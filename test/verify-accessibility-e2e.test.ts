@@ -100,6 +100,7 @@ async function runVerify(
   urls: string[],
   bodiesDir: string,
   cachePath: string,
+  logRootDir?: string,
 ): Promise<RunResult> {
   const dir = mkdtempSync(join(tmpdir(), "verify-e2e-"));
   const urlsPath = join(dir, "urls.json");
@@ -118,6 +119,12 @@ async function runVerify(
         bodiesDir,
         "--cache",
         cachePath,
+        // #3311: isola o logEvent de auditoria (`verify: N paywall, ...`) pro
+        // tmpdir do teste — sem isso, main() cai no default de logEvent
+        // (process.cwd()), que aqui é a raiz real do repo (cwd do processo
+        // spawnado), poluindo data/run-log.jsonl de produção a cada run
+        // deste teste E2E (7 subtests × múltiplas chamadas runVerify cada).
+        ...(logRootDir ? ["--log-root-dir", logRootDir] : []),
       ],
       { cwd: resolve(process.cwd()), shell: process.platform === "win32" },
     );
@@ -149,7 +156,7 @@ describe("verify-accessibility E2E (#849 — cache flow integration)", () => {
     const cachePath = join(tmpRoot, "verify-cache.json");
     try {
       const urls = [`http://127.0.0.1:${port}/200-good`];
-      const r = await runVerify(urls, bodiesDir, cachePath);
+      const r = await runVerify(urls, bodiesDir, cachePath, tmpRoot);
       assert.equal(r.exitCode, 0, `CLI exit ${r.exitCode}: ${r.stderr}`);
 
       const results = JSON.parse(r.stdout);
@@ -185,11 +192,11 @@ describe("verify-accessibility E2E (#849 — cache flow integration)", () => {
       const urls = [`http://127.0.0.1:${port}/200-good`];
 
       // First run populates cache
-      const r1 = await runVerify(urls, bodiesDir, cachePath);
+      const r1 = await runVerify(urls, bodiesDir, cachePath, tmpRoot);
       assert.equal(r1.exitCode, 0);
 
       // Second run should hit cache
-      const r2 = await runVerify(urls, bodiesDir, cachePath);
+      const r2 = await runVerify(urls, bodiesDir, cachePath, tmpRoot);
       assert.equal(r2.exitCode, 0);
 
       const results = JSON.parse(r2.stdout);
@@ -212,7 +219,7 @@ describe("verify-accessibility E2E (#849 — cache flow integration)", () => {
     const cachePath = join(tmpRoot, "verify-cache.json");
     try {
       const urls = [`http://127.0.0.1:${port}/404`];
-      const r = await runVerify(urls, bodiesDir, cachePath);
+      const r = await runVerify(urls, bodiesDir, cachePath, tmpRoot);
       assert.equal(r.exitCode, 0);
 
       const results = JSON.parse(r.stdout);
@@ -237,10 +244,10 @@ describe("verify-accessibility E2E (#849 — cache flow integration)", () => {
       const url2 = `http://127.0.0.1:${port}/200-good-2`;
 
       // First run: cache só url1
-      await runVerify([url1], bodiesDir, cachePath);
+      await runVerify([url1], bodiesDir, cachePath, tmpRoot);
 
       // Second run: url1 cached + url2 novo
-      const r = await runVerify([url1, url2], bodiesDir, cachePath);
+      const r = await runVerify([url1, url2], bodiesDir, cachePath, tmpRoot);
       assert.equal(r.exitCode, 0);
 
       const results = JSON.parse(r.stdout);
@@ -272,7 +279,7 @@ describe("verify-accessibility E2E (#849 — cache flow integration)", () => {
         `http://127.0.0.1:${port}/200-good`,
         `http://127.0.0.1:${port}/404`,
       ];
-      const r = await runVerify(urls, bodiesDir, cachePath);
+      const r = await runVerify(urls, bodiesDir, cachePath, tmpRoot);
       assert.equal(r.exitCode, 0);
 
       // Stderr menciona body lift count quando aplicável
@@ -305,7 +312,7 @@ describe("verify-accessibility E2E (#849 — cache flow integration)", () => {
       const urls = [`http://127.0.0.1:${port}/200-good`];
 
       // First run: body lifted pra cache
-      await runVerify(urls, bodiesDir, cachePath);
+      await runVerify(urls, bodiesDir, cachePath, tmpRoot);
       const beforeBody = (Object.values(
         JSON.parse(readFileSync(cachePath, "utf8")).entries,
       )[0] as any).body;
@@ -313,7 +320,7 @@ describe("verify-accessibility E2E (#849 — cache flow integration)", () => {
 
       // Second run com bodies-dir limpo (simula nova edição)
       rmSync(bodiesDir, { recursive: true, force: true });
-      await runVerify(urls, bodiesDir, cachePath);
+      await runVerify(urls, bodiesDir, cachePath, tmpRoot);
 
       // Body deve continuar no cache (cache hit, no rewrite)
       const afterBody = (Object.values(
@@ -331,7 +338,7 @@ describe("verify-accessibility E2E (#849 — cache flow integration)", () => {
     const cachePath = join(tmpRoot, "verify-cache.json");
     try {
       const url = `http://127.0.0.1:${port}/js-rendered-old-article`;
-      const r = await runVerify([url], bodiesDir, cachePath);
+      const r = await runVerify([url], bodiesDir, cachePath, tmpRoot);
       assert.equal(r.exitCode, 0, `CLI exit ${r.exitCode}: ${r.stderr}`);
 
       // Confirma que o fallback do browser de fato rolou (não o path primário
@@ -376,6 +383,42 @@ describe("verify-accessibility E2E (#849 — cache flow integration)", () => {
       assert.equal(filterResult.kept.lancamento.length, 0, "artigo de 17/jun deve ser removido da janela ancorada em 10/jul");
       assert.equal(filterResult.removed.length, 1);
       assert.equal(filterResult.removed[0].source_field, "published_date");
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  // #3311: regressão direta — antes do --log-root-dir, main() sempre logava
+  // via logEvent() sem rootDir explícito, caindo no default process.cwd() do
+  // subprocesso spawnado (= raiz real do repo/worktree). Toda run deste
+  // teste E2E poluía data/run-log.jsonl de produção com entries fabricadas
+  // (edition: null, agent: "verify-accessibility.ts"). Este teste prova que
+  // (a) o log de auditoria é de fato persistido, mas (b) SOMENTE no tmpdir
+  // isolado passado via --log-root-dir — nunca no repo real.
+  it("#3311: log de auditoria isolado via --log-root-dir — nunca grava em data/run-log.jsonl real", async () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "verify-e2e-logroot-"));
+    const bodiesDir = join(tmpRoot, "bodies");
+    const cachePath = join(tmpRoot, "verify-cache.json");
+    const realRepoLogPath = resolve(process.cwd(), "data", "run-log.jsonl");
+    const realRepoLogSnapshot = existsSync(realRepoLogPath) ? readFileSync(realRepoLogPath, "utf8") : null;
+    try {
+      const urls = [`http://127.0.0.1:${port}/200-good`];
+      const r = await runVerify(urls, bodiesDir, cachePath, tmpRoot);
+      assert.equal(r.exitCode, 0, `CLI exit ${r.exitCode}: ${r.stderr}`);
+
+      const isolatedLogPath = join(tmpRoot, "data", "run-log.jsonl");
+      assert.ok(existsSync(isolatedLogPath), "log de auditoria deveria existir no tmpdir isolado (--log-root-dir)");
+      const isolatedLog = readFileSync(isolatedLogPath, "utf8");
+      assert.match(isolatedLog, /"agent":"verify-accessibility\.ts"/);
+
+      if (existsSync(realRepoLogPath)) {
+        const realLogAfter = readFileSync(realRepoLogPath, "utf8");
+        assert.equal(
+          realLogAfter,
+          realRepoLogSnapshot,
+          "data/run-log.jsonl REAL do repo não deveria ter sido alterado por este teste (--log-root-dir deveria ter isolado o write)",
+        );
+      }
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
     }

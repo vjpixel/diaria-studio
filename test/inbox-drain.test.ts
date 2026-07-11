@@ -1,7 +1,8 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import { strict as assert } from "node:assert";
-import { writeFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
+import { tmpdir } from "node:os";
 import {
   extractUrls,
   URL_REGEX,
@@ -394,8 +395,20 @@ describe("inbox-drain main() integration (#306)", () => {
     }
   });
 
-  /** Helper: capture stdout written by drainMain() and return parsed JSON. */
+  /**
+   * Helper: capture stdout written by drainMain() and return parsed JSON.
+   *
+   * #3311: drainMain() é chamado IN-PROCESS (não spawnado) — o silent_reset
+   * path (linhas 413+/614+ abaixo) dispara logDrainInfo(), que sem
+   * isolamento cai no default de logEvent (process.cwd()), aqui a raiz real
+   * do repo/worktree (mesma resolvida por CONFIG_PATH/CURSOR_PATH/ROOT no
+   * topo deste arquivo). Cada chamada a runDrain() cria um tmpdir isolado
+   * SÓ para o destino do run-log de auditoria — CONFIG_PATH/CURSOR_PATH/
+   * INBOX_PATH continuam apontando pro repo real (convenção pré-existente
+   * deste arquivo, com restore em afterEach; fora do escopo de #3311).
+   */
   async function runDrain(): Promise<Record<string, unknown>> {
+    const logRootDir = mkdtempSync(resolve(tmpdir(), "inbox-drain-logroot-"));
     const capturedOutput: string[] = [];
     const origWrite = process.stdout.write.bind(process.stdout);
     process.stdout.write = (chunk: any) => {
@@ -403,9 +416,10 @@ describe("inbox-drain main() integration (#306)", () => {
       return true;
     };
     try {
-      await drainMain();
+      await drainMain(logRootDir);
     } finally {
       process.stdout.write = origWrite;
+      rmSync(logRootDir, { recursive: true, force: true });
     }
     return JSON.parse(capturedOutput.join(""));
   }
@@ -432,6 +446,64 @@ describe("inbox-drain main() integration (#306)", () => {
     // After silent_reset cursor should reset consecutive_empty_drains to 0
     const cursor = JSON.parse(readFileSync(CURSOR_PATH, "utf8"));
     assert.equal(cursor.consecutive_empty_drains, 0);
+  });
+
+  // #3311 regressão direta: antes de main(rootDir) existir, o silent_reset
+  // path acima disparava logDrainInfo() sem rootDir explícito — caía no
+  // default de logEvent (process.cwd()), que em drainMain() chamado
+  // in-process (não spawnado) é o cwd real do test runner, tipicamente a
+  // raiz do repo/worktree (mesmo ROOT usado por CONFIG_PATH/CURSOR_PATH
+  // acima). Toda run desta suite poluía data/run-log.jsonl real com
+  // entries "auto-reset: inbox vazio..." fabricadas. Este teste prova (a)
+  // que o log de auditoria é de fato persistido, e (b) que vai SOMENTE pro
+  // tmpdir isolado passado a main() — nunca pro repo real.
+  it("#3311: log de auditoria do silent_reset isolado via main(rootDir) — nunca grava em data/run-log.jsonl real", async () => {
+    writeFileSync(CURSOR_PATH, JSON.stringify({
+      last_drain_iso: "2026-04-01T00:00:00Z",
+      consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
+    }), "utf8");
+
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/threads") && !u.includes("/threads/")) {
+        return makeGmailResponse({ threads: [] });
+      }
+      return makeGmailResponse({});
+    };
+
+    const logRootDir = mkdtempSync(resolve(tmpdir(), "inbox-drain-logroot-check-"));
+    const realRepoLogPath = resolve(ROOT, "data", "run-log.jsonl");
+    const realRepoLogSnapshot = existsSync(realRepoLogPath) ? readFileSync(realRepoLogPath, "utf8") : null;
+    const capturedOutput: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: any) => {
+      if (typeof chunk === "string") capturedOutput.push(chunk);
+      return true;
+    };
+    try {
+      await drainMain(logRootDir);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    try {
+      const isolatedLogPath = resolve(logRootDir, "data", "run-log.jsonl");
+      assert.ok(existsSync(isolatedLogPath), "log de auditoria deveria existir no tmpdir isolado (main(rootDir))");
+      const isolatedLog = readFileSync(isolatedLogPath, "utf8");
+      assert.match(isolatedLog, /"agent":"inbox-drainer"/);
+      assert.match(isolatedLog, /auto-reset/);
+
+      if (existsSync(realRepoLogPath)) {
+        const realLogAfter = readFileSync(realRepoLogPath, "utf8");
+        assert.equal(
+          realLogAfter,
+          realRepoLogSnapshot,
+          "data/run-log.jsonl REAL do repo não deveria ter sido alterado por este teste (main(rootDir) deveria ter isolado o write)",
+        );
+      }
+    } finally {
+      rmSync(logRootDir, { recursive: true, force: true });
+    }
   });
 
   it("drain com 1 thread com URL → URL extraída em data/inbox.md", async () => {

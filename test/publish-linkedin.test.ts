@@ -13,9 +13,9 @@ import {
   type DispatchContext,
   type DispatchInput,
 } from "../scripts/publish-linkedin.ts";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const LF = "# Facebook\n\n## d1\nFacebook d1.\n\n# LinkedIn\n\n## d1\nLinkedIn d1.\n\nLinha 2 d1.\n\n## d2\nLinkedIn d2.\n<!-- oculto -->\n\n## d3\nLinkedIn d3.";
@@ -637,6 +637,12 @@ describe("#595 dispatchEntry: bug regression — pixel + null scheduled_at em fi
       workerToken: "test-tok",
       useWorkerForScheduled: true,
       editionDate: "260999",
+      // #3311: isola o logEvent de auditoria de dispatchEntry() pro mesmo
+      // tmpdir da edição de teste — sem isso, dispatchEntry() (chamado
+      // in-process, não spawnado) gravava entries fabricadas (edition:
+      // "260999") direto em data/run-log.jsonl REAL do worktree a cada
+      // test run (rootDir cai no default de logEvent, process.cwd()).
+      rootDir: dir,
     };
   }
 
@@ -710,6 +716,58 @@ describe("#595 dispatchEntry: bug regression — pixel + null scheduled_at em fi
       const entry = await dispatchEntry(input, ctx);
       assert.equal(entry.status, "draft", "diaria fire-now → draft (post imediato)");
       assert.equal(entry.route, "make_now");
+    } finally {
+      cleanup();
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  // #3311 regressão direta: antes de DispatchContext.rootDir existir,
+  // dispatchEntry() (chamado in-process pelos testes acima, não spawnado)
+  // sempre gravava o logEvent de auditoria via process.cwd() — o cwd real
+  // do test runner, tipicamente a raiz do repo/worktree. Toda run desta
+  // suite poluía data/run-log.jsonl real com entries fabricadas
+  // (edition: "260999", achado empírico citado na issue #3311: 4353+
+  // entries históricas). Este teste prova (a) que o log de auditoria é de
+  // fato persistido, e (b) que ele vai SOMENTE pro tmpdir isolado passado
+  // via ctx.rootDir — nunca pro repo real.
+  it("#3311: log de auditoria de dispatchEntry isolado via ctx.rootDir — nunca grava em data/run-log.jsonl real", async () => {
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response(JSON.stringify({ accepted: true, request_id: "test-req" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    const { dir, cleanup } = tmpDir();
+    const realRepoLogPath = join(process.cwd(), "data", "run-log.jsonl");
+    const realRepoLogSnapshot = existsSync(realRepoLogPath) ? readFileSync(realRepoLogPath, "utf8") : null;
+    try {
+      const input: DispatchInput = {
+        destaque: "d1",
+        subtype: "main",
+        text: "Main post",
+        imageUrl: null,
+        scheduledAt: null,
+        webhookTarget: "diaria",
+        action: "post",
+      };
+      const ctx = mkCtx(dir);
+      await dispatchEntry(input, ctx);
+
+      const isolatedLogPath = join(dir, "data", "run-log.jsonl");
+      assert.ok(existsSync(isolatedLogPath), "log de auditoria deveria existir no tmpdir isolado (ctx.rootDir)");
+      const isolatedLog = readFileSync(isolatedLogPath, "utf8");
+      assert.match(isolatedLog, /"agent":"publish-linkedin"/);
+      assert.match(isolatedLog, /"edition":"260999"/);
+
+      if (existsSync(realRepoLogPath)) {
+        const realLogAfter = readFileSync(realRepoLogPath, "utf8");
+        assert.equal(
+          realLogAfter,
+          realRepoLogSnapshot,
+          "data/run-log.jsonl REAL do repo não deveria ter sido alterado por este teste (ctx.rootDir deveria ter isolado o write)",
+        );
+      }
     } finally {
       cleanup();
       globalThis.fetch = savedFetch;
@@ -886,10 +944,17 @@ const APPROVED_UNCAPPED_INFLATED = JSON.stringify({
 function runPublishLinkedinCli(editionDir: string, extraArgs: string[] = []) {
   const projectRoot = join(import.meta.dirname, "..");
   const scriptPath = join(projectRoot, "scripts", "publish-linkedin.ts");
+  // #3311: --log-root-dir isola o logEvent de auditoria (image_cache_state +
+  // dispatched-via) pro parent de editionDir (sempre um tmpdir mkdtempSync'd
+  // por mkEditionDir() acima) — sem isso, main() cai no default de logEvent
+  // (process.cwd()), aqui `cwd: projectRoot` (raiz real do repo/worktree),
+  // gravando entries fabricadas (edition: "260999") direto em
+  // data/run-log.jsonl a cada test run desta suite.
+  const logRootDir = dirname(editionDir);
   // Set minimal env to not trigger Worker guard and to not hit Make webhook
   return spawnSync(
     process.execPath,
-    ["--import", "tsx", scriptPath, "--edition-dir", editionDir, "--fire-now", ...extraArgs],
+    ["--import", "tsx", scriptPath, "--edition-dir", editionDir, "--fire-now", "--log-root-dir", logRootDir, ...extraArgs],
     {
       cwd: projectRoot,
       encoding: "utf8",

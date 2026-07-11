@@ -11,8 +11,25 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
 import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
+
+/**
+ * #3311: deriva --log-root-dir automaticamente a partir do --edition-dir
+ * passado (editionDir é sempre `{tmp}/{AAMMDD}` nestes testes — o parent é
+ * o tmpdir isolado do teste). Sem isso, main() cai no default de logEvent
+ * (process.cwd()), que no processo spawnado resolve pra raiz real do repo
+ * — o logEvent incondicional de audit de imgCacheState em publish-linkedin.ts
+ * ("Logar SEMPRE") gravava entries fabricadas (edition: "260999", achado
+ * empírico citado na issue #3311) direto em data/run-log.jsonl REAL a cada
+ * run desta suite.
+ */
+function withLogRootDir(args: string[]): string[] {
+  if (args.includes("--log-root-dir")) return args;
+  const idx = args.indexOf("--edition-dir");
+  if (idx === -1 || !args[idx + 1]) return args;
+  return [...args, "--log-root-dir", dirname(args[idx + 1])];
+}
 
 function runCli(args: string[], env: Record<string, string | undefined>): {
   stdout: string;
@@ -23,7 +40,7 @@ function runCli(args: string[], env: Record<string, string | undefined>): {
   const cleanEnv = { ...process.env, ...env };
   const result = spawnSync(
     NPX,
-    ["tsx", "scripts/publish-linkedin.ts", ...args],
+    ["tsx", "scripts/publish-linkedin.ts", ...withLogRootDir(args)],
     { encoding: "utf8", stdio: "pipe", shell: isWindows, env: cleanEnv },
   );
   if (result.error) throw result.error;
@@ -124,7 +141,7 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
     };
     const result = spawnSync(
       process.execPath,
-      ["--import", "tsx", scriptPath, ...args],
+      ["--import", "tsx", scriptPath, ...withLogRootDir(args)],
       { cwd: projectRoot, encoding: "utf8", env },
     );
     return {
@@ -255,7 +272,7 @@ describe("#1310 publish-linkedin.ts — comments skipped por default", () => {
     };
     const result = spawnSync(
       process.execPath,
-      ["--import", "tsx", scriptPath, ...args],
+      ["--import", "tsx", scriptPath, ...withLogRootDir(args)],
       { cwd: projectRoot, encoding: "utf8", env },
     );
     return {
