@@ -101,18 +101,31 @@ function parseLinkAtLineStart(
   const url = line.slice(destStart, j);
   if (!url) return null;
   let rest = line.slice(j + 1);
-  // #3300: `**` colado logo após o link SÓ é consumido como fechamento
-  // quando (a) HOUVE abertura `**` antes do `[` (`hasOpenBold`) — sem
-  // abertura, não há o que fechar — E (b) o candidato está genuinamente
-  // desemparelhado no restante da linha (paridade par/ímpar de `**`, mesma
-  // heurística de `isUnpairedBoldMarker`). Antes, `rest.startsWith("**")`
-  // disparava o strip incondicionalmente — mesmo SEM abertura — corrompendo
-  // texto colado ao link que é na verdade um bold INDEPENDENTE (ex:
-  // `[Título](url)**Atualização:** resto`, onde o `**` abre essa frase, não
-  // fecha um wrap do link que nunca existiu).
-  if (hasOpenBold && rest.startsWith("**")) {
+  if (rest.startsWith("**")) {
     const closeAdjacent = rest.slice(2);
-    if (isUnpairedBoldMarker(closeAdjacent)) rest = closeAdjacent;
+    // #3300: `**` colado logo após o link SÓ é consumido como fechamento do
+    // wrap de negrito quando (a) HOUVE abertura `**` antes do `[`
+    // (`hasOpenBold`) E (b) o candidato está genuinamente desemparelhado no
+    // restante da linha (paridade par/ímpar de `**`, mesma heurística de
+    // `isUnpairedBoldMarker`). Antes, `rest.startsWith("**")` disparava o
+    // strip incondicionalmente — mesmo SEM abertura — corrompendo texto
+    // colado ao link que é na verdade um bold INDEPENDENTE (ex:
+    // `[Título](url)**Atualização:** resto`, onde o `**` abre essa frase,
+    // não fecha um wrap do link que nunca existiu).
+    if (hasOpenBold) {
+      if (isUnpairedBoldMarker(closeAdjacent)) rest = closeAdjacent;
+    } else if (closeAdjacent.trim() === "") {
+      // #3351: `**` de fechamento SOLO (sem abertura correspondente) é
+      // tolerado quando é o ÚNICO conteúdo restante da linha (nada, ou só
+      // whitespace, depois dele) — perda do marcador de ABERTURA por edição
+      // manual no Drive ou um passe do humanizador que corta só um lado.
+      // Espelha o comportamento pré-#3300 (incondicional) mas SÓ nesse caso
+      // estrito — não reabre o bug do #3300: quando sobra conteúdo real após
+      // o `**` (ex: `**Atualização:** resto`), isso é bold independente
+      // colado, não fechamento solo, e o `**` permanece intocado (cai no
+      // branch acima, condição falsa, `rest` inalterado).
+      rest = closeAdjacent;
+    }
   }
   return { rawTitle, url, rest };
 }
