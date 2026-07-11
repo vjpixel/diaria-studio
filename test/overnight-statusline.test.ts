@@ -22,7 +22,15 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { renderOvernightBar, readTodayPlan, cycleLabel, OVERNIGHT_DIR_RE, type Plan } from "../scripts/overnight-statusline.ts";
+import {
+  renderOvernightBar,
+  readTodayPlan,
+  readPlanFromDir,
+  cycleLabel,
+  OVERNIGHT_DIR_RE,
+  type Plan,
+  type PlanFileReaders,
+} from "../scripts/overnight-statusline.ts";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -680,6 +688,130 @@ describe("readTodayPlan — integração com dirs reais (#2246 pt2)", () => {
       assert.equal(plan, null, "sem plans válidos deve retornar null");
     } finally {
       rmSync(emptyRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #3264: readPlanFromDir — retry único em JSON truncado (escrita concorrente) ──
+//
+// Bug: o `catch` original de readPlanFromDir tratava "arquivo ausente" e "arquivo
+// existe mas JSON truncado (escrita não-atômica em progresso)" de forma idêntica
+// (ambos → null), fazendo a statusline mostrar "sem rodada ativa" por até um ciclo
+// de poll (30s) mesmo com uma rodada genuinamente ativa. O fix faz 1 retry síncrono
+// imediato quando o arquivo EXISTE mas o parse falha, sem retry quando o arquivo
+// está genuinamente ausente.
+//
+// Como a janela de escrita concorrente real é sub-ms (não reproduzível de forma
+// determinística com 2 leituras síncronas no mesmo processo/thread sem um segundo
+// processo escrevendo em paralelo), o teste injeta leitores fake via o parâmetro
+// `readers` (dependency injection) que devolvem conteúdo truncado na 1ª chamada de
+// readFileSync e conteúdo válido na 2ª — reproduzindo exatamente o cenário que o
+// retry precisa cobrir (arquivo existe, 1ª leitura pega o meio de uma escrita, 2ª
+// leitura já pega o arquivo completo). Isso testa o comportamento do retry de forma
+// determinística sem depender de timing real de I/O concorrente.
+describe("readPlanFromDir — retry único em JSON truncado (#3264)", () => {
+  function makeReadersWithSequence(existsResult: boolean, readResults: (string | Error)[]): PlanFileReaders {
+    let callIndex = 0;
+    return {
+      existsSync: (() => existsResult) as PlanFileReaders["existsSync"],
+      readFileSync: ((..._args: unknown[]) => {
+        const result = readResults[Math.min(callIndex, readResults.length - 1)];
+        callIndex += 1;
+        if (result instanceof Error) throw result;
+        return result;
+      }) as PlanFileReaders["readFileSync"],
+    };
+  }
+
+  it("arquivo genuinamente ausente → null IMEDIATO, sem tentar ler (nenhum retry)", () => {
+    let readFileSyncCalls = 0;
+    const readers: PlanFileReaders = {
+      existsSync: (() => false) as PlanFileReaders["existsSync"],
+      readFileSync: ((..._args: unknown[]) => {
+        readFileSyncCalls += 1;
+        throw new Error("não deveria ser chamado — arquivo não existe");
+      }) as PlanFileReaders["readFileSync"],
+    };
+
+    const plan = readPlanFromDir("/fake/plan.json", readers);
+
+    assert.equal(plan, null, "arquivo ausente deve retornar null");
+    assert.equal(readFileSyncCalls, 0, "readFileSync NUNCA deve ser chamado quando o arquivo não existe");
+  });
+
+  it("arquivo existe mas 1ª leitura pega JSON truncado (escrita concorrente) → retry recupera o plan válido", () => {
+    // Simula exatamente o cenário do bug: existsSync vê o arquivo (já foi criado),
+    // mas a 1ª leitura cai no meio de uma escrita não-atômica (JSON.parse falha).
+    // A 2ª leitura (retry) já pega o conteúdo completo, escrito um instante depois.
+    const validPlan = JSON.stringify({
+      started_at: "2026-07-11T03:00:00.000Z",
+      issues: [{ number: 3264, status: "elegivel" }],
+    });
+    const readers = makeReadersWithSequence(true, [
+      '{"started_at": "2026-07-11T03:00:00.000Z", "iss', // truncado — JSON.parse falha
+      validPlan, // completo — 2ª leitura (retry) recupera
+    ]);
+
+    const plan = readPlanFromDir("/fake/plan.json", readers);
+
+    assert.ok(plan !== null, "retry deve recuperar o plan válido, não permanecer null");
+    assert.equal(plan!.issues.length, 1);
+    assert.equal(plan!.issues[0]!.number, 3264);
+  });
+
+  it("arquivo existe mas AMBAS as leituras batem em JSON truncado → null (retry não é infinito)", () => {
+    // Documenta o risco residual: se a janela de escrita for mais longa que o
+    // intervalo entre as 2 leituras síncronas, o retry também falha. Comportamento
+    // esperado: cai pro fallback idle (null), não trava nem faz retry indefinido.
+    const readers = makeReadersWithSequence(true, [
+      '{"started_at": "2026-07-11T03:00:00.000Z", "iss',
+      '{"started_at": "2026-07-11T03:00:00.000Z", "issu', // ainda truncado na 2ª tentativa
+    ]);
+
+    const plan = readPlanFromDir("/fake/plan.json", readers);
+
+    assert.equal(plan, null, "2 leituras truncadas seguidas deve desistir e retornar null (não travar)");
+  });
+
+  it("arquivo existe e a 1ª leitura já é válida → retorna direto, sem precisar do retry", () => {
+    let readFileSyncCalls = 0;
+    const validPlan = JSON.stringify({
+      started_at: "2026-07-11T03:00:00.000Z",
+      issues: [{ number: 1, status: "mergeada" }],
+    });
+    const readers: PlanFileReaders = {
+      existsSync: (() => true) as PlanFileReaders["existsSync"],
+      readFileSync: ((..._args: unknown[]) => {
+        readFileSyncCalls += 1;
+        return validPlan;
+      }) as PlanFileReaders["readFileSync"],
+    };
+
+    const plan = readPlanFromDir("/fake/plan.json", readers);
+
+    assert.ok(plan !== null);
+    assert.equal(readFileSyncCalls, 1, "caso comum (arquivo estável) não deve pagar o custo do retry");
+  });
+
+  // Integração com FS real (sem DI) — cobre o contrato ponta-a-ponta via readTodayPlan,
+  // que é o que a statusline de fato chama. Não simula concorrência real (single-thread),
+  // mas confirma que um plan.json ESTÁVEL (não-truncado) continua funcionando pelo
+  // caminho de produção (readers default = fs real) após a mudança.
+  it("integração (fs real via readTodayPlan): plan.json válido continua sendo lido normalmente", () => {
+    const tmpRoot = join(tmpdir(), `overnight-statusline-retry-${Date.now()}`);
+    const overnightDir = join(tmpRoot, "data", "overnight");
+    mkdirSync(join(overnightDir, "260711"), { recursive: true });
+    writeFileSync(
+      join(overnightDir, "260711", "plan.json"),
+      JSON.stringify({ started_at: "2026-07-11T03:00:00.000Z", issues: [{ number: 1, status: "elegivel" }] }),
+    );
+
+    try {
+      const plan = readTodayPlan(tmpRoot);
+      assert.ok(plan !== null, "plan.json válido deve continuar sendo lido normalmente");
+      assert.equal(plan!.issues.length, 1);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
 });
