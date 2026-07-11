@@ -41,6 +41,7 @@
  *     --edition-dir data/editions/260623/ \
  *     --title "Título D1 da edição"
  *     [--validate-social]   # avisar (não bloquear) se sobrar placeholder em 03-social.md
+ *     [--log-root-dir <path>]  # override de onde data/run-log.jsonl é gravado (default: ROOT do repo)
  *
  *   npx tsx scripts/resolve-edition-url.ts \
  *     --edition-dir data/editions/260623/ \
@@ -51,6 +52,16 @@
  *     --edition-dir data/editions/260623/ \
  *     --edition-url "https://diar.ia.br/p/titulo-d1-da-edicao"
  *     [--validate-social]
+ *
+ * `--log-root-dir` (#3277 code-review, PR #3310): existe SÓ pra isolamento de
+ * teste. Sem essa flag, o warning do guard sempre grava em `{ROOT}/data/run-log.jsonl`
+ * (ROOT = raiz do repo onde este script mora, cwd-independente — nunca use
+ * `process.cwd()` implícito aqui). Testes que spawnam o CLI via subprocess
+ * (`test/resolve-edition-url.test.ts`, seção c) passam essa flag apontando
+ * pro próprio tmpdir do teste, evitando gravar warns fabricados no log real —
+ * sem ela, o subprocesso do teste sempre resolve ROOT pro repo real (é a
+ * localização física do próprio arquivo `resolve-edition-url.ts`), então
+ * `--cwd` do spawn não ajudaria (ROOT já é cwd-independente por design).
  *
  * Exit codes:
  *   0 — URL gravada com sucesso. Com --validate-social, sempre 0 mesmo quando
@@ -70,6 +81,7 @@ import {
   findUnresolvedPlaceholders,
   substituteEditionUrl,
   BEEHIIV_BASE_URL,
+  PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX,
 } from "./lib/edition-url.ts";
 import { seoSlug } from "./lib/slug.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
@@ -141,7 +153,7 @@ conteúdo sobre IA). Revisão humana recomendada — ver ${logHint}.
       stage: 5,
       agent: "resolve-edition-url",
       level: "warn",
-      message: `guard anti-placeholder (#3277): placeholder(s) não-resolvido(s) em 03-social.md, dispatch NÃO bloqueado — revisão humana recomendada`,
+      message: `${PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX}: placeholder(s) não-resolvido(s) em 03-social.md, dispatch NÃO bloqueado — revisão humana recomendada`,
       details: { unresolved, edition_url: editionUrl, social_md_path: socialMdPath },
     },
     rootDir,
@@ -164,6 +176,12 @@ function main(argv: string[]): void {
   }
   const editionDir = resolve(ROOT, editionDirRaw);
   const internalDir = resolve(editionDir, "_internal");
+
+  // #3277 code-review (PR #3310): --log-root-dir é override SÓ pra teste —
+  // ver docstring do cabeçalho do arquivo. Produção nunca passa essa flag,
+  // então logRootDir === ROOT em todo uso real.
+  const logRootDirRaw = typeof args["log-root-dir"] === "string" ? args["log-root-dir"] : undefined;
+  const logRootDir = logRootDirRaw ? resolve(ROOT, logRootDirRaw) : ROOT;
 
   if (!existsSync(editionDir)) {
     console.error(`Erro: edition-dir não existe: ${editionDir}`);
@@ -240,23 +258,27 @@ function main(argv: string[]): void {
       // #3277: não-fatal. Um placeholder {snake_case} remanescente é ambíguo
       // (bug real vs. prosa citando um exemplo entre chaves) — avisar em vez
       // de travar o dispatch social da edição inteira num falso positivo.
-      // Ver docstring de warnUnresolvedPlaceholders() pro porquê do rootDir.
+      // Ver docstring de warnUnresolvedPlaceholders() pro porquê do rootDir e
+      // de --log-root-dir no cabeçalho do arquivo.
       //
       // #3277 code-review finding: a confirmação "OK" da escrita é emitida
       // AQUI (não incondicionalmente no fim da função) — ela é verdadeira (o
       // arquivo FOI gravado com sucesso) — e então retornamos logo após o
       // AVISO, sem cair no "OK" final abaixo. Isso garante duas coisas ao
       // mesmo tempo: (a) o AVISO é a ÚLTIMA linha do output quando presente
-      // (mais visível pra quem lê só a cauda do stdout), e (b) "OK" nunca é
-      // impresso incondicionalmente antes de um exit(1) mais adiante (bug
-      // encontrado pelo próprio code-review desta PR numa iteração anterior
-      // deste fix: mover o "OK" pra logo após o write fazia ele imprimir
-      // mesmo quando --validate-social ia abortar com exit(1) por
-      // 03-social.md ausente — essa checagem já passou nesse ponto do fluxo,
-      // então aqui "OK" é sempre verdadeiro).
+      // (mais visível pra quem lê só a cauda do stdout — vale pra terminal/
+      // CI/Bash-tool combinando stdout+stderr; um consumidor que separa os
+      // streams, como o próprio spawnSync dos testes, não enxerga essa
+      // ordem — mas o consumidor real deste script é um agente lendo output
+      // combinado), e (b) "OK" nunca é impresso incondicionalmente antes de
+      // um exit(1) mais adiante (bug encontrado pelo próprio code-review
+      // desta PR numa iteração anterior deste fix: mover o "OK" pra logo
+      // após o write fazia ele imprimir mesmo quando --validate-social ia
+      // abortar com exit(1) por 03-social.md ausente — essa checagem já
+      // passou nesse ponto do fluxo, então aqui "OK" é sempre verdadeiro).
       console.log(`OK: edition_url="${editionUrl}" gravada em ${outPath}`);
       const editionId = basename(editionDir).match(/^\d{6}/)?.[0] ?? null;
-      warnUnresolvedPlaceholders(unresolved, editionId, editionUrl, socialMdPath, ROOT);
+      warnUnresolvedPlaceholders(unresolved, editionId, editionUrl, socialMdPath, logRootDir);
       return;
     }
     console.log(`#3223: guard anti-placeholder OK — nenhum placeholder não-resolvido em 03-social.md.`);

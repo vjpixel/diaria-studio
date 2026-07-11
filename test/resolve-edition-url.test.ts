@@ -256,9 +256,17 @@ function runCli(args: string[], extraFiles?: Record<string, string>): {
     }
   }
 
+  // #3277 code-review (PR #3310): --log-root-dir aponta o warn do guard
+  // anti-placeholder pro PRÓPRIO tmpdir do teste, não pro data/run-log.jsonl
+  // real do repo. Sem isso, main() sempre resolve ROOT (script location,
+  // cwd-independente por design) pro repo real, então nenhum cwd override
+  // do spawnSync ajudaria — só a flag explícita isola de fato. Passado em
+  // TODA chamada (não só nos testes que disparam o warning) — inofensivo
+  // quando não usado, e cobre qualquer teste futuro que passe a disparar o
+  // guard sem precisar lembrar de adicionar a flag manualmente.
   const result = spawnSync(
     NPX,
-    ["tsx", "scripts/resolve-edition-url.ts", "--edition-dir", editionDir, ...args],
+    ["tsx", "scripts/resolve-edition-url.ts", "--edition-dir", editionDir, "--log-root-dir", tmp, ...args],
     { encoding: "utf8", stdio: "pipe", shell: isWindows },
   );
 
@@ -377,6 +385,11 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
       "",
     ].join("\n");
 
+    // Snapshot do log REAL do repo ANTES de rodar o CLI, pra provar depois
+    // que --log-root-dir isolou o write (ver assercao apos runCli abaixo).
+    const realRepoLogPath = resolve(process.cwd(), "data", "run-log.jsonl");
+    const realRepoLogPathSnapshot = existsSync(realRepoLogPath) ? readFileSync(realRepoLogPath, "utf8") : null;
+
     const { exitCode, stderr, stdout, editionDir, tmp } = runCli(
       ["--slug", "meu-titulo-teste", "--validate-social"],
       { "03-social.md": socialMd },
@@ -398,6 +411,30 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
       const rewritten = readFileSync(rewrittenPath, "utf8");
       assert.ok(!rewritten.includes("{edition_url}"), "{edition_url} deve ter sido substituido");
       assert.ok(rewritten.includes("{algum_placeholder_novo}"), "placeholder desconhecido permanece intocado");
+
+      // #3277 code-review (PR #3310), regressao direta: ANTES desta PR, o
+      // warn deste caminho (spawnSync via CLI real, nao chamada direta da
+      // funcao) sempre gravava em {ROOT-do-repo}/data/run-log.jsonl mesmo
+      // com rootDir sendo passado internamente — porque ROOT em si (nao o
+      // cwd do processo) ja era resolvido pro repo real, e nao havia flag
+      // pra sobrescrever isso a partir de fora. Confirmado empiricamente
+      // pelo proprio code-review: dezenas de entries fabricadas com edition
+      // "260999" apareciam no run-log real a cada rodada de teste. Com
+      // --log-root-dir (passado por runCli() acima), o warn deve gravar
+      // SOMENTE no tmpdir isolado deste teste — nunca no repo real.
+      const isolatedLogPath = resolve(tmp, "data", "run-log.jsonl");
+      assert.ok(existsSync(isolatedLogPath), "warn deveria gravar em data/run-log.jsonl DENTRO do tmpdir isolado (--log-root-dir)");
+      const isolatedLog = readFileSync(isolatedLogPath, "utf8");
+      assert.match(isolatedLog, /guard anti-placeholder \(#3277\)/, "entry do guard deveria estar no log isolado");
+
+      if (existsSync(realRepoLogPath)) {
+        const realLogAfter = readFileSync(realRepoLogPath, "utf8");
+        assert.equal(
+          realLogAfter,
+          realRepoLogPathSnapshot,
+          "data/run-log.jsonl REAL do repo nao deveria ter sido alterado por este teste (--log-root-dir deveria ter isolado o write)",
+        );
+      }
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

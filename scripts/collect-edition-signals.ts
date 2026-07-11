@@ -39,6 +39,7 @@ import { parseSourcesMd } from "./list-active-sources.ts";
 // #2834: parseArgs local era byte-idêntico (exceto `positional`, não usado
 // aqui) ao helper genérico de lib/cli-args.ts — migrado.
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX } from "./lib/edition-url.ts";
 
 /**
  * Lê os nomes das fontes ativas de `context/sources.md` (gerado de
@@ -663,7 +664,7 @@ export function signalsFromPlaceholderGuardWarnings(
     // (mesma lógica de signalsFromClariceSkips / signalsFromTestWarnings).
     if (edition && !parsed.edition) continue;
     if (parsed.level !== "warn") continue;
-    if (!(parsed.message ?? "").startsWith("guard anti-placeholder (#3277)")) continue;
+    if (!(parsed.message ?? "").startsWith(PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX)) continue;
 
     if (typeof parsed.timestamp === "string" && firstAt.length < 5) firstAt.push(parsed.timestamp);
     const unresolvedRaw = parsed.details?.unresolved;
@@ -677,10 +678,20 @@ export function signalsFromPlaceholderGuardWarnings(
 
   const allPlaceholders = [...new Set(occurrences.flat())];
 
+  // #3277 code-review (PR #3310): severidade escala com o número de
+  // placeholders DISTINTOS encontrados na edição (não com occurrences.length
+  // — na prática quase sempre 1, já que resolve-edition-url.ts roda uma vez
+  // por edição, validando o 03-social.md inteiro numa passada só). Múltiplos
+  // placeholders distintos é sinal mais forte de bug sistêmico (ex: vários
+  // destaques com o mesmo problema) do que uma única menção ambígua —
+  // mirrors o padrão de escalação de signalsFromClariceSkips (count-based),
+  // adaptado pra essa dimensão que é a que de fato varia aqui.
+  const severity: Severity = allPlaceholders.length >= 2 ? "high" : "medium";
+
   return [
     {
       kind: "placeholder_guard_warning",
-      severity: "medium",
+      severity,
       title: `Guard anti-placeholder (#3277): ${allPlaceholders.join(", ") || "placeholder(s) não-identificado(s)"} pode ter ido ao ar literal no social`,
       details: {
         count: occurrences.length,
@@ -738,9 +749,10 @@ const TEST_WARNING_SKIP_PATTERNS: RegExp[] = [
   /clarice_skip/i,
   /\bclarice skip\b/i, // legacy prose match — keep in sync with signalsFromClariceSkips
   // #3277 — guard anti-placeholder do resolve-edition-url.ts, já capturado
-  // por Signal 5b (signalsFromPlaceholderGuardWarnings). Manter em sync com
-  // o prefixo checado lá (`message.startsWith("guard anti-placeholder (#3277)")`).
-  /^guard anti-placeholder \(#3277\)/i,
+  // por Signal 5b (signalsFromPlaceholderGuardWarnings). Construído a partir
+  // de PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX (não um literal duplicado) —
+  // impossível divergir do prefixo checado lá (#3277 code-review, PR #3310).
+  new RegExp(`^${PLACEHOLDER_GUARD_LOG_MESSAGE_PREFIX.replace(/[()]/g, "\\$&")}`, "i"),
 ];
 
 // Nota (#565): warns informativos eram detectados via regex `/\(informativo\)/i`
@@ -1074,6 +1086,11 @@ function main(): void {
           chrome_disconnects: draft.signals.filter((s) => s.kind === "chrome_disconnects").length,
           mcp_unavailable: draft.signals.filter((s) => s.kind === "mcp_unavailable").length,
           clarice_skip: draft.signals.filter((s) => s.kind === "clarice_skip").length,
+          // #3277 code-review (PR #3310): faltava aqui — Signal 5b existia em
+          // signals[] (issues-draft.json correto) mas o resumo de diagnóstico
+          // do CLI omitia a contagem, parecendo (a quem lê só o stdout) que o
+          // signal não estava sendo coletado.
+          placeholder_guard_warning: draft.signals.filter((s) => s.kind === "placeholder_guard_warning").length,
           test_warning: draft.signals.filter((s) => s.kind === "test_warning").length,
           runtime_fix: draft.signals.filter((s) => s.kind === "runtime_fix").length,
         },
