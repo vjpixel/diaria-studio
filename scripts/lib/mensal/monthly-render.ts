@@ -18,7 +18,8 @@ import { COLORS, FONTS } from "../shared/design-tokens.ts"; // #1936
 export { escHtml } from "../html-escape.ts"; // #1990: re-export for back-compat callers
 import { escHtml } from "../html-escape.ts"; // #1990: local usage
 import { applyWordJoiner } from "../word-joiner.ts"; // #2018 — shared helper (refs #2048)
-import { applyBrandWordmark, tealDot } from "../newsletter-render-html.ts"; // wordmark diar.ia.br + ponto ● teal (#3181, mesmos da diária)
+import { applyBrandWordmark } from "../newsletter-render-html.ts"; // wordmark diar.ia.br, mesmo da diária (#3181) — candidato a mover pra shared/, ver docs/render-unification-analysis-3269.md
+import { tealDot } from "../shared/email-components.ts"; // #3269 — extraído de newsletter-render-html.ts pra shared/ (era o mesmo import cruzado ad-hoc do applyBrandWordmark acima; ponto ● teal, #3181)
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
 import {
   DIARIA_FACEBOOK_PAGE_URL,
