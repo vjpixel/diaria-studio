@@ -36,6 +36,7 @@ import { fileURLToPath } from "node:url";
 import { getPreviousEditionDate } from "./lib/edition-utils.ts";
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3024/#3030: layout flat+nested
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import type { CategorizedJson as CanonicalCategorizedJson } from "./lib/types/categorized-json.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -59,14 +60,10 @@ interface CategorizedArticle {
   [k: string]: unknown;
 }
 
-interface CategorizedJson {
-  highlights?: Array<{ url?: string; article?: { url?: string } }>;
-  runners_up?: Array<{ url?: string; article?: { url?: string } } | CategorizedArticle>;
-  lancamento?: CategorizedArticle[];
-  // #1629: buckets renomeados
-  radar?: CategorizedArticle[];
-  use_melhor?: CategorizedArticle[];
-  video?: CategorizedArticle[];
+// #2834: campos modernos herdados do reader canônico (era a mesma declaração
+// loose repetida byte-a-byte aqui); só os 3 campos legado abaixo (usados
+// exclusivamente por este arquivo pra parsear edições pré-#1629) ficam locais.
+interface CategorizedJson extends CanonicalCategorizedJson {
   // Legacy (parsear edições históricas)
   pesquisa?: CategorizedArticle[];
   noticias?: CategorizedArticle[];
