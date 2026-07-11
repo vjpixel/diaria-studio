@@ -9,6 +9,7 @@ import {
   todayAammddBrt, // #3113 item 9: fecha a mesma brecha de edição futura no /vote direto
   isValidVoteEmailFormat, // #3118 item 3
   isValidVoteEditionFormat, // #3118 item 3
+  legacyMonthlyEditionForCycle, // #3261: /stats por ciclo também consulta a chave AAMMDD legada
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
@@ -917,21 +918,24 @@ async function updateScore(
 // ── /stats ────────────────────────────────────────────────────────────────────
 
 /**
- * #2223: se STATS_COUNTER binding disponível, lê do DO (fonte autoritativa).
- * Fallback para KV `stats:{edition}` se o DO não estiver disponível ou retornar erro.
- * `brand` é necessário para derivar o DO id correto (`{brand}:{edition}`).
+ * #2223/#3115/#3261: busca stats + gabarito de UMA chave de edição (DO +
+ * espelho KV, com o merge DO×KV de #3115) + `correct:{edition}`.
+ *
+ * Extraído de `handleStats` (#3261) para poder ser chamado 2x — uma vez para
+ * a `edition` pedida pelo caller (ciclo ou AAMMDD) e, quando aplicável, uma
+ * segunda vez para o identificador AAMMDD LEGADO do mesmo ciclo (ver
+ * `legacyMonthlyEditionForCycle`) — votos gravados ANTES do cutover #2115
+ * (370fba43, 2026-06-11) usam essa 2ª chave, não a chave de ciclo.
  */
-export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
-  const edition = url.searchParams.get("edition");
-  if (!edition) return json({ error: "missing edition" }, 400, env);
-
-  // Fix #4: correctRaw é independente dos stats — paralela as duas leituras.
-  // Antes: correctRaw era lido APÓS a lógica de DO/fallback (sequencial).
-  // Agora: a leitura do DO/KV e a leitura de correct:${edition} correm em paralelo.
-  //
-  // #3115: o espelho KV `stats:{edition}` agora é SEMPRE lido em paralelo (não só
-  // no branch de erro do DO) — precisamos dele mesmo quando o DO responde ok,
-  // para o merge de mergeStatsWithKvFallback abaixo (DO all-zero ambíguo).
+async function fetchEditionStatsAndCorrect(
+  env: Env,
+  brand: Brand,
+  edition: string,
+): Promise<{ stats: StatsCounterData; correctRaw: string | null }> {
+  // Fix #4 (#2223): correctRaw é independente dos stats — paralela as duas leituras.
+  // #3115: o espelho KV `stats:{edition}` é SEMPRE lido em paralelo (não só no
+  // branch de erro do DO) — precisamos dele mesmo quando o DO responde ok, para
+  // o merge de mergeStatsWithKvFallback abaixo (DO all-zero ambíguo).
   const [doStatsResult, correctRaw, kvStatsRaw] = await Promise.all([
     // #2223: tentar ler do DO (serializado, sem inconsistência de cache KV)
     (async () => {
@@ -973,7 +977,67 @@ export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): 
   // preservando o caso "zero real" (ambos concordam em 0 → resultado 0) sem virar
   // falso-positivo. doStatsResult === null (DO indisponível/erro) cai no KV puro.
   const stats: StatsCounterData = mergeStatsWithKvFallback(doStatsResult, kvStatsResult);
+  return { stats, correctRaw };
+}
 
+/**
+ * #3261: soma dois `StatsCounterData` — usado quando eles vêm de DUAS CHAVES
+ * DE EDIÇÃO DISTINTAS que representam o mesmo ciclo lógico (ex: ciclo novo
+ * `2605-06` + AAMMDD legado `260531`, ver `legacyMonthlyEditionForCycle`).
+ *
+ * Diferente de `mergeStatsWithKvFallback` (que ESCOLHE uma fonte pra
+ * representar a MESMA chave DO×KV — são espelhos um do outro, nunca somados),
+ * aqui as duas fontes são votos REAIS e DISTINTOS gravados sob chaves
+ * diferentes — soma, não escolha. `b === null` (edition sem par legado, ou
+ * par legado sem dados) retorna `a` intacto.
+ */
+export function sumStatsCounterData(
+  a: StatsCounterData,
+  b: StatsCounterData | null,
+): StatsCounterData {
+  if (!b) return a;
+  return {
+    total: a.total + b.total,
+    voted_a: a.voted_a + b.voted_a,
+    voted_b: a.voted_b + b.voted_b,
+    correct_count: a.correct_count + b.correct_count,
+  };
+}
+
+/**
+ * #2223: se STATS_COUNTER binding disponível, lê do DO (fonte autoritativa).
+ * Fallback para KV `stats:{edition}` se o DO não estiver disponível ou retornar erro.
+ * `brand` é necessário para derivar o DO id correto (`{brand}:{edition}`).
+ *
+ * #3261: quando `edition` é um ciclo Clarice (`YYMM-MM`), consulta TAMBÉM o
+ * identificador AAMMDD LEGADO do mesmo ciclo (`legacyMonthlyEditionForCycle`)
+ * e SOMA os dois resultados (`sumStatsCounterData`). Sem isso, `/stats?edition=X`
+ * fazia lookup EXATO só pela string `edition` recebida — um ciclo enviado
+ * ANTES do cutover #2115 (370fba43, 2026-06-11) gravou seus votos sob a
+ * chave AAMMDD antiga (única que existia então), invisível pra uma consulta
+ * pelo slug de ciclo novo. `correct_answer` usa o gabarito da chave primária
+ * quando presente, senão o da legada (`primary.correctRaw ?? legacy?.correctRaw`)
+ * — só uma das duas foi de fato gravada pelo close-poll.ts na prática.
+ *
+ * Generaliza para qualquer ciclo futuro com essa mesma ambiguidade de
+ * formato — não hardcoded pros ciclos específicos que motivaram a issue.
+ * `edition` em formato AAMMDD (diária) ou ciclo com mês de conteúdo inválido
+ * → `legacyMonthlyEditionForCycle` retorna null → sem 2ª consulta, comportamento
+ * idêntico ao pré-#3261.
+ */
+export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
+  const edition = url.searchParams.get("edition");
+  if (!edition) return json({ error: "missing edition" }, 400, env);
+
+  const legacyEdition = legacyMonthlyEditionForCycle(edition);
+
+  const [primary, legacy] = await Promise.all([
+    fetchEditionStatsAndCorrect(env, brand, edition),
+    legacyEdition ? fetchEditionStatsAndCorrect(env, brand, legacyEdition) : Promise.resolve(null),
+  ]);
+
+  const stats = sumStatsCounterData(primary.stats, legacy?.stats ?? null);
+  const correctRaw = primary.correctRaw ?? legacy?.correctRaw ?? null;
   const total = stats.total;
 
   return json({
