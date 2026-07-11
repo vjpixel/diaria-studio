@@ -61,7 +61,7 @@ export interface VideoArticleLike {
  * Retorna true se a URL é uma URL de vídeo do YouTube: `youtube.com/watch`,
  * `youtube.com/live/{id}` (livestream), `youtube.com/shorts/{id}`, o host
  * mobile `m.youtube.com` equivalente, ou `youtu.be`. Deliberadamente MAIS
- * ESTRITO que `isVideoUrl` de `launch-heuristics.ts` (que também aceita
+ * ESTRITO que `isVideoUrl` (abaixo, neste mesmo módulo — também aceita
  * `vimeo.com` — usado só pra categorização inicial em `video`, não pra
  * validação final da seção). A regra editorial #3202 exige especificamente
  * YouTube.
@@ -84,6 +84,35 @@ export function isYoutubeUrl(url: string): boolean {
       u.pathname.startsWith("/live/") ||
       u.pathname.startsWith("/shorts/")
     );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Retorna true se a URL aponta para um vídeo em plataforma conhecida:
+ * qualquer formato aceito por `isYoutubeUrl` (acima), OU `vimeo.com`.
+ * Escopo deliberadamente MAIS AMPLO que `isYoutubeUrl` — usado pra
+ * categorização geral de um artigo no bucket `video` (#359), não pra
+ * validação final da URL de uma seção de vídeo (que exige YouTube
+ * especificamente, regra #3202).
+ *
+ * #3288: fonte única — antes desta extração, `isVideoUrl` existia
+ * duplicada byte-a-byte em `launch-heuristics.ts` (gate de categorização
+ * em `categorize()`, #359) e em `verify-accessibility.ts` (verdict de
+ * acessibilidade), e as duas ficaram desatualizadas quando #3273 ampliou
+ * só `isYoutubeUrl` pra aceitar `/live/`, `/shorts/` e `m.youtube.com`.
+ * Resultado: uma URL `youtube.com/live/{id}` nunca entrava no bucket
+ * `video` em `categorize()` (o gate de 1º estágio), então o fix de 2º
+ * estágio do #3273 nunca chegava a ser exercitado pra esse artigo. Ambos
+ * os módulos agora importam esta função em vez de reimplementá-la.
+ */
+export function isVideoUrl(url: string): boolean {
+  if (isYoutubeUrl(url)) return true;
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, "");
+    return host === "vimeo.com";
   } catch {
     return false;
   }

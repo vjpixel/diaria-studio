@@ -6,6 +6,7 @@ import {
   runBounded,
   shouldBypassHeadFor,
   BROWSER_UA,
+  verify,
 } from "../scripts/verify-accessibility.ts";
 
 const TRUSTED_HOST = "techcrunch.com"; // está em TRUSTED_PUBLISHERS
@@ -63,6 +64,35 @@ describe("classifyHttpStatus (#696) — 429 sempre anti_bot", () => {
 
   it("301 → null (sem erro)", () => {
     assert.equal(classifyHttpStatus(301, UNKNOWN_HOST, "HEAD"), null);
+  });
+});
+
+// #3288 REGRESSÃO: verify() usava uma cópia local de isVideoUrl duplicada
+// byte-a-byte com launch-heuristics.ts, e ficou desatualizada quando #3273
+// ampliou isYoutubeUrl pra aceitar /live/, /shorts/ e m.youtube.com. Sem
+// fix, uma URL youtube.com/live/{id} passava batido pelo gate `video` aqui
+// e caía nos caminhos de shortener/aggregator/paywall (sem sentido pra
+// vídeo). Chamadas abaixo não fazem I/O — o gate `video` retorna ANTES de
+// qualquer fetch/cache lookup (opts vazio → sem verifyCache).
+describe("verify() — gate video (#3288, isVideoUrl compartilhado)", () => {
+  it("youtube.com/live/{id} (livestream) → verdict video, sem rede", async () => {
+    const result = await verify("https://www.youtube.com/live/EAN5Cj347PY");
+    assert.equal(result.verdict, "video");
+  });
+
+  it("youtube.com/shorts/{id} → verdict video, sem rede", async () => {
+    const result = await verify("https://www.youtube.com/shorts/EAN5Cj347PY");
+    assert.equal(result.verdict, "video");
+  });
+
+  it("host m.youtube.com → verdict video, sem rede", async () => {
+    const result = await verify("https://m.youtube.com/watch?v=EAN5Cj347PY");
+    assert.equal(result.verdict, "video");
+  });
+
+  it("vimeo.com → verdict video, sem rede", async () => {
+    const result = await verify("https://vimeo.com/123456789");
+    assert.equal(result.verdict, "video");
   });
 });
 
