@@ -226,7 +226,15 @@ describe("Worker fetch — auth routes", () => {
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.ok(text.includes("Clarice News Dashboard"), "deve exibir o dashboard");
-    assert.ok(!text.includes("<form"), "não deve exibir formulário de login");
+    // #3257: a checagem era `!text.includes("<form")` — servia como proxy pra
+    // "não é a login page" só porque, até então, o único <form> de todo o
+    // worker era o de /login. Isso deixou de valer com o botão "Atualizar"
+    // da aba Engajamento (EIA_REFRESH_BUTTON em sections-kv.ts), que é um
+    // <form method="POST" action="/api/eia/refresh"> LEGÍTIMO dentro do
+    // próprio dashboard autenticado — não um vazamento da login page.
+    // Assertion agora mira o marcador REAL do form de login (action="/login"),
+    // preservando a intenção original sem quebrar por causa do form novo.
+    assert.ok(!text.includes('action="/login"'), "não deve exibir formulário de login");
   });
 
   it("/api/campaigns sem auth: retorna JSON (isento de autenticação)", async () => {

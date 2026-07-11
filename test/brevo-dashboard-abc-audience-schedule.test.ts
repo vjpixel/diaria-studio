@@ -352,6 +352,98 @@ describe("renderAbcAudienceTable / renderAbcAudienceSection — omite audiência
   });
 });
 
+// ─── renderAbcAudienceTable: guard de zero/aguardando (#3303) ────────────────
+
+describe("renderAbcAudienceTable — guard opens>0/clicks=0 não é 'empate' (#3303)", () => {
+  // Regressão #3303: mesma classe de bug já corrigida em renderAbcSection
+  // (#3281) — reproduzida aqui pra renderAbcAudienceTable, que nunca teve o
+  // guard. Fixture idêntica à do CONFIRMED da issue: opens>0, clicks=0 em
+  // todas as 3 células amostradas (comum nas primeiras horas pós-envio,
+  // clique atrasa em relação à abertura).
+  function cell(cellId: "A" | "B" | "C", opens: number) {
+    return {
+      cell: cellId,
+      campaignCount: 1,
+      sent: 100,
+      delivered: 100,
+      opens,
+      clicks: 0,
+      unsubscriptions: 0,
+      openRate: opens,
+      ctor: 0,
+      clickRate: 0,
+      unsubRate: 0,
+      bounceRate: 0,
+      spamRate: 0,
+    };
+  }
+
+  test("opens>0/clicks=0 em todas as células amostradas → 'Aguardando dados de clique', não 'Empate'", () => {
+    const table: AbcAudienceTable = {
+      cells: [cell("A", 40), cell("B", 35), cell("C", 38)],
+      leaderOpenRate: "A",
+      leaderClickRate: null,
+      significantClick: false,
+      pValue: null,
+    };
+    const html = renderAbcAudienceTable("Agregada (Fria + Quente)", table);
+    assert.doesNotMatch(
+      html,
+      /Empate no clique/,
+      "não deve implicar empate REAL no critério decisório (clique, #2976) quando na verdade é falta de dado",
+    );
+    assert.match(html, /Aguardando dados de clique/, "deve mostrar aviso de aguardando dados de clique");
+  });
+
+  test("empate REAL de clique (clicks>0, taxas iguais) continua mostrando 'Empate no clique'", () => {
+    const tied = (cellId: "A" | "B" | "C") => ({
+      ...cell(cellId, 50),
+      clicks: 10,
+      clickRate: 10,
+    });
+    const table: AbcAudienceTable = {
+      cells: [tied("A"), tied("B"), tied("C")],
+      leaderOpenRate: null,
+      leaderClickRate: null,
+      significantClick: false,
+      pValue: null,
+    };
+    const html = renderAbcAudienceTable("Agregada (Fria + Quente)", table);
+    assert.match(html, /Empate no clique/, "empate real de clique deve continuar mostrando o texto de empate");
+    assert.doesNotMatch(html, /Aguardando dados de clique/, "não deve mostrar 'aguardando' quando há clique real empatado");
+  });
+
+  test("menos de 2 células amostradas → 'Dados insuficientes', não afetado pelo novo guard", () => {
+    const table: AbcAudienceTable = {
+      cells: [cell("A", 40), buildCellZero("B"), buildCellZero("C")],
+      leaderOpenRate: null,
+      leaderClickRate: null,
+      significantClick: false,
+      pValue: null,
+    };
+    const html = renderAbcAudienceTable("Fria (nunca recebeu)", table);
+    assert.match(html, /Dados insuficientes para comparação/);
+  });
+
+  function buildCellZero(cellId: "A" | "B" | "C") {
+    return {
+      cell: cellId,
+      campaignCount: 0,
+      sent: 0,
+      delivered: 0,
+      opens: 0,
+      clicks: 0,
+      unsubscriptions: 0,
+      openRate: 0,
+      ctor: 0,
+      clickRate: 0,
+      unsubRate: 0,
+      bounceRate: 0,
+      spamRate: 0,
+    };
+  }
+});
+
 // ─── pickTopWeekdays / renderTopWeekdaysSection (#2989) ──────────────────────
 
 describe("pickTopWeekdays", () => {

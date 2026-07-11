@@ -65,6 +65,8 @@ import {
 } from "./brevo-api.ts";
 import { LASTGOOD_TTL } from "./types.ts";
 import { renderDashboardHtml, escHtml } from "./sections-core.ts";
+import { refreshEiaEngagement } from "./eia-refresh.ts";
+export * from "./eia-refresh.ts";
 
 const AUTH_COOKIE = 'cf-dash-auth'
 
@@ -260,6 +262,31 @@ export default {
           "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
         },
       });
+    }
+
+    // #3257: botão "Atualizar" da aba Engajamento (É IA?/"Por edição") — dispara
+    // o mesmo pipeline de `scripts/build-poll-eia-data.ts --push` (ramo mensal),
+    // mas rodando DENTRO do worker (fetch em GET /editions + /stats do worker
+    // `poll`, grava direto no KV local STATS_CACHE — sem depender de
+    // `data/monthly/` local nem de credenciais Cloudflare cross-worker). Requer
+    // auth explícita (mutação de KV) — igual ao padrão de /api/coupons acima,
+    // não a isenção geral de /api/* (essa é só pra leitura pública de automação).
+    if (path === "/api/eia/refresh" && request.method === "POST") {
+      if (!(await isAuthenticated(request, env))) return loginPage();
+      const result = await refreshEiaEngagement(env);
+      if (result.ok) {
+        // Redireciona de volta pro dashboard com bypass de cache (?fresh=1) e
+        // já na aba Engajamento (#panel-engajamento — mesmo id que o JS de
+        // deep-link/#2622 reconhece) pra o editor ver o dado atualizado na hora.
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "/?fresh=1#panel-engajamento", "Cache-Control": "no-store" },
+        });
+      }
+      return new Response(
+        `<!DOCTYPE html><html><body><h1>Refresh do É IA? falhou</h1><p>${escHtml(result.error)}</p><p><a href="/#panel-engajamento">← Voltar pro dashboard</a></p></body></html>`,
+        { status: 502, headers: { "Content-Type": "text/html; charset=utf-8" } },
+      );
     }
 
     if (path === "/" || path === "/index.html") {
