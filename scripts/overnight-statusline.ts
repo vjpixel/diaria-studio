@@ -463,17 +463,55 @@ export function renderOvernightBar(plan: Plan | null | undefined): string {
 
 // ─── helpers internos ─────────────────────────────────────────────────────────
 
+/** Funções de leitura injetáveis pra teste de `readPlanFromDir` (#3264). */
+export interface PlanFileReaders {
+  existsSync: typeof existsSync;
+  readFileSync: typeof readFileSync;
+}
+
+const defaultPlanFileReaders: PlanFileReaders = { existsSync, readFileSync };
+
 /**
  * Lê e parseia o plan.json de um diretório de rodada. Retorna null em qualquer erro.
+ *
+ * #3264: distingue dois cenários que o `catch` original tratava de forma idêntica:
+ *   1. Arquivo genuinamente ausente → `null` IMEDIATO, sem retry (nenhuma rodada).
+ *   2. Arquivo EXISTE mas `JSON.parse` falha (JSON truncado/inconsistente) — sinal de
+ *      escrita não-atômica em progresso no exato momento da leitura. A statusline poll
+ *      a cada 30s (`refreshInterval` em `.claude/settings.json`); qualquer poll que caia
+ *      no meio de uma escrita de `plan.json` lia o arquivo parcial e mostrava "sem rodada
+ *      ativa" por até 30s — falso negativo justo quando o editor mais precisa da barra.
+ *      Nesse caso, tenta 1 retry síncrono IMEDIATO (sem sleep) antes de desistir — a
+ *      janela de escrita de um JSON pequeno é tipicamente sub-ms a poucos ms, então um
+ *      único re-read cobre a esmagadora maioria dos casos sem adicionar latência
+ *      perceptível no caminho comum (arquivo estável).
+ *
+ * Risco residual (documentado por não ser 100% testável sem simular concorrência real
+ * de processo): se a janela de escrita for mais longa que o intervalo entre as duas
+ * leituras síncronas consecutivas (extremamente raro para um JSON de poucos KB), o
+ * retry também falha e o comportamento cai de volta ao fallback idle por até um ciclo
+ * de poll — mesmo pior caso do bug original, porém com probabilidade drasticamente
+ * menor. Não escalamos para retry com delay (setTimeout) sem evidência concreta de que
+ * o retry síncrono não é suficiente na prática — manter a versão mais simples per o
+ * pedido da issue.
  */
-function readPlanFromDir(planPath: string): Plan | null {
+export function readPlanFromDir(planPath: string, readers: PlanFileReaders = defaultPlanFileReaders): Plan | null {
   try {
-    if (!existsSync(planPath)) return null;
-    const raw = readFileSync(planPath, "utf8");
-    return JSON.parse(raw) as Plan;
+    if (!readers.existsSync(planPath)) return null;
   } catch {
     return null;
   }
+
+  // Arquivo existe: tenta ler+parsear, com 1 retry síncrono imediato se falhar.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const raw = readers.readFileSync(planPath, "utf8");
+      return JSON.parse(raw) as Plan;
+    } catch {
+      // attempt 0: tenta mais uma vez. attempt 1: cai pro `return null` abaixo.
+    }
+  }
+  return null;
 }
 
 /**
