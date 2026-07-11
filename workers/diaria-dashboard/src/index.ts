@@ -667,11 +667,16 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
     // Use Melhor. Categoria→Âncora reusa cat-col/cat-inline (já definidos
     // globalmente pra aba CTR acima), mesmo risco de wrap em 6 colunas.
     const categoryEsc = escHtml(r.category);
+    // #3145: Seção = seção estrutural real da newsletter (Destaque/Lançamento/
+    // Radar/Use Melhor/Vídeo), distinta de Categoria (por domínio/conteúdo).
+    // Vazio em rows de CSVs antigos sem a coluna `section` (compat).
+    const sectionEsc = r.section ? escHtml(r.section) : "—";
     return `<tr>
     <td>${i + 1}</td>
     <td>${escHtml(r.edition)}</td>
     <td class="cat-col"><small>${categoryEsc}</small></td>
-    <td>${escHtml(r.anchor)}<small class="cat-inline muted">Categoria: ${categoryEsc}</small></td>
+    <td class="cat-col"><small>${sectionEsc}</small></td>
+    <td>${escHtml(r.anchor)}<small class="cat-inline muted">Categoria: ${categoryEsc}</small><small class="cat-inline muted">Seção: ${sectionEsc}</small></td>
     ${clicksCell(r.unique_verified_clicks)}
     <td>${linkCell}</td>
   </tr>`;
@@ -687,6 +692,7 @@ export function renderTopClickedRecentSection(data: DashboardData): string {
         <th title="Posição">#</th>
         <th title="Edição com mais cliques do link na janela de 20 edições">Edição</th>
         <th class="cat-col" title="Categoria do link">Categoria</th>
+        <th class="cat-col" title="Seção real da newsletter onde o link apareceu (Destaque/Lançamento/Radar/Use Melhor/Vídeo)">Seção</th>
         <th title="Âncora do link (título ou label)">Âncora</th>
         <th title="Cliques únicos verificados (soma da janela de 20 edições)">Cliques</th>
         <th>Link</th>

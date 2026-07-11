@@ -17,7 +17,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import Papa from 'papaparse';
 // #1844: classificador de links extraído pra módulo dedicado (puro, testável).
-import { categorize } from './lib/link-ctr-categorize.ts';
+// #3145: resolveNewsletterSection expõe a seção estrutural real (Destaque/
+// Lançamento/Radar/Use Melhor/Vídeo), distinta de `category` (por domínio/conteúdo).
+import { categorize, resolveNewsletterSection } from './lib/link-ctr-categorize.ts';
 import { isMainModule } from "./lib/cli-args.ts";
 import { DIARIA_FACEBOOK_PAGE_SLUG, DIARIA_LINKEDIN_PAGE_SLUG, DIARIA_INSTAGRAM_SLUG } from './lib/canonical-urls.ts'; // #2695/#2790 fonte única
 import { MIN_AGE_DAYS_FOR_CLICKS } from './lib/shared/ctr-config.ts'; // #3146: fonte única do cutoff de estabilização (era duplicado local aqui)
@@ -390,6 +392,9 @@ interface Row {
   unique_verified_clicks: number;
   ctr_pct: string;
   category: string;
+  // #3145: seção estrutural normalizada (Destaque/Lançamento/Radar/Use Melhor/
+  // Vídeo/Outro/''), derivada de section_title via resolveNewsletterSection().
+  section: string;
   origin: 'BR' | 'INT';
 }
 
@@ -401,7 +406,9 @@ function main() {
 
   const header = [
     'date', 'post_title', 'section_title', 'anchor', 'base_url', 'domain',
-    'unique_opens', 'verified_clicks', 'unique_verified_clicks', 'ctr_pct', 'category', 'origin'
+    'unique_opens', 'verified_clicks', 'unique_verified_clicks', 'ctr_pct', 'category',
+    'section', // #3145
+    'origin'
   ];
 
   // Incremental: read existing CSV to find the most recent date already processed
@@ -516,6 +523,8 @@ function main() {
         unique_verified_clicks: clickStat.unique_verified_clicks,
         ctr_pct: ctr,
         category: categorize(link.baseUrl, link.anchor, link.sectionTitle, title, link.context),
+        // #3145: seção estrutural (Destaque/Lançamento/Radar/Use Melhor/Vídeo).
+        section: resolveNewsletterSection(link.sectionTitle),
         // #1567 finding B: NÃO incluir `title` (manchete do post) — ele vazava o
         // ângulo BR do lead pra todos os links. Origem vem da evidência por-link + domínio.
         origin: classifyOrigin(link.anchor + ' ' + link.sectionTitle + ' ' + link.context, domain),
@@ -528,7 +537,8 @@ function main() {
   // Write CSV: existing rows + new rows
   const newCsvLines = newRows.map(r => [
     r.date, r.post_title, r.section_title, r.anchor, r.base_url, r.domain,
-    r.unique_opens, r.verified_clicks, r.unique_verified_clicks, r.ctr_pct, r.category, r.origin
+    r.unique_opens, r.verified_clicks, r.unique_verified_clicks, r.ctr_pct, r.category,
+    r.section, r.origin
   ].map(csvEscape).join(','));
 
   const allLines = [header.join(','), ...existingLines, ...newCsvLines];

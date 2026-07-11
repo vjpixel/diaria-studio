@@ -179,8 +179,15 @@ export interface TopClickedRecentItem {
   anchor: string;
   /** URL base do link */
   base_url: string;
-  /** Categoria do link */
+  /** Categoria do link (classificação por domínio/conteúdo — categorize()) */
   category: string;
+  /**
+   * #3145: seção ESTRUTURAL real da newsletter onde o link apareceu
+   * (Destaque/Lançamento/Radar/Use Melhor/Vídeo/Outro), distinta de
+   * `category`. Vazio ('') para linhas de CSVs antigos sem a coluna `section`
+   * (compat — ver buildTopClickedRecent).
+   */
+  section: string;
   /** Cliques únicos verificados */
   unique_verified_clicks: number;
 }

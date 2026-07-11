@@ -6,7 +6,14 @@
  * string (sem I/O), antes inline e SEM teste direto no build-link-ctr.ts.
  * Agora exportável e coberto por golden tests. build-link-ctr.ts importa
  * `categorize`; `negociosSubcategory` é privado do módulo (só categorize usa).
+ *
+ * #3145: também exporta `resolveNewsletterSection` — normaliza o
+ * `section_title` bruto (heading/kicker mais próximo acima do link, extraído
+ * por `extractLinks()` em build-link-ctr.ts) pra um label de SEÇÃO ESTRUTURAL
+ * da newsletter (Destaque/Lançamento/Radar/Use Melhor/Vídeo), distinto de
+ * `category` (inferência por domínio/conteúdo feita aqui em `categorize()`).
  */
+import { stripEmojiPrefix } from './section-naming.ts';
 
 // ─── Categorization ───────────────────────────────────────────────────────────
 
@@ -420,7 +427,13 @@ export function categorize(url: string, anchor = '', sectionTitle = '', postTitl
     host === 'transparencycoalition.ai' ||
     host === 'correio24horas.com.br' ||
     host === 'english.luatvietnam.vn' ||
-    host === 'iab.com'
+    host === 'iab.com' ||
+    // #3145: veículos jurídicos/regulatórios BR — auditoria de código (sem acesso a
+    // dados reais de produção nesta sessão), lacuna óbvia pra uma newsletter que
+    // cobre regulação de IA no Brasil (LGPD, PL de IA, decisões judiciais).
+    host === 'jota.info' ||
+    host === 'migalhas.com.br' ||
+    host === 'conjur.com.br'
   ) return 'Regulação';
 
   // Curiosidade — cultural, pop, wikipedia, encyclopedic
@@ -526,6 +539,18 @@ export function categorize(url: string, anchor = '', sectionTitle = '', postTitl
     host === 'labs.google.com' ||
     host === 'hcompany.ai' ||
     host === 'news.lmarena.ai' ||
+    // #3145: empresas/ferramentas de IA nativas comuns em cobertura de IA —
+    // auditoria de código (sem acesso a dados reais de produção nesta sessão),
+    // lacuna óbvia contra o volume de lançamentos que a Diar.ia cobre.
+    host === 'groq.com' ||
+    host === 'character.ai' ||
+    host === 'you.com' ||
+    host === 'leonardo.ai' ||
+    host === 'pika.art' ||
+    host === 'synthesia.io' ||
+    host === 'descript.com' ||
+    host === 'otter.ai' ||
+    host === 'langchain.com' ||
     // Outro → Lançamento
     host === 'lambda.ai' ||
     host === 'poe.com' ||
@@ -843,7 +868,29 @@ export function categorize(url: string, anchor = '', sectionTitle = '', postTitl
     host === 'nvidia.com' ||
     host === 'nebius.com' ||
     host === 'news.skhynix.com' ||
-    host === 'thetechportal.com'
+    host === 'thetechportal.com' ||
+    // #3145: lacunas óbvias identificadas via auditoria de código (sem acesso
+    // a dados reais de produção nesta sessão) — veículos BR de grande porte
+    // (Estadão/Folha/Valor/Terra/R7/Metrópoles) e veículos internacionais de
+    // tech/business recorrentes em cobertura de IA que ainda caíam em 'Outro'.
+    host === 'estadao.com.br' ||
+    host === 'folha.uol.com.br' ||
+    host === 'valor.globo.com' ||
+    host === 'metropoles.com' ||
+    host === 'terra.com.br' ||
+    host === 'r7.com' ||
+    host === 'poder360.com.br' ||
+    host === 'istoedinheiro.com.br' ||
+    host === 'epocanegocios.globo.com' ||
+    host === 'moneytimes.com.br' ||
+    host === 'semafor.com' ||
+    host === 'restofworld.org' ||
+    host === 'stratechery.com' ||
+    host === 'marketwatch.com' ||
+    host === 'geekwire.com' ||
+    host === 'macrumors.com' ||
+    host === 'appleinsider.com' ||
+    host === 'digitaltrends.com'
   ) {
     // Use anchor if descriptive, else section title, else post title as last resort
     const isGeneric = !anchor || anchor.length < 3 || /^https?:\/\//.test(anchor) || /^(aprofunde|saiba mais|aqui|veja|clique|leia)$/i.test(anchor.trim());
@@ -860,4 +907,79 @@ export function categorize(url: string, anchor = '', sectionTitle = '', postTitl
 
   // Fallback
   return 'Outro';
+}
+
+// ─── Newsletter section (structural) ───────────────────────────────────────
+
+/**
+ * Kickers renderizados via renderKicker() (scripts/lib/newsletter-render-html.ts)
+ * que NÃO envolvem links editoriais de conteúdo — aparecem acima dos blocos É
+ * IA?/Divulgação/Sorteio/Para encerrar. Um link raro capturado sob um desses
+ * (a maioria já é filtrada por isEditorial() em build-link-ctr.ts) não deve
+ * ser rotulado incorretamente como 'Destaque'.
+ */
+const NON_SECTION_KICKERS = new Set(['É IA?', 'DIVULGAÇÃO', 'SORTEIO', 'PARA ENCERRAR']);
+
+/**
+ * Seções secundárias canônicas (LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS + aliases
+ * legacy PESQUISAS/OUTRAS NOTÍCIAS, cf. `SECTIONS` em section-naming.ts) →
+ * label singular pra exibição. Padrões espelham `SECTIONS[].pattern`
+ * (case-insensitive aqui pois comparamos contra `.toUpperCase()`).
+ */
+const SECONDARY_SECTION_LABELS: Array<{ re: RegExp; label: string }> = [
+  { re: /^LAN[ÇC]AMENTOS?$/, label: 'Lançamento' },
+  { re: /^RADAR$/, label: 'Radar' },
+  { re: /^USE\s+MELHOR$/, label: 'Use Melhor' },
+  { re: /^V[ÍI]DEOS?$/, label: 'Vídeo' },
+  { re: /^PESQUISAS?$/, label: 'Radar' }, // legacy alias (#1569)
+  { re: /^OUTRAS?\s+NOT[ÍI]CIAS?$/, label: 'Radar' }, // legacy alias (#1569)
+];
+
+/**
+ * Resolve a SEÇÃO REAL da newsletter onde um link apareceu (Destaque /
+ * Lançamento / Radar / Use Melhor / Vídeo), a partir do `section_title` bruto
+ * extraído por `extractLinks()` — o texto do kicker <td> mais próximo ACIMA
+ * do link no HTML renderizado.
+ *
+ * Distinto de `categorize()`: aqui a fonte é ESTRUTURAL (qual bloco da
+ * newsletter envolve o link), não uma inferência por domínio/conteúdo — as
+ * duas dimensões podem (e costumam) divergir, ex: um link 'Lançamento' por
+ * `categorize()` pode ter aparecido dentro do RADAR.
+ *
+ * Como funciona:
+ * - Seções secundárias (renderSection() → renderKicker(displaySectionName(...)),
+ *   com prefixo emoji + singular/plural) → label canônico via
+ *   `SECONDARY_SECTION_LABELS`.
+ * - O kicker de um Destaque usa a categoria editorial da matéria
+ *   (`renderKicker(d.category)` em renderDestaque(), ex: "LANÇAMENTO" /
+ *   "REGULAÇÃO" / "NOTÍCIA" — ver `CATEGORY_EMOJI` em newsletter-parse.ts).
+ *   Esse texto é livre e não é enumerado aqui: qualquer heading não
+ *   reconhecido como seção secundária, não-vazio, e não um kicker de bloco
+ *   não-editorial é assumido como Destaque — única outra origem de kicker com
+ *   link editorial no template.
+ * - Kickers de blocos sem conteúdo editorial (É IA?, Divulgação, Sorteio,
+ *   Para encerrar) retornam 'Outro' em vez de 'Destaque' incorreto.
+ * - Heading vazio (post antigo pré-#3043, sem match de kicker) → ''.
+ *
+ * Limitação conhecida (ambiguidade estrutural, não um bug de parsing): 2 das
+ * 14 categorias editoriais de Destaque colidem textualmente com o singular de
+ * uma seção secundária — "LANÇAMENTO" (categoria) === "LANÇAMENTO" (seção
+ * LANÇAMENTOS com 1 item) e "PESQUISA" (categoria) === "PESQUISA" (alias
+ * legacy de RADAR com 1 item). `renderKicker()` sempre remove qualquer prefixo
+ * emoji do texto ANTES de renderizar (`stripKickerEmoji`), então o HTML final
+ * não preserva nenhum sinal que distinga as duas origens nesses 2 casos —
+ * ambos resolvem pro label da seção secundária (Lançamento/Radar), não
+ * 'Destaque'. Nos outros 12 casos (REGULAÇÃO/MERCADO/FERRAMENTA/PRODUTO/
+ * TENDÊNCIA/INDÚSTRIA/CULTURA/BRASIL/OPINIÃO/DADOS/CONCEITO/NOTÍCIA) não há
+ * colisão — resolvem corretamente pra 'Destaque'.
+ */
+export function resolveNewsletterSection(sectionTitle: string): string {
+  const bare = stripEmojiPrefix(sectionTitle ?? '').trim();
+  if (!bare) return '';
+  const upper = bare.toUpperCase();
+  if (NON_SECTION_KICKERS.has(upper)) return 'Outro';
+  for (const { re, label } of SECONDARY_SECTION_LABELS) {
+    if (re.test(upper)) return label;
+  }
+  return 'Destaque';
 }

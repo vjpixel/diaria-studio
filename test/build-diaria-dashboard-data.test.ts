@@ -1124,8 +1124,8 @@ describe("regressao #2558: buildTopClickedRecent -- janela 20 edicoes (#2601), c
       top_clicked_recent: {
         window_editions: ["2026-06-01", "2026-05-01", "2026-04-01", "2026-03-01", "2026-02-01"],
         top_items: [
-          { edition: "2026-06-01", post_title: "Ed Jun", anchor: "LinkD", base_url: "https://d.example.com", category: "Destaque", unique_verified_clicks: 50 },
-          { edition: "2026-05-01", post_title: "Ed Mai", anchor: "LinkC", base_url: "https://c.example.com", category: "Use Melhor", unique_verified_clicks: 40 },
+          { edition: "2026-06-01", post_title: "Ed Jun", anchor: "LinkD", base_url: "https://d.example.com", category: "Destaque", section: "Destaque", unique_verified_clicks: 50 },
+          { edition: "2026-05-01", post_title: "Ed Mai", anchor: "LinkC", base_url: "https://c.example.com", category: "Use Melhor", section: "Use Melhor", unique_verified_clicks: 40 },
         ],
       },
       audience: null,
@@ -1149,6 +1149,114 @@ describe("regressao #2558: buildTopClickedRecent -- janela 20 edicoes (#2601), c
     const html = renderTopClickedRecentSection(data);
     assert.ok(html.includes("top-clicked-recent"), "deve ter id mesmo com dados ausentes");
     assert.ok(html.includes("link-ctr-table.csv"), "deve mencionar CSV ausente");
+  });
+});
+
+// ─── #3145: coluna Seção (section) — CSV novo, compat com CSV antigo, render ──
+
+describe("#3145: buildTopClickedRecent -- coluna section nova + compat com CSV sem a coluna", () => {
+  test("CSV com coluna section popula TopClickedRecentItem.section", async () => {
+    const { buildTopClickedRecent } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,section,origin";
+    const rows = [
+      "2026-06-01,Ed Jun,LANÇAMENTO,LinkA,https://a.example.com,a.example.com,200,30,30,15.00,Lançamento,Destaque,INT",
+      "2026-06-01,Ed Jun,🛠️ USE MELHOR,LinkB,https://b.example.com,b.example.com,200,20,20,10.00,Treinamento,Use Melhor,INT",
+    ];
+    const csv = [header, ...rows].join("\n");
+    const csvPath = joinForTestTCR(tmpdirTCR(), "diaria-test-tcr-3145a.csv");
+    writeFileSyncForTestTCR(csvPath, csv, "utf8");
+
+    const result = buildTopClickedRecent(csvPath);
+    rmSyncForTestTCR(csvPath, { force: true });
+
+    assert.ok(result !== null, "deve retornar resultado nao-nulo");
+    const itemA = result!.top_items.find((i) => i.base_url === "https://a.example.com");
+    const itemB = result!.top_items.find((i) => i.base_url === "https://b.example.com");
+    assert.equal(itemA?.section, "Destaque", "coluna section do CSV deve ser propagada pro item");
+    assert.equal(itemB?.section, "Use Melhor");
+  });
+
+  test("CSV ANTIGO sem a coluna section -- item.section fica '' (compat, nao lanca erro)", async () => {
+    const { buildTopClickedRecent } = await import("../scripts/build-diaria-dashboard-data.ts");
+    // Header no formato pre-#3145 (sem 'section') -- simula um CSV real ja existente
+    // que ainda nao passou pelo re-bootstrap automático de schema.
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,origin";
+    const rows = [
+      "2026-06-01,Ed Jun,Destaques,LinkC,https://c.example.com,c.example.com,200,10,10,5.00,Destaque,INT",
+    ];
+    const csv = [header, ...rows].join("\n");
+    const csvPath = joinForTestTCR(tmpdirTCR(), "diaria-test-tcr-3145b.csv");
+    writeFileSyncForTestTCR(csvPath, csv, "utf8");
+
+    const result = buildTopClickedRecent(csvPath);
+    rmSyncForTestTCR(csvPath, { force: true });
+
+    assert.ok(result !== null, "CSV antigo (sem coluna section) nao deve retornar null");
+    assert.equal(result!.top_items[0]?.section, "", "sem a coluna, section deve ser string vazia, nao undefined/crash");
+  });
+
+  test("agregacao entre edicoes: section acompanha a edicao de maior clique (mesmo padrao de post_title, #2570)", async () => {
+    const { buildTopClickedRecent } = await import("../scripts/build-diaria-dashboard-data.ts");
+    const header = "date,post_title,section_title,anchor,base_url,domain,unique_opens,verified_clicks,unique_verified_clicks,ctr_pct,category,section,origin";
+    const rows = [
+      // mesmo link, 2 edicoes; edicao com 30 cliques tem section diferente da com 10
+      "2026-02-01,Ed Fev,RADAR,LinkX,https://x.example.com,x.example.com,200,10,10,5.00,Mercado,Radar,INT",
+      "2026-03-01,Ed Mar,LANÇAMENTO,LinkX,https://x.example.com,x.example.com,200,30,30,15.00,Mercado,Destaque,INT",
+    ];
+    const csv = [header, ...rows].join("\n");
+    const csvPath = joinForTestTCR(tmpdirTCR(), "diaria-test-tcr-3145c.csv");
+    writeFileSyncForTestTCR(csvPath, csv, "utf8");
+
+    const result = buildTopClickedRecent(csvPath);
+    rmSyncForTestTCR(csvPath, { force: true });
+
+    assert.ok(result !== null);
+    const item = result!.top_items.find((i) => i.base_url === "https://x.example.com");
+    assert.equal(item?.unique_verified_clicks, 40, "cliques devem somar entre edicoes");
+    assert.equal(item?.section, "Destaque", "section deve refletir a edicao de MAIOR clique (Mar/30), nao a primeira vista (Fev/10)");
+  });
+});
+
+describe("#3145: renderTopClickedRecentSection -- coluna Seção renderizada", () => {
+  test("renderiza <th> e <td> da coluna Seção com o valor de item.section", async () => {
+    const { renderTopClickedRecentSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    type DD = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+    const data: DD = {
+      generated_at: "2026-06-25T00:00:00Z", schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null, overnight: { runs: [], total_runs: 0 }, stubs: [],
+      top_clicked_recent: {
+        window_editions: ["2026-06-01"],
+        top_items: [
+          { edition: "2026-06-01", post_title: "Ed Jun", anchor: "LinkD", base_url: "https://d.example.com", category: "Lançamento", section: "Destaque", unique_verified_clicks: 50 },
+        ],
+      },
+      audience: null,
+    };
+    const html = renderTopClickedRecentSection(data);
+    assert.match(html, /<th class="cat-col"[^>]*>Seção<\/th>/, "deve ter <th> Seção");
+    assert.match(html, /<td class="cat-col"><small>Destaque<\/small><\/td>/, "deve ter <td> com o valor de section");
+    assert.match(html, /<small class="cat-inline muted">Seção: Destaque<\/small>/, "deve fundir Seção sob a âncora via cat-inline (mesmo padrão de Categoria)");
+  });
+
+  test("item.section vazio (CSV antigo) renderiza '—', nao crasha", async () => {
+    const { renderTopClickedRecentSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    type DD = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
+    const data: DD = {
+      generated_at: "2026-06-25T00:00:00Z", schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null, overnight: { runs: [], total_runs: 0 }, stubs: [],
+      top_clicked_recent: {
+        window_editions: ["2026-06-01"],
+        top_items: [
+          { edition: "2026-06-01", post_title: "Ed Jun", anchor: "LinkE", base_url: "https://e.example.com", category: "Radar", section: "", unique_verified_clicks: 5 },
+        ],
+      },
+      audience: null,
+    };
+    assert.doesNotThrow(() => renderTopClickedRecentSection(data));
+    const html = renderTopClickedRecentSection(data);
+    assert.match(html, /<small class="cat-inline muted">Seção: —<\/small>/, "section vazio deve renderizar fallback '—'");
   });
 });
 
@@ -1508,7 +1616,7 @@ describe("regressao #2601: buildTopClickedRecent -- janela 20 edicoes (ampliada 
       top_clicked_recent: {
         window_editions: Array.from({ length: 20 }, (_, i) => `2026-${String(i + 1).padStart(2, "0")}-01`),
         top_items: [
-          { edition: "2026-06-01", post_title: "Ed Jun", anchor: "LinkA", base_url: "https://a.example.com", category: "Destaque", unique_verified_clicks: 99 },
+          { edition: "2026-06-01", post_title: "Ed Jun", anchor: "LinkA", base_url: "https://a.example.com", category: "Destaque", section: "Destaque", unique_verified_clicks: 99 },
         ],
       },
     };

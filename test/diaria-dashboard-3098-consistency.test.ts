@@ -67,7 +67,7 @@ test("#3098: renderTopClickedRecentSection usa <small> pros cliques, não mais t
   const tcr: TopClickedRecentSummary = {
     window_editions: ["260706", "260705"],
     top_items: [
-      { edition: "260706", post_title: "P", anchor: "Âncora X", base_url: "https://ex.com/a", category: "Destaque", unique_verified_clicks: 42 },
+      { edition: "260706", post_title: "P", anchor: "Âncora X", base_url: "https://ex.com/a", category: "Destaque", section: "Destaque", unique_verified_clicks: 42 },
     ],
   };
   const html = renderTopClickedRecentSection(baseData({ top_clicked_recent: tcr }));
@@ -171,7 +171,7 @@ test("#3098: renderTopClickedRecentSection também funde a categoria sob a Ânco
   const tcr: TopClickedRecentSummary = {
     window_editions: ["260706"],
     top_items: [
-      { edition: "260706", post_title: "P", anchor: "Âncora Longa X", base_url: "https://ex.com/a", category: "Destaque", unique_verified_clicks: 42 },
+      { edition: "260706", post_title: "P", anchor: "Âncora Longa X", base_url: "https://ex.com/a", category: "Destaque", section: "Destaque", unique_verified_clicks: 42 },
     ],
   };
   const html = renderTopClickedRecentSection(baseData({ top_clicked_recent: tcr }));
@@ -199,7 +199,7 @@ test("sanity: renderCtrSection e renderTopClickedRecentSection renderizam sem la
       top_categories: [{ category: "Destaque", link_count: 2, total_clicks: 20, avg_ctr_pct: 5, max_ctr_pct: 6 } satisfies CtrByCategoryRow],
       top_links: [{ date: "260706", category: "Destaque", anchor: "Aprofunde", highlight_title: "Tema X", post_title: "Post X", ctr_pct: 5, unique_verified_clicks: 10, base_url: "https://ex.com/a" }],
     },
-    top_clicked_recent: { window_editions: ["260706", "260705", "260704"], top_items: [{ edition: "260706", post_title: "P", anchor: "A", base_url: "https://ex.com/b", category: "Radar", unique_verified_clicks: 5 }] },
+    top_clicked_recent: { window_editions: ["260706", "260705", "260704"], top_items: [{ edition: "260706", post_title: "P", anchor: "A", base_url: "https://ex.com/b", category: "Radar", section: "Radar", unique_verified_clicks: 5 }] },
   });
   assert.doesNotThrow(() => renderCtrSection(ctrData));
   assert.doesNotThrow(() => renderTopClickedRecentSection(ctrData));
