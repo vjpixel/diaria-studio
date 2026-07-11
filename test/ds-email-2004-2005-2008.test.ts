@@ -215,6 +215,34 @@ describe("#3280 code-review — 2+ links bold-wrapped consecutivos no mesmo par�
     assert.match(out, /<strong>texto<\/strong>/, `"texto" deveria ser <strong> próprio: ${out}`);
   });
 
+  it("#3316: bold auto-contido (word) colado SEM espaço a um link plano subsequente, entre 2 links bold-wrapped, não vaza ** e não corrompe o link", () => {
+    // Regressão: hasCloseBold stripava incondicionalmente o `**` final do
+    // texto conector sempre que colado ao próximo link — mas se o conector
+    // já contém uma frase bold auto-contida e pareada ("word", contagem PAR
+    // de `**` antes do strip), esse `**` final é o FECHAMENTO dessa frase,
+    // não uma abertura emprestada pro link seguinte. Antes do #3316:
+    // '**' literal vazava antes de A, ' text ' virava <strong> por engano, e
+    // 'word**' vazava um '**' de fechamento literal.
+    const out = processInlineLinks("**[A](urlA)** text **word**[B](urlB) more.");
+    assert.doesNotMatch(out, /\*\*/, `asterisco literal vazou: ${out}`);
+    assert.match(
+      out,
+      /<strong><a href="urlA"[^>]*>A<\/a><\/strong>/,
+      `A deveria fundir em <strong><a>: ${out}`,
+    );
+    assert.match(out, /<strong>word<\/strong>/, `"word" deveria ser <strong> próprio: ${out}`);
+    assert.match(
+      out,
+      /<a href="urlB"[^>]*>B<\/a>/,
+      `href/label de B ausentes ou corrompidos: ${out}`,
+    );
+    assert.doesNotMatch(
+      out,
+      /<strong><a href="urlB"/,
+      `B não deveria sair envolto em <strong> (não é um bold-wrap genuíno, "word" já consumiu o par): ${out}`,
+    );
+  });
+
   it("renderBodyParasInner (corpo de destaque, segundo consumidor de tokenizeInline via renderBodyInline): link com o padrão da issue não corrompe href/label", () => {
     // #3280/#3284 code-review (achado Angle C/E — cobertura de teste): a
     // decisão hasOpenBold/hasCloseBold é compartilhada por tokenizeInline

@@ -1387,19 +1387,36 @@ function tokenizeInline(
     // link (pra não contaminar a contagem com `**` dentro do label de um link
     // seguinte). #3280 code-review (achado #A/#B/#E/Altitude, confirmado
     // empiricamente): quando HÁ um próximo link `**[label2](url2)**` colado
-    // ao fim do texto entre os dois links, o `**` final desse texto NÃO é o
-    // fechamento deste link — é a ABERTURA do wrap do link seguinte
-    // (resolvida pelo `hasOpenBold` dele, na iteração seguinte). Sem isso,
-    // 2+ links bold-wrapped consecutivos no mesmo parágrafo quebravam: nenhum
-    // fundia, `**` vazava literal, e o texto conector entre eles virava
-    // `<strong>` por engano. `closeBoundary` só é computado quando o `**`
-    // candidato existe (lazy — evita o scan de `nextLinkStartIndex` na
-    // maioria dos links, que não têm `**` colado).
+    // ao fim do texto entre os dois links, o `**` final desse texto PODE ser
+    // a ABERTURA do wrap do link seguinte (resolvida pelo `hasOpenBold` dele,
+    // na iteração seguinte) — mas só quando o texto conector, tomado como um
+    // todo (SEM strip nenhum), já não é auto-suficiente. Sem isso, 2+ links
+    // bold-wrapped consecutivos no mesmo parágrafo quebravam: nenhum fundia,
+    // `**` vazava literal, e o texto conector entre eles virava `<strong>`
+    // por engano.
+    // #3316: a versão original stripava o `**` final incondicionalmente
+    // sempre que colado ao próximo link — mas se o conector JÁ contém uma
+    // frase bold auto-contida e pareada (ex: `**word**`, contagem PAR de
+    // `**`), esse `**` final é na verdade o FECHAMENTO dessa frase, não uma
+    // abertura emprestada pro link seguinte. Stripar incondicionalmente
+    // desmanchava esse par (sobrando um `**` órfão) e derrubava a paridade
+    // deste link. Só stripa quando o conector CRU (antes de qualquer strip)
+    // tem contagem ÍMPAR — sinal de que sobra de fato um marcador solto pra
+    // resolver "emprestando" a abertura pro link seguinte; contagem PAR
+    // significa que o conector já fecha sozinho, e o `**` candidato deste
+    // link está livre (fundiu com nada) — usa o conector como está.
+    // `closeBoundary` só é computado quando o `**` candidato existe (lazy —
+    // evita o scan de `nextLinkStartIndex` na maioria dos links, que não têm
+    // `**` colado).
     let hasCloseBold = false;
     if (input.startsWith("**", j + 1)) {
       const closeBoundary = nextLinkStartIndex(input, j + 3);
       let closeAdjacent = input.substring(j + 3, closeBoundary);
-      if (closeBoundary < input.length && closeAdjacent.endsWith("**")) {
+      if (
+        closeBoundary < input.length &&
+        closeAdjacent.endsWith("**") &&
+        !isUnpairedBoldMarker(closeAdjacent)
+      ) {
         closeAdjacent = closeAdjacent.slice(0, -2);
       }
       hasCloseBold = isUnpairedBoldMarker(closeAdjacent);
