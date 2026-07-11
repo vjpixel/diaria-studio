@@ -90,7 +90,7 @@ import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { brevoPost, brevoPut, brevoGetCampaign } from "./lib/brevo-client.ts";
-import { clariceSegmentsDir, parseCycleArg } from "./lib/clarice-paths.ts";
+import { clariceSegmentsDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
 import { checkEiaGuard, applyVerifyResults } from "./clarice-schedule-sends.ts";
 import { groupListsRegistryPath, type GroupListEntry } from "./clarice-import-waves.ts";
@@ -314,6 +314,14 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const c: CampaignEntry = { key, campaignId, listId, subject, scheduledAt, status: "draft" };
       campaigns.push(c);
       byKey.set(key, c);
+      // #3228: segmentsDir já existe no fluxo --group (criado por
+      // clarice-build-segment.ts antes de escrever {group}-manifest.json —
+      // pré-condição pra resolveGroupListId ter chegado até aqui), mas no
+      // fluxo --list-id direto pode ser a 1ª escrita neste ciclo/segments/
+      // (ex: cycle nunca passou por clarice-build-segment.ts). writeFileAtomic
+      // não cria diretórios faltantes (documentado em lib/atomic-write.ts) —
+      // sem ensureDir aqui, --create com --list-id puro falharia com ENOENT.
+      ensureDir(segmentsDir);
       writeFileAtomic(campaignsPath, JSON.stringify(campaigns, null, 2));
     }
   }
