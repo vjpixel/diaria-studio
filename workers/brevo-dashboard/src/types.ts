@@ -152,3 +152,18 @@ export interface EiaEngagementSummary {
 // #2733: TTL do cache de campanhas cruas (LASTGOOD_CAMPAIGNS_KEY). 1h — a janela
 // de rate-limit da Brevo cabe folgada.
 export const LASTGOOD_TTL = 3600;
+
+/**
+ * #3256: cadência do Cron Trigger que pré-computa `dash:lastgood:campaigns`
+ * (`scheduled()` em index.ts / `runCronRefresh` em brevo-api.ts). Revisão do
+ * editor sobre a decisão original do #3079 (10min) — 3h é aceitável dado que
+ * o dado não é usado pra decisão em tempo real, só leitura.
+ *
+ * Fonte de VERDADE do valor real continua sendo o campo `crons` em
+ * wrangler.toml (a cada 3h, no minuto 0) — o Worker não consegue ler o
+ * próprio `crons` em runtime, então esta constante é usada só para TEXTO
+ * exibido ao editor (nota de frescor em sections-core.ts: "atualizado às X /
+ * próxima: ~Y"). Se o intervalo do cron mudar de novo, atualizar os DOIS
+ * lugares — nenhum teste consegue pegar a divergência automaticamente.
+ */
+export const CRON_INTERVAL_HOURS = 3;

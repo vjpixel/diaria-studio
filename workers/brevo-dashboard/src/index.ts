@@ -307,9 +307,10 @@ export default {
         let campaignsWindowLimit: number | null = null;
 
         // #3079: default (sem ?fresh=1) lê o payload PRÉ-COMPUTADO pelo Cron
-        // Trigger (scheduled() abaixo, roda a cada ~10min) em `dash:lastgood:campaigns`
-        // — zero chamadas Brevo em request-time. `?fresh=1` bypassa e mantém o
-        // fetch ao vivo de sempre (debug/urgência, decisão do editor #3079).
+        // Trigger (scheduled() abaixo — #3256 subiu a cadência de 10min pra 3h)
+        // em `dash:lastgood:campaigns` — zero chamadas Brevo em request-time.
+        // `?fresh=1` bypassa e mantém o fetch ao vivo de sempre (debug/urgência,
+        // decisão do editor #3079).
         const lastGood = (!isFresh && env.STATS_CACHE)
           ? await env.STATS_CACHE.get(LASTGOOD_CAMPAIGNS_KEY, "json").catch(() => null) as LastGoodCampaignsPayload | null
           : null;
@@ -406,9 +407,10 @@ export default {
   },
 
   /**
-   * #3079: Cron Trigger (a cada 10min — `crons` em wrangler.toml) — pré-computa o fetch
-   * pesado de campanhas Brevo fora do request-time e grava em
-   * `dash:lastgood:campaigns`, que a rota `/` lê por padrão (ver acima).
+   * #3079: Cron Trigger (`crons` em wrangler.toml — #3256 subiu de 10min pra
+   * 3h) — pré-computa o fetch pesado de campanhas Brevo fora do request-time
+   * e grava em `dash:lastgood:campaigns`, que a rota `/` lê por padrão (ver
+   * acima).
    * `ctx.waitUntil` garante que o Worker não seja reciclado antes do fetch (que
    * pode levar vários segundos com ~100 GETs) terminar. Nunca lança — erros são
    * logados por `runCronRefresh` e o KV mantém o último valor bom.

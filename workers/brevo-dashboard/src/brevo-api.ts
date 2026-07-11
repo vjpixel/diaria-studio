@@ -345,8 +345,9 @@ export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
  * ("Totais por mês", "Volume no ciclo", "Open rate por dia da semana", saúde
  * da Rampa). Pré-#3079 este fetch era SÍNCRONO na rota `/` — 50 mantinha a
  * latência do request baixa. #3079 moveu o fetch pesado pro Cron Trigger
- * (roda a cada 10min, fora do request-time): o custo de uma janela maior
- * agora é absorvido pelo cron, não pelo usuário que carrega a página.
+ * (fora do request-time — #3256 subiu a cadência de 10min pra 3h): o custo
+ * de uma janela maior agora é absorvido pelo cron, não pelo usuário que
+ * carrega a página.
  *
  * Subimos de 50 → 100 (INCIDENTE 260710: #3080 originalmente subiu pra 150,
  * mas a API da Brevo rejeita `limit` acima de 100 em `/v3/emailCampaigns`
@@ -1241,7 +1242,8 @@ export async function fetchScheduledCampaigns(
  * (#2733, fallback de rate-limit) — `generatedAt` é o campo NOVO: timestamp
  * de quando o payload foi de fato computado (cron tick, ou "agora" em fetch
  * ao vivo/`?fresh=1`/cold-start). Sem ele, o header "Dados em tempo real" da
- * rota `/` mentiria para dado pré-computado até ~10min velho.
+ * rota `/` mentiria para dado pré-computado até ~CRON_INTERVAL_HOURS velho
+ * (types.ts — #3256 subiu de 10min pra 3h).
  */
 export interface LastGoodCampaignsPayload {
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>;
@@ -1260,12 +1262,13 @@ export interface LastGoodCampaignsPayload {
 }
 
 /**
- * #3079: roda no Cron Trigger (a cada 10min — ver `crons` em wrangler.toml) — faz o
- * fetch pesado de campanhas Brevo (agendadas + enviadas, ~100+ chamadas com
- * cache frio) FORA do request-time, e grava o resultado em
- * `dash:lastgood:campaigns`. A rota `/` passa a ler dessa chave por padrão
- * (sem `?fresh=1`) — decisão do editor: dado ~10min stale é aceitável, com
- * escape hatch `?fresh=1` pra debug ao vivo.
+ * #3079: roda no Cron Trigger (ver `crons` em wrangler.toml — #3256 subiu de
+ * 10min pra 3h) — faz o fetch pesado de campanhas Brevo (agendadas +
+ * enviadas, ~100+ chamadas com cache frio) FORA do request-time, e grava o
+ * resultado em `dash:lastgood:campaigns`. A rota `/` passa a ler dessa chave
+ * por padrão (sem `?fresh=1`) — decisão do editor: dado stale de até
+ * CRON_INTERVAL_HOURS (types.ts) é aceitável, com escape hatch `?fresh=1`
+ * pra debug ao vivo.
  *
  * Mesma ordem de fetch que a rota `/` já usava (créditos → agendadas →
  * enviadas, #2268/#2910): os 2 primeiros são baratos e pegam a janela de

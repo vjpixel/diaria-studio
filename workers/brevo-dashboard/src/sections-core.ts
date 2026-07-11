@@ -1,4 +1,5 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary } from "./types.ts";
+import { CRON_INTERVAL_HOURS } from "./types.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 // #3092: PT_MONTHS_ABBR — dependency-free/Workers-safe (mesmo padrão de
 // cohortSendRank em sections-kv.ts), reusado por formatCycleEnvioLabel.
@@ -233,16 +234,25 @@ export function renderDashboardHtml(
 
   // #3079: o header antigo ("Dados em tempo real — carregado às {now} BRT")
   // sempre usava `new Date()` — mentiroso para o payload PRÉ-COMPUTADO pelo
-  // Cron Trigger (dash:lastgood:campaigns, até ~10min velho). Reusa o mesmo
-  // helper de staleness do #3011 (shouldShowStalenessNote) que já decide,
-  // pras outras seções KV, se `sectionIso` diverge o bastante de `nowDate`
-  // pra merecer nota — aqui a "seção" é o payload de campanhas em si.
-  // `dataGeneratedAt == null` (callers/testes pré-#3079) nunca mostra a nota
-  // pré-computada — degrada pro texto/formato antigo, idêntico ao pré-#3079.
+  // Cron Trigger (dash:lastgood:campaigns, até ~CRON_INTERVAL_HOURS velho —
+  // #3256 subiu de 10min pra 3h). Reusa o mesmo helper de staleness do #3011
+  // (shouldShowStalenessNote) que já decide, pras outras seções KV, se
+  // `sectionIso` diverge o bastante de `nowDate` pra merecer nota — aqui a
+  // "seção" é o payload de campanhas em si. `dataGeneratedAt == null`
+  // (callers/testes pré-#3079) nunca mostra a nota pré-computada — degrada
+  // pro texto/formato antigo, idêntico ao pré-#3079.
   const dataIsPrecomputed = dataGeneratedAt != null && shouldShowStalenessNote(dataGeneratedAt, nowDate);
   const dataFreshnessTimeLabel = dataGeneratedAt != null ? fmtTimeBRT(dataGeneratedAt) : now;
+  // #3256: nota de "próxima atualização" — dataGeneratedAt + CRON_INTERVAL_HOURS
+  // (o tick do cron que gerou ESTE payload + o intervalo entre ticks). Só faz
+  // sentido calcular quando o payload é de fato pré-computado (dataGeneratedAt
+  // presente) — pedido do editor #3256 pra deixar claro quando esperar dado
+  // mais fresco sem precisar saber de cor a cadência do cron.
+  const nextUpdateLabel = dataGeneratedAt != null
+    ? fmtTimeBRT(new Date(Date.parse(dataGeneratedAt) + CRON_INTERVAL_HOURS * 3_600_000).toISOString())
+    : null;
   const dataFreshnessLine = dataIsPrecomputed
-    ? `Dados pré-computados a cada ~10min (Cron Trigger) — atualizado às ${dataFreshnessTimeLabel} BRT.`
+    ? `Dados pré-computados a cada ~${CRON_INTERVAL_HOURS}h (Cron Trigger) — atualizado às ${dataFreshnessTimeLabel} BRT (próxima: ~${nextUpdateLabel} BRT).`
     : `Dados em tempo real — carregado às ${dataFreshnessTimeLabel} BRT.`;
 
   // #2086 Fase 2: seções adicionais
