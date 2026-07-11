@@ -11,7 +11,7 @@ Você compõe **3 posts principais + 6 textos auxiliares** (1 comment Diar.ia + 
 
 LinkedIn algoritmo deprioriza posts com link externo no body. Estratégia editorial:
 
-- **Post principal**: corpo focado no insight, **sem URL nem menção a Diar.ia/diar.ia.br**, hashtags. Driver de alcance.
+- **Post principal**: corpo focado no insight, **sem URL nem menção a diar.ia.br**, hashtags. Driver de alcance.
 - **Comment Diar.ia (T+3min)**: CTA com URL da edição completa. Driver de tráfego — branding e link vão exclusivamente aqui.
 - **Comment Pixel pessoal (T+8min)**: opinião editorial direta da conta `vjpixel`. Amplifica via 2ª conta (sinal forte pro algoritmo + 2ª notificação aos seguidores).
 
@@ -46,7 +46,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - 2–3 parágrafos curtos.
    - "Por que isso importa" pode ser adaptado, mas nunca começar com "Para [audiência],".
    - **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente", "acabou de" ficam errados no dia em que o editor posta (D+1 ou depois). Use datas absolutas ou framing neutro.
-   - **#595 (decisão 2026-05-08): SEM URL nem menção a Diar.ia/diar.ia.br no body do main post.** LinkedIn deprioriza posts com link externo. Branding e CTA pra newsletter vão exclusivamente no `### comment_diaria` (T+3min). Main post fica 100% editorial.
+   - **#595 (decisão 2026-05-08): SEM URL nem menção a diar.ia.br no body do main post.** LinkedIn deprioriza posts com link externo. Branding e CTA pra newsletter vão exclusivamente no `### comment_diaria` (T+3min). Main post fica 100% editorial.
    - **#1762: NUNCA encerrar o post com pergunta** ("Comente abaixo: você usa X? Como você faz Y?"). A última frase do post deve ser uma **afirmação** que fecha o raciocínio — não um CTA-pergunta. Perguntas retóricas no MEIO do corpo são OK; a de encerramento, não. Validado por `lint-social-md.ts --check no-trailing-question`. (CTA pra newsletter vai no `### comment_diaria`, não no main post.)
    - 3 hashtags relevantes ao tema do destaque. Regras (#367): sempre incluir `#InteligenciaArtificial`; nunca usar `#Tecnologia` (genérica — substituir por hashtags específicas como `#MachineLearning`, `#Agentes`, `#Automacao`); hashtags em português quando possível.
    - 1.200–1.500 caracteres.
@@ -63,7 +63,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
      ```
      Edição completa com mais {outros_count} destaques de IA do dia em {edition_url}
 
-     Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br
+     Siga a diar.ia.br no LinkedIn em linkedin.com/company/diar.ia.br
      ```
    - **NÃO incluir CTA de assinatura por e-mail** no comment_diaria nem em nenhum post do LinkedIn (#2458). Remover "assine grátis", "receba por e-mail", "inscreva-se" e variações — o LinkedIn não é canal de aquisição de e-mail; o foco é seguir a página.
    - **Placeholder `{edition_url}`** é substituído em Stage 5 pelo URL Beehiiv real (ex: `https://diar.ia.br/p/modelos-se-replicam-sozinhos`). Em Stage 2, deixar o placeholder literal.
@@ -97,7 +97,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - **Reescrever, não copiar:** ângulo editorial próprio sobre o D1 — a leitura/opinião do Pixel, não o resumo factual da página.
    - Depois da abertura, pode reforçar o fato do D1, mas o corpo é a interpretação pessoal (por que isso importa pra ele / pra quem trabalha na área).
    - Hashtags próprias (1-3).
-   - **Incluir link da página** ao final: `Siga a Diar.ia em linkedin.com/company/diar.ia.br` (sem `https://`, sem ponto final).
+   - **Incluir link da página** ao final: `Siga a diar.ia.br em linkedin.com/company/diar.ia.br` (sem `https://`, sem ponto final).
    - 600–1300 caracteres (post de LinkedIn, não comentário).
    - **NUNCA usar "esta/essa/nossa newsletter" nem deixis que pressuponha o leitor na Diar.ia (#2148).** O post vai no feed pessoal do Pixel — leitores de IA, colegas, ex-colegas que talvez nunca tenham ouvido falar da Diar.ia. Pode mencionar que o autor *faz* uma newsletter de IA, mas nunca com framing de "você já está dentro". Errado: "Esta newsletter roda em grande parte com agentes". Certo: "A newsletter de IA que escrevo roda em grande parte com agentes". Validado por `lint-social-md.ts --check personal-post-no-newsletter-deixis`.
    - **NUNCA abrir/fechar com frase de credencial ou auto-apresentação (#2494).** "Trabalho com IA há alguns anos e faço uma newsletter de IA, a Diar.ia", "como alguém que acompanha o setor", "há anos que trabalho com isso" — essas frases estabelecem autoridade pela bio, não pelo conteúdo. O post pessoal deve fazer o ponto direto, sem se anunciar. Validado por `lint-social-md.ts --check no-credential-bio`.

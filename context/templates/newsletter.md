@@ -33,7 +33,7 @@ Para esta edição, eu (o editor) enviei X submissões e a diar.ia.br encontrou 
 
 Por que isso importa:
 
-[1 parágrafo — impacto prático para o público Diar.ia]
+[1 parágrafo — impacto prático para o público diar.ia.br]
 
 ---
 
@@ -152,4 +152,4 @@ URL embedada no título (#599): editor poda 2 das 3 opções no gate de Etapa 2,
 - Não usar markdown em parágrafos. **Negrito (`**...**`) só é permitido em** nomes de seção (`**LANÇAMENTOS**`, `**DESTAQUE N**`) e títulos (#590). Outros markups (`#`, `-`, `_`, `>`) sempre proibidos.
 - Não incluir texto fora do template.
 - Não adicionar emojis no corpo do texto — apenas o emoji de categoria no header `DESTAQUE N | emoji CATEGORIA` é permitido (#265).
-- Não mencionar "Diar.ia" dentro do corpo dos destaques (é redundante).
+- Não mencionar "diar.ia.br" dentro do corpo dos destaques (é redundante).
