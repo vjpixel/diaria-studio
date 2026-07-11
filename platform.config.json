@@ -22,7 +22,7 @@
   },
   "inbox": {
     "address": "diariaeditor@gmail.com",
-    "gmailQuery": "in:sent to:diariaeditor@gmail.com",
+    "gmailQuery": "in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}",
     "enabled": true,
     "editor_personal_email": "vjpixel@gmail.com"
   },
