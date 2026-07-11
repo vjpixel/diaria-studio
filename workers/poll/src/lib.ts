@@ -323,6 +323,61 @@ export function legacyMonthlyEditionForCycle(edition: string): string | null {
 }
 
 /**
+ * #3350: direção INVERSA de `legacyMonthlyEditionForCycle` — dado um
+ * identificador AAMMDD que pode ser um marcador LEGADO de ciclo mensal
+ * (pré-#2115), reconstrói o slug de ciclo `YYMM-MM` correspondente.
+ *
+ * Motivação (issue #3350): `handleEditions` (vote.ts) enumera edições via
+ * scan bruto das chaves KV `stats:` e devolvia o sufixo literal armazenado —
+ * uma chave AAMMDD legada nunca era normalizada de volta pro slug de ciclo.
+ * `fetchClariceEditions` (workers/brevo-dashboard/src/eia-refresh.ts) filtra
+ * essa lista só pro formato de ciclo (`/^\d{4}-\d{2}$/`), descartando
+ * silenciosamente qualquer entrada em formato legado — um ciclo com votos
+ * reais só sob a chave AAMMDD (ex: `2605-06` sob `260531`, ver #3261)
+ * desaparecia da aba Engajamento assim que o botão "Atualizar" rodava.
+ *
+ * Reconstrução: o AAMMDD legado codifica `YY`+`MM`(mês de CONTEÚDO)+
+ * últimoDiaDoMês — o mês de ENVIO nunca é codificado nele (é sempre
+ * mês-de-conteúdo + 1, invariante validado em `--cycle` nos scripts). Então:
+ *   yy/mm = os 2 primeiros pares de dígitos do AAMMDD (ano/mês de conteúdo)
+ *   envioMM = mm + 1 (wrap 12 → 01, mesmo mês-mesmo-ano do slug — o ano do
+ *             envio não é representado no slug `YYMM-MM`, só o mês)
+ *
+ * Guard de forma: só reconstrói quando o `DD` do AAMMDD bate exatamente com
+ * o último dia do mês `MM` — é assim que `legacyMonthlyEditionForCycle`
+ * SEMPRE constrói a chave legada (nunca um dia arbitrário). Isso evita
+ * reinterpretar uma edição AAMMDD que por coincidência caiu no último dia do
+ * mês (ex: uma edição DIÁRIA real publicada em 31/05) como se fosse um
+ * marcador de ciclo — mas o call site em `handleEditions` só aplica esta
+ * função para brands com `leaderboardPeriod === "year"` (hoje só `clarice`,
+ * que não tem conceito de "edição diária" — toda chave AAMMDD dela É um
+ * marcador legado por construção), então a ambiguidade teórica não ocorre
+ * na prática; o guard aqui é defesa em profundidade caso a função seja
+ * reusada em outro contexto no futuro.
+ *
+ * Retorna `null` se `edition` não é AAMMDD válido, mês de conteúdo fora de
+ * range (0/>12), ou `DD` não bate com o último dia do mês (não é um
+ * marcador legado reconstruível).
+ *
+ * Round-trips com `legacyMonthlyEditionForCycle`:
+ *   `legacyMonthlyEditionForCycle("2605-06")` → `"260531"`
+ *   `cycleForLegacyMonthlyEdition("260531")` → `"2605-06"`
+ */
+export function cycleForLegacyMonthlyEdition(edition: string): string | null {
+  if (!AAMMDD_RE.test(edition)) return null;
+  const yy = edition.slice(0, 2);
+  const mm = edition.slice(2, 4);
+  const dd = edition.slice(4, 6);
+  const yr = 2000 + parseInt(yy, 10);
+  const moNum = parseInt(mm, 10);
+  if (moNum < 1 || moNum > 12) return null;
+  const lastDay = new Date(Date.UTC(yr, moNum, 0)).getUTCDate();
+  if (parseInt(dd, 10) !== lastDay) return null;
+  const envioMoNum = moNum === 12 ? 1 : moNum + 1;
+  return `${yy}${mm}-${String(envioMoNum).padStart(2, "0")}`;
+}
+
+/**
  * Pure: parseia slug "YYYY-MM" → {year, month}. Retorna null em formato
  * ou range inválido (mês 0, 13, ano fora 2000-2099).
  */

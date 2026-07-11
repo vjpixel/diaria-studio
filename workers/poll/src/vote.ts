@@ -1,5 +1,5 @@
 import type { Env } from "./index";
-import { type Brand, editionToMonthSlug, AAMMDD_RE } from "./lib"; // #3297: AAMMDD_RE substitui regex inline
+import { type Brand, editionToMonthSlug, AAMMDD_RE, BRAND_INFO } from "./lib"; // #3297: AAMMDD_RE substitui regex inline
 import {
   formatEditionDateForBrand,
   parseValidEditions,
@@ -10,6 +10,7 @@ import {
   isValidVoteEmailFormat, // #3118 item 3
   isValidVoteEditionFormat, // #3118 item 3
   legacyMonthlyEditionForCycle, // #3261: /stats por ciclo também consulta a chave AAMMDD legada
+  cycleForLegacyMonthlyEdition, // #3350: /editions normaliza chave AAMMDD legada pro slug de ciclo
   safeParseKv, // #3298: parse seguro de JSON vindo do KV
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
@@ -663,10 +664,20 @@ async function updateStatsCounter(
   // já aplicado ao espelho KV em fetchEditionStatsAndCorrect (#3115).
   const stats = safeParseKv<StatsCounterData>(raw, "stats_kv_fallback_parse_error", edition)
     ?? { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
-  stats.total += 1;
-  if (choice === "A") stats.voted_a += 1;
-  if (choice === "B") stats.voted_b += 1;
-  if (correct === true) stats.correct_count += 1;
+  // #3355: `?? 0` guarda contra shape incompleto vindo de safeParseKv — o
+  // guard de parse só protege contra JSON.parse que LANÇA (sintaxe
+  // inválida); um valor JSON VÁLIDO mas com shape errado (ex: `{}`, sem os
+  // campos numéricos) passa incólume pelo `?? {...}` acima (que só entra em
+  // ação quando safeParseKv retorna `null`). Sem o `?? 0` aqui,
+  // `stats.total += 1` produziria NaN, serializado como `null` no próximo
+  // JSON.stringify — perda silenciosa do contador acumulado (o registro
+  // "autocura" aritmeticamente no PRÓXIMO voto, já que `null + 1` coage pra
+  // `1` em JS, mascarando a perda). PLAUSIBLE não CONFIRMED (não alcançável
+  // hoje via nenhum write-path atual do /vote) — defesa em profundidade.
+  stats.total = (stats.total ?? 0) + 1;
+  if (choice === "A") stats.voted_a = (stats.voted_a ?? 0) + 1;
+  if (choice === "B") stats.voted_b = (stats.voted_b ?? 0) + 1;
+  if (correct === true) stats.correct_count = (stats.correct_count ?? 0) + 1;
   await env.POLL.put(statsKey, JSON.stringify(stats));
 }
 
@@ -806,8 +817,11 @@ async function updateScoreByMonth(
   }>(raw, "update_score_by_month_parse_error", edition)
     ?? { total: 0, correct: 0, last_edition: null, nickname: null };
 
-  entry.total += 1;
-  if (correct === true) entry.correct += 1;
+  // #3355: mesmo guard `?? 0` de updateStatsCounter (ver nota lá) — shape
+  // incompleto vindo de safeParseKv (JSON válido, campo numérico ausente)
+  // não deve produzir NaN/perda silenciosa do total acumulado.
+  entry.total = (entry.total ?? 0) + 1;
+  if (correct === true) entry.correct = (entry.correct ?? 0) + 1;
   entry.last_edition = edition;
   // #1383: timestamp do voto pra tiebreaker no leaderboard. Voto mais recente
   // vence empate de (correct, total). Sobrescreve a cada vote (não acumula).
@@ -941,11 +955,12 @@ async function updateScore(
   }>(raw, "update_score_parse_error", edition)
     ?? { total: 0, correct: 0, streak: 0, last_edition: null, nickname: null };
 
-  score.total += 1;
+  // #3355: mesmo guard `?? 0` de updateStatsCounter (ver nota lá).
+  score.total = (score.total ?? 0) + 1;
   // correct === null → gabarito ainda não definido: incrementa total mas não
   // mexe em correct/streak (preserva estado pra reconciliação futura).
   if (correct === true) {
-    score.correct += 1;
+    score.correct = (score.correct ?? 0) + 1;
     score.streak = (score.streak || 0) + 1;
   } else if (correct === false) {
     score.streak = 0;
@@ -1132,16 +1147,42 @@ export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): 
  * `stats:` corrompida/parcial (edition vazio ou lixo) vazando pro consumer.
  * Ordenado desc (mais recente primeiro), mesma convenção de `discoverEditions`/
  * `buildPollEiaSummaryFromApi` no script que este endpoint substitui.
+ *
+ * #3350: para brands com leaderboard ANUAL (`BRAND_INFO[brand].leaderboardPeriod
+ * === "year"` — hoje só `clarice`), uma chave `stats:AAMMDD` pode ser um
+ * MARCADOR LEGADO de ciclo mensal (pré-#2115, ver `legacyMonthlyEditionForCycle`)
+ * em vez de uma edição diária real — `clarice` não tem conceito de "edição
+ * diária", então toda chave AAMMDD dela É um marcador legado por construção.
+ * Sem normalizar aqui, `fetchClariceEditions` (eia-refresh.ts) filtra a lista
+ * só pro formato de ciclo (`/^\d{4}-\d{2}$/`) e descarta essas entradas
+ * silenciosamente — um ciclo com votos reais só sob a chave legada (ex:
+ * `2605-06` sob `260531`, mesmo cenário do #3261) desaparecia da aba
+ * Engajamento assim que o botão "Atualizar" (#3257) sobrescrevia o KV
+ * `eia:engagement` com a lista incompleta. `cycleForLegacyMonthlyEdition`
+ * reconstrói o slug de ciclo a partir do AAMMDD; `null` (não é um marcador
+ * legado reconstruível — não deveria ocorrer pra `clarice` na prática, ver
+ * guard de forma no helper) mantém a edition original como fallback.
+ * Normalizado na FONTE (aqui) em vez de ensinar cada consumidor
+ * (`fetchClariceEditions`) a lidar com os dois formatos — mais robusto,
+ * mesmo racional já aplicado por `handleStats` no #3261.
+ *
+ * `Set` deduplica o caso onde AMBAS as chaves existem pro mesmo ciclo
+ * (`stats:260531` legado + `stats:2605-06` novo, cenário "soma" do #3261) —
+ * sem dedup, `/editions` listaria o mesmo ciclo 2x.
  */
 export async function handleEditions(env: Env, brand: Brand = "diaria"): Promise<Response> {
   const prefix = "stats:";
-  const editions: string[] = [];
+  const editionSet = new Set<string>();
+  const normalizeLegacy = BRAND_INFO[brand].leaderboardPeriod === "year";
   for await (const keyName of listAllKeys(env, prefix)) {
     const edition = keyName.slice(prefix.length);
     // #3297: reusa isValidVoteEditionFormat (mesmo regex combinado AAMMDD|ciclo)
     // em vez de reexpressar o par de regex inline.
-    if (isValidVoteEditionFormat(edition)) editions.push(edition);
+    if (!isValidVoteEditionFormat(edition)) continue;
+    const normalized = normalizeLegacy ? cycleForLegacyMonthlyEdition(edition) : null;
+    editionSet.add(normalized ?? edition);
   }
+  const editions = [...editionSet];
   editions.sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
   return json({ brand, editions }, 200, env);
 }
