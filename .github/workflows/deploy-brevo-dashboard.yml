@@ -1,0 +1,71 @@
+name: Deploy brevo-dashboard Worker
+
+# #3268: workers/brevo-dashboard não tinha deploy automático — `package.json`
+# só define um script npm manual ("deploy": "wrangler deploy") e nenhum
+# workflow existente (ci.yml ou outro) o chamava. Resultado: o Cron Trigger
+# do Cloudflare roda no schedule certo, mas executa o código da última vez
+# que ALGUÉM rodou `wrangler deploy` manualmente — não necessariamente o
+# HEAD do master. Este workflow fecha esse gap: dispara `wrangler deploy`
+# automaticamente sempre que um push em master tocar
+# `workers/brevo-dashboard/**`.
+#
+# Secrets reusados (já configurados em Settings > Secrets and variables >
+# Actions para o workflow refresh-coupons-kv.yml, #2750): CLOUDFLARE_ACCOUNT_ID
+# e CLOUDFLARE_WORKERS_TOKEN. NOTA: CLOUDFLARE_WORKERS_TOKEN foi documentado em
+# .env.example com escopo "Workers KV Storage:Edit" (uso original: push de
+# dados pro KV via scripts/*, não deploy de Worker script). Deploy de Worker
+# via `wrangler deploy` precisa do escopo "Workers Scripts:Edit" (tipicamente
+# incluído no template Cloudflare "Edit Cloudflare Workers"). Se este workflow
+# falhar com 403/erro de permissão na primeira execução, o editor precisa
+# either (a) adicionar o escopo "Workers Scripts:Edit" ao token existente em
+# dash.cloudflare.com/profile/api-tokens, ou (b) criar um novo token dedicado
+# e apontar o secret CLOUDFLARE_WORKERS_TOKEN pra ele. Não havia nenhum
+# secret CLOUDFLARE_API_TOKEN configurado no repo no momento deste PR
+# (verificado via `gh secret list`) — só CLOUDFLARE_ACCOUNT_ID,
+# CLOUDFLARE_WORKERS_TOKEN e STRIPE_API_KEY.
+#
+# Não valida se o deploy anterior (manual) já estava desatualizado — essa
+# verificação (`wrangler deployments list`) requer credenciais Cloudflare
+# fora do escopo desta sessão automatizada. Fica para o editor/coordenador
+# rodar manualmente se quiser confirmar o estado do Worker em produção antes
+# deste fix.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/brevo-dashboard/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-brevo-dashboard
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # Necessário pra `[build] command` do wrangler.toml (npx tsx
+      # ../../scripts/generate-worker-tokens.ts), que resolve `tsx` a partir
+      # do node_modules da raiz do repo — mesmo padrão do ci.yml (#3164).
+      - run: npm ci
+
+      - name: Install brevo-dashboard worker deps
+        working-directory: workers/brevo-dashboard
+        run: npm ci
+
+      - name: Deploy to Cloudflare Workers
+        working-directory: workers/brevo-dashboard
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy
