@@ -205,6 +205,45 @@ export function editionToMonthSlug(edition: string): string | null {
 }
 
 /**
+ * #3261: dado um ciclo Clarice `YYMM-MM` (ver `editionToMonthSlug`), deriva o
+ * identificador AAMMDD LEGADO que a MESMA edição usava ANTES do cutover
+ * #2115 (commit 370fba43, 2026-06-11) — YY+MM+últimoDiaDoMês do mês de
+ * CONTEÚDO (`YYMM`). Espelha byte-a-byte a fórmula antiga de
+ * `eiaEditionFromYymm` (scripts/lib/mensal/monthly-render.ts, pré-#2115):
+ *
+ *   yr = 2000 + parseInt(yymm.slice(0,2))
+ *   mo = parseInt(yymm.slice(2,4))
+ *   lastDay = new Date(Date.UTC(yr, mo, 0)).getUTCDate()
+ *   → `${yy}${mm}${lastDay}`
+ *
+ * Ex: "2605-06" (digest de maio, enviado em junho) → "260531".
+ *     "2604-05" → "260430". "2603-04" → "260331".
+ *
+ * Motivação (issue #3261): ciclos enviados ANTES do cutover gravaram seus
+ * votos sob a chave AAMMDD legada (era a ÚNICA forma que existia então) — uma
+ * consulta `/stats?edition=2605-06` busca só a chave NOVA e nunca encontra
+ * esses votos, mesmo eles existindo de fato no KV sob `stats:260531`.
+ * `handleStats` (vote.ts) usa este helper para consultar AMBAS as chaves
+ * quando o caller pede stats por ciclo, generalizando para qualquer ciclo
+ * futuro que tenha essa mesma ambiguidade — não hardcoded pros 3 ciclos
+ * específicos da issue.
+ *
+ * Retorna null se `edition` não é formato de ciclo (`^\d{4}-\d{2}$` — ex:
+ * AAMMDD diário não precisa de fallback, nunca teve 2 formatos) ou se o mês
+ * de CONTEÚDO (`MM` em `YYMM`) é semanticamente inválido (0 ou >12).
+ */
+export function legacyMonthlyEditionForCycle(edition: string): string | null {
+  const m = edition.match(/^(\d{2})(\d{2})-\d{2}$/);
+  if (!m) return null;
+  const [, yy, mm] = m;
+  const yr = 2000 + parseInt(yy, 10);
+  const moNum = parseInt(mm, 10);
+  if (moNum < 1 || moNum > 12) return null;
+  const lastDay = new Date(Date.UTC(yr, moNum, 0)).getUTCDate();
+  return `${yy}${mm}${String(lastDay).padStart(2, "0")}`;
+}
+
+/**
  * Pure: parseia slug "YYYY-MM" → {year, month}. Retorna null em formato
  * ou range inválido (mês 0, 13, ano fora 2000-2099).
  */
