@@ -27,9 +27,11 @@ import {
   getLastRunLogActivity,
   diagnoseWatchdogActivity,
   buildTelegramAlertRequest,
+  readPlanForStallHandling,
   WATCHDOG_IO_TIMEOUT_MS,
   type StallEvent,
 } from "../scripts/overnight-watchdog.ts";
+import type { PlanFileReaders } from "../scripts/overnight-statusline.ts";
 
 // ---------------------------------------------------------------------------
 // detectStall
@@ -520,6 +522,142 @@ describe("execFileSync de render-halt-banner/log-event usam timeout limitado (#2
       emitBlock,
       /timeout:\s*WATCHDOG_IO_TIMEOUT_MS/,
       "execFileSync do log-event deve ter timeout limitado (#2958)",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readPlanForStallHandling — retry em JSON truncado + escrita atômica (#3353)
+// ---------------------------------------------------------------------------
+//
+// Bug: overnight-watchdog.ts era um SEGUNDO leitor de plan.json (além da
+// statusline) que nunca ganhou o fix do #3264 — fazia `JSON.parse(readFileSync(
+// ...))` cru e tratava "arquivo ausente" e "arquivo existe mas o parse falhou
+// (escrita não-atômica em progresso)" de forma idêntica: ambos caíam no catch
+// e `main()` retornava ANTES de gravar stall_events/emitir run-log/renderizar
+// halt banner/alertar Telegram — a notificação de stall inteira era perdida
+// silenciosamente. Pior: o próprio watchdog gravava plan.json de volta via
+// `writeFileSync` cru, podendo ser a ORIGEM da janela de truncamento.
+//
+// Fix: `readPlanForStallHandling` delega para `readPlanFromDir` (mesma função
+// já testada em test/overnight-statusline.test.ts para o cenário de retry) e
+// a escrita passou a usar `writeFileAtomic`. Os testes abaixo replicam a
+// MESMA técnica de DI de leitores fake usada em #3264 (readFileSync retorna
+// conteúdo truncado na 1ª chamada, válido na 2ª), agora no ponto de entrada
+// que overnight-watchdog.ts de fato usa — confirmando que o retry recupera o
+// plan e a notificação de stall NÃO é perdida.
+describe("readPlanForStallHandling — retry em JSON truncado (#3353, mesma técnica do #3264)", () => {
+  function makeReadersWithSequence(existsResult: boolean, readResults: (string | Error)[]): PlanFileReaders {
+    let callIndex = 0;
+    return {
+      existsSync: (() => existsResult) as PlanFileReaders["existsSync"],
+      readFileSync: ((..._args: unknown[]) => {
+        const result = readResults[Math.min(callIndex, readResults.length - 1)];
+        callIndex += 1;
+        if (result instanceof Error) throw result;
+        return result;
+      }) as PlanFileReaders["readFileSync"],
+    };
+  }
+
+  it("plan.json existe mas a 1ª leitura pega JSON truncado (escrita concorrente) → retry recupera stall_events intactos", () => {
+    const validPlan = JSON.stringify({
+      started_at: "2026-07-11T03:00:00.000Z",
+      stall_events: [{ at: "2026-07-11T02:00:00.000Z", reason: "unknown", resumed_at: "2026-07-11T02:05:00.000Z" }],
+    });
+    const readers = makeReadersWithSequence(true, [
+      '{"started_at": "2026-07-11T03:00:00.000Z", "stall', // truncado — JSON.parse falha
+      validPlan, // completo — 2ª leitura (retry) recupera
+    ]);
+
+    const plan = readPlanForStallHandling("/fake/plan.json", readers);
+
+    assert.ok(plan !== null, "retry deve recuperar o plan válido — sem isso a notificação de stall seria perdida");
+    assert.equal(plan!.started_at, "2026-07-11T03:00:00.000Z");
+    assert.equal(plan!.stall_events.length, 1, "stall_events pré-existente deve sobreviver ao retry, intacto");
+  });
+
+  it("arquivo genuinamente ausente → null IMEDIATO, sem retry (nenhuma rodada ativa é o caminho normal, não uma falha)", () => {
+    let readFileSyncCalls = 0;
+    const readers: PlanFileReaders = {
+      existsSync: (() => false) as PlanFileReaders["existsSync"],
+      readFileSync: ((..._args: unknown[]) => {
+        readFileSyncCalls += 1;
+        throw new Error("não deveria ser chamado — arquivo não existe");
+      }) as PlanFileReaders["readFileSync"],
+    };
+
+    const plan = readPlanForStallHandling("/fake/plan.json", readers);
+
+    assert.equal(plan, null);
+    assert.equal(readFileSyncCalls, 0);
+  });
+
+  it("ambas as leituras batem em JSON truncado → null (retry não é infinito, cai no fallback de erro do main())", () => {
+    const readers = makeReadersWithSequence(true, [
+      '{"started_at": "2026-07-11T03:00:00.000Z", "stall',
+      '{"started_at": "2026-07-11T03:00:00.000Z", "stall_ev', // ainda truncado na 2ª tentativa
+    ]);
+
+    const plan = readPlanForStallHandling("/fake/plan.json", readers);
+
+    assert.equal(plan, null, "2 leituras truncadas seguidas deve desistir e retornar null, não travar");
+  });
+
+  it("sem readers explícito, usa o default (fs real) — smoke test de que a assinatura funciona sem DI", () => {
+    // Arquivo genuinamente ausente no caminho fs real — cobre o caminho de
+    // produção (main() chama sem passar `readers`).
+    const plan = readPlanForStallHandling(
+      resolve(dirname(fileURLToPath(import.meta.url)), "__nao-existe-3353__", "plan.json"),
+    );
+    assert.equal(plan, null);
+  });
+});
+
+describe("overnight-watchdog.ts delega leitura/escrita de plan.json pra funções seguras contra truncamento (#3353)", () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const source = readFileSync(resolve(ROOT, "scripts/overnight-watchdog.ts"), "utf8");
+
+  it("main() usa readPlanForStallHandling, não JSON.parse(readFileSync(...)) cru", () => {
+    assert.match(
+      source,
+      /const plan = readPlanForStallHandling\(planPath\)/,
+      "a leitura de plan.json no branch de stall deve delegar pra readPlanForStallHandling (que por sua vez usa readPlanFromDir com retry) — sem isso, reintroduz o bug do #3353",
+    );
+    assert.ok(
+      !/JSON\.parse\(readFileSync\(planPath/.test(source),
+      "não deve sobrar um JSON.parse(readFileSync(planPath...)) cru — essa era exatamente a implementação vulnerável ao truncamento",
+    );
+  });
+
+  it("readPlanForStallHandling delega pra readPlanFromDir (importado de overnight-statusline.ts)", () => {
+    assert.match(
+      source,
+      /import\s*\{\s*readPlanFromDir,\s*type PlanFileReaders\s*\}\s*from\s*"\.\/overnight-statusline\.ts"/,
+      "deve importar readPlanFromDir da statusline em vez de reimplementar o retry",
+    );
+  });
+
+  it("a escrita de plan.json (bloco STALL) usa writeFileAtomic, não writeFileSync cru", () => {
+    const stallWriteBlock = source.slice(
+      source.indexOf("// (a) Append stall_events no plan.json"),
+      source.indexOf("// (b) Emite evento no run-log"),
+    );
+    assert.match(
+      stallWriteBlock,
+      /writeFileAtomic\(planPath,/,
+      "gravar stall_event em plan.json deve usar writeFileAtomic (scripts/lib/atomic-write.ts) — writeFileSync cru é uma fonte de truncamento pros leitores concorrentes (#3353)",
+    );
+    assert.ok(
+      !/writeFileSync\(planPath/.test(stallWriteBlock),
+      "não deve sobrar um writeFileSync(planPath...) cru no bloco de gravação de stall_event",
+    );
+  });
+
+  it("writeFileAtomic é importado de scripts/lib/atomic-write.ts", () => {
+    assert.match(
+      source,
+      /import\s*\{\s*writeFileAtomic\s*\}\s*from\s*"\.\/lib\/atomic-write\.ts"/,
     );
   });
 });
