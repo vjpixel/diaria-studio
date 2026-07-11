@@ -106,10 +106,20 @@ export function findUnresolvedPlaceholders(text: string): string[] {
  * independente no dispatch (defesa dupla, redundante mas inofensiva) — não
  * foi migrada para usar este helper.
  *
+ * Usa replacer FUNCTION (`() => editionUrl`), não string literal (#3314).
+ * `String.prototype.replaceAll(str, replacement)` interpreta padrões especiais
+ * (`$&`, `$$`, `` $` ``, `$'`) dentro do argumento `replacement` mesmo quando a
+ * busca é uma string simples (algoritmo GetSubstitution do ECMA-262) — se
+ * `editionUrl` contivesse um desses tokens, o resultado seria corrompido
+ * (ex: `$&` seria expandido para o próprio match, `$$` viraria `$`). Uma
+ * função replacer devolve o valor sempre como literal, sem essa interpretação.
+ * Mesmo bug corrigido em `scripts/apply-factcheck-autofix.ts` (#3292/#3275) —
+ * este call site é o irmão que ficou de fora daquele fix.
+ *
  * @param text - Conteúdo original (pode ou não conter {edition_url})
  * @param editionUrl - URL resolvida a substituir
  * @returns Texto com {edition_url} substituído (idêntico ao original se ausente)
  */
 export function substituteEditionUrl(text: string, editionUrl: string): string {
-  return text.replaceAll("{edition_url}", editionUrl);
+  return text.replaceAll("{edition_url}", () => editionUrl);
 }

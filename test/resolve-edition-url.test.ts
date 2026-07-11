@@ -51,7 +51,12 @@ import { NPX, isWindows } from "./_helpers/spawn-npx.ts";
 import { warnUnresolvedPlaceholders } from "../scripts/resolve-edition-url.ts";
 
 // Importar funcoes puras diretamente para testes unitarios
-import { deriveEditionUrl, findUnresolvedPlaceholders, BEEHIIV_BASE_URL } from "../scripts/lib/edition-url.ts";
+import {
+  deriveEditionUrl,
+  findUnresolvedPlaceholders,
+  substituteEditionUrl,
+  BEEHIIV_BASE_URL,
+} from "../scripts/lib/edition-url.ts";
 
 // ── (a) Testes unitarios: deriveEditionUrl ────────────────────────────────────
 
@@ -147,6 +152,85 @@ describe("#2454 findUnresolvedPlaceholders — guard anti-placeholder", () => {
       found.includes("{algum_placeholder_novo}"),
       `deve detectar placeholder generico: ${JSON.stringify(found)}`,
     );
+  });
+});
+
+// ── (b-bis) Testes unitarios: substituteEditionUrl (#3314) ──────────────────
+//
+// Regressao #3314: `text.replaceAll("{edition_url}", editionUrl)` usava
+// `editionUrl` como argumento de substituicao LITERAL — mas
+// `String.prototype.replaceAll` interpreta padroes especiais (`$&`, `$$`,
+// `` $` ``, `$'`) dentro do argumento de substituicao (algoritmo
+// GetSubstitution do ECMA-262) mesmo quando a busca e uma string simples.
+// Mesmo bug corrigido em `apply-factcheck-autofix.ts` (#3292/#3275) via
+// replacer function — este call site irmao ficou de fora daquele fix.
+// Fix: `text.replaceAll("{edition_url}", () => editionUrl)`.
+
+describe("#3314 substituteEditionUrl — editionUrl com padroes especiais de replacement preservado como literal", () => {
+  it("substituicao simples sem padroes especiais continua funcionando", () => {
+    const text = "Edicao completa em {edition_url}";
+    const result = substituteEditionUrl(text, "https://diar.ia.br/p/meu-slug");
+    assert.equal(result, "Edicao completa em https://diar.ia.br/p/meu-slug");
+  });
+
+  it("editionUrl contendo $& (match completo) preservado como literal, nao expandido", () => {
+    const text = "Edicao em {edition_url} — confira";
+    const editionUrl = "https://diar.ia.br/p/edicao-$&-especial";
+    const result = substituteEditionUrl(text, editionUrl);
+    assert.equal(
+      result,
+      "Edicao em https://diar.ia.br/p/edicao-$&-especial — confira",
+      `$& deve ser preservado literal, nao expandido para o match: ${result}`,
+    );
+  });
+
+  it("editionUrl contendo $$ (escape de $) preservado como literal, nao colapsado", () => {
+    const text = "Link: {edition_url}";
+    const editionUrl = "https://diar.ia.br/p/preco-$$-desconto";
+    const result = substituteEditionUrl(text, editionUrl);
+    assert.equal(
+      result,
+      "Link: https://diar.ia.br/p/preco-$$-desconto",
+      `$$ deve permanecer como dois cifroes literais, nao colapsar para 1: ${result}`,
+    );
+  });
+
+  it("editionUrl contendo $` (prefixo antes do match) preservado como literal", () => {
+    const text = "Antes {edition_url} depois";
+    const editionUrl = "https://diar.ia.br/p/slug-$`-x";
+    const result = substituteEditionUrl(text, editionUrl);
+    assert.equal(
+      result,
+      "Antes https://diar.ia.br/p/slug-$`-x depois",
+      `$\` deve ser preservado literal, nao expandido para o prefixo: ${result}`,
+    );
+  });
+
+  it("editionUrl contendo $' (sufixo apos o match) preservado como literal", () => {
+    const text = "Antes {edition_url} depois";
+    const editionUrl = "https://diar.ia.br/p/slug-$'-y";
+    const result = substituteEditionUrl(text, editionUrl);
+    assert.equal(
+      result,
+      "Antes https://diar.ia.br/p/slug-$'-y depois",
+      `$' deve ser preservado literal, nao expandido para o sufixo: ${result}`,
+    );
+  });
+
+  it("multiplas ocorrencias de {edition_url} no texto — todas substituidas corretamente com $& no valor", () => {
+    const text = "d1: {edition_url}\nd2: {edition_url}\nd3: {edition_url}";
+    const editionUrl = "https://diar.ia.br/p/$&-slug";
+    const result = substituteEditionUrl(text, editionUrl);
+    assert.equal(
+      result,
+      "d1: https://diar.ia.br/p/$&-slug\nd2: https://diar.ia.br/p/$&-slug\nd3: https://diar.ia.br/p/$&-slug",
+    );
+  });
+
+  it("texto sem {edition_url} retorna identico ao original, mesmo com editionUrl contendo padroes especiais", () => {
+    const text = "Nenhum placeholder aqui.";
+    const result = substituteEditionUrl(text, "https://diar.ia.br/p/$&-$$-slug");
+    assert.equal(result, text);
   });
 });
 
