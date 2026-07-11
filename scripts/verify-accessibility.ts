@@ -17,6 +17,7 @@ import {
 import type { VerifyOptions } from "./lib/verify-options.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { extractDateFromBody } from "./lib/extract-date.ts"; // #1554 P2 — populate published_date inline
+import { isVideoUrl } from "./lib/video-youtube-resolve.ts"; // #3288: fonte única — antes duplicada byte-a-byte aqui e em launch-heuristics.ts
 
 // #717 hypothesis #3: concorrência do browser fallback. Default 4 — Puppeteer
 // roda múltiplas tabs no mesmo browser sem problema; serial era ~7-8s/url ×
@@ -120,23 +121,11 @@ const SOCIAL_DOMAINS = new Set([
   "t.co",
 ]);
 
-/**
- * Detecta URLs de vídeo (YouTube, Vimeo) que devem receber verdict `video`
- * em vez de `aggregator` ou `blocked`. URLs de vídeo são conteúdo primário,
- * não agregadores — precisam de tratamento especial (#359).
- */
-function isVideoUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    const host = u.hostname.replace(/^www\./, "");
-    if (host === "youtu.be") return true;
-    if (host === "youtube.com" && u.pathname.startsWith("/watch")) return true;
-    if (host === "vimeo.com") return true;
-    return false;
-  } catch {
-    return false;
-  }
-}
+// `isVideoUrl` (YouTube, Vimeo) — devem receber verdict `video` em vez de
+// `aggregator` ou `blocked`. URLs de vídeo são conteúdo primário, não
+// agregadores — precisam de tratamento especial (#359). Importado de
+// `./lib/video-youtube-resolve.ts` (#3288) — antes vivia aqui como cópia
+// local duplicada byte-a-byte com a versão de `launch-heuristics.ts`.
 
 // Prefixos de URL que são fontes primárias dentro de domínios parcialmente
 // agregadores. Verificados ANTES de checar AGGREGATOR_DOMAINS.

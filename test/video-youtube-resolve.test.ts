@@ -21,6 +21,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   isYoutubeUrl,
+  isVideoUrl,
   pickBestYoutubeCandidate,
   resolveVideoArticle,
   resolveVideoBucket,
@@ -78,6 +79,49 @@ describe("isYoutubeUrl", () => {
 
   it("rejeita URL inválida sem lançar", () => {
     assert.equal(isYoutubeUrl("not-a-url"), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isVideoUrl (#3288) — fonte única compartilhada por launch-heuristics.ts
+// (categorize(), gate de 1º estágio) e verify-accessibility.ts (verdict de
+// acessibilidade). Escopo MAIS AMPLO que isYoutubeUrl: aceita tudo que
+// isYoutubeUrl aceita, mais vimeo.com.
+//
+// Motivação: antes desta extração, isVideoUrl existia como cópia local
+// byte-a-byte em launch-heuristics.ts e verify-accessibility.ts, e as duas
+// ficaram desatualizadas quando #3273 ampliou só isYoutubeUrl pra aceitar
+// /live/, /shorts/ e m.youtube.com — uma URL youtube.com/live/{id} nunca
+// entrava no bucket `video` em categorize() (gate de 1º estágio), então o
+// fix do #3273 (validação de 2º estágio) nunca chegava a ser exercitado
+// pra esse artigo. Ver também test/categorize-tutorial-video.test.ts,
+// describe("categorize() — bucket video (#359)") pro cenário end-to-end.
+// ---------------------------------------------------------------------------
+
+describe("isVideoUrl (#3288) — fonte única, superset de isYoutubeUrl + vimeo", () => {
+  it("aceita tudo que isYoutubeUrl aceita: /watch, youtu.be, /live/, /shorts/, m.youtube.com", () => {
+    assert.equal(isVideoUrl("https://www.youtube.com/watch?v=EAN5Cj347PY"), true);
+    assert.equal(isVideoUrl("https://youtu.be/EAN5Cj347PY"), true);
+    assert.equal(isVideoUrl("https://www.youtube.com/live/EAN5Cj347PY"), true);
+    assert.equal(isVideoUrl("https://www.youtube.com/shorts/EAN5Cj347PY"), true);
+    assert.equal(isVideoUrl("https://m.youtube.com/live/EAN5Cj347PY"), true);
+  });
+
+  it("aceita vimeo.com — diferença deliberada de escopo vs. isYoutubeUrl", () => {
+    assert.equal(isVideoUrl("https://vimeo.com/123456"), true);
+    assert.equal(isYoutubeUrl("https://vimeo.com/123456"), false);
+  });
+
+  it("rejeita youtube.com sem /watch, /live/ ou /shorts/ (ex: /channel/, homepage)", () => {
+    assert.equal(isVideoUrl("https://www.youtube.com/@OpenAI"), false);
+  });
+
+  it("rejeita domínio não-vídeo", () => {
+    assert.equal(isVideoUrl("https://techcrunch.com/article"), false);
+  });
+
+  it("rejeita URL inválida sem lançar", () => {
+    assert.equal(isVideoUrl("not-a-url"), false);
   });
 });
 

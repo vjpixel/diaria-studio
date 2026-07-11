@@ -754,6 +754,39 @@ describe("categorize() — bucket video (#359)", () => {
     );
   });
 
+  // #3288 REGRESSÃO: isVideoUrl (usado por categorize()) e a versão
+  // duplicada em verify-accessibility.ts ficaram desatualizadas quando
+  // #3273 ampliou só isYoutubeUrl (validação de 2º estágio, dentro do
+  // bucket video) pra aceitar /live/, /shorts/ e m.youtube.com. Sem o
+  // gate de 1º estágio (categorize()) reconhecer esses formatos, o
+  // artigo nunca entrava no bucket `video` — o fix do #3273 nunca
+  // chegava a ser exercitado. Caso motivador real: #3202/#3273
+  // "Introducing GPT-Live" (youtube.com/live/{id}).
+  it("#3288: youtube.com/live/{id} (livestream) → video", () => {
+    assert.equal(
+      categorize({ url: "https://www.youtube.com/live/EAN5Cj347PY" }),
+      "video",
+    );
+  });
+
+  it("#3288: youtube.com/shorts/{id} → video", () => {
+    assert.equal(
+      categorize({ url: "https://www.youtube.com/shorts/EAN5Cj347PY" }),
+      "video",
+    );
+  });
+
+  it("#3288: host m.youtube.com (mobile) → video", () => {
+    assert.equal(
+      categorize({ url: "https://m.youtube.com/watch?v=EAN5Cj347PY" }),
+      "video",
+    );
+    assert.equal(
+      categorize({ url: "https://m.youtube.com/live/EAN5Cj347PY" }),
+      "video",
+    );
+  });
+
   it("video tem precedência absoluta — mesmo se título parece lancamento", () => {
     assert.equal(
       categorize({
@@ -786,6 +819,21 @@ describe("isVideoUrl (#359)", () => {
 
   it("vimeo.com → true", () => {
     assert.ok(isVideoUrl("https://vimeo.com/123456789"));
+  });
+
+  // #3288: isVideoUrl (re-exportado de video-youtube-resolve.ts) precisa
+  // aceitar os mesmos formatos que isYoutubeUrl reconhece desde #3273.
+  it("#3288: youtube.com/live/{id} (livestream) → true", () => {
+    assert.ok(isVideoUrl("https://www.youtube.com/live/EAN5Cj347PY"));
+  });
+
+  it("#3288: youtube.com/shorts/{id} → true", () => {
+    assert.ok(isVideoUrl("https://www.youtube.com/shorts/EAN5Cj347PY"));
+  });
+
+  it("#3288: host m.youtube.com (mobile) → true", () => {
+    assert.ok(isVideoUrl("https://m.youtube.com/watch?v=EAN5Cj347PY"));
+    assert.ok(isVideoUrl("https://m.youtube.com/live/EAN5Cj347PY"));
   });
 
   it("youtube.com sem /watch → false", () => {

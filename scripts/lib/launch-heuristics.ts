@@ -19,7 +19,9 @@ import { loadUseMelhorPrefixes, matchesUseMelhorPrefix, resolveAllSourcePrefixMa
 import { isMarketingCaseStudy } from "./use-melhor-curation.ts"; // #2276
 import { isDevReleaseNote } from "./release-note-detect.ts"; // #2469 (finding 4): shared regex — fonte única, evita divergência com use-melhor-curation.ts
 import { hasRoundupSignalInUrlOrTitle } from "./roundup-detect.ts"; // #2691 item 1: shared regex — fonte única, evita divergência com use-melhor-curation.ts
+import { isVideoUrl } from "./video-youtube-resolve.ts"; // #3288: fonte única — antes duplicada byte-a-byte aqui e em verify-accessibility.ts
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
+export { isVideoUrl }; // #3288: re-exportado pra manter compat com importadores existentes (categorize.ts, testes)
 export type { Article };
 
 export type Category = "lancamento" | "pesquisa" | "noticias" | "tutorial" | "video";
@@ -1062,24 +1064,15 @@ export function isIncrementalReleaseOnThirdPartyBlog(article: Article): boolean 
 // ---------------------------------------------------------------------------
 // Detecção de vídeos — YouTube e Vimeo (#359)
 // ---------------------------------------------------------------------------
-
-/**
- * Retorna true se a URL aponta para um vídeo em plataforma conhecida.
- * Detectado antes de qualquer outra regra no categorize() — vídeos nunca
- * devem cair em `lancamento`, `noticias` ou serem descartados como redes sociais.
- */
-export function isVideoUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    const host = u.hostname.replace(/^www\./, "");
-    if (host === "youtu.be") return true;
-    if (host === "youtube.com" && u.pathname.startsWith("/watch")) return true;
-    if (host === "vimeo.com") return true;
-    return false;
-  } catch {
-    return false;
-  }
-}
+//
+// `isVideoUrl` — detectado antes de qualquer outra regra no categorize() —
+// vídeos nunca devem cair em `lancamento`, `noticias` ou serem descartados
+// como redes sociais. Importado de `./video-youtube-resolve.ts` (#3288):
+// antes vivia aqui como cópia local, duplicada byte-a-byte com a versão de
+// `verify-accessibility.ts`; as duas ficaram desatualizadas quando #3273
+// ampliou só `isYoutubeUrl` (`/live/`, `/shorts/`, `m.youtube.com`) — uma
+// URL `youtube.com/live/{id}` nunca chegava a entrar no bucket `video` aqui,
+// então o fix de 2º estágio do #3273 nunca era exercitado pra esse artigo.
 
 // ---------------------------------------------------------------------------
 // Helpers
