@@ -3,8 +3,8 @@
  *
  * Regressão: `clarice-dashboard` deixa de fazer o fetch pesado de campanhas
  * Brevo (fetchRecentCampaigns/fetchScheduledCampaigns, ~100+ chamadas com
- * cache frio) em REQUEST-TIME. Um Cron Trigger (`scheduled()`, a cada 10min)
- * roda `runCronRefresh` fora do request e grava o resultado em
+ * cache frio) em REQUEST-TIME. Um Cron Trigger (`scheduled()`, a cada 3h —
+ * #3256 subiu de 10min) roda `runCronRefresh` fora do request e grava o resultado em
  * `dash:lastgood:campaigns` (KV) — a rota `/` passa a ler dessa chave por
  * padrão. `?fresh=1` continua fazendo o fetch ao vivo (debug/urgência,
  * decisão do editor #3079).
@@ -35,6 +35,8 @@ import worker, {
   renderDashboardHtml,
   LASTGOOD_CAMPAIGNS_KEY,
   CAMPAIGNS_FETCH_LIMIT,
+  CRON_INTERVAL_HOURS,
+  fmtTimeBRT,
 } from "../workers/brevo-dashboard/src/index.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
 
@@ -241,11 +243,37 @@ describe("renderDashboardHtml — cabeçalho de frescor (#3079)", () => {
     assert.ok(!html.includes("pré-computados"));
   });
 
-  it("dataGeneratedAt antigo (10min — tick típico do cron) → 'Dados pré-computados', com o horário do CRON, nunca 'agora'", () => {
+  it("dataGeneratedAt antigo (10min — além da tolerância de staleness de 5min, #3011; tick real do cron agora é 3h, #3256) → 'Dados pré-computados', com o horário do CRON, nunca 'agora'", () => {
     const generatedAt = new Date(Date.now() - 10 * 60_000).toISOString();
     const html = renderDashboardHtml([], [], null, null, null, null, null, null, generatedAt);
     assert.ok(html.includes("Dados pré-computados"), "wording honesto — não é fetch ao vivo desta request");
     assert.ok(!html.includes("Dados em tempo real"));
+  });
+
+  // #3256: a nota de frescor cita o intervalo do cron (via CRON_INTERVAL_HOURS,
+  // sincronizado manualmente com `crons` em wrangler.toml) e a hora da PRÓXIMA
+  // atualização (dataGeneratedAt + CRON_INTERVAL_HOURS) — pedido do editor pra
+  // não deixar o leitor adivinhar quando esperar dado mais novo.
+  it("#3256 nota de frescor cita ~CRON_INTERVAL_HOURSh e a hora da próxima atualização (dataGeneratedAt + CRON_INTERVAL_HOURS)", () => {
+    const generatedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    const html = renderDashboardHtml([], [], null, null, null, null, null, null, generatedAt);
+    assert.ok(
+      html.includes(`a cada ~${CRON_INTERVAL_HOURS}h`),
+      `deve citar o intervalo atual do cron (~${CRON_INTERVAL_HOURS}h), nunca o valor antigo (~10min)`,
+    );
+    assert.ok(!html.includes("a cada ~10min"), "wording antigo (#3079, pré-#3256) não deve mais aparecer");
+    const expectedNext = fmtTimeBRT(
+      new Date(Date.parse(generatedAt) + CRON_INTERVAL_HOURS * 3_600_000).toISOString(),
+    );
+    assert.ok(
+      html.includes(`próxima: ~${expectedNext} BRT`),
+      "deve mostrar a hora da próxima atualização (dataGeneratedAt + CRON_INTERVAL_HOURS), formatada como as demais horas BRT",
+    );
+  });
+
+  it("#3256 dataGeneratedAt ausente ('Dados em tempo real') → sem nota de 'próxima atualização' (não é dado pré-computado)", () => {
+    const html = renderDashboardHtml([]);
+    assert.ok(!html.includes("próxima:"), "fetch ao vivo não tem 'próximo tick de cron' pra anunciar");
   });
 });
 

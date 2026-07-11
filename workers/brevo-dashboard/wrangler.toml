@@ -36,12 +36,20 @@ preview_id = "2f87d65d735c499ab8f465774d0167e2" # mesma namespace -- ok para dev
 [build]
 command = "npx tsx ../../scripts/generate-worker-tokens.ts"
 
-# #3079: Cron Trigger — roda scheduled() a cada 10min pra pré-computar o fetch
-# pesado de campanhas Brevo (fetchRecentCampaigns/fetchScheduledCampaigns, ~100+
+# #3079: Cron Trigger — roda scheduled() pra pré-computar o fetch pesado de
+# campanhas Brevo (fetchRecentCampaigns/fetchScheduledCampaigns, ~100+
 # chamadas com cache frio) FORA do request-time, gravando em
 # `dash:lastgood:campaigns` (KV). A rota `/` passa a ler dessa chave por padrão;
-# `?fresh=1` bypassa e mantém o fetch ao vivo (debug). Decisão do editor #3079:
-# dado ~10min stale é aceitável, dado o padrão já usado por cohorts/contatos/MV/
-# cupons/É IA? (todos pré-computados via KV). Free tier Cloudflare (até 3 crons).
+# `?fresh=1` bypassa e mantém o fetch ao vivo (debug). Decisão original do
+# editor #3079: dado stale é aceitável, dado o padrão já usado por
+# cohorts/contatos/MV/cupons/É IA? (todos pré-computados via KV). Free tier
+# Cloudflare (até 3 crons).
+#
+# #3256: intervalo revisado de 10min → 3h (editor: 10min era mais frequente do
+# que o necessário pra dado que só é lido, nunca usado pra decisão em tempo
+# real). Se este valor mudar de novo, atualizar TAMBÉM `CRON_INTERVAL_HOURS`
+# em src/types.ts — o Worker não lê `crons` em runtime, então o texto exibido
+# ao editor ("atualizado às X / próxima: ~Y") depende dessa constante ficar em
+# sincronia manual com o valor abaixo.
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["0 */3 * * *"]
