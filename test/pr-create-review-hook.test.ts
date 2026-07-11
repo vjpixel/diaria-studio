@@ -145,14 +145,12 @@ describe("buildReviewInstruction (#2754)", () => {
   });
 });
 
-// #3322: isOvernightRoundActive lida com o disco de verdade (via cwd injetado),
-// não com o hook em si — cobre o schema de plan.json (issues terminais/não-terminais,
-// machine_id cross-machine) isoladamente do resolveEffort acima.
-//
-// Cada caso usa sua PRÓPRIA raiz tmpdir (não uma pasta `data/overnight/` compartilhada
-// com vários dirs AAMMDD): readTodayPlan sempre retorna o dir MAIS RECENTE com
-// issues não-vazio, então reusar uma raiz entre casos faria um plan.json de um
-// teste anterior "vazar" como fallback do caso seguinte.
+// #3322: isOvernightRoundActive lida com o disco de verdade (via repoRoot/machineTag/now
+// injetados), não com o hook em si. O marker é um arquivo dedicado por máquina
+// (`data/overnight/.active-session-{tag}.json`) — não `plan.json` — então cada teste só
+// precisa escrever esse único arquivo, sem se preocupar com "qual dir é mais recente"
+// (a limitação que motivou uma raiz tmpdir isolada por caso na revisão anterior deste
+// teste não existe mais aqui, mas mantemos raízes isoladas por clareza/hermeticidade).
 describe("isOvernightRoundActive (#3322)", () => {
   const roots = [];
 
@@ -166,57 +164,80 @@ describe("isOvernightRoundActive (#3322)", () => {
     return root;
   }
 
-  function writePlan(root, dirName, plan) {
-    const dir = join(root, "data", "overnight", dirName);
+  function writeMarker(root, tag, marker) {
+    const dir = join(root, "data", "overnight");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "plan.json"), JSON.stringify(plan), "utf8");
+    writeFileSync(join(dir, `.active-session-${tag}.json`), JSON.stringify(marker), "utf8");
   }
 
-  it("sem data/overnight/ no disco → false", () => {
-    assert.equal(isOvernightRoundActive(freshRoot(), "host-a"), false);
+  const NOW = Date.parse("2026-07-11T12:00:00.000Z");
+  const ONE_HOUR_MS = 60 * 60 * 1000;
+
+  it("sem marker no disco → false", () => {
+    assert.equal(isOvernightRoundActive(freshRoot(), "host-a", NOW), false);
   });
 
-  it("plan.json com issue não-terminal (elegivel) → true", () => {
+  it("marker fresco (started_at recente) → true", () => {
     const root = freshRoot();
-    writePlan(root, "260710", {
-      machine_id: "host-a",
-      issues: [{ number: 1, status: "elegivel" }],
-    });
-    assert.equal(isOvernightRoundActive(root, "host-a"), true);
+    writeMarker(root, "host-a", { started_at: new Date(NOW - ONE_HOUR_MS).toISOString() });
+    assert.equal(isOvernightRoundActive(root, "host-a", NOW), true);
   });
 
-  it("plan.json com TODAS as issues terminais → false (rodada encerrada)", () => {
+  it("marker de OUTRA máquina (tag diferente no filename) → false, mesmo fresco", () => {
     const root = freshRoot();
-    writePlan(root, "260711", {
-      machine_id: "host-a",
-      issues: [
-        { number: 1, status: "mergeada" },
-        { number: 2, status: "pulada" },
-      ],
-    });
-    assert.equal(isOvernightRoundActive(root, "host-a"), false);
+    writeMarker(root, "host-b", { started_at: new Date(NOW - ONE_HOUR_MS).toISOString() });
+    assert.equal(isOvernightRoundActive(root, "host-a", NOW), false);
   });
 
-  it("plan.json de OUTRA máquina (machine_id diferente) → false, mesmo com issue não-terminal", () => {
+  it("marker mais velho que MAX_SESSION_AGE_MS (24h) → false (round abandonado não fica ativo pra sempre)", () => {
     const root = freshRoot();
-    writePlan(root, "260712", {
-      machine_id: "host-b",
-      issues: [{ number: 1, status: "elegivel" }],
-    });
-    assert.equal(isOvernightRoundActive(root, "host-a"), false);
+    writeMarker(root, "host-a", { started_at: new Date(NOW - 25 * ONE_HOUR_MS).toISOString() });
+    assert.equal(isOvernightRoundActive(root, "host-a", NOW), false);
   });
 
-  it("plan.json sem machine_id (legado) → fail-open, não filtra por máquina", () => {
+  it("marker no limite (23h59) ainda conta como fresco; 24h01 já não conta", () => {
     const root = freshRoot();
-    writePlan(root, "260713", {
-      issues: [{ number: 1, status: "elegivel" }],
-    });
-    assert.equal(isOvernightRoundActive(root, "host-a"), true);
+    writeMarker(root, "host-a", { started_at: new Date(NOW - (24 * ONE_HOUR_MS - 60_000)).toISOString() });
+    assert.equal(isOvernightRoundActive(root, "host-a", NOW), true);
+
+    const root2 = freshRoot();
+    writeMarker(root2, "host-a", { started_at: new Date(NOW - (24 * ONE_HOUR_MS + 60_000)).toISOString() });
+    assert.equal(isOvernightRoundActive(root2, "host-a", NOW), false);
   });
 
-  it("issues vazio → false (readTodayPlan não considera plan sem issues uma rodada real)", () => {
+  it("started_at ausente/malformado → false (nunca finge que está ativo por dado corrompido)", () => {
     const root = freshRoot();
-    writePlan(root, "260714", { machine_id: "host-a", issues: [] });
-    assert.equal(isOvernightRoundActive(root, "host-a"), false);
+    writeMarker(root, "host-a", { started_at: "not-a-real-date" });
+    assert.equal(isOvernightRoundActive(root, "host-a", NOW), false);
+
+    const root2 = freshRoot();
+    writeMarker(root2, "host-a", {});
+    assert.equal(isOvernightRoundActive(root2, "host-a", NOW), false);
+  });
+
+  it("JSON malformado no marker → fail-safe false", () => {
+    const root = freshRoot();
+    const dir = join(root, "data", "overnight");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, ".active-session-host-a.json"), "{not valid json", "utf8");
+    assert.equal(isOvernightRoundActive(root, "host-a", NOW), false);
+  });
+
+  // Regressão direta do bug encontrado na revisão do PR: a versão anterior desta função
+  // resolvia a raiz do repo a partir de `import.meta.url` (localização do PRÓPRIO arquivo
+  // do hook), que aponta pro WORKTREE quando o hook roda de dentro de um worktree
+  // linkado (exatamente o contexto de todo subagente implementador do overnight,
+  // `isolation: "worktree"`) — e o worktree não tem a junction `data/`. A cobertura
+  // dessa regressão específica (via `git rev-parse --git-common-dir` real, dentro de um
+  // worktree real) está fora do escopo de um teste unitário puro (exige um worktree git
+  // de verdade) — foi verificada manualmente durante a revisão deste PR. Este teste cobre
+  // só a metade testável em unidade: `repoRoot` é sempre um parâmetro explícito, nunca
+  // hardcoded, então o caller (produção: `resolveMainRepoRoot()`) é livre de resolver
+  // corretamente sem exigir mudança nesta função.
+  it("repoRoot é sempre parâmetro explícito — não há caminho hardcoded pro checkout principal", () => {
+    const root = freshRoot();
+    writeMarker(root, "any-tag", { started_at: new Date(NOW).toISOString() });
+    assert.equal(isOvernightRoundActive(root, "any-tag", NOW), true);
+    assert.equal(isOvernightRoundActive(freshRoot(), "any-tag", NOW), false);
   });
 });
