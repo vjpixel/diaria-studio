@@ -1,8 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import {
   listNameFor,
   countRows,
@@ -11,7 +11,10 @@ import {
   findExistingConflicts,
   buildPlan,
   loadWaveDefs,
+  groupListsRegistryPath,
+  appendGroupListsRegistry,
   type WaveDef,
+  type GroupListEntry,
 } from "../scripts/clarice-import-waves.ts";
 import { buildSegmentArtifact, type SegmentRow } from "../scripts/clarice-build-segment.ts";
 
@@ -280,6 +283,100 @@ describe("parseArgs", () => {
     const a = parseArgs(["--label", "--execute"]);
     assert.equal(a.label, "edição atual");
     assert.equal(a.execute, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3228 — registro de listas Brevo criadas por grupo nomeado (fecha o gap
+// entre --group --execute e clarice-schedule-group.ts, que precisa resolver
+// "qual lista pertence a este grupo neste ciclo" sem o editor copiar o
+// listId do stdout manualmente).
+// ---------------------------------------------------------------------------
+
+describe("groupListsRegistryPath (#3228)", () => {
+  it("caminho determinístico dentro do segmentsDir", () => {
+    const expected = ["fake", "segments", "ramp-warm-lists.json"].join(sep);
+    assert.ok(
+      groupListsRegistryPath(`${sep}fake${sep}segments`, "ramp-warm").endsWith(expected),
+      `esperado terminar em ${expected}`,
+    );
+  });
+});
+
+describe("appendGroupListsRegistry (#3228)", () => {
+  it("1ª invocação: cria o arquivo com a(s) entrada(s) passada(s)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "group-registry-1st-"));
+    try {
+      const entries: GroupListEntry[] = [
+        { listId: 69, listName: "Clarice Ramp Jul/2026 ramp-warm", count: 6403, importedAt: "2026-07-10T12:00:00.000Z" },
+      ];
+      appendGroupListsRegistry(dir, "2606-07", "ramp-warm", entries);
+
+      const file = groupListsRegistryPath(dir, "ramp-warm");
+      const parsed = JSON.parse(readFileSync(file, "utf8"));
+      assert.equal(parsed.cycle, "2606-07");
+      assert.equal(parsed.group, "ramp-warm");
+      assert.deepEqual(parsed.lists, entries);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("invocações subsequentes ACUMULAM (não sobrescrevem) — caso real: mesmo grupo, 3 budgets diferentes no mesmo ciclo", () => {
+    const dir = mkdtempSync(join(tmpdir(), "group-registry-accum-"));
+    try {
+      appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
+        { listId: 69, listName: "lista 1", count: 6403, importedAt: "2026-07-10T12:00:00.000Z" },
+      ]);
+      appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
+        { listId: 70, listName: "lista 2", count: 7043, importedAt: "2026-07-10T13:00:00.000Z" },
+      ]);
+      appendGroupListsRegistry(dir, "2606-07", "ramp-warm", [
+        { listId: 71, listName: "lista 3", count: 7748, importedAt: "2026-07-10T14:00:00.000Z" },
+      ]);
+
+      const parsed = JSON.parse(readFileSync(groupListsRegistryPath(dir, "ramp-warm"), "utf8"));
+      assert.equal(parsed.lists.length, 3, "as 3 invocações devem se acumular, não sobrescrever");
+      assert.deepEqual(parsed.lists.map((l: GroupListEntry) => l.listId), [69, 70, 71]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("JSON corrompido pré-existente → recomeça do zero (não trava o import)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "group-registry-corrupt-"));
+    try {
+      writeFileSync(groupListsRegistryPath(dir, "engajados"), "{ not json", "utf8");
+      appendGroupListsRegistry(dir, "2606-07", "engajados", [
+        { listId: 5, listName: "lista nova", count: 100, importedAt: "2026-07-10T12:00:00.000Z" },
+      ]);
+      const parsed = JSON.parse(readFileSync(groupListsRegistryPath(dir, "engajados"), "utf8"));
+      assert.equal(parsed.lists.length, 1, "deve conter só a entrada nova, sem lançar por causa do JSON corrompido");
+      assert.equal(parsed.lists[0].listId, 5);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dois grupos diferentes no mesmo ciclo → arquivos separados, sem colisão", () => {
+    const dir = mkdtempSync(join(tmpdir(), "group-registry-two-groups-"));
+    try {
+      appendGroupListsRegistry(dir, "2606-07", "engajados", [
+        { listId: 10, listName: "engajados list", count: 500, importedAt: "2026-07-10T12:00:00.000Z" },
+      ]);
+      appendGroupListsRegistry(dir, "2606-07", "reativacao", [
+        { listId: 20, listName: "reativacao list", count: 300, importedAt: "2026-07-10T12:05:00.000Z" },
+      ]);
+
+      const engajados = JSON.parse(readFileSync(groupListsRegistryPath(dir, "engajados"), "utf8"));
+      const reativacao = JSON.parse(readFileSync(groupListsRegistryPath(dir, "reativacao"), "utf8"));
+      assert.equal(engajados.lists.length, 1);
+      assert.equal(engajados.lists[0].listId, 10);
+      assert.equal(reativacao.lists.length, 1);
+      assert.equal(reativacao.lists[0].listId, 20);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

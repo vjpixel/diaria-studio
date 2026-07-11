@@ -37,6 +37,15 @@
  *   com --group NOME (grupo nomeado, em .../{conteúdo}-{envio}/segments/):
  *     {NOME}-manifest.json + {NOME}.csv (gerados por clarice-build-segment.ts,
  *     #2885/#2916 — mesmo shape do manifest da rampa: key/file/desc).
+ *
+ * Output adicional com --group + --execute (#3228): cada lista Brevo criada é
+ * REGISTRADA (append) em `{ciclo}/segments/{group}-lists.json` — sem isso, o
+ * `listId` retornado pela API só existia no stdout desta invocação, e o script
+ * de agendamento de campanha (`clarice-schedule-group.ts`, #3228) não tinha
+ * como resolver "qual lista Brevo pertence a este grupo neste ciclo" sem o
+ * editor copiar o ID manualmente. `resolveGroupListId` (em
+ * clarice-schedule-group.ts) lê este arquivo via `--group` em vez de exigir
+ * `--list-id` explícito.
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -44,6 +53,7 @@ import { resolve } from "node:path";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoPost, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: brevoListAllLists
+import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceWavesDir, clariceSegmentsDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961 / #2916
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 
@@ -165,6 +175,64 @@ export function findExistingConflicts(
 // #2018: fetchExistingLists triplicada → lib/brevo-client.brevoListAllLists.
 // Alias local pra manter a chamada interna legível sem renomear os call-sites.
 const fetchExistingLists = brevoListAllLists;
+
+// ---------------------------------------------------------------------------
+// Registro de listas Brevo criadas por grupo nomeado (#3228)
+// ---------------------------------------------------------------------------
+//
+// Único por {ciclo}/{group}: acumula UMA entrada por lista criada com sucesso
+// (uma invocação --execute normalmente cria 1 lista — o manifest do grupo tem
+// só 1 entrada, ver clarice-build-segment.ts — mas o mesmo grupo pode ser
+// re-rodado com budgets diferentes, criando VÁRIAS listas ao longo do ciclo;
+// por isso é array, não valor único). Consumido por
+// `clarice-schedule-group.ts` (`resolveGroupListId`) pra casar campanha↔lista
+// sem exigir que o editor copie o listId manualmente do stdout.
+
+export interface GroupListEntry {
+  listId: number;
+  listName: string;
+  count: number;
+  importedAt: string;
+}
+
+export interface GroupListsRegistry {
+  cycle: string;
+  group: string;
+  lists: GroupListEntry[];
+}
+
+/** Caminho do registro (`{ciclo}/segments/{group}-lists.json`). */
+export function groupListsRegistryPath(segmentsDir: string, group: string): string {
+  return resolve(segmentsDir, `${group}-lists.json`);
+}
+
+/**
+ * Acrescenta `newEntries` ao registro do grupo (união — nunca remove/edita
+ * entradas anteriores), escreve atomicamente. Tolerante a arquivo ausente
+ * (1ª vez) ou corrompido (recomeça do zero em vez de travar — mesma postura
+ * de `clarice-build-segment.ts`'s `appendSentOrQueuedEmails`). `segmentsDir`
+ * já existe neste ponto (pré-condição: `{group}-manifest.json` precisa
+ * existir pra `main()` ter chegado até aqui).
+ */
+export function appendGroupListsRegistry(
+  segmentsDir: string,
+  cycle: string,
+  group: string,
+  newEntries: GroupListEntry[],
+): void {
+  const file = groupListsRegistryPath(segmentsDir, group);
+  let existing: GroupListEntry[] = [];
+  if (existsSync(file)) {
+    try {
+      const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<GroupListsRegistry>;
+      if (Array.isArray(parsed.lists)) existing = parsed.lists;
+    } catch {
+      // JSON corrompido — recomeça do zero em vez de travar o import.
+    }
+  }
+  const merged: GroupListsRegistry = { cycle, group, lists: [...existing, ...newEntries] };
+  writeFileAtomic(file, JSON.stringify(merged, null, 2) + "\n");
+}
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -329,6 +397,24 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   }
 
   console.error(`\n✅ ${results.length} listas criadas + imports disparados (assíncronos na Brevo).`);
+
+  // #3228: registra as listas criadas pra este GRUPO (não pra rampa — waves/
+  // não tem o conceito de "campanha ad-hoc por lista", só dNN do plano de
+  // blocos) — sem isso, clarice-schedule-group.ts não teria como resolver
+  // --group NOME pra um listId sem o editor copiar do stdout.
+  if (args.group && results.length > 0) {
+    const now = new Date().toISOString();
+    appendGroupListsRegistry(
+      clariceSegmentsDir(args.cycle),
+      args.cycle,
+      args.group,
+      results.map((r, i) => ({ listId: r.listId, listName: plans[i].listName, count: r.count, importedAt: now })),
+    );
+    console.error(
+      `📝 registrado em ${groupListsRegistryPath(clariceSegmentsDir(args.cycle), args.group)} — ${results.length} lista(s) do grupo '${args.group}'.`,
+    );
+  }
+
   console.log(JSON.stringify({ mode: "execute", folder_id: args.folderId, label: args.label, results }, null, 2));
 }
 
