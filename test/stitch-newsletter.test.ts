@@ -885,7 +885,7 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
       // acceptance #2527: snippet de livros presente → boxDivulgacao1 📚 no HTML final
       const mid = extractBoxDivulgacao1(out);
       assert.ok(mid, "extractBoxDivulgacao1 acha o box");
-      assert.match(mid!, /^📚 A Diar\.ia mantém uma curadoria/);
+      assert.match(mid!, /^📚 A diar\.ia\.br mantém uma curadoria/);
     } finally {
       cleanup();
     }

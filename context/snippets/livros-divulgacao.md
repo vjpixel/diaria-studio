@@ -11,4 +11,4 @@ O bloco 📣 Clarice continua disponível em context/snippets/clarice-divulgacao
 para reuso (ex: mensal, ou troca pontual do callout diário).
 -->
 
-**📚 A Diar.ia mantém uma curadoria de livros sobre IA: cada título com nota da Amazon, resenha e link de compra, e filtros por idioma, nível e tema. Dá pra achar sua próxima leitura em segundos. [Confira a página de livros](https://livros.diaria.workers.dev).**
+**📚 A diar.ia.br mantém uma curadoria de livros sobre IA: cada título com nota da Amazon, resenha e link de compra, e filtros por idioma, nível e tema. Dá pra achar sua próxima leitura em segundos. [Confira a página de livros](https://livros.diaria.workers.dev).**

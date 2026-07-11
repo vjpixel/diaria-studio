@@ -1,4 +1,4 @@
-# Template — Edição Mensal Diar.ia
+# Template — Edição Mensal diar.ia.br
 
 Formato exato do digest mensal. Cada destaque é uma narrativa multi-artigo cobrindo um tema do mês (não um único artigo, como no diário).
 
@@ -164,7 +164,7 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 - Não usar markdown (`**`, `#`, `-`, `_`, `>` etc.) no **corpo** da newsletter (parágrafos, título, "O fio condutor:", itens de Use Melhor/Radar). **Exceção obrigatória (#2794): os labels de seção em si (`**ASSUNTO**`, `**DESTAQUE 1 | TEMA**`, `**INTRO**` etc.) SEMPRE levam `**` — não são "corpo", são o delimitador estrutural que o render usa pra fatiar o draft.** Confundir essa regra e tirar o `**` dos labels foi a causa raiz do ciclo 2606-07 (draft inteiro virou 1 parágrafo, zero imagens).
 - Não incluir texto fora do template.
 - Não adicionar emojis.
-- Não mencionar "Diar.ia" dentro do corpo dos destaques.
+- Não mencionar "diar.ia.br" dentro do corpo dos destaques.
 - Não inventar conexões — só conectar artigos que de fato cobrem o mesmo tema.
 - Não repetir destaques entre temas. Cada artigo de suporte aparece em no máximo um destaque (os que sobram concorrem ao Radar por cliques).
 - Não listar "Para aprofundar" com URLs ao final dos destaques.

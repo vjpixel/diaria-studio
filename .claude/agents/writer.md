@@ -47,7 +47,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
      ---
 
      ```
-   - Formato esperado: `Para esta edição, eu (o editor) enviei X submissões e a Diar.ia encontrou outros Y artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter.`
+   - Formato esperado: `Para esta edição, eu (o editor) enviei X submissões e a diar.ia.br encontrou outros Y artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter.`
    - Se `coverage` ausente do approved.json (regen retroativa, edição antiga), fallback: ler totalSelected do approved e emitir formato com `???` no lugar de Y. **Não inventar** números.
 2. Para cada um dos 3 destaques (d1, d2, d3), compor:
    - **Header em negrito** (#590): formato `**DESTAQUE N | EMOJI CATEGORIA**` (linha completa em bold).
