@@ -45,6 +45,26 @@
  * a cada `npm test`. Fix: mesmo guard de CLI já usado em
  * `scripts/lib/check-watchdog-armed.ts`.
  *
+ * #3353: este módulo tinha o MESMO bug de leitura truncada que o #3264
+ * corrigiu em `readPlanFromDir` (scripts/overnight-statusline.ts) — mas num
+ * SEGUNDO leitor independente do mesmo `plan.json`, que nunca foi atualizado.
+ * O `JSON.parse(readFileSync(...))` cru aqui tratava "arquivo ausente" e
+ * "arquivo existe mas foi lido no meio de uma escrita não-atômica (JSON
+ * truncado)" de forma idêntica: ambos caíam no mesmo `catch` e retornavam de
+ * `main()` ANTES de gravar `stall_events`, emitir o evento no run-log,
+ * renderizar o halt banner ou disparar o alerta Telegram — a notificação de
+ * stall inteira era pulada silenciosamente (só stderr, sem `process.exit(1)`,
+ * sem crash reportável no Task Scheduler). Pior: este mesmo módulo grava
+ * `plan.json` de volta (bloco STALL abaixo) via `writeFileSync` cru — ele
+ * podia ser a própria ORIGEM da janela de truncamento que afeta a leitura
+ * seguinte (sua ou a de `overnight-statusline.ts`). Fix (2 partes): (a) a
+ * leitura agora delega para `readPlanFromDir` (retry síncrono imediato
+ * quando o arquivo existe mas o parse falha — mesma função já usada e
+ * testada pela statusline, evita duas implementações divergentes do mesmo
+ * retry); (b) a escrita agora usa `writeFileAtomic`
+ * (scripts/lib/atomic-write.ts — write-to-temp + fsync + rename atômico),
+ * eliminando esta fonte de truncamento.
+ *
  * Flags:
  *   --dry-run          Apenas diagnóstico; sem writes nem alertas.
  *   --threshold <min>  Override do limiar (default: 60 ou OVERNIGHT_WATCHDOG_STALL_MIN).
@@ -59,7 +79,6 @@
 import {
   existsSync,
   readFileSync,
-  writeFileSync,
   readdirSync,
 } from "node:fs";
 import { resolve, join } from "node:path";
@@ -68,6 +87,8 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { resolveRunLogPath } from "./lib/run-log.ts";
 import { mtimeMs } from "./lib/mtime.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { writeFileAtomic } from "./lib/atomic-write.ts";
+import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts";
 
 // ---------------------------------------------------------------------------
 // Pure / injectable helpers (exported for tests — #633)
@@ -133,6 +154,35 @@ export function isDeduped(
   if (last.resumed_at) return false;
   const lastStallMs = new Date(last.at).getTime();
   return nowMs - lastStallMs < dedupWindowMs;
+}
+
+/**
+ * Lê plan.json no branch de tratamento de stall de `main()`, delegando pra
+ * `readPlanFromDir` (scripts/overnight-statusline.ts) em vez de um
+ * `JSON.parse(readFileSync(...))` cru (#3353 — mesmo bug de leitura truncada
+ * que o #3264 corrigiu no OUTRO leitor do mesmo arquivo).
+ *
+ * `readPlanFromDir` já cobre a distinção entre "arquivo genuinamente
+ * ausente" (null imediato, sem retry) e "arquivo existe mas o parse falhou"
+ * (1 retry síncrono imediato — cobre a janela sub-ms de uma escrita
+ * não-atômica concorrente). Reusar essa função (em vez de reimplementar o
+ * mesmo retry aqui) evita duas versões divergentes da mesma lógica.
+ *
+ * `readers` é injetável (mesmo padrão de `PlanFileReaders` da statusline)
+ * pra permitir testes determinísticos de JSON truncado sem depender de
+ * timing real de I/O concorrente — ver test/overnight-watchdog.test.ts.
+ *
+ * Retorna `PlanJson | null`; o cast é seguro porque `Plan` (statusline) e
+ * `PlanJson` (watchdog) são ambos supersets abertos (`[key: string]:
+ * unknown`) do mesmo documento em disco — só os campos obrigatórios
+ * declarados em cada interface diferem (uso local de cada consumidor).
+ */
+export function readPlanForStallHandling(
+  planPath: string,
+  readers?: PlanFileReaders,
+): PlanJson | null {
+  const plan = readPlanFromDir(planPath, readers);
+  return plan === null ? null : (plan as unknown as PlanJson);
 }
 
 // ---------------------------------------------------------------------------
@@ -503,10 +553,8 @@ async function main(): Promise<void> {
 
   // --- STALL DETECTADO ---
 
-  let plan: PlanJson;
-  try {
-    plan = JSON.parse(readFileSync(planPath, "utf-8")) as PlanJson;
-  } catch {
+  const plan = readPlanForStallHandling(planPath);
+  if (plan === null) {
     process.stderr.write(`[watchdog] Erro ao ler plan.json: ${planPath}\n`);
     return;
   }
@@ -529,9 +577,13 @@ async function main(): Promise<void> {
   };
 
   // (a) Append stall_events no plan.json
+  // #3353: writeFileAtomic (write-to-temp + fsync + rename) em vez de
+  // writeFileSync cru — este módulo era, ele próprio, uma fonte adicional da
+  // race de truncamento que afeta os leitores de plan.json (esta função e
+  // readPlanFromDir/overnight-statusline.ts).
   plan.stall_events = [...(plan.stall_events ?? []), stallEvent];
   try {
-    writeFileSync(planPath, JSON.stringify(plan, null, 2) + "\n", "utf-8");
+    writeFileAtomic(planPath, JSON.stringify(plan, null, 2) + "\n");
   } catch {
     process.stderr.write(`[watchdog] Erro ao gravar stall_event em plan.json.\n`);
   }
