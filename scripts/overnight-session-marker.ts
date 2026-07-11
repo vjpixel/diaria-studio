@@ -35,7 +35,7 @@
  * independentemente, então uma divergência acidental quebra pelo menos um dos
  * dois test files.
  *
- * Uso (chamado pela skill `/diaria-overnight` — Fase 0 passo 1 e Fase 2 passo 1):
+ * Uso (chamado pela skill `/diaria-overnight` — Fase 0 passo 1 e Fase 2 passo 0):
  *   npx tsx scripts/overnight-session-marker.ts --start
  *   npx tsx scripts/overnight-session-marker.ts --end
  */

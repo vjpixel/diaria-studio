@@ -195,6 +195,20 @@ describe("isOvernightRoundActive (#3322)", () => {
     assert.equal(isOvernightRoundActive(root, "host-a", NOW), false);
   });
 
+  // Achado da verificação adversarial pós-redesign: sem o guard `ageMs >= 0`, um
+  // started_at no FUTURO (clock skew, marker corrompido/editado à mão) produz idade
+  // negativa, que passa trivialmente em `<= MAX_SESSION_AGE_MS` — invertendo a
+  // direção de fail-safe (deveria cair pro default caro/max, não pro barato/low).
+  it("marker com started_at no FUTURO → false (clock skew/corrupção não pode virar 'ativo')", () => {
+    const root = freshRoot();
+    writeMarker(root, "host-a", { started_at: new Date(NOW + 10 * ONE_HOUR_MS).toISOString() });
+    assert.equal(isOvernightRoundActive(root, "host-a", NOW), false);
+
+    const rootFarFuture = freshRoot();
+    writeMarker(rootFarFuture, "host-a", { started_at: new Date(NOW + 1000 * 24 * ONE_HOUR_MS).toISOString() }); // ~1000 dias no futuro
+    assert.equal(isOvernightRoundActive(rootFarFuture, "host-a", NOW), false);
+  });
+
   it("marker no limite (23h59) ainda conta como fresco; 24h01 já não conta", () => {
     const root = freshRoot();
     writeMarker(root, "host-a", { started_at: new Date(NOW - (24 * ONE_HOUR_MS - 60_000)).toISOString() });

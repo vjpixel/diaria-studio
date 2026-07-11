@@ -31,7 +31,7 @@
 // fired `low` all night). `isOvernightRoundActive` adds a second, naming-independent
 // signal: a lightweight per-machine marker file written/removed by the
 // `/diaria-overnight` skill itself (`scripts/overnight-session-marker.ts`, Fase 0
-// passo 1 / Fase 2 passo 1) — `data/overnight/.active-session-{machine}.json`.
+// passo 1 / Fase 2 passo 0) — `data/overnight/.active-session-{machine}.json`.
 // Branch prefix is checked FIRST (cheap, no disk/process I/O) as a fast-path; the
 // active-session check is the fallback that makes the gate correct even when
 // naming drifts again.
@@ -116,9 +116,15 @@ function activeSessionPath(repoRoot, tag) {
  * #3322: true quando há uma rodada `/diaria-overnight` genuinamente em progresso
  * NESTA máquina — independe 100% de como o subagente nomeou a branch do PR.
  *
- * Fail-open pra `false` (não força low) em qualquer erro, marker ausente, ou
- * marker mais velho que `MAX_SESSION_AGE_MS` — mesma direção fail-safe do resto
- * do hook: na dúvida, mantém o default mais caro (max), nunca o mais barato.
+ * Fail-open pra `false` (não força low) em qualquer erro, marker ausente,
+ * marker mais velho que `MAX_SESSION_AGE_MS`, OU marker com `started_at` no
+ * FUTURO relativo a `now` (clock skew entre escrita e leitura, ou marker
+ * corrompido/editado à mão) — sem o guard `startedAtMs <= now`, uma idade
+ * negativa passaria trivialmente em `<= MAX_SESSION_AGE_MS`, invertendo a
+ * direção de fail-safe pra exatamente o tipo de estado duvidoso que ela
+ * deveria proteger contra (achado da verificação adversarial do PR #3324).
+ * Mesma direção fail-safe do resto do hook: na dúvida, mantém o default mais
+ * caro (max), nunca o mais barato.
  */
 export function isOvernightRoundActive(
   repoRoot = resolveMainRepoRoot(),
@@ -131,7 +137,8 @@ export function isOvernightRoundActive(
     const marker = JSON.parse(readFileSync(markerPath, "utf8"));
     const startedAtMs = Date.parse(marker.started_at);
     if (!Number.isFinite(startedAtMs)) return false;
-    return now - startedAtMs <= MAX_SESSION_AGE_MS;
+    const ageMs = now - startedAtMs;
+    return ageMs >= 0 && ageMs <= MAX_SESSION_AGE_MS;
   } catch {
     return false;
   }
