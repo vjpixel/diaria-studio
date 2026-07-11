@@ -149,10 +149,6 @@ export interface EiaEngagementSummary {
   updated_at: string | null;
 }
 
-// #2733: TTL do cache de campanhas cruas (LASTGOOD_CAMPAIGNS_KEY). 1h — a janela
-// de rate-limit da Brevo cabe folgada.
-export const LASTGOOD_TTL = 3600;
-
 /**
  * #3256: cadência do Cron Trigger que pré-computa `dash:lastgood:campaigns`
  * (`scheduled()` em index.ts / `runCronRefresh` em brevo-api.ts). Revisão do
@@ -167,3 +163,16 @@ export const LASTGOOD_TTL = 3600;
  * lugares — nenhum teste consegue pegar a divergência automaticamente.
  */
 export const CRON_INTERVAL_HOURS = 3;
+
+// #2733/#3352: TTL do cache de campanhas cruas (LASTGOOD_CAMPAIGNS_KEY) —
+// precisa cobrir folgadamente o intervalo entre ticks do Cron Trigger
+// (CRON_INTERVAL_HOURS), senão existe uma janela em que a chave KV expira
+// ANTES do próximo tick regravá-la, e qualquer request no meio cai no
+// fallback de fetch ao vivo (~100+ chamadas Brevo — exatamente o custo que a
+// pré-computação existe pra evitar, #3079). Derivado de CRON_INTERVAL_HOURS
+// (nunca hardcoded em paralelo) pra não desalinhar de novo: o cron subiu de
+// 10min pra 3h no #3256 mas este valor ficou parado em 1h (3600s), abrindo
+// uma janela de ~2h por ciclo sem cache — só descoberto depois (#3352).
+// Margem de +1h sobre o intervalo do cron absorve atraso/retry do próprio
+// Cron Trigger sem reintroduzir a janela.
+export const LASTGOOD_TTL = (CRON_INTERVAL_HOURS + 1) * 3600;
