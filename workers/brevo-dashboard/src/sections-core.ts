@@ -442,6 +442,11 @@ ${monthlyAbcSectionsByDate}
     --rule: ${DS.rule};
     --hair: ${DS.rule};
     --alert: ${DS.alert};
+    /* #3323: variante de --brand escurecida SÓ pra este dashboard — não é
+       token canônico do DS (não entra em design-tokens.ts). Existe unicamente
+       pra td.metric passar AA em texto pequeno sem cair pra --ink puro. Ver
+       comentário completo na regra td.metric abaixo. */
+    --metric-teal: #007A7A;
   }
   body { font-family: ${DSF.sans}; max-width: 1200px; margin: 30px auto; padding: 0 20px; background: var(--paper); color: var(--ink); }
   h1 { font-size: 1.6rem; margin: 0 0 4px 0; color: var(--ink); }
@@ -480,29 +485,26 @@ ${monthlyAbcSectionsByDate}
   .table-wrap th:first-child { position: sticky; left: 0; z-index: 3; background: var(--paper-alt); }
   /* #2104: borda do th era --rule (#EBE5D0) sobre fundo --paper-alt (#EBE5D0) → invisível.
      Substituída por ink (#171411) com 18% opacity — visível no DS claro sem ser pesada. */
-  /* #3088: valores numéricos de destaque (td.metric) voltam a --ink — teal
-     (--brand, #00A0A0) mede ~3.2:1 sobre --card, abaixo do mínimo AA (4.5:1)
-     pra texto normal nesse tamanho (14.4px/600, não é "large text"). O
-     negrito + mono/tabular-nums (ver regra acima) já diferencia visualmente
-     do texto comum sem depender de cor. Teal fica reservado a elementos
-     GRÁFICOS (links, barra de progresso, estado ativo de abas — 3:1 é
-     aceitável pra esses por SC 1.4.11, não pra texto).
+  /* #3088: valores numéricos de destaque (td.metric) tinham ido pra --ink —
+     teal original (--brand, #00A0A0) media ~3.2:1 sobre --card, abaixo do
+     mínimo AA (4.5:1) pra texto normal nesse tamanho (14.4px/600, não é
+     "large text"). Teal fica reservado a elementos GRÁFICOS (links, barra de
+     progresso, estado ativo de abas — 3:1 é aceitável pra esses por SC
+     1.4.11, não pra texto).
 
-     #3323 (investigado, NÃO revertido): editor reportou "números da Visão
-     Geral ficaram pretos" e pediu reverter pra cor anterior. Achado: a cor
-     "anterior" É o teal acima — removido de propósito por #3087-3091 (PR
-     #3139, contraste documentado na tabela do PR body: teal mede 3.08-3.21:1
-     nos 3 fundos do DS, sempre abaixo de AA). Não é regressão de CSS nem
-     efeito colateral de dark-mode (este dashboard não tem tema escuro — só
-     um :root com os tokens claros do DS, fixos, ver DS.paper/DS.ink no topo
-     desta função). Reverter reintroduziria uma falha de acessibilidade já fechada
-     via 5 issues — e contrariaria a paleta canônica do DS ("texto é SEMPRE
-     ink — hierarquia vem de tamanho/peso, não de cor", ver
-     scripts/lib/shared/design-tokens.ts). Decisão: manter --ink; se o editor
-     quiser recuperar alguma distinção visual, o caminho é uma variante de
-     teal MAIS ESCURA que passe AA (ex: ~#007A7A mede ~5.16:1 sobre branco),
-     não o teal original — mudança de paleta fora do escopo deste fix. */
-  td.metric { font-weight: 600; color: var(--ink); }
+     #3323 (investigado, resolvido com nova cor — não é revert nem --ink puro):
+     editor reportou "números da Visão Geral ficaram pretos" e pediu recuperar
+     alguma distinção visual. O --brand original (#00A0A0) segue inviável (ver
+     acima). Fix: --metric-teal (#007A7A, definida no :root acima) — variante
+     ESCURECIDA de --brand, mede ~5.17:1 sobre --card (branco), passa AA com
+     folga confortável. É um token LOCAL deste dashboard, não canônico do DS
+     (não entra em design-tokens.ts) — ponderado e descartado ajustar --ink
+     globalmente pra abrir uma faixa de teal viável nos 2 extremos claro/escuro
+     simultaneamente: exigiria luminância do --ink ≤0.0019 (hoje 0.0072,
+     ~4x mais escuro que o #171411 atual, praticamente preto puro) — mudança
+     de identidade de marca (--ink é usado em toda newsletter diária/mensal,
+     web e e-mail), desproporcional a uma célula de dashboard interno. */
+  td.metric { font-weight: 600; color: var(--metric-teal); }
   td.alert { font-weight: 600; color: var(--alert); }
   td.alert small, td.alert .rate-inline { color: var(--alert); opacity: 1; }
   .alert-label { font-weight: 600; color: var(--alert); }

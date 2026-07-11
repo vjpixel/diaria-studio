@@ -96,12 +96,19 @@ test("#3087: renderWeeklyPlanTabPanel usa o STATUS_COLOR consolidado (não uma c
 // #3088 — teal (--brand) fora de elementos gráficos vira --ink
 // ---------------------------------------------------------------------------
 
-test("#3088: td.metric usa --ink, não --brand (teal falha AA em texto pequeno)", () => {
+test("#3323: td.metric usa --metric-teal (teal escurecido AA-safe), não --brand nem --ink puro", () => {
   const html = renderDashboardHtml([]);
   const styleBlock = html.match(/<style>[\s\S]*?<\/style>/)?.[0] ?? "";
   const rule = styleBlock.match(/(?<!\.links-table )td\.metric\s*\{[^}]*\}/)?.[0] ?? "";
-  assert.match(rule, /color:\s*var\(--ink\)/, "td.metric deve usar --ink (#3088)");
-  assert.doesNotMatch(rule, /color:\s*var\(--brand\)/, "td.metric NÃO deve mais usar --brand (#3088)");
+  assert.match(rule, /color:\s*var\(--metric-teal\)/, "td.metric deve usar --metric-teal (#3323)");
+  assert.doesNotMatch(rule, /color:\s*var\(--brand\)/, "td.metric NÃO deve usar --brand (#3088, teal original falha AA)");
+  assert.doesNotMatch(rule, /color:\s*var\(--ink\)\s*;/, "td.metric NÃO deve mais usar --ink puro (#3323)");
+});
+
+test("#3323: --metric-teal está definida no :root como #007A7A (~5.17:1 sobre --card, passa AA)", () => {
+  const html = renderDashboardHtml([]);
+  const rootBlock = html.match(/:root\s*\{[^}]*\}/)?.[0] ?? "";
+  assert.match(rootBlock, /--metric-teal:\s*#007A7A;/i, "--metric-teal deve ser #007A7A (#3323)");
 });
 
 test("#3088: .links-table td.link-clicks usa --ink, não --brand", () => {
