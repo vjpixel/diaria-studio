@@ -1175,18 +1175,36 @@ export function processInlineItalics(s: string): string {
 /**
  * Escape pra HTML body text — combina `unescapeMd` (remove backslash do MD)
  * + `esc` (HTML entities) + `processInlineItalics` (#1364 — `*x*` → `<em>x</em>`)
+ * + `applyInlineBold` (#3301 — `**x**` → `<strong>x</strong>`)
  * + word-joiner anti-linkify (#2008 — "Clarice.ai" em texto puro)
  * + wordmark da marca (#2532 — `Diar.ia` → `diar.ia.br` teal).
- * Ordem: unescape → esc → italics → word-joiner → wordmark. Os 2 últimos rodam
- * pós-esc (injetam HTML cru de propósito). Usar em conteúdo editorial destinado
- * a `<p>` de corpo; NÃO em URLs nem em atributos (`alt=`/`title=`) — o output
- * contém `<span>`/`<wbr>` não-escapados que quebrariam o atributo.
+ * Ordem: unescape → esc → italics → bold → word-joiner → wordmark. Os 2
+ * últimos rodam pós-esc (injetam HTML cru de propósito). Usar em conteúdo
+ * editorial destinado a `<p>` de corpo; NÃO em URLs nem em atributos
+ * (`alt=`/`title=`) — o output contém `<span>`/`<wbr>` não-escapados que
+ * quebrariam o atributo.
+ *
+ * #3301: antes, `**bold**` solto (sem link por perto) sobrevivia literal no
+ * corpo de destaque — `escText` (via `renderBodyInline`/`renderWhyBoxInner`/
+ * `renderCoverage`) nunca chamava `applyInlineBold`, diferente de
+ * `processInlineLinks` (callouts/boxes), que sempre aplica bold aos
+ * segmentos de texto. O template (`context/templates/newsletter.md`) e o
+ * humanizador (`context/publishers/humanizador-rubric.md`) proíbem `**` fora
+ * de headers/títulos — então isso não deveria ocorrer no fluxo normal — mas
+ * nenhum lint estrutural garante isso linha a linha (só checam trailing
+ * spaces/frontmatter/section headers/contagem de bold-link nesting, ver
+ * `lint-humanized-output.ts`); um `**` solto que escapasse dessas checagens
+ * violaria "Output final sem markdown" (CLAUDE.md) sem este fix. `**` roda
+ * ANTES do italic seria equivalente aqui (a regex de italic já exclui `**`
+ * via lookaround `(?<!\*)...(?!\*)`, e a de bold exige o par completo
+ * `**...**` sem `*` interno) — ordem escolhida (italic primeiro) só pra
+ * manter o comentário de ordem acima estável.
  */
 function escText(s: string): string {
   // #2008: word-joiner aplicado via applyWordJoiner (declarado acima) — análogo
   // ao monthly-render.ts renderTextInline (commit 1ec81b0).
   // #2532: wordmark da marca aplicado por último (já pós-esc — injeta <span> raw).
-  return applyBrandWordmark(applyWordJoiner(processInlineItalics(esc(unescapeMd(s)))));
+  return applyBrandWordmark(applyWordJoiner(applyInlineBold(processInlineItalics(esc(unescapeMd(s))))));
 }
 
 /**
@@ -1290,6 +1308,19 @@ function countDoubleAsterisk(str: string): number {
  */
 function isUnpairedBoldMarker(adjacentText: string): boolean {
   return countDoubleAsterisk(adjacentText) % 2 === 0;
+}
+
+/**
+ * #3302: o LABEL de um link (`m[1]` cru, antes de esc/applyInlineBold) é
+ * inteiramente envolto em `**...**`, sem `**` interno (`**Título**`, não
+ * `**A**B**`)? Espelha o predicado `fullBold` já usado em
+ * `renderIntroCallout` (linha ~397) para o mesmo formato. Usado só para
+ * decidir se o wrap externo de bold-link deve ser omitido (o label já sai
+ * `<strong>` via `applyInlineBold` dentro de `inlineLinkHtml`) — não afeta
+ * se os `**` externos são CONSUMIDOS (isso continua governado por `boldLink`).
+ */
+function isLabelFullyBold(label: string): boolean {
+  return /^\*\*[^*][\s\S]*\*\*$/.test(label) && !label.slice(2, -2).includes("**");
 }
 
 /**
@@ -1415,7 +1446,16 @@ function tokenizeInline(
     }
     if (textBefore.length > 0) parts.push(onText(textBefore));
     const linkHtml = onLink(m[1], url);
-    parts.push(boldLink ? `<strong>${linkHtml}</strong>` : linkHtml);
+    // #3302: quando o LABEL do link já é inteiramente bold (`**[**Título**](url)**`),
+    // `onLink` (via `inlineLinkHtml`/`applyInlineBold`) já envolve o texto em
+    // `<strong>` — sem este guard, o wrap externo do bold-link (`boldLink`
+    // acima) duplicava o `<strong>` (`<strong><a><strong>Título</strong></a></strong>`).
+    // Markup redundante mas não quebrava visualmente; o guard evita a duplicação
+    // sem alterar a lógica de CONSUMO dos `**` externos (`lastIdx`/`linkStart.lastIndex`
+    // abaixo seguem baseados em `boldLink`, não em `wrapBold` — os `**` externos
+    // continuam sendo estruturalmente reconhecidos como bold-wrap do link).
+    const wrapBold = boldLink && !isLabelFullyBold(m[1]);
+    parts.push(wrapBold ? `<strong>${linkHtml}</strong>` : linkHtml);
     lastIdx = boldLink ? j + 3 : j + 1;
     linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
   }
