@@ -16,13 +16,25 @@
 //      only emits the instruction when one is present (skips `--help`, etc.).
 //
 // Output: a PostToolUse `additionalContext` payload instructing Claude to run
-// the effort-aware /code-review on the new PR. Effort is branch-aware (#2754):
-// `overnight/*` branches get `low` (token-optimized — the overnight skill's own
-// subagent already does an adversarial self-review pass per unit; a second full
-// multi-agent `max` review on top was double-paying for depth on low-risk P3
-// hardening PRs, the single biggest token sink observed in the 260630 session).
-// Everything else (develop/manual PRs) keeps `max` — speed matters more than
-// token count there, and `max` doesn't cost wall-clock time, just tokens.
+// the effort-aware /code-review on the new PR.
+//
+// #3326 (260711): default effort is `low` for EVERY PR, period — not just
+// `overnight/*` (#2754) or active-round branches (#3322). The editor opts
+// INTO more depth explicitly (e.g. "roda um code-review max nisso") instead
+// of the hook silently paying for the full multi-agent fleet (5+5 finder
+// angles + verify + sweep) on every PR by default. Trigger: PR #3324 (a
+// manual/develop branch, no overnight signal) resolved `max` under the old
+// rule and burned ~1.5M tokens reviewing a ~250-line diff — real bugs found,
+// but that depth shouldn't be the automatic floor for routine PRs.
+// This inverts the #2754 direction, which kept `max` as the default and
+// only downgraded overnight-signaled branches to `low`. Post-#3326, the
+// branch-prefix (#2754) and active-round-guard (#3322) checks below no
+// longer change the resolved *effort* in the non-error path (it's `low`
+// either way) — they still matter for the naming-drift `warning` (#3322:
+// flags when an active overnight round's branch skipped the `overnight/*`
+// convention). `max` survives only as the fail-safe for genuinely unknown
+// state (gh unavailable, PR number unparseable, active-round check
+// throwing) — see resolveEffort below.
 // Never throws / never exits non-zero, so it can't block the Bash tool.
 //
 // #3322: branch-prefix alone is NOT the primary signal anymore — it's a fragile
@@ -123,8 +135,16 @@ function activeSessionPath(repoRoot, tag) {
  * negativa passaria trivialmente em `<= MAX_SESSION_AGE_MS`, invertendo a
  * direção de fail-safe pra exatamente o tipo de estado duvidoso que ela
  * deveria proteger contra (achado da verificação adversarial do PR #3324).
- * Mesma direção fail-safe do resto do hook: na dúvida, mantém o default mais
- * caro (max), nunca o mais barato.
+ * Na dúvida, não afirma que uma rodada está ativa — nunca finge certeza sobre
+ * um marker ausente/expirado/corrompido.
+ *
+ * #3326: essa direção de fail-safe já não controla mais o effort resolvido em
+ * `resolveEffort` (o default geral virou `low`, com ou sem rodada ativa) —
+ * antes de #3326, `false` aqui empurrava o caller pro fallback `max`; hoje só
+ * decide se o `warning` de naming divergente (#3322) é anexado ou não. Manter
+ * o fail-open pra `false` continua correto pelo motivo original (não afirmar
+ * "ativa" sobre estado duvidoso), só que o motivo já não é mais "isso barra o
+ * desconto de effort".
  */
 export function isOvernightRoundActive(
   repoRoot = resolveMainRepoRoot(),
@@ -149,18 +169,32 @@ export function isOvernightRoundActive(
  * `execFn` é injetável (default = execFileSync real) pra ser testável sem gh live.
  * `checkRoundActive` é injetável (default = isOvernightRoundActive real) pra ser
  * testável sem tocar `data/overnight/` no disco real.
- * Fail-safe: qualquer erro (gh indisponível, PR não encontrado, timeout) → "max".
+ *
+ * #3326: default é `low` — inclusive no caminho "sem sinal nenhum" (sem prefixo
+ * `overnight/*`, sem rodada ativa) que antes caía em `max` (#2754). O editor
+ * escala pra `max` pedindo explicitamente; o hook não paga o fleet completo
+ * (5+5 ângulos + verify + sweep) por padrão em toda PR manual/develop.
+ *
+ * Fail-safe: em estado genuinamente indeterminado — gh indisponível, PR sem
+ * número reconhecível na URL, `checkRoundActive` lançando erro — mantém `max`.
+ * Isso NÃO é mais "o default geral com um desconto pra overnight" (#3326 já
+ * inverteu isso); é uma escolha deliberada e independente: quando o hook não
+ * consegue nem determinar o que está revisando, erra pro lado mais caro em vez
+ * de conceder o mais barato silenciosamente sobre um estado desconhecido.
  *
  * Retorna `{ effort, warning }`: `warning` é `null` no caminho feliz, ou uma nota
- * (#3322 direção 3) quando o effort só resolveu `low` via o guard de sessão ativa
- * — ou seja, a branch NÃO seguiu a convenção `overnight/*` (#3321) mesmo com uma
- * rodada ativa. O guard já corrige o effort sozinho; o warning só torna essa
- * divergência de naming visível ao coordenador em vez de passar em silêncio (era
- * justamente o silêncio do fallback antigo que atrasou a detecção do #3321).
+ * (#3322 direção 3) quando a branch NÃO seguiu a convenção `overnight/*` (#3321)
+ * apesar de uma rodada ativa nesta máquina. Desde #3326 esse guard não muda mais
+ * o `effort` resolvido (já é `low` por padrão de qualquer forma) — o warning
+ * continua útil por si só: torna a divergência de naming visível ao coordenador
+ * em vez de passar em silêncio (era justamente esse silêncio que atrasou a
+ * detecção do #3321).
  */
 export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = isOvernightRoundActive) {
   try {
     const num = prUrl.match(/\/pull\/(\d+)/)?.[1];
+    // fail-safe: sem número de PR nem dá pra chamar `gh` — estado indeterminado,
+    // mantém max (#3326: única sobra do max fora do fail-safe de erro).
     if (!num) return { effort: "max", warning: null };
     const branch = execFn(
       "gh",
@@ -175,13 +209,20 @@ export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = i
           `branch "${branch}" não usa o prefixo overnight/ apesar de uma sessão ` +
           "overnight ativa nesta máquina (data/overnight/.active-session-*.json) — " +
           "SKILL.md diaria-overnight (Fase 1, passo 2) deveria ter instruído esse " +
-          "prefixo no dispatch do subagente implementador (#3321). Effort resolvido " +
-          "como low via guard de sessão ativa (#3322), não pelo naming da branch.",
+          "prefixo no dispatch do subagente implementador (#3321). Effort já seria " +
+          "low pelo default geral (#3326) de qualquer forma — este warning é só " +
+          "sobre o naming divergente, não sobre o effort resolvido.",
       };
     }
-    return { effort: "max", warning: null };
+    // #3326: default geral — sem sinal de overnight/rodada-ativa, ainda assim low.
+    // O editor escala pra max explicitamente quando quiser mais profundidade.
+    return { effort: "low", warning: null };
   } catch {
-    return { effort: "max", warning: null }; // fail-safe: estado desconhecido → mantém o default mais caro.
+    // fail-safe: estado desconhecido (gh indisponível, timeout, checkRoundActive
+    // lançando erro) → mantém o default mais caro. Não é mais "o default geral
+    // com desconto pra overnight" (#3326 inverteu isso) — é uma escolha deliberada
+    // e independente pra quando o hook não consegue nem determinar o que revisar.
+    return { effort: "max", warning: null };
   }
 }
 
@@ -189,7 +230,7 @@ export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = i
 export function buildReviewInstruction(prUrl, effort, warning = null) {
   const effortNote =
     effort === "low"
-      ? "at LOW effort (overnight branch — token-optimized; fewer, high-confidence findings only)"
+      ? "at LOW effort (#3326 default — token-optimized; fewer, high-confidence findings only; ask for max explicitly for deeper review)"
       : "at ULTRACODE / maximum effort: the full multi-agent review (many finder angles -> verify -> sweep, recall mode)";
   const warningNote = warning ? ` [aviso: ${warning}]` : "";
   return (
