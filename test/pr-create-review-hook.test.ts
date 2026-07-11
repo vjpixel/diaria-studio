@@ -9,10 +9,16 @@ import {
   isOvernightRoundActive,
 } from "../.claude/hooks/pr-create-review.mjs";
 
-// #2754: overnight (token-sensitive) usa /code-review low; develop/manual
-// (velocidade > tokens) mantém max. Regressão do PR que introduziu essa
-// branch-detection — sem isso, todo PR (inclusive overnight/*) volta a pagar
-// o custo do review multi-agente max por cima do self-review interno da skill.
+// #2754/#3322/#3326: overnight (token-sensitive) sempre resolveu /code-review
+// low via branch-prefix (#2754) ou guard de sessão ativa (#3322). #3326
+// (260711) estendeu esse `low` pra default GERAL — develop/manual não guarda
+// mais `max` como fallback quando não há sinal de overnight; o editor escala
+// pra `max` pedindo explicitamente. `max` sobra só como fail-safe de estado
+// indeterminado (gh indisponível, PR sem número reconhecível na URL,
+// checkRoundActive lançando erro) — não mais como "o default geral".
+// Regressão do PR que introduziu a branch-detection original — sem isso, todo
+// PR (inclusive overnight/*) voltaria a pagar o custo do review multi-agente
+// max por cima do self-review interno da skill.
 //
 // Todos os testes de resolveEffort injetam `checkRoundActive: () => false`
 // explicitamente — sem isso, o default real (isOvernightRoundActive) leria
@@ -36,17 +42,20 @@ describe("resolveEffort (#2754)", () => {
     assert.equal(result.effort, "low");
   });
 
-  it("branch develop/fix-1234, sem rodada ativa → max", () => {
+  // #3326: default geral virou low — develop/manual sem sinal de overnight não
+  // guarda mais o fallback max daqui.
+  it("branch develop/fix-1234, sem rodada ativa → low (#3326 default geral)", () => {
     const execFn = () => "develop/fix-1234\n";
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
-    assert.equal(result.effort, "max");
+    assert.equal(result.effort, "low");
     assert.equal(result.warning, null);
   });
 
-  it("branch sem prefixo especial (manual), sem rodada ativa → max", () => {
+  it("branch sem prefixo especial (manual), sem rodada ativa → low (#3326 default geral)", () => {
     const execFn = () => "fix-something\n";
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
-    assert.equal(result.effort, "max");
+    assert.equal(result.effort, "low");
+    assert.equal(result.warning, null);
   });
 
   it("gh indisponível/erro → fail-safe max", () => {
@@ -69,10 +78,18 @@ describe("resolveEffort (#2754)", () => {
     assert.equal(called, false, "não deveria invocar gh sem número de PR");
   });
 
-  it("branch com substring 'overnight' mas não como prefixo, sem rodada ativa → max (evita false-positive)", () => {
+  // #3326: com noActiveRound, tanto o match correto (não-prefixo) quanto um
+  // hipotético false-positive no `startsWith` resolveriam "low" (default geral
+  // agora), então esse cenário sozinho não distingue mais os dois casos. Usar
+  // activeRound + checar o `warning` (só presente no caminho correto, que NÃO
+  // deu match no prefixo) é o jeito que continua pegando a regressão: um
+  // false-positive no `startsWith` faria o early-return `{effort:"low",
+  // warning:null}` disparar ANTES do checkRoundActive, engolindo o warning.
+  it("branch com substring 'overnight' mas não como prefixo, com rodada ativa → low COM warning (evita false-positive no startsWith)", () => {
     const execFn = () => "feature/overnight-related-refactor\n";
-    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
-    assert.equal(result.effort, "max");
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
+    assert.equal(result.effort, "low");
+    assert.match(result.warning, /não usa o prefixo overnight\//);
   });
 
   // #3322: guard determinístico independente de naming — regressão direta do
@@ -94,14 +111,21 @@ describe("resolveEffort (#2754)", () => {
       assert.equal(result.warning, null);
     });
 
-    it("branch sem prefixo + SEM rodada ativa → max (guard não força low fora de rodada overnight)", () => {
+    // #3326: agora idêntico ao default geral (não é mais o guard quem resolve
+    // isso) — sem prefixo overnight/ e sem rodada ativa cai direto no fallback
+    // "low" de resolveEffort, sem passar pelo warning branch do guard.
+    it("branch sem prefixo + SEM rodada ativa → low (#3326 default geral, não é o guard quem resolve)", () => {
       const execFn = () => "fix-something\n";
       const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
-      assert.equal(result.effort, "max");
+      assert.equal(result.effort, "low");
       assert.equal(result.warning, null);
     });
 
-    it("checkRoundActive lançando erro → fail-safe max (mesma direção do resto do hook)", () => {
+    // #3326: max sobrevive só como fail-safe de estado indeterminado — não mais
+    // "a mesma direção do default geral" (que agora é low). checkRoundActive
+    // lançando erro é capturado pelo catch-all de resolveEffort, que mantém max
+    // deliberadamente mesmo com low sendo o default em todo o resto.
+    it("checkRoundActive lançando erro → fail-safe max (única sobra do max fora do estado normal)", () => {
       const execFn = () => "fix-something\n";
       const throwingCheck = () => {
         throw new Error("disco indisponível");
@@ -113,11 +137,15 @@ describe("resolveEffort (#2754)", () => {
 });
 
 describe("buildReviewInstruction (#2754)", () => {
-  it("effort=low menciona LOW effort e branch overnight", () => {
+  // #3326: "low" agora é o default geral (não só overnight), então o texto não
+  // deve mais alegar "overnight branch" — isso enganaria o coordenador numa PR
+  // manual/develop comum que resolveu low pelo novo default.
+  it("effort=low menciona LOW effort e #3326 (não mais 'overnight branch')", () => {
     const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low");
     assert.match(msg, /\/code-review low --comment/);
     assert.match(msg, /LOW effort/);
-    assert.match(msg, /overnight branch/);
+    assert.match(msg, /#3326/);
+    assert.doesNotMatch(msg, /overnight branch/);
   });
 
   it("effort=max menciona ULTRACODE / maximum effort", () => {
@@ -198,7 +226,10 @@ describe("isOvernightRoundActive (#3322)", () => {
   // Achado da verificação adversarial pós-redesign: sem o guard `ageMs >= 0`, um
   // started_at no FUTURO (clock skew, marker corrompido/editado à mão) produz idade
   // negativa, que passa trivialmente em `<= MAX_SESSION_AGE_MS` — invertendo a
-  // direção de fail-safe (deveria cair pro default caro/max, não pro barato/low).
+  // direção de fail-safe (deveria cair em "não confirmado como ativo", não fingir
+  // certeza sobre um marker corrompido — #3326: essa direção nunca foi sobre
+  // low/max diretamente, é sobre não afirmar "rodada ativa" com dado duvidoso;
+  // o efeito em max/low mudou desde #3326, mas essa direção da função não).
   it("marker com started_at no FUTURO → false (clock skew/corrupção não pode virar 'ativo')", () => {
     const root = freshRoot();
     writeMarker(root, "host-a", { started_at: new Date(NOW + 10 * ONE_HOUR_MS).toISOString() });
