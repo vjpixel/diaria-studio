@@ -7,19 +7,21 @@ O Claude Code usa o conector Gmail MCP da claude.ai para ler e-mails. Esse conec
 `scripts/inbox-drain.ts` busca, na própria conta autenticada (`vjpixel@gmail.com`), os e-mails que o **editor mandou para** `diariaeditor@gmail.com`:
 
 ```
-gmailQuery: "in:sent to:diariaeditor@gmail.com"
+gmailQuery: "in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}"
 ```
+
+**#3362 — os dois formatos (com/sem ponto) funcionam.** Gmail ignora pontos na *entrega* (`diariaeditor@gmail.com` e `diaria.editor@gmail.com` caem na mesma caixa), mas o operador de busca `to:` faz correspondência **literal** — não normaliza pontos. A query default usa `{ }` (OR do Gmail search) pra cobrir os dois formatos explicitamente; antes do #3362 só o formato sem ponto era capturado, e >2 meses de submissões pro formato com ponto foram perdidas silenciosamente.
 
 **Por que isso funciona sem nenhum setup do lado de `diariaeditor@gmail.com`:** o editor sempre tem uma cópia de qualquer e-mail que mandou na própria pasta Enviados (`Sent`) de `vjpixel@gmail.com`. Não há forward, filtro ou label nenhum no caminho — a única dependência é o Gmail MCP estar autenticado com a conta pessoal do editor, o que já é o caso para o resto do fluxo (draft de posts, leitura de threads, etc).
 
 ### Como enviar uma submissão
 
-Simplesmente mande um e-mail (ou encaminhe um artigo/newsletter) de `vjpixel@gmail.com` para `diariaeditor@gmail.com`, com o(s) link(s) no corpo. Na próxima drenagem (`/diaria-inbox` ou automaticamente no Stage 1 de `/diaria-1-pesquisa` / `/diaria-edicao`), a submissão é capturada.
+Simplesmente mande um e-mail (ou encaminhe um artigo/newsletter) de `vjpixel@gmail.com` para `diariaeditor@gmail.com` **ou** `diaria.editor@gmail.com` (com ponto — os dois formatos funcionam desde #3362), com o(s) link(s) no corpo. Na próxima drenagem (`/diaria-inbox` ou automaticamente no Stage 1 de `/diaria-1-pesquisa` / `/diaria-edicao`), a submissão é capturada.
 
 ### Setup
 
 1. Confirmar que o Gmail MCP na claude.ai está autenticado com `vjpixel@gmail.com` (`/mcp` no Claude Code deve listar `claude.ai Gmail`).
-2. Confirmar `platform.config.json > inbox.enabled: true`. `gmailQuery` pode ficar omitido (usa o default `in:sent to:diariaeditor@gmail.com`) ou setado explicitamente.
+2. Confirmar `platform.config.json > inbox.enabled: true`. `gmailQuery` pode ficar omitido (usa o default `in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}`) ou setado explicitamente.
 3. Nada a configurar em `diariaeditor@gmail.com` — a conta nem precisa ter forwarding, filtro ou label.
 
 ### Validar
@@ -107,5 +109,5 @@ Mais robusto mas exige mais setup: app password + script `node-imap` próprio, s
 
 - **`skipped: true, reason: "gmail_mcp_error"`** → Gmail MCP desconectado. `/mcp` no Claude Code pra reautenticar.
 - **`skipped: true, reason: "auth_expired"`** → OAuth Google expirado/revogado. Rodar `npx tsx scripts/oauth-setup.ts` e depois `/diaria-inbox` pra recuperar submissões que ficaram sem drenar.
-- **`new_entries: 0` inesperado** → confirme que o e-mail foi mesmo enviado de `vjpixel@gmail.com` para `diariaeditor@gmail.com` (busque `in:sent to:diariaeditor@gmail.com` direto na UI do Gmail). Se aparecer lá mas não em `data/inbox.md`, confira o cursor em `data/inbox-cursor.json` (`last_drain_iso`) — e-mails mais antigos que o cursor são ignorados por design.
-- **Migrando de Opção A (label) pra busca direta** → basta remover (ou deixar de setar) `gmailQuery` custom em `platform.config.json`; o default já é `in:sent to:diariaeditor@gmail.com`. O label antigo pode ficar (não atrapalha) ou ser removido manualmente no Gmail.
+- **`new_entries: 0` inesperado** → confirme que o e-mail foi mesmo enviado de `vjpixel@gmail.com` para `diariaeditor@gmail.com` ou `diaria.editor@gmail.com` (busque `in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}` direto na UI do Gmail). Se aparecer lá mas não em `data/inbox.md`, confira o cursor em `data/inbox-cursor.json` (`last_drain_iso`) — e-mails mais antigos que o cursor são ignorados por design.
+- **Migrando de Opção A (label) pra busca direta** → basta remover (ou deixar de setar) `gmailQuery` custom em `platform.config.json`; o default já é `in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}`. O label antigo pode ficar (não atrapalha) ou ser removido manualmente no Gmail.

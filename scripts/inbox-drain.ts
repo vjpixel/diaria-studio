@@ -13,7 +13,7 @@
  *
  * Configuração em platform.config.json:
  *   inbox.enabled       (default: true)
- *   inbox.gmailQuery    (default: "in:sent to:diariaeditor@gmail.com")
+ *   inbox.gmailQuery    (default: "in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}")
  *
  * #3217: a query busca DIRETO na pasta Enviados da própria conta autenticada
  * (vjpixel@gmail.com) por e-mails endereçados a diariaeditor@gmail.com — o
@@ -23,6 +23,13 @@
  * que dependia de um forward diariaeditor@ → vjpixel@ que se mostrou frágil
  * e quebrou silenciosamente (#3199, #3215). Decisão do editor (260710): sem
  * fallback de label — a busca em Sent é o único caminho.
+ *
+ * #3362: Gmail IGNORA pontos na entrega (diariaeditor@ e diaria.editor@
+ * caem na mesma caixa), mas o operador `to:` de busca faz correspondência
+ * LITERAL no header — não normaliza pontos. Descoberto que o editor mandava
+ * pra ambos os formatos e só um era capturado (>2 meses de submissões pro
+ * formato com ponto nunca entraram em data/inbox.md). A query default usa
+ * `{ }` (OR do Gmail search) pra cobrir os 2 formatos.
  *
  * Cursor: data/inbox-cursor.json  — { last_drain_iso: "2026-04-17T14:22:00Z" | null }
  * Credenciais: data/.credentials.json (gerado por scripts/oauth-setup.ts)
@@ -558,7 +565,9 @@ async function main(rootDir: string = ROOT): Promise<void> {
   // #3217: default troca de label:Diaria.Editor (dependia de forward+filtro
   // frágil em diariaeditor@gmail.com) pra busca direta em Sent na própria
   // conta autenticada — o editor sempre tem uma cópia do que mandou lá.
-  const gmailQuery = config.inbox?.gmailQuery ?? "in:sent to:diariaeditor@gmail.com";
+  // #3362: `{ }` = OR no Gmail search — cobre os 2 formatos (com/sem ponto),
+  // já que `to:` não normaliza pontos como a entrega normaliza (ver docstring).
+  const gmailQuery = config.inbox?.gmailQuery ?? "in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}";
 
   if (!inboxEnabled) {
     const result: DrainResult = {

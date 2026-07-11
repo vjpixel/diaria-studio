@@ -574,7 +574,7 @@ describe("inbox-drain main() integration (#306)", () => {
     assert.equal(fetchCalled, false, "Gmail API must not be called when inbox is disabled");
   });
 
-  it("#3217: query default (gmailQuery omitido) é 'in:sent to:diariaeditor@gmail.com'", async () => {
+  it("#3362: query default (gmailQuery omitido) cobre os 2 formatos (com/sem ponto)", async () => {
     // Remove gmailQuery do config → main() deve cair no default novo, não em label:.
     const config = JSON.parse(savedConfig ?? "{}");
     config.inbox = { ...(config.inbox ?? {}) };
@@ -598,8 +598,66 @@ describe("inbox-drain main() integration (#306)", () => {
 
     await runDrain();
     assert.ok(capturedQuery, "query deve ter sido capturada");
-    assert.ok(capturedQuery!.startsWith("in:sent to:diariaeditor@gmail.com"), `query default incorreta: ${capturedQuery}`);
+    assert.ok(
+      capturedQuery!.startsWith("in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}"),
+      `query default incorreta: ${capturedQuery}`,
+    );
     assert.ok(!capturedQuery!.includes("label:"), "query default não deve mais usar label:");
+  });
+
+  it("#3362: mensagem endereçada a diaria.editor@gmail.com (COM ponto) é parseada em entrada de inbox", async () => {
+    // Regressão do bug real: Gmail entrega diariaeditor@ e diaria.editor@ na
+    // mesma caixa (ignora pontos), mas o operador `to:` de busca não
+    // normaliza pontos — sem o `{ }` OR na query, mensagens endereçadas ao
+    // formato COM ponto nunca eram encontradas (perdido por >2 meses em prod).
+    const config = JSON.parse(savedConfig ?? "{}");
+    config.inbox = {
+      ...(config.inbox ?? {}),
+      gmailQuery: "in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}",
+    };
+    writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+
+    writeFileSync(CURSOR_PATH, JSON.stringify({
+      last_drain_iso: "2026-07-07T00:00:00Z",
+      consecutive_empty_drains: 0,
+    }), "utf8");
+
+    const bodyText = "Confira https://openai.com/academy/prompting-com-ponto";
+    const b64 = Buffer.from(bodyText).toString("base64")
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/threads") && !u.includes("/threads/")) {
+        return makeGmailResponse({ threads: [{ id: "tdotted", snippet: "x" }] });
+      }
+      if (u.includes("/threads/tdotted")) {
+        return makeGmailResponse({
+          id: "tdotted",
+          messages: [{
+            id: "m1",
+            internalDate: String(new Date("2026-07-08T11:00:00Z").getTime()),
+            payload: {
+              mimeType: "text/plain",
+              body: { data: b64 },
+              headers: [
+                { name: "From", value: "vjpixel@gmail.com" },
+                { name: "Subject", value: "Pick do dia (ponto)" },
+                { name: "To", value: "diaria.editor@gmail.com" },
+              ],
+            },
+          }],
+        });
+      }
+      return makeGmailResponse({});
+    };
+
+    const output = await runDrain();
+    assert.equal(output.new_entries, 1, "mensagem endereçada ao formato com ponto deve virar 1 entrada");
+    assert.ok(
+      output.urls.some((u) => u.url === "https://openai.com/academy/prompting-com-ponto"),
+      "URL do e-mail (formato com ponto) deve aparecer em output.urls",
+    );
   });
 
   it("#3217: mensagem encontrada via in:sent to:diariaeditor@gmail.com é parseada em entrada de inbox", async () => {
