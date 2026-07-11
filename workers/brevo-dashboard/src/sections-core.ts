@@ -248,8 +248,16 @@ export function renderDashboardHtml(
   // sentido calcular quando o payload é de fato pré-computado (dataGeneratedAt
   // presente) — pedido do editor #3256 pra deixar claro quando esperar dado
   // mais fresco sem precisar saber de cor a cadência do cron.
-  const nextUpdateLabel = dataGeneratedAt != null
-    ? fmtTimeBRT(new Date(Date.parse(dataGeneratedAt) + CRON_INTERVAL_HOURS * 3_600_000).toISOString())
+  // #3349: `Date.parse` retorna NaN pra string não-parseável (ex: KV corrompido
+  // — index.ts só valida `typeof === "string"`, não que seja data válida) e
+  // `new Date(NaN).toISOString()` LANÇA RangeError antes mesmo de fmtTimeBRT (que
+  // já tem guard próprio) ser chamado — derrubava a dashboard inteira com 502.
+  // `Number.isFinite` guarda o parse, mesmo padrão de shouldShowStalenessNote
+  // (staleness.ts) e fmtTimeBRT (render-links.ts) neste mesmo módulo: degrada
+  // pra `null` (nota omitida) em vez de lançar.
+  const parsedGeneratedAtMs = dataGeneratedAt != null ? Date.parse(dataGeneratedAt) : NaN;
+  const nextUpdateLabel = Number.isFinite(parsedGeneratedAtMs)
+    ? fmtTimeBRT(new Date(parsedGeneratedAtMs + CRON_INTERVAL_HOURS * 3_600_000).toISOString())
     : null;
   const dataFreshnessLine = dataIsPrecomputed
     ? `Dados pré-computados a cada ~${CRON_INTERVAL_HOURS}h (Cron Trigger) — atualizado às ${dataFreshnessTimeLabel} BRT (próxima: ~${nextUpdateLabel} BRT).`

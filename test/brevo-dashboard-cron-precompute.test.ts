@@ -36,6 +36,7 @@ import worker, {
   LASTGOOD_CAMPAIGNS_KEY,
   CAMPAIGNS_FETCH_LIMIT,
   CRON_INTERVAL_HOURS,
+  LASTGOOD_TTL,
   fmtTimeBRT,
 } from "../workers/brevo-dashboard/src/index.ts";
 import { withFetchSpy } from "./_helpers/with-fetch-spy.ts";
@@ -151,6 +152,30 @@ describe("CAMPAIGNS_FETCH_LIMIT — nunca deve exceder o teto real da Brevo (inc
         `qualquer valor acima disso faz /v3/emailCampaigns retornar 400 "out_of_range" e derruba ` +
         `a dashboard inteira (sem fallback gracioso, ver incidente 260710). Confirme o teto real ` +
         `contra a API antes de subir este valor de novo.`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3352: o cron subiu de 10min pra 3h no #3256 (CRON_INTERVAL_HOURS), mas
+// LASTGOOD_TTL (TTL da chave dash:lastgood:campaigns, gravada pelo cron) ficou
+// parado em 3600s (1h) — desalinhado do #3256 em diante. Com cron a cada 3h e
+// TTL de 1h, existe uma janela de ~2h por ciclo em que a chave está AUSENTE e
+// qualquer request nessa janela cai no fallback de fetch ao vivo (~100+
+// chamadas Brevo — exatamente o custo que a pré-computação existe pra evitar,
+// #3079). Assert ESTRUTURAL (não só o valor atual) pra pegar qualquer futura
+// mudança de CRON_INTERVAL_HOURS que não venha acompanhada do ajuste em
+// LASTGOOD_TTL.
+// ---------------------------------------------------------------------------
+describe("LASTGOOD_TTL — nunca deve ficar abaixo do intervalo do Cron Trigger (#3352)", () => {
+  it("LASTGOOD_TTL >= CRON_INTERVAL_HOURS * 3600 (senão há janela sem cache entre ticks do cron)", () => {
+    assert.ok(
+      LASTGOOD_TTL >= CRON_INTERVAL_HOURS * 3_600,
+      `LASTGOOD_TTL=${LASTGOOD_TTL}s deve ser >= CRON_INTERVAL_HOURS(${CRON_INTERVAL_HOURS}h)*3600s=` +
+        `${CRON_INTERVAL_HOURS * 3_600}s — senão a chave dash:lastgood:campaigns expira ANTES do ` +
+        `próximo tick do cron regravá-la, abrindo uma janela onde qualquer request cai no fallback ` +
+        `de fetch ao vivo (~100+ chamadas Brevo, #3079). Se CRON_INTERVAL_HOURS mudar de novo, ` +
+        `LASTGOOD_TTL (types.ts) precisa ser derivado dele, nunca hardcoded em paralelo.`,
     );
   });
 });
@@ -274,6 +299,27 @@ describe("renderDashboardHtml — cabeçalho de frescor (#3079)", () => {
   it("#3256 dataGeneratedAt ausente ('Dados em tempo real') → sem nota de 'próxima atualização' (não é dado pré-computado)", () => {
     const html = renderDashboardHtml([]);
     assert.ok(!html.includes("próxima:"), "fetch ao vivo não tem 'próximo tick de cron' pra anunciar");
+  });
+
+  // -------------------------------------------------------------------------
+  // #3349: `Date.parse(dataGeneratedAt)` pode retornar NaN se o valor vindo do
+  // KV não for uma data parseável (KV corrompido — edição manual durante
+  // debug, ou regressão futura em outro writer; `index.ts` só valida
+  // `typeof lastGood.generatedAt === "string"`, não que seja uma data válida).
+  // `new Date(NaN).toISOString()` LANÇA RangeError antes mesmo de `fmtTimeBRT`
+  // (que já tem guard `isNaN` interno) ser chamado — derrubava a dashboard
+  // inteira com 502 "Dashboard error" (degradava TODAS as seções, não só a
+  // nota de frescor).
+  // -------------------------------------------------------------------------
+  it("#3349 dataGeneratedAt malformado (string não-vazia, não-ISO) → NÃO lança, degrada graciosamente", () => {
+    assert.doesNotThrow(() => {
+      renderDashboardHtml([], [], null, null, null, null, null, null, "not-a-real-date");
+    }, "renderDashboardHtml não deve lançar RangeError quando dataGeneratedAt é uma string não-parseável como data");
+    const html = renderDashboardHtml([], [], null, null, null, null, null, null, "not-a-real-date");
+    assert.ok(
+      !html.includes("próxima:"),
+      "dado malformado não deve fingir calcular 'próxima atualização' a partir de uma data inválida",
+    );
   });
 });
 
