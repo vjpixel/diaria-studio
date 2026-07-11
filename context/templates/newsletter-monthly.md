@@ -18,7 +18,7 @@ Formato exato do digest mensal. Cada destaque é uma narrativa multi-artigo cobr
 
 Esta é a newsletter mensal da [Clarice](https://clarice.ai/?via=diaria), em parceria com a diar.ia.br: uma curadoria para você entender, em poucos minutos, o que mudou no mundo da IA.
 
-Se você quiser receber essa newsletter com prioridade, responda a este e-mail dizendo "quero". Se quiser receber notícias de IA todos os dias, se cadastre gratuitamente [aqui](https://diaria.beehiiv.com).
+Se você quiser receber essa newsletter com prioridade, responda a este e-mail dizendo "quero". Se quiser receber tutoriais e notícias de IA todos os dias, se cadastre gratuitamente [aqui](https://diaria.beehiiv.com).
 
 Você está recebendo esse e-mail porque se cadastrou na [Clarice](https://clarice.ai/?via=diaria). Caso não queira receber a newsletter, pode se [descadastrar aqui]({{ unsubscribe }}).
 
