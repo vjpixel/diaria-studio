@@ -188,6 +188,70 @@ export function capitalizeFirstLetter(text: string): string {
 }
 
 /**
+ * Conta ocorrências NÃO sobrepostas de `**` numa string (avança 2 posições a
+ * cada match — "****" conta como 2, não 3). Espelha `countDoubleAsterisk` de
+ * `../newsletter-render-html.ts` (#3299 — porta o merge bold+link do
+ * #3220/#3280/#3284/#3316 pra cá). Duplicado em vez de importado: a mensal
+ * mantém seu parser markdown self-contained (ver
+ * `docs/render-unification-analysis-3269.md` §2.3 — extrair o scanner de
+ * baixo nível pro shared/ é candidato Tier 1 de baixo risco mas não
+ * obrigatório; o objetivo aqui é fechar o bug, não a unificação).
+ */
+function countDoubleAsterisk(str: string): number {
+  let count = 0;
+  let idx = str.indexOf("**");
+  while (idx !== -1) {
+    count++;
+    idx = str.indexOf("**", idx + 2);
+  }
+  return count;
+}
+
+/**
+ * O `**` candidato (adjacente a um link) é um marcador genuinamente
+ * desemparelhado no texto adjacente — livre pra fundir com o link — ou já
+ * está auto-pareado ali (não deve fundir)? Contagem PAR de `**` em
+ * `adjacentText` = tudo já pareado, o candidato está livre; ÍMPAR = sobra um
+ * marcador anterior sem par, que consome o candidato. Espelha
+ * `isUnpairedBoldMarker` de `../newsletter-render-html.ts` (#3280) — ver lá a
+ * explicação completa da heurística.
+ */
+function isUnpairedBoldMarker(adjacentText: string): boolean {
+  return countDoubleAsterisk(adjacentText) % 2 === 0;
+}
+
+/**
+ * Índice do próximo `[label](url)` VÁLIDO (URL não-vazia, parênteses
+ * balanceados) a partir de `from`. Espelha `nextLinkStartIndex` de
+ * `../newsletter-render-html.ts` (#3280 code-review) — usado só pra delimitar
+ * o texto conector entre 2 links ao decidir a paridade de `**` (#3284/#3316:
+ * sem isso, 2+ links bold-wrapped consecutivos no mesmo parágrafo paravam de
+ * fundir). Retorna `str.length` se não houver mais links válidos.
+ */
+function nextLinkStartIndex(str: string, from: number): number {
+  const rest = str.slice(from);
+  const linkStart = /\[([^\]]+)\]\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = linkStart.exec(rest)) !== null) {
+    const destStart = m.index + m[0].length;
+    let depth = 0;
+    let j = destStart;
+    for (; j < rest.length; j++) {
+      const ch = rest[j];
+      if (ch === "(") depth++;
+      else if (ch === ")") {
+        if (depth === 0) break;
+        depth--;
+      }
+    }
+    if (j >= rest.length) continue; // sem `)` de fechamento — não é link válido
+    if (j > destStart) return from + m.index; // URL não-vazia
+    linkStart.lastIndex = j + 1;
+  }
+  return str.length;
+}
+
+/**
  * Converts [text](url) markdown links to <a> tags; o texto AO REDOR dos links
  * ganha bold/italic via renderTextInline. (O rótulo do link em si — `m[1]` — é
  * só escapado, sem bold/italic, igual à diária.)
@@ -197,6 +261,16 @@ export function capitalizeFirstLetter(text: string): string {
  * o link no PRIMEIRO `)`, então uma URL com parênteses — ex: um PDF da Clarice
  * `.../arquivo%20(1).pdf` — truncava o href e vazava `.pdf)` como texto puro.
  * Mesmo bug que o #1634 corrigiu na diária; a mensal nunca tinha recebido o fix.
+ *
+ * #3299: `**[label](url)**` (negrito envolvendo um link) fundia SEM checar se
+ * os `**` já estavam auto-pareados no texto adjacente — `renderTextInline`
+ * só casa `**...**` DENTRO do mesmo segmento de texto, e o link quebra o
+ * texto em 2 segmentos, cada um com um `**` órfão sem par que vazava literal
+ * no HTML final. Porta o merge bold+link do #3220/#3280/#3284/#3316 (diária,
+ * `tokenizeInline`): só funde quando os DOIS lados têm um `**` genuinamente
+ * desemparelhado colado ao link (não quando o `**` já fecha/abre um bold
+ * independente que só encosta no link por acidente, nem quando um dos 2+
+ * links consecutivos bold-wrapped "rouba" o `**` de fechamento do anterior).
  */
 export function renderInline(text: string): string {
   // Pre-strip backslash escapes ANTES do escHtml — assim `\&` vira `&` que então
@@ -226,12 +300,36 @@ export function renderInline(text: string): string {
       linkStart.lastIndex = j + 1;
       continue;
     }
-    if (m.index > lastIdx) parts.push(renderTextInline(input.substring(lastIdx, m.index)));
-    parts.push(
-      `<a href="${escHtml(normalizeKnownUrl(url))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtml(m[1])}</a>`,
-    );
-    lastIdx = j + 1;
-    linkStart.lastIndex = j + 1; // retoma a busca após o link consumido
+
+    // #3299: `**` colado ao link (dos 2 lados) só funde quando genuinamente
+    // desemparelhado no texto adjacente — ver docstring da função acima.
+    let textBefore = input.substring(lastIdx, m.index);
+    const hasOpenBold =
+      textBefore.endsWith("**") &&
+      isUnpairedBoldMarker(textBefore.slice(0, -2));
+    let hasCloseBold = false;
+    if (input.startsWith("**", j + 1)) {
+      const closeBoundary = nextLinkStartIndex(input, j + 3);
+      let closeAdjacent = input.substring(j + 3, closeBoundary);
+      if (
+        closeBoundary < input.length &&
+        closeAdjacent.endsWith("**") &&
+        !isUnpairedBoldMarker(closeAdjacent)
+      ) {
+        closeAdjacent = closeAdjacent.slice(0, -2);
+      }
+      hasCloseBold = isUnpairedBoldMarker(closeAdjacent);
+    }
+    const boldLink = hasOpenBold && hasCloseBold;
+    if (boldLink) {
+      textBefore = textBefore.slice(0, -2);
+    }
+
+    if (textBefore.length > 0) parts.push(renderTextInline(textBefore));
+    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtml(m[1])}</a>`;
+    parts.push(boldLink ? `<strong>${linkHtml}</strong>` : linkHtml);
+    lastIdx = boldLink ? j + 3 : j + 1;
+    linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
   }
   if (lastIdx < input.length) parts.push(renderTextInline(input.substring(lastIdx)));
   return parts.join("");
