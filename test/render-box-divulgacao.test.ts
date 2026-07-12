@@ -89,3 +89,32 @@ Estou testando a Alexa+ há alguns dias e a diferença é grande.
     assert.match(html, /cdn\.example\.com\/livros\.jpg/, "box de 1 link mantém a imagem");
   });
 });
+
+describe("renderBoxDivulgacao — peso de fonte do box só-texto (#3372)", () => {
+  const box = "🙋🏼‍♀️ Apoie a curadoria. [Conheça](https://apoia.se/diaria).";
+
+  it("default (sem 3º arg) preserva o visual histórico: font-weight:600", () => {
+    const html = renderBoxDivulgacao(box);
+    assert.match(html, /font-weight:600/);
+    assert.ok(!html.includes("font-weight:400"));
+  });
+
+  it("bold=true explícito: font-weight:600", () => {
+    const html = renderBoxDivulgacao(box, null, true);
+    assert.match(html, /font-weight:600/);
+  });
+
+  it("bold=false: font-weight:400, sem afetar o resto do conteúdo", () => {
+    const html = renderBoxDivulgacao(box, null, false);
+    assert.match(html, /font-weight:400/);
+    assert.ok(!html.includes("font-weight:600"));
+    assert.match(html, /apoia\.se\/diaria/, "conteúdo do box preservado");
+  });
+
+  it("bold não afeta o path com CTA pill (🛒) — irrelevante pra estrutura título+corpo", () => {
+    const cartBox = "🛒 Compre agora\n\n[Ver oferta](https://link.amazon/x)";
+    const boldHtml = renderBoxDivulgacao(cartBox, null, true);
+    const noBoldHtml = renderBoxDivulgacao(cartBox, null, false);
+    assert.equal(boldHtml, noBoldHtml, "path carrinho ignora o parâmetro bold");
+  });
+});
