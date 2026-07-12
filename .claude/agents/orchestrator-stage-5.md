@@ -302,7 +302,16 @@ npx tsx scripts/render-social-html.ts \
   --images {EDITION_DIR}/06-public-images.json
 ```
 
-Publicar via `Artifact` (#3214 — mesmo mecanismo do Stage 4 §4b step 3, chamado aqui de novo pra refletir qualquer resolucao de URL que so existe pos-dispatch, ex: `{edition_url}`). Resume-aware: ler URL ja persistida em `05-social-preview.json` e passar via `url` do tool pra atualizar o MESMO artifact em vez de mintar um novo:
+**Mesmo problema de CSP do Stage 4 §4b step 3 (#3214 + descoberto 260712)** — Artifacts bloqueiam imagem remota, gerar variante embutida antes de publicar:
+```bash
+npx tsx scripts/embed-images-base64.ts \
+  --html {EDITION_DIR}/_internal/social-preview.html \
+  --images {EDITION_DIR}/06-public-images.json \
+  --edition-dir {EDITION_DIR} \
+  --out {EDITION_DIR}/_internal/social-preview-embedded.html
+```
+
+Publicar via `Artifact` (#3214 — mesmo mecanismo do Stage 4 §4b step 3, chamado aqui de novo pra refletir qualquer resolucao de URL que so existe pos-dispatch, ex: `{edition_url}`), a partir de `social-preview-embedded.html` (nunca `social-preview.html` direto). Resume-aware: ler URL ja persistida em `05-social-preview.json` e passar via `url` do tool pra atualizar o MESMO artifact em vez de mintar um novo:
 
 ```bash
 node -e "
@@ -315,12 +324,16 @@ node -e "
 "
 ```
 
-`Artifact` com `file_path: "{EDITION_DIR}/_internal/social-preview.html"` + `url` (se a leitura acima imprimiu algo) + `description`/`favicon` iguais aos usados no Stage 4. Persistir a URL retornada:
+`Artifact` com `file_path: "{EDITION_DIR}/_internal/social-preview-embedded.html"` + `url` (se a leitura acima imprimiu algo) + `description`/`favicon` iguais aos usados no Stage 4. Persistir a URL retornada (`node -e` puro — `npx tsx -e` com `import` de `upload-html-public.ts` falha silenciosamente, ver nota no Stage 4 §4b step 2b):
 
 ```bash
-npx tsx -e "
-  import { persistFieldToJsonFile } from './scripts/upload-html-public.ts';
-  persistFieldToJsonFile('{EDITION_DIR}/_internal/05-social-preview.json', 'social_preview_url', '{social_url}');
+node -e "
+  const fs = require('fs');
+  const p = '{EDITION_DIR}/_internal/05-social-preview.json';
+  let j = {};
+  if (fs.existsSync(p)) { try { j = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {} }
+  j.social_preview_url = '{social_url}';
+  fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
 "
 ```
 
