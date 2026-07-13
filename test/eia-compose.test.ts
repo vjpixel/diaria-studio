@@ -741,6 +741,28 @@ describe("buildCreditLine — trunca nota de uso verbosa em artist.text (#3367)"
       `credit não deve ter nome de artista vazio: ${credit}`,
     );
   });
+
+  it("#3390: texto começando com '.' sem outro ponto de corte seguro não deixa pontuação solta isolada no crédito", () => {
+    const image = {
+      description: { text: "A photograph." },
+      artist: {
+        text:
+          ". Some malformed text without a leading name, just a long run-on " +
+          "sentence with no safe cut point anywhere near the start of the string.",
+      },
+    };
+    const credit = buildCreditLine(image);
+    // O "." solto do início do texto malformado não deve sobreviver como
+    // token isolado no crédito publicado (ex: "— . Some malformed...").
+    assert.ok(
+      !credit.includes("— ."),
+      `credit não deve ter "." solto logo após o traço: ${credit}`,
+    );
+    // O nome de artista publicado deve começar direto pela primeira palavra
+    // real (sem "." isolado antes), confirmando que o token sobrevivente do
+    // fallback de 6 palavras é "Some", não ".".
+    assert.match(credit, /— Some malformed text without a/);
+  });
 });
 
 describe("tokenizeImageTitle (#284)", () => {
