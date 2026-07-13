@@ -83,9 +83,12 @@ test("renderContactsSummarySection: sem priority_points_histogram (KV pré-#2731
 });
 
 test("renderContactsSummarySection: com priority_points_histogram → valores exatos, ordenados DESC (#2731)", () => {
+  // #3415: "35" (não "80") — valores ≥40 agora agrupam na linha "40+" (ver
+  // describe abaixo); este teste cobre só a ordenação DESC entre valores
+  // ABAIXO do corte, que continua inalterada.
   const withHistogram: ContactsSummary = {
     ...sample,
-    priority_points_histogram: { "-3": 2, "0": 427520, "15": 40, "80": 3, null: 12 },
+    priority_points_histogram: { "-3": 2, "0": 427520, "15": 40, "35": 3, null: 12 },
   };
   const html = renderContactsSummarySection(withHistogram);
   assert.match(html, /valor exato/, "cabeçalho do histograma novo presente");
@@ -94,13 +97,68 @@ test("renderContactsSummarySection: com priority_points_histogram → valores ex
   // Ordem: maior valor primeiro (fila de re-envio, #2731 — comentário do editor).
   // #2805: a linha 0 pode carregar o breakdown de 1º envio no mesmo <td> — o
   // localizador usa regex (>0< ou >0 <span…) em vez de string fixa.
-  const idx80 = html.indexOf(">80<");
+  const idx35 = html.indexOf(">35<");
   const idx15 = html.indexOf(">15<");
   const idx0 = html.search(/<td>0[< ]/);
   const idxNeg3 = html.indexOf(">-3<");
   const idxNull = html.indexOf("sem pontuação");
-  assert.ok(idx80 < idx15 && idx15 < idx0 && idx0 < idxNeg3, "ordem numérica DESC: 80 > 15 > 0 > -3");
+  assert.ok(idx35 < idx15 && idx15 < idx0 && idx0 < idxNeg3, "ordem numérica DESC: 35 > 15 > 0 > -3");
   assert.ok(idxNeg3 < idxNull, "'sem pontuação' (null) vai por último, depois do menor valor numérico");
+});
+
+// ---------------------------------------------------------------------------
+// #3415 — valores exatos ≥40 juntam numa única linha "40+" (cauda comprida de
+// scores altos, cada um com poucos contatos, inflava a tabela)
+// ---------------------------------------------------------------------------
+
+test("renderContactsSummarySection: scores ≥40 juntam numa linha '40+', somando os counts (#3415)", () => {
+  const withHigh: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 427520, "15": 40, "40": 3, "80": 2, "120": 1 },
+  };
+  const html = renderContactsSummarySection(withHigh);
+  assert.match(html, /<td>40\+<\/td><td[^>]*>6<\/td>/, "linha 40+ com contagem somada (3+2+1=6)");
+  assert.doesNotMatch(html, /<td>40<\/td>/, "valor exato 40 não aparece mais como linha própria");
+  assert.doesNotMatch(html, /<td>80<\/td>/, "valor exato 80 não aparece mais como linha própria");
+  assert.doesNotMatch(html, /<td>120<\/td>/, "valor exato 120 não aparece mais como linha própria");
+  const idx40Plus = html.indexOf(">40+<");
+  const idx15 = html.indexOf(">15<");
+  assert.ok(idx40Plus > -1 && idx15 > -1 && idx40Plus < idx15, "40+ vem antes das faixas abaixo de 40 (maior score primeiro)");
+});
+
+test("renderContactsSummarySection: '40+' soma também elegíveis/verified/Brevo dos valores agrupados (#3415)", () => {
+  const withHighAllCols: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "0": 400, "40": 10, "80": 5 },
+    priority_points_histogram_eligible: { "0": 380, "40": 9, "80": 4 },
+    priority_points_histogram_verified: { "0": 90, "40": 6, "80": 1 },
+    priority_points_histogram_brevo: { "0": 29, "40": 3, "80": 1 },
+  };
+  const html = renderContactsSummarySection(withHighAllCols);
+  const row = html.match(/<tr><td>40\+<\/td>([\s\S]*?)<\/tr>/)?.[1];
+  assert.ok(row, "linha 40+ capturável");
+  assert.match(row!, /<td[^>]*>15<\/td>/, "contatos somados (10+5=15)");
+  assert.match(row!, /<td[^>]*>13<\/td>/, "elegíveis somados (9+4=13)");
+  assert.match(row!, /<td[^>]*>7<\/td>/, "verified somado (6+1=7)");
+  assert.match(row!, /<td[^>]*>4<\/td>/, "Brevo somado (3+1=4)");
+});
+
+test("renderContactsSummarySection: sem valores ≥40 → sem linha '40+' (#3415)", () => {
+  const html = renderContactsSummarySection({
+    ...sample,
+    priority_points_histogram: { "0": 427520, "15": 40, "-3": 2 },
+  });
+  assert.doesNotMatch(html, /40\+/, "linha 40+ não aparece quando não há valores ≥40");
+});
+
+test("renderContactsSummarySection: linha Total continua somando TODOS os valores, mesmo agrupados em 40+ (#3415)", () => {
+  const html = renderContactsSummarySection({
+    ...sample,
+    priority_points_histogram: { "0": 400, "15": 40, "40": 3, "80": 2 },
+  });
+  const totalRowMatch = html.match(/<tr class="total-row"><td>Total<\/td>([\s\S]*?)<\/tr>/);
+  assert.ok(totalRowMatch, "linha Total capturável");
+  assert.match(totalRowMatch![1], />445</, "total = 400+40+3+2 = 445, independente do agrupamento 40+");
 });
 
 test("renderContactsSummarySection: tabela 'Por tier'/'Por safra' não existe — histograma de priority_points é PURO (#2880)", () => {
