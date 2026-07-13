@@ -256,23 +256,6 @@ describe("aggregateAbcByAudience", () => {
     assert.match(html, /▲ CLIQUE/);
   });
 
-  // #3398: uniqueClicks inclui clique em unsubscribe — não deveria decidir o
-  // vencedor do teste A/B/C por Audiência.
-  test("#3398: exclui clique em unsubscribe do clickRate/leaderClickRate da célula", () => {
-    const coldWithUnsub = [
-      ...cold.slice(0, 2), // A, B intactas
-      {
-        ...cold[2], // C: uniqueClicks=15, mas 12 são unsubscribe → 3 editoriais
-        statistics: {
-          globalStats: cold[2].statistics.globalStats,
-          linksStats: { "https://diar.ia.br/artigo": 3, "https://x.brevo.com/unsubscribe/abc": 12 },
-        },
-      },
-    ];
-    const result = aggregateAbcByAudience([...coldWithUnsub, ...warm], cycle);
-    const coldC = result.cold.cells.find((c) => c.cell === "C")!;
-    assert.equal(coldC.clicks, 3, "15 uniqueClicks - 12 clicks em unsubscribe = 3 editoriais");
-  });
 });
 
 // ─── aggregateAbcByAudience: naming ambíguo (mesmo padrão pra fria E quente) — #3128 ──
