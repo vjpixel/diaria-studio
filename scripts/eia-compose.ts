@@ -723,6 +723,10 @@ function truncateVerboseArtistText(text: string): string {
   const sentenceEndRe = /\.(?=\s|$)/g;
   let m: RegExpExecArray | null;
   while ((m = sentenceEndRe.exec(text)) !== null) {
+    // #3367 self-review: cutIndex=0 (texto malformado começando com ".")
+    // produziria firstSentence/candidate vazios — tratar como "sem corte
+    // seguro" em vez de aceitar um corte vazio.
+    if (m.index === 0) continue;
     const before = text.slice(0, m.index);
     const lastWord = before.match(/(\S+)$/)?.[1] ?? "";
     if (/^\p{Lu}$/u.test(lastWord)) continue; // inicial do meio — não é fim de frase
@@ -731,7 +735,7 @@ function truncateVerboseArtistText(text: string): string {
   }
   const firstSentence = cutIndex !== null ? text.slice(0, cutIndex).trim() : text;
   const withoutLeadIn = firstSentence.replace(ARTIST_LEAD_IN_RE, "").trim();
-  const candidate = withoutLeadIn || firstSentence;
+  const candidate = withoutLeadIn || firstSentence || text;
 
   if (candidate.length > 60) {
     return candidate.split(/\s+/).slice(0, 6).join(" ");

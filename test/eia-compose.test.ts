@@ -724,6 +724,23 @@ describe("buildCreditLine — trunca nota de uso verbosa em artist.text (#3367)"
     const credit = buildCreditLine(image);
     assert.match(credit, /Wikimedia Commons/);
   });
+
+  it("self-review: texto malformado começando com '.' não produz nome vazio (fallback pras 6 primeiras palavras)", () => {
+    const image = {
+      description: { text: "A photograph." },
+      artist: {
+        text:
+          ". Some malformed text without a leading name, just a long run-on " +
+          "sentence with no safe cut point anywhere near the start of the string.",
+      },
+    };
+    const credit = buildCreditLine(image);
+    // Não deve produzir " — / CC BY-SA 4.0." (nome vazio antes do traço).
+    assert.ok(
+      !/— \//.test(credit),
+      `credit não deve ter nome de artista vazio: ${credit}`,
+    );
+  });
 });
 
 describe("tokenizeImageTitle (#284)", () => {
