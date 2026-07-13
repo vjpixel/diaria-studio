@@ -14,6 +14,7 @@ import {
   lintLinkedinPageLink,
   lintInstagramEmailCTA,
   DIARIA_LINKEDIN_PAGE_SLUG,
+  lintPlatformHeadersUnique,
 } from "../scripts/lint-social-md.ts";
 
 describe("lintPostPixelMatchesD1 (#1861)", () => {
@@ -264,6 +265,142 @@ describe("extractPlatformSection", () => {
     const md = "# LinkedIn\r\n## d1\r\nFoo\r\n";
     const sec = extractPlatformSection(md, "linkedin");
     assert.ok(sec);
+  });
+});
+
+describe("lintPlatformHeadersUnique (#3388)", () => {
+  it("FALHA: '# LinkedIn' duplicado com nota operacional entre os 2 (caso real 260713)", () => {
+    // Reproduz exatamente o cenário da issue: merge-social-md.ts prepende seu
+    // próprio header + nota operacional, mas o conteúdo do agent também trazia
+    // um '# LinkedIn' embutido — resultado: 2 headers, com prosa no meio.
+    const md = `# LinkedIn
+
+> **Postagem semi-automática:** main agenda via Worker→Make. comment_diaria e comment_pixel precisam ser postados manualmente.
+
+# LinkedIn
+
+## d1
+
+Texto do destaque 1.
+
+## d2
+
+Texto do destaque 2.
+
+## d3
+
+Texto do destaque 3.
+
+# Facebook
+
+## d1
+
+Post do Facebook.
+`;
+    const r = lintPlatformHeadersUnique(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1);
+    assert.equal(r.errors[0].platform, "linkedin");
+    assert.equal(r.errors[0].count, 2);
+    assert.deepEqual(r.errors[0].lines, [1, 5]);
+  });
+
+  it("PASSA: exatamente 1 '# LinkedIn' e 1 '# Facebook' (caso saudável)", () => {
+    const r = lintPlatformHeadersUnique(validMd);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+    assert.equal(r.errors.length, 0);
+  });
+
+  it("FALHA: '# Facebook' duplicado (mesma lógica, outro canal)", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Texto do destaque 1.
+
+# Facebook
+
+## d1
+
+Post do Facebook d1.
+
+# Facebook
+
+## d2
+
+Post do Facebook d2 — segundo header colado por engano.
+`;
+    const r = lintPlatformHeadersUnique(md);
+    assert.equal(r.ok, false);
+    assert.equal(r.errors.length, 1);
+    assert.equal(r.errors[0].platform, "facebook");
+    assert.equal(r.errors[0].count, 2);
+  });
+
+  it("NÃO flaga '# LinkedIn'/'# Facebook' mencionado dentro de prosa (não é header de linha)", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Siga a Diar.ia no LinkedIn e no Facebook para mais notícias de IA.
+
+### comment_diaria
+
+Confira também nossa página no Facebook.
+
+# Facebook
+
+## d1
+
+Post do Facebook.
+`;
+    const r = lintPlatformHeadersUnique(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("NÃO flaga sub-header '## LinkedIn' (nível errado, não é '# LinkedIn' top-level)", () => {
+    const md = "# LinkedIn\n\n## LinkedIn\n\nTexto.\n\n# Facebook\n\n## d1\n\nPost.\n";
+    const r = lintPlatformHeadersUnique(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("CLI: exit 1 com header duplicado, exit 0 no md saudável (--check platform-headers-unicos)", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { spawnSync } = await import("node:child_process");
+    const scriptPath = join(import.meta.dirname, "..", "scripts", "lint-social-md.ts");
+    const run = (md: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "platform-headers-cli-"));
+      try {
+        const p = join(dir, "03-social.md");
+        writeFileSync(p, md, "utf8");
+        return spawnSync(
+          process.execPath,
+          ["--import", "tsx", scriptPath, "--check", "platform-headers-unicos", "--md", p],
+          { encoding: "utf8" },
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    const duplicated = `# LinkedIn
+
+> Nota operacional entre os 2 headers.
+
+# LinkedIn
+
+## d1
+
+Texto.
+`;
+    const dupResult = run(duplicated);
+    assert.equal(dupResult.status, 1, "header duplicado → exit 1");
+    assert.ok(dupResult.stderr.includes("# LinkedIn"), dupResult.stderr);
+
+    const healthy = run(validMd);
+    assert.equal(healthy.status, 0, "md saudável → exit 0");
   });
 });
 
@@ -1767,5 +1904,191 @@ describe("lintInstagramEmailCTA (#2486)", () => {
     const md = mkFbMd("Inovação em IA muda o panorama da tecnologia. Saiba mais em diar.ia.br.");
     const r = lintInstagramEmailCTA(md);
     assert.equal(r.ok, true, "texto sem CTA de e-mail deve passar");
+  });
+});
+
+// ─── #3388: lintPlatformHeadersUnique ───────────────────────────────────────
+// Regressão: edição 260713 teve `# LinkedIn` duplicado em 03-social.md (linha 1
+// e novamente ~linha 5, com uma nota operacional entre eles). O regex de parsing
+// em publish-linkedin.ts (`(?:^|\n)# LinkedIn\n([\s\S]*?)(?=\n# |$)`) capturou só
+// até o PRIMEIRO header seguinte — como o 2º `# LinkedIn` conta como "próximo
+// header", o parser parou cedo e reportou "Destaque 'd1' não encontrado em
+// LinkedIn" pros 3 destaques, quebrando o dispatch inteiro.
+
+describe("lintPlatformHeadersUnique (#3388)", () => {
+  it("FALHA: '# LinkedIn' duplicado com nota operacional entre os 2 headers (cenário exato da edição 260713)", () => {
+    // Replica o formato real produzido por merge-social-md.ts: o header
+    // canônico + banner operacional, seguido por um SEGUNDO '# LinkedIn'
+    // (ex: o tmp file do agent social-linkedin já trazia o próprio header)
+    // antes do conteúdo real dos destaques.
+    const md = `# LinkedIn
+
+> **Postagem semi-automática:** main agenda via Worker→Make. comment_diaria e comment_pixel precisam ser postados manualmente.
+
+# LinkedIn
+
+## d1
+
+Texto do post principal.
+
+### comment_diaria
+
+Edição completa em {edition_url}
+
+## d2
+
+Outro texto.
+
+## d3
+
+Mais um texto.
+
+# Facebook
+
+## d1
+
+Post do Facebook.
+`;
+    const r = lintPlatformHeadersUnique(md);
+    assert.equal(r.ok, false, "header duplicado deve falhar");
+    const li = r.errors.find((e) => e.platform === "linkedin");
+    assert.ok(li, `esperava erro pra linkedin; got: ${JSON.stringify(r.errors)}`);
+    assert.equal(li!.count, 2);
+    assert.deepEqual(li!.lines, [1, 5]);
+    // Facebook não deve ser afetado — só 1 ocorrência
+    assert.ok(!r.errors.some((e) => e.platform === "facebook"));
+  });
+
+  it("FALHA: '# Facebook' duplicado (mesma lógica, canal diferente)", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Texto do LinkedIn.
+
+# Facebook
+
+## d1
+
+Primeiro bloco Facebook.
+
+# Facebook
+
+## d1
+
+Segundo bloco Facebook (duplicado por engano).
+`;
+    const r = lintPlatformHeadersUnique(md);
+    assert.equal(r.ok, false, "header Facebook duplicado deve falhar");
+    const fb = r.errors.find((e) => e.platform === "facebook");
+    assert.ok(fb, `esperava erro pra facebook; got: ${JSON.stringify(r.errors)}`);
+    assert.equal(fb!.count, 2);
+    assert.ok(!r.errors.some((e) => e.platform === "linkedin"));
+  });
+
+  it("PASSA: exatamente 1 '# LinkedIn' e 1 '# Facebook' (caso saudável)", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Texto do LinkedIn.
+
+# Facebook
+
+## d1
+
+Texto do Facebook.
+`;
+    const r = lintPlatformHeadersUnique(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+    assert.equal(r.errors.length, 0);
+  });
+
+  it("não flaga menção a 'LinkedIn'/'Facebook' dentro de prosa (não é header de linha)", () => {
+    // "Siga a Diar.ia no LinkedIn em ..." e citações de "Facebook" no corpo do
+    // texto não devem contar como headers — só linhas que batem EXATAMENTE
+    // com '# LinkedIn'/'# Facebook' (linha inteira).
+    const md = `# LinkedIn
+
+## d1
+
+Siga a Diar.ia no LinkedIn em linkedin.com/company/diar.ia.br. Publicamos também no Facebook.
+
+### comment_diaria
+
+## LinkedIn e Facebook são plataformas diferentes
+
+# Facebook
+
+## d1
+
+Texto do Facebook, mencionando LinkedIn de novo aqui.
+`;
+    const r = lintPlatformHeadersUnique(md);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+  });
+
+  it("normaliza CRLF ao contar headers duplicados", () => {
+    const md = "# LinkedIn\r\n\r\n## d1\r\nTexto.\r\n\r\n# LinkedIn\r\n\r\n## d2\r\nOutro texto.\r\n";
+    const r = lintPlatformHeadersUnique(md);
+    assert.equal(r.ok, false);
+    const li = r.errors.find((e) => e.platform === "linkedin");
+    assert.equal(li!.count, 2);
+  });
+
+  it("md sem nenhuma seção de plataforma → ok (no-op)", () => {
+    const r = lintPlatformHeadersUnique("## d1\nTexto sem header de plataforma.\n");
+    assert.equal(r.ok, true);
+    assert.equal(r.errors.length, 0);
+  });
+
+  it("CLI: exit 1 com header duplicado, exit 0 no caso saudável", async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { spawnSync } = await import("node:child_process");
+    const scriptPath = join(import.meta.dirname, "..", "scripts", "lint-social-md.ts");
+    const run = (md: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "platform-headers-cli-"));
+      try {
+        const p = join(dir, "03-social.md");
+        writeFileSync(p, md, "utf8");
+        return spawnSync(
+          process.execPath,
+          ["--import", "tsx", scriptPath, "--check", "platform-headers-unicos", "--md", p],
+          { encoding: "utf8" },
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    const duplicated = `# LinkedIn
+
+> Nota operacional.
+
+# LinkedIn
+
+## d1
+
+Texto.
+`;
+    const dupResult = run(duplicated);
+    assert.equal(dupResult.status, 1, "header duplicado → exit 1");
+    assert.ok(dupResult.stderr.includes("# LinkedIn"), "stderr deve mencionar o header duplicado");
+
+    const healthy = `# LinkedIn
+
+## d1
+
+Texto.
+
+# Facebook
+
+## d1
+
+Texto.
+`;
+    assert.equal(run(healthy).status, 0, "caso saudável → exit 0");
   });
 });

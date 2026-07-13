@@ -36,6 +36,56 @@ export function extractPlatformSection(md: string, platform: "linkedin" | "faceb
   return match ? match[1] : null;
 }
 
+export interface PlatformHeaderDuplicateError {
+  platform: "linkedin" | "facebook";
+  header: string;
+  count: number;
+  lines: number[];
+}
+
+export interface PlatformHeaderUniqueResult {
+  ok: boolean;
+  errors: PlatformHeaderDuplicateError[];
+}
+
+/**
+ * lintPlatformHeadersUnique (#3388)
+ *
+ * `extractPlatformSection` (acima) e `extractDestaqueBlock` (publish-linkedin.ts)
+ * usam o padrão `(?:^|\n)# LinkedIn\n([\s\S]*?)(?=\n# |$)` — a captura para no
+ * PRÓXIMO header top-level `# `, seja qual for. Se `03-social.md` tiver `# LinkedIn`
+ * duplicado (ex: o agent social-linkedin já escreveu o header no seu próprio tmp
+ * file, e `merge-social-md.ts` prepende OUTRO `# LinkedIn` na hora do merge — caso
+ * real da edição 260713), o parser para no 2º `# LinkedIn` como se fosse o próximo
+ * header de plataforma. Todo o conteúdo real (`## d1`, `## d2`, `## d3`) fica
+ * depois desse 2º header — fora da seção capturada — e `publish-linkedin.ts`
+ * reporta "Destaque 'd1' não encontrado em LinkedIn" pros 3 destaques, quebrando
+ * o dispatch inteiro. Root cause do bug: nada validava que `03-social.md` tem
+ * exatamente 1 seção por plataforma antes do parse.
+ *
+ * Este lint conta LINHAS que batem EXATAMENTE com `# LinkedIn` ou `# Facebook`
+ * (linha inteira, não substring solta — "Siga a Diar.ia no LinkedIn em..." não
+ * conta) e falha se qualquer uma das duas plataformas aparecer mais de 1 vez.
+ */
+export function lintPlatformHeadersUnique(md: string): PlatformHeaderUniqueResult {
+  const lines = md.replace(/\r\n/g, "\n").split("\n");
+  const errors: PlatformHeaderDuplicateError[] = [];
+  const platforms: Array<{ platform: "linkedin" | "facebook"; header: string; re: RegExp }> = [
+    { platform: "linkedin", header: "# LinkedIn", re: /^# LinkedIn\s*$/i },
+    { platform: "facebook", header: "# Facebook", re: /^# Facebook\s*$/i },
+  ];
+  for (const { platform, header, re } of platforms) {
+    const matchLines: number[] = [];
+    lines.forEach((line, idx) => {
+      if (re.test(line)) matchLines.push(idx + 1);
+    });
+    if (matchLines.length > 1) {
+      errors.push({ platform, header, count: matchLines.length, lines: matchLines });
+    }
+  }
+  return { ok: errors.length === 0, errors };
+}
+
 /**
  * #2343: extrai a lista de destaques (`## dN`) presentes numa seção de plataforma.
  * Retorna a lista em ordem canônica d1..d3, sem duplicatas; [] se nenhum achado.

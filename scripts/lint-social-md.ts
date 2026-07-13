@@ -85,6 +85,9 @@ import {
   lintPersonalPostNewsletterDeixis,
   type SectionCoverageResult,
   checkHumanizerSectionCoverage,
+  type PlatformHeaderDuplicateError,
+  type PlatformHeaderUniqueResult,
+  lintPlatformHeadersUnique,
 } from "./lib/social-lint-rules.ts"; // #2833: extraído — movimentação pura
 
 export type { LintError };
@@ -115,6 +118,8 @@ export type { PersonalPostDeixisMatch, PersonalPostDeixisResult };
 export { lintPersonalPostNewsletterDeixis };
 export type { SectionCoverageResult };
 export { checkHumanizerSectionCoverage };
+export type { PlatformHeaderDuplicateError, PlatformHeaderUniqueResult };
+export { lintPlatformHeadersUnique };
 function main(): void {
   const args = parseArgsStructured(process.argv.slice(2)).values;
   if (!args.md) {
@@ -130,7 +135,8 @@ function main(): void {
         "  ou: lint-social-md.ts --check no-credential-bio --md <path>\n" +
         "  ou: lint-social-md.ts --check no-email-cta-instagram --md <path>\n" +
         "  ou: lint-social-md.ts --check no-antithesis-reveal --md <path>\n" +
-        "  ou: lint-social-md.ts --check no-trailing-editorial-hook --md <path>",
+        "  ou: lint-social-md.ts --check no-trailing-editorial-hook --md <path>\n" +
+        "  ou: lint-social-md.ts --check platform-headers-unicos --md <path>",
     );
     process.exit(2);
   }
@@ -363,6 +369,28 @@ function main(): void {
         );
       }
       // WARN-ONLY: exit 0 mesmo com matches — não bloqueia o gate
+    }
+    return;
+  }
+
+  // Modo --check platform-headers-unicos (#3388) — falha se `# LinkedIn` ou
+  // `# Facebook` aparecer mais de 1 vez em 03-social.md (header duplicado faz
+  // extractPlatformSection/extractDestaqueBlock pararem cedo — ver doc em
+  // lib/social-lint-rules.ts:lintPlatformHeadersUnique).
+  if (args.check === "platform-headers-unicos") {
+    const result = lintPlatformHeadersUnique(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ ${result.errors.length} plataforma(s) com header duplicado em 03-social.md:`,
+      );
+      for (const e of result.errors) {
+        console.error(
+          `  '${e.header}' aparece ${e.count}x (esperado: 1) — linhas ${e.lines.join(", ")}. ` +
+            `Remova o(s) header(s) duplicado(s) antes de prosseguir — publish-${e.platform}.ts para de parsear no 2º header, tratando-o como o fim da seção, e reporta "Destaque não encontrado" pra todos os destaques.`,
+        );
+      }
+      process.exit(1);
     }
     return;
   }
