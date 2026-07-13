@@ -229,6 +229,13 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
     line-height: 1.6;
     font-size: 16px;
   }
+  /* #3371: sem isso o card estica full-bleed na tela — limita à largura
+     aproximada de um card de feed (LinkedIn/Facebook), pra revisar o post
+     perto de como ele aparece de verdade. */
+  .container {
+    max-width: 560px;
+    margin: 0 auto;
+  }
   h1 {
     text-align: center;
     font-size: 18px;
@@ -314,6 +321,7 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
 </style>
 </head>
 <body>
+<div class="container">
 <h1>Social Preview</h1>
 ${platforms.map(p => {
   const isLinkedin = p.name.toLowerCase().includes("linkedin");
@@ -327,6 +335,7 @@ ${platforms.map(p => {
     ${p.posts.map(post => renderPost(post, color, imageUrls, postPixelImageNum)).join("\n")}
   </div>`;
 }).join("\n")}
+</div>
 </body>
 </html>`;
 }
