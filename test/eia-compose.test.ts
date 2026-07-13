@@ -638,6 +638,94 @@ describe("buildCreditLine (#256 markdown links inline)", () => {
   });
 });
 
+describe("buildCreditLine — trunca nota de uso verbosa em artist.text (#3367)", () => {
+  it("caso real 260713: 'This Photo was taken by Timothy A. Gonsalves. Feel free...' vira só o nome", () => {
+    const verboseArtist =
+      "This Photo was taken by Timothy A. Gonsalves. Feel free to use my photos, " +
+      "but please mention me as the author. I would much appreciate if you send me " +
+      "an email tagooty@yahoo.com or write on my talk page, for my information. " +
+      "Please contact me before commercial use. Please do not upload an edited image " +
+      "here without consulting me. I would like to make corrections only at my own " +
+      "source to ensure that the changes improve the image and are preserved." +
+      "Otherwise you may upload an edited image with a new name. Please use one of " +
+      "the templates derivative or extract.";
+    const image = {
+      description: { text: "A photograph of a landscape." },
+      artist: { text: verboseArtist },
+    };
+    const credit = buildCreditLine(image);
+    assert.match(credit, /Timothy A\. Gonsalves/);
+    assert.ok(
+      !credit.includes("Feel free to use my photos"),
+      `credit não deve conter a nota de uso completa: ${credit}`,
+    );
+    assert.ok(
+      !credit.includes("tagooty@yahoo.com"),
+      `credit não deve vazar o email do fotógrafo: ${credit}`,
+    );
+    assert.ok(
+      !credit.includes("templates derivative"),
+      `credit não deve conter o texto de instruções final: ${credit}`,
+    );
+  });
+
+  it("caso saudável 260710: 'Tisha Mukherjee' (nome curto) permanece inalterado — sem falso-corte", () => {
+    const image = {
+      description: { text: "A photograph of a person." },
+      artist: { text: "Tisha Mukherjee" },
+    };
+    const credit = buildCreditLine(image);
+    assert.match(credit, /Tisha Mukherjee/);
+  });
+
+  it("iniciais do meio isoladas: 'John F. Kennedy' não é cortado em 'F' (regex de sentence-boundary)", () => {
+    const image = {
+      description: { text: "A historical photograph." },
+      artist: {
+        text:
+          "Photo by John F. Kennedy. All rights reserved, please credit accordingly " +
+          "when reusing this image for any commercial or editorial purpose whatsoever.",
+      },
+    };
+    const credit = buildCreditLine(image);
+    assert.match(credit, /John F\. Kennedy/);
+    assert.ok(
+      !credit.includes("All rights reserved"),
+      `credit não deve conter a nota de direitos: ${credit}`,
+    );
+  });
+
+  it("nome sem lead-in 'by' à frente da nota de uso: corta na primeira frase segura mesmo assim", () => {
+    const image = {
+      description: { text: "A photograph of a building." },
+      artist: {
+        text:
+          "Timothy A. Gonsalves. Feel free to reuse this image for any purpose, " +
+          "commercial or otherwise, as long as proper attribution is given in the caption.",
+      },
+    };
+    const credit = buildCreditLine(image);
+    assert.match(credit, /Timothy A\. Gonsalves/);
+    assert.ok(
+      !credit.includes("Feel free to reuse"),
+      `credit não deve conter a nota de uso: ${credit}`,
+    );
+  });
+
+  it("#706 preservado após fix de truncamento: 'Unknown' continua virando 'autor desconhecido'", () => {
+    const image = { description: { text: "Historic photograph." }, artist: { text: "Unknown" } };
+    const credit = buildCreditLine(image);
+    assert.ok(!credit.includes("Unknown"), `credit não deve conter 'Unknown': ${credit}`);
+    assert.match(credit, /autor desconhecido/);
+  });
+
+  it("#706 preservado após fix de truncamento: artist ausente continua 'Wikimedia Commons'", () => {
+    const image = { description: { text: "Imagem sem autor." } };
+    const credit = buildCreditLine(image);
+    assert.match(credit, /Wikimedia Commons/);
+  });
+});
+
 describe("tokenizeImageTitle (#284)", () => {
   it("strip File: prefix + extensão", () => {
     assert.deepEqual(

@@ -688,6 +688,57 @@ export function extractCommonsUserUrl(artistRaw: string | undefined): string | n
   return bare ? bare[0] : null;
 }
 
+/**
+ * Lead-ins comuns de atribuição fotográfica que precedem o nome próprio
+ * quando o campo `artist.text` vem como frase completa em vez de só o nome
+ * (ex: "This Photo was taken by Timothy A. Gonsalves") (#3367). Removidos
+ * pra sobrar só o nome depois do corte de sentença.
+ */
+const ARTIST_LEAD_IN_RE =
+  /^(this\s+photo\s+was\s+taken\s+by|photo\s+(taken\s+)?by|taken\s+by|by)\s+/i;
+
+/**
+ * Trunca textos verbosos de autor (#3367): fotógrafos do Wikimedia Commons
+ * às vezes colam uma nota de uso/permissão inteira no campo `artist.text`
+ * (ex: "This Photo was taken by Timothy A. Gonsalves. Feel free to use my
+ * photos, but please mention me as the author...") em vez de só o nome. Sem
+ * corte, o texto inteiro vira o link text do crédito na newsletter.
+ *
+ * Estratégia:
+ * 1. Texto curto (≤60 chars) → devolve intacto. Cobre o caso saudável
+ *    ("Tisha Mukherjee") sem risco de falso-corte.
+ * 2. Localiza o primeiro `.` seguido de espaço/fim que NÃO seja precedido
+ *    por uma única letra maiúscula — inicial do meio de nome (ex: o "A." em
+ *    "Timothy A. Gonsalves" não conta como fim de frase). Isola assim a
+ *    primeira frase "útil".
+ * 3. Remove lead-ins comuns de atribuição ("this photo was taken by",
+ *    "photo by", "taken by", "by") do início da frase, deixando só o nome.
+ * 4. Fallback conservador: se ainda sobrar texto longo (sem ponto de corte
+ *    seguro, ou sem lead-in reconhecido), trunca nas 6 primeiras palavras.
+ */
+function truncateVerboseArtistText(text: string): string {
+  if (text.length <= 60) return text;
+
+  let cutIndex: number | null = null;
+  const sentenceEndRe = /\.(?=\s|$)/g;
+  let m: RegExpExecArray | null;
+  while ((m = sentenceEndRe.exec(text)) !== null) {
+    const before = text.slice(0, m.index);
+    const lastWord = before.match(/(\S+)$/)?.[1] ?? "";
+    if (/^\p{Lu}$/u.test(lastWord)) continue; // inicial do meio — não é fim de frase
+    cutIndex = m.index;
+    break;
+  }
+  const firstSentence = cutIndex !== null ? text.slice(0, cutIndex).trim() : text;
+  const withoutLeadIn = firstSentence.replace(ARTIST_LEAD_IN_RE, "").trim();
+  const candidate = withoutLeadIn || firstSentence;
+
+  if (candidate.length > 60) {
+    return candidate.split(/\s+/).slice(0, 6).join(" ");
+  }
+  return candidate;
+}
+
 function extractArtistName(artistText: string | undefined): string {
   // Campo ausente → creditar a instituição (comportamento anterior preservado)
   if (!artistText) return "Wikimedia Commons";
@@ -695,7 +746,7 @@ function extractArtistName(artistText: string | undefined): string {
   // Wikimedia frequentemente retorna "Unknown" ou "Unknown author" para domínio
   // público antigo sem atribuição — tratar como desconhecido em vez de publicar "Unknown".
   if (!stripped || /^unknown(\s+author)?$/i.test(stripped)) return "autor desconhecido";
-  return stripped;
+  return truncateVerboseArtistText(stripped);
 }
 
 /**
