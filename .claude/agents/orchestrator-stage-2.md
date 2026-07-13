@@ -363,6 +363,12 @@ O script:
 
 Falha = abortar e reportar ao editor com sugestão de re-rodar isolado.
 
+**Lint header de plataforma único (#3388) — logo após o merge.** `merge-social-md.ts` prepende seu próprio header `# LinkedIn` na hora do merge; se o tmp file do agent `social-linkedin` já contiver um `# LinkedIn` embutido no próprio texto (esse é o root cause do bug real da edição 260713), o resultado tem 2 ocorrências — `extractPlatformSection`/`extractDestaqueBlock` param no 2º header como se fosse o fim da seção, e `publish-linkedin.ts` reporta "Destaque não encontrado" pros 3 destaques no Stage 5, quebrando o dispatch inteiro. Rodar imediatamente após o merge, antes do humanizador:
+```bash
+npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md data/editions/{AAMMDD}/03-social.md
+```
+Exit 1 = `# LinkedIn` ou `# Facebook` aparece mais de 1 vez. **Abortar Stage 2** (não silenciar, não prosseguir pro humanizador) e reportar ao editor a mensagem do lint (linhas exatas dos headers duplicados) — a correção correta é remover o header duplicado de `03-social.md` e, se a causa for o agent `social-linkedin`/`social-facebook` emitindo `# LinkedIn`/`# Facebook` no próprio tmp file, ajustar o prompt do agent pra não incluir esse header (só `merge-social-md.ts` deve escrevê-lo).
+
 **Humanizar social (#308, #1072, refined #1546):** invocar skill `humanizador` in-place no `03-social.md` com prompt completo (mesma profundidade da newsletter — prompt fraco causava remoção de só 25% dos travessões):
 ```
 Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA em português, calibrando a voz com data/past-editions.md como referência. Rode os 9 passos completos. Meta quantitativa do padrão #20: zero travessões no output (exceção: diálogo e meia-risca numérica). Salve no mesmo arquivo.")

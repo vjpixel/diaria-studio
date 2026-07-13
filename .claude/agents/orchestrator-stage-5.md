@@ -208,7 +208,19 @@ Exit code do guard:
 
 **Passo 5c-3: Dispatch social — APOS a URL estar resolvida.**
 
-**Em uma unica mensagem, disparar simultaneamente** (so apos passo 5c-2 retornar exit 0):
+**Precondicao defensiva (#3388) — header de plataforma unico.** Antes de dispatchar, rodar (barato, backstop mesmo se a variante do fluxo mudar e pular o lint do fim do Stage 2):
+```bash
+npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
+```
+Exit 1 = `# LinkedIn` ou `# Facebook` aparece mais de 1 vez em `03-social.md` — **halt** Stage 5 (nao dispatchar `publish-linkedin.ts`/`publish-facebook.ts`, que vao falhar com "Destaque nao encontrado" pros 3 destaques):
+```bash
+npx tsx scripts/render-halt-banner.ts \
+  --stage "5 — Publicacao" \
+  --reason "03-social.md tem header de plataforma duplicado (# LinkedIn ou # Facebook aparece >1x) — publish-linkedin.ts/publish-facebook.ts vao parsear so ate o 2o header e reportar destaque nao encontrado" \
+  --action "remova o header duplicado em {EDITION_DIR}/03-social.md (ver linhas no output do lint) e rode novamente"
+```
+
+**Em uma unica mensagem, disparar simultaneamente** (so apos o guard acima E o passo 5c-2 retornarem exit 0):
 
 1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir {EDITION_DIR}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato). Usa mesmos horarios do LinkedIn via `compute-social-schedule.ts`.
 2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir {EDITION_DIR}/ --schedule")` — Worker queue + Make webhook x 3. Le `_internal/05-edition-url.txt` para substituir `{edition_url}` (ja existe do passo 5c-1).
