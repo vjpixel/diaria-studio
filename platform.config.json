@@ -56,8 +56,8 @@
     "min_primary_urls": 5
   },
   "boxes_divulgacao": {
-    "slot1": "livros-divulgacao.md",
-    "slot2": null
+    "slot1": "recomendacao-leitura.md",
+    "slot2": "livros-divulgacao.md"
   },
   "drive_sync": true,
   "logging": {

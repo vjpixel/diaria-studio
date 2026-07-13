@@ -135,19 +135,26 @@ export function buildParaEncerrar(): string {
 
 /**
  * #2978: carrega um bloco de divulgação de `context/snippets/{file}`,
- * format-agnóstico — aceita tanto o formato bold-line (`**📚/📣/🎉 …**`)
- * quanto o formato carrinho (`🛒 …`, multi-parágrafo com CTA, sem bold-wrap).
- * Strip do comentário HTML de header; retorna o bloco trimado, ou `null` se o
- * arquivo não existir / não tiver nenhum dos dois formatos (graceful — a
- * edição sai sem o box em vez de quebrar).
+ * format-agnóstico — aceita o formato bold-line (`**📚/📣/🎉 …**`), o formato
+ * carrinho (`🛒 …`, multi-parágrafo com CTA, sem bold-wrap), OU (#3306,
+ * caso real: `recomendacao-leitura.md`/#3212) qualquer outro conteúdo
+ * multi-parágrafo sem bold-wrap total — devolvido cru, deixando
+ * `renderBoxDivulgacao` (marcador-agnóstico desde #3204) decidir o formato
+ * de render pela ESTRUTURA, não pelo marcador. Antes desse 3º fallback, um
+ * snippet como `📖 Recomendação de leitura\n\n[**Livro**](url), de Autor.\n\n
+ * Comentário.` retornava `null` (não batia bold-line nem carrinho) e a
+ * edição saía sem o box — mesmo com `platform.config.json` apontando pra ele.
+ *
+ * Strip do comentário HTML de header; retorna o bloco trimado, ou `null` só
+ * se o arquivo não existir / ficar vazio após o strip.
  *
  * Leitura crua (resolve root + readFileSync + strip comentário HTML + trim)
  * delegada a `readSnippetFile` (#3219 — extraído pra parar de duplicar essa
  * lógica em paralelo com `loadEncerramentoSocialApoioTemplate`); esta função
  * mantém só o pós-processamento específico de formato (marker bold-line vs
- * carrinho) por cima da leitura compartilhada.
+ * carrinho vs genérico) por cima da leitura compartilhada.
  */
-function loadDivulgacaoSnippet(file: string | null | undefined): string | null {
+export function loadDivulgacaoSnippet(file: string | null | undefined): string | null {
   if (!file) return null;
   const raw = readSnippetFile(file);
   if (!raw) return null;
@@ -156,7 +163,12 @@ function loadDivulgacaoSnippet(file: string | null | undefined): string | null {
   if (raw.startsWith("🛒")) return raw;
   // Formato bold-line: bloco `**📚/📣/🎉 …**` (mesmo que extractBoxDivulgacao1/2 casa).
   const m = raw.match(/\*\*\s*(?:📚|📣|🎉)[\s\S]+?\*\*/);
-  return m ? m[0].trim() : null;
+  if (m) return m[0].trim();
+  // #3306: fallback genérico — nenhum marcador legado bateu, mas o conteúdo
+  // ainda é um box válido (ex: 📖 recomendação de leitura, multi-parágrafo,
+  // 1 link). `renderBoxDivulgacao`/`shouldForceCtaPill` já processam
+  // qualquer estrutura; devolver cru em vez de `null`.
+  return raw;
 }
 
 /**
