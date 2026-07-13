@@ -364,9 +364,10 @@ describe("Stage 2 invariants", () => {
     // linkedin-schema + relative-time + post_pixel-matches-d1 (#1861) +
     // personal-post-no-newsletter-deixis (#2148) +
     // no-email-cta-linkedin (#2458) + linkedin-page-link (#2458) +
-    // no-credential-bio (#2494) + no-email-cta-instagram (#2486).
+    // no-credential-bio (#2494) + no-email-cta-instagram (#2486) +
+    // platform-headers-unicos (#3388).
     // humanizer-section-coverage só roda quando snapshot existe → não conta aqui.
-    assert.equal(v.length, 8);
+    assert.equal(v.length, 9);
     assert.ok(v.every((x) => x.rule.endsWith("-file-exists")));
     // #1861: a nova check está registrada (não só a contagem mudou).
     assert.ok(
@@ -397,6 +398,11 @@ describe("Stage 2 invariants", () => {
       v.some((x) => x.rule === "social-no-email-cta-instagram-file-exists"),
       "rule social-no-email-cta-instagram deve estar presente (#2486)",
     );
+    // #3388: platform-headers-unicos check registrada
+    assert.ok(
+      v.some((x) => x.rule === "social-platform-headers-unicos-file-exists"),
+      "rule social-platform-headers-unicos deve estar presente (#3388)",
+    );
     assert.match(v[0].message, /03-social\.md ausente/);
     rmSync(fixture, { recursive: true, force: true });
   });
@@ -425,6 +431,22 @@ describe("Stage 2 invariants", () => {
     assert.ok(
       ruleIds.includes("social-relative-time"),
       `Esperava social-relative-time, achei ${JSON.stringify(ruleIds)}`,
+    );
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("#3388: social-passes-lints detecta '# LinkedIn' duplicado (spawn integration)", () => {
+    // Cenário real da edição 260713: merge-social-md.ts prepende `# LinkedIn`
+    // e o tmp file do agent já trazia o header embutido — 2 ocorrências.
+    writeFileSync(
+      join(fixture, "03-social.md"),
+      "# LinkedIn\n\n# LinkedIn\n\n## d1\n\nConteúdo.\n",
+    );
+    const v = checkSocialPassesLints(fixture);
+    const ruleIds = v.map((x) => x.rule);
+    assert.ok(
+      ruleIds.includes("social-platform-headers-unicos"),
+      `Esperava social-platform-headers-unicos, achei ${JSON.stringify(ruleIds)}`,
     );
     rmSync(fixture, { recursive: true, force: true });
   });

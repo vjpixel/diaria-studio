@@ -106,6 +106,7 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
  * `post_pixel-matches-d1` (#1861), `personal-post-no-newsletter-deixis` (#2148),
  * `no-email-cta-linkedin` (#2458), `linkedin-page-link` (#2458),
  * `no-credential-bio` (#2494), `no-email-cta-instagram` (#2486),
+ * `platform-headers-unicos` (#3388),
  * e `humanizer-section-coverage` (#2148, quando snapshot pré-humanizador existe).
  */
 function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
@@ -196,6 +197,23 @@ function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
       ["--check", "no-email-cta-instagram", "--md", file],
       "social-no-email-cta-instagram",
       "#2486",
+      file,
+    ),
+  );
+  // #3388: `# LinkedIn`/`# Facebook` não pode aparecer mais de 1 vez —
+  // merge-social-md.ts prepende o header no merge; se o tmp file do agent
+  // social-linkedin/social-facebook já contiver esse header embutido, o
+  // parser (extractPlatformSection/extractDestaqueBlock) para no 2º header
+  // como fim de seção e publish-linkedin.ts/publish-facebook.ts reportam
+  // "Destaque não encontrado" pros 3 destaques (edição 260713). Wira o check
+  // no gate — sem isso o lint ficaria dormente e a instrução do agent
+  // no orchestrator seria a única proteção.
+  violations.push(
+    ...runCheck(
+      "lint-social-md.ts",
+      ["--check", "platform-headers-unicos", "--md", file],
+      "social-platform-headers-unicos",
+      "#3388",
       file,
     ),
   );
@@ -301,7 +319,7 @@ export const STAGE_2_RULES: InvariantRule[] = [
   },
   {
     id: "social-passes-lints",
-    description: "03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 + personal-post-no-newsletter-deixis + humanizer-section-coverage (#595, #1861, #2148)",
+    description: "03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 + personal-post-no-newsletter-deixis + platform-headers-unicos + humanizer-section-coverage (#595, #1861, #2148, #3388)",
     source_issue: "#595",
     stage: 2,
     run: checkSocialPassesLints,
