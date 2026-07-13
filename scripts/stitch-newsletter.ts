@@ -34,8 +34,9 @@ import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts"; // 
 import { DIARIA_FACEBOOK_PAGE_URL, DIARIA_LINKEDIN_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695/#2790 fonte única
 import {
   splitEncerramentoSocialApoio,
+  renderEncerramentoSocialApoio,
   ENCERRAMENTO_OPENING_DAILY,
-} from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal; split #3368 (reorder)
+} from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal; split #3368 (reorder); renderEncerramentoSocialApoio #3382 fix (fallback de conteúdo real quando o split falha)
 import { readSnippetFile } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
 import { extractBoxDivulgacao1 } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap)
 
@@ -103,17 +104,33 @@ Esta edição tem um erro proposital. Responda este e-mail com a correção para
  * antes (#3219) a ordem era cabeçalho > ferramentas/Acesse > apoio > convite
  * social (só o cabeçalho não mudou de posição).
  *
- * Graceful: se o snippet não existir/ficar vazio, cai no fallback hardcoded
- * (só o convite social, sem o parágrafo de apoio) — a edição não trava por
- * causa de um arquivo de conteúdo ausente.
+ * `splitEncerramentoSocialApoio` retorna `null` em 2 situações BEM diferentes
+ * (finding de self-review do #3382, thread em encerramento-snippet.ts:80):
+ *   1. Arquivo ausente/vazio (`renderEncerramentoSocialApoio` também `null`)
+ *      — nunca houve conteúdo real pra perder, cai no fallback hardcoded
+ *      genérico (comportamento graceful original, #3219).
+ *   2. Arquivo existe e RENDERIZOU, mas não tem exatamente 2 parágrafos
+ *      separados por linha em branco (ex: editor fundiu apoio+social num só
+ *      parágrafo). Antes deste fix, esse caso caía indistintamente no MESMO
+ *      fallback hardcoded do caso 1 — descartando silenciosamente conteúdo
+ *      real do editor só porque o reorder (#3368) não conseguiu separar os
+ *      parágrafos. Agora usa o render INTEIRO, não-dividido, na posição
+ *      ANTERIOR ao reorder (header > tools > render inteiro) — perde só o
+ *      reorder (apoio não fica mais em primeiro), nunca o conteúdo.
  */
 export function buildParaEncerrar(): string {
   const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
-  if (!split) {
-    const socialFallback = `Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) ou no [Facebook](${DIARIA_FACEBOOK_PAGE_URL})? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!`;
-    return `${FIXED_BLOCKS.para_encerrar_header}\n\n${FIXED_BLOCKS.para_encerrar_tools}\n\n${socialFallback}`;
+  if (split) {
+    return `${FIXED_BLOCKS.para_encerrar_header}\n\n${split.apoio}\n\n${FIXED_BLOCKS.para_encerrar_tools}\n\n${split.socialInvite}`;
   }
-  return `${FIXED_BLOCKS.para_encerrar_header}\n\n${split.apoio}\n\n${FIXED_BLOCKS.para_encerrar_tools}\n\n${split.socialInvite}`;
+  // Split falhou — distingue arquivo ausente (caso 1) de arquivo presente mas
+  // com forma inesperada (caso 2, #3382).
+  const whole = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
+  if (whole) {
+    return `${FIXED_BLOCKS.para_encerrar_header}\n\n${FIXED_BLOCKS.para_encerrar_tools}\n\n${whole}`;
+  }
+  const socialFallback = `Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) ou no [Facebook](${DIARIA_FACEBOOK_PAGE_URL})? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!`;
+  return `${FIXED_BLOCKS.para_encerrar_header}\n\n${FIXED_BLOCKS.para_encerrar_tools}\n\n${socialFallback}`;
 }
 
 /**
