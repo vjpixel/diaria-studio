@@ -1,6 +1,6 @@
 ---
 name: diaria-develop
-description: Sessão de desenvolvimento SUPERVISIONADA focada no backlog BLOQUEADO (#2636) — o complemento exato do /diaria-overnight. O editor está presente e desbloqueia em tempo real (cola token, confirma conta, decide trade-off, autoriza blast-radius); a skill valida o desbloqueio deterministicamente (#573) e leva a issue ao merge reusando a maquinaria do overnight, PARALELIZANDO tudo que for seguro. Uso — `/diaria-develop [AAMMDD] [--issues N,M] [--only A-E] [--dry-run] [--no-implement] [--serial]`.
+description: Sessão de desenvolvimento SUPERVISIONADA focada no backlog BLOQUEADO (#2636) — o complemento exato do /diaria-overnight. O editor está presente e desbloqueia em tempo real (cola token, confirma conta, decide trade-off, autoriza blast-radius); a skill valida o desbloqueio deterministicamente (#573) e leva a issue ao merge reusando a maquinaria do overnight, PARALELIZANDO tudo que for seguro. Uso — `/diaria-develop [AAMMDD] [--issues N,M] [--only A-E] [--bugs] [--dry-run] [--no-implement] [--serial]`.
 disable-model-invocation: true
 ---
 
@@ -28,6 +28,7 @@ Espelho invertido do `/diaria-overnight` (#2021): onde o overnight é autônomo 
 - **`AAMMDD` (opcional)** — data-rótulo da sessão (nomeia `data/develop/{AAMMDD}/plan.json`). **Não é data de edição** (nenhum stage editorial destrutivo depende dela; a regra D+1 não se aplica). O default de hoje é seguro, mas a skill **confirma** ("sessão develop de hoje, {AAMMDD}? s/n") em vez de inferir em silêncio. Fixar no `plan.json` e reler dele (a sessão pode cruzar meia-noite).
 - **`--issues N,M,…`** — restringe a issues específicas, pulando a varredura. Issue não bloqueada (trabalho de overnight) → permitir-com-aviso.
 - **`--only A,B,C,D,E`** — restringe por categoria de bloqueio (minimiza a troca de contexto do editor).
+- **`--bugs`** (#3375) — restringe a sessão a issues bloqueadas com label `bug`; `enhancement`/`documentation`/cleanup/etc. ficam fora mesmo que desbloqueáveis por todos os outros critérios. Compõe com `--issues`/`--only` (ex: `--bugs --only A,B` = só bugs bloqueados por credencial ou conta externa). Aplica-se na varredura (Fase 0 passo 2/3) e na herança de triagem do overnight (passo 2) — issue herdada sem label `bug` não entra na tabela. Sem a flag, comportamento atual sem mudança.
 - **`--dry-run`** — só Fase 0 (varredura + classificação + tabela), zero side-effect.
 - **`--no-implement`** — modo "só destravar": gate de desbloqueio + validação + registro durável, **sem** implementar (deixa pro overnight posterior, que então vê as issues como `elegivel`).
 - **`--serial`** — desliga a paralelização (volta ao 1-PR-por-vez do overnight). Default é **paralelo seguro**.
@@ -60,11 +61,11 @@ Categoria inferida na Fase 0 por **labels reais** (`external-blocker`→A/B/E co
 
 0. **Resume** via `plan.json` se existe.
 1. **Sync:** `git checkout master && git pull`; capturar `base_sha = git rev-parse HEAD`; **`gh auth status`**.
-2. **Herdar a triagem do overnight:** ler `data/overnight/{AAMMDD-recente}/plan.json` e extrair os `status: pulada` com motivo ∈ `{bloqueio-externo, not-this-week, ambigua}` — a triagem cara já foi feita (`source: inherited-overnight`).
-3. **Varredura fresca de confirmação** por labels reais via `gh issue list --json labels` + reconciliar; **fresh-scan vence o plan.json herdado em divergência**.
+2. **Herdar a triagem do overnight:** ler `data/overnight/{AAMMDD-recente}/plan.json` e extrair os `status: pulada` com motivo ∈ `{bloqueio-externo, not-this-week, ambigua}` — a triagem cara já foi feita (`source: inherited-overnight`). **Com `--bugs` (#3375)**: descartar aqui as issues herdadas sem label `bug` — não entram na tabela nem na classificação seguinte.
+3. **Varredura fresca de confirmação** por labels reais via `gh issue list --json labels` + reconciliar; **fresh-scan vence o plan.json herdado em divergência**. Mesmo filtro `--bugs` se aplica ao resultado fresco.
 4. **Classificar** cada bloqueio em A–E.
 5. **Imprimir a tabela** do backlog bloqueado, agrupada por categoria, ordenada P0>P1>P2>P3: `#NNNN | P? | cat A-E | o-que-falta-destravar | título`.
-6. Aplicar `--issues`/`--only`.
+6. Aplicar `--issues`/`--only`/`--bugs`.
 7. Gravar `plan.json`; com `--dry-run`, **parar aqui**.
 
 ## Fase 0.5 — Briefing FRONT-LOADED (colher o máximo de decisões no início, #2966)
@@ -113,7 +114,7 @@ Roda só se houve ≥1 merge e o diff `{base_sha}..HEAD` > ~50 linhas. Um `/code
 
 ## Fase 2 — Relatório + handoff para o overnight
 
-Digest de `plan.json` + run-log (filtrado por `agent: "develop"` + AAMMDD) em 4 buckets: (a) destravadas e mergeadas (agrupadas por onda); (b) destravadas mas pendentes (`--no-implement` ou CI vermelho — **prontas p/ o próximo overnight pegar como `elegivel`**); (c) não-destraváveis na sessão; (d) findings/hotfixes. **Seção de HANDOFF:** quais issues saíram de bloqueada→elegível (label removido + decisão postada) e quais ações fora da sessão o editor ainda precisa agendar. Timeline via `npx tsx scripts/render-overnight-timeline.ts --plan data/develop/{AAMMDD}/plan.json --title "Timeline da sessão" --total-label "Total da sessão"`. Canal primário = terminal; rascunho no Gmail (`create_draft`, não envia, fail-soft #738).
+Com `--bugs` (#3375) ativo, abrir o digest com `Modo: --bugs (só issues com label bug)`. Digest de `plan.json` + run-log (filtrado por `agent: "develop"` + AAMMDD) em 4 buckets: (a) destravadas e mergeadas (agrupadas por onda); (b) destravadas mas pendentes (`--no-implement` ou CI vermelho — **prontas p/ o próximo overnight pegar como `elegivel`**); (c) não-destraváveis na sessão; (d) findings/hotfixes. **Seção de HANDOFF:** quais issues saíram de bloqueada→elegível (label removido + decisão postada) e quais ações fora da sessão o editor ainda precisa agendar. Timeline via `npx tsx scripts/render-overnight-timeline.ts --plan data/develop/{AAMMDD}/plan.json --title "Timeline da sessão" --total-label "Total da sessão"`. Canal primário = terminal; rascunho no Gmail (`create_draft`, não envia, fail-soft #738).
 
 ## Guard de colisão editorial — aviso interativo, sem auto-preempt
 
