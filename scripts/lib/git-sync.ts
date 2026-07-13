@@ -30,10 +30,26 @@
  *      confiável só inspecionando `git stash` (nenhum comando devolve um ID
  *      específico da invocação; a mensagem do stash é idêntica entre processos
  *      no mesmo branch/commit). Fix: serializar toda a operação de sync com um
- *      lock de arquivo (`.diaria-sync.lock` na raiz do repo, `fs.mkdirSync`
- *      atômico) — elimina a race na origem em vez de tentar resolvê-la depois
- *      do fato. Uma segunda chamada concorrente detecta o lock e retorna
- *      "sync_in_progress" (fail-soft) SEM tocar em stash/merge.
+ *      lock de arquivo (`.diaria-sync.lock`, `fs.mkdirSync` atômico) — elimina a
+ *      race na origem em vez de tentar resolvê-la depois do fato. Uma segunda
+ *      chamada concorrente detecta o lock e retorna "sync_in_progress" (fail-soft)
+ *      SEM tocar em stash/merge.
+ *   3c. #3430: o próprio lock do 3b tinha 3 gaps confirmados por review
+ *      adversarial (4 finders independentes) — endurecido nesta revisão:
+ *        (i) `LOCK_STALE_MS` (10min fixo) era matematicamente MENOR que o pior
+ *            caso real (8 spawns git sequenciais × até 120s cada = 16min) —
+ *            agora derivado de `MAX_SEQUENTIAL_GIT_SPAWNS` × `GIT_TIMEOUT_MS`
+ *            com margem documentada (ver `LOCK_STALE_MS` abaixo).
+ *        (ii) a reivindicação de lock morto (`rmdirSync`+`mkdirSync`, 2 syscalls
+ *            separadas) permitia 2 processos "vencerem" simultaneamente — agora
+ *            via `renameSync` atômico + verificação de identidade por mtime
+ *            pós-rename (rollback se não bater) + token de propriedade
+ *            verificado em `release()`. Ver `createFileLock()`.
+ *        (iii) o path do lock era resolvido a partir de `import.meta.url`
+ *            (localização FÍSICA do arquivo, que difere por `git worktree`) —
+ *            agora resolvido via `git rev-parse --git-common-dir`, o mesmo
+ *            `.git` real compartilhado entre TODOS os worktrees do repo. Ver
+ *            `resolveSharedLockPath()`.
  *   4. Se working tree limpa → merge --ff-only origin/master direto.
  *      Se ff-only falhar (divergência) → warn + retorna (nunca força merge).
  *   5. Falha de fetch OU ff_failed OU stash_pop_failed OU stash_partial_failure
@@ -51,6 +67,7 @@
 
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GitSpawnFn, SpawnResult } from "./spawn-types.ts";
@@ -71,6 +88,13 @@ export type SpawnFn = GitSpawnFn;
  * CWD do processo; se `/diaria-edicao` for invocado de dentro de um worktree
  * (`.claude/worktrees/agent-*`), o sync miraria o worktree, não o checkout
  * principal. `scripts/lib/git-sync.ts` está 2 níveis abaixo da raiz.
+ *
+ * IMPORTANTE (#3430): isso continua correto para o CWD usado nos comandos git
+ * de `defaultSpawn` (stash/merge/checkout devem rodar no checkout FÍSICO que
+ * de fato invocou `syncCode()`, não redirecionar magicamente pra outro
+ * worktree). O que mudou em #3430 é só o path do LOCK em si (ver
+ * `resolveSharedLockPath()`), que precisa ser compartilhado entre worktrees
+ * mesmo que `REPO_ROOT` — corretamente — não seja.
  */
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -103,12 +127,12 @@ export interface GitSyncResult {
  * esperando passphrase de SSH ou credencial bloquearia o processo indefinidamente,
  * derrotando o fail-soft. 120s cobre fetch/pull em conexões lentas com folga.
  */
-const GIT_TIMEOUT_MS = 120_000;
+export const GIT_TIMEOUT_MS = 120_000;
 
 /**
- * Lock de sync (#3423). Interface injetável — produção usa `createFileLock()`
- * (fs real); testes usam um double em memória para não depender do disco nem
- * interferir entre casos de teste sequenciais.
+ * Lock de sync (#3423, endurecido em #3430). Interface injetável — produção usa
+ * `createFileLock()` (fs real); testes usam um double em memória para não
+ * depender do disco nem interferir entre casos de teste sequenciais.
  */
 export interface SyncLock {
   /** Path do lock, só para diagnóstico nas mensagens de warning. */
@@ -124,34 +148,181 @@ export interface SyncLock {
 }
 
 /**
- * Lock morto (processo dono crashou sem `release()`) é considerado stale após
- * esse intervalo e liberado automaticamente na próxima tentativa de acquire.
- * Bem acima do pior caso realista de `syncCode()` (handful de comandos git a
- * até GIT_TIMEOUT_MS cada) para nunca confundir um sync lento com um lock morto.
+ * Subconjunto de `node:fs` usado por `createFileLock()` — injetável só para
+ * testes (#3430). Produção usa o módulo `fs` real (importado no topo deste
+ * arquivo); testes de race usam um double em memória que intercepta
+ * `renameSync`/`mkdirSync` pra simular 2 processos disputando a mesma
+ * reivindicação de lock morto sem precisar de 2 processos de verdade.
  */
-const LOCK_STALE_MS = 10 * 60 * 1000;
+export interface LockFs {
+  mkdirSync(path: string): void;
+  rmSync(path: string, opts: { recursive: boolean; force: boolean }): void;
+  statSync(path: string): { mtimeMs: number };
+  renameSync(oldPath: string, newPath: string): void;
+  writeFileSync(path: string, data: string): void;
+  readFileSync(path: string, encoding: "utf8"): string;
+}
 
 /**
- * Lock de arquivo real (#3423). Usa um DIRETÓRIO (não arquivo) como marcador —
- * `fs.mkdirSync` é atômico em POSIX e Windows (falha com EEXIST se já existe),
- * ao contrário de checar-depois-criar com arquivos comuns.
+ * Comandos git sequenciais que `syncCodeLocked()` pode rodar numa única
+ * chamada, contados explicitamente (não estimados) no caminho MAIS LONGO
+ * (dirty tree, branch != master): rev-parse HEAD(1) + checkout master(1,
+ * condicional) + fetch(1) + status(1) + rev-parse verify refs/stash ANTES(1)
+ * + stash --include-untracked(1) + merge --ff-only(1) + stash pop(1) = 8.
  *
- * Path deliberadamente FORA de `.git/`: em um `git worktree` (ex: sessões
- * overnight/develop rodando em `.claude/worktrees/agent-*`), `.git` é um
- * ARQUIVO (não diretório) apontando pro gitdir real — `mkdirSync` dentro dele
- * falharia com ENOTDIR. Um dotfile-dir na raiz do checkout funciona em
- * qualquer configuração (repo normal ou worktree).
- *
- * @param lockPath Path do diretório-lock (default: raiz do repo corrente —
- *   `REPO_ROOT`, resolvido do mesmo jeito que `defaultSpawn`, então 2
- *   invocações no MESMO checkout físico sempre colidem no mesmo lock).
+ * `LOCK_STALE_MS` abaixo deriva desse número em vez de um valor redondo
+ * chutado — #3430 gap 1 encontrou o valor antigo (10min fixo) matematicamente
+ * MENOR que 8 × `GIT_TIMEOUT_MS` (16min no pior caso teórico).
  */
-export function createFileLock(lockPath: string = resolve(REPO_ROOT, ".diaria-sync.lock")): SyncLock {
+export const MAX_SEQUENTIAL_GIT_SPAWNS = 8;
+
+/**
+ * Lock morto (processo dono crashou sem `release()`) é considerado stale após
+ * esse intervalo e liberado automaticamente na próxima tentativa de acquire.
+ *
+ * #3430 gap 1: o valor antigo (10min fixo; o comentário afirmava "bem acima
+ * do pior caso realista") não sustentava a aritmética — `MAX_SEQUENTIAL_GIT_SPAWNS`
+ * (8) × até `GIT_TIMEOUT_MS` (120s) cada = até 16min no pior caso teórico,
+ * ACIMA dos 10min antigos. Um sync legítimo-mas-lento (ex: contenção de I/O
+ * do OneDrive documentada no CLAUDE.md pra junctions de `data/` — o próprio
+ * checkout do repo pode compartilhar o mesmo disco) podia ter o lock roubado
+ * por um processo concorrente antes de terminar, reproduzindo a exata race
+ * que o lock foi criado pra eliminar (#3423).
+ *
+ * Novo valor: 2× o pior caso teórico + 2min de buffer fixo — margem generosa
+ * e DERIVADA (não um número redondo chutado de novo), cobrindo jitter de
+ * scheduling do SO e a diferença entre "GIT_TIMEOUT_MS é um teto por comando"
+ * vs. "8 comandos consecutivos raspando o teto" (pior caso real, não o caso
+ * comum).
+ *
+ * Trade-off aceito conscientemente (documentado no PR #3430): nenhum valor
+ * FINITO elimina 100% a janela teórica — só um heartbeat (renovar o mtime do
+ * lock periodicamente durante o trabalho) eliminaria por completo, e isso foi
+ * avaliado como desproporcional pra este mecanismo (mais um subsistema com
+ * seu próprio potencial de bug novo, exatamente o padrão que #3430 pede pra
+ * não repetir). Em vez disso, a reivindicação do lock morto agora é
+ * estruturalmente segura mesmo se a janela for cruzada — ver `acquire()`
+ * abaixo (reivindicação via `renameSync` atômico + verificação de identidade
+ * por mtime, gap 2) — então mesmo o cenário residual (staleness bater
+ * durante um sync legítimo-mas-lento) resulta, no pior caso, em dois syncs
+ * concorrentes (já fail-soft por design) em vez de corrupção do stash.
+ */
+export const LOCK_STALE_MS = MAX_SEQUENTIAL_GIT_SPAWNS * GIT_TIMEOUT_MS * 2 + 2 * 60_000;
+
+/** Nome do arquivo interno que guarda o token de propriedade do lock (#3430 gap 2). */
+const OWNER_TOKEN_FILE = "owner.json";
+
+function writeOwnerToken(lockDirPath: string, token: string, fsImpl: LockFs): void {
+  try {
+    fsImpl.writeFileSync(
+      resolve(lockDirPath, OWNER_TOKEN_FILE),
+      JSON.stringify({ pid: process.pid, token, acquiredAt: Date.now() }),
+    );
+  } catch {
+    // Best-effort (#3430) — falha ao escrever o token NÃO invalida o lock em
+    // si (`mkdirSync` já teve sucesso, provando posse ao nível do FS de forma
+    // atômica); só significa que a checagem extra de posse em `release()`
+    // degrada pro comportamento pré-#3430 (remove incondicionalmente) para
+    // ESTA aquisição especificamente.
+  }
+}
+
+function readOwnerToken(lockDirPath: string, fsImpl: LockFs): string | null {
+  try {
+    const raw = fsImpl.readFileSync(resolve(lockDirPath, OWNER_TOKEN_FILE), "utf8");
+    const parsed = JSON.parse(raw) as { token?: unknown };
+    return typeof parsed.token === "string" ? parsed.token : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve o path do lock compartilhado entre TODOS os worktrees do mesmo
+ * repositório físico (#3430 gap 3).
+ *
+ * `REPO_ROOT` (raiz calculada a partir de `import.meta.url` — a localização
+ * FÍSICA deste arquivo) difere por worktree: num `git worktree`, o arquivo
+ * `scripts/lib/git-sync.ts` é uma cópia física separada em
+ * `.claude/worktrees/agent-XXX/scripts/lib/git-sync.ts`, então 2 invocações de
+ * `syncCode()` em worktrees diferentes do MESMO repo resolviam (antes do
+ * #3430) o lock pra paths DIFERENTES e não-conflitantes — mesmo competindo
+ * pela mesma `refs/stash` (ref única por repositório, compartilhada entre
+ * worktrees — motivação original do #3423).
+ *
+ * `git rev-parse --path-format=absolute --git-common-dir` é o comando git
+ * canônico pra isso: resolve pro MESMO diretório `.git` físico
+ * independentemente de rodar a partir do checkout principal ou de um
+ * worktree vinculado (verificado empiricamente durante esta correção — rodar
+ * esse comando tanto da raiz do repo principal quanto de dentro de
+ * `.claude/worktrees/agent-*` retorna o EXATO mesmo path absoluto).
+ *
+ * IMPORTANTE — a sugestão original da issue #3430 era `git rev-parse
+ * --show-toplevel`. Isso NÃO resolve o gap: `--show-toplevel` devolve o
+ * diretório de trabalho do PRÓPRIO worktree (equivalente ao `REPO_ROOT`
+ * atual, físico), reproduzindo exatamente a mesma fragmentação por worktree
+ * que este fix precisa fechar — confirmado empiricamente durante esta
+ * correção (valores DIFERENTES entre o checkout principal e um worktree
+ * vinculado do mesmo repo). `--git-common-dir` é o comando correto porque
+ * aponta pro `.git` REAL compartilhado, não pro toplevel de cada working
+ * copy — desviamos da sugestão literal da issue por esse motivo.
+ *
+ * O lock vive DENTRO do `.git` comum retornado por esse comando — sempre um
+ * diretório real (nunca o arquivo `.git` de um worktree vinculado, que só
+ * existe no toplevel de CADA worktree individual, não no common dir
+ * compartilhado) — e nunca aparece em `git status`/`git stash` (tudo sob
+ * `.git/` é implicitamente ignorado pelo git, sem depender de `.gitignore`).
+ *
+ * Fail-soft: se o comando git falhar (não é um repositório, git indisponível,
+ * versão de git anterior a 2.31 sem suporte a `--path-format`), cai de volta
+ * pro comportamento pré-#3430 (`REPO_ROOT/.diaria-sync.lock`) — ainda correto
+ * pro caso comum de um único checkout, só reintroduzindo o gap de
+ * worktree-sharing (aceitável dado que a alternativa seria lançar exceção no
+ * meio de um mecanismo que é fail-soft por design inteiro).
+ */
+export function resolveSharedLockPath(spawn: SpawnFn = defaultSpawn): string {
+  const res = spawn("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  if (res.status === 0 && res.stdout.trim()) {
+    return resolve(res.stdout.trim(), "diaria-sync.lock");
+  }
+  return resolve(REPO_ROOT, ".diaria-sync.lock");
+}
+
+/**
+ * Lock de arquivo real (#3423, endurecido em #3430). Usa um DIRETÓRIO (não
+ * arquivo) como marcador — `fs.mkdirSync` é atômico em POSIX e Windows (falha
+ * com EEXIST se já existe), ao contrário de checar-depois-criar com arquivos
+ * comuns.
+ *
+ * @param lockPath Path do diretório-lock. Default (#3430): resolvido via
+ *   `resolveSharedLockPath()` — compartilhado entre TODOS os worktrees do
+ *   mesmo repositório físico (gap 3), não mais `REPO_ROOT` (que diferia por
+ *   worktree).
+ * @param spawn Spawner usado SÓ pra resolver o `lockPath` default via git
+ *   (ignorado se `lockPath` for passado explicitamente). Injetável para testes.
+ * @param fsImpl Subconjunto de `node:fs` usado pelas operações do lock.
+ *   Injetável para testes de race (#3430) — produção usa o `fs` real.
+ */
+export function createFileLock(
+  lockPath?: string,
+  spawn: SpawnFn = defaultSpawn,
+  fsImpl: LockFs = fs,
+): SyncLock {
+  const path = lockPath ?? resolveSharedLockPath(spawn);
+  // Token da aquisição ATUAL desta instância de SyncLock — `null` até
+  // `acquire()` suceder. `release()` só remove o diretório quando o token
+  // gravado em disco bate com este (#3430 gap 2) — nunca remove um lock que
+  // não foi ele quem criou.
+  let heldToken: string | null = null;
+
   return {
-    path: lockPath,
+    path,
     acquire(): boolean {
+      const myToken = randomUUID();
       try {
-        fs.mkdirSync(lockPath);
+        fsImpl.mkdirSync(path);
+        writeOwnerToken(path, myToken, fsImpl);
+        heldToken = myToken;
         return true;
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
@@ -165,46 +336,128 @@ export function createFileLock(lockPath: string = resolve(REPO_ROOT, ".diaria-sy
         // Lock já existe — pode ser (a) outro processo genuinamente em
         // andamento, ou (b) um lock morto de um processo que crashou sem
         // `release()`. Staleness por mtime distingue os dois casos.
-        let mtimeMs: number;
+        let observedMtimeMs: number;
         try {
-          mtimeMs = fs.statSync(lockPath).mtimeMs;
+          observedMtimeMs = fsImpl.statSync(path).mtimeMs;
         } catch {
           // Lock sumiu entre o EEXIST e o stat (outro processo liberou
           // concorrentemente) — tenta adquirir de novo, uma única vez.
           try {
-            fs.mkdirSync(lockPath);
+            fsImpl.mkdirSync(path);
+            writeOwnerToken(path, myToken, fsImpl);
+            heldToken = myToken;
             return true;
           } catch {
             return false;
           }
         }
 
-        if (Date.now() - mtimeMs <= LOCK_STALE_MS) {
+        if (Date.now() - observedMtimeMs <= LOCK_STALE_MS) {
           return false; // lock ativo — outro processo genuinamente sincronizando
         }
 
-        // Lock stale — remove e recria. Ainda existe uma janela TOCTOU minúscula
-        // aqui (2 processos limpando o MESMO lock morto ao mesmo tempo), mas é
-        // um caso muito mais raro que a race original (#3423 exigia só 2 syncs
-        // concorrentes com falha parcial de stash; isso exige 2 syncs concorrentes
-        // colidindo com um lock morto de um TERCEIRO processo já crashado no
-        // mesmo instante). Fail-soft: se perder a corrida, desiste nesta rodada.
+        // Lock stale — reivindica via RENAME atômico (#3430 gap 2), não mais
+        // `rmdirSync`+`mkdirSync` separados. `renameSync` é uma ÚNICA syscall
+        // atômica: só quem vence a corrida de renomear o path original
+        // consegue — quem perder recebe ENOENT determinístico (o path de
+        // origem já não existe mais pra ele), nunca um "sucesso silencioso"
+        // que destrua o lock que o vencedor acabou de criar. Isso fecha o
+        // bug original do gap 2: `rmdirSync`+`mkdirSync` eram 2 syscalls
+        // separadas SEM verificação de identidade entre elas, então o
+        // `rmdirSync` de um processo B podia remover o `mkdirSync`
+        // recém-criado do processo A sem levantar erro nenhum (ambos "achavam"
+        // que tinham reivindicado o MESMO lock morto original).
+        const staleClaimPath = `${path}.stale-${process.pid}-${Date.now()}-${randomUUID()}`;
         try {
-          fs.rmdirSync(lockPath);
-          fs.mkdirSync(lockPath);
+          fsImpl.renameSync(path, staleClaimPath);
+        } catch {
+          // Perdemos a corrida de reivindicação (outro processo já renomeou
+          // este exato lock morto primeiro), ou outro erro inesperado. De
+          // qualquer forma, NÃO fomos nós quem reivindicou. Desiste nesta
+          // rodada (fail-soft) — próxima chamada de `syncCode()` tenta de novo.
+          return false;
+        }
+
+        // Verificação de identidade PÓS-rename (fecha a janela residual: e se
+        // outro processo já tivesse reivindicado E recriado um lock FRESCO no
+        // instante exato entre nosso `statSync` acima e este `renameSync`?
+        // `renameSync` move atomicamente o que ESTIVER no path no momento —
+        // não distingue "o lock morto original" de "um lock fresco de outro
+        // dono" só por endereço. Comparamos o mtime do que de fato movemos
+        // contra o mtime que observamos ANTES de decidir reivindicar: se não
+        // bater, renomeamos o lock ERRADO — devolve pro lugar e desiste,
+        // preservando o lock do dono real).
+        let claimedMtimeMs: number;
+        try {
+          claimedMtimeMs = fsImpl.statSync(staleClaimPath).mtimeMs;
+        } catch {
+          // Não deveria acontecer (acabamos de renomear pra cá) — fail-soft.
+          return false;
+        }
+        if (claimedMtimeMs !== observedMtimeMs) {
+          try {
+            fsImpl.renameSync(staleClaimPath, path);
+          } catch {
+            // Se nem a devolução for possível, o pior caso é o path original
+            // ficar temporariamente ausente até o dono real notar — nunca
+            // corrompemos o lock dele (não o descartamos, não criamos um
+            // segundo lock concorrente).
+          }
+          return false;
+        }
+
+        // Identidade confirmada — reivindicamos de fato o lock morto
+        // ORIGINAL (mtime bate). Descarta (best-effort — se falhar, fica
+        // órfão mas inofensivo: não bloqueia ninguém, só ocupa espaço em disco).
+        try {
+          fsImpl.rmSync(staleClaimPath, { recursive: true, force: true });
+        } catch {
+          /* órfão inofensivo, ver comentário acima */
+        }
+
+        try {
+          fsImpl.mkdirSync(path);
+          writeOwnerToken(path, myToken, fsImpl);
+          heldToken = myToken;
           return true;
         } catch {
+          // Um 3º processo (não participante da corrida de reivindicação)
+          // criou um lock fresco no instante entre nosso rename vencedor e
+          // este `mkdirSync` — colisão normal (idêntica ao EEXIST comum no
+          // topo desta função), desiste nesta rodada.
           return false;
         }
       }
     },
     release(): void {
-      try {
-        fs.rmdirSync(lockPath);
-      } catch {
-        // Idempotente — já liberado, nunca adquirido nesta chamada, ou removido
-        // externamente. Nunca lança.
+      if (heldToken === null) {
+        // Nunca adquirimos nesta instância — idempotente, não faz nada
+        // (comportamento pré-#3430 preservado).
+        return;
       }
+
+      // #3430 gap 2: só remove se o token em disco bater com o que ESTA
+      // instância gravou ao adquirir. `null` (owner.json ilegível — ex:
+      // `writeOwnerToken` falhou ao gravar, ou lock criado por código
+      // legado/teste sem token) não é evidência POSITIVA de dono diferente —
+      // remove mesmo assim (fail-open, preserva o comportamento idempotente
+      // pré-#3430). Um token DIFERENTE É evidência clara: outro processo já
+      // reivindicou este lock (staleness bateu enquanto ainda trabalhávamos,
+      // ver trade-off documentado em `LOCK_STALE_MS`) — nunca remover o lock
+      // do dono atual; nosso `release()` vira no-op.
+      const onDiskToken = readOwnerToken(path, fsImpl);
+      if (onDiskToken !== null && onDiskToken !== heldToken) {
+        heldToken = null;
+        return;
+      }
+
+      try {
+        fsImpl.rmSync(path, { recursive: true, force: true });
+      } catch {
+        // Idempotente — já liberado, nunca adquirido nesta chamada, ou
+        // removido externamente. Nunca lança.
+      }
+      heldToken = null;
     },
   };
 }
@@ -232,12 +485,17 @@ function isAlreadyUpToDate(stdout: string): boolean {
  * Sincroniza o checkout local com origin/master.
  *
  * @param spawn   Spawner injetável para testes (default: spawnSync real).
- * @param lock    Lock injetável para testes (default: `createFileLock()` real).
+ * @param lock    Lock injetável para testes (default: `createFileLock()` real,
+ *                resolvido via o MESMO `spawn` recebido — #3430 — pra que o
+ *                path do lock use o mesmo spawner injetado em testes).
  *                #3423: serializa toda a chamada — se outro `syncCode()` já
  *                estiver rodando contra este checkout, retorna imediatamente
  *                sem tocar em stash/merge (evita a race TOCTOU no stash-recovery).
  */
-export function syncCode(spawn: SpawnFn = defaultSpawn, lock: SyncLock = createFileLock()): GitSyncResult {
+export function syncCode(
+  spawn: SpawnFn = defaultSpawn,
+  lock: SyncLock = createFileLock(undefined, spawn),
+): GitSyncResult {
   if (!lock.acquire()) {
     const msg =
       `[git-sync] WARN: outro processo já parece estar sincronizando este checkout ` +

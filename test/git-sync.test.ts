@@ -17,6 +17,10 @@
  *   - #2699 item 1: defaultSpawn roda git com cwd=REPO_ROOT, não process.cwd()
  *   - #2699 item 3: rev-parse falha → mensagem de diagnóstico aponta pra causa raiz
  *     (não-repo / git indisponível), não "branch desconhecida"
+ *   - #3430: lock hardening — reivindicação de lock morto é atômica (renameSync +
+ *     verificação de identidade, 2 "processos" concorrentes só 1 prevalece),
+ *     LOCK_STALE_MS tem margem real vs. MAX_SEQUENTIAL_GIT_SPAWNS × GIT_TIMEOUT_MS,
+ *     e o path do lock resolve pro MESMO valor a partir de 2 "worktrees" diferentes
  */
 
 import { describe, it, before, after } from "node:test";
@@ -29,10 +33,15 @@ import {
   syncCode,
   defaultSpawn,
   createFileLock,
+  resolveSharedLockPath,
   REPO_ROOT,
+  GIT_TIMEOUT_MS,
+  MAX_SEQUENTIAL_GIT_SPAWNS,
+  LOCK_STALE_MS,
   type SpawnFn,
   type SpawnResult,
   type SyncLock,
+  type LockFs,
 } from "../scripts/lib/git-sync.ts";
 
 // ── Helpers de mock ────────────────────────────────────────────────────────
@@ -729,12 +738,16 @@ describe("git-sync — #3423: createFileLock (lock de arquivo real)", () => {
   it("lock STALE (mtime antigo, processo dono crashou) é recuperado automaticamente", () => {
     const staleLockPath = join(lockDir, "stale.lock");
     fs.mkdirSync(staleLockPath);
-    // Recua o mtime pra além do limiar de staleness (LOCK_STALE_MS = 10min).
-    const veryOld = new Date(Date.now() - 15 * 60 * 1000);
+    // Recua o mtime pra além do limiar de staleness real (#3430: LOCK_STALE_MS
+    // agora é derivado, não mais um "10min" hardcoded — referenciar a constante
+    // exportada em vez de repetir o número evita o teste ficar obsoleto na
+    // próxima vez que a margem for recalibrada, como aconteceu aqui: o valor
+    // antigo deste teste (15min) já não seria mais stale sob o novo threshold).
+    const veryOld = new Date(Date.now() - (LOCK_STALE_MS + 60_000));
     fs.utimesSync(staleLockPath, veryOld, veryOld);
 
     const lock = createFileLock(staleLockPath);
-    assert.equal(lock.acquire(), true, "lock stale (>10min) deve ser recuperado, não bloquear pra sempre");
+    assert.equal(lock.acquire(), true, "lock stale (> LOCK_STALE_MS) deve ser recuperado, não bloquear pra sempre");
     lock.release();
   });
 
@@ -746,5 +759,216 @@ describe("git-sync — #3423: createFileLock (lock de arquivo real)", () => {
     assert.equal(lock.acquire(), false, "lock recente deve continuar bloqueando (processo genuinamente em andamento)");
 
     fs.rmdirSync(freshLockPath); // cleanup manual (não foi este `lock` que criou)
+  });
+});
+
+describe("git-sync — #3430 gap 1: LOCK_STALE_MS tem margem real sobre o pior caso documentado", () => {
+  it("LOCK_STALE_MS > MAX_SEQUENTIAL_GIT_SPAWNS × GIT_TIMEOUT_MS (regressão: 10min fixo antigo era MENOR que 16min)", () => {
+    const worstCaseMs = MAX_SEQUENTIAL_GIT_SPAWNS * GIT_TIMEOUT_MS;
+    assert.ok(
+      LOCK_STALE_MS > worstCaseMs,
+      `LOCK_STALE_MS (${LOCK_STALE_MS}ms) precisa ser MAIOR que o pior caso real documentado ` +
+        `(${MAX_SEQUENTIAL_GIT_SPAWNS} spawns × ${GIT_TIMEOUT_MS}ms = ${worstCaseMs}ms) — o bug original do #3430 ` +
+        `gap 1 era exatamente essa desigualdade invertida (10min fixo < 16min de pior caso teórico).`,
+    );
+  });
+
+  it("margem é de pelo menos 2x o pior caso teórico (não só marginalmente maior — cobre jitter de scheduling/I-O)", () => {
+    const worstCaseMs = MAX_SEQUENTIAL_GIT_SPAWNS * GIT_TIMEOUT_MS;
+    assert.ok(
+      LOCK_STALE_MS >= worstCaseMs * 2,
+      `margem esperada de pelo menos 2x o pior caso (${worstCaseMs * 2}ms); LOCK_STALE_MS atual: ${LOCK_STALE_MS}ms`,
+    );
+  });
+});
+
+describe("git-sync — #3430 gap 3: path do lock compartilhado entre worktrees do mesmo repo", () => {
+  it("2 spawns diferentes (simulando 2 worktrees do MESMO repo físico) resolvem pro MESMO lock path", () => {
+    // `git rev-parse --path-format=absolute --git-common-dir` sempre resolve
+    // pro MESMO `.git` real independente de rodar a partir do checkout
+    // principal ou de um worktree vinculado (verificado empiricamente durante
+    // a correção do #3430) — aqui simulamos isso com 2 spawns DIFERENTES
+    // (representando 2 processos/worktrees distintos) que, corretamente,
+    // devolvem o MESMO stdout pra esse comando específico.
+    const sharedGitCommonDir = "C:/Users/vjpix/Projects/diaria-studio/.git";
+    const spawnFromMainCheckout: SpawnFn = (cmd, args) => {
+      assert.equal(cmd, "git");
+      assert.deepEqual(args, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+      return { status: 0, stdout: sharedGitCommonDir + "\n", stderr: "" };
+    };
+    const spawnFromLinkedWorktree: SpawnFn = (cmd, args) => {
+      assert.equal(cmd, "git");
+      assert.deepEqual(args, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+      return { status: 0, stdout: sharedGitCommonDir + "\n", stderr: "" };
+    };
+
+    const pathFromMain = resolveSharedLockPath(spawnFromMainCheckout);
+    const pathFromWorktree = resolveSharedLockPath(spawnFromLinkedWorktree);
+
+    assert.equal(
+      pathFromMain,
+      pathFromWorktree,
+      `path do lock deveria ser IDÊNTICO a partir de qualquer worktree do mesmo repo — ` +
+        `main: ${pathFromMain}, worktree: ${pathFromWorktree}`,
+    );
+  });
+
+  it("git rev-parse --show-toplevel NÃO seria uma correção válida — devolve valores DIFERENTES por worktree", () => {
+    // Documenta por que a correção usa --git-common-dir em vez da sugestão
+    // literal da issue (--show-toplevel): --show-toplevel devolve o diretório
+    // de trabalho de CADA worktree individualmente, reproduzindo o mesmo gap
+    // que o fix precisa fechar.
+    const toplevelFromMain = "C:/Users/vjpix/Projects/diaria-studio";
+    const toplevelFromWorktree = "C:/Users/vjpix/Projects/diaria-studio/.claude/worktrees/agent-example";
+    assert.notEqual(
+      toplevelFromMain,
+      toplevelFromWorktree,
+      "pré-condição do teste documental: --show-toplevel varia por worktree (por isso não serve pro lock)",
+    );
+  });
+
+  it("git rev-parse falha (não-repo / git indisponível) → cai de volta pro REPO_ROOT-relativo, fail-soft", () => {
+    const failingSpawn: SpawnFn = () => ({ status: 128, stdout: "", stderr: "fatal: not a git repository" });
+
+    const path = resolveSharedLockPath(failingSpawn);
+
+    assert.equal(
+      path,
+      resolve(REPO_ROOT, ".diaria-sync.lock"),
+      "fallback deveria reproduzir o comportamento pré-#3430 (REPO_ROOT/.diaria-sync.lock)",
+    );
+  });
+});
+
+describe("git-sync — #3430 gap 2: reivindicação de lock morto é atômica (2 concorrentes, só 1 prevalece)", () => {
+  /**
+   * Filesystem falso em memória, suficiente pra rodar 2 instâncias de
+   * `createFileLock()` contra o MESMO diretório simulado e provar exclusão
+   * mútua durante a reivindicação de um lock stale — sem depender de 2
+   * processos reais (impossível de orquestrar deterministicamente num
+   * teste). Implementa exatamente a semântica do `node:fs` real que o código
+   * sob teste depende: `mkdirSync` lança EEXIST se já existe, `statSync`/
+   * `renameSync` lançam ENOENT se não existe, `renameSync` move atomicamente
+   * (só uma chamada pode "vencer" um dado path de origem).
+   */
+  class FakeLockFs implements LockFs {
+    private dirs = new Map<string, number>(); // path -> mtimeMs
+    private files = new Map<string, string>(); // path -> conteúdo
+
+    private enoent(): never {
+      const err = new Error("ENOENT") as NodeJS.ErrnoException;
+      err.code = "ENOENT";
+      throw err;
+    }
+    private eexist(): never {
+      const err = new Error("EEXIST") as NodeJS.ErrnoException;
+      err.code = "EEXIST";
+      throw err;
+    }
+
+    mkdirSync(path: string): void {
+      if (this.dirs.has(path)) this.eexist();
+      this.dirs.set(path, Date.now());
+    }
+    rmSync(path: string): void {
+      this.dirs.delete(path);
+      for (const key of [...this.files.keys()]) {
+        if (key.startsWith(path)) this.files.delete(key);
+      }
+    }
+    statSync(path: string): { mtimeMs: number } {
+      if (!this.dirs.has(path)) this.enoent();
+      return { mtimeMs: this.dirs.get(path)! };
+    }
+    renameSync(oldPath: string, newPath: string): void {
+      if (!this.dirs.has(oldPath)) this.enoent();
+      const mtime = this.dirs.get(oldPath)!;
+      this.dirs.delete(oldPath);
+      this.dirs.set(newPath, mtime);
+      for (const [key, val] of [...this.files.entries()]) {
+        if (key.startsWith(oldPath)) {
+          this.files.delete(key);
+          this.files.set(newPath + key.slice(oldPath.length), val);
+        }
+      }
+    }
+    writeFileSync(path: string, data: string): void {
+      this.files.set(path, data);
+    }
+    readFileSync(path: string): string {
+      const v = this.files.get(path);
+      if (v === undefined) this.enoent();
+      return v!;
+    }
+
+    /** Helper de teste: simula um lock morto já existente com mtime antigo. */
+    seedStaleDir(path: string, mtimeMs: number): void {
+      this.dirs.set(path, mtimeMs);
+    }
+  }
+
+  it("2 acquire() sequenciais contra o MESMO lock morto → só o primeiro prevalece", () => {
+    const fakeFs = new FakeLockFs();
+    const lockPath = "/fake-repo/.git/diaria-sync.lock";
+    fakeFs.seedStaleDir(lockPath, Date.now() - (LOCK_STALE_MS + 60_000));
+
+    const lockA = createFileLock(lockPath, defaultSpawn, fakeFs);
+    const lockB = createFileLock(lockPath, defaultSpawn, fakeFs);
+
+    assert.equal(lockA.acquire(), true, "A reivindica o lock morto");
+    // B roda DEPOIS de A já ter recriado um lock fresco no mesmo path — B deve
+    // ver um lock ATIVO (mtime recente, não mais stale) e recuar normalmente,
+    // sem jamais destruir o lock de A.
+    assert.equal(lockB.acquire(), false, "B NÃO deve conseguir adquirir — A já é dono do lock fresco");
+  });
+
+  it("reivindicação atômica: se A completar o ciclo inteiro DENTRO da janela entre o statSync e o renameSync de B, B detecta via mtime e desiste (nunca destrói o lock de A)", () => {
+    // Reprodução da janela residual mais estreita possível do gap 2: B já fez
+    // seu próprio EEXIST + statSync (observou o lock morto original, decidiu
+    // reivindicar) — mas ANTES de B chamar seu renameSync, A roda o ciclo
+    // INTEIRO de reivindicação (rename + descarte + mkdir fresco) contra o
+    // MESMO lock morto original. Isso é modelado interceptando a PRIMEIRA
+    // chamada de renameSync(lockPath, ...) — que é a de B — e injetando a
+    // corrida completa de A antes de deixar a chamada de B prosseguir.
+    const fakeFs = new FakeLockFs();
+    const lockPath = "/fake-repo/.git/diaria-sync.lock";
+    fakeFs.seedStaleDir(lockPath, Date.now() - (LOCK_STALE_MS + 60_000));
+
+    let injectedRaceOnce = false;
+    const originalRenameSync = fakeFs.renameSync.bind(fakeFs);
+    fakeFs.renameSync = (oldPath: string, newPath: string) => {
+      if (!injectedRaceOnce && oldPath === lockPath) {
+        injectedRaceOnce = true;
+        // A "chega" e reivindica o MESMO lock morto original ANTES da chamada
+        // de renameSync de B (esta, em andamento) prosseguir.
+        const lockA = createFileLock(lockPath, defaultSpawn, fakeFs);
+        const resultA = lockA.acquire();
+        assert.equal(resultA, true, "pré-condição do teste: A deve reivindicar primeiro, dentro da janela de B");
+      }
+      return originalRenameSync(oldPath, newPath);
+    };
+
+    const lockB = createFileLock(lockPath, defaultSpawn, fakeFs);
+    const resultB = lockB.acquire();
+
+    assert.equal(
+      resultB,
+      false,
+      "B deve detectar (via verificação de identidade por mtime pós-rename) que renomeou o lock FRESCO de A, " +
+        "não o lock morto original que observou — e desistir, devolvendo o lock de A intacto",
+    );
+
+    // O lock de A precisa continuar existindo e utilizável — a prova final de
+    // que B não o destruiu: um 3º acquire() no mesmo path (simulando A
+    // tentando liberar seu próprio lock) só deve suceder se A ainda for dono.
+    const lockAAgain = createFileLock(lockPath, defaultSpawn, fakeFs);
+    // Path ainda deve estar ocupado (não sumiu, não foi substituído por B) —
+    // uma nova tentativa de acquire() deve falhar (lock ativo de A, mtime
+    // recente) em vez de suceder como se estivesse livre.
+    assert.equal(
+      lockAAgain.acquire(),
+      false,
+      "o lock de A deve continuar intacto e ativo após a tentativa frustrada de B — prova de que B não o corrompeu",
+    );
   });
 });
