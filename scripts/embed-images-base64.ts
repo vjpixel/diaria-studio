@@ -137,6 +137,11 @@ function main(): void {
     console.error(
       `⚠️  ${result.missing.length} imagem(ns) sem arquivo local: ${result.missing.join(", ")}`,
     );
+    // code-review low (#3370): sinaliza falha parcial via exit code — sem isso,
+    // um caller que só checa exit code (como substitute-image-urls.ts faz pra
+    // placeholders não-resolvidas) não percebe imagem faltante e o Artifact
+    // publicado carrega URL remota quebrada pra aquela imagem, sem sinal de erro.
+    process.exitCode = 1;
   }
 }
 
