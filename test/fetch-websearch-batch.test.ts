@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import {
   processResult,
   buildSourceQuery,
+  shouldRecordBraveResponse,
 } from "../scripts/fetch-websearch-batch.ts";
 
 describe("processResult", () => {
@@ -135,6 +136,34 @@ describe("processResult", () => {
     );
     assert.ok(r.kept);
     assert.equal(r.kept?.discovered_source, undefined);
+  });
+});
+
+// (#3389) REGRESSÃO: raiz do falso-positivo persistente do alarme critical
+// (#3002/#3122/#3271/#3307/#3389). Antes deste fix, o guard em runQuery só
+// gravava crédito para status ok/rate_limited — uma resposta 402 "usage limit
+// exceeded" (free tier esgotado) descartava o header quota_remaining mesmo
+// quando presente, congelando `quota_remaining_last_seen` no último valor
+// pré-exaustão pelo resto do mês. Este teste caracteriza a decisão correta:
+// gravar (sem contar como query real — ver test/brave-credits.test.ts) sempre
+// que o header vier junto do erro.
+describe("shouldRecordBraveResponse (#3389)", () => {
+  it("grava sempre que status é ok", () => {
+    assert.equal(shouldRecordBraveResponse({ status: "ok" }), true);
+  });
+
+  it("grava sempre que status é rate_limited (429), mesmo sem quota_remaining", () => {
+    assert.equal(shouldRecordBraveResponse({ status: "rate_limited" }), true);
+  });
+
+  it("grava quando status é error MAS o header quota_remaining veio preenchido (402 com header) — o fix do #3389", () => {
+    assert.equal(shouldRecordBraveResponse({ status: "error", quota_remaining: 0 }), true);
+    assert.equal(shouldRecordBraveResponse({ status: "error", quota_remaining: 49 }), true);
+  });
+
+  it("NÃO grava quando status é error e não há quota_remaining (comportamento pré-#3389 preservado)", () => {
+    assert.equal(shouldRecordBraveResponse({ status: "error" }), false);
+    assert.equal(shouldRecordBraveResponse({ status: "error", quota_remaining: undefined }), false);
   });
 });
 

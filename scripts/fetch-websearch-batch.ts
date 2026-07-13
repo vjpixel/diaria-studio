@@ -35,7 +35,7 @@ import "dotenv/config";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { braveSearch, freshnessForWindow, type BraveWebResult } from "./lib/brave-search.ts";
+import { braveSearch, freshnessForWindow, type BraveWebResult, type BraveSearchResponse } from "./lib/brave-search.ts";
 import { isAggregator } from "./lib/aggregator-blocklist.ts";
 import { containsAITerms } from "./lib/ai-relevance.ts";
 import { isMainModule } from "./lib/cli-args.ts";
@@ -178,6 +178,39 @@ export function processResult(
 }
 
 /**
+ * Pure (#3389): decide se uma resposta Brave deve ser persistida no log de
+ * créditos, e com que status.
+ *
+ * - `ok`/`rate_limited` SEMPRE gravam — são as únicas respostas que a Brave
+ *   efetivamente cobra (invariante pré-existente, #1558/#2378).
+ * - `error` (qualquer 4xx não-429, ex: 402 "usage limit exceeded" quando o
+ *   free tier esgota) só grava SE a resposta trouxe um `quota_remaining` —
+ *   isto é, se o header `X-RateLimit-Remaining` veio junto do erro. Essas
+ *   entradas NUNCA contam como query cobrada (ver o guard `status === "error"`
+ *   em `computeBraveCreditStats`) — existem só pra manter `quota_remaining_last_seen`
+ *   fresco durante uma janela de exaustão.
+ *
+ * Causa raiz do falso-positivo persistente do alarme critical (#3002, #3122,
+ * #3271, #3307, #3389): sem isto, a partir do momento em que o free tier
+ * esgota, TODA query Path A passa a retornar `status: "error"` (402) e o guard
+ * antigo (`ok || rate_limited`) descartava o header dessas respostas — mesmo
+ * quando ele vinha preenchido. `quota_remaining_last_seen` (e portanto
+ * `effective_used`/`alert_level`) CONGELAVA no último valor lido antes da
+ * exaustão, pelo resto do mês, sem nenhum sinal de que a leitura estava obsoleta
+ * (Path A continuava rodando normalmente edição após edição — só que toda
+ * tentativa falhava silenciosamente sem deixar rastro no jsonl). Gravar o
+ * header também nos erros mantém a leitura sempre corrente: se a exaustão
+ * persistir, o alerta critical passa a ser uma confirmação fresca, não um eco
+ * de dias atrás.
+ */
+export function shouldRecordBraveResponse(
+  response: Pick<BraveSearchResponse, "status" | "quota_remaining">,
+): boolean {
+  if (response.status === "ok" || response.status === "rate_limited") return true;
+  return typeof response.quota_remaining === "number";
+}
+
+/**
  * Roda uma query Brave + processa resultados.
  * Caller deve respeitar rate limit antes de chamar.
  */
@@ -198,10 +231,11 @@ async function runQuery(
 
   const duration_ms = Date.now() - startedAt;
 
-  // #1558: log credit usage (apenas pra status que CONTAM contra free tier)
-  // 4xx não-429 (ex: 400 bad request, 403 forbidden) não são registrados: a Brave não cobra
-  // queries que retornam erro de request (só cobra ok + rate_limited). Manter consistente.
-  if (response.status === "ok" || response.status === "rate_limited") {
+  // #1558/#3389: log credit usage. ok/rate_limited sempre (são cobrados pela
+  // Brave); error só quando trouxer quota_remaining (ver shouldRecordBraveResponse
+  // acima) — nesse caso NUNCA conta como query real (guard em computeBraveCreditStats),
+  // só preserva a leitura fresca do header.
+  if (shouldRecordBraveResponse(response)) {
     recordBraveCredit({
       edition: args.edition,
       query,

@@ -489,26 +489,160 @@ describe("computeBraveCreditStats", () => {
     rmSync(path, { force: true });
   });
 
-  // #2378: characterisation — error queries are never recorded (only ok/rate_limited count).
-  // This is enforced at the call site (fetch-websearch-batch.ts), not here, but the
-  // JSONL-only design means errors can never appear in the file by construction.
-  it("does not count queries with status error (they would not be in the file)", () => {
+  // #2378 (atualizado por #3389): "error" agora PODE aparecer no arquivo —
+  // fetch-websearch-batch.ts passou a gravá-las quando trazem quota_remaining
+  // (ver shouldRecordBraveResponse). Continuam NÃO contando como query real —
+  // ver describe("#3389") abaixo para a cobertura completa desse guard.
+  it("does not count queries with status error even when present in the file", () => {
     const path = makeTmpPath();
     const now = new Date("2026-06-18T12:00:00Z");
     writeFileSync(
       path,
       [
-        // 'error' status entries should never be written, but if they were, they'd still
-        // be counted since compute() only filters by timestamp, not status.
-        // This test documents the design: the guard lives at the call site, not here.
         JSON.stringify({ timestamp: "2026-06-18T10:00:00Z", query: "q1", status: "ok" }),
         JSON.stringify({ timestamp: "2026-06-18T10:01:00Z", query: "q2", status: "rate_limited" }),
+        JSON.stringify({ timestamp: "2026-06-18T10:02:00Z", query: "q3", status: "error", quota_remaining: 100 }),
       ].join("\n"),
       "utf8",
     );
     const stats = computeBraveCreditStats(null, path, now);
-    // Only 2 entries exist — both ok/rate_limited (as per call-site guard)
+    // Only the 2 ok/rate_limited entries count — the error entry is excluded.
     assert.equal(stats.queries_this_month, 2);
+    rmSync(path, { force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3389 — regressão: alarme critical persistente por header congelado
+// ---------------------------------------------------------------------------
+//
+// Causa raiz confirmada (ver scripts/fetch-websearch-batch.ts `runQuery` +
+// `shouldRecordBraveResponse`): quando o free tier Brave esgota, toda query
+// Path A passa a retornar HTTP 402 (`status: "error"` em braveSearch()). Antes
+// do #3389, o guard de gravação de crédito só disparava para `ok`/`rate_limited`
+// — descartando o header `X-RateLimit-Remaining` mesmo quando ele vinha
+// preenchido na resposta de erro. Resultado: `quota_remaining_last_seen`
+// CONGELAVA no último valor lido antes da exaustão pelo resto do mês (Path A
+// continuava rodando normalmente, edição após edição, sem nunca deixar rastro
+// no jsonl) — daí `data/brave-credits.jsonl` "silencioso" desde a exaustão
+// (não porque Path A parou, mas porque toda tentativa falhava sem gravar
+// nada), e o relatório reportando "critical" com uma leitura de dias atrás,
+// sem qualquer sinal de que estava obsoleta.
+//
+// O fix (#3389): fetch-websearch-batch.ts agora GRAVA entradas status="error"
+// quando elas trazem quota_remaining — mas computeBraveCreditStats (guard
+// acima) as EXCLUI da contagem de queries reais, então elas só servem pra
+// manter quota_remaining_last_seen fresco. Os testes abaixo comprovam as duas
+// pontas: (1) entradas de erro atualizam quota_remaining_last_seen mesmo após
+// entradas reais mais antigas — a leitura passa a refletir SEMPRE a mais
+// recente, mesmo que só "error" tenha ocorrido desde então; (2) isso não
+// infla queries_this_month_real (senão o breakdown do relatório mentiria).
+describe("computeBraveCreditStats — leitura fresca do header durante exaustão (#3389)", () => {
+  it("quota_remaining_last_seen reflete a ÚLTIMA leitura, mesmo vinda de uma entrada status=error (fix)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-07-13T12:00:00Z");
+    writeFileSync(
+      path,
+      [
+        // 260709: Path A ainda funcionando, quota caindo pra 49 (97.55% usado).
+        ...Array.from({ length: 999 }, (_, i) =>
+          JSON.stringify({ timestamp: "2026-07-09T10:00:00Z", query: `q${i}`, status: "ok" }),
+        ),
+        JSON.stringify({ timestamp: "2026-07-09T10:05:00Z", query: "q999b", status: "ok", quota_remaining: 49 }),
+        // 260710-260713: free tier esgotado — toda query 402, mas o fix (#3389)
+        // grava o header mesmo assim (status="error"). Aqui simulamos uma leitura
+        // FRESCA diferente (quota_remaining=49 ainda, confirmado de novo — não é
+        // eco do dia 9, é uma NOVA leitura do dia 13 que corrobora o mesmo estado).
+        JSON.stringify({ timestamp: "2026-07-13T09:00:00Z", query: "q_edition_260713", status: "error", quota_remaining: 49, http_status: 402 }),
+      ].join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats("260713", path, now);
+    // A leitura de 260713 (mesmo sendo "error") é a mais recente no arquivo —
+    // confirma que o header foi consultado de novo hoje, não é eco de dias atrás.
+    assert.equal(stats.quota_remaining_last_seen, 49);
+    // CRÍTICO: a entrada error NÃO conta como query real — só as 1000 de 260709 contam.
+    assert.equal(stats.queries_this_month_real, 1000, "entrada status=error não deve inflar o contador real");
+    assert.equal(stats.queries_this_edition_real, 0, "a única entrada desta edição é status=error — não conta");
+    assert.equal(stats.alert_level, "critical", "1951/2000 = 97.55% — critical é uma leitura FRESCA confirmada, não um eco congelado");
+    // A leitura foi feita 3h antes de `now` (09:00 vs 12:00 do mesmo dia) — fresca.
+    assert.equal(stats.quota_remaining_age_hours, 3, "leitura de hoje às 09:00, now=12:00 → 3h de idade");
+    rmSync(path, { force: true });
+  });
+
+  it("caracterização do bug pré-#3389: sem a entrada error, o header trava numa leitura de dias atrás e o breakdown desta edição fica sem NENHUM registro", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-07-13T12:00:00Z");
+    // Só a entrada de 260709 — reproduz o estado real reportado na issue #3389
+    // (data/brave-credits.jsonl sem NENHUMA entrada nova desde 260709, pro guard
+    // antigo que descartava respostas de erro mesmo com header presente).
+    writeFileSync(
+      path,
+      [
+        ...Array.from({ length: 999 }, (_, i) =>
+          JSON.stringify({ timestamp: "2026-07-09T10:00:00Z", query: `q${i}`, status: "ok" }),
+        ),
+        JSON.stringify({ timestamp: "2026-07-09T10:05:00Z", query: "q999b", status: "ok", quota_remaining: 49 }),
+      ].join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats("260713", path, now);
+    // O alerta ainda mostra critical (correto, o free tier de fato está esgotado),
+    // mas ZERO evidência de que essa leitura foi reconfirmada nesta edição —
+    // exatamente o sintoma relatado: brave-credits.jsonl "silencioso" desde 260709.
+    assert.equal(stats.quota_remaining_last_seen, 49);
+    assert.equal(stats.queries_this_edition, 0, "260713 não deixou NENHUM rastro no jsonl — o sintoma relatado na issue");
+    assert.equal(stats.alert_level, "critical");
+    // (#3389 defesa em profundidade) quota_remaining_age_hours EXPÕE que essa
+    // leitura tem 4 dias (96h) — mesmo que o fix principal (gravar header em
+    // erros) por algum motivo não capture uma leitura nova, o relatório agora
+    // consegue sinalizar "isso é obsoleto" em vez de apresentar como corrente.
+    assert.equal(stats.quota_remaining_age_hours, 97.9, "260709 10:05 até 260713 12:00 = ~98h de idade");
+    rmSync(path, { force: true });
+  });
+});
+
+describe("computeBraveCreditStats — quota_remaining_age_hours (#3389)", () => {
+  it("ausente quando não há quota_remaining este mês", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-07-13T12:00:00Z");
+    writeFileSync(
+      path,
+      JSON.stringify({ timestamp: "2026-07-13T10:00:00Z", query: "q1", status: "ok" }),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.quota_remaining_age_hours, undefined);
+    rmSync(path, { force: true });
+  });
+
+  it("arredonda pra 1 casa decimal", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-07-13T12:15:00Z"); // 2h15min depois
+    writeFileSync(
+      path,
+      JSON.stringify({ timestamp: "2026-07-13T10:00:00Z", query: "q1", status: "ok", quota_remaining: 100 }),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.quota_remaining_age_hours, 2.3, "2h15min = 2.25h, arredonda pra 2.3");
+    rmSync(path, { force: true });
+  });
+
+  it("acompanha a entrada MAIS RECENTE com quota_remaining, não a primeira", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-07-13T12:00:00Z");
+    writeFileSync(
+      path,
+      [
+        JSON.stringify({ timestamp: "2026-07-10T00:00:00Z", query: "q_old", status: "ok", quota_remaining: 500 }),
+        JSON.stringify({ timestamp: "2026-07-13T10:00:00Z", query: "q_new", status: "error", quota_remaining: 49, http_status: 402 }),
+      ].join("\n"),
+      "utf8",
+    );
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.quota_remaining_last_seen, 49, "deve usar a leitura mais recente (49), não a antiga (500)");
+    assert.equal(stats.quota_remaining_age_hours, 2, "idade relativa à leitura mais recente (260713 10:00 → 12:00 = 2h)");
     rmSync(path, { force: true });
   });
 });

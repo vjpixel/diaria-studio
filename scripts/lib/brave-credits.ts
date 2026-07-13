@@ -3,24 +3,33 @@
  *
  * Counter persistente de queries Brave Search. Cada chamada bem-sucedida
  * (`status: ok` ou `rate_limited`) vira 1 linha em `data/brave-credits.jsonl`.
- * Queries com `status: error` NÃO contam (não são cobradas pelo Brave).
+ * Queries com `status: error` NÃO contam como query cobrada — mas (#3389) PODEM
+ * ser gravadas mesmo assim, só pra preservar uma leitura fresca do header
+ * `X-RateLimit-Remaining` quando ele veio presente na resposta de erro (ex: 402
+ * "usage limit exceeded" quando o free tier esgota). Ver `computeBraveCreditStats`
+ * abaixo — o guard `entry.status === "error"` exclui essas entradas da contagem,
+ * mas ainda usa seu `quota_remaining` pra atualizar `quota_remaining_last_seen`.
  *
  * Free tier: 2000 queries/mês. Counter local dá visibilidade imediata —
  * dashboard Brave tem ~1h de delay.
  *
- * ## Semântica de query (#2378)
+ * ## Semântica de query (#2378, revisado #3389)
  *
- * - **1 entrada = 1 query cobrada.** Cada chamada `braveSearch()` que retorna
- *   `ok` ou `rate_limited` gera exactamente 1 entrada via `recordBraveCredit`.
+ * - **1 entrada = 1 query cobrada, EXCETO entradas `status: "error"`.** Cada
+ *   chamada `braveSearch()` que retorna `ok` ou `rate_limited` gera exatamente
+ *   1 entrada via `recordBraveCredit`, contada em `queries_this_month`/`_edition`.
  *   Não há batching — `count` (nº de resultados por query) não afeta o crédito.
+ *   Entradas `status: "error"` (ver #3389 acima) NUNCA contam pra esses totais,
+ *   independente de estarem no arquivo.
  *
- * - **Retries de falha NÃO contam duplo.** Um retry após `status: "error"` não
- *   chama `recordBraveCredit` (o guard `if (ok || rate_limited)` em
- *   `fetch-websearch-batch.ts:201` exclui erros). Se o retry subsequente
- *   retornar `ok`, conta 1 crédito — comportamento correto (Brave cobra o
- *   retry como query nova). Não existe retry automático dentro de `braveSearch`
- *   nem de `fetch-websearch-batch.ts` — um retry é sempre uma nova invocação
- *   externa ao script, não um loop interno que duplicaria o counter.
+ * - **Retries de falha NÃO contam duplo como query cobrada.** Um retry após
+ *   `status: "error"` pode gravar uma entrada (só pro header, #3389 — ver
+ *   `shouldRecordBraveResponse` em `fetch-websearch-batch.ts`), mas ela é
+ *   excluída da contagem de créditos. Se o retry subsequente retornar `ok`,
+ *   conta 1 crédito — comportamento correto (Brave cobra o retry como query
+ *   nova). Não existe retry automático dentro de `braveSearch` nem de
+ *   `fetch-websearch-batch.ts` — um retry é sempre uma nova invocação externa
+ *   ao script, não um loop interno que duplicaria o counter.
  *
  * - **Escopo mensal usa UTC de ponta a ponta.** `timestamp` é gravado como
  *   `new Date().toISOString()` (UTC). `monthPrefix` é `now.toISOString()
@@ -53,7 +62,12 @@ export interface BraveCreditEntry {
   timestamp: string; // ISO 8601
   edition?: string; // AAMMDD when called from edition context
   query: string;
-  status: "ok" | "rate_limited";
+  // (#3389) "error" added: entries recorded SOLELY to preserve a fresh
+  // `quota_remaining` reading when the query itself failed (e.g., 402 "usage
+  // limit exceeded" once the free tier is exhausted) — see
+  // `computeBraveCreditStats` below for why these must NEVER count toward
+  // queries_this_month/_edition (Brave does not charge failed requests).
+  status: "ok" | "rate_limited" | "error";
   http_status?: number;
   quota_remaining?: number; // X-RateLimit-Remaining from Brave API response (#2608 C)
   estimated?: true; // present when entry is an estimate, not a real API call (#2608 A)
@@ -212,6 +226,16 @@ export interface BraveCreditStats {
   // ciclo de cobrança do Brave para diffar contra uma leitura anterior — usar
   // `delta_untracked`/`effective_used` para relato ao editor, não este campo.
   real_used_raw?: number;
+  // (#3389) idade, em horas, da entrada que produziu `quota_remaining_last_seen`
+  // (now − timestamp dessa entrada). Defesa em profundidade complementar ao fix
+  // de #3389 (gravar o header também em respostas de erro): mesmo que uma
+  // situação futura volte a impedir a leitura fresca do header (ex: Brave para
+  // de enviar X-RateLimit-Remaining em respostas 402 — não verificável nesta
+  // sessão sem BRAVE_API_KEY live), este campo torna a estagnação VISÍVEL no
+  // relatório em vez de silenciosa, para que "critical" nunca seja lido como
+  // uma leitura de agora quando na verdade é de dias atrás. Ausente quando não
+  // há quota_remaining este mês.
+  quota_remaining_age_hours?: number;
 }
 
 export const FREE_TIER_LIMIT = 2000;
@@ -271,6 +295,7 @@ export function computeBraveCreditStats(
   let queries_this_edition_real = 0;
   let queries_this_edition_estimated = 0;
   let quota_remaining_last_seen: number | undefined;
+  let quota_remaining_last_seen_ts: string | undefined; // (#3389) staleness tracking
 
   for (const line of lines) {
     let entry: BraveCreditEntry;
@@ -287,7 +312,17 @@ export function computeBraveCreditStats(
     // values from previous billing cycles don't corrupt delta_untracked at cycle boundaries
     if (typeof entry.quota_remaining === "number") {
       quota_remaining_last_seen = entry.quota_remaining;
+      quota_remaining_last_seen_ts = entry.timestamp; // (#3389)
     }
+
+    // (#3389) "error" entries exist ONLY to keep quota_remaining_last_seen fresh
+    // during free-tier exhaustion (fetch-websearch-batch.ts's runQuery records
+    // them for their header alone once every query starts failing with 402 —
+    // see shouldRecordBraveResponse). Brave doesn't charge failed requests, so
+    // these must NEVER inflate queries_this_month/_edition — a "real" query
+    // count that grows just because we kept retrying a query Brave rejected
+    // would be its own false signal, on top of the one this fix addresses.
+    if (entry.status === "error") continue;
 
     const isEstimated = entry.estimated === true;
     if (isEstimated) {
@@ -362,6 +397,17 @@ export function computeBraveCreditStats(
         ? "warn"
         : "ok";
 
+  // (#3389) Idade da leitura do header em horas — defesa em profundidade (ver
+  // doc do campo em BraveCreditStats acima). NaN-safe: só computa quando o
+  // timestamp parseia; nunca lança.
+  let quota_remaining_age_hours: number | undefined;
+  if (quota_remaining_last_seen_ts) {
+    const readAt = new Date(quota_remaining_last_seen_ts).getTime();
+    if (!isNaN(readAt)) {
+      quota_remaining_age_hours = Math.round(((now.getTime() - readAt) / 3600000) * 10) / 10;
+    }
+  }
+
   return {
     queries_this_edition,
     queries_this_month,
@@ -379,6 +425,7 @@ export function computeBraveCreditStats(
     ...(typeof delta_untracked === "number" ? { delta_untracked } : {}),
     ...(header_discarded ? { header_discarded } : {}),
     ...(typeof real_used === "number" ? { real_used_raw: real_used } : {}),
+    ...(typeof quota_remaining_age_hours === "number" ? { quota_remaining_age_hours } : {}),
   };
 }
 
