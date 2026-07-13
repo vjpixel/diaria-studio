@@ -16,6 +16,13 @@
  *   Worker KV do poll (`poll.diaria.workers.dev`, mesma key `img-{edition}-...`
  *   usada por `publish-monthly.ts`) — essas imagens VÃO pro email real, não são
  *   preview-only, então continuam em Cloudflare (fora do escopo de #3214).
+ * - Grava `_internal/public-images.json` (url pública → filename local por
+ *   imagem, #3392) — manifest consumido por `scripts/embed-images-base64.ts`
+ *   pra gerar a variante `cloudflare-preview-embedded.html` publicada via
+ *   `Artifact` (mesmo padrão do diário #3214/#3370: Artifacts rodam sob CSP
+ *   estrita que bloqueia `<img src="https://...">` remoto, só `data:` URI —
+ *   sem essa variante o preview mensal reproduziria a mesma regressão do
+ *   diário, imagem quebrada dentro do Artifact).
  *
  * O que NÃO faz: não toca no Brevo, não pré-registra gabarito, não embute a
  * imagem D1 (essa entra manualmente no Brevo, igual ao fluxo atual). É só o
@@ -28,7 +35,7 @@
  * Env:
  *   CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_WORKERS_TOKEN — upload das imagens pro KV
  *
- * Output stdout (JSON): { yymm, cycle, html_path }
+ * Output stdout (JSON): { yymm, cycle, html_path, public_images_path }
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -38,7 +45,7 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { draftToEmail, eiaEditionFromYymm, parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render.ts"; // #2018-fix: captionForGenerator centralizado
-import { uploadDestaqueImages, uploadEiaImages, uploadLivrosImage } from "./lib/mensal/monthly-image-upload.ts";
+import { uploadDestaqueImages, uploadEiaImages, uploadLivrosImage, LIVROS_PROMO_FILENAME } from "./lib/mensal/monthly-image-upload.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { fetchMonthlyEiaPrevResultLine } from "./lib/mensal/monthly-eia-prev-result.ts"; // #2948
 import {
@@ -48,6 +55,53 @@ import {
 } from "./lib/mensal/monthly-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+export interface MonthlyPublicImage {
+  url: string;
+  filename: string;
+  mime_type: string;
+}
+
+/**
+ * Infere mime_type pela extensão do filename — evita hardcode fixo (self-review
+ * #3392: todo filename hoje é .jpg, mas um hardcode sobreviveria silenciosamente
+ * a uma futura mudança de formato).
+ */
+function mimeForFilename(filename: string): string {
+  const ext = filename.toLowerCase().split(".").pop() ?? "";
+  if (ext === "png") return "image/png";
+  if (ext === "webp") return "image/webp";
+  return "image/jpeg";
+}
+
+/**
+ * Pure (#3392): monta o manifest `{ images: { slot: { url, filename, mime_type } } }`
+ * consumido por `scripts/embed-images-base64.ts` — mesmo shape de
+ * `06-public-images.json` do diário (sem `file_id`, que o embed não lê).
+ * `filename` é sempre relativo à raiz da edição mensal (`monthlyDir`), igual
+ * à convenção de `--edition-dir` do embed script.
+ */
+export function buildPublicImagesManifest(
+  eia: { a?: string; b?: string; aFilename?: string; bFilename?: string },
+  destaqueImages: Record<number, string>,
+  livrosImageUrl: string | undefined,
+): Record<string, MonthlyPublicImage> {
+  const images: Record<string, MonthlyPublicImage> = {};
+  if (eia.a && eia.aFilename) {
+    images.eia_a = { url: eia.a, filename: eia.aFilename, mime_type: mimeForFilename(eia.aFilename) };
+  }
+  if (eia.b && eia.bFilename) {
+    images.eia_b = { url: eia.b, filename: eia.bFilename, mime_type: mimeForFilename(eia.bFilename) };
+  }
+  for (const [n, url] of Object.entries(destaqueImages)) {
+    const filename = `04-d${n}-2x1.jpg`;
+    images[`d${n}`] = { url, filename, mime_type: mimeForFilename(filename) };
+  }
+  if (livrosImageUrl) {
+    images.livros_promo = { url: livrosImageUrl, filename: LIVROS_PROMO_FILENAME, mime_type: mimeForFilename(LIVROS_PROMO_FILENAME) };
+  }
+  return images;
+}
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -92,7 +146,7 @@ async function main(): Promise<void> {
 
   // Imagens (É IA? + destaques 2x1) → URLs públicas no KV (pulado em dry-run).
   const eiaEdition = eiaEditionFromYymm(yymm);
-  let eia: { a?: string; b?: string } = {};
+  let eia: { a?: string; b?: string; aFilename?: string; bFilename?: string } = {};
   let destaqueImages: Record<number, string> = {};
   let livrosImageUrl: string | undefined;
   if (!dryRun) {
@@ -163,7 +217,17 @@ async function main(): Promise<void> {
   const htmlPath = resolve(internalDir, "cloudflare-preview.html");
   writeFileSync(htmlPath, html);
 
-  console.log(JSON.stringify({ yymm, cycle, html_path: htmlPath, dry_run: dryRun }, null, 2));
+  // #3392: manifest url pública → filename local, consumido por
+  // `scripts/embed-images-base64.ts` (SKILL.md §3c/§4b) pra gerar a variante
+  // `cloudflare-preview-embedded.html` publicada via `Artifact` — sem isso o
+  // Artifact bloqueia as imagens remotas por CSP (mesma regressão do diário
+  // #3214/#3370). Grava mesmo em dry-run/sem upload (fica `{ images: {} }`,
+  // inofensivo — o embed simplesmente não encontra nada pra substituir).
+  const publicImages = buildPublicImagesManifest(eia, destaqueImages, livrosImageUrl);
+  const publicImagesPath = resolve(internalDir, "public-images.json");
+  writeFileSync(publicImagesPath, JSON.stringify({ images: publicImages }, null, 2) + "\n");
+
+  console.log(JSON.stringify({ yymm, cycle, html_path: htmlPath, public_images_path: publicImagesPath, dry_run: dryRun }, null, 2));
 }
 
 if (isMainModule(import.meta.url)) {
