@@ -710,7 +710,7 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
 
 <!-- tab bar (labels referencing the radio inputs above; aria-controls liga aba↔painel) -->
 <div class="tab-bar" role="tablist">
-  <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão GERAL</label>
+  <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão Geral</label>
   <label class="tab-label" id="tablabel-envios" for="tab-envios" role="tab" aria-controls="panel-envios">Envios</label>
   <label class="tab-label" id="tablabel-rampa" for="tab-rampa" role="tab" aria-controls="panel-rampa">Agendamento</label>
   <label class="tab-label" id="tablabel-engajamento" for="tab-engajamento" role="tab" aria-controls="panel-engajamento">Engajamento</label>
@@ -722,7 +722,7 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
 <!-- tab panels -->
 <div class="tab-panels">
 
-  <!-- Aba 0: Visão GERAL — resumo curado pra reunião de parceria (#3406,
+  <!-- Aba 0: Visão Geral — resumo curado pra reunião de parceria (#3406,
        reorganizado em #3408, e novamente em #3415): 3 blocos narrativos,
        passado → presente → futuro. Reaproveita seções já computadas pras
        outras abas (mesmas variáveis, zero fetch extra) — gera IDs de elemento
