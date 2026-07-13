@@ -94,12 +94,18 @@ export async function uploadDestaqueImages(
  * Extraído de `monthly-preview-cloudflare.ts` (#2802) pra ser compartilhado
  * com `publish-monthly.ts`, que tinha uma cópia quase-idêntica dessa busca
  * com fallback legado — divergência de fonte é exatamente o bug do #1908.
+ *
+ * `aFilename`/`bFilename` (#3392): qual par de nome venceu (novo `01-eia-*` ou
+ * legado `01-eai-*`) — campos aditivos, só consumidos por
+ * `monthly-preview-cloudflare.ts` pra montar o manifest de `embed-images-base64.ts`
+ * (precisa do filename LOCAL correspondente à URL pra resolver o `data:` URI).
+ * `publish-monthly.ts` continua lendo só `.a`/`.b`, sem quebra.
  */
 export async function uploadEiaImages(
   monthlyDir: string,
   eiaEdition: string,
   root: string = DEFAULT_ROOT,
-): Promise<{ a?: string; b?: string }> {
+): Promise<{ a?: string; b?: string; aFilename?: string; bFilename?: string }> {
   const namePairs = [
     ["01-eia-A.jpg", "01-eia-B.jpg"],
     ["01-eai-A.jpg", "01-eai-B.jpg"], // legacy
@@ -113,7 +119,7 @@ export async function uploadEiaImages(
         uploadMonthlyImage(pathA, eiaEdition, root),
         uploadMonthlyImage(pathB, eiaEdition, root),
       ]);
-      return { a, b };
+      return { a, b, aFilename: nameA, bFilename: nameB };
     }
   }
   return {};
