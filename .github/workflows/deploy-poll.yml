@@ -1,0 +1,54 @@
+name: Deploy poll Worker
+
+# #3399: workers/poll não tinha deploy automático — igual ao gap do
+# brevo-dashboard fechado no #3268, `package.json` só define um script npm
+# manual ("deploy": "wrangler deploy") e nenhum workflow chamava. Resultado
+# observado: o botão "Atualizar É IA?" do clarice-dashboard (`/api/eia/refresh`)
+# quebrou com 404 em `GET /editions?brand=clarice` porque a versão do Worker
+# `poll` em produção era mais antiga que master — não tinha a rota `/editions`
+# ainda. Este workflow fecha esse gap: dispara `wrangler deploy` automaticamente
+# sempre que um push em master tocar `workers/poll/**`.
+#
+# Secrets reusados (mesmos do deploy-brevo-dashboard.yml, #2750/#3268):
+# CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_WORKERS_TOKEN.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/poll/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-poll
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      # Necessário pra `[build] command` do wrangler.toml (npx tsx
+      # ../../scripts/generate-worker-tokens.ts), que resolve `tsx` a partir
+      # do node_modules da raiz do repo — mesmo padrão do ci.yml (#3164) e do
+      # deploy-brevo-dashboard.yml (#3268).
+      - run: npm ci
+
+      - name: Install poll worker deps
+        working-directory: workers/poll
+        run: npm ci
+
+      - name: Deploy to Cloudflare Workers
+        working-directory: workers/poll
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy
