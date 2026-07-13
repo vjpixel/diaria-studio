@@ -33,9 +33,10 @@ import {
 import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts"; // #2464 finding 5 — evitar cópia de regex
 import { DIARIA_FACEBOOK_PAGE_URL, DIARIA_LINKEDIN_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695/#2790 fonte única
 import {
+  splitEncerramentoSocialApoio,
   renderEncerramentoSocialApoio,
   ENCERRAMENTO_OPENING_DAILY,
-} from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal
+} from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal; split #3368 (reorder); renderEncerramentoSocialApoio #3382 fix (fallback de conteúdo real quando o split falha)
 import { readSnippetFile } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
 import { extractBoxDivulgacao1 } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap)
 
@@ -67,13 +68,17 @@ Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse
 
 **Responda indicando qual é o erro, ou se não há nenhum, e receba um número para concorrer a uma caneca da Diar.ia, a ser sorteada mês que vem.** Sua resposta deve chegar até mim antes do envio da edição seguinte.`,
 
-  // #3219: só o cabeçalho + parágrafo de ferramentas + pills "Acesse:" —
-  // fixos, sem parametrização. O parágrafo de apoio (Apoia.se) + convite
-  // social (LinkedIn/Facebook) vêm de `buildParaEncerrar()` abaixo, carregados
-  // do snippet compartilhado com o mensal.
-  para_encerrar_intro: `**🙋🏼‍♀️ PARA ENCERRAR**
+  // #3219: cabeçalho da seção — fixo, sem parametrização, sempre o primeiro
+  // elemento do bloco PARA ENCERRAR (#3368: o parágrafo de apoio entra
+  // DEPOIS do cabeçalho, não antes — só a ordem dos parágrafos internos
+  // mudou, o cabeçalho continua abrindo a seção).
+  para_encerrar_header: `**🙋🏼‍♀️ PARA ENCERRAR**`,
 
-Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
+  // #3219: parágrafo de ferramentas + pills "Acesse:" — fixos, sem
+  // parametrização. O parágrafo de apoio (Apoia.se) + convite social
+  // (LinkedIn/Facebook) vêm de `buildParaEncerrar()` abaixo, carregados do
+  // snippet compartilhado com o mensal.
+  para_encerrar_tools: `Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
 
 - [Cursos de IA](https://cursos.diaria.workers.dev)
 - [Livros sobre IA](https://livros.diaria.workers.dev)`,
@@ -86,22 +91,46 @@ Esta edição tem um erro proposital. Responda este e-mail com a correção para
 };
 
 /**
- * #3219: monta o bloco PARA ENCERRAR completo — cabeçalho + parágrafo de
- * ferramentas + pills "Acesse:" (fixos, `FIXED_BLOCKS.para_encerrar_intro`) +
- * parágrafo de apoio (Apoia.se) + convite social (LinkedIn/Facebook), estes
- * dois últimos carregados de `context/snippets/encerramento-social-apoio.md`
- * via `renderEncerramentoSocialApoio` — fonte única compartilhada com o
+ * #3219/#3368: monta o bloco PARA ENCERRAR completo — cabeçalho (fixo,
+ * `FIXED_BLOCKS.para_encerrar_header`) + parágrafo de apoio (Apoia.se) +
+ * parágrafo de ferramentas/pills "Acesse:" (fixo,
+ * `FIXED_BLOCKS.para_encerrar_tools`) + convite social (LinkedIn/Facebook).
+ * Apoio e convite social vêm de `context/snippets/encerramento-social-apoio.md`
+ * via `splitEncerramentoSocialApoio` — fonte única compartilhada com o
  * mensal (mesmo texto aprovado pelo editor, ver comentário do snippet).
  *
- * Graceful: se o snippet não existir/ficar vazio, cai no fallback hardcoded
- * (só o convite social, sem o parágrafo de apoio) — a edição não trava por
- * causa de um arquivo de conteúdo ausente.
+ * Ordem (#3368, pedido do editor na edição 260713): cabeçalho > apoio >
+ * ferramentas/Acesse, com o convite social como ÚLTIMO parágrafo da seção —
+ * antes (#3219) a ordem era cabeçalho > ferramentas/Acesse > apoio > convite
+ * social (só o cabeçalho não mudou de posição).
+ *
+ * `splitEncerramentoSocialApoio` retorna `null` em 2 situações BEM diferentes
+ * (finding de self-review do #3382, thread em encerramento-snippet.ts:80):
+ *   1. Arquivo ausente/vazio (`renderEncerramentoSocialApoio` também `null`)
+ *      — nunca houve conteúdo real pra perder, cai no fallback hardcoded
+ *      genérico (comportamento graceful original, #3219).
+ *   2. Arquivo existe e RENDERIZOU, mas não tem exatamente 2 parágrafos
+ *      separados por linha em branco (ex: editor fundiu apoio+social num só
+ *      parágrafo). Antes deste fix, esse caso caía indistintamente no MESMO
+ *      fallback hardcoded do caso 1 — descartando silenciosamente conteúdo
+ *      real do editor só porque o reorder (#3368) não conseguiu separar os
+ *      parágrafos. Agora usa o render INTEIRO, não-dividido, na posição
+ *      ANTERIOR ao reorder (header > tools > render inteiro) — perde só o
+ *      reorder (apoio não fica mais em primeiro), nunca o conteúdo.
  */
 export function buildParaEncerrar(): string {
-  const social = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
-  const tail = social ??
-    `Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) ou no [Facebook](${DIARIA_FACEBOOK_PAGE_URL})? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!`;
-  return `${FIXED_BLOCKS.para_encerrar_intro}\n\n${tail}`;
+  const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
+  if (split) {
+    return `${FIXED_BLOCKS.para_encerrar_header}\n\n${split.apoio}\n\n${FIXED_BLOCKS.para_encerrar_tools}\n\n${split.socialInvite}`;
+  }
+  // Split falhou — distingue arquivo ausente (caso 1) de arquivo presente mas
+  // com forma inesperada (caso 2, #3382).
+  const whole = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
+  if (whole) {
+    return `${FIXED_BLOCKS.para_encerrar_header}\n\n${FIXED_BLOCKS.para_encerrar_tools}\n\n${whole}`;
+  }
+  const socialFallback = `Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) ou no [Facebook](${DIARIA_FACEBOOK_PAGE_URL})? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!`;
+  return `${FIXED_BLOCKS.para_encerrar_header}\n\n${FIXED_BLOCKS.para_encerrar_tools}\n\n${socialFallback}`;
 }
 
 /**

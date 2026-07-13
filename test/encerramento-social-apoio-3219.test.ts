@@ -29,11 +29,12 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   loadEncerramentoSocialApoioTemplate,
   renderEncerramentoSocialApoio,
+  splitEncerramentoSocialApoio,
   ENCERRAMENTO_OPENING_DAILY,
   ENCERRAMENTO_OPENING_MONTHLY,
 } from "../scripts/lib/shared/encerramento-snippet.ts";
@@ -129,7 +130,32 @@ describe("scripts/lib/shared/encerramento-snippet.ts (#3219)", () => {
   });
 });
 
-describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartilhado (#3219)", () => {
+describe("scripts/lib/shared/encerramento-snippet.ts — splitEncerramentoSocialApoio (#3368)", () => {
+  it("separa o template em { apoio, socialInvite } sem perder conteúdo", () => {
+    const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
+    assert.ok(split, "split não deveria ser null");
+    assert.match(split!.apoio, /^Quem quiser apoiar a curadoria pode contribuir a partir de R\$5\/mês em \[apoia\.se\/diaria\]/);
+    assert.match(split!.socialInvite, /^Agora que chegou ao final da edição, que tal interagir/);
+    // nenhum dos dois vaza conteúdo do outro
+    assert.doesNotMatch(split!.apoio, /Agora que chegou ao final da edição/);
+    assert.doesNotMatch(split!.socialInvite, /apoia\.se\/diaria/);
+  });
+
+  it("aplica a cláusula de abertura só no parágrafo de apoio, nunca no convite social", () => {
+    const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_MONTHLY);
+    assert.ok(split);
+    assert.match(split!.apoio, /^Essa edição mensal nasce da \*\*diar\.ia\.br\*\*/);
+    assert.doesNotMatch(split!.socialInvite, /Essa edição mensal nasce/);
+  });
+
+  it("o texto concatenado de volta (apoio + \\n\\n + socialInvite) é idêntico ao render não-splitado", () => {
+    const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY)!;
+    const whole = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY)!;
+    assert.equal(`${split.apoio}\n\n${split.socialInvite}`, whole);
+  });
+});
+
+describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartilhado (#3219, reorder #3368)", () => {
   it("buildParaEncerrar preserva o cabeçalho + parágrafo de ferramentas + pills Acesse (inalterado)", () => {
     const out = buildParaEncerrar();
     assert.match(out, /\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/);
@@ -159,13 +185,28 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     assert.ok(apoioIdx < socialIdx, "apoio deve vir ANTES do convite social");
   });
 
-  it("ordem final: ferramentas > Acesse > apoio > convite social", () => {
+  it("ordem final (#3368, pedido do editor 260713): cabeçalho > apoio > ferramentas > Acesse > convite social", () => {
     const out = buildParaEncerrar();
+    const headerIdx = out.indexOf("PARA ENCERRAR");
+    const apoioIdx = out.indexOf("apoia.se/diaria");
     const toolsIdx = out.indexOf("usei Claude Code");
     const acesseIdx = out.indexOf("[Cursos de IA]");
-    const apoioIdx = out.indexOf("apoia.se/diaria");
     const socialIdx = out.indexOf("Agora que chegou ao final da edição");
-    assert.ok(toolsIdx < acesseIdx && acesseIdx < apoioIdx && apoioIdx < socialIdx, "ordem incorreta");
+    assert.ok(
+      headerIdx >= 0 && headerIdx < apoioIdx && apoioIdx < toolsIdx && toolsIdx < acesseIdx && acesseIdx < socialIdx,
+      "ordem incorreta",
+    );
+  });
+
+  it("o parágrafo de apoio é o PRIMEIRO parágrafo depois do cabeçalho (#3368)", () => {
+    const out = buildParaEncerrar();
+    const afterHeader = out.slice(out.indexOf("**🙋🏼‍♀️ PARA ENCERRAR**") + "**🙋🏼‍♀️ PARA ENCERRAR**".length).trimStart();
+    assert.match(afterHeader, /^Quem quiser apoiar a curadoria/);
+  });
+
+  it("o convite social é o ÚLTIMO parágrafo da seção (#3368)", () => {
+    const out = buildParaEncerrar();
+    assert.match(out.trimEnd(), /Agora que chegou ao final da edição, que tal interagir em uma publicação da \*\*diar\.ia\.br\*\* no \[LinkedIn\]\([^)]+\) ou no \[Facebook\]\([^)]+\)\?$/);
   });
 });
 
@@ -231,5 +272,69 @@ describe("integração de render — mensal (renderEncerramento processa o novo 
     assert.match(html, /Essa edição mensal nasce/);
     // encerramento padrão pré-existente continua presente — não foi substituído
     assert.match(html, /assine em/);
+  });
+});
+
+describe("buildParaEncerrar — split falho NÃO descarta conteúdo real (#3382, regressão do self-review do #3368)", () => {
+  // #3382: `splitEncerramentoSocialApoio` retorna `null` tanto quando o
+  // arquivo está ausente/vazio QUANTO quando o arquivo existe mas não separa
+  // em exatamente 2 parágrafos (ex: editor fundiu apoio+social num parágrafo
+  // só). Antes deste fix, os 2 casos eram tratados IGUAL por
+  // `buildParaEncerrar` — caindo no fallback hardcoded genérico e perdendo
+  // silenciosamente o conteúdo real do editor no 2º caso. Testamos aqui
+  // sobrescrevendo transitoriamente o snippet real (não há hook de injeção
+  // de conteúdo — `readSnippetFile` lê direto do path fixo em
+  // `context/snippets/`), sempre restaurando o original no `finally`.
+  const originalSnippet = readFileSync(SNIPPET_PATH, "utf8");
+
+  function withSnippetContent(content: string, fn: () => void): void {
+    writeFileSync(SNIPPET_PATH, content, "utf8");
+    try {
+      fn();
+    } finally {
+      writeFileSync(SNIPPET_PATH, originalSnippet, "utf8");
+    }
+  }
+
+  it("arquivo com 1 parágrafo só (editor fundiu apoio+social): splitEncerramentoSocialApoio retorna null, mas o conteúdo real aparece em buildParaEncerrar (não cai no hardcoded genérico)", () => {
+    withSnippetContent(
+      "{{OPENING}}Texto único do editor fundindo apoio e social num parágrafo só, com link exclusivo https://exemplo-editor-fundiu.test/apoio-e-social e sem quebra de linha.",
+      () => {
+        const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
+        assert.equal(split, null, "pré-condição do teste: split precisa falhar com 1 parágrafo só");
+
+        const out = buildParaEncerrar();
+        // conteúdo real do editor está presente...
+        assert.match(out, /Texto único do editor fundindo apoio e social/);
+        assert.match(out, /https:\/\/exemplo-editor-fundiu\.test\/apoio-e-social/);
+        // ...e o fallback hardcoded genérico (que NUNCA existiu no arquivo) NÃO aparece
+        assert.doesNotMatch(out, /Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante/);
+      },
+    );
+  });
+
+  it("arquivo com 3 parágrafos (editor adicionou um parágrafo extra no meio): conteúdo do editor inteiro é preservado em buildParaEncerrar", () => {
+    withSnippetContent(
+      "{{OPENING}}Quem quiser apoiar a curadoria, o link é https://exemplo-editor-3par.test/apoio.\n\nParágrafo extra que o editor adicionou no meio, fora do formato de 2 parágrafos original.\n\nConvite social customizado pelo editor: https://exemplo-editor-3par.test/social.",
+      () => {
+        const out = buildParaEncerrar();
+        // os 3 parágrafos do editor aparecem, nenhum foi descartado
+        assert.match(out, /Quem quiser apoiar a curadoria, o link é https:\/\/exemplo-editor-3par\.test\/apoio/);
+        assert.match(out, /Parágrafo extra que o editor adicionou no meio/);
+        assert.match(out, /Convite social customizado pelo editor: https:\/\/exemplo-editor-3par\.test\/social/);
+        // fallback hardcoded genérico não aparece
+        assert.doesNotMatch(out, /Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante/);
+      },
+    );
+  });
+
+  it("arquivo de fato ausente/vazio ainda cai no fallback hardcoded genérico (caso 1, comportamento preservado)", () => {
+    withSnippetContent("<!-- só comentário, sem conteúdo real -->", () => {
+      const whole = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
+      assert.equal(whole, null, "pré-condição do teste: arquivo precisa renderizar null (vazio após strip)");
+
+      const out = buildParaEncerrar();
+      assert.match(out, /Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante/);
+    });
   });
 });

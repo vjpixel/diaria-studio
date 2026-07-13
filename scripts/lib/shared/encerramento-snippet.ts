@@ -54,3 +54,29 @@ export function renderEncerramentoSocialApoio(opening: string): string | null {
   if (!template) return null;
   return template.replace("{{OPENING}}", opening);
 }
+
+/**
+ * #3368: mesmo render de `renderEncerramentoSocialApoio`, mas separado nos 2
+ * parágrafos que compõem o bloco — `apoio` (Apoia.se) e `socialInvite`
+ * (convite LinkedIn/Facebook) — pra permitir que o caller intercale outro
+ * conteúdo ENTRE os dois (pedido do editor na edição 260713: mover o
+ * parágrafo de apoio para o INÍCIO da seção `PARA ENCERRAR` do diário,
+ * deixando o convite social por último — ver `buildParaEncerrar` em
+ * `scripts/stitch-newsletter.ts`).
+ *
+ * O template (`encerramento-social-apoio.md`) já separa os 2 parágrafos por
+ * linha em branco (apoio primeiro, convite social depois) — reusa essa
+ * estrutura em vez de inventar heurística nova. Retorna `null` se o template
+ * não existir/ficar vazio (graceful, mesmo contrato de
+ * `renderEncerramentoSocialApoio`).
+ */
+export function splitEncerramentoSocialApoio(
+  opening: string,
+): { apoio: string; socialInvite: string } | null {
+  const rendered = renderEncerramentoSocialApoio(opening);
+  if (!rendered) return null;
+  const [apoio, ...rest] = rendered.split(/\n\s*\n/);
+  const socialInvite = rest.join("\n\n").trim();
+  if (!apoio || !socialInvite) return null;
+  return { apoio: apoio.trim(), socialInvite };
+}
