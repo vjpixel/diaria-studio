@@ -852,5 +852,86 @@ describe("isNewsNotTutorial — 'New Guide to X' não é ejetado como release no
 });
 
 // ---------------------------------------------------------------------------
+// #3366 — developers.googleblog.com: "newest member of the family" +
+// "introduce" infinitivo reconhecidos como sinal de lançamento
+// ---------------------------------------------------------------------------
+
+describe("categorize() / isNewsNotTutorial — #3366: anúncio 'newest member of the family' vence tutorial-by-domain", () => {
+  // Caso real 260713: "LiteRT.js, Google's high performance Web AI Inference"
+  // (developers.googleblog.com) foi categorizado como use_melhor (tutorial)
+  // quando é um anúncio de produto novo — "We're excited to introduce
+  // LiteRT.js, the newest member of the LiteRT family!". O slug
+  // ("litertjs-googles-high-performance-web-ai-inference") não bate
+  // isLaunchSlug (não tem "introducing-X"), e o texto usa a forma infinitiva
+  // "introduce" (não "introducing"/"introduces").
+  const liteRtArticle: Article = {
+    url: "https://developers.googleblog.com/en/litertjs-googles-high-performance-web-ai-inference/",
+    title: "LiteRT.js, Google's high performance Web AI Inference",
+    summary:
+      "We're excited to introduce LiteRT.js, the newest member of the LiteRT family! It brings hardware-accelerated ML inference directly to the web.",
+  };
+
+  it("hasLaunchVerb detecta a forma infinitiva 'introduce' (antes só 'introducing'/'introduces')", () => {
+    assert.ok(
+      hasLaunchVerb(liteRtArticle),
+      "'excited to introduce X' deve contar como verbo de anúncio",
+    );
+  });
+
+  it("isNewsNotTutorial retorna true via 'newest member of the family'", () => {
+    assert.ok(
+      isNewsNotTutorial(liteRtArticle),
+      "'the newest member of the LiteRT family' deve ser sinal de anúncio, não tutorial",
+    );
+  });
+
+  it("categorize(): LiteRT.js vira lancamento, não tutorial (#3366 fix)", () => {
+    assert.equal(
+      categorize(liteRtArticle),
+      "lancamento",
+      "anúncio 'newest member of the family' em developers.googleblog.com deve ser LANÇAMENTO",
+    );
+  });
+
+  it("guard: tutorial real de developers.googleblog.com SEM sinal de família CONTINUA tutorial", () => {
+    // Regressão: não ejetar how-tos reais que não mencionam "family".
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/how-to-use-gemini-api/",
+      title: "How to use the new Gemini API for developers",
+    };
+    assert.equal(
+      categorize(art),
+      "tutorial",
+      "how-to real sem menção a 'family' deve continuar tutorial",
+    );
+  });
+
+  it("guard: 'family' sozinho (sem newest/latest member/addition) NÃO dispara o override", () => {
+    const art: Article = {
+      url: "https://developers.googleblog.com/blog/how-to-build-a-family-of-agents/",
+      title: "How to build a family of cooperating agents",
+    };
+    assert.equal(
+      categorize(art),
+      "tutorial",
+      "'family' isolado não deve ser tratado como sinal de anúncio",
+    );
+  });
+
+  it("PT-BR: 'novo integrante da família' também dispara o override", () => {
+    const art: Article = {
+      url: "https://developers.googleblog.com/pt-br/novo-modelo/",
+      title: "Anunciamos o novo modelo X",
+      summary: "O novo integrante da família Gemini chega com mais velocidade.",
+    };
+    assert.notEqual(
+      categorize(art),
+      "tutorial",
+      "'novo integrante da família X' deve ser tratado como anúncio, não tutorial",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #2663 — isRoundupSlug: newsletter/roundup no slug bloqueia tutorial
 // ---------------------------------------------------------------------------

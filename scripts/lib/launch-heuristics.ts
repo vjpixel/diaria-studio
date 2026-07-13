@@ -529,9 +529,15 @@ export function isReport(article: Article): boolean {
  *
  * Mantido permissivo pra evitar falso-negativo em formatos novos:
  * "Introducing X", "Meet X", "Say hello to X" todos contam.
+ *
+ * #3366: `introduce` (infinitivo) adicionado — cobre a forma "we're excited
+ * to introduce X" (vs. "introducing X"/"introduces X", já cobertas). Caso
+ * real 260713: "We're excited to introduce LiteRT.js, the newest member of
+ * the LiteRT family!" (developers.googleblog.com) não batia nenhuma das
+ * duas formas existentes.
  */
 const LAUNCH_VERB_PATTERN =
-  /\b(introducing|introduces|launch(es|ing)?|launches?|now\s+available|unveils?|releas(e|es|ing)|announc(es|ing|ed)|meet\s+\w+|say\s+hello\s+to\b|presents?|reveals?|debuts?|disponibiliza|lan[çc]a(mos|m|r)?|apresenta(mos|m|r)?|revela(mos|m|r)?|chega(m)?\s+(o|a|os|as)\s+novo|chegou\s+o\s+novo)\b/i;
+  /\b(introducing|introduces|introduce|launch(es|ing)?|launches?|now\s+available|unveils?|releas(e|es|ing)|announc(es|ing|ed)|meet\s+\w+|say\s+hello\s+to\b|presents?|reveals?|debuts?|disponibiliza|lan[çc]a(mos|m|r)?|apresenta(mos|m|r)?|revela(mos|m|r)?|chega(m)?\s+(o|a|os|as)\s+novo|chegou\s+o\s+novo)\b/i;
 
 /**
  * Detecta se o título/summary tem verbo de anúncio explícito ("lança",
@@ -685,6 +691,27 @@ export { isDevReleaseNote };
  */
 const VISUAL_GUIDE_EXPLAINER_RE = /\b(visual|illustrated)\s+guide\s+to\b/i;
 
+/**
+ * #3366: "the newest/latest member of the X family" — sinal forte e
+ * específico de lançamento de produto em posts de blog corporativo, mesmo
+ * em domínios tutorial-by-default (developers.googleblog.com, AWS ML blog).
+ *
+ * Caso real 260713: "We're excited to introduce LiteRT.js, the newest
+ * member of the LiteRT family!" (developers.googleblog.com) caiu em USE
+ * MELHOR — o domínio bate em TUTORIAL_DOMAIN_EXTRA_PATTERNS e nenhum dos
+ * overrides existentes detectava o sinal de anúncio: `isLaunchSlug` só olha
+ * o path da URL ("introducing-X"), que aqui não bate (o slug é
+ * "litertjs-googles-high-performance-web-ai-inference"), e o texto usa a
+ * forma infinitiva "introduce" ("excited to introduce"), não "introducing"/
+ * "introduces". Este padrão é independente de `hasLaunchVerb`/
+ * `LAUNCH_VERB_PATTERN` de propósito — evita usar aquele helper como gate
+ * geral aqui (ver aviso explícito no comentário de `hasLaunchVerb`); em vez
+ * disso, um padrão narrow e específico ("newest member of the ... family")
+ * que dificilmente aparece em título/summary de tutorial hands-on.
+ */
+const LAUNCH_FAMILY_MEMBER_RE =
+  /\b(newest|latest)\s+(member|addition)\s+(of|to)\s+(the\s+)?\S+(\s+\S+){0,4}\s+family\b|\b(mais\s+)?novo\s+integrante\s+da\s+fam[íi]lia\b/i;
+
 export function isNewsNotTutorial(article: Article): boolean {
   // #2313: slug de lançamento no path → anúncio, mesmo que título diga "How to use X".
   // Vendor blogs frequentemente publicam anúncios com wording de tutorial no título
@@ -711,7 +738,12 @@ export function isNewsNotTutorial(article: Article): boolean {
   // "guide to" já dispara isTutorialByKeyword=true, então sem essa
   // precedência a checagem abaixo nunca seria alcançada.
   if (VISUAL_GUIDE_EXPLAINER_RE.test(article.title ?? "")) return true;
-  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug, roundup, lançamento e visual-guide-explainer)
+  // #3366: "newest member of the X family" — anúncio de produto explícito,
+  // mesmo em domínio tutorial-by-default. Roda ANTES de isTutorialByKeyword
+  // pelo mesmo motivo dos overrides acima (launch slug, roundup, visual
+  // guide): sinal de lançamento inequívoco vence how-to genérico no título.
+  if (LAUNCH_FAMILY_MEMBER_RE.test(`${article.title ?? ""}\n${article.summary ?? ""}`)) return true;
+  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug, roundup, lançamento, visual-guide-explainer e family-member)
   if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
     return true;
   }
@@ -1179,8 +1211,25 @@ const TUTORIAL_PATTERNS: RegExp[] = [
 // (qual usar/quando usar), padrão comum em guias de ferramenta PT-BR.
 // Ambos conservadores — exigem a frase completa, não só "o que é" ou
 // "diferenças" isolados (que apareceriam em cobertura jornalística comum).
+//
+// #3365: caso real 260713 — "Choosing a Claude model and effort level in
+// Claude Code" (claude.com/blog) caiu em LANÇAMENTO porque "choosing" não
+// batia no allowlist de verbos do how-to ("build|create|deploy|train|
+// fine-tune|implement|use"), sem "how to" como prefixo. É um guia de
+// decisão (como escolher entre modelos/effort levels), não um anúncio.
+// Duas adições:
+//   1. `choose|pick|select|decide` adicionados ao allowlist do how-to
+//      ("how to choose the right model") — mesma forma das demais.
+//   2. Nova branch standalone p/ títulos que abrem com o gerúndio da
+//      decisão SEM "how to" ("Choosing a X", "Picking the right Y"):
+//      exige o gerúndio seguido de artigo/preposição de escolha
+//      (a/an/the/between/which/what) — escopo estreito o bastante pra não
+//      casar em "X is choosing to expand" (infinitivo "to", não coberto)
+//      nem em títulos de negócio tipo "Company chooses new CEO" (forma
+//      "chooses", não "choosing", fica de fora). PT-BR: "escolhendo"/
+//      "decidindo" com o mesmo shape ("escolhendo entre X e Y").
 const TUTORIAL_KEYWORDS_RE =
-  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b|\b(?:veja|saiba|descubra)\s+como\b(?=\s*(?:$|\n|[.!?]))|\bveja\s+o\s+prompt\b|\baprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b|\bo\s+que\s+[ée]\s+.{0,60}?\be\s+\d+\s+(maneiras|formas|jeitos)\s+de\s+(usar|utilizar)\b|\bentenda\s+as\s+diferen[çc]as\s+entre\b|\bquando\s+usar\s+cada\s+um\b/i;
+  /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use|choose|pick|select|decide)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b|\b(?:veja|saiba|descubra)\s+como\b(?=\s*(?:$|\n|[.!?]))|\bveja\s+o\s+prompt\b|\baprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b|\bo\s+que\s+[ée]\s+.{0,60}?\be\s+\d+\s+(maneiras|formas|jeitos)\s+de\s+(usar|utilizar)\b|\bentenda\s+as\s+diferen[çc]as\s+entre\b|\bquando\s+usar\s+cada\s+um\b|\b(choosing|picking|selecting|deciding)\s+(a|an|the|between|which|what)\b|\b(escolhendo|decidindo)\s+(a|o|um|uma|entre|qual)\b/i;
 
 function isTutorialByKeyword(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;

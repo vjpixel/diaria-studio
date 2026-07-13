@@ -354,6 +354,80 @@ describe("categorize() — bucket tutorial (#59 slice 2)", () => {
   });
 });
 
+describe("categorize() — #3365: 'Choosing X' reconhecido como how-to em domínio oficial", () => {
+  // Caso real 260713: "Choosing a Claude model and effort level in Claude
+  // Code" (claude.com/blog, submetido pelo editor via inbox) caiu em
+  // LANÇAMENTO porque "choosing" ficava fora do allowlist de verbos do
+  // how-to ("build|create|deploy|train|fine-tune|implement|use") e não
+  // havia branch pra gerúndio de decisão sem prefixo "how to". É um guia de
+  // decisão (como escolher entre modelos/effort levels), não anúncio de
+  // produto novo.
+  it("'Choosing a Claude model and effort level in Claude Code' (claude.com/blog) → tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://claude.com/blog/choosing-a-claude-model-and-effort-level-in-claude-code",
+        title: "Choosing a Claude model and effort level in Claude Code",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("'Picking the right vector database for your RAG app' → tutorial (mesma família semântica)", () => {
+    assert.equal(
+      categorize({
+        url: "https://techcrunch.com/x",
+        title: "Picking the right vector database for your RAG app",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("'How to choose the right model for your task' → tutorial (how-to + verbo novo no allowlist)", () => {
+    assert.equal(
+      categorize({
+        url: "https://techcrunch.com/x",
+        title: "How to choose the right model for your task",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("'Escolhendo entre GPT-5 e Claude 4' (PT-BR) → tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://techcrunch.com/x",
+        title: "Escolhendo entre GPT-5 e Claude 4 para seu produto",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("guard: 'OpenAI chooses new CEO' (3ª pessoa, não gerúndio) NÃO vira tutorial", () => {
+    // A branch nova exige o gerúndio ('choosing'/'picking'/'selecting'/
+    // 'deciding') seguido de artigo/preposição de escolha — 'chooses' (3a
+    // pessoa) não bate, evitando falso-positivo em manchete de negócio.
+    assert.notEqual(
+      categorize({
+        url: "https://techcrunch.com/x",
+        title: "OpenAI chooses new CEO after board shakeup",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("guard: 'X is choosing to expand into new markets' (infinitivo 'to') NÃO vira tutorial", () => {
+    // 'choosing to' (infinitivo) não bate no branch, que exige artigo/
+    // preposição de escolha (a/an/the/between/which/what) após o gerúndio.
+    assert.notEqual(
+      categorize({
+        url: "https://techcrunch.com/x",
+        title: "Startup is choosing to expand into new markets this year",
+      }),
+      "tutorial",
+    );
+  });
+});
+
 describe("categorize() — ordem de precedência (#77)", () => {
   it("pesquisa tem precedência sobre lancamento (mesmo domínio)", () => {
     // anthropic.com é LANCAMENTO_PATTERN mas /research/ é PESQUISA_PATTERN
