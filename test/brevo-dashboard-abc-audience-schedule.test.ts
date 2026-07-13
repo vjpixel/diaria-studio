@@ -77,7 +77,13 @@ describe("classifyClariceAudience", () => {
   });
 
   test("naming desconhecido → null", () => {
-    assert.equal(classifyClariceAudience("Diar.ia Mensal 2604 — 2026-05-14 19:26"), null);
+    assert.equal(classifyClariceAudience("T1-W1 digest"), null);
+  });
+
+  // #3376: "Diar.ia Mensal {AAMM} — {timestamp}" passou a ser reconhecido
+  // (era o exemplo canônico de "desconhecido" acima, antes do fix).
+  test("#3376: naming do Digest Mensal 'Diar.ia Mensal AAMM — timestamp' → quente", () => {
+    assert.equal(classifyClariceAudience("Diar.ia Mensal 2604 — 2026-05-14 19:26"), "warm");
   });
 });
 
