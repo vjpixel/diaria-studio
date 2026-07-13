@@ -26,6 +26,7 @@ import { COHORT_ASSINANTES_ATIVOS, COHORT_EX_ASSINANTES, COHORT_LEADS_CAUDAO } f
 import {
   parseClariceCampaignKey,
   aggregateAbcSummary,
+  editorialClicks,
   isPostAbcReset,
   ABC_RESET_AT,
   calcCumulativeSent,
@@ -578,6 +579,22 @@ describe("aggregateAbcSummary", () => {
     }
   });
 
+  // #3398: uniqueClicks inclui clique em unsubscribe — o critério decisório
+  // do A/B/C (clickRate) não deve contar isso.
+  test("#3398: exclui clique em link de unsubscribe do totalClicks/clickRate da célula", () => {
+    const withUnsubClicks = {
+      ...makeCampaign(300, "Clarice News 2610 d01-A (qua)", "2026-10-01T09:00:00Z", { sent: 100, delivered: 98, uniqueViews: 40, uniqueClicks: 10 }),
+      statistics: {
+        globalStats: makeGlobalStats({ sent: 100, delivered: 98, uniqueViews: 40, uniqueClicks: 10 }),
+        linksStats: { "https://diar.ia.br/artigo": 6, "https://unsubscribe.brevo.com/xyz": 4 },
+      },
+    };
+    const result = aggregateAbcSummary([withUnsubClicks], "2610");
+    const a = result.find((r) => r.cell === "A")!;
+    assert.equal(a.totalClicks, 6, "10 uniqueClicks - 4 clicks em unsubscribe = 6 editoriais");
+    assert.ok(Math.abs(a.clickRate - (6 / 98) * 100) < 0.01);
+  });
+
   test("exclui dias S2 (dayNum > 7) da agregação S1", () => {
     const s2Campaign = makeCampaign(50, "Clarice News 2605 d08-A (qui)", "2026-06-12T09:00:00Z",
       { sent: 200, delivered: 198, uniqueViews: 50 });
@@ -761,6 +778,46 @@ describe("aggregateAbcSummary", () => {
       // se o filtro falhar, B.totalViews viraria 202038 e apareceria na tabela.
       assert.doesNotMatch(html, /202038|99999/, "views dos dias solo não devem vazar pro agregado renderizado");
     });
+  });
+});
+
+// ─── editorialClicks (#3398) ──────────────────────────────────────────────────
+
+describe("editorialClicks (#3398)", () => {
+  test("sem linksStats → retorna uniqueClicks intacto", () => {
+    assert.equal(editorialClicks(10, undefined), 10);
+    assert.equal(editorialClicks(10, null), 10);
+  });
+
+  test("subtrai clicks de link de unsubscribe (isSystemLink)", () => {
+    const linksStats = { "https://diar.ia.br/artigo": 8, "https://x.brevo.com/unsubscribe/abc": 3 };
+    assert.equal(editorialClicks(10, linksStats), 7);
+  });
+
+  test("subtrai vários links de sistema (unsubscribe + preferências) somados", () => {
+    const linksStats = {
+      "https://diar.ia.br/artigo": 5,
+      "https://x.brevo.com/unsubscribe/abc": 2,
+      "https://x.brevo.com/preferences/abc": 1,
+    };
+    assert.equal(editorialClicks(10, linksStats), 7, "10 - (2 unsub + 1 preferences) = 7");
+  });
+
+  test("não subtrai clicks de links editoriais (isSystemLink false)", () => {
+    const linksStats = { "https://diar.ia.br/artigo-1": 4, "https://diar.ia.br/artigo-2": 6 };
+    assert.equal(editorialClicks(10, linksStats), 10);
+  });
+
+  test("clampa em 0 (nunca negativo) quando linksStats de sistema excede uniqueClicks", () => {
+    // Aproximação documentada: linksStats é TOTAL (não único) — pode exceder
+    // uniqueClicks se 1 pessoa clicou várias vezes no botão de unsubscribe.
+    const linksStats = { "https://x.brevo.com/unsubscribe/abc": 15 };
+    assert.equal(editorialClicks(10, linksStats), 0);
+  });
+
+  test("ignora entradas não-finitas/negativas em linksStats (mesmo guard de isSystemLink callers)", () => {
+    const linksStats = { "https://x.brevo.com/unsubscribe/abc": NaN };
+    assert.equal(editorialClicks(10, linksStats), 10);
   });
 });
 

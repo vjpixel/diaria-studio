@@ -1047,6 +1047,28 @@ export function isPostAbcReset(c: Pick<BrevoCampaign, "scheduledAt">): boolean {
 }
 
 /**
+ * #3398: `uniqueClicks` (clique único agregado, `globalStats`/`campaignStats`)
+ * inclui clique em links de sistema (unsubscribe/optout/preferências) — a API
+ * Brevo não separa isso no nível da campanha. `linksStats` (mapa url→clicks,
+ * ver `BrevoLinksStats`) só expõe clicks TOTAIS por link, não únicos — subtrair
+ * é uma aproximação deliberada: se 1 pessoa clicou 2x no botão de descadastro,
+ * subtraímos 2 de uma métrica que já é única-por-pessoa (pode sobre-subtrair).
+ * Aceito porque a alternativa (não corrigir nada) distorce sistematicamente o
+ * critério decisório do A/B/C (#2976 — clique é o "fundo do poço" que decide o
+ * vencedor) a favor de células com pior conteúdo editorial. Clampado em 0
+ * (nunca negativo). Reusa `isSystemLink` — mesmo filtro já aplicado na tabela
+ * "Links clicados" (`render-links.ts`). Exportado pra teste unitário.
+ */
+export function editorialClicks(uniqueClicks: number, linksStats: BrevoLinksStats | undefined | null): number {
+  if (!linksStats) return Math.max(0, uniqueClicks);
+  let systemClicks = 0;
+  for (const [url, clicks] of Object.entries(linksStats)) {
+    if (Number.isFinite(clicks) && clicks > 0 && isSystemLink(url)) systemClicks += clicks;
+  }
+  return Math.max(0, uniqueClicks - systemClicks);
+}
+
+/**
  * Agrega resumo A/B/C das campanhas de um ciclo Clarice.
  * Usa apenas campanhas com status "sent" e stats reais (gs.sent > 0).
  * Exportado pra teste unitário.
@@ -1183,7 +1205,8 @@ export function aggregateAbcSummary(
     cells[e.cell].views += s.uniqueViews ?? 0;
     cells[e.cell].delivered += s.delivered ?? 0;
     // #3124: soma de cliques únicos — base do click rate (critério decisório real, #2976).
-    cells[e.cell].clicks += s.uniqueClicks ?? 0;
+    // #3398: exclui clique em links de sistema (unsubscribe/optout/...) do total.
+    cells[e.cell].clicks += editorialClicks(s.uniqueClicks ?? 0, e.c.statistics?.linksStats);
     cells[e.cell].count += 1;
 
     // #2257: orgânico (sem MPP) só de globalStats (tem appleMppOpens). Contamos
@@ -1575,7 +1598,8 @@ function aggregateCellsV2(
     a.sent += s.sent ?? 0;
     a.delivered += s.delivered ?? 0;
     a.opens += s.uniqueViews ?? 0;
-    a.clicks += s.uniqueClicks ?? 0;
+    // #3398: exclui clique em links de sistema (unsubscribe/optout/...) do total.
+    a.clicks += editorialClicks(s.uniqueClicks ?? 0, c.statistics?.linksStats);
     a.unsub += s.unsubscriptions ?? 0;
     a.bounces += (s.hardBounces ?? 0) + (s.softBounces ?? 0);
     a.spam += s.complaints ?? 0;
