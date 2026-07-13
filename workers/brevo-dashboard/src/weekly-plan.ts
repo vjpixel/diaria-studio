@@ -705,8 +705,23 @@ ${metricRows}
  */
 export function renderRecommendationSection(campaigns: BrevoCampaign[], now: Date = new Date()): string {
   const state = computeWeeklySendState(campaigns, now);
-  const body = state.plan
-    ? `
+
+  // #3426: mesma checagem em passos que renderHealthSection já faz — `plan`
+  // é null em 3 situações distintas (zero envios / nenhum maduro / volume-base
+  // desconhecido) e cada uma precisa de mensagem própria, senão "zero envios"
+  // herda a mensagem de "envio imaturo" (falsa nesse caso).
+  let body: string;
+  if (state.allSent.length === 0) {
+    body = `<p class="section-note">Nenhum envio registrado.</p>`;
+  } else if (state.mature.length === 0) {
+    body = `<p class="section-note">Sem envio maduro (&gt;48h) da semana anterior ainda — plano indisponível até maturar.</p>`;
+  } else if (!state.plan) {
+    // mature.length > 0 mas baseVolume === 0 (sem dados de volume do último
+    // dia enviado) — texto de "imaturo" seria enganoso aqui também, já que
+    // existe envio maduro; só o volume-base é que está indisponível.
+    body = `<p class="section-note">Volume-base do último envio indisponível — plano indisponível.</p>`;
+  } else {
+    body = `
   <div class="table-wrap">
   <table>
     <thead><tr><th scope="col">Envio</th><th scope="col">Volume recomendado</th></tr></thead>
@@ -723,12 +738,12 @@ export function renderRecommendationSection(campaigns: BrevoCampaign[], now: Dat
   </table>
   </div>
   <p class="section-note">Volume-base (último envio): ${state.baseVolume.toLocaleString("pt-BR")}.${
-        state.plan.flagged
-          ? " <strong>⚠️ Semáforo vermelho — revisar antes de rodar scripts/weekly-send-plan-audience.ts.</strong>"
-          : ""
-      }</p>
-  <p class="section-note"><code>npx tsx scripts/weekly-send-plan-audience.ts --volumes ${state.plan.volumes.join(",")} [--write]</code></p>`
-    : `<p class="section-note">Sem envio maduro (&gt;48h) da semana anterior ainda — plano indisponível até maturar.</p>`;
+      state.plan.flagged
+        ? " <strong>⚠️ Semáforo vermelho — revisar antes de rodar scripts/weekly-send-plan-audience.ts.</strong>"
+        : ""
+    }</p>
+  <p class="section-note"><code>npx tsx scripts/weekly-send-plan-audience.ts --volumes ${state.plan.volumes.join(",")} [--write]</code></p>`;
+  }
 
   return `
 <section class="phase2-section" id="weekly-plan-recommendation">
