@@ -802,7 +802,7 @@ describe("renderDashboardHtml — couponUsage", () => {
     });
   });
 
-  describe("(c) as 4 abas existentes estão presentes em ambos os casos", () => {
+  describe("(c) as 5 abas existentes estão presentes em ambos os casos (#3406: + Envios)", () => {
     const withCoupons = renderDashboardHtml(emptyCampaigns, [], null, null, null, syntheticUsage);
     const withoutCoupons = renderDashboardHtml(emptyCampaigns, [], null, null, null, null);
 
@@ -812,6 +812,9 @@ describe("renderDashboardHtml — couponUsage", () => {
     ] as [string, string][]) {
       it(`panel-visaogeral presente [${label}]`, () => {
         assert.ok(html.includes("panel-visaogeral"), `panel-visaogeral deve estar presente [${label}]`);
+      });
+      it(`panel-envios presente [${label}] (#3406)`, () => {
+        assert.ok(html.includes("panel-envios"), `panel-envios deve estar presente [${label}]`);
       });
       it(`panel-engajamento presente [${label}]`, () => {
         assert.ok(html.includes("panel-engajamento"), `panel-engajamento deve estar presente [${label}]`);

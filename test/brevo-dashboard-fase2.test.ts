@@ -2846,18 +2846,19 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     listSize: 500,
   };
 
-  test("HTML contém 5 inputs radio para as abas (tab state)", () => {
+  test("HTML contém 6 inputs radio para as abas (tab state)", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
     // Cada aba precisa de 1 radio input (#2653: + aba Contatos; #2880: aba Cohorts
     // eliminada — a tabela Cohorts foi consolidada dentro da aba Contatos;
-    // #2974: + aba Rampa).
+    // #2974: + aba Rampa; #3406: + aba Envios, "Visão geral" virou resumo curado).
     const radioMatches = html.match(/type="radio"[^>]*name="dash-tab"/g) ?? [];
-    assert.equal(radioMatches.length, 5, "deve ter exatamente 5 radio inputs para as 5 abas");
+    assert.equal(radioMatches.length, 6, "deve ter exatamente 6 radio inputs para as 6 abas");
   });
 
-  test("HTML contém 5 labels de aba com textos corretos", () => {
+  test("HTML contém 6 labels de aba com textos corretos", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
     assert.match(html, /Visão geral/, "deve ter label 'Visão geral'");
+    assert.match(html, />Envios</, "deve ter label 'Envios' (#3406, ex-'Visão geral')");
     assert.match(html, /Engajamento/, "deve ter label 'Engajamento'");
     assert.match(html, /Links \/ Cliques/, "deve ter label 'Links / Cliques'");
     assert.match(html, />Contatos</, "deve ter label 'Contatos' (#2653)");
@@ -2875,18 +2876,28 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
   test("cada label aponta para o radio correto via for= (associação funcional)", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
     assert.match(html, /for="tab-visaogeral"/, "label Visão geral deve ter for=tab-visaogeral");
+    assert.match(html, /for="tab-envios"/, "label Envios deve ter for=tab-envios (#3406)");
     assert.match(html, /for="tab-engajamento"/, "label Engajamento deve ter for=tab-engajamento");
     assert.match(html, /for="tab-links"/, "label Links deve ter for=tab-links");
   });
 
-  test("panel-visaogeral contém id=campaigns-table, monthly-totals, volume-ciclo", () => {
+  test("panel-visaogeral (#3406, resumo curado) contém id=weekly-plan, monthly-totals, volume-ciclo", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
-    // Extrair o panel visaogeral
-    const panel = html.match(/id="panel-visaogeral"[\s\S]*?(?=id="panel-engajamento")/)?.[0] ?? "";
+    // Extrair o panel visaogeral — pra pela aba Envios, que agora vem logo em seguida.
+    const panel = html.match(/id="panel-visaogeral"[\s\S]*?(?=id="panel-envios")/)?.[0] ?? "";
     assert.ok(panel.length > 0, "panel-visaogeral deve existir no HTML");
-    assert.match(panel, /id="campaigns-table"/, "Envios deve estar no panel Visão geral");
-    assert.match(panel, /id="monthly-totals"/, "Totais mensais deve estar no panel Visão geral");
-    assert.match(panel, /id="volume-ciclo"/, "Volume do ciclo deve estar no panel Visão geral");
+    assert.match(panel, /id="weekly-plan"/, "Saúde/plano de ramp-up deve estar no resumo curado (#3406)");
+    assert.match(panel, /id="monthly-totals"/, "Totais mensais deve estar no resumo curado");
+    assert.match(panel, /id="volume-ciclo"/, "Volume do ciclo deve estar no resumo curado");
+  });
+
+  test("panel-envios (#3406, ex-'Visão geral') contém id=campaigns-table, monthly-totals, volume-ciclo", () => {
+    const html = renderDashboardHtml([baseCampaignForTabs]);
+    const panel = html.match(/id="panel-envios"[\s\S]*?(?=id="panel-rampa")/)?.[0] ?? "";
+    assert.ok(panel.length > 0, "panel-envios deve existir no HTML");
+    assert.match(panel, /id="campaigns-table"/, "Envios deve estar no panel Envios");
+    assert.match(panel, /id="monthly-totals"/, "Totais mensais deve estar no panel Envios");
+    assert.match(panel, /id="volume-ciclo"/, "Volume do ciclo deve estar no panel Envios");
   });
 
   test("panel-engajamento contém id=engagement-cohorts e weekday-openrate (day-summary removida, #2736)", () => {
@@ -2937,7 +2948,7 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     assert.doesNotMatch(html, /id="mv-status"/, 'seção id="mv-status" foi removida (#2736)');
   });
 
-  test("scheduled-campaigns aparece dentro de panel-rampa (Agendamento), não mais em panel-visaogeral (#3010)", () => {
+  test("scheduled-campaigns aparece dentro de panel-rampa (Agendamento), não mais em panel-envios (#3010, #3406)", () => {
     const scheduled = [{
       id: 200,
       name: "Clarice News 2605 d02-A (qua)",
@@ -2951,14 +2962,25 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
       listSize: 500,
     }];
     const html = renderDashboardHtml([baseCampaignForTabs], scheduled);
-    // panel-visaogeral isolado (até o INÍCIO de panel-rampa, que agora vem logo em seguida) —
-    // não deve mais conter a seção.
-    const visaoGeralPanel = html.match(/id="panel-visaogeral"[\s\S]*?(?=<!-- Aba Agendamento)/)?.[0] ?? "";
-    assert.ok(visaoGeralPanel.length > 0, "panel-visaogeral deve existir");
+    // panel-envios (ex-"Visão geral", #3406) isolado — não deve conter a seção
+    // (#3010 original: scheduled-campaigns só vive no plano de envio semanal).
+    const enviosPanel = html.match(/id="panel-envios"[\s\S]*?(?=id="panel-rampa")/)?.[0] ?? "";
+    assert.ok(enviosPanel.length > 0, "panel-envios deve existir");
     assert.doesNotMatch(
+      enviosPanel,
+      /id="scheduled-campaigns"/,
+      "scheduled-campaigns NÃO deve estar no panel Envios (#3010)",
+    );
+
+    // #3406: o novo panel-visaogeral (resumo curado) reaproveita weeklyPlanSection
+    // por INTEIRO (decisão do editor) — scheduled-campaigns aparece aqui também,
+    // duplicado com panel-rampa, como consequência esperada dessa escolha.
+    const visaoGeralPanel = html.match(/id="panel-visaogeral"[\s\S]*?(?=id="panel-envios")/)?.[0] ?? "";
+    assert.ok(visaoGeralPanel.length > 0, "panel-visaogeral deve existir");
+    assert.match(
       visaoGeralPanel,
       /id="scheduled-campaigns"/,
-      "scheduled-campaigns NÃO deve mais estar no panel Visão geral (#3010)",
+      "scheduled-campaigns deve aparecer no resumo curado (#3406 — weeklyPlanSection inteiro)",
     );
 
     const rampaPanel = html.match(/id="panel-rampa"[\s\S]*?(?=id="panel-engajamento")/)?.[0] ?? "";

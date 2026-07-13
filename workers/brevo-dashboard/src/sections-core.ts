@@ -615,6 +615,7 @@ ${monthlyAbcSectionsByDate}
   }
   .tab-label:hover { opacity: 1; background: var(--paper-alt); }
   #tab-visaogeral:checked ~ .tab-bar label[for="tab-visaogeral"],
+  #tab-envios:checked ~ .tab-bar label[for="tab-envios"],
   #tab-engajamento:checked ~ .tab-bar label[for="tab-engajamento"],
   #tab-links:checked ~ .tab-bar label[for="tab-links"],
   #tab-contatos:checked ~ .tab-bar label[for="tab-contatos"],
@@ -625,6 +626,7 @@ ${monthlyAbcSectionsByDate}
   }
   /* Foco de teclado: o radio focado projeta um contorno no seu label irmão. */
   #tab-visaogeral:focus-visible ~ .tab-bar label[for="tab-visaogeral"],
+  #tab-envios:focus-visible ~ .tab-bar label[for="tab-envios"],
   #tab-engajamento:focus-visible ~ .tab-bar label[for="tab-engajamento"],
   #tab-links:focus-visible ~ .tab-bar label[for="tab-links"],
   #tab-contatos:focus-visible ~ .tab-bar label[for="tab-contatos"],
@@ -634,6 +636,7 @@ ${monthlyAbcSectionsByDate}
   }
   .tab-panel { display: none; padding-top: 8px; }
   #tab-visaogeral:checked ~ .tab-panels #panel-visaogeral,
+  #tab-envios:checked ~ .tab-panels #panel-envios,
   #tab-engajamento:checked ~ .tab-panels #panel-engajamento,
   #tab-links:checked ~ .tab-panels #panel-links,
   #tab-contatos:checked ~ .tab-panels #panel-contatos,
@@ -655,7 +658,10 @@ ${monthlyAbcSectionsByDate}
 <p class="sub">Últimas ${campaigns.length} campaigns. ${dataFreshnessLine}</p>
 
 <!-- #2542: tab state inputs (hidden, CSS-only — sem JS externo) -->
+<!-- #3406: "Visão geral" agora é o resumo curado (reunião de parceria); o
+     conteúdo antigo (totais + volume + tabela de envios) virou a aba "Envios". -->
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-visaogeral" checked>
+<input type="radio" class="tab-radios" name="dash-tab" id="tab-envios">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-rampa">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-engajamento">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-links">
@@ -665,6 +671,7 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
 <!-- tab bar (labels referencing the radio inputs above; aria-controls liga aba↔painel) -->
 <div class="tab-bar" role="tablist">
   <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão geral</label>
+  <label class="tab-label" id="tablabel-envios" for="tab-envios" role="tab" aria-controls="panel-envios">Envios</label>
   <label class="tab-label" id="tablabel-rampa" for="tab-rampa" role="tab" aria-controls="panel-rampa">Agendamento</label>
   <label class="tab-label" id="tablabel-engajamento" for="tab-engajamento" role="tab" aria-controls="panel-engajamento">Engajamento</label>
   <label class="tab-label" id="tablabel-links" for="tab-links" role="tab" aria-controls="panel-links">Links / Cliques</label>
@@ -675,8 +682,23 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
 <!-- tab panels -->
 <div class="tab-panels">
 
-  <!-- Aba 1: Visão geral — totais mensais + volume + envios (#3010: agendados moveu pra aba Agendamento) -->
+  <!-- Aba 0: Visão geral — resumo curado pra reunião de parceria (#3406):
+       saúde/circuit breakers + ramp-up, alcance/volume, cupons/comissão e
+       resultado do teste A/B/C por Audiência. Reaproveita seções já
+       computadas pras outras abas (mesmas variáveis, zero fetch extra) —
+       gera IDs de elemento duplicados entre abas (ex: id="weekly-plan",
+       "monthly-totals", "volume-ciclo"), aceito porque nenhum script do
+       dashboard usa getElementById/querySelector nesses ids específicos. -->
   <div class="tab-panel" id="panel-visaogeral" role="tabpanel" aria-labelledby="tablabel-visaogeral">
+${weeklyPlanSection}
+${monthlyTotalsSection}
+${volumeSection}
+${couponTabHtml}
+${abcAudienceSection}
+  </div><!-- /panel-visaogeral -->
+
+  <!-- Aba 1: Envios — totais mensais + volume + tabela de envios (#3406: ex-"Visão geral", renomeada; #3010: agendados moveu pra aba Agendamento) -->
+  <div class="tab-panel" id="panel-envios" role="tabpanel" aria-labelledby="tablabel-envios">
 ${monthlyTotalsSection}
 ${volumeSection}
 ${unclassifiedNote}
@@ -755,7 +777,7 @@ ${rows || `<tr><td colspan="10" style="text-align:center;color:${DS.ink};opacity
 })();
 </script>
 </section>
-  </div><!-- /panel-visaogeral -->
+  </div><!-- /panel-envios -->
 
   <!-- Aba Agendamento: plano de envio semanal cold (#2974) -->
   <div class="tab-panel" id="panel-rampa" role="tabpanel" aria-labelledby="tablabel-rampa">
