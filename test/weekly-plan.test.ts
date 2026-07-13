@@ -614,3 +614,10 @@ test("renderRecommendationSection — sem envio maduro → mensagem de indispon�
   assert.match(html, /Sem envio maduro/);
   assert.doesNotMatch(html, /Próximo envio/);
 });
+
+test("renderRecommendationSection — zero campanhas → 'Nenhum envio registrado', NÃO 'Sem envio maduro' (#3426)", () => {
+  const html = renderRecommendationSection([], NOW);
+  assert.match(html, /Nenhum envio registrado/);
+  assert.doesNotMatch(html, /Sem envio maduro/);
+  assert.doesNotMatch(html, /Próximo envio/);
+});
