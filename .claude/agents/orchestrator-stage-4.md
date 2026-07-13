@@ -280,6 +280,7 @@ Exit code handling:
     --md {EDITION_DIR}/03-social.md
   npx tsx scripts/lint-social-md.ts --check relative-time --md {EDITION_DIR}/03-social.md
   npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
+  npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
   ```
   (b) gravar sentinel: `npx tsx scripts/check-humanizer-social.ts --write --edition-dir {EDITION_DIR}/`
   (c) re-rodar o check; só prosseguir quando exit 0.
@@ -402,6 +403,7 @@ Rodar SOMENTE os lints relevantes ao arquivo que o autofix de fato tocou:
   ```bash
   npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md {EDITION_DIR}/03-social.md
   npx tsx scripts/lint-social-md.ts --check linkedin-page-link --md {EDITION_DIR}/03-social.md
+  npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
   ```
 
 Exit code handling — **GATE-BLOCKING**, mesmo padrão que `check-humanizer-social.ts --check` já usa logo acima: se falhar, tratar como o exit 2 padrão de §4c.2b (re-corrigir e re-selar antes do gate, nunca deixar a violação vazar pro resumo do editor):
@@ -567,6 +569,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
         --md {EDITION_DIR}/03-social.md
       npx tsx scripts/lint-social-md.ts --check relative-time --md {EDITION_DIR}/03-social.md
       npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
+      npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
       ```
    5. Re-rodar check para confirmar exit 0 antes de voltar ao gate:
       ```bash

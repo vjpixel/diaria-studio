@@ -129,6 +129,44 @@ export function stripHtmlComments(input: string): StripResult {
   return { stripped, warnings };
 }
 
+/**
+ * stripLeadingPlatformHeader (#3424)
+ *
+ * `main()` abaixo prepende `# LinkedIn`/`# Facebook` incondicionalmente ao
+ * conteúdo recebido de cada tmp file. Se o agent (`social-linkedin` /
+ * `social-facebook`) já escreveu esse mesmo header no início do seu próprio
+ * tmp file, o merge produzia 2 headers idênticos em sequência — root cause
+ * confirmado do incidente #3388 (edição 260713): `extractPlatformSection`
+ * (scripts/lib/social-lint-rules.ts) para no PRÓXIMO `# ` top-level, então o
+ * conteúdo real ficava "fora" da seção capturada.
+ *
+ * `lintPlatformHeadersUnique` (scripts/lib/social-lint-rules.ts, #3388) só
+ * DETECTA a duplicata depois do fato. Esta função torna o merge
+ * estruturalmente imune à classe de bug: remove um header de plataforma
+ * pré-existente do INÍCIO do conteúdo (mesma linha reconhecida por
+ * `lintPlatformHeadersUnique` — `^# LinkedIn\s*$` / `^# Facebook\s*$`,
+ * case-insensitive, whitespace tolerado) antes do header canônico ser
+ * prependado. Só remove se o header for a primeira linha não-vazia — um
+ * header solto no meio/fim do texto (não é o que este bug produz) não é
+ * tocado.
+ */
+export function stripLeadingPlatformHeader(
+  content: string,
+  platform: "linkedin" | "facebook",
+): string {
+  const platTitle = platform.charAt(0).toUpperCase() + platform.slice(1);
+  const headerRe = new RegExp(`^# ${platTitle}\\s*$`, "i");
+  const lines = content.split("\n");
+
+  let i = 0;
+  while (i < lines.length && lines[i].trim() === "") i++;
+  if (i >= lines.length || !headerRe.test(lines[i])) return content;
+
+  i++; // pular a linha do header
+  while (i < lines.length && lines[i].trim() === "") i++;
+  return lines.slice(i).join("\n");
+}
+
 interface TmpCheck {
   agent: string;
   path: string;
@@ -199,6 +237,25 @@ function main(): void {
     console.error(`merge-social-md: FALHOU — ${(err as Error).message}`);
     process.exit(1);
   }
+
+  // #3424: strip de header de plataforma pré-existente ANTES do header
+  // canônico ser prependado abaixo — impede a duplicação na fonte, em vez de
+  // só deixar `lintPlatformHeadersUnique` (#3388) detectar depois do fato.
+  const liAfterHeaderStrip = stripLeadingPlatformHeader(liStripped, "linkedin");
+  if (liAfterHeaderStrip !== liStripped) {
+    console.error(
+      `merge-social-md: warn — tmp file de LinkedIn já continha o header "# LinkedIn" — removido antes do merge (#3424).`,
+    );
+  }
+  liStripped = liAfterHeaderStrip.trim();
+
+  const fbAfterHeaderStrip = stripLeadingPlatformHeader(fbStripped, "facebook");
+  if (fbAfterHeaderStrip !== fbStripped) {
+    console.error(
+      `merge-social-md: warn — tmp file de Facebook já continha o header "# Facebook" — removido antes do merge (#3424).`,
+    );
+  }
+  fbStripped = fbAfterHeaderStrip.trim();
 
   // #1075 + #1310: AMBOS comment_diaria e comment_pixel são postagem manual.
   // Make.com LinkedIn module não suporta Create Comment nem em company page
