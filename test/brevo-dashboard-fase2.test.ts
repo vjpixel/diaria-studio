@@ -2857,7 +2857,7 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
 
   test("HTML contém 6 labels de aba com textos corretos", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
-    assert.match(html, /Visão GERAL/, "deve ter label 'Visão GERAL' (#3415: título em caixa alta)");
+    assert.match(html, />Visão Geral</, "deve ter label 'Visão Geral' (#3415, corrigido: title-case, não caixa alta)");
     assert.match(html, />Envios</, "deve ter label 'Envios' (#3406, ex-'Visão geral')");
     assert.match(html, /Engajamento/, "deve ter label 'Engajamento'");
     assert.match(html, /Links \/ Cliques/, "deve ter label 'Links / Cliques'");

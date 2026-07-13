@@ -1,7 +1,7 @@
 /**
  * test/brevo-dashboard-3408-visaogeral-reorg.test.ts (#3408, reorg #3415)
  *
- * Regressão (#633) para a reorganização da aba "Visão GERAL" pedida pelo
+ * Regressão (#633) para a reorganização da aba "Visão Geral" pedida pelo
  * editor:
  *  1. Resumo A/B/C na Visão Geral mostra só a tabela Agregada (Fria + Quente
  *     combinadas) — sem os headers "Fria (nunca recebeu)"/"Quente (já
