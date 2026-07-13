@@ -1556,7 +1556,18 @@ function emptyCellV2(cell: "A" | "B" | "C"): CellSummaryV2 {
   };
 }
 
-/** Agrega uma lista de campanhas JÁ FILTRADA (por audiência/ciclo) em CellSummaryV2[A,B,C]. */
+/**
+ * Agrega uma lista de campanhas JÁ FILTRADA (por audiência/ciclo) em CellSummaryV2[A,B,C].
+ *
+ * #3404: envios de CONSOLIDAÇÃO (só 1-2 células enviadas num dado dia, sem par
+ * completo A/B/C — ex: ciclo 2606-07, terça 07-07, envio só pra Célula B pós
+ * sinal de vencedor) são excluídos da agregação. Sem isso, o dado que "prova"
+ * a célula vencedora na comparação estatística já inclui volume extra que só
+ * ela recebeu — viés circular. Agrupa por (audiência, dia BRT) — mesma técnica
+ * de `groupMonthlyAbcTests` (scheduledAt‖sentDate →
+ * toLocaleDateString("en-CA", {timeZone: "America/Sao_Paulo"})) — e só inclui
+ * campanhas de dias com as 3 células representadas.
+ */
 function aggregateCellsV2(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number }>,
   cycle: string,
@@ -1567,14 +1578,34 @@ function aggregateCellsV2(
     B: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
     C: { sent: 0, delivered: 0, opens: 0, clicks: 0, unsub: 0, bounces: 0, spam: 0, count: 0 },
   };
+  const parsedCampaigns: Array<{
+    c: BrevoCampaign & { listName?: string; listSize?: number };
+    cell: "A" | "B" | "C";
+    audience: ClariceAudience;
+    dayKey: string;
+  }> = [];
+  const cellsPerDay = new Map<string, Set<"A" | "B" | "C">>();
   for (const c of campaigns) {
     const parsed = parseAbcAudienceCampaign(c.name, c.listName);
     if (!parsed || parsed.cycle !== cycle) continue;
-    if (audienceFilter !== "any" && parsed.audience !== audienceFilter) continue;
+    const when = c.scheduledAt ?? c.sentDate;
+    if (!when) continue;
+    const ms = Date.parse(when);
+    if (!Number.isFinite(ms)) continue;
+    const dayKey = new Date(ms).toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" });
+    const groupKey = `${parsed.audience}|${dayKey}`;
+    if (!cellsPerDay.has(groupKey)) cellsPerDay.set(groupKey, new Set());
+    cellsPerDay.get(groupKey)!.add(parsed.cell);
+    parsedCampaigns.push({ c, cell: parsed.cell, audience: parsed.audience, dayKey });
+  }
+  for (const { c, cell, audience, dayKey } of parsedCampaigns) {
+    if (audienceFilter !== "any" && audience !== audienceFilter) continue;
+    const groupKey = `${audience}|${dayKey}`;
+    if ((cellsPerDay.get(groupKey)?.size ?? 0) < 3) continue; // consolidação — sem par completo A/B/C
     const picked = pickStats(c);
     if (!picked) continue;
     const s = picked.stats;
-    const a = acc[parsed.cell];
+    const a = acc[cell];
     a.sent += s.sent ?? 0;
     a.delivered += s.delivered ?? 0;
     a.opens += s.uniqueViews ?? 0;

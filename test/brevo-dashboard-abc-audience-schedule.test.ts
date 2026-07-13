@@ -419,6 +419,43 @@ describe("renderAbcAudienceTable / renderAbcAudienceSection — omite quando <2 
   });
 });
 
+// ─── aggregateAbcByAudience: exclui envio de CONSOLIDAÇÃO da comparação (#3404) ──
+
+describe("aggregateAbcByAudience — exclui dia sem par completo A/B/C (consolidação, #3404)", () => {
+  const cycle = "2606-07";
+
+  // Reproduz o padrão real do ciclo 2606-07 (achado ao vivo, 260713): 2 dias
+  // completos (sáb, dom) + 1 envio de CONSOLIDAÇÃO só pra Célula B (terça,
+  // pós sinal de vencedor) — mesmo padrão do #87 real ("2606-07 cold d1").
+  const coldTwoFullDays = [
+    { ...makeCampaign(184, "Clarice News 2606-07 — A · sab", "2026-07-04T09:13:00Z", { sent: 900, delivered: 895, uniqueViews: 200, uniqueClicks: 20 }), listName: "cold 2606-07 sab-A" },
+    { ...makeCampaign(185, "Clarice News 2606-07 — B · sab", "2026-07-04T09:13:00Z", { sent: 900, delivered: 895, uniqueViews: 250, uniqueClicks: 60 }), listName: "cold 2606-07 sab-B" },
+    { ...makeCampaign(186, "Clarice News 2606-07 — C · sab", "2026-07-04T09:13:00Z", { sent: 900, delivered: 895, uniqueViews: 150, uniqueClicks: 15 }), listName: "cold 2606-07 sab-C" },
+    { ...makeCampaign(181, "Clarice News 2606-07 — A · dom", "2026-07-05T09:58:00Z", { sent: 800, delivered: 800, uniqueViews: 180, uniqueClicks: 18 }), listName: "cold 2606-07 dom-A" },
+    { ...makeCampaign(182, "Clarice News 2606-07 — B · dom", "2026-07-05T09:30:00Z", { sent: 800, delivered: 800, uniqueViews: 220, uniqueClicks: 55 }), listName: "cold 2606-07 dom-B" },
+    { ...makeCampaign(183, "Clarice News 2606-07 — C · dom", "2026-07-05T09:31:00Z", { sent: 800, delivered: 800, uniqueViews: 140, uniqueClicks: 13 }), listName: "cold 2606-07 dom-C" },
+  ];
+  const coldConsolidacaoSoloB = {
+    ...makeCampaign(187, "Clarice News 2606-07 — B · ter", "2026-07-07T10:12:00Z", { sent: 1200, delivered: 1200, uniqueViews: 400, uniqueClicks: 300 }),
+    listName: "2606-07 cold d1",
+  };
+
+  test("célula com envio solo (sem par A/C no mesmo dia) não conta esse dia — campaignCount/delivered ficam simétricos", () => {
+    const result = aggregateAbcByAudience([...coldTwoFullDays, coldConsolidacaoSoloB], cycle);
+    const a = result.cold.cells.find((c) => c.cell === "A")!;
+    const b = result.cold.cells.find((c) => c.cell === "B")!;
+    const c = result.cold.cells.find((c) => c.cell === "C")!;
+    // Sem o fix: B teria campaignCount=3, delivered=895+800+1200=2895 —
+    // volume de consolidação inflando a comparação a favor de quem já venceu.
+    assert.equal(b.campaignCount, 2, "envio de terça (consolidação solo) não deve contar");
+    assert.equal(b.delivered, 895 + 800, "delivered de B não deve incluir o envio de consolidação (1200)");
+    assert.equal(a.campaignCount, 2);
+    assert.equal(c.campaignCount, 2);
+    assert.equal(a.delivered, b.delivered, "A e B devem ficar simétricos — mesmo número de dias completos");
+    assert.equal(c.delivered, b.delivered, "C e B devem ficar simétricos — mesmo número de dias completos");
+  });
+});
+
 // ─── renderAbcAudienceTable: guard de zero/aguardando (#3303) ────────────────
 
 describe("renderAbcAudienceTable — guard opens>0/clicks=0 não é 'empate' (#3303)", () => {
