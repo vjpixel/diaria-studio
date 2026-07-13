@@ -322,6 +322,7 @@ npx tsx scripts/embed-images-base64.ts \
   --edition-dir {EDITION_DIR} \
   --out {EDITION_DIR}/_internal/social-preview-embedded.html
 ```
+Exit 1 aqui é esperado quando `missing` não está vazio — não bloqueante, seguir normalmente checando o campo `missing` no JSON de stdout (#3393).
 
 Publicar via `Artifact` (#3214 — mesmo mecanismo do Stage 4 §4b step 3, chamado aqui de novo pra refletir qualquer resolucao de URL que so existe pos-dispatch, ex: `{edition_url}`), a partir de `social-preview-embedded.html` (nunca `social-preview.html` direto). Resume-aware: ler URL ja persistida em `05-social-preview.json` e passar via `url` do tool pra atualizar o MESMO artifact em vez de mintar um novo:
 

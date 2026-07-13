@@ -15,10 +15,17 @@ import {
   renderEiaEngagementSection,
   renderCouponTabPanel,
   renderCohortsTabPanel,
+  renderScheduledSection,
   COHORT_DEVIATION_THRESHOLD_PP,
 } from "./sections-kv.ts";
 import { billingCycleWindow, isInBillingWindow, type BillingCycleWindow } from "./billing-cycle.ts";
-import { renderWeeklyPlanTabPanel, deriveEditionName } from "./weekly-plan.ts";
+import {
+  renderWeeklyPlanTabPanel,
+  renderHealthSection,
+  renderRecommendationSection,
+  renderTopWeekdaysSection,
+  deriveEditionName,
+} from "./weekly-plan.ts";
 import { isBounceBreach } from "./thresholds.ts";
 
 /**
@@ -427,10 +434,25 @@ ${monthlyAbcSectionsByDate}
   const eiaEngagementSection = renderEiaEngagementSection(eiaEngagement, nowDate);
   // #2718: tab de cupons Stripe (apenas quando couponUsage não é null — PII-gated).
   const couponTabHtml = couponUsage ? renderCouponTabPanel(couponUsage, nowDate) : "";
+  // #3415: variante scoped só pra Visão Geral — mesmo painel, header "Total
+  // por mês" → "Cupons" (rename que não pode vazar pra aba Cupons, fonte
+  // compartilhada — ver renderCouponTabPanel opts.monthlyTitle).
+  const couponVisaoGeralHtml = couponUsage ? renderCouponTabPanel(couponUsage, nowDate, { monthlyTitle: "Cupons" }) : "";
   // #2974: aba "Rampa"/Agendamento — plano de envio semanal (maturação >48h →
   // agregado → semáforo → 3 volumes) + #3010: campanhas agendadas (`scheduled`)
   // logo abaixo da recomendação dos próximos 3 envios.
   const weeklyPlanSection = renderWeeklyPlanTabPanel(campaigns, nowDate, scheduled);
+  // #3415: peças fatiadas do mesmo cálculo (computeWeeklySendState
+  // compartilhado em weekly-plan.ts) pro reorg Passado/Presente/Futuro da
+  // Visão Geral — "Saúde" (Passado), "Recomendação" + agendados (Futuro),
+  // "Melhores dias" (Presente). Nunca duplicam a lógica de semáforo/plano.
+  const healthVisaoGeralSection = renderHealthSection(campaigns, nowDate, { title: "Saúde" });
+  const recommendationVisaoGeralSection = renderRecommendationSection(campaigns, nowDate);
+  const scheduledVisaoGeralSection = renderScheduledSection(scheduled);
+  const weekdaysVisaoGeralInner = renderTopWeekdaysSection(campaigns, nowDate);
+  const weekdaysVisaoGeralSection = weekdaysVisaoGeralInner
+    ? `<section class="phase2-section" id="weekly-plan-weekdays">${weekdaysVisaoGeralInner}</section>`
+    : "";
 
   // #2991: paleta visual da dashboard usa os tokens CANÔNICOS do DS (decisão
   // do editor — dashboard não tem paleta própria, segue design-tokens.ts como
@@ -688,7 +710,7 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
 
 <!-- tab bar (labels referencing the radio inputs above; aria-controls liga aba↔painel) -->
 <div class="tab-bar" role="tablist">
-  <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão geral</label>
+  <label class="tab-label" id="tablabel-visaogeral" for="tab-visaogeral" role="tab" aria-controls="panel-visaogeral">Visão Geral</label>
   <label class="tab-label" id="tablabel-envios" for="tab-envios" role="tab" aria-controls="panel-envios">Envios</label>
   <label class="tab-label" id="tablabel-rampa" for="tab-rampa" role="tab" aria-controls="panel-rampa">Agendamento</label>
   <label class="tab-label" id="tablabel-engajamento" for="tab-engajamento" role="tab" aria-controls="panel-engajamento">Engajamento</label>
@@ -700,23 +722,34 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
 <!-- tab panels -->
 <div class="tab-panels">
 
-  <!-- Aba 0: Visão geral — resumo curado pra reunião de parceria (#3406,
-       reorganizado em #3408): 2 blocos narrativos, passado → presente.
-       Reaproveita seções já computadas pras outras abas (mesmas variáveis,
-       zero fetch extra) — gera IDs de elemento duplicados entre abas (ex:
-       id="weekly-plan", "monthly-totals", "volume-ciclo"), aceito porque
-       nenhum script do dashboard usa getElementById/querySelector nesses ids
-       específicos. #3408: só a tabela Agregada do resumo A/B/C aparece aqui
-       (abcAudienceAggregateSection) — Fria/Quente continuam só na aba
-       Engajamento (abcAudienceSection, sem mudança). -->
+  <!-- Aba 0: Visão Geral — resumo curado pra reunião de parceria (#3406,
+       reorganizado em #3408, e novamente em #3415): 3 blocos narrativos,
+       passado → presente → futuro. Reaproveita seções já computadas pras
+       outras abas (mesmas variáveis, zero fetch extra) — gera IDs de elemento
+       duplicados entre abas (ex: "monthly-totals", "volume-ciclo"), aceito
+       porque nenhum script do dashboard usa getElementById/querySelector
+       nesses ids específicos. #3408: só a tabela Agregada do resumo A/B/C
+       aparece aqui (abcAudienceAggregateSection) — Fria/Quente continuam só
+       na aba Engajamento (abcAudienceSection, sem mudança). #3415: o bundle
+       completo da aba Agendamento (weekly-plan) NÃO é mais reaproveitado
+       inteiro aqui — health/recomendação/agendados/melhores-dias são peças
+       extraídas (renderHealthSection/renderRecommendationSection/
+       renderScheduledSection/renderTopWeekdaysSection), cada uma no bloco
+       narrativo certo; os headers "Saúde"/"Cupons" são renames SCOPED só
+       desta aba (opts.title/opts.monthlyTitle), a fonte compartilhada
+       (aba Agendamento/Cupons) mantém os títulos originais. -->
   <div class="tab-panel" id="panel-visaogeral" role="tabpanel" aria-labelledby="tablabel-visaogeral">
 <h3 class="narrative-group-title">Passado — o que foi executado</h3>
 ${monthlyTotalsSection}
-${volumeSection}
-${abcAudienceAggregateSection}
+${healthVisaoGeralSection}
 <h3 class="narrative-group-title">Presente — estado atual</h3>
-${couponTabHtml}
-${weeklyPlanSection}
+${volumeSection}
+${couponVisaoGeralHtml}
+${abcAudienceAggregateSection}
+${weekdaysVisaoGeralSection}
+<h3 class="narrative-group-title">Futuro — próximos passos</h3>
+${recommendationVisaoGeralSection}
+${scheduledVisaoGeralSection}
   </div><!-- /panel-visaogeral -->
 
   <!-- Aba 1: Envios — totais mensais + volume + tabela de envios (#3406: ex-"Visão geral", renomeada; #3010: agendados moveu pra aba Agendamento) -->
