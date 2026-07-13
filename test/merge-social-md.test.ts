@@ -8,7 +8,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { stripHtmlComments } from "../scripts/merge-social-md.ts";
+import {
+  stripHtmlComments,
+  stripLeadingPlatformHeader,
+} from "../scripts/merge-social-md.ts";
+import { lintPlatformHeadersUnique } from "../scripts/lib/social-lint-rules.ts";
 import { makeEditionDir as makeEditionDirWithPrefix } from "./_helpers/make-edition-dir.ts";
 
 function makeEditionDir(): string {
@@ -87,6 +91,48 @@ describe("stripHtmlComments (#875)", () => {
     const input = "antes\n<!--\n  multi\n  linha\n-->\ndepois";
     const r = stripHtmlComments(input);
     assert.equal(r.stripped, "antes\n\ndepois");
+  });
+});
+
+describe("stripLeadingPlatformHeader (#3424)", () => {
+  it("remove header LinkedIn no início do conteúdo", () => {
+    const input = "# LinkedIn\n\n## d1\n\nconteúdo\n";
+    assert.equal(stripLeadingPlatformHeader(input, "linkedin"), "## d1\n\nconteúdo\n");
+  });
+
+  it("remove header Facebook no início do conteúdo", () => {
+    const input = "# Facebook\n\n## d1\n\nconteúdo\n";
+    assert.equal(stripLeadingPlatformHeader(input, "facebook"), "## d1\n\nconteúdo\n");
+  });
+
+  it("case-insensitive e tolera trailing whitespace no header", () => {
+    const input = "# linkedin   \n\nconteúdo\n";
+    assert.equal(stripLeadingPlatformHeader(input, "linkedin"), "conteúdo\n");
+  });
+
+  it("tolera linhas em branco antes do header", () => {
+    const input = "\n\n# LinkedIn\n\nconteúdo\n";
+    assert.equal(stripLeadingPlatformHeader(input, "linkedin"), "conteúdo\n");
+  });
+
+  it("sem header no início → conteúdo intacto", () => {
+    const input = "## d1\n\nconteúdo sem header\n";
+    assert.equal(stripLeadingPlatformHeader(input, "linkedin"), input);
+  });
+
+  it("header da OUTRA plataforma no início → não remove", () => {
+    const input = "# Facebook\n\nconteúdo\n";
+    assert.equal(stripLeadingPlatformHeader(input, "linkedin"), input);
+  });
+
+  it("header no MEIO do conteúdo (não na 1ª linha não-vazia) → não remove", () => {
+    const input = "## d1\n\n# LinkedIn\n\nconteúdo\n";
+    assert.equal(stripLeadingPlatformHeader(input, "linkedin"), input);
+  });
+
+  it("substring 'LinkedIn' solta em prosa não é removida (regex exige linha inteira)", () => {
+    const input = "Siga a Diar.ia no LinkedIn\n\nconteúdo\n";
+    assert.equal(stripLeadingPlatformHeader(input, "linkedin"), input);
   });
 });
 
@@ -261,6 +307,83 @@ describe("merge-social-md CLI", () => {
       assert.ok(!out.includes("trailing"));
       assert.ok(out.includes("Visible LinkedIn"));
       assert.ok(out.includes("Visible Facebook"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#3424 — tmp de LinkedIn já com header embutido → merge NÃO duplica (root cause do #3388)", () => {
+    const dir = makeEditionDir();
+    try {
+      // Reproduz o caso real da edição 260713: o agent social-linkedin já
+      // escreveu "# LinkedIn" no início do próprio tmp file.
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "# LinkedIn\n\n## d1\n\nLinkedIn d1 content\n",
+      );
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "## d1\n\nFacebook d1 content\n",
+      );
+
+      const r = runScript(dir);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.ok(r.stderr.includes("já continha o header"), "deve avisar sobre o strip no stderr");
+
+      const out = readFileSync(join(dir, "03-social.md"), "utf8");
+      // Exatamente 1 ocorrência de "# LinkedIn" como linha inteira — não 2.
+      const lintResult = lintPlatformHeadersUnique(out);
+      assert.equal(lintResult.ok, true, JSON.stringify(lintResult.errors));
+      assert.ok(out.includes("LinkedIn d1 content"));
+      assert.ok(out.includes("Postagem semi-automática"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#3424 — tmp de Facebook já com header embutido → merge NÃO duplica", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "## d1\n\nLinkedIn d1 content\n",
+      );
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "# Facebook\n\n## d1\n\nFacebook d1 content\n",
+      );
+
+      const r = runScript(dir);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.ok(r.stderr.includes("já continha o header"), "deve avisar sobre o strip no stderr");
+
+      const out = readFileSync(join(dir, "03-social.md"), "utf8");
+      const lintResult = lintPlatformHeadersUnique(out);
+      assert.equal(lintResult.ok, true, JSON.stringify(lintResult.errors));
+      assert.ok(out.includes("Facebook d1 content"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("#3424 — ambos tmps já com header embutido → merge NÃO duplica em nenhuma plataforma", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "# LinkedIn\n\n## d1\n\nLinkedIn content\n",
+      );
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "# Facebook\n\n## d1\n\nFacebook content\n",
+      );
+
+      const r = runScript(dir);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+
+      const out = readFileSync(join(dir, "03-social.md"), "utf8");
+      const lintResult = lintPlatformHeadersUnique(out);
+      assert.equal(lintResult.ok, true, JSON.stringify(lintResult.errors));
     } finally {
       rmSync(dir, { recursive: true });
     }
