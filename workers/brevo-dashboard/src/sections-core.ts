@@ -1659,11 +1659,14 @@ export function aggregateAbcByAudience(
 /** Renderiza 1 tabela (Agregada/Fria/Quente) do Resumo A/B/C por Audiência. Exportado pra teste unitário. */
 export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): string {
   const { cells, leaderOpenRate, leaderClickRate, significantClick, pValue } = table;
-  if (cells.every((c) => c.campaignCount === 0)) {
+  if (cells.filter((c) => c.campaignCount > 0).length < 2) {
     // #3127: omite a subseção inteira (sem header nem stub "Sem dados") quando
     // esta audiência especificamente não teve nenhum envio no ciclo — ruído
     // visual, já que as outras 1-2 audiências do mesmo ciclo normalmente têm
     // dado. Mesmo idioma de renderAbcSection (branch sem resetNote).
+    // #3396: <2 células amostradas (não só ===0) — com só 1 célula (ex: A saiu,
+    // B/C ainda não), não há comparação possível ainda; mesmo critério que
+    // pickLeader já usa (sampled.length < 2 → null).
     return "";
   }
   const orderedRows = [...cells].sort((a, b) => {
@@ -1695,6 +1698,8 @@ export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): 
     })
     .join("\n");
 
+  // #3396: sampled.length sempre >= 2 aqui — o guard early-return acima já
+  // cobre <2 (retorna "" antes de chegar neste ponto).
   const sampled = cells.filter((c) => c.campaignCount > 0);
   // #3303: mesma classe de bug já corrigida em renderAbcSection (#3281) — sem
   // este guard, opens>0/clicks=0 (comum nas primeiras horas pós-envio, clique
@@ -1705,11 +1710,9 @@ export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): 
   // "Aguardando dados suficientes") — esta tabela não tem uma métrica de
   // abertura secundária também aguardando; o resto dos campos (open rate, CTOR)
   // já está populado quando isso dispara.
-  const allZero = sampled.length >= 2 && sampled.every((c) => c.clicks === 0);
+  const allZero = sampled.every((c) => c.clicks === 0);
   const conclusionNote =
-    sampled.length < 2
-      ? "Dados insuficientes para comparação."
-      : allZero
+    allZero
       ? "Aguardando dados de clique — primeiras horas pós-envio."
       : !leaderClickRate
       ? "Empate no clique — aguardar mais dados."
@@ -1752,10 +1755,14 @@ export function renderAbcAudienceSection(
   cycle: string,
   result: { aggregate: AbcAudienceTable; cold: AbcAudienceTable; warm: AbcAudienceTable },
 ): string {
+  // #3396: <2 células amostradas em CADA sub-tabela (não só ===0) — senão o
+  // wrapper externo (título + nota de metodologia) ainda renderiza quando as
+  // 3 sub-tabelas já se omitem sozinhas (renderAbcAudienceTable) mas alguma
+  // tem exatamente 1 célula com envio.
   const allEmpty =
-    result.aggregate.cells.every((c) => c.campaignCount === 0) &&
-    result.cold.cells.every((c) => c.campaignCount === 0) &&
-    result.warm.cells.every((c) => c.campaignCount === 0);
+    result.aggregate.cells.filter((c) => c.campaignCount > 0).length < 2 &&
+    result.cold.cells.filter((c) => c.campaignCount > 0).length < 2 &&
+    result.warm.cells.filter((c) => c.campaignCount > 0).length < 2;
   if (allEmpty) return "";
   // #3092: título opaco ("2607-07" não comunica nada de imediato) — sufixo
   // legível do mês/ano de ENVIO quando o formato do ciclo permite derivá-lo.
