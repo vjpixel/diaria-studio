@@ -119,7 +119,7 @@ npx tsx scripts/render-halt-banner.ts \
      --edition-dir {EDITION_DIR} \
      --out {EDITION_DIR}/_internal/newsletter-preview-embedded.html
    ```
-   `missing` no stdout = imagem sem arquivo local (mantém URL remota, não bloqueia) — logar warn se não-vazio. Publicar o Artifact a partir de `newsletter-preview-embedded.html` (NUNCA `newsletter-final.html` diretamente — esse fica reservado pro upload real de produção na Etapa 5, que precisa de URLs reais, não `data:` URI).
+   **Exit 1 aqui é esperado quando `missing` não está vazio (#3370/#3393)** — não bloqueante, seguir normalmente checando o campo `missing` no JSON de stdout (imagem sem arquivo local mantém URL remota, só logar warn). Publicar o Artifact a partir de `newsletter-preview-embedded.html` (NUNCA `newsletter-final.html` diretamente — esse fica reservado pro upload real de produção na Etapa 5, que precisa de URLs reais, não `data:` URI).
 
    Republicar no MESMO `file_path` mantém a MESMA URL **dentro da mesma conversa**; entre conversas (ex: resume dias depois numa sessão nova) republicar sem `url` explícito minta uma URL NOVA — por isso o resume-safety abaixo persiste a URL retornada e a reusa via o parâmetro `url` do tool:
 
@@ -161,7 +161,7 @@ npx tsx scripts/render-halt-banner.ts \
      --edition-dir {EDITION_DIR} \
      --out {EDITION_DIR}/_internal/social-preview-embedded.html
    ```
-   Publicar via `Artifact` — mesmo padrão resume-aware do passo 2b acima, a partir de `social-preview-embedded.html` (nunca `social-preview.html` direto), lendo/persistindo `{EDITION_DIR}/_internal/05-social-preview.json` campo `social_preview_url` (nome de arquivo/campo inalterado desde #1734 — `send-edition-report.ts` continua lendo daqui sem mudança):
+   Exit 1 aqui é esperado quando `missing` não está vazio — não bloqueante (mesma semântica do passo 2b acima). Publicar via `Artifact` — mesmo padrão resume-aware do passo 2b acima, a partir de `social-preview-embedded.html` (nunca `social-preview.html` direto), lendo/persistindo `{EDITION_DIR}/_internal/05-social-preview.json` campo `social_preview_url` (nome de arquivo/campo inalterado desde #1734 — `send-edition-report.ts` continua lendo daqui sem mudança):
    ```bash
    node -e "
      const fs = require('fs');
@@ -361,7 +361,7 @@ npx tsx scripts/embed-images-base64.ts \
   --edition-dir {EDITION_DIR} \
   --out {EDITION_DIR}/_internal/newsletter-preview-embedded.html
 ```
-Chamar `Artifact` de novo com `file_path: "{EDITION_DIR}/_internal/newsletter-preview-embedded.html"` e `url: "{newsletter_url}"` (a URL já persistida em `04-newsletter-url.json` por §4b step 2b) — **isso atualiza o MESMO artifact, na MESMA URL** (diferente do Worker Cloudflare antigo, que gerava uma URL nova a cada conteúdo por ser content-hash-keyed). Como a URL não muda, não é necessário re-persistir nem reavisar o editor de staleness — a variável `{newsletter_url}` capturada em §4b step 2b já continua válida e aponta pro conteúdo corrigido automaticamente assim que a republicação completar.
+Exit 1 aqui é esperado quando `missing` não está vazio — não bloqueante (ver §4b step 2b). Chamar `Artifact` de novo com `file_path: "{EDITION_DIR}/_internal/newsletter-preview-embedded.html"` e `url: "{newsletter_url}"` (a URL já persistida em `04-newsletter-url.json` por §4b step 2b) — **isso atualiza o MESMO artifact, na MESMA URL** (diferente do Worker Cloudflare antigo, que gerava uma URL nova a cada conteúdo por ser content-hash-keyed). Como a URL não muda, não é necessário re-persistir nem reavisar o editor de staleness — a variável `{newsletter_url}` capturada em §4b step 2b já continua válida e aponta pro conteúdo corrigido automaticamente assim que a republicação completar.
 
 **⚠️ Re-render do social quando `social_modified === true` (#3224):** claims com `sources` incluindo `"social"` agora também são corrigidos em `03-social.md` (nos blocos `## dN`, LinkedIn e Facebook — ver "O que é auto-corrigido" abaixo). O script já regrava `_internal/.humanizer-social-done.json` internamente com `bypassReason` explícito (reusa `writeSentinel` de `check-humanizer-social.ts`, mesmo mecanismo do #2529) — **não é preciso rodar `check-humanizer-social.ts --write` manualmente**. Mas o pré-render de §4b step 3 (`social-preview.html`) foi gerado ANTES do autofix, então se `_internal/fact-check-autofix.json` mostra `social_modified: true`, re-renderizar e republicar:
 
@@ -378,7 +378,7 @@ npx tsx scripts/embed-images-base64.ts \
   --edition-dir {EDITION_DIR} \
   --out {EDITION_DIR}/_internal/social-preview-embedded.html
 ```
-`file_path: "{EDITION_DIR}/_internal/social-preview-embedded.html"` + `url: "{social_url}"` (já persistida em `05-social-preview.json`), **atualiza a mesma URL**.
+Exit 1 aqui é esperado quando `missing` não está vazio — não bloqueante (ver §4b step 2b). `file_path: "{EDITION_DIR}/_internal/social-preview-embedded.html"` + `url: "{social_url}"` (já persistida em `05-social-preview.json`), **atualiza a mesma URL**.
 
 Confirmar que o sentinel bate com o social já corrigido antes de seguir pro gate (deve dar exit 0 — o próprio script já regravou):
 ```bash

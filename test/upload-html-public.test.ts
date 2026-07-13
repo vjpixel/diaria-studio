@@ -709,3 +709,62 @@ describe("uploadHtml — freshness guard integração (#2012)", () => {
     assert.ok(r.bytes > 0);
   });
 });
+
+describe("CLI guard — importar o módulo não dispara main() (#3386)", () => {
+  it("dynamic import() via `node --import tsx -e` roda só a função exportada, sem side-effect de CLI", async () => {
+    // Regressão #3386: antes do guard `isMainModule`, o módulo terminava com
+    // uma chamada direta de `main()` no module scope — importar o arquivo (em
+    // vez de rodá-lo como CLI) disparava `main()` com argv inválido, que
+    // aborta ANTES de qualquer código do caller rodar (main() é síncrono até
+    // o primeiro `await`, então `process.exit` nele preempta o resto do
+    // eval). Isso mascarava falhas: nenhuma das chamadas subsequentes do
+    // caller (ex: `persistFieldToJsonFile`) executava, e dependendo do
+    // ambiente/flags nem sequer sobrava stderr visível.
+    //
+    // Reproduzido ao investigar: `npx tsx -e` com `import` ESTÁTICO misturado
+    // a outras statements é INSTÁVEL neste stack (chega a dar segfault
+    // silencioso do processo node). O padrão seguro — e o único exercitado
+    // aqui — é dynamic `import()` via `node --import tsx -e`, que é também o
+    // padrão que qualquer call-site programático desse módulo deve usar.
+    const { spawnSync } = await import("node:child_process");
+    const { join } = await import("node:path");
+    const { pathToFileURL } = await import("node:url");
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptUrl = pathToFileURL(
+      join(projectRoot, "scripts", "upload-html-public.ts"),
+    ).href;
+    const dir = mkdtempSync(resolve(tmpdir(), "cli-guard-import-"));
+    const persistPath = resolve(dir, "04-newsletter-url.json").replace(/\\/g, "/");
+
+    const code = `
+      import('${scriptUrl}').then((m) => {
+        console.log('IMPORT_OK:' + typeof m.persistFieldToJsonFile);
+        m.persistFieldToJsonFile('${persistPath}', 'newsletter_url', 'https://example.com/regressao-3386');
+        console.log('WRITE_OK');
+      }).catch((e) => {
+        console.error('IMPORT_FAILED:' + e.message);
+        process.exit(1);
+      });
+    `;
+
+    const r = spawnSync(process.execPath, ["--import", "tsx", "-e", code], {
+      encoding: "utf8",
+      cwd: projectRoot,
+    });
+
+    assert.equal(r.status, 0, `esperava exit 0, stderr: ${r.stderr}`);
+    assert.match(r.stdout, /IMPORT_OK:function/, "import deve expor persistFieldToJsonFile");
+    assert.match(r.stdout, /WRITE_OK/, "a função exportada deve rodar e completar (main() não pode preemptar)");
+
+    const combined = r.stdout + r.stderr;
+    assert.doesNotMatch(
+      combined,
+      /Uso: upload-html-public\.ts/,
+      "main() não deve rodar em import — nenhuma mensagem de uso de CLI esperada",
+    );
+
+    assert.ok(existsSync(persistPath), "persistFieldToJsonFile deve ter escrito o arquivo (prova que main() não preemptou)");
+    const written = JSON.parse(readFileSync(persistPath, "utf8"));
+    assert.equal(written.newsletter_url, "https://example.com/regressao-3386");
+  });
+});
