@@ -63,6 +63,18 @@ export interface MonthlyPublicImage {
 }
 
 /**
+ * Infere mime_type pela extensão do filename — evita hardcode fixo (self-review
+ * #3392: todo filename hoje é .jpg, mas um hardcode sobreviveria silenciosamente
+ * a uma futura mudança de formato).
+ */
+function mimeForFilename(filename: string): string {
+  const ext = filename.toLowerCase().split(".").pop() ?? "";
+  if (ext === "png") return "image/png";
+  if (ext === "webp") return "image/webp";
+  return "image/jpeg";
+}
+
+/**
  * Pure (#3392): monta o manifest `{ images: { slot: { url, filename, mime_type } } }`
  * consumido por `scripts/embed-images-base64.ts` — mesmo shape de
  * `06-public-images.json` do diário (sem `file_id`, que o embed não lê).
@@ -76,16 +88,17 @@ export function buildPublicImagesManifest(
 ): Record<string, MonthlyPublicImage> {
   const images: Record<string, MonthlyPublicImage> = {};
   if (eia.a && eia.aFilename) {
-    images.eia_a = { url: eia.a, filename: eia.aFilename, mime_type: "image/jpeg" };
+    images.eia_a = { url: eia.a, filename: eia.aFilename, mime_type: mimeForFilename(eia.aFilename) };
   }
   if (eia.b && eia.bFilename) {
-    images.eia_b = { url: eia.b, filename: eia.bFilename, mime_type: "image/jpeg" };
+    images.eia_b = { url: eia.b, filename: eia.bFilename, mime_type: mimeForFilename(eia.bFilename) };
   }
   for (const [n, url] of Object.entries(destaqueImages)) {
-    images[`d${n}`] = { url, filename: `04-d${n}-2x1.jpg`, mime_type: "image/jpeg" };
+    const filename = `04-d${n}-2x1.jpg`;
+    images[`d${n}`] = { url, filename, mime_type: mimeForFilename(filename) };
   }
   if (livrosImageUrl) {
-    images.livros_promo = { url: livrosImageUrl, filename: LIVROS_PROMO_FILENAME, mime_type: "image/jpeg" };
+    images.livros_promo = { url: livrosImageUrl, filename: LIVROS_PROMO_FILENAME, mime_type: mimeForFilename(LIVROS_PROMO_FILENAME) };
   }
   return images;
 }

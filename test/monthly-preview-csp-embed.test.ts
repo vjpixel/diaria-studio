@@ -44,6 +44,15 @@ describe("buildPublicImagesManifest (#3392)", () => {
     assert.equal(manifest.eia_b.filename, "01-eai-B.jpg");
   });
 
+  it("infere mime_type pela extensão do filename em vez de hardcode fixo", () => {
+    const manifest = buildPublicImagesManifest(
+      { a: "https://poll.diaria.workers.dev/img/x.png", aFilename: "01-eia-A.png" },
+      {},
+      undefined,
+    );
+    assert.equal(manifest.eia_a.mime_type, "image/png");
+  });
+
   it("omite eia_a/eia_b quando uploadEiaImages não achou o par (sem url, sem filename)", () => {
     const manifest = buildPublicImagesManifest({}, {}, undefined);
     assert.equal(manifest.eia_a, undefined);
