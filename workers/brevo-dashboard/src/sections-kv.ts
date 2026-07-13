@@ -770,13 +770,28 @@ export function renderContactsSummarySection(
     // #2865: coluna "Brevo" (brevo_list_ids IS NOT NULL) — mesmo gate opcional.
     const bHist = s.priority_points_histogram_brevo;
     const withBrevo = bHist !== undefined;
+    // #3415: valores exatos ≥40 juntam numa única linha "40+" — a cauda de
+    // scores altos tinha 1 linha por valor exato (41, 42, 43...), a maioria
+    // com 1-2 contatos cada, inflando a tabela sem ajudar a leitura (a fila de
+    // re-envio já prioriza por score internamente; o editor só precisa saber
+    // "quantos estão bem posicionados", não o valor exato acima de 40).
+    const HIGH_SCORE_CUTOFF = 40;
+    const highEntries = sorted.filter(([k]) => rank(k) >= HIGH_SCORE_CUTOFF);
+    const restEntries = sorted.filter(([k]) => rank(k) < HIGH_SCORE_CUTOFF);
+    const sumOverKeys = (m: Record<string, number> | undefined, keys: string[]): number =>
+      keys.reduce((a, k) => a + (m?.[k] ?? 0), 0);
+    const highKeys = highEntries.map(([k]) => k);
+    const highRow = highEntries.length
+      ? `<tr><td>40+</td><td style="text-align:right">${n(highEntries.reduce((a, [, v]) => a + v, 0))}</td>${withEligible ? `<td style="text-align:right">${n(sumOverKeys(eHist, highKeys))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumOverKeys(vHist, highKeys))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumOverKeys(bHist, highKeys))}</td>` : ""}</tr>`
+      : "";
     // #2880: as sub-linhas "1º envio — cohort" (que ficavam sob a linha 0)
     // foram removidas — o eixo cohort agora vive só na tabela Cohorts, logo
     // abaixo. O histograma fica PURO (distribuição por valor de pontuação).
     // Ordem das colunas: contatos | elegíveis | verified | Brevo.
-    const rows = sorted.map(([k, v]) =>
+    const restRows = restEntries.map(([k, v]) =>
       `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withEligible ? `<td style="text-align:right">${n(eHist?.[k] ?? 0)}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(bHist?.[k] ?? 0)}</td>` : ""}</tr>`,
     ).join("\n");
+    const rows = [highRow, restRows].filter(Boolean).join("\n");
     // #2880 E: linha Total — soma cada coluna sobre todas as faixas (= a base
     // inteira menos internos, universo do histograma).
     const sumMap = (m: Record<string, number> | undefined): number =>
@@ -1328,7 +1343,14 @@ interface FlatPayment {
   epoch: number;
 }
 
-export function renderCouponTabPanel(usage: CouponUsageReport, headerNow: Date = new Date()): string {
+export function renderCouponTabPanel(
+  usage: CouponUsageReport,
+  headerNow: Date = new Date(),
+  // #3415: `monthlyTitle` renomeia só o <h2> de "Total por mês" pra "Cupons"
+  // quando embutido no bloco Presente da Visão Geral — a aba Cupons continua
+  // usando o default (rename não pode vazar pra lá, ver caveat da issue).
+  opts: { monthlyTitle?: string } = {},
+): string {
   const fmtBRL = (cents: number): string => {
     const abs = Math.abs(cents);
     return `R$${Math.floor(abs / 100)},${String(abs % 100).padStart(2, "0")}`;
@@ -1500,7 +1522,7 @@ export function renderCouponTabPanel(usage: CouponUsageReport, headerNow: Date =
   return `
 ${generatedAtNote}
 <section class="phase2-section" id="coupon-monthly">
-  <h2 class="section-title">Total por mês</h2>
+  <h2 class="section-title">${escHtml(opts.monthlyTitle ?? "Total por mês")}</h2>
   ${monthlySectionBody}
   ${legacyNote}
 </section>

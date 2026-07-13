@@ -396,6 +396,114 @@ export function renderTopWeekdaysSection(campaigns: BrevoCampaign[], now: Date =
 }
 
 /**
+ * #3415: estado derivado (allSent/mature/immature/baseVolume/health/semaphore/
+ * plan) compartilhado por renderWeeklyPlanTabPanel (aba Agendamento) e pelas
+ * seções extraídas renderHealthSection/renderRecommendationSection (bloco
+ * Passado/Futuro da Visão Geral) — computado 1x, garante que as 2 superfícies
+ * nunca divirjam sobre o mesmo cálculo de semáforo/plano.
+ */
+interface WeeklySendState {
+  allSent: BrevoCampaign[];
+  mature: BrevoCampaign[];
+  immature: BrevoCampaign[];
+  baseVolume: number;
+  health: HealthAggregate | null;
+  semaphore: Semaphore | null;
+  plan: WeekPlan | null;
+  /** dias-calendário BRT distintos entre `mature` (ver HEALTH_SAMPLE_DAYS). */
+  dayCount: number;
+}
+
+function computeWeeklySendState(campaigns: BrevoCampaign[], now: Date): WeeklySendState {
+  // TODOS os envios (sem diferenciar cold/quente — o ISP vê a reputação AGREGADA
+  // do domínio, ver HEALTH_SAMPLE_DAYS).
+  const allSent = campaigns.filter((c) => c.status === "sent" && !!c.sentDate);
+  if (allSent.length === 0) {
+    return { allSent, mature: [], immature: [], baseVolume: 0, health: null, semaphore: null, plan: null, dayCount: 0 };
+  }
+
+  // Saúde = os HEALTH_SAMPLE_DAYS (10) dias-calendário BRT MADUROS (>48h) mais
+  // recentes com envio — todas as campanhas desses dias (célula A/B/C = 1 dia).
+  // #2992: maturidade é avaliada por DIA (o dia matura quando a célula A/B/C
+  // MAIS RECENTE dele passa de 48h) — o dia é atômico, nunca rachado entre
+  // "incluído" e "excluído".
+  const { mature: matureUnsorted, immature } = selectMatureDayCampaigns(allSent, now);
+  const mature = matureUnsorted.sort(
+    (a, b) => Date.parse(b.sentDate as string) - Date.parse(a.sentDate as string),
+  );
+
+  // Volume-base = total do ÚLTIMO envio registrado (mesmo <48h) — volume é
+  // conhecido na hora, não precisa maturar (decisão do editor). Soma as células
+  // A/B/C do último dia de envio.
+  const baseVolume = baseVolumeFromLastSendDay(allSent);
+
+  // Sem envio maduro ainda → semáforo indefinido (não decidir crescimento sobre
+  // dado imaturo).
+  if (mature.length === 0) {
+    return { allSent, mature, immature, baseVolume, health: null, semaphore: null, plan: null, dayCount: 0 };
+  }
+
+  const health = aggregateHealth(mature);
+  const semaphore = decideSemaphore(health);
+  const canPlan = baseVolume > 0;
+  const plan = canPlan ? computeWeekPlan(baseVolume, semaphore) : null;
+  const dayCount = groupByBrtDay(mature).size;
+
+  return { allSent, mature, immature, baseVolume, health, semaphore, plan, dayCount };
+}
+
+function describeSemaphore(semaphore: Semaphore): { label: string; note: string } {
+  const label = { green: "Verde", yellow: "Amarelo", red: "Vermelho" }[semaphore];
+  const note = {
+    green: "Saúde dentro da meta — escalona +10% a cada envio.",
+    yellow: "Saúde na faixa de atenção — mantém o mesmo volume (sem crescer).",
+    red: "Saúde abaixo da meta — corta 30% e sinaliza revisão do editor.",
+  }[semaphore];
+  return { label, note };
+}
+
+/**
+ * Tabela de métricas: valor colorido pelo status + coluna de alvo (limiares) —
+ * o editor vê na hora QUAL métrica segura o semáforo. Extraída (#3415) de
+ * renderWeeklyPlanTabPanel pra ser reusada por renderHealthSection sem
+ * duplicar a lógica de classificação/"sem dado".
+ */
+function buildMetricRows(health: HealthAggregate): string {
+  const T = DEFAULT_HEALTH_THRESHOLDS;
+  // #3081 (achados do code-review low no PR #3166): a checagem de "sem dado"
+  // é por MÉTRICA, não hardcoded pro rótulo "Spam" — Abertura usa `delivered`
+  // como denominador (as demais 4 usam `sent`), então cada metricDef carrega
+  // o próprio flag `noData` computado a partir do denominador real que
+  // alimenta `value`.
+  const noDataBySent = health.sent === 0;
+  const noDataByDelivered = health.delivered === 0;
+  const metricDefs = [
+    { label: "Abertura", value: health.openRate, t: T.openRate, dir: "higher" as const, noData: noDataByDelivered },
+    { label: "Hard bounce", value: health.hardBounceRate, t: T.hardBounceRate, dir: "lower" as const, noData: noDataBySent },
+    { label: "Bounce total", value: health.bounceRate, t: T.bounceRate, dir: "lower" as const, noData: noDataBySent },
+    // #3081: 3 casas (não 2) — mesma precisão de fmtSpamPct/Envios/"Totais por
+    // mês"/Resumo A/B/C por Audiência (o breaker dispara em ≥0.1%, 2 casas
+    // ainda arredondam 0.049%→"0.05%" perto do limiar).
+    { label: "Spam", value: health.spamRate, t: T.spamRate, dir: "lower" as const, decimals: 3, noData: noDataBySent },
+    { label: "Unsub", value: health.unsubRate, t: T.unsubRate, dir: "lower" as const, noData: noDataBySent },
+  ];
+  return metricDefs
+    .map((m) => {
+      const targetGreen = m.dir === "higher" ? `≥${m.t.green}%` : `&lt;${m.t.green}%`;
+      const targetYellow = m.dir === "higher" ? `≥${m.t.yellow}%` : `&lt;${m.t.yellow}%`;
+      // #3081: quando não há dado real (denominador 0), "0.000%" afirmaria
+      // falsamente "confirmado zero" — mostra "—" em vez de calcular
+      // `classifyMetric`/colorir como se fosse um valor real.
+      const valueFmt = m.noData ? "—" : fmtPct(m.value, "decimals" in m ? m.decimals : undefined);
+      const valueStyle = m.noData
+        ? `color:${DS.ink};opacity:0.6;font-style:italic;`
+        : `color:${STATUS_COLOR[classifyMetric(m.value, m.t, m.dir)]};font-weight:600`;
+      return `<tr><td>${m.label}</td><td style="${valueStyle}">${valueFmt}</td><td style="opacity:0.7">${targetGreen}</td><td style="opacity:0.7">${targetYellow}</td></tr>`;
+    })
+    .join("\n");
+}
+
+/**
  * Renderiza a aba "Rampa" do dashboard — semáforo, agregado maduro, quais
  * campanhas entraram vs foram excluídas por imaturidade (<48h, transparência
  * pro editor), e a recomendação de volume dos próximos 3 envios (sem data fixa).
@@ -415,11 +523,9 @@ export function renderWeeklyPlanTabPanel(
   // retorno desta função (mesmo quando não há plano/recomendação ainda).
   const scheduledSection = renderScheduledSection(scheduled);
 
-  // TODOS os envios (sem diferenciar cold/quente — o ISP vê a reputação AGREGADA
-  // do domínio, ver HEALTH_SAMPLE_DAYS).
-  const allSent = campaigns.filter((c) => c.status === "sent" && !!c.sentDate);
+  const state = computeWeeklySendState(campaigns, now);
 
-  if (allSent.length === 0) {
+  if (state.allSent.length === 0) {
     return `
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Agendamento — plano de envio semanal</h2>
@@ -428,53 +534,26 @@ export function renderWeeklyPlanTabPanel(
 ${scheduledSection}`;
   }
 
-  // Saúde = os HEALTH_SAMPLE_DAYS (10) dias-calendário BRT MADUROS (>48h) mais
-  // recentes com envio — todas as campanhas desses dias (célula A/B/C = 1 dia).
-  // #2992: maturidade é avaliada por DIA (o dia matura quando a célula A/B/C
-  // MAIS RECENTE dele passa de 48h) — o dia é atômico, nunca rachado entre
-  // "incluído" e "excluído".
-  const { mature: matureUnsorted, immature } = selectMatureDayCampaigns(allSent, now);
-  const mature = matureUnsorted.sort(
-    (a, b) => Date.parse(b.sentDate as string) - Date.parse(a.sentDate as string),
-  );
-
-  // Volume-base = total do ÚLTIMO envio registrado (mesmo <48h) — volume é
-  // conhecido na hora, não precisa maturar (decisão do editor). Soma as células
-  // A/B/C do último dia de envio.
-  const baseVolume = baseVolumeFromLastSendDay(allSent);
-
-  // Sem envio maduro ainda → semáforo indefinido (não decidir crescimento sobre
-  // dado imaturo). Mostra os que estão maturando + o volume-base já conhecido.
-  if (mature.length === 0) {
-    const waitRows = immature
+  if (state.mature.length === 0) {
+    const waitRows = state.immature
       .map((c) => `<tr><td>${escHtml(c.name)}</td><td>${fmtTimeBRT(c.sentDate)}</td></tr>`)
       .join("\n");
     return `
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Agendamento — plano de envio semanal</h2>
-  <p class="section-note">Nenhum envio <strong>maduro (&gt;48h)</strong> ainda — as métricas dos mais recentes ainda estão subindo. Semáforo e plano aparecem quando o mais antigo cruzar 48h. ${immature.length} envio(s) aguardando maturar:</p>
+  <p class="section-note">Nenhum envio <strong>maduro (&gt;48h)</strong> ainda — as métricas dos mais recentes ainda estão subindo. Semáforo e plano aparecem quando o mais antigo cruzar 48h. ${state.immature.length} envio(s) aguardando maturar:</p>
   <div class="table-wrap">
   <table><thead><tr><th scope="col">Campanha</th><th scope="col">Enviado</th></tr></thead><tbody>
 ${waitRows}
 </tbody></table>
   </div>
-  <p class="section-note"><small>Volume-base (último envio): ${baseVolume.toLocaleString("pt-BR")}.</small></p>
+  <p class="section-note"><small>Volume-base (último envio): ${state.baseVolume.toLocaleString("pt-BR")}.</small></p>
 </section>
 ${scheduledSection}`;
   }
 
-  const health = aggregateHealth(mature);
-  const semaphore = decideSemaphore(health);
-
-  const canPlan = baseVolume > 0;
-  const plan = canPlan ? computeWeekPlan(baseVolume, semaphore) : null;
-
-  const semLabel = { green: "Verde", yellow: "Amarelo", red: "Vermelho" }[semaphore];
-  const semNote = {
-    green: "Saúde dentro da meta — escalona +10% a cada envio.",
-    yellow: "Saúde na faixa de atenção — mantém o mesmo volume (sem crescer).",
-    red: "Saúde abaixo da meta — corta 30% e sinaliza revisão do editor.",
-  }[semaphore];
+  const { mature, immature } = state;
+  const { label: semLabel, note: semNote } = describeSemaphore(state.semaphore!);
 
   /** Agrupa campanhas por dia BRT → 1 linha por dia (Edição | Data | E-mails). */
   function groupByDayForDetails(cs: BrevoCampaign[]): { rows: string; dayCount: number } {
@@ -496,78 +575,38 @@ ${scheduledSection}`;
   const includedDetails = groupByDayForDetails(mature);
   const excludedDetails = groupByDayForDetails(immature);
 
-  const planSection = plan
+  const planSection = state.plan
     ? `
   <h3>Recomendação — próximos 3 envios</h3>
   <div class="table-wrap">
   <table>
     <thead><tr><th scope="col">Envio</th><th scope="col">Volume recomendado</th></tr></thead>
     <tbody>
-      <tr><td>Próximo envio</td><td>${plan.volumes[0].toLocaleString("pt-BR")}</td></tr>
-      <tr><td>2º envio</td><td>${plan.volumes[1].toLocaleString("pt-BR")}</td></tr>
-      <tr><td>3º envio</td><td>${plan.volumes[2].toLocaleString("pt-BR")}</td></tr>
+      <tr><td>Próximo envio</td><td>${state.plan.volumes[0].toLocaleString("pt-BR")}</td></tr>
+      <tr><td>2º envio</td><td>${state.plan.volumes[1].toLocaleString("pt-BR")}</td></tr>
+      <tr><td>3º envio</td><td>${state.plan.volumes[2].toLocaleString("pt-BR")}</td></tr>
     </tbody>
     <tfoot>
-      <tr class="total-row"><td>Total (3 envios)</td><td>${plan.volumes
+      <tr class="total-row"><td>Total (3 envios)</td><td>${state.plan.volumes
         .reduce((a, b) => a + b, 0)
         .toLocaleString("pt-BR")}</td></tr>
     </tfoot>
   </table>
   </div>
-  <p class="section-note">Volume-base (último envio): ${baseVolume.toLocaleString("pt-BR")}.${
-      plan.flagged
+  <p class="section-note">Volume-base (último envio): ${state.baseVolume.toLocaleString("pt-BR")}.${
+      state.plan.flagged
         ? " <strong>⚠️ Semáforo vermelho — revisar antes de rodar scripts/weekly-send-plan-audience.ts.</strong>"
         : ""
     }</p>
-  <p class="section-note"><code>npx tsx scripts/weekly-send-plan-audience.ts --volumes ${plan.volumes.join(",")} [--write]</code></p>`
+  <p class="section-note"><code>npx tsx scripts/weekly-send-plan-audience.ts --volumes ${state.plan.volumes.join(",")} [--write]</code></p>`
     : `<p class="section-note">Sem envio maduro (&gt;48h) da semana anterior ainda — plano indisponível até maturar.</p>`;
 
-  // Tabela de métricas: valor colorido pelo status + coluna de alvo (limiares) +
-  // status por métrica — o editor vê na hora QUAL métrica segura o semáforo.
-  const T = DEFAULT_HEALTH_THRESHOLDS;
-  // #3087: STATUS_COLOR consolidado em render-links.ts (ao lado de DS.alert) —
-  // não mais declarado localmente (evita drift entre o vermelho daqui e o
-  // vermelho de alerta usado no resto do dashboard).
-  // #3081 (achados do code-review low no PR #3166): a checagem de "sem dado"
-  // é por MÉTRICA, não hardcoded pro rótulo "Spam" — Abertura usa `delivered`
-  // como denominador (as demais 4 usam `sent`), então cada metricDef carrega
-  // o próprio flag `noData` computado a partir do denominador real que
-  // alimenta `value`. Antes disso, "—" era aplicado só a Spam (m.label ===
-  // "Spam") mesmo Hard bounce/Bounce total/Unsub compartilhando o MESMO
-  // `health.sent === 0` — inconsistência visível na mesma tabela.
-  const noDataBySent = health.sent === 0;
-  const noDataByDelivered = health.delivered === 0;
-  const metricDefs = [
-    { label: "Abertura", value: health.openRate, t: T.openRate, dir: "higher" as const, noData: noDataByDelivered },
-    { label: "Hard bounce", value: health.hardBounceRate, t: T.hardBounceRate, dir: "lower" as const, noData: noDataBySent },
-    { label: "Bounce total", value: health.bounceRate, t: T.bounceRate, dir: "lower" as const, noData: noDataBySent },
-    // #3081: 3 casas (não 2) — mesma precisão de fmtSpamPct/Envios/"Totais por
-    // mês"/Resumo A/B/C por Audiência (o breaker dispara em ≥0.1%, 2 casas
-    // ainda arredondam 0.049%→"0.05%" perto do limiar).
-    { label: "Spam", value: health.spamRate, t: T.spamRate, dir: "lower" as const, decimals: 3, noData: noDataBySent },
-    { label: "Unsub", value: health.unsubRate, t: T.unsubRate, dir: "lower" as const, noData: noDataBySent },
-  ];
-  const metricRows = metricDefs
-    .map((m) => {
-      const targetGreen = m.dir === "higher" ? `≥${m.t.green}%` : `&lt;${m.t.green}%`;
-      const targetYellow = m.dir === "higher" ? `≥${m.t.yellow}%` : `&lt;${m.t.yellow}%`;
-      // #3081: quando não há dado real (denominador 0), "0.000%" afirmaria
-      // falsamente "confirmado zero" — mostra "—" em vez de calcular
-      // `classifyMetric`/colorir como se fosse um valor real. Sem isso, a
-      // célula dizia "sem dado" mas continuava colorida de verde ("saudável"),
-      // uma contradição interna entre texto e cor.
-      const valueFmt = m.noData ? "—" : fmtPct(m.value, "decimals" in m ? m.decimals : undefined);
-      const valueStyle = m.noData
-        ? `color:${DS.ink};opacity:0.6;font-style:italic;`
-        : `color:${STATUS_COLOR[classifyMetric(m.value, m.t, m.dir)]};font-weight:600`;
-      return `<tr><td>${m.label}</td><td style="${valueStyle}">${valueFmt}</td><td style="opacity:0.7">${targetGreen}</td><td style="opacity:0.7">${targetYellow}</td></tr>`;
-    })
-    .join("\n");
+  const metricRows = buildMetricRows(state.health!);
 
   return `
 <section class="phase2-section" id="weekly-plan">
   <h2 class="section-title">Agendamento — plano de envio semanal</h2>
-  <p class="section-note"><strong>${SEMAPHORE_EMOJI[semaphore]} ${semLabel}</strong> — ${semNote}</p>
+  <p class="section-note"><strong>${SEMAPHORE_EMOJI[state.semaphore!]} ${semLabel}</strong> — ${semNote}</p>
   <p class="section-note">Agregado dos ${mature.length} envios maduros (&gt;48h) nos últimos ${includedDetails.dayCount} dias de envio (janela: até ${HEALTH_SAMPLE_DAYS}), sem diferenciar cold/quente. <strong>Semáforo = a PIOR métrica.</strong></p>
   <div class="table-wrap">
   <table>
@@ -592,5 +631,108 @@ ${metricRows}
     ${excludedDetails.rows || '<tr><td colspan="3">Nenhum.</td></tr>'}
     </tbody></table></div>
   </details>
+</section>`;
+}
+
+/**
+ * #3415: seção "Saúde" isolada, pro bloco Passado da Visão Geral
+ * (`panel-visaogeral`) — mesma tabela de semáforo/métricas da aba Agendamento
+ * (`renderWeeklyPlanTabPanel`, via computeWeeklySendState/buildMetricRows
+ * compartilhados), sem a recomendação/agendados/melhores-dias/accordions que
+ * só existem no bundle completo da aba Agendamento.
+ *
+ * `opts.title` permite o rename "Saúde" só na Visão Geral (#3415 caveat: o
+ * título "Agendamento — plano de envio semanal" não pode vazar pra outra
+ * aba nem virar 2 fontes de verdade — a variante scoped fica aqui, não editada
+ * na fonte compartilhada).
+ */
+export function renderHealthSection(
+  campaigns: BrevoCampaign[],
+  now: Date = new Date(),
+  opts: { title?: string } = {},
+): string {
+  const title = opts.title ?? "Agendamento — plano de envio semanal";
+  const state = computeWeeklySendState(campaigns, now);
+
+  if (state.allSent.length === 0) {
+    return `
+<section class="phase2-section" id="weekly-plan-health">
+  <h2 class="section-title">${escHtml(title)}</h2>
+  <p class="section-note">Nenhum envio registrado.</p>
+</section>`;
+  }
+
+  if (state.mature.length === 0) {
+    const waitRows = state.immature
+      .map((c) => `<tr><td>${escHtml(c.name)}</td><td>${fmtTimeBRT(c.sentDate)}</td></tr>`)
+      .join("\n");
+    return `
+<section class="phase2-section" id="weekly-plan-health">
+  <h2 class="section-title">${escHtml(title)}</h2>
+  <p class="section-note">Nenhum envio <strong>maduro (&gt;48h)</strong> ainda — as métricas dos mais recentes ainda estão subindo. Semáforo aparece quando o mais antigo cruzar 48h. ${state.immature.length} envio(s) aguardando maturar:</p>
+  <div class="table-wrap">
+  <table><thead><tr><th scope="col">Campanha</th><th scope="col">Enviado</th></tr></thead><tbody>
+${waitRows}
+</tbody></table>
+  </div>
+  <p class="section-note"><small>Volume-base (último envio): ${state.baseVolume.toLocaleString("pt-BR")}.</small></p>
+</section>`;
+  }
+
+  const { label: semLabel, note: semNote } = describeSemaphore(state.semaphore!);
+  const metricRows = buildMetricRows(state.health!);
+
+  return `
+<section class="phase2-section" id="weekly-plan-health">
+  <h2 class="section-title">${escHtml(title)}</h2>
+  <p class="section-note"><strong>${SEMAPHORE_EMOJI[state.semaphore!]} ${semLabel}</strong> — ${semNote}</p>
+  <p class="section-note">Agregado dos ${state.mature.length} envios maduros (&gt;48h) nos últimos ${state.dayCount} dias de envio (janela: até ${HEALTH_SAMPLE_DAYS}), sem diferenciar cold/quente. <strong>Semáforo = a PIOR métrica.</strong></p>
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">Métrica</th><th scope="col">Valor</th><th scope="col">Alvo <span role="img" aria-label="verde">🟢</span></th><th scope="col">Alvo <span role="img" aria-label="amarelo">🟡</span></th></tr></thead>
+    <tbody>
+${metricRows}
+    </tbody>
+  </table>
+  </div>
+</section>`;
+}
+
+/**
+ * #3415: seção "Recomendação — próximos 3 envios" isolada, pro bloco Futuro
+ * da Visão Geral — mesmo cálculo de plano da aba Agendamento
+ * (computeWeeklySendState compartilhado), sem o resto do bundle.
+ */
+export function renderRecommendationSection(campaigns: BrevoCampaign[], now: Date = new Date()): string {
+  const state = computeWeeklySendState(campaigns, now);
+  const body = state.plan
+    ? `
+  <div class="table-wrap">
+  <table>
+    <thead><tr><th scope="col">Envio</th><th scope="col">Volume recomendado</th></tr></thead>
+    <tbody>
+      <tr><td>Próximo envio</td><td>${state.plan.volumes[0].toLocaleString("pt-BR")}</td></tr>
+      <tr><td>2º envio</td><td>${state.plan.volumes[1].toLocaleString("pt-BR")}</td></tr>
+      <tr><td>3º envio</td><td>${state.plan.volumes[2].toLocaleString("pt-BR")}</td></tr>
+    </tbody>
+    <tfoot>
+      <tr class="total-row"><td>Total (3 envios)</td><td>${state.plan.volumes
+        .reduce((a, b) => a + b, 0)
+        .toLocaleString("pt-BR")}</td></tr>
+    </tfoot>
+  </table>
+  </div>
+  <p class="section-note">Volume-base (último envio): ${state.baseVolume.toLocaleString("pt-BR")}.${
+        state.plan.flagged
+          ? " <strong>⚠️ Semáforo vermelho — revisar antes de rodar scripts/weekly-send-plan-audience.ts.</strong>"
+          : ""
+      }</p>
+  <p class="section-note"><code>npx tsx scripts/weekly-send-plan-audience.ts --volumes ${state.plan.volumes.join(",")} [--write]</code></p>`
+    : `<p class="section-note">Sem envio maduro (&gt;48h) da semana anterior ainda — plano indisponível até maturar.</p>`;
+
+  return `
+<section class="phase2-section" id="weekly-plan-recommendation">
+  <h2 class="section-title">Recomendação — próximos 3 envios</h2>
+${body}
 </section>`;
 }

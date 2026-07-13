@@ -2857,7 +2857,7 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
 
   test("HTML contém 6 labels de aba com textos corretos", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
-    assert.match(html, /Visão geral/, "deve ter label 'Visão geral'");
+    assert.match(html, /Visão GERAL/, "deve ter label 'Visão GERAL' (#3415: título em caixa alta)");
     assert.match(html, />Envios</, "deve ter label 'Envios' (#3406, ex-'Visão geral')");
     assert.match(html, /Engajamento/, "deve ter label 'Engajamento'");
     assert.match(html, /Links \/ Cliques/, "deve ter label 'Links / Cliques'");
@@ -2881,12 +2881,15 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
     assert.match(html, /for="tab-links"/, "label Links deve ter for=tab-links");
   });
 
-  test("panel-visaogeral (#3406, resumo curado) contém id=weekly-plan, monthly-totals, volume-ciclo", () => {
+  test("panel-visaogeral (#3415, reorg Passado/Presente/Futuro) contém id=weekly-plan-health, monthly-totals, volume-ciclo", () => {
     const html = renderDashboardHtml([baseCampaignForTabs]);
     // Extrair o panel visaogeral — pra pela aba Envios, que agora vem logo em seguida.
     const panel = html.match(/id="panel-visaogeral"[\s\S]*?(?=id="panel-envios")/)?.[0] ?? "";
     assert.ok(panel.length > 0, "panel-visaogeral deve existir no HTML");
-    assert.match(panel, /id="weekly-plan"/, "Saúde/plano de ramp-up deve estar no resumo curado (#3406)");
+    // #3415: a aba Agendamento não é mais reaproveitada inteira (id="weekly-plan")
+    // aqui — só a peça "Saúde" extraída (id="weekly-plan-health").
+    assert.match(panel, /id="weekly-plan-health"/, "Saúde (seção extraída, #3415) deve estar no resumo curado");
+    assert.doesNotMatch(panel, /id="weekly-plan"/, "bundle completo da aba Agendamento não deve mais vazar pra Visão Geral");
     assert.match(panel, /id="monthly-totals"/, "Totais mensais deve estar no resumo curado");
     assert.match(panel, /id="volume-ciclo"/, "Volume do ciclo deve estar no resumo curado");
   });

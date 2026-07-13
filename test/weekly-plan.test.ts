@@ -16,6 +16,8 @@ import {
   classifyMetric,
   computeWeekPlan,
   renderWeeklyPlanTabPanel,
+  renderHealthSection,
+  renderRecommendationSection,
   baseVolumeFromLastSendDay,
   groupByBrtDay,
   selectMatureDayCampaigns,
@@ -539,4 +541,76 @@ test("render — dia A/B/C rachando a fronteira 48h aparece TODO em excluídos, 
   assert.match(html, /2607-08 — A/);
   assert.match(html, /2607-08 — B/);
   assert.match(html, /2607-08 — C/);
+});
+
+// ---------------------------------------------------------------------------
+// #3415 — renderHealthSection/renderRecommendationSection: peças extraídas de
+// renderWeeklyPlanTabPanel pro reorg Passado/Presente/Futuro da Visão Geral.
+// Reusam computeWeeklySendState/buildMetricRows/describeSemaphore internos —
+// cobertura aqui garante que a extração não divergiu do bundle completo.
+// ---------------------------------------------------------------------------
+
+test("renderHealthSection — título default é o mesmo da aba Agendamento; opts.title sobrescreve (#3415)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, { statistics: statsFor({ sent: 1000, delivered: 990, uniqueViews: 160 }) }),
+  ];
+  const defaultHtml = renderHealthSection(camps, NOW);
+  assert.match(defaultHtml, /Agendamento — plano de envio semanal/);
+
+  const scopedHtml = renderHealthSection(camps, NOW, { title: "Saúde" });
+  assert.match(scopedHtml, /<h2 class="section-title">Saúde<\/h2>/);
+  assert.doesNotMatch(scopedHtml, /Agendamento — plano de envio semanal/);
+});
+
+test("renderHealthSection — mesmo semáforo/métricas do bundle completo pro mesmo input (#3415)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, { statistics: statsFor({ sent: 1000, delivered: 990, uniqueViews: 270, unsubscriptions: 31 }) }),
+  ];
+  const bundle = renderWeeklyPlanTabPanel(camps, NOW);
+  const health = renderHealthSection(camps, NOW, { title: "Saúde" });
+  assert.match(health, /#0E6B39/); // mesmo verde (abertura 27%)
+  assert.match(health, /#C00000/); // mesmo vermelho (unsub 3,1% ≥ breaker 3%)
+  assert.match(bundle, /#0E6B39/);
+  assert.match(bundle, /#C00000/);
+  // não deve conter a recomendação/agendados/melhores-dias/accordions — só a
+  // tabela de saúde (isso é o que diferencia da versão bundle).
+  assert.doesNotMatch(health, /Recomendação — próximos 3 envios/);
+  assert.doesNotMatch(health, /Dias de envio incluídos/);
+});
+
+test("renderHealthSection — sem envios registrados → mensagem neutra, id próprio (#3415)", () => {
+  const html = renderHealthSection([], NOW, { title: "Saúde" });
+  assert.match(html, /id="weekly-plan-health"/);
+  assert.match(html, /Nenhum envio registrado/);
+});
+
+test("renderHealthSection — só envios <48h → 'aguardando maturar', sem semáforo (#3415)", () => {
+  const camps = [campaignSentHoursAgo(12), campaignSentHoursAgo(36)];
+  const html = renderHealthSection(camps, NOW, { title: "Saúde" });
+  assert.match(html, /aguardando maturar/i);
+  assert.doesNotMatch(html, /Verde|Amarelo|Vermelho/);
+});
+
+test("renderRecommendationSection — mesmo plano do bundle completo pro mesmo input (#3415)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, { statistics: statsFor({ sent: 1000, delivered: 990, uniqueViews: 160 }) }),
+  ];
+  const bundle = renderWeeklyPlanTabPanel(camps, NOW);
+  const recommendation = renderRecommendationSection(camps, NOW);
+  assert.match(recommendation, /<h2 class="section-title">Recomendação — próximos 3 envios<\/h2>/);
+  assert.match(recommendation, /id="weekly-plan-recommendation"/);
+  // openRate = 160/990 ≈ 16,16% → Amarelo (entre 15 e 17) → plano repete o
+  // volume-base (1000) nos 3 envios, sem crescer.
+  assert.match(recommendation, /Próximo envio<\/td><td>1\.000/);
+  assert.match(bundle, /Próximo envio<\/td><td>1\.000/);
+  // não deve conter a tabela de saúde/agendados/melhores-dias — só a recomendação.
+  assert.doesNotMatch(recommendation, /Alvo <span role="img"/);
+  assert.doesNotMatch(recommendation, /id="scheduled-campaigns"/);
+});
+
+test("renderRecommendationSection — sem envio maduro → mensagem de indisponível, sem tabela (#3415)", () => {
+  const camps = [campaignSentHoursAgo(12)];
+  const html = renderRecommendationSection(camps, NOW);
+  assert.match(html, /Sem envio maduro/);
+  assert.doesNotMatch(html, /Próximo envio/);
 });
