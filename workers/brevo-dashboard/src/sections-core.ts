@@ -1388,12 +1388,24 @@ export type ClariceAudience = "cold" | "warm";
  * newsletter) ou quente (já engajada) — sinal usado pra separar o Resumo A/B/C
  * em 3 tabelas (#2976). Convenção de naming do editor: campanhas frias começam
  * com "cold " (ex: "cold 2606-07 — A: subject"); campanhas quentes seguem o
- * padrão "Clarice News ..." já reconhecido por `parseClariceCampaignKey`.
- * Retorna `null` quando o naming não bate com nenhum dos dois padrões.
+ * padrão "Clarice News ..." já reconhecido por `parseClariceCampaignKey`, ou
+ * (#3376) o naming do Digest Mensal "Diar.ia Mensal {AAMM} — {timestamp}".
+ * Retorna `null` quando o naming não bate com nenhum dos três padrões.
  */
 export function classifyClariceAudience(campaignName: string): ClariceAudience | null {
-  if (/^cold\b/i.test(campaignName.trim())) return "cold";
-  if (parseClariceCampaignKey(campaignName)) return "warm";
+  const trimmed = campaignName.trim();
+  if (/^cold\b/i.test(trimmed)) return "cold";
+  if (parseClariceCampaignKey(trimmed)) return "warm";
+  // #3376: Digest Mensal ("Diar.ia Mensal {AAMM} — {timestamp}[ — Teste N]",
+  // ver scripts/publish-monthly.ts:570) usa naming próprio, fora do padrão
+  // "Clarice News ..." — mas consome créditos do mesmo plano Brevo e deve
+  // contar no volume do ciclo. Sem segmentação fria/quente documentada pro
+  // Mensal (a lista de destinatários já filtra isso na composição das waves)
+  // — trata como "warm". Não passa por parseClariceCampaignKey de propósito:
+  // esse naming não tem célula A/B/C nem dayNum, então não deve entrar em
+  // aggregateAbcSummary/detectActiveCycle (testes diários) nem em
+  // groupMonthlyAbcTests (que usa parseAbcAudienceCampaign, não este).
+  if (/^Diar\.ia Mensal \d{4}\s*[—–-]\s*/i.test(trimmed)) return "warm";
   return null;
 }
 

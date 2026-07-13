@@ -390,6 +390,18 @@ describe("findUnclassifiedCampaignNames (#3081)", () => {
     ];
     assert.deepEqual(findUnclassifiedCampaignNames(campaigns), ["T1-W1 digest"]);
   });
+
+  // #3376: naming do Digest Mensal ("Diar.ia Mensal {AAMM} — {timestamp}")
+  // virava falso positivo aqui — mesmo classificador de calcCumulativeSentInBillingWindow.
+  test("#3376: campanha do Digest Mensal ('Diar.ia Mensal AAMM — timestamp') → reconhecida, não entra na lista", () => {
+    const campaigns = [makeCampaign(1, "Diar.ia Mensal 2606 — 2026-07-10 01:33", "2026-07-10T04:33:00.000Z")];
+    assert.deepEqual(findUnclassifiedCampaignNames(campaigns), []);
+  });
+
+  test("#3376: campanha de teste do Digest Mensal (sufixo '— Teste N') → reconhecida, não entra na lista", () => {
+    const campaigns = [makeCampaign(1, "Diar.ia Mensal 2606 — 2026-07-10 01:33 — Teste 2", "2026-07-10T04:33:00.000Z")];
+    assert.deepEqual(findUnclassifiedCampaignNames(campaigns), []);
+  });
 });
 
 describe("renderUnclassifiedCampaignsNote (#3081)", () => {
@@ -2062,6 +2074,23 @@ describe("calcCumulativeSentInBillingWindow (#2910)", () => {
     const notClarice = makeCampaign(1, "Outra campanha qualquer", "2026-06-20T09:00:00Z", { sent: 999 });
     const total = calcCumulativeSentInBillingWindow([notClarice], window);
     assert.equal(total, 0);
+  });
+
+  // #3376: "Diar.ia Mensal {AAMM} — {timestamp}" (scripts/publish-monthly.ts:570)
+  // não batia em nenhum padrão de classifyClariceAudience — o Digest Mensal
+  // ficava silenciosamente fora do volume do ciclo, mesmo consumindo créditos
+  // reais do mesmo plano Brevo.
+  test("#3376: soma campanhas do Digest Mensal ('Diar.ia Mensal AAMM — timestamp')", () => {
+    const daily = makeCampaign(1, "Clarice News 2605 d08 (qua)", "2026-06-20T09:00:00Z", { sent: 100 });
+    const monthlyDigest = makeCampaign(2, "Diar.ia Mensal 2606 — 2026-06-25 01:33", "2026-06-25T04:33:00Z", { sent: 25000 });
+    const total = calcCumulativeSentInBillingWindow([daily, monthlyDigest], window);
+    assert.equal(total, 100 + 25000, "Digest Mensal precisa contar no volume do ciclo — mesmo plano Brevo, créditos reais");
+  });
+
+  test("#3376: campanha de teste do Digest Mensal (sufixo '— Teste N') também conta", () => {
+    const monthlyTest = makeCampaign(1, "Diar.ia Mensal 2606 — 2026-06-25 01:33 — Teste 1", "2026-06-25T04:33:00Z", { sent: 3 });
+    const total = calcCumulativeSentInBillingWindow([monthlyTest], window);
+    assert.equal(total, 3);
   });
 
   test("sem campanhas na janela → 0 (nunca trava numa rampa antiga)", () => {
