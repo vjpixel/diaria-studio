@@ -740,12 +740,30 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
     ...extra,
   });
 
-  it("config default do platform.config.json (slot1=livros, slot2=null): injeta só slot1", () => {
+  it("config default do platform.config.json (slot1=recomendacao-leitura, slot2=livros, #3212): injeta os 2 slots", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir));
-      assert.ok(extractBoxDivulgacao1(out), "slot1 (livros) injetado por default");
-      assert.equal(extractBoxDivulgacao2(out), null, "slot2 vazio por default");
+      const slot1 = extractBoxDivulgacao1(out);
+      assert.ok(slot1, "slot1 (recomendação de leitura) injetado por default");
+      assert.match(slot1!, /Recomendação de leitura/);
+      const slot2 = extractBoxDivulgacao2(out);
+      assert.ok(slot2, "slot2 (curadoria de livros) injetado por default");
+      assert.match(slot2!, /curadoria de livros/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#3306: loadDivulgacaoSnippet aceita formato multi-parágrafo sem bold-wrap total (📖 recomendacao-leitura.md) — antes retornava null e a edição saía sem o box", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: "recomendacao-leitura.md", slot2: null },
+      }));
+      const slot1 = extractBoxDivulgacao1(out);
+      assert.ok(slot1, "slot1 (📖, formato genérico) injetado, não mais null");
+      assert.match(slot1!, /Recomendação de leitura/);
     } finally {
       cleanup();
     }
@@ -874,28 +892,30 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
     assert.match(block!, /livros\.diaria\.workers\.dev/);
   });
 
-  it("default (sponsor on, #2527): injeta o callout 📚 de livros entre D1 e D2 + extractBoxDivulgacao1 o acha", () => {
+  it("default (sponsor on, #3212): injeta o callout 📖 de recomendação de leitura entre D1 e D2 + extractBoxDivulgacao1 o acha", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir));
       const d1Pos = out.indexOf("DESTAQUE 1");
-      const calloutPos = out.indexOf("📚");
+      const calloutPos = out.indexOf("📖");
       const d2Pos = out.indexOf("DESTAQUE 2");
       assert.ok(d1Pos < calloutPos && calloutPos < d2Pos, "callout entre D1 e D2");
-      // acceptance #2527: snippet de livros presente → boxDivulgacao1 📚 no HTML final
+      // acceptance #3212: slot1 default agora é a recomendação de leitura específica (📖),
+      // curadoria geral de livros (📚) move pro slot2 — boxDivulgacao1 acha o 📖 no HTML final.
       const mid = extractBoxDivulgacao1(out);
       assert.ok(mid, "extractBoxDivulgacao1 acha o box");
-      assert.match(mid!, /^📚 A diar\.ia\.br mantém uma curadoria/);
+      assert.match(mid!, /^📖 Recomendação de leitura/);
     } finally {
       cleanup();
     }
   });
 
-  it("sponsor=false (kill-switch): NÃO injeta", () => {
+  it("sponsor=false (kill-switch): NÃO injeta nenhum dos 2 slots", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir, false));
-      assert.ok(!out.includes("📚"), "sem callout quando sponsor=false");
+      assert.ok(!out.includes("📖"), "sem callout slot1 quando sponsor=false");
+      assert.ok(!out.includes("📚"), "sem callout slot2 quando sponsor=false");
       assert.equal(extractBoxDivulgacao1(out), null);
     } finally {
       cleanup();
@@ -928,7 +948,11 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
       );
       const out = stitchNewsletter(base(dir, internalDir));
       assert.ok(!out.includes("📣"), "não injeta 📣 quando já há 📚");
-      assert.equal((out.match(/📚/g) || []).length, 1);
+      // #3212: slot2 (D2/D3) default também é 📚 (livros) agora — o 📚 pré-existente
+      // (colado manualmente na região do slot1) NÃO deve duplicar, mas o slot2
+      // segue injetando seu próprio 📚 independentemente (posições/gaps diferentes).
+      // Total esperado: 1 (pré-existente, slot1 suprimido) + 1 (auto-injetado, slot2) = 2.
+      assert.equal((out.match(/📚/g) || []).length, 2);
     } finally {
       cleanup();
     }
@@ -966,8 +990,8 @@ describe("#3232 — idempotência de boxes_divulgacao marcador-agnóstica (subst
         "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1\n\n**🎥 Já colado, marcador novo. [Assista](https://exemplo.com/v).**",
       );
       const out = stitchNewsletter(base(dir, internalDir));
-      // Não deve injetar o snippet default (livros, 📚) por cima do box já presente.
-      assert.ok(!out.includes("curadoria de livros"), "não injeta livros por cima de um box com marcador novo já colado");
+      // Não deve injetar o snippet default do slot1 (#3212: recomendação de leitura) por cima do box já presente.
+      assert.ok(!out.includes("Recomendação de leitura"), "não injeta slot1 por cima de um box com marcador novo já colado");
       const count = (out.match(/🎥/g) || []).length;
       assert.equal(count, 1, "só 1 marcador 🎥 (não dupla-injeta)");
     } finally {
@@ -983,7 +1007,7 @@ describe("#3232 — idempotência de boxes_divulgacao marcador-agnóstica (subst
         "**🎥 Já colado ANTES do header de D2, marcador novo. [Assista](https://exemplo.com/v).**\n\n**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2",
       );
       const out = stitchNewsletter(base(dir, internalDir));
-      assert.ok(!out.includes("curadoria de livros"), "não injeta livros por cima do box com marcador novo prepended a D2");
+      assert.ok(!out.includes("Recomendação de leitura"), "não injeta slot1 por cima do box com marcador novo prepended a D2");
       assert.equal((out.match(/🎥/g) || []).length, 1, "só 1 marcador 🎥 (não dupla-injeta)");
     } finally {
       cleanup();
@@ -1015,7 +1039,7 @@ describe("#3232 — idempotência de boxes_divulgacao marcador-agnóstica (subst
         "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1\n\n🛒 Já colado formato carrinho. [Compre](https://exemplo.com/produto).",
       );
       const out = stitchNewsletter(base(dir, internalDir));
-      assert.ok(!out.includes("curadoria de livros"), "não injeta livros por cima do box 🛒 já colado");
+      assert.ok(!out.includes("Recomendação de leitura"), "não injeta slot1 por cima do box 🛒 já colado");
       assert.equal((out.match(/🛒/g) || []).length, 1, "só 1 marcador 🛒 (não dupla-injeta)");
     } finally {
       cleanup();
