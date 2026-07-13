@@ -34,6 +34,7 @@ import { join } from "node:path";
 import {
   loadEncerramentoSocialApoioTemplate,
   renderEncerramentoSocialApoio,
+  splitEncerramentoSocialApoio,
   ENCERRAMENTO_OPENING_DAILY,
   ENCERRAMENTO_OPENING_MONTHLY,
 } from "../scripts/lib/shared/encerramento-snippet.ts";
@@ -129,7 +130,32 @@ describe("scripts/lib/shared/encerramento-snippet.ts (#3219)", () => {
   });
 });
 
-describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartilhado (#3219)", () => {
+describe("scripts/lib/shared/encerramento-snippet.ts — splitEncerramentoSocialApoio (#3368)", () => {
+  it("separa o template em { apoio, socialInvite } sem perder conteúdo", () => {
+    const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
+    assert.ok(split, "split não deveria ser null");
+    assert.match(split!.apoio, /^Quem quiser apoiar a curadoria pode contribuir a partir de R\$5\/mês em \[apoia\.se\/diaria\]/);
+    assert.match(split!.socialInvite, /^Agora que chegou ao final da edição, que tal interagir/);
+    // nenhum dos dois vaza conteúdo do outro
+    assert.doesNotMatch(split!.apoio, /Agora que chegou ao final da edição/);
+    assert.doesNotMatch(split!.socialInvite, /apoia\.se\/diaria/);
+  });
+
+  it("aplica a cláusula de abertura só no parágrafo de apoio, nunca no convite social", () => {
+    const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_MONTHLY);
+    assert.ok(split);
+    assert.match(split!.apoio, /^Essa edição mensal nasce da \*\*diar\.ia\.br\*\*/);
+    assert.doesNotMatch(split!.socialInvite, /Essa edição mensal nasce/);
+  });
+
+  it("o texto concatenado de volta (apoio + \\n\\n + socialInvite) é idêntico ao render não-splitado", () => {
+    const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY)!;
+    const whole = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY)!;
+    assert.equal(`${split.apoio}\n\n${split.socialInvite}`, whole);
+  });
+});
+
+describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartilhado (#3219, reorder #3368)", () => {
   it("buildParaEncerrar preserva o cabeçalho + parágrafo de ferramentas + pills Acesse (inalterado)", () => {
     const out = buildParaEncerrar();
     assert.match(out, /\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/);
@@ -159,13 +185,28 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     assert.ok(apoioIdx < socialIdx, "apoio deve vir ANTES do convite social");
   });
 
-  it("ordem final: ferramentas > Acesse > apoio > convite social", () => {
+  it("ordem final (#3368, pedido do editor 260713): cabeçalho > apoio > ferramentas > Acesse > convite social", () => {
     const out = buildParaEncerrar();
+    const headerIdx = out.indexOf("PARA ENCERRAR");
+    const apoioIdx = out.indexOf("apoia.se/diaria");
     const toolsIdx = out.indexOf("usei Claude Code");
     const acesseIdx = out.indexOf("[Cursos de IA]");
-    const apoioIdx = out.indexOf("apoia.se/diaria");
     const socialIdx = out.indexOf("Agora que chegou ao final da edição");
-    assert.ok(toolsIdx < acesseIdx && acesseIdx < apoioIdx && apoioIdx < socialIdx, "ordem incorreta");
+    assert.ok(
+      headerIdx >= 0 && headerIdx < apoioIdx && apoioIdx < toolsIdx && toolsIdx < acesseIdx && acesseIdx < socialIdx,
+      "ordem incorreta",
+    );
+  });
+
+  it("o parágrafo de apoio é o PRIMEIRO parágrafo depois do cabeçalho (#3368)", () => {
+    const out = buildParaEncerrar();
+    const afterHeader = out.slice(out.indexOf("**🙋🏼‍♀️ PARA ENCERRAR**") + "**🙋🏼‍♀️ PARA ENCERRAR**".length).trimStart();
+    assert.match(afterHeader, /^Quem quiser apoiar a curadoria/);
+  });
+
+  it("o convite social é o ÚLTIMO parágrafo da seção (#3368)", () => {
+    const out = buildParaEncerrar();
+    assert.match(out.trimEnd(), /Agora que chegou ao final da edição, que tal interagir em uma publicação da \*\*diar\.ia\.br\*\* no \[LinkedIn\]\([^)]+\) ou no \[Facebook\]\([^)]+\)\?$/);
   });
 });
 
