@@ -359,6 +359,66 @@ describe("renderAbcAudienceTable / renderAbcAudienceSection — omite audiência
   });
 });
 
+// ─── renderAbcAudienceTable / renderAbcAudienceSection: <2 células amostradas (#3396) ──
+
+describe("renderAbcAudienceTable / renderAbcAudienceSection — omite quando <2 células amostradas (#3396)", () => {
+  const cycle = "2607-09";
+
+  test("renderAbcAudienceTable: só 1 célula com campaignCount > 0 (B/C zeradas) → string vazia", () => {
+    const zeroCell = (cell: "A" | "B" | "C") => ({
+      cell,
+      campaignCount: 0,
+      sent: 0,
+      delivered: 0,
+      opens: 0,
+      clicks: 0,
+      unsubscriptions: 0,
+      openRate: 0,
+      ctor: 0,
+      clickRate: 0,
+      unsubRate: 0,
+      bounceRate: 0,
+      spamRate: 0,
+    });
+    const table: AbcAudienceTable = {
+      cells: [
+        {
+          cell: "A", campaignCount: 1, sent: 1000, delivered: 990, opens: 500, clicks: 80,
+          unsubscriptions: 2, openRate: 50.5, ctor: 16, clickRate: 8.1, unsubRate: 0.2,
+          bounceRate: 1, spamRate: 0.01,
+        },
+        zeroCell("B"),
+        zeroCell("C"),
+      ],
+      leaderOpenRate: null,
+      leaderClickRate: null,
+      significantClick: false,
+      pValue: null,
+    };
+    // Distinto do caso já coberto em #3127 (3 células === 0): aqui há 1 célula
+    // com dado real, mas ainda não é comparação — mesmo critério de pickLeader
+    // (sampled.length < 2 → null).
+    assert.equal(renderAbcAudienceTable("Fria (nunca recebeu)", table), "");
+  });
+
+  test("renderAbcAudienceSection: só Célula A saiu no ciclo (B/C aguardando) → seção inteira omitida", () => {
+    const aOnly = [
+      makeCampaign(20, "Clarice News 2607-09 — A: subject A", "2026-07-13T06:00:00Z", {
+        sent: 1000, delivered: 990, uniqueViews: 500, uniqueClicks: 80,
+      }),
+    ];
+    const result = aggregateAbcByAudience(aOnly, cycle);
+    // Pré-condição: nenhuma das 3 sub-tabelas tem 2+ células amostradas.
+    assert.ok(result.aggregate.cells.filter((c) => c.campaignCount > 0).length < 2);
+    assert.ok(result.cold.cells.filter((c) => c.campaignCount > 0).length < 2);
+    assert.ok(result.warm.cells.filter((c) => c.campaignCount > 0).length < 2);
+
+    // Antes do #3396: renderizava a seção inteira (título + nota de
+    // metodologia + tabela com 1 linha real e 2 stubs "— sem envios —").
+    assert.equal(renderAbcAudienceSection(cycle, result), "");
+  });
+});
+
 // ─── renderAbcAudienceTable: guard de zero/aguardando (#3303) ────────────────
 
 describe("renderAbcAudienceTable — guard opens>0/clicks=0 não é 'empate' (#3303)", () => {
@@ -420,35 +480,10 @@ describe("renderAbcAudienceTable — guard opens>0/clicks=0 não é 'empate' (#3
     assert.doesNotMatch(html, /Aguardando dados de clique/, "não deve mostrar 'aguardando' quando há clique real empatado");
   });
 
-  test("menos de 2 células amostradas → 'Dados insuficientes', não afetado pelo novo guard", () => {
-    const table: AbcAudienceTable = {
-      cells: [cell("A", 40), buildCellZero("B"), buildCellZero("C")],
-      leaderOpenRate: null,
-      leaderClickRate: null,
-      significantClick: false,
-      pValue: null,
-    };
-    const html = renderAbcAudienceTable("Fria (nunca recebeu)", table);
-    assert.match(html, /Dados insuficientes para comparação/);
-  });
-
-  function buildCellZero(cellId: "A" | "B" | "C") {
-    return {
-      cell: cellId,
-      campaignCount: 0,
-      sent: 0,
-      delivered: 0,
-      opens: 0,
-      clicks: 0,
-      unsubscriptions: 0,
-      openRate: 0,
-      ctor: 0,
-      clickRate: 0,
-      unsubRate: 0,
-      bounceRate: 0,
-      spamRate: 0,
-    };
-  }
+  // #3396: o cenário "1 célula amostrada + 2 zeradas" (testado aqui antes como
+  // 'Dados insuficientes' dentro da tabela) agora omite a tabela inteira via
+  // guard em renderAbcAudienceTable (sampled.length < 2) — ver describe
+  // "omite quando <2 células amostradas (#3396)" acima, que cobre o caso.
 });
 
 // ─── pickTopWeekdays / renderTopWeekdaysSection (#2989) ──────────────────────
