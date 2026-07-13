@@ -194,6 +194,149 @@ describe("git-sync — dirty tree edge cases", () => {
   });
 });
 
+describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso negativo de 'working tree não tocada')", () => {
+  /**
+   * Reprodução real (260713): `git stash --include-untracked` não é atômico —
+   * cria o(s) commit(s) de stash e SÓ DEPOIS remove os arquivos não-rastreados
+   * (clean-equivalente). Se essa remoção falhar parcialmente (ex: "Permission
+   * denied" num diretório com handle aberto por outro processo), o comando sai
+   * com exit não-zero MESMO com o stash já criado. O código antigo tratava
+   * qualquer exit não-zero como "stash falhou, tree não tocada" — falso.
+   *
+   * Helper para simular `git rev-parse --verify refs/stash` retornando valores
+   * DIFERENTES nas chamadas antes/depois do stash (a essência da detecção).
+   */
+  function makeStashRefSequence(sequence: SpawnResult[]): SpawnFn {
+    let call = 0;
+    return (cmd: string, args: string[]): SpawnResult => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git rev-parse --verify refs/stash") {
+        const r = sequence[Math.min(call, sequence.length - 1)];
+        call += 1;
+        return r;
+      }
+      return ok("");
+    };
+  }
+
+  it("stash saiu não-zero mas CRIOU stash (refs/stash mudou) + pop recupera → 'stash_partial_failure'", () => {
+    const popCalled: boolean[] = [];
+    const stashRefSpawn = makeStashRefSequence([
+      fail("fatal: ambiguous argument 'refs/stash': unknown revision", 128), // antes: nenhum stash existia
+      ok("a1b2c3d4"), // depois: um stash FOI criado apesar do exit não-zero
+    ]);
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git stash pop") popCalled.push(true);
+      if (key === "git rev-parse --verify refs/stash") return stashRefSpawn(cmd, args);
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M arquivo.txt"),
+        "git stash --include-untracked": fail(
+          "warning: failed to remove some/untracked/dir: Permission denied",
+          1,
+        ),
+        "git stash pop": ok("On branch master...\nDropped refs/stash@{0}"),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn);
+    assert.equal(r.outcome, "stash_partial_failure");
+    assert.equal(r.proceed, true);
+    assert.equal(popCalled.length, 1, "pop deve ser tentado automaticamente quando um stash foi detectado");
+    assert.match(r.message, /a1b2c3d4/, "mensagem deve citar o hash do stash pra investigação");
+    assert.match(r.message, /pop/i);
+    assert.doesNotMatch(
+      r.message,
+      /working tree não tocada/i,
+      "NÃO deve afirmar 'working tree não tocada' quando um stash foi de fato criado",
+    );
+  });
+
+  it("stash saiu não-zero mas CRIOU stash + pop TAMBÉM falha → 'stash_partial_failure_unrecovered', stash preservado (sem drop)", () => {
+    const dropCalled: boolean[] = [];
+    const stashRefSpawn = makeStashRefSequence([
+      fail("fatal: ambiguous argument 'refs/stash': unknown revision", 128),
+      ok("deadbeef01"),
+    ]);
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key.startsWith("git stash drop")) dropCalled.push(true);
+      if (key === "git rev-parse --verify refs/stash") return stashRefSpawn(cmd, args);
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M arquivo.txt"),
+        "git stash --include-untracked": fail(
+          "warning: failed to remove some/untracked/dir: Permission denied",
+          1,
+        ),
+        "git stash pop": fail("CONFLICT (content): Merge conflict in arquivo.txt"),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn);
+    assert.equal(r.outcome, "stash_partial_failure_unrecovered");
+    assert.equal(r.proceed, true);
+    assert.equal(dropCalled.length, 0, "stash NUNCA deve ser descartado (git stash drop) quando o pop falha");
+    assert.match(r.message, /deadbeef01/, "mensagem deve citar o hash do stash preservado");
+    assert.match(r.message, /investiga(ç|c)[aã]o manual|preservado/i);
+  });
+
+  it("stash falhou 100% — NADA foi criado (refs/stash não mudou, nunca existiu) → 'stash_failed' original preservado", () => {
+    // Regressão: garantir que a nova detecção não gera falso-positivo quando o
+    // stash de fato falhou por completo, sem criar nada.
+    const popCalled: boolean[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git stash pop") popCalled.push(true);
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M arquivo.txt"),
+        // refs/stash falha (nunca existiu) tanto antes quanto depois — mesmo resultado
+        "git rev-parse --verify refs/stash": fail(
+          "fatal: ambiguous argument 'refs/stash': unknown revision",
+          128,
+        ),
+        "git stash --include-untracked": fail("error: cannot stash"),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn);
+    assert.equal(r.outcome, "stash_failed");
+    assert.equal(r.proceed, true);
+    assert.equal(popCalled.length, 0, "pop não deve ser chamado quando nenhum stash foi criado");
+    assert.match(r.message, /working tree não tocada/i);
+  });
+
+  it("stash falhou mas JÁ existia um stash de rodada anterior (refs/stash igual antes/depois) → 'stash_failed', não confunde com stash novo", () => {
+    // Edge case: se já havia um stash de uma rodada anterior (não relacionado a
+    // esta chamada), e o `git stash` desta chamada falha sem criar um NOVO
+    // stash, refs/stash não muda — não deve ser confundido com "stash criado
+    // apesar do exit não-zero".
+    const popCalled: boolean[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git stash pop") popCalled.push(true);
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M arquivo.txt"),
+        // mesmo hash antes E depois — nenhum stash NOVO foi criado
+        "git rev-parse --verify refs/stash": ok("existing-stash-hash-999"),
+        "git stash --include-untracked": fail("error: cannot stash"),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn);
+    assert.equal(r.outcome, "stash_failed");
+    assert.equal(r.proceed, true);
+    assert.equal(popCalled.length, 0, "pop não deve ser chamado — nenhum stash NOVO foi criado");
+  });
+});
+
 describe("git-sync — cenários de falha fail-soft", () => {
   it("fetch falhou (offline) → 'fetch_failed', proceed=true, sem bloquear", () => {
     const spawn = makeSpawn({

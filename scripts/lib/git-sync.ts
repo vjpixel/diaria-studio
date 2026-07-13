@@ -10,12 +10,22 @@
  *      Se checkout falhar → warn + retorna sem forçar (fail-soft).
  *   2. `git fetch origin` — fail-soft (offline, credencial, etc.) → warn + retorna.
  *   3. Se working tree suja → stash → merge --ff-only origin/master → stash pop
- *      (reversível). Se stash falhar → warn + retorna sem tocar o tree.
- *      Se stash pop falhar (conflito de merge) → warn + stash preservado.
+ *      (reversível). Se stash falhar E nenhum stash tiver sido criado → warn +
+ *      retorna sem tocar o tree ("stash_failed"). Se stash pop falhar (conflito
+ *      de merge) → warn + stash preservado.
+ *   3a. #3411: `git stash --include-untracked` não é atômico — cria o(s) commit(s)
+ *      de stash e SÓ DEPOIS remove os arquivos não-rastreados (clean-equivalente).
+ *      Se essa remoção falhar parcialmente (ex: Permission denied), o comando sai
+ *      não-zero MESMO com o stash já criado — "working tree não tocada" seria
+ *      falso nesse caso. Detectado comparando `refs/stash` antes/depois; se um
+ *      stash foi criado apesar do exit não-zero, tenta `git stash pop` automático
+ *      ("stash_partial_failure" se recuperar; "stash_partial_failure_unrecovered"
+ *      com stash preservado se o pop também falhar — nunca faz `git stash drop`).
  *   4. Se working tree limpa → merge --ff-only origin/master direto.
  *      Se ff-only falhar (divergência) → warn + retorna (nunca força merge).
- *   5. Falha de fetch OU ff_failed OU stash_pop_failed NÃO bloqueiam a edição
- *      — retornam status de warn e a skill continua.
+ *   5. Falha de fetch OU ff_failed OU stash_pop_failed OU stash_partial_failure
+ *      (ou sua variante _unrecovered) NÃO bloqueiam a edição — retornam status
+ *      de warn e a skill continua.
  *
  * Nota: usa `git merge --ff-only origin/master` (não `git pull`) após o fetch
  * explícito do passo 2 — evita um segundo fetch implícito (rede = única
@@ -57,7 +67,9 @@ export type GitSyncOutcome =
   | "already_up_to_date"  // já na versão mais recente (tree limpa ou suja)
   | "fetch_failed"        // git fetch falhou (offline / auth) — warn, segue
   | "ff_failed"           // pull --ff-only falhou (divergência) — warn, segue
-  | "stash_failed"        // stash falhou — skip pull, tree não tocada — warn, segue
+  | "stash_failed"        // stash falhou E nenhum stash foi criado — tree não tocada — warn, segue
+  | "stash_partial_failure"             // stash saiu não-zero MAS criou um stash (#3411); recuperado via pop automático — warn, segue
+  | "stash_partial_failure_unrecovered" // idem, mas o pop automático TAMBÉM falhou — stash preservado p/ investigação manual — warn, segue
   | "stash_pop_failed"    // pull OK mas stash pop teve conflito — warn, stash preservado
   | "checkout_failed";    // não estava em master e checkout master falhou — warn, segue
 
@@ -168,10 +180,78 @@ export function syncCode(spawn: SpawnFn = defaultSpawn): GitSyncResult {
 
   if (isDirty) {
     // ── 5a. Dirty tree: stash → merge --ff-only → stash pop ────────────────
+    // #3411: captura o estado de `refs/stash` ANTES de rodar o stash. Motivo:
+    // `git stash --include-untracked` NÃO é atômico — ele (1) cria o(s) commit(s)
+    // de stash (index + working-tree + untracked-files) e SÓ DEPOIS (2) remove os
+    // arquivos não-rastreados do working tree (clean-equivalente). Se o passo 2
+    // falhar parcialmente (ex: "Permission denied" num diretório com handle aberto
+    // por outro processo), o comando INTEIRO sai com exit não-zero mesmo com o
+    // stash já criado e parte dos untracked já removida — reportar "working tree
+    // não tocada" nesse caso é falso e pode esconder perda real de arquivos
+    // (incidente real 260713). Comparar refs/stash antes/depois é a forma robusta
+    // de distinguir "nada foi stashado" de "stash foi criado apesar do exit != 0".
+    const stashRefBeforeRes = spawn("git", ["rev-parse", "--verify", "refs/stash"]);
+    const stashRefBefore = stashRefBeforeRes.status === 0 ? stashRefBeforeRes.stdout.trim() : null;
+
     const stashRes = spawn("git", ["stash", "--include-untracked"]);
     if (stashRes.status !== 0) {
+      const stashRefAfterRes = spawn("git", ["rev-parse", "--verify", "refs/stash"]);
+      const stashRefAfter = stashRefAfterRes.status === 0 ? stashRefAfterRes.stdout.trim() : null;
+      // Um novo stash foi criado apesar do exit não-zero se refs/stash mudou
+      // (cobre tanto o caso "não existia stash antes" [before=null] quanto
+      // "já existia um stash diferente antes").
+      const stashWasCreatedDespiteFailure = stashRefAfter !== null && stashRefAfter !== stashRefBefore;
+
+      if (stashWasCreatedDespiteFailure) {
+        // O stash existe e é válido (o commit foi criado no passo 1 antes da
+        // falha no passo 2) — tentar recuperar automaticamente via pop, reusando
+        // a mesma lógica de tratamento de conflito do caminho de sucesso.
+        const popRes = spawn("git", ["stash", "pop"]);
+        if (popRes.status === 0) {
+          const msg =
+            `[git-sync] WARN: git stash --include-untracked saiu com erro (exit ${stashRes.status}) — ` +
+            `provável falha parcial ao remover arquivos não-rastreados (ex: Permission denied em diretório ` +
+            `com handle aberto por outro processo) — MAS um stash FOI criado (${stashRefAfter}) apesar do ` +
+            `exit não-zero. Sync ignorado (nenhum merge tentado nesta rodada) — stash recuperado ` +
+            `automaticamente via 'git stash pop' com sucesso, working tree restaurada. ` +
+            `Stderr original do stash: ${stashRes.stderr.trim() || "(vazio)"}`;
+          warnings.push(msg);
+          return {
+            outcome: "stash_partial_failure",
+            message: msg,
+            branch_before: branchBefore,
+            warnings,
+            proceed: true,
+          };
+        }
+
+        // Pop também falhou (conflito ou outro erro) — NÃO descartar o stash;
+        // preservado para investigação manual. Outcome DISTINTO de
+        // "stash_pop_failed" (que implica pull/merge bem-sucedido) — aqui nenhum
+        // merge foi sequer tentado, então reusar aquele outcome enganaria
+        // qualquer consumidor que assume "pull OK" a partir dele. Warning
+        // explicitamente mais urgente (prefixo ERROR), porque a causa raiz
+        // envolve possível remoção não-recuperável de arquivos não-rastreados.
+        const msg =
+          `[git-sync] ERROR: git stash --include-untracked saiu com erro (exit ${stashRes.status}) E criou ` +
+          `um stash (${stashRefAfter}) apesar disso — possível remoção NÃO-RECUPERÁVEL de arquivos não-` +
+          `rastreados (#3411). A recuperação automática via 'git stash pop' TAMBÉM falhou (conflito ou ` +
+          `outro erro) — stash NÃO foi descartado, preservado para investigação manual: ` +
+          `'git stash show -p ${stashRefAfter}' ou 'git stash apply ${stashRefAfter}'. ` +
+          `Stderr stash: ${stashRes.stderr.trim() || "(vazio)"} | Stderr pop: ${popRes.stderr.trim() || "(vazio)"}`;
+        warnings.push(msg);
+        return {
+          outcome: "stash_partial_failure_unrecovered",
+          message: msg,
+          branch_before: branchBefore,
+          warnings,
+          proceed: true,
+        };
+      }
+
       const msg =
-        `[git-sync] WARN: git stash falhou — sync ignorado, working tree não tocada. ` +
+        `[git-sync] WARN: git stash falhou — sync ignorado, working tree não tocada ` +
+        `(nenhum stash foi criado — refs/stash não mudou). ` +
         `Stderr: ${stashRes.stderr.trim() || "(vazio)"}`;
       warnings.push(msg);
       return { outcome: "stash_failed", message: msg, branch_before: branchBefore, warnings, proceed: true };
