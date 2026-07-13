@@ -324,11 +324,15 @@ node -e "
 `Artifact` com `file_path: "data/monthly/$CYCLE/_internal/cloudflare-preview.html"`
 + `url` (se a leitura acima imprimiu algo) + `description` (ex: "Preview mensal —
 ciclo $CYCLE") + `favicon` fixo entre re-publicações do mesmo ciclo (ex: 🗓️).
-Persistir a URL retornada:
+Persistir a URL retornada (`node -e` puro — `npx tsx -e` com `import` de `upload-html-public.ts` falha silenciosamente, exit 0 sem gravar nada; descoberto 260712 no Stage 4 da diária, ver `.claude/agents/orchestrator-stage-4.md` §4b step 2b):
 ```bash
-npx tsx -e "
-  import { persistFieldToJsonFile } from './scripts/upload-html-public.ts';
-  persistFieldToJsonFile('data/monthly/$CYCLE/_internal/preview-artifact-url.json', 'preview_url', '{url_retornada}');
+node -e "
+  const fs = require('fs');
+  const p = 'data/monthly/$CYCLE/_internal/preview-artifact-url.json';
+  let j = {};
+  if (fs.existsSync(p)) { try { j = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {} }
+  j.preview_url = '{url_retornada}';
+  fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
 "
 ```
 

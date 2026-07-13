@@ -117,6 +117,12 @@ export interface NewsletterContent {
    * tornar o box 1 mais proeminente: imagem + texto + botão CTA. Lida de
    * `06-public-images.json` (entry `livros_promo`). Ausente → box só-texto. */
   boxDivulgacao1Image?: string | null;
+  /** #3373: peso de fonte do box de 1 parágrafo (sem imagem/CTA-pill) —
+   * `true` quando a fonte tem `**...**` embrulhando o box inteiro, `false`
+   * quando é texto plano. Editor controla o peso pelo markdown do
+   * `02-reviewed.md`; não afeta o box com imagem/carrinho (sempre estruturado
+   * por título+corpo). Default `true` preserva o visual histórico. */
+  boxDivulgacao1Bold?: boolean;
   /** Box de divulgação (#2978) posicionado ENTRE o 2º e o 3º destaque — SLOT
    * fixo por posição (gap D2/D3), mesmo contrato de formato do slot 1. Em
    * edições de 2 destaques (sem gap D2/D3) fica sempre `null`. */
@@ -127,6 +133,8 @@ export interface NewsletterContent {
    * degradava pra texto puro (sem imagem/CTA-pill), quebrando paridade com o
    * slot 1. Ausente → box só-texto. */
   boxDivulgacao2Image?: string | null;
+  /** #3373: mesmo contrato de `boxDivulgacao1Bold`, pro slot 2. */
+  boxDivulgacao2Bold?: boolean;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -659,10 +667,15 @@ function splitByGapSeparator(region: string): GapBlock[] {
  * Qualquer outro formato (multi-parágrafo, ou 1 parágrafo sem bold-wrap
  * total) mantém o texto bruto — `renderBoxDivulgacao` decide o resto
  * (imagem/pill/etc.) pela estrutura do conteúdo.
+ *
+ * #3373: também reporta se o bloco ESTAVA bold-wrapped na fonte — sinal que
+ * `renderBoxDivulgacao`/`renderIntroCallout` usam pra decidir o peso da fonte
+ * do box de 1 parágrafo (editor escreve `**...**` pra negrito, texto plano
+ * pra peso normal — editorial 260712).
  */
-function formatBoxInner(trimmed: string): string {
+function formatBoxInner(trimmed: string): { inner: string; bold: boolean } {
   const boldWrap = /^\*\*\s*([\s\S]+?)\*\*$/.exec(trimmed);
-  return boldWrap ? boldWrap[1].trim() : trimmed;
+  return boldWrap ? { inner: boldWrap[1].trim(), bold: true } : { inner: trimmed, bold: false };
 }
 
 interface ParaSpan {
@@ -741,7 +754,7 @@ function locateGluedBoxInBlock(block: GapBlock): ParaSpan | null {
 function locateBoxInGap(
   text: string,
   gapIndex: number,
-): { inner: string; matchStart: number; matchEnd: number } | null {
+): { inner: string; bold: boolean; matchStart: number; matchEnd: number } | null {
   const gap = interDestaqueGaps(text).find((g) => g.gapIndex === gapIndex);
   if (!gap) return null;
   const region = text.slice(gap.start, gap.end);
@@ -764,13 +777,16 @@ function locateBoxInGap(
     const trailingWs = block.text.length - block.text.trimEnd().length;
     const matchStart = gap.start + block.rawStart + leadingWs;
     const matchEnd = gap.start + block.rawEnd - trailingWs;
-    return { inner: formatBoxInner(trimmed), matchStart, matchEnd };
+    const formatted = formatBoxInner(trimmed);
+    return { inner: formatted.inner, bold: formatted.bold, matchStart, matchEnd };
   }
   // Nenhum bloco isolado — tenta o fallback de box colado ao destaque.
   const glued = locateGluedBoxInBlock(blocks[0]);
   if (glued) {
+    const formatted = formatBoxInner(glued.text);
     return {
-      inner: formatBoxInner(glued.text),
+      inner: formatted.inner,
+      bold: formatted.bold,
       matchStart: gap.start + blocks[0].rawStart + glued.start,
       matchEnd: gap.start + blocks[0].rawStart + glued.end,
     };
@@ -824,6 +840,22 @@ export function extractBoxDivulgacao1(text: string): string | null {
 /** Box de divulgação posicionado ENTRE o 2º e o 3º destaque (slot 2, gap D2/D3). */
 export function extractBoxDivulgacao2(text: string): string | null {
   return locateBoxInGap(text, 1)?.inner ?? null;
+}
+
+/**
+ * #3373: o box de 1 parágrafo (sem imagem, sem CTA pill) sai em negrito
+ * quando a fonte tem `**...**` embrulhando o bloco inteiro, peso normal
+ * quando não tem (editorial 260712 — editor controla o peso pelo markdown).
+ * Default `true` (bold) quando o box não existe é inofensivo — só é
+ * consultado nos call-sites que já checaram que o box existe.
+ */
+export function isBoxDivulgacao1Bold(text: string): boolean {
+  return locateBoxInGap(text, 0)?.bold ?? true;
+}
+
+/** Mesma lógica de `isBoxDivulgacao1Bold`, pro slot 2 (gap D2/D3). */
+export function isBoxDivulgacao2Bold(text: string): boolean {
+  return locateBoxInGap(text, 1)?.bold ?? true;
 }
 
 /**
@@ -1036,10 +1068,13 @@ export function extractContent(editionDir: string): NewsletterContent {
   // vai pro box de livros; box 📣 CLARICE recebe null (sem hero). Só o slot 1
   // suporta imagem (comportamento legado, nunca existiu pro slot 2).
   const boxDivulgacao1Image = readBoxDivulgacao1Image(editionDir, boxDivulgacao1);
+  // #3373: peso de fonte do box só-texto controlado pelo bold-wrap da fonte.
+  const boxDivulgacao1Bold = isBoxDivulgacao1Bold(reviewedText);
   const boxDivulgacao2 = extractBoxDivulgacao2(reviewedText);
   // #2978-slot2-parity: mesmo tratamento do slot 1 — a imagem livros_promo só
   // vai pro box de livros, independente de em qual slot ele caiu.
   const boxDivulgacao2Image = readBoxDivulgacao2Image(editionDir, boxDivulgacao2);
+  const boxDivulgacao2Bold = isBoxDivulgacao2Bold(reviewedText);
 
   // #2316: subtitle adapta-se ao número real de destaques.
   // Com 2 destaques: só D2 (sem o separador " | "). Com 3: D2 | D3 (padrão).
@@ -1065,8 +1100,10 @@ export function extractContent(editionDir: string): NewsletterContent {
     introCallout,
     boxDivulgacao1,
     boxDivulgacao1Image,
+    boxDivulgacao1Bold,
     boxDivulgacao2,
     boxDivulgacao2Image,
+    boxDivulgacao2Bold,
   };
 }
 

@@ -135,6 +135,25 @@ describe("render-social-html — check de contagem de imagens (#1800)", () => {
   });
 });
 
+describe("render-social-html — largura limitada do preview (#3371)", () => {
+  const platforms = parsePlatforms(MD);
+
+  it("body tem um .container com max-width — não estica full-bleed", () => {
+    const html = buildSocialHtml(platforms, IMAGES.images);
+    assert.match(html, /\.container\s*\{[^}]*max-width:\s*\d+px/, "CSS define max-width no container");
+    assert.match(html, /<div class="container">/, "marcação usa a classe container");
+  });
+
+  it("todo o conteúdo (h1 + plataformas) fica DENTRO do .container", () => {
+    const html = buildSocialHtml(platforms, IMAGES.images);
+    const openIdx = html.indexOf('<div class="container">');
+    const h1Idx = html.indexOf("<h1>");
+    const lastPlatformCloseIdx = html.lastIndexOf('<div class="platform">');
+    assert.ok(openIdx >= 0 && openIdx < h1Idx, "container abre antes do <h1>");
+    assert.ok(lastPlatformCloseIdx > openIdx, "plataformas ficam depois da abertura do container");
+  });
+});
+
 describe("post_pixel — post standalone de D1 no perfil pessoal (#1690)", () => {
   const IMAGES = { images: { d1: { url: "https://img.example/d1.jpg" } } };
   const MD_PIXEL = `# LinkedIn

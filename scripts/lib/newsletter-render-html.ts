@@ -307,7 +307,40 @@ export function renderCoverage(text: string): string {
  * centralizado (ex: box Alexa+ "Conhecer a Alexa+ e ver as ofertas"). Sem 📣,
  * NÃO adiciona o separador "Divulgação" (o box de divulgação já tem o seu).
  */
-export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = "serif", forceCtaPill = false): string {
+
+/** #3374: parágrafo é lista quando TODA linha não-vazia começa com `- `/`* `. */
+function isBulletParagraph(p: string): boolean {
+  const lines = p.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every((l) => /^[-*]\s+/.test(l));
+}
+
+/**
+ * #3374: `- item`/`* item` (1 por linha) → `<ul><li>` real. Usado no corpo
+ * multi-parágrafo do box de divulgação (ex: lista de benefícios do programa
+ * de apoio) — `<ul>`/`<li>` com estilo inline renderiza bem nos principais
+ * clientes de e-mail (Gmail, Apple Mail, Outlook web/desktop moderno).
+ */
+function renderBulletList(p: string, marginTop: string): string {
+  const items = p
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => l.replace(/^[-*]\s+/, ""));
+  const lis = items
+    .map(
+      (item) =>
+        `<li style="margin:0 0 6px;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(item)}</li>`,
+    )
+    .join("\n        ");
+  return `<ul style="margin:${marginTop} 0 0;padding-left:20px;">\n        ${lis}\n      </ul>`;
+}
+
+export function renderIntroCallout(
+  text: string,
+  titleStyle: "serif" | "body" = "serif",
+  forceCtaPill = false,
+  bold = true,
+): string {
   // #1938: split em parágrafos (`\n\n`). Callout de 1 parágrafo (intro/sorteio)
   // mantém o comportamento antigo (negrito, emoji preservado). Bloco
   // multi-parágrafo (ex: divulgação CLARICE reaproveitada da mensal) segue o DS:
@@ -394,6 +427,10 @@ export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = 
     const bodyHtml = bodyParas
       .map((p, i) => {
         const mt = i === 0 ? "0" : "12px";
+        // #3374: bloco de lista (`- item`/`* item`) vira `<ul><li>` real.
+        if (isBulletParagraph(p)) {
+          return renderBulletList(p, mt);
+        }
         const fullBold = titleStyle === "body" &&
           /^\*\*[^*][\s\S]*\*\*$/.test(p) && !p.slice(2, -2).includes("**");
         if (fullBold) {
@@ -426,9 +463,10 @@ export function renderIntroCallout(text: string, titleStyle: "serif" | "body" = 
   } else {
     // 1 parágrafo: anúncio (📣) tem o marcador removido — o separador "Divulgação"
     // já rotula (#1942 review #3). 🎉/📚 preservam o emoji decorativo.
+    // #3373: peso de fonte segue `bold` (default true = visual histórico).
     const single = paras[0] ?? text;
     const only = sponsored ? stripCalloutMarker(single) : single;
-    inner = `<p style="margin:0;font-family:${FONT_BODY};font-weight:600;font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(only)}</p>`;
+    inner = `<p style="margin:0;font-family:${FONT_BODY};font-weight:${bold ? 600 : 400};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(only)}</p>`;
   }
   return `<!-- #1648 intro callout (sorteio/CTA) -->
 <tr><td class="pad" style="padding:8px 32px 0;">
@@ -516,8 +554,17 @@ function shouldForceCtaPill(box: string): boolean {
  * qualquer outro conteúdo → bold-line/mid-callout (reusa `renderMidCallout`,
  * que aceita imagem opcional — #2978-slot2-parity: agora nos 2 slots). Ambos
  * os slots chamam este dispatcher.
+ *
+ * `bold` (#3373): peso de fonte do box SÓ-TEXTO (sem imagem, sem CTA pill) —
+ * `true` (default) reproduz o visual histórico; `false` quando a fonte do box
+ * é texto plano (sem `**...**` embrulhando o bloco inteiro). Não afeta o path
+ * com imagem/CTA pill, que já tem peso próprio hardcoded por estrutura.
  */
-export function renderBoxDivulgacao(box: string, imageUrl: string | null = null): string {
+export function renderBoxDivulgacao(
+  box: string,
+  imageUrl: string | null = null,
+  bold = true,
+): string {
   if (shouldForceCtaPill(box)) {
     // Remove um eventual marcador estrutural legado (🛒/📚) da 1ª linha antes
     // de renderizar — não deve vazar cru no HTML. `\r?\n?` cobre o marcador
@@ -527,17 +574,17 @@ export function renderBoxDivulgacao(box: string, imageUrl: string | null = null)
     // comportamento já existente pra 🎉/📚 no path sem CTA pill.
     return renderIntroCallout(box.replace(/^\s*(?:🛒|📚)[ \t]*\r?\n?/u, ""), "serif", true);
   }
-  return renderMidCallout(box, imageUrl);
+  return renderMidCallout(box, imageUrl, bold);
 }
 
 /**
  * Box de divulgação (slot 1 gap D1/D2 OU slot 2 gap D2/D3, #2978-slot2-parity)
  * com imagem proeminente + texto + botão CTA. Sem imagem → cai no box
- * só-texto (renderIntroCallout). Extrai o link `[texto](url)` do próprio box
- * pra usar na imagem clicável e no botão.
+ * só-texto (renderIntroCallout, repassando `bold` — #3373). Extrai o link
+ * `[texto](url)` do próprio box pra usar na imagem clicável e no botão.
  */
-export function renderMidCallout(text: string, imageUrl: string | null): string {
-  if (!imageUrl) return renderIntroCallout(text);
+export function renderMidCallout(text: string, imageUrl: string | null, bold = true): string {
+  if (!imageUrl) return renderIntroCallout(text, "serif", false, bold);
   // #1634-safe: parênteses balanceados em vez de `\(([^)]+)\)`. Primeiro link
   // vira destino da imagem clicável + botão; TODOS os links saem do corpo.
   // #2067: anchor text do 1º link → alt da imagem + label do CTA (genérico).
@@ -1033,7 +1080,13 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // kicker "● DIVULGAÇÃO" antes (260611, supersede #1940/#2069).
     if (content.boxDivulgacao1 && i === 0) {
       parts.push(renderDivulgacaoSeparator());
-      parts.push(renderBoxDivulgacao(content.boxDivulgacao1, content.boxDivulgacao1Image ?? null));
+      parts.push(
+        renderBoxDivulgacao(
+          content.boxDivulgacao1,
+          content.boxDivulgacao1Image ?? null,
+          content.boxDivulgacao1Bold ?? true,
+        ),
+      );
     }
     // #2978: box de divulgação slot 2 — SEMPRE na lacuna D2/D3 (após D2, i===1).
     // Só existe em edições de 3 destaques (sem gap D2/D3 em edições de 2).
@@ -1042,7 +1095,13 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       // #2978-slot2-parity: passa a imagem (quando presente) igual ao slot 1 —
       // antes caía sempre em renderMidCallout(text, null) → degradava pro box
       // só-texto (sem imagem/CTA-pill) mesmo quando o box de livros caía aqui.
-      parts.push(renderBoxDivulgacao(content.boxDivulgacao2, content.boxDivulgacao2Image ?? null));
+      parts.push(
+        renderBoxDivulgacao(
+          content.boxDivulgacao2,
+          content.boxDivulgacao2Image ?? null,
+          content.boxDivulgacao2Bold ?? true,
+        ),
+      );
     }
     // #2546: È IA? renderiza APÓS o ÚLTIMO destaque (D3 em edições de 3
     // destaques; D2 em edições de 2). Antes ficava fixo após o D2 (i === 1).
