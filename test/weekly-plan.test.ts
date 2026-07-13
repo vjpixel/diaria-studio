@@ -621,3 +621,21 @@ test("renderRecommendationSection — zero campanhas → 'Nenhum envio registrad
   assert.doesNotMatch(html, /Sem envio maduro/);
   assert.doesNotMatch(html, /Próximo envio/);
 });
+
+// #3431: 3º branch de renderRecommendationSection (mature.length > 0 mas
+// baseVolume === 0, ou seja `!state.plan` sem cair nos 2 branches acima) não
+// tinha teste dedicado — só o 1º branch (zero campanhas) foi coberto no
+// #3426. Reproduz via envio MADURO (>48h) sem stats reais (sent=0), mesmo
+// padrão do #3081: `pickStats` retorna null → baseVolumeFromLastSendDay
+// soma 0, então `computeWeeklySendState` retorna `plan: null` mesmo com
+// `mature.length > 0`.
+test("renderRecommendationSection — envio maduro mas sem volume-base (baseVolume===0) → mensagem própria, NÃO 'Sem envio maduro' nem 'Nenhum envio registrado' (#3431)", () => {
+  const camps = [
+    campaignSentHoursAgo(72, { statistics: statsFor({ sent: 0, delivered: 0, uniqueViews: 0 }) }),
+  ];
+  const html = renderRecommendationSection(camps, NOW);
+  assert.match(html, /Volume-base do último envio indisponível/);
+  assert.doesNotMatch(html, /Sem envio maduro/);
+  assert.doesNotMatch(html, /Nenhum envio registrado/);
+  assert.doesNotMatch(html, /Próximo envio/);
+});
