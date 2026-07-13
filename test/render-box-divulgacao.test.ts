@@ -166,3 +166,42 @@ Quem contribui ganha benefícios como:
     assert.ok(!noList.includes("<ul"), "hífen no meio da frase não confunde com bullet");
   });
 });
+
+describe("renderBoxDivulgacao — bold repassado no path de 2+ links (#3391)", () => {
+  // shouldForceCtaPill(box) força o path carrinho pra QUALQUER box com 2+
+  // links, mesmo de 1 parágrafo só (#3028) — esse box cai no branch de 1
+  // parágrafo de renderIntroCallout, que usa `bold` pra decidir font-weight.
+  const box = "📚 Confira [Livro A](https://amzn.to/aaa) e [Livro B](https://amzn.to/bbb) com desconto.";
+
+  it("bold=false: font-weight:400 no HTML (editor pediu peso normal via ausência de **...**)", () => {
+    const html = renderBoxDivulgacao(box, null, false);
+    assert.match(html, /font-weight:400/);
+    assert.ok(!html.includes("font-weight:600"));
+  });
+
+  it("bold=true (default): font-weight:600 no HTML — regressão do visual histórico", () => {
+    const html = renderBoxDivulgacao(box);
+    assert.match(html, /font-weight:600/);
+    assert.ok(!html.includes("font-weight:400"));
+  });
+});
+
+describe("renderBoxDivulgacao — lista de bullets DEPOIS do CTA (#3391)", () => {
+  it("bloco `- item` após o botão CTA vira <ul><li>, não texto corrido com hífen literal", () => {
+    const box = `Título aqui.
+
+Corpo antes do CTA.
+
+[Conheça](https://apoia.se/diaria)
+
+- Item 1
+- Item 2`;
+    const html = renderBoxDivulgacao(box);
+    assert.match(html, /border-radius:999px/, "CTA vira botão pill");
+    assert.match(html, /<ul/, "lista depois do CTA vira <ul>");
+    assert.equal((html.match(/<li /g) ?? []).length, 2, "2 itens viram 2 <li>");
+    assert.ok(!/<p[^>]*>-\s*Item/.test(html), "item não vaza como <p> com hífen literal");
+    assert.match(html, /<li[^>]*>Item 1<\/li>/);
+    assert.match(html, /<li[^>]*>Item 2<\/li>/);
+  });
+});

@@ -735,7 +735,14 @@ function truncateVerboseArtistText(text: string): string {
   }
   const firstSentence = cutIndex !== null ? text.slice(0, cutIndex).trim() : text;
   const withoutLeadIn = firstSentence.replace(ARTIST_LEAD_IN_RE, "").trim();
-  const candidate = withoutLeadIn || firstSentence || text;
+  let candidate = withoutLeadIn || firstSentence || text;
+
+  // #3390: quando não há nenhum ponto de corte de sentença seguro (ex: texto
+  // malformado começando com "."), `candidate` ainda carrega a pontuação/
+  // espaço solto do início. Remover antes do fallback de 6 palavras — sem
+  // isso, o "." isolado sobrevive como token próprio no crédito publicado.
+  const withoutLeadingPunct = candidate.replace(/^[.\s]+/, "").trim();
+  if (withoutLeadingPunct) candidate = withoutLeadingPunct;
 
   if (candidate.length > 60) {
     return candidate.split(/\s+/).slice(0, 6).join(" ");

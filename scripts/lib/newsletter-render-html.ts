@@ -445,8 +445,16 @@ export function renderIntroCallout(
     if (ctaButtonHtml) {
       // #2996: parágrafos DEPOIS do CTA (ex: disclosure de comissão) renderizam
       // como corpo normal ABAIXO do botão, numa linha própria dentro do box.
+      // #3391: mesma checagem de lista (`- item`) do bodyHtml acima — sem isso,
+      // uma lista depois do CTA saía como texto corrido com hífen literal.
       const afterCtaHtml = afterCtaParas
-        .map((p, i) => bodyP(`${i === 0 ? "12px" : "8px"} 0 0`, processInlineLinks(p)))
+        .map((p, i) => {
+          const mt = i === 0 ? "12px" : "8px";
+          if (isBulletParagraph(p)) {
+            return renderBulletList(p, mt);
+          }
+          return bodyP(`${mt} 0 0`, processInlineLinks(p));
+        })
         .join("\n      ");
       // Botão pill em linha separada dentro do mesmo box, centralizado.
       return `<!-- #1648 intro callout (sorteio/CTA) -->
@@ -572,7 +580,7 @@ export function renderBoxDivulgacao(
     // <p></p> vazio no topo do box. Marcadores novos (sem allowlist) não são
     // stripados aqui — ficam como texto decorativo no título, igual ao
     // comportamento já existente pra 🎉/📚 no path sem CTA pill.
-    return renderIntroCallout(box.replace(/^\s*(?:🛒|📚)[ \t]*\r?\n?/u, ""), "serif", true);
+    return renderIntroCallout(box.replace(/^\s*(?:🛒|📚)[ \t]*\r?\n?/u, ""), "serif", true, bold);
   }
   return renderMidCallout(box, imageUrl, bold);
 }
