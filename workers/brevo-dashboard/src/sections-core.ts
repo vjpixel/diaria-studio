@@ -2180,14 +2180,25 @@ export function renderAbcSection(
   // Pouco depois de um envio é comum ter opens>0 e clicks=0 (clique atrasa
   // horas em relação à abertura) — checar totalViews aqui fazia esse caso
   // cair no branch !leaderClickRate ("Empate no clique com 0.00%"), sugerindo
-  // enganosamente um empate real no critério principal. Checando totalClicks,
+  // enganosamente um empate real no critério principal. Checando o clique,
   // esse caso cai no branch certo ("Aguardando dados suficientes"). Texto
   // genérico (não "de abertura") de propósito — code-review do PR #3287
   // notou que esse branch também cobre o caso opens>0/clicks=0, onde
   // abertura JÁ existe (às vezes até com líder próprio, ▲ ABERTURA); "de
   // abertura" ficaria impreciso/contraditório com a própria tabela.
-  const allZero = allSampled && sampledRows.every((r) => r.totalClicks === 0);
+  //
+  // #3305 (refactor puro, sem mudança de comportamento): `allZero` derivava
+  // de `totalClicks` (campo bruto) enquanto `maxClickRate`/`leaderClickRate`
+  // derivam de `clickRate` — dois cálculos independentes dizendo a mesma
+  // coisa (totalClicks === 0 ⟺ clickRate === 0 sempre que totalDelivered >
+  // 0, garantido por `aggregateAbcSummary`). `allZero` agora deriva de
+  // `maxClickRate`, a MESMA fonte que `pickLeader`/`leaderClickRate` usa —
+  // evita que uma futura migração de métrica desincronize o guard de novo
+  // (a causa raiz do #3281). Decisão do editor (#3305): "1 clique isolado
+  // basta pra declarar vencedor provisório" continua sendo o critério
+  // oficial — nenhum limiar mínimo de amostra foi adicionado aqui.
   const maxClickRate = allSampled ? sampledRows.reduce((m, r) => Math.max(m, r.clickRate), 0) : 0;
+  const allZero = allSampled && maxClickRate === 0;
   const statusNote = allZero
     ? `Aguardando dados suficientes — primeiras horas pós-envio.`
     : !allSampled

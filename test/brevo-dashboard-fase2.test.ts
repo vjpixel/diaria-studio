@@ -1008,6 +1008,33 @@ describe("renderAbcSection", () => {
     assert.match(html, /Empate no clique com 10\.00%/, "empate real deve continuar mostrando a taxa empatada");
     assert.doesNotMatch(html, /[Aa]guardando dados/, "não deve mostrar 'aguardando dados' em empate real");
   });
+
+  // Regressão #3305: a issue levantou se 1 clique isolado (sem NENHUMA
+  // abertura confirmada em nenhuma célula) deveria bastar pra declarar
+  // vencedor provisório, ou se merecia um limiar mínimo de amostra. O editor
+  // confirmou (rodada overnight 260712): manter o comportamento ATUAL — 1
+  // clique isolado basta, é o critério oficial desde #2976/#3124, sem
+  // mudança. Este teste documenta/trava essa decisão (não é bugfix). A
+  // simplificação real do #3305 foi reordenar `allZero` pra derivar de
+  // `maxClickRate` (mesma fonte que `leaderClickRate`) em vez do campo bruto
+  // `totalClicks` — refactor puro, sem alteração de output.
+  test("1 clique isolado + zero aberturas em TODAS as células ainda declara vencedor provisório (decisão do editor, #3305)", () => {
+    const oneIsolatedClickRows = [
+      { cell: "A" as const, totalViews: 0, totalDelivered: 100, openRate: 0, totalClicks: 1, clickRate: 1.0, campaignCount: 1, organicOpenRate: null },
+      { cell: "B" as const, totalViews: 0, totalDelivered: 100, openRate: 0, totalClicks: 0, clickRate: 0, campaignCount: 1, organicOpenRate: null },
+      { cell: "C" as const, totalViews: 0, totalDelivered: 100, openRate: 0, totalClicks: 0, clickRate: 0, campaignCount: 1, organicOpenRate: null },
+    ];
+    const html = renderAbcSection(oneIsolatedClickRows);
+    assert.match(
+      html,
+      /Vencedor provisório por CLIQUE: <strong[^>]*>Célula A<\/strong>/,
+      "1 clique isolado (sem nenhuma abertura em nenhuma célula) deve declarar vencedor provisório — decisão explícita do editor, não bug",
+    );
+    assert.doesNotMatch(html, /[Aa]guardando dados/, "não deve cair em 'aguardando dados' quando há 1 clique real registrado");
+    const tbodyIdx = html.indexOf("<tbody>");
+    const rowA = html.slice(tbodyIdx + html.slice(tbodyIdx).indexOf("Célula A"));
+    assert.match(rowA.slice(0, 400), /▲ CLIQUE/, "célula A deve carregar a tag de líder de clique");
+  });
 });
 
 // ─── #2360: parseClariceCampaignKey — sufixo de célula opcional ──────────────
