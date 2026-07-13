@@ -356,8 +356,20 @@ ${monthlyAbcSectionsByDate}
   // contrário de `monthlyAbcSection` acima que separa por data). Vem ANTES do
   // detalhe cronológico por data — é a leitura primária pra decidir o teste.
   const monthlyAbcCycles = [...new Set(monthlyAbcGroups.map((g) => g.cycle))];
-  const abcAudienceSection = monthlyAbcCycles
-    .map((cycle) => renderAbcAudienceSection(cycle, aggregateAbcByAudience(campaigns, cycle)))
+  // #3408: 1 cômputo por ciclo, reusado pelas 2 renderizações (completa —
+  // Engajamento; só-Agregada — Visão Geral) — evita re-agregar as campanhas
+  // do ciclo 2x.
+  const abcAudienceResultsByCycle = monthlyAbcCycles.map((cycle) => ({
+    cycle,
+    result: aggregateAbcByAudience(campaigns, cycle),
+  }));
+  const abcAudienceSection = abcAudienceResultsByCycle
+    .map(({ cycle, result }) => renderAbcAudienceSection(cycle, result))
+    .join("\n");
+  // #3408: só a tabela Agregada, pra Visão Geral (resumo curado) — Fria/Quente
+  // continuam só na aba Engajamento via abcAudienceSection acima.
+  const abcAudienceAggregateSection = abcAudienceResultsByCycle
+    .map(({ cycle, result }) => renderAbcAudienceAggregateSection(cycle, result))
     .join("\n");
   // #2736: "Resumo D1–D5 — S1" removida da aba Engajamento (ruído, decisão do
   // editor). renderDaySummarySection/aggregateDaySummary permanecem exportadas
@@ -538,6 +550,12 @@ ${monthlyAbcSectionsByDate}
      tamanho/peso do texto normal — nada sinalizava que eram 3 subdivisões
      de UMA tabela-mãe, não 3 seções novas. */
   .subsection-title { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--ink); opacity: 0.75; margin: 20px 0 6px 0; }
+  /* #3408: divisor de agrupamento narrativo (Passado/Presente) na Visão Geral
+     — acima de .section-title (h2) em hierarquia visual, pra sinalizar que
+     as seções seguintes pertencem a um bloco temático diferente. Só existe
+     dentro de #panel-visaogeral. */
+  .narrative-group-title { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 1.5px; color: var(--brand); opacity: 0.9; margin: 40px 0 4px 0; }
+  .narrative-group-title:first-child { margin-top: 0; }
   .volume-note { font-size: 0.95rem; margin-top: 10px; } /* número no font do DS; só a spark-bar é monospace */
   .spark-bar { display: block; font-family: monospace; font-size: 0.8rem; line-height: 1.2; letter-spacing: -1px; color: var(--brand); margin-top: 4px; overflow: hidden; white-space: nowrap; }
   td.spark { font-family: monospace; letter-spacing: -1px; color: var(--brand); font-size: 0.8rem; white-space: nowrap; }
@@ -682,19 +700,23 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
 <!-- tab panels -->
 <div class="tab-panels">
 
-  <!-- Aba 0: Visão geral — resumo curado pra reunião de parceria (#3406):
-       saúde/circuit breakers + ramp-up, alcance/volume, cupons/comissão e
-       resultado do teste A/B/C por Audiência. Reaproveita seções já
-       computadas pras outras abas (mesmas variáveis, zero fetch extra) —
-       gera IDs de elemento duplicados entre abas (ex: id="weekly-plan",
-       "monthly-totals", "volume-ciclo"), aceito porque nenhum script do
-       dashboard usa getElementById/querySelector nesses ids específicos. -->
+  <!-- Aba 0: Visão geral — resumo curado pra reunião de parceria (#3406,
+       reorganizado em #3408): 2 blocos narrativos, passado → presente.
+       Reaproveita seções já computadas pras outras abas (mesmas variáveis,
+       zero fetch extra) — gera IDs de elemento duplicados entre abas (ex:
+       id="weekly-plan", "monthly-totals", "volume-ciclo"), aceito porque
+       nenhum script do dashboard usa getElementById/querySelector nesses ids
+       específicos. #3408: só a tabela Agregada do resumo A/B/C aparece aqui
+       (abcAudienceAggregateSection) — Fria/Quente continuam só na aba
+       Engajamento (abcAudienceSection, sem mudança). -->
   <div class="tab-panel" id="panel-visaogeral" role="tabpanel" aria-labelledby="tablabel-visaogeral">
-${weeklyPlanSection}
+<h3 class="narrative-group-title">Passado — o que foi executado</h3>
 ${monthlyTotalsSection}
 ${volumeSection}
+${abcAudienceAggregateSection}
+<h3 class="narrative-group-title">Presente — estado atual</h3>
 ${couponTabHtml}
-${abcAudienceSection}
+${weeklyPlanSection}
   </div><!-- /panel-visaogeral -->
 
   <!-- Aba 1: Envios — totais mensais + volume + tabela de envios (#3406: ex-"Visão geral", renomeada; #3010: agendados moveu pra aba Agendamento) -->
@@ -1828,6 +1850,33 @@ export function renderAbcAudienceSection(
   ${renderAbcAudienceTable("Agregada (Fria + Quente)", result.aggregate)}
   ${renderAbcAudienceTable("Fria (nunca recebeu)", result.cold)}
   ${renderAbcAudienceTable("Quente (já engajada)", result.warm)}
+</section>`;
+}
+
+/**
+ * Versão enxuta de `renderAbcAudienceSection` só com a tabela Agregada (#3408)
+ * — pra Visão Geral (resumo curado pra reunião de parceria). As sub-tabelas
+ * Fria/Quente continuam existindo normalmente na aba Engajamento via
+ * `renderAbcAudienceSection` acima; esta função nunca as renderiza. Mesmo
+ * wrapper (título do ciclo + nota de metodologia) pra manter contexto de qual
+ * ciclo e o que "Agregada" significa, sem herdar Fria/Quente. Exportado pra
+ * teste unitário.
+ */
+export function renderAbcAudienceAggregateSection(
+  cycle: string,
+  result: { aggregate: AbcAudienceTable; cold: AbcAudienceTable; warm: AbcAudienceTable },
+): string {
+  // #3396: mesmo critério de <2 células amostradas, mas só considera a
+  // tabela Agregada — Fria/Quente não são exibidas aqui, então seu conteúdo
+  // não deve influenciar se este wrapper aparece ou não.
+  if (result.aggregate.cells.filter((c) => c.campaignCount > 0).length < 2) return "";
+  const envioLabel = formatCycleEnvioLabel(cycle);
+  const cycleTitle = envioLabel ? `${escHtml(cycle)} · ${envioLabel}` : escHtml(cycle);
+  return `
+<section class="phase2-section" id="abc-audience-aggregate-${escHtml(cycle)}">
+  <h2 class="section-title">Resumo A/B/C por Audiência (${cycleTitle})</h2>
+  <p class="section-note"><small>Agregada = fria (nunca recebeu) + quente (já engajada) combinadas — o detalhe por audiência está na aba Engajamento. Vencedor decidido pelo CLIQUE (click rate), não só pela abertura.</small></p>
+  ${renderAbcAudienceTable("Agregada (Fria + Quente)", result.aggregate)}
 </section>`;
 }
 
