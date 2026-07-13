@@ -13,23 +13,26 @@ hífen literal; (4) o CTA sozinho como `[texto](url)` — por ser o ÚNICO
 conteúdo do parágrafo, `shouldForceCtaPill` detecta e vira botão pill
 centralizado (ver newsletter-render-html.ts).
 
-Sem `**...**` embrulhando o bloco — texto plano aqui vira peso normal (#3373,
-o peso da fonte do box SÓ-TEXTO de 1 parágrafo é controlado pelo bold-wrap
-da fonte; este bloco é multi-parágrafo e nem passa por esse caminho, mas a
-convenção do repo é não embrulhar em bold quando não for pra ficar em negrito).
+Sem `**...**` embrulhando o BLOCO INTEIRO — texto plano no nível do bloco vira
+peso normal (#3373, o peso da fonte do box SÓ-TEXTO de 1 parágrafo é
+controlado pelo bold-wrap da fonte; este bloco é multi-parágrafo e nem passa
+por esse caminho). Dentro de cada item da lista, o `**label**` em negrito é
+INLINE (processInlineLinks já converte `**...**` → `<strong>`, #2532) — só o
+rótulo do benefício fica em negrito, a descrição depois do hífen fica normal.
 
-Aprovado pelo editor na edição 260713 (260712) — textos dos benefícios
-revisados 2x (1ª versão inline, 2ª com lista + botão + emoji removido).
+Aprovado pelo editor na edição 260713 (260712) — revisado 3x (1ª versão
+inline sem lista, 2ª com lista + botão + emoji removido, 3ª com labels em
+negrito + título ajustado + botão encurtado pra só "Conheça").
 -->
 
-A diar.ia.br lançou o programa de apoio.
+A diar.ia.br lançou um programa de apoio
 
 Quem contribui ajuda a manter a curadoria diária gratuita e ganha benefícios como:
 
-- Artigo Especial - um mergulho fundo num tema do momento, escolhido por apoiadores
-- Bastidores da produção - como o pipeline funciona por trás da newsletter
-- Panorama do Mês - recap conectando notícias do último mês
-- Acesso antecipado a novos projetos
-- Sorteios mensais de brindes
+- **Artigo Especial** - um mergulho fundo num tema do momento, escolhido por apoiadores
+- **Bastidores da produção** - como o pipeline funciona por trás da newsletter
+- **Panorama do Mês** - recap conectando notícias do último mês
+- **Acesso antecipado** a novos projetos
+- **Sorteios mensais** de brindes
 
-[Conheça em apoia.se/diaria](https://apoia.se/diaria)
+[Conheça](https://apoia.se/diaria)

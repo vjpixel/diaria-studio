@@ -22,6 +22,6 @@ O parágrafo de convite social (LinkedIn/Facebook) é IDÊNTICO nos dois
 formatos — sem parametrização.
 -->
 
-{{OPENING}}Quem quiser apoiar a curadoria pode contribuir a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria) e ganha recompensas como artigo especial do mês, bastidores da produção e acesso antecipado a novos projetos.
+{{OPENING}}Quem quiser apoiar a curadoria pode contribuir a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria) e ganhar recompensas como artigo especial do mês, bastidores da produção e acesso antecipado a novos projetos.
 
 Agora que chegou ao final da edição, que tal interagir em uma publicação da **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/) ou no [Facebook](https://www.facebook.com/diar.ia.br)?
