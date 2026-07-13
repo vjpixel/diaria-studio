@@ -43,7 +43,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `por-que-isso-importa-separate-line` | 'Por que isso importa:' em linha separada (editorial-rules) | #editorial-rules |
 | `reviewed-passes-all-lints` | 02-reviewed.md passa lint-newsletter-md granulares (#964) | #964 |
 | `social-no-trailing-editorial-hook` | 03-social.md sem gancho editorial emendado via ', e' — warn-only (#2658) | #2658 |
-| `social-passes-lints` | 03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 + personal-post-no-newsletter-deixis + humanizer-section-coverage (#595, #1861, #2148) | #595 |
+| `social-passes-lints` | 03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 + personal-post-no-newsletter-deixis + platform-headers-unicos + humanizer-section-coverage (#595, #1861, #2148, #3388) | #595 |
 
 ## Stage 3 — Imagens
 
