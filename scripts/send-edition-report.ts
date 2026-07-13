@@ -39,6 +39,11 @@ import { computeBraveCreditStats, type BraveCreditStats } from "./lib/brave-cred
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+// (#3389) Acima disso, uma leitura do header X-RateLimit-Remaining é sinalizada
+// como potencialmente obsoleta no relatório — 30h dá folga sobre a cadência de
+// 1 edição/dia (24h) sem disparar em variação normal de horário.
+const BRAVE_HEADER_STALE_HOURS = 30;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -456,6 +461,7 @@ export function renderHtmlReport(
       ${braveCredits.projected_month_end !== null ? `<tr><td>Projecao fim do mes</td><td>~${braveCredits.projected_month_end}</td></tr>` : ""}
       ${typeof braveCredits.delta_untracked === "number" && braveCredits.delta_untracked !== 0 ? `<tr><td>Gap real vs. estimativa (Brave − local)</td><td>${braveCredits.delta_untracked > 0 ? `<span class="warn">+${braveCredits.delta_untracked}</span>` : braveCredits.delta_untracked}</td></tr>` : ""}
       ${braveCredits.header_discarded ? `<tr><td>Header Brave (X-RateLimit-Remaining)</td><td><em>descartado — diverge implausivelmente da contagem local (ciclo de rate-limit desalinhado do mês-calendário, #3002)</em></td></tr>` : ""}
+      ${braveCredits.alert_basis === "brave_header" && typeof braveCredits.quota_remaining_age_hours === "number" ? `<tr><td>Leitura do header</td><td>${braveCredits.quota_remaining_age_hours > BRAVE_HEADER_STALE_HOURS ? `<span class="warn">há ${braveCredits.quota_remaining_age_hours}h — sem confirmação recente, pode estar obsoleta (#3389)</span>` : `há ${braveCredits.quota_remaining_age_hours}h (fresca)`}</td></tr>` : ""}
       <tr><td>Status</td><td class="${braveCredits.alert_level === "critical" ? "err" : braveCredits.alert_level === "warn" ? "warn" : ""}">${braveCredits.alert_level === "critical" ? "&#9888; Critical (&gt;95% free tier)" : braveCredits.alert_level === "warn" ? "&#9888; Warn (&gt;80% free tier)" : "&#10003; OK"}</td></tr>
     </tbody>
   </table>

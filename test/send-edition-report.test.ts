@@ -7,6 +7,7 @@ import {
   type HighlightSummary,
 } from "../scripts/send-edition-report.ts";
 import type { StageStatusDoc } from "../scripts/update-stage-status.ts";
+import type { BraveCreditStats } from "../scripts/lib/brave-credits.ts";
 
 const MINIMAL_DOC: StageStatusDoc = {
   edition: "260525",
@@ -267,5 +268,50 @@ describe("buildSummary", () => {
   it("defaults newsletter status when not available", () => {
     const summary = buildSummary("260525", MINIMAL_DOC, HIGHLIGHTS, null, null, 0, 0);
     assert.equal(summary.newsletter_status, "not_available");
+  });
+});
+
+// (#3389) Defesa em profundidade: o relatório deve tornar visível quando a
+// leitura do header Brave (base do alerta critical/warn) está obsoleta —
+// mesmo que o fix principal (gravar quota_remaining também em respostas de
+// erro) garanta uma leitura fresca a cada edição, este sinal no relatório
+// evita que uma futura regressão volte a apresentar um eco de dias atrás
+// como se fosse a leitura de hoje, silenciosamente.
+const BRAVE_BASE: BraveCreditStats = {
+  queries_this_edition: 1,
+  queries_this_month: 1000,
+  queries_this_edition_real: 0,
+  queries_this_edition_estimated: 0,
+  queries_this_month_real: 1000,
+  queries_this_month_estimated: 0,
+  free_tier_limit: 2000,
+  percent_used: 97.55,
+  projected_month_end: 1951,
+  alert_level: "critical",
+  effective_used: 1951,
+  alert_basis: "brave_header",
+  quota_remaining_last_seen: 49,
+};
+
+describe("renderHtmlReport — leitura do header Brave (#3389)", () => {
+  it("sinaliza leitura obsoleta quando quota_remaining_age_hours excede o limiar", () => {
+    const braveCredits: BraveCreditStats = { ...BRAVE_BASE, quota_remaining_age_hours: 97.9 };
+    const html = renderHtmlReport("260713", MINIMAL_DOC, null, null, [], [], braveCredits);
+    assert.match(html, /há 97\.9h/, "deve mostrar a idade da leitura");
+    assert.match(html, /obsoleta/, "deve sinalizar que pode estar obsoleta");
+  });
+
+  it("NÃO sinaliza obsolescência quando a leitura é fresca (dentro do limiar)", () => {
+    const braveCredits: BraveCreditStats = { ...BRAVE_BASE, quota_remaining_age_hours: 3 };
+    const html = renderHtmlReport("260713", MINIMAL_DOC, null, null, [], [], braveCredits);
+    assert.match(html, /há 3h \(fresca\)/);
+    assert.doesNotMatch(html, /obsoleta/);
+  });
+
+  it("omite a linha de idade quando quota_remaining_age_hours está ausente (comportamento pré-existente preservado)", () => {
+    const braveCredits: BraveCreditStats = { ...BRAVE_BASE };
+    delete (braveCredits as { quota_remaining_age_hours?: number }).quota_remaining_age_hours;
+    const html = renderHtmlReport("260713", MINIMAL_DOC, null, null, [], [], braveCredits);
+    assert.doesNotMatch(html, /Leitura do header/);
   });
 });
