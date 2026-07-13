@@ -21,11 +21,24 @@
  *      stash foi criado apesar do exit não-zero, tenta `git stash pop` automático
  *      ("stash_partial_failure" se recuperar; "stash_partial_failure_unrecovered"
  *      com stash preservado se o pop também falhar — nunca faz `git stash drop`).
+ *   3b. #3423: a detecção do 3a comparando `refs/stash` antes/depois é uma TOCTOU
+ *      race quando 2 chamadas de `syncCode()` rodam concorrentemente contra o
+ *      MESMO checkout — `refs/stash` é uma ref escalar única por repositório
+ *      (inclusive entre worktrees do mesmo repo), então o processo A pode ler
+ *      `stashRefAfter` como o stash que o processo B acabou de criar (não o seu
+ *      próprio) e popar as mudanças de B. Não dá pra desambiguar isso de forma
+ *      confiável só inspecionando `git stash` (nenhum comando devolve um ID
+ *      específico da invocação; a mensagem do stash é idêntica entre processos
+ *      no mesmo branch/commit). Fix: serializar toda a operação de sync com um
+ *      lock de arquivo (`.diaria-sync.lock` na raiz do repo, `fs.mkdirSync`
+ *      atômico) — elimina a race na origem em vez de tentar resolvê-la depois
+ *      do fato. Uma segunda chamada concorrente detecta o lock e retorna
+ *      "sync_in_progress" (fail-soft) SEM tocar em stash/merge.
  *   4. Se working tree limpa → merge --ff-only origin/master direto.
  *      Se ff-only falhar (divergência) → warn + retorna (nunca força merge).
  *   5. Falha de fetch OU ff_failed OU stash_pop_failed OU stash_partial_failure
- *      (ou sua variante _unrecovered) NÃO bloqueiam a edição — retornam status
- *      de warn e a skill continua.
+ *      (ou sua variante _unrecovered) OU sync_in_progress NÃO bloqueiam a
+ *      edição — retornam status de warn e a skill continua.
  *
  * Nota: usa `git merge --ff-only origin/master` (não `git pull`) após o fetch
  * explícito do passo 2 — evita um segundo fetch implícito (rede = única
@@ -37,6 +50,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GitSpawnFn, SpawnResult } from "./spawn-types.ts";
@@ -71,7 +85,8 @@ export type GitSyncOutcome =
   | "stash_partial_failure"             // stash saiu não-zero MAS criou um stash (#3411); recuperado via pop automático — warn, segue
   | "stash_partial_failure_unrecovered" // idem, mas o pop automático TAMBÉM falhou — stash preservado p/ investigação manual — warn, segue
   | "stash_pop_failed"    // pull OK mas stash pop teve conflito — warn, stash preservado
-  | "checkout_failed";    // não estava em master e checkout master falhou — warn, segue
+  | "checkout_failed"     // não estava em master e checkout master falhou — warn, segue
+  | "sync_in_progress";   // #3423: outro syncCode() já está rodando neste checkout — warn, segue sem tocar git
 
 /** Resultado completo do sync. */
 export interface GitSyncResult {
@@ -89,6 +104,110 @@ export interface GitSyncResult {
  * derrotando o fail-soft. 120s cobre fetch/pull em conexões lentas com folga.
  */
 const GIT_TIMEOUT_MS = 120_000;
+
+/**
+ * Lock de sync (#3423). Interface injetável — produção usa `createFileLock()`
+ * (fs real); testes usam um double em memória para não depender do disco nem
+ * interferir entre casos de teste sequenciais.
+ */
+export interface SyncLock {
+  /** Path do lock, só para diagnóstico nas mensagens de warning. */
+  readonly path: string;
+  /**
+   * Tenta adquirir o lock. `true` = adquirido (chamador é dono exclusivo até
+   * `release()`); `false` = já havia um lock ATIVO de outro processo (ou erro
+   * inesperado ao adquirir — tratado como "não consegui", fail-soft).
+   */
+  acquire(): boolean;
+  /** Libera o lock. Idempotente — seguro chamar mesmo sem ter adquirido. */
+  release(): void;
+}
+
+/**
+ * Lock morto (processo dono crashou sem `release()`) é considerado stale após
+ * esse intervalo e liberado automaticamente na próxima tentativa de acquire.
+ * Bem acima do pior caso realista de `syncCode()` (handful de comandos git a
+ * até GIT_TIMEOUT_MS cada) para nunca confundir um sync lento com um lock morto.
+ */
+const LOCK_STALE_MS = 10 * 60 * 1000;
+
+/**
+ * Lock de arquivo real (#3423). Usa um DIRETÓRIO (não arquivo) como marcador —
+ * `fs.mkdirSync` é atômico em POSIX e Windows (falha com EEXIST se já existe),
+ * ao contrário de checar-depois-criar com arquivos comuns.
+ *
+ * Path deliberadamente FORA de `.git/`: em um `git worktree` (ex: sessões
+ * overnight/develop rodando em `.claude/worktrees/agent-*`), `.git` é um
+ * ARQUIVO (não diretório) apontando pro gitdir real — `mkdirSync` dentro dele
+ * falharia com ENOTDIR. Um dotfile-dir na raiz do checkout funciona em
+ * qualquer configuração (repo normal ou worktree).
+ *
+ * @param lockPath Path do diretório-lock (default: raiz do repo corrente —
+ *   `REPO_ROOT`, resolvido do mesmo jeito que `defaultSpawn`, então 2
+ *   invocações no MESMO checkout físico sempre colidem no mesmo lock).
+ */
+export function createFileLock(lockPath: string = resolve(REPO_ROOT, ".diaria-sync.lock")): SyncLock {
+  return {
+    path: lockPath,
+    acquire(): boolean {
+      try {
+        fs.mkdirSync(lockPath);
+        return true;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "EEXIST") {
+          // Erro inesperado (permissão, disco cheio, ENOTDIR, etc.) — tratar
+          // como "não consegui adquirir" em vez de propagar. O módulo inteiro
+          // é fail-soft; uma falha de lock nunca deve virar exceção não-tratada.
+          return false;
+        }
+
+        // Lock já existe — pode ser (a) outro processo genuinamente em
+        // andamento, ou (b) um lock morto de um processo que crashou sem
+        // `release()`. Staleness por mtime distingue os dois casos.
+        let mtimeMs: number;
+        try {
+          mtimeMs = fs.statSync(lockPath).mtimeMs;
+        } catch {
+          // Lock sumiu entre o EEXIST e o stat (outro processo liberou
+          // concorrentemente) — tenta adquirir de novo, uma única vez.
+          try {
+            fs.mkdirSync(lockPath);
+            return true;
+          } catch {
+            return false;
+          }
+        }
+
+        if (Date.now() - mtimeMs <= LOCK_STALE_MS) {
+          return false; // lock ativo — outro processo genuinamente sincronizando
+        }
+
+        // Lock stale — remove e recria. Ainda existe uma janela TOCTOU minúscula
+        // aqui (2 processos limpando o MESMO lock morto ao mesmo tempo), mas é
+        // um caso muito mais raro que a race original (#3423 exigia só 2 syncs
+        // concorrentes com falha parcial de stash; isso exige 2 syncs concorrentes
+        // colidindo com um lock morto de um TERCEIRO processo já crashado no
+        // mesmo instante). Fail-soft: se perder a corrida, desiste nesta rodada.
+        try {
+          fs.rmdirSync(lockPath);
+          fs.mkdirSync(lockPath);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+    },
+    release(): void {
+      try {
+        fs.rmdirSync(lockPath);
+      } catch {
+        // Idempotente — já liberado, nunca adquirido nesta chamada, ou removido
+        // externamente. Nunca lança.
+      }
+    },
+  };
+}
 
 /**
  * Spawner de produção. `cwd: REPO_ROOT` explícito (#2699 item 1) — nunca
@@ -113,8 +232,41 @@ function isAlreadyUpToDate(stdout: string): boolean {
  * Sincroniza o checkout local com origin/master.
  *
  * @param spawn   Spawner injetável para testes (default: spawnSync real).
+ * @param lock    Lock injetável para testes (default: `createFileLock()` real).
+ *                #3423: serializa toda a chamada — se outro `syncCode()` já
+ *                estiver rodando contra este checkout, retorna imediatamente
+ *                sem tocar em stash/merge (evita a race TOCTOU no stash-recovery).
  */
-export function syncCode(spawn: SpawnFn = defaultSpawn): GitSyncResult {
+export function syncCode(spawn: SpawnFn = defaultSpawn, lock: SyncLock = createFileLock()): GitSyncResult {
+  if (!lock.acquire()) {
+    const msg =
+      `[git-sync] WARN: outro processo já parece estar sincronizando este checkout ` +
+      `(lock '${lock.path}' presente e ainda válido — #3423). Sync ignorado nesta ` +
+      `rodada para evitar popar/aplicar o stash de um processo concorrente. ` +
+      `Edição continua com o código local atual (pode estar levemente desatualizado ` +
+      `se o outro sync ainda não terminou).`;
+    return {
+      outcome: "sync_in_progress",
+      message: msg,
+      branch_before: "unknown",
+      warnings: [msg],
+      proceed: true,
+    };
+  }
+
+  try {
+    return syncCodeLocked(spawn);
+  } finally {
+    lock.release();
+  }
+}
+
+/**
+ * Corpo real do sync, executado apenas com o lock (#3423) já adquirido pelo
+ * chamador (`syncCode`). Extraído para função própria só para manter o
+ * `try/finally` do lock enxuto — não é exportado nem chamado diretamente.
+ */
+function syncCodeLocked(spawn: SpawnFn): GitSyncResult {
   const warnings: string[] = [];
 
   // ── 1. Branch atual ────────────────────────────────────────────────────────

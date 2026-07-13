@@ -13,6 +13,10 @@ dist/
 data/
 # Scheduling lockfile (ephemeral por execução)
 .claude/scheduled_tasks.lock
+# #3423: lock de arquivo do sync-code (git-sync.ts) — serializa syncCode()
+# concorrentes contra o mesmo checkout; sempre removido em `finally`, mas
+# ignorar por segurança caso sobreviva a um crash (staleness cleanup no próximo run).
+.diaria-sync.lock/
 .DS_Store
 .tmp/
 # Cloudflare Wrangler local build/cache state (root + workers/*/.wrangler)

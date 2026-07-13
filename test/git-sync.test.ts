@@ -21,15 +21,18 @@
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { dirname, resolve } from "node:path";
+import * as fs from "node:fs";
+import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import {
   syncCode,
   defaultSpawn,
+  createFileLock,
   REPO_ROOT,
   type SpawnFn,
   type SpawnResult,
+  type SyncLock,
 } from "../scripts/lib/git-sync.ts";
 
 // ── Helpers de mock ────────────────────────────────────────────────────────
@@ -41,6 +44,17 @@ function ok(stdout = ""): SpawnResult {
 function fail(stderr = "", status = 1): SpawnResult {
   return { status, stdout: "", stderr };
 }
+
+/**
+ * Lock fake que sempre adquire com sucesso — usado pela maioria dos testes,
+ * que não exercitam a lógica de lock em si (#3423) e não devem depender do
+ * disco real nem interferir entre casos de teste sequenciais.
+ */
+const NOOP_LOCK: SyncLock = {
+  path: "(noop-lock, teste)",
+  acquire: () => true,
+  release: () => {},
+};
 
 /**
  * Constrói um SpawnFn a partir de um mapa de "git <args[0]> <args[1]>" → resultado.
@@ -64,7 +78,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git merge --ff-only origin/master": ok("2 files changed, 10 insertions(+)"),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "synced");
     assert.equal(r.branch_before, "master");
     assert.equal(r.proceed, true);
@@ -79,7 +93,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git merge --ff-only origin/master": ok("Already up to date."),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "already_up_to_date");
     assert.equal(r.proceed, true);
   });
@@ -94,7 +108,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git stash pop": ok("On branch master..."),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "synced_stashed");
     assert.equal(r.proceed, true);
     assert.match(r.message, /stash/);
@@ -110,7 +124,7 @@ describe("git-sync — cenários de sucesso", () => {
       "git stash pop": ok(""),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "already_up_to_date");
     assert.equal(r.proceed, true);
   });
@@ -127,7 +141,7 @@ describe("git-sync — dirty tree edge cases", () => {
       "git stash pop": fail("CONFLICT (content): Merge conflict in .claude/settings.json"),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "stash_pop_failed");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.some((w) => /stash pop/i.test(w)));
@@ -141,7 +155,7 @@ describe("git-sync — dirty tree edge cases", () => {
       "git stash --include-untracked": fail("error: cannot stash"),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "stash_failed");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.some((w) => /stash/i.test(w)));
@@ -162,7 +176,7 @@ describe("git-sync — dirty tree edge cases", () => {
       })(cmd, args);
     };
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     // nada foi stashado → pop não deve ter sido chamado
     assert.equal(popCalled.length, 0, "stash pop não deve ser chamado quando nada foi stashado");
     assert.equal(r.outcome, "already_up_to_date");
@@ -187,7 +201,7 @@ describe("git-sync — dirty tree edge cases", () => {
       })(cmd, args);
     };
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(popCalled.length, 0, "stash pop não deve ser chamado quando nada foi stashado");
     assert.equal(r.outcome, "synced", "outcome deve ser 'synced' (não 'synced_stashed') quando nada foi de fato stashado");
     assert.equal(r.proceed, true);
@@ -241,7 +255,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
       })(cmd, args);
     };
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "stash_partial_failure");
     assert.equal(r.proceed, true);
     assert.equal(popCalled.length, 1, "pop deve ser tentado automaticamente quando um stash foi detectado");
@@ -276,7 +290,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
       })(cmd, args);
     };
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "stash_partial_failure_unrecovered");
     assert.equal(r.proceed, true);
     assert.equal(dropCalled.length, 0, "stash NUNCA deve ser descartado (git stash drop) quando o pop falha");
@@ -304,7 +318,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
       })(cmd, args);
     };
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "stash_failed");
     assert.equal(r.proceed, true);
     assert.equal(popCalled.length, 0, "pop não deve ser chamado quando nenhum stash foi criado");
@@ -330,7 +344,7 @@ describe("git-sync — #3411: stash exit não-zero mas CRIOU um stash (falso neg
       })(cmd, args);
     };
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "stash_failed");
     assert.equal(r.proceed, true);
     assert.equal(popCalled.length, 0, "pop não deve ser chamado — nenhum stash NOVO foi criado");
@@ -344,7 +358,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git fetch origin": fail("fatal: unable to connect to origin"),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "fetch_failed");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.some((w) => /fetch/i.test(w)));
@@ -358,7 +372,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git merge --ff-only origin/master": fail("fatal: Not possible to fast-forward, aborting."),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "ff_failed");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.length > 0);
@@ -374,7 +388,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git stash pop": ok(""), // pop deve ser chamado mesmo com ff falho
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "ff_failed");
     assert.equal(r.proceed, true);
   });
@@ -391,7 +405,7 @@ describe("git-sync — cenários de falha fail-soft", () => {
       "git stash pop": fail("CONFLICT (content): Merge conflict in .claude/settings.json"),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "ff_failed");
     assert.equal(r.proceed, true);
     // a mensagem deve mencionar AMBOS: a divergência do ff e o conflito do pop
@@ -418,7 +432,7 @@ describe("git-sync — robustez de detecção (locale + status)", () => {
       })(cmd, args);
     };
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(stashCalled.length, 1, "status-fail deve forçar o caminho com stash");
     assert.equal(r.proceed, true);
     assert.ok(r.warnings.some((w) => /status falhou/i.test(w)));
@@ -439,7 +453,7 @@ describe("git-sync — robustez de detecção (locale + status)", () => {
       })(cmd, args);
     };
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(popCalled.length, 0, "stash pop não deve ser chamado em PT-BR 'nada guardado'");
     assert.equal(r.outcome, "already_up_to_date");
   });
@@ -460,7 +474,7 @@ describe("git-sync — branch != master", () => {
       })(cmd, args);
     };
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.branch_before, "overnight/fix-2686");
     assert.equal(checkoutCalled.length, 1, "checkout master deve ser chamado");
     assert.equal(r.outcome, "already_up_to_date");
@@ -474,7 +488,7 @@ describe("git-sync — branch != master", () => {
       "git checkout master": fail("error: Your local changes would be overwritten by checkout"),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
     assert.equal(r.outcome, "checkout_failed");
     assert.equal(r.branch_before, "feat/some-feature");
     assert.equal(r.proceed, true);
@@ -535,7 +549,7 @@ describe("git-sync — #2699 item 3: diagnóstico quando rev-parse falha", () =>
       "git rev-parse --abbrev-ref HEAD": fail("fatal: not a git repository (or any of the parent directories): .git", 128),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
 
     // rev-parse falhou → stdout vazio → branchBefore cai em "unknown" → tenta
     // checkout master (fail-soft) → mockSpawn não mapeado pra "git checkout
@@ -558,7 +572,7 @@ describe("git-sync — #2699 item 3: diagnóstico quando rev-parse falha", () =>
       "git checkout master": fail("fatal: not a git repository", 128),
     });
 
-    const r = syncCode(spawn);
+    const r = syncCode(spawn, NOOP_LOCK);
 
     assert.equal(r.outcome, "checkout_failed");
     assert.equal(r.branch_before, "unknown");
@@ -567,5 +581,170 @@ describe("git-sync — #2699 item 3: diagnóstico quando rev-parse falha", () =>
       /não é um reposit(ó|o)rio git|git indispon[íi]vel/i,
       `mensagem final deveria citar a causa raiz (rev-parse já falho), não só a branch: ${r.message}`,
     );
+  });
+});
+
+describe("git-sync — #3423: TOCTOU race no stash-recovery, serializada via lock", () => {
+  /**
+   * Reprodução do achado #3423: `scripts/lib/git-sync.ts` comparava `refs/stash`
+   * antes/depois de um `git stash --include-untracked` que falhou parcialmente
+   * (#3411) e, se a ref mudasse, rodava `git stash pop` SEM identificador — que
+   * popa cegamente o topo da pilha (`stash@{0}`). Se 2 chamadas de `syncCode()`
+   * corressem concorrentemente contra o MESMO checkout e ambas falhassem
+   * parcialmente no stash, o processo A podia ler `stashRefAfter` como o stash
+   * que o processo B tinha acabado de criar (não o seu próprio) e popar as
+   * mudanças de B — corrompendo o estado de B e deixando as mudanças reais de A
+   * ainda stashadas.
+   *
+   * O fix serializa toda a chamada de `syncCode()` com um lock — uma segunda
+   * chamada concorrente detecta o lock já adquirido e retorna imediatamente
+   * SEM rodar nenhum comando `git stash`/`git merge`, eliminando a janela onde
+   * a comparação `refs/stash` antes/depois poderia observar o stash de OUTRO
+   * processo.
+   */
+
+  it("lock já adquirido (simulando processo B em andamento) → 'sync_in_progress' SEM tocar em stash/merge", () => {
+    // Lock double que simula "já existe um lock ativo de outro processo" —
+    // é exatamente o que aconteceria se o processo B tivesse chamado
+    // lock.acquire() primeiro e ainda não tivesse chamado release().
+    const alreadyHeldLock: SyncLock = {
+      path: "/fake/.diaria-sync.lock",
+      acquire: () => false,
+      release: () => {
+        throw new Error("release() nunca deveria ser chamado por quem não adquiriu o lock");
+      },
+    };
+
+    const gitCommandsRun: string[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      gitCommandsRun.push([cmd, ...args].join(" "));
+      // Mesmo cenário do achado original: tree dirty, refs/stash MUDOU
+      // (simula o stash que o processo B concorrente acabou de criar) — se o
+      // lock não tivesse barrado a chamada, o código antigo teria popado isso.
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M arquivo-do-processo-A.txt"),
+        "git rev-parse --verify refs/stash": ok("stash-do-processo-B"),
+        "git stash --include-untracked": fail("warning: failed to remove some/dir: Permission denied", 1),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn, alreadyHeldLock);
+
+    assert.equal(r.outcome, "sync_in_progress");
+    assert.equal(r.proceed, true);
+    assert.match(r.message, /outro processo|lock/i);
+    assert.equal(
+      gitCommandsRun.length,
+      0,
+      `nenhum comando git deveria rodar quando o lock já está adquirido — rodou: ${JSON.stringify(gitCommandsRun)}`,
+    );
+  });
+
+  it("lock livre → syncCode adquire, roda normalmente, e libera ao final (sucesso)", () => {
+    const acquireCalls: boolean[] = [];
+    const releaseCalls: boolean[] = [];
+    const lock: SyncLock = {
+      path: "/fake/.diaria-sync.lock",
+      acquire: () => {
+        acquireCalls.push(true);
+        return true;
+      },
+      release: () => {
+        releaseCalls.push(true);
+      },
+    };
+
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("master"),
+      "git fetch origin": ok(""),
+      "git status --porcelain": ok(""),
+      "git merge --ff-only origin/master": ok("Already up to date."),
+    });
+
+    const r = syncCode(spawn, lock);
+
+    assert.equal(r.outcome, "already_up_to_date");
+    assert.equal(acquireCalls.length, 1, "lock deve ser adquirido exatamente 1x");
+    assert.equal(releaseCalls.length, 1, "lock deve ser liberado exatamente 1x ao final");
+  });
+
+  it("lock livre, mas syncCode caminho com erro (checkout falha) → lock ainda é liberado (finally)", () => {
+    const releaseCalls: boolean[] = [];
+    const lock: SyncLock = {
+      path: "/fake/.diaria-sync.lock",
+      acquire: () => true,
+      release: () => {
+        releaseCalls.push(true);
+      },
+    };
+
+    const spawn = makeSpawn({
+      "git rev-parse --abbrev-ref HEAD": ok("overnight/fix-x"),
+      "git checkout master": fail("error: Your local changes would be overwritten by checkout"),
+    });
+
+    const r = syncCode(spawn, lock);
+
+    assert.equal(r.outcome, "checkout_failed");
+    assert.equal(releaseCalls.length, 1, "lock deve ser liberado mesmo em caminho de erro (early return)");
+  });
+});
+
+describe("git-sync — #3423: createFileLock (lock de arquivo real)", () => {
+  let lockDir: string;
+  let lockPath: string;
+
+  before(() => {
+    lockDir = fs.mkdtempSync(join(tmpdir(), "diaria-sync-lock-test-"));
+    lockPath = join(lockDir, ".diaria-sync.lock");
+  });
+
+  after(() => {
+    fs.rmSync(lockDir, { recursive: true, force: true });
+  });
+
+  it("2 locks apontando pro MESMO path → só o primeiro adquire (exclusão mútua real, sem mock)", () => {
+    // Simula 2 processos concorrentes (processo A e processo B) chamando
+    // createFileLock() com o mesmo path — o cenário real do #3423 (2 invocações
+    // de /diaria-edicao contra o mesmo checkout).
+    const lockA = createFileLock(lockPath);
+    const lockB = createFileLock(lockPath);
+
+    assert.equal(lockA.acquire(), true, "processo A adquire o lock livre");
+    assert.equal(lockB.acquire(), false, "processo B NÃO deve conseguir adquirir — A já é dono");
+
+    lockA.release();
+
+    assert.equal(lockB.acquire(), true, "após A liberar, B consegue adquirir");
+    lockB.release();
+  });
+
+  it("release() é idempotente — chamar sem ter adquirido não lança", () => {
+    const lock = createFileLock(join(lockDir, "nunca-adquirido.lock"));
+    assert.doesNotThrow(() => lock.release());
+  });
+
+  it("lock STALE (mtime antigo, processo dono crashou) é recuperado automaticamente", () => {
+    const staleLockPath = join(lockDir, "stale.lock");
+    fs.mkdirSync(staleLockPath);
+    // Recua o mtime pra além do limiar de staleness (LOCK_STALE_MS = 10min).
+    const veryOld = new Date(Date.now() - 15 * 60 * 1000);
+    fs.utimesSync(staleLockPath, veryOld, veryOld);
+
+    const lock = createFileLock(staleLockPath);
+    assert.equal(lock.acquire(), true, "lock stale (>10min) deve ser recuperado, não bloquear pra sempre");
+    lock.release();
+  });
+
+  it("lock recente (não-stale) NÃO é recuperado — permanece bloqueado", () => {
+    const freshLockPath = join(lockDir, "fresh.lock");
+    fs.mkdirSync(freshLockPath); // mtime = agora
+
+    const lock = createFileLock(freshLockPath);
+    assert.equal(lock.acquire(), false, "lock recente deve continuar bloqueando (processo genuinamente em andamento)");
+
+    fs.rmdirSync(freshLockPath); // cleanup manual (não foi este `lock` que criou)
   });
 });
