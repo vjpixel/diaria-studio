@@ -90,7 +90,7 @@ Estou testando a Alexa+ há alguns dias e a diferença é grande.
   });
 });
 
-describe("renderBoxDivulgacao — peso de fonte do box só-texto (#3372)", () => {
+describe("renderBoxDivulgacao — peso de fonte do box só-texto (#3373)", () => {
   const box = "🙋🏼‍♀️ Apoie a curadoria. [Conheça](https://apoia.se/diaria).";
 
   it("default (sem 3º arg) preserva o visual histórico: font-weight:600", () => {
@@ -116,5 +116,53 @@ describe("renderBoxDivulgacao — peso de fonte do box só-texto (#3372)", () =>
     const boldHtml = renderBoxDivulgacao(cartBox, null, true);
     const noBoldHtml = renderBoxDivulgacao(cartBox, null, false);
     assert.equal(boldHtml, noBoldHtml, "path carrinho ignora o parâmetro bold");
+  });
+});
+
+describe("renderBoxDivulgacao — lista de bullets no corpo (#3374)", () => {
+  const box = `A diar.ia.br lançou o programa de apoio.
+
+Quem contribui ganha benefícios como:
+
+- Artigo Especial - um mergulho fundo num tema do momento
+- Bastidores da produção
+- Panorama do Mês
+
+[Conheça em apoia.se/diaria](https://apoia.se/diaria)`;
+
+  it("bloco `- item` vira <ul><li> real, não <p> com hífen literal", () => {
+    const html = renderBoxDivulgacao(box);
+    assert.match(html, /<ul/, "lista vira <ul>");
+    assert.equal((html.match(/<li /g) ?? []).length, 3, "3 itens viram 3 <li>");
+    assert.match(html, /<li[^>]*>Artigo Especial - um mergulho fundo num tema do momento<\/li>/);
+    assert.ok(!/<p[^>]*>-\s/.test(html), "item não vaza como <p> com hífen literal");
+  });
+
+  it("CTA-only final vira botão pill (não fica preso na lista nem some)", () => {
+    const html = renderBoxDivulgacao(box);
+    assert.match(html, /border-radius:999px/);
+    assert.match(html, /apoia\.se\/diaria/);
+    assert.equal((html.match(/<li /g) ?? []).length, 3, "CTA não virou um 4º <li>");
+  });
+
+  it("título e intro (parágrafos não-lista) continuam <p>, não viram <li>", () => {
+    const html = renderBoxDivulgacao(box);
+    assert.match(
+      html,
+      /<p[^>]*>[\s\S]*?lançou o programa de apoio[\s\S]*?<\/p>/,
+      "título vira <p>, não <li>",
+    );
+    assert.match(
+      html,
+      /<p[^>]*>Quem contribui ganha benefícios como:<\/p>/,
+      "intro vira <p>, não <li>",
+    );
+  });
+
+  it("parágrafo com hífen no MEIO do texto (não bullet) não vira lista", () => {
+    const noList = renderBoxDivulgacao(
+      "Título aqui.\n\nUm texto qualquer - com um hífen no meio - mas sem marcador de lista.\n\n[Link](https://example.com)",
+    );
+    assert.ok(!noList.includes("<ul"), "hífen no meio da frase não confunde com bullet");
   });
 });

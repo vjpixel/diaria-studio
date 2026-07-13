@@ -117,7 +117,7 @@ export interface NewsletterContent {
    * tornar o box 1 mais proeminente: imagem + texto + botão CTA. Lida de
    * `06-public-images.json` (entry `livros_promo`). Ausente → box só-texto. */
   boxDivulgacao1Image?: string | null;
-  /** #3372: peso de fonte do box de 1 parágrafo (sem imagem/CTA-pill) —
+  /** #3373: peso de fonte do box de 1 parágrafo (sem imagem/CTA-pill) —
    * `true` quando a fonte tem `**...**` embrulhando o box inteiro, `false`
    * quando é texto plano. Editor controla o peso pelo markdown do
    * `02-reviewed.md`; não afeta o box com imagem/carrinho (sempre estruturado
@@ -133,7 +133,7 @@ export interface NewsletterContent {
    * degradava pra texto puro (sem imagem/CTA-pill), quebrando paridade com o
    * slot 1. Ausente → box só-texto. */
   boxDivulgacao2Image?: string | null;
-  /** #3372: mesmo contrato de `boxDivulgacao1Bold`, pro slot 2. */
+  /** #3373: mesmo contrato de `boxDivulgacao1Bold`, pro slot 2. */
   boxDivulgacao2Bold?: boolean;
 }
 
@@ -668,7 +668,7 @@ function splitByGapSeparator(region: string): GapBlock[] {
  * total) mantém o texto bruto — `renderBoxDivulgacao` decide o resto
  * (imagem/pill/etc.) pela estrutura do conteúdo.
  *
- * #3372: também reporta se o bloco ESTAVA bold-wrapped na fonte — sinal que
+ * #3373: também reporta se o bloco ESTAVA bold-wrapped na fonte — sinal que
  * `renderBoxDivulgacao`/`renderIntroCallout` usam pra decidir o peso da fonte
  * do box de 1 parágrafo (editor escreve `**...**` pra negrito, texto plano
  * pra peso normal — editorial 260712).
@@ -843,7 +843,7 @@ export function extractBoxDivulgacao2(text: string): string | null {
 }
 
 /**
- * #3372: o box de 1 parágrafo (sem imagem, sem CTA pill) sai em negrito
+ * #3373: o box de 1 parágrafo (sem imagem, sem CTA pill) sai em negrito
  * quando a fonte tem `**...**` embrulhando o bloco inteiro, peso normal
  * quando não tem (editorial 260712 — editor controla o peso pelo markdown).
  * Default `true` (bold) quando o box não existe é inofensivo — só é
@@ -1068,7 +1068,7 @@ export function extractContent(editionDir: string): NewsletterContent {
   // vai pro box de livros; box 📣 CLARICE recebe null (sem hero). Só o slot 1
   // suporta imagem (comportamento legado, nunca existiu pro slot 2).
   const boxDivulgacao1Image = readBoxDivulgacao1Image(editionDir, boxDivulgacao1);
-  // #3372: peso de fonte do box só-texto controlado pelo bold-wrap da fonte.
+  // #3373: peso de fonte do box só-texto controlado pelo bold-wrap da fonte.
   const boxDivulgacao1Bold = isBoxDivulgacao1Bold(reviewedText);
   const boxDivulgacao2 = extractBoxDivulgacao2(reviewedText);
   // #2978-slot2-parity: mesmo tratamento do slot 1 — a imagem livros_promo só

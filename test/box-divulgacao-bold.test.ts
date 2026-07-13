@@ -1,5 +1,5 @@
 /**
- * test/box-divulgacao-bold.test.ts (#3372)
+ * test/box-divulgacao-bold.test.ts (#3373)
  *
  * `isBoxDivulgacao1Bold`/`isBoxDivulgacao2Bold` detectam se o box de 1
  * parágrafo (sem imagem/CTA-pill) veio embrulhado em `**...**` na fonte —
@@ -22,7 +22,7 @@ Por que isso importa:
 Explicação ${n}.`;
 }
 
-describe("isBoxDivulgacao1Bold / isBoxDivulgacao2Bold (#3372)", () => {
+describe("isBoxDivulgacao1Bold / isBoxDivulgacao2Bold (#3373)", () => {
   it("box bold-wrapped (**...**) → true", () => {
     const md = `${d(1, "CAT", "https://a.com")}
 

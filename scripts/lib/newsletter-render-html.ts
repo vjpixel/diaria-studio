@@ -307,6 +307,34 @@ export function renderCoverage(text: string): string {
  * centralizado (ex: box Alexa+ "Conhecer a Alexa+ e ver as ofertas"). Sem 📣,
  * NÃO adiciona o separador "Divulgação" (o box de divulgação já tem o seu).
  */
+
+/** #3374: parágrafo é lista quando TODA linha não-vazia começa com `- `/`* `. */
+function isBulletParagraph(p: string): boolean {
+  const lines = p.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every((l) => /^[-*]\s+/.test(l));
+}
+
+/**
+ * #3374: `- item`/`* item` (1 por linha) → `<ul><li>` real. Usado no corpo
+ * multi-parágrafo do box de divulgação (ex: lista de benefícios do programa
+ * de apoio) — `<ul>`/`<li>` com estilo inline renderiza bem nos principais
+ * clientes de e-mail (Gmail, Apple Mail, Outlook web/desktop moderno).
+ */
+function renderBulletList(p: string, marginTop: string): string {
+  const items = p
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => l.replace(/^[-*]\s+/, ""));
+  const lis = items
+    .map(
+      (item) =>
+        `<li style="margin:0 0 6px;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(item)}</li>`,
+    )
+    .join("\n        ");
+  return `<ul style="margin:${marginTop} 0 0;padding-left:20px;">\n        ${lis}\n      </ul>`;
+}
+
 export function renderIntroCallout(
   text: string,
   titleStyle: "serif" | "body" = "serif",
@@ -399,6 +427,10 @@ export function renderIntroCallout(
     const bodyHtml = bodyParas
       .map((p, i) => {
         const mt = i === 0 ? "0" : "12px";
+        // #3374: bloco de lista (`- item`/`* item`) vira `<ul><li>` real.
+        if (isBulletParagraph(p)) {
+          return renderBulletList(p, mt);
+        }
         const fullBold = titleStyle === "body" &&
           /^\*\*[^*][\s\S]*\*\*$/.test(p) && !p.slice(2, -2).includes("**");
         if (fullBold) {
@@ -431,7 +463,7 @@ export function renderIntroCallout(
   } else {
     // 1 parágrafo: anúncio (📣) tem o marcador removido — o separador "Divulgação"
     // já rotula (#1942 review #3). 🎉/📚 preservam o emoji decorativo.
-    // #3372: peso de fonte segue `bold` (default true = visual histórico).
+    // #3373: peso de fonte segue `bold` (default true = visual histórico).
     const single = paras[0] ?? text;
     const only = sponsored ? stripCalloutMarker(single) : single;
     inner = `<p style="margin:0;font-family:${FONT_BODY};font-weight:${bold ? 600 : 400};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(only)}</p>`;
@@ -523,7 +555,7 @@ function shouldForceCtaPill(box: string): boolean {
  * que aceita imagem opcional — #2978-slot2-parity: agora nos 2 slots). Ambos
  * os slots chamam este dispatcher.
  *
- * `bold` (#3372): peso de fonte do box SÓ-TEXTO (sem imagem, sem CTA pill) —
+ * `bold` (#3373): peso de fonte do box SÓ-TEXTO (sem imagem, sem CTA pill) —
  * `true` (default) reproduz o visual histórico; `false` quando a fonte do box
  * é texto plano (sem `**...**` embrulhando o bloco inteiro). Não afeta o path
  * com imagem/CTA pill, que já tem peso próprio hardcoded por estrutura.
@@ -548,7 +580,7 @@ export function renderBoxDivulgacao(
 /**
  * Box de divulgação (slot 1 gap D1/D2 OU slot 2 gap D2/D3, #2978-slot2-parity)
  * com imagem proeminente + texto + botão CTA. Sem imagem → cai no box
- * só-texto (renderIntroCallout, repassando `bold` — #3372). Extrai o link
+ * só-texto (renderIntroCallout, repassando `bold` — #3373). Extrai o link
  * `[texto](url)` do próprio box pra usar na imagem clicável e no botão.
  */
 export function renderMidCallout(text: string, imageUrl: string | null, bold = true): string {
