@@ -544,8 +544,8 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       ```bash
       npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
       ```
-      - **`legacy: true`** (sentinel gravado antes do #3446 — sem baseline por-seção confiável): pular pro **fluxo FULL-FILE** (6.2'/6.3' abaixo).
-      - **`legacy: false`**: `changed_sections` traz os blocos exatos tocados (`main_d{N}`, `comment_pixel_d{N}`, `post_pixel`). Seguir o **fluxo SCOPED** (6.2-6.5).
+      - **`legacy: true`** (sentinel gravado antes do #3446 — sem baseline por-seção confiável): pular pro **fluxo FULL-FILE** (6.2' abaixo).
+      - **`legacy: false`**: `changed_sections` traz os blocos exatos tocados (`main_d{N}`, `comment_pixel_d{N}`, `post_pixel`). Seguir o **fluxo SCOPED** (6.2-6.4).
 
    **Fluxo SCOPED (`legacy: false`):**
 
