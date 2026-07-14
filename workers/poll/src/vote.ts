@@ -18,6 +18,15 @@ import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
 import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter";
 
 /**
+ * #3384: contas do próprio editor usadas pra testar o fluxo de voto no e-mail
+ * de teste do Stage 5 (rodado na véspera — a edição ainda é "de amanhã" no
+ * momento do teste). Isentas do gate de edição-futura abaixo; todas as outras
+ * regras (assinatura/gabarito/KV) continuam valendo normalmente pra elas.
+ * `email` já chega normalizado (lowercase + trim) no momento da comparação.
+ */
+const TEST_ACCOUNT_EMAILS = new Set(["pixel@memelab.com.br", "vjpixel@gmail.com"]);
+
+/**
  * #3118 (item 10): monta a resposta "já votou" — extraído dos dois caminhos
  * de dedup em `handleVote` (DO e fallback KV), que tinham ~20 linhas quase
  * idênticas. A duplicação já havia divergido uma vez no passado (#2189
@@ -192,7 +201,11 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   // pela página do arquivo). Só se aplica ao formato diário AAMMDD — o ciclo
   // mensal da Clarice (`YYMM-MM`) não tem um "dia" real pra comparar (mesma
   // exceção documentada acima pra `clarice:valid_editions`).
-  if (AAMMDD_RE.test(edition) && edition > todayAammddBrt(new Date())) {
+  //
+  // #3384: contas de teste do editor (TEST_ACCOUNT_EMAILS) ignoram este gate —
+  // precisam votar no e-mail de teste do Stage 5, rodado na véspera, quando a
+  // edição ainda é "de amanhã".
+  if (AAMMDD_RE.test(edition) && edition > todayAammddBrt(new Date()) && !TEST_ACCOUNT_EMAILS.has(email)) {
     return voteHtmlResponse(votePageHtml("Essa edição não aceita mais votos.", false, null, null, null, brand), 410);
   }
 
