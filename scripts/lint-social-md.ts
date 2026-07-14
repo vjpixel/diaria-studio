@@ -88,6 +88,10 @@ import {
   type PlatformHeaderDuplicateError,
   type PlatformHeaderUniqueResult,
   lintPlatformHeadersUnique,
+  extractSocialSections,
+  computeSectionHashes,
+  type ScopedCoverageResult,
+  checkScopedHumanizerCoverage,
 } from "./lib/social-lint-rules.ts"; // #2833: extraído — movimentação pura
 
 export type { LintError };
@@ -120,6 +124,9 @@ export type { SectionCoverageResult };
 export { checkHumanizerSectionCoverage };
 export type { PlatformHeaderDuplicateError, PlatformHeaderUniqueResult };
 export { lintPlatformHeadersUnique };
+export { extractSocialSections, computeSectionHashes };
+export type { ScopedCoverageResult };
+export { checkScopedHumanizerCoverage };
 function main(): void {
   const args = parseArgsStructured(process.argv.slice(2)).values;
   if (!args.md) {

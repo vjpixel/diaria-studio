@@ -120,35 +120,32 @@ describe("orchestrator-prompt (#634)", () => {
     );
     // root orchestrator.md ≤ 200 linhas
     assert.ok(lines["orchestrator.md"] <= 200, `orchestrator.md tem ${lines["orchestrator.md"]} linhas (target ≤200)`);
-    // sub-arquivos ≤ 580 linhas (target 250, tolerância para arquivos de pesquisa
-    // que acumulam invariantes operacionais — bumped from 450 quando
-    // orchestrator-stage-1-research.md cresceu por #791/#716/#789/#790/#780;
-    // 500→510 quando #903 adicionou step 1v-early; 510→525 quando #1007 Fase 1
-    // adicionou pre-gate invariant checks em todos os stages; 525→540 quando
-    // #1091 adicionou warning anti-skip de 1f + passo 1w-quint; 540→555
-    // quando #1095 + #1097 documentaram newsletter extraction + coverage line sync;
-    // 555→565 quando #1112 adicionou step 1p1 research-review-dates; 565→580
-    // quando #1273 adicionou wrapper ensure-research-reviewer-output post-dispatch;
-    // 580→620 quando stage-4 cresceu com publish paralelo + resume-aware + halt rules;
-    // 620→640 quando #1545 adicionou 4f-ter social preview + #1548 report instruction;
-    // 640→700 quando #1571 documentou pre-gate mode + 4a-pre-gate explícito;
-    // 700→715 quando #1783 adicionou marks de status S0 (running/done) + S4
-    // (mark-done canônico no §4i, fora do §4g que é pulado em pre-gate).
-    // 715→745 quando #2073 adicionou step 1w-quint-b (check-highlight-themes)
-    // + item 4 no gate de repeat-de-tema.
-    // #1694: split Stage 4 (Publicação) → Stage 4 (Revisão) + Stage 5 (Publicação).
-    // stage-5.md herda o conteúdo pesado do antigo stage-4.md. Budget mantido
-    // em 745 por arquivo — stage-4.md (Revisão) é muito menor (~130 linhas).
-    // 745→755 quando #2367 adicionou step 1u-bis (dedup-intra-edition).
-    // 755→770 quando #2496 adicionou nota explicativa do --pool-out no passo 1q.1
-    // e comentário no 1q.3 sobre o motivo da mudança de --categorized.
-    // 770→772 quando #2608 adicionou instrução de estimativa Path B em 1f.
-    // 772→790 quando #3202 adicionou step 1m-quinquies (resolver URLs de
-    // VÍDEO para YouTube via discovery-searcher + resolve-video-youtube.ts).
+
+    // #3445: teto POR-ARQUIVO (substitui o teto único 790 compartilhado por todos
+    // os sub-arquivos, #634→#3202). O teto único era, na prática, um ratchet que
+    // só cresceu (450→790 ao longo de ~15 bumps, ver histórico no git blame deste
+    // arquivo) e nunca pegou crescimento de um arquivo PEQUENO até perto do dobro
+    // do seu tamanho real — ex: stage-3.md (122 linhas) podia sextuplicar antes
+    // de falhar. Cada teto abaixo é o tamanho medido em 260713 (pós-auditoria
+    // #3445 — stage-1 perdeu a seção morta 1p2/#1553; stage-4 ganhou o fluxo de
+    // re-humanização scoped #3446, líquido +15) + ~15 linhas de headroom. Bump
+    // exige decisão consciente (igual ao teto único antigo) — só que agora por
+    // arquivo, então crescimento de um sub-arquivo pequeno não passa despercebido
+    // sob a sombra do teto de um arquivo grande.
+    const PER_FILE_LINE_BUDGET: Record<string, number> = {
+      "orchestrator-stage-0-preflight.md": 520,
+      "orchestrator-stage-1-research.md": 795,
+      "orchestrator-stage-2.md": 548,
+      "orchestrator-stage-3.md": 135,
+      "orchestrator-stage-4.md": 648,
+      "orchestrator-stage-5.md": 455,
+    };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
+      const budget = PER_FILE_LINE_BUDGET[file];
+      assert.ok(budget !== undefined, `${file} sem teto definido em PER_FILE_LINE_BUDGET (#3445)`);
       assert.ok(
-        lines[file] <= 790,
-        `${file} tem ${lines[file]} linhas (target ≤790)`,
+        lines[file] <= budget,
+        `${file} tem ${lines[file]} linhas (target ≤${budget} — #3445 per-file budget)`,
       );
     }
   });

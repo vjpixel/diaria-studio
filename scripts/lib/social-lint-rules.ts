@@ -12,6 +12,7 @@
  * compat com importadores existentes.
  */
 
+import { createHash } from "node:crypto";
 import { tokenizeForJaccard, jaccardSimilarity } from "../dedup.ts"; // #1861
 import { DIARIA_LINKEDIN_PAGE_SLUG } from "./canonical-urls.ts"; // #2790 fonte única (reexportada abaixo p/ back-compat)
 import { extractSection } from "./extract-section.ts"; // #2834 fonte única (era duplicada em publish-instagram.ts/publish-threads.ts)
@@ -1516,8 +1517,13 @@ export interface SectionCoverageResult {
   deleted: string[];
 }
 
-/** Extrai blocos nomeados de nível `##` e `###` da seção LinkedIn. */
-function extractSocialSections(md: string): Record<string, string> {
+/**
+ * Extrai blocos nomeados de nível `##` e `###` da seção LinkedIn.
+ * Exportada (#3446) — reusada pelo hashing por-seção do check-humanizer-social.ts
+ * pra permitir re-humanização SCOPED (só as seções que mudaram) no gate do Stage 4,
+ * em vez de re-humanizar o arquivo inteiro a cada ajuste.
+ */
+export function extractSocialSections(md: string): Record<string, string> {
   const section = extractPlatformSection(md, "linkedin");
   if (!section) return {};
 
@@ -1590,5 +1596,90 @@ export function checkHumanizerSectionCoverage(preMd: string, postMd: string): Se
   }
 
   return { ok: untouched.length === 0 && deleted.length === 0, sections, untouched, deleted };
+}
+
+// ---------------------------------------------------------------------------
+// #3446: hashing por-seção + verificação de re-humanização SCOPED
+// ---------------------------------------------------------------------------
+
+/** Nomes de seção verificados pela re-humanização scoped — mesmo conjunto de checkHumanizerSectionCoverage. */
+const SCOPED_SECTION_NAMES = [
+  "main_d1", "main_d2", "main_d3",
+  "comment_pixel_d1", "comment_pixel_d2", "comment_pixel_d3",
+  "post_pixel",
+] as const;
+
+/**
+ * Computa sha256 de cada seção nomeada de `03-social.md` (main_dN, comment_pixel_dN,
+ * post_pixel). Usado pelo sentinel do humanizador (check-humanizer-social.ts) pra
+ * detectar EXATAMENTE quais seções mudaram desde a última humanização — em vez de
+ * só "o arquivo mudou" (hash whole-file), permitindo re-humanizar só o(s) destaque(s)
+ * tocado(s) no gate do Stage 4 (#3446).
+ *
+ * Seções ausentes nesta edição (ex: só 2 destaques) não entram no resultado.
+ */
+export function computeSectionHashes(md: string): Record<string, string> {
+  const sections = extractSocialSections(md);
+  const hashes: Record<string, string> = {};
+  for (const name of SCOPED_SECTION_NAMES) {
+    const content = sections[name];
+    if (content === undefined) continue;
+    hashes[name] = createHash("sha256").update(content.trim().replace(/\r\n/g, "\n")).digest("hex");
+  }
+  return hashes;
+}
+
+export interface ScopedCoverageResult {
+  /** true = apenas as seções-alvo mudaram, e todas elas mudaram. */
+  ok: boolean;
+  /** Seções-alvo que de fato mudaram entre pre e post. */
+  touchedTargets: string[];
+  /** Seções-alvo que NÃO mudaram (humanizador pulou o alvo pedido). */
+  untouchedTargets: string[];
+  /** Seções FORA do alvo que mudaram mesmo assim (violação de escopo). */
+  unexpectedChanges: string[];
+}
+
+/**
+ * Verifica que uma re-humanização SCOPED (#3446) tocou exatamente as seções
+ * pedidas — nem menos (humanizador ignorou o alvo) nem mais (humanizador
+ * reescreveu seções que deveriam ficar intactas, colateral fora do escopo).
+ *
+ * `targetSections` — nomes dentre `main_d1/d2/d3`, `comment_pixel_d1/d2/d3`,
+ * `post_pixel` (mesmo vocabulário de checkHumanizerSectionCoverage).
+ */
+export function checkScopedHumanizerCoverage(
+  preMd: string,
+  postMd: string,
+  targetSections: string[],
+): ScopedCoverageResult {
+  const preSections = extractSocialSections(preMd);
+  const postSections = extractSocialSections(postMd);
+  const targetSet = new Set(targetSections);
+
+  const touchedTargets: string[] = [];
+  const untouchedTargets: string[] = [];
+  const unexpectedChanges: string[] = [];
+
+  for (const name of SCOPED_SECTION_NAMES) {
+    const pre = preSections[name];
+    const post = postSections[name];
+    if (pre === undefined && post === undefined) continue; // seção não existe nesta edição
+    const changed = pre?.trim() !== post?.trim();
+
+    if (targetSet.has(name)) {
+      if (changed) touchedTargets.push(name);
+      else untouchedTargets.push(name);
+    } else if (changed) {
+      unexpectedChanges.push(name);
+    }
+  }
+
+  return {
+    ok: untouchedTargets.length === 0 && unexpectedChanges.length === 0,
+    touchedTargets,
+    untouchedTargets,
+    unexpectedChanges,
+  };
 }
 

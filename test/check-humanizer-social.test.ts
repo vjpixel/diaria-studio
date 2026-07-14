@@ -23,6 +23,7 @@ import {
   computeSocialHash,
   writeSentinel,
   lintTicsOnMismatch,
+  computeChangedSections,
 } from "../scripts/check-humanizer-social.ts";
 
 const SCRIPT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "../scripts/check-humanizer-social.ts");
@@ -118,6 +119,119 @@ describe("writeSentinel (#2279)", () => {
     const { dir, cleanup } = mkEdition(); // sem social
     try {
       assert.throws(() => writeSentinel(dir), /03-social\.md não existe/);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+const SOCIAL_CONTENT_MULTI = `# LinkedIn
+## d1
+Post d1 humanizado.
+
+### comment_pixel
+Comentário pessoal d1.
+
+## d2
+Post d2 humanizado.
+
+### comment_pixel
+Comentário pessoal d2.
+
+## post_pixel
+Post pixel humanizado.
+
+# Facebook
+## d1
+Post Facebook d1.
+`;
+
+describe("writeSentinel — section_hashes (#3446)", () => {
+  it("grava section_hashes junto com o hash whole-file", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      const path = writeSentinel(dir);
+      const data = JSON.parse(readFileSync(path, "utf8"));
+      assert.ok(data.section_hashes && typeof data.section_hashes === "object", "section_hashes deve estar presente");
+      assert.ok(typeof data.section_hashes.main_d1 === "string" && data.section_hashes.main_d1.length === 64);
+      assert.ok(typeof data.section_hashes.main_d2 === "string");
+      assert.ok(typeof data.section_hashes.post_pixel === "string");
+      assert.ok(typeof data.section_hashes.comment_pixel_d1 === "string");
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("computeChangedSections (#3446)", () => {
+  it("legacy:true quando sentinel não tem section_hashes (gravado antes do #3446)", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      const sentinelPath = join(dir, "_internal", ".humanizer-social-done.json");
+      // Simula sentinel legado: sem section_hashes
+      writeFileSync(sentinelPath, JSON.stringify({
+        social_sha256: computeSocialHash(join(dir, "03-social.md")),
+        written_at: new Date().toISOString(),
+      }), "utf8");
+      const result = computeChangedSections(dir);
+      assert.equal(result.legacy, true);
+      assert.deepEqual(result.changed, []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("legacy:true quando sentinel está ausente", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      // Sem writeSentinel — sentinel nunca foi gravado
+      const result = computeChangedSections(dir);
+      assert.equal(result.legacy, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("detecta EXATAMENTE as seções que mudaram (só D2 editado no gate)", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      writeSentinel(dir); // sentinel com hashes de todas as seções
+
+      // Simula ajuste no gate do Stage 4: só o D2 muda
+      const edited = SOCIAL_CONTENT_MULTI.replace("Post d2 humanizado.", "Post d2 EDITADO no gate.");
+      writeFileSync(join(dir, "03-social.md"), edited, "utf8");
+
+      const result = computeChangedSections(dir);
+      assert.equal(result.legacy, false);
+      assert.deepEqual(result.changed, ["main_d2"], "apenas main_d2 deve aparecer em changed");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("detecta múltiplas seções alteradas (D1 main + D2 comment_pixel)", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      writeSentinel(dir);
+      let edited = SOCIAL_CONTENT_MULTI.replace("Post d1 humanizado.", "Post d1 EDITADO.");
+      edited = edited.replace("Comentário pessoal d2.", "Comentário pessoal d2 EDITADO.");
+      writeFileSync(join(dir, "03-social.md"), edited, "utf8");
+
+      const result = computeChangedSections(dir);
+      assert.equal(result.legacy, false);
+      assert.deepEqual(result.changed.sort(), ["comment_pixel_d2", "main_d1"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("changed vazio quando nada mudou (whole-file hash bateria também)", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      writeSentinel(dir);
+      const result = computeChangedSections(dir);
+      assert.equal(result.legacy, false);
+      assert.deepEqual(result.changed, []);
     } finally {
       cleanup();
     }
@@ -266,6 +380,57 @@ describe("CLI — check-humanizer-social.ts (#2279 #2290)", () => {
       writeFileSync(join(dir, "03-social.md"), SOCIAL_CONTENT_B, "utf8"); // simulate post-humanization edit
       const result = runScript(["--check", "--edition-dir", dir]);
       assert.equal(result.status, 2, `expected exit 2, got ${result.status}\nstderr: ${result.stderr}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--check exit 2 reports EXACTLY the changed sections in stdout JSON (#3446)", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      writeSentinel(dir);
+      const edited = SOCIAL_CONTENT_MULTI.replace("Post d2 humanizado.", "Post d2 EDITADO no gate.");
+      writeFileSync(join(dir, "03-social.md"), edited, "utf8");
+      const result = runScript(["--check", "--edition-dir", dir]);
+      assert.equal(result.status, 2, `expected exit 2, got ${result.status}\nstderr: ${result.stderr}`);
+
+      const lines = result.stdout.trim().split("\n");
+      const jsonLine = lines.find((l) => l.includes("changed_sections"));
+      assert.ok(jsonLine, `stdout deve conter uma linha JSON com changed_sections; got:\n${result.stdout}`);
+      const parsed = JSON.parse(jsonLine!);
+      assert.equal(parsed.legacy, false);
+      assert.deepEqual(parsed.changed_sections, ["main_d2"]);
+
+      assert.ok(
+        result.stderr.includes("SEÇÕES ALTERADAS") && result.stderr.includes("main_d2"),
+        `stderr deve mencionar a seção alterada; got:\n${result.stderr}`,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--check exit 2 reports legacy:true when stored sentinel predates #3446", () => {
+    const { dir, cleanup } = mkEdition(SOCIAL_CONTENT_MULTI);
+    try {
+      const sentinelPath = join(dir, "_internal", ".humanizer-social-done.json");
+      writeFileSync(sentinelPath, JSON.stringify({
+        social_sha256: computeSocialHash(join(dir, "03-social.md")),
+        written_at: new Date().toISOString(),
+      }), "utf8");
+      const edited = SOCIAL_CONTENT_MULTI.replace("Post d2 humanizado.", "Post d2 EDITADO.");
+      writeFileSync(join(dir, "03-social.md"), edited, "utf8");
+      const result = runScript(["--check", "--edition-dir", dir]);
+      assert.equal(result.status, 2);
+
+      const lines = result.stdout.trim().split("\n");
+      const jsonLine = lines.find((l) => l.includes("changed_sections"));
+      const parsed = JSON.parse(jsonLine!);
+      assert.equal(parsed.legacy, true, "sentinel sem section_hashes deve reportar legacy:true");
+      assert.ok(
+        result.stderr.includes("legacy") || result.stderr.includes("INTEIRO"),
+        `stderr deve avisar sobre fallback full-file; got:\n${result.stderr}`,
+      );
     } finally {
       cleanup();
     }
