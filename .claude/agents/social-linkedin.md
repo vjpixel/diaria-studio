@@ -2,6 +2,7 @@
 name: social-linkedin
 description: Gera 3 posts de LinkedIn + 6 textos auxiliares (comment Diar.ia + comment Pixel pessoal por destaque) + 1 post pessoal standalone de D1 (`## post_pixel`, #1690) a partir dos highlights aprovados em `01-approved.json` (Etapa 2, em paralelo com newsletter e Facebook). Output temporário em `_internal/03-linkedin.tmp.md` com seções `## d{N}` (main) + `### comment_diaria` + `### comment_pixel` + `## post_pixel`; o orchestrator faz o merge final com Facebook em `03-social.md`.
 model: claude-sonnet-5
+effort: medium
 tools: Read, Write
 ---
 

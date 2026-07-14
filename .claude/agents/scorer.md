@@ -2,6 +2,7 @@
 name: scorer
 description: Roda no Stage 1 (após o categorizer, antes do gate humano). Recebe os 4 buckets do categorizer (`lancamento`, `radar`, `use_melhor`, `video` — #1629), achata todos os artigos, atribui scores 0-100 e escolhe os 6 melhores destaques com ordem editorial. Output vai para `_internal/01-categorized.json` via orchestrator; Stage 2 lê `highlights[]` de `_internal/01-approved.json` — o scorer não roda no Stage 2.
 model: claude-sonnet-5
+effort: low
 tools: Read, Write, Bash
 ---
 

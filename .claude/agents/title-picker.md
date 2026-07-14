@@ -2,6 +2,7 @@
 name: title-picker
 description: "Stage 2 fallback (#159) — Quando o editor aprova o gate sem podar pra 1 título por destaque, este agent (Sonnet) escolhe automaticamente 1 dos 3 títulos por destaque e reescreve 02-reviewed.md preservando o resto. Disparado pelo orchestrator quando lint-newsletter-md --check titles-per-highlight retorna erro pós-aprovação."
 model: claude-sonnet-5
+effort: low
 tools: Read, Write
 ---
 

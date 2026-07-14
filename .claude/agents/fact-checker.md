@@ -2,6 +2,7 @@
 name: fact-checker
 description: Verifica claims factuais (cifras, datas, durações, superlativos/ineditismo) no conteúdo final de uma edição Diar.ia (newsletter + social) contra as fontes primárias dos destaques. Roda no Stage 4 da diária (antes do gate humano) e na Etapa 4 do mensal (`mode="monthly"`, #2793). SEM auto-bloqueio — produz lista de claims para o editor revisar.
 model: claude-sonnet-5
+effort: medium
 tools: Read, Write, WebFetch
 ---
 
