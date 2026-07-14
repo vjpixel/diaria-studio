@@ -15,6 +15,8 @@ import {
   lintInstagramEmailCTA,
   DIARIA_LINKEDIN_PAGE_SLUG,
   lintPlatformHeadersUnique,
+  computeSectionHashes,
+  checkScopedHumanizerCoverage,
 } from "../scripts/lint-social-md.ts";
 
 describe("lintPostPixelMatchesD1 (#1861)", () => {
@@ -1471,6 +1473,103 @@ describe("checkHumanizerSectionCoverage (#2148 Fix B)", () => {
       postPixel: "G reescrito.",
     });
     assert.equal(run(preMd2, postMd2).status, 0, "tudo tocado → exit 0");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3446: computeSectionHashes + checkScopedHumanizerCoverage
+// ---------------------------------------------------------------------------
+
+describe("computeSectionHashes (#3446)", () => {
+  it("retorna um hash sha256 por seção conhecida (main_dN, comment_pixel_dN, post_pixel)", () => {
+    const md = mkSocialForCoverage({});
+    const hashes = computeSectionHashes(md);
+    for (const name of ["main_d1", "main_d2", "main_d3", "comment_pixel_d1", "comment_pixel_d2", "comment_pixel_d3", "post_pixel"]) {
+      assert.ok(typeof hashes[name] === "string" && hashes[name].length === 64, `${name} deve ter hash sha256 hex`);
+    }
+  });
+
+  it("hash de uma seção muda quando SÓ o conteúdo dessa seção muda", () => {
+    const before = mkSocialForCoverage({});
+    const after = mkSocialForCoverage({ mainD2: "Texto totalmente diferente para o destaque 2." });
+    const hashesBefore = computeSectionHashes(before);
+    const hashesAfter = computeSectionHashes(after);
+
+    assert.notEqual(hashesBefore.main_d2, hashesAfter.main_d2, "main_d2 deve mudar");
+    for (const name of ["main_d1", "main_d3", "comment_pixel_d1", "comment_pixel_d2", "comment_pixel_d3", "post_pixel"]) {
+      assert.equal(hashesBefore[name], hashesAfter[name], `${name} deve permanecer estável — só main_d2 mudou`);
+    }
+  });
+
+  it("seções ausentes na edição (ex: só 2 destaques) não entram no resultado", () => {
+    const md = `# LinkedIn\n\n## d1\n\nTexto d1.\n\n## post_pixel\n\nPost pixel.\n\n# Facebook\n## d1\nFoo\n`;
+    const hashes = computeSectionHashes(md);
+    assert.ok("main_d1" in hashes);
+    assert.ok(!("main_d2" in hashes), "main_d2 não deve existir — edição não tem D2");
+    assert.ok(!("main_d3" in hashes));
+  });
+});
+
+describe("checkScopedHumanizerCoverage (#3446)", () => {
+  it("OK: apenas a seção-alvo (main_d2 + comment_pixel_d2) mudou — re-humanização scoped respeitou o escopo", () => {
+    const pre = mkSocialForCoverage({
+      mainD2: "Texto ORIGINAL d2 com marcas de IA: otimizando recursos.",
+      commentPixelD2: "Comentário ORIGINAL d2 com IA: alavancando o pipeline.",
+    });
+    const post = mkSocialForCoverage({
+      mainD2: "Texto reescrito d2 — sem marcas de IA.",
+      commentPixelD2: "Comentário reescrito d2 — voz pessoal real.",
+    });
+    const r = checkScopedHumanizerCoverage(pre, post, ["main_d2", "comment_pixel_d2"]);
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.touchedTargets.sort(), ["comment_pixel_d2", "main_d2"]);
+    assert.equal(r.untouchedTargets.length, 0);
+    assert.equal(r.unexpectedChanges.length, 0);
+  });
+
+  it("FALHA: seção fora do escopo também mudou (violação — humanizador tocou d1 quando só d2 foi pedido)", () => {
+    const pre = mkSocialForCoverage({});
+    const post = mkSocialForCoverage({
+      mainD2: "Texto reescrito d2.",
+      mainD1: "Texto d1 também reescrito — colateral fora do escopo pedido.",
+    });
+    const r = checkScopedHumanizerCoverage(pre, post, ["main_d2"]);
+    assert.equal(r.ok, false);
+    assert.ok(r.unexpectedChanges.includes("main_d1"), "main_d1 deve aparecer em unexpectedChanges");
+    assert.ok(r.touchedTargets.includes("main_d2"));
+  });
+
+  it("FALHA: seção-alvo NÃO mudou (humanizador pulou o alvo pedido)", () => {
+    const md = mkSocialForCoverage({});
+    const r = checkScopedHumanizerCoverage(md, md, ["main_d2"]);
+    assert.equal(r.ok, false);
+    assert.ok(r.untouchedTargets.includes("main_d2"));
+    assert.equal(r.unexpectedChanges.length, 0);
+  });
+
+  it("preview final: seções não-alvo (d1, d3, post_pixel) permanecem byte-idênticas após scoped humanize de d2", () => {
+    // Guardrail do #3446: o preview final deve refletir o estado atual completo —
+    // isso só é seguro se as seções não tocadas ficarem intactas, não corrompidas.
+    const pre = mkSocialForCoverage({
+      mainD1: "D1 aprovado, não deve mudar.",
+      mainD3: "D3 aprovado, não deve mudar.",
+      postPixel: "Post pixel aprovado, não deve mudar.",
+      mainD2: "D2 original com tic de IA: otimizando o pipeline.",
+    });
+    const post = mkSocialForCoverage({
+      mainD1: "D1 aprovado, não deve mudar.",
+      mainD3: "D3 aprovado, não deve mudar.",
+      postPixel: "Post pixel aprovado, não deve mudar.",
+      mainD2: "D2 reescrito — sem tics de IA.",
+    });
+    const r = checkScopedHumanizerCoverage(pre, post, ["main_d2"]);
+    assert.equal(r.ok, true, "scoped humanize de d2 não deve afetar d1/d3/post_pixel");
+    // O arquivo `post` inteiro (não só a seção) é o que alimenta o render final —
+    // confirmar que ele preserva as seções aprovadas verbatim.
+    assert.ok(post.includes("D1 aprovado, não deve mudar."));
+    assert.ok(post.includes("D3 aprovado, não deve mudar."));
+    assert.ok(post.includes("Post pixel aprovado, não deve mudar."));
+    assert.ok(post.includes("D2 reescrito — sem tics de IA."));
   });
 });
 

@@ -269,21 +269,7 @@ Exit code handling:
 
   **#2529 — Tic lint automático no exit 2:** quando o hash diverge, o guard roda automaticamente `lintAntithesisReveal` sobre o `03-social.md` atual e emite WARNs adicionais no stderr. Se o stderr contiver `⚠️  TICS DE IA DETECTADOS`, incluir esses tics no bloco `{violations_block}` do gate como `⚠️ Social editado pós-humanizador acusa tics de IA (lista abaixo) — considere re-humanizar`. Se o stderr contiver apenas `ℹ️  Lint de tics: nenhum tic detectado`, a edição pode ter sido só remoção de tic — apresentar essa informação ao editor para auxiliar a decisão. O evento é sempre logado no run-log automaticamente.
 
-  **Re-humanizar antes de aprovar** (quando exit 2, independente de tics):
-  ```
-  Skill("humanizador", "Leia {EDITION_DIR}/03-social.md, humanize o texto removendo marcas de IA … Salve no mesmo arquivo.")
-  ```
-  Após humanização: (a) re-rodar lints do §2c que cobrem qualidade social:
-  ```bash
-  npx tsx scripts/lint-social-md.ts --check humanizer-section-coverage \
-    --pre {EDITION_DIR}/_internal/03-social-pre-humanizador.md \
-    --md {EDITION_DIR}/03-social.md
-  npx tsx scripts/lint-social-md.ts --check relative-time --md {EDITION_DIR}/03-social.md
-  npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
-  npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
-  ```
-  (b) gravar sentinel: `npx tsx scripts/check-humanizer-social.ts --write --edition-dir {EDITION_DIR}/`
-  (c) re-rodar o check; só prosseguir quando exit 0.
+  **Re-humanizar antes de aprovar** (quando exit 2, independente de tics) — seguir o mesmo fluxo SCOPED/FULL-FILE de **§4d.1 passo 6** (re-humanização scoped #3446): a saída do `--check` acima já traz `{ legacy, changed_sections }` no stdout — usar direto, sem rodar o check de novo.
 
 **4c.3 — Imagens geradas:**
 - Listar `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` com tamanhos (bytes).
@@ -552,17 +538,44 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
      --message "gate revisao: ajustar inline aplicado ({descrição curta})"
    ```
 
-6. **Re-humanizar e gravar sentinel se `03-social.md` foi tocado (#2279/#2290/#2373):** qualquer ajuste que altere `03-social.md` (reorder de destaques, edição de post social inline) OBRIGATORIAMENTE:
-   1. **Rodar o humanizador** em `03-social.md` (passagem completa via Skill humanizador).
-   2. **Rodar `mcp__clarice__correct_text`** no `## post_pixel` (revisão ortográfica).
-   3. **Só então gravar o sentinel** com `--bypass-reason` descritivo:
+6. **Re-humanizar SCOPED e gravar sentinel se `03-social.md` foi tocado (#2279/#2290/#2373, re-humanização scoped #3446):** qualquer ajuste que altere `03-social.md` (reorder de destaques, edição de post social inline) dispara re-humanização — mas **só das seções de fato alteradas**, não do arquivo inteiro. Re-humanizar tudo a cada ajuste era o 2º maior ofensor de tokens do pipeline (~600 linhas de prompt do humanizador por invocação completa × 2-4 ajustes/edição, #3379).
+
+   **6.1 — Detectar seções alteradas** — o check abaixo sai exit 2 (esperado, `03-social.md` já mudou); ler a linha JSON do stdout `{ legacy, changed_sections }`:
+      ```bash
+      npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
+      ```
+      - **`legacy: true`** (sentinel gravado antes do #3446 — sem baseline por-seção confiável): pular pro **fluxo FULL-FILE** (6.2'/6.3' abaixo).
+      - **`legacy: false`**: `changed_sections` traz os blocos exatos tocados (`main_d{N}`, `comment_pixel_d{N}`, `post_pixel`). Seguir o **fluxo SCOPED** (6.2-6.5).
+
+   **Fluxo SCOPED (`legacy: false`):**
+
+   **6.2** — Snapshot pré-humanização: `cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/.stage4-pre-scoped-humanize.md`.
+   **6.3** — **Rodar o humanizador SCOPED** — invocar a Skill pedindo explicitamente que **só** os blocos de `changed_sections` sejam reescritos (traduzir cada nome pra prosa: `main_d{N}` = texto principal de `## d{N}`; `comment_pixel_d{N}` = bloco `### comment_pixel` dentro de `## d{N}`; `post_pixel` = bloco `## post_pixel`). Instruir explicitamente para copiar todo o resto verbatim, sem tocar. Rodar `mcp__clarice__correct_text` no `## post_pixel` **só se `"post_pixel"` estiver em `changed_sections`**.
+   **6.4** — **Verificar que o escopo foi respeitado:**
+      ```bash
+      npx tsx scripts/verify-scoped-humanization.ts \
+        --pre {EDITION_DIR}/_internal/.stage4-pre-scoped-humanize.md \
+        --post {EDITION_DIR}/03-social.md \
+        --sections {changed_sections join vírgula}
+      ```
+      - Exit 0 → seguir pro passo 6.6.
+      - Exit 1 com `untouchedTargets` (humanizador ignorou um bloco pedido): re-invocar a Skill humanizador só pra esse(s) bloco(s) e re-verificar. Persistindo após 1 retry, cair no **fluxo FULL-FILE**.
+      - Exit 1 com `unexpectedChanges` (humanizador tocou algo fora do pedido): não é inseguro, só gastou mais tokens que o ideal — logar warn (`scope_not_respected: {unexpectedChanges}`) e seguir pro passo 6.6 normalmente.
+
+   **Fluxo FULL-FILE (fallback — `legacy: true`, ou escalonamento do passo 6.4 acima):**
+
+   **6.2'** — Rodar o humanizador em `03-social.md` inteiro (passagem completa via Skill humanizador) — comportamento pré-#3446, preservado como rede de segurança. Rodar `mcp__clarice__correct_text` no `## post_pixel` (revisão ortográfica).
+
+   **Os dois fluxos convergem aqui:**
+
+   **6.6 — Gravar o sentinel** com `--bypass-reason` descritivo (grava também os `section_hashes` atualizados automaticamente — #3446, baseline pro próximo ajuste):
       ```bash
       npx tsx scripts/check-humanizer-social.ts --write \
-        --bypass-reason "humanizador re-rodou após ajuste {descrição} no Stage 4" \
+        --bypass-reason "humanizador re-rodou ({scoped: changed_sections | full-file}) após ajuste {descrição} no Stage 4" \
         --edition-dir {EDITION_DIR}/
       ```
       O `--write` SEM `--bypass-reason` falhará com exit 3 se o hash divergir — essa é a trava que impede bypasse acidental (#2373). Nunca usar `--write` como atalho para limpar o lint sem re-humanizar.
-   4. Re-rodar lints de qualidade social (mesmo fluxo do exit-2 em §4c.2b):
+   **6.7** — Re-rodar lints de qualidade social (mesmo fluxo do exit-2 em §4c.2b — comparam contra o baseline ORIGINAL de Stage 2, válido em ambos os fluxos):
       ```bash
       npx tsx scripts/lint-social-md.ts --check humanizer-section-coverage \
         --pre {EDITION_DIR}/_internal/03-social-pre-humanizador.md \
@@ -571,11 +584,11 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
       npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
       ```
-   5. Re-rodar check para confirmar exit 0 antes de voltar ao gate:
+   **6.8** — Re-rodar check para confirmar exit 0 antes de voltar ao gate:
       ```bash
       npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
       ```
-   6. Re-renderizar (`render-social-html.ts`, §4b step 3) e republicar o preview social via `Artifact` (mesmo `file_path`/`url` já persistidos em `05-social-preview.json` — atualiza a mesma URL) antes de voltar ao gate.
+   **6.9** — Re-renderizar (`render-social-html.ts`, §4b step 3) e republicar o preview social via `Artifact` (mesmo `file_path`/`url` já persistidos em `05-social-preview.json` — atualiza a mesma URL) antes de voltar ao gate. O arquivo republicado é sempre o `03-social.md` COMPLETO (seções scoped-humanizadas + seções intactas) — o preview reflete o estado atual inteiro em ambos os fluxos.
 
 7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
 

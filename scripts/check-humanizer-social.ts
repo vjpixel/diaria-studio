@@ -51,6 +51,7 @@ import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { lintAntithesisReveal, lintTrailingEditorialHook, type AntithesisRevealMatch, type TrailingEditorialHookMatch } from "./lint-social-md.ts";
+import { computeSectionHashes } from "./lib/social-lint-rules.ts"; // #3446: hash por-seção p/ re-humanização scoped
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SENTINEL_FILENAME = ".humanizer-social-done.json";
@@ -60,6 +61,14 @@ export interface HumanizerSocialSentinel {
   written_at: string;
   /** Razão de bypass quando --write foi chamado após edição pós-humanização (#2373). */
   bypass_reason?: string;
+  /**
+   * Hash sha256 por seção nomeada (main_dN, comment_pixel_dN, post_pixel) — #3446.
+   * Permite detectar EXATAMENTE quais seções mudaram desde a última humanização,
+   * pra re-humanizar só o(s) destaque(s) tocado(s) no gate do Stage 4 em vez do
+   * arquivo inteiro. Ausente em sentinels gravados antes do #3446 (legacy) —
+   * computeChangedSections() trata esse caso como fallback pra full-file.
+   */
+  section_hashes?: Record<string, string>;
 }
 
 /**
@@ -117,6 +126,7 @@ export function writeSentinel(editionDir: string, bypassReason?: string): string
   const sentinel: HumanizerSocialSentinel = {
     social_sha256: computeSocialHash(socialPath),
     written_at: new Date().toISOString(),
+    section_hashes: computeSectionHashes(readFileSync(socialPath, "utf8")), // #3446
     ...(bypassReason ? { bypass_reason: bypassReason } : {}),
   };
   writeFileSync(sentinelPath, JSON.stringify(sentinel, null, 2) + "\n", "utf8");
@@ -166,6 +176,59 @@ export function checkSentinel(editionDir: string): CheckResult {
   }
 
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// #3446: seções alteradas — habilita re-humanização SCOPED em vez de full-file
+// ---------------------------------------------------------------------------
+
+export interface ChangedSectionsResult {
+  /**
+   * true = sentinel armazenado não tem `section_hashes` (gravado antes do
+   * #3446, ou primeiro `--write` desta sessão nunca rodou). Fail-safe:
+   * caller deve tratar como "tudo mudou" e cair no fluxo full-file antigo —
+   * nunca assumir escopo reduzido sem uma baseline por-seção confiável.
+   */
+  legacy: boolean;
+  /** Nomes de seção cujo hash diverge do sentinel armazenado (vazio se `legacy`). */
+  changed: string[];
+}
+
+/**
+ * Compara os hashes por-seção do sentinel armazenado contra o `03-social.md`
+ * atual, retornando exatamente quais seções mudaram desde a última
+ * humanização — usado pelo Stage 4 (§4d.1) pra escopar a re-humanização
+ * ao(s) destaque(s) de fato tocado(s) em vez do arquivo inteiro (#3446).
+ *
+ * Chamar apenas quando `checkSentinel` já indicou `hash_mismatch` — caso
+ * contrário não há nada mudado para escopar.
+ */
+export function computeChangedSections(editionDir: string): ChangedSectionsResult {
+  const socialPath = resolve(editionDir, "03-social.md");
+  const sentinelPath = join(editionDir, "_internal", SENTINEL_FILENAME);
+
+  if (!existsSync(sentinelPath) || !existsSync(socialPath)) {
+    return { legacy: true, changed: [] };
+  }
+
+  let stored: HumanizerSocialSentinel;
+  try {
+    stored = JSON.parse(readFileSync(sentinelPath, "utf8")) as HumanizerSocialSentinel;
+  } catch {
+    return { legacy: true, changed: [] };
+  }
+
+  if (!stored.section_hashes) {
+    return { legacy: true, changed: [] };
+  }
+
+  const current = computeSectionHashes(readFileSync(socialPath, "utf8"));
+  const allNames = new Set([...Object.keys(stored.section_hashes), ...Object.keys(current)]);
+  const changed: string[] = [];
+  for (const name of allNames) {
+    if (stored.section_hashes[name] !== current[name]) changed.push(name);
+  }
+  return { legacy: false, changed };
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +403,26 @@ function main(): void {
 
         // Logar decisão no run-log para rastreabilidade (#2529)
         logTicLintEvent(editionDir, ticResult);
+
+        // #3446: reportar EXATAMENTE quais seções mudaram — permite ao orchestrator
+        // escopar a re-humanização ao(s) destaque(s) tocado(s) em vez do arquivo inteiro.
+        const changedSections = computeChangedSections(editionDir);
+        if (changedSections.legacy) {
+          console.error(
+            "[check-humanizer-social] ℹ️  Sentinel sem section_hashes (legacy, pré-#3446) — " +
+            "sem baseline por-seção confiável. Re-humanizar 03-social.md INTEIRO (fallback seguro).",
+          );
+        } else {
+          console.error(
+            `[check-humanizer-social] SEÇÕES ALTERADAS (re-humanizar apenas estas): ${changedSections.changed.join(", ") || "(nenhuma — hash mismatch veio de fora das seções conhecidas)"}`,
+          );
+        }
+        console.log(JSON.stringify({
+          ok: false,
+          reason: "hash_mismatch",
+          legacy: changedSections.legacy,
+          changed_sections: changedSections.changed,
+        }));
 
         process.exit(2);
       }

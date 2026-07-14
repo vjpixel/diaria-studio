@@ -52,26 +52,35 @@ seções renderizadas no email de teste). Esse uso é legítimo e foi mantido.
 
 ---
 
-### #2 — Re-render + re-humanização completa no Stage 4 ⭐⭐ ALTO IMPACTO
+### #2 — Re-render + re-humanização completa no Stage 4 ⭐⭐ ALTO IMPACTO — ✅ Implementado (#3446)
 
-**Onde:** `orchestrator-stage-4.md` — loop de gate humano.
+**Onde:** `orchestrator-stage-4.md` — loop de gate humano (§4d.1 passo 6, §4c.2b).
 
 **O problema:** Quando o editor faz ajustes pós-gate (ex: muda D1, aprova D2
 e D3 sem alteração), o Stage 4 re-renderiza o HTML completo (`render-newsletter-html.ts`
-— newsletter-final.html ~34KB) e dispara humanizador × 2 novamente, mesmo que
-apenas 1 dos 3 destaques tenha mudado. O humanizador carrega ~600 linhas de
-prompt (skill `humanizador`) a cada invocação.
+— newsletter-final.html ~34KB) e disparava humanizador completo de novo, mesmo
+que apenas 1 dos 3 destaques tivesse mudado. O humanizador carrega ~600 linhas
+de prompt (skill `humanizador`) a cada invocação.
 
 **Impacto estimado:** 2–4 re-renders por edição em gates com ajuste = ~600k
-tokens adicionais por edição (prompt do humanizador × 2 invocações × re-cargas).
+tokens adicionais por edição (prompt do humanizador × invocação completa × re-cargas).
 
-**Corte recomendado (não implementado — médio risco):**
-- Comparar `02-reviewed.md` atual com a versão pré-gate via diff
-- Re-humanizar somente os blocos de destaque modificados (não o arquivo inteiro)
-- Marcar humanizador como "já aplicado" com hash do conteúdo — pular se hash
-  não mudou
-- Requer mudança no orchestrator-stage-4.md e no script de stitch — escopo
-  maior que 1 PR de análise
+**Corte implementado (#3446):**
+- `check-humanizer-social.ts` grava hash sha256 **por seção** (`main_dN`,
+  `comment_pixel_dN`, `post_pixel`) no sentinel, além do hash whole-file
+  (`computeSectionHashes`, `scripts/lib/social-lint-rules.ts`).
+- `computeChangedSections()` compara os hashes por-seção armazenados contra o
+  `03-social.md` atual e retorna EXATAMENTE quais blocos mudaram desde a
+  última humanização — o Stage 4 usa isso pra pedir à skill humanizador que
+  reescreva só esses blocos, não o arquivo inteiro.
+- `scripts/verify-scoped-humanization.ts` verifica deterministicamente que a
+  re-humanização scoped tocou exatamente o pedido (nem menos — bloco ignorado,
+  nem mais — colateral fora do escopo) antes de gravar o sentinel.
+- Sentinels gravados antes do #3446 (sem `section_hashes`) caem no fallback
+  full-file antigo automaticamente (`legacy: true`) — sem regressão em
+  edições em voo.
+- O render de newsletter/social HTML continua completo (script determinístico,
+  custo de token desprezível) — só a chamada LLM do humanizador foi escopada.
 
 ---
 
@@ -158,7 +167,7 @@ Moderado, mas estruturalmente corrigível.
 | # | Ofensor | Impacto estimado | Risco do corte | Status |
 |---|---------|-----------------|----------------|--------|
 | 1 | Gmail `get_thread FULL_CONTENT` (0b-bis) | **480k–1.3M chars por edição** | Baixo | ✅ Implementado (#2452) |
-| 2 | Re-render + re-humanização no Stage 4 | ~600k tokens/loop de ajuste | Médio | Próximo PR |
+| 2 | Re-render + re-humanização no Stage 4 | ~600k tokens/loop de ajuste | Médio | ✅ Implementado (#3446) |
 | 3 | Humanizador recarrega prompt | ~2.4k linhas × 4 invocações | Baixo | Oportunidade futura |
 | 4 | Round-trip Google Docs | Moderado (já mitigado #494/#495) | — | N/A |
 | 5 | Re-leitura de arquivos grandes | ~10k tokens | Baixo | Monitorar |
@@ -168,9 +177,9 @@ Moderado, mas estruturalmente corrigível.
 
 1. **#1 — Gmail 0b-bis** (já resolvido): maior ofensor absoluto, baixo risco,
    corte contido em 1 script + mudança de prompt.
-2. **#2 — Re-humanização parcial no Stage 4**: segundo maior impacto para
-   edições com múltiplos loops de ajuste pós-gate. Requer mudança cirúrgica no
-   orchestrator-stage-4.md e hashing de conteúdo.
+2. **#2 — Re-humanização parcial no Stage 4** (já resolvido, #3446): segundo
+   maior impacto para edições com múltiplos loops de ajuste pós-gate. Hashing
+   por-seção + verificação de escopo determinística.
 3. **#6 — MCP outputs Beehiiv**: baixo risco de implementar (encapsular em TS)
    e elimina 40–60KB de JSON de post body do contexto do orchestrator no Stage 5–6.
 

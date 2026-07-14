@@ -394,16 +394,9 @@ Output: `{ categorized, stats }`. Logar `stats.date_corrected`, `stats.fetch_fai
 
 **#1554 P2 — `--link-verify-json`**: passa o output do passo 1i (verify-accessibility). Verify-accessibility já fetcha cada URL e extrai `published_date` inline durante o GET. Quando esse campo está populado, o script aqui faz pre-skip do verifyDate (sem novo HTTP GET) — economiza 2-4 min em edições com 70+ artigos. URLs sem pre-extracted date (browser fallback, HEAD-only, fetch failed) caem no caminho normal de verifyDate.
 
-### 1p2. ~~Research-reviewer (agent Haiku, Filtro 2)~~ — REMOVIDO em P3 #1553
+### 1p2. ~~Research-reviewer~~ — REMOVIDO #1553 (theme dedup agora é `dedup.ts` Pass 1c/1d)
 
-Removido em 2026-05-27 (#1553). O Filtro 2 (theme dedup contra past-editions) é agora coberto deterministicamente por `dedup.ts` Pass 1d (#1475 — theme-entity match) e Pass 1c (Jaccard subject similarity com threshold lowered #1331 quando entidades coincidem). O agent Haiku custava ~1-2min por edição e removia tipicamente apenas 2-5 artigos que dedup.ts já capturava.
-
-Se em produção surgirem casos de tema repetido escapando dedup.ts, considerar:
-- Lower `subjectVsPastThreshold` de 0.6 para 0.55 globalmente
-- Adicionar entidades extras ao `pastThemeEntities` parser
-- Re-introduzir o agent como fallback opcional
-
-Input do scorer (1q) agora vem direto de `tmp-dates-reviewed.json` (output de 1p1).
+Se tema repetido escapar de `dedup.ts`: considerar lower `subjectVsPastThreshold` (0.6→0.55) ou re-introduzir o agent como fallback. Input do scorer (1q) vem direto de `tmp-dates-reviewed.json` (output de 1p1).
 
 ### 1q. Scorer (chunked-parallel, #1611)
 
