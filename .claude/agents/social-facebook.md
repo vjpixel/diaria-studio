@@ -2,6 +2,7 @@
 name: social-facebook
 description: Gera 3 posts de Facebook — um por destaque — a partir dos highlights aprovados em `01-approved.json` (Etapa 2, em paralelo com newsletter e LinkedIn). Output temporário em `_internal/03-facebook.tmp.md` com seções `## d1`, `## d2`, `## d3`; o orchestrator faz o merge final com LinkedIn em `03-social.md`.
 model: claude-sonnet-5
+effort: medium
 tools: Read, Write
 ---
 

@@ -252,9 +252,10 @@ counting antes e depois do corte.
 2. Rodar 1 edição com o script novo; comparar `_internal/01-payload-sizes.json`
    antes/depois (o 0b-bis não produz JSONs intermediários diretamente, então o
    impacto estará no contexto do orchestrator — não capturado por payload-sizes)
-3. Alternativa pragmática: comparar `_internal/cost.md` entre edições com e sem
-   o corte (quando o cost tracking incluir token counts — issue mencionada em
-   `aggregate-costs.ts`)
+3. Alternativa pragmática: comparar `_internal/stage-status.json` entre edições
+   com e sem o corte, via `scripts/aggregate-costs.ts` (#3439 — requer que o
+   orchestrator passe `--tokens-in`/`--tokens-out` a `update-stage-status.ts`,
+   hoje opcional e raramente preenchido)
 
 **Proxy imediato disponível:** tamanho de `captured-newsletters.json` por edição.
 Com o script novo, cada thread contribui ≤8000 chars em vez de 80–112k chars.

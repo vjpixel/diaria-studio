@@ -1,14 +1,24 @@
 /**
  * aggregate-costs.ts
  *
- * Agrega cost.md de todas as edições em `data/editions/*\/_internal/cost.md`
- * e gera relatório consolidado em `data/cost-summary.md`.
+ * Agrega `stage-status.json` de todas as edições em
+ * `data/editions/*\/_internal/stage-status.json` e gera relatório consolidado
+ * em `data/cost-summary.md`.
  *
- * Formato esperado de cada cost.md (do orchestrator):
- *   | Stage | Início | Fim | Chamadas | Haiku | Sonnet | [Opus] |
+ * #3439: `_internal/cost.md` foi removido em #1217 (redundante com
+ * stage-status, nunca foi preenchido na prática — ver orchestrator.md §
+ * "Cost + timing tracking"). Este script lia um arquivo que não existe mais
+ * desde então; `cost-summary.md` sempre saía vazio. `stage-status.json` é o
+ * single source of truth atual (timing + custo + tokens + modelos por stage,
+ * `scripts/update-stage-status.ts`) — este script lê de lá.
  *
- * Colunas adicionais (ex: Opus) são detectadas automaticamente via parser
- * de tabela markdown. Ausência de colunas vira zero.
+ * `cost_usd`/`tokens_in`/`tokens_out`/`models` em `stage-status.json` só são
+ * preenchidos quando o orchestrator passa `--cost-usd`/`--tokens-in`/
+ * `--tokens-out`/`--models` ao `update-stage-status.ts` — hoje isso é opcional
+ * e raramente populado (o orchestrator não tem acesso programático a
+ * `usage` das chamadas de subagent). Este script agrega o que existir e
+ * estima $ a partir de tokens quando os campos estão presentes; edições sem
+ * esses campos contam para timing mas ficam com custo "-".
  *
  * Uso:
  *   npx tsx scripts/aggregate-costs.ts [--since AAMMDD] [--until AAMMDD] [--out <path>]
@@ -29,117 +39,174 @@ import { editionsRoot } from "./lib/edition-paths.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
 export interface StageCost {
-  stage: string;
-  calls: number;
-  haiku: number;
-  sonnet: number;
-  opus: number;
+  stage: number;
+  label: string;
+  status: string;
+  durationMs: number;
+  costUsd: number | undefined;
+  tokensIn: number;
+  tokensOut: number;
+  models: string[];
+}
+
+export interface EditionTotals {
+  durationMs: number;
+  costUsd: number;
+  costEstimated: boolean;
+  tokensIn: number;
+  tokensOut: number;
 }
 
 export interface EditionCost {
   edition: string;
   month: string; // AAMM
   stages: StageCost[];
-  totals: { calls: number; haiku: number; sonnet: number; opus: number };
+  totals: EditionTotals;
+}
+
+interface RawStageRow {
+  stage: number;
+  status?: string;
+  duration_ms?: number;
+  cost_usd?: number;
+  tokens_in?: number;
+  tokens_out?: number;
+  models?: string[];
+}
+
+interface RawStageStatusDoc {
+  edition?: string;
+  rows?: RawStageRow[];
+}
+
+const STAGE_LABELS: Record<number, string> = {
+  0: "Setup + dedup",
+  1: "Pesquisa",
+  2: "Escrita",
+  3: "Imagens",
+  4: "Revisão",
+  5: "Publicação",
+  6: "Agendamento",
+};
+
+/**
+ * Parseia `stage-status.json` (schema de `scripts/lib/update-stage-status.ts`
+ * — StageStatusDoc). Tolera docs sem os campos opcionais de custo/tokens
+ * (legado, ou stage ainda não instrumentado).
+ */
+export function parseStageStatusJson(content: string): StageCost[] {
+  let doc: RawStageStatusDoc;
+  try {
+    doc = JSON.parse(content);
+  } catch {
+    return [];
+  }
+  if (!doc || !Array.isArray(doc.rows)) return [];
+
+  return doc.rows
+    .filter((r) => r && typeof r.stage === "number")
+    .map((r) => ({
+      stage: r.stage,
+      label: STAGE_LABELS[r.stage] ?? `Stage ${r.stage}`,
+      status: r.status ?? "pending",
+      durationMs: r.duration_ms ?? 0,
+      costUsd: r.cost_usd,
+      tokensIn: r.tokens_in ?? 0,
+      tokensOut: r.tokens_out ?? 0,
+      models: Array.isArray(r.models) ? r.models : [],
+    }));
+}
+
+// ---------------------------------------------------------------------------
+// Pricing (#3437 context — auditoria de model mix; ver skill claude-api)
+// ---------------------------------------------------------------------------
+
+interface PricingEntry {
+  inputPer1M: number;
+  outputPer1M: number;
+}
+
+const OPUS_PRICING: PricingEntry = { inputPer1M: 5, outputPer1M: 25 };
+const SONNET_PRICING_STANDARD: PricingEntry = { inputPer1M: 3, outputPer1M: 15 };
+const SONNET_PRICING_INTRO: PricingEntry = { inputPer1M: 2, outputPer1M: 10 };
+const HAIKU_PRICING: PricingEntry = { inputPer1M: 1, outputPer1M: 5 };
+
+// Sonnet 5 intro pricing ($2/$10) vale até 2026-08-31 (#3437); depois volta a $3/$15.
+const SONNET_5_INTRO_END = Date.UTC(2026, 7, 31, 23, 59, 59); // month is 0-indexed: 7 = August
+
+/** "AAMMDD" (ex: "260424") → epoch ms (UTC, meio-dia pra evitar off-by-one de fuso). */
+function editionDateMs(edition: string): number | null {
+  const m = edition.match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (!m) return null;
+  const [, yy, mm, dd] = m;
+  return Date.UTC(2000 + Number(yy), Number(mm) - 1, Number(dd), 12);
 }
 
 /**
- * Parseia tabela markdown do cost.md e retorna entries por stage.
- * Aceita variação de colunas (ordem + presença de Opus).
+ * Resolve pricing por tier a partir de um model string livre (ex:
+ * "haiku-4-5", "claude-opus-4-7", "gemini", "sonnet-4-6"). Retorna `null` pra
+ * modelos não-Claude (ex: Gemini na Etapa 3) — não há tier a precificar.
  */
-export function parseCostMd(content: string): StageCost[] {
-  const lines = content.split("\n");
-  let headerIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^\|\s*Stage\s*\|/i.test(lines[i])) {
-      headerIdx = i;
-      break;
-    }
+function resolvePricing(modelString: string, editionMs: number | null): PricingEntry | null {
+  const s = modelString.toLowerCase();
+  if (s.includes("opus")) return OPUS_PRICING;
+  if (s.includes("sonnet")) {
+    const isIntro = editionMs !== null && editionMs <= SONNET_5_INTRO_END;
+    return isIntro ? SONNET_PRICING_INTRO : SONNET_PRICING_STANDARD;
   }
-  if (headerIdx === -1) return [];
-
-  const headerCells = lines[headerIdx]
-    .split("|")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  const colIdx: Record<string, number> = {};
-  headerCells.forEach((h, i) => {
-    colIdx[h] = i;
-  });
-
-  const stageCol = colIdx["stage"] ?? 0;
-  const callsCol = colIdx["chamadas"];
-  const haikuCol = colIdx["haiku"];
-  const sonnetCol = colIdx["sonnet"];
-  const opusCol = colIdx["opus"];
-
-  const stages: StageCost[] = [];
-  // Data rows start after separator line (|----|----)
-  let dataStart = headerIdx + 2;
-  for (let i = dataStart; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim().startsWith("|")) break;
-    if (/^\|\s*-+/.test(line)) continue;
-
-    const cells = line.split("|").map((s) => s.trim());
-    // Remove leading/trailing empty from pipe-wrapped
-    if (cells[0] === "") cells.shift();
-    if (cells[cells.length - 1] === "") cells.pop();
-    if (cells.length === 0) continue;
-
-    const stage = cells[stageCol] ?? "?";
-    if (!stage || stage === "-") continue;
-
-    const callsStr = callsCol != null ? cells[callsCol] ?? "" : "";
-    const calls = parseCallsCount(callsStr);
-
-    stages.push({
-      stage,
-      calls,
-      haiku: parseNumber(haikuCol != null ? cells[haikuCol] : "0"),
-      sonnet: parseNumber(sonnetCol != null ? cells[sonnetCol] : "0"),
-      opus: parseNumber(opusCol != null ? cells[opusCol] : "0"),
-    });
-  }
-  return stages;
+  if (s.includes("haiku")) return HAIKU_PRICING;
+  return null;
 }
 
 /**
- * "writer:1, clarice:3, source:5" → 9
- * Tolera formato "N" puro.
+ * Estima custo de um stage a partir de tokens_in/tokens_out quando `models`
+ * lista exatamente 1 tier Claude (não dá pra atribuir tokens por modelo
+ * quando o stage mistura tiers — ex: Stage 1 roda Haiku researchers +
+ * Sonnet scorer sob o mesmo total). Retorna `undefined` quando não é
+ * possível estimar (0 ou 2+ modelos, ou modelo não-Claude).
  */
-function parseCallsCount(raw: string): number {
-  if (!raw || raw === "-") return 0;
-  const nums = raw.match(/\d+/g);
-  if (!nums) return 0;
-  // Se tiver só um número, é o total direto
-  if (nums.length === 1 && !raw.includes(":")) return Number(nums[0]);
-  // Se tiver formato "agent:N, agent:N", somar os N
-  return nums.reduce((sum, n) => sum + Number(n), 0);
+function estimateStageCostUsd(stage: StageCost, editionMs: number | null): number | undefined {
+  if (stage.models.length !== 1) return undefined;
+  const pricing = resolvePricing(stage.models[0], editionMs);
+  if (!pricing) return undefined;
+  const inputCost = (stage.tokensIn / 1_000_000) * pricing.inputPer1M;
+  const outputCost = (stage.tokensOut / 1_000_000) * pricing.outputPer1M;
+  return inputCost + outputCost;
 }
 
-function parseNumber(raw: string | undefined): number {
-  if (!raw || raw === "-") return 0;
-  const n = Number(raw.trim());
-  return isNaN(n) ? 0 : n;
-}
-
-function totalsFromStages(stages: StageCost[]) {
-  return stages.reduce(
-    (acc, s) => ({
-      calls: acc.calls + s.calls,
-      haiku: acc.haiku + s.haiku,
-      sonnet: acc.sonnet + s.sonnet,
-      opus: acc.opus + s.opus,
-    }),
-    { calls: 0, haiku: 0, sonnet: 0, opus: 0 },
-  );
-}
+// ---------------------------------------------------------------------------
+// Aggregation
+// ---------------------------------------------------------------------------
 
 export interface AggregateOptions {
   editionsDir: string;
   since?: string; // AAMMDD
   until?: string; // AAMMDD
+}
+
+function totalsFromStages(stages: StageCost[], editionMs: number | null): EditionTotals {
+  let costUsd = 0;
+  let costEstimated = false;
+  let durationMs = 0;
+  let tokensIn = 0;
+  let tokensOut = 0;
+
+  for (const s of stages) {
+    durationMs += s.durationMs;
+    tokensIn += s.tokensIn;
+    tokensOut += s.tokensOut;
+    if (s.costUsd != null) {
+      costUsd += s.costUsd;
+    } else {
+      const estimated = estimateStageCostUsd(s, editionMs);
+      if (estimated != null) {
+        costUsd += estimated;
+        costEstimated = true;
+      }
+    }
+  }
+
+  return { durationMs, costUsd, costEstimated, tokensIn, tokensOut };
 }
 
 export function aggregateCosts(opts: AggregateOptions): EditionCost[] {
@@ -154,89 +221,133 @@ export function aggregateCosts(opts: AggregateOptions): EditionCost[] {
   for (const edition of dirs) {
     if (opts.since && edition < opts.since) continue;
     if (opts.until && edition > opts.until) continue;
-    const costPath = resolve(editionDirsByAammdd.get(edition)!, "_internal/cost.md");
-    if (!existsSync(costPath)) continue;
-    const content = readFileSync(costPath, "utf8");
-    const stages = parseCostMd(content);
+    const statusPath = resolve(editionDirsByAammdd.get(edition)!, "_internal/stage-status.json");
+    if (!existsSync(statusPath)) continue;
+    const content = readFileSync(statusPath, "utf8");
+    const stages = parseStageStatusJson(content);
     if (stages.length === 0) continue;
+    const editionMs = editionDateMs(edition);
     editions.push({
       edition,
       month: edition.slice(0, 4), // AAMM
       stages,
-      totals: totalsFromStages(stages),
+      totals: totalsFromStages(stages, editionMs),
     });
   }
   editions.sort((a, b) => a.edition.localeCompare(b.edition));
   return editions;
 }
 
-function groupByMonth(
-  editions: EditionCost[],
-): Record<string, { count: number; totals: { calls: number; haiku: number; sonnet: number; opus: number } }> {
-  const by: Record<string, { count: number; totals: { calls: number; haiku: number; sonnet: number; opus: number } }> = {};
+// ---------------------------------------------------------------------------
+// Grouping + formatting
+// ---------------------------------------------------------------------------
+
+interface GroupTotals {
+  durationMs: number;
+  costUsd: number;
+  costEstimated: boolean;
+  tokensIn: number;
+  tokensOut: number;
+}
+
+function emptyGroupTotals(): GroupTotals {
+  return { durationMs: 0, costUsd: 0, costEstimated: false, tokensIn: 0, tokensOut: 0 };
+}
+
+function addTotals(acc: GroupTotals, t: EditionTotals): void {
+  acc.durationMs += t.durationMs;
+  acc.costUsd += t.costUsd;
+  acc.costEstimated = acc.costEstimated || t.costEstimated;
+  acc.tokensIn += t.tokensIn;
+  acc.tokensOut += t.tokensOut;
+}
+
+function groupByMonth(editions: EditionCost[]): Record<string, { count: number; totals: GroupTotals }> {
+  const by: Record<string, { count: number; totals: GroupTotals }> = {};
   for (const ed of editions) {
-    if (!by[ed.month]) {
-      by[ed.month] = { count: 0, totals: { calls: 0, haiku: 0, sonnet: 0, opus: 0 } };
-    }
+    if (!by[ed.month]) by[ed.month] = { count: 0, totals: emptyGroupTotals() };
     by[ed.month].count += 1;
-    by[ed.month].totals.calls += ed.totals.calls;
-    by[ed.month].totals.haiku += ed.totals.haiku;
-    by[ed.month].totals.sonnet += ed.totals.sonnet;
-    by[ed.month].totals.opus += ed.totals.opus;
+    addTotals(by[ed.month].totals, ed.totals);
   }
   return by;
 }
 
 function groupByStage(
   editions: EditionCost[],
-): Record<string, { editions: number; totals: { calls: number; haiku: number; sonnet: number; opus: number } }> {
-  const by: Record<string, { editions: number; totals: { calls: number; haiku: number; sonnet: number; opus: number } }> = {};
+): Record<string, { label: string; editions: number; totals: GroupTotals }> {
+  const by: Record<string, { label: string; editions: number; totals: GroupTotals }> = {};
   for (const ed of editions) {
     for (const s of ed.stages) {
-      if (!by[s.stage]) {
-        by[s.stage] = { editions: 0, totals: { calls: 0, haiku: 0, sonnet: 0, opus: 0 } };
+      const key = String(s.stage);
+      if (!by[key]) by[key] = { label: s.label, editions: 0, totals: emptyGroupTotals() };
+      by[key].editions += 1;
+      by[key].totals.durationMs += s.durationMs;
+      by[key].totals.tokensIn += s.tokensIn;
+      by[key].totals.tokensOut += s.tokensOut;
+      if (s.costUsd != null) {
+        by[key].totals.costUsd += s.costUsd;
+      } else {
+        const estimated = estimateStageCostUsd(s, editionDateMs(ed.edition));
+        if (estimated != null) {
+          by[key].totals.costUsd += estimated;
+          by[key].totals.costEstimated = true;
+        }
       }
-      by[s.stage].editions += 1;
-      by[s.stage].totals.calls += s.calls;
-      by[s.stage].totals.haiku += s.haiku;
-      by[s.stage].totals.sonnet += s.sonnet;
-      by[s.stage].totals.opus += s.opus;
     }
   }
   return by;
 }
 
-function formatMonthTable(
-  byMonth: Record<string, { count: number; totals: { calls: number; haiku: number; sonnet: number; opus: number } }>,
-): string {
+function fmtDuration(ms: number): string {
+  if (!ms) return "-";
+  const totalMin = Math.round(ms / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  return h > 0 ? `${h}h${m.toString().padStart(2, "0")}m` : `${m}m`;
+}
+
+function fmtCost(usd: number, estimated: boolean): string {
+  if (!usd) return "-";
+  const val = usd < 0.01 ? usd.toFixed(4) : usd.toFixed(2);
+  return estimated ? `~$${val}` : `$${val}`;
+}
+
+function fmtTokens(n: number): string {
+  if (!n) return "-";
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1_000_000).toFixed(2)}M`;
+}
+
+function formatMonthTable(byMonth: Record<string, { count: number; totals: GroupTotals }>): string {
   const months = Object.keys(byMonth).sort();
   if (months.length === 0) return "_Sem dados por mês._";
   const lines: string[] = [
-    "| Mês | Edições | Chamadas | Haiku | Sonnet | Opus |",
-    "|---|---:|---:|---:|---:|---:|",
+    "| Mês | Edições | Duração | Custo | Tokens (in/out) |",
+    "|---|---:|---:|---:|---:|",
   ];
   for (const m of months) {
     const b = byMonth[m];
     lines.push(
-      `| ${m} | ${b.count} | ${b.totals.calls} | ${b.totals.haiku} | ${b.totals.sonnet} | ${b.totals.opus} |`,
+      `| ${m} | ${b.count} | ${fmtDuration(b.totals.durationMs)} | ${fmtCost(b.totals.costUsd, b.totals.costEstimated)} | ${fmtTokens(b.totals.tokensIn)}/${fmtTokens(b.totals.tokensOut)} |`,
     );
   }
   return lines.join("\n");
 }
 
 function formatStageTable(
-  byStage: Record<string, { editions: number; totals: { calls: number; haiku: number; sonnet: number; opus: number } }>,
+  byStage: Record<string, { label: string; editions: number; totals: GroupTotals }>,
 ): string {
-  const stages = Object.keys(byStage).sort();
+  const stages = Object.keys(byStage).sort((a, b) => Number(a) - Number(b));
   if (stages.length === 0) return "_Sem dados por stage._";
   const lines: string[] = [
-    "| Stage | Edições | Chamadas | Haiku | Sonnet | Opus |",
-    "|---|---:|---:|---:|---:|---:|",
+    "| Stage | Edições | Duração | Custo | Tokens (in/out) |",
+    "|---|---:|---:|---:|---:|",
   ];
   for (const s of stages) {
     const b = byStage[s];
     lines.push(
-      `| ${s} | ${b.editions} | ${b.totals.calls} | ${b.totals.haiku} | ${b.totals.sonnet} | ${b.totals.opus} |`,
+      `| ${s} — ${b.label} | ${b.editions} | ${fmtDuration(b.totals.durationMs)} | ${fmtCost(b.totals.costUsd, b.totals.costEstimated)} | ${fmtTokens(b.totals.tokensIn)}/${fmtTokens(b.totals.tokensOut)} |`,
     );
   }
   return lines.join("\n");
@@ -246,18 +357,14 @@ export function formatSummary(editions: EditionCost[], generatedAt: Date = new D
   const byMonth = groupByMonth(editions);
   const byStage = groupByStage(editions);
 
-  const total = editions.reduce(
-    (acc, e) => ({
-      calls: acc.calls + e.totals.calls,
-      haiku: acc.haiku + e.totals.haiku,
-      sonnet: acc.sonnet + e.totals.sonnet,
-      opus: acc.opus + e.totals.opus,
-    }),
-    { calls: 0, haiku: 0, sonnet: 0, opus: 0 },
-  );
+  const total = editions.reduce((acc, e) => {
+    addTotals(acc, e.totals);
+    return acc;
+  }, emptyGroupTotals());
 
   const topExpensive = [...editions]
-    .sort((a, b) => b.totals.calls - a.totals.calls)
+    .filter((e) => e.totals.costUsd > 0)
+    .sort((a, b) => b.totals.costUsd - a.totals.costUsd)
     .slice(0, 5);
 
   return `# Cost Summary — Diar.ia
@@ -267,10 +374,9 @@ Edições agregadas: ${editions.length}
 
 ## Totais gerais
 
-- **Chamadas**: ${total.calls}
-- **Haiku**: ${total.haiku}
-- **Sonnet**: ${total.sonnet}
-- **Opus**: ${total.opus}
+- **Duração**: ${fmtDuration(total.durationMs)}
+- **Custo**: ${fmtCost(total.costUsd, total.costEstimated)}
+- **Tokens**: ${fmtTokens(total.tokensIn)} in / ${fmtTokens(total.tokensOut)} out
 
 ## Por mês
 
@@ -280,15 +386,16 @@ ${formatMonthTable(byMonth)}
 
 ${formatStageTable(byStage)}
 
-## Top 5 edições mais caras (por chamadas totais)
+## Top 5 edições mais caras (por custo)
 
-${topExpensive.length === 0 ? "_Nenhuma edição._" : topExpensive
-  .map((e, i) => `${i + 1}. ${e.edition} — ${e.totals.calls} chamadas (H=${e.totals.haiku} S=${e.totals.sonnet} O=${e.totals.opus})`)
+${topExpensive.length === 0 ? "_Nenhuma edição com custo registrado ou estimável._" : topExpensive
+  .map((e, i) => `${i + 1}. ${e.edition} — ${fmtCost(e.totals.costUsd, e.totals.costEstimated)} (${fmtTokens(e.totals.tokensIn)}/${fmtTokens(e.totals.tokensOut)} tokens)`)
   .join("\n")}
 
 ---
-_Nota: o cost.md atual registra contagens de chamada por modelo, não tokens nem $._
-_Estimativa monetária requer incluir token counts em cost.md (follow-up)._
+_Fonte: \`_internal/stage-status.json\` por edição (#3439 — \`_internal/cost.md\` foi removido em #1217 e nunca chegou a ser reintroduzido; este relatório lê o schema atual)._
+_Custo prefixado com "~" é estimado a partir de tokens_in/tokens_out via tabela de pricing (só quando o stage roda 1 único tier Claude); sem "~" veio direto de \`cost_usd\` gravado pelo orchestrator._
+_\`cost_usd\`/\`tokens_in\`/\`tokens_out\`/\`models\` só existem quando o orchestrator os passou explicitamente ao \`update-stage-status.ts\` — hoje é opcional e raramente preenchido; edições sem esses campos contam pra duração mas ficam com custo "-"._
 `;
 }
 
