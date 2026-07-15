@@ -193,6 +193,30 @@ function loadSocialPreviewUrl(editionDir: string): string | null {
   }
 }
 
+/**
+ * #3466: URL do preview da newsletter (Worker-hosted, com hash de conteúdo),
+ * persistida em `_internal/04-newsletter-url.json` campo `newsletter_url`
+ * pelo `upload-html-public.ts --persist-to` no Stage 4 (§4b/§4c do
+ * orchestrator-stage-4.md). ANTES do fix, este script lia
+ * `published.draft_preview_url` de `05-published.json` — um campo que NENHUM
+ * script do pipeline escreve (nunca existiu nesse arquivo); o relatório
+ * sempre caía no fallback "(preview indisponível)". `04-newsletter-url.json`
+ * é o arquivo correto — não usa dual-path (`resolveReadPath`) porque é um
+ * arquivo novo (#3420-era), sempre em `_internal/`, sem edições legadas na
+ * raiz. Retorna null se ausente/corrompido/campo não-string (best-effort,
+ * nunca lança) — mesmo comportamento de degradação de `loadSocialPreviewUrl`.
+ */
+export function loadNewsletterUrl(editionDir: string): string | null {
+  const path = resolve(editionDir, "_internal", "04-newsletter-url.json");
+  if (!existsSync(path)) return null;
+  try {
+    const j = JSON.parse(readFileSync(path, "utf8")) as { newsletter_url?: unknown };
+    return typeof j.newsletter_url === "string" ? j.newsletter_url : null;
+  } catch {
+    return null;
+  }
+}
+
 interface LogEntry {
   timestamp?: string;
   edition?: string | null;
@@ -311,6 +335,7 @@ export function renderHtmlReport(
   errors: LogEntry[],
   braveCredits: BraveCreditStats | null = null, // #1558
   socialPreviewUrl: string | null = null, // #1739
+  newsletterUrl: string | null = null, // #3466
 ): string {
   // #1609: total = soma do tempo de pipeline (sem aguardo de gate). Marca
   // visualmente quando algum stage caiu no fallback duration_ms (inclui gate).
@@ -346,16 +371,18 @@ export function renderHtmlReport(
     )
     .join("\n");
 
-  // Preview link. #1739/#1612: usar SÓ o `draft_preview_url` persistido.
+  // Preview link. #3466: usar SÓ o `newsletterUrl` (lido de
+  // `_internal/04-newsletter-url.json` campo `newsletter_url` pelo caller —
+  // ver `loadNewsletterUrl`). ANTES lia `published.draft_preview_url`, campo
+  // que nenhum script do pipeline escreve em `05-published.json` — o preview
+  // nunca aparecia no relatório (#3466).
   // #1824: sem URL persistida, deixar null → o render mostra
   // "(preview indisponível)" em vez de um link quebrado.
   // #3214 migrou a URL pra Claude Artifact; #3420 reverteu pro draft worker
   // Cloudflare (Worker-hosted) — o campo/contrato de persistência não mudou.
-  const persistedPreview = (published as { draft_preview_url?: unknown } | null)
-    ?.draft_preview_url;
   const previewUrl =
-    typeof persistedPreview === "string" && persistedPreview.length > 0
-      ? persistedPreview
+    typeof newsletterUrl === "string" && newsletterUrl.length > 0
+      ? newsletterUrl
       : null;
 
   // Warnings/errors summary
@@ -423,7 +450,7 @@ export function renderHtmlReport(
   <p>📄 Preview newsletter (Worker): ${
     previewUrl
       ? `<a href="${escapeHtml(previewUrl)}">${escapeHtml(previewUrl)}</a>`
-      : `<span style="color:#999;">(preview indisponível — draft_preview_url não persistido)</span>`
+      : `<span style="color:#999;">(preview indisponível — newsletter_url não persistido)</span>`
   }</p>
   <p>📱 Preview social (Worker): ${
     socialPreviewUrl
@@ -570,6 +597,7 @@ export function writeEditionReport(
     errors,
     braveCredits,
     loadSocialPreviewUrl(editionDir),
+    loadNewsletterUrl(editionDir), // #3466
   );
   const { md5, absOut } = writeReportFile(editionDir, outPath, html);
   return { md5, outPath: absOut };
@@ -614,6 +642,7 @@ async function main(): Promise<void> {
     errors,
     braveCredits,
     loadSocialPreviewUrl(editionDir), // #1739
+    loadNewsletterUrl(editionDir), // #3466
   );
 
   // #1579: quando --out passado, escreve arquivo + grava manifest com md5

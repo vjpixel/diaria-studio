@@ -728,7 +728,15 @@ Apresentar ao usuário:
 
 ### 1y. Pós-gate (quando aprovado)
 
-- **Pull do MD** (o editor pode ter editado no Drive):
+- **`auto_approve = true` (#3459):** pular o pull do MD e chamar `apply-gate-edits.ts` com `--auto` em vez de `--md` (não há edição humana pra aplicar):
+  ```bash
+  npx tsx scripts/apply-gate-edits.ts \
+    --auto \
+    --json data/editions/{AAMMDD}/_internal/01-categorized.json \
+    --out data/editions/{AAMMDD}/_internal/01-approved.json
+  ```
+  `--auto` simula um MD sem edição (seção Destaques vazia, buckets intactos) e aplica o mesmo slice `highlights: first-3` do fluxo com gate — **nunca copiar `01-categorized.json` literal pra `01-approved.json`** (preservaria os 6 highlights do scorer em vez de 3). Seguir direto pro passo "Pós-gate-apply invariants" abaixo (pula o re-render/validate-lancamentos/push do MD — não há edição do editor pra refletir).
+- **Gate humano normal — pull do MD** (o editor pode ter editado no Drive):
   ```bash
   npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md
   ```

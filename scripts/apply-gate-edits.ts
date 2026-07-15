@@ -219,23 +219,36 @@ function buildHighlight(
 }
 
 function main() {
-  const args = parseArgs(process.argv.slice(2));
+  // #3459: `--auto` é uma flag booleana (sem valor). `parseArgsSimple` (aliased
+  // `parseArgs` neste arquivo) só entende pares `--key value` — um `--auto`
+  // solto seria mis-interpretado como consumindo o PRÓXIMO argumento como seu
+  // valor (ex: `--auto --json foo.json` faria `auto="--json"` e dropraria
+  // `--json`/`foo.json` do parse). Filtra `--auto` do argv antes de parsear.
+  const rawArgv = process.argv.slice(2);
+  const autoMode = rawArgv.includes("--auto");
+  const args = parseArgs(rawArgv.filter((a) => a !== "--auto"));
   const mdPath = args["md"];
   const jsonPath = args["json"];
   const outPath = args["out"];
   const inboxMdPath = args["inbox-md"] ?? resolve(ROOT, "data/inbox.md");
+  // Modo auto-approve (`--no-gates`) do gate do Stage 1. Sem MD editado por
+  // humano — o orchestrator antes copiava _internal/01-categorized.json
+  // literal para 01-approved.json, preservando os 6 highlights do scorer em
+  // vez de aplicar o slice de first-3 que o fluxo humano aplica via
+  // resolveDestaques (quando a seção Destaques do MD está vazia). Com
+  // --auto, simulamos exatamente esse "MD sem edição" — Destaques vazio,
+  // buckets intactos na ordem original — reusando o MESMO resolveDestaques
+  // e todo o pipeline de coverage/sanitize abaixo, sem precisar do arquivo MD.
 
-  if (!mdPath || !jsonPath || !outPath) {
+  if (!jsonPath || !outPath || (!autoMode && !mdPath)) {
     console.error(
-      "Uso: apply-gate-edits.ts --md <categorized.md> --json <categorized.json> --out <approved.json> [--inbox-md <path>]",
+      "Uso: apply-gate-edits.ts --json <categorized.json> --out <approved.json> (--md <categorized.md> | --auto) [--inbox-md <path>]",
     );
     process.exit(1);
   }
 
-  const md = readFileSync(mdPath, "utf8");
   const data: CategorizedJson = JSON.parse(readFileSync(jsonPath, "utf8"));
 
-  const sections = parseSections(md);
   const originalHighlights = data.highlights ?? [];
   const originalBuckets = {
     lancamento: data.lancamento ?? [],
@@ -244,6 +257,16 @@ function main() {
     video: data.video ?? [],
   };
   const allPools = [originalBuckets.lancamento, originalBuckets.radar, originalBuckets.use_melhor, originalBuckets.video];
+
+  const sections: Record<BucketName, string[]> = autoMode
+    ? {
+        destaques: [],
+        lancamento: originalBuckets.lancamento.map((a) => a.url),
+        radar: originalBuckets.radar.map((a) => a.url),
+        use_melhor: originalBuckets.use_melhor.map((a) => a.url),
+        video: originalBuckets.video.map((a) => a.url),
+      }
+    : parseSections(readFileSync(mdPath!, "utf8"));
 
   // ---- Destaques ---------------------------------------------------------
   const destaquesUrls = resolveDestaques(sections, originalHighlights);

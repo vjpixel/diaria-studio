@@ -8,8 +8,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, utimesSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
 import { createHmac } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   uploadHtml,
   htmlPutSig,
@@ -766,5 +767,55 @@ describe("CLI guard — importar o módulo não dispara main() (#3386)", () => {
     assert.ok(existsSync(persistPath), "persistFieldToJsonFile deve ter escrito o arquivo (prova que main() não preemptou)");
     const written = JSON.parse(readFileSync(persistPath, "utf8"));
     assert.equal(written.newsletter_url, "https://example.com/regressao-3386");
+  });
+});
+
+describe("CLI guard — `tsx -e` com import ESTÁTICO não dispara main() (#3419)", () => {
+  // #3419: preocupação era que `persistFieldToJsonFile` importado via `tsx -e`
+  // (o CLI do tsx, não `node --import tsx -e` do teste #3386 acima) disparasse
+  // `main()` com argv incorreto, saindo silenciosamente (exit 0, sem output) e
+  // deixando arquivos como `04-newsletter-url.json` vazios.
+  //
+  // Investigação (#3419): `isMainModule` (scripts/lib/cli-args.ts) já cobre
+  // este caso — `tsx -e` internamente reduz a `node --eval <código>` (ver
+  // node_modules/tsx/dist/cli.mjs), e `process.argv[1]` fica `undefined` sob
+  // `--eval` em qualquer variante (nativo ou via tsx). `isMainModule` retorna
+  // `false` sempre que `argv1` é falsy — main() nunca dispara em modo eval,
+  // com import estático OU dinâmico. Este teste fecha a lacuna de cobertura:
+  // o teste #3386 acima só exercitava `node --import tsx -e` + `import()`
+  // dinâmico; aqui exercitamos o `tsx -e` literal citado na issue, com import
+  // ESTÁTICO (o padrão mais comum pra um one-liner de debug/recovery).
+  it("`node --import tsx -e` com import ESTÁTICO roda só a função exportada, sem side-effect de CLI", () => {
+    const projectRoot = join(import.meta.dirname, "..");
+    const dir = mkdtempSync(resolve(tmpdir(), "cli-guard-static-import-"));
+    const persistPath = resolve(dir, "04-newsletter-url.json").replace(/\\/g, "/");
+
+    // Import ESTÁTICO (não dynamic import()) — caminho relativo, como um
+    // one-liner de recovery rodado a partir da raiz do projeto (cwd=projectRoot).
+    const code =
+      "import { persistFieldToJsonFile } from './scripts/upload-html-public.ts'; " +
+      "console.log('IMPORT_OK:' + typeof persistFieldToJsonFile); " +
+      `persistFieldToJsonFile('${persistPath}', 'newsletter_url', 'https://example.com/regressao-3419'); ` +
+      "console.log('WRITE_OK');";
+
+    const r = spawnSync(process.execPath, ["--import", "tsx", "-e", code], {
+      encoding: "utf8",
+      cwd: projectRoot,
+    });
+
+    assert.equal(r.status, 0, `esperava exit 0, stderr: ${r.stderr}`);
+    assert.match(r.stdout, /IMPORT_OK:function/, "import estático deve expor persistFieldToJsonFile");
+    assert.match(r.stdout, /WRITE_OK/, "a função exportada deve rodar e completar (main() não pode preemptar)");
+
+    const combined = r.stdout + r.stderr;
+    assert.doesNotMatch(
+      combined,
+      /Uso: upload-html-public\.ts/,
+      "main() não deve rodar em import estático via tsx -e — nenhuma mensagem de uso de CLI esperada",
+    );
+
+    assert.ok(existsSync(persistPath), "persistFieldToJsonFile deve ter escrito o arquivo (prova que main() não preemptou)");
+    const written = JSON.parse(readFileSync(persistPath, "utf8"));
+    assert.equal(written.newsletter_url, "https://example.com/regressao-3419");
   });
 });
