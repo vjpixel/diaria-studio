@@ -183,29 +183,33 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
       "substitute-image-urls.ts precisa de --html newsletter-draft.html",
     );
 
-    // #3214: a republicação do preview pós-autofix migrou de upload-html-public.ts
-    // (Cloudflare draft worker) pra Artifact (Claude-hosted) — este bloco não deve
-    // mais chamar o script de upload; deve chamar Artifact reusando o file_path/url
-    // já persistidos, pra manter a MESMA URL (sem staleness a resolver).
+    // #3420: o preview do gate voltou a ser Worker-hosted (Cloudflare draft
+    // worker) — #3214 tinha migrado pra Claude Artifact, mas Artifacts rodam
+    // sob CSP estrita que bloqueia imagem remota (só `data:` URI), quebrando
+    // o preview visual sempre que o HTML referencia imagem http/https
+    // (regressão P1 detectada 260712). Revertido: este bloco deve chamar
+    // upload-html-public.ts de novo, NÃO o tool Artifact.
     assert.doesNotMatch(
       block,
-      /upload-html-public\.ts/,
-      "#3214: republicação pós-autofix não usa mais upload-html-public.ts (migrado pra Artifact)",
+      /\bArtifact\b/,
+      "#3420: republicação pós-autofix não deve mais chamar o tool Artifact (revertido pra Worker-hosted)",
     );
+    assert.doesNotMatch(
+      block,
+      /embed-images-base64\.ts/,
+      "#3420: sem Artifact não há mais CSP a contornar — não deve chamar embed-images-base64.ts",
+    );
+    // upload-html-public.ts: --no-wrap é OBRIGATÓRIO (#2550) — sobe o fragmento bruto,
+    // igual ao §4b. Sem ele, o HTML re-uploadado vai embrulhado no preview-wrapper.
     assert.match(
       block,
-      /Artifact/,
-      "#3214: republicação pós-autofix deve chamar o tool Artifact",
-    );
-    assert.match(
-      block,
-      /newsletter-final\.html/,
-      "#3214: Artifact deve republicar sobre newsletter-final.html (mesmo file_path do §4b step 2b)",
+      /upload-html-public\.ts[\s\S]*?--no-wrap/,
+      "#3420: upload-html-public.ts no re-render precisa de --no-wrap (fragmento bruto, #2550)",
     );
     assert.match(
       block,
       /04-newsletter-url\.json/,
-      "#3214: deve reusar a URL persistida em 04-newsletter-url.json (mesma URL, sem re-captura)",
+      "#3420: deve persistir a URL nova em 04-newsletter-url.json via --persist-to (Worker é content-hash-keyed, URL muda a cada upload)",
     );
   });
 
@@ -226,6 +230,109 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
       playbookSrc,
       /plan.*gated|gated.*plan|pago.*plano|plano.*pago/i,
       "playbook deve mencionar que o campo é plan-gated (#2340)",
+    );
+  });
+});
+
+// ── #3420: preview do gate volta a ser Worker-hosted (revert de #3214) ────
+// Claude Artifacts rodam sob CSP estrita que bloqueia carregamento de imagem
+// remota (só `data:` URI). newsletter-final.html/social-preview.html
+// referenciam URLs http/https de imagem — o preview nunca renderizava as
+// imagens dentro do Artifact (P1, editor não conseguia revisar antes do
+// gate). Fix: reverter o mecanismo de publicação do preview pra
+// upload-html-public.ts (Worker Cloudflare, sem CSP), tanto no Stage 4
+// quanto no re-render pós-dispatch social do Stage 5.
+
+describe("#3420: preview do Stage 4/5 é Worker-hosted, não Claude Artifact", () => {
+  it("orchestrator-stage-4.md §4b (steps 2b/3): publica o preview via upload-html-public.ts, não via Artifact/embed-images-base64", () => {
+    const stage4Src = readFileSync(
+      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
+      "utf8",
+    );
+
+    // Isolar o bloco do §4b (entre o step "2b." e o começo do §4c) — cobre a
+    // publicação inicial do preview de newsletter e social, o site real do
+    // bug original (não só o re-render pós-autofix, já coberto acima).
+    const blockStart = stage4Src.indexOf("2b. **Publicar preview");
+    assert.ok(blockStart >= 0, "step 2b (publicar preview) não encontrado");
+    const blockEnd = stage4Src.indexOf("### 4c.", blockStart);
+    assert.ok(blockEnd > blockStart, "início do §4c não encontrado após step 2b");
+    const block = stage4Src.slice(blockStart, blockEnd);
+
+    // `Artifact` entre backticks = sintaxe de invocação do tool (ex: "chamar
+    // `Artifact` com file_path..."). Prosa histórica mencionando "Claude
+    // Artifacts" (sem backticks, explicando o motivo do revert) é permitida.
+    assert.doesNotMatch(
+      block,
+      /`Artifact`/,
+      "#3420: publicação do preview (newsletter + social) não deve chamar o tool Artifact — CSP bloqueia imagem remota",
+    );
+    assert.doesNotMatch(
+      block,
+      /embed-images-base64\.ts/,
+      "#3420: sem Artifact não há CSP a contornar — não deve chamar embed-images-base64.ts pro preview diário",
+    );
+    assert.match(
+      block,
+      /upload-html-public\.ts/,
+      "#3420: publicação do preview de newsletter deve usar upload-html-public.ts (Worker Cloudflare)",
+    );
+    // Preview de social também precisa voltar a subir pro Worker.
+    assert.match(
+      block,
+      /upload-html-public\.ts[\s\S]*social_preview_url/,
+      "#3420: publicação do preview social também deve usar upload-html-public.ts (--persist-to/--field social_preview_url)",
+    );
+  });
+
+  it("orchestrator-stage-4.md: nenhuma instrução residual manda republicar preview via Artifact (edição inline, reordenação, humanização scoped)", () => {
+    const stage4Src = readFileSync(
+      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
+      "utf8",
+    );
+    assert.doesNotMatch(
+      stage4Src,
+      /republicar[^\n]*Artifact/i,
+      "#3420: nenhuma instrução de republicação de preview deve referenciar o tool Artifact",
+    );
+  });
+
+  it("orchestrator-stage-5.md §5f-ter: re-render do social preview pós-dispatch usa upload-html-public.ts, não Artifact/embed-images-base64", () => {
+    const stage5Src = readFileSync(
+      resolve(ROOT, ".claude/agents/orchestrator-stage-5.md"),
+      "utf8",
+    );
+
+    const blockStart = stage5Src.indexOf("### 5f-ter.");
+    assert.ok(blockStart >= 0, "§5f-ter (render social preview) não encontrado");
+    const block = stage5Src.slice(blockStart, blockStart + 1200);
+
+    assert.doesNotMatch(
+      block,
+      /`Artifact`/,
+      "#3420: §5f-ter não deve chamar o tool Artifact",
+    );
+    assert.doesNotMatch(
+      block,
+      /embed-images-base64\.ts/,
+      "#3420: §5f-ter não deve chamar embed-images-base64.ts",
+    );
+    assert.match(
+      block,
+      /upload-html-public\.ts[\s\S]*?--persist-to[\s\S]*?05-social-preview\.json/,
+      "#3420: §5f-ter deve re-upload via upload-html-public.ts --persist-to 05-social-preview.json",
+    );
+  });
+
+  it("scripts/upload-html-public.ts (mecanismo Worker-hosted) continua presente e exportando persistFieldToJsonFile", () => {
+    const scriptSrc = readFileSync(
+      resolve(ROOT, "scripts/upload-html-public.ts"),
+      "utf8",
+    );
+    assert.match(
+      scriptSrc,
+      /export function persistFieldToJsonFile/,
+      "upload-html-public.ts deve continuar exportando persistFieldToJsonFile (usado pelo --persist-to)",
     );
   });
 });

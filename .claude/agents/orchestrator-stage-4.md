@@ -96,7 +96,7 @@ npx tsx scripts/render-halt-banner.ts \
    npx tsx scripts/upload-images-public.ts --edition-dir {EDITION_DIR}/ --mode social
    ```
 
-2. Pre-render do newsletter HTML — seguir steps 1.1-1.3 do `context/publishers/beehiiv-playbook.md` (extract-destaques, upload-images-public, render-newsletter-html + substitute-image-urls). Output: `_internal/newsletter-final.html`. **Não** rodar o passo 5 Fase 2 do playbook (`upload-html-public.ts`) aqui — aquele upload é o mecanismo de PRODUÇÃO usado pelo `fetch()` in-page do Chrome na Etapa 5 (§5.2 Fase 3 do playbook) pra colar o HTML no Beehiiv, e roda de novo, fresco, quando a Etapa 5 executar o playbook completo. Repeti-lo aqui seria upload redundante só pra descartar.
+2. Pre-render do newsletter HTML — seguir steps 1.1-1.3 do `context/publishers/beehiiv-playbook.md` (extract-destaques, upload-images-public, render-newsletter-html + substitute-image-urls). Output: `_internal/newsletter-final.html`.
 
    **Exit codes de `substitute-image-urls.ts` (#2316, #2335):**
 
@@ -109,79 +109,21 @@ npx tsx scripts/render-halt-banner.ts \
 
    > **Exit 3 (#2316):** mensagem stderr: `[substitute-image-urls] ERRO: HTML de input está desatualizado`. Ação: re-renderizar e re-substituir. Ver beehiiv-playbook.md §1.3 para o exit-code table completo.
 
-2b. **Publicar preview via Claude Artifacts (#3214).** O preview visual pro editor — que ANTES subia pra `draft.diaria.workers.dev` via `upload-html-public.ts` — agora é publicado como Claude Artifact (hospedado pelo lado do Claude, zero custo de cota Cloudflare Workers KV, #3214). **Chamado direto pelo top-level Claude Code — não é um script, `Artifact` só existe como tool do top-level.**
-
-   **⚠️ Artifacts rodam sob CSP estrita que bloqueia imagem remota (só `data:` URI) — descoberto em 260712 (regressão silenciosa desde #3214).** `newsletter-final.html` referencia imagens em `poll.diaria.workers.dev` (URL externa) e nunca renderiza dentro do Artifact, mesmo com o domínio saudável — o e-mail real (Beehiiv) não é afetado, só este preview. **Sempre gerar uma variante com imagens embutidas antes de publicar:**
-   ```bash
-   npx tsx scripts/embed-images-base64.ts \
-     --html {EDITION_DIR}/_internal/newsletter-final.html \
-     --images {EDITION_DIR}/06-public-images.json \
-     --edition-dir {EDITION_DIR} \
-     --out {EDITION_DIR}/_internal/newsletter-preview-embedded.html
-   ```
-   **Exit 1 aqui é esperado quando `missing` não está vazio (#3370/#3393)** — não bloqueante, seguir normalmente checando o campo `missing` no JSON de stdout (imagem sem arquivo local mantém URL remota, só logar warn). Publicar o Artifact a partir de `newsletter-preview-embedded.html` (NUNCA `newsletter-final.html` diretamente — esse fica reservado pro upload real de produção na Etapa 5, que precisa de URLs reais, não `data:` URI).
-
-   Republicar no MESMO `file_path` mantém a MESMA URL **dentro da mesma conversa**; entre conversas (ex: resume dias depois numa sessão nova) republicar sem `url` explícito minta uma URL NOVA — por isso o resume-safety abaixo persiste a URL retornada e a reusa via o parâmetro `url` do tool:
-
-   ```bash
-   # Resume-aware: se já existe uma URL persistida (Stage 4 rodou antes, mesma ou outra sessão), reusar via `url` do Artifact tool.
-   node -e "
-     const fs = require('fs');
-     const p = '{EDITION_DIR}/_internal/04-newsletter-url.json';
-     if (fs.existsSync(p)) {
-       const j = JSON.parse(fs.readFileSync(p, 'utf8'));
-       if (j.newsletter_url) console.log(j.newsletter_url);
-     }
-   "
-   ```
-   Se o comando acima imprimir uma URL: chamar `Artifact` com `file_path: "{EDITION_DIR}/_internal/newsletter-preview-embedded.html"` e `url: "{url_impressa}"` (atualiza o MESMO artifact, mesma URL). Se não imprimir nada (1ª vez): chamar `Artifact` sem `url` (minta uma URL nova). Em ambos os casos, usar `description` curta (ex: "Preview newsletter — edição {AAMMDD}") e `favicon` fixo entre re-publicações da mesma edição (ex: 📰) — trocar o favicon lê como artifact diferente pro editor.
-
-   Capturar a URL retornada pelo tool (`{newsletter_url}`) e persistir. **Não usar `tsx -e` com `import` de `upload-html-public.ts` aqui** — descoberto em 260712 que esse padrão falha silenciosamente (exit 0, zero stdout, `persistFieldToJsonFile` nunca roda) por conflito entre o eval de `tsx -e` e os efeitos colaterais de módulo do arquivo importado; usar `node -e` com CommonJS puro, sem dependência do módulo:
-   ```bash
-   node -e "
-     const fs = require('fs');
-     const p = '{EDITION_DIR}/_internal/04-newsletter-url.json';
-     let j = {};
-     if (fs.existsSync(p)) { try { j = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {} }
-     j.newsletter_url = '{newsletter_url}';
-     fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
-   "
-   ```
+2b. **Publicar preview no Worker Cloudflare `draft.diaria.workers.dev` via `upload-html-public.ts` (#3420 — revertido de Claude Artifacts).** #3214 tinha migrado esse preview pra Claude Artifact pra economizar cota de Workers KV, mas Artifacts rodam sob CSP estrita que bloqueia imagem remota (só `data:` URI) — `newsletter-final.html` referencia imagens em `poll.diaria.workers.dev` e nunca renderizava dentro do Artifact (regressão P1 detectada 260712, editor não conseguia revisar visualmente antes do gate). Voltar ao Worker-hosted é confiável e sem restrição de CSP; o upload aqui é redundante com o que a Etapa 5 refaz na hora do dispatch real (§5.2 Fase 2 do playbook), mas é o único jeito do editor revisar visualmente ANTES do gate.
+    ```bash
+    npx tsx scripts/upload-html-public.ts --edition {AAMMDD} --no-wrap \
+      --html {EDITION_DIR}/_internal/newsletter-final.html \
+      --persist-to {EDITION_DIR}/_internal/04-newsletter-url.json \
+      --field newsletter_url
+    ```
+    **--no-wrap é OBRIGATÓRIO (#2550)** — sobe o fragmento bruto, preservando `{{email}}`; sem ele o HTML sobe embrulhado no preview-wrapper. Capturar `{newsletter_url}` do campo `url` do JSON stdout — Worker usa key `html:{AAMMDD}-{contentHash}` (#1494, hash dos primeiros 6 chars de md5 do HTML). Sem o hash, fetch retorna 404 (review #1612 regression). `--persist-to`/`--field` já grava `newsletter_url` em `04-newsletter-url.json` (merge, preserva demais chaves) — nenhum passo adicional de persistência é necessário.
 
 3. Pre-render do social preview HTML:
    ```bash
    # #1800: --images é OBRIGATÓRIO — sem ele o preview sai sem imagens.
    npx tsx scripts/render-social-html.ts --md {EDITION_DIR}/03-social.md --out {EDITION_DIR}/_internal/social-preview.html --images {EDITION_DIR}/06-public-images.json
-   ```
-   **Mesmo problema de CSP do passo 2b** — gerar variante com imagens embutidas antes de publicar:
-   ```bash
-   npx tsx scripts/embed-images-base64.ts \
-     --html {EDITION_DIR}/_internal/social-preview.html \
-     --images {EDITION_DIR}/06-public-images.json \
-     --edition-dir {EDITION_DIR} \
-     --out {EDITION_DIR}/_internal/social-preview-embedded.html
-   ```
-   Exit 1 aqui é esperado quando `missing` não está vazio — não bloqueante (mesma semântica do passo 2b acima). Publicar via `Artifact` — mesmo padrão resume-aware do passo 2b acima, a partir de `social-preview-embedded.html` (nunca `social-preview.html` direto), lendo/persistindo `{EDITION_DIR}/_internal/05-social-preview.json` campo `social_preview_url` (nome de arquivo/campo inalterado desde #1734 — `send-edition-report.ts` continua lendo daqui sem mudança):
-   ```bash
-   node -e "
-     const fs = require('fs');
-     const p = '{EDITION_DIR}/_internal/05-social-preview.json';
-     if (fs.existsSync(p)) {
-       const j = JSON.parse(fs.readFileSync(p, 'utf8'));
-       if (j.social_preview_url) console.log(j.social_preview_url);
-     }
-   "
-   ```
-   `Artifact` com `file_path: "{EDITION_DIR}/_internal/social-preview-embedded.html"` + `url` (se houver) + `description` (ex: "Preview social — edição {AAMMDD}") + `favicon` fixo (ex: 📱). Persistir a URL retornada (padrão `node -e` puro, ver nota do passo 2b sobre `tsx -e` + import falhar silenciosamente):
-   ```bash
-   node -e "
-     const fs = require('fs');
-     const p = '{EDITION_DIR}/_internal/05-social-preview.json';
-     let j = {};
-     if (fs.existsSync(p)) { try { j = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {} }
-     j.social_preview_url = '{social_url}';
-     fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
-   "
+   # #1734: --persist-to grava a URL durável (com hash) em 05-social-preview.json.
+   npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social --html {EDITION_DIR}/_internal/social-preview.html --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url
    ```
 
 4. close-poll (set gabarito — idempotente):
@@ -273,7 +215,7 @@ Exit code handling:
 
 **4c.3 — Imagens geradas:**
 - Listar `04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-1x1.jpg`, `04-d3-1x1.jpg` com tamanhos (bytes).
-- URL do preview (Claude Artifact): `{newsletter_url}` (capturada em §4b step 2b).
+- URL pública no Worker KV: `{newsletter_url}` (capturada em §4b step 2b).
 
 **4c.4 — Social preview:**
 - Social preview URL: `{social_url}` (de `_internal/05-social-preview.json`).
@@ -340,32 +282,27 @@ npx tsx scripts/substitute-image-urls.ts \
 
 Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b.
 
-**Republicar o preview (#3214):** regenerar a variante com imagens embutidas (mesmo motivo de CSP do §4b step 2b) antes de chamar `Artifact`:
+**⚠️ Atualizar `{newsletter_url}` após o re-upload:** o re-upload gera um novo hash de conteúdo (#1494) → nova URL. A URL capturada em §4b step 2b fica STALE. Re-ler `_internal/04-newsletter-url.json` e atualizar a variável `{newsletter_url}` ANTES de montar o gate (§4c.7) — senão o editor abre o preview da URL antiga (texto PRÉ-correção) e aprova conteúdo que não revisou. **Re-upload (#3420 — Worker-hosted, revertido de Claude Artifacts/#3214):**
 ```bash
-npx tsx scripts/embed-images-base64.ts \
+# --no-wrap é OBRIGATÓRIO (#2550): sobe o fragmento bruto, igual ao §4b/beehiiv-playbook.md.
+# Sem ele o Worker hospeda o HTML embrulhado no preview-wrapper → paste no Beehiiv quebra.
+npx tsx scripts/upload-html-public.ts --edition {AAMMDD} --no-wrap \
   --html {EDITION_DIR}/_internal/newsletter-final.html \
-  --images {EDITION_DIR}/06-public-images.json \
-  --edition-dir {EDITION_DIR} \
-  --out {EDITION_DIR}/_internal/newsletter-preview-embedded.html
+  --persist-to {EDITION_DIR}/_internal/04-newsletter-url.json \
+  --field newsletter_url
 ```
-Exit 1 aqui é esperado quando `missing` não está vazio — não bloqueante (ver §4b step 2b). Chamar `Artifact` de novo com `file_path: "{EDITION_DIR}/_internal/newsletter-preview-embedded.html"` e `url: "{newsletter_url}"` (a URL já persistida em `04-newsletter-url.json` por §4b step 2b) — **isso atualiza o MESMO artifact, na MESMA URL** (diferente do Worker Cloudflare antigo, que gerava uma URL nova a cada conteúdo por ser content-hash-keyed). Como a URL não muda, não é necessário re-persistir nem reavisar o editor de staleness — a variável `{newsletter_url}` capturada em §4b step 2b já continua válida e aponta pro conteúdo corrigido automaticamente assim que a republicação completar.
 
 **⚠️ Re-render do social quando `social_modified === true` (#3224):** claims com `sources` incluindo `"social"` agora também são corrigidos em `03-social.md` (nos blocos `## dN`, LinkedIn e Facebook — ver "O que é auto-corrigido" abaixo). O script já regrava `_internal/.humanizer-social-done.json` internamente com `bypassReason` explícito (reusa `writeSentinel` de `check-humanizer-social.ts`, mesmo mecanismo do #2529) — **não é preciso rodar `check-humanizer-social.ts --write` manualmente**. Mas o pré-render de §4b step 3 (`social-preview.html`) foi gerado ANTES do autofix, então se `_internal/fact-check-autofix.json` mostra `social_modified: true`, re-renderizar e republicar:
 
 ```bash
 # Re-render social HTML com o 03-social.md já corrigido
 npx tsx scripts/render-social-html.ts --md {EDITION_DIR}/03-social.md --out {EDITION_DIR}/_internal/social-preview.html --images {EDITION_DIR}/06-public-images.json
-```
-
-Regenerar a variante com imagens embutidas (mesmo motivo de CSP do §4b step 2b) e republicar via `Artifact` — mesmo padrão resume-aware de §4b step 3:
-```bash
-npx tsx scripts/embed-images-base64.ts \
+# Re-upload (atualiza a URL persistida em 05-social-preview.json com o novo conteúdo)
+npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social \
   --html {EDITION_DIR}/_internal/social-preview.html \
-  --images {EDITION_DIR}/06-public-images.json \
-  --edition-dir {EDITION_DIR} \
-  --out {EDITION_DIR}/_internal/social-preview-embedded.html
+  --persist-to {EDITION_DIR}/_internal/05-social-preview.json \
+  --field social_preview_url
 ```
-Exit 1 aqui é esperado quando `missing` não está vazio — não bloqueante (ver §4b step 2b). `file_path: "{EDITION_DIR}/_internal/social-preview-embedded.html"` + `url: "{social_url}"` (já persistida em `05-social-preview.json`), **atualiza a mesma URL**.
 
 Confirmar que o sentinel bate com o social já corrigido antes de seguir pro gate (deve dar exit 0 — o próprio script já regravou):
 ```bash
@@ -399,7 +336,7 @@ Exit code handling — **GATE-BLOCKING**, mesmo padrão que `check-humanizer-soc
   2. Corrigir cirurgicamente (#495 — `Edit` com `old_string` mínimo, nunca substituir blocos grandes) o arquivo afetado, preservando o valor factual já corrigido mas restaurando a estrutura esperada pelo lint (callout isolado por `---`, ou bloco `post_pixel`/link do LinkedIn realinhado).
   3. Re-rodar o lint que falhou até sair `0`.
   4. Se a correção cirúrgica tocou `03-social.md`: re-humanizar + re-selar sentinel (mesmo fluxo do exit 2 de §4c.2b, incluindo os lints de qualidade social) antes de prosseguir.
-  5. Re-renderizar o(s) arquivo(s) tocado(s) (newsletter e/ou social, §4b steps 2/3) e republicar o preview via `Artifact` (mesma URL já persistida) antes de seguir pro gate.
+  5. Re-renderizar o(s) arquivo(s) tocado(s) (newsletter e/ou social, §4b steps 2/3) e re-upload pro Worker Cloudflare (§4c.6b) antes de seguir pro gate — capturar a nova URL (content-hash muda a cada re-upload).
 
 **Comportamento em `auto_approve = true` (`--no-gates`):** mesma execução e mesmo bloqueio — GATE-BLOCKING vale igual mesmo sem apresentação visual do gate; o orchestrator não pode prosseguir pra Etapa 5 com um invariante estrutural quebrado só porque o gate humano foi pulado.
 
@@ -523,7 +460,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
    - O orchestrator **avisa** o editor: "Essa mudança afeta a imagem e os posts sociais do D{N} — vou re-gerar os passos afetados."
    - Re-rodar: re-render do HTML (§4b steps 1-3), regenerar imagem do destaque (`scripts/image-generate.ts --edition {AAMMDD} --highlight d{N}`), e regenerar post social do D{N} (`social-linkedin` / `social-facebook` para aquele destaque).
    - Edição de **corpo ou link** (sem mudar título) não cascateia — só re-render do HTML basta.
-   - **Em ambos os casos, republicar o preview via `Artifact`** (§4b step 2b — mesmo `file_path`/`url` já persistidos, atualiza a mesma URL) antes de re-apresentar o gate, senão o editor revisa conteúdo desatualizado.
+   - **Em ambos os casos, re-upload do HTML pro Worker Cloudflare** (§4b step 2b — `upload-html-public.ts --no-wrap`, captura URL nova e atualiza `04-newsletter-url.json`) antes de re-apresentar o gate, senão o editor revisa conteúdo desatualizado.
 
 4. **Reordenação/swap de destaques (#2145 — post_pixel stale):** se a mudança reordenar os destaques (ex: troca D1↔D3) ou trocar qual destaque ocupa a posição D1:
    - O `## post_pixel` foi gerado sobre o D1 **original** (Stage 2) e **não é remapeado automaticamente** junto com os blocos `## d{N}`.
@@ -588,7 +525,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       ```bash
       npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
       ```
-   **6.9** — Re-renderizar (`render-social-html.ts`, §4b step 3) e republicar o preview social via `Artifact` (mesmo `file_path`/`url` já persistidos em `05-social-preview.json` — atualiza a mesma URL) antes de voltar ao gate. O arquivo republicado é sempre o `03-social.md` COMPLETO (seções scoped-humanizadas + seções intactas) — o preview reflete o estado atual inteiro em ambos os fluxos.
+   **6.9** — Re-renderizar (`render-social-html.ts`, §4b step 3) e re-upload pro Worker Cloudflare (`upload-html-public.ts --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url` — atualiza a URL persistida com o novo conteúdo) antes de voltar ao gate. O arquivo republicado é sempre o `03-social.md` COMPLETO (seções scoped-humanizadas + seções intactas) — o preview reflete o estado atual inteiro em ambos os fluxos.
 
 7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
 
