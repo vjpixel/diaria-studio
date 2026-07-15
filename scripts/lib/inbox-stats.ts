@@ -157,29 +157,39 @@ export function resolveEditorEmail(platformConfigPath: string): string {
 }
 
 /**
- * Formata a linha de cobertura no formato canônico (#592 + #609).
+ * Formata o bloco de boas-vindas/cobertura no formato canônico (#3461,
+ * substitui o formato legado #592/#609 a partir da edição 260715 — pedido
+ * explícito do editor: "salve como padrão: todas as edições devem começar
+ * com esse texto").
+ *
+ * 4 parágrafos (separados por `\n\n`), SEM negrito — texto corrido no topo
+ * da edição, não um box com borda. `[Pixel](...)` e `[considere apoiar o
+ * projeto](...)` são links markdown que `processInlineLinks` converte em
+ * `<a>` no render (ver `renderCoverage`, que precisa processar links, não
+ * escapar texto puro).
  *
  * #701: pluralização condicional pra concordância numérica em PT-BR — antes
- * "1 submissões"/"1 artigos" caía no leitor. Caller é livre pra passar
- * `selected = 0` (caso degenerado), mas a frase fica esquisita.
+ * "1 artigos"/"o(s) N mais relevante(s)" caía no leitor. Caller é livre pra
+ * passar `selected = 0` (caso degenerado), mas a frase fica esquisita.
  *
- * Regex em `lint-newsletter-md.ts COVERAGE_LINE_RE` aceita ambas as formas
- * (singular e plural).
+ * Regex em `lib/lint-checks/coverage-line-format.ts` (`COVERAGE_LINE_RE`)
+ * precisa reconhecer este formato pra `checkCoverageLine`/`sync-coverage-line.ts`
+ * não acusarem falso-positivo de "linha de cobertura ausente".
  */
 export function formatCoverageLine(args: {
   editorSubmissions: number;
   diariaDiscovered: number;
   selected: number;
 }): string {
-  const subWord = args.editorSubmissions === 1 ? "submissão" : "submissões";
-  const artWord = args.diariaDiscovered === 1 ? "artigo" : "artigos";
+  const total = args.editorSubmissions + args.diariaDiscovered;
   const selPhrase =
     args.selected === 1
-      ? "Selecionamos o artigo mais relevante"
-      : `Selecionamos os ${args.selected} mais relevantes`;
-  return (
-    `Para esta edição, eu (o editor) enviei ${args.editorSubmissions} ${subWord} e a ` +
-    `Diar.ia encontrou outros ${args.diariaDiscovered} ${artWord}. ${selPhrase} ` +
-    `para as pessoas que assinam a newsletter.`
-  );
+      ? "selecionei o artigo mais relevante"
+      : `selecionei os ${args.selected} mais relevantes`;
+  return [
+    "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+    "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
+    `Nesta edição, a IA analisou ${total} artigos (${args.editorSubmissions} enviados por mim e ${args.diariaDiscovered} encontrados automaticamente) e ${selPhrase}.`,
+    "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+  ].join("\n\n");
 }

@@ -633,7 +633,12 @@ function main() {
         : null;
       return diariaDiscovered !== null
         ? formatCoverageLine({ editorSubmissions, diariaDiscovered, selected: totalSelected })
-        : `Para esta edição, eu (o editor) enviei ${editorSubmissions} submissões e a Diar.ia encontrou outros ??? artigos. Selecionamos os ${totalSelected} mais relevantes para as pessoas que assinam a newsletter.`;
+        : [
+            "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+            "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
+            `Nesta edição, a IA analisou ??? artigos (${editorSubmissions} enviados por mim e ??? encontrados automaticamente) e selecionei os ${totalSelected} mais relevantes.`,
+            "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+          ].join("\n\n");
     },
   }) + "\n\n";
 

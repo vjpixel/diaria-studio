@@ -519,38 +519,56 @@ export function parseEIA(text: string, editionDir: string): EIA {
 }
 
 /**
- * Pure (#1093): extrai a linha de cobertura ("Para esta edição, eu (o editor) enviei X
- * submissões e a Diar.ia encontrou outros Y artigos. Selecionamos os Z mais relevantes...")
- * do reviewed.md. Retorna `null` se ausente.
+ * Pure (#1093, formato novo #3456): extrai a linha de cobertura do topo do
+ * reviewed.md. Retorna `null` se ausente.
+ *
+ * Suporta 2 formatos (ambos começam com "Para esta edição,"):
+ *   - legado: "Para esta edição, eu (o editor) enviei X submissões e a Diar.ia
+ *     encontrou outros Y artigos. Selecionamos os Z mais relevantes..."
+ *   - novo (#3456): "Para esta edição, a diar.ia.br analisou N artigos: X
+ *     enviados pelo editor, {nome}, e Y encontrados automaticamente. Após a
+ *     curadoria, foram selecionados os Z mais relevantes."
  *
  * A linha é injetada pelo writer no topo do reviewed.md (após TÍTULO/SUBTÍTULO e
  * antes do primeiro destaque). #1097 mantém os números sincronizados com Stage 1.
  */
 export function extractCoverageLine(text: string): string | null {
-  const m = text.match(/^Para esta edição, eu \(o editor\) enviei[^\n]+$/m);
+  // #3461: formato novo (padrão a partir de 260715) — bloco de boas-vindas
+  // multi-parágrafo, sem negrito, começando com "Olá! Eu sou o [Pixel](...)"
+  // e terminando no CTA fixo de apoio. Captura o bloco INTEIRO (todos os
+  // parágrafos) pra renderCoverage processar como múltiplos <p> com links.
+  const welcomeMatch = text.match(
+    /^Olá! Eu sou o [\s\S]*?considere apoiar o projeto\]\([^)]+\)\.$/m,
+  );
+  if (welcomeMatch) return welcomeMatch[0].trim();
+
+  // Formatos legados (linha única): #592/#609 original + #3456.
+  const m = text.match(/^Para esta edição,[^\n]+$/m);
   return m ? m[0].trim() : null;
 }
 
 /**
- * Pure (#1761): reconcilia o "Selecionamos os Z mais relevantes" da linha de
- * cobertura com o número REAL de itens renderizados (3 destaques + itens das
- * seções secundárias). O Z é setado por `sync-coverage-line.ts` num ponto do
+ * Pure (#1761, formato novo #3456, formato de boas-vindas #3461): reconcilia
+ * a contagem final ("Selecionamos os Z mais relevantes" / "foram
+ * selecionados os Z mais relevantes" / "selecionei os Z mais relevantes")
+ * com o número REAL de itens renderizados (3 destaques + itens das seções
+ * secundárias). O Z é setado por `sync-coverage-line.ts` num ponto do
  * pipeline e fica STALE quando o editor adiciona/remove itens no gate. Fazendo
  * isso no render, a fonte de verdade do Z passa a ser o que de fato vai pro HTML.
  *
- * Só substitui o trecho "Selecionamos ..."; preserva X (submissões) e Y
- * (encontrados). Concordância numérica: 1 item → "Selecionamos o artigo mais
- * relevante"; N>1 → "Selecionamos os N mais relevantes".
+ * Só substitui o trecho de contagem; preserva X (submissões) e Y (encontrados).
+ * Detecta qual template está presente (verbo ativo "Selecionamos"/"selecionei"
+ * vs passivo "foram selecionados") e preserva essa forma verbal na
+ * substituição — concordância numérica: 1 item → singular ("o artigo mais
+ * relevante"); N>1 → plural ("os N mais relevantes").
  */
 export function reconcileCoverageCount(line: string, count: number): string {
   if (!line) return line;
-  const replacement =
-    count === 1
-      ? "Selecionamos o artigo mais relevante"
-      : `Selecionamos os ${count} mais relevantes`;
+  const countPhrase =
+    count === 1 ? "o artigo mais relevante" : `os ${count} mais relevantes`;
   return line.replace(
-    /Selecionamos (?:o artigo mais relevante|os \d+ mais relevantes)/i,
-    replacement,
+    /(selecionamos|selecionei|foram selecionados)\s+(?:o artigo mais relevante|os \d+ mais relevantes)/i,
+    (_match, verb: string) => `${verb} ${countPhrase}`,
   );
 }
 
