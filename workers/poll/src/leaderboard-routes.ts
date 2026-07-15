@@ -17,6 +17,7 @@ import {
   maskEmail, // #3118 item 11: consolida as 3 implementações de mascaramento de email
   closedPeriodCacheControl, // #3118 item 2: cache de período fechado — 1h, não mais 30d immutable
   AAMMDD_RE, // #3297: substitui as 2 cópias inline de /^\d{6}$/ deste arquivo
+  envioMonthYear, // #3464: heading do arquivo mensal Clarice mostra mês de ENVIO, não de conteúdo
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
@@ -798,22 +799,39 @@ export function extractEditionsForYear(correctKeyNames: string[], year: string, 
  * 200 itens/ano sem agrupamento. Assume todas as edições do MESMO ano (o
  * caller já filtra por ano em `extractEditionsForYear`) — o heading mostra só
  * o nome do mês (o ano já aparece no `<h1>` da página).
+ *
+ * #3464: pra `brand` com `leaderboardPeriod === "year"` (só `clarice` hoje),
+ * o heading agrupa pelo mês de ENVIO, não de CONTEÚDO — mesmo racional de
+ * `formatEditionDateForBrand` (o `mm` embutido no AAMMDD é sempre o mês de
+ * CONTEÚDO; o leitor recebeu o e-mail no mês SEGUINTE). Só a exibição muda —
+ * `editions` dentro de cada grupo continuam os AAMMDD crus originais (hrefs
+ * intactos). Wrap dezembro→janeiro: uma edição de conteúdo=dezembro exibe
+ * "Janeiro" (mês de envio, ano seguinte) mesmo permanecendo agrupada dentro
+ * da página do ano de CONTEÚDO — o filtro de ano (`extractEditionsForYear`)
+ * não muda, só o rótulo. Brand `diaria` (`leaderboardPeriod === "month"`)
+ * mantém o comportamento original (agrupa pelo mês embutido no AAMMDD).
  */
 export interface EditionMonthGroup {
   monthLabel: string;
   editions: string[];
 }
 
-export function groupEditionsByMonth(editions: string[]): EditionMonthGroup[] {
+export function groupEditionsByMonth(editions: string[], brand: Brand = "diaria"): EditionMonthGroup[] {
+  const showEnvioMonth = BRAND_INFO[brand].leaderboardPeriod === "year"; // #3464
   const groups: EditionMonthGroup[] = [];
-  let currentMonth: string | null = null;
+  let currentGroupKey: string | null = null;
   for (const ed of editions) {
-    const mm = ed.slice(2, 4);
-    if (mm !== currentMonth) {
-      const monthName = MONTH_NAMES_PT[parseInt(mm, 10) - 1] ?? mm;
+    const contentYy = parseInt(ed.slice(0, 2), 10);
+    const contentMm = parseInt(ed.slice(2, 4), 10);
+    const displayMm = showEnvioMonth && contentMm >= 1 && contentMm <= 12
+      ? envioMonthYear(2000 + contentYy, contentMm).month
+      : contentMm;
+    const groupKey = String(displayMm).padStart(2, "0");
+    if (groupKey !== currentGroupKey) {
+      const monthName = MONTH_NAMES_PT[displayMm - 1] ?? ed.slice(2, 4);
       const monthLabel = monthName.charAt(0).toUpperCase() + monthName.slice(1);
       groups.push({ monthLabel, editions: [] });
-      currentMonth = mm;
+      currentGroupKey = groupKey;
     }
     groups[groups.length - 1].editions.push(ed);
   }
@@ -837,7 +855,7 @@ export function renderArchiveListHtml(
   const info = BRAND_INFO[brand];
   // #3113 (item 10): agrupado por mês (heading + <ul> próprio) em vez de uma
   // única lista flat — evita >200 itens/ano sem estrutura.
-  const sections = groupEditionsByMonth(editions)
+  const sections = groupEditionsByMonth(editions, brand) // #3464: heading por mês de ENVIO pra brand=clarice
     .map((g) => {
       const items = g.editions
         .map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDateForBrand(ed, brand))}</a></li>`)

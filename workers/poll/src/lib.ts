@@ -323,6 +323,20 @@ export function legacyMonthlyEditionForCycle(edition: string): string | null {
 }
 
 /**
+ * #3464: mês/ano de ENVIO dado mês/ano de CONTEÚDO — wrap dezembro(12)→
+ * janeiro(1) do ano SEGUINTE. Extrai a fórmula que já existia inline em
+ * `cycleForLegacyMonthlyEdition` (`envioMoNum = moNum === 12 ? 1 : moNum + 1`)
+ * pra um helper puro reusável — issue #3464 precisa do mesmo mapeamento
+ * conteúdo→envio em `formatEditionDateForBrand`/`groupEditionsByMonth`
+ * (leaderboard-routes.ts) sem duplicar a fórmula um 3º lugar.
+ */
+export function envioMonthYear(contentYear: number, contentMonth: number): { year: number; month: number } {
+  return contentMonth === 12
+    ? { year: contentYear + 1, month: 1 }
+    : { year: contentYear, month: contentMonth + 1 };
+}
+
+/**
  * #3350: direção INVERSA de `legacyMonthlyEditionForCycle` — dado um
  * identificador AAMMDD que pode ser um marcador LEGADO de ciclo mensal
  * (pré-#2115), reconstrói o slug de ciclo `YYMM-MM` correspondente.
@@ -373,7 +387,7 @@ export function cycleForLegacyMonthlyEdition(edition: string): string | null {
   if (moNum < 1 || moNum > 12) return null;
   const lastDay = new Date(Date.UTC(yr, moNum, 0)).getUTCDate();
   if (parseInt(dd, 10) !== lastDay) return null;
-  const envioMoNum = moNum === 12 ? 1 : moNum + 1;
+  const { month: envioMoNum } = envioMonthYear(yr, moNum); // #3464: reusa o wrap dez→jan em vez de duplicar
   return `${yy}${mm}-${String(envioMoNum).padStart(2, "0")}`;
 }
 
@@ -571,6 +585,15 @@ export function brandKvPrefix(brand: Brand): string {
  * formato de ciclo). Sem este ramo, a mensagem "já votou" mostraria o slug
  * interno cru ("2605-06") pro leitor em vez de um mês legível.
  *
+ * #3464: pra `leaderboardPeriod === "year"` (só `clarice` hoje), o mês
+ * exibido é o mês de ENVIO, não o de CONTEÚDO — a edição de conteúdo de
+ * maio é ENVIADA em junho (invariante `{envio} = {conteúdo} + 1`, ver
+ * `legacyMonthlyEditionForCycle`/`cycleForLegacyMonthlyEdition`); pro
+ * leitor que recebeu o e-mail em junho, "maio de 2026" é confuso. Ambos os
+ * ramos (ciclo `YYMM-MM` e AAMMDD legado) convertem CONTEÚDO→ENVIO via
+ * `envioMonthYear` (wrap dezembro→janeiro do ano seguinte) antes de formatar
+ * — reusa o mesmo mapeamento de `cycleForLegacyMonthlyEdition`, não duplica.
+ *
  * NÃO altera o código da edição interno usado em hrefs/gabarito/dedup — só a
  * STRING exibida ao leitor. Input malformado → retorna o input cru (mesmo
  * fallback de `formatEditionDate`).
@@ -581,14 +604,15 @@ export function formatEditionDateForBrand(edition: string, brand: Brand): string
     const monthSlug = editionToMonthSlug(edition); // ciclo → "YYYY-MM" do mês de CONTEÚDO
     if (!monthSlug) return edition;
     const [yearStr, mmStr] = monthSlug.split("-");
-    const mmNum = parseInt(mmStr, 10);
-    return `${MONTH_NAMES_PT[mmNum - 1]} de ${yearStr}`;
+    const { year, month } = envioMonthYear(parseInt(yearStr, 10), parseInt(mmStr, 10)); // #3464: conteúdo → envio
+    return `${MONTH_NAMES_PT[month - 1]} de ${year}`;
   }
   if (!AAMMDD_RE.test(edition)) return edition;
   const yy = parseInt(edition.slice(0, 2), 10);
   const mm = parseInt(edition.slice(2, 4), 10);
   if (mm < 1 || mm > 12) return edition;
-  return `${MONTH_NAMES_PT[mm - 1]} de ${2000 + yy}`;
+  const { year, month } = envioMonthYear(2000 + yy, mm); // #3464: conteúdo → envio
+  return `${MONTH_NAMES_PT[month - 1]} de ${year}`;
 }
 
 /**
