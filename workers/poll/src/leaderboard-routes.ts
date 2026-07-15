@@ -810,26 +810,56 @@ export function extractEditionsForYear(correctKeyNames: string[], year: string, 
  * da página do ano de CONTEÚDO — o filtro de ano (`extractEditionsForYear`)
  * não muda, só o rótulo. Brand `diaria` (`leaderboardPeriod === "month"`)
  * mantém o comportamento original (agrupa pelo mês embutido no AAMMDD).
+ *
+ * #3473 (fix do achado de review sobre #3464 — heading "Janeiro" vs link
+ * "Janeiro de 2027"): `pageYear` opcional = ano de CONTEÚDO da página
+ * (`/leaderboard/{pageYear}/arquivo`). Quando o ano de EXIBIÇÃO do grupo
+ * (envio) diverge de `pageYear` — só ocorre no wrap dezembro→janeiro — o
+ * heading passa a carregar o ano ("Janeiro de 2027") em vez do mês nu
+ * ("Janeiro"), que na página "Arquivo de 2026" lia-se como janeiro/2026 e
+ * contradizia o link do item logo abaixo (que já mostrava "Janeiro de 2027"
+ * via `formatEditionDateForBrand`). `pageYear` omitido (chamadas de teste
+ * unitário pré-#3473) preserva o comportamento antigo (mês nu sempre) —
+ * back-compat.
  */
 export interface EditionMonthGroup {
   monthLabel: string;
   editions: string[];
 }
 
-export function groupEditionsByMonth(editions: string[], brand: Brand = "diaria"): EditionMonthGroup[] {
+export function groupEditionsByMonth(
+  editions: string[],
+  brand: Brand = "diaria",
+  pageYear?: string, // #3473: ano de CONTEÚDO da página — reconcilia heading↔link no wrap dez→jan
+): EditionMonthGroup[] {
   const showEnvioMonth = BRAND_INFO[brand].leaderboardPeriod === "year"; // #3464
+  const pageYearNum = pageYear !== undefined ? parseInt(pageYear, 10) : null;
   const groups: EditionMonthGroup[] = [];
   let currentGroupKey: string | null = null;
   for (const ed of editions) {
     const contentYy = parseInt(ed.slice(0, 2), 10);
     const contentMm = parseInt(ed.slice(2, 4), 10);
-    const displayMm = showEnvioMonth && contentMm >= 1 && contentMm <= 12
-      ? envioMonthYear(2000 + contentYy, contentMm).month
-      : contentMm;
-    const groupKey = String(displayMm).padStart(2, "0");
+    let displayMm = contentMm;
+    let displayYear = 2000 + contentYy;
+    if (showEnvioMonth && contentMm >= 1 && contentMm <= 12) {
+      const envio = envioMonthYear(2000 + contentYy, contentMm);
+      displayMm = envio.month;
+      displayYear = envio.year;
+    }
+    // #3473: groupKey inclui o ano de exibição — sem isso, um "Janeiro"
+    // normal (mesmo ano da página) e um "Janeiro" do wrap dezembro→janeiro
+    // (ano seguinte) colapsariam no mesmo grupo se ambos aparecessem na
+    // mesma página (não ocorre hoje — só 1 ano de conteúdo por página — mas
+    // defensivo, mesmo racional do #3113 item 9).
+    const groupKey = `${displayYear}-${String(displayMm).padStart(2, "0")}`;
     if (groupKey !== currentGroupKey) {
       const monthName = MONTH_NAMES_PT[displayMm - 1] ?? ed.slice(2, 4);
-      const monthLabel = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+      let monthLabel = monthName.charAt(0).toUpperCase() + monthName.slice(1);
+      // #3473: heading carrega o ano quando ele diverge do ano da página —
+      // elimina a contradição heading↔link no wrap dezembro→janeiro.
+      if (pageYearNum !== null && displayYear !== pageYearNum) {
+        monthLabel = `${monthLabel} de ${displayYear}`;
+      }
       groups.push({ monthLabel, editions: [] });
       currentGroupKey = groupKey;
     }
@@ -855,7 +885,7 @@ export function renderArchiveListHtml(
   const info = BRAND_INFO[brand];
   // #3113 (item 10): agrupado por mês (heading + <ul> próprio) em vez de uma
   // única lista flat — evita >200 itens/ano sem estrutura.
-  const sections = groupEditionsByMonth(editions, brand) // #3464: heading por mês de ENVIO pra brand=clarice
+  const sections = groupEditionsByMonth(editions, brand, year) // #3464: heading por mês de ENVIO pra brand=clarice; #3473: year reconcilia heading↔link no wrap dez→jan
     .map((g) => {
       const items = g.editions
         .map((ed) => `<li><a href="${archiveHref(brand, year, ed)}">${htmlEscape(formatEditionDateForBrand(ed, brand))}</a></li>`)
@@ -918,6 +948,19 @@ ${renderBrandFooter(brand)}
  * O form submete via GET pro `/vote` já existente — SEM `sig` (merge-tag
  * mode, o mesmo caminho sem-HMAC que `handleVote` já suporta pra emails não
  * substituídos por template — aqui o e-mail vem digitado pelo leitor).
+ *
+ * #3473 (fix do achado de review sobre #3464): pra `brand` com
+ * `leaderboardPeriod === "year"` e edição de conteúdo=dezembro, `dateLabel`
+ * (via `formatEditionDateForBrand`) mostra o mês/ano de ENVIO ("janeiro de
+ * 2027"), mas o voto conta pro leaderboard do ano de CONTEÚDO (`year`, que é
+ * sempre o ano de conteúdo — ver guard em `handleArchiveVotePage`:
+ * `edition.slice(0,2) === yearStr.slice(2)`). Sem reconciliar, a subcopy
+ * citava os dois anos como se fossem o mesmo ("Edição de janeiro de 2027 —
+ * vale ponto no leaderboard anual de 2026"), contradição literal.
+ * `leaderboardYearNote` anota explicitamente o mês de CONTEÚDO quando os
+ * anos divergem, sem alterar `dateLabel` (mês de envio continua exibido,
+ * intencional desde #3464) nem `year` (continua o ano de CONTEÚDO — invariante
+ * de indexação do leaderboard, não mexido aqui).
  */
 export function renderArchiveVoteHtml(
   edition: string,
@@ -930,9 +973,18 @@ export function renderArchiveVoteHtml(
   const imgB = `/img/img-${edition}-01-eia-B.jpg`;
   const dateLabel = htmlEscape(formatEditionDateForBrand(edition, brand));
   const pageTitle = `É IA? — ${dateLabel} | ${info.name}`;
+  // #3473: mês de CONTEÚDO extraído do próprio AAMMDD (`edition`) — quando é
+  // dezembro E o brand mostra mês de envio, o ano do `dateLabel` (envio,
+  // 2027) diverge do `year` da página/leaderboard (conteúdo, 2026).
+  const contentMm = parseInt(edition.slice(2, 4), 10);
+  const yearMismatch = BRAND_INFO[brand].leaderboardPeriod === "year" && contentMm === 12;
+  const contentMonthName = MONTH_NAMES_PT[contentMm - 1] ?? "";
+  const leaderboardYearNote = yearMismatch
+    ? ` (conteúdo de ${contentMonthName} de ${htmlEscape(year)})`
+    : "";
   const seoMeta = renderSeoMeta({
     title: pageTitle,
-    description: `Qual imagem foi gerada por IA? Vote na edição de ${dateLabel} e valha ponto no leaderboard anual de ${year} da ${info.name}.`,
+    description: `Qual imagem foi gerada por IA? Vote na edição de ${dateLabel}${leaderboardYearNote} e valha ponto no leaderboard anual de ${year} da ${info.name}.`,
     path: archiveHref(brand, year, edition),
   });
   const html = `<!DOCTYPE html>
@@ -977,7 +1029,7 @@ ${renderBrandShellStyles()}
 <p class="kicker">É IA?</p>
 <hr class="rule">
 <h1>Qual imagem foi gerada por IA?</h1>
-<p class="sub">Edição de ${dateLabel} — vale ponto no leaderboard anual de ${htmlEscape(year)}.</p>
+<p class="sub">Edição de ${dateLabel}${leaderboardYearNote} — vale ponto no leaderboard anual de ${htmlEscape(year)}.</p>
 <form action="/vote" method="GET">
   <input type="hidden" name="edition" value="${htmlEscape(edition)}">
   ${brandHidden}
