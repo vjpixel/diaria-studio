@@ -30,7 +30,7 @@ description: Stage 0 do orchestrator Diar.ia — setup, parâmetros, checks pré
   Esses dois valores **substituem** `edition_iso` em qualquer prompt de agente de pesquisa (1f) e qualquer chamada a `filter-date-window.ts` (1o). `edition_iso` permanece só como identificador da edição.
 - Criar o diretório e subdiretório interno se não existirem: `Bash("mkdir -p data/editions/{edition_date}/_internal")`.
 - **Receber `window_days` como parâmetro de entrada.** A skill que disparou este orchestrator já perguntou e confirmou a janela com o usuário antes de disparar. **Se não receber** (retrocompat), usar default: segunda/terça = 4, quarta-sexta = 3 — calcular via Bash node. Armazenar `window_days` — usado em Stage 1.
-- **Receber `auto_approve` (opcional, default `false`).** Se `true`: auto-aprovar todos os gates, manter Drive sync ativo, manter social scheduling normal, copiar categorized → approved diretamente.
+- **Receber `auto_approve` (opcional, default `false`).** Se `true`: auto-aprovar todos os gates, manter Drive sync ativo, manter social scheduling normal. No Stage 1, gerar `_internal/01-approved.json` via `npx tsx scripts/apply-gate-edits.ts --auto --json ... --out ...` (nunca copiar `_internal/01-categorized.json` literal — #3459, perdia o slice `highlights: first-3`).
 
 ### 0b. Resume-aware
 

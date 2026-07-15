@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { parseSections, mergeWithNewJson, canonicalizeUrl, resolveDestaques } from "../scripts/apply-gate-edits.ts";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 describe("parseSections", () => {
   it("extrai URLs de todas as 4 seções", () => {
@@ -479,5 +483,67 @@ describe("resolveDestaques (#2333) — editor demove D3 para Radar (3→2)", () 
     assert.equal(result[0], "https://a.com/1", "D1 manual preservado");
     assert.equal(result.length, 3, "fill deve completar até 3 quando count < 2");
     assert.ok(result.includes("https://b.com/2"), "rank 2 deve ser adicionado no fill");
+  });
+});
+
+describe("apply-gate-edits CLI --auto (#3459)", () => {
+  // Antes do fix, o modo auto-approve (--no-gates) copiava _internal/01-categorized.json
+  // literal pra _internal/01-approved.json, preservando os 6 highlights do scorer em vez
+  // de aplicar o slice de first-3 (invariant approved-has-3-highlights, #2343). O modo
+  // --auto simula um MD sem edição humana (Destaques vazio, buckets intactos) e reusa o
+  // MESMO resolveDestaques do fluxo com gate.
+  function runCli(args: string[]) {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "apply-gate-edits.ts");
+    return spawnSync(process.execPath, ["--import", "tsx", scriptPath, ...args], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      timeout: 15000,
+    });
+  }
+
+  function makeCategorizedWithSixHighlights() {
+    const highlights = Array.from({ length: 6 }, (_, i) => ({
+      rank: i + 1,
+      score: 90 - i,
+      bucket: "radar",
+      url: `https://scorer.example/${i + 1}`,
+    }));
+    return {
+      highlights,
+      runners_up: [],
+      lancamento: [],
+      radar: highlights.map((h) => ({ url: h.url, title: `Título ${h.rank}`, score: h.score })),
+      use_melhor: [],
+      video: [],
+    };
+  }
+
+  it("input com 6 highlights → 01-approved.json tem exatamente 3", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apply-gate-edits-auto-"));
+    try {
+      const jsonPath = join(dir, "01-categorized.json");
+      const outPath = join(dir, "01-approved.json");
+      writeFileSync(jsonPath, JSON.stringify(makeCategorizedWithSixHighlights()), "utf8");
+
+      const r = runCli(["--auto", "--json", jsonPath, "--out", outPath]);
+      assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
+
+      const approved = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.equal(approved.highlights.length, 3, "approved-has-3-highlights (#2343): slice first-3 deve ser aplicado no --auto");
+      assert.deepEqual(
+        approved.highlights.map((h: { url: string }) => h.url),
+        ["https://scorer.example/1", "https://scorer.example/2", "https://scorer.example/3"],
+        "top-3 por rank do scorer, na ordem",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--auto sem --md não exige o MD (rejeita só quando faltam --json/--out)", () => {
+    const r = runCli(["--auto"]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /Uso:/);
   });
 });

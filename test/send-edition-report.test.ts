@@ -4,10 +4,14 @@ import {
   renderHtmlReport,
   renderDurationCell,
   buildSummary,
+  loadNewsletterUrl,
   type HighlightSummary,
 } from "../scripts/send-edition-report.ts";
 import type { StageStatusDoc } from "../scripts/update-stage-status.ts";
 import type { BraveCreditStats } from "../scripts/lib/brave-credits.ts";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const MINIMAL_DOC: StageStatusDoc = {
   edition: "260525",
@@ -51,17 +55,36 @@ describe("renderHtmlReport", () => {
     assert.ok(html.includes("<!DOCTYPE html>"), "render normal");
   });
 
-  it("#1739/#1612: preview da newsletter prefere draft_preview_url (com hash) ao hashless", () => {
+  it("#3466: preview da newsletter usa newsletterUrl (com hash), não published.draft_preview_url", () => {
     const hashed = "https://draft.diaria.workers.dev/260525-796cd4";
+    // #3466: published NÃO tem draft_preview_url (nenhum script escreve esse
+    // campo em 05-published.json) — a URL vem do param newsletterUrl (9º arg),
+    // carregado de _internal/04-newsletter-url.json via loadNewsletterUrl.
     const published = {
       draft_url: "https://app.beehiiv.com/posts/abc/edit",
       title: "Edição",
       status: "draft",
-      draft_preview_url: hashed,
+    } as unknown as Parameters<typeof renderHtmlReport>[2];
+    const html = renderHtmlReport("260525", MINIMAL_DOC, published, null, [], [], null, null, hashed);
+    assert.ok(html.includes(hashed), "usa a URL com hash persistida via newsletterUrl");
+    assert.ok(!html.includes(">https://draft.diaria.workers.dev/260525<"), "não usa a versão hashless");
+  });
+
+  it("#3466: published.draft_preview_url (campo que nenhum script escreve) é IGNORADO", () => {
+    // Regressão: antes do fix, renderHtmlReport lia published.draft_preview_url,
+    // que nunca é escrito em 05-published.json — o preview sempre caía no
+    // fallback. Este teste garante que mesmo se esse campo aparecer (ex: lixo
+    // de uma versão antiga do arquivo), ele não é mais consultado.
+    const stalePreview = "https://draft.diaria.workers.dev/260525-stale";
+    const published = {
+      draft_url: "https://app.beehiiv.com/posts/abc/edit",
+      title: "Edição",
+      status: "draft",
+      draft_preview_url: stalePreview,
     } as unknown as Parameters<typeof renderHtmlReport>[2];
     const html = renderHtmlReport("260525", MINIMAL_DOC, published, null, [], []);
-    assert.ok(html.includes(hashed), "usa a URL com hash persistida");
-    assert.ok(!html.includes(">https://draft.diaria.workers.dev/260525<"), "não usa a versão hashless");
+    assert.ok(!html.includes(stalePreview), "draft_preview_url não deve mais ser lido de published");
+    assert.ok(html.includes("preview indisponível"), "sem newsletterUrl explícito, degrada como antes");
   });
 
   // #1609: seção "Destaques" removida (redundante — editor já vê no Drive +
@@ -191,7 +214,7 @@ describe("renderDurationCell — sempre gate-excluded (#1823)", () => {
 });
 
 describe("links do relatório (#1824)", () => {
-  it("sem draft_preview_url → '(preview indisponível)', não link 404 hashless", () => {
+  it("sem newsletterUrl → '(preview indisponível)', não link 404 hashless", () => {
     const published = {
       draft_url: "https://app.beehiiv.com/posts/abc/edit",
       title: "Edição",
@@ -219,6 +242,86 @@ describe("links do relatório (#1824)", () => {
   });
 });
 
+describe("loadNewsletterUrl (#3466)", () => {
+  // #3466: send-edition-report.ts lia published.draft_preview_url de
+  // 05-published.json — campo que nenhum script do pipeline escreve. O
+  // Stage 4 persiste a URL do preview em _internal/04-newsletter-url.json
+  // campo newsletter_url (via upload-html-public.ts --persist-to). Este
+  // teste garante que loadNewsletterUrl lê o arquivo/campo CORRETO.
+  function makeEditionDir(): string {
+    return mkdtempSync(join(tmpdir(), "send-edition-report-newsletter-url-"));
+  }
+
+  it("lê newsletter_url de _internal/04-newsletter-url.json quando presente", () => {
+    const dir = makeEditionDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal", "04-newsletter-url.json"),
+        JSON.stringify({ newsletter_url: "https://draft.diaria.workers.dev/260525-796cd4" }),
+        "utf8",
+      );
+      assert.equal(loadNewsletterUrl(dir), "https://draft.diaria.workers.dev/260525-796cd4");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna null quando 04-newsletter-url.json não existe (degrada como antes)", () => {
+    const dir = makeEditionDir();
+    try {
+      assert.equal(loadNewsletterUrl(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna null quando o campo newsletter_url está ausente/não-string", () => {
+    const dir = makeEditionDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal", "04-newsletter-url.json"),
+        JSON.stringify({ social_preview_url: "https://draft.diaria.workers.dev/260525-social-ab12" }),
+        "utf8",
+      );
+      assert.equal(loadNewsletterUrl(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna null (fail-open) quando o JSON está corrompido", () => {
+    const dir = makeEditionDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "_internal", "04-newsletter-url.json"), "{ not valid json", "utf8");
+      assert.equal(loadNewsletterUrl(dir), null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("integração: newsletter_url persistido → renderHtmlReport inclui a URL correta no HTML", () => {
+    const dir = makeEditionDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      const url = "https://draft.diaria.workers.dev/260525-abc123";
+      writeFileSync(
+        join(dir, "_internal", "04-newsletter-url.json"),
+        JSON.stringify({ newsletter_url: url }),
+        "utf8",
+      );
+      const loaded = loadNewsletterUrl(dir);
+      const html = renderHtmlReport("260525", MINIMAL_DOC, null, null, [], [], null, null, loaded);
+      assert.ok(html.includes(url), "HTML deve conter a URL lida do arquivo persistido");
+      assert.ok(!html.includes("preview indisponível"), "com URL presente, não deve mostrar o fallback");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("relatório de edição não enumera issues criadas (#1825)", () => {
   // O editor não quer ver a lista de issues criadas pelo auto-reporter no
   // relatório. send-edition-report.ts não lê issues-reported.json — a
@@ -230,13 +333,16 @@ describe("relatório de edição não enumera issues criadas (#1825)", () => {
       draft_url: "https://app.beehiiv.com/posts/abc/edit",
       title: "Edição",
       status: "draft",
-      draft_preview_url: "https://draft.diaria.workers.dev/260525-796cd4",
     } as unknown as Parameters<typeof renderHtmlReport>[2];
     const social = {
       posts: [{ platform: "facebook", destaque: "d1", status: "published", scheduled_at: "2026-05-25T20:00:00Z" }],
     };
     const warnings = [{ level: "warn", message: "timeout", agent: "researcher", stage: 1, edition: "260525" }];
-    const html = renderHtmlReport("260525", MINIMAL_DOC, published, social, warnings, [], null, "https://draft.diaria.workers.dev/260525-social-ab12");
+    const html = renderHtmlReport(
+      "260525", MINIMAL_DOC, published, social, warnings, [], null,
+      "https://draft.diaria.workers.dev/260525-social-ab12",
+      "https://draft.diaria.workers.dev/260525-796cd4", // #3466: newsletterUrl
+    );
     assert.ok(!/github\.com\/[^/]+\/[^/]+\/issues\/\d+/.test(html), "sem links de issue GitHub no relatório");
     assert.ok(!/Issues? (criadas|propostas|reportadas)/i.test(html), "sem cabeçalho de enumeração de issues");
     assert.ok(!html.includes("issues-reported.json"), "não referencia o registro interno de issues");

@@ -96,8 +96,10 @@ export function mergeFieldIntoJson(
  * `_internal/05-social-preview.json`), mesclando com conteúdo existente via
  * `mergeFieldIntoJson` + write atômico. Resolve o gap onde a URL do preview
  * social só era `console.log`ada e nunca registrada — com TTL 12h no KV, a
- * URL morria irrecuperável (a da newsletter persiste em `draft_preview_url`,
- * a do social não persistia em lugar nenhum).
+ * URL morria irrecuperável (a da newsletter persiste em `_internal/04-newsletter-url.json`
+ * campo `newsletter_url` — #3466 corrigiu `send-edition-report.ts` que até
+ * então lia o campo errado, `published.draft_preview_url`, nunca escrito por
+ * nenhum script — a do social não persistia em lugar nenhum).
  *
  * Arquivo dedicado (não `05-published.json`) porque este último exige
  * `draft_url` (Beehiiv, só existe pós-dispatch) e é reescrito pelo publisher
@@ -448,6 +450,25 @@ async function main(): Promise<void> {
   console.log(JSON.stringify(result, null, 2));
 }
 
+// #3419: guard de entrypoint — `main()` só roda quando este arquivo é
+// executado DIRETAMENTE (CLI), nunca quando `persistFieldToJsonFile`/
+// `uploadHtml`/etc. são importados por outro módulo ou por um one-liner
+// `tsx -e` (recovery/debug de `04-newsletter-url.json`, por ex). Verificado
+// (#3419): `isMainModule` (scripts/lib/cli-args.ts) já cobre isso — `tsx -e`
+// reduz internamente a `node --eval <código>` (node_modules/tsx/dist/cli.mjs),
+// e `process.argv[1]` fica `undefined` sob `--eval` tanto no Node nativo
+// quanto via tsx, com import estático ou dinâmico — `isMainModule` retorna
+// `false` sempre que `argv1` é falsy, então `main()` nunca dispara nesse modo
+// (coberto por test/upload-html-public.test.ts, describes #3386 e #3419).
+//
+// ⚠️ Pegadinha DIFERENTE encontrada ao investigar #3419 (não é bug de código,
+// não tem fix em JS): no Windows, `npx tsx -e "<código multi-linha>"` via
+// `npx.cmd` trunca o argumento no primeiro `\n` — o processo sai limpo (exit
+// 0, sem stdout/stderr, nenhum side-effect), porque só a 1ª linha (ex: um
+// `import` sem chamada) chega a rodar. Sintoma idêntico ao que #3419
+// descreveu ("exit 0 sem output"), mas a causa é o shell, não este guard.
+// Mitigação: usar `node --import tsx -e "<código>"` (testado robusto acima)
+// ou código `-e` em uma única linha ao invocar `tsx -e` no Windows.
 if (isMainModule(import.meta.url)) {
   main().catch((e) => {
     console.error(`[upload-html-public] ${(e as Error).message}`);
