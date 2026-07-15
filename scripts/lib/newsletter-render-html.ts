@@ -363,8 +363,13 @@ export function renderIntroCallout(
   // título. Sem essa exceção, o 1º parágrafo sempre virava um "título" visualmente
   // destacado (serif/bold) só por estar na posição 0, mesmo sendo uma frase comum
   // do mesmo texto corrido — pedido explícito do editor pra tratamento uniforme.
+  // `forceCtaPill` fica de fora desta exceção (regressão achada em CI, #3465):
+  // `renderBoxDivulgacao` remove o marcador 🛒/📚 do texto ANTES de chamar aqui
+  // com forceCtaPill=true — o marcador já não está mais em paras[0] quando esta
+  // função roda, então checar só hasKnownMarker intercepta indevidamente todo
+  // box de divulgação (🛒/📚) e quebra o botão pill/lista de bullets.
   const hasKnownMarker = /^\s*(?:📣|📚|📖|🎉)/u.test(paras[0] ?? "");
-  if (paras.length > 1 && !sponsored && !hasKnownMarker) {
+  if (paras.length > 1 && !sponsored && !hasKnownMarker && !forceCtaPill) {
     inner = paras
       .map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", processInlineLinks(p)))
       .join("\n      ");

@@ -342,9 +342,11 @@ describe("apply-stage2-caps CLI — coverage.line recalc (#906)", () => {
       const capped = JSON.parse(readFileSync(outPath, "utf8"));
       // Selected real: 3 + 2 + 3 + 4 = 12 (max(2, 12-3-2-3) = 4 outras)
       assert.equal(capped.coverage.selected, 12);
+      // #3461: formatCoverageLine agora gera o bloco de boas-vindas (padrão
+      // desde 260715) em vez do formato legado "Selecionamos os N ...".
       assert.match(
         capped.coverage.line,
-        /Selecionamos os 12 mais relevantes/,
+        /Nesta edição, a IA analisou 105 artigos \(5 enviados por mim e 100 encontrados automaticamente\) e selecionei os 12 mais relevantes\./,
       );
       assert.doesNotMatch(capped.coverage.line, /30 mais/);
     } finally {

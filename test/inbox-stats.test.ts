@@ -184,59 +184,47 @@ describe("countEditorSubmissions (#592, #609, #1486)", () => {
   });
 });
 
-describe("formatCoverageLine (#592, #609)", () => {
-  it("monta linha canônica com 'submissões' (não 'artigos')", () => {
+describe("formatCoverageLine (#3461 — bloco de boas-vindas, padrão desde 260715)", () => {
+  it("monta o bloco de 4 parágrafos com total = editorSubmissions + diariaDiscovered", () => {
     const line = formatCoverageLine({
       editorSubmissions: 26,
       diariaDiscovered: 186,
       selected: 12,
     });
-    assert.match(line, /enviei 26 submissões/);
-    assert.match(line, /encontrou outros 186 artigos/);
-    assert.match(line, /Selecionamos os 12 mais relevantes/);
-    assert.match(line, /pessoas que assinam a newsletter\.$/);
+    assert.match(line, /^Olá! Eu sou o \[Pixel\]\(https:\/\/www\.linkedin\.com\/in\/vjpixel\/\), editor dessa newsletter\./);
+    assert.match(line, /Todos os dias, junto com a IA da diar\.ia\.br, seleciono e resumo as notícias mais importantes/);
+    assert.match(line, /Nesta edição, a IA analisou 212 artigos \(26 enviados por mim e 186 encontrados automaticamente\) e selecionei os 12 mais relevantes\./);
+    assert.match(line, /Se esse trabalho faz diferença para você, \[considere apoiar o projeto\]\(https:\/\/apoia\.se\/diaria\)\.$/);
+    // 4 parágrafos separados por linha em branco
+    assert.equal(line.split("\n\n").length, 4);
   });
 
-  it("#701: pluraliza singular para 1 submissão", () => {
-    const line = formatCoverageLine({
-      editorSubmissions: 1,
-      diariaDiscovered: 186,
-      selected: 12,
-    });
-    assert.match(line, /enviei 1 submissão /);
-    assert.doesNotMatch(line, /1 submissões/);
-  });
-
-  it("#701: pluraliza singular para 1 artigo", () => {
-    const line = formatCoverageLine({
-      editorSubmissions: 5,
-      diariaDiscovered: 1,
-      selected: 12,
-    });
-    assert.match(line, /encontrou outros 1 artigo\./);
-    assert.doesNotMatch(line, /1 artigos\./);
-  });
-
-  it("#701: pluraliza singular para 1 selecionado", () => {
+  it("#701: concordância singular quando selected=1 → 'selecionei o artigo mais relevante'", () => {
     const line = formatCoverageLine({
       editorSubmissions: 5,
       diariaDiscovered: 100,
       selected: 1,
     });
-    assert.match(line, /Selecionamos o artigo mais relevante /);
-    assert.doesNotMatch(line, /Selecionamos os 1 /);
+    assert.match(line, /e selecionei o artigo mais relevante\./);
+    assert.doesNotMatch(line, /selecionei os 1 /);
   });
 
-  it("#701: tudo singular ao mesmo tempo", () => {
+  it("#701: concordância plural quando selected>1 → 'selecionei os N mais relevantes'", () => {
+    const line = formatCoverageLine({
+      editorSubmissions: 5,
+      diariaDiscovered: 100,
+      selected: 3,
+    });
+    assert.match(line, /e selecionei os 3 mais relevantes\./);
+  });
+
+  it("total soma editorSubmissions + diariaDiscovered mesmo com números pequenos/1", () => {
     const line = formatCoverageLine({
       editorSubmissions: 1,
       diariaDiscovered: 1,
       selected: 1,
     });
-    assert.match(
-      line,
-      /enviei 1 submissão e a Diar\.ia encontrou outros 1 artigo\. Selecionamos o artigo mais relevante /,
-    );
+    assert.match(line, /Nesta edição, a IA analisou 2 artigos \(1 enviados por mim e 1 encontrados automaticamente\) e selecionei o artigo mais relevante\./);
   });
 });
 
