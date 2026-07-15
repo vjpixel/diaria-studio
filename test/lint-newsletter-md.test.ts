@@ -1711,6 +1711,36 @@ describe("checkCoverageLine standalone (--check coverage-line-format, #1207)", (
     assert.equal(r.ok, true, `firstLine extracted: "${r.firstLine}"`);
     assert.match(r.firstLine, /^Para esta edição/);
   });
+
+  it("#3459: reconhece a coverage line mesmo com um box de intro ANTES dela (não é a 1ª linha)", () => {
+    // Regressão 260715: editor inseriu um bloco de boas-vindas antes da coverage
+    // line; checkCoverageLine só olhava a 1ª linha não-vazia e reportava falso-negativo.
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
+      "",
+      "Nesta edição, a IA analisou 265 artigos (10 enviados por mim e 255 encontrados automaticamente) e selecionei os 11 mais relevantes.",
+      "",
+      "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+    ].join("\n");
+    const r = checkCoverageLine(md);
+    assert.equal(r.ok, true);
+    // firstLine continua reportando a 1ª linha real (não a linha de cobertura)
+    assert.match(r.firstLine, /^Olá! Eu sou o/);
+  });
+
+  it("#3461: reconhece o formato de boas-vindas (welcome) como coverage line válida", () => {
+    const md = "Nesta edição, a IA analisou 100 artigos (5 enviados por mim e 95 encontrados automaticamente) e selecionei os 3 mais relevantes.";
+    const r = checkCoverageLine(md);
+    assert.equal(r.ok, true);
+  });
+
+  it("#3461: formato de boas-vindas aceita singular ('selecionei o artigo mais relevante')", () => {
+    const md = "Nesta edição, a IA analisou 100 artigos (5 enviados por mim e 95 encontrados automaticamente) e selecionei o artigo mais relevante.";
+    const r = checkCoverageLine(md);
+    assert.equal(r.ok, true);
+  });
 });
 
 describe("lintMultilineLinks (#1213)", () => {
