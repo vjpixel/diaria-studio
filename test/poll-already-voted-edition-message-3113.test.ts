@@ -37,7 +37,7 @@ async function vote(
 }
 
 describe("#3113 item 13 — mensagem 'já votou' sempre cita a edição (brand clarice, sem VOTE_DEDUP)", () => {
-  it("2º voto na MESMA edição arquivada: mensagem cita 'julho de 2026' (mês/ano, sem dia — mensal)", async () => {
+  it("2º voto na MESMA edição arquivada: mensagem cita 'agosto de 2026' — mês de ENVIO (#3464), não o conteúdo (julho)", async () => {
     const kv = makeTrackedKv({ "clarice:correct:260701": "A" });
     const env = makePollEnv(kv);
 
@@ -49,11 +49,13 @@ describe("#3113 item 13 — mensagem 'já votou' sempre cita a edição (brand c
     const res2 = await vote("leitor@x.com", "260701", "B", env, "clarice");
     assert.equal(res2.status, 200);
     const html2 = await res2.text();
-    assert.match(html2, /Você já votou na edição de julho de 2026/, "deve citar 'julho de 2026', não o genérico 'nesta edição'");
+    assert.match(html2, /Você já votou na edição de agosto de 2026/, "deve citar 'agosto de 2026' (mês de envio), não o genérico 'nesta edição'");
     assert.doesNotMatch(html2, /nesta edição/i);
   });
 
   it("2 edições arquivadas DIFERENTES (meses diferentes): cada 'já votou' cita a edição CORRETA (não confunde uma com a outra)", async () => {
+    // #3464: 260501 = conteúdo maio → enviado em junho; 260701 = conteúdo
+    // julho → enviado em agosto.
     const kv = makeTrackedKv({
       "clarice:correct:260501": "A",
       "clarice:correct:260701": "B",
@@ -64,17 +66,17 @@ describe("#3113 item 13 — mensagem 'já votou' sempre cita a edição (brand c
     await vote("multi@x.com", "260501", "A", env, "clarice");
     await vote("multi@x.com", "260701", "B", env, "clarice");
 
-    // Repete o voto na edição de MAIO — mensagem deve citar maio, não julho
+    // Repete o voto na edição de conteúdo MAIO — mensagem deve citar junho (envio), não agosto
     const resMaio = await vote("multi@x.com", "260501", "B", env, "clarice");
     const htmlMaio = await resMaio.text();
-    assert.match(htmlMaio, /Você já votou na edição de maio de 2026/);
-    assert.doesNotMatch(htmlMaio, /julho de 2026/);
+    assert.match(htmlMaio, /Você já votou na edição de junho de 2026/);
+    assert.doesNotMatch(htmlMaio, /agosto de 2026/);
 
-    // Repete o voto na edição de JULHO — mensagem deve citar julho, não maio
+    // Repete o voto na edição de conteúdo JULHO — mensagem deve citar agosto (envio), não junho
     const resJulho = await vote("multi@x.com", "260701", "A", env, "clarice");
     const htmlJulho = await resJulho.text();
-    assert.match(htmlJulho, /Você já votou na edição de julho de 2026/);
-    assert.doesNotMatch(htmlJulho, /maio de 2026/);
+    assert.match(htmlJulho, /Você já votou na edição de agosto de 2026/);
+    assert.doesNotMatch(htmlJulho, /junho de 2026/);
   });
 });
 
@@ -101,9 +103,10 @@ describe("#3113 item 13 — brand diaria (mensal, com dia) continua inalterado",
 // tinha ramo pra esse formato.
 
 describe("#3113 item 13 (self-review) — formatEditionDateForBrand aceita o ciclo Clarice YYMM-MM", () => {
-  it("ciclo 'YYMM-MM' no brand clarice → 'mês de ano' do mês de CONTEÚDO, sem o slug cru", () => {
-    assert.equal(formatEditionDateForBrand("2605-06", "clarice"), "maio de 2026");
-    assert.equal(formatEditionDateForBrand("2607-08", "clarice"), "julho de 2026");
+  it("ciclo 'YYMM-MM' no brand clarice → 'mês de ano' do mês de ENVIO (#3464), sem o slug cru", () => {
+    // 2605-06: conteúdo maio → envio junho. 2607-08: conteúdo julho → envio agosto.
+    assert.equal(formatEditionDateForBrand("2605-06", "clarice"), "junho de 2026");
+    assert.equal(formatEditionDateForBrand("2607-08", "clarice"), "agosto de 2026");
   });
 
   it("ciclo com mês de conteúdo inválido (ex: 13) → retorna o input cru (fail-open)", () => {
@@ -116,7 +119,7 @@ describe("#3113 item 13 (self-review) — formatEditionDateForBrand aceita o cic
 });
 
 describe("#3113 item 13 (self-review) — mensagem 'já votou' via /vote com edição em ciclo Clarice", () => {
-  it("2º voto numa edição de ciclo ('2605-06'): mensagem cita 'maio de 2026', NÃO o slug cru '2605-06'", async () => {
+  it("2º voto numa edição de ciclo ('2605-06'): mensagem cita 'junho de 2026' (mês de ENVIO, #3464), NÃO o slug cru '2605-06' nem o mês de conteúdo (maio)", async () => {
     const kv = makeTrackedKv({ "clarice:correct:2605-06": "A" });
     const env = makePollEnv(kv);
 
@@ -127,7 +130,7 @@ describe("#3113 item 13 (self-review) — mensagem 'já votou' via /vote com edi
     const res2 = await vote("ciclo@x.com", "2605-06", "B", env, "clarice");
     assert.equal(res2.status, 200);
     const html2 = await res2.text();
-    assert.match(html2, /Você já votou na edição de maio de 2026/, "deve citar 'maio de 2026', não o slug de ciclo cru");
+    assert.match(html2, /Você já votou na edição de junho de 2026/, "deve citar 'junho de 2026' (mês de envio), não o slug de ciclo cru nem o mês de conteúdo");
     assert.doesNotMatch(html2, /2605-06/, "o slug de ciclo interno NUNCA deve vazar pro texto exibido ao leitor");
   });
 });

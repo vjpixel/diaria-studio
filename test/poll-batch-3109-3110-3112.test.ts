@@ -125,8 +125,11 @@ describe("formatEditionDateForBrand (#3112) — pure", () => {
   });
 
   it("brand clarice (leaderboardPeriod 'year') → SÓ 'Mês de AAAA', sem o dia", () => {
-    assert.equal(formatEditionDateForBrand("260531", "clarice"), "maio de 2026");
-    assert.equal(formatEditionDateForBrand("260701", "clarice"), "julho de 2026");
+    // #3464: exibe o mês de ENVIO (conteúdo+1), não o mês de conteúdo embutido
+    // no AAMMDD — 260531 = conteúdo maio → enviado em junho; 260701 = conteúdo
+    // julho → enviado em agosto.
+    assert.equal(formatEditionDateForBrand("260531", "clarice"), "junho de 2026");
+    assert.equal(formatEditionDateForBrand("260701", "clarice"), "agosto de 2026");
     // Dia do código (31 vs 01) não aparece nem influencia o mês exibido.
     assert.doesNotMatch(formatEditionDateForBrand("260531", "clarice"), /\b31\b/);
   });
@@ -156,14 +159,16 @@ describe("#3112 — renderArchiveListHtml aplica formatação por brand sem alte
     assert.match(html, /href="\/leaderboard\/2026\/arquivo\/260615"/);
   });
 
-  it("brand clarice: exibe só 'Mês de AAAA' (sem dia) — mas href mantém o AAMMDD interno intacto", async () => {
+  it("brand clarice: exibe só 'Mês de AAAA' (sem dia), mês de ENVIO (#3464) — mas href mantém o AAMMDD interno intacto", async () => {
+    // #3464: 260701 = conteúdo julho → enviado em agosto; 260601 = conteúdo
+    // junho → enviado em julho.
     const res = renderArchiveListHtml(["260701", "260601"], "2026", "clarice");
     const html = await res.text();
+    assert.match(html, /agosto de 2026/);
     assert.match(html, /julho de 2026/);
-    assert.match(html, /junho de 2026/);
-    // O texto exibido NÃO deve conter "1 de julho" nem "01" — só o mês.
+    // O texto exibido NÃO deve conter "1 de agosto" nem "01" — só o mês.
+    assert.doesNotMatch(html, /\d+\s+de\s+agosto/);
     assert.doesNotMatch(html, /\d+\s+de\s+julho/);
-    assert.doesNotMatch(html, /\d+\s+de\s+junho/);
     // Href/gabarito continuam usando o AAMMDD cru (260701, 260601) — só a
     // formatação exibida mudou, não o código interno da edição.
     assert.match(html, /href="\/leaderboard\/2026\/arquivo\/260701\?brand=clarice"/);
@@ -178,11 +183,12 @@ describe("#3112 — renderArchiveVoteHtml aplica formatação por brand sem alte
     assert.match(html, /Edição de 7 de julho de 2026/);
   });
 
-  it("brand clarice: subtítulo mostra só 'Mês de AAAA', sem dia — mas edição/imagens/gabarito usam o AAMMDD cru intacto", async () => {
+  it("brand clarice: subtítulo mostra só 'Mês de AAAA', sem dia, mês de ENVIO (#3464) — mas edição/imagens/gabarito usam o AAMMDD cru intacto", async () => {
+    // #3464: 260701 = conteúdo julho → enviado em agosto.
     const res = renderArchiveVoteHtml("260701", "2026", "clarice");
     const html = await res.text();
-    assert.match(html, /Edição de julho de 2026/);
-    assert.doesNotMatch(html, /Edição de \d+\s+de julho/);
+    assert.match(html, /Edição de agosto de 2026/);
+    assert.doesNotMatch(html, /Edição de \d+\s+de agosto/);
     // O AAMMDD interno (usado no hidden input do form, nas imagens A/B e no
     // gabarito correct:{edition}) NÃO foi tocado — continua 260701 cru.
     assert.match(html, /<input type="hidden" name="edition" value="260701">/);
@@ -219,7 +225,8 @@ function makeEnv(seed: Record<string, string> = {}): Env {
 }
 
 describe("#3112 — integração via worker fetch: /leaderboard/{YYYY}/arquivo/{AAMMDD}", () => {
-  it("brand clarice via query param real: página de voto mostra 'Mês de AAAA' sem dia", async () => {
+  it("brand clarice via query param real: página de voto mostra 'Mês de AAAA' sem dia, mês de ENVIO (#3464)", async () => {
+    // #3464: 260701 = conteúdo julho → enviado em agosto.
     const { default: worker } = await import("../workers/poll/src/index.ts");
     const env = makeEnv({ "clarice:correct:260701": "A" });
     const res = await worker.fetch(
@@ -229,8 +236,8 @@ describe("#3112 — integração via worker fetch: /leaderboard/{YYYY}/arquivo/{
     );
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.match(html, /Edição de julho de 2026/);
-    assert.doesNotMatch(html, /Edição de \d+\s+de julho/);
+    assert.match(html, /Edição de agosto de 2026/);
+    assert.doesNotMatch(html, /Edição de \d+\s+de agosto/);
   });
 
   it("brand diaria (default) via worker fetch: mantém data completa com dia", async () => {
