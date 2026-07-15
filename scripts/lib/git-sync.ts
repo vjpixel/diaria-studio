@@ -395,13 +395,47 @@ export function createFileLock(
           return false;
         }
         if (claimedMtimeMs !== observedMtimeMs) {
+          // #3434: a janela entre o `renameSync` que acabou de roubar o lock
+          // FRESCO de outro dono (identidade não bate, estamos aqui) e este
+          // ponto pode ter sido cruzada por um 3º processo C, que rodou
+          // `mkdirSync(path)` limpo (sem EEXIST) e virou dono legítimo de
+          // `path`. Nesse caso, tentar `renameSync(staleClaimPath, path)`
+          // pra "devolver" o lock destruiria o lock genuíno de C — e em
+          // Windows/NTFS, rename para um diretório já existente (mesmo
+          // vazio) falha com EPERM, que o catch original engolia
+          // silenciosamente, deixando `staleClaimPath` (dados órfãos de A,
+          // que não é dono de nada) permanentemente no disco. Checar
+          // explicitamente ANTES de tentar o rename — mesmo tratamento que o
+          // caminho feliz já dá pro EEXIST de `mkdirSync`.
+          let pathAlreadyClaimedByThirdProcess = false;
+          try {
+            fsImpl.statSync(path);
+            pathAlreadyClaimedByThirdProcess = true;
+          } catch {
+            pathAlreadyClaimedByThirdProcess = false;
+          }
+
+          if (pathAlreadyClaimedByThirdProcess) {
+            // `path` já tem um dono legítimo (C) — não tentar rename de
+            // volta. `staleClaimPath` só contém dados órfãos de A; descarta
+            // (best-effort, mesmo trade-off já documentado acima: se nem o
+            // descarte for possível, fica órfão mas inofensivo).
+            try {
+              fsImpl.rmSync(staleClaimPath, { recursive: true, force: true });
+            } catch {
+              /* órfão inofensivo, ver comentário acima */
+            }
+            return false;
+          }
+
           try {
             fsImpl.renameSync(staleClaimPath, path);
           } catch {
-            // Se nem a devolução for possível, o pior caso é o path original
-            // ficar temporariamente ausente até o dono real notar — nunca
-            // corrompemos o lock dele (não o descartamos, não criamos um
-            // segundo lock concorrente).
+            // `path` estava genuinamente ausente (checamos acima) mas o
+            // rename ainda assim falhou — erro inesperado do FS. Pior caso:
+            // path fica temporariamente ausente até o dono real notar —
+            // nunca corrompemos o lock dele (não o descartamos, não criamos
+            // um segundo lock concorrente).
           }
           return false;
         }
