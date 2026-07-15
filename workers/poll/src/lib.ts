@@ -311,6 +311,17 @@ export function editionToMonthSlug(edition: string): string | null {
  * AAMMDD diário não precisa de fallback, nunca teve 2 formatos) ou se o mês
  * de CONTEÚDO (`MM` em `YYMM`) é semanticamente inválido (0 ou >12).
  */
+export function legacyMonthlyEditionForCycle(edition: string): string | null {
+  const m = edition.match(/^(\d{2})(\d{2})-\d{2}$/);
+  if (!m) return null;
+  const [, yy, mm] = m;
+  const yr = 2000 + parseInt(yy, 10);
+  const moNum = parseInt(mm, 10);
+  if (moNum < 1 || moNum > 12) return null;
+  const lastDay = new Date(Date.UTC(yr, moNum, 0)).getUTCDate();
+  return `${yy}${mm}${String(lastDay).padStart(2, "0")}`;
+}
+
 /**
  * #3464: mês/ano de ENVIO dado mês/ano de CONTEÚDO — wrap dezembro(12)→
  * janeiro(1) do ano SEGUINTE. Extrai a fórmula que já existia inline em
@@ -323,17 +334,6 @@ export function envioMonthYear(contentYear: number, contentMonth: number): { yea
   return contentMonth === 12
     ? { year: contentYear + 1, month: 1 }
     : { year: contentYear, month: contentMonth + 1 };
-}
-
-export function legacyMonthlyEditionForCycle(edition: string): string | null {
-  const m = edition.match(/^(\d{2})(\d{2})-\d{2}$/);
-  if (!m) return null;
-  const [, yy, mm] = m;
-  const yr = 2000 + parseInt(yy, 10);
-  const moNum = parseInt(mm, 10);
-  if (moNum < 1 || moNum > 12) return null;
-  const lastDay = new Date(Date.UTC(yr, moNum, 0)).getUTCDate();
-  return `${yy}${mm}${String(lastDay).padStart(2, "0")}`;
 }
 
 /**
