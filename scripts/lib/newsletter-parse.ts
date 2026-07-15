@@ -567,8 +567,19 @@ export function reconcileCoverageCount(line: string, count: number): string {
   const countPhrase =
     count === 1 ? "o artigo mais relevante" : `os ${count} mais relevantes`;
   return line.replace(
-    /(selecionamos|selecionei|foram selecionados)\s+(?:o artigo mais relevante|os \d+ mais relevantes)/i,
-    (_match, verb: string) => `${verb} ${countPhrase}`,
+    /(selecionamos|selecionei|foi selecionado|foram selecionados)\s+(?:o artigo mais relevante|os \d+ mais relevantes)/i,
+    (_match, verb: string) => {
+      // Voz passiva (#3456) flexiona em número — "foi selecionado" (singular)
+      // vira "foram selecionados" (plural) e vice-versa quando o count muda.
+      // Voz ativa ("selecionamos"/"selecionei") não flexiona — mantém como capturado.
+      const isPassive = /^fo(i|ram)\s+selecionad/i.test(verb);
+      const verbOut = isPassive
+        ? count === 1
+          ? "foi selecionado"
+          : "foram selecionados"
+        : verb;
+      return `${verbOut} ${countPhrase}`;
+    },
   );
 }
 
