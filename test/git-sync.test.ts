@@ -76,6 +76,86 @@ function makeSpawn(responses: Record<string, SpawnResult>): SpawnFn {
   };
 }
 
+/**
+ * Filesystem falso em memória, suficiente pra rodar N instâncias de
+ * `createFileLock()` contra o MESMO diretório simulado e provar exclusão
+ * mútua durante a reivindicação de um lock stale — sem depender de processos
+ * reais (impossível de orquestrar deterministicamente num teste). Implementa
+ * exatamente a semântica do `node:fs` real que o código sob teste depende:
+ * `mkdirSync` lança EEXIST se já existe, `statSync`/`renameSync` lançam
+ * ENOENT se não existe, `renameSync` move atomicamente (só uma chamada pode
+ * "vencer" um dado path de origem).
+ *
+ * Movida pra escopo de módulo (#3434) — antes vivia só dentro do describe de
+ * "gap 2"; os testes de #3434 (colisão de 3 processos no rollback + release()
+ * com token divergente) reusam a mesma implementação em vez de duplicá-la.
+ */
+class FakeLockFs implements LockFs {
+  private dirs = new Map<string, number>(); // path -> mtimeMs
+  private files = new Map<string, string>(); // path -> conteúdo
+
+  private enoent(): never {
+    const err = new Error("ENOENT") as NodeJS.ErrnoException;
+    err.code = "ENOENT";
+    throw err;
+  }
+  private eexist(): never {
+    const err = new Error("EEXIST") as NodeJS.ErrnoException;
+    err.code = "EEXIST";
+    throw err;
+  }
+
+  mkdirSync(path: string): void {
+    if (this.dirs.has(path)) this.eexist();
+    this.dirs.set(path, Date.now());
+  }
+  rmSync(path: string): void {
+    this.dirs.delete(path);
+    for (const key of [...this.files.keys()]) {
+      if (key.startsWith(path)) this.files.delete(key);
+    }
+  }
+  statSync(path: string): { mtimeMs: number } {
+    if (!this.dirs.has(path)) this.enoent();
+    return { mtimeMs: this.dirs.get(path)! };
+  }
+  renameSync(oldPath: string, newPath: string): void {
+    if (!this.dirs.has(oldPath)) this.enoent();
+    const mtime = this.dirs.get(oldPath)!;
+    this.dirs.delete(oldPath);
+    this.dirs.set(newPath, mtime);
+    for (const [key, val] of [...this.files.entries()]) {
+      if (key.startsWith(oldPath)) {
+        this.files.delete(key);
+        this.files.set(newPath + key.slice(oldPath.length), val);
+      }
+    }
+  }
+  writeFileSync(path: string, data: string): void {
+    this.files.set(path, data);
+  }
+  readFileSync(path: string): string {
+    const v = this.files.get(path);
+    if (v === undefined) this.enoent();
+    return v!;
+  }
+
+  /** Helper de teste: simula um lock morto já existente com mtime antigo. */
+  seedStaleDir(path: string, mtimeMs: number): void {
+    this.dirs.set(path, mtimeMs);
+  }
+
+  /** Helper de teste (#3434): true se `path` existe como diretório-lock. */
+  hasDir(path: string): boolean {
+    return this.dirs.has(path);
+  }
+
+  /** Helper de teste (#3434): lista todos os diretórios-lock vivos (inclui staleClaimPath órfãos, se houver). */
+  listDirs(): string[] {
+    return [...this.dirs.keys()];
+  }
+}
+
 // ── Suíte principal ────────────────────────────────────────────────────────
 
 describe("git-sync — cenários de sucesso", () => {
@@ -841,71 +921,8 @@ describe("git-sync — #3430 gap 3: path do lock compartilhado entre worktrees d
 });
 
 describe("git-sync — #3430 gap 2: reivindicação de lock morto é atômica (2 concorrentes, só 1 prevalece)", () => {
-  /**
-   * Filesystem falso em memória, suficiente pra rodar 2 instâncias de
-   * `createFileLock()` contra o MESMO diretório simulado e provar exclusão
-   * mútua durante a reivindicação de um lock stale — sem depender de 2
-   * processos reais (impossível de orquestrar deterministicamente num
-   * teste). Implementa exatamente a semântica do `node:fs` real que o código
-   * sob teste depende: `mkdirSync` lança EEXIST se já existe, `statSync`/
-   * `renameSync` lançam ENOENT se não existe, `renameSync` move atomicamente
-   * (só uma chamada pode "vencer" um dado path de origem).
-   */
-  class FakeLockFs implements LockFs {
-    private dirs = new Map<string, number>(); // path -> mtimeMs
-    private files = new Map<string, string>(); // path -> conteúdo
-
-    private enoent(): never {
-      const err = new Error("ENOENT") as NodeJS.ErrnoException;
-      err.code = "ENOENT";
-      throw err;
-    }
-    private eexist(): never {
-      const err = new Error("EEXIST") as NodeJS.ErrnoException;
-      err.code = "EEXIST";
-      throw err;
-    }
-
-    mkdirSync(path: string): void {
-      if (this.dirs.has(path)) this.eexist();
-      this.dirs.set(path, Date.now());
-    }
-    rmSync(path: string): void {
-      this.dirs.delete(path);
-      for (const key of [...this.files.keys()]) {
-        if (key.startsWith(path)) this.files.delete(key);
-      }
-    }
-    statSync(path: string): { mtimeMs: number } {
-      if (!this.dirs.has(path)) this.enoent();
-      return { mtimeMs: this.dirs.get(path)! };
-    }
-    renameSync(oldPath: string, newPath: string): void {
-      if (!this.dirs.has(oldPath)) this.enoent();
-      const mtime = this.dirs.get(oldPath)!;
-      this.dirs.delete(oldPath);
-      this.dirs.set(newPath, mtime);
-      for (const [key, val] of [...this.files.entries()]) {
-        if (key.startsWith(oldPath)) {
-          this.files.delete(key);
-          this.files.set(newPath + key.slice(oldPath.length), val);
-        }
-      }
-    }
-    writeFileSync(path: string, data: string): void {
-      this.files.set(path, data);
-    }
-    readFileSync(path: string): string {
-      const v = this.files.get(path);
-      if (v === undefined) this.enoent();
-      return v!;
-    }
-
-    /** Helper de teste: simula um lock morto já existente com mtime antigo. */
-    seedStaleDir(path: string, mtimeMs: number): void {
-      this.dirs.set(path, mtimeMs);
-    }
-  }
+  // `FakeLockFs` agora vive em escopo de módulo (#3434) — ver definição acima,
+  // logo após `makeSpawn()`.
 
   it("2 acquire() sequenciais contra o MESMO lock morto → só o primeiro prevalece", () => {
     const fakeFs = new FakeLockFs();
@@ -971,4 +988,181 @@ describe("git-sync — #3430 gap 2: reivindicação de lock morto é atômica (2
       "o lock de A deve continuar intacto e ativo após a tentativa frustrada de B — prova de que B não o corrompeu",
     );
   });
+});
+
+describe("git-sync — #3434: rollback de reivindicação morta colide com 3º processo + release() com token divergente", () => {
+  it(
+    "colisão de 3 processos: rollback com `path` já ocupado por C não lança nem é engolido silenciosamente — " +
+      "descarta o staleClaim órfão de A e retorna false, sem corromper o lock de C",
+    () => {
+      // Reproduz o mecanismo exato do #3434: B observa o lock morto ORIGINAL
+      // (mtime antigo), mas ANTES de B roubar o que está em `path`, A roda o
+      // ciclo COMPLETO de reivindicação daquele MESMO lock morto (idêntico ao
+      // teste do gap 2 acima) e vira dono com mtime FRESCO. Quando o
+      // `renameSync` de B então rouba esse lock fresco (não o morto que B
+      // observou), `path` fica temporariamente AUSENTE — é exatamente essa
+      // janela que este teste explora: um 3º processo C corre nela e faz
+      // `mkdirSync(path)` limpo (sem EEXIST, porque o path está genuinamente
+      // livre). Quando B finalmente detecta o mismatch de identidade e tenta
+      // devolver (`renameSync(staleClaimPath, path)`), `path` já tem o
+      // diretório de C — em Windows/NTFS isso falharia com EPERM (rename para
+      // um diretório já existente), que o catch vazio pré-#3434 engolia
+      // silenciosamente, deixando o staleClaimPath de B (com os dados órfãos
+      // de A) preso em disco pra sempre e o lock de C potencialmente exposto.
+      const fakeFs = new FakeLockFs();
+      // #3434: pré-resolvido (ao contrário dos testes do gap 2 acima, que
+      // usam a string crua) — necessário pra que a asserção de owner.json
+      // abaixo seja válida. `writeOwnerToken`/`readOwnerToken` no código
+      // sob teste gravam em `resolve(lockDirPath, "owner.json")`, enquanto
+      // `mkdirSync`/`statSync`/`renameSync` operam sobre o `path` CRU — num
+      // path já-absoluto-e-normalizado (o caso real, sempre produzido por
+      // `resolveSharedLockPath()` em produção) os dois convergem pro mesmo
+      // namespace de string; com uma string POSIX crua num teste rodando em
+      // Windows, `resolve()` reformata pra backslash e o casamento de
+      // prefixo do `FakeLockFs` durante `renameSync` (que mimetiza mover
+      // arquivos JUNTO com o diretório, como um FS real faz) deixa de bater
+      // — o que mascararia silenciosamente a asserção abaixo independente
+      // do fix estar presente ou não.
+      const lockPath = resolve("/fake-repo/.git/diaria-sync.lock");
+      fakeFs.seedStaleDir(lockPath, Date.now() - (LOCK_STALE_MS + 60_000));
+
+      let injectedA = false;
+      let renameFromLockPathCount = 0;
+      let injectedC = false;
+      // Snapshot do owner.json de C capturado IMEDIATAMENTE após sua própria
+      // aquisição — é a assinatura de identidade que prova, ao final, se o
+      // rollback de B tocou ou não no lock de C. Note que `renameSync` do
+      // `FakeLockFs` (de propósito, ver comentário na definição da classe)
+      // reproduz a semântica POSIX de mover atomicamente PARA um diretório de
+      // destino existente (sem lançar) — não a semântica EPERM específica do
+      // Windows/NTFS descrita na issue (o teste deve validar o CONTRATO de
+      // forma determinística e cross-platform, não depender do erro real do
+      // SO). Por isso a asserção que realmente distingue o código antigo do
+      // corrigido não é "renameSync lançou", e sim "o owner.json de C
+      // continua exatamente como C escreveu" — o código ANTIGO chamava
+      // `renameSync(staleClaimPath, path)` incondicionalmente nesse ponto, o
+      // que (via `FakeLockFs`) sobrescreveria silenciosamente o owner.json de
+      // C com os dados órfãos de A; o código CORRIGIDO detecta via `statSync`
+      // que `path` já está ocupado e nunca chama `renameSync` — owner.json de
+      // C fica intocado.
+      let ownerJsonSnapshotAfterC: string | undefined;
+      const originalRenameSync = fakeFs.renameSync.bind(fakeFs);
+      fakeFs.renameSync = (oldPath: string, newPath: string) => {
+        // Igual ao teste do gap 2: na PRIMEIRA tentativa de rename saindo de
+        // `lockPath` (a de B, ainda não executada), injeta o ciclo completo
+        // de A primeiro — reproduz "B rouba o lock FRESCO de A, não o morto
+        // original que observou".
+        if (!injectedA && oldPath === lockPath) {
+          injectedA = true;
+          const lockA = createFileLock(lockPath, defaultSpawn, fakeFs);
+          assert.equal(lockA.acquire(), true, "pré-condição: A reivindica o lock morto original primeiro");
+        }
+
+        const result = originalRenameSync(oldPath, newPath);
+
+        if (oldPath === lockPath && newPath !== lockPath) {
+          renameFromLockPathCount++;
+          // A 1ª ocorrência é o rename INTERNO do próprio ciclo de A (o
+          // lock morto original → staleClaimPath de A) — não é o evento que
+          // este teste mira. A 2ª ocorrência é B roubando o lock FRESCO que
+          // A acabou de recriar — é exatamente aqui que `path` fica vago e a
+          // janela do #3434 se abre.
+          if (!injectedC && renameFromLockPathCount === 2) {
+            injectedC = true;
+            const lockC = createFileLock(lockPath, defaultSpawn, fakeFs);
+            assert.equal(
+              lockC.acquire(),
+              true,
+              "pré-condição: C adquire o path livre nesta janela (mkdirSync limpo, sem EEXIST)",
+            );
+            ownerJsonSnapshotAfterC = fakeFs.readFileSync(resolve(lockPath, "owner.json"));
+          }
+        }
+
+        return result;
+      };
+
+      const lockB = createFileLock(lockPath, defaultSpawn, fakeFs);
+      let resultB: boolean | undefined;
+      assert.doesNotThrow(() => {
+        resultB = lockB.acquire();
+      }, "acquire() de B nunca deve lançar — mesmo com `path` já reivindicado por C no instante do rollback");
+
+      assert.equal(resultB, false, "B deve desistir (não reivindicou nada de fato) quando path já pertence a C");
+
+      // O diretório de C precisa continuar existindo em `lockPath` — prova
+      // de que o rollback frustrado de B não o removeu nem substituiu por um
+      // 2º dono concorrente.
+      assert.equal(fakeFs.hasDir(lockPath), true, "path deve continuar existindo, ocupado por C, após a tentativa frustrada de B");
+
+      // A asserção que de fato distingue o bug do fix (ver comentário acima
+      // de `ownerJsonSnapshotAfterC`): o owner.json de C precisa estar
+      // BYTE-A-BYTE igual ao que C escreveu — nenhuma sobrescrita pelos
+      // dados órfãos de A via o rename de rollback.
+      assert.ok(ownerJsonSnapshotAfterC, "pré-condição: snapshot do owner.json de C deveria ter sido capturado");
+      assert.equal(
+        fakeFs.readFileSync(resolve(lockPath, "owner.json")),
+        ownerJsonSnapshotAfterC,
+        "owner.json de C não pode ser sobrescrito pelo rollback frustrado de B — identidade do dono real " +
+          "precisa permanecer intacta (este é o bug real do #3434: o código antigo tentava o rename de volta " +
+          "incondicionalmente, o que sobrescreveria o lock do dono real quando o destino já estivesse ocupado)",
+      );
+
+      // Nenhum diretório-lock órfão adicional deveria sobreviver além de
+      // `lockPath` (dono: C) — o staleClaimPath de B (dados órfãos de A) deve
+      // ter sido descartado, não deixado preso em disco pra sempre.
+      const survivingDirs = fakeFs.listDirs();
+      assert.deepEqual(
+        survivingDirs,
+        [lockPath],
+        `nenhum diretório-lock órfão deveria sobreviver além de '${lockPath}' (dono: C) — ` +
+          `encontrado: ${JSON.stringify(survivingDirs)}`,
+      );
+    },
+  );
+
+  it(
+    "release(): token em disco diverge do token da instância → no-op, NÃO remove o lock do dono real " +
+      "(rede de segurança residual do #3430 gap 2, sem cobertura de teste até o #3434)",
+    () => {
+      const fakeFs = new FakeLockFs();
+      const lockPath = "/fake-repo/.git/diaria-sync.lock";
+
+      const lockA = createFileLock(lockPath, defaultSpawn, fakeFs);
+      assert.equal(lockA.acquire(), true, "A adquire o lock livre normalmente");
+      assert.equal(fakeFs.hasDir(lockPath), true, "pré-condição: diretório do lock existe após acquire()");
+
+      // Simula o cenário residual documentado no #3430 (trade-off aceito
+      // conscientemente, nunca coberto por teste até agora): o lock de A
+      // ficou STALE enquanto A ainda achava que era dono (ex: processo
+      // suspenso além de LOCK_STALE_MS), e um processo D o reivindicou de
+      // verdade nesse meio tempo — reescrevendo o owner.json com um token
+      // DIFERENTE do que A guardou na própria instância (`heldToken`).
+      // Simulado aqui sobrescrevendo o owner.json diretamente — equivalente
+      // ao que D faria via `writeOwnerToken` dentro do seu próprio
+      // `acquire()` (ciclo completo de reivindicação de lock morto, já
+      // coberto pelos testes do gap 2 acima — não repetido aqui pra manter
+      // este teste focado só no comportamento de `release()`).
+      fakeFs.writeFileSync(
+        resolve(lockPath, "owner.json"),
+        JSON.stringify({ pid: 999999, token: "token-de-D-nao-de-A", acquiredAt: Date.now() }),
+      );
+
+      lockA.release();
+
+      // O diretório do lock (agora de D) NÃO deve ter sido removido —
+      // release() de A com token divergente precisa ser no-op.
+      assert.equal(
+        fakeFs.hasDir(lockPath),
+        true,
+        "release() de A com token divergente nunca deve remover o lock do dono real (D)",
+      );
+
+      // Chamar release() de novo (idempotência já testada em outro lugar pro
+      // caminho "nunca adquiriu"; aqui confirmamos que o caminho "adquiriu,
+      // mas foi usurpado" também não lança e continua no-op).
+      assert.doesNotThrow(() => lockA.release());
+      assert.equal(fakeFs.hasDir(lockPath), true, "2ª chamada a release() continua no-op — lock de D intacto");
+    },
+  );
 });
