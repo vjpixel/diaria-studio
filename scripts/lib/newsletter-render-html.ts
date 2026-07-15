@@ -284,9 +284,18 @@ export function renderWhyBoxInner(text: string): string {
 export function renderCoverage(text: string): string {
   // #1936 (DS): INTRO = parágrafo sans ink (não mais cinza itálico). Primeira
   // seção, padding 44px 32px 8px.
+  // #3461: formato de boas-vindas é multi-parágrafo (`\n\n`) com links
+  // markdown ([Pixel](...), [considere apoiar...](...)) — precisa de
+  // processInlineLinks (não escText, que escaparia os `[`/`]` literalmente)
+  // e um `<p>` por parágrafo. Formatos legados (linha única, sem `\n\n`)
+  // continuam pelo caminho antigo (escText — nunca tiveram links).
+  const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const inner = paras.length > 1
+    ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", processInlineLinks(p))).join("\n  ")
+    : bodyP("0", escText(text));
   return `<!-- INTRO (coverage) -->
 <tr><td class="pad" style="padding:44px 32px 8px;">
-  ${bodyP("0", escText(text))}
+  ${inner}
 </td></tr>`;
 }
 
@@ -349,7 +358,22 @@ export function renderIntroCallout(
   const sponsored = isSponsoredCallout(text);
   const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   let inner: string;
-  if (paras.length > 1) {
+  // #3460: multi-parágrafo SEM marcador reconhecido (📣/📚/📖/🎉) e não-patrocinado —
+  // nota pessoal do editor (ex: boas-vindas), não anúncio/box de divulgação com
+  // título. Sem essa exceção, o 1º parágrafo sempre virava um "título" visualmente
+  // destacado (serif/bold) só por estar na posição 0, mesmo sendo uma frase comum
+  // do mesmo texto corrido — pedido explícito do editor pra tratamento uniforme.
+  // `forceCtaPill` fica de fora desta exceção (regressão achada em CI, #3465):
+  // `renderBoxDivulgacao` remove o marcador 🛒/📚 do texto ANTES de chamar aqui
+  // com forceCtaPill=true — o marcador já não está mais em paras[0] quando esta
+  // função roda, então checar só hasKnownMarker intercepta indevidamente todo
+  // box de divulgação (🛒/📚) e quebra o botão pill/lista de bullets.
+  const hasKnownMarker = /^\s*(?:📣|📚|📖|🎉)/u.test(paras[0] ?? "");
+  if (paras.length > 1 && !sponsored && !hasKnownMarker && !forceCtaPill) {
+    inner = paras
+      .map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", processInlineLinks(p)))
+      .join("\n      ");
+  } else if (paras.length > 1) {
     // multi-parágrafo: 1º = título (marcador 📣/📚/🎉 removido), demais = corpo normal.
     // titleStyle "serif" (default) = título serif grande (sponsored/mid callout);
     // "body" = mesmo tamanho do corpo, em negrito (intro 🎉 — pedido do editor 260701).

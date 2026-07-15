@@ -1419,6 +1419,30 @@ describe("reconcileCoverageCount (#1761)", () => {
   it("string vazia → retorna vazia (sem crash)", () => {
     assert.equal(reconcileCoverageCount("", 12), "");
   });
+
+  it("#3465: formato #3456 (voz passiva) flexiona 'foi selecionado' → 'foram selecionados' quando o count muda pra plural", () => {
+    // Bug achado no code-review do PR: o regex de verbos não incluía a forma
+    // singular passiva "foi selecionado" — reconciliar pra count>1 nesse
+    // formato retornava a linha inalterada (sem erro, contagem stale).
+    const stale = "Após a curadoria, foi selecionado o artigo mais relevante.";
+    const out = reconcileCoverageCount(stale, 5);
+    assert.match(out, /foram selecionados os 5 mais relevantes/);
+    assert.doesNotMatch(out, /foi selecionado/);
+  });
+
+  it("#3465: formato #3456 (voz passiva) flexiona 'foram selecionados' → 'foi selecionado' quando o count muda pra singular", () => {
+    const stale = "Após a curadoria, foram selecionados os 8 mais relevantes.";
+    const out = reconcileCoverageCount(stale, 1);
+    assert.match(out, /foi selecionado o artigo mais relevante/);
+    assert.doesNotMatch(out, /os \d+ mais/);
+  });
+
+  it("#3461: formato de boas-vindas (voz ativa 'selecionei') reconcilia contagem sem quebrar o verbo", () => {
+    const stale = "Nesta edição, a IA analisou 100 artigos (5 enviados por mim e 95 encontrados automaticamente) e selecionei os 9 mais relevantes.";
+    const out = reconcileCoverageCount(stale, 3);
+    assert.match(out, /selecionei os 3 mais relevantes/);
+    assert.doesNotMatch(out, /os 9 mais/);
+  });
 });
 
 describe("extractCoverageLine + renderCoverage (#1093)", () => {
@@ -1470,6 +1494,38 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     assert.match(line!, /os 9 mais relevantes/);
   });
 
+  it("#3462: extrai o bloco de boas-vindas multi-parágrafo (#3461) inteiro, não só a 1ª linha", () => {
+    // Bug 260715: extractCoverageLine só reconhecia o formato legado de linha
+    // única; o novo bloco de 4 parágrafos era descartado silenciosamente
+    // (sumia do HTML renderizado).
+    const md = [
+      "TÍTULO",
+      "",
+      "Headline de teste",
+      "",
+      "---",
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
+      "",
+      "Nesta edição, a IA analisou 265 artigos (10 enviados por mim e 255 encontrados automaticamente) e selecionei os 11 mais relevantes.",
+      "",
+      "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const line = extractCoverageLine(md);
+    assert.ok(line, "coverage line (welcome) deve ser extraída");
+    assert.match(line!, /^Olá! Eu sou o \[Pixel\]/);
+    // captura os 4 parágrafos, até o CTA final de apoio
+    assert.match(line!, /considere apoiar o projeto\]\(https:\/\/apoia\.se\/diaria\)\.$/);
+    assert.match(line!, /Nesta edição, a IA analisou 265 artigos/);
+    assert.doesNotMatch(line!, /---/);
+    assert.doesNotMatch(line!, /DESTAQUE/);
+  });
+
   it("renderCoverage retorna <tr> com texto escapado", () => {
     const text = "Para esta edição, eu (o editor) enviei 5 submissões & a Diar.ia encontrou outros 80 artigos.";
     const html = renderCoverage(text);
@@ -1480,6 +1536,23 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     // #2532: a marca "Diar.ia" renderiza como wordmark diar.ia.br (pontos teal);
     // o escape do & precede o wordmark, garantindo que ambos coexistem.
     assert.match(html, /&amp; a <strong>diar<span style="color:#00A0A0">\.<\/span>ia<span style="color:#00A0A0">\.br<\/span><\/strong> encontrou/);
+  });
+
+  it("#3461: renderCoverage processa bloco multi-parágrafo com links markdown (um <p> por parágrafo)", () => {
+    // Bug 260715: antes desta correção, renderCoverage só tratava o texto como
+    // parágrafo único via escText — um bloco multi-parágrafo com [texto](url)
+    // teria os colchetes/parênteses escapados literalmente, sem virar <a>.
+    const text = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "Todos os dias, junto com a IA, seleciono e resumo as notícias.",
+      "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+    ].join("\n\n");
+    const html = renderCoverage(text);
+    // 3 parágrafos → 3 tags <p>
+    assert.equal((html.match(/<p /g) ?? []).length, 3);
+    assert.match(html, /<a href="https:\/\/www\.linkedin\.com\/in\/vjpixel\/"[^>]*>Pixel<\/a>/);
+    assert.match(html, /<a href="https:\/\/apoia\.se\/diaria"[^>]*>considere apoiar o projeto<\/a>/);
+    assert.doesNotMatch(html, /\[Pixel\]/);
   });
 
   it("renderHTML inclui o bloco de cobertura antes do primeiro destaque", () => {

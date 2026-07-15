@@ -72,6 +72,30 @@ describe("renderIntroCallout (#1648)", () => {
     assert.match(html, /<a href="https:\/\/meet\.google\.com\/awi-jter-dwm"/);
     assert.match(html, /font-weight:600/);
   });
+
+  it("#3460: multi-parágrafo SEM marcador conhecido (📣/📚/📖/🎉) e não-patrocinado renderiza todos os parágrafos uniformemente (sem título serif/bold no 1º)", () => {
+    // Bug 260715: renderIntroCallout sempre estilizava o 1º parágrafo como
+    // título (serif grande / bold) só por estar na posição 0 — quebrava o
+    // pedido do editor de tratar uma nota pessoal (ex: boas-vindas) como
+    // texto corrido comum, sem destaque visual artificial no início.
+    const html = renderIntroCallout(
+      "Olá! Eu sou o Pixel, editor dessa newsletter.\n\nTodos os dias seleciono as notícias mais importantes.",
+    );
+    // Nenhum parágrafo em serif 26px (tamanho de título) nem font-weight:600 (sub-header)
+    assert.doesNotMatch(html, /font-size:26px/);
+    assert.doesNotMatch(html, /font-weight:600/);
+    assert.match(html, /Olá! Eu sou o Pixel/);
+    assert.match(html, /Todos os dias seleciono/);
+  });
+
+  it("#3460: multi-parágrafo COM marcador conhecido (🎉) preserva o tratamento de título existente", () => {
+    // Continua funcionando como antes para os callouts de sorteio/CTA — a
+    // exceção do #3460 só se aplica quando NÃO há marcador reconhecido.
+    const html = renderIntroCallout(
+      "🎉 Sorteio\n\nlinha do sorteio.",
+    );
+    assert.match(html, /font-size:26px/);
+  });
 });
 
 // #260701: box de início de mês (campeões É IA? + sorteio) — title body-size
