@@ -176,11 +176,11 @@ function loadSocial(editionDir: string): PublishedSocial | null {
 
 /**
  * #1739: URL do social preview, persistida em `.../05-social-preview.json`
- * campo `social_preview_url` no Stage 4 (#1734). Até #3214 era hospedado no
- * draft worker Cloudflare via `upload-html-public.ts --persist-to`; desde
- * #3214 é um Claude Artifact publicado direto pelo top-level (a persistência
- * do campo/arquivo não mudou — só a origem da URL). Retorna null se não
- * persistida (edição sem preview social).
+ * campo `social_preview_url` no Stage 4 (#1734), hospedada no draft worker
+ * Cloudflare via `upload-html-public.ts --persist-to`. (#3214 migrou pra
+ * Claude Artifact, mas #3420 reverteu pro Worker-hosted — Artifacts rodam sob
+ * CSP que bloqueava imagem remota. O campo/arquivo de persistência nunca
+ * mudou.) Retorna null se não persistida (edição sem preview social).
  */
 function loadSocialPreviewUrl(editionDir: string): string | null {
   const path = resolveReadPath(editionDir, "05-social-preview.json");
@@ -349,8 +349,8 @@ export function renderHtmlReport(
   // Preview link. #1739/#1612: usar SÓ o `draft_preview_url` persistido.
   // #1824: sem URL persistida, deixar null → o render mostra
   // "(preview indisponível)" em vez de um link quebrado.
-  // #3214: a URL passou de Cloudflare draft worker para Claude Artifact —
-  // o campo/contrato de persistência não mudou, só a origem da URL.
+  // #3214 migrou a URL pra Claude Artifact; #3420 reverteu pro draft worker
+  // Cloudflare (Worker-hosted) — o campo/contrato de persistência não mudou.
   const persistedPreview = (published as { draft_preview_url?: unknown } | null)
     ?.draft_preview_url;
   const previewUrl =
@@ -420,12 +420,12 @@ export function renderHtmlReport(
   <h2>Publicacao</h2>
   <h3 style="font-size:14px;">Newsletter</h3>
   <p>${nlStatus}</p>
-  <p>📄 Preview newsletter (Claude Artifact): ${
+  <p>📄 Preview newsletter (Worker): ${
     previewUrl
       ? `<a href="${escapeHtml(previewUrl)}">${escapeHtml(previewUrl)}</a>`
       : `<span style="color:#999;">(preview indisponível — draft_preview_url não persistido)</span>`
   }</p>
-  <p>📱 Preview social (Claude Artifact): ${
+  <p>📱 Preview social (Worker): ${
     socialPreviewUrl
       ? `<a href="${escapeHtml(socialPreviewUrl)}">${escapeHtml(socialPreviewUrl)}</a>`
       : `<span style="color:#999;">(social preview não gerado)</span>`
