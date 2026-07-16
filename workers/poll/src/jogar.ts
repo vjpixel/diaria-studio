@@ -402,7 +402,11 @@ ${seoMeta}
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
   .choice { flex: 1 1 240px; max-width: 260px; }
-  .choice img { width: 100%; height: auto; border-radius: 6px; display: block; background: ${DS_COLORS.paperAlt}; }
+  /* #3607: aspect-ratio reserva o box na proporção 16:9 (800x450, mesma das
+     imagens do É IA) ANTES do load — combinado com os atributos width/height
+     nos <img> (reforço, cobre browser que ignora aspect-ratio), evita o
+     colapso de altura que causava o layout shift reportado pelo editor. */
+  .choice img { width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 6px; display: block; background: ${DS_COLORS.paperAlt}; }
   .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   .choice button:disabled { opacity: 0.5; cursor: not-allowed; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
@@ -450,9 +454,9 @@ ${renderBrandShellStyles()}
   <input type="hidden" name="brand" value="${JOGAR_BRAND}">
   <input type="hidden" name="email" id="jogar-email" value="">
   <div class="choices" id="jogar-choices">
-    <div class="choice"><img id="jogar-img-a" src="${imgA}" alt="Imagem A" loading="lazy"><button type="submit" name="choice" value="A">Essa é a IA</button></div>
+    <div class="choice"><img id="jogar-img-a" src="${imgA}" width="800" height="450" alt="Imagem A" loading="lazy"><button type="submit" name="choice" value="A">Essa é a IA</button></div>
     <p class="scroll-hint">↓ Veja também a Imagem B antes de decidir</p>
-    <div class="choice"><img id="jogar-img-b" src="${imgB}" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA</button></div>
+    <div class="choice"><img id="jogar-img-b" src="${imgB}" width="800" height="450" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA</button></div>
   </div>
 </form>
 <!-- #3517: preenchido via JS (fetch a /vote + DOMParser) com o '.msg' de
@@ -1005,15 +1009,40 @@ ${renderInlineSignupFormBlock()}`;
     progressEl.textContent = "Par " + (originalIndex + 1) + " de " + total;
   }
 
+  // #3607: aquece o cache do browser pras imagens do PRÓXIMO par ENQUANTO o
+  // leitor ainda olha o par atual — não bloqueia nada (new Image() só
+  // dispara o fetch, sem inserir no DOM), só faz a troca de par no
+  // renderRound() seguinte ser cache-hit instantâneo em vez de piscar
+  // branco/carregar do zero.
+  function preloadRound(originalIndex) {
+    if (originalIndex == null || originalIndex < 0 || originalIndex >= editions.length) return;
+    var edition = editions[originalIndex];
+    try {
+      var imgA = new Image();
+      imgA.src = imgUrl(edition, "A");
+      var imgB = new Image();
+      imgB.src = imgUrl(edition, "B");
+    } catch (e) {}
+  }
+
   function renderRound() {
     if (round >= playIndices.length) { showFinal(); return; }
     var originalIndex = playIndices[round];
     var edition = editions[originalIndex];
     updateProgress(originalIndex);
+    // #3607: width/height reservam o box na proporção 16:9 (800x450, mesma
+    // proporção das imagens do É IA) ANTES do load — combinado com
+    // aspect-ratio: 16 / 9 no CSS '.choice img' (reforço pra browser que
+    // ignorar os atributos), evita o colapso de altura que causava o layout
+    // shift reportado pelo editor ao trocar de par via innerHTML.
     choicesEl.innerHTML =
-      '<div class="choice"><img src="' + imgUrl(edition, "A") + '" alt="Imagem A" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="A">Essa é a IA</button></div>' +
+      '<div class="choice"><img src="' + imgUrl(edition, "A") + '" width="800" height="450" alt="Imagem A" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="A">Essa é a IA</button></div>' +
       '<p class="scroll-hint">↓ Veja também a Imagem B antes de decidir</p>' +
-      '<div class="choice"><img src="' + imgUrl(edition, "B") + '" alt="Imagem B" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="B">Essa é a IA</button></div>';
+      '<div class="choice"><img src="' + imgUrl(edition, "B") + '" width="800" height="450" alt="Imagem B" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="B">Essa é a IA</button></div>';
+    // #3607: pré-carrega o PRÓXIMO par (se existir) — troca instantânea
+    // (cache-hit) no próximo clique em vez de aguardar o fetch das novas
+    // imagens.
+    preloadRound(playIndices[round + 1]);
   }
 
   // #3595 (modelo "Suspense"): vota em BACKGROUND — 1 retry em falha de
@@ -1179,7 +1208,11 @@ ${seoMeta}
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
   .choice { flex: 1 1 240px; max-width: 260px; }
-  .choice img { width: 100%; height: auto; border-radius: 6px; display: block; background: ${DS_COLORS.paperAlt}; }
+  /* #3607: mesma reserva de espaço 16:9 (800x450) do par único acima — a
+     sequência troca as <img> a cada rodada via choicesEl.innerHTML
+     (renderRound() no script abaixo), então SEM aspect-ratio/width/height o
+     box colapsa a cada troca de par (CLS reportado pelo editor). */
+  .choice img { width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 6px; display: block; background: ${DS_COLORS.paperAlt}; }
   .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   .choice button:disabled { opacity: 0.5; cursor: not-allowed; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
