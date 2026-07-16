@@ -137,23 +137,32 @@ describe("#1940 — separador Divulgação antes de bloco patrocinado", () => {
 });
 
 describe("#1938 — renderIntroCallout multi-parágrafo segue o DS", () => {
-  it("1º parágrafo vira título serif (emoji removido) e corpo fica peso normal", () => {
+  it("patrocinado (link de afiliado): 1º parágrafo vira título serif, corpo fica peso normal", () => {
     const html = renderIntroCallout(
-      "📣 Escreva melhor com a Clarice.ai\n\nA única IA criada por brasileiros.\n\n[Acesse e use os cupons](https://clarice.ai/x)",
+      "Escreva melhor com a Clarice.ai\n\nA única IA criada por brasileiros.\n\n[Acesse e use os cupons](https://clarice.ai/x?via=diaria)",
     );
-    // título: serif (Georgia), sem o emoji de marcação
-    assert.match(html, /font-family:Georgia[^"]*"[^>]*>Escreva melhor com a Clarice\.ai/, "título serif sem emoji");
-    assert.ok(!html.includes("📣"), "emoji de marcação removido do render");
+    // título: serif (Georgia)
+    assert.match(html, /font-family:Georgia[^"]*"[^>]*>Escreva melhor com a Clarice\.ai/, "título serif");
     // corpo: sem negrito (font-weight:600) no parágrafo de corpo
     assert.ok(!/font-weight:600;font-size:16px;line-height:1\.5;[^>]*>A única IA/.test(html), "corpo não deve ser peso 600");
     // link preservado
-    assert.ok(html.includes("https://clarice.ai/x"), "link preservado");
+    assert.ok(html.includes("https://clarice.ai/x?via=diaria"), "link preservado");
   });
 
-  it("callout de 1 parágrafo mantém negrito e emoji (sorteio/intro)", () => {
-    const html = renderIntroCallout("🎉 Sorteio ao vivo nesta edição!");
+  it("#3475: NÃO-patrocinado (sem link de afiliado) e sem forceCtaPill renderiza uniforme, sem título serif", () => {
+    // Antes do #3475, um marcador emoji reconhecido (📣/📚/📖/🎉) no 1º
+    // parágrafo dava título serif mesmo sem link de afiliado — o sistema de
+    // marcadores foi removido; agora só sponsored/forceCtaPill dão título.
+    const html = renderIntroCallout(
+      "Escreva melhor com a Clarice.ai\n\nA única IA criada por brasileiros.\n\n[Acesse e use os cupons](https://clarice.ai/x)",
+    );
+    assert.doesNotMatch(html, /font-size:26px/, "sem link de afiliado, não ganha título serif 26px");
+    assert.ok(html.includes("https://clarice.ai/x"), "link preservado mesmo sem título");
+  });
+
+  it("callout de 1 parágrafo mantém negrito (sorteio/intro)", () => {
+    const html = renderIntroCallout("Sorteio ao vivo nesta edição!");
     assert.match(html, /font-weight:600/, "1 parágrafo mantém peso 600");
-    assert.ok(html.includes("🎉"), "emoji preservado no callout de 1 parágrafo");
   });
 });
 
@@ -266,12 +275,11 @@ describe("#1942 review #1 — isSponsoredCallout + disclosure em ambos os slots"
 describe("#1942 review #2 — renderMidCallout com imagem renderiza multi-parágrafo", () => {
   it("corpo multi-parágrafo COM imagem não vira blocão (título serif + 2 parágrafos)", () => {
     const html = renderMidCallout(
-      "📣 Título do anúncio\n\nPrimeiro parágrafo do corpo.\n\nSegundo parágrafo. [Acesse](https://anunciante.com)",
+      "Título do anúncio\n\nPrimeiro parágrafo do corpo.\n\nSegundo parágrafo. [Acesse](https://anunciante.com)",
       "https://img.example/p.jpg",
     );
-    // título serif (FONT_HEADING) sem o marcador 📣
-    assert.match(html, /font-family:Georgia[^"]*"[^>]*>Título do anúncio/, "título serif sem 📣");
-    assert.ok(!html.includes("📣"), "marcador removido do título");
+    // título serif (FONT_HEADING)
+    assert.match(html, /font-family:Georgia[^"]*"[^>]*>Título do anúncio/, "título serif");
     // dois parágrafos de corpo (não um <p> só)
     const bodyParas = (html.match(/font-size:16px;line-height:1\.62/g) || []).length;
     assert.ok(bodyParas >= 2, `esperava ≥2 parágrafos de corpo, achou ${bodyParas}`);
@@ -281,28 +289,24 @@ describe("#1942 review #2 — renderMidCallout com imagem renderiza multi-parág
   // (removido daqui para evitar duplicata — #2067 Point 3).
 });
 
-describe("#1942 review #3 — strip do marcador 📣 no callout de 1 parágrafo", () => {
-  it("anúncio 📣 de 1 parágrafo (com link de afiliado, patrocinado) remove o emoji (o kicker 'Divulgação' rotula)", () => {
-    // #3232: a decisão de stripar o marcador no caminho de 1 parágrafo é
-    // gated por `sponsored` (isSponsoredCallout), que agora depende do link
-    // de afiliado — não basta mais o emoji 📣 sozinho (ver review #1 acima).
-    // URL real da Clarice (com ?via=) preserva o comportamento de produção.
-    const html = renderIntroCallout("📣 Escreva melhor com a Clarice.ai. [Acesse](https://clarice.ai/precos-planos?via=diaria).");
-    assert.ok(!html.includes("📣"), "📣 removido do anúncio de 1 parágrafo");
+describe("#1942 review #3 / #3475 — callout de 1 parágrafo sem marcador emoji", () => {
+  it("anúncio de 1 parágrafo (com link de afiliado, patrocinado) — o kicker 'Divulgação' rotula, sem precisar de marcador", () => {
+    const html = renderIntroCallout("Escreva melhor com a Clarice.ai. [Acesse](https://clarice.ai/precos-planos?via=diaria).");
     assert.ok(html.includes("Escreva melhor com a Clarice.ai"), "texto preservado");
   });
 
-  it("#3232: SEM link de afiliado, o marcador 📣 de 1 parágrafo NÃO é mais removido (cosmético, item 2 do #3232)", () => {
-    // Documenta a mudança de contrato: como `stripCalloutMarker` no caminho
-    // de 1 parágrafo é condicional a `sponsored`, e `sponsored` agora exige
-    // link de afiliado, um 📣 "solto" (sem link de afiliado real) deixa de
-    // ser stripado — cosmético, não silent-drop (nenhum conteúdo se perde).
-    const html = renderIntroCallout("📣 Anúncio sem link de afiliado nenhum.");
-    assert.ok(html.includes("📣"), "sem link de afiliado, marcador fica visível (cosmético)");
+  it("#3475: o sistema de marcadores foi removido — stripCalloutMarker não existe mais", () => {
+    // Antes do #3475, um 📣 "solto" (sem link de afiliado) ficava visível
+    // (cosmético) enquanto um 📣 patrocinado era stripado. Agora nenhum dos
+    // dois caminhos remove emoji — o editor simplesmente não os digita mais
+    // (ver context/snippets/*.md). Se algum texto legado ainda trouxer um
+    // emoji, ele aparece no render (nada mais o reconhece/remove).
+    const html = renderIntroCallout("Anúncio sem link de afiliado nenhum.");
+    assert.ok(html.includes("Anúncio sem link de afiliado nenhum."), "texto preservado, sem processamento de marcador");
   });
 });
 
-describe("#1942 review #4 — stripCalloutMarker não engole '[' de título com link", () => {
+describe("#1942 review #4 — processamento de parágrafo não engole '[' de título com link", () => {
   it("título multi-parágrafo começando com link mantém o link vivo", () => {
     const html = renderIntroCallout(
       "[Confira o parceiro](https://parceiro.com) lançou novidade\n\nCorpo do bloco.",

@@ -1,20 +1,22 @@
 /**
- * test/render-box-divulgacao.test.ts (#2978)
+ * test/render-box-divulgacao.test.ts (#2978, marcador-agnóstico desde #3204,
+ * sistema de marcadores removido em #3475)
  *
  * `renderBoxDivulgacao(box, imageUrl?)` é o dispatcher único pros 2 boxes de
  * divulgação (slot 1 = gap D1/D2, slot 2 = gap D2/D3). O FORMATO é decidido
- * pelo marcador do próprio box, não pelo slot:
- *   - 🛒 → prateleira multi-parágrafo com CTA pill (renderIntroCallout com
- *     forceCtaPill=true), marcador estrutural removido do HTML.
- *   - 📚/📣/🎉 → bold-line (renderMidCallout).
+ * pela ESTRUTURA do próprio conteúdo (`shouldForceCtaPill`), não por marcador
+ * emoji:
+ *   - 2+ links, ou último parágrafo é só um link → prateleira multi-parágrafo
+ *     com CTA pill (renderIntroCallout com forceCtaPill=true).
+ *   - caso contrário → bold-line (renderMidCallout).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { renderBoxDivulgacao } from "../scripts/lib/newsletter-render-html.ts";
 
-describe("renderBoxDivulgacao — dispatcher por marcador (#2978)", () => {
-  it("🛒 → formato carrinho (pill CTA), marcador removido do HTML", () => {
-    const box = `🛒 Equipe sua casa com a Alexa+
+describe("renderBoxDivulgacao — dispatcher por estrutura (#2978/#3475)", () => {
+  it("último parágrafo só-link → formato carrinho (pill CTA)", () => {
+    const box = `Equipe sua casa com a Alexa+
 
 Estou testando a Alexa+ há alguns dias e a diferença é grande.
 
@@ -22,48 +24,46 @@ Estou testando a Alexa+ há alguns dias e a diferença é grande.
     const html = renderBoxDivulgacao(box);
     assert.match(html, /border-radius:999px/, "vira botão pill (formato carrinho)");
     assert.match(html, /Conhecer a Alexa\+ e ver as ofertas<\/a>/);
-    assert.ok(!html.includes("🛒"), "marcador estrutural não vaza pro HTML");
   });
 
-  it("📚 → formato bold-line (box teal, sem pill)", () => {
-    const box = "📚 A Diar.ia mantém uma curadoria de livros sobre IA. [Confira a página de livros](https://livros.diaria.workers.dev).";
+  it("1 link só, sem CTA-only paragraph → formato bold-line (box teal, sem pill)", () => {
+    const box = "A Diar.ia mantém uma curadoria de livros sobre IA. [Confira a página de livros](https://livros.diaria.workers.dev).";
     const html = renderBoxDivulgacao(box);
     assert.ok(!html.includes("border-radius:999px"), "bold-line não usa pill do carrinho");
     assert.match(html, /livros\.diaria\.workers\.dev/);
-    assert.ok(!/^📚/.test(html), "marcador não vaza cru");
   });
 
-  it("📣 (patrocinado) → formato bold-line", () => {
-    const box = "📣 Escreva melhor com a Clarice.ai. [Acesse](https://clarice.ai/precos-planos?via=diaria).";
+  it("patrocinado (link de afiliado) → formato bold-line", () => {
+    const box = "Escreva melhor com a Clarice.ai. [Acesse](https://clarice.ai/precos-planos?via=diaria).";
     const html = renderBoxDivulgacao(box);
     assert.ok(!html.includes("border-radius:999px"));
     assert.match(html, /clarice\.ai\/precos-planos/);
   });
 
-  it("🎉 (CTA editorial) → formato bold-line", () => {
-    const box = "🎉 Venha pro sorteio ao vivo! [Participe](https://meet.google.com/xyz).";
+  it("CTA editorial (1 link, sem CTA-only paragraph) → formato bold-line", () => {
+    const box = "Venha pro sorteio ao vivo! [Participe](https://meet.google.com/xyz).";
     const html = renderBoxDivulgacao(box);
     assert.ok(!html.includes("border-radius:999px"));
     assert.match(html, /meet\.google\.com/);
   });
 
-  it("🛒 com imagem: o parâmetro imageUrl é ignorado pelo formato carrinho (usa renderIntroCallout, não renderMidCallout)", () => {
+  it("formato carrinho: o parâmetro imageUrl é ignorado (usa renderIntroCallout, não renderMidCallout)", () => {
     // #2978: imagem só é suportada no formato bold-line (renderMidCallout);
     // o dispatcher NÃO passa imageUrl pro path do carrinho.
-    const box = "🛒 Compre agora\n\n[Ver oferta](https://link.amazon/x)";
+    const box = "Compre agora\n\n[Ver oferta](https://link.amazon/x)";
     const html = renderBoxDivulgacao(box, "https://cdn.example.com/img.jpg");
     assert.ok(!html.includes("cdn.example.com"), "imagem não é usada no formato carrinho");
   });
 
-  it("📚 com imagem: usa o path com imagem (renderMidCallout)", () => {
-    const box = "📚 Nossa curadoria. [Confira](https://livros.diaria.workers.dev).";
+  it("bold-line com imagem: usa o path com imagem (renderMidCallout)", () => {
+    const box = "Nossa curadoria. [Confira](https://livros.diaria.workers.dev).";
     const html = renderBoxDivulgacao(box, "https://cdn.example.com/livros.jpg");
     assert.match(html, /cdn\.example\.com\/livros\.jpg/);
   });
 
-  it("📚 com 2+ links: renderiza 1 botão por link, SEM a imagem (#3028)", () => {
+  it("2+ links: renderiza 1 botão por link, SEM a imagem (#3028)", () => {
     const box =
-      "📚 Livros em oferta.\n\nO primeiro tem 48% de desconto; o segundo, R$ 217 a menos.\n\n" +
+      "Livros em oferta.\n\nO primeiro tem 48% de desconto; o segundo, R$ 217 a menos.\n\n" +
       "[Ver livro A](https://amzn.to/aaa) · [Ver livro B](https://amzn.to/bbb)";
     const html = renderBoxDivulgacao(box, "https://cdn.example.com/livros.jpg");
     // Ambos os links viram botão (não some o 2º como no path com imagem).
@@ -75,18 +75,65 @@ Estou testando a Alexa+ há alguns dias e a diferença é grande.
     assert.match(html, /48% de desconto/, "descrições preservadas no corpo");
   });
 
-  it("📚 de 1 parágrafo com 2 links inline: não vaza o marcador 📚 no texto (#3028)", () => {
-    const box = "📚 Confira [Livro A](https://amzn.to/aaa) e [Livro B](https://amzn.to/bbb) com desconto.";
+  it("1 parágrafo com 2 links inline: link markdown cru não vaza no texto (#3028)", () => {
+    const box = "Confira [Livro A](https://amzn.to/aaa) e [Livro B](https://amzn.to/bbb) com desconto.";
     const html = renderBoxDivulgacao(box, "https://cdn.example.com/livros.jpg");
-    assert.ok(!html.includes("📚"), "marcador 📚 não vaza cru no HTML");
     assert.match(html, /amzn\.to\/aaa/, "1º link presente");
     assert.match(html, /amzn\.to\/bbb/, "2º link presente");
   });
 
-  it("📚 com 1 link + imagem NÃO muda (regressão #3028): continua no path com imagem", () => {
-    const box = "📚 Nossa curadoria. [Confira](https://livros.diaria.workers.dev).";
+  it("1 link + imagem NÃO muda (regressão #3028): continua no path com imagem", () => {
+    const box = "Nossa curadoria. [Confira](https://livros.diaria.workers.dev).";
     const html = renderBoxDivulgacao(box, "https://cdn.example.com/livros.jpg");
     assert.match(html, /cdn\.example\.com\/livros\.jpg/, "box de 1 link mantém a imagem");
+  });
+});
+
+describe("renderBoxDivulgacao — título serif restaurado por sinal estrutural (#3475 follow-up)", () => {
+  // Box "recomendação de leitura": (1) linha de título sem link, (2) parágrafo
+  // liderado por link do livro, (3) comentário. O título serif 26px foi
+  // RESTAURADO via sinal estrutural (1ª linha sem link + 2º parágrafo liderado
+  // por link), NÃO pelo marcador emoji 📖 (removido em #3475).
+  const RECOMENDACAO = `Recomendação de leitura
+
+[**2041: Como a IA Vai Mudar Sua Vida**](https://link.amazon/B05FlAaJ7), de Kai-Fu Lee e Chen Qiufan.
+
+Estou terminando agora e gosto da estrutura: cada capítulo abre com um conto.`;
+
+  it("1ª linha vira título serif 26px, SEM depender de emoji no fonte", () => {
+    const html = renderBoxDivulgacao(RECOMENDACAO);
+    assert.match(
+      html,
+      /<p style="[^"]*font-family:Georgia[^"]*font-size:26px[^"]*">Recomendação de leitura<\/p>/,
+      "título serif 26px ausente na 1ª linha",
+    );
+    // não é o formato carrinho (1 link não-CTA-only → sem pill)
+    assert.ok(!html.includes("border-radius:999px"), "não deve virar botão pill");
+    // conteúdo preservado
+    assert.ok(html.includes("link.amazon/B05FlAaJ7"), "link do livro preservado");
+    assert.ok(html.includes("cada capítulo abre com um conto"), "comentário preservado");
+  });
+
+  it("detecção é agnóstica ao emoji: título serif sai com ou sem 📖 na 1ª linha", () => {
+    // O ponto do #3475: a DETECÇÃO do título é ESTRUTURAL, não pelo emoji. Um
+    // 📖 legado no fonte não muda nada (aparece cru — não há mais strip); o
+    // título serif é aplicado igual, por estrutura. A fonte canônica não tem emoji.
+    assert.match(renderBoxDivulgacao(RECOMENDACAO), /font-size:26px/, "sem emoji: título aplicado");
+    assert.match(renderBoxDivulgacao(`📖 ${RECOMENDACAO}`), /font-size:26px/, "com 📖 legado: título aplicado igual");
+  });
+
+  it("box livros de 1 parágrafo (bold-line) NÃO ganha título serif indevidamente", () => {
+    const livros = "A diar.ia.br mantém uma curadoria de livros sobre IA. [Confira a página](https://livros.diaria.workers.dev).";
+    const html = renderBoxDivulgacao(livros);
+    assert.doesNotMatch(html, /font-size:26px/, "box de 1 parágrafo não deve ganhar título 26px");
+  });
+
+  it("nota pessoal multi-parágrafo (sem 2º parágrafo liderado por link) NÃO ganha título serif (#3460 preservado)", () => {
+    // A nota do editor corre em prosa; se tem link, ele fica no meio da frase,
+    // nunca abrindo o parágrafo. Não deve virar título.
+    const nota = "Olá! Eu sou o Pixel, editor dessa newsletter.\n\nConsidere [apoiar](https://apoia.se/diaria) se puder — todo dia trago as notícias mais importantes.";
+    const html = renderBoxDivulgacao(nota);
+    assert.doesNotMatch(html, /font-size:26px/, "nota pessoal não deve ganhar título serif");
   });
 });
 

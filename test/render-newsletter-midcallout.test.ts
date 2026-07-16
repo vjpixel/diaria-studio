@@ -107,21 +107,20 @@ describe("boxDivulgacao1 — box entre D1 e D2", () => {
     assert.match(imgTag![0], /style="[^"]*width:100%;height:auto/, "style width:100%;height:auto deve ser preservado");
   });
 
-  it("single-parágrafo COM imagem: marcador 📚 removido e corpo em peso normal/1.62 (DS body, 260611)", () => {
+  it("single-parágrafo COM imagem: corpo em peso normal/1.62 (DS body, 260611)", () => {
     const html = renderMidCallout(
-      "📚 Promo da página. [Confira a nova página](https://livros.diaria.workers.dev).",
+      "Promo da página. [Confira a nova página](https://livros.diaria.workers.dev).",
       "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo.jpg",
     );
-    assert.ok(!html.includes("📚"), "emoji do marcador não deve renderizar no box com imagem");
     // #2067: corpo (parágrafo antes do CTA) não usa bold 600 — checa no bloco inteiro
     // excluindo o CTA pill (que pode ser bold). Nenhum <p> de 16px deve ter font-weight:600.
     assert.ok(!/font-size:16px[^"]*font-weight:600/.test(html), "corpo não usa bold 600 nos parágrafos");
     assert.match(html, /line-height:1\.62/);
   });
 
-  it("review #2066: corpo que é só marcador+link não emite <p> fantasma", () => {
+  it("review #2066: corpo que é só um link não emite <p> fantasma", () => {
     const html = renderMidCallout(
-      "📚 [Confira a nova página](https://livros.diaria.workers.dev).",
+      "[Confira a nova página](https://livros.diaria.workers.dev).",
       "https://img.example/p.jpg",
     );
     assert.ok(!/<p[^>]*>\s*<\/p>/.test(html), "sem parágrafo vazio entre imagem e CTA");
@@ -129,23 +128,19 @@ describe("boxDivulgacao1 — box entre D1 e D2", () => {
     assert.ok(html.includes("Confira a nova página"), "CTA preservado com label do link");
   });
 
-  it("review #2066: stripCalloutMarker consome VS15 (U+FE0E) além do VS16", () => {
-    const html = renderMidCallout(
-      "📚︎ Promo da página. [Confira](https://livros.diaria.workers.dev).",
-      "https://img.example/p.jpg",
-    );
-    assert.ok(!html.includes("︎"), "variation selector não vaza pro HTML");
-    assert.ok(html.includes("Promo da página"), "corpo preservado");
-  });
+  // #3475: o teste "stripCalloutMarker consome VS15 (U+FE0E) além do VS16"
+  // (review #2066) foi removido — cobria uma regra de regex de
+  // `stripCalloutMarker`, função deletada junto com o resto do sistema de
+  // marcadores emoji (o editor não abre mais boxes com 📣/📚/📖/🎉).
 
   it("callout multi-parágrafo (ex: Clarice) renderiza título serif em 26px (DS h4)", () => {
     // #DS callout/É IA? title h4: o 1º parágrafo vira título serif; antes 22px (h5), agora 26px (h4).
     const html = renderMidCallout(
-      "📣 Escreva melhor com a Clarice.ai\n\nA IA brasileira que revisa textos.\n\n[Acesse](https://clarice.ai/precos-planos?via=diaria).",
+      "Escreva melhor com a Clarice.ai\n\nA IA brasileira que revisa textos.\n\n[Acesse](https://clarice.ai/precos-planos?via=diaria).",
       null,
     );
     const titleMatch = html.match(/<p style="([^"]+)">Escreva melhor com a Clarice\.ai<\/p>/);
-    assert.ok(titleMatch, "título do callout multi-parágrafo deve sair num <p> próprio (marcador 📣 removido)");
+    assert.ok(titleMatch, "título do callout multi-parágrafo deve sair num <p> próprio");
     assert.match(titleMatch![1], /font-size:26px/, "título do callout é 26px (DS h4)");
     assert.doesNotMatch(titleMatch![1], /font-size:22px/, "não deve mais ser 22px (h5)");
   });
@@ -154,11 +149,11 @@ describe("boxDivulgacao1 — box entre D1 e D2", () => {
     // O caminho com imagem (renderMidCallout, paras.length>1) espelha o sem imagem (#1938)
     // — o título serif deve sair em 26px igual, não 22px.
     const html = renderMidCallout(
-      "📚 Curadoria de livros sobre IA\n\nPágina nova com filtros. [Confira](https://livros.diaria.workers.dev).",
+      "Curadoria de livros sobre IA\n\nPágina nova com filtros. [Confira](https://livros.diaria.workers.dev).",
       "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo.jpg",
     );
     const titleMatch = html.match(/<p style="([^"]+)">Curadoria de livros sobre IA<\/p>/);
-    assert.ok(titleMatch, "título serif do callout com imagem deve sair num <p> próprio (marcador 📚 removido)");
+    assert.ok(titleMatch, "título serif do callout com imagem deve sair num <p> próprio");
     assert.match(titleMatch![1], /font-size:26px/, "título do callout com imagem é 26px (DS h4)");
     assert.doesNotMatch(titleMatch![1], /font-size:22px/, "não deve mais ser 22px (h5)");
   });

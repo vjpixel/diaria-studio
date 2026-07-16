@@ -28,13 +28,19 @@
  * #2730: o formato REAL de `email:encoding_drop` produzido pelo review-test-email
  * (`.claude/agents/review-test-email.md` passo 3e, mapeado de
  * `lint-test-email-encoding.ts`) é `"{codepoint} '{char}' em '…{context}…'"` — 2
- * termos entre aspas simples (char + context), nunca 1. Os checkers de FP
- * by-design (`isEncodingDropSectionEmojiByDesign`, `isEncodingDropCalloutMarkerByDesign`)
- * exigiam exatamente 1 termo — nunca disparavam em produção, só nos testes
- * sintéticos com 1 termo só. `extractEncodingDropCharAndContext`/
- * `extractEncodingDropCharTerm` reconhecem os 2 formatos (produção com
- * codepoint, e legado/sintético com 1 termo) e mantêm os dois checkers
- * funcionando nos dois casos.
+ * termos entre aspas simples (char + context), nunca 1. O checker de FP
+ * by-design (`isEncodingDropSectionEmojiByDesign`) exigia exatamente 1 termo —
+ * nunca disparava em produção, só nos testes sintéticos com 1 termo só.
+ * `extractEncodingDropCharAndContext`/`extractEncodingDropCharTerm`
+ * reconhecem os 2 formatos (produção com codepoint, e legado/sintético com 1
+ * termo) e mantêm o checker funcionando nos dois casos.
+ *
+ * #3475: removido `isEncodingDropCalloutMarkerByDesign`/`CALLOUT_MARKER_EMOJIS`
+ * (checker de FP pro marcador emoji 📣/📚/🎉 dos boxes de divulgação) — o
+ * marcador em si foi removido do sistema (`stripCalloutMarker` não existe
+ * mais em `newsletter-render-html.ts`), então a premissa "ausente por design"
+ * não é mais verdadeira: esses emoji não entram mais no MD source, e se um
+ * dia aparecerem cita-los reportados como `encoding_drop` é sinal real, não FP.
  *
  * Outros tipos passam através (caller decide o que fazer).
  *
@@ -70,15 +76,14 @@ export function extractQuotedTerms(issue: string): string[] {
  *
  * Esse formato SEMPRE cita 2 termos entre aspas simples — o char dropado E o
  * contexto ao redor no source — então `extractQuotedTerms(issue).length` é 2,
- * nunca 1. Os checkers de FP by-design (`isEncodingDropSectionEmojiByDesign`,
- * `isEncodingDropCalloutMarkerByDesign`) exigiam exatamente 1 termo quoted —
- * bug real do #2730: em produção esse gate NUNCA disparava, então os FPs de
- * emoji by-design (headers de seção, marcadores de callout) nunca eram
- * dropados de fato, só nos testes sintéticos com 1 termo só.
+ * nunca 1. O checker de FP by-design (`isEncodingDropSectionEmojiByDesign`)
+ * exigia exatamente 1 termo quoted — bug real do #2730: em produção esse gate
+ * NUNCA disparava, então os FPs de emoji by-design (headers de seção) nunca
+ * eram dropados de fato, só nos testes sintéticos com 1 termo só.
  *
  * Retorna `{ char, context }` quando o formato de produção é reconhecido
  * (codepoint + char + "em" + context), ou `null` caso contrário (formato
- * legado/sintético sem codepoint, usado nos testes originais #2013/#2066).
+ * legado/sintético sem codepoint, usado nos testes originais #2013).
  */
 export function extractEncodingDropCharAndContext(
   issue: string,
@@ -279,46 +284,6 @@ export const SECTION_HEADER_EMOJIS: ReadonlySet<string> = new Set([
   "⚖️", // categoria jurídico/regulação
   "🇧🇷", // Brasil
 ]);
-
-/**
- * #2066: Marcadores de callout (boxDivulgacao1/boxDivulgacao2/introCallout) — `**📣/📚/🎉 …**`.
- * `stripCalloutMarker` (newsletter-render-html.ts) remove o marcador do HTML
- * renderizado nos caminhos de callout (multi-parágrafo desde #1938/#1942;
- * single-parágrafo com imagem desde #2066). O emoji existe só no MD source
- * (`02-reviewed.md`), então `lint-test-email-encoding` o reporta como
- * `char_dropped` — falso-positivo by-design, análogo ao #2013.
- */
-export const CALLOUT_MARKER_EMOJIS: ReadonlySet<string> = new Set([
-  "📣", // patrocinado (Clarice) — separador "Divulgação" rotula no lugar
-  "📚", // promo interna (página de livros)
-  "🎉", // CTA editorial / sorteio
-]);
-
-/**
- * #2066: Pure — decide se um `email:encoding_drop` citando um marcador de
- * callout (📣/📚/🎉) é falso-positivo porque `stripCalloutMarker` o remove
- * do HTML por design. Mesmo shape do #2013: só dropa quando o ÚNICO termo
- * citado é o marcador — múltiplos termos voltam pra checagem normal (pode
- * haver texto real corrompido junto). Sem gate de frase: diferente dos emojis
- * de header (multi-propósito), os 3 marcadores só entram no MD como prefixo
- * de callout (`**📣 …**`), então a citação isolada é inequívoca.
- */
-export function isEncodingDropCalloutMarkerByDesign(
-  issue: string,
-): { falsePositive: true; reason: string } | { falsePositive: false } {
-  if (!/^email:encoding_drop/i.test(issue)) return { falsePositive: false };
-  // #2730: extração cobre o formato de produção (codepoint + char + context,
-  // 2 termos quoted) E o legado/sintético (1 termo só) — antes só o legado
-  // era reconhecido, então o FP nunca era dropado nas issues reais do
-  // review-test-email.
-  const term = extractEncodingDropCharTerm(issue);
-  if (term === null) return { falsePositive: false };
-  if (!CALLOUT_MARKER_EMOJIS.has(term)) return { falsePositive: false };
-  return {
-    falsePositive: true,
-    reason: `#2066: marcador de callout '${term}' é removido do HTML por stripCalloutMarker — ausência by-design`,
-  };
-}
 
 /**
  * #2013: Pure — decide se um `email:encoding_drop` reportando emoji ausente
@@ -726,17 +691,14 @@ interface IssueHandler {
  */
 export const ISSUE_HANDLERS: readonly IssueHandler[] = [
   {
-    // encoding_drop (#1421, #2013, #2066): verifica emoji de header/callout
-    // por design antes do check genérico de encoding; retorna keep se não é FP
-    // (#2059: checker competente → nunca cai nos genéricos de DS).
+    // encoding_drop (#1421, #2013): verifica emoji de header por design antes
+    // do check genérico de encoding; retorna keep se não é FP (#2059: checker
+    // competente → nunca cai nos genéricos de DS).
     prefix: "email:encoding_drop",
     handle(issue, { htmlLocal }) {
       // #2013: emoji de header removido por DS por design — verificar primeiro.
       const emojiCheck = isEncodingDropSectionEmojiByDesign(issue);
       if (emojiCheck.falsePositive) return { kind: "drop", reason: emojiCheck.reason };
-      // #2066: marcador de callout (📣/📚/🎉) stripped por design — idem.
-      const markerCheck = isEncodingDropCalloutMarkerByDesign(issue);
-      if (markerCheck.falsePositive) return { kind: "drop", reason: markerCheck.reason };
       const r = isEncodingDropFalsePositive(issue, htmlLocal);
       if (r.falsePositive) return { kind: "drop", reason: r.reason };
       return { kind: "keep" };

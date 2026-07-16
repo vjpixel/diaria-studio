@@ -1,15 +1,14 @@
 /**
- * test/flexible-callout-position.test.ts (#2665, rescoped #2978)
+ * test/flexible-callout-position.test.ts (#2665, rescoped #2978, #3475)
  *
  * Boxes de divulgação são um SLOT fixo por POSIÇÃO: boxDivulgacao1 = box na
  * lacuna D1/D2 (gap 0), boxDivulgacao2 = box na lacuna D2/D3 (gap 1) —
- * independente do FORMATO do conteúdo (bold-line 📚/📣/🎉 vs carrinho 🛒). O
- * formato é decidido pelo próprio marcador no momento do render
- * (`renderBoxDivulgacao`), não pelo slot. Pedido do editor na 260630: box de
- * afiliados Alexa+ (🛒) logo após o D1 e a promo de livros (📚) depois, entre
- * D2 e D3 — o inverso do layout legado (📚 em D1/D2, 🛒 em D2/D3).
- *
- * O render remove o marcador 🛒 do HTML (estrutural, não aparece ao leitor).
+ * independente do FORMATO do conteúdo (bold-line vs carrinho). O formato é
+ * decidido pela ESTRUTURA do conteúdo no momento do render
+ * (`renderBoxDivulgacao`/`shouldForceCtaPill`), não pelo slot nem por
+ * marcador emoji (sistema removido em #3475). Pedido do editor na 260630:
+ * box de afiliados Alexa+ logo após o D1 e a promo de livros depois, entre
+ * D2 e D3 — o inverso do layout legado (livros em D1/D2, Alexa+ em D2/D3).
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -39,14 +38,14 @@ Why do D${n}.
 `;
 }
 
-const BOX_ALEXA = `🛒 Equipe sua casa com a Alexa+
+const BOX_ALEXA = `Equipe sua casa com a Alexa+
 
 Veja os dispositivos: [Show 8](https://link.amazon/B00RlxPou) · [Dot Max](https://link.amazon/B08Vl81qA)
 
 Ao comprar por esses links, a Diar.ia recebe comissão.`;
 
 const BOX_LIVROS =
-  `**📚 A Diar.ia mantém uma curadoria de livros sobre IA. [Confira a página de livros](https://livros.diaria.workers.dev).**`;
+  `**A Diar.ia mantém uma curadoria de livros sobre IA. [Confira a página de livros](https://livros.diaria.workers.dev).**`;
 
 function buildReviewed(box1: string, box2: string): string {
   return `Para esta edição, selecionamos 12 itens.
@@ -96,17 +95,17 @@ function withEdition(reviewed: string, fn: (dir: string) => void): void {
 }
 
 describe("#2978 — box em cada slot detectado por POSIÇÃO, independente do formato", () => {
-  it("🛒 na lacuna D1/D2 → boxDivulgacao1; 📚 na lacuna D2/D3 → boxDivulgacao2 (formato invertido do legado)", () => {
+  it("Alexa+ na lacuna D1/D2 → boxDivulgacao1; livros na lacuna D2/D3 → boxDivulgacao2 (formato invertido do legado)", () => {
     withEdition(buildReviewed(BOX_ALEXA, BOX_LIVROS), (dir) => {
       const c = extractContent(dir);
-      assert.ok(c.boxDivulgacao1, "slot 1 (D1/D2) deveria achar o box 🛒");
+      assert.ok(c.boxDivulgacao1, "slot 1 (D1/D2) deveria achar o box Alexa+");
       assert.match(c.boxDivulgacao1!, /Equipe sua casa com a Alexa/);
-      assert.ok(c.boxDivulgacao2, "slot 2 (D2/D3) deveria achar o box 📚");
+      assert.ok(c.boxDivulgacao2, "slot 2 (D2/D3) deveria achar o box livros");
       assert.match(c.boxDivulgacao2!, /curadoria de livros/);
     });
   });
 
-  it("layout legado: 📚 na lacuna D1/D2 → boxDivulgacao1; 🛒 na lacuna D2/D3 → boxDivulgacao2", () => {
+  it("layout legado: livros na lacuna D1/D2 → boxDivulgacao1; Alexa+ na lacuna D2/D3 → boxDivulgacao2", () => {
     withEdition(buildReviewed(BOX_LIVROS, BOX_ALEXA), (dir) => {
       const c = extractContent(dir);
       assert.match(c.boxDivulgacao1!, /curadoria de livros/, "slot 1 (D1/D2) = livros (legado)");
@@ -114,13 +113,12 @@ describe("#2978 — box em cada slot detectado por POSIÇÃO, independente do fo
     });
   });
 
-  it("render: ambos os boxes aparecem, na ORDEM posicional (slot 1 antes de slot 2), e o marcador 🛒 NÃO vaza pro HTML", () => {
+  it("render: ambos os boxes aparecem, na ORDEM posicional (slot 1 antes de slot 2)", () => {
     withEdition(buildReviewed(BOX_ALEXA, BOX_LIVROS), (dir) => {
       const html = renderHTML(extractContent(dir));
       assert.ok(html.includes("Equipe sua casa com a Alexa"), "box Alexa renderizado");
       assert.ok(html.includes("curadoria de livros"), "box livros renderizado");
       assert.ok(html.includes("link.amazon/B00RlxPou"), "links de afiliado preservados");
-      assert.ok(!html.includes("🛒"), "marcador 🛒 removido do HTML");
       assert.ok(
         html.indexOf("Equipe sua casa") < html.indexOf("curadoria de livros"),
         "box do slot 1 (Alexa, D1/D2) deve vir antes do box do slot 2 (livros, D2/D3)",
@@ -141,7 +139,7 @@ describe("#2978 — box em cada slot detectado por POSIÇÃO, independente do fo
   });
 
   it("**negrito** dentro do box vira <strong> (não vaza com asteriscos)", () => {
-    const boxBold = `🛒 Compre agora
+    const boxBold = `Compre agora
 
 Veja: [Dot](https://link.amazon/B08O9g9Dj)
 
@@ -194,12 +192,8 @@ Resumo.
     });
   });
 
-  it("🛒 sozinho na primeira linha do box não deixa <p> vazio (strip do \\n)", () => {
-    const boxSoEmoji = `🛒\n\nSmart speakers: [Dot](https://link.amazon/B08O9g9Dj)\n\nAo comprar, a Diar.ia recebe comissão.`;
-    withEdition(buildReviewed(boxSoEmoji, BOX_LIVROS), (dir) => {
-      const html = renderHTML(extractContent(dir));
-      assert.ok(!html.includes("🛒"), "marcador 🛒 removido mesmo sozinho na linha");
-      assert.ok(html.includes("Smart speakers"), "conteúdo do box preservado");
-    });
-  });
+  // #3475: o teste "🛒 sozinho na primeira linha do box não deixa <p> vazio"
+  // cobria o strip do marcador `🛒` (legado, removido de `renderBoxDivulgacao`
+  // junto com o resto do sistema de marcadores) — sem marcador nenhum pra
+  // stripar, o cenário deixou de existir.
 });

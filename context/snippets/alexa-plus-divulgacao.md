@@ -1,4 +1,4 @@
-🛒 Equipe sua casa com a Alexa+
+Equipe sua casa com a Alexa+
 
 Comprar um aparelho compatível é o jeito mais barato de ter a experiência completa: o acesso chega na hora e se estende a todos os dispositivos compatíveis que você já tem em casa. Para assinantes Prime, a Alexa+ está incluída.
 

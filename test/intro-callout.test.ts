@@ -73,7 +73,7 @@ describe("renderIntroCallout (#1648)", () => {
     assert.match(html, /font-weight:600/);
   });
 
-  it("#3460: multi-parágrafo SEM marcador conhecido (📣/📚/📖/🎉) e não-patrocinado renderiza todos os parágrafos uniformemente (sem título serif/bold no 1º)", () => {
+  it("#3460: multi-parágrafo não-patrocinado e sem CTA pill forçado renderiza todos os parágrafos uniformemente (sem título serif/bold no 1º)", () => {
     // Bug 260715: renderIntroCallout sempre estilizava o 1º parágrafo como
     // título (serif grande / bold) só por estar na posição 0 — quebrava o
     // pedido do editor de tratar uma nota pessoal (ex: boas-vindas) como
@@ -88,13 +88,24 @@ describe("renderIntroCallout (#1648)", () => {
     assert.match(html, /Todos os dias seleciono/);
   });
 
-  it("#3460: multi-parágrafo COM marcador conhecido (🎉) preserva o tratamento de título existente", () => {
-    // Continua funcionando como antes para os callouts de sorteio/CTA — a
-    // exceção do #3460 só se aplica quando NÃO há marcador reconhecido.
-    const html = renderIntroCallout(
-      "🎉 Sorteio\n\nlinha do sorteio.",
-    );
-    assert.match(html, /font-size:26px/);
+  it("#3475: sem marcador emoji, um callout multi-parágrafo qualquer (patrocinado ou não) sem CTA pill também cai no tratamento uniforme", () => {
+    // #3460 introduziu a exceção pra notas pessoais; #3475 removeu o
+    // allowlist de marcador emoji (📣/📚/📖/🎉) que antes distinguia "título
+    // de box" de "nota pessoal" — agora só `sponsored` (link de afiliado) ou
+    // `forceCtaPill` (estrutural) dão o tratamento de título. Um bloco
+    // "Sorteio" sem link de afiliado e sem CTA-only paragraph, mesmo curto,
+    // cai no mesmo caminho uniforme da nota pessoal (ver renderIntroCallout
+    // em newsletter-render-html.ts).
+    const html = renderIntroCallout("Sorteio\n\nlinha do sorteio.");
+    assert.doesNotMatch(html, /font-size:26px/);
+  });
+
+  it("titleStyle='body' + forceCtaPill=true preserva o tratamento de título independente de marcador", () => {
+    // Callouts de sorteio/CTA reais (ex: box de campeões do mês) continuam
+    // com título quando o dispatcher os marca como forceCtaPill — não
+    // dependem de emoji.
+    const html = renderIntroCallout("Sorteio\n\nlinha do sorteio.", "body", true);
+    assert.match(html, /font-size:16px/);
   });
 });
 
@@ -133,6 +144,29 @@ describe("box campeões/sorteio (#260701)", () => {
     // título serif tamanho de corpo (16px, peso 600), não o 26px do default
     assert.match(html, /font-size:16px/);
     assert.doesNotMatch(html, /font-size:26px/);
+  });
+
+  it("#3475: marcador 🎉 preserva o tratamento de TÍTULO (não cai no flat do #3460) mesmo sem sponsored/forceCtaPill", () => {
+    // Regressão real encontrada ao remover o allowlist de marcadores dos
+    // boxes de divulgação (#3475): o box de campeões/sorteio
+    // (build-champions-callout.ts) é multi-parágrafo, NÃO patrocinado e NÃO
+    // passa forceCtaPill — sem reconhecer 🎉 especificamente, caía no mesmo
+    // branch "flat" do #3460 (nota pessoal), perdendo o <p> de título
+    // dedicado (font-family Georgia + font-weight:600) e virando um `<p>`
+    // de corpo comum como qualquer outro parágrafo.
+    const titleTagRe = /<p style="[^"]*font-family:Georgia[^"]*font-weight:600[^"]*">Sorteio<\/p>/;
+    const flat = renderIntroCallout("Sorteio\n\nlinha do sorteio.", "body"); // sem 🎉
+    const withMarker = renderIntroCallout("🎉 Sorteio\n\nlinha do sorteio.", "body");
+    assert.doesNotMatch(
+      flat,
+      titleTagRe,
+      "sem o marcador 🎉, não há <p> de título dedicado (comportamento #3460, esperado)",
+    );
+    assert.match(
+      withMarker,
+      titleTagRe,
+      "com o marcador 🎉, o box de campeões/sorteio mantém o <p> de título dedicado",
+    );
   });
 
   it("parágrafo inteiramente **bold** vira sub-cabeçalho (titleStyle='body')", () => {
