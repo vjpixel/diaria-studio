@@ -289,6 +289,40 @@ export function resolveSharedLockPath(spawn: SpawnFn = defaultSpawn): string {
 }
 
 /**
+ * Cache de `resolveSharedLockPath()` por identidade de função `spawn` (#3435
+ * finding 1). Antes desta memoização, `resolveSharedLockPath()` rodava
+ * `git rev-parse --git-common-dir` — um spawn de processo real — a CADA
+ * chamada de `syncCode()` sem lock explícito (o parâmetro default
+ * `lock: SyncLock = createFileLock(undefined, spawn)` é reavaliado a cada
+ * invocação, já que default parameters em JS são expressões, não valores
+ * memoizados pela linguagem). O git-common-dir não muda durante o processo —
+ * não há necessidade de repetir esse spawn no caminho quente.
+ *
+ * `WeakMap<SpawnFn, string>` (chave = a própria função `spawn`, não uma
+ * string) foi escolhido em vez de uma variável módulo única porque:
+ *   - produção reusa a MESMA referência `defaultSpawn` em toda chamada de
+ *     `syncCode()` dentro de um processo — cache efetivo, 1 spawn real por
+ *     processo, como pedido no finding;
+ *   - cada `it()` deste arquivo de teste injeta seu PRÓPRIO closure `spawn`
+ *     (`makeSpawn({...})` cria uma função nova a cada chamada) — chaves
+ *     diferentes nunca colidem, então os testes continuam isolados e
+ *     determinísticos sem precisar de nenhum hook de reset entre casos.
+ *
+ * Cacheia tanto sucesso quanto o fallback fail-soft (`REPO_ROOT/.diaria-sync.lock`)
+ * — ambos são funções puras do par (spawn, ambiente), e o ambiente (estar ou
+ * não num repo git válido) não muda durante o processo.
+ */
+const sharedLockPathCache = new WeakMap<SpawnFn, string>();
+
+export function resolveSharedLockPathCached(spawn: SpawnFn = defaultSpawn): string {
+  const cached = sharedLockPathCache.get(spawn);
+  if (cached !== undefined) return cached;
+  const resolved = resolveSharedLockPath(spawn);
+  sharedLockPathCache.set(spawn, resolved);
+  return resolved;
+}
+
+/**
  * Lock de arquivo real (#3423, endurecido em #3430). Usa um DIRETÓRIO (não
  * arquivo) como marcador — `fs.mkdirSync` é atômico em POSIX e Windows (falha
  * com EEXIST se já existe), ao contrário de checar-depois-criar com arquivos
@@ -300,6 +334,9 @@ export function resolveSharedLockPath(spawn: SpawnFn = defaultSpawn): string {
  *   worktree).
  * @param spawn Spawner usado SÓ pra resolver o `lockPath` default via git
  *   (ignorado se `lockPath` for passado explicitamente). Injetável para testes.
+ *   Resolvido via `resolveSharedLockPathCached()` (#3435 finding 1) — memoizado
+ *   por identidade de `spawn`, evita re-spawnar `git rev-parse --git-common-dir`
+ *   a cada `createFileLock(undefined, spawn)` no caminho quente de `syncCode()`.
  * @param fsImpl Subconjunto de `node:fs` usado pelas operações do lock.
  *   Injetável para testes de race (#3430) — produção usa o `fs` real.
  */
@@ -308,7 +345,7 @@ export function createFileLock(
   spawn: SpawnFn = defaultSpawn,
   fsImpl: LockFs = fs,
 ): SyncLock {
-  const path = lockPath ?? resolveSharedLockPath(spawn);
+  const path = lockPath ?? resolveSharedLockPathCached(spawn);
   // Token da aquisição ATUAL desta instância de SyncLock — `null` até
   // `acquire()` suceder. `release()` só remove o diretório quando o token
   // gravado em disco bate com este (#3430 gap 2) — nunca remove um lock que
