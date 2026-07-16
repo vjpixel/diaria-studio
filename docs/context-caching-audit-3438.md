@@ -12,6 +12,10 @@ A estimativa aqui deve ser tratada como **piso aproximado**, não número
 exato — re-rodar `ant messages count-tokens --message "@<arquivo>"` por
 arquivo quando o CLI estiver disponível pra números exatos.
 
+**Atualizado em #3438 (260716):** refresh dos números (drift natural desde
+o levantamento original de 260714, #3440) — sem mudança de veredito. Ver
+nota de drift ao fim da seção 1.
+
 ---
 
 ## 1. Tamanho por arquivo
@@ -20,31 +24,46 @@ Rodar `npx tsx scripts/audit-context-tokens.ts` regenera esta tabela.
 
 | Arquivo | Bytes | ~Tokens (estimado) |
 |---|---:|---:|
-| `context/publishers/beehiiv-playbook.md` | 78653 | ~19254 |
-| `context/editorial-rules.md` | 18182 | ~4395 |
+| `context/publishers/beehiiv-playbook.md` | 83435 | ~20410 |
+| `context/editorial-rules.md` | 19909 | ~4815 |
 | `context/publishers/linkedin.md` | 14211 | ~3472 |
+| `context/snippets/README.md` | 12092 | ~2921 |
 | `context/sources.md` (gerado) | 12018 | ~2999 |
-| `context/snippets/README.md` | 9971 | ~2409 |
 | `context/templates/newsletter-monthly.md` | 9903 | ~2391 |
 | `context/templates/newsletter.md` | 9306 | ~2227 |
 | `context/audience-profile.md` (gerado) | 7420 | ~1782 |
 | `context/templates/social-linkedin.md` | 5454 | ~1316 |
-| `context/publishers/facebook.md` | 3847 | ~937 |
+| `context/overnight-dispatch-rules.md` | 5135 | ~1252 |
+| `context/publishers/facebook.md` | 3768 | ~917 |
 | `context/agents-known-issues.md` | 2629 | ~645 |
 | `context/publishers/humanizador-rubric.md` | 2289 | ~551 |
-| `context/snippets/*.md` (7 arquivos) | ~10300 total | ~2478 total |
-| `context/invariants.md` (gerado) | 1818 | ~442 |
+| `context/templates/social-instagram.md` | 1974 | ~476 |
+| `context/invariants.md` (gerado) | 1778 | ~432 |
+| `context/snippets/*.md` (8 arquivos de conteúdo) | ~12337 total | ~2963 total |
 
-**Total: 21 arquivos, 187.231 bytes, ~45.600 tokens estimados.**
+**Total: 24 arquivos, 204.888 bytes, ~49.866 tokens estimados** (era 21
+arquivos / 187.231 bytes / ~45.600 tokens em 260714, #3440 — +9% em 2 dias,
+crescimento orgânico, não um outlier isolado).
 
-`beehiiv-playbook.md` sozinho é **42% do total de bytes** de `context/` —
-de longe o maior contribuinte, isolado.
+`beehiiv-playbook.md` sozinho é **41% do total de bytes** de `context/` —
+segue de longe o maior contribuinte, isolado (era 42% — proporção estável
+apesar do arquivo também ter crescido, de 78653 para 83435 bytes).
+
+**Drift desde 260714:** 3 arquivos novos entraram em `context/` por features
+legítimas, não por acidente — `context/overnight-dispatch-rules.md` (#3453/
+#3454, checklist canônico de dispatch overnight/develop, citado em vez de
+reproduzido em cada prompt — ver header do próprio arquivo), `context/
+templates/social-instagram.md` e `context/snippets/indicacao-ferramenta.md`
+(#3486/#3212, seção Instagram + box de divulgação). Nenhum é candidato a
+corte — cada um resolve uma duplicação de prompt maior do que o próprio
+tamanho (ex: `overnight-dispatch-rules.md` existe justamente pra encolher o
+prompt de dispatch do coordenador, trocando N reproduções por 1 leitura).
 
 ---
 
 ## 2. `beehiiv-playbook.md` — o outlier
 
-78KB / ~19k tokens estimados é um script passo-a-passo de automação
+83KB / ~20k tokens estimados é um script passo-a-passo de automação
 Claude in Chrome (seletores, fallbacks de retry, snippets JS de
 `javascript_tool`) pro fluxo de publicação Beehiiv. Achados:
 
@@ -78,14 +97,21 @@ um cabeçalho estático de metadata (o tipo de coisa que muda a cada
 render/chamada e invalida o prefixo cacheado a partir dali): `new Date()`/
 `Date.now()` literal, UUID literal, timestamp ISO 8601 completo.
 
-**2 arquivos flagados — ambos falsos-positivos, confirmados manualmente:**
+**2 arquivos flagados — todos os matches são falsos-positivos, confirmados
+manualmente (atualizado 260716 — `beehiiv-playbook.md` acumulou um 2º
+padrão desde 260714):**
 
-1. `beehiiv-playbook.md:926` — `new Date()` aparece dentro de um bloco de
-   código bash **de exemplo** (`node -e "process.stdout.write(new
-   Date().toISOString())"`), instrução estática de como o operador deve
-   capturar um timestamp durante a execução da Etapa 5. Não é código que
-   roda a cada leitura do arquivo — é texto imutável do próprio playbook.
-2. `context/invariants.md:5` — `Última atualização: 2026-05-08T04:01:49...`
+1. `beehiiv-playbook.md` — 2 padrões, ambos texto estático em blocos de
+   código de exemplo, nunca avaliado em runtime:
+   - `new Date()` (linha ~926) dentro de um bash de exemplo (`node -e
+     "process.stdout.write(new Date().toISOString())"`), instrução de como
+     o operador captura um timestamp durante a Etapa 5.
+   - Timestamp ISO 8601 completo (3 ocorrências: `test_email_sent_at`,
+     `scheduled_at`, `published_at`) dentro de blocos ```json``` que
+     documentam o *shape* esperado da saída de scripts (`05-published.json`,
+     output de `verify-scheduled-post.ts`) — valores de exemplo fixos
+     (`"2026-04-18T12:34:56.789Z"` etc.), não interpolação.
+2. `context/invariants.md` — `Última atualização: 2026-05-08T04:01:49...`
    é um cabeçalho de metadata em arquivo **gerado**
    (`scripts/regen-invariants.ts`, a partir de issues GitHub com label
    `convention`). Só muda quando o script roda de novo (gatilho: issue
@@ -95,13 +121,14 @@ render/chamada e invalida o prefixo cacheado a partir dali): `new Date()`/
    antes do conteúdo estável, e a cadência de mudança é baixa o
    suficiente pra não ser um invalidador prático.
 
-**Conclusão: nenhum invalidador de cache real encontrado.** Os 3 arquivos
-gerados (`sources.md`, `audience-profile.md`, `invariants.md`) já seguem a
-convenção correta — timestamp de geração isolado num cabeçalho, regenerado
-com baixa frequência (não por request), análogo à decisão já tomada em
-#1847 de mover `data/past-editions.md` pra fora de `context/` justamente
-por regenerar a cada Stage 0 (esse sim seria um invalidador reintroduzido
-se voltasse pra `context/`).
+**Conclusão: nenhum invalidador de cache real encontrado** — mesmo veredito
+de 260714, revalidado após o crescimento de `beehiiv-playbook.md`. Os 3
+arquivos gerados (`sources.md`, `audience-profile.md`, `invariants.md`) já
+seguem a convenção correta — timestamp de geração isolado num cabeçalho,
+regenerado com baixa frequência (não por request), análogo à decisão já
+tomada em #1847 de mover `data/past-editions.md` pra fora de `context/`
+justamente por regenerar a cada Stage 0 (esse sim seria um invalidador
+reintroduzido se voltasse pra `context/`).
 
 ---
 
@@ -117,8 +144,8 @@ tratamento de `inconclusive`). Os arquivos `context/sources.md` e
 próximo run; qualquer redundância neles (ex: o topic-filter string repetido
 por fonte em `sources.md`) precisa ser resolvida no gerador, não no
 arquivo, e está fora do escopo desta issue (nenhuma medição indicou que
-isso seja um problema prático de tamanho — `sources.md` é o 4º maior
-arquivo, ~3k tokens estimados, não um outlier).
+isso seja um problema prático de tamanho — `sources.md` está entre os 5
+maiores arquivos, ~3k tokens estimados, não um outlier).
 
 `beehiiv-playbook.md` (seção 2) é o único candidato de tamanho real, e a
 recomendação é revisão editorial manual, não corte automatizado.
