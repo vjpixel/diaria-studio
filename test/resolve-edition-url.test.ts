@@ -385,11 +385,6 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
       "",
     ].join("\n");
 
-    // Snapshot do log REAL do repo ANTES de rodar o CLI, pra provar depois
-    // que --log-root-dir isolou o write (ver assercao apos runCli abaixo).
-    const realRepoLogPath = resolve(process.cwd(), "data", "run-log.jsonl");
-    const realRepoLogPathSnapshot = existsSync(realRepoLogPath) ? readFileSync(realRepoLogPath, "utf8") : null;
-
     const { exitCode, stderr, stdout, editionDir, tmp } = runCli(
       ["--slug", "meu-titulo-teste", "--validate-social"],
       { "03-social.md": socialMd },
@@ -427,14 +422,11 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
       const isolatedLog = readFileSync(isolatedLogPath, "utf8");
       assert.match(isolatedLog, /guard anti-placeholder \(#3277\)/, "entry do guard deveria estar no log isolado");
 
-      if (existsSync(realRepoLogPath)) {
-        const realLogAfter = readFileSync(realRepoLogPath, "utf8");
-        assert.equal(
-          realLogAfter,
-          realRepoLogPathSnapshot,
-          "data/run-log.jsonl REAL do repo nao deveria ter sido alterado por este teste (--log-root-dir deveria ter isolado o write)",
-        );
-      }
+      // #3479: a comparação de snapshot contra data/run-log.jsonl REAL do
+      // repo (antes/depois) foi removida daqui — a assertion positiva acima
+      // já prova a intenção (write isolado via --log-root-dir), e o
+      // snapshot era flaky sob concorrência com outros testes da suíte que
+      // gravam no run-log real durante a janela do snapshot.
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

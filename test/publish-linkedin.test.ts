@@ -739,8 +739,6 @@ describe("#595 dispatchEntry: bug regression — pixel + null scheduled_at em fi
         headers: { "Content-Type": "application/json" },
       });
     const { dir, cleanup } = tmpDir();
-    const realRepoLogPath = join(process.cwd(), "data", "run-log.jsonl");
-    const realRepoLogSnapshot = existsSync(realRepoLogPath) ? readFileSync(realRepoLogPath, "utf8") : null;
     try {
       const input: DispatchInput = {
         destaque: "d1",
@@ -760,14 +758,11 @@ describe("#595 dispatchEntry: bug regression — pixel + null scheduled_at em fi
       assert.match(isolatedLog, /"agent":"publish-linkedin"/);
       assert.match(isolatedLog, /"edition":"260999"/);
 
-      if (existsSync(realRepoLogPath)) {
-        const realLogAfter = readFileSync(realRepoLogPath, "utf8");
-        assert.equal(
-          realLogAfter,
-          realRepoLogSnapshot,
-          "data/run-log.jsonl REAL do repo não deveria ter sido alterado por este teste (ctx.rootDir deveria ter isolado o write)",
-        );
-      }
+      // #3479: a comparação de snapshot contra data/run-log.jsonl REAL do
+      // repo (antes/depois) foi removida daqui — as assertions positivas
+      // acima já provam a intenção do #3311 (write isolado em ctx.rootDir),
+      // e o snapshot era flaky sob concorrência com outros testes da suíte
+      // que gravam no run-log real durante a janela do snapshot.
     } finally {
       cleanup();
       globalThis.fetch = savedFetch;

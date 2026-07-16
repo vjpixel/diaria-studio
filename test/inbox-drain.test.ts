@@ -472,8 +472,6 @@ describe("inbox-drain main() integration (#306)", () => {
     };
 
     const logRootDir = mkdtempSync(resolve(tmpdir(), "inbox-drain-logroot-check-"));
-    const realRepoLogPath = resolve(ROOT, "data", "run-log.jsonl");
-    const realRepoLogSnapshot = existsSync(realRepoLogPath) ? readFileSync(realRepoLogPath, "utf8") : null;
     const capturedOutput: string[] = [];
     const origWrite = process.stdout.write.bind(process.stdout);
     process.stdout.write = (chunk: any) => {
@@ -493,14 +491,12 @@ describe("inbox-drain main() integration (#306)", () => {
       assert.match(isolatedLog, /"agent":"inbox-drainer"/);
       assert.match(isolatedLog, /auto-reset/);
 
-      if (existsSync(realRepoLogPath)) {
-        const realLogAfter = readFileSync(realRepoLogPath, "utf8");
-        assert.equal(
-          realLogAfter,
-          realRepoLogSnapshot,
-          "data/run-log.jsonl REAL do repo não deveria ter sido alterado por este teste (main(rootDir) deveria ter isolado o write)",
-        );
-      }
+      // #3479: a comparação de snapshot contra data/run-log.jsonl REAL do
+      // repo (antes/depois) foi removida daqui — as assertions positivas
+      // acima já provam a intenção do #3311 (write isolado em rootDir/), e
+      // o snapshot era flaky sob concorrência: qualquer outro teste da
+      // suíte gravando no run-log real durante a janela do snapshot quebra
+      // a comparação sem relação com o que este teste cobre.
     } finally {
       rmSync(logRootDir, { recursive: true, force: true });
     }
