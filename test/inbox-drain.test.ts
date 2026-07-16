@@ -502,6 +502,80 @@ describe("inbox-drain main() integration (#306)", () => {
     }
   });
 
+  // #3493: cobertura de threading de rootDir pro call site logDrainWarn
+  // (path auth_expired, linha ~614 de inbox-drain.ts) — distinto do
+  // logDrainInfo (silent_reset) já coberto pelo teste #3311 acima. Achado
+  // do self-review #2038 em #3492/#3479: inbox-drain.ts tem MÚLTIPLOS call
+  // sites de logEvent com `rootDir` default `= ROOT`; a assertion positiva
+  // que sobrou depois da remoção do snapshot-do-arquivo-real (#3479) só
+  // cobria o call site do silent_reset — um esquecimento de repassar
+  // `rootDir` especificamente no branch auth_expired não seria pego por
+  // nenhum teste existente. Este teste fecha esse buraco de forma
+  // determinística (isolamento via tmpdir, sem depender de estado global
+  // compartilhado — mesma técnica do #3311, não a comparação insegura
+  // removida no #3479).
+  it("#3493: log de auditoria do path auth_expired (logDrainWarn) isolado via main(rootDir) — nunca grava em data/run-log.jsonl real", async () => {
+    writeFileSync(CURSOR_PATH, JSON.stringify({
+      last_drain_iso: "2026-04-01T00:00:00Z",
+      consecutive_empty_drains: 0,
+    }), "utf8");
+
+    // Status 400 (não 401): gFetch só tenta re-refresh de token quando
+    // status===401 (google-auth.ts::gFetch); 400 com body invalid_grant
+    // propaga direto pro caller (gmailRequest lança, isAuthExpiredError
+    // detecta pelo texto do body) sem precisar mockar o endpoint de refresh
+    // de token também — mesmo truque usado em test/drive-sync.test.ts pro
+    // guard #2318.
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes("/threads") && !u.includes("/threads/")) {
+        return {
+          ok: false,
+          status: 400,
+          text: async () => JSON.stringify({
+            error: "invalid_grant",
+            error_description: "Token has been expired or revoked.",
+          }),
+          json: async () => ({ error: "invalid_grant" }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+          headers: { get: () => null },
+        } as unknown as Response;
+      }
+      return makeGmailResponse({});
+    };
+
+    const logRootDir = mkdtempSync(resolve(tmpdir(), "inbox-drain-logroot-authwarn-"));
+    const capturedOutput: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: any) => {
+      if (typeof chunk === "string") capturedOutput.push(chunk);
+      return true;
+    };
+    try {
+      await drainMain(logRootDir);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+
+    const output = JSON.parse(capturedOutput.join(""));
+    assert.equal(output.skipped, true, "auth_expired deve abortar o drain (buildSearchFailedResult)");
+    assert.equal(output.reason, "auth_expired");
+
+    try {
+      const isolatedLogPath = resolve(logRootDir, "data", "run-log.jsonl");
+      assert.ok(
+        existsSync(isolatedLogPath),
+        "log de auditoria do path auth_expired (logDrainWarn) deveria existir no tmpdir isolado (main(rootDir))",
+      );
+      const isolatedLog = readFileSync(isolatedLogPath, "utf8");
+      assert.match(isolatedLog, /"agent":"inbox-drainer"/);
+      assert.match(isolatedLog, /"level":"warn"/);
+      assert.match(isolatedLog, /auth_expired/);
+    } finally {
+      rmSync(logRootDir, { recursive: true, force: true });
+    }
+  });
+
   it("drain com 1 thread com URL → URL extraída em data/inbox.md", async () => {
     writeFileSync(CURSOR_PATH, JSON.stringify({
       last_drain_iso: "2026-01-01T00:00:00Z",
