@@ -582,7 +582,7 @@ function main(): void {
     modified: { rewritten: [], renamed: [], deleted: [] },
     rerenders_needed: [
       `writer-destaque DESTAQUE ${demotePosition} (novo item: "${promotedTitle}")`,
-      `social-linkedin + social-facebook (re-dispatch pra novo lineup de destaques)`,
+      `social-linkedin + social-facebook + social-instagram (re-dispatch pra novo lineup de destaques, #3486)`,
       `merge-social-md.ts (re-grava .social-source-hash.json com novo hash)`,
       `scripts/image-generate.ts --destaque ${demotePosition} (gerar nova imagem para o destaque promovido)`,
       `upload-images-public.ts (após gerar imagem nova)`,

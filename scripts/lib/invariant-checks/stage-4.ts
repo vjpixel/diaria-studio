@@ -153,7 +153,7 @@ function checkPublicImagesPopulated(editionDir: string): InvariantViolation[] {
  *
  * Mismatch = highlights mudaram após social.md ser gerado — social ficou
  * stale e precisa re-dispatch dos agents `social-linkedin` + `social-facebook`
- * + re-run de merge-social-md.ts. Caso 260520: D1 trocou de Karpathy pra
+ * + `social-instagram` (#3486) + re-run de merge-social-md.ts. Caso 260520: D1 trocou de Karpathy pra
  * Google I/O pós-Stage 2; social manteve hook Karpathy → contradição
  * cross-channel.
  *
@@ -230,7 +230,7 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
         message:
           `Highlights mudaram após social.md ser gerado (hash: ${cachedHash} → ${currentHash}). ` +
           `Editor reestruturou destaques pós-Stage 2. Re-dispatch agents ` +
-          `social-linkedin + social-facebook + re-run merge-social-md.ts E re-push pro Drive ` +
+          `social-linkedin + social-facebook + social-instagram (#3486) + re-run merge-social-md.ts E re-push pro Drive ` +
           `(drive-sync --mode push --files 03-social.md) antes de publicar — senão o Drive fica stale (#1828).`,
         source_issue: "#1413",
         severity: "error",

@@ -13,6 +13,13 @@
  * - try/catch ao redor de todas as ops de FS, mensagens de erro úteis em
  *   stderr (#870 — antes era node -e inline sem nenhum tratamento).
  *
+ * #3486: também mescla `_internal/03-instagram.tmp.md` (agent `social-instagram`)
+ * em `# Instagram`, quando presente. Diferente de LinkedIn/Facebook, esse tmp é
+ * OPCIONAL — ausência não falha o merge, só omite a seção (edição sai igual ao
+ * formato pré-#3486). Isso preserva o fallback estrutural `# Instagram` →
+ * `# Facebook` que `lintInstagramEmailCTA`/`publish-instagram.ts` já usavam
+ * (#2486) pra edições/testes que não disparam o novo agent.
+ *
  * Uso:
  *   npx tsx scripts/merge-social-md.ts --edition-dir data/editions/260507/
  *
@@ -152,7 +159,7 @@ export function stripHtmlComments(input: string): StripResult {
  */
 export function stripLeadingPlatformHeader(
   content: string,
-  platform: "linkedin" | "facebook",
+  platform: "linkedin" | "facebook" | "instagram",
 ): string {
   const platTitle = platform.charAt(0).toUpperCase() + platform.slice(1);
   const headerRe = new RegExp(`^# ${platTitle}\\s*$`, "i");
@@ -202,6 +209,36 @@ function readTmpOrFail(check: TmpCheck): string {
   }
 }
 
+/**
+ * readOptionalTmp (#3486)
+ *
+ * Análogo a `readTmpOrFail`, mas pra tmps OPCIONAIS: se ausente ou vazio,
+ * retorna `null` (warn no stderr) em vez de `process.exit(1)`. Usado pro tmp
+ * do `social-instagram` — diferente de LinkedIn/Facebook, uma edição sem
+ * `03-instagram.tmp.md` (ex: worktree/teste antigo, ou o agent ainda não foi
+ * disparado) não deve quebrar o merge; `03-social.md` simplesmente sai sem
+ * `# Instagram`, preservando o fallback `# Instagram` → `# Facebook` já usado
+ * por `lintInstagramEmailCTA`/`publish-instagram.ts` (#2486).
+ */
+function readOptionalTmp(check: TmpCheck): string | null {
+  if (!existsSync(check.path)) return null;
+  if (statSync(check.path).size === 0) {
+    console.error(
+      `merge-social-md: warn — tmp file vazio (0 bytes) para agent opcional '${check.agent}' — ` +
+        `pulando seção (fallback Facebook segue valendo pro Instagram): ${check.path}`,
+    );
+    return null;
+  }
+  try {
+    return readFileSync(check.path, "utf8");
+  } catch (err) {
+    console.error(
+      `merge-social-md: warn — erro lendo tmp opcional para agent '${check.agent}': ${(err as Error).message}`,
+    );
+    return null;
+  }
+}
+
 function main(): void {
   const args = parseArgsSimple(process.argv.slice(2));
   const editionDirArg = args["edition-dir"];
@@ -219,18 +256,35 @@ function main(): void {
     agent: "social-facebook",
     path: resolve(editionDir, "_internal/03-facebook.tmp.md"),
   };
+  // #3486: tmp OPCIONAL — social-instagram é um agent novo; edições antigas
+  // (ou worktrees/testes que não o disparam) não têm este arquivo. Ausência
+  // não é falha: 03-social.md sai sem `# Instagram` e o fallback estrutural
+  // `# Instagram` → `# Facebook` (lintInstagramEmailCTA/publish-instagram.ts,
+  // #2486) continua valendo pra essas edições.
+  const instagramTmp: TmpCheck = {
+    agent: "social-instagram",
+    path: resolve(editionDir, "_internal/03-instagram.tmp.md"),
+  };
 
   const liRaw = readTmpOrFail(linkedinTmp);
   const fbRaw = readTmpOrFail(facebookTmp);
+  const igRaw = readOptionalTmp(instagramTmp);
 
   let liStripped: string;
   let fbStripped: string;
+  let igStripped: string | null = null;
   try {
     const li = stripHtmlComments(liRaw);
     const fb = stripHtmlComments(fbRaw);
     liStripped = li.stripped.trim();
     fbStripped = fb.stripped.trim();
-    for (const w of [...li.warnings, ...fb.warnings]) {
+    const warnings = [...li.warnings, ...fb.warnings];
+    if (igRaw !== null) {
+      const ig = stripHtmlComments(igRaw);
+      igStripped = ig.stripped.trim();
+      warnings.push(...ig.warnings);
+    }
+    for (const w of warnings) {
       console.error(`merge-social-md: warn — ${w}`);
     }
   } catch (err) {
@@ -257,13 +311,29 @@ function main(): void {
   }
   fbStripped = fbAfterHeaderStrip.trim();
 
+  // #3486: mesmo strip de header pré-existente, aplicado ao Instagram quando
+  // o tmp opcional estiver presente.
+  if (igStripped !== null) {
+    const igAfterHeaderStrip = stripLeadingPlatformHeader(igStripped, "instagram");
+    if (igAfterHeaderStrip !== igStripped) {
+      console.error(
+        `merge-social-md: warn — tmp file de Instagram já continha o header "# Instagram" — removido antes do merge (#3424).`,
+      );
+    }
+    igStripped = igAfterHeaderStrip.trim();
+  }
+
   // #1075 + #1310: AMBOS comment_diaria e comment_pixel são postagem manual.
   // Make.com LinkedIn module não suporta Create Comment nem em company page
   // (descoberto em 2026-05-15 após semanas de Make rejection emails) nem em
   // conta pessoal. publish-linkedin.ts agora skipa comments por default
   // (#1310 inverteu o flag). Banner explica que só o main é automatizado.
   const linkedinHeader = `# LinkedIn\n\n> **Postagem semi-automática (#1310 atualizou #1075):** \`main\` agenda via Worker→Make. \`comment_diaria\` (T+3min, company page) E \`comment_pixel\` (T+8min, conta pessoal) precisam ser postados manualmente — Make.com não suporta Create Comment em nenhum dos dois alvos. Copy-paste dos textos abaixo.\n`;
-  const merged = `${linkedinHeader}\n${liStripped}\n\n# Facebook\n\n${fbStripped}\n`;
+  // #3486: `# Instagram` só entra no output quando o tmp opcional existe —
+  // preserva 03-social.md byte-idêntico ao formato pré-#3486 quando o agent
+  // social-instagram não rodou (edições antigas, testes, resume parcial).
+  const instagramSection = igStripped !== null ? `\n\n# Instagram\n\n${igStripped}` : "";
+  const merged = `${linkedinHeader}\n${liStripped}\n\n# Facebook\n\n${fbStripped}${instagramSection}\n`;
   const outPath = resolve(editionDir, "03-social.md");
 
   try {
@@ -275,8 +345,12 @@ function main(): void {
     process.exit(1);
   }
 
-  // Deletar tmps só após sucesso na escrita do output final.
-  for (const tmp of [linkedinTmp, facebookTmp]) {
+  // Deletar tmps só após sucesso na escrita do output final. Instagram só
+  // entra na lista se de fato foi lido (existsSync) — evita tentar unlink
+  // de um arquivo que nunca existiu.
+  const tmpsToDelete = [linkedinTmp, facebookTmp];
+  if (igRaw !== null) tmpsToDelete.push(instagramTmp);
+  for (const tmp of tmpsToDelete) {
     try {
       unlinkSync(tmp.path);
     } catch (err) {
