@@ -749,6 +749,112 @@ describe("ensureIntentionalErrorJson (#2284, migrado #3222)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("#3485: preencher description/reveal pela 1ª vez em intentional-error.json e re-rodar NÃO corrompe a linha 'Nessa edição, …' do corpo", () => {
+    // Regressão do bug relatado pelo auto-reporter (#3485, edição 260716):
+    // fluxo real é (1) o script roda uma vez e insere o placeholder
+    // "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}." no corpo do MD (ainda sem
+    // o editor ter escrito a narrativa); (2) o editor preenche `description` e
+    // `reveal` em _internal/intentional-error.json pela primeira vez (fluxo
+    // legado, de antes do #3222, onde o frontmatter alimentava a linha
+    // visível); (3) o script roda de novo. Pré-fix, `insertOrUpdateSection`
+    // usava `record.reveal` (prosa em 1ª pessoa PASSADA, "Na última edição,
+    // escrevi X...", escrita para a edição SEGUINTE revelar) como fallback pra
+    // computar a declaração da edição CORRENTE, produzindo
+    // "Nessa edição, Na última edição, escrevi X..." — texto corrompido
+    // sobrescrevendo o placeholder. Pós-fix, o JSON nunca alimenta a linha
+    // "Nessa edição, …" — só a prosa que o editor já escreveu no CORPO conta,
+    // então o placeholder permanece intacto até o editor escrever a narrativa
+    // diretamente no MD.
+    const dir = mkdtempSync(join(tmpdir(), "render-erro-3485-"));
+    try {
+      const editionDir = join(dir, "editions", "260716-repro");
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      const mdPath = join(editionDir, "02-reviewed.md");
+      const jsonPath = join(editionDir, "_internal", "intentional-error.json");
+
+      // Estado pós-1º run: placeholder já inserido no corpo, JSON ainda não existe.
+      writeFileSync(
+        mdPath,
+        [
+          "OUTRAS NOTÍCIAS",
+          "",
+          "Item.",
+          "",
+          "---",
+          "",
+          "**ERRO INTENCIONAL**",
+          "",
+          "Na última edição, escrevi \"Cursera\" onde o correto é Coursera.",
+          "",
+          "Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.",
+          "",
+          "---",
+          "",
+          "**🎁 SORTEIO**",
+          "",
+          "Texto sorteio.",
+          "",
+          "---",
+          "",
+          "**🙋🏼‍♀️ PARA ENCERRAR**",
+          "",
+          "Texto encerrar.",
+        ].join("\n"),
+        "utf8",
+      );
+
+      // Editor preenche description + reveal pela 1ª vez (deixa o resto como
+      // placeholder, e NÃO toca a linha "Nessa edição, …" do corpo — é
+      // exatamente o passo que dispara o bug relatado).
+      writeFileSync(
+        jsonPath,
+        JSON.stringify(
+          {
+            description: "DESTAQUE 2 cita a startup Acme como fundada em 2020.",
+            location: "{PREENCHER — ex: DESTAQUE 2, parágrafo 1}",
+            category: "{PREENCHER — factual|ortografico|numeric|attribution|data|version_inconsistency|factual_synthetic}",
+            correct_value: "{PREENCHER — valor correto}",
+            reveal: "Na última edição, escrevi que a Acme foi fundada em 2020, quando na verdade foi em 2022.",
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      const emptyEditionsRoot = join(dir, "empty-editions-root");
+      mkdirSync(emptyEditionsRoot, { recursive: true });
+
+      const projectRoot = join(import.meta.dirname, "..");
+      const scriptPath = join(projectRoot, "scripts", "render-erro-intencional.ts");
+      const r = spawnSync(process.execPath, ["--import", "tsx", scriptPath,
+        "--edition", "260716-repro",
+        "--md", mdPath,
+        "--editions-dir", emptyEditionsRoot,
+        "--errors", join(dir, "nonexistent.jsonl"),
+      ], { cwd: projectRoot, encoding: "utf8" });
+      assert.equal(r.status, 0, r.stderr);
+
+      const updated = readFileSync(mdPath, "utf8");
+      // Assert central da regressão: nunca "Nessa edição, Na última edição, …"
+      // (assinatura exata da corrupção pré-fix).
+      assert.doesNotMatch(
+        updated,
+        /Nessa edição,\s*Na última edição/i,
+        "linha 'Nessa edição, …' não pode ser derivada do campo `reveal` (público/tempo verbal diferentes)",
+      );
+      // Placeholder deve permanecer intacto — editor ainda não escreveu a
+      // narrativa desta edição diretamente no corpo.
+      assert.match(
+        updated,
+        /Nessa edição, \{PREENCHER_NARRATIVA_DO_ERRO\}\./,
+        "placeholder da narrativa corrente deve ser preservado, não fabricado a partir do JSON",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── Regressão #2377: narrativeIsGenericPlaceholder ──────────────────────────────────────────

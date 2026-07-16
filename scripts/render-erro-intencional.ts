@@ -634,7 +634,7 @@ export function renderSection(
 export function insertOrUpdateSection(
   md: string,
   reveal: string | null,
-  opts: { preserveExistingReveal?: boolean; currentRecord?: IntentionalErrorJson | null } = {},
+  opts: { preserveExistingReveal?: boolean } = {},
 ): { md: string; action: "inserted" | "updated" | "no_change" } {
   // #1079: preserva linhas "Na última edição, …" e "Nessa edição, …" do MD da
   // edição corrente se já existirem (autor pode ter editado wording à mão).
@@ -645,10 +645,22 @@ export function insertOrUpdateSection(
   // anterior, e o preserve mantinha o stale silenciosamente, repetindo o
   // mesmo reveal por 3 edições seguidas. Agora reveal computado SEMPRE
   // sobrescreve a menos que `opts.preserveExistingReveal=true`.
-  // (#3222) `opts.currentRecord` — o record `_internal/intentional-error.json`
-  // da edição CORRENTE, usado como fallback quando a prosa "Nessa edição, …"
-  // ainda não foi escrita no corpo.
-  const currentExtracted = extractIntentionalErrorFromMd(md, opts.currentRecord);
+  // (#3222 introduziu `opts.currentRecord` como fallback pra extrair a
+  // declaração corrente do `_internal/intentional-error.json` quando a prosa
+  // "Nessa edição, …" ainda não tinha sido escrita no corpo. #3485: esse
+  // fallback foi REMOVIDO — `record.reveal` é prosa em 1ª pessoa PASSADA
+  // ("Na última edição, escrevi X...") escrita para a PRÓXIMA edição revelar,
+  // não para esta mesma edição convidar o leitor a achar o erro. Ao preencher
+  // só `description`/`reveal` no JSON (sem tocar o corpo do MD) e re-rodar, o
+  // fallback produzia "Nessa edição, Na última edição, escrevi X..." —
+  // conteúdo corrompido/gramaticalmente incoerente sobrescrevendo o
+  // placeholder (ou, pior, uma prosa real já escrita ficaria arriscada a ser
+  // substituída por esse texto malformado num rerun). A declaração corrente
+  // só vem do que o EDITOR já escreveu no corpo — se ainda não escreveu, o
+  // placeholder "{PREENCHER_NARRATIVA_DO_ERRO}" permanece como sinal correto
+  // de pendência, em vez de fabricar texto incorreto a partir de um campo
+  // com público/tempo verbal diferentes.
+  const currentExtracted = extractIntentionalErrorFromMd(md);
   const currentDeclaration = currentExtracted
     ? `Nessa edição, ${currentExtracted.narrative}.`
     : null;
@@ -929,8 +941,10 @@ function main(): void {
 
   const md = readFileSync(mdPath, "utf8");
   // (#3222) `_internal/intentional-error.json` da edição CORRENTE — sibling do
-  // `--md` recebido. Usado como fallback em insertOrUpdateSection quando a
-  // prosa "Nessa edição, …" ainda não foi escrita no corpo.
+  // `--md` recebido. Usado por `currentHasIntentionalErrorFlag` (result final,
+  // abaixo) e por `ensureIntentionalErrorJson`. #3485: NÃO é mais passado pra
+  // `insertOrUpdateSection` — ver comentário na própria função pro motivo
+  // (fallback removido por corromper a linha "Nessa edição, …").
   const currentJsonPath = intentionalErrorJsonPath(dirname(mdPath));
   const currentRecord = loadIntentionalErrorJson(currentJsonPath);
 
@@ -939,7 +953,6 @@ function main(): void {
   const preserveExistingReveal = process.argv.includes("--preserve-existing-reveal");
   const { md: updated, action } = insertOrUpdateSection(md, reveal, {
     preserveExistingReveal,
-    currentRecord,
   });
 
   if (action !== "no_change") {
