@@ -61,6 +61,13 @@ export interface Env {
   POLL_SECRET: string;
   ADMIN_SECRET: string;
   ALLOWED_ORIGINS: string;
+  /** #3521: allowlist de origens autorizadas a embutir `/embed` via iframe
+   * (CSP `frame-ancestors`, ver embed.ts). Opcional — vazio/ausente é
+   * tratado como "ninguém autorizado" (fail-closed), nunca "todos". Mesmo
+   * formato CSV de `ALLOWED_ORIGINS`. `?: string` (não `string`) pra não
+   * quebrar as dezenas de fixtures de teste que constroem `Env` sem este
+   * campo (opt-in, não regride nenhum teste existente). */
+  EMBED_ALLOWED_ORIGINS?: string;
   /** #3116: origin da request atual (`request.headers.get("Origin")`),
    * extraído 1x no entrypoint `fetch()` e propagado via spread de `env` (e
    * `brandedEnv`, que também espalha `env`) por toda a árvore de handlers que
@@ -173,6 +180,39 @@ export function json(data: unknown, status = 200, env?: Env): Response {
   });
 }
 
+// ── Framing policy (#3521) ───────────────────────────────────────────────────
+
+/**
+ * #3521: cabeçalhos padrão de "nunca embutível" — aplicados a TODA resposta
+ * do worker EXCETO `/embed` (que declara sua própria allowlist via CSP
+ * `frame-ancestors`, ver `embed.ts`). Achado de self-review #2038 CORRIGIDO
+ * (não só comentado, mesmo precedente #3117/#3120): introduzir o widget
+ * embutível expôs que NENHUMA rota deste worker jamais restringiu framing —
+ * `X-Frame-Options`/CSP `frame-ancestors` nunca foram emitidos por handler
+ * nenhum, então TODA página (inclusive `/vote`, que executa uma escrita real
+ * a partir de 1 clique) podia ser embutida por QUALQUER site terceiro sem
+ * consentimento — vetor clássico de clickjacking. Ao introduzir o conceito
+ * de política de framing (que não existia), o correto é fechar essa
+ * exposição em tudo que NÃO pediu pra ser embutível, não só abrir a rota
+ * nova.
+ *
+ * `X-Frame-Options: DENY` cobre browsers legados sem suporte a CSP
+ * `frame-ancestors`; a diretiva CSP é a moderna e tem precedência quando
+ * ambas presentes na mesma resposta. Mutação in-place de `response.headers`
+ * é segura aqui — nenhuma resposta que chega neste ponto do `fetch()` foi
+ * construída via `Response.redirect()`/`Response.error()` (guard
+ * "immutable" nesses 2 construtores): o único `Response.redirect()` do
+ * worker (301 de trailing-slash) retorna ANTES deste ponto; os demais
+ * redirects internos (`/share`, `/quiz-share`, auto-heal de
+ * `/leaderboard/{YYYY-MM}`) usam `new Response(null, {status, headers})` —
+ * guard "response" (mutável), não "immutable".
+ */
+export function applyFrameDenyHeaders(response: Response): Response {
+  response.headers.set("X-Frame-Options", "DENY");
+  response.headers.set("Content-Security-Policy", "frame-ancestors 'none'");
+  return response;
+}
+
 // ── Secrets guard (#1420) ─────────────────────────────────────────────────────
 
 /**
@@ -273,6 +313,9 @@ import {
 // #3519: handleJogarArchivePage — arquivo de pares passados, mesmo módulo.
 // #3520: handleJogarQuizPage/handleQuizAnswer/handleQuizResult — quiz relâmpago.
 import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleQuizAnswer, handleQuizResult } from "./jogar";
+// #3521: widget embutível (iframe) pro EPIC #3514 — sites parceiros. Ver
+// rationale completo no header de embed.ts.
+import { handleEmbedPage } from "./embed";
 // #3517: share card pós-jogo (OG image dinâmica) — motor de divulgação do
 // EPIC #3514, construído sobre o slot `#jogar-result-slot` que o #3516 deixou
 // reservado. Rationale completo no header de share.ts.
@@ -945,6 +988,26 @@ export default {
     const brand = parseBrandParam(url.searchParams.get("brand"));
     const bEnv = brandedEnv(env, brand);
 
+    const response = await routeRequest(request, url, path, env, bEnv, brand);
+    // #3521: `/embed` declara sua PRÓPRIA política de embutimento (allowlist
+    // de parceiros via CSP `frame-ancestors`, ver embed.ts); toda outra rota
+    // recebe "nunca embutível" por padrão — ver rationale completo em
+    // `applyFrameDenyHeaders` acima.
+    return path === "/embed" ? response : applyFrameDenyHeaders(response);
+  },
+  // #1077 → #1345: cron de reset mensal removido. Leaderboard agora é
+  // indexado por publication date (score-by-month:{YYYY-MM}:{email}); reset
+  // não é mais necessário — meses são naturalmente isolados.
+};
+
+/**
+ * #3521: dispatch de rotas extraído de `fetch()` pra permitir pós-processar
+ * a `Response` (aplicar headers de framing) num único ponto central, sem
+ * duplicar a lógica em cada `return` do router (que já tinha ~35 pontos de
+ * saída). Comportamento idêntico ao `fetch()` anterior — puramente uma
+ * extração mecânica de função, nenhuma rota mudou de lugar/ordem/guarda.
+ */
+async function routeRequest(request: Request, url: URL, path: string, env: Env, bEnv: Env, brand: Brand): Promise<Response> {
     // #3516: /jogar é standalone e sempre brand="web" (ignora `?brand=` da
     // request — a rota já implica a marca). Usa `env` CRU (não `bEnv`) — a
     // página só lê o gabarito PÚBLICO compartilhado (`correct:{edition}`,
@@ -961,6 +1024,11 @@ export default {
     if (path === "/jogar/quiz" && request.method === "GET") return handleJogarQuizPage(url, env);
     if (path === "/jogar/quiz/answer" && request.method === "GET") return handleQuizAnswer(url, env);
     if (path === "/jogar/quiz/result" && request.method === "GET") return handleQuizResult(url, env);
+    // #3521: widget embutível (iframe) pra sites parceiros — `env` CRU
+    // (mesmo racional acima: só lê `correct:{edition}` compartilhado); a
+    // allowlist de embutimento (EMBED_ALLOWED_ORIGINS) é independente de
+    // brand. Ver rationale completo em embed.ts.
+    if (path === "/embed" && request.method === "GET") return handleEmbedPage(url, env);
 
     // #3517: share card pós-jogo. `env` CRU (não `bEnv`) — o token já carrega
     // seu próprio payload assinado (edition + correct), sem depender de
@@ -1037,9 +1105,5 @@ export default {
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
-  },
-  // #1077 → #1345: cron de reset mensal removido. Leaderboard agora é
-  // indexado por publication date (score-by-month:{YYYY-MM}:{email}); reset
-  // não é mais necessário — meses são naturalmente isolados.
-};
+    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+}
