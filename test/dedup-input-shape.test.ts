@@ -62,9 +62,6 @@ describe("dedup.ts — input shape guard (#1268)", () => {
       const articlesPath = join(dir, "articles.json");
       writeFileSync(articlesPath, JSON.stringify(articles), "utf8");
 
-      const realRepoLogPath = resolve(ROOT, "data", "run-log.jsonl");
-      const realRepoLogSnapshot = existsSync(realRepoLogPath) ? readFileSync(realRepoLogPath, "utf8") : null;
-
       const r = runDedup(articlesPath, dir);
       assert.equal(r.code, 0, `dedup deveria passar com array raw; stderr: ${r.stderr}`);
 
@@ -73,13 +70,16 @@ describe("dedup.ts — input shape guard (#1268)", () => {
       const isolatedLogPath = join(dir, "data", "run-log.jsonl");
       assert.ok(existsSync(isolatedLogPath), "log de auditoria deveria existir no tmpdir isolado (--log-root-dir)");
       assert.match(readFileSync(isolatedLogPath, "utf8"), /"agent":"dedup\.ts"/);
-      if (existsSync(realRepoLogPath)) {
-        assert.equal(
-          readFileSync(realRepoLogPath, "utf8"),
-          realRepoLogSnapshot,
-          "data/run-log.jsonl REAL do repo não deveria ter sido alterado por este teste",
-        );
-      }
+
+      // #3479: havia aqui uma 3ª assertion que tirava snapshot de
+      // data/run-log.jsonl REAL do repo antes/depois e comparava igualdade.
+      // Removida: as duas assertions positivas acima já provam a intenção do
+      // #1268/#3311 (o dedup escreve SÓ no --log-root-dir passado), e o
+      // snapshot era inseguro sob concorrência — data/run-log.jsonl é global
+      // e compartilhado, então qualquer outro teste da suíte rodando em
+      // paralelo que grave nele (via scripts/lib/run-log.ts sem
+      // --log-root-dir) quebrava a comparação sem relação nenhuma com o
+      // shape guard do dedup. Ver discussão na issue #3479.
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
