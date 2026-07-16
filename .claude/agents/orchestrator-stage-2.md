@@ -537,5 +537,5 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
     ```
     Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
 
-  - **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 2 done via `update-stage-status.ts --stage 2 --status done --end ISO --duration-ms X [--cost-usd Y --tokens-in N --tokens-out N --models "sonnet-4-6,opus-4-7"]`.
+  - **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 2 done via `update-stage-status.ts --stage 2 --status done --end ISO --duration-ms X`. Em seguida `npx tsx scripts/capture-stage-usage.ts --edition-dir data/editions/{AAMMDD}/ --stage 2` (#3441) — popula `cost_usd`/`tokens_in`/`tokens_out`/`models` reais a partir do transcript local da sessão; sem transcript local, sai sem escrever (fail-soft).
     `title_picker:?1` = só conta se foi disparado (destaques_picked > 0); senão 0.

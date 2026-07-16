@@ -37,6 +37,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { editionsRoot } from "./lib/edition-paths.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
+import { editionDateMs, estimateAggregateCostUsd } from "./lib/pricing.ts";
 
 export interface StageCost {
   stage: number;
@@ -120,43 +121,10 @@ export function parseStageStatusJson(content: string): StageCost[] {
 // ---------------------------------------------------------------------------
 // Pricing (#3437 context — auditoria de model mix; ver skill claude-api)
 // ---------------------------------------------------------------------------
-
-interface PricingEntry {
-  inputPer1M: number;
-  outputPer1M: number;
-}
-
-const OPUS_PRICING: PricingEntry = { inputPer1M: 5, outputPer1M: 25 };
-const SONNET_PRICING_STANDARD: PricingEntry = { inputPer1M: 3, outputPer1M: 15 };
-const SONNET_PRICING_INTRO: PricingEntry = { inputPer1M: 2, outputPer1M: 10 };
-const HAIKU_PRICING: PricingEntry = { inputPer1M: 1, outputPer1M: 5 };
-
-// Sonnet 5 intro pricing ($2/$10) vale até 2026-08-31 (#3437); depois volta a $3/$15.
-const SONNET_5_INTRO_END = Date.UTC(2026, 7, 31, 23, 59, 59); // month is 0-indexed: 7 = August
-
-/** "AAMMDD" (ex: "260424") → epoch ms (UTC, meio-dia pra evitar off-by-one de fuso). */
-function editionDateMs(edition: string): number | null {
-  const m = edition.match(/^(\d{2})(\d{2})(\d{2})$/);
-  if (!m) return null;
-  const [, yy, mm, dd] = m;
-  return Date.UTC(2000 + Number(yy), Number(mm) - 1, Number(dd), 12);
-}
-
-/**
- * Resolve pricing por tier a partir de um model string livre (ex:
- * "haiku-4-5", "claude-opus-4-7", "gemini", "sonnet-4-6"). Retorna `null` pra
- * modelos não-Claude (ex: Gemini na Etapa 3) — não há tier a precificar.
- */
-function resolvePricing(modelString: string, editionMs: number | null): PricingEntry | null {
-  const s = modelString.toLowerCase();
-  if (s.includes("opus")) return OPUS_PRICING;
-  if (s.includes("sonnet")) {
-    const isIntro = editionMs !== null && editionMs <= SONNET_5_INTRO_END;
-    return isIntro ? SONNET_PRICING_INTRO : SONNET_PRICING_STANDARD;
-  }
-  if (s.includes("haiku")) return HAIKU_PRICING;
-  return null;
-}
+// #3441: tabela de pricing + resolução por model string movida pra
+// `scripts/lib/pricing.ts` (single source of truth compartilhada com
+// `scripts/capture-stage-usage.ts`, que precisa da MESMA tabela pra não
+// divergir preço entre o agregador mensal e a captura por-stage).
 
 /**
  * Estima custo de um stage a partir de tokens_in/tokens_out quando `models`
@@ -166,12 +134,7 @@ function resolvePricing(modelString: string, editionMs: number | null): PricingE
  * possível estimar (0 ou 2+ modelos, ou modelo não-Claude).
  */
 function estimateStageCostUsd(stage: StageCost, editionMs: number | null): number | undefined {
-  if (stage.models.length !== 1) return undefined;
-  const pricing = resolvePricing(stage.models[0], editionMs);
-  if (!pricing) return undefined;
-  const inputCost = (stage.tokensIn / 1_000_000) * pricing.inputPer1M;
-  const outputCost = (stage.tokensOut / 1_000_000) * pricing.outputPer1M;
-  return inputCost + outputCost;
+  return estimateAggregateCostUsd(stage.tokensIn, stage.tokensOut, stage.models, editionMs);
 }
 
 // ---------------------------------------------------------------------------

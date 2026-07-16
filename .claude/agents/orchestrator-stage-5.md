@@ -365,6 +365,11 @@ npx tsx scripts/pipeline-sentinel.ts write \
 npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 5 --status done
 ```
 
+**Capturar custo/tokens reais (#3441):**
+```bash
+npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 5
+```
+
 - Sentinel ausente faz Stage 0 da proxima edicao re-investigar publicacao via Beehiiv API.
 - Falha do sentinel → logar warn. Nao bloquear.
 

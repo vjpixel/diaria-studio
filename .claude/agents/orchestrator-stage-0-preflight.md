@@ -501,6 +501,12 @@ Exit 1 = abort imediato com violations no stderr. Editor corrige (env, credentia
 npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 0 --status done
 ```
 
+**Capturar custo/tokens reais (#3441).** Logo em seguida, rodar `capture-stage-usage.ts` — lê `_internal/stage-status.json` (o `--end` que acabou de ser gravado), agrega o `usage` real das chamadas do coordenador dentro da janela `[start, end]` do stage a partir do transcript local da sessão (`~/.claude/projects/`), e popula `cost_usd`/`tokens_in`/`tokens_out`/`models` — nunca fabrica número: sem transcript local (sessão cloud) ou sem entradas na janela, imprime `source: "unavailable"` e não escreve nada:
+
+```bash
+npx tsx scripts/capture-stage-usage.ts --edition-dir data/editions/{AAMMDD}/ --stage 0
+```
+
 ---
 
 ## Stage 1 — Research

@@ -549,6 +549,11 @@ npx tsx scripts/pipeline-sentinel.ts write \
 npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 4 --status done
 ```
 
+**Capturar custo/tokens reais (#3441):**
+```bash
+npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 4
+```
+
 - Falha do sentinel → logar warn. Não bloquear.
 - O sentinel de Stage 4 garante que resume-aware (Stage 0b) detecta que a Revisão completou e pula direto para a Etapa 5.
 

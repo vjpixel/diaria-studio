@@ -119,4 +119,4 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
     --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg"
   ```
   Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
-- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 3 done via `update-stage-status.ts --stage 3 --status done --end ISO --duration-ms X [--cost-usd Y --models "gemini,haiku"]`.
+- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 3 done via `update-stage-status.ts --stage 3 --status done --end ISO --duration-ms X`. Em seguida `npx tsx scripts/capture-stage-usage.ts --edition-dir data/editions/{AAMMDD}/ --stage 3` (#3441) — captura tokens/custo REAIS só do lado Claude (transcript local da sessão); **não captura** o custo de Gemini/ComfyUI da geração de imagem (APIs externas, fora do transcript do harness) — esse gap fica documentado, não fabricado como zero.

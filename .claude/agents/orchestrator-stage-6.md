@@ -362,6 +362,11 @@ e a transicao tem sucesso:
 npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --status done
 ```
 
+**Capturar custo/tokens reais (#3441):**
+```bash
+npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 6
+```
+
 Falha (exit != 0) → logar warn com o motivo impresso pelo script; nao bloquear o resto do
 fluxo (relatorio ja foi enviado). Se isso acontecer, a barra de status pode ficar presa em
 `running` ate reconciliacao (ver `reconcileZombieRunningRows` em `scripts/overnight-statusline.ts`,
