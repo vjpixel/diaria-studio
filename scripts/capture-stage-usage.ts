@@ -143,8 +143,17 @@ async function main(): Promise<void> {
   const doc = loadDoc(editionDir, editionId);
   const row: StageRow | undefined = doc.rows.find((r) => r.stage === stage);
 
-  const start = values["start"] ?? row?.start;
-  const end = values["end"] ?? row?.end;
+  // `doc.rows` só cobre STAGES (0-6, ver makeInitialDoc) — um --stage fora
+  // desse conjunto não tem onde persistir, mesmo que o transcript tenha dado
+  // real. Falhar cedo aqui evita reportar `source: "session_transcript"`
+  // (sucesso) sem gravar nada, o que seria enganoso pro caller.
+  if (!row) {
+    console.log(JSON.stringify({ source: "unavailable", reason: "stage_not_tracked", stage }));
+    return;
+  }
+
+  const start = values["start"] ?? row.start;
+  const end = values["end"] ?? row.end;
   const transcriptsDir = values["transcripts-dir"] ?? resolveTranscriptsDir(process.cwd());
 
   const result = captureUsageForWindow(transcriptsDir, start, end, editionId);
@@ -160,7 +169,7 @@ async function main(): Promise<void> {
       doc,
       {
         stage,
-        status: row?.status ?? "done", // preserva status existente — este script nunca transiciona stage
+        status: row.status, // preserva status existente — este script nunca transiciona stage
         cost_usd: result.cost_usd,
         tokens_in: result.tokens_in,
         tokens_out: result.tokens_out,

@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { captureUsageForWindow } from "../scripts/capture-stage-usage.ts";
@@ -165,6 +166,139 @@ describe("captureUsageForWindow + stage-status.json — integração de escrita"
       rmSync(transcriptsDir, { recursive: true, force: true });
     } finally {
       rmSync(editionRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("capture-stage-usage CLI (#3441) — invocação real via subprocess", () => {
+  function runCli(args: string[]) {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "capture-stage-usage.ts");
+    return spawnSync(process.execPath, ["--import", "tsx", scriptPath, ...args], {
+      cwd: projectRoot,
+      encoding: "utf8",
+    });
+  }
+
+  function setupEdition(): { editionRoot: string; editionDir: string; transcriptsDir: string } {
+    const editionRoot = mkdtempSync(join(tmpdir(), "capture-cli-edition-"));
+    const editionDir = join(editionRoot, "260508");
+    mkdirSync(editionDir, { recursive: true });
+    let doc = makeInitialDoc("260508", "2026-05-08T08:00:00.000Z");
+    doc = applyUpdate(
+      doc,
+      { stage: 1, status: "done", start: "2026-05-08T08:30:00.000Z", end: "2026-05-08T08:48:00.000Z" },
+      "2026-05-08T08:48:00.000Z",
+    );
+    saveDoc(editionDir, doc);
+    const transcriptsDir = mkdtempSync(join(tmpdir(), "capture-cli-transcripts-"));
+    return { editionRoot, editionDir, transcriptsDir };
+  }
+
+  it("--dry-run não escreve em stage-status.json", () => {
+    const { editionRoot, editionDir, transcriptsDir } = setupEdition();
+    try {
+      writeFileSync(join(transcriptsDir, "session.jsonl"), usageLine(), "utf8");
+      const r = runCli([
+        "--edition-dir",
+        editionDir,
+        "--stage",
+        "1",
+        "--transcripts-dir",
+        transcriptsDir,
+        "--dry-run",
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.source, "session_transcript");
+      assert.equal(out.cost_usd, 7.5);
+      assert.equal(out.path, undefined); // dry-run não grava, não retorna path
+
+      const doc = loadDoc(editionDir, "260508");
+      const row = doc.rows.find((row) => row.stage === 1)!;
+      assert.equal(row.cost_usd, undefined); // confirma que nada foi persistido
+    } finally {
+      rmSync(editionRoot, { recursive: true, force: true });
+      rmSync(transcriptsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("execução real grava cost_usd/tokens_in/tokens_out/models em stage-status.json", () => {
+    const { editionRoot, editionDir, transcriptsDir } = setupEdition();
+    try {
+      writeFileSync(join(transcriptsDir, "session.jsonl"), usageLine(), "utf8");
+      const r = runCli(["--edition-dir", editionDir, "--stage", "1", "--transcripts-dir", transcriptsDir]);
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.source, "session_transcript");
+      assert.ok(out.path);
+
+      const doc = loadDoc(editionDir, "260508");
+      const row = doc.rows.find((row) => row.stage === 1)!;
+      assert.equal(row.status, "done"); // não muda status
+      assert.equal(row.start, "2026-05-08T08:30:00.000Z"); // não muda start
+      assert.equal(row.end, "2026-05-08T08:48:00.000Z"); // não muda end
+      assert.equal(row.cost_usd, 7.5);
+      assert.equal(row.tokens_in, 1_000_000);
+      assert.equal(row.tokens_out, 100_000);
+      assert.deepEqual(row.models, ["opus-4-8"]);
+    } finally {
+      rmSync(editionRoot, { recursive: true, force: true });
+      rmSync(transcriptsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem transcript local: sai com status 0, source unavailable, não escreve nada (fail-soft)", () => {
+    const { editionRoot, editionDir, transcriptsDir } = setupEdition();
+    // Não escreve nenhum .jsonl no transcriptsDir — simula ausência de dado real.
+    try {
+      const r = runCli(["--edition-dir", editionDir, "--stage", "1", "--transcripts-dir", transcriptsDir]);
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.source, "unavailable");
+      assert.equal(out.reason, "no_usage_records_in_window");
+
+      const doc = loadDoc(editionDir, "260508");
+      const row = doc.rows.find((row) => row.stage === 1)!;
+      assert.equal(row.cost_usd, undefined); // nunca escreve zero/null como se fosse real
+    } finally {
+      rmSync(editionRoot, { recursive: true, force: true });
+      rmSync(transcriptsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("--stage fora do range 0-6 (sem row em stage-status.json): falha cedo com unavailable/stage_not_tracked — nunca reporta sucesso sem persistir", () => {
+    const { editionRoot, editionDir, transcriptsDir } = setupEdition();
+    try {
+      writeFileSync(
+        join(transcriptsDir, "session.jsonl"),
+        usageLine({ timestamp: "2026-05-08T08:35:00.000Z" }),
+        "utf8",
+      );
+      const r = runCli([
+        "--edition-dir",
+        editionDir,
+        "--stage",
+        "7",
+        "--start",
+        "2026-05-08T08:30:00.000Z",
+        "--end",
+        "2026-05-08T08:48:00.000Z",
+        "--transcripts-dir",
+        transcriptsDir,
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.source, "unavailable");
+      assert.equal(out.reason, "stage_not_tracked");
+      const doc = loadDoc(editionDir, "260508");
+      assert.equal(
+        doc.rows.find((row) => row.stage === 7),
+        undefined,
+      );
+    } finally {
+      rmSync(editionRoot, { recursive: true, force: true });
+      rmSync(transcriptsDir, { recursive: true, force: true });
     }
   });
 });
