@@ -11,7 +11,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -67,17 +67,19 @@ describe("dedup.ts — input shape guard (#1268)", () => {
 
       // #3311: prova que o logEvent de auditoria (`dedup: N artigos...`) foi
       // de fato isolado no tmpdir via --log-root-dir — nunca no repo real.
-      //
-      // #3479: a assertion positiva acima (existência + conteúdo do log no
-      // tmpdir isolado) já prova a intenção do #1268/#3311 — que o dedup
-      // escreve SÓ no --log-root-dir passado. Havia uma 2ª assertion aqui
-      // que tirava snapshot de data/run-log.jsonl REAL do repo antes/depois
-      // e comparava igualdade — redundante (não cobre nada que a assertion
-      // acima já não cubra) e insegura sob concorrência: qualquer outro
-      // teste da suíte rodando em paralelo que grave no run-log real (via
-      // scripts/lib/run-log.ts sem --log-root-dir) quebra essa comparação
-      // sem relação nenhuma com o shape guard do dedup. Removida — ver
-      // discussão na issue #3479.
+      const isolatedLogPath = join(dir, "data", "run-log.jsonl");
+      assert.ok(existsSync(isolatedLogPath), "log de auditoria deveria existir no tmpdir isolado (--log-root-dir)");
+      assert.match(readFileSync(isolatedLogPath, "utf8"), /"agent":"dedup\.ts"/);
+
+      // #3479: havia aqui uma 3ª assertion que tirava snapshot de
+      // data/run-log.jsonl REAL do repo antes/depois e comparava igualdade.
+      // Removida: as duas assertions positivas acima já provam a intenção do
+      // #1268/#3311 (o dedup escreve SÓ no --log-root-dir passado), e o
+      // snapshot era inseguro sob concorrência — data/run-log.jsonl é global
+      // e compartilhado, então qualquer outro teste da suíte rodando em
+      // paralelo que grave nele (via scripts/lib/run-log.ts sem
+      // --log-root-dir) quebrava a comparação sem relação nenhuma com o
+      // shape guard do dedup. Ver discussão na issue #3479.
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
