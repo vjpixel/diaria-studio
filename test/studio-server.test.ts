@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
 import type { QueryFn } from "../scripts/studio-ui/studio-chat.ts";
 
@@ -295,5 +295,204 @@ describe("POST /api/chat (#3556) — com chatQueryFn mockado (sem SDK real)", ()
     assert.equal(events.length, 1);
     assert.equal(events[0].event, "chat-error");
     assert.match((events[0].data as { message: string }).message, /CLI do Claude Code não encontrado/);
+  });
+});
+
+/** Lê incrementalmente um `Response` SSE (via `getReader()`, igual ao
+ * `chat-drawer.js` real — `EventSource` não suporta POST), chamando
+ * `onEvent` pra cada `{event, data}` assim que chega. Usado pro round-trip
+ * de `POST /api/chat/answer` (#3557): a request de `/api/chat` fica
+ * BLOQUEADA no meio (aguardando o gate ser respondido), então `res.text()`
+ * (usado nos outros testes deste arquivo) travaria pra sempre — aqui
+ * precisamos reagir a um evento específico (`chat-permission-request`) e
+ * disparar uma 2ª request (`/api/chat/answer`) ENQUANTO a 1ª ainda está
+ * em voo, exatamente como o browser real faz. */
+async function readSseStream(res: Response, onEvent: (evt: { event: string; data: unknown }) => void): Promise<void> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sepIndex: number;
+    while ((sepIndex = buffer.indexOf("\n\n")) !== -1) {
+      const raw = buffer.slice(0, sepIndex);
+      buffer = buffer.slice(sepIndex + 2);
+      if (!raw || raw.startsWith(":")) continue;
+      let eventName = "message";
+      let dataLine = "";
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("event:")) eventName = line.slice("event:".length).trim();
+        else if (line.startsWith("data:")) dataLine += line.slice("data:".length).trim();
+      }
+      if (!dataLine) continue;
+      onEvent({ event: eventName, data: JSON.parse(dataLine) });
+    }
+  }
+}
+
+describe("POST /api/chat/answer (#3557) — gate AskUserQuestion via HTTP", () => {
+  let root: string;
+  let server: StudioServer;
+  let queryFn: QueryFn;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-server-chat-answer-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    queryFn = () => {
+      async function* gen() {}
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    server = await startStudioServer({
+      port: 0,
+      rootDir: root,
+      pollIntervalMs: 30,
+      chatQueryFn: (params) => queryFn(params),
+    });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("GET é rejeitado com 405 — só POST é aceito nessa rota", async () => {
+    const res = await fetch(new URL("/api/chat/answer", server.url));
+    assert.equal(res.status, 405);
+  });
+
+  it("400 quando o corpo não tem 'toolUseId'/'answers'", async () => {
+    const res = await fetch(new URL("/api/chat/answer", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("404 quando não há gate pendente com esse toolUseId (já respondido, ou nunca existiu)", async () => {
+    const res = await fetch(new URL("/api/chat/answer", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ toolUseId: "tu-inexistente", answers: { q: "a" } }),
+    });
+    assert.equal(res.status, 404);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+  });
+
+  it("round-trip completo (#633): AskUserQuestion pendura o turno; /api/chat/answer resolve; /api/state reflete o badge enquanto pendente e some depois", async () => {
+    const askInput = {
+      questions: [
+        {
+          question: "Qual caminho seguir?",
+          header: "Caminho",
+          multiSelect: false,
+          options: [
+            { label: "Opção 1", description: "primeira" },
+            { label: "Opção 2", description: "segunda" },
+          ],
+        },
+      ],
+    };
+
+    queryFn = (params) => {
+      async function* gen() {
+        const canUseTool = params.options?.canUseTool as CanUseTool;
+        yield { type: "system", subtype: "init", session_id: "s-http", model: "m", cwd: root } as unknown as SDKMessage;
+        const result = await canUseTool("AskUserQuestion", askInput, {
+          signal: new AbortController().signal,
+          toolUseID: "tu-http-1",
+          requestId: "req-1",
+        });
+        if (result?.behavior === "allow") {
+          yield {
+            type: "user",
+            message: {
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "tu-http-1",
+                  is_error: false,
+                  content: JSON.stringify(result.updatedInput),
+                },
+              ],
+            },
+          } as unknown as SDKMessage;
+        }
+        yield { type: "result", subtype: "success", is_error: false, result: "fim", session_id: "s-http" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    const chatRes = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "escolhe um caminho" }),
+    });
+    assert.equal(chatRes.status, 200);
+
+    const events: Array<{ event: string; data: unknown }> = [];
+    let answered = false;
+    let stateWhilePending: { chatPermissionsPending: Array<{ toolUseId: string }> } | null = null;
+    // Capturado (não fire-and-forget "solto") pra poder `await` depois do
+    // loop de leitura — garante que qualquer falha de assert aqui dentro vira
+    // uma rejeição de teste normal, não uma unhandled rejection perdida
+    // numa corrida com o `readSseStream` abaixo.
+    let answerPromise: Promise<void> | null = null;
+
+    await readSseStream(chatRes, (evt) => {
+      events.push(evt);
+      if (evt.event === "chat-permission-request" && !answered) {
+        answered = true;
+        const data = evt.data as { toolUseId: string; questions: Array<{ question: string; options: Array<{ label: string }> }> };
+        // #3557 critério de aceite: enquanto o gate está pendente, o badge
+        // global (/api/state) precisa refletir isso — checa ANTES de
+        // responder, reagindo ao evento SSE igual ao browser real
+        // (`chat-drawer.js`). `readSseStream` continua lendo em paralelo
+        // (não espera este callback) — é isso que permite a 2ª request
+        // (`/api/chat/answer`) acontecer ENQUANTO a 1ª ainda está bloqueada
+        // esperando resposta.
+        answerPromise = (async () => {
+          const stateRes = await fetch(new URL("/api/state", server.url));
+          stateWhilePending = (await stateRes.json()) as typeof stateWhilePending;
+
+          const answerRes = await fetch(new URL("/api/chat/answer", server.url), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              toolUseId: data.toolUseId,
+              answers: { [data.questions[0].question]: data.questions[0].options[0].label },
+            }),
+          });
+          assert.equal(answerRes.status, 200);
+          const answerBody = await answerRes.json();
+          assert.deepEqual(answerBody, { ok: true });
+        })();
+      }
+    });
+
+    assert.ok(answerPromise, "esperava que chat-permission-request tivesse disparado a resposta");
+    await answerPromise;
+
+    assert.ok(stateWhilePending, "esperava ter checado /api/state enquanto o gate estava pendente");
+    assert.equal((stateWhilePending as NonNullable<typeof stateWhilePending>).chatPermissionsPending.length, 1);
+    assert.equal((stateWhilePending as NonNullable<typeof stateWhilePending>).chatPermissionsPending[0].toolUseId, "tu-http-1");
+
+    const eventNames = events.map((e) => e.event);
+    assert.ok(eventNames.includes("chat-permission-request"), "esperava chat-permission-request");
+    assert.ok(eventNames.includes("chat-done"), "esperava que a sessão tivesse continuado até chat-done");
+    const doneEvent = events.find((e) => e.event === "chat-done");
+    assert.equal((doneEvent?.data as { isError: boolean }).isError, false);
+    const toolEndEvent = events.find(
+      (e) => e.event === "chat-tool" && (e.data as { toolUseId?: string; status?: string }).toolUseId === "tu-http-1",
+    );
+    assert.ok(toolEndEvent, "esperava um chat-tool pra tu-http-1 (a sessão prosseguiu, não foi negada)");
+    assert.equal((toolEndEvent?.data as { status?: string }).status, "end");
+
+    const stateAfterRes = await fetch(new URL("/api/state", server.url));
+    const stateAfter = (await stateAfterRes.json()) as { chatPermissionsPending: unknown[] };
+    assert.equal(stateAfter.chatPermissionsPending.length, 0);
   });
 });

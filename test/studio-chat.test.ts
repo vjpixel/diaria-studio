@@ -11,16 +11,22 @@
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   parseChatRequestBody,
+  parseChatAnswerRequestBody,
+  parseAskUserQuestionInput,
+  buildAskUserQuestionUpdatedInput,
   sdkMessageToChatEvents,
   describeChatError,
   getSessionId,
   setSessionId,
   clearSession,
   runChatTurn,
+  listPendingPermissionRequests,
+  resolvePendingPermissionRequest,
   type ChatWireEvent,
+  type ChatPermissionRequestEvent,
   type QueryFn,
 } from "../scripts/studio-ui/studio-chat.ts";
 
@@ -73,6 +79,130 @@ describe("parseChatRequestBody (#3556)", () => {
   it("corpo vazio (string em branco) é tratado como objeto vazio -> rejeita por falta de message", () => {
     const result = parseChatRequestBody("");
     assert.equal(result.ok, false);
+  });
+});
+
+describe("parseChatAnswerRequestBody (#3557)", () => {
+  it("aceita um corpo válido com toolUseId + answers", () => {
+    const result = parseChatAnswerRequestBody(
+      JSON.stringify({ toolUseId: "tu-1", answers: { "Qual biblioteca?": "date-fns" } }),
+    );
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.value.toolUseId, "tu-1");
+      assert.deepEqual(result.value.answers, { "Qual biblioteca?": "date-fns" });
+      assert.equal(result.value.response, undefined);
+    }
+  });
+
+  it("aceita 'response' opcional (resposta livre)", () => {
+    const result = parseChatAnswerRequestBody(
+      JSON.stringify({ toolUseId: "tu-1", answers: { "Qual?": "outra coisa" }, response: "outra coisa" }),
+    );
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.value.response, "outra coisa");
+  });
+
+  it("rejeita JSON inválido", () => {
+    assert.equal(parseChatAnswerRequestBody("{not json").ok, false);
+  });
+
+  it("rejeita 'toolUseId' ausente ou vazio", () => {
+    assert.equal(parseChatAnswerRequestBody(JSON.stringify({ answers: { a: "b" } })).ok, false);
+    assert.equal(parseChatAnswerRequestBody(JSON.stringify({ toolUseId: "", answers: { a: "b" } })).ok, false);
+  });
+
+  it("rejeita 'answers' ausente, vazio, ou de tipo errado", () => {
+    assert.equal(parseChatAnswerRequestBody(JSON.stringify({ toolUseId: "tu-1" })).ok, false);
+    assert.equal(parseChatAnswerRequestBody(JSON.stringify({ toolUseId: "tu-1", answers: {} })).ok, false);
+    assert.equal(parseChatAnswerRequestBody(JSON.stringify({ toolUseId: "tu-1", answers: [] })).ok, false);
+    assert.equal(
+      parseChatAnswerRequestBody(JSON.stringify({ toolUseId: "tu-1", answers: { a: 5 } })).ok,
+      false,
+    );
+  });
+
+  it("rejeita 'response' de tipo errado quando presente", () => {
+    assert.equal(
+      parseChatAnswerRequestBody(JSON.stringify({ toolUseId: "tu-1", answers: { a: "b" }, response: 5 })).ok,
+      false,
+    );
+  });
+});
+
+describe("parseAskUserQuestionInput (#3557)", () => {
+  const validInput = {
+    questions: [
+      {
+        question: "Qual biblioteca de datas?",
+        header: "Biblioteca",
+        multiSelect: false,
+        options: [
+          { label: "date-fns", description: "leve, tree-shakeable" },
+          { label: "dayjs", description: "API estilo moment", preview: "dayjs().format()" },
+        ],
+      },
+    ],
+  };
+
+  it("parseia um input válido de 1 pergunta com 2 opções", () => {
+    const result = parseAskUserQuestionInput(validInput);
+    assert.ok(result);
+    assert.equal(result?.length, 1);
+    assert.equal(result?.[0].question, "Qual biblioteca de datas?");
+    assert.equal(result?.[0].header, "Biblioteca");
+    assert.equal(result?.[0].multiSelect, false);
+    assert.equal(result?.[0].options.length, 2);
+    assert.equal(result?.[0].options[1].preview, "dayjs().format()");
+  });
+
+  it("multiSelect true é preservado", () => {
+    const input = { questions: [{ ...validInput.questions[0], multiSelect: true }] };
+    const result = parseAskUserQuestionInput(input);
+    assert.equal(result?.[0].multiSelect, true);
+  });
+
+  it("até 4 perguntas são aceitas", () => {
+    const input = { questions: [validInput.questions[0], validInput.questions[0], validInput.questions[0], validInput.questions[0]] };
+    const result = parseAskUserQuestionInput(input);
+    assert.equal(result?.length, 4);
+  });
+
+  it("retorna null (não lança) quando 'questions' está ausente ou vazio", () => {
+    assert.equal(parseAskUserQuestionInput({}), null);
+    assert.equal(parseAskUserQuestionInput({ questions: [] }), null);
+  });
+
+  it("retorna null quando uma pergunta tem menos de 2 opções", () => {
+    const input = { questions: [{ ...validInput.questions[0], options: [validInput.questions[0].options[0]] }] };
+    assert.equal(parseAskUserQuestionInput(input), null);
+  });
+
+  it("retorna null quando falta 'question'/'header' ou o shape de uma opção está errado", () => {
+    assert.equal(parseAskUserQuestionInput({ questions: [{ header: "x", options: validInput.questions[0].options }] }), null);
+    assert.equal(
+      parseAskUserQuestionInput({ questions: [{ question: "q", header: "h", options: [{ label: "a" }, { label: "b" }] }] }),
+      null,
+    );
+  });
+});
+
+describe("buildAskUserQuestionUpdatedInput (#3557)", () => {
+  it("ecoa o input original + adiciona 'answers'", () => {
+    const original = { questions: [{ question: "q1", header: "h1", multiSelect: false, options: [] }] };
+    const result = buildAskUserQuestionUpdatedInput(original, { answers: { q1: "opção A" } });
+    assert.deepEqual(result, { questions: original.questions, answers: { q1: "opção A" } });
+  });
+
+  it("inclui 'response' quando presente no answer", () => {
+    const original = { questions: [] };
+    const result = buildAskUserQuestionUpdatedInput(original, { answers: { q1: "livre" }, response: "livre" });
+    assert.equal(result.response, "livre");
+  });
+
+  it("não inclui 'response' quando ausente", () => {
+    const result = buildAskUserQuestionUpdatedInput({}, { answers: { q1: "a" } });
+    assert.equal("response" in result, false);
   });
 });
 
@@ -374,5 +504,213 @@ describe("runChatTurn (#3556) — com queryFn mockado (sem SDK real)", () => {
     assert.equal(received.length, 2);
     assert.equal(received[0].event, "chat-init");
     assert.equal(received[1].event, "chat-error");
+  });
+});
+
+describe("runChatTurn (#3557) — AskUserQuestion vira gate (form), não denial automática", () => {
+  // #633: regressão que prova o mecanismo fim-a-fim descrito no PR —
+  // "sessão de brinquedo que chama AskUserQuestion -> form -> resposta ->
+  // assert da continuação". O `fakeQuery` abaixo é o único jeito de exercer
+  // isso sem spawnar o SDK real: ele chama `options.canUseTool` ele mesmo
+  // (a mesma função que o SDK de verdade chamaria), simulando também uma 2ª
+  // tool call (Bash) pra provar que o escopo ampliado NÃO vazou pra outras
+  // tools (critério (d) do #3557).
+  it("(a) emite chat-permission-request; (b) resolve via resolvePendingPermissionRequest; (c) a sessão continua; (d) outra tool call segue negada", async () => {
+    const ROOT = "/tmp/root-askuserquestion-e2e";
+    const askInput = {
+      questions: [
+        {
+          question: "Qual abordagem?",
+          header: "Abordagem",
+          multiSelect: false,
+          options: [
+            { label: "A", description: "opção A" },
+            { label: "B", description: "opção B" },
+          ],
+        },
+      ],
+    };
+
+    let capturedBashDenial: PermissionResult | null = null;
+
+    const fakeQuery: QueryFn = (params) => {
+      async function* gen() {
+        const canUseTool = params.options?.canUseTool as CanUseTool;
+        yield { type: "system", subtype: "init", session_id: "s1", model: "m", cwd: ROOT } as unknown as SDKMessage;
+
+        const signal = new AbortController().signal;
+        const askResult = await canUseTool("AskUserQuestion", askInput, {
+          signal,
+          toolUseID: "tu-ask-1",
+          requestId: "req-1",
+        });
+        assert.ok(askResult);
+        assert.equal(askResult?.behavior, "allow");
+        if (askResult?.behavior === "allow") {
+          // (c) a AskUserQuestion "executa" com o updatedInput resolvido e
+          // devolve um tool_result — exatamente como qualquer outra tool
+          // call bem-sucedida; a sessão não terminou nem travou.
+          yield {
+            type: "user",
+            message: {
+              content: [
+                {
+                  type: "tool_result",
+                  tool_use_id: "tu-ask-1",
+                  is_error: false,
+                  content: JSON.stringify(askResult.updatedInput),
+                },
+              ],
+            },
+          } as unknown as SDKMessage;
+        }
+
+        // (d) uma 2ª tool call, FORA do escopo desta issue, continua negada.
+        capturedBashDenial = await canUseTool("Bash", { command: "ls" }, {
+          signal,
+          toolUseID: "tu-bash-1",
+          requestId: "req-2",
+        });
+        yield {
+          type: "system",
+          subtype: "permission_denied",
+          tool_name: "Bash",
+          tool_use_id: "tu-bash-1",
+          message: capturedBashDenial?.behavior === "deny" ? capturedBashDenial.message : "",
+        } as unknown as SDKMessage;
+
+        yield { type: "result", subtype: "success", is_error: false, result: "fim", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    const received: ChatWireEvent[] = [];
+    const turnPromise = runChatTurn({
+      message: "vamos decidir a abordagem",
+      cwd: ROOT,
+      queryFn: fakeQuery,
+      onEvent: (e) => received.push(e),
+    });
+
+    // O turno fica bloqueado dentro do `await canUseTool(...)` da
+    // AskUserQuestion até alguém resolver — dá um tick pro generator rodar
+    // até esse ponto (a Promise interna do canUseTool já registrou tudo
+    // sincronamente antes do próprio `await` suspender, mas o `for await` de
+    // `runChatTurn` só observa isso depois de um turno de microtask).
+    await new Promise((r) => setImmediate(r));
+
+    // (a) evento chat-permission-request chegou com o shape certo.
+    const permissionEvent = received.find(
+      (e): e is ChatPermissionRequestEvent => e.event === "chat-permission-request",
+    );
+    assert.ok(permissionEvent, "esperava um evento chat-permission-request");
+    assert.equal(permissionEvent.data.toolUseId, "tu-ask-1");
+    assert.equal(permissionEvent.data.questions.length, 1);
+    assert.equal(permissionEvent.data.questions[0].header, "Abordagem");
+    assert.equal(permissionEvent.data.questions[0].options.length, 2);
+
+    // gate visível no snapshot que alimenta o badge global (studio-state.ts).
+    const pendingBefore = listPendingPermissionRequests(ROOT);
+    assert.equal(pendingBefore.length, 1);
+    assert.equal(pendingBefore[0].toolUseId, "tu-ask-1");
+
+    // (b) resolve — a MESMA função que o handler HTTP de
+    // POST /api/chat/answer chama.
+    const resolveResult = resolvePendingPermissionRequest(ROOT, "tu-ask-1", {
+      answers: { "Qual abordagem?": "A" },
+    });
+    assert.deepEqual(resolveResult, { ok: true });
+
+    // removido da lista de pendentes assim que respondido.
+    assert.equal(listPendingPermissionRequests(ROOT).length, 0);
+
+    await turnPromise;
+
+    // (c) a sessão prosseguiu: tool_result da AskUserQuestion virou um
+    // chat-tool "end" (não "denied"), e o turno terminou sem erro.
+    const toolEvents = received.filter((e) => e.event === "chat-tool");
+    const askEnd = toolEvents.find(
+      (e) => e.event === "chat-tool" && (e.data as { toolUseId?: string }).toolUseId === "tu-ask-1",
+    );
+    assert.ok(askEnd, "esperava um chat-tool pra tu-ask-1 (a sessão prosseguiu)");
+    assert.equal((askEnd?.data as { status?: string }).status, "end");
+    const doneEvent = received.find((e): e is Extract<ChatWireEvent, { event: "chat-done" }> => e.event === "chat-done");
+    assert.ok(doneEvent);
+    assert.equal(doneEvent?.data.isError, false);
+    assert.equal(doneEvent?.data.result, "fim");
+
+    // (d) a 2ª tool call (Bash) foi negada de verdade pelo canUseTool, e o
+    // sinal chegou ao browser como chat-tool "denied" — regressão de escopo:
+    // o #3557 não deve ter aberto a porta pra mais nada além de AskUserQuestion.
+    assert.ok(capturedBashDenial);
+    assert.equal((capturedBashDenial as PermissionResult).behavior, "deny");
+    const bashDenied = toolEvents.find(
+      (e) => e.event === "chat-tool" && (e.data as { toolUseId?: string }).toolUseId === "tu-bash-1",
+    );
+    assert.ok(bashDenied, "esperava um chat-tool 'denied' pra tu-bash-1");
+    assert.equal((bashDenied?.data as { status?: string }).status, "denied");
+  });
+
+  it("AskUserQuestion com input malformado é negada, sem emitir chat-permission-request", async () => {
+    const ROOT = "/tmp/root-askuserquestion-malformed";
+    const fakeQuery: QueryFn = (params) => {
+      async function* gen() {
+        const canUseTool = params.options?.canUseTool as CanUseTool;
+        const result = await canUseTool(
+          "AskUserQuestion",
+          { questions: "não é um array" },
+          { signal: new AbortController().signal, toolUseID: "tu-bad-1", requestId: "req-1" },
+        );
+        assert.equal(result?.behavior, "deny");
+        yield { type: "result", subtype: "success", is_error: false, result: "fim", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    const received: ChatWireEvent[] = [];
+    await runChatTurn({ message: "oi", cwd: ROOT, queryFn: fakeQuery, onEvent: (e) => received.push(e) });
+    assert.equal(received.some((e) => e.event === "chat-permission-request"), false);
+    assert.equal(listPendingPermissionRequests(ROOT).length, 0);
+  });
+
+  it("regressão: turno que morre (erro) ANTES da resposta chegar não vaza a entry pendente (finally de runChatTurn)", async () => {
+    const ROOT = "/tmp/root-askuserquestion-abort";
+    const askInput = {
+      questions: [
+        {
+          question: "Q?",
+          header: "H",
+          multiSelect: false,
+          options: [
+            { label: "A", description: "a" },
+            { label: "B", description: "b" },
+          ],
+        },
+      ],
+    };
+    const fakeQuery: QueryFn = (params) => {
+      async function* gen() {
+        const canUseTool = params.options?.canUseTool as CanUseTool;
+        // dispara a permission request mas NUNCA aguarda a resolução —
+        // simula o turno morrendo enquanto o gate ainda está aberto (ex:
+        // browser desconectou, abortController disparou).
+        void canUseTool("AskUserQuestion", askInput, {
+          signal: new AbortController().signal,
+          toolUseID: "tu-orphan-1",
+          requestId: "req-1",
+        });
+        throw new Error("sessão abortada");
+        // eslint-disable-next-line no-unreachable
+        yield undefined as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    const received: ChatWireEvent[] = [];
+    await runChatTurn({ message: "oi", cwd: ROOT, queryFn: fakeQuery, onEvent: (e) => received.push(e) });
+    assert.equal(received.some((e) => e.event === "chat-permission-request"), true);
+    assert.equal(received.some((e) => e.event === "chat-error"), true);
+    // sem o cleanup em `finally` (`clearPendingPermissionRequestIfUnresolved`),
+    // esta entry ficaria pendente pro rootDir pra sempre (Promise nunca
+    // resolvida, nunca mais será — a stream que a criou já morreu).
+    assert.equal(listPendingPermissionRequests(ROOT).length, 0);
   });
 });

@@ -18,12 +18,19 @@
  *
  * Mantido 100% read-only por design (#3555 é a fatia fundação/read-only da
  * EPIC #3554) — nenhuma função aqui escreve em disco.
+ *
+ * `chatPermissionsPending` (#3557) é a única exceção a "read-only": não lê
+ * disco, lê o Map em memória de `studio-chat.ts` (`listPendingPermissionRequests`)
+ * — os gates `AskUserQuestion` aguardando resposta do editor. É o campo que
+ * alimenta o badge global de gates pendentes (`chat-drawer.js`, via `/api/state`
+ * e o SSE de `/api/events`).
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { enumerateEditionDirs, findEditionsInProgress } from "../lib/find-current-edition.ts";
 import { loadDoc, STAGE_LABELS, type StageStatusDoc } from "../update-stage-status.ts";
+import { listPendingPermissionRequests, type PendingPermissionSummary } from "./studio-chat.ts";
 
 export type CurrentStage = number | "done" | "unknown";
 
@@ -52,6 +59,10 @@ export interface StudioState {
   gatesPending: Array<{ edition: string; stage: number }>;
   overnight: PlanSummary | null;
   develop: PlanSummary | null;
+  /** #3557: gates `AskUserQuestion` do chat drawer aguardando resposta do
+   * editor — distinto de `gatesPending` acima (que são os gates de pipeline,
+   * stage 4/6). Alimenta o badge global no `chat-toggle`. */
+  chatPermissionsPending: PendingPermissionSummary[];
 }
 
 const AAMMDD_RE = /^\d{6}$/;
@@ -228,5 +239,6 @@ export function buildStudioState(
     gatesPending,
     overnight: overnightPath ? summarizePlan(rootDir, overnightPath) : null,
     develop: developPath ? summarizePlan(rootDir, developPath) : null,
+    chatPermissionsPending: listPendingPermissionRequests(rootDir),
   };
 }

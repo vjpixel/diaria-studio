@@ -32,9 +32,17 @@
  *   - `POST /api/chat` — chat drawer (#3556): sessão Claude Agent SDK
  *     embutida, `cwd` = `rootDir` (mesmas skills/MCPs/CLAUDE.md do terminal).
  *     Streaming via SSE (mesmo `sse.ts` do `/api/events`) — eventos
- *     `chat-init`/`chat-delta`/`chat-tool`/`chat-done`/`chat-error`, contrato
- *     em `studio-chat.ts`. Fail-soft: erro do SDK vira `chat-error`
- *     no stream, nunca um 500 nem crash do processo.
+ *     `chat-init`/`chat-delta`/`chat-tool`/`chat-permission-request`/
+ *     `chat-done`/`chat-error`, contrato em `studio-chat.ts`. Fail-soft: erro
+ *     do SDK vira `chat-error` no stream, nunca um 500 nem crash do processo.
+ *   - `POST /api/chat/answer` — gates da sessão de chat (#3557): resolve um
+ *     `chat-permission-request` pendente (a sessão chamou `AskUserQuestion`)
+ *     com a resposta do editor. Ver `studio-chat.ts` (`makeInteractiveCanUseTool`,
+ *     `resolvePendingPermissionRequest`) pro mecanismo completo — a stream
+ *     SSE de `POST /api/chat` que originou a pergunta retoma sozinha assim
+ *     que esta rota resolve a Promise pendente, sem coordenação extra aqui.
+ *     `GET /api/state`/`GET /api/events` expõem `chatPermissionsPending`
+ *     (badge global) via `studio-state.ts`.
  *   - `GET /revisao/:aammdd` — painel de revisão de conteúdo rica (#3559):
  *     mesma estratégia de rewrite, servindo `public/revisao.html`. Consome
  *     `GET/PUT /api/editions/:aammdd/review/:slug` (`slug` = categorized |
@@ -56,7 +64,9 @@
  * escreve em disco nem dispara nada, EXCETO `POST /api/chat` (#3556), que
  * conduz uma sessão Claude real (a UI só invoca — a lógica de negócio
  * permanece nas skills/scripts que essa sessão chama, mesmo princípio do epic
- * #3554), e as rotas de ação de revisão de conteúdo (#3559, detalhadas
+ * #3554), `POST /api/chat/answer` (#3557, resolve um gate em memória — não
+ * escreve disco, mas é mutação de estado do processo), e as rotas de ação de
+ * revisão de conteúdo (#3559, detalhadas
  * abaixo). Sem autenticação nesta fatia — acesso remoto é escopo da #3560;
  * aqui o único guard de segurança é o bind loopback. #3558 (cockpit de
  * edição) e #3562 (triagem de issues/PRs) preservam o invariante read-only
@@ -116,10 +126,13 @@ import { buildDiariaDashboardHtml } from "./dashboard-diaria.ts";
 import { buildClariceDashboardHtml } from "./dashboard-clarice.ts";
 import {
   parseChatRequestBody,
+  parseChatAnswerRequestBody,
   runChatTurn,
   getSessionId,
   setSessionId,
   clearSession,
+  resolvePendingPermissionRequest,
+  watchPendingChatPermissions,
   type QueryFn,
 } from "./studio-chat.ts";
 // #3559: painel de revisão de conteúdo rica — arquivos próprios desta fatia,
@@ -252,6 +265,17 @@ function handleApiEvents(
     { pollIntervalMs: opts.pollIntervalMs },
   );
 
+  // #3557: badge global de gates pendentes — re-emite o snapshot completo de
+  // `/api/state` (o browser já sabe renderizar `state.chatPermissionsPending`)
+  // assim que uma AskUserQuestion chega OU é respondida, sem esperar o
+  // próximo evento de run-log/plan.json que disparasse esse refresh por
+  // acaso.
+  const chatPermissionWatch = watchPendingChatPermissions(
+    rootDir,
+    () => res.write(formatSseEvent("state", buildStudioState(rootDir))),
+    { pollIntervalMs: opts.pollIntervalMs },
+  );
+
   const heartbeat = setInterval(() => {
     res.write(formatSseComment("heartbeat"));
   }, 20_000);
@@ -260,6 +284,7 @@ function handleApiEvents(
     clearInterval(heartbeat);
     logWatch.close();
     planWatch.close();
+    chatPermissionWatch.close();
   };
   req.on("close", cleanup);
   res.on("error", cleanup);
@@ -375,12 +400,67 @@ async function handleApiChat(
       if (wireEvent.event === "chat-done" && wireEvent.data.sessionId) {
         setSessionId(rootDir, wireEvent.data.sessionId);
       }
-      res.write(formatSseEvent(wireEvent.event, wireEvent.data));
+      // #3557 (fallback): se o navegador que abriu este turno já se
+      // desconectou no instante em que a AskUserQuestion chega, não há UI
+      // pra renderizar o form agora — logamos um aviso, mas a sessão SEGUE
+      // esperando (mesma semântica do terminal: sem timeout). O gate ainda
+      // aparece pro badge global via `/api/state` pra qualquer outra aba
+      // conectada, e `POST /api/chat/answer` continua funcionando
+      // normalmente quando alguém finalmente responder.
+      if (wireEvent.event === "chat-permission-request" && (res.writableEnded || res.destroyed)) {
+        console.warn(
+          `[studio-chat] AskUserQuestion pendente (toolUseId=${wireEvent.data.toolUseId}) sem UI/SSE conectada no momento — a sessão continua esperando a resposta do editor.`,
+        );
+      }
+      try {
+        res.write(formatSseEvent(wireEvent.event, wireEvent.data));
+      } catch {
+        // conexão já fechada — a sessão SDK segue rodando/esperando de
+        // qualquer forma; só não há mais pra onde emitir o evento.
+      }
     },
   });
 
   req.off("close", onClose);
   res.end();
+}
+
+/**
+ * `POST /api/chat/answer` (#3557) — resolve um gate `AskUserQuestion`
+ * pendente. Corpo: `{toolUseId, answers, response?}` (`parseChatAnswerRequestBody`).
+ * A resolução em si é `resolvePendingPermissionRequest` (`studio-chat.ts`):
+ * localiza a Promise pendente pelo `toolUseId`, resolve com
+ * `{behavior:'allow', updatedInput}` e a sessão original (bloqueada no
+ * `for await` de `runChatTurn` dessa OUTRA request HTTP, a de `POST /api/chat`)
+ * retoma sozinha — os eventos subsequentes (`chat-tool` end, mais deltas,
+ * `chat-done`) continuam chegando na stream SSE já aberta daquela request,
+ * sem qualquer coordenação extra aqui.
+ */
+async function handleApiChatAnswer(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  opts: { maxBodyBytes: number },
+): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readRequestBody(req, opts.maxBodyBytes);
+  } catch (e) {
+    sendJson(res, 413, { error: (e as Error).message });
+    return;
+  }
+
+  const parsed = parseChatAnswerRequestBody(raw);
+  if (!parsed.ok) {
+    sendJson(res, 400, { error: parsed.error });
+    return;
+  }
+
+  const result = resolvePendingPermissionRequest(rootDir, parsed.value.toolUseId, {
+    answers: parsed.value.answers,
+    response: parsed.value.response,
+  });
+  sendJson(res, result.ok ? 200 : 404, result);
 }
 
 function handleTokensCss(res: ServerResponse): void {
@@ -663,6 +743,23 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
           // este catch cobre só falhas síncronas anteriores (ex: writeHead
           // já chamado e o socket morreu no meio) — sem headers ainda
           // enviados, respondemos 500; senão só fechamos a conexão.
+          if (!res.headersSent) {
+            sendJson(res, 500, { error: (e as Error).message });
+          } else {
+            res.end();
+          }
+        });
+        return;
+      }
+
+      // #3557: resolve um gate AskUserQuestion pendente — mesmo tratamento
+      // "rota de mutação checada antes do guard read-only" de /api/chat acima.
+      if (urlPath === "/api/chat/answer") {
+        if (req.method !== "POST") {
+          sendJson(res, 405, { error: "POST obrigatório em /api/chat/answer" });
+          return;
+        }
+        handleApiChatAnswer(rootDir, req, res, { maxBodyBytes: chatMaxBodyBytes }).catch((e) => {
           if (!res.headersSent) {
             sendJson(res, 500, { error: (e as Error).message });
           } else {
