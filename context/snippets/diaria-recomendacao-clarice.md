@@ -1,11 +1,18 @@
 <!--
-Bloco canônico de DIVULGAÇÃO da diar.ia.br para a base da Clarice (cross-promo
-na newsletter MENSAL). É a Clarice recomendando a diária aos leitores dela —
-por isso o tom de endosso ("Recomendação da equipe da Clarice"). Criado 260716
-a partir do box improvisado da edição 2606-07 ("Um recado rápido da equipe da
-Clarice"), com copy revisada: endosso > recado; "grátis" visível no corpo E no
-botão (maior removedor de fricção); benefício no lugar de ficha técnica
-("leitura diária de 5 minutos", não "com 5 minutos de leitura"); CTA reforçado.
+Bloco canônico de DIVULGAÇÃO da diar.ia.br na newsletter MENSAL (base da Clarice).
+É a Clarice recomendando aos leitores DESTA mensal que, se quiserem acompanhar
+IA todos os dias, se cadastrem na newsletter DIÁRIA da diar.ia.br. Criado 260716.
+
+AUDIÊNCIA (importante, decisão do editor 260716): a mensal é enviada pra base
+INATIVA da Clarice — pessoas que se cadastraram na Clarice mas não são usuárias
+ativas da ferramenta. Elas JÁ recebem esta newsletter mensal (a parceria
+Clarice × diar.ia.br é justamente esta edição). Portanto o texto:
+  - NÃO presume uso ativo da ferramenta Clarice (nada de "quem escreve com a
+    gente"/"seus textos" como se fossem usuárias correntes);
+  - NÃO re-anuncia a parceria como novidade a assinar — ela é o que a pessoa já
+    lê. A parceria entra só como contexto/credibilidade;
+  - O QUE se recomenda é a edição DIÁRIA (upgrade de frequência: a pessoa já tem
+    a mensal; a diária é opt-in, num canal separado — cadastro no site).
 
 Formato (título + corpo + CTA): (1) linha de título, sem marcador nem link;
 (2) 1 parágrafo de corpo; (3) o CTA sozinho como `→ [texto](url)` — por ser o
@@ -22,6 +29,6 @@ destaques, isolado por `---`. Não é auto-inserido pelo pipeline.
 
 Recomendação da equipe da Clarice
 
-Quem escreve com a gente sabe que clareza importa. Por isso, fechamos parceria com a diar.ia.br: uma leitura diária de 5 minutos sobre o que está mudando na forma como escrevemos e trabalhamos com IA. Assine de graça para receber uma edição todos os dias.
+Você recebe esta curadoria uma vez por mês. Se quiser mais, a diar.ia.br, que produz esta newsletter conosco, publica uma edição diária e gratuita: 5 minutos para se manter atualizado e usar melhor a IA. É só se cadastrar no site.
 
-→ [Assinar grátis](https://diaria.beehiiv.com/?utm_source=clarice)
+→ [Assinar a edição diária](https://diaria.beehiiv.com/?utm_source=clarice)

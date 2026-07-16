@@ -129,6 +129,19 @@ function withClariceUtm(url: string): string {
   return parsed.toString();
 }
 
+/**
+ * escHtml + `**bold**` + `*italic*`, SEM wordmark/word-joiner. Base de
+ * `renderTextInline` e usado DIRETO no rótulo de link (`renderInline`) — o
+ * rótulo não pode receber wordmark (`diar.ia.br` → link Beehiiv), que aninharia
+ * um `<a>` dentro do `<a>` do próprio link. Assim `[**Título**](url)` (bold
+ * dentro do rótulo, ex: título de livro) vira `<strong>` sem `**` literal.
+ */
+function escHtmlWithEmphasis(s: string): string {
+  return escHtml(s)
+    .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>');
+}
+
 function renderTextInline(s: string): string {
   // #2008/#2018: applyWordJoiner roda após escHtml+bold/italic — anti auto-linkify
   // via shared helper (scripts/lib/word-joiner.ts; lookbehind protege URLs cruas).
@@ -136,11 +149,7 @@ function renderTextInline(s: string): string {
   // estiliza "diar.ia" / "diar.ia.br" como o wordmark da marca (pontos teal) E,
   // na mensal, envolve num link pro Beehiiv (#template-branding 260703).
   return applyBrandWordmark(
-    applyWordJoiner(
-      escHtml(s)
-        .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
-        .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>'),
-    ),
+    applyWordJoiner(escHtmlWithEmphasis(s)),
     withClariceUtm(MENSAL_BRAND_LINK), // #2975: link do wordmark carrega UTM clarice
   );
 }
@@ -253,8 +262,11 @@ function nextLinkStartIndex(str: string, from: number): number {
 
 /**
  * Converts [text](url) markdown links to <a> tags; o texto AO REDOR dos links
- * ganha bold/italic via renderTextInline. (O rótulo do link em si — `m[1]` — é
- * só escapado, sem bold/italic, igual à diária.)
+ * ganha bold/italic + wordmark via renderTextInline. O rótulo do link em si
+ * (`m[1]`) ganha bold/italic via `escHtmlWithEmphasis` (mas NÃO wordmark — evita
+ * `<a>` aninhado), então `[**Título**](url)` — bold DENTRO do rótulo, ex: título
+ * de livro no box de recomendação de leitura — vira `<a><strong>Título</strong></a>`
+ * em vez de vazar `**` literal (bug detectado no ciclo 2606-07).
  *
  * #1917/#1634: o destino do link é parseado contando parênteses balanceados,
  * não com `\([^)]+\)`. A regex antiga (split por `\[[^\]]+\]\([^)]+\)`) fechava
@@ -326,7 +338,7 @@ export function renderInline(text: string): string {
     }
 
     if (textBefore.length > 0) parts.push(renderTextInline(textBefore));
-    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtml(m[1])}</a>`;
+    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
     parts.push(boldLink ? `<strong>${linkHtml}</strong>` : linkHtml);
     lastIdx = boldLink ? j + 3 : j + 1;
     linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
@@ -583,16 +595,21 @@ export function renderLaboratorio(chunk: string): string {
  *   1. Item lista ...
  *   → CTA: [link](url)
  */
-export function renderClariceBox(chunk: string, headerLabelText: string, imageUrl?: string): string {
+export function renderClariceBox(chunk: string, headerLabelText: string, imageUrl?: string, noSubtitle = false): string {
   const lines = chunk.split("\n");
   // Skip header (o rótulo de seção) + blank lines.
   let i = 1;
   while (i < lines.length && !lines[i].trim()) i++;
 
-  // Subtítulo: primeira linha não-vazia (espera `**...**`).
-  const subtitleRaw = i < lines.length ? lines[i].trim() : "";
-  const subtitle = subtitleRaw.replace(/^\*\*+/, "").replace(/\*\*+$/, "").trim();
-  i++;
+  // Subtítulo: primeira linha não-vazia (espera `**...**`). Com `noSubtitle`
+  // (box RECOMENDAÇÃO DE LEITURA), o box NÃO tem título interno — o kicker já
+  // nomeia a seção; todo o corpo (a partir daqui) vira parágrafo.
+  let subtitle = "";
+  if (!noSubtitle) {
+    const subtitleRaw = i < lines.length ? lines[i].trim() : "";
+    subtitle = subtitleRaw.replace(/^\*\*+/, "").replace(/\*\*+$/, "").trim();
+    i++;
+  }
 
   const remaining = lines.slice(i).join("\n").trim();
 
@@ -1099,7 +1116,7 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
 //      o label `PREVIEW`; sem essa restrição um teste real capturou esse
 //      exato colapso — 3 seções em vez de 2 porque "Preview" virou boundary).
 const FIXED_LABEL_RE_NO_BOLD =
-  /^(REMETENTE|ASSUNTO(\s*\(\s*3\s*OP[ÇC][ÕO]ES\s*\))?|PREVIEW|APRESENTA[ÇC][ÃA]O|INTRO|DIVULGA[ÇC][ÃA]O|LIVROS|LABORAT[ÓO]RIO CLARICE|USE MELHOR( DO M[ÊE]S)?|RADAR( DO M[ÊE]S)?|OUTRAS NOT[ÍI]CIAS DO M[ÊE]S|ENCERRAMENTO|PARA ENCERRAR)$/;
+  /^(REMETENTE|ASSUNTO(\s*\(\s*3\s*OP[ÇC][ÕO]ES\s*\))?|PREVIEW|APRESENTA[ÇC][ÃA]O|INTRO|DIVULGA[ÇC][ÃA]O|LIVROS|LIVRO DO M[ÊE]S|LABORAT[ÓO]RIO CLARICE|USE MELHOR( DO M[ÊE]S)?|RADAR( DO M[ÊE]S)?|OUTRAS NOT[ÍI]CIAS DO M[ÊE]S|ENCERRAMENTO|PARA ENCERRAR)$/;
 // "É IA?" não-bold só é label quando é a linha INTEIRA ("É IA?") ou seguido de
 // travessão ("É IA? — DESTAQUE DO MÊS") — NUNCA prosa que começa com a pergunta
 // ("É IA? do mês: duas versões..."), que senão vira 2ª seção e renderiza o card
@@ -1121,7 +1138,7 @@ export function isSectionLabel(line: string): boolean {
     // pra "USE MELHOR"/"RADAR" (igual ao diário). Sufixo opcional cobre ambos.
     // "RADAR"/"USE MELHOR" são ancorados ao fim ($) porque são palavras comuns:
     // sem o $, uma linha 100%-bold tipo **RADAR DA OPENAI** viraria seção espúria.
-    return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DIVULGAÇÃO$|LIVROS$|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
+    return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DIVULGAÇÃO$|LIVROS$|LIVRO\s+DO\s+M[ÊE]S$|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
       normalized
     );
   }
@@ -1259,6 +1276,15 @@ export function draftToEmail(
     // igual ao box de livros da diária. Reusa o box do Clarice com rótulo "Livros".
     if (label === "LIVROS") {
       bodyParts.push(renderClariceBox(chunk, "Livros", livrosImageUrl));
+      continue;
+    }
+
+    // LIVRO DO MÊS: box de indicação de UM livro (bege), kicker "Livro do mês"
+    // e SEM título interno (noSubtitle) — o título do livro em negrito-com-link
+    // é o próprio âncora visual. Sem imagem. (O "DO MÊS" segue a família de
+    // rubricas da mensal; #3581 propõe tirar "do mês" de todas de uma vez.)
+    if (label === "LIVRO DO MÊS") {
+      bodyParts.push(renderClariceBox(chunk, "Livro do mês", undefined, true));
       continue;
     }
 
