@@ -180,6 +180,135 @@ export function renderQuizSubscribeCtaBlock(): string {
 </div>`;
 }
 
+// ── #3580: cadastro INLINE pós-jogo (nome + e-mail + opt-in → assina direto) ─
+//
+// Evolução do funil #3518 (que só linkava pro Beehiiv): o visitante assina a
+// newsletter SEM sair da página, via `POST /jogar/subscribe` (ver subscribe.ts
+// pro mecanismo/anti-abuso). COMPLEMENTA — não remove — o CTA-link do #3518
+// (`#jogar-subscribe-cta`, contrato coberto por poll-jogar-cta-3518.test.ts):
+// o form é a conversão primária (direta), o link continua como fallback pra
+// quem prefere a página hospedada da Beehiiv. Mesma disciplina anti-spoiler:
+// `hidden` no HTML estático, revelado via JS SÓ junto com o resultado do voto
+// (nunca antes). Opt-in é o consentimento LGPD explícito; honeypot (`website`)
+// é o campo invisível anti-bot.
+
+/**
+ * Pure (#3580): bloco do form de cadastro inline. `hidden` por padrão (mesma
+ * disciplina do CTA-link). `novalidate` — a validação real é server-side
+ * (subscribe.ts) + uma checagem leve no JS pra UX; não dependemos da validação
+ * nativa do browser (inconsistente entre navegadores). Honeypot: `.signup-hp`
+ * fica fora da tela via CSS + `aria-hidden` + `tabindex="-1"` + `autocomplete
+ * ="off"` — humano nunca vê/preenche; bot que preenche é descartado no
+ * servidor.
+ */
+export function renderInlineSignupFormBlock(): string {
+  return `<form id="jogar-signup-form" class="signup-form" hidden novalidate>
+  <p class="signup-text">Prefere direto? Assine aqui — sem sair da página.</p>
+  <label class="signup-field"><span>Nome</span><input type="text" name="name" autocomplete="name" maxlength="100"></label>
+  <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
+  <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
+  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — notícias de IA + tutoriais + um par desses todo dia.</label>
+  <button type="submit" class="signup-btn">Assinar a Diar.ia (grátis)</button>
+  <p class="signup-status" role="status" aria-live="polite" hidden></p>
+</form>`;
+}
+
+/**
+ * Pure (#3580): CSS do form inline — reusa o visual de `.subscribe-cta`
+ * (fundo paperAlt, cantos arredondados) + campos/botão em tokens do DS
+ * (test/poll-ds-tokens.test.ts trava hardcode). Fatorado numa função porque
+ * as DUAS páginas (`/jogar` e `/jogar/quiz`) embutem o form e precisam do mesmo
+ * bloco de estilo.
+ */
+export function renderInlineSignupFormStyles(): string {
+  return `  /* #3580: form de cadastro inline pós-jogo */
+  .signup-form { margin: 20px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; text-align: left; }
+  .signup-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
+  .signup-field { display: block; margin: 0 0 10px 0; font-size: 0.85rem; font-family: ${DS_FONTS.sans}; }
+  .signup-field span { display: block; margin-bottom: 4px; font-weight: 600; }
+  .signup-field input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 1rem; font-family: ${DS_FONTS.sans}; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
+  .signup-optin { display: block; margin: 4px 0 14px 0; font-size: 0.9rem; font-family: ${DS_FONTS.sans}; line-height: 1.4; }
+  .signup-optin input { margin-right: 8px; }
+  .signup-btn { display: block; width: 100%; box-sizing: border-box; padding: 12px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
+  .signup-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .signup-status { margin: 10px 0 0 0; font-size: 0.9rem; font-family: ${DS_FONTS.sans}; }
+  .signup-status.ok { color: ${DS_COLORS.brand}; }
+  .signup-status.err { color: ${DS_COLORS.ink}; font-weight: 600; }
+  .signup-hp { position: absolute !important; left: -9999px !important; width: 1px; height: 1px; overflow: hidden; }`;
+}
+
+/**
+ * Pure (#3580): script (IIFE) que faz o wiring do submit do form inline —
+ * intercepta o submit, valida leve (opt-in marcado + e-mail com `@`), POSTa
+ * JSON pra `/jogar/subscribe` e mostra status inline. NÃO revela o form (a
+ * revelação é feita pelas duas páginas junto com o resultado, mesma disciplina
+ * do CTA-link). No-op se o form não existir. Reusado LITERALMENTE por
+ * `/jogar` e `/jogar/quiz` (por isso é uma função — 1 fonte de verdade).
+ */
+export function inlineSignupScript(): string {
+  return `<script>
+(function () {
+  var form = document.getElementById("jogar-signup-form");
+  if (!form) return;
+  var status = form.querySelector(".signup-status");
+  function setStatus(msg, ok) {
+    if (!status) return;
+    status.hidden = false;
+    status.textContent = msg;
+    status.className = "signup-status" + (ok ? " ok" : " err");
+  }
+  function val(sel) { var el = form.querySelector(sel); return el ? el.value : ""; }
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var optin = form.querySelector('input[name="optin"]');
+    if (!optin || !optin.checked) { setStatus("Marque a caixinha de consentimento pra assinar.", false); return; }
+    var email = (val('input[name="email"]') || "").trim();
+    if (!email || email.indexOf("@") < 0) { setStatus("Digite um e-mail válido.", false); return; }
+    var btn = form.querySelector('button[type="submit"]');
+    if (btn) btn.disabled = true;
+    setStatus("Enviando…", true);
+    var payload = {
+      name: (val('input[name="name"]') || "").trim(),
+      email: email,
+      optin: true,
+      website: val('input[name="website"]') || ""
+    };
+    if (typeof window.fetch !== "function") {
+      setStatus("Seu navegador não suporta o cadastro direto — use o link de assinatura acima.", false);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    window.fetch("/jogar/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
+    }).then(function (r) {
+      if (r.status === 200 && r.body && r.body.ok) {
+        form.reset();
+        setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
+        var fields = form.querySelectorAll("input, button");
+        for (var i = 0; i < fields.length; i++) fields[i].disabled = true;
+      } else if (r.status === 429) {
+        setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
+        if (btn) btn.disabled = false;
+      } else if (r.status === 503) {
+        setStatus("Cadastro direto indisponível agora — use o link de assinatura acima.", false);
+        if (btn) btn.disabled = false;
+      } else {
+        setStatus("Não deu pra assinar agora. Confira o e-mail e tente de novo.", false);
+        if (btn) btn.disabled = false;
+      }
+    }).catch(function () {
+      setStatus("Erro de conexão. Tente de novo.", false);
+      if (btn) btn.disabled = false;
+    });
+  });
+})();
+</script>`;
+}
+
 /**
  * Pure (#3516): resolve a edição a ser jogada. `?edition=AAMMDD` explícito
  * (formato válido) tem prioridade — hook de extensão pro arquivo de pares
@@ -266,7 +395,7 @@ ${seoMeta}
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .already { margin: 24px auto; padding: 16px 18px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; font-size: 0.95rem; }
   .scroll-hint { display: none; }
-  #jogar-form[hidden], #jogar-already[hidden], #jogar-result-slot[hidden], #jogar-subscribe-cta[hidden] { display: none; }
+  #jogar-form[hidden], #jogar-already[hidden], #jogar-result-slot[hidden], #jogar-subscribe-cta[hidden], #jogar-signup-form[hidden] { display: none; }
   /* #3517: estilo do resultado + card de compartilhamento injetados no slot
      via JS (mesmas classes de renderShareCardBlock/votePageHtml, index.ts —
      duplicado aqui pois é um <style> inline separado, mesmo padrão do resto
@@ -283,6 +412,7 @@ ${seoMeta}
   .subscribe-cta { margin: 20px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
   .subscribe-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
   .subscribe-btn { display: inline-block; padding: 10px 20px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; text-decoration: none; font-weight: 600; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+${renderInlineSignupFormStyles()}
   @media (max-width: 600px) {
     .choice { flex-basis: 100%; max-width: 100%; }
     .scroll-hint { display: block; width: 100%; margin: 2px 0 10px; font-size: 0.85rem; font-weight: 600; color: ${DS_COLORS.brand}; }
@@ -291,6 +421,7 @@ ${seoMeta}
     .share-actions button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
     .subscribe-cta { max-width: 100%; padding: 20px 18px; }
     .subscribe-btn { display: block; width: 100%; box-sizing: border-box; padding: 14px 16px; font-size: 1.05rem; }
+    .signup-form { max-width: 100%; padding: 20px 18px; }
   }
 ${renderBrandShellStyles()}
 </style>
@@ -317,10 +448,15 @@ ${renderBrandShellStyles()}
      navegação nativa (window.location.href) em qualquer falha de rede. -->
 <div id="jogar-result-slot" hidden></div>
 <div id="jogar-already" class="already" hidden></div>
+<!-- #3580: cadastro INLINE (nome + e-mail + opt-in) — conversão primária,
+     assina direto sem sair da página. Revelado via JS junto com o resultado
+     (mesma disciplina anti-spoiler). Vem ANTES do CTA-link (fallback #3518). -->
+${renderInlineSignupFormBlock()}
 <!-- #3518: CTA de assinatura — estático (SEM dado de servidor, ao contrário
      do result-slot/share-card), revelado via JS junto com o resultado (voto
      novo OU repetido, ver script abaixo). Nunca antes do voto (mesma
-     disciplina anti-spoiler do resto da página). -->
+     disciplina anti-spoiler do resto da página). Complementado pelo form
+     inline acima (#3580) — segue como fallback pra página hospedada. -->
 ${renderSubscribeCtaBlock()}
 
 <p class="footer-links"><a href="${htmlEscape(info.siteUrl)}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Jogar edições passadas</a></p>
@@ -406,11 +542,16 @@ ${renderBrandFooter(JOGAR_BRAND)}
   // novo abaixo, ou já-votou aqui). Bloco é estático (sem dado de servidor),
   // então só precisa desescondê-lo — nenhum fetch/injeção extra.
   var subscribeCta = document.getElementById("jogar-subscribe-cta");
+  // #3580: form de cadastro inline — revelado junto com o CTA-link, mesma
+  // disciplina anti-spoiler (nunca antes do voto). Lido 1x, reusado nos 2
+  // caminhos (voto novo e já-votou).
+  var signupForm = document.getElementById("jogar-signup-form");
   if (already && form && alreadyBox) {
     form.hidden = true;
     alreadyBox.hidden = false;
     alreadyBox.textContent = "Você já votou na edição de hoje (escolha: " + already + "). Resultado na página do seu voto ou no leaderboard.";
     if (subscribeCta) subscribeCta.hidden = false;
+    if (signupForm) signupForm.hidden = false;
   } else if (form) {
     // #3517: intercepta o submit — em vez de deixar o browser navegar pro
     // /vote (comportamento nativo do form GET), busca a mesma URL via fetch
@@ -458,6 +599,8 @@ ${renderBrandFooter(JOGAR_BRAND)}
         // #3518: CTA de assinatura — revelado junto com o resultado do voto
         // NOVO (mesmo timing do share card acima).
         if (subscribeCta) subscribeCta.hidden = false;
+        // #3580: form de cadastro inline — mesmo timing.
+        if (signupForm) signupForm.hidden = false;
       }).catch(fallbackNativeNav);
     });
 
@@ -468,6 +611,7 @@ ${renderBrandFooter(JOGAR_BRAND)}
 })();
 </script>
 ${shareButtonScript("#jogar-result-slot")}
+${inlineSignupScript()}
 </body>
 </html>`;
 }
@@ -815,7 +959,8 @@ export function renderJogarQuizPageHtml(editions: string[]): string {
   <div id="quiz-share-slot" hidden></div>
 </div>
 
-${renderQuizSubscribeCtaBlock()}`;
+${renderQuizSubscribeCtaBlock()}
+${renderInlineSignupFormBlock()}`;
 
   const scriptHtml = total === 0 ? "" : `<script>
 (function () {
@@ -831,6 +976,7 @@ ${renderQuizSubscribeCtaBlock()}`;
   var playEl = document.getElementById("quiz-play");
   var finalEl = document.getElementById("quiz-final");
   var subscribeCta = document.getElementById("jogar-subscribe-cta");
+  var signupForm = document.getElementById("jogar-signup-form"); // #3580
 
   function imgUrl(edition, side) {
     return "/img/img-" + edition + "-01-eia-" + side + ".jpg";
@@ -877,6 +1023,7 @@ ${renderQuizSubscribeCtaBlock()}`;
       })
       .catch(function () {});
     if (subscribeCta) subscribeCta.hidden = false;
+    if (signupForm) signupForm.hidden = false; // #3580: revela o cadastro inline no fim do quiz
   }
 
   function onChoice(choice) {
@@ -917,7 +1064,8 @@ ${renderQuizSubscribeCtaBlock()}`;
   renderRound();
 })();
 </script>
-${shareButtonScript("#quiz-share-slot")}`;
+${shareButtonScript("#quiz-share-slot")}
+${inlineSignupScript()}`;
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -938,7 +1086,7 @@ ${seoMeta}
   .choice button:disabled { opacity: 0.5; cursor: not-allowed; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .scroll-hint { display: none; }
-  #quiz-round-result[hidden], #quiz-final[hidden], #jogar-subscribe-cta[hidden] { display: none; }
+  #quiz-round-result[hidden], #quiz-final[hidden], #jogar-subscribe-cta[hidden], #jogar-signup-form[hidden] { display: none; }
   .result-msg { font-family: ${DS_FONTS.serif}; font-size: 1.3rem; line-height: 1.4; margin: 20px 0; }
   .quiz-round-result button { margin-top: 4px; padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
   .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
@@ -948,6 +1096,7 @@ ${seoMeta}
   .subscribe-cta { margin: 20px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
   .subscribe-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
   .subscribe-btn { display: inline-block; padding: 10px 20px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; text-decoration: none; font-weight: 600; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+${renderInlineSignupFormStyles()}
   @media (max-width: 600px) {
     .choice { flex-basis: 100%; max-width: 100%; }
     .scroll-hint { display: block; width: 100%; margin: 2px 0 10px; font-size: 0.85rem; font-weight: 600; color: ${DS_COLORS.brand}; }
@@ -956,6 +1105,7 @@ ${seoMeta}
     .share-actions button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
     .subscribe-cta { max-width: 100%; padding: 20px 18px; }
     .subscribe-btn { display: block; width: 100%; box-sizing: border-box; padding: 14px 16px; font-size: 1.05rem; }
+    .signup-form { max-width: 100%; padding: 20px 18px; }
   }
 ${renderBrandShellStyles()}
 </style>

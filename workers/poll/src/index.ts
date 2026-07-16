@@ -69,6 +69,22 @@ export interface Env {
    * quebrar as dezenas de fixtures de teste que constroem `Env` sem este
    * campo (opt-in, não regride nenhum teste existente). */
   EMBED_ALLOWED_ORIGINS?: string;
+  /** #3580: credenciais da API pública da Beehiiv usadas pelo cadastro inline
+   * (`POST /jogar/subscribe`, ver subscribe.ts). OPCIONAIS — o worker `poll`
+   * NÃO tem esses secrets hoje (ver SECRETS.md); sem eles o endpoint responde
+   * 503 amigável e o form cai no fallback "assine pela página". Configurar via
+   * `wrangler secret put BEEHIIV_API_KEY` / `BEEHIIV_PUBLICATION_ID` pra ativar
+   * a assinatura direta (padrão apoia.se — nunca hardcode). */
+  BEEHIIV_API_KEY?: string;
+  BEEHIIV_PUBLICATION_ID?: string;
+  /** #3580: override da base da API Beehiiv — só pra teste (mock server local),
+   * mesmo padrão de `BEEHIIV_API_URL` nos scripts. Default
+   * `https://api.beehiiv.com/v2`. */
+  BEEHIIV_API_URL?: string;
+  /** #3580: nome do custom field da Beehiiv onde gravar o nome do assinante
+   * (a API de criação não tem campo nativo de nome). Ausente → nome não é
+   * enviado (assinatura segue só com e-mail + UTM, sem falhar). */
+  BEEHIIV_NAME_FIELD?: string;
   /** #3116: origin da request atual (`request.headers.get("Origin")`),
    * extraído 1x no entrypoint `fetch()` e propagado via spread de `env` (e
    * `brandedEnv`, que também espalha `env`) por toda a árvore de handlers que
@@ -314,6 +330,11 @@ import {
 // #3519: handleJogarArchivePage — arquivo de pares passados, mesmo módulo.
 // #3520: handleJogarQuizPage/handleQuizAnswer/handleQuizResult — quiz relâmpago.
 import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleQuizAnswer, handleQuizResult } from "./jogar";
+// #3580: cadastro inline pós-jogo (POST /jogar/subscribe) — assina direto na
+// Beehiiv sem sair da página. Ciclo index↔subscribe (subscribe importa `json`
+// de index; index importa o handler de volta) é o mesmo padrão seguro já usado
+// por vote.ts/jogar.ts — valores só usados em request-time.
+import { handleJogarSubscribe } from "./subscribe";
 // #3521: widget embutível (iframe) pro EPIC #3514 — sites parceiros. Ver
 // rationale completo no header de embed.ts.
 import { handleEmbedPage } from "./embed";
@@ -1037,6 +1058,11 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path === "/jogar/quiz" && request.method === "GET") return handleJogarQuizPage(url, env);
     if (path === "/jogar/quiz/answer" && request.method === "GET") return handleQuizAnswer(url, env);
     if (path === "/jogar/quiz/result" && request.method === "GET") return handleQuizResult(url, env);
+    // #3580: cadastro inline pós-jogo — POST público que cria assinante direto
+    // na Beehiiv. `env` CRU (o rate-limit usa `env.POLL` sem prefixo de brand;
+    // a assinatura é do brand `web`). Anti-abuso (honeypot + rate-limit +
+    // validação server-side) dentro do handler, ver subscribe.ts.
+    if (path === "/jogar/subscribe" && request.method === "POST") return handleJogarSubscribe(request, env);
     // #3521: widget embutível (iframe) pra sites parceiros — `env` CRU
     // (mesmo racional acima: só lê `correct:{edition}` compartilhado); a
     // allowlist de embutimento (EMBED_ALLOWED_ORIGINS) é independente de
@@ -1118,5 +1144,5 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/subscribe", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
 }

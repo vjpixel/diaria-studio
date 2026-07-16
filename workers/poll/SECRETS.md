@@ -20,6 +20,30 @@ re-setados via `wrangler secret put`).
 Rotas públicas (`/img/{key}`, `/stats`, `/leaderboard*`) **não** dependem de
 secrets e continuam funcionando mesmo com manifest vazio.
 
+## Optional secrets (#3580 — cadastro inline do jogo)
+
+| Nome | Endpoint | Severidade |
+|------|----------|------------|
+| `BEEHIIV_API_KEY` | `POST /jogar/subscribe` | **opcional** — sem ela o endpoint responde 503 amigável e o form cai no fallback "assine pela página" (não é boot-critical, não usa o guard `missingSecretsForRoute`) |
+| `BEEHIIV_PUBLICATION_ID` | `POST /jogar/subscribe` | **opcional** — idem acima |
+| `BEEHIIV_NAME_FIELD` (var) | `POST /jogar/subscribe` | **opcional** — nome do custom field da Beehiiv onde gravar o nome; ausente = nome não é enviado (assinatura segue só com e-mail + UTM) |
+
+O cadastro inline do "É IA?" standalone (#3580) assina direto na Beehiiv via
+API pública (`POST /publications/{id}/subscriptions`). Enquanto os 2 secrets
+acima não forem configurados, o form + validação + anti-abuso já funcionam,
+mas a assinatura em si retorna 503 (`subscribe_unavailable`). Para ativar:
+
+```bash
+cd workers/poll
+echo "$BEEHIIV_API_KEY"        | npx wrangler secret put BEEHIIV_API_KEY
+echo "$BEEHIIV_PUBLICATION_ID" | npx wrangler secret put BEEHIIV_PUBLICATION_ID
+# (opcional, pra capturar o nome — criar antes um custom field na Beehiiv):
+# echo "Nome" | npx wrangler secret put BEEHIIV_NAME_FIELD
+```
+
+A `BEEHIIV_API_KEY` do worker deve ser uma key da Beehiiv com escopo de
+criação de assinatura. Padrão apoia.se — **nunca** hardcodar no código.
+
 ## Re-setar pós-deploy
 
 Após qualquer `wrangler deploy` ou `delete + recreate` do worker, garantir
