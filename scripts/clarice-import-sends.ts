@@ -40,6 +40,7 @@ import { clariceCycleDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { normalizeImportCsv, findExistingConflicts } from "./clarice-import-waves.ts";
 import { loadSendsSummary, sendsSummaryPath } from "./lib/send-plan.ts";
+import { ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455
 
 loadProjectEnv();
 
@@ -95,7 +96,10 @@ export function toImportCsv(raw: string): { csv: string; count: number } {
   // #2018: NOME column detection via regex — aceita "NOME", "Nome", "nome", etc.
   const nomeKey = fields.find((f) => /^nome$/i.test(f.trim())) ?? "NOME";
   const data = rows.map((r) => ({ email: (r[emailKey] ?? "").trim(), NOME: (r[nomeKey] ?? "").trim() }));
-  const csv = normalizeImportCsv(Papa.unparse({ fields: ["email", "NOME"], data }));
+  // #3455: injeta o editor como destinatário determinístico de TODO envio/célula
+  // criado (clarice-split-cells.ts reusa esta função pra cada célula A/B/C) —
+  // count reflete só os contatos reais (não conta a linha do editor).
+  const csv = ensureEditorCopyRow(normalizeImportCsv(Papa.unparse({ fields: ["email", "NOME"], data })));
   return { csv, count: data.length };
 }
 

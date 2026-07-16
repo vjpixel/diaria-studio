@@ -56,6 +56,7 @@ import { brevoPost, brevoListAllLists } from "./lib/brevo-client.ts"; // #2018: 
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { clariceWavesDir, clariceSegmentsDir, parseCycleArg } from "./lib/clarice-paths.ts"; // #1961 / #2916
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455
 
 loadProjectEnv();
 
@@ -310,7 +311,9 @@ export function buildPlan(
       );
     }
     const raw = readFileSync(path, "utf-8");
-    const csv = normalizeImportCsv(raw);
+    // #3455: injeta o editor como destinatário determinístico de TODA wave/grupo
+    // criado — count reflete só os contatos reais (não conta a linha do editor).
+    const csv = ensureEditorCopyRow(normalizeImportCsv(raw));
     const columns = (csv.split(/\r?\n/)[0] ?? "").split(",");
     plans.push({ wave, listName: listNameFor(wave, label), count: countRows(raw), csv, columns });
   }

@@ -31,6 +31,17 @@
  *   - platform.config.json → brevo_monthly.sender_email preenchido
  *   - list_id resolvido: --list-id N ou brevo_monthly.list_id (CLI tem prioridade)
  *   - data/monthly/{YYMM}/draft.md existente (Etapa 2)
+ *
+ * #3455: diferente do fluxo canônico (clarice-import-waves.ts /
+ * clarice-import-sends.ts, que injetam scripts/lib/editor-copy.ts ->
+ * EDITOR_COPY_EMAIL determinística em todo CSV de import), este script
+ * dispara pra `recipients: { listIds: [effectiveListId] }` — uma lista Brevo
+ * ESTÁTICA já existente na conta (não um CSV montado por este pipeline).
+ * Garantir que o editor receba cópia aqui exigiria uma chamada de API contra
+ * dados AO VIVO (adicionar contato à lista de produção), fora do escopo de
+ * uma mudança só-de-código. Ação manual (1x, se necessário enquanto este
+ * script legado não é removido): adicionar EDITOR_COPY_EMAIL
+ * (vjpixel@gmail.com) à lista Brevo `brevo_monthly.list_id` via UI.
  */
 
 import { config as dotenvConfig } from "dotenv";

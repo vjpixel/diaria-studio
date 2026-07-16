@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { sendListName, toImportCsv, parseArgs, mergeSendsSummaryWithListIds } from "../scripts/clarice-import-sends.ts";
+import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
 
 describe("sendListName", () => {
   it("nome determinístico: dNN zero-padded + dia planejado", () => {
@@ -45,6 +46,22 @@ describe("toImportCsv", () => {
     // Linha deve ter email + campo vazio (não undefined/null literal)
     assert.ok(csv.includes("a@b.com,"), `linha deve ter email e campo vazio: '${csv}'`);
     assert.ok(!/undefined/.test(csv), "csv não deve conter 'undefined'");
+  });
+
+  // #3455: todo envio real criado a partir deste helper (dNN diário, e por
+  // reuso em clarice-split-cells.ts, cada célula A/B/C) deve incluir o
+  // editor como destinatário — regressão pro caso real (CSV que vai pro
+  // Brevo /contacts/import).
+  it("#3455: o CSV final inclui EDITOR_COPY_EMAIL, mas count reflete só contatos reais", () => {
+    const { csv, count } = toImportCsv("email,NOME\na@b.com,Ana\nc@d.com,Caio\n");
+    assert.ok(csv.includes(EDITOR_COPY_EMAIL), `csv deve incluir o editor: ${csv}`);
+    assert.equal(count, 2, "count não deve contar a linha injetada do editor");
+  });
+
+  it("#3455: idempotente — se o editor já está na lista real, não duplica", () => {
+    const { csv } = toImportCsv(`email,NOME\n${EDITOR_COPY_EMAIL},Pixel\na@b.com,Ana\n`);
+    const occurrences = csv.split(EDITOR_COPY_EMAIL).length - 1;
+    assert.equal(occurrences, 1, `email do editor não deve duplicar: ${csv}`);
   });
 });
 
