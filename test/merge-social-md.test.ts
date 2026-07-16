@@ -12,7 +12,13 @@ import {
   stripHtmlComments,
   stripLeadingPlatformHeader,
 } from "../scripts/merge-social-md.ts";
-import { lintPlatformHeadersUnique } from "../scripts/lib/social-lint-rules.ts";
+import {
+  lintPlatformHeadersUnique,
+  lintInstagramEmailCTA,
+  lintFacebookCTAs,
+  extractPlatformSection,
+} from "../scripts/lib/social-lint-rules.ts";
+import { extractSection } from "../scripts/lib/extract-section.ts";
 import { makeEditionDir as makeEditionDirWithPrefix } from "./_helpers/make-edition-dir.ts";
 
 function makeEditionDir(): string {
@@ -387,5 +393,161 @@ describe("merge-social-md CLI", () => {
     } finally {
       rmSync(dir, { recursive: true });
     }
+  });
+
+  // ── #3486: seção Instagram dedicada (tmp opcional) ────────────────────────
+  // Regressão do incidente que motivou #3486: antes deste fix, nenhum
+  // agent/template emitia `# Instagram` em 03-social.md, então
+  // `lintInstagramEmailCTA` sempre caía no fallback `# Facebook` — que
+  // MANTÉM o CTA de e-mail (legítimo lá) — e a lint disparava incorretamente
+  // sobre a copy do Instagram (que na real nunca existia). Com
+  // `social-instagram` gerando um tmp próprio, o merge deve produzir uma
+  // seção `# Instagram` real, sem CTA de e-mail, e a seção `# Facebook`
+  // deve continuar intocada (CTA de e-mail preservado, sem violar lint).
+  describe("#3486 — merge da seção Instagram (tmp opcional)", () => {
+    it("Instagram tmp presente → 03-social.md ganha seção '# Instagram' própria, sem CTA de e-mail; Facebook mantém CTA de e-mail sem violar lint", () => {
+      const dir = makeEditionDir();
+      try {
+        writeFileSync(
+          join(dir, "_internal", "03-linkedin.tmp.md"),
+          "## d1\n\nLinkedIn d1 content\n",
+        );
+        writeFileSync(
+          join(dir, "_internal", "03-facebook.tmp.md"),
+          "## d1\n\nFato concreto sobre IA. Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.\n",
+        );
+        writeFileSync(
+          join(dir, "_internal", "03-instagram.tmp.md"),
+          "## d1\n\nFato concreto sobre IA. Edição completa no link da bio. Segue @diar.ia pra não perder a próxima.\n",
+        );
+
+        const r = runScript(dir);
+        assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+
+        const out = readFileSync(join(dir, "03-social.md"), "utf8");
+
+        // Seção Instagram existe e é extraível isoladamente.
+        const igSection = extractSection(out, "Instagram");
+        assert.ok(igSection !== null, "seção '# Instagram' deve existir no merge");
+        assert.ok(igSection!.includes("link da bio"));
+
+        // (a) Seção Instagram passa limpa na lint no-email-cta-instagram —
+        // e por ler a seção IG DIRETA (não o fallback FB), o CTA de e-mail do
+        // Facebook não vaza pra validação do Instagram.
+        const igLint = lintInstagramEmailCTA(out);
+        assert.equal(igLint.ok, true, JSON.stringify(igLint.errors));
+
+        // (b) Seção Facebook mantém o CTA de e-mail intacto — não removido
+        // pelo merge, e a lint de CTA do Facebook (formato https://.../.) não
+        // reclama (regra é sobre formato, não sobre proibir CTA de e-mail).
+        const fbSection = extractPlatformSection(out, "facebook");
+        assert.ok(fbSection !== null);
+        assert.ok(
+          fbSection!.includes("Receba notícias de IA todo dia por e-mail"),
+          "CTA de e-mail do Facebook deve permanecer intacto (#3486 não altera Facebook)",
+        );
+        const fbCtaLint = lintFacebookCTAs(fbSection!);
+        assert.equal(fbCtaLint.length, 0, JSON.stringify(fbCtaLint));
+
+        // Tmp de Instagram deletado após sucesso, igual LinkedIn/Facebook.
+        assert.equal(
+          existsSync(join(dir, "_internal", "03-instagram.tmp.md")),
+          false,
+        );
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    });
+
+    it("Instagram tmp AUSENTE → merge sucede sem seção '# Instagram' (comportamento legado preservado, fallback FB continua valendo)", () => {
+      const dir = makeEditionDir();
+      try {
+        writeFileSync(
+          join(dir, "_internal", "03-linkedin.tmp.md"),
+          "## d1\n\nLinkedIn d1 content\n",
+        );
+        writeFileSync(
+          join(dir, "_internal", "03-facebook.tmp.md"),
+          "## d1\n\nAssine grátis em diar.ia.br!\n",
+        );
+        // Nenhum 03-instagram.tmp.md gravado — simula edição/worktree onde
+        // social-instagram não rodou (ou ainda não existe).
+
+        const r = runScript(dir);
+        assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+
+        const out = readFileSync(join(dir, "03-social.md"), "utf8");
+        assert.equal(
+          extractSection(out, "Instagram"),
+          null,
+          "sem tmp de Instagram, '# Instagram' não deve aparecer no merge",
+        );
+
+        // Comportamento legado preservado: sem seção IG própria, a lint
+        // no-email-cta-instagram cai no fallback '# Facebook' e DETECTA o
+        // CTA de e-mail (mesmo comportamento de antes do #3486 existir).
+        const igLint = lintInstagramEmailCTA(out);
+        assert.equal(igLint.ok, false, "sem seção IG, fallback FB deve disparar a lint (comportamento legado)");
+        assert.ok(igLint.errors.length > 0);
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    });
+
+    it("Instagram tmp vazio (0 bytes) → warn no stderr, merge sucede sem seção Instagram (não é FATAL como LinkedIn/Facebook)", () => {
+      const dir = makeEditionDir();
+      try {
+        writeFileSync(
+          join(dir, "_internal", "03-linkedin.tmp.md"),
+          "## d1\n\nLinkedIn content\n",
+        );
+        writeFileSync(
+          join(dir, "_internal", "03-facebook.tmp.md"),
+          "## d1\n\nFacebook content\n",
+        );
+        writeFileSync(join(dir, "_internal", "03-instagram.tmp.md"), "");
+
+        const r = runScript(dir);
+        assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+        assert.ok(r.stderr.includes("social-instagram"));
+
+        const out = readFileSync(join(dir, "03-social.md"), "utf8");
+        assert.equal(extractSection(out, "Instagram"), null);
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    });
+
+    it("Instagram tmp com header '# Instagram' embutido → merge NÃO duplica (mesma proteção #3424 aplicada ao 3º canal)", () => {
+      const dir = makeEditionDir();
+      try {
+        writeFileSync(
+          join(dir, "_internal", "03-linkedin.tmp.md"),
+          "## d1\n\nLinkedIn content\n",
+        );
+        writeFileSync(
+          join(dir, "_internal", "03-facebook.tmp.md"),
+          "## d1\n\nFacebook content\n",
+        );
+        writeFileSync(
+          join(dir, "_internal", "03-instagram.tmp.md"),
+          "# Instagram\n\n## d1\n\nInstagram content\n",
+        );
+
+        const r = runScript(dir);
+        assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+        assert.ok(r.stderr.includes("já continha o header"));
+
+        const out = readFileSync(join(dir, "03-social.md"), "utf8");
+        // Exatamente 1 ocorrência de "# Instagram" como linha inteira.
+        const igHeaderCount = out
+          .split("\n")
+          .filter((l) => /^# Instagram\s*$/i.test(l)).length;
+        assert.equal(igHeaderCount, 1, "header '# Instagram' não deve duplicar");
+        assert.ok(out.includes("Instagram content"));
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    });
   });
 });

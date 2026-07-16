@@ -5,7 +5,7 @@ description: Roda a Etapa 2 (newsletter + social em paralelo, ambos a partir de 
 
 # /diaria-2-escrita
 
-Executa a Etapa 2 da pipeline Diar.ia: dispara `writer` (newsletter) + `social-linkedin` + `social-facebook` **em paralelo**, ambos lendo diretamente de `_internal/01-approved.json` — sem dependência sequencial entre newsletter e social. Gate unificado ao final.
+Executa a Etapa 2 da pipeline Diar.ia: dispara `writer` (newsletter) + `social-linkedin` + `social-facebook` + `social-instagram` (#3486) **em paralelo**, todos lendo diretamente de `_internal/01-approved.json` — sem dependência sequencial entre newsletter e social. Gate unificado ao final.
 
 Self-contained — você (top-level Claude Code) executa todo o playbook aqui, sem delegar a um orchestrator subagente. (Workaround #207: runtime bloqueia `Agent` dentro de subagentes.)
 
@@ -175,6 +175,12 @@ Agent({
   description: "Etapa 2 — Facebook writer",
   prompt: "Gera 3 posts de Facebook (um por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-facebook.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-facebook.md."
 })
+
+Agent({
+  subagent_type: "social-instagram",
+  description: "Etapa 2 — Instagram writer",
+  prompt: "Gera 3 captions de Instagram (uma por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-instagram.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-instagram.md. CTA nativo de social ('link na bio' + follow) — SEM CTA de e-mail (#3486, #2486)."
+})
 ```
 
 **Após os 3 writer-destaques retornarem, rodar stitch:**
@@ -207,6 +213,12 @@ Agent({
   description: "Etapa 2 — Facebook writer",
   prompt: "Gera 3 posts de Facebook (um por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-facebook.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-facebook.md."
 })
+
+Agent({
+  subagent_type: "social-instagram",
+  description: "Etapa 2 — Instagram writer",
+  prompt: "Gera 3 captions de Instagram (uma por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-instagram.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-instagram.md. CTA nativo de social ('link na bio' + follow) — SEM CTA de e-mail (#3486, #2486)."
+})
 ```
 
 ### Se `$2 = newsletter`:
@@ -215,7 +227,7 @@ Dispatchar só `writer`. Pular steps de social abaixo.
 
 ### Se `$2 = social`:
 
-Dispatchar `social-linkedin` + `social-facebook` em paralelo. Pular steps de newsletter abaixo.
+Dispatchar `social-linkedin` + `social-facebook` + `social-instagram` (#3486) em paralelo. Pular steps de newsletter abaixo.
 
 ## Passo 2b — Push incremental ao Drive (#958)
 
@@ -230,17 +242,12 @@ npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --file
 
 Não esperar social terminar. Disparar antes mesmo de `social-linkedin` / `social-facebook` retornarem.
 
-### 2b-soc — assim que `social-linkedin` E `social-facebook` retornarem
+### 2b-soc — assim que `social-linkedin`, `social-facebook` E `social-instagram` retornarem
+
+**#3486:** usar `merge-social-md.ts` (não montar `03-social.md` manualmente) — o script valida os tmps obrigatórios (LinkedIn/Facebook), faz strip de comentários HTML e dedupe de header (#3424/#3388), e mescla `# Instagram` quando `_internal/03-instagram.tmp.md` existir (tmp OPCIONAL — ausência não falha o merge, só omite a seção e mantém o fallback `# Instagram` → `# Facebook`, #2486):
 
 ```bash
-node -e "
-  const fs=require('fs');
-  const dir='{EDIR}/';
-  const li=fs.readFileSync(dir+'_internal/03-linkedin.tmp.md','utf8').trim();
-  const fb=fs.readFileSync(dir+'_internal/03-facebook.tmp.md','utf8').trim();
-  fs.writeFileSync(dir+'03-social.md','# LinkedIn\n\n'+li+'\n\n# Facebook\n\n'+fb+'\n');
-"
-
+npx tsx scripts/merge-social-md.ts --edition-dir {EDIR}/
 npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 03-social.md
 ```
 
