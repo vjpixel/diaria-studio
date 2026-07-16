@@ -31,6 +31,11 @@ destacado) — ainda funcional, só sem o realce visual de título.
 O conteúdo abaixo é a instância real usada na edição 2041 (Kai-Fu Lee),
 mantida como exemplo de referência — o editor substitui título/autor/link/
 comentário a cada reuso, preservando a estrutura acima.
+
+Variante IMPESSOAL para a MENSAL (base da Clarice): ver
+context/snippets/recomendacao-leitura-mensal.md — mesma estrutura, 3ª pessoa
++ mini-bio do autor (decisão do editor 260716, desacoplada deste box do
+diário que fica em 1ª pessoa por design).
 -->
 
 Recomendação de leitura
