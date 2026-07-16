@@ -95,3 +95,10 @@ main {
 .log-row.warn .lvl { color: #b8860b; }
 .log-row.error .lvl { color: #c0392b; }
 .log-row .msg { flex: 1; overflow-wrap: anywhere; }
+
+/* #3563: links pros painéis embutidos (diária/poll + Clarice-mensal) —
+   abrem em nova aba porque são documentos HTML autocontidos (render dos
+   próprios Workers), não parte da navegação client-side da SPA. */
+.panel-links { display: flex; flex-direction: column; gap: 0.5rem; }
+.panel-links a { color: var(--brand); text-decoration: none; }
+.panel-links a:hover { text-decoration: underline; }

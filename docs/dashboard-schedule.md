@@ -92,3 +92,43 @@ então setar `DASHBOARD_KV_NAMESPACE_ID` no `.env`.
 
 `data/dashboard-push/` guarda `task.log` (log append-only do wrapper).
 Mora no OneDrive junto com o resto de `data/`.
+
+## Modo local (#3563, endereça #3550) — sem KV/push, dado sempre fresco
+
+Além do Worker remoto (snapshot do último push, acima), o **studio-server**
+(`npx tsx scripts/studio-ui/server.ts` / `npm run studio`) serve o MESMO
+dashboard como painel local em `GET /painel/diaria` — zero fork de template:
+reusa `renderDashboardHtml` do próprio Worker (`workers/diaria-dashboard/src/index.ts`)
+e `buildDashboardData()` (`scripts/build-diaria-dashboard-data.ts`), mas
+re-agrega `data/` a cada request em vez de ler de um snapshot KV. Não precisa
+de `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN` — só `data/` local
+(junction OneDrive, label `local` #2643). Sem `data/`, o painel ainda
+carrega, com todas as seções em estado "sem dados" (graceful).
+
+A aba **"É IA?"** (poll) já vem embutida no mesmo documento a partir de
+`data/poll-eia-summary.json` — não há painel separado para o poll.
+
+Implementação: `scripts/studio-ui/dashboard-diaria.ts`. Teste:
+`test/studio-dashboard-panels.test.ts`.
+
+### Painel Clarice/mensal local (#3563, endereça #3553-A)
+
+`GET /painel/clarice` — modo local do dashboard Clarice/mensal
+(`workers/brevo-dashboard`): busca campanhas/agendadas/créditos direto na
+Brevo API (`BREVO_CLARICE_API_KEY`, ver `.env.example`) e lê o sumário de
+contatos direto do store SQLite local (`scripts/lib/clarice-db.ts`) — mais
+fresco que o snapshot KV do push diário das 03:40 (#2932). Cache de página
+de 5min (mesmo TTL do edge cache do Worker) protege contra o limite horário
+da Brevo em reloads repetidos do editor. Sem `BREVO_CLARICE_API_KEY`
+configurada, nenhuma chamada de rede é feita.
+
+Gap deliberado: coortes de engajamento, status MillionVerifier, cupons
+Stripe e engajamento "É IA?" (por edição, aba Clarice) não são
+recomputáveis barato on-demand — são pré-computados por scripts caros
+(ex: `clarice-engagement-cohorts.ts`, ~40k GETs) só empurrados pro KV.
+Essas 4 abas degradam pra "sem dados" no painel local (mesmo
+comportamento gracioso do cold-start do Worker). `#3553` parte B (remover
+o Cron Trigger do Worker remoto) é um follow-up separado — muda o
+`wrangler.toml`/deploy do Worker, fora do escopo do embed local.
+
+Implementação: `scripts/studio-ui/dashboard-clarice.ts`.
