@@ -21,7 +21,8 @@
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { editionDir } from "./lib/edition-paths.ts";
+import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3495: disk-aware, cobre flat+nested (mesmo fix do #3484)
+import { logEvent } from "./lib/run-log.ts"; // #3495: warn quando 01-approved.json falta numa edição que existe no disco
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
 
@@ -240,6 +241,20 @@ export function aammddFromIso(iso: string): string {
  * confiável, sem dependência de Beehiiv API. Resolve o gap do #234
  * (`get_post_content` retorna URLs como tracking redirects).
  *
+ * #3495: usa `resolveEditionDir()` (disk-aware, cobre os dois layouts —
+ * flat legado `{AAMMDD}/` e nested novo `{AAMM}/{AAMMDD}/`, #2463/#3024;
+ * mesmo fix do #3484) em vez de `editionDir()` — que sempre monta o path
+ * nested sem checar o disco e causava `return []` silencioso para toda
+ * edição ainda em layout flat, matando esta camada de URLs canônicas (#238)
+ * sem aviso.
+ *
+ * Distingue "edição não existe no disco" (silencioso — esperado, ex: edição
+ * produzida noutra máquina, ou ainda não criada) de "edição existe mas
+ * `01-approved.json` não está lá" (sintoma real — emite warn no run-log,
+ * `root` é repassado como `rootDir` do `logEvent`, isolando testes do
+ * `data/run-log.jsonl` real da mesma forma que a resolução de path já é
+ * isolada por `root`).
+ *
  * Refs #238.
  */
 export function extractUrlsFromApproved(
@@ -247,8 +262,26 @@ export function extractUrlsFromApproved(
   root: string = ROOT,
 ): string[] {
   if (!yymmdd) return [];
-  const path = resolve(root, editionDir(yymmdd), "_internal/01-approved.json");
-  if (!existsSync(path)) return [];
+  const editionsRootDir = resolve(root, "data", "editions");
+  const editionDirPath = resolveEditionDir(editionsRootDir, yymmdd);
+  const path = resolve(editionDirPath, "_internal/01-approved.json");
+  if (!existsSync(path)) {
+    if (existsSync(editionDirPath)) {
+      logEvent(
+        {
+          edition: yymmdd,
+          stage: null,
+          agent: "refresh-past-editions",
+          level: "warn",
+          message:
+            "01-approved.json não encontrado para edição existente no disco — camada de URLs canônicas (#238) inoperante para esta edição",
+          details: { edition_dir: editionDirPath, expected_path: path },
+        },
+        root,
+      );
+    }
+    return [];
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));

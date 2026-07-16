@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
   populateLinksFromApproved,
   type Post,
 } from "../scripts/refresh-past-editions.ts";
+import { resolveRunLogPath } from "../scripts/lib/run-log.ts";
 
 /**
  * Tests do fix #238 — popular `links[]` em past-editions a partir do
@@ -175,6 +176,75 @@ describe("extractUrlsFromApproved (#238)", () => {
     });
     const urls = extractUrlsFromApproved("260425", tmpRoot);
     assert.deepEqual(urls, ["https://tut.com/aprenda"]);
+  });
+
+  // #3495: extractUrlsFromApproved usava editionDir() — sempre nested, sem
+  // checar o disco. Uma edição em layout FLAT (data/editions/{AAMMDD}/, sem
+  // contraparte nested) resolvia pra um path inexistente e caía no
+  // `return []` silencioso ANTES do fix, mesmo com 01-approved.json presente
+  // no layout flat. Este teste falharia (urls.length === 0) com o bug
+  // presente — só passa porque extractUrlsFromApproved agora usa
+  // resolveEditionDir() (disk-aware, cobre flat+nested).
+  it("extrai URLs de edição em layout FLAT, sem contraparte nested (#3495)", () => {
+    const flatDir = join(tmpRoot, "data/editions/260715/_internal");
+    mkdirSync(flatDir, { recursive: true });
+    writeFileSync(
+      join(flatDir, "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ article: { url: "https://flat-edition.com/post" } }],
+        runners_up: [],
+        lancamento: [],
+        radar: [],
+      }),
+      "utf8",
+    );
+    const urls = extractUrlsFromApproved("260715", tmpRoot);
+    assert.deepEqual(urls, ["https://flat-edition.com/post"]);
+  });
+
+  // #3495 item 2: "não achei" (edição nunca existiu no disco) e "achei e
+  // 01-approved.json está ausente" (camada de dedup silenciosamente morta
+  // pra essa edição) precisam ser distinguíveis via warn no run-log.
+  describe("warn no run-log (#3495)", () => {
+    it("emite warn quando a edição existe no disco (nested) mas 01-approved.json falta", () => {
+      const nestedDir = join(tmpRoot, "data/editions/2604/260425");
+      mkdirSync(nestedDir, { recursive: true }); // sem _internal/01-approved.json
+      const urls = extractUrlsFromApproved("260425", tmpRoot);
+      assert.deepEqual(urls, []);
+
+      const logPath = resolveRunLogPath(tmpRoot);
+      assert.ok(existsSync(logPath), "run-log.jsonl deveria ter sido escrito");
+      const lines = readFileSync(logPath, "utf8").trim().split("\n");
+      const entry = JSON.parse(lines[lines.length - 1]);
+      assert.equal(entry.level, "warn");
+      assert.equal(entry.edition, "260425");
+      assert.equal(entry.agent, "refresh-past-editions");
+      assert.match(entry.message, /01-approved\.json não encontrado/);
+    });
+
+    it("emite warn quando a edição existe no disco (flat) mas 01-approved.json falta", () => {
+      const flatDir = join(tmpRoot, "data/editions/260715");
+      mkdirSync(flatDir, { recursive: true }); // sem _internal/01-approved.json
+      const urls = extractUrlsFromApproved("260715", tmpRoot);
+      assert.deepEqual(urls, []);
+
+      const logPath = resolveRunLogPath(tmpRoot);
+      assert.ok(existsSync(logPath), "run-log.jsonl deveria ter sido escrito");
+      const entry = JSON.parse(readFileSync(logPath, "utf8").trim().split("\n").pop()!);
+      assert.equal(entry.level, "warn");
+      assert.equal(entry.edition, "260715");
+    });
+
+    it("NÃO emite warn quando a edição não existe no disco em layout nenhum (regressão)", () => {
+      // Guard contra over-warning: edição que nunca foi produzida nesta
+      // máquina (ex: produzida em outra máquina, sem sync) continua
+      // silenciosa — comportamento pré-existente preservado.
+      const urls = extractUrlsFromApproved("260101", tmpRoot);
+      assert.deepEqual(urls, []);
+
+      const logPath = resolveRunLogPath(tmpRoot);
+      assert.equal(existsSync(logPath), false, "run-log.jsonl não deveria existir");
+    });
   });
 });
 
