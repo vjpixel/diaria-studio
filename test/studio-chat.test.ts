@@ -203,6 +203,28 @@ describe("sdkMessageToChatEvents (#3556) — contrato de wire", () => {
     assert.deepEqual(events, [{ event: "chat-done", data: { sessionId: "sess-1", isError: true, result: null } }]);
   });
 
+  it("system/permission_denied -> chat-tool status denied com motivo", () => {
+    const msg = {
+      type: "system",
+      subtype: "permission_denied",
+      tool_name: "Bash",
+      tool_use_id: "tu-9",
+      message: "Permissão para \"Bash\" exigiria confirmação interativa...",
+    } as unknown as SDKMessage;
+    const events = sdkMessageToChatEvents(msg);
+    assert.deepEqual(events, [
+      {
+        event: "chat-tool",
+        data: {
+          toolUseId: "tu-9",
+          name: "Bash",
+          status: "denied",
+          reason: "Permissão para \"Bash\" exigiria confirmação interativa...",
+        },
+      },
+    ]);
+  });
+
   it("tipo de mensagem desconhecido/irrelevante não gera evento nem lança", () => {
     const msg = { type: "prompt_suggestion", suggestion: "tente X" } as unknown as SDKMessage;
     assert.deepEqual(sdkMessageToChatEvents(msg), []);

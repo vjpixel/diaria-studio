@@ -163,6 +163,10 @@ function contentBlocks(message: unknown): ContentBlockLike[] {
  *     aceite).
  *   - `user` (as tool_result que o CLI reinjeta, não a mensagem do editor)
  *     -> `chat-tool` (end) pra cada bloco `tool_result`.
+ *   - `system` (subtype `permission_denied`) -> `chat-tool` (denied) — o
+ *     `canUseTool` fixo desta fatia (ver `makeDenyAllCanUseTool`) nega toda
+ *     tool call que chegaria a um prompt interativo; este é o sinal com o
+ *     motivo legível pro browser (chega antes do `tool_result` de erro).
  *   - `result` -> `chat-done`.
  *
  * Pura e determinística — sem I/O, sem depender do SDK real rodando; testável
@@ -179,6 +183,25 @@ export function sdkMessageToChatEvents(msg: SDKMessage): ChatWireEvent[] {
           sessionId: String(anyMsg.session_id ?? ""),
           model: String(anyMsg.model ?? ""),
           cwd: String(anyMsg.cwd ?? ""),
+        },
+      },
+    ];
+  }
+
+  if (anyMsg.type === "system" && anyMsg.subtype === "permission_denied") {
+    // Emitido pelo SDK quando o `canUseTool` deste módulo (ver
+    // `makeDenyAllCanUseTool`) — ou uma regra de settings.json — nega uma
+    // tool call sem prompt interativo. Sem este mapeamento, a única pista no
+    // wire seria o `tool_result` de erro em `user` (abaixo), sem o motivo
+    // legível; este evento chega ANTES daquele e carrega a mensagem certa.
+    return [
+      {
+        event: "chat-tool",
+        data: {
+          toolUseId: String(anyMsg.tool_use_id ?? ""),
+          name: String(anyMsg.tool_name ?? ""),
+          status: "denied",
+          reason: String(anyMsg.message ?? "permissão negada"),
         },
       },
     ];
