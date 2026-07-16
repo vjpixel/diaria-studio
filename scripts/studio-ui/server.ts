@@ -60,6 +60,8 @@ import { formatSseEvent, formatSseComment } from "./sse.ts";
 import { serveStaticFile } from "./static-serve.ts";
 import { buildTokensCss } from "./tokens-css.ts";
 import { fetchTriageData, type GhRunFn } from "./studio-issues.ts";
+import { buildDiariaDashboardHtml } from "./dashboard-diaria.ts";
+import { buildClariceDashboardHtml } from "./dashboard-clarice.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -185,6 +187,47 @@ function handleTokensCss(res: ServerResponse): void {
   res.end(css);
 }
 
+function sendHtml(res: ServerResponse, status: number, html: string): void {
+  const body = Buffer.from(html, "utf8");
+  res.writeHead(status, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": body.length,
+  });
+  res.end(body);
+}
+
+// #3563 (self-review): mensagens de erro (ex: exceção de node:sqlite/fetch)
+// entram numa página HTML — escapar por padrão, mesmo em servidor
+// loopback-only, é mais barato que justificar por que não em toda revisão.
+function escHtmlLite(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// #3563 (endereça #3550): painel diária embutido — HTML autocontido, mesmo
+// render do Worker (workers/diaria-dashboard), agregado localmente a partir
+// de data/ (sempre fresco, sem KV). A aba "É IA?" embutida no MESMO
+// documento cobre o pedido de embed do dashboard "poll" (data/poll-eia-summary.json).
+function handlePainelDiaria(res: ServerResponse): void {
+  buildDiariaDashboardHtml()
+    .then((html) => sendHtml(res, 200, html))
+    .catch((e) => {
+      sendHtml(res, 500, `<!DOCTYPE html><html><body><h1>Painel diária — erro</h1><p>${escHtmlLite((e as Error).message)}</p></body></html>`);
+    });
+}
+
+// #3563 (endereça #3553-A): painel Clarice/mensal local embutido — Brevo API
+// direto + store SQLite local (contactsSummary), sem KV/Cloudflare. Async —
+// respondido via promise chain (o handler HTTP síncrono não bloqueia
+// aguardando; a resposta chega quando a promise resolve).
+function handlePainelClarice(req: IncomingMessage, res: ServerResponse): void {
+  const fresh = new URL(req.url ?? "/", "http://localhost").searchParams.get("fresh") === "1";
+  buildClariceDashboardHtml({ fresh })
+    .then((html) => sendHtml(res, 200, html))
+    .catch((e) => {
+      sendHtml(res, 500, `<!DOCTYPE html><html><body><h1>Painel Clarice — erro</h1><p>${escHtmlLite((e as Error).message)}</p></body></html>`);
+    });
+}
+
 /**
  * Sobe o studio-server. `rootDir` default é `process.cwd()` (o repo aberto
  * no Claude Code); injete um tmpdir em testes.
@@ -223,6 +266,17 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       if (urlPath === "/tokens.generated.css") {
         handleTokensCss(res);
+        return;
+      }
+      // #3563: painéis embutidos (diária/poll + Clarice-mensal), servidos
+      // localmente a partir dos dados-fonte frescos — ver dashboard-diaria.ts
+      // e dashboard-clarice.ts.
+      if (urlPath === "/painel/diaria") {
+        handlePainelDiaria(res);
+        return;
+      }
+      if (urlPath === "/painel/clarice") {
+        handlePainelClarice(req, res);
         return;
       }
       if (urlPath.startsWith("/api/")) {
