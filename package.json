@@ -31,7 +31,8 @@
     "generate-worker-tokens": "tsx scripts/generate-worker-tokens.ts",
     "pretest": "tsx scripts/generate-worker-tokens.ts && tsx scripts/assert-test-discovery.ts",
     "test": "node --import tsx --test",
-    "check-cursos-links": "tsx scripts/check-cursos-links.ts"
+    "check-cursos-links": "tsx scripts/check-cursos-links.ts",
+    "studio": "tsx scripts/studio-ui/server.ts"
   },
   "dependencies": {
     "dotenv": "^16.0.0",

@@ -1,0 +1,95 @@
+/* style.css (#3555) — usa os tokens de /tokens.generated.css (design-tokens.ts canônico). */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+h1, h2 {
+  font-family: var(--font-serif);
+  font-weight: 400;
+  margin: 0 0 0.75rem;
+}
+
+h1 { font-size: 1.4rem; }
+h2 { font-size: 1.1rem; }
+
+.statusbar {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+  padding: 0.6rem 1rem;
+  background: var(--ink);
+  color: var(--on-ink);
+  flex-wrap: wrap;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.statusbar-item { display: flex; gap: 0.4rem; align-items: baseline; }
+.statusbar .label { opacity: 0.65; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; }
+.statusbar .value { font-family: var(--font-mono); }
+
+.statusbar-item.conn { margin-left: auto; display: flex; align-items: center; gap: 0.4rem; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #999; display: inline-block; }
+.dot.ok { background: var(--brand); }
+.dot.down { background: #c0392b; }
+
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.panel {
+  background: var(--paper-email);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+}
+
+.timeline { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.stage-chip {
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.85rem;
+  background: var(--paper-alt);
+}
+.stage-chip.done { background: var(--brand); color: var(--on-ink); border-color: var(--brand); }
+.stage-chip.current { border-color: var(--ink); border-width: 2px; font-weight: 600; }
+.stage-chip.gate { outline: 2px dashed var(--brand); outline-offset: 2px; }
+
+.editions-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.editions-table th, .editions-table td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--rule);
+}
+.editions-table th { font-family: var(--font-mono); font-size: 0.75rem; text-transform: uppercase; opacity: 0.7; }
+
+.log-list {
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  display: flex;
+  flex-direction: column-reverse; /* mais recente no topo visual */
+  gap: 2px;
+}
+.log-row { display: flex; gap: 0.5rem; padding: 2px 0; border-bottom: 1px dotted var(--rule); }
+.log-row .lvl { width: 3.2em; flex: none; text-transform: uppercase; }
+.log-row.info .lvl { color: var(--brand); }
+.log-row.warn .lvl { color: #b8860b; }
+.log-row.error .lvl { color: #c0392b; }
+.log-row .msg { flex: 1; overflow-wrap: anywhere; }

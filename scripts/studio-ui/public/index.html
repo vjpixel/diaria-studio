@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diar.ia Studio</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <div class="statusbar-item">
+      <span class="label">Edição</span>
+      <span class="value" id="statusbar-edition">—</span>
+    </div>
+    <div class="statusbar-item">
+      <span class="label">Stage</span>
+      <span class="value" id="statusbar-stage">—</span>
+    </div>
+    <div class="statusbar-item">
+      <span class="label">Gates</span>
+      <span class="value" id="statusbar-gates">—</span>
+    </div>
+    <div class="statusbar-item">
+      <span class="label">Overnight</span>
+      <span class="value" id="statusbar-overnight">—</span>
+    </div>
+    <div class="statusbar-item conn">
+      <span class="dot" id="conn-dot"></span>
+      <span id="conn-label">conectando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Edição corrente</h1>
+      <div id="timeline" class="timeline"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Edições recentes</h2>
+      <table class="editions-table">
+        <thead>
+          <tr>
+            <th>Edição</th>
+            <th>Stage</th>
+            <th>Gates</th>
+            <th>Diretório</th>
+          </tr>
+        </thead>
+        <tbody id="editions-tbody"></tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>Log ao vivo</h2>
+      <div id="log-list" class="log-list"></div>
+    </section>
+  </main>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,262 @@
+/**
+ * server.ts (#3555) — studio-server: fundação da EPIC "Studio UI" (#3554).
+ *
+ * Servidor HTTP local, **loopback-only** (`127.0.0.1`, nunca `0.0.0.0`),
+ * servindo:
+ *   - a SPA de status (HTML/CSS/JS vanilla, `./public/`);
+ *   - `GET /api/state` — snapshot read-only (edição corrente, estágio por
+ *     edição, gates pendentes) via `studio-state.ts`;
+ *   - `GET /api/editions/:aammdd` — detalhe de UMA edição via
+ *     `studio-edition-detail.ts`;
+ *   - `GET /api/events` — SSE: tail do run-log + push de linhas novas
+ *     (`run-log-tail.ts`) e mudanças em `plan.json` overnight/develop
+ *     (`plan-watch.ts`);
+ *   - `GET /tokens.generated.css` — tokens do DS em CSS (`tokens-css.ts`).
+ *
+ * **Read-only por construção** (#3555 é a fatia fundação da EPIC — as fatias
+ * de AÇÃO vêm depois, #3556+): nenhuma rota aqui escreve em disco nem
+ * dispara nada. Sem autenticação nesta fatia — acesso remoto é escopo da
+ * #3560; aqui o único guard de segurança é o bind loopback.
+ *
+ * Ver "Decisões de design" no PR body pra rationale completo (framework
+ * escolhido, estrutura de diretórios, formato das APIs, pontos de extensão).
+ *
+ * Uso (CLI):
+ *   npx tsx scripts/studio-ui/server.ts [--port N] [--root-dir <dir>]
+ *   npm run studio
+ *
+ * Programmatic (usado por testes e por outros scripts):
+ *   import { startStudioServer } from "./server.ts";
+ *   const server = await startStudioServer({ port: 0 });
+ *   // server.url, server.port
+ *   await server.close();
+ */
+
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseArgs as parseCliArgs, isMainModule } from "../lib/cli-args.ts";
+import { resolveRunLogPath } from "../lib/run-log.ts";
+import { buildStudioState } from "./studio-state.ts";
+import { buildEditionDetail } from "./studio-edition-detail.ts";
+import { tailJsonl, watchRunLogAppends, type RunLogWatchHandle } from "./run-log-tail.ts";
+import { watchPlanFiles, type PlanWatchHandle } from "./plan-watch.ts";
+import { formatSseEvent, formatSseComment } from "./sse.ts";
+import { serveStaticFile } from "./static-serve.ts";
+import { buildTokensCss } from "./tokens-css.ts";
+
+// #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
+// escopo de outra fatia (#3560) do epic #3554, com auth explícita.
+const HOST = "127.0.0.1";
+
+// Porta default arbitrária, escolhida só pra não colidir com convenções já
+// em uso no repo (oauth-setup.ts usa 8765; serve-preview.ts usa porta
+// efêmera 0). Sempre sobrescrevível via --port ou STUDIO_PORT.
+const DEFAULT_PORT = 4174;
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = resolve(__dirname, "public");
+
+const AAMMDD_RE = /^[0-9]{6}$/;
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  const payload = JSON.stringify(body, null, 2);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(payload),
+  });
+  res.end(payload);
+}
+
+export interface StudioServerOptions {
+  /** Porta fixa; omitida ou `0` = porta efêmera OS-assigned (útil em testes). */
+  port?: number;
+  /** Raiz do projeto (onde `data/` mora) — injetável pra testes apontarem pra um tmpdir. */
+  rootDir?: string;
+  /** Quantas linhas de run-log incluir no tail inicial de `/api/events`. */
+  runLogTailSize?: number;
+  /** Intervalo de polling (ms) dos watchers — reduzido em testes. */
+  pollIntervalMs?: number;
+}
+
+export interface StudioServer {
+  url: string;
+  port: number;
+  rootDir: string;
+  close: () => Promise<void>;
+}
+
+function handleApiState(rootDir: string, res: ServerResponse): void {
+  sendJson(res, 200, buildStudioState(rootDir));
+}
+
+function handleApiEdition(rootDir: string, aammdd: string, res: ServerResponse): void {
+  if (!AAMMDD_RE.test(aammdd)) {
+    sendJson(res, 400, { error: "AAMMDD inválido", edition: aammdd });
+    return;
+  }
+  const detail = buildEditionDetail(rootDir, aammdd);
+  if (!detail.found) {
+    sendJson(res, 404, { error: "edição não encontrada", edition: aammdd });
+    return;
+  }
+  sendJson(res, 200, detail);
+}
+
+function handleApiEvents(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  opts: { runLogTailSize: number; pollIntervalMs: number },
+): void {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    // #3555: loopback-only server — CORS não é necessário (mesma origem), mas
+    // deixar explícito documenta a intenção pra próximas fatias que possam
+    // servir a SPA de outra origem (ex: dev server com hot-reload).
+  });
+  res.write(formatSseComment("connected"));
+
+  const logPath = resolveRunLogPath(rootDir);
+  res.write(formatSseEvent("state", buildStudioState(rootDir)));
+  res.write(formatSseEvent("log-init", tailJsonl(logPath, opts.runLogTailSize)));
+
+  const logWatch: RunLogWatchHandle = watchRunLogAppends(
+    logPath,
+    (events) => {
+      for (const event of events) res.write(formatSseEvent("log", event));
+    },
+    { pollIntervalMs: opts.pollIntervalMs },
+  );
+
+  const planWatch: PlanWatchHandle = watchPlanFiles(
+    rootDir,
+    (sig) => res.write(formatSseEvent("plan", sig)),
+    { pollIntervalMs: opts.pollIntervalMs },
+  );
+
+  const heartbeat = setInterval(() => {
+    res.write(formatSseComment("heartbeat"));
+  }, 20_000);
+
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    logWatch.close();
+    planWatch.close();
+  };
+  req.on("close", cleanup);
+  res.on("error", cleanup);
+}
+
+function handleTokensCss(res: ServerResponse): void {
+  const css = buildTokensCss();
+  res.writeHead(200, {
+    "Content-Type": "text/css; charset=utf-8",
+    "Content-Length": Buffer.byteLength(css),
+  });
+  res.end(css);
+}
+
+/**
+ * Sobe o studio-server. `rootDir` default é `process.cwd()` (o repo aberto
+ * no Claude Code); injete um tmpdir em testes.
+ */
+export async function startStudioServer(opts: StudioServerOptions = {}): Promise<StudioServer> {
+  const rootDir = resolve(opts.rootDir ?? process.cwd());
+  const runLogTailSize = opts.runLogTailSize ?? 50;
+  const pollIntervalMs = opts.pollIntervalMs ?? 1000;
+
+  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    try {
+      const urlPath = (req.url ?? "/").split("?")[0];
+
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555)" });
+        return;
+      }
+
+      if (urlPath === "/api/state") {
+        handleApiState(rootDir, res);
+        return;
+      }
+      if (urlPath === "/api/events") {
+        handleApiEvents(rootDir, req, res, { runLogTailSize, pollIntervalMs });
+        return;
+      }
+      const editionMatch = urlPath.match(/^\/api\/editions\/([^/]+)$/);
+      if (editionMatch) {
+        handleApiEdition(rootDir, editionMatch[1], res);
+        return;
+      }
+      if (urlPath === "/tokens.generated.css") {
+        handleTokensCss(res);
+        return;
+      }
+      if (urlPath.startsWith("/api/")) {
+        sendJson(res, 404, { error: "rota de API desconhecida", path: urlPath });
+        return;
+      }
+
+      const served = serveStaticFile(PUBLIC_DIR, urlPath, res);
+      if (!served) {
+        res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Not found");
+      }
+    } catch (e) {
+      sendJson(res, 500, { error: (e as Error).message });
+    }
+  });
+
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen(opts.port ?? DEFAULT_PORT, HOST, () => resolvePromise());
+  });
+
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : (opts.port ?? DEFAULT_PORT);
+
+  let closed = false;
+  return {
+    url: `http://${HOST}:${port}/`,
+    port,
+    rootDir,
+    close: () =>
+      new Promise<void>((resolveClose, reject) => {
+        if (closed) {
+          resolveClose();
+          return;
+        }
+        closed = true;
+        server.close((err) => (err ? reject(err) : resolveClose()));
+      }),
+  };
+}
+
+async function main(): Promise<void> {
+  const { values } = parseCliArgs(process.argv.slice(2));
+  const portArg = values["port"] ?? process.env.STUDIO_PORT;
+  const port = portArg !== undefined ? Number(portArg) : DEFAULT_PORT;
+  if (Number.isNaN(port) || port < 0) {
+    console.error(`[studio-server] --port inválido: ${portArg}`);
+    process.exit(2);
+  }
+  const rootDir = values["root-dir"] ? resolve(values["root-dir"]) : process.cwd();
+
+  const server = await startStudioServer({ port, rootDir });
+  console.log(`[studio-server] ${server.url} (rootDir=${server.rootDir})`);
+
+  const shutdown = () => {
+    server.close().finally(() => process.exit(0));
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
+
+if (isMainModule(import.meta.url)) {
+  main().catch((e) => {
+    console.error(`[studio-server] ${(e as Error).message}`);
+    process.exit(1);
+  });
+}
