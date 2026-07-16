@@ -4,6 +4,9 @@ import { type Brand, editionToMonthSlug, AAMMDD_RE, BRAND_INFO } from "./lib"; /
 // período de votação + sufixo de exibição pós-voto. Ver rationale completo
 // no header da seção "Streak" em lib.ts.
 import { isConsecutiveVotingPeriod, renderStreakSuffix } from "./lib";
+// #3523: "X% acertaram este par" — mesmo padrão de sufixo pós-voto do streak
+// acima (ver header da seção "Stats pós-voto" em lib.ts).
+import { renderStatsSuffix } from "./lib";
 import {
   formatEditionDateForBrand,
   parseValidEditions,
@@ -567,10 +570,33 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
     streakForDisplay = freshScore?.streak ?? null;
   }
 
+  // #3523: "X% acertaram este par" — sufixo agregado (social proof), exibido
+  // SÓ pós-voto (anti-spoiler). O gate `correct !== null` é o MESMO usado por
+  // `showImages`/`resultImages` mais abaixo — o gabarito só existe quando a
+  // edição já foi fechada (`correct:{edition}` setado pelo close-poll), então
+  // pré-voto (correct === null) nunca chega aqui e a % nunca vaza antes do
+  // reveal. `getSummedEditionStats` já inclui o voto ATUAL (o incremento via
+  // `updateStatsCounter`/guard-key `stats` já rodou acima, antes deste ponto).
+  // Fail-soft (try/catch): uma falha aqui (DO indisponível além do retry
+  // interno de `fetchEditionStatsAndCorrect`, KV lançando, etc.) NUNCA deve
+  // derrubar o voto já commitado — pior caso é a mensagem sem o sufixo de %,
+  // igual ao comportamento de amostra abaixo do mínimo (`renderStatsSuffix`
+  // já retorna "" nesse caso).
+  let statsSuffix = "";
+  if (correct !== null) {
+    try {
+      const { stats } = await getSummedEditionStats(env, brand, edition);
+      statsSuffix = renderStatsSuffix(stats);
+    } catch (e) {
+      console.error(JSON.stringify({ event: "vote_stats_suffix_fetch_failed", edition, error: String(e) }));
+      // statsSuffix permanece "" — mesmo fallback de amostra pequena.
+    }
+  }
+
   const msg = correct === true
-    ? `✅ Acertou! Era a imagem gerada por IA.${renderStreakSuffix(streakForDisplay, brand)}`
+    ? `✅ Acertou! Era a imagem gerada por IA.${renderStreakSuffix(streakForDisplay, brand)}${statsSuffix}`
     : correct === false
-    ? "❌ Não foi dessa vez — era a foto real."
+    ? `❌ Não foi dessa vez — era a foto real.${statsSuffix}`
     : "Voto registrado! O resultado sai na próxima edição.";
 
   // #1078 — primeiro voto: oferecer nickname pra leaderboard. scoreObj já foi
@@ -1170,11 +1196,23 @@ export function sumStatsCounterData(
  * usado em `handleVote`, aplicado ANTES de qualquer uso de `edition` em
  * DO id ou chave KV.
  */
-export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
-  const edition = url.searchParams.get("edition");
-  if (!edition) return json({ error: "missing edition" }, 400, env);
-  if (!isValidVoteEditionFormat(edition)) return json({ error: "invalid edition format" }, 400, env);
-
+/**
+ * #3523: extraído de `handleStats` (era código inline ali) — soma a chave
+ * primária + a legada (mesmo racional de #3261) num único helper reusável.
+ * `handleStats` continua sendo o único CALLER público (`/stats`, JSON), mas
+ * `handleVote` (#3523) agora reusa exatamente a mesma agregação para montar
+ * o sufixo "X% acertaram este par" pós-voto — evita a classe de bug já
+ * documentada alhures neste arquivo (#3118 item 10) onde dois call sites
+ * quase-idênticos divergem silenciosamente ao longo do tempo. O voto do
+ * PRÓPRIO votante já foi incrementado no DO/KV ANTES deste ponto no fluxo de
+ * `handleVote` (`updateStatsCounter`, guard-key `stats`, mais acima) —
+ * portanto o valor lido aqui já reflete o voto que está sendo processado.
+ */
+export async function getSummedEditionStats(
+  env: Env,
+  brand: Brand,
+  edition: string,
+): Promise<{ stats: StatsCounterData; correctRaw: string | null }> {
   const legacyEdition = legacyMonthlyEditionForCycle(edition);
 
   const [primary, legacy] = await Promise.all([
@@ -1184,6 +1222,15 @@ export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): 
 
   const stats = sumStatsCounterData(primary.stats, legacy?.stats ?? null);
   const correctRaw = primary.correctRaw ?? legacy?.correctRaw ?? null;
+  return { stats, correctRaw };
+}
+
+export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
+  const edition = url.searchParams.get("edition");
+  if (!edition) return json({ error: "missing edition" }, 400, env);
+  if (!isValidVoteEditionFormat(edition)) return json({ error: "invalid edition format" }, 400, env);
+
+  const { stats, correctRaw } = await getSummedEditionStats(env, brand, edition);
   const total = stats.total;
 
   return json({
