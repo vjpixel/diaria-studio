@@ -13,7 +13,11 @@ description: Stage 0 do orchestrator Diar.ia — setup, parâmetros, checks pré
 
 ### 0a. Parâmetros de entrada
 
-- `edition_date` recebido no formato `AAMMDD` (ex: `260423`). Usar como diretório: `data/editions/{edition_date}/`.
+- `edition_date` recebido no formato `AAMMDD` (ex: `260423`).
+- **Resolver `{EDITION_DIR}` (#2463/#3025/#3530) — ANTES de criar qualquer diretório.** Diretório REAL da edição no disco: encontra a edição existente (flat legado OU nested novo, o que já estiver lá — resume-safe) ou, se ainda não existe, retorna o path NESTED (`data/editions/{AAMM}/{AAMMDD}/`, o layout que toda edição nova passa a usar a partir daqui). **Nunca** montar `data/editions/` + `{edition_date}` à mão daqui em diante — usar `{EDITION_DIR}` em todo path deste arquivo e dos Stages 1-3:
+  ```bash
+  EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {edition_date})
+  ```
 - Converter para ISO quando precisar de Date math:
   ```bash
   Bash("node -e \"const s='{edition_date}';process.stdout.write('20'+s.slice(0,2)+'-'+s.slice(2,4)+'-'+s.slice(4,6))\"")
@@ -28,14 +32,14 @@ description: Stage 0 do orchestrator Diar.ia — setup, parâmetros, checks pré
   Bash("node -e \"const a=new Date('{anchor_iso}T00:00:00Z');a.setUTCDate(a.getUTCDate()-{window_days});process.stdout.write(a.toISOString().slice(0,10))\"")
   ```
   Esses dois valores **substituem** `edition_iso` em qualquer prompt de agente de pesquisa (1f) e qualquer chamada a `filter-date-window.ts` (1o). `edition_iso` permanece só como identificador da edição.
-- Criar o diretório e subdiretório interno se não existirem: `Bash("mkdir -p data/editions/{edition_date}/_internal")`.
-  **Nota (#3526, investigado — flat é intencional aqui, não um bug):** este `mkdir` (e toda referência subsequente a `data/editions/{AAMMDD}/` dentro de Stages 0-3) usa o layout **flat** literal, não o helper `resolveEditionDir()`/`editionDir()` de `scripts/lib/find-current-edition.ts`/`edition-paths.ts` (que produziria **nested**, `data/editions/{AAMM}/{AAMMDD}/`, pra uma edição ainda não criada). Isso é consistente com a realidade atual: **nenhuma edição em disco está no layout nested ainda** — `migrate-edition-layout.ts` (a migração real, #2463 step 3) nunca rodou (requer Gate B explícito com o editor) — e Stages 0-3 usam o path flat literal de ponta a ponta entre si, então não há divergência funcional hoje. `orchestrator-stage-{4,5,6}.md` (migrados em #3025) resolvem `$EDITION_DIR` via `find-current-edition.ts --resolve` — disk-aware, funciona tanto pra flat quanto nested — mas isso é defensivo/forward-compat, não uma correção de um bug ativo em Stages 0-3. Migração completa (mkdir + Stages 0-3 pro layout nested, espelhando o que #3025 fez pra 4-6) trackeada em #3530 — não é urgente porque não há bug hoje, mas fecha um risco latente: se a migração real (`migrate-edition-layout.ts --execute`) rodar no futuro, o resume-check flat literal deste arquivo (§0b) não encontraria uma edição migrada pra nested e a re-criaria do zero.
+- Criar o diretório e subdiretório interno se não existirem: `Bash("mkdir -p {EDITION_DIR}/_internal")`.
+  **Nota (#3530 — migrado; supersede a nota #3526):** este `mkdir` (e toda referência subsequente dentro de Stages 0-3) usa `{EDITION_DIR}` resolvido acima — mesmo padrão disk-aware que `orchestrator-stage-{4,5,6}.md` já usam desde #3025. Compat bidirecional: uma edição criada ANTES desta migração (flat) continua sendo encontrada e usada em flat pelo resume (§0b) — `resolveEditionDir()` prioriza o que já existe no disco sobre o layout default. Só edições **novas** (que ainda não têm diretório em nenhum layout) passam a nascer em nested. Não requer `migrate-edition-layout.ts --execute` (Gate B) — coexistência dos dois layouts é o estado normal até essa migração rodar.
 - **Receber `window_days` como parâmetro de entrada.** A skill que disparou este orchestrator já perguntou e confirmou a janela com o usuário antes de disparar. **Se não receber** (retrocompat), usar default: segunda/terça = 4, quarta-sexta = 3 — calcular via Bash node. Armazenar `window_days` — usado em Stage 1.
 - **Receber `auto_approve` (opcional, default `false`).** Se `true`: auto-aprovar todos os gates, manter Drive sync ativo, manter social scheduling normal. No Stage 1, gerar `_internal/01-approved.json` via `npx tsx scripts/apply-gate-edits.ts --auto --json ... --out ...` (nunca copiar `_internal/01-categorized.json` literal — #3459, perdia o slice `highlights: first-3`).
 
 ### 0b. Resume-aware
 
-Antes de iniciar qualquer etapa, listar arquivos em `data/editions/{AAMMDD}/`. **Pipeline principal** (verificar de baixo para cima — parar na primeira condição verdadeira):
+Antes de iniciar qualquer etapa, listar arquivos em `{EDITION_DIR}/`. **Pipeline principal** (verificar de baixo para cima — parar na primeira condição verdadeira):
 
 - Se `_internal/.step-6-done.json` existe → **Pipeline finalizado** (Stage 6 Agendamento concluído). **Nota sobre edições históricas (pré-Stage-6):** edições publicadas antes de #1694 (split Stage 5→6) têm `_internal/05-published.json` com `scheduled_at` ou `status: "published"` mas NÃO têm `.step-6-done.json`. Detectar pela presença de `scheduled_at` OU `status: "published"` em `_internal/05-published.json` junto com `_internal/06-social-published.json` populado — tratar como concluídas. NÃO re-agendar edições históricas.
 - Se `_internal/06-social-published.json` existe **e** `posts[]` tem 6 entries com `status` ∈ `"draft"`, `"scheduled"`, `"pending_manual"` **e** (`_internal/05-published.json` tem `scheduled_at` OU `status: "published"`) → Pipeline finalizado. (Compat com edições históricas pré-Stage-6.)
@@ -55,10 +59,10 @@ Antes de iniciar qualquer etapa, listar arquivos em `data/editions/{AAMMDD}/`. *
 
 **É IA? (paralelo, #1111)** — verificar em qualquer ponto de resume:
 - Se `01-eia.md` já existe → não disparar `eia-compose`.
-- Se `01-eia.md` **não** existe e o resume está no Stage 1 ou acima → disparar `Bash(npx tsx scripts/eia-compose.ts --edition {AAMMDD} --out-dir data/editions/{AAMMDD}/, run_in_background=true)` (era Agent dispatch antes de #1111).
+- Se `01-eia.md` **não** existe e o resume está no Stage 1 ou acima → disparar `Bash(npx tsx scripts/eia-compose.ts --edition {AAMMDD} --out-dir {EDITION_DIR}/, run_in_background=true)` (era Agent dispatch antes de #1111).
 - **Pré-requisito da Etapa 5:** `01-eia.md` + imagens devem existir antes de publicar. Se o background bash ainda não completou quando a Etapa 5 for atingida, **bloquear e aguardar** via file-presence check.
 
-Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional digitando o nome da edição** (`AAMMDD`) antes de prosseguir — `sim`/`yes`/`confirmar` não valem, só o literal da edição (#101). Em seguida, **renomear** (não deletar) a pasta para `{AAMMDD}-backup-{timestamp}/` antes de começar.
+Se o usuário responder "sim, refazer do zero", **pedir confirmação adicional digitando o nome da edição** (`AAMMDD`) antes de prosseguir — `sim`/`yes`/`confirmar` não valem, só o literal da edição (#101). Em seguida, **renomear** (não deletar) `{EDITION_DIR}` para `{EDITION_DIR}-backup-{timestamp}/` (sibling, mesmo parent — funciona igual em flat ou nested) antes de começar.
 
 ### 0b-bis. Auto-capture newsletters (background) (#1514, #1518)
 
@@ -83,17 +87,17 @@ Substitui o forward manual que o editor fazia diariamente.
    npx tsx scripts/fetch-newsletter-threads.ts \
      --senders "{sender1},{sender2},..." \
      --since-hours {since_hours} \
-     --out data/editions/{AAMMDD}/_internal/captured-newsletters.json
+     --out {EDITION_DIR}/_internal/captured-newsletters.json
    ```
    O script usa a Gmail REST API diretamente (OAuth via `data/.credentials.json`), extrai somente `text/plain` (fallback HTML stripped+truncado a 8000 chars por thread), e escreve `CapturedThread[]` JSON. **Isso evita que até 20× `get_thread FULL_CONTENT` (80–112k chars HTML cada) entre no contexto do orchestrator.** O script faz a própria busca (Gmail REST `threads.list`) — **não chamar `mcp__claude_ai_Gmail__search_threads` neste passo**: busca e fetch são ambos feitos pelo script.
    - Se o script terminar com exit 0: ler o JSON de summary do stdout (campos `threads_found`, `threads_written`, `skipped_no_body`) e logar via `log-event.ts`.
    - Se o script terminar com exit 1 (erro de credenciais OAuth, rede, etc.): tratar como MCP indisponível — logar warn e fazer skip (mesmo comportamento do fallback Gmail MCP).
-4. Salvar threads em `data/editions/{AAMMDD}/_internal/captured-newsletters.json` (feito pelo script no passo 3).
+4. Salvar threads em `{EDITION_DIR}/_internal/captured-newsletters.json` (feito pelo script no passo 3).
 5. Rodar **em background** (`run_in_background: true`) — o resultado (`_internal/captured-newsletter-articles.json`) só é consumido no Stage 1 (1h inject-inbox-urls), então não precisa bloquear os health checks (0c) e refreshes (0d+):
    ```bash
    npx tsx scripts/capture-newsletter-urls.ts \
-     --threads data/editions/{AAMMDD}/_internal/captured-newsletters.json \
-     --out data/editions/{AAMMDD}/_internal/captured-newsletter-articles.json \
+     --threads {EDITION_DIR}/_internal/captured-newsletters.json \
+     --out {EDITION_DIR}/_internal/captured-newsletter-articles.json \
      --cursor data/newsletter-capture-cursor.json
    ```
    Writes `SyntheticInboxArticle[]` JSON directly to `_internal/captured-newsletter-articles.json` — no inbox.md intermediary (#1520). URL filtering (tracking, affiliate, sender-domain) is applied during capture.
@@ -154,33 +158,33 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
 - **Pre-flight Beehiiv MCP (#3451, espelha #143).** Tentar `mcp__claude_ai_Beehiiv__get_current_user` (leitura barata, sem side-effect). Setar `BEEHIIV_MCP = true` se sucesso; se erro, `BEEHIIV_MCP = false` e logar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn --message "mcp_disconnect: claude_ai_Beehiiv" --details '{"server":"claude_ai_Beehiiv","kind":"mcp_disconnect"}'`. **Em modo interativo**, alertar editor e aguardar `[y/n]`; **em `auto_approve`**, prosseguir silenciosamente. Cobre só os passos que usam o MCP claude.ai Beehiiv (0h.2 clicks enricher, 0-replies fallback remoto, correção de slug no Stage 6) — o dedup refresh (0d) usa a REST API direta via `BEEHIIV_API_KEY` e não depende deste flag.
 - **Inicializar `stage-status.md` (#960, #1217).** Single source of truth pra timing + custo + tokens + modelos. `_internal/cost.md` (legado pré-#1217) foi removido — era redundante com stage-status e nunca foi preenchido na prática. Doc unificado de tempo + custo, atualizado incrementalmente durante o pipeline e visível no Drive. Editor abre durante runs longos pra ver progresso ao invés de esperar fim. Rodar:
   ```bash
-  npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --init
+  npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --init
   ```
   Idempotente — se já existe (resume), apenas reabre o estado anterior; não zera.
 
   - **Reconciliar stages `running` órfãos no resume (#2525).** Logo após o `--init`, rodar reconcile: uma interrupção (Claude fechado, crash, timeout) deixa o stage corrente em `running` pra sempre, travando a barra de progresso da statusLine (fica em "5/7 Publicação" e nunca avança). Edição fresca = no-op (tudo `pending`); resume = marca os `running` órfãos como `failed` pro orchestrator decidir re-rodar:
     ```bash
-    npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --reconcile-running
+    npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --reconcile-running
     ```
 
   Push ao Drive logo após init:
   ```bash
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 0 --files stage-status.md
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 0 --files stage-status.md
   ```
   Falha não bloqueia (`stage-status.md` é observabilidade, não estado canônico).
   - **Marcar Stage 0 `running` logo após o init (#1783).** Sem isso o Stage 0 nunca passa por `running`, fica sem `start`, e o relatório mostra `-` na duração do preflight. **Não** passar `--start` — o auto-carimbo (#1789) põe `start = now` se ainda não há (e preserva o original em resume):
     ```bash
-    npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 0 --status running
+    npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 0 --status running
     ```
 
   **Atualização incremental durante o pipeline:** ao **começar** cada stage (1-5), chamar:
   ```bash
-  npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ \
+  npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ \
     --stage N --status running --start "{ISO_now}"
   ```
   Ao **terminar** cada stage:
   ```bash
-  npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ \
+  npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ \
     --stage N --status done --end "{ISO_now}" --duration-ms {ms} \
     [--cost-usd X] [--tokens-in N] [--tokens-out N] [--models "haiku-4-5,opus-4-7"]
   ```
@@ -376,14 +380,13 @@ Não bloqueia — se credenciais FB não existem ou nenhuma edição anterior te
 
 ### 0l. Verificação pré-edição de posts da edição anterior (#366)
 
-Sempre roda, após Verify FB. Busca `_internal/06-social-published.json` da edição mais recente (Glob `data/editions/*/_internal/06-social-published.json`; pegar o mais recente por nome de pasta sort alfanumérico desc):
+Sempre roda, após Verify FB. Busca `_internal/06-social-published.json` da edição mais recente. **#3530:** reusa `find-last-edition-with-fb.ts` (já disk-aware desde #3483/#3484 — `enumerateEditionDirs()` internamente, cobre flat legado e nested) em vez de `readdirSync('data/editions')` cru, que só varre 1 nível e perderia edições no layout nested (`data/editions/{AAMM}/{AAMMDD}/`), tratando a mais recente como inexistente. Mesmo critério de "tem o arquivo" do 0k (o script já filtra por isso, incluindo fallback pra raiz em edições anteriores ao #158 via `existsInEditionDir`) — mesmo comportamento de antes (só `_internal/`), sem reimplementar a lógica de enumeração inline:
 ```bash
-PREV_SOCIAL=$(node -e "
-  const fs=require('fs');
-  const dirs=fs.readdirSync('data/editions').filter(d=>/^\d{6}$/.test(d)).sort().reverse();
-  const found=dirs.find(d=>fs.existsSync('data/editions/'+d+'/_internal/06-social-published.json'));
-  process.stdout.write(found?'data/editions/'+found+'/_internal/06-social-published.json':'');
-")
+PREV_SOCIAL_DIR=$(npx tsx scripts/find-last-edition-with-fb.ts --current {AAMMDD})
+PREV_SOCIAL=""
+if [ -n "$PREV_SOCIAL_DIR" ] && [ -f "$PREV_SOCIAL_DIR/_internal/06-social-published.json" ]; then
+  PREV_SOCIAL="$PREV_SOCIAL_DIR/_internal/06-social-published.json"
+fi
 ```
 Se o arquivo existir:
 1. Posts com `status === "scheduled"` e `scheduled_at < now` (prazo passou): alertar editor com a lista.
@@ -452,15 +455,15 @@ Se Gmail MCP estiver indisponível (disconnect): pular `0n` silenciosamente (nã
 **`pre_gate` undefined (ex: skills isoladas sem definir este parâmetro) = skip** — tratar idêntico a `false`. A seção só deve rodar quando `pre_gate` for explicitamente `true` (P2 fix #2300).
 
 1. Buscar via `mcp__claude_ai_Gmail__search_threads` na caixa do editor (reply-to da newsletter): query `to:vjpixel@gmail.com subject:(Re OR Res) newer_than:7d` (`Re`+`Res` cobre prefixos EN e PT-BR/Outlook; 7d cobre o intervalo entre edições + fim de semana). Limit 20. *Limitação conhecida (#1827): replies sem prefixo no assunto (só com header In-Reply-To) não são capturados nesta v1.*
-2. Para cada thread, `mcp__claude_ai_Gmail__get_thread` (`FULL_CONTENT`). Montar JSON array `[{ thread_id, from, subject, date, body }]` em `data/editions/{AAMMDD}/_internal/captured-replies.json`.
+2. Para cada thread, `mcp__claude_ai_Gmail__get_thread` (`FULL_CONTENT`). Montar JSON array `[{ thread_id, from, subject, date, body }]` em `{EDITION_DIR}/_internal/captured-replies.json`.
 3. Filtrar quais são respostas de assinante (determinístico):
    ```bash
-   npx tsx scripts/filter-subscriber-replies.ts --in data/editions/{AAMMDD}/_internal/captured-replies.json
+   npx tsx scripts/filter-subscriber-replies.ts --in {EDITION_DIR}/_internal/captured-replies.json
    ```
    (assunto `Re:` + remetente humano — exclui automáticos `no-reply`/`beehiiv`/`mailer-daemon` e os próprios endereços do editor.)
 4. Para **cada** resposta filtrada (`replies[]`):
    1. Resolver a edição referenciada pelo `subject` (ex: "Re: Diar.ia — 29/06" → `260629`; quando o assunto não tiver data clara, usar a edição mais recente publicada antes da `date` da reply).
-   2. Ler `_internal/intentional-error.json` dessa edição (`data/editions/{edição}/_internal/intentional-error.json` — campos `category`, `location`, `description`, `correct_value`; #3222 — não mora mais no frontmatter de `02-reviewed.md`, que sincronizava com o Drive e corrompia o bloco YAML no round-trip do Google Docs, #3205). Também carregar `data/intentional-errors.jsonl` (`loadIntentionalErrors` + filtrar pela edição) — é a fonte durável, sincronizada tanto pelo fluxo automático (`beehiiv-playbook.md` §0.1) quanto pelo manual (`close-poll.ts`, #3210).
+   2. Resolver o diretório real dessa edição (**#3530** — pode estar em flat legado ou nested, igual à edição corrente: `npx tsx scripts/lib/find-current-edition.ts --resolve {edição}`) e ler `_internal/intentional-error.json` dela (campos `category`, `location`, `description`, `correct_value`; #3222 — não mora mais no frontmatter de `02-reviewed.md`, que sincronizava com o Drive e corrompia o bloco YAML no round-trip do Google Docs, #3205). Também carregar `data/intentional-errors.jsonl` (`loadIntentionalErrors` + filtrar pela edição) — é a fonte durável, sincronizada tanto pelo fluxo automático (`beehiiv-playbook.md` §0.1) quanto pelo manual (`close-poll.ts`, #3210).
    2b. **Fallback remoto quando os dois estão ausentes (#3210).** Se `_internal/intentional-error.json` da edição **e** a entry correspondente no jsonl estiverem ambos ausentes — cenário real: edição publicada manualmente (`prep-manual-publish.ts`) cujo diretório local já foi limpo/arquivado antes de qualquer sync rodar — usar `decideRemoteFallback(localRecord, jsonlEntry)` (`scripts/lib/raffle-numbers.ts`) pra confirmar (`useRemoteFallback === true`) antes de gastar uma chamada de API. Quando confirmado:
       1. **Importante — qual edição buscar:** por regra editorial (#1079, `context/templates/newsletter.md` "Regra HTML/Beehiiv"), o erro da edição corrente **nunca** aparece no HTML publicado dela mesma — só o reveal ("Na última edição, …") aparece, e só dentro do bloco ERRO INTENCIONAL/SORTEIO da edição **seguinte**. Ou seja: pra recuperar o erro da edição `E` (a que a reply está tentando adivinhar), buscar o post publicado de `E+1`, não de `E`.
       2. Resolver o post_id de `E+1` (ex: via `mcp__claude_ai_Beehiiv__list_posts` filtrando por título/data, análogo à resolução de `subject → edição` do passo 4.1; ou o cache local `data/beehiiv-cache/posts/` se já tiver sido sincronizado). **Se `E+1` ainda não foi publicada** (cenário comum: mesma sessão que está escrevendo `E+1` agora, e só percebeu o buraco de dados nesta própria rodada de §0-replies) — não há fallback possível ainda; seguir pro passo 4.5 (tratar como "sem dado", comportamento seguro pré-existente).
@@ -499,13 +502,13 @@ Exit 1 = abort imediato com violations no stderr. Editor corrige (env, credentia
 **Marcar Stage 0 `done` ao fim do preflight (#1783).** Fecha a duração do preflight (auto-carimbo de `end` via #1789; computa `end - start` do `running` lá do init). Sem isso o S0 ficaria eternamente `running` e sem duração no relatório:
 
 ```bash
-npx tsx scripts/update-stage-status.ts --edition-dir data/editions/{AAMMDD}/ --stage 0 --status done
+npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 0 --status done
 ```
 
 **Capturar custo/tokens reais (#3441).** Logo em seguida, rodar `capture-stage-usage.ts` — lê `_internal/stage-status.json` (o `--end` que acabou de ser gravado), agrega o `usage` real das chamadas do coordenador dentro da janela `[start, end]` do stage a partir do transcript local da sessão (`~/.claude/projects/`), e popula `cost_usd`/`tokens_in`/`tokens_out`/`models` — nunca fabrica número: sem transcript local (sessão cloud) ou sem entradas na janela, imprime `source: "unavailable"` e não escreve nada:
 
 ```bash
-npx tsx scripts/capture-stage-usage.ts --edition-dir data/editions/{AAMMDD}/ --stage 0
+npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 0
 ```
 
 ---
