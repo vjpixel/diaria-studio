@@ -1116,7 +1116,7 @@ export function wrapEmail(subject: string, bodyParts: string[]): string {
 //      o label `PREVIEW`; sem essa restrição um teste real capturou esse
 //      exato colapso — 3 seções em vez de 2 porque "Preview" virou boundary).
 const FIXED_LABEL_RE_NO_BOLD =
-  /^(REMETENTE|ASSUNTO(\s*\(\s*3\s*OP[ÇC][ÕO]ES\s*\))?|PREVIEW|APRESENTA[ÇC][ÃA]O|INTRO|DIVULGA[ÇC][ÃA]O|LIVROS|LIVRO DO M[ÊE]S|LABORAT[ÓO]RIO CLARICE|USE MELHOR( DO M[ÊE]S)?|RADAR( DO M[ÊE]S)?|OUTRAS NOT[ÍI]CIAS DO M[ÊE]S|ENCERRAMENTO|PARA ENCERRAR)$/;
+  /^(REMETENTE|ASSUNTO(\s*\(\s*3\s*OP[ÇC][ÕO]ES\s*\))?|PREVIEW|APRESENTA[ÇC][ÃA]O|INTRO|DIVULGA[ÇC][ÃA]O|LIVROS|LIVRO( DO M[ÊE]S)?|LABORAT[ÓO]RIO CLARICE|USE MELHOR( DO M[ÊE]S)?|RADAR( DO M[ÊE]S)?|OUTRAS NOT[ÍI]CIAS DO M[ÊE]S|ENCERRAMENTO|PARA ENCERRAR)$/;
 // "É IA?" não-bold só é label quando é a linha INTEIRA ("É IA?") ou seguido de
 // travessão ("É IA? — DESTAQUE DO MÊS") — NUNCA prosa que começa com a pergunta
 // ("É IA? do mês: duas versões..."), que senão vira 2ª seção e renderiza o card
@@ -1138,7 +1138,7 @@ export function isSectionLabel(line: string): boolean {
     // pra "USE MELHOR"/"RADAR" (igual ao diário). Sufixo opcional cobre ambos.
     // "RADAR"/"USE MELHOR" são ancorados ao fim ($) porque são palavras comuns:
     // sem o $, uma linha 100%-bold tipo **RADAR DA OPENAI** viraria seção espúria.
-    return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DIVULGAÇÃO$|LIVROS$|LIVRO\s+DO\s+M[ÊE]S$|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
+    return /^(REMETENTE|ASSUNTO|PREVIEW|APRESENTAÇÃO|APRESENTACAO|INTRO|DIVULGAÇÃO$|LIVROS$|LIVRO(\s+DO\s+M[ÊE]S)?$|DESTAQUE\s+\d+|CLARICE\s+—|LABORAT[ÓO]RIO\s+CLARICE|USE\s+MELHOR(\s+DO\s+M[ÊE]S)?$|RADAR(\s+DO\s+M[ÊE]S)?$|OUTRAS\s+NOTÍCIAS\s+DO\s+M[ÊE]S|É\s+IA\?|ENCERRAMENTO|PARA\s+ENCERRAR)/i.test(
       normalized
     );
   }
@@ -1279,12 +1279,13 @@ export function draftToEmail(
       continue;
     }
 
-    // LIVRO DO MÊS: box de indicação de UM livro (bege), kicker "Livro do mês"
-    // e SEM título interno (noSubtitle) — o título do livro em negrito-com-link
-    // é o próprio âncora visual. Sem imagem. (O "DO MÊS" segue a família de
-    // rubricas da mensal; #3581 propõe tirar "do mês" de todas de uma vez.)
-    if (label === "LIVRO DO MÊS") {
-      bodyParts.push(renderClariceBox(chunk, "Livro do mês", undefined, true));
+    // LIVRO: box de indicação de UM livro (bege), kicker "Livro" e SEM título
+    // interno (noSubtitle) — o título do livro em negrito-com-link é o próprio
+    // âncora visual. Sem imagem. (#3581: kicker perdeu o sufixo "do mês", que
+    // era redundante pro leitor; label longo "LIVRO DO MÊS" segue aceito na
+    // detecção por back-compat com edições/drafts em voo.)
+    if (label === "LIVRO" || label === "LIVRO DO MÊS") {
+      bodyParts.push(renderClariceBox(chunk, "Livro", undefined, true));
       continue;
     }
 

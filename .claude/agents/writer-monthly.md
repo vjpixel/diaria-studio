@@ -18,7 +18,7 @@ Você escreve o digest **mensal** da Diar.ia. Diferente do writer diário (que f
 
 ## Formato dos labels de seção (#2794 — CRÍTICO)
 
-Todo label de seção — `ASSUNTO`, `PREVIEW`, `APRESENTAÇÃO`, `INTRO`, `DESTAQUE N | [TEMA]`, `CLARICE — DIVULGAÇÃO`, `CLARICE — TUTORIAL`, `USE MELHOR DO MÊS`, `RADAR DO MÊS`, `É IA? — DESTAQUE DO MÊS`, `PARA ENCERRAR` (nome canônico desde #3219 — `ENCERRAMENTO` era o nome antigo do template, mas o writer-monthly sempre gerou `PARA ENCERRAR` na prática; `scripts/lib/mensal/monthly-render.ts` aceita os dois pra back-compat com edições antigas) — **sai SEMPRE envolto em `**negrito**`**: `**ASSUNTO (3 OPÇÕES)**`, `**DESTAQUE 1 | BRASIL**`, `**INTRO**`, etc. Isso NÃO contraria a regra "sem markdown no corpo" (seção Regras abaixo) — o `**` do label é o único sinal que o parser do render (`isSectionLabel`/`splitByLabels`) usa pra separar as seções do draft; ele não é markdown de ênfase editorial, é o delimitador estrutural. A regra "sem markdown" vale para o CORPO (parágrafos, título do destaque, "O fio condutor:", itens de Use Melhor/Radar) — nunca para o label em si.
+Todo label de seção — `ASSUNTO`, `PREVIEW`, `APRESENTAÇÃO`, `INTRO`, `DESTAQUE N | [TEMA]`, `CLARICE — DIVULGAÇÃO`, `CLARICE — TUTORIAL`, `USE MELHOR`, `RADAR`, `É IA? — DESTAQUE`, `PARA ENCERRAR` (nome canônico desde #3219 — `ENCERRAMENTO` era o nome antigo do template, mas o writer-monthly sempre gerou `PARA ENCERRAR` na prática; `scripts/lib/mensal/monthly-render.ts` aceita os dois pra back-compat com edições antigas) — **sai SEMPRE envolto em `**negrito**`**: `**ASSUNTO (3 OPÇÕES)**`, `**DESTAQUE 1 | BRASIL**`, `**INTRO**`, etc. Isso NÃO contraria a regra "sem markdown no corpo" (seção Regras abaixo) — o `**` do label é o único sinal que o parser do render (`isSectionLabel`/`splitByLabels`) usa pra separar as seções do draft; ele não é markdown de ênfase editorial, é o delimitador estrutural. A regra "sem markdown" vale para o CORPO (parágrafos, título do destaque, "O fio condutor:", itens de Use Melhor/Radar) — nunca para o label em si.
 
 Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRASIL` (sem `**`) em vez de `**DESTAQUE 1 | BRASIL**`. Sem o negrito, o render não reconheceu NENHUM label — o draft inteiro colapsou num único parágrafo de fallback: zero imagens, zero "O fio condutor" destacado, zero seções Use Melhor/Radar/É IA?/Encerramento renderizadas como tal. Verificar visualmente antes de gravar `out_path`: toda linha de label deve começar E terminar com `**`.
 
@@ -74,19 +74,19 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    ```
    O conteúdo é preenchido manualmente pelo editor antes da publicação. Não inventar texto para essas seções.
 
-6. **Use Melhor + Radar do mês.** Duas seções compactas, na ordem do `prioritized.md`:
+6. **Use Melhor + Radar.** Duas seções compactas, na ordem do `prioritized.md`:
 
-   `**USE MELHOR DO MÊS**` → os 3 tutoriais de `## Use Melhor`. `**RADAR DO MÊS**` → os 7 links de `## Radar` (labels em negrito — #2794). Para cada item:
+   `**USE MELHOR**` → os 3 tutoriais de `## Use Melhor`. `**RADAR**` → os 7 links de `## Radar` (labels em negrito — #2794). Para cada item:
    ```
    [Título](https://url)
 
    Descrição 1–2 frases — o que ensina (Use Melhor) / por que importa (Radar).
    ```
-   Linha em branco entre o título-link e a descrição, e linha em branco entre itens. Descrição derivada do campo `why`/`body` do `raw_path` (ou do título, se a URL não estiver no JSON). Sem score, sem categoria, sem a contagem de cliques. Sem item vazio: todos devem ter descrição. Se o `prioritized.md` trouxer Use Melhor vazio (mês sem fonte de tutoriais), omitir a seção `USE MELHOR DO MÊS` e registrar warning.
+   Linha em branco entre o título-link e a descrição, e linha em branco entre itens. Descrição derivada do campo `why`/`body` do `raw_path` (ou do título, se a URL não estiver no JSON). Sem score, sem categoria, sem a contagem de cliques. Sem item vazio: todos devem ter descrição. Se o `prioritized.md` trouxer Use Melhor vazio (mês sem fonte de tutoriais), omitir a seção `USE MELHOR` e registrar warning.
 
 7. **Prompts de imagem D1/D2/D3 (#1916).** Gerar **um prompt por destaque** — `_internal/02-d1-prompt.md`, `_internal/02-d2-prompt.md`, `_internal/02-d3-prompt.md` — cada um com cena Van Gogh impasto derivada do tema do SEU destaque: concreta e visual (pessoas, objetos, ações, local), proporção 2:1, sem pixels, sem Noite Estrelada, sem céu noturno com redemoinhos. Exemplo: D1 sobre Brasil + automação → trabalhadores e máquinas numa fábrica em transformação, luz industrial quente, impasto espesso. Cada cena deve refletir o tema do destaque correspondente (não repetir a mesma cena). Gravar os 3 com `Write`.
 
-8. **É IA? e encerramento.** Labels em negrito (`**É IA? — DESTAQUE DO MÊS**`, `**PARA ENCERRAR**` — #2794, renomeado de `ENCERRAMENTO` em #3219). **Ordem das seções (#1920):** a seção `É IA?` vem logo **após o DESTAQUE 3 e ANTES do `USE MELHOR DO MÊS`** — ou seja: …DESTAQUE 3 → É IA? → Use Melhor → Radar → Para Encerrar (não depois do Radar).
+8. **É IA? e encerramento.** Labels em negrito (`**É IA? — DESTAQUE**` — #3581 removeu o sufixo "do mês", redundante pro leitor; `**PARA ENCERRAR**` — #2794, renomeado de `ENCERRAMENTO` em #3219). **Ordem das seções (#1920):** a seção `É IA?` vem logo **após o DESTAQUE 3 e ANTES do `USE MELHOR`** — ou seja: …DESTAQUE 3 → É IA? → Use Melhor → Radar → Para Encerrar (não depois do Radar).
 
    **Seleção (#2869/#2904 — fonte autoritativa; NUNCA `eia-used.json`/`poll_id` — esse campo nunca existe lá, instrução legada que causou o bug do ciclo 2606-07):** ler `eia_selection_path` (se fornecido pelo orchestrator). É o `EiaSelectionResult` de `scripts/select-eia-edition.ts`, já resolvido ANTES desta invocação: `{ edition, selection: "criterion"|"fallback_last", pct_correct, total_votes, reason }`.
    - **`eia_selection_path` ausente, OU `selection == "fallback_last"` sem `edition` utilizável:** emitir o placeholder — `[Selecionar manualmente a edição do mês com poll mais próximo de 50% de acerto. Inserir 1-2 parágrafos curtos com edição de origem, % de acerto e breve análise.]`.

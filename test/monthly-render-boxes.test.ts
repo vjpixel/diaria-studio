@@ -104,8 +104,11 @@ describe("draftToEmail dispatch dos boxes DIVULGAÇÃO e LIVROS", () => {
   });
 });
 
-describe("box LIVRO DO MÊS (kicker próprio, sem título interno)", () => {
-  it("isSectionLabel reconhece o label (bold e sem bold)", () => {
+describe("box LIVRO (kicker próprio, sem título interno) — #3581 removeu 'do mês' do kicker", () => {
+  it("isSectionLabel reconhece o label curto e o longo legado (bold e sem bold)", () => {
+    assert.equal(isSectionLabel("**LIVRO**"), true);
+    assert.equal(isSectionLabel("LIVRO"), true);
+    // Back-compat: edições/drafts em voo ainda podem trazer o label longo.
     assert.equal(isSectionLabel("**LIVRO DO MÊS**"), true);
     assert.equal(isSectionLabel("LIVRO DO MÊS"), true);
   });
@@ -114,7 +117,7 @@ describe("box LIVRO DO MÊS (kicker próprio, sem título interno)", () => {
     "**ASSUNTO**",
     "1. Teste",
     "",
-    "**LIVRO DO MÊS**",
+    "**LIVRO**",
     "",
     "[**2041: Livro Teste**](https://link.amazon/ABC), de Fulano de Tal.",
     "",
@@ -123,10 +126,20 @@ describe("box LIVRO DO MÊS (kicker próprio, sem título interno)", () => {
     "Ao lado de Beltrano, ele adota uma estrutura pouco comum.",
   ].join("\n");
 
-  it("kicker 'Livro do mês' + SEM <h3> interno", () => {
+  // Mesmo conteúdo, mas com o label longo legado — cobre o draft antigo em voo.
+  const draftLegacyLabel = draft.replace("**LIVRO**", "**LIVRO DO MÊS**");
+
+  it("kicker 'Livro' (SEM 'do mês') + SEM <h3> interno", () => {
     const { html } = draftToEmail(draft, "Teste", "2606");
-    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro do m/.test(html), "kicker Livro do mês");
+    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro<\/td>/.test(html), "kicker Livro sem sufixo");
+    assert.ok(!html.includes("Livro do m"), "kicker não deve mais conter 'do mês'/'do Mês'");
     assert.ok(!html.includes("<h3"), "box não deve ter título interno (h3)");
+  });
+
+  it("label legado 'LIVRO DO MÊS' (back-compat) ainda renderiza kicker 'Livro' sem sufixo", () => {
+    const { html } = draftToEmail(draftLegacyLabel, "Teste", "2606");
+    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro<\/td>/.test(html), "kicker Livro sem sufixo mesmo a partir do label longo");
+    assert.ok(!html.includes("Livro do m"), "kicker não deve conter 'do mês'/'do Mês' mesmo com input legado");
   });
 
   it("título do livro: **dentro** do link vira <strong>, sem ** literal", () => {
