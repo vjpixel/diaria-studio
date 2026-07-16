@@ -291,11 +291,11 @@ npx tsx scripts/eia-compose.ts --edition $EAI_EDITION --out-dir data/monthly/$CY
 ```
 Se `eia-compose.ts` falhar (sem imagem elegível), registrar warn e seguir — É IA? é opcional. `$SEL_JSON` fica em `_internal/` (não sobe pro Drive — #959) e é a fonte pro item de aviso no Gate Etapa 3 abaixo.
 
-### 3c. Preview via Claude Artifacts (#1914, migrado de Cloudflare em #3214)
+### 3c. Preview local via `serve-preview.ts` (#3546 — substitui Claude Artifacts)
 
 Com as imagens prontas, renderizar o HTML da edição no design real (`draftToEmail`,
-mesmo template do Brevo) e publicar como preview pro editor revisar no celular
-antes do Brevo. Sobe as imagens do É IA?/destaques/livros pro KV do poll (produção
+mesmo template do Brevo) e servir LOCALMENTE pro editor revisar no Chrome antes
+do Brevo. Sobe as imagens do É IA?/destaques/livros pro KV do poll (produção
 real, inalterado — ver nota abaixo) e mescla a legenda do `01-eia.md`:
 ```bash
 npx tsx scripts/monthly-preview-cloudflare.ts --cycle $CYCLE
@@ -305,9 +305,19 @@ arquivo mantido por compat — não sobe mais pra Cloudflare, só as imagens con
 lá) e o manifest `_internal/public-images.json` (url pública → filename local por
 imagem — usado só pelo embed abaixo, #3392). Falha = warning, não bloqueia. Requer
 `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN` (só pras imagens — produção
-real, fora do escopo de #3214).
+real, fora do escopo de #3214/#3546).
 
-**⚠️ Artifacts rodam sob CSP estrita que bloqueia imagem remota (só `data:` URI) — mesma regressão descoberta e corrigida no diário em 260712 (#3214/#3370), reproduzida e corrigida aqui em #3392.** `cloudflare-preview.html` referencia imagens em `poll.diaria.workers.dev` (URL externa) e nunca renderiza dentro do Artifact — o e-mail real (Brevo) não é afetado, só este preview. **Sempre gerar uma variante com imagens embutidas antes de publicar**, reusando `scripts/embed-images-base64.ts` (mesmo script do diário, já testado — ver `.claude/agents/orchestrator-stage-4.md` §4b step 2b):
+**Gerar a variante com imagens embutidas antes de servir** — #1914 tinha migrado
+esse preview de Cloudflare pra Claude Artifact (elimina cota de Workers KV pro
+HTML), mas Artifacts rodam sob CSP estrita que bloqueia imagem remota (só
+`data:` URI) — mesma regressão descoberta e corrigida no diário em 260712
+(#3214/#3370), reproduzida e corrigida aqui em #3392. #3546 elimina o Artifact
+também (servidor local não tem CSP nenhuma, e nem depende de rede pra imagem),
+mas a variante embedded continua necessária — `cloudflare-preview.html`
+referencia imagens em `poll.diaria.workers.dev`, e servir standalone (sem
+depender do Worker estar no ar) é o ponto do preview local. Reusa
+`scripts/embed-images-base64.ts` (mesmo script do diário, já testado — ver
+`.claude/agents/orchestrator-stage-4.md` §4b step 2b):
 ```bash
 npx tsx scripts/embed-images-base64.ts \
   --html data/monthly/$CYCLE/_internal/cloudflare-preview.html \
@@ -315,38 +325,27 @@ npx tsx scripts/embed-images-base64.ts \
   --edition-dir data/monthly/$CYCLE \
   --out data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html
 ```
-`missing` no stdout = imagem sem arquivo local (mantém URL remota, não bloqueia) — logar warn se não-vazio (exit code 1 é só sinal de falha PARCIAL, não fatal — não abortar a etapa por causa dele). Publicar o Artifact a partir de `cloudflare-preview-embedded.html` (NUNCA `cloudflare-preview.html` diretamente — esse fica intacto com URLs reais, análogo ao `newsletter-final.html` do diário).
+`missing` no stdout = imagem sem arquivo local (mantém URL remota, não bloqueia) — logar warn se não-vazio (exit code 1 é só sinal de falha PARCIAL, não fatal — não abortar a etapa por causa dele). Servir a partir de `cloudflare-preview-embedded.html` (NUNCA `cloudflare-preview.html` diretamente — esse fica intacto com URLs reais, análogo ao `newsletter-final.html` do diário).
 
-**Publicar o preview via `Artifact` (#3214) — chamado direto pelo top-level, não
-pelo script acima.** Resume-aware: se `_internal/preview-artifact-url.json` já
-tem `preview_url` (Etapa 3c ou 4b rodou antes, mesma ou outra sessão), reusar via
-`url` do tool — atualiza o MESMO artifact em vez de mintar um novo (republicar no
-mesmo `file_path` dentro da mesma conversa já mantém a URL; entre conversas é
-preciso passar `url` explícito):
+**Servir localmente via `serve-preview.ts` (#3546).** Diferente do Artifact (URL
+hospedada pela infra da Anthropic, sobrevive entre sessões), um servidor local é
+um PROCESSO desta sessão — não sobrevive a um resume em sessão nova. Por isso o
+padrão aqui é sempre "encerrar o servidor anterior (best-effort — o PID pode já
+estar morto, de uma sessão passada) → subir um novo", nunca tentar reusar a
+mesma URL entre sessões:
 ```bash
-node -e "
-  const fs = require('fs');
-  const p = 'data/monthly/$CYCLE/_internal/preview-artifact-url.json';
-  if (fs.existsSync(p)) {
-    const j = JSON.parse(fs.readFileSync(p, 'utf8'));
-    if (j.preview_url) console.log(j.preview_url);
-  }
-"
+OLD_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('data/monthly/$CYCLE/_internal/preview-server-url.json','utf8')).preview_url_pid||'')}catch(e){}")
+[ -n "$OLD_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$OLD_PID"
+
+npx tsx scripts/serve-preview.ts \
+  --file data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html --port 0 \
+  --persist-to data/monthly/$CYCLE/_internal/preview-server-url.json --field preview_url &
 ```
-`Artifact` com `file_path: "data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html"`
-+ `url` (se a leitura acima imprimiu algo) + `description` (ex: "Preview mensal —
-ciclo $CYCLE") + `favicon` fixo entre re-publicações do mesmo ciclo (ex: 🗓️).
-Persistir a URL retornada (`node -e` puro — `npx tsx -e` com `import` de `upload-html-public.ts` falha silenciosamente, exit 0 sem gravar nada; descoberto 260712 no Stage 4 da diária, ver `.claude/agents/orchestrator-stage-4.md` §4b step 2b):
-```bash
-node -e "
-  const fs = require('fs');
-  const p = 'data/monthly/$CYCLE/_internal/preview-artifact-url.json';
-  let j = {};
-  if (fs.existsSync(p)) { try { j = JSON.parse(fs.readFileSync(p, 'utf8')); } catch {} }
-  j.preview_url = '{url_retornada}';
-  fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
-"
-```
+Rodar com `run_in_background: true` no Bash tool. Ler `preview_url` (e
+`preview_url_pid`, pra teardown) de `preview-server-url.json`. Em modo `local`
+(`scripts/lib/exec-mode.ts`), pode-se navegar o Chrome do editor pra essa URL
+(`mcp__claude-in-chrome__navigate`); em `cloud`, só logar a URL — sem navegação
+(sem Chrome do editor na sessão).
 
 ### Gate Etapa 3 (pulado com `--no-gate`)
 
@@ -366,7 +365,7 @@ Apresentar:
 📸 D1: data/monthly/$CYCLE/04-d1-2x1.jpg
 🤔 É IA? A: data/monthly/$CYCLE/01-eia-A.jpg
 🤔 É IA? B: data/monthly/$CYCLE/01-eia-B.jpg
-🌐 Preview (Claude Artifact): {preview_url}
+🌐 Preview (local): {preview_url}
 
 [se selection == "criterion"]
 ✓ É IA? do recap: edição {EAI_EDITION} — {pct_correct}% acertaram (critério: mais dividida do mês).
@@ -413,7 +412,7 @@ npx tsx scripts/monthly-preview-cloudflare.ts --cycle $CYCLE
 
 Esse é o MESMO `draftToEmail` que gera o email real — o preview mostra o É IA? com a legenda de `01-eia.md` já mesclada (não o placeholder `[...]` que aparece no `draft.md` cru) e as imagens D1/D2/D3 2:1 embutidas via `<img>`, não só referenciadas por path. Se falhar (Cloudflare indisponível pras imagens): warning, seguir sem preview — mas sinalizar isso claramente no resumo do gate (4e) já que o "artefato principal" fica ausente.
 
-**Regenerar a variante com imagens embutidas (mesmo motivo de CSP da Etapa 3c, #3392) antes de republicar:**
+**Regenerar a variante com imagens embutidas (#3546, mesmo script da Etapa 3c) e re-servir localmente antes do gate:**
 ```bash
 npx tsx scripts/embed-images-base64.ts \
   --html data/monthly/$CYCLE/_internal/cloudflare-preview.html \
@@ -423,7 +422,16 @@ npx tsx scripts/embed-images-base64.ts \
 ```
 `missing` no stdout = imagem sem arquivo local (mantém URL remota, não bloqueia) — logar warn se não-vazio (exit code 1 é só sinal de falha PARCIAL, não fatal — não abortar a etapa por causa dele).
 
-**Republicar o preview via `Artifact` (#3214)** — mesmo fluxo resume-aware da Etapa 3c: ler `_internal/preview-artifact-url.json`, chamar `Artifact` com `url` (se já houver uma) sobre `file_path: "data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html"`, persistir a URL retornada. Como o artifact é republicado no MESMO `file_path`/`url`, a URL não muda entre a Etapa 3c e esta re-publicação — `{preview_url}` do gate (4e) continua válida sem re-captura manual.
+**Re-servir localmente (#3546)** — mesmo padrão stop-old → serve-new da Etapa 3c (o conteúdo pode ter mudado desde 3c — `draft.md` editado no Drive/local, pull do 4a — então o servidor de lá fica STALE):
+```bash
+OLD_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('data/monthly/$CYCLE/_internal/preview-server-url.json','utf8')).preview_url_pid||'')}catch(e){}")
+[ -n "$OLD_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$OLD_PID"
+
+npx tsx scripts/serve-preview.ts \
+  --file data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html --port 0 \
+  --persist-to data/monthly/$CYCLE/_internal/preview-server-url.json --field preview_url &
+```
+Rodar com `run_in_background: true`. Ler `preview_url` novo de `preview-server-url.json` pra popular `{preview_url}` no resumo do gate (4e) — diferente do Artifact, a URL muda a cada re-render (porta efêmera nova), nunca fica igual entre 3c e 4b.
 
 ### 4c. Lint do draft (sumarizado)
 
@@ -457,7 +465,7 @@ Apresentar ao editor:
 ```
 📋 Revisão consolidada — Diar.ia Mensal {YYMM}
 
-🌐 Preview completo (Claude Artifact): {preview_url}
+🌐 Preview completo (local): {preview_url}
 
 Lint (scripts/lint-monthly-draft.ts):
   Guardrail de render: {N} seções reconhecidas, {N}/3 <img> na sonda — OK
@@ -477,11 +485,14 @@ Fact-check (_internal/04-fact-check.json):
 Aprovar? sim / editar / retry
 ```
 
-- `editar` → editor edita `draft.md` local/Drive; re-rodar 4a→4b→4c→4d após confirmação.
-- `retry` → re-rodar 4b→4c→4d (mesmo draft, novo preview/lint/fact-check — útil se só o preview falhou em 4b).
+- `editar` → editor edita `draft.md` local/Drive; re-rodar 4a→4b→4c→4d após confirmação (4b já encerra o servidor de preview anterior e sobe um novo — sem teardown manual aqui).
+- `retry` → re-rodar 4b→4c→4d (mesmo draft, novo preview/lint/fact-check — útil se só o preview falhou em 4b; mesmo stop-old→serve-new de 4b).
 
-Após aprovação (`sim`), gravar o checkpoint (#2795):
+Após aprovação (`sim`), encerrar o servidor de preview local (#3546 — Etapa 5 não precisa dele, publica direto no Brevo) e gravar o checkpoint (#2795):
 ```bash
+PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('data/monthly/$CYCLE/_internal/preview-server-url.json','utf8')).preview_url_pid||'')}catch(e){}")
+[ -n "$PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$PID"
+
 npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 4 --dir "data/monthly/$CYCLE" --outputs "_internal/04-fact-check.json"
 ```
 
@@ -622,7 +633,8 @@ Todos em `data/monthly/{ciclo}/` (ex: `data/monthly/2605-06/`):
 - `01-eia.md` + `01-eia-A.jpg` + `01-eia-B.jpg` — É IA? novo (Etapa 3)
 - `_internal/cloudflare-preview.html` — pré-render completo com URLs reais (Etapa 4)
 - `_internal/public-images.json` — manifest url pública → filename local, input do embed base64 (Etapa 3/4, #3392)
-- `_internal/cloudflare-preview-embedded.html` — variante com imagens embutidas em base64, artefato publicado via Artifact no gate (Etapa 4, CSP fix #3392 espelhando o diário #3370)
+- `_internal/cloudflare-preview-embedded.html` — variante com imagens embutidas em base64, servida localmente via `serve-preview.ts` no gate (Etapa 3/4, #3546 — CSP fix original #3392 espelhando o diário #3370)
+- `_internal/preview-server-url.json` — URL + PID do servidor de preview local corrente (Etapa 3/4, #3546 — efêmero, não sobrevive entre sessões)
 - `_internal/04-fact-check.json` — claims verificados (Etapa 4)
 - `_internal/.step-N-done.json` (N=1..5) — checkpoints de conclusão por etapa, mesmo formato do diário (#2795)
 - `_internal/05-published.json` — campanha Brevo criada (Etapa 5)

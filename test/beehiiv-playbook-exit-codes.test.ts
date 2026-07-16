@@ -142,12 +142,17 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
       "utf8",
     );
 
-    // Isolar o bloco de re-render do §4c.6b (entre o marcador #2617 e a tabela
-    // de exit codes #2335 que o segue). Garante que o assert mira nesse bloco,
-    // não em outra invocação dos scripts no arquivo.
+    // Isolar o bloco de re-render do §4c.6b (entre o marcador #2617 e o
+    // início do §4c.6c que o segue). Garante que o assert mira nesse bloco,
+    // não em outra invocação dos scripts no arquivo (ex: o re-render do
+    // social em §4c.6c, que agora também chama embed-images-base64.ts/
+    // serve-preview.ts — #3546 alongou este bloco além dos 1200 chars fixos
+    // usados antes, daí o corte por marcador de seção em vez de offset).
     const blockStart = stage4Src.indexOf("Re-render newsletter HTML");
     assert.ok(blockStart >= 0, "bloco §4c.6b de re-render não encontrado");
-    const block = stage4Src.slice(blockStart, blockStart + 1200);
+    const blockEnd = stage4Src.indexOf("**4c.6c —", blockStart);
+    assert.ok(blockEnd > blockStart, "início do §4c.6c não encontrado após o bloco §4c.6b");
+    const block = stage4Src.slice(blockStart, blockEnd);
 
     // render-newsletter-html.ts: edition-dir é POSICIONAL + escreve em arquivo via --out.
     // O bug original (#2598 follow-up) usava --edition-dir (flag inexistente) e omitia
@@ -183,33 +188,39 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
       "substitute-image-urls.ts precisa de --html newsletter-draft.html",
     );
 
-    // #3420: o preview do gate voltou a ser Worker-hosted (Cloudflare draft
-    // worker) — #3214 tinha migrado pra Claude Artifact, mas Artifacts rodam
-    // sob CSP estrita que bloqueia imagem remota (só `data:` URI), quebrando
-    // o preview visual sempre que o HTML referencia imagem http/https
-    // (regressão P1 detectada 260712). Revertido: este bloco deve chamar
-    // upload-html-public.ts de novo, NÃO o tool Artifact.
+    // #3546: o preview do gate agora é servido LOCALMENTE (loopback, sem
+    // Worker/KV, sem Artifact/CSP) — este bloco de re-render pós-autofix
+    // precisa re-gerar a variante embedded e re-servir, não chamar
+    // upload-html-public.ts (Worker) nem o tool Artifact.
     assert.doesNotMatch(
       block,
       /\bArtifact\b/,
-      "#3420: republicação pós-autofix não deve mais chamar o tool Artifact (revertido pra Worker-hosted)",
+      "#3546: republicação pós-autofix não deve chamar o tool Artifact — preview é servido localmente",
     );
     assert.doesNotMatch(
       block,
-      /embed-images-base64\.ts/,
-      "#3420: sem Artifact não há mais CSP a contornar — não deve chamar embed-images-base64.ts",
+      /upload-html-public\.ts\s+--/,
+      "#3546: republicação pós-autofix não deve mais chamar upload-html-public.ts (Worker) — usa serve-preview.ts",
     );
-    // upload-html-public.ts: --no-wrap é OBRIGATÓRIO (#2550) — sobe o fragmento bruto,
-    // igual ao §4b. Sem ele, o HTML re-uploadado vai embrulhado no preview-wrapper.
     assert.match(
       block,
-      /upload-html-public\.ts[\s\S]*?--no-wrap/,
-      "#3420: upload-html-public.ts no re-render precisa de --no-wrap (fragmento bruto, #2550)",
+      /embed-images-base64\.ts/,
+      "#3546: re-render pós-autofix deve gerar a variante embedded via embed-images-base64.ts antes de re-servir",
+    );
+    assert.match(
+      block,
+      /serve-preview\.ts/,
+      "#3546: re-render pós-autofix deve re-servir localmente via serve-preview.ts",
+    );
+    assert.match(
+      block,
+      /serve-preview\.ts[\s\S]*?--stop-pid/,
+      "#3546: deve encerrar o servidor de preview anterior (--stop-pid) antes de subir o novo",
     );
     assert.match(
       block,
       /04-newsletter-url\.json/,
-      "#3420: deve persistir a URL nova em 04-newsletter-url.json via --persist-to (Worker é content-hash-keyed, URL muda a cada upload)",
+      "#3546: deve persistir a URL nova (loopback) em 04-newsletter-url.json via --persist-to",
     );
   });
 
@@ -234,17 +245,18 @@ describe("#2341: beehiiv-playbook.md rules — #1500 primeiro, 2-step só como f
   });
 });
 
-// ── #3420: preview do gate volta a ser Worker-hosted (revert de #3214) ────
-// Claude Artifacts rodam sob CSP estrita que bloqueia carregamento de imagem
-// remota (só `data:` URI). newsletter-final.html/social-preview.html
-// referenciam URLs http/https de imagem — o preview nunca renderizava as
-// imagens dentro do Artifact (P1, editor não conseguia revisar antes do
-// gate). Fix: reverter o mecanismo de publicação do preview pra
-// upload-html-public.ts (Worker Cloudflare, sem CSP), tanto no Stage 4
-// quanto no re-render pós-dispatch social do Stage 5.
+// ── #3546: preview do gate (Stage 4) é servido LOCALMENTE, não Worker/KV ──
+// #3420 tinha revertido pra Worker-hosted (upload-html-public.ts) porque
+// #3214/Claude Artifacts quebrava por CSP (bloqueia imagem remota, só
+// `data:` URI). #3546 resolve isso de outra forma: serve o HTML localmente
+// via scripts/serve-preview.ts (loopback, sem CSP, sem cota Workers KV, sem
+// rede), com imagens embutidas via scripts/embed-images-base64.ts (mesmo
+// script que o mensal já usa pro preview via Artifact, #3392). Cobre Stage 4
+// (revisão) — Stage 5 (§5f-ter, pós-dispatch) fica FORA de escopo do #3546
+// e continua Worker-hosted (ver describe #3420 acima, ainda válido pra ele).
 
-describe("#3420: preview do Stage 4/5 é Worker-hosted, não Claude Artifact", () => {
-  it("orchestrator-stage-4.md §4b (steps 2b/3): publica o preview via upload-html-public.ts, não via Artifact/embed-images-base64", () => {
+describe("#3546: preview do Stage 4 é servido localmente (serve-preview.ts), não Worker/Artifact", () => {
+  it("orchestrator-stage-4.md §4b (steps 2b/3): serve o preview via serve-preview.ts + embed-images-base64.ts, não via upload-html-public.ts/Artifact", () => {
     const stage4Src = readFileSync(
       resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
       "utf8",
@@ -253,35 +265,43 @@ describe("#3420: preview do Stage 4/5 é Worker-hosted, não Claude Artifact", (
     // Isolar o bloco do §4b (entre o step "2b." e o começo do §4c) — cobre a
     // publicação inicial do preview de newsletter e social, o site real do
     // bug original (não só o re-render pós-autofix, já coberto acima).
-    const blockStart = stage4Src.indexOf("2b. **Publicar preview");
-    assert.ok(blockStart >= 0, "step 2b (publicar preview) não encontrado");
+    const blockStart = stage4Src.indexOf("2b. **Servir preview");
+    assert.ok(blockStart >= 0, "step 2b (servir preview localmente) não encontrado");
     const blockEnd = stage4Src.indexOf("### 4c.", blockStart);
     assert.ok(blockEnd > blockStart, "início do §4c não encontrado após step 2b");
     const block = stage4Src.slice(blockStart, blockEnd);
 
-    // `Artifact` entre backticks = sintaxe de invocação do tool (ex: "chamar
-    // `Artifact` com file_path..."). Prosa histórica mencionando "Claude
-    // Artifacts" (sem backticks, explicando o motivo do revert) é permitida.
+    // `Artifact` entre backticks = sintaxe de invocação do tool. Prosa
+    // histórica mencionando "Claude Artifacts"/"Artifact (CSP)" sem
+    // backticks (explicando por que #3420 revertera o Worker) é permitida.
     assert.doesNotMatch(
       block,
       /`Artifact`/,
-      "#3420: publicação do preview (newsletter + social) não deve chamar o tool Artifact — CSP bloqueia imagem remota",
+      "#3546: publicação do preview (newsletter + social) não deve chamar o tool Artifact",
     );
+    // upload-html-public.ts pode aparecer em PROSA (explicando o histórico
+    // #3420 e reservando o script pro upload real da Etapa 5) — o que não
+    // pode é ser INVOCADO (seguido de flag) neste bloco de revisão.
     assert.doesNotMatch(
       block,
+      /upload-html-public\.ts\s+--/,
+      "#3546: publicação do preview não deve invocar upload-html-public.ts (Worker) — usa serve-preview.ts localmente",
+    );
+    assert.match(
+      block,
       /embed-images-base64\.ts/,
-      "#3420: sem Artifact não há CSP a contornar — não deve chamar embed-images-base64.ts pro preview diário",
+      "#3546: preview de newsletter deve gerar a variante embedded via embed-images-base64.ts",
     );
     assert.match(
       block,
-      /upload-html-public\.ts/,
-      "#3420: publicação do preview de newsletter deve usar upload-html-public.ts (Worker Cloudflare)",
+      /serve-preview\.ts/,
+      "#3546: publicação do preview de newsletter deve usar serve-preview.ts (servidor local)",
     );
-    // Preview de social também precisa voltar a subir pro Worker.
+    // Preview de social também precisa ser servido localmente.
     assert.match(
       block,
-      /upload-html-public\.ts[\s\S]*social_preview_url/,
-      "#3420: publicação do preview social também deve usar upload-html-public.ts (--persist-to/--field social_preview_url)",
+      /serve-preview\.ts[\s\S]*social_preview_url/,
+      "#3546: publicação do preview social também deve usar serve-preview.ts (--persist-to/--field social_preview_url)",
     );
   });
 
@@ -293,10 +313,39 @@ describe("#3420: preview do Stage 4/5 é Worker-hosted, não Claude Artifact", (
     assert.doesNotMatch(
       stage4Src,
       /republicar[^\n]*Artifact/i,
-      "#3420: nenhuma instrução de republicação de preview deve referenciar o tool Artifact",
+      "nenhuma instrução de republicação de preview deve referenciar o tool Artifact",
     );
   });
 
+  it("orchestrator-stage-4.md: teardown dos preview servers locais está presente e cobre newsletter + social (#3546 critério de aceite)", () => {
+    const stage4Src = readFileSync(
+      resolve(ROOT, ".claude/agents/orchestrator-stage-4.md"),
+      "utf8",
+    );
+    // Precisa encerrar ambos os PIDs persistidos (newsletter e social) em
+    // algum ponto do fluxo pós-gate — senão os servidores locais ficam
+    // pendurados indefinidamente após o editor decidir sim/abortar/editar.
+    assert.match(
+      stage4Src,
+      /serve-preview\.ts\s+--stop-pid[\s\S]*?newsletter_url_pid/,
+      "#3546: deve haver teardown do servidor de preview da newsletter via --stop-pid",
+    );
+    assert.match(
+      stage4Src,
+      /serve-preview\.ts\s+--stop-pid[\s\S]*?social_preview_url_pid/,
+      "#3546: deve haver teardown do servidor de preview social via --stop-pid",
+    );
+  });
+});
+
+// ── #3420: preview do Stage 5 (pós-dispatch) permanece Worker-hosted ─────
+// Fora de escopo do #3546 (issue restringe explicitamente a mudança ao
+// caminho de REVISÃO — Stage 4/mensal Etapa 4). O re-render de
+// social-preview.html em §5f-ter roda DEPOIS do dispatch real (não é mais
+// uma etapa de revisão pré-publicação) e continua usando o mecanismo
+// Worker-hosted introduzido em #3420, inalterado por este PR.
+
+describe("#3420: preview do Stage 5 (pós-dispatch) é Worker-hosted, não Claude Artifact", () => {
   it("orchestrator-stage-5.md §5f-ter: re-render do social preview pós-dispatch usa upload-html-public.ts, não Artifact/embed-images-base64", () => {
     const stage5Src = readFileSync(
       resolve(ROOT, ".claude/agents/orchestrator-stage-5.md"),
@@ -332,7 +381,7 @@ describe("#3420: preview do Stage 4/5 é Worker-hosted, não Claude Artifact", (
     assert.match(
       scriptSrc,
       /export function persistFieldToJsonFile/,
-      "upload-html-public.ts deve continuar exportando persistFieldToJsonFile (usado pelo --persist-to)",
+      "upload-html-public.ts deve continuar exportando persistFieldToJsonFile (usado pelo --persist-to, inclusive por scripts/serve-preview.ts #3546)",
     );
   });
 });
