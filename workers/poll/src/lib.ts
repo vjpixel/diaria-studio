@@ -514,10 +514,15 @@ export function classify403Reason(sig: string): Vote403Reason {
 
 /**
  * Marcas que têm leaderboard É IA? próprio. `diaria` é o diário (Beehiiv);
- * `clarice` é o digest mensal (Clarice News / Brevo). Cada uma tem ranking,
- * gate de edições e apelidos isolados.
+ * `clarice` é o digest mensal (Clarice News / Brevo); `web` (#3516, EPIC
+ * #3514) é o jogo público standalone em diar.ia.br — visitante anônimo
+ * (identidade por token, sem email/assinatura), ranking mensal próprio,
+ * mesmos pares de imagem já gerados pela pipeline diária. Cada marca tem
+ * ranking, gate de edições e apelidos isolados (mecânica #1905 — um brand
+ * novo entra de graça na isolação, ver `brandKvPrefix`/`parseBrandParam`
+ * abaixo, derivados de `Object.keys(BRAND_INFO)`).
  */
-export type Brand = "diaria" | "clarice";
+export type Brand = "diaria" | "clarice" | "web";
 
 /**
  * #2018: leaderboardPeriod — período canônico do leaderboard por brand.
@@ -538,6 +543,13 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
   // #3108: shortName — a sub-copy do leaderboard clarice linka só "Clarice" (não
   // "Clarice News" inteiro) na frase "newsletter da Clarice".
   clarice: { name: "Clarice News", siteUrl: "https://clarice.ai/?via=diaria", leaderboardPeriod: "year", shortName: "Clarice" },
+  // #3516: leaderboardPeriod "month" com reset natural por mês de publicação
+  // (mesma mecânica score-by-month da diária, #1345) — sugestão #2 do EPIC
+  // #3514 ("mensal com reset+archive, consistente com diaria"). siteUrl
+  // aponta pro site principal (o jogo É a isca de divulgação pra diar.ia.br,
+  // não um produto à parte com marca própria) — decisão de design
+  // conservadora documentada no PR do #3516.
+  web: { name: "Diar.ia", siteUrl: "https://diar.ia.br", leaderboardPeriod: "month" },
 };
 
 /**

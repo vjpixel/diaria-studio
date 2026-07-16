@@ -39,7 +39,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHmac } from "node:crypto";
-import { parseArgs as parseCliArgs } from "./lib/cli-args.ts"; // #535
+import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #535 / #3516
 import { parseEiaMeta } from "./lib/schemas/eia-meta.ts"; // #1031
 import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra ISPs com UDP/53 broken
 import { monthlyDir as resolveMonthlyDir, isValidMonthlyCycle } from "./lib/mensal/monthly-paths.ts"; // #2009 — marker mensal
@@ -58,6 +58,20 @@ const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.work
 // /admin/correct — sempre com brand=clarice).
 function adminSig(secret: string, brand: string, edition: string, answer: string): string {
   return createHmac("sha256", secret).update(`${brand}:${edition}:${answer}`).digest("hex");
+}
+
+/**
+ * Pure (#3516): decide se o close-poll da diária deve TAMBÉM espelhar o
+ * gabarito pro brand `web` (jogo standalone, EPIC #3514). Só o branch
+ * DEFAULT (fecha a diária, `--brand` omitido) dispara o mirror — `clarice`
+ * é um ciclo mensal sem relação com o par diário do standalone, e qualquer
+ * outro `--brand` explícito (ex: `web` direto, pra correção manual) já é o
+ * PRÓPRIO alvo do mirror, não faz sentido espelhar de novo pra si mesmo.
+ * Extraída como função pura testável sem precisar spawnar o CLI inteiro
+ * (que tocaria `data/monthly/` de verdade pro branch clarice).
+ */
+export function shouldMirrorToWeb(brand: string | null): boolean {
+  return brand === null;
 }
 
 async function main(): Promise<void> {
@@ -98,7 +112,14 @@ async function main(): Promise<void> {
   // é uma data de edição diária válida). A sig não muda (HMAC só de edition:answer).
   // #2009: parsed early so the answer-resolution block can emit a clear error for
   // the monthly flow (01-eia-meta.json lives in data/editions/, irrelevant here).
-  const brand = values["brand"] === "clarice" ? "clarice" : null;
+  // #3516: generaliza de "só 'clarice'" pra QUALQUER brand não-diaria — o
+  // branch genérico logo abaixo ("brand não-clarice futuro") já existia
+  // antecipando isso, mas o parse só deixava "clarice" passar. Permite
+  // `--brand web` (jogo standalone, EPIC #3514) usar o MESMO endpoint
+  // /admin/correct genérico sem precisar de um branch dedicado aqui — útil
+  // pro editor corrigir manualmente o gabarito do brand `web` se necessário
+  // (o caminho normal é o mirror automático logo abaixo, no branch default).
+  const brand = values["brand"] && values["brand"] !== "diaria" ? values["brand"] : null;
 
   // Ler ai_side de 01-eia-meta.json se não foi passado manualmente
   if (!answer) {
@@ -214,6 +235,35 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ ok: true, brand, edition, answer, updated_votes: data.updated_votes ?? 0 }));
     return;
   }
+
+  // #3516 (EPIC #3514, fundação do "É IA?" standalone): espelha o MESMO
+  // gabarito pro brand "web" — o jogo público em /jogar reusa literalmente o
+  // par de imagens da diária (mesma edição, mesmos arquivos em /img/), então
+  // fechar o poll da diária é o sinal natural de que o par do dia também
+  // pode revelar resultado no standalone. Best-effort e FAIL-SOFT (mesma
+  // filosofia de `drive-sync.ts`/sync scripts do pipeline — nunca bloqueia o
+  // close-poll principal): uma falha aqui só vira warning em stderr, o
+  // fluxo de publicação da diária (branch acima, já concluído com sucesso
+  // neste ponto) segue intocado. `shouldMirrorToWeb` (pure, testável) é
+  // sempre true neste ponto do código (só chega aqui quando `brand` é null —
+  // os dois `if` acima já retornaram pros outros casos) — o guard explícito
+  // documenta a intenção em vez de depender só do fallthrough estrutural.
+  if (shouldMirrorToWeb(brand)) {
+    try {
+      const webSig = adminSig(secret, "web", edition, answer);
+      const webUrl = `${POLL_WORKER_URL}/admin/correct?edition=${edition}&answer=${answer}&sig=${webSig}&brand=web`;
+      const webRes = await dohFetch(webUrl, { method: "POST" });
+      const webData = await webRes.json().catch(() => ({})) as { ok?: boolean };
+      if (!webRes.ok || !webData.ok) {
+        console.error(`[close-poll] aviso (#3516): mirror --brand web falhou (status ${webRes.status}) para edition=${edition} — não bloqueia close-poll da diária.`);
+      } else {
+        console.error(`[close-poll] gabarito espelhado pro brand=web (edition=${edition}) — #3516.`);
+      }
+    } catch (e) {
+      console.error(`[close-poll] aviso (#3516): mirror --brand web lançou exceção para edition=${edition}: ${(e as Error).message} — não bloqueia close-poll.`);
+    }
+  }
+
   // #3031: mesmo fix do metaPath acima — resolve o path REAL da edição (flat
   // ou nested) em vez de montar data/editions/{edition} à força. Sem isso, o
   // marker era gravado num diretório flat órfão que o resume-check e o
@@ -294,4 +344,15 @@ async function main(): Promise<void> {
   );
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+// #3516: guard de main-module — antes `main()` rodava incondicionalmente em
+// QUALQUER import do arquivo (nunca era um problema porque nada importava
+// close-poll.ts, só invocava via CLI). `shouldMirrorToWeb` (pure, acima)
+// precisa ser importável em teste sem disparar `main()` (que faria parse de
+// `process.argv` do processo de TESTE e abortaria com `process.exit(1)` por
+// falta de `--edition`). Mesmo padrão de `eia-compose.ts`/outros scripts do
+// repo (`isMainModule` de `./lib/cli-args.ts`). Comportamento do CLI real
+// (`npx tsx scripts/close-poll.ts ...`) inalterado — `import.meta.url` só
+// bate com o entrypoint quando rodado diretamente.
+if (isMainModule(import.meta.url)) {
+  main().catch(err => { console.error(err); process.exit(1); });
+}
