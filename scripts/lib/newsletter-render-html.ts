@@ -977,16 +977,20 @@ export function renderLeaderboardLinkRow(paragraphStyle: string): string {
 }
 
 /**
- * Pure (#3524): link PERSISTENTE pro arquivo jogável do "É IA?" standalone no
- * rodapé do painel — a metade "email → site" da ponte cross-canal do EPIC
- * #3514 (#3519 arquivo + #3518 CTA de assinatura já cobrem a metade "site →
- * email"). Renderiza em TODA edição, mesmo padrão de `renderLeaderboardLinkRow`
- * (#1970) — estático, sem fetch, sem depender de `eia.edition` (o arquivo
- * lista TODAS as edições fechadas, não uma específica). `buildJogarArchiveUrl`
- * carrega o UTM do funil (`utm_source=newsletter`) — mede quantos visitantes
- * do arquivo vieram da newsletter vs. share (#3517: `utm_source=share`) vs.
- * embed (#3521: `utm_source=embed`), item de aceite #3524 ("funil distingue
- * origem").
+ * Pure (#3524; SEM caller em produção desde #3578): link PERSISTENTE pro
+ * arquivo jogável do "É IA?" standalone no rodapé do painel — a metade
+ * "email → site" da ponte cross-canal do EPIC #3514 (#3519 arquivo + #3518
+ * CTA de assinatura já cobrem a metade "site → email"). Mesmo padrão de
+ * `renderLeaderboardLinkRow` (#1970) — estático, sem fetch, sem depender de
+ * `eia.edition` (o arquivo lista TODAS as edições fechadas, não uma
+ * específica). `buildJogarArchiveUrl` carrega o UTM do funil
+ * (`utm_source=newsletter`) — mede quantos visitantes do arquivo vieram da
+ * newsletter vs. share (#3517: `utm_source=share`) vs. embed (#3521:
+ * `utm_source=embed`), item de aceite #3524 ("funil distingue origem").
+ * `renderEIA` (única caller de produção) deixou de invocar esta função no
+ * #3578 — a diária vota só no par do dia, sem arquivo. Mantida exportada e
+ * testada (test/eia-cross-canal-3524.test.ts) por não ser exclusiva de
+ * produto; pode voltar a ter caller se a diária reintroduzir o link.
  */
 export function renderJogarArchiveLinkRow(paragraphStyle: string): string {
   const url = buildJogarArchiveUrl();
