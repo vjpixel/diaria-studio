@@ -20,6 +20,16 @@
  * `# Facebook` que `lintInstagramEmailCTA`/`publish-instagram.ts` já usavam
  * (#2486) pra edições/testes que não disparam o novo agent.
  *
+ * #3471: também injeta uma seção `## eia` dentro do LinkedIn (entre os
+ * destaques `## d1/d2/d3` e `## post_pixel`, posição pedida pelo editor) com
+ * o post social do "É IA?" do dia, pronto pra publicação MANUAL. Lida
+ * `01-eia.md` (raiz da edição — gerado por `eia-compose.ts`) e monta o bloco
+ * de forma determinística (`extractEiaCreditLine` + `buildEiaSocialSection` +
+ * `insertEiaSection`, todos exportados/testados). NUNCA lê o frontmatter
+ * `eia_answer` (o gabarito) — só a linha de crédito, que já é pública. Também
+ * OPCIONAL como o Instagram: `01-eia.md` ausente ou num formato inesperado só
+ * omite a seção (warn no stderr), nunca falha o merge.
+ *
  * Uso:
  *   npx tsx scripts/merge-social-md.ts --edition-dir data/editions/260507/
  *
@@ -174,6 +184,108 @@ export function stripLeadingPlatformHeader(
   return lines.slice(i).join("\n");
 }
 
+/**
+ * extractEiaCreditLine (#3471)
+ *
+ * Extrai a linha de crédito do "É IA?" do dia a partir do BODY de `01-eia.md`
+ * — nunca do frontmatter YAML, que carrega `eia_answer` (A/B → real/ia, o
+ * GABARITO do quiz). Vazar o gabarito no social estragaria o jogo pros
+ * leitores que ainda não abriram a edição.
+ *
+ * Formato de `01-eia.md` (ver `eia-compose.ts` `buildEiaMd`):
+ *   ---
+ *   eia_answer:
+ *     A: real|ia
+ *     B: real|ia
+ *   ---
+ *
+ *   **É IA?**
+ *
+ *   <linha de crédito>
+ *
+ *   [Resultado da última edição: ...]  (opcional, #107)
+ *
+ * Retorna a 1ª linha não-vazia após o header `**É IA?**`, ou `null` se o
+ * arquivo não seguir o formato esperado (edição antiga/corrompida) — o
+ * caller trata isso como "sem bloco social pra É IA? nesta edição", nunca
+ * falha o merge por causa disso.
+ */
+export function extractEiaCreditLine(eiaMd: string): string | null {
+  const withoutFrontmatter = eiaMd.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+  const lines = withoutFrontmatter.replace(/\r\n/g, "\n").split("\n");
+  let seenHeader = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!seenHeader) {
+      if (/^\*\*É IA\?\*\*$/i.test(line)) seenHeader = true;
+      continue;
+    }
+    if (line.length === 0) continue;
+    return line;
+  }
+  return null;
+}
+
+/**
+ * buildEiaSocialSection (#3471)
+ *
+ * Monta a seção `## eia` do "É IA?" do dia pro `03-social.md` — texto
+ * copy-paste pronto pra publicação MANUAL nas redes (pedido do editor,
+ * issue #3471: "só disponibilizar o artefato pronto pra copiar/postar").
+ *
+ * Template-based (mesma filosofia de `eia-compose.ts`: "credit line e SD
+ * prompt são template-based, não natural-language poetry" — editor pode
+ * polir no gate se quiser). Passa pelo humanizador/Clarice igual ao resto
+ * de `03-social.md` (roda in-place no arquivo inteiro, #1072), então o tom
+ * final ainda é calibrado — este template é só o ponto de partida.
+ *
+ * NUNCA inclui o gabarito (`eia_answer`) — só a linha de crédito, que já é
+ * pública (mesmo texto que aparece pro leitor em `01-eia.md`/na newsletter).
+ *
+ * Publicação continua manual por construção, sem guard extra necessário:
+ * `publish-linkedin.ts` só itera destaques `["d1","d2","d3"]` e trata
+ * `post_pixel` como caso manual à parte (#1690) — a seção `## eia` nunca
+ * entra em nenhum desses loops, logo nunca é dispatchada automaticamente.
+ */
+export function buildEiaSocialSection(creditLine: string): string {
+  const body = [
+    "É IA? 🧐",
+    "",
+    "Duas imagens no post: uma é foto real, a outra foi gerada por inteligência artificial. Veja se consegue diferenciar antes de conferir a resposta.",
+    "",
+    creditLine,
+    "",
+    "Vote respondendo o quiz na edição da newsletter em diar.ia.br e confira o resultado na edição seguinte.",
+    "",
+    "Imagens para o post: 01-eia-A.jpg (opção A) e 01-eia-B.jpg (opção B).",
+  ].join("\n");
+  return `## eia\n\n<!-- destaque: eia -->\n\n${body}\n`;
+}
+
+/**
+ * insertEiaSection (#3471)
+ *
+ * Insere a seção `## eia` dentro do conteúdo LinkedIn já processado (header
+ * de plataforma `# LinkedIn` já removido pelo caller), na posição pedida
+ * pelo editor (issue #3471, comentário 260714): imediatamente ANTES de
+ * `## post_pixel` — ou seja, depois dos posts dos destaques (`## d1/d2/d3`
+ * + comments), antes do post pessoal standalone do Pixel.
+ *
+ * Sem `## post_pixel` no conteúdo (edição antiga, ou campo não gerado por
+ * algum motivo), acrescenta a seção ao final — nunca descarta o bloco.
+ */
+export function insertEiaSection(linkedinBody: string, eiaSection: string): string {
+  const body = linkedinBody.replace(/\r\n/g, "\n");
+  const ppHeaderRe = /\n## post_pixel\b/i;
+  const m = ppHeaderRe.exec(body);
+  if (!m) {
+    return `${body.trimEnd()}\n\n${eiaSection.trim()}\n`;
+  }
+  const before = body.slice(0, m.index);
+  const after = body.slice(m.index); // começa com "\n## post_pixel..."
+  return `${before.trimEnd()}\n\n${eiaSection.trim()}\n${after}`;
+}
+
 interface TmpCheck {
   agent: string;
   path: string;
@@ -302,6 +414,40 @@ function main(): void {
     );
   }
   liStripped = liAfterHeaderStrip.trim();
+
+  // #3471: seção "## eia" — best-effort, opcional. `01-eia.md` (ou o legacy
+  // `01-eai.md` pré-#428) mora na RAIZ da edição, não em `_internal/` — lido
+  // aqui, não em `editionDirArg`, porque o merge roda com `--edition-dir`
+  // apontando pro root da edição já. Nunca falha o merge por causa disso:
+  // 01-eia.md pode ainda não existir (eia-compose roda em background bash
+  // desde o Stage 1, #1111) ou pode estar num formato inesperado — nesses
+  // casos, `03-social.md` sai igual ao formato pré-#3471, sem a seção.
+  const eiaMdPath = existsSync(resolve(editionDir, "01-eia.md"))
+    ? resolve(editionDir, "01-eia.md")
+    : existsSync(resolve(editionDir, "01-eai.md"))
+      ? resolve(editionDir, "01-eai.md")
+      : null;
+  if (eiaMdPath) {
+    try {
+      const eiaRaw = readFileSync(eiaMdPath, "utf8");
+      const creditLine = extractEiaCreditLine(eiaRaw);
+      if (creditLine) {
+        const eiaSection = buildEiaSocialSection(creditLine);
+        liStripped = insertEiaSection(liStripped, eiaSection).trim();
+        console.error(`merge-social-md: info — seção '## eia' incluída (#3471) a partir de ${eiaMdPath}`);
+      } else {
+        console.error(
+          `merge-social-md: warn — ${eiaMdPath} encontrado mas linha de crédito não extraída (formato inesperado) — pulando seção '## eia' (#3471).`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        `merge-social-md: warn — falha lendo ${eiaMdPath} para seção '## eia' (não-fatal, #3471): ${(err as Error).message}`,
+      );
+    }
+  } else {
+    console.error(`merge-social-md: info — 01-eia.md ausente em ${editionDir} — seção '## eia' não incluída (#3471).`);
+  }
 
   const fbAfterHeaderStrip = stripLeadingPlatformHeader(fbStripped, "facebook");
   if (fbAfterHeaderStrip !== fbStripped) {
