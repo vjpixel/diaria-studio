@@ -20,15 +20,21 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { classifyRefreshError } from "../google-auth.ts";
-import { DRIVE_API, DRIVE_UPLOAD } from "./drive-constants.ts"; // #1308 item 1
+import {
+  DRIVE_API,
+  DRIVE_UPLOAD,
+  DRIVE_ROOT_FOLDER_NAME,
+  DRIVE_ROOT_FOLDER_NAME_FALLBACKS,
+} from "./drive-constants.ts"; // #1308 item 1, #3573
 import {
   gFetchRetry,
   escapeDriveQueryString,
   driveCreateFolder,
   driveFindFolderInParent,
+  driveFindFolderByNames,
   driveFindFolderInRoot,
   buildMultipartBody,
-} from "./drive-helpers.ts"; // #1308 itens 2, 4
+} from "./drive-helpers.ts"; // #1308 itens 2, 4; #3573
 import {
   parseDriveFileMetadata,
   parseDriveFileUploadResponse,
@@ -566,11 +572,19 @@ export async function resolveEdicoesFolder(cache: DriveCache): Promise<string> {
   const startupsId = await driveFindFolderInParent("Startups", workId);
   if (!startupsId) throw new Error("drive_path_missing:Startups — pasta 'Startups' não encontrada em Work");
 
-  const diaria = await driveFindFolderInParent("diar.ia", startupsId);
-  if (!diaria) throw new Error("drive_path_missing:diar.ia — pasta 'diar.ia' não encontrada em Startups");
+  // #3573: pasta raiz foi renomeada de "diar.ia" pra "diar.ia.br" — tenta o
+  // nome atual primeiro, cai pros legados (DRIVE_ROOT_FOLDER_NAME_FALLBACKS)
+  // se não achar, tolerando esse rename e qualquer rollback/rename futuro.
+  const diariaNames = [DRIVE_ROOT_FOLDER_NAME, ...DRIVE_ROOT_FOLDER_NAME_FALLBACKS];
+  const diaria = await driveFindFolderByNames(diariaNames, startupsId);
+  if (!diaria) {
+    throw new Error(
+      `drive_path_missing:diar.ia — nenhuma pasta encontrada em Startups (tentados: ${diariaNames.join(", ")})`
+    );
+  }
 
-  const edicoes = await driveFindFolderInParent("edicoes", diaria);
-  if (!edicoes) throw new Error("drive_path_missing:edicoes — pasta 'edicoes' não encontrada em diar.ia");
+  const edicoes = await driveFindFolderInParent("edicoes", diaria.id);
+  if (!edicoes) throw new Error(`drive_path_missing:edicoes — pasta 'edicoes' não encontrada em ${diaria.matchedName}`);
 
   cache.edicoes_folder_id = edicoes;
   return edicoes;
