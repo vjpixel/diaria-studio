@@ -1,5 +1,9 @@
 import type { Env } from "./index";
 import { type Brand, editionToMonthSlug, AAMMDD_RE, BRAND_INFO } from "./lib"; // #3297: AAMMDD_RE substitui regex inline
+// #3522: streak (dias/meses consecutivos acertando) — continuidade de
+// período de votação + sufixo de exibição pós-voto. Ver rationale completo
+// no header da seção "Streak" em lib.ts.
+import { isConsecutiveVotingPeriod, renderStreakSuffix } from "./lib";
 import {
   formatEditionDateForBrand,
   parseValidEditions,
@@ -491,7 +495,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   await Promise.all([
     (async () => {
       if (!(await env.POLL.get(scoreGuardKey))) {
-        await updateScore(env, email, edition, correct, scoreRaw);
+        await updateScore(env, email, edition, correct, scoreRaw, brand); // #3522: brand p/ cadência do streak
         await env.POLL.put(scoreGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
       }
     })(),
@@ -547,8 +551,24 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
     console.error(JSON.stringify({ event: "vote_log_failed", edition, error: String(e) }));
   }
 
+  // #3522: streak pra exibição na mensagem pós-voto ("🔥 N dias seguidos
+  // acertando!"). Lido do KV DEPOIS dos incrementos acima — cobre tanto o
+  // caminho de voto novo (guard-key acabou de gravar) quanto um retry onde o
+  // guard já existia (updateScore sequer foi chamado nesta invocação) sem
+  // duplicar a lógica de cálculo de streak aqui (mesma disciplina de reuso
+  // que scoreObj/prevScoreObj já seguem no resto deste arquivo). Só lido
+  // quando correct===true — é a única transição em que `updateScore` pode
+  // ter incrementado o streak (correct null/false não o alteram além do
+  // reset-pra-0, que não precisa de leitura extra pra decidir "sem sufixo").
+  let streakForDisplay: number | null = null;
+  if (correct === true) {
+    const freshScoreRaw = await env.POLL.get(`score:${email}`);
+    const freshScore = safeParseKv<{ streak?: number }>(freshScoreRaw, "vote_streak_display_parse_error", edition);
+    streakForDisplay = freshScore?.streak ?? null;
+  }
+
   const msg = correct === true
-    ? "✅ Acertou! Era a imagem gerada por IA."
+    ? `✅ Acertou! Era a imagem gerada por IA.${renderStreakSuffix(streakForDisplay, brand)}`
     : correct === false
     ? "❌ Não foi dessa vez — era a foto real."
     : "Voto registrado! O resultado sai na próxima edição.";
@@ -965,6 +985,7 @@ async function updateScore(
   edition: string,
   correct: boolean | null,
   preloadedScoreRaw?: string | null,
+  brand: Brand = "diaria",
 ): Promise<void> {
   const scoreKey = `score:${email}`;
   // #2190: usa o valor pré-lido se disponível; senão faz o get (backfill do admin).
@@ -985,14 +1006,41 @@ async function updateScore(
   // #3355: mesmo guard `?? 0` de updateStatsCounter (ver nota lá).
   score.total = (score.total ?? 0) + 1;
   // correct === null → gabarito ainda não definido: incrementa total mas não
-  // mexe em correct/streak (preserva estado pra reconciliação futura).
+  // mexe em correct/streak/last_edition (preserva estado pra reconciliação
+  // futura — caso do brand "web" votando no par do dia ANTES do reveal do
+  // dia seguinte via close-poll mirror, #3516). NOTA (#3522, decisão
+  // conservadora documentada): a reconciliação retroativa de streak quando o
+  // gabarito É definido depois passa por `handleAdminCorrect`/
+  // `adjustScoreCorrectOnly` (index.ts/vote.ts) — essa função é também o
+  // caminho de correção AO VIVO de gabarito já revelado pra diaria/clarice
+  // (typo do editor), e um teste de regressão já trava deliberadamente
+  // "streak NUNCA é tocado pelo backfill" (#2202/#2217,
+  // test/poll-hardening-2188-2189-2190-2191.test.ts). Estender esse caminho
+  // pra também atualizar streak no caso null→revelado (só relevante pra
+  // "web") exigiria distinguir "1ª revelação" de "correção de valor já
+  // conhecido" sem quebrar esse invariante travado — mudança genuína no
+  // pipeline de correção ao vivo, fora do escopo conservador desta issue
+  // (ver PR #3522: "documentar plano do e-mail como follow-up, não forçar
+  // mudança arriscada"). Efeito prático: o voto do PRÓPRIO dia no brand
+  // "web" nunca soma streak sozinho — soma quando o jogador volta e vota de
+  // novo (arquivo/par seguinte, correctness já resolvida na hora do voto).
   if (correct === true) {
+    // #3522: streak só continua se esta edição é o PRÓXIMO período de
+    // votação esperado (dia útil seguinte, ou mês de conteúdo seguinte pra
+    // brand "year"/clarice) após `score.last_edition` — sem isso, um
+    // jogador que pulava dias/meses mantinha o streak intacto (só zerava em
+    // resposta errada, nunca em ausência de voto). `score.last_edition` só
+    // avança quando a correctness é CONHECIDA (aqui e no `else if` de
+    // correct===false abaixo) — por isso funciona como "última edição com
+    // streak resolvido", não "última edição votada".
+    const continues = isConsecutiveVotingPeriod(score.last_edition, edition, brand);
+    score.streak = continues ? (score.streak || 0) + 1 : 1;
     score.correct = (score.correct ?? 0) + 1;
-    score.streak = (score.streak || 0) + 1;
+    score.last_edition = edition;
   } else if (correct === false) {
     score.streak = 0;
+    score.last_edition = edition;
   }
-  score.last_edition = edition;
   // Preserve nickname if already set (don't overwrite)
   if (score.nickname === undefined) score.nickname = null;
 
