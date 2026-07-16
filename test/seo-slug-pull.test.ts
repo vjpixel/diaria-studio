@@ -3,7 +3,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { slugify, seoSlug, seoMetaDescription } from "../scripts/lib/slug.ts";
+import { slugify, seoSlug, seoMetaDescription, formatManualSlugFixInstructions } from "../scripts/lib/slug.ts";
 import { scoreOpportunities, parseGscResponse, isoDate, type GscRow } from "../scripts/seo-pull.ts";
 
 describe("slug acent-correto (#1989)", () => {
@@ -12,6 +12,29 @@ describe("slug acent-correto (#1989)", () => {
     assert.equal(slugify("Empregos e automação: pânico vs dados"), "empregos-e-automacao-panico-vs-dados");
     assert.equal(slugify("Inteligência Artificial à brasileira"), "inteligencia-artificial-a-brasileira");
     assert.equal(slugify("ChatGPT, Gemini & Claude"), "chatgpt-gemini-claude");
+  });
+
+  it("#3449 regressão: título real da edição 260714 (â→a) — 'câncer' vira 'cancer', não 'c-ncer'", () => {
+    // Caso real do post-mortem #3449: Beehiiv REMOVEU o 'â' em vez de
+    // transliterar, gerando `ia-do-google-detecta-c-ncer-raro-no-sus`.
+    assert.equal(
+      slugify("IA do Google detecta câncer raro no SUS"),
+      "ia-do-google-detecta-cancer-raro-no-sus",
+    );
+    assert.equal(
+      seoSlug("IA do Google detecta câncer raro no SUS"),
+      "ia-do-google-detecta-cancer-raro-no-sus",
+    );
+  });
+
+  it("#3449: cobertura de todos os acentos PT-BR comuns (â/ç/ã/é/í/ó/ú)", () => {
+    assert.equal(slugify("Câmera"), "camera"); // â
+    assert.equal(slugify("Ação"), "acao"); // ã + ç (cedilha)
+    assert.equal(slugify("Café"), "cafe"); // é
+    assert.equal(slugify("País"), "pais"); // í
+    assert.equal(slugify("Órgão"), "orgao"); // ó + ã
+    assert.equal(slugify("Última"), "ultima"); // ú
+    assert.equal(slugify("Reação química"), "reacao-quimica"); // ç + í
   });
 
   it("seoSlug: trunca em palavra inteira até maxLen (sem cortar palavra/hífen pendente)", () => {
@@ -32,6 +55,23 @@ describe("slug acent-correto (#1989)", () => {
     const long = seoMetaDescription("A".repeat(100), "B".repeat(100), 80);
     assert.ok(long.length <= 81, "≤ maxLen + reticências");
     assert.ok(long.endsWith("…"));
+  });
+});
+
+describe("formatManualSlugFixInstructions (#3449)", () => {
+  it("inclui post_id, slug alvo e localização do campo na UI Beehiiv", () => {
+    const msg = formatManualSlugFixInstructions("post_abc123", "ia-do-google-detecta-cancer-raro-no-sus");
+    assert.match(msg, /post_abc123/);
+    assert.match(msg, /ia-do-google-detecta-cancer-raro-no-sus/);
+    assert.match(msg, /#text-input-slug/);
+    assert.match(msg, /SEO/i);
+    assert.match(msg, /app\.beehiiv\.com\/posts\/post_abc123\/edit/);
+  });
+
+  it("é determinística (mesma entrada → mesma saída)", () => {
+    const a = formatManualSlugFixInstructions("post_x", "slug-x");
+    const b = formatManualSlugFixInstructions("post_x", "slug-x");
+    assert.equal(a, b);
   });
 });
 
