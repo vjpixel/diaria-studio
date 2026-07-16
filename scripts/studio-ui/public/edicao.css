@@ -1,13 +1,6 @@
 /* edicao.css (#3558) — cockpit de UMA edição. Estende style.css (#3555),
-   mesma fonte de tokens (/tokens.generated.css). */
-
-.back-link {
-  color: inherit;
-  text-decoration: none;
-  font-family: var(--font-mono);
-  opacity: 0.85;
-}
-.back-link:hover { opacity: 1; text-decoration: underline; }
+   mesma fonte de tokens (/tokens.generated.css). `.back-link` mudou pra
+   style.css em #3562 (agora usado também por index.html → /triagem). */
 
 .hint {
   font-size: 0.82rem;

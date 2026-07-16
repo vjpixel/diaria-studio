@@ -1,0 +1,220 @@
+/**
+ * test/studio-issues.test.ts (#3562) — cobertura de
+ * scripts/studio-ui/studio-issues.ts: derivação pura (prioridade, trilha),
+ * parsing do JSON cru do `gh`, e a camada de cache/fail-soft de
+ * `fetchTriageData` com um runner de `gh` mockado (sem invocar o binário
+ * real nem rede).
+ */
+import { describe, it, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import {
+  derivePriority,
+  deriveTrackFromBranch,
+  parseIssues,
+  parsePrs,
+  fetchTriageData,
+  clearTriageCache,
+  type GhRunFn,
+  type GhIssueRaw,
+  type GhPrRaw,
+} from "../scripts/studio-ui/studio-issues.ts";
+
+describe("derivePriority (#3562)", () => {
+  it("acha a primeira label P0-P3", () => {
+    assert.equal(derivePriority(["bug", "P2", "diaria"]), "P2");
+  });
+  it("null quando nenhuma label bate", () => {
+    assert.equal(derivePriority(["bug", "enhancement"]), null);
+  });
+  it("não confunde 'P10' ou 'p2' minúsculo com prioridade válida", () => {
+    assert.equal(derivePriority(["P10", "p2"]), null);
+  });
+});
+
+describe("deriveTrackFromBranch (#3562)", () => {
+  it("overnight/fix-NNNN-slug -> overnight", () => {
+    assert.equal(deriveTrackFromBranch("overnight/fix-3562-studio-issues-cockpit"), "overnight");
+  });
+  it("overnight/batch-slug -> overnight", () => {
+    assert.equal(deriveTrackFromBranch("overnight/batch-cleanup"), "overnight");
+  });
+  it("develop/fix-NNNN -> develop", () => {
+    assert.equal(deriveTrackFromBranch("develop/fix-1234"), "develop");
+  });
+  it("develop/blast-NNNN -> develop", () => {
+    assert.equal(deriveTrackFromBranch("develop/blast-1234"), "develop");
+  });
+  it("branch manual do editor -> other", () => {
+    assert.equal(deriveTrackFromBranch("editor/hotfix-urgente"), "other");
+  });
+  it("undefined/null/vazio -> other, sem lançar", () => {
+    assert.equal(deriveTrackFromBranch(undefined), "other");
+    assert.equal(deriveTrackFromBranch(null), "other");
+    assert.equal(deriveTrackFromBranch(""), "other");
+  });
+});
+
+describe("parseIssues (#3562)", () => {
+  it("normaliza labels + deriva prioridade", () => {
+    const raw: GhIssueRaw[] = [
+      {
+        number: 3562,
+        title: "Cockpit de issues",
+        url: "https://github.com/x/y/issues/3562",
+        state: "OPEN",
+        labels: [{ name: "P1" }, { name: "enhancement" }],
+        createdAt: "2026-07-01T00:00:00Z",
+        updatedAt: "2026-07-15T00:00:00Z",
+      },
+    ];
+    const [issue] = parseIssues(raw);
+    assert.equal(issue.number, 3562);
+    assert.deepEqual(issue.labels, ["P1", "enhancement"]);
+    assert.equal(issue.priority, "P1");
+    assert.equal(issue.createdAt, "2026-07-01T00:00:00Z");
+  });
+
+  it("labels ausentes/malformadas viram array vazio, sem lançar", () => {
+    const raw = [
+      { number: 1, title: "sem labels", url: "u", state: "OPEN" },
+    ] as GhIssueRaw[];
+    const [issue] = parseIssues(raw);
+    assert.deepEqual(issue.labels, []);
+    assert.equal(issue.priority, null);
+    assert.equal(issue.createdAt, null);
+  });
+});
+
+describe("parsePrs (#3562)", () => {
+  it("deriva track do headRefName + prioridade das labels", () => {
+    const raw: GhPrRaw[] = [
+      {
+        number: 100,
+        title: "fix overnight",
+        url: "u",
+        state: "OPEN",
+        isDraft: false,
+        headRefName: "overnight/fix-99-slug",
+        labels: [{ name: "P0" }],
+      },
+      {
+        number: 101,
+        title: "fix develop",
+        url: "u2",
+        state: "OPEN",
+        isDraft: true,
+        headRefName: "develop/fix-1234",
+        labels: [],
+      },
+    ];
+    const [pr1, pr2] = parsePrs(raw);
+    assert.equal(pr1.track, "overnight");
+    assert.equal(pr1.priority, "P0");
+    assert.equal(pr2.track, "develop");
+    assert.equal(pr2.isDraft, true);
+    assert.equal(pr2.priority, null);
+  });
+});
+
+describe("fetchTriageData (#3562)", () => {
+  beforeEach(() => {
+    clearTriageCache();
+  });
+
+  function mockRun(issues: unknown[], prs: unknown[], status = 0): GhRunFn {
+    return (args: string[]) => {
+      if (args[0] === "issue") {
+        return { status, stdout: JSON.stringify(issues), stderr: "" };
+      }
+      return { status, stdout: JSON.stringify(prs), stderr: "" };
+    };
+  }
+
+  it("busca issues + PRs via o runner injetado e monta o snapshot", () => {
+    const run = mockRun(
+      [{ number: 1, title: "a", url: "u", state: "OPEN", labels: [] }],
+      [{ number: 2, title: "b", url: "u2", state: "OPEN", isDraft: false, headRefName: "overnight/fix-1-x", labels: [] }],
+    );
+    const data = fetchTriageData("/tmp/root-a", { run, now: () => 1000 });
+    assert.equal(data.error, null);
+    assert.equal(data.cached, false);
+    assert.equal(data.issues.length, 1);
+    assert.equal(data.prs.length, 1);
+    assert.equal(data.prs[0].track, "overnight");
+  });
+
+  it("dentro do TTL, uma segunda chamada serve do cache sem invocar o runner de novo", () => {
+    let calls = 0;
+    const run: GhRunFn = (args) => {
+      calls++;
+      return { status: 0, stdout: args[0] === "issue" ? "[]" : "[]", stderr: "" };
+    };
+    let nowMs = 1000;
+    fetchTriageData("/tmp/root-b", { run, cacheTtlMs: 60_000, now: () => nowMs });
+    const callsAfterFirst = calls;
+    nowMs += 1000; // ainda dentro do TTL
+    const second = fetchTriageData("/tmp/root-b", { run, cacheTtlMs: 60_000, now: () => nowMs });
+    assert.equal(calls, callsAfterFirst); // não chamou o runner de novo
+    assert.equal(second.cached, true);
+  });
+
+  it("após o TTL expirar, refaz o fetch", () => {
+    let calls = 0;
+    const run: GhRunFn = () => {
+      calls++;
+      return { status: 0, stdout: "[]", stderr: "" };
+    };
+    let nowMs = 1000;
+    fetchTriageData("/tmp/root-c", { run, cacheTtlMs: 1000, now: () => nowMs });
+    const callsAfterFirst = calls;
+    nowMs += 2000; // passou do TTL
+    fetchTriageData("/tmp/root-c", { run, cacheTtlMs: 1000, now: () => nowMs });
+    assert.ok(calls > callsAfterFirst);
+  });
+
+  it("gh falhando (status != 0) sem cache anterior: arrays vazios + error preenchido, nunca lança", () => {
+    const run: GhRunFn = () => ({ status: 1, stdout: "", stderr: "rate limit exceeded" });
+    const data = fetchTriageData("/tmp/root-d", { run, now: () => 1000 });
+    assert.deepEqual(data.issues, []);
+    assert.deepEqual(data.prs, []);
+    assert.match(data.error ?? "", /rate limit exceeded/);
+    assert.equal(data.cached, false);
+  });
+
+  it("gh falhando DEPOIS de um fetch bom: serve o cache stale com error preenchido", () => {
+    let shouldFail = false;
+    const run: GhRunFn = (args) => {
+      if (shouldFail) return { status: 1, stdout: "", stderr: "boom" };
+      return { status: 0, stdout: args[0] === "issue" ? '[{"number":1,"title":"x","url":"u","state":"OPEN"}]' : "[]", stderr: "" };
+    };
+    let nowMs = 1000;
+    const first = fetchTriageData("/tmp/root-e", { run, cacheTtlMs: 500, now: () => nowMs });
+    assert.equal(first.issues.length, 1);
+
+    shouldFail = true;
+    nowMs += 1000; // expira o cache
+    const second = fetchTriageData("/tmp/root-e", { run, cacheTtlMs: 500, now: () => nowMs });
+    assert.equal(second.issues.length, 1); // stale, mas ainda presente
+    assert.equal(second.cached, true);
+    assert.match(second.error ?? "", /boom/);
+  });
+
+  it("stdout que não é JSON válido vira erro tratado, nunca lança", () => {
+    const run: GhRunFn = () => ({ status: 0, stdout: "não é json", stderr: "" });
+    assert.doesNotThrow(() => fetchTriageData("/tmp/root-f", { run, now: () => 1000 }));
+    const data = fetchTriageData("/tmp/root-g", { run, now: () => 1000 });
+    assert.ok(data.error);
+  });
+
+  it("forceRefresh ignora o cache mesmo dentro do TTL", () => {
+    let calls = 0;
+    const run: GhRunFn = () => {
+      calls++;
+      return { status: 0, stdout: "[]", stderr: "" };
+    };
+    fetchTriageData("/tmp/root-h", { run, cacheTtlMs: 60_000, now: () => 1000 });
+    const callsAfterFirst = calls;
+    fetchTriageData("/tmp/root-h", { run, cacheTtlMs: 60_000, now: () => 1000, forceRefresh: true });
+    assert.ok(calls > callsAfterFirst);
+  });
+});

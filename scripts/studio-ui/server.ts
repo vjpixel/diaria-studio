@@ -17,12 +17,21 @@
  *     a página consome as mesmas `/api/state` + `/api/editions/:aammdd` +
  *     `/api/events` já existentes). AAMMDD não é validado aqui: a página
  *     cliente delega a validação/404 pras chamadas de API que ela mesma faz.
+ *   - `GET /api/issues` — issues abertas + PRs abertos do GitHub (via `gh
+ *     issue list` / `gh pr list`, cache+throttle em `studio-issues.ts`) pra a
+ *     view de triagem (#3562).
+ *   - `GET /triagem` — cockpit de triagem de issues/PRs (#3562): mesma
+ *     estratégia de rewrite client-side de `/edicao/:aammdd`, servindo
+ *     `public/triagem.html`.
  *
  * **Read-only por construção** (#3555 é a fatia fundação da EPIC — as fatias
  * de AÇÃO vêm depois, #3556+): nenhuma rota aqui escreve em disco nem
  * dispara nada. Sem autenticação nesta fatia — acesso remoto é escopo da
  * #3560; aqui o único guard de segurança é o bind loopback. #3558 (cockpit
- * de edição) preserva esse invariante: é só mais uma view read-only.
+ * de edição) e #3562 (triagem de issues/PRs) preservam esse invariante: são
+ * só mais views read-only. #3562 em particular nunca expõe token do GitHub
+ * (o server só invoca o binário `gh`, que resolve auth localmente) e nunca
+ * chama subcomando de mutação (`close`/`comment`/`merge`) — só `list`.
  *
  * Ver "Decisões de design" no PR body pra rationale completo (framework
  * escolhido, estrutura de diretórios, formato das APIs, pontos de extensão).
@@ -50,6 +59,7 @@ import { watchPlanFiles, type PlanWatchHandle } from "./plan-watch.ts";
 import { formatSseEvent, formatSseComment } from "./sse.ts";
 import { serveStaticFile } from "./static-serve.ts";
 import { buildTokensCss } from "./tokens-css.ts";
+import { fetchTriageData, type GhRunFn } from "./studio-issues.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -83,6 +93,9 @@ export interface StudioServerOptions {
   runLogTailSize?: number;
   /** Intervalo de polling (ms) dos watchers — reduzido em testes. */
   pollIntervalMs?: number;
+  /** Runner de `gh` injetável pra `/api/issues` (#3562) — testes mockam sem
+   * invocar o binário real nem rede; produção usa o default de `studio-issues.ts`. */
+  ghRun?: GhRunFn;
 }
 
 export interface StudioServer {
@@ -156,6 +169,13 @@ function handleApiEvents(
   res.on("error", cleanup);
 }
 
+/** `GET /api/issues` — issues abertas + PRs abertos do GitHub (#3562). Sempre
+ * 200: `fetchTriageData` é fail-soft (nunca lança), erros de `gh` vêm
+ * embutidos no campo `error` do payload. */
+function handleApiIssues(rootDir: string, res: ServerResponse, ghRun?: GhRunFn): void {
+  sendJson(res, 200, fetchTriageData(rootDir, { run: ghRun }));
+}
+
 function handleTokensCss(res: ServerResponse): void {
   const css = buildTokensCss();
   res.writeHead(200, {
@@ -173,6 +193,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const rootDir = resolve(opts.rootDir ?? process.cwd());
   const runLogTailSize = opts.runLogTailSize ?? 50;
   const pollIntervalMs = opts.pollIntervalMs ?? 1000;
+  const ghRun = opts.ghRun;
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -196,6 +217,10 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiEdition(rootDir, editionMatch[1], res);
         return;
       }
+      if (urlPath === "/api/issues") {
+        handleApiIssues(rootDir, res, ghRun);
+        return;
+      }
       if (urlPath === "/tokens.generated.css") {
         handleTokensCss(res);
         return;
@@ -209,6 +234,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // de 400/404 já coberto por handleApiEdition).
       if (/^\/edicao\/[^/]+\/?$/.test(urlPath)) {
         const served = serveStaticFile(PUBLIC_DIR, "/edicao.html", res);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #3562: mesma estratégia de rewrite — a página busca /api/issues.
+      if (urlPath === "/triagem" || urlPath === "/triagem/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/triagem.html", res);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");

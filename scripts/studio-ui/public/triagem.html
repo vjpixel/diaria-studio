@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diar.ia Studio — Triagem</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <a class="statusbar-item back-link" href="/">&larr; Painel</a>
+    <div class="statusbar-item">
+      <span class="label">Triagem</span>
+      <span class="value">issues + PRs abertos</span>
+    </div>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Triagem — issues &amp; PRs</h1>
+      <p class="hint">
+        Read-only: só lista e linka pro GitHub. Nenhum botão aqui fecha,
+        comenta ou mergeia. Dados vêm de <code>gh issue list</code> /
+        <code>gh pr list</code> com cache no servidor (~60s) — atualizar
+        aqui não estoura o rate limit do <code>gh</code>.
+      </p>
+      <div id="triage-error" class="panel alert-banner" hidden></div>
+
+      <div class="filters-bar">
+        <label class="filter-field">
+          <span class="label">Prioridade</span>
+          <select id="filter-priority">
+            <option value="">Todas</option>
+            <option value="P0">P0</option>
+            <option value="P1">P1</option>
+            <option value="P2">P2</option>
+            <option value="P3">P3</option>
+            <option value="none">Sem prioridade</option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <span class="label">Trilha (PRs)</span>
+          <select id="filter-track">
+            <option value="">Todas</option>
+            <option value="overnight">overnight</option>
+            <option value="develop">develop</option>
+            <option value="other">other</option>
+          </select>
+        </label>
+        <div class="filter-field filter-labels-field">
+          <span class="label">Labels</span>
+          <div id="filter-labels" class="filter-labels"></div>
+        </div>
+        <button id="refresh-btn" type="button">Atualizar</button>
+        <span id="last-updated" class="hint"></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Issues abertas (<span id="issues-count">0</span>)</h2>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Título</th>
+              <th>Prioridade</th>
+              <th>Labels</th>
+              <th>Atualizada</th>
+            </tr>
+          </thead>
+          <tbody id="issues-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>PRs abertos (<span id="prs-count">0</span>)</h2>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Título</th>
+              <th>Trilha</th>
+              <th>Prioridade</th>
+              <th>Labels</th>
+              <th>Atualizado</th>
+            </tr>
+          </thead>
+          <tbody id="prs-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/triagem.js" type="module"></script>
+</body>
+</html>
