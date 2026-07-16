@@ -11,7 +11,26 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
+import type { QueryFn } from "../scripts/studio-ui/studio-chat.ts";
+
+/** Parseia um corpo SSE completo (já lido inteiro) em `{event, data}[]` —
+ * mesmo formato de `formatSseEvent`. Ignora linhas de comentário (heartbeat). */
+function parseSseBody(body: string): Array<{ event: string; data: unknown }> {
+  return body
+    .split("\n\n")
+    .filter((chunk) => chunk.trim() && !chunk.startsWith(":"))
+    .map((chunk) => {
+      const lines = chunk.split("\n");
+      const eventLine = lines.find((l) => l.startsWith("event:"));
+      const dataLine = lines.find((l) => l.startsWith("data:"));
+      return {
+        event: eventLine ? eventLine.slice("event:".length).trim() : "message",
+        data: dataLine ? JSON.parse(dataLine.slice("data:".length).trim()) : null,
+      };
+    });
+}
 
 describe("studio-server (#3555)", () => {
   let root: string;
@@ -98,8 +117,13 @@ describe("studio-server (#3555)", () => {
     assert.equal(res.status, 403);
   });
 
-  it("POST é rejeitado com 405 — servidor é read-only nesta fatia", async () => {
+  it("POST é rejeitado com 405 em rotas read-only (exceto /api/chat, #3556)", async () => {
     const res = await fetch(new URL("/api/state", server.url), { method: "POST" });
+    assert.equal(res.status, 405);
+  });
+
+  it("GET /api/chat é rejeitado com 405 — só POST é aceito nessa rota", async () => {
+    const res = await fetch(new URL("/api/chat", server.url));
     assert.equal(res.status, 405);
   });
 
@@ -118,5 +142,158 @@ describe("studio-server (#3555)", () => {
     assert.ok(chunk.length > 0);
 
     controller.abort();
+  });
+});
+
+describe("POST /api/chat (#3556) — com chatQueryFn mockado (sem SDK real)", () => {
+  let root: string;
+  let server: StudioServer;
+  let lastPrompt: string | undefined;
+  let lastOptions: { resume?: string } | undefined;
+  let queryFn: QueryFn;
+
+  function makeFakeQuery(messages: SDKMessage[]): QueryFn {
+    return (params) => {
+      lastPrompt = params.prompt as string;
+      lastOptions = params.options as { resume?: string };
+      async function* gen() {
+        for (const m of messages) yield m;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+  }
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-server-chat-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    // queryFn é reatribuível por teste via um wrapper indireto — cada `it`
+    // chama `setQueryFn` antes de disparar a request.
+    queryFn = (params) => makeFakeQuery([])(params);
+    server = await startStudioServer({
+      port: 0,
+      rootDir: root,
+      pollIntervalMs: 30,
+      chatQueryFn: (params) => queryFn(params),
+    });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function setQueryFn(fn: QueryFn) {
+    queryFn = fn;
+  }
+
+  it("400 quando o corpo não tem 'message'", async () => {
+    const res = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error, /message/);
+  });
+
+  it("400 quando o corpo não é JSON válido", async () => {
+    const res = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{not json",
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("200 + SSE: streama chat-init/chat-delta/chat-done na ordem emitida pelo queryFn", async () => {
+    setQueryFn(
+      makeFakeQuery([
+        { type: "system", subtype: "init", session_id: "sess-abc", model: "claude-sonnet-5", cwd: root } as unknown as SDKMessage,
+        {
+          type: "stream_event",
+          event: { type: "content_block_delta", delta: { type: "text_delta", text: "olá!" } },
+        } as unknown as SDKMessage,
+        { type: "result", subtype: "success", is_error: false, result: "olá!", session_id: "sess-abc" } as unknown as SDKMessage,
+      ]),
+    );
+
+    const res = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "oi" }),
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /text\/event-stream/);
+
+    const body = await res.text();
+    const events = parseSseBody(body);
+    const names = events.map((e) => e.event);
+    assert.deepEqual(names, ["chat-init", "chat-delta", "chat-done"]);
+    assert.equal((events[1].data as { text: string }).text, "olá!");
+    assert.equal(lastPrompt, "oi");
+  });
+
+  it("persiste o sessionId de chat-init e reenvia como 'resume' no turno seguinte", async () => {
+    setQueryFn(
+      makeFakeQuery([
+        { type: "system", subtype: "init", session_id: "sess-persisted", model: "m", cwd: root } as unknown as SDKMessage,
+        { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "sess-persisted" } as unknown as SDKMessage,
+      ]),
+    );
+    await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "primeira mensagem" }),
+    });
+
+    setQueryFn(makeFakeQuery([{ type: "result", subtype: "success", is_error: false, result: "ok2", session_id: "sess-persisted" } as unknown as SDKMessage]));
+    await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "segunda mensagem" }),
+    });
+
+    assert.equal(lastOptions?.resume, "sess-persisted");
+  });
+
+  it("'reset: true' limpa a sessão em memória antes do turno — 'resume' fica ausente", async () => {
+    setQueryFn(
+      makeFakeQuery([
+        { type: "system", subtype: "init", session_id: "sess-to-reset", model: "m", cwd: root } as unknown as SDKMessage,
+      ]),
+    );
+    await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "primeira" }),
+    });
+
+    setQueryFn(makeFakeQuery([]));
+    await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "depois do reset", reset: true }),
+    });
+
+    assert.equal(lastOptions?.resume, undefined);
+  });
+
+  it("fail-soft: queryFn que lança vira evento chat-error no stream, resposta continua 200", async () => {
+    setQueryFn(() => {
+      throw new Error("spawn claude ENOENT");
+    });
+
+    const res = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "oi", reset: true }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    const events = parseSseBody(body);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].event, "chat-error");
+    assert.match((events[0].data as { message: string }).message, /CLI do Claude Code não encontrado/);
   });
 });

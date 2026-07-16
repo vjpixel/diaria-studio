@@ -29,15 +29,25 @@
  *   - `GET /triagem` — cockpit de triagem de issues/PRs (#3562): mesma
  *     estratégia de rewrite client-side de `/edicao/:aammdd`, servindo
  *     `public/triagem.html`.
+ *   - `POST /api/chat` — chat drawer (#3556): sessão Claude Agent SDK
+ *     embutida, `cwd` = `rootDir` (mesmas skills/MCPs/CLAUDE.md do terminal).
+ *     Streaming via SSE (mesmo `sse.ts` do `/api/events`) — eventos
+ *     `chat-init`/`chat-delta`/`chat-tool`/`chat-done`/`chat-error`, contrato
+ *     em `studio-chat.ts`. **ÚNICA rota de mutação/ação do servidor** — todas
+ *     as outras seguem read-only. Fail-soft: erro do SDK vira `chat-error`
+ *     no stream, nunca um 500 nem crash do processo.
  *
- * **Read-only por construção** (#3555 é a fatia fundação da EPIC — as fatias
- * de AÇÃO vêm depois, #3556+): nenhuma rota aqui escreve em disco nem
- * dispara nada. Sem autenticação nesta fatia — acesso remoto é escopo da
- * #3560; aqui o único guard de segurança é o bind loopback. #3558 (cockpit
- * de edição) e #3562 (triagem de issues/PRs) preservam esse invariante: são
- * só mais views read-only. #3562 em particular nunca expõe token do GitHub
- * (o server só invoca o binário `gh`, que resolve auth localmente) e nunca
- * chama subcomando de mutação (`close`/`comment`/`merge`) — só `list`.
+ * **Read-only por construção, com 1 exceção** (#3555 é a fatia fundação da
+ * EPIC — as fatias de AÇÃO vêm depois, #3556+): nenhuma rota aqui escreve em
+ * disco nem dispara nada, EXCETO `POST /api/chat` (#3556), que conduz uma
+ * sessão Claude real (a UI só invoca — a lógica de negócio permanece nas
+ * skills/scripts que essa sessão chama, mesmo princípio do epic #3554). Sem
+ * autenticação nesta fatia — acesso remoto é escopo da #3560; aqui o único
+ * guard de segurança é o bind loopback. #3558 (cockpit de edição) e #3562
+ * (triagem de issues/PRs) preservam o invariante read-only original: são só
+ * mais views. #3562 em particular nunca expõe token do GitHub (o server só
+ * invoca o binário `gh`, que resolve auth localmente) e nunca chama
+ * subcomando de mutação (`close`/`comment`/`merge`) — só `list`.
  *
  * Ver "Decisões de design" no PR body pra rationale completo (framework
  * escolhido, estrutura de diretórios, formato das APIs, pontos de extensão).
@@ -69,6 +79,14 @@ import { fetchTriageData, type GhRunFn } from "./studio-issues.ts";
 import { buildWaveProposal } from "./studio-waves.ts";
 import { buildDiariaDashboardHtml } from "./dashboard-diaria.ts";
 import { buildClariceDashboardHtml } from "./dashboard-clarice.ts";
+import {
+  parseChatRequestBody,
+  runChatTurn,
+  getSessionId,
+  setSessionId,
+  clearSession,
+  type QueryFn,
+} from "./studio-chat.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -105,6 +123,14 @@ export interface StudioServerOptions {
   /** Runner de `gh` injetável pra `/api/issues` (#3562) — testes mockam sem
    * invocar o binário real nem rede; produção usa o default de `studio-issues.ts`. */
   ghRun?: GhRunFn;
+  /** `query()` injetável pra `POST /api/chat` (#3556) — testes mockam o
+   * Claude Agent SDK sem spawnar o CLI real; produção usa o default de
+   * `studio-chat.ts`. */
+  chatQueryFn?: QueryFn;
+  /** Tamanho máximo (bytes) do corpo de `POST /api/chat` — default 256KB,
+   * generoso pra uma mensagem de chat digitada à mão, protege contra corpo
+   * absurdo consumindo memória do processo. */
+  chatMaxBodyBytes?: number;
 }
 
 export interface StudioServer {
@@ -208,6 +234,94 @@ function handleApiWaves(rootDir: string, res: ServerResponse, ghRun?: GhRunFn): 
   });
 }
 
+/** Coleta o corpo da request em memória, com um teto de bytes pra evitar que
+ * um corpo absurdo (ou um cliente malicioso/travado) segure memória do
+ * processo indefinidamente. Rejeita (`reject`) assim que o teto é excedido —
+ * não espera o `end` do stream. */
+function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new Error(`corpo da request excede o limite de ${maxBytes} bytes`));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolvePromise(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+/**
+ * `POST /api/chat` — chat drawer (#3556). Lê o corpo, valida via
+ * `parseChatRequestBody` (400 se inválido), abre a resposta como SSE e
+ * conduz UM turno via `runChatTurn`, streamando cada evento traduzido pro
+ * browser. `chat-init`/`chat-done` atualizam a sessão em memória pro próximo
+ * turno resolver `resume` corretamente (1 sessão ad-hoc por `rootDir`, ver
+ * `studio-chat.ts`).
+ *
+ * Único handler do server que escreve estado em memória — todo o resto do
+ * arquivo permanece read-only (ver doc-comment do módulo).
+ */
+async function handleApiChat(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  opts: { queryFn?: QueryFn; maxBodyBytes: number },
+): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readRequestBody(req, opts.maxBodyBytes);
+  } catch (e) {
+    sendJson(res, 413, { error: (e as Error).message });
+    return;
+  }
+
+  const parsed = parseChatRequestBody(raw);
+  if (!parsed.ok) {
+    sendJson(res, 400, { error: parsed.error });
+    return;
+  }
+
+  if (parsed.value.reset) clearSession(rootDir);
+  const sessionId = parsed.value.sessionId ?? getSessionId(rootDir);
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+  res.write(formatSseComment("connected"));
+
+  const abortController = new AbortController();
+  const onClose = () => abortController.abort();
+  req.on("close", onClose);
+
+  await runChatTurn({
+    message: parsed.value.message,
+    sessionId,
+    cwd: rootDir,
+    queryFn: opts.queryFn,
+    abortController,
+    onEvent: (wireEvent) => {
+      if (wireEvent.event === "chat-init" && wireEvent.data.sessionId) {
+        setSessionId(rootDir, wireEvent.data.sessionId);
+      }
+      if (wireEvent.event === "chat-done" && wireEvent.data.sessionId) {
+        setSessionId(rootDir, wireEvent.data.sessionId);
+      }
+      res.write(formatSseEvent(wireEvent.event, wireEvent.data));
+    },
+  });
+
+  req.off("close", onClose);
+  res.end();
+}
+
 function handleTokensCss(res: ServerResponse): void {
   const css = buildTokensCss();
   res.writeHead(200, {
@@ -267,13 +381,36 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const runLogTailSize = opts.runLogTailSize ?? 50;
   const pollIntervalMs = opts.pollIntervalMs ?? 1000;
   const ghRun = opts.ghRun;
+  const chatQueryFn = opts.chatQueryFn;
+  const chatMaxBodyBytes = opts.chatMaxBodyBytes ?? 256_000;
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     try {
       const urlPath = (req.url ?? "/").split("?")[0];
 
+      // #3556: única rota que aceita POST — mutação/ação (sessão de chat),
+      // tratada ANTES do guard read-only genérico abaixo.
+      if (urlPath === "/api/chat") {
+        if (req.method !== "POST") {
+          sendJson(res, 405, { error: "POST obrigatório em /api/chat" });
+          return;
+        }
+        handleApiChat(rootDir, req, res, { queryFn: chatQueryFn, maxBodyBytes: chatMaxBodyBytes }).catch((e) => {
+          // runChatTurn já é fail-soft (erros do SDK viram evento chat-error);
+          // este catch cobre só falhas síncronas anteriores (ex: writeHead
+          // já chamado e o socket morreu no meio) — sem headers ainda
+          // enviados, respondemos 500; senão só fechamos a conexão.
+          if (!res.headersSent) {
+            sendJson(res, 500, { error: (e as Error).message });
+          } else {
+            res.end();
+          }
+        });
+        return;
+      }
+
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555)" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556)" });
         return;
       }
 
