@@ -98,22 +98,37 @@ na frente, cliques reais funcionaram normalmente). Antes do halt, tentar um
    ```js
    document.querySelectorAll('img,iframe,video').forEach(el => el.style.visibility='');
    ```
-4. **Se o screenshot retornar a página renderizada em ≤ 10s** → `visibilityState` é
-   stale; a aba está visível. Prosseguir com os cliques normalmente — NÃO haltar.
-5. **Se o screenshot demorar > 10s ou falhar com timeout/CDP error** → frozen real.
-   Renderizar halt banner e aguardar:
-   ```bash
-   npx tsx scripts/render-halt-banner.ts \
-     --stage "4" \
-     --reason "aba Beehiiv oculta (visibilityState=hidden + screenshot timeout)" \
-     --action "traga a janela do Chrome pra frente e responda 'retry'"
-   ```
-   Aguardar resposta explícita do editor antes de qualquer ação adicional.
+4. **Classificar via `classifyVisibilityProbe`** (`scripts/lib/beehiiv-visibility-probe.ts`, #3450) — decisão pura/testável, substitui a lógica ad-hoc anterior:
+   ```typescript
+   import { classifyVisibilityProbe } from "scripts/lib/beehiiv-visibility-probe.ts";
 
-**Decisão resumida:**
-- `visibilityState === "visible"` → prosseguir diretamente.
-- `visibilityState === "hidden"` + screenshot OK (≤ 10s) → stale; prosseguir (#2075).
-- `visibilityState === "hidden"` + screenshot timeout/falha → frozen real; halt banner.
+   const decision = classifyVisibilityProbe({
+     visibilityState,             // lido no passo 0 (document.visibilityState)
+     screenshotOk,                // screenshot retornou sem erro/timeout
+     screenshotElapsedMs,         // tempo decorrido do screenshot (ms), ou null se erro
+     // #3450: se o conteúdo crítico (paste do corpo, §5.2/§5.3) já foi
+     // verificado como persistido ANTES deste probe (ex: varredura
+     // doc.descendants confirmou merge tags + docSize), passar true — um
+     // screenshot-probe que falha DEPOIS do paste não deve abortar o
+     // dispatch inteiro, é diagnóstico pro PRÓXIMO passo (ex: Send test
+     // email), não crítico ao trabalho já feito.
+     contentAlreadyPasted,
+   });
+   ```
+
+   **`decision.action`:**
+   - `"proceed"` (`reason: "visible"` ou `"stale_hidden"`) → prosseguir com os cliques normalmente — NÃO haltar.
+   - `"warn_and_proceed"` (`reason: "frozen_but_content_verified"`, #3450) → screenshot deu timeout/falhou, MAS o paste já foi verificado persistido antes deste probe. **NÃO haltar o dispatch inteiro.** Registrar `decision.message` em `unfixed_issues[]` com `reason: "visibility_probe_frozen_post_paste"` e tentar prosseguir pro próximo passo (ex: Send test email). Se o próximo passo também falhar (click real não registra efeito), aí sim haltar nesse ponto específico — não retroativamente no paste já concluído.
+   - `"halt"` (`reason: "frozen"`) → frozen real E nenhum conteúdo crítico verificado ainda (preflight ANTES do paste, ex: abrir post/clicar "New post"). Renderizar halt banner e aguardar:
+     ```bash
+     npx tsx scripts/render-halt-banner.ts \
+       --stage "4" \
+       --reason "aba Beehiiv oculta (visibilityState=hidden + screenshot timeout)" \
+       --action "traga a janela do Chrome pra frente e responda 'retry'"
+     ```
+     Aguardar resposta explícita do editor antes de qualquer ação adicional.
+
+**Timeout do screenshot-probe: 20s** (`DEFAULT_SCREENSHOT_TIMEOUT_MS` em `beehiiv-visibility-probe.ts`, #3450 — alargado de 10s; 10s podia ser insuficiente em contexto lento/página pesada mesmo com img/iframe/video ocultados).
 
 Sintomas do frozen real (incidente 260610, ~10 min de debug): cliques via `computer`
 chegam como no-op (zero pointerdown/click na página) e screenshots dão timeout
@@ -964,9 +979,11 @@ Sem tooling dedicado — é a mesma checklist a cada mês, aberta aqui pra não 
 
 `unfixed_issues[]` agrega problemas detectados no passo 5.3 (Verificação pós-paste) que o agent não conseguiu auto-corrigir. Formato por entrada: `{ "reason": "<code>", "section": "<where>", "details": "<optional>" }`. Se não-vazio, o editor deve revisar antes de publicar (o `review-test-email` loop pode pegar alguns mas nem todos).
 
-### 9. Verificar slug pós-Schedule (#2011)
+### 9. Verificar slug pós-Schedule (#2011, #3449)
 
-**⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a-bis (#1989). O Schedule acontece manualmente — depois que o editor clicar Schedule, verificar e corrigir o slug via API.
+**⚠️ Bug confirmado 260610**: o wizard de Schedule do Beehiiv re-deriva o slug do título e **mangla acentos PT-BR** (`automação` → `automa-o`, `pânico` → `p-nico`), desfazendo o slug correto setado no passo 4a-bis (#1989). O Schedule acontece manualmente — depois que o editor clicar Schedule, verificar e corrigir o slug.
+
+**⚠️ #3449 (confirmado 260714, edição real): a correção via API está permanentemente bloqueada no plano atual.** `fix-post-slug.ts --execute` retornou `403 SEND_API_NOT_ENTERPRISE_PLAN` — o mesmo gate de plano que já bloqueava `edit_post` via MCP (#1705) cobre o PATCH direto de `web_settings.slug` também. **Não é transitório** — não vale a pena re-tentar via API em edições futuras até um eventual upgrade de plano (ver #2501 pra decisão de custo). O caminho viável é a correção manual via UI (passo 3 abaixo), direto — sem passar pela tentativa de API primeiro.
 
 **Trigger**: após receber confirmação do editor que agendou (ou ao montar o relatório final), verificar o slug via MCP e corrigir se necessário.
 
@@ -980,36 +997,26 @@ npx tsx -e "
   import { seoSlug } from './scripts/lib/slug.ts';
   console.log(seoSlug('{title}'));
 "
+```
 
-# 3. Se slugs divergirem: corrigir via API (não requer browser — PATCH direto)
+Se os slugs divergirem, ir direto para a correção manual (passo 3) — não gastar
+uma tentativa de `fix-post-slug.ts --execute` sabendo que vai retornar `exit 3`
+(plan-gated, #3449). Se quiser confirmar o estado formalmente antes (ex: pra
+registrar no log), o script ainda pode ser chamado — ele detecta o 403 e já
+imprime as instruções de correção manual no stderr (não precisa reconstruí-las):
+
+```bash
 npx tsx scripts/fix-post-slug.ts \
   --post-id {post_id} \
   --slug {slug_correto} \
   --execute
+# exit 3 esperado (#3449) — stderr já traz as instruções manuais formatadas
+# via formatManualSlugFixInstructions() (scripts/lib/slug.ts)
 ```
 
-O script `fix-post-slug.ts` (#2011):
-- Valida o slug alvo (detecta acentos manglados antes de enviar ao Beehiiv)
-- Faz `PATCH /publications/{pubId}/posts/{postId}` com `{ web_settings: { slug } }`
-- GET-verify pós-update (#573) — confirma que o slug persistiu
-- Dry-run por default; `--execute` pra valer
+**Correção manual (passo 3 — caminho primário desde #3449):** aba visível com o post já agendado (step=web), clicar no campo `#text-input-slug` (Settings → SEO/URL slug), selecionar tudo, digitar o slug correto via teclado real (validado em 260610 que keystrokes reais persistem mesmo com status `scheduled` — `scheduled_at` não é alterado pela edição do slug).
 
-**Saída esperada (JSON):**
-```json
-{
-  "post_id": "post_...",
-  "slug_before": "anthropic-lanc-a-fable-5-com-bloqueios-embutidos",
-  "slug_after": "anthropic-lanca-fable-5-com-bloqueios-embutidos",
-  "slug_target": "anthropic-lanca-fable-5-com-bloqueios-embutidos",
-  "updated": true,
-  "verified": true,
-  "dry_run": false
-}
-```
-
-**Se `fix-post-slug.ts` falhar** (API não suportou o campo, ou slug não persistiu após update): aba visível com o post já agendado (step=web), clicar no campo `#text-input-slug`, selecionar tudo, digitar o slug correto via teclado real (validado em 260610 que keystrokes reais persistem mesmo com status `scheduled` — `scheduled_at` não é alterado pela edição do slug).
-
-**Hipótese a validar (próxima edição):** setar o slug DEPOIS do título estabilizar (após confirmação da API pós-autosave) e apenas ANTES do clique de Schedule pode evitar a re-derivação. Documentar resultado em #2011.
+**Hipótese não confirmada, mantida como nota histórica:** setar o slug DEPOIS do título estabilizar (após confirmação da API pós-autosave) e apenas ANTES do clique de Schedule *poderia* evitar a re-derivação — mas como a correção pós-Schedule via API está definitivamente bloqueada (#3449), essa hipótese só teria valor se testada manualmente pelo editor; não é um caminho de automação viável.
 
 ### 10. Verificar estado pós-Schedule: agendado vs publicado imediato (#2074)
 

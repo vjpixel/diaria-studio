@@ -46,3 +46,28 @@ export function seoMetaDescription(title: string, subtitle?: string, maxLen = 15
   const lastSpace = cut.lastIndexOf(" ");
   return (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).replace(/[\s—-]+$/, "") + "…";
 }
+
+/**
+ * #3449: instruções de correção manual do slug SEO na UI do Beehiiv.
+ *
+ * Contexto: `fix-post-slug.ts --execute` corrige o slug via
+ * `PATCH /publications/{pubId}/posts/{postId}` — mas essa rota é gated pelo
+ * plano Beehiiv (confirmado 260714, edição real: `403
+ * SEND_API_NOT_ENTERPRISE_PLAN`, ver `SlugPlanGatedError` em
+ * `fix-post-slug.ts`). Como a correção pós-criação via API está bloqueada em
+ * qualquer plano abaixo de Enterprise, a via de escape é a UI manual — este
+ * helper gera o texto exato que o orchestrator/editor precisa pra aplicar a
+ * correção em `Settings → SEO/URL slug` (campo `#text-input-slug`) do post.
+ *
+ * Pure — sem I/O, testável com fixtures.
+ */
+export function formatManualSlugFixInstructions(postId: string, slugTarget: string): string {
+  return (
+    `Slug não pôde ser corrigido via API (plano Beehiiv não suporta PATCH ` +
+    `web_settings.slug — ver #3449). Correção manual:\n` +
+    `1. Abrir o post no Beehiiv: https://app.beehiiv.com/posts/${postId}/edit\n` +
+    `2. Ir em Settings → SEO/URL slug (campo #text-input-slug)\n` +
+    `3. Selecionar todo o conteúdo do campo e digitar: ${slugTarget}\n` +
+    `4. Confirmar/salvar — o agendamento (scheduled_at) não é alterado pela edição do slug.`
+  );
+}

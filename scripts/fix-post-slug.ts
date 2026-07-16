@@ -9,8 +9,13 @@
  * correto setado no passo SEO (#1989) é sobrescrito silenciosamente.
  *
  * Solução: PATCH /publications/{pubId}/posts/{postId} com body
- * `{ web_settings: { slug } }` — confirmado suportado pela API v2 doc
- * (https://developers.beehiiv.com/api-reference/posts/update.md).
+ * `{ web_settings: { slug } }` — documentado como suportado pela API v2
+ * (https://developers.beehiiv.com/api-reference/posts/update.md), mas **#3449
+ * (confirmado 260714, edição real)**: no plano atual (Launch/free) esse PATCH
+ * retorna `403 SEND_API_NOT_ENTERPRISE_PLAN` — o mesmo gate que já bloqueava
+ * `edit_post` via MCP (#1705) cobre a rota de API direta também. `--execute`
+ * detecta esse erro (`SlugPlanGatedError`) e imprime instruções de correção
+ * manual em vez de falhar genericamente — não adianta retry.
  *
  * Fluxo:
  *   1. GET post pra confirmar estado atual (slug + status).
@@ -35,6 +40,9 @@
  *   0 = sucesso (ou dry-run OK)
  *   1 = erro de API / slug não persistiu após update
  *   2 = config inválida ou args inválidos
+ *   3 = plano Beehiiv não suporta o PATCH (#3449, confirmado 260714 — `403
+ *       SEND_API_NOT_ENTERPRISE_PLAN`). Não é transitório — instruções de
+ *       correção manual (Settings → SEO/URL slug) impressas no stderr.
  */
 
 import { loadProjectEnv } from "./lib/env-loader.ts";
@@ -42,7 +50,7 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { seoSlug } from "./lib/slug.ts";
+import { seoSlug, formatManualSlugFixInstructions } from "./lib/slug.ts";
 import { beehiivApiBase } from "./lib/beehiiv-config.ts";
 
 loadProjectEnv();
@@ -58,6 +66,41 @@ const BEEHIIV_API = beehiivApiBase();
 interface Config {
   apiKey: string;
   publicationId: string;
+}
+
+// ── Plan-gate detection (#3449) ──────────────────────────────────────────────
+
+/**
+ * Assinatura do erro que a API Beehiiv retorna quando `PATCH
+ * web_settings.slug` (ou qualquer write via `edit_post`) é chamado num plano
+ * abaixo de Enterprise. Confirmado ao vivo na edição 260714 (#3449) —
+ * `fix-post-slug.ts --execute` retornou `403 SEND_API_NOT_ENTERPRISE_PLAN`,
+ * não um erro transitório. Antes disso a hipótese (#1705/#2011) era que o
+ * PATCH direto via API contornava o gate do `edit_post` do MCP; a 260714
+ * confirmou que o gate cobre a rota de API também.
+ */
+export const BEEHIIV_PLAN_GATE_SIGNATURE = "SEND_API_NOT_ENTERPRISE_PLAN";
+
+/**
+ * Erro específico pra quando o PATCH falha por gate de plano Beehiiv (não
+ * Enterprise) — distinto de um erro de API genérico (rede, 404, 422, etc).
+ * Permite ao caller (CLI `main()`, ou o orchestrator) tratar esse caso
+ * separadamente: pular retry (não é transitório) e ir direto pra correção
+ * manual via `formatManualSlugFixInstructions`.
+ */
+export class SlugPlanGatedError extends Error {
+  constructor(
+    message: string,
+    public readonly postId: string,
+    public readonly slugTarget: string,
+  ) {
+    super(message);
+    this.name = "SlugPlanGatedError";
+  }
+}
+
+function isPlanGatedResponseBody(body: string): boolean {
+  return body.includes(BEEHIIV_PLAN_GATE_SIGNATURE);
 }
 
 function loadConfig(): Config {
@@ -166,6 +209,16 @@ export async function patchSlug(
   });
   if (!res.ok) {
     const respBody = await res.text().catch(() => "");
+    // #3449: 403 + assinatura de plano-gated → erro específico, não genérico.
+    // Confirmado ao vivo (260714): não é transitório, retry não ajuda.
+    if (res.status === 403 && isPlanGatedResponseBody(respBody)) {
+      throw new SlugPlanGatedError(
+        `PATCH post ${postId} slug: plano Beehiiv não suporta write via API ` +
+          `(${res.status} ${res.statusText} — ${respBody})`,
+        postId,
+        slug,
+      );
+    }
     throw new Error(
       `PATCH post ${postId} slug: ${res.status} ${res.statusText} — ${respBody}`,
     );
@@ -391,6 +444,18 @@ async function main(): Promise<void> {
     const result = await fixPostSlug({ postId, slug, execute, force, cfg });
     console.log(JSON.stringify(result, null, 2));
   } catch (e) {
+    // #3449: plano Beehiiv não suporta o PATCH — não é transitório, não
+    // adianta retry. Emitir instruções de correção manual (não é um erro
+    // "inesperado" no sentido de precisar debug) e sair com exit code
+    // distinto (3) pra o caller (orchestrator) diferenciar de erro de API
+    // genérico (exit 1).
+    if (e instanceof SlugPlanGatedError) {
+      process.stderr.write(
+        `[fix-post-slug] Plano Beehiiv não suporta correção via API: ${e.message}\n\n` +
+          `${formatManualSlugFixInstructions(e.postId, e.slugTarget)}\n`,
+      );
+      process.exit(3);
+    }
     process.stderr.write(`[fix-post-slug] Erro: ${(e as Error).message}\n`);
     process.exit(1);
   }

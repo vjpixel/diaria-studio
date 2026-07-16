@@ -17,6 +17,8 @@ import {
   fetchPost,
   patchSlug,
   fixPostSlug,
+  SlugPlanGatedError,
+  BEEHIIV_PLAN_GATE_SIGNATURE,
   type FixSlugResult,
 } from "../scripts/fix-post-slug.ts";
 
@@ -520,5 +522,94 @@ describe("fixPostSlug execute (#2011)", () => {
     assert.equal(result.updated, false, "já estava correto — no PATCH");
     assert.equal(result.verified, true);
     assert.equal(result.slug_after, slug);
+  });
+});
+
+// ── Plan-gate detection (#3449) ────────────────────────────────────────────
+//
+// Regressão central: em 260714, `fix-post-slug.ts --execute` falhou ao vivo
+// com `403 SEND_API_NOT_ENTERPRISE_PLAN` — confirmando que o PATCH direto via
+// API (não só o MCP edit_post, #1705) também é gated pelo plano Beehiiv.
+// Esse erro precisa ser distinguível de um erro de API genérico (rede, 404,
+// 422) pra o caller pular retry e ir direto pra correção manual.
+
+describe("patchSlug — plan-gate detection (#3449)", () => {
+  it("lança SlugPlanGatedError em 403 com assinatura SEND_API_NOT_ENTERPRISE_PLAN", async () => {
+    const mockFetch: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({ errors: [{ code: "SEND_API_NOT_ENTERPRISE_PLAN", message: "not available" }] }),
+        { status: 403 },
+      );
+
+    await assert.rejects(
+      () => patchSlug(MOCK_CFG, "post_abc", "novo-slug", mockFetch),
+      (err: unknown) => {
+        assert.ok(err instanceof SlugPlanGatedError, "deve ser SlugPlanGatedError");
+        assert.equal((err as SlugPlanGatedError).postId, "post_abc");
+        assert.equal((err as SlugPlanGatedError).slugTarget, "novo-slug");
+        return true;
+      },
+    );
+  });
+
+  it("403 SEM a assinatura de plan-gate continua lançando Error genérico (não SlugPlanGatedError)", async () => {
+    const mockFetch: typeof fetch = async () =>
+      new Response("Forbidden — invalid token", { status: 403 });
+
+    await assert.rejects(
+      () => patchSlug(MOCK_CFG, "post_abc", "novo-slug", mockFetch),
+      (err: unknown) => {
+        assert.ok(!(err instanceof SlugPlanGatedError), "403 genérico não deve virar SlugPlanGatedError");
+        assert.ok(err instanceof Error);
+        return true;
+      },
+    );
+  });
+
+  it("outros status codes (422, 500) continuam Error genérico", async () => {
+    const mockFetch: typeof fetch = async () =>
+      new Response(BEEHIIV_PLAN_GATE_SIGNATURE, { status: 422 });
+
+    await assert.rejects(
+      () => patchSlug(MOCK_CFG, "post_abc", "novo-slug", mockFetch),
+      (err: unknown) => {
+        // mesmo contendo a assinatura no body, só 403 é tratado como plan-gate
+        assert.ok(!(err instanceof SlugPlanGatedError));
+        return true;
+      },
+    );
+  });
+
+  it("fixPostSlug propaga SlugPlanGatedError (não mascara como erro genérico)", async () => {
+    const mockFetch: typeof fetch = async (_url, init) => {
+      const method = init?.method ?? "GET";
+      if (method === "PATCH") {
+        return new Response(
+          JSON.stringify({ errors: [{ code: BEEHIIV_PLAN_GATE_SIGNATURE }] }),
+          { status: 403 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          data: { id: "post_abc", title: "Café com açúcar", web_settings: { slug: "cafe-com-a-ucar" } },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    };
+
+    await assert.rejects(
+      () =>
+        fixPostSlug({
+          postId: "post_abc",
+          slug: "cafe-com-acucar",
+          execute: true,
+          cfg: MOCK_CFG,
+          fetchFn: mockFetch,
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof SlugPlanGatedError);
+        return true;
+      },
+    );
   });
 });

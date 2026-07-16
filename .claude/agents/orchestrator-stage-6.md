@@ -177,7 +177,7 @@ O botao clicado foi "Publish" (envio imediato), nao "Schedule".
 data/past-editions.md regenerado via refresh-dedup.
 ```
 
-**Verificar e corrigir slug pos-Schedule (#2011):**
+**Verificar e corrigir slug pos-Schedule (#2011, #3449):**
 
 ```bash
 npx tsx -e "
@@ -186,12 +186,21 @@ npx tsx -e "
 "
 ```
 
-Se o slug atual (via `mcp__claude_ai_Beehiiv__get_post`) divergir do correto, corrigir:
+Se o slug atual (via `mcp__claude_ai_Beehiiv__get_post`) divergir do correto, a
+correcao via API esta **permanentemente bloqueada** no plano atual (#3449,
+confirmado 260714 — `403 SEND_API_NOT_ENTERPRISE_PLAN`, nao transitorio). Ir
+direto pra correcao manual documentada em `context/publishers/beehiiv-playbook.md`
+§9 (aba visivel → campo `#text-input-slug` em Settings → SEO/URL slug →
+digitar o slug correto via teclado real). Nao vale gastar uma chamada de
+`fix-post-slug.ts --execute` esperando sucesso — ela vai retornar `exit 3`
+(plan-gated) e so serve pra reconfirmar/logar o estado, se necessario:
+
 ```bash
 npx tsx scripts/fix-post-slug.ts \
   --post-id {post_id} \
   --slug {slug_correto} \
   --execute
+# exit 3 esperado (#3449) — stderr traz instrucoes manuais formatadas
 ```
 
 **Guard refresh-dedup apos schedule confirmado:** rodar `/diaria-refresh-dedup` (equivalente a `npx tsx scripts/refresh-dedup.ts`) para manter `data/past-editions.md` atualizado.
