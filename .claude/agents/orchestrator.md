@@ -122,11 +122,13 @@ Padrão: P2 (vira issue automática via auto-reporter). P3 = cleanup que não va
 
 **Quando logar**: sempre que o orchestrator executar código de remediação não-prescrito pelo playbook. Sem o log, fixes in-flight escapam do auto-reporter (gap arquitetural identificado em #1210).
 
-### Cost + timing tracking (#1217)
+### Cost + timing tracking (#1217, #3441)
 
-`stage-status.md` (#960) é o **single source of truth** pra timing + custo + tokens + modelos por stage. Atualizar incrementalmente via `scripts/update-stage-status.ts` ao começar (`--status running --start ISO`) e ao terminar (`--status done --end ISO --duration-ms X [--cost-usd Y --tokens-in N --tokens-out N --models "haiku,opus"]`) cada stage. JSON sidecar em `_internal/stage-status.json` (canonical, gitignored); MD na raiz da edição (presentation, visível no Drive durante runs).
+`stage-status.md` (#960) é o **single source of truth** pra timing + custo + tokens + modelos por stage. Atualizar incrementalmente via `scripts/update-stage-status.ts` ao começar (`--status running --start ISO`) e ao terminar (`--status done --end ISO --duration-ms X`) cada stage. JSON sidecar em `_internal/stage-status.json` (canonical, gitignored); MD na raiz da edição (presentation, visível no Drive durante runs).
 
 `_internal/cost.md` foi removido em #1217 — era redundante e nunca foi preenchido na prática.
+
+**Captura de custo/tokens (#3441).** Logo após cada `--status done`, rodar `npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage N` — popula `cost_usd`/`tokens_in`/`tokens_out`/`models` com dado REAL, lido do `usage` das chamadas do coordenador registrado no transcript local da sessão (`~/.claude/projects/{cwd-codificado}/*.jsonl`, mesmo diretório onde o harness já grava toda sessão) dentro da janela `[start, end]` do stage recém-fechado. Não é estimativa nem placeholder — é o `usage` retornado pela API, agregado pós-hoc. **Limitação honesta, documentada (não escondida):** só captura chamadas que aparecem nesse diretório de projeto — cobre o coordenador e qualquer subagent despachado no MESMO cwd (sem `isolation: "worktree"`); subagents isolados em worktree escrevem em outro diretório de projeto e ficam fora da captura (gap conhecido, mesma disciplina de honestidade do `coordinator_tokens_estimate`/`subagent_metrics` do overnight/develop — #3453/#3454). Requer sessão **local** (`~/.claude/projects/` não existe em cloud efêmero) — sem isso, ou sem entradas de usage na janela, o script imprime `source: "unavailable"` e não escreve nada (fail-soft, nunca bloqueia o pipeline).
 
 ### Task tracking — UI hygiene (#904)
 
