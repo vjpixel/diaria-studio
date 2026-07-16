@@ -42,6 +42,14 @@
  *     `GET /api/editions/:aammdd/preview.html` (HTML completo do e-mail,
  *     pra `<iframe>`) + `POST /api/editions/:aammdd/actions/swap-destaque`
  *     — ver `studio-review.ts`/`studio-review-actions.ts` pro detalhe.
+ *   - `GET /apoios` — CRM simples de apoios apoia.se (#3602): mesma
+ *     estratégia de rewrite, servindo `public/apoios.html`. Consome
+ *     `GET /api/apoios` (contatos + status cruzado via `checkBacker` +
+ *     agregação de campanha + follow-ups pendentes) e
+ *     `POST /api/apoios/contacts` / `PUT /api/apoios/contacts/:id` /
+ *     `POST /api/apoios/contacts/:id/outreach` (CRUD de contato + tracking
+ *     de outreach) — ver `studio-apoios.ts` pro detalhe. Dado pessoal: só em
+ *     `data/apoia-se/contacts.jsonl` (junction OneDrive, nunca no repo).
  *
  * **Read-only por construção, com exceções controladas** (#3555 é a fatia
  * fundação da EPIC — as fatias de AÇÃO vêm depois, #3556+): nenhuma rota aqui
@@ -68,6 +76,13 @@
  * editor rodaria manualmente). Toda a lógica mora em `studio-review.ts` /
  * `studio-review-actions.ts` (arquivos próprios desta fatia) — ver o
  * cabeçalho de cada um pro detalhe do design.
+ *
+ * **Exceção controlada (#3602 — CRM de apoios):** `POST /api/apoios/contacts`,
+ * `PUT /api/apoios/contacts/:id` e `POST /api/apoios/contacts/:id/outreach`
+ * escrevem SÓ `data/apoia-se/contacts.jsonl` (dado pessoal, junction OneDrive,
+ * nunca no repo/KV) — nunca tocam credenciais nem a API apoia.se em modo de
+ * escrita (o cruzamento de status é sempre leitura via `checkBacker`). Toda a
+ * lógica mora em `studio-apoios.ts`.
  *
  * Ver "Decisões de design" no PR body pra rationale completo (framework
  * escolhido, estrutura de diretórios, formato das APIs, pontos de extensão).
@@ -121,6 +136,17 @@ import {
 } from "./studio-review.ts";
 import { runSwapDestaque, type SwapDestaqueRequest } from "./studio-review-actions.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
+// #3602: CRM simples de apoios apoia.se — arquivo próprio desta fatia, import
+// isolado (nenhuma outra rota depende dele). Ver studio-apoios.ts.
+import {
+  buildApoiosData,
+  addContact,
+  updateContactById,
+  addOutreachToContact,
+  parseCreateContactBody,
+  parseUpdateContactBody,
+  parseOutreachEventBody,
+} from "./studio-apoios.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -519,6 +545,83 @@ async function handleReviewSwap(
   sendJson(res, result.ok ? 200 : 400, result);
 }
 
+// ── #3602: CRM simples de apoios apoia.se ───────────────────────────────
+
+// Corpo pequeno (nome + emails + notas livres) — 200KB é generoso e mantém o
+// mesmo teto de proteção contra corpo absurdo dos outros handlers de escrita.
+const APOIOS_MAX_BODY_BYTES = 200_000;
+
+/** `GET /api/apoios` — contatos + status cruzado + campanha + follow-ups
+ * pendentes (#3602). Sempre 200: `buildApoiosData` é fail-soft (data/
+ * ausente, credenciais ausentes, 401 da apoia.se viram `error` no payload,
+ * nunca uma exceção). */
+function handleApiApoiosGet(rootDir: string, res: ServerResponse): void {
+  buildApoiosData(rootDir)
+    .then((data) => sendJson(res, 200, data))
+    .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
+}
+
+async function handleApiApoiosCreate(rootDir: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readRequestBody(req, APOIOS_MAX_BODY_BYTES);
+  } catch (e) {
+    sendJson(res, 413, { error: (e as Error).message });
+    return;
+  }
+  const parsed = parseCreateContactBody(raw);
+  if (!parsed.ok) {
+    sendJson(res, 400, { error: parsed.error });
+    return;
+  }
+  const result = addContact(rootDir, parsed.value);
+  sendJson(res, result.ok ? 201 : 400, result);
+}
+
+async function handleApiApoiosUpdate(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readRequestBody(req, APOIOS_MAX_BODY_BYTES);
+  } catch (e) {
+    sendJson(res, 413, { error: (e as Error).message });
+    return;
+  }
+  const parsed = parseUpdateContactBody(raw);
+  if (!parsed.ok) {
+    sendJson(res, 400, { error: parsed.error });
+    return;
+  }
+  const result = updateContactById(rootDir, id, parsed.value);
+  sendJson(res, result.ok ? 200 : result.error.includes("não encontrado") ? 404 : 400, result);
+}
+
+async function handleApiApoiosOutreach(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  id: string,
+): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readRequestBody(req, APOIOS_MAX_BODY_BYTES);
+  } catch (e) {
+    sendJson(res, 413, { error: (e as Error).message });
+    return;
+  }
+  const parsed = parseOutreachEventBody(raw);
+  if (!parsed.ok) {
+    sendJson(res, 400, { error: parsed.error });
+    return;
+  }
+  const result = addOutreachToContact(rootDir, id, parsed.value);
+  sendJson(res, result.ok ? 200 : result.error.includes("não encontrado") ? 404 : 400, result);
+}
+
 /**
  * Sobe o studio-server. `rootDir` default é `process.cwd()` (o repo aberto
  * no Claude Code); injete um tmpdir em testes.
@@ -578,8 +681,30 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         return;
       }
 
+      // #3602: exceção estreita ao invariante read-only, mesmo padrão do
+      // #3559 acima — CRUD do CRM de apoios. Checadas ANTES do guard
+      // genérico de método.
+      if (urlPath === "/api/apoios/contacts" && req.method === "POST") {
+        handleApiApoiosCreate(rootDir, req, res).catch((e) => sendJson(res, 500, { error: (e as Error).message }));
+        return;
+      }
+      const apoiosUpdateMatch = urlPath.match(/^\/api\/apoios\/contacts\/([^/]+)$/);
+      if (req.method === "PUT" && apoiosUpdateMatch) {
+        handleApiApoiosUpdate(rootDir, req, res, decodeURIComponent(apoiosUpdateMatch[1])).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
+      const apoiosOutreachMatch = urlPath.match(/^\/api\/apoios\/contacts\/([^/]+)\/outreach$/);
+      if (req.method === "POST" && apoiosOutreachMatch) {
+        handleApiApoiosOutreach(rootDir, req, res, decodeURIComponent(apoiosOutreachMatch[1])).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
+
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556) e as rotas de ação do #3559" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556) e as rotas de ação do #3559/#3602" });
         return;
       }
 
@@ -602,6 +727,12 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       if (urlPath === "/api/waves") {
         handleApiWaves(rootDir, res, ghRun);
+        return;
+      }
+      // #3602: CRM de apoios — GET (POST/PUT de mutação já tratados acima,
+      // antes do guard de método).
+      if (urlPath === "/api/apoios") {
+        handleApiApoiosGet(rootDir, res);
         return;
       }
       // #3559: painel de revisão de conteúdo rica — leitura (GET) do arquivo,
@@ -670,6 +801,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #3562: mesma estratégia de rewrite — a página busca /api/issues.
       if (urlPath === "/triagem" || urlPath === "/triagem/") {
         const served = serveStaticFile(PUBLIC_DIR, "/triagem.html", res);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #3602: mesma estratégia de rewrite — a página busca /api/apoios.
+      if (urlPath === "/apoios" || urlPath === "/apoios/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/apoios.html", res);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");

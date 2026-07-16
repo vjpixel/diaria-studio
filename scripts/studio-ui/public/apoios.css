@@ -1,0 +1,221 @@
+/* apoios.css (#3602) — CRM simples de apoios apoia.se. Estende style.css
+   (#3555) + triagem.css (#3562), mesma fonte de tokens
+   (/tokens.generated.css). */
+
+.campaign-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.tile {
+  flex: 1 1 140px;
+  min-width: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-alt);
+}
+.tile-value {
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+.tile-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.65;
+}
+
+.followups-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.followups-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper-alt);
+  font-size: 0.85rem;
+}
+.followups-list .fu-name { font-weight: 600; }
+.followups-list .fu-meta { opacity: 0.7; font-size: 0.78rem; font-family: var(--font-mono); }
+.followups-empty { opacity: 0.6; font-size: 0.85rem; }
+
+.contact-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+}
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  flex: 1 1 180px;
+}
+.form-field-wide { flex-basis: 100%; }
+.form-field .label,
+.form-field-check {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.65;
+}
+.form-field-check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-transform: none;
+  font-size: 0.85rem;
+  opacity: 1;
+}
+.contact-form input[type="text"],
+.contact-form input[type="date"],
+.contact-form textarea {
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.contact-form button[type="submit"],
+#refresh-btn,
+.dialog-actions button {
+  font: inherit;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid var(--ink);
+  border-radius: 4px;
+  background: var(--paper-alt);
+  color: var(--ink);
+  cursor: pointer;
+}
+.contact-form button[type="submit"]:hover,
+#refresh-btn:hover,
+.dialog-actions button[type="submit"]:hover {
+  background: var(--brand);
+  color: var(--on-ink);
+  border-color: var(--brand);
+}
+
+.panel-header-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.panel-header-row h2 { margin: 0; }
+.panel-header-row .filter-field { flex-direction: row; align-items: center; gap: 0.4rem; }
+
+.contacts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.contact-card {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.6rem 0.85rem;
+  background: var(--paper-email);
+}
+.contact-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.contact-name { font-weight: 600; }
+.contact-circle {
+  font-size: 0.75rem;
+  opacity: 0.65;
+  font-family: var(--font-mono);
+}
+.contact-emails {
+  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  opacity: 0.8;
+  margin: 0.2rem 0;
+}
+.contact-notes {
+  font-size: 0.82rem;
+  opacity: 0.85;
+  white-space: pre-wrap;
+  margin: 0.3rem 0;
+}
+.contact-outreach {
+  font-size: 0.78rem;
+  opacity: 0.75;
+  margin: 0.2rem 0;
+}
+.contact-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+.contact-actions button {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper-alt);
+  color: var(--ink);
+  cursor: pointer;
+}
+.contact-actions button:hover { background: var(--brand); color: var(--on-ink); border-color: var(--brand); }
+
+.status-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  white-space: nowrap;
+}
+.status-apoiando { background: #1e8e3e; color: #fff; border-color: #1e8e3e; }
+.status-nao_apoia { opacity: 0.55; }
+.status-apoiou_e_parou { border-color: #e67e22; color: #e67e22; }
+.status-sem_dados { border-style: dashed; opacity: 0.6; }
+
+.followup-tag {
+  display: inline-block;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  color: #e67e22;
+  border: 1px dashed #e67e22;
+  border-radius: 3px;
+  padding: 0 0.3rem;
+}
+
+.contact-dialog {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  background: var(--paper);
+  color: var(--ink);
+  max-width: 480px;
+  width: calc(100% - 2rem);
+}
+.contact-dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
+.contact-dialog h3 { margin: 0 0 0.75rem; font-family: var(--font-serif); font-weight: 400; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; flex-basis: 100%; margin-top: 0.25rem; }
+
+@media (max-width: 640px) {
+  .contact-form { flex-direction: column; align-items: stretch; }
+  .panel-header-row { flex-direction: column; align-items: stretch; }
+}

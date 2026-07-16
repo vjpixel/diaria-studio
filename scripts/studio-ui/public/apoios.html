@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diar.ia Studio — Apoios</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+  <link rel="stylesheet" href="/apoios.css" />
+  <link rel="stylesheet" href="/chat-drawer.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <a class="statusbar-item back-link" href="/">&larr; Painel</a>
+    <div class="statusbar-item">
+      <span class="label">Apoios</span>
+      <span class="value">CRM apoia.se</span>
+    </div>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Apoios — apoia.se</h1>
+      <p class="hint">
+        CRM local dos contatos abordados na campanha de apoio (apoia.se não tem
+        endpoint de listagem — a base de contatos é nossa). Status cruza
+        <strong>todos os emails do contato</strong> contra o cache de
+        <code>checkBacker</code> (mês corrente ao vivo; meses anteriores lidos
+        do cache já existente, sem nova consulta). Dado pessoal — fica só em
+        <code>data/apoia-se/contacts.jsonl</code>, nunca no repo.
+      </p>
+      <div id="apoios-error" class="panel alert-banner" hidden></div>
+    </section>
+
+    <section class="panel">
+      <h2>Visão de campanha</h2>
+      <div class="campaign-tiles">
+        <div class="tile">
+          <span class="tile-value" id="tile-total">—</span>
+          <span class="tile-label">contatos</span>
+        </div>
+        <div class="tile">
+          <span class="tile-value" id="tile-contacted">—</span>
+          <span class="tile-label">contactados</span>
+        </div>
+        <div class="tile">
+          <span class="tile-value" id="tile-converted">—</span>
+          <span class="tile-label">apoiando</span>
+        </div>
+        <div class="tile">
+          <span class="tile-value" id="tile-value">—</span>
+          <span class="tile-label">R$/mês</span>
+        </div>
+        <div class="tile">
+          <span class="tile-value" id="tile-followups">—</span>
+          <span class="tile-label">follow-ups pendentes</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Follow-ups pendentes (<span id="followups-count">0</span>)</h2>
+      <p class="hint">Último contato de cada um marcou "follow-up pendente" — ordenado do mais antigo pro mais recente.</p>
+      <ul id="followups-list" class="followups-list"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Adicionar contato</h2>
+      <form id="add-contact-form" class="contact-form">
+        <label class="form-field">
+          <span class="label">Nome</span>
+          <input type="text" id="new-name" required />
+        </label>
+        <label class="form-field">
+          <span class="label">Email(s) — separados por vírgula</span>
+          <input type="text" id="new-emails" placeholder="fulano@x.com, fulano@y.com" required />
+        </label>
+        <label class="form-field">
+          <span class="label">Círculo/origem</span>
+          <input type="text" id="new-circle" placeholder="ex: lista VJs" />
+        </label>
+        <label class="form-field form-field-wide">
+          <span class="label">Notas</span>
+          <textarea id="new-notes" rows="2"></textarea>
+        </label>
+        <button type="submit">Adicionar contato</button>
+      </form>
+      <div id="add-contact-error" class="alert-banner" hidden></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Contatos (<span id="contacts-count">0</span>)</h2>
+        <label class="filter-field">
+          <span class="label">Status</span>
+          <select id="filter-status">
+            <option value="">Todos</option>
+            <option value="apoiando">apoiando</option>
+            <option value="nao_apoia">não apoia</option>
+            <option value="apoiou_e_parou">apoiou e parou</option>
+            <option value="sem_dados">sem dados</option>
+          </select>
+        </label>
+        <button id="refresh-btn" type="button">Atualizar</button>
+        <span id="last-updated" class="hint"></span>
+      </div>
+      <div id="contacts-list" class="contacts-list"></div>
+    </section>
+  </main>
+
+  <!-- Editar contato / adicionar email/notas -->
+  <dialog id="edit-dialog" class="contact-dialog">
+    <form id="edit-contact-form" class="contact-form">
+      <h3>Editar contato</h3>
+      <input type="hidden" id="edit-id" />
+      <label class="form-field">
+        <span class="label">Nome</span>
+        <input type="text" id="edit-name" required />
+      </label>
+      <label class="form-field">
+        <span class="label">Email(s) — separados por vírgula</span>
+        <input type="text" id="edit-emails" required />
+      </label>
+      <label class="form-field">
+        <span class="label">Círculo/origem</span>
+        <input type="text" id="edit-circle" />
+      </label>
+      <label class="form-field form-field-wide">
+        <span class="label">Notas</span>
+        <textarea id="edit-notes" rows="3"></textarea>
+      </label>
+      <div id="edit-contact-error" class="alert-banner" hidden></div>
+      <div class="dialog-actions">
+        <button type="button" id="edit-cancel-btn">Cancelar</button>
+        <button type="submit">Salvar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Registrar outreach -->
+  <dialog id="outreach-dialog" class="contact-dialog">
+    <form id="outreach-form" class="contact-form">
+      <h3>Registrar outreach</h3>
+      <input type="hidden" id="outreach-id" />
+      <label class="form-field">
+        <span class="label">Data</span>
+        <input type="date" id="outreach-date" required />
+      </label>
+      <label class="form-field">
+        <span class="label">Canal</span>
+        <input type="text" id="outreach-channel" placeholder="email, whatsapp, linkedin…" required />
+      </label>
+      <label class="form-field-check">
+        <input type="checkbox" id="outreach-responded" /> Respondeu
+      </label>
+      <label class="form-field-check">
+        <input type="checkbox" id="outreach-followup" /> Follow-up pendente
+      </label>
+      <label class="form-field form-field-wide">
+        <span class="label">Nota (opcional)</span>
+        <textarea id="outreach-note" rows="2"></textarea>
+      </label>
+      <div id="outreach-error" class="alert-banner" hidden></div>
+      <div class="dialog-actions">
+        <button type="button" id="outreach-cancel-btn">Cancelar</button>
+        <button type="submit">Registrar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/apoios.js" type="module"></script>
+  <script src="/chat-drawer.js" type="module"></script>
+</body>
+</html>
