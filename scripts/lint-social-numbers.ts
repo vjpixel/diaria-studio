@@ -178,10 +178,22 @@ export function highlightSourceText(approved: ApprovedShape, destaque: number): 
 }
 
 /**
- * Separa o 03-social.md por destaque. Os posts (LinkedIn main + comments +
- * Facebook) ficam sob headers `## d1`/`## d2`/`## d3` (dentro de `# LinkedIn`
- * e `# Facebook`). Concatena TODO o texto de cada dN (os dois canais), parando
- * em `## d{outro}` ou `# {canal}`. Exportada pra teste.
+ * Separa o 03-social.md por destaque. Os posts (LinkedIn main + comments,
+ * Facebook, Instagram — `# Instagram` desde #3486, e qualquer canal futuro)
+ * ficam sob headers `## d1`/`## d2`/`## d3` dentro de cada seção `# {canal}`.
+ * Concatena TODO o texto de cada dN (TODOS os canais presentes no arquivo),
+ * parando em `## d{outro}` ou `# {canal}`. Exportada pra teste.
+ *
+ * #3504: deliberadamente CANAL-AGNÓSTICO — o reset de `current` dispara em
+ * QUALQUER header `# {qualquer coisa}` (não checa se é literalmente "LinkedIn"
+ * ou "Facebook"), e a captura de `## dN` funciona em QUALQUER seção. Isso é o
+ * que já fez a seção `# Instagram` (#3486) ser coberta pelo guard de cifras
+ * (#1711) sem precisar de mudança de código quando o agent `social-instagram`
+ * foi introduzido — e é o que cobre automaticamente o próximo canal que vier
+ * (ex: Threads) sem precisar editar esta função de novo. NÃO hard-code nomes
+ * de plataforma aqui — isso reintroduziria a classe de bug que #3504 pediu
+ * pra evitar (guard "esquece" de cobrir canal novo até alguém lembrar de
+ * atualizar uma lista).
  */
 export function parseSocialByDestaque(socialMd: string): Map<number, string> {
   const map = new Map<number, string>();
@@ -193,7 +205,7 @@ export function parseSocialByDestaque(socialMd: string): Map<number, string> {
       continue;
     }
     if (/^#\s+/.test(line)) {
-      current = null; // # LinkedIn / # Facebook — fora de qualquer destaque
+      current = null; // # LinkedIn / # Facebook / # Instagram / ... — fora de qualquer destaque
       continue;
     }
     if (current !== null) {

@@ -165,6 +165,49 @@ Post Facebook d2.`;
   });
 });
 
+describe("parseSocialByDestaque (#3504) — inclui seção # Instagram", () => {
+  it("captura conteúdo de ## dN dentro de # Instagram junto com LinkedIn/Facebook", () => {
+    const md = `# LinkedIn
+
+## d1
+
+Post LinkedIn d1.
+
+# Facebook
+
+## d1
+
+Post Facebook d1.
+
+# Instagram
+
+## d1
+
+Post Instagram d1 com US$ 777 bilhões.
+
+## d2
+
+Post Instagram d2.`;
+    const map = parseSocialByDestaque(md);
+    assert.match(map.get(1) ?? "", /Post LinkedIn d1/);
+    assert.match(map.get(1) ?? "", /Post Facebook d1/);
+    assert.match(map.get(1) ?? "", /Post Instagram d1/);
+    assert.doesNotMatch(map.get(1) ?? "", /Post Instagram d2/);
+  });
+
+  it("canal-agnóstico: uma seção # {qualquer} nova também é coberta sem mudança de código", () => {
+    // #3504: garante que a extração não depende de hard-coded platform names —
+    // um canal futuro (ex: Threads) precisa ser coberto automaticamente.
+    const md = `# Threads
+
+## d1
+
+Post Threads d1 com cifra.`;
+    const map = parseSocialByDestaque(md);
+    assert.match(map.get(1) ?? "", /Post Threads d1/);
+  });
+});
+
 describe("lintSocialNumbers (#1722) — per-destaque, caso 260602", () => {
   it("flaga '965B' no post d1 mesmo que esteja na fonte de OUTRO destaque", () => {
     // O bug 260602: "965B" aparecia num item use_melhor, mas o post d1 (Anthropic
@@ -198,6 +241,63 @@ Post d2 sem cifras.`;
 A startup foi avaliada em US$ 10B.`;
     const approved = {
       highlights: [{ article: { title: "Startup X", summary: "Atingiu valuation de 10 bilhões de dólares." } }],
+    };
+    assert.deepEqual(lintSocialNumbers(social, approved), []);
+  });
+});
+
+describe("lintSocialNumbers (#3504) — cobertura da seção # Instagram", () => {
+  it("flaga cifra fabricada que aparece SÓ na caption de Instagram (#3486)", () => {
+    const social = `# LinkedIn
+
+## d1
+
+Post LinkedIn d1 sem cifra.
+
+# Facebook
+
+## d1
+
+Post Facebook d1 sem cifra.
+
+# Instagram
+
+## d1
+
+A startup levantou US$ 777 bilhões numa rodada recorde.`;
+    const approved = {
+      highlights: [
+        { article: { title: "Startup capta investimento", summary: "Empresa fecha nova rodada, diz reportagem." } },
+      ],
+    };
+    const findings = lintSocialNumbers(social, approved);
+    const d1 = findings.find((f) => f.destaque === 1);
+    assert.ok(d1, "d1 deve ter finding a partir da caption de Instagram");
+    assert.equal(d1!.unsourced[0].key, "777B");
+  });
+
+  it("NÃO flaga cifra de Instagram que ESTÁ na fonte do destaque", () => {
+    const social = `# LinkedIn
+
+## d1
+
+Post LinkedIn d1 sem cifra.
+
+# Facebook
+
+## d1
+
+Post Facebook d1 sem cifra.
+
+# Instagram
+
+## d1
+
+A startup foi avaliada em US$ 10 bilhões.`;
+    const approved = {
+      highlights: [
+        { article: { title: "Startup X", summary: "Atingiu valuation de 10 bilhões de dólares." } },
+      ],
     };
     assert.deepEqual(lintSocialNumbers(social, approved), []);
   });
@@ -831,6 +931,136 @@ describe("lint-social-numbers CLI (#2338/fix1) — ok:false no JSON em --post-st
         "#2356 discriminant: ok deve ser false quando há {outros_count} literal pós-Stage5, " +
           "mesmo sem count-findings — remove !hasUnresolvedPostStage5 do ok e este teste falha",
       );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3504 — CLI end-to-end: 03-social.md no formato REAL produzido por
+// merge-social-md.ts (#3486), com seção `# Instagram` mesclada. Reproduz o
+// cenário da issue: cifra fabricada numa caption de Instagram deve disparar
+// o guard igual dispararia se estivesse em LinkedIn/Facebook.
+// ---------------------------------------------------------------------------
+
+describe("lint-social-numbers CLI (#3504) — 03-social.md real com # Instagram", () => {
+  function runLintCli3504(socialPath: string, approvedPath: string, extraArgs: string[] = []) {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "lint-social-numbers.ts");
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--social", socialPath, "--approved", approvedPath, ...extraArgs],
+      { cwd: projectRoot, encoding: "utf8" },
+    );
+  }
+
+  // Formato produzido por scripts/merge-social-md.ts quando o tmp opcional
+  // do social-instagram (#3486) está presente: header canônico "# LinkedIn"
+  // (com o banner de postagem semi-automática), "# Facebook", e por último
+  // "# Instagram" só quando o agent rodou.
+  const SOCIAL_WITH_INSTAGRAM = `# LinkedIn
+
+> **Postagem semi-automática (#1310 atualizou #1075):** \`main\` agenda via Worker→Make.
+
+## d1
+
+Post LinkedIn d1 sem cifra.
+
+### comment_diaria
+
+Edição completa com mais 0 destaques de IA do dia em {edition_url}
+
+### comment_pixel
+
+Opinião do Pixel sobre d1.
+
+## post_pixel
+
+Post pessoal do Pixel.
+
+# Facebook
+
+## d1
+
+Post Facebook d1 sem cifra.
+
+# Instagram
+
+## d1
+
+A rodada de investimento levantou US$ 777 bilhões, segundo a caption.
+`;
+
+  const APPROVED_1_HIGHLIGHT = {
+    highlights: [
+      { article: { title: "Startup capta investimento", summary: "Empresa fecha nova rodada, diz reportagem." } },
+    ],
+    lancamento: [],
+    radar: [],
+    use_melhor: [],
+    video: [],
+  };
+
+  it("flaga cifra fabricada presente só na seção # Instagram mesclada (exit 0, WARN-only)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-social-3504-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      const approvedPath = join(tmp, "01-approved-capped.json");
+      writeFileSync(socialPath, SOCIAL_WITH_INSTAGRAM, "utf8");
+      writeFileSync(approvedPath, JSON.stringify(APPROVED_1_HIGHLIGHT), "utf8");
+
+      const result = runLintCli3504(socialPath, approvedPath);
+
+      // Cifra fabricada é WARN-only (#1711) — exit continua 0, mas o achado
+      // precisa aparecer no stdout JSON e no stderr.
+      assert.equal(result.status, 0, `expected exit 0 (WARN-only), got ${result.status}\nstderr: ${result.stderr}`);
+      assert.match(
+        result.stderr,
+        /777 bilhões|777B/,
+        "#3504: cifra fabricada na caption de Instagram deve aparecer no warning",
+      );
+
+      let parsed: { ok: boolean; num_findings: Array<{ destaque: number; unsourced: Array<{ key: string }> }> } | undefined;
+      assert.doesNotThrow(() => {
+        parsed = JSON.parse(result.stdout);
+      }, `stdout deve ser JSON válido — recebido: ${JSON.stringify(result.stdout)}`);
+      assert.equal(parsed!.ok, false, "#3504: ok deve ser false quando há cifra não-sourced na caption de Instagram");
+      const d1 = parsed!.num_findings.find((f) => f.destaque === 1);
+      assert.ok(d1, "#3504: finding deve estar associado ao d1 (mesmo destaque da caption de Instagram)");
+      assert.equal(d1!.unsourced[0].key, "777B");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("NÃO flaga quando a cifra da caption de Instagram está sourced no approved.json", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "lint-social-3504b-"));
+    try {
+      const socialPath = join(tmp, "03-social.md");
+      const approvedPath = join(tmp, "01-approved-capped.json");
+      const socialSourced = SOCIAL_WITH_INSTAGRAM.replace(
+        "A rodada de investimento levantou US$ 777 bilhões, segundo a caption.",
+        "A rodada de investimento levantou US$ 10 bilhões, segundo a caption.",
+      );
+      const approvedSourced = {
+        ...APPROVED_1_HIGHLIGHT,
+        highlights: [
+          { article: { title: "Startup capta investimento", summary: "Rodada de US$ 10 bilhões confirmada pela empresa." } },
+        ],
+      };
+      writeFileSync(socialPath, socialSourced, "utf8");
+      writeFileSync(approvedPath, JSON.stringify(approvedSourced), "utf8");
+
+      const result = runLintCli3504(socialPath, approvedPath);
+
+      assert.equal(result.status, 0, `expected exit 0, got ${result.status}\nstderr: ${result.stderr}`);
+      let parsed: { ok: boolean; num_findings: unknown[] } | undefined;
+      assert.doesNotThrow(() => {
+        parsed = JSON.parse(result.stdout);
+      });
+      assert.equal(parsed!.ok, true, "#3504: cifra sourced na caption de Instagram não deve gerar finding");
+      assert.deepEqual(parsed!.num_findings, []);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
