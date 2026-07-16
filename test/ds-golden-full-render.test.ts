@@ -119,7 +119,7 @@ const FULL_FIXTURE: NewsletterContent = {
   ],
 
   boxDivulgacao1:
-    "📚 Nossa curadoria de livros sobre IA ganhou uma nova página. [Confira a nova página](https://livros.diaria.workers.dev).",
+    "Nossa curadoria de livros sobre IA ganhou uma nova página. [Confira a nova página](https://livros.diaria.workers.dev).",
   boxDivulgacao1Image:
     "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo-a1b2c3d4.jpg",
 

@@ -19,7 +19,6 @@ import {
   isItalicMissingFalsePositive,
   isMergeTagUnexpandedFalsePositive,
   isEncodingDropSectionEmojiByDesign,
-  isEncodingDropCalloutMarkerByDesign,
   isSectionMissingFalsePositive,
   isLinkDeadFalsePositive,
   extractLinkDeadUrl,
@@ -249,50 +248,12 @@ describe("filterAgentIssues — orchestrator integration (#1421)", () => {
 // #2013 — 3 classes novas de FP
 // ---------------------------------------------------------------------------
 
-describe("#2066 — isEncodingDropCalloutMarkerByDesign", () => {
-  it("FP: marcador 📚 do box de livros — stripCalloutMarker remove por design", () => {
-    const issue = "email:encoding_drop: '📚' ausente no email (U+1F4DA presente no source)";
-    const r = isEncodingDropCalloutMarkerByDesign(issue);
-    assert.equal(r.falsePositive, true);
-    if (r.falsePositive) assert.match(r.reason, /stripCalloutMarker|by-design/i);
-  });
-
-  it("FP: marcador 📣 do callout patrocinado", () => {
-    const issue = "email:encoding_drop: '📣' não aparece no email";
-    const r = isEncodingDropCalloutMarkerByDesign(issue);
-    assert.equal(r.falsePositive, true);
-  });
-
-  it("FP: marcador 🎉 de CTA editorial", () => {
-    const issue = "email:encoding_drop: '🎉' ausente no email de teste";
-    const r = isEncodingDropCalloutMarkerByDesign(issue);
-    assert.equal(r.falsePositive, true);
-  });
-
-  it("NÃO é FP: múltiplos termos citados (pode haver texto real corrompido junto)", () => {
-    const issue = "email:encoding_drop: '📚' e 'pré-treino' corrompidos";
-    const r = isEncodingDropCalloutMarkerByDesign(issue);
-    assert.equal(r.falsePositive, false);
-  });
-
-  it("NÃO é FP: emoji que não é marcador de callout", () => {
-    const issue = "email:encoding_drop: '🚀' ausente no email";
-    const r = isEncodingDropCalloutMarkerByDesign(issue);
-    assert.equal(r.falsePositive, false);
-  });
-
-  it("filterAgentIssues dropa o encoding_drop do 📚 mesmo sem o emoji no HTML local", async () => {
-    const html = "<html><body><p>Curadoria de livros.</p></body></html>";
-    const { kept, dropped } = await filterAgentIssues(
-      ["email:encoding_drop: '📚' ausente no email"],
-      html,
-      "260611",
-    );
-    assert.equal(kept.length, 0);
-    assert.equal(dropped.length, 1);
-    assert.match(dropped[0].reason, /stripCalloutMarker/);
-  });
-});
+// #3475: removida a suíte "#2066 — isEncodingDropCalloutMarkerByDesign" — o
+// checker e o marcador emoji que ele reconhecia (📣/📚/🎉 nos boxes de
+// divulgação) foram deletados junto com `stripCalloutMarker`
+// (newsletter-render-html.ts). Um `encoding_drop` citando um desses emoji
+// agora é um sinal real (o conteúdo não deveria mais conter esses
+// caracteres), não um falso-positivo by-design.
 
 describe("#2013 — isEncodingDropSectionEmojiByDesign", () => {
   it("FP: emoji 🚀 de LANÇAMENTOS em header — DS remove por design", () => {
@@ -420,12 +381,6 @@ describe("#2730 — FP real de produção: emoji de header/callout no formato co
     assert.equal(r.falsePositive, true);
   });
 
-  it("FP: 📣 de callout patrocinado no formato de produção", () => {
-    const issue = "email:encoding_drop: U+1F4E3 '📣' em '…📣 Patrocinado por Clarice…'";
-    const r = isEncodingDropCalloutMarkerByDesign(issue);
-    assert.equal(r.falsePositive, true);
-  });
-
   it("NÃO é FP: emoji de header cujo contexto NÃO bate o label canônico (💼 fora de header)", () => {
     // 💼 é multi-propósito (também usado em DESTAQUE labels/links inline) — o
     // contexto aqui não menciona MERCADO/TRABALHO, então fica conservador (mantém).
@@ -437,10 +392,14 @@ describe("#2730 — FP real de produção: emoji de header/callout no formato co
   it("NÃO é FP: encoding_drop real (acento, não emoji by-design) no formato de produção continua mantido", () => {
     const issue = "email:encoding_drop: U+00E3 'ã' em '…funcionários da Anthropic confirmaram…'";
     assert.equal(isEncodingDropSectionEmojiByDesign(issue).falsePositive, false);
-    assert.equal(isEncodingDropCalloutMarkerByDesign(issue).falsePositive, false);
   });
 
-  it("filterAgentIssues: dropa os FPs de emoji by-design no formato de produção real, mantém corrupção real", async () => {
+  it("#3475: 📣 de callout de divulgação NÃO é mais FP by-design — o marcador foi removido do sistema, então uma citação real é sinal genuíno", () => {
+    const issue = "email:encoding_drop: U+1F4E3 '📣' em '…📣 Patrocinado por Clarice…'";
+    assert.equal(isEncodingDropSectionEmojiByDesign(issue).falsePositive, false);
+  });
+
+  it("filterAgentIssues: dropa o FP de emoji de header by-design, mantém corrupção real (inclui 📣, #3475)", async () => {
     const html = "<p>newsletter renderizada sem emojis nos headers</p>";
     const issues = [
       "email:encoding_drop: U+1F680 '🚀' em '…🚀 LANÇAMENTOS\\n\\nprimeiro item…'",
@@ -448,9 +407,10 @@ describe("#2730 — FP real de produção: emoji de header/callout no formato co
       "email:encoding_drop: U+00E3 'ã' em '…funcionários confirmaram…'", // real — não está no html
     ];
     const r = await filterAgentIssues(issues, html, "260701");
-    assert.equal(r.dropped.length, 2, `esperado 2 FPs dropados: ${JSON.stringify(r.dropped)}`);
-    assert.equal(r.kept.length, 1, `esperado 1 issue real mantida: ${JSON.stringify(r.kept)}`);
-    assert.match(r.kept[0], /U\+00E3/);
+    assert.equal(r.dropped.length, 1, `esperado 1 FP dropado (🚀 header): ${JSON.stringify(r.dropped)}`);
+    assert.equal(r.kept.length, 2, `esperado 2 issues reais mantidas (📣 + ã): ${JSON.stringify(r.kept)}`);
+    assert.ok(r.kept.some((k) => /U\+00E3/.test(k)));
+    assert.ok(r.kept.some((k) => /U\+1F4E3/.test(k)));
   });
 });
 

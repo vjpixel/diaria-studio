@@ -1020,37 +1020,37 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
     sponsor,
   });
 
-  it("loadClariceCallout retorna o bloco **📣 …** com cupons + link", () => {
+  it("loadClariceCallout retorna o bloco **… ** com cupons + link (#3475: sem marcador emoji)", () => {
     const block = loadClariceCallout();
     assert.ok(block, "snippet existe");
-    assert.match(block!, /^\*\*\s*📣/);
+    assert.match(block!, /^\*\*\s*Escreva melhor/);
     assert.match(block!, /\*\*$/);
     assert.match(block!, /NEWS25|NEWS50/);
     assert.match(block!, /clarice\.ai\/precos-planos\?via=diaria/);
   });
 
-  it("loadDailyCallout (#2527): retorna o bloco **📚 …** de curadoria de livros", () => {
+  it("loadDailyCallout (#2527): retorna o bloco **… ** de curadoria de livros (#3475: sem marcador emoji)", () => {
     const block = loadDailyCallout();
     assert.ok(block, "snippet de livros existe");
-    assert.match(block!, /^\*\*\s*📚/);
+    assert.match(block!, /^\*\*\s*A diar\.ia\.br mantém/);
     assert.match(block!, /\*\*$/);
     assert.match(block!, /curadoria de livros/i);
     assert.match(block!, /livros\.diaria\.workers\.dev/);
   });
 
-  it("default (sponsor on, #3212): injeta o callout 📖 de recomendação de leitura entre D1 e D2 + extractBoxDivulgacao1 o acha", () => {
+  it("default (sponsor on, #3212): injeta o callout de recomendação de leitura entre D1 e D2 + extractBoxDivulgacao1 o acha", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir));
       const d1Pos = out.indexOf("DESTAQUE 1");
-      const calloutPos = out.indexOf("📖");
+      const calloutPos = out.indexOf("Recomendação de leitura");
       const d2Pos = out.indexOf("DESTAQUE 2");
       assert.ok(d1Pos < calloutPos && calloutPos < d2Pos, "callout entre D1 e D2");
-      // acceptance #3212: slot1 default agora é a recomendação de leitura específica (📖),
-      // curadoria geral de livros (📚) move pro slot2 — boxDivulgacao1 acha o 📖 no HTML final.
+      // acceptance #3212: slot1 default agora é a recomendação de leitura específica,
+      // curadoria geral de livros move pro slot2 — boxDivulgacao1 acha o box no HTML final.
       const mid = extractBoxDivulgacao1(out);
       assert.ok(mid, "extractBoxDivulgacao1 acha o box");
-      assert.match(mid!, /^📖 Recomendação de leitura/);
+      assert.match(mid!, /^Recomendação de leitura/);
     } finally {
       cleanup();
     }
@@ -1060,8 +1060,8 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir, false));
-      assert.ok(!out.includes("📖"), "sem callout slot1 quando sponsor=false");
-      assert.ok(!out.includes("📚"), "sem callout slot2 quando sponsor=false");
+      assert.ok(!out.includes("Recomendação de leitura"), "sem callout slot1 quando sponsor=false");
+      assert.ok(!out.includes("curadoria de livros"), "sem callout slot2 quando sponsor=false");
       assert.equal(extractBoxDivulgacao1(out), null);
     } finally {
       cleanup();
@@ -1084,21 +1084,22 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
     }
   });
 
-  it("code-review: callout 📚/🎉 pré-existente também suprime injeção (não cria 2º boxDivulgacao1)", () => {
+  it("code-review: callout pré-existente (qualquer conteúdo) também suprime injeção (não cria 2º boxDivulgacao1)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
-      // um 📚 (livros) já na região do D1 → NÃO injetar 📣 (dois midCallouts orfanariam um)
+      // um box de livros já colado na região do D1 → NÃO injetar recomendação de
+      // leitura por cima (dois midCallouts orfanariam um)
       writeFileSync(
         join(internalDir, "02-d2-draft.md"),
-        "**📚 Curadoria de livros [ver](https://livros.diaria.workers.dev)**\n\n**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2",
+        "**Curadoria de livros [ver](https://livros.diaria.workers.dev)**\n\n**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2",
       );
       const out = stitchNewsletter(base(dir, internalDir));
-      assert.ok(!out.includes("📣"), "não injeta 📣 quando já há 📚");
-      // #3212: slot2 (D2/D3) default também é 📚 (livros) agora — o 📚 pré-existente
+      assert.ok(!out.includes("Recomendação de leitura"), "não injeta slot1 quando já há box pré-existente");
+      // #3212: slot2 (D2/D3) default também é livros agora — o box pré-existente
       // (colado manualmente na região do slot1) NÃO deve duplicar, mas o slot2
-      // segue injetando seu próprio 📚 independentemente (posições/gaps diferentes).
+      // segue injetando seu próprio box independentemente (posições/gaps diferentes).
       // Total esperado: 1 (pré-existente, slot1 suprimido) + 1 (auto-injetado, slot2) = 2.
-      assert.equal((out.match(/📚/g) || []).length, 2);
+      assert.equal((out.match(/curadoria de livros/gi) || []).length, 2);
     } finally {
       cleanup();
     }

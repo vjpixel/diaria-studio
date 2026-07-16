@@ -88,19 +88,19 @@ function generateGoldens(): Record<string, string> {
       "🎉 Sorteio ao vivo hoje às 19h! [Participe aqui](https://livros.diaria.workers.dev).",
     ),
     intro_callout_multi: renderIntroCallout(
-      "📣 Escreva melhor com a Clarice.ai\n\nA IA brasileira que revisa seus textos.\n\n[Acesse com desconto](https://clarice.ai/precos-planos?via=diaria).",
+      "Escreva melhor com a Clarice.ai\n\nA IA brasileira que revisa seus textos.\n\n[Acesse com desconto](https://clarice.ai/precos-planos?via=diaria).",
     ),
 
     mid_callout_com_imagem: renderMidCallout(
-      "📚 Nossa curadoria de livros sobre IA ganhou página nova. [Confira a nova página](https://livros.diaria.workers.dev).",
+      "Nossa curadoria de livros sobre IA ganhou página nova. [Confira a nova página](https://livros.diaria.workers.dev).",
       "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo-a1b2c3d4.jpg",
     ),
     mid_callout_sem_imagem: renderMidCallout(
-      "📚 Nossa curadoria de livros sobre IA. [Confira a nova página](https://livros.diaria.workers.dev).",
+      "Nossa curadoria de livros sobre IA. [Confira a nova página](https://livros.diaria.workers.dev).",
       null,
     ),
     mid_callout_multi_para: renderMidCallout(
-      "📚 Curadoria de livros sobre IA\n\nPágina nova com filtros por tema. [Confira](https://livros.diaria.workers.dev).",
+      "Curadoria de livros sobre IA\n\nPágina nova com filtros por tema. [Confira](https://livros.diaria.workers.dev).",
       "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo-a1b2c3d4.jpg",
     ),
 
@@ -206,8 +206,6 @@ describe("ds-golden-components (#2071) — HTML canônico por componente do DS",
       /Georgia, 'Times New Roman', serif/,
       "introCallout multi: fonte serif ausente",
     );
-    // Marcador 📣 removido (o separador 'Divulgação' o substitui)
-    assert.ok(!html.includes("📣"), "introCallout multi: marcador 📣 não deve aparecer");
   });
 
   it("boxDivulgacao1 com imagem: <img> + botão CTA + link do box (DS box com screenshot)", () => {

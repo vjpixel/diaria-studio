@@ -58,13 +58,15 @@ O formato de render de um box de slot 1/2/3 é decidido pela **estrutura do
 próprio conteúdo** (`shouldForceCtaPill` em `newsletter-render-html.ts`), não
 pelo slot nem pelo emoji:
 
-- **bold-line / mid-callout** (`renderMidCallout`) — bloco `**emoji Título …
+- **bold-line / mid-callout** (`renderMidCallout`) — bloco `**Título …
   [link](url)**` compacto, título + corpo + 1 link, tudo dentro do mesmo
   `**...**`. Formato de `clarice-divulgacao.md` e `livros-divulgacao.md`.
 - **carrinho / CTA pill** (`renderIntroCallout` com `forceCtaPill=true`) —
-  multi-parágrafo SEM bold-wrap, acionado quando (a) o texto começa com 🛒,
-  (b) tem 2+ links no total, ou (c) algum parágrafo é SÓ um link (`[label](url)`
-  ou `→ [label](url)`) — o último link vira botão pill centralizado no HTML.
+  multi-parágrafo SEM bold-wrap, acionado quando (a) tem 2+ links no total,
+  ou (b) algum parágrafo é SÓ um link (`[label](url)` ou `→ [label](url)`) —
+  o último link vira botão pill centralizado no HTML (legado #3204: um
+  marcador `🛒` de abertura também acionava este formato; removido em #3475
+  por ser redundante com o sinal (b) em todo conteúdo real observado).
   Formato de `alexa-plus-divulgacao.md`.
 - **multi-parágrafo com lista** — mesma família estrutural do carrinho (texto
   plano, sem bold-wrap), mas com um bloco de lista `- item` no meio que vira
@@ -94,7 +96,7 @@ pelo slot nem pelo emoji:
 |---|---|---|---|---|
 | `livros-divulgacao.md` | Slot 1, 2 (default) ou 3 | bold-line/mid-callout | **Sim** — é o default de `slot2` (#3212) | Curadoria própria (`livros.diaria.workers.dev`), roda sem intervenção na maioria das edições (#2527). |
 | `clarice-divulgacao.md` | Slot 1, 2 ou 3 | bold-line/mid-callout, link de afiliado (`?via=diaria`) | **Sim** | Trocar o config quando quiser rodar a campanha Clarice no lugar de livros (era o default pré-#2527). Também reusado no mensal como seção própria. |
-| `alexa-plus-divulgacao.md` | Slot 1, 2 ou 3 | carrinho/CTA pill, com disclosure de comissão no próprio corpo | **Sim** (começa com 🛒) | Trocar o config quando quiser divulgar a campanha de afiliado Alexa+. |
+| `alexa-plus-divulgacao.md` | Slot 1, 2 ou 3 | carrinho/CTA pill, com disclosure de comissão no próprio corpo | **Sim** (último parágrafo é só o link CTA — sinal estrutural) | Trocar o config quando quiser divulgar a campanha de afiliado Alexa+. |
 | `recomendacao-leitura.md` | Slot 1 (default) ou qualquer outro | bold-line/mid-callout genérico (só 1 link no bloco, nenhum parágrafo CTA-only → não vira carrinho) | **Sim** (#3306) — `loadDivulgacaoSnippet` tem um 3º fallback genérico: quando o conteúdo não bate bold-line nem carrinho, devolve o texto cru em vez de `null`. É o default de `slot1` desde #3212. | Default automático — não precisa fazer nada. Recomendação de leitura pessoal (livro/artigo) com link afiliado; título+autor em negrito-com-link, 1 comentário pessoal em 1ª pessoa, sem CTA pill. Editor substitui o conteúdo a cada reuso (troca manual do arquivo/edição pontual). |
 | `indicacao-ferramenta.md` | Slot 3 (default, #3476) | bold-line/mid-callout genérico (mesmo fallback do #3306) | **Sim** — é o default de `slot3` desde #3476. | Default automático. Indicação pessoal de ferramenta que o editor usa/recomenda, SEM comissão — disclaimer em itálico no próprio corpo. Editor substitui nome/link/comentário a cada reuso. |
 | `apoio-divulgacao.md` | Slot 1, 2 ou 3 | multi-parágrafo com lista + CTA pill | **Sim** (#3306) — mesmo fallback genérico de `recomendacao-leitura.md`/`indicacao-ferramenta.md` (antes do #3306 retornava `null`; ver nota de reconciliação na issue #3212). Colar manualmente no draft (`02-d1-draft.md`/`02-d2-draft.md`/`02-d3-draft.md`) também funciona — o parse do lado do render é marcador-agnóstico e não depende de `loadDivulgacaoSnippet`. | Editor troca o config (ou cola manualmente na região desejada) quando quiser rodar a campanha do programa de apoio (apoia.se/diaria). |
@@ -113,12 +115,19 @@ por slot).
   (`scripts/lib/shared/snippet-loader.ts`) remove esse comentário
   automaticamente antes do conteúdo entrar no render — o comentário é só
   documentação, nunca vaza pro e-mail final.
-- **Marcador emoji é cosmético, não estrutural.** O parse/render decide
-  formato e posição por estrutura (posição no texto, presença de `---`,
-  contagem de links, parágrafo CTA-only), não por qual emoji abre o bloco
-  (#3204/#3232). Um emoji novo nunca-visto-antes funciona sem mudança de
-  código — só fica visível no título (não é removido por `stripCalloutMarker`,
-  que só reconhece `📣`/`📚`/`📖`/`🎉` para fins cosméticos).
+- **Sem marcador emoji (#3475).** O parse/render decide formato e posição
+  100% por estrutura (posição no texto, presença de `---`, contagem de
+  links, parágrafo CTA-only) e por sinal de conteúdo (link de afiliado pra
+  `isSponsoredCallout`, link `livros.diaria.workers.dev` pra
+  `isBoxDivulgacaoLivros`) — nunca por qual emoji abre o bloco (#3204/#3232).
+  O sistema antigo de marcadores (`stripCalloutMarker`, que reconhecia
+  `📣`/`📚`/`📖`/`🎉` só pra fins cosméticos) foi removido — os 4 arquivos
+  que usavam marcador (`recomendacao-leitura.md`, `livros-divulgacao.md`,
+  `clarice-divulgacao.md`, `alexa-plus-divulgacao.md`) não abrem mais com
+  emoji. Efeito colateral aceito em `recomendacao-leitura.md`: era o único
+  box cuja distinção "título vs. corpo comum" dependia do marcador (não de
+  sponsored/CTA-only) — sem ele, os parágrafos renderizam uniformemente,
+  sem o título serif 26px destacado (ver comentário do próprio arquivo).
 - **Nem todo arquivo é "vivo" em runtime.** `intro-campeoes-sorteio.md` é
   puramente um template de referência (o gerador é a fonte de verdade
   executável); os demais 7 são lidos de fato — seja via `boxes_divulgacao`

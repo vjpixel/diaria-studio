@@ -172,28 +172,6 @@ export function stripKickerEmoji(s: string): string {
 }
 
 /**
- * Remove SÓ o marcador de callout (📣/📚/📖/🎉 + variation selector + espaço)
- * do início. Diferente de `stripKickerEmoji`, NÃO engole `[` (markdown-link),
- * aspas ou outros não-alfanuméricos — preservando títulos que começam com
- * link/citação (#1942 review #4).
- *
- * #3232: propositalmente NÃO virou um allowlist Unicode genérico como
- * `EMOJI_LEAD_RE` em lint-checks/callout-placement.ts — isto é cosmético
- * (remove o emoji decorativo do título quando ele É um destes 4, conhecidos),
- * não um mecanismo de detecção/silent-drop (esses foram corrigidos por
- * posição+estrutura em `extractIntroCallout`/`locateBoxInGap` e por link de
- * afiliado em `isSponsoredCallout` — nenhum dos dois depende mais desta
- * função pra decidir SE um callout existe). Um marcador novo (ex: 🎥) que não
- * esteja nesta lista simplesmente fica visível no título — cosmético, não
- * crítico (revisado no #3232, item 2 do inventário do #3204).
- */
-export function stripCalloutMarker(s: string): string {
-  // [︎️]? — consome VS15 (texto) além do VS16 (emoji); VS15 órfão
-  // viraria char invisível líder no <p> (review #2066).
-  return s.replace(/^\s*(?:📣|📚|📖|🎉)[︎️]?\s*/u, "").trim();
-}
-
-/**
  * Convenção de disclosure de callout (#1942 review #1; marcador-agnóstico
  * desde #3232): um callout é PATROCINADO — e recebe o separador "Divulgação"
  * — quando o texto contém um link de AFILIADO (`?via=…` ou `tag=…`), não mais
@@ -354,10 +332,11 @@ export function renderCoverage(text: string): string {
  * é emitido como `<p>` de corpo — evita `→` orphan e <p> vazio.
  *
  * #2797: `forceCtaPill` ativa o mesmo botão pill do último parágrafo CTA-only
- * em callouts NÃO-patrocinados. Usado pelo box de divulgação em formato 🛒 — que reusa este
- * render sem o marcador 📣 (logo `sponsored=false`) mas quer o CTA como pill
- * centralizado (ex: box Alexa+ "Conhecer a Alexa+ e ver as ofertas"). Sem 📣,
- * NÃO adiciona o separador "Divulgação" (o box de divulgação já tem o seu).
+ * em callouts NÃO-patrocinados — usado pelo box de divulgação em formato
+ * carrinho (`shouldForceCtaPill`, ex: Alexa+ "Conhecer a Alexa+ e ver as
+ * ofertas"), que não é `sponsored` (sem link de afiliado `?via=`/`tag=`) mas
+ * quer o CTA como pill centralizado. Sem `sponsored`, NÃO adiciona o
+ * separador "Divulgação" (o box de divulgação já tem o seu).
  */
 
 /** #3374: parágrafo é lista quando TODA linha não-vazia começa com `- `/`* `. */
@@ -387,6 +366,27 @@ function renderBulletList(p: string, marginTop: string): string {
   return `<ul style="margin:${marginTop} 0 0;padding-left:20px;">\n        ${lis}\n      </ul>`;
 }
 
+/**
+ * #3475: reconhece SÓ o marcador 🎉 do box de campeões/sorteio auto-gerado
+ * no topo da edição (`build-champions-callout.ts`, 1ª edição do mês). Este
+ * NÃO é o sistema de marcadores dos boxes de divulgação (📣/📚/📖/🎉,
+ * removido em #3475) — é uma convenção separada, específica da região de
+ * intro/topo, que distingue esse CTA auto-gerado de uma nota pessoal do
+ * editor (boas-vindas, #3460) escrita na mesma região. Sem ela, as duas
+ * coisas são indistinguíveis por estrutura (ambas multi-parágrafo,
+ * não-patrocinadas, sem CTA-only paragraph) — o emoji ainda é o único sinal.
+ */
+function hasCeremonyMarker(p: string): boolean {
+  return /^\s*🎉/u.test(p);
+}
+
+/** Remove o marcador 🎉 (+ variation selector) do título do box de campeões/
+ * sorteio antes de renderizar — mesmo motivo cosmético do antigo
+ * `stripCalloutMarker`, mas escopado só a este marcador (#3475). */
+function stripCeremonyMarker(s: string): string {
+  return s.replace(/^\s*🎉[︎️]?\s*/u, "").trim();
+}
+
 export function renderIntroCallout(
   text: string,
   titleStyle: "serif" | "body" = "serif",
@@ -396,31 +396,42 @@ export function renderIntroCallout(
   // #1938: split em parágrafos (`\n\n`). Callout de 1 parágrafo (intro/sorteio)
   // mantém o comportamento antigo (negrito, emoji preservado). Bloco
   // multi-parágrafo (ex: divulgação CLARICE reaproveitada da mensal) segue o DS:
-  // 1º parágrafo = título serif (emoji de marcação removido), demais = corpo
-  // peso normal; os links já saem em negrito via processInlineLinks.
+  // 1º parágrafo = título serif, demais = corpo peso normal; os links já saem
+  // em negrito via processInlineLinks.
   const sponsored = isSponsoredCallout(text);
   const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const ceremony = hasCeremonyMarker(paras[0] ?? "");
   let inner: string;
-  // #3460: multi-parágrafo SEM marcador reconhecido (📣/📚/📖/🎉) e não-patrocinado —
-  // nota pessoal do editor (ex: boas-vindas), não anúncio/box de divulgação com
-  // título. Sem essa exceção, o 1º parágrafo sempre virava um "título" visualmente
-  // destacado (serif/bold) só por estar na posição 0, mesmo sendo uma frase comum
-  // do mesmo texto corrido — pedido explícito do editor pra tratamento uniforme.
-  // `forceCtaPill` fica de fora desta exceção (regressão achada em CI, #3465):
-  // `renderBoxDivulgacao` remove o marcador 🛒/📚 do texto ANTES de chamar aqui
-  // com forceCtaPill=true — o marcador já não está mais em paras[0] quando esta
-  // função roda, então checar só hasKnownMarker intercepta indevidamente todo
-  // box de divulgação (🛒/📚) e quebra o botão pill/lista de bullets.
-  const hasKnownMarker = /^\s*(?:📣|📚|📖|🎉)/u.test(paras[0] ?? "");
-  if (paras.length > 1 && !sponsored && !hasKnownMarker && !forceCtaPill) {
+  // #3460: multi-parágrafo não-patrocinado e sem CTA pill forçado — nota
+  // pessoal do editor (ex: boas-vindas), não anúncio/box de divulgação com
+  // título. Sem essa exceção, o 1º parágrafo sempre virava um "título"
+  // visualmente destacado (serif/bold) só por estar na posição 0, mesmo sendo
+  // uma frase comum do mesmo texto corrido — pedido explícito do editor pra
+  // tratamento uniforme.
+  //
+  // #3475: até aqui, um box de divulgação (recomendação de leitura, livros,
+  // Clarice, Alexa+) escapava desta exceção porque o 1º parágrafo começava
+  // com um marcador emoji conhecido (📣/📚/📖) — allowlist removida junto com
+  // o resto do sistema de marcadores dos boxes de divulgação (o editor não
+  // usa mais esses emoji pra abrir box; ver context/snippets/*.md). Sem
+  // allowlist pra distinguir "título de box" de "nota pessoal", um box
+  // não-patrocinado e sem CTA-only paragraph (caso real:
+  // recomendacao-leitura.md) passa a cair aqui também — perde o título serif
+  // 26px e renderiza como parágrafos uniformes (ainda funcional: conteúdo e
+  // links intactos, só sem o destaque visual de título). Callouts patrocinados
+  // (Clarice, `sponsored=true`), boxes com CTA pill estrutural (Alexa+,
+  // apoio — `forceCtaPill=true`) e o box de campeões/sorteio (`ceremony`,
+  // marcador 🎉 preservado — feature separada, fora do escopo do #3475)
+  // continuam com título, pois não passam por este branch.
+  if (paras.length > 1 && !sponsored && !forceCtaPill && !ceremony) {
     inner = paras
       .map((p, i) => renderBoxParagraph(p, i === 0 ? "0" : "12px 0 0"))
       .join("\n      ");
   } else if (paras.length > 1) {
-    // multi-parágrafo: 1º = título (marcador 📣/📚/🎉 removido), demais = corpo normal.
-    // titleStyle "serif" (default) = título serif grande (sponsored/mid callout);
-    // "body" = mesmo tamanho do corpo, em negrito (intro 🎉 — pedido do editor 260701).
-    const title = stripCalloutMarker(paras[0]);
+    // multi-parágrafo: 1º = título, demais = corpo normal. titleStyle "serif"
+    // (default) = título serif grande (sponsored/mid callout); "body" = mesmo
+    // tamanho do corpo, em negrito (intro 🎉 — pedido do editor 260701).
+    const title = ceremony ? stripCeremonyMarker(paras[0]) : paras[0];
     // #260701 review: estilo do header body-size (título + sub-cabeçalho) num só
     // lugar — evita divergência silenciosa entre os 2 usos (cf. lbStyle em renderEIA).
     const bodyHeadingStyle = `font-family:${FONT_HEADING};font-weight:600;font-size:16px;line-height:1.4;color:${TEXT_COLOR};`;
@@ -536,11 +547,11 @@ export function renderIntroCallout(
 </td></tr>`;
     }
   } else {
-    // 1 parágrafo: anúncio (📣) tem o marcador removido — o separador "Divulgação"
-    // já rotula (#1942 review #3). 🎉/📚 preservam o emoji decorativo.
-    // #3373: peso de fonte segue `bold` (default true = visual histórico).
-    const single = paras[0] ?? text;
-    const only = sponsored ? stripCalloutMarker(single) : single;
+    // 1 parágrafo: #3475 removeu o strip de marcador emoji (📣/📚/📖/🎉) — o
+    // editor não abre mais boxes com esses marcadores, então não há mais nada
+    // pra remover aqui. #3373: peso de fonte segue `bold` (default true =
+    // visual histórico).
+    const only = paras[0] ?? text;
     // #3477: disclosure paragraph (`_..._`) — mesmo no path single-parágrafo,
     // renderiza 12px itálico em vez do corpo 16px/peso variável padrão.
     const { text: strippedOnly, isDisclosure } = stripDisclosureWrap(only);
@@ -593,22 +604,18 @@ export function findMarkdownLinks(
 /**
  * #3204: decide se o box de divulgação usa o formato "carrinho" (CTA pill
  * centralizado, via `renderIntroCallout(forceCtaPill=true)`) por ESTRUTURA do
- * conteúdo — não por um allowlist de marcador emoji. Sinais:
- *   - legado: box começa com o marcador carrinho 🛒 — comportamento
- *     pré-#3204 preservado (compat com hábito editorial/edições antigas);
- *     `forceCtaPill=true` é seguro mesmo se nenhum parágrafo qualificar como
- *     CTA-only (renderIntroCallout degrada graciosamente pra no-op nesse caso).
- *   - estrutural: 2+ links no total no box (#3028 — prateleira com múltiplos
- *     títulos), OU QUALQUER parágrafo é SÓ um link (opcionalmente prefixado
- *     por `→`/`Acesse`) — mesmo critério que `renderIntroCallout` já usa
+ * conteúdo — não por um allowlist de marcador emoji (o legado `🛒` foi
+ * removido em #3475; era redundante com o sinal estrutural abaixo pra todo
+ * conteúdo real observado). Sinais:
+ *   - 2+ links no total no box (#3028 — prateleira com múltiplos títulos);
+ *   - OU QUALQUER parágrafo é SÓ um link (opcionalmente prefixado por
+ *     `→`/`Acesse`) — mesmo critério que `renderIntroCallout` já usa
  *     internamente pra decidir o pill de um CTA-only paragraph (#2797),
  *     generalizado pro dispatcher e sem exigir que seja o ÚLTIMO parágrafo
  *     (um box pode ter um parágrafo de disclosure DEPOIS do CTA, #2996).
- * Sem o sinal estrutural, um box novo sem marcador emoji reconhecido nunca
- * ganharia o tratamento carrinho/pill.
+ * Sem o sinal estrutural, um box novo cai no formato bold-line/mid-callout.
  */
 function shouldForceCtaPill(box: string): boolean {
-  if (/^\s*🛒/u.test(box)) return true;
   if (findMarkdownLinks(box).length >= 2) return true;
   const paras = box.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   if (paras.length <= 1) return false;
@@ -627,13 +634,12 @@ function shouldForceCtaPill(box: string): boolean {
 /**
  * #2978/#3204: dispatcher único pros 2 boxes de divulgação (slot 1 = gap
  * D1/D2, slot 2 = gap D2/D3). O FORMATO é decidido pela ESTRUTURA do próprio
- * box (`shouldForceCtaPill`), não pelo slot nem por um marcador emoji
- * reconhecido: conteúdo "carrinho" (CTA-only no fim, ou 2+ links) → prateleira
- * multi-parágrafo com CTA pill (reusa `renderIntroCallout` com
- * `forceCtaPill=true`; um eventual marcador legado 🛒/📚 é removido do HTML);
- * qualquer outro conteúdo → bold-line/mid-callout (reusa `renderMidCallout`,
- * que aceita imagem opcional — #2978-slot2-parity: agora nos 2 slots). Ambos
- * os slots chamam este dispatcher.
+ * box (`shouldForceCtaPill`), não pelo slot nem por um marcador emoji: conteúdo
+ * "carrinho" (CTA-only no fim, ou 2+ links) → prateleira multi-parágrafo com
+ * CTA pill (reusa `renderIntroCallout` com `forceCtaPill=true`); qualquer
+ * outro conteúdo → bold-line/mid-callout (reusa `renderMidCallout`, que
+ * aceita imagem opcional — #2978-slot2-parity: agora nos 2 slots). Ambos os
+ * slots chamam este dispatcher.
  *
  * `bold` (#3373): peso de fonte do box SÓ-TEXTO (sem imagem, sem CTA pill) —
  * `true` (default) reproduz o visual histórico; `false` quando a fonte do box
@@ -646,13 +652,7 @@ export function renderBoxDivulgacao(
   bold = true,
 ): string {
   if (shouldForceCtaPill(box)) {
-    // Remove um eventual marcador estrutural legado (🛒/📚) da 1ª linha antes
-    // de renderizar — não deve vazar cru no HTML. `\r?\n?` cobre o marcador
-    // sozinho na própria linha, pra não deixar um `\n` órfão que vira um
-    // <p></p> vazio no topo do box. Marcadores novos (sem allowlist) não são
-    // stripados aqui — ficam como texto decorativo no título, igual ao
-    // comportamento já existente pra 🎉/📚 no path sem CTA pill.
-    return renderIntroCallout(box.replace(/^\s*(?:🛒|📚)[ \t]*\r?\n?/u, ""), "serif", true, bold);
+    return renderIntroCallout(box, "serif", true, bold);
   }
   return renderMidCallout(box, imageUrl, bold);
 }
@@ -705,17 +705,18 @@ export function renderMidCallout(text: string, imageUrl: string | null, bold = t
     ? `<a href="${safeLink}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${ctaLabel}</a>`
     : "";
   // #1942 review #2: corpo multi-parágrafo não vira blocão. >1 parágrafo → 1º =
-  // título serif (marcador removido) + demais peso normal, igual ao caminho
-  // sem imagem (#1938). 1 parágrafo: a imagem já identifica a promo — marcador
-  // (📣/📚/🎉) removido e corpo no estilo de texto do DS (peso normal, 1.62),
-  // não o bold 600 herdado do box texto-puro (pedido do editor, 260611).
+  // título serif + demais peso normal, igual ao caminho sem imagem (#1938).
+  // 1 parágrafo: a imagem já identifica a promo — corpo no estilo de texto do
+  // DS (peso normal, 1.62), não o bold 600 herdado do box texto-puro (pedido
+  // do editor, 260611).
   const bodyParas = body.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-  // review #2066: corpo que era só marcador+link fica vazio pós-strip — sem o
-  // guard, sairia um <p> fantasma com 12px de margem entre a imagem e o CTA.
-  const singleBody = stripCalloutMarker(body);
+  // review #2066: corpo que é só um link fica vazio após a remoção do link
+  // acima — sem o guard, sairia um <p> fantasma com 12px de margem entre a
+  // imagem e o CTA.
+  const singleBody = body;
   const bodyHtml =
     bodyParas.length > 1
-      ? `<p style="margin:0 0 12px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(stripCalloutMarker(bodyParas[0]))}</p>\n      ` +
+      ? `<p style="margin:0 0 12px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(bodyParas[0])}</p>\n      ` +
         bodyParas
           .slice(1)
           .map((p, i) => renderBoxParagraph(p, `${i === 0 ? "0" : "12px"} 0 0`))
@@ -1154,9 +1155,10 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   for (let i = 0; i < content.destaques.length; i++) {
     parts.push(renderDestaque(content.destaques[i]));
     // #2978: box de divulgação slot 1 — SEMPRE na lacuna D1/D2 (após D1, i===0).
-    // O formato (bold-line 📚/📣/🎉 ou carrinho 🛒) é decidido por
-    // renderBoxDivulgacao, não pelo slot. TODO box de divulgação recebe o
-    // kicker "● DIVULGAÇÃO" antes (260611, supersede #1940/#2069).
+    // O formato (bold-line ou carrinho) é decidido por renderBoxDivulgacao
+    // pela ESTRUTURA do conteúdo (#3204/#3475), não pelo slot nem por
+    // marcador emoji. TODO box de divulgação recebe o kicker "● DIVULGAÇÃO"
+    // antes (260611, supersede #1940/#2069).
     if (content.boxDivulgacao1 && i === 0) {
       parts.push(renderDivulgacaoSeparator());
       parts.push(

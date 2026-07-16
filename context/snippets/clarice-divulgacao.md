@@ -1,12 +1,16 @@
 <!--
 Bloco canônico de DIVULGAÇÃO da Clarice (patrocínio). Fonte única reaproveitável
 nas edições (diária via midCallout entre D1 e D2; mensal como seção própria).
-Convenção (#1940/#1942): marcador 📣 = patrocinado → o render adiciona o
-separador "Divulgação" automaticamente (ver isSponsoredCallout em
-scripts/render-newsletter-html.ts). Auto-inserção/cadência: #1938.
+O separador "Divulgação" é adicionado automaticamente por ser patrocinado —
+detectado pelo link de afiliado `?via=diaria` (ver isSponsoredCallout em
+scripts/lib/newsletter-render-html.ts), não por marcador emoji (#3232).
+Auto-inserção/cadência: #1938.
+
+#3475: sem marcador emoji de abertura (📣) — o sistema de marcadores foi
+removido; a detecção de callout patrocinado é 100% pelo link de afiliado.
 -->
 
-**📣 Escreva melhor em português com a Clarice
+**Escreva melhor em português com a Clarice
 
 A única IA criada por brasileiros para brasileiros. A Clarice foi treinada para entender as nuances da língua portuguesa e identificar problemas de correção e estilo em qualquer texto, seja ele seu ou gerado por IAs generalistas (ChatGPT, Claude e similares).
 
