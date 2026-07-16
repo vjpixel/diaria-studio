@@ -20,8 +20,16 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 
+interface HighlightLike {
+  bucket?: string;
+  url?: string;
+  title?: string;
+  article?: { url?: string; title?: string; category?: string; [key: string]: unknown };
+  [key: string]: unknown;
+}
+
 interface ApprovedJson {
-  highlights?: unknown[];
+  highlights?: HighlightLike[];
   lancamento?: unknown[];
   pesquisa?: unknown[];
   noticias?: unknown[];
@@ -143,6 +151,73 @@ function checkCoverageLinePresent(editionDir: string): InvariantViolation[] {
   return [];
 }
 
+/**
+ * #3436: destaques NUNCA devem vir do bucket USE MELHOR — a seção já tem
+ * visibilidade garantida própria (mínimo 2 itens renderizados, #1855), então
+ * promover um tutorial a destaque também é redundante e desperdiça um slot
+ * editorial nobre (imagem gerada, post social próprio) que deveria ir para
+ * uma notícia real de LANÇAMENTOS ou RADAR.
+ *
+ * Caso real: edição 260714 selecionou "Como o Copilot acha inconsistências
+ * no Excel" (tutorial, `discovery: tutorial passo a passo como usar IA para`)
+ * como D2.
+ *
+ * Backstop determinístico — a primeira linha de defesa é a instrução no
+ * prompt do `scorer-select` (nunca escolher destaque de `use_melhor`); este
+ * guard pega o caso de o agent ignorar a instrução, ou de o `bucket` chegar
+ * corrompido por outro caminho.
+ *
+ * O campo `bucket` de um highlight tem 2 shapes possíveis dependendo de QUAL
+ * passo do pipeline o escreveu por último:
+ *   - `scorer-select`/`assemble-scored.ts` grava o bucket de SEÇÃO
+ *     (`lancamento`/`radar`/`use_melhor`/`video`) — ver scorer-select.md.
+ *   - `apply-gate-edits.ts` (pós-gate humano OU `--auto`) RE-ESCREVE `bucket`
+ *     com a CATEGORY do artigo original (`article.category`, ex: `"tutorial"`
+ *     para um item que veio do bucket use_melhor — ver `buildHighlight()` /
+ *     `findArticle()` em apply-gate-edits.ts). Por isso `01-approved.json`
+ *     final tipicamente tem `bucket: "tutorial"`, não `bucket: "use_melhor"`,
+ *     para esse caso.
+ * Checa as DUAS formas (top-level `bucket` e `article.category` nested) para
+ * cobrir qualquer um dos 2 caminhos sem depender de qual escreveu por último.
+ */
+const USE_MELHOR_BUCKET_VALUES = new Set(["use_melhor", "tutorial"]);
+
+function isUseMelhorHighlight(h: HighlightLike): boolean {
+  if (h.bucket && USE_MELHOR_BUCKET_VALUES.has(h.bucket)) return true;
+  if (h.article?.category && USE_MELHOR_BUCKET_VALUES.has(h.article.category)) return true;
+  return false;
+}
+
+function checkNoUseMelhorHighlights(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "01-approved.json");
+  if (!existsSync(path)) return []; // covered by approved-has-3-highlights
+  let data: ApprovedJson;
+  try {
+    data = JSON.parse(readFileSync(path, "utf8")) as ApprovedJson;
+  } catch {
+    return []; // covered by approved-parseable
+  }
+  const highlights = Array.isArray(data.highlights) ? data.highlights : [];
+  const offenders = highlights.filter(isUseMelhorHighlight);
+  if (offenders.length === 0) return [];
+  const titles = offenders
+    .map((h) => h.title ?? h.article?.title ?? h.url ?? h.article?.url ?? "(sem título)")
+    .join("; ");
+  return [
+    {
+      rule: "no-use-melhor-highlights",
+      message:
+        `${offenders.length} destaque(s) do bucket USE MELHOR em highlights[] — ` +
+        `destaques nunca devem vir de tutorial/use_melhor (#3436): ${titles}. ` +
+        `Remover do Destaques (a seção USE MELHOR já garante visibilidade própria) e ` +
+        `promover o próximo candidato de LANÇAMENTOS/RADAR.`,
+      source_issue: "#3436",
+      severity: "error",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_1_RULES: InvariantRule[] = [
   {
     id: "approved-has-3-highlights",
@@ -165,10 +240,19 @@ export const STAGE_1_RULES: InvariantRule[] = [
     stage: 1,
     run: checkCoverageLinePresent,
   },
+  {
+    id: "no-use-melhor-highlights",
+    description: "highlights[] nunca contém item do bucket USE MELHOR/tutorial (#3436)",
+    source_issue: "#3436",
+    stage: 1,
+    run: checkNoUseMelhorHighlights,
+  },
 ];
 
 export {
   checkApprovedHas3Highlights,
   checkCategorizedHasEiaSection,
   checkCoverageLinePresent,
+  checkNoUseMelhorHighlights,
+  isUseMelhorHighlight,
 };

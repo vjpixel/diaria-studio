@@ -173,6 +173,10 @@ Stage 1 deve garantir **mínimo 3 candidatos** no bucket `use_melhor` (#1629, ex
 
 **Mínimo 2 renderizados, enforçado em Stage 2 (#1855).** `apply-stage2-caps` (`promoteUseMelhorToMinimum`) garante que a seção sai com **≥ 2 itens**: se após a seleção o bucket tiver < 2, promove runners-up **já categorizados como `use_melhor`** (tutoriais de verdade, por score desc — nunca outro bucket). Se nem com runners-up dá 2, emite warn loud (`shortfall > 0`) que o orchestrator surfa no gate. Editor pode reordenar/cortar no gate da Etapa 2.
 
+**Mínimo 2 iniciantes, warn-only (#3213).** Após os caps de Stage 2, `check-invariants.ts --stage 2` avisa (não bloqueia) se a seleção final de USE MELHOR tiver < 2 itens classificados como `casual` ou `dev-iniciante` (`classifyAudienceClass`, #2339 — reusado, não redefinido). Caso real 260710: 2 itens renderizados, ambos `dev-avancado` (comparação de frameworks de orquestração LLM, tuning de harness), nenhum acessível a quem está começando com IA. Editor revisa/completa no gate quando o warn aparecer.
+
+**Destaques NUNCA vêm de USE MELHOR (#3436).** A seção já tem visibilidade garantida própria (mínimo 2 itens acima) — promover um tutorial também a destaque (D1/D2/D3) é redundante e desperdiça um slot editorial nobre (imagem gerada, post social próprio) que deveria ir para uma notícia real de LANÇAMENTOS ou RADAR. `scorer-select` descarta qualquer finalista `bucket: "use_melhor"` da seleção de destaques, sem exceção — mesmo com score competitivo. Backstop determinístico: `check-invariants.ts --stage 1` bloqueia o gate (`no-use-melhor-highlights`, hard error) se algum item de `highlights[]` tiver `bucket`/`article.category` em `{"use_melhor", "tutorial"}`. Caso real 260714: "Como o Copilot acha inconsistências no Excel" (tutorial) foi selecionado como D2 antes desta regra existir.
+
 ### Fontes primárias (veja `context/sources.md` → seção "Tutoriais")
 
 - **Cookbooks oficiais**: Anthropic Cookbook, OpenAI Cookbook
