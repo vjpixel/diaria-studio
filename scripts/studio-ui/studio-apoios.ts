@@ -140,6 +140,29 @@ function normalizeEmailList(emails: string[] | undefined | null): string[] {
   return out;
 }
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Sanitiza 1 entrada crua de outreach lida do jsonl — mesma validação de
+ * forma que `appendOutreachEvent` aplica a eventos criados via API. Entradas
+ * malformadas (data fora do formato, sem canal) são DESCARTADAS em vez de
+ * propagadas cruas — protege `computePendingFollowups`/a UI de um
+ * `contacts.jsonl` editado à mão (arquivo pensado pra edição manual, ver
+ * doc-comment do módulo) com uma linha corrompida. */
+function sanitizeOutreachEntry(raw: unknown): OutreachEvent | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Partial<OutreachEvent>;
+  if (typeof r.date !== "string" || !DATE_RE.test(r.date)) return null;
+  const channel = typeof r.channel === "string" ? r.channel.trim() : "";
+  if (!channel) return null;
+  return {
+    date: r.date,
+    channel,
+    responded: r.responded === true,
+    followupPending: r.followupPending === true,
+    ...(typeof r.note === "string" && r.note.trim() ? { note: r.note.trim() } : {}),
+  };
+}
+
 /** Parseia `contacts.jsonl` (1 JSON por linha, linhas vazias ignoradas). */
 export function parseContactsJsonl(raw: string): ApoioContact[] {
   const contacts: ApoioContact[] = [];
@@ -154,7 +177,9 @@ export function parseContactsJsonl(raw: string): ApoioContact[] {
       emails: normalizeEmailList(parsed.emails),
       circle: String(parsed.circle ?? ""),
       notes: String(parsed.notes ?? ""),
-      outreach: Array.isArray(parsed.outreach) ? (parsed.outreach as OutreachEvent[]) : [],
+      outreach: Array.isArray(parsed.outreach)
+        ? parsed.outreach.map(sanitizeOutreachEntry).filter((e): e is OutreachEvent => e !== null)
+        : [],
       createdAt: String(parsed.createdAt ?? new Date(0).toISOString()),
       updatedAt: String(parsed.updatedAt ?? new Date(0).toISOString()),
     });
@@ -240,8 +265,6 @@ export interface OutreachEventInput {
   followupPending?: boolean;
   note?: string;
 }
-
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Adiciona um evento de outreach ao histórico do contato (append-only —
  * eventos existentes nunca são editados/removidos nesta entrega). */
@@ -549,10 +572,29 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
   });
   const pastSnapshots = readPastMonthSnapshots(cacheDir, currentMonth);
 
-  const withStatus: ContactWithStatus[] = contacts.map((c) => ({
-    ...c,
-    status: deriveContactStatus(c.emails, currentStatuses, pastSnapshots),
-  }));
+  // Emails que de fato receberam uma resposta definitiva de `checkBacker`
+  // (achou pagando OU achou não-pagando/não encontrado — `checkBacker`
+  // sempre devolve um `BackerStatus` em caso de sucesso). Um email do
+  // contato AUSENTE daqui não foi resolvido — seja por parada antecipada em
+  // `ApoiaSeAuthError` (emails após o ponto de falha nunca chegam a ser
+  // tentados) seja por uma falha pontual (rede/API) que `fetchCurrentStatuses`
+  // engole silenciosamente por email. Usado abaixo pra NUNCA rotular como
+  // "não apoia" um contato cujo email do mês corrente ficou genuinamente
+  // desconhecido — a alternativa (deixar cair em "nao_apoia") mascararia uma
+  // falha de checagem como uma negativa definitiva (mesma armadilha que a
+  // regra #573 do CLAUDE.md endereça pra estado externo ambíguo).
+  const resolvedEmails = new Set(Object.keys(currentStatuses));
+
+  const withStatus: ContactWithStatus[] = contacts.map((c) => {
+    const status = deriveContactStatus(c.emails, currentStatuses, pastSnapshots);
+    if (status.label === "nao_apoia") {
+      const hasUnresolvedEmail = normalizeEmailList(c.emails).some((e) => !resolvedEmails.has(e));
+      if (hasUnresolvedEmail) {
+        return { ...c, status: { label: "sem_dados" } };
+      }
+    }
+    return { ...c, status };
+  });
 
   return {
     contacts: withStatus,
