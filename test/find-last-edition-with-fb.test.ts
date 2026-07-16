@@ -130,4 +130,39 @@ describe("findLastEditionWithFb", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // #3483: 06-social-published.json mora em `_internal/` desde a migração
+  // pra edition-paths.ts (INTERNAL_JSON_FILES) — checar SÓ a raiz faz o
+  // script pular a edição correta e retornar uma edição stale mais antiga
+  // que ainda tinha o arquivo na raiz (cenário real reportado na issue:
+  // retornou 260509 em vez de 260714).
+  it("encontra 06-social-published.json em _internal/ e não regride pra edição stale com arquivo na raiz (#3483)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-find-internal-"));
+    try {
+      // Edição antiga (legado), arquivo na raiz.
+      mkdirSync(join(dir, "260509"), { recursive: true });
+      writeFileSync(join(dir, "260509", "06-social-published.json"), "{}");
+      // Edição recente (pós-migração #3024), arquivo em _internal/.
+      const recentInternal = join(dir, "260714", "_internal");
+      mkdirSync(recentInternal, { recursive: true });
+      writeFileSync(join(recentInternal, "06-social-published.json"), "{}");
+      // Current — sem fb ainda.
+      mkdirSync(join(dir, "260715"), { recursive: true });
+      assert.equal(findLastEditionWithFb(dir, "260715"), "data/editions/260714");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("encontra 06-social-published.json em _internal/ no layout NESTED (#3483)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-find-internal-nested-"));
+    try {
+      const nestedInternal = join(dir, "2607", "260714", "_internal");
+      mkdirSync(nestedInternal, { recursive: true });
+      writeFileSync(join(nestedInternal, "06-social-published.json"), "{}");
+      assert.equal(findLastEditionWithFb(dir, "260715"), "data/editions/2607/260714");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

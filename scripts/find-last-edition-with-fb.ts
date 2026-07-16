@@ -18,7 +18,7 @@ import { existsSync } from "node:fs";
 import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
-import { editionsRoot } from "./lib/edition-paths.ts";
+import { editionsRoot, existsInEditionDir } from "./lib/edition-paths.ts";
 import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 
 export function findLastEditionWithFb(
@@ -35,8 +35,12 @@ export function findLastEditionWithFb(
     .reverse();
   for (const d of dirs) {
     const editionPath = found.get(d)!;
-    const publishedPath = resolve(editionPath, "06-social-published.json");
-    if (existsSync(publishedPath)) {
+    // #3483: `06-social-published.json` mora em `_internal/` desde a migração
+    // pra `edition-paths.ts` (INTERNAL_JSON_FILES) — checar SÓ a raiz faz o
+    // script pular toda edição pós-migração e cair numa edição stale mais
+    // antiga que ainda tinha o arquivo na raiz (legado). `existsInEditionDir`
+    // checa `_internal/` primeiro, com fallback pra raiz (edições antigas).
+    if (existsInEditionDir(editionPath, "06-social-published.json")) {
       // Path simbólico `data/editions/{...}` — mesma convenção do
       // comportamento anterior (o prefixo `data/editions` é sempre fixo,
       // independente de onde `editionsDir` fisicamente mora no disco em
