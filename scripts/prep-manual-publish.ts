@@ -47,16 +47,29 @@ interface BeehiivPostListItem {
   status: string;
 }
 
+interface DefaultTemplateMatch {
+  /** Post id (sem prefixo `post_`), ou `null` quando resolvido só via fallback
+   *  hardcoded por falha de API — nesse caso não dá pra confiar no id pra
+   *  fetch de conteúdo (#3221 checkTemplateNotStale trata `null` como "não
+   *  verificável", não como stale). */
+  id: string | null;
+  url: string;
+}
+
 /**
  * Procura post template "Default" via Beehiiv API por title exato.
- * Fallback hardcoded preserva URL conhecida (`5232180a`) em caso de API failure.
+ * Fallback hardcoded preserva URL conhecida (`5232180a`) em caso de API failure —
+ * mas `id: null` nesse caso, pra `checkTemplateNotStale` (#3221) não tentar
+ * fetch de conteúdo sobre um id que pode não ser mais o post real.
  */
-async function findDefaultTemplateUrl(opts: {
+async function findDefaultTemplate(opts: {
   publicationId: string;
   apiKey: string;
-}): Promise<string> {
-  const HARDCODED_FALLBACK =
-    "https://app.beehiiv.com/posts/5232180a-0224-4cd2-a0cb-276aadc7b4f6/edit";
+}): Promise<DefaultTemplateMatch> {
+  const HARDCODED_FALLBACK: DefaultTemplateMatch = {
+    id: null,
+    url: "https://app.beehiiv.com/posts/5232180a-0224-4cd2-a0cb-276aadc7b4f6/edit",
+  };
   const baseUrl = `${beehiivApiBase()}/publications/${opts.publicationId}/posts`; // #2834/#2850
   let cursor: string | undefined;
   try {
@@ -75,7 +88,7 @@ async function findDefaultTemplateUrl(opts: {
       const match = (json.data ?? []).find((p) => p.title === "Default");
       if (match) {
         const id = match.id.replace(/^post_/, "");
-        return `https://app.beehiiv.com/posts/${id}/edit`;
+        return { id, url: `https://app.beehiiv.com/posts/${id}/edit` };
       }
       if (!json.has_more || !json.next_cursor) break;
       cursor = json.next_cursor;
@@ -84,6 +97,90 @@ async function findDefaultTemplateUrl(opts: {
     return HARDCODED_FALLBACK;
   }
   return HARDCODED_FALLBACK;
+}
+
+/**
+ * #3221: detecta se um HTML de post/template ainda carrega a versão ANTIGA
+ * (pré-#3220) da linha "Resultado da última edição: X% ..." — bold +
+ * uppercase + letter-spacing + cor teal (padrão kicker/whyBox herdado de
+ * #3103/#3104). #3220 destylizou essa linha pra parágrafo comum (sem esses
+ * três atributos). #2283 documenta que o Beehiiv PERSISTE o htmlSnippet do
+ * template "Default"/"HTML" entre usos — se o snippet salvo é de uma edição
+ * anterior ao fix, o estilo antigo pode reaparecer visualmente mesmo com o
+ * renderer do repo já corrigido. Puro/testável sem rede (recebe o HTML já
+ * buscado).
+ */
+export function hasStaleResultLineStyle(html: string): boolean {
+  const match = /<p style="([^"]*)">\s*Resultado da última edição/i.exec(html);
+  if (!match) return false;
+  const style = match[1];
+  return (
+    /font-weight:\s*bold/i.test(style) &&
+    /letter-spacing/i.test(style) &&
+    /text-transform:\s*uppercase/i.test(style)
+  );
+}
+
+const CHECK_NAME_TEMPLATE_STALE = 'Template Default sem "Resultado da última edição" no estilo antigo (#3221)';
+
+/**
+ * #3221: busca o conteúdo persistido do template "Default" via API (mesmo
+ * expand[]=free_web_content usado por fetch-beehiiv-poll-stats.ts) e roda
+ * `hasStaleResultLineStyle` sobre ele. Falha de API/rede não bloqueia o
+ * fluxo manual (fail-open, `passed: true`) — vira aviso pra conferência
+ * manual, já que essa checagem é aditiva, não uma pré-condição de dados
+ * locais como `checkNewsletterHtml`/`checkWorker`.
+ */
+async function checkTemplateNotStale(
+  template: DefaultTemplateMatch,
+  opts: { publicationId: string; apiKey: string },
+): Promise<Check> {
+  if (!template.id) {
+    return {
+      name: CHECK_NAME_TEMPLATE_STALE,
+      passed: true,
+      detail:
+        "id do template Default não resolvido via API (fallback hardcoded) — não foi possível verificar automaticamente, confira manualmente antes do paste",
+    };
+  }
+  try {
+    const url = `${beehiivApiBase()}/publications/${opts.publicationId}/posts/${template.id}?expand[]=free_web_content`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${opts.apiKey}` },
+    });
+    if (!res.ok) {
+      return {
+        name: CHECK_NAME_TEMPLATE_STALE,
+        passed: true,
+        detail: `Beehiiv API ${res.status} ao buscar conteúdo do template Default — não foi possível verificar automaticamente, confira manualmente antes do paste`,
+      };
+    }
+    const json = (await res.json()) as {
+      data?: { content?: { free?: { web?: string } } };
+    };
+    const html = json.data?.content?.free?.web ?? "";
+    if (hasStaleResultLineStyle(html)) {
+      return {
+        name: CHECK_NAME_TEMPLATE_STALE,
+        passed: false,
+        detail:
+          'htmlSnippet persistido no template "Default" ainda tem "Resultado da última edição" no estilo ANTIGO (bold+uppercase+letter-spacing, pré-#3220) — abrir o template e limpar o Custom HTML block antes de colar o conteúdo desta edição (raiz #2283: Beehiiv persiste o snippet entre usos)',
+      };
+    }
+    return {
+      name: CHECK_NAME_TEMPLATE_STALE,
+      passed: true,
+      detail: html
+        ? 'conteúdo persistido não tem o estilo antigo de "Resultado da última edição"'
+        : "template Default está vazio — sem risco de conteúdo stale",
+    };
+  } catch (e) {
+    return {
+      name: CHECK_NAME_TEMPLATE_STALE,
+      passed: true,
+      detail: `erro ao verificar template Default (${(e as Error).message}) — não foi possível verificar automaticamente, confira manualmente antes do paste`,
+    };
+  }
 }
 
 async function pingWorker(edition: string): Promise<{
@@ -263,10 +360,16 @@ async function main(): Promise<void> {
 
   const apiOpts = { publicationId, apiKey };
 
+  // #3221: resolve o template Default ANTES dos checks pra poder incluir
+  // checkTemplateNotStale (verifica conteúdo persistido) na mesma lista/gate
+  // que checkNewsletterHtml/checkWorker, em vez de só imprimir a URL depois.
+  const template = await findDefaultTemplate(apiOpts);
+
   // Run all checks
   const checks: Check[] = [
     checkNewsletterHtml(editionDir),
     await checkWorker(edition),
+    await checkTemplateNotStale(template, apiOpts),
   ];
   const allPassed = printChecks(checks);
 
@@ -277,7 +380,7 @@ async function main(): Promise<void> {
 
   // Print step-by-step instructions
   const htmlPath = resolve(editionDir, "_internal", "newsletter-final.html");
-  const templateUrl = await findDefaultTemplateUrl(apiOpts);
+  const templateUrl = template.url;
   console.log("=== Próximos passos (manual) ===\n");
   console.log("1. Abrir template no Beehiiv:");
   console.log(`   ${templateUrl}\n`);
