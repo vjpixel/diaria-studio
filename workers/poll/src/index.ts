@@ -268,6 +268,9 @@ import {
   invalidateSnapshot,
   listAllKeys,
 } from "./leaderboard-routes";
+// #3516: página jogável standalone (EPIC #3514) — brand fixo "web", ver
+// rationale completo no header de jogar.ts.
+import { handleJogarPage } from "./jogar";
 
 // ── /admin/correct ────────────────────────────────────────────────────────────
 
@@ -823,6 +826,14 @@ export default {
     const brand = parseBrandParam(url.searchParams.get("brand"));
     const bEnv = brandedEnv(env, brand);
 
+    // #3516: /jogar é standalone e sempre brand="web" (ignora `?brand=` da
+    // request — a rota já implica a marca). Usa `env` CRU (não `bEnv`) — a
+    // página só lê o gabarito PÚBLICO compartilhado (`correct:{edition}`,
+    // mesmo padrão de `handleImage`/`/img/*`); voto/score/nickname passam
+    // pelos endpoints normais (`/vote?brand=web` etc.), que já branding via
+    // `bEnv` quando `?brand=web` é passado por eles.
+    if (path === "/jogar" && request.method === "GET") return handleJogarPage(url, env);
+
     if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand);
     if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv, brand);
     // #3257: lista as edições/ciclos com stats registrados neste brand — usado
@@ -888,7 +899,7 @@ export default {
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/jogar", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
   },
   // #1077 → #1345: cron de reset mensal removido. Leaderboard agora é
   // indexado por publication date (score-by-month:{YYYY-MM}:{email}); reset
