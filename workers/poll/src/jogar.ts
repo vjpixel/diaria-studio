@@ -51,6 +51,7 @@ import {
   BRAND_INFO,
   formatEditionDate,
   htmlEscape,
+  isValidVoteEmailFormat, // #3595: valida o pseudo-email recebido por /jogar/seq-state
   leaderboardHref,
   renderBrandFooter,
   renderBrandShellStyles,
@@ -449,9 +450,9 @@ ${renderBrandShellStyles()}
   <input type="hidden" name="brand" value="${JOGAR_BRAND}">
   <input type="hidden" name="email" id="jogar-email" value="">
   <div class="choices" id="jogar-choices">
-    <div class="choice"><img id="jogar-img-a" src="${imgA}" alt="Imagem A" loading="lazy"><button type="submit" name="choice" value="A">Essa é a IA (A)</button></div>
+    <div class="choice"><img id="jogar-img-a" src="${imgA}" alt="Imagem A" loading="lazy"><button type="submit" name="choice" value="A">Essa é a IA</button></div>
     <p class="scroll-hint">↓ Veja também a Imagem B antes de decidir</p>
-    <div class="choice"><img id="jogar-img-b" src="${imgB}" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA (B)</button></div>
+    <div class="choice"><img id="jogar-img-b" src="${imgB}" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA</button></div>
   </div>
 </form>
 <!-- #3517: preenchido via JS (fetch a /vote + DOMParser) com o '.msg' de
@@ -756,6 +757,100 @@ export function resolveJogarSequenceEditions(correctKeyNames: string[], now: Dat
   return yearEditions.filter((ed) => ed.slice(2, 4) === mm).sort(); // ASC — ordem de jogo
 }
 
+// ── #3595: rework "Suspense" + skip-and-credit (feedback do editor 260716) ──
+//
+// Segundo review do editor sobre a sequência web (#3589), no mesmo dia do
+// deploy. TRÊS mudanças:
+//
+//   1. Rótulo dos botões some o sufixo "(A)"/"(B)" — a posição embaixo de
+//      cada imagem já identifica a escolha; `data-choice`/`value` internos
+//      (o que de fato vai pro /vote) são intocados.
+//
+//   2. Modelo "Suspense": cada clique avança IMEDIATAMENTE pro próximo par
+//      (sem esperar a resposta do /vote) — o /vote roda em BACKGROUND
+//      (`voteInBackground` no script de `renderJogarSequencePageHtml`) e o
+//      resultado por rodada NUNCA é revelado (sem "Acertou!/Errou" no meio —
+//      só a tela final, depois de `Promise.all(pending)`, mostra o placar +
+//      quais pares foram errados).
+//
+//   3. Skip-and-credit: o bug visto pelo editor era um token que já tinha
+//      votado (por outro caminho/sessão) ver "já votou" em TODOS os pares —
+//      a sequência re-tentava votar em edições já respondidas. Fix: um
+//      endpoint novo (`GET /jogar/seq-state`) reporta, PRA CADA edição
+//      pedida, se este token já votou e (só nesse caso, anti-spoiler) se
+//      acertou — reusando a MESMA chave `vote:{edition}:{email}` que
+//      `handleVote`/`buildAlreadyVotedResponse` (vote.ts) já leem/escrevem,
+//      zero esquema novo de persistência. O <script> consulta esse endpoint
+//      ANTES de montar a play list: edições já votadas nunca são rejogadas
+//      (pré-creditadas se corretas, marcadas como erro conhecido se não), e
+//      a play list vira só as NÃO votadas. `?reset=1` em `/jogar` limpa a
+//      identidade anônima local (token+cookie) pra permitir re-testar do
+//      zero (só client-side — votos antigos no servidor não são apagados).
+//
+// `computeSeqSkipAndCredit`/`parseSeqStateEditionsParam` abaixo são os
+// gêmeos TS puros e testáveis da lógica de skip-and-credit — o <script>
+// inline de `renderJogarSequencePageHtml` (`startGame`) reimplementa a MESMA
+// lógica em JS literal (não há bundler no worker pra reusar o TS em runtime
+// de browser); qualquer mudança num lado precisa ser espelhada no outro
+// (mesma disciplina já documentada pra `resolveQuizResultParams` vs. uso
+// client em `showFinal`).
+
+/** Estado de voto de UMA edição pro token consultante, tal como devolvido
+ * por `GET /jogar/seq-state` — ver `handleJogarSeqState`. */
+export interface SeqStateEntry {
+  edition: string;
+  voted: boolean;
+  /** Anti-spoiler: só populado (não-null) quando `voted === true`. */
+  correct: boolean | null;
+}
+
+/**
+ * Pure (#3595): dado o array de edições da sequência (ASC, mesma ordem que
+ * `GET /jogar/seq-state` recebeu) + o `state` alinhado (mesmo índice),
+ * calcula o plano de skip-and-credit — gêmeo testável da lógica embutida no
+ * `<script>` de `renderJogarSequencePageHtml` (`startGame`, ver header da
+ * seção acima). `state[i]` ausente/malformado é tratado como "não votado"
+ * (nunca lança — mesma disciplina defensiva do resto de jogar.ts).
+ */
+export function computeSeqSkipAndCredit(
+  editions: string[],
+  state: Array<SeqStateEntry | null | undefined>,
+): { playIndices: number[]; preCredited: number; knownWrongIndices: number[] } {
+  const playIndices: number[] = [];
+  const knownWrongIndices: number[] = [];
+  let preCredited = 0;
+  for (let i = 0; i < editions.length; i++) {
+    const entry = state[i];
+    if (entry?.voted) {
+      if (entry.correct === true) preCredited++;
+      else if (entry.correct === false) knownWrongIndices.push(i);
+      // entry.correct === null && voted === true: voto sem gabarito ainda
+      // conhecido no momento do voto original — não pré-credita nem soma
+      // erro (edge case improvável pra edições já fechadas do mês anterior,
+      // mas nunca lança/perde a edição — ela simplesmente não conta nem
+      // pra score nem pra wrong list, igual a uma rodada nunca jogada).
+    } else {
+      playIndices.push(i);
+    }
+  }
+  return { playIndices, preCredited, knownWrongIndices };
+}
+
+/**
+ * Pure (#3595): parseia o CSV de edições recebido por
+ * `GET /jogar/seq-state?editions=...` — só aceita AAMMDD válidos, ignora
+ * silenciosamente qualquer item malformado/vazio (endpoint de suporte de
+ * página pública — nunca 500 por um param malformado do próprio cliente,
+ * mesma disciplina do resto de jogar.ts).
+ */
+export function parseSeqStateEditionsParam(raw: string | null): string[] {
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => AAMMDD_RE.test(s));
+}
+
 /**
  * Pure render (#3589): página `/jogar` DEFAULT — a sequência oficial do mês
  * anterior. Mirror estrutural de `renderJogarQuizPageHtml` (#3520, mesmo
@@ -790,17 +885,27 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
   const emptyStateHtml = `<p class="sub">Ainda não há uma sequência fechada do mês anterior — volte em breve.</p>`;
   const quizFallbackLink = total === 0 ? ` &nbsp;|&nbsp; <a href="/jogar/quiz">Jogar o quiz relâmpago</a>` : "";
 
-  const bodyHtml = total === 0 ? emptyStateHtml : `<p class="sub" id="seq-progress">Par 1 de ${total} — acertos: 0</p>
+  // #3595 (rework "Suspense", feedback do editor 260716): cada rodada avança
+  // IMEDIATAMENTE pro próximo par ao clicar — o /vote roda em BACKGROUND
+  // (ver script abaixo) e o acerto/erro NUNCA é revelado por rodada (some o
+  // bloco de resultado intermediário que existia aqui, `#seq-round-result` —
+  // não há mais "Próximo", o avanço já É automático). Por isso a barra de
+  // progresso mostra só "Par X de N" (sem "acertos: Y" incremental — mostrar
+  // um contador que atualiza de forma assíncrona conforme os votos em
+  // background respondem vazaria parcialmente o resultado de rodadas
+  // anteriores enquanto o leitor já está jogando outras). O placar completo
+  // só aparece na tela final, após `Promise.all(pending)`.
+  const bodyHtml = total === 0 ? emptyStateHtml : `<p class="sub" id="seq-progress">Carregando sequência…</p>
 
 <noscript><p class="sub">A sequência precisa de JavaScript pra jogar. <a href="${leaderboardLink}">Ver leaderboard</a>.</p></noscript>
 
 <div id="seq-play">
   <div class="choices" id="seq-choices"></div>
-  <div id="seq-round-result" class="quiz-round-result" hidden></div>
 </div>
 
 <div id="seq-final" class="quiz-final" hidden>
   <p class="result-msg seq-final-score"></p>
+  <p class="sub seq-final-wrong" hidden></p>
   <div id="seq-share-slot" hidden></div>
 </div>
 
@@ -811,17 +916,35 @@ ${renderInlineSignupFormBlock()}`;
 (function () {
   var editions = ${JSON.stringify(editions)};
   var total = editions.length;
-  var round = 0;
-  var score = 0;
-  var answered = false;
 
   var choicesEl = document.getElementById("seq-choices");
   var progressEl = document.getElementById("seq-progress");
-  var roundResultEl = document.getElementById("seq-round-result");
   var playEl = document.getElementById("seq-play");
   var finalEl = document.getElementById("seq-final");
   var subscribeCta = document.getElementById("jogar-subscribe-cta");
   var signupForm = document.getElementById("jogar-signup-form"); // #3580
+
+  // #3595: ?reset=1 (ou ?reset) — limpa a identidade anônima local (token +
+  // cookie) + qualquer cache legado por edição (eia_web_seq_result_*, o
+  // mecanismo de retomada client-side do #3589, substituído nesta revisão
+  // pelo /jogar/seq-state servidor-autoritativo abaixo) ANTES de resolver o
+  // token. Só client-side — votos antigos sob o token velho permanecem no
+  // servidor; o objetivo é só permitir re-testar do zero (editor/QA).
+  (function maybeReset() {
+    var params;
+    try { params = new URLSearchParams(window.location.search); } catch (e) { return; }
+    if (!params.has("reset")) return;
+    try {
+      window.localStorage.removeItem("eia_web_token");
+      var toRemove = [];
+      for (var i = 0; i < window.localStorage.length; i++) {
+        var k = window.localStorage.key(i);
+        if (k && k.indexOf("eia_web_seq_result_") === 0) toRemove.push(k);
+      }
+      for (var j = 0; j < toRemove.length; j++) window.localStorage.removeItem(toRemove[j]);
+    } catch (e) {}
+    document.cookie = "eia_web_token=; path=/; max-age=0; SameSite=Lax";
+  })();
 
   // #3589 (mesmo mecanismo #3516): identidade anônima — token opaco (UUID)
   // em localStorage + cookie. Reusado em TODAS as rodadas — cada edição
@@ -861,57 +984,65 @@ ${renderInlineSignupFormBlock()}`;
   var token = getOrCreateToken();
   var email = token + "@web.eia.diaria.local";
 
-  // #3589: cache local de resultado por edição — permite RETOMAR a
-  // sequência (reload/revisita) sem re-votar em editions já respondidas
-  // por este token. Dedup REAL de qualquer forma continua no DO
-  // VoteDedup do Worker (esse cache é só performance/UX de retomada, não
-  // é a fonte de verdade do voto).
-  var CACHE_PREFIX = "eia_web_seq_result_";
-  function getCached(edition) {
-    try {
-      var raw = window.localStorage.getItem(CACHE_PREFIX + edition);
-      if (!raw) return null;
-      var parsed = JSON.parse(raw);
-      if (typeof parsed.correct !== "boolean") return null;
-      return parsed;
-    } catch (e) { return null; }
-  }
-  function setCached(edition, choice, correct) {
-    try { window.localStorage.setItem(CACHE_PREFIX + edition, JSON.stringify({ choice: choice, correct: correct })); } catch (e) {}
-  }
-
   function imgUrl(edition, side) {
     return "/img/img-" + edition + "-01-eia-" + side + ".jpg";
   }
 
-  function updateProgress() {
-    progressEl.textContent = "Par " + (round + 1) + " de " + total + " — acertos: " + score;
+  // #3595 (skip-and-credit): preenchido só depois que /jogar/seq-state
+  // responde (ver startGame abaixo, espelha computeSeqSkipAndCredit
+  // exportado/testado em jogar.ts). playIndices = posições (0-based) em
+  // editions que este token AINDA não votou — a play list real. Edições já
+  // votadas nunca são rejogadas: preCredited soma as já corretas,
+  // knownWrongIndices guarda as já erradas (ambas fora da play list).
+  var playIndices = [];
+  var preCredited = 0;
+  var knownWrongIndices = [];
+  var round = 0; // índice dentro de playIndices, NÃO de editions
+  var results = {}; // originalIndex (string) -> true | false | null
+  var pending = []; // promises do /vote em background — NUNCA rejeitam (ver voteInBackground)
+
+  function updateProgress(originalIndex) {
+    progressEl.textContent = "Par " + (originalIndex + 1) + " de " + total;
   }
 
   function renderRound() {
-    // Pula silenciosamente editions já respondidas por este token (replay) —
-    // credita o resultado já conhecido sem round-trip/voto duplicado.
-    while (round < total) {
-      var cached = getCached(editions[round]);
-      if (!cached) break;
-      if (cached.correct) score++;
-      round++;
-    }
-    if (round >= total) { showFinal(); return; }
-    answered = false;
-    roundResultEl.hidden = true;
-    roundResultEl.innerHTML = "";
-    updateProgress();
-    var edition = editions[round];
+    if (round >= playIndices.length) { showFinal(); return; }
+    var originalIndex = playIndices[round];
+    var edition = editions[originalIndex];
+    updateProgress(originalIndex);
     choicesEl.innerHTML =
-      '<div class="choice"><img src="' + imgUrl(edition, "A") + '" alt="Imagem A" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="A">Essa é a IA (A)</button></div>' +
+      '<div class="choice"><img src="' + imgUrl(edition, "A") + '" alt="Imagem A" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="A">Essa é a IA</button></div>' +
       '<p class="scroll-hint">↓ Veja também a Imagem B antes de decidir</p>' +
-      '<div class="choice"><img src="' + imgUrl(edition, "B") + '" alt="Imagem B" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="B">Essa é a IA (B)</button></div>';
+      '<div class="choice"><img src="' + imgUrl(edition, "B") + '" alt="Imagem B" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="B">Essa é a IA</button></div>';
   }
 
-  function setChoiceButtonsDisabled(disabled) {
-    var btns = choicesEl.querySelectorAll(".seq-choice-btn");
-    for (var i = 0; i < btns.length; i++) btns[i].disabled = disabled;
+  // #3595 (modelo "Suspense"): vota em BACKGROUND — 1 retry em falha de
+  // rede, e NUNCA rejeita (resolve com null = "não pontuado") pra que
+  // Promise.all(pending) na tela final nunca trave por causa de um /vote que
+  // falhou. Parseia só o prefixo ✅/❌ de '.msg' — nunca exibe o texto bruto
+  // do servidor (pode incluir sufixo de streak/stats, deliberadamente
+  // suprimido nesta UI, mesma disciplina do #3589).
+  function voteInBackground(voteUrl, attempt) {
+    if (typeof window.fetch !== "function" || typeof DOMParser === "undefined") {
+      // Sem fetch/DOMParser (browser muito antigo): não há como disparar o
+      // /vote em background sem navegar a página inteira embora (o que
+      // abandonaria a sequência) — trade-off aceito: esta rodada não é
+      // registrada/pontuada nesse caso raro, mas o jogo nunca trava.
+      return Promise.resolve(null);
+    }
+    return fetch(voteUrl).then(function (res) {
+      return res.text();
+    }).then(function (html) {
+      var parsed = new DOMParser().parseFromString(html, "text/html");
+      var msgEl = parsed.querySelector(".msg");
+      var text = msgEl ? (msgEl.textContent || "") : "";
+      if (text.indexOf("✅") === 0) return true;
+      if (text.indexOf("❌") === 0) return false;
+      return null; // ambíguo (já votado por outro caminho, etc.) — não pontua
+    }).catch(function () {
+      if (attempt < 1) return voteInBackground(voteUrl, attempt + 1);
+      return null; // 2ª falha — segue sem pontuar esta rodada, nunca trava a tela final
+    });
   }
 
   function advance() {
@@ -919,31 +1050,13 @@ ${renderInlineSignupFormBlock()}`;
     renderRound();
   }
 
-  function showFinal() {
-    if (playEl) playEl.hidden = true;
-    finalEl.hidden = false;
-    var scoreEl = finalEl.querySelector(".seq-final-score");
-    if (scoreEl) scoreEl.textContent = "Você acertou " + score + " de " + total + "!";
-    var slot = document.getElementById("seq-share-slot");
-    // #3589: reusa LITERALMENTE /jogar/quiz/result (#3520) — mesmo endpoint,
-    // mesmo QuizSharePayload {score,total}, zero mudança em share.ts/handleQuizResult.
-    fetch("/jogar/quiz/result?score=" + encodeURIComponent(String(score)) + "&total=" + encodeURIComponent(String(total)))
-      .then(function (res) { if (!res.ok) throw new Error("result fetch failed"); return res.text(); })
-      .then(function (html) {
-        if (!slot) return;
-        slot.innerHTML = html;
-        slot.hidden = false;
-      })
-      .catch(function () {});
-    if (subscribeCta) subscribeCta.hidden = false;
-    if (signupForm) signupForm.hidden = false;
-  }
-
+  // #3595: clicar avança IMEDIATAMENTE pro próximo par (advance() síncrono
+  // abaixo) — o /vote roda em background (voteInBackground) e só ajusta
+  // results quando responder. Nenhum "Acertou!/Errou" por rodada — o
+  // feedback só existe na tela final.
   function onChoice(choice) {
-    if (answered) return;
-    answered = true;
-    setChoiceButtonsDisabled(true);
-    var edition = editions[round];
+    var originalIndex = playIndices[round];
+    var edition = editions[originalIndex];
 
     var params = new URLSearchParams();
     params.set("edition", edition);
@@ -952,46 +1065,56 @@ ${renderInlineSignupFormBlock()}`;
     params.set("choice", choice);
     var voteUrl = "/vote?" + params.toString();
 
-    if (typeof window.fetch !== "function" || typeof DOMParser === "undefined") {
-      // Sem fetch/DOMParser: navega nativamente pro /vote — o voto em si
-      // não se perde (mesmo fallback do par único clássico), só a
-      // continuidade da sequência nesta aba.
-      window.location.href = voteUrl;
-      return;
-    }
+    var voteDone = voteInBackground(voteUrl, 0).then(function (correct) {
+      results[String(originalIndex)] = correct;
+    });
+    pending.push(voteDone);
 
-    fetch(voteUrl).then(function (res) {
-      return res.text();
-    }).then(function (html) {
-      var parsed = new DOMParser().parseFromString(html, "text/html");
-      var msgEl = parsed.querySelector(".msg");
-      var text = msgEl ? (msgEl.textContent || "") : "";
-      // #3589 (item 3 do rationale): checa só o prefixo ✅/❌ pra decidir
-      // certo/errado — NUNCA exibe o texto bruto de .msg (que pode incluir
-      // sufixo de streak/stats "🔥 N dias seguidos" — deliberadamente
-      // suprimido nesta UI de replay em lote, ver rationale acima).
-      var correct = text.indexOf("✅") === 0 ? true : text.indexOf("❌") === 0 ? false : null;
-      var nextLabel = (round + 1 < total ? "Próximo par" : "Ver resultado");
-      if (correct === null) {
-        // Ambíguo (já votado nesta edição por outro caminho, ou erro) —
-        // não pontua, só avança. Nunca trava o jogo.
-        roundResultEl.hidden = false;
-        roundResultEl.innerHTML = '<p class="result-msg">Esse par já tinha um voto registrado — seguindo.</p>' +
-          '<button type="button" id="seq-next-btn">' + nextLabel + "</button>";
-      } else {
-        if (correct) score++;
-        setCached(edition, choice, correct);
-        roundResultEl.hidden = false;
-        roundResultEl.innerHTML = '<p class="result-msg">' + (correct ? "Acertou!" : "Essa não — errou dessa vez.") + '</p>' +
-          '<button type="button" id="seq-next-btn">' + nextLabel + "</button>";
+    advance();
+  }
+
+  function showFinal() {
+    if (playEl) playEl.hidden = true;
+    finalEl.hidden = false;
+    var scoreEl = finalEl.querySelector(".seq-final-score");
+    var wrongEl = finalEl.querySelector(".seq-final-wrong");
+    if (scoreEl) scoreEl.textContent = "Calculando placar…";
+    // #3595: aguarda TODOS os votos em background terminarem (nunca
+    // rejeitam, ver voteInBackground) antes de fechar o placar final —
+    // "acertou/errou" só é revelado aqui, pós-jogo, nunca por rodada.
+    Promise.all(pending).then(function () {
+      var score = preCredited;
+      var wrongIndices = knownWrongIndices.slice();
+      for (var key in results) {
+        if (!Object.prototype.hasOwnProperty.call(results, key)) continue;
+        var idx = parseInt(key, 10);
+        if (results[key] === true) score++;
+        else if (results[key] === false) wrongIndices.push(idx);
       }
-      var nextBtn = document.getElementById("seq-next-btn");
-      if (nextBtn) nextBtn.addEventListener("click", advance);
-    }).catch(function () {
-      // Falha de rede — reabilita os botões pra tentar de novo (não avança/
-      // não pontua uma rodada nunca confirmada).
-      answered = false;
-      setChoiceButtonsDisabled(false);
+      wrongIndices.sort(function (a, b) { return a - b; });
+      if (scoreEl) scoreEl.textContent = "Você acertou " + score + " de " + total + "!";
+      if (wrongEl) {
+        if (wrongIndices.length > 0) {
+          var pairLabels = wrongIndices.map(function (i) { return i + 1; }).join(", ");
+          wrongEl.textContent = "Errou nos pares " + pairLabels + ".";
+          wrongEl.hidden = false;
+        } else {
+          wrongEl.hidden = true;
+        }
+      }
+      var slot = document.getElementById("seq-share-slot");
+      // #3589: reusa LITERALMENTE /jogar/quiz/result (#3520) — mesmo endpoint,
+      // mesmo QuizSharePayload {score,total}, zero mudança em share.ts/handleQuizResult.
+      fetch("/jogar/quiz/result?score=" + encodeURIComponent(String(score)) + "&total=" + encodeURIComponent(String(total)))
+        .then(function (res) { if (!res.ok) throw new Error("result fetch failed"); return res.text(); })
+        .then(function (html) {
+          if (!slot) return;
+          slot.innerHTML = html;
+          slot.hidden = false;
+        })
+        .catch(function () {});
+      if (subscribeCta) subscribeCta.hidden = false;
+      if (signupForm) signupForm.hidden = false;
     });
   }
 
@@ -1001,7 +1124,42 @@ ${renderInlineSignupFormBlock()}`;
     onChoice(btn.getAttribute("data-choice"));
   });
 
-  renderRound();
+  // #3595 (skip-and-credit, MUDANÇA 3): consulta /jogar/seq-state pra saber
+  // quais edições este token JÁ votou (e se acertou) ANTES de montar a play
+  // list — pares já respondidos nunca são rejogados (o bug visto pelo
+  // editor: um token que já tinha votado via outro caminho via "já votou" em
+  // TODOS os pares). Fail-open: qualquer falha de rede aqui faz a sequência
+  // jogar do zero (playIndices = todas, sem pré-crédito) — nunca bloqueia.
+  function startGame() {
+    if (typeof window.fetch !== "function") {
+      playIndices = editions.map(function (_, i) { return i; });
+      renderRound();
+      return;
+    }
+    var seqStateUrl = "/jogar/seq-state?email=" + encodeURIComponent(email) + "&editions=" + encodeURIComponent(editions.join(","));
+    fetch(seqStateUrl).then(function (res) {
+      if (!res.ok) throw new Error("seq-state fetch failed");
+      return res.json();
+    }).then(function (state) {
+      var idx = [];
+      for (var i = 0; i < editions.length; i++) {
+        var entry = state[i];
+        if (entry && entry.voted) {
+          if (entry.correct === true) preCredited++;
+          else if (entry.correct === false) knownWrongIndices.push(i);
+        } else {
+          idx.push(i);
+        }
+      }
+      playIndices = idx;
+      renderRound(); // playIndices vazio (tudo já votado) → renderRound já dispara showFinal
+    }).catch(function () {
+      playIndices = editions.map(function (_, i) { return i; });
+      renderRound();
+    });
+  }
+
+  startGame();
 })();
 </script>
 ${shareButtonScript("#seq-share-slot")}
@@ -1026,7 +1184,7 @@ ${seoMeta}
   .choice button:disabled { opacity: 0.5; cursor: not-allowed; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .scroll-hint { display: none; }
-  #seq-round-result[hidden], #seq-final[hidden], #jogar-subscribe-cta[hidden], #jogar-signup-form[hidden] { display: none; }
+  #seq-final[hidden], #jogar-subscribe-cta[hidden], #jogar-signup-form[hidden] { display: none; }
   .result-msg { font-family: ${DS_FONTS.serif}; font-size: 1.3rem; line-height: 1.4; margin: 20px 0; }
   .quiz-round-result button { margin-top: 4px; padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
   .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
@@ -1099,6 +1257,70 @@ export async function handleJogarPage(url: URL, env: Env): Promise<Response> {
       // racional de Cache-Control: no-store do /jogar/quiz, embora aqui a
       // razão seja side-effect real, não só "sequência sorteada nova").
       "Cache-Control": "no-store",
+    },
+  });
+}
+
+/** Entrada retornada por `GET /jogar/seq-state` — ver `handleJogarSeqState`. */
+export interface SeqStateResultEntry {
+  edition: string;
+  voted: boolean;
+  correct: boolean | null;
+}
+
+/**
+ * Handler `GET /jogar/seq-state?email={pseudo-email}&editions={csv AAMMDD}`
+ * (#3595 — skip-and-credit, ver rationale na seção acima). Pra CADA edição
+ * pedida, reporta se o TOKEN (pseudo-email anônimo, mesmo formato de
+ * `anonEmailForToken`) já votou nela e, SE já votou, se acertou — lendo
+ * DIRETO a mesma chave `vote:{edition}:{email}` que `handleVote`/
+ * `buildAlreadyVotedResponse` (vote.ts) já escrevem/leem (o `correct`
+ * gravado ali no momento do voto original, `{choice, ts, correct}` — ver
+ * `env.POLL.put(voteKey, ...)` em handleVote). ZERO esquema novo de
+ * persistência.
+ *
+ * Anti-spoiler: `correct` só é populado (não-null) quando `voted === true` —
+ * o cliente só pode saber o gabarito de uma edição em que ESTE token já
+ * votou antes (o mesmo dado que `/vote` já devolveu a ele na hora). Edição
+ * não votada nunca revela `correct` aqui, mesmo que `correct:{edition}` já
+ * exista no KV compartilhado. Mesmo nível de exposição já aceito em
+ * `/vote` (que hoje já revela "já votou, escolha: X" pra qualquer email
+ * passado nos params, sem exigir sig em merge-tag mode) — este endpoint não
+ * introduz uma classe de risco nova, só um caminho read-only equivalente.
+ *
+ * `env` CRU (não `bEnv`) — mesmo racional do resto de `/jogar*`: a chave
+ * `vote:{edition}:{email}` não é prefixada por brand (o pseudo-email já
+ * isola o namespace `web` por construção, `@web.eia.diaria.local`).
+ */
+export async function handleJogarSeqState(url: URL, env: Env): Promise<Response> {
+  const emailRaw = url.searchParams.get("email");
+  const email = emailRaw ? emailRaw.toLowerCase().trim() : emailRaw;
+  if (!email || !isValidVoteEmailFormat(email)) {
+    return json({ error: "invalid email" }, 400, env);
+  }
+  const editions = parseSeqStateEditionsParam(url.searchParams.get("editions"));
+  const results: SeqStateResultEntry[] = await Promise.all(
+    editions.map(async (edition): Promise<SeqStateResultEntry> => {
+      const raw = await env.POLL.get(`vote:${edition}:${email}`);
+      if (!raw) return { edition, voted: false, correct: null };
+      try {
+        const parsed = JSON.parse(raw) as { correct?: boolean | null };
+        const correct = typeof parsed.correct === "boolean" ? parsed.correct : null;
+        return { edition, voted: true, correct };
+      } catch {
+        // Registro corrompido — trata como votado mas sem gabarito conhecido
+        // (mesma disciplina de safeParseKv em vote.ts: nunca derruba o
+        // endpoint por causa de 1 registro malformado).
+        return { edition, voted: true, correct: null };
+      }
+    }),
+  );
+  return new Response(JSON.stringify(results), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      ...corsHeaders(env),
     },
   });
 }
