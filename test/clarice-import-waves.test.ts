@@ -17,6 +17,7 @@ import {
   type GroupListEntry,
 } from "../scripts/clarice-import-waves.ts";
 import { buildSegmentArtifact, type SegmentRow } from "../scripts/clarice-build-segment.ts";
+import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
 
 describe("loadWaveDefs (#2656/#2844)", () => {
   it("sem manifest → erro claro (rode clarice-build-waves-store)", () => {
@@ -84,8 +85,28 @@ describe("buildPlan via manifest (#2656)", () => {
       const plans = buildPlan("Jun/2026", "2606-07", dir);
       assert.equal(plans.length, 1);
       assert.equal(plans[0].wave.key, "W1");
-      assert.equal(plans[0].count, 2);
+      assert.equal(plans[0].count, 2, "count reflete só os contatos reais, não a linha do editor");
       assert.equal(plans[0].listName, "Clarice Jun/2026 W1 — re-envio (engajado)");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #3455: toda wave criada deve incluir o editor como destinatário — regressão
+  // pro caso real (o CSV que de fato vai pro Brevo /contacts/import).
+  it("#3455: o CSV final da wave inclui EDITOR_COPY_EMAIL", () => {
+    const dir = mkdtempSync(join(tmpdir(), "bp-editor-copy-"));
+    try {
+      writeFileSync(
+        join(dir, "waves-manifest.json"),
+        JSON.stringify([{ key: "W1", file: "w1-store.csv", desc: "re-envio (engajado)" }]),
+      );
+      writeFileSync(join(dir, "w1-store.csv"), "email,NOME\na@x.com,Ana\nb@x.com,Bia\n");
+      const plans = buildPlan("Jun/2026", "2606-07", dir);
+      assert.ok(
+        plans[0].csv.includes(EDITOR_COPY_EMAIL),
+        `csv da wave deve incluir o editor: ${plans[0].csv}`,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
