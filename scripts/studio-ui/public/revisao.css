@@ -1,0 +1,171 @@
+/* revisao.css (#3559) — painel de revisão de conteúdo rica. Estende
+   style.css (#3555), mesma fonte de tokens (/tokens.generated.css). */
+
+.rv-tabs {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+.rv-tab {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper-alt);
+  color: inherit;
+  cursor: pointer;
+}
+.rv-tab.active {
+  background: var(--brand);
+  color: var(--on-ink);
+  border-color: var(--brand);
+  font-weight: 600;
+}
+.rv-tab:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.rv-editor-panel { display: flex; flex-direction: column; gap: 0.5rem; }
+.rv-editor-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.rv-editor-toolbar button {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-alt);
+  color: inherit;
+  cursor: pointer;
+}
+.rv-editor-toolbar button:hover { border-color: var(--ink); }
+.rv-editor-toolbar button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.rv-save-status { font-family: var(--font-mono); font-size: 0.8rem; opacity: 0.8; }
+.rv-save-status.ok { color: var(--brand); }
+.rv-save-status.err { color: #c0392b; }
+
+.rv-editor {
+  width: 100%;
+  min-height: 420px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  padding: 0.75rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  tab-size: 2;
+}
+
+.rv-pane { padding-top: 0.5rem; }
+
+.rv-lint-results { display: flex; flex-direction: column; gap: 0.35rem; }
+.rv-lint-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+.rv-lint-row.ok { border-color: var(--rule); opacity: 0.75; }
+.rv-lint-row.fail { border-color: #c0392b; background: rgba(192, 57, 43, 0.08); }
+.rv-lint-row.warn { border-color: #b8860b; background: rgba(184, 134, 11, 0.08); }
+.rv-lint-badge {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  flex: none;
+  width: 4.2em;
+}
+.rv-lint-label { flex: 1; }
+.rv-lint-detail {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  opacity: 0.85;
+  margin-top: 0.25rem;
+}
+
+.rv-diff-view {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  max-height: 480px;
+  overflow-y: auto;
+}
+.rv-diff-line { display: flex; gap: 0.5rem; padding: 1px 0.5rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rv-diff-line .rv-diff-gutter { flex: none; width: 1.2em; text-align: center; opacity: 0.7; }
+.rv-diff-line.add { background: rgba(46, 125, 50, 0.12); }
+.rv-diff-line.add .rv-diff-gutter { color: #2e7d32; }
+.rv-diff-line.del { background: rgba(192, 57, 43, 0.12); }
+.rv-diff-line.del .rv-diff-gutter { color: #c0392b; }
+
+.rv-preview-frame {
+  width: 100%;
+  height: 600px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: #fff;
+  margin-top: 0.5rem;
+}
+
+.rv-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+.rv-action-card {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.rv-action-card h3 { font-family: var(--font-serif); font-weight: 400; font-size: 1rem; margin: 0; }
+.rv-action-hook { opacity: 0.65; }
+.rv-action-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.82rem;
+}
+.rv-action-card input[type="text"], .rv-action-card select {
+  font: inherit;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper);
+  color: inherit;
+}
+.rv-checkbox { flex-direction: row !important; align-items: center; gap: 0.4rem !important; }
+.rv-swap-result {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--paper-alt);
+  border-radius: 4px;
+  padding: 0.5rem;
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .statusbar { gap: 0.75rem; }
+  main { padding: 1rem 0.75rem 3rem; }
+  .rv-editor { min-height: 320px; }
+}

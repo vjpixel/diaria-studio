@@ -30,6 +30,7 @@ const el = {
   editionsBody: document.getElementById("editions-tbody"),
   logList: document.getElementById("log-list"),
   currentEditionLink: document.getElementById("current-edition-link"),
+  currentEditionReviewLink: document.getElementById("current-edition-review-link"),
 };
 
 let lastCurrentEdition = null;
@@ -53,8 +54,12 @@ function renderStatusbar(state) {
   if (state.currentEdition) {
     el.currentEditionLink.href = `/edicao/${state.currentEdition}`;
     el.currentEditionLink.style.display = "";
+    // #3559: link direto pro painel de revisão de conteúdo da edição corrente.
+    el.currentEditionReviewLink.href = `/revisao/${state.currentEdition}`;
+    el.currentEditionReviewLink.style.display = "";
   } else {
     el.currentEditionLink.style.display = "none";
+    el.currentEditionReviewLink.style.display = "none";
   }
 }
 

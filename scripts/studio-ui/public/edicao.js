@@ -40,6 +40,7 @@ const el = {
   gate4: document.getElementById("gate-4"),
   gate6: document.getElementById("gate-6"),
   logList: document.getElementById("edicao-log-list"),
+  reviewLink: document.getElementById("review-link"),
 };
 
 /** AAMMDD a partir do path — `/edicao/260716` → `260716`. Pura, testável
@@ -105,6 +106,15 @@ function renderHeader(detail) {
   el.titulo.textContent = detail.edition;
   document.title = `Diar.ia Studio — Edição ${detail.edition}`;
   el.stage.textContent = detail.found ? `${detail.stageLabel} (${detail.currentStage})` : "—";
+  // #3559: link direto pro painel de revisão de conteúdo desta edição.
+  if (el.reviewLink) {
+    if (detail.found) {
+      el.reviewLink.href = `/revisao/${detail.edition}`;
+      el.reviewLink.style.display = "";
+    } else {
+      el.reviewLink.style.display = "none";
+    }
+  }
 }
 
 function renderNotFound(detail) {
