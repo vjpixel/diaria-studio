@@ -117,7 +117,26 @@ export async function buildAlreadyVotedResponse(
   return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
 }
 
-export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
+/**
+ * #3600: `rawEnv` — env CRU (sem prefixo de brand), usado SÓ para ler o
+ * gabarito compartilhado `correct:{edition}`. O gabarito é um fato público
+ * brand-independente (mesma decisão já documentada em jogar.ts, decisão 3:
+ * "gabarito lido DIRETO do KV correct:{edition}, sem prefixo de brand") —
+ * close-poll.ts sempre grava a chave crua, nunca `{brand}:correct:{edition}`.
+ * Antes deste fix, `handleVote` lia o gabarito via `env` (que É o `bEnv`
+ * branded, passado por `routeRequest` em index.ts) — para brand="web"/"clarice"
+ * isso resolvia para `web:correct:{edition}`/`clarice:correct:{edition}`,
+ * chaves que NUNCA são escritas. Resultado: `correctRaw` sempre null para
+ * brands não-diaria → reveal quebrado (mensagem "resultado sai na próxima
+ * edição" para sempre, mesmo com o gabarito já fechado).
+ * Default `= env` preserva o comportamento de chamadas legadas/testes que
+ * invocam `handleVote` com um único env não-branded para os 2 parâmetros
+ * (equivalente a brand="diaria", onde `bEnv === env` de qualquer forma —
+ * brandKvPrefix("diaria") === "").
+ * Todo o resto (voto, score, dedup, stats, valid_editions) CONTINUA lido/
+ * escrito via `env` (branded) — só o READ do gabarito muda.
+ */
+export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", rawEnv: Env = env): Promise<Response> {
   // #1083: Beehiiv não URL-encoda `{{ subscriber.email }}`; URLSearchParams
   // converte `+` em ` `. Restaurar antes de qualquer uso (HMAC, KV key).
   const emailRaw = url.searchParams.get("email")?.toLowerCase().trim();
@@ -191,8 +210,12 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria"): P
   // inválida), `existingFromKv` acaba sendo lido mesmo sem chegar a ser usado
   // — 1 GET a mais, desprezível vs. o ganho no caminho comum (maioria dos votos).
   const voteKey = `vote:${edition}:${email}`;
+  // #3600: `correct:{edition}` lido via `rawEnv` (CRU) — gabarito é
+  // brand-independente, close-poll.ts nunca grava a chave prefixada por
+  // brand. `valid_editions` (branded, ex: `web:valid_editions`) e `voteKey`
+  // continuam via `env` (branded) — só o gabarito muda de namespace.
   const [correctRaw, validEditionsRaw, existingFromKv] = await Promise.all([
-    env.POLL.get(`correct:${edition}`),
+    rawEnv.POLL.get(`correct:${edition}`),
     env.POLL.get("valid_editions"),
     env.POLL.get(voteKey),
   ]);

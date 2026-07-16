@@ -1085,7 +1085,9 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path.startsWith("/quiz-og/") && request.method === "GET") return handleQuizOgImage(path, env);
     if (path.startsWith("/quiz-share/") && request.method === "GET") return handleQuizSharePage(url, path, env);
 
-    if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand);
+    // #3600: 4º arg `env` (CRU) — handleVote lê o gabarito `correct:{edition}`
+    // dele (brand-independente), mantendo voto/score/dedup/stats via `bEnv`.
+    if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand, env);
     if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv, brand);
     // #3257: lista as edições/ciclos com stats registrados neste brand — usado
     // pelo botão "Atualizar" da aba Engajamento do clarice-dashboard pra
