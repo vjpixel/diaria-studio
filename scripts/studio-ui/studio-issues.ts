@@ -22,13 +22,26 @@
  * `run` é injetável (mesmo padrão de `PlanFileReaders` em
  * `overnight-statusline.ts`) — testes mockam `gh` sem precisar do binário
  * real nem de rede.
+ *
+ * Extensão (#3562, entrega 2 — triagem rica + composição de waves): além do
+ * shape original (#3574), `TriageIssue` ganhou `files` (paths citados no
+ * corpo, ver `studio-waves.ts::extractFilePaths` — insumo da análise de
+ * cluster de conflito) e `dispatchTrack` (classificação best-effort
+ * elegível/bloqueada/ambígua, `studio-waves.ts::classifyDispatchTrack`).
+ * `TriagePr` ganhou `ciState` (resumo de `statusCheckRollup`) e
+ * `reviewDecision` (repasse cru da API) — visão de "PRs em voo" pedida pelo
+ * #3562. Isso exige incluir `body` no `gh issue list` e
+ * `statusCheckRollup,reviewDecision` no `gh pr list` — mesmas 2 chamadas já
+ * existentes, sem nenhuma chamada extra por item (crítico pra não estourar
+ * rate limit, mesma preocupação do design original).
  */
 
 import { spawnSync } from "node:child_process";
+import { extractFilePaths, classifyDispatchTrack, type DispatchTrack } from "./studio-waves.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────
 
-/** Shape cru de `gh issue list --json number,title,url,state,labels,createdAt,updatedAt`. */
+/** Shape cru de `gh issue list --json number,title,url,state,labels,createdAt,updatedAt,body`. */
 export interface GhIssueRaw {
   number: number;
   title: string;
@@ -37,9 +50,12 @@ export interface GhIssueRaw {
   labels?: Array<{ name: string }>;
   createdAt?: string;
   updatedAt?: string;
+  /** Usado só pra derivar `files`/`dispatchTrack` (#3562) — NUNCA repassado
+   * cru pro cliente (ver `parseIssues`: o corpo não entra em `TriageIssue`). */
+  body?: string;
 }
 
-/** Shape cru de `gh pr list --json number,title,url,state,isDraft,headRefName,labels,createdAt,updatedAt`. */
+/** Shape cru de `gh pr list --json number,title,url,state,isDraft,headRefName,labels,createdAt,updatedAt,statusCheckRollup,reviewDecision`. */
 export interface GhPrRaw {
   number: number;
   title: string;
@@ -50,6 +66,10 @@ export interface GhPrRaw {
   labels?: Array<{ name: string }>;
   createdAt?: string;
   updatedAt?: string;
+  /** Shape variável (StatusContext OU CheckRun do GraphQL da API do GitHub,
+   * `gh` normaliza os 2 no mesmo array) — ver `summarizeChecks`. */
+  statusCheckRollup?: unknown[];
+  reviewDecision?: string | null;
 }
 
 export type TrackLabel = "overnight" | "develop" | "other";
@@ -63,6 +83,14 @@ export interface TriageIssue {
   priority: string | null; // "P0".."P3" | null quando nenhuma label P0-P3
   createdAt: string | null;
   updatedAt: string | null;
+  /** Paths de arquivo citados no título+corpo (#3562, insumo da composição
+   * de waves) — ver `studio-waves.ts::extractFilePaths`. Nunca inclui o
+   * corpo cru da issue, só os paths extraídos. */
+  files: string[];
+  /** Classificação best-effort elegível/bloqueada/ambígua (#3562) — ver
+   * `studio-waves.ts::classifyDispatchTrack`. Aproximação determinística,
+   * não substitui a Fase 0 do `/diaria-develop`/`/diaria-overnight`. */
+  dispatchTrack: DispatchTrack;
 }
 
 export interface TriagePr {
@@ -79,6 +107,15 @@ export interface TriagePr {
   priority: string | null;
   createdAt: string | null;
   updatedAt: string | null;
+  /** Resumo de `statusCheckRollup` (#3562) — "PRs em voo": estado agregado
+   * de CI. NUNCA o gate de merge completo (#2210/#2222 também exige checar
+   * threads não-resolvidas, que exigiria 1 chamada `gh api graphql` extra
+   * POR PR — fora de escopo desta view read-only pra não estourar rate
+   * limit; ver disclaimer na UI). */
+  ciState: CiState;
+  /** Repasse cru de `reviewDecision` da API (`APPROVED` | `CHANGES_REQUESTED`
+   * | `REVIEW_REQUIRED` | `null`) — informacional, mesmo caveat acima. */
+  reviewDecision: string | null;
 }
 
 export interface TriageData {
@@ -136,6 +173,7 @@ function labelNames(raw: Array<{ name: string }> | undefined): string[] {
 export function parseIssues(raw: GhIssueRaw[]): TriageIssue[] {
   return raw.map((i) => {
     const labels = labelNames(i.labels);
+    const files = extractFilePaths(`${i.title}\n${i.body ?? ""}`);
     return {
       number: i.number,
       title: i.title,
@@ -145,8 +183,61 @@ export function parseIssues(raw: GhIssueRaw[]): TriageIssue[] {
       priority: derivePriority(labels),
       createdAt: i.createdAt ?? null,
       updatedAt: i.updatedAt ?? null,
+      files,
+      dispatchTrack: classifyDispatchTrack(labels, `${i.title}\n${i.body ?? ""}`),
     };
   });
+}
+
+export type CiState = "green" | "red" | "pending" | "none";
+
+/** Shape variável — `gh` normaliza StatusContext (`state`) e CheckRun
+ * (`status`/`conclusion`) no mesmo array de `statusCheckRollup`. */
+interface RawCheckRollupItem {
+  state?: string; // StatusContext: SUCCESS | FAILURE | ERROR | PENDING | EXPECTED
+  status?: string; // CheckRun: QUEUED | IN_PROGRESS | COMPLETED | ...
+  conclusion?: string | null; // CheckRun: SUCCESS | FAILURE | CANCELLED | TIMED_OUT | ACTION_REQUIRED | NEUTRAL | SKIPPED | STALE
+}
+
+const FAILURE_STATES = new Set(["FAILURE", "ERROR"]);
+const FAILURE_CONCLUSIONS = new Set(["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED"]);
+
+/**
+ * Resume `statusCheckRollup` (array bruto, shape variável) num único
+ * `CiState`. Conservador: qualquer check não reconhecido (shape inesperado)
+ * conta como `pending`, nunca como `green` silencioso — melhor sub-relatar
+ * confiança que afirmar "tudo verde" errado (#573 é sobre validar estado
+ * externo antes de relayar; mesmo espírito aqui, read-only). Pura.
+ */
+export function summarizeChecks(rollup: unknown): CiState {
+  if (!Array.isArray(rollup) || rollup.length === 0) return "none";
+  let sawFailure = false;
+  let sawPending = false;
+  for (const raw of rollup as RawCheckRollupItem[]) {
+    if (!raw || typeof raw !== "object") {
+      sawPending = true;
+      continue;
+    }
+    const { state, status, conclusion } = raw;
+    if ((state && FAILURE_STATES.has(state)) || (conclusion && FAILURE_CONCLUSIONS.has(conclusion))) {
+      sawFailure = true;
+      continue;
+    }
+    if (status && status !== "COMPLETED") {
+      sawPending = true;
+      continue;
+    }
+    if (state === "PENDING" || state === "EXPECTED") {
+      sawPending = true;
+      continue;
+    }
+    if (state == null && status == null && conclusion == null) {
+      sawPending = true;
+    }
+  }
+  if (sawFailure) return "red";
+  if (sawPending) return "pending";
+  return "green";
 }
 
 /** Normaliza o JSON cru de `gh pr list` pro shape de `TriagePr`. Pura. */
@@ -165,14 +256,17 @@ export function parsePrs(raw: GhPrRaw[]): TriagePr[] {
       priority: derivePriority(labels),
       createdAt: p.createdAt ?? null,
       updatedAt: p.updatedAt ?? null,
+      ciState: summarizeChecks(p.statusCheckRollup),
+      reviewDecision: p.reviewDecision ?? null,
     };
   });
 }
 
 // ─── invocação do `gh` CLI (I/O, injetável) ────────────────────────────
 
-const ISSUE_FIELDS = "number,title,url,state,labels,createdAt,updatedAt";
-const PR_FIELDS = "number,title,url,state,isDraft,headRefName,labels,createdAt,updatedAt";
+const ISSUE_FIELDS = "number,title,url,state,labels,createdAt,updatedAt,body";
+const PR_FIELDS =
+  "number,title,url,state,isDraft,headRefName,labels,createdAt,updatedAt,statusCheckRollup,reviewDecision";
 
 function defaultGhRun(args: string[], cwd: string): GhRunResult {
   const result = spawnSync("gh", args, { cwd, encoding: "utf8" });

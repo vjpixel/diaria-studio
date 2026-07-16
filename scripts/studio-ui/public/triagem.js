@@ -4,11 +4,13 @@
 // JS, sem build step (mesmo princípio de app.js/edicao.js — #3555/#3558).
 //
 // Escopo desta fatia (#3562): READ-ONLY. Nenhum botão aqui fecha, comenta ou
-// mergeia — só lista + linka pro GitHub. A composição de waves / disparo de
-// rodada (ação de verdade) é #3561/#3557, fora daqui. Este módulo só lê
-// GET /api/issues (studio-issues.ts, server-side cache+throttle de `gh`) e
-// desenha; todo filtro é 100% client-side sobre o snapshot já buscado —
-// trocar filtro NUNCA dispara um novo fetch.
+// mergeia — só lista + linka pro GitHub. Este módulo lê GET /api/issues
+// (studio-issues.ts, server-side cache+throttle de `gh`) e GET /api/waves
+// (studio-waves.ts, mesmo snapshot cacheado — composição de wave PREVIEW);
+// todo filtro de issues/PRs é 100% client-side sobre o snapshot já buscado —
+// trocar filtro NUNCA dispara um novo fetch. O botão "Disparar esta onda"
+// fica sempre desabilitado nesta fatia: a execução de verdade depende da
+// sessão de chat/ações (#3556/#3557), ainda não construída.
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -16,6 +18,7 @@ const el = {
   error: document.getElementById("triage-error"),
   filterPriority: document.getElementById("filter-priority"),
   filterTrack: document.getElementById("filter-track"),
+  filterDispatch: document.getElementById("filter-dispatch"),
   filterLabels: document.getElementById("filter-labels"),
   refreshBtn: document.getElementById("refresh-btn"),
   lastUpdated: document.getElementById("last-updated"),
@@ -23,15 +26,28 @@ const el = {
   issuesBody: document.getElementById("issues-tbody"),
   prsCount: document.getElementById("prs-count"),
   prsBody: document.getElementById("prs-tbody"),
+  wavesError: document.getElementById("waves-error"),
+  waveCount: document.getElementById("wave-count"),
+  waveChips: document.getElementById("wave-chips"),
+  waveDeferredCount: document.getElementById("wave-deferred-count"),
+  waveDeferredChips: document.getElementById("wave-deferred-chips"),
+  waveCapacityWarning: document.getElementById("wave-capacity-warning"),
+  waveClusters: document.getElementById("wave-clusters"),
+  waveMaxConcurrency: document.getElementById("wave-max-concurrency"),
+  fireWaveBtn: document.getElementById("fire-wave-btn"),
 };
 
 /** Snapshot bruto da última resposta de /api/issues — filtros nunca refetcham. */
 let data = { issues: [], prs: [], error: null, cached: false, generatedAt: null };
 
+/** Snapshot bruto da última resposta de /api/waves. */
+let waveData = { wave: [], deferred: [], clusters: [], overCapacity: false, maxConcurrency: 6, consideredIds: [], error: null };
+
 /** Estado dos filtros — 100% client-side. */
 const filters = {
   priority: "",
   track: "",
+  dispatch: "",
   labels: new Set(),
 };
 
@@ -77,6 +93,30 @@ function trackBadge(track) {
   return `<span class="track-badge track-${track}">${track}</span>`;
 }
 
+function dispatchBadge(track) {
+  const labelPt = { elegivel: "elegível", bloqueada: "bloqueada", ambigua: "ambígua" }[track] ?? track;
+  return `<span class="dispatch-badge dispatch-${track}">${labelPt}</span>`;
+}
+
+function ciBadge(ciState) {
+  const labelPt = { green: "verde", red: "vermelho", pending: "pendente", none: "sem checks" }[ciState] ?? ciState;
+  return `<span class="ci-badge ci-${ciState}">${labelPt}</span>`;
+}
+
+function ageDays(iso, nowMs = Date.now()) {
+  if (!iso) return null;
+  const created = new Date(iso).getTime();
+  if (Number.isNaN(created)) return null;
+  return Math.max(0, Math.floor((nowMs - created) / 86_400_000));
+}
+
+function ageLabel(iso) {
+  const days = ageDays(iso);
+  if (days === null) return "—";
+  if (days === 0) return "hoje";
+  return `${days}d`;
+}
+
 /** Recalcula o conjunto de labels presentes em issues+PRs e desenha os
  * checkboxes de filtro — chamado só quando um NOVO snapshot chega (não a
  * cada mudança de filtro, pra não reconstruir/perder o estado dos checkboxes
@@ -120,7 +160,10 @@ function matchesLabelFilter(labels) {
 
 function renderIssuesTable() {
   const filtered = data.issues.filter(
-    (i) => matchesPriorityFilter(i.priority) && matchesLabelFilter(i.labels),
+    (i) =>
+      matchesPriorityFilter(i.priority) &&
+      matchesLabelFilter(i.labels) &&
+      (!filters.dispatch || i.dispatchTrack === filters.dispatch),
   );
   el.issuesCount.textContent = String(filtered.length);
   el.issuesBody.innerHTML = "";
@@ -130,7 +173,9 @@ function renderIssuesTable() {
       <td><a href="${i.url}" target="_blank" rel="noopener">#${i.number}</a></td>
       <td>${escapeHtml(i.title)}</td>
       <td>${priorityBadge(i.priority)}</td>
+      <td>${dispatchBadge(i.dispatchTrack)}</td>
       <td>${labelsBadges(i.labels)}</td>
+      <td class="mono">${ageLabel(i.createdAt)}</td>
       <td class="mono">${fmtTime(i.updatedAt)}</td>
     `;
     el.issuesBody.appendChild(tr);
@@ -154,11 +199,88 @@ function renderPrsTable() {
       <td>${escapeHtml(p.title)}${draftTag}</td>
       <td>${trackBadge(p.track)}</td>
       <td>${priorityBadge(p.priority)}</td>
+      <td>${ciBadge(p.ciState)}</td>
+      <td class="mono">${escapeHtml(p.reviewDecision ?? "—")}</td>
       <td>${labelsBadges(p.labels)}</td>
       <td class="mono">${fmtTime(p.updatedAt)}</td>
     `;
     el.prsBody.appendChild(tr);
   }
+}
+
+function issueLink(number) {
+  const issue = data.issues.find((i) => i.number === number);
+  return issue ? issue.url : `#${number}`;
+}
+
+function chipRow(container, ids, extraClass = "") {
+  container.innerHTML = "";
+  for (const id of ids) {
+    const a = document.createElement("a");
+    a.href = issueLink(id);
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.className = `wave-chip ${extraClass}`.trim();
+    a.textContent = `#${id}`;
+    container.appendChild(a);
+  }
+}
+
+function renderWaves() {
+  if (waveData.error) {
+    el.wavesError.hidden = false;
+    el.wavesError.textContent = `falha ao montar a proposta de wave: ${waveData.error}`;
+  } else {
+    el.wavesError.hidden = true;
+  }
+
+  el.waveMaxConcurrency.textContent = String(waveData.maxConcurrency ?? 6);
+  el.waveCount.textContent = String(waveData.wave.length);
+  el.waveDeferredCount.textContent = String(waveData.deferred.length);
+  chipRow(el.waveChips, waveData.wave, "wave-chip-active");
+  chipRow(el.waveDeferredChips, waveData.deferred, "wave-chip-deferred");
+
+  if (waveData.overCapacity) {
+    el.waveCapacityWarning.hidden = false;
+    el.waveCapacityWarning.textContent =
+      `A onda candidata excedeu o teto de ${waveData.maxConcurrency} concorrentes — ` +
+      `só as primeiras ${waveData.maxConcurrency} (por prioridade) entram nesta onda; o resto fica pra próxima.`;
+  } else {
+    el.waveCapacityWarning.hidden = true;
+  }
+
+  el.waveClusters.innerHTML = "";
+  const multi = waveData.clusters.filter((c) => c.ids.length > 1);
+  if (multi.length === 0) {
+    el.waveClusters.innerHTML = '<p class="hint">Nenhum cluster de conflito — todas as issues elegíveis são singletons.</p>';
+  }
+  for (const c of multi) {
+    const card = document.createElement("div");
+    card.className = "cluster-card";
+    const repr = c.ids[0];
+    card.innerHTML = `
+      <div class="cluster-ids">
+        <span class="wave-chip wave-chip-active">#${repr} (representante)</span>
+        ${c.ids
+          .slice(1)
+          .map((id) => `<span class="wave-chip wave-chip-deferred">#${id}</span>`)
+          .join(" ")}
+      </div>
+      <div class="cluster-files">${c.files.map((f) => `<code>${escapeHtml(f)}</code>`).join(" ")}</div>
+    `;
+    el.waveClusters.appendChild(card);
+  }
+}
+
+async function fetchWaves() {
+  try {
+    const res = await fetch("/api/waves");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    waveData = await res.json();
+  } catch (e) {
+    waveData = { ...waveData, error: String(e) };
+  }
+  renderWaves();
 }
 
 function renderTables() {
@@ -198,6 +320,7 @@ async function fetchIssues() {
     data = { issues: data.issues, prs: data.prs, error: String(e), cached: true, generatedAt: data.generatedAt };
   }
   renderAll();
+  await fetchWaves();
 }
 
 el.filterPriority.addEventListener("change", () => {
@@ -206,6 +329,10 @@ el.filterPriority.addEventListener("change", () => {
 });
 el.filterTrack.addEventListener("change", () => {
   filters.track = el.filterTrack.value;
+  renderTables();
+});
+el.filterDispatch.addEventListener("change", () => {
+  filters.dispatch = el.filterDispatch.value;
   renderTables();
 });
 el.refreshBtn.addEventListener("click", () => fetchIssues());

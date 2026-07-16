@@ -4,6 +4,14 @@
  * parsing do JSON cru do `gh`, e a camada de cache/fail-soft de
  * `fetchTriageData` com um runner de `gh` mockado (sem invocar o binário
  * real nem rede).
+ *
+ * Extensão (#3562, entrega 2): `files`/`dispatchTrack` em `parseIssues`
+ * (derivados via `studio-waves.ts`) e `ciState`/`reviewDecision` em
+ * `parsePrs` (via `summarizeChecks`). A cobertura das funções puras de
+ * classificação/extração em si (regex de path, heurística
+ * elegível/bloqueada/ambígua) mora em `test/studio-waves.test.ts` — aqui só
+ * cobrimos a INTEGRAÇÃO (parseIssues/parsePrs chamando essas funções
+ * corretamente) + `summarizeChecks`, que é local deste arquivo.
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
@@ -12,6 +20,7 @@ import {
   deriveTrackFromBranch,
   parseIssues,
   parsePrs,
+  summarizeChecks,
   fetchTriageData,
   clearTriageCache,
   type GhRunFn,
@@ -113,6 +122,120 @@ describe("parsePrs (#3562)", () => {
     assert.equal(pr2.track, "develop");
     assert.equal(pr2.isDraft, true);
     assert.equal(pr2.priority, null);
+  });
+});
+
+describe("parseIssues — files + dispatchTrack (#3562, entrega 2)", () => {
+  it("deriva files do corpo e dispatchTrack='elegivel' sem label de bloqueio", () => {
+    const raw: GhIssueRaw[] = [
+      {
+        number: 1,
+        title: "Fix em scripts/studio-ui/server.ts",
+        url: "u",
+        state: "OPEN",
+        labels: [{ name: "bug" }],
+        body: "Toca `context/overnight-dispatch-rules.md` também.",
+      },
+    ];
+    const [issue] = parseIssues(raw);
+    assert.deepEqual(issue.files, ["context/overnight-dispatch-rules.md", "scripts/studio-ui/server.ts"]);
+    assert.equal(issue.dispatchTrack, "elegivel");
+  });
+
+  it("label external-blocker -> dispatchTrack='bloqueada'", () => {
+    const raw: GhIssueRaw[] = [
+      { number: 2, title: "t", url: "u", state: "OPEN", labels: [{ name: "external-blocker" }], body: "" },
+    ];
+    const [issue] = parseIssues(raw);
+    assert.equal(issue.dispatchTrack, "bloqueada");
+  });
+
+  it("corpo sem label de bloqueio mas com marcador de decisão -> 'ambigua'", () => {
+    const raw: GhIssueRaw[] = [
+      { number: 3, title: "t", url: "u", state: "OPEN", labels: [], body: "precisamos decidir entre X e Y" },
+    ];
+    const [issue] = parseIssues(raw);
+    assert.equal(issue.dispatchTrack, "ambigua");
+  });
+
+  it("body ausente -> files vazio, sem lançar", () => {
+    const raw = [{ number: 4, title: "sem corpo", url: "u", state: "OPEN" }] as GhIssueRaw[];
+    const [issue] = parseIssues(raw);
+    assert.deepEqual(issue.files, []);
+    assert.equal(issue.dispatchTrack, "elegivel");
+  });
+});
+
+describe("summarizeChecks (#3562, entrega 2)", () => {
+  it("array vazio ou ausente -> 'none'", () => {
+    assert.equal(summarizeChecks([]), "none");
+    assert.equal(summarizeChecks(undefined), "none");
+    assert.equal(summarizeChecks(null), "none");
+  });
+
+  it("todos os checks concluídos com sucesso -> 'green'", () => {
+    assert.equal(
+      summarizeChecks([
+        { status: "COMPLETED", conclusion: "SUCCESS" },
+        { state: "SUCCESS" },
+      ]),
+      "green",
+    );
+  });
+
+  it("qualquer check com falha -> 'red', mesmo com outros passando", () => {
+    assert.equal(
+      summarizeChecks([
+        { status: "COMPLETED", conclusion: "SUCCESS" },
+        { status: "COMPLETED", conclusion: "FAILURE" },
+      ]),
+      "red",
+    );
+    assert.equal(summarizeChecks([{ state: "ERROR" }]), "red");
+  });
+
+  it("check ainda rodando (sem falha) -> 'pending'", () => {
+    assert.equal(summarizeChecks([{ status: "IN_PROGRESS", conclusion: null }]), "pending");
+    assert.equal(summarizeChecks([{ state: "PENDING" }]), "pending");
+  });
+
+  it("shape desconhecido/malformado conta como 'pending', nunca 'green' silencioso", () => {
+    assert.equal(summarizeChecks([{}]), "pending");
+    assert.equal(summarizeChecks([null]), "pending");
+  });
+
+  it("falha vence pendência quando ambos presentes", () => {
+    assert.equal(summarizeChecks([{ status: "IN_PROGRESS" }, { conclusion: "FAILURE", status: "COMPLETED" }]), "red");
+  });
+});
+
+describe("parsePrs — ciState + reviewDecision (#3562, entrega 2)", () => {
+  it("deriva ciState de statusCheckRollup e repassa reviewDecision", () => {
+    const raw: GhPrRaw[] = [
+      {
+        number: 5,
+        title: "t",
+        url: "u",
+        state: "OPEN",
+        isDraft: false,
+        headRefName: "develop/fix-5",
+        labels: [],
+        statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+        reviewDecision: "APPROVED",
+      },
+    ];
+    const [pr] = parsePrs(raw);
+    assert.equal(pr.ciState, "green");
+    assert.equal(pr.reviewDecision, "APPROVED");
+  });
+
+  it("statusCheckRollup ausente -> ciState='none', reviewDecision null", () => {
+    const raw: GhPrRaw[] = [
+      { number: 6, title: "t", url: "u", state: "OPEN", isDraft: false, headRefName: "x", labels: [] },
+    ];
+    const [pr] = parsePrs(raw);
+    assert.equal(pr.ciState, "none");
+    assert.equal(pr.reviewDecision, null);
   });
 });
 
