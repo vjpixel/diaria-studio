@@ -10,8 +10,10 @@ import {
   postToWorkerQueue,
   sanitizeFallbackReason,
   resolveOutrosCount,
+  classifyImageCache,
   type DispatchContext,
   type DispatchInput,
+  type ImageCacheFile,
 } from "../scripts/publish-linkedin.ts";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1204,6 +1206,155 @@ describe("#2454-finding-6: publish-linkedin le 05-edition-url.txt e injeta no co
       );
     } finally {
       cleanup();
+    }
+  });
+});
+
+// ── #3385: LinkedIn com OU sem imagem ──────────────────────────────────
+//
+// #999/#1275 fail-fast continua ativo pra falha REAL (nem URL, nem marcador
+// explícito). #3385 adiciona uma 3ª categoria — destaque genuinamente sem
+// imagem associada (`no_image: true` em 06-public-images.json) — que NÃO
+// dispara o abort e dispatcha com `image_url: null` no payload (schema já
+// aceita null explícito desde #1032/#974, ver linkedin-payload.ts).
+
+describe("#3385 classifyImageCache: distingue com-imagem / genuinamente-sem-imagem / falha-real", () => {
+  it("destaque com URL válida → destaques_with_url, não é missing nem no_image", () => {
+    const cache: ImageCacheFile = { images: { d1: { url: "https://img.test/d1.jpg" } } };
+    const r = classifyImageCache(["d1"], cache);
+    assert.deepEqual(r.destaques_with_url, ["d1"]);
+    assert.deepEqual(r.destaques_no_image, []);
+    assert.deepEqual(r.missing, []);
+  });
+
+  it("destaque marcado no_image:true (sem url) → destaques_no_image, NÃO é missing (comportamento novo)", () => {
+    const cache: ImageCacheFile = { images: { d1: { no_image: true } } };
+    const r = classifyImageCache(["d1"], cache);
+    assert.deepEqual(r.destaques_with_url, []);
+    assert.deepEqual(r.destaques_no_image, ["d1"]);
+    assert.deepEqual(r.missing, [], "no_image:true NÃO deve entrar em missing — não dispara fail-fast");
+  });
+
+  it("destaque sem url e sem marcador no_image → missing (falha real, preserva #999/#1275)", () => {
+    const cache: ImageCacheFile = { images: {} };
+    const r = classifyImageCache(["d1"], cache);
+    assert.deepEqual(r.destaques_with_url, []);
+    assert.deepEqual(r.destaques_no_image, []);
+    assert.deepEqual(r.missing, ["d1"], "sem url e sem no_image continua sendo falha real");
+  });
+
+  it("cache totalmente ausente (null) → todos missing (preserva comportamento pré-#3385)", () => {
+    const r = classifyImageCache(["d1", "d2", "d3"], null);
+    assert.deepEqual(r.missing, ["d1", "d2", "d3"]);
+  });
+
+  it("url vazia + no_image:true → trata como no_image, não como missing", () => {
+    // url:"" é falsy — a lógica cai pro branch no_image se marcado.
+    const cache: ImageCacheFile = { images: { d1: { url: "", no_image: true } } };
+    const r = classifyImageCache(["d1"], cache);
+    assert.deepEqual(r.destaques_no_image, ["d1"]);
+    assert.deepEqual(r.missing, []);
+  });
+
+  it("url válida vence sobre no_image:true (url presente tem prioridade)", () => {
+    const cache: ImageCacheFile = { images: { d1: { url: "https://img.test/d1.jpg", no_image: true } } };
+    const r = classifyImageCache(["d1"], cache);
+    assert.deepEqual(r.destaques_with_url, ["d1"]);
+    assert.deepEqual(r.destaques_no_image, []);
+  });
+
+  it("mix: d1 com url, d2 no_image:true, d3 falha real → classifica cada um corretamente", () => {
+    const cache: ImageCacheFile = {
+      images: {
+        d1: { url: "https://img.test/d1.jpg" },
+        d2: { no_image: true },
+        // d3 ausente do cache
+      },
+    };
+    const r = classifyImageCache(["d1", "d2", "d3"], cache);
+    assert.deepEqual(r.destaques_with_url, ["d1"]);
+    assert.deepEqual(r.destaques_no_image, ["d2"]);
+    assert.deepEqual(r.missing, ["d3"]);
+  });
+});
+
+describe("#3385 dispatchEntry: publica COM imagem e SEM imagem (payload image_url null aceito)", () => {
+  function tmpDir(): { dir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "publish-linkedin-3385-"));
+    return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  function mkCtx(dir: string): DispatchContext {
+    return {
+      publishedPath: join(dir, "06-social-published.json"),
+      webhookUrl: "https://hook.test/diaria",
+      workerUrl: "https://worker.test",
+      workerToken: "test-tok",
+      useWorkerForScheduled: true,
+      editionDate: "260999",
+      rootDir: dir, // #3311 isolamento
+    };
+  }
+
+  it("COM imagem: payload enviado ao Make carrega image_url da URL (comportamento preservado)", async () => {
+    let capturedBody: unknown = null;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+      capturedBody = JSON.parse(String((init as RequestInit).body));
+      return new Response(JSON.stringify({ accepted: true, request_id: "req-with-img" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const { dir, cleanup } = tmpDir();
+    try {
+      const input: DispatchInput = {
+        destaque: "d1",
+        subtype: "main",
+        text: "Post com imagem",
+        imageUrl: "https://img.test/d1.jpg",
+        scheduledAt: null,
+        webhookTarget: "diaria",
+        action: "post",
+      };
+      const entry = await dispatchEntry(input, mkCtx(dir));
+      assert.equal(entry.status, "draft");
+      assert.equal((capturedBody as { image_url: string | null }).image_url, "https://img.test/d1.jpg");
+    } finally {
+      cleanup();
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("SEM imagem: payload enviado ao Make carrega image_url: null (novo — #3385), dispatch não lança erro", async () => {
+    let capturedBody: unknown = null;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+      capturedBody = JSON.parse(String((init as RequestInit).body));
+      return new Response(JSON.stringify({ accepted: true, request_id: "req-no-img" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const { dir, cleanup } = tmpDir();
+    try {
+      const input: DispatchInput = {
+        destaque: "d2",
+        subtype: "main",
+        text: "Post text-only (destaque genuinamente sem imagem)",
+        imageUrl: null,
+        scheduledAt: null,
+        webhookTarget: "diaria",
+        action: "post",
+      };
+      const entry = await dispatchEntry(input, mkCtx(dir));
+      // Não pode lançar / falhar por falta de imagem — dispatch prossegue normalmente.
+      assert.equal(entry.status, "draft", "dispatch sem imagem deve suceder, não exigir imagem");
+      assert.equal((capturedBody as { image_url: string | null }).image_url, null);
+      assert.equal((capturedBody as { text: string }).text, "Post text-only (destaque genuinamente sem imagem)");
+    } finally {
+      cleanup();
+      globalThis.fetch = savedFetch;
     }
   });
 });
