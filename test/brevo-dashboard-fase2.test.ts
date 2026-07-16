@@ -2124,9 +2124,9 @@ describe("renderWeekdaySection (#2134)", () => {
 
   test("ordena dias do melhor pro pior open rate", () => {
     const rows = [
-      { weekday: 0, label: "Seg", count: 2, delivered: 100, opens: 20, openRate: 20, smallSample: false },
-      { weekday: 2, label: "Qua", count: 2, delivered: 100, opens: 40, openRate: 40, smallSample: false },
-      { weekday: 3, label: "Qui", count: 2, delivered: 100, opens: 30, openRate: 30, smallSample: false },
+      { weekday: 0, label: "Seg", count: 2, delivered: 100, opens: 20, openRate: 20, clicks: 2, ctor: 10, smallSample: false },
+      { weekday: 2, label: "Qua", count: 2, delivered: 100, opens: 40, openRate: 40, clicks: 4, ctor: 10, smallSample: false },
+      { weekday: 3, label: "Qui", count: 2, delivered: 100, opens: 30, openRate: 30, clicks: 3, ctor: 10, smallSample: false },
     ];
     const html = renderWeekdaySection(rows, "todos os envios");
     const posQua = html.indexOf(">Qua<");
@@ -2163,8 +2163,8 @@ describe("renderWeekdaySection (#2134)", () => {
 
   test("empate: nenhum dia recebe MELHOR DIA", () => {
     const tiedRows = [
-      { weekday: 2, label: "Qua", count: 2, delivered: 200, opens: 50, openRate: 25.0, smallSample: false },
-      { weekday: 3, label: "Qui", count: 2, delivered: 200, opens: 50, openRate: 25.0, smallSample: false },
+      { weekday: 2, label: "Qua", count: 2, delivered: 200, opens: 50, openRate: 25.0, clicks: 5, ctor: 10.0, smallSample: false },
+      { weekday: 3, label: "Qui", count: 2, delivered: 200, opens: 50, openRate: 25.0, clicks: 5, ctor: 10.0, smallSample: false },
     ];
     const html = renderWeekdaySection(tiedRows, "ciclo 2605");
     assert.doesNotMatch(html, /MELHOR DIA/, "empate não deve gerar MELHOR DIA");
@@ -2174,7 +2174,7 @@ describe("renderWeekdaySection (#2134)", () => {
   test("apenas 1 dia: sem MELHOR DIA (dados insuficientes)", () => {
     // 1 único dia → validRows.length < 2 → nenhum winner
     const single = [
-      { weekday: 2, label: "Qua", count: 3, delivered: 347, opens: 82, openRate: 23.6, smallSample: false },
+      { weekday: 2, label: "Qua", count: 3, delivered: 347, opens: 82, openRate: 23.6, clicks: 9, ctor: 11.0, smallSample: false },
     ];
     const html = renderWeekdaySection(single, "ciclo 2605");
     assert.doesNotMatch(html, /MELHOR DIA/, "1 único dia não deve ter MELHOR DIA");
@@ -2184,8 +2184,8 @@ describe("renderWeekdaySection (#2134)", () => {
 
   test("amostra pequena: exibe nota '(amostra pequena)' na linha correta", () => {
     const rowsWithSmall = [
-      { weekday: 2, label: "Qua", count: 1, delivered: 98, opens: 20, openRate: 20.4, smallSample: true },
-      { weekday: 3, label: "Qui", count: 3, delivered: 295, opens: 70, openRate: 23.7, smallSample: false },
+      { weekday: 2, label: "Qua", count: 1, delivered: 98, opens: 20, openRate: 20.4, clicks: 2, ctor: 10.0, smallSample: true },
+      { weekday: 3, label: "Qui", count: 3, delivered: 295, opens: 70, openRate: 23.7, clicks: 7, ctor: 10.0, smallSample: false },
     ];
     const html = renderWeekdaySection(rowsWithSmall, "ciclo 2605");
     assert.match(html, /amostra pequena/, "deve mostrar nota amostra pequena na linha de count=1");
@@ -2205,8 +2205,8 @@ describe("renderWeekdaySection (#2134)", () => {
 
   test("all-zero openRate exibe 'aguardando dados' (não 'Empate...0.0%')", () => {
     const zeroRows = [
-      { weekday: 2, label: "Qua", count: 2, delivered: 200, opens: 0, openRate: 0, smallSample: false },
-      { weekday: 3, label: "Qui", count: 2, delivered: 200, opens: 0, openRate: 0, smallSample: false },
+      { weekday: 2, label: "Qua", count: 2, delivered: 200, opens: 0, openRate: 0, clicks: 0, ctor: 0, smallSample: false },
+      { weekday: 3, label: "Qui", count: 2, delivered: 200, opens: 0, openRate: 0, clicks: 0, ctor: 0, smallSample: false },
     ];
     const html = renderWeekdaySection(zeroRows, "ciclo 2605");
     assert.doesNotMatch(html, /Empate.*0\.0%/, "não deve mostrar 'Empate 0.0%' quando todos zero");
@@ -2255,7 +2255,7 @@ describe("renderWeekdaySection (#2134)", () => {
 
   test("#2185 graceful: dia sem opens (opens=0) renderiza 0 sem crash", () => {
     const zeroOpens = [
-      { weekday: 2, label: "Qua", count: 1, delivered: 98, opens: 0, openRate: 0, smallSample: true },
+      { weekday: 2, label: "Qua", count: 1, delivered: 98, opens: 0, openRate: 0, clicks: 0, ctor: 0, smallSample: true },
     ];
     const html = renderWeekdaySection(zeroOpens, "ciclo 2605");
     assert.match(html, /<td>0<\/td>/, "deve renderizar 0 sem crash");
@@ -2264,10 +2264,10 @@ describe("renderWeekdaySection (#2134)", () => {
 
   // ─── #3081: glossário de colunas (mesmo padrão de ENVIOS_COLUMNS/#3090) ───
 
-  test("#3081 WEEKDAY_COLUMNS: 5 colunas com os mesmos labels dos headers da tabela", () => {
+  test("#3452 (era #3081) WEEKDAY_COLUMNS: 6 colunas com os mesmos labels dos headers da tabela", () => {
     assert.deepEqual(
       WEEKDAY_COLUMNS.map((c) => c.label),
-      ["Dia", "Envios", "Delivered", "Opens", "Open rate agr."],
+      ["Dia", "Envios", "Delivered", "Opens", "Open rate agr.", "CTOR"],
     );
   });
 
@@ -2288,6 +2288,91 @@ describe("renderWeekdaySection (#2134)", () => {
   test("#3081 renderWeekdaySection: glossário some no stub (rows vazio, sem tabela)", () => {
     const html = renderWeekdaySection([], "ciclo 2605", [{ name: "d05-A", sentDate: "2026-06-11T09:00:00Z" }]);
     assert.doesNotMatch(html, /Glossário das colunas/, "sem tabela, não há colunas a documentar");
+  });
+
+  // ─── #3452: coluna CTOR (click-to-open rate) agregada por dia da semana ───
+
+  test("#3452 aggregateByWeekday: soma uniqueClicks por dia e calcula ctor = clicks/opens", () => {
+    // cycle2605Campaigns usa makeGlobalStats default uniqueClicks=3 (não sobrescrito
+    // por nenhuma fixture do ciclo 2605) → 3 campanhas por dia = clicks agregados 9.
+    // Qua: opens=82, clicks=9 → ctor = 9/82*100
+    // Qui: opens=104, clicks=9 → ctor = 9/104*100
+    const { rows } = aggregateByWeekday(cycle2605Campaigns, "2605");
+    const qua = rows.find((r) => r.weekday === 2)!;
+    const qui = rows.find((r) => r.weekday === 3)!;
+    assert.equal(qua.clicks, 9, "Qua deve somar 3+3+3 uniqueClicks das 3 campanhas");
+    assert.equal(qui.clicks, 9, "Qui deve somar 3+3+3 uniqueClicks das 3 campanhas");
+    const expectedQuaCtor = (9 / 82) * 100;
+    const expectedQuiCtor = (9 / 104) * 100;
+    assert.ok(Math.abs(qua.ctor - expectedQuaCtor) < 0.01,
+      `ctor Qua deve ser ~${expectedQuaCtor.toFixed(2)}% (clicks/opens), foi ${qua.ctor.toFixed(2)}%`);
+    assert.ok(Math.abs(qui.ctor - expectedQuiCtor) < 0.01,
+      `ctor Qui deve ser ~${expectedQuiCtor.toFixed(2)}% (clicks/opens), foi ${qui.ctor.toFixed(2)}%`);
+  });
+
+  test("#3452 aggregateByWeekday: ctor usa opens como base, NÃO delivered (diverge de openRate)", () => {
+    // Fixture com clicks/opens desproporcionais a delivered — se o cálculo usasse
+    // delivered por engano, o valor bateria com openRate escalado errado.
+    const c = makeCampaign(201, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z",
+      { sent: 1000, delivered: 900, uniqueViews: 100, uniqueClicks: 50 });
+    const { rows } = aggregateByWeekday([c], "2605");
+    const qua = rows.find((r) => r.weekday === 2)!;
+    // Base correta (opens=100): ctor = 50/100*100 = 50%
+    // Base errada (delivered=900): ctor seria 50/900*100 ≈ 5.6%
+    assert.equal(qua.ctor, 50, "ctor deve usar opens (100) como base, não delivered (900)");
+  });
+
+  test("#3452 aggregateByWeekday: dia sem opens (opens=0) não gera NaN/Infinity em ctor", () => {
+    // csOnly (campaignStats fallback) da suíte já cobre delivered/opens=0 real
+    // ser impossível (guard de sent>0 exclui) — aqui simulamos via campanha com
+    // uniqueClicks>0 mas uniqueViews=0 (clique sem abertura registrada, MPP edge case).
+    const c = makeCampaign(202, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z",
+      { sent: 100, delivered: 98, uniqueViews: 0, uniqueClicks: 2 });
+    const { rows } = aggregateByWeekday([c], "2605");
+    const qua = rows.find((r) => r.weekday === 2)!;
+    assert.equal(qua.ctor, 0, "ctor deve ser 0 (não NaN/Infinity) quando opens=0");
+    assert.ok(isFinite(qua.ctor), "ctor deve ser finito");
+  });
+
+  test("#3452 aggregateByWeekday: usa campaignStats.uniqueClicks fallback quando globalStats ausente", () => {
+    const csOnly = {
+      ...makeCampaign(77, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z"),
+      statistics: {
+        campaignStats: [{
+          listId: 177, sent: 99, delivered: 97,
+          hardBounces: 1, softBounces: 1, deferred: 0,
+          uniqueViews: 40, viewed: 45, trackableViews: 30,
+          uniqueClicks: 4, clickers: 4, unsubscriptions: 0, complaints: 0,
+        }],
+        globalStats: undefined,
+      },
+    };
+    const { rows } = aggregateByWeekday([csOnly], "2605");
+    assert.equal(rows[0].clicks, 4, "deve usar campaignStats.uniqueClicks quando globalStats ausente");
+    assert.equal(rows[0].ctor, 10, "ctor = 4/40*100 = 10%");
+  });
+
+  test("#3452 renderWeekdaySection: header contém coluna CTOR", () => {
+    const html = renderWeekdaySection(makeRows(), "ciclo 2605");
+    assert.match(html, /<th[^>]*>CTOR<\/th>/, "header deve conter 'CTOR'");
+  });
+
+  test("#3452 renderWeekdaySection: célula CTOR mostra a taxa formatada + count de cliques", () => {
+    const { rows } = aggregateByWeekday(cycle2605Campaigns, "2605");
+    const html = renderWeekdaySection(rows, "ciclo 2605");
+    const qua = rows.find((r) => r.weekday === 2)!;
+    const ctorFmt = qua.ctor.toFixed(1) + "%";
+    assert.ok(html.includes(ctorFmt), `deve exibir ctor formatado (${ctorFmt}) no HTML`);
+    assert.ok(html.includes(`<small>${qua.clicks}</small>`), "deve exibir count de cliques em <small>");
+  });
+
+  test("#3452 renderWeekdaySection: dia com ctor=0 renderiza '0.0%' sem crash/NaN", () => {
+    const zeroCtor = [
+      { weekday: 2, label: "Qua", count: 1, delivered: 98, opens: 0, openRate: 0, clicks: 0, ctor: 0, smallSample: true },
+    ];
+    const html = renderWeekdaySection(zeroCtor, "ciclo 2605");
+    assert.match(html, /0\.0%/, "deve renderizar 0.0% para ctor zerado");
+    assert.doesNotMatch(html, /NaN|undefined/, "não deve exibir NaN/undefined");
   });
 });
 

@@ -1941,6 +1941,10 @@ export interface WeekdaySummary {
   opens: number;
   /** open rate agregado = opens / delivered (0 quando delivered=0) */
   openRate: number;
+  /** #3452: soma de cliques únicos (uniqueClicks) das campanhas enviadas neste dia */
+  clicks: number;
+  /** #3452: CTOR agregado = clicks / opens (0 quando opens=0) — mesmo padrão da tabela principal (base = opens, não delivered) */
+  ctor: number;
   /** true quando count < 2 — amostra insuficiente para conclusão */
   smallSample: boolean;
 }
@@ -2029,7 +2033,7 @@ export function aggregateByWeekday(
   cycle: string | null,
   now: Date = new Date(),
 ): { rows: WeekdaySummary[]; excluded: WeekdayExcluded[] } {
-  type Acc = { count: number; delivered: number; opens: number };
+  type Acc = { count: number; delivered: number; opens: number; clicks: number };
   const acc: Record<number, Acc> = {};
   const excluded: WeekdayExcluded[] = [];
   const minAgeMs = WEEKDAY_MIN_AGE_HOURS * 3600 * 1000;
@@ -2061,10 +2065,11 @@ export function aggregateByWeekday(
     const wk = weekdayKeyBRT(c.sentDate);
     if (wk === null) continue;
 
-    if (!acc[wk]) acc[wk] = { count: 0, delivered: 0, opens: 0 };
+    if (!acc[wk]) acc[wk] = { count: 0, delivered: 0, opens: 0, clicks: 0 };
     acc[wk].count += 1;
     acc[wk].delivered += s.delivered ?? 0;
     acc[wk].opens += s.uniqueViews ?? 0;
+    acc[wk].clicks += s.uniqueClicks ?? 0;
   }
 
   // Ordenar seg→dom (chave 0..6) e construir WeekdaySummary
@@ -2080,6 +2085,9 @@ export function aggregateByWeekday(
         delivered: d.delivered,
         opens: d.opens,
         openRate: d.delivered > 0 ? (d.opens / d.delivered) * 100 : 0,
+        clicks: d.clicks,
+        // #3452: base = opens (não delivered) — mesmo padrão da tabela principal (`ctor = pct(s.uniqueClicks, s.uniqueViews)`).
+        ctor: d.opens > 0 ? (d.clicks / d.opens) * 100 : 0,
         smallSample: d.count < 2,
       };
     });
@@ -2145,6 +2153,11 @@ export const WEEKDAY_COLUMNS: Array<{ label: string; tooltip: string }> = [
   { label: "Delivered", tooltip: "Total entregue" },
   { label: "Opens", tooltip: "Soma de aberturas únicas (uniqueViews) das campanhas enviadas neste dia." },
   { label: "Open rate agr.", tooltip: "Open rate agregado: opens ÷ delivered. Dias com < 2 campanhas = amostra pequena." },
+  {
+    label: "CTOR",
+    tooltip:
+      "CTOR (click-to-open rate) agregado = cliques únicos ÷ aberturas únicas deste dia. Engajamento com o conteúdo entre quem abriu (base = opens, não delivered — mesmo padrão da tabela principal).",
+  },
 ];
 
 /**
@@ -2197,12 +2210,14 @@ export function renderWeekdaySection(
         ? ` <span style="color:${DS.ink};opacity:0.6;font-size:0.8em;">(amostra pequena)</span>`
         : "";
       const openRateFmt = r.openRate.toFixed(1) + "%";
+      const ctorFmt = r.ctor.toFixed(1) + "%";
       return `<tr>
         <td><strong>${escHtml(r.label)}</strong></td>
         <td>${r.count}</td>
         <td>${r.delivered.toLocaleString("pt-BR")}</td>
         <td>${r.opens.toLocaleString("pt-BR")}</td>
         <td class="metric">${openRateFmt}${winnerTag}${smallSampleNote}</td>
+        <td class="metric">${ctorFmt}<br><small>${r.clicks.toLocaleString("pt-BR")}</small></td>
       </tr>`;
     })
     .join("\n");
