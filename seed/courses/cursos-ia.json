@@ -1,8 +1,8 @@
 {
   "_meta": {
-    "issue": "#1745, #2451",
-    "status": "20 cursos — fonte: doc de pesquisa do editor 'Busca Cursos Gratuitos IA' (Google Drive, dez/2025) + cursos oficiais Anthropic e OpenAI (#2451). Todos gratuitos ou de auditoria livre; 11 PT-BR, 9 EN.",
-    "instrucoes": "Fonte de verdade: a curadoria do editor (doc Drive). REGRAS: (1) links DIRETOS pra plataforma/curso — SEM encurtador de afiliado fabricado (#1632); (2) quando há versão PT-BR, listar a PT; (3) duração de cursos 'Variável' no doc é ESTIMATIVA (marcada com duration_estimated:true); (4) cost: 'free' = 100% grátis (acesso+conteúdo); a coluna certificate indica se há certificado SEM custo extra (auditoria do Coursera = cert pago → certificate:false). Rode `npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html` pra regenerar.",
+    "issue": "#1745, #2451, #3458",
+    "status": "31 cursos — fonte: doc de pesquisa do editor 'Busca Cursos Gratuitos IA' (Google Drive, dez/2025) + cursos oficiais Anthropic e OpenAI (#2451) + catálogo completo das duas academias mapeado via WebFetch/WebSearch (#3458). Todos gratuitos ou de auditoria livre; 11 PT-BR, 20 EN.",
+    "instrucoes": "Fonte de verdade: a curadoria do editor (doc Drive) + catálogo oficial das academias Anthropic/OpenAI (#3458, verificado ao vivo via WebFetch em cada URL). REGRAS: (1) links DIRETOS pra plataforma/curso — SEM encurtador de afiliado fabricado (#1632); (2) quando há versão PT-BR, listar a PT; (3) duração de cursos 'Variável' no doc, OU sem duração publicada pela academia, é ESTIMATIVA (marcada com duration_estimated:true); (4) cost: 'free' = 100% grátis (acesso+conteúdo); a coluna certificate indica se há certificado SEM custo extra (auditoria do Coursera = cert pago → certificate:false). Rode `npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html` pra regenerar.",
     "schema": {
       "id": "slug-kebab-case (estável)",
       "title": "string",
@@ -18,7 +18,7 @@
       "themes": "array de rótulos livres",
       "summary": "string (para quem é / o que cobre)"
     },
-    "count": 20
+    "count": 31
   },
   "courses": [
     {
@@ -368,6 +368,205 @@
         "Produtividade"
       ],
       "summary": "Curso oficial da OpenAI: fundamentos de IA, modelos de linguagem e ChatGPT — com foco em prompting prático, revisão de outputs e uso responsável no dia a dia."
+    },
+    {
+      "id": "openai-academy-applied-ai-foundations",
+      "title": "Applied AI Foundations",
+      "platform": "OpenAI Academy",
+      "url": "https://academy.openai.com/public/courses/applied-ai-foundations-hgk7r",
+      "language": "en",
+      "level": "intermediario",
+      "format": "hands-on",
+      "duration_hours": 1.25,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Produtividade",
+        "Fundamentos"
+      ],
+      "summary": "Curso oficial da OpenAI pra transformar uma tarefa recorrente num fluxo de trabalho repetível: dividir o trabalho em etapas, identificar onde o ChatGPT ajuda e criar pontos de revisão no processo."
+    },
+    {
+      "id": "openai-academy-agents-and-workflows",
+      "title": "Agents and Workflows",
+      "platform": "OpenAI Academy",
+      "url": "https://academy.openai.com/public/courses/agents-and-workflows-bieml",
+      "language": "en",
+      "level": "intermediario",
+      "format": "hands-on",
+      "duration_hours": 1.25,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Agentes",
+        "Produtividade"
+      ],
+      "summary": "Curso oficial da OpenAI sobre dirigir agentes em trabalho estruturado: fornecer contexto, definir outputs, estabelecer limites, revisar rascunhos e reaproveitar o que funciona."
+    },
+    {
+      "id": "anthropic-claude-101",
+      "title": "Claude 101",
+      "platform": "Anthropic Academy",
+      "url": "https://anthropic.skilljar.com/claude-101",
+      "language": "en",
+      "level": "iniciante",
+      "format": "video",
+      "duration_hours": 1,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Fundamentos",
+        "Prompt Engineering",
+        "Produtividade"
+      ],
+      "summary": "Curso oficial da Anthropic pra quem está começando com Claude: recursos essenciais, boas práticas do dia a dia e como organizar o trabalho em projetos. Certificado gratuito ao concluir."
+    },
+    {
+      "id": "anthropic-claude-code-101",
+      "title": "Claude Code 101",
+      "platform": "Anthropic Academy",
+      "url": "https://anthropic.skilljar.com/claude-code-101",
+      "language": "en",
+      "level": "iniciante",
+      "format": "hands-on",
+      "duration_hours": 2,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Claude Code",
+        "Produtividade"
+      ],
+      "summary": "Instalação, o fluxo explorar → planejar → codar → commitar, gestão de contexto, CLAUDE.md, subagentes e MCP servers — curso oficial pra usar o Claude Code no dia a dia de desenvolvimento."
+    },
+    {
+      "id": "anthropic-claude-platform-101",
+      "title": "Claude Platform 101",
+      "platform": "Anthropic Academy",
+      "url": "https://anthropic.skilljar.com/claude-platform-101",
+      "language": "en",
+      "level": "intermediario",
+      "format": "hands-on",
+      "duration_hours": 4,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Desenvolvimento",
+        "API"
+      ],
+      "summary": "Construir sobre a Claude Developer Platform do zero: fundamentos da API, loop de agentes, uso de ferramentas, extended thinking e agentes gerenciados, com demos práticas em cada lição."
+    },
+    {
+      "id": "anthropic-ai-capabilities-limitations",
+      "title": "AI Capabilities and Limitations",
+      "platform": "Anthropic Academy",
+      "url": "https://anthropic.skilljar.com/ai-capabilities-and-limitations",
+      "language": "en",
+      "level": "iniciante",
+      "format": "video",
+      "duration_hours": 1,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Fundamentos",
+        "Ética"
+      ],
+      "summary": "Modelo mental de como sistemas de IA generativa modernos se comportam e por quê — curso companheiro do AI Fluency, pra identificar comportamentos inesperados e calibrar confiança nos outputs."
+    },
+    {
+      "id": "anthropic-building-claude-api",
+      "title": "Building with the Claude API",
+      "platform": "Anthropic Academy",
+      "url": "https://anthropic.skilljar.com/claude-with-the-anthropic-api",
+      "language": "en",
+      "level": "avancado",
+      "format": "hands-on",
+      "duration_hours": 6,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Desenvolvimento",
+        "API"
+      ],
+      "summary": "Curso completo sobre integrar Claude via API: operações fundamentais, prompting avançado, tool use, RAG e padrões de arquitetura pra sistemas com IA em produção."
+    },
+    {
+      "id": "anthropic-intro-mcp",
+      "title": "Introduction to Model Context Protocol",
+      "platform": "Anthropic Academy",
+      "url": "https://anthropic.skilljar.com/introduction-to-model-context-protocol",
+      "language": "en",
+      "level": "intermediario",
+      "format": "hands-on",
+      "duration_hours": 4,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "MCP",
+        "Desenvolvimento"
+      ],
+      "summary": "Construir servidores e clientes MCP do zero em Python, cobrindo as três primitivas centrais do protocolo (tools, resources, prompts) e a integração com o Claude."
+    },
+    {
+      "id": "anthropic-intro-agent-skills",
+      "title": "Introduction to Agent Skills",
+      "platform": "Anthropic Academy",
+      "url": "https://anthropic.skilljar.com/introduction-to-agent-skills",
+      "language": "en",
+      "level": "intermediario",
+      "format": "hands-on",
+      "duration_hours": 1.5,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Claude Code",
+        "Agentes"
+      ],
+      "summary": "Como criar, configurar e compartilhar Skills no Claude Code — instruções reutilizáveis em markdown que o Claude aplica automaticamente às tarefas certas."
+    },
+    {
+      "id": "anthropic-intro-subagents",
+      "title": "Introduction to Subagents",
+      "platform": "Anthropic Academy",
+      "url": "https://anthropic.skilljar.com/introduction-to-subagents",
+      "language": "en",
+      "level": "intermediario",
+      "format": "hands-on",
+      "duration_hours": 1.5,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Claude Code",
+        "Agentes"
+      ],
+      "summary": "Como usar e criar subagentes no Claude Code pra gerenciar contexto, delegar tarefas e montar fluxos especializados dentro de um projeto maior."
+    },
+    {
+      "id": "anthropic-intro-claude-cowork",
+      "title": "Introduction to Claude Cowork",
+      "platform": "Anthropic Academy",
+      "url": "https://anthropic.skilljar.com/introduction-to-claude-cowork",
+      "language": "en",
+      "level": "iniciante",
+      "format": "hands-on",
+      "duration_hours": 2,
+      "duration_estimated": true,
+      "cost": "free",
+      "certificate": true,
+      "themes": [
+        "Produtividade",
+        "Agentes"
+      ],
+      "summary": "Curso prático sobre trabalhar lado a lado com o Claude em arquivos e projetos: o loop de tarefas do Cowork, plugins e skills, fluxos de pesquisa e como conduzir trabalho multi-etapas com responsabilidade."
     }
   ]
 }
