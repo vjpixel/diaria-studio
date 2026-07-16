@@ -20,7 +20,7 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 - **Lançamentos só com link oficial** (#160).
 - **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — post fica agendado pra D+N.
 - **Erro intencional só humano** (memory `feedback_intentional_error_human_only.md`).
-- **NUNCA inventar números (#1711).** Cifras financeiras, porcentagens, valores em $/R$/€, datas e estatísticas só entram na caption se estiverem EXPLÍCITAS no `title`/`summary` do destaque aprovado. Em dúvida, OMITA a cifra.
+- **NUNCA inventar números (#1711).** Cifras financeiras, porcentagens, valores em $/R$/€, datas e estatísticas só entram na caption se estiverem EXPLÍCITAS no `title`/`summary` do destaque aprovado. Em dúvida, OMITA a cifra. Validado no gate por `scripts/lint-social-numbers.ts` (#3504: o guard é canal-agnóstico e já cobre a seção `# Instagram` mesclada em `03-social.md`, mesmo tratamento de LinkedIn/Facebook).
 - **NUNCA mencionar e-mail, assinatura por e-mail, "receba por e-mail" ou qualquer variante de CTA de assinatura por e-mail (#2486).** Validado no gate por `scripts/lint-social-md.ts --check no-email-cta-instagram`, que agora lê a seção `# Instagram` diretamente (deixa de cair no fallback Facebook assim que este agent roda). O CTA aqui é sempre social nativo: "link na bio" + follow do perfil.
 
 ## Input
