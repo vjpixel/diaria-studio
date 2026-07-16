@@ -26,6 +26,8 @@
  *   # Custom edition-dir (sobrescreve default data/editions/{AAMMDD}):
  *   npx tsx scripts/reorder-destaques.ts --edition 260529 --new-order 3,1,2 --edition-dir /tmp/test
  *
+ *   # --editions-dir <path>: override do editions ROOT — só para testes (#3491)
+ *
  * Validação:
  *   - --new-order DEVE ser permutação de [1,2,3]
  *   - Idempotente: reorder 1,2,3 = no-op (saída zero-changes)
@@ -45,6 +47,7 @@ import { resolve, dirname, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
+import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import {
   loadIntentionalErrorJson,
   writeIntentionalErrorJson,
@@ -54,14 +57,14 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-interface CliArgs {
+export interface CliArgs {
   edition: string;
   newOrder: number[];
   editionDir: string;
   dryRun: boolean;
 }
 
-function parseArgs(argv: string[]): CliArgs {
+export function parseArgs(argv: string[]): CliArgs {
   // #2834: --dry-run é flag booleana incondicional no parser local original
   // (checada antes da lógica genérica, com `continue` — nunca é tratada como
   // valor de outra flag) → argv.includes preserva isso. O consumo de valor das
@@ -93,8 +96,20 @@ function parseArgs(argv: string[]): CliArgs {
     );
     process.exit(2);
   }
+  // #3491: sem --edition-dir (o override "cru" de path COMPLETO, já existente),
+  // o default construía `data/editions/{AAMMDD}` à mão (layout FLAT) — mesma
+  // classe de bug de #3483/#3484. Este é um comando editor-invocado
+  // diretamente (sem caller fixo no orchestrator que sempre passe
+  // --edition-dir), então o default É o path realmente exercitado no uso
+  // normal. `resolveEditionDir` acha o dir REAL no disco (flat ou nested).
+  // `--editions-dir` (plural, raiz) é um segundo override, só de teste (mesmo
+  // padrão de close-poll.ts #3031) — distinto de `--edition-dir` (singular,
+  // dir completo).
+  const editionsRootDir = args["editions-dir"]
+    ? resolve(args["editions-dir"])
+    : resolve(ROOT, "data", "editions");
   const editionDir =
-    args["edition-dir"] ?? resolve(ROOT, "data", "editions", args.edition);
+    args["edition-dir"] ?? resolveEditionDir(editionsRootDir, args.edition);
   return { edition: args.edition, newOrder, editionDir, dryRun };
 }
 

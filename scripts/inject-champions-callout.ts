@@ -31,7 +31,8 @@
  *
  * Uso:
  *   npx tsx scripts/inject-champions-callout.ts --edition AAMMDD [--edition-dir path] \
- *     [--leaderboard-json path] [--reviewed path] [--past-editions path] [--platform-config path]
+ *     [--leaderboard-json path] [--reviewed path] [--past-editions path] [--platform-config path] \
+ *     [--editions-dir path]  # override do editions root — só para testes (#3491)
  *
  * Exit codes:
  *   0  sucesso — injetado, OU no-op gracioso (motivo no stdout)
@@ -43,6 +44,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import {
   editionToMonthSlug,
   previousMonthSlug,
@@ -75,11 +77,24 @@ interface PlatformConfigShape {
  * TÍTULO/SUBTÍTULO e a coverage line). */
 const SEP_BEFORE_DESTAQUE = /\n\n---\n\n(?=\*\*DESTAQUE)/;
 
-function parseCliArgs(argv: string[]) {
+export function parseCliArgs(argv: string[]) {
   const { values } = parseArgs(argv);
   const edition = values.edition ?? "";
   if (!edition) return null;
-  const editionDir = values["edition-dir"] ?? join("data", "editions", edition);
+  // #3491: sem --edition-dir, o default construía `data/editions/{AAMMDD}`
+  // à mão (layout FLAT) — mesma classe de bug de #3483/#3484. Na prática o
+  // orchestrator (Stage 3, `.claude/agents/orchestrator-stage-3.md`) SEMPRE
+  // passa `--edition-dir` explícito, então este fallback não é exercitado em
+  // produção hoje — corrigido por defesa em profundidade (invocação manual
+  // futura, ou mudança no orchestrator que esqueça a flag). `--editions-dir`
+  // (plural, raiz) é override só de teste (mesmo padrão de close-poll.ts
+  // #3031) — distinto de `--edition-dir` (singular, dir completo).
+  const editionDir = values["edition-dir"] ?? (() => {
+    const editionsRootDir = values["editions-dir"]
+      ? resolve(process.cwd(), values["editions-dir"])
+      : resolve(ROOT, "data", "editions");
+    return resolveEditionDir(editionsRootDir, edition);
+  })();
   return {
     edition,
     leaderboardJson: values["leaderboard-json"] ??
