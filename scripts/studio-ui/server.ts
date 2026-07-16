@@ -146,6 +146,7 @@ import {
   parseCreateContactBody,
   parseUpdateContactBody,
   parseOutreachEventBody,
+  type ApoiosMutationResult,
 } from "./studio-apoios.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
@@ -578,6 +579,18 @@ async function handleApiApoiosCreate(rootDir: string, req: IncomingMessage, res:
   sendJson(res, result.ok ? 201 : 400, result);
 }
 
+/** Único ponto de mapeamento resultado→status HTTP pras 2 mutações que
+ * podem alvejar um id inexistente (update/outreach) — evita duplicar (e
+ * desalinhar) o `result.error.includes("não encontrado") ? 404 : 400` em
+ * cada handler. */
+function sendApoiosMutationResult(res: ServerResponse, result: ApoiosMutationResult): void {
+  if (result.ok) {
+    sendJson(res, 200, result);
+    return;
+  }
+  sendJson(res, result.error.includes("não encontrado") ? 404 : 400, result);
+}
+
 async function handleApiApoiosUpdate(
   rootDir: string,
   req: IncomingMessage,
@@ -597,7 +610,7 @@ async function handleApiApoiosUpdate(
     return;
   }
   const result = updateContactById(rootDir, id, parsed.value);
-  sendJson(res, result.ok ? 200 : result.error.includes("não encontrado") ? 404 : 400, result);
+  sendApoiosMutationResult(res, result);
 }
 
 async function handleApiApoiosOutreach(
@@ -619,7 +632,7 @@ async function handleApiApoiosOutreach(
     return;
   }
   const result = addOutreachToContact(rootDir, id, parsed.value);
-  sendJson(res, result.ok ? 200 : result.error.includes("não encontrado") ? 404 : 400, result);
+  sendApoiosMutationResult(res, result);
 }
 
 /**

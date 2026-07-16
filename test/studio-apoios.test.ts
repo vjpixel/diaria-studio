@@ -83,6 +83,21 @@ describe("parseContactsJsonl / serializeContactsJsonl (#3602)", () => {
     const parsed = parseContactsJsonl(raw);
     assert.deepEqual(parsed[0].emails, ["fulano@x.com"]);
   });
+
+  it("regressão (self-review #3608): descarta entradas de outreach malformadas em vez de propagá-las cruas", () => {
+    const raw = JSON.stringify({
+      ...makeContact(),
+      outreach: [
+        { date: "2026-07-01", channel: "email", responded: false, followupPending: true }, // válida
+        { date: "16/07/2026", channel: "whatsapp" }, // data fora do formato — descartada
+        { date: "2026-07-05", channel: "  " }, // sem canal — descartada
+        "not-an-object", // shape totalmente errado — descartada
+      ],
+    });
+    const parsed = parseContactsJsonl(raw);
+    assert.equal(parsed[0].outreach.length, 1);
+    assert.equal(parsed[0].outreach[0].date, "2026-07-01");
+  });
 });
 
 // ─── CRUD puro ──────────────────────────────────────────────────────────
@@ -451,6 +466,44 @@ describe("buildApoiosData (#3602)", () => {
       if (saved.key !== undefined) process.env.APOIA_SE_API_KEY = saved.key;
       if (saved.secret !== undefined) process.env.APOIA_SE_API_SECRET = saved.secret;
       if (saved.campaign !== undefined) process.env.APOIA_SE_CAMPAIGN = saved.campaign;
+    }
+  });
+
+  it("regressão (self-review #3608): falha de auth NO MEIO do loop marca contato não-checado como sem_dados, não nao_apoia", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-authfail-cache-"));
+    try {
+      const contacts = [
+        makeContact({ id: "checked", name: "Checado", emails: ["a@x.com"] }),
+        makeContact({ id: "unchecked", name: "Não checado", emails: ["b@x.com"] }),
+      ];
+      // "a@x.com" resolve com sucesso (não paga); "b@x.com" nunca chega a ser
+      // tentado de verdade — a chamada pra ele estoura 401 (credencial
+      // rotacionada no meio da sessão), o que aborta o loop antes de resolver
+      // qualquer email subsequente.
+      const fetchImpl = (async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("a%40x.com") || u.includes("a@x.com")) {
+          return new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ message: "unauthorized" }), { status: 401 });
+      }) as typeof fetch;
+
+      const result = await buildApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+      });
+
+      const byId = Object.fromEntries(result.contacts.map((c) => [c.id, c.status]));
+      // Resolvido com sucesso (checkBacker respondeu) -> "nao_apoia" de fato correto.
+      assert.equal(byId.checked.label, "nao_apoia");
+      // NUNCA resolvido (abortado por auth) -> "sem_dados", NÃO "nao_apoia".
+      assert.equal(byId.unchecked.label, "sem_dados");
+      assert.match(result.error ?? "", /401|unauthorized|não autorizado/i);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
     }
   });
 
