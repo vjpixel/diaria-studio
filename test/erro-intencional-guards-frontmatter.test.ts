@@ -24,7 +24,8 @@ import { tmpdir } from "node:os";
 
 import {
   composeRevealText,
-  extractIntentionalErrorFromMd,
+  extractCurrentDeclarationFromMd,
+  extractPreviousRevealFromRecord,
   extractNarrativeFromFrontmatter,
   narrativeIsGenericPlaceholder,
 } from "../scripts/render-erro-intencional.ts";
@@ -217,7 +218,7 @@ describe("extractNarrativeFromFrontmatter (#2398 + #2411, migrado pra JSON #3222
   });
 });
 
-describe("extractIntentionalErrorFromMd — prioridade record JSON (#2398 + #2411, migrado #3222)", () => {
+describe("extractPreviousRevealFromRecord — prioridade record JSON (#2398 + #2411, migrado #3222, split #3494)", () => {
   it("(a) #2411: record.description catálogo + corpo genérico → null (não vaza label)", () => {
     // #2398 retornava description catálogo como narrative; #2411 reverte.
     // Com o fix: body genérico é filtrado, description catálogo não é fonte → null.
@@ -235,7 +236,7 @@ describe("extractIntentionalErrorFromMd — prioridade record JSON (#2398 + #241
       category: "ortografico",
       correct_value: "Microsoft",
     };
-    const r = extractIntentionalErrorFromMd(md, record);
+    const r = extractPreviousRevealFromRecord(md, record);
     // #2411: description é catálogo + body é genérico → null
     assert.equal(r, null, "#2411: description catálogo + body genérico → null");
   });
@@ -248,14 +249,14 @@ describe("extractIntentionalErrorFromMd — prioridade record JSON (#2398 + #241
       "Nessa edição, escrevi que a OpenAI foi fundada em 1914, quando o correto é 2014.",
       "",
     ].join("\n");
-    const r = extractIntentionalErrorFromMd(md, null);
+    const r = extractPreviousRevealFromRecord(md, null);
     assert.ok(r !== null, "fallback para corpo deve funcionar");
     assert.equal(r!.narrative, "escrevi que a OpenAI foi fundada em 1914, quando o correto é 2014");
     assert.equal(narrativeIsGenericPlaceholder(r!.narrative), false);
   });
 
-  it("(c) #2411: sem record, corpo genérico → extractIntentionalErrorFromMd=null", () => {
-    // #2411: corpo genérico é filtrado pelo extractIntentionalErrorFromMd (não retornado).
+  it("(c) #2411: sem record, corpo genérico → extractCurrentDeclarationFromMd=null", () => {
+    // #2411: corpo genérico é filtrado (não retornado).
     // (O lint Stage 4 checkNarrativeNotGenericPlaceholder detecta isso diretamente.)
     const md = [
       "**ERRO INTENCIONAL**",
@@ -265,7 +266,7 @@ describe("extractIntentionalErrorFromMd — prioridade record JSON (#2398 + #241
       "Nessa edição, há um erro proposital escondido em um dos destaques. Responda este e-mail com a correção para concorrer ao sorteio.",
       "",
     ].join("\n");
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     // #2411: genérico filtrado → null (o lint acessa o corpo diretamente)
     assert.equal(r, null, "#2411: corpo genérico filtrado → null");
   });
@@ -306,9 +307,17 @@ describe("checkNarrativeNotGenericPlaceholder — fix #2411 (guard Stage 4, migr
     }
   });
 
-  it("#2411: 0 violations quando record.reveal específico + corpo genérico", () => {
-    // Editor preencheu `reveal` first-person no record → lint OK.
-    const dir = mkdtempSync(join(tmpdir(), "stage4-2411-narrative-ok-"));
+  it("#3494 (revisa expectativa pré-#3494 do #2411): record.reveal específico NÃO silencia corpo genérico", () => {
+    // Pré-#3494 este teste esperava 0 violations aqui — extractIntentionalErrorFromMd
+    // caía na PRIORIDADE 2 (record.reveal) quando o corpo era filtrado, e o gate
+    // considerava o `record.reveal` válido como se fosse também a declaração
+    // CORRENTE do corpo. Mas `record.reveal` é prosa pré-escrita para a PRÓXIMA
+    // edição revelar o erro DESTA edição — não substitui a prosa "Nessa edição, …"
+    // que OS LEITORES DESTA edição leem. Um corpo com o convite genérico ainda
+    // preenchido é um problema real (o leitor não tem pista do que procurar),
+    // mesmo que `record.reveal` já esteja pronto para a próxima edição — por
+    // isso o Stage 4 deve continuar sinalizando (issue #3494).
+    const dir = mkdtempSync(join(tmpdir(), "stage4-3494-record-reveal-does-not-mask-body-"));
     try {
       const md = [
         "**ERRO INTENCIONAL**",
@@ -331,8 +340,17 @@ describe("checkNarrativeNotGenericPlaceholder — fix #2411 (guard Stage 4, migr
         correct_value: "Perplexity ou Copilot",
       });
       const violations = checkNarrativeNotGenericPlaceholder(dir);
-      assert.equal(violations.length, 0,
-        `record.reveal first-person OK → sem violation. Got: ${JSON.stringify(violations)}`);
+      assert.equal(violations.length, 1,
+        `corpo genérico deve continuar sinalizado mesmo com record.reveal válido (#3494). Got: ${JSON.stringify(violations)}`);
+      assert.equal(violations[0].severity, "warning");
+      assert.equal(violations[0].source_issue, "#2411");
+      // Guard central do #3494: a mensagem nunca deriva de record.reveal (prosa em
+      // 1ª pessoa PASSADA) — nunca produz a corrupção "Nessa edição, Na última edição, …".
+      assert.doesNotMatch(
+        violations[0].message,
+        /Nessa edição,\s*Na última edição/i,
+        "mensagem não pode misturar a declaração corrente com o reveal (prosa/tempo verbal diferentes)",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -403,9 +421,9 @@ describe("extractNarrativeFromFrontmatter — invariante description×reveal (#2
     );
   });
 
-  it("description vazia + prosa 'Nessa edição,' no corpo → extractIntentionalErrorFromMd usa corpo", () => {
+  it("description vazia + prosa 'Nessa edição,' no corpo → extractPreviousRevealFromRecord usa corpo", () => {
     // Sem reveal preenchido no record → extractNarrativeFromFrontmatter=null
-    // → extractIntentionalErrorFromMd deve cair no fallback do corpo.
+    // → extractPreviousRevealFromRecord deve cair no fallback do corpo.
     const md = [
       "**ERRO INTENCIONAL**",
       "",
@@ -420,8 +438,8 @@ describe("extractNarrativeFromFrontmatter — invariante description×reveal (#2
     // extractNarrativeFromFrontmatter deve retornar null (sem reveal)
     const fm = extractNarrativeFromFrontmatter(record);
     assert.equal(fm, null, "record sem reveal deve retornar null");
-    // extractIntentionalErrorFromMd deve pegar o corpo como fallback
-    const full = extractIntentionalErrorFromMd(md, record);
+    // extractPreviousRevealFromRecord deve pegar o corpo como fallback
+    const full = extractPreviousRevealFromRecord(md, record);
     assert.ok(full !== null, "fallback pro corpo deve funcionar");
     assert.ok(
       full!.narrative.includes("fundada em 1904"),
@@ -429,7 +447,7 @@ describe("extractNarrativeFromFrontmatter — invariante description×reveal (#2
     );
   });
 
-  it("integrado: description catálogo + corpo genérico → extractIntentionalErrorFromMd=null (#2411)", () => {
+  it("integrado: description catálogo + corpo genérico → extractPreviousRevealFromRecord=null (#2411)", () => {
     // Com o fix #2411: description é catálogo (não fonte do reveal), corpo é genérico
     // (filtrado por narrativeIsGenericPlaceholder) → null.
     const md = [
@@ -446,7 +464,7 @@ describe("extractNarrativeFromFrontmatter — invariante description×reveal (#2
       category: "numeric",
       correct_value: "24",
     };
-    const r = extractIntentionalErrorFromMd(md, record);
+    const r = extractPreviousRevealFromRecord(md, record);
     // description é catálogo (ignorada), corpo é genérico (filtrado) → null
     assert.equal(r, null,
       "#2411: description catálogo + corpo genérico → null (não vaza label interno)");

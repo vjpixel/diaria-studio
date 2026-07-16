@@ -15,7 +15,7 @@ import { spawnSync } from "node:child_process";
 import {
   findPreviousIntentionalError,
   currentHasIntentionalErrorFlag,
-  extractIntentionalErrorFromMd,
+  extractCurrentDeclarationFromMd,
   findPreviousIntentionalErrorFromMd,
   resolvePreviousError,
   ensureIntentionalErrorJson,
@@ -47,10 +47,10 @@ describe("currentHasIntentionalErrorFlag (#911, migrado pra JSON #3222)", () => 
   });
 });
 
-describe("extractIntentionalErrorFromMd (#961 / #1079)", () => {
+describe("extractCurrentDeclarationFromMd (#961 / #1079)", () => {
   it("#1079: extrai narrative livre (sem aspas)", () => {
     const md = `Nessa edição, eu disse que a OpenAI lançou 4 modelos, mas listei 3 (que é o número correto).`;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r?.narrative, "eu disse que a OpenAI lançou 4 modelos, mas listei 3 (que é o número correto)");
     // detail/gabarito ficam undefined nesse caso (não bate com regex legacy)
     assert.equal(r?.detail, undefined);
@@ -59,7 +59,7 @@ describe("extractIntentionalErrorFromMd (#961 / #1079)", () => {
 
   it("extrai narrative + detail/gabarito da linha legacy 'escrevi \"X\" onde deveria ser \"Y\"' (back-compat)", () => {
     const md = `Texto.\n\nNessa edição, escrevi "iPhone 5 e 6" onde deveria ser "iPhone 15 e 16".\n\nMais texto.`;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r?.detail, "iPhone 5 e 6");
     assert.equal(r?.gabarito, "iPhone 15 e 16");
     assert.match(r?.narrative ?? "", /escrevi "iPhone 5 e 6" onde deveria ser "iPhone 15 e 16"/);
@@ -67,21 +67,21 @@ describe("extractIntentionalErrorFromMd (#961 / #1079)", () => {
 
   it("extrai com aspas simples (caso histórico)", () => {
     const md = `Nessa edição, escrevi 'V4' onde deveria ser 'V8'.`;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r?.detail, "V4");
     assert.equal(r?.gabarito, "V8");
   });
 
   it("retorna null quando linha não existe", () => {
     const md = `Nada de erro intencional aqui.`;
-    assert.equal(extractIntentionalErrorFromMd(md), null);
+    assert.equal(extractCurrentDeclarationFromMd(md), null);
   });
 
   it("captura narrativa parcial quando linha está malformada legacy (#1079: pega texto livre)", () => {
     // No formato novo (#1079), qualquer linha "Nessa edição, X." vira narrative.
     // O regex legacy de aspas só roda como sub-extração; quando falha, retorna só narrative.
     const md = `Nessa edição, escrevi "X" mas esqueci o resto.`;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r?.narrative, `escrevi "X" mas esqueci o resto`);
     assert.equal(r?.detail, undefined);
     assert.equal(r?.gabarito, undefined);
@@ -89,21 +89,21 @@ describe("extractIntentionalErrorFromMd (#961 / #1079)", () => {
 
   it("#991: aceita aspas duplas em ambos os lados", () => {
     const md = `Nessa edição, escrevi "X" onde deveria ser "Y".`;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r?.detail, "X");
     assert.equal(r?.gabarito, "Y");
   });
 
   it("#991: aceita aspas simples em ambos os lados", () => {
     const md = `Nessa edição, escrevi 'X' onde deveria ser 'Y'.`;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r?.detail, "X");
     assert.equal(r?.gabarito, "Y");
   });
 
   it("#991: aceita aspas mistas — duplas no detail + simples no gabarito (cada lado consistente)", () => {
     const md = `Nessa edição, escrevi "X" onde deveria ser 'Y'.`;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r?.detail, "X");
     assert.equal(r?.gabarito, "Y");
   });
@@ -112,7 +112,7 @@ describe("extractIntentionalErrorFromMd (#961 / #1079)", () => {
     // Non-greedy [^\n]+? ancorado em \.\s*(\n|$) captura até o último ponto
     // antes da quebra. Narrativas com pontos internos cabem se tudo em 1 linha.
     const md = `Nessa edição, eu disse X. Depois corrigi pra Y.`;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r?.narrative, "eu disse X. Depois corrigi pra Y");
   });
 
@@ -120,7 +120,7 @@ describe("extractIntentionalErrorFromMd (#961 / #1079)", () => {
     // Em reviewed.md real, parágrafos são separados por \n\n. A regex termina
     // no primeiro \n, então linhas subsequentes não são capturadas.
     const md = `Nessa edição, X.\n\nOutro parágrafo. Não capturar.`;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r?.narrative, "X");
   });
 
@@ -147,7 +147,7 @@ Nessa edição, escrevi 'X' onde deveria ser 'Y'.
 
 Nessa edição da **Diar.ia**, usei Claude Code para automatizar...
 `;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r?.narrative, "escrevi 'X' onde deveria ser 'Y'");
     // Confirma que NÃO pegou o PARA ENCERRAR
     assert.doesNotMatch(r?.narrative ?? "", /Diar\.ia|Claude Code/);
@@ -166,7 +166,7 @@ Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.
 
 Nessa edição da **Diar.ia**, usei Claude Code...
 `;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r, null, "deve retornar null em placeholder + ignorar PARA ENCERRAR");
   });
 
@@ -177,7 +177,7 @@ Nessa edição da **Diar.ia**, usei Claude Code para escrever.
 `;
     // Sem header ERRO INTENCIONAL → busca global, mas vírgula é obrigatória.
     // "Nessa edição da Diar.ia" não tem vírgula entre "edição" e "da" → não matcha.
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r, null, "frase do PARA ENCERRAR sem vírgula não deve matchar");
   });
 });

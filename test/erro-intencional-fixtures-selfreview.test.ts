@@ -19,7 +19,7 @@ import {
   findPreviousIntentionalError,
   composeRevealText,
   boldQuotedStrings,
-  extractIntentionalErrorFromMd,
+  extractPreviousRevealFromRecord,
   extractNarrativeFromFrontmatter,
   extractRevealFromFrontmatter,
   extractCorrectValueFromFrontmatter,
@@ -133,8 +133,9 @@ describe("#2419 reescrita — fixtures obrigatórias (6 classes de bug)", () => 
       correct_value: "Perplexity ou Copilot",
     };
 
-    // extractIntentionalErrorFromMd deve retornar null (bug #5/#9 fix)
-    const extracted = extractIntentionalErrorFromMd(md, record);
+    // extractPreviousRevealFromRecord (#3494 split de extractIntentionalErrorFromMd)
+    // deve retornar null (bug #5/#9 fix)
+    const extracted = extractPreviousRevealFromRecord(md, record);
     assert.equal(extracted, null, "description catálogo + corpo genérico → null (bug #5 fix)");
 
     // composeRevealText com entry JSONL que tem detail=description (catálogo):
@@ -243,8 +244,8 @@ describe("#2419 reescrita — fixtures obrigatórias (6 classes de bug)", () => 
     const reveal = extractRevealFromFrontmatter(record);
     assert.equal(reveal, "Na última edição, escrevi X onde o correto é Y.");
 
-    // extractIntentionalErrorFromMd também deve achar via o record, independente do MD longo
-    const extracted = extractIntentionalErrorFromMd(md, record);
+    // extractPreviousRevealFromRecord também deve achar via o record, independente do MD longo
+    const extracted = extractPreviousRevealFromRecord(md, record);
     assert.equal(extracted?.reveal, "Na última edição, escrevi X onde o correto é Y.");
 
     // composeRevealText com o `reveal` propagado deve retornar verbatim
@@ -637,7 +638,7 @@ describe("#3222 — leitura de _internal/intentional-error.json é robusta a CRL
       const md = "Body.";
       writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
 
-      const extracted = extractIntentionalErrorFromMd(md, record);
+      const extracted = extractPreviousRevealFromRecord(md, record);
       assert.equal(extracted?.correct_value, "2014");
       assert.equal(extracted?.reveal, "Na última edição, escrevi 1990 onde o correto é 1998.");
     } finally {

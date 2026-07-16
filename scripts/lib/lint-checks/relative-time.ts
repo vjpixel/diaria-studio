@@ -52,7 +52,7 @@ const SEPARATOR_RE = /^\s*---\s*$/;
 // segundo caso, uma edição cujo `---` entre ERRO INTENCIONAL e a próxima seção
 // foi removido (hand-edit no Drive) faria o skip ir até o EOF, engolindo
 // violações reais em SORTEIO / PARA ENCERRAR (falso-negativo num lint que o
-// gate confia). Espelha o `nextSepRe` do extractIntentionalErrorFromMd.
+// gate confia). Espelha o `nextSepRe` do extractCurrentDeclarationFromMd.
 const NEXT_SECTION_HEADER_RE = new RegExp(String.raw`^\s*(?:\*\*)?${SECTION_EMOJI}`, "u");
 
 export function lintRelativeTime(md: string): RelativeTimeResult {
