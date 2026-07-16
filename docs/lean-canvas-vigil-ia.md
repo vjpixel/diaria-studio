@@ -37,11 +37,10 @@ Mass market (escala futura): leitores de newsletters tech genéricas que querem 
 
 ## 3. Unique Value Proposition
 
-**"Notícias de IA filtradas editorialmente, em português, todo dia. 5 minutos de leitura."**
+**"5 minutos diários pra se manter atualizado e usar melhor a IA."** (tagline única, #3577 — 2026-07-16)
 
 Subtexto:
-- Curadoria humana (não agregador algorítmico)
-- Frame editorial: "por que isso importa" pra leitor BR profissional
+- Curadoria humana (não agregador algorítmico), em português, com frame editorial: "por que isso importa" e o que muda pro leitor profissional no Brasil
 - Frequência alta (diária) sem virar overload (5 min, 3 destaques)
 - Qualidade de produção: imagens, layout, voz consistente
 
