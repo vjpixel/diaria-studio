@@ -32,6 +32,12 @@
  *     continua vencendo (comportamento pré-#3541, não regride).
  *   + edge case: develop concluído + overnight ausente (null) → develop
  *     mostra sua barra 100% (não desaparece).
+ *
+ * ATUALIZAÇÃO (#3590, 260716): os 2 edge cases acima ("develop concluído mostra 100%")
+ * foram revisados pelo editor — rodada concluída agora SOME em vez de travar em 100%.
+ * As asserções desses 2 casos foram atualizadas na seção "edge cases de preservação"
+ * abaixo; os demais casos (a)/(b)/(c) — envolvendo overnight ou develop ATIVO — não
+ * mudaram. Ver test/statusline-concluded-hides-3590.test.ts pra cobertura dedicada do #3590.
  */
 
 import { describe, it } from "node:test";
@@ -225,24 +231,31 @@ describe("renderStatusline — #3541 (c): develop ATIVO + overnight → precedê
 // ─── edge cases adicionais de preservação de comportamento pré-#3541 ──────────
 
 describe("renderStatusline — #3541: edge cases de preservação (develop concluído sem overnight ativo)", () => {
-  it("develop concluído + overnight AUSENTE (null) → develop mostra sua própria barra 100% (não desaparece)", () => {
+  // #3590 revisou este comportamento: um develop CONCLUÍDO agora SOME (cai pro fallback
+  // idle/vazio) em vez de travar em 100% pra sempre — decisão de produto do editor
+  // (achado ao vivo 260716), ver test/statusline-concluded-hides-3590.test.ts pra cobertura
+  // dedicada. Os 2 casos abaixo foram atualizados de "develop concluído mostra 100%" pra
+  // "develop concluído some" (mantidos aqui pra não perder a cobertura de regressão do
+  // #3541 — overnight concluído junto não ressuscita o develop).
+  it("#3590: develop concluído + overnight AUSENTE (null) → barra some (não trava em 100%)", () => {
     const developEntry: DevelopPlanEntry = { id: "260716", plan: makeConcludedDevelopPlan(5) };
 
     const result = renderStatusline(null, null, null, null, "master", developEntry);
 
-    assert.ok(result.includes("develop 260716"), `develop concluído deve continuar visível: "${result}"`);
-    assert.ok(result.includes("100%"), `develop concluído deve mostrar 100%: "${result}"`);
-    assert.ok(result.includes("(5/5)"), `deve mostrar (5/5): "${result}"`);
+    // Sem edição no disco, o fallback (#2618) é o idle bar padrão, não string vazia —
+    // o ponto testado é que o develop concluído não trava mais em 100%.
+    assert.ok(!result.includes("develop"), `develop concluído deve sumir: "${result}"`);
+    assert.ok(!result.includes("100%"), `NÃO deve travar em 100%: "${result}"`);
   });
 
-  it("develop concluído + overnight TAMBÉM concluído → develop continua vencendo (não regride pra overnight)", () => {
+  it("#3590: develop concluído + overnight TAMBÉM concluído → barra some (nenhum dos dois trava em 100%)", () => {
     const developEntry: DevelopPlanEntry = { id: "260716", plan: makeConcludedDevelopPlan(5) };
     const overnightPlan = makeConcludedOvernightPlan();
 
     const result = renderStatusline(null, overnightPlan, null, null, "master", developEntry);
 
-    assert.ok(result.includes("develop 260716"), `develop concluído deve continuar vencendo sobre overnight também concluído: "${result}"`);
-    assert.ok(result.includes("(5/5)"), `deve mostrar o 5/5 do develop, não o overnight: "${result}"`);
+    assert.ok(!result.includes("develop"), `develop concluído deve sumir: "${result}"`);
+    assert.ok(!result.includes("100%"), `NÃO deve travar em 100%: "${result}"`);
   });
 
   it("edição em curso tem precedência máxima mesmo com develop concluído + overnight ativo", () => {
