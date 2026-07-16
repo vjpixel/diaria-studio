@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout } from "../scripts/stitch-newsletter.ts";
-import { extractBoxDivulgacao1, extractBoxDivulgacao2 } from "../scripts/render-newsletter-html.ts";
+import { extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3 } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 
 describe("renderSection (#1463)", () => {
@@ -850,6 +850,152 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
       assert.equal(extractBoxDivulgacao2(out), null, "slot2 nunca injeta sem gap D2/D3");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de USE MELHOR", () => {
+  function setupEdition() {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-3476-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "02-d1-draft.md"), "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1");
+    writeFileSync(join(internalDir, "02-d2-draft.md"), "**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2");
+    writeFileSync(join(internalDir, "02-d3-draft.md"), "**DESTAQUE 3 | ⚖️ REGULAÇÃO**\n\n[**T3**](https://e.com/d3)\n\nbody3");
+    writeFileSync(
+      join(internalDir, "01-approved-capped.json"),
+      JSON.stringify({
+        coverage: { line: "cov" },
+        use_melhor: [{ title: "UM1", url: "https://um.com/1", summary: "umdesc" }],
+      }),
+    );
+    return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+  const base = (dir: string, internalDir: string, extra: Record<string, unknown> = {}) => ({
+    d1Path: join(internalDir, "02-d1-draft.md"),
+    d2Path: join(internalDir, "02-d2-draft.md"),
+    d3Path: join(internalDir, "02-d3-draft.md"),
+    approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+    editionDir: dir,
+    ...extra,
+  });
+
+  it("#3212/#3476: config default de platform.config.json injeta os 3 slots (recomendação de leitura, livros, indicação de ferramenta)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      // Sem override — lê boxes_divulgacao direto de platform.config.json.
+      const out = stitchNewsletter(base(dir, internalDir));
+      const slot1 = extractBoxDivulgacao1(out);
+      assert.ok(slot1, "slot1 (recomendação de leitura) injetado por default");
+      assert.match(slot1!, /Recomendação de leitura/);
+      const slot2 = extractBoxDivulgacao2(out);
+      assert.ok(slot2, "slot2 (curadoria de livros) injetado por default");
+      assert.match(slot2!, /curadoria de livros/);
+      const slot3 = extractBoxDivulgacao3(out);
+      assert.ok(slot3, "slot3 (indicação de ferramenta) injetado por default");
+      assert.match(slot3!, /Indicação de ferramenta/);
+      assert.match(slot3!, /Não recebi comissão/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#3476: box3 posicionado entre D3 e USE MELHOR (não entre D2/D3, não depois de USE MELHOR)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir));
+      const d3Pos = out.indexOf("DESTAQUE 3");
+      const slot3Pos = out.indexOf("Indicação de ferramenta");
+      const umPos = out.indexOf("USE MELHOR");
+      assert.ok(slot3Pos > 0, "box3 deveria estar presente");
+      assert.ok(
+        d3Pos < slot3Pos && slot3Pos < umPos,
+        `box3 deve ficar entre D3 (${d3Pos}) e USE MELHOR (${umPos}); achou em ${slot3Pos}`,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#3476: USE MELHOR renderiza ANTES de É IA? (antes do #3476 era o inverso, #2546)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir));
+      const umPos = out.indexOf("USE MELHOR");
+      const eiaPos = out.indexOf("É IA?");
+      assert.ok(umPos > 0 && eiaPos > 0, "USE MELHOR e É IA? devem estar presentes");
+      assert.ok(umPos < eiaPos, `USE MELHOR (${umPos}) deve vir antes de É IA? (${eiaPos})`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#3476: sem USE MELHOR na edição, É IA? cai logo após box3 (nunca desaparece)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      // Sobrescreve o approved-capped.json sem use_melhor.
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({ coverage: { line: "cov" } }),
+      );
+      const out = stitchNewsletter(base(dir, internalDir));
+      assert.doesNotMatch(out, /USE MELHOR/);
+      const slot3Pos = out.indexOf("Indicação de ferramenta");
+      const eiaPos = out.indexOf("É IA?");
+      assert.ok(slot3Pos > 0 && eiaPos > 0);
+      assert.ok(slot3Pos < eiaPos, "É IA? deve vir logo após box3 quando USE MELHOR está ausente");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#3476: box3 injeta mesmo em edição de 2 destaques (após D2, diferente do slot2 que exige D3)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-3476-2d-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2");
+      writeFileSync(join(internalDir, "01-approved-capped.json"), JSON.stringify({ coverage: { line: "cov" }, highlights: [{}, {}] }));
+      const out = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: null,
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+      });
+      const slot3 = extractBoxDivulgacao3(out);
+      assert.ok(slot3, "slot3 deve injetar mesmo sem D3 (é pós-último-destaque, não uma lacuna D2/D3)");
+      assert.match(slot3!, /Indicação de ferramenta/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("idempotência: box3 já glúado ao fim de D3 não é dupla-injetado", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "02-d3-draft.md"),
+        "**DESTAQUE 3 | ⚖️ REGULAÇÃO**\n\n[**T3**](https://e.com/d3)\n\nbody3\n\n**🔧 Já colado. [Ver](https://exemplo.com/ferramenta).**",
+      );
+      const out = stitchNewsletter(base(dir, internalDir));
+      assert.equal((out.match(/🔧/g) || []).length, 1, "só 1 marcador 🔧 (não dupla-injeta)");
+      assert.ok(!out.includes("Não recebi comissão"), "não injeta o snippet default por cima do box já colado");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("sponsor=false suprime os 3 slots (não só os 2 antigos)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir, { sponsor: false }));
+      assert.equal(extractBoxDivulgacao1(out), null, "slot1 suprimido");
+      assert.equal(extractBoxDivulgacao2(out), null, "slot2 suprimido");
+      assert.equal(extractBoxDivulgacao3(out), null, "slot3 suprimido");
+    } finally {
+      cleanup();
     }
   });
 });

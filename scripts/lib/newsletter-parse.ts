@@ -135,6 +135,20 @@ export interface NewsletterContent {
   boxDivulgacao2Image?: string | null;
   /** #3373: mesmo contrato de `boxDivulgacao1Bold`, pro slot 2. */
   boxDivulgacao2Bold?: boolean;
+  /** #3476: box de divulgação posicionado SEMPRE após o ÚLTIMO destaque (D3 em
+   * edições de 3 destaques, D2 em edições de 2), antes de USE MELHOR/É IA? —
+   * diferente dos slots 1/2 (lacunas ENTRE destaques), este é a região
+   * pós-destaques (ver `extractBoxDivulgacao3`/`locateBoxAfterLastDestaque`).
+   * Existe em QUALQUER contagem de destaques (2 ou 3). Mesmo contrato de
+   * formato dos slots 1/2 (bold-line OU multi-parágrafo genérico). */
+  boxDivulgacao3?: string | null;
+  /** Mesmo contrato de `boxDivulgacao1Image`, pro slot 3. Na prática sempre
+   * `null` — a imagem `livros_promo` só é associada ao box de livros
+   * (`isBoxDivulgacaoLivros`), e o slot 3 (Indicação de Ferramenta) nunca é
+   * esse box; mantido pra paridade de contrato/futuro-proofing. */
+  boxDivulgacao3Image?: string | null;
+  /** Mesmo contrato de `boxDivulgacao1Bold`, pro slot 3. */
+  boxDivulgacao3Bold?: boolean;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -823,6 +837,76 @@ function locateBoxInGap(
   return null;
 }
 
+// #3476: marcos conhecidos que delimitam o FIM da região pós-destaques (slot
+// 3) — ao contrário de `interDestaqueGaps` (lacuna BOUNDED entre 2 markers de
+// destaque), a região após o ÚLTIMO destaque se estende até o fim do arquivo
+// (USE MELHOR/É IA?/LANÇAMENTOS/.../PARA ENCERRAR). Sem um limite explícito,
+// o scan de candidato a box passaria por cima de seções inteiras. Qualquer um
+// desses marcos, na 1ª linha de um bloco `---`-isolado, encerra a busca —
+// diferente de `locateBoxInGap` (que só pula esses blocos e CONTINUA
+// procurando dentro da lacuna fixa), aqui é um `break` definitivo.
+const EIA_HEADER_RE = /^(?:\*\*)?É IA\?(?:\*\*)?\s*$/;
+const ERRO_INTENCIONAL_HEADER_RE = /^(?:\*\*)?ERRO INTENCIONAL(?:\*\*)?\s*$/;
+
+function isPostDestaqueLandmark(firstLine: string): boolean {
+  if (DESTAQUE_HEADER_IN_BLOCK_RE.test(firstLine)) return true;
+  if (SECTION_HEADER_RE.test(firstLine)) return true;
+  if (EIA_HEADER_RE.test(firstLine)) return true;
+  if (ERRO_INTENCIONAL_HEADER_RE.test(firstLine)) return true;
+  for (const re of SECTION_TERMINATOR_MARKERS) {
+    if (re.test(firstLine)) return true;
+  }
+  return false;
+}
+
+/**
+ * #3476: localiza o box de divulgação do slot 3 — SEMPRE posicionado após o
+ * ÚLTIMO destaque (D3 em edições de 3 destaques, D2 em edições de 2), antes
+ * de USE MELHOR/É IA?/qualquer outra seção. Diferente de `locateBoxInGap`
+ * (lacuna fixa ENTRE 2 markers de destaque), esta região não é bounded pelo
+ * próximo destaque — é bounded pelo próximo MARCO CONHECIDO
+ * (`isPostDestaqueLandmark`). Mesma técnica de posição+estrutura do #3204:
+ * aceita QUALQUER bloco `---`-isolado antes do 1º marco, ou (fallback) um
+ * box GLUADO ao final do bloco do último destaque (sem `---` isolando).
+ */
+function locateBoxAfterLastDestaque(
+  text: string,
+): { inner: string; bold: boolean; matchStart: number; matchEnd: number } | null {
+  const markers = [...text.matchAll(/^\*\*DESTAQUE/gm)].map((m) => m.index ?? -1)
+    .filter((i) => i >= 0);
+  if (markers.length === 0) return null;
+  const lastMarkerStart = markers[markers.length - 1];
+  const region = text.slice(lastMarkerStart);
+  const blocks = splitByGapSeparator(region);
+  // blocks[0] = o próprio último destaque. Candidato a box é o 1º bloco
+  // seguinte não-vazio, ATÉ encontrar um marco conhecido (fim da região).
+  for (let i = 1; i < blocks.length; i++) {
+    const block = blocks[i];
+    const trimmed = block.text.trim();
+    if (!trimmed) continue;
+    const firstLine = trimmed.split(/\r?\n/, 1)[0];
+    if (isPostDestaqueLandmark(firstLine)) break; // fim da região — sem box isolado
+    const leadingWs = block.text.length - block.text.trimStart().length;
+    const trailingWs = block.text.length - block.text.trimEnd().length;
+    const matchStart = lastMarkerStart + block.rawStart + leadingWs;
+    const matchEnd = lastMarkerStart + block.rawEnd - trailingWs;
+    const formatted = formatBoxInner(trimmed);
+    return { inner: formatted.inner, bold: formatted.bold, matchStart, matchEnd };
+  }
+  // Nenhum bloco isolado — tenta o fallback de box colado ao final do último destaque.
+  const glued = locateGluedBoxInBlock(blocks[0]);
+  if (glued) {
+    const formatted = formatBoxInner(glued.text);
+    return {
+      inner: formatted.inner,
+      bold: formatted.bold,
+      matchStart: lastMarkerStart + blocks[0].rawStart + glued.start,
+      matchEnd: lastMarkerStart + blocks[0].rawStart + glued.end,
+    };
+  }
+  return null;
+}
+
 export interface OrphanBoxWarning {
   gapIndex: number;
   reason: string;
@@ -851,6 +935,34 @@ export function findOrphanBoxWarnings(text: string): OrphanBoxWarning[] {
           `${extra.length} blocos extras na lacuna D${gap.gapIndex + 1}/D${gap.gapIndex + 2} — ` +
           `apenas o 1º vira box de divulgação; os demais seriam descartados silenciosamente. ` +
           `Isole 1 único bloco de box entre os \`---\`, ou mova o excedente pra outra lacuna.`,
+      });
+    }
+  }
+  // #3476: região pós-destaques (slot 3) — entre o ÚLTIMO destaque e o
+  // próximo marco conhecido (USE MELHOR/É IA?/outra seção). Mesmo raciocínio
+  // do loop acima, mas contando só os blocos ANTES do 1º marco (a região não
+  // é bounded pelo próximo destaque — segue até o fim do arquivo).
+  const markers = [...text.matchAll(/^\*\*DESTAQUE/gm)].map((m) => m.index ?? -1)
+    .filter((i) => i >= 0);
+  if (markers.length > 0) {
+    const lastMarkerStart = markers[markers.length - 1];
+    const region = text.slice(lastMarkerStart);
+    const extra: string[] = [];
+    for (const block of splitByGapSeparator(region).slice(1)) {
+      const trimmed = block.text.trim();
+      if (!trimmed) continue;
+      const firstLine = trimmed.split(/\r?\n/, 1)[0];
+      if (isPostDestaqueLandmark(firstLine)) break;
+      extra.push(trimmed);
+    }
+    if (extra.length > 1) {
+      warnings.push({
+        gapIndex: 2,
+        reason:
+          `${extra.length} blocos extras na região pós-destaques (slot 3, entre o último ` +
+          `destaque e USE MELHOR/É IA?) — apenas o 1º vira box de divulgação; os demais ` +
+          `seriam descartados silenciosamente. Isole 1 único bloco de box nessa região, ` +
+          `ou mova o excedente pra outro slot.`,
       });
     }
   }
@@ -885,6 +997,21 @@ export function isBoxDivulgacao1Bold(text: string): boolean {
 /** Mesma lógica de `isBoxDivulgacao1Bold`, pro slot 2 (gap D2/D3). */
 export function isBoxDivulgacao2Bold(text: string): boolean {
   return locateBoxInGap(text, 1)?.bold ?? true;
+}
+
+/**
+ * #3476: box de divulgação posicionado SEMPRE após o ÚLTIMO destaque (D3 em
+ * edições de 3 destaques, D2 em edições de 2), antes de USE MELHOR/É IA?.
+ * Diferente dos slots 1/2 (lacuna ENTRE 2 destaques), este é a região
+ * pós-destaques — ver `locateBoxAfterLastDestaque`.
+ */
+export function extractBoxDivulgacao3(text: string): string | null {
+  return locateBoxAfterLastDestaque(text)?.inner ?? null;
+}
+
+/** Mesma lógica de `isBoxDivulgacao1Bold`, pro slot 3 (região pós-destaques). */
+export function isBoxDivulgacao3Bold(text: string): boolean {
+  return locateBoxAfterLastDestaque(text)?.bold ?? true;
 }
 
 /**
@@ -923,6 +1050,27 @@ export function stripBoxDivulgacao1(text: string): string {
 /** Remove o box do slot 2 (gap D2/D3) do texto bruto ANTES do parse dos destaques. */
 export function stripBoxDivulgacao2(text: string): string {
   return stripBoxInGap(text, 1);
+}
+
+/**
+ * #3476: remove o bloco do box de divulgação do slot 3 (região pós-último-
+ * destaque) do texto bruto ANTES do parse dos destaques. Mesmo motivo de
+ * `stripBoxInGap` — sem isso, um box colado ao final do último destaque
+ * (sem `---` isolando) seria absorvido pelo corpo/why desse destaque.
+ * Idempotente quando não há box na região.
+ */
+export function stripBoxDivulgacao3(text: string): string {
+  const loc = locateBoxAfterLastDestaque(text);
+  if (!loc) return text;
+  const before = text.slice(0, loc.matchStart);
+  const after = text.slice(loc.matchEnd);
+  const openSep = /\n---[ \t]*\r?\n\s*$/;
+  const closeSep = /^\s*\r?\n---[ \t]*\r?\n/;
+  const joined =
+    openSep.test(before) && closeSep.test(after)
+      ? before + after.replace(closeSep, "\n")
+      : before + after;
+  return joined.replace(/(?:\r?\n){3,}/g, "\n\n");
 }
 
 /**
@@ -999,6 +1147,18 @@ export function readBoxDivulgacao2Image(
   return readBoxDivulgacaoImage(editionDir, boxText);
 }
 
+/**
+ * Slot 3 (região pós-destaques, #3476). Mesmo contrato dos slots 1/2 — na
+ * prática sempre `null`, já que o box do slot 3 (Indicação de Ferramenta)
+ * nunca é o de livros (`isBoxDivulgacaoLivros`); mantido pra paridade.
+ */
+export function readBoxDivulgacao3Image(
+  editionDir: string,
+  boxText?: string | null,
+): string | null {
+  return readBoxDivulgacaoImage(editionDir, boxText);
+}
+
 export function extractContent(editionDir: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
@@ -1009,12 +1169,12 @@ export function extractContent(editionDir: string): NewsletterContent {
 
   const reviewedText = joinMultilineLinks(readFileSync(reviewedPath, "utf8"));
 
-  // #1972/#2978: remove os blocos dos boxes de divulgação (slot 1 e slot 2)
-  // ANTES do parse dos destaques. Se um callout estiver colado antes do `---`
-  // de fechamento do destaque anterior, o parser o absorveria no corpo/why
-  // desse destaque (render duplicado). Strip → sai só como box de divulgação
-  // (extraído abaixo do texto original). De-dup determinístico.
-  const destaquesText = stripBoxDivulgacao2(stripBoxDivulgacao1(reviewedText));
+  // #1972/#2978/#3476: remove os blocos dos boxes de divulgação (slot 1, slot
+  // 2 e slot 3) ANTES do parse dos destaques. Se um callout estiver colado
+  // antes do `---` de fechamento do destaque anterior, o parser o absorveria
+  // no corpo/why desse destaque (render duplicado). Strip → sai só como box
+  // de divulgação (extraído abaixo do texto original). De-dup determinístico.
+  const destaquesText = stripBoxDivulgacao3(stripBoxDivulgacao2(stripBoxDivulgacao1(reviewedText)));
 
   // Destaques: use shared parser from extract-destaques.ts (single source of truth)
   // #2316: aceita 2–3 destaques (o caso editorial legítimo é 2 quando o editor
@@ -1104,6 +1264,11 @@ export function extractContent(editionDir: string): NewsletterContent {
   // vai pro box de livros, independente de em qual slot ele caiu.
   const boxDivulgacao2Image = readBoxDivulgacao2Image(editionDir, boxDivulgacao2);
   const boxDivulgacao2Bold = isBoxDivulgacao2Bold(reviewedText);
+  // #3476: box de divulgação slot 3 — região pós-último-destaque (D3 em
+  // edições de 3, D2 em edições de 2), antes de USE MELHOR/É IA?.
+  const boxDivulgacao3 = extractBoxDivulgacao3(reviewedText);
+  const boxDivulgacao3Image = readBoxDivulgacao3Image(editionDir, boxDivulgacao3);
+  const boxDivulgacao3Bold = isBoxDivulgacao3Bold(reviewedText);
 
   // #2316: subtitle adapta-se ao número real de destaques.
   // Com 2 destaques: só D2 (sem o separador " | "). Com 3: D2 | D3 (padrão).
@@ -1133,6 +1298,9 @@ export function extractContent(editionDir: string): NewsletterContent {
     boxDivulgacao2,
     boxDivulgacao2Image,
     boxDivulgacao2Bold,
+    boxDivulgacao3,
+    boxDivulgacao3Image,
+    boxDivulgacao3Bold,
   };
 }
 

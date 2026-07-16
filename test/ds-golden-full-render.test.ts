@@ -14,7 +14,7 @@
  *   1. Fixture sintética de edição completa — todas as seções que renderHTML
  *      compõe: 3 destaques, lançamentos, notícias/radar, use melhor, vídeo,
  *      É IA?, sorteio, erro intencional, encerrar, boxDivulgacao1 com e sem imagem,
- *      introCallout. Determinística — sem dados reais.
+ *      boxDivulgacao3 (#3476), introCallout. Determinística — sem dados reais.
  *   2. 1 golden do HTML completo: mesmo mecanismo de atualização consciente dos
  *      goldens por componente (NODE_TEST_SNAPSHOTS=1 npm test).
  *   3. Asserções de composição ALÉM do golden bruto: ordem das seções no HTML,
@@ -63,11 +63,13 @@ const SNAPSHOT_PATH = resolve(
  *   - Destaque 1          (com imagem hero)
  *   - boxDivulgacao1          (com imagem — régua "Divulgação" antes do box)
  *   - Destaque 2
- *   - É IA?               (após o último destaque, #2546)
  *   - Destaque 3
+ *   - boxDivulgacao3      (#3476 — sempre após o ÚLTIMO destaque, antes das seções)
  *   - LANÇAMENTOS         (seção)
  *   - OUTRAS NOTÍCIAS     (seção)
  *   - USE MELHOR          (seção)
+ *   - É IA?               (#3476: DEPOIS de USE MELHOR — antes ficava logo após
+ *     o último destaque, #2546)
  *   - SORTEIO             (bloco fixo)
  *   - ERRO INTENCIONAL    (reveal entre SORTEIO e PARA ENCERRAR)
  *   - PARA ENCERRAR       (bloco fixo com pills + CTA "Agora que chegou")
@@ -120,6 +122,11 @@ const FULL_FIXTURE: NewsletterContent = {
     "📚 Nossa curadoria de livros sobre IA ganhou uma nova página. [Confira a nova página](https://livros.diaria.workers.dev).",
   boxDivulgacao1Image:
     "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo-a1b2c3d4.jpg",
+
+  // #3476: box do slot 3 — sempre após o ÚLTIMO destaque (D3 aqui), antes das
+  // seções secundárias.
+  boxDivulgacao3:
+    "🔧 Indicação de ferramenta: uso o Raycast todo dia pra automatizar buscas. [Confira](https://raycast.com).",
 
   eia: {
     credit: "Foto: Gerado com Gemini. Uma dessas imagens é artificial — qual é?",
@@ -298,9 +305,10 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
   // Regra: cada bloco tem um comentário HTML canônico no render. Verificamos
   // que aparecem na ordem correta no HTML composto.
   //
-  // Ordem esperada (alinhada ao renderHTML):
-  //   INTRO → coverageLine → introCallout → D1 → boxDivulgacao1 → D2 → D3 → É IA? →
-  //   D3 → seções → SORTEIO → ERRO INTENCIONAL → PARA ENCERRAR
+  // Ordem esperada (alinhada ao renderHTML, #3476):
+  //   INTRO → coverageLine → introCallout → D1 → boxDivulgacao1 → D2 → D3 →
+  //   boxDivulgacao3 → LANÇAMENTOS → OUTRAS NOTÍCIAS → USE MELHOR → É IA? →
+  //   RADAR → SORTEIO → ERRO INTENCIONAL → PARA ENCERRAR
 
   it("composição: coverageLine antes do primeiro Destaque", () => {
     // Usa comentários HTML canônicos — estáveis e não aparecem no conteúdo editorial
@@ -323,8 +331,16 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assertOrder(html, "<!-- Destaque 2 -->", "<!-- É IA? (poll) -->");
   });
 
-  it("composição: Destaque 3 antes do É IA? (#2546)", () => {
+  it("composição: Destaque 3 antes do É IA? (#3476: via USE MELHOR, não mais direto)", () => {
     assertOrder(html, "<!-- Destaque 3 -->", "<!-- É IA? (poll) -->");
+  });
+
+  it("composição: Destaque 3 antes do boxDivulgacao3 (#3476)", () => {
+    assertOrder(html, "<!-- Destaque 3 -->", "Indicação de ferramenta");
+  });
+
+  it("composição: boxDivulgacao3 antes das seções secundárias (#3476)", () => {
+    assertOrder(html, "Indicação de ferramenta", "<!-- LANÇAMENTOS -->");
   });
 
   it("composição: Destaque 3 antes das seções secundárias", () => {
@@ -412,33 +428,29 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     );
   });
 
-  // ── Composição: É IA? posicionado após o último destaque (#2546) ──────────
+  // ── Composição: É IA? posicionado após USE MELHOR (#3476) ─────────────────
+  //
+  // Antes (#2546): É IA? renderizava logo após o último destaque, antes de
+  // QUALQUER seção secundária. Pedido do editor 260716 (tornado permanente):
+  // É IA? passa a ficar DEPOIS da seção USE MELHOR — nesta fixture, USE
+  // MELHOR é a 3ª seção do array (após LANÇAMENTOS e OUTRAS NOTÍCIAS), então
+  // É IA? cai entre USE MELHOR e RADAR, não logo após D3.
 
-  it("É IA? está após o Destaque 3, antes das seções secundárias (#2546)", () => {
-    const d2Idx = html.indexOf("<!-- Destaque 2 -->");
-    const eiaIdx = html.indexOf("<!-- É IA? (poll) -->");
+  it("É IA? está após a seção USE MELHOR, antes de RADAR (#3476)", () => {
     const d3Idx = html.indexOf("<!-- Destaque 3 -->");
     const lancIdx = html.indexOf("<!-- LANÇAMENTOS -->");
+    const umIdx = html.indexOf("<!-- USE MELHOR -->");
+    const eiaIdx = html.indexOf("<!-- É IA? (poll) -->");
+    const radarIdx = html.indexOf("<!-- RADAR -->");
+    assert.ok(d3Idx !== -1, "comentário '<!-- Destaque 3 -->' ausente");
+    assert.ok(lancIdx !== -1, "comentário '<!-- LANÇAMENTOS -->' ausente");
+    assert.ok(umIdx !== -1, "comentário '<!-- USE MELHOR -->' ausente");
+    assert.ok(eiaIdx !== -1, "comentário '<!-- É IA? (poll) -->' ausente");
+    assert.ok(radarIdx !== -1, "comentário '<!-- RADAR -->' ausente");
+    // #3476: ordem D3 < LANÇAMENTOS < USE MELHOR < É IA? < RADAR.
     assert.ok(
-      d2Idx !== -1,
-      "comentário '<!-- Destaque 2 -->' ausente",
-    );
-    assert.ok(
-      eiaIdx !== -1,
-      "comentário '<!-- É IA? (poll) -->' ausente",
-    );
-    assert.ok(
-      d3Idx !== -1,
-      "comentário '<!-- Destaque 3 -->' ausente",
-    );
-    assert.ok(
-      lancIdx !== -1,
-      "comentário '<!-- LANÇAMENTOS -->' ausente",
-    );
-    // #2546: ordem D2 < D3 < É IA? < seções secundárias.
-    assert.ok(
-      d2Idx < d3Idx && d3Idx < eiaIdx && eiaIdx < lancIdx,
-      `Posição incorreta: D2(${d2Idx}) < D3(${d3Idx}) < ÉIA(${eiaIdx}) < LANÇ(${lancIdx})`,
+      d3Idx < lancIdx && lancIdx < umIdx && umIdx < eiaIdx && eiaIdx < radarIdx,
+      `Posição incorreta: D3(${d3Idx}) < LANÇ(${lancIdx}) < USEM(${umIdx}) < ÉIA(${eiaIdx}) < RADAR(${radarIdx})`,
     );
   });
 
