@@ -13,6 +13,11 @@ description: Detalhe da Etapa 2 (escrita — newsletter + social em paralelo) do
 
 Newsletter e social rodam **em paralelo** a partir de `_internal/01-approved.json` — nenhum depende do outro. O gate ao final é unificado.
 
+**`{EDITION_DIR}` (#2463/#3025/#3530):** diretório REAL da edição no disco — pode ser o layout flat legado OU o nested novo, dependendo de quando a edição foi criada. Já foi resolvido no Stage 0/1 — se este stage estiver rodando na mesma sessão, reusar o valor. Se estiver rodando isolado (resume, skill separada), resolver de novo (idempotente — encontra o que já está no disco):
+```bash
+EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
+```
+
 ### Pré-condição: sentinel Stage 1
 
 <!-- outputs must match the `write` call at the end of orchestrator-stage-1-research.md §gate approval -->
@@ -37,8 +42,8 @@ Exit code handling:
   - **Validar lançamentos ANTES do cap (#742, #876):** rodar `validate-lancamentos.ts` na lista de lançamentos do approved JSON para identificar URLs não-oficiais. Remover lançamentos rejeitados ANTES de calcular `lançamentos_final`. Isso garante que slots liberados por lançamentos inválidos sejam compensados em Outras Notícias. **Persistir o resumo** em `_internal/02-lancamentos-removed.json` para que o `sync-intro-count.ts` (§2b) ajuste menções narrativas a "X lançamentos" no intro:
     ```bash
     npx tsx scripts/validate-lancamentos.ts \
-      --approved data/editions/{AAMMDD}/_internal/01-approved.json \
-      --write-removed data/editions/{AAMMDD}/_internal/02-lancamentos-removed.json
+      --approved {EDITION_DIR}/_internal/01-approved.json \
+      --write-removed {EDITION_DIR}/_internal/02-lancamentos-removed.json
     ```
     Exit 1 (URLs removidas) é esperado quando o approved tem URL não-oficial — não bloquear, só informativo.
 - Radar: `max(5, 12 − destaques − lançamentos_final)` (#1629 — substitui caps separados de Pesquisas + Outras Notícias).
@@ -47,16 +52,16 @@ Exit code handling:
 - **Aplicar caps via script TS (#907)** — não confiar no writer LLM pra respeitar:
   ```bash
   npx tsx scripts/apply-stage2-caps.ts \
-    --in data/editions/{AAMMDD}/_internal/01-approved.json \
-    --out data/editions/{AAMMDD}/_internal/01-approved-capped.json
+    --in {EDITION_DIR}/_internal/01-approved.json \
+    --out {EDITION_DIR}/_internal/01-approved-capped.json
   ```
   Writer recebe `01-approved-capped.json`. Lint pós-writer (`--check section-counts`) valida que o output respeitou os caps; falha = re-disparar writer.
 
 - **Limpar/truncar summaries em inglês (#1490 / #1572).** Antes de stitch, rodar:
   ```bash
   npx tsx scripts/translate-summaries.ts \
-    --in data/editions/{AAMMDD}/_internal/01-approved-capped.json \
-    --out data/editions/{AAMMDD}/_internal/01-approved-capped.json
+    --in {EDITION_DIR}/_internal/01-approved-capped.json \
+    --out {EDITION_DIR}/_internal/01-approved-capped.json
   ```
   O script é idempotente (marca `summary_translated: true` após processar). Strip de prefixo arXiv + 1ª frase + truncate em 150 chars; **não faz tradução LLM** — apenas cleanup determinístico pra evitar prefix bruto `[TRADUZIR]` no MD final. Items com `summary_lang: "en"` (categorize.ts #1473) e/ou arXiv abstract são afetados. Stitch adiciona `[TRADUZIR]` na **DESCRIÇÃO** (2ª linha) quando o summary está em EN — **nunca no título** (#1697/#1634: título de seção secundária preserva o nome original do recurso, nunca traduzido). O prefixo da descrição é removido pelo **humanizer** (ETAPA 0, que roda no draft stitched inteiro — seções secundárias incluídas) ou pelo editor no gate. (Obs: `writer-destaque` NÃO toca seções secundárias — só escreve D1/D2/D3.) Sem este step, prefixo `[TRADUZIR]` + summary em inglês cru vazaram pro newsletter HTML em 260529 (LANÇAMENTOS + PESQUISAS sections).
 
@@ -90,12 +95,12 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
    - `destaque_n`, `destaque` (= `highlights[N-1].article`), `category_label`
    - `peer_titles` (titles dos outros 2 — preserva voice diversity)
    - `edition_date`
-   - `out_path = data/editions/{AAMMDD}/_internal/02-d{N}-draft.md`
-   - `image_prompt_out_path = data/editions/{AAMMDD}/_internal/02-d{N}-prompt.md`
+   - `out_path = {EDITION_DIR}/_internal/02-d{N}-draft.md`
+   - `image_prompt_out_path = {EDITION_DIR}/_internal/02-d{N}-prompt.md`
 
 2. `Agent` → `social-linkedin` passando:
-   - `approved_json_path = data/editions/{AAMMDD}/_internal/01-approved-capped.json`
-   - `out_dir = data/editions/{AAMMDD}/`
+   - `approved_json_path = {EDITION_DIR}/_internal/01-approved-capped.json`
+   - `out_dir = {EDITION_DIR}/`
    - `outros_count`: **não injetar (#2319)** — `social-linkedin` mantëm `{outros_count}` como placeholder literal (igual a `{edition_url}`). Stage 5 (`publish-linkedin`) resolve do `01-approved-capped.json` FINAL antes de enfileirar. Não calcular nem passar no prompt.
 
 3. `Agent` → `social-facebook` (mesmo input que social-linkedin, exceto `outros_count` que não se aplica ao Facebook).
@@ -107,7 +112,7 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 **Pós:** rodar `scripts/stitch-newsletter.ts` (#1463) que produz `02-draft.md` determinístico unificando os 3 destaque drafts + seções secundárias + blocos fixos:
 
 ```bash
-npx tsx scripts/stitch-newsletter.ts --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/stitch-newsletter.ts --edition-dir {EDITION_DIR}/
 ```
 
 **#1938/#2527/#2978/#3212/#3476:** o stitch auto-injeta os boxes de divulgação nos slots 1 (D1/D2), 2 (D2/D3) e 3 (região pós-ÚLTIMO-destaque, entre D3/D2 e USE MELHOR) em **todo daily** (decisão editorial — os 3 boxes são permanentes desde #3476). Config-driven via `boxes_divulgacao` de `platform.config.json`. **Default: recomendação de leitura no slot 1** (`context/snippets/recomendacao-leitura.md`), **curadoria de livros no slot 2** (`context/snippets/livros-divulgacao.md`), **indicação de ferramenta no slot 3** (`context/snippets/indicacao-ferramenta.md`); o bloco 📣 Clarice (`context/snippets/clarice-divulgacao.md`, via `loadClariceCallout`) segue disponível para reuso (mensal / troca pontual / configurar em qualquer slot). Idempotente por slot (pula se a região correspondente já traz um callout `**📣/📚/🎉 …**` ou `🛒 …`, marcador-agnóstico — ver `boxAlreadyPresentInGap`/`boxAlreadyPresentAfterLastDestaque`). Kill-switch pontual: `--no-sponsor` (suprime a injeção nos 3 slots).
@@ -150,10 +155,10 @@ Fallback dispatch:
    - `highlights` (extraído de `_internal/01-approved-capped.json`)
    - `categorized = _internal/01-approved-capped.json`
    - `edition_date`
-   - `out_path = data/editions/{AAMMDD}/_internal/02-draft.md`
-   - `d1_prompt_path = data/editions/{AAMMDD}/_internal/02-d1-prompt.md`
-   - `d2_prompt_path = data/editions/{AAMMDD}/_internal/02-d2-prompt.md`
-   - `d3_prompt_path = data/editions/{AAMMDD}/_internal/02-d3-prompt.md`
+   - `out_path = {EDITION_DIR}/_internal/02-draft.md`
+   - `d1_prompt_path = {EDITION_DIR}/_internal/02-d1-prompt.md`
+   - `d2_prompt_path = {EDITION_DIR}/_internal/02-d2-prompt.md`
+   - `d3_prompt_path = {EDITION_DIR}/_internal/02-d3-prompt.md`
 
 2. `Agent` → `social-linkedin` (mesmo input do writer; `{outros_count}` é placeholder literal no output — não injetar #2319).
 3. `Agent` → `social-facebook` (mesmo input do writer).
@@ -164,7 +169,7 @@ Aguardar os 4 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_pr
 **Validar outputs dos 4 agents antes de qualquer processamento (#872, #3486):** se um deles falhou silenciosamente (timeout, retorno mal-formado), o merge em 2c crasharia lendo arquivo ausente (LinkedIn/Facebook) ou perderia a seção Instagram dedicada silenciosamente. Antes de prosseguir, rodar:
 
 ```bash
-npx tsx scripts/validate-stage-2-outputs.ts --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/validate-stage-2-outputs.ts --edition-dir {EDITION_DIR}/
 ```
 
 O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e `_internal/03-facebook.tmp.md` existem e não estão vazios (FATAL — exit 1) e que `_internal/03-instagram.tmp.md` existe e não está vazio (WARN — não bloqueia, mas sinaliza que o merge vai cair no fallback `# Instagram` → `# Facebook`). Exit 1 = algum agent obrigatório falhou — relatar ao editor com sugestão de re-rodar isolado (`/diaria-2-escrita {AAMMDD} newsletter` ou `social`). Não prosseguir.
@@ -173,15 +178,15 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
 
 - **Pull pós-gate** (antes de qualquer edição local pós-aprovação):
   ```bash
-  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md
+  npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDITION_DIR}/ --stage 2 --files 02-reviewed.md
   ```
   Garante que edições manuais do editor no Drive durante a revisão do gate não sejam sobrescritas pelo processamento local. Se o pull falhar, usar versão local e logar warn.
 
 - **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved-capped.json`:
   ```bash
   npx tsx scripts/lint-newsletter-md.ts \
-    --md data/editions/{AAMMDD}/_internal/02-draft.md \
-    --approved data/editions/{AAMMDD}/_internal/01-approved-capped.json
+    --md {EDITION_DIR}/_internal/02-draft.md \
+    --approved {EDITION_DIR}/_internal/01-approved-capped.json
   ```
   Exit 1 = URL na seção errada ou URL fantasma (não existe no approved). Se falhar, **re-disparar o writer** com a lista de erros explicitada no prompt. Até 3 tentativas; se persistir após 3, reportar erro e pausar pra fix manual no `02-draft.md`. Caso de borda comum: ferramenta nova com category `noticias` no bucket `radar` que o writer põe em LANÇAMENTOS por associação temática.
 
@@ -189,8 +194,8 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```bash
   npx tsx scripts/lint-newsletter-md.ts \
     --check section-counts \
-    --md data/editions/{AAMMDD}/_internal/02-draft.md \
-    --approved data/editions/{AAMMDD}/_internal/01-approved-capped.json
+    --md {EDITION_DIR}/_internal/02-draft.md \
+    --approved {EDITION_DIR}/_internal/01-approved-capped.json
   ```
   Exit 1 = re-disparar writer com a violação no prompt.
 
@@ -198,10 +203,10 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```bash
   npx tsx scripts/lint-newsletter-md.ts \
     --check destaque-min-chars \
-    --md data/editions/{AAMMDD}/_internal/02-draft.md
+    --md {EDITION_DIR}/_internal/02-draft.md
   npx tsx scripts/lint-newsletter-md.ts \
     --check destaque-max-chars \
-    --md data/editions/{AAMMDD}/_internal/02-draft.md
+    --md {EDITION_DIR}/_internal/02-draft.md
   ```
   Exit 1 do min = destaque anêmico — re-disparar writer com instruction explícita:
   > "Destaque D{N} tem {chars} chars (mínimo {min}). Expanda: (a) adicione 1 frase em 'Por que isso importa' contextualizando impacto pro leitor BR — ex: timing eleitoral, custo de infra, mudança de processo; OU (b) adicione mais 1 parágrafo curto de body com detalhe técnico/empresarial. NÃO repetir conteúdo já presente." (#1208 — anti-pattern observado em 260517: D2/D3 saiam ~860 chars com why em 1 frase só).
@@ -210,56 +215,56 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
 - **Normalizar layout (inline — sem Agent, #157):**
   ```bash
   npx tsx scripts/normalize-newsletter.ts \
-    --in data/editions/{AAMMDD}/_internal/02-draft.md \
-    --out data/editions/{AAMMDD}/_internal/02-normalized.md \
-    2> data/editions/{AAMMDD}/_internal/02-normalize-report.json
+    --in {EDITION_DIR}/_internal/02-draft.md \
+    --out {EDITION_DIR}/_internal/02-normalized.md \
+    2> {EDITION_DIR}/_internal/02-normalize-report.json
   ```
   Heurístico conservador — só quebra quando o pattern é inequívoco (ex: 3 títulos do destaque colados no header, ou título+URL+descrição colados num item de seção). Se nenhum bug detectado, `02-normalized.md` é cópia idêntica do draft. Falha do script → log warn + fallback usa `02-draft.md`.
 
 - **Singularizar + adicionar emoji nos headers de seção (#1324, #1328):** writer escreve sempre plural (`**LANÇAMENTOS**`); script normaliza pra singular quando N=1 + adiciona emoji prefix (`**🚀 LANÇAMENTO**`):
   ```bash
   npx tsx scripts/singularize-md-sections.ts \
-    --md data/editions/{AAMMDD}/_internal/02-normalized.md
+    --md {EDITION_DIR}/_internal/02-normalized.md
   ```
   Idempotente. Stdout: JSON `{changed, sections}`. Falha não-bloqueante (log warn) — render-newsletter-html.ts em Stage 4 também aplica a normalização, então pior caso o gate MD mostra plural mas o HTML final fica correto.
 
 - **Humanizar (#308, #1072):** invocar skill `humanizador` no arquivo `02-normalized.md` — remove tics LLM (gerúndio em cascata, vocabulário inflado, aberturas cenográficas, etc.), calibrando a voz com `data/past-editions.md` como referência:
   ```
-  Skill("humanizador", "Leia data/editions/{AAMMDD}/_internal/02-normalized.md, humanize o texto removendo marcas de IA em português, calibrando a voz com data/past-editions.md como referência, e salve o resultado em data/editions/{AAMMDD}/_internal/02-humanized.md.")
+  Skill("humanizador", "Leia {EDITION_DIR}/_internal/02-normalized.md, humanize o texto removendo marcas de IA em português, calibrando a voz com data/past-editions.md como referência, e salve o resultado em {EDITION_DIR}/_internal/02-humanized.md.")
   ```
   **Retry 3x + abort se persistir (#1072).** Se a skill retornar erro OU se `02-humanized.md` for byte-idêntico a `02-normalized.md` (no-op), re-invocar até 3 vezes total. Após 3 falhas, **abortar Stage 2** com erro claro pro editor — não usar fallback "normalized direto pra Clarice" silenciosamente. Justificativa: humanizador remove marcas IA que Clarice **não** pega; sem ele a edição sai com prosa polida-vazia (issue #1072). Logar cada tentativa: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'humanizador attempt N/3 failed'`. Após 3ª falha: `--level error --message 'humanizador esgotou retries — abortar Stage 2'` + exit do pipeline.
 
 - **Revisar com Clarice (inline — sem Agent):**
   Determinar e **persistir** `CLARICE_INPUT` em arquivo (#871) — evita drift entre o passo de leitura e o passo de diff:
   ```bash
-  npx tsx scripts/resolve-clarice-input.ts --edition-dir data/editions/{AAMMDD}/
+  npx tsx scripts/resolve-clarice-input.ts --edition-dir {EDITION_DIR}/
   ```
-  O script aplica a fallback chain `(02-humanized.md → 02-normalized.md → 02-draft.md)`, valida que o arquivo escolhido existe, e grava o nome relativo em `data/editions/{AAMMDD}/_internal/02-clarice-input.txt`. Se nenhum existir, exit 1 (FATAL).
+  O script aplica a fallback chain `(02-humanized.md → 02-normalized.md → 02-draft.md)`, valida que o arquivo escolhido existe, e grava o nome relativo em `{EDITION_DIR}/_internal/02-clarice-input.txt`. Se nenhum existir, exit 1 (FATAL).
 
   **Snapshot pré-Clarice (#874).** Antes de aplicar Clarice, copiar o `CLARICE_INPUT` resolvido para `_internal/02-pre-clarice.md`. Esse snapshot é (a) source-of-truth pra resume mid-Clarice (ver SKILL diaria-2-escrita), (b) input pro check de estabilidade de URLs (#873) abaixo, (c) input do `clarice-diff.ts`:
   ```bash
-  CLARICE_INPUT=$(cat data/editions/{AAMMDD}/_internal/02-clarice-input.txt)
-  cp "data/editions/{AAMMDD}/_internal/$CLARICE_INPUT" data/editions/{AAMMDD}/_internal/02-pre-clarice.md
+  CLARICE_INPUT=$(cat {EDITION_DIR}/_internal/02-clarice-input.txt)
+  cp "{EDITION_DIR}/_internal/$CLARICE_INPUT" {EDITION_DIR}/_internal/02-pre-clarice.md
   ```
 
   **Assertion obrigatória (review #889 P2).** Antes de chamar `mcp__clarice__correct_text`, verificar que o snapshot foi gravado. Se ausente, abortar e logar erro — sem snapshot não há como detectar URL stability nem fazer resume mid-Clarice:
   ```bash
-  test -f data/editions/{AAMMDD}/_internal/02-pre-clarice.md || {
+  test -f {EDITION_DIR}/_internal/02-pre-clarice.md || {
     npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level error --message "pre-clarice snapshot missing — aborting before MCP Clarice call"
     echo "ERRO: snapshot pré-Clarice ausente — abortar antes de chamar MCP Clarice." >&2
     exit 1
   }
   ```
 
-  1. Ler `_internal/02-clarice-input.txt` pra obter o filename relativo. Ler conteúdo de `data/editions/{AAMMDD}/_internal/{FILENAME}`.
-  2. Chamar `mcp__clarice__correct_text` passando o texto. **Chunking automático (#2606):** se o texto tiver > 9.000 chars (threshold `CLARICE_CHUNK_THRESHOLD` de `scripts/lib/clarice-chunk.ts`), **não** passar o texto inteiro — usar `splitIntoChunks(text, 9000)` para dividir em chunks em fronteiras seguras (seção `---` > parágrafo vazio > fim de linha; nunca no meio de frase ou link markdown). Para cada chunk, chamar `mcp__clarice__correct_text` com `chunk.text`. Após coletar as sugestões de cada chunk, usar `mergeChunkSuggestions([{chunk, suggestions},...])` (apply chunk-local + re-concatenação — sem aritmética de offset) para produzir o texto corrigido com a política de ambiguidade: sugestão pulada (+ log warn) se `from` aparece 0× (não encontrado) ou 2+× (ambíguo) no chunk — evita replace global de termos curtos como `"os"→""`. Salvar a resposta crua (array de todas as sugestões de todos os chunks) em `data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json` antes de aplicar (auditoria + resume). **Nota:** o fallback REST (`clarice-correct.ts`) também suporta chunking desde #2626 — para textos > 9k, o script divide em chunks via `correctTextChunked`, faz 1 request REST por chunk e usa `mergeChunkSuggestions` internamente. O texto corrigido pode ser gravado opcionalmente via `--corrected-out` (auditoria).
+  1. Ler `_internal/02-clarice-input.txt` pra obter o filename relativo. Ler conteúdo de `{EDITION_DIR}/_internal/{FILENAME}`.
+  2. Chamar `mcp__clarice__correct_text` passando o texto. **Chunking automático (#2606):** se o texto tiver > 9.000 chars (threshold `CLARICE_CHUNK_THRESHOLD` de `scripts/lib/clarice-chunk.ts`), **não** passar o texto inteiro — usar `splitIntoChunks(text, 9000)` para dividir em chunks em fronteiras seguras (seção `---` > parágrafo vazio > fim de linha; nunca no meio de frase ou link markdown). Para cada chunk, chamar `mcp__clarice__correct_text` com `chunk.text`. Após coletar as sugestões de cada chunk, usar `mergeChunkSuggestions([{chunk, suggestions},...])` (apply chunk-local + re-concatenação — sem aritmética de offset) para produzir o texto corrigido com a política de ambiguidade: sugestão pulada (+ log warn) se `from` aparece 0× (não encontrado) ou 2+× (ambíguo) no chunk — evita replace global de termos curtos como `"os"→""`. Salvar a resposta crua (array de todas as sugestões de todos os chunks) em `{EDITION_DIR}/_internal/02-clarice-suggestions.json` antes de aplicar (auditoria + resume). **Nota:** o fallback REST (`clarice-correct.ts`) também suporta chunking desde #2626 — para textos > 9k, o script divide em chunks via `correctTextChunked`, faz 1 request REST por chunk e usa `mergeChunkSuggestions` internamente. O texto corrigido pode ser gravado opcionalmente via `--corrected-out` (auditoria).
 
      **Fallback REST (#1329, retry #2320, chunking #2626).** Se a chamada ao MCP retornar erro de disconnect/unavailable OU se `<system-reminder>` indicar que `mcp__clarice` ficou offline, **não fazer halt** — em vez disso, cair no fallback REST com retry/backoff que escreve no mesmo path. **Sempre passar `--corrected-out`** (#2626): o script já chunka textos > 9k e aplica as sugestões chunk-localmente via `mergeChunkSuggestions`, gravando o texto corrigido nesse arquivo. Esse é o resultado correto para textos multi-chunk — **não** re-aplicar `02-clarice-suggestions.json` ao texto inteiro via `clarice-apply.ts` (uma âncora única dentro de um chunk pode aparecer 2+× no texto inteiro e seria pulada como ambígua, sub-corrigindo silenciosamente):
      ```bash
      npx tsx scripts/clarice-correct.ts \
-       --in data/editions/{AAMMDD}/_internal/{FILENAME} \
-       --out data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json \
-       --corrected-out data/editions/{AAMMDD}/_internal/02-clarice-corrected.md \
+       --in {EDITION_DIR}/_internal/{FILENAME} \
+       --out {EDITION_DIR}/_internal/02-clarice-suggestions.json \
+       --corrected-out {EDITION_DIR}/_internal/02-clarice-corrected.md \
        --retry \
        --edition {AAMMDD}
      ```
@@ -282,58 +287,58 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
      1. Copiar `02-pre-clarice.md` → `02-reviewed.md`.
      2. Gravar `[]` em `_internal/02-clarice-suggestions.json` (array vazio = Clarice chamada sem sugestões — aceito por `checkClariceRan` em `check-stage2-invariants.ts`):
         ```bash
-        echo '[]' > data/editions/{AAMMDD}/_internal/02-clarice-suggestions.json
+        echo '[]' > {EDITION_DIR}/_internal/02-clarice-suggestions.json
         ```
      3. Continuar o pipeline normalmente.
-  3. Produzir o texto revisado em `data/editions/{AAMMDD}/02-reviewed.md`. **Dois caminhos, conforme a origem das sugestões:**
+  3. Produzir o texto revisado em `{EDITION_DIR}/02-reviewed.md`. **Dois caminhos, conforme a origem das sugestões:**
      - **Caminho MCP (normal):** aplicar as sugestões ao texto. Se houve chunking (#2606), o texto corrigido é o resultado do `mergeChunkSuggestions` (apply chunk-local) — gravar esse texto. Se foi chamada única (≤9k), aplicar as sugestões ao texto integral.
      - **Caminho fallback REST (#2626):** o script já gravou o texto corrigido (chunk-applied) em `02-clarice-corrected.md`. **Copiar esse arquivo diretamente** para `02-reviewed.md` — **não** re-aplicar `02-clarice-suggestions.json` via `clarice-apply.ts` (re-aplicar a lista plana ao texto inteiro sub-corrige textos multi-chunk; ver fallback acima):
        ```bash
-       cp data/editions/{AAMMDD}/_internal/02-clarice-corrected.md data/editions/{AAMMDD}/02-reviewed.md
+       cp {EDITION_DIR}/_internal/02-clarice-corrected.md {EDITION_DIR}/02-reviewed.md
        ```
-     Em ambos os casos, gravar o texto corrigido (não a lista de sugestões) em `data/editions/{AAMMDD}/02-reviewed.md`.
+     Em ambos os casos, gravar o texto corrigido (não a lista de sugestões) em `{EDITION_DIR}/02-reviewed.md`.
   4. Gerar diff legível usando o snapshot pré-Clarice:
      ```bash
      npx tsx scripts/clarice-diff.ts \
-       data/editions/{AAMMDD}/_internal/02-pre-clarice.md \
-       data/editions/{AAMMDD}/02-reviewed.md \
-       data/editions/{AAMMDD}/_internal/02-clarice-diff.md
+       {EDITION_DIR}/_internal/02-pre-clarice.md \
+       {EDITION_DIR}/02-reviewed.md \
+       {EDITION_DIR}/_internal/02-clarice-diff.md
      ```
   Se a Clarice falhar (MCP + REST), propagar o erro — **não** usar o rascunho sem revisão.
 
 - **Verificar estabilidade de URLs em LANÇAMENTOS (#873).** Clarice pode "limpar" URLs (remover query params, normalizar paths, adicionar trailing slash) — isso quebra a regra "LANÇAMENTOS só com link oficial" (#160) silenciosamente, porque a URL pós-Clarice pode não bater mais com a whitelist. Comparar URLs pré/pós-Clarice **antes** de `validate-lancamentos.ts`:
   ```bash
   npx tsx scripts/verify-clarice-url-stability.ts \
-    --pre data/editions/{AAMMDD}/_internal/02-pre-clarice.md \
-    --post data/editions/{AAMMDD}/02-reviewed.md
+    --pre {EDITION_DIR}/_internal/02-pre-clarice.md \
+    --post {EDITION_DIR}/02-reviewed.md
   ```
   Exit 0 = todas URLs em LANÇAMENTOS estáveis (warnings em outras seções são informativos, não bloqueiam). Exit 1 = Clarice mexeu em URL de lançamento — incluir o output no prompt do gate humano com diff `antes/depois` pra editor decidir: aceitar a versão pós-Clarice (pode quebrar #160) ou restaurar manualmente em `02-reviewed.md`. Não auto-restaurar — preserva agência editorial.
 
 - **Verificar sobrevivência dos cupons CLARICE (#1982).** Os cupons `NEWS25`/`NEWS50` + link de afiliado `?via=diaria` aparecem no bloco PARA ENCERRAR (sempre) e no box de divulgação `**📣 …**` Clarice **apenas quando esse for o callout ativo** (desde #2527 o default diário é o 📚 livros, sem cupons — o check sai exit 0 "sem patrocínio", esperado). Esses literais passam por humanizer + Clarice e não têm guard. Comparar o baseline **pré-LLM** (`02-normalized.md`, pré-humanizer — cobre os 2 passos; #1982 code-review) vs o pós:
   ```bash
   npx tsx scripts/verify-clarice-coupons.ts \
-    --pre data/editions/{AAMMDD}/_internal/02-normalized.md \
-    --post data/editions/{AAMMDD}/02-reviewed.md
+    --pre {EDITION_DIR}/_internal/02-normalized.md \
+    --post {EDITION_DIR}/02-reviewed.md
   ```
   Exit 0 = cupons/link preservados (ou ausentes no pré — edição sem patrocínio). Exit 1 = algum literal sumiu/mudou pós-LLM → **surfaçar no gate** (quebra tracking de afiliado / cupom do parceiro); editor restaura o literal exato em `02-reviewed.md`. Não auto-restaurar.
 
 - **Sincronizar contagem da intro (#743, #876):** após a Clarice, o número declarado na intro pode divergir do número real de artigos (ex: lançamentos rejeitados reduziram o total) e a narrativa pode mencionar "X lançamentos" com X antigo. Corrigir automaticamente, passando o resumo de lançamentos removidos escrito em §2a:
   ```bash
   npx tsx scripts/sync-intro-count.ts \
-    --md data/editions/{AAMMDD}/02-reviewed.md \
-    --lancamentos-removed data/editions/{AAMMDD}/_internal/02-lancamentos-removed.json
+    --md {EDITION_DIR}/02-reviewed.md \
+    --lancamentos-removed {EDITION_DIR}/_internal/02-lancamentos-removed.json
   ```
   Se o script retornar `changed: true` ou `lancamentos_changed: true`, logar `warn` no run-log com os valores antes/depois. Não bloquear — correções são cirúrgicas (apenas o número, sem mexer no resto do texto). Quando `02-lancamentos-removed.json` não existe (ex: §2a foi pulado em rerun), o script ignora silenciosamente esse passo.
 
 - **Validar LANÇAMENTOS oficiais (#160):**
   ```bash
-  npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/02-reviewed.md
+  npx tsx scripts/validate-lancamentos.ts {EDITION_DIR}/02-reviewed.md
   ```
   Garante que todo URL na seção LANÇAMENTOS bate com whitelist oficial (`scripts/categorize.ts > LANCAMENTO_DOMAINS`/`PATTERNS`). **#1968 (verificação POSITIVA):** além do domínio oficial, cada item precisa de um sinal de produto (software/hardware) no slug/título — item oficial sem sinal vai pra `not_a_tool` e também faz exit 1 (pega parceria/evento/programa/relatório). Se exit code != 0 (URL não-oficial OU `not_a_tool`), **incluir os erros no prompt do gate humano** mostrando linha + URL + sugestão de mover pra NOTÍCIAS. Não bloquear automaticamente — editor decide. **Se for ferramenta legítima de slug atípico** (ex: hardware NVIDIA Jetson), adicionar a URL a `seed/lancamentos-tool-allowlist.txt` (1 substring por linha) — override permanente da verificação positiva.
 
 - **Sincronizar linha de cobertura (#1097):** após Clarice + validate-lancamentos, antes do render-erro-intencional, rodar:
   ```bash
-  npx tsx scripts/sync-coverage-line.ts --edition-dir data/editions/{AAMMDD}/
+  npx tsx scripts/sync-coverage-line.ts --edition-dir {EDITION_DIR}/
   ```
   Auto-calcula X (editor_submitted + newsletter_extracted + source:inbox no pool inicial), Y (auto-found = total - X), Z (itens visíveis no 02-reviewed.md final). Substitui a linha "Para esta edição..." no topo do MD. Antes era chutada pelo writer LLM e ficava stale após podas. Stdout: `{ x, y, z, changed, mdPath }`. Falha não-bloqueante (log warn) — números errados são cosméticos, não bloqueiam publicação.
 
@@ -341,16 +346,16 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```bash
   npx tsx scripts/render-erro-intencional.ts \
     --edition {AAMMDD} \
-    --md data/editions/{AAMMDD}/02-reviewed.md
+    --md {EDITION_DIR}/02-reviewed.md
   ```
   Substitui o placeholder do writer pelo reveal do erro anterior (`Na última edição, …`) + preserva ou insere placeholder pra `Nessa edição, …` (autor preenche manualmente). Também garante que `_internal/intentional-error.json` existe (escreve placeholder `{PREENCHER}` se ausente — #3222, campos estruturados description/location/category/correct_value/reveal, sibling de `02-reviewed.md`, **nunca** sincroniza com o Drive). **Falha = abortar Stage 2** (não silenciar). Justificativa: sem o script, edição vai com `{placeholder, script render-erro-intencional.ts substitui pós-Clarice}` literal no MD; quando colado manualmente no Beehiiv (#1083), aparece como texto bruto no email — contamina UX e mata o concurso "Ache o erro".
 
-  **Coletar os campos do editor (#3222).** Diferente de antes (editor editava o frontmatter YAML direto no Google Doc via Drive), o JSON não passa pelo Drive — pergunte ao editor no gate (ou antes dele, se a sessão já tiver essa info) a descrição do erro proposital desta edição (o que está errado / onde / categoria / valor correto / frase de reveal em 1ª pessoa pra próxima edição) e grave direto em `data/editions/{AAMMDD}/_internal/intentional-error.json`, substituindo os placeholders `{PREENCHER}`. Isso é o único lugar onde o editor "edita" esse dado agora — nunca via Drive.
+  **Coletar os campos do editor (#3222).** Diferente de antes (editor editava o frontmatter YAML direto no Google Doc via Drive), o JSON não passa pelo Drive — pergunte ao editor no gate (ou antes dele, se a sessão já tiver essa info) a descrição do erro proposital desta edição (o que está errado / onde / categoria / valor correto / frase de reveal em 1ª pessoa pra próxima edição) e grave direto em `{EDITION_DIR}/_internal/intentional-error.json`, substituindo os placeholders `{PREENCHER}`. Isso é o único lugar onde o editor "edita" esse dado agora — nunca via Drive.
 
 - **Validator final Stage 2 (#1072, #1073):** antes do gate humano, rodar invariant check que detecta passos pulados silenciosamente:
   ```bash
   npx tsx scripts/check-stage2-invariants.ts \
-    --edition-dir data/editions/{AAMMDD}/
+    --edition-dir {EDITION_DIR}/
   ```
   Cobre 4 checks: (a) Humanizador rodou (02-humanized.md ≠ 02-normalized.md), (b) Clarice rodou (02-reviewed.md ≠ 02-pre-clarice.md), (c) render-erro-intencional rodou (sem placeholder literal no MD), (d) `_internal/intentional-error.json` existe (#2284, migrado #3222) — placeholder OK, valores preenchidos pelo editor via chat (não mais via Drive). Exit 1 = abort + mostrar o(s) check(s) que falharam ao editor. Existe pra capturar regressões de retry/skip silencioso — humanizador/Clarice/render-erro/intentional-error.json são todos invariantes do Stage 2.
 
@@ -359,7 +364,7 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
 Após os social agents retornarem, fazer merge em `03-social.md` via script TS. Substitui o snippet inline anterior (#870) — agora com try/catch, validação de tmp files e error reporting actionable:
 
 ```bash
-npx tsx scripts/merge-social-md.ts --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/merge-social-md.ts --edition-dir {EDITION_DIR}/
 ```
 
 O script:
@@ -373,21 +378,21 @@ Falha = abortar e reportar ao editor com sugestão de re-rodar isolado.
 
 **Lint header de plataforma único (#3388) — logo após o merge.** `merge-social-md.ts` prepende seu próprio header `# LinkedIn` na hora do merge; se o tmp file do agent `social-linkedin` já contiver um `# LinkedIn` embutido no próprio texto (esse é o root cause do bug real da edição 260713), o resultado tem 2 ocorrências — `extractPlatformSection`/`extractDestaqueBlock` param no 2º header como se fosse o fim da seção, e `publish-linkedin.ts` reporta "Destaque não encontrado" pros 3 destaques no Stage 5, quebrando o dispatch inteiro. Rodar imediatamente após o merge, antes do humanizador:
 ```bash
-npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md data/editions/{AAMMDD}/03-social.md
+npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
 ```
 Exit 1 = `# LinkedIn` ou `# Facebook` aparece mais de 1 vez. **Abortar Stage 2** (não silenciar, não prosseguir pro humanizador) e reportar ao editor a mensagem do lint (linhas exatas dos headers duplicados) — a correção correta é remover o header duplicado de `03-social.md` e, se a causa for o agent `social-linkedin`/`social-facebook` emitindo `# LinkedIn`/`# Facebook` no próprio tmp file, ajustar o prompt do agent pra não incluir esse header (só `merge-social-md.ts` deve escrevê-lo).
 
 **Humanizar social (#308, #1072, refined #1546):** invocar skill `humanizador` in-place no `03-social.md` com prompt completo (mesma profundidade da newsletter — prompt fraco causava remoção de só 25% dos travessões):
 ```
-Skill("humanizador", "Leia data/editions/{AAMMDD}/03-social.md, humanize o texto removendo marcas de IA em português, calibrando a voz com data/past-editions.md como referência. Rode os 9 passos completos. Meta quantitativa do padrão #20: zero travessões no output (exceção: diálogo e meia-risca numérica). Salve no mesmo arquivo.")
+Skill("humanizador", "Leia {EDITION_DIR}/03-social.md, humanize o texto removendo marcas de IA em português, calibrando a voz com data/past-editions.md como referência. Rode os 9 passos completos. Meta quantitativa do padrão #20: zero travessões no output (exceção: diálogo e meia-risca numérica). Salve no mesmo arquivo.")
 ```
-**Retry 3x + abort se persistir (#1072).** Se skill retornar erro OU `03-social.md` post-humanizador for byte-idêntico ao pré (no-op), re-invocar até 3 vezes total. Após 3 falhas, **abortar Stage 2** — não publicar social com tom corporativo de agent output. Antes da invocação, fazer snapshot: `cp data/editions/{AAMMDD}/03-social.md data/editions/{AAMMDD}/_internal/03-social-pre-humanizador.md` pra diff post-skill.
+**Retry 3x + abort se persistir (#1072).** Se skill retornar erro OU `03-social.md` post-humanizador for byte-idêntico ao pré (no-op), re-invocar até 3 vezes total. Após 3 falhas, **abortar Stage 2** — não publicar social com tom corporativo de agent output. Antes da invocação, fazer snapshot: `cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/03-social-pre-humanizador.md` pra diff post-skill.
 
 **Verificar cobertura por-seção do humanizador (#2148):** após cada invocação do humanizador social, checar se TODAS as seções relevantes foram tocadas — não apenas o arquivo como um todo:
 ```bash
 npx tsx scripts/lint-social-md.ts --check humanizer-section-coverage \
-  --pre data/editions/{AAMMDD}/_internal/03-social-pre-humanizador.md \
-  --md data/editions/{AAMMDD}/03-social.md
+  --pre {EDITION_DIR}/_internal/03-social-pre-humanizador.md \
+  --md {EDITION_DIR}/03-social.md
 ```
 Seções verificadas: `main_d1/d2/d3` (posts principais), `comment_pixel_d1/d2/d3` (comments pessoais) e `post_pixel`. Seção idêntica antes/depois = humanizador não tocou. **Exit 1 com lista de seções não-cobertas → re-invocar humanizador mirando explicitamente essas seções no prompt** (ex: "humanize as seções comment_pixel_d2 e post_pixel que ficaram com tom corporativo"). Contabiliza como tentativa adicional no retry 3x — se após o retry dirigido a cobertura ainda for parcial e o no-op total persistir, abortar. Fundamento: o guard whole-file (byte-idêntico pré vs pós) detecta "humanizador não rodou nada", mas NÃO detecta "humanizador rodou nos destaques mas pulou comments/post_pixel" — esse furo deixava comments com tom LLM passando silenciosamente pelo gate (#2148).
 
@@ -397,7 +402,7 @@ Seções verificadas: `main_d1/d2/d3` (posts principais), `comment_pixel_d1/d2/d
 
 **Gravar sentinel de humanizador social (#2279):** após humanizar+Clarice (ambos concluídos), gravar o hash do `03-social.md` final:
 ```bash
-npx tsx scripts/check-humanizer-social.ts --write --edition-dir data/editions/{AAMMDD}/
+npx tsx scripts/check-humanizer-social.ts --write --edition-dir {EDITION_DIR}/
 ```
 Isso grava `_internal/.humanizer-social-done.json` com o sha256 do arquivo atual. O Stage 4 valida esse hash antes do gate — se o social for editado ou reordenado depois, o hash diverge e o gate bloqueia para re-humanizar.
 
@@ -407,30 +412,30 @@ Exit code handling:
 
 **Lint timestamps relativos pré-gate (#877):** após humanizar+Clarice, rodar:
 ```bash
-npx tsx scripts/lint-social-md.ts --check relative-time --md data/editions/{AAMMDD}/03-social.md
+npx tsx scripts/lint-social-md.ts --check relative-time --md {EDITION_DIR}/03-social.md
 ```
 Detecta "hoje", "ontem", "amanhã", "esta semana", "próxima semana", "este mês", "recentemente", "há N dias/semanas/meses" — palavras que envelhecem entre escrever e publicar (posts vão pra fila com D+1+ delay). Matches dentro de aspas (citação direta) são pulados. Exit 1 = matches encontrados. **Incluir os matches no prompt do gate** mostrando linha + palavra + contexto, mas não bloquear automaticamente — editor decide se reescreve ou aceita (caso de borda raro: nome próprio com palavra-chave).
 
 **Lint anti-alucinação de cifras pré-gate (#1711):** após humanizar+Clarice, rodar:
 ```bash
-npx tsx scripts/lint-social-numbers.ts --social data/editions/{AAMMDD}/03-social.md --approved data/editions/{AAMMDD}/_internal/01-approved-capped.json
+npx tsx scripts/lint-social-numbers.ts --social {EDITION_DIR}/03-social.md --approved {EDITION_DIR}/_internal/01-approved-capped.json
 ```
 Flaga cifras de DINHEIRO COM MAGNITUDE (US$/R$/€ + número + bi/mi/bilhões/...) presentes no post de cada destaque mas AUSENTES da fonte DAQUELE destaque (title+summary de `highlights[N-1]`) — comparação **per-destaque** (não pool inteiro), que pega número certo no contexto errado (caso 260602: post d1 citou "US$ 965 bilhões em valuation" da Anthropic, ausente da fonte do d1). WARN-only (exit 0) para cifras alucinadas e contagem errada. `{outros_count}` no `comment_diaria` é placeholder intencional deferido para Stage 5 (#2319) — o lint não bloqueia mais por isso. **Incluir as cifras flagadas no prompt do gate** ("⚠️ cifra X não encontrada na fonte — confira") pro editor verificar contra a fonte original antes de aprovar. Cifras: heurística conservadora (pode ter falso-positivo se a fonte usa formato muito diferente).
 
 **Lint LinkedIn schema 3-textos pré-gate (#595):** social-linkedin agora gera main + comment_diaria + comment_pixel por destaque. Validar:
 ```bash
-npx tsx scripts/lint-social-md.ts --check linkedin-schema --md data/editions/{AAMMDD}/03-social.md
+npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
 ```
 Falha = subseção ausente (missing_main / missing_comment_diaria / missing_comment_pixel) ou char count fora do range. **#3052:** também valida que `## post_pixel` abre com `{outros_count}` + `{edition_url}` literais (post_pixel_missing_outros_count / post_pixel_missing_edition_url) — mesma convenção do comment_diaria, ver §3d de social-linkedin.md. Exit 1 = re-disparar `social-linkedin` agent.
 
 **Lint pergunta-de-encerramento pré-gate (#1762):** posts social não devem fechar com pergunta (CTA-pergunta). Rodar:
 ```bash
-npx tsx scripts/lint-social-md.ts --check no-trailing-question --md data/editions/{AAMMDD}/03-social.md
+npx tsx scripts/lint-social-md.ts --check no-trailing-question --md {EDITION_DIR}/03-social.md
 ```
 
 **Lint deixis de newsletter em post/comment pessoal (#2148):** `## post_pixel` e `### comment_pixel` são postados na conta PESSOAL do autor — sem contexto de marca. "Esta/essa/nossa newsletter" pressupõe que o leitor está dentro da Diar.ia; inválido num post standalone. Rodar:
 ```bash
-npx tsx scripts/lint-social-md.ts --check personal-post-no-newsletter-deixis --md data/editions/{AAMMDD}/03-social.md
+npx tsx scripts/lint-social-md.ts --check personal-post-no-newsletter-deixis --md {EDITION_DIR}/03-social.md
 ```
 Exit 1 = ocorrências de "esta newsletter", "essa newsletter", "nossa newsletter" (e variantes com "boletim", "edição") em `## post_pixel` ou `### comment_pixel`. **Incluir ocorrências no prompt do gate** com sugestão de substituição. Fix: reescrever como fato biográfico ("a newsletter de IA que escrevo") em vez de contexto compartilhado. Não bloqueia automaticamente — editor decide se reescreve ou aceita (casos de borda: citação direta de entrevistado).
 Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos comments) termina em "?". Perguntas retóricas no meio e perguntas entre aspas são ignoradas. Exit 1 = **incluir os matches no prompt do gate** (platform + destaque + frase) — editor decide reescrever o fim como afirmação ou aceitar. Fix preferido: re-disparar o agent social correspondente pra fechar com afirmação.
@@ -439,7 +444,7 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
 
 - **Sync push antes do gate:**
   ```bash
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 2 --files 02-reviewed.md,03-social.md,_internal/02-clarice-diff.md --on-conflict pull-merge --fail-on-conflict
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 2 --files 02-reviewed.md,03-social.md,_internal/02-clarice-diff.md --on-conflict pull-merge --fail-on-conflict
   ```
   - `--on-conflict pull-merge` (#963): quando Drive foi modificado depois do último push, tenta 3-way merge automático via `git merge-file --diff3` usando snapshot pre-push como base. Edits disjuntos (pipeline mexeu em D2, editor mexeu em D3) merge clean e seguem.
   - `--fail-on-conflict` (#977): quando 3-way detecta overlap real (mesma região editada por ambos), exit 2. Markers `<<<<<<<` ficam em local pra editor resolver.
@@ -453,13 +458,13 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
 
 - **Pre-gate invariants (#1007 Fase 1).** Antes do gate, rodar lints como invariantes (defense-in-depth — lints individuais já rodaram, mas registry centraliza):
   ```bash
-  npx tsx scripts/check-invariants.ts --stage 2 --edition-dir data/editions/{AAMMDD}/
+  npx tsx scripts/check-invariants.ts --stage 2 --edition-dir {EDITION_DIR}/
   ```
   Exit 1 = re-disparar writer ou bloquear gate até fix manual. Violations são logadas com `source_issue` pra rastreabilidade.
 
 - **Medir tamanho dos destaques (#739).** Antes de apresentar o gate, rodar:
   ```bash
-  npx tsx scripts/measure-highlights.ts data/editions/{AAMMDD}/02-reviewed.md
+  npx tsx scripts/measure-highlights.ts {EDITION_DIR}/02-reviewed.md
   ```
   Stderr exibe `d1: N chars (M palavras)` por destaque + total + warnings quando algum destaque está fora da faixa saudável (600-1500 chars). Incluir o output stderr no prompt do gate pra editor avaliar balanceamento (d1 muito longo vs d3 raso = desbalanceio editorial; >1500 = newsletter densa, CTR cai). Não bloquear — informativo only.
 
@@ -467,11 +472,11 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
   ```
   ✏️  Etapa 2 — Escrita pronta.
 
-  Newsletter — edite data/editions/{AAMMDD}/02-reviewed.md:
+  Newsletter — edite {EDITION_DIR}/02-reviewed.md:
       — Mantenha exatamente 1 título por destaque (delete os outros 2).
         URL fica na linha imediatamente abaixo do título escolhido (#172).
 
-  Social — revise data/editions/{AAMMDD}/03-social.md:
+  Social — revise {EDITION_DIR}/03-social.md:
       — 3 posts LinkedIn (d1/d2/d3) + 3 posts Facebook (d1/d2/d3)
 
   📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/
@@ -479,14 +484,14 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
   Quando o editor responder "sim", os arquivos locais são os textos finais.
 
   - **Auto-pick de título via Sonnet (#159, #2772).** Após aprovação, **fazer snapshot do 02-reviewed.md** pra `_internal/02-pre-title-picker.md` (necessário pra validar estrutura post-#1205), depois dispatch `title-picker` (Sonnet, Agent) passando:
-    - `md_path = data/editions/{AAMMDD}/02-reviewed.md`
-    - `out_path = data/editions/{AAMMDD}/02-reviewed.md` (in-place)
+    - `md_path = {EDITION_DIR}/02-reviewed.md`
+    - `out_path = {EDITION_DIR}/02-reviewed.md` (in-place)
     - `audience_path = context/audience-profile.md`
     - `editorial_rules_path = context/editorial-rules.md`
-    - `picks_log_path = data/editions/{AAMMDD}/_internal/02-title-picks.json`
+    - `picks_log_path = {EDITION_DIR}/_internal/02-title-picks.json`
 
     ```bash
-    cp data/editions/{AAMMDD}/02-reviewed.md data/editions/{AAMMDD}/_internal/02-pre-title-picker.md
+    cp {EDITION_DIR}/02-reviewed.md {EDITION_DIR}/_internal/02-pre-title-picker.md
     ```
 
     Title-picker detecta destaques que ainda têm >1 título (editor não podou) e escolhe 1 baseado em concretude + tom + variedade lexical. Se `destaques_picked > 0`, logar info: `"title-picker: auto-podou N destaque(s) — log em _internal/02-title-picks.json"`. Se `destaques_picked === 0`, editor já podou tudo manualmente — title-picker é no-op.
@@ -496,15 +501,15 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
   - **Validar estrutura preservada (#1205).** Após title-picker, comparar estrutura de seções pré/pós:
     ```bash
     npx tsx scripts/validate-section-structure.ts \
-      --before data/editions/{AAMMDD}/_internal/02-pre-title-picker.md \
-      --after data/editions/{AAMMDD}/02-reviewed.md
+      --before {EDITION_DIR}/_internal/02-pre-title-picker.md \
+      --after {EDITION_DIR}/02-reviewed.md
     ```
     Exit 1 = title-picker mexeu na estrutura (removeu `---`, moveu ERRO INTENCIONAL, etc — caso 260517). **Restaurar do snapshot** e reportar ao editor: `"⚠️ title-picker corrompeu estrutura — restaurando 02-reviewed.md do snapshot. Pode podar 1 título por destaque manualmente."`. Não re-disparar — agent vai cometer o mesmo erro.
 
   - **Validar schema de intentional-error.json (#2553, repurposed #3222).** Após title-picker (e após restauração de snapshot, se houver), validar que `_internal/intentional-error.json` está bem-formado com as 5 chaves esperadas:
     ```bash
     npx tsx scripts/validate-frontmatter-yaml.ts \
-      --md data/editions/{AAMMDD}/02-reviewed.md
+      --md {EDITION_DIR}/02-reviewed.md
     ```
     (deriva `_internal/intentional-error.json` como sibling de `--md`.) title-picker só toca `02-reviewed.md` — nunca `_internal/*` — então a classe de corrupção original deste check (Google Docs colapsando o bloco YAML no round-trip do Drive, caso real 260625) não pode mais acontecer (#3222): o JSON nunca sincroniza com o Drive. Este script agora serve como guard de schema (JSON malformado por edição manual, campos faltando/placeholder `{PREENCHER}`).
 
@@ -514,10 +519,10 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
     ```bash
     npx tsx scripts/lint-newsletter-md.ts \
       --check titles-per-highlight \
-      --md data/editions/{AAMMDD}/02-reviewed.md
+      --md {EDITION_DIR}/02-reviewed.md
     ```
     Exit 1 = algum destaque ainda tem ≠1 título. **Não prosseguir** — re-apresentar o gate com o erro destacado:
-    > ⚠️ DESTAQUE N tem K títulos — delete os K-1 excedentes em `data/editions/{AAMMDD}/02-reviewed.md` antes de aprovar de novo.
+    > ⚠️ DESTAQUE N tem K títulos — delete os K-1 excedentes em `{EDITION_DIR}/02-reviewed.md` antes de aprovar de novo.
 
     Se exit 0, prosseguir pra Etapa 3 normalmente. (Em caso normal, title-picker já podou tudo e este check passa silenciosamente.)
 
@@ -525,7 +530,7 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
 
     ```bash
     npx tsx scripts/insert-titulo-subtitulo.ts \
-      --in data/editions/{AAMMDD}/02-reviewed.md
+      --in {EDITION_DIR}/02-reviewed.md
     ```
     Falha = warning, **não bloqueia** (gate já aprovou).
 
@@ -537,5 +542,5 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`, antes dos co
     ```
     Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
 
-  - **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 2 done via `update-stage-status.ts --stage 2 --status done --end ISO --duration-ms X`. Em seguida `npx tsx scripts/capture-stage-usage.ts --edition-dir data/editions/{AAMMDD}/ --stage 2` (#3441) — popula `cost_usd`/`tokens_in`/`tokens_out`/`models` reais a partir do transcript local da sessão; sem transcript local, sai sem escrever (fail-soft).
+  - **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 2 done via `update-stage-status.ts --stage 2 --status done --end ISO --duration-ms X`. Em seguida `npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 2` (#3441) — popula `cost_usd`/`tokens_in`/`tokens_out`/`models` reais a partir do transcript local da sessão; sem transcript local, sai sem escrever (fail-soft).
     `title_picker:?1` = só conta se foi disparado (destaques_picked > 0); senão 0.

@@ -64,19 +64,19 @@ Antes de criar qualquer task nova, varrer `TaskList()` e marcar como `completed`
 
 ## Passo 3 — Pre-gate validator (#581)
 
-Antes de apresentar o gate humano, rodar:
+Antes de apresentar o gate humano, rodar. **#3530:** `{EDITION_DIR}` já foi resolvido no § 0 Setup (via `find-current-edition.ts --resolve`, mesma sessão) — reusar aqui, nunca montar `data/editions/$1/` à mão (a edição pode estar em layout flat legado OU nested):
 
 ```bash
 npx tsx scripts/validate-stage-1-output.ts \
   --edition $1 \
-  --edition-dir data/editions/$1/
+  --edition-dir {EDITION_DIR}/
 ```
 
 Semântica completa (exit codes, output JSON, falha do próprio validator) em **[`docs/validate-stage-1-output-semantics.md`](../../../docs/validate-stage-1-output-semantics.md)** — single source of truth (#832).
 
 ## Output
 
-`data/editions/{AAMMDD}/_internal/01-categorized.json` + `01-categorized.md` — apresentar ao usuário para aprovação. Após aprovação, salvar em `_internal/01-approved.json`.
+`{EDITION_DIR}/_internal/01-categorized.json` + `01-categorized.md` — apresentar ao usuário para aprovação. Após aprovação, salvar em `_internal/01-approved.json`.
 
 ## Passo 4 — Fechar task tracking pós-gate (#904)
 

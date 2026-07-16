@@ -133,7 +133,10 @@ describe("orchestrator-prompt (#634)", () => {
     // arquivo, então crescimento de um sub-arquivo pequeno não passa despercebido
     // sob a sombra do teto de um arquivo grande.
     const PER_FILE_LINE_BUDGET: Record<string, number> = {
-      "orchestrator-stage-0-preflight.md": 520,
+      // #3530: +6 linhas (resolução de {EDITION_DIR} em §0a + fix nested-aware
+      // em §0l + resolução da edição referenciada em §0-replies). Teto bumped
+      // de 520→535 com headroom (era 521 medido pós-#3530).
+      "orchestrator-stage-0-preflight.md": 535,
       "orchestrator-stage-1-research.md": 795,
       "orchestrator-stage-2.md": 548,
       "orchestrator-stage-3.md": 135,
@@ -283,6 +286,66 @@ describe("orchestrator-prompt (#634)", () => {
           `  NODE_TEST_SNAPSHOTS=1 npm test`
         );
       }
+    }
+  });
+});
+
+describe("#3530: Stages 0-3 usam {EDITION_DIR} resolvido — sem split-brain com layout nested", () => {
+  // Guard direto do risco central do #3530: se Stage 0 criasse a edição em
+  // nested mas Stages 1-3 continuassem lendo/escrevendo em flat literal
+  // (`data/editions/{AAMMDD}/...`), a pipeline quebraria (edição partida
+  // entre 2 diretórios). Este teste garante que NENHUM dos 4 arquivos monta
+  // mais esse path à mão para a edição CORRENTE — todos devem passar por
+  // `{EDITION_DIR}` (resolvido via `find-current-edition.ts --resolve`).
+  const STAGE_0_3_FILES = [
+    "orchestrator-stage-0-preflight.md",
+    "orchestrator-stage-1-research.md",
+    "orchestrator-stage-2.md",
+    "orchestrator-stage-3.md",
+  ];
+
+  // Padrões que representariam o bug antigo: montar o path da edição CORRENTE
+  // à mão em vez de usar {EDITION_DIR}. Não cobre `data/editions/*/` (glob
+  // multi-edição) nem `--editions-dir data/editions/` (root, scripts próprios
+  // já enumeram os 2 layouts internamente via enumerateEditionDirs) — esses
+  // permanecem literais de propósito.
+  const FORBIDDEN_PATTERNS = [
+    /data\/editions\/\{AAMMDD\}/,
+    /data\/editions\/\{edition_date\}/,
+    /data\/editions\/\{edição\}/,
+  ];
+
+  for (const file of STAGE_0_3_FILES) {
+    it(`${file} não monta mais data/editions/{AAMMDD} (ou variantes) à mão para a edição corrente`, () => {
+      const content = readFileSync(resolve(AGENTS_DIR, file), "utf8");
+      for (const pattern of FORBIDDEN_PATTERNS) {
+        assert.ok(
+          !pattern.test(content),
+          `${file} ainda contém ${pattern} — path da edição corrente deve usar {EDITION_DIR}, não ser montado à mão (risco de split-brain #3530)`,
+        );
+      }
+    });
+  }
+
+  it("orchestrator-stage-0-preflight.md resolve {EDITION_DIR} ANTES do mkdir de criação da edição", () => {
+    const content = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-0-preflight.md"), "utf8");
+    const resolveIdx = content.indexOf("find-current-edition.ts --resolve");
+    const mkdirIdx = content.indexOf("mkdir -p {EDITION_DIR}");
+    assert.ok(resolveIdx !== -1, "stage-0 não resolve EDITION_DIR via find-current-edition.ts --resolve");
+    assert.ok(mkdirIdx !== -1, "stage-0 não usa {EDITION_DIR} no mkdir de criação");
+    assert.ok(
+      resolveIdx < mkdirIdx,
+      "EDITION_DIR deve ser resolvido ANTES do mkdir — senão o mkdir usaria um path não-resolvido",
+    );
+  });
+
+  it("Stages 1-3 documentam a resolução de {EDITION_DIR} no início do arquivo (idempotente em resume isolado)", () => {
+    for (const file of STAGE_0_3_FILES.slice(1)) {
+      const content = readFileSync(resolve(AGENTS_DIR, file), "utf8");
+      assert.ok(
+        content.includes("find-current-edition.ts --resolve"),
+        `${file} não documenta a resolução de {EDITION_DIR} — stages são invocáveis isoladamente via skill própria (ex: /diaria-2-escrita), então cada um precisa resolver de novo se não herdar de uma sessão anterior`,
+      );
     }
   });
 });

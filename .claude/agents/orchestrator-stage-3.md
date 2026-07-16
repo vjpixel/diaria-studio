@@ -9,6 +9,11 @@ description: Detalhe da Etapa 3 (imagens — É IA? coleta + destaques) do orche
 
 ## Etapa 3 — Imagens
 
+**`{EDITION_DIR}` (#2463/#3025/#3530):** diretório REAL da edição no disco — pode ser o layout flat legado OU o nested novo, dependendo de quando a edição foi criada. Já foi resolvido em stages anteriores — se este stage estiver rodando na mesma sessão, reusar o valor. Se estiver rodando isolado (resume, skill separada), resolver de novo (idempotente — encontra o que já está no disco):
+```bash
+EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
+```
+
 ### Pré-condição: sentinel Stage 2
 
 <!-- outputs must match the `write` call at the end of orchestrator-stage-2.md §Escrever sentinel de conclusão do Stage 2 -->
@@ -32,12 +37,12 @@ O `scripts/eia-compose.ts` foi disparado em background bash durante a Etapa 1 (#
 
 Detecção de conclusão por **file-presence check** (mais robusto que pollar bash status):
 
-- **Se `data/editions/{AAMMDD}/01-eia.md` existe:** script terminou. Continuar.
-- **Se ainda não existe:** aguardar até 10 minutos a partir de `eia_dispatch_ts`, pollando a cada ~10s via `existsSync`. Se expirar sem conclusão, reportar: `"⚠️ eia-compose não completou em 10min. Opções: (r) retry — re-disparar Bash; (s) skip — pular È IA? e continuar (será necessário adicionar manualmente antes do Stage 4)."` Em retry: re-disparar `npx tsx scripts/eia-compose.ts --edition {AAMMDD} --out-dir data/editions/{AAMMDD}/ --force` e aguardar mais 10min. Em skip: logar warn `eia_compose_timeout`, definir `eia_available = false`, continuar para 3b.
+- **Se `{EDITION_DIR}/01-eia.md` existe:** script terminou. Continuar.
+- **Se ainda não existe:** aguardar até 10 minutos a partir de `eia_dispatch_ts`, pollando a cada ~10s via `existsSync`. Se expirar sem conclusão, reportar: `"⚠️ eia-compose não completou em 10min. Opções: (r) retry — re-disparar Bash; (s) skip — pular È IA? e continuar (será necessário adicionar manualmente antes do Stage 4)."` Em retry: re-disparar `npx tsx scripts/eia-compose.ts --edition {AAMMDD} --out-dir {EDITION_DIR}/ --force` e aguardar mais 10min. Em skip: logar warn `eia_compose_timeout`, definir `eia_available = false`, continuar para 3b.
 - Se eia-compose falhou (exit code != 0), logar erro + reportar. Oferecer retry com `--force`. Após retry bem-sucedido, re-renderizar `01-categorized.md` se ainda não tiver passado pelo gate da Etapa 1.
 - **Sync push das imagens do É IA? para o Drive:**
   ```bash
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 01-eia-A.jpg,01-eia-B.jpg
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 3 --files 01-eia-A.jpg,01-eia-B.jpg
   ```
   Anotar em `sync_results[3]` (eia); ignorar falhas. (Edições antigas têm `01-eia-real.jpg`/`01-eia-ia.jpg`; ajustar manualmente em retry de pré-#192.)
   **Nota (#582):** `01-eia.md` **não vai pro Drive** — conteúdo já em `01-categorized.md` (#371) e `eia_answer` propagado pra `02-reviewed.md` frontmatter (#744).
@@ -54,9 +59,9 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
 - **Sync pull antes de começar** — prompts de imagem derivam dos destaques escritos na Etapa 2. Ler `destaque_count` de `_internal/01-approved-capped.json` (campo `highlights.length`; default 3 se ausente). Incluir `_internal/02-d3-prompt.md` **somente se `destaque_count === 3`**:
   ```bash
   # destaque_count=3:
-  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 3 --files _internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
+  npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDITION_DIR}/ --stage 3 --files _internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
   # destaque_count=2:
-  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 3 --files _internal/02-d1-prompt.md,_internal/02-d2-prompt.md
+  npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDITION_DIR}/ --stage 3 --files _internal/02-d1-prompt.md,_internal/02-d2-prompt.md
   ```
 - Se `platform.config.json > image_generator` é `"comfyui"`, verificar que ComfyUI está acessível:
   ```bash
@@ -65,14 +70,14 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
   Se falhar, pausar e instruir o usuário a iniciar o ComfyUI.
 - **Lint pre-flight do prompt (#810).** Para cada destaque presente (d1, d2 — e d3 **somente se `destaque_count === 3`**), rodar lint determinístico antes de gastar API call. Detecta violações da regra editorial (`context/editorial-rules.md`): "Noite Estrelada" / "Starry Night", resolução em pixels, DPI:
   ```bash
-  npx tsx scripts/lint-image-prompt.ts data/editions/{AAMMDD}/_internal/02-d{N}-prompt.md
+  npx tsx scripts/lint-image-prompt.ts {EDITION_DIR}/_internal/02-d{N}-prompt.md
   ```
   Se exit `1` (violações encontradas), pausar geração desse destaque e mostrar ao editor as violações (stderr lista trechos + categoria + regra). Editor pode editar `_internal/02-d{N}-prompt.md` no Drive ou local e responder "retry". Não chamar `image-generate.ts` antes do lint passar — defesa em profundidade vs `NEGATIVE_PROMPT` parcial do `image-generate`. **Exit `2` (I/O error — arquivo ausente):** tratar como erro fatal para aquele destaque e reportar ao editor (não confundir com exit `1` = violação de conteúdo).
 - **Gerar imagens via script (sem Agent).** Para cada destaque presente (d1, d2 — e d3 **somente se `destaque_count === 3`**) sequencialmente (Gemini API por default), DEPOIS do lint passar:
   ```bash
   npx tsx scripts/image-generate.ts \
-    --editorial data/editions/{AAMMDD}/_internal/02-d{N}-prompt.md \
-    --out-dir data/editions/{AAMMDD}/ \
+    --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md \
+    --out-dir {EDITION_DIR}/ \
     --destaque d{N}
   ```
   **#2133/#2141:** D2 e D3 agora também geram `04-d{N}-2x1.jpg` (hero inline no email) + `04-d{N}-1x1.jpg` (social crop), igual ao D1. O default de ratio para d1/d2/d3 é 2x1.
@@ -82,28 +87,28 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
 - **Sync push antes do gate.** O conjunto de arquivos depende do `destaque_count`:
   ```bash
   # destaque_count=3:
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg,04-d3-2x1.jpg,04-d3-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg,04-d3-2x1.jpg,04-d3-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
   # destaque_count=2:
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 3 --files 04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md
   ```
   Anotar em `sync_results[3]`; ignorar falhas. **#2133/#2141:** D2/D3 agora também têm `04-d{N}-2x1.jpg` — incluir no push pra o editor poder revisar os heroes no Drive antes do gate.
 - **Fetch leaderboard top1 (#1160 — rodapé do È IA?).** Antes do render no Stage 4, popular `_internal/04-leaderboard-top1.json`. **#1753:** o bloco só aparece na **1ª edição do mês** e anuncia o mês que acabou de fechar (período ANTERIOR ao da edição); em qualquer outra edição o script grava `top1: []` e o renderer omite. O gate é interno ao script (cruza com `data/past-editions-raw.json`) — o orchestrator só invoca normalmente. Renderer lê automaticamente:
   ```bash
   npx tsx scripts/fetch-leaderboard-top1.ts \
     --edition {AAMMDD} \
-    --out data/editions/{AAMMDD}/_internal/04-leaderboard-top1.json
+    --out {EDITION_DIR}/_internal/04-leaderboard-top1.json
   ```
   Falha do fetch (Worker offline, timeout) escreve `top1: []` — renderer detecta e omite bloco. **Não-bloqueante** — newsletter funciona sem leaderboard.
 - **Injetar box campeões/sorteio de início de mês (#2725).** Logo após o fetch acima (mesmo gate "1ª edição do mês", reusado internamente — não duplica a detecção), preencher e injetar o box `🎉 Os campeões do É IA?... + Sorteio` em `02-reviewed.md` a partir do `podium` recém-escrito + do bloco `raffle` de `platform.config.json`:
   ```bash
   npx tsx scripts/inject-champions-callout.ts \
     --edition {AAMMDD} \
-    --edition-dir data/editions/{AAMMDD}/
+    --edition-dir {EDITION_DIR}/
   ```
   **Graceful/no-op** (mesmo padrão do fetch): não é a 1ª edição do mês, pódio vazio/incompleto, ou bloco `raffle` ausente → loga o motivo e sai 0 sem alterar `02-reviewed.md`. **Precedência:** se `02-reviewed.md` já tem um callout na região de intro (ex: patrocínio 📣 colado manualmente), a injeção é PULADA — o callout existente vence, evitando corromper o parse greedy de `extractIntroCallout` (#2727) com dois blocos empilhados. Se isso ocorrer, reportar ao editor no resumo do gate: "Box de campeões do mês não injetado — já havia um callout ({tipo}) no topo desta edição." Só roda quando `02-reviewed.md` já existe (Stage 2 completo) — nunca antes.
 - **Pre-gate invariants (#1007 Fase 1).** Validar que as imagens obrigatórias existem (eia A/B + d1/d2 2x1/1x1; d3 2x1/1x1 **condicional a `destaque_count === 3`**, #2352) e prompts não violam regras editoriais (sem pixels, sem Noite Estrelada):
   ```bash
-  npx tsx scripts/check-invariants.ts --stage 3 --edition-dir data/editions/{AAMMDD}/
+  npx tsx scripts/check-invariants.ts --stage 3 --edition-dir {EDITION_DIR}/
   ```
   Exit 1 = bloquear gate até fix (regenerar imagem ausente / corrigir prompt). Violations explicam qual destaque/arquivo precisa atenção. O script já é 2-destaque-aware (#2352) — não requer flag adicional.
 - **GATE HUMANO (É IA? + imagens):** mostrar paths do É IA? + paths de imagem gerados (`04-d1-2x1.jpg`, `04-d1-1x1.jpg`, `04-d2-2x1.jpg`, `04-d2-1x1.jpg`; incluir `04-d3-2x1.jpg`, `04-d3-1x1.jpg` **somente se `destaque_count === 3`**). Mencionar: "Imagens full-size disponíveis no Drive em `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/`." **#2133/#2141:** todos os destaques têm hero 2:1 no email. Opções: aprovar / regenerar individual (re-rodar o script só para `d{N}` e re-disparar o push).
@@ -119,4 +124,4 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
     --outputs "01-eia.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-2x1.jpg,04-d2-1x1.jpg"
   ```
   Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 3 --agent orchestrator --level warn --message 'sentinel_write_failed'`). Não bloquear.
-- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 3 done via `update-stage-status.ts --stage 3 --status done --end ISO --duration-ms X`. Em seguida `npx tsx scripts/capture-stage-usage.ts --edition-dir data/editions/{AAMMDD}/ --stage 3` (#3441) — captura tokens/custo REAIS só do lado Claude (transcript local da sessão); **não captura** o custo de Gemini/ComfyUI da geração de imagem (APIs externas, fora do transcript do harness) — esse gap fica documentado, não fabricado como zero.
+- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 3 done via `update-stage-status.ts --stage 3 --status done --end ISO --duration-ms X`. Em seguida `npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 3` (#3441) — captura tokens/custo REAIS só do lado Claude (transcript local da sessão); **não captura** o custo de Gemini/ComfyUI da geração de imagem (APIs externas, fora do transcript do harness) — esse gap fica documentado, não fabricado como zero.

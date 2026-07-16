@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findEditionsInProgress } from "../scripts/lib/find-current-edition.ts";
+import { findEditionsInProgress, resolveEditionDir } from "../scripts/lib/find-current-edition.ts";
 
 function setupSandbox(): { root: string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), "find-current-edition-"));
@@ -270,6 +270,86 @@ describe("findEditionsInProgress", () => {
           "02-reviewed.md",
         ]);
         assert.deepEqual(findEditionsInProgress(2, root), []);
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
+  // #3530: Stage 0 (mkdir/criação) e Stages 1-3 (leitura/escrita) passam a
+  // resolver `{EDITION_DIR}` via `resolveEditionDir()` em vez de montar
+  // `data/editions/{AAMMDD}` à mão. Estes testes cobrem exatamente as duas
+  // garantias que a migração depende: (a) edição NOVA nasce nested; (b)
+  // edição já existente EM QUALQUER layout é encontrada nesse mesmo layout
+  // (nunca recriada do zero num layout diferente — isso seria split-brain).
+  describe("#3530: resolveEditionDir — criação (Stage 0) usa o mesmo path que leitura (Stages 1-6)", () => {
+    it("edição que ainda não existe em disco → retorna path NESTED (layout de toda edição nova)", () => {
+      const { root, cleanup } = setupSandbox();
+      try {
+        const editionsRootDir = join(root, "data/editions");
+        const dir = resolveEditionDir(editionsRootDir, "260801");
+        assert.equal(
+          dir.replaceAll("\\", "/"),
+          join(editionsRootDir, "2608", "260801").replaceAll("\\", "/"),
+        );
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("edição já existente em FLAT (pré-migração) → retorna o path FLAT (resume-safe, não recria em nested)", () => {
+      const { root, cleanup } = setupSandbox();
+      try {
+        makeEdition(root, "260505", ["_internal/01-approved.json"]);
+        const editionsRootDir = join(root, "data/editions");
+        const dir = resolveEditionDir(editionsRootDir, "260505");
+        assert.equal(
+          dir.replaceAll("\\", "/"),
+          join(editionsRootDir, "260505").replaceAll("\\", "/"),
+        );
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("edição já existente em NESTED → retorna o path NESTED", () => {
+      const { root, cleanup } = setupSandbox();
+      try {
+        const aamm = "2607";
+        const editionDir = join(root, "data/editions", aamm, "260706");
+        mkdirSync(join(editionDir, "_internal"), { recursive: true });
+        writeFileSync(join(editionDir, "_internal/01-approved.json"), "x");
+        const editionsRootDir = join(root, "data/editions");
+        const dir = resolveEditionDir(editionsRootDir, "260706");
+        assert.equal(
+          dir.replaceAll("\\", "/"),
+          editionDir.replaceAll("\\", "/"),
+        );
+      } finally {
+        cleanup();
+      }
+    });
+
+    it("resume de edição FLAT criada por uma sessão Stage 0 anterior a #3530 continua resolvendo pro mesmo diretório (sem split-brain)", () => {
+      // Simula: Stage 0 de uma sessão ANTIGA (pré-#3530) criou a pasta flat via
+      // mkdir literal. Uma sessão NOVA (pós-#3530) retoma essa mesma edição —
+      // resolveEditionDir() deve achar a pasta flat existente, não desviar
+      // pra nested (que criaria uma segunda pasta vazia e "perderia" o
+      // trabalho já feito na flat).
+      const { root, cleanup } = setupSandbox();
+      try {
+        makeEdition(root, "260420", [
+          "_internal/01-categorized.json",
+          "01-categorized.md",
+        ]);
+        const editionsRootDir = join(root, "data/editions");
+        const dirAtStage0Resume = resolveEditionDir(editionsRootDir, "260420");
+        const dirAtStage2Read = resolveEditionDir(editionsRootDir, "260420");
+        assert.equal(dirAtStage0Resume, dirAtStage2Read);
+        assert.equal(
+          dirAtStage0Resume.replaceAll("\\", "/"),
+          join(editionsRootDir, "260420").replaceAll("\\", "/"),
+        );
       } finally {
         cleanup();
       }

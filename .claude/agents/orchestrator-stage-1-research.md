@@ -11,6 +11,11 @@ description: Stage 1 do orchestrator Diar.ia — pesquisa (inbox drain, RSS, res
 
 **MCP disconnect logging:** ver `orchestrator.md` § "MCP disconnect — logging + halt banner" (#759/#737). Nesta etapa: `--stage 1`, banner `--stage "1 — Pesquisa"`.
 
+**`{EDITION_DIR}` (#2463/#3025/#3530):** diretório REAL da edição no disco — pode ser o layout flat legado OU o nested novo, dependendo de quando a edição foi criada. Já foi resolvido no Stage 0 (§0a) — se este stage estiver rodando na mesma sessão que o Stage 0, reusar o valor. Se estiver rodando isolado (resume, skill separada), resolver de novo (idempotente — encontra o que já está no disco):
+```bash
+EDITION_DIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve {AAMMDD})
+```
+
 ### 1a. Inbox drain
 
 Sempre roda, antes da pesquisa:
@@ -38,7 +43,7 @@ O `eia-compose.ts` auto-preenche "Resultado da última edição" se `_internal/0
 ```bash
 PREV_EDITION=$(node -e "const r=require('fs').existsSync('data/past-editions-raw.json')?JSON.parse(require('fs').readFileSync('data/past-editions-raw.json','utf8')):[];const p=r[0];if(!p||!p.published_at){process.exit(0)}const d=new Date(p.published_at);process.stdout.write(String(d.getUTCFullYear()).slice(-2)+String(d.getUTCMonth()+1).padStart(2,'0')+String(d.getUTCDate()).padStart(2,'0'))")
 if [ -n "$PREV_EDITION" ]; then
-  npx tsx scripts/fetch-poll-stats.ts --edition "$PREV_EDITION" --out data/editions/{AAMMDD}/_internal/04-eia-poll-stats.json
+  npx tsx scripts/fetch-poll-stats.ts --edition "$PREV_EDITION" --out {EDITION_DIR}/_internal/04-eia-poll-stats.json
 fi
 ```
 
@@ -49,17 +54,17 @@ Se `PREV_EDITION` vazio ou Worker indisponível — prosseguir silenciosamente s
 O `scripts/eia-compose.ts` (#110 fix 2) não depende de nenhum output do pipeline principal — disparar como **Bash em background** (`run_in_background: true`, na mesma mensagem dos researchers abaixo). Antes era dispatched como Agent Haiku que apenas invocava o script — wrapper redundante, removido em #1111.
 
 ```bash
-npx tsx scripts/eia-compose.ts --edition {AAMMDD} --out-dir data/editions/{AAMMDD}/
+npx tsx scripts/eia-compose.ts --edition {AAMMDD} --out-dir {EDITION_DIR}/
 ```
 
-Armazenar `eia_bash_id` (output do `Bash(run_in_background=true)`) e `eia_dispatch_ts` (timestamp). Stage 3 usa o bashId pra detectar conclusão ou faz file-presence check em `data/editions/{AAMMDD}/01-eia.md`.
+Armazenar `eia_bash_id` (output do `Bash(run_in_background=true)`) e `eia_dispatch_ts` (timestamp). Stage 3 usa o bashId pra detectar conclusão ou faz file-presence check em `{EDITION_DIR}/01-eia.md`.
 
 **Logging por caminho** (#110 fix 4):
 - **Dispatch normal**: logar `info 'eia dispatched (background bash)'`.
 - **Skip por resume** (`01-eia.md` já existir): logar `info 'eia dispatch skipped: already_exists (resume)'`. Não dispatchar.
 - **Skip por dispatch failure** (Bash run_in_background indisponível ou erro imediato): logar `warn 'eia dispatch skipped: bash_unavailable'`. Ainda assim prosseguir com a Etapa 1 — Etapa 3 sinaliza ausência e oferece retry.
 
-**Validação no gate da Etapa 1** (#110 fix 1): antes do gate principal, checar se `data/editions/{AAMMDD}/01-eia.md` existe OU se há background bash ativo (via `eia_bash_id`). Se nenhum dos dois (skip silencioso), incluir bullet no relatório: `🟡 É IA?: não dispatchado — rode /diaria-3-imagens {AAMMDD} eai antes do gate da Etapa 4.`
+**Validação no gate da Etapa 1** (#110 fix 1): antes do gate principal, checar se `{EDITION_DIR}/01-eia.md` existe OU se há background bash ativo (via `eia_bash_id`). Se nenhum dos dois (skip silencioso), incluir bullet no relatório: `🟡 É IA?: não dispatchado — rode /diaria-3-imagens {AAMMDD} eai antes do gate da Etapa 4.`
 
 ### 1e. Método de fetch por fonte (#54)
 
@@ -70,8 +75,8 @@ Pra cada fonte em `context/sources.md`, escolher entre RSS (rápido, determinís
 **Preferido (#1209, #1270):** 2 passos curtos — `list-active-sources` gera batch, `fetch-rss-batch` dispara:
 
 ```bash
-npx tsx scripts/list-active-sources.ts --format json --rss-only --out data/editions/{AAMMDD}/_internal/rss-batch.json
-npx tsx scripts/fetch-rss-batch.ts --sources data/editions/{AAMMDD}/_internal/rss-batch.json --out data/editions/{AAMMDD}/_internal/researcher-results.json --days {window_days}
+npx tsx scripts/list-active-sources.ts --format json --rss-only --out {EDITION_DIR}/_internal/rss-batch.json
+npx tsx scripts/fetch-rss-batch.ts --sources {EDITION_DIR}/_internal/rss-batch.json --out {EDITION_DIR}/_internal/researcher-results.json --days {window_days}
 ```
 
 35 fontes em ~9s. **Não construir `rss-batch.json` via parser inline** — `list-active-sources.ts` é canônico (#1270).
@@ -81,7 +86,7 @@ npx tsx scripts/fetch-rss-batch.ts --sources data/editions/{AAMMDD}/_internal/rs
 **Imediatamente após RSS batch retornar**, kick off `prewarm-verify-cache.ts` em background pra popular o cache cross-edição enquanto os agents WebSearch (1f) rodam em paralelo. URLs do RSS estarão pre-verificadas quando o passo 1i principal rodar — elimina ~3-5min de wall clock duplicado.
 
 ```bash
-Bash("npx tsx scripts/prewarm-verify-cache.ts --edition-dir data/editions/{AAMMDD}/", run_in_background: true)
+Bash("npx tsx scripts/prewarm-verify-cache.ts --edition-dir {EDITION_DIR}/", run_in_background: true)
 ```
 
 Capturar o `bash_id`. Não aguardar — segue direto pro 1e.5 e 1f. O processo termina sozinho enquanto agents WebSearch dispatch. Quando 1i rodar, URLs do RSS hitam cache e skipam HEAD+GET.
@@ -102,7 +107,7 @@ Preserva saúde da fonte em todos os casos: propagar `method` como campo extra n
 
 Entradas de texto-puro do editor (sem URL) viram queries de discovery. Armazenar output como `inbox_topics` para o passo 1f:
 ```bash
-npx tsx scripts/extract-inbox-topics.ts --inbox-md data/inbox.md --out data/editions/{AAMMDD}/_internal/inbox-topics.json
+npx tsx scripts/extract-inbox-topics.ts --inbox-md data/inbox.md --out {EDITION_DIR}/_internal/inbox-topics.json
 ```
 Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics extraídos"`.
 
@@ -117,19 +122,19 @@ Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics e
 ```bash
 # Gerar sources list
 npx tsx scripts/list-active-sources.ts --format json --websearch-only \
-  --out data/editions/{AAMMDD}/_internal/websearch-batch.json
+  --out {EDITION_DIR}/_internal/websearch-batch.json
 
 # Pre-flight blocklist (mesma lib usada no Path B)
 # (Output já filtrado quando websearch-batch.json é gerado pelo list-active-sources.ts)
 
 # Rodar dispatch determinístico
 npx tsx scripts/fetch-websearch-batch.ts \
-  --sources data/editions/{AAMMDD}/_internal/websearch-batch.json \
-  --discovery data/editions/{AAMMDD}/_internal/inbox-topics.json \
+  --sources {EDITION_DIR}/_internal/websearch-batch.json \
+  --discovery {EDITION_DIR}/_internal/inbox-topics.json \
   --cutoff-iso {cutoff_iso} \
   --window-days {window_days} \
   --edition {AAMMDD} \
-  --out data/editions/{AAMMDD}/_internal/websearch-results.json
+  --out {EDITION_DIR}/_internal/websearch-results.json
 ```
 
 Flag `--edition` (#1558): tagga cada Brave query no `data/brave-credits.jsonl` pra tracking de consumo no relatório de edição.
@@ -169,11 +174,11 @@ Em vez de N chamadas individuais, agregar todos os resultados (researchers + dis
 ]
 ```
 
-1. Gravar em `data/editions/{AAMMDD}/_internal/researcher-results.json` (rastreabilidade).
+1. Gravar em `{EDITION_DIR}/_internal/researcher-results.json` (rastreabilidade).
 2. Rodar **uma vez** o script batch:
    ```bash
    npx tsx scripts/record-source-runs.ts \
-     --runs data/editions/{AAMMDD}/_internal/researcher-results.json \
+     --runs {EDITION_DIR}/_internal/researcher-results.json \
      --edition {AAMMDD}
    ```
    Atualiza `data/source-health.json` + anexa linhas JSONL em `data/sources/{slug}.jsonl`. O script retorna JSON com `summary.sources_with_consecutive_failures_ge3` — usar no relatório do gate.
@@ -186,8 +191,8 @@ Reaproveita artigos não-aprovados da edição anterior (`runners_up` + buckets)
 
 ```bash
 npx tsx scripts/load-carry-over.ts \
-  --edition-dir data/editions/{AAMMDD} \
-  --pool data/editions/{AAMMDD}/_internal/tmp-articles-raw.json \
+  --edition-dir {EDITION_DIR} \
+  --pool {EDITION_DIR}/_internal/tmp-articles-raw.json \
   --window-start {window_start} \
   --window-end {WINDOW_END} \
   --score-min 60
@@ -202,9 +207,9 @@ Output stdout: `{ prev, candidates_total, kept, skipped, total_pool_size }`. Se 
 ```bash
 npx tsx scripts/inject-inbox-urls.ts \
   --inbox-md data/inbox.md \
-  --captured-articles data/editions/{AAMMDD}/_internal/captured-newsletter-articles.json \
-  --pool data/editions/{AAMMDD}/_internal/tmp-articles-raw.json \
-  --out data/editions/{AAMMDD}/_internal/tmp-articles-raw.json \
+  --captured-articles {EDITION_DIR}/_internal/captured-newsletter-articles.json \
+  --pool {EDITION_DIR}/_internal/tmp-articles-raw.json \
+  --out {EDITION_DIR}/_internal/tmp-articles-raw.json \
   --validate-pool
 ```
 
@@ -228,7 +233,7 @@ Validador **externo** anti-skip — diferente de `--validate-pool` (interno/taut
 
 ```bash
 npx tsx scripts/validate-stage-1-injection.ts \
-  --edition-dir data/editions/{AAMMDD} \
+  --edition-dir {EDITION_DIR} \
   --inbox-md data/inbox.md
 ```
 
@@ -242,19 +247,19 @@ Logar resultado como info no run-log. **Não prosseguir para 1i se exit 1.**
 
 ### 1i. Link verification (script direto)
 
-Gravar a lista de URLs da lista agregada em `data/editions/{AAMMDD}/_internal/tmp-urls-all.json` (array de strings) e rodar:
+Gravar a lista de URLs da lista agregada em `{EDITION_DIR}/_internal/tmp-urls-all.json` (array de strings) e rodar:
 ```bash
 npx tsx scripts/verify-accessibility.ts \
-  data/editions/{AAMMDD}/_internal/tmp-urls-all.json \
-  data/editions/{AAMMDD}/_internal/link-verify-all.json \
-  --bodies-dir data/editions/{AAMMDD}/_internal/_forensic/link-verify-bodies \
+  {EDITION_DIR}/_internal/tmp-urls-all.json \
+  {EDITION_DIR}/_internal/link-verify-all.json \
+  --bodies-dir {EDITION_DIR}/_internal/_forensic/link-verify-bodies \
   --cache data/link-verify-cache.json \
   --browser-concurrency 8
 ```
 A flag `--cache` (#717 hipótese 2) ativa o cache cross-edição de verdicts. URLs já verificadas como `accessible`/`blocked`/`paywall` em qualquer edição passada (TTL default 7 dias) skipam HEAD+GET inteiro. Cache persistido em `data/link-verify-cache.json` (gitignored). Hit ratio típico esperado >50% após 1-2 semanas de runs. Override TTL com `--cache-ttl-days N`.
 A flag `--bodies-dir` (#717 hipótese 1) persiste o body raw de cada GET bem-sucedido no path indicado. `verify-dates.ts` (rodado pelo step 1p1 research-review-dates) lê desse cache antes de fetchar — elimina ~3-4min de fetch duplicado em edições com 300+ URLs.
 O fallback de browser (Puppeteer) usa worker pool com `--browser-concurrency 8` (#717 hipótese 3, default 4, bumped pra 8 em P5 #1553). URLs `uncertain` no first-pass são verificadas em paralelo com até N tabs no mesmo browser headless — em 260506 (227 uncertain), serial era ~26-30min, com concurrency=4 cai pra ~7min, com concurrency=8 esperado ~4min. Descer pra 2-4 se a máquina estiver sob pressão de memória.
-Ler `data/editions/{AAMMDD}/_internal/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom?, access_uncertain? }`). Então:
+Ler `{EDITION_DIR}/_internal/link-verify-all.json` (array de `{ url, verdict, finalUrl, note, resolvedFrom?, access_uncertain? }`). Então:
 - **Anotar (#778)**: para todos os artigos, adicionar `verify_verdict` e (quando presente) `verify_note` no artigo a partir do match por URL no `link-verify-all.json`. Isso permite que `render-categorized-md.ts` marque visualmente artigos editor-submitted que falharam acessibilidade (per #778) em vez de eles sumirem do gate.
 - **Remover** artigos com verdict `paywall`, `blocked` ou `aggregator` (sem `resolvedFrom`) que **não** sejam de inbox. Editor-submitted (`flag: "editor_submitted"` ou `source: "inbox"`) **nunca** são dropados por verdict de acessibilidade — apenas anotados (#778). A regra de aggregator continua dropando inbox-aggregator que não foi expandido pelo `expand-inbox-aggregators.ts` (esse script já trata o caso primário-extraído).
 - **Manter com flag** artigos com verdict `anti_bot` (#320): adicionar `"access_uncertain": true`. Incluir no relatório do gate: `"⚠️ N artigo(s) marcados anti_bot — accessible no browser mas bloqueados por crawler. Revisar antes de aprovar."` com a lista de domínios.
@@ -266,9 +271,9 @@ Ler `data/editions/{AAMMDD}/_internal/link-verify-all.json` (array de `{ url, ve
 Quando o editor submete um link de agregador (ex: Perplexity Page, Flipboard), o link não é simplesmente descartado — seus links primários são extraídos e injetados no pipeline:
 ```bash
 npx tsx scripts/expand-inbox-aggregators.ts \
-  --articles data/editions/{AAMMDD}/_internal/tmp-articles-post-verify.json \
-  --verify   data/editions/{AAMMDD}/_internal/link-verify-all.json \
-  --out      data/editions/{AAMMDD}/_internal/tmp-articles-expanded.json
+  --articles {EDITION_DIR}/_internal/tmp-articles-post-verify.json \
+  --verify   {EDITION_DIR}/_internal/link-verify-all.json \
+  --out      {EDITION_DIR}/_internal/tmp-articles-expanded.json
 ```
 Substitui cada artigo inbox com `verdict: "aggregator"` pelos links primários extraídos (até 10 por agregador, `source: "inbox_via_aggregator"`). Se nenhum link for encontrado, o agregador é descartado com warning. Artigos não-inbox com verdict `aggregator` continuam sendo descartados normalmente.
 
@@ -277,8 +282,8 @@ Substitui cada artigo inbox com `verdict: "aggregator"` pelos links primários e
 URLs do editor entram com `title: "(inbox)"` e `summary: null`. Após a expansão de agregadores:
 ```bash
 npx tsx scripts/enrich-inbox-articles.ts \
-  --in data/editions/{AAMMDD}/_internal/tmp-articles-enrich.json \
-  --bodies-dir data/editions/{AAMMDD}/_internal/_forensic/link-verify-bodies
+  --in {EDITION_DIR}/_internal/tmp-articles-enrich.json \
+  --bodies-dir {EDITION_DIR}/_internal/_forensic/link-verify-bodies
 ```
 O script toca: (a) artigos do **inbox** (`flag: "editor_submitted"` ou `source: "inbox"`) com título placeholder (`(inbox)`, `[INBOX] ...`) OU `summary` vazio — lê o body cacheado por `verify-accessibility.ts` no 1i (`--bodies-dir`); se ausente, faz fetch da URL final; e (b) **#1696**: artigos de **fonte regular** com título real mas `summary` vazio — preenche `og:description` (itens de seção secundária LANÇAMENTOS/RADAR sem summary renderizavam como título pelado). Para (b) o enrichment é **cache-only** (sem network fetch — bound de custo; o body já foi cacheado no 1i pros acessíveis); cache-miss vira outcome `cache_miss_skipped_non_inbox`. Extrai `og:title` / `og:description` (fallback `<title>` / `meta name=description`); títulos curados pelo editor preservados (non-inbox NÃO tem o título tocado — só summary). Falhas de fetch (inbox) viram `fetch_failed`. Ler o JSON de volta (mutated in place). Stderr loga `[enrich] body-cache: H/T hit (P%)`.
 
@@ -286,28 +291,28 @@ O script toca: (a) artigos do **inbox** (`flag: "editor_submitted"` ou `source: 
 
 ```bash
 npx tsx scripts/dedup.ts \
-  --articles data/editions/{AAMMDD}/_internal/tmp-articles-raw.json \
+  --articles {EDITION_DIR}/_internal/tmp-articles-raw.json \
   --past-editions data/past-editions.md \
   --window {window_days} \
-  --out data/editions/{AAMMDD}/_internal/tmp-dedup-output.json
+  --out {EDITION_DIR}/_internal/tmp-dedup-output.json
 ```
 Pré-passo automático (#485): artigos inbox com título placeholder `(inbox)` têm o título real resolvido via fetch antes do dedup principal, evitando falsos-positivos de similaridade entre artigos com mesmo placeholder. Ler `kept[]` do JSON de saída como lista de artigos daqui em diante. Logar `removed[]` (apenas contagem e motivos) para rastreabilidade. Limpar arquivos temporários com Bash.
 
 ### 1m. Categorizar
 
-Gravar `kept[]` em `data/editions/{AAMMDD}/_internal/tmp-kept.json` e rodar:
+Gravar `kept[]` em `{EDITION_DIR}/_internal/tmp-kept.json` e rodar:
 ```bash
 npx tsx scripts/categorize.ts \
-  --articles data/editions/{AAMMDD}/_internal/tmp-kept.json \
-  --out data/editions/{AAMMDD}/_internal/tmp-categorized.json
+  --articles {EDITION_DIR}/_internal/tmp-kept.json \
+  --out {EDITION_DIR}/_internal/tmp-categorized.json
 ```
 
 Em seguida, rodar **enrich-primary-source** (#487) pra sinalizar notícias que parecem cobrir lançamentos (verbo + empresa conhecida no título) — o editor verá um marker `🚀→{dominio}` no MD do gate sugerindo busca da fonte primária:
 ```bash
 npx tsx scripts/enrich-primary-source.ts \
-  --in data/editions/{AAMMDD}/_internal/tmp-categorized.json
+  --in {EDITION_DIR}/_internal/tmp-categorized.json
 ```
-In-place. Loga no stderr `N/M notícia(s) sinalizadas` e nunca falha. Ler `data/editions/{AAMMDD}/_internal/tmp-categorized.json` como `{ lancamento, radar, use_melhor, video }` (#1629) para usar daqui em diante.
+In-place. Loga no stderr `N/M notícia(s) sinalizadas` e nunca falha. Ler `{EDITION_DIR}/_internal/tmp-categorized.json` como `{ lancamento, radar, use_melhor, video }` (#1629) para usar daqui em diante.
 
 **1m-ter. Busca ATIVA de fonte primária (#1699).** O `enrich-primary-source` só sinaliza; #1699 manda buscar de fato. Para cada artigo em `radar` com `launch_candidate: true` (e `suggested_primary_domain`), o orchestrator:
 
@@ -324,7 +329,7 @@ Se `launch_candidate` count = 0, pular este passo (info no run-log). Falha de bu
 **1m-quater. Dedup pós-promoção (#2315).** `dedup.ts` (passo 1l) viu URLs de pesquisa originais — URLs oficiais introduzidas pelo passo 1m-ter NUNCA passaram pelo dedup. Re-checar agora. **Sempre rodar** (idempotente: sem `primary_source_substituted` → `checked: 0`):
 ```bash
 npx tsx scripts/check-promoted-dedup.ts \
-  --categorized data/editions/{AAMMDD}/_internal/tmp-categorized.json \
+  --categorized {EDITION_DIR}/_internal/tmp-categorized.json \
   --past-editions data/past-editions.md --window 3
 ```
 Resultado `{ demoted[], checked }`. Logar info. Se `demoted.length > 0`: surfar no gate `⚠️ N lançamento(s) revertidos para RADAR (URL oficial repetia edição anterior — #2315)`. Falha → warn + prosseguir.
@@ -332,12 +337,12 @@ Resultado `{ demoted[], checked }`. Logar info. Se `demoted.length > 0`: surfar 
 **1m-quinquies. Resolver URLs de VÍDEO para YouTube (#3202).** Regra editorial: itens da seção VÍDEOS usam SEMPRE link do YouTube (`context/editorial-rules.md` — Seção "Vídeos"). Para cada artigo em `video` cuja URL NÃO seja `youtube.com/watch` ou `youtu.be` (checar com `isYoutubeUrl` de `scripts/lib/video-youtube-resolve.ts`):
 
 1. **Buscar** o vídeo equivalente no YouTube — disparar `discovery-searcher` com a query `site:youtube.com {título do vídeo} {fonte/canal, se conhecido}`. (Um `discovery-searcher` por item; paralelo se houver mais de um — lembrar do cap de 2 vídeos/edição.)
-2. **Consolidar** os `articles[]` retornados (`{ title, url, source_name }`) num JSON `{ [urlOriginal]: [candidatos...] }` e gravar em `data/editions/{AAMMDD}/_internal/tmp-video-search-results.json`.
+2. **Consolidar** os `articles[]` retornados (`{ title, url, source_name }`) num JSON `{ [urlOriginal]: [candidatos...] }` e gravar em `{EDITION_DIR}/_internal/tmp-video-search-results.json`.
 3. **Resolver determinístico** (score de similaridade de título, `subjectSimilarity` — mesmo helper do dedup; threshold `YOUTUBE_MATCH_THRESHOLD`):
    ```bash
    npx tsx scripts/resolve-video-youtube.ts \
-     --categorized data/editions/{AAMMDD}/_internal/tmp-categorized.json \
-     --search-results data/editions/{AAMMDD}/_internal/tmp-video-search-results.json
+     --categorized {EDITION_DIR}/_internal/tmp-categorized.json \
+     --search-results {EDITION_DIR}/_internal/tmp-video-search-results.json
    ```
    In-place. Stdout: `{ resolved, flagged, alreadyYoutube }`. Match confiável → URL substituída + `video_url_resolved: { from, to, matched_title, score }` anotado no artigo (mesmo espírito de `primary_source_substituted`, #1699). Sem match confiável → `video_url_unverified: true` no artigo, **NUNCA** um fallback silencioso pra URL não-YouTube (princípio invariável CLAUDE.md — nunca fabricar/manter URL não verificada).
 4. **Guard (gate-critical):** se `flagged > 0`, **surfar no gate da Etapa 1** cada item flagado: `⚠️ vídeo sem URL de YouTube verificável — cole o link ({título})`. O editor cola a URL correta manualmente no MD antes de aprovar, ou remove o item de VÍDEOS.
@@ -347,7 +352,7 @@ Backstop gate-blocking em Stage 4 (`lint-newsletter-md.ts --check video-links-ar
 
 **Instrumentação type_hint vs categorize (#1718 fase 1) — silenciosa, append-only:** mede a divergência entre o `type_hint` do source-researcher e a decisão de lançamento do categorize, sem mudar nada. Acumula o dado pra decidir (em ~2 semanas) se vale inverter o ônus (type_hint primário). Nunca bloqueia:
 ```bash
-npx tsx scripts/measure-type-hint-divergence.ts --in data/editions/{AAMMDD}/_internal/tmp-categorized.json --edition {AAMMDD}
+npx tsx scripts/measure-type-hint-divergence.ts --in {EDITION_DIR}/_internal/tmp-categorized.json --edition {AAMMDD}
 ```
 Append em `data/type-hint-divergence.jsonl`. Se `launch_disagreements > 0`, loga warn informativo (não-bloqueante).
 
@@ -356,8 +361,8 @@ Append em `data/type-hint-divergence.jsonl`. Se `launch_disagreements > 0`, loga
 Rodar `topic-cluster.ts` pra consolidar artigos do mesmo evento dentro do mesmo bucket:
 ```bash
 npx tsx scripts/topic-cluster.ts \
-  --in data/editions/{AAMMDD}/_internal/tmp-categorized.json \
-  --out data/editions/{AAMMDD}/_internal/tmp-clustered.json \
+  --in {EDITION_DIR}/_internal/tmp-categorized.json \
+  --out {EDITION_DIR}/_internal/tmp-clustered.json \
   --threshold 0.3
 ```
 Threshold `0.3` é agressivo (Jaccard de tokens). False positives são amortecidos pelo ranking intra-cluster (representante mantido é o de melhor qualidade). Daqui em diante usar `_internal/tmp-clustered.json`. Logar `clusters.length` (zero é normal).
@@ -367,11 +372,11 @@ Threshold `0.3` é agressivo (Jaccard de tokens). False positives são amortecid
 Antes do step 1p1 (research-review-dates), rodar `scripts/filter-date-window.ts` pra garantir que **nenhum** artigo fora da janela chegue ao filtro de datas. **Anchor = `anchor_iso`** (today UTC), não `edition_iso` — assim a janela cobre o que foi publicado de fato nos últimos `window_days` dias, e não uma janela hipotética entre hoje e a publication date:
 ```bash
 npx tsx scripts/filter-date-window.ts \
-  --articles data/editions/{AAMMDD}/_internal/tmp-clustered.json \
+  --articles {EDITION_DIR}/_internal/tmp-clustered.json \
   --anchor-date {anchor_iso} \
   --edition-date {edition_iso} \
   --window-days {window_days} \
-  --out data/editions/{AAMMDD}/_internal/tmp-filtered.json
+  --out {EDITION_DIR}/_internal/tmp-filtered.json
 ```
 Logar `removed.length`. Daqui em diante o input do step 1p1 é `_internal/tmp-filtered.json` (que já tem `{ kept: { lancamento, radar, use_melhor, video } }`, #1629) — extrair `kept` e usar como `categorized`.
 
@@ -380,15 +385,15 @@ Logar `removed.length`. Daqui em diante o input do step 1p1 é `_internal/tmp-fi
 Rodar `scripts/research-review-dates.ts` ANTES do scorer (Filtro 1: verify-dates + filter-date-window com datas corrigidas). Determinístico, sem LLM:
 ```bash
 npx tsx scripts/research-review-dates.ts \
-  --in data/editions/{AAMMDD}/_internal/tmp-filtered.json \
-  --out data/editions/{AAMMDD}/_internal/tmp-dates-reviewed.json \
-  --edition-dir data/editions/{AAMMDD}/ \
+  --in {EDITION_DIR}/_internal/tmp-filtered.json \
+  --out {EDITION_DIR}/_internal/tmp-dates-reviewed.json \
+  --edition-dir {EDITION_DIR}/ \
   --anchor-iso {anchor_iso} \
   --edition-iso {edition_iso} \
   --window-days {window_days} \
-  --bodies-dir data/editions/{AAMMDD}/_internal/_forensic/link-verify-bodies \
+  --bodies-dir {EDITION_DIR}/_internal/_forensic/link-verify-bodies \
   --verify-cache data/link-verify-cache.json \
-  --link-verify-json data/editions/{AAMMDD}/_internal/link-verify-all.json
+  --link-verify-json {EDITION_DIR}/_internal/link-verify-all.json
 ```
 Output: `{ categorized, stats }`. Logar `stats.date_corrected`, `stats.fetch_failed`, `stats.removed_date_window`.
 
@@ -405,10 +410,10 @@ O scorer single-call (esse mesmo caminho legado, hoje chamado **1q-fallback** �
 **1q.1 — Split.** Dividir o pool em chunks de ~30:
 ```bash
 npx tsx scripts/split-articles-for-scoring.ts \
-  --categorized data/editions/{AAMMDD}/_internal/tmp-dates-reviewed.json \
-  --out-dir data/editions/{AAMMDD}/_internal/scoring-chunks \
+  --categorized {EDITION_DIR}/_internal/tmp-dates-reviewed.json \
+  --out-dir {EDITION_DIR}/_internal/scoring-chunks \
   --chunk-size 30 \
-  --pool-out data/editions/{AAMMDD}/_internal/tmp-scoring-pool.json
+  --pool-out {EDITION_DIR}/_internal/tmp-scoring-pool.json
 ```
 O manifest stdout traz `chunk_count` + `chunk_files[]` + `pool_out` (quando `--pool-out` é passado). **Se `chunk_count <= 1`, pular pro 1q-fallback.**
 
@@ -423,10 +428,10 @@ O manifest stdout traz `chunk_count` + `chunk_files[]` + `pool_out` (quando `--p
 # de fato foi distribuído nos chunks — evita falso catastrophic quando use_melhor
 # é capado pelo split (ex: 31→15: os 16 capados apareciam como missing → exit 2 falso).
 npx tsx scripts/merge-scored-chunks.ts \
-  --categorized data/editions/{AAMMDD}/_internal/tmp-scoring-pool.json \
-  --chunk-scores data/editions/{AAMMDD}/_internal/scoring-chunks/scored-chunk-0.json,...,scored-chunk-{N-1}.json \
-  --allscored-out data/editions/{AAMMDD}/_internal/tmp-allscored.json \
-  --finalists-out data/editions/{AAMMDD}/_internal/tmp-finalists.json \
+  --categorized {EDITION_DIR}/_internal/tmp-scoring-pool.json \
+  --chunk-scores {EDITION_DIR}/_internal/scoring-chunks/scored-chunk-0.json,...,scored-chunk-{N-1}.json \
+  --allscored-out {EDITION_DIR}/_internal/tmp-allscored.json \
+  --finalists-out {EDITION_DIR}/_internal/tmp-finalists.json \
   --top 15
 MERGE_EXIT=$?   # capturar ANTES do echo (echo zera o $?)
 echo "merge-scored-chunks exit: $MERGE_EXIT"   # 0 = ok/incompleto-recuperável · 1 = erro de args/input · 2 = CATASTRÓFICO (#1669)
@@ -442,9 +447,9 @@ echo "merge-scored-chunks exit: $MERGE_EXIT"   # 0 = ok/incompleto-recuperável 
 **1q.5 — Assemble.**
 ```bash
 npx tsx scripts/assemble-scored.ts \
-  --selection data/editions/{AAMMDD}/_internal/tmp-selection.json \
-  --allscored data/editions/{AAMMDD}/_internal/tmp-allscored.json \
-  --out data/editions/{AAMMDD}/_internal/tmp-scored.json
+  --selection {EDITION_DIR}/_internal/tmp-selection.json \
+  --allscored {EDITION_DIR}/_internal/tmp-allscored.json \
+  --out {EDITION_DIR}/_internal/tmp-scored.json
 ```
 Daqui em diante `tmp-scored.json` tem o **mesmo contrato** de antes (`highlights`, `runners_up`, `all_scored`) — 1r/1s seguem inalterados.
 
@@ -459,9 +464,9 @@ Se `highlights.length < 6` E `pool_size = sum(buckets.length) >= 6`, **promover*
 Rodar via script determinístico:
 ```bash
 npx tsx scripts/finalize-stage1.ts \
-  --scored data/editions/{AAMMDD}/_internal/tmp-scored.json \
-  --categorized data/editions/{AAMMDD}/_internal/tmp-dates-reviewed.json \
-  --out data/editions/{AAMMDD}/_internal/tmp-finalized.json \
+  --scored {EDITION_DIR}/_internal/tmp-scored.json \
+  --categorized {EDITION_DIR}/_internal/tmp-dates-reviewed.json \
+  --out {EDITION_DIR}/_internal/tmp-finalized.json \
   --edition {AAMMDD}
 ```
 
@@ -503,15 +508,15 @@ Strip do campo `verifier` de cada artigo antes de salvar (só os acessíveis che
 ```
 `clusters` é preservado automaticamente por `filter-date-window.ts` (passthrough de campos extras desde #247). Mesmo se algum cluster member virou `removed` no filtro de janela, a metadata do cluster fica intacta — é informativo pro editor.
 
-Salvar `data/editions/{AAMMDD}/_internal/01-categorized.json`.
+Salvar `{EDITION_DIR}/_internal/01-categorized.json`.
 
 ### 1u-bis. Dedup intra-edição (#2367, #2397, #2548)
 
 Após salvar `01-categorized.json`, remover dos buckets secundários itens que cobrem o mesmo evento que um destaque:
 ```bash
 npx tsx scripts/dedup-intra-edition.ts \
-  --in data/editions/{AAMMDD}/_internal/01-categorized.json \
-  --out data/editions/{AAMMDD}/_internal/01-categorized.json
+  --in {EDITION_DIR}/_internal/01-categorized.json \
+  --out {EDITION_DIR}/_internal/01-categorized.json
 ```
 Compara `radar`/`lancamento`/`use_melhor`/`video` contra **top-3 destaques por rank** por Jaccard ≥0.45, ≥2 entidades ou **domain-match** (#2548 Furo 2: RADAR com `suggested_primary_domain=google.com` + D1 em blog.google.com → cobertura de imprensa do mesmo lançamento). **#2587:** o domain-match exige um **segundo sinal** de mesmo-lançamento — `≥1 entidade-de-produto compartilhada além do nome da empresa` OU `Jaccard de título ≥0.2` — para não remover dois lançamentos DIFERENTES da mesma empresa (D1=produto A + RADAR=produto B no mesmo domínio). O caminho de entidade-de-produto cobre cobertura cross-lingual (D1 inglês + RADAR português, Jaccard ~0, mas ambos citam o produto). Strip sufixo de veículo. `01-categorized.json` reescrito in-place.
 
@@ -519,7 +524,7 @@ Compara `radar`/`lancamento`/`use_melhor`/`video` contra **top-3 destaques por r
 
 Dedup sem janela para `use_melhor`/`video` (janela de 4 do dedup.ts é curta para evergreen re-descoberto meses depois):
 ```bash
-npx tsx scripts/dedup-evergreen-buckets.ts --in data/editions/{AAMMDD}/_internal/01-categorized.json --out data/editions/{AAMMDD}/_internal/01-categorized.json --past-editions data/past-editions.md
+npx tsx scripts/dedup-evergreen-buckets.ts --in {EDITION_DIR}/_internal/01-categorized.json --out {EDITION_DIR}/_internal/01-categorized.json --past-editions data/past-editions.md
 ```
 Verifica URL de `use_melhor`/`video` em **qualquer** edição passada. `radar`/`lancamento` não tocados.
 
@@ -528,8 +533,8 @@ Verifica URL de `use_melhor`/`video` em **qualquer** edição passada. `radar`/`
 **Nunca gerar o MD livre-forma** — o formato é responsabilidade do script, não do LLM:
 ```bash
 npx tsx scripts/render-categorized-md.ts \
-  --in data/editions/{AAMMDD}/_internal/01-categorized.json \
-  --out data/editions/{AAMMDD}/01-categorized.md \
+  --in {EDITION_DIR}/_internal/01-categorized.json \
+  --out {EDITION_DIR}/01-categorized.md \
   --edition {AAMMDD} \
   --source-health data/source-health.json
 ```
@@ -541,7 +546,7 @@ O script produz o formato combinado (seção Destaques vazia no topo + seções 
 
 Subir `01-categorized.md` agora — antes de 1v-bis/1w-bis/1w. Editor começa a revisar enquanto pipeline ainda lint+valida. Falha não bloqueia (1w sobe de novo como fallback obrigatório).
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 1 --files 01-categorized.md
 ```
 
 ### 1v-bis. Lint LANÇAMENTOS — bloqueia URLs não-oficiais antes do gate (#587)
@@ -549,7 +554,7 @@ npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ 
 Antes de apresentar o gate, validar que items em `## Lançamentos` do MD têm URL oficial (per regra invariável #160). Sem este check, o editor podia mover artigos com URL não-oficial pra LANÇAMENTOS no gate, e o writer da Etapa 2 silenciosamente reclassificava pra OUTRAS NOTÍCIAS — quebrando o contrato de aprovação.
 
 ```bash
-npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/01-categorized.md
+npx tsx scripts/validate-lancamentos.ts {EDITION_DIR}/01-categorized.md
 ```
 
 Se exit code != 0, **incluir no gate output** as URLs problemáticas com sugestão pro editor:
@@ -573,7 +578,7 @@ Editor decide no gate. Auto-aprovação (`--no-gates`) bypassa o lint mas loga w
 Antes do gate, rodar o guard determinístico que pega item mal-bucketado em `use_melhor` (newsletter/análise/cobertura em vez de tutorial — em 260604 dois posts da `latent.space` entraram). **Warn-only — nunca bloqueia** (o editor cura USE MELHOR no gate, 0-1 item):
 
 ```bash
-npx tsx scripts/review-use-melhor.ts --approved data/editions/{AAMMDD}/_internal/01-approved.json
+npx tsx scripts/review-use-melhor.ts --approved {EDITION_DIR}/_internal/01-approved.json
 ```
 
 Se o JSON de saída tiver `suspicious[]` não-vazio, **incluir no gate output** os itens com o motivo (domínio newsletter/agregador **E** sem sinal de tutorial no título/slug — o vetor real de mis-bucket), pra o editor decidir manter ou trocar. USE MELHOR é tutorial de verdade, não cobertura/análise.
@@ -583,7 +588,7 @@ Se o JSON de saída tiver `suspicious[]` não-vazio, **incluir no gate output** 
 Antes do gate, flagar destaque que é **lançamento** mas usa URL de cobertura de imprensa em vez da fonte primária (a #160 só cobre a seção LANÇAMENTOS; destaques sobre lançamentos escapavam — caso 260602: RTX Spark com link Canaltech). **Warn-only**:
 
 ```bash
-npx tsx scripts/review-highlight-source.ts --approved data/editions/{AAMMDD}/_internal/01-approved.json
+npx tsx scripts/review-highlight-source.ts --approved {EDITION_DIR}/_internal/01-approved.json
 ```
 
 Se `flagged[]` não-vazio, **surfar no gate** cada destaque com a fonte oficial sugerida (`suggested_domain`), pra o editor trocar a URL pela newsroom/site oficial. (Busca ativa + substituição automática é fase 2 do #1699 — aqui só sinaliza melhor.)
@@ -592,15 +597,15 @@ Se `flagged[]` não-vazio, **surfar no gate** cada destaque com a fonte oficial 
 
 **Sem este push, o gate da Etapa 1 expõe MD apenas localmente** — editor não consegue revisar no Drive (mobile, telas grandes). Bug recorrente: orchestrator skipa silenciosamente este passo em sessões longas. **Não é opcional.**
 
-Se `data/editions/{AAMMDD}/01-eia.md` existir (É IA? já completou em background):
+Se `{EDITION_DIR}/01-eia.md` existir (É IA? já completou em background):
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD} --stage 1 --files 01-categorized.md,01-eia-A.jpg,01-eia-B.jpg
+npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR} --stage 1 --files 01-categorized.md,01-eia-A.jpg,01-eia-B.jpg
 ```
 **Nota (#582):** `01-eia.md` **não vai pro Drive** — conteúdo (linha de crédito + gabarito) já está embutido em `01-categorized.md` (#371). Arquivo permanece local pra scripts (`render-categorized-md`, `normalize-newsletter`, `lint`, `eia-compose`, `publish-monthly`).
 
 Se `01-eia.md` ainda não existir (É IA? ainda processando):
 ```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD} --stage 1 --files 01-categorized.md
+npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR} --stage 1 --files 01-categorized.md
 ```
 Anotar resultado em `sync_results[1]`; falhas reais (não warning) abortam. Falhas warning podem prosseguir mas precisam ser mencionadas no gate.
 
@@ -622,7 +627,7 @@ Antes do `validate-stage-1-output.ts`, rodar:
 
 ```bash
 npx tsx scripts/validate-stage-1-completeness.ts \
-  --edition-dir data/editions/{AAMMDD}/
+  --edition-dir {EDITION_DIR}/
 ```
 
 Confere que o passo 1f rodou (i.e., `researcher-results.json` tem entries de `source-researcher` ou `discovery`, não só RSS). Exit 1 = passo 1f foi skipado silenciosamente — **bloquear o gate** e re-rodar 1f antes de prosseguir.
@@ -636,7 +641,7 @@ Antes de apresentar o gate humano, rodar:
 ```bash
 npx tsx scripts/validate-stage-1-output.ts \
   --edition {AAMMDD} \
-  --edition-dir data/editions/{AAMMDD}/
+  --edition-dir {EDITION_DIR}/
 ```
 
 Semântica completa (exit codes, output JSON, falha do próprio validator) em **[`docs/validate-stage-1-output-semantics.md`](../../docs/validate-stage-1-output-semantics.md)** — single source of truth (#832). Pipeline completo (`/diaria-edicao`) ganha o mesmo catch-net que o skill `/diaria-1-pesquisa` isolado tem (#828).
@@ -648,7 +653,7 @@ Só validar artefatos pré-gate (categorized.md). Approved.json ainda não exist
 ```bash
 npx tsx scripts/check-invariants.ts --stage 1 \
   --rule categorized-has-eia-section \
-  --edition-dir data/editions/{AAMMDD}/
+  --edition-dir {EDITION_DIR}/
 ```
 
 Exit 1 = bloquear gate (`01-categorized.md` sem seção "## É IA?"). Os outros checks de Stage 1 rodam pós-gate apply (passo 1y).
@@ -669,10 +674,10 @@ Antes do gate, verificar se algum candidato a destaque repete o TEMA de um desta
 
 ```bash
 npx tsx scripts/check-highlight-themes.ts \
-  --categorized data/editions/{AAMMDD}/_internal/01-categorized.json \
+  --categorized {EDITION_DIR}/_internal/01-categorized.json \
   --past-editions data/past-editions.md --window 12 \
   --editions-dir data/editions --secondary-window 10 --current-edition {AAMMDD} \
-  --out-json data/editions/{AAMMDD}/_internal/01-highlight-theme-check.json
+  --out-json {EDITION_DIR}/_internal/01-highlight-theme-check.json
 ```
 
 Exit 0 sempre. O JSON gerado é lido no gate (item 4 abaixo) para exibição. Se o script falhar por qualquer motivo (past-editions.md ausente, data/editions/ vazio, JSON corrompido): logar warn e **prosseguir** — esta checagem é best-effort, nunca bloqueia.
@@ -685,7 +690,7 @@ Apresentar ao usuário:
    ```
    📊 {total_brutos} artigos garimpados → {kept_dedup} após dedup → {total_categorized} categorizados
 
-   📄 Abra data/editions/{AAMMDD}/01-categorized.md para revisar.
+   📄 Abra {EDITION_DIR}/01-categorized.md para revisar.
    📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/01-categorized.md
 
    ✏️  Candidatos recomendados pelo scorer estão marcados com ⭐.
@@ -732,21 +737,21 @@ Apresentar ao usuário:
   ```bash
   npx tsx scripts/apply-gate-edits.ts \
     --auto \
-    --json data/editions/{AAMMDD}/_internal/01-categorized.json \
-    --out data/editions/{AAMMDD}/_internal/01-approved.json
+    --json {EDITION_DIR}/_internal/01-categorized.json \
+    --out {EDITION_DIR}/_internal/01-approved.json
   ```
   `--auto` simula um MD sem edição (seção Destaques vazia, buckets intactos) e aplica o mesmo slice `highlights: first-3` do fluxo com gate — **nunca copiar `01-categorized.json` literal pra `01-approved.json`** (preservaria os 6 highlights do scorer em vez de 3). Seguir direto pro passo "Pós-gate-apply invariants" abaixo (pula o re-render/validate-lancamentos/push do MD — não há edição do editor pra refletir).
 - **Gate humano normal — pull do MD** (o editor pode ter editado no Drive):
   ```bash
-  npx tsx scripts/drive-sync.ts --mode pull --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md
+  npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDITION_DIR}/ --stage 1 --files 01-categorized.md
   ```
   Se o pull falhar, usar a versão local.
 - **Aplicar as edições do gate** via `scripts/apply-gate-edits.ts`:
   ```bash
   npx tsx scripts/apply-gate-edits.ts \
-    --md data/editions/{AAMMDD}/01-categorized.md \
-    --json data/editions/{AAMMDD}/_internal/01-categorized.json \
-    --out data/editions/{AAMMDD}/_internal/01-approved.json
+    --md {EDITION_DIR}/01-categorized.md \
+    --json {EDITION_DIR}/_internal/01-categorized.json \
+    --out {EDITION_DIR}/_internal/01-approved.json
   ```
   Comportamento:
   - `## Destaques`: primeiras 3 linhas na ordem física viram D1/D2/D3 (rank 1/2/3, renumeradas). Se < 3, completa com candidatos do scorer por rank. Se > 3, mantém as 3 primeiras.
@@ -755,23 +760,23 @@ Apresentar ao usuário:
 - **Re-renderizar o MD** a partir do `_internal/01-approved.json`:
   ```bash
   npx tsx scripts/render-categorized-md.ts \
-    --in data/editions/{AAMMDD}/_internal/01-approved.json \
-    --out data/editions/{AAMMDD}/01-categorized.md \
+    --in {EDITION_DIR}/_internal/01-approved.json \
+    --out {EDITION_DIR}/01-categorized.md \
     --edition {AAMMDD} \
     --source-health data/source-health.json
   ```
   Re-validar LANÇAMENTOS após edições do gate (#787) — o editor pode ter movido URLs não-oficiais para LANÇAMENTOS durante a revisão:
   ```bash
-  npx tsx scripts/validate-lancamentos.ts data/editions/{AAMMDD}/01-categorized.md
+  npx tsx scripts/validate-lancamentos.ts {EDITION_DIR}/01-categorized.md
   ```
   Se exit code != 0: avisar o editor — `"⚠️ validate-lancamentos detectou URLs não-oficiais OU itens sem sinal de produto (not_a_tool, #1968) em LANÇAMENTOS. Mover pra NOTÍCIAS, ou allowlistar slug atípico legítimo em seed/lancamentos-tool-allowlist.txt."` — mas **não bloquear automaticamente**.
   Push do MD atualizado de volta para o Drive:
   ```bash
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir data/editions/{AAMMDD}/ --stage 1 --files 01-categorized.md
+  npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 1 --files 01-categorized.md
   ```
 - **Pós-gate-apply invariants (#1007 Fase 1)** — agora `01-approved.json` existe:
   ```bash
-  npx tsx scripts/check-invariants.ts --stage 1 --edition-dir data/editions/{AAMMDD}/
+  npx tsx scripts/check-invariants.ts --stage 1 --edition-dir {EDITION_DIR}/
   ```
   Roda todos os checks de Stage 1 (incluindo `categorized-has-eia-section` e `approved-has-3-highlights` + `coverage-line-present`). Exit 1 = bug downstream — logar warn e seguir; o sentinel ainda é escrito.
 
@@ -783,4 +788,4 @@ Apresentar ao usuário:
   ```
   Falha do sentinel → logar warn (`npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator --level warn --message 'sentinel_write_failed'`). **Não bloquear** a aprovação do gate.
 - **Arquivar o inbox** (#680): `mkdir -p data/inbox-archive` seguido de `mv data/inbox.md data/inbox-archive/{YYYY-MM-DD}.md`. Recriar `data/inbox.md` vazio. Sem o mkdir, falha em checkout limpo.
-- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 1 done via `update-stage-status.ts` com `--end ISO` e `--duration-ms`. Em seguida, rodar `npx tsx scripts/capture-stage-usage.ts --edition-dir data/editions/{AAMMDD}/ --stage 1` (#3441) — captura `cost_usd`/`tokens_in`/`tokens_out`/`models` REAIS a partir do `usage` das chamadas do coordenador registrado no transcript local da sessão (janela `[start, end]` do stage), sem precisar que o orchestrator agregue nada manualmente. Sem transcript local disponível (sessão cloud), sai silenciosamente sem escrever nada — nunca bloqueia.
+- **Atualizar `stage-status.md` (#1217 — removed cost.md).** Marcar stage 1 done via `update-stage-status.ts` com `--end ISO` e `--duration-ms`. Em seguida, rodar `npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 1` (#3441) — captura `cost_usd`/`tokens_in`/`tokens_out`/`models` REAIS a partir do `usage` das chamadas do coordenador registrado no transcript local da sessão (janela `[start, end]` do stage), sem precisar que o orchestrator agregue nada manualmente. Sem transcript local disponível (sessão cloud), sai silenciosamente sem escrever nada — nunca bloqueia.
