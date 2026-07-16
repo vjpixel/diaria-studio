@@ -507,6 +507,27 @@ export function resolveJogarArchiveYear(rawYear: string | null, now: Date): stri
 }
 
 /**
+ * Pure (#3524): reforço contextual de assinatura no ÍNDICE do arquivo —
+ * distinto de `renderSubscribeCtaBlock` (o CTA PRINCIPAL, revelado só
+ * pós-voto/pós-quiz, #3518) por design: aqui o visitante ainda não jogou
+ * nada nesta página (é o índice de edições, não um par jogável) — um botão
+ * `hidden`-then-revealed não se aplica, e mostrar o CTA cheio de cara
+ * duplicaria visualmente o mesmo bloco que aparece segundos depois assim que
+ * o visitante clica em qualquer edição (`/jogar?edition=…` → mesmo
+ * `renderJogarPageHtml` de sempre). Decisão conservadora: uma frase única,
+ * sempre visível (sem JS/hidden), no rodapé do índice — reforço leve, não
+ * uma 2ª conversão concorrente. Reusa `buildSubscribeUrl()` (mesmo destino/
+ * UTM do CTA principal, #3518) — o funil de atribuição não distingue "veio
+ * do índice do arquivo" vs. "veio pós-voto"; ambos são o mesmo `eia-standalone`
+ * (decisão aceitável: a issue #3524 só exige o funil distinguir
+ * newsletter/share/embed, não sub-origens dentro do próprio `/jogar`).
+ */
+export function renderArchiveSubscribeReinforcement(): string {
+  const url = buildSubscribeUrl();
+  return `<p class="sub archive-subscribe-reinforcement">Isso chega pronto na sua caixa de entrada todo dia — <a href="${htmlEscape(url)}" target="_blank" rel="noopener">assine a Diar.ia</a>.</p>`;
+}
+
+/**
  * Pure render (#3519): página de índice do arquivo — lista as edições
  * FECHADAS do ano (já filtradas/ordenadas DESC pelo caller via
  * `extractEditionsForYear`), agrupadas por mês (`groupEditionsByMonth`,
@@ -559,6 +580,7 @@ ${renderBrandShellStyles()}
 <h1>Jogue edições passadas</h1>
 <p class="sub">Pares de dias anteriores — vote e veja na hora se acertou. Só edições já reveladas entram aqui, o par de hoje fica em <a href="/jogar">/jogar</a>.</p>
 ${rows}
+${renderArchiveSubscribeReinforcement()}
 <p class="footer-links"><a href="/jogar">← Voltar pro par de hoje</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver leaderboard</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 </body>

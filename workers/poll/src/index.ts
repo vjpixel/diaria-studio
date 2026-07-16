@@ -37,6 +37,7 @@ import {
   leaderboardHref,
   brandHiddenInput, // #3118 item 12
   maskEmail, // #3118 item 11
+  jogarArchiveHref, // #3524
 } from "./lib";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
@@ -615,6 +616,16 @@ export function votePageHtml(
     ? `${leaderboardBase}${leaderboardBase.includes("?") ? "&" : "?"}v=${cacheBusterTs}`
     : leaderboardBase;
 
+  // #3524: link pro arquivo jogável — a metade "página pós-voto (email) →
+  // arquivo" da ponte cross-canal (EPIC #3514). Só pra brands diaria/clarice
+  // (leitor de e-mail que chegou aqui via botão/link do e-mail) — brand "web"
+  // (jogo standalone) já tem o MESMO link no próprio rodapé de `/jogar`
+  // (jogar.ts `renderJogarPageHtml`/`renderJogarQuizPageHtml`); duplicar aqui
+  // seria redundante pro visitante que já está no site.
+  const archiveLinkHtml = brand !== "web"
+    ? ` &nbsp;|&nbsp; <a href="${jogarArchiveHref()}">Jogar edições passadas</a>`
+    : "";
+
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -696,7 +707,7 @@ export function votePageHtml(
 ${imagesHtml}
 ${shareCardHtml}
 ${formHtml}
-<p class="footer-links"><a href="${BRAND_INFO[brand].siteUrl}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="${BRAND_INFO[brand].siteUrl}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
 </body>
 </html>`;
 }

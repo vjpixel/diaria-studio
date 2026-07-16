@@ -814,6 +814,40 @@ export function leaderboardHref(brand: Brand, slug?: string | null): string {
   return withBrandQuery(base, brand);
 }
 
+// ── #3524: ponte cross-canal email → arquivo do site (última sub-issue do
+// EPIC #3514) ─────────────────────────────────────────────────────────────
+//
+// UTM fixo do funil "página pós-voto (email) → arquivo jogável" — mesma
+// disciplina de 3 parâmetros já usada pelo funil site→email (`SUBSCRIBE_UTM_*`,
+// jogar.ts #3518) e embed→email (`EMBED_UTM_*`, embed.ts #3521).
+// `utm_source=newsletter` é o mesmo valor usado no bloco É IA? da newsletter
+// (scripts/lib/newsletter-render-html.ts, `EIA_ARCHIVE_UTM_SOURCE` — duplicado
+// ali por rodar em bundle Node separado, mesmo racional de DS_COLORS/
+// DS_FONTS/ds-tokens.generated.ts) — o leitor de email que chega em `/vote`
+// clicando no botão do e-mail e o leitor que chega pelo link do corpo do
+// e-mail contam pro MESMO utm_source no funil, coerência exigida pelo item
+// de aceite #3524 ("UTMs distintos por origem... funil distingue newsletter
+// vs share vs embed").
+export const EMAIL_ARCHIVE_UTM_SOURCE = "newsletter";
+export const EMAIL_ARCHIVE_UTM_MEDIUM = "email";
+export const EMAIL_ARCHIVE_UTM_CAMPAIGN = "eia-arquivo";
+
+/**
+ * Href relativo do arquivo jogável (`/jogar/arquivo`, #3519) com o UTM do
+ * funil "página pós-voto → site". Path relativo (não `POLL_BASE_URL` absoluto)
+ * — mesmo padrão de `leaderboardHref`/`archiveHref` acima: o link vive na
+ * MESMA origem do Worker (`/vote` e `/jogar/arquivo` são handlers do mesmo
+ * worker `poll`), sem necessidade de URL absoluta.
+ */
+export function jogarArchiveHref(): string {
+  const params = new URLSearchParams({
+    utm_source: EMAIL_ARCHIVE_UTM_SOURCE,
+    utm_medium: EMAIL_ARCHIVE_UTM_MEDIUM,
+    utm_campaign: EMAIL_ARCHIVE_UTM_CAMPAIGN,
+  });
+  return `/jogar/arquivo?${params.toString()}`;
+}
+
 // ── Brand default hardcoded em 5 pontos → 2 helpers (#3118 item 12) ────────
 //
 // `leaderboardHref` (acima), `archiveHref` (leaderboard-routes.ts) e o hidden
