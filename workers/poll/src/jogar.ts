@@ -61,6 +61,56 @@ import { shareButtonScript } from "./share";
 const JOGAR_BRAND = "web" as const;
 
 /**
+ * #3518: URL de assinatura da diária usada no CTA de conversão pós-voto do
+ * jogo standalone (o passo de conversão do EPIC #3514). `diaria.beehiiv.com`
+ * DIRETO — não `diar.ia.br` — mesma decisão já documentada em
+ * `count-subscriptions-by-utm.ts` (#2457) e `monthly-render.ts` (#2975): o
+ * redirect do Registro.br em `diar.ia.br` dropa a query string (#2613), o que
+ * apagaria silenciosamente o UTM. `utm_source=eia-standalone` segue a MESMA
+ * convenção de medição já usada pra Clarice (`utm_source=clarice`) —
+ * `count-subscriptions-by-utm.ts --source eia-standalone` mede quantos
+ * assinantes vieram por este funil sem nenhum código novo (o script já
+ * agrega por qualquer utm_source presente na subscription do Beehiiv).
+ */
+export const SUBSCRIBE_UTM_SOURCE = "eia-standalone";
+export const SUBSCRIBE_UTM_MEDIUM = "jogar";
+export const SUBSCRIBE_UTM_CAMPAIGN = "eia-jogar-posvoto";
+
+/**
+ * Pure (#3518): URL de assinatura com UTM fixo do funil do jogo. Sem
+ * variante A/B — a issue sugere "copy A/B-ável (guardar variante no KV pra
+ * medir)" como ideia de expansão; decisão conservadora aqui é 1 única
+ * copy/URL fixa, já mensurável via `count-subscriptions-by-utm.ts`. A/B real
+ * (persistir variante + KV) fica de follow-up caso o editor queira testar
+ * cópias — fora do escopo desta issue [S].
+ */
+export function buildSubscribeUrl(): string {
+  const params = new URLSearchParams({
+    utm_source: SUBSCRIBE_UTM_SOURCE,
+    utm_medium: SUBSCRIBE_UTM_MEDIUM,
+    utm_campaign: SUBSCRIBE_UTM_CAMPAIGN,
+  });
+  return `https://diaria.beehiiv.com/?${params.toString()}`;
+}
+
+/**
+ * Pure (#3518): bloco HTML do CTA de assinatura pós-voto — a conversão do
+ * EPIC #3514. `hidden` por padrão no HTML estático: revelado via JS só
+ * depois do voto (novo OU repetido — ver `renderJogarPageHtml`), nunca antes
+ * (mesma disciplina anti-spoiler/progressive-enhancement do resto da
+ * página). Copy reusa quase literalmente a sugestão da própria issue #3518.
+ * `target="_blank"` — não perder o estado do jogo (token/voto já registrado)
+ * ao converter; assinatura abre em aba nova.
+ */
+export function renderSubscribeCtaBlock(): string {
+  const url = buildSubscribeUrl();
+  return `<div id="jogar-subscribe-cta" class="subscribe-cta" hidden>
+  <p class="subscribe-text">Gostou? Um par novo desses todo dia na sua caixa de entrada, além das 3 notícias de IA mais importantes. Grátis.</p>
+  <a class="subscribe-btn" href="${htmlEscape(url)}" target="_blank" rel="noopener">Assinar a Diar.ia</a>
+</div>`;
+}
+
+/**
  * Pure (#3516): resolve a edição a ser jogada. `?edition=AAMMDD` explícito
  * (formato válido) tem prioridade — hook de extensão pro arquivo de pares
  * passados (#3519). Formato inválido/ausente → "hoje" em BRT.
@@ -146,7 +196,7 @@ ${seoMeta}
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .already { margin: 24px auto; padding: 16px 18px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; font-size: 0.95rem; }
   .scroll-hint { display: none; }
-  #jogar-form[hidden], #jogar-already[hidden], #jogar-result-slot[hidden] { display: none; }
+  #jogar-form[hidden], #jogar-already[hidden], #jogar-result-slot[hidden], #jogar-subscribe-cta[hidden] { display: none; }
   /* #3517: estilo do resultado + card de compartilhamento injetados no slot
      via JS (mesmas classes de renderShareCardBlock/votePageHtml, index.ts —
      duplicado aqui pois é um <style> inline separado, mesmo padrão do resto
@@ -156,12 +206,21 @@ ${seoMeta}
   .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
   .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .share-actions button { padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  /* #3518: CTA de assinatura pós-voto — mesmo padrão visual de .share-card
+     (fundo paperAlt, cantos arredondados). Botão sólido em ink (não brand) —
+     #3110 já documentou que ink+onInk é o único par que passa contraste AA
+     (~15:1) pra botão de fundo cheio; brand/teal é só texto no DS. */
+  .subscribe-cta { margin: 20px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
+  .subscribe-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
+  .subscribe-btn { display: inline-block; padding: 10px 20px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; text-decoration: none; font-weight: 600; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
   @media (max-width: 600px) {
     .choice { flex-basis: 100%; max-width: 100%; }
     .scroll-hint { display: block; width: 100%; margin: 2px 0 10px; font-size: 0.85rem; font-weight: 600; color: ${DS_COLORS.brand}; }
     .share-card { max-width: 100%; padding: 20px 18px; }
     .share-actions { flex-direction: column; }
     .share-actions button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
+    .subscribe-cta { max-width: 100%; padding: 20px 18px; }
+    .subscribe-btn { display: block; width: 100%; box-sizing: border-box; padding: 14px 16px; font-size: 1.05rem; }
   }
 ${renderBrandShellStyles()}
 </style>
@@ -188,6 +247,11 @@ ${renderBrandShellStyles()}
      navegação nativa (window.location.href) em qualquer falha de rede. -->
 <div id="jogar-result-slot" hidden></div>
 <div id="jogar-already" class="already" hidden></div>
+<!-- #3518: CTA de assinatura — estático (SEM dado de servidor, ao contrário
+     do result-slot/share-card), revelado via JS junto com o resultado (voto
+     novo OU repetido, ver script abaixo). Nunca antes do voto (mesma
+     disciplina anti-spoiler do resto da página). -->
+${renderSubscribeCtaBlock()}
 
 <p class="footer-links"><a href="${htmlEscape(info.siteUrl)}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
@@ -268,10 +332,15 @@ ${renderBrandFooter(JOGAR_BRAND)}
   try { already = window.localStorage.getItem(votedKey); } catch (e) {}
   var form = document.getElementById("jogar-form");
   var alreadyBox = document.getElementById("jogar-already");
+  // #3518: CTA de assinatura — revelado junto com QUALQUER resultado (voto
+  // novo abaixo, ou já-votou aqui). Bloco é estático (sem dado de servidor),
+  // então só precisa desescondê-lo — nenhum fetch/injeção extra.
+  var subscribeCta = document.getElementById("jogar-subscribe-cta");
   if (already && form && alreadyBox) {
     form.hidden = true;
     alreadyBox.hidden = false;
     alreadyBox.textContent = "Você já votou na edição de hoje (escolha: " + already + "). Resultado na página do seu voto ou no leaderboard.";
+    if (subscribeCta) subscribeCta.hidden = false;
   } else if (form) {
     // #3517: intercepta o submit — em vez de deixar o browser navegar pro
     // /vote (comportamento nativo do form GET), busca a mesma URL via fetch
@@ -316,6 +385,9 @@ ${renderBrandFooter(JOGAR_BRAND)}
         resultSlot.innerHTML = out;
         resultSlot.hidden = false;
         form.hidden = true;
+        // #3518: CTA de assinatura — revelado junto com o resultado do voto
+        // NOVO (mesmo timing do share card acima).
+        if (subscribeCta) subscribeCta.hidden = false;
       }).catch(fallbackNativeNav);
     });
 
