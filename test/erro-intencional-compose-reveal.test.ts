@@ -17,7 +17,8 @@ import {
   renderSection,
   insertOrUpdateSection,
   boldQuotedStrings,
-  extractIntentionalErrorFromMd,
+  extractCurrentDeclarationFromMd,
+  extractPreviousRevealFromRecord,
   extractCorrectValueFromFrontmatter,
   narrativeHasCorrection,
   narrativeIsCatalogShaped,
@@ -397,7 +398,7 @@ describe("extractCorrectValueFromFrontmatter (#1443, migrado pra JSON #3222)", (
   });
 });
 
-describe("extractIntentionalErrorFromMd (#1443, migrado pra JSON #3222) — agora retorna correct_value", () => {
+describe("extractPreviousRevealFromRecord (#1443, migrado pra JSON #3222, split #3494) — agora retorna correct_value", () => {
   it("#2411 fix — description catálogo (record) + corpo genérico → null (não vaza label interno)", () => {
     // Regressão #2411: #2398 fazia description catálogo virar narrative do reveal.
     // Após o fix: body genérico é filtrado, record sem `reveal` → null.
@@ -414,7 +415,7 @@ describe("extractIntentionalErrorFromMd (#1443, migrado pra JSON #3222) — agor
       category: "factual",
       correct_value: "Perplexity ou Copilot",
     };
-    const r = extractIntentionalErrorFromMd(md, record);
+    const r = extractPreviousRevealFromRecord(md, record);
     // description é catálogo → NÃO deve ser retornada como narrative
     assert.equal(r, null, "deve retornar null — description é catálogo, body é genérico");
   });
@@ -436,7 +437,7 @@ describe("extractIntentionalErrorFromMd (#1443, migrado pra JSON #3222) — agor
       category: "factual",
       correct_value: "Perplexity ou Copilot",
     };
-    const r = extractIntentionalErrorFromMd(md, record);
+    const r = extractPreviousRevealFromRecord(md, record);
     // Body first-person é a fonte primária (#2411)
     assert.ok(r !== null, "deve retornar resultado válido");
     assert.equal(r?.narrative, "listei o Spotify como assistente de IA no DESTAQUE 2, mas o Spotify é um serviço de streaming");
@@ -457,7 +458,7 @@ describe("extractIntentionalErrorFromMd (#1443, migrado pra JSON #3222) — agor
       category: "factual",
       correct_value: "2014",
     };
-    const r = extractIntentionalErrorFromMd(md, record);
+    const r = extractPreviousRevealFromRecord(md, record);
     assert.equal(r?.narrative, "contei que Karpathy cofundou a OpenAI em 1914");
     assert.equal(r?.correct_value, "2014");
   });
@@ -472,7 +473,7 @@ describe("extractIntentionalErrorFromMd (#1443, migrado pra JSON #3222) — agor
       category: "ortografico",
       correct_value: "Microsoft",
     };
-    const r = extractIntentionalErrorFromMd(md, record);
+    const r = extractPreviousRevealFromRecord(md, record);
     // `reveal` do record é a fonte fallback (#2411/#3222)
     assert.ok(r !== null, "deve retornar resultado com narrative do record");
     assert.equal(r?.narrative, "escrevi Macrosoft no primeiro parágrafo do DESTAQUE 3, o nome correto é Microsoft");
@@ -481,12 +482,14 @@ describe("extractIntentionalErrorFromMd (#1443, migrado pra JSON #3222) — agor
     assert.doesNotMatch(r?.narrative ?? "", /^DESTAQUE/);
   });
 
-  it("correct_value undefined quando record ausente", () => {
+  it("#3494: extractCurrentDeclarationFromMd nunca carrega correct_value (não recebe record)", () => {
+    // Pós-split #3494: extractCurrentDeclarationFromMd não tem parâmetro `record`
+    // — a ausência de `correct_value` no retorno é garantida pelo próprio tipo,
+    // não por um record ausente/vazio.
     const md = `Nessa edição, escrevi "X" onde deveria ser "Y".`;
-    const r = extractIntentionalErrorFromMd(md);
+    const r = extractCurrentDeclarationFromMd(md);
     assert.equal(r?.detail, "X");
     assert.equal(r?.gabarito, "Y");
-    assert.equal(r?.correct_value, undefined);
   });
 });
 

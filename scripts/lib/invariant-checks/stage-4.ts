@@ -30,7 +30,7 @@ import {
 import { urlsMatch } from "../url-utils.ts";
 import { readDestaqueCount } from "./stage-3.ts";
 import {
-  extractIntentionalErrorFromMd,
+  extractCurrentDeclarationFromMd,
   extractRevealFromFrontmatter,
   narrativeIsGenericPlaceholder,
   narrativeIsCatalogShaped,
@@ -510,10 +510,22 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
     `first-person completa para o reveal público da próxima edição. ` +
     `Ex: "Na última edição, escrevi 1990 onde o correto é 1998."`;
 
-  // 1. Verificação via extractIntentionalErrorFromMd (casos: narrative real mas genérico
-  //    ou catalog-shaped que ainda escapou do filtro na extração do corpo).
-  const extracted = extractIntentionalErrorFromMd(md, record);
+  // 1. Verificação via extractCurrentDeclarationFromMd (#3494: SÓ corpo, nunca
+  //    `record` — `record.reveal` descreve o erro desta edição fraseado para a
+  //    PRÓXIMA edição revelar, não a declaração desta edição sobre si mesma;
+  //    misturar os dois mascarava prosa genérica/placeholder no corpo sempre
+  //    que `record.reveal` estivesse preenchido, produzindo inclusive a
+  //    mensagem corrompida "Nessa edição, Na última edição, …").
+  const extracted = extractCurrentDeclarationFromMd(md);
   if (extracted?.narrative) {
+    // (self-review #3494) Ambos os checks abaixo (genérico + catalog-shaped)
+    // são estruturalmente redundantes agora — extractCurrentDeclarationFromMd
+    // já filtra as duas classes antes de retornar não-null, então
+    // `extracted.narrative` nunca deveria bater aqui. Mantidos como
+    // defense-in-depth intencional (mesma classe de guard que #2438/#633
+    // já pratica no resto desta função) em vez de removidos — barato e
+    // protege contra o filtro de extractCurrentDeclarationFromMd divergir
+    // no futuro sem este check acompanhar.
     if (narrativeIsGenericPlaceholder(extracted.narrative)) {
       return [
         {
@@ -530,8 +542,6 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
         },
       ];
     }
-    // (#2419 bug #2 fix) catalog-shaped escape — extractIntentionalErrorFromMd filtra corpo
-    // catalog-shaped mas narrative pode vir do frontmatter `narrative` legado (bug #2).
     if (narrativeIsCatalogShaped(extracted.narrative)) {
       return [
         {
@@ -549,10 +559,13 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
     }
   }
 
-  // 2. Quando extractIntentionalErrorFromMd retorna null (filtrou texto genérico/catalog),
-  //    verificar diretamente o corpo do bloco ERRO INTENCIONAL.
-  //    Isso cobre: editor escreveu só o convite genérico OU catalog-shaped no corpo,
-  //    sem frontmatter `reveal`/`narrative` preenchido.
+  // 2. Quando extractCurrentDeclarationFromMd retorna null (filtrou texto
+  //    genérico/catalog, ou não achou nenhuma linha "Nessa edição, …"),
+  //    verificar diretamente o corpo do bloco ERRO INTENCIONAL. Isso cobre:
+  //    editor escreveu só o convite genérico OU catalog-shaped no corpo —
+  //    INDEPENDENTE de `record.reveal` estar preenchido (#3494): o corpo é
+  //    lido pelos assinantes DESTA edição, `record.reveal` é usado pela
+  //    PRÓXIMA — um não substitui o outro.
   if (!extracted) {
     const narrativeRe = /Nessa\s+edi[çc][ãa]o,\s+([^\n]+?)\.\s*(?:\n|$)/i;
     let block = md;
@@ -608,14 +621,14 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
   // `reveal`, o Stage 4 ficaria silencioso sem esta checagem.
   // severity: warning (decisão editorial 260619 — lints ficam warning).
   //
-  // (#2438 DRY) Quando extracted é não-nulo, reutiliza extracted.reveal (já computado
-  // por extractIntentionalErrorFromMd internamente via extractRevealFromFrontmatter)
-  // em vez de chamar extractRevealFromFrontmatter de novo — o `??` dispara tanto quando
-  // extracted é null quanto quando extracted.reveal é undefined (edições narrative-only
-  // sem campo reveal), causando double-parse residual. Usar condicional explícita:
-  // só parse o frontmatter quando extracted é null (o campo reveal pode ter valor
-  // catalog/genérico que precisamos checar mesmo sem narrative válida).
-  const reveal = extracted !== null ? extracted.reveal : extractRevealFromFrontmatter(record);
+  // (#3494) `extracted` (corpo) e `reveal` (record) são fontes ORTOGONAIS desde
+  // o split de extractCurrentDeclarationFromMd/extractPreviousRevealFromRecord
+  // — `extracted` nunca carrega mais um campo `.reveal` derivado do record, então
+  // este check roda SEMPRE, independente do corpo já ter (ou não) uma declaração
+  // válida. Isso é o que corrige o cegamento original: `record.reveal` catalog/
+  // genérico agora é sinalizado mesmo quando o corpo também está com problema
+  // (que já terá sido sinalizado antes, no passo 1/2 acima).
+  const reveal = extractRevealFromFrontmatter(record);
   if (reveal) {
     if (narrativeIsCatalogShaped(reveal)) {
       return [

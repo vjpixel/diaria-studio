@@ -99,8 +99,10 @@ export function findPreviousIntentionalError(
 
 /**
  * (#2438 DRY) Regex legado para extrair detail/gabarito do formato
- * "escrevi 'X' onde deveria ser 'Y'". Compartilhado por extractIntentionalErrorFromMd
- * (onde aparecia duplicado em 2 lugares) para eliminar a duplicação.
+ * "escrevi 'X' onde deveria ser 'Y'". Compartilhado por
+ * extractCurrentDeclarationFromMd e extractPreviousRevealFromRecord (#3494 —
+ * split de extractIntentionalErrorFromMd, onde aparecia duplicado em 2
+ * lugares) para eliminar a duplicação.
  */
 const LEGACY_DETAIL_RE =
   /escrevi\s+(["'])([^"']+?)\1\s+onde\s+deveria\s+ser\s+(["'])([^"']+?)\3/i;
@@ -155,38 +157,31 @@ export function extractNarrativeFromFrontmatter(
 }
 
 /**
- * Pure (#961 / #1079 / #2411 / #2419 rewrite / #3222 migrado pra JSON): extrai o erro
- * intencional declarado da edição — prosa de `02-reviewed.md` + campos estruturados
- * de `_internal/intentional-error.json` (`record`, opcional).
+ * Pure (#961 / #1079 / #2411 / #2419 / #3494 split): extrai a declaração da
+ * edição CORRENTE a partir da prosa "Nessa edição, …" em `02-reviewed.md`.
  *
- * **Separação REVEAL × CATÁLOGO (#2419):**
- *   - `description` é CATÁLOGO (3ª pessoa, "DESTAQUE N faz X") — NÃO é fonte do reveal.
- *   - `reveal` (#2419 NEW) é o campo dedicado first-person para o reveal público.
- *   - A prosa "Nessa edição, …" no corpo é fonte de reveal quando nenhum campo
- *     estruturado first-person está disponível.
+ * **NUNCA recebe/consulta `record` (`_internal/intentional-error.json`)** — o
+ * campo `record.reveal` é prosa PRÉ-ESCRITA pelo editor, em primeira pessoa
+ * PASSADA ("Na última edição, escrevi X…"), destinada à PRÓXIMA edição
+ * revelar o erro DESTA edição (ver `extractRevealFromFrontmatter`). Não é a
+ * mesma coisa que "a declaração que esta edição faz de si mesma" — misturar
+ * as duas produzia "Nessa edição, Na última edição, escrevi X…" (#3205→#3485→
+ * #3494: três bandaids no mesmo defeito estrutural antes deste split). Quando
+ * o corpo precisa de fallback pro record de uma edição ANTERIOR (caso de
+ * `findPreviousIntentionalErrorFromMd`), use `extractPreviousRevealFromRecord`.
  *
- * Estratégia de extração:
- *   1. Prosa "Nessa edição, {narrativa}." no corpo (first-person, primário).
- *      Filtros: placeholder {PREENCHER}, texto genérico de convite, texto catalog-shaped.
- *   2. `record.reveal` (`_internal/intentional-error.json`, #3222).
- *      NUNCA usa `description` — catálogo 3ª pessoa.
- *   3. Se nenhuma das duas, retornar null.
+ * Filtros de exclusão sobre a prosa do corpo:
+ *   - Placeholder `{PREENCHER…}` não preenchido.
+ *   - Texto genérico do convite ("há um erro proposital", "concorrer ao sorteio" etc.).
+ *   - (#2419 bug #9 fix) Texto catalog-shaped ("DESTAQUE N …") — label interno
+ *     que vaza ao reveal público e é agramatical com "Nessa edição, DESTAQUE N…".
  *
- * Retorna `{ narrative, reveal? }` no novo formato; campos `detail/gabarito` ficam
- * derivados pelos consumidores que ainda precisam deles (back-compat).
+ * Retorna `{ narrative, detail?, gabarito? }` (detail/gabarito só quando a
+ * narrativa bate com o formato legado "escrevi 'X' onde deveria ser 'Y'").
  */
-export function extractIntentionalErrorFromMd(
+export function extractCurrentDeclarationFromMd(
   md: string,
-  record?: IntentionalErrorJson | null,
-): { narrative: string; detail?: string; gabarito?: string; correct_value?: string; reveal?: string } | null {
-  const correctValue = extractCorrectValueFromFrontmatter(record);
-  // (#2419) Extrair o campo `reveal` dedicado para propagação — fonte canônica.
-  const revealFromFm = extractRevealFromFrontmatter(record);
-
-  // PRIORIDADE 1 — prosa "Nessa edição, …" no corpo (first-person, fonte
-  // primária do reveal). O hábito editorial é o editor escrever a frase de
-  // primeira pessoa que vai aparecer como reveal na próxima edição.
-  //
+): { narrative: string; detail?: string; gabarito?: string } | null {
   // #1099: quando o MD tem o header `**ERRO INTENCIONAL**`, ancorar busca
   // dentro do bloco. Caso contrário, busca global (back-compat com testes
   // que passam só a linha solta). Em ambos os casos, vírgula obrigatória
@@ -208,38 +203,77 @@ export function extractIntentionalErrorFromMd(
   // "edição" — evita match em "Nessa edição da Diar.ia" do PARA ENCERRAR (#1099).
   const narrativeRe = /Nessa\s+edi[çc][ãa]o,\s+([^\n]+?)\.\s*(?:\n|$)/i;
   const nm = block.match(narrativeRe);
-  if (nm) {
-    const narrative = nm[1].trim();
-    // Filtros de exclusão:
-    // - Placeholder não preenchido.
-    // - Texto genérico do convite ("há um erro proposital", "concorrer ao sorteio" etc.)
-    //   — quando o corpo tem só o convite genérico, NÃO é fonte válida de reveal.
-    // - (#2419 bug #9 fix) Texto catalog-shaped ("DESTAQUE N ...") — label interno
-    //   que vaza ao reveal público e é agramatical com "Nessa edição, DESTAQUE N...".
-    if (
-      !/^\{PREENCHER/i.test(narrative) &&
-      !narrativeIsGenericPlaceholder(narrative) &&
-      !narrativeIsCatalogShaped(narrative)
-    ) {
-      // Back-compat: tenta extrair detail/gabarito do formato legado
-      // "escrevi 'X' onde deveria ser 'Y'" pra consumidores antigos.
-      // (#2438 DRY) Usa LEGACY_DETAIL_RE compartilhado (eliminando duplicata abaixo).
-      const lm = narrative.match(LEGACY_DETAIL_RE);
-      if (lm) {
-        return {
-          narrative,
-          detail: lm[2],
-          gabarito: lm[4],
-          ...(correctValue ? { correct_value: correctValue } : {}),
-          ...(revealFromFm ? { reveal: revealFromFm } : {}),
-        };
-      }
-      return {
-        narrative,
-        ...(correctValue ? { correct_value: correctValue } : {}),
-        ...(revealFromFm ? { reveal: revealFromFm } : {}),
-      };
-    }
+  if (!nm) return null;
+
+  const narrative = nm[1].trim();
+  // Filtros de exclusão: placeholder não preenchido, texto genérico do
+  // convite, texto catalog-shaped (ver docstring acima).
+  if (
+    /^\{PREENCHER/i.test(narrative) ||
+    narrativeIsGenericPlaceholder(narrative) ||
+    narrativeIsCatalogShaped(narrative)
+  ) {
+    return null;
+  }
+
+  // Back-compat: tenta extrair detail/gabarito do formato legado
+  // "escrevi 'X' onde deveria ser 'Y'" pra consumidores antigos.
+  // (#2438 DRY) Usa LEGACY_DETAIL_RE compartilhado.
+  const lm = narrative.match(LEGACY_DETAIL_RE);
+  if (lm) {
+    return { narrative, detail: lm[2], gabarito: lm[4] };
+  }
+  return { narrative };
+}
+
+/**
+ * Pure (#961 / #1079 / #2411 / #2419 rewrite / #3222 migrado pra JSON / #3494
+ * split): extrai o que uma edição PASSADA declarou — prosa de
+ * `02-reviewed.md` DESSA MESMA edição + fallback pro `record.reveal` DESSE
+ * MESMO `_internal/intentional-error.json` quando a prosa não basta.
+ *
+ * **Contrato: `md` e `record` devem pertencer à MESMA edição** — a edição
+ * sendo consultada como "anterior" por `findPreviousIntentionalErrorFromMd`
+ * (ou, em `sync-intentional-error.ts`, a própria edição corrente quando o
+ * corpo ainda não tem prosa própria e o `record.reveal` — pré-escrito pelo
+ * editor pra usar como reveal na PRÓXIMA edição — é o único dado disponível).
+ * NUNCA usar pra extrair a declaração que UMA edição faz de SI MESMA — ver
+ * `extractCurrentDeclarationFromMd`, que nunca consulta `record`.
+ *
+ * **Separação REVEAL × CATÁLOGO (#2419):**
+ *   - `description` é CATÁLOGO (3ª pessoa, "DESTAQUE N faz X") — NÃO é fonte do reveal.
+ *   - `reveal` (#2419 NEW) é o campo dedicado first-person para o reveal público.
+ *   - A prosa "Nessa edição, …" no corpo é fonte de reveal quando nenhum campo
+ *     estruturado first-person está disponível.
+ *
+ * Estratégia de extração:
+ *   1. Prosa "Nessa edição, {narrativa}." no corpo (first-person, primário) —
+ *      via `extractCurrentDeclarationFromMd`.
+ *   2. `record.reveal` (`_internal/intentional-error.json`, #3222).
+ *      NUNCA usa `description` — catálogo 3ª pessoa.
+ *   3. Se nenhuma das duas, retornar null.
+ *
+ * Retorna `{ narrative, reveal? }` no novo formato; campos `detail/gabarito` ficam
+ * derivados pelos consumidores que ainda precisam deles (back-compat).
+ */
+export function extractPreviousRevealFromRecord(
+  md: string,
+  record?: IntentionalErrorJson | null,
+): { narrative: string; detail?: string; gabarito?: string; correct_value?: string; reveal?: string } | null {
+  const correctValue = extractCorrectValueFromFrontmatter(record);
+  // (#2419) Extrair o campo `reveal` dedicado para propagação — fonte canônica.
+  const revealFromFm = extractRevealFromFrontmatter(record);
+
+  // PRIORIDADE 1 — prosa "Nessa edição, …" no corpo (first-person, fonte
+  // primária do reveal). O hábito editorial é o editor escrever a frase de
+  // primeira pessoa que vai aparecer como reveal na próxima edição.
+  const bodyDeclaration = extractCurrentDeclarationFromMd(md);
+  if (bodyDeclaration) {
+    return {
+      ...bodyDeclaration,
+      ...(correctValue ? { correct_value: correctValue } : {}),
+      ...(revealFromFm ? { reveal: revealFromFm } : {}),
+    };
   }
 
   // PRIORIDADE 2 — `record.reveal` (`_internal/intentional-error.json`, #3222).
@@ -316,7 +350,7 @@ export function findPreviousIntentionalErrorFromMd(
     // dela, não no `_internal/` da edição atual — precisa ler explicitamente
     // pelo editionDir resolvido acima (não é o mesmo diretório que `--md`).
     const record = loadIntentionalErrorJson(intentionalErrorJsonPath(editionDir));
-    const extracted = extractIntentionalErrorFromMd(md, record);
+    const extracted = extractPreviousRevealFromRecord(md, record);
     if (extracted) {
       return {
         edition: editionId,
@@ -660,7 +694,7 @@ export function insertOrUpdateSection(
   // placeholder "{PREENCHER_NARRATIVA_DO_ERRO}" permanece como sinal correto
   // de pendência, em vez de fabricar texto incorreto a partir de um campo
   // com público/tempo verbal diferentes.
-  const currentExtracted = extractIntentionalErrorFromMd(md);
+  const currentExtracted = extractCurrentDeclarationFromMd(md);
   const currentDeclaration = currentExtracted
     ? `Nessa edição, ${currentExtracted.narrative}.`
     : null;

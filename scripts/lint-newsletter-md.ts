@@ -54,7 +54,7 @@ import {
 import { checkEiaAnswer } from "./lib/lint-checks/eia-answer-check.ts";
 import { checkIntentionalError, checkIntentionalErrorSafety } from "./lib/lint-checks/intentional-error.ts";
 import {
-  extractIntentionalErrorFromMd,
+  extractCurrentDeclarationFromMd,
   narrativeIsGenericPlaceholder,
 } from "./render-erro-intencional.ts";
 import { checkSectionItemFormat } from "./lib/lint-checks/section-item-format.ts";
@@ -486,7 +486,7 @@ function main(): void {
       process.exit(2);
     }
     const md = readFileSync(mdPath, "utf8");
-    const extracted = extractIntentionalErrorFromMd(md);
+    const extracted = extractCurrentDeclarationFromMd(md);
     let isGeneric = false;
     let label: string | undefined;
     if (extracted && extracted.narrative) {

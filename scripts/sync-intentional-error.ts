@@ -44,7 +44,10 @@ import {
   type IntentionalError,
 } from "./lib/intentional-errors.ts";
 // #1860: fallback de prosa quando o frontmatter falta.
-import { extractIntentionalErrorFromMd } from "./render-erro-intencional.ts";
+import {
+  extractCurrentDeclarationFromMd,
+  extractPreviousRevealFromRecord,
+} from "./render-erro-intencional.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
 export interface Flags {
@@ -194,33 +197,36 @@ function runSyncIntentionalErrorInner(flags: Flags): SyncIntentionalErrorResult 
     // deixa um buraco no JSONL e faz o reveal da próxima edição pular a
     // edição certa (#1854) — extrair da prosa e gravar com source="prose_block".
     const md = readFileSync(mdPath, "utf8");
-    // #3272 (revisado pós-#3293, code-review consolidado): tenta SEM o
-    // `record` primeiro — preserva o comportamento pré-#3272 quando o corpo
-    // do MD já tem prosa "Nessa edição, …" auto-suficiente. Só passa
-    // `lintResult.parsed` (já carregado por `checkIntentionalError` acima —
-    // zero I/O extra, dispensa reler `_internal/intentional-error.json`) na
-    // 2ª tentativa, alcançando a PRIORIDADE 2 (`record.reveal`) apenas quando
-    // o MD NÃO tem prosa própria. Sem esse cuidado, um record incompleto/
-    // desatualizado (ex: `reveal` de uma tentativa anterior, quando o editor
-    // reescreve a prosa do MD mas esquece de atualizar o JSON) contaminaria
-    // uma declaração de prosa completa e sem relação com o `reveal`/
-    // `correct_value` do record errado — `extractIntentionalErrorFromMd`
-    // sempre mescla esses campos do record na PRIORIDADE 1 também, mesmo
-    // quando a prosa já é auto-suficiente.
-    const proseFromMdAlone = extractIntentionalErrorFromMd(md);
+    // #3272 (revisado pós-#3293, code-review consolidado; #3494 — chamadas
+    // renomeadas ao contrato explícito): tenta `extractCurrentDeclarationFromMd`
+    // (SÓ corpo) primeiro — preserva o comportamento pré-#3272 quando o corpo
+    // do MD já tem prosa "Nessa edição, …" auto-suficiente. Só recorre a
+    // `extractPreviousRevealFromRecord` (que também tenta o corpo, mas cai no
+    // `record.reveal` — já carregado por `checkIntentionalError` acima, zero
+    // I/O extra — quando o corpo não basta) na 2ª tentativa. Sem esse
+    // cuidado, um record incompleto/desatualizado (ex: `reveal` de uma
+    // tentativa anterior, quando o editor reescreve a prosa do MD mas
+    // esquece de atualizar o JSON) contaminaria uma declaração de prosa
+    // completa e sem relação com o `reveal`/`correct_value` do record errado.
+    const proseFromMdAlone = extractCurrentDeclarationFromMd(md);
     // #3272 follow-up: só é seguro atribuir `category`/`location` do record à
-    // entry quando o record FOI a fonte real da narrativa (a chamada sem
-    // record já falhou, então a 2ª chamada com `lintResult.parsed` é quem
-    // produziu `prose`) — nesse caso record e narrativa descrevem
+    // entry quando o record FOI a fonte real da narrativa (a 1ª tentativa,
+    // corpo-só, já falhou, então é a 2ª chamada — com fallback pro record —
+    // quem produziu `prose`) — nesse caso record e narrativa descrevem
     // necessariamente o MESMO erro (o `reveal` do record virou a narrativa).
-    // Quando a 1ª chamada (sem record) já basta, `category`/`location` do
+    // Quando a 1ª chamada (corpo-só) já basta, `category`/`location` do
     // record NÃO podem ser presumidos do mesmo erro — o mesmo raciocínio que
-    // motiva não passar `record` pra `extractIntentionalErrorFromMd` nesse
-    // caso (evita contaminar uma prosa auto-suficiente com metadado
-    // desatualizado/não-relacionado de um record incompleto).
+    // motiva `extractCurrentDeclarationFromMd` nunca tocar `record` (evita
+    // contaminar uma prosa auto-suficiente com metadado desatualizado/não-
+    // relacionado de um record incompleto).
     const usedRecordAsSource = proseFromMdAlone === null;
-    const prose =
-      proseFromMdAlone ?? extractIntentionalErrorFromMd(md, lintResult.parsed);
+    // Tipagem: `proseFromMdAlone` (extractCurrentDeclarationFromMd) nunca tem
+    // `correct_value`/`reveal` (não recebe record) — estruturalmente compatível
+    // com o tipo mais completo de `extractPreviousRevealFromRecord` (campos
+    // opcionais podem ficar ausentes), então a anotação abaixo apenas unifica
+    // os dois ramos pro TS sem precisar de cast.
+    const prose: ReturnType<typeof extractPreviousRevealFromRecord> =
+      proseFromMdAlone ?? extractPreviousRevealFromRecord(md, lintResult.parsed);
     if (prose) {
       const existing = loadIntentionalErrors(jsonlPath);
       if (existing.some((e) => e.edition === flags.edition)) {
