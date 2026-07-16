@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
-import { checkNewsletterHtml, resolvePrepPublishEditionDir } from "../scripts/prep-manual-publish.ts";
+import {
+  checkNewsletterHtml,
+  resolvePrepPublishEditionDir,
+  hasStaleResultLineStyle,
+} from "../scripts/prep-manual-publish.ts";
 
 /**
  * Tests pra prep-manual-publish.ts (#1047, refatorado #1185, simplificado #1186).
@@ -172,6 +176,45 @@ describe("resolvePrepPublishEditionDir — auditoria #3491 (mesma classe de #348
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("hasStaleResultLineStyle — #3221 detecta estilo antigo de 'Resultado da última edição'", () => {
+  // Bug-driver: #3220 destylizou a linha "Resultado da última edição" (era
+  // bold+uppercase+letter-spacing+teal, herdado do padrão kicker/whyBox de
+  // #3103/#3104; agora é parágrafo comum). #2283 documenta que o Beehiiv
+  // PERSISTE o htmlSnippet do template "Default" entre usos — se o template
+  // salvo é anterior ao fix, o estilo antigo pode reaparecer visualmente
+  // mesmo com o renderer do repo já corrigido. Este teste trava a detecção
+  // determinística usada por checkTemplateNotStale (#3221) contra os dois
+  // formatos reais (antes/depois de #3220), extraídos de
+  // scripts/lib/newsletter-render-html.ts.
+
+  it("detecta o estilo ANTIGO (bold+letter-spacing+uppercase, pré-#3220)", () => {
+    const staleHtml =
+      '<tr><td><p style="margin:6px 0 0;font-family:Arial;font-size:12px;font-weight:bold;letter-spacing:1px;text-transform:uppercase;color:#0f766e;">Resultado da última edição: 62% acertaram.</p></td></tr>';
+    assert.equal(hasStaleResultLineStyle(staleHtml), true);
+  });
+
+  it("NÃO detecta o estilo NOVO (parágrafo comum, pós-#3220)", () => {
+    const freshHtml =
+      '<tr><td><p style="margin:6px 0 0;font-family:Arial;font-size:16px;line-height:1.5;color:#111111;">Resultado da última edição: 62% acertaram.</p></td></tr>';
+    assert.equal(hasStaleResultLineStyle(freshHtml), false);
+  });
+
+  it("não detecta nada quando a linha está ausente (template vazio ou outra edição sem É IA?)", () => {
+    assert.equal(hasStaleResultLineStyle(""), false);
+    assert.equal(
+      hasStaleResultLineStyle('<p style="font-weight:bold;letter-spacing:1px;text-transform:uppercase;">Outro texto qualquer</p>'),
+      false,
+    );
+  });
+
+  it("não falso-positiva quando só parte dos 3 atributos do estilo antigo está presente", () => {
+    // font-weight:bold sozinho (ex: <strong> genérico em outro contexto) não deve bastar.
+    const partial =
+      '<p style="font-weight:bold;color:#111;">Resultado da última edição: 50% acertaram.</p>';
+    assert.equal(hasStaleResultLineStyle(partial), false);
   });
 });
 
