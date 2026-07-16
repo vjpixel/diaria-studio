@@ -29,6 +29,6 @@ destaques, isolado por `---`. Não é auto-inserido pelo pipeline.
 
 Recomendação da equipe da Clarice
 
-Você recebe esta curadoria uma vez por mês. Se quiser acompanhar as novidades de IA todos os dias, a diar.ia.br, que produz esta newsletter conosco, publica uma edição diária e gratuita, que você lê em 5 minutos. É só se cadastrar no site.
+Você recebe esta curadoria uma vez por mês. Se quiser mais, a diar.ia.br, que produz esta newsletter conosco, publica uma edição diária e gratuita: 5 minutos para se manter atualizado e usar melhor a IA. É só se cadastrar no site.
 
 → [Assinar a edição diária](https://diaria.beehiiv.com/?utm_source=clarice)

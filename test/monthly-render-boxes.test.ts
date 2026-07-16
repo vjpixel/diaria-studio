@@ -104,17 +104,17 @@ describe("draftToEmail dispatch dos boxes DIVULGAÇÃO e LIVROS", () => {
   });
 });
 
-describe("box RECOMENDAÇÃO DE LEITURA (kicker próprio, sem título interno)", () => {
+describe("box LIVRO DO MÊS (kicker próprio, sem título interno)", () => {
   it("isSectionLabel reconhece o label (bold e sem bold)", () => {
-    assert.equal(isSectionLabel("**RECOMENDAÇÃO DE LEITURA**"), true);
-    assert.equal(isSectionLabel("RECOMENDAÇÃO DE LEITURA"), true);
+    assert.equal(isSectionLabel("**LIVRO DO MÊS**"), true);
+    assert.equal(isSectionLabel("LIVRO DO MÊS"), true);
   });
 
   const draft = [
     "**ASSUNTO**",
     "1. Teste",
     "",
-    "**RECOMENDAÇÃO DE LEITURA**",
+    "**LIVRO DO MÊS**",
     "",
     "[**2041: Livro Teste**](https://link.amazon/ABC), de Fulano de Tal.",
     "",
@@ -123,9 +123,9 @@ describe("box RECOMENDAÇÃO DE LEITURA (kicker próprio, sem título interno)",
     "Ao lado de Beltrano, ele adota uma estrutura pouco comum.",
   ].join("\n");
 
-  it("kicker 'Recomendação de leitura' + SEM <h3> interno", () => {
+  it("kicker 'Livro do mês' + SEM <h3> interno", () => {
     const { html } = draftToEmail(draft, "Teste", "2606");
-    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Recomenda/.test(html), "kicker Recomendação de leitura");
+    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro do m/.test(html), "kicker Livro do mês");
     assert.ok(!html.includes("<h3"), "box não deve ter título interno (h3)");
   });
 
