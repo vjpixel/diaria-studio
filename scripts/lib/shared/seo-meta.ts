@@ -48,14 +48,15 @@ function escAttr(s: string): string {
 }
 
 /**
- * Favicon SVG inline (data-URI, sem asset externo versionado): "D" em tinta
- * (#FBFAF6) sobre fundo teal (#00A0A0) — mesma paleta do DS canônico
- * (`lib/shared/design-tokens.ts`). Reusado como `<link rel="icon">` em toda
- * página coberta por este módulo. Mantido estável entre redeploys — trocar o
- * favicon faz o browser tratar como página diferente no histórico/tabs.
+ * Favicon SVG inline (data-URI, sem asset externo versionado): marca "d.."
+ * em branco (#FFFFFF) sobre fundo teal (#00A0A0) — mesma paleta do DS canônico
+ * (`lib/shared/design-tokens.ts`). Os dois pontos são o period do Georgia
+ * (redondo). Reusado como `<link rel="icon">` em toda página coberta por este
+ * módulo. Trocar o favicon faz o browser tratar como página diferente no
+ * histórico/tabs — mudança intencional aqui (alinhamento à marca d..).
  */
 export const FAVICON_DATA_URI =
-  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2300A0A0'/%3E%3Ctext x='32' y='46' font-family='Georgia, Times, serif' font-size='38' font-weight='700' fill='%23FBFAF6' text-anchor='middle'%3ED%3C/text%3E%3C/svg%3E";
+  "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2300A0A0'/%3E%3Ctext x='30' y='46' font-family='Georgia, Times, serif' font-size='40' font-weight='700' fill='%23FFFFFF' text-anchor='middle'%3Ed..%3C/text%3E%3C/svg%3E";
 
 /**
  * Monta o bloco de tags `<head>` de SEO/compartilhamento. Pure — devolve uma
