@@ -800,14 +800,22 @@ export function validateNickname(cleanName: string): string | null {
 // valores de design token inline (ver nota em design-tokens.ts sobre "bundle
 // Cloudflare separado") em vez de puxar de scripts/lib/shared.
 //
-// Sem og:image/twitter:image por decisão de escopo (#3106, ver PR): nenhum
-// asset de marca estático versionado existe no repo, e um `data:` URI não é
+// Sem og:image/twitter:image por decisão de escopo original (#3106): nenhum
+// asset de marca estático versionado existia no repo, e um `data:` URI não é
 // buscável via HTTP pelos crawlers de unfurling (WhatsApp/LinkedIn/Facebook
 // exigem GET numa URL http/https real) — declarar um og:image que nenhum
 // unfurler consegue buscar é pior que omiti-lo. `twitter:card=summary` (sem
 // imagem grande) mantém title+description no preview.
+//
+// #3517: a lacuna acima é resolvida (não removida) para o card de
+// compartilhamento do "É IA?" standalone — `/og/{token}` (share.ts) agora
+// gera uma imagem SVG determinística e BUSCÁVEL via HTTP GET a partir de um
+// payload assinado, satisfazendo a exigência dos unfurlers. `imageUrl` abaixo
+// é opcional: omitido (todo call-site pré-#3517, ex: leaderboard/arquivo)
+// preserva o comportamento antigo (sem tag de imagem, twitter:card=summary);
+// só `renderSharePageHtml` (share.ts) passa `imageUrl`.
 
-const POLL_BASE_URL = "https://poll.diaria.workers.dev";
+export const POLL_BASE_URL = "https://poll.diaria.workers.dev";
 
 /** Favicon SVG inline (data-URI) — "D" em tinta (papel) sobre teal (marca),
  * mesma marca usada em cursos/livros. Mantido estável entre redeploys —
@@ -826,6 +834,11 @@ export interface SeoMetaOptions {
   description: string;
   /** Path relativo (começando com "/"), combinado com POLL_BASE_URL para canonical/og:url. */
   path: string;
+  /** #3517: URL absoluta (http/https, buscável via GET) pra og:image/twitter:image.
+   * Omitido → comportamento pré-#3517 inalterado (sem tag de imagem,
+   * twitter:card=summary — ver rationale #3106 acima). Presente → tags de
+   * imagem entram e twitter:card vira summary_large_image (preview rico). */
+  imageUrl?: string;
 }
 
 /** Monta o bloco de tags <head> de SEO/compartilhamento. Pure. */
@@ -834,6 +847,10 @@ export function renderSeoMeta(opts: SeoMetaOptions): string {
   const t = htmlEscape(opts.title);
   const d = htmlEscape(opts.description);
   const u = htmlEscape(url);
+  const imageTags = opts.imageUrl
+    ? `\n<meta property="og:image" content="${htmlEscape(opts.imageUrl)}">\n<meta name="twitter:image" content="${htmlEscape(opts.imageUrl)}">`
+    : "";
+  const twitterCard = opts.imageUrl ? "summary_large_image" : "summary";
   return `<meta name="description" content="${d}">
 <link rel="canonical" href="${u}">
 <link rel="icon" href="${FAVICON_DATA_URI}">
@@ -842,8 +859,8 @@ export function renderSeoMeta(opts: SeoMetaOptions): string {
 <meta property="og:locale" content="pt_BR">
 <meta property="og:title" content="${t}">
 <meta property="og:description" content="${d}">
-<meta property="og:url" content="${u}">
-<meta name="twitter:card" content="summary">
+<meta property="og:url" content="${u}">${imageTags}
+<meta name="twitter:card" content="${twitterCard}">
 <meta name="twitter:title" content="${t}">
 <meta name="twitter:description" content="${d}">`;
 }

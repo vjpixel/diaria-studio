@@ -271,6 +271,55 @@ import {
 // #3516: página jogável standalone (EPIC #3514) — brand fixo "web", ver
 // rationale completo no header de jogar.ts.
 import { handleJogarPage } from "./jogar";
+// #3517: share card pós-jogo (OG image dinâmica) — motor de divulgação do
+// EPIC #3514, construído sobre o slot `#jogar-result-slot` que o #3516 deixou
+// reservado. Rationale completo no header de share.ts.
+import {
+  decodeShareToken,
+  renderShareCardBlock,
+  renderShareCardSvg,
+  renderSharePageHtml,
+  shareButtonScript,
+  type SharePayload,
+} from "./share";
+
+// ── /og/{token} + /share/{token} (#3517) ─────────────────────────────────────
+
+/** `GET /og/{token}` — imagem SVG determinística do card de resultado (ver
+ * rationale sobre SVG-vs-PNG no header de share.ts). Token inválido/
+ * adulterado → 404 (diferente de `/share`, que faz 302: aqui é um `<img src>`
+ * embutido, um 404 de imagem é o comportamento HTTP correto). */
+export async function handleOgImage(path: string, env: Env): Promise<Response> {
+  const corsHeaders = { "Access-Control-Allow-Origin": "*" };
+  const token = decodeURIComponent(path.slice("/og/".length));
+  const payload = await decodeShareToken(env.POLL_SECRET, token);
+  if (!payload) return new Response("not found", { status: 404, headers: corsHeaders });
+  return new Response(renderShareCardSvg(payload), {
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "image/svg+xml",
+      // Conteúdo é função pura e determinística do payload assinado no token
+      // — o MESMO token sempre produz a MESMA imagem, então immutable é seguro.
+      "Cache-Control": "public, max-age=31536000, immutable",
+    },
+  });
+}
+
+/** `GET /share/{token}` — página de destino que os unfurlers buscam ao
+ * expandir o link compartilhado (meta tags OG/Twitter, agora com og:image
+ * populado — ver #3106 em lib.ts). Token inválido/adulterado → 302 pra
+ * `/jogar` (nunca dead-end, ver rationale no header de share.ts). */
+export async function handleSharePage(url: URL, path: string, env: Env): Promise<Response> {
+  const token = decodeURIComponent(path.slice("/share/".length));
+  const payload = await decodeShareToken(env.POLL_SECRET, token);
+  if (!payload) {
+    return new Response(null, { status: 302, headers: { Location: "/jogar", "Cache-Control": "no-store" } });
+  }
+  const utmMedium = url.searchParams.get("utm_medium") ?? "link";
+  return new Response(renderSharePageHtml({ token, payload, utmMedium }), {
+    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "public, max-age=86400" },
+  });
+}
 
 // ── /admin/correct ────────────────────────────────────────────────────────────
 
@@ -427,6 +476,14 @@ export function votePageHtml(
    * cache do navegador que cacheou a página de leaderboard antes do voto.
    * Só passado por handleVote no resultado do voto (não afeta tráfego orgânico). */
   cacheBusterTs?: string | null,
+  /** #3517: card de compartilhamento pós-jogo. Só passado por handleVote
+   * quando brand === "web" (jogo público standalone — brands diaria/clarice
+   * são e-mail assinantes, "compartilhar meu resultado" não se aplica).
+   * Renderizado como bloco visível `#jogar-share-card` (progressive
+   * enhancement: funciona mesmo sem JS, pra quem navega direto até /vote) —
+   * /jogar (jogar.ts) extrai o MESMO bloco via DOMParser quando intercepta o
+   * voto via fetch, sem sair da página. */
+  shareCard?: { token: string; payload: SharePayload } | null,
 ): string {
   // #1083: htmlEscape no email (user-controlled) previne XSS via attribute
   // break. Sig é hex HMAC controlado pelo Worker — escape por consistência.
@@ -456,6 +513,14 @@ export function votePageHtml(
 
   // #1351: HTML pra mostrar imagens A e B com labels + highlight da clicada
   const imagesHtml = renderResultImagesHtml(resultImages);
+
+  // #3517: card de compartilhamento (só quando shareCard foi passado — hoje
+  // só brand="web"). O script de wiring dos botões (Web Share API + fallback
+  // copiar-link) é reusado literalmente do mesmo helper que /jogar usa pro
+  // bloco injetado dinamicamente — ver rationale em share.ts.
+  const shareCardHtml = shareCard
+    ? `${renderShareCardBlock(shareCard.token, shareCard.payload)}\n${shareButtonScript("#jogar-share-card")}`
+    : "";
 
   // #2113(a): link do leaderboard com cache-buster quando vindo do resultado do voto.
   const leaderboardBase = leaderboardHref(brand, leaderboardSlug);
@@ -491,6 +556,12 @@ export function votePageHtml(
      ~3:1 de contraste (abaixo de AA 4.5:1); ink+onInk dá ~15:1. Teal é SÓ
      texto no design system (design-tokens.ts) — botões/badges cheios usam ink. */
   .result-image .you { display: inline-block; padding: 2px 8px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  /* #3517: card de compartilhamento pós-jogo — mesmo padrão visual de
+     .nick-box (fundo paperAlt, cantos arredondados). */
+  .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
+  .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
+  .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .share-actions button { padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
   /* #1675/#1779: nickname form + textos como classes (eram inline → media query
      não conseguia ampliar; causa do "texto miúdo no mobile"). */
   .nick-box { margin: 30px auto; padding: 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 380px; }
@@ -527,12 +598,16 @@ export function votePageHtml(
     .nick-save { width: 100%; padding: 14px 16px; font-size: 1.1rem; }
     .footer-links { font-size: 1.05rem; }
     .footer-links a { padding: 12px 10px; }
+    .share-card { max-width: 100%; padding: 20px 18px; }
+    .share-actions { flex-direction: column; }
+    .share-actions button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
   }
 </style>
 </head>
 <body>
 <p class="msg">${htmlEscape(message)}</p>
 ${imagesHtml}
+${shareCardHtml}
 ${formHtml}
 <p class="footer-links"><a href="${BRAND_INFO[brand].siteUrl}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
 </body>
@@ -834,6 +909,12 @@ export default {
     // `bEnv` quando `?brand=web` é passado por eles.
     if (path === "/jogar" && request.method === "GET") return handleJogarPage(url, env);
 
+    // #3517: share card pós-jogo. `env` CRU (não `bEnv`) — o token já carrega
+    // seu próprio payload assinado (edition + correct), sem depender de
+    // namespace de brand; card sempre representa o jogo `web`.
+    if (path.startsWith("/og/") && request.method === "GET") return handleOgImage(path, env);
+    if (path.startsWith("/share/") && request.method === "GET") return handleSharePage(url, path, env);
+
     if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand);
     if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv, brand);
     // #3257: lista as edições/ciclos com stats registrados neste brand — usado
@@ -899,7 +980,7 @@ export default {
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/jogar", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/jogar", "/share/{token}", "/og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
   },
   // #1077 → #1345: cron de reset mensal removido. Leaderboard agora é
   // indexado por publication date (score-by-month:{YYYY-MM}:{email}); reset
