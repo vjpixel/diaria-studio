@@ -12,13 +12,15 @@
  * single source of truth atual (timing + custo + tokens + modelos por stage,
  * `scripts/update-stage-status.ts`) — este script lê de lá.
  *
- * `cost_usd`/`tokens_in`/`tokens_out`/`models` em `stage-status.json` só são
- * preenchidos quando o orchestrator passa `--cost-usd`/`--tokens-in`/
- * `--tokens-out`/`--models` ao `update-stage-status.ts` — hoje isso é opcional
- * e raramente populado (o orchestrator não tem acesso programático a
- * `usage` das chamadas de subagent). Este script agrega o que existir e
- * estima $ a partir de tokens quando os campos estão presentes; edições sem
- * esses campos contam para timing mas ficam com custo "-".
+ * `cost_usd`/`tokens_in`/`tokens_out`/`models` em `stage-status.json` são
+ * populados por `scripts/capture-stage-usage.ts` (#3441), rodado pelo
+ * orchestrator logo após cada `--status done` nos 7 playbooks
+ * `orchestrator-stage-*.md` — lê o `usage` real das chamadas do coordenador a
+ * partir do transcript local da sessão (`scripts/lib/session-transcript.ts`),
+ * fail-soft (sem transcript local, ex: sessão cloud, sai sem escrever nada).
+ * Este script agrega o que existir e estima $ a partir de tokens quando os
+ * campos estão presentes; edições sem esses campos (pré-#3441, ou stages
+ * capturados sem transcript local) contam para timing mas ficam com custo "-".
  *
  * Uso:
  *   npx tsx scripts/aggregate-costs.ts [--since AAMMDD] [--until AAMMDD] [--out <path>]
@@ -358,7 +360,7 @@ ${topExpensive.length === 0 ? "_Nenhuma edição com custo registrado ou estimá
 ---
 _Fonte: \`_internal/stage-status.json\` por edição (#3439 — \`_internal/cost.md\` foi removido em #1217 e nunca chegou a ser reintroduzido; este relatório lê o schema atual)._
 _Custo prefixado com "~" é estimado a partir de tokens_in/tokens_out via tabela de pricing (só quando o stage roda 1 único tier Claude); sem "~" veio direto de \`cost_usd\` gravado pelo orchestrator._
-_\`cost_usd\`/\`tokens_in\`/\`tokens_out\`/\`models\` só existem quando o orchestrator os passou explicitamente ao \`update-stage-status.ts\` — hoje é opcional e raramente preenchido; edições sem esses campos contam pra duração mas ficam com custo "-"._
+_\`cost_usd\`/\`tokens_in\`/\`tokens_out\`/\`models\` são capturados automaticamente por \`scripts/capture-stage-usage.ts\` (#3441) ao fim de cada stage, a partir do transcript local da sessão; edições sem esses campos (pré-#3441, ou capturadas sem transcript local — ex: sessão cloud) contam pra duração mas ficam com custo "-"._
 `;
 }
 
