@@ -278,3 +278,176 @@ ${renderBrandFooter("web")}
 </body>
 </html>`;
 }
+
+// ── Quiz relâmpago — score compartilhável (#3520) ────────────────────────────
+//
+// Sub-issue [S] do EPIC #3514, construída sobre a fundação #3516/#3519
+// (identidade anônima, arquivo de pares fechados) + o motor de compartilhamento
+// #3517 (HMAC token → OG SVG → página de destino). Decisões de design (ver PR
+// #3520 para rationale completo):
+//
+//   - **Payload dedicado (`QuizSharePayload = {score, total}`), NÃO uma
+//     extensão do `SharePayload` existente.** `deserializeSharePayload` usa um
+//     regex estrito (`/^(\d{6})\.([01-])$/`) que rejeitaria um corpo de quiz;
+//     bifurcar em tipo+funções+rotas (`/quiz-og/`, `/quiz-share/`) próprias
+//     evita qualquer mudança no parsing já testado do #3517 (zero risco de
+//     regressão no card de voto único) — o preço é ~80 linhas quase-duplicadas
+//     aqui, aceito deliberadamente pela mesma razão que o resto do worker já
+//     duplica CSS por página (cada rota é autocontida).
+//   - **Score do quiz é 100% CLIENT-SIDE, nunca escrito no KV.** O critério de
+//     aceite da issue #3520 ("não contamina o ranking mensal") é satisfeito
+//     por CONSTRUÇÃO: nenhuma rodada do quiz chama `/vote` (que é o único
+//     caminho que escreve `score:{email}`/`score-by-month:*`) — o quiz só lê
+//     o gabarito já público via `/jogar/quiz/answer` (sem side-effect) e soma
+//     o placar em variável JS. Sem escrita = sem poluição, sem precisar de
+//     nenhum branch condicional em `handleVote`.
+//   - **`/jogar/quiz/result` (que assina o token) confia no `score`/`total`
+//     enviados pelo cliente, sem verificação server-side contra respostas
+//     reais.** Mesmo trade-off já aceito e documentado pro card de voto único
+//     (ver rationale de `SIG_LENGTH` acima): o pior caso de forja é alguém
+//     fabricar um card "acertei 10/10" falso pra si mesmo — zero efeito
+//     colateral no sistema (sem leaderboard, sem voto, sem KV). Verificar de
+//     verdade exigiria o servidor manter estado de sessão do quiz (o que a
+//     issue explicitamente pede pra EVITAR — "sem depender de estado servidor
+//     pesado") só pra impedir uma vaidade sem custo real.
+export interface QuizSharePayload {
+  score: number;
+  total: number;
+}
+
+/** Pure: serializa `{score, total}` pra um corpo compacto e determinístico —
+ * prefixo `Q.` distingue do formato `{AAMMDD}.{0|1|-}` do payload de voto
+ * único (nunca colidem, mesmo token space, rotas diferentes). */
+export function serializeQuizSharePayload(payload: QuizSharePayload): string {
+  return `Q.${payload.score}.${payload.total}`;
+}
+
+/** Pure: inverso de `serializeQuizSharePayload`. `null` pra forma malformada
+ * OU semanticamente inválida (`total<=0`, `score<0`, `score>total`) — nunca
+ * lança (mesma disciplina de `deserializeSharePayload`: rota pública, input
+ * adulterado não pode derrubar `/quiz-og`/`/quiz-share`). */
+export function deserializeQuizSharePayload(body: string): QuizSharePayload | null {
+  const match = /^Q\.(\d+)\.(\d+)$/.exec(body);
+  if (!match) return null;
+  const score = parseInt(match[1], 10);
+  const total = parseInt(match[2], 10);
+  if (total <= 0 || score < 0 || score > total) return null;
+  return { score, total };
+}
+
+/** Monta+assina o token do quiz. Mesmo `POLL_SECRET`/`SIG_LENGTH` do token de
+ * voto único — nenhum secret novo, mesma margem de segurança (ver rationale
+ * no header do arquivo: forja não tem efeito colateral no sistema). */
+export async function encodeQuizShareToken(secret: string, payload: QuizSharePayload): Promise<string> {
+  const body = serializeQuizSharePayload(payload);
+  const sig = (await hmacSign(secret, body)).slice(0, SIG_LENGTH);
+  return `${body}.${sig}`;
+}
+
+/** Decodifica+verifica um token de quiz. `null` pra ausente/malformado/
+ * adulterado — nunca lança. Comparação constant-time, mesmo padrão de
+ * `decodeShareToken`. */
+export async function decodeQuizShareToken(secret: string, token: string): Promise<QuizSharePayload | null> {
+  const lastDot = token.lastIndexOf(".");
+  if (lastDot <= 0 || lastDot === token.length - 1) return null;
+  const body = token.slice(0, lastDot);
+  const sig = token.slice(lastDot + 1);
+  const expected = (await hmacSign(secret, body)).slice(0, SIG_LENGTH);
+  if (expected.length !== sig.length) return null;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ sig.charCodeAt(i);
+  if (diff !== 0) return null;
+  return deserializeQuizSharePayload(body);
+}
+
+/** Pure: texto de compartilhamento do resultado do quiz. */
+export function buildQuizShareText(payload: QuizSharePayload): string {
+  const { score, total } = payload;
+  return `Acertei ${score} de ${total} no quiz relâmpago do "É IA?"! Você consegue diferenciar uma foto real de uma gerada por IA? diar.ia.br/jogar/quiz`;
+}
+
+/** Pure: bloco HTML do card de compartilhamento do quiz — reusa literalmente
+ * o padrão visual/estrutural de `renderShareCardBlock` (só id + rota
+ * `/quiz-share/` diferentes). Injetado por `/jogar/quiz` no slot
+ * `#quiz-share-slot` reservado (mesmo padrão fetch+innerHTML do #3517/#3519,
+ * sem precisar de DOMParser aqui — a resposta de `/jogar/quiz/result` É
+ * exatamente este bloco, não uma página inteira pra extrair de dentro). */
+export function renderQuizShareCardBlock(token: string, payload: QuizSharePayload): string {
+  const text = buildQuizShareText(payload);
+  const shareUrlNative = `${POLL_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=social`;
+  const shareUrlCopy = `${POLL_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=copy`;
+  return `<div id="jogar-quiz-share-card" class="share-card">
+  <p class="share-text">${htmlEscape(text)}</p>
+  <div class="share-actions">
+    <button type="button" data-share-action="native" data-share-url="${htmlEscape(shareUrlNative)}" data-share-text="${htmlEscape(text)}">Compartilhar</button>
+    <button type="button" data-share-action="copy" data-share-url="${htmlEscape(shareUrlCopy)}" data-share-text="${htmlEscape(text)}">Copiar link</button>
+  </div>
+</div>`;
+}
+
+/** Pure: card visual 1200×630 do resultado do quiz — mesma proporção/racional
+ * SVG-vs-PNG do card de voto único (ver header do arquivo). */
+export function renderQuizShareCardSvg(payload: QuizSharePayload): string {
+  const { score, total } = payload;
+  const pct = total > 0 ? Math.round((score / total) * 100) : 0;
+  const resultLabel = `${score}/${total}`;
+  const sub = pct >= 80 ? "Olho treinado!" : pct >= 50 ? "Nada mal!" : "Bora treinar mais?";
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="${DS_COLORS.paper}"/>
+  <rect x="0" y="0" width="1200" height="14" fill="${DS_COLORS.brand}"/>
+  <text x="80" y="150" font-family="${DS_FONTS.sans}" font-size="30" font-weight="700" letter-spacing="4" fill="${DS_COLORS.ink}">É IA? — QUIZ RELÂMPAGO</text>
+  <text x="80" y="300" font-family="${DS_FONTS.serif}" font-size="120" font-weight="700" fill="${DS_COLORS.ink}">${htmlEscape(resultLabel)}</text>
+  <text x="80" y="365" font-family="${DS_FONTS.sans}" font-size="36" fill="${DS_COLORS.ink}">${htmlEscape(sub)}</text>
+  <text x="80" y="570" font-family="${DS_FONTS.sans}" font-size="32" font-weight="700" fill="${DS_COLORS.brand}">diar.ia.br/jogar/quiz</text>
+</svg>`;
+}
+
+export interface QuizSharePageOptions {
+  token: string;
+  payload: QuizSharePayload;
+  /** `?utm_medium=` lido da própria URL de `/quiz-share/{token}` (default
+   * "link") — repassado pro CTA, mesmo padrão do `/share/{token}`. */
+  utmMedium: string;
+}
+
+/** Pure: página `GET /quiz-share/{token}` — destino dos unfurlers pro
+ * resultado do quiz. Espelho estrutural de `renderSharePageHtml`. */
+export function renderQuizSharePageHtml(opts: QuizSharePageOptions): string {
+  const { token, payload, utmMedium } = opts;
+  const text = buildQuizShareText(payload);
+  const ogImageUrl = `${POLL_BASE_URL}/quiz-og/${encodeURIComponent(token)}`;
+  const jogarHref = `/jogar/quiz?utm_source=share&utm_medium=${encodeURIComponent(utmMedium || "link")}`;
+  const pageTitle = "É IA? — quiz relâmpago | Diar.ia";
+  const seoMeta = renderSeoMeta({
+    title: pageTitle,
+    description: text,
+    path: `/quiz-share/${encodeURIComponent(token)}`,
+    imageUrl: ogImageUrl,
+  });
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${pageTitle}</title>
+${seoMeta}
+<style>
+  body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
+  img.share-card-img { width: 100%; height: auto; border-radius: 8px; display: block; margin: 20px 0; background: ${DS_COLORS.paperAlt}; }
+  p.share-text { font-family: ${DS_FONTS.serif}; font-size: 1.25rem; line-height: 1.4; }
+  a.cta { display: inline-block; margin-top: 20px; padding: 12px 24px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 6px; text-decoration: none; font-weight: 600; }
+${renderBrandShellStyles()}
+</style>
+</head>
+<body>
+<p class="kicker">É IA? — quiz relâmpago</p>
+<hr class="rule">
+<img class="share-card-img" src="${htmlEscape(ogImageUrl)}" alt="Card de resultado do quiz relâmpago do É IA?">
+<p class="share-text">${htmlEscape(text)}</p>
+<a class="cta" href="${htmlEscape(jogarHref)}">Jogar o quiz</a>
+${renderBrandFooter("web")}
+</body>
+</html>`;
+}
