@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diar.ia Studio — Edição</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/edicao.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <a class="statusbar-item back-link" href="/">&larr; Painel</a>
+    <div class="statusbar-item">
+      <span class="label">Edição</span>
+      <span class="value" id="edicao-titulo">—</span>
+    </div>
+    <div class="statusbar-item">
+      <span class="label">Stage</span>
+      <span class="value" id="edicao-stage">—</span>
+    </div>
+    <div class="statusbar-item conn">
+      <span class="dot" id="conn-dot"></span>
+      <span id="conn-label">conectando…</span>
+    </div>
+  </header>
+
+  <main>
+    <div id="edicao-not-found" class="panel alert-banner" hidden>
+      Edição não encontrada no disco. Confira o AAMMDD na URL ou volte pro
+      <a href="/">painel</a>.
+    </div>
+
+    <section id="alerts-section" class="panel alerts-panel" hidden>
+      <h2>Alertas</h2>
+      <p class="hint">
+        Eventos de nível <code>error</code> no run-log desta edição — sinal
+        aproximado de parada (#738). Halt banners de verdade só existem no
+        stdout do terminal (não persistidos em disco nesta fatia); ver
+        "Decisões de design" no PR.
+      </p>
+      <div id="alerts-list"></div>
+    </section>
+
+    <section class="panel">
+      <h1>Timeline (stages 0–6)</h1>
+      <div id="stage-timeline" class="stage-timeline"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Gate 4 — Revisão editorial</h2>
+      <div id="gate-4" class="gate-card"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Gate 6 — Agendamento</h2>
+      <div id="gate-6" class="gate-card"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Log desta edição</h2>
+      <div id="edicao-log-list" class="log-list"></div>
+    </section>
+  </main>
+
+  <script src="/edicao.js" type="module"></script>
+</body>
+</html>

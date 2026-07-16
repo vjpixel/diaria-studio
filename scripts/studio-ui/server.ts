@@ -11,12 +11,18 @@
  *   - `GET /api/events` — SSE: tail do run-log + push de linhas novas
  *     (`run-log-tail.ts`) e mudanças em `plan.json` overnight/develop
  *     (`plan-watch.ts`);
- *   - `GET /tokens.generated.css` — tokens do DS em CSS (`tokens-css.ts`).
+ *   - `GET /tokens.generated.css` — tokens do DS em CSS (`tokens-css.ts`);
+ *   - `GET /edicao/:aammdd` — cockpit de UMA edição (#3558): rewrite pra
+ *     `public/edicao.html` (SPA shell client-side, sem lógica server nova —
+ *     a página consome as mesmas `/api/state` + `/api/editions/:aammdd` +
+ *     `/api/events` já existentes). AAMMDD não é validado aqui: a página
+ *     cliente delega a validação/404 pras chamadas de API que ela mesma faz.
  *
  * **Read-only por construção** (#3555 é a fatia fundação da EPIC — as fatias
  * de AÇÃO vêm depois, #3556+): nenhuma rota aqui escreve em disco nem
  * dispara nada. Sem autenticação nesta fatia — acesso remoto é escopo da
- * #3560; aqui o único guard de segurança é o bind loopback.
+ * #3560; aqui o único guard de segurança é o bind loopback. #3558 (cockpit
+ * de edição) preserva esse invariante: é só mais uma view read-only.
  *
  * Ver "Decisões de design" no PR body pra rationale completo (framework
  * escolhido, estrutura de diretórios, formato das APIs, pontos de extensão).
@@ -196,6 +202,17 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       if (urlPath.startsWith("/api/")) {
         sendJson(res, 404, { error: "rota de API desconhecida", path: urlPath });
+        return;
+      }
+      // #3558: rewrite client-side-routed pra o shell estático — a página
+      // valida o AAMMDD e busca dados via /api/editions/:aammdd (mesmo guard
+      // de 400/404 já coberto por handleApiEdition).
+      if (/^\/edicao\/[^/]+\/?$/.test(urlPath)) {
+        const served = serveStaticFile(PUBLIC_DIR, "/edicao.html", res);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
         return;
       }
 
