@@ -13,9 +13,13 @@
  *     distinto do funil de par único (`utm_medium=jogar`), pra medir os dois
  *     funis separadamente (mesma disciplina do #3524/#3521/#3518).
  *
- * Também cobre regressão: o CTA genérico do `/jogar` (par único) não muda —
- * `renderJogarPageHtml` continua usando `renderSubscribeCtaBlock`/
- * `buildSubscribeUrl` (#3518), intocados por esta issue.
+ * Também cobre regressão: o CTA do quiz (`renderQuizSubscribeCtaBlock`/
+ * `buildQuizSubscribeUrl`) segue intocado e distinto da caixa genérica de
+ * `renderJogarPageHtml` (par único). A caixa genérica em si foi REWORKADA
+ * pelo #3589 (deixou de empurrar assinatura Beehiiv, virou convite de
+ * descoberta do site) — esse rework é coberto por
+ * test/poll-jogar-cta-3518.test.ts, não duplicado aqui; este arquivo só
+ * garante que as duas caixas continuam DISTINTAS uma da outra.
  */
 
 import { describe, it } from "node:test";
@@ -133,16 +137,22 @@ describe("renderJogarQuizPageHtml embute o CTA específico do quiz, não o gené
   });
 });
 
-describe("regressão: CTA de par único (/jogar) continua com a copy e UTM genéricos do #3518 (#3579 não altera)", () => {
-  it("renderJogarPageHtml continua usando utm_medium=jogar, não utm_medium=quiz", () => {
+describe("regressão: caixa do par único (/jogar) segue distinta da do quiz — não usa UTM/copy do quiz (#3579 não altera; rework #3589 mudou a copy genérica, ver test/poll-jogar-cta-3518.test.ts)", () => {
+  // #3589 (rework do #3518, item 4 da issue): a caixa genérica de
+  // `renderJogarPageHtml` deixou de linkar pro Beehiiv (sem UTM nenhum,
+  // portanto sem `utm_medium=jogar` também) — passou a convidar a conhecer
+  // o site. O contrato QUE ESTE ARQUIVO (#3579) garante é só que a caixa do
+  // quiz continua DISTINTA da caixa genérica — não que a genérica usa UTM
+  // `jogar` especificamente (isso mudou no #3589, coberto em
+  // test/poll-jogar-cta-3518.test.ts).
+  it("renderJogarPageHtml não usa o UTM/copy do quiz (utm_medium=quiz, 'arquivo de edições passadas')", () => {
     const html = renderJogarPageHtml({ edition: "260101", revealed: false });
-    assert.match(html, /utm_medium=jogar/);
     assert.doesNotMatch(html, /utm_medium=quiz/);
+    assert.doesNotMatch(html, /arquivo de edições passadas/i);
   });
 
-  it("renderJogarPageHtml não enquadra como 'arquivo' — copy genérica intacta", () => {
+  it("renderJogarPageHtml usa a copy de descoberta do #3589 (não a copy do quiz)", () => {
     const html = renderJogarPageHtml({ edition: "260101", revealed: false });
-    assert.doesNotMatch(html, /arquivo de edições passadas/i);
-    assert.match(html, /Um par novo desses todo dia/);
+    assert.match(html, /Conhecer a Diar\.ia|Conhe(ç|c)a a Diar\.ia/i);
   });
 });
