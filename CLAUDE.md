@@ -9,11 +9,11 @@ O fluxo editorial é modelado como 6 etapas com gate humano em 2 delas (Stage 4:
 ## Como usar
 
 **Setup (1x):**
-1. Exportar `CLARICE_API_KEY` no ambiente do shell (necessário para o MCP Clarice local). No Windows (persistente, requer reabrir o terminal):
+1. Exportar `CLARICE_API_KEY` no ambiente do shell. **Uma key serve os dois caminhos** da Clarice: o MCP (`.mcp.json` manda no header `X-Clarice-Api-Key`, via `${CLARICE_API_KEY}`) e o REST fallback (`scripts/clarice-correct.ts` → `cortex.clarice.ai`). Pegue a sua em https://cortex.clarice.ai (cada usuário usa a própria — o servidor é passthrough, não tem key compartilhada). No Windows (persistente, requer reabrir o terminal):
    ```powershell
    [Environment]::SetEnvironmentVariable("CLARICE_API_KEY", "SEU_TOKEN_AQUI", "User")
    ```
-   Use o mesmo token do `claude_desktop_config.json`. Veja `.env.example`.
+   Sem ela o invariant `clarice-key-set` **halta a pipeline no Stage 0**. Veja `.env.example`.
 2. `npm install` no diretório.
 2a. `npm run setup-hooks` — instala hook que regenera `context/sources.md` automaticamente ao editar `seed/sources.csv`.
 2b. **`data/` mora no OneDrive, não no repo.** A pasta `data/` é uma *directory junction* local apontando para `~/OneDrive/Documentos/diaria-studio-data` (sync entre máquinas, business-sensitive não vai pro GH). Criar 1x por máquina, **antes de rodar qualquer skill** (`data/` não existe num clone fresco — scripts que tentarem escrever ali vão falhar):
@@ -28,8 +28,13 @@ O fluxo editorial é modelado como 6 etapas com gate humano em 2 delas (Stage 4:
 
    A pasta-alvo no OneDrive precisa existir antes (criar manualmente na 1ª máquina; nas demais, o OneDrive já sincronizou). Toda `data/` está em `.gitignore` blanket — nada lá dentro vai pro repo.
 3. `npm run sync-sources` para gerar `context/sources.md`.
+3a. **Instalar a skill `humanizador`** (repo separado, instalação global — não é vendorada aqui, ver #1676):
+   ```bash
+   git clone https://github.com/vjpixel/humanizador.git ~/.claude/skills/humanizador
+   ```
+   **Não é opcional:** o Stage 2 invoca `Skill("humanizador", …)` 2× (newsletter + social) e, por decisão do #1072, ausência/no-op = **abort do Stage 2** após 3 retries — nunca fallback silencioso. `verify-stage-2` também trata `02-humanized.md ≠ 02-normalized.md` como invariante. Confirme com `/humanizador` ou reabrindo o Claude Code.
 4. Abrir Claude Code neste diretório: `cd diaria-studio && claude`.
-5. Confirmar que os MCPs estão ativos: `/mcp` deve listar `clarice` (local), `claude.ai Beehiiv` e `claude.ai Gmail` (conectores nativos). Para Fase 2 (imagens), instalar ComfyUI local (ver `docs/comfyui-setup.md`). Para Fase 3 (publicação), instalar e logar a extensão `Claude in Chrome` em Beehiiv/LinkedIn/Facebook (ver `docs/browser-publish-setup.md`).
+5. Confirmar que os MCPs estão ativos: `/mcp` deve listar `clarice` (HTTP, de `.mcp.json` — header-auth via `${CLARICE_API_KEY}`, **não** OAuth), `claude.ai Beehiiv` e `claude.ai Gmail` (conectores nativos). Para Fase 2 (imagens), instalar ComfyUI local (ver `docs/comfyui-setup.md`). Para Fase 3 (publicação), instalar e logar a extensão `Claude in Chrome` em Beehiiv/LinkedIn/Facebook (ver `docs/browser-publish-setup.md`).
 6. **Inbox editorial** (`diariaeditor@gmail.com`): nenhum setup necessário — o drain busca direto na pasta Enviados da conta pessoal (ver `docs/gmail-inbox-setup.md`). Isso permite enviar links/temas durante o dia que são considerados na próxima edição automaticamente.
 7. Rodar `/diaria-atualiza-audiencia` para importar respostas de survey do Beehiiv em `data/audience-raw.json` (re-rodar semanalmente ou quando quiser recalibrar). O `context/audience-profile.md` é regenerado automaticamente no Stage 0, combinando CTR comportamental (primário) e survey (secundário).
 

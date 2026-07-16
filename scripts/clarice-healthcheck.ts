@@ -7,13 +7,17 @@
  * sendo MCP, mas o orchestrator agora **sabe** se o REST tá disponível
  * pra cair no fallback (`clarice-correct.ts`) sem halt.
  *
+ * Uso (CLI):
+ *   npx tsx scripts/clarice-healthcheck.ts [--timeout-ms N]
+ *
  * Stdout: JSON { ok: boolean, latency_ms?: number, error?: string }
  * Exit codes:
  *   0 — saudável (ok: true)
+ *   1 — arg inválido
  *   2 — degraded (ok: false, exibe `error`)
  *
- * Não escolhi exit 1 pra erro: 1 é "arg inválido" em vários scripts do repo
- * e poderia ser confundido com falha de uso vs falha de conectividade.
+ * Não escolhi exit 1 pra erro de conectividade: 1 é "arg inválido" em vários
+ * scripts do repo e poderia ser confundido com falha de uso.
  */
 
 import "dotenv/config";
@@ -21,7 +25,17 @@ import { isMainModule } from "./lib/cli-args.ts";
 
 const CLARICE_ENDPOINT = "https://cortex.clarice.ai/api-correction";
 const PROBE_TEXT = "ola";
-const DEFAULT_TIMEOUT_MS = 5_000;
+/**
+ * O cortex responde em ~16s mesmo pro probe de 3 chars (medido 2026-07-15).
+ * O default anterior de 5s abortava SEMPRE — Stage 0 marcava CLARICE_REST=false
+ * com o REST saudável, e Stage 2 pulava direto pro halt banner sem tentar o
+ * fallback (orchestrator-stage-2.md §266). Alinhado com o default sem --retry
+ * de clarice-correct.ts.
+ */
+export const DEFAULT_TIMEOUT_MS = 30_000;
+
+/** Latência real observada no probe de 3 chars (2026-07-15). O default precisa folgar sobre isso. */
+export const OBSERVED_PROBE_LATENCY_MS = 16_300;
 
 export interface HealthResult {
   ok: boolean;
@@ -68,13 +82,38 @@ export async function checkClariceHealth(
   }
 }
 
+export function parseHealthcheckArgs(argv: string[]): { timeoutMs?: number } {
+  const out: { timeoutMs?: number } = {};
+  for (let i = 0; i < argv.length; i++) {
+    // Mesmo guard de clarice-correct.ts: só consome o próximo token como valor
+    // se ele não for outra --flag.
+    const value = argv[i + 1]?.startsWith("--") ? undefined : argv[i + 1];
+    if (argv[i] === "--timeout-ms" && value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) {
+        throw new Error(`--timeout-ms deve ser um número positivo (recebido: ${value})`);
+      }
+      out.timeoutMs = n;
+      i++;
+    }
+  }
+  return out;
+}
+
 async function main(): Promise<void> {
+  let args: { timeoutMs?: number };
+  try {
+    args = parseHealthcheckArgs(process.argv.slice(2));
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exit(1);
+  }
   const apiKey = process.env.CLARICE_API_KEY;
   if (!apiKey) {
     console.log(JSON.stringify({ ok: false, error: "CLARICE_API_KEY ausente" }));
     process.exit(2);
   }
-  const result = await checkClariceHealth({ apiKey });
+  const result = await checkClariceHealth({ apiKey, timeoutMs: args.timeoutMs });
   console.log(JSON.stringify(result));
   process.exit(result.ok ? 0 : 2);
 }
