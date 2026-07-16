@@ -255,6 +255,75 @@ describe("#999 publish-linkedin.ts fail-fast quando 06-public-images.json ausent
     // Esperamos exit code != 0 (fail-fast por 06-public-images ausente, ou env vars worker)
     assert.notEqual(result.exitCode, 0, `default deveria agendar e fail-fast, mas exit code = 0. stderr=${result.stderr.slice(0, 300)}`);
   });
+
+  // #3385 — destaque marcado explicitamente `no_image: true` NÃO deve disparar
+  // o fail-fast #999/#1275 (é "genuinamente sem imagem", não falha de upload).
+  it("NÃO aborta quando destaque tem no_image:true em vez de url (#3385)", () => {
+    const tmp = mkdtempSync(resolve(tmpdir(), "no-image-marker-"));
+    const editionDir = resolve(tmp, "260999");
+    const internalDir = resolve(editionDir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(
+      resolve(editionDir, "03-social.md"),
+      "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
+    );
+    writeFileSync(
+      resolve(editionDir, "06-public-images.json"),
+      JSON.stringify({
+        images: {
+          d1: { url: "https://example.com/d1.jpg" },
+          d2: { no_image: true }, // #3385: genuinamente sem imagem, não falha
+          d3: { url: "https://example.com/d3.jpg" },
+        },
+      }),
+    );
+    writeFileSync(
+      resolve(internalDir, "01-approved.json"),
+      JSON.stringify({ highlights: [{}, {}, {}], lancamento: [], radar: [], use_melhor: [], video: [] }),
+    );
+
+    const result = runCli(["--edition-dir", editionDir, "--schedule"]);
+    rmSync(tmp, { recursive: true, force: true });
+
+    assert.notEqual(result.exitCode, 2, `no_image:true não deveria disparar fail-fast. stderr=${result.stderr}`);
+    assert.doesNotMatch(
+      result.stderr,
+      /06-public-images\.json não tem URL pra destaque/,
+      "mensagem de fail-fast não deveria aparecer quando destaque tem no_image:true",
+    );
+    // Log positivo do novo comportamento
+    assert.match(result.stdout, /#3385.*no_image|sem imagem \(no_image marcado/i);
+  });
+
+  // #3385 — mistura de no_image:true (OK) com destaque genuinamente faltando
+  // (nem url nem marcador) ainda precisa abortar, e a mensagem deve apontar
+  // só pro destaque realmente ausente (d3), não pro d2 marcado.
+  it("ABORTA ainda quando um destaque falta de verdade, mesmo com outro marcado no_image:true (#3385)", () => {
+    const tmp = mkdtempSync(resolve(tmpdir(), "mixed-no-image-missing-"));
+    const editionDir = resolve(tmp, "260999");
+    mkdirSync(editionDir, { recursive: true });
+    writeFileSync(
+      resolve(editionDir, "03-social.md"),
+      "# LinkedIn\n\n## d1\nLI d1.\n\n## d2\nLI d2.\n\n## d3\nLI d3.\n",
+    );
+    writeFileSync(
+      resolve(editionDir, "06-public-images.json"),
+      JSON.stringify({
+        images: {
+          d1: { url: "https://example.com/d1.jpg" },
+          d2: { no_image: true }, // OK — genuinamente sem imagem
+          // d3 ausente — falha real (upload nunca rodou/falhou)
+        },
+      }),
+    );
+
+    const result = runCli(["--edition-dir", editionDir, "--schedule"]);
+    rmSync(tmp, { recursive: true, force: true });
+
+    assert.equal(result.exitCode, 2, "d3 genuinamente faltando ainda deve disparar fail-fast");
+    assert.match(result.stderr, /06-public-images\.json não tem URL pra destaque\(s\): d3/);
+    assert.doesNotMatch(result.stderr, /destaque\(s\): d2/, "d2 (no_image:true) não deveria aparecer como missing");
+  });
 });
 
 // #1310 — comments são manuais por default. Make não suporta CreateComment,

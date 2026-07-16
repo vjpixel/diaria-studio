@@ -213,6 +213,55 @@ export function sanitizeFallbackReason(raw: string): string {
     : firstLine.slice(0, 100);
 }
 
+// #3385 — shape mínimo de 06-public-images.json lido por este script.
+export interface ImageCacheEntry {
+  url?: string;
+  /** #3385: marcador explícito de que o destaque genuinamente não tem imagem
+   * associada (não é falha de upload). Setado por quem gera o cache — hoje
+   * nenhum produtor emite isso (todo destaque sempre gera imagem), mas o
+   * consumidor (este script) já honra o marcador pra quando isso mudar. */
+  no_image?: boolean;
+}
+export interface ImageCacheFile {
+  images?: Record<string, ImageCacheEntry>;
+}
+
+export interface ImageCacheState {
+  /** Destaques com URL válida — post normal com imagem. */
+  destaques_with_url: string[];
+  /** #3385: destaques SEM url mas marcados `no_image: true` — genuinamente
+   * sem imagem associada. Não é falha; dispatch prossegue com image_url: null. */
+  destaques_no_image: string[];
+  /** Nem URL nem marcador `no_image` — falha real (upload nunca rodou ou
+   * falhou). Dispara o fail-fast #999/#1275. */
+  missing: string[];
+}
+
+/**
+ * #3385: classifica cada destaque em 3 buckets a partir de 06-public-images.json,
+ * distinguindo "genuinamente sem imagem" (no_image: true, dispatch OK) de
+ * "falha real" (nem URL nem marcador, dispara fail-fast #999/#1275).
+ *
+ * Exported pra teste direto (evita precisar spawnar o CLI só pra cobrir a
+ * classificação — #633 regression coverage do bug original + do novo caso).
+ */
+export function classifyImageCache(
+  destaques: string[],
+  imgCache: ImageCacheFile | null,
+): ImageCacheState {
+  const destaques_with_url = destaques.filter((d) => {
+    const url = imgCache?.images?.[d]?.url ?? null;
+    return typeof url === "string" && url.length > 0;
+  });
+  const destaques_no_image = destaques.filter(
+    (d) => !destaques_with_url.includes(d) && imgCache?.images?.[d]?.no_image === true,
+  );
+  const missing = destaques.filter(
+    (d) => !destaques_with_url.includes(d) && !destaques_no_image.includes(d),
+  );
+  return { destaques_with_url, destaques_no_image, missing };
+}
+
 /**
  * Envia payload ao webhook Make.com com retry (até `maxAttempts` tentativas).
  * Retorna a resposta parseada ou lança em falha total.
@@ -709,8 +758,9 @@ async function main(): Promise<void> {
   // por platform+destaque sob .lock — não precisamos de buffer local.
 
   // #999/#1275 fail-fast: se 06-public-images.json não existe ou tem destaque
-  // sem URL, abortar SEMPRE. Make scenario LinkedIn (tanto main quanto comments)
-  // exige Image URL — sem ela, post falha 5× e vai pra DLQ silenciosamente.
+  // sem URL E sem marcador `no_image` explícito, abortar SEMPRE. Make scenario
+  // LinkedIn (tanto main quanto comments) exige Image URL — sem ela, post
+  // falha 5× e vai pra DLQ silenciosamente.
   //
   // Histórico:
   // - #999 (260508): primeira incidência, fail-fast adicionado mas só ativo com --schedule
@@ -721,33 +771,30 @@ async function main(): Promise<void> {
   //   Rationale: post sem imagem cria post LinkedIn quebrado (text-only mas Make scenario
   //   espera image post) → erro do Make → editor recebe spam de email. Safety net pior
   //   que abort claro.
+  // - #3385: distingue "genuinamente sem imagem" (destaque marcado `no_image: true`
+  //   em 06-public-images.json) de "falha real" (nem URL nem marcador). Só o segundo
+  //   caso ainda dispara o fail-fast — o primeiro prossegue com image_url: null no
+  //   payload (schema já aceita null explícito desde #1032/#974). Preparação de código
+  //   pro Make.com scenario ganhar um branch condicional sem-imagem (bloqueio externo,
+  //   só o editor mexe — até lá, nenhum produtor emite `no_image`, então o comportamento
+  //   default pra edições reais não muda).
   {
     const imgCachePath = resolve(editionDir, "06-public-images.json");
-    const imgCacheState: {
-      exists: boolean;
-      keys: string[];
-      missing: string[];
-      destaques_with_url: string[];
-    } = { exists: false, keys: [], missing: [...destaques], destaques_with_url: [] };
+    let imgCache: ImageCacheFile | null = null;
+    let cacheExists = false;
+    let cacheParseError = false;
 
     if (existsSync(imgCachePath)) {
-      imgCacheState.exists = true;
+      cacheExists = true;
       try {
-        const imgCache = JSON.parse(readFileSync(imgCachePath, "utf8")) as {
-          images?: Record<string, { url?: string }>;
-        };
-        imgCacheState.keys = Object.keys(imgCache.images ?? {});
-        imgCacheState.destaques_with_url = destaques.filter((d) => {
-          const url = imgCache.images?.[d]?.url ?? null;
-          return typeof url === "string" && url.length > 0;
-        });
-        imgCacheState.missing = destaques.filter(
-          (d) => !imgCacheState.destaques_with_url.includes(d),
-        );
+        imgCache = JSON.parse(readFileSync(imgCachePath, "utf8")) as ImageCacheFile;
       } catch {
-        imgCacheState.missing = [...destaques];
+        cacheParseError = true;
       }
     }
+
+    const imgCacheState = classifyImageCache(destaques, cacheParseError ? null : imgCache);
+    const keys = Object.keys(imgCache?.images ?? {});
 
     // Logar SEMPRE o state do cache (audit pra debug futuro de regressões #1275)
     logEvent({
@@ -755,21 +802,33 @@ async function main(): Promise<void> {
       stage: 4,
       agent: "publish-linkedin",
       level: imgCacheState.missing.length === 0 ? "info" : "warn",
-      message: `image_cache_state: ${imgCacheState.destaques_with_url.length}/${destaques.length} destaques com URL`,
-      details: { ...imgCacheState, cache_path: imgCachePath },
+      message: `image_cache_state: ${imgCacheState.destaques_with_url.length}/${destaques.length} destaques com URL` +
+        (imgCacheState.destaques_no_image.length > 0
+          ? `, ${imgCacheState.destaques_no_image.length} sem imagem (no_image marcado, #3385)`
+          : ""),
+      details: { ...imgCacheState, exists: cacheExists, keys, cache_path: imgCachePath },
     }, logRootDir);
+
+    if (imgCacheState.destaques_no_image.length > 0) {
+      console.log(
+        `#3385: destaque(s) marcado(s) genuinamente sem imagem (no_image: true): ${imgCacheState.destaques_no_image.join(", ")} — dispatch prossegue com image_url: null.`,
+      );
+    }
 
     if (imgCacheState.missing.length > 0) {
       console.error(
         [
           `ERRO (#1275 fail-fast): 06-public-images.json não tem URL pra destaque(s): ${imgCacheState.missing.join(", ")}`,
           `  Path: ${imgCachePath}`,
-          `  Keys presentes: ${imgCacheState.keys.join(", ") || "<arquivo ausente>"}`,
+          `  Keys presentes: ${keys.join(", ") || "<arquivo ausente>"}`,
           "  Make scenario LinkedIn (Create Company Image Post) exige Image URL — sem ela,",
           "  webhook retorna BundleValidationError e post entra em retry loop até DLQ.",
           "  Comments (comment_diaria + comment_pixel) também falham mesmo herdando URL do main.",
           "",
-          "Resolução: rodar antes do dispatch:",
+          "  Se o destaque genuinamente não tem imagem (não é falha de upload), marque",
+          `  images.${imgCacheState.missing[0]}.no_image: true em 06-public-images.json (#3385).`,
+          "",
+          "Resolução (caso a imagem seja esperada): rodar antes do dispatch:",
           "  npx tsx scripts/upload-images-public.ts --edition-dir " + editionDir + " --mode social",
           "",
           "  (--mode all também serve — uploada cover/eai_a/eia_b + d1/d2/d3 em uma chamada)",
@@ -824,13 +883,15 @@ async function main(): Promise<void> {
     const imgCachePath = resolve(editionDir, "06-public-images.json");
     if (existsSync(imgCachePath)) {
       try {
-        const imgCache = JSON.parse(readFileSync(imgCachePath, "utf8")) as {
-          images?: Record<string, { url?: string }>;
-        };
-        const url = imgCache.images?.[d]?.url ?? null;
+        const imgCache = JSON.parse(readFileSync(imgCachePath, "utf8")) as ImageCacheFile;
+        const entry = imgCache.images?.[d];
+        const url = entry?.url ?? null;
         if (url) {
           imageUrl = url;
           console.log(`linkedin/${d}: imagem → ${url}`);
+        } else if (entry?.no_image === true) {
+          // #3385: marcador explícito — não é falha, destaque genuinamente sem imagem.
+          console.log(`linkedin/${d}: sem imagem (no_image marcado explicitamente, #3385) — post text-only`);
         } else {
           console.warn(`linkedin/${d}: chave '${d}' ausente em 06-public-images.json — post sem imagem`);
         }
