@@ -104,6 +104,48 @@ describe("draftToEmail dispatch dos boxes DIVULGAÇÃO e LIVROS", () => {
   });
 });
 
+describe("box RECOMENDAÇÃO DE LEITURA (kicker próprio, sem título interno)", () => {
+  it("isSectionLabel reconhece o label (bold e sem bold)", () => {
+    assert.equal(isSectionLabel("**RECOMENDAÇÃO DE LEITURA**"), true);
+    assert.equal(isSectionLabel("RECOMENDAÇÃO DE LEITURA"), true);
+  });
+
+  const draft = [
+    "**ASSUNTO**",
+    "1. Teste",
+    "",
+    "**RECOMENDAÇÃO DE LEITURA**",
+    "",
+    "[**2041: Livro Teste**](https://link.amazon/ABC), de Fulano de Tal.",
+    "",
+    "Fulano de Tal foi presidente do Google na China.",
+    "",
+    "Ao lado de Beltrano, ele adota uma estrutura pouco comum.",
+  ].join("\n");
+
+  it("kicker 'Recomendação de leitura' + SEM <h3> interno", () => {
+    const { html } = draftToEmail(draft, "Teste", "2606");
+    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Recomenda/.test(html), "kicker Recomendação de leitura");
+    assert.ok(!html.includes("<h3"), "box não deve ter título interno (h3)");
+  });
+
+  it("título do livro: **dentro** do link vira <strong>, sem ** literal", () => {
+    const { html } = draftToEmail(draft, "Teste", "2606");
+    assert.doesNotMatch(html, /\*\*/, `asterisco literal vazou: ${html}`);
+    assert.match(
+      html,
+      /<a href="https:\/\/link\.amazon\/ABC"[^>]*><strong>2041: Livro Teste<\/strong><\/a>/,
+      "título do livro em <strong> dentro do <a>",
+    );
+  });
+
+  it("2 parágrafos impessoais renderizados (autor / livro)", () => {
+    const { html } = draftToEmail(draft, "Teste", "2606");
+    assert.ok(html.includes("Fulano de Tal foi presidente do Google"), "parágrafo do autor");
+    assert.ok(html.includes("estrutura pouco comum"), "parágrafo do livro");
+  });
+});
+
 describe("parseUseMelhorCount", () => {
   it("--use-melhor-count 6", () => {
     assert.equal(parseUseMelhorCount(["--cycle", "2606-07", "--use-melhor-count", "6"]), 6);
