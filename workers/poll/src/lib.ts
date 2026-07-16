@@ -627,6 +627,115 @@ export function formatEditionDateForBrand(edition: string, brand: Brand): string
   return `${MONTH_NAMES_PT[month - 1]} de ${year}`;
 }
 
+// ── Streak: continuidade de período de votação (#3522) ─────────────────────
+//
+// `score:{email}.streak` (dias/meses CONSECUTIVOS acertando) existe desde
+// #2832, mas só resetava em ERRO (`correct === false`) — nunca em AUSÊNCIA
+// de voto. Um jogador que pulasse dias/meses mantinha o streak intacto até a
+// próxima resposta errada, quando deveria já ter zerado no primeiro período
+// pulado. `isConsecutiveVotingPeriod` fecha essa brecha: em `updateScore`
+// (vote.ts), o streak só continua se a edição do voto atual é o PRÓXIMO
+// período de votação esperado após `score.last_edition`.
+//
+// Brand-aware porque a CADÊNCIA de votação difere por `leaderboardPeriod`
+// (BRAND_INFO acima):
+//   - "month" (diaria, web): 1 edição por DIA ÚTIL — a newsletter nunca
+//     publica sáb/dom (context/editorial-rules.md, a janela de publicação
+//     das edições de segunda/terça cobre explicitamente o fim de semana). O
+//     "próximo período esperado" é o próximo dia útil (seg-sex) após
+//     `prevEdition` — `nextWeekdayAammdd`.
+//   - "year" (clarice): 1 edição por MÊS — o "próximo período esperado" é o
+//     mês de CONTEÚDO seguinte (`editionToMonthSlug`), independente do "dia"
+//     codificado no AAMMDD/ciclo (que não representa uma data real pra este
+//     brand — mesmo racional de `formatEditionDateForBrand` acima) —
+//     `nextContentMonthSlug`.
+
+/**
+ * Pure (#3522): próximo dia ÚTIL (seg-sex) em AAMMDD após `edition`. `null`
+ * se `edition` não é AAMMDD válido (forma ou range de mês/dia). Usado só
+ * pela cadência "month" (diaria/web) — clarice usa `nextContentMonthSlug`.
+ */
+export function nextWeekdayAammdd(edition: string): string | null {
+  if (!AAMMDD_RE.test(edition)) return null;
+  const yy = parseInt(edition.slice(0, 2), 10);
+  const mm = parseInt(edition.slice(2, 4), 10);
+  const dd = parseInt(edition.slice(4, 6), 10);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+  const d = new Date(Date.UTC(2000 + yy, mm - 1, dd));
+  if (Number.isNaN(d.getTime())) return null;
+  do {
+    d.setUTCDate(d.getUTCDate() + 1);
+  } while (d.getUTCDay() === 0 || d.getUTCDay() === 6); // pula dom(0)/sáb(6)
+  const y2 = String(d.getUTCFullYear() % 100).padStart(2, "0");
+  const m2 = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const d2 = String(d.getUTCDate()).padStart(2, "0");
+  return `${y2}${m2}${d2}`;
+}
+
+/**
+ * Pure (#3522): mês de CONTEÚDO seguinte (slug "YYYY-MM") após `edition` —
+ * usado só pela cadência "year" (clarice). `null` se `edition` não resolve
+ * via `editionToMonthSlug` (nem AAMMDD nem ciclo `YYMM-MM` válidos).
+ */
+export function nextContentMonthSlug(edition: string): string | null {
+  const slug = editionToMonthSlug(edition);
+  if (!slug) return null;
+  const parsed = parseMonthSlug(slug);
+  if (!parsed) return null;
+  const { year, month } = parsed;
+  return month === 12 ? `${year + 1}-01` : `${year}-${String(month + 1).padStart(2, "0")}`;
+}
+
+/**
+ * Pure (#3522): `newEdition` continua um streak iniciado em `prevEdition`?
+ *
+ *   - `prevEdition === null` (sem voto anterior com correctness resolvida —
+ *     1º voto "confirmado" do jogador) → `true`: nada a quebrar;
+ *     `updateScore` semeia o streak em 1 naturalmente, nunca comparando
+ *     continuidade contra um histórico vazio.
+ *   - Forma inválida de qualquer um dos dois lados → `false` (fail-safe:
+ *     nunca concede continuidade pra dado que não conseguimos interpretar —
+ *     mesmo viés conservador dos outros guards `?? 0`/`safeParseKv` deste
+ *     módulo).
+ *   - Caso contrário, delega pra `nextWeekdayAammdd` ("month") ou
+ *     `nextContentMonthSlug` ("year") conforme `BRAND_INFO[brand].leaderboardPeriod`.
+ *
+ * Limitação conhecida e aceita (decisão conservadora, #3522): não conhece
+ * feriados/interrupções editoriais fora do padrão seg-sex — um hiato
+ * excepcional (feriado prolongado, pane) quebraria o streak mesmo sem o
+ * jogador ter "pulado" um dia de publicação real. Resolver isso exigiria
+ * consultar o calendário real de edições publicadas (scan de KV a cada
+ * voto) — sobre-engenharia pra um streak de retenção P3; mesmo trade-off já
+ * aceito em outras decisões de escopo do EPIC #3514 (ver jogar.ts).
+ */
+export function isConsecutiveVotingPeriod(prevEdition: string | null, newEdition: string, brand: Brand): boolean {
+  if (prevEdition === null) return true;
+  if (BRAND_INFO[brand].leaderboardPeriod === "year") {
+    const expected = nextContentMonthSlug(prevEdition);
+    const actual = editionToMonthSlug(newEdition);
+    return expected !== null && actual !== null && expected === actual;
+  }
+  const expected = nextWeekdayAammdd(prevEdition);
+  return expected !== null && expected === newEdition;
+}
+
+/**
+ * Pure (#3522): sufixo de streak pra mensagem pós-voto (ex: " 🔥 5 dias
+ * seguidos acertando!"). `null`/`< 2` → "" (1 acerto isolado não é
+ * "sequência" — mesmo limiar usado por produtos de retenção comparáveis,
+ * Duolingo/Wordle só destacam o contador a partir de 2). Unidade
+ * ("dias"/"meses") deriva de `BRAND_INFO[brand].leaderboardPeriod`, mesmo
+ * padrão de `formatEditionDateForBrand`/`leaderboardPeriodWord` (index.ts) —
+ * clarice (cadência mensal) nunca deveria dizer "dias seguidos". Espaço
+ * inicial deliberado — caller concatena direto ao fim da frase da mensagem
+ * de resultado, sem espaço próprio (ver `handleVote`, vote.ts).
+ */
+export function renderStreakSuffix(streak: number | null, brand: Brand): string {
+  if (streak === null || streak < 2) return "";
+  const unit = BRAND_INFO[brand].leaderboardPeriod === "year" ? "meses seguidos" : "dias seguidos";
+  return ` 🔥 ${streak} ${unit} acertando!`;
+}
+
 /**
  * #3118 (item 2): Cache-Control pra período (mês/ano) de leaderboard já
  * FECHADO (passado). Antes era `"public, max-age=2592000, immutable"` (30d +
