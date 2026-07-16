@@ -29,6 +29,7 @@ const el = {
   timeline: document.getElementById("timeline"),
   editionsBody: document.getElementById("editions-tbody"),
   logList: document.getElementById("log-list"),
+  currentEditionLink: document.getElementById("current-edition-link"),
 };
 
 let lastCurrentEdition = null;
@@ -47,6 +48,14 @@ function renderStatusbar(state) {
     : "nenhum";
   const on = state.overnight;
   el.overnight.textContent = on ? `${on.sessionId} (${on.totalIssues} issues)` : "sem rodada recente";
+
+  // #3558: link direto pro cockpit da edição corrente.
+  if (state.currentEdition) {
+    el.currentEditionLink.href = `/edicao/${state.currentEdition}`;
+    el.currentEditionLink.style.display = "";
+  } else {
+    el.currentEditionLink.style.display = "none";
+  }
 }
 
 function renderEditionsTable(state) {
@@ -54,7 +63,9 @@ function renderEditionsTable(state) {
   for (const e of state.editions) {
     const tr = document.createElement("tr");
     const gates = e.gatesPending.length ? e.gatesPending.join(", ") : "—";
-    tr.innerHTML = `<td>${e.edition}</td><td>${e.stageLabel}</td><td>${gates}</td><td>${e.editionDir}</td>`;
+    // #3558: linka pro cockpit da edição (/edicao/:aammdd) — a página de
+    // status geral continua sendo a visão de lista, o cockpit é o detalhe.
+    tr.innerHTML = `<td><a href="/edicao/${e.edition}">${e.edition}</a></td><td>${e.stageLabel}</td><td>${gates}</td><td>${e.editionDir}</td>`;
     el.editionsBody.appendChild(tr);
   }
 }
