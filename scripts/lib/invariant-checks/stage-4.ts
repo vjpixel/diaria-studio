@@ -518,6 +518,14 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
   //    mensagem corrompida "Nessa edição, Na última edição, …").
   const extracted = extractCurrentDeclarationFromMd(md);
   if (extracted?.narrative) {
+    // (self-review #3494) Ambos os checks abaixo (genérico + catalog-shaped)
+    // são estruturalmente redundantes agora — extractCurrentDeclarationFromMd
+    // já filtra as duas classes antes de retornar não-null, então
+    // `extracted.narrative` nunca deveria bater aqui. Mantidos como
+    // defense-in-depth intencional (mesma classe de guard que #2438/#633
+    // já pratica no resto desta função) em vez de removidos — barato e
+    // protege contra o filtro de extractCurrentDeclarationFromMd divergir
+    // no futuro sem este check acompanhar.
     if (narrativeIsGenericPlaceholder(extracted.narrative)) {
       return [
         {
@@ -534,9 +542,6 @@ function checkNarrativeNotGenericPlaceholder(editionDir: string): InvariantViola
         },
       ];
     }
-    // (#2419 bug #2 fix) catalog-shaped escape — defense-in-depth caso o filtro
-    // de extractCurrentDeclarationFromMd não tenha pego (não deveria acontecer,
-    // mas o check abaixo é redundante de propósito).
     if (narrativeIsCatalogShaped(extracted.narrative)) {
       return [
         {
