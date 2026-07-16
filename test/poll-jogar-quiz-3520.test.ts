@@ -187,9 +187,24 @@ describe("resolveQuizResultParams (#3520)", () => {
     assert.equal(resolveQuizResultParams("-1", "5"), null);
   });
 
-  it("total fora de [QUIZ_MIN_N, QUIZ_MAX_N] é rejeitado", () => {
-    assert.equal(resolveQuizResultParams("1", "1"), null); // abaixo do mínimo
-    assert.equal(resolveQuizResultParams("1", "999"), null); // acima do máximo
+  it("total acima de QUIZ_MAX_N é rejeitado (teto contra forja de placar absurdo)", () => {
+    assert.equal(resolveQuizResultParams("1", "999"), null);
+  });
+
+  it("total=0 é rejeitado (quiz sem nenhuma rodada não é um resultado válido)", () => {
+    assert.equal(resolveQuizResultParams("0", "0"), null);
+  });
+
+  // Self-review #2038 (achado corrigido — ver rationale em resolveQuizResultParams
+  // no jogar.ts): total ABAIXO de QUIZ_MIN_N precisa continuar válido, porque
+  // pickQuizEditions pode devolver menos rodadas que QUIZ_MIN_N quando o pool
+  // de edições fechadas é pequeno (cenário "edições insuficientes", critério
+  // de aceite #3520). Usar QUIZ_MIN_N como piso aqui quebraria o card de
+  // compartilhamento justamente nesse cenário.
+  it("total < QUIZ_MIN_N (1 ou 2) é ACEITO — quiz jogado com menos rodadas por falta de edições disponíveis ainda precisa gerar card de compartilhamento", () => {
+    assert.deepEqual(resolveQuizResultParams("1", "1"), { score: 1, total: 1 });
+    assert.deepEqual(resolveQuizResultParams("0", "1"), { score: 0, total: 1 });
+    assert.deepEqual(resolveQuizResultParams("2", "2"), { score: 2, total: 2 });
   });
 
   it("não-numérico/ausente/decimal nunca lança, retorna null", () => {
@@ -373,6 +388,29 @@ describe("GET /jogar/quiz/result (#3520)", () => {
     const env = makeEnv();
     const res = await handleQuizResult(new URL("https://poll.test/jogar/quiz/result?score=10&total=5"), env);
     assert.equal(res.status, 400);
+  });
+
+  // Self-review #2038 (achado corrigido): reproduz o cenário e2e de "edições
+  // insuficientes" ponta a ponta — só 1 edição fechada disponível (ex: dia
+  // seguinte ao lançamento do produto), quiz pedido com n=5 mas jogável com
+  // 1 rodada só. O card de compartilhamento final PRECISA funcionar mesmo
+  // com total=1 (abaixo de QUIZ_MIN_N) — sem isso, o critério de aceite
+  // "edições insuficientes tratado" ficaria quebrado só no passo de share.
+  it("quiz jogado com só 1 rodada (edições insuficientes) ainda gera card de compartilhamento — não falha silenciosamente", async () => {
+    const env = makeEnv({ "correct:200101": "A" });
+    const pageRes = await handleJogarQuizPage(new URL("https://poll.test/jogar/quiz?n=5"), env);
+    const html = await pageRes.text();
+    const match = /var editions = (\[[^\]]*\])/.exec(html);
+    const editions = JSON.parse(match![1]);
+    assert.equal(editions.length, 1, "só 1 edição fechada disponível — quiz mais curto que o pedido");
+
+    const resultRes = await handleQuizResult(
+      new URL(`https://poll.test/jogar/quiz/result?score=1&total=${editions.length}`),
+      env,
+    );
+    assert.equal(resultRes.status, 200, "share do resultado não pode falhar quando o quiz teve menos rodadas que QUIZ_MIN_N");
+    const resultHtml = await resultRes.text();
+    assert.match(resultHtml, /Acertei 1 de 1/);
   });
 
   it("via router completo", async () => {

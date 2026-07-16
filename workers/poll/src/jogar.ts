@@ -872,7 +872,7 @@ ${seoMeta}
   .scroll-hint { display: none; }
   #quiz-round-result[hidden], #quiz-final[hidden], #jogar-subscribe-cta[hidden] { display: none; }
   .result-msg { font-family: ${DS_FONTS.serif}; font-size: 1.3rem; line-height: 1.4; margin: 20px 0; }
-  .quiz-round-result button, .quiz-final-score + button { margin-top: 4px; padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  .quiz-round-result button { margin-top: 4px; padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
   .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
   .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
   .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
@@ -959,7 +959,19 @@ export async function handleQuizAnswer(url: URL, env: Env): Promise<Response> {
 /**
  * Pure (#3520): valida `score`/`total` recebidos de `GET /jogar/quiz/result`.
  * `null` pra qualquer forma inválida (não-inteiro, `total` fora de
- * [QUIZ_MIN_N, QUIZ_MAX_N], `score` negativo ou > `total`) — nunca lança.
+ * [1, QUIZ_MAX_N], `score` negativo ou > `total`) — nunca lança.
+ *
+ * Self-review #2038 (achado corrigido, não só comentado — mesmo precedente
+ * de #3117): o piso do `total` aqui é `1`, NÃO `QUIZ_MIN_N`. `QUIZ_MIN_N`
+ * bound o TAMANHO PEDIDO de um quiz novo (`resolveQuizSize`) — mas
+ * `pickQuizEditions` pode legitimamente devolver MENOS rodadas que isso
+ * quando o pool de edições fechadas é pequeno (ex: lançamento do produto,
+ * só 1-2 edições fechadas ainda). Usar `QUIZ_MIN_N` como piso aqui rejeitaria
+ * `/jogar/quiz/result?score=1&total=1` justamente no cenário "edições
+ * insuficientes" que é critério de aceite explícito da #3520 — o placar do
+ * quiz jogaria normalmente, mas o card de compartilhamento final falharia
+ * silenciosamente (o `.catch` no cliente engole o 400). `QUIZ_MAX_N`
+ * continua como teto — nenhum quiz real produz `total` maior que isso.
  *
  * Nota (ver rationale no header de share.ts): não há verificação contra
  * respostas REAIS aqui — `score`/`total` são confiados do cliente. Trade-off
@@ -970,7 +982,7 @@ export function resolveQuizResultParams(rawScore: string | null, rawTotal: strin
   if (!/^\d+$/.test(rawScore) || !/^\d+$/.test(rawTotal)) return null;
   const score = parseInt(rawScore, 10);
   const total = parseInt(rawTotal, 10);
-  if (total < QUIZ_MIN_N || total > QUIZ_MAX_N) return null;
+  if (total < 1 || total > QUIZ_MAX_N) return null;
   if (score < 0 || score > total) return null;
   return { score, total };
 }
