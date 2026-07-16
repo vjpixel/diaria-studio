@@ -387,6 +387,37 @@ function stripCeremonyMarker(s: string): string {
   return s.replace(/^\s*🎉[︎️]?\s*/u, "").trim();
 }
 
+/** Parágrafo que COMEÇA com um link markdown `[…](…)` (possível `**` interno
+ * no rótulo). Âncora de início — não casa link no meio do parágrafo. */
+const LINK_LED_PARAGRAPH_RE = /^\s*\[[^\]]+\]\(/;
+
+/**
+ * #3475: sinal ESTRUTURAL (não-emoji) que reidentifica o box "recomendação de
+ * leitura" (slot 1) pra restaurar o título serif 26px na 1ª linha — pedido do
+ * editor depois que a remoção do marcador 📖 (#3475) fez o box perder o
+ * título e cair no tratamento uniforme do #3460.
+ *
+ * A estrutura CANÔNICA desse box (`context/snippets/recomendacao-leitura.md`)
+ * é única entre os boxes que chegam a ESTE branch (não-patrocinado, sem CTA
+ * pill estrutural, sem marcador 🎉):
+ *   [0] linha de título da seção — curta, SEM link markdown  ("Recomendação de leitura")
+ *   [1] parágrafo LIDERADO por link  ("[**Título do livro**](url), de Autor.")
+ *   [2] comentário pessoal
+ *
+ * O discriminador é: `paras[0]` não tem link E `paras[1]` COMEÇA com um link.
+ * Isso separa o box da nota pessoal do editor (#3460, ex: boas-vindas), onde
+ * NENHUM parágrafo é liderado por link — a nota corre em prosa, com links (se
+ * houver) no meio das frases, nunca abrindo o 2º parágrafo. Boxes patrocinados
+ * (Clarice) e com CTA pill (Alexa+, ferramenta, apoio) nunca chegam aqui —
+ * são interceptados antes por `sponsored`/`forceCtaPill`. Marcador-agnóstico:
+ * um 📖 (ou nenhum emoji) no início da 1ª linha não muda a detecção.
+ */
+function firstLineIsSectionTitle(paras: string[]): boolean {
+  if (paras.length < 2) return false;
+  if (findMarkdownLinks(paras[0]).length > 0) return false;
+  return LINK_LED_PARAGRAPH_RE.test(paras[1]);
+}
+
 export function renderIntroCallout(
   text: string,
   titleStyle: "serif" | "body" = "serif",
@@ -401,6 +432,7 @@ export function renderIntroCallout(
   const sponsored = isSponsoredCallout(text);
   const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   const ceremony = hasCeremonyMarker(paras[0] ?? "");
+  const sectionTitle = firstLineIsSectionTitle(paras);
   let inner: string;
   // #3460: multi-parágrafo não-patrocinado e sem CTA pill forçado — nota
   // pessoal do editor (ex: boas-vindas), não anúncio/box de divulgação com
@@ -413,17 +445,19 @@ export function renderIntroCallout(
   // Clarice, Alexa+) escapava desta exceção porque o 1º parágrafo começava
   // com um marcador emoji conhecido (📣/📚/📖) — allowlist removida junto com
   // o resto do sistema de marcadores dos boxes de divulgação (o editor não
-  // usa mais esses emoji pra abrir box; ver context/snippets/*.md). Sem
-  // allowlist pra distinguir "título de box" de "nota pessoal", um box
-  // não-patrocinado e sem CTA-only paragraph (caso real:
-  // recomendacao-leitura.md) passa a cair aqui também — perde o título serif
-  // 26px e renderiza como parágrafos uniformes (ainda funcional: conteúdo e
-  // links intactos, só sem o destaque visual de título). Callouts patrocinados
+  // usa mais esses emoji pra abrir box; ver context/snippets/*.md).
+  //
+  // #3475 follow-up (pedido do editor): o título serif 26px do box
+  // "recomendação de leitura" foi RESTAURADO via sinal ESTRUTURAL não-emoji
+  // (`firstLineIsSectionTitle` — 1ª linha sem link seguida de parágrafo
+  // liderado por link), não pelo 📖. Só esse box tem essa forma entre os que
+  // chegam aqui; a nota pessoal do editor (#3460) não é liderada por link em
+  // nenhum parágrafo → continua no tratamento uniforme. Callouts patrocinados
   // (Clarice, `sponsored=true`), boxes com CTA pill estrutural (Alexa+,
-  // apoio — `forceCtaPill=true`) e o box de campeões/sorteio (`ceremony`,
-  // marcador 🎉 preservado — feature separada, fora do escopo do #3475)
-  // continuam com título, pois não passam por este branch.
-  if (paras.length > 1 && !sponsored && !forceCtaPill && !ceremony) {
+  // apoio, ferramenta — `forceCtaPill=true`) e o box de campeões/sorteio
+  // (`ceremony`, marcador 🎉 preservado — feature separada) continuam com
+  // título por outros caminhos, sem passar por este branch.
+  if (paras.length > 1 && !sponsored && !forceCtaPill && !ceremony && !sectionTitle) {
     inner = paras
       .map((p, i) => renderBoxParagraph(p, i === 0 ? "0" : "12px 0 0"))
       .join("\n      ");

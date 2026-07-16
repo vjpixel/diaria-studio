@@ -90,6 +90,12 @@ function generateGoldens(): Record<string, string> {
     intro_callout_multi: renderIntroCallout(
       "Escreva melhor com a Clarice.ai\n\nA IA brasileira que revisa seus textos.\n\n[Acesse com desconto](https://clarice.ai/precos-planos?via=diaria).",
     ),
+    // #3475 follow-up: box "recomendação de leitura" — título serif 26px
+    // restaurado via sinal ESTRUTURAL (1ª linha sem link + 2º parágrafo
+    // liderado por link), SEM marcador emoji. Golden protege a regressão.
+    intro_callout_recomendacao: renderIntroCallout(
+      "Recomendação de leitura\n\n[**2041: Como a IA Vai Mudar Sua Vida**](https://link.amazon/B05FlAaJ7), de Kai-Fu Lee e Chen Qiufan.\n\nEstou terminando agora e gosto da estrutura: cada capítulo abre com um conto.",
+    ),
 
     mid_callout_com_imagem: renderMidCallout(
       "Nossa curadoria de livros sobre IA ganhou página nova. [Confira a nova página](https://livros.diaria.workers.dev).",
@@ -206,6 +212,21 @@ describe("ds-golden-components (#2071) — HTML canônico por componente do DS",
       /Georgia, 'Times New Roman', serif/,
       "introCallout multi: fonte serif ausente",
     );
+  });
+
+  it("#3475: box recomendação de leitura tem título serif 26px na 1ª linha, SEM emoji (restaurado por sinal estrutural)", () => {
+    const html = goldens["intro_callout_recomendacao"];
+    // 1ª linha ("Recomendação de leitura") vira <p> de título serif 26px
+    assert.match(
+      html,
+      /<p style="[^"]*font-family:Georgia[^"]*font-size:26px[^"]*">Recomendação de leitura<\/p>/,
+      "título serif 26px ausente na 1ª linha",
+    );
+    // sem emoji no HTML (o 📖 foi removido do fonte; a detecção não depende dele)
+    assert.doesNotMatch(html, /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u, "não deve haver emoji no HTML");
+    // conteúdo do box preservado (link do livro + comentário)
+    assert.ok(html.includes("link.amazon/B05FlAaJ7"), "link do livro ausente");
+    assert.ok(html.includes("cada capítulo abre com um conto"), "comentário ausente");
   });
 
   it("boxDivulgacao1 com imagem: <img> + botão CTA + link do box (DS box com screenshot)", () => {

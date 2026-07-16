@@ -89,6 +89,54 @@ Estou testando a Alexa+ há alguns dias e a diferença é grande.
   });
 });
 
+describe("renderBoxDivulgacao — título serif restaurado por sinal estrutural (#3475 follow-up)", () => {
+  // Box "recomendação de leitura": (1) linha de título sem link, (2) parágrafo
+  // liderado por link do livro, (3) comentário. O título serif 26px foi
+  // RESTAURADO via sinal estrutural (1ª linha sem link + 2º parágrafo liderado
+  // por link), NÃO pelo marcador emoji 📖 (removido em #3475).
+  const RECOMENDACAO = `Recomendação de leitura
+
+[**2041: Como a IA Vai Mudar Sua Vida**](https://link.amazon/B05FlAaJ7), de Kai-Fu Lee e Chen Qiufan.
+
+Estou terminando agora e gosto da estrutura: cada capítulo abre com um conto.`;
+
+  it("1ª linha vira título serif 26px, SEM depender de emoji no fonte", () => {
+    const html = renderBoxDivulgacao(RECOMENDACAO);
+    assert.match(
+      html,
+      /<p style="[^"]*font-family:Georgia[^"]*font-size:26px[^"]*">Recomendação de leitura<\/p>/,
+      "título serif 26px ausente na 1ª linha",
+    );
+    // não é o formato carrinho (1 link não-CTA-only → sem pill)
+    assert.ok(!html.includes("border-radius:999px"), "não deve virar botão pill");
+    // conteúdo preservado
+    assert.ok(html.includes("link.amazon/B05FlAaJ7"), "link do livro preservado");
+    assert.ok(html.includes("cada capítulo abre com um conto"), "comentário preservado");
+  });
+
+  it("detecção é agnóstica ao emoji: título serif sai com ou sem 📖 na 1ª linha", () => {
+    // O ponto do #3475: a DETECÇÃO do título é ESTRUTURAL, não pelo emoji. Um
+    // 📖 legado no fonte não muda nada (aparece cru — não há mais strip); o
+    // título serif é aplicado igual, por estrutura. A fonte canônica não tem emoji.
+    assert.match(renderBoxDivulgacao(RECOMENDACAO), /font-size:26px/, "sem emoji: título aplicado");
+    assert.match(renderBoxDivulgacao(`📖 ${RECOMENDACAO}`), /font-size:26px/, "com 📖 legado: título aplicado igual");
+  });
+
+  it("box livros de 1 parágrafo (bold-line) NÃO ganha título serif indevidamente", () => {
+    const livros = "A diar.ia.br mantém uma curadoria de livros sobre IA. [Confira a página](https://livros.diaria.workers.dev).";
+    const html = renderBoxDivulgacao(livros);
+    assert.doesNotMatch(html, /font-size:26px/, "box de 1 parágrafo não deve ganhar título 26px");
+  });
+
+  it("nota pessoal multi-parágrafo (sem 2º parágrafo liderado por link) NÃO ganha título serif (#3460 preservado)", () => {
+    // A nota do editor corre em prosa; se tem link, ele fica no meio da frase,
+    // nunca abrindo o parágrafo. Não deve virar título.
+    const nota = "Olá! Eu sou o Pixel, editor dessa newsletter.\n\nConsidere [apoiar](https://apoia.se/diaria) se puder — todo dia trago as notícias mais importantes.";
+    const html = renderBoxDivulgacao(nota);
+    assert.doesNotMatch(html, /font-size:26px/, "nota pessoal não deve ganhar título serif");
+  });
+});
+
 describe("renderBoxDivulgacao — peso de fonte do box só-texto (#3373)", () => {
   const box = "🙋🏼‍♀️ Apoie a curadoria. [Conheça](https://apoia.se/diaria).";
 
