@@ -134,6 +134,52 @@ export function renderSubscribeCtaBlock(): string {
 </div>`;
 }
 
+// ── CTA de assinatura do quiz relâmpago (#3579, divulgação — enhancement do
+// #3520) ──────────────────────────────────────────────────────────────────
+//
+// UTM PRÓPRIO (medium/campaign distintos do CTA pós-voto de par único acima,
+// mesma disciplina de "funil distingue origem" do #3524/#3521/#3518) — mede
+// separadamente quantos assinantes vêm do quiz (várias rodadas, mais
+// engajamento) vs. do jogo de par único. `utm_source` continua
+// `eia-standalone` (mesma convenção de `count-subscriptions-by-utm.ts`).
+export const QUIZ_SUBSCRIBE_UTM_SOURCE = "eia-standalone";
+export const QUIZ_SUBSCRIBE_UTM_MEDIUM = "quiz";
+export const QUIZ_SUBSCRIBE_UTM_CAMPAIGN = "eia-quiz-posvoto";
+
+/**
+ * Pure (#3579): URL de assinatura com UTM próprio do funil do quiz relâmpago
+ * — mesmo destino (`diaria.beehiiv.com`) do `buildSubscribeUrl` (#3518), UTM
+ * distinto pra medir o quiz separadamente.
+ */
+export function buildQuizSubscribeUrl(): string {
+  const params = new URLSearchParams({
+    utm_source: QUIZ_SUBSCRIBE_UTM_SOURCE,
+    utm_medium: QUIZ_SUBSCRIBE_UTM_MEDIUM,
+    utm_campaign: QUIZ_SUBSCRIBE_UTM_CAMPAIGN,
+  });
+  return `https://diaria.beehiiv.com/?${params.toString()}`;
+}
+
+/**
+ * Pure (#3579): bloco HTML do CTA de assinatura no resultado final do quiz
+ * relâmpago — copy própria do editor (review 260716), distinta do CTA
+ * genérico pós-voto de par único (`renderSubscribeCtaBlock`). Enquadra as
+ * imagens do quiz como o arquivo de edições passadas da Diar.ia (o jogador
+ * acabou de jogar vários pares de edições anteriores em sequência, contexto
+ * que o CTA genérico não menciona) e convida pra assinatura. Mesmo `id`/
+ * `class`/mecânica `hidden` de `renderSubscribeCtaBlock` — o JS do quiz
+ * (`renderJogarQuizPageHtml`) já revela via `getElementById("jogar-subscribe-cta")`
+ * em `showFinal()`, sem precisar de nenhuma mudança no script (anti-spoiler
+ * preservado: nunca aparece antes do fim do quiz).
+ */
+export function renderQuizSubscribeCtaBlock(): string {
+  const url = buildQuizSubscribeUrl();
+  return `<div id="jogar-subscribe-cta" class="subscribe-cta" hidden>
+  <p class="subscribe-text">Essas imagens são do arquivo de edições passadas da Diar.ia. Quer receber notícias de IA, tutoriais pra usar no dia a dia e um par desses todo dia? Assine a Diar.ia (grátis).</p>
+  <a class="subscribe-btn" href="${htmlEscape(url)}" target="_blank" rel="noopener">Assinar a Diar.ia</a>
+</div>`;
+}
+
 /**
  * Pure (#3516): resolve a edição a ser jogada. `?edition=AAMMDD` explícito
  * (formato válido) tem prioridade — hook de extensão pro arquivo de pares
@@ -769,7 +815,7 @@ export function renderJogarQuizPageHtml(editions: string[]): string {
   <div id="quiz-share-slot" hidden></div>
 </div>
 
-${renderSubscribeCtaBlock()}`;
+${renderQuizSubscribeCtaBlock()}`;
 
   const scriptHtml = total === 0 ? "" : `<script>
 (function () {

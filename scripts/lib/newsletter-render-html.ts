@@ -839,11 +839,16 @@ export function renderEIA(eia: EIA): string {
   const leaderboardRow = renderLeaderboardTop1Row(eia, lbStyle);
   // #1970: link persistente pra leaderboard em TODA edição (pódio acima é 1ª-do-mês).
   const leaderboardLinkRow = renderLeaderboardLinkRow(lbStyle);
-  // #3524: link persistente pro arquivo jogável (site) — metade "email → site"
-  // da ponte cross-canal do EPIC #3514. Vem DEPOIS do leaderboard (loop
-  // resultado→ranking é a mecânica central de engajamento existente, #1160 —
-  // a ponte pro site é reforço adicional, não substitui).
-  const archiveLinkRow = renderJogarArchiveLinkRow(lbStyle);
+  // #3578 (correção do #3524, feedback do editor 260716): esta função —
+  // `renderEIA` — só é usada pelo pipeline DIÁRIO (o mensal tem sua própria
+  // implementação, `monthly-render.ts::renderEia`, que nunca ganhou este
+  // link). Regra de produto: a diária vota SÓ no par do dia, sem
+  // arquivo/jogar edições anteriores — o link "Jogue os pares anteriores →
+  // arquivo do É IA?" foi removido daqui. `renderJogarArchiveLinkRow`/
+  // `buildJogarArchiveUrl` seguem exportados (não deletados — cobertos por
+  // test/eia-cross-canal-3524.test.ts) mas sem caller em produção; a ponte
+  // "email → arquivo" continua viva só na superfície `clarice` (mensal), via
+  // `votePageHtml` (workers/poll/src/index.ts, gate `brand === "clarice"`).
 
   // #1630: "Resultado da última edição: X% acertaram", no rodapé do painel.
   // #3220: destylizado a pedido do editor — pra ler como frase comum, não como
@@ -887,7 +892,6 @@ export function renderEIA(eia: EIA): string {
       </td></tr>${prevResultHtml}
 ${leaderboardRow}
 ${leaderboardLinkRow}
-${archiveLinkRow}
       </table>
     </td>
   </tr></table>
@@ -973,16 +977,20 @@ export function renderLeaderboardLinkRow(paragraphStyle: string): string {
 }
 
 /**
- * Pure (#3524): link PERSISTENTE pro arquivo jogável do "É IA?" standalone no
- * rodapé do painel — a metade "email → site" da ponte cross-canal do EPIC
- * #3514 (#3519 arquivo + #3518 CTA de assinatura já cobrem a metade "site →
- * email"). Renderiza em TODA edição, mesmo padrão de `renderLeaderboardLinkRow`
- * (#1970) — estático, sem fetch, sem depender de `eia.edition` (o arquivo
- * lista TODAS as edições fechadas, não uma específica). `buildJogarArchiveUrl`
- * carrega o UTM do funil (`utm_source=newsletter`) — mede quantos visitantes
- * do arquivo vieram da newsletter vs. share (#3517: `utm_source=share`) vs.
- * embed (#3521: `utm_source=embed`), item de aceite #3524 ("funil distingue
- * origem").
+ * Pure (#3524; SEM caller em produção desde #3578): link PERSISTENTE pro
+ * arquivo jogável do "É IA?" standalone no rodapé do painel — a metade
+ * "email → site" da ponte cross-canal do EPIC #3514 (#3519 arquivo + #3518
+ * CTA de assinatura já cobrem a metade "site → email"). Mesmo padrão de
+ * `renderLeaderboardLinkRow` (#1970) — estático, sem fetch, sem depender de
+ * `eia.edition` (o arquivo lista TODAS as edições fechadas, não uma
+ * específica). `buildJogarArchiveUrl` carrega o UTM do funil
+ * (`utm_source=newsletter`) — mede quantos visitantes do arquivo vieram da
+ * newsletter vs. share (#3517: `utm_source=share`) vs. embed (#3521:
+ * `utm_source=embed`), item de aceite #3524 ("funil distingue origem").
+ * `renderEIA` (única caller de produção) deixou de invocar esta função no
+ * #3578 — a diária vota só no par do dia, sem arquivo. Mantida exportada e
+ * testada (test/eia-cross-canal-3524.test.ts) por não ser exclusiva de
+ * produto; pode voltar a ter caller se a diária reintroduzir o link.
  */
 export function renderJogarArchiveLinkRow(paragraphStyle: string): string {
   const url = buildJogarArchiveUrl();

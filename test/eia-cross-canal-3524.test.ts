@@ -1,5 +1,5 @@
 /**
- * test/eia-cross-canal-3524.test.ts (#3524)
+ * test/eia-cross-canal-3524.test.ts (#3524, corrigido pelo #3578)
  *
  * Última sub-issue do EPIC #3514 — fecha o loop cross-canal entre a versão
  * email (newsletter/vote do brand diaria/clarice) e a versão standalone
@@ -17,6 +17,15 @@
  *
  * Também cobre regressão: nenhuma das 3 mudanças quebra o fluxo de
  * voto/humanizador/lint existente.
+ *
+ * **Correção #3578** (feedback do editor 260716): a ponte 1 (email → arquivo)
+ * e a metade "diaria" da ponte 2 foram REVERTIDAS — a É IA? da DIÁRIA só vota
+ * no par do dia, sem arquivo/jogar edições anteriores. A ponte 2 continua
+ * viva só pra brand `clarice` (mensal, que já podia voltar em edições
+ * anteriores antes do #3524 e mantém isso). A ponte 3 (reforço no arquivo do
+ * site) não muda — é sobre o site standalone, não sobre a diária.
+ * `renderJogarArchiveLinkRow`/`buildJogarArchiveUrl` (função 1) seguem
+ * exportados e testados abaixo, mas sem caller em `renderEIA` desde o #3578.
  */
 
 import { describe, it } from "node:test";
@@ -81,20 +90,16 @@ describe("renderJogarArchiveLinkRow (#3524) — linha do bloco É IA? da newslet
   });
 });
 
-describe("renderEIA embute o link do arquivo no rodapé do painel (#3524)", () => {
-  it("HTML do bloco É IA? contém o link pro arquivo com UTM", () => {
+describe("renderEIA NÃO embute mais o link do arquivo no rodapé do painel — diária vota só no par do dia (correção #3578 do #3524)", () => {
+  it("HTML do bloco É IA? NÃO contém o link pro arquivo (diária não joga edições passadas)", () => {
     const html = renderEIA(baseEia);
-    assert.match(html, /\/jogar\/arquivo\?/);
-    assert.match(html, /utm_source=newsletter/);
+    assert.doesNotMatch(html, /\/jogar\/arquivo\?/, "renderEIA (diária) não deve linkar o arquivo — #3578");
+    assert.doesNotMatch(html, /utm_source=newsletter/);
   });
 
-  it("link do arquivo vem DEPOIS do link persistente de leaderboard (reforço, não substitui #1970)", () => {
+  it("regressão: link persistente de leaderboard (#1970) continua presente", () => {
     const html = renderEIA(baseEia);
-    const leaderboardLinkIdx = html.indexOf("/leaderboard\"");
-    const archiveIdx = html.indexOf("/jogar/arquivo?");
-    assert.ok(archiveIdx > -1, "link do arquivo deve estar presente");
-    assert.ok(leaderboardLinkIdx > -1, "link do leaderboard deve estar presente");
-    assert.ok(archiveIdx > leaderboardLinkIdx, "arquivo deve vir depois do leaderboard");
+    assert.match(html, /\/leaderboard"/);
   });
 
   it("regressão: painel É IA? continua com merge tag {{email}} (modo merge-tag, #1186)", () => {
@@ -126,16 +131,16 @@ describe("jogarArchiveHref (#3524) — href do worker pro rodapé da página pó
   });
 });
 
-describe("votePageHtml linka o arquivo no rodapé pra brands diaria/clarice (#3524)", () => {
-  it("brand diaria (default): footer-links inclui 'Jogar edições passadas' → /jogar/arquivo", () => {
+describe("votePageHtml linka o arquivo no rodapé SÓ pra brand clarice — diária não joga edições passadas (correção #3578 do #3524)", () => {
+  it("brand diaria (default): footer-links NÃO inclui 'Jogar edições passadas' (#3578)", () => {
     const html = votePageHtml("Você acertou!", true, null, null, null, "diaria");
-    assert.match(html, /Jogar edições passadas/);
-    assert.match(html, /href="\/jogar\/arquivo\?utm_source=newsletter/);
+    assert.ok(!html.includes("Jogar edições passadas"), "brand diaria não deve linkar o arquivo — #3578");
   });
 
-  it("brand clarice: mesmo link presente", () => {
+  it("brand clarice: link presente (mensal MANTÉM o arquivo, já podia voltar em edições anteriores antes do #3524)", () => {
     const html = votePageHtml("Você acertou!", true, null, null, null, "clarice");
     assert.match(html, /Jogar edições passadas/);
+    assert.match(html, /href="\/jogar\/arquivo\?utm_source=newsletter/);
   });
 
   it("brand web: link NÃO duplicado (o /jogar já tem o próprio link de arquivo no rodapé)", () => {
