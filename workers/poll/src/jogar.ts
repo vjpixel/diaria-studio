@@ -39,6 +39,13 @@
  *      `handleVote`.
  */
 import type { Env } from "./index";
+// #3520: `json`/`corsHeaders` (valores, não só tipo) — mesmo padrão de
+// import circular já em produção em vote.ts (`import { hmacSign, hmacVerify,
+// json, ... } from "./index"` + index.ts importa `handleVote` de volta de
+// vote.ts). Seguro porque nenhum dos dois módulos usa o valor importado no
+// top-level, só dentro de corpos de função executados em request-time
+// (bindings vivos do ESM resolvem o ciclo).
+import { corsHeaders, json } from "./index";
 import {
   AAMMDD_RE,
   BRAND_INFO,
@@ -55,7 +62,9 @@ import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 // fallback copiar-link) reusado LITERALMENTE do mesmo helper que
 // votePageHtml (index.ts) usa pro bloco renderizado direto, só com um
 // container selector diferente. Rationale completo em share.ts.
-import { shareButtonScript } from "./share";
+// #3520: encodeQuizShareToken/renderQuizShareCardBlock — mesmo motor,
+// payload/rotas próprios do quiz relâmpago (rationale em share.ts).
+import { encodeQuizShareToken, renderQuizShareCardBlock, shareButtonScript, type QuizSharePayload } from "./share";
 // #3519: arquivo de pares passados — reusa 100% da extração/agrupamento já
 // construído pro arquivo retroativo do brand `diaria`/`clarice` (#2867/#3113,
 // leaderboard-routes.ts) em vez de duplicar a lógica de listagem de edições
@@ -573,6 +582,418 @@ export async function handleJogarArchivePage(url: URL, env: Env): Promise<Respon
     headers: {
       "Content-Type": "text/html;charset=utf-8",
       "Cache-Control": "public, max-age=300",
+    },
+  });
+}
+
+// ── #3520: quiz relâmpago — N pares seguidos, score compartilhável ─────────
+//
+// Sub-issue [S] do EPIC #3514, construída sobre a fundação #3516 (identidade
+// anônima, `/jogar?edition=`) + #3519 (arquivo de pares FECHADOS, reusa
+// `extractEditionsForYear`'s racional de "só edição com gabarito público e
+// não-futura") + #3517 (motor de share, ver `QuizSharePayload` em share.ts).
+// Decisões de design (ver PR #3520 para rationale completo):
+//
+//   1. Rota: `GET /jogar/quiz?n=N` — índice novo, não um query param em
+//      `/jogar` (evitaria complicar `resolveJogarEdition`/`renderJogarPageHtml`
+//      que já tratam de outra coisa — o par ÚNICO do dia/arquivo). Mesmo
+//      padrão de path dedicado já usado por `/jogar/arquivo` (#3519).
+//
+//   2. Fonte dos pares: MESMAS chaves `correct:{edition}` que alimentam o
+//      arquivo (#3519) — só que sem filtro de ANO (o quiz sorteia do universo
+//      inteiro de edições fechadas, não de um ano específico) e com exclusão
+//      explícita do dia corrente mesmo que já tenha gabarito definido (ver
+//      item 5, guard crítico de anti-spoiler em `handleQuizAnswer`).
+//
+//   3. Placar 100% client-side, NUNCA escrito no KV — ver rationale completo
+//      no header de share.ts ("Score do quiz é 100% CLIENT-SIDE"). Cada
+//      rodada só LÊ o gabarito público via `GET /jogar/quiz/answer`
+//      (sem side-effect); nenhuma chamada a `/vote` acontece. Satisfaz o
+//      critério de aceite #3520 ("não contamina o ranking mensal") por
+//      construção, sem precisar de nenhum branch condicional em
+//      `handleVote`/`vote.ts` (arquivo mais sensível do worker — dedup,
+//      Durable Object — zero mudança ali).
+//
+//   4. Sem sessão/seed servidor pra anti-replay (a issue original sugeria
+//      "seed no KV/cookie pra evitar replay-farm"). Decisão CONSERVADORA:
+//      omitido deliberadamente — como o placar não entra em NENHUM ranking
+//      (item 3), "farmar" o quiz não tem nenhum payoff competitivo, só
+//      vaidade sem custo real (mesmo racional já aceito pro `SIG_LENGTH`
+//      truncado do card de voto único, ver header de share.ts). Implementar
+//      anti-replay real exigiria justamente o "estado servidor pesado" que a
+//      issue pede pra evitar — sobre-engenharia pra um risco de blast radius
+//      zero. Cada `GET /jogar/quiz` sorteia uma sequência NOVA (sem cache,
+//      `Cache-Control: no-store`) — recarregar a página já dá um quiz
+//      diferente, suficiente pra não ser um "spoiler permanente" reusável.
+//
+//   5. Anti-spoiler — o guard mais importante desta issue: `handleQuizAnswer`
+//      rejeita qualquer `edition >= hoje` (BRT) INDEPENDENTE de
+//      `correct:{edition}` já existir no KV. Sem este guard, um leitor
+//      poderia chamar `GET /jogar/quiz/answer?edition={hoje}` DIRETAMENTE
+//      (sem passar pela UI) e descobrir o gabarito do par do dia ANTES de
+//      votar em `/jogar` — o gabarito pode ser definido no KV antes do
+//      e-mail sair (mesmo racional já documentado no header deste arquivo
+//      pro `handleJogarPage`). O quiz só pode revelar respostas de edições
+//      ESTRITAMENTE passadas, nunca a de hoje, mesmo que já "fechada"
+//      administrativamente.
+//
+//   6. Requer JavaScript (progressive enhancement NÃO preservado aqui, ao
+//      contrário de `/jogar`/`/jogar/arquivo`). Decisão conservadora: um
+//      fallback sem-JS exigiria ou N page-loads inteiras (uma por rodada,
+//      com placar tracked via query string/cookie — reintroduz o "estado
+//      servidor pesado" que o item 4 evita) ou uma reimplementação paralela
+//      da UI em HTML puro. `<noscript>` linka de volta pro `/jogar` (par do
+//      dia, 100% funcional sem JS) — nunca um dead-end.
+//
+//   7. Pontuação: mesma decisão do #3519 — sem diferenciação de pontos entre
+//      par do dia/arquivo/quiz (aliás o quiz nem GRAVA pontos, ver item 3).
+
+/** Tamanho mínimo/máximo/default do quiz — issue sugere "5 ou 10 pares";
+ * MIN=3 garante que "quiz" seja mais que 1-2 rodadas, MAX=10 limita o custo
+ * de imagens carregadas numa sessão (mesmo teto sugerido na issue). */
+export const QUIZ_MIN_N = 3;
+export const QUIZ_MAX_N = 10;
+export const QUIZ_DEFAULT_N = 5;
+
+/**
+ * Pure (#3520): resolve quantas rodadas o quiz pedido deve ter — clamped em
+ * [QUIZ_MIN_N, QUIZ_MAX_N]. `?n=` ausente/malformado (não-inteiro, NaN) cai
+ * no default, nunca lança (mesma disciplina de `resolveJogarEdition`: página
+ * pública de entrada não pode 400/500 por um param mal formado). Note que
+ * este é o tamanho PEDIDO — a quantidade REAL de rodadas jogáveis pode ser
+ * menor se não houver edições fechadas suficientes (ver `pickQuizEditions`).
+ */
+export function resolveQuizSize(rawN: string | null): number {
+  if (!rawN || !/^-?\d+$/.test(rawN)) return QUIZ_DEFAULT_N;
+  const n = parseInt(rawN, 10);
+  if (n < QUIZ_MIN_N) return QUIZ_MIN_N;
+  if (n > QUIZ_MAX_N) return QUIZ_MAX_N;
+  return n;
+}
+
+/**
+ * Pure (#3520): extrai TODAS as edições com gabarito fechado (qualquer ano),
+ * excluindo hoje e futuro — mesmo racional de `extractEditionsForYear`
+ * (#3519), sem o filtro de ano (o quiz sorteia do universo inteiro de
+ * edições disponíveis, não de um ano específico). Ordem de retorno não
+ * importa aqui (`pickQuizEditions` embaralha) — dedup via Set.
+ */
+export function extractAllClosedEditions(correctKeyNames: string[], now: Date = new Date()): string[] {
+  const today = todayAammddBrt(now);
+  const set = new Set<string>();
+  for (const k of correctKeyNames) {
+    const edition = k.startsWith("correct:") ? k.slice("correct:".length) : k;
+    if (!AAMMDD_RE.test(edition)) continue;
+    if (edition >= today) continue; // hoje/futuro nunca entram no quiz (anti-spoiler)
+    set.add(edition);
+  }
+  return [...set];
+}
+
+/**
+ * Pure (#3520): sorteia até `n` edições SEM repetição de `available` (Fisher-
+ * Yates parcial). `rng` injetável pra determinismo em teste (default
+ * `Math.random`). Se `available.length < n`, retorna `available.length`
+ * itens (nunca lança/preenche com duplicata) — "edições insuficientes" vira
+ * um quiz mais curto, não um erro (critério de aceite #3520).
+ */
+export function pickQuizEditions(available: string[], n: number, rng: () => number = Math.random): string[] {
+  const pool = [...available];
+  const count = Math.min(Math.max(n, 0), pool.length);
+  const picked: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const idx = Math.floor(rng() * pool.length);
+    picked.push(pool[idx]);
+    pool.splice(idx, 1);
+  }
+  return picked;
+}
+
+/**
+ * Pure render (#3520): página do quiz relâmpago. `editions` já sorteadas
+ * pelo caller (`handleJogarQuizPage`) — esta função só embute o array (sem
+ * revelar NENHUM gabarito, só os AAMMDD, que não são spoiler — o gabarito só
+ * é buscado rodada-a-rodada via `/jogar/quiz/answer`, depois do voto do
+ * leitor, mesma disciplina anti-gaming do resto do produto) e monta o
+ * shell/JS que conduz as rodadas inteiramente no cliente.
+ *
+ * `editions.length === 0` → mensagem amigável (sem edições fechadas
+ * suficientes ainda) em vez de renderizar um quiz vazio quebrado.
+ */
+export function renderJogarQuizPageHtml(editions: string[]): string {
+  const info = BRAND_INFO[JOGAR_BRAND];
+  const total = editions.length;
+  const pageTitle = `Quiz relâmpago — É IA? | ${info.name}`;
+  const seoMeta = renderSeoMeta({
+    title: pageTitle,
+    description: `${total > 0 ? total : "Vários"} pares seguidos, direto do "É IA?" — acerte o máximo possível e compartilhe seu placar.`,
+    path: "/jogar/quiz",
+  });
+
+  const emptyStateHtml = `<p class="sub">Ainda não há edições fechadas suficientes pra montar o quiz relâmpago — volte em breve.</p>
+<p class="footer-links"><a href="/jogar">Jogar o par de hoje</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Ver arquivo</a></p>`;
+
+  const quizBodyHtml = total === 0 ? emptyStateHtml : `<p class="sub" id="quiz-progress">Par 1 de ${total} — acertos: 0</p>
+
+<noscript><p class="sub">O quiz relâmpago precisa de JavaScript. <a href="/jogar">Jogue o par de hoje sem JavaScript.</a></p></noscript>
+
+<div id="quiz-play">
+  <div class="choices" id="quiz-choices"></div>
+  <div id="quiz-round-result" class="quiz-round-result" hidden></div>
+</div>
+
+<div id="quiz-final" class="quiz-final" hidden>
+  <p class="result-msg quiz-final-score"></p>
+  <div id="quiz-share-slot" hidden></div>
+</div>
+
+${renderSubscribeCtaBlock()}`;
+
+  const scriptHtml = total === 0 ? "" : `<script>
+(function () {
+  var editions = ${JSON.stringify(editions)};
+  var total = editions.length;
+  var round = 0;
+  var score = 0;
+  var answered = false;
+
+  var choicesEl = document.getElementById("quiz-choices");
+  var progressEl = document.getElementById("quiz-progress");
+  var roundResultEl = document.getElementById("quiz-round-result");
+  var playEl = document.getElementById("quiz-play");
+  var finalEl = document.getElementById("quiz-final");
+  var subscribeCta = document.getElementById("jogar-subscribe-cta");
+
+  function imgUrl(edition, side) {
+    return "/img/img-" + edition + "-01-eia-" + side + ".jpg";
+  }
+
+  function renderRound() {
+    answered = false;
+    roundResultEl.hidden = true;
+    roundResultEl.innerHTML = "";
+    var edition = editions[round];
+    progressEl.textContent = "Par " + (round + 1) + " de " + total + " — acertos: " + score;
+    choicesEl.innerHTML =
+      '<div class="choice"><img src="' + imgUrl(edition, "A") + '" alt="Imagem A" loading="lazy"><button type="button" class="quiz-choice-btn" data-choice="A">Essa é a IA (A)</button></div>' +
+      '<p class="scroll-hint">↓ Veja também a Imagem B antes de decidir</p>' +
+      '<div class="choice"><img src="' + imgUrl(edition, "B") + '" alt="Imagem B" loading="lazy"><button type="button" class="quiz-choice-btn" data-choice="B">Essa é a IA (B)</button></div>';
+  }
+
+  function setChoiceButtonsDisabled(disabled) {
+    var btns = choicesEl.querySelectorAll(".quiz-choice-btn");
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = disabled;
+  }
+
+  function advance() {
+    round++;
+    if (round >= total) {
+      showFinal();
+      return;
+    }
+    renderRound();
+  }
+
+  function showFinal() {
+    if (playEl) playEl.hidden = true;
+    finalEl.hidden = false;
+    var scoreEl = finalEl.querySelector(".quiz-final-score");
+    if (scoreEl) scoreEl.textContent = "Você acertou " + score + " de " + total + "!";
+    var slot = document.getElementById("quiz-share-slot");
+    fetch("/jogar/quiz/result?score=" + encodeURIComponent(String(score)) + "&total=" + encodeURIComponent(String(total)))
+      .then(function (res) { if (!res.ok) throw new Error("result fetch failed"); return res.text(); })
+      .then(function (html) {
+        if (!slot) return;
+        slot.innerHTML = html;
+        slot.hidden = false;
+      })
+      .catch(function () {});
+    if (subscribeCta) subscribeCta.hidden = false;
+  }
+
+  function onChoice(choice) {
+    if (answered) return;
+    answered = true;
+    setChoiceButtonsDisabled(true);
+    var edition = editions[round];
+    fetch("/jogar/quiz/answer?edition=" + encodeURIComponent(edition))
+      .then(function (res) {
+        if (!res.ok) throw new Error("answer fetch failed");
+        return res.json();
+      })
+      .then(function (data) {
+        var isCorrect = data.correct === choice;
+        if (isCorrect) score++;
+        roundResultEl.hidden = false;
+        roundResultEl.innerHTML =
+          '<p class="result-msg">' + (isCorrect ? "Acertou!" : "Essa não — a resposta era " + data.correct + ".") + "</p>" +
+          '<button type="button" id="quiz-next-btn">' + (round + 1 < total ? "Próximo par" : "Ver resultado") + "</button>";
+        var nextBtn = document.getElementById("quiz-next-btn");
+        if (nextBtn) nextBtn.addEventListener("click", advance);
+      })
+      .catch(function () {
+        // Falha de rede não deve travar o quiz — reabilita os botões pra
+        // tentar a rodada de novo (não avança/não pontua, evita placar
+        // inconsistente com uma rodada que nunca foi confirmada).
+        answered = false;
+        setChoiceButtonsDisabled(false);
+      });
+  }
+
+  choicesEl.addEventListener("click", function (ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest(".quiz-choice-btn") : null;
+    if (!btn) return;
+    onChoice(btn.getAttribute("data-choice"));
+  });
+
+  renderRound();
+})();
+</script>
+${shareButtonScript("#quiz-share-slot")}`;
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${pageTitle}</title>
+${seoMeta}
+<style>
+  body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
+  h1 { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
+  .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
+  .choice { flex: 1 1 240px; max-width: 260px; }
+  .choice img { width: 100%; height: auto; border-radius: 6px; display: block; background: ${DS_COLORS.paperAlt}; }
+  .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
+  .choice button:disabled { opacity: 0.5; cursor: not-allowed; }
+  a { color: ${DS_COLORS.ink}; text-decoration: underline; }
+  .scroll-hint { display: none; }
+  #quiz-round-result[hidden], #quiz-final[hidden], #jogar-subscribe-cta[hidden] { display: none; }
+  .result-msg { font-family: ${DS_FONTS.serif}; font-size: 1.3rem; line-height: 1.4; margin: 20px 0; }
+  .quiz-round-result button, .quiz-final-score + button { margin-top: 4px; padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
+  .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
+  .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .share-actions button { padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  .subscribe-cta { margin: 20px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
+  .subscribe-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
+  .subscribe-btn { display: inline-block; padding: 10px 20px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; text-decoration: none; font-weight: 600; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  @media (max-width: 600px) {
+    .choice { flex-basis: 100%; max-width: 100%; }
+    .scroll-hint { display: block; width: 100%; margin: 2px 0 10px; font-size: 0.85rem; font-weight: 600; color: ${DS_COLORS.brand}; }
+    .share-card { max-width: 100%; padding: 20px 18px; }
+    .share-actions { flex-direction: column; }
+    .share-actions button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
+    .subscribe-cta { max-width: 100%; padding: 20px 18px; }
+    .subscribe-btn { display: block; width: 100%; box-sizing: border-box; padding: 14px 16px; font-size: 1.05rem; }
+  }
+${renderBrandShellStyles()}
+</style>
+</head>
+<body>
+<p class="kicker">É IA? — quiz relâmpago</p>
+<hr class="rule">
+<h1>Quiz relâmpago</h1>
+${quizBodyHtml}
+
+<p class="footer-links"><a href="${htmlEscape(info.siteUrl)}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="/jogar">Jogar o par de hoje</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Ver arquivo</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver leaderboard</a></p>
+${renderBrandFooter(JOGAR_BRAND)}
+${scriptHtml}
+</body>
+</html>`;
+}
+
+/**
+ * Handler `GET /jogar/quiz` (#3520). `env` CRU — lê `correct:*` compartilhado
+ * pra montar o universo de edições jogáveis (mesmo racional de
+ * `handleJogarArchivePage`). `Cache-Control: no-store` — cada request sorteia
+ * uma sequência NOVA (ver item 4 do rationale acima); cachear serviria o
+ * MESMO quiz repetidamente.
+ */
+export async function handleJogarQuizPage(url: URL, env: Env): Promise<Response> {
+  const now = new Date();
+  const requestedN = resolveQuizSize(url.searchParams.get("n"));
+  const keys: string[] = [];
+  for await (const k of listAllKeys(env, "correct:")) keys.push(k);
+  const available = extractAllClosedEditions(keys, now);
+  const editions = pickQuizEditions(available, requestedN);
+  return new Response(renderJogarQuizPageHtml(editions), {
+    headers: {
+      "Content-Type": "text/html;charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+/**
+ * Handler `GET /jogar/quiz/answer?edition=AAMMDD` (#3520). Endpoint público
+ * SEM side-effect (só leitura do gabarito já público) — nunca escreve no KV,
+ * é o que garante que o quiz nunca poluí score/leaderboard (ver rationale no
+ * header de share.ts).
+ *
+ * Guard crítico de anti-spoiler: `edition >= hoje` (BRT) é rejeitado com 403
+ * INDEPENDENTE de `correct:{edition}` já existir no KV — o gabarito de hoje
+ * pode ser definido antes do e-mail sair (mesmo racional documentado no
+ * header do arquivo pra `handleJogarPage`); sem este guard, chamar este
+ * endpoint diretamente com `edition=hoje` vazaria a resposta do par do dia
+ * ANTES do leitor votar em `/jogar`.
+ */
+export async function handleQuizAnswer(url: URL, env: Env): Promise<Response> {
+  const edition = url.searchParams.get("edition");
+  if (!edition || !AAMMDD_RE.test(edition)) {
+    return json({ error: "invalid edition" }, 400, env);
+  }
+  const today = todayAammddBrt(new Date());
+  if (edition >= today) {
+    return json({ error: "edition not eligible for quiz — reveals only past closed editions" }, 403, env);
+  }
+  const correct = await env.POLL.get(`correct:${edition}`);
+  if (correct !== "A" && correct !== "B") {
+    return json({ error: "not found" }, 404, env);
+  }
+  return json({ edition, correct }, 200, env);
+}
+
+/**
+ * Pure (#3520): valida `score`/`total` recebidos de `GET /jogar/quiz/result`.
+ * `null` pra qualquer forma inválida (não-inteiro, `total` fora de
+ * [QUIZ_MIN_N, QUIZ_MAX_N], `score` negativo ou > `total`) — nunca lança.
+ *
+ * Nota (ver rationale no header de share.ts): não há verificação contra
+ * respostas REAIS aqui — `score`/`total` são confiados do cliente. Trade-off
+ * deliberado (forja só produz vaidade sem efeito no sistema).
+ */
+export function resolveQuizResultParams(rawScore: string | null, rawTotal: string | null): QuizSharePayload | null {
+  if (!rawScore || !rawTotal) return null;
+  if (!/^\d+$/.test(rawScore) || !/^\d+$/.test(rawTotal)) return null;
+  const score = parseInt(rawScore, 10);
+  const total = parseInt(rawTotal, 10);
+  if (total < QUIZ_MIN_N || total > QUIZ_MAX_N) return null;
+  if (score < 0 || score > total) return null;
+  return { score, total };
+}
+
+/**
+ * Handler `GET /jogar/quiz/result?score=X&total=N` (#3520). Assina o
+ * `QuizSharePayload` e retorna DIRETO o bloco `renderQuizShareCardBlock`
+ * (não uma página inteira) — o cliente injeta a resposta via
+ * `slot.innerHTML` sem precisar de DOMParser (ao contrário do fetch de
+ * `/vote` em `renderJogarPageHtml`, cuja resposta é uma página completa da
+ * qual só um fragmento é extraído).
+ */
+export async function handleQuizResult(url: URL, env: Env): Promise<Response> {
+  const payload = resolveQuizResultParams(url.searchParams.get("score"), url.searchParams.get("total"));
+  if (!payload) {
+    return json({ error: "invalid score/total" }, 400, env);
+  }
+  const token = await encodeQuizShareToken(env.POLL_SECRET, payload);
+  return new Response(renderQuizShareCardBlock(token, payload), {
+    headers: {
+      "Content-Type": "text/html;charset=utf-8",
+      "Cache-Control": "no-store",
+      ...corsHeaders(env),
     },
   });
 }
