@@ -549,12 +549,30 @@ export function parseEIA(text: string, editionDir: string): EIA {
 export function extractCoverageLine(text: string): string | null {
   // #3461: formato novo (padrão a partir de 260715) — bloco de boas-vindas
   // multi-parágrafo, sem negrito, começando com "Olá! Eu sou o [Pixel](...)"
-  // e terminando no CTA fixo de apoio. Captura o bloco INTEIRO (todos os
-  // parágrafos) pra renderCoverage processar como múltiplos <p> com links.
-  const welcomeMatch = text.match(
-    /^Olá! Eu sou o [\s\S]*?considere apoiar o projeto\]\([^)]+\)\.$/m,
+  // e ANCORADO na frase-CTA fixa de apoio (sinal inequívoco de que é o bloco
+  // de boas-vindas, não outro texto qualquer que comece com "Olá!").
+  //
+  // #3477 item 4: antes, o match TERMINAVA nessa frase — qualquer parágrafo
+  // adicionado DEPOIS dela (ex: agradecimento a novos apoiadores) era
+  // descartado silenciosamente do HTML mesmo presente no MD (o editor tinha
+  // que colar o parágrafo extra ANTES da frase-fronteira, frágil). Agora a
+  // frase-CTA só ANCORA o início do bloco — a captura real se estende até o
+  // próximo boundary estrutural (`---` isolado em linha própria, ou o próximo
+  // `**DESTAQUE`), o que vier primeiro. Sem boundary (MD malformado) captura
+  // até o fim do texto — defensivo, não deveria ocorrer em MD bem formado.
+  const anchorMatch = text.match(
+    /^Olá! Eu sou o [\s\S]*?considere apoiar o projeto\]\([^)]+\)\./m,
   );
-  if (welcomeMatch) return welcomeMatch[0].trim();
+  if (anchorMatch) {
+    const startIdx = anchorMatch.index ?? 0;
+    const rest = text.slice(startIdx);
+    const sepMatch = rest.match(/^---[ \t]*\r?$/m);
+    const destMatch = rest.match(/^\*\*DESTAQUE/m);
+    let endIdx = rest.length;
+    if (sepMatch?.index !== undefined) endIdx = Math.min(endIdx, sepMatch.index);
+    if (destMatch?.index !== undefined) endIdx = Math.min(endIdx, destMatch.index);
+    return rest.slice(0, endIdx).trim();
+  }
 
   // Formatos legados (linha única): #592/#609 original + #3456.
   const m = text.match(/^Para esta edição,[^\n]+$/m);

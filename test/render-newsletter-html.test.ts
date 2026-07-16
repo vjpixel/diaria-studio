@@ -23,6 +23,9 @@ import {
   unescapeMd,
   processInlineItalics,
   processInlineLinks,
+  renderIntroCallout,
+  renderMidCallout,
+  renderBoxDivulgacao,
   applyBrandWordmark,
   truncateAtSectionTerminator,
   joinMultilineLinks,
@@ -1526,6 +1529,57 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     assert.doesNotMatch(line!, /DESTAQUE/);
   });
 
+  it("#3477 item 4: inclui parágrafo ADICIONADO depois da frase-CTA fixa, até o próximo ---", () => {
+    // Antes, extractCoverageLine parava exatamente na frase "considere apoiar
+    // o projeto](...)." — um parágrafo extra (ex: agradecimento a novos
+    // apoiadores) colado DEPOIS dela era descartado silenciosamente do HTML,
+    // mesmo presente no MD (o editor tinha que colar ANTES da frase-fronteira,
+    // frágil — #3477).
+    const md = [
+      "TÍTULO",
+      "",
+      "Headline de teste",
+      "",
+      "---",
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Nesta edição, a IA analisou 265 artigos (10 enviados por mim e 255 encontrados automaticamente) e selecionei os 11 mais relevantes.",
+      "",
+      "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+      "",
+      "Obrigado às pessoas que apoiaram o projeto este mês: Fulano, Sicrano.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const line = extractCoverageLine(md);
+    assert.ok(line, "coverage line deve ser extraída");
+    assert.match(line!, /^Olá! Eu sou o \[Pixel\]/);
+    assert.match(line!, /considere apoiar o projeto\]\(https:\/\/apoia\.se\/diaria\)\./);
+    // #3477: o parágrafo extra pós-CTA agora É capturado, não descartado.
+    assert.match(line!, /Obrigado às pessoas que apoiaram o projeto este mês: Fulano, Sicrano\.$/);
+    assert.doesNotMatch(line!, /---/);
+    assert.doesNotMatch(line!, /DESTAQUE/);
+  });
+
+  it("#3477 item 4: sem parágrafo extra, comportamento idêntico ao anterior (regressão)", () => {
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const line = extractCoverageLine(md);
+    assert.equal(
+      line,
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.\n\nSe esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+    );
+  });
+
   it("renderCoverage retorna <tr> com texto escapado", () => {
     const text = "Para esta edição, eu (o editor) enviei 5 submissões & a Diar.ia encontrou outros 80 artigos.";
     const html = renderCoverage(text);
@@ -1980,6 +2034,110 @@ describe("processInlineItalics (#1364)", () => {
       processInlineItalics("foo *open\nclose* bar"),
       "foo *open\nclose* bar",
     );
+  });
+
+  it("#3477: converte _texto_ (underscore) em <em>", () => {
+    assert.equal(
+      processInlineItalics("Não recebi comissão para _indicar_ este produto."),
+      'Não recebi comissão para <em style="font-style:italic;">indicar</em> este produto.',
+    );
+  });
+
+  it("#3477: _texto_ e *texto* na mesma string, ambos convertidos", () => {
+    assert.equal(
+      processInlineItalics("foo *asterisco* bar _underscore_ baz"),
+      'foo <em style="font-style:italic;">asterisco</em> bar <em style="font-style:italic;">underscore</em> baz',
+    );
+  });
+
+  it("#3477: NÃO trata underscore intraword como itálico (snake_case)", () => {
+    assert.equal(
+      processInlineItalics("o campo nome_variavel não muda"),
+      "o campo nome_variavel não muda",
+    );
+  });
+
+  it("#3477: não cruza newlines com underscore (mesma regra do asterisco)", () => {
+    assert.equal(
+      processInlineItalics("foo _open\nclose_ bar"),
+      "foo _open\nclose_ bar",
+    );
+  });
+});
+
+describe("processInlineLinks — itálico nos segmentos de texto (#3477)", () => {
+  it("*texto* dentro de um box/callout vira <em> (antes só escText tratava italics)", () => {
+    const html = processInlineLinks("Isenção: *não recebi comissão* para indicar.");
+    assert.match(html, /<em style="font-style:italic;">não recebi comissão<\/em>/);
+  });
+
+  it("_texto_ dentro de um box/callout vira <em>", () => {
+    const html = processInlineLinks("Isenção: _não recebi comissão_ para indicar.");
+    assert.match(html, /<em style="font-style:italic;">não recebi comissão<\/em>/);
+  });
+
+  it("itálico convive com link markdown no mesmo texto", () => {
+    const html = processInlineLinks("Veja [este produto](https://example.com) — *sem comissão* aqui.");
+    assert.match(html, /<a href="https:\/\/example\.com"[^>]*>este produto<\/a>/);
+    assert.match(html, /<em style="font-style:italic;">sem comissão<\/em>/);
+  });
+});
+
+describe("disclosure paragraph — fonte menor + itálico via _..._ (#3477)", () => {
+  it("renderIntroCallout: parágrafo INTEIRO embrulhado em _..._ vira 12px itálico (path single-parágrafo)", () => {
+    const html = renderIntroCallout("_Não recebi comissão para indicar este produto._");
+    assert.match(html, /font-size:12px;font-style:italic/);
+    assert.match(html, />Não recebi comissão para indicar este produto\.<\/p>/);
+    // não deve sobrar underscore literal (nem vazar como <em> — é o wrap ESTRUTURAL, consumido)
+    assert.doesNotMatch(html, /_Não recebi/);
+  });
+
+  it("renderIntroCallout multi-parágrafo: só o parágrafo marcado vira disclosure 12px; os demais mantêm 16px", () => {
+    const text = [
+      "📣 Indicação de Ferramenta",
+      "",
+      "Conheça essa ferramenta incrível para o seu dia a dia.",
+      "",
+      "_Não recebi comissão para indicar este produto._",
+    ].join("\n\n");
+    const html = renderIntroCallout(text);
+    assert.match(html, /font-size:12px;font-style:italic/);
+    assert.match(html, />Não recebi comissão para indicar este produto\.<\/p>/);
+    assert.doesNotMatch(html, /_Não recebi/);
+    // o parágrafo de corpo comum continua no tamanho 16px padrão do box
+    assert.match(html, /font-family:[^;]+;font-size:16px;line-height:1\.62/);
+  });
+
+  it("renderBoxDivulgacao (box de indicação de ferramenta, sem imagem): disclosure paragraph funciona ponta a ponta", () => {
+    const text = [
+      "📖 Recomendação de leitura",
+      "",
+      "Um livro excelente sobre IA para quem está começando.",
+      "",
+      "_Indicar produtos pode me render uma comissão de vendas._",
+    ].join("\n\n");
+    const html = renderBoxDivulgacao(text);
+    assert.match(html, /font-size:12px;font-style:italic/);
+    assert.match(html, />Indicar produtos pode me render uma comissão de vendas\.<\/p>/);
+    assert.doesNotMatch(html, /_Indicar produtos/);
+  });
+
+  it("renderMidCallout (box com imagem): último parágrafo marcado vira disclosure 12px", () => {
+    const text = [
+      "📖 Recomendação de leitura",
+      "",
+      "Um livro excelente sobre IA. [Compre aqui](https://livros.diaria.workers.dev/x)",
+      "",
+      "_Indicar produtos pode me render uma comissão de vendas._",
+    ].join("\n\n");
+    const html = renderMidCallout(text, "https://cdn.example.com/capa.jpg");
+    assert.match(html, /font-size:12px;font-style:italic/);
+    assert.match(html, />Indicar produtos pode me render uma comissão de vendas\.<\/p>/);
+  });
+
+  it("parágrafo com underscore só numa ponta NÃO é tratado como disclosure (fica no corpo normal 16px)", () => {
+    const html = renderIntroCallout("_Não recebi comissão para indicar este produto.");
+    assert.doesNotMatch(html, /font-size:12px;font-style:italic/);
   });
 });
 

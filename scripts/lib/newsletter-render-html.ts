@@ -77,6 +77,49 @@ function bodyP(margin: string, content: string): string {
   return `<p style="margin:${margin};font-family:${FONT_BODY};font-size:16px;line-height:1.62;color:${TEXT_COLOR};">${content}</p>`;
 }
 
+/**
+ * #3477: parágrafo "disclosure" — 12px itálico, pro texto legal/comissão
+ * (ex: "Não recebi comissão para indicar.") que o editor quer discreto dentro
+ * de um box de divulgação. Reusa o mesmo tamanho já usado em labels/legendas
+ * (12px), sem introduzir um 4º tamanho hardcoded.
+ */
+function disclosureP(margin: string, content: string): string {
+  return `<p style="margin:${margin};font-family:${FONT_BODY};font-size:12px;font-style:italic;line-height:1.5;color:${TEXT_COLOR};">${content}</p>`;
+}
+
+/**
+ * #3477: um parágrafo inteiro embrulhado em `_..._` (single underscore, do
+ * 1º ao último char não-whitespace) é a convenção "disclosure paragraph" — o
+ * editor marca um parágrafo específico dentro de um box (ex: "Indicar
+ * produtos pode me render uma comissão de vendas.") pra renderizar em fonte
+ * menor + itálico, em vez do corpo padrão 16px do box. Espelha a técnica de
+ * `FULL_BOLD_WRAP_RE`/`formatBoxInner` em newsletter-parse.ts (wrap completo
+ * como sinal estrutural). Retorna o texto SEM os underscores estruturais
+ * (processado normalmente depois — links/bold/itálico interno preservados)
+ * + a flag. Não casa `__texto__` (bold-alt do CommonMark, não usado neste
+ * pipeline) nem parágrafos com `_` só numa ponta.
+ */
+function stripDisclosureWrap(p: string): { text: string; isDisclosure: boolean } {
+  if (/^_(?!_)[\s\S]*[^_](?<!_)_$/.test(p)) {
+    return { text: p.slice(1, -1).trim(), isDisclosure: true };
+  }
+  return { text: p, isDisclosure: false };
+}
+
+/**
+ * #3477: renderiza 1 parágrafo de corpo de box — `disclosureP` quando o
+ * parágrafo inteiro está marcado via `stripDisclosureWrap` (convenção
+ * `_..._`), `bodyP` (16px padrão) caso contrário. Único ponto de decisão
+ * reusado pelos vários call-sites de parágrafo de box (`renderIntroCallout`,
+ * `renderMidCallout`) — evita divergência entre eles.
+ */
+function renderBoxParagraph(p: string, margin: string): string {
+  const { text: stripped, isDisclosure } = stripDisclosureWrap(p);
+  return isDisclosure
+    ? disclosureP(margin, processInlineLinks(stripped))
+    : bodyP(margin, processInlineLinks(p));
+}
+
 // #1936 (DS): cada seção é UMA linha `<tr><td class="pad">` com
 // padding lateral de 32px (mobile → 12px via .pad, #2514). Os helpers abaixo retornam
 // HTML INTERNO (sem `<tr>`); os render* de topo embrulham na linha padded.
@@ -371,7 +414,7 @@ export function renderIntroCallout(
   const hasKnownMarker = /^\s*(?:📣|📚|📖|🎉)/u.test(paras[0] ?? "");
   if (paras.length > 1 && !sponsored && !hasKnownMarker && !forceCtaPill) {
     inner = paras
-      .map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", processInlineLinks(p)))
+      .map((p, i) => renderBoxParagraph(p, i === 0 ? "0" : "12px 0 0"))
       .join("\n      ");
   } else if (paras.length > 1) {
     // multi-parágrafo: 1º = título (marcador 📣/📚/🎉 removido), demais = corpo normal.
@@ -460,7 +503,7 @@ export function renderIntroCallout(
         if (fullBold) {
           return `<p style="margin:${mt} 0 0;${bodyHeadingStyle}">${processInlineLinks(p.slice(2, -2))}</p>`;
         }
-        return bodyP(`${mt} 0 0`, processInlineLinks(p));
+        return renderBoxParagraph(p, `${mt} 0 0`);
       })
       .join("\n      ");
     // #finding-3: bodyHtml vazio não deve deixar whitespace no inner.
@@ -477,7 +520,7 @@ export function renderIntroCallout(
           if (isBulletParagraph(p)) {
             return renderBulletList(p, mt);
           }
-          return bodyP(`${mt} 0 0`, processInlineLinks(p));
+          return renderBoxParagraph(p, `${mt} 0 0`);
         })
         .join("\n      ");
       // Botão pill em linha separada dentro do mesmo box, centralizado.
@@ -498,7 +541,12 @@ export function renderIntroCallout(
     // #3373: peso de fonte segue `bold` (default true = visual histórico).
     const single = paras[0] ?? text;
     const only = sponsored ? stripCalloutMarker(single) : single;
-    inner = `<p style="margin:0;font-family:${FONT_BODY};font-weight:${bold ? 600 : 400};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(only)}</p>`;
+    // #3477: disclosure paragraph (`_..._`) — mesmo no path single-parágrafo,
+    // renderiza 12px itálico em vez do corpo 16px/peso variável padrão.
+    const { text: strippedOnly, isDisclosure } = stripDisclosureWrap(only);
+    inner = isDisclosure
+      ? `<p style="margin:0;font-family:${FONT_BODY};font-size:12px;font-style:italic;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(strippedOnly)}</p>`
+      : `<p style="margin:0;font-family:${FONT_BODY};font-weight:${bold ? 600 : 400};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(only)}</p>`;
   }
   return `<!-- #1648 intro callout (sorteio/CTA) -->
 <tr><td class="pad" style="padding:8px 32px 0;">
@@ -670,13 +718,17 @@ export function renderMidCallout(text: string, imageUrl: string | null, bold = t
       ? `<p style="margin:0 0 12px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(stripCalloutMarker(bodyParas[0]))}</p>\n      ` +
         bodyParas
           .slice(1)
-          .map(
-            (p, i) =>
-              bodyP(`${i === 0 ? "0" : "12px"} 0 0`, processInlineLinks(p))
-          )
+          .map((p, i) => renderBoxParagraph(p, `${i === 0 ? "0" : "12px"} 0 0`))
           .join("\n      ")
       : singleBody
-        ? bodyP("0 0 12px", processInlineLinks(singleBody))
+        ? (() => {
+            // #3477: disclosure paragraph (`_..._`) também no path 1-parágrafo
+            // com imagem (ex: box "Recomendação de leitura" com screenshot).
+            const { text: strippedSingle, isDisclosure } = stripDisclosureWrap(singleBody);
+            return isDisclosure
+              ? disclosureP("0 0 12px", processInlineLinks(strippedSingle))
+              : bodyP("0 0 12px", processInlineLinks(singleBody));
+          })()
         : "";
   return `<!-- mid callout com imagem -->
 <tr><td class="pad" style="padding:8px 32px 0;">
@@ -1263,21 +1315,34 @@ ${renderEIA(content.eia)}
 }
 
 /**
- * #1364: converte `*text*` (italic markdown) em `<em>text</em>` inline,
- * preservando `**text**` (bold) intacto.
+ * #1364/#3477: converte `*text*` OU `_text_` (italic markdown) em
+ * `<em>text</em>` inline, preservando `**text**` (bold) intacto.
  *
  * Writer agent + crédito do É IA? usam `*Canis aureus*` pra nome científico.
  * Antes do #1364 o renderer mantinha os asteriscos literais → o email saía
  * com "(*Canis aureus*)" em texto puro, sem itálico.
  *
- * Regex: `*` solo (não-precedido nem seguido de `*`), conteúdo sem `*` nem
- * newline. `font-style:italic` inline garante renderização email-safe.
+ * #3477: `_text_` (CommonMark também reconhece underscore pra ênfase) some
+ * silenciosamente do render — o editor pediu itálico via `_..._` num box de
+ * divulgação e o marcador nunca virava `<em>` (só `*..*` era tratado). Regex
+ * separada, com boundary de "palavra" (`(?<![\w_])`/`(?![\w_])`) em vez do
+ * boundary de `*` — evita casar `_` intraword (`nome_variavel`, `snake_case`),
+ * que markdown padrão NÃO trata como ênfase quando colado a caracteres de
+ * palavra dos dois lados.
+ *
+ * Regex do asterisco: `*` solo (não-precedido nem seguido de `*`), conteúdo
+ * sem `*` nem newline. `font-style:italic` inline garante renderização
+ * email-safe.
  *
  * Pure helper — exportado pra teste.
  */
 export function processInlineItalics(s: string): string {
-  return s.replace(
+  const asteriskDone = s.replace(
     /(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)/g,
+    '<em style="font-style:italic;">$1</em>',
+  );
+  return asteriskDone.replace(
+    /(?<![\w_])_(?!_)([^_\n]+?)_(?![\w_])/g,
     '<em style="font-style:italic;">$1</em>',
   );
 }
@@ -1583,7 +1648,14 @@ function inlineLinkHtml(label: string, url: string): string {
 
 export function processInlineLinks(s: string): string {
   // #2532: wordmark só nos segmentos de TEXTO (não no label do link).
-  return tokenizeInline(s, (seg) => applyInlineBold(applyBrandWordmark(esc(seg))), inlineLinkHtml);
+  // #3477: itálico (`*texto*`/`_texto_`) processado nos segmentos de texto —
+  // antes, boxes de divulgação/callouts (que renderizam via este pipeline, não
+  // `escText`) nunca convertiam itálico, mesmo com o marcador presente no MD.
+  return tokenizeInline(
+    s,
+    (seg) => applyInlineBold(applyBrandWordmark(processInlineItalics(esc(seg)))),
+    inlineLinkHtml,
+  );
 }
 
 /**
