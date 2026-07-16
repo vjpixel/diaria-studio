@@ -109,21 +109,42 @@ npx tsx scripts/render-halt-banner.ts \
 
    > **Exit 3 (#2316):** mensagem stderr: `[substitute-image-urls] ERRO: HTML de input está desatualizado`. Ação: re-renderizar e re-substituir. Ver beehiiv-playbook.md §1.3 para o exit-code table completo.
 
-2b. **Publicar preview no Worker Cloudflare `draft.diaria.workers.dev` via `upload-html-public.ts` (#3420 — revertido de Claude Artifacts).** #3214 tinha migrado esse preview pra Claude Artifact pra economizar cota de Workers KV, mas Artifacts rodam sob CSP estrita que bloqueia imagem remota (só `data:` URI) — `newsletter-final.html` referencia imagens em `poll.diaria.workers.dev` e nunca renderizava dentro do Artifact (regressão P1 detectada 260712, editor não conseguia revisar visualmente antes do gate). Voltar ao Worker-hosted é confiável e sem restrição de CSP; o upload aqui é redundante com o que a Etapa 5 refaz na hora do dispatch real (§5.2 Fase 2 do playbook), mas é o único jeito do editor revisar visualmente ANTES do gate.
-    ```bash
-    npx tsx scripts/upload-html-public.ts --edition {AAMMDD} --no-wrap \
-      --html {EDITION_DIR}/_internal/newsletter-final.html \
-      --persist-to {EDITION_DIR}/_internal/04-newsletter-url.json \
-      --field newsletter_url
-    ```
-    **--no-wrap é OBRIGATÓRIO (#2550)** — sobe o fragmento bruto, preservando `{{email}}`; sem ele o HTML sobe embrulhado no preview-wrapper. Capturar `{newsletter_url}` do campo `url` do JSON stdout — Worker usa key `html:{AAMMDD}-{contentHash}` (#1494, hash dos primeiros 6 chars de md5 do HTML). Sem o hash, fetch retorna 404 (review #1612 regression). `--persist-to`/`--field` já grava `newsletter_url` em `04-newsletter-url.json` (merge, preserva demais chaves) — nenhum passo adicional de persistência é necessário.
+2b. **Servir preview LOCALMENTE via `serve-preview.ts` (#3546 — substitui o Worker Cloudflare no caminho de REVISÃO).** #3420 tinha revertido pra Worker-hosted (`upload-html-public.ts`) porque #3214/Claude Artifacts quebrava por CSP (bloqueia imagem remota, só `data:` URI). #3546 resolve isso sem depender nem do Worker (cota Workers KV, rede) nem do Artifact (CSP): serve o HTML LOCALMENTE (loopback, `http://127.0.0.1:{porta}/...`) com imagens embutidas em `data:` URI via `embed-images-base64.ts` — não há CSP num servidor local próprio, e não há requisição de rede pra imagem nenhuma. **Nunca chamar `upload-html-public.ts` neste passo** — esse script fica reservado ao upload REAL que a Etapa 5 refaz independentemente no dispatch (`context/publishers/beehiiv-playbook.md` §5.2 Fase 3, sobre `newsletter-final.html` intacto, sem a variante embedded).
 
-3. Pre-render do social preview HTML:
+    Gerar a variante embedded (`newsletter-final.html` fica intacto, com `{{email}}` preservado pro paste real da Etapa 5):
+    ```bash
+    npx tsx scripts/embed-images-base64.ts \
+      --html {EDITION_DIR}/_internal/newsletter-final.html \
+      --images {EDITION_DIR}/06-public-images.json \
+      --edition-dir {EDITION_DIR}/ \
+      --out {EDITION_DIR}/_internal/newsletter-final-embedded.html
+    ```
+    `missing` no stdout (exit 1 é só sinal de falha PARCIAL, não fatal) = imagem sem arquivo local — logar warn, preview mantém URL remota só pra essa imagem específica.
+
+    Servir localmente em background (porta efêmera) e persistir `{newsletter_url}` + PID (pra teardown em §4e):
+    ```bash
+    npx tsx scripts/serve-preview.ts \
+      --file {EDITION_DIR}/_internal/newsletter-final-embedded.html --port 0 \
+      --persist-to {EDITION_DIR}/_internal/04-newsletter-url.json --field newsletter_url &
+    ```
+    Rodar com `run_in_background: true` no Bash tool. Ler `newsletter_url` (e `newsletter_url_pid`, guardado pro teardown) de `04-newsletter-url.json` pra popular `{newsletter_url}` no resumo do gate (§4d). Em modo `local` (`scripts/lib/exec-mode.ts`), pode-se navegar o Chrome do editor pra essa URL (`mcp__claude-in-chrome__navigate`) pra revisão visual assistida; em `cloud`, só logar a URL — sem navegação (sem Chrome do editor na sessão, ver issue #3546 "Fora de escopo").
+
+3. Pre-render do social preview HTML + servir localmente (mesmo padrão do step 2b acima):
    ```bash
    # #1800: --images é OBRIGATÓRIO — sem ele o preview sai sem imagens.
    npx tsx scripts/render-social-html.ts --md {EDITION_DIR}/03-social.md --out {EDITION_DIR}/_internal/social-preview.html --images {EDITION_DIR}/06-public-images.json
-   # #1734: --persist-to grava a URL durável (com hash) em 05-social-preview.json.
-   npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social --html {EDITION_DIR}/_internal/social-preview.html --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url
+
+   # Variante embedded (data: URI) — mesmo script/motivo do step 2b.
+   npx tsx scripts/embed-images-base64.ts \
+     --html {EDITION_DIR}/_internal/social-preview.html \
+     --images {EDITION_DIR}/06-public-images.json \
+     --edition-dir {EDITION_DIR}/ \
+     --out {EDITION_DIR}/_internal/social-preview-embedded.html
+
+   # Servir localmente em background, persistir social_preview_url + PID.
+   npx tsx scripts/serve-preview.ts \
+     --file {EDITION_DIR}/_internal/social-preview-embedded.html --port 0 \
+     --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url &
    ```
 
 4. close-poll (set gabarito — idempotente):
@@ -282,27 +303,46 @@ npx tsx scripts/substitute-image-urls.ts \
 
 Exit codes de `substitute-image-urls.ts` (#2316, #2335) — mesma tabela de §4b.
 
-**⚠️ Atualizar `{newsletter_url}` após o re-upload:** o re-upload gera um novo hash de conteúdo (#1494) → nova URL. A URL capturada em §4b step 2b fica STALE. Re-ler `_internal/04-newsletter-url.json` e atualizar a variável `{newsletter_url}` ANTES de montar o gate (§4c.7) — senão o editor abre o preview da URL antiga (texto PRÉ-correção) e aprova conteúdo que não revisou. **Re-upload (#3420 — Worker-hosted, revertido de Claude Artifacts/#3214):**
+**⚠️ Atualizar `{newsletter_url}` após o re-render:** o conteúdo mudou → o preview local servido em §4b step 2b fica STALE. Re-servir ANTES de montar o gate (§4c.7) — senão o editor abre o preview antigo (texto PRÉ-correção) e aprova conteúdo que não revisou. **Re-servir localmente (#3546 — mesmo padrão do §4b step 2b: encerrar o servidor antigo, re-gerar a variante embedded, subir um novo):**
 ```bash
-# --no-wrap é OBRIGATÓRIO (#2550): sobe o fragmento bruto, igual ao §4b/beehiiv-playbook.md.
-# Sem ele o Worker hospeda o HTML embrulhado no preview-wrapper → paste no Beehiiv quebra.
-npx tsx scripts/upload-html-public.ts --edition {AAMMDD} --no-wrap \
+# Encerra o servidor de preview anterior (PID gravado em 04-newsletter-url.json).
+OLD_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/04-newsletter-url.json','utf8')).newsletter_url_pid||'')}catch(e){}")
+[ -n "$OLD_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$OLD_PID"
+
+npx tsx scripts/embed-images-base64.ts \
   --html {EDITION_DIR}/_internal/newsletter-final.html \
-  --persist-to {EDITION_DIR}/_internal/04-newsletter-url.json \
-  --field newsletter_url
+  --images {EDITION_DIR}/06-public-images.json \
+  --edition-dir {EDITION_DIR}/ \
+  --out {EDITION_DIR}/_internal/newsletter-final-embedded.html
+
+npx tsx scripts/serve-preview.ts \
+  --file {EDITION_DIR}/_internal/newsletter-final-embedded.html --port 0 \
+  --persist-to {EDITION_DIR}/_internal/04-newsletter-url.json --field newsletter_url &
 ```
+Rodar o `serve-preview.ts` final com `run_in_background: true`. Re-ler `newsletter_url` de `04-newsletter-url.json` e atualizar a variável `{newsletter_url}` do gate.
 
 **⚠️ Re-render do social quando `social_modified === true` (#3224):** claims com `sources` incluindo `"social"` agora também são corrigidos em `03-social.md` (nos blocos `## dN`, LinkedIn e Facebook — ver "O que é auto-corrigido" abaixo). O script já regrava `_internal/.humanizer-social-done.json` internamente com `bypassReason` explícito (reusa `writeSentinel` de `check-humanizer-social.ts`, mesmo mecanismo do #2529) — **não é preciso rodar `check-humanizer-social.ts --write` manualmente**. Mas o pré-render de §4b step 3 (`social-preview.html`) foi gerado ANTES do autofix, então se `_internal/fact-check-autofix.json` mostra `social_modified: true`, re-renderizar e republicar:
 
 ```bash
 # Re-render social HTML com o 03-social.md já corrigido
 npx tsx scripts/render-social-html.ts --md {EDITION_DIR}/03-social.md --out {EDITION_DIR}/_internal/social-preview.html --images {EDITION_DIR}/06-public-images.json
-# Re-upload (atualiza a URL persistida em 05-social-preview.json com o novo conteúdo)
-npx tsx scripts/upload-html-public.ts --edition {AAMMDD}-social \
+
+# Encerra o servidor de preview social anterior (PID gravado em 05-social-preview.json).
+OLD_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/05-social-preview.json','utf8')).social_preview_url_pid||'')}catch(e){}")
+[ -n "$OLD_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$OLD_PID"
+
+npx tsx scripts/embed-images-base64.ts \
   --html {EDITION_DIR}/_internal/social-preview.html \
-  --persist-to {EDITION_DIR}/_internal/05-social-preview.json \
-  --field social_preview_url
+  --images {EDITION_DIR}/06-public-images.json \
+  --edition-dir {EDITION_DIR}/ \
+  --out {EDITION_DIR}/_internal/social-preview-embedded.html
+
+# Serve localmente (atualiza a URL/PID persistidos em 05-social-preview.json com o novo conteúdo)
+npx tsx scripts/serve-preview.ts \
+  --file {EDITION_DIR}/_internal/social-preview-embedded.html --port 0 \
+  --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url &
 ```
+(#3546 — mesmo padrão stop-old → embed → serve-new de §4b step 3 / §4c.6b acima.)
 
 Confirmar que o sentinel bate com o social já corrigido antes de seguir pro gate (deve dar exit 0 — o próprio script já regravou):
 ```bash
@@ -442,11 +482,20 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator -
   --message "gate revisao response: {sim|editar|ajustar|abortar}"
 ```
 
-**"editar":** rodar `update-stage-status --stage 4 --status pending` + halt banner. NÃO escrever sentinel. Editor edita no Drive e re-roda quando pronto. Adequado para revisões longas ou fora do terminal.
+**Teardown dos preview servers locais (#3546) — rodar em QUALQUER branch TERMINAL do gate (`sim`, `editar`, `abortar`); NUNCA em `ajustar`** (que já encerra→re-serve a cada re-render nos passos de §4d.1, mantendo o gate vivo com um preview atual):
+```bash
+NEWS_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/04-newsletter-url.json','utf8')).newsletter_url_pid||'')}catch(e){}")
+[ -n "$NEWS_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$NEWS_PID"
+SOCIAL_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/05-social-preview.json','utf8')).social_preview_url_pid||'')}catch(e){}")
+[ -n "$SOCIAL_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$SOCIAL_PID"
+```
+Best-effort — `serve-preview.ts --stop-pid` já não é fatal quando o PID não existe mais (processo já morto, sessão reiniciada); nunca bloquear o encerramento do gate por causa disso.
 
-**"ajustar":** ver §4d.1 abaixo — edição inline no chat, orchestrator aplica e volta ao gate. Adequado para tweaks rápidos.
+**"editar":** rodar o teardown acima, depois `update-stage-status --stage 4 --status pending` + halt banner. NÃO escrever sentinel. Editor edita no Drive e re-roda quando pronto (um novo preview local é servido do zero na próxima passada por §4b). Adequado para revisões longas ou fora do terminal.
 
-**"abortar":** logar warn `"gate_revisao_abortado"`, encerrar sem sentinel.
+**"ajustar":** ver §4d.1 abaixo — edição inline no chat, orchestrator aplica e volta ao gate. Adequado para tweaks rápidos. **Não** rodar o teardown aqui.
+
+**"abortar":** rodar o teardown acima, logar warn `"gate_revisao_abortado"`, encerrar sem sentinel.
 
 ### 4d.1 — Edição inline ("ajustar") (#1694)
 
@@ -460,7 +509,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
    - O orchestrator **avisa** o editor: "Essa mudança afeta a imagem e os posts sociais do D{N} — vou re-gerar os passos afetados."
    - Re-rodar: re-render do HTML (§4b steps 1-3), regenerar imagem do destaque (`scripts/image-generate.ts --edition {AAMMDD} --highlight d{N}`), e regenerar post social do D{N} (`social-linkedin` / `social-facebook` para aquele destaque).
    - Edição de **corpo ou link** (sem mudar título) não cascateia — só re-render do HTML basta.
-   - **Em ambos os casos, re-upload do HTML pro Worker Cloudflare** (§4b step 2b — `upload-html-public.ts --no-wrap`, captura URL nova e atualiza `04-newsletter-url.json`) antes de re-apresentar o gate, senão o editor revisa conteúdo desatualizado.
+   - **Em ambos os casos, re-servir o HTML localmente** (§4b step 2b / §4c.6b — stop-old → `embed-images-base64.ts` → `serve-preview.ts`, captura URL nova e atualiza `04-newsletter-url.json`) antes de re-apresentar o gate, senão o editor revisa conteúdo desatualizado.
 
 4. **Reordenação/swap de destaques (#2145 — post_pixel stale):** se a mudança reordenar os destaques (ex: troca D1↔D3) ou trocar qual destaque ocupa a posição D1:
    - O `## post_pixel` foi gerado sobre o D1 **original** (Stage 2) e **não é remapeado automaticamente** junto com os blocos `## d{N}`.
@@ -525,7 +574,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       ```bash
       npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
       ```
-   **6.9** — Re-renderizar (`render-social-html.ts`, §4b step 3) e re-upload pro Worker Cloudflare (`upload-html-public.ts --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url` — atualiza a URL persistida com o novo conteúdo) antes de voltar ao gate. O arquivo republicado é sempre o `03-social.md` COMPLETO (seções scoped-humanizadas + seções intactas) — o preview reflete o estado atual inteiro em ambos os fluxos.
+   **6.9** — Re-renderizar (`render-social-html.ts`, §4b step 3) e re-servir localmente (mesmo padrão stop-old → `embed-images-base64.ts` → `serve-preview.ts --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url` de §4c.6c) antes de voltar ao gate. O arquivo republicado é sempre o `03-social.md` COMPLETO (seções scoped-humanizadas + seções intactas) — o preview reflete o estado atual inteiro em ambos os fluxos.
 
 7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
 
@@ -537,6 +586,14 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
 ### 4e. Escrever sentinel de conclusão (#978, adaptado de #1694)
 
 **Após aprovação do gate** (ou imediatamente em `auto_approve = true` após §4b):
+
+**Teardown dos preview servers locais (#3546)** — rodar aqui também no caminho `auto_approve = true` (gate pulado inteiramente, mas os servidores de §4b sobem do mesmo jeito no pré-render). Se o editor já respondeu `sim` no gate humano, o teardown já rodou em §4d — idempotente, seguro repetir (mesmo bloco):
+```bash
+NEWS_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/04-newsletter-url.json','utf8')).newsletter_url_pid||'')}catch(e){}")
+[ -n "$NEWS_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$NEWS_PID"
+SOCIAL_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/05-social-preview.json','utf8')).social_preview_url_pid||'')}catch(e){}")
+[ -n "$SOCIAL_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$SOCIAL_PID"
+```
 
 ```bash
 npx tsx scripts/pipeline-sentinel.ts write \
