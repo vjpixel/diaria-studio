@@ -107,7 +107,7 @@ padrão desde 260714):**
      "process.stdout.write(new Date().toISOString())"`), instrução de como
      o operador captura um timestamp durante a Etapa 5.
    - Timestamp ISO 8601 completo (3 ocorrências: `test_email_sent_at`,
-     `scheduled_at`, `published_at`) dentro de blocos ```json``` que
+     `scheduled_at`, `published_at`) dentro de blocos `json` que
      documentam o *shape* esperado da saída de scripts (`05-published.json`,
      output de `verify-scheduled-post.ts`) — valores de exemplo fixos
      (`"2026-04-18T12:34:56.789Z"` etc.), não interpolação.
