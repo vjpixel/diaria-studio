@@ -421,6 +421,7 @@ npx tsx scripts/embed-images-base64.ts \
   --edition-dir data/monthly/$CYCLE \
   --out data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html
 ```
+`missing` no stdout = imagem sem arquivo local (mantém URL remota, não bloqueia) — logar warn se não-vazio (exit code 1 é só sinal de falha PARCIAL, não fatal — não abortar a etapa por causa dele).
 
 **Republicar o preview via `Artifact` (#3214)** — mesmo fluxo resume-aware da Etapa 3c: ler `_internal/preview-artifact-url.json`, chamar `Artifact` com `url` (se já houver uma) sobre `file_path: "data/monthly/$CYCLE/_internal/cloudflare-preview-embedded.html"`, persistir a URL retornada. Como o artifact é republicado no MESMO `file_path`/`url`, a URL não muda entre a Etapa 3c e esta re-publicação — `{preview_url}` do gate (4e) continua válida sem re-captura manual.
 
