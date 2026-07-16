@@ -21,7 +21,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3495: disk-aware, cobre flat+nested (mesmo fix do #3484)
+import { resolveEditionDir, enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #3495: disk-aware, cobre flat+nested (mesmo fix do #3484); #3498: enumerateEditionDirs exposto pra cache de 1 varredura por populateAllFromApproved
 import { logEvent } from "./lib/run-log.ts"; // #3495: warn quando 01-approved.json falta numa edição que existe no disco
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { extractUrlsFromBuckets } from "./lib/approved-urls.ts"; // #1678
@@ -253,17 +253,31 @@ export function aammddFromIso(iso: string): string {
  * `01-approved.json` não está lá" (sintoma real — emite warn no run-log,
  * `root` é repassado como `rootDir` do `logEvent`, isolando testes do
  * `data/run-log.jsonl` real da mesma forma que a resolução de path já é
- * isolada por `root`).
+ * isolada por `root`) de "edição existe, `01-approved.json` existe, mas o
+ * conteúdo é JSON malformado" (#3498 — mesmo sintoma real do warn acima,
+ * cenário concreto: write interrompido durante sync do junction OneDrive
+ * que é onde `data/` mora; sem o warn, a URL some da camada de dedup (#238)
+ * sem nenhum sinal).
+ *
+ * `editionDirsCache` (opcional, #3498): quando fornecido (populado uma vez via
+ * `enumerateEditionDirs()` por `populateAllFromApproved`), evita que cada
+ * chamada refaça a varredura completa da árvore `data/editions` — o disco não
+ * muda no meio de um Stage 0. Sem cache (chamada avulsa, testes, etc.), cai de
+ * volta em `resolveEditionDir()` (1 varredura por chamada, como antes do
+ * #3498).
  *
  * Refs #238.
  */
 export function extractUrlsFromApproved(
   yymmdd: string,
   root: string = ROOT,
+  editionDirsCache?: Map<string, string>,
 ): string[] {
   if (!yymmdd) return [];
   const editionsRootDir = resolve(root, "data", "editions");
-  const editionDirPath = resolveEditionDir(editionsRootDir, yymmdd);
+  const editionDirPath = editionDirsCache
+    ? (editionDirsCache.get(yymmdd) ?? resolve(editionsRootDir, yymmdd.slice(0, 4), yymmdd))
+    : resolveEditionDir(editionsRootDir, yymmdd);
   const path = resolve(editionDirPath, "_internal/01-approved.json");
   if (!existsSync(path)) {
     if (existsSync(editionDirPath)) {
@@ -285,7 +299,22 @@ export function extractUrlsFromApproved(
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch {
+  } catch (e) {
+    // #3498: antes engolia o erro em silêncio — JSON corrompido (ex: write
+    // interrompido pelo sync do junction OneDrive) tinha o mesmo sintoma do
+    // "arquivo ausente" que o #3495 corrigiu, mas ficava de fora do warn.
+    logEvent(
+      {
+        edition: yymmdd,
+        stage: null,
+        agent: "refresh-past-editions",
+        level: "warn",
+        message:
+          "01-approved.json presente mas contém JSON inválido — camada de URLs canônicas (#238) inoperante para esta edição",
+        details: { path, error: (e as Error).message },
+      },
+      root,
+    );
     return [];
   }
   // #1678: bucket-walk delegado ao helper compartilhado (single-source — antes
@@ -298,15 +327,19 @@ export function extractUrlsFromApproved(
  * local da edição correspondente. No-op se post já tem links ou se o
  * arquivo local não existe.
  *
+ * `editionDirsCache` (opcional, #3498): repassado adiante pra
+ * `extractUrlsFromApproved` — ver doc lá pra motivação.
+ *
  * Refs #238.
  */
 export function populateLinksFromApproved(
   post: Post,
   root: string = ROOT,
+  editionDirsCache?: Map<string, string>,
 ): { populated: number } {
   if (post.links && post.links.length > 0) return { populated: 0 };
   const yymmdd = aammddFromIso(post.published_at);
-  const urls = extractUrlsFromApproved(yymmdd, root);
+  const urls = extractUrlsFromApproved(yymmdd, root, editionDirsCache);
   if (urls.length === 0) return { populated: 0 };
   post.links = urls;
   return { populated: urls.length };
@@ -317,6 +350,15 @@ export function populateLinksFromApproved(
  * de cada edição que não tem links ainda (#268 — extrai do block-scope inline
  * de main() pra ser testável diretamente).
  *
+ * #3498: `enumerateEditionDirs()` (varredura de `data/editions` + cada
+ * subpasta `{AAMM}`) é computado UMA VEZ aqui, antes do loop, e repassado
+ * como cache pra cada `populateLinksFromApproved`/`extractUrlsFromApproved`.
+ * Antes, cada post sem `links[]` disparava sua própria varredura completa da
+ * árvore (via `resolveEditionDir()` sem cache) — custo que cresce conforme as
+ * pastas mensais `{AAMM}` se acumulam, e que roda no Stage 0 de toda
+ * `/diaria-1-pesquisa`/`/diaria-edicao`. O disco não muda no meio desta
+ * função, então uma varredura basta.
+ *
  * Retorna stats: { posts_touched, total_urls_populated }.
  */
 export function populateAllFromApproved(
@@ -325,9 +367,11 @@ export function populateAllFromApproved(
 ): { posts_touched: number; total_urls_populated: number } {
   let totalPopulated = 0;
   let postsTouched = 0;
+  const editionsRootDir = resolve(root, "data", "editions");
+  const editionDirsCache = enumerateEditionDirs(editionsRootDir);
   for (const post of posts) {
     if (post.links && post.links.length > 0) continue;
-    const { populated } = populateLinksFromApproved(post, root);
+    const { populated } = populateLinksFromApproved(post, root, editionDirsCache);
     if (populated > 0) {
       totalPopulated += populated;
       postsTouched++;

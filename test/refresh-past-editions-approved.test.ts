@@ -7,9 +7,11 @@ import {
   aammddFromIso,
   extractUrlsFromApproved,
   populateLinksFromApproved,
+  populateAllFromApproved,
   type Post,
 } from "../scripts/refresh-past-editions.ts";
 import { resolveRunLogPath } from "../scripts/lib/run-log.ts";
+import { enumerateEditionDirs } from "../scripts/lib/find-current-edition.ts";
 
 /**
  * Tests do fix #238 — popular `links[]` em past-editions a partir do
@@ -88,11 +90,99 @@ describe("extractUrlsFromApproved (#238)", () => {
     assert.deepEqual(urls, []);
   });
 
-  it("retorna [] quando JSON é malformado (silent fallback)", () => {
+  it("retorna [] quando JSON é malformado", () => {
     const dir = join(tmpRoot, "data/editions/2604/260425/_internal");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "01-approved.json"), "{ not json", "utf8");
     const urls = extractUrlsFromApproved("260425", tmpRoot);
+    assert.deepEqual(urls, []);
+  });
+
+  // #3498 item 1: antes do fix, JSON corrompido caía num catch silencioso —
+  // mesmo sintoma do "arquivo ausente" que o #3495 corrigiu (URL some da
+  // camada de dedup #238 sem nenhum sinal), mas sem o warn. Cenário concreto:
+  // write interrompido durante sync do junction OneDrive (onde `data/` mora).
+  it("emite warn no run-log quando JSON é malformado, mas ainda extrai [] sem crashar (#3498)", () => {
+    const dir = join(tmpRoot, "data/editions/2604/260425/_internal");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "01-approved.json");
+    writeFileSync(path, "{ not json", "utf8");
+
+    const urls = extractUrlsFromApproved("260425", tmpRoot);
+    assert.deepEqual(urls, []);
+
+    const logPath = resolveRunLogPath(tmpRoot);
+    assert.ok(existsSync(logPath), "run-log.jsonl deveria ter sido escrito");
+    const entry = JSON.parse(readFileSync(logPath, "utf8").trim().split("\n").pop()!);
+    assert.equal(entry.level, "warn");
+    assert.equal(entry.edition, "260425");
+    assert.equal(entry.agent, "refresh-past-editions");
+    assert.match(entry.message, /JSON inválido/);
+    assert.match(entry.details.error, /.+/); // erro de parse propagado nos details
+  });
+
+  // #3498 item 2: URLs válidas de edições distintas continuam extraídas
+  // corretamente quando resolvidas via cache pré-computado (em vez de uma
+  // varredura de disco por chamada) — a otimização não deve mudar o resultado.
+  it("extrai URLs corretamente quando editionDirsCache pré-computado é fornecido (#3498)", () => {
+    const flatDir = join(tmpRoot, "data/editions/260715/_internal");
+    mkdirSync(flatDir, { recursive: true });
+    writeFileSync(
+      join(flatDir, "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ article: { url: "https://flat-cache.com/post" } }],
+        runners_up: [],
+        lancamento: [],
+        radar: [],
+      }),
+      "utf8",
+    );
+    const nestedDir = join(tmpRoot, "data/editions/2604/260425/_internal");
+    mkdirSync(nestedDir, { recursive: true });
+    writeFileSync(
+      join(nestedDir, "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ article: { url: "https://nested-cache.com/post" } }],
+        runners_up: [],
+        lancamento: [],
+        radar: [],
+      }),
+      "utf8",
+    );
+
+    // 1 varredura só, reusada pras duas edições (flat + nested).
+    const cache = enumerateEditionDirs(join(tmpRoot, "data/editions"));
+    assert.deepEqual(extractUrlsFromApproved("260715", tmpRoot, cache), [
+      "https://flat-cache.com/post",
+    ]);
+    assert.deepEqual(extractUrlsFromApproved("260425", tmpRoot, cache), [
+      "https://nested-cache.com/post",
+    ]);
+  });
+
+  // #3498 item 2: quando um cache é fornecido mas não contém a edição, a
+  // função cai no path nested default (O(1), sem re-escanear o disco) em vez
+  // de fazer sua própria varredura pra "se autocorrigir" — prova que a
+  // otimização de fato evita o custo repetido (o objetivo do fix), não só
+  // delega pra baixo silenciosamente.
+  it("com cache que não contém a edição, cai no path nested default sem re-escanear o disco (#3498)", () => {
+    const flatDir = join(tmpRoot, "data/editions/260715/_internal");
+    mkdirSync(flatDir, { recursive: true });
+    writeFileSync(
+      join(flatDir, "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ article: { url: "https://flat.com/x" } }],
+        runners_up: [],
+        lancamento: [],
+        radar: [],
+      }),
+      "utf8",
+    );
+
+    const staleCache = new Map<string, string>(); // não conhece 260715
+    const urls = extractUrlsFromApproved("260715", tmpRoot, staleCache);
+    // Path nested default (data/editions/2607/260715) não existe no disco —
+    // função não re-varre pra achar o flat real, então retorna [].
     assert.deepEqual(urls, []);
   });
 
@@ -319,5 +409,60 @@ describe("populateLinksFromApproved (#238)", () => {
     const r = populateLinksFromApproved(post, tmpRoot);
     assert.equal(r.populated, 1);
     assert.deepEqual(post.links, ["https://a.com/1"]);
+  });
+});
+
+// #3498 item 2: populateAllFromApproved agora computa enumerateEditionDirs()
+// UMA VEZ (antes do loop) em vez de deixar cada post sem links[] disparar sua
+// própria varredura via extractUrlsFromApproved. Este teste cobre a
+// correção FUNCIONAL da mudança — múltiplos posts, múltiplas edições
+// distintas (flat + nested), todos populados certo a partir do cache
+// compartilhado.
+describe("populateAllFromApproved com cache compartilhado (#3498)", () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "approved-all-"));
+  });
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  function writeApprovedAt(dir: string, urls: string[]) {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "01-approved.json"),
+      JSON.stringify({
+        highlights: [],
+        runners_up: [],
+        lancamento: urls.map((url) => ({ url })),
+        radar: [],
+      }),
+      "utf8",
+    );
+  }
+
+  it("popula posts de edições diferentes (flat + nested) corretamente", () => {
+    // Edição 1: layout flat.
+    writeApprovedAt(join(tmpRoot, "data/editions/260715/_internal"), [
+      "https://flat.com/a",
+    ]);
+    // Edição 2: layout nested.
+    writeApprovedAt(join(tmpRoot, "data/editions/2604/260425/_internal"), [
+      "https://nested.com/b",
+    ]);
+
+    const posts: Post[] = [
+      { id: "p1", title: "T1", published_at: "2026-07-15T10:00:00Z" }, // -> 260715
+      { id: "p2", title: "T2", published_at: "2026-04-25T10:00:00Z" }, // -> 260425
+      { id: "p3", title: "T3", published_at: "2026-01-01T10:00:00Z" }, // sem edição local
+    ];
+
+    const stats = populateAllFromApproved(posts, tmpRoot);
+    assert.equal(stats.posts_touched, 2);
+    assert.equal(stats.total_urls_populated, 2);
+    assert.deepEqual(posts[0].links, ["https://flat.com/a"]);
+    assert.deepEqual(posts[1].links, ["https://nested.com/b"]);
+    assert.equal(posts[2].links, undefined);
   });
 });
