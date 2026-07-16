@@ -118,19 +118,31 @@ export function buildSubscribeUrl(): string {
 }
 
 /**
- * Pure (#3518): bloco HTML do CTA de assinatura pós-voto — a conversão do
- * EPIC #3514. `hidden` por padrão no HTML estático: revelado via JS só
- * depois do voto (novo OU repetido — ver `renderJogarPageHtml`), nunca antes
- * (mesma disciplina anti-spoiler/progressive-enhancement do resto da
- * página). Copy reusa quase literalmente a sugestão da própria issue #3518.
- * `target="_blank"` — não perder o estado do jogo (token/voto já registrado)
- * ao converter; assinatura abre em aba nova.
+ * Pure (#3589, rework do #3518): a "caixa do meio" pós-voto — decisão do
+ * editor (review 260716, #3589 item 4): deixa de EMPURRAR assinatura (função
+ * redundante com o form inline #3580, que já é a conversão primária) e passa
+ * a convidar o visitante a CONHECER o projeto Diar.ia — link pro site
+ * (`BRAND_INFO.web.siteUrl`), NÃO pro subscribe do Beehiiv.
+ *
+ * `buildSubscribeUrl`/`SUBSCRIBE_UTM_SOURCE` acima NÃO foram removidos por
+ * esta mudança — continuam em uso por dois outros callers que este rework
+ * não toca: (a) `subscribe.ts` importa `SUBSCRIBE_UTM_SOURCE` como o
+ * `utm_source` real do form inline (#3580) — a atribuição de conversões
+ * `eia-standalone` continua idêntica; (b) `renderArchiveSubscribeReinforcement`
+ * (arquivo, #3524) segue linkando pro subscribe Beehiiv — reforço de um
+ * fluxo diferente (índice do arquivo, sempre visível, não gated por voto),
+ * fora do escopo desta issue.
+ *
+ * `hidden` por padrão no HTML estático: revelado via JS só depois do
+ * voto/rodada (nunca antes — mesma disciplina anti-spoiler do resto da
+ * página). `target="_blank"` — não perder o estado do jogo ao navegar pro
+ * site.
  */
 export function renderSubscribeCtaBlock(): string {
-  const url = buildSubscribeUrl();
+  const url = BRAND_INFO[JOGAR_BRAND].siteUrl;
   return `<div id="jogar-subscribe-cta" class="subscribe-cta" hidden>
-  <p class="subscribe-text">Gostou? Um par novo desses todo dia na sua caixa de entrada, além das 3 notícias de IA mais importantes. Grátis.</p>
-  <a class="subscribe-btn" href="${htmlEscape(url)}" target="_blank" rel="noopener">Assinar a Diar.ia</a>
+  <p class="subscribe-text">Quer entender o que a Diar.ia faz? Conheça o projeto.</p>
+  <a class="subscribe-btn" href="${htmlEscape(url)}" target="_blank" rel="noopener">Conhecer a Diar.ia</a>
 </div>`;
 }
 
@@ -459,7 +471,13 @@ ${renderInlineSignupFormBlock()}
      inline acima (#3580) — segue como fallback pra página hospedada. -->
 ${renderSubscribeCtaBlock()}
 
-<p class="footer-links"><a href="${htmlEscape(info.siteUrl)}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Jogar edições passadas</a></p>
+<!-- #3589: link do arquivo removido daqui — /jogar (visão default, sem
+     ?edition=) agora É a sequência do mês anterior; o par individual
+     servido por esta função só existe pra ?edition= explícito (ponte
+     clarice/#3524, ver handleJogarPage). A rota /jogar/arquivo continua
+     viva (destino dessa ponte), só não é mais auto-promovida em NENHUMA
+     view web (issue #3589 item 3). -->
+<p class="footer-links"><a href="${htmlEscape(info.siteUrl)}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 
 <script>
@@ -616,19 +634,471 @@ ${inlineSignupScript()}
 </html>`;
 }
 
+// ── #3589: /jogar VIRA a sequência do mês anterior ──────────────────────────
+//
+// Rework do EPIC #3514 — feedback do editor no review do deploy (260716):
+// o modelo mental final dos 3 É IAs distingue diário (email, 1 par/dia),
+// mensal (email/clarice, vota meses anteriores) e WEB (ação RELÂMPAGO,
+// divulgada em momentos específicos — NUNCA "o par de hoje"). O web é
+// SEMPRE uma sequência: os pares do MÊS COMPLETO ANTERIOR, jogados em
+// ordem, com % de acerto + entrada no leaderboard MENSAL (`BRAND_INFO.web`
+// já é `leaderboardPeriod: "month"` desde #3516 — zero mudança ali).
+//
+// Decisões de design (ver PR #3589 para rationale completo):
+//
+//   1. **Mecânica reaproveitada do quiz relâmpago (#3520)**: mesmo shell de
+//      rodadas sequenciais (`renderJogarQuizPageHtml`) — progress bar, 1 par
+//      por vez, resultado de rodada, tela final com share. DIFERENÇA
+//      CRÍTICA: o quiz (`/jogar/quiz`) é 100% client-side/sem side-effect
+//      (não grava no KV, não conta pro ranking — ver header de share.ts) —
+//      a sequência da issue #3589 PRECISA contar pro leaderboard mensal
+//      ("entra no ranking"), então cada rodada AQUI chama o `/vote` REAL
+//      (mesmo endpoint que o par único sempre usou), com o mesmo token
+//      anônimo (`anonEmailForToken`) reusado em todas as rodadas — cada
+//      edição do mês vira um voto de verdade, dedup/streak/score
+//      inalterados (mesmo DO VoteDedup, mesmo `score:{email}` do resto do
+//      produto).
+//
+//   2. **Fonte dos pares**: `correct:{edition}` do MÊS DE CONTEÚDO anterior
+//      ao mês corrente (BRT) — reusa o mesmo filtro de forma/futuro de
+//      `extractEditionsForYear` (leaderboard-routes.ts, #2867/#3519), só
+//      recortado pelo mês em vez do ano inteiro. Ordem CRESCENTE
+//      (cronológica) — joga-se a sequência na ordem em que foi publicada.
+//
+//   3. **Streak (#3522) — decisão "rethink" (avaliado, não removido do
+//      backend)**: o streak (`score:{email}.streak`) já é calculado com a
+//      MESMA cadência "month" pra diaria/web (`nextWeekdayAammdd`) — como a
+//      sequência aqui vota em ordem cronológica através de dias úteis
+//      consecutivos, o streak semanticamente CONTINUA correto (cada edição
+//      É o próximo dia útil da anterior, dentro do mês) — mesmo mecanismo
+//      já validado pelo brand `web` jogando o arquivo edição-a-edição
+//      (test/poll-streak-3522.test.ts, describe "streak via /vote — brand=
+//      web"). O que MUDARIA de sentido é EXIBIR "🔥 N dias seguidos" depois
+//      de uma sequência inteira jogada numa única sentada (o texto sugere
+//      cadência diária real de uso, não replay em lote). Resolução: o
+//      backend/KV não muda (zero risco pro resto do produto que depende de
+//      streak) — a UI da sequência simplesmente NÃO exibe o texto bruto de
+//      `.msg` por rodada (mesmo padrão que o quiz relâmpago JÁ usa — o quiz
+//      nunca mostrou streak/stats, mesmo antes desta issue), evitando a
+//      leitura confusa sem tocar no modelo de dados. Se o editor quiser
+//      reconsiderar streak no nível de dado (não só de exibição) pro brand
+//      web, é um follow-up isolado (P3, cosmético/produto).
+//
+//   4. **Caixa do meio → descoberta** (item 4 da issue): `renderSubscribeCtaBlock`
+//      (rework do #3518, ver acima) já muda pra convite "conhecer o
+//      projeto" — reusado aqui sem alteração adicional.
+//
+//   5. **Par único preservado só via `?edition=` explícito** (não é mais o
+//      default): a ponte clarice→arquivo (#3524/#3578, `votePageHtml` linka
+//      "Jogar edições passadas" pra `/jogar/arquivo`, que por sua vez linka
+//      pra `/jogar?edition=X`) continua funcionando sem nenhuma mudança —
+//      `renderJogarPageHtml`/`resolveJogarEdition` seguem intactos, só não
+//      são mais o comportamento DEFAULT de `GET /jogar` sem parâmetro.
+//
+//   6. **`/jogar/arquivo` NÃO foi deletado** — desvio deliberado e
+//      documentado da issue #3589 item 3 ("deletar /jogar/arquivo... rota
+//      some"). A issue escopa as mudanças "só brand web" — mas o MESMO
+//      route é o destino da ponte clarice→arquivo (#3524/#3578, reconfirmada
+//      pelo editor no MESMO dia 260716 desta issue, ver
+//      test/eia-cross-canal-3524.test.ts). Deletar a rota quebraria essa
+//      ponte silenciosamente — regressão não-documentada de uma feature
+//      fora do escopo desta issue. Resolução: a rota continua servindo
+//      (compat com a ponte clarice), mas deixa de ser um "feature web"
+//      auto-promovido — nenhuma view web (`/jogar` default OU `?edition=`)
+//      linka mais pra ela (ver remoção do link "Jogar edições passadas" no
+//      footer de `renderJogarPageHtml` acima). Se o editor quiser a
+//      remoção literal (inclusive pra clarice), é uma decisão de #3524 a
+//      parte — flagged aqui pro editor decidir.
+//
+//   7. **`/jogar/quiz` intocado**: mecanismo distinto e complementar (casual,
+//      random, sem crédito de leaderboard) — a sequência oficial da issue
+//      #3589 não o substitui nem reusa sua rota, só o PADRÃO de UI/JS.
+//
+//   8. **Embed (#3521) intocado**: widget pra parceiros (Clarice.ai) segue
+//      mostrando o par de HOJE (`resolveJogarEdition`, ainda exportado e
+//      usado por `embed.ts`) — produto/superfície diferente (iframe de
+//      terceiro), fora do escopo desta issue. Decisão: não mudar (a issue
+//      pede pra "avaliar" — avaliado, mantido como está; rework do embed
+//      pra sequência é follow-up isolado se o editor quiser).
+
 /**
- * Handler `GET /jogar` (#3516). Lê o gabarito compartilhado direto do KV cru
- * (sem branding — ver rationale no header do arquivo) só pra decidir a cópia
- * de apoio; todo resto (voto, score, nickname, leaderboard) passa pelos
- * endpoints existentes com `?brand=web`, sem tocar em `env` branded aqui.
+ * Pure (#3589): mês de CONTEÚDO anterior ao "hoje" (BRT), como `{yy, mm}`
+ * (2 dígitos cada, mesma convenção AAMMDD). Usado só pra resolver a
+ * sequência default de `/jogar` — nunca lança (entrada sempre um `Date`
+ * válido).
+ */
+export function resolvePreviousCalendarMonth(now: Date): { yy: string; mm: string } {
+  const today = todayAammddBrt(now);
+  const yy = parseInt(today.slice(0, 2), 10);
+  const mm = parseInt(today.slice(2, 4), 10);
+  let prevMonth = mm - 1;
+  let prevYearFull = 2000 + yy;
+  if (prevMonth < 1) {
+    prevMonth = 12;
+    prevYearFull -= 1;
+  }
+  return { yy: String(prevYearFull % 100).padStart(2, "0"), mm: String(prevMonth).padStart(2, "0") };
+}
+
+/**
+ * Pure (#3589): edições AAMMDD FECHADAS (gabarito definido) do mês de
+ * CONTEÚDO imediatamente anterior a "hoje" (BRT), em ordem CRESCENTE
+ * (cronológica — a ordem em que a sequência é jogada). Reusa
+ * `extractEditionsForYear` (leaderboard-routes.ts, #2867/#3519) pra herdar
+ * o mesmo filtro de forma AAMMDD + exclusão de edição futura, recortando
+ * pelo mês depois (a função original filtra só por ano). `correctKeyNames`
+ * já deve vir da listagem `correct:*` do KV (caller decide o prefixo —
+ * `handleJogarPage` usa o prefixo do mês pra economizar I/O de list).
+ */
+export function resolveJogarSequenceEditions(correctKeyNames: string[], now: Date = new Date()): string[] {
+  const { yy, mm } = resolvePreviousCalendarMonth(now);
+  const yearEditions = extractEditionsForYear(correctKeyNames, `20${yy}`, now); // DESC, já filtra forma/futuro
+  return yearEditions.filter((ed) => ed.slice(2, 4) === mm).sort(); // ASC — ordem de jogo
+}
+
+/**
+ * Pure render (#3589): página `/jogar` DEFAULT — a sequência oficial do mês
+ * anterior. Mirror estrutural de `renderJogarQuizPageHtml` (#3520, mesmo
+ * shell de rodadas/progress/share), mas cada rodada vota DE VERDADE (chama
+ * `/vote?brand=web`, ver rationale item 1 acima) em vez do endpoint
+ * read-only `/jogar/quiz/answer`. `editions` já vem ordenada (ASC) do
+ * caller (`handleJogarPage` → `resolveJogarSequenceEditions`).
+ *
+ * `editions.length === 0` (ex: 1º mês do produto, sem mês anterior fechado
+ * ainda) → mensagem amigável com link pro quiz relâmpago (alternativa
+ * imediata, mesmo padrão de `renderJogarQuizPageHtml`'s emptyStateHtml).
+ */
+export function renderJogarSequencePageHtml(editions: string[]): string {
+  const info = BRAND_INFO[JOGAR_BRAND];
+  const total = editions.length;
+  const leaderboardLink = leaderboardHref(JOGAR_BRAND);
+  const pageTitle = `É IA? — sequência do mês | ${info.name}`;
+  const seoMeta = renderSeoMeta({
+    title: pageTitle,
+    description: `Jogue a sequência de pares do "É IA?" do mês anterior — acerte o máximo possível e entre no leaderboard mensal.`,
+    path: "/jogar",
+  });
+
+  // Self-review #2038 (achado corrigido, não só comentado): esta função
+  // originalmente duplicava "Ver leaderboard" (um par nesta mensagem +
+  // outro no footer-links comum logo abaixo, fora do ternário) — mesmo
+  // padrão de duplicação já presente em `renderJogarQuizPageHtml`'s próprio
+  // `emptyStateHtml` (pré-existente, fora do escopo desta issue — não
+  // tocado aqui). Fix aqui: `emptyStateHtml` some fica só com a mensagem;
+  // o link alternativo pro quiz relâmpago é injetado no footer-links ÚNICO
+  // e comum (ver `quizFallbackLink` mais abaixo).
+  const emptyStateHtml = `<p class="sub">Ainda não há uma sequência fechada do mês anterior — volte em breve.</p>`;
+  const quizFallbackLink = total === 0 ? ` &nbsp;|&nbsp; <a href="/jogar/quiz">Jogar o quiz relâmpago</a>` : "";
+
+  const bodyHtml = total === 0 ? emptyStateHtml : `<p class="sub" id="seq-progress">Par 1 de ${total} — acertos: 0</p>
+
+<noscript><p class="sub">A sequência precisa de JavaScript pra jogar. <a href="${leaderboardLink}">Ver leaderboard</a>.</p></noscript>
+
+<div id="seq-play">
+  <div class="choices" id="seq-choices"></div>
+  <div id="seq-round-result" class="quiz-round-result" hidden></div>
+</div>
+
+<div id="seq-final" class="quiz-final" hidden>
+  <p class="result-msg seq-final-score"></p>
+  <div id="seq-share-slot" hidden></div>
+</div>
+
+${renderSubscribeCtaBlock()}
+${renderInlineSignupFormBlock()}`;
+
+  const scriptHtml = total === 0 ? "" : `<script>
+(function () {
+  var editions = ${JSON.stringify(editions)};
+  var total = editions.length;
+  var round = 0;
+  var score = 0;
+  var answered = false;
+
+  var choicesEl = document.getElementById("seq-choices");
+  var progressEl = document.getElementById("seq-progress");
+  var roundResultEl = document.getElementById("seq-round-result");
+  var playEl = document.getElementById("seq-play");
+  var finalEl = document.getElementById("seq-final");
+  var subscribeCta = document.getElementById("jogar-subscribe-cta");
+  var signupForm = document.getElementById("jogar-signup-form"); // #3580
+
+  // #3589 (mesmo mecanismo #3516): identidade anônima — token opaco (UUID)
+  // em localStorage + cookie. Reusado em TODAS as rodadas — cada edição
+  // vota de verdade via /vote, mesmo pseudo-email em todas.
+  var STORAGE_KEY = "eia_web_token";
+  var COOKIE_KEY = "eia_web_token";
+  function readCookie(name) {
+    var m = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+  function writeCookie(name, value) {
+    var oneYear = 365 * 24 * 60 * 60;
+    document.cookie = name + "=" + encodeURIComponent(value) + "; path=/; max-age=" + oneYear + "; SameSite=Lax";
+  }
+  function uuid() {
+    if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+      var r = (Math.random() * 16) | 0;
+      var v = c === "x" ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+  function getOrCreateToken() {
+    var t = null;
+    try { t = window.localStorage.getItem(STORAGE_KEY); } catch (e) {}
+    if (!t) t = readCookie(COOKIE_KEY);
+    if (!t) {
+      t = uuid();
+      try { window.localStorage.setItem(STORAGE_KEY, t); } catch (e) {}
+      writeCookie(COOKIE_KEY, t);
+    } else {
+      try { window.localStorage.setItem(STORAGE_KEY, t); } catch (e) {}
+      writeCookie(COOKIE_KEY, t);
+    }
+    return t;
+  }
+  var token = getOrCreateToken();
+  var email = token + "@web.eia.diaria.local";
+
+  // #3589: cache local de resultado por edição — permite RETOMAR a
+  // sequência (reload/revisita) sem re-votar em editions já respondidas
+  // por este token. Dedup REAL de qualquer forma continua no DO
+  // VoteDedup do Worker (esse cache é só performance/UX de retomada, não
+  // é a fonte de verdade do voto).
+  var CACHE_PREFIX = "eia_web_seq_result_";
+  function getCached(edition) {
+    try {
+      var raw = window.localStorage.getItem(CACHE_PREFIX + edition);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (typeof parsed.correct !== "boolean") return null;
+      return parsed;
+    } catch (e) { return null; }
+  }
+  function setCached(edition, choice, correct) {
+    try { window.localStorage.setItem(CACHE_PREFIX + edition, JSON.stringify({ choice: choice, correct: correct })); } catch (e) {}
+  }
+
+  function imgUrl(edition, side) {
+    return "/img/img-" + edition + "-01-eia-" + side + ".jpg";
+  }
+
+  function updateProgress() {
+    progressEl.textContent = "Par " + (round + 1) + " de " + total + " — acertos: " + score;
+  }
+
+  function renderRound() {
+    // Pula silenciosamente editions já respondidas por este token (replay) —
+    // credita o resultado já conhecido sem round-trip/voto duplicado.
+    while (round < total) {
+      var cached = getCached(editions[round]);
+      if (!cached) break;
+      if (cached.correct) score++;
+      round++;
+    }
+    if (round >= total) { showFinal(); return; }
+    answered = false;
+    roundResultEl.hidden = true;
+    roundResultEl.innerHTML = "";
+    updateProgress();
+    var edition = editions[round];
+    choicesEl.innerHTML =
+      '<div class="choice"><img src="' + imgUrl(edition, "A") + '" alt="Imagem A" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="A">Essa é a IA (A)</button></div>' +
+      '<p class="scroll-hint">↓ Veja também a Imagem B antes de decidir</p>' +
+      '<div class="choice"><img src="' + imgUrl(edition, "B") + '" alt="Imagem B" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="B">Essa é a IA (B)</button></div>';
+  }
+
+  function setChoiceButtonsDisabled(disabled) {
+    var btns = choicesEl.querySelectorAll(".seq-choice-btn");
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = disabled;
+  }
+
+  function advance() {
+    round++;
+    renderRound();
+  }
+
+  function showFinal() {
+    if (playEl) playEl.hidden = true;
+    finalEl.hidden = false;
+    var scoreEl = finalEl.querySelector(".seq-final-score");
+    if (scoreEl) scoreEl.textContent = "Você acertou " + score + " de " + total + "!";
+    var slot = document.getElementById("seq-share-slot");
+    // #3589: reusa LITERALMENTE /jogar/quiz/result (#3520) — mesmo endpoint,
+    // mesmo QuizSharePayload {score,total}, zero mudança em share.ts/handleQuizResult.
+    fetch("/jogar/quiz/result?score=" + encodeURIComponent(String(score)) + "&total=" + encodeURIComponent(String(total)))
+      .then(function (res) { if (!res.ok) throw new Error("result fetch failed"); return res.text(); })
+      .then(function (html) {
+        if (!slot) return;
+        slot.innerHTML = html;
+        slot.hidden = false;
+      })
+      .catch(function () {});
+    if (subscribeCta) subscribeCta.hidden = false;
+    if (signupForm) signupForm.hidden = false;
+  }
+
+  function onChoice(choice) {
+    if (answered) return;
+    answered = true;
+    setChoiceButtonsDisabled(true);
+    var edition = editions[round];
+
+    var params = new URLSearchParams();
+    params.set("edition", edition);
+    params.set("brand", ${JSON.stringify(JOGAR_BRAND)});
+    params.set("email", email);
+    params.set("choice", choice);
+    var voteUrl = "/vote?" + params.toString();
+
+    if (typeof window.fetch !== "function" || typeof DOMParser === "undefined") {
+      // Sem fetch/DOMParser: navega nativamente pro /vote — o voto em si
+      // não se perde (mesmo fallback do par único clássico), só a
+      // continuidade da sequência nesta aba.
+      window.location.href = voteUrl;
+      return;
+    }
+
+    fetch(voteUrl).then(function (res) {
+      return res.text();
+    }).then(function (html) {
+      var parsed = new DOMParser().parseFromString(html, "text/html");
+      var msgEl = parsed.querySelector(".msg");
+      var text = msgEl ? (msgEl.textContent || "") : "";
+      // #3589 (item 3 do rationale): checa só o prefixo ✅/❌ pra decidir
+      // certo/errado — NUNCA exibe o texto bruto de .msg (que pode incluir
+      // sufixo de streak/stats "🔥 N dias seguidos" — deliberadamente
+      // suprimido nesta UI de replay em lote, ver rationale acima).
+      var correct = text.indexOf("✅") === 0 ? true : text.indexOf("❌") === 0 ? false : null;
+      var nextLabel = (round + 1 < total ? "Próximo par" : "Ver resultado");
+      if (correct === null) {
+        // Ambíguo (já votado nesta edição por outro caminho, ou erro) —
+        // não pontua, só avança. Nunca trava o jogo.
+        roundResultEl.hidden = false;
+        roundResultEl.innerHTML = '<p class="result-msg">Esse par já tinha um voto registrado — seguindo.</p>' +
+          '<button type="button" id="seq-next-btn">' + nextLabel + "</button>";
+      } else {
+        if (correct) score++;
+        setCached(edition, choice, correct);
+        roundResultEl.hidden = false;
+        roundResultEl.innerHTML = '<p class="result-msg">' + (correct ? "Acertou!" : "Essa não — errou dessa vez.") + '</p>' +
+          '<button type="button" id="seq-next-btn">' + nextLabel + "</button>";
+      }
+      var nextBtn = document.getElementById("seq-next-btn");
+      if (nextBtn) nextBtn.addEventListener("click", advance);
+    }).catch(function () {
+      // Falha de rede — reabilita os botões pra tentar de novo (não avança/
+      // não pontua uma rodada nunca confirmada).
+      answered = false;
+      setChoiceButtonsDisabled(false);
+    });
+  }
+
+  choicesEl.addEventListener("click", function (ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest(".seq-choice-btn") : null;
+    if (!btn) return;
+    onChoice(btn.getAttribute("data-choice"));
+  });
+
+  renderRound();
+})();
+</script>
+${shareButtonScript("#seq-share-slot")}
+${inlineSignupScript()}`;
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${pageTitle}</title>
+${seoMeta}
+<style>
+  body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
+  h1 { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; margin-bottom: 4px; letter-spacing: -0.01em; }
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
+  .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
+  .choice { flex: 1 1 240px; max-width: 260px; }
+  .choice img { width: 100%; height: auto; border-radius: 6px; display: block; background: ${DS_COLORS.paperAlt}; }
+  .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
+  .choice button:disabled { opacity: 0.5; cursor: not-allowed; }
+  a { color: ${DS_COLORS.ink}; text-decoration: underline; }
+  .scroll-hint { display: none; }
+  #seq-round-result[hidden], #seq-final[hidden], #jogar-subscribe-cta[hidden], #jogar-signup-form[hidden] { display: none; }
+  .result-msg { font-family: ${DS_FONTS.serif}; font-size: 1.3rem; line-height: 1.4; margin: 20px 0; }
+  .quiz-round-result button { margin-top: 4px; padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
+  .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
+  .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .share-actions button { padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  .subscribe-cta { margin: 20px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
+  .subscribe-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
+  .subscribe-btn { display: inline-block; padding: 10px 20px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; text-decoration: none; font-weight: 600; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+${renderInlineSignupFormStyles()}
+  @media (max-width: 600px) {
+    .choice { flex-basis: 100%; max-width: 100%; }
+    .scroll-hint { display: block; width: 100%; margin: 2px 0 10px; font-size: 0.85rem; font-weight: 600; color: ${DS_COLORS.brand}; }
+    .share-card { max-width: 100%; padding: 20px 18px; }
+    .share-actions { flex-direction: column; }
+    .share-actions button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
+    .subscribe-cta { max-width: 100%; padding: 20px 18px; }
+    .subscribe-btn { display: block; width: 100%; box-sizing: border-box; padding: 14px 16px; font-size: 1.05rem; }
+    .signup-form { max-width: 100%; padding: 20px 18px; }
+  }
+${renderBrandShellStyles()}
+</style>
+</head>
+<body>
+<p class="kicker">É IA?</p>
+<hr class="rule">
+<h1>Sequência do mês — jogue e entre no leaderboard</h1>
+${bodyHtml}
+
+<p class="footer-links"><a href="${htmlEscape(info.siteUrl)}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${quizFallbackLink}</p>
+${renderBrandFooter(JOGAR_BRAND)}
+${scriptHtml}
+</body>
+</html>`;
+}
+
+/**
+ * Handler `GET /jogar` (#3516, rework #3589). `?edition=AAMMDD` explícito e
+ * válido preserva o comportamento CLÁSSICO de par único (ponte clarice→
+ * arquivo, #3524/#3578 — ver rationale item 5/6 acima) — não é mais o
+ * default. Sem `?edition=` (ou malformado): serve a SEQUÊNCIA do mês
+ * anterior (#3589), a experiência principal do web a partir de agora.
+ *
+ * Prefixo de list `correct:{yy}{mm}` (mês de conteúdo anterior) em vez de
+ * escanear TODO o keyspace `correct:*` — mesma economia de I/O que
+ * `handleJogarArchivePage` já faz por ano.
  */
 export async function handleJogarPage(url: URL, env: Env): Promise<Response> {
-  const edition = resolveJogarEdition(url.searchParams.get("edition"), new Date());
-  const correctRaw = await env.POLL.get(`correct:${edition}`);
-  return new Response(renderJogarPageHtml({ edition, revealed: correctRaw !== null }), {
+  const explicitEdition = url.searchParams.get("edition");
+  if (explicitEdition && AAMMDD_RE.test(explicitEdition)) {
+    const edition = explicitEdition;
+    const correctRaw = await env.POLL.get(`correct:${edition}`);
+    return new Response(renderJogarPageHtml({ edition, revealed: correctRaw !== null }), {
+      headers: {
+        "Content-Type": "text/html;charset=utf-8",
+        "Cache-Control": "public, max-age=120",
+      },
+    });
+  }
+
+  const now = new Date();
+  const { yy, mm } = resolvePreviousCalendarMonth(now);
+  const keys: string[] = [];
+  for await (const k of listAllKeys(env, `correct:${yy}${mm}`)) keys.push(k);
+  const editions = resolveJogarSequenceEditions(keys, now);
+  return new Response(renderJogarSequencePageHtml(editions), {
     headers: {
       "Content-Type": "text/html;charset=utf-8",
-      "Cache-Control": "public, max-age=120",
+      // #3589: cada rodada grava um voto real — nunca cachear (mesmo
+      // racional de Cache-Control: no-store do /jogar/quiz, embora aqui a
+      // razão seja side-effect real, não só "sequência sorteada nova").
+      "Cache-Control": "no-store",
     },
   });
 }
@@ -1175,9 +1645,33 @@ export async function handleQuizAnswer(url: URL, env: Env): Promise<Response> {
 }
 
 /**
- * Pure (#3520): valida `score`/`total` recebidos de `GET /jogar/quiz/result`.
- * `null` pra qualquer forma inválida (não-inteiro, `total` fora de
- * [1, QUIZ_MAX_N], `score` negativo ou > `total`) — nunca lança.
+ * #3589 (self-review #2038, achado corrigido no mesmo PR — não só
+ * comentado, mesmo precedente de #3117/#3120): teto de `total` aceito por
+ * `resolveQuizResultParams`/`GET /jogar/quiz/result`. NÃO é mais
+ * `QUIZ_MAX_N` (10) — este endpoint agora é reusado LITERALMENTE por
+ * `renderJogarSequencePageHtml` (`/jogar` default, a sequência do mês
+ * anterior), cujo `total` realista é o número de edições fechadas do mês
+ * (até ~23 dias úteis num mês de 31 dias) — bem acima do teto do quiz
+ * relâmpago. Usar `QUIZ_MAX_N` aqui rejeitaria `/jogar/quiz/result` com
+ * 400 pra QUALQUER sequência mensal real, quebrando o card de
+ * compartilhamento final da sequência silenciosamente (o `.catch` no
+ * cliente engole o 400 — mesmo risco documentado abaixo pro `QUIZ_MIN_N`).
+ * `31` cobre o mês civil mais longo possível — generoso o bastante pra
+ * nunca rejeitar um total real de nenhum dos dois callers (quiz ≤10,
+ * sequência ≤~23), sem re-abrir a validação pra "qualquer número" (ainda
+ * finito e pequeno o bastante pra não servir de vetor de abuso — mesmo
+ * racional de "forja só produz vaidade sem efeito no sistema", ver
+ * rationale no header de share.ts). `QUIZ_MAX_N` continua intocado — segue
+ * bound o TAMANHO PEDIDO de um quiz novo (`resolveQuizSize`), sem relação
+ * com este teto.
+ */
+export const QUIZ_RESULT_MAX_TOTAL = 31;
+
+/**
+ * Pure (#3520, teto ajustado #3589): valida `score`/`total` recebidos de
+ * `GET /jogar/quiz/result`. `null` pra qualquer forma inválida (não-inteiro,
+ * `total` fora de [1, QUIZ_RESULT_MAX_TOTAL], `score` negativo ou > `total`)
+ * — nunca lança.
  *
  * Self-review #2038 (achado corrigido, não só comentado — mesmo precedente
  * de #3117): o piso do `total` aqui é `1`, NÃO `QUIZ_MIN_N`. `QUIZ_MIN_N`
@@ -1188,8 +1682,7 @@ export async function handleQuizAnswer(url: URL, env: Env): Promise<Response> {
  * `/jogar/quiz/result?score=1&total=1` justamente no cenário "edições
  * insuficientes" que é critério de aceite explícito da #3520 — o placar do
  * quiz jogaria normalmente, mas o card de compartilhamento final falharia
- * silenciosamente (o `.catch` no cliente engole o 400). `QUIZ_MAX_N`
- * continua como teto — nenhum quiz real produz `total` maior que isso.
+ * silenciosamente (o `.catch` no cliente engole o 400).
  *
  * Nota (ver rationale no header de share.ts): não há verificação contra
  * respostas REAIS aqui — `score`/`total` são confiados do cliente. Trade-off
@@ -1200,7 +1693,7 @@ export function resolveQuizResultParams(rawScore: string | null, rawTotal: strin
   if (!/^\d+$/.test(rawScore) || !/^\d+$/.test(rawTotal)) return null;
   const score = parseInt(rawScore, 10);
   const total = parseInt(rawTotal, 10);
-  if (total < 1 || total > QUIZ_MAX_N) return null;
+  if (total < 1 || total > QUIZ_RESULT_MAX_TOTAL) return null;
   if (score < 0 || score > total) return null;
   return { score, total };
 }

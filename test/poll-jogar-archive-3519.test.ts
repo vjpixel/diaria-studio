@@ -238,7 +238,7 @@ describe("Anti-spoiler preservado ao jogar uma edição de arquivo já fechada (
 
 // ── Regressão: resto do #3516/#3517/#3518 intacto ──────────────────────────
 
-describe("Regressão — /jogar (par do dia) segue intacto (#3519 não altera handleJogarPage)", () => {
+describe("Regressão — /jogar (par do dia via ?edition=) segue intacto (#3519 não altera renderJogarPageHtml)", () => {
   it("form de voto continua apontando pro /vote com brand=web, edição resolvida normalmente", async () => {
     const env = makeEnv();
     const res = await worker.fetch(new Request("https://poll.test/jogar?edition=260101"), env);
@@ -248,10 +248,17 @@ describe("Regressão — /jogar (par do dia) segue intacto (#3519 não altera ha
     assert.match(html, /name="edition"\s+value="260101"/);
   });
 
-  it("link 'Jogar edições passadas' aparece na página do par do dia, apontando pro novo arquivo", async () => {
+  // #3589 item 3: a issue exige remover o link "Jogar edições passadas" de
+  // TODAS as views web — inclusive o par único (?edition= explícito, que
+  // continua vivo só como ponte clarice/#3524, não mais auto-promovido). A
+  // rota /jogar/arquivo em si NÃO foi deletada (ver rationale #3589 item 6
+  // em jogar.ts — a mesma rota é o destino da ponte clarice→arquivo,
+  // #3524/#3578), só deixou de ser linkada a partir de qualquer view web.
+  it("link 'Jogar edições passadas' NÃO aparece mais na página do par único (#3589)", async () => {
     const env = makeEnv();
     const res = await worker.fetch(new Request("https://poll.test/jogar?edition=260101"), env);
     const html = await res.text();
-    assert.match(html, /href="\/jogar\/arquivo"/);
+    assert.doesNotMatch(html, /Jogar edições passadas/, "par único não deve mais auto-promover o arquivo — #3589");
+    assert.doesNotMatch(html, /href="\/jogar\/arquivo"/);
   });
 });

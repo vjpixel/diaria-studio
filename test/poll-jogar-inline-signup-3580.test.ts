@@ -401,10 +401,9 @@ describe("GET /jogar/quiz embute o form inline (#3580)", () => {
 // ── regressão: não quebra o CTA-link #3518 ──────────────────────────────────
 
 describe("regressão #3518/#3516 (#3580) — CTA-link e voto intactos", () => {
-  it("CTA-link #jogar-subscribe-cta continua presente (complementa, não remove)", () => {
+  it("CTA-link #jogar-subscribe-cta continua presente (complementa, não remove) — copy/link viraram descoberta pelo rework #3589 (ver test/poll-jogar-cta-3518.test.ts), o form inline em si não muda", () => {
     const html = renderJogarPageHtml({ edition: "260101", revealed: false });
     assert.match(html, /id="jogar-subscribe-cta"/);
-    assert.match(html, /diaria\.beehiiv\.com/);
   });
 
   it("form de voto continua apontando pro /vote com brand=web", () => {
