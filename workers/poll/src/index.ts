@@ -616,13 +616,15 @@ export function votePageHtml(
     ? `${leaderboardBase}${leaderboardBase.includes("?") ? "&" : "?"}v=${cacheBusterTs}`
     : leaderboardBase;
 
-  // #3524: link pro arquivo jogável — a metade "página pós-voto (email) →
-  // arquivo" da ponte cross-canal (EPIC #3514). Só pra brands diaria/clarice
-  // (leitor de e-mail que chegou aqui via botão/link do e-mail) — brand "web"
-  // (jogo standalone) já tem o MESMO link no próprio rodapé de `/jogar`
-  // (jogar.ts `renderJogarPageHtml`/`renderJogarQuizPageHtml`); duplicar aqui
-  // seria redundante pro visitante que já está no site.
-  const archiveLinkHtml = brand !== "web"
+  // #3578 (correção do #3524, feedback do editor 260716): a metade "página
+  // pós-voto (email) → arquivo" da ponte cross-canal (EPIC #3514) agora só
+  // vale pra brand `clarice` (É IA? MENSAL — já podia voltar em edições
+  // anteriores antes do #3524, continua). `diaria` foi removida do gate: a
+  // diária só vota no par do dia, sem arquivo/jogar edições passadas — regra
+  // de produto (#3578). Brand "web" (jogo standalone) já tem o MESMO link no
+  // próprio rodapé de `/jogar` (jogar.ts `renderJogarPageHtml`/
+  // `renderJogarQuizPageHtml`); duplicar aqui seria redundante.
+  const archiveLinkHtml = brand === "clarice"
     ? ` &nbsp;|&nbsp; <a href="${jogarArchiveHref()}">Jogar edições passadas</a>`
     : "";
 
