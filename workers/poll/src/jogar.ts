@@ -51,6 +51,11 @@ import {
   todayAammddBrt,
 } from "./lib";
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
+// #3517: share card pós-jogo — script de wiring dos botões (Web Share API +
+// fallback copiar-link) reusado LITERALMENTE do mesmo helper que
+// votePageHtml (index.ts) usa pro bloco renderizado direto, só com um
+// container selector diferente. Rationale completo em share.ts.
+import { shareButtonScript } from "./share";
 
 /** Brand fixo desta página — `/jogar` É o standalone, não um parâmetro. */
 const JOGAR_BRAND = "web" as const;
@@ -141,10 +146,22 @@ ${seoMeta}
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .already { margin: 24px auto; padding: 16px 18px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; font-size: 0.95rem; }
   .scroll-hint { display: none; }
-  #jogar-form[hidden], #jogar-already[hidden] { display: none; }
+  #jogar-form[hidden], #jogar-already[hidden], #jogar-result-slot[hidden] { display: none; }
+  /* #3517: estilo do resultado + card de compartilhamento injetados no slot
+     via JS (mesmas classes de renderShareCardBlock/votePageHtml, index.ts —
+     duplicado aqui pois é um <style> inline separado, mesmo padrão do resto
+     do worker: cada página inline o próprio CSS). */
+  .result-msg { font-family: ${DS_FONTS.serif}; font-size: 1.3rem; line-height: 1.4; margin: 20px 0; }
+  .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
+  .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
+  .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .share-actions button { padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
   @media (max-width: 600px) {
     .choice { flex-basis: 100%; max-width: 100%; }
     .scroll-hint { display: block; width: 100%; margin: 2px 0 10px; font-size: 0.85rem; font-weight: 600; color: ${DS_COLORS.brand}; }
+    .share-card { max-width: 100%; padding: 20px 18px; }
+    .share-actions { flex-direction: column; }
+    .share-actions button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
   }
 ${renderBrandShellStyles()}
 </style>
@@ -165,8 +182,10 @@ ${renderBrandShellStyles()}
     <div class="choice"><img id="jogar-img-b" src="${imgB}" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA (B)</button></div>
   </div>
 </form>
-<!-- #3516: slot pra card de compartilhamento pós-jogo (#3517, OG dinâmica) —
-     não implementado aqui, só o ponto de extensão marcado. -->
+<!-- #3517: preenchido via JS (fetch a /vote + DOMParser) com o '.msg' de
+     resultado + o bloco '#jogar-share-card' (mesma estrutura de
+     renderShareCardBlock, share.ts) — sem sair da página. Fallback pra
+     navegação nativa (window.location.href) em qualquer falha de rede. -->
 <div id="jogar-result-slot" hidden></div>
 <div id="jogar-already" class="already" hidden></div>
 
@@ -254,15 +273,59 @@ ${renderBrandFooter(JOGAR_BRAND)}
     alreadyBox.hidden = false;
     alreadyBox.textContent = "Você já votou na edição de hoje (escolha: " + already + "). Resultado na página do seu voto ou no leaderboard.";
   } else if (form) {
+    // #3517: intercepta o submit — em vez de deixar o browser navegar pro
+    // /vote (comportamento nativo do form GET), busca a mesma URL via fetch
+    // e injeta o resultado (mensagem + card de compartilhamento) no slot
+    // reservado, sem sair de /jogar. QUALQUER falha de rede cai pra
+    // navegação nativa (window.location.href) — o voto NUNCA se perde por
+    // causa de um fetch que falhou (dedup no servidor cobre o retry).
     form.addEventListener("submit", function (ev) {
+      ev.preventDefault();
       var choice = ev.submitter && ev.submitter.value;
-      if (choice) {
-        try { window.localStorage.setItem(votedKey, choice); } catch (e) {}
+      // Safety net: um <button type="submit"> sempre tem 'value', mas se o
+      // browser não expuser 'ev.submitter' (API relativamente recente),
+      // preferimos a navegação nativa garantida a silenciosamente não votar.
+      if (!choice) { form.submit(); return; }
+      try { window.localStorage.setItem(votedKey, choice); } catch (e) {}
+
+      var params = new URLSearchParams();
+      params.set("edition", edition);
+      params.set("brand", ${JSON.stringify(JOGAR_BRAND)});
+      params.set("email", email);
+      params.set("choice", choice);
+      var voteUrl = "/vote?" + params.toString();
+      var resultSlot = document.getElementById("jogar-result-slot");
+
+      function fallbackNativeNav() { window.location.href = voteUrl; }
+
+      if (!resultSlot || typeof window.fetch !== "function" || typeof DOMParser === "undefined") {
+        fallbackNativeNav();
+        return;
       }
+
+      fetch(voteUrl).then(function (res) {
+        return res.text();
+      }).then(function (html) {
+        var parsed = new DOMParser().parseFromString(html, "text/html");
+        var msgEl = parsed.querySelector(".msg");
+        var shareCardEl = parsed.querySelector("#jogar-share-card");
+        if (!msgEl && !shareCardEl) { fallbackNativeNav(); return; }
+        var out = "";
+        if (msgEl) out += '<p class="result-msg">' + msgEl.innerHTML + "</p>";
+        if (shareCardEl) out += shareCardEl.outerHTML;
+        resultSlot.innerHTML = out;
+        resultSlot.hidden = false;
+        form.hidden = true;
+      }).catch(fallbackNativeNav);
     });
+
+    // #3517: delegação de clique pro(s) botão(ões) de compartilhamento
+    // injetado(s) dinamicamente acima — mesmo script reusado por votePageHtml
+    // (index.ts) pro card renderizado direto em /vote, ver share.ts.
   }
 })();
 </script>
+${shareButtonScript("#jogar-result-slot")}
 </body>
 </html>`;
 }

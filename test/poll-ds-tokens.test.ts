@@ -82,7 +82,9 @@ describe("workers/poll/src — nenhum literal de cor hex hardcoded (#3111, trava
   // #3516: jogar.ts entrou na mesma lista — página nova com seu próprio
   // <style> inline (padrão do worker: cada página inline o próprio CSS,
   // tokens vêm de DS_COLORS/DS_FONTS, nunca literal).
-  for (const file of ["index.ts", "leaderboard-routes.ts", "lib.ts", "jogar.ts"]) {
+  // #3517: share.ts entrou na mesma lista — renderShareCardSvg/
+  // renderSharePageHtml também estilizam com DS_COLORS/DS_FONTS.
+  for (const file of ["index.ts", "leaderboard-routes.ts", "lib.ts", "jogar.ts", "share.ts"]) {
     test(`${file} não contém literais #RRGGBB — cores devem vir de DS_COLORS (ds-tokens.generated.ts)`, () => {
       const src = readFileSync(resolve(POLL_SRC, file), "utf8");
       const matches = src.match(HEX_COLOR) ?? [];
