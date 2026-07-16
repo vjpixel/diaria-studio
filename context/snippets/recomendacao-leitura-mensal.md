@@ -33,6 +33,6 @@ destaques, isolado por `---`. Não é auto-inserido pelo pipeline.
 
 [**2041: Como a Inteligência Artificial Vai Mudar Sua Vida nas Próximas Décadas**](https://link.amazon/B05FlAaJ7), de Kai-Fu Lee e Chen Qiufan.
 
-Kai-Fu Lee foi presidente do Google na China, passou por Apple e Microsoft e é hoje um dos investidores e pensadores de IA mais influentes da Ásia.
+Kai-Fu Lee foi presidente do Google na China, passou pela Apple e pela Microsoft e hoje é um dos investidores e pensadores de IA mais influentes da Ásia.
 
-Ao lado do escritor de ficção científica Chen Qiufan, ele adota uma estrutura pouco comum: cada capítulo abre com um conto e depois desconstrói as tecnologias que aparecem nele — uma forma diferente de imaginar para onde a IA pode ir nas próximas décadas.
+Ao lado do escritor de ficção científica Chen Qiufan, ele adota uma estrutura pouco comum: cada capítulo abre com um conto e depois desconstrói as tecnologias que aparecem nele. É uma forma diferente de imaginar para onde a IA pode ir nas próximas décadas.
