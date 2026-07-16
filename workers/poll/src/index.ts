@@ -270,7 +270,8 @@ import {
 } from "./leaderboard-routes";
 // #3516: página jogável standalone (EPIC #3514) — brand fixo "web", ver
 // rationale completo no header de jogar.ts.
-import { handleJogarPage } from "./jogar";
+// #3519: handleJogarArchivePage — arquivo de pares passados, mesmo módulo.
+import { handleJogarArchivePage, handleJogarPage } from "./jogar";
 // #3517: share card pós-jogo (OG image dinâmica) — motor de divulgação do
 // EPIC #3514, construído sobre o slot `#jogar-result-slot` que o #3516 deixou
 // reservado. Rationale completo no header de share.ts.
@@ -908,6 +909,9 @@ export default {
     // pelos endpoints normais (`/vote?brand=web` etc.), que já branding via
     // `bEnv` quando `?brand=web` é passado por eles.
     if (path === "/jogar" && request.method === "GET") return handleJogarPage(url, env);
+    // #3519: arquivo de pares passados (índice) — mesmo racional acima:
+    // `env` cru, lê `correct:{edition}` compartilhado, não `bEnv`.
+    if (path === "/jogar/arquivo" && request.method === "GET") return handleJogarArchivePage(url, env);
 
     // #3517: share card pós-jogo. `env` CRU (não `bEnv`) — o token já carrega
     // seu próprio payload assinado (edition + correct), sem depender de
@@ -980,7 +984,7 @@ export default {
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/jogar", "/share/{token}", "/og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/share/{token}", "/og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
   },
   // #1077 → #1345: cron de reset mensal removido. Leaderboard agora é
   // indexado por publication date (score-by-month:{YYYY-MM}:{email}); reset

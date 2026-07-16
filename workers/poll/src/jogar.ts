@@ -56,6 +56,21 @@ import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 // votePageHtml (index.ts) usa pro bloco renderizado direto, só com um
 // container selector diferente. Rationale completo em share.ts.
 import { shareButtonScript } from "./share";
+// #3519: arquivo de pares passados — reusa 100% da extração/agrupamento já
+// construído pro arquivo retroativo do brand `diaria`/`clarice` (#2867/#3113,
+// leaderboard-routes.ts) em vez de duplicar a lógica de listagem de edições
+// fechadas. Único ponto novo aqui é o HREF de cada item: em vez da página de
+// voto por e-mail (`renderArchiveVoteHtml`, arquivo "assinante"), o arquivo
+// standalone linka pra `/jogar?edition={AAMMDD}` (identidade anônima, mesmo
+// mecanismo do #3516) — mantendo a experiência sem-email consistente com o
+// resto de `/jogar`. `leaderboard-routes.ts` importa de `./index`, que por
+// sua vez importa `handleJogarPage`/`handleJogarArchivePage` deste arquivo —
+// ciclo de 3 módulos já existente hoje entre index.ts↔leaderboard-routes.ts
+// (via `export * from "./leaderboard-routes"` em index.ts) e comprovadamente
+// seguro: nenhum dos três usa o valor importado no top-level do módulo, só
+// dentro de corpos de função executados em request-time (bindings vivos do
+// ESM resolvem o ciclo sem problema).
+import { extractEditionsForYear, groupEditionsByMonth, listAllKeys } from "./leaderboard-routes";
 
 /** Brand fixo desta página — `/jogar` É o standalone, não um parâmetro. */
 const JOGAR_BRAND = "web" as const;
@@ -253,7 +268,7 @@ ${renderBrandShellStyles()}
      disciplina anti-spoiler do resto da página). -->
 ${renderSubscribeCtaBlock()}
 
-<p class="footer-links"><a href="${htmlEscape(info.siteUrl)}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="${htmlEscape(info.siteUrl)}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Jogar edições passadas</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 
 <script>
@@ -415,6 +430,149 @@ export async function handleJogarPage(url: URL, env: Env): Promise<Response> {
     headers: {
       "Content-Type": "text/html;charset=utf-8",
       "Cache-Control": "public, max-age=120",
+    },
+  });
+}
+
+// ── #3519: arquivo de pares passados ────────────────────────────────────────
+//
+// Sub-issue [S] do EPIC #3514 — visitante novo (chegando via share, #3517)
+// não deve esbarrar em "volte amanhã": oferece os pares de edições PASSADAS
+// como conteúdo jogável imediato. Decisões de design (ver PR #3519):
+//
+//   1. Rota: `GET /jogar/arquivo` (índice) + `/jogar?edition={AAMMDD}` pro
+//      par individual — reusa literalmente o hook `?edition=` que o #3516 já
+//      deixou reservado (`resolveJogarEdition`), em vez de criar uma rota
+//      nova `/jogar/{edicao}`. Zero mudança em `handleJogarPage`/
+//      `renderJogarPageHtml` — o form de voto, a identidade anônima, o
+//      anti-spoiler e o CTA de assinatura já funcionam para QUALQUER edição
+//      válida passada pelo query param (comportamento já coberto pelos testes
+//      do #3516: `?edition=` malformado cai no default; `?edition=` válido
+//      mas sem gabarito ainda renderiza normalmente com a cópia "pré-
+//      revelação" — mesmo tratamento gracioso que o par do dia já tem quando
+//      a pipeline ainda não terminou. Não duplicamos esse guard aqui.).
+//
+//   2. Fonte da lista: as mesmas chaves `correct:{edition}` que já alimentam
+//      `/leaderboard/{YYYY}/arquivo` (#2867/#3113) — `extractEditionsForYear`
+//      + `listAllKeys` (leaderboard-routes.ts) reusados sem duplicação. Só
+//      entram edições com gabarito FECHADO (`correct:{edition}` definido) e
+//      não-futuras (mesma guarda defensiva #3113 item 9) — exatamente o
+//      critério de aceite "arquivo lista pares fechados". Lido do KV CRU
+//      (não branded) — mesmo racional do resto do arquivo: `correct:{edition}`
+//      é fato público compartilhado entre brands, não dado do brand `web`.
+//
+//   3. Par corrente excluído: mesmo com gabarito já fechado, a edição de HOJE
+//      nunca aparece na listagem — ela já é o padrão de `/jogar` (sem
+//      `?edition=`); o arquivo é estritamente o retrospecto, evita conteúdo
+//      duplicado entre as duas páginas.
+//
+//   4. Pontuação: NÃO reimplementamos gate nenhum em `/vote` — o voto em
+//      edição arquivada via `/jogar?edition=X&brand=web` já é aceito hoje
+//      pelo gate existente (`web:valid_editions` nunca populado → fail-open,
+//      mesmo padrão do brand `clarice`, #2018) e conta pro leaderboard
+//      mensal do brand `web` normalmente. Decisão conservadora: sem
+//      diferenciação de pontos entre par do dia e par de arquivo (a issue
+//      deixava em aberto "decidir na implementação"; manter o mesmo
+//      mecanismo simples do resto do produto evita introduzir um sistema de
+//      pontuação paralelo só pro brand `web` nesta entrega [S]).
+//
+//   5. Anti-spoiler: preservado por construção — `renderJogarPageHtml` nunca
+//      rotula qual imagem é a IA antes do voto, fechada ou não (mesmo teste
+//      `renderJogarPageHtml pure render` do #3516 cobre isso com
+//      `revealed: true`). O arquivo só adiciona a LISTAGEM; a revelação
+//      continua exclusivamente pós-voto via `/vote`.
+
+/**
+ * Pure (#3519): resolve o ano da listagem do arquivo. `?year=YYYY` explícito
+ * (formato + range sensato) tem prioridade; ausente/malformado cai no ano
+ * corrente em BRT — nunca lança, mesma disciplina de `resolveJogarEdition`
+ * (página pública de entrada não pode 400/500 por um param mal formado).
+ */
+export function resolveJogarArchiveYear(rawYear: string | null, now: Date): string {
+  if (rawYear && /^\d{4}$/.test(rawYear)) {
+    const y = parseInt(rawYear, 10);
+    if (y >= 2000 && y <= 2099) return rawYear;
+  }
+  const today = todayAammddBrt(now);
+  return `20${today.slice(0, 2)}`;
+}
+
+/**
+ * Pure render (#3519): página de índice do arquivo — lista as edições
+ * FECHADAS do ano (já filtradas/ordenadas DESC pelo caller via
+ * `extractEditionsForYear`), agrupadas por mês (`groupEditionsByMonth`,
+ * reusado de leaderboard-routes.ts). Cada item linka pra `/jogar?edition=…`
+ * (identidade anônima) — NÃO pra `/leaderboard/{year}/arquivo/{edition}`
+ * (fluxo de e-mail digitado do arquivo "assinante", #2867), que exigiria o
+ * visitante sair do modo anônimo do `/jogar`.
+ */
+export function renderJogarArchiveHtml(editions: string[], year: string): string {
+  const info = BRAND_INFO[JOGAR_BRAND];
+  const sections = groupEditionsByMonth(editions, JOGAR_BRAND, year)
+    .map((g) => {
+      const items = g.editions
+        .map((ed) => `<li><a href="/jogar?edition=${htmlEscape(ed)}">${htmlEscape(formatEditionDate(ed))}</a></li>`)
+        .join("\n");
+      return `<h2 class="month-heading">${htmlEscape(g.monthLabel)}</h2>\n<ul>${items}</ul>`;
+    })
+    .join("\n");
+  const rows = sections || "<ul><li>Nenhuma edição disponível ainda.</li></ul>";
+  const pageTitle = `Arquivo — É IA? | ${info.name}`;
+  const seoMeta = renderSeoMeta({
+    title: pageTitle,
+    description: `Jogue pares de edições passadas do "É IA?" — arquivo de ${htmlEscape(year)} da ${info.name}. Adivinhe qual imagem foi gerada por IA.`,
+    path: "/jogar/arquivo",
+  });
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${pageTitle}</title>
+${seoMeta}
+<style>
+  body { font-family: ${DS_FONTS.sans}; max-width: 640px; margin: 40px auto; padding: 0 20px; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
+  h1 { font-family: ${DS_FONTS.serif}; font-size: 1.7rem; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 4px; }
+  p.sub { color: ${DS_COLORS.ink}; font-size: 0.95rem; }
+  ul { list-style: none; padding: 0; margin-top: 20px; }
+  li { padding: 12px 8px; border-bottom: 1px solid ${DS_COLORS.rule}; font-size: 1.02rem; }
+  a { color: ${DS_COLORS.ink}; text-decoration: underline; }
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
+  .month-heading { font-family: ${DS_FONTS.sans}; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: ${DS_COLORS.brand}; margin: 28px 0 0; }
+  .month-heading + ul { margin-top: 8px; }
+${renderBrandShellStyles()}
+</style>
+</head>
+<body>
+<p class="kicker">É IA? — arquivo</p>
+<hr class="rule">
+<h1>Jogue edições passadas</h1>
+<p class="sub">Pares de dias anteriores — vote e veja na hora se acertou. Só edições já reveladas entram aqui, o par de hoje fica em <a href="/jogar">/jogar</a>.</p>
+${rows}
+<p class="footer-links"><a href="/jogar">← Voltar pro par de hoje</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver leaderboard</a></p>
+${renderBrandFooter(JOGAR_BRAND)}
+</body>
+</html>`;
+}
+
+/**
+ * Handler `GET /jogar/arquivo` (#3519). `env` CRU (não branded) — mesmo
+ * padrão de `handleJogarPage`: lê `correct:{edition}` compartilhado, fato
+ * público sobre a edição, não dado do brand `web`.
+ */
+export async function handleJogarArchivePage(url: URL, env: Env): Promise<Response> {
+  const now = new Date();
+  const year = resolveJogarArchiveYear(url.searchParams.get("year"), now);
+  const yy = year.slice(2);
+  const keys: string[] = [];
+  for await (const k of listAllKeys(env, `correct:${yy}`)) keys.push(k);
+  const today = todayAammddBrt(now);
+  const editions = extractEditionsForYear(keys, year, now).filter((ed) => ed !== today);
+  return new Response(renderJogarArchiveHtml(editions, year), {
+    headers: {
+      "Content-Type": "text/html;charset=utf-8",
+      "Cache-Control": "public, max-age=300",
     },
   });
 }
