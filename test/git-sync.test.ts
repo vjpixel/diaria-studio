@@ -34,6 +34,7 @@ import {
   defaultSpawn,
   createFileLock,
   resolveSharedLockPath,
+  resolveSharedLockPathCached,
   REPO_ROOT,
   GIT_TIMEOUT_MS,
   MAX_SEQUENTIAL_GIT_SPAWNS,
@@ -893,17 +894,36 @@ describe("git-sync — #3430 gap 3: path do lock compartilhado entre worktrees d
     );
   });
 
-  it("git rev-parse --show-toplevel NÃO seria uma correção válida — devolve valores DIFERENTES por worktree", () => {
-    // Documenta por que a correção usa --git-common-dir em vez da sugestão
-    // literal da issue (--show-toplevel): --show-toplevel devolve o diretório
-    // de trabalho de CADA worktree individualmente, reproduzindo o mesmo gap
-    // que o fix precisa fechar.
-    const toplevelFromMain = "C:/Users/vjpix/Projects/diaria-studio";
-    const toplevelFromWorktree = "C:/Users/vjpix/Projects/diaria-studio/.claude/worktrees/agent-example";
-    assert.notEqual(
-      toplevelFromMain,
-      toplevelFromWorktree,
-      "pré-condição do teste documental: --show-toplevel varia por worktree (por isso não serve pro lock)",
+  // #3435 finding 5: o teste acima alimenta stdout IDÊNTICO pros 2 mocks — não
+  // prova nada sobre a claim empírica real ("2 processos/worktrees reais
+  // devolvem o mesmo --git-common-dir"), só que a função é determinística
+  // dado o mesmo input (trivial). Esse teste ancora pelo menos 1 lado em git
+  // REAL (defaultSpawn, cwd=REPO_ROOT — este próprio worktree de teste) para
+  // confirmar que o parsing de `resolveSharedLockPath()` (resolve(stdout.trim(),
+  // "diaria-sync.lock")) produz o MESMO resultado tanto rodando o comando de
+  // verdade quanto alimentando um mock com o stdout capturado desse comando
+  // real — não deriva de 2 fontes puramente mockadas e desconectadas da saída
+  // real do git. A claim mais forte ("2 worktrees DIFERENTES do mesmo repo
+  // físico produzem o mesmo --git-common-dir") continua sendo um invariante
+  // documentado do próprio `git` (ver comentário de `resolveSharedLockPath`
+  // acima — "verificado empiricamente durante esta correção"), não algo que
+  // este arquivo de teste unitário consegue provar sem criar worktrees reais.
+  it("resolveSharedLockPath ancorado em git REAL (defaultSpawn) bate com o mesmo parsing aplicado ao stdout capturado desse git real", () => {
+    const realCommonDirRes = defaultSpawn("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    assert.equal(
+      realCommonDirRes.status,
+      0,
+      "git rev-parse --git-common-dir precisa suceder neste ambiente de teste (é um repositório git real)",
+    );
+
+    const pathFromRealGit = resolveSharedLockPath(defaultSpawn);
+    const mockFedRealStdout: SpawnFn = () => realCommonDirRes;
+    const pathFromMockFedRealStdout = resolveSharedLockPath(mockFedRealStdout);
+
+    assert.equal(
+      pathFromRealGit,
+      pathFromMockFedRealStdout,
+      "resolveSharedLockPath deveria produzir o MESMO path resolvendo via git real e via um mock alimentado com o stdout desse MESMO git real",
     );
   });
 
@@ -924,21 +944,19 @@ describe("git-sync — #3430 gap 2: reivindicação de lock morto é atômica (2
   // `FakeLockFs` agora vive em escopo de módulo (#3434) — ver definição acima,
   // logo após `makeSpawn()`.
 
-  it("2 acquire() sequenciais contra o MESMO lock morto → só o primeiro prevalece", () => {
-    const fakeFs = new FakeLockFs();
-    const lockPath = "/fake-repo/.git/diaria-sync.lock";
-    fakeFs.seedStaleDir(lockPath, Date.now() - (LOCK_STALE_MS + 60_000));
-
-    const lockA = createFileLock(lockPath, defaultSpawn, fakeFs);
-    const lockB = createFileLock(lockPath, defaultSpawn, fakeFs);
-
-    assert.equal(lockA.acquire(), true, "A reivindica o lock morto");
-    // B roda DEPOIS de A já ter recriado um lock fresco no mesmo path — B deve
-    // ver um lock ATIVO (mtime recente, não mais stale) e recuar normalmente,
-    // sem jamais destruir o lock de A.
-    assert.equal(lockB.acquire(), false, "B NÃO deve conseguir adquirir — A já é dono do lock fresco");
-  });
-
+  // #3435 finding 3: havia aqui um teste "2 acquire() sequenciais contra o
+  // MESMO lock morto → só o primeiro prevalece" que foi removido. Ele não
+  // interleava as 2 aquisições de fato (A completava o ciclo INTEIRO antes de
+  // B sequer começar) — passaria idêntico contra a implementação antiga com
+  // bug (`rmdirSync`+`mkdirSync` em 2 syscalls separadas, sem verificação de
+  // identidade), já que nenhuma das duas implementações precisa de proteção
+  // contra race numa chamada puramente sequencial. A cobertura real de "1 lock
+  // stale é recuperado" e "1 lock fresco continua bloqueando" já existe com fs
+  // REAL (não fake) no describe "#3423: createFileLock (lock de arquivo
+  // real)" acima ("lock STALE... é recuperado automaticamente" e "lock
+  // recente... permanece bloqueado") — nada foi perdido removendo o
+  // duplicado. O teste abaixo é quem de fato interleava as 2 aquisições e
+  // prova o fix do gap 2.
   it("reivindicação atômica: se A completar o ciclo inteiro DENTRO da janela entre o statSync e o renameSync de B, B detecta via mtime e desiste (nunca destrói o lock de A)", () => {
     // Reprodução da janela residual mais estreita possível do gap 2: B já fez
     // seu próprio EEXIST + statSync (observou o lock morto original, decidiu
@@ -1165,4 +1183,155 @@ describe("git-sync — #3434: rollback de reivindicação morta colide com 3º p
       assert.equal(fakeFs.hasDir(lockPath), true, "2ª chamada a release() continua no-op — lock de D intacto");
     },
   );
+});
+
+describe("git-sync — #3435 finding 1: resolveSharedLockPathCached memoiza por identidade de spawn", () => {
+  it("2 chamadas com o MESMO spawn → só 1 spawn real de 'git rev-parse --git-common-dir'", () => {
+    let gitCommonDirCalls = 0;
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git rev-parse --path-format=absolute --git-common-dir") gitCommonDirCalls++;
+      return makeSpawn({
+        "git rev-parse --path-format=absolute --git-common-dir": ok("/fake/.git"),
+      })(cmd, args);
+    };
+
+    const first = resolveSharedLockPathCached(spawn);
+    const second = resolveSharedLockPathCached(spawn);
+
+    assert.equal(first, second, "as 2 resoluções devem produzir o mesmo path");
+    assert.equal(
+      gitCommonDirCalls,
+      1,
+      `resolveSharedLockPathCached() deveria memoizar por spawn — a 2ª chamada não devia re-spawnar git; rodou ${gitCommonDirCalls}x`,
+    );
+  });
+
+  it("2 spawns DIFERENTES (closures novas, como em 2 testes distintos) NÃO compartilham cache entre si", () => {
+    const spawnA: SpawnFn = () => ok("/fake/repo-a/.git");
+    const spawnB: SpawnFn = () => ok("/fake/repo-b/.git");
+
+    const pathA = resolveSharedLockPathCached(spawnA);
+    const pathB = resolveSharedLockPathCached(spawnB);
+
+    assert.notEqual(
+      pathA,
+      pathB,
+      "cache por identidade de função spawn não deve vazar entre spawns distintos — cada teste permanece isolado",
+    );
+  });
+
+  it("createFileLock(undefined, spawn) usa a versão memoizada — 2 instâncias com o MESMO spawn não re-spawnam git", () => {
+    let gitCommonDirCalls = 0;
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      if (key === "git rev-parse --path-format=absolute --git-common-dir") gitCommonDirCalls++;
+      return makeSpawn({
+        "git rev-parse --path-format=absolute --git-common-dir": ok("/fake/.git"),
+      })(cmd, args);
+    };
+
+    const lock1 = createFileLock(undefined, spawn);
+    const lock2 = createFileLock(undefined, spawn);
+
+    assert.equal(lock1.path, lock2.path, "as 2 instâncias devem resolver pro MESMO path de lock");
+    assert.equal(
+      gitCommonDirCalls,
+      1,
+      `createFileLock(undefined, spawn) chamado 2x com o MESMO spawn deveria re-spawnar git só 1x (memoizado via resolveSharedLockPathCached); rodou ${gitCommonDirCalls}x`,
+    );
+  });
+});
+
+describe("git-sync — #3435 finding 2: wiring do lock default de syncCode() nunca era testada end-to-end", () => {
+  it("syncCode(spawn) com 1 único argumento (sem lock explícito) usa o spawn injetado pro resolver do lock default", () => {
+    // Antes deste teste, todos os ~25 call sites de syncCode() nesta suíte
+    // passavam um lock explícito (NOOP_LOCK ou um double custom) — a wiring
+    // real de produção, `lock: SyncLock = createFileLock(undefined, spawn)`,
+    // nunca era exercitada. Um revert futuro dessa wiring (ex: trocar pro
+    // `defaultSpawn` real por engano) não quebraria nenhum teste. Este teste
+    // chama syncCode() com 1 ARGUMENTO SÓ e prova, por 2 sinais independentes,
+    // que o `spawn` injetado foi de fato threadado até o resolver do lock:
+    //   (a) o comando 'git rev-parse --git-common-dir' aparece na lista de
+    //       comandos rodados pelo spawn injetado (nunca apareceria se
+    //       createFileLock tivesse caído pro defaultSpawn real);
+    //   (b) o lock foi criado sob o diretório fake apontado pelo stdout mockado
+    //       (tmpGitDir), não sob REPO_ROOT real — e foi liberado ao final.
+    const tmpGitDir = fs.mkdtempSync(join(tmpdir(), "diaria-sync-default-lock-test-"));
+    const gitCommandsRun: string[] = [];
+    const spawn: SpawnFn = (cmd, args) => {
+      const key = [cmd, ...args].join(" ");
+      gitCommandsRun.push(key);
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("master"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(""),
+        "git merge --ff-only origin/master": ok("Already up to date."),
+        "git rev-parse --path-format=absolute --git-common-dir": ok(tmpGitDir),
+      })(cmd, args);
+    };
+
+    try {
+      const r = syncCode(spawn);
+
+      assert.equal(r.outcome, "already_up_to_date");
+      assert.ok(
+        gitCommandsRun.includes("git rev-parse --path-format=absolute --git-common-dir"),
+        `o resolver do lock default deveria ter usado o spawn INJETADO (via createFileLock(undefined, spawn)) ` +
+          `— comandos rodados pelo spawn injetado: ${JSON.stringify(gitCommandsRun)}`,
+      );
+
+      const expectedLockPath = resolve(tmpGitDir, "diaria-sync.lock");
+      assert.equal(
+        fs.existsSync(expectedLockPath),
+        false,
+        "o lock resolvido a partir do spawn injetado deveria ter sido criado E liberado (release() no finally) — " +
+          "se ainda existir, ou a wiring do spawn está errada, ou o lock não foi liberado",
+      );
+    } finally {
+      fs.rmSync(tmpGitDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("git-sync — #3435 finding 6: MAX_SEQUENTIAL_GIT_SPAWNS reflete a contagem REAL de spawn(...) em syncCodeLocked()", () => {
+  it("pior caso documentado (branch != master, dirty tree, stash/merge/pop bem-sucedidos) roda EXATAMENTE MAX_SEQUENTIAL_GIT_SPAWNS spawns", () => {
+    // Regressão-alvo: um 9º spawn futuro em syncCodeLocked() sem atualizar
+    // MAX_SEQUENTIAL_GIT_SPAWNS sub-dimensionaria LOCK_STALE_MS silenciosamente
+    // de novo (a mesma classe de bug do #3430 gap 1, mas dessa vez indetectável
+    // até agora — a contagem de 8 era só um comentário, nunca verificada).
+    // Cenário: exatamente o caminho descrito no comentário de
+    // MAX_SEQUENTIAL_GIT_SPAWNS — rev-parse HEAD(1) + checkout master(1) +
+    // fetch(1) + status(1) + rev-parse verify refs/stash ANTES(1) +
+    // stash --include-untracked(1) + merge --ff-only(1) + stash pop(1) = 8.
+    let spawnCallCount = 0;
+    const spawn: SpawnFn = (cmd, args) => {
+      spawnCallCount++;
+      return makeSpawn({
+        "git rev-parse --abbrev-ref HEAD": ok("overnight/fix-x"),
+        "git checkout master": ok("Switched to branch 'master'"),
+        "git fetch origin": ok(""),
+        "git status --porcelain": ok(" M arquivo.txt"),
+        "git rev-parse --verify refs/stash": ok(""),
+        "git stash --include-untracked": ok("Saved working directory..."),
+        "git merge --ff-only origin/master": ok("Fast-forward\n 1 file changed"),
+        "git stash pop": ok("On branch master..."),
+      })(cmd, args);
+    };
+
+    const r = syncCode(spawn, NOOP_LOCK);
+
+    assert.equal(
+      r.outcome,
+      "synced_stashed",
+      "pré-condição: precisa ser exatamente o caminho dirty+branch-switch+stash+merge+pop bem-sucedido documentado em MAX_SEQUENTIAL_GIT_SPAWNS",
+    );
+    assert.equal(
+      spawnCallCount,
+      MAX_SEQUENTIAL_GIT_SPAWNS,
+      `syncCodeLocked() rodou ${spawnCallCount} spawns git no pior caso documentado, mas MAX_SEQUENTIAL_GIT_SPAWNS = ${MAX_SEQUENTIAL_GIT_SPAWNS} — ` +
+        `se este número divergiu, LOCK_STALE_MS (derivado de MAX_SEQUENTIAL_GIT_SPAWNS × GIT_TIMEOUT_MS) pode estar ` +
+        `sub-dimensionado de novo (#3430 gap 1) — atualize a constante E o comentário que documenta a contagem em scripts/lib/git-sync.ts.`,
+    );
+  });
 });
