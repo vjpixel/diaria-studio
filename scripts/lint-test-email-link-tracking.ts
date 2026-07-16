@@ -20,6 +20,21 @@
  *      (diaria.beehiiv.com/cursos|livros, tecnoblog)
  *    - `merge_tag`: URL com `{{email}}`/`{{poll_sig}}` — Beehiiv expande no envio
  *    - `non_http`/`tel_mailto`: protocolos não-http
+ *    - Artefatos conhecidos de test-send (#3480/#3481/#3482, post-mortem 260716)
+ *      — classificados via `classifyKnownArtifact`, sempre `skipped[]` (nunca
+ *      `issues[]`), com `note` explicando o motivo:
+ *      - `amazon_bot_block` (#3480): domínios Amazon retornam 404 (não
+ *        401/403) pra HEAD de user-agent não-navegador — página existe pra
+ *        humanos, não é link morto.
+ *      - `font_degradation` (#3482): fonts.gstatic.com/fonts.googleapis.com
+ *        podem retornar 404 em contexto de test send — degrada pra fallback
+ *        de fonte do sistema, cosmético, não bloqueante.
+ *      - `beehiiv_footer_artifact` (#3481): link de preferences/unsubscribe
+ *        no rodapé Beehiiv (boilerplate injetado, fora do htmlSnippet, #1944)
+ *        — carrega token de assinante que não resolve em test send (sem
+ *        subscription real).
+ *      A allowlist é por domínio/padrão específico — links REALMENTE
+ *      quebrados fora dessas classes continuam `link_dead` blocker.
  *
  * Uso:
  *   npx tsx scripts/lint-test-email-link-tracking.ts \
@@ -53,12 +68,25 @@ export interface LinkIssue {
 export interface LinkSkip {
   /** #1949: `merge_tag` = URL com `{{email}}` (vote URL, #1186 modo merge-tag) —
    * Beehiiv expande no envio, não dá pra HEAD; `bot_blocked` = 401/403 (página
-   * existe pra humanos, bloqueia bot — ex: diaria.beehiiv.com/cursos, tecnoblog). */
+   * existe pra humanos, bloqueia bot — ex: diaria.beehiiv.com/cursos, tecnoblog).
+   * #3480/#3481/#3482: `amazon_bot_block`/`font_degradation`/
+   * `beehiiv_footer_artifact` são artefatos conhecidos de test-send —
+   * classificados via `classifyKnownArtifact` ANTES de tentar HEAD. */
   url: string;
-  reason: "auth_required" | "non_http" | "tel_mailto" | "merge_tag" | "bot_blocked";
+  reason:
+    | "auth_required"
+    | "non_http"
+    | "tel_mailto"
+    | "merge_tag"
+    | "bot_blocked"
+    | "amazon_bot_block"
+    | "font_degradation"
+    | "beehiiv_footer_artifact";
   domain?: string;
   /** Status HTTP quando bot_blocked. */
   status?: number;
+  /** Explicação do porquê é um artefato conhecido (#3480/#3481/#3482). */
+  note?: string;
 }
 
 export interface LinkTrackingResult {
@@ -157,6 +185,80 @@ export function categorizeUrl(url: string): "non_http" | "auth_required" | "merg
   return null;
 }
 
+// #3480: hostnames onde Amazon retorna 404 (não 401/403) pra HEAD de bot —
+// bot-block "silencioso", a página existe normalmente pra humanos.
+const AMAZON_DOMAINS = new Set([
+  "amazon.com",
+  "www.amazon.com",
+  "amazon.com.br",
+  "www.amazon.com.br",
+  "amzn.to",
+  "www.amzn.to",
+]);
+
+// #3482: hosts de Google Fonts — 404 em test send degrada pra fallback
+// gracioso de fonte do sistema, cosmético, não bloqueante.
+const FONT_DOMAINS = new Set(["fonts.gstatic.com", "fonts.googleapis.com"]);
+
+export interface KnownArtifact {
+  reason: "amazon_bot_block" | "font_degradation" | "beehiiv_footer_artifact";
+  note: string;
+}
+
+/**
+ * Classifica artefatos conhecidos de test-send (#3480/#3481/#3482,
+ * post-mortem edição 260716) — ANTES de tentar HEAD, pra não gastar rede
+ * numa checagem que sabidamente não é confiável pra essas classes de URL.
+ *
+ * Roda em duas fases:
+ * 1. Pattern na URL CRUA (pré-parse) — cobre #3481, onde a URL do
+ *    footer/preferences do Beehiiv pode vir malformada (token de assinante
+ *    não resolve em test send) e `new URL()` lançaria antes de chegar em
+ *    qualquer checagem por hostname.
+ * 2. Domínio (pós-parse) — cobre #3480 (Amazon) e #3482 (Google Fonts).
+ *
+ * Links REALMENTE quebrados fora dessas classes (domínio/padrão específico)
+ * NÃO são afetados — continuam indo pro HEAD normal e viram `link_dead` se
+ * de fato retornarem 4xx/5xx.
+ */
+export function classifyKnownArtifact(rawUrl: string): KnownArtifact | null {
+  const lower = rawUrl.toLowerCase();
+
+  // #3481 — link de preferences/unsubscribe no rodapé Beehiiv (boilerplate
+  // injetado, fora do htmlSnippet, #1944). Em test send não há subscription
+  // real, então o token do link não resolve — href malformado é esperado,
+  // não um link quebrado de fato.
+  if (lower.includes("beehiiv") && /unsubscribe|preferences?/.test(lower)) {
+    return {
+      reason: "beehiiv_footer_artifact",
+      note: "link de preferences/unsubscribe do rodapé Beehiiv não resolve em test send (sem subscription real) — artefato esperado, ver #3481",
+    };
+  }
+
+  let hostname: string;
+  try {
+    hostname = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+
+  if (AMAZON_DOMAINS.has(hostname) || hostname.endsWith(".amazon.com") || hostname.endsWith(".amazon.com.br")) {
+    return {
+      reason: "amazon_bot_block",
+      note: "Amazon bloqueia HEAD de user-agent não-navegador com 404 — página existe normalmente pra humanos, ver #3480",
+    };
+  }
+
+  if (FONT_DOMAINS.has(hostname)) {
+    return {
+      reason: "font_degradation",
+      note: "Google Fonts pode retornar 404 em test send — degrada pra fallback de fonte do sistema, cosmético, ver #3482",
+    };
+  }
+
+  return null;
+}
+
 interface HeadResult {
   status: number | null;
   hops: number;
@@ -225,6 +327,16 @@ export async function checkLinkTracking(
     const decoded = decodeRedirectWrapper(raw);
     if (seen.has(decoded)) continue;
     seen.add(decoded);
+
+    // #3480/#3481/#3482: checa artefatos conhecidos de test-send ANTES do
+    // HEAD — tanto na URL crua (pega #3481, que pode nem parsear) quanto na
+    // decodada (pega #3480/#3482 atrás de wrappers de tracking/proxy).
+    const artifact = classifyKnownArtifact(raw) ?? classifyKnownArtifact(decoded);
+    if (artifact) {
+      skipped.push({ url: decoded, reason: artifact.reason, note: artifact.note });
+      continue;
+    }
+
     const cat = categorizeUrl(decoded);
     if (cat === "non_http") {
       skipped.push({ url: decoded, reason: decoded.startsWith("mailto:") ? "tel_mailto" : "non_http" });

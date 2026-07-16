@@ -146,8 +146,13 @@ O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor ve
 > 3. **403/401 = bot-block aceitável** (página existe pra humanos): `cursos`/
 >    `livros` no `diaria.beehiiv.com`, tecnoblog etc. NÃO é link morto.
 > 4. **Timeout de link = warning, nunca blocker** (transiente).
+> 5. **Artefatos conhecidos de test-send (#3480/#3481/#3482)**: link Amazon
+>    404 (bot-block, não link morto), `fonts.gstatic.com`/`fonts.googleapis.com`
+>    404 (degradação cosmética de fonte) e link de preferences/unsubscribe do
+>    rodapé Beehiiv malformado (token de assinante não resolve sem
+>    subscription real). NENHUM dos três é problema real — não reportar.
 >
-> O lint determinístico (passos 8-9, 17) já trata 1/3/4 — **prefira o CLI** a
+> O lint determinístico (passos 8-9, 17) já trata 1/3/4/5 — **prefira o CLI** a
 > julgar à mão.
 
 ### 3. Checklist de verificacao
@@ -340,13 +345,32 @@ Mapear `issues[]` pra strings do output do agent **respeitando o severity**:
 - `type:link_redirect_chain_long` (blocker) → `"email:link_redirect_chain_long: {url} → {hops} hops"` (blocker)
 - `type:link_timeout` (severity:**warning**, #1949) → `"info:link_timeout: {url} (>5s, transiente)"` — **WARNING, nunca blocker**. Timeout é transiente (host lento pontual, ex: anthropic.com); não derruba o fix loop.
 
-`skipped[]` (auth_required + non_http + **bot_blocked** + **merge_tag**, #1949) ficam no
-JSON pra debug mas **NÃO viram issue**:
+`skipped[]` (auth_required + non_http + **bot_blocked** + **merge_tag** +
+artefatos conhecidos de test-send, #1949/#3480/#3481/#3482) ficam no JSON pra
+debug mas **NÃO viram issue**:
 - **`bot_blocked` (401/403)**: a página existe pra humanos, só bloqueia HEAD de
   bot (diaria.beehiiv.com/cursos|livros, tecnoblog). **NÃO é link morto** — não
   reportar.
 - **`merge_tag`**: URL com `{{email}}` (vote URL do É IA?, #1186 modo merge-tag) —
   o Beehiiv expande no ENVIO. **NÃO é link quebrado** — não reportar.
+- **`amazon_bot_block` (#3480)**: domínios Amazon (amazon.com, amazon.com.br,
+  amzn.to) retornam **404** (não 401/403) pra HEAD de user-agent não-navegador
+  — bot-block "silencioso". Página existe normalmente pra humanos. **NÃO é
+  link morto** — não reportar (nem tentar HEAD nesses domínios).
+- **`font_degradation` (#3482)**: `fonts.gstatic.com`/`fonts.googleapis.com`
+  podem retornar 404 em contexto de test send. Degrada pra fallback de fonte
+  do sistema — **cosmético, não bloqueante**. Não reportar.
+- **`beehiiv_footer_artifact` (#3481)**: link de preferences/unsubscribe no
+  rodapé Beehiiv (boilerplate injetado pela plataforma, fora do htmlSnippet,
+  #1944) carrega token de assinante que não resolve em test send (sem
+  subscription real) — pode vir malformado. **Artefato esperado de test
+  send** — não reportar, mesmo que o href pareça quebrado/malformado.
+
+Essas 3 últimas classes são detectadas deterministicamente por
+`classifyKnownArtifact()` em `scripts/lint-test-email-link-tracking.ts` —
+allowlist por domínio/padrão específico. Links REALMENTE quebrados fora
+dessas classes continuam `link_dead` blocker normalmente — a allowlist não
+mascara problemas reais.
 
 Decoda Gmail Image Proxy (`google.com/url?q=...`) e respeita whitelist de
 domínios que retornam 4xx pra bots (linkedin/facebook). Concurrency 5

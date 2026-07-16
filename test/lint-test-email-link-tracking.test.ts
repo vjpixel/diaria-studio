@@ -5,6 +5,7 @@ import {
   decodeRedirectWrapper,
   categorizeUrl,
   checkLinkTracking,
+  classifyKnownArtifact,
 } from "../scripts/lint-test-email-link-tracking.ts";
 
 describe("extractEmailUrls (#1248)", () => {
@@ -187,5 +188,106 @@ describe("#1949 — cortar falso-positivos (merge tags, 403 bot-block, timeout w
     assert.equal(r.issues[0].severity, "warning");
     // nenhum blocker → exit deveria ser 0 (validado via filtro de severity)
     assert.equal(r.issues.filter((i) => i.severity === "blocker").length, 0);
+  });
+});
+
+describe("classifyKnownArtifact (#3480/#3481/#3482 — post-mortem 260716)", () => {
+  it("#3480: domínio Amazon → amazon_bot_block", () => {
+    const r1 = classifyKnownArtifact("https://www.amazon.com.br/dp/B0ABCDEF12");
+    assert.equal(r1?.reason, "amazon_bot_block");
+    const r2 = classifyKnownArtifact("https://amazon.com/dp/B0ABCDEF12");
+    assert.equal(r2?.reason, "amazon_bot_block");
+    const r3 = classifyKnownArtifact("https://amzn.to/3xYzAbC");
+    assert.equal(r3?.reason, "amazon_bot_block");
+  });
+
+  it("#3482: fonts.gstatic.com / fonts.googleapis.com → font_degradation", () => {
+    const r1 = classifyKnownArtifact("https://fonts.gstatic.com/s/inter/v13/abc.woff2");
+    assert.equal(r1?.reason, "font_degradation");
+    const r2 = classifyKnownArtifact("https://fonts.googleapis.com/css2?family=Inter");
+    assert.equal(r2?.reason, "font_degradation");
+  });
+
+  it("#3481: link preferences/unsubscribe do footer Beehiiv → beehiiv_footer_artifact (mesmo malformado)", () => {
+    const r1 = classifyKnownArtifact("https://diaria.beehiiv.com/unsubscribe?token=");
+    assert.equal(r1?.reason, "beehiiv_footer_artifact");
+    // URL malformada (não parseável) que ainda contém o padrão — checagem
+    // roda no raw string ANTES do new URL(), então não precisa ser válida.
+    const r2 = classifyKnownArtifact("beehiiv preferences ??? not-a-real-url");
+    assert.equal(r2?.reason, "beehiiv_footer_artifact");
+  });
+
+  it("link normal (não artefato conhecido) → null", () => {
+    assert.equal(classifyKnownArtifact("https://example.com/article"), null);
+    assert.equal(classifyKnownArtifact("https://dead.example.com"), null);
+  });
+});
+
+describe("checkLinkTracking — allowlist de artefatos de test-send não mascara link real quebrado", () => {
+  it("#3480: Amazon 404 vira known-artifact (skipped), não error — sem HEAD", async () => {
+    const html = '<a href="https://www.amazon.com.br/dp/B0XYZ">produto</a>';
+    let called = false;
+    const fetchStub = (): Promise<Response> => {
+      called = true;
+      return Promise.resolve(new Response(null, { status: 404 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(called, false, "não faz HEAD em domínio Amazon — bot-block conhecido");
+    assert.equal(r.issues.length, 0);
+    const skip = r.skipped.find((s) => s.reason === "amazon_bot_block");
+    assert.ok(skip, "deve aparecer em skipped[] com reason amazon_bot_block");
+    assert.ok(skip?.note, "deve ter note explicando o motivo");
+  });
+
+  it("#3482: gstatic font 404 vira known-artifact (skipped), não error", async () => {
+    const html = '<link href="https://fonts.gstatic.com/s/inter/v13/abc.woff2">';
+    let called = false;
+    const fetchStub = (): Promise<Response> => {
+      called = true;
+      return Promise.resolve(new Response(null, { status: 404 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(called, false);
+    assert.equal(r.issues.length, 0);
+    const skip = r.skipped.find((s) => s.reason === "font_degradation");
+    assert.ok(skip);
+  });
+
+  it("#3481: preferences link malformado do footer Beehiiv vira known-artifact, não error", async () => {
+    const html = '<a href="https://diaria.beehiiv.com/unsubscribe?e=%7B%7Bsubscriber%7D%7D&broken=true">preferências</a>';
+    let called = false;
+    const fetchStub = (): Promise<Response> => {
+      called = true;
+      return Promise.resolve(new Response(null, { status: 404 }));
+    };
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(called, false);
+    assert.equal(r.issues.length, 0);
+    const skip = r.skipped.find((s) => s.reason === "beehiiv_footer_artifact");
+    assert.ok(skip);
+  });
+
+  it("link REALMENTE quebrado (fora da allowlist) continua link_dead — não mascarado", async () => {
+    const html = '<a href="https://some-random-news-site.example.com/article-404">artigo</a>';
+    const fetchStub = (): Promise<Response> => Promise.resolve(new Response(null, { status: 404 }));
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 1);
+    assert.equal(r.issues[0].type, "link_dead");
+    assert.equal(r.issues[0].severity, "blocker");
+    assert.equal(r.skipped.length, 0);
+  });
+
+  it("mix: Amazon + gstatic + link real quebrado na mesma checagem — só o real vira issue", async () => {
+    const html = `
+      <a href="https://www.amazon.com.br/dp/B0XYZ">produto</a>
+      <link href="https://fonts.gstatic.com/s/inter/v13/abc.woff2">
+      <a href="https://real-dead-link.example.com/gone">morto de verdade</a>
+    `;
+    const fetchStub = (): Promise<Response> => Promise.resolve(new Response(null, { status: 404 }));
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 1, "só o link real quebrado vira issue");
+    assert.equal(r.issues[0].url, "https://real-dead-link.example.com/gone");
+    assert.equal(r.skipped.filter((s) => s.reason === "amazon_bot_block").length, 1);
+    assert.equal(r.skipped.filter((s) => s.reason === "font_degradation").length, 1);
   });
 });
