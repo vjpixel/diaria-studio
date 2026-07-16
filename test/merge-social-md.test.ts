@@ -11,6 +11,9 @@ import { join } from "node:path";
 import {
   stripHtmlComments,
   stripLeadingPlatformHeader,
+  extractEiaCreditLine,
+  buildEiaSocialSection,
+  insertEiaSection,
 } from "../scripts/merge-social-md.ts";
 import {
   lintPlatformHeadersUnique,
@@ -549,5 +552,234 @@ describe("merge-social-md CLI", () => {
         rmSync(dir, { recursive: true });
       }
     });
+  });
+});
+
+// ── #3471: seção "## eia" (posto social do "É IA?" pra publicação manual) ──
+
+// Réplica minimal do formato real gerado por `eia-compose.ts` `buildEiaMd`
+// (ver scripts/eia-compose.ts) — frontmatter com o GABARITO (eia_answer),
+// header em negrito, linha de crédito.
+const REAL_EIA_MD = `---
+eia_answer:
+  A: real
+  B: ia
+---
+
+**É IA?**
+
+[Landsort](https://pt.wikipedia.org/wiki/Landsort) é um farol na Suécia — [Tisha Mukherjee](https://commons.wikimedia.org/wiki/User:Tisha) / [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0).
+
+Resultado da última edição: 62% das pessoas acertaram.
+`;
+
+describe("extractEiaCreditLine (#3471)", () => {
+  it("extrai a linha de crédito (1ª linha não-vazia após o header **É IA?**)", () => {
+    const line = extractEiaCreditLine(REAL_EIA_MD);
+    assert.equal(
+      line,
+      "[Landsort](https://pt.wikipedia.org/wiki/Landsort) é um farol na Suécia — [Tisha Mukherjee](https://commons.wikimedia.org/wiki/User:Tisha) / [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0).",
+    );
+  });
+
+  it("NUNCA retorna conteúdo do frontmatter — gabarito (eia_answer/real/ia) não vaza", () => {
+    const line = extractEiaCreditLine(REAL_EIA_MD);
+    assert.ok(line);
+    assert.ok(!line!.includes("eia_answer"));
+    assert.ok(!/^\s*A:\s*(real|ia)/i.test(line!));
+  });
+
+  it("ignora a linha 'Resultado da última edição' opcional — pega só o crédito", () => {
+    const line = extractEiaCreditLine(REAL_EIA_MD);
+    assert.ok(!line!.includes("Resultado da última edição"));
+  });
+
+  it("sem o header '**É IA?**' → retorna null (formato inesperado)", () => {
+    const malformed = "---\neia_answer:\n  A: real\n  B: ia\n---\n\nsem header aqui\n";
+    assert.equal(extractEiaCreditLine(malformed), null);
+  });
+
+  it("sem frontmatter mas com header → ainda extrai a linha de crédito", () => {
+    const noFrontmatter = "**É IA?**\n\nUma foto qualquer — Autor / CC BY-SA 4.0.\n";
+    assert.equal(extractEiaCreditLine(noFrontmatter), "Uma foto qualquer — Autor / CC BY-SA 4.0.");
+  });
+
+  it("CRLF (arquivo vindo do Drive/Windows) → extrai normalmente", () => {
+    const crlf = REAL_EIA_MD.replace(/\n/g, "\r\n");
+    const line = extractEiaCreditLine(crlf);
+    assert.ok(line?.startsWith("[Landsort]"));
+  });
+
+  it("arquivo vazio → retorna null", () => {
+    assert.equal(extractEiaCreditLine(""), null);
+  });
+});
+
+describe("buildEiaSocialSection (#3471)", () => {
+  it("gera seção '## eia' copy-paste-ready referenciando as imagens A/B", () => {
+    const section = buildEiaSocialSection("Crédito de teste — Autor / CC BY-SA 4.0.");
+    assert.ok(section.startsWith("## eia\n\n"));
+    assert.ok(section.includes("01-eia-A.jpg"));
+    assert.ok(section.includes("01-eia-B.jpg"));
+    assert.ok(section.includes("Crédito de teste — Autor / CC BY-SA 4.0."));
+  });
+
+  it("NUNCA menciona o gabarito (eia_answer, 'A: real', 'B: ia')", () => {
+    const section = buildEiaSocialSection("Crédito de teste — Autor / CC BY-SA 4.0.");
+    assert.ok(!section.includes("eia_answer"));
+    assert.ok(!/\bA:\s*(real|ia)\b/i.test(section));
+    assert.ok(!/\bB:\s*(real|ia)\b/i.test(section));
+  });
+
+  it("não termina em pergunta (mesmo padrão editorial dos posts de destaque)", () => {
+    const section = buildEiaSocialSection("Crédito.");
+    const trimmed = section.trim();
+    assert.ok(!trimmed.endsWith("?"), `não deveria terminar com '?': ...${trimmed.slice(-40)}`);
+  });
+
+  it("sem referências temporais relativas (#747 — hoje/ontem/agora/esta semana)", () => {
+    const section = buildEiaSocialSection("Crédito.");
+    assert.ok(!/\b(hoje|ontem|agora|esta semana|recentemente|acabou de)\b/i.test(section));
+  });
+});
+
+describe("insertEiaSection (#3471)", () => {
+  it("com '## post_pixel' presente → insere IMEDIATAMENTE antes dele (ordem pedida pelo editor)", () => {
+    const linkedinBody =
+      "## d1\n\nMain d1\n\n## d2\n\nMain d2\n\n## d3\n\nMain d3\n\n## post_pixel\n\nPost pessoal do Pixel\n";
+    const eiaSection = "## eia\n\nConteúdo do É IA?\n";
+    const out = insertEiaSection(linkedinBody, eiaSection);
+
+    const idxD3 = out.indexOf("## d3");
+    const idxEia = out.indexOf("## eia");
+    const idxPostPixel = out.indexOf("## post_pixel");
+    assert.ok(idxD3 < idxEia, "## eia deve vir depois de ## d3");
+    assert.ok(idxEia < idxPostPixel, "## eia deve vir antes de ## post_pixel");
+    assert.ok(out.includes("Conteúdo do É IA?"));
+    assert.ok(out.includes("Post pessoal do Pixel"));
+  });
+
+  it("sem '## post_pixel' → acrescenta a seção ao final (nunca descarta o bloco)", () => {
+    const linkedinBody = "## d1\n\nMain d1\n\n## d2\n\nMain d2\n";
+    const eiaSection = "## eia\n\nConteúdo do É IA?\n";
+    const out = insertEiaSection(linkedinBody, eiaSection);
+    assert.ok(out.trim().endsWith("Conteúdo do É IA?"));
+  });
+});
+
+describe("merge-social-md CLI — seção '## eia' (#3471)", () => {
+  it("01-eia.md presente na raiz da edição → '## eia' aparece no LinkedIn, entre destaques e post_pixel", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "## d1\n\nMain d1\n\n## d2\n\nMain d2\n\n## d3\n\nMain d3\n\n## post_pixel\n\n<!-- destaque: d1 -->\n\nPost pessoal do Pixel\n",
+      );
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "## d1\n\nFacebook d1 content\n",
+      );
+      writeFileSync(join(dir, "01-eia.md"), REAL_EIA_MD);
+
+      const r = runScript(dir);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.ok(r.stderr.includes("seção '## eia' incluída"));
+
+      const out = readFileSync(join(dir, "03-social.md"), "utf8");
+      const liSection = extractPlatformSection(out, "linkedin");
+      assert.ok(liSection);
+
+      const idxD3 = liSection!.indexOf("## d3");
+      const idxEia = liSection!.indexOf("## eia");
+      const idxPostPixel = liSection!.indexOf("## post_pixel");
+      assert.ok(idxD3 >= 0 && idxEia > idxD3, "## eia deve vir depois de ## d3");
+      assert.ok(idxPostPixel > idxEia, "## eia deve vir antes de ## post_pixel");
+
+      assert.ok(out.includes("01-eia-A.jpg"));
+      assert.ok(out.includes("01-eia-B.jpg"));
+      assert.ok(out.includes("Landsort"));
+
+      // Gabarito NUNCA vaza pro social.md publicável.
+      assert.ok(!out.includes("eia_answer"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("01-eia.md AUSENTE → merge sucede sem '## eia' (comportamento pré-#3471 preservado)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "## d1\n\nMain d1\n\n## post_pixel\n\nPost pessoal do Pixel\n",
+      );
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "## d1\n\nFacebook d1 content\n",
+      );
+      // Nenhum 01-eia.md gravado — simula edição sem É IA? (skip, ou ainda processando).
+
+      const r = runScript(dir);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.ok(r.stderr.includes("01-eia.md ausente"));
+
+      const out = readFileSync(join(dir, "03-social.md"), "utf8");
+      assert.ok(!out.includes("## eia"));
+      // Resto do merge não regride.
+      assert.ok(out.includes("Post pessoal do Pixel"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("01-eia.md malformado (sem header '**É IA?**') → warn no stderr, merge sucede sem '## eia' (não é FATAL)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "## d1\n\nMain d1\n\n## post_pixel\n\nPost pessoal\n",
+      );
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "## d1\n\nFacebook d1 content\n",
+      );
+      writeFileSync(join(dir, "01-eia.md"), "---\neia_answer:\n  A: real\n  B: ia\n---\n\nformato inesperado sem header\n");
+
+      const r = runScript(dir);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.ok(r.stderr.includes("formato inesperado"));
+
+      const out = readFileSync(join(dir, "03-social.md"), "utf8");
+      assert.ok(!out.includes("## eia"));
+      assert.ok(!out.includes("eia_answer"));
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("01-eia.md presente → lintPlatformHeadersUnique + lintInstagramEmailCTA/Facebook continuam OK (sem regressão nos outros lints)", () => {
+    const dir = makeEditionDir();
+    try {
+      writeFileSync(
+        join(dir, "_internal", "03-linkedin.tmp.md"),
+        "## d1\n\nMain d1\n\n### comment_diaria\n\nEdição completa com mais {outros_count} destaques em {edition_url}\n\nSiga a diar.ia.br no LinkedIn em linkedin.com/company/diar.ia.br\n\n### comment_pixel\n\nOpinião do Pixel sobre d1.\n\n## post_pixel\n\n{outros_count} novidades em {edition_url}. Post pessoal do Pixel sobre d1.\n\nSiga a diar.ia.br em linkedin.com/company/diar.ia.br\n",
+      );
+      writeFileSync(
+        join(dir, "_internal", "03-facebook.tmp.md"),
+        "## d1\n\nAssine grátis em https://diar.ia.br.\n",
+      );
+      writeFileSync(join(dir, "01-eia.md"), REAL_EIA_MD);
+
+      const r = runScript(dir);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+
+      const out = readFileSync(join(dir, "03-social.md"), "utf8");
+      assert.equal(lintPlatformHeadersUnique(out).ok, true);
+
+      const fbSection = extractPlatformSection(out, "facebook");
+      assert.equal(lintFacebookCTAs(fbSection!).length, 0);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
   });
 });
