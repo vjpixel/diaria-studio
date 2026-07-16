@@ -201,25 +201,40 @@ describe("log-runtime-fix CLI (#1210)", () => {
     assert.match(r.stderr, /severity inválida/);
   });
 
+  // #3496: passa --editions-dir apontando pra um tmpdir vazio — sem a flag,
+  // pós-#3484 este teste resolve via resolveEditionDir() → enumerateEditionDirs(),
+  // que faz readdirSync da árvore REAL de data/editions (junction OneDrive
+  // nesta máquina). Isolamento explícito, mesmo padrão dos outros casos deste
+  // arquivo (nunca tocar data/editions/ real fora de teste). A edição
+  // "999999" não existe em nenhum layout dentro do tmpdir vazio → resolve pro
+  // path nested default → existsSync false → exit 2, agora por isolamento e
+  // não por acidente de nomenclatura.
   it("rejeita edition dir ausente", () => {
-    const r = runCli([
-      "--edition", "999999",
-      "--stage", "1",
-      "--fix-type", "format",
-      "--component", "writer",
-      "--description", "test",
-    ]);
-    assert.equal(r.status, 2);
-    assert.match(r.stderr, /não existe/);
+    const dir = mkdtempSync(join(tmpdir(), "runtime-fix-missing-"));
+    try {
+      const r = runCli([
+        "--edition", "999999",
+        "--stage", "1",
+        "--fix-type", "format",
+        "--component", "writer",
+        "--description", "test",
+        "--editions-dir", dir,
+      ]);
+      assert.equal(r.status, 2);
+      assert.match(r.stderr, /não existe/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   // #3484: editionDir era montado à mão como `data/editions/{AAMMDD}` (flat)
   // sem passar pelo helper de resolução de path — qualquer edição já
   // migrada pro layout nested (`{AAMM}/{AAMMDD}`, #2463/#3024) causava ENOENT
   // ("Edition dir não existe") mesmo com a edição presente no disco.
-  // `--editions-root` isola o teste do `data/editions/` real (junction
-  // OneDrive) — nunca aponta pro repo de verdade.
-  it("resolve edição no layout NESTED via --editions-root, sem ENOENT (#3484)", () => {
+  // `--editions-dir` (renomeado de `--editions-root` em #3496) isola o teste
+  // do `data/editions/` real (junction OneDrive) — nunca aponta pro repo de
+  // verdade.
+  it("resolve edição no layout NESTED via --editions-dir, sem ENOENT (#3484)", () => {
     const dir = mkdtempSync(join(tmpdir(), "runtime-fix-nested-"));
     try {
       const nestedEditionDir = join(dir, "2605", "260517");
@@ -230,7 +245,7 @@ describe("log-runtime-fix CLI (#1210)", () => {
         "--fix-type", "format",
         "--component", "writer",
         "--description", "test nested layout",
-        "--editions-root", dir,
+        "--editions-dir", dir,
       ]);
       assert.equal(r.status, 0, r.stderr);
       const outPath = join(nestedEditionDir, "_internal", "runtime-fixes.jsonl");
@@ -242,7 +257,7 @@ describe("log-runtime-fix CLI (#1210)", () => {
     }
   });
 
-  it("resolve edição no layout FLAT legado via --editions-root (regressão)", () => {
+  it("resolve edição no layout FLAT legado via --editions-dir (regressão)", () => {
     const dir = mkdtempSync(join(tmpdir(), "runtime-fix-flat-"));
     try {
       const flatEditionDir = join(dir, "260421");
@@ -253,7 +268,7 @@ describe("log-runtime-fix CLI (#1210)", () => {
         "--fix-type", "format",
         "--component", "writer",
         "--description", "test flat layout",
-        "--editions-root", dir,
+        "--editions-dir", dir,
       ]);
       assert.equal(r.status, 0, r.stderr);
       const outPath = join(flatEditionDir, "_internal", "runtime-fixes.jsonl");
