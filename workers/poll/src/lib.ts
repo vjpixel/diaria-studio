@@ -736,6 +736,49 @@ export function renderStreakSuffix(streak: number | null, brand: Brand): string 
   return ` 🔥 ${streak} ${unit} acertando!`;
 }
 
+// ── Stats pós-voto (#3523) ───────────────────────────────────────────────────
+
+/**
+ * #3523: nº mínimo de votos agregados na edição antes de exibir "X%
+ * acertaram este par" pós-voto — protege contra expor uma amostra minúscula
+ * (ex: o 1º votante de uma edição recém-publicada veria "100%" ou "0%",
+ * estatisticamente sem sentido e potencialmente enganoso/spoiler-adjacent).
+ * Valor sugerido pelo próprio editor na seção "Aceite" da issue #3523.
+ */
+export const MIN_VOTES_FOR_STATS_DISPLAY = 20;
+
+/**
+ * Pure (#3523): sufixo "X% acertaram este par" pra mensagem pós-voto — mesmo
+ * padrão de `renderStreakSuffix` acima (espaço inicial deliberado, caller
+ * concatena direto ao fim da frase de resultado, sem espaço próprio, ver
+ * `handleVote`/vote.ts).
+ *
+ * `stats` aceita um shape estrutural mínimo (`{ total, correct_count }`) em
+ * vez de importar `StatsCounterData` de stats-counter.ts — mantém este
+ * arquivo (lib.ts, #1083: "sem dependência de Cloudflare runtime") livre de
+ * qualquer acoplamento a outro módulo do worker, mesmo que hoje não haja
+ * ciclo real (stats-counter.ts não importa nada).
+ *
+ * Anti-sample-size: `stats === null` (fetch falhou — fail-soft, nunca
+ * bloqueia o voto) OU `total < minVotes` → "" (sem sufixo). O gate
+ * anti-spoiler em si (não revelar % ANTES do voto) é responsabilidade do
+ * caller — `handleVote` só chama esta função quando `correct !== null`
+ * (gabarito já revelado), o mesmo gate que `showImages`/`resultImages` já
+ * usam (ver vote.ts).
+ *
+ * Percentual arredondado com o mesmo critério de `correct_pct` em
+ * `handleStats` (vote.ts) — consistência entre o que `/stats` reporta
+ * publicamente e o que a mensagem pós-voto mostra pro mesmo par.
+ */
+export function renderStatsSuffix(
+  stats: { total: number; correct_count: number } | null,
+  minVotes: number = MIN_VOTES_FOR_STATS_DISPLAY,
+): string {
+  if (!stats || stats.total < minVotes) return "";
+  const pct = Math.round((stats.correct_count / stats.total) * 100);
+  return ` ${pct}% dos jogadores acertaram este par.`;
+}
+
 /**
  * #3118 (item 2): Cache-Control pra período (mês/ano) de leaderboard já
  * FECHADO (passado). Antes era `"public, max-age=2592000, immutable"` (30d +
