@@ -1123,16 +1123,20 @@ export function findMostRecentEditionId(cwd: string): string | null {
  *
  * Função pura testável — não lê disco, não chama git. Toda I/O fica no CLI entrypoint.
  *
- * Precedência (#2255, atualizado #2618, #2803, #3541):
+ * Precedência (#2255, atualizado #2618, #2803, #3541, #3590):
  *   1. Edição EM CURSO (started, não encerrada) → renderEditionBar
  *   2. Sessão /diaria-develop ativa → renderDevelopBar (#2803, só quando sem edição em curso
- *      E não suprimida pelo guard de conclusão do item 2b abaixo)
- *   2b. #3541: develop CONCLUÍDO (todas issues terminais) + overnight MAIS RECENTE e ATIVO
- *      no mesmo dia → o overnight assume o display em vez do develop 100% (guard de
- *      conclusão, mesmo espírito de `mostRecentEditionEncerrada` — ver `isPlanConcluded`).
- *      Develop concluído SEM overnight ativo continua mostrando sua própria barra em 100%.
- *   3. Rodada overnight ativa/encerrada → renderOvernightBar (só quando sem edição nem develop)
- *   4. Edição CONCLUÍDA (todas terminais) + sem develop/overnight → string vazia (#2618: barra some)
+ *      E o develop não está CONCLUÍDO — #3590, ver item 2b)
+ *   2b. #3590 (revisa #3541/#2246 pt3): develop CONCLUÍDO (todas issues terminais) SEMPRE
+ *      cede a barra — independente de haver overnight ATIVO pra assumir. Decisão de produto
+ *      do editor (260716): rodada concluída deve SUMIR (cair pro fallback idle/vazio), não
+ *      travar em 100% pra sempre. Quando há overnight ATIVO no mesmo dia, ele aparece no
+ *      lugar (efeito colateral automático do item 3 abaixo — não precisa de guard dedicado).
+ *   3. Rodada overnight ativa → renderOvernightBar (só quando sem edição em curso, sem
+ *      develop ativo, E o overnight NÃO está concluído — #3590, mesmo espírito do item 2b:
+ *      overnight CONCLUÍDO também cede a barra em vez de travar em 100%).
+ *   4. Edição CONCLUÍDA (todas terminais) + sem develop/overnight ativo → string vazia
+ *      (#2618: barra some)
  *   5. Idle sem edição → renderIdleBar (fallback padrão)
  *
  * #2618: quando a edição mais recente está concluída (todos stages terminais) e não há
@@ -1143,10 +1147,19 @@ export function findMostRecentEditionId(cwd: string): string | null {
  * INCONDICIONALMENTE (`editionBar ? "" : renderDevelopBar(developEntry)`), sem nenhum guard
  * análogo a `mostRecentEditionEncerrada` pra develop CONCLUÍDO. Um develop 100% (todas
  * issues terminais) do mesmo dia sequestrava a barra pra sempre, escondendo um overnight
- * mais recente e genuinamente ativo (achado ao vivo 260716). Fix: `developSuppressed` só é
- * true quando develop concluiu E existe overnight ativo (`overnightIsActive`) pra assumir o
- * display — nos demais casos (develop ativo, ou develop concluído sem overnight ativo) o
- * comportamento pré-#3541 se preserva integralmente.
+ * mais recente e genuinamente ativo (achado ao vivo 260716). Fix original: `developSuppressed`
+ * só era true quando develop concluiu E existia overnight ATIVO pra assumir o display.
+ *
+ * #3590 (follow-up direto do #3541): o próprio `overnightBar` não tinha guard de conclusão
+ * análogo — um overnight CONCLUÍDO (17/17 terminal) ficava congelado em 100% por horas depois
+ * de terminar, igual ao bug original do develop. Além disso, o fix do #3541 só suprimia o
+ * develop concluído quando havia overnight ATIVO pra assumir — um develop concluído SOZINHO
+ * (sem overnight) continuava travado em 100%, o que o editor decidiu (achado ao vivo 260716,
+ * revisando #2246 pt3) que também deveria sumir. Fix: `developSuppressed` agora é
+ * `editionBar !== "" || developConcluded` (sem depender de `overnightIsActive`), e
+ * `overnightBar` ganhou o mesmo guard `isPlanConcluded(plan)` que falta antes. O #3541
+ * continua funcionando por construção: com developBar sempre suprimido quando concluído, um
+ * overnight ativo no mesmo dia aparece normalmente via `overnightBar` (item 3).
  *
  * @param editionDoc       doc da edição EM CURSO (null quando nenhuma ou encerrada)
  * @param plan             plan.json overnight (null quando sem rodada)
@@ -1191,16 +1204,23 @@ export function renderStatusline(
   // concluído SEM overnight ativo continua mostrando sua própria barra em 100% — mesmo
   // comportamento pré-#3541 (#2246 pt3: rodada encerrada fica visível, não some).
   const overnightBarCandidate = renderOvernightBar(plan);
-  const overnightIsActive = overnightBarCandidate !== "" && !isPlanConcluded(plan);
   const developConcluded = isPlanConcluded(developEntry?.plan);
-  const developSuppressed = editionBar !== "" || (developConcluded && overnightIsActive);
+  // #3590: develop CONCLUÍDO sempre cede a barra — independente de haver overnight ATIVO
+  // pra assumir (antes só suprimia com `developConcluded && overnightIsActive`; decisão de
+  // produto do editor 260716 revisa #2246 pt3: rodada concluída deve SUMIR, não travar em
+  // 100%). Isso automaticamente preserva o #3541 (develop concluído cede a overnight ATIVO
+  // no mesmo dia): com developBar sempre suprimido quando concluído, o overnightBar abaixo
+  // decide sozinho — mostra overnightBarCandidate quando o overnight ainda não concluiu.
+  const developSuppressed = editionBar !== "" || developConcluded;
 
   // Source 2 (#2803): sessão /diaria-develop ativa — só quando sem edição em curso e sem
   // ser suprimida pelo guard de conclusão acima.
   const developBar = developSuppressed ? "" : renderDevelopBar(developEntry);
 
-  // Source 3: Rodada overnight — só quando sem edição em curso nem develop ativo.
-  const overnightBar = editionBar || developBar ? "" : overnightBarCandidate;
+  // Source 3: Rodada overnight — só quando sem edição em curso, sem develop ativo, E não
+  // concluída (#3590: mesmo espírito de `mostRecentEditionEncerrada` — overnight CONCLUÍDO
+  // não trava a barra em 100%, cede pro fallback idle/vazio).
+  const overnightBar = editionBar || developBar || isPlanConcluded(plan) ? "" : overnightBarCandidate;
 
   // Source 4: fallback — só entra quando não há editionBar, developBar nem overnightBar.
   // #2618: se a edição mais recente está concluída → barra some (""); senão idle bar (#2255).
