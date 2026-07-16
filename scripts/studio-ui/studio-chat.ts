@@ -266,7 +266,13 @@ export function sdkMessageToChatEvents(msg: SDKMessage): ChatWireEvent[] {
  * stack trace cru na UI. Fail-soft: sempre retorna string, nunca lança. */
 export function describeChatError(e: unknown): string {
   const message = e instanceof Error ? e.message : String(e);
-  if (/ENOENT/.test(message) || /not found|não encontrado/i.test(message)) {
+  // #3556 self-review: o antigo `/not found|não encontrado/i` era amplo
+  // demais e rodava ANTES dos outros checks — um erro de `resume` com
+  // sessionId obsoleto (algo como "session not found") caía aqui e mostrava
+  // "CLI não encontrado", diagnóstico errado. `ENOENT` sozinho (ou o padrão
+  // de spawn falho do Node, "spawn ... ENOENT"/"command not found" de shell)
+  // é o sinal específico de binário ausente — não generalizar por "not found".
+  if (/ENOENT/.test(message) || /spawn\s+\S*claude\S*\s+(ENOENT|failed)/i.test(message)) {
     return "chat indisponível: CLI do Claude Code não encontrado no PATH deste processo. Rode `claude` no terminal uma vez pra confirmar a instalação.";
   }
   if (/authentication|unauthenticated|not logged in|oauth/i.test(message)) {
@@ -274,6 +280,9 @@ export function describeChatError(e: unknown): string {
   }
   if (/rate.?limit/i.test(message)) {
     return "chat indisponível no momento: rate limit da conta Claude atingido. Tente de novo em alguns minutos.";
+  }
+  if (/session.*not found|no session found|resume.*not found/i.test(message)) {
+    return "chat indisponível: a sessão anterior não foi encontrada (pode ter expirado ou sido limpa). Clique em \"nova conversa\" e tente de novo.";
   }
   return `chat indisponível: ${message}`;
 }

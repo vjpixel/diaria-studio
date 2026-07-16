@@ -103,8 +103,18 @@ toggle.addEventListener("click", () => {
   drawer.classList.contains("open") ? closeDrawer() : openDrawer();
 });
 el.close.addEventListener("click", closeDrawer);
+
+// #3556 self-review: limpar só o estado do CLIENTE (sessionId local +
+// localStorage) não bastava — a próxima mensagem, sem `sessionId`, caía no
+// fallback `getSessionId(rootDir)` do SERVER (ver handleApiChat em
+// server.ts) e resumia a MESMA sessão antiga. `pendingReset` é consumido
+// pelo próximo `sendMessage` pra mandar `reset: true` explicitamente, que
+// limpa também o estado em memória do server (`clearSession`).
+let pendingReset = false;
+
 el.reset.addEventListener("click", () => {
   sessionId = null;
+  pendingReset = true;
   try {
     localStorage.removeItem(STORAGE_KEY);
   } catch {
@@ -265,9 +275,16 @@ async function sendMessage(text) {
 
   appendUserMessage(text);
 
+  // Consome o pedido de reset da última clicada em "nova conversa" (ver
+  // listener acima) — precisa viajar explicitamente pro server porque
+  // `sessionId` já está `null` aqui, o que sozinho NÃO limpa o estado em
+  // memória do server (`handleApiChat` cairia em `getSessionId(rootDir)`).
+  const reset = pendingReset;
+  pendingReset = false;
+
   let sawDelta = false;
   await streamChat(
-    { message: text, sessionId: sessionId ?? undefined },
+    { message: text, sessionId: sessionId ?? undefined, reset },
     {
       onEvent(eventName, data) {
         if (eventName === "chat-init") {
@@ -309,8 +326,15 @@ async function sendMessage(text) {
   el.send.disabled = false;
 }
 
+// #3556 self-review: só limpar o textarea quando a mensagem VAI ser
+// realmente enviada — o guard aqui espelha o topo de `sendMessage`
+// (`sending || !text.trim()`) de propósito: antes desta correção, o input
+// era limpo incondicionalmente e um Enter/clique disparado enquanto
+// `sending` já era `true` (turno anterior ainda em voo) descartava o texto
+// digitado em silêncio, sem forma de restaurá-lo depois do early-return.
 el.send.addEventListener("click", () => {
   const text = el.input.value;
+  if (sending || !text.trim()) return;
   el.input.value = "";
   sendMessage(text);
 });

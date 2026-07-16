@@ -247,6 +247,19 @@ describe("describeChatError (#3556) — fail-soft", () => {
     assert.match(msg, /rate limit/);
   });
 
+  it("sessão de resume não encontrada -> mensagem sobre iniciar nova conversa, NÃO sobre CLI ausente", () => {
+    const msg = describeChatError(new Error("session not found for id sess-stale-123"));
+    assert.match(msg, /sessão anterior não foi encontrada/);
+    assert.doesNotMatch(msg, /CLI do Claude Code não encontrado/);
+  });
+
+  it("regressão (#3556 self-review): 'not found' genérico não é mais confundido com CLI ausente", () => {
+    // Antes do fix, qualquer mensagem contendo "not found" (sem ser ENOENT/spawn)
+    // caía no branch de "CLI não encontrado" — diagnóstico errado pro editor.
+    const msg = describeChatError(new Error("resume target not found"));
+    assert.doesNotMatch(msg, /CLI do Claude Code não encontrado/);
+  });
+
   it("erro genérico -> mensagem cai no fallback com a mensagem original embutida", () => {
     const msg = describeChatError(new Error("algo inesperado aconteceu"));
     assert.match(msg, /chat indisponível: algo inesperado aconteceu/);
