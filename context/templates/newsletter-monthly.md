@@ -70,7 +70,7 @@ O fio condutor:
 
 ---
 
-**USE MELHOR DO MÊS**
+**USE MELHOR**
 
 [[Título do tutorial 1](https://url)]
 
@@ -80,7 +80,7 @@ O fio condutor:
 
 ---
 
-**RADAR DO MÊS**
+**RADAR**
 
 [[Título do link 1](https://url)]
 
@@ -94,7 +94,7 @@ O fio condutor:
 
 ---
 
-**É IA? — DESTAQUE DO MÊS**
+**É IA? — DESTAQUE**
 
 [Recap de UM É IA? do mês — preferir a edição cujo poll ficou mais próximo de 50% de acerto
 (mais ambígua para os leitores). Se poll não disponível, escolher a mais visualmente difícil.
@@ -146,7 +146,7 @@ Contados do primeiro parágrafo de prosa até o fim do "O fio condutor:", **excl
 - **Use Melhor**: 3 tutoriais mais clicados do bucket `use_melhor` das edições diárias do mês (#1902). Vem pronto de `## Use Melhor` em `prioritized.md` (selecionado por `monthly-click-sections.ts`). Formato: `Título URL` + descrição de 1–2 frases abaixo.
 - **Radar**: 7 links mais clicados do mês, fora dos já cobertos nos Destaques e no Use Melhor (#1901). Vem pronto de `## Radar` em `prioritized.md`. Formato: `Título URL` + descrição de 1–2 frases abaixo. (Ex-"Outras Notícias", 10 itens por relevância editorial.)
 - **É IA? recap**: preferir a edição com poll mais próximo de 50% de acerto (mais ambígua). Se poll não disponível (ver issue #419), escolher a mais visualmente difícil.
-- **Boxes de divulgação mid-body (colados manualmente entre destaques, isolados por `---` — não auto-inseridos pelo pipeline, decisão do editor 260716):** (a) **recomendação da edição DIÁRIA pra base da Clarice** — fonte única `context/snippets/diaria-recomendacao-clarice.md`. Audiência = base INATIVA da Clarice que JÁ recebe esta mensal; o box recomenda a diária como upgrade de frequência (cadastro no site), NÃO re-anuncia a parceria (que é a própria mensal) nem presume uso ativo da ferramenta Clarice. CTA "Assinar a edição diária" com `utm_source=clarice`; (b) **box livro do mês** — usar `context/snippets/recomendacao-leitura-mensal.md`, que traz o label de seção `**LIVRO DO MÊS**` (kicker próprio, SEM título interno — o render usa `renderClariceBox` com `noSubtitle`) + título do livro em negrito-com-link + 2 parágrafos impessoais (autor / livro). Instância de referência: 2041/Kai-Fu Lee. (O "do mês" segue a família de rubricas da mensal; #3581 propõe removê-lo de todas.) **Não** usar o `livros-divulgacao.md` genérico do diário (kicker "Livros" + imagem promo) nem o `recomendacao-leitura.md` (1ª pessoa, exclusivo do diário). Substituem os boxes improvisados "Um recado rápido da equipe da Clarice" e "LIVROS/Curadoria de livros" da edição 2606-07.
+- **Boxes de divulgação mid-body (colados manualmente entre destaques, isolados por `---` — não auto-inseridos pelo pipeline, decisão do editor 260716):** (a) **recomendação da edição DIÁRIA pra base da Clarice** — fonte única `context/snippets/diaria-recomendacao-clarice.md`. Audiência = base INATIVA da Clarice que JÁ recebe esta mensal; o box recomenda a diária como upgrade de frequência (cadastro no site), NÃO re-anuncia a parceria (que é a própria mensal) nem presume uso ativo da ferramenta Clarice. CTA "Assinar a edição diária" com `utm_source=clarice`; (b) **box livro** — usar `context/snippets/recomendacao-leitura-mensal.md`, que traz o label de seção `**LIVRO**` (kicker próprio, SEM título interno — o render usa `renderClariceBox` com `noSubtitle`) + título do livro em negrito-com-link + 2 parágrafos impessoais (autor / livro). Instância de referência: 2041/Kai-Fu Lee. (#3581 removeu o sufixo "do mês" do kicker — redundante pro leitor; label longo `LIVRO DO MÊS` segue aceito na detecção por back-compat.) **Não** usar o `livros-divulgacao.md` genérico do diário (kicker "Livros" + imagem promo) nem o `recomendacao-leitura.md` (1ª pessoa, exclusivo do diário). Substituem os boxes improvisados "Um recado rápido da equipe da Clarice" e "LIVROS/Curadoria de livros" da edição 2606-07.
 
 ## Diferenças vs template diário (`newsletter.md`)
 

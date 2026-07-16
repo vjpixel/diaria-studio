@@ -9,11 +9,12 @@ pessoal do editor, em 1ª pessoa por design (auto-injetado via stitch-newsletter
 como slot1, platform.config.json). A mensal fala pra base da Clarice com voz
 mais institucional, então precisa da versão impessoal — sem acoplar as duas.
 
-Estrutura na MENSAL (renderiza via label LIVRO DO MÊS em
+Estrutura na MENSAL (renderiza via label LIVRO em
 scripts/lib/mensal/monthly-render.ts → renderClariceBox com noSubtitle):
-  (1) o LABEL de seção `**LIVRO DO MÊS**` — vira o kicker do box "Livro do mês"
-      (não há título/h3 interno; o kicker já nomeia a seção). O "do mês" segue a
-      família de rubricas da mensal; #3581 propõe removê-lo de todas;
+  (1) o LABEL de seção `**LIVRO**` — vira o kicker do box "Livro"
+      (não há título/h3 interno; o kicker já nomeia a seção). #3581 removeu o
+      sufixo "do mês" do kicker (redundante pro leitor); o label longo
+      `LIVRO DO MÊS` segue aceito na detecção por back-compat;
   (2) 1 parágrafo com o título do livro em negrito-com-link + autor(es) —
       `[**Título**](url), de Autor.` (o `**` dentro do link é renderizado como
       <strong>, ver escHtmlWithEmphasis);
@@ -30,7 +31,7 @@ Uso na mensal: o editor cola este bloco (COM o label) numa lacuna entre
 destaques, isolado por `---`. Não é auto-inserido pelo pipeline.
 -->
 
-**LIVRO DO MÊS**
+**LIVRO**
 
 [**2041: Como a inteligência artificial vai mudar sua vida nas próximas décadas**](https://link.amazon/B05FlAaJ7), de Kai-Fu Lee e Chen Qiufan.
 
