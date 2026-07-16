@@ -13,6 +13,10 @@ import { spawnSync } from "node:child_process";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { assertHumanized } from "../assert-humanized.ts";
 import { lintTrailingEditorialHook } from "../../lint-social-md.ts";
+import {
+  checkUseMelhorBeginnerMinimum,
+  type BeginnerMinimumItem,
+} from "../lint-checks/use-melhor-beginner-minimum.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
@@ -309,6 +313,57 @@ function checkNoTrailingEditorialHookSocial(editionDir: string): InvariantViolat
   }));
 }
 
+/**
+ * #3213: USE MELHOR (pós `apply-stage2-caps.ts`, i.e. `01-approved-capped.json`)
+ * deve ter pelo menos 2 itens acessíveis a quem está começando com IA (classe
+ * `casual` ou `dev-iniciante` — ver `use-melhor-curation.ts` #2339). Reusa o
+ * MESMO classificador que já alimenta `selectUseMelhorSplit` (cota 2+2) e o
+ * warn de composição de `review-use-melhor.ts`, mas roda aqui — logo após os
+ * caps de Stage 2 — sobre a seleção FINAL renderizada (não o pool bruto de
+ * candidatos do Stage 1, onde `review-use-melhor.ts` já roda). Fecha o gap
+ * real da edição 260710: o pool no Stage 1 podia ter candidato iniciante, mas
+ * o cap/dedup de domínio do Stage 2 o descartou, e nenhum guard revalidava a
+ * composição pós-cap antes do gate.
+ *
+ * WARN-ONLY (severity: warning) — mesma filosofia de toda a família de guards
+ * de composição USE MELHOR (#1798/#2339/#3027/#3059): nunca bloqueia, porque
+ * o pool do dia pode genuinamente não ter 2 candidatos iniciantes; o editor
+ * decide no gate.
+ */
+function checkUseMelhorHasBeginnerMinimum(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "01-approved-capped.json");
+  if (!existsSync(path)) return [];
+  let data: { use_melhor?: BeginnerMinimumItem[] };
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    return [
+      {
+        rule: "use-melhor-beginner-minimum-parse-error",
+        message: `Falha ao parsear ${path}: ${err instanceof Error ? err.message : String(err)}`,
+        source_issue: "#3213",
+        severity: "warning",
+        file: path,
+      },
+    ];
+  }
+  const items = Array.isArray(data.use_melhor) ? data.use_melhor : [];
+  const report = checkUseMelhorBeginnerMinimum(items);
+  if (report.ok) return [];
+  return [
+    {
+      rule: "use-melhor-beginner-minimum",
+      message:
+        `USE MELHOR tem só ${report.beginnerCount}/${report.min} item(ns) acessível(is) a ` +
+        `iniciantes (casual/dev-iniciante) de ${report.total} no total. Revisar composição ` +
+        `no gate — adicione um tutorial casual/dev-iniciante antes de aprovar (#3213).`,
+      source_issue: "#3213",
+      severity: "warning",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_2_RULES: InvariantRule[] = [
   {
     id: "reviewed-passes-all-lints",
@@ -345,6 +400,13 @@ export const STAGE_2_RULES: InvariantRule[] = [
     stage: 2,
     run: checkNoTrailingEditorialHookSocial,
   },
+  {
+    id: "use-melhor-beginner-minimum",
+    description: "USE MELHOR (pós-caps) tem ≥2 itens acessíveis a iniciantes — warn-only (#3213)",
+    source_issue: "#3213",
+    stage: 2,
+    run: checkUseMelhorHasBeginnerMinimum,
+  },
 ];
 
 export {
@@ -353,4 +415,5 @@ export {
   checkPorQueIssoImportaSeparate,
   checkHumanizerRan,
   checkNoTrailingEditorialHookSocial,
+  checkUseMelhorHasBeginnerMinimum,
 };

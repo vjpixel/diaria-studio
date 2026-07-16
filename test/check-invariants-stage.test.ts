@@ -20,6 +20,7 @@ import { STAGE_0_RULES } from "../scripts/lib/invariant-checks/stage-0.ts";
 import {
   checkApprovedHas3Highlights,
   checkCategorizedHasEiaSection,
+  checkNoUseMelhorHighlights,
 } from "../scripts/lib/invariant-checks/stage-1.ts";
 import {
   checkReviewedPassesAllLints,
@@ -87,6 +88,18 @@ describe("invariant-checks registry (#1007)", () => {
       "ALL_INVARIANT_RULES deve conter entry com id 'linkedin-worker-url-https'",
     );
     assert.equal(entry!.stage, 5, "linkedin-worker-url-https deve estar no stage 5");
+  });
+
+  it("#3436 registry contém entry no-use-melhor-highlights no stage 1 (severity error)", () => {
+    const entry = ALL_INVARIANT_RULES.find((r) => r.id === "no-use-melhor-highlights");
+    assert.ok(entry !== undefined, "ALL_INVARIANT_RULES deve conter 'no-use-melhor-highlights'");
+    assert.equal(entry!.stage, 1);
+  });
+
+  it("#3213 registry contém entry use-melhor-beginner-minimum no stage 2", () => {
+    const entry = ALL_INVARIANT_RULES.find((r) => r.id === "use-melhor-beginner-minimum");
+    assert.ok(entry !== undefined, "ALL_INVARIANT_RULES deve conter 'use-melhor-beginner-minimum'");
+    assert.equal(entry!.stage, 2);
   });
 });
 
@@ -287,6 +300,88 @@ describe("Stage 1 invariants", () => {
     );
     const v = checkCategorizedHasEiaSection(fixture);
     assert.equal(v.length, 0, "placeholder header com sufixo deve passar");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // --- #3436: destaques nunca vêm do bucket USE MELHOR ---
+
+  it("no-use-melhor-highlights sem violation quando 01-approved.json ausente", () => {
+    const v = checkNoUseMelhorHighlights(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("no-use-melhor-highlights passa com highlights de lancamento/radar", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "lancamento", url: "https://a.com" },
+          { bucket: "radar", article: { url: "https://b.com", category: "noticias" } },
+        ],
+      }),
+    );
+    const v = checkNoUseMelhorHighlights(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // Caso real 260714: "Como o Copilot acha inconsistências no Excel" selecionado como D2.
+  it("no-use-melhor-highlights falha (error) quando bucket top-level é 'use_melhor'", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "lancamento", url: "https://a.com" },
+          {
+            bucket: "use_melhor",
+            title: "Como o Copilot acha inconsistências no Excel",
+            url: "https://b.com",
+          },
+        ],
+      }),
+    );
+    const v = checkNoUseMelhorHighlights(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "no-use-melhor-highlights");
+    assert.equal(v[0].severity, "error");
+    assert.equal(v[0].source_issue, "#3436");
+    assert.match(v[0].message, /Como o Copilot acha inconsistências no Excel/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // apply-gate-edits.ts re-escreve `bucket` com article.category (ex: "tutorial")
+  // — o guard tem que pegar essa forma também, não só "use_melhor" literal.
+  it("no-use-melhor-highlights falha quando bucket top-level é 'tutorial' (shape pós apply-gate-edits.ts)", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ bucket: "tutorial", url: "https://b.com", article: { url: "https://b.com" } }],
+      }),
+    );
+    const v = checkNoUseMelhorHighlights(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "error");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("no-use-melhor-highlights falha quando só article.category (nested) é 'tutorial', sem bucket top-level", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ url: "https://b.com", article: { url: "https://b.com", category: "tutorial" } }],
+      }),
+    );
+    const v = checkNoUseMelhorHighlights(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "error");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("no-use-melhor-highlights sem violation quando JSON malformado (coberto por approved-parseable)", () => {
+    writeFileSync(join(fixture, "_internal", "01-approved.json"), "{ not valid json");
+    const v = checkNoUseMelhorHighlights(fixture);
+    assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });
 });

@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 53 invariants.
+**Total**: 55 invariants.
 
 ## Static (estrutura do repo)
 
@@ -34,6 +34,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `approved-has-3-highlights` | 01-approved.json tem 2 ou 3 highlights (#2343) | #2343 |
 | `categorized-has-eia-section` | 01-categorized.md inclui seção '## É IA?' (#481) | #481 |
 | `coverage-line-present` | 01-approved.json tem coverage.line (#592) | #592 |
+| `no-use-melhor-highlights` | highlights[] nunca contém item do bucket USE MELHOR/tutorial (#3436) | #3436 |
 
 ## Stage 2 — Escrita
 
@@ -44,6 +45,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `reviewed-passes-all-lints` | 02-reviewed.md passa lint-newsletter-md granulares (#964) | #964 |
 | `social-no-trailing-editorial-hook` | 03-social.md sem gancho editorial emendado via ', e' — warn-only (#2658) | #2658 |
 | `social-passes-lints` | 03-social.md passa linkedin-schema + relative-time + post_pixel-matches-d1 + personal-post-no-newsletter-deixis + platform-headers-unicos + humanizer-section-coverage (#595, #1861, #2148, #3388) | #595 |
+| `use-melhor-beginner-minimum` | USE MELHOR (pós-caps) tem ≥2 itens acessíveis a iniciantes — warn-only (#3213) | #3213 |
 
 ## Stage 3 — Imagens
 
