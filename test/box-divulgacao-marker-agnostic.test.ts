@@ -24,6 +24,7 @@ import {
   extractContent,
   extractBoxDivulgacao1,
   extractBoxDivulgacao2,
+  extractBoxDivulgacao3,
   findOrphanBoxWarnings,
 } from "../scripts/lib/newsletter-parse.ts";
 import { renderHTML } from "../scripts/lib/newsletter-render-html.ts";
@@ -319,5 +320,174 @@ ${d(2, "💼 MERCADO", "https://example.com/d2")}`;
 
 ${d(2, "💼 MERCADO", "https://example.com/d2")}`;
     assert.equal(extractBoxDivulgacao1(reviewed), null, "ênfase sem link não deveria virar box");
+  });
+});
+
+// ─── #3476 — extractBoxDivulgacao3: box na região pós-ÚLTIMO-destaque ────────
+
+describe("#3476 — extractBoxDivulgacao3: box posicionado após o ÚLTIMO destaque, antes de USE MELHOR/É IA?", () => {
+  function buildReviewedWithBox3(box3: string | null, useMelhorBlock = ""): string {
+    const um = useMelhorBlock ? `${useMelhorBlock}\n\n---\n\n` : "";
+    return `Para esta edição, selecionamos 12 itens.
+
+---
+
+${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}
+
+---
+
+${d(2, "💼 MERCADO", "https://example.com/d2")}
+
+---
+
+${d(3, "💼 TRABALHO", "https://example.com/d3")}
+
+---
+
+${box3 ? `${box3}\n\n---\n\n` : ""}${um}${EIA}
+
+---
+
+**📡 RADAR**
+
+**[Item de radar](https://example.com/r1)**
+Resumo do item.
+`;
+  }
+
+  it("box com marcador novo (🔧) isolado entre D3 e É IA? é extraído (marker-agnóstico, mesma técnica do #3204)", () => {
+    const box3 = `🔧 Indicação de ferramenta: uso o Raycast todo dia.
+
+_Não recebi comissão por essa indicação._`;
+    const reviewed = buildReviewedWithBox3(box3);
+    const found = extractBoxDivulgacao3(reviewed);
+    assert.ok(found, "box3 deveria ser extraído");
+    assert.match(found!, /uso o Raycast todo dia/);
+    assert.match(found!, /Não recebi comissão/);
+  });
+
+  it("box3 entre D3 e USE MELHOR (não entre D3 e É IA? quando USE MELHOR presente)", () => {
+    const box3 = "🔧 Indicação de ferramenta: [Raycast](https://raycast.com).";
+    const useMelhorBlock = "**🛠️ USE MELHOR**\n\n**[Tutorial](https://example.com/t)**\nDescrição.";
+    const reviewed = buildReviewedWithBox3(box3, useMelhorBlock);
+    const found = extractBoxDivulgacao3(reviewed);
+    assert.ok(found, "box3 deveria ser extraído mesmo com USE MELHOR na região");
+    assert.match(found!, /Raycast/);
+  });
+
+  it("sem box3 na região — extractBoxDivulgacao3 retorna null (não confunde USE MELHOR/É IA? com box)", () => {
+    const reviewed = buildReviewedWithBox3(null);
+    assert.equal(extractBoxDivulgacao3(reviewed), null);
+  });
+
+  it("box3 GLUADO (sem ---) ao final do último destaque ainda é recuperado (fallback, mesma técnica do #3204)", () => {
+    const reviewed = `${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}
+
+---
+
+${d(2, "💼 MERCADO", "https://example.com/d2")}
+
+---
+
+${d(3, "💼 TRABALHO", "https://example.com/d3").trimEnd()}
+
+**🔧 Box colado sem separador. [Ver](https://example.com/f).**
+
+---
+
+${EIA}`;
+    const found = extractBoxDivulgacao3(reviewed);
+    assert.ok(found, "box3 glúado deveria ser recuperado");
+    assert.match(found!, /Box colado sem separador/);
+  });
+
+  it("box3 renderiza no HTML entre Destaque 3 e USE MELHOR (round-trip extractContent + renderHTML)", () => {
+    const box3 = "🔧 Indicação de ferramenta: uso o [Raycast](https://raycast.com) todo dia.";
+    const useMelhorBlock = "**🛠️ USE MELHOR**\n\n**[Tutorial de Cursor](https://example.com/t)**\nDescrição do tutorial.";
+    const reviewed = buildReviewedWithBox3(box3, useMelhorBlock);
+    const dir = mkdtempSync(join(tmpdir(), "ed-3476-"));
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), reviewed, "utf8");
+      writeFileSync(join(dir, "01-eia.md"), EIA, "utf8");
+      const content = extractContent(dir);
+      assert.ok(content.boxDivulgacao3, "content.boxDivulgacao3 populado");
+      const html = renderHTML(content);
+      const d3Idx = html.indexOf("<!-- Destaque 3 -->");
+      const box3Idx = html.indexOf("uso o");
+      const umIdx = html.indexOf("<!-- USE MELHOR -->");
+      const eiaIdx = html.indexOf("<!-- É IA? (poll) -->");
+      assert.ok(d3Idx !== -1 && box3Idx !== -1 && umIdx !== -1 && eiaIdx !== -1);
+      // #3476: D3 < box3 < USE MELHOR < É IA?.
+      assert.ok(
+        d3Idx < box3Idx && box3Idx < umIdx && umIdx < eiaIdx,
+        `Posição incorreta: D3(${d3Idx}) < box3(${box3Idx}) < USEM(${umIdx}) < ÉIA(${eiaIdx})`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#3476 — findOrphanBoxWarnings: região pós-destaques (slot 3) com blocos extras ambíguos", () => {
+  it("2 blocos --- isolados entre D3 e USE MELHOR → warning (só o 1º vira box3)", () => {
+    const reviewed = `${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}
+
+---
+
+${d(2, "💼 MERCADO", "https://example.com/d2")}
+
+---
+
+${d(3, "💼 TRABALHO", "https://example.com/d3")}
+
+---
+
+🔧 Primeiro candidato
+
+[Link 1](https://example.com/1)
+
+---
+
+🎁 Segundo candidato (ambíguo — mesma região)
+
+[Link 2](https://example.com/2)
+
+---
+
+**🛠️ USE MELHOR**
+
+**[Tutorial](https://example.com/t)**
+Desc.`;
+    const warnings = findOrphanBoxWarnings(reviewed);
+    const slot3Warning = warnings.find((w) => w.gapIndex === 2);
+    assert.ok(slot3Warning, "deveria haver warning pra região pós-destaques (gapIndex 2)");
+    assert.match(slot3Warning!.reason, /2 blocos extras/);
+  });
+
+  it("só 1 bloco extra entre D3 e USE MELHOR → sem warning de slot3", () => {
+    const reviewed = `${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}
+
+---
+
+${d(2, "💼 MERCADO", "https://example.com/d2")}
+
+---
+
+${d(3, "💼 TRABALHO", "https://example.com/d3")}
+
+---
+
+🔧 Box único
+
+[Link](https://example.com/x)
+
+---
+
+**🛠️ USE MELHOR**
+
+**[Tutorial](https://example.com/t)**
+Desc.`;
+    const warnings = findOrphanBoxWarnings(reviewed);
+    assert.equal(warnings.find((w) => w.gapIndex === 2), undefined);
   });
 });

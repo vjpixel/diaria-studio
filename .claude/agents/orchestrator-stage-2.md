@@ -110,16 +110,20 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 npx tsx scripts/stitch-newsletter.ts --edition-dir data/editions/{AAMMDD}/
 ```
 
-**#1938/#2527/#2978:** o stitch auto-injeta os boxes de divulgação nos slots 1 (D1/D2) e 2 (D2/D3) em **todo daily** (decisão editorial), config-driven via `boxes_divulgacao` de `platform.config.json`. **Default (chave ausente): bloco 📚 de curadoria de livros no slot 1** (`context/snippets/livros-divulgacao.md`, via `loadDailyCallout`), slot 2 vazio; o bloco 📣 Clarice (`context/snippets/clarice-divulgacao.md`, via `loadClariceCallout`) segue disponível para reuso (mensal / troca pontual / configurar em qualquer slot). Idempotente por slot (pula se a região correspondente já traz um callout `**📣/📚/🎉 …**` ou `🛒 …`). Kill-switch pontual: `--no-sponsor` (suprime a injeção em AMBOS os slots).
+**#1938/#2527/#2978/#3212/#3476:** o stitch auto-injeta os boxes de divulgação nos slots 1 (D1/D2), 2 (D2/D3) e 3 (região pós-ÚLTIMO-destaque, entre D3/D2 e USE MELHOR) em **todo daily** (decisão editorial — os 3 boxes são permanentes desde #3476). Config-driven via `boxes_divulgacao` de `platform.config.json`. **Default: recomendação de leitura no slot 1** (`context/snippets/recomendacao-leitura.md`), **curadoria de livros no slot 2** (`context/snippets/livros-divulgacao.md`), **indicação de ferramenta no slot 3** (`context/snippets/indicacao-ferramenta.md`); o bloco 📣 Clarice (`context/snippets/clarice-divulgacao.md`, via `loadClariceCallout`) segue disponível para reuso (mensal / troca pontual / configurar em qualquer slot). Idempotente por slot (pula se a região correspondente já traz um callout `**📣/📚/🎉 …**` ou `🛒 …`, marcador-agnóstico — ver `boxAlreadyPresentInGap`/`boxAlreadyPresentAfterLastDestaque`). Kill-switch pontual: `--no-sponsor` (suprime a injeção nos 3 slots).
 
-O script é determinístico, sem LLM. Ordem canonical:
+O script é determinístico, sem LLM. Ordem canonical (#3476):
 - Coverage line (do `01-approved-capped.json > coverage.line`)
 - DESTAQUE 1 block (lê `_internal/02-d1-draft.md`)
+- box de divulgação slot 1 (D1/D2)
 - DESTAQUE 2 block (lê `_internal/02-d2-draft.md`)
-- É IA? section (lê `01-eia.md` se existir, strip frontmatter YAML)
+- box de divulgação slot 2 (D2/D3) — **omitido em edições de 2 destaques**
 - DESTAQUE 3 block (lê `_internal/02-d3-draft.md`) — **omitido em edições de 2 destaques (#2343)**
+- box de divulgação slot 3 (pós-último-destaque — D3 se existir, senão D2)
+- **🛠️ USE MELHOR** (se houver candidato selecionado)
+- É IA? section (lê `01-eia.md` se existir, strip frontmatter YAML) — **#3476: agora DEPOIS de USE MELHOR** (antes ficava logo após o último destaque, #2546); se a edição não tiver USE MELHOR, É IA? cai logo após o box do slot 3
 - **LANÇAMENTOS** (formato canonical `**[title](url)**` + summary, singular/plural conforme count #1324)
-- **PESQUISAS**, **OUTRAS NOTÍCIAS**, **VÍDEOS** (idem; omite seção vazia)
+- **VÍDEOS**, **RADAR** (idem; omite seção vazia — RADAR mergeia PESQUISAS + OUTRAS NOTÍCIAS, #1569)
 - **ERRO INTENCIONAL** placeholder (`render-erro-intencional.ts` re-insere ao final pós-Clarice — auto-converge)
 - **🎁 SORTEIO** + **🙋🏼‍♀️ PARA ENCERRAR** (texto fixo)
 

@@ -1097,11 +1097,6 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     ));
   }
 
-  // #1077 — É IA? idealmente entre D2 e D3 (após i === 1), per memory
-  // `feedback_beehiiv_sections.md` e convention pre-existente. Fallback
-  // robusto (#1085): se destaques.length < 2 (test fixtures ou edições
-  // atípicas), insere no fim do loop pra garantir que È IA? não seja
-  // silenciosamente omitido.
   const includeEia = !!(!opts.excludeEia && content.eia.credit);
   let eiaInserted = false;
   for (let i = 0; i < content.destaques.length; i++) {
@@ -1135,19 +1130,43 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
         ),
       );
     }
-    // #2546: È IA? renderiza APÓS o ÚLTIMO destaque (D3 em edições de 3
-    // destaques; D2 em edições de 2). Antes ficava fixo após o D2 (i === 1).
-    if (includeEia && !eiaInserted && i === content.destaques.length - 1) {
+    // #3476: box de divulgação slot 3 — SEMPRE após o ÚLTIMO destaque (D3 em
+    // edições de 3 destaques; D2 em edições de 2), antes de USE MELHOR/É IA?.
+    // Diferente do slot 2 (só existe com D3), o slot 3 existe em QUALQUER
+    // contagem de destaques — não é uma lacuna ENTRE destaques.
+    if (content.boxDivulgacao3 && i === content.destaques.length - 1) {
+      parts.push(renderDivulgacaoSeparator());
+      parts.push(
+        renderBoxDivulgacao(
+          content.boxDivulgacao3,
+          content.boxDivulgacao3Image ?? null,
+          content.boxDivulgacao3Bold ?? true,
+        ),
+      );
+    }
+  }
+
+  // #3476: É IA? renderiza DEPOIS da seção USE MELHOR (pedido do editor
+  // 260716, tornado permanente — antes ficava fixo logo após o último
+  // destaque, #2546). Se a edição não tiver USE MELHOR, É IA? cai ANTES das
+  // demais seções secundárias — mesma posição relativa (logo após
+  // destaques/box3), preservando o fallback "nunca desaparece" (#1085).
+  const useMelhorIdx = content.sections.findIndex((s) => s.name === "USE MELHOR");
+  if (includeEia && useMelhorIdx === -1) {
+    parts.push(renderEIA(content.eia));
+    eiaInserted = true;
+  }
+  for (let i = 0; i < content.sections.length; i++) {
+    parts.push(renderSection(content.sections[i]));
+    if (includeEia && !eiaInserted && i === useMelhorIdx) {
       parts.push(renderEIA(content.eia));
       eiaInserted = true;
     }
   }
+  // Defensivo (#1085): nunca deveria disparar (os 2 ramos acima cobrem todo
+  // caso), mas garante que É IA? nunca desapareça silenciosamente.
   if (includeEia && !eiaInserted) {
     parts.push(renderEIA(content.eia));
-  }
-
-  for (const section of content.sections) {
-    parts.push(renderSection(section));
   }
 
   // #1076: blocos fixos do template Beehiiv (SORTEIO + PARA ENCERRAR).

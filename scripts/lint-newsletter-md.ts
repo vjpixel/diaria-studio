@@ -1091,12 +1091,14 @@ function main(): void {
     return;
   }
 
-  // Modo --check orphan-box-in-gap (#3204) — backstop pós marcador-agnóstico:
-  // (a) callout com forma de box (bold-line inteiro OU emoji-led) colado
-  // DENTRO de uma seção de destaque, sem `---` isolando-o (reusa
-  // lintCalloutPlacement, agora marcador-agnóstico); (b) lacuna com MAIS de
-  // 1 bloco extra `---`-isolado — ambíguo, `locateBoxInGap` descartaria os
-  // excedentes silenciosamente (findOrphanBoxWarnings).
+  // Modo --check orphan-box-in-gap (#3204, estendido pro slot 3 em #3476) —
+  // backstop pós marcador-agnóstico: (a) callout com forma de box (bold-line
+  // inteiro OU emoji-led) colado DENTRO de uma seção de destaque, sem `---`
+  // isolando-o (reusa lintCalloutPlacement, agora marcador-agnóstico); (b)
+  // lacuna (D1/D2, D2/D3) OU região pós-último-destaque (slot 3, entre o
+  // último destaque e USE MELHOR/É IA?) com MAIS de 1 bloco extra
+  // `---`-isolado — ambíguo, `locateBoxInGap`/`locateBoxAfterLastDestaque`
+  // descartariam os excedentes silenciosamente (findOrphanBoxWarnings).
   if (args.check === "orphan-box-in-gap") {
     if (!args.md) {
       console.error("Uso: lint-newsletter-md.ts --check orphan-box-in-gap --md <md-path>");

@@ -38,7 +38,7 @@ import {
   ENCERRAMENTO_OPENING_DAILY,
 } from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal; split #3368 (reorder); renderEncerramentoSocialApoio #3382 fix (fallback de conteúdo real quando o split falha)
 import { readSnippetFile } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
-import { extractBoxDivulgacao1 } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap)
+import { extractBoxDivulgacao1, extractBoxDivulgacao3 } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap); extractBoxDivulgacao3 #3476
 
 interface ArticleLike {
   url?: string;
@@ -196,6 +196,13 @@ export function loadClariceCallout(): string | null {
 export interface BoxesDivulgacaoConfig {
   slot1: string | null;
   slot2: string | null;
+  /** #3476: 3º box — posicionado SEMPRE após o ÚLTIMO destaque (D3 se
+   * existir, senão D2), antes de USE MELHOR/É IA?. Existe em QUALQUER
+   * contagem de destaques (diferente do slot2, que só existe com D3).
+   * Opcional (não `null`-obrigatório) por back-compat: overrides de teste
+   * escritos antes do #3476 que só passam slot1/slot2 continuam válidos —
+   * ausência é tratada como `null` (sem slot3) nos call-sites. */
+  slot3?: string | null;
 }
 
 /**
@@ -217,12 +224,13 @@ export function loadBoxesDivulgacaoConfig(): BoxesDivulgacaoConfig {
       return {
         slot1: raw.boxes_divulgacao.slot1 ?? null,
         slot2: raw.boxes_divulgacao.slot2 ?? null,
+        slot3: raw.boxes_divulgacao.slot3 ?? null,
       };
     }
   } catch {
     // graceful — config ausente/corrompido cai no default legado abaixo
   }
-  return { slot1: "livros-divulgacao.md", slot2: null };
+  return { slot1: "livros-divulgacao.md", slot2: null, slot3: null };
 }
 
 /**
@@ -467,6 +475,23 @@ export function stitchNewsletter(input: StitchInput): string {
   const slot2Box = wantSponsor && d3 !== null && !slot2AlreadyPresent
     ? loadDivulgacaoSnippet(boxesCfg.slot2)
     : null;
+  // #3476: slot 3 — SEMPRE após o ÚLTIMO destaque (D3 se existir, senão D2),
+  // antes de USE MELHOR/É IA?. Existe em QUALQUER contagem de destaques
+  // (diferente do slot2, que exige D3) — não é uma lacuna ENTRE destaques, é
+  // a região pós-destaques (`extractBoxDivulgacao3`/`locateBoxAfterLastDestaque`).
+  // Idempotência: sonda a mesma forma "glued ao destaque OU isolado" via
+  // `extractBoxDivulgacao3`, unindo o texto do último destaque com o próximo
+  // conteúdo conhecido (USE MELHOR se presente, senão o próprio bloco É IA?).
+  const lastDestaque = d3 ?? d2;
+  const nextAfterLastDestaque = useMelhor || eiaBlock;
+  function boxAlreadyPresentAfterLastDestaque(destaqueText: string, nextText: string): boolean {
+    if (CART_MARKER_RE.test(destaqueText) || CART_MARKER_RE.test(nextText)) return true;
+    return extractBoxDivulgacao3(`${destaqueText}\n\n---\n\n${nextText}`) !== null;
+  }
+  const slot3AlreadyPresent = boxAlreadyPresentAfterLastDestaque(lastDestaque, nextAfterLastDestaque);
+  const slot3Box = wantSponsor && !slot3AlreadyPresent
+    ? loadDivulgacaoSnippet(boxesCfg.slot3)
+    : null;
 
   const parts: string[] = [
     coverageLine,
@@ -499,8 +524,22 @@ export function stitchNewsletter(input: StitchInput): string {
       "",
     );
   }
-  // #2546: È IA? renderiza APÓS o último destaque (D3 em edições de 3
-  // destaques; D2 em edições de 2). Antes ficava fixo entre D2 e D3.
+  // #3476: box de divulgação slot 3 — SEMPRE após o ÚLTIMO destaque (D3 se
+  // existir, senão D2), antes de USE MELHOR/É IA?.
+  if (slot3Box) {
+    parts.push(slot3Box, "", "---", "");
+  }
+  // #3476: USE MELHOR agora vem ANTES de É IA? (pedido do editor 260716,
+  // tornado permanente). Antes (#2546): È IA? renderizava logo após o último
+  // destaque (D3 em edições de 3 destaques; D2 em edições de 2), e USE MELHOR
+  // vinha depois. Ordem editorial de USE MELHOR-antes-de-LANÇAMENTOS (#1752,
+  // 260603) preservada.
+  if (useMelhor) {
+    parts.push(useMelhor);
+    parts.push("");
+    parts.push("---");
+    parts.push("");
+  }
   parts.push(
     eiaBlock,
     "",
@@ -508,13 +547,6 @@ export function stitchNewsletter(input: StitchInput): string {
     "",
   );
 
-  // #1752: USE MELHOR antes de LANÇAMENTOS (decisão editorial 260603).
-  if (useMelhor) {
-    parts.push(useMelhor);
-    parts.push("");
-    parts.push("---");
-    parts.push("");
-  }
   if (lancamentos) {
     parts.push(lancamentos);
     parts.push("");
