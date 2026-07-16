@@ -53,6 +53,15 @@
             <option value="other">other</option>
           </select>
         </label>
+        <label class="filter-field">
+          <span class="label">Classificação (issues)</span>
+          <select id="filter-dispatch">
+            <option value="">Todas</option>
+            <option value="elegivel">elegível</option>
+            <option value="bloqueada">bloqueada</option>
+            <option value="ambigua">ambígua</option>
+          </select>
+        </label>
         <div class="filter-field filter-labels-field">
           <span class="label">Labels</span>
           <div id="filter-labels" class="filter-labels"></div>
@@ -64,6 +73,11 @@
 
     <section class="panel">
       <h2>Issues abertas (<span id="issues-count">0</span>)</h2>
+      <p class="hint">
+        "Classificação" é uma heurística best-effort (labels operacionais +
+        marcadores de texto) que aproxima — mas não substitui — a triagem
+        real da Fase 0 de <code>/diaria-develop</code>/<code>/diaria-overnight</code>.
+      </p>
       <div class="table-scroll">
         <table class="triage-table">
           <thead>
@@ -71,7 +85,9 @@
               <th>#</th>
               <th>Título</th>
               <th>Prioridade</th>
+              <th>Classificação</th>
               <th>Labels</th>
+              <th>Idade</th>
               <th>Atualizada</th>
             </tr>
           </thead>
@@ -82,6 +98,11 @@
 
     <section class="panel">
       <h2>PRs abertos (<span id="prs-count">0</span>)</h2>
+      <p class="hint">
+        "CI" resume <code>statusCheckRollup</code>. Não é o gate de merge
+        completo (#2210/#2222) — falta checar threads não-resolvidas, que
+        exigiria 1 chamada extra por PR; essa coluna cobre só o pedaço de CI.
+      </p>
       <div class="table-scroll">
         <table class="triage-table">
           <thead>
@@ -90,6 +111,8 @@
               <th>Título</th>
               <th>Trilha</th>
               <th>Prioridade</th>
+              <th>CI</th>
+              <th>Review</th>
               <th>Labels</th>
               <th>Atualizado</th>
             </tr>
@@ -97,6 +120,37 @@
           <tbody id="prs-tbody"></tbody>
         </table>
       </div>
+    </section>
+
+    <section class="panel">
+      <h2>Composição de wave — preview</h2>
+      <p class="hint">
+        Onda paralela máxima segura = 1 unidade por cluster de conflito
+        (issues cujos arquivos citados se intersectam) + todos os singletons,
+        até o teto de <span id="wave-max-concurrency">6</span> concorrentes —
+        mesma regra do "Paralelização segura" em
+        <code>.claude/skills/diaria-develop/SKILL.md</code>. Considera só
+        issues elegíveis. <strong>Preview read-only</strong>: disparar a onda
+        (worktrees + implementadores) depende da sessão de chat/ações
+        (#3556/#3557), ainda não construída.
+      </p>
+      <div id="waves-error" class="panel alert-banner" hidden></div>
+      <div class="wave-summary">
+        <div class="wave-block">
+          <h3>Onda proposta (<span id="wave-count">0</span>)</h3>
+          <div id="wave-chips" class="chip-row"></div>
+        </div>
+        <div class="wave-block">
+          <h3>Adiadas (<span id="wave-deferred-count">0</span>)</h3>
+          <div id="wave-deferred-chips" class="chip-row"></div>
+        </div>
+      </div>
+      <div id="wave-capacity-warning" class="alert-banner" hidden></div>
+      <h3>Clusters de conflito</h3>
+      <div id="wave-clusters" class="cluster-list"></div>
+      <button id="fire-wave-btn" type="button" disabled title="requer #3556/#3557 (sessão de chat/ações) — ainda não existe">
+        Disparar esta onda
+      </button>
     </section>
   </main>
 

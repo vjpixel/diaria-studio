@@ -19,7 +19,13 @@
  *     cliente delega a validação/404 pras chamadas de API que ela mesma faz.
  *   - `GET /api/issues` — issues abertas + PRs abertos do GitHub (via `gh
  *     issue list` / `gh pr list`, cache+throttle em `studio-issues.ts`) pra a
- *     view de triagem (#3562).
+ *     view de triagem (#3562), agora com classificação
+ *     elegível/bloqueada/ambígua por issue + resumo de CI por PR.
+ *   - `GET /api/waves` (#3562, entrega 2) — composição de wave PREVIEW:
+ *     clusters de conflito (arquivos citados por issue) + a onda paralela
+ *     segura proposta, sobre o MESMO snapshot cacheado de `/api/issues`
+ *     (`studio-waves.ts`, zero chamada `gh` extra). Read-only — só propõe,
+ *     nunca dispara worktree/implementador (isso é #3556/#3557).
  *   - `GET /triagem` — cockpit de triagem de issues/PRs (#3562): mesma
  *     estratégia de rewrite client-side de `/edicao/:aammdd`, servindo
  *     `public/triagem.html`.
@@ -60,6 +66,7 @@ import { formatSseEvent, formatSseComment } from "./sse.ts";
 import { serveStaticFile } from "./static-serve.ts";
 import { buildTokensCss } from "./tokens-css.ts";
 import { fetchTriageData, type GhRunFn } from "./studio-issues.ts";
+import { buildWaveProposal } from "./studio-waves.ts";
 import { buildDiariaDashboardHtml } from "./dashboard-diaria.ts";
 import { buildClariceDashboardHtml } from "./dashboard-clarice.ts";
 
@@ -178,6 +185,29 @@ function handleApiIssues(rootDir: string, res: ServerResponse, ghRun?: GhRunFn):
   sendJson(res, 200, fetchTriageData(rootDir, { run: ghRun }));
 }
 
+/** `GET /api/waves` (#3562, entrega 2) — composição de wave PREVIEW: reusa o
+ * mesmo snapshot cacheado de `fetchTriageData` (zero chamada `gh` extra) e
+ * roda a análise pura de cluster de conflito (`studio-waves.ts`) sobre as
+ * issues classificadas `elegivel`. Read-only por construção: só propõe, não
+ * dispara nada — ver disclaimer em `studio-waves.ts`. */
+function handleApiWaves(rootDir: string, res: ServerResponse, ghRun?: GhRunFn): void {
+  const triage = fetchTriageData(rootDir, { run: ghRun });
+  const proposal = buildWaveProposal(
+    triage.issues.map((i) => ({
+      number: i.number,
+      files: i.files,
+      priority: i.priority,
+      dispatchTrack: i.dispatchTrack,
+    })),
+  );
+  sendJson(res, 200, {
+    generatedAt: triage.generatedAt,
+    error: triage.error,
+    cached: triage.cached,
+    ...proposal,
+  });
+}
+
 function handleTokensCss(res: ServerResponse): void {
   const css = buildTokensCss();
   res.writeHead(200, {
@@ -262,6 +292,10 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       if (urlPath === "/api/issues") {
         handleApiIssues(rootDir, res, ghRun);
+        return;
+      }
+      if (urlPath === "/api/waves") {
+        handleApiWaves(rootDir, res, ghRun);
         return;
       }
       if (urlPath === "/tokens.generated.css") {
