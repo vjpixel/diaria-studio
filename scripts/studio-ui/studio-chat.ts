@@ -28,12 +28,24 @@
  * `chat-error` no stream — nunca derruba o processo do studio-server nem a
  * request HTTP.
  *
- * Escopo desta fatia (ver corpo do PR "Decisões de design" para o detalhe):
- * permission prompts interativos (cards clicáveis na UI) são o gancho do
- * #3557 — aqui, qualquer tool call que exigiria um prompt interativo (ou
- * seja, não já pré-aprovado por `.claude/settings.json`/`allowedTools`) é
- * NEGADO com uma mensagem clara em vez de travar a stream esperando resposta
- * que a UI ainda não sabe renderizar. Ver `TODO(#3557)` abaixo.
+ * #3557 (gates): qualquer tool call que exigiria um prompt interativo (ou
+ * seja, não já pré-aprovado por `.claude/settings.json`/`allowedTools`)
+ * continua NEGADA — EXCETO `AskUserQuestion`, escopo estrito desta fatia.
+ * Quando o modelo chama `AskUserQuestion`, `makeInteractiveCanUseTool`
+ * (abaixo) NÃO nega: serializa `questions[]` num evento de wire
+ * `chat-permission-request`, guarda a Promise de resolução do `canUseTool`
+ * num Map em memória (por `rootDir`, chaveado por `toolUseID` — o mesmo id
+ * já usado pelos eventos `chat-tool`) e a devolve PENDENTE — sem timeout,
+ * mesma semântica bloqueante de `AskUserQuestion` no terminal
+ * (`askUserQuestionTimeout` do SDK, não setado aqui, default é `never`). A
+ * rota `POST /api/chat/answer` (`server.ts`) resolve essa Promise chamando
+ * `resolvePendingPermissionRequest`, que devolve `{behavior:'allow',
+ * updatedInput}` — `updatedInput` espelha o shape de `AskUserQuestionOutput`
+ * (`questions` ecoado + `answers`/`response`), a única forma documentada no
+ * `.d.ts` do SDK de casar uma resposta headless a essa tool call
+ * (`PermissionResult.updatedInput`; ver `buildAskUserQuestionUpdatedInput`).
+ * Qualquer OUTRA tool call (Bash, Edit, etc.) permanece negada sempre —
+ * ampliar esse escopo é fora desta issue (ver corpo do #3557).
  */
 
 import type {
@@ -67,6 +79,26 @@ export interface ChatToolDeniedEvent {
   event: "chat-tool";
   data: { toolUseId: string; name: string; status: "denied"; reason: string };
 }
+export interface ChatPermissionOption {
+  label: string;
+  description: string;
+  preview?: string;
+}
+export interface ChatPermissionQuestion {
+  question: string;
+  header: string;
+  multiSelect: boolean;
+  options: ChatPermissionOption[];
+}
+/** #3557: emitido quando o modelo chama `AskUserQuestion` — o browser
+ * renderiza `data.questions` como form/cards (single/multi-select + campo
+ * livre "Other") e responde via `POST /api/chat/answer` com `toolUseId`. Sem
+ * timeout por design (ver doc-comment do módulo); `askedAt` (epoch ms) deixa
+ * o cliente calcular "esperando há Xmin" localmente. */
+export interface ChatPermissionRequestEvent {
+  event: "chat-permission-request";
+  data: { toolUseId: string; questions: ChatPermissionQuestion[]; askedAt: number };
+}
 export interface ChatDoneEvent {
   event: "chat-done";
   data: { sessionId: string | null; isError: boolean; result: string | null };
@@ -82,6 +114,7 @@ export type ChatWireEvent =
   | ChatToolStartEvent
   | ChatToolEndEvent
   | ChatToolDeniedEvent
+  | ChatPermissionRequestEvent
   | ChatDoneEvent
   | ChatErrorEvent;
 
@@ -130,6 +163,120 @@ export function parseChatRequestBody(raw: string): ParsedChatRequest {
       reset: obj.reset === true,
     },
   };
+}
+
+// ─── parsing do corpo de POST /api/chat/answer (puro, #3557) ───────────────
+
+export interface ChatAnswerRequest {
+  toolUseId: string;
+  /** question text -> resposta escolhida (labels selecionados, comma-separated
+   * pra multiSelect) OU texto livre quando o editor usou "Other". Mesmo
+   * shape de `AskUserQuestionOutput.answers` do SDK. */
+  answers: Record<string, string>;
+  /** Texto livre digitado pelo editor em vez de escolher uma opção
+   * estruturada — só presente quando fizer sentido (1 pergunta, resposta
+   * livre única). Opcional, espelha `AskUserQuestionOutput.response`. */
+  response?: string;
+}
+
+export type ParsedChatAnswerRequest =
+  | { ok: true; value: ChatAnswerRequest }
+  | { ok: false; error: string };
+
+/** Valida + normaliza o corpo cru (string JSON) de `POST /api/chat/answer`
+ * (#3557). Pura — nunca lança, sempre retorna um resultado tagged, mesmo
+ * padrão de `parseChatRequestBody`. */
+export function parseChatAnswerRequestBody(raw: string): ParsedChatAnswerRequest {
+  let parsed: unknown;
+  try {
+    parsed = raw.trim() === "" ? {} : JSON.parse(raw);
+  } catch (e) {
+    return { ok: false, error: `corpo não é JSON válido: ${(e as Error).message}` };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, error: "corpo deve ser um objeto JSON" };
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.toolUseId !== "string" || obj.toolUseId.trim() === "") {
+    return { ok: false, error: "campo 'toolUseId' é obrigatório (string não-vazia)" };
+  }
+  if (typeof obj.answers !== "object" || obj.answers === null || Array.isArray(obj.answers)) {
+    return { ok: false, error: "campo 'answers' é obrigatório (objeto question -> resposta)" };
+  }
+  const answers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(obj.answers as Record<string, unknown>)) {
+    if (typeof value !== "string") {
+      return { ok: false, error: `resposta de "${key}" precisa ser string` };
+    }
+    answers[key] = value;
+  }
+  if (Object.keys(answers).length === 0) {
+    return { ok: false, error: "'answers' precisa ter ao menos 1 resposta" };
+  }
+  if (obj.response !== undefined && typeof obj.response !== "string") {
+    return { ok: false, error: "'response' deve ser string quando presente" };
+  }
+  return {
+    ok: true,
+    value: { toolUseId: obj.toolUseId, answers, response: obj.response as string | undefined },
+  };
+}
+
+// ─── AskUserQuestion: parsing do input + montagem do updatedInput (#3557) ──
+
+/** Extrai + normaliza `questions[]` do input cru (`Record<string, unknown>`,
+ * sem tipagem forte em runtime) de uma tool call `AskUserQuestion`, pro
+ * contrato serializável do evento `chat-permission-request`. Defensivo:
+ * `AskUserQuestionInput` é validado pelo lado do modelo antes de chegar
+ * aqui, mas este módulo não confia cegamente — retorna `null` (nunca lança)
+ * se o shape não bater, pra `makeInteractiveCanUseTool` negar com mensagem
+ * clara em vez de emitir um evento malformado pro browser. */
+export function parseAskUserQuestionInput(input: Record<string, unknown>): ChatPermissionQuestion[] | null {
+  const raw = input?.questions;
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const questions: ChatPermissionQuestion[] = [];
+  for (const q of raw) {
+    if (typeof q !== "object" || q === null) return null;
+    const qq = q as Record<string, unknown>;
+    if (typeof qq.question !== "string" || typeof qq.header !== "string") return null;
+    if (!Array.isArray(qq.options) || qq.options.length < 2) return null;
+    const options: ChatPermissionOption[] = [];
+    for (const o of qq.options) {
+      if (typeof o !== "object" || o === null) return null;
+      const oo = o as Record<string, unknown>;
+      if (typeof oo.label !== "string" || typeof oo.description !== "string") return null;
+      const option: ChatPermissionOption = { label: oo.label, description: oo.description };
+      if (typeof oo.preview === "string") option.preview = oo.preview;
+      options.push(option);
+    }
+    questions.push({
+      question: qq.question,
+      header: qq.header,
+      multiSelect: qq.multiSelect === true,
+      options,
+    });
+  }
+  return questions;
+}
+
+/**
+ * Monta o `updatedInput` devolvido em `{behavior:'allow', updatedInput}`
+ * quando o editor responde uma `AskUserQuestion` (#3557). O `.d.ts` do SDK
+ * não documenta um campo dedicado "resultado da tool call" no
+ * `PermissionResult` — só `updatedInput` (que normalmente substitui os
+ * PARÂMETROS de entrada antes da tool executar). Pra `AskUserQuestion`
+ * especificamente, a forma mais fiel ao contrato observável do SDK
+ * (`AskUserQuestionOutput`, que ecoa `questions` de volta e adiciona
+ * `answers`/`response`) é ecoar o input original + as respostas: se a tool
+ * "executar" com esse input já resolvido, o resultado que produzir já
+ * carrega a resposta certa. Pura — sem I/O. */
+export function buildAskUserQuestionUpdatedInput(
+  originalInput: Record<string, unknown>,
+  answer: { answers: Record<string, string>; response?: string },
+): Record<string, unknown> {
+  const updated: Record<string, unknown> = { ...originalInput, answers: answer.answers };
+  if (answer.response !== undefined) updated.response = answer.response;
+  return updated;
 }
 
 // ─── tradução SDKMessage -> eventos de wire (pura) ─────────────────────────
@@ -303,6 +450,125 @@ export function clearSession(rootDir: string): void {
   sessionIdByRoot.delete(rootDir);
 }
 
+// ─── gates pendentes: fila de AskUserQuestion aguardando resposta (#3557) ──
+//
+// 1 Map por `rootDir` (mesmo padrão de `sessionIdByRoot` acima — múltiplos
+// `StudioServer` no mesmo processo, ex: testes, não devem vazar estado entre
+// si). Chave interna é `toolUseID` (já único por tool call dentro de uma
+// mensagem do assistente, e é o mesmo id que os eventos `chat-tool`
+// start/end usam — o browser correlaciona o card de pergunta com o chip de
+// tool call pelo mesmo id).
+
+interface PendingPermissionRequest {
+  toolUseId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  questions: ChatPermissionQuestion[];
+  askedAt: number;
+  resolve: (result: PermissionResult) => void;
+}
+
+const pendingByRoot = new Map<string, Map<string, PendingPermissionRequest>>();
+
+function pendingMapFor(rootDir: string): Map<string, PendingPermissionRequest> {
+  let m = pendingByRoot.get(rootDir);
+  if (!m) {
+    m = new Map();
+    pendingByRoot.set(rootDir, m);
+  }
+  return m;
+}
+
+export interface PendingPermissionSummary {
+  toolUseId: string;
+  toolName: string;
+  askedAt: number;
+  /** Texto da 1ª pergunta — só pra preview/tooltip do badge global, não o
+   * form completo (esse chega via `chat-permission-request`). */
+  firstQuestion: string | null;
+}
+
+/** Lista os gates (`AskUserQuestion`) pendentes de resposta pro `rootDir`
+ * dado — usado pelo badge global (`studio-state.ts`/`buildStudioState`) e
+ * por `resolvePendingPermissionRequest`. Ordenado do mais antigo pro mais
+ * novo (o gate esperando há mais tempo aparece primeiro). */
+export function listPendingPermissionRequests(rootDir: string): PendingPermissionSummary[] {
+  return [...pendingMapFor(rootDir).values()]
+    .sort((a, b) => a.askedAt - b.askedAt)
+    .map((p) => ({
+      toolUseId: p.toolUseId,
+      toolName: p.toolName,
+      askedAt: p.askedAt,
+      firstQuestion: p.questions[0]?.question ?? null,
+    }));
+}
+
+/** Resolve a Promise de `canUseTool` pendente pro `toolUseId` dado, com
+ * `{behavior:'allow', updatedInput}` montado por `buildAskUserQuestionUpdatedInput`
+ * (#3557). Chamado pelo handler HTTP de `POST /api/chat/answer`. Idempotente
+ * por construção: a entry é removida do Map antes de resolver, então uma 2ª
+ * chamada com o mesmo `toolUseId` sempre retorna o erro "não encontrado" em
+ * vez de resolver a Promise duas vezes. */
+export function resolvePendingPermissionRequest(
+  rootDir: string,
+  toolUseId: string,
+  answer: { answers: Record<string, string>; response?: string },
+): { ok: true } | { ok: false; error: string } {
+  const map = pendingMapFor(rootDir);
+  const pending = map.get(toolUseId);
+  if (!pending) {
+    return {
+      ok: false,
+      error: `nenhum gate pendente com toolUseId "${toolUseId}" — pode já ter sido respondido, ou a sessão foi reiniciada/abortada.`,
+    };
+  }
+  map.delete(toolUseId);
+  pending.resolve({
+    behavior: "allow",
+    updatedInput: buildAskUserQuestionUpdatedInput(pending.input, answer),
+  });
+  return { ok: true };
+}
+
+/** Remove uma entry pendente SEM resolver a Promise — usado só pra limpeza
+ * de fim de turno (`runChatTurn`, `finally`) quando o turno termina em
+ * erro/abort antes do editor responder: a Promise fica sem consumidor (a
+ * stream que a aguardava já foi encerrada), então mantê-la no Map vazaria
+ * memória indefinidamente e o badge global mostraria um gate "morto" que
+ * nunca mais será respondido. Idempotente (no-op se já não existir). */
+function clearPendingPermissionRequestIfUnresolved(rootDir: string, toolUseId: string): void {
+  pendingByRoot.get(rootDir)?.delete(toolUseId);
+}
+
+export interface PendingPermissionWatchHandle {
+  close: () => void;
+}
+
+/** Observa a lista de gates pendentes do `rootDir` e chama `onChange`
+ * sempre que o CONJUNTO de `toolUseId`s pendentes mudar (nova pergunta
+ * chegou OU uma foi respondida) — usado por `handleApiEvents` (server.ts)
+ * pra re-emitir `GET /api/state` via SSE assim que o badge global precisa
+ * atualizar, sem esperar o próximo evento de run-log/plan.json (#3557
+ * critério de aceite "badge global de gates pendentes"). Polling simples,
+ * mesmo padrão de `run-log-tail.ts`/`plan-watch.ts` — não há evento nativo
+ * de "Map mudou" pra observar. */
+export function watchPendingChatPermissions(
+  rootDir: string,
+  onChange: (pending: PendingPermissionSummary[]) => void,
+  opts: { pollIntervalMs?: number } = {},
+): PendingPermissionWatchHandle {
+  let lastKey = JSON.stringify(listPendingPermissionRequests(rootDir).map((p) => p.toolUseId));
+  const interval = setInterval(() => {
+    const current = listPendingPermissionRequests(rootDir);
+    const key = JSON.stringify(current.map((p) => p.toolUseId));
+    if (key !== lastKey) {
+      lastKey = key;
+      onChange(current);
+    }
+  }, opts.pollIntervalMs ?? 1000);
+  return { close: () => clearInterval(interval) };
+}
+
 // ─── invocação real do SDK (I/O, injetável) ────────────────────────────────
 
 export type QueryFn = (params: { prompt: string; options?: Options }) => Query;
@@ -311,29 +577,66 @@ function defaultQueryFn(params: { prompt: string; options?: Options }): Query {
   return sdkQuery(params);
 }
 
+function denyToolResult(toolName: string): PermissionResult {
+  return {
+    behavior: "deny",
+    message:
+      `Permissão para "${toolName}" exigiria confirmação interativa — o chat drawer só intercepta ` +
+      `AskUserQuestion como form clicável (#3557); outras tool calls seguem negadas por padrão. Rode ` +
+      `essa ação pelo terminal, ou aprove a ferramenta em .claude/settings.json se for segura pra automatizar.`,
+  };
+}
+
 /**
- * TODO(#3557): esta é a peça-chave que a issue-mãe (#3554) descreve como
- * "interceptar AskUserQuestion / permission prompts -> form clicável na UI".
- * Nesta fatia (fundação), qualquer tool call que chegaria a um prompt
- * interativo (ou seja, NÃO já resolvido allow/deny por
- * `.claude/settings.json`/`allowedTools` — essas nunca invocam este
- * callback) é negado com uma mensagem explicativa: a stream SSE de uma
- * request HTTP não tem pra onde mandar um prompt bloqueante ainda. O #3557
- * troca este `deny` fixo por: emitir um evento `chat-permission-request` pro
- * browser, aguardar a resposta do editor (form/card) e resolver a Promise
- * deste callback com o resultado — sem mudar mais nada da mecânica de
- * streaming já construída aqui.
+ * #3557 — a peça-chave que a issue-mãe (#3554) descreve como "interceptar
+ * AskUserQuestion / permission prompts -> form clicável na UI". Qualquer
+ * tool call que chegaria a um prompt interativo (ou seja, NÃO já resolvido
+ * allow/deny por `.claude/settings.json`/`allowedTools` — essas nunca
+ * invocam este callback) continua sendo NEGADA — **exceto** `AskUserQuestion`,
+ * que passa a: (1) parsear `questions[]` via `parseAskUserQuestionInput`
+ * (nega com mensagem clara se o shape vier malformado); (2) emitir
+ * `chat-permission-request` pro browser via `onEvent`; (3) registrar a
+ * Promise de resolução em `pendingByRoot` (chaveada por `toolUseID`) e
+ * `turnPermissionIds` (limpeza de fim-de-turno, ver `runChatTurn`); (4)
+ * retornar essa Promise PENDENTE — sem timeout, resolvida só quando
+ * `resolvePendingPermissionRequest` for chamado (via `POST /api/chat/answer`).
+ * Ampliar esse tratamento pra outras tools é fora de escopo desta issue (ver
+ * corpo do #3557 — "Escopo estrito").
  */
-function makeDenyAllCanUseTool(): CanUseTool {
-  return async (toolName) => {
-    const denial: PermissionResult = {
-      behavior: "deny",
-      message:
-        `Permissão para "${toolName}" exigiria confirmação interativa — o chat drawer ainda não ` +
-        `suporta permission prompts (gancho pro #3557). Rode essa ação pelo terminal, ou aprove a ` +
-        `ferramenta em .claude/settings.json se for segura pra automatizar.`,
-    };
-    return denial;
+function makeInteractiveCanUseTool(
+  rootDir: string,
+  onEvent: (event: ChatWireEvent) => void,
+  turnPermissionIds: Set<string>,
+): CanUseTool {
+  return async (toolName, input, options) => {
+    if (toolName !== "AskUserQuestion") {
+      return denyToolResult(toolName);
+    }
+
+    const questions = parseAskUserQuestionInput(input);
+    if (!questions) {
+      return {
+        behavior: "deny",
+        message:
+          "AskUserQuestion chegou com input malformado — não foi possível renderizar o form no chat drawer.",
+      };
+    }
+
+    const toolUseId = options.toolUseID;
+    const askedAt = Date.now();
+    turnPermissionIds.add(toolUseId);
+    onEvent({ event: "chat-permission-request", data: { toolUseId, questions, askedAt } });
+
+    return new Promise<PermissionResult>((resolve) => {
+      pendingMapFor(rootDir).set(toolUseId, {
+        toolUseId,
+        toolName,
+        input,
+        questions,
+        askedAt,
+        resolve,
+      });
+    });
   };
 }
 
@@ -362,6 +665,16 @@ export interface RunChatTurnOptions {
  */
 export async function runChatTurn(opts: RunChatTurnOptions): Promise<void> {
   const runQuery = opts.queryFn ?? defaultQueryFn;
+  // #3557: ids de gates (AskUserQuestion) abertos DURANTE este turno — num
+  // turno bem-sucedido, o `for await` abaixo já garante que cada um foi
+  // resolvido antes da stream avançar (é o próprio contrato de `canUseTool`:
+  // a tool call não "acontece" até a Promise resolver), então o Map já
+  // estará vazio dessas entries no `finally`. Só importa no caminho de
+  // erro/abort: o `finally` varre esta lista e remove qualquer entry que
+  // ainda esteja pendente (turno morreu antes da resposta chegar) — sem
+  // isso, uma sessão abortada com pergunta em aberto vazaria a entry pra
+  // sempre (Promise nunca resolvida, nunca mais será).
+  const turnPermissionIds = new Set<string>();
   try {
     const stream = runQuery({
       prompt: opts.message,
@@ -375,7 +688,7 @@ export async function runChatTurn(opts: RunChatTurnOptions): Promise<void> {
         settingSources: ["user", "project", "local"],
         includePartialMessages: true,
         permissionMode: "default",
-        canUseTool: makeDenyAllCanUseTool(),
+        canUseTool: makeInteractiveCanUseTool(opts.cwd, opts.onEvent, turnPermissionIds),
         abortController: opts.abortController,
       },
     });
@@ -387,5 +700,9 @@ export async function runChatTurn(opts: RunChatTurnOptions): Promise<void> {
     }
   } catch (e) {
     opts.onEvent({ event: "chat-error", data: { message: describeChatError(e) } });
+  } finally {
+    for (const toolUseId of turnPermissionIds) {
+      clearPendingPermissionRequestIfUnresolved(opts.cwd, toolUseId);
+    }
   }
 }

@@ -17,6 +17,8 @@ import {
   type StudioEditionSummary,
 } from "../scripts/studio-ui/studio-state.ts";
 import { saveDoc, makeInitialDoc, applyUpdate } from "../scripts/update-stage-status.ts";
+import { runChatTurn, type QueryFn } from "../scripts/studio-ui/studio-chat.ts";
+import type { CanUseTool, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 function setupRoot(): { root: string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), "studio-state-"));
@@ -241,7 +243,58 @@ describe("buildStudioState (#3555)", () => {
       assert.deepEqual(state.gatesPending, []);
       assert.equal(state.overnight, null);
       assert.equal(state.develop, null);
+      assert.deepEqual(state.chatPermissionsPending, []);
       assert.ok(state.generatedAt);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("chatPermissionsPending (#3557): reflete um gate AskUserQuestion aberto pelo chat drawer", async () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      assert.deepEqual(buildStudioState(root).chatPermissionsPending, []);
+
+      const fakeQuery: QueryFn = (params) => {
+        async function* gen() {
+          const canUseTool = params.options?.canUseTool as CanUseTool;
+          // nunca resolvido nesta rodada — só precisamos que o gate FIQUE
+          // pendente pra observar `buildStudioState` enquanto isso.
+          void canUseTool(
+            "AskUserQuestion",
+            {
+              questions: [
+                {
+                  question: "Qual rumo?",
+                  header: "Rumo",
+                  multiSelect: false,
+                  options: [
+                    { label: "A", description: "a" },
+                    { label: "B", description: "b" },
+                  ],
+                },
+              ],
+            },
+            { signal: new AbortController().signal, toolUseID: "tu-state-1", requestId: "req-1" },
+          );
+          // o `finally` de runChatTurn só varre gates AINDA sem resposta —
+          // pra observar o estado pendente de fora, o turno precisa continuar
+          // "vivo" (sem terminar) enquanto o teste consulta buildStudioState.
+          await new Promise(() => {}); // nunca resolve — mantém o turno em aberto de propósito.
+          yield { type: "result", subtype: "success", is_error: false, result: "fim", session_id: "s1" } as unknown as SDKMessage;
+        }
+        return gen() as unknown as ReturnType<QueryFn>;
+      };
+
+      // dispara sem aguardar — o turno fica pendurado de propósito (ver
+      // comentário acima), então não faz sentido (nem é seguro) dar `await`.
+      void runChatTurn({ message: "oi", cwd: root, queryFn: fakeQuery, onEvent: () => {} });
+      await new Promise((r) => setImmediate(r));
+
+      const state = buildStudioState(root);
+      assert.equal(state.chatPermissionsPending.length, 1);
+      assert.equal(state.chatPermissionsPending[0].toolUseId, "tu-state-1");
+      assert.equal(state.chatPermissionsPending[0].firstQuestion, "Qual rumo?");
     } finally {
       cleanup();
     }

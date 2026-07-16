@@ -20,10 +20,20 @@
 // browser/perfil, não entre browsers diferentes — histórico multi-cliente é
 // escopo maior, fora desta fundação).
 //
-// TODO(#3557): permission prompts hoje são negados automaticamente pelo
-// server (ver `makeDenyAllCanUseTool` em studio-chat.ts) — este módulo só
-// exibe o chip "negado" quando isso acontece. A troca por um card
-// aprovar/negar entra quando o server emitir `chat-permission-request`.
+// #3557: quando a sessão chama `AskUserQuestion`, o server NÃO nega mais —
+// emite `chat-permission-request` (ver `makeInteractiveCanUseTool` em
+// studio-chat.ts) e este módulo renderiza um card/form (header + opções
+// clicáveis + campo livre "Other" + botão "Responder"). O clique faz
+// `POST /api/chat/answer` com `{toolUseId, answers, response?}` — a stream
+// SSE já aberta desta MESMA sendMessage() retoma sozinha assim que o server
+// resolve a Promise pendente (o `chat-tool` "end" da própria AskUserQuestion
+// chega depois, pela mesma stream). Sem timeout por design — só mostramos
+// "esperando há Xmin" client-side. Qualquer OUTRA tool call negada continua
+// aparecendo como chip "negado" (`onToolDenied`, inalterado).
+// Badge global (contador no `chat-toggle`): assina `/api/events` (SSE já
+// existente de `/api/state`) só pelo campo `chatPermissionsPending` — assim
+// o contador funciona mesmo em páginas sem o drawer aberto, e mesmo antes de
+// qualquer mensagem ter sido enviada nesta aba.
 // TODO(#3561/#3562): briefings e ações-por-botão (que "injetam prompt" nesta
 // mesma sessão, com o texto visível/editável antes de enviar) são outras
 // fatias — este módulo só expõe `window.diariaStudioChat.sendMessage(text)`
@@ -53,7 +63,9 @@ function persistSessionId(id) {
 const toggle = document.createElement("button");
 toggle.className = "chat-toggle";
 toggle.type = "button";
-toggle.innerHTML = '<span class="chat-toggle-dot" id="chat-toggle-dot"></span>Chat';
+toggle.innerHTML =
+  '<span class="chat-toggle-dot" id="chat-toggle-dot"></span>Chat' +
+  '<span class="chat-toggle-badge" id="chat-toggle-badge" style="display:none"></span>';
 
 const drawer = document.createElement("aside");
 drawer.className = "chat-drawer";
@@ -70,8 +82,9 @@ drawer.innerHTML = `
   </div>
   <div class="chat-hint">
     Sessão real (Claude Agent SDK) rodando no studio-server local — mesmas
-    skills/MCPs/CLAUDE.md do terminal. Permission prompts ainda não têm UI
-    própria (ver #3557): ações que pediriam confirmação aparecem negadas.
+    skills/MCPs/CLAUDE.md do terminal. Perguntas da sessão (AskUserQuestion)
+    aparecem como formulário abaixo, sem prazo pra responder; qualquer outra
+    ação que pediria confirmação interativa aparece negada.
   </div>
 `;
 
@@ -80,6 +93,7 @@ document.body.appendChild(drawer);
 
 const el = {
   toggleDot: toggle.querySelector("#chat-toggle-dot"),
+  toggleBadge: toggle.querySelector("#chat-toggle-badge"),
   messages: drawer.querySelector("#chat-messages"),
   input: drawer.querySelector("#chat-input"),
   send: drawer.querySelector("#chat-send"),
@@ -90,6 +104,36 @@ const el = {
 function setToggleStatus(status) {
   // "ok" | "down" | "" (idle) — mesmo vocabulário do dot de /api/events.
   el.toggleDot.className = "chat-toggle-dot " + status;
+}
+
+// #3557: badge global de gates pendentes (AskUserQuestion aguardando
+// resposta), visível mesmo com o drawer fechado/em outra aba deste mesmo
+// browser — fonte é `state.chatPermissionsPending` (studio-state.ts),
+// atualizado por assinatura própria de `/api/events` (independente de
+// app.js, que só existe em index.html — chat-drawer.js é injetado em várias
+// páginas e precisa funcionar sozinho em todas).
+function setPendingBadge(count) {
+  if (count > 0) {
+    el.toggleBadge.textContent = String(count);
+    el.toggleBadge.style.display = "";
+  } else {
+    el.toggleBadge.style.display = "none";
+  }
+}
+
+try {
+  const statusEvents = new EventSource("/api/events");
+  statusEvents.addEventListener("state", (ev) => {
+    try {
+      const state = JSON.parse(ev.data);
+      setPendingBadge(Array.isArray(state.chatPermissionsPending) ? state.chatPermissionsPending.length : 0);
+    } catch {
+      // payload malformado — o badge simplesmente não atualiza neste tick.
+    }
+  });
+} catch {
+  // EventSource indisponível (ambiente de teste/sem browser real) — badge
+  // fica em 0, sem quebrar o resto do drawer.
 }
 
 function openDrawer() {
@@ -203,6 +247,126 @@ function onToolDenied(data) {
   scrollToBottom();
 }
 
+// ─── AskUserQuestion como form (#3557) ─────────────────────────────────────
+
+function formatWaited(askedAtMs) {
+  const mins = Math.floor((Date.now() - askedAtMs) / 60000);
+  return mins > 0 ? `esperando há ${mins}min` : "esperando…";
+}
+
+/** Renderiza `data.questions` (1-4 perguntas, 2-4 opções cada, single ou
+ * multi-select + "Other" livre) como um card no fluxo de mensagens, e
+ * resolve via `POST /api/chat/answer` quando o editor clica "Responder". Sem
+ * timeout — o card fica ali indefinidamente até ser respondido (mesma
+ * semântica bloqueante do terminal); só o texto "esperando há Xmin" muda
+ * sozinho (client-side, a partir de `data.askedAt`). */
+function onPermissionRequest(data) {
+  const card = document.createElement("div");
+  card.className = "chat-permission-card";
+
+  // 1 entrada de estado por pergunta: seleção (array de labels — só 1 item
+  // quando não multiSelect) + texto livre digitado em "Other".
+  const state = data.questions.map(() => ({ selected: [], freeform: "" }));
+
+  const waitedEl = document.createElement("div");
+  waitedEl.className = "chat-permission-waited";
+  waitedEl.textContent = formatWaited(data.askedAt);
+  card.appendChild(waitedEl);
+  const waitedTimer = setInterval(() => {
+    waitedEl.textContent = formatWaited(data.askedAt);
+  }, 15_000);
+
+  data.questions.forEach((q, qi) => {
+    const qEl = document.createElement("div");
+    qEl.className = "chat-permission-question";
+
+    const header = document.createElement("span");
+    header.className = "chat-permission-header-chip";
+    header.textContent = q.header;
+    qEl.appendChild(header);
+
+    const questionText = document.createElement("div");
+    questionText.className = "chat-permission-question-text";
+    questionText.textContent = q.question;
+    qEl.appendChild(questionText);
+
+    const optsWrap = document.createElement("div");
+    optsWrap.className = "chat-permission-options";
+    for (const opt of q.options) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chat-permission-option";
+      btn.textContent = opt.label;
+      if (opt.description) btn.title = opt.description;
+      btn.addEventListener("click", () => {
+        if (q.multiSelect) {
+          const idx = state[qi].selected.indexOf(opt.label);
+          if (idx === -1) state[qi].selected.push(opt.label);
+          else state[qi].selected.splice(idx, 1);
+        } else {
+          state[qi].selected = [opt.label];
+        }
+        for (const b of optsWrap.querySelectorAll(".chat-permission-option")) {
+          b.classList.toggle("selected", state[qi].selected.includes(b.textContent));
+        }
+      });
+      optsWrap.appendChild(btn);
+    }
+    qEl.appendChild(optsWrap);
+
+    const otherInput = document.createElement("input");
+    otherInput.type = "text";
+    otherInput.className = "chat-permission-other";
+    otherInput.placeholder = "Other (resposta livre)";
+    otherInput.addEventListener("input", () => {
+      state[qi].freeform = otherInput.value;
+    });
+    qEl.appendChild(otherInput);
+
+    card.appendChild(qEl);
+  });
+
+  const submit = document.createElement("button");
+  submit.type = "button";
+  submit.className = "chat-permission-submit";
+  submit.textContent = "Responder";
+  submit.addEventListener("click", async () => {
+    submit.disabled = true;
+    const answers = {};
+    let response;
+    data.questions.forEach((q, qi) => {
+      const st = state[qi];
+      if (st.freeform.trim()) {
+        answers[q.question] = st.freeform.trim();
+        if (data.questions.length === 1) response = st.freeform.trim();
+      } else {
+        answers[q.question] = st.selected.join(", ");
+      }
+    });
+    try {
+      const res = await fetch("/api/chat/answer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toolUseId: data.toolUseId, answers, response }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.ok === false) {
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      clearInterval(waitedTimer);
+      card.classList.add("resolved");
+      for (const elx of card.querySelectorAll("button, input")) elx.disabled = true;
+    } catch (e) {
+      submit.disabled = false;
+      appendErrorNote(`falha ao enviar resposta: ${e.message}`);
+    }
+  });
+  card.appendChild(submit);
+
+  el.messages.appendChild(card);
+  scrollToBottom();
+}
+
 // ─── parsing SSE manual (fetch não dá EventSource pra POST) ────────────
 
 /** Faz o parsing incremental de um stream SSE lido via `fetch` (sem
@@ -297,6 +461,8 @@ async function sendMessage(text) {
           if (data.status === "start") onToolStart(data);
           else if (data.status === "end") onToolEnd(data);
           else if (data.status === "denied") onToolDenied(data);
+        } else if (eventName === "chat-permission-request") {
+          onPermissionRequest(data);
         } else if (eventName === "chat-done") {
           if (data.sessionId) persistSessionId(data.sessionId);
           finalizeAssistantMessage();
