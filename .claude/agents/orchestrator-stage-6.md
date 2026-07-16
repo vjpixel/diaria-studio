@@ -345,9 +345,14 @@ Se ha sinais, disparar agent `auto-reporter` via `Agent` com `edition_dir` e `re
    {reported_count}/{signals_total} sinais reportados, {issues_created} novas issues criadas, {issues_commented} issues comentadas.
 ```
 
-### 6b-6. Enviar relatorio por email (#1510)
+### 6b-6. Gerar report HTML — pre-requisito pra fechar o Stage 6 (#1510)
 
-Ultimo passo do pipeline:
+**Nao e o ultimo passo do pipeline (#3457)** — esta geracao existe so pra satisfazer
+`blockReasonForMarkingStageDone` (stage 6), que exige `_internal/edition-report.html`
+presente antes de aceitar `--status done` (ver 6b-7). Como o Stage 6 ainda esta `running`
+neste ponto, a linha do stage 6 na propria tabela do report sai sem duracao medida — este
+arquivo e descartavel, **nao e o que vai pro rascunho de e-mail** (isso so acontece em
+6b-8, depois do timer fechar):
 
 ```bash
 npx tsx scripts/send-edition-report.ts \
@@ -356,16 +361,14 @@ npx tsx scripts/send-edition-report.ts \
   --out {EDITION_DIR}/_internal/edition-report.html
 ```
 
-**INVARIANTE (#1579):** Enviar via Gmail MCP `create_draft` (to: `vjpixel@gmail.com`, subject: `Diar.ia {AAMMDD} — relatorio de edicao`, htmlBody: `readFileSync('_internal/edition-report.html', 'utf8')` LITERAL). **NUNCA construir htmlBody programaticamente.**
+### 6b-7. Marcar Stage 6 `done` (#2800) — fecha o timer da edicao
 
-**Falha nao bloqueia** — logar warn e seguir.
-
-### 6b-7. Marcar Stage 6 `done` (#2800)
-
-Ultimo passo do pipeline. So agora `_internal/edition-report.html` existe (escrito em 6b-6) —
+So agora `_internal/edition-report.html` existe (escrito em 6b-6) —
 `blockReasonForMarkingStageDone` para o stage 6 exige esse arquivo (+ `scheduled_at` em
 `05-published.json`, ja setado em 6e) — entao rodar o `--status done` AQUI (e nao em 6f)
-e a transicao tem sucesso:
+e a transicao tem sucesso. **Isto fecha o timer da edicao (#3457)** — o `end` e
+auto-carimbado agora, ANTES de qualquer trabalho de montar/enviar o rascunho de e-mail
+(6b-8), pra que o tempo desse envio nao va pra dentro da duracao do Stage 6:
 
 ```bash
 npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 6 --status done
@@ -377,9 +380,31 @@ npx tsx scripts/capture-stage-usage.ts --edition-dir {EDITION_DIR}/ --stage 6
 ```
 
 Falha (exit != 0) → logar warn com o motivo impresso pelo script; nao bloquear o resto do
-fluxo (relatorio ja foi enviado). Se isso acontecer, a barra de status pode ficar presa em
-`running` ate reconciliacao (ver `reconcileZombieRunningRows` em `scripts/overnight-statusline.ts`,
-que detecta `.step-6-done.json` presente + row `running` e corrige a exibicao sem escrita).
+fluxo (relatorio ainda vai ser enviado em 6b-8). Se isso acontecer, a barra de status pode
+ficar presa em `running` ate reconciliacao (ver `reconcileZombieRunningRows` em
+`scripts/overnight-statusline.ts`, que detecta `.step-6-done.json` presente + row `running`
+e corrige a exibicao sem escrita).
+
+### 6b-8. Regenerar o report + criar o rascunho de e-mail (#1510, #3457) — ULTIMO passo do pipeline
+
+Com o Stage 6 ja `done` (timer fechado em 6b-7), regenerar `edition-report.html`: agora a
+linha do Stage 6 na tabela tem `end`/duracao carimbados, entao a duracao total do relatorio
+reflete o processamento real do stage (Schedule Beehiiv, verificacao, purga de leaderboard,
+auto-reporter) em vez de ficar subcontada por excluir esse tempo (causa-raiz #3457 — o
+report antigo era gerado, e o e-mail montado a partir dele, ANTES do Stage 6 fechar o
+timer). So depois disso, criar o rascunho do e-mail — a criacao do rascunho e a acao
+literalmente final do pipeline inteiro:
+
+```bash
+npx tsx scripts/send-edition-report.ts \
+  --edition {AAMMDD} \
+  --edition-dir {EDITION_DIR}/ \
+  --out {EDITION_DIR}/_internal/edition-report.html
+```
+
+**INVARIANTE (#1579):** Enviar via Gmail MCP `create_draft` (to: `vjpixel@gmail.com`, subject: `Diar.ia {AAMMDD} — relatorio de edicao`, htmlBody: `readFileSync('_internal/edition-report.html', 'utf8')` LITERAL — o arquivo REGENERADO nesta etapa, nao o descartavel de 6b-6). **NUNCA construir htmlBody programaticamente.**
+
+**Falha nao bloqueia** — logar warn e seguir.
 
 ---
 
