@@ -36,6 +36,19 @@
  * de escopo nesta entrega: edição/remoção de eventos de outreach individuais
  * (só append), busca/filtro server-side (a UI filtra client-side sobre o
  * snapshot, mesmo padrão de `triagem.js`).
+ *
+ * **Taxa de abertura Beehiiv (#3612):** sinal adicional de engajamento,
+ * INDEPENDENTE do status de apoio acima — vem de um cache separado
+ * (`data/apoia-se/beehiiv-open-rate.json`) populado manualmente por uma
+ * sessão com o MCP `claude_ai_Beehiiv` conectado (`get_subscription` só
+ * está disponível na sessão top-level interativa, não em subagente
+ * headless — não existe REST fallback hoje porque `BEEHIIV_API_KEY` está
+ * vazio em `.env`, mesma lacuna de #3580). O painel LÊ desse cache, nunca
+ * chama a API Beehiiv ao vivo. `deriveOpenRate` segue o MESMO padrão de
+ * `deriveContactStatus`: cruza TODOS os emails do contato contra o cache;
+ * aqui, em vez de "qualquer email que bate", usa o email com MAIS
+ * `totalDelivered` quando mais de 1 bate. Cache ausente/corrompido/vazio →
+ * `openRate: null` em todos os contatos, nunca quebra o painel.
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
@@ -109,8 +122,26 @@ export interface PendingFollowup {
   lastOutreachChannel: string;
 }
 
+/** Taxa de abertura/clique histórica (Beehiiv) casada por email — #3612.
+ * `null` quando nenhum email do contato está no cache. */
+export interface OpenRateInfo {
+  subscriptionId: string;
+  totalDelivered: number;
+  totalUniqueOpened: number;
+  openRatePct: number;
+  clickRatePct: number;
+  fetchedAt: string;
+}
+
+/** Cache lido de `data/apoia-se/beehiiv-open-rate.json` — chaves normalizadas
+ * (lowercase/trim), mesmo tratamento de `normalizeEmailList`. */
+export type OpenRateCache = Record<string, OpenRateInfo>;
+
 export interface ContactWithStatus extends ApoioContact {
   status: ContactBackerStatus;
+  /** `null` sempre que o cache está ausente/corrompido ou nenhum email do
+   * contato tem entrada nele — independente do status de apoio (#3612). */
+  openRate: OpenRateInfo | null;
 }
 
 export interface ApoiosData {
@@ -343,6 +374,28 @@ export function deriveContactStatus(
   return { label: "nao_apoia" };
 }
 
+/**
+ * Deriva a taxa de abertura Beehiiv de um contato cruzando TODOS os seus
+ * emails contra o cache (#3612). Mesmo padrão de `deriveContactStatus`
+ * (cruza múltiplos emails), mas a regra de desempate é diferente: em vez de
+ * "qualquer email que bate" (apoia.se, onde só 1 email de cada vez é
+ * ativo), aqui MAIS de 1 email pode legitimamente ter histórico de envio
+ * Beehiiv (ex: contato trocou de email de assinatura) — usa o que tem MAIS
+ * `totalDelivered` (sinal mais robusto/mais amostras). `null` se nenhum
+ * email do contato está no cache.
+ */
+export function deriveOpenRate(contact: ApoioContact, cache: OpenRateCache): OpenRateInfo | null {
+  let best: OpenRateInfo | null = null;
+  for (const email of normalizeEmailList(contact.emails)) {
+    const info = cache[email];
+    if (!info) continue;
+    if (!best || info.totalDelivered > best.totalDelivered) {
+      best = info;
+    }
+  }
+  return best;
+}
+
 // ── agregação de campanha (puro) ────────────────────────────────────────
 
 export function emptyCampaignSummary(): CampaignSummary {
@@ -464,6 +517,67 @@ export function readPastMonthSnapshots(cacheDir: string, currentMonth: string): 
   return snapshots;
 }
 
+// ── I/O: cache de taxa de abertura Beehiiv (leitura fail-soft, #3612) ───
+
+export function openRateCachePath(rootDir: string): string {
+  return resolve(rootDir, "data", "apoia-se", "beehiiv-open-rate.json");
+}
+
+/** Valida o shape de 1 entrada crua do cache — descarta silenciosamente
+ * entradas malformadas (mesmo espírito de `sanitizeOutreachEntry`: o
+ * arquivo é populado por um processo externo/manual, nunca confiar cego). */
+function sanitizeOpenRateEntry(raw: unknown): OpenRateInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.subscriptionId !== "string" ||
+    typeof r.totalDelivered !== "number" ||
+    typeof r.totalUniqueOpened !== "number" ||
+    typeof r.openRatePct !== "number" ||
+    typeof r.clickRatePct !== "number" ||
+    typeof r.fetchedAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    subscriptionId: r.subscriptionId,
+    totalDelivered: r.totalDelivered,
+    totalUniqueOpened: r.totalUniqueOpened,
+    openRatePct: r.openRatePct,
+    clickRatePct: r.clickRatePct,
+    fetchedAt: r.fetchedAt,
+  };
+}
+
+/**
+ * Lê `data/apoia-se/beehiiv-open-rate.json` (#3612) — arquivo LOCAL,
+ * gitignored, populado manualmente por uma sessão com MCP Beehiiv conectado
+ * (ver doc-comment do módulo). Fail-soft total: arquivo ausente, JSON
+ * corrompido, shape inesperado, ou entrada individual malformada → nunca
+ * lança, na pior hipótese devolve `{}` (todo contato aparece com
+ * `openRate: null`). Chaves normalizadas (lowercase/trim) pra casar direto
+ * contra `normalizeEmailList`.
+ */
+export function loadOpenRateCache(rootDir: string): OpenRateCache {
+  const path = openRateCachePath(rootDir);
+  if (!existsSync(path)) return {};
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    return {};
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const cache: OpenRateCache = {};
+  for (const [rawEmail, value] of Object.entries(raw as Record<string, unknown>)) {
+    const email = rawEmail.trim().toLowerCase();
+    if (!email) continue;
+    const entry = sanitizeOpenRateEntry(value);
+    if (entry) cache[email] = entry;
+  }
+  return cache;
+}
+
 // ── I/O: consulta ao vivo do mês corrente (reusa checkBacker) ───────────
 
 export interface FetchCurrentStatusesResult {
@@ -514,10 +628,13 @@ export interface BuildApoiosDataOptions {
   cacheDir?: string;
   fetchImpl?: typeof fetch;
   limiter?: CheckBackerOptions["limiter"];
+  /** Injetável pra testes — evita I/O de `beehiiv-open-rate.json` real
+   * (#3612). Default: `loadOpenRateCache(rootDir)`. */
+  openRateCache?: OpenRateCache;
 }
 
-function toSemDados(contacts: ApoioContact[]): ContactWithStatus[] {
-  return contacts.map((c) => ({ ...c, status: { label: "sem_dados" as const } }));
+function toSemDados(contacts: ApoioContact[], openRateCache: OpenRateCache): ContactWithStatus[] {
+  return contacts.map((c) => ({ ...c, status: { label: "sem_dados" as const }, openRate: deriveOpenRate(c, openRateCache) }));
 }
 
 /**
@@ -545,11 +662,17 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
     return { contacts: [], campaign: emptyCampaignSummary(), pendingFollowups: [], error: (e as Error).message, generatedAt };
   }
 
+  // Taxa de abertura Beehiiv (#3612) é um sinal INDEPENDENTE do status de
+  // apoio apoia.se — carregado cedo, antes do gate de credenciais abaixo,
+  // pra aparecer em TODOS os caminhos de retorno (inclusive quando as
+  // credenciais apoia.se estão ausentes).
+  const openRateCache = opts.openRateCache ?? loadOpenRateCache(rootDir);
+
   let env: ApoiaSeEnv;
   try {
     env = opts.env ?? readApoiaSeEnv();
   } catch (e) {
-    const withStatus = toSemDados(contacts);
+    const withStatus = toSemDados(contacts, openRateCache);
     return {
       contacts: withStatus,
       campaign: computeCampaignSummary(withStatus),
@@ -590,10 +713,10 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
     if (status.label === "nao_apoia") {
       const hasUnresolvedEmail = normalizeEmailList(c.emails).some((e) => !resolvedEmails.has(e));
       if (hasUnresolvedEmail) {
-        return { ...c, status: { label: "sem_dados" } };
+        return { ...c, status: { label: "sem_dados" }, openRate: deriveOpenRate(c, openRateCache) };
       }
     }
-    return { ...c, status };
+    return { ...c, status, openRate: deriveOpenRate(c, openRateCache) };
   });
 
   return {

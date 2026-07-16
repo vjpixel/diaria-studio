@@ -192,6 +192,20 @@
 .status-apoiou_e_parou { border-color: #e67e22; color: #e67e22; }
 .status-sem_dados { border-style: dashed; opacity: 0.6; }
 
+/* #3612: taxa de abertura Beehiiv — mesmo tratamento visual de .status-badge,
+   badge separado porque é um sinal ortogonal ao status de apoio. */
+.open-rate-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  white-space: nowrap;
+}
+.open-rate-ok { border-color: #1a73e8; color: #1a73e8; }
+.open-rate-sem-dados { border-style: dashed; opacity: 0.6; }
+
 .followup-tag {
   display: inline-block;
   font-size: 0.68rem;

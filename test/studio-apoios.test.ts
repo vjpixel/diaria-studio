@@ -21,6 +21,9 @@ import {
   findContact,
   upsertContact,
   deriveContactStatus,
+  deriveOpenRate,
+  loadOpenRateCache,
+  openRateCachePath,
   computeCampaignSummary,
   computePendingFollowups,
   emptyCampaignSummary,
@@ -39,6 +42,8 @@ import {
   parseOutreachEventBody,
   type ApoioContact,
   type ContactWithStatus,
+  type OpenRateInfo,
+  type OpenRateCache,
 } from "../scripts/studio-ui/studio-apoios.ts";
 import type { ApoiaSeEnv, BackerStatus } from "../scripts/lib/apoia-se.ts";
 
@@ -238,6 +243,113 @@ describe("deriveContactStatus (#3602)", () => {
 
   it("nao_apoia quando email não está em nenhum cache", () => {
     assert.equal(deriveContactStatus(["a@x.com"], {}, []).label, "nao_apoia");
+  });
+});
+
+// ─── taxa de abertura Beehiiv (#3612) ───────────────────────────────────
+
+function makeOpenRateInfo(overrides: Partial<OpenRateInfo> = {}): OpenRateInfo {
+  return {
+    subscriptionId: "sub-1",
+    totalDelivered: 10,
+    totalUniqueOpened: 5,
+    openRatePct: 50,
+    clickRatePct: 10,
+    fetchedAt: "2026-07-16T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("deriveOpenRate (#3612)", () => {
+  it("1 email do contato bate no cache -> retorna os stats certos", () => {
+    const contact = makeContact({ emails: ["fulano@x.com"] });
+    const cache: OpenRateCache = { "fulano@x.com": makeOpenRateInfo({ openRatePct: 82 }) };
+    const result = deriveOpenRate(contact, cache);
+    assert.equal(result?.openRatePct, 82);
+    assert.equal(result?.subscriptionId, "sub-1");
+  });
+
+  it("múltiplos emails, mais de 1 bate no cache -> retorna o de MAIOR totalDelivered", () => {
+    const contact = makeContact({ emails: ["a@x.com", "b@x.com"] });
+    const cache: OpenRateCache = {
+      "a@x.com": makeOpenRateInfo({ subscriptionId: "sub-a", totalDelivered: 8 }),
+      "b@x.com": makeOpenRateInfo({ subscriptionId: "sub-b", totalDelivered: 40 }),
+    };
+    const result = deriveOpenRate(contact, cache);
+    assert.equal(result?.subscriptionId, "sub-b");
+    assert.equal(result?.totalDelivered, 40);
+  });
+
+  it("nenhum email do contato está no cache -> null", () => {
+    const contact = makeContact({ emails: ["nao-cadastrado@x.com"] });
+    const cache: OpenRateCache = { "outro@x.com": makeOpenRateInfo() };
+    assert.equal(deriveOpenRate(contact, cache), null);
+  });
+
+  it("cache vazio -> null, sem lançar", () => {
+    const contact = makeContact({ emails: ["fulano@x.com"] });
+    assert.equal(deriveOpenRate(contact, {}), null);
+  });
+
+  it("casa email em maiúscula/com espaço via normalização (mesmo padrão de deriveContactStatus)", () => {
+    const contact = makeContact({ emails: ["fulano@x.com"] }); // já normalizado na leitura
+    const cache: OpenRateCache = { "fulano@x.com": makeOpenRateInfo() };
+    assert.notEqual(deriveOpenRate(contact, cache), null);
+  });
+});
+
+describe("loadOpenRateCache (#3612)", () => {
+  let root: string;
+
+  before(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-apoios-openrate-"));
+  });
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("arquivo ausente -> {} (sem lançar)", () => {
+    const dir = join(root, "missing");
+    mkdirSync(dir, { recursive: true });
+    assert.deepEqual(loadOpenRateCache(dir), {});
+  });
+
+  it("JSON corrompido -> {} (sem lançar)", () => {
+    const dir = join(root, "corrupted");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(openRateCachePath(dir), "{ nao é json válido");
+    assert.deepEqual(loadOpenRateCache(dir), {});
+  });
+
+  it("array no lugar de objeto -> {} (shape inesperado)", () => {
+    const dir = join(root, "array-shape");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(openRateCachePath(dir), JSON.stringify([1, 2, 3]));
+    assert.deepEqual(loadOpenRateCache(dir), {});
+  });
+
+  it("arquivo válido -> parseia e normaliza chaves (lowercase/trim)", () => {
+    const dir = join(root, "valid");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(
+      openRateCachePath(dir),
+      JSON.stringify({ " Fulano@X.com ": makeOpenRateInfo({ openRatePct: 91 }) }),
+    );
+    const cache = loadOpenRateCache(dir);
+    assert.equal(cache["fulano@x.com"]?.openRatePct, 91);
+  });
+
+  it("entrada individual malformada é descartada, resto do cache sobrevive", () => {
+    const dir = join(root, "partial-malformed");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(
+      openRateCachePath(dir),
+      JSON.stringify({
+        "bom@x.com": makeOpenRateInfo({ openRatePct: 70 }),
+        "ruim@x.com": { openRatePct: "not-a-number" }, // faltam campos + tipo errado
+      }),
+    );
+    const cache = loadOpenRateCache(dir);
+    assert.equal(cache["bom@x.com"]?.openRatePct, 70);
+    assert.equal("ruim@x.com" in cache, false);
   });
 });
 
@@ -545,6 +657,61 @@ describe("buildApoiosData (#3602)", () => {
       assert.equal(result.campaign.totalContacts, 3);
       assert.equal(result.campaign.totalConverted, 1);
       assert.equal(result.campaign.monthlyValueSum, 20);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  // ── #3612: cache de taxa de abertura Beehiiv é ortogonal ao status de
+  // apoio — cobre os 2 caminhos de retorno que constroem ContactWithStatus
+  // (credenciais ausentes E caminho feliz), garantindo fail-soft total.
+
+  it("cache de open-rate ausente/vazio -> TODOS os contatos com openRate: null (mesmo sem credenciais apoia.se)", async () => {
+    const saved = {
+      key: process.env.APOIA_SE_API_KEY,
+      secret: process.env.APOIA_SE_API_SECRET,
+      campaign: process.env.APOIA_SE_CAMPAIGN,
+    };
+    delete process.env.APOIA_SE_API_KEY;
+    delete process.env.APOIA_SE_API_SECRET;
+    delete process.env.APOIA_SE_CAMPAIGN;
+    try {
+      const contacts = [makeContact({ id: "c1", emails: ["fulano@x.com"] })];
+      const result = await buildApoiosData("irrelevant-root", { now: FIXED_NOW, contacts, openRateCache: {} });
+      assert.equal(result.contacts[0].status.label, "sem_dados"); // credenciais ausentes
+      assert.equal(result.contacts[0].openRate, null); // cache vazio, sem lançar
+    } finally {
+      if (saved.key !== undefined) process.env.APOIA_SE_API_KEY = saved.key;
+      if (saved.secret !== undefined) process.env.APOIA_SE_API_SECRET = saved.secret;
+      if (saved.campaign !== undefined) process.env.APOIA_SE_CAMPAIGN = saved.campaign;
+    }
+  });
+
+  it("caminho feliz: openRate populado via cache injetado, independente do status de apoio", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-openrate-happy-cache-"));
+    try {
+      const contacts = [
+        makeContact({ id: "c1", name: "Ativo", emails: ["ativo@x.com"] }),
+        makeContact({ id: "c2", name: "SemAbertura", emails: ["sem-abertura@x.com"] }),
+      ];
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 })) as typeof fetch;
+      const openRateCache: OpenRateCache = {
+        "ativo@x.com": makeOpenRateInfo({ subscriptionId: "sub-ativo", openRatePct: 77 }),
+      };
+
+      const result = await buildApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        openRateCache,
+      });
+
+      const byId = Object.fromEntries(result.contacts.map((c) => [c.id, c.openRate]));
+      assert.equal(byId.c1?.openRatePct, 77);
+      assert.equal(byId.c2, null);
     } finally {
       rmSync(cacheDir, { recursive: true, force: true });
     }

@@ -18,10 +18,11 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
+import { openRateCachePath } from "../scripts/studio-ui/studio-apoios.ts";
 
 const ENV_KEYS = ["APOIA_SE_API_KEY", "APOIA_SE_API_SECRET", "APOIA_SE_CAMPAIGN"] as const;
 
@@ -112,7 +113,30 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.equal(body.contacts.length, 1);
     assert.equal(body.contacts[0].id, createdId);
     assert.equal(body.contacts[0].status.label, "sem_dados");
+    assert.equal(body.contacts[0].openRate, null); // sem cache de open-rate ainda (#3612)
     assert.equal(body.campaign.totalContacts, 1);
+  });
+
+  it("GET /api/apoios reflete o cache de taxa de abertura Beehiiv quando presente (#3612, fixture mockada — nunca o arquivo real de data/)", async () => {
+    mkdirSync(join(root, "data", "apoia-se"), { recursive: true });
+    writeFileSync(
+      openRateCachePath(root),
+      JSON.stringify({
+        "fulano@x.com": {
+          subscriptionId: "sub-fulano",
+          totalDelivered: 12,
+          totalUniqueOpened: 9,
+          openRatePct: 75,
+          clickRatePct: 20,
+          fetchedAt: "2026-07-16T00:00:00.000Z",
+        },
+      }),
+    );
+    const res = await fetch(new URL("/api/apoios", server.url));
+    const body = await res.json();
+    const contact = body.contacts.find((c: { id: string }) => c.id === createdId);
+    assert.equal(contact.openRate.subscriptionId, "sub-fulano");
+    assert.equal(contact.openRate.openRatePct, 75);
   });
 
   it("PUT /api/apoios/contacts/:id atualiza o contato", async () => {

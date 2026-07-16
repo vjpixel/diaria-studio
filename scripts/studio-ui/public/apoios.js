@@ -112,6 +112,19 @@ function statusBadge(status) {
   return `<span class="status-badge status-${status.label}">${escapeHtml(label)}${extra}</span>`;
 }
 
+// #3612: taxa de abertura Beehiiv — sinal independente do status de apoio,
+// vem de um cache separado (data/apoia-se/beehiiv-open-rate.json) populado
+// manualmente. `openRate` é `null` quando o cache está ausente/sem match
+// pro contato — mostra "sem dados" (nunca quebra a UI, mesmo padrão do
+// status-badge "sem_dados").
+function openRateBadge(openRate) {
+  if (!openRate || typeof openRate.openRatePct !== "number") {
+    return '<span class="open-rate-badge open-rate-sem-dados">abertura: sem dados</span>';
+  }
+  const pct = Math.round(openRate.openRatePct);
+  return `<span class="open-rate-badge open-rate-ok" title="${escapeHtml(String(openRate.totalUniqueOpened))}/${escapeHtml(String(openRate.totalDelivered))} aberturas · click ${escapeHtml(String(Math.round(openRate.clickRatePct)))}%">abertura: ${pct}%</span>`;
+}
+
 function renderError() {
   if (data.error) {
     el.error.hidden = false;
@@ -166,6 +179,7 @@ function renderContacts() {
       <div class="contact-card-head">
         <span class="contact-name">${escapeHtml(c.name)}</span>
         ${statusBadge(c.status)}
+        ${openRateBadge(c.openRate)}
         ${followupTag}
         <span class="contact-circle">${escapeHtml(c.circle || "—")}</span>
       </div>
