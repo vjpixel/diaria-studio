@@ -22,10 +22,22 @@
  *     --component title-picker \
  *     --description "remontei ordem de seções pós-title-picker; removeu --- entre OUTRAS NOTÍCIAS e SORTEIO" \
  *     --severity P2
+ *     [--editions-root <path>]  # override de onde `data/editions/` mora (default: ROOT do repo)
  *
- * Output: append em `data/editions/{AAMMDD}/_internal/runtime-fixes.jsonl`.
- * Cada linha = 1 fix. Lido por `collect-edition-signals.ts` como sinal
- * `kind: "runtime_fix"`.
+ * Output: append em `{editionDir}/_internal/runtime-fixes.jsonl`, onde
+ * `editionDir` é resolvido via `resolveEditionDir` (#3484) — suporta os
+ * dois layouts que coexistem no disco durante a migração #2463/#3024: o
+ * FLAT legado `data/editions/{AAMMDD}/` e o NESTED novo
+ * `data/editions/{AAMM}/{AAMMDD}/`. Cada linha = 1 fix. Lido por
+ * `collect-edition-signals.ts` como sinal `kind: "runtime_fix"`.
+ *
+ * `--editions-root` (#3484): existe SÓ pra isolamento de teste — mesmo
+ * padrão de `--log-root-dir` em `resolve-edition-url.ts`/`dedup.ts`. Sem
+ * essa flag, a raiz de edições sempre resolve pra `{ROOT}/data/editions`
+ * (ROOT = raiz do repo onde este script mora, cwd-independente). Testes que
+ * spawnam o CLI via subprocess passam essa flag apontando pro próprio
+ * tmpdir do teste, evitando qualquer leitura/escrita no `data/editions/`
+ * real (junction OneDrive — nunca tocar fora de teste).
  *
  * Severities: P0 (fire), P1 (urgent), P2 (default — vira issue), P3
  * (cleanup, não vira issue automática).
@@ -35,6 +47,7 @@ import { appendFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { resolveEditionDir } from "./lib/find-current-edition.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -119,7 +132,16 @@ function main(): void {
     }
   }
 
-  const editionDir = resolve(ROOT, "data", "editions", args.edition);
+  // #3484: monta a raiz de edições a partir do ROOT (ou override de teste
+  // --editions-root) e delega a resolução do path da edição pra
+  // `resolveEditionDir` — que checa o disco pelos DOIS layouts possíveis
+  // (flat legado `{AAMMDD}/` e nested novo `{AAMM}/{AAMMDD}/`, #2463/#3024)
+  // em vez de montar `data/editions/{AAMMDD}` à mão (ENOENT garantido pra
+  // qualquer edição já migrada pro layout nested).
+  const editionsRootDir = args["editions-root"]
+    ? resolve(args["editions-root"])
+    : resolve(ROOT, "data", "editions");
+  const editionDir = resolveEditionDir(editionsRootDir, args.edition);
   if (!existsSync(editionDir)) {
     console.error(`Edition dir não existe: ${editionDir}`);
     process.exit(2);

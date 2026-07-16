@@ -212,4 +212,54 @@ describe("log-runtime-fix CLI (#1210)", () => {
     assert.equal(r.status, 2);
     assert.match(r.stderr, /não existe/);
   });
+
+  // #3484: editionDir era montado à mão como `data/editions/{AAMMDD}` (flat)
+  // sem passar pelo helper de resolução de path — qualquer edição já
+  // migrada pro layout nested (`{AAMM}/{AAMMDD}`, #2463/#3024) causava ENOENT
+  // ("Edition dir não existe") mesmo com a edição presente no disco.
+  // `--editions-root` isola o teste do `data/editions/` real (junction
+  // OneDrive) — nunca aponta pro repo de verdade.
+  it("resolve edição no layout NESTED via --editions-root, sem ENOENT (#3484)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "runtime-fix-nested-"));
+    try {
+      const nestedEditionDir = join(dir, "2605", "260517");
+      mkdirSync(nestedEditionDir, { recursive: true });
+      const r = runCli([
+        "--edition", "260517",
+        "--stage", "1",
+        "--fix-type", "format",
+        "--component", "writer",
+        "--description", "test nested layout",
+        "--editions-root", dir,
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const outPath = join(nestedEditionDir, "_internal", "runtime-fixes.jsonl");
+      assert.ok(existsSync(outPath));
+      const entry = JSON.parse(readFileSync(outPath, "utf8").trim());
+      assert.equal(entry.component, "writer");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolve edição no layout FLAT legado via --editions-root (regressão)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "runtime-fix-flat-"));
+    try {
+      const flatEditionDir = join(dir, "260421");
+      mkdirSync(flatEditionDir, { recursive: true });
+      const r = runCli([
+        "--edition", "260421",
+        "--stage", "1",
+        "--fix-type", "format",
+        "--component", "writer",
+        "--description", "test flat layout",
+        "--editions-root", dir,
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const outPath = join(flatEditionDir, "_internal", "runtime-fixes.jsonl");
+      assert.ok(existsSync(outPath));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
