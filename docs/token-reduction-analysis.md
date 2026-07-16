@@ -262,9 +262,9 @@ counting antes e depois do corte.
    antes/depois (o 0b-bis não produz JSONs intermediários diretamente, então o
    impacto estará no contexto do orchestrator — não capturado por payload-sizes)
 3. Alternativa pragmática: comparar `_internal/stage-status.json` entre edições
-   com e sem o corte, via `scripts/aggregate-costs.ts` (#3439 — requer que o
-   orchestrator passe `--tokens-in`/`--tokens-out` a `update-stage-status.ts`,
-   hoje opcional e raramente preenchido)
+   com e sem o corte, via `scripts/aggregate-costs.ts` (#3439 — `tokens_in`/
+   `tokens_out` por stage agora são capturados automaticamente do transcript
+   local pelo `scripts/capture-stage-usage.ts`, #3441, sem passo manual)
 
 **Proxy imediato disponível:** tamanho de `captured-newsletters.json` por edição.
 Com o script novo, cada thread contribui ≤8000 chars em vez de 80–112k chars.

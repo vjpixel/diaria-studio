@@ -28,7 +28,7 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 
 ## 3. Destaques
 
-- Máximo **3 destaques** por edição.
+- **2 ou 3 destaques por edição, nunca 4** (#3369). 3 é o padrão; 2 é o único edge case legítimo (editor demove D3 para o Radar, #2316/#2343). Promover um item do pool (RADAR/USE MELHOR/etc.) a destaque **substitui** um D1/D2/D3 existente — nunca adiciona um D4 (perguntar ao editor qual substituir quando não for óbvio). Enforcement: `scripts/extract-destaques.ts` rejeita qualquer contagem fora do intervalo 2–3.
 - Título: **máximo 52 caracteres** (incluindo espaços). Validação: `npx tsx scripts/lint-newsletter-md.ts --check title-length --md <md>`.
 - Sempre propor **3 opções de título** por destaque (todas ≤52 chars).
 - **"Por que isso importa:"** sempre em **linha separada**, nunca continuando o parágrafo.
