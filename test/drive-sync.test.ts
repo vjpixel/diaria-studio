@@ -29,6 +29,8 @@ import {
   backoffMs,
   escapeDriveQueryString,
 } from "../scripts/lib/drive-helpers.ts"; // #1308 item 2 — extraído de drive-sync.ts
+import { resolveEdicoesFolder } from "../scripts/lib/drive-sync-core.ts"; // #3573
+import { DRIVE_ROOT_FOLDER_NAME, DRIVE_ROOT_FOLDER_NAME_FALLBACKS } from "../scripts/lib/drive-constants.ts"; // #3573
 
 const ROOT = resolve(import.meta.dirname, "..");
 const CREDS_PATH = resolve(ROOT, "data", ".credentials.json");
@@ -301,6 +303,87 @@ describe("resolveSubfolder (#281)", () => {
     const id = await resolveSubfolder(cache as any, yymmdd, dayFolderId, "_internal");
     assert.equal(id, "cached-id");
     assert.equal(fetchCallCount, 0, "não deve chamar fetch quando cache hit");
+  });
+});
+
+describe("resolveEdicoesFolder — resolve pasta raiz tolerante a rename (#3573)", () => {
+  let originalFetch: typeof globalThis.fetch;
+  let credsExistedBefore: boolean;
+  let prevCredsContent: string | null;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    credsExistedBefore = existsSync(CREDS_PATH);
+    prevCredsContent = credsExistedBefore ? readFileSync(CREDS_PATH, "utf8") : null;
+    mkdirSync(resolve(ROOT, "data"), { recursive: true });
+    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    try {
+      if (prevCredsContent !== null) writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
+      else if (!credsExistedBefore && existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
+    } catch (e) {
+      console.error("[afterEach resolveEdicoesFolder]", e);
+    }
+  });
+
+  /**
+   * Simula Work → Startups → {diaria} → edicoes, respondendo só ao nome de
+   * pasta pedido. Matcher usa o nome entre aspas (não `name = '...'`) porque
+   * URLSearchParams codifica os espaços da query como '+' (decodeURIComponent
+   * não reverte); o '%27' das aspas, sim, vira '\''. A aspa de fechamento
+   * também desambigua 'diar.ia' de 'diar.ia.br' (substring).
+   */
+  function mockDriveTree(diariaFolderName: string | null): void {
+    globalThis.fetch = async (url: string | URL | Request) => {
+      const s = decodeURIComponent(String(url));
+      if (s.includes("'Work'")) return makeDriveResponse({ files: [{ id: "work-id", name: "Work", mimeType: "application/vnd.google-apps.folder", modifiedTime: "t" }] });
+      if (s.includes("'Startups'")) return makeDriveResponse({ files: [{ id: "startups-id", name: "Startups", mimeType: "application/vnd.google-apps.folder", modifiedTime: "t" }] });
+      if (diariaFolderName && s.includes(`'${diariaFolderName}'`)) {
+        return makeDriveResponse({ files: [{ id: "diaria-id", name: diariaFolderName, mimeType: "application/vnd.google-apps.folder", modifiedTime: "t" }] });
+      }
+      if (s.includes("'edicoes'")) return makeDriveResponse({ files: [{ id: "edicoes-id", name: "edicoes", mimeType: "application/vnd.google-apps.folder", modifiedTime: "t" }] });
+      return makeDriveResponse({ files: [] }); // não encontrado (nomes não-mockados)
+    };
+  }
+
+  it("resolve com o nome atual ('diar.ia.br') sem precisar de fallback", async () => {
+    mockDriveTree(DRIVE_ROOT_FOLDER_NAME);
+    const cache: DriveCache = { editions: {} };
+    const id = await resolveEdicoesFolder(cache);
+    assert.equal(id, "edicoes-id");
+    assert.equal(cache.edicoes_folder_id, "edicoes-id", "resultado é cacheado");
+  });
+
+  it("nome atual ausente — cai pro fallback legado ('diar.ia') em vez de falhar (regressão #3573)", async () => {
+    assert.ok(DRIVE_ROOT_FOLDER_NAME_FALLBACKS.includes("diar.ia"), "fixture assume 'diar.ia' como fallback legado");
+    mockDriveTree("diar.ia"); // só a pasta LEGADA existe no Drive — simula o rename ainda não propagado
+    const cache: DriveCache = { editions: {} };
+    const id = await resolveEdicoesFolder(cache);
+    assert.equal(id, "edicoes-id", "deve resolver via fallback em vez de lançar drive_path_missing");
+  });
+
+  it("nem o nome atual nem nenhum fallback existem — lança drive_path_missing (fail-soft do caller intacto)", async () => {
+    mockDriveTree(null); // nenhuma pasta raiz existe
+    const cache: DriveCache = { editions: {} };
+    await assert.rejects(
+      () => resolveEdicoesFolder(cache),
+      (err: Error) => {
+        assert.match(err.message, /drive_path_missing:diar\.ia/);
+        return true;
+      },
+    );
+  });
+
+  it("cache hit (edicoes_folder_id já presente) — não chama fetch", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = async () => { fetchCalled = true; return makeDriveResponse({ files: [] }); };
+    const cache: DriveCache = { editions: {}, edicoes_folder_id: "cached-edicoes-id" };
+    const id = await resolveEdicoesFolder(cache);
+    assert.equal(id, "cached-edicoes-id");
+    assert.equal(fetchCalled, false);
   });
 });
 

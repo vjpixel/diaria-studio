@@ -2,7 +2,8 @@
  * upload-report-to-drive.ts — cria novo Google Doc a partir de markdown local
  *
  * Usa OAuth credentials de data/.credentials.json (mesmo que drive-sync.ts).
- * Faz upload em Work/Startups/diar.ia/relatorios/ (cria pasta se não existir).
+ * Faz upload em Work/Startups/diar.ia.br/relatorios/ (cria pasta se não
+ * existir; nome da pasta raiz em lib/drive-constants.ts — DRIVE_ROOT_FOLDER_NAME, #3573).
  * Converte MD → Google Doc nativo (editor pode comentar/editar).
  *
  * **CREATE-ONLY:** se já existe um arquivo com mesmo nome na pasta, **aborta**
@@ -36,14 +37,19 @@ import { fileURLToPath } from "node:url";
 import { gFetch } from "./google-auth.ts";
 import { GOOGLE_DOC_MIME } from "./drive-sync.ts";
 import { parseArgs } from "./lib/cli-args.ts"; // #1308 item 3
-import { DRIVE_UPLOAD } from "./lib/drive-constants.ts"; // #1308 item 1
+import {
+  DRIVE_UPLOAD,
+  DRIVE_ROOT_FOLDER_NAME,
+  DRIVE_ROOT_FOLDER_NAME_FALLBACKS,
+} from "./lib/drive-constants.ts"; // #1308 item 1, #3573
 import {
   driveCreateFolder,
   driveFindFileInParent,
   driveFindFolderInParent,
+  driveFindFolderByNames,
   driveFindFolderInRoot,
   buildMultipartBody,
-} from "./lib/drive-helpers.ts"; // #1308 itens 2, 4
+} from "./lib/drive-helpers.ts"; // #1308 itens 2, 4; #3573
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -92,14 +98,19 @@ async function main() {
   const localPath = resolve(ROOT, localFile);
   if (!existsSync(localPath)) throw new Error(`local file not found: ${localPath}`);
 
-  // Resolve folder: Work/Startups/diar.ia/{subFolder}
-  console.error(`[1/4] Resolvendo path no Drive: Work/Startups/diar.ia/${subFolder}/`);
+  // Resolve folder: Work/Startups/{DRIVE_ROOT_FOLDER_NAME}/{subFolder}
+  console.error(`[1/4] Resolvendo path no Drive: Work/Startups/${DRIVE_ROOT_FOLDER_NAME}/${subFolder}/`);
   const workId = await driveFindFolderInRoot("Work");
   if (!workId) throw new Error("Work folder not found at My Drive root");
   const startupsId = await driveFindFolderInParent("Startups", workId);
   if (!startupsId) throw new Error("Startups folder not found in Work");
-  const diariaId = await driveFindFolderInParent("diar.ia", startupsId);
-  if (!diariaId) throw new Error("diar.ia folder not found in Startups");
+  // #3573: pasta raiz foi renomeada de "diar.ia" pra "diar.ia.br" — tenta o
+  // nome atual primeiro, cai pros legados se não achar (tolera rollback ou
+  // renames futuros sem repetir o incidente).
+  const diariaNames = [DRIVE_ROOT_FOLDER_NAME, ...DRIVE_ROOT_FOLDER_NAME_FALLBACKS];
+  const diaria = await driveFindFolderByNames(diariaNames, startupsId);
+  if (!diaria) throw new Error(`${diariaNames.join("/")} folder not found in Startups`);
+  const diariaId = diaria.id;
   let subId = await driveFindFolderInParent(subFolder, diariaId);
   if (!subId) {
     console.error(`[2/4] Pasta ${subFolder} não existe — criando...`);
@@ -135,7 +146,7 @@ async function main() {
     action: existing ? "updated" : "created",
     file_id: result.id,
     drive_url: result.webViewLink ?? `https://docs.google.com/document/d/${result.id}/edit`,
-    folder_path: `Work/Startups/diar.ia/${subFolder}/`,
+    folder_path: `Work/Startups/${diaria.matchedName}/${subFolder}/`,
   }, null, 2));
 }
 main().catch((e) => { console.error("Fatal:", e); process.exit(1); });

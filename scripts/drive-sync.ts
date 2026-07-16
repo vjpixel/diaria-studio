@@ -2,7 +2,8 @@
  * drive-sync.ts
  *
  * Sincroniza arquivos de edição entre `data/editions/{YYMMDD}/` e
- * `Work/Startups/diar.ia/edicoes/{YYMM}/{YYMMDD}/` no Google Drive.
+ * `Work/Startups/diar.ia.br/edicoes/{YYMM}/{YYMMDD}/` no Google Drive
+ * (nome da pasta raiz em `lib/drive-constants.ts` — DRIVE_ROOT_FOLDER_NAME, #3573).
  *
  * Substitui o subagente `drive-syncer` (Haiku via Task).
  *
@@ -35,7 +36,7 @@
 import { readFileSync, writeFileSync, existsSync, statSync, mkdirSync } from "node:fs";
 import { resolve, extname, basename as pathBasename } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #535
-import { DRIVE_API } from "./lib/drive-constants.ts"; // #1308 item 1
+import { DRIVE_API, DRIVE_ROOT_FOLDER_NAME } from "./lib/drive-constants.ts"; // #1308 item 1, #3573
 import {
   gFetchRetry,
   driveList,
@@ -558,7 +559,10 @@ async function main(): Promise<void> {
     mode,
     stage,
     edition: yymmdd,
-    day_folder_path: `Work/Startups/diar.ia/edicoes/${yymmdd.slice(0, 4)}/${editionDir.includes("/monthly/") ? "mensal" : yymmdd}`,
+    // #3573: informativo apenas (a resolução real usa driveFindFolderByNames
+    // com fallback, ver resolveEdicoesFolder em lib/drive-sync-core.ts) —
+    // usa o nome atual da pasta raiz pra não ficar estampando o nome antigo.
+    day_folder_path: `Work/Startups/${DRIVE_ROOT_FOLDER_NAME}/edicoes/${yymmdd.slice(0, 4)}/${editionDir.includes("/monthly/") ? "mensal" : yymmdd}`,
     uploaded: [],
     pulled: [],
     warnings: [],

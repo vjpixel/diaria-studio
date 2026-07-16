@@ -110,6 +110,23 @@ export async function driveFindFolderInParent(name: string, parentId: string): P
 }
 
 /**
+ * Acha pasta por nome dentro de um parent, tentando múltiplos nomes em
+ * ordem — o primeiro que existir vence (#3573: tolerância a rename/rollback
+ * de pastas do Drive, ex: nome atual primeiro, nomes legados como fallback).
+ * Retorna `null` só se NENHUM dos nomes existir.
+ */
+export async function driveFindFolderByNames(
+  names: string[],
+  parentId: string
+): Promise<{ id: string; matchedName: string } | null> {
+  for (const name of names) {
+    const id = await driveFindFolderInParent(name, parentId);
+    if (id) return { id, matchedName: name };
+  }
+  return null;
+}
+
+/**
  * Acha arquivo (não-folder) por nome dentro de um parent.
  * Exclui folders pra evitar match espúrio se houver pasta com mesmo nome.
  */
