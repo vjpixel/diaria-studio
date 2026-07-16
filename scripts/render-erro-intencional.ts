@@ -157,31 +157,19 @@ export function extractNarrativeFromFrontmatter(
 }
 
 /**
- * Pure (#961 / #1079 / #2411 / #2419 / #3494 split): extrai a declaração da
- * edição CORRENTE a partir da prosa "Nessa edição, …" em `02-reviewed.md`.
+ * Pure (#3489 split): extrai a prosa CRUA "Nessa edição, {narrativa}." do
+ * bloco ERRO INTENCIONAL em `02-reviewed.md`, SEM aplicar nenhum filtro de
+ * exclusão (placeholder/genérico/catalog-shaped/auto-concatenado). Usada por
+ * `extractCurrentDeclarationFromMd` (que filtra) e por consumidores que
+ * precisam classificar A RAZÃO pela qual uma narrativa é inválida — ex: o
+ * lint `erro-intencional-placeholder` (#3489), que precisa distinguir "sem
+ * narrativa nenhuma" de "narrativa presente mas corrompida" pra dar uma
+ * mensagem de erro específica em vez de deixar passar silenciosamente.
  *
- * **NUNCA recebe/consulta `record` (`_internal/intentional-error.json`)** — o
- * campo `record.reveal` é prosa PRÉ-ESCRITA pelo editor, em primeira pessoa
- * PASSADA ("Na última edição, escrevi X…"), destinada à PRÓXIMA edição
- * revelar o erro DESTA edição (ver `extractRevealFromFrontmatter`). Não é a
- * mesma coisa que "a declaração que esta edição faz de si mesma" — misturar
- * as duas produzia "Nessa edição, Na última edição, escrevi X…" (#3205→#3485→
- * #3494: três bandaids no mesmo defeito estrutural antes deste split). Quando
- * o corpo precisa de fallback pro record de uma edição ANTERIOR (caso de
- * `findPreviousIntentionalErrorFromMd`), use `extractPreviousRevealFromRecord`.
- *
- * Filtros de exclusão sobre a prosa do corpo:
- *   - Placeholder `{PREENCHER…}` não preenchido.
- *   - Texto genérico do convite ("há um erro proposital", "concorrer ao sorteio" etc.).
- *   - (#2419 bug #9 fix) Texto catalog-shaped ("DESTAQUE N …") — label interno
- *     que vaza ao reveal público e é agramatical com "Nessa edição, DESTAQUE N…".
- *
- * Retorna `{ narrative, detail?, gabarito? }` (detail/gabarito só quando a
- * narrativa bate com o formato legado "escrevi 'X' onde deveria ser 'Y'").
+ * Retorna a narrativa trimmed, ou `null` se a linha "Nessa edição, …" não
+ * foi encontrada no bloco.
  */
-export function extractCurrentDeclarationFromMd(
-  md: string,
-): { narrative: string; detail?: string; gabarito?: string } | null {
+export function extractRawCurrentNarrative(md: string): string | null {
   // #1099: quando o MD tem o header `**ERRO INTENCIONAL**`, ancorar busca
   // dentro do bloco. Caso contrário, busca global (back-compat com testes
   // que passam só a linha solta). Em ambos os casos, vírgula obrigatória
@@ -204,14 +192,49 @@ export function extractCurrentDeclarationFromMd(
   const narrativeRe = /Nessa\s+edi[çc][ãa]o,\s+([^\n]+?)\.\s*(?:\n|$)/i;
   const nm = block.match(narrativeRe);
   if (!nm) return null;
+  return nm[1].trim();
+}
 
-  const narrative = nm[1].trim();
+/**
+ * Pure (#961 / #1079 / #2411 / #2419 / #3494 split / #3489 raw split):
+ * extrai a declaração da edição CORRENTE a partir da prosa "Nessa edição, …"
+ * em `02-reviewed.md`.
+ *
+ * **NUNCA recebe/consulta `record` (`_internal/intentional-error.json`)** — o
+ * campo `record.reveal` é prosa PRÉ-ESCRITA pelo editor, em primeira pessoa
+ * PASSADA ("Na última edição, escrevi X…"), destinada à PRÓXIMA edição
+ * revelar o erro DESTA edição (ver `extractRevealFromFrontmatter`). Não é a
+ * mesma coisa que "a declaração que esta edição faz de si mesma" — misturar
+ * as duas produzia "Nessa edição, Na última edição, escrevi X…" (#3205→#3485→
+ * #3494: três bandaids no mesmo defeito estrutural antes deste split). Quando
+ * o corpo precisa de fallback pro record de uma edição ANTERIOR (caso de
+ * `findPreviousIntentionalErrorFromMd`), use `extractPreviousRevealFromRecord`.
+ *
+ * Filtros de exclusão sobre a prosa do corpo:
+ *   - Placeholder `{PREENCHER…}` não preenchido.
+ *   - Texto genérico do convite ("há um erro proposital", "concorrer ao sorteio" etc.).
+ *   - (#2419 bug #9 fix) Texto catalog-shaped ("DESTAQUE N …") — label interno
+ *     que vaza ao reveal público e é agramatical com "Nessa edição, DESTAQUE N…".
+ *   - (#3489) Texto auto-concatenado ("Nessa edição, Na última edição, …") —
+ *     assinatura exata da classe de bug do #3485: o reveal PASSADO acabou
+ *     colado no lugar da declaração CORRENTE.
+ *
+ * Retorna `{ narrative, detail?, gabarito? }` (detail/gabarito só quando a
+ * narrativa bate com o formato legado "escrevi 'X' onde deveria ser 'Y'").
+ */
+export function extractCurrentDeclarationFromMd(
+  md: string,
+): { narrative: string; detail?: string; gabarito?: string } | null {
+  const narrative = extractRawCurrentNarrative(md);
+  if (!narrative) return null;
+
   // Filtros de exclusão: placeholder não preenchido, texto genérico do
-  // convite, texto catalog-shaped (ver docstring acima).
+  // convite, texto catalog-shaped, texto auto-concatenado (ver docstring acima).
   if (
     /^\{PREENCHER/i.test(narrative) ||
     narrativeIsGenericPlaceholder(narrative) ||
-    narrativeIsCatalogShaped(narrative)
+    narrativeIsCatalogShaped(narrative) ||
+    narrativeIsSelfConcatenated(narrative)
   ) {
     return null;
   }
@@ -476,6 +499,31 @@ export function narrativeIsGenericPlaceholder(narrative: string): boolean {
  */
 export function narrativeIsCatalogShaped(narrative: string): boolean {
   return /^DESTAQUE\s+\d|^[A-ZÁÉÍÓÚÀÂÊÔÃÕÜ]{4,}\s+\d/i.test(narrative);
+}
+
+/**
+ * Detecta se a narrativa é o resultado de auto-concatenação do reveal
+ * PASSADO com a declaração CORRENTE (#3489, causa raiz #3485). Uma narrativa
+ * válida da edição corrente nunca começa com "Na última edição," — essa é a
+ * abertura fixa do reveal da edição ANTERIOR (ver `composeRevealText` /
+ * `SAFE_FALLBACK_REVEAL`), não da declaração desta edição sobre si mesma.
+ *
+ * Assinatura exata do bug observado: um fallback não-idempotente escrevia
+ * `"Nessa edição, Na última edição, escrevi que a Acme foi fundada em 2020,
+ * quando na verdade foi em 2022."` — texto agramatical e auto-contraditório
+ * que não contém o placeholder literal `{PREENCHER_NARRATIVA_DO_ERRO}`, então
+ * passava incólume pelo lint que só olhava o placeholder (#3489).
+ *
+ * Retorna `true` quando o narrative parece corrompido por auto-concatenação
+ * (deve bloquear). Retorna `false` caso contrário.
+ *
+ * Exportada para uso no lint do Stage 5 (erro-intencional-placeholder) e
+ * como defense-in-depth em `extractCurrentDeclarationFromMd`.
+ */
+const SELF_CONCATENATION_RE = /^Na\s+[úu]ltima\s+edi[çc][ãa]o,/i;
+
+export function narrativeIsSelfConcatenated(narrative: string): boolean {
+  return SELF_CONCATENATION_RE.test(narrative.trim());
 }
 
 /**

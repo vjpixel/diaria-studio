@@ -25,9 +25,11 @@ import { tmpdir } from "node:os";
 import {
   composeRevealText,
   extractCurrentDeclarationFromMd,
+  extractRawCurrentNarrative,
   extractPreviousRevealFromRecord,
   extractNarrativeFromFrontmatter,
   narrativeIsGenericPlaceholder,
+  narrativeIsSelfConcatenated,
 } from "../scripts/render-erro-intencional.ts";
 import type { IntentionalError } from "../scripts/lib/intentional-errors.ts";
 import type { IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
@@ -558,5 +560,102 @@ describe("narrativeIsGenericPlaceholder (#2377 root cause fix)", () => {
 
   it("passa (false) em texto vazio", () => {
     assert.equal(narrativeIsGenericPlaceholder(""), false);
+  });
+});
+
+// ── narrativeIsSelfConcatenated (#3489, causa raiz #3485) — pure ───────────────────────────
+//
+// Detecta a assinatura exata do bug #3485: fallback não-idempotente colava o
+// reveal PASSADO ("Na última edição, …") dentro da declaração CORRENTE
+// ("Nessa edição, …"), produzindo "Nessa edição, Na última edição, escrevi X…".
+// Esse texto não contém o placeholder literal, então escapava do lint original
+// (#3489) — este predicado fecha o buraco.
+
+describe("narrativeIsSelfConcatenated (#3489)", () => {
+  it("detecta o cenário exato observado no #3485/#3489", () => {
+    assert.equal(
+      narrativeIsSelfConcatenated(
+        "Na última edição, escrevi que a Acme foi fundada em 2020, quando na verdade foi em 2022",
+      ),
+      true,
+    );
+  });
+
+  it("detecta variação de caixa/acento ('na ultima edicao,')", () => {
+    assert.equal(narrativeIsSelfConcatenated("na ultima edicao, escrevi X"), true);
+  });
+
+  it("passa (false) em declaração real de primeira pessoa", () => {
+    assert.equal(
+      narrativeIsSelfConcatenated(
+        "escrevi que a empresa parceira da DeepSeek se chamava Macrosoft, quando o correto é Microsoft",
+      ),
+      false,
+    );
+  });
+
+  it("passa (false) quando 'Na última edição' aparece no meio, não no início", () => {
+    // Só a abertura importa — o texto real do editor pode mencionar a edição
+    // anterior no meio da frase sem ser o bug de auto-concatenação.
+    assert.equal(
+      narrativeIsSelfConcatenated("escrevi um valor errado, diferente do que corrigi na última edição"),
+      false,
+    );
+  });
+
+  it("passa (false) em texto vazio", () => {
+    assert.equal(narrativeIsSelfConcatenated(""), false);
+  });
+});
+
+// ── extractRawCurrentNarrative × extractCurrentDeclarationFromMd (#3489) ────────────────────
+//
+// extractRawCurrentNarrative NUNCA filtra (usado pra classificar a razão de
+// invalidez no lint); extractCurrentDeclarationFromMd filtra as 4 classes
+// inválidas (placeholder/genérico/catalog/auto-concatenado) e retorna null.
+
+describe("extractRawCurrentNarrative vs extractCurrentDeclarationFromMd (#3489)", () => {
+  it("narrativa auto-concatenada: raw retorna o texto cru, filtrada retorna null", () => {
+    const md = [
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, X.",
+      "",
+      "Nessa edição, Na última edição, escrevi que a Acme foi fundada em 2020, quando na verdade foi em 2022.",
+      "",
+    ].join("\n");
+    const raw = extractRawCurrentNarrative(md);
+    assert.equal(
+      raw,
+      "Na última edição, escrevi que a Acme foi fundada em 2020, quando na verdade foi em 2022",
+    );
+    assert.equal(narrativeIsSelfConcatenated(raw ?? ""), true);
+    assert.equal(
+      extractCurrentDeclarationFromMd(md),
+      null,
+      "#3489: extractCurrentDeclarationFromMd deve filtrar narrativa auto-concatenada",
+    );
+  });
+
+  it("narrativa válida: raw e filtrada retornam o mesmo texto", () => {
+    const md = [
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, X.",
+      "",
+      "Nessa edição, escrevi que o modelo foi lançado em 2024, mas o correto é 2025.",
+      "",
+    ].join("\n");
+    const raw = extractRawCurrentNarrative(md);
+    assert.equal(raw, "escrevi que o modelo foi lançado em 2024, mas o correto é 2025");
+    const filtered = extractCurrentDeclarationFromMd(md);
+    assert.ok(filtered !== null);
+    assert.equal(filtered!.narrative, raw);
+  });
+
+  it("sem linha 'Nessa edição, …': ambas retornam null", () => {
+    const md = ["**ASSINE**", "", "Texto."].join("\n");
+    assert.equal(extractRawCurrentNarrative(md), null);
+    assert.equal(extractCurrentDeclarationFromMd(md), null);
   });
 });
