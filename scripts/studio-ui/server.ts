@@ -33,21 +33,41 @@
  *     embutida, `cwd` = `rootDir` (mesmas skills/MCPs/CLAUDE.md do terminal).
  *     Streaming via SSE (mesmo `sse.ts` do `/api/events`) — eventos
  *     `chat-init`/`chat-delta`/`chat-tool`/`chat-done`/`chat-error`, contrato
- *     em `studio-chat.ts`. **ÚNICA rota de mutação/ação do servidor** — todas
- *     as outras seguem read-only. Fail-soft: erro do SDK vira `chat-error`
+ *     em `studio-chat.ts`. Fail-soft: erro do SDK vira `chat-error`
  *     no stream, nunca um 500 nem crash do processo.
+ *   - `GET /revisao/:aammdd` — painel de revisão de conteúdo rica (#3559):
+ *     mesma estratégia de rewrite, servindo `public/revisao.html`. Consome
+ *     `GET/PUT /api/editions/:aammdd/review/:slug` (`slug` = categorized |
+ *     reviewed | social), `.../diff`, `.../lint`, `.../reset-baseline` e
+ *     `GET /api/editions/:aammdd/preview.html` (HTML completo do e-mail,
+ *     pra `<iframe>`) + `POST /api/editions/:aammdd/actions/swap-destaque`
+ *     — ver `studio-review.ts`/`studio-review-actions.ts` pro detalhe.
  *
- * **Read-only por construção, com 1 exceção** (#3555 é a fatia fundação da
- * EPIC — as fatias de AÇÃO vêm depois, #3556+): nenhuma rota aqui escreve em
- * disco nem dispara nada, EXCETO `POST /api/chat` (#3556), que conduz uma
- * sessão Claude real (a UI só invoca — a lógica de negócio permanece nas
- * skills/scripts que essa sessão chama, mesmo princípio do epic #3554). Sem
- * autenticação nesta fatia — acesso remoto é escopo da #3560; aqui o único
- * guard de segurança é o bind loopback. #3558 (cockpit de edição) e #3562
- * (triagem de issues/PRs) preservam o invariante read-only original: são só
- * mais views. #3562 em particular nunca expõe token do GitHub (o server só
- * invoca o binário `gh`, que resolve auth localmente) e nunca chama
- * subcomando de mutação (`close`/`comment`/`merge`) — só `list`.
+ * **Read-only por construção, com exceções controladas** (#3555 é a fatia
+ * fundação da EPIC — as fatias de AÇÃO vêm depois, #3556+): nenhuma rota aqui
+ * escreve em disco nem dispara nada, EXCETO `POST /api/chat` (#3556), que
+ * conduz uma sessão Claude real (a UI só invoca — a lógica de negócio
+ * permanece nas skills/scripts que essa sessão chama, mesmo princípio do epic
+ * #3554), e as rotas de ação de revisão de conteúdo (#3559, detalhadas
+ * abaixo). Sem autenticação nesta fatia — acesso remoto é escopo da #3560;
+ * aqui o único guard de segurança é o bind loopback. #3558 (cockpit de
+ * edição) e #3562 (triagem de issues/PRs) preservam o invariante read-only
+ * original: são só mais views. #3562 em particular nunca expõe token do
+ * GitHub (o server só invoca o binário `gh`, que resolve auth localmente) e
+ * nunca chama subcomando de mutação (`close`/`comment`/`merge`) — só `list`.
+ *
+ * **Exceção controlada (#3559 — revisão de conteúdo rica):** as rotas
+ * `PUT /api/editions/:aammdd/review/:slug` (salvar edição) e
+ * `POST /api/editions/:aammdd/review/:slug/reset-baseline` +
+ * `POST /api/editions/:aammdd/actions/swap-destaque` são a 1ª quebra
+ * deliberada do invariante read-only — a fatia de AÇÃO que #3555 previa.
+ * Escopo estreito e auditável: só escrevem os 3 arquivos gate-facing de
+ * revisão (`01-categorized.md`, `02-reviewed.md`, `03-social.md`) e o
+ * baseline interno de diff (`_internal/studio-review-baseline/`), ou
+ * invocam `scripts/swap-destaque.ts` como subprocess (mesma CLI que o
+ * editor rodaria manualmente). Toda a lógica mora em `studio-review.ts` /
+ * `studio-review-actions.ts` (arquivos próprios desta fatia) — ver o
+ * cabeçalho de cada um pro detalhe do design.
  *
  * Ver "Decisões de design" no PR body pra rationale completo (framework
  * escolhido, estrutura de diretórios, formato das APIs, pontos de extensão).
@@ -87,6 +107,20 @@ import {
   clearSession,
   type QueryFn,
 } from "./studio-chat.ts";
+// #3559: painel de revisão de conteúdo rica — arquivos próprios desta fatia,
+// import isolado (nenhuma outra rota depende deles). Ver studio-review.ts.
+import {
+  isReviewSlug,
+  readReviewFile,
+  saveReviewFile,
+  resetBaseline,
+  computeReviewDiff,
+  runReviewLints,
+  buildReviewPreviewHtml,
+  pullReviewFileBestEffort,
+} from "./studio-review.ts";
+import { runSwapDestaque, type SwapDestaqueRequest } from "./studio-review-actions.ts";
+import { resolveEditionDir } from "../lib/find-current-edition.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -372,6 +406,119 @@ function handlePainelClarice(req: IncomingMessage, res: ServerResponse): void {
     });
 }
 
+// ── #3559: painel de revisão de conteúdo rica ──────────────────────────
+
+// #3559: teto de corpo pras rotas de escrita de revisão. Reusa o
+// `readRequestBody(req, maxBytes)` do #3556 (mesmo helper) em vez de duplicar.
+// 2 MB folga pra o maior 02-reviewed.md (~algumas dezenas de KB), mas ainda
+// limita corpo absurdo.
+const REVIEW_MAX_BODY_BYTES = 2_000_000;
+
+function editionDirFor(rootDir: string, aammdd: string): string {
+  return resolveEditionDir(resolve(rootDir, "data", "editions"), aammdd);
+}
+
+function handleReviewGet(rootDir: string, aammdd: string, slug: string, res: ServerResponse): void {
+  if (!isReviewSlug(slug)) {
+    sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
+    return;
+  }
+  // #494: pull best-effort do Drive antes de abrir — fail-soft (offline, sem
+  // credenciais, sem cache viram `pull.ok === false`, nunca bloqueiam a
+  // leitura do arquivo local).
+  const pull = pullReviewFileBestEffort(rootDir, aammdd, slug);
+  const state = readReviewFile(rootDir, aammdd, slug);
+  sendJson(res, state.ok ? 200 : 400, { ...state, pull });
+}
+
+function handleReviewDiff(rootDir: string, aammdd: string, slug: string, res: ServerResponse): void {
+  if (!isReviewSlug(slug)) {
+    sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
+    return;
+  }
+  const diff = computeReviewDiff(rootDir, aammdd, slug);
+  sendJson(res, diff.ok ? 200 : 400, diff);
+}
+
+function handleReviewLint(rootDir: string, aammdd: string, slug: string, res: ServerResponse): void {
+  if (!isReviewSlug(slug)) {
+    sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
+    return;
+  }
+  const state = readReviewFile(rootDir, aammdd, slug);
+  if (!state.ok || !state.exists) {
+    sendJson(res, 200, { ok: true, checks: [], skipped: [], note: "arquivo ainda não existe — nada pra lintar" });
+    return;
+  }
+  const report = runReviewLints(rootDir, editionDirFor(rootDir, aammdd), slug, state.content);
+  sendJson(res, 200, report);
+}
+
+function handleReviewPreview(rootDir: string, aammdd: string, res: ServerResponse): void {
+  const preview = buildReviewPreviewHtml(editionDirFor(rootDir, aammdd));
+  sendHtml(res, preview.ok ? 200 : 422, preview.html);
+}
+
+async function handleReviewSave(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  aammdd: string,
+  slug: string,
+): Promise<void> {
+  if (!isReviewSlug(slug)) {
+    sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
+    return;
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, REVIEW_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const content = (body as { content?: unknown } | null)?.content;
+  if (typeof content !== "string") {
+    sendJson(res, 400, { error: "campo 'content' (string) é obrigatório no corpo" });
+    return;
+  }
+  const result = saveReviewFile(rootDir, aammdd, slug, content);
+  sendJson(res, result.ok ? 200 : 400, result);
+}
+
+function handleReviewResetBaseline(rootDir: string, aammdd: string, slug: string, res: ServerResponse): void {
+  if (!isReviewSlug(slug)) {
+    sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
+    return;
+  }
+  const result = resetBaseline(rootDir, aammdd, slug);
+  sendJson(res, result.ok ? 200 : 400, result);
+}
+
+async function handleReviewSwap(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  aammdd: string,
+): Promise<void> {
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(await readRequestBody(req, REVIEW_MAX_BODY_BYTES)) as Record<string, unknown>;
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const request: SwapDestaqueRequest = {
+    aammdd,
+    promote: String(body.promote ?? ""),
+    demote: String(body.demote ?? ""),
+    drop: !!body.drop,
+    dryRun: !!body.dryRun,
+  };
+  const result = runSwapDestaque(rootDir, request);
+  sendJson(res, result.ok ? 200 : 400, result);
+}
+
 /**
  * Sobe o studio-server. `rootDir` default é `process.cwd()` (o repo aberto
  * no Claude Code); injete um tmpdir em testes.
@@ -388,7 +535,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
     try {
       const urlPath = (req.url ?? "/").split("?")[0];
 
-      // #3556: única rota que aceita POST — mutação/ação (sessão de chat),
+      // #3556: rota de chat aceita POST — mutação/ação (sessão de chat),
       // tratada ANTES do guard read-only genérico abaixo.
       if (urlPath === "/api/chat") {
         if (req.method !== "POST") {
@@ -409,8 +556,30 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         return;
       }
 
+      // #3559: exceção estreita ao invariante read-only (ver nota no topo do
+      // arquivo) — só estas 3 rotas aceitam método de escrita, e só pra
+      // AÇÕES do painel de revisão de conteúdo. Checadas ANTES do guard
+      // genérico de método, senão cairiam no 405.
+      const reviewFileMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)$/);
+      if (req.method === "PUT" && reviewFileMatch) {
+        handleReviewSave(rootDir, req, res, reviewFileMatch[1], reviewFileMatch[2]).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
+      const resetBaselineMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)\/reset-baseline$/);
+      if (req.method === "POST" && resetBaselineMatch) {
+        handleReviewResetBaseline(rootDir, resetBaselineMatch[1], resetBaselineMatch[2], res);
+        return;
+      }
+      const swapMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/actions\/swap-destaque$/);
+      if (req.method === "POST" && swapMatch) {
+        handleReviewSwap(rootDir, req, res, swapMatch[1]).catch((e) => sendJson(res, 500, { error: (e as Error).message }));
+        return;
+      }
+
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556)" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556) e as rotas de ação do #3559" });
         return;
       }
 
@@ -433,6 +602,29 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       if (urlPath === "/api/waves") {
         handleApiWaves(rootDir, res, ghRun);
+        return;
+      }
+      // #3559: painel de revisão de conteúdo rica — leitura (GET) do arquivo,
+      // diff contra baseline, lints e preview do e-mail. As rotas de ESCRITA
+      // (PUT/POST) já foram tratadas acima, antes do guard de método.
+      const reviewLintMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)\/lint$/);
+      if (reviewLintMatch) {
+        handleReviewLint(rootDir, reviewLintMatch[1], reviewLintMatch[2], res);
+        return;
+      }
+      const reviewDiffMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)\/diff$/);
+      if (reviewDiffMatch) {
+        handleReviewDiff(rootDir, reviewDiffMatch[1], reviewDiffMatch[2], res);
+        return;
+      }
+      const reviewGetMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)$/);
+      if (reviewGetMatch) {
+        handleReviewGet(rootDir, reviewGetMatch[1], reviewGetMatch[2], res);
+        return;
+      }
+      const reviewPreviewMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/preview\.html$/);
+      if (reviewPreviewMatch) {
+        handleReviewPreview(rootDir, reviewPreviewMatch[1], res);
         return;
       }
       if (urlPath === "/tokens.generated.css") {
@@ -459,6 +651,16 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // de 400/404 já coberto por handleApiEdition).
       if (/^\/edicao\/[^/]+\/?$/.test(urlPath)) {
         const served = serveStaticFile(PUBLIC_DIR, "/edicao.html", res);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #3559: mesma estratégia de rewrite — a página busca
+      // /api/editions/:aammdd/review/:slug (+ diff/lint/preview.html).
+      if (/^\/revisao\/[^/]+\/?$/.test(urlPath)) {
+        const served = serveStaticFile(PUBLIC_DIR, "/revisao.html", res);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
