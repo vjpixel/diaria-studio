@@ -32,9 +32,13 @@ export const HAIKU_PRICING: PricingEntry = { inputPer1M: 1, outputPer1M: 5 };
 export const SONNET_5_INTRO_END = Date.UTC(2026, 7, 31, 23, 59, 59); // month is 0-indexed: 7 = August
 
 // Cache multipliers (skill claude-api § Prompt Caching — Economics).
+// Só o de 5min é usado: `estimateCallCostUsd` assume TTL padrão (5min) porque
+// `cache_creation_input_tokens` do transcript não distingue qual TTL foi usado
+// numa chamada específica (ver comentário do topo do arquivo). O multiplicador
+// de 1h (2x) não é aplicável enquanto essa distinção não existir no dado —
+// omitido pra não deixar export morto (knip).
 export const CACHE_READ_MULTIPLIER = 0.1;
 export const CACHE_WRITE_5M_MULTIPLIER = 1.25;
-export const CACHE_WRITE_1H_MULTIPLIER = 2;
 
 /** "AAMMDD" (ex: "260424") → epoch ms (UTC, meio-dia pra evitar off-by-one de fuso). */
 export function editionDateMs(edition: string): number | null {
