@@ -1071,6 +1071,66 @@ describe("#2331/F3: outrosCount não-resolvível → abort (nunca posta literal)
   });
 });
 
+// #3493: cobertura de threading de rootDir pro call site de logEvent que só
+// existe dentro de main() — o "image_cache_state" (linha ~753 de
+// publish-linkedin.ts, logado ANTES do fail-fast #999/#1275, SEMPRE que o
+// script roda). Achado do self-review #2038 em #3492/#3479: publish-linkedin.ts
+// tem 2 call sites de logEvent com rootDir/ctx.rootDir default `= ROOT`
+// (`dispatchEntry` já tinha cobertura de isolamento via #3311 acima —
+// "#3311: log de auditoria de dispatchEntry isolado via ctx.rootDir"); o
+// call site dentro de main() (repassado via `--log-root-dir` → `logRootDir`
+// local) nunca teve uma assertion que provasse que o log de fato aterrissa
+// no destino isolado — os testes CLI existentes (#2331 F1-F3, #2454) só
+// verificam stdout/stderr, nunca o conteúdo do run-log em si. Um
+// esquecimento de repassar `logRootDir` nesse call site específico não seria
+// pego por nenhum teste existente.
+describe("#3493: log de auditoria de main() (image_cache_state) isolado via --log-root-dir", () => {
+  it("--log-root-dir isola AMBOS os call sites de logEvent (image_cache_state em main() + dispatched-via em dispatchEntry) — nunca grava em data/run-log.jsonl real", () => {
+    const { dir, internalDir, cleanup } = mkEditionDir({});
+    try {
+      writeFileSync(join(internalDir, "01-approved.json"), APPROVED_CAPPED, "utf8");
+      writeFileSync(join(dir, "03-social.md"), [
+        "# LinkedIn", "", "## d1", "Post d1.", "",
+        "### comment_diaria", "", "Mais {outros_count} destaques em {edition_url}", "",
+        "# Facebook", "", "## d1", "FB d1.",
+      ].join("\n"), "utf8");
+      writeFileSync(join(dir, "06-public-images.json"), JSON.stringify({
+        images: { d1: { url: "https://img.test/d1.jpg" }, d2: { url: "https://img.test/d2.jpg" }, d3: { url: "https://img.test/d3.jpg" } }
+      }), "utf8");
+
+      // runPublishLinkedinCli já passa --log-root-dir apontando pro parent
+      // de editionDir (dirname(editionDir) — ver helper acima).
+      runPublishLinkedinCli(dir, ["--only", "d1"]);
+
+      const logRootDir = dirname(dir);
+      const isolatedLogPath = join(logRootDir, "data", "run-log.jsonl");
+      assert.ok(
+        existsSync(isolatedLogPath),
+        "log de auditoria deveria existir no tmpdir isolado (--log-root-dir)",
+      );
+      const isolatedLog = readFileSync(isolatedLogPath, "utf8");
+
+      // Call site 1: image_cache_state, dentro de main() — logado incondicionalmente
+      // (mesmo que o fail-fast #999/#1275 nunca dispare, como aqui).
+      assert.match(
+        isolatedLog,
+        /image_cache_state/,
+        "call site main() (image_cache_state) deveria ter gravado no tmpdir isolado",
+      );
+      // Call site 2: "dispatched via", dentro de dispatchEntry() — logado antes
+      // da tentativa de rede, independente de sucesso/falha do webhook.
+      assert.match(
+        isolatedLog,
+        /dispatched via/,
+        "call site dispatchEntry() (dispatched via) deveria ter gravado no mesmo tmpdir isolado",
+      );
+      assert.match(isolatedLog, /"agent":"publish-linkedin"/);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
 describe("#2454-finding-6: publish-linkedin le 05-edition-url.txt e injeta no comment_diaria", () => {
   it("05-edition-url.txt presente → {edition_url} substituido no output (nao aparece literal)", () => {
     // Testa o LADO DE LEITURA: publish-linkedin.ts deve ler _internal/05-edition-url.txt
