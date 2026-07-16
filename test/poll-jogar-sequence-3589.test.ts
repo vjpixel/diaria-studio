@@ -197,18 +197,20 @@ describe("renderJogarSequencePageHtml (#3589)", () => {
     assert.doesNotMatch(html, /href="\/jogar\/arquivo"/);
   });
 
-  it("streak/stats do servidor NUNCA exibidos por rodada — só ✅/❌ decidem certo/errado no cliente (#3589 item 3)", () => {
+  it("streak/stats do servidor NUNCA exibidos por rodada — só ✅/❌ decidem certo/errado no cliente (#3589 item 3, #3595: sempre em background)", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
     assert.match(html, /text\.indexOf\("✅"\) === 0/);
     // O texto bruto do servidor (que pode incluir "🔥 N dias seguidos") nunca
-    // é injetado no DOM por rodada — só as strings fixas "Acertou!"/"Essa
-    // não — errou dessa vez." (checadas na descrição do bloco acima).
-    assert.doesNotMatch(html, /roundResultEl\.innerHTML[^;]*msgEl/);
+    // é injetado no DOM — nem por rodada (não existe mais reveal por rodada,
+    // #3595) nem na tela final (que só mostra as strings fixas montadas por
+    // este próprio script — placar numérico + "Errou nos pares ...").
+    assert.doesNotMatch(html, /innerHTML[^;]*msgEl/);
   });
 
-  it("progress bar mostra rodada atual + total + acertos", () => {
+  it("progress bar mostra só 'Par X de N' — sem contador de acertos incremental (#3595: revelaria parcialmente resultado de rodadas já jogadas)", () => {
     const html = renderJogarSequencePageHtml(["260601", "260602", "260603"]);
-    assert.match(html, /Par 1 de 3 — acertos: 0/);
+    assert.doesNotMatch(html, /acertos: \d/);
+    assert.match(html, /"Par " \+ \(originalIndex \+ 1\) \+ " de " \+ total/);
   });
 
   it("leaderboard linkado com brand=web (mensal — nenhuma mudança de BRAND_INFO)", () => {
