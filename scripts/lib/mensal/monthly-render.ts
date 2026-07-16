@@ -129,6 +129,19 @@ function withClariceUtm(url: string): string {
   return parsed.toString();
 }
 
+/**
+ * escHtml + `**bold**` + `*italic*`, SEM wordmark/word-joiner. Base de
+ * `renderTextInline` e usado DIRETO no rótulo de link (`renderInline`) — o
+ * rótulo não pode receber wordmark (`diar.ia.br` → link Beehiiv), que aninharia
+ * um `<a>` dentro do `<a>` do próprio link. Assim `[**Título**](url)` (bold
+ * dentro do rótulo, ex: título de livro) vira `<strong>` sem `**` literal.
+ */
+function escHtmlWithEmphasis(s: string): string {
+  return escHtml(s)
+    .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>');
+}
+
 function renderTextInline(s: string): string {
   // #2008/#2018: applyWordJoiner roda após escHtml+bold/italic — anti auto-linkify
   // via shared helper (scripts/lib/word-joiner.ts; lookbehind protege URLs cruas).
@@ -136,11 +149,7 @@ function renderTextInline(s: string): string {
   // estiliza "diar.ia" / "diar.ia.br" como o wordmark da marca (pontos teal) E,
   // na mensal, envolve num link pro Beehiiv (#template-branding 260703).
   return applyBrandWordmark(
-    applyWordJoiner(
-      escHtml(s)
-        .replace(/\*\*([^*]+?)\*\*/g, "<strong>$1</strong>")
-        .replace(/(?<!\*)\*(?!\*)(\S(?:[^*\n]*?\S)?)\*(?!\*)/g, '<em style="font-style:italic;">$1</em>'),
-    ),
+    applyWordJoiner(escHtmlWithEmphasis(s)),
     withClariceUtm(MENSAL_BRAND_LINK), // #2975: link do wordmark carrega UTM clarice
   );
 }
@@ -253,8 +262,11 @@ function nextLinkStartIndex(str: string, from: number): number {
 
 /**
  * Converts [text](url) markdown links to <a> tags; o texto AO REDOR dos links
- * ganha bold/italic via renderTextInline. (O rótulo do link em si — `m[1]` — é
- * só escapado, sem bold/italic, igual à diária.)
+ * ganha bold/italic + wordmark via renderTextInline. O rótulo do link em si
+ * (`m[1]`) ganha bold/italic via `escHtmlWithEmphasis` (mas NÃO wordmark — evita
+ * `<a>` aninhado), então `[**Título**](url)` — bold DENTRO do rótulo, ex: título
+ * de livro no box de recomendação de leitura — vira `<a><strong>Título</strong></a>`
+ * em vez de vazar `**` literal (bug detectado no ciclo 2606-07).
  *
  * #1917/#1634: o destino do link é parseado contando parênteses balanceados,
  * não com `\([^)]+\)`. A regex antiga (split por `\[[^\]]+\]\([^)]+\)`) fechava
@@ -326,7 +338,7 @@ export function renderInline(text: string): string {
     }
 
     if (textBefore.length > 0) parts.push(renderTextInline(textBefore));
-    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtml(m[1])}</a>`;
+    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
     parts.push(boldLink ? `<strong>${linkHtml}</strong>` : linkHtml);
     lastIdx = boldLink ? j + 3 : j + 1;
     linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
