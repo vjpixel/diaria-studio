@@ -59,6 +59,32 @@ const FONT_LABEL = FONTS.sans;
 // (validado contra docs oficiais 2026-05-11).
 const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
 
+// #3524: ponte cross-canal email → arquivo do site (última sub-issue do EPIC
+// #3514). UTM fixo do funil newsletter→site — mesma disciplina de 3
+// parâmetros já usada pelo funil site→email (`SUBSCRIBE_UTM_*`,
+// workers/poll/src/jogar.ts #3518) e pelo funil embed→email (`EMBED_UTM_*`,
+// workers/poll/src/embed.ts #3521). `utm_source=newsletter` é literal da
+// issue (#3524 "O quê"); `count-subscriptions-by-utm.ts` (#2457) já agrega
+// por QUALQUER utm_source presente na subscription Beehiiv — nenhuma mudança
+// naquele script é necessária pra este valor aparecer no funil.
+export const EIA_ARCHIVE_UTM_SOURCE = "newsletter";
+export const EIA_ARCHIVE_UTM_MEDIUM = "email";
+export const EIA_ARCHIVE_UTM_CAMPAIGN = "eia-arquivo";
+
+/**
+ * Pure (#3524): URL do arquivo jogável do "É IA?" standalone (`/jogar/arquivo`,
+ * #3519) com o UTM do funil newsletter→site. Determinística — sem variante
+ * A/B, mesma decisão conservadora de `buildSubscribeUrl` (jogar.ts, #3518).
+ */
+export function buildJogarArchiveUrl(): string {
+  const params = new URLSearchParams({
+    utm_source: EIA_ARCHIVE_UTM_SOURCE,
+    utm_medium: EIA_ARCHIVE_UTM_MEDIUM,
+    utm_campaign: EIA_ARCHIVE_UTM_CAMPAIGN,
+  });
+  return `${POLL_WORKER_URL}/jogar/arquivo?${params.toString()}`;
+}
+
 /**
  * #2067: helper DS body — sans 16px line-height 1.62 ink. `margin` aceita
  * qualquer shorthand CSS (ex: "18px 0 0", "12px 0 0", "0 0 12px", "0").
@@ -813,6 +839,11 @@ export function renderEIA(eia: EIA): string {
   const leaderboardRow = renderLeaderboardTop1Row(eia, lbStyle);
   // #1970: link persistente pra leaderboard em TODA edição (pódio acima é 1ª-do-mês).
   const leaderboardLinkRow = renderLeaderboardLinkRow(lbStyle);
+  // #3524: link persistente pro arquivo jogável (site) — metade "email → site"
+  // da ponte cross-canal do EPIC #3514. Vem DEPOIS do leaderboard (loop
+  // resultado→ranking é a mecânica central de engajamento existente, #1160 —
+  // a ponte pro site é reforço adicional, não substitui).
+  const archiveLinkRow = renderJogarArchiveLinkRow(lbStyle);
 
   // #1630: "Resultado da última edição: X% acertaram", no rodapé do painel.
   // #3220: destylizado a pedido do editor — pra ler como frase comum, não como
@@ -856,6 +887,7 @@ export function renderEIA(eia: EIA): string {
       </td></tr>${prevResultHtml}
 ${leaderboardRow}
 ${leaderboardLinkRow}
+${archiveLinkRow}
       </table>
     </td>
   </tr></table>
@@ -937,6 +969,26 @@ export function renderLeaderboardLinkRow(paragraphStyle: string): string {
   const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;display:inline-block;padding:4px 0;`;
   return `      <tr><td align="left" style="padding:8px 0 0 0;">
         <p style="${paragraphStyle}">Veja o ranking de quem mais acerta → <a href="${url}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">leaderboard</a></p>
+      </td></tr>`;
+}
+
+/**
+ * Pure (#3524): link PERSISTENTE pro arquivo jogável do "É IA?" standalone no
+ * rodapé do painel — a metade "email → site" da ponte cross-canal do EPIC
+ * #3514 (#3519 arquivo + #3518 CTA de assinatura já cobrem a metade "site →
+ * email"). Renderiza em TODA edição, mesmo padrão de `renderLeaderboardLinkRow`
+ * (#1970) — estático, sem fetch, sem depender de `eia.edition` (o arquivo
+ * lista TODAS as edições fechadas, não uma específica). `buildJogarArchiveUrl`
+ * carrega o UTM do funil (`utm_source=newsletter`) — mede quantos visitantes
+ * do arquivo vieram da newsletter vs. share (#3517: `utm_source=share`) vs.
+ * embed (#3521: `utm_source=embed`), item de aceite #3524 ("funil distingue
+ * origem").
+ */
+export function renderJogarArchiveLinkRow(paragraphStyle: string): string {
+  const url = buildJogarArchiveUrl();
+  const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;display:inline-block;padding:4px 0;`;
+  return `      <tr><td align="left" style="padding:8px 0 0 0;">
+        <p style="${paragraphStyle}">Quer mais? Jogue os pares anteriores → <a href="${url}" target="_blank" rel="noopener noreferrer" style="${linkStyle}">arquivo do É IA?</a></p>
       </td></tr>`;
 }
 

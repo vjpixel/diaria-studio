@@ -73,6 +73,8 @@ export {
   renderBoxDivulgacao,
   renderLeaderboardTop1Row,
   renderLeaderboardLinkRow,
+  renderJogarArchiveLinkRow, // #3524
+  buildJogarArchiveUrl, // #3524
   renderHTML,
   renderEiaStandalone,
 } from "./lib/newsletter-render-html.ts";
