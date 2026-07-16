@@ -253,16 +253,16 @@ describe("streak via /vote — brand=web: mesma cadência 'month' que diaria (#3
     // acima pra diaria. O caso "par do dia, ainda não revelado" (correct
     // null no momento do voto) é o gap documentado/deferido — não testado
     // aqui (ver header do arquivo).
-    // #1905: handleVote roda sob o env BRANDED (bEnv) — pra brand="web" isso
-    // significa que `correct:{edition}`/`score:{email}` lidos/escritos por
-    // handleVote são `web:correct:{edition}`/`web:score:{email}` (mesmo
-    // `brandKvPrefix`, lib.ts). Diferente do `env` CRU que
-    // `handleJogarPage`/`handleJogarArchivePage` usam só pra decidir a cópia
-    // "revelado?" — aqui é o dado autoritativo de correctness do voto.
+    // #3600: `correct:{edition}` é lido por handleVote via env CRU (gabarito
+    // brand-independente, close-poll.ts nunca grava a chave prefixada) —
+    // `score:{email}` continua branded (`web:score:{email}`, mesmo
+    // `brandKvPrefix`, lib.ts). Antes do #3600, handleVote lia o gabarito via
+    // bEnv (`web:correct:{edition}`, chave nunca escrita em produção) — bug
+    // que quebrava o reveal em brand=web/clarice (ver PR #3600).
     const token = "11111111-1111-4111-8111-111111111111@web.eia.diaria.local";
     const kv = makeTrackedKv({
-      "web:correct:260601": "A",
-      "web:correct:260602": "A",
+      "correct:260601": "A",
+      "correct:260602": "A",
     });
 
     await vote(kv, token, "260601", "A", "web");
@@ -277,8 +277,9 @@ describe("streak via /vote — brand=web: mesma cadência 'month' que diaria (#3
   it("web: pular um dia útil de arquivo reseta o streak pra 1", async () => {
     const token = "22222222-2222-4222-8222-222222222222@web.eia.diaria.local";
     const kv = makeTrackedKv({
-      "web:correct:260601": "A",
-      "web:correct:260603": "A",
+      // #3600: gabarito CRU (ver comentário do teste acima).
+      "correct:260601": "A",
+      "correct:260603": "A",
     });
 
     await vote(kv, token, "260601", "A", "web");
@@ -298,8 +299,9 @@ describe("streak via /vote — clarice: cadência 'year' (mensal), não 'dias' (
     // (ver editionToMonthSlug/nextContentMonthSlug em lib.ts).
     const email = "streak-clarice@x.com";
     const kv = makeTrackedKv({
-      "clarice:correct:2606-07": "A",
-      "clarice:correct:2607-08": "A",
+      // #3600: gabarito CRU — mesmo racional do brand=web acima.
+      "correct:2606-07": "A",
+      "correct:2607-08": "A",
     });
 
     await vote(kv, email, "2606-07", "A", "clarice");
@@ -316,8 +318,9 @@ describe("streak via /vote — clarice: cadência 'year' (mensal), não 'dias' (
     // julho e agosto — não é o próximo mês de conteúdo.
     const email = "streak-clarice-gap@x.com";
     const kv = makeTrackedKv({
-      "clarice:correct:2606-07": "A",
-      "clarice:correct:2609-10": "A",
+      // #3600: gabarito CRU — mesmo racional do brand=web acima.
+      "correct:2606-07": "A",
+      "correct:2609-10": "A",
     });
 
     await vote(kv, email, "2606-07", "A", "clarice");

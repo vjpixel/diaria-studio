@@ -145,7 +145,10 @@ describe("stats pós-voto via /vote — sufixo aparece quando gabarito revelado 
     // .msg via DOMParser já é genérica).
     const token = "33333333-3333-4333-8333-333333333333@web.eia.diaria.local";
     const kv = makeTrackedKv({
-      "web:correct:260704": "A",
+      // #3600: gabarito é lido CRU (sem prefixo de brand) por handleVote —
+      // "web:correct:260704" nunca é escrito em produção (close-poll.ts só
+      // grava "correct:{edition}"). Stats seguem branded normalmente.
+      "correct:260704": "A",
       "web:stats:260704": JSON.stringify({ total: 25, voted_a: 20, voted_b: 5, correct_count: 20 }),
     });
 
