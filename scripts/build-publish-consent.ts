@@ -31,6 +31,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/cli-args.ts";
+import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 import {
   autoApproveConsent,
   defaultAutoConsent,
@@ -50,6 +51,7 @@ interface CliArgs {
   editorResponse?: string;
   skip?: string;
   outPath?: string;
+  editionsDir?: string;
   help?: boolean;
 }
 
@@ -64,6 +66,10 @@ function parseArgs(argv: string[]): CliArgs {
     else if (a === "--editor-response") out.editorResponse = argv[++i];
     else if (a === "--skip") out.skip = argv[++i];
     else if (a === "--out") out.outPath = argv[++i];
+    // #3491: override do editions root — só pra isolamento de teste (mesmo
+    // padrão de close-poll.ts #3031/log-runtime-fix.ts #3484). Produção nunca
+    // passa essa flag.
+    else if (a === "--editions-dir") out.editionsDir = argv[++i];
     else if (a === "--help" || a === "-h") out.help = true;
   }
   return out;
@@ -139,9 +145,20 @@ export function mainCli(argv: string[]): number {
     consent = parsed;
   }
 
+  // #3491: sem --out, o caminho default construía `data/editions/{AAMMDD}`
+  // à mão (layout FLAT), órfão de qualquer edição já migrada pro layout
+  // nested (`{AAMM}/{AAMMDD}`, #2463/#3024) — o consent gravava num dir vazio
+  // que Stage 5 nunca lia, já que o resto da edição mora em `_internal/`
+  // dentro do dir nested resolvido. `resolveEditionDir` acha o dir REAL no
+  // disco (flat ou nested) e cai no default nested só se a edição ainda não
+  // existir em nenhum layout. `--editions-dir` é override só de teste (mesmo
+  // padrão de close-poll.ts #3031); produção nunca passa essa flag.
+  const editionsRootDir = args.editionsDir
+    ? resolve(args.editionsDir)
+    : resolve(ROOT, "data", "editions");
   const outPath = args.outPath
     ? resolve(ROOT, args.outPath)
-    : resolve(ROOT, "data", "editions", args.edition, "_internal", "05-publish-consent.json");
+    : resolve(resolveEditionDir(editionsRootDir, args.edition), "_internal", "05-publish-consent.json");
   const outDir = dirname(outPath);
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
 

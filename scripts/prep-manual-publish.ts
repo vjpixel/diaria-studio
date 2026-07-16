@@ -11,6 +11,7 @@
  *
  * Uso:
  *   npx tsx scripts/prep-manual-publish.ts --edition 260510
+ *   [--editions-dir <path>]  # override do editions root — só para testes (#3491)
  *
  * Env:
  *   BEEHIIV_API_KEY        - acesso à API Beehiiv (required)
@@ -26,6 +27,7 @@ import { loadProjectEnv } from "./lib/env-loader.ts";
 import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isWorkerReachable } from "./lib/worker-reachability.ts"; // #2551
 import { dohFetch } from "./lib/doh-fetch.ts"; // #2551: stats fetch via DoH quando DNS local filtra
+import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 
 loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
 
@@ -192,6 +194,23 @@ async function checkWorker(edition: string): Promise<Check> {
   };
 }
 
+/**
+ * #3491: resolve o diretório da edição a partir do editions root (real ou
+ * override de teste) usando `resolveEditionDir` (flat legado + nested,
+ * #2463/#3024) em vez de montar `data/editions/{AAMMDD}` à mão. Extraído
+ * como função pura pra ser testável sem spawnar o CLI inteiro (que faz
+ * chamadas de rede via checkWorker).
+ */
+export function resolvePrepPublishEditionDir(
+  edition: string,
+  editionsDirOverride?: string,
+): string {
+  const editionsRootDir = editionsDirOverride
+    ? resolve(editionsDirOverride)
+    : resolve(ROOT, "data", "editions");
+  return resolveEditionDir(editionsRootDir, edition);
+}
+
 function printChecks(checks: Check[]): boolean {
   const allPassed = checks.every((c) => c.passed);
   console.log("\n=== Pré-condições ===");
@@ -227,7 +246,14 @@ async function main(): Promise<void> {
   const cfg = loadBeehiivConfig("[prep-manual-publish]");
   const { apiKey, publicationId } = cfg;
 
-  const editionDir = resolve(ROOT, "data", "editions", edition);
+  // #3491: editionDir era montado à mão como `data/editions/{AAMMDD}` (layout
+  // FLAT), sem passar por nenhum helper — a mesma classe de bug de #3483/#3484.
+  // Este script faz parte do fluxo de publicação MANUAL documentado no
+  // CLAUDE.md (gate técnico pré-paste no Beehiiv); ENOENT garantido em
+  // qualquer edição já migrada pro layout nested (`{AAMM}/{AAMMDD}`,
+  // #2463/#3024). `--editions-dir` é override só de teste (mesmo padrão de
+  // close-poll.ts #3031); produção nunca passa essa flag.
+  const editionDir = resolvePrepPublishEditionDir(edition, values["editions-dir"]);
   if (!existsSync(editionDir)) {
     console.error(
       `[prep-manual-publish] edição ${edition} não existe em ${editionDir}`,

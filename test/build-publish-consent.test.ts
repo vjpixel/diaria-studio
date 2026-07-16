@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -130,6 +130,72 @@ describe("build-publish-consent CLI (#1238 follow-up)", () => {
       assert.equal(fromStdout.newsletter, "auto");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("build-publish-consent — default outPath via #3491 (mesma classe de #3483/#3484)", () => {
+  // Antes do #3491, sem --out (o caminho que o orchestrator-stage-5 SEMPRE usa
+  // — grep confirma nenhum caller passa --out), o outPath default era
+  // `resolve(ROOT, "data", "editions", edition, "_internal", ...)` (layout
+  // FLAT) à mão. Numa edição já no layout nested (`{AAMM}/{AAMMDD}`,
+  // #2463/#3024) — criado pelas etapas 1-4 ANTES do Stage 5 rodar — o
+  // consent gravava num dir FLAT órfão, vazio, que nenhum outro script lê;
+  // o consent real nunca era encontrado pelo resto do Stage 5.
+  it("grava consent dentro do editionDir NESTED existente, não num dir flat órfão", () => {
+    const editionsDir = mkdtempSync(join(tmpdir(), "consent-nested-"));
+    try {
+      const nestedEditionDir = join(editionsDir, "2605", "260517");
+      mkdirSync(nestedEditionDir, { recursive: true });
+      const r = run([
+        "--edition", "260517",
+        "--auto-approve",
+        "--editions-dir", editionsDir,
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const expectedPath = join(nestedEditionDir, "_internal", "05-publish-consent.json");
+      assert.ok(existsSync(expectedPath), `esperava consent em ${expectedPath}`);
+      const parsed = JSON.parse(readFileSync(expectedPath, "utf8"));
+      assert.equal(parsed.newsletter, "auto");
+      // Não deve ter criado o dir FLAT órfão (regressão pré-#3491).
+      const orphanFlatPath = join(editionsDir, "260517", "_internal", "05-publish-consent.json");
+      assert.equal(existsSync(orphanFlatPath), false, "não deve criar dir flat órfão quando a edição já é nested");
+    } finally {
+      rmSync(editionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("grava consent no layout FLAT legado quando a edição só existe lá (compat)", () => {
+    const editionsDir = mkdtempSync(join(tmpdir(), "consent-flat-"));
+    try {
+      const flatEditionDir = join(editionsDir, "260421");
+      mkdirSync(flatEditionDir, { recursive: true });
+      const r = run([
+        "--edition", "260421",
+        "--default-manual",
+        "--editions-dir", editionsDir,
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const expectedPath = join(flatEditionDir, "_internal", "05-publish-consent.json");
+      assert.ok(existsSync(expectedPath), `esperava consent em ${expectedPath}`);
+    } finally {
+      rmSync(editionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("edição ainda não criada em nenhum layout: cai no default NESTED (não flat)", () => {
+    const editionsDir = mkdtempSync(join(tmpdir(), "consent-new-"));
+    try {
+      const r = run([
+        "--edition", "260601",
+        "--auto-approve",
+        "--editions-dir", editionsDir,
+      ]);
+      assert.equal(r.status, 0, r.stderr);
+      const expectedPath = join(editionsDir, "2606", "260601", "_internal", "05-publish-consent.json");
+      assert.ok(existsSync(expectedPath), `esperava consent nested-default em ${expectedPath}`);
+    } finally {
+      rmSync(editionsDir, { recursive: true, force: true });
     }
   });
 });

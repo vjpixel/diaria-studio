@@ -24,6 +24,7 @@ import {
   reorderSocialMd,
   renameDestaqueImages,
   renameDestaquePrompts,
+  parseArgs,
 } from "../scripts/reorder-destaques.ts";
 import { checkIntentionalError } from "../scripts/lib/lint-checks/intentional-error.ts";
 import type { IntentionalErrorJson } from "../scripts/lib/intentional-errors.ts";
@@ -426,6 +427,62 @@ describe("renameDestaquePrompts (#1585)", () => {
       assert.equal(readFileSync(join(dir, "02-d1-sd-prompt.json"), "utf8"), "sd2");
     } finally {
       rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+describe("parseArgs — default editionDir via #3491 (mesma classe de #3483/#3484)", () => {
+  // Antes do #3491, sem --edition-dir (comando editor-invocado diretamente,
+  // sem caller fixo que sempre passe a flag), o default construía
+  // `data/editions/{AAMMDD}` à mão (layout FLAT). Numa edição já migrada pro
+  // layout nested (`{AAMM}/{AAMMDD}`, #2463/#3024), isso apontava pra um dir
+  // que não existe.
+  it("resolve edição no layout NESTED via --editions-dir", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-dest-nested-"));
+    try {
+      const nestedEditionDir = join(dir, "2605", "260517");
+      mkdirSync(nestedEditionDir, { recursive: true });
+      const args = parseArgs([
+        "--edition", "260517",
+        "--new-order", "2,1,3",
+        "--editions-dir", dir,
+      ]);
+      assert.equal(args.editionDir, nestedEditionDir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolve edição no layout FLAT legado via --editions-dir (compat)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-dest-flat-"));
+    try {
+      const flatEditionDir = join(dir, "260421");
+      mkdirSync(flatEditionDir, { recursive: true });
+      const args = parseArgs([
+        "--edition", "260421",
+        "--new-order", "2,1,3",
+        "--editions-dir", dir,
+      ]);
+      assert.equal(args.editionDir, flatEditionDir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--edition-dir explícito continua tendo precedência sobre --editions-dir", () => {
+    const dir = mkdtempSync(join(tmpdir(), "reorder-dest-precedence-"));
+    try {
+      const nestedEditionDir = join(dir, "2605", "260517");
+      mkdirSync(nestedEditionDir, { recursive: true });
+      const args = parseArgs([
+        "--edition", "260517",
+        "--new-order", "2,1,3",
+        "--editions-dir", dir,
+        "--edition-dir", "/custom/override",
+      ]);
+      assert.equal(args.editionDir, "/custom/override");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

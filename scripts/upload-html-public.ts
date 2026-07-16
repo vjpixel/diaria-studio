@@ -20,6 +20,7 @@
  * Uso:
  *   npx tsx scripts/upload-html-public.ts --edition 260514
  *   npx tsx scripts/upload-html-public.ts --edition 260514 --dry-run
+ *   [--editions-dir <path>]  # override do editions root — só para testes (#3491)
  *
  * Env:
  *   ADMIN_SECRET ou POLL_ADMIN_SECRET — HMAC pra autenticar o PUT
@@ -44,6 +45,7 @@ import { createHmac, createHash } from "node:crypto";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { mtimeMs } from "./lib/mtime.ts"; // #2048 item 10: helper compartilhado (catch→null)
+import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DRAFT_WORKER_URL =
@@ -405,9 +407,24 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // #3491: sem --html, o path default construía `data/editions/{edition}`
+  // à mão (layout FLAT) — mesma classe de bug de #3483/#3484. Chamado toda
+  // edição no Stage 4 (`upload-html-public.ts --edition {AAMMDD} --no-wrap`,
+  // sem --html) — ENOENT garantido em qualquer edição já migrada pro layout
+  // nested (`{AAMM}/{AAMMDD}`, #2463/#3024). `resolveEditionDir` acha o dir
+  // REAL no disco. `--editions-dir` é override só de teste (mesmo padrão de
+  // close-poll.ts #3031); produção nunca passa essa flag. Só resolvido
+  // quando NÃO há --html override — chamadas com sufixo não-AAMMDD (ex:
+  // `{AAMMDD}-social`) sempre passam --html explícito (orchestrator-stage-4/5),
+  // então nunca dependem desta resolução.
   const htmlPath = htmlPathOverride
     ? resolve(ROOT, htmlPathOverride)
-    : resolve(ROOT, "data", "editions", edition, "_internal", "newsletter-final.html");
+    : (() => {
+        const editionsRootDir = values["editions-dir"]
+          ? resolve(ROOT, values["editions-dir"])
+          : resolve(ROOT, "data", "editions");
+        return resolve(resolveEditionDir(editionsRootDir, edition), "_internal", "newsletter-final.html");
+      })();
 
   if (!existsSync(htmlPath)) {
     console.error(`[upload-html-public] HTML não encontrado: ${htmlPath}`);
@@ -419,7 +436,7 @@ async function main(): Promise<void> {
   // pode não ter 02-reviewed.md associado (preview mensal, re-render manual).
   const reviewedMdPath = htmlPathOverride
     ? undefined
-    : resolve(ROOT, "data", "editions", edition, "02-reviewed.md");
+    : resolve(dirname(dirname(htmlPath)), "02-reviewed.md");
 
   const result = await uploadHtml({
     edition,

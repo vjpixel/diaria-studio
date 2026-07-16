@@ -6,7 +6,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, utimesSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, utimesSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { createHmac } from "node:crypto";
@@ -767,6 +767,103 @@ describe("CLI guard — importar o módulo não dispara main() (#3386)", () => {
     assert.ok(existsSync(persistPath), "persistFieldToJsonFile deve ter escrito o arquivo (prova que main() não preemptou)");
     const written = JSON.parse(readFileSync(persistPath, "utf8"));
     assert.equal(written.newsletter_url, "https://example.com/regressao-3386");
+  });
+});
+
+describe("upload-html-public CLI — default htmlPath via #3491 (mesma classe de #3483/#3484)", () => {
+  // Antes do #3491, sem --html (o caminho que o orchestrator-stage-4 usa toda
+  // edição pra newsletter principal: `--edition {AAMMDD} --no-wrap`, sem
+  // --html), o htmlPath default era `resolve(ROOT, "data", "editions",
+  // edition, "_internal", "newsletter-final.html")` (layout FLAT) à mão.
+  // Numa edição já no layout nested (`{AAMM}/{AAMMDD}`, #2463/#3024) —
+  // criado antes do Stage 4 rodar — o script nunca achava o HTML real.
+  function runCli(args: string[]) {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "upload-html-public.ts");
+    return spawnSync(process.execPath, ["--import", "tsx", scriptPath, ...args], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      timeout: 15000,
+    });
+  }
+
+  it("acha newsletter-final.html no layout NESTED via --editions-dir, sem 'HTML não encontrado' (#3491)", () => {
+    const editionsDir = mkdtempSync(resolve(tmpdir(), "uphtml-nested-"));
+    try {
+      const nestedEditionDir = join(editionsDir, "2605", "260517");
+      const internalDir = join(nestedEditionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(join(internalDir, "newsletter-final.html"), "<p>ok</p>", "utf8");
+
+      const r = runCli([
+        "--edition", "260517",
+        "--dry-run",
+        "--no-wrap",
+        "--editions-dir", editionsDir,
+      ]);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.doesNotMatch(r.stderr, /HTML não encontrado/);
+    } finally {
+      rmSync(editionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("layout FLAT legado (compat) via --editions-dir", () => {
+    const editionsDir = mkdtempSync(resolve(tmpdir(), "uphtml-flat-"));
+    try {
+      const flatEditionDir = join(editionsDir, "260421");
+      const internalDir = join(flatEditionDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(join(internalDir, "newsletter-final.html"), "<p>ok</p>", "utf8");
+
+      const r = runCli([
+        "--edition", "260421",
+        "--dry-run",
+        "--no-wrap",
+        "--editions-dir", editionsDir,
+      ]);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.doesNotMatch(r.stderr, /HTML não encontrado/);
+    } finally {
+      rmSync(editionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem HTML em nenhum layout: erro 'HTML não encontrado' (comportamento esperado)", () => {
+    const editionsDir = mkdtempSync(resolve(tmpdir(), "uphtml-missing-"));
+    try {
+      const r = runCli([
+        "--edition", "260999",
+        "--dry-run",
+        "--editions-dir", editionsDir,
+      ]);
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /HTML não encontrado/);
+    } finally {
+      rmSync(editionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("--html explícito ignora --editions-dir (override continua funcionando)", () => {
+    const dir = mkdtempSync(resolve(tmpdir(), "uphtml-override-"));
+    try {
+      const htmlPath = resolve(dir, "custom.html");
+      writeFileSync(htmlPath, "<p>custom</p>", "utf8");
+      const r = spawnSync(
+        process.execPath,
+        [
+          "--import", "tsx",
+          join(join(import.meta.dirname, ".."), "scripts", "upload-html-public.ts"),
+          "--edition", "260514",
+          "--dry-run",
+          "--html", htmlPath,
+        ],
+        { encoding: "utf8", cwd: join(import.meta.dirname, ".."), timeout: 15000 },
+      );
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

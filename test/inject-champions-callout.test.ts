@@ -13,7 +13,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { insertChampionsCallout } from "../scripts/inject-champions-callout.ts";
+import { insertChampionsCallout, parseCliArgs } from "../scripts/inject-champions-callout.ts";
 import { extractIntroCallout } from "../scripts/lib/newsletter-parse.ts";
 
 const REVIEWED_BASE = `Para esta edição, eu (o editor) enviei 5 artigos e a Diar.ia encontrou outros 20. Selecionamos os 3 mais relevantes para as pessoas que assinam a newsletter.
@@ -85,6 +85,66 @@ describe("insertChampionsCallout (#2725)", () => {
     const result = insertChampionsCallout(weird, CALLOUT_INNER);
     assert.equal(result.text, null);
     assert.match(result.skippedReason!, /separador/);
+  });
+});
+
+describe("parseCliArgs — default editionDir via #3491 (mesma classe de #3483/#3484)", () => {
+  // Na prática o orchestrator (Stage 3, orchestrator-stage-3.md) SEMPRE passa
+  // --edition-dir explícito, então este fallback não é exercitado em
+  // produção hoje. Corrigido por defesa em profundidade — antes do #3491, sem
+  // --edition-dir, o default construía `data/editions/{AAMMDD}` à mão (layout
+  // FLAT), mesma classe de bug de #3483/#3484.
+  it("resolve edição no layout NESTED via --editions-dir", () => {
+    const dir = mkdtempSync(join(tmpdir(), "champions-nested-"));
+    try {
+      const nestedEditionDir = join(dir, "2605", "260517");
+      mkdirSync(nestedEditionDir, { recursive: true });
+      const args = parseCliArgs([
+        "--edition", "260517",
+        "--editions-dir", dir,
+      ]);
+      assert.ok(args);
+      assert.equal(args!.reviewedPath, join(nestedEditionDir, "02-reviewed.md"));
+      assert.equal(
+        args!.leaderboardJson,
+        join(nestedEditionDir, "_internal", "04-leaderboard-top1.json"),
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolve edição no layout FLAT legado via --editions-dir (compat)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "champions-flat-"));
+    try {
+      const flatEditionDir = join(dir, "260421");
+      mkdirSync(flatEditionDir, { recursive: true });
+      const args = parseCliArgs([
+        "--edition", "260421",
+        "--editions-dir", dir,
+      ]);
+      assert.ok(args);
+      assert.equal(args!.reviewedPath, join(flatEditionDir, "02-reviewed.md"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--edition-dir explícito continua tendo precedência sobre --editions-dir", () => {
+    const dir = mkdtempSync(join(tmpdir(), "champions-precedence-"));
+    try {
+      const nestedEditionDir = join(dir, "2605", "260517");
+      mkdirSync(nestedEditionDir, { recursive: true });
+      const args = parseCliArgs([
+        "--edition", "260517",
+        "--editions-dir", dir,
+        "--edition-dir", "/custom/override",
+      ]);
+      assert.ok(args);
+      assert.equal(args!.reviewedPath, join("/custom/override", "02-reviewed.md"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

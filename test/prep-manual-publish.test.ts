@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { checkNewsletterHtml } from "../scripts/prep-manual-publish.ts";
+import { spawnSync } from "node:child_process";
+import { checkNewsletterHtml, resolvePrepPublishEditionDir } from "../scripts/prep-manual-publish.ts";
 
 /**
  * Tests pra prep-manual-publish.ts (#1047, refatorado #1185, simplificado #1186).
@@ -130,5 +131,74 @@ describe("prep-manual-publish #2286 — publicationId via platform.config.json f
       cfg.beehiiv?.publicationId?.startsWith("pub_"),
       `platform.config.json.beehiiv.publicationId deve começar com 'pub_', got: ${cfg.beehiiv?.publicationId}`,
     );
+  });
+});
+
+describe("resolvePrepPublishEditionDir — auditoria #3491 (mesma classe de #3483/#3484)", () => {
+  // Antes do #3491, `editionDir` era montado à mão como
+  // `resolve(ROOT, "data", "editions", edition)` (layout FLAT), sem passar
+  // por resolveEditionDir — ENOENT garantido em qualquer edição já migrada
+  // pro layout nested (`{AAMM}/{AAMMDD}`, #2463/#3024). Este script faz
+  // parte do fluxo de publicação MANUAL documentado no CLAUDE.md.
+  it("resolve edição no layout NESTED (regressão #3491)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "prep-publish-nested-"));
+    try {
+      const nestedEditionDir = join(dir, "2605", "260517");
+      mkdirSync(nestedEditionDir, { recursive: true });
+      const resolved = resolvePrepPublishEditionDir("260517", dir);
+      assert.equal(resolved, nestedEditionDir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolve edição no layout FLAT legado (compat)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "prep-publish-flat-"));
+    try {
+      const flatEditionDir = join(dir, "260421");
+      mkdirSync(flatEditionDir, { recursive: true });
+      const resolved = resolvePrepPublishEditionDir("260421", dir);
+      assert.equal(resolved, flatEditionDir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("edição ausente em ambos os layouts cai no default NESTED (não flat)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "prep-publish-missing-"));
+    try {
+      const resolved = resolvePrepPublishEditionDir("260901", dir);
+      assert.equal(resolved, join(dir, "2609", "260901"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("prep-manual-publish CLI — editionDir via --editions-dir (#3491)", () => {
+  function runCli(args: string[]) {
+    const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+    const scriptPath = join(projectRoot, "scripts", "prep-manual-publish.ts");
+    return spawnSync(process.execPath, ["--import", "tsx", scriptPath, ...args], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      timeout: 15000,
+      env: { ...process.env, BEEHIIV_API_KEY: "test-key-not-real" },
+    });
+  }
+
+  // Só cobre o caminho "edição ausente" — retorna ANTES de checkWorker (rede
+  // real), então é determinístico/rápido. O caminho "edição presente no
+  // layout nested" é coberto pelos testes de `resolvePrepPublishEditionDir`
+  // acima (sem spawnar o CLI, que tocaria rede via checkWorker/isWorkerReachable).
+  it("edição ausente em ambos os layouts retorna 'edição não existe' (comportamento esperado)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "prep-publish-cli-missing-"));
+    try {
+      const r = runCli(["--edition", "260999", "--editions-dir", dir]);
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /edição 260999 não existe/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

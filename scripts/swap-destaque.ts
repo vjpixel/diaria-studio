@@ -62,6 +62,7 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { isMainModule } from "./lib/cli-args.ts";
+import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -467,8 +468,20 @@ export function parseSwapArgs(argv: string[]): SwapArgs {
   }
   const demote = demoteRaw as DemoteTarget;
 
+  // #3491: sem --edition-dir (o override "cru" de path COMPLETO, já existente),
+  // o default construía `data/editions/{AAMMDD}` à mão (layout FLAT) — mesma
+  // classe de bug de #3483/#3484. Este é um comando editor-invocado
+  // diretamente (sem caller fixo no orchestrator que sempre passe
+  // --edition-dir), então o default É o path realmente exercitado no uso
+  // normal. `resolveEditionDir` acha o dir REAL no disco (flat ou nested).
+  // `--editions-dir` (plural, raiz) é um segundo override, só de teste (mesmo
+  // padrão de close-poll.ts #3031) — distinto de `--edition-dir` (singular,
+  // dir completo).
+  const editionsRootDir = args["editions-dir"]
+    ? resolve(args["editions-dir"])
+    : resolve(ROOT, "data", "editions");
   const editionDir =
-    args["edition-dir"] ?? resolve(ROOT, "data", "editions", args.edition);
+    args["edition-dir"] ?? resolveEditionDir(editionsRootDir, args.edition);
 
   return { edition: args.edition, editionDir, promote, demote, drop, dryRun };
 }
