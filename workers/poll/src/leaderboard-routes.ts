@@ -687,6 +687,24 @@ function renderLeaderboardHtml(
   const subCopy = brand === "clarice"
     ? `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada pela <a href="https://diaria.beehiiv.com">diar.ia.br</a> na newsletter da <a href="${info.siteUrl}">${info.shortName ?? info.name}</a>.</p>`
     : `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada por IA na <a href="${info.siteUrl}">${info.name}</a>.</p>`;
+  // #3615: link do arquivo só pra clarice — mesmo gate já aplicado à página
+  // de voto (votePageHtml, index.ts) pelo #3578. Diária não tem mais acesso
+  // ao arquivo em NENHUMA superfície; web também não (#3589 — web é a
+  // sequência do mês anterior, sem conceito de arquivo).
+  const archiveLinkHtml = brand === "clarice"
+    ? ` · <a href="${archiveHref(brand, String(year))}">Votar em edições passadas</a>`
+    : "";
+  // #3615 (item 2, feedback do editor): "Ver ranking anual" só faz sentido
+  // pra brand com leaderboard ANUAL (`BRAND_INFO[brand].leaderboardPeriod ===
+  // "year"` — hoje só clarice) — mesma abstração que `leaderboardHref` já usa
+  // internamente pra decidir a conversão mensal→anual do slug. Diária/web têm
+  // leaderboard MENSAL (fecha todo mês) — não existe "ranking anual" pra
+  // linkar. `navHtml` fica "" (parágrafo inteiro some) quando não há NENHUM
+  // link (nem anual nem arquivo) pra oferecer.
+  const annualLinkHtml = BRAND_INFO[brand].leaderboardPeriod === "year"
+    ? `<a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a>`
+    : "";
+  const navHtml = annualLinkHtml || archiveLinkHtml ? `<p class="nav">${annualLinkHtml}${archiveLinkHtml}</p>` : "";
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -720,7 +738,7 @@ ${renderBrandShellStyles()}
 <hr class="rule">
 <h1>${heading}</h1>
 ${subCopy}
-<p class="nav"><a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a> · <a href="${archiveHref(brand, String(year))}">Votar em edições passadas</a></p>
+${navHtml}
 <table>
 <thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
 <tbody>${rows || `<tr><td colspan=3 style='color:${DS_COLORS.ink};text-align:center;padding:20px'>Ainda sem votos.</td></tr>`}</tbody>
