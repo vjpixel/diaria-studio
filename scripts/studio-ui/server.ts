@@ -55,7 +55,11 @@
  *     `_internal/newsletter-final.html` publicado de verdade pela Etapa 5),
  *     `.../diff`, `.../lint`, `.../reset-baseline` e
  *     `GET /api/editions/:aammdd/preview.html` (HTML completo do e-mail,
- *     pra `<iframe>`) + `POST /api/editions/:aammdd/actions/swap-destaque`
+ *     pra `<iframe>`) + `GET /api/editions/:aammdd/social-preview.html`
+ *     (#3663 — HTML legível do `03-social.md`: posts LinkedIn/Facebook/
+ *     Instagram com quebras de linha e hashtags como aparecem publicados,
+ *     mesmo renderer `render-social-html.ts` que a Etapa 4 real usa) +
+ *     `POST /api/editions/:aammdd/actions/swap-destaque`
  *     — ver `studio-review.ts`/`studio-review-actions.ts` pro detalhe.
  *   - `GET /api/round/:kind` (#3561, `kind` = `overnight` | `develop`) — fila
  *     classificada (entram/pendente/fora, com motivo) + timeline por unidade
@@ -176,6 +180,7 @@ import {
   computeReviewDiff,
   runReviewLints,
   buildReviewPreviewHtml,
+  buildSocialPreviewHtml,
   pullReviewFileBestEffort,
   resolveReviewImagePath,
 } from "./studio-review.ts";
@@ -642,6 +647,16 @@ function handleReviewPreview(rootDir: string, aammdd: string, res: ServerRespons
   sendHtml(res, preview.ok ? 200 : 422, preview.html);
 }
 
+/** #3663: preview HTML do conteúdo social (`03-social.md`), análogo ao
+ * preview de e-mail acima mas pro card LinkedIn/Facebook/Instagram — pedido
+ * da issue: "só markdown cru" não deixava erro de formatação visível antes
+ * de aprovar o gate do Stage 4. Mesmo status 200/422 e mesmo tipo de conteúdo
+ * (`text/html`) do preview de e-mail. */
+function handleReviewSocialPreview(rootDir: string, aammdd: string, res: ServerResponse): void {
+  const preview = buildSocialPreviewHtml(editionDirFor(rootDir, aammdd), aammdd);
+  sendHtml(res, preview.ok ? 200 : 422, preview.html);
+}
+
 /** #achado-260716: as imagens da edição (`04-d1-2x1.jpg` etc, geradas pela
  * Etapa 3) não apareciam no preview do painel de revisão — `renderHTML` do
  * pipeline produz `<img src="{{IMG:filename}}">`, um placeholder que só a
@@ -972,6 +987,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       const reviewPreviewMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/preview\.html$/);
       if (reviewPreviewMatch) {
         handleReviewPreview(rootDir, reviewPreviewMatch[1], res);
+        return;
+      }
+      // #3663: preview do conteúdo social — checado ANTES do preview de
+      // e-mail acima seria redundante (regex distinto, `/social-preview.html`
+      // nunca casa `/preview.html`), mas a ordem aqui espelha a leitura
+      // natural (e-mail primeiro, social logo depois).
+      const socialPreviewMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/social-preview\.html$/);
+      if (socialPreviewMatch) {
+        handleReviewSocialPreview(rootDir, socialPreviewMatch[1], res);
         return;
       }
       const reviewImageMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/image\/([^/]+)$/);

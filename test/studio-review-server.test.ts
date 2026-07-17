@@ -44,7 +44,11 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     editionDir = join(root, "data", "editions", "260716");
     mkdirSync(join(editionDir, "_internal"), { recursive: true });
     writeFileSync(join(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
-    writeFileSync(join(editionDir, "03-social.md"), "# LinkedIn\n\nconteúdo social de teste diar.ia.br", "utf8");
+    writeFileSync(
+      join(editionDir, "03-social.md"),
+      "# LinkedIn\n\n## d1\n\nconteúdo social de teste diar.ia.br\n",
+      "utf8",
+    );
     server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
   });
 
@@ -146,6 +150,37 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.equal(res.status, 422);
     const html = await res.text();
     assert.match(html, /Sem preview/);
+  });
+
+  // #3663 — preview HTML do conteúdo social (03-social.md).
+  it("GET .../social-preview.html retorna HTML legível (200) quando 03-social.md existe", async () => {
+    const res = await fetch(new URL("/api/editions/260716/social-preview.html", server.url));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /text\/html/);
+    const html = await res.text();
+    assert.match(html, /<html/i);
+    assert.match(html, /LinkedIn/);
+    assert.match(html, /conteúdo social de teste diar\.ia\.br/);
+  });
+
+  it("GET .../social-preview.html de edição sem 03-social.md retorna 422 com página de erro", async () => {
+    const res = await fetch(new URL("/api/editions/260717/social-preview.html", server.url));
+    assert.equal(res.status, 422);
+    const html = await res.text();
+    assert.match(html, /Sem preview/);
+  });
+
+  it("GET .../social-preview.html nunca casa com a rota de preview de e-mail (regexes distintas)", async () => {
+    // Regressão de rota: garante que o novo endpoint não "vaza" pro handler
+    // de preview de e-mail nem vice-versa — cada um lê o arquivo certo.
+    const social = await fetch(new URL("/api/editions/260716/social-preview.html", server.url));
+    const email = await fetch(new URL("/api/editions/260716/preview.html", server.url));
+    assert.equal(social.status, 200);
+    assert.equal(email.status, 200);
+    const socialHtml = await social.text();
+    const emailHtml = await email.text();
+    assert.match(socialHtml, /conteúdo social de teste diar\.ia\.br/);
+    assert.doesNotMatch(emailHtml, /conteúdo social de teste diar\.ia\.br/);
   });
 
   it("POST .../actions/swap-destaque com corpo inválido retorna 400", async () => {
@@ -284,6 +319,17 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     const body = await res.text();
     assert.match(body, /export function buildRewriteTitlePrompt/);
     assert.match(body, /export function buildRegenerateImagePrompt/);
+  });
+
+  // #3663: contrato do wiring aba social → endpoint de preview social —
+  // mesmo padrão de teste "só contrato estático" dos casos acima (sem harness
+  // jsdom pra simular clique/DOM nesta suíte).
+  it("GET /revisao.js referencia social-preview.html pro slug 'social'", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /social-preview\.html/);
+    assert.match(body, /currentSlug === "social"/);
   });
 
   it("GET /revisao.js importa revisao-prompts.js e referencia prefillMessage", async () => {

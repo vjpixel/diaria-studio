@@ -59,6 +59,7 @@ const el = {
   diffView: document.getElementById("rv-diff-view"),
   previewFrame: document.getElementById("rv-preview-frame"),
   previewRefreshBtn: document.getElementById("rv-preview-refresh-btn"),
+  previewHint: document.getElementById("rv-preview-hint"),
   swapPromote: document.getElementById("rv-swap-promote"),
   swapDemote: document.getElementById("rv-swap-demote"),
   swapDrop: document.getElementById("rv-swap-drop"),
@@ -96,12 +97,39 @@ async function fetchJson(url, opts) {
   return { ok: res.ok, status: res.status, body };
 }
 
+// #3663: rótulo + hint da aba lateral "Preview" mudam conforme o arquivo
+// ativo — o preview de e-mail (02-reviewed.md) e o preview social
+// (03-social.md) são endpoints distintos (ver refreshPreview()).
+const PREVIEW_TAB_LABELS = {
+  categorized: "Preview do e-mail",
+  reviewed: "Preview do e-mail",
+  social: "Preview social",
+  "html-final": "Preview do e-mail",
+};
+// innerHTML (não textContent): conteúdo estático próprio (sem input do
+// editor), preserva o <code>/<strong> do markup original em vez de virar
+// texto corrido sem formatação.
+const PREVIEW_HINTS = {
+  social:
+    "Renderizado a partir de <code>03-social.md</code> salvo no disco (mesmo renderer " +
+    "da Etapa 4, #1800) — posts de LinkedIn/Facebook/Instagram lado a lado, com quebras " +
+    "de linha e hashtags como aparecem publicados. Salve antes de atualizar o preview.",
+  default:
+    "Renderizado a partir de <code>02-reviewed.md</code> salvo no disco (mesmo caminho " +
+    "do Stage 4) — salve antes de atualizar o preview. Exceção: com a aba " +
+    "<strong>HTML final</strong> ativa, mostra o <code>_internal/newsletter-final.html</code> " +
+    "salvo diretamente (sem passar pelo Markdown).",
+};
+
 function renderTabs() {
   el.tabs.querySelectorAll(".rv-tab").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.slug === currentSlug);
   });
   el.arquivo.textContent = FILE_LABELS[currentSlug];
   el.htmlFinalNote.hidden = currentSlug !== "html-final";
+  const previewTabBtn = el.sideTabs.querySelector('[data-pane="preview"]');
+  if (previewTabBtn) previewTabBtn.textContent = PREVIEW_TAB_LABELS[currentSlug] || PREVIEW_TAB_LABELS.reviewed;
+  if (el.previewHint) el.previewHint.innerHTML = PREVIEW_HINTS[currentSlug] || PREVIEW_HINTS.default;
 }
 
 // #3635: consulta a mesma rota genérica de diff (`.../review/html-final/diff`)
@@ -305,8 +333,13 @@ async function refreshPreview() {
     return;
   }
   el.previewFrame.removeAttribute("srcdoc");
+  // #3663: aba "social" tem preview PRÓPRIO (posts LinkedIn/Facebook/
+  // Instagram, endpoint distinto do e-mail) — todas as outras abas
+  // (categorized/reviewed) continuam no preview de e-mail derivado do
+  // 02-reviewed.md, mesmo comportamento de antes.
+  const endpoint = currentSlug === "social" ? "social-preview.html" : "preview.html";
   // Cache-bust: o iframe não deve mostrar preview obsoleto depois de um save.
-  el.previewFrame.src = `/api/editions/${encodeURIComponent(aammdd)}/preview.html?t=${Date.now()}`;
+  el.previewFrame.src = `/api/editions/${encodeURIComponent(aammdd)}/${endpoint}?t=${Date.now()}`;
 }
 
 function activateSidePane(pane) {
