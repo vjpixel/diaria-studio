@@ -186,4 +186,51 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     const body = await res.text();
     assert.ok(body.includes("Revisão de conteúdo"));
   });
+
+  // #3629: smoke/contrato do HTML servido pros ganchos "Reescrever
+  // título"/"Regenerar imagem" — `prefillMessage` (chat-drawer.js) é
+  // puramente DOM (sem lógica pura extraível além do que já é coberto por
+  // `revisao-prompts.js`, ver test/revisao-prompts.test.ts), então a
+  // cobertura aqui é de contrato: os elementos que revisao.js espera
+  // encontrar via `getElementById` existem no HTML servido, e o script
+  // real servido expõe a 3ª função (`prefillMessage`) no objeto global.
+  it("GET /revisao/{aammdd} inclui os cards de 'Reescrever título' e 'Regenerar imagem' (não mais stub/gancho)", async () => {
+    const res = await fetch(new URL("/revisao/260716", server.url));
+    const body = await res.text();
+    assert.ok(body.includes("Reescrever título"));
+    assert.ok(body.includes("Regenerar imagem"));
+    assert.ok(body.includes('id="rv-title-destaque"'));
+    assert.ok(body.includes('id="rv-title-instrucao"'));
+    assert.ok(body.includes('id="rv-title-fill-btn"'));
+    assert.ok(body.includes('id="rv-image-destaque"'));
+    assert.ok(body.includes('id="rv-image-instrucao"'));
+    assert.ok(body.includes('id="rv-image-fill-btn"'));
+    // Stub antigo (#3559) não deve mais aparecer.
+    assert.ok(!body.includes("Não implementado nesta fatia"));
+  });
+
+  it("GET /chat-drawer.js expõe prefillMessage em window.diariaStudioChat", async () => {
+    const res = await fetch(new URL("/chat-drawer.js", server.url));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /javascript/);
+    const body = await res.text();
+    assert.match(body, /function prefillMessage\(/);
+    assert.match(body, /window\.diariaStudioChat\s*=\s*\{[^}]*prefillMessage/);
+  });
+
+  it("GET /revisao-prompts.js serve o módulo com as 2 funções exportadas", async () => {
+    const res = await fetch(new URL("/revisao-prompts.js", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /export function buildRewriteTitlePrompt/);
+    assert.match(body, /export function buildRegenerateImagePrompt/);
+  });
+
+  it("GET /revisao.js importa revisao-prompts.js e referencia prefillMessage", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /from ["']\.\/revisao-prompts\.js["']/);
+    assert.match(body, /prefillMessage/);
+  });
 });

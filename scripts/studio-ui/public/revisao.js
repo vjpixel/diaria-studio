@@ -8,6 +8,8 @@
 // demanda (botões), lendo sempre o que está SALVO no disco — não o
 // conteúdo ainda-não-salvo do textarea (documentado no hint da UI).
 
+import { buildRewriteTitlePrompt, buildRegenerateImagePrompt } from "./revisao-prompts.js";
+
 const SLUGS = ["categorized", "reviewed", "social"];
 const FILE_LABELS = {
   categorized: "01-categorized.md",
@@ -54,6 +56,14 @@ const el = {
   swapPreviewBtn: document.getElementById("rv-swap-preview-btn"),
   swapApplyBtn: document.getElementById("rv-swap-apply-btn"),
   swapResult: document.getElementById("rv-swap-result"),
+  titleDestaque: document.getElementById("rv-title-destaque"),
+  titleInstrucao: document.getElementById("rv-title-instrucao"),
+  titleFillBtn: document.getElementById("rv-title-fill-btn"),
+  titleWarn: document.getElementById("rv-title-warn"),
+  imageDestaque: document.getElementById("rv-image-destaque"),
+  imageInstrucao: document.getElementById("rv-image-instrucao"),
+  imageFillBtn: document.getElementById("rv-image-fill-btn"),
+  imageWarn: document.getElementById("rv-image-warn"),
 };
 
 function setConn(status) {
@@ -278,6 +288,41 @@ async function runSwap(dryRun) {
   }
 }
 
+// #3629: os dois ganchos "Reescrever título"/"Regenerar imagem" NÃO chamam
+// script/API diretamente — montam um prompt (função pura, ver
+// revisao-prompts.js) e pré-preenchem o textarea do chat drawer
+// (`window.diariaStudioChat.prefillMessage`, ver chat-drawer.js), sem
+// enviar. O editor revisa/edita o prompt e manda manualmente. Fail-soft: se
+// chat-drawer.js não carregou por algum motivo (ordem de script, erro de
+// rede), mostra um aviso na própria card em vez de lançar erro no console.
+function fillChatOrWarn(prompt, warnEl) {
+  warnEl.hidden = true;
+  if (!window.diariaStudioChat || typeof window.diariaStudioChat.prefillMessage !== "function") {
+    warnEl.textContent = "Chat indisponível nesta página (chat-drawer.js não carregou) — copie o prompt manualmente.";
+    warnEl.hidden = false;
+    return;
+  }
+  window.diariaStudioChat.prefillMessage(prompt);
+}
+
+function fillRewriteTitlePrompt() {
+  const prompt = buildRewriteTitlePrompt({
+    aammdd,
+    destaque: el.titleDestaque.value,
+    instrucao: el.titleInstrucao.value,
+  });
+  fillChatOrWarn(prompt, el.titleWarn);
+}
+
+function fillRegenerateImagePrompt() {
+  const prompt = buildRegenerateImagePrompt({
+    aammdd,
+    destaque: el.imageDestaque.value,
+    instrucao: el.imageInstrucao.value,
+  });
+  fillChatOrWarn(prompt, el.imageWarn);
+}
+
 function bindEvents() {
   el.tabs.querySelectorAll(".rv-tab").forEach((btn) => {
     btn.addEventListener("click", () => loadFile(btn.dataset.slug));
@@ -297,6 +342,8 @@ function bindEvents() {
   el.previewRefreshBtn.addEventListener("click", refreshPreview);
   el.swapPreviewBtn.addEventListener("click", () => runSwap(true));
   el.swapApplyBtn.addEventListener("click", () => runSwap(false));
+  el.titleFillBtn.addEventListener("click", fillRewriteTitlePrompt);
+  el.imageFillBtn.addEventListener("click", fillRegenerateImagePrompt);
   window.addEventListener("beforeunload", (e) => {
     if (dirty) { e.preventDefault(); e.returnValue = ""; }
   });

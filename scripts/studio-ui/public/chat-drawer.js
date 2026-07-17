@@ -622,8 +622,20 @@ el.input.addEventListener("keydown", (ev) => {
   }
 });
 
-// Ponto de extensão pras fatias seguintes (#3561 briefings, #3562
-// ações-por-botão "injetar prompt") — um botão de outra tela chama isto pra
-// rodar uma mensagem nesta MESMA sessão sem duplicar a mecânica de
-// streaming/parsing acima.
-window.diariaStudioChat = { sendMessage, openDrawer: expandDrawer };
+// #3629: pré-preenche o textarea de input com `text` e EXPANDE o painel,
+// SEM enviar — reusa o mesmo textarea/`expandDrawer()` que `sendMessage` já
+// usa (nenhuma lógica de expandir duplicada). O editor revisa/edita o texto
+// pré-preenchido e manda manualmente clicando "Enviar" (ou Enter), igual
+// digitação normal — nenhum envio automático. Ponto de extensão previsto
+// desde #3556 ("ações-por-botão 'injetar prompt'"), usado pelos ganchos
+// "Reescrever título"/"Regenerar imagem" de `revisao.js`.
+function prefillMessage(text) {
+  el.input.value = text;
+  expandDrawer();
+  el.input.focus();
+}
+
+// Ponto de extensão pras fatias seguintes (#3561 briefings) — um botão de
+// outra tela chama isto pra rodar uma mensagem nesta MESMA sessão sem
+// duplicar a mecânica de streaming/parsing acima.
+window.diariaStudioChat = { sendMessage, openDrawer: expandDrawer, prefillMessage };
