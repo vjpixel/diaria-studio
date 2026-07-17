@@ -43,6 +43,11 @@
  *     que esta rota resolve a Promise pendente, sem coordenação extra aqui.
  *     `GET /api/state`/`GET /api/events` expõem `chatPermissionsPending`
  *     (badge global) via `studio-state.ts`.
+ *   - `GET /api/chat/pending` (#3617) — payload COMPLETO (`questions[]`) dos
+ *     gates pendentes, pra `chat-drawer.js` reidratar o card ao montar
+ *     qualquer página, sem depender do stream SSE ao vivo que originou a
+ *     pergunta (fix do bug "gate pendente inalcançável" — ver `studio-chat.ts`
+ *     `listPendingPermissionRequestsFull`).
  *   - `GET /revisao/:aammdd` — painel de revisão de conteúdo rica (#3559):
  *     mesma estratégia de rewrite, servindo `public/revisao.html`. Consome
  *     `GET/PUT /api/editions/:aammdd/review/:slug` (`slug` = categorized |
@@ -133,6 +138,7 @@ import {
   clearSession,
   resolvePendingPermissionRequest,
   watchPendingChatPermissions,
+  listPendingPermissionRequestsFull,
   type QueryFn,
 } from "./studio-chat.ts";
 // #3559: painel de revisão de conteúdo rica — arquivos próprios desta fatia,
@@ -216,6 +222,18 @@ export interface StudioServer {
 
 function handleApiState(rootDir: string, res: ServerResponse): void {
   sendJson(res, 200, buildStudioState(rootDir));
+}
+
+/** `GET /api/chat/pending` (#3617) — payload COMPLETO dos gates
+ * `AskUserQuestion` pendentes pro `rootDir` corrente (`questions[]` inteiro,
+ * não só `firstQuestion`) — o que faltava pra `chat-drawer.js` reidratar o
+ * card ao montar QUALQUER página do Studio, sem depender do stream SSE ao
+ * vivo que originou a pergunta. Reusa `listPendingPermissionRequestsFull`
+ * (mesmo Map de `studio-chat.ts` que já alimenta `chatPermissionsPending`
+ * em `/api/state`) — não duplica estado. Sempre 200 (lista vazia = nenhum
+ * gate pendente); não há "erro" possível numa leitura de Map em memória. */
+function handleApiChatPending(rootDir: string, res: ServerResponse): void {
+  sendJson(res, 200, { pending: listPendingPermissionRequestsFull(rootDir) });
 }
 
 function handleApiEdition(rootDir: string, aammdd: string, res: ServerResponse): void {
@@ -820,6 +838,12 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
 
       if (urlPath === "/api/state") {
         handleApiState(rootDir, res);
+        return;
+      }
+      // #3617: hidratação do chat drawer — checada antes de /api/events pra
+      // não colidir com o guard genérico de rota de API desconhecida abaixo.
+      if (urlPath === "/api/chat/pending") {
+        handleApiChatPending(rootDir, res);
         return;
       }
       if (urlPath === "/api/events") {

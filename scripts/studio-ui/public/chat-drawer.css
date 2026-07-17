@@ -1,83 +1,108 @@
-/* chat-drawer.css (#3556) — painel lateral do chat embutido. Usa os tokens
-   de /tokens.generated.css (mesma convenção de style.css/#3555). Injetado em
-   TODA página do studio (index/edicao/triagem) via chat-drawer.js — CSS
-   próprio pra não inchar style.css com algo que só o drawer usa. */
+/* chat-drawer.css (#3556; redesenhado no #3617) — painel FIXO à ESQUERDA,
+   presente em TODA página do studio (index/edicao/triagem/apoios/revisao),
+   sem toggle open/close que esconda o acesso a um gate pendente (só
+   collapse/expand de LARGURA — ver .chat-drawer.collapsed abaixo). Usa os
+   tokens de /tokens.generated.css (mesma convenção de style.css/#3555).
+   Injetado via chat-drawer.js — CSS próprio pra não inchar style.css com
+   algo que só o drawer usa. */
 
-.chat-toggle {
+:root {
+  --chat-drawer-width: 360px;
+  --chat-drawer-collapsed-width: 44px;
+}
+
+/* #3617: abre espaço à ESQUERDA pro painel fixo em vez de sobrepor o
+   conteúdo — style.css define `body { margin: 0 }`; esta regra (carregada
+   DEPOIS de style.css em todo <head>) sobrescreve só a margem esquerda,
+   variando com o estado colapsado/expandido do painel. Aplicada só quando
+   chat-drawer.js efetivamente montou o painel (`.chat-drawer-present`) —
+   nunca aparece deslocamento de layout antes do script rodar/em páginas
+   sem o script. */
+body.chat-drawer-present {
+  margin-left: var(--chat-drawer-width);
+  transition: margin-left 0.18s ease-out;
+}
+body.chat-drawer-present.chat-drawer-collapsed {
+  margin-left: var(--chat-drawer-collapsed-width);
+}
+
+.chat-drawer {
   position: fixed;
-  right: 1.25rem;
-  bottom: 1.25rem;
-  z-index: 100;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--chat-drawer-width);
+  background: var(--paper-email);
+  border-right: 1px solid var(--rule);
+  box-shadow: 4px 0 16px rgba(0, 0, 0, 0.15);
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  transition: width 0.18s ease-out;
+  overflow: hidden;
+}
+.chat-drawer.collapsed {
+  width: var(--chat-drawer-collapsed-width);
+}
+
+.chat-drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--rule);
   background: var(--ink);
   color: var(--on-ink);
+}
+.chat-expand-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+  background: transparent;
   border: none;
-  border-radius: 999px;
-  padding: 0.7rem 1.1rem;
+  color: inherit;
   font-family: var(--font-sans);
   font-size: 0.85rem;
   cursor: pointer;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+  padding: 0.25rem;
 }
-.chat-toggle:hover { opacity: 0.9; }
-.chat-toggle .chat-toggle-dot {
+.chat-drawer-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-drawer.collapsed .chat-drawer-title,
+.chat-drawer.collapsed #chat-reset {
+  display: none;
+}
+.chat-toggle-dot {
   display: inline-block;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: #999;
-  margin-right: 0.4rem;
+  flex: none;
 }
-.chat-toggle .chat-toggle-dot.ok { background: var(--brand); }
-.chat-toggle .chat-toggle-dot.down { background: #c0392b; }
-.chat-toggle .chat-toggle-badge {
+.chat-toggle-dot.ok { background: var(--brand); }
+.chat-toggle-dot.down { background: #c0392b; }
+.chat-toggle-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-width: 1.15rem;
   height: 1.15rem;
   padding: 0 0.3rem;
-  margin-left: 0.4rem;
   border-radius: 999px;
   background: #c0392b;
   color: #fff;
   font-size: 0.7rem;
   font-weight: 600;
   line-height: 1;
+  flex: none;
 }
-
-.chat-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: min(420px, 100vw);
-  background: var(--paper-email);
-  border-left: 1px solid var(--rule);
-  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.15);
-  z-index: 200;
-  display: flex;
-  flex-direction: column;
-  transform: translateX(100%);
-  transition: transform 0.18s ease-out;
-}
-.chat-drawer.open { transform: translateX(0); }
-
-.chat-drawer-header {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid var(--rule);
-  background: var(--ink);
-  color: var(--on-ink);
-}
-.chat-drawer-header h2 {
-  font-family: var(--font-sans);
-  font-size: 0.95rem;
-  margin: 0;
-  flex: 1;
-}
-.chat-drawer-header button {
+#chat-reset {
   background: transparent;
   border: 1px solid var(--on-ink);
   color: var(--on-ink);
@@ -85,17 +110,23 @@
   padding: 0.2rem 0.5rem;
   font-size: 0.75rem;
   cursor: pointer;
+  white-space: nowrap;
 }
-.chat-drawer-header button:hover { background: rgba(255, 255, 255, 0.12); }
+#chat-reset:hover { background: rgba(255, 255, 255, 0.12); }
 
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 0.75rem 1rem;
+  padding: 0.75rem;
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  font-size: 0.88rem;
+  font-size: 0.86rem;
+}
+.chat-drawer.collapsed .chat-messages,
+.chat-drawer.collapsed .chat-drawer-footer,
+.chat-drawer.collapsed .chat-hint {
+  display: none;
 }
 
 .chat-msg { display: flex; flex-direction: column; gap: 0.2rem; }
@@ -143,7 +174,9 @@
 .chat-tool-chip.denied { opacity: 1; border-color: #c0392b; color: #c0392b; }
 .chat-tool-chip.error { opacity: 1; border-color: #c0392b; }
 
-/* #3557: card de AskUserQuestion — form clicável, sem prazo. */
+/* #3557: card de AskUserQuestion — form clicável, sem prazo. Reidratado
+   pelo #3617 a partir de GET /api/chat/pending com o MESMO markup do fluxo
+   ao vivo. */
 .chat-permission-card {
   display: flex;
   flex-direction: column;
@@ -259,8 +292,16 @@
 .chat-drawer-footer button:disabled { opacity: 0.5; cursor: default; }
 
 .chat-hint {
-  padding: 0.4rem 1rem;
+  padding: 0.4rem 0.75rem;
   font-size: 0.72rem;
   opacity: 0.65;
   border-top: 1px dotted var(--rule);
+}
+
+/* Telas estreitas: painel expandido ocuparia demais — encolhe a largura
+   base (ainda colapsável do mesmo jeito) em vez de sobrepor o conteúdo. */
+@media (max-width: 720px) {
+  :root {
+    --chat-drawer-width: 78vw;
+  }
 }

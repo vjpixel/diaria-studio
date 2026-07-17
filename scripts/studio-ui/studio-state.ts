@@ -61,7 +61,7 @@ export interface StudioState {
   develop: PlanSummary | null;
   /** #3557: gates `AskUserQuestion` do chat drawer aguardando resposta do
    * editor — distinto de `gatesPending` acima (que são os gates de pipeline,
-   * stage 4/6). Alimenta o badge global no `chat-toggle`. */
+   * stage 4/6). Alimenta o badge global no header do painel de chat (#3617). */
   chatPermissionsPending: PendingPermissionSummary[];
 }
 

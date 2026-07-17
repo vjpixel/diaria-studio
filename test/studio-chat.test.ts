@@ -24,6 +24,7 @@ import {
   clearSession,
   runChatTurn,
   listPendingPermissionRequests,
+  listPendingPermissionRequestsFull,
   resolvePendingPermissionRequest,
   type ChatWireEvent,
   type ChatPermissionRequestEvent,
@@ -712,5 +713,79 @@ describe("runChatTurn (#3557) — AskUserQuestion vira gate (form), não denial 
     // esta entry ficaria pendente pro rootDir pra sempre (Promise nunca
     // resolvida, nunca mais será — a stream que a criou já morreu).
     assert.equal(listPendingPermissionRequests(ROOT).length, 0);
+  });
+});
+
+describe("listPendingPermissionRequestsFull (#3617) — payload completo pra hidratação", () => {
+  const ROOT = "/tmp/root-pending-full-3617";
+  const askInput = {
+    questions: [
+      {
+        question: "Qual biblioteca de datas?",
+        header: "Biblioteca",
+        multiSelect: false,
+        options: [
+          { label: "date-fns", description: "leve, tree-shakeable" },
+          { label: "dayjs", description: "API estilo moment" },
+        ],
+      },
+    ],
+  };
+
+  function openGate(root: string, toolUseId: string): void {
+    // Mesmo mecanismo do teste de runChatTurn acima (#3557): dispara
+    // canUseTool sem aguardar, deixando a entry pendente no Map em memória.
+    const fakeQuery: QueryFn = (params) => {
+      async function* gen() {
+        const canUseTool = params.options?.canUseTool as CanUseTool;
+        void canUseTool("AskUserQuestion", askInput, {
+          signal: new AbortController().signal,
+          toolUseID: toolUseId,
+          requestId: `req-${toolUseId}`,
+        });
+        // nunca resolve — o gate fica pendente de propósito.
+        await new Promise(() => {});
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    void runChatTurn({ message: "oi", cwd: root, queryFn: fakeQuery, onEvent: () => {} });
+  }
+
+  it("regressão (#3617): com um gate pendente no servidor, devolve questions[] completo — não só firstQuestion", async () => {
+    openGate(ROOT, "tu-full-1");
+    // dá um tick pro generator registrar a entry no Map antes de checarmos.
+    await new Promise((r) => setImmediate(r));
+
+    const full = listPendingPermissionRequestsFull(ROOT);
+    assert.equal(full.length, 1);
+    assert.equal(full[0].toolUseId, "tu-full-1");
+    assert.equal(full[0].toolName, "AskUserQuestion");
+    assert.equal(typeof full[0].askedAt, "number");
+    // o ponto central da regressão: questions[] inteiro, com header/options,
+    // não um resumo — o que `listPendingPermissionRequests` (a versão antiga,
+    // usada pelo badge global) NUNCA expôs.
+    assert.equal(full[0].questions.length, 1);
+    assert.equal(full[0].questions[0].header, "Biblioteca");
+    assert.equal(full[0].questions[0].question, "Qual biblioteca de datas?");
+    assert.equal(full[0].questions[0].options.length, 2);
+    assert.equal(full[0].questions[0].options[0].label, "date-fns");
+
+    // responder via o mesmo mecanismo que POST /api/chat/answer usa resolve
+    // a mesma Promise — provando que o payload de hidratação e o fluxo ao
+    // vivo compartilham o MESMO estado, não uma cópia.
+    const resolved = resolvePendingPermissionRequest(ROOT, "tu-full-1", { answers: { "Qual biblioteca de datas?": "date-fns" } });
+    assert.deepEqual(resolved, { ok: true });
+    assert.equal(listPendingPermissionRequestsFull(ROOT).length, 0);
+  });
+
+  it("lista vazia quando não há gate pendente pro rootDir", () => {
+    assert.deepEqual(listPendingPermissionRequestsFull("/tmp/root-pending-full-vazio"), []);
+  });
+
+  it("não vaza pendentes entre rootDirs diferentes", async () => {
+    openGate(`${ROOT}-a`, "tu-a-1");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(listPendingPermissionRequestsFull(`${ROOT}-a`).length, 1);
+    assert.equal(listPendingPermissionRequestsFull(`${ROOT}-b`).length, 0);
   });
 });
