@@ -142,15 +142,17 @@
   gap: 0.2rem;
   font-size: 0.82rem;
 }
-.rv-action-card input[type="text"], .rv-action-card select {
+.rv-action-card input[type="text"], .rv-action-card select, .rv-action-card textarea {
   font: inherit;
   padding: 0.3rem 0.5rem;
   border: 1px solid var(--rule);
   border-radius: 4px;
   background: var(--paper);
   color: inherit;
+  resize: vertical;
 }
 .rv-checkbox { flex-direction: row !important; align-items: center; gap: 0.4rem !important; }
+.rv-action-warn { color: #c0392b; }
 .rv-swap-result {
   font-family: var(--font-mono);
   font-size: 0.75rem;

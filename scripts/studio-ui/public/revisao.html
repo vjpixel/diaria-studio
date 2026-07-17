@@ -110,21 +110,50 @@
           <pre id="rv-swap-result" class="rv-swap-result"></pre>
         </div>
 
-        <div class="rv-action-card rv-action-hook">
+        <div class="rv-action-card">
           <h3>Reescrever título</h3>
           <p class="hint">
-            Gancho — depende da ponte chat/Agent SDK (#3556) pra injetar um
-            prompt editável numa sessão real. Não implementado nesta fatia.
+            Pré-preenche o chat com um prompt pedindo 2-3 opções de título
+            alternativas pro destaque escolhido — a sessão de chat aplica
+            depois que você escolher (mesmo acesso de Edit do terminal).
           </p>
+          <label>Destaque
+            <select id="rv-title-destaque">
+              <option value="d1">D1</option>
+              <option value="d2">D2</option>
+              <option value="d3">D3</option>
+            </select>
+          </label>
+          <label>Instrução (opcional)
+            <textarea id="rv-title-instrucao" rows="2" placeholder="ex: mais curto, foco no dado principal…"></textarea>
+          </label>
+          <div class="rv-editor-toolbar">
+            <button type="button" id="rv-title-fill-btn">Preencher no chat</button>
+          </div>
+          <p class="hint rv-action-warn" id="rv-title-warn" hidden></p>
         </div>
 
-        <div class="rv-action-card rv-action-hook">
+        <div class="rv-action-card">
           <h3>Regenerar imagem</h3>
           <p class="hint">
-            Gancho — mesma dependência de #3556 (a ação dispara geração via
-            LLM/ComfyUI, não é determinística como o swap de destaque). Não
-            implementado nesta fatia.
+            Pré-preenche o chat com um prompt pedindo pra rodar
+            <code>scripts/image-generate.ts</code> pro destaque escolhido —
+            a sessão de chat roda o comando e confirma o resultado.
           </p>
+          <label>Destaque
+            <select id="rv-image-destaque">
+              <option value="d1">D1</option>
+              <option value="d2">D2</option>
+              <option value="d3">D3</option>
+            </select>
+          </label>
+          <label>Instrução (opcional)
+            <textarea id="rv-image-instrucao" rows="2" placeholder="ex: mais foco no personagem, cores mais quentes…"></textarea>
+          </label>
+          <div class="rv-editor-toolbar">
+            <button type="button" id="rv-image-fill-btn">Preencher no chat</button>
+          </div>
+          <p class="hint rv-action-warn" id="rv-image-warn" hidden></p>
         </div>
       </div>
     </section>
