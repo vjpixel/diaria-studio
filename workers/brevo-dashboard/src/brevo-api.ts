@@ -371,6 +371,22 @@ export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
  */
 const inflightRefreshes = new Map<string, Promise<unknown>>();
 
+// #3644: contador de OBSERVABILIDADE PRA TESTE, incrementado a cada chamada de
+// `coalesceRefresh` (hit ou miss) por routeKey. Nunca lido por lógica de
+// produção -- existe só pra testes de corrida conseguirem esperar
+// deterministicamente por "a 2ª chamada concorrente já chegou no checkpoint de
+// coalescing" (`getCoalesceCallCount`) em vez de estimar quantos ticks isso
+// leva. Achado em CI (não reproduzido localmente): o caminho até este
+// checkpoint na rota `/` passa por `isAuthenticated` (2x
+// `crypto.subtle.digest`, despacho real via WebCrypto/threadpool -- timing
+// não-determinístico o bastante entre ambientes pra quebrar suposições de
+// "N ticks bastam").
+const coalesceCallCounts = new Map<string, number>();
+/** Exported for tests only -- ver comentário de `coalesceCallCounts` acima. */
+export function getCoalesceCallCount(routeKey: string): number {
+  return coalesceCallCounts.get(routeKey) ?? 0;
+}
+
 /**
  * Compartilha UMA única execução de `run()` entre todas as chamadas
  * concorrentes com a mesma `routeKey` (enquanto a 1ª ainda não resolveu).
@@ -380,6 +396,7 @@ const inflightRefreshes = new Map<string, Promise<unknown>>();
  * de execução.
  */
 export function coalesceRefresh<T>(routeKey: string, run: () => Promise<T>): Promise<T> {
+  coalesceCallCounts.set(routeKey, (coalesceCallCounts.get(routeKey) ?? 0) + 1);
   const existing = inflightRefreshes.get(routeKey);
   if (existing) return existing as Promise<T>;
   const promise = run().finally(() => {

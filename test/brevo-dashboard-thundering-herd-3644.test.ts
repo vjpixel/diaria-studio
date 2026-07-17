@@ -56,6 +56,7 @@ import assert from "node:assert/strict";
 
 import worker, {
   coalesceRefresh,
+  getCoalesceCallCount,
   tryAcquireRefreshLock,
   releaseRefreshLock,
   REFRESH_LOCK_KEY_PREFIX,
@@ -173,6 +174,30 @@ async function waitUntil(cond: () => boolean, maxTicks = 1000): Promise<void> {
 }
 
 /**
+ * Dá uma folga generosa pro event loop antes de liberar o gate -- usado
+ * especificamente pra dar tempo da request 2 atravessar `isAuthenticated`
+ * (2x `crypto.subtle.digest`, real operação assíncrona via WebCrypto, NÃO
+ * um microtask puro) e chegar no checkpoint de coalescing ANTES de eu
+ * liberar a request 1.
+ *
+ * Achado em CI (não reproduzido localmente em 15 runs seguidos): um único
+ * `setImmediate` não é suficiente em toda infra -- `crypto.subtle.digest`
+ * no Node é despachado via threadpool/callback nativo, cujo timing real
+ * varia mais entre máquinas do que qualquer microtask puro. Combinar
+ * MUITOS `setImmediate` (cobre o caso comum, custo ~0) com um `setTimeout`
+ * real pequeno (força uma volta completa pelas fases de timer do event
+ * loop, cobrindo o caso em que o callback nativo da crypto ainda não
+ * tinha disparado dentro da rajada de `setImmediate`) sem deixar o teste
+ * lento (worst-case ~30ms).
+ */
+async function settle(): Promise<void> {
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setImmediate(r));
+  }
+  await new Promise((r) => setTimeout(r, 40));
+}
+
+/**
  * Mock de `globalThis.fetch` que SEGURA a 1ª chamada num gate controlado —
  * simula genuinamente "request 1 já está em voo, não terminou" em vez de
  * torcer pra 2 `worker.fetch()` concorrentes calharem de intercalar do jeito
@@ -277,6 +302,9 @@ describe("rota / (#3644) — 2 requests genuinamente sobrepostas coalescem em 1 
       const env = makeEnv(kv);
       const req1 = new Request("http://localhost/", { headers: { Cookie: COOKIE } });
       const req2 = new Request("http://localhost/", { headers: { Cookie: COOKIE } });
+      // Baseline -- não assume que "GET:/" nunca foi chamado antes desta
+      // suíte (robusto a reordenação/novos testes usando a mesma routeKey).
+      const baseline = getCoalesceCallCount("GET:/");
 
       const p1 = worker.fetch(req1, env);
       // Espera a request 1 realmente ter alcançado o live-fetch (1ª chamada
@@ -284,10 +312,18 @@ describe("rota / (#3644) — 2 requests genuinamente sobrepostas coalescem em 1 
       // garantindo sobreposição de verdade, não uma corrida de timing torcida.
       await waitUntil(() => gated.callCount() >= 1);
       const p2 = worker.fetch(req2, env);
-      // Dá uma chance real pra request 2 alcançar o ponto de coalescing
-      // (ela deve encontrar a promise da request 1 já registrada e NÃO
-      // disparar um novo live-fetch) antes de liberar o gate.
-      await new Promise((r) => setImmediate(r));
+      // Espera DETERMINISTICAMENTE (não estimando ticks) até a request 2 ter
+      // de fato chamado coalesceRefresh("GET:/") -- ela ainda precisa
+      // atravessar isAuthenticated (2x crypto.subtle.digest, real async via
+      // WebCrypto/threadpool, timing não-determinístico entre ambientes) antes
+      // de chegar lá. getCoalesceCallCount é um contador de observabilidade
+      // pra teste (nunca lido por lógica de produção, ver brevo-api.ts) --
+      // isso elimina a adivinhação de "quantos ticks bastam" que causou o
+      // flake em CI (não reproduzido localmente, mas real: um único
+      // `setImmediate` não é garantia suficiente sob scheduling diferente).
+      // `settle()` continua como cinto-de-segurança adicional depois.
+      await waitUntil(() => getCoalesceCallCount("GET:/") >= baseline + 2);
+      await settle();
       gated.release();
 
       const [res1, res2] = await Promise.all([p1, p2]);
@@ -403,11 +439,17 @@ describe("rota /api/campaigns (#3644) — mesma garantia de coalescing (Map em m
       // /api/campaigns é isenta de auth (automação interna) -- sem Cookie.
       const req1 = new Request("http://localhost/api/campaigns");
       const req2 = new Request("http://localhost/api/campaigns");
+      // limit=20 é o default de /api/campaigns sem ?limit=.
+      const coalesceKey = "GET:/api/campaigns:20";
+      const baseline = getCoalesceCallCount(coalesceKey);
 
       const p1 = worker.fetch(req1, env);
       await waitUntil(() => gated.callCount() >= 1);
       const p2 = worker.fetch(req2, env);
-      await new Promise((r) => setImmediate(r));
+      // Espera deterministicamente a request 2 ter chamado coalesceRefresh
+      // (ver comentário equivalente no teste da rota "/" acima).
+      await waitUntil(() => getCoalesceCallCount(coalesceKey) >= baseline + 2);
+      await settle();
       gated.release();
 
       const [res1, res2] = await Promise.all([p1, p2]);
