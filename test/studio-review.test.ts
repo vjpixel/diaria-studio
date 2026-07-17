@@ -20,6 +20,7 @@ import {
   runReviewLints,
   buildReviewPreviewHtml,
   pullReviewFileBestEffort,
+  resolveReviewImagePath,
   REVIEW_FILES,
 } from "../scripts/studio-ui/studio-review.ts";
 
@@ -264,6 +265,63 @@ describe("buildReviewPreviewHtml (#3559)", () => {
     const preview = buildReviewPreviewHtml(editionDir);
     assert.equal(preview.ok, false);
     assert.match(preview.html, /Erro ao renderizar preview/);
+  });
+
+  it("achado 260716: sem aammdd, placeholder {{IMG:...}} fica intacto (comportamento anterior preservado)", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    const preview = buildReviewPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /\{\{IMG:04-d1-2x1\.jpg\}\}/);
+  });
+
+  it("achado 260716: com aammdd + imagem presente em disco, placeholder vira rota local (não mais {{IMG:...}})", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    writeFileSync(resolve(editionDir, "04-d1-2x1.jpg"), Buffer.from([0xff, 0xd8, 0xff]));
+    const preview = buildReviewPreviewHtml(editionDir, "260716");
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /src="\/api\/editions\/260716\/image\/04-d1-2x1\.jpg"/);
+    assert.doesNotMatch(preview.html, /\{\{IMG:04-d1-2x1\.jpg\}\}/);
+  });
+
+  it("achado 260716: imagem referenciada mas AUSENTE em disco fica como placeholder (fail-open, não quebra)", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    // Só cria a imagem do D1 — D2 (04-d2-2x1.jpg) fica sem arquivo correspondente.
+    writeFileSync(resolve(editionDir, "04-d1-2x1.jpg"), Buffer.from([0xff, 0xd8, 0xff]));
+    const preview = buildReviewPreviewHtml(editionDir, "260716");
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /\{\{IMG:04-d2-2x1\.jpg\}\}/);
+  });
+});
+
+describe("resolveReviewImagePath (#3559 — achado 260716)", () => {
+  let root: string;
+  let editionDir: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-review-image-"));
+    editionDir = makeEdition(root, "260716");
+    writeFileSync(resolve(editionDir, "04-d1-2x1.jpg"), Buffer.from([0xff, 0xd8, 0xff]));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("arquivo de imagem existente na raiz da edição → resolve o path absoluto", () => {
+    const resolved = resolveReviewImagePath(editionDir, "04-d1-2x1.jpg");
+    assert.ok(resolved);
+    assert.ok(existsSync(resolved!));
+  });
+
+  it("arquivo inexistente → null", () => {
+    assert.equal(resolveReviewImagePath(editionDir, "04-d9-2x1.jpg"), null);
+  });
+
+  it("path traversal (../ ou separador) → null, nunca escapa da edição", () => {
+    assert.equal(resolveReviewImagePath(editionDir, "../../../etc/passwd"), null);
+    assert.equal(resolveReviewImagePath(editionDir, "_internal/segredo.json"), null);
+    assert.equal(resolveReviewImagePath(editionDir, "..\\..\\config.json"), null);
+  });
+
+  it("extensão fora da allowlist (ex: .md, .json) → null mesmo se o arquivo existir", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "conteudo", "utf8");
+    assert.equal(resolveReviewImagePath(editionDir, "02-reviewed.md"), null);
   });
 });
 
