@@ -18,6 +18,15 @@
  * Clarice) é EXCLUSIVA do brand `clarice` — cross-promoção só faz sentido na
  * newsletter mensal. O brand `diaria` mantém o texto original inalterado —
  * regressão explícita (falharia se alguém generalizasse a mudança por engano).
+ *
+ * CORREÇÃO #3615 (260716): a premissa original do achado 1 acima ("nos 2
+ * brands, com os 2 links") foi revertida pro brand `diaria` — o editor
+ * esclareceu que o leaderboard diário é MENSAL por design (fecha todo mês,
+ * `BRAND_INFO.diaria.leaderboardPeriod === "month"`), então não existe
+ * "ranking anual" nem acesso ao arquivo pra linkar. Só `clarice`
+ * (`leaderboardPeriod === "year"`) mantém os 2 links — os testes de nav pra
+ * `diaria` abaixo foram atualizados pra refletir a AUSÊNCIA do `<p class="nav">`
+ * inteiro (cobertura detalhada em test/poll-leaderboard-archive-link-brand-gate-3615.test.ts).
  */
 
 import { describe, it } from "node:test";
@@ -89,17 +98,10 @@ describe("#3108 — kicker sempre ACIMA do h1 (unificado entre leaderboard e arq
   });
 });
 
-describe("#3108 — navegação (arquivo + anual) ANTES da tabela, nos 2 brands", () => {
-  it("GET /leaderboard (brand diaria): nav com os 2 links, posicionada entre sub-copy e <table>", async () => {
+describe("#3108 — navegação (arquivo + anual) ANTES da tabela; #3615 restringe a clarice", () => {
+  it("GET /leaderboard (brand diaria): SEM <p class=\"nav\"> — leaderboard mensal não tem ranking anual nem arquivo (#3615)", async () => {
     const html = await fetchHtml("/leaderboard");
-    const subIdx = idx(html, '<p class="sub">');
-    const navIdx = idx(html, '<p class="nav">');
-    const tableIdx = idx(html, "<table>");
-    assert.ok(subIdx >= 0 && navIdx >= 0 && tableIdx >= 0, "sub, nav e table devem existir");
-    assert.ok(subIdx < navIdx, "nav deve vir depois da sub-copy");
-    assert.ok(navIdx < tableIdx, "nav deve vir ANTES da <table>");
-    assert.match(html, /href="\/leaderboard\/\d{4}">Ver ranking anual de \d{4}<\/a>/);
-    assert.match(html, /href="\/leaderboard\/\d{4}\/arquivo">Votar em edições passadas<\/a>/);
+    assert.doesNotMatch(html, /<p class="nav">/, "diária não deveria ter nenhum link de nav (nem anual, nem arquivo)");
   });
 
   it("GET /leaderboard/2026?brand=clarice: nav preserva ?brand=clarice nos 2 links", async () => {
@@ -111,10 +113,9 @@ describe("#3108 — navegação (arquivo + anual) ANTES da tabela, nos 2 brands"
     assert.match(html, /href="\/leaderboard\/2026\/arquivo\?brand=clarice">Votar em edições passadas<\/a>/);
   });
 
-  it("GET /leaderboard/2026-03 (mês específico, diaria): nav aponta pro ano 2026 (não pro mês)", async () => {
+  it("GET /leaderboard/2026-03 (mês específico, diaria): SEM nav (#3615)", async () => {
     const html = await fetchHtml("/leaderboard/2026-03");
-    assert.match(html, /href="\/leaderboard\/2026">Ver ranking anual de 2026<\/a>/);
-    assert.match(html, /href="\/leaderboard\/2026\/arquivo">Votar em edições passadas<\/a>/);
+    assert.doesNotMatch(html, /<p class="nav">/, "mês específico da diária também não deveria ter nav");
   });
 });
 

@@ -694,6 +694,17 @@ function renderLeaderboardHtml(
   const archiveLinkHtml = brand === "clarice"
     ? ` · <a href="${archiveHref(brand, String(year))}">Votar em edições passadas</a>`
     : "";
+  // #3615 (item 2, feedback do editor): "Ver ranking anual" só faz sentido
+  // pra brand com leaderboard ANUAL (`BRAND_INFO[brand].leaderboardPeriod ===
+  // "year"` — hoje só clarice) — mesma abstração que `leaderboardHref` já usa
+  // internamente pra decidir a conversão mensal→anual do slug. Diária/web têm
+  // leaderboard MENSAL (fecha todo mês) — não existe "ranking anual" pra
+  // linkar. `navHtml` fica "" (parágrafo inteiro some) quando não há NENHUM
+  // link (nem anual nem arquivo) pra oferecer.
+  const annualLinkHtml = BRAND_INFO[brand].leaderboardPeriod === "year"
+    ? `<a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a>`
+    : "";
+  const navHtml = annualLinkHtml || archiveLinkHtml ? `<p class="nav">${annualLinkHtml}${archiveLinkHtml}</p>` : "";
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -727,7 +738,7 @@ ${renderBrandShellStyles()}
 <hr class="rule">
 <h1>${heading}</h1>
 ${subCopy}
-<p class="nav"><a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a>${archiveLinkHtml}</p>
+${navHtml}
 <table>
 <thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
 <tbody>${rows || `<tr><td colspan=3 style='color:${DS_COLORS.ink};text-align:center;padding:20px'>Ainda sem votos.</td></tr>`}</tbody>
