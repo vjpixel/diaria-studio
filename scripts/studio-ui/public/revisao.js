@@ -254,7 +254,19 @@ async function saveCurrent() {
         dirty = false;
         el.fileStatus.textContent = `Modificado ${fmtTime(body.modifiedAt)}`;
       }
-      if (slugAtSaveStart === "html-final") await refreshDivergenceBanner();
+      if (slugAtSaveStart === "html-final") {
+        // #3672 (self-review): refresh PÓS-save isolado num try/catch
+        // próprio — o save já teve sucesso (mensagem "Salvo" acima); se só
+        // este refresh falhar, não deveria sobrescrever esse status de
+        // sucesso com "Erro ao salvar" (cairia no catch externo e mentiria
+        // sobre o resultado do save). Loga no console em vez de reportar erro
+        // visível de save.
+        try {
+          await refreshDivergenceBanner();
+        } catch (err) {
+          console.error("refreshDivergenceBanner() pós-save falhou (não afeta o resultado do save):", err);
+        }
+      }
     } else {
       el.saveStatus.textContent = `Erro ao salvar: ${(body && body.error) || "falha desconhecida"}`;
       el.saveStatus.className = "rv-save-status err";
