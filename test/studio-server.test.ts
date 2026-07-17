@@ -496,3 +496,126 @@ describe("POST /api/chat/answer (#3557) — gate AskUserQuestion via HTTP", () =
     assert.equal(stateAfter.chatPermissionsPending.length, 0);
   });
 });
+
+describe("GET /api/chat/pending (#3617) — hidratação do chat drawer", () => {
+  let root: string;
+  let server: StudioServer;
+  let queryFn: QueryFn;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-server-chat-pending-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    queryFn = () => {
+      async function* gen() {}
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    server = await startStudioServer({
+      port: 0,
+      rootDir: root,
+      pollIntervalMs: 30,
+      chatQueryFn: (params) => queryFn(params),
+    });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("200 com pending:[] quando não há gate nenhum", async () => {
+    const res = await fetch(new URL("/api/chat/pending", server.url));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /application\/json/);
+    const body = await res.json();
+    assert.deepEqual(body, { pending: [] });
+  });
+
+  it("regressão (#3617): com um gate AskUserQuestion pendurado, devolve questions[] completo — o payload que faltava pro drawer reidratar o card sem depender do stream SSE ao vivo", async () => {
+    const askInput = {
+      questions: [
+        {
+          question: "Qual caminho seguir?",
+          header: "Caminho",
+          multiSelect: false,
+          options: [
+            { label: "Opção 1", description: "primeira" },
+            { label: "Opção 2", description: "segunda" },
+          ],
+        },
+      ],
+    };
+
+    queryFn = (params) => {
+      async function* gen() {
+        const canUseTool = params.options?.canUseTool as CanUseTool;
+        yield { type: "system", subtype: "init", session_id: "s-pending", model: "m", cwd: root } as unknown as SDKMessage;
+        // BLOQUEIA de verdade até o gate ser respondido — exatamente o
+        // cenário do bug #3617 (a sessão real do SDK também trava aqui, sem
+        // timeout por design; ver studio-chat.ts). A única forma de destravar
+        // é responder via /api/chat/answer, como o teste faz abaixo depois de
+        // ler o payload de /api/chat/pending (não do stream SSE ao vivo).
+        await canUseTool("AskUserQuestion", askInput, {
+          signal: new AbortController().signal,
+          toolUseID: "tu-pending-1",
+          requestId: "req-1",
+        });
+        yield { type: "result", subtype: "success", is_error: false, result: "fim", session_id: "s-pending" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    const chatRes = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "escolhe um caminho" }),
+    });
+    assert.equal(chatRes.status, 200);
+
+    // Lê o stream SSE só até o gate ser registrado (chat-permission-request)
+    // pra saber QUANDO checar /api/chat/pending com garantia — mas a
+    // asserção central usa o endpoint de hidratação, não o payload do
+    // evento SSE, provando que os dois caminhos leem o MESMO estado.
+    let answerPromise: Promise<void> | null = null;
+    await readSseStream(chatRes, (evt) => {
+      if (evt.event === "chat-permission-request" && !answerPromise) {
+        answerPromise = (async () => {
+          const pendingRes = await fetch(new URL("/api/chat/pending", server.url));
+          assert.equal(pendingRes.status, 200);
+          const body = (await pendingRes.json()) as { pending: Array<{ toolUseId: string; toolName: string; askedAt: number; questions: unknown[] }> };
+          assert.equal(body.pending.length, 1);
+          const pending = body.pending[0];
+          assert.equal(pending.toolUseId, "tu-pending-1");
+          assert.equal(pending.toolName, "AskUserQuestion");
+          assert.equal(typeof pending.askedAt, "number");
+          // o critério de aceite central (#3617): questions[] INTEIRO
+          // (header/options), não um resumo — reconstrói o card exatamente
+          // como o evento SSE ao vivo `chat-permission-request` faria, mas
+          // SEM depender de estar conectado a esse stream.
+          assert.deepEqual(pending.questions, askInput.questions);
+
+          // resolve pelo MESMO endpoint que o card ao vivo usaria, provando
+          // que reidratar não criou um estado paralelo — a stream acima
+          // retoma sozinha assim que isto resolve.
+          const answerRes = await fetch(new URL("/api/chat/answer", server.url), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ toolUseId: "tu-pending-1", answers: { "Qual caminho seguir?": "Opção 1" } }),
+          });
+          assert.equal(answerRes.status, 200);
+        })();
+      }
+    });
+
+    assert.ok(answerPromise, "esperava que chat-permission-request tivesse disparado a checagem de /api/chat/pending");
+    await answerPromise;
+
+    const afterRes = await fetch(new URL("/api/chat/pending", server.url));
+    const afterBody = (await afterRes.json()) as { pending: unknown[] };
+    assert.equal(afterBody.pending.length, 0);
+  });
+
+  it("POST em /api/chat/pending não é permitido (rota GET-only)", async () => {
+    const res = await fetch(new URL("/api/chat/pending", server.url), { method: "POST" });
+    assert.equal(res.status, 405);
+  });
+});

@@ -1,11 +1,12 @@
-// chat-drawer.js (#3556, fatia 2 do epic "Studio UI" #3554) — painel lateral
-// com uma sessão Claude real (Agent SDK, server-side em studio-chat.ts).
-// Vanilla JS, sem build step, sem lib nova (mesmo princípio de app.js/#3555).
+// chat-drawer.js (#3556, fatia 2 do epic "Studio UI" #3554; redesenhado no
+// #3617) — painel FIXO à ESQUERDA com uma sessão Claude real (Agent SDK,
+// server-side em studio-chat.ts). Vanilla JS, sem build step, sem lib nova
+// (mesmo princípio de app.js/#3555).
 //
-// Injetado em toda página do studio (index/edicao/triagem) via
-// `<script src="/chat-drawer.js" type="module"></script>` — constrói o
-// próprio DOM (toggle + drawer) em vez de exigir markup duplicado em cada
-// HTML, então uma única tag basta pra ligar o chat em qualquer página.
+// Injetado em toda página do studio (index/edicao/triagem/apoios/revisao)
+// via `<script src="/chat-drawer.js" type="module"></script>` — constrói o
+// próprio DOM (painel único) em vez de exigir markup duplicado em cada HTML,
+// então uma única tag basta pra ligar o chat em qualquer página.
 //
 // Transporte: POST /api/chat com um corpo JSON, resposta é
 // text/event-stream — só que `EventSource` não suporta POST, então este
@@ -30,16 +31,34 @@
 // chega depois, pela mesma stream). Sem timeout por design — só mostramos
 // "esperando há Xmin" client-side. Qualquer OUTRA tool call negada continua
 // aparecendo como chip "negado" (`onToolDenied`, inalterado).
-// Badge global (contador no `chat-toggle`): assina `/api/events` (SSE já
-// existente de `/api/state`) só pelo campo `chatPermissionsPending` — assim
-// o contador funciona mesmo em páginas sem o drawer aberto, e mesmo antes de
-// qualquer mensagem ter sido enviada nesta aba.
-// TODO(#3561/#3562): briefings e ações-por-botão (que "injetam prompt" nesta
-// mesma sessão, com o texto visível/editável antes de enviar) são outras
-// fatias — este módulo só expõe `window.diariaStudioChat.sendMessage(text)`
-// como ponto de extensão simples pra esse uso futuro.
+//
+// #3617 — BUG que este redesenho corrige por construção: o card de
+// AskUserQuestion só era renderizado como parte do stream AO VIVO da chamada
+// `POST /api/chat` que originou a pergunta. Sem hidratação, fechar o
+// painel/recarregar a página/navegar pra outra página do Studio (MPA — cada
+// página injeta este script do zero, não é SPA) perdia qualquer jeito de
+// re-exibir a pergunta pendente, mesmo com o servidor ainda esperando (sem
+// timeout, por design do #3557) — a sessão do Agent SDK travava PRA SEMPRE
+// sem jeito de responder pela UI. Fix: (1) painel FIXO à esquerda, SEMPRE
+// presente (nunca `display:none`/escondido por padrão — só colapsa de
+// LARGURA, ver chat-drawer.css); (2) ao montar em QUALQUER página, busca
+// `GET /api/chat/pending` (payload completo, `questions[]` inteiro — não só
+// `firstQuestion`) e reidrata o(s) card(s) pendente(s) com o MESMO renderer
+// (`onPermissionRequest`) do fluxo ao vivo, expandindo o painel
+// automaticamente pra garantir que o card fique visível sem depender de
+// clique nenhum. A lógica pura de parse/dedupe fica em `chat-hydration.js`
+// (testável sem DOM — este arquivo toca `document` no top-level e não pode
+// ser importado num teste Node puro).
+// TODO(#3561/#3562): histórico completo de mensagens de turnos anteriores
+// (não só o gate pendente) não é reidratado nesta fatia — o SDK não expõe
+// isso de forma trivial via `resume`; o card pendente (critério de aceite
+// obrigatório do #3617) é reidratado, o histórico de texto cru fica pendente
+// de investigação futura.
+
+import { parsePendingChatResponse, planHydrationCards } from "./chat-hydration.js";
 
 const STORAGE_KEY = "diaria-studio-chat-session-id";
+const COLLAPSE_STORAGE_KEY = "diaria-studio-chat-collapsed";
 
 let sessionId = null;
 try {
@@ -59,21 +78,29 @@ function persistSessionId(id) {
 }
 
 // ─── DOM ────────────────────────────────────────────────────────────────
+// #3617: painel único, FIXO à esquerda (ver chat-drawer.css) — sem toggle
+// flutuante separado que esconde o conteúdo. O botão de expandir/recolher
+// mora dentro do próprio header do painel; recolher só reduz a LARGURA
+// (rail fino com dot + badge sempre visíveis), nunca esconde o painel
+// inteiro.
 
-const toggle = document.createElement("button");
-toggle.className = "chat-toggle";
-toggle.type = "button";
-toggle.innerHTML =
-  '<span class="chat-toggle-dot" id="chat-toggle-dot"></span>Chat' +
-  '<span class="chat-toggle-badge" id="chat-toggle-badge" style="display:none"></span>';
+let startCollapsed = true;
+try {
+  startCollapsed = localStorage.getItem(COLLAPSE_STORAGE_KEY) !== "0";
+} catch {
+  // best-effort — default colapsado.
+}
 
 const drawer = document.createElement("aside");
-drawer.className = "chat-drawer";
+drawer.className = "chat-drawer" + (startCollapsed ? " collapsed" : "");
 drawer.innerHTML = `
   <div class="chat-drawer-header">
-    <h2>Chat — sessão Claude</h2>
+    <button type="button" class="chat-expand-toggle" id="chat-expand-toggle" title="Expandir/recolher chat">
+      <span class="chat-toggle-dot" id="chat-toggle-dot"></span>
+      <span class="chat-drawer-title">Chat — sessão Claude</span>
+      <span class="chat-toggle-badge" id="chat-toggle-badge" style="display:none"></span>
+    </button>
     <button type="button" id="chat-reset" title="Nova conversa">nova conversa</button>
-    <button type="button" id="chat-close" title="Fechar">&times;</button>
   </div>
   <div class="chat-messages" id="chat-messages"></div>
   <div class="chat-drawer-footer">
@@ -83,22 +110,24 @@ drawer.innerHTML = `
   <div class="chat-hint">
     Sessão real (Claude Agent SDK) rodando no studio-server local — mesmas
     skills/MCPs/CLAUDE.md do terminal. Perguntas da sessão (AskUserQuestion)
-    aparecem como formulário abaixo, sem prazo pra responder; qualquer outra
-    ação que pediria confirmação interativa aparece negada.
+    aparecem como formulário abaixo, sem prazo pra responder, e ficam
+    acessíveis mesmo recarregando ou navegando pra outra página; qualquer
+    outra ação que pediria confirmação interativa aparece negada.
   </div>
 `;
 
-document.body.appendChild(toggle);
 document.body.appendChild(drawer);
+document.body.classList.add("chat-drawer-present");
+document.body.classList.toggle("chat-drawer-collapsed", startCollapsed);
 
 const el = {
-  toggleDot: toggle.querySelector("#chat-toggle-dot"),
-  toggleBadge: toggle.querySelector("#chat-toggle-badge"),
+  expandToggle: drawer.querySelector("#chat-expand-toggle"),
+  toggleDot: drawer.querySelector("#chat-toggle-dot"),
+  toggleBadge: drawer.querySelector("#chat-toggle-badge"),
   messages: drawer.querySelector("#chat-messages"),
   input: drawer.querySelector("#chat-input"),
   send: drawer.querySelector("#chat-send"),
   reset: drawer.querySelector("#chat-reset"),
-  close: drawer.querySelector("#chat-close"),
 };
 
 function setToggleStatus(status) {
@@ -106,12 +135,12 @@ function setToggleStatus(status) {
   el.toggleDot.className = "chat-toggle-dot " + status;
 }
 
-// #3557: badge global de gates pendentes (AskUserQuestion aguardando
-// resposta), visível mesmo com o drawer fechado/em outra aba deste mesmo
-// browser — fonte é `state.chatPermissionsPending` (studio-state.ts),
-// atualizado por assinatura própria de `/api/events` (independente de
-// app.js, que só existe em index.html — chat-drawer.js é injetado em várias
-// páginas e precisa funcionar sozinho em todas).
+// #3557/#3617: badge de gates pendentes (AskUserQuestion aguardando
+// resposta), visível mesmo com o painel colapsado (rail fino) — fonte é
+// `state.chatPermissionsPending` (studio-state.ts), atualizado por
+// assinatura própria de `/api/events` (independente de app.js, que só
+// existe em index.html — chat-drawer.js é injetado em várias páginas e
+// precisa funcionar sozinho em todas).
 function setPendingBadge(count) {
   if (count > 0) {
     el.toggleBadge.textContent = String(count);
@@ -136,17 +165,27 @@ try {
   // fica em 0, sem quebrar o resto do drawer.
 }
 
-function openDrawer() {
-  drawer.classList.add("open");
-}
-function closeDrawer() {
-  drawer.classList.remove("open");
+function persistCollapsed(collapsed) {
+  try {
+    localStorage.setItem(COLLAPSE_STORAGE_KEY, collapsed ? "1" : "0");
+  } catch {
+    // best-effort
+  }
 }
 
-toggle.addEventListener("click", () => {
-  drawer.classList.contains("open") ? closeDrawer() : openDrawer();
+function setCollapsed(collapsed) {
+  drawer.classList.toggle("collapsed", collapsed);
+  document.body.classList.toggle("chat-drawer-collapsed", collapsed);
+  persistCollapsed(collapsed);
+}
+
+function expandDrawer() {
+  setCollapsed(false);
+}
+
+el.expandToggle.addEventListener("click", () => {
+  setCollapsed(!drawer.classList.contains("collapsed"));
 });
-el.close.addEventListener("click", closeDrawer);
 
 // #3556 self-review: limpar só o estado do CLIENTE (sessionId local +
 // localStorage) não bastava — a próxima mensagem, sem `sessionId`, caía no
@@ -165,6 +204,7 @@ el.reset.addEventListener("click", () => {
     // best-effort
   }
   el.messages.innerHTML = "";
+  permissionCards.clear();
   appendSystemNote("nova conversa — sessão anterior desvinculada (o histórico continua no disco do Claude Code, só não é mais retomado por padrão).");
 });
 
@@ -247,7 +287,13 @@ function onToolDenied(data) {
   scrollToBottom();
 }
 
-// ─── AskUserQuestion como form (#3557) ─────────────────────────────────────
+// ─── AskUserQuestion como form (#3557), com hidratação (#3617) ────────────
+
+// toolUseId -> card element, pro card do fluxo ao vivo (evento SSE) E o
+// hidratado (GET /api/chat/pending) nunca duplicarem o mesmo gate — também
+// alimenta `planHydrationCards` (chat-hydration.js) como o conjunto de ids
+// já renderizados.
+const permissionCards = new Map();
 
 function formatWaited(askedAtMs) {
   const mins = Math.floor((Date.now() - askedAtMs) / 60000);
@@ -259,10 +305,17 @@ function formatWaited(askedAtMs) {
  * resolve via `POST /api/chat/answer` quando o editor clica "Responder". Sem
  * timeout — o card fica ali indefinidamente até ser respondido (mesma
  * semântica bloqueante do terminal); só o texto "esperando há Xmin" muda
- * sozinho (client-side, a partir de `data.askedAt`). */
+ * sozinho (client-side, a partir de `data.askedAt`). Usado tanto pelo evento
+ * SSE `chat-permission-request` (fluxo ao vivo) quanto pela hidratação
+ * (#3617, `hydratePendingPermissions` abaixo) — MESMO renderer, sem
+ * duplicar a lógica de montagem do card; idempotente por `toolUseId` via
+ * `permissionCards`. */
 function onPermissionRequest(data) {
+  if (permissionCards.has(data.toolUseId)) return; // já renderizado — evita duplicar em race hidratação/SSE.
+
   const card = document.createElement("div");
   card.className = "chat-permission-card";
+  permissionCards.set(data.toolUseId, card);
 
   // 1 entrada de estado por pergunta: seleção (array de labels — só 1 item
   // quando não multiSelect) + texto livre digitado em "Other".
@@ -365,7 +418,37 @@ function onPermissionRequest(data) {
 
   el.messages.appendChild(card);
   scrollToBottom();
+  // #3617: um gate pendente NUNCA fica escondido atrás de um clique que
+  // pode falhar — expande o painel automaticamente (colapsado só esconde
+  // LARGURA/texto, nunca o acesso à pergunta, mas expandir de cara garante
+  // que o card apareça sem exigir nenhuma ação do editor).
+  expandDrawer();
 }
+
+// #3617: hidratação — busca os gates pendentes REAIS da sessão do servidor
+// (não só o contador global de `/api/events`) e reidrata o(s) card(s)
+// completo(s) com o MESMO `onPermissionRequest` do fluxo ao vivo. Roda uma
+// vez ao montar o script em QUALQUER página — é isto que resolve o bug
+// #3617 por construção: fechar/recarregar/navegar não perde mais o acesso
+// ao gate, porque a hidratação sempre reconstrói o card a partir do estado
+// do servidor, independente de estar "no meio" do stream SSE que o
+// originou.
+async function hydratePendingPermissions() {
+  try {
+    const res = await fetch("/api/chat/pending");
+    if (!res.ok) return;
+    const json = await res.json();
+    const pending = parsePendingChatResponse(json);
+    const toRender = planHydrationCards(pending, permissionCards.keys());
+    for (const p of toRender) onPermissionRequest(p);
+  } catch {
+    // best-effort — studio-server offline/erro de rede no momento da
+    // hidratação; o badge global (via /api/events) ainda vai sinalizar o
+    // gate pendente assim que a conexão SSE abrir, e a próxima navegação
+    // tenta hidratar de novo.
+  }
+}
+hydratePendingPermissions();
 
 // ─── parsing SSE manual (fetch não dá EventSource pra POST) ────────────
 
@@ -511,8 +594,8 @@ el.input.addEventListener("keydown", (ev) => {
   }
 });
 
-// Ponto de extensão pras fatias seguintes (#3557 gates-como-forms, #3561
-// briefings, #3562 ações "injetar prompt") — um botão de outra tela chama
-// isto pra rodar uma mensagem nesta MESMA sessão sem duplicar a mecânica de
+// Ponto de extensão pras fatias seguintes (#3561 briefings, #3562
+// ações-por-botão "injetar prompt") — um botão de outra tela chama isto pra
+// rodar uma mensagem nesta MESMA sessão sem duplicar a mecânica de
 // streaming/parsing acima.
-window.diariaStudioChat = { sendMessage, openDrawer };
+window.diariaStudioChat = { sendMessage, openDrawer: expandDrawer };

@@ -503,6 +503,37 @@ export function listPendingPermissionRequests(rootDir: string): PendingPermissio
     }));
 }
 
+/** Payload COMPLETO de um gate pendente — mesmo shape de
+ * `ChatPermissionRequestEvent.data`, pra `GET /api/chat/pending` (#3617)
+ * conseguir reidratar o card no cliente sem depender de estar "no meio" do
+ * stream SSE que originou a pergunta (a lacuna que causava o bug #3617: gate
+ * pendente inalcançável depois de fechar/recarregar/navegar, já que
+ * `chatPermissionsPending`/`PendingPermissionSummary` só expõe `firstQuestion`,
+ * resumo insuficiente pra renderizar o form). */
+export interface PendingPermissionFull {
+  toolUseId: string;
+  toolName: string;
+  askedAt: number;
+  questions: ChatPermissionQuestion[];
+}
+
+/** Mesma fonte de `listPendingPermissionRequests` (o Map em memória de
+ * `pendingByRoot` — não duplica estado), só que serializando `questions[]`
+ * completo em vez do resumo `firstQuestion`. Consumido por
+ * `GET /api/chat/pending` (server.ts) e, no cliente, por `chat-drawer.js`
+ * pra montar o mesmo card que o evento `chat-permission-request` ao vivo
+ * renderiza. */
+export function listPendingPermissionRequestsFull(rootDir: string): PendingPermissionFull[] {
+  return [...pendingMapFor(rootDir).values()]
+    .sort((a, b) => a.askedAt - b.askedAt)
+    .map((p) => ({
+      toolUseId: p.toolUseId,
+      toolName: p.toolName,
+      askedAt: p.askedAt,
+      questions: p.questions,
+    }));
+}
+
 /** Resolve a Promise de `canUseTool` pendente pro `toolUseId` dado, com
  * `{behavior:'allow', updatedInput}` montado por `buildAskUserQuestionUpdatedInput`
  * (#3557). Chamado pelo handler HTTP de `POST /api/chat/answer`. Idempotente
