@@ -295,9 +295,9 @@ function isInQuotedRange(
 
 /**
  * #3208: `## post_pixel` documentadamente abre com "Hoje" (template
- * `.claude/agents/social-linkedin.md` §3d, #3052) — é publicado ao vivo no
- * mesmo dia (não agendado como main_d{N}/comment_diaria/comment_pixel, que
- * vão pra D+1+), então "hoje" é literalmente correto ali.
+ * `.claude/agents/social-linkedin.md` §3b, #3052) — é publicado ao vivo no
+ * mesmo dia (não agendado como main_d{N}, que vai pra D+1+), então "hoje"
+ * é literalmente correto ali.
  *
  * Localiza o range de LINHAS (0-based, inclusivo nas duas pontas) do CORPO
  * do bloco `## post_pixel` dentro da seção `# LinkedIn`, pra que o scan de
@@ -567,13 +567,12 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
 
   // #2453: `## post_pixel` é um post standalone na conta pessoal do Pixel —
   // já é a voz do Pixel. Ter um `### comment_pixel` dentro dele seria redundante
-  // (comment_pixel é para ir SOB os posts da company page d1/d2/d3, não sob
-  // post_pixel). Validar que o bloco post_pixel NÃO contém essa subseção.
+  // (comment_pixel ia SOB os posts da company page d1/d2/d3 antes de #3627 tê-lo
+  // aposentado). Validar que o bloco post_pixel NÃO contém essa subseção.
   //
   // #3052: post_pixel deve abrir com {outros_count} + {edition_url} literais
-  // (mesma convenção do comment_diaria §3b, ver social-linkedin.md §3d) — ambos
-  // resolvidos em Stage 6 (scripts/resolve-post-pixel.ts), nunca estimados ou
-  // omitidos em Stage 2.
+  // (ver social-linkedin.md §3b) — ambos resolvidos em Stage 6
+  // (scripts/resolve-post-pixel.ts), nunca estimados ou omitidos em Stage 2.
   if (linkedinSection) {
     const ppBlockMatch = ("\n" + linkedinSection).match(
       /\n## post_pixel[^\n]*\n([\s\S]*?)(?=\n## [a-z]|$)/i,
