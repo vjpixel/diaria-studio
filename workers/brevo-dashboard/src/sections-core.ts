@@ -1,11 +1,9 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary } from "./types.ts";
-import { CRON_INTERVAL_HOURS } from "./types.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 // #3092: PT_MONTHS_ABBR — dependency-free/Workers-safe (mesmo padrão de
 // cohortSendRank em sections-kv.ts), reusado por formatCycleEnvioLabel.
 import { PT_MONTHS_ABBR } from "../../../scripts/lib/cohorts.ts";
 import { DS, DS_FONTS as DSF, pct, cellClass, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT, renderColumnGlossary, brevoReportLink } from "./render-links.ts";
-import { shouldShowStalenessNote } from "./staleness.ts";
 import {
   renderVolumeSection,
   aggregateByMonth,
@@ -57,11 +55,12 @@ export function renderDashboardHtml(
   couponUsage: CouponUsageReport | null = null, // #2718: tab de cupons Stripe (PII-gated)
   eiaEngagement: EiaEngagementSummary | null = null, // #2738: engajamento do poll "É IA?" por edição
   planCredits: number | null = null, // #2910: créditos/limite do plano Brevo (denominador dinâmico da seção Volume) — fetch ao vivo feito no call site (index.ts), nunca aqui (função continua pura/sync)
-  // #3079: ISO de quando `campaigns`/`scheduled` foram DE FATO buscados na Brevo
-  // (cron tick pré-computado, ou "agora" em fetch ao vivo — `?fresh=1`/cold-start
-  // antes do 1º tick). `null` (default) preserva o comportamento pré-#3079 para
-  // callers/testes que não passam este argumento — tratado como "agora" (fetch
-  // ao vivo), nunca como pré-computado.
+  // #3079/#3553: ISO de quando `campaigns`/`scheduled` foram DE FATO buscados
+  // na Brevo — sempre "agora" desde que #3553 (parte B) removeu o Cron
+  // Trigger (toda leitura é fetch ao vivo em request-time, exceto o fallback
+  // de rate-limit, que passa `null` de propósito). `null` (default) preserva
+  // o comportamento histórico para callers/testes que não passam este
+  // argumento — tratado como "agora" (fetch ao vivo).
   dataGeneratedAt: string | null = null,
   // #3080: limite de campanhas pedido ao Brevo pra montar `campaigns` (ex:
   // CAMPAIGNS_FETCH_LIMIT=150) — usado só pra decidir se a janela está "cheia"
@@ -239,36 +238,19 @@ export function renderDashboardHtml(
     second: "2-digit",
   });
 
-  // #3079: o header antigo ("Dados em tempo real — carregado às {now} BRT")
-  // sempre usava `new Date()` — mentiroso para o payload PRÉ-COMPUTADO pelo
-  // Cron Trigger (dash:lastgood:campaigns, até ~CRON_INTERVAL_HOURS velho —
-  // #3256 subiu de 10min pra 3h). Reusa o mesmo helper de staleness do #3011
-  // (shouldShowStalenessNote) que já decide, pras outras seções KV, se
-  // `sectionIso` diverge o bastante de `nowDate` pra merecer nota — aqui a
-  // "seção" é o payload de campanhas em si. `dataGeneratedAt == null`
-  // (callers/testes pré-#3079) nunca mostra a nota pré-computada — degrada
-  // pro texto/formato antigo, idêntico ao pré-#3079.
-  const dataIsPrecomputed = dataGeneratedAt != null && shouldShowStalenessNote(dataGeneratedAt, nowDate);
+  // #3553 (parte B): sem Cron Trigger, o header sempre reflete o load ATUAL —
+  // não existe mais um payload "pré-computado" com timestamp defasado (o
+  // caminho que gerava isso, dash:lastgood:campaigns como fonte PRIMÁRIA de
+  // leitura, foi removido; o KV agora é só fallback de rate-limit, ver
+  // buildRateLimitFallback em brevo-api.ts, que passa dataGeneratedAt=null de
+  // propósito). `dataGeneratedAt` presente é tratado como o instante do fetch
+  // desta própria request — nunca mais compara contra `nowDate` pra decidir
+  // entre dois textos.
+  // #3349: `fmtTimeBRT` já degrada com segurança (retorna a string crua) para
+  // um ISO não-parseável — não precisa de guard extra aqui (KV corrompido
+  // nunca lança RangeError, ver render-links.ts).
   const dataFreshnessTimeLabel = dataGeneratedAt != null ? fmtTimeBRT(dataGeneratedAt) : now;
-  // #3256: nota de "próxima atualização" — dataGeneratedAt + CRON_INTERVAL_HOURS
-  // (o tick do cron que gerou ESTE payload + o intervalo entre ticks). Só faz
-  // sentido calcular quando o payload é de fato pré-computado (dataGeneratedAt
-  // presente) — pedido do editor #3256 pra deixar claro quando esperar dado
-  // mais fresco sem precisar saber de cor a cadência do cron.
-  // #3349: `Date.parse` retorna NaN pra string não-parseável (ex: KV corrompido
-  // — index.ts só valida `typeof === "string"`, não que seja data válida) e
-  // `new Date(NaN).toISOString()` LANÇA RangeError antes mesmo de fmtTimeBRT (que
-  // já tem guard próprio) ser chamado — derrubava a dashboard inteira com 502.
-  // `Number.isFinite` guarda o parse, mesmo padrão de shouldShowStalenessNote
-  // (staleness.ts) e fmtTimeBRT (render-links.ts) neste mesmo módulo: degrada
-  // pra `null` (nota omitida) em vez de lançar.
-  const parsedGeneratedAtMs = dataGeneratedAt != null ? Date.parse(dataGeneratedAt) : NaN;
-  const nextUpdateLabel = Number.isFinite(parsedGeneratedAtMs)
-    ? fmtTimeBRT(new Date(parsedGeneratedAtMs + CRON_INTERVAL_HOURS * 3_600_000).toISOString())
-    : null;
-  const dataFreshnessLine = dataIsPrecomputed
-    ? `Dados pré-computados a cada ~${CRON_INTERVAL_HOURS}h (Cron Trigger) — atualizado às ${dataFreshnessTimeLabel} BRT (próxima: ~${nextUpdateLabel} BRT).`
-    : `Dados em tempo real — carregado às ${dataFreshnessTimeLabel} BRT.`;
+  const dataFreshnessLine = `Dados em tempo real — carregado às ${dataFreshnessTimeLabel} BRT.`;
 
   // #2086 Fase 2: seções adicionais
   // #2910: "Volume enviado no ciclo" usa o ciclo de COBRANÇA Brevo (dia 4,

@@ -127,8 +127,29 @@ Stripe e engajamento "É IA?" (por edição, aba Clarice) não são
 recomputáveis barato on-demand — são pré-computados por scripts caros
 (ex: `clarice-engagement-cohorts.ts`, ~40k GETs) só empurrados pro KV.
 Essas 4 abas degradam pra "sem dados" no painel local (mesmo
-comportamento gracioso do cold-start do Worker). `#3553` parte B (remover
-o Cron Trigger do Worker remoto) é um follow-up separado — muda o
-`wrangler.toml`/deploy do Worker, fora do escopo do embed local.
+comportamento gracioso do cold-start do Worker).
 
 Implementação: `scripts/studio-ui/dashboard-clarice.ts`.
+
+### Worker remoto `clarice-dashboard`: sem auto-refresh (#3553 parte B)
+
+O Cron Trigger que pré-computava `dash:lastgood:campaigns` fora do
+request-time (`scheduled()`/`runCronRefresh`, #3079, cadência revisada em
+#3256) foi **removido** (`[triggers]`/`crons` fora do `wrangler.toml`,
+`workers/brevo-dashboard`) — decisão do editor 2026-07-16: a dashboard
+Cloudflare não deve mais se atualizar sozinha, só no reload da página.
+
+O refresh de campanhas Brevo passou a acontecer em **request-time** na rota
+`/`: toda request faz fetch ao vivo, gravando o resultado em
+`dash:lastgood:campaigns` como **write-through** — o KV virou cache de
+FALLBACK (consumido só quando a Brevo responde 429, ver
+`buildRateLimitFallback` em `brevo-api.ts`), nunca mais fonte primária de
+leitura. Proteções que seguem valendo, inalteradas: cache de borda 5min via
+Cache API (#2144, limita a 1 fetch real por 5min mesmo com múltiplos
+visitantes) e `STATS_CACHE` para stats imutáveis (campanhas >7d).
+
+A tab de contatos (`ContactsSummary`) continua alimentada exclusivamente pelo
+push local diário das 03:40 (`clarice-db-summary.ts`, #2932) — esse push
+**não foi afetado** por esta mudança; o Cron Trigger removido era só do
+Worker `brevo-dashboard`, um mecanismo separado do agendador local do
+Windows.
