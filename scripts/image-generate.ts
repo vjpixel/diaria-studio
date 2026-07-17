@@ -35,10 +35,18 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // (que ele interpreta como descrição geral, às vezes induzindo o oposto).
 // #2657: instrução de safe-area central — todos os sujeitos principais agrupados
 // na metade central do frame, visíveis após o crop 1:1 (800×800 do centro de 1600×800).
+// #3633: instrução de safe-area VERTICAL — análoga à horizontal do #2657, mas pro
+// eixo vertical. Bug 260717: figura robótica angulosa gerada 3× seguidas com a
+// CABEÇA cortada no topo do frame 1600×800 (2:1) — e por consequência no crop
+// 800×800 (1:1) derivado. O modelo tende a desenhar a figura grande/próxima
+// demais verticalmente quando a cena tem um personagem antropomórfico/robótico
+// em pé. Fix editorial pontual aplicado no gate (wide shot + headroom explícito)
+// promovido pra regra global aqui, pra não precisar de ajuste manual por edição.
 // Exportada para teste de regressão em test/image-generate-safe-area.test.ts.
 export const STYLE_SUFFIX =
   ", post-impressionist oil painting with thick impasto brushstrokes, swirling textures, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast. " +
   "All principal subjects must be grouped together in the central half of the horizontal frame so that all of them remain fully visible when the image is cropped to a square (1:1); do not place key subjects near the left or right edges. " +
+  "When the scene includes a standing or upright figure (human, robot, or humanoid character), frame it as a wide shot: the entire figure, including the head and feet, must fit comfortably within the frame with generous empty margin above the head; never crop or cut off the top of the head. " +
   "Purely visual scene with absolutely no written characters, no letters, no digits, no symbols on any surface; " +
   "all signage, papers, screens, books and labels rendered as abstract shapes or solid color blocks without any text or numbers.";
 

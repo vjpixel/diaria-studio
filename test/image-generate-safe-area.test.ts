@@ -34,6 +34,30 @@ describe("image-generate STYLE_SUFFIX — safe-area central (#2657)", () => {
     );
   });
 
+  it("#3633: contém instrução de headroom vertical para figuras em pé", () => {
+    assert.match(
+      STYLE_SUFFIX,
+      /margin above the head|headroom/i,
+      "STYLE_SUFFIX deve instruir margem/headroom acima da cabeça para figuras antropomórficas em pé",
+    );
+  });
+
+  it("#3633: proíbe explicitamente cortar o topo da cabeça", () => {
+    assert.match(
+      STYLE_SUFFIX,
+      /never crop.*(?:top of the head|head)|cut off the top of the head/i,
+      "STYLE_SUFFIX deve proibir explicitamente o corte do topo da cabeça",
+    );
+  });
+
+  it("#3633: instrução de headroom cobre figuras humanas, robóticas e humanoides", () => {
+    assert.match(
+      STYLE_SUFFIX,
+      /human, robot, or humanoid/i,
+      "STYLE_SUFFIX deve cobrir figuras humanas/robóticas/humanoides, não só robôs",
+    );
+  });
+
   it("mantém instrução de Van Gogh impasto (regressão STYLE_SUFFIX existente)", () => {
     assert.match(STYLE_SUFFIX, /impasto/i, "STYLE_SUFFIX deve manter estilo Van Gogh impasto");
   });
