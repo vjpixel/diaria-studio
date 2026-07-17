@@ -84,6 +84,21 @@ export function clariceSegmentsDir(cycle: string): string {
   return resolve(clariceCycleDir(cycle), "segments");
 }
 
+/**
+ * Diretório dos 3 envios RAMP-WARM (cold, 1º envio) agendados fim-a-fim por
+ * `scripts/clarice-schedule-ramp.ts` (#3593). Irmão de `waves/`/`segments/`:
+ * deliberadamente SEPARADO de `waves/` (usado pela rampa store-driven,
+ * `clarice-build-waves-store.ts` — `waves-manifest.json`/`w*-store.csv`) e de
+ * `segments/` (grupos nomeados de `clarice-build-segment.ts`, incluindo o
+ * `ramp-warm` de 1 lista só) — os 3 CSVs disjuntos (ter/sex/dom) deste script
+ * teriam o MESMO nome de arquivo (`ramp-warm.csv`) que o grupo nomeado
+ * homônimo se compartilhassem `segments/`, colidindo/sobrescrevendo caso os
+ * dois fluxos rodem no mesmo ciclo.
+ */
+export function clariceRampDir(cycle: string): string {
+  return resolve(clariceCycleDir(cycle), "ramp");
+}
+
 /** Caminho de um arquivo de input-base (root, não por-ciclo): stripe, excluded, tiers. */
 export function clariceBaseFile(name: string): string {
   return resolve(CLARICE_BASE, name);
