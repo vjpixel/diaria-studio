@@ -1238,9 +1238,15 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // #260701 review: title "body" SÓ para callout editorial (🎉); patrocinado (📣)
     // mantém o serif 26px (consistente com os boxes de divulgação). Sem o gate, um 📣 no
     // intro regredia o título pra 16px e o fullBold-subheader disparava nele.
+    // #3631 (pedido do editor, 260717): nota editorial de 1 parágrafo (ex:
+    // agradecimento a apoiadores) não deve sair em negrito — só conteúdo
+    // patrocinado/promocional mantém o peso forte histórico.
+    const introSponsored = isSponsoredCallout(content.introCallout);
     parts.push(renderIntroCallout(
       content.introCallout,
-      isSponsoredCallout(content.introCallout) ? "serif" : "body",
+      introSponsored ? "serif" : "body",
+      false,
+      introSponsored,
     ));
   }
 
