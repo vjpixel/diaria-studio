@@ -129,6 +129,9 @@ import { buildStudioState } from "./studio-state.ts";
 import { buildEditionDetail } from "./studio-edition-detail.ts";
 import { tailJsonl, watchRunLogAppends, type RunLogWatchHandle } from "./run-log-tail.ts";
 import { watchPlanFiles, type PlanWatchHandle } from "./plan-watch.ts";
+// #3565: espelho read-only do Studio local — push periódico do snapshot pro
+// KV do worker diaria-dashboard. Ver studio-snapshot-watcher.ts.
+import { watchAndPushStudioSnapshot, type StudioSnapshotWatchHandle } from "./studio-snapshot-watcher.ts";
 import { formatSseEvent, formatSseComment } from "./sse.ts";
 import { serveStaticFile } from "./static-serve.ts";
 import { buildTokensCss } from "./tokens-css.ts";
@@ -228,6 +231,15 @@ export interface StudioServerOptions {
    * generoso pra uma mensagem de chat digitada à mão, protege contra corpo
    * absurdo consumindo memória do processo. */
   chatMaxBodyBytes?: number;
+  /** #3565: liga o watcher de push periódico do snapshot pro KV (espelho
+   * read-only externo, `workers/diaria-dashboard` rota `/studio`).
+   * DESLIGADO por padrão — inclusive em testes, que criam `StudioServer` sem
+   * setar isso; `main()` liga explicitamente pro uso real (`npm run studio`).
+   * Fail-soft total mesmo ligado: falha de rede/Cloudflare nunca derruba o
+   * Studio local (ver `studio-snapshot-watcher.ts`). */
+  enableSnapshotPush?: boolean;
+  /** Intervalo (ms) do push periódico — default 5min (`studio-snapshot-watcher.ts`). */
+  snapshotPushIntervalMs?: number;
 }
 
 export interface StudioServer {
@@ -992,6 +1004,11 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const telegramNotifyWatch: TelegramNotifyWatchHandle = startTelegramNotifyWatcher(rootDir, {
     pollIntervalMs: opts.telegramPollIntervalMs,
   });
+  // #3565: opt-in (ver StudioServerOptions.enableSnapshotPush) — nunca ativo
+  // implicitamente em teste, só quando main() liga pro uso real.
+  const snapshotWatch: StudioSnapshotWatchHandle | null = opts.enableSnapshotPush
+    ? watchAndPushStudioSnapshot(rootDir, { intervalMs: opts.snapshotPushIntervalMs })
+    : null;
 
   let closed = false;
   return {
@@ -1006,6 +1023,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         }
         closed = true;
         telegramNotifyWatch.close();
+        snapshotWatch?.close();
         server.close((err) => (err ? reject(err) : resolveClose()));
       }),
   };
@@ -1020,8 +1038,14 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   const rootDir = values["root-dir"] ? resolve(values["root-dir"]) : process.cwd();
+  // #3565: espelho read-only ligado por padrão no uso real (`npm run
+  // studio`) — `--no-snapshot-push` opta fora (ex: sessão sem credenciais
+  // Cloudflare configuradas, editor prefere não tentar o push periódico).
+  // Fail-soft mesmo ligado sem credenciais: o watcher só pula o push (ver
+  // pushStudioSnapshot's skippedReason="missing-credentials"), nunca lança.
+  const enableSnapshotPush = !parseCliArgs(process.argv.slice(2)).flags.has("no-snapshot-push");
 
-  const server = await startStudioServer({ port, rootDir });
+  const server = await startStudioServer({ port, rootDir, enableSnapshotPush });
   console.log(`[studio-server] ${server.url} (rootDir=${server.rootDir})`);
 
   const shutdown = () => {

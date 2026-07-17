@@ -284,3 +284,46 @@ export interface DashboardData {
   /** Seções que ainda não têm dados disponíveis */
   stubs: StubSection[];
 }
+
+// ─── Studio snapshot (#3565 — espelho read-only do Studio local) ─────────────
+
+/**
+ * Resumo COMPACTO de uma rodada overnight/develop — contagem por status, não
+ * o `plan.json` inteiro (que pode conter descrições de issue). Mesmo shape
+ * de `PlanSummary` (`scripts/studio-ui/studio-state.ts`), reexportado aqui
+ * como tipo do payload do Worker pra manter a fronteira do bundle (Worker
+ * não importa `scripts/studio-ui/*`, que usa `node:fs`).
+ */
+export interface StudioSnapshotPlanSummary {
+  /** AAMMDD do diretório da sessão (overnight/develop) — rótulo de data, não PII. */
+  sessionId: string;
+  totalIssues: number;
+  /** status -> contagem (ex: {merged: 3, draft: 1, pulada: 2}) */
+  counts: Record<string, number>;
+}
+
+/**
+ * Snapshot pushado pro KV (binding `DASHBOARD_DATA`, chave própria
+ * `studio:snapshot` — distinta de `dashboard`) por
+ * `scripts/studio-snapshot-push.ts`. Puramente contagens/enums/rótulos de
+ * data — mesma disciplina "sem PII" de `contacts:summary`
+ * (`clarice-db-summary.ts`): nunca o texto de uma pergunta
+ * `AskUserQuestion` (só a CONTAGEM de gates pendentes), nunca email/token,
+ * nunca `rootDir`/paths absolutos da máquina local.
+ */
+export interface StudioSnapshot {
+  /** ISO timestamp de quando o snapshot foi montado — o Worker exibe a
+   * IDADE deste campo em relação a `now()` pra sinalizar "PC offline?". */
+  generated_at: string;
+  current_edition: string | null;
+  current_stage: number | "done" | "unknown";
+  stage_label: string;
+  /** Contagem de gates de PIPELINE pendentes (stage 4/6), somada entre
+   * todas as edições — nunca o conteúdo do gate. */
+  gates_pending_count: number;
+  /** Contagem de gates `AskUserQuestion` do chat drawer aguardando
+   * resposta — nunca `firstQuestion`/texto da pergunta. */
+  chat_gates_pending_count: number;
+  overnight: StudioSnapshotPlanSummary | null;
+  develop: StudioSnapshotPlanSummary | null;
+}
