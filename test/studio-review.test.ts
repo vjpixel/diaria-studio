@@ -19,6 +19,7 @@ import {
   computeReviewDiff,
   runReviewLints,
   buildReviewPreviewHtml,
+  buildSocialPreviewHtml,
   pullReviewFileBestEffort,
   resolveReviewImagePath,
   REVIEW_FILES,
@@ -414,6 +415,162 @@ describe("buildReviewPreviewHtml (#3559)", () => {
     const preview = buildReviewPreviewHtml(editionDir, "260716");
     assert.equal(preview.ok, true);
     assert.match(preview.html, /\{\{IMG:04-d2-2x1\.jpg\}\}/);
+  });
+});
+
+describe("buildSocialPreviewHtml (#3663)", () => {
+  let root: string;
+  let editionDir: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-review-social-preview-"));
+    editionDir = makeEdition(root, "260716");
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  const THREE_DESTAQUES_SOCIAL_MD = [
+    "# LinkedIn",
+    "",
+    "## d1",
+    "",
+    "Primeira linha do post D1.",
+    "",
+    "Segunda linha, parágrafo separado.",
+    "",
+    "#InteligenciaArtificial #Agentes",
+    "",
+    "## d2",
+    "",
+    "Post D2 do LinkedIn.",
+    "",
+    "#InteligenciaArtificial",
+    "",
+    "## d3",
+    "",
+    "Post D3 do LinkedIn.",
+    "",
+    "#InteligenciaArtificial",
+    "",
+    "# Facebook",
+    "",
+    "## d1",
+    "",
+    "Post D1 do Facebook.",
+    "",
+    "## d2",
+    "",
+    "Post D2 do Facebook.",
+    "",
+    "## d3",
+    "",
+    "Post D3 do Facebook.",
+    "",
+  ].join("\n");
+
+  it("sem 03-social.md → ok:false com mensagem clara, HTML de erro", () => {
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, false);
+    assert.match(preview.html, /Sem preview/);
+    assert.match(preview.error ?? "", /03-social\.md/);
+  });
+
+  it("com 03-social.md válido → ok:true, HTML com as 2 plataformas e os 3 destaques cada", () => {
+    writeFileSync(resolve(editionDir, "03-social.md"), THREE_DESTAQUES_SOCIAL_MD, "utf8");
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /<html/i);
+    assert.match(preview.html, /LinkedIn/);
+    assert.match(preview.html, /Facebook/);
+    assert.match(preview.html, /Primeira linha do post D1\./);
+    assert.match(preview.html, /Post D3 do Facebook\./);
+  });
+
+  it("preserva quebra de linha entre parágrafos como <br>/<p> separados, sem aplicar markdown pesado", () => {
+    writeFileSync(resolve(editionDir, "03-social.md"), THREE_DESTAQUES_SOCIAL_MD, "utf8");
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    // 2 parágrafos do d1 (separados por linha em branco) viram <p> distintos.
+    assert.match(preview.html, /<p>Primeira linha do post D1\.<\/p>/);
+    assert.match(preview.html, /<p>Segunda linha, parágrafo separado\.<\/p>/);
+  });
+
+  it("hashtags aparecem destacadas no HTML (não como texto markdown cru)", () => {
+    writeFileSync(resolve(editionDir, "03-social.md"), THREE_DESTAQUES_SOCIAL_MD, "utf8");
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.match(preview.html, /#InteligenciaArtificial/);
+  });
+
+  it("edição com só 2 destaques (regra 2-3, #3369) não quebra — renderiza os 2 presentes", () => {
+    const twoDestaquesMd = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "",
+      "Post D1.",
+      "",
+      "## d2",
+      "",
+      "Post D2.",
+      "",
+      "# Facebook",
+      "",
+      "## d1",
+      "",
+      "Post D1 fb.",
+      "",
+      "## d2",
+      "",
+      "Post D2 fb.",
+      "",
+    ].join("\n");
+    writeFileSync(resolve(editionDir, "03-social.md"), twoDestaquesMd, "utf8");
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /Post D1\./);
+    assert.match(preview.html, /Post D2\./);
+    assert.doesNotMatch(preview.html, /Post D3/);
+  });
+
+  it("seção de plataforma ausente (só LinkedIn, Facebook ainda não gerado) não quebra", () => {
+    const linkedinOnlyMd = ["# LinkedIn", "", "## d1", "", "Post D1.", ""].join("\n");
+    writeFileSync(resolve(editionDir, "03-social.md"), linkedinOnlyMd, "utf8");
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    // header do card LinkedIn presente; o card/header Facebook (não o
+    // seletor CSS estático ".platform-header.facebook", que sempre existe no
+    // <style>) não deveria estar — checa a div renderizada, não o CSS.
+    assert.match(preview.html, /💼 LinkedIn/);
+    assert.doesNotMatch(preview.html, /platform-header facebook"/);
+    assert.doesNotMatch(preview.html, /📘 Facebook/);
+  });
+
+  it("sem aammdd, sem imagens em disco → renderiza sem <img> (fail-open, não quebra)", () => {
+    writeFileSync(resolve(editionDir, "03-social.md"), THREE_DESTAQUES_SOCIAL_MD, "utf8");
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    assert.doesNotMatch(preview.html, /<img\b/);
+  });
+
+  it("com aammdd + imagem 1x1 em disco → src aponta pra rota local de imagem", () => {
+    writeFileSync(resolve(editionDir, "03-social.md"), THREE_DESTAQUES_SOCIAL_MD, "utf8");
+    writeFileSync(resolve(editionDir, "04-d1-1x1.jpg"), Buffer.from([0xff, 0xd8, 0xff]));
+    const preview = buildSocialPreviewHtml(editionDir, "260716");
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /src="\/api\/editions\/260716\/image\/04-d1-1x1\.jpg"/);
+  });
+
+  it("sem 1x1 mas com 2x1 em disco → cai pro fallback 2x1", () => {
+    writeFileSync(resolve(editionDir, "03-social.md"), THREE_DESTAQUES_SOCIAL_MD, "utf8");
+    writeFileSync(resolve(editionDir, "04-d1-2x1.jpg"), Buffer.from([0xff, 0xd8, 0xff]));
+    const preview = buildSocialPreviewHtml(editionDir, "260716");
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /src="\/api\/editions\/260716\/image\/04-d1-2x1\.jpg"/);
+  });
+
+  it("03-social.md vazio (sem nenhum '# Plataforma') não lança — renderiza shell HTML sem plataformas", () => {
+    writeFileSync(resolve(editionDir, "03-social.md"), "", "utf8");
+    const preview = buildSocialPreviewHtml(editionDir);
+    assert.equal(preview.ok, true);
+    assert.match(preview.html, /<html/i);
   });
 });
 

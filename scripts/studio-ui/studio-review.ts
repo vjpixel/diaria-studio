@@ -63,6 +63,11 @@ import { extractContent } from "../lib/newsletter-parse.ts";
 import { findOrphanBoxWarnings } from "../lib/newsletter-parse.ts";
 import { renderHTML } from "../lib/newsletter-render-html.ts";
 import { substituteImagePlaceholders } from "../substitute-image-urls.ts";
+// #3663: preview do conteúdo social (03-social.md) — reusa o MESMO
+// parser/renderer que a pipeline REAL usa no Stage 4 (§4b step 3 de
+// orchestrator-stage-4.md) pra gerar `_internal/social-preview.html`, em vez
+// de reimplementar o parsing de `## d1/d2/d3` por plataforma aqui.
+import { parsePlatforms, buildSocialHtml, type ImageMap } from "../render-social-html.ts";
 import {
   countTitlesPerHighlight,
   checkTitleLengths,
@@ -551,6 +556,85 @@ export function buildReviewPreviewHtml(editionDir: string, aammdd?: string): Pre
   } catch (e) {
     const message = (e as Error).message;
     return { ok: false, error: message, html: errorHtml("Erro ao renderizar preview", message) };
+  }
+}
+
+/**
+ * #3663: mapa de imagens LOCAL pro preview social — análogo em espírito ao
+ * `filenameMap` de `buildReviewPreviewHtml` acima, mas resolvendo pras chaves
+ * `d1`/`d2`/`d3` que `buildSocialHtml` (render-social-html.ts) espera em vez
+ * de um placeholder `{{IMG:filename}}`.
+ *
+ * A pipeline REAL (`upload-images-public.ts`, rodado só na Etapa 4/5) sobe a
+ * variante `04-d{N}-1x1.jpg` (quadrada, 800×800/1024×1024 — o mesmo crop que
+ * LinkedIn/Facebook/Instagram usam de verdade) pra Drive/Cloudflare e grava
+ * a URL pública em `06-public-images.json`, que é o que `render-social-html.ts
+ * --images` consome no fluxo real. Esse upload é cedo demais pra um preview
+ * local no Studio (a edição pode nem estar pronta pra publicar ainda) — em
+ * vez disso, aponta direto pro arquivo `04-d{N}-1x1.jpg` já gerado em disco
+ * pela Etapa 3, servido pela MESMA rota local de imagem que o preview de
+ * e-mail já usa (`GET /api/editions/:aammdd/image/:filename`,
+ * `resolveReviewImagePath`). Sem 1x1 em disco (edição antiga ou Etapa 3
+ * ainda não rodou), cai pra `04-d{N}-2x1.jpg` como fallback — melhor mostrar
+ * a imagem larga do que nenhuma. Destaque sem nenhum arquivo correspondente
+ * simplesmente fica sem entry no mapa (`buildSocialHtml` já trata ausência
+ * de imagem sem quebrar — mesmo fail-open do preview de e-mail).
+ */
+function buildLocalSocialImageMap(editionDir: string, aammdd: string): ImageMap {
+  const filenames = listReviewImageFilenames(editionDir);
+  const map: ImageMap = {};
+  for (let n = 1; n <= 3; n++) {
+    const key = `d${n}`;
+    const squareRe = new RegExp(`^04-d${n}-1x1\\.(jpe?g|png)$`, "i");
+    const wideRe = new RegExp(`^04-d${n}-2x1\\.(jpe?g|png)$`, "i");
+    const filename = filenames.find((f) => squareRe.test(f)) ?? filenames.find((f) => wideRe.test(f));
+    if (filename) {
+      map[key] = { url: `/api/editions/${aammdd}/image/${filename}`, filename };
+    }
+  }
+  return map;
+}
+
+/** Lê o marker opcional de override do destaque coberto pelo `## post_pixel`
+ * (default D1, #1690/#2549) — mesmo arquivo que `render-social-html.ts`
+ * (CLI) já lê antes de montar o HTML, mas aqui `editionDir` já É a raiz da
+ * edição (o CLI reconstrói via `dirname(mdPath)`). */
+function readPostPixelImageNum(editionDir: string): string {
+  const ppMarker = resolve(editionDir, "_internal", "post-pixel-image.txt");
+  if (!existsSync(ppMarker)) return "1";
+  const v = readFileSync(ppMarker, "utf8").trim().replace(/\D/g, "");
+  return v || "1";
+}
+
+/** Renderiza o HTML de preview do conteúdo social (`03-social.md`) —
+ * análogo a `buildReviewPreviewHtml` acima, mas pro card LinkedIn/Facebook/
+ * Instagram em vez do e-mail. Reusa `parsePlatforms` + `buildSocialHtml` de
+ * `render-social-html.ts` (mesmo módulo que a Etapa 4 real invoca via CLI
+ * pra gerar `_internal/social-preview.html`, #1800) — zero reimplementação
+ * de parsing/template. Fail-soft: `03-social.md` ausente vira página de erro
+ * clara (nunca lança); uma seção de plataforma ausente (ex: só LinkedIn, sem
+ * Facebook ainda) ou um destaque faltando (edição com 2 destaques em vez de
+ * 3, #3369) não quebra — `parsePlatforms`/`buildSocialHtml` já iteram sobre
+ * o que existir, sem indexação fixa d1/d2/d3. */
+export function buildSocialPreviewHtml(editionDir: string, aammdd?: string): PreviewResult {
+  const socialPath = resolve(editionDir, "03-social.md");
+  if (!existsSync(socialPath)) {
+    return {
+      ok: false,
+      error: "03-social.md ainda não existe nesta edição — nada pra pré-visualizar.",
+      html: errorHtml("Sem preview", "03-social.md ainda não existe nesta edição."),
+    };
+  }
+  try {
+    const md = readFileSync(socialPath, "utf8");
+    const platforms = parsePlatforms(md);
+    const imageMap = aammdd ? buildLocalSocialImageMap(editionDir, aammdd) : {};
+    const postPixelImageNum = readPostPixelImageNum(editionDir);
+    const html = buildSocialHtml(platforms, imageMap, postPixelImageNum);
+    return { ok: true, html };
+  } catch (e) {
+    const message = (e as Error).message;
+    return { ok: false, error: message, html: errorHtml("Erro ao renderizar preview social", message) };
   }
 }
 
