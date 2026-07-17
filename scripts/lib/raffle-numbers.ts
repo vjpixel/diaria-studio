@@ -285,14 +285,24 @@ export function nextRaffleNumber(entries: RaffleEntry[], cycle: string): number 
 export interface AllocateRaffleNumberResult {
   entries: RaffleEntry[];
   entry: RaffleEntry;
-  /** `false` quando o email já tinha número no ciclo (idempotência, #2724 item 4). */
+  /** `false` quando esta EDIÇÃO específica já tinha número alocado pro email
+   * (idempotência por reprocessamento — #achado-260716, revisão do #2724 item 4). */
   isNew: boolean;
 }
 
 /**
- * Pure: aloca (ou retorna o já existente) número de sorteio pra
- * `email` no `cycle`. Idempotente — se o email já tem número nesse ciclo
- * (de qualquer edição), retorna a entry existente sem realocar nem duplicar.
+ * Pure: aloca (ou retorna o já existente) número de sorteio pra `email` no
+ * `cycle`, referente ao acerto na edição `edition`.
+ *
+ * Regra editorial (confirmada com o editor em 260716 — 1 número NOVO por
+ * acerto/edição, não 1 número fixo por pessoa por ciclo): o mesmo email pode
+ * acumular VÁRIOS números no mesmo ciclo se acertar o erro em mais de uma
+ * edição daquele mês — cada acerto correto é um bilhete a mais no sorteio.
+ * Idempotência é por (cycle, email, edition): reprocessar a MESMA reply/edição
+ * (ex: §0-replies rodando de novo sobre a mesma captura) nunca realoca nem
+ * duplica um número pra aquela edição específica — mas uma edição DIFERENTE,
+ * mesmo email, mesmo ciclo, sempre ganha número novo.
+ *
  * `nowIso` é injetável pra testes determinísticos.
  */
 export function allocateRaffleNumber(
@@ -301,7 +311,9 @@ export function allocateRaffleNumber(
   nowIso: string = new Date().toISOString(),
 ): AllocateRaffleNumberResult {
   const emailNorm = params.email.trim().toLowerCase();
-  const existing = entries.find((e) => e.cycle === params.cycle && e.email === emailNorm);
+  const existing = entries.find(
+    (e) => e.cycle === params.cycle && e.email === emailNorm && e.edition === params.edition,
+  );
   if (existing) {
     return { entries, entry: existing, isNew: false };
   }
