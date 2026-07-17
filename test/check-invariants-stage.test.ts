@@ -750,7 +750,7 @@ describe("Stage 2 invariants", () => {
     rmSync(fixture, { recursive: true, force: true });
   });
 
-  it("#2458: gate social detecta link da página ausente em comment_diaria (social-linkedin-page-link é gate-blocking)", () => {
+  it("#2458: gate social detecta link da página ausente em post_pixel (social-linkedin-page-link é gate-blocking)", () => {
     const missingPageLink = [
       "# LinkedIn",
       "",
@@ -758,47 +758,17 @@ describe("Stage 2 invariants", () => {
       "",
       "Texto editorial d1.",
       "",
-      "### comment_diaria",
-      "",
-      "Edição completa em {edition_url}",
-      "",
-      "### comment_pixel",
-      "",
-      "Comentário pessoal.",
-      "",
       "## d2",
       "",
       "Texto editorial d2.",
-      "",
-      "### comment_diaria",
-      "",
-      "Edição completa em {edition_url}",
-      "",
-      "Siga a Diar.ia em linkedin.com/company/diar.ia.br",
-      "",
-      "### comment_pixel",
-      "",
-      "Comentário pessoal.",
       "",
       "## d3",
       "",
       "Texto editorial d3.",
       "",
-      "### comment_diaria",
-      "",
-      "Edição completa em {edition_url}",
-      "",
-      "Siga a Diar.ia em linkedin.com/company/diar.ia.br",
-      "",
-      "### comment_pixel",
-      "",
-      "Comentário pessoal.",
-      "",
       "## post_pixel",
       "",
-      "Texto do post pessoal.",
-      "",
-      "Siga a Diar.ia em linkedin.com/company/diar.ia.br",
+      "Texto do post pessoal sem link da página.",
       "",
       "# Facebook",
       "",
@@ -814,6 +784,47 @@ describe("Stage 2 invariants", () => {
     assert.ok(
       ruleIds.includes("social-linkedin-page-link"),
       `Gate não detectou link ausente. violations: ${JSON.stringify(ruleIds)}`,
+    );
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("#3645: gate social NÃO detecta mais link ausente em comment_diaria (check aposentado pós-#3627)", () => {
+    // Até #3627 este cenário disparava `social-linkedin-page-link` via comment_diaria
+    // de d1. A subseção `### comment_diaria` deixou de ser gerada e o check
+    // correspondente foi removido de lintLinkedinPageLink (#3645) em vez de deixado
+    // morto-mas-verde. post_pixel (com link válido) segue sendo o único checável —
+    // o gate não deve mais disparar por causa de comment_diaria.
+    const commentDiariaWithoutLinkButPostPixelOk = [
+      "# LinkedIn",
+      "",
+      "## d1",
+      "",
+      "Texto editorial d1.",
+      "",
+      "### comment_diaria",
+      "",
+      "Edição completa em {edition_url}",
+      "",
+      "## post_pixel",
+      "",
+      "Texto do post pessoal.",
+      "",
+      "Siga a Diar.ia em linkedin.com/company/diar.ia.br",
+      "",
+      "# Facebook",
+      "",
+      "## d1",
+      "",
+      "Post Facebook.",
+      "",
+      "Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.",
+    ].join("\n");
+    writeFileSync(join(fixture, "03-social.md"), commentDiariaWithoutLinkButPostPixelOk);
+    const v = checkSocialPassesLints(fixture);
+    const ruleIds = v.map((x) => x.rule);
+    assert.ok(
+      !ruleIds.includes("social-linkedin-page-link"),
+      `comment_diaria sem link não deve mais disparar o gate: ${JSON.stringify(ruleIds)}`,
     );
     rmSync(fixture, { recursive: true, force: true });
   });

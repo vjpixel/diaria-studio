@@ -168,8 +168,11 @@ function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
       file,
     ),
   );
-  // #2458: comment_diaria e post_pixel devem conter link da página da Diar.ia
-  // no LinkedIn (linkedin.com/company/diar.ia.br) como CTA de follow.
+  // #2458: post_pixel deve conter link da página da Diar.ia no LinkedIn
+  // (linkedin.com/company/diar.ia.br) como CTA de follow. #3645: até #3627
+  // este check também cobria comment_diaria (CTA de follow nos 3 posts
+  // principais) — removido junto com a subseção comment_diaria, que #3627
+  // parou de gerar; ver docstring de lintLinkedinPageLink.
   violations.push(
     ...runCheck(
       "lint-social-md.ts",

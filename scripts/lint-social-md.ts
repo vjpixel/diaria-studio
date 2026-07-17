@@ -306,7 +306,8 @@ function main(): void {
     return;
   }
 
-  // Modo --check linkedin-page-link (#2458) — valida link da página em comment_diaria + post_pixel
+  // Modo --check linkedin-page-link (#2458) — valida link da página em post_pixel
+  // (#3645: comment_diaria deixou de ser checado — subseção não é mais gerada desde #3627)
   if (args.check === "linkedin-page-link") {
     const result = lintLinkedinPageLink(md);
     console.log(JSON.stringify(result, null, 2));
