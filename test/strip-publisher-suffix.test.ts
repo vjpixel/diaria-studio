@@ -396,4 +396,20 @@ describe("normalizeItemTitle — chain completo (#2664 + #2672)", () => {
     const input = "Google anuncia novidades no I/O 2026";
     assert.equal(normalizeItemTitle(input), input);
   });
+
+  it("#3647: 2 sufixos de veículo encadeados (' - Reuters - CNN Brasil') removidos numa única chamada", () => {
+    // `stripDashSuffix` só remove a ÚLTIMA camada de sufixo por chamada — sem
+    // loop, uma única invocação de `normalizeItemTitle` deixaria "Reuters"
+    // sobrando. A função precisa repetir a passada até estabilizar.
+    const input = "Empresa anuncia resultado importante - Reuters - CNN Brasil";
+    assert.equal(normalizeItemTitle(input), "Empresa anuncia resultado importante");
+  });
+
+  it("#3647: normalizeItemTitle é idempotente — chamar 2x dá o mesmo resultado de chamar 1x", () => {
+    const input = "Empresa anuncia resultado importante - Reuters - CNN Brasil";
+    const once = normalizeItemTitle(input);
+    const twice = normalizeItemTitle(once);
+    assert.equal(twice, once, "uma 2ª chamada não deve remover mais nenhuma camada");
+    assert.equal(once, "Empresa anuncia resultado importante");
+  });
 });

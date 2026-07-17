@@ -616,6 +616,67 @@ describe("enrichArticles — #2140 strip publisher suffix gate by origin (C9)", 
     }
   });
 
+  it("#3647: título com 2 sufixos de veículo encadeados normaliza por completo numa única chamada (worker) e não duplica outcome no passe final", async () => {
+    // Bug: `stripDashSuffix` só remove UMA camada de sufixo por chamada
+    // (verifica só a ÚLTIMA ocorrência do separador). `normalizeItemTitle` é
+    // chamada 1x dentro do worker (linha ~459, sobre o título de entrada) E
+    // de novo no passe final sobre TODO o array `out` (linha ~515, cobrindo
+    // itens que o worker não tocou) — inclusive artigos já processados pelo
+    // worker. Título com 2 sufixos de veículo conhecidos encadeados
+    // ("... - Reuters - CNN Brasil") só ficava totalmente limpo por acidente,
+    // porque a 2ª chamada (não-idempotente entre si) removia a 2ª camada —
+    // e essa 2ª remoção não gerava entry de outcome (contradizendo o
+    // comentário de idempotência do código-fonte, linhas ~504-506 na época).
+    // Com `normalizeItemTitle` genuinamente idempotente (loop até estabilizar,
+    // #3647), a 1ª chamada dentro do worker já remove as 2 camadas — o passe
+    // final vira no-op de fato, e o outcome log reflete exatamente 1 evento
+    // (do worker), sem strip silencioso adicional.
+    const dir = mkdtempSync(join(tmpdir(), "enrich-3647-chained-suffix-"));
+    try {
+      const url = "https://example.com/artigo-chained-suffix";
+      writeFileSync(
+        join(dir, bodyCacheFilename(url)),
+        `<meta property="og:description" content="Resumo extraído do cache."/>`,
+      );
+      const articles = [
+        {
+          url,
+          title: "Empresa anuncia resultado importante - Reuters - CNN Brasil",
+          summary: "", // sem summary → needsEnrichment=true, entra no worker
+        },
+      ];
+      const fetcher = async (): Promise<string | null> => null;
+      const { articles: out, outcomes } = await enrichArticles(articles, fetcher, {
+        bodiesDir: dir,
+      });
+      assert.equal(
+        out[0].title,
+        "Empresa anuncia resultado importante",
+        "as 2 camadas de sufixo de veículo (Reuters + CNN Brasil) devem ser removidas por completo",
+      );
+      const urlOutcomes = outcomes.filter((o) => o.url === url);
+      assert.equal(
+        urlOutcomes.length,
+        1,
+        "deve haver exatamente 1 outcome para esta URL — sem entry fantasma do passe final " +
+          `(outcomes: ${JSON.stringify(urlOutcomes)})`,
+      );
+      assert.equal(
+        urlOutcomes[0].title_updated,
+        true,
+        "outcome do worker deve refletir que o título foi atualizado",
+      );
+      assert.notEqual(
+        urlOutcomes[0].reason,
+        "normalize_item_title",
+        "a normalização deve ter acontecido dentro do worker (idempotente), não via " +
+          "strip silencioso adicional no passe final (reason: normalize_item_title)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("artigo editorial com ' | ' legítimo no submitted_subject → preservado intacto (C3/C6)", async () => {
     // Editor enviou um link com assunto contendo ' | ' — não é sufixo de veículo.
     // O fetch falha (anti-bot), então o título vem do submitted_subject.
