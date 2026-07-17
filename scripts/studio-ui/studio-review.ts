@@ -36,17 +36,19 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   writeFileSync,
   statSync,
 } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename, extname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 import { diffLines, diffIsEmpty, type DiffLine } from "./text-diff.ts";
 import { extractContent } from "../lib/newsletter-parse.ts";
 import { findOrphanBoxWarnings } from "../lib/newsletter-parse.ts";
 import { renderHTML } from "../lib/newsletter-render-html.ts";
+import { substituteImagePlaceholders } from "../substitute-image-urls.ts";
 import {
   countTitlesPerHighlight,
   checkTitleLengths,
@@ -421,12 +423,54 @@ export interface PreviewResult {
   error?: string;
 }
 
+/** Extensões de imagem servidas pelo preview local — mesmo conjunto que a
+ * pipeline gera pros destaques/É IA (`.jpg`/`.jpeg`/`.png`). */
+const REVIEW_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png"]);
+
+/** Nomes de arquivo de imagem presentes DIRETO em `editionDir` (não recursivo
+ * — os arquivos de imagem da edição sempre ficam na raiz do diretório, nunca
+ * em `_internal/`). Usado tanto pra montar o mapa de substituição do preview
+ * quanto (via `resolveReviewImagePath`) pra validar que uma requisição de
+ * imagem só serve arquivo que genuinamente pertence à edição. */
+function listReviewImageFilenames(editionDir: string): string[] {
+  if (!existsSync(editionDir)) return [];
+  return readdirSync(editionDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && REVIEW_IMAGE_EXTENSIONS.has(extname(entry.name).toLowerCase()))
+    .map((entry) => entry.name);
+}
+
+/** Resolve o path absoluto de uma imagem da edição, validando que `filename`
+ * (vindo de request HTTP) é exatamente um arquivo de imagem presente na raiz
+ * de `editionDir` — nunca um path (basename-only, sem `..`/separador), nunca
+ * uma extensão fora da allowlist. Retorna `null` se inválido/inexistente
+ * (caller responde 404, nunca serve fora do diretório da edição). */
+export function resolveReviewImagePath(editionDir: string, filename: string): string | null {
+  const safeName = basename(filename);
+  if (safeName !== filename) return null; // continha separador de path
+  if (!REVIEW_IMAGE_EXTENSIONS.has(extname(safeName).toLowerCase())) return null;
+  const fullPath = resolve(editionDir, safeName);
+  if (!existsSync(fullPath) || !statSync(fullPath).isFile()) return null;
+  return fullPath;
+}
+
 /** Renderiza o HTML completo do e-mail a partir do `02-reviewed.md` (+
  * `01-eia.md`) ATUALMENTE em disco — reusa `extractContent`/`renderHTML` do
  * pipeline (mesmo caminho do Stage 4). Fail-soft: qualquer exceção de parse
  * (ex: menos de 2 destaques, seção ausente) vira uma página de erro simples
- * em vez de derrubar a rota. */
-export function buildReviewPreviewHtml(editionDir: string): PreviewResult {
+ * em vez de derrubar a rota.
+ *
+ * `renderHTML` produz `<img src="{{IMG:filename}}">` — placeholders que a
+ * pipeline REAL só resolve depois de subir as imagens publicamente
+ * (`upload-images-public.ts` + `substitute-image-urls.ts`, fluxo Custom HTML
+ * do Beehiiv). Pra um preview LOCAL no Studio isso é cedo demais (a edição
+ * pode nem estar pronta pra publicar ainda) — em vez de subir nada, aponta
+ * cada placeholder pra uma rota local (`GET /api/editions/:aammdd/image/:filename`,
+ * ver `resolveReviewImagePath`) que serve o arquivo já gerado em disco pela
+ * Etapa 3. `aammdd` é necessário só pra montar essa URL — se omitido
+ * (chamada fora do contexto de rota HTTP), os placeholders ficam intactos
+ * (mesmo comportamento de antes, sem imagem — não quebra, só sem preview
+ * visual de imagem). */
+export function buildReviewPreviewHtml(editionDir: string, aammdd?: string): PreviewResult {
   if (!existsSync(resolve(editionDir, "02-reviewed.md"))) {
     return {
       ok: false,
@@ -436,7 +480,14 @@ export function buildReviewPreviewHtml(editionDir: string): PreviewResult {
   }
   try {
     const content = extractContent(editionDir);
-    const html = renderHTML(content, { fullDocument: true });
+    let html = renderHTML(content, { fullDocument: true });
+    if (aammdd) {
+      const filenameMap = new Map<string, string>();
+      for (const filename of listReviewImageFilenames(editionDir)) {
+        filenameMap.set(filename, `/api/editions/${aammdd}/image/${filename}`);
+      }
+      html = substituteImagePlaceholders(html, filenameMap).html;
+    }
     return { ok: true, html };
   } catch (e) {
     const message = (e as Error).message;

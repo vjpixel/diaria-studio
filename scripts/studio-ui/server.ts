@@ -129,6 +129,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "../lib/cli-args.ts";
@@ -141,7 +142,7 @@ import { watchPlanFiles, type PlanWatchHandle } from "./plan-watch.ts";
 // KV do worker diaria-dashboard. Ver studio-snapshot-watcher.ts.
 import { watchAndPushStudioSnapshot, type StudioSnapshotWatchHandle } from "./studio-snapshot-watcher.ts";
 import { formatSseEvent, formatSseComment } from "./sse.ts";
-import { serveStaticFile } from "./static-serve.ts";
+import { serveStaticFile, mimeFor } from "./static-serve.ts";
 import { buildTokensCss } from "./tokens-css.ts";
 import { fetchTriageData, type GhRunFn } from "./studio-issues.ts";
 import { buildWaveProposal } from "./studio-waves.ts";
@@ -174,6 +175,7 @@ import {
   runReviewLints,
   buildReviewPreviewHtml,
   pullReviewFileBestEffort,
+  resolveReviewImagePath,
 } from "./studio-review.ts";
 import { runSwapDestaque, type SwapDestaqueRequest } from "./studio-review-actions.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
@@ -634,8 +636,26 @@ function handleReviewLint(rootDir: string, aammdd: string, slug: string, res: Se
 }
 
 function handleReviewPreview(rootDir: string, aammdd: string, res: ServerResponse): void {
-  const preview = buildReviewPreviewHtml(editionDirFor(rootDir, aammdd));
+  const preview = buildReviewPreviewHtml(editionDirFor(rootDir, aammdd), aammdd);
   sendHtml(res, preview.ok ? 200 : 422, preview.html);
+}
+
+/** #achado-260716: as imagens da edição (`04-d1-2x1.jpg` etc, geradas pela
+ * Etapa 3) não apareciam no preview do painel de revisão — `renderHTML` do
+ * pipeline produz `<img src="{{IMG:filename}}">`, um placeholder que só a
+ * pipeline REAL resolve (upload público + substituição). `handleReviewPreview`
+ * agora aponta esses placeholders pra esta rota, que serve o arquivo já
+ * gerado em disco pela edição — sem subir nada publicamente cedo demais. */
+function handleReviewImage(rootDir: string, aammdd: string, filename: string, res: ServerResponse): void {
+  const resolved = resolveReviewImagePath(editionDirFor(rootDir, aammdd), filename);
+  if (!resolved) {
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Not found");
+    return;
+  }
+  const body = readFileSync(resolved);
+  res.writeHead(200, { "Content-Type": mimeFor(resolved), "Content-Length": body.length, "Cache-Control": "no-store" });
+  res.end(body);
 }
 
 async function handleReviewSave(
@@ -950,6 +970,11 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       const reviewPreviewMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/preview\.html$/);
       if (reviewPreviewMatch) {
         handleReviewPreview(rootDir, reviewPreviewMatch[1], res);
+        return;
+      }
+      const reviewImageMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/image\/([^/]+)$/);
+      if (reviewImageMatch) {
+        handleReviewImage(rootDir, reviewImageMatch[1], decodeURIComponent(reviewImageMatch[2]), res);
         return;
       }
       if (urlPath === "/tokens.generated.css") {
