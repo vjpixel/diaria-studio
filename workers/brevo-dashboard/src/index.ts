@@ -128,8 +128,13 @@ export async function isAuthenticated(request: Request, env: Env): Promise<boole
  * não-numérico → `fallback`. Clamp de 50 (`DASHBOARD_WORKER_CLAMP`, ver
  * `scripts/clarice-schedule-ramp.ts`) continua aplicado pelo caller.
  */
+// #3659: `?limit=` com valor VAZIO explícito (`raw === ""`) precisa do mesmo
+// guard que `null` -- `Number("")` é `0` (não `NaN`), e `Number.isFinite(0)`
+// é `true`, então sem este guard `resolveCampaignsLimitParam("")` resolvia
+// pra `0` em vez do fallback, silenciosamente diferente de `?limit=0`
+// (0 explícito, intencional) que o #3653 corrigiu para ser respeitado.
 export function resolveCampaignsLimitParam(raw: string | null, fallback = 20): number {
-  if (raw === null) return fallback;
+  if (raw === null || raw.trim().length === 0) return fallback;
   const n = Number(raw);
   return Number.isFinite(n) ? n : fallback;
 }

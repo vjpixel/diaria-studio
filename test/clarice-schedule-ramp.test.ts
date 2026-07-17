@@ -465,6 +465,21 @@ describe("assertImportUsable (#3643 bug 2 — --create/--schedule recusam prosse
     assert.throws(() => assertImportUsable({ key: "w1", status: "planned", count: 100 }, true), /não concluído/);
     assert.throws(() => assertImportUsable({ key: "w1", status: "list_created", count: 100 }, true), /não concluído/);
   });
+
+  // #3660: gap residual do #3652 — assertImportUsable ainda comparava só o
+  // literal "imported", então uma wave já avançada pra "draft"/"scheduled"
+  // (rodada anterior do ramp multi-dia) caía incorretamente no throw final
+  // de "import não concluído". Agora usa hasPassedImportPhase, que reconhece
+  // qualquer status ">= imported" na ordem do ciclo de vida.
+  it("status \"draft\" (pós --create de rodada anterior) → não lança (com ou sem --force)", () => {
+    assert.doesNotThrow(() => assertImportUsable({ key: "w1", status: "draft", count: 100, importedCount: 100 }, false));
+    assert.doesNotThrow(() => assertImportUsable({ key: "w1", status: "draft", count: 100, importedCount: 100 }, true));
+  });
+
+  it("status \"scheduled\" (pós --schedule de rodada anterior) → não lança (com ou sem --force)", () => {
+    assert.doesNotThrow(() => assertImportUsable({ key: "w1", status: "scheduled", count: 100, importedCount: 100 }, false));
+    assert.doesNotThrow(() => assertImportUsable({ key: "w1", status: "scheduled", count: 100, importedCount: 100 }, true));
+  });
 });
 
 describe("buildImportFileBody (#3643 bug 3 — faltava ensureEditorCopyRow, quebrava invariante #3455)", () => {

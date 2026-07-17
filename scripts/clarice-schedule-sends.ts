@@ -228,6 +228,76 @@ export function applyVerifyResults(
   }
 }
 
+export interface ScheduleLoopDeps {
+  /** Executa o PUT real de agendamento (`brevoPut .../emailCampaigns/{id}`). */
+  putFn: (c: CampaignEntry) => Promise<void>;
+  /** Executa o GET-verify pós-PUT (`brevoGetCampaign`). */
+  verifyFn: (c: CampaignEntry) => Promise<{ status: string }>;
+  writeFn?: (path: string, content: string) => void;
+  logFn?: (msg: string) => void;
+  now?: () => Date;
+}
+
+/**
+ * #3658 (mesma classe do #3652 bug 2 em clarice-schedule-ramp.ts): roda o
+ * loop de `--schedule` persistindo o resultado de CADA campanha
+ * (`applyVerifyResults`, que já grava em disco por-entry) IMEDIATAMENTE após
+ * seu `putFn`+`verifyFn`, ANTES de tentar a próxima campanha.
+ *
+ * Antes: o loop original PUTava todas as campanhas em escopo sequencialmente
+ * acumulando em `toVerify`, e só chamava `applyVerifyResults` UMA VEZ, depois
+ * do loop inteiro terminar. Se `brevoPut` lançasse (timeout, 5xx,
+ * rate-limit transiente) na campanha N, a exceção propagava ANTES de
+ * `applyVerifyResults` rodar — as campanhas 1..N-1, já agendadas de verdade e
+ * imutáveis na Brevo, nunca tinham seu status local (`campaigns-summary.json`)
+ * atualizado pra "scheduled". Um retry subsequente re-tentaria agendar
+ * campanhas já agendadas (o guard `status === "scheduled"` não protegia, pois
+ * o status local nunca foi persistido).
+ *
+ * Agora: cada campanha é PUT + GET-verify + persistida antes de seguir pra
+ * próxima. Se `putFn` de uma campanha lançar, a exceção ainda propaga (mesmo
+ * contrato de antes — `main().catch()` trata como erro fatal), mas só DEPOIS
+ * de garantir que toda campanha anterior bem-sucedida já está gravada em
+ * disco. `verifyFn` nunca precisa de try/catch aqui — passa por
+ * `Promise.allSettled` (mesmo padrão do loop antigo) e `applyVerifyResults`
+ * já trata rejection sem lançar (warn + status local não atualizado, retry
+ * seguro).
+ */
+export async function runScheduleLoop(
+  campaigns: CampaignEntry[],
+  keysInScope: Set<string>,
+  campaignsPath: string,
+  deps: ScheduleLoopDeps,
+): Promise<void> {
+  const writeFn = deps.writeFn ?? ((p, c) => writeFileAtomic(p, c));
+  const logFn = deps.logFn ?? ((m) => console.error(m));
+  const now = deps.now ?? (() => new Date());
+
+  for (const c of campaigns) {
+    if (!keysInScope.has(c.key)) continue;
+    if (c.status === "scheduled") {
+      logFn(`↷ ${c.key} já agendada — pulando`);
+      continue;
+    }
+    // #2101: guard simétrico ao --create — scheduledAt passado (herança/edição manual)
+    // seria PUTado no Brevo sem validação. Abortar com mensagem clara antes do PUT.
+    if (new Date(c.scheduledAt) <= now()) {
+      throw new Error(
+        `--schedule: ${c.key} (campanha #${c.campaignId}) tem scheduledAt no passado/presente ` +
+        `(${c.scheduledAt}). Atualize o campaigns-summary.json ou o send-plan.json do ciclo ` +
+        `antes de agendar.`,
+      );
+    }
+
+    await deps.putFn(c); // brevoPut REAL — agendamento aceito e imutável na Brevo a partir daqui
+
+    // #3658: persiste ESTA campanha IMEDIATAMENTE — se a PRÓXIMA falhar, o
+    // registro local desta já está gravado, não some junto com a exceção.
+    const settled = await Promise.allSettled([deps.verifyFn(c)]);
+    applyVerifyResults(settled, [c], campaigns, campaignsPath, writeFn, logFn);
+  }
+}
+
 /**
  * #2009: verifica se o gabarito É IA? foi setado para o ciclo via close-poll
  * --brand clarice. Pura (testável sem rede): só verifica existência do marker.
@@ -544,40 +614,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
 
     const keysInScope = buildKeysInScope(sendsSummary.sends, blocks, cellBlock);
-    // #2061: PUTs sequenciais (ordem importa — Brevo pode ter rate-limit por
-    // rajada, e a escrita atômica do campaigns-summary após cada verify precisa
-    // do resultado individual). GETs de verify independentes → Promise.all.
-    const toVerify: CampaignEntry[] = [];
-    for (const c of campaigns) {
-      if (!keysInScope.has(c.key)) continue;
-      if (c.status === "scheduled") {
-        console.error(`↷ ${c.key} já agendada — pulando`);
-        continue;
-      }
-      // #2101: guard simétrico ao --create — scheduledAt passado (herança/edição manual)
-      // seria PUTado no Brevo sem validação. Abortar com mensagem clara antes do PUT.
-      if (new Date(c.scheduledAt) <= new Date()) {
-        throw new Error(
-          `--schedule: ${c.key} (campanha #${c.campaignId}) tem scheduledAt no passado/presente ` +
-          `(${c.scheduledAt}). Atualize o campaigns-summary.json ou o send-plan.json do ciclo ` +
-          `antes de agendar.`,
-        );
-      }
-      await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: c.scheduledAt });
-      toVerify.push(c);
-    }
-
-    // #2018 / regra #573 / #2061 / #2101: GET-verify em paralelo pós-PUTs — confirma que
-    // o Brevo realmente recebeu o scheduledAt antes de marcar "scheduled" localmente.
-    // Brevo pode aceitar PUT 204 mas não persistir em edge cases — divergência logada
-    // e flag local NÃO atualizada (próximo --schedule re-tenta).
-    //
-    // #2101: Promise.allSettled (era Promise.all) — se 1 GET lançar, os demais não
-    // são descartados. Delegado a applyVerifyResults (exportado, testável sem rede).
-    const verifySettled = await Promise.allSettled(
-      toVerify.map((c) => brevoGetCampaign(apiKey, c.campaignId)),
-    );
-    applyVerifyResults(verifySettled, toVerify, campaigns, campaignsPath);
+    // #3658: cada campanha é PUT + GET-verify + persistida ANTES de seguir
+    // pra próxima — não mais "PUT todas, verifica/persiste no fim" (ver
+    // docstring de `runScheduleLoop`). Falha de `putFn` na campanha N não
+    // perde mais o registro local das campanhas 1..N-1 já agendadas de
+    // verdade (e imutáveis) na Brevo.
+    await runScheduleLoop(campaigns, keysInScope, campaignsPath, {
+      putFn: async (c) => { await brevoPut(apiKey, `/emailCampaigns/${c.campaignId}`, { scheduledAt: c.scheduledAt }); },
+      verifyFn: (c) => brevoGetCampaign(apiKey, c.campaignId),
+    });
   }
 
   console.log(JSON.stringify({ created: campaigns.length, scheduled: campaigns.filter((c) => c.status === "scheduled").length }, null, 2));

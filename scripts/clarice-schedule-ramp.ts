@@ -487,12 +487,21 @@ export function resolveImportStatus(matched: boolean, skipVerify: boolean): "imp
  * (`status === "import_incomplete"`), a menos que `--force` seja passado
  * explicitamente (override consciente do operador). Também recusa se o
  * import nem foi tentado ainda (`"planned"`/`"list_created"`). Pura, testável.
+ *
+ * #3660 (gap residual do #3652): usa `hasPassedImportPhase` em vez do
+ * literal `entry.status === "imported"` — reconhece também `"draft"`
+ * (pós `--create`) e `"scheduled"` (pós `--schedule`) como já usáveis, igual
+ * ao `shouldSkipImport` (mesma fonte única de verdade, `WAVE_STATUS_ORDER`).
+ * Antes, uma entry com status `"draft"`/`"scheduled"` (wave já avançada numa
+ * rodada anterior do ramp multi-dia) não batia nem no `"imported"` nem no
+ * `"import_incomplete"`, caindo incorretamente no `throw` final de "import
+ * não concluído" — mesmo a wave já tendo passado da fase de import há muito.
  */
 export function assertImportUsable(
   entry: Pick<RampWaveEntry, "key" | "status" | "count" | "importedCount">,
   force: boolean,
 ): void {
-  if (entry.status === "imported") return;
+  if (hasPassedImportPhase(entry.status)) return;
   if (entry.status === "import_incomplete") {
     if (force) return;
     throw new Error(
