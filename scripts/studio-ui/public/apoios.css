@@ -139,11 +139,6 @@
   gap: 0.5rem;
 }
 .contact-name { font-weight: 600; }
-.contact-circle {
-  font-size: 0.75rem;
-  opacity: 0.65;
-  font-family: var(--font-mono);
-}
 .contact-emails {
   font-size: 0.78rem;
   font-family: var(--font-mono);

@@ -94,7 +94,7 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
 
   let createdId = "";
 
-  it("POST /api/apoios/contacts cria contato -> 201", async () => {
+  it("POST /api/apoios/contacts cria contato -> 201 (regressão #3611: 'circle' no corpo é ignorado)", async () => {
     const res = await fetch(new URL("/api/apoios/contacts", server.url), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -104,10 +104,11 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.ok(body.contact.id);
+    assert.equal("circle" in body.contact, false);
     createdId = body.contact.id;
   });
 
-  it("GET /api/apoios reflete o contato recém-criado", async () => {
+  it("GET /api/apoios reflete o contato recém-criado sem o campo 'circle' (#3611)", async () => {
     const res = await fetch(new URL("/api/apoios", server.url));
     const body = await res.json();
     assert.equal(body.contacts.length, 1);
@@ -115,6 +116,7 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.equal(body.contacts[0].status.label, "sem_dados");
     assert.equal(body.contacts[0].openRate, null); // sem cache de open-rate ainda (#3612)
     assert.equal(body.campaign.totalContacts, 1);
+    assert.equal("circle" in body.contacts[0], false);
   });
 
   it("GET /api/apoios reflete o cache de taxa de abertura Beehiiv quando presente (#3612, fixture mockada — nunca o arquivo real de data/)", async () => {

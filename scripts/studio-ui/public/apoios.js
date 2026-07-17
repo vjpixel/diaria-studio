@@ -23,7 +23,6 @@ const el = {
   addForm: document.getElementById("add-contact-form"),
   newName: document.getElementById("new-name"),
   newEmails: document.getElementById("new-emails"),
-  newCircle: document.getElementById("new-circle"),
   newNotes: document.getElementById("new-notes"),
   addError: document.getElementById("add-contact-error"),
   contactsCount: document.getElementById("contacts-count"),
@@ -36,7 +35,6 @@ const el = {
   editId: document.getElementById("edit-id"),
   editName: document.getElementById("edit-name"),
   editEmails: document.getElementById("edit-emails"),
-  editCircle: document.getElementById("edit-circle"),
   editNotes: document.getElementById("edit-notes"),
   editError: document.getElementById("edit-contact-error"),
   editCancelBtn: document.getElementById("edit-cancel-btn"),
@@ -155,7 +153,7 @@ function renderFollowups() {
     const li = document.createElement("li");
     li.innerHTML = `
       <span class="fu-name">${escapeHtml(f.name)}</span>
-      <span class="fu-meta">${escapeHtml(f.circle || "—")} · último contato ${escapeHtml(f.lastOutreachDate)} via ${escapeHtml(f.lastOutreachChannel)}</span>
+      <span class="fu-meta">último contato ${escapeHtml(f.lastOutreachDate)} via ${escapeHtml(f.lastOutreachChannel)}</span>
     `;
     el.followupsList.appendChild(li);
   }
@@ -181,7 +179,6 @@ function renderContacts() {
         ${statusBadge(c.status)}
         ${openRateBadge(c.openRate)}
         ${followupTag}
-        <span class="contact-circle">${escapeHtml(c.circle || "—")}</span>
       </div>
       <div class="contact-emails">${c.emails.map(escapeHtml).join(", ")}</div>
       ${c.notes ? `<div class="contact-notes">${escapeHtml(c.notes)}</div>` : ""}
@@ -238,7 +235,6 @@ el.addForm.addEventListener("submit", async (ev) => {
   const body = {
     name: el.newName.value,
     emails: parseEmailsInput(el.newEmails.value),
-    circle: el.newCircle.value,
     notes: el.newNotes.value,
   };
   try {
@@ -272,7 +268,6 @@ function openEditDialog(contact) {
   el.editId.value = contact.id;
   el.editName.value = contact.name;
   el.editEmails.value = contact.emails.join(", ");
-  el.editCircle.value = contact.circle;
   el.editNotes.value = contact.notes;
   el.editDialog.showModal();
 }
@@ -286,7 +281,6 @@ el.editForm.addEventListener("submit", async (ev) => {
   const body = {
     name: el.editName.value,
     emails: parseEmailsInput(el.editEmails.value),
-    circle: el.editCircle.value,
     notes: el.editNotes.value,
   };
   try {

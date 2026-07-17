@@ -83,8 +83,6 @@ export interface ApoioContact {
   name: string;
   /** Múltiplos emails — mitiga a ressalva de match exato da apoia.se. */
   emails: string[];
-  /** Origem/círculo livre (ex: "lista VJs", "ex-alunos"). */
-  circle: string;
   notes: string;
   outreach: OutreachEvent[];
   createdAt: string;
@@ -117,7 +115,6 @@ export interface CampaignSummary {
 export interface PendingFollowup {
   contactId: string;
   name: string;
-  circle: string;
   lastOutreachDate: string;
   lastOutreachChannel: string;
 }
@@ -194,7 +191,12 @@ function sanitizeOutreachEntry(raw: unknown): OutreachEvent | null {
   };
 }
 
-/** Parseia `contacts.jsonl` (1 JSON por linha, linhas vazias ignoradas). */
+/** Parseia `contacts.jsonl` (1 JSON por linha, linhas vazias ignoradas).
+ *
+ * Compat (#3611): linhas legadas podem trazer um campo `circle` (removido
+ * do schema) — `Partial<ApoioContact>` já não o tipa, e como o objeto
+ * resultante só copia os campos abaixo, `circle` simplesmente nunca é lido
+ * nem propagado. Nunca quebra o parse. */
 export function parseContactsJsonl(raw: string): ApoioContact[] {
   const contacts: ApoioContact[] = [];
   const lines = raw.split("\n");
@@ -206,7 +208,6 @@ export function parseContactsJsonl(raw: string): ApoioContact[] {
       id: String(parsed.id ?? randomUUID()),
       name: String(parsed.name ?? ""),
       emails: normalizeEmailList(parsed.emails),
-      circle: String(parsed.circle ?? ""),
       notes: String(parsed.notes ?? ""),
       outreach: Array.isArray(parsed.outreach)
         ? parsed.outreach.map(sanitizeOutreachEntry).filter((e): e is OutreachEvent => e !== null)
@@ -228,7 +229,6 @@ export function serializeContactsJsonl(contacts: ApoioContact[]): string {
 export interface CreateContactInput {
   name: string;
   emails: string[];
-  circle?: string;
   notes?: string;
 }
 
@@ -249,7 +249,6 @@ export function createContact(input: CreateContactInput, opts: CreateContactOpti
     id: opts.id ?? randomUUID(),
     name,
     emails,
-    circle: (input.circle ?? "").trim(),
     notes: input.notes ?? "",
     outreach: [],
     createdAt: iso,
@@ -260,7 +259,6 @@ export function createContact(input: CreateContactInput, opts: CreateContactOpti
 export interface UpdateContactPatch {
   name?: string;
   emails?: string[];
-  circle?: string;
   notes?: string;
 }
 
@@ -283,7 +281,6 @@ export function applyContactUpdate(
     ...contact,
     name,
     emails,
-    circle: patch.circle !== undefined ? patch.circle.trim() : contact.circle,
     notes: patch.notes !== undefined ? patch.notes : contact.notes,
     updatedAt: now.toISOString(),
   };
@@ -413,7 +410,6 @@ export function computePendingFollowups(contacts: ApoioContact[]): PendingFollow
       result.push({
         contactId: c.id,
         name: c.name,
-        circle: c.circle,
         lastOutreachDate: last.date,
         lastOutreachChannel: last.channel,
       });
@@ -794,7 +790,6 @@ export function parseCreateContactBody(raw: string): ParseResult<CreateContactIn
     value: {
       name: b.name,
       emails: b.emails as string[],
-      circle: typeof b.circle === "string" ? b.circle : undefined,
       notes: typeof b.notes === "string" ? b.notes : undefined,
     },
   };
@@ -818,10 +813,6 @@ export function parseUpdateContactBody(raw: string): ParseResult<UpdateContactPa
       return { ok: false, error: "'emails' precisa ser array de strings" };
     }
     patch.emails = b.emails as string[];
-  }
-  if (b.circle !== undefined) {
-    if (typeof b.circle !== "string") return { ok: false, error: "'circle' precisa ser string" };
-    patch.circle = b.circle;
   }
   if (b.notes !== undefined) {
     if (typeof b.notes !== "string") return { ok: false, error: "'notes' precisa ser string" };
