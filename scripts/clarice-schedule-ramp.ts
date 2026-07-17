@@ -30,11 +30,16 @@
  *                  soma ANTES de escrever qualquer CSV. Escreve
  *                  `{ciclo}/ramp/ramp-manifest.json` + `w{1,2,3}-{dia}.csv` +
  *                  `ramp-summary.json` (estado, idempotência).
- *   3. --import:   cria 1 lista Brevo por wave (idempotente por nome) + importa
- *                  os contatos (`POST /contacts/lists` + `POST /contacts/import`,
- *                  mesmas chamadas de `clarice-import-waves.ts`). Import é
- *                  ASYNC — faz polling em `GET /contacts/lists/{id}` até
- *                  `totalSubscribers` bater (ou esgotar tentativas, com warning).
+ *   3. --import:   cria 1 lista Brevo por wave (idempotente por nome, reusa a
+ *                  lista já criada num retry em vez de recriar) + importa os
+ *                  contatos (`POST /contacts/lists` + `POST /contacts/import`,
+ *                  fileBody inclui a cópia QA do editor via `ensureEditorCopyRow`,
+ *                  #3455) — mesmas chamadas de `clarice-import-waves.ts`. Import
+ *                  é ASYNC — faz polling em `GET /contacts/lists/{id}` até
+ *                  `totalSubscribers` bater. Só marca a wave "imported" (status
+ *                  terminal, retry-skip) quando o poll de fato bate; caso
+ *                  contrário fica "import_incomplete" — `--create`/`--schedule`
+ *                  recusam prosseguir sem `--force` explícito (#3643).
  *   4. --create:   cria as 3 campanhas como RASCUNHO (payload proven de
  *                  `clarice-schedule-sends.ts`: name/subject/previewText/
  *                  sender/recipients/htmlContent, OMITINDO header/footer/
@@ -45,11 +50,17 @@
  *                  (legal). `--send-test` manda test email de cada campanha.
  *   5. --schedule: agenda as 3 campanhas (`PUT scheduledAt` + GET-verify, reusa
  *                  `isScheduledStatus`/`applyVerifyResults` de
- *                  `clarice-schedule-sends.ts`). REQUER o gabarito É IA?
- *                  setado antes (`checkEiaGuard`, mesmo guard do pipeline
- *                  canônico — a rampa distribui o MESMO conteúdo do digest
- *                  mensal, só que pra uma audiência nova). `--skip-eia-guard`
- *                  pula essa verificação (não recomendado).
+ *                  `clarice-schedule-sends.ts`). Valida ANTES de qualquer PUT
+ *                  que TODAS as waves têm `campaignId` (senão bloqueia com erro
+ *                  upfront — #3643, evita agendar parcial e perder o rastro do
+ *                  estado). REQUER o gabarito É IA? setado antes (`checkEiaGuard`,
+ *                  mesmo guard do pipeline canônico — a rampa distribui o MESMO
+ *                  conteúdo do digest mensal, só que pra uma audiência nova).
+ *                  `--skip-eia-guard` pula essa verificação (não recomendado).
+ *
+ * `--force` (#3643): override explícito pra `--create` prosseguir com uma wave
+ * cujo import não foi confirmado (`status: "import_incomplete"`) — use só após
+ * verificar manualmente no Brevo que a lista de fato tem os contatos esperados.
  *
  * `--dates D1,D2,D3` (YYYY-MM-DD, OBRIGATÓRIO pra --create/--schedule) — datas
  * EXPLÍCITAS dos 3 envios, cada uma agendada para 06:00 BRT (09:00 UTC, sem
@@ -95,6 +106,7 @@ import { segmentRampWarm, excludeCommittedToQueuedCampaigns, type StoreRow } fro
 import { monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { checkEiaGuard, applyVerifyResults } from "./clarice-schedule-sends.ts";
 import { findExistingConflicts, normalizeImportCsv, countRows, type WaveDef } from "./clarice-import-waves.ts";
+import { ensureEditorCopyRow } from "./lib/editor-copy.ts"; // #3455 / #3643 bug 3
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { extractPlanCredits } from "../workers/brevo-dashboard/src/brevo-api.ts";
 import {
@@ -113,7 +125,12 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const DAY_LABELS = ["ter", "sex", "dom"];
 export const DEFAULT_DASHBOARD_URL = "https://clarice-dashboard.diaria.workers.dev";
-export const DEFAULT_DASHBOARD_LIMIT = 80;
+// #3643 minor 1: era 80, mas o Worker clampa `limit` em 50 sem avisar
+// (workers/brevo-dashboard/src/index.ts:227, `Math.min(50, ...)`) — 80 era
+// efetivamente morto/enganoso. 50 reflete o real. `warnIfLimitExceedsWorkerClamp`
+// cobre o caso de alguém passar --dashboard-limit explícito acima do clamp.
+export const DEFAULT_DASHBOARD_LIMIT = 50;
+export const DASHBOARD_WORKER_CLAMP = 50;
 
 // ---------------------------------------------------------------------------
 // Volumes — explícito (--volumes) OU calculado a partir do worker (#3593 item 1)
@@ -173,6 +190,32 @@ export function sliceIntoVolumes<T>(ordered: T[], volumes: number[]): T[][] {
     cursor += v;
   }
   return out;
+}
+
+/**
+ * Resolve `--dashboard-limit N` (#3643 minor 2): `N` explícito é usado mesmo
+ * quando `0` — evita o bug clássico de falsy-zero de `Number(raw) || fallback`
+ * (que descartaria um `--dashboard-limit 0` explícito e caísse no default
+ * silenciosamente). `raw` ausente ou não-numérico → `fallback`. Pura, testável.
+ */
+export function resolveDashboardLimit(raw: string | undefined, fallback: number = DEFAULT_DASHBOARD_LIMIT): number {
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * #3643 minor 1: o Worker clampa `limit` em `clamp` (default 50, ver
+ * `workers/brevo-dashboard/src/index.ts:227`) sem avisar quando trunca. Avisa
+ * quando o `limit` efetivo pedido excede o clamp conhecido, já que a resposta
+ * real virá truncada silenciosamente. Retorna `null` quando não há truncamento
+ * a avisar. Pura, testável.
+ */
+export function warnIfLimitExceedsWorkerClamp(limit: number, clamp: number = DASHBOARD_WORKER_CLAMP): string | null {
+  if (limit > clamp) {
+    return `⚠️  --dashboard-limit ${limit} excede o clamp conhecido do Worker (${clamp}) — a resposta real virá truncada em ${clamp} campanhas.`;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -362,7 +405,102 @@ export interface RampWaveEntry {
   campaignId?: number;
   subject?: string;
   scheduledAt?: string;
-  status: "planned" | "imported" | "draft" | "scheduled";
+  // #3643 bug 1/2: "list_created" é o estado intermediário entre "criamos a
+  // lista Brevo" e "confirmamos o import" — permite retry seguro (reusa a
+  // lista existente em vez de recriar) sem marcar a wave como concluída antes
+  // da hora. "import_incomplete" é terminal-mas-não-confirmado: o poll não
+  // bateu a contagem esperada; --create/--schedule recusam prosseguir sem
+  // --force (ver `assertImportUsable`).
+  status: "planned" | "list_created" | "imported" | "import_incomplete" | "draft" | "scheduled";
+}
+
+/**
+ * #3643 bug 1: decide se uma wave já foi IMPORTADA COM SUCESSO e deve ser
+ * pulada num re-run de `--import`. Antes, o skip-check gatava em
+ * `entry.listId !== undefined` — mas `listId` é gravado ANTES da chamada
+ * `/contacts/import` ser sequer tentada, então um import que falhasse
+ * (rede, 5xx, CSV malformado) deixava a wave PERMANENTEMENTE pulada em
+ * re-runs futuros, com uma lista Brevo vazia. Gatear em `status === "imported"`
+ * (só setado após confirmação, ver `resolveImportStatus`) corrige isso — um
+ * retry após falha vê `status` intermediário e tenta de novo. Pura, testável.
+ */
+export function shouldSkipImport(entry: Pick<RampWaveEntry, "status">): boolean {
+  return entry.status === "imported";
+}
+
+/**
+ * #3643 bug 2: resolve o status pós-import — só "imported" quando o poll
+ * de fato bateu a contagem esperada (ou a verificação foi explicitamente
+ * pulada via `--skip-verify`, decisão consciente do operador). Antes,
+ * `entry.status = "imported"` era setado incondicionalmente mesmo com
+ * `poll.matched === false`, com o único rastro sendo um `console.error`
+ * fácil de perder. Pura, testável.
+ */
+export function resolveImportStatus(matched: boolean, skipVerify: boolean): "imported" | "import_incomplete" {
+  if (skipVerify) return "imported";
+  return matched ? "imported" : "import_incomplete";
+}
+
+/**
+ * #3643 bug 2: guard que `--create`/`--schedule` chamam antes de prosseguir
+ * com uma wave — recusa avançar se o import não foi confirmado
+ * (`status === "import_incomplete"`), a menos que `--force` seja passado
+ * explicitamente (override consciente do operador). Também recusa se o
+ * import nem foi tentado ainda (`"planned"`/`"list_created"`). Pura, testável.
+ */
+export function assertImportUsable(
+  entry: Pick<RampWaveEntry, "key" | "status" | "count" | "importedCount">,
+  force: boolean,
+): void {
+  if (entry.status === "imported") return;
+  if (entry.status === "import_incomplete") {
+    if (force) return;
+    throw new Error(
+      `${entry.key}: import não confirmado (esperado ${entry.count}, visto ${entry.importedCount ?? "?"} contatos) — ` +
+      `rode --import novamente pra tentar reconfirmar, ou use --force pra prosseguir mesmo assim.`,
+    );
+  }
+  throw new Error(`${entry.key}: import não concluído (status "${entry.status}") — rode --import antes.`);
+}
+
+/**
+ * #3643 bug 3: monta o `fileBody` do `POST /contacts/import` incluindo a
+ * cópia QA do editor (#3455) — MESMO ponto de injeção que
+ * `clarice-import-waves.ts:316`/`clarice-import-sends.ts:102` usam
+ * (`ensureEditorCopyRow(normalizeImportCsv(...))`). Antes, este script só
+ * chamava `normalizeImportCsv`, quebrando o invariante "ponto único de
+ * injeção" — as 3 campanhas ramp-warm excluíam a cópia QA do editor por
+ * padrão, dependendo do operador lembrar de passar `--extra-email`
+ * manualmente toda vez. Pura, testável.
+ */
+export function buildImportFileBody(csv: string): string {
+  return ensureEditorCopyRow(normalizeImportCsv(csv));
+}
+
+export interface CampaignsReadyCheck {
+  ready: boolean;
+  missingKeys: string[];
+}
+
+/**
+ * #3643 bug 4: verifica ANTES do loop de `--schedule` que TODAS as entries
+ * têm `campaignId` definido — mesmo padrão implícito de
+ * `clarice-schedule-sends.ts` (lá, `campaigns[]` só contém entries JÁ
+ * criadas por construção, nunca uma mistura). Antes, o loop de `--schedule`
+ * iterava o manifest INTEIRO sem esse filtro: se uma wave anterior tinha
+ * `campaignId` válido e uma posterior não, o loop disparava `brevoPut`
+ * REAIS (agendamento de produção) pras waves válidas, DEPOIS lançava ao
+ * chegar na wave sem campanha — e como `applyVerifyResults` (que persiste
+ * `status: "scheduled"`) só roda UMA VEZ após o loop inteiro, as waves já
+ * agendadas no Brevo nunca tinham seu estado local atualizado (campanhas
+ * agendadas são imutáveis na Brevo — um retry tentaria re-agendar via PUT
+ * algo que já foi aceito). Um `--create` incompleto agora bloqueia
+ * `--schedule` pra TODAS as waves com um erro claro upfront, em vez de
+ * agendar parcialmente e perder o rastro do estado. Pura, testável.
+ */
+export function checkAllCampaignsCreated(entries: Array<{ key: string; campaignId?: number }>): CampaignsReadyCheck {
+  const missingKeys = entries.filter((e) => e.campaignId === undefined).map((e) => e.key);
+  return { ready: missingKeys.length === 0, missingKeys };
 }
 
 function rampSummaryPath(rampDir: string): string {
@@ -405,6 +543,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const doSchedule = hasFlag(argv, "schedule");
   const skipEiaGuard = hasFlag(argv, "skip-eia-guard");
   const skipVerify = hasFlag(argv, "skip-verify");
+  const force = hasFlag(argv, "force"); // #3643 bug 2: override consciente pra prosseguir com import não-confirmado
 
   const rampDir = clariceRampDir(cycle);
   const manifestPath = resolve(rampDir, "ramp-manifest.json");
@@ -417,7 +556,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.error(`📋 Volumes (explícito --volumes): ${volumes.join(", ")}`);
   } else {
     const dashboardUrl = getArg(argv, "dashboard-url") || DEFAULT_DASHBOARD_URL;
-    const limit = Number(getArg(argv, "dashboard-limit")) || DEFAULT_DASHBOARD_LIMIT;
+    const limit = resolveDashboardLimit(getArg(argv, "dashboard-limit"), DEFAULT_DASHBOARD_LIMIT);
+    const limitWarning = warnIfLimitExceedsWorkerClamp(limit);
+    if (limitWarning) console.error(limitWarning);
     console.error(`📋 Volumes: nenhum --volumes explícito — recomputando via ${dashboardUrl}/api/campaigns?limit=${limit}…`);
     const res = await fetch(`${dashboardUrl}/api/campaigns?limit=${limit}`);
     if (!res.ok) {
@@ -571,47 +712,70 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     for (const w of manifest) {
       const entry = byKey.get(w.key);
       if (!entry) throw new Error(`ramp-summary.json não tem entrada para ${w.key} — rode --build-audience antes.`);
-      if (entry.listId !== undefined) {
+      // #3643 bug 1: gate no status TERMINAL ("imported"), não em `listId`
+      // (que é gravado ANTES do import ser sequer tentado — ver docstring de
+      // shouldSkipImport). Isso permite retomar com segurança waves cujo
+      // import anterior falhou/não confirmou.
+      if (shouldSkipImport(entry)) {
         console.error(`↷ ${w.key} já importada (lista #${entry.listId}) — pulando`);
         continue;
       }
       const csvPath = resolve(rampDir, w.file);
       if (!existsSync(csvPath)) throw new Error(`CSV faltando: ${csvPath}`);
       const csv = readFileSync(csvPath, "utf8");
-      const listName = `Clarice ${label} ${w.key} — ${entry.desc}`;
 
-      console.error(`\n→ ${w.key}: criando lista "${listName}"…`);
-      const list = (await brevoPost(apiKey, "/contacts/lists", { name: listName, folderId: 1 })) as { id?: number };
-      if (typeof list?.id !== "number") throw new Error(`Brevo /contacts/lists retornou shape inesperado: ${JSON.stringify(list)}`);
-      entry.listId = list.id;
-      entry.listName = listName;
-      writeRampSummary(rampDir, entries);
+      // #3643 bug 1: reusa a lista já criada num retry em vez de recriar
+      // (entry.listId sobrevive a um `status` intermediário/import_incomplete).
+      let listId: number;
+      if (entry.listId !== undefined) {
+        listId = entry.listId;
+        console.error(`\n↪ ${w.key}: lista já criada (#${listId}) — retomando import…`);
+      } else {
+        const listName = `Clarice ${label} ${w.key} — ${entry.desc}`;
+        console.error(`\n→ ${w.key}: criando lista "${listName}"…`);
+        const list = (await brevoPost(apiKey, "/contacts/lists", { name: listName, folderId: 1 })) as { id?: number };
+        if (typeof list?.id !== "number") throw new Error(`Brevo /contacts/lists retornou shape inesperado: ${JSON.stringify(list)}`);
+        entry.listId = list.id;
+        entry.listName = listName;
+        entry.status = "list_created";
+        writeRampSummary(rampDir, entries);
+        listId = list.id;
+      }
 
-      console.error(`   list #${list.id} criada · importando ${entry.count} contatos…`);
+      console.error(`   list #${listId} · importando ${entry.count} contatos…`);
+      // #3643 bug 3: ensureEditorCopyRow (#3455) — MESMO ponto de injeção que
+      // clarice-import-waves.ts/clarice-import-sends.ts, garante a cópia QA
+      // do editor em todo envio real, sem depender de --extra-email manual.
       await brevoPost(apiKey, "/contacts/import", {
-        fileBody: normalizeImportCsv(csv),
-        listIds: [list.id],
+        fileBody: buildImportFileBody(csv),
+        listIds: [listId],
         updateExistingContacts: true,
         emptyContactsAttributes: false,
       });
 
       if (!skipVerify) {
         const poll = await pollUntilCount(
-          async () => (await brevoGetList(apiKey, list.id!)).totalSubscribers,
+          async () => (await brevoGetList(apiKey, listId)).totalSubscribers,
           entry.count,
         );
         entry.importedCount = poll.finalCount;
+        // #3643 bug 2: status só vira "imported" quando o poll de fato bate —
+        // caso contrário "import_incomplete" (terminal-mas-não-confirmado),
+        // que --create/--schedule recusam ultrapassar sem --force.
+        entry.status = resolveImportStatus(poll.matched, false);
         if (poll.matched) {
           console.error(`   ✓ import confirmado (${poll.finalCount} assinantes, ${poll.attempts} tentativa(s))`);
         } else {
           console.error(
             `   ⚠️  import ainda não bateu a contagem esperada após ${poll.attempts} tentativas ` +
             `(esperado ${entry.count}, visto ${poll.finalCount}) — Brevo pode levar mais tempo pra processar lotes grandes; ` +
-            `verifique manualmente antes de --create.`,
+            `status marcado "import_incomplete" — verifique manualmente, rode --import de novo, ou use --force em --create.`,
           );
         }
+      } else {
+        entry.status = resolveImportStatus(true, true);
+        console.error(`   ⚠️  --skip-verify ativo — import não confirmado, marcando "imported" mesmo assim (decisão explícita do operador).`);
       }
-      entry.status = "imported";
       writeRampSummary(rampDir, entries);
     }
   }
@@ -647,6 +811,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
           console.error(`↷ ${entry.key} já criada (#${entry.campaignId}) — pulando`);
           continue;
         }
+        // #3643 bug 2: recusa prosseguir com import não-confirmado (status
+        // "planned"/"list_created"/"import_incomplete") sem --force explícito.
+        assertImportUsable(entry, force);
         if (entry.listId === undefined) throw new Error(`${entry.key}: listId ausente — rode --import antes.`);
         const resp = (await brevoPost(apiKey, "/emailCampaigns", {
           name: `cold ${cycle} — ${entry.key} (${entry.day})`,
@@ -690,9 +857,30 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // (não só o subconjunto agendado nesta invocação) em ramp-summary.json.
       type CampaignEntryLike = { key: string; campaignId: number; listId: number; subject: string; scheduledAt: string; status: "draft" | "scheduled" };
       const campaignsView = entries as unknown as CampaignEntryLike[];
+
+      // #3643 bug 4: filtra/valida ANTES de qualquer PUT — igual ao padrão
+      // implícito de clarice-schedule-sends.ts (lá `campaigns[]` só contém
+      // entries JÁ criadas por construção). Antes, o loop abaixo iterava
+      // TODO o manifest sem esse guard: se uma wave anterior tivesse
+      // campaignId válido e uma posterior não, o loop disparava `brevoPut`
+      // REAIS (agendamento de produção) pras waves válidas e SÓ ENTÃO lançava
+      // ao chegar na wave sem campanha — e como `applyVerifyResults` só roda
+      // UMA VEZ após o loop inteiro, as waves já agendadas no Brevo nunca
+      // tinham seu `status: "scheduled"` persistido localmente (campanhas
+      // agendadas são imutáveis na Brevo — um retry tentaria re-PUTar algo
+      // já aceito). Um --create incompleto agora bloqueia --schedule pra
+      // TODAS as waves com um erro claro upfront, antes de qualquer chamada real.
+      const readyCheck = checkAllCampaignsCreated(campaignsView);
+      if (!readyCheck.ready) {
+        throw new Error(
+          `--schedule: ${readyCheck.missingKeys.join(", ")} sem campanha criada (campaignId ausente) — ` +
+          `rode --create para TODAS as waves antes de agendar (agendamento parcial deixaria waves já ` +
+          `agendadas no Brevo com o estado local (ramp-summary.json) desatualizado).`,
+        );
+      }
+
       const toVerify: CampaignEntryLike[] = [];
       for (const view of campaignsView) {
-        if (view.campaignId === undefined) throw new Error(`${view.key}: campanha não criada — rode --create antes.`);
         if (view.status === "scheduled") {
           console.error(`↷ ${view.key} já agendada — pulando`);
           continue;

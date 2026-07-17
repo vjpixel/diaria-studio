@@ -14,7 +14,17 @@ import {
   deriveRampVolumes,
   pollUntilCount,
   DAY_LABELS,
+  resolveDashboardLimit,
+  warnIfLimitExceedsWorkerClamp,
+  DEFAULT_DASHBOARD_LIMIT,
+  DASHBOARD_WORKER_CLAMP,
+  shouldSkipImport,
+  resolveImportStatus,
+  assertImportUsable,
+  buildImportFileBody,
+  checkAllCampaignsCreated,
 } from "../scripts/clarice-schedule-ramp.ts";
+import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 
 /**
@@ -310,5 +320,150 @@ describe("deriveRampVolumes (#3593 item 1 — recomputa volumes via a MESMA lóg
     assert.equal(result.plan.semaphore, "red");
     assert.equal(result.plan.flagged, true);
     assert.ok(result.plan.volumes[0] < result.plan.baseVolume, "vermelho deve cortar o volume-base");
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #3643 — 4 bugs de data-integrity + 2 achados menores no --import/--schedule
+// -----------------------------------------------------------------------------
+
+describe("resolveDashboardLimit (#3643 minor 2 — falsy-zero de `Number(raw) || fallback`)", () => {
+  it("--dashboard-limit ausente → fallback", () => {
+    assert.equal(resolveDashboardLimit(undefined, 80), 80);
+  });
+
+  it("BUG ORIGINAL: --dashboard-limit 0 explícito era descartado por `|| fallback` — agora é respeitado", () => {
+    assert.equal(resolveDashboardLimit("0", 80), 0);
+  });
+
+  it("valor numérico normal é respeitado", () => {
+    assert.equal(resolveDashboardLimit("30", 80), 30);
+  });
+
+  it("valor não-numérico cai no fallback", () => {
+    assert.equal(resolveDashboardLimit("abc", 80), 80);
+  });
+});
+
+describe("warnIfLimitExceedsWorkerClamp (#3643 minor 1 — Worker clampa em 50 sem avisar)", () => {
+  it("limit dentro do clamp → sem warning", () => {
+    assert.equal(warnIfLimitExceedsWorkerClamp(50, 50), null);
+    assert.equal(warnIfLimitExceedsWorkerClamp(10, 50), null);
+  });
+
+  it("limit acima do clamp → warning explícito", () => {
+    const msg = warnIfLimitExceedsWorkerClamp(80, 50);
+    assert.ok(msg, "esperava warning");
+    assert.match(msg!, /80/);
+    assert.match(msg!, /50/);
+  });
+
+  it("DEFAULT_DASHBOARD_LIMIT agora reflete o clamp real do Worker (era 80, morto/enganoso)", () => {
+    assert.equal(DEFAULT_DASHBOARD_LIMIT, DASHBOARD_WORKER_CLAMP);
+    assert.equal(warnIfLimitExceedsWorkerClamp(DEFAULT_DASHBOARD_LIMIT), null);
+  });
+});
+
+describe("shouldSkipImport (#3643 bug 1 — retry-skip gatava em listId, não em conclusão)", () => {
+  it("status \"imported\" (confirmado) → pula em retry", () => {
+    assert.equal(shouldSkipImport({ status: "imported" }), true);
+  });
+
+  it("BUG ORIGINAL: status \"planned\" com listId já setado (import ainda não tentado/falhou) — agora NÃO pula", () => {
+    // Antes: skip-check gatava em `entry.listId !== undefined`, que é gravado
+    // ANTES do /contacts/import ser tentado — uma wave cujo import falhasse
+    // (rede, 5xx) ficava PERMANENTEMENTE pulada em retries futuros.
+    assert.equal(shouldSkipImport({ status: "planned" }), false);
+  });
+
+  it("status \"list_created\" (lista criada, import não confirmado) → NÃO pula, permite retomar", () => {
+    assert.equal(shouldSkipImport({ status: "list_created" }), false);
+  });
+
+  it("status \"import_incomplete\" (poll não bateu) → NÃO pula, permite re-tentar", () => {
+    assert.equal(shouldSkipImport({ status: "import_incomplete" }), false);
+  });
+});
+
+describe("resolveImportStatus (#3643 bug 2 — status \"imported\" era setado mesmo com poll.matched=false)", () => {
+  it("poll bateu (matched=true) → \"imported\"", () => {
+    assert.equal(resolveImportStatus(true, false), "imported");
+  });
+
+  it("BUG ORIGINAL: poll NÃO bateu (matched=false) — antes virava \"imported\" incondicionalmente, agora \"import_incomplete\"", () => {
+    assert.equal(resolveImportStatus(false, false), "import_incomplete");
+  });
+
+  it("--skip-verify ativo (decisão explícita do operador) → \"imported\" mesmo sem poll", () => {
+    assert.equal(resolveImportStatus(false, true), "imported");
+    assert.equal(resolveImportStatus(true, true), "imported");
+  });
+});
+
+describe("assertImportUsable (#3643 bug 2 — --create/--schedule recusam prosseguir com import incompleto sem --force)", () => {
+  it("status \"imported\" → não lança (com ou sem --force)", () => {
+    assert.doesNotThrow(() => assertImportUsable({ key: "w1", status: "imported", count: 100, importedCount: 100 }, false));
+    assert.doesNotThrow(() => assertImportUsable({ key: "w1", status: "imported", count: 100, importedCount: 100 }, true));
+  });
+
+  it("BUG ORIGINAL: status \"import_incomplete\" sem --force — antes prosseguia silenciosamente (só um console.error perdido), agora lança", () => {
+    assert.throws(
+      () => assertImportUsable({ key: "w1", status: "import_incomplete", count: 100, importedCount: 42 }, false),
+      /não confirmado/,
+    );
+  });
+
+  it("status \"import_incomplete\" com --force → não lança (override consciente do operador)", () => {
+    assert.doesNotThrow(() => assertImportUsable({ key: "w1", status: "import_incomplete", count: 100, importedCount: 42 }, true));
+  });
+
+  it("status \"planned\"/\"list_created\" (import nem tentado) → lança mesmo com --force (força não pula --import inteiramente)", () => {
+    assert.throws(() => assertImportUsable({ key: "w1", status: "planned", count: 100 }, true), /não concluído/);
+    assert.throws(() => assertImportUsable({ key: "w1", status: "list_created", count: 100 }, true), /não concluído/);
+  });
+});
+
+describe("buildImportFileBody (#3643 bug 3 — faltava ensureEditorCopyRow, quebrava invariante #3455)", () => {
+  it("BUG ORIGINAL: CSV importado agora inclui a cópia QA do editor (antes só normalizeImportCsv, sem ensureEditorCopyRow)", () => {
+    const csv = "email,NOME\nana@x.com,Ana\n";
+    const body = buildImportFileBody(csv);
+    assert.ok(
+      body.toLowerCase().includes(EDITOR_COPY_EMAIL.toLowerCase()),
+      `esperava ${EDITOR_COPY_EMAIL} no fileBody, recebido:\n${body}`,
+    );
+  });
+
+  it("idempotente: não duplica se o editor já estiver na audiência real", () => {
+    const csv = `email,NOME\n${EDITOR_COPY_EMAIL},Pixel\n`;
+    const body = buildImportFileBody(csv);
+    const occurrences = body.toLowerCase().split(EDITOR_COPY_EMAIL.toLowerCase()).length - 1;
+    assert.equal(occurrences, 1);
+  });
+});
+
+describe("checkAllCampaignsCreated (#3643 bug 4 — --schedule agendava parcial antes de detectar campaignId ausente)", () => {
+  it("todas as entries com campaignId → ready=true, sem missing", () => {
+    const result = checkAllCampaignsCreated([
+      { key: "w1", campaignId: 111 },
+      { key: "w2", campaignId: 222 },
+      { key: "w3", campaignId: 333 },
+    ]);
+    assert.deepEqual(result, { ready: true, missingKeys: [] });
+  });
+
+  it("BUG ORIGINAL: w1/w2 têm campaignId, w3 não — antes o loop de --schedule agendaria w1/w2 de VERDADE via brevoPut antes de lançar em w3; agora o guard detecta ANTES de qualquer PUT", () => {
+    const result = checkAllCampaignsCreated([
+      { key: "w1", campaignId: 111 },
+      { key: "w2", campaignId: 222 },
+      { key: "w3", campaignId: undefined },
+    ]);
+    assert.equal(result.ready, false);
+    assert.deepEqual(result.missingKeys, ["w3"], "identifica exatamente a(s) wave(s) sem campanha, sem tocar nas já criadas");
+  });
+
+  it("nenhuma entry com campaignId → ready=false, todas em missingKeys", () => {
+    const result = checkAllCampaignsCreated([{ key: "w1" }, { key: "w2" }]);
+    assert.equal(result.ready, false);
+    assert.deepEqual(result.missingKeys, ["w1", "w2"]);
   });
 });
