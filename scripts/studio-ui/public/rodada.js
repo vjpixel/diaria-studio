@@ -140,7 +140,11 @@ function renderTimeline(rows) {
 function renderMeta() {
   if (!data || !data.found) {
     el.meta.hidden = true;
-    el.empty.hidden = !data || data.found !== false;
+    // Só mostra "nenhuma sessão encontrada" quando o SERVIDOR respondeu
+    // found:false — nunca quando a própria requisição falhou (fetchFailed),
+    // senão uma falha de rede/servidor fora do ar aparenta "sessão ausente"
+    // em vez do problema real (ver banner de erro em renderAll()).
+    el.empty.hidden = fetchFailed || !data || data.found !== false;
     if (el.empty.hidden === false) el.emptyDir.textContent = `data/${kind}/`;
     return;
   }
@@ -152,11 +156,23 @@ function renderMeta() {
   el.metaPath.textContent = data.planPath ?? "—";
 }
 
+// #3561 self-review (PR #3622): `fetchFailed` distingue "a requisição pra
+// /api/round/:kind falhou" (rede, HTTP != 2xx) de `data.found === false`
+// ("o servidor respondeu 200 mas não achou nenhuma sessão desse kind") —
+// antes, o catch de fetchRound() reusava `found:false` pros dois casos, o
+// que fazia uma falha de rede exibir "Nenhuma sessão encontrada" (a mesma
+// empty-state de um plan.json genuinamente ausente) e o banner de erro dizer
+// "falha ao ler plan.json" pra um erro que nem chegou a tocar o servidor.
+let fetchFailed = false;
+
 function renderAll() {
   el.sessionLabel.textContent = data && data.sessionId ? `${kind} — ${data.sessionId}` : kind;
   renderMeta();
 
-  if (data && data.error) {
+  if (fetchFailed) {
+    el.error.hidden = false;
+    el.error.textContent = `falha ao buscar /api/round/${kind}: ${data && data.error}`;
+  } else if (data && data.error) {
     el.error.hidden = false;
     el.error.textContent = `falha ao ler plan.json: ${data.error}`;
   } else {
@@ -169,7 +185,12 @@ function renderAll() {
   renderQueueTable(el.foraBody, el.foraCount, queue.fora, true);
   renderTimeline((data && data.timeline) || []);
 
-  el.lastUpdated.textContent = data ? `atualizado ${fmtTime(new Date().toISOString())}` : "";
+  // Só mostra "atualizado agora" quando o fetch de fato completou com
+  // sucesso — na falha, o texto anterior (ou vazio) fica, em vez de sugerir
+  // falsamente um refresh bem-sucedido.
+  if (!fetchFailed) {
+    el.lastUpdated.textContent = data ? `atualizado ${fmtTime(new Date().toISOString())}` : "";
+  }
 }
 
 async function fetchRound() {
@@ -178,8 +199,10 @@ async function fetchRound() {
     const res = await fetch(`/api/round/${kind}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     data = await res.json();
+    fetchFailed = false;
     setFetchStatus(data.error ? "down" : "ok", data.error ? "erro" : "ok");
   } catch (e) {
+    fetchFailed = true;
     setFetchStatus("down", "falha ao buscar /api/round");
     data = { kind, found: false, error: String(e), queue: { entram: [], pendente: [], fora: [] }, timeline: [] };
   }

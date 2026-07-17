@@ -107,6 +107,17 @@ function reasonForPendente(issue: RawPlanIssue): string {
   return "aguardando desbloqueio (Gate 1)";
 }
 
+/** Normaliza `batch` — `plan.json` documenta o campo como
+ * `"ds-email | null (solo)"` (SKILL.md do overnight) e o próprio
+ * `render-overnight-timeline.ts` trata a STRING literal `"null"` como
+ * ausência de lote (`if (batch && batch !== "null")`). Sem esta normalização
+ * uma issue solo com `batch: "null"` (string, não JSON `null`) apareceria
+ * classificada como lote de nome "null" em vez de solo. Pura. */
+function normalizeBatch(batch: string | null | undefined): string | null {
+  if (!batch || batch === "null") return null;
+  return batch;
+}
+
 /** Classifica UMA issue do plan.json em bucket + motivo legível. Pura. */
 export function classifyQueueRow(issue: RawPlanIssue): QueueRow {
   const status = issue.status ?? "unknown";
@@ -131,7 +142,7 @@ export function classifyQueueRow(issue: RawPlanIssue): QueueRow {
     status,
     bucket,
     reason,
-    batch: issue.batch ?? null,
+    batch: normalizeBatch(issue.batch),
     pr: issue.pr ?? null,
   };
 }

@@ -108,6 +108,15 @@ describe("classifyQueueRow (#3561)", () => {
     assert.equal(row.batch, "ds-email");
     assert.equal(row.pr, 3505);
   });
+
+  it("normaliza a string literal 'null' de batch (issue solo) pra null real (regressão self-review PR #3622)", () => {
+    // plan.json documenta batch como "ds-email | null (solo)" — a string
+    // literal "null", não JSON null. render-overnight-timeline.ts já trata
+    // isso via `batch !== "null"`; sem a mesma normalização aqui, a UI
+    // (rodada.js) mostraria "null" como nome de lote em vez do chip "solo".
+    const row = classifyQueueRow({ number: 16, status: "elegivel", batch: "null" });
+    assert.equal(row.batch, null);
+  });
 });
 
 describe("buildRoundQueue (#3561)", () => {
