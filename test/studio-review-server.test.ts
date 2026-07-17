@@ -380,8 +380,12 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.ok(fnStart >= 0, "saveCurrent deveria existir em revisao.js");
     const fnEnd = body.indexOf("\nfunction renderDiff", fnStart);
     const fnBody = body.slice(fnStart, fnEnd >= 0 ? fnEnd : undefined);
-    assert.match(fnBody, /shouldConfirmDivergenceGuard\(currentSlug\)/);
-    const guardIdx = fnBody.indexOf("shouldConfirmDivergenceGuard(currentSlug)");
+    // #3672: o guard agora consulta o slug do SNAPSHOT (slugAtSaveStart),
+    // capturado antes de qualquer await — não mais a leitura ao vivo de
+    // currentSlug (ver teste dedicado #3672 logo abaixo, que cobre o
+    // snapshot em si).
+    assert.match(fnBody, /shouldConfirmDivergenceGuard\(slugAtSaveStart\)/);
+    const guardIdx = fnBody.indexOf("shouldConfirmDivergenceGuard(slugAtSaveStart)");
     const refreshIdx = fnBody.indexOf("await refreshDivergenceBanner()");
     const checkIdx = fnBody.indexOf("if (htmlFinalDiverged)");
     assert.ok(refreshIdx > guardIdx, "refresh deveria vir depois do guard de slug");
@@ -433,5 +437,105 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.match(fnBody, /catch\s*\(err\)\s*\{\s*showPreviewError\(err\);/);
     const catchSites = body.split("refreshPreview().catch(showPreviewError)").length - 1;
     assert.ok(catchSites >= 3, `esperava .catch(showPreviewError) em pelo menos 3 call sites de refreshPreview(), achou ${catchSites}`);
+  });
+
+  // #3672: o `await refreshDivergenceBanner()` inserido no #3671 (gap 3)
+  // introduziu uma condição de corrida — `currentSlug`/`el.editor.value` eram
+  // lidos AO VIVO no PUT final, e `loadFile()` (disparado por um clique de
+  // aba durante essa janela) reatribui os dois SINCRONAMENTE (incluindo
+  // `el.editor.value = ""`) antes do próprio fetch do novo arquivo terminar.
+  // Cenário real: editor clica Salvar em `reviewed` (dispara o guard →
+  // `await`), troca de aba pra `categorized` durante a espera — sem o
+  // snapshot, o PUT que resolve depois grava "" no slug ERRADO
+  // (`categorized`, não `reviewed`). O fix: capturar slug/conteúdo em
+  // constantes LOCAIS logo no início da função, ANTES de qualquer `await`, e
+  // usar só essas constantes (nunca `currentSlug`/`el.editor.value` ao vivo)
+  // no guard e no PUT.
+  it("#3672: saveCurrent() captura slug/conteúdo em snapshot ANTES do primeiro await, e usa o snapshot (não currentSlug/el.editor.value ao vivo) no guard e no PUT", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function saveCurrent()");
+    assert.ok(fnStart >= 0, "saveCurrent deveria existir em revisao.js");
+    const fnEnd = body.indexOf("\nfunction renderDiff", fnStart);
+    const fnBody = body.slice(fnStart, fnEnd >= 0 ? fnEnd : undefined);
+
+    const snapSlugIdx = fnBody.indexOf("const slugAtSaveStart = currentSlug;");
+    const snapContentIdx = fnBody.indexOf("const contentAtSaveStart = el.editor.value;");
+    const firstAwaitIdx = fnBody.indexOf("await ");
+    assert.ok(snapSlugIdx >= 0, "esperava snapshot de currentSlug em variável local");
+    assert.ok(snapContentIdx >= 0, "esperava snapshot de el.editor.value em variável local");
+    assert.ok(firstAwaitIdx >= 0, "esperava pelo menos um await em saveCurrent");
+    assert.ok(snapSlugIdx < firstAwaitIdx, "snapshot de slug deveria vir ANTES do primeiro await");
+    assert.ok(snapContentIdx < firstAwaitIdx, "snapshot de conteúdo deveria vir ANTES do primeiro await");
+
+    // guard e PUT usam o snapshot, não os valores ao vivo
+    assert.match(fnBody, /shouldConfirmDivergenceGuard\(slugAtSaveStart\)/);
+    assert.match(fnBody, /review\/\$\{slugAtSaveStart\}/);
+    assert.match(fnBody, /content:\s*contentAtSaveStart/);
+    // a condição antiga (leitura ao vivo no PUT) não deveria mais existir
+    assert.doesNotMatch(fnBody, /review\/\$\{currentSlug\}/);
+    assert.doesNotMatch(fnBody, /content:\s*el\.editor\.value/);
+  });
+
+  // #3672: fail-open sem aviso — o `await refreshDivergenceBanner()` (e o PUT
+  // final) não tinham try/catch em saveCurrent(); `fetchJson()` só embrulha
+  // `res.json()`, não o `await fetch(...)` em si. Uma falha de rede durante o
+  // guard propagava como unhandled rejection a partir do listener de clique,
+  // sem nenhum aviso visual — só um erro no console. Confere que o corpo
+  // inteiro (guard + PUT) está dentro de um try/catch cujo catch cai no mesmo
+  // branch de erro visível ("Erro ao salvar") já usado pelo caminho de falha
+  // HTTP normal.
+  it("#3672: saveCurrent() envolve o guard + PUT em try/catch — falha de rede cai no branch visível 'Erro ao salvar', não propaga sem tratamento", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function saveCurrent()");
+    const fnEnd = body.indexOf("\nfunction renderDiff", fnStart);
+    const fnBody = body.slice(fnStart, fnEnd >= 0 ? fnEnd : undefined);
+
+    const tryIdx = fnBody.indexOf("try {");
+    const guardIdx = fnBody.indexOf("shouldConfirmDivergenceGuard(slugAtSaveStart)");
+    const refreshIdx = fnBody.indexOf("await refreshDivergenceBanner()");
+    const putIdx = fnBody.indexOf("await fetchJson(");
+    const catchIdx = fnBody.indexOf("} catch (err) {");
+    assert.ok(tryIdx >= 0, "esperava um bloco try em saveCurrent()");
+    assert.ok(catchIdx > tryIdx, "esperava um catch depois do try");
+    assert.ok(guardIdx > tryIdx && guardIdx < catchIdx, "o guard deveria estar DENTRO do try");
+    assert.ok(refreshIdx > tryIdx && refreshIdx < catchIdx, "o await refreshDivergenceBanner() deveria estar DENTRO do try");
+    assert.ok(putIdx > tryIdx && putIdx < catchIdx, "o await fetchJson() do PUT deveria estar DENTRO do try");
+
+    const catchBody = fnBody.slice(catchIdx);
+    assert.match(catchBody, /Erro ao salvar/);
+    assert.match(catchBody, /rv-save-status err/);
+  });
+
+  // #3672: trava adicional — botão Salvar desabilitado durante o save em voo
+  // (reabilitado no finally, mesmo se o try lançar). Não elimina a corrida
+  // sozinho (não impede trocar de aba), mas reduz o risco de duplo-clique
+  // concorrente e é parte do fix.
+  it("#3672: saveCurrent() desabilita rv-save-btn durante o save e reabilita no finally", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function saveCurrent()");
+    const fnEnd = body.indexOf("\nfunction renderDiff", fnStart);
+    const fnBody = body.slice(fnStart, fnEnd >= 0 ? fnEnd : undefined);
+    assert.match(fnBody, /el\.saveBtn\.disabled = true;/);
+    assert.match(fnBody, /finally\s*\{\s*el\.saveBtn\.disabled = false;/);
+  });
+
+  // #3672 achado 3 (opcional, incluído): init() tinha `await loadFile(currentSlug)`
+  // desprotegido ANTES do try/catch que envolvia só refreshDivergenceBanner()
+  // (#3669 bug 2a) — falha de rede dentro de loadFile() propagava e
+  // setConn() nunca rodava em nenhum branch, indicador preso em
+  // "conectando…". Agora os dois awaits estão dentro do mesmo try.
+  it("#3672 achado 3: init() envolve loadFile(currentSlug) E refreshDivergenceBanner() no mesmo try/catch", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function init()");
+    assert.ok(fnStart >= 0, "init deveria existir em revisao.js");
+    const fnBody = body.slice(fnStart, body.indexOf("\ninit();", fnStart));
+    assert.match(
+      fnBody,
+      /try\s*\{[\s\S]*await loadFile\(currentSlug\);[\s\S]*await refreshDivergenceBanner\(\);[\s\S]*setConn\("ok"\);[\s\S]*\}\s*catch[\s\S]*setConn\("down"\);[\s\S]*\}/,
+    );
   });
 });

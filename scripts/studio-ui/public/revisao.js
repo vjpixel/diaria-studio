@@ -200,41 +200,76 @@ function refreshPreviewIfOpen() {
 }
 
 async function saveCurrent() {
-  // #3635/#3668: guard — salvar 02-reviewed.md enquanto o HTML final já
-  // diverge do baseline é o risco: um re-render futuro do HTML a partir do
-  // Markdown (rodar a Etapa 4 de novo) descarta essa divergência sem aviso
-  // nenhum da pipeline. shouldConfirmDivergenceGuard restringe o disparo ao
-  // único slug com vínculo causal real (#3668 gap 2 — 01-categorized.md e
-  // 03-social.md não alimentam o render do HTML, não bloqueiam mais).
-  if (shouldConfirmDivergenceGuard(currentSlug)) {
-    // #3668 gap 3 (TOCTOU): a flag em memória só é atualizada em init() e
-    // logo após salvar/resetar o próprio slug html-final — uma aba aberta
-    // há tempo, ou html-final editado por outra aba/janela nesse meio
-    // tempo, deixaria htmlFinalDiverged desatualizada aqui. Re-busca o
-    // estado fresco do servidor (mesma rota que refreshDivergenceBanner()
-    // usa) antes de decidir.
-    await refreshDivergenceBanner();
-    if (htmlFinalDiverged) {
-      const proceed = window.confirm(DIVERGENCE_CONFIRM_MESSAGE);
-      if (!proceed) return;
+  // #3672: SNAPSHOT de slug/conteúdo capturado ANTES de qualquer espera
+  // assíncrona — fecha a condição de corrida introduzida pela nova chamada a
+  // refreshDivergenceBanner() (que aguarda rede) adicionada no #3671 (gap 3).
+  // Sem o snapshot, `currentSlug`/`el.editor.value` são lidos
+  // AO VIVO no PUT final: se o editor clicar noutra aba durante o guard (
+  // loadFile() reatribui ambos SINCRONAMENTE, incluindo `el.editor.value = ""`,
+  // antes do próprio fetch do novo arquivo completar), o PUT podia gravar
+  // string vazia no arquivo ERRADO (o da aba nova, não o que estava sendo
+  // salvo). Usar os valores capturados aqui — nunca os `currentSlug`/
+  // `el.editor.value` ao vivo — no guard e no PUT elimina a corrida de forma
+  // robusta, independente de qualquer trava de UI.
+  const slugAtSaveStart = currentSlug;
+  const contentAtSaveStart = el.editor.value;
+  el.saveBtn.disabled = true;
+  try {
+    // #3635/#3668: guard — salvar 02-reviewed.md enquanto o HTML final já
+    // diverge do baseline é o risco: um re-render futuro do HTML a partir do
+    // Markdown (rodar a Etapa 4 de novo) descarta essa divergência sem aviso
+    // nenhum da pipeline. shouldConfirmDivergenceGuard restringe o disparo ao
+    // único slug com vínculo causal real (#3668 gap 2 — 01-categorized.md e
+    // 03-social.md não alimentam o render do HTML, não bloqueiam mais).
+    if (shouldConfirmDivergenceGuard(slugAtSaveStart)) {
+      // #3668 gap 3 (TOCTOU): a flag em memória só é atualizada em init() e
+      // logo após salvar/resetar o próprio slug html-final — uma aba aberta
+      // há tempo, ou html-final editado por outra aba/janela nesse meio
+      // tempo, deixaria htmlFinalDiverged desatualizada aqui. Re-busca o
+      // estado fresco do servidor (mesma rota que refreshDivergenceBanner()
+      // usa) antes de decidir. #3672: esse é justamente o `await` que abre a
+      // janela de corrida — protegido por try/catch (abaixo) e pelo snapshot
+      // acima.
+      await refreshDivergenceBanner();
+      if (htmlFinalDiverged) {
+        const proceed = window.confirm(DIVERGENCE_CONFIRM_MESSAGE);
+        if (!proceed) return;
+      }
     }
-  }
-  el.saveStatus.textContent = "Salvando…";
-  el.saveStatus.className = "rv-save-status";
-  const { ok, body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/${currentSlug}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content: el.editor.value }),
-  });
-  if (ok && body && body.ok) {
-    dirty = false;
-    el.saveStatus.textContent = `Salvo ${fmtTime(body.modifiedAt)}`;
-    el.saveStatus.className = "rv-save-status ok";
-    el.fileStatus.textContent = `Modificado ${fmtTime(body.modifiedAt)}`;
-    if (currentSlug === "html-final") await refreshDivergenceBanner();
-  } else {
-    el.saveStatus.textContent = `Erro ao salvar: ${(body && body.error) || "falha desconhecida"}`;
+    el.saveStatus.textContent = "Salvando…";
+    el.saveStatus.className = "rv-save-status";
+    const { ok, body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/${slugAtSaveStart}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: contentAtSaveStart }),
+    });
+    if (ok && body && body.ok) {
+      el.saveStatus.textContent = `Salvo ${fmtTime(body.modifiedAt)}`;
+      el.saveStatus.className = "rv-save-status ok";
+      // #3672: só limpa `dirty`/`fileStatus` se a aba ativa AINDA for a que
+      // acabou de ser salva — se o editor trocou de aba durante o await, o
+      // `dirty` atual pertence ao arquivo aberto agora (possivelmente ainda
+      // não salvo), não ao slug capturado no snapshot.
+      if (currentSlug === slugAtSaveStart) {
+        dirty = false;
+        el.fileStatus.textContent = `Modificado ${fmtTime(body.modifiedAt)}`;
+      }
+      if (slugAtSaveStart === "html-final") await refreshDivergenceBanner();
+    } else {
+      el.saveStatus.textContent = `Erro ao salvar: ${(body && body.error) || "falha desconhecida"}`;
+      el.saveStatus.className = "rv-save-status err";
+    }
+  } catch (err) {
+    // #3672: fail-open sem aviso — `fetchJson()` só embrulha `res.json()` em
+    // try/catch, o `await fetch(...)` em si (e `refreshDivergenceBanner()`,
+    // sem try/catch próprio) ficavam desprotegidos. Uma falha de rede durante
+    // o guard ou o PUT propagava como unhandled rejection a partir do
+    // listener de clique — sem aviso visual nenhum ao editor. Agora cai no
+    // mesmo branch de erro visível do PUT.
+    el.saveStatus.textContent = `Erro ao salvar: ${(err && err.message) || err}`;
     el.saveStatus.className = "rv-save-status err";
+  } finally {
+    el.saveBtn.disabled = false;
   }
 }
 
@@ -499,17 +534,20 @@ async function init() {
 
   bindEvents();
   renderTabs();
-  await loadFile(currentSlug);
-  // #3669 bug 2a: sem try/catch, uma falha de rede aqui propagava e nunca
-  // chegava em setConn("ok") — o indicador de conexão ficava preso em
-  // "conectando…" pra sempre mesmo com o resto do painel funcional. Falha
+  // #3669 bug 2a / #3672 achado 3: sem try/catch, uma falha de rede em
+  // QUALQUER um dos dois `await`s abaixo propagava e nunca chegava em
+  // setConn("ok") — o indicador de conexão ficava preso em "conectando…" pra
+  // sempre mesmo com o resto do painel funcional. O try/catch original só
+  // envolvia refreshDivergenceBanner(); loadFile(currentSlug) — que também
+  // faz fetch de rede — ficava desprotegido ANTES dele. Falha em qualquer um
   // vira setConn("down") (sinal real de que uma chamada de rede falhou), sem
   // travar a inicialização.
   try {
+    await loadFile(currentSlug);
     await refreshDivergenceBanner();
     setConn("ok");
   } catch (err) {
-    console.error("refreshDivergenceBanner falhou:", err);
+    console.error("init() falhou ao carregar estado inicial:", err);
     setConn("down");
   }
 }
