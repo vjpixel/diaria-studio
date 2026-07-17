@@ -17,6 +17,7 @@ import {
   isValidCycle,
   clariceCycleDir,
   clariceWavesDir,
+  clariceRampDir,
   clariceBaseFile,
   ensureDir,
   parseCycleArg,
@@ -90,6 +91,13 @@ describe("clarice cycle paths (#1961)", () => {
     assert.ok(norm(clariceWavesDir("2605-06")).endsWith("clarice-subscribers/2605-06/waves"));
     // Junho (maio→junho) não colide com maio (abril→maio):
     assert.notEqual(clariceWavesDir("2605-06"), clariceWavesDir("2604-05"));
+  });
+
+  it("clariceRampDir = {ciclo}/ramp (#3593) — separado de waves/ e segments/, sem colisão de arquivo", () => {
+    assert.ok(norm(clariceRampDir("2605-06")).endsWith("clarice-subscribers/2605-06/ramp"));
+    assert.notEqual(clariceRampDir("2605-06"), clariceWavesDir("2605-06"));
+    // Junho (maio→junho) não colide com maio (abril→maio):
+    assert.notEqual(clariceRampDir("2605-06"), clariceRampDir("2604-05"));
   });
 
   it("clariceBaseFile fica no root (não por-ciclo): stripe, excluded, tiers", () => {
