@@ -29,7 +29,11 @@
  * studio-server já é de longa duração, não precisa persistir em disco). Uma
  * chave só é removida do store quando o evento de origem deixa de estar
  * pendente (gate respondido/aprovado) — se o MESMO gate reaparecer depois
- * (nova edição atingindo o stage 4, por ex.), notifica de novo.
+ * (nova edição atingindo o stage 4, por ex.), notifica de novo. Uma chave só
+ * é ADICIONADA ao store quando `notifyFn` retorna `ok:true` — um envio
+ * `skipped` (sem credenciais) ou falho (rede/HTTP) NÃO marca dedup, então o
+ * gate ainda pendente é retentado no próximo tick em vez de ficar
+ * silenciosamente "esquecido" até resolver/reaparecer.
  *
  * Halt banner (#737/#738): NÃO tratado por este watcher — halt é emitido
  * por `render-halt-banner.ts`, um script CLI efêmero (1 processo por
@@ -158,8 +162,14 @@ export interface TelegramNotifyTickOptions {
    * em testes pra não depender de `data/` real no disco. */
   buildStateFn?: (rootDir: string) => StudioState;
   /** Envia a notificação — default `sendTelegramNotification`, injetável em
-   * testes pra não bater na rede/Telegram real. */
-  notifyFn?: (text: string, opts?: SendTelegramNotificationOptions) => Promise<unknown>;
+   * testes pra não bater na rede/Telegram real. O `result.ok` do retorno é
+   * o que decide se a chave entra no dedup store (ver `runTelegramNotifyTick`
+   * abaixo) — um mock de teste que só quer registrar o texto enviado ainda
+   * precisa retornar `{ok:true}` pra exercitar o caminho de dedup. */
+  notifyFn?: (
+    text: string,
+    opts?: SendTelegramNotificationOptions,
+  ) => Promise<{ ok: boolean; skipped?: boolean; error?: string }>;
   baseUrl?: string;
 }
 
@@ -188,24 +198,36 @@ export async function runTelegramNotifyTick(
 
   for (const key of plan.toClear) store.delete(key);
 
+  // #3564 self-review: só marca `key` como notificada no dedup store quando
+  // `notifyFn` de fato reporta `ok:true`. Sem essa checagem, um envio
+  // `skipped` (sem credenciais) ou falho (rede/HTTP) ainda entrava no store
+  // — o gate ficava "notificado" mesmo sem NENHUMA mensagem ter saído, e só
+  // seria retentado se resolvido e reaberto depois. Com a checagem, um gate
+  // ainda pendente é retentado a cada tick até um envio realmente bem
+  // sucedido (mesma semântica de `notifyHaltViaTelegram` em
+  // render-halt-banner.ts, que também só persiste dedup em `result.ok`).
   const notified: string[] = [];
   for (const key of plan.toNotify) {
     const editionGate = state.gatesPending.find(
       (g) => editionGateKey(g.edition, g.stage) === key,
     );
     if (editionGate) {
-      await notifyFn(
+      const result = await notifyFn(
         formatEditionGateMessage(editionGate.edition, editionGate.stage as 4 | 6, baseUrl),
       );
-      store.add(key);
-      notified.push(key);
+      if (result.ok) {
+        store.add(key);
+        notified.push(key);
+      }
       continue;
     }
     const chatGate = state.chatPermissionsPending.find((p) => chatGateKey(p.toolUseId) === key);
     if (chatGate) {
-      await notifyFn(formatChatGateMessage(chatGate.firstQuestion, baseUrl));
-      store.add(key);
-      notified.push(key);
+      const result = await notifyFn(formatChatGateMessage(chatGate.firstQuestion, baseUrl));
+      if (result.ok) {
+        store.add(key);
+        notified.push(key);
+      }
     }
   }
 

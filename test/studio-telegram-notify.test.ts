@@ -216,6 +216,38 @@ describe("runTelegramNotifyTick (#3564 — dedup + re-notificação)", () => {
     assert.equal(calls.length, 2);
   });
 
+  it("notifyFn retornando {ok:false, skipped:true} (sem credenciais) NÃO marca dedup — retenta no próximo tick", async () => {
+    const store = createInMemoryNotifiedStore();
+    const calls: string[] = [];
+    const notifyFn = async (text: string) => {
+      calls.push(text);
+      return { ok: false, skipped: true };
+    };
+    const buildStateFn = () => stateWith({ gatesPending: [{ edition: "260716", stage: 4 }] });
+
+    await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
+    await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
+
+    assert.equal(calls.length, 2, "sem credenciais, cada tick deve tentar de novo — nunca 'desiste' de um gate ainda pendente");
+    assert.equal(store.has("edition-gate:260716:4"), false);
+  });
+
+  it("notifyFn retornando {ok:false} (erro de rede) NÃO marca dedup — retenta no próximo tick", async () => {
+    const store = createInMemoryNotifiedStore();
+    const calls: string[] = [];
+    const notifyFn = async (text: string) => {
+      calls.push(text);
+      return { ok: false, error: "network down" };
+    };
+    const buildStateFn = () => stateWith({ gatesPending: [{ edition: "260716", stage: 4 }] });
+
+    await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
+    await runTelegramNotifyTick("/fake", store, { buildStateFn, notifyFn });
+
+    assert.equal(calls.length, 2, "falha de rede não deve suprimir a retentativa no próximo tick");
+    assert.equal(store.has("edition-gate:260716:4"), false);
+  });
+
   it("nenhum gate pendente -> nenhuma chamada de notifyFn", async () => {
     const store = createInMemoryNotifiedStore();
     let called = false;
