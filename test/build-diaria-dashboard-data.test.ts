@@ -207,6 +207,36 @@ describe("bucketOvernightIssue — #3072: EPIC deferido não fica preso em 'in_p
   });
 });
 
+// Achado 260716: dashboard local mostrava a rodada 260706 com "2 em
+// andamento" que na verdade já estavam resolvidos (#2723, #2483) — issue
+// bloqueada externamente reavaliada em rodadas subsequentes recebe status
+// "pulada" de novo, mas o coordenador nem sempre regrava o timestamp
+// `timeline.pulada` numa reavaliação (só na 1ª vez que a decisão foi
+// tomada). "Pulada" é decisão atômica (ao contrário de "mergeada", que tem
+// processo de várias etapas que pode ficar genuinamente interrompido no
+// meio) — sem estado "pulada pela metade" que esta exceção mascararia.
+describe("bucketOvernightIssue — achado 260716: status 'pulada' sem timeline não fica preso em 'in_progress'", () => {
+  test("status 'pulada' sem timeline → bucket 'pulada', não 'in_progress'", async () => {
+    const { bucketOvernightIssue } = await import("../scripts/build-diaria-dashboard-data.ts");
+    assert.equal(bucketOvernightIssue({ status: "pulada" }), "pulada");
+    assert.equal(bucketOvernightIssue({ status: "pulada", timeline: {} }), "pulada");
+  });
+
+  test("status 'mergeada'/'draft-ci-vermelho' sem timeline continuam 'in_progress' (cautela preservada — processo de várias etapas pode ficar interrompido)", async () => {
+    const { bucketOvernightIssue } = await import("../scripts/build-diaria-dashboard-data.ts");
+    assert.equal(bucketOvernightIssue({ status: "mergeada" }), "in_progress");
+    assert.equal(bucketOvernightIssue({ status: "draft-ci-vermelho" }), "in_progress");
+  });
+
+  test("timeline com pulada tem precedência sobre status, como antes", async () => {
+    const { bucketOvernightIssue } = await import("../scripts/build-diaria-dashboard-data.ts");
+    assert.equal(
+      bucketOvernightIssue({ status: "pulada", timeline: { pulada: "2026-07-05T23:10:00-03:00" } }),
+      "pulada",
+    );
+  });
+});
+
 // ─── Shared fixture factory (module scope, used by multiple describe blocks) ──
 
 type DashData = import("../workers/diaria-dashboard/src/types.ts").DashboardData;
