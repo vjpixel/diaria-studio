@@ -51,7 +51,9 @@
  *   - `GET /revisao/:aammdd` — painel de revisão de conteúdo rica (#3559):
  *     mesma estratégia de rewrite, servindo `public/revisao.html`. Consome
  *     `GET/PUT /api/editions/:aammdd/review/:slug` (`slug` = categorized |
- *     reviewed | social), `.../diff`, `.../lint`, `.../reset-baseline` e
+ *     reviewed | social | html-final — #3635, editor de última milha do
+ *     `_internal/newsletter-final.html` publicado de verdade pela Etapa 5),
+ *     `.../diff`, `.../lint`, `.../reset-baseline` e
  *     `GET /api/editions/:aammdd/preview.html` (HTML completo do e-mail,
  *     pra `<iframe>`) + `POST /api/editions/:aammdd/actions/swap-destaque`
  *     — ver `studio-review.ts`/`studio-review-actions.ts` pro detalhe.

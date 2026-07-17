@@ -45,11 +45,12 @@ const TWO_DESTAQUES_MD = [
   "",
 ].join("\n");
 
-describe("isReviewSlug (#3559)", () => {
-  it("aceita só os 3 slugs conhecidos", () => {
+describe("isReviewSlug (#3559, +html-final #3635)", () => {
+  it("aceita só os 4 slugs conhecidos", () => {
     assert.equal(isReviewSlug("categorized"), true);
     assert.equal(isReviewSlug("reviewed"), true);
     assert.equal(isReviewSlug("social"), true);
+    assert.equal(isReviewSlug("html-final"), true);
     assert.equal(isReviewSlug("nope"), false);
     assert.equal(isReviewSlug(""), false);
   });
@@ -76,6 +77,17 @@ describe("resolveReviewFile (#3559)", () => {
     assert.equal(resolved!.filename, REVIEW_FILES.reviewed);
     assert.ok(resolved!.filePath.endsWith(REVIEW_FILES.reviewed));
     assert.match(resolved!.baselinePath, /_internal[\\/]studio-review-baseline[\\/]02-reviewed\.md\.md$/);
+  });
+
+  it("#3635: html-final resolve pra _internal/newsletter-final.html, baseline sem subpasta _internal/ aninhada", () => {
+    const resolved = resolveReviewFile(root, "260716", "html-final");
+    assert.ok(resolved);
+    assert.equal(resolved!.filename, "_internal/newsletter-final.html");
+    assert.match(resolved!.filePath, /_internal[\\/]newsletter-final\.html$/);
+    // basename(filename) na construção do baseline — NÃO deveria aninhar
+    // outra pasta `_internal` dentro de `studio-review-baseline/`.
+    assert.match(resolved!.baselinePath, /studio-review-baseline[\\/]newsletter-final\.html\.md$/);
+    assert.doesNotMatch(resolved!.baselinePath, /studio-review-baseline[\\/]_internal/);
   });
 });
 
@@ -139,6 +151,70 @@ describe("readReviewFile / saveReviewFile / resetBaseline (#3559)", () => {
   });
 });
 
+describe("html-final (#3635) — read/save/mkdir/pull-skip", () => {
+  let root: string;
+  let editionDir: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-review-html-final-"));
+    editionDir = makeEdition(root, "260716");
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("exists:false quando newsletter-final.html ainda não foi gerado (pré-Etapa 4)", () => {
+    const state = readReviewFile(root, "260716", "html-final");
+    assert.equal(state.ok, true);
+    assert.equal(state.exists, false);
+  });
+
+  it("lê o conteúdo de _internal/newsletter-final.html e captura baseline", () => {
+    writeFileSync(resolve(editionDir, "_internal", "newsletter-final.html"), "<html>v-agente</html>", "utf8");
+    const state = readReviewFile(root, "260716", "html-final");
+    assert.equal(state.exists, true);
+    assert.equal(state.content, "<html>v-agente</html>");
+    assert.equal(state.baseline, "<html>v-agente</html>");
+  });
+
+  it("saveReviewFile escreve de volta em _internal/newsletter-final.html", () => {
+    writeFileSync(resolve(editionDir, "_internal", "newsletter-final.html"), "<html>original</html>", "utf8");
+    const result = saveReviewFile(root, "260716", "html-final", "<html>editado à mão</html>");
+    assert.equal(result.ok, true);
+    assert.equal(
+      readFileSync(resolve(editionDir, "_internal", "newsletter-final.html"), "utf8"),
+      "<html>editado à mão</html>",
+    );
+  });
+
+  it("saveReviewFile cria _internal/ se ausente (mkdir recursivo antes do write)", () => {
+    // Edição sem _internal/ ainda (diferente de makeEdition, que já cria a
+    // pasta) — simula uma edição criada só com o dir raiz.
+    const bareRoot = mkdtempSync(join(tmpdir(), "studio-review-html-final-bare-"));
+    const bareDir = resolve(bareRoot, "data", "editions", "260716");
+    mkdirSync(bareDir, { recursive: true }); // sem _internal/
+    const result = saveReviewFile(bareRoot, "260716", "html-final", "<html>primeira vez</html>");
+    assert.equal(result.ok, true);
+    assert.equal(
+      readFileSync(resolve(bareDir, "_internal", "newsletter-final.html"), "utf8"),
+      "<html>primeira vez</html>",
+    );
+    rmSync(bareRoot, { recursive: true, force: true });
+  });
+
+  it("pullReviewFileBestEffort pula html-final sem spawnar nada (_internal/* não sincroniza com Drive)", () => {
+    writeFileSync(resolve(editionDir, "_internal", "newsletter-final.html"), "<html></html>", "utf8");
+    let called = false;
+    const fakeSpawn = () => {
+      called = true;
+      return { status: 0, stdout: "{}", stderr: "", error: undefined } as ReturnType<
+        typeof import("node:child_process").spawnSync
+      >;
+    };
+    const result = pullReviewFileBestEffort(root, "260716", "html-final", fakeSpawn as never);
+    assert.equal(result.attempted, false);
+    assert.equal(result.ok, false);
+    assert.equal(called, false);
+  });
+});
+
 describe("computeReviewDiff (#3559)", () => {
   let root: string;
   let editionDir: string;
@@ -164,6 +240,45 @@ describe("computeReviewDiff (#3559)", () => {
     assert.equal(diff.isEmpty, false);
     assert.ok(diff.lines.some((l) => l.type === "add" && l.text === "linha editada"));
     assert.ok(diff.lines.some((l) => l.type === "del" && l.text === "linha original"));
+  });
+
+  // #3635: este é o mecanismo REAL por trás do guard de divergência do
+  // painel (revisao.js `refreshDivergenceBanner`/`saveCurrent`) — o cliente
+  // consulta esta MESMA rota genérica (`.../review/html-final/diff`) e trata
+  // `isEmpty === false` como "HTML final foi editado manualmente desde que a
+  // Etapa 4 gerou este baseline". Cobrir aqui prova que o sinal que o guard
+  // consome é correto nos 3 estados possíveis.
+  describe("#3635 — html-final como sinal de divergência (guard do painel)", () => {
+    it("arquivo inexistente (pré-Etapa 4): isEmpty:true — nada a avisar", () => {
+      const diff = computeReviewDiff(root, "260716", "html-final");
+      assert.equal(diff.ok, true);
+      assert.equal(diff.isEmpty, true);
+    });
+
+    it("recém-gerado pela Etapa 4, nunca editado à mão: isEmpty:true — nada a avisar", () => {
+      writeFileSync(resolve(editionDir, "_internal", "newsletter-final.html"), "<html>v-agente</html>", "utf8");
+      readReviewFile(root, "260716", "html-final"); // captura baseline = v-agente
+      const diff = computeReviewDiff(root, "260716", "html-final");
+      assert.equal(diff.isEmpty, true);
+    });
+
+    it("editado à mão via saveReviewFile: isEmpty:false — dispara o aviso", () => {
+      writeFileSync(resolve(editionDir, "_internal", "newsletter-final.html"), "<html>v-agente</html>", "utf8");
+      readReviewFile(root, "260716", "html-final"); // captura baseline = v-agente
+      saveReviewFile(root, "260716", "html-final", "<html>v-agente + correção manual</html>");
+      const diff = computeReviewDiff(root, "260716", "html-final");
+      assert.equal(diff.isEmpty, false);
+      assert.ok(diff.lines.some((l) => l.type === "add" && l.text.includes("correção manual")));
+    });
+
+    it("resetBaseline volta a isEmpty:true (editor tratou a edição manual como novo baseline)", () => {
+      writeFileSync(resolve(editionDir, "_internal", "newsletter-final.html"), "<html>v-agente</html>", "utf8");
+      readReviewFile(root, "260716", "html-final");
+      saveReviewFile(root, "260716", "html-final", "<html>editado</html>");
+      assert.equal(computeReviewDiff(root, "260716", "html-final").isEmpty, false);
+      resetBaseline(root, "260716", "html-final");
+      assert.equal(computeReviewDiff(root, "260716", "html-final").isEmpty, true);
+    });
   });
 });
 
@@ -234,6 +349,15 @@ describe("runReviewLints (#3559)", () => {
     const report = runReviewLints(root, editionDir, "social", md);
     const cta = report.checks.find((c) => c.id === "cta-format");
     assert.ok(cta);
+  });
+
+  it("#3635: html-final não roda nenhum check de Markdown — retorna note explicando que é edição de última milha sem rede de segurança", () => {
+    const report = runReviewLints(root, editionDir, "html-final", "<html><body>qualquer coisa</body></html>");
+    assert.equal(report.ok, true);
+    assert.deepEqual(report.checks, []);
+    assert.ok(report.note, "deveria ter uma note explicando a ausência de lints");
+    assert.match(report.note!, /última milha/);
+    assert.match(report.note!, /NÃO passa pelos lints/);
   });
 });
 

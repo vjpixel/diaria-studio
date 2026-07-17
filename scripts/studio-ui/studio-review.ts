@@ -31,6 +31,20 @@
  *   - Preview reusa `extractContent` + `renderHTML({ fullDocument: true })`
  *     do pipeline (mesmo render usado no Stage 4) — zero reimplementação de
  *     template.
+ *   - #3635: 4º slug `html-final` → `_internal/newsletter-final.html`, o
+ *     HTML que a Etapa 4 pré-renderiza e a Etapa 5 PUBLICA de verdade (não é
+ *     só o preview acima, que é derivado do MD). Opt-in, "última milha":
+ *     reusa a mesma máquina de read/save/diff/baseline dos outros 3 slugs
+ *     (generalizada via `REVIEW_FILES`), mas SEM lints (HTML não-Markdown,
+ *     ver `lintHtmlFinal`) e SEM pull do Drive (`_internal/*` nunca
+ *     sincroniza, ver `REVIEW_STAGE`). Risco explícito: qualquer re-render a
+ *     partir do MD (rodar a Etapa 4 de novo) sobrescreve edições manuais
+ *     feitas aqui sem aviso automático da pipeline — o guard de divergência
+ *     fica do lado do cliente (`revisao.js`), que consulta
+ *     `GET .../review/html-final/diff` (mesma rota genérica de diff, já
+ *     roteada por `isReviewSlug`) e avisa antes de salvar um dos outros 3
+ *     slugs quando o HTML final diverge do baseline (= foi editado
+ *     manualmente desde a última vez que a Etapa 4 rodou).
  */
 
 import {
@@ -94,24 +108,33 @@ import { validateLancamentos, loadToolAllowlist } from "../validate-lancamentos.
 
 // ── Arquivos revisáveis ─────────────────────────────────────────────────
 
-export type ReviewSlug = "categorized" | "reviewed" | "social";
+export type ReviewSlug = "categorized" | "reviewed" | "social" | "html-final";
 
 export const REVIEW_FILES: Record<ReviewSlug, string> = {
   categorized: "01-categorized.md",
   reviewed: "02-reviewed.md",
   social: "03-social.md",
+  // #3635: última milha — HTML final que a Etapa 4 pré-renderiza e a Etapa 5
+  // publica de verdade (não é só preview). Editável diretamente no painel
+  // como camada de acabamento OPT-IN, fora do fluxo de lint/Drive/MD — ver
+  // nota de design no topo do arquivo.
+  "html-final": "_internal/newsletter-final.html",
 };
 
 /** Stage de pipeline associado a cada arquivo — usado só como metadado pro
- * `--stage` de `drive-sync.ts` (#494); não afeta comportamento do pull. */
-const REVIEW_STAGE: Record<ReviewSlug, number> = {
+ * `--stage` de `drive-sync.ts` (#494); não afeta comportamento do pull.
+ * `html-final` deliberadamente SEM entrada: `_internal/*` nunca sincroniza
+ * com o Drive (convenção #959/#1022 — só sobe o que o editor de fato edita
+ * na superfície gate-facing), então `pullReviewFileBestEffort` pula o
+ * pull inteiramente pra este slug. */
+const REVIEW_STAGE: Partial<Record<ReviewSlug, number>> = {
   categorized: 1,
   reviewed: 2,
   social: 2,
 };
 
 export function isReviewSlug(v: string): v is ReviewSlug {
-  return v === "categorized" || v === "reviewed" || v === "social";
+  return v === "categorized" || v === "reviewed" || v === "social" || v === "html-final";
 }
 
 const AAMMDD_RE = /^\d{6}$/;
@@ -136,7 +159,16 @@ export function resolveReviewFile(
   const editionDir = resolveEditionDir(editionsRootAbs, aammdd);
   const filename = REVIEW_FILES[slug];
   const filePath = resolve(editionDir, filename);
-  const baselinePath = resolve(editionDir, "_internal", "studio-review-baseline", `${filename}.md`);
+  // basename(filename) — não `filename` cru — pra `html-final` não criar uma
+  // subpasta `_internal/` aninhada dentro do baseline dir (`filename` para
+  // esse slug é `_internal/newsletter-final.html`, com separador). Sem
+  // efeito nos outros 3 slugs (já são basename puro, sem separador).
+  const baselinePath = resolve(
+    editionDir,
+    "_internal",
+    "studio-review-baseline",
+    `${basename(filename)}.md`,
+  );
   return { aammdd, slug, filename, editionDir, filePath, baselinePath };
 }
 
@@ -229,6 +261,11 @@ export function saveReviewFile(
     return { ok: false, error: `edição não encontrada: ${aammdd}`, filename: resolved.filename, modifiedAt: null };
   }
   try {
+    // mkdir recursivo do dirname — no-op pros 3 slugs de raiz (dirname já é
+    // editionDir, sempre existente), mas necessário pro slug `html-final`
+    // (dirname = editionDir/_internal, que pode não existir se o editor
+    // salvar antes de qualquer stage ter rodado, ex: edição recém-criada).
+    mkdirSync(dirname(resolved.filePath), { recursive: true });
     writeFileSync(resolved.filePath, content, "utf8");
     const modifiedAt = statSync(resolved.filePath).mtime.toISOString();
     return { ok: true, filename: resolved.filename, modifiedAt };
@@ -289,6 +326,11 @@ export interface LintReport {
   ok: boolean; // agregado: false se algum check BLOCKING falhou ou crashou
   checks: LintCheckResult[];
   skipped: string[]; // checks pulados (ex: falta 01-approved.json)
+  /** Nota exibida no lugar da lista de checks quando não há nenhum aplicável
+   * por design (não por falta de pré-requisito) — ex: `html-final` (#3635).
+   * Mesmo campo que `handleReviewLint` (server.ts) já sintetiza ad-hoc pro
+   * caso "arquivo ainda não existe". */
+  note?: string;
 }
 
 function runCheck<T extends { ok: boolean }>(
@@ -401,6 +443,22 @@ function lintSocial(md: string): LintReport {
   return { ok: checks.every((c) => !c.blocking || c.ok), checks, skipped };
 }
 
+/** #3635: `html-final` não tem lints — é edição de última milha do HTML já
+ * pré-renderizado, deliberadamente FORA do fluxo de lint/Drive/MD (ver nota
+ * de design no topo do arquivo). `note` deixa isso explícito na UI em vez de
+ * simplesmente não mostrar nada (ambíguo — pareceria um bug/lista vazia). */
+function lintHtmlFinal(): LintReport {
+  return {
+    ok: true,
+    checks: [],
+    skipped: [],
+    note:
+      "newsletter-final.html é edição de última milha — NÃO passa pelos lints de " +
+      "Markdown (títulos, formato de seções, etc). Sem rede de segurança automática " +
+      "aqui: revise visualmente (aba Preview/HTML renderizado) antes de publicar.",
+  };
+}
+
 /** Roda o conjunto de lints aplicável ao `slug`, sobre `content` (o que está
  * no editor/disco agora — não precisa ter sido salvo ainda). Fail-soft por
  * check (ver `runCheck`); nunca lança. */
@@ -412,6 +470,7 @@ export function runReviewLints(
 ): LintReport {
   if (slug === "categorized") return lintCategorized(content, rootDir);
   if (slug === "reviewed") return lintReviewed(content, rootDir, editionDir);
+  if (slug === "html-final") return lintHtmlFinal();
   return lintSocial(content);
 }
 
@@ -532,6 +591,12 @@ export function pullReviewFileBestEffort(
   const resolved = resolveReviewFile(rootDir, aammdd, slug);
   if (!resolved) return { attempted: false, ok: false, error: "AAMMDD ou arquivo inválido" };
   if (!existsSync(resolved.editionDir)) return { attempted: false, ok: false, error: "edição não encontrada" };
+  const stage = REVIEW_STAGE[slug];
+  if (stage === undefined) {
+    // `html-final` é `_internal/*` — nunca sincroniza com o Drive (ver nota
+    // em REVIEW_STAGE). Pular sem spawnar drive-sync.ts.
+    return { attempted: false, ok: false, error: "arquivo _internal/* não sincroniza com o Drive (#959/#1022)" };
+  }
 
   try {
     const scriptPath = resolve(rootDir, "scripts", "drive-sync.ts");
@@ -545,7 +610,7 @@ export function pullReviewFileBestEffort(
         scriptPath,
         "--mode", "pull",
         "--edition-dir", editionDirArg,
-        "--stage", String(REVIEW_STAGE[slug]),
+        "--stage", String(stage),
         "--files", resolved.filename,
       ],
       { cwd: rootDir, encoding: "utf8", timeout: 20_000 },

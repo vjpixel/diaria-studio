@@ -37,9 +37,22 @@
         <button type="button" class="rv-tab" data-slug="categorized" role="tab">01 — Categorizado</button>
         <button type="button" class="rv-tab" data-slug="reviewed" role="tab">02 — Newsletter</button>
         <button type="button" class="rv-tab" data-slug="social" role="tab">03 — Social</button>
+        <button type="button" class="rv-tab" data-slug="html-final" role="tab">HTML final (última milha)</button>
       </div>
       <p class="hint" id="rv-file-status">—</p>
       <p class="hint" id="rv-pull-status"></p>
+      <p class="hint" id="rv-html-final-note" hidden>
+        Editando <code>_internal/newsletter-final.html</code> diretamente — o HTML já
+        pré-renderizado que a Etapa 5 publica de verdade. Última milha, opt-in: NÃO
+        passa pelos lints de Markdown nem sincroniza com o Drive. Um novo re-render a
+        partir do Markdown (rodar a Etapa 4 de novo) descarta essas edições sem aviso
+        automático da pipeline.
+      </p>
+      <p class="rv-divergence-banner" id="rv-divergence-banner" hidden>
+        HTML final editado manualmente e diverge da versão gerada pelo agente — um novo
+        re-render a partir do Markdown (Etapa 4) vai descartar essas mudanças. Confira a
+        aba "HTML final" antes de rodar a Etapa 4 de novo.
+      </p>
     </section>
 
     <section class="panel rv-editor-panel">
@@ -76,6 +89,9 @@
         <p class="hint">
           Renderizado a partir de <code>02-reviewed.md</code> salvo no disco
           (mesmo caminho do Stage 4) — salve antes de atualizar o preview.
+          Exceção: com a aba <strong>HTML final</strong> ativa, mostra o
+          <code>_internal/newsletter-final.html</code> salvo diretamente (sem
+          passar pelo Markdown).
         </p>
         <button type="button" id="rv-preview-refresh-btn">Atualizar preview</button>
         <iframe id="rv-preview-frame" class="rv-preview-frame" title="Preview do e-mail"></iframe>
