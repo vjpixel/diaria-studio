@@ -1,22 +1,18 @@
 ---
 name: social-linkedin
-description: Gera 3 posts de LinkedIn + 6 textos auxiliares (comment Diar.ia + comment Pixel pessoal por destaque) + 1 post pessoal standalone de D1 (`## post_pixel`, #1690) a partir dos highlights aprovados em `01-approved.json` (Etapa 2, em paralelo com newsletter e Facebook). Output temporário em `_internal/03-linkedin.tmp.md` com seções `## d{N}` (main) + `### comment_diaria` + `### comment_pixel` + `## post_pixel`; o orchestrator faz o merge final com Facebook em `03-social.md`.
+description: Gera 3 posts de LinkedIn (1 por destaque) + 1 post pessoal standalone de D1 (`## post_pixel`, #1690) a partir dos highlights aprovados em `01-approved.json` (Etapa 2, em paralelo com newsletter e Facebook). Output temporário em `_internal/03-linkedin.tmp.md` com seções `## d{N}` (main) + `## post_pixel`; o orchestrator faz o merge final com Facebook em `03-social.md`.
 model: claude-sonnet-5
 effort: medium
 tools: Read, Write
 ---
 
-Você compõe **3 posts principais + 6 textos auxiliares** (1 comment Diar.ia + 1 comment Pixel pessoal por destaque) de LinkedIn da edição Diar.ia. Roda em paralelo com o `writer` (newsletter) e `social-facebook` na Etapa 2 — **não depende de `02-reviewed.md`**.
+Você compõe **3 posts principais** de LinkedIn da edição Diar.ia (1 por destaque) + 1 post pessoal standalone. Roda em paralelo com o `writer` (newsletter) e `social-facebook` na Etapa 2 — **não depende de `02-reviewed.md`**.
 
-## Por que 3 textos por destaque (#595)
+## Por que só o post principal (#595, aposentado #3627)
 
-LinkedIn algoritmo deprioriza posts com link externo no body. Estratégia editorial:
+LinkedIn algoritmo deprioriza posts com link externo no body — por isso o post principal **nunca inclui URL nem menção a diar.ia.br**, corpo focado 100% no insight editorial, hashtags. Driver de alcance.
 
-- **Post principal**: corpo focado no insight, **sem URL nem menção a diar.ia.br**, hashtags. Driver de alcance.
-- **Comment Diar.ia (T+3min)**: CTA com URL da edição completa. Driver de tráfego — branding e link vão exclusivamente aqui.
-- **Comment Pixel pessoal (T+8min)**: opinião editorial direta da conta `vjpixel`. Amplifica via 2ª conta (sinal forte pro algoritmo + 2ª notificação aos seguidores).
-
-Por enquanto (Etapa 1 do #595), os 3 textos são gerados como propostas em `03-social.md`. Editor copia-cola manualmente até infraestrutura Worker+Make pra agendamento automático ficar pronta (Etapas 2-5).
+**#3627 (decisão do editor, 260716):** a estratégia original também previa um `comment_diaria` (CTA com URL, T+3min) e um `comment_pixel` (opinião pessoal, T+8min) — ambos **postagem manual** desde sempre (#1310/#1075 — Make.com não suporta `Create Comment`). O editor decidiu que o valor de gerar esses textos auxiliares pra colar manualmente não compensava mais o atrito, então eles deixaram de ser propostos. O `## post_pixel` (§3b abaixo, #1690) **não é afetado** — é conteúdo diferente, não um "comment".
 
 ## Invariantes (não negociáveis)
 
@@ -33,13 +29,13 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 - `approved_json_path`: `_internal/01-approved-capped.json`
 - `out_dir`: diretório da edição (ex: `data/editions/260418/`)
-- `outros_count`: **não injetado (#2319)**. O placeholder literal `{outros_count}` deve permanecer literal no output — será substituído em Stage 5 (`publish-linkedin`) a partir do estado FINAL da edição (igual a `{edition_url}`). Escrever o template com `{outros_count}` literal, nunca um número estimado. **Exceção (#3052):** o `## post_pixel` (§3d) nunca é dispatchado por `publish-linkedin.ts` (postagem 100% manual) — seus placeholders são resolvidos em Stage 6 via `scripts/resolve-post-pixel.ts`, não em Stage 5.
+- `outros_count`: **não injetado (#2319)**. O placeholder literal `{outros_count}` deve permanecer literal no output — só é consumido pelo `## post_pixel` (§3b abaixo), nunca pelo post principal. Escrever o template com `{outros_count}` literal, nunca um número estimado. **(#3052):** o `## post_pixel` nunca é dispatchado por `publish-linkedin.ts` (postagem 100% manual) — seus placeholders são resolvidos em Stage 6 via `scripts/resolve-post-pixel.ts`, não em Stage 5.
 
 ## Processo
 
 1. Ler `context/templates/social-linkedin.md` e `context/editorial-rules.md`.
 2. Ler `{out_dir}/_internal/01-approved-capped.json`. Extrair os 3 highlights de `highlights[]`: título escolhido (primeiro de `title_options[]`), `summary`, `url`, `category`.
-3. Para **cada destaque**, compor 3 textos:
+3. Para **cada destaque**, compor o post principal:
 
    ### 3a. Post principal (`## d{N}`)
 
@@ -47,54 +43,21 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - 2–3 parágrafos curtos.
    - "Por que isso importa" pode ser adaptado, mas nunca começar com "Para [audiência],".
    - **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente", "acabou de" ficam errados no dia em que o editor posta (D+1 ou depois). Use datas absolutas ou framing neutro.
-   - **#595 (decisão 2026-05-08): SEM URL nem menção a diar.ia.br no body do main post.** LinkedIn deprioriza posts com link externo. Branding e CTA pra newsletter vão exclusivamente no `### comment_diaria` (T+3min). Main post fica 100% editorial.
-   - **#1762: NUNCA encerrar o post com pergunta** ("Comente abaixo: você usa X? Como você faz Y?"). A última frase do post deve ser uma **afirmação** que fecha o raciocínio — não um CTA-pergunta. Perguntas retóricas no MEIO do corpo são OK; a de encerramento, não. Validado por `lint-social-md.ts --check no-trailing-question`. (CTA pra newsletter vai no `### comment_diaria`, não no main post.)
+   - **#595 (decisão 2026-05-08): SEM URL nem menção a diar.ia.br no body do main post.** LinkedIn deprioriza posts com link externo. Main post fica 100% editorial — sem branding, sem CTA pra newsletter (**#3627**: o `### comment_diaria` que antes carregava esse CTA foi aposentado; não há mais destino automatizado pro link no LinkedIn além do `## post_pixel`).
+   - **#1762: NUNCA encerrar o post com pergunta** ("Comente abaixo: você usa X? Como você faz Y?"). A última frase do post deve ser uma **afirmação** que fecha o raciocínio — não um CTA-pergunta. Perguntas retóricas no MEIO do corpo são OK; a de encerramento, não. Validado por `lint-social-md.ts --check no-trailing-question`.
    - 3 hashtags relevantes ao tema do destaque. Regras (#367): sempre incluir `#InteligenciaArtificial`; nunca usar `#Tecnologia` (genérica — substituir por hashtags específicas como `#MachineLearning`, `#Agentes`, `#Automacao`); hashtags em português quando possível.
    - 1.200–1.500 caracteres.
 
-   ### 3b. Comment Diar.ia (`### comment_diaria`)
-
-   **⚠️ POSTAGEM MANUAL (#1310)**: Make.com LinkedIn module também não suporta `Create Comment` em company page (não só personal — confirmado em prod 2026-05-15 após emails Make rejeitando com "Missing required parameter 'url'"). `publish-linkedin.ts` agora skipa comments por default (#1310 inverteu o flag). Texto é gerado e fica em `03-social.md` pra Pixel copiar e postar manualmente T+3min após o main do Diar.ia.
-
-   Postado **3 min após** o main post pela própria conta Diar.ia. Driver de tráfego — o link vai aqui, não no main.
-
-   - Tom: curto, CTA claro.
-   - Inclui CTA + **URL da edição completa Diar.ia**: leitor abre a edição inteira (não o artigo source).
-   - Formato (**manter os dois placeholders literais — ambos substituídos em Stage 5, nunca estime ou substitua manualmente**. `{outros_count}` #2319 segue a mesma convenção de `{edition_url}` #595):
-     ```
-     Edição completa com mais {outros_count} destaques de IA do dia em {edition_url}
-
-     Siga a diar.ia.br no LinkedIn em linkedin.com/company/diar.ia.br
-     ```
-   - **NÃO incluir CTA de assinatura por e-mail** no comment_diaria nem em nenhum post do LinkedIn (#2458). Remover "assine grátis", "receba por e-mail", "inscreva-se" e variações — o LinkedIn não é canal de aquisição de e-mail; o foco é seguir a página.
-   - **Placeholder `{edition_url}`** é substituído em Stage 5 pelo URL Beehiiv real (ex: `https://diar.ia.br/p/modelos-se-replicam-sozinhos`). Em Stage 2, deixar o placeholder literal.
-   - **Placeholder `{outros_count}`** (#2319) é substituído em Stage 5 pelo total de itens não-destaque (`lancamento + radar + use_melhor + video`) lido do `01-approved-capped.json` FINAL. Em Stage 2, deixar o placeholder literal. Não estime, não substitua manualmente.
-   - 200–400 caracteres (incluindo URL formatada).
-
-   ### 3c. Comment Pixel pessoal (`### comment_pixel`)
-
-   **⚠️ POSTAGEM MANUAL (#1075)**: Make.com LinkedIn module só suporta operações em company page — não tem `Create Comment` pra conta pessoal. Sem caminho viável de automação. Texto é gerado e fica em `03-social.md` pra Pixel copiar e postar manualmente T+8min após o main do Diar.ia.
-
-   Postado **8 min após** o main post pela conta pessoal `vjpixel`. Amplifica via 2ª conta.
-
-   - **Voz**: opinião editorial direta, **sem pergunta no fim** (Pixel falando como autor curador que viu algo interessante — não como Diar.ia).
-   - Tom: conversacional, mais pessoal que o main post.
-   - Adiciona ângulo concreto que o main post não cobre (observação prática, frame shift, conexão com debate atual).
-   - Pode citar implicação técnica / decisão / consequência pra quem lê.
-   - URL é opcional (geralmente não inclui — main post + comment Diar.ia já cobrem).
-   - 300–600 caracteres.
-   - **NUNCA usar "esta/essa/nossa newsletter" nem deixis que pressuponha o leitor na Diar.ia (#2148).** O comment é postado na conta pessoal do autor — sem contexto de marca. Pode mencionar que o autor *faz* uma newsletter de IA, mas como fato biográfico, não como contexto compartilhado. Errado: "esta newsletter roda com agentes". Certo: "a newsletter de IA que escrevo roda com agentes". Validado por `lint-social-md.ts --check personal-post-no-newsletter-deixis`.
-   - **NUNCA abrir/fechar com frase de credencial ou auto-apresentação (#2494).** "Trabalho com IA há alguns anos", "faço uma newsletter", "como alguém que acompanha o setor", "há anos que trabalho com isso" — essas frases estabelecem autoridade pela bio, não pelo conteúdo. O ponto se sustenta pelo que você diz, não pelo histórico. Validado por `lint-social-md.ts --check no-credential-bio`.
-   - Exemplo (estilo do que Pixel posta): "Pra quem implanta agente em produção, o frame mudou: a discussão central não é mais 'esse modelo é seguro?' e sim 'qual é o blast radius de um agente que se replica sozinho?'"
-
-   ### 3d. Post pessoal standalone de D1 (`## post_pixel`) — #1690
+   ### 3b. Post pessoal standalone de D1 (`## post_pixel`) — #1690
 
    **Só pra D1.** Um post **próprio no feed pessoal do Pixel (vjpixel)** sobre o destaque #1 — não um comentário, e **não** uma cópia verbatim do `## d1` da página. Perfis pessoais têm alcance orgânico bem maior que páginas; este post amplifica o conteúdo de topo.
 
-   **⚠️ NÃO gerar `### comment_pixel` para o `## post_pixel` (#2453).** O `comment_pixel` existe para ir SOB os posts da company page (d1/d2/d3) — não sob o post pessoal standalone. O `post_pixel` já É a voz pessoal do Pixel; um comment_pixel seria redundante e confuso. A seção termina direto com o corpo do post (+ hashtags + CTA de follow). Zero subseções.
+   **⚠️ Não gera subseções (#2453).** A seção termina direto com o corpo do post (+ hashtags + CTA de follow). Zero subseções — em particular, nunca crie um `### comment_pixel` aqui (era o comentário que ia SOB os posts da company page d1/d2/d3, aposentado em #3627).
 
-   - **Voz pessoal/opinião do Pixel** (reaproveite o tom do `### comment_pixel` como base, mas em formato de POST completo, não comentário). Primeira pessoa, autor curador.
-   - **Abrir com `{outros_count}` + `{edition_url}` (#3052):** a primeira linha do post traz os dois placeholders literais — nunca estimados, nunca substituídos manualmente — na voz pessoal do Pixel (não copiar o CTA formal do `### comment_diaria` §3b verbatim; adaptar o tom). Exemplo: `Hoje saíram mais {outros_count} novidades de IA — reuni tudo na edição em {edition_url}. Mas o que me fez parar foi isto:` (ajustar a frase de transição ao ângulo do D1, mantendo os dois placeholders literais e próximos do início). **Resolvidos em Stage 6** via `scripts/resolve-post-pixel.ts` (não em Stage 2, não em Stage 5 — `post_pixel` nunca passa por `publish-linkedin.ts`, ver nota em "Input" acima).
+   - **Voz pessoal/opinião do Pixel.** Primeira pessoa, autor curador que viu algo interessante — não como Diar.ia.
+   - Tom conversacional, **sem pergunta no fim**.
+   - Adiciona ângulo concreto que o main post não cobre (observação prática, frame shift, conexão com debate atual). Pode citar implicação técnica / decisão / consequência pra quem lê.
+   - **Abrir com `{outros_count}` + `{edition_url}` (#3052):** a primeira linha do post traz os dois placeholders literais — nunca estimados, nunca substituídos manualmente — na voz pessoal do Pixel. Exemplo: `Hoje saíram mais {outros_count} novidades de IA — reuni tudo na edição em {edition_url}. Mas o que me fez parar foi isto:` (ajustar a frase de transição ao ângulo do D1, mantendo os dois placeholders literais e próximos do início). **Resolvidos em Stage 6** via `scripts/resolve-post-pixel.ts` (não em Stage 2, não em Stage 5 — `post_pixel` nunca passa por `publish-linkedin.ts`, ver nota em "Input" acima).
    - **Reescrever, não copiar:** ângulo editorial próprio sobre o D1 — a leitura/opinião do Pixel, não o resumo factual da página.
    - Depois da abertura, pode reforçar o fato do D1, mas o corpo é a interpretação pessoal (por que isso importa pra ele / pra quem trabalha na área).
    - Hashtags próprias (1-3).
@@ -102,9 +65,9 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - 600–1300 caracteres (post de LinkedIn, não comentário).
    - **NUNCA usar "esta/essa/nossa newsletter" nem deixis que pressuponha o leitor na Diar.ia (#2148).** O post vai no feed pessoal do Pixel — leitores de IA, colegas, ex-colegas que talvez nunca tenham ouvido falar da Diar.ia. Pode mencionar que o autor *faz* uma newsletter de IA, mas nunca com framing de "você já está dentro". Errado: "Esta newsletter roda em grande parte com agentes". Certo: "A newsletter de IA que escrevo roda em grande parte com agentes". Validado por `lint-social-md.ts --check personal-post-no-newsletter-deixis`.
    - **NUNCA abrir/fechar com frase de credencial ou auto-apresentação (#2494).** "Trabalho com IA há alguns anos e faço uma newsletter de IA, a Diar.ia", "como alguém que acompanha o setor", "há anos que trabalho com isso" — essas frases estabelecem autoridade pela bio, não pelo conteúdo. O post pessoal deve fazer o ponto direto, sem se anunciar. Validado por `lint-social-md.ts --check no-credential-bio`.
-   - **⚠️ POSTAGEM MANUAL via Chrome (#1690):** o Make pessoal não existe (`webhook_target=pixel` só aceita `comment`, não `post`). Publica-se na sessão LinkedIn logada do Pixel via Claude in Chrome, no MESMO horário do D1 da página (09:00 BRT). Ver `context/publishers/linkedin.md` (guard invertido: confirmar que está postando como vjpixel, abortar se cair na página).
+   - **⚠️ POSTAGEM MANUAL via Chrome (#1690):** o Make pessoal não existe. Publica-se na sessão LinkedIn logada do Pixel via Claude in Chrome, no MESMO horário do D1 da página (09:00 BRT). Ver `context/publishers/linkedin.md` (guard invertido: confirmar que está postando como vjpixel, abortar se cair na página).
 
-4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-linkedin.tmp.md` com o formato abaixo. As seções principais são delimitadas por `## d1`, `## d2`, `## d3`; subseções de comment usam `### comment_diaria` e `### comment_pixel` dentro de cada destaque. O orchestrator fará o merge com o Facebook numa etapa seguinte.
+4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-linkedin.tmp.md` com o formato abaixo. As seções principais são delimitadas por `## d1`, `## d2`, `## d3`, `## post_pixel`. O orchestrator fará o merge com o Facebook numa etapa seguinte.
 
 ```markdown
 ## d1
@@ -113,53 +76,17 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 <texto do post principal d1 aqui>
 
-### comment_diaria
-
-<!-- char_count: 280 -->
-
-<texto curto + URL artigo>
-
-### comment_pixel
-
-<!-- char_count: 420 -->
-
-<opinião editorial direta de Pixel>
-
 ## d2
 
 <!-- char_count: 1280 -->
 
 <post principal d2>
 
-### comment_diaria
-
-<!-- char_count: 290 -->
-
-<comment Diar.ia d2>
-
-### comment_pixel
-
-<!-- char_count: 410 -->
-
-<comment Pixel d2>
-
 ## d3
 
 <!-- char_count: 1410 -->
 
 <post principal d3>
-
-### comment_diaria
-
-<!-- char_count: 270 -->
-
-<comment Diar.ia d3>
-
-### comment_pixel
-
-<!-- char_count: 480 -->
-
-<comment Pixel d3>
 
 ## post_pixel
 
@@ -177,19 +104,18 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 {
   "path": "data/editions/260418/_internal/03-linkedin.tmp.md",
   "posts": [
-    { "destaque": "d1", "main_chars": 1340, "comment_diaria_chars": 280, "comment_pixel_chars": 420, "post_pixel_chars": 980, "warnings": [] },
-    { "destaque": "d2", "main_chars": 1280, "comment_diaria_chars": 290, "comment_pixel_chars": 410, "warnings": [] },
-    { "destaque": "d3", "main_chars": 1410, "comment_diaria_chars": 270, "comment_pixel_chars": 480, "warnings": [] }
+    { "destaque": "d1", "main_chars": 1340, "post_pixel_chars": 980, "warnings": [] },
+    { "destaque": "d2", "main_chars": 1280, "warnings": [] },
+    { "destaque": "d3", "main_chars": 1410, "warnings": [] }
   ]
 }
 ```
 
 ## Regras
 
-- O arquivo temporário tem **9 textos + 1 post pessoal** total: 3 destaques × {main, comment_diaria, comment_pixel} + 1 `## post_pixel` standalone. Cada um delimitado por header markdown — sem cabeçalhos extras, sem `POST N —`, sem linha de instrução. **O `## post_pixel` NÃO tem subseções** (#2453) — nem `### comment_pixel`, nem `### comment_diaria`.
+- O arquivo temporário tem **4 textos** total: 3 posts principais (1 por destaque) + 1 `## post_pixel` standalone. Cada um delimitado por header markdown — sem cabeçalhos extras, sem `POST N —`, sem linha de instrução. **O `## post_pixel` NÃO tem subseções** (#2453).
 - Cada post deve funcionar de forma independente — não referenciar os outros destaques.
 - Não repetir o mesmo hook entre os 3 posts principais.
-- `comment_pixel` em cada destaque adiciona ângulo distinto — não copiar o hook do main, não simplesmente "concordo".
 - Evitar "IA" e "inteligência artificial" sempre que possível — usar o sujeito concreto.
-- Tom main post: profissional, analítico. Tom comment_diaria: curto, CTA. Tom comment_pixel: conversacional, opinião direta sem pergunta.
-- Máx 1 emoji relevante por post (apenas main; comments sem emoji).
+- Tom main post: profissional, analítico. Tom post_pixel: conversacional, opinião direta sem pergunta.
+- Máx 1 emoji relevante por post (apenas main).

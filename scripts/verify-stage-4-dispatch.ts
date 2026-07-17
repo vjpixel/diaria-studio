@@ -14,7 +14,10 @@
  * Output: relatorio JSON pra orchestrator + report human-readable em stderr.
  * Exit codes:
  *   0 = todos os posts confirmados (count auto-derivado de fbEntries + liEntries;
- *       edição #595 normal: 12 = 3 FB + 9 LI [3 main + 3 comment_diaria + 3 comment_pixel])
+ *       edição normal pós-#3627: 6 = 3 FB + 3 LI [main only — comment_diaria/
+ *       comment_pixel aposentados, decisão do editor 260716]. Edições legadas
+ *       ainda podem ter até 9 entries LinkedIn (3 main + 3 comment_diaria +
+ *       3 comment_pixel) — a lógica é dinâmica, conta o que existir de fato.)
  *   1 = >=1 post nao passou na verificacao (gate humano ve o problema)
  *   2 = erro de input (arquivo missing, env missing, etc.)
  *

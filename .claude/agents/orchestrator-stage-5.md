@@ -165,7 +165,7 @@ Skip apenas se editor selecionou "manual" em **ambos** LinkedIn e Facebook em 5b
 
 **So dispatchar se o canal foi autorizado em 5b.** Canal manual fica com `status: pending_manual`.
 
-**ORDEM OBRIGATORIA (#2454): newsletter ANTES do social.** O social usa `{edition_url}` no comment_diaria — essa URL so pode ser derivada do slug do draft depois que o draft Beehiiv for criado. Disparo em paralelo causava fallback silencioso pra `https://diar.ia.br` (raiz) quando `05-edition-url.txt` ainda nao existia. A partir de #2454, o fluxo e sequencial: draft Beehiiv → resolve URL → dispatch social.
+**ORDEM OBRIGATORIA (#2454): newsletter ANTES do social.** O social usa `{edition_url}` no `## post_pixel` (#3627: antes tambem no `comment_diaria`, aposentado) — essa URL so pode ser derivada do slug do draft depois que o draft Beehiiv for criado. Disparo em paralelo causava fallback silencioso pra `https://diar.ia.br` (raiz) quando `05-edition-url.txt` ainda nao existia. A partir de #2454, o fluxo e sequencial: draft Beehiiv → resolve URL → dispatch social.
 
 **Passo 5c-1: Newsletter Beehiiv.**
 

@@ -189,13 +189,13 @@ function main(): void {
     return;
   }
 
-  // Modo --check linkedin-schema (#595) — valida 3 textos por destaque
+  // Modo --check linkedin-schema (#595, #3627) — valida o post principal por destaque
   if (args.check === "linkedin-schema") {
     const result = lintLinkedinSchema(md);
     console.log(JSON.stringify(result, null, 2));
     if (!result.ok) {
       console.error(
-        `\n❌ ${result.errors.length} erro(s) no schema LinkedIn (#595 — main + comment_diaria + comment_pixel por destaque):`,
+        `\n❌ ${result.errors.length} erro(s) no schema LinkedIn (main post por destaque):`,
       );
       for (const e of result.errors) console.error(`  [${e.destaque}] ${e.rule}: ${e.detail}`);
       process.exit(1);

@@ -469,12 +469,11 @@ function main(): void {
     igStripped = igAfterHeaderStrip.trim();
   }
 
-  // #1075 + #1310: AMBOS comment_diaria e comment_pixel são postagem manual.
-  // Make.com LinkedIn module não suporta Create Comment nem em company page
-  // (descoberto em 2026-05-15 após semanas de Make rejection emails) nem em
-  // conta pessoal. publish-linkedin.ts agora skipa comments por default
-  // (#1310 inverteu o flag). Banner explica que só o main é automatizado.
-  const linkedinHeader = `# LinkedIn\n\n> **Postagem semi-automática (#1310 atualizou #1075):** \`main\` agenda via Worker→Make. \`comment_diaria\` (T+3min, company page) E \`comment_pixel\` (T+8min, conta pessoal) precisam ser postados manualmente — Make.com não suporta Create Comment em nenhum dos dois alvos. Copy-paste dos textos abaixo.\n`;
+  // #3627: comment_diaria e comment_pixel deixaram de ser gerados (decisão do
+  // editor, 260716 — postagem manual de comentários auxiliares não compensava
+  // mais o atrito, ver #1310/#1075 pro histórico de por que eram manuais).
+  // Banner atualizado: só main (agendado) + post_pixel (manual via Chrome).
+  const linkedinHeader = `# LinkedIn\n\n> **Postagem semi-automática:** \`main\` (d1/d2/d3) agenda via Worker→Make. \`post_pixel\` precisa ser postado manualmente via Claude in Chrome (#1690) — copy-paste do texto abaixo.\n`;
   // #3486: `# Instagram` só entra no output quando o tmp opcional existe —
   // preserva 03-social.md byte-idêntico ao formato pré-#3486 quando o agent
   // social-instagram não rodou (edições antigas, testes, resume parcial).

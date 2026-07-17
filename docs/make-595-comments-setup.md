@@ -1,5 +1,7 @@
 # Make scenarios setup — comments LinkedIn (#595)
 
+> **#3627 (260716): aposentado.** `social-linkedin` não gera mais `comment_diaria`/`comment_pixel` (decisão do editor — postagem manual de comentários auxiliares não compensava mais o atrito). Este doc fica como histórico do setup original; não há mais nada pra configurar aqui.
+
 Setup pros 2 scenarios Make pra suportar comments LinkedIn:
 1. **Estender o scenario Diar.ia existente** (`diar-ia-linkedin-post`) pra aceitar `action: "post"` ou `action: "comment"` via Router.
 2. **Criar novo scenario "Pixel LinkedIn"** autenticado com vjpixel personal pra `comment_pixel` (T+8min).

@@ -415,15 +415,18 @@ export interface LinkedinSchemaResult {
 }
 
 /**
- * #595: Valida que cada `## d{N}` na seção LinkedIn do `03-social.md` tem
- * subseções `### comment_diaria` e `### comment_pixel`. Sem isso, Stage 4
- * (futuro publish-linkedin com 9 items) não tem como compor payload pros 3
- * scenarios Make.
+ * #595: Valida o corpo de cada `## d{N}` na seção LinkedIn do `03-social.md`.
+ *
+ * #3627: `### comment_diaria` e `### comment_pixel` deixaram de ser gerados
+ * (decisão do editor, 260716 — postagem manual de comentários auxiliares não
+ * compensava mais o atrito). A validação de presença dessas subseções
+ * (`missing_comment_diaria`/`missing_comment_pixel`) foi removida — exigir
+ * algo que não deve mais existir travaria a pipeline em toda edição nova. A
+ * extração/contagem de chars permanece só para compat com `03-social.md` de
+ * edições antigas que ainda tenham essas subseções (nunca bloqueia).
  *
  * Char count limits:
  *   main: 1200-1500 (sweet spot LinkedIn)
- *   comment_diaria: 200-400 (CTA + URL)
- *   comment_pixel: 300-600 (opinião editorial)
  */
 export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
   const linkedinSection = extractPlatformSection(md, "linkedin");
@@ -495,20 +498,8 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
         detail: `${destaque}: post principal ausente em ## ${destaque}`,
       });
     }
-    if (!has_comment_diaria) {
-      errors.push({
-        destaque,
-        rule: "missing_comment_diaria",
-        detail: `${destaque}: subseção ### comment_diaria ausente — necessária pra CTA + URL (#595)`,
-      });
-    }
-    if (!has_comment_pixel) {
-      errors.push({
-        destaque,
-        rule: "missing_comment_pixel",
-        detail: `${destaque}: subseção ### comment_pixel ausente — necessária pra amplificação 2ª conta (#595)`,
-      });
-    }
+    // #3627: comment_diaria/comment_pixel não são mais gerados — sem checks
+    // de presença aqui (ver nota na JSDoc da função).
     // Char count ranges (warning only — não bloqueia gate; lints estritos
     // apenas missing-section)
     if (has_main && (mainText.length < 800 || mainText.length > 1800)) {
@@ -520,16 +511,15 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
     }
 
     // #595 (decisão editorial 2026-05-08): main post NÃO pode mencionar
-    // Diar.ia ou diar.ia.br. Branding/CTA vão exclusivamente no comment_diaria
-    // (T+3min). Main post fica 100% editorial.
+    // Diar.ia ou diar.ia.br. Main post fica 100% editorial (regra sobrevive
+    // independente do #3627 ter aposentado o comment_diaria como destino do CTA).
     if (has_main) {
       if (/\bDiar\.ia\b/i.test(mainText)) {
         errors.push({
           destaque,
           rule: "main_post_mentions_diaria",
           detail:
-            `${destaque}: main post menciona "Diar.ia" — ` +
-            `branding vai exclusivamente no comment_diaria (T+3min), main post fica 100% editorial.`,
+            `${destaque}: main post menciona "Diar.ia" — main post fica 100% editorial, sem branding.`,
         });
       }
       if (/\bdiar\.ia\.br\b/i.test(mainText)) {
@@ -537,8 +527,7 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
           destaque,
           rule: "main_post_mentions_diaria_url",
           detail:
-            `${destaque}: main post contém "diar.ia.br" — ` +
-            `URL/CTA pra newsletter vai exclusivamente no comment_diaria.`,
+            `${destaque}: main post contém "diar.ia.br" — main post fica 100% editorial, sem URL.`,
         });
       }
     }
@@ -784,7 +773,7 @@ export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
     // Extrair texto do comment_diaria
     const cdStart = body.search(/\n### comment_diaria\b/);
     const cpStart = body.search(/\n### comment_pixel\b/);
-    if (cdStart === -1) continue; // sem comment_diaria → regra missing_comment_diaria já pega
+    if (cdStart === -1) continue; // #3627: sem comment_diaria (esperado — não é mais gerado), no-op
     const start = body.indexOf("\n", cdStart + 1) + 1;
     // #2489: guard — se comment_pixel vier antes de comment_diaria (ou ausente),
     // cpStart ≤ cdStart produz slice vazio → falso-positivo "link ausente".
