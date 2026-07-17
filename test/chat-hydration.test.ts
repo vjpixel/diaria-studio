@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import {
   parsePendingChatResponse,
   planHydrationCards,
+  isSensitiveQuestion,
 } from "../scripts/studio-ui/public/chat-hydration.js";
 
 const VALID_QUESTIONS = [
@@ -121,5 +122,58 @@ describe("planHydrationCards (#3617)", () => {
 
   it("lista vazia de pendentes -> lista vazia, sem lançar", () => {
     assert.deepEqual(planHydrationCards([], new Set()), []);
+  });
+});
+
+/**
+ * #3561 (Studio UI fatia 7) — regressão #633: sem `isSensitiveQuestion`, o
+ * campo "Other" do card de AskUserQuestion (chat-drawer.js) renderizava
+ * `type="text"` pra QUALQUER pergunta, inclusive quando a sessão (rodando
+ * `/diaria-develop`, Gate 1 cat. A) pede o editor colar um token/credencial
+ * — o valor ficava em texto plano na tela, inclusive depois de enviado (o
+ * input desabilitado mantinha o `.value`). Esta função é o sinal que
+ * `chat-drawer.js` usa pra (a) montar o input como `type="password"` e (b)
+ * limpar o valor da tela ao enviar — ver uso em `onPermissionRequest`.
+ */
+describe("isSensitiveQuestion (#3561)", () => {
+  it("detecta 'token' no header", () => {
+    assert.equal(isSensitiveQuestion({ header: "Token Instagram", question: "Cole aqui" }), true);
+  });
+
+  it("detecta 'credencial' na pergunta", () => {
+    assert.equal(
+      isSensitiveQuestion({ header: "Cat. A", question: "Qual é a credencial de acesso à API?" }),
+      true,
+    );
+  });
+
+  it("detecta variações — senha, API key, chave de API, secret (case-insensitive)", () => {
+    assert.equal(isSensitiveQuestion({ header: "SENHA", question: "" }), true);
+    assert.equal(isSensitiveQuestion({ header: "", question: "cole a API key" }), true);
+    assert.equal(isSensitiveQuestion({ header: "", question: "informe a chave de API" }), true);
+    assert.equal(isSensitiveQuestion({ header: "Secret", question: "" }), true);
+    assert.equal(isSensitiveQuestion({ header: "api-key", question: "" }), true);
+  });
+
+  it("pergunta comum (sem termo sensível) -> false", () => {
+    assert.equal(
+      isSensitiveQuestion({ header: "Abordagem", question: "Formato A ou B de log?" }),
+      false,
+    );
+  });
+
+  it("word-boundary evita falso-positivo em palavra composta ('tokenização' não bate 'token')", () => {
+    // \btoken\b não casa dentro de "tokenização" (sem boundary entre "token"
+    // e "ização", ambos \w) — evita mascarar campos de perguntas legítimas
+    // só porque mencionam o tema sem pedir um valor.
+    assert.equal(isSensitiveQuestion({ header: "", question: "estratégia de tokenização" }), false);
+  });
+
+  it("input malformado (null/undefined/tipo errado) -> false, nunca lança", () => {
+    assert.equal(isSensitiveQuestion(null), false);
+    assert.equal(isSensitiveQuestion(undefined), false);
+    assert.equal(isSensitiveQuestion("string"), false);
+    assert.equal(isSensitiveQuestion({}), false);
+    assert.equal(isSensitiveQuestion({ header: 123, question: null }), false);
   });
 });

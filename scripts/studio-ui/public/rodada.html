@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diar.ia Studio — Rodada</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+  <link rel="stylesheet" href="/rodada.css" />
+  <link rel="stylesheet" href="/chat-drawer.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <a class="statusbar-item back-link" href="/">&larr; Painel</a>
+    <div class="statusbar-item">
+      <span class="label">Rodada</span>
+      <span class="value" id="round-session">—</span>
+    </div>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Acompanhamento de rodada — overnight / develop</h1>
+      <p class="hint">
+        Read-only: mostra o <code>plan.json</code> da sessão MAIS RECENTE já
+        gravado por <code>/diaria-overnight</code> ou <code>/diaria-develop</code>
+        rodando no terminal. Não dispara nenhuma rodada nova nem varredura —
+        o disparo continua sendo a skill no terminal. Perguntas
+        <code>AskUserQuestion</code> pendentes da sessão (briefing, gates de
+        desbloqueio) aparecem como formulário no chat à esquerda, não aqui.
+      </p>
+
+      <div class="round-kind-tabs" role="tablist">
+        <button type="button" class="round-kind-tab" data-kind="overnight" id="tab-overnight">Overnight</button>
+        <button type="button" class="round-kind-tab" data-kind="develop" id="tab-develop">Develop</button>
+      </div>
+
+      <div id="round-error" class="panel alert-banner" hidden></div>
+      <div id="round-empty" class="hint" hidden>Nenhuma sessão encontrada em <code id="round-empty-dir">—</code>.</div>
+
+      <dl class="round-meta" id="round-meta" hidden>
+        <div><dt>Sessão</dt><dd id="meta-session">—</dd></div>
+        <div><dt>Iniciada em</dt><dd id="meta-started" class="mono">—</dd></div>
+        <div><dt>Loop estendido</dt><dd id="meta-loop">—</dd></div>
+        <div><dt>plan.json</dt><dd class="mono" id="meta-path">—</dd></div>
+      </dl>
+
+      <div class="filters-bar">
+        <label class="filter-field">
+          <span class="label">Prioridade</span>
+          <select id="filter-priority">
+            <option value="">Todas</option>
+            <option value="P0">P0</option>
+            <option value="P1">P1</option>
+            <option value="P2">P2</option>
+            <option value="P3">P3</option>
+          </select>
+        </label>
+        <label class="filter-field">
+          <span class="label">Label</span>
+          <select id="filter-label">
+            <option value="">Todas</option>
+            <option value="local">local</option>
+            <option value="external-blocker">external-blocker</option>
+          </select>
+        </label>
+        <button id="refresh-btn" type="button">Atualizar</button>
+        <span id="last-updated" class="hint"></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Entram na rodada (<span id="entram-count">0</span>)</h2>
+      <div class="table-scroll">
+        <table class="triage-table round-queue-table">
+          <thead>
+            <tr><th>#</th><th>Prioridade</th><th>Status</th><th>Lote</th><th>PR</th></tr>
+          </thead>
+          <tbody id="entram-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Pendentes — Gate 1 de desbloqueio (<span id="pendente-count">0</span>)</h2>
+      <p class="hint">Só aparece em rodadas <code>/diaria-develop</code>: issues aguardando o editor destravar (cat. A-E). Nunca mostra valor de credencial.</p>
+      <div class="table-scroll">
+        <table class="triage-table round-queue-table">
+          <thead>
+            <tr><th>#</th><th>Prioridade</th><th>Motivo</th></tr>
+          </thead>
+          <tbody id="pendente-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Ficam de fora (<span id="fora-count">0</span>)</h2>
+      <div class="table-scroll">
+        <table class="triage-table round-queue-table">
+          <thead>
+            <tr><th>#</th><th>Prioridade</th><th>Motivo</th></tr>
+          </thead>
+          <tbody id="fora-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Timeline ao vivo</h2>
+      <p class="hint">
+        Mesma tabela do relatório final da rodada (<code>render-overnight-timeline.ts</code>,
+        #2637), atualizada automaticamente sempre que o <code>plan.json</code> mudar.
+      </p>
+      <div class="table-scroll">
+        <table class="triage-table round-timeline-table">
+          <thead>
+            <tr><th>Unidade</th><th>Início</th><th>Fim</th><th>Duração</th><th>Fix-iterations</th></tr>
+          </thead>
+          <tbody id="timeline-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/rodada.js" type="module"></script>
+  <script src="/chat-drawer.js" type="module"></script>
+</body>
+</html>

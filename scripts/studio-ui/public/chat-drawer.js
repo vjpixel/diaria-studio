@@ -55,7 +55,7 @@
 // obrigatório do #3617) é reidratado, o histórico de texto cru fica pendente
 // de investigação futura.
 
-import { parsePendingChatResponse, planHydrationCards } from "./chat-hydration.js";
+import { parsePendingChatResponse, planHydrationCards, isSensitiveQuestion } from "./chat-hydration.js";
 
 const STORAGE_KEY = "diaria-studio-chat-session-id";
 const COLLAPSE_STORAGE_KEY = "diaria-studio-chat-collapsed";
@@ -329,6 +329,16 @@ function onPermissionRequest(data) {
     waitedEl.textContent = formatWaited(data.askedAt);
   }, 15_000);
 
+  // #3561: campo(s) "Other" que pedem um secret (token/credencial/senha —
+  // ver `isSensitiveQuestion`, cat. A do develop) NUNCA devem ecoar o valor
+  // digitado em texto plano em nenhum lugar visível. `otherInputs` guarda a
+  // referência de cada input pra (a) mascarar visualmente (type="password")
+  // já na montagem do card, e (b) apagar o valor da tela assim que a
+  // resposta é enviada — mesmo em caso de falha de rede, o valor não fica
+  // sentado em texto plano num input desabilitado indefinidamente.
+  const otherInputs = [];
+  const sensitiveFlags = data.questions.map(isSensitiveQuestion);
+
   data.questions.forEach((q, qi) => {
     const qEl = document.createElement("div");
     qEl.className = "chat-permission-question";
@@ -368,13 +378,18 @@ function onPermissionRequest(data) {
     qEl.appendChild(optsWrap);
 
     const otherInput = document.createElement("input");
-    otherInput.type = "text";
-    otherInput.className = "chat-permission-other";
-    otherInput.placeholder = "Other (resposta livre)";
+    // #3561: type="password" pra qualquer pergunta que parece pedir um
+    // secret (token/credencial/senha) — mascara o valor na tela enquanto o
+    // editor digita, igual a qualquer campo de senha de browser.
+    otherInput.type = sensitiveFlags[qi] ? "password" : "text";
+    otherInput.autocomplete = "off";
+    otherInput.className = "chat-permission-other" + (sensitiveFlags[qi] ? " chat-permission-other-sensitive" : "");
+    otherInput.placeholder = sensitiveFlags[qi] ? "cole o valor (nunca fica visível)" : "Other (resposta livre)";
     otherInput.addEventListener("input", () => {
       state[qi].freeform = otherInput.value;
     });
     qEl.appendChild(otherInput);
+    otherInputs[qi] = otherInput;
 
     card.appendChild(qEl);
   });
@@ -394,6 +409,19 @@ function onPermissionRequest(data) {
         if (data.questions.length === 1) response = st.freeform.trim();
       } else {
         answers[q.question] = st.selected.join(", ");
+      }
+    });
+    // #3561: apaga o valor da TELA de qualquer campo sensível assim que a
+    // resposta foi capturada em `answers` — antes do round-trip de rede, não
+    // depois (uma falha no fetch abaixo não deve deixar o secret visível
+    // esperando retry). O texto digitado nunca é logado nem persistido em
+    // plan.json em texto plano (ver studio-round-queue.ts/SKILL.md) — isto
+    // cobre o lado do DOM (a única superfície onde ele ficaria visível).
+    data.questions.forEach((_q, qi) => {
+      if (sensitiveFlags[qi] && otherInputs[qi]) {
+        state[qi].freeform = "";
+        otherInputs[qi].value = "";
+        otherInputs[qi].placeholder = "•••••••• (enviado)";
       }
     });
     try {

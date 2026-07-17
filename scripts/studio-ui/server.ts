@@ -55,6 +55,14 @@
  *     `GET /api/editions/:aammdd/preview.html` (HTML completo do e-mail,
  *     pra `<iframe>`) + `POST /api/editions/:aammdd/actions/swap-destaque`
  *     — ver `studio-review.ts`/`studio-review-actions.ts` pro detalhe.
+ *   - `GET /api/round/:kind` (#3561, `kind` = `overnight` | `develop`) — fila
+ *     classificada (entram/pendente/fora, com motivo) + timeline por unidade
+ *     do `plan.json` MAIS RECENTE daquele kind, pra `/rodada`. Read-only:
+ *     visualização de uma rodada já em andamento/resumível, não dispara
+ *     nenhuma varredura/sessão nova — ver `studio-round.ts`.
+ *   - `GET /rodada` — acompanhamento de rodada overnight/develop (#3561):
+ *     mesma estratégia de rewrite, servindo `public/rodada.html`. Consome
+ *     `GET /api/round/:kind`.
  *   - `GET /apoios` — CRM simples de apoios apoia.se (#3602): mesma
  *     estratégia de rewrite, servindo `public/apoios.html`. Consome
  *     `GET /api/apoios` (contatos + status cruzado via `checkBacker` +
@@ -127,6 +135,10 @@ import { serveStaticFile } from "./static-serve.ts";
 import { buildTokensCss } from "./tokens-css.ts";
 import { fetchTriageData, type GhRunFn } from "./studio-issues.ts";
 import { buildWaveProposal } from "./studio-waves.ts";
+// #3561: visualização da fila classificada + timeline ao vivo de uma rodada
+// overnight/develop já em andamento/resumível — arquivo próprio desta
+// fatia, import isolado (nenhuma outra rota depende dele). Ver studio-round.ts.
+import { buildRoundPayload, isRoundKind } from "./studio-round.ts";
 import { buildDiariaDashboardHtml } from "./dashboard-diaria.ts";
 import { buildClariceDashboardHtml } from "./dashboard-clarice.ts";
 import {
@@ -336,6 +348,19 @@ function handleApiWaves(rootDir: string, res: ServerResponse, ghRun?: GhRunFn): 
     cached: triage.cached,
     ...proposal,
   });
+}
+
+/** `GET /api/round/:kind` (#3561) — fila classificada (entram/pendente/fora,
+ * com motivo) + timeline por unidade do `plan.json` MAIS RECENTE de `kind`
+ * ("overnight" | "develop"). Sempre 200 com `found:false` quando não há
+ * nenhuma sessão — `kind` inválido é o único 400 desta rota. Read-only:
+ * `buildRoundPayload` só lê disco, nunca dispara nada (ver studio-round.ts). */
+function handleApiRound(rootDir: string, kind: string, res: ServerResponse): void {
+  if (!isRoundKind(kind)) {
+    sendJson(res, 400, { error: "kind inválido — use 'overnight' ou 'develop'", kind });
+    return;
+  }
+  sendJson(res, 200, buildRoundPayload(rootDir, kind));
 }
 
 /** Coleta o corpo da request em memória, com um teto de bytes pra evitar que
@@ -863,6 +888,12 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiWaves(rootDir, res, ghRun);
         return;
       }
+      // #3561: fila classificada + timeline de uma rodada overnight/develop.
+      const roundMatch = urlPath.match(/^\/api\/round\/([^/]+)$/);
+      if (roundMatch) {
+        handleApiRound(rootDir, roundMatch[1], res);
+        return;
+      }
       // #3602: CRM de apoios — GET (POST/PUT de mutação já tratados acima,
       // antes do guard de método).
       if (urlPath === "/api/apoios") {
@@ -935,6 +966,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #3562: mesma estratégia de rewrite — a página busca /api/issues.
       if (urlPath === "/triagem" || urlPath === "/triagem/") {
         const served = serveStaticFile(PUBLIC_DIR, "/triagem.html", res);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #3561: mesma estratégia de rewrite — a página busca /api/round/:kind.
+      if (urlPath === "/rodada" || urlPath === "/rodada/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/rodada.html", res);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
