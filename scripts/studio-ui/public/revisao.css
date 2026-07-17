@@ -25,6 +25,20 @@
 }
 .rv-tab:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* #3635 — aviso de divergência HTML final × Markdown (ver revisao.js
+   refreshDivergenceBanner). Cor de alerta própria: `.hint`/`.alert-banner`
+   pré-existentes nesta página não têm regra em nenhum CSS carregado por
+   revisao.html (gap pré-existente, fora do escopo desta issue) — declarada
+   aqui pra garantir que o aviso realmente apareça. */
+.rv-divergence-banner {
+  margin: 0.4rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #c0392b;
+  border-radius: 6px;
+  background: rgba(192, 57, 43, 0.1);
+  font-size: 0.82rem;
+}
+
 .rv-editor-panel { display: flex; flex-direction: column; gap: 0.5rem; }
 .rv-editor-toolbar {
   display: flex;

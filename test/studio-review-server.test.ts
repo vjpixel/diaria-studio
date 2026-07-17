@@ -179,12 +179,72 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.equal(res.status, 405);
   });
 
+  // #3635 — editor de última milha do HTML final publicado de verdade.
+  it("GET .../review/html-final antes da Etapa 4: exists:false, sem erro", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/html-final", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.exists, false);
+    // #959/#1022: _internal/* nunca sincroniza com Drive — pull nem tenta.
+    assert.equal(body.pull.attempted, false);
+  });
+
+  it("PUT .../review/html-final grava _internal/newsletter-final.html (cria a pasta se preciso) e reflete no GET/diff", async () => {
+    const put = await fetch(new URL("/api/editions/260716/review/html-final", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "<html><body>final editado à mão</body></html>" }),
+    });
+    assert.equal(put.status, 200);
+    assert.equal(
+      readFileSync(join(editionDir, "_internal", "newsletter-final.html"), "utf8"),
+      "<html><body>final editado à mão</body></html>",
+    );
+
+    const get = await fetch(new URL("/api/editions/260716/review/html-final", server.url));
+    const getBody = await get.json();
+    assert.equal(getBody.exists, true);
+    assert.equal(getBody.content, "<html><body>final editado à mão</body></html>");
+    // baseline capturado na 1ª leitura == o conteúdo que acabou de ser
+    // escrito pelo PUT acima (nunca tinha sido lido antes) — então o diff
+    // deveria estar vazio até uma 2ª edição.
+    const diff1 = await fetch(new URL("/api/editions/260716/review/html-final/diff", server.url));
+    assert.equal((await diff1.json()).isEmpty, true);
+
+    const put2 = await fetch(new URL("/api/editions/260716/review/html-final", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "<html><body>2ª edição manual</body></html>" }),
+    });
+    assert.equal(put2.status, 200);
+    const diff2 = await fetch(new URL("/api/editions/260716/review/html-final/diff", server.url));
+    const diff2Body = await diff2.json();
+    assert.equal(diff2Body.isEmpty, false, "diverge do baseline — é este sinal que o guard do painel consome");
+  });
+
+  it("GET .../review/html-final/lint não roda checks de Markdown — retorna note explicativa", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/html-final/lint", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.checks, []);
+    assert.match(body.note ?? "", /última milha/);
+  });
+
   it("GET /revisao/{aammdd} serve o shell estático da SPA", async () => {
     const res = await fetch(new URL("/revisao/260716", server.url));
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") ?? "", /text\/html/);
     const body = await res.text();
     assert.ok(body.includes("Revisão de conteúdo"));
+  });
+
+  it("GET /revisao/{aammdd} inclui a aba 'HTML final' (#3635) e o banner de divergência", async () => {
+    const res = await fetch(new URL("/revisao/260716", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('data-slug="html-final"'));
+    assert.ok(body.includes('id="rv-divergence-banner"'));
+    assert.ok(body.includes('id="rv-html-final-note"'));
   });
 
   // #3629: smoke/contrato do HTML servido pros ganchos "Reescrever

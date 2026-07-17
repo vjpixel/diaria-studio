@@ -10,11 +10,12 @@
 
 import { buildRewriteTitlePrompt, buildRegenerateImagePrompt } from "./revisao-prompts.js";
 
-const SLUGS = ["categorized", "reviewed", "social"];
+const SLUGS = ["categorized", "reviewed", "social", "html-final"];
 const FILE_LABELS = {
   categorized: "01-categorized.md",
   reviewed: "02-reviewed.md",
   social: "03-social.md",
+  "html-final": "_internal/newsletter-final.html",
 };
 
 function getAammddFromPath() {
@@ -25,6 +26,12 @@ function getAammddFromPath() {
 const aammdd = getAammddFromPath();
 let currentSlug = "reviewed";
 let dirty = false;
+// #3635: true quando o HTML final salvo em disco diverge do baseline
+// (versão que a Etapa 4 gerou) — atualizado por refreshDivergenceBanner(),
+// consultado por saveCurrent() antes de salvar QUALQUER um dos outros 3
+// slugs (o risco documentado na issue: re-render do MD descarta edição
+// manual do HTML sem aviso da pipeline).
+let htmlFinalDiverged = false;
 
 const el = {
   backLink: document.getElementById("back-link"),
@@ -36,6 +43,8 @@ const el = {
   tabs: document.getElementById("rv-tabs"),
   fileStatus: document.getElementById("rv-file-status"),
   pullStatus: document.getElementById("rv-pull-status"),
+  htmlFinalNote: document.getElementById("rv-html-final-note"),
+  divergenceBanner: document.getElementById("rv-divergence-banner"),
   editor: document.getElementById("rv-editor"),
   saveBtn: document.getElementById("rv-save-btn"),
   diffBtn: document.getElementById("rv-diff-btn"),
@@ -92,6 +101,20 @@ function renderTabs() {
     btn.classList.toggle("active", btn.dataset.slug === currentSlug);
   });
   el.arquivo.textContent = FILE_LABELS[currentSlug];
+  el.htmlFinalNote.hidden = currentSlug !== "html-final";
+}
+
+// #3635: consulta a mesma rota genérica de diff (`.../review/html-final/diff`)
+// já roteada por isReviewSlug/REVIEW_FILES — sem endpoint novo. `isEmpty`
+// vem `true` tanto quando o arquivo ainda não existe quanto quando não há
+// diferença vs. baseline (ambos os casos: nada a avisar). Chamado
+// independente da aba atual, pra avisar mesmo quem está editando o
+// Markdown (o risco real é justamente re-renderizar o MD por cima do HTML
+// editado manualmente).
+async function refreshDivergenceBanner() {
+  const { body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/html-final/diff`);
+  htmlFinalDiverged = !!(body && body.ok && body.isEmpty === false);
+  el.divergenceBanner.hidden = !htmlFinalDiverged;
 }
 
 async function loadFile(slug, { force } = {}) {
@@ -130,6 +153,22 @@ async function loadFile(slug, { force } = {}) {
 }
 
 async function saveCurrent() {
+  // #3635: guard — salvar um dos slugs de Markdown enquanto o HTML final já
+  // diverge (foi editado manualmente) é o risco explícito da issue: um
+  // re-render futuro a partir do MD (rodar a Etapa 4 de novo) descarta essas
+  // edições manuais sem aviso nenhum da pipeline. Avisa e exige confirmação
+  // aqui, no único ponto de controle que o painel tem. Não bloqueia salvar
+  // o próprio html-final (não faz sentido avisar o editor sobre o arquivo
+  // que ele está justamente editando).
+  if (currentSlug !== "html-final" && htmlFinalDiverged) {
+    const proceed = window.confirm(
+      "HTML final (_internal/newsletter-final.html) foi editado manualmente e diverge " +
+        "da versão gerada pelo agente. Salvar o Markdown agora não altera o HTML — mas um " +
+        "re-render futuro a partir dele (rodar a Etapa 4 de novo) vai descartar essas " +
+        "edições manuais sem aviso automático da pipeline. Salvar mesmo assim?",
+    );
+    if (!proceed) return;
+  }
   el.saveStatus.textContent = "Salvando…";
   el.saveStatus.className = "rv-save-status";
   const { ok, body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/${currentSlug}`, {
@@ -142,6 +181,7 @@ async function saveCurrent() {
     el.saveStatus.textContent = `Salvo ${fmtTime(body.modifiedAt)}`;
     el.saveStatus.className = "rv-save-status ok";
     el.fileStatus.textContent = `Modificado ${fmtTime(body.modifiedAt)}`;
+    if (currentSlug === "html-final") await refreshDivergenceBanner();
   } else {
     el.saveStatus.textContent = `Erro ao salvar: ${(body && body.error) || "falha desconhecida"}`;
     el.saveStatus.className = "rv-save-status err";
@@ -241,13 +281,30 @@ async function resetBaselineCurrent() {
   if (ok && body && body.ok) {
     el.saveStatus.textContent = "Baseline resetado — diff agora compara contra o conteúdo atual.";
     el.saveStatus.className = "rv-save-status ok";
+    if (currentSlug === "html-final") await refreshDivergenceBanner();
   } else {
     el.saveStatus.textContent = `Erro ao resetar baseline: ${(body && body.error) || "falha desconhecida"}`;
     el.saveStatus.className = "rv-save-status err";
   }
 }
 
-function refreshPreview() {
+// #3635: quando a aba ativa é `html-final`, a "Preview do e-mail" mostra o
+// próprio HTML final SALVO em disco (via srcdoc) em vez do HTML derivado do
+// Markdown (`preview.html`, que ignora edições de última milha por
+// definição — é sempre re-derivado do 02-reviewed.md). Sempre lê do disco,
+// nunca do textarea ainda-não-salvo (mesmo invariante documentado no topo
+// do arquivo pros outros 3 slugs).
+async function refreshPreview() {
+  if (currentSlug === "html-final") {
+    el.previewFrame.removeAttribute("src");
+    const { body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/html-final`);
+    el.previewFrame.srcdoc =
+      body && body.ok && body.exists
+        ? body.content
+        : "<p style=\"font-family:sans-serif;padding:1rem;color:#444\">newsletter-final.html ainda não existe nesta edição (roda depois da Etapa 4).</p>";
+    return;
+  }
+  el.previewFrame.removeAttribute("srcdoc");
   // Cache-bust: o iframe não deve mostrar preview obsoleto depois de um save.
   el.previewFrame.src = `/api/editions/${encodeURIComponent(aammdd)}/preview.html?t=${Date.now()}`;
 }
@@ -373,6 +430,7 @@ async function init() {
   bindEvents();
   renderTabs();
   await loadFile(currentSlug);
+  await refreshDivergenceBanner();
   setConn("ok");
 }
 
