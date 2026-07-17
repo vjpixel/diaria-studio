@@ -55,7 +55,6 @@ function makeContact(overrides: Partial<ApoioContact> = {}): ApoioContact {
     id: "c1",
     name: "Fulano",
     emails: ["fulano@x.com"],
-    circle: "lista VJs",
     notes: "",
     outreach: [],
     createdAt: FIXED_NOW.toISOString(),
@@ -102,6 +101,15 @@ describe("parseContactsJsonl / serializeContactsJsonl (#3602)", () => {
     const parsed = parseContactsJsonl(raw);
     assert.equal(parsed[0].outreach.length, 1);
     assert.equal(parsed[0].outreach[0].date, "2026-07-01");
+  });
+
+  it("regressão (#3611): linha legada com campo 'circle' não quebra o parse, e o campo não é lido", () => {
+    const raw = JSON.stringify({ ...makeContact(), circle: "import inicial 260716" });
+    const parsed = parseContactsJsonl(raw);
+    assert.equal(parsed.length, 1);
+    assert.equal("circle" in parsed[0], false);
+    // roundtrip (parse -> serialize) também não reintroduz o campo.
+    assert.equal(serializeContactsJsonl(parsed).includes("circle"), false);
   });
 });
 
@@ -800,6 +808,11 @@ describe("parseCreateContactBody / parseUpdateContactBody / parseOutreachEventBo
     const result = parseCreateContactBody("{ not json");
     assert.equal(result.ok, false);
   });
+  it("regressão (#3611): 'circle' no corpo é ignorado, nunca aparece no value parseado", () => {
+    const result = parseCreateContactBody(JSON.stringify({ name: "F", emails: ["f@x.com"], circle: "lista VJs" }));
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal("circle" in result.value, false);
+  });
 
   it("parseUpdateContactBody aceita patch parcial", () => {
     const result = parseUpdateContactBody(JSON.stringify({ notes: "x" }));
@@ -809,6 +822,14 @@ describe("parseCreateContactBody / parseUpdateContactBody / parseOutreachEventBo
   it("parseUpdateContactBody rejeita tipo errado", () => {
     const result = parseUpdateContactBody(JSON.stringify({ name: 123 }));
     assert.equal(result.ok, false);
+  });
+  it("regressão (#3611): 'circle' no patch é ignorado, nunca aparece no value parseado", () => {
+    const result = parseUpdateContactBody(JSON.stringify({ notes: "x", circle: "lista VJs" }));
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal("circle" in result.value, false);
+      assert.deepEqual(result.value, { notes: "x" });
+    }
   });
 
   it("parseOutreachEventBody exige date YYYY-MM-DD + channel", () => {
