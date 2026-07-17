@@ -427,6 +427,18 @@ export async function enrichArticles(
         continue;
       }
       const merged = mergeMetadata(job.article, meta);
+      // #3628: `merged.titleUpdated` significa que `mergeMetadata` acabou de
+      // substituir um título PLACEHOLDER pelo og:title/<title> da página —
+      // ou seja, o texto vem da FONTE (og:title do site), não do editor. Esse
+      // texto carrega o mesmo risco de sufixo de veículo (" | OpenAI",
+      // " - Exame") que qualquer artigo de imprensa, então normaliza ANTES do
+      // fallback de submitted_subject abaixo (que é editorial e nunca deve
+      // ser tocado). Captura o snapshot aqui porque `merged.titleUpdated`
+      // continua fixo mesmo que o texto seja sobrescrito depois.
+      const titleCameFromFetchedMetadata = merged.titleUpdated;
+      if (titleCameFromFetchedMetadata && typeof merged.article.title === "string") {
+        merged.article.title = normalizeItemTitle(merged.article.title);
+      }
       // #1641: metadata veio só com summary (sem title) e o título seguiu
       // placeholder — recupera do submitted_subject pra não dropar na categorização.
       if (!merged.titleUpdated && needsEnrichment(merged.article)) {
@@ -434,8 +446,12 @@ export async function enrichArticles(
         if (recovered) merged.article.title = recovered;
       }
       // #2140, #2664, #2672: normalização de título — aplicado AQUI (dentro do worker),
-      // SOMENTE em artigos de imprensa (não-inbox). Títulos editoriais/inbox
-      // (curados pelo editor ou recuperados de submitted_subject) são preservados.
+      // SOMENTE em artigos de imprensa (não-inbox), cobrindo o caso onde o título de
+      // ENTRADA já era real (não-placeholder, ex: RSS com summary vindo do cache) e
+      // por isso não passou pelo branch `titleCameFromFetchedMetadata` acima. Títulos
+      // editoriais/inbox (curados pelo editor ou recuperados de submitted_subject)
+      // continuam preservados aqui — a normalização deles, quando aplicável, já
+      // aconteceu no branch de metadata-fetched acima.
       // Aplica: strip de sufixo de veículo (` | `, ` - `, ` — `) + strip de ponto final.
       // Aplicar antes de gravar em `out` para que `title_updated` reflita o estado
       // final correto, sem a obsolescência que existia no passo pós-loop.

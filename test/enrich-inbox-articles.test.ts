@@ -657,6 +657,40 @@ describe("enrichArticles — #2140 strip publisher suffix gate by origin (C9)", 
     );
   });
 
+  it("#3628: inbox placeholder title, fetch retorna og:title com sufixo de veículo → sufixo removido", async () => {
+    // Bug real (edição 260717): editor submeteu link via inbox, título ficou
+    // placeholder "(inbox)", o fetch buscou o og:title da própria página do
+    // veículo — que já carregava o sufixo de crédito de fonte embutido
+    // ("GPT-Red: Unlocking Self-Improvement for Robustness | OpenAI"). Esse
+    // texto vem da PÁGINA (não do editor), então deve ser normalizado como
+    // qualquer título de imprensa, mesmo sendo um artigo `source`/`flag` inbox.
+    const articles = [
+      { url: "https://openai.com/index/gpt-red", title: "(inbox)", flag: "editor_submitted" },
+    ];
+    const fetcher = async (): Promise<string | null> =>
+      `<meta property="og:title" content="GPT-Red: Unlocking Self-Improvement for Robustness | OpenAI"/>`;
+    const { articles: out } = await enrichArticles(articles, fetcher);
+    assert.equal(
+      out[0].title,
+      "GPT-Red: Unlocking Self-Improvement for Robustness",
+      "sufixo ' | OpenAI' deve ser removido mesmo em título de inbox recuperado via fetch",
+    );
+  });
+
+  it("#3628: idem para sufixo via travessão em veículo conhecido", async () => {
+    const articles = [
+      { url: "https://canaltech.com.br/x", title: "(inbox)", source: "inbox" },
+    ];
+    const fetcher = async (): Promise<string | null> =>
+      `<meta property="og:title" content="Novidade em IA generativa - Canaltech"/>`;
+    const { articles: out } = await enrichArticles(articles, fetcher);
+    assert.equal(
+      out[0].title,
+      "Novidade em IA generativa",
+      "sufixo ' - Canaltech' (veículo conhecido) deve ser removido em título de inbox recuperado via fetch",
+    );
+  });
+
   it("artigo RSS não-enriquecível (needsEnrichment=false) com sufixo → strippado no pós-loop", async () => {
     // Artigo RSS com título real E summary já preenchido → needsEnrichment=false, não entra no worker.
     // O pós-loop (não-targets) deve strippar o sufixo de imprensa.
