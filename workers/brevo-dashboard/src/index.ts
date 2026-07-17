@@ -60,6 +60,11 @@ import {
   LASTGOOD_CAMPAIGNS_KEY,
   CAMPAIGNS_FETCH_LIMIT,
   fetchPlanCredits,
+  tryAcquireRefreshLock,
+  releaseRefreshLock,
+  buildInflightCoalescedFallback,
+  buildInflightCoalescedCampaignsJson,
+  coalesceRefresh,
   type LastGoodCampaignsPayload,
 } from "./brevo-api.ts";
 import { LASTGOOD_TTL } from "./types.ts";
@@ -140,6 +145,178 @@ ${error ? '<p class="err">Token inválido. Tente novamente.</p>' : ''}
   })
 }
 
+/**
+ * #3644: corpo da rota `/api/campaigns`, extraído pra função própria — nunca
+ * lança (BrevoRateLimitError e erros genéricos viram Response aqui dentro),
+ * pra poder ser compartilhada como uma ÚNICA promise entre requests
+ * concorrentes via `coalesceRefresh` (ver call site em `fetch()`). O lock KV
+ * (`tryAcquireRefreshLock`) continua como 2ª linha de defesa pra requests
+ * concorrentes que caem em isolates/colos diferentes, fora do alcance do
+ * coalescing em memória.
+ */
+async function buildCampaignsResponse(
+  request: Request,
+  env: Env,
+  isFresh: boolean,
+  limit: number,
+): Promise<Response> {
+  const cache = caches.default;
+  const path = "/api/campaigns";
+  let lockAcquired = false;
+  try {
+    if (!isFresh) {
+      lockAcquired = await tryAcquireRefreshLock(env, path);
+      if (!lockAcquired) {
+        const coalesced = await buildInflightCoalescedCampaignsJson(env, limit);
+        if (coalesced) return coalesced;
+        // Sem stale bom pra servir: prossegue com o live-fetch mesmo com o
+        // lock ocupado (fail-open — pior caso é igual ao pré-#3644).
+      }
+    }
+    const campaigns = await fetchRecentCampaigns(env, limit, isFresh);
+    const response = new Response(JSON.stringify(campaigns, null, 2), {
+      headers: {
+        "Content-Type": "application/json",
+        // Cache-Control: private impede proxies compartilhados de cachear metricas
+        // de negocio. CDN-Cache-Control (CF-especifico) permite cache no edge do
+        // proprio Worker. fresh=1 retorna no-store para o browser nao cachear o "fresh".
+        "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
+        ...(isFresh ? {} : { "CDN-Cache-Control": "public, max-age=300" }),
+      },
+    });
+    if (!isFresh) {
+      // Clonar antes de armazenar — Response só pode ser lida uma vez
+      await cache.put(request, response.clone());
+    }
+    return response;
+  } catch (e) {
+    if (e instanceof BrevoRateLimitError) {
+      return rateLimitResponse(e.retryAfterSecs, false);
+    }
+    return new Response(`Brevo fetch error: ${(e as Error).message}`, { status: 502 });
+  } finally {
+    if (lockAcquired) await releaseRefreshLock(env, path);
+  }
+}
+
+/**
+ * #3644: corpo da rota `/`, extraído pra função própria pelo mesmo motivo de
+ * `buildCampaignsResponse` acima — nunca lança, compartilhável via
+ * `coalesceRefresh`.
+ */
+async function buildDashboardResponse(request: Request, env: Env, isFresh: boolean): Promise<Response> {
+  const cache = caches.default;
+  const path = "/";
+  // #3644: lock de coalescing cross-isolate (2ª linha de defesa) — antes de
+  // disparar o live-fetch (~150 chamadas Brevo), tenta adquirir o lock desta
+  // rota. Se outra request (outro isolate/colo) já está com ele, serve o
+  // fallback stale-mas-recente em vez de duplicar o fetch inteiro.
+  let lockAcquired = false;
+  if (!isFresh) {
+    lockAcquired = await tryAcquireRefreshLock(env, path);
+    if (!lockAcquired) {
+      const coalesced = await buildInflightCoalescedFallback(env);
+      if (coalesced) return coalesced;
+      // Sem stale bom pra servir: prossegue com o live-fetch mesmo com o lock
+      // ocupado (fail-open — pior caso é igual ao comportamento pré-#3644).
+    }
+  }
+  // Créditos do plano declarados FORA do try: buscados ANTES das campanhas
+  // (janela de rate-limit fresca) e reusados pelo fallback de 429 em memória.
+  // Sem isso o fallback lia "kv-only" e o KV nunca era populado (o fetch que o
+  // populava rodava DEPOIS das campanhas, pulado pelo 429) → "indisponível".
+  let planCredits: number | null = null;
+  try {
+    type CampaignRow = Awaited<ReturnType<typeof fetchRecentCampaigns>>[number];
+    let campaigns: CampaignRow[];
+    let scheduled: CampaignRow[];
+    let dataGeneratedAt: string;
+    // #3080: limite de campanhas pedido pra `campaigns` neste render — usado
+    // pra decidir se a janela está "cheia" (defesa em profundidade nas
+    // agregações de "Totais por mês"/"Volume no ciclo", ver sections-core.ts).
+    let campaignsWindowLimit: number | null = null;
+
+    // #3553 (parte B): Cron Trigger removido — toda request faz fetch ao
+    // vivo na Brevo (o cache de borda 5min via Cache API, checado acima,
+    // já limita isso a 1 fetch real a cada 5min mesmo com múltiplos
+    // visitantes; `?fresh=1` bypassa esse cache de borda também). O KV
+    // `dash:lastgood:campaigns` deixou de ser lido aqui como fonte
+    // primária — só é lido em buildRateLimitFallback (brevo-api.ts),
+    // quando o fetch abaixo lança BrevoRateLimitError.
+    //
+    // #2910: créditos do plano Brevo PRIMEIRO — 1 chamada barata a
+    // /v3/account com a janela de rate-limit fresca, antes do fetch
+    // pesado de campanhas (~100 GETs). Fail-soft: cai pro KV/null se
+    // falhar, nunca lança.
+    planCredits = await fetchPlanCredits(env, isFresh ? "fresh" : "cached").catch(() => null);
+    // #2268: agendadas PRIMEIRO — a listagem `queued` (1 chamada barata) pega a
+    // janela de rate-limit fresca, antes do fetch pesado de enviadas (que após
+    // o #2260 faz 2 GETs/campanha). Falha degrada pra [] (seção oculta) mas
+    // NÃO silenciosa — loga, pra não esconder regressão. fetchScheduledCampaigns
+    // já retenta a listagem em 429 internamente (#2268).
+    let scheduledOk = true;
+    scheduled = await fetchScheduledCampaigns(env, 50, isFresh).catch((e) => {
+      scheduledOk = false; // #2733: render degradado não vira o cache de campanhas
+      console.error("[#2268] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
+      return [];
+    });
+    // #3080: janela subida de 50 → CAMPAIGNS_FETCH_LIMIT (100, teto real da
+    // Brevo — ver docstring da constante, incidente 260710).
+    campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
+    dataGeneratedAt = new Date().toISOString();
+    campaignsWindowLimit = CAMPAIGNS_FETCH_LIMIT;
+    // #3553: write-through — persiste em dash:lastgood:campaigns a cada
+    // fetch bem-sucedido fora de ?fresh=1 (mesmo guard de sempre), pra
+    // buildRateLimitFallback ter um valor recente quando o Brevo entrar
+    // em rate-limit numa request futura. `?fresh=1` nunca escreve
+    // (comportamento preservado do #3079).
+    if (scheduledOk && env.STATS_CACHE && !isFresh) {
+      const payload: LastGoodCampaignsPayload = {
+        campaigns,
+        scheduled,
+        generatedAt: dataGeneratedAt,
+        campaignsLimit: CAMPAIGNS_FETCH_LIMIT, // #3080
+      };
+      await env.STATS_CACHE
+        .put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify(payload), { expirationTtl: LASTGOOD_TTL })
+        .catch(() => { /* erro de KV nunca bloqueia o render */ });
+    }
+
+    // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
+    // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
+    const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, isFresh ? "fresh" : "cached");
+    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit);
+    const response = new Response(html, {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
+        ...(isFresh ? {} : { "CDN-Cache-Control": "public, max-age=300" }),
+      },
+    });
+    if (!isFresh) {
+      await cache.put(request, response.clone());
+    }
+    return response;
+  } catch (e) {
+    if (e instanceof BrevoRateLimitError) {
+      // #2733: em vez de servir o HTML inteiro congelado (#2280), re-renderiza
+      // com campanhas Brevo STALE (do KV) + abas de KV FRESCAS. Assim uma janela
+      // de rate-limit do Brevo nunca esconde dado KV recém-publicado (o bug
+      // original: aba de Cupons pós-deploy oculta). Throw-safe: degrada p/ 503.
+      return buildRateLimitFallback(env, e.retryAfterSecs, planCredits);
+    }
+    return new Response(
+      `<!DOCTYPE html><html><body><h1>Dashboard error</h1><p>${escHtml((e as Error).message)}</p></body></html>`,
+      { status: 502, headers: { "Content-Type": "text/html; charset=utf-8" } },
+    );
+  } finally {
+    // #3644: libera o lock assim que o live-fetch termina (sucesso ou falha) —
+    // não deixa a próxima request esperar o TTL inteiro à toa. O TTL continua
+    // como rede de segurança (worker morto no meio da request, etc).
+    if (lockAcquired) await releaseRefreshLock(env, path);
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -217,36 +394,24 @@ export default {
     // precisa vir acompanhado de migração dos consumidores internos pra um
     // método de auth compatível com automação (ex: header de service token).
     if (path === "/api/campaigns") {
-      try {
-        // #3080: clamp mantido em 50 (não CAMPAIGNS_FETCH_LIMIT) — esta rota, ao
-        // contrário de "/", ainda faz o fetch SÍNCRONO em request-time (não passou
-        // pelo #3079/Cron Trigger). Subir o clamp aqui reintroduziria a latência
-        // que o #2144 já havia mitigado. Consumidores desta rota (ex: dashboard
-        // Clarice migration lookup, ver CLAUDE.md) pedem poucas campanhas recentes
-        // (`?limit=5`), não o histórico completo — não precisam da janela maior.
-        const limit = Math.min(50, Number(url.searchParams.get("limit") ?? "20") || 20);
-        const campaigns = await fetchRecentCampaigns(env, limit, isFresh);
-        const response = new Response(JSON.stringify(campaigns, null, 2), {
-          headers: {
-            "Content-Type": "application/json",
-            // Cache-Control: private impede proxies compartilhados de cachear metricas
-            // de negocio. CDN-Cache-Control (CF-especifico) permite cache no edge do
-            // proprio Worker. fresh=1 retorna no-store para o browser nao cachear o "fresh".
-            "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
-            ...(isFresh ? {} : { "CDN-Cache-Control": "public, max-age=300" }),
-          },
-        });
-        if (!isFresh) {
-          // Clonar antes de armazenar — Response só pode ser lida uma vez
-          await cache.put(request, response.clone());
-        }
-        return response;
-      } catch (e) {
-        if (e instanceof BrevoRateLimitError) {
-          return rateLimitResponse(e.retryAfterSecs, false);
-        }
-        return new Response(`Brevo fetch error: ${(e as Error).message}`, { status: 502 });
-      }
+      // #3080: clamp mantido em 50 (não CAMPAIGNS_FETCH_LIMIT) — esta rota, ao
+      // contrário de "/", ainda faz o fetch SÍNCRONO em request-time (não passou
+      // pelo #3079/Cron Trigger). Subir o clamp aqui reintroduziria a latência
+      // que o #2144 já havia mitigado. Consumidores desta rota (ex: dashboard
+      // Clarice migration lookup, ver CLAUDE.md) pedem poucas campanhas recentes
+      // (`?limit=5`), não o histórico completo — não precisam da janela maior.
+      const limit = Math.min(50, Number(url.searchParams.get("limit") ?? "20") || 20);
+      // #3644: buildCampaignsResponse roda o live-fetch (+ o lock KV cross-colo,
+      // internamente) e SEMPRE resolve pra uma Response (nunca lança) — é o que
+      // permite compartilhar a MESMA promise entre requests concorrentes via
+      // coalesceRefresh (defesa primária, same-isolate). `?fresh=1` nunca
+      // coalesce (bypassa cache/lock por design já existente).
+      const buildOnce = () => buildCampaignsResponse(request, env, isFresh, limit);
+      const shared = isFresh ? await buildOnce() : await coalesceRefresh(`GET:${path}:${limit}`, buildOnce);
+      // Response compartilhada entre N callers concorrentes -- cada um recebe seu
+      // próprio clone (o corpo original nunca é lido diretamente, então pode ser
+      // clonado múltiplas vezes com segurança).
+      return shared.clone();
     }
 
     // #2718: rota de cupons — requer auth explícita (PII: emails de clientes).
@@ -289,95 +454,16 @@ export default {
     }
 
     if (path === "/" || path === "/index.html") {
-      // Créditos do plano declarados FORA do try: buscados ANTES das campanhas
-      // (janela de rate-limit fresca) e reusados pelo fallback de 429 em memória.
-      // Sem isso o fallback lia "kv-only" e o KV nunca era populado (o fetch que o
-      // populava rodava DEPOIS das campanhas, pulado pelo 429) → "indisponível".
-      let planCredits: number | null = null;
-      try {
-        type CampaignRow = Awaited<ReturnType<typeof fetchRecentCampaigns>>[number];
-        let campaigns: CampaignRow[];
-        let scheduled: CampaignRow[];
-        let dataGeneratedAt: string;
-        // #3080: limite de campanhas pedido pra `campaigns` neste render — usado
-        // pra decidir se a janela está "cheia" (defesa em profundidade nas
-        // agregações de "Totais por mês"/"Volume no ciclo", ver sections-core.ts).
-        let campaignsWindowLimit: number | null = null;
-
-        // #3553 (parte B): Cron Trigger removido — toda request faz fetch ao
-        // vivo na Brevo (o cache de borda 5min via Cache API, checado acima,
-        // já limita isso a 1 fetch real a cada 5min mesmo com múltiplos
-        // visitantes; `?fresh=1` bypassa esse cache de borda também). O KV
-        // `dash:lastgood:campaigns` deixou de ser lido aqui como fonte
-        // primária — só é lido em buildRateLimitFallback (brevo-api.ts),
-        // quando o fetch abaixo lança BrevoRateLimitError.
-        //
-        // #2910: créditos do plano Brevo PRIMEIRO — 1 chamada barata a
-        // /v3/account com a janela de rate-limit fresca, antes do fetch
-        // pesado de campanhas (~100 GETs). Fail-soft: cai pro KV/null se
-        // falhar, nunca lança.
-        planCredits = await fetchPlanCredits(env, isFresh ? "fresh" : "cached").catch(() => null);
-        // #2268: agendadas PRIMEIRO — a listagem `queued` (1 chamada barata) pega a
-        // janela de rate-limit fresca, antes do fetch pesado de enviadas (que após
-        // o #2260 faz 2 GETs/campanha). Falha degrada pra [] (seção oculta) mas
-        // NÃO silenciosa — loga, pra não esconder regressão. fetchScheduledCampaigns
-        // já retenta a listagem em 429 internamente (#2268).
-        let scheduledOk = true;
-        scheduled = await fetchScheduledCampaigns(env, 50, isFresh).catch((e) => {
-          scheduledOk = false; // #2733: render degradado não vira o cache de campanhas
-          console.error("[#2268] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
-          return [];
-        });
-        // #3080: janela subida de 50 → CAMPAIGNS_FETCH_LIMIT (100, teto real da
-        // Brevo — ver docstring da constante, incidente 260710).
-        campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
-        dataGeneratedAt = new Date().toISOString();
-        campaignsWindowLimit = CAMPAIGNS_FETCH_LIMIT;
-        // #3553: write-through — persiste em dash:lastgood:campaigns a cada
-        // fetch bem-sucedido fora de ?fresh=1 (mesmo guard de sempre), pra
-        // buildRateLimitFallback ter um valor recente quando o Brevo entrar
-        // em rate-limit numa request futura. `?fresh=1` nunca escreve
-        // (comportamento preservado do #3079).
-        if (scheduledOk && env.STATS_CACHE && !isFresh) {
-          const payload: LastGoodCampaignsPayload = {
-            campaigns,
-            scheduled,
-            generatedAt: dataGeneratedAt,
-            campaignsLimit: CAMPAIGNS_FETCH_LIMIT, // #3080
-          };
-          await env.STATS_CACHE
-            .put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify(payload), { expirationTtl: LASTGOOD_TTL })
-            .catch(() => { /* erro de KV nunca bloqueia o render */ });
-        }
-
-        // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
-        // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
-        const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, isFresh ? "fresh" : "cached");
-        const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit);
-        const response = new Response(html, {
-          headers: {
-            "Content-Type": "text/html; charset=utf-8",
-            "Cache-Control": isFresh ? "no-store" : "private, max-age=300",
-            ...(isFresh ? {} : { "CDN-Cache-Control": "public, max-age=300" }),
-          },
-        });
-        if (!isFresh) {
-          await cache.put(request, response.clone());
-        }
-        return response;
-      } catch (e) {
-        if (e instanceof BrevoRateLimitError) {
-          // #2733: em vez de servir o HTML inteiro congelado (#2280), re-renderiza
-          // com campanhas Brevo STALE (do KV) + abas de KV FRESCAS. Assim uma janela
-          // de rate-limit do Brevo nunca esconde dado KV recém-publicado (o bug
-          // original: aba de Cupons pós-deploy oculta). Throw-safe: degrada p/ 503.
-          return buildRateLimitFallback(env, e.retryAfterSecs, planCredits);
-        }
-        return new Response(
-          `<!DOCTYPE html><html><body><h1>Dashboard error</h1><p>${escHtml((e as Error).message)}</p></body></html>`,
-          { status: 502, headers: { "Content-Type": "text/html; charset=utf-8" } },
-        );
-      }
+      // #3644: buildDashboardResponse roda o live-fetch (+ lock KV cross-colo,
+      // internamente) e SEMPRE resolve pra uma Response (nunca lança) — permite
+      // compartilhar a MESMA promise entre requests concorrentes via
+      // coalesceRefresh (defesa primária, same-isolate — ver docstring da função
+      // em brevo-api.ts). `?fresh=1` nunca coalesce (bypassa cache/lock por
+      // design já existente). Chave normaliza "/" e "/index.html" pro mesmo
+      // slot -- são a mesma rota efetivamente.
+      const buildOnce = () => buildDashboardResponse(request, env, isFresh);
+      const shared = isFresh ? await buildOnce() : await coalesceRefresh("GET:/", buildOnce);
+      return shared.clone();
     }
 
     return new Response("Not found", { status: 404 });
