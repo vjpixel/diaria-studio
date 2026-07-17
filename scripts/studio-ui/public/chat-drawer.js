@@ -595,9 +595,10 @@ async function sendMessage(text) {
           // Sem este handler, o evento chegava e era silenciosamente
           // ignorado (nenhum case do switch batia) — a tela ficava muda
           // ("não responde") até o stream fechar sozinho, sem explicação.
-          finalizeAssistantMessage();
-          appendErrorNote(data.message || "a sessão terminou com erro — ver detalhes no terminal/run-log.");
-          setToggleStatus("down");
+          // Reusa onError (mesmo objeto handlers) em vez de duplicar as 3
+          // chamadas — this é o próprio objeto handlers aqui, já que este
+          // método é invocado como handlers.onEvent(...).
+          this.onError(data.message || "a sessão terminou com erro — ver detalhes no terminal/run-log.");
         }
       },
       onError(message) {
