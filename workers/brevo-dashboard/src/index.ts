@@ -115,6 +115,25 @@ export async function isAuthenticated(request: Request, env: Env): Promise<boole
   return timingSafeEqualStr(val, env.AUTH_TOKEN)
 }
 
+/**
+ * #3653 achado 1: resolve `?limit=` da rota `/api/campaigns` sem descartar um
+ * `0` explícito. O padrão antigo (`Number(raw ?? "20") || 20`) colapsava
+ * `Number("0")` (falsy) pro fallback 20 -- um `?limit=0` explícito nunca
+ * chegava a `fetchRecentCampaigns` como `0`, retornando 20 campanhas mesmo
+ * assim. Espelha `resolveDashboardLimit` de `scripts/clarice-schedule-ramp.ts`
+ * (#3643 minor 2), que corrigiu o mesmo bug do lado do CLIENTE (a URL montada
+ * pro fetch) -- mas sem este fix o Worker, do lado SERVIDOR, ainda ignorava o
+ * `limit=0` que chegava na querystring, então o fix do cliente não tinha
+ * efeito observável fim-a-fim pra esse valor específico. `raw` ausente ou
+ * não-numérico → `fallback`. Clamp de 50 (`DASHBOARD_WORKER_CLAMP`, ver
+ * `scripts/clarice-schedule-ramp.ts`) continua aplicado pelo caller.
+ */
+export function resolveCampaignsLimitParam(raw: string | null, fallback = 20): number {
+  if (raw === null) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export function loginPage(error = false): Response {
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -207,26 +226,36 @@ async function buildCampaignsResponse(
 async function buildDashboardResponse(request: Request, env: Env, isFresh: boolean): Promise<Response> {
   const cache = caches.default;
   const path = "/";
-  // #3644: lock de coalescing cross-isolate (2ª linha de defesa) — antes de
-  // disparar o live-fetch (~150 chamadas Brevo), tenta adquirir o lock desta
-  // rota. Se outra request (outro isolate/colo) já está com ele, serve o
-  // fallback stale-mas-recente em vez de duplicar o fetch inteiro.
   let lockAcquired = false;
-  if (!isFresh) {
-    lockAcquired = await tryAcquireRefreshLock(env, path);
-    if (!lockAcquired) {
-      const coalesced = await buildInflightCoalescedFallback(env);
-      if (coalesced) return coalesced;
-      // Sem stale bom pra servir: prossegue com o live-fetch mesmo com o lock
-      // ocupado (fail-open — pior caso é igual ao comportamento pré-#3644).
-    }
-  }
   // Créditos do plano declarados FORA do try: buscados ANTES das campanhas
   // (janela de rate-limit fresca) e reusados pelo fallback de 429 em memória.
   // Sem isso o fallback lia "kv-only" e o KV nunca era populado (o fetch que o
   // populava rodava DEPOIS das campanhas, pulado pelo 429) → "indisponível".
   let planCredits: number | null = null;
   try {
+    // #3644: lock de coalescing cross-isolate (2ª linha de defesa) — antes de
+    // disparar o live-fetch (~150 chamadas Brevo), tenta adquirir o lock desta
+    // rota. Se outra request (outro isolate/colo) já está com ele, serve o
+    // fallback stale-mas-recente em vez de duplicar o fetch inteiro.
+    // #3653 achado 2: movido pra DENTRO do try (era antes/fora dele) — espelha
+    // a estrutura de `buildCampaignsResponse` acima, onde o mesmo bloco já
+    // vive dentro do try/finally. `buildInflightCoalescedFallback` chama
+    // `readKvTabs` antes do próprio try dela começar; hoje toda leitura que
+    // ela toca já é defensivamente blindada (não lança na prática), mas manter
+    // o bloco fora do try aqui era uma assimetria estrutural desnecessária —
+    // uma exceção genuína aqui escaparia do catch/finally desta função e
+    // vazaria sem tratamento pelo call site (`coalesceRefresh`), cujo
+    // `.finally()` só limpa a entrada do Map, não converte a rejection em
+    // Response.
+    if (!isFresh) {
+      lockAcquired = await tryAcquireRefreshLock(env, path);
+      if (!lockAcquired) {
+        const coalesced = await buildInflightCoalescedFallback(env);
+        if (coalesced) return coalesced;
+        // Sem stale bom pra servir: prossegue com o live-fetch mesmo com o lock
+        // ocupado (fail-open — pior caso é igual ao comportamento pré-#3644).
+      }
+    }
     type CampaignRow = Awaited<ReturnType<typeof fetchRecentCampaigns>>[number];
     let campaigns: CampaignRow[];
     let scheduled: CampaignRow[];
@@ -400,7 +429,7 @@ export default {
       // que o #2144 já havia mitigado. Consumidores desta rota (ex: dashboard
       // Clarice migration lookup, ver CLAUDE.md) pedem poucas campanhas recentes
       // (`?limit=5`), não o histórico completo — não precisam da janela maior.
-      const limit = Math.min(50, Number(url.searchParams.get("limit") ?? "20") || 20);
+      const limit = Math.min(50, resolveCampaignsLimitParam(url.searchParams.get("limit")));
       // #3644: buildCampaignsResponse roda o live-fetch (+ o lock KV cross-colo,
       // internamente) e SEMPRE resolve pra uma Response (nunca lança) — é o que
       // permite compartilhar a MESMA promise entre requests concorrentes via
