@@ -18,6 +18,8 @@ import {
   parseStageStatus,
   loadDoc,
   saveDoc,
+  reconcileRunningStages,
+  readStepCheckpointEnds,
   STAGES,
   type StageStatusDoc,
 } from "../scripts/update-stage-status.ts";
@@ -640,6 +642,123 @@ describe("loadDoc/saveDoc (#1216)", () => {
       const s1 = reloaded.rows.find((r) => r.stage === 1)!;
       assert.equal(s1.status, "done", "JSON sidecar vence (canonical)");
       assert.equal(s1.cost_usd, 0.45, "cost_usd só está no JSON");
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+});
+
+// Achado 260716 (edição 260706): Stage 5 concluiu de verdade (draft criado,
+// e-mail de teste enviado, .step-5-done.json gravado) mas uma reconciliação
+// manual posterior (editor agendou direto no Beehiiv) só atualizou os dados
+// da edição, não este doc — Stage 5 ficou "running" por 11 dias no Studio UI.
+describe("reconcileRunningStages (#2525) — checkpointEnds evita falso 'failed' (achado 260716)", () => {
+  it("stage running sem checkpointEnds → 'failed' (comportamento pré-existente preservado)", () => {
+    const doc = applyUpdate(makeInitialDoc("260706"), {
+      stage: 5,
+      status: "running",
+      start: "2026-07-06T01:42:21.287Z",
+    });
+    const { doc: reconciled, reconciledStages } = reconcileRunningStages(
+      doc,
+      "2026-07-16T12:00:00Z",
+    );
+    const s5 = reconciled.rows.find((r) => r.stage === 5)!;
+    assert.deepEqual(reconciledStages, [5]);
+    assert.equal(s5.status, "failed");
+    assert.equal(s5.end, "2026-07-16T12:00:00Z");
+  });
+
+  it("stage running COM checkpointEnds[stage] → 'done' usando o completed_at real, não 'failed'", () => {
+    const doc = applyUpdate(makeInitialDoc("260706"), {
+      stage: 5,
+      status: "running",
+      start: "2026-07-06T01:42:21.287Z",
+    });
+    const { doc: reconciled, reconciledStages } = reconcileRunningStages(
+      doc,
+      "2026-07-16T12:00:00Z",
+      { 5: "2026-07-06T02:40:04.622Z" },
+    );
+    const s5 = reconciled.rows.find((r) => r.stage === 5)!;
+    assert.deepEqual(reconciledStages, [5]);
+    assert.equal(s5.status, "done");
+    assert.equal(s5.end, "2026-07-06T02:40:04.622Z", "usa o completed_at real, não o 'now' da reconciliação");
+    assert.equal(s5.duration_ms, 3463335); // 57m43s — duração real do trabalho, não até 'now'
+  });
+
+  it("stage já com 'end' preenchido não é sobrescrito pelo checkpointEnds (start/end originais preservados)", () => {
+    const doc: StageStatusDoc = {
+      ...makeInitialDoc("260706"),
+      rows: makeInitialDoc("260706").rows.map((r) =>
+        r.stage === 5
+          ? { ...r, status: "running" as const, start: "2026-07-06T01:42:21.287Z", end: "2026-07-06T03:00:00Z" }
+          : r,
+      ),
+    };
+    const { doc: reconciled } = reconcileRunningStages(doc, "2026-07-16T12:00:00Z", {
+      5: "2026-07-06T02:40:04.622Z",
+    });
+    const s5 = reconciled.rows.find((r) => r.stage === 5)!;
+    // status ainda reconcilia pra "done" (checkpoint prova sucesso), mas o
+    // `end` já registrado (r.end) tem precedência sobre o checkpoint, mesmo padrão de `r.end ?? checkpointEnd ?? nowTs`.
+    assert.equal(s5.status, "done");
+    assert.equal(s5.end, "2026-07-06T03:00:00Z");
+  });
+});
+
+describe("readStepCheckpointEnds (#2525) — achado 260716", () => {
+  it("lê completed_at de .step-N-done.json só pros stages 'running' no doc", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage-checkpoint-"));
+    try {
+      const editionDir = join(dir, "260706");
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(editionDir, "_internal", ".step-5-done.json"),
+        JSON.stringify({ step: 5, completed_at: "2026-07-06T02:40:04.622Z", outputs: [] }),
+        "utf8",
+      );
+
+      const doc = applyUpdate(makeInitialDoc("260706"), {
+        stage: 5,
+        status: "running",
+        start: "2026-07-06T01:42:21.287Z",
+      });
+      const ends = readStepCheckpointEnds(editionDir, doc);
+      assert.deepEqual(ends, { 5: "2026-07-06T02:40:04.622Z" });
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("stage 'running' sem .step-N-done.json correspondente → não entra no mapa (fallback 'failed' intacto)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage-checkpoint-missing-"));
+    try {
+      const editionDir = join(dir, "260706");
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+
+      const doc = applyUpdate(makeInitialDoc("260706"), { stage: 5, status: "running" });
+      const ends = readStepCheckpointEnds(editionDir, doc);
+      assert.deepEqual(ends, {});
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("stages não-'running' são ignorados mesmo se tiverem .step-N-done.json (não precisam reconciliação)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage-checkpoint-done-"));
+    try {
+      const editionDir = join(dir, "260706");
+      mkdirSync(join(editionDir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(editionDir, "_internal", ".step-1-done.json"),
+        JSON.stringify({ step: 1, completed_at: "2026-07-05T20:44:23.966Z" }),
+        "utf8",
+      );
+
+      const doc = applyUpdate(makeInitialDoc("260706"), { stage: 1, status: "done" });
+      const ends = readStepCheckpointEnds(editionDir, doc);
+      assert.deepEqual(ends, {}, "stage 1 já é 'done', não precisa de checkpoint reconciliado");
     } finally {
       rmSync(dir, { recursive: true });
     }
