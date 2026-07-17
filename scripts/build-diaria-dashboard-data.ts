@@ -388,14 +388,23 @@ export function bucketOvernightIssue(
   // statusLine (que já trata esse status como terminal). Bucket mais
   // próximo semanticamente é "pulada" (não requer mais ação do editor).
   //
-  // Restrito a ESSE status específico, não ao `isTerminalForBar` genérico
-  // (que também casa `mergeada`/`draft-ci-vermelho`/`pulada`): pra qualquer
-  // OUTRO status terminal, timeline vazio indica uma rodada
-  // interrompida/legada de verdade, não um EPIC deferido por design —
-  // tratar como "pulada" nesse caso mascararia um dado real de rodada
-  // incompleta.
+  // EXCETO também status "pulada" literal (achado 260716, dashboard local
+  // mostrava a rodada 260706 com "2 em andamento" que já estavam resolvidos):
+  // issue bloqueada externamente (ex: #2723, #2483) reavaliada em rodadas
+  // subsequentes recebe status "pulada" de novo a cada noite, mas o
+  // coordenador nem sempre regrava o timestamp `timeline.pulada` numa
+  // reavaliação (só na 1ª vez que a decisão foi tomada). "Pulada" é uma
+  // decisão atômica — ao contrário de "mergeada" (processo de várias etapas:
+  // PR → CI → merge, que pode genuinamente ficar interrompido no meio),
+  // não existe estado "pulada pela metade" que essa exceção mascararia.
+  //
+  // Restrito a ESSES DOIS status específicos, não ao `isTerminalForBar`
+  // genérico (que também casa `mergeada`/`draft-ci-vermelho`): pra qualquer
+  // OUTRO status terminal, timeline vazio ainda indica uma rodada
+  // interrompida/legada de verdade — tratar esses como "pulada" mascararia
+  // um dado real de rodada incompleta.
   if (!tl || Object.keys(tl).length === 0) {
-    if (issue.status === EPIC_DEFERRED_STATUS) return "pulada";
+    if (issue.status === EPIC_DEFERRED_STATUS || issue.status === "pulada") return "pulada";
     return "in_progress";
   }
   if (tl.merged) return "merged";
