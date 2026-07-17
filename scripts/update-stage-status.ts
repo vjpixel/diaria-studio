@@ -352,16 +352,31 @@ export function makeInitialDoc(edition: string, runStartedAt?: string): StageSta
  * situation — typically by checking that the pipeline is not currently live
  * before calling reconcile.
  *
+ * `checkpointEnds` (achado 260716, edição 260706): quando o caller já sabe
+ * que um stage "running" órfão na verdade TERMINOU com sucesso (evidência
+ * concreta: `_internal/.step-{N}-done.json` existe com `completed_at`), passar
+ * o timestamp aqui marca o stage como "done" em vez de "failed" — usando esse
+ * timestamp real como `end`. Sem isso, um stage que só não teve seu
+ * `update-stage-status --status done` chamado (ex: sessão interrompida bem
+ * depois do trabalho real terminar, ou reconciliação manual do editor que só
+ * tocou nos arquivos de dados e não neste doc) fica marcado "failed" pra
+ * sempre — falso negativo que o Studio UI/dashboard exibiria como falha real.
+ * Função continua pura (sem I/O): o caller é responsável por ler os arquivos
+ * `.step-N-done.json` do disco e montar esse mapa (ver `--reconcile-running`
+ * no CLI abaixo).
+ *
  * Returns the list of stage numbers that were reconciled (for logging).
  * Does NOT save to disk — caller must call saveDoc().
  *
  * @param doc       Current stage status document
  * @param now       ISO timestamp to use as `end` for reconciled rows (injectable for testing)
+ * @param checkpointEnds  Mapa stage → `completed_at` real (de `.step-N-done.json`), quando conhecido
  * @returns         Updated doc + list of reconciled stage numbers
  */
 export function reconcileRunningStages(
   doc: StageStatusDoc,
   now?: string,
+  checkpointEnds?: Partial<Record<number, string>>,
 ): { doc: StageStatusDoc; reconciledStages: number[] } {
   const nowTs = now ?? new Date().toISOString();
   const reconciledStages: number[] = [];
@@ -369,13 +384,14 @@ export function reconcileRunningStages(
   const newRows = doc.rows.map((r) => {
     if (r.status !== "running") return r;
     reconciledStages.push(r.stage);
-    // Mark as failed with auto-carimbo of end timestamp (no start override — preserve original).
-    const end = r.end ?? nowTs;
+    const checkpointEnd = checkpointEnds?.[r.stage];
+    const status: StageStatus = checkpointEnd ? "done" : "failed";
+    const end = r.end ?? checkpointEnd ?? nowTs;
     const duration_ms =
       r.start && end ? Math.max(0, new Date(end).getTime() - new Date(r.start).getTime()) : r.duration_ms;
     return {
       ...r,
-      status: "failed" as StageStatus,
+      status,
       end,
       duration_ms,
     } as StageRow;
@@ -385,6 +401,31 @@ export function reconcileRunningStages(
     doc: { ...doc, rows: newRows, generated_at: nowTs },
     reconciledStages,
   };
+}
+
+/**
+ * Lê `_internal/.step-{stage}-done.json` pra cada stage atualmente "running"
+ * no doc, quando existir, extraindo `completed_at`. Usado pra alimentar
+ * `checkpointEnds` de `reconcileRunningStages` — separado da função pura pra
+ * manter I/O isolado e testável independentemente.
+ */
+export function readStepCheckpointEnds(
+  editionDir: string,
+  doc: StageStatusDoc,
+): Partial<Record<number, string>> {
+  const result: Partial<Record<number, string>> = {};
+  for (const row of doc.rows) {
+    if (row.status !== "running") continue;
+    const checkpointPath = resolve(editionDir, "_internal", `.step-${row.stage}-done.json`);
+    if (!existsSync(checkpointPath)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(checkpointPath, "utf8")) as { completed_at?: string };
+      if (parsed.completed_at) result[row.stage] = parsed.completed_at;
+    } catch {
+      // JSON malformado -- ignora, cai no fallback "failed" existente
+    }
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -537,7 +578,7 @@ async function main(): Promise<void> {
     console.error(
       "Uso:\n" +
         "  --edition-dir <path> --init                                # inicializa (todos pending)\n" +
-        "  --edition-dir <path> --reconcile-running                   # marca stages 'running' órfãos como 'failed' (#2525)\n" +
+        "  --edition-dir <path> --reconcile-running                   # marca stages 'running' órfãos como 'failed', ou 'done' se houver .step-N-done.json (#2525, achado 260716)\n" +
         "  --edition-dir <path> --stage N --status pending|running|done|failed [field=val]...",
     );
     process.exit(2);
@@ -551,9 +592,18 @@ async function main(): Promise<void> {
     doc = makeInitialDoc(editionId);
   } else if (args["reconcile-running"]) {
     // #2525: reconcile orphaned running stages on resume.
-    // Marks all `running` stages as `failed` — orchestrator can re-run them.
+    // Marks `running` stages as `failed` — EXCETO quando `.step-N-done.json`
+    // prova que o stage terminou de verdade (achado 260716, edição 260706:
+    // reconciliação manual do editor tinha atualizado os dados da edição mas
+    // não este doc, deixando Stage 5 "running" por 11 dias apesar de
+    // concluído) — nesse caso usa "done" com o `completed_at` real.
     doc = loadDoc(editionDir, editionId);
-    const { doc: reconciledDoc, reconciledStages } = reconcileRunningStages(doc, new Date().toISOString());
+    const checkpointEnds = readStepCheckpointEnds(editionDir, doc);
+    const { doc: reconciledDoc, reconciledStages } = reconcileRunningStages(
+      doc,
+      new Date().toISOString(),
+      checkpointEnds,
+    );
     doc = reconciledDoc;
 
     try {
