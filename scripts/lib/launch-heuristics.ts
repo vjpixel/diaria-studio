@@ -1400,6 +1400,13 @@ export function categorize(article: Article): Category {
     // #1852: sigla de conferência no slug (cvpr/neurips/...) → pesquisa, mesmo
     // que o agent rotule launch. Caso 260605: blogs.nvidia.com/blog/cvpr-research-…
     if (isResearchBySlug(article.url)) return "pesquisa";
+    // #3638: roundup/newsletter em blog oficial (ex: langchain.com/blog
+    // monthly newsletter, caso real 260630) → noticias, não lancamento.
+    // Mesmo sinal já usado no gate de tutorial (step 0) — sem este check,
+    // adicionar um domínio ao LANCAMENTO_DOMAINS/PATTERNS (ex: LangChain,
+    // #3628) faz posts de roundup caírem no default "lancamento" no fim
+    // deste bloco em vez de "noticias".
+    if (isRoundupSlug(article.url, article.title ?? "")) return "noticias";
     if (isNonLaunchPath(article.url)) return "noticias"; // #898
     // #1852: customer story "Frontiers" da OpenAI → noticias. Caso 260605:
     // openai.com/index/endava-frontiers. Roda antes do short-circuit type_hint.

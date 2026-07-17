@@ -210,6 +210,22 @@ async function main() {
   const skipExisting = !flags.has("no-skip-existing");
   const isTest = flags.has("test-mode");
 
+  // #3635: kill-switch manual do editor via platform.config.json — mesmo
+  // padrão de graceful-skip (exit 0) das credenciais ausentes abaixo, mas
+  // acionado por decisão editorial (ex: formato do Instagram em redesenho),
+  // não por configuração incompleta. Checar ANTES das credenciais: mesmo com
+  // env vars válidas, o canal fica bloqueado até o editor reativar.
+  const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+  const igConfig = platformConfig?.publishing?.social?.instagram;
+  if (igConfig?.enabled === false) {
+    console.warn(
+      `SKIP: Instagram bloqueado via platform.config.json (publishing.social.instagram.enabled=false).\n` +
+        `Motivo: ${igConfig.disabled_reason || "não especificado"}\n` +
+        "Reative setando publishing.social.instagram.enabled:true quando pronto.",
+    );
+    process.exit(0);
+  }
+
   // Carregar credenciais — env vars obrigatórias em runtime
   const igUserId = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID || "";
   const accessToken = process.env.INSTAGRAM_ACCESS_TOKEN || "";
@@ -264,7 +280,7 @@ async function main() {
   // Ler o cache de imagens públicas UMA vez (não muda entre destaques).
   // Para Instagram Graph API, a imagem precisa estar em URL pública acessível —
   // gerado por upload-images-public.ts no Stage 5c-pre.
-  const publicImagesPath = resolve(editionDir, "_internal", "06-public-images.json");
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
   const publicImagesExists = existsSync(publicImagesPath);
   const publicImages: Record<string, unknown> = publicImagesExists
     ? (JSON.parse(readFileSync(publicImagesPath, "utf8")) as Record<string, unknown>)
@@ -357,13 +373,14 @@ async function main() {
       continue;
     }
 
-    // Chave esperada: "d1_1x1", "d2_1x1", "d3_1x1"
-    const imgKey = `${d}_1x1`;
-    const imageUrl = publicImages[imgKey] as string | undefined;
+    // Chave esperada: images.d1 / images.d2 / images.d3 (crop 1x1 — mesmo
+    // shape lido por publish-linkedin.ts, ver ImageCacheFile em publish-linkedin.ts)
+    const images = (publicImages as { images?: Record<string, { url?: string }> }).images;
+    const imageUrl = images?.[d]?.url;
     if (!imageUrl) {
       console.error(
-        `ERROR: URL pública para ${imgKey} não encontrada em 06-public-images.json.\n` +
-          `Chaves disponíveis: ${Object.keys(publicImages).join(", ")}`,
+        `ERROR: URL pública para ${d} não encontrada em 06-public-images.json.\n` +
+          `Chaves disponíveis: ${Object.keys(images ?? {}).join(", ")}`,
       );
       const entry: PostEntry = {
         platform: "instagram",
@@ -371,7 +388,7 @@ async function main() {
         url: null,
         status: "failed",
         scheduled_at: null,
-        reason: `public URL para ${imgKey} ausente em 06-public-images.json`,
+        reason: `public URL para ${d} ausente em 06-public-images.json`,
       };
       tagAndAppend(entry);
       results.push(entry);

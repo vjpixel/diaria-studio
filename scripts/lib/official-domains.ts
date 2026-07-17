@@ -127,6 +127,14 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     // {project}.github.io = site oficial open-source; subdomain obrigatório
     path_patterns: [/^[a-z0-9][a-z0-9-]*\.github\.io\//],
   },
+  {
+    // 260717: adicionado no gate da edição 260717 (OpenWiki 0.2 flagado como
+    // invalid_url apesar de ser o blog oficial da empresa).
+    company: "LangChain",
+    path_patterns: [/^(www\.)?langchain\.com\/blog\//],
+    detection_keywords: /\b(langchain|langgraph|langsmith)\b/i,
+    primary_domain: "langchain.com",
+  },
 
   // -----------------------------------------------------------------------
   // Domínios any-path (qualquer URL no host = lancamento)
@@ -305,6 +313,16 @@ export const OFFICIAL_SOURCES: OfficialSource[] = [
     // classificados como noticias mesmo vindo do domínio oficial da empresa.
     company: "Samsung Semiconductor (AI research)",
     domains: ["research.samsung.com"],
+  },
+  {
+    // 260717: adicionado no gate da edição 260717 (Ailo/One-Click Buy
+    // flagado como invalid_url apesar de vir do site institucional oficial
+    // do iFood). Não é empresa nativa de IA, mas o item específico é sobre
+    // lançamento de feature de IA (assistente Ailo) — domínio scoped ao
+    // subdomínio institucional/imprensa, não o app de consumo principal.
+    company: "iFood (institucional)",
+    domains: ["institucional.ifood.com.br"],
+    detection_keywords: /\bifood\b/i,
   },
 ];
 

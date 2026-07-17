@@ -264,16 +264,19 @@ describe("Erro claro quando imagem ausente", () => {
       url: null,
       status: "failed" as const,
       scheduled_at: null,
-      reason: "public URL para d1_1x1 ausente em 06-public-images.json",
+      reason: "public URL para d1 ausente em 06-public-images.json",
     };
     assert.equal(failEntry.status, "failed");
     assert.equal(failEntry.url, null);
-    assert.ok(failEntry.reason.includes("d1_1x1"));
+    assert.ok(failEntry.reason.includes("public URL para d1"));
   });
 
-  it("chave de imagem pública é {destaque}_1x1 (ex: d1_1x1)", () => {
-    // Verificar o padrão de chave usado para lookup em 06-public-images.json
-    assert.match(SRC, /_1x1/, "deve usar sufixo _1x1 para lookup de imagem pública");
+  it("chave de imagem pública é images.{destaque} (ex: images.d1) — mesmo shape de publish-linkedin.ts (#3634)", () => {
+    // #3634: bug anterior lia publicImages[`${d}_1x1`] direto no objeto raiz
+    // (JSON real é { images: { d1: { url }, ... } }, sem sufixo _1x1) — 100%
+    // miss em runtime. Fix alinha com o ImageCacheFile shape de publish-linkedin.ts.
+    assert.match(SRC, /images\?\.\[d\]\?\.url/, "deve ler via images?.[d]?.url (shape aninhado, sem sufixo _1x1)");
+    assert.doesNotMatch(SRC, /\$\{d\}_1x1/, "não deve mais montar chave com sufixo _1x1");
   });
 });
 
@@ -353,6 +356,37 @@ describe("Credenciais INSTAGRAM obrigatórias", () => {
     // (ainda pode ter process.exit(1) em outros erros fatais — só a bifurcação de creds mudou).
     assert.match(SRC, /SKIP:.*ausente/, "deve emitir mensagem SKIP quando creds ausentes");
   });
+});
+
+// ─── Kill-switch manual via platform.config.json (#3635) ────────────────────
+
+describe("Kill-switch publishing.social.instagram.enabled (#3635)", () => {
+  it("lê publishing.social.instagram do platform.config.json", () => {
+    assert.match(
+      SRC,
+      /platformConfig\?\.publishing\?\.social\?\.instagram/,
+      "deve ler publishing.social.instagram de platform.config.json",
+    );
+  });
+
+  it("sai com exit 0 (graceful skip) quando enabled === false", () => {
+    assert.match(
+      SRC,
+      /igConfig\?\.enabled === false/,
+      "deve checar enabled === false explicitamente (chave ausente = habilitado por default)",
+    );
+  });
+
+  it("checa o kill-switch ANTES da checagem de credenciais", () => {
+    const killSwitchIdx = SRC.indexOf("igConfig?.enabled === false");
+    const credsIdx = SRC.indexOf("if (!igUserId || !accessToken)");
+    assert.ok(killSwitchIdx > 0 && credsIdx > 0, "ambos os trechos devem existir");
+    assert.ok(
+      killSwitchIdx < credsIdx,
+      "kill-switch deve ser checado antes das credenciais (bloqueio editorial > config incompleta)",
+    );
+  });
+
 });
 
 // ─── Retry com backoff exponencial ───────────────────────────────────────────

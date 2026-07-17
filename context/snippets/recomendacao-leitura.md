@@ -5,8 +5,8 @@ slot 2 D2/D3, #2978) — NÃO auto-injetado por padrão (diferente de livros,
 #2527): o editor cola este bloco na lacuna desejada quando quiser divulgar
 uma leitura específica.
 
-Formato: (1) linha de título da seção, sem negrito nem link ("Recomendação
-de leitura"); (2) 1 parágrafo com título do livro em negrito-com-link +
+Formato: (1) linha de título da seção, em negrito e sem link
+("**Recomendação de leitura**", 260717); (2) 1 parágrafo com título do livro em negrito-com-link +
 autor(es) — `[**Título**](url), de Autor.`; (3) 1 parágrafo de comentário
 pessoal em 1ª pessoa sobre a leitura. Sem CTA pill — só 1 link no bloco
 inteiro e nenhum parágrafo é CTA-only, então `shouldForceCtaPill`
@@ -28,6 +28,12 @@ estrutural (sponsored/CTA-only não se aplicam aqui). Sem o marcador, o box
 passa a renderizar os 3 parágrafos uniformemente (sem título serif 26px
 destacado) — ainda funcional, só sem o realce visual de título.
 
+260717 (decisão do editor): a linha de título volta a sair em negrito
+(`**Recomendação de leitura**`) pra funcionar como categoria/kicker
+visualmente distinta do corpo — bold-wrap simples que reverte o efeito
+colateral do #3475 sem reintroduzir detecção por emoji nem mexer em
+newsletter-render-html.ts.
+
 O conteúdo abaixo é a instância real usada na edição 2041 (Kai-Fu Lee),
 mantida como exemplo de referência — o editor substitui título/autor/link/
 comentário a cada reuso, preservando a estrutura acima.
@@ -38,7 +44,7 @@ context/snippets/recomendacao-leitura-mensal.md — mesma estrutura, 3ª pessoa
 diário que fica em 1ª pessoa por design).
 -->
 
-Recomendação de leitura
+**Recomendação de leitura**
 
 [**2041: Como a inteligência artificial vai mudar sua vida nas próximas décadas**](https://link.amazon/B05FlAaJ7), de Kai-Fu Lee e Chen Qiufan.
 
