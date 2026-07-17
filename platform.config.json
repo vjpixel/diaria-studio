@@ -103,6 +103,10 @@
     },
     "social": {
       "mode": "draft_or_schedule",
+      "instagram": {
+        "enabled": false,
+        "disabled_reason": "260717: editor pediu bloqueio manual — precisa definir um formato próprio pro Instagram (diferente do que o pipeline usa hoje) antes de reativar. Reative setando enabled:true quando o novo formato estiver pronto."
+      },
       "linkedin": {
         "make_webhook_url": "https://hook.us2.make.com/dmikx9ktrmee9woy1synf5vvgo5qhx2t",
         "make_webhook_pixel_url": "",
