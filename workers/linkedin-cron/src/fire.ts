@@ -161,6 +161,32 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       webhookUrl = env.MAKE_WEBHOOK_URL;
     }
 
+    // (#3662) Guard: o módulo LinkedIn do Make Diar.ia (webhookTarget != "pixel")
+    // não suporta "Create Comment" — o comentário na montagem do payload abaixo
+    // já documenta que "Pixel só aceita comment", ou seja, webhook_target="pixel"
+    // é o ÚNICO caso onde action="comment" é válido. Uma entry residual (fila
+    // pré-#3627, que removeu a geração de comments) ou regressão futura com
+    // action="comment" + webhookTarget="diaria" geraria erro
+    // `Missing value of required parameter 'url'` no Make, 5 retries, DLQ, e
+    // email de erro pro editor — não adianta re-tentar, o Make sempre rejeita o
+    // mesmo payload. Rejeitar cedo, direto pra DLQ, mesmo padrão do bloco
+    // pixel-sem-webhook-url acima.
+    if (action === "comment" && webhookTarget !== "pixel") {
+      await releaseCronClaim();
+      const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
+      await env.LINKEDIN_QUEUE.put(
+        dlqKey,
+        JSON.stringify({ ...entry, retry_count: MAX_RETRIES }),
+        { expirationTtl: DLQ_TTL_SECONDS },
+      );
+      await env.LINKEDIN_QUEUE.delete(k.name);
+      console.error(
+        `[fire] ${k.name} dropped to dlq: action=comment but webhook_target=${webhookTarget} (só "pixel" suporta comment) (dlq_key=${dlqKey})`,
+      );
+      dlq++;
+      continue;
+    }
+
     // Disparar webhook Make (#881 — com timeout)
     let succeeded = false;
     try {

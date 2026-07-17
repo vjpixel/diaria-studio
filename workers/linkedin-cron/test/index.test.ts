@@ -1132,21 +1132,49 @@ describe("#595 fireDueItems: routing por webhook_target", () => {
     } finally { restore(); }
   });
 
-  it("webhook_target=diaria + action=comment → MAKE_WEBHOOK_URL com action=comment", async () => {
+  // (#3662) BUG ORIGINAL: webhook_target=diaria + action=comment ERA forward
+  // pro Make webhook "diaria" sem validação — o módulo LinkedIn desse
+  // scenario não suporta "Create Comment" (só o webhook "pixel" aceita),
+  // então o Make sempre rejeitava com `Missing value of required parameter
+  // 'url'`, esgotando os 5 retries até DLQ + email de erro pro editor.
+  // Fix: fire.ts agora rejeita cedo (DLQ direto, sem fetch) qualquer
+  // action=comment com webhookTarget != "pixel".
+  it("webhook_target=diaria + action=comment → DLQ direto, NUNCA chama o webhook Make (#3662)", async () => {
     const { env, kv } = mkEnv("tok", "https://make.test/diaria");
     const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-com");
     const entry: QueueEntry = {
       text: "Diar.ia comment", image_url: null, scheduled_at: past,
       destaque: "d2", created_at: past, retry_count: 0,
       webhook_target: "diaria", action: "comment", parent_destaque: "d2",
     };
-    kv.store.set(buildQueueKey(past, "uuid-com"), JSON.stringify(entry));
+    kv.store.set(queueKey, JSON.stringify(entry));
     try {
       const result = await __test__.fireDueItems(env);
-      assert.equal(result.fired, 1);
-      assert.equal(fetchCalls[0].url, "https://make.test/diaria");
-      const fb = fetchCalls[0].body as { action: string };
-      assert.equal(fb.action, "comment");
+      assert.equal(result.dlq, 1);
+      assert.equal(fetchCalls.length, 0, "não deve ter tentado o webhook Make — o Make sempre rejeitaria action=comment em webhook_target != pixel");
+      const dlqKeys = Array.from(kv.store.keys()).filter(k => k.startsWith("dlq:"));
+      assert.equal(dlqKeys.length, 1);
+      assert.equal(kv.store.has(queueKey), false);
+    } finally { restore(); }
+  });
+
+  it("webhook_target ausente (default 'diaria') + action=comment → DLQ direto, NUNCA chama o webhook Make (#3662)", async () => {
+    const { env, kv } = mkEnv("tok", "https://make.test/diaria");
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const queueKey = buildQueueKey(past, "uuid-com-nodefault");
+    const entry: QueueEntry = {
+      text: "legacy comment residual", image_url: null, scheduled_at: past,
+      destaque: "d3", created_at: past, retry_count: 0,
+      action: "comment", // webhook_target ausente — default resolve pra "diaria"
+    };
+    kv.store.set(queueKey, JSON.stringify(entry));
+    try {
+      const result = await __test__.fireDueItems(env);
+      assert.equal(result.dlq, 1);
+      assert.equal(fetchCalls.length, 0);
+      const dlqKeys = Array.from(kv.store.keys()).filter(k => k.startsWith("dlq:"));
+      assert.equal(dlqKeys.length, 1);
     } finally { restore(); }
   });
 });

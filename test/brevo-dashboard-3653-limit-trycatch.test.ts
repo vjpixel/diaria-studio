@@ -124,6 +124,22 @@ describe("resolveCampaignsLimitParam (#3653 achado 1)", () => {
     assert.equal(resolveCampaignsLimitParam("0"), 0);
   });
 
+  // #3659: raw="" (querystring `?limit=` sem valor) -> Number("") é 0 (não NaN),
+  // e Number.isFinite(0) é true, então sem guard explícito de string vazia isso
+  // colapsava pra 0 em vez do fallback -- distinto (e incorretamente idêntico
+  // ao efeito) de `?limit=0` explícito, que deve mesmo resolver pra 0.
+  it('raw="" (vazio explícito) -> fallback default (20), NÃO 0', () => {
+    assert.equal(resolveCampaignsLimitParam(""), 20);
+  });
+
+  it('raw="   " (só espaços) -> fallback default (20)', () => {
+    assert.equal(resolveCampaignsLimitParam("   "), 20);
+  });
+
+  it('raw="" com fallback customizado -> fallback customizado, NÃO 0', () => {
+    assert.equal(resolveCampaignsLimitParam("", 5), 5);
+  });
+
   it('raw="30" -> 30', () => {
     assert.equal(resolveCampaignsLimitParam("30"), 30);
   });

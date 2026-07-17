@@ -14,6 +14,7 @@ import {
   checkEiaGuard,
   isScheduledStatus,
   applyVerifyResults,
+  runScheduleLoop,
 } from "../scripts/clarice-schedule-sends.ts";
 import type { SendsSummaryEntry } from "../scripts/lib/send-plan.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "../scripts/lib/mensal/monthly-paths.ts";
@@ -521,5 +522,125 @@ describe('scheduledAt passado em --schedule — guard simétrico (#2101 finding 
       () => assertScheduledAtFuture(SENDS, 21, afterAllSends),
       /desatualizado|passado ou presente/i,
     );
+  });
+});
+
+// Regressão #3658 (mesma classe do #3652 bug 2 em clarice-schedule-ramp.ts):
+// falha de putFn na campanha N não deve impedir que as campanhas 1..N-1
+// (já agendadas de verdade e imutáveis na Brevo) tenham seu status local
+// persistido como "scheduled" — antes, o loop só persistia UMA VEZ no fim,
+// então uma exceção no meio do loop perdia o rastro de todo o progresso
+// já feito.
+describe("runScheduleLoop (#3658 — persistência per-iteração, não só no fim do loop)", () => {
+  function makeCampaign(key: string, id: number): { key: string; campaignId: number; listId: number; subject: string; scheduledAt: string; status: "draft" | "scheduled" } {
+    return { key, campaignId: id, listId: 1, subject: "X", scheduledAt: "2099-01-01T09:00:00.000Z", status: "draft" };
+  }
+
+  it("putFn lança na campanha N → campanhas 1..N-1 já têm status='scheduled' persistido (não se perde na exceção)", async () => {
+    const c1 = makeCampaign("d01", 1);
+    const c2 = makeCampaign("d02", 2);
+    const c3 = makeCampaign("d03", 3); // putFn desta vai lançar
+    const campaigns = [c1, c2, c3];
+    const keysInScope = new Set(["d01", "d02", "d03"]);
+    const writeCalls: string[] = [];
+    const logs: string[] = [];
+
+    const putFn = async (c: typeof c1) => {
+      if (c.key === "d03") throw new Error("500 Internal Server Error (Brevo transiente)");
+      // PUT real seria aqui — mock apenas resolve
+    };
+    const verifyFn = async (c: typeof c1) => ({ status: "queued" });
+
+    await assert.rejects(
+      () => runScheduleLoop(campaigns, keysInScope, "/fake/campaigns-summary.json", {
+        putFn,
+        verifyFn,
+        writeFn: (_p, content) => { writeCalls.push(content); },
+        logFn: (m) => { logs.push(m); },
+      }),
+      /500 Internal Server Error/,
+    );
+
+    // c1 e c2 (sucesso ANTES da falha em c3) devem estar persistidos como
+    // scheduled — é exatamente o que o bug antigo perdia (só persistia no
+    // fim do loop inteiro, então a exceção em c3 descartava o progresso de
+    // c1/c2 também).
+    assert.equal(c1.status, "scheduled", "c1 (PUT bem-sucedido antes da falha) deve estar persistido");
+    assert.equal(c2.status, "scheduled", "c2 (PUT bem-sucedido antes da falha) deve estar persistido");
+    assert.equal(c3.status, "draft", "c3 (putFn lançou) deve permanecer draft — nunca foi agendado de fato");
+    assert.equal(writeCalls.length, 2, "deve ter gravado em disco 2× (c1 + c2), antes da exceção de c3");
+  });
+
+  it("todas as campanhas bem-sucedidas → todas persistidas como scheduled, na ordem", async () => {
+    const c1 = makeCampaign("d01", 1);
+    const c2 = makeCampaign("d02", 2);
+    const campaigns = [c1, c2];
+    const keysInScope = new Set(["d01", "d02"]);
+    const putCalls: string[] = [];
+
+    await runScheduleLoop(campaigns, keysInScope, "/fake/path", {
+      putFn: async (c) => { putCalls.push(c.key); },
+      verifyFn: async () => ({ status: "scheduled" }),
+      writeFn: () => {},
+      logFn: () => {},
+    });
+
+    assert.deepEqual(putCalls, ["d01", "d02"], "PUTs sequenciais na ordem do array");
+    assert.equal(c1.status, "scheduled");
+    assert.equal(c2.status, "scheduled");
+  });
+
+  it("campanha fora de keysInScope é ignorada (não chama putFn)", async () => {
+    const c1 = makeCampaign("d01", 1);
+    const c2 = makeCampaign("d99", 2); // fora do escopo
+    const campaigns = [c1, c2];
+    const keysInScope = new Set(["d01"]);
+    const putCalls: string[] = [];
+
+    await runScheduleLoop(campaigns, keysInScope, "/fake/path", {
+      putFn: async (c) => { putCalls.push(c.key); },
+      verifyFn: async () => ({ status: "scheduled" }),
+      writeFn: () => {},
+      logFn: () => {},
+    });
+
+    assert.deepEqual(putCalls, ["d01"]);
+    assert.equal(c2.status, "draft", "fora de escopo — não deve ser tocado");
+  });
+
+  it("campanha já 'scheduled' é pulada (não chama putFn de novo)", async () => {
+    const c1 = makeCampaign("d01", 1);
+    c1.status = "scheduled";
+    const campaigns = [c1];
+    const keysInScope = new Set(["d01"]);
+    const putCalls: string[] = [];
+
+    await runScheduleLoop(campaigns, keysInScope, "/fake/path", {
+      putFn: async (c) => { putCalls.push(c.key); },
+      verifyFn: async () => ({ status: "scheduled" }),
+      writeFn: () => {},
+      logFn: () => {},
+    });
+
+    assert.equal(putCalls.length, 0, "já agendada — não deve re-PUTar");
+  });
+
+  it("scheduledAt no passado lança ANTES do putFn (guard simétrico ao --create, #2101)", async () => {
+    const c1 = makeCampaign("d01", 1);
+    c1.scheduledAt = "2020-01-01T09:00:00.000Z"; // passado
+    const campaigns = [c1];
+    const keysInScope = new Set(["d01"]);
+    const putCalls: string[] = [];
+
+    await assert.rejects(
+      () => runScheduleLoop(campaigns, keysInScope, "/fake/path", {
+        putFn: async (c) => { putCalls.push(c.key); },
+        verifyFn: async () => ({ status: "scheduled" }),
+        writeFn: () => {},
+        logFn: () => {},
+      }),
+      /passado\/presente/,
+    );
+    assert.equal(putCalls.length, 0, "guard deve barrar ANTES de chamar putFn");
   });
 });
