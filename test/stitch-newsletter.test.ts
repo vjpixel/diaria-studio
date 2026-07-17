@@ -1050,7 +1050,10 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
       // curadoria geral de livros move pro slot2 — boxDivulgacao1 acha o box no HTML final.
       const mid = extractBoxDivulgacao1(out);
       assert.ok(mid, "extractBoxDivulgacao1 acha o box");
-      assert.match(mid!, /^Recomendação de leitura/);
+      // 260717: título volta a sair em negrito (bold-wrap kicker, ver
+      // context/snippets/recomendacao-leitura.md) — reverte o efeito
+      // colateral do #3475 sem detecção por emoji.
+      assert.match(mid!, /^\*\*Recomendação de leitura\*\*/);
     } finally {
       cleanup();
     }
