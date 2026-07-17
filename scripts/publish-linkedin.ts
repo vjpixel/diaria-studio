@@ -733,7 +733,9 @@ async function main(): Promise<void> {
       editionUrl = BEEHIIV_BASE_URL;
       console.warn(
         `#595: edition_url não fornecido (sem --edition-url nem 05-edition-url.txt) — fallback ${editionUrl}. ` +
-        `Comment_diaria vai apontar pra raiz da newsletter em vez do post específico.`,
+        `#3646: comment_diaria está inerte desde #3627 (03-social.md novo nunca gera essa subseção) — ` +
+        `o consumidor real remanescente é resolve-post-pixel.ts no Stage 6, que cairia no mesmo ` +
+        `fallback pro \`## post_pixel\` em vez do link direto da edição.`,
       );
     }
   }
