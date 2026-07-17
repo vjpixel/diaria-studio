@@ -89,6 +89,11 @@ import { mtimeMs } from "./lib/mtime.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { readPlanFromDir, type PlanFileReaders } from "./overnight-statusline.ts";
+import {
+  TELEGRAM_IO_TIMEOUT_MS,
+  buildTelegramSendMessageRequest,
+  sendTelegramNotification,
+} from "./lib/telegram-notify.ts";
 
 // ---------------------------------------------------------------------------
 // Pure / injectable helpers (exported for tests — #633)
@@ -273,49 +278,20 @@ export function getLastRunLogActivity(
 // Alert channels
 // ---------------------------------------------------------------------------
 
-/** #2958: nenhuma chamada de rede/subprocesso neste script pode ficar sem timeout. */
-export const WATCHDOG_IO_TIMEOUT_MS = 10_000;
-
-/**
- * Pure: monta a requisição do alerta Telegram (url + options), incluindo o
- * `signal` de timeout (#2958) — extraído pra ser testável sem mockar rede.
- */
-export function buildTelegramAlertRequest(
-  token: string,
-  chatId: string,
-  message: string,
-): { url: string; options: RequestInit } {
-  return {
-    url: `https://api.telegram.org/bot${token}/sendMessage`,
-    options: {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: message,
-        parse_mode: "Markdown",
-      }),
-      signal: AbortSignal.timeout(WATCHDOG_IO_TIMEOUT_MS),
-    },
-  };
-}
+// #3564: a implementação de request/timeout/env var foi extraída pra
+// scripts/lib/telegram-notify.ts (reusada agora também pelo Studio UI —
+// gate pendente/halt banner). Os nomes abaixo (`WATCHDOG_IO_TIMEOUT_MS`,
+// `buildTelegramAlertRequest`) ficam de pé como aliases locais + re-exports
+// só pra não quebrar `test/overnight-watchdog.test.ts` (#633 — regressão de
+// import) e qualquer outro consumidor externo que já dependa deles; a
+// lógica em si não é mais duplicada aqui.
+export const WATCHDOG_IO_TIMEOUT_MS = TELEGRAM_IO_TIMEOUT_MS;
+export const buildTelegramAlertRequest = buildTelegramSendMessageRequest;
 
 async function sendTelegramAlert(message: string): Promise<void> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_WATCHDOG_CHAT_ID;
-  if (!token || !chatId) return;
-
-  try {
-    const { url, options } = buildTelegramAlertRequest(token, chatId, message);
-    const resp = await fetch(url, options);
-    if (!resp.ok) {
-      const body = await resp.text();
-      process.stderr.write(
-        `[watchdog] Telegram alert falhou ${resp.status}: ${body.slice(0, 200)}\n`,
-      );
-    }
-  } catch (e) {
-    process.stderr.write(`[watchdog] Telegram alert erro: ${String(e)}\n`);
+  const result = await sendTelegramNotification(message);
+  if (!result.ok && !result.skipped) {
+    process.stderr.write(`[watchdog] Telegram alert falhou: ${result.error}\n`);
   }
 }
 

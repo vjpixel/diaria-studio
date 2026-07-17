@@ -63,6 +63,13 @@
  *     `POST /api/apoios/contacts/:id/outreach` (CRUD de contato + tracking
  *     de outreach) — ver `studio-apoios.ts` pro detalhe. Dado pessoal: só em
  *     `data/apoia-se/contacts.jsonl` (junction OneDrive, nunca no repo).
+ *   - Notificação Telegram (#3564, sem rota HTTP própria): um watcher em
+ *     background, subido por `startStudioServer` e fechado em `close()`,
+ *     observa `gatesPending`/`chatPermissionsPending` (mesmo `buildStudioState`
+ *     de `GET /api/state`) e dispara notificação com deep-link + dedup pro
+ *     Telegram quando algo passa a esperar o editor — ver
+ *     `studio-telegram-notify.ts`. Fail-soft total: sem credenciais
+ *     configuradas, ou qualquer falha de rede, o Studio segue normal.
  *
  * **Read-only por construção, com exceções controladas** (#3555 é a fatia
  * fundação da EPIC — as fatias de AÇÃO vêm depois, #3556+): nenhuma rota aqui
@@ -167,6 +174,10 @@ import {
   parseOutreachEventBody,
   type ApoiosMutationResult,
 } from "./studio-apoios.ts";
+// #3564: notificação Telegram (gate 4/6 pendente + AskUserQuestion pendente
+// no chat) com dedup — arquivo próprio desta fatia, import isolado (nenhuma
+// outra rota depende dele). Ver studio-telegram-notify.ts.
+import { startTelegramNotifyWatcher, type TelegramNotifyWatchHandle } from "./studio-telegram-notify.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -207,6 +218,12 @@ export interface StudioServerOptions {
    * Claude Agent SDK sem spawnar o CLI real; produção usa o default de
    * `studio-chat.ts`. */
   chatQueryFn?: QueryFn;
+  /** Intervalo de polling (ms) do watcher de notificação Telegram (#3564) —
+   * default 15s (independente de `pollIntervalMs` acima, que é tunado pra
+   * SSE de baixa latência; aqui 1 tick/s seria polling desnecessariamente
+   * agressivo pra um evento que só interessa notificar 1x). Reduzido em
+   * testes. */
+  telegramPollIntervalMs?: number;
   /** Tamanho máximo (bytes) do corpo de `POST /api/chat` — default 256KB,
    * generoso pra uma mensagem de chat digitada à mão, protege contra corpo
    * absurdo consumindo memória do processo. */
@@ -969,6 +986,13 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : (opts.port ?? DEFAULT_PORT);
 
+  // #3564: watcher independente de qualquer cliente SSE conectado — o
+  // cenário-alvo é justamente o editor longe do computador (nenhuma aba do
+  // Studio aberta). Fail-soft por construção (ver studio-telegram-notify.ts).
+  const telegramNotifyWatch: TelegramNotifyWatchHandle = startTelegramNotifyWatcher(rootDir, {
+    pollIntervalMs: opts.telegramPollIntervalMs,
+  });
+
   let closed = false;
   return {
     url: `http://${HOST}:${port}/`,
@@ -981,6 +1005,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
           return;
         }
         closed = true;
+        telegramNotifyWatch.close();
         server.close((err) => (err ? reject(err) : resolveClose()));
       }),
   };
