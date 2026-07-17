@@ -1454,6 +1454,84 @@ describe("#1168 LinkedInScheduler DO: alarm() dispara webhook e é idempotente",
     assert.equal(capturedUrl, "https://make.test/pixel", "deve usar pixelWebhookUrl pra target=pixel");
   });
 
+  // (#3667) BUG: o guard de #3662 (action=comment + webhookTarget != "pixel"
+  // → DLQ direto) só foi adicionado em fire.ts (fireDueItems/cron). O caminho
+  // alarm() do Durable Object — que é o disparo PRIMÁRIO (armado via /arm no
+  // enqueue) — resolvia webhookUrl/disparava o fetch pro Make de forma
+  // totalmente independente, sem nenhum guard equivalente. Uma entry
+  // action="comment" + webhookTarget="diaria" residual (pré-#3627) ou de
+  // regressão futura reproduziria o bug original mesmo com o guard do
+  // #3662 em vigor no cron, porque alarm() dispara ANTES do cron pra
+  // qualquer item armado.
+  it("alarm() com action=comment + webhook_target=diaria: NUNCA chama fetch pro Make, libera claim (#3667)", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "Diar.ia comment via alarm", image_url: null, scheduled_at: past,
+      destaque: "d2", created_at: past, retry_count: 0,
+      webhook_target: "diaria", action: "comment", parent_destaque: "d2",
+    };
+    await state.storage.put("payload", {
+      key: "queue:test-alarm-comment-diaria",
+      entry,
+      webhookUrl: "https://make.test/diaria",
+      pixelWebhookUrl: "https://make.test/pixel",
+    } satisfies DoStoredPayload);
+
+    let fetchCalls = 0;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      await scheduler.alarm();
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    assert.equal(fetchCalls, 0, "alarm() NUNCA deve chamar fetch pro Make — webhookTarget=diaria não suporta action=comment");
+    assert.equal(await state.storage.get<boolean>("fired"), undefined, "fired não deve ser setado — item não foi disparado");
+    assert.equal(await state.storage.get<boolean>("claiming"), undefined, "claim deve ser liberado pro cron poder processar (e DLQ) na próxima rodada");
+  });
+
+  it("alarm() com action=comment + webhook_target ausente (default 'diaria'): NUNCA chama fetch pro Make (#3667)", async () => {
+    const state = new MockDOState();
+    const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);
+
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const entry: QueueEntry = {
+      text: "legacy comment residual via alarm", image_url: null, scheduled_at: past,
+      destaque: "d3", created_at: past, retry_count: 0,
+      action: "comment", // webhook_target ausente — default resolve pra "diaria"
+    };
+    await state.storage.put("payload", {
+      key: "queue:test-alarm-comment-nodefault",
+      entry,
+      webhookUrl: "https://make.test/diaria",
+    } satisfies DoStoredPayload);
+
+    let fetchCalls = 0;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response("ok", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      await scheduler.alarm();
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+
+    assert.equal(fetchCalls, 0, "alarm() NUNCA deve chamar fetch pro Make — default webhookTarget=diaria não suporta action=comment");
+    assert.equal(await state.storage.get<boolean>("fired"), undefined);
+    assert.equal(await state.storage.get<boolean>("claiming"), undefined, "claim deve ser liberado pro cron poder processar (e DLQ) na próxima rodada");
+  });
+
   it("alarm() falha de webhook: libera fired flag, cron pode tentar novamente", async () => {
     const state = new MockDOState();
     const scheduler = new LinkedInScheduler(state as unknown as DurableObjectState);

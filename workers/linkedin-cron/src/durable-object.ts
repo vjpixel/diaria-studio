@@ -1,5 +1,6 @@
 import type { Env, QueueEntry, WebhookTarget, QueueAction } from "./index";
 import { CLAIM_TTL_MS, FETCH_TIMEOUT_MS } from "./index";
+import { isUnsupportedCommentTarget } from "./guards";
 
 // ── LinkedInScheduler — Durable Object (#1168) ────────────────────────────
 
@@ -226,6 +227,29 @@ export class LinkedInScheduler {
     const { key, entry, webhookUrl: defaultWebhookUrl, pixelWebhookUrl } = payload;
     const webhookTarget: WebhookTarget = entry.webhook_target ?? "diaria";
     const action: QueueAction = entry.action ?? "post";
+
+    // (#3667) Guard equivalente ao de fire.ts (#3662, extraído pra
+    // isUnsupportedCommentTarget() em guards.ts): action="comment" com
+    // webhookTarget != "pixel" nunca deve ser disparado pro Make — o módulo
+    // "diaria" não suporta "Create Comment", o Make sempre rejeitaria com
+    // `Missing value of required parameter 'url'`. alarm() é o caminho
+    // PRIMÁRIO de disparo (armado via /arm no enqueue) — sem este guard, uma
+    // entry residual/regressão futura reproduziria o bug original do #3662
+    // mesmo com o guard de fire.ts em vigor (aquele só cobre o fallback cron).
+    //
+    // Diferente de fire.ts, alarm() não tem acesso a env.LINKEDIN_QUEUE (só
+    // ao DO storage) — não dá pra escrever a entry em dlq: diretamente aqui.
+    // Libera o claim e retorna sem postar, deixando a KV entry intocada: o
+    // próximo ciclo do cron (fireDueItems) processa essa mesma entry e
+    // aplica o MESMO guard, que aí sim escreve em dlq: via KV.
+    if (isUnsupportedCommentTarget(action, webhookTarget)) {
+      await this.state.storage.delete("claiming");
+      await this.state.storage.delete("claimed_at");
+      console.error(
+        `[DO alarm] ${key} action=comment but webhookTarget=${webhookTarget} (só "pixel" suporta comment) — releasing claim without firing, cron will DLQ`,
+      );
+      return;
+    }
 
     let webhookUrl: string;
     if (webhookTarget === "pixel") {
