@@ -21,7 +21,7 @@
  */
 
 import { DS_COLORS, DS_FONTS as DSF } from "./ds-tokens.generated.ts";
-import type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection, UseMelhorSummary, PollEiaSummary, TopClickedRecentSummary, AudienceSummary } from "./types.ts";
+import type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection, UseMelhorSummary, PollEiaSummary, TopClickedRecentSummary, AudienceSummary, StudioSnapshot } from "./types.ts";
 
 // ─── Helpers inline (espelham scripts/lib/ctr-utils.ts) ──────────────────────
 // Duplicar em vez de importar — o Worker não tem acesso a scripts/lib/ no bundle.
@@ -70,7 +70,7 @@ export interface Env {
 
 // ─── Re-export types para testes ─────────────────────────────────────────────
 
-export type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection, UseMelhorSummary, PollEiaSummary, TopClickedRecentSummary, AudienceSummary };
+export type { DashboardData, SourceHealthEntry, OvernightRun, CtrByCategoryRow, StubSection, UseMelhorSummary, PollEiaSummary, TopClickedRecentSummary, AudienceSummary, StudioSnapshot };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -823,6 +823,105 @@ export function renderStubsSection(stubs: StubSection[]): string {
 </section>`;
 }
 
+// ─── #3565: espelho read-only do Studio local ("onde parou") ─────────────────
+
+// Idade (minutos) acima da qual o snapshot é considerado velho o bastante
+// pra suspeitar que o PC do editor está desligado — o Studio local só
+// consegue empurrar um snapshot novo enquanto está rodando.
+const STUDIO_SNAPSHOT_STALE_MINUTES = 10;
+
+/**
+ * Renderiza o painel "onde parou" (#3565) a partir do `StudioSnapshot`
+ * pushado pro KV — PURO READ-ONLY: nenhum botão de ação (nem "responder o
+ * gate", nem "reiniciar"). O timestamp do snapshot fica sempre visível, com
+ * aviso "PC offline?" quando a idade excede `STUDIO_SNAPSHOT_STALE_MINUTES`
+ * (o único jeito confiável de saber que o Studio local não está mais
+ * pushando é a IDADE do último push, não um "heartbeat" ativo).
+ *
+ * TODO(#3564): botão "me avise quando eu voltar" — a issue #3565 permite
+ * anotar isso como TODO em vez de implementar, já que #3564 (notificações
+ * push via Telegram/deep-link) segue OPEN (checado no momento desta fatia)
+ * sem a infra de push pronta pra integrar. Quando #3564 mergear, plugar
+ * aqui sem violar o invariante "zero ações" desta view — o botão dispararia
+ * uma notificação num canal externo (Telegram), nunca um comando executado
+ * a partir DESTE Worker/processo.
+ */
+export function renderStudioSnapshotHtml(snapshot: StudioSnapshot | null, now: Date = new Date()): string {
+  if (!snapshot) {
+    return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Diar.ia Studio — espelho</title>
+</head>
+<body style="font-family:sans-serif;max-width:640px;margin:40px auto;padding:0 20px">
+<h1>Studio — espelho não inicializado</h1>
+<p>Nenhum snapshot encontrado no KV. O Studio local precisa estar rodando (<code>npm run studio</code>) com credenciais Cloudflare configuradas — o watcher interno faz push automático a cada poucos minutos.</p>
+</body></html>`;
+  }
+
+  const generatedDate = new Date(snapshot.generated_at);
+  const ageMinutes = isNaN(generatedDate.getTime())
+    ? null
+    : Math.max(0, Math.round((now.getTime() - generatedDate.getTime()) / 60_000));
+  const isStale = ageMinutes === null || ageMinutes > STUDIO_SNAPSHOT_STALE_MINUTES;
+  const ageLabel = ageMinutes === null ? "idade desconhecida" : ageMinutes === 0 ? "agora mesmo" : `há ${ageMinutes}min`;
+
+  const staleBanner = isStale
+    ? `<p style="background:#fff3cd;border:1px solid #c07800;border-radius:4px;padding:10px 14px;color:#7a4d00;font-weight:600">
+        ⚠ Dados de ${escHtml(fmtTimeBRT(snapshot.generated_at))} (${escHtml(ageLabel)}) — PC offline?
+      </p>`
+    : `<p style="color:#2d8a4e;font-weight:600">✓ Dados de ${escHtml(fmtTimeBRT(snapshot.generated_at))} (${escHtml(ageLabel)})</p>`;
+
+  const planRow = (label: string, plan: StudioSnapshot["overnight"]): string => {
+    if (!plan) return `<tr><td>${escHtml(label)}</td><td colspan="2"><span style="opacity:0.6">sem rodada recente</span></td></tr>`;
+    const countsLabel = Object.entries(plan.counts)
+      .map(([status, n]) => `${n} ${status}`)
+      .join(" · ") || "—";
+    return `<tr><td>${escHtml(label)}</td><td>${escHtml(plan.sessionId)}</td><td>${plan.totalIssues} issues (${escHtml(countsLabel)})</td></tr>`;
+  };
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Diar.ia Studio — espelho</title>
+<style>
+  body { font-family: ${DSF.sans}; max-width: 720px; margin: 30px auto; padding: 0 20px; background: ${DS.paper}; color: ${DS.ink}; }
+  h1 { font-size: 1.4rem; margin: 0 0 12px 0; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; margin: 12px 0 24px 0; }
+  th, td { padding: 8px; border-bottom: 1px solid ${DS.rule}; text-align: left; vertical-align: top; }
+  th { background: ${DS.paperAlt}; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; }
+  .footer { color: ${DS.ink}; opacity: 0.6; font-size: 0.75rem; margin-top: 32px; text-align: center; padding-top: 16px; border-top: 1px solid ${DS.rule}; }
+</style>
+</head>
+<body>
+<h1>Diar.ia Studio — onde parou</h1>
+${staleBanner}
+<table>
+  <tbody>
+    <tr><th>Edição corrente</th><td colspan="2">${snapshot.current_edition ? escHtml(snapshot.current_edition) : "<span style=\"opacity:0.6\">nenhuma</span>"}</td></tr>
+    <tr><th>Estágio</th><td colspan="2">${escHtml(snapshot.stage_label)} ${snapshot.current_stage !== "done" && snapshot.current_stage !== "unknown" ? `(stage ${snapshot.current_stage})` : ""}</td></tr>
+    <tr><th>Gates de pipeline pendentes</th><td colspan="2">${snapshot.gates_pending_count}</td></tr>
+    <tr><th>Gates de chat pendentes</th><td colspan="2">${snapshot.chat_gates_pending_count}</td></tr>
+  </tbody>
+</table>
+<table>
+  <thead><tr><th>Rodada</th><th>Sessão</th><th>Resumo</th></tr></thead>
+  <tbody>
+    ${planRow("Overnight", snapshot.overnight)}
+    ${planRow("Develop", snapshot.develop)}
+  </tbody>
+</table>
+<p class="footer">
+  Espelho READ-ONLY do Studio local (#3565) — nenhuma ação disponível aqui; abra o Studio na máquina do editor pra agir.
+  Dados brutos em <a href="/api/studio-snapshot" style="color:${DS.brand}">/api/studio-snapshot</a>.
+</p>
+</body></html>`;
+}
+
 // ─── Render completo ──────────────────────────────────────────────────────────
 
 export function renderDashboardHtml(data: DashboardData): string {
@@ -1083,6 +1182,50 @@ ${audienceSection}
 // ─── Fetch handler ────────────────────────────────────────────────────────────
 
 const KV_KEY = "dashboard";
+// #3565: chave separada — DEVE bater com STUDIO_SNAPSHOT_KV_KEY de
+// scripts/studio-snapshot-push.ts (mesmo binding DASHBOARD_DATA, chave
+// própria, nunca sobrescreve a chave "dashboard" acima).
+const STUDIO_SNAPSHOT_KV_KEY = "studio:snapshot";
+
+async function readStudioSnapshot(env: Env): Promise<StudioSnapshot | null> {
+  try {
+    const raw = await env.DASHBOARD_DATA.get(STUDIO_SNAPSHOT_KV_KEY, "text");
+    if (raw) return JSON.parse(raw) as StudioSnapshot;
+  } catch {
+    // KV indisponível ou JSON malformado — tratar como ausente
+  }
+  return null;
+}
+
+/** `GET /api/studio-snapshot` (#3565) — JSON cru do snapshot. Exportado
+ * (não inline no fetch handler) pra ser testável sem depender do wrapper
+ * `default.fetch` deste arquivo (ver comentário no fetch handler). */
+export async function handleStudioSnapshotJson(env: Env): Promise<Response> {
+  const snapshot = await readStudioSnapshot(env);
+  if (!snapshot) {
+    return new Response(
+      JSON.stringify({
+        error: "no_data",
+        hint: "Studio local precisa estar rodando e pushando (ver scripts/studio-snapshot-push.ts).",
+      }),
+      { status: 404, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } },
+    );
+  }
+  return new Response(JSON.stringify(snapshot, null, 2), {
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
+
+/** `GET /studio` (#3565) — painel HTML "onde parou". Mesma motivação de
+ * exportar acima. */
+export async function handleStudioSnapshotHtml(env: Env): Promise<Response> {
+  const snapshot = await readStudioSnapshot(env);
+  const html = renderStudioSnapshotHtml(snapshot);
+  return new Response(html, {
+    status: 200,
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+  });
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -1154,6 +1297,26 @@ export default {
       });
       if (!isFresh) await cache.put(request, response.clone());
       return response;
+    }
+
+    // #3565: espelho read-only do Studio local ("onde parou" com PC
+    // desligado) — rota NOVA no worker existente (evita um 8º worker, ver
+    // header de renderStudioSnapshotHtml). Sem cache de borda: a idade do
+    // snapshot ("dados de HH:MM — PC offline?") precisa ser calculada
+    // contra o `now()` real de cada request, não contra o instante em que a
+    // resposta foi cacheada. Lógica extraída em funções exportadas
+    // (handleStudioSnapshotJson/Html) — testadas diretamente por
+    // test/diaria-dashboard-studio-snapshot-3565.test.ts, evitando invocar
+    // `default.fetch` deste arquivo (o quirk de interop CJS/ESM sob
+    // `node --import tsx` documentado em scripts/studio-ui/dashboard-diaria.ts
+    // faz um `import()` dinâmico deste entrypoint devolver o objeto
+    // `{fetch}` aninhado sob `.default.default`, não `.default`).
+    if (path === "/api/studio-snapshot") {
+      return handleStudioSnapshotJson(env);
+    }
+
+    if (path === "/studio" || path === "/studio/") {
+      return handleStudioSnapshotHtml(env);
     }
 
     return new Response("Not found", { status: 404 });
