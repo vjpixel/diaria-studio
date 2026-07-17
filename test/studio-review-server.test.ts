@@ -282,6 +282,19 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.ok(body.includes('id="rv-html-final-note"'));
   });
 
+  // #3668 gap 1: o banner PERSISTENTE (sempre visível quando htmlFinalDiverged,
+  // independente da aba ativa) tinha a mesma alegação categórica de autoria
+  // que o confirm() de saveCurrent() — "editado manualmente" — não decidível
+  // só do lado client (um re-render agent-driven do Stage 4 também diverge
+  // sem edição manual nenhuma). Cobre o texto estático servido, não só a
+  // mensagem do confirm() (essa já coberta em test/revisao-guards.test.ts).
+  it("#3668 gap 1: o texto estático do banner de divergência não afirma categoricamente 'editado manualmente'", async () => {
+    const res = await fetch(new URL("/revisao/260716", server.url));
+    const body = await res.text();
+    assert.doesNotMatch(body, /HTML final editado manualmente/);
+    assert.match(body, /pode ser edição sua ou re-render do agente/);
+  });
+
   // #3629: smoke/contrato do HTML servido pros ganchos "Reescrever
   // título"/"Regenerar imagem" — `prefillMessage` (chat-drawer.js) é
   // puramente DOM (sem lógica pura extraível além do que já é coberto por
@@ -338,5 +351,87 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     const body = await res.text();
     assert.match(body, /from ["']\.\/revisao-prompts\.js["']/);
     assert.match(body, /prefillMessage/);
+  });
+
+  // #3668 — 3 gaps do guard de divergência do HTML final (#3635/PR #3664).
+  // Sem harness de DOM neste projeto pra revisao.js (executa `init()` no
+  // top-level, referencia `document`/`location`) — mesmo padrão "contrato
+  // estático" dos casos acima. A lógica PURA extraível (gap 1 e 2) tem
+  // cobertura direta em test/revisao-guards.test.ts; aqui confirmamos o
+  // WIRING: que saveCurrent() de fato usa essa lógica em vez da condição
+  // antiga, e que a chamada de rede fresca (gap 3) acontece antes da
+  // decisão.
+  it("GET /revisao.js importa revisao-guards.js e usa shouldConfirmDivergenceGuard (não mais a condição antiga currentSlug !== \"html-final\")", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /from ["']\.\/revisao-guards\.js["']/);
+    assert.match(body, /shouldConfirmDivergenceGuard/);
+    assert.match(body, /DIVERGENCE_CONFIRM_MESSAGE/);
+    // condição antiga (#3635) não deveria mais existir — ela disparava pra
+    // qualquer slug de Markdown, não só 'reviewed' (gap 2).
+    assert.doesNotMatch(body, /currentSlug !== "html-final" && htmlFinalDiverged/);
+  });
+
+  it("GET /revisao.js — saveCurrent() re-busca o estado de divergência fresco (refreshDivergenceBanner) ANTES de checar htmlFinalDiverged (gap 3, TOCTOU)", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function saveCurrent()");
+    assert.ok(fnStart >= 0, "saveCurrent deveria existir em revisao.js");
+    const fnEnd = body.indexOf("\nfunction renderDiff", fnStart);
+    const fnBody = body.slice(fnStart, fnEnd >= 0 ? fnEnd : undefined);
+    assert.match(fnBody, /shouldConfirmDivergenceGuard\(currentSlug\)/);
+    const guardIdx = fnBody.indexOf("shouldConfirmDivergenceGuard(currentSlug)");
+    const refreshIdx = fnBody.indexOf("await refreshDivergenceBanner()");
+    const checkIdx = fnBody.indexOf("if (htmlFinalDiverged)");
+    assert.ok(refreshIdx > guardIdx, "refresh deveria vir depois do guard de slug");
+    assert.ok(checkIdx > refreshIdx, "a checagem de htmlFinalDiverged deveria vir DEPOIS do refresh fresco, não usar só a flag em memória");
+  });
+
+  // #3669 bug 1 — trocar de aba de documento com o painel Preview já aberto
+  // deveria disparar um refresh do iframe (antes: só clique explícito na
+  // aba lateral "Preview" ou no botão "Atualizar preview" atualizava).
+  it("GET /revisao.js — loadFile() dispara refreshPreviewIfOpen() ao final de todos os caminhos de saída, e o helper checa se o painel Preview está aberto", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function loadFile(");
+    const fnEnd = body.indexOf("\nfunction refreshPreviewIfOpen", fnStart);
+    assert.ok(fnStart >= 0 && fnEnd > fnStart, "loadFile deveria existir e vir antes de refreshPreviewIfOpen");
+    const fnBody = body.slice(fnStart, fnEnd);
+    const occurrences = fnBody.split("refreshPreviewIfOpen();").length - 1;
+    assert.ok(occurrences >= 3, `esperava refreshPreviewIfOpen() nos 3 caminhos de saída de loadFile, achou ${occurrences}`);
+    assert.match(body, /function refreshPreviewIfOpen\(\)\s*\{\s*if \(!el\.panePreview\.hidden\)/);
+  });
+
+  // #3669 bug 2a — falha de rede em refreshDivergenceBanner() durante init()
+  // não pode travar o indicador de conexão em "conectando…" pra sempre.
+  it("GET /revisao.js — init() envolve refreshDivergenceBanner() em try/catch e sempre chama setConn em ambos os ramos", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function init()");
+    assert.ok(fnStart >= 0, "init deveria existir em revisao.js");
+    const fnBody = body.slice(fnStart, body.indexOf("\ninit();", fnStart));
+    assert.match(fnBody, /try\s*\{[\s\S]*await refreshDivergenceBanner\(\);[\s\S]*setConn\("ok"\);[\s\S]*\}\s*catch[\s\S]*setConn\("down"\);[\s\S]*\}/);
+  });
+
+  // #3669 bug 2b — refreshPreview() virou async (usa await fetchJson no ramo
+  // html-final) mas os call sites eram fire-and-forget sem .catch(): falha
+  // de rede virava unhandled rejection e o preview ficava em branco sem
+  // aviso. Confere: (i) refreshPreview() captura erro internamente e mostra
+  // feedback visível via showPreviewError; (ii) os 3 call sites (aba lateral
+  // Preview, botão "Atualizar preview", e o novo refreshPreviewIfOpen do bug
+  // 1) tratam a rejeição.
+  it("GET /revisao.js — refreshPreview() captura erro e mostra feedback visível; todos os call sites tratam a rejeição", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    assert.match(body, /function showPreviewError\(/);
+    assert.match(body, /Erro ao carregar preview/);
+    const fnStart = body.indexOf("async function refreshPreview()");
+    const fnEnd = body.indexOf("\nfunction activateSidePane", fnStart);
+    const fnBody = body.slice(fnStart, fnEnd);
+    assert.match(fnBody, /try\s*\{/);
+    assert.match(fnBody, /catch\s*\(err\)\s*\{\s*showPreviewError\(err\);/);
+    const catchSites = body.split("refreshPreview().catch(showPreviewError)").length - 1;
+    assert.ok(catchSites >= 3, `esperava .catch(showPreviewError) em pelo menos 3 call sites de refreshPreview(), achou ${catchSites}`);
   });
 });
