@@ -1,5 +1,6 @@
 import type { Env, QueueEntry, WebhookTarget, QueueAction } from "./index";
 import { buildDlqKey, MAX_RETRIES, DLQ_TTL_SECONDS, FETCH_TIMEOUT_MS } from "./index";
+import { isUnsupportedCommentTarget } from "./guards";
 
 // ── Cron handler — fira items maduros ──────────────────────────────────────
 
@@ -171,7 +172,10 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     // email de erro pro editor — não adianta re-tentar, o Make sempre rejeita o
     // mesmo payload. Rejeitar cedo, direto pra DLQ, mesmo padrão do bloco
     // pixel-sem-webhook-url acima.
-    if (action === "comment" && webhookTarget !== "pixel") {
+    // (#3667) Decisão extraída pra isUnsupportedCommentTarget() (guards.ts) —
+    // reusada também por alarm() (durable-object.ts), que aplica o mesmo guard
+    // mas libera o claim em vez de escrever DLQ (sem acesso a KV).
+    if (isUnsupportedCommentTarget(action, webhookTarget)) {
       await releaseCronClaim();
       const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
       await env.LINKEDIN_QUEUE.put(
