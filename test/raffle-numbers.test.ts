@@ -301,7 +301,7 @@ describe("allocateRaffleNumber (#2724)", () => {
     assert.equal(result.entry.number, 8);
   });
 
-  it("idempotência: mesmo email no mesmo ciclo não realoca (#2724 item 4)", () => {
+  it("idempotência: mesma edição pro mesmo email não realoca — reprocessar a mesma reply não duplica (#achado-260716, revisão do #2724 item 4)", () => {
     const first = allocateRaffleNumber(
       [],
       { cycle: "2606", email: "joshu@example.com", edition: "260629" },
@@ -309,13 +309,31 @@ describe("allocateRaffleNumber (#2724)", () => {
     );
     const second = allocateRaffleNumber(
       first.entries,
-      { cycle: "2606", email: "JOSHU@example.com", edition: "260630" }, // case diferente, edição diferente
+      { cycle: "2606", email: "JOSHU@example.com", edition: "260629" }, // case diferente, MESMA edição
       "2026-06-30T12:00:00.000Z",
     );
     assert.equal(second.isNew, false);
     assert.equal(second.entry.number, first.entry.number);
     assert.equal(second.entries.length, 1); // não duplicou
-    assert.equal(second.entry.edition, "260629"); // preserva a edição original
+  });
+
+  it("caso real Joshu 260716: mesmo email, mesmo ciclo, edição DIFERENTE → ganha número NOVO (regra confirmada com o editor: 1 número por acerto, não por pessoa)", () => {
+    const first = allocateRaffleNumber(
+      [],
+      { cycle: "2607", email: "joshusantos@gmail.com", nickname: "Joshu", edition: "260709" },
+      "2026-07-10T02:36:43.268Z",
+    );
+    assert.equal(first.entry.number, 1);
+
+    const second = allocateRaffleNumber(first.entries, {
+      cycle: "2607",
+      email: "joshusantos@gmail.com",
+      nickname: "Joshu",
+      edition: "260716", // edição diferente, mesmo ciclo
+    });
+    assert.equal(second.isNew, true, "acerto numa edição diferente do mesmo ciclo deve gerar número novo");
+    assert.equal(second.entry.number, 2, "próximo número sequencial do ciclo, não reaproveita o da 1ª edição");
+    assert.equal(second.entries.length, 2, "as 2 entries coexistem — 2 bilhetes pro mesmo email no mesmo ciclo");
   });
 
   it("mesmo email em ciclos diferentes ganha números independentes", () => {
