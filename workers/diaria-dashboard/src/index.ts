@@ -837,6 +837,14 @@ const STUDIO_SNAPSHOT_STALE_MINUTES = 10;
  * aviso "PC offline?" quando a idade excede `STUDIO_SNAPSHOT_STALE_MINUTES`
  * (o único jeito confiável de saber que o Studio local não está mais
  * pushando é a IDADE do último push, não um "heartbeat" ativo).
+ *
+ * TODO(#3564): botão "me avise quando eu voltar" — a issue #3565 permite
+ * anotar isso como TODO em vez de implementar, já que #3564 (notificações
+ * push via Telegram/deep-link) segue OPEN (checado no momento desta fatia)
+ * sem a infra de push pronta pra integrar. Quando #3564 mergear, plugar
+ * aqui sem violar o invariante "zero ações" desta view — o botão dispararia
+ * uma notificação num canal externo (Telegram), nunca um comando executado
+ * a partir DESTE Worker/processo.
  */
 export function renderStudioSnapshotHtml(snapshot: StudioSnapshot | null, now: Date = new Date()): string {
   if (!snapshot) {
