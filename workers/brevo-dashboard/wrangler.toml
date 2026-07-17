@@ -36,20 +36,12 @@ preview_id = "2f87d65d735c499ab8f465774d0167e2" # mesma namespace -- ok para dev
 [build]
 command = "npx tsx ../../scripts/generate-worker-tokens.ts"
 
-# #3079: Cron Trigger — roda scheduled() pra pré-computar o fetch pesado de
-# campanhas Brevo (fetchRecentCampaigns/fetchScheduledCampaigns, ~100+
-# chamadas com cache frio) FORA do request-time, gravando em
-# `dash:lastgood:campaigns` (KV). A rota `/` passa a ler dessa chave por padrão;
-# `?fresh=1` bypassa e mantém o fetch ao vivo (debug). Decisão original do
-# editor #3079: dado stale é aceitável, dado o padrão já usado por
-# cohorts/contatos/MV/cupons/É IA? (todos pré-computados via KV). Free tier
-# Cloudflare (até 3 crons).
-#
-# #3256: intervalo revisado de 10min → 3h (editor: 10min era mais frequente do
-# que o necessário pra dado que só é lido, nunca usado pra decisão em tempo
-# real). Se este valor mudar de novo, atualizar TAMBÉM `CRON_INTERVAL_HOURS`
-# em src/types.ts — o Worker não lê `crons` em runtime, então o texto exibido
-# ao editor ("atualizado às X / próxima: ~Y") depende dessa constante ficar em
-# sincronia manual com o valor abaixo.
-[triggers]
-crons = ["0 */3 * * *"]
+# #3553 (parte B): Cron Trigger REMOVIDO (era #3079, cadência revisada em
+# #3256). O refresh de campanhas Brevo agora acontece em REQUEST-TIME na rota
+# `/` — decisão do editor 2026-07-16: a dashboard não deve mais se atualizar
+# sozinha, só no reload da página. `dash:lastgood:campaigns` (KV) virou
+# write-through (gravado a cada fetch bem-sucedido) usado só como FALLBACK em
+# rate-limit (buildRateLimitFallback, brevo-api.ts) — nunca mais lido como
+# fonte primária. Proteções que seguem valendo: cache de borda 5min (Cache
+# API, #2144) limita a 1 fetch Brevo real a cada 5min mesmo com múltiplos
+# visitantes; STATS_CACHE (#2144) cacheia stats imutáveis (campanhas >7d).

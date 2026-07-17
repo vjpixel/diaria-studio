@@ -60,7 +60,6 @@ import {
   LASTGOOD_CAMPAIGNS_KEY,
   CAMPAIGNS_FETCH_LIMIT,
   fetchPlanCredits,
-  runCronRefresh,
   type LastGoodCampaignsPayload,
 } from "./brevo-api.ts";
 import { LASTGOOD_TTL } from "./types.ts";
@@ -303,74 +302,52 @@ export default {
         // #3080: limite de campanhas pedido pra `campaigns` neste render — usado
         // pra decidir se a janela está "cheia" (defesa em profundidade nas
         // agregações de "Totais por mês"/"Volume no ciclo", ver sections-core.ts).
-        // `null` = desconhecido (KV pré-#3080 sem o campo) → nenhum aviso exibido.
         let campaignsWindowLimit: number | null = null;
 
-        // #3079: default (sem ?fresh=1) lê o payload PRÉ-COMPUTADO pelo Cron
-        // Trigger (scheduled() abaixo — #3256 subiu a cadência de 10min pra 3h)
-        // em `dash:lastgood:campaigns` — zero chamadas Brevo em request-time.
-        // `?fresh=1` bypassa e mantém o fetch ao vivo de sempre (debug/urgência,
-        // decisão do editor #3079).
-        const lastGood = (!isFresh && env.STATS_CACHE)
-          ? await env.STATS_CACHE.get(LASTGOOD_CAMPAIGNS_KEY, "json").catch(() => null) as LastGoodCampaignsPayload | null
-          : null;
-
-        if (lastGood && Array.isArray(lastGood.campaigns)) {
-          // Caminho pré-computado (default, #3079): nenhuma chamada à Brevo aqui.
-          campaigns = lastGood.campaigns;
-          scheduled = Array.isArray(lastGood.scheduled) ? lastGood.scheduled : [];
-          dataGeneratedAt = typeof lastGood.generatedAt === "string" ? lastGood.generatedAt : new Date().toISOString();
-          // #3080: self-describing — usa o limite gravado JUNTO deste payload
-          // (pode ter sido escrito por uma versão anterior do worker com um
-          // CAMPAIGNS_FETCH_LIMIT diferente do atual).
-          campaignsWindowLimit = typeof lastGood.campaignsLimit === "number" ? lastGood.campaignsLimit : null;
-          // #2910: créditos também vêm só do KV neste caminho (kv-only) — nunca
-          // fetch ao vivo fora de ?fresh=1/cold-start (o cron já os populou).
-          planCredits = await fetchPlanCredits(env, "kv-only").catch(() => null);
-        } else {
-          // #3079: fetch ao vivo — usado em `?fresh=1` (debug intencional) OU no
-          // cold-start antes do 1º tick do cron (KV ainda vazio pós-deploy). Sem
-          // este fallback o dashboard ficaria quebrado/vazio até o cron rodar.
-          if (!isFresh) {
-            console.warn("[#3079] dash:lastgood:campaigns vazio — fallback pra fetch ao vivo (provável cold-start antes do 1º tick do cron)");
-          }
-          // #2910: créditos do plano Brevo PRIMEIRO — 1 chamada barata a /v3/account
-          // com a janela de rate-limit fresca, antes do fetch pesado de campanhas
-          // (~100 GETs). Fail-soft: cai pro KV/null se falhar, nunca lança.
-          planCredits = await fetchPlanCredits(env, isFresh ? "fresh" : "cached").catch(() => null);
-          // #2268: agendadas PRIMEIRO — a listagem `queued` (1 chamada barata) pega a
-          // janela de rate-limit fresca, antes do fetch pesado de enviadas (que após
-          // o #2260 faz 2 GETs/campanha). Falha degrada pra [] (seção oculta) mas
-          // NÃO silenciosa — loga, pra não esconder regressão. fetchScheduledCampaigns
-          // já retenta a listagem em 429 internamente (#2268).
-          let scheduledOk = true;
-          scheduled = await fetchScheduledCampaigns(env, 50, isFresh).catch((e) => {
-            scheduledOk = false; // #2733: render degradado não vira o cache de campanhas
-            console.error("[#2268] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
-            return [];
-          });
-          // #3080: janela subida de 50 → CAMPAIGNS_FETCH_LIMIT (100, teto real da
-          // Brevo — ver docstring da constante, incidente 260710) — mesmo valor
-          // usado pelo cron, pra manter o mesmo comportamento de "janela cheia"
-          // entre o caminho pré-computado e este fallback ao vivo (cold-start/?fresh=1).
-          campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
-          dataGeneratedAt = new Date().toISOString();
-          campaignsWindowLimit = CAMPAIGNS_FETCH_LIMIT;
-          // #3079: só persiste em dash:lastgood:campaigns fora de ?fresh=1 (mesmo
-          // guard de sempre) — seeda o KV no cold-start, pra requests seguintes
-          // já lerem do KV até o cron rodar; ?fresh=1 nunca escreve (preserva o
-          // comportamento pré-#3079).
-          if (scheduledOk && env.STATS_CACHE && !isFresh) {
-            const payload: LastGoodCampaignsPayload = {
-              campaigns,
-              scheduled,
-              generatedAt: dataGeneratedAt,
-              campaignsLimit: CAMPAIGNS_FETCH_LIMIT, // #3080
-            };
-            await env.STATS_CACHE
-              .put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify(payload), { expirationTtl: LASTGOOD_TTL })
-              .catch(() => { /* erro de KV nunca bloqueia o render */ });
-          }
+        // #3553 (parte B): Cron Trigger removido — toda request faz fetch ao
+        // vivo na Brevo (o cache de borda 5min via Cache API, checado acima,
+        // já limita isso a 1 fetch real a cada 5min mesmo com múltiplos
+        // visitantes; `?fresh=1` bypassa esse cache de borda também). O KV
+        // `dash:lastgood:campaigns` deixou de ser lido aqui como fonte
+        // primária — só é lido em buildRateLimitFallback (brevo-api.ts),
+        // quando o fetch abaixo lança BrevoRateLimitError.
+        //
+        // #2910: créditos do plano Brevo PRIMEIRO — 1 chamada barata a
+        // /v3/account com a janela de rate-limit fresca, antes do fetch
+        // pesado de campanhas (~100 GETs). Fail-soft: cai pro KV/null se
+        // falhar, nunca lança.
+        planCredits = await fetchPlanCredits(env, isFresh ? "fresh" : "cached").catch(() => null);
+        // #2268: agendadas PRIMEIRO — a listagem `queued` (1 chamada barata) pega a
+        // janela de rate-limit fresca, antes do fetch pesado de enviadas (que após
+        // o #2260 faz 2 GETs/campanha). Falha degrada pra [] (seção oculta) mas
+        // NÃO silenciosa — loga, pra não esconder regressão. fetchScheduledCampaigns
+        // já retenta a listagem em 429 internamente (#2268).
+        let scheduledOk = true;
+        scheduled = await fetchScheduledCampaigns(env, 50, isFresh).catch((e) => {
+          scheduledOk = false; // #2733: render degradado não vira o cache de campanhas
+          console.error("[#2268] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
+          return [];
+        });
+        // #3080: janela subida de 50 → CAMPAIGNS_FETCH_LIMIT (100, teto real da
+        // Brevo — ver docstring da constante, incidente 260710).
+        campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, isFresh); // #2142 review: rota / hardcodava 20 e ignorava o default novo
+        dataGeneratedAt = new Date().toISOString();
+        campaignsWindowLimit = CAMPAIGNS_FETCH_LIMIT;
+        // #3553: write-through — persiste em dash:lastgood:campaigns a cada
+        // fetch bem-sucedido fora de ?fresh=1 (mesmo guard de sempre), pra
+        // buildRateLimitFallback ter um valor recente quando o Brevo entrar
+        // em rate-limit numa request futura. `?fresh=1` nunca escreve
+        // (comportamento preservado do #3079).
+        if (scheduledOk && env.STATS_CACHE && !isFresh) {
+          const payload: LastGoodCampaignsPayload = {
+            campaigns,
+            scheduled,
+            generatedAt: dataGeneratedAt,
+            campaignsLimit: CAMPAIGNS_FETCH_LIMIT, // #3080
+          };
+          await env.STATS_CACHE
+            .put(LASTGOOD_CAMPAIGNS_KEY, JSON.stringify(payload), { expirationTtl: LASTGOOD_TTL })
+            .catch(() => { /* erro de KV nunca bloqueia o render */ });
         }
 
         // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
@@ -405,25 +382,7 @@ export default {
 
     return new Response("Not found", { status: 404 });
   },
-
-  /**
-   * #3079: Cron Trigger (`crons` em wrangler.toml — #3256 subiu de 10min pra
-   * 3h) — pré-computa o fetch pesado de campanhas Brevo fora do request-time
-   * e grava em `dash:lastgood:campaigns`, que a rota `/` lê por padrão (ver
-   * acima).
-   * `ctx.waitUntil` garante que o Worker não seja reciclado antes do fetch (que
-   * pode levar vários segundos com ~100 GETs) terminar. Nunca lança — erros são
-   * logados por `runCronRefresh` e o KV mantém o último valor bom.
-   */
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(
-      runCronRefresh(env).then((result) => {
-        if (result.ok) {
-          console.log(`[#3079 cron] dash:lastgood:campaigns atualizado — ${result.campaignCount} campanhas, ${result.scheduledCount} agendadas`);
-        } else {
-          console.error(`[#3079 cron] refresh falhou — KV mantém o último valor bom: ${result.error}`);
-        }
-      }),
-    );
-  },
+  // #3553 (parte B): scheduled() (Cron Trigger) removido — sem `[triggers]`
+  // em wrangler.toml, nenhuma atualização automática roda mais neste Worker.
+  // O refresh de campanhas passou a ser em request-time (ver rota `/` acima).
 };

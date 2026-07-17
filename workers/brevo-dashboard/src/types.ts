@@ -149,30 +149,12 @@ export interface EiaEngagementSummary {
   updated_at: string | null;
 }
 
-/**
- * #3256: cadência do Cron Trigger que pré-computa `dash:lastgood:campaigns`
- * (`scheduled()` em index.ts / `runCronRefresh` em brevo-api.ts). Revisão do
- * editor sobre a decisão original do #3079 (10min) — 3h é aceitável dado que
- * o dado não é usado pra decisão em tempo real, só leitura.
- *
- * Fonte de VERDADE do valor real continua sendo o campo `crons` em
- * wrangler.toml (a cada 3h, no minuto 0) — o Worker não consegue ler o
- * próprio `crons` em runtime, então esta constante é usada só para TEXTO
- * exibido ao editor (nota de frescor em sections-core.ts: "atualizado às X /
- * próxima: ~Y"). Se o intervalo do cron mudar de novo, atualizar os DOIS
- * lugares — nenhum teste consegue pegar a divergência automaticamente.
- */
-export const CRON_INTERVAL_HOURS = 3;
-
-// #2733/#3352: TTL do cache de campanhas cruas (LASTGOOD_CAMPAIGNS_KEY) —
-// precisa cobrir folgadamente o intervalo entre ticks do Cron Trigger
-// (CRON_INTERVAL_HOURS), senão existe uma janela em que a chave KV expira
-// ANTES do próximo tick regravá-la, e qualquer request no meio cai no
-// fallback de fetch ao vivo (~100+ chamadas Brevo — exatamente o custo que a
-// pré-computação existe pra evitar, #3079). Derivado de CRON_INTERVAL_HOURS
-// (nunca hardcoded em paralelo) pra não desalinhar de novo: o cron subiu de
-// 10min pra 3h no #3256 mas este valor ficou parado em 1h (3600s), abrindo
-// uma janela de ~2h por ciclo sem cache — só descoberto depois (#3352).
-// Margem de +1h sobre o intervalo do cron absorve atraso/retry do próprio
-// Cron Trigger sem reintroduzir a janela.
-export const LASTGOOD_TTL = (CRON_INTERVAL_HOURS + 1) * 3600;
+// #3553 (parte B): TTL do cache de campanhas cruas (LASTGOOD_CAMPAIGNS_KEY).
+// Pré-#3553 este valor era derivado de CRON_INTERVAL_HOURS (cadência do Cron
+// Trigger que pré-computava o KV — #3079/#3256, removido). Sem cron, o KV é
+// write-through: gravado a cada fetch ao vivo bem-sucedido na rota `/` e lido
+// só como FALLBACK em rate-limit (buildRateLimitFallback, brevo-api.ts) —
+// nunca mais como fonte primária. 24h é uma folga generosa para o fallback
+// continuar servível mesmo numa janela sem nenhum visitante (o write-through
+// só acontece quando alguém carrega a página).
+export const LASTGOOD_TTL = 24 * 3600;
