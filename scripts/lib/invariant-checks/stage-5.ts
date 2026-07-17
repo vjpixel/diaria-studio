@@ -740,13 +740,18 @@ function checkConsentBinding(editionDir: string): InvariantViolation[] {
  * bem-formada (HTTPS, sem placeholder {edition_url}) antes do dispatch social.
  *
  * Este arquivo é gravado pelo beehiiv-playbook (§6.1) imediatamente após criar
- * o draft. O dispatch do social (publish-linkedin.ts + publish-facebook.ts) lê
- * este arquivo para substituir `{edition_url}` no comment_diaria. Se o arquivo
- * estiver ausente ou com placeholder, o post social vai ao ar com URL errada.
+ * o draft. **#3646:** `publish-linkedin.ts`/`publish-facebook.ts` (dispatch de
+ * Stage 5) não consomem mais este arquivo — o main post do LinkedIn não carrega
+ * URL (#595) e o `comment_diaria` que antes precisava dela foi aposentado
+ * (#3627); `publish-facebook.ts` nunca a leu. O consumidor real remanescente é
+ * `resolve-post-pixel.ts` no Stage 6, que lê `05-edition-url.txt` para
+ * substituir `{edition_url}` no `## post_pixel` (postagem manual, #1690). Se o
+ * arquivo estiver ausente ou com placeholder, é o `post_pixel` do Stage 6 que
+ * sai com a URL errada, não os posts do LinkedIn/Facebook.
  *
  * Roda como pós-publicacao invariant (checkInvariants --stage 5): detecta o
  * caso em que o playbook falhou silenciosamente ao gravar 05-edition-url.txt
- * e o dispatch social rodou com fallback para https://diar.ia.br (raiz).
+ * antes do post_pixel do Stage 6 precisar dele.
  */
 function checkEditionUrlFile(editionDir: string): InvariantViolation[] {
   const path = resolve(editionDir, "_internal", "05-edition-url.txt");
@@ -756,8 +761,8 @@ function checkEditionUrlFile(editionDir: string): InvariantViolation[] {
         rule: "edition-url-file-exists",
         message:
           `_internal/05-edition-url.txt ausente — playbook Beehiiv nao gravou a URL publica. ` +
-          `publish-linkedin/facebook usou fallback https://diar.ia.br (raiz) no comment_diaria, ` +
-          `em vez do link direto da edicao. ` +
+          `resolve-post-pixel.ts (Stage 6) vai cair no fallback https://diar.ia.br (raiz) ` +
+          `no \`## post_pixel\`, em vez do link direto da edicao. ` +
           `Gravar manualmente: \`npx tsx scripts/resolve-edition-url.ts --edition-dir ... --title "TITULO"\`.`,
         source_issue: "#2454",
         severity: "warning",
@@ -776,7 +781,8 @@ function checkEditionUrlFile(editionDir: string): InvariantViolation[] {
         rule: "edition-url-file-valid",
         message:
           `_internal/05-edition-url.txt contém placeholder literal "{edition_url}" — nao foi resolvido. ` +
-          `publish-linkedin/facebook enviou placeholder ao vivo. ` +
+          `resolve-post-pixel.ts (Stage 6) enviaria o placeholder ao vivo no ` +
+          `\`## post_pixel\`. ` +
           `Corrigir: \`npx tsx scripts/resolve-edition-url.ts --edition-dir ... --title "TITULO"\`.`,
         source_issue: "#2454",
         severity: "error",

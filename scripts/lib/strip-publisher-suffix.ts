@@ -289,9 +289,16 @@ export function stripTrailingPeriod(title: string): string {
 }
 
 /**
- * Normalização completa de título de item (#2664 + #2672).
+ * Teto de iterações do loop de `normalizeItemTitle` (defensivo — nenhum título
+ * real deveria ter dezenas de sufixos de veículo encadeados; existe só pra
+ * nunca travar em input patológico).
+ */
+const MAX_NORMALIZE_ITERATIONS = 10;
+
+/**
+ * Normalização completa de título de item (#2664 + #2672 + #3647).
  *
- * Ordem: ponto final → sufixo de veículo → ponto final (sandwich).
+ * Ordem por passada: ponto final → sufixo de veículo → ponto final (sandwich).
  * O ponto final pode aparecer de dois lados do separador de veículo, e os dois
  * casos precisam funcionar:
  *   - "Evento ocorreu. - Canaltech"  → o ponto vem ANTES do separador. O strip
@@ -304,11 +311,29 @@ export function stripTrailingPeriod(title: string): string {
  *     daí o strip de veículo casa e remove → "...veja como" (caso real #2664).
  * `stripTrailingPeriod` é idempotente, então o duplo strip é seguro.
  *
+ * #3647: `stripDashSuffix` (dentro de `stripPublisherSuffix`) só remove UMA
+ * camada de sufixo por chamada — verifica só a ÚLTIMA ocorrência do separador.
+ * Um título com sufixos de veículo ENCADEADOS (ex: "Título - Reuters - CNN
+ * Brasil", ambos em `KNOWN_DASH_PUBLISHERS`) precisava de 2 chamadas externas
+ * pra normalizar completamente, o que só acontecia por acidente quando o
+ * chamador invocava a função 2x (`enrich-inbox-articles.ts` fazia isso sem
+ * querer — 1x no worker, 1x no passe final sobre o array inteiro — e o
+ * segundo strip saía sem entry correspondente no outcome log). A função
+ * repete a passada completa até estabilizar, tornando-a de fato idempotente
+ * numa única chamada — o contrato `@pure`/idempotente já documentado aqui
+ * passa a valer sem depender de o chamador invocar 2x.
+ *
  * @param title - Título bruto (de og:title / <title> / pipeline).
- * @returns Título normalizado.
+ * @returns Título normalizado (todas as camadas de sufixo de veículo removidas).
  *
  * @pure
  */
 export function normalizeItemTitle(title: string): string {
-  return stripTrailingPeriod(stripPublisherSuffix(stripTrailingPeriod(title)));
+  let current = title;
+  for (let i = 0; i < MAX_NORMALIZE_ITERATIONS; i++) {
+    const next = stripTrailingPeriod(stripPublisherSuffix(stripTrailingPeriod(current)));
+    if (next === current) return next;
+    current = next;
+  }
+  return current;
 }
