@@ -9,6 +9,7 @@
 // conteúdo ainda-não-salvo do textarea (documentado no hint da UI).
 
 import { buildRewriteTitlePrompt, buildRegenerateImagePrompt } from "./revisao-prompts.js";
+import { shouldConfirmDivergenceGuard, DIVERGENCE_CONFIRM_MESSAGE } from "./revisao-guards.js";
 
 const SLUGS = ["categorized", "reviewed", "social", "html-final"];
 const FILE_LABELS = {
@@ -28,9 +29,13 @@ let currentSlug = "reviewed";
 let dirty = false;
 // #3635: true quando o HTML final salvo em disco diverge do baseline
 // (versão que a Etapa 4 gerou) — atualizado por refreshDivergenceBanner(),
-// consultado por saveCurrent() antes de salvar QUALQUER um dos outros 3
-// slugs (o risco documentado na issue: re-render do MD descarta edição
-// manual do HTML sem aviso da pipeline).
+// consultado por saveCurrent() antes de salvar o slug `reviewed` (#3668 gap
+// 2: só 02-reviewed.md alimenta o render do HTML final — 01-categorized.md e
+// 03-social.md não têm vínculo causal com o risco, ver
+// shouldConfirmDivergenceGuard em revisao-guards.js). Esta flag em memória é
+// só o valor usado pra pintar o banner — saveCurrent() sempre re-busca o
+// estado fresco do servidor antes de decidir mostrar o confirm() (#3668 gap
+// 3: evita TOCTOU de aba aberta há tempo ou edição concorrente).
 let htmlFinalDiverged = false;
 
 const el = {
@@ -162,11 +167,13 @@ async function loadFile(slug, { force } = {}) {
   el.editor.disabled = false;
   if (!ok || !body || !body.ok) {
     el.fileStatus.textContent = `Erro ao carregar: ${(body && body.error) || "falha desconhecida"}`;
+    refreshPreviewIfOpen();
     return;
   }
   if (!body.exists) {
     el.fileStatus.textContent = `${FILE_LABELS[slug]} ainda não existe nesta edição.`;
     el.editor.placeholder = "Arquivo ainda não gerado pelo pipeline.";
+    refreshPreviewIfOpen();
     return;
   }
   el.editor.value = body.content;
@@ -178,24 +185,39 @@ async function loadFile(slug, { force } = {}) {
   } else {
     el.pullStatus.textContent = "";
   }
+  refreshPreviewIfOpen();
+}
+
+// #3669 bug 1: trocar de aba de documento (categorized/reviewed/social/
+// html-final) só atualizava `currentSlug`/`renderTabs()` — o iframe de
+// preview ficava com o conteúdo da aba anterior até um clique explícito na
+// aba lateral "Preview" ou no botão "Atualizar preview". Chamado ao final de
+// loadFile() (todos os caminhos de saída) SE o painel lateral Preview já
+// estiver aberto — reusa refreshPreview(), que já sabe o endpoint certo pro
+// `currentSlug` atualizado.
+function refreshPreviewIfOpen() {
+  if (!el.panePreview.hidden) refreshPreview().catch(showPreviewError);
 }
 
 async function saveCurrent() {
-  // #3635: guard — salvar um dos slugs de Markdown enquanto o HTML final já
-  // diverge (foi editado manualmente) é o risco explícito da issue: um
-  // re-render futuro a partir do MD (rodar a Etapa 4 de novo) descarta essas
-  // edições manuais sem aviso nenhum da pipeline. Avisa e exige confirmação
-  // aqui, no único ponto de controle que o painel tem. Não bloqueia salvar
-  // o próprio html-final (não faz sentido avisar o editor sobre o arquivo
-  // que ele está justamente editando).
-  if (currentSlug !== "html-final" && htmlFinalDiverged) {
-    const proceed = window.confirm(
-      "HTML final (_internal/newsletter-final.html) foi editado manualmente e diverge " +
-        "da versão gerada pelo agente. Salvar o Markdown agora não altera o HTML — mas um " +
-        "re-render futuro a partir dele (rodar a Etapa 4 de novo) vai descartar essas " +
-        "edições manuais sem aviso automático da pipeline. Salvar mesmo assim?",
-    );
-    if (!proceed) return;
+  // #3635/#3668: guard — salvar 02-reviewed.md enquanto o HTML final já
+  // diverge do baseline é o risco: um re-render futuro do HTML a partir do
+  // Markdown (rodar a Etapa 4 de novo) descarta essa divergência sem aviso
+  // nenhum da pipeline. shouldConfirmDivergenceGuard restringe o disparo ao
+  // único slug com vínculo causal real (#3668 gap 2 — 01-categorized.md e
+  // 03-social.md não alimentam o render do HTML, não bloqueiam mais).
+  if (shouldConfirmDivergenceGuard(currentSlug)) {
+    // #3668 gap 3 (TOCTOU): a flag em memória só é atualizada em init() e
+    // logo após salvar/resetar o próprio slug html-final — uma aba aberta
+    // há tempo, ou html-final editado por outra aba/janela nesse meio
+    // tempo, deixaria htmlFinalDiverged desatualizada aqui. Re-busca o
+    // estado fresco do servidor (mesma rota que refreshDivergenceBanner()
+    // usa) antes de decidir.
+    await refreshDivergenceBanner();
+    if (htmlFinalDiverged) {
+      const proceed = window.confirm(DIVERGENCE_CONFIRM_MESSAGE);
+      if (!proceed) return;
+    }
   }
   el.saveStatus.textContent = "Salvando…";
   el.saveStatus.className = "rv-save-status";
@@ -322,24 +344,39 @@ async function resetBaselineCurrent() {
 // definição — é sempre re-derivado do 02-reviewed.md). Sempre lê do disco,
 // nunca do textarea ainda-não-salvo (mesmo invariante documentado no topo
 // do arquivo pros outros 3 slugs).
+// #3669 bug 2b: erro de rede (fetch falha, ou o próprio fetchJson lança) não
+// pode virar unhandled promise rejection nem deixar o iframe em branco sem
+// explicação — mostra uma mensagem de erro visível no lugar do preview.
+function showPreviewError(err) {
+  el.previewFrame.removeAttribute("src");
+  el.previewFrame.srcdoc =
+    '<p style="font-family:sans-serif;padding:1rem;color:#b00020">Erro ao carregar preview: ' +
+    String((err && err.message) || err) +
+    "</p>";
+}
+
 async function refreshPreview() {
-  if (currentSlug === "html-final") {
-    el.previewFrame.removeAttribute("src");
-    const { body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/html-final`);
-    el.previewFrame.srcdoc =
-      body && body.ok && body.exists
-        ? body.content
-        : "<p style=\"font-family:sans-serif;padding:1rem;color:#444\">newsletter-final.html ainda não existe nesta edição (roda depois da Etapa 4).</p>";
-    return;
+  try {
+    if (currentSlug === "html-final") {
+      el.previewFrame.removeAttribute("src");
+      const { body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/html-final`);
+      el.previewFrame.srcdoc =
+        body && body.ok && body.exists
+          ? body.content
+          : "<p style=\"font-family:sans-serif;padding:1rem;color:#444\">newsletter-final.html ainda não existe nesta edição (roda depois da Etapa 4).</p>";
+      return;
+    }
+    el.previewFrame.removeAttribute("srcdoc");
+    // #3663: aba "social" tem preview PRÓPRIO (posts LinkedIn/Facebook/
+    // Instagram, endpoint distinto do e-mail) — todas as outras abas
+    // (categorized/reviewed) continuam no preview de e-mail derivado do
+    // 02-reviewed.md, mesmo comportamento de antes.
+    const endpoint = currentSlug === "social" ? "social-preview.html" : "preview.html";
+    // Cache-bust: o iframe não deve mostrar preview obsoleto depois de um save.
+    el.previewFrame.src = `/api/editions/${encodeURIComponent(aammdd)}/${endpoint}?t=${Date.now()}`;
+  } catch (err) {
+    showPreviewError(err);
   }
-  el.previewFrame.removeAttribute("srcdoc");
-  // #3663: aba "social" tem preview PRÓPRIO (posts LinkedIn/Facebook/
-  // Instagram, endpoint distinto do e-mail) — todas as outras abas
-  // (categorized/reviewed) continuam no preview de e-mail derivado do
-  // 02-reviewed.md, mesmo comportamento de antes.
-  const endpoint = currentSlug === "social" ? "social-preview.html" : "preview.html";
-  // Cache-bust: o iframe não deve mostrar preview obsoleto depois de um save.
-  el.previewFrame.src = `/api/editions/${encodeURIComponent(aammdd)}/${endpoint}?t=${Date.now()}`;
 }
 
 function activateSidePane(pane) {
@@ -347,7 +384,7 @@ function activateSidePane(pane) {
   el.paneLint.hidden = pane !== "lint";
   el.paneDiff.hidden = pane !== "diff";
   el.panePreview.hidden = pane !== "preview";
-  if (pane === "preview") refreshPreview();
+  if (pane === "preview") refreshPreview().catch(showPreviewError);
 }
 
 async function runSwap(dryRun) {
@@ -429,7 +466,7 @@ function bindEvents() {
   el.diffBtn.addEventListener("click", runDiff);
   el.lintBtn.addEventListener("click", runLints);
   el.resetBaselineBtn.addEventListener("click", resetBaselineCurrent);
-  el.previewRefreshBtn.addEventListener("click", refreshPreview);
+  el.previewRefreshBtn.addEventListener("click", () => { refreshPreview().catch(showPreviewError); });
   el.swapPreviewBtn.addEventListener("click", () => runSwap(true));
   el.swapApplyBtn.addEventListener("click", () => runSwap(false));
   el.titleFillBtn.addEventListener("click", fillRewriteTitlePrompt);
@@ -463,8 +500,18 @@ async function init() {
   bindEvents();
   renderTabs();
   await loadFile(currentSlug);
-  await refreshDivergenceBanner();
-  setConn("ok");
+  // #3669 bug 2a: sem try/catch, uma falha de rede aqui propagava e nunca
+  // chegava em setConn("ok") — o indicador de conexão ficava preso em
+  // "conectando…" pra sempre mesmo com o resto do painel funcional. Falha
+  // vira setConn("down") (sinal real de que uma chamada de rede falhou), sem
+  // travar a inicialização.
+  try {
+    await refreshDivergenceBanner();
+    setConn("ok");
+  } catch (err) {
+    console.error("refreshDivergenceBanner falhou:", err);
+    setConn("down");
+  }
 }
 
 init();
