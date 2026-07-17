@@ -24,8 +24,6 @@ import { buildTimelineRows, type TimelineRow, type Plan as TimelinePlan } from "
 
 export type RoundKind = "overnight" | "develop";
 
-export const ROUND_KINDS: RoundKind[] = ["overnight", "develop"];
-
 export function isRoundKind(value: string): value is RoundKind {
   return value === "overnight" || value === "develop";
 }
