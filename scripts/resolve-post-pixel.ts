@@ -6,12 +6,12 @@
  * manual no Claude in Chrome (#1690).
  *
  * `post_pixel` NUNCA passa por `publish-linkedin.ts` — é publicado 100%
- * manualmente (Make.com não tem endpoint pra post pessoal, ver §3d de
+ * manualmente (Make.com não tem endpoint pra post pessoal, ver §3b de
  * social-linkedin.md e context/publishers/linkedin.md). Por isso os
- * placeholders não são resolvidos no dispatch de Stage 5 como em
- * `### comment_diaria` — este script é o ponto de resolução equivalente
- * pro fluxo manual, chamado no pré-gate do Stage 6 (depois que o draft
- * Beehiiv e o approved JSON final já existem).
+ * placeholders não são resolvidos no dispatch de Stage 5 (como eram no
+ * `### comment_diaria`, aposentado em #3627) — este script é o ponto de
+ * resolução equivalente pro fluxo manual, chamado no pré-gate do Stage 6
+ * (depois que o draft Beehiiv e o approved JSON final já existem).
  *
  * Uso:
  *   npx tsx scripts/resolve-post-pixel.ts --edition-dir data/editions/260707

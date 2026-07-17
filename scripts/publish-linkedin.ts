@@ -1,6 +1,19 @@
 /**
  * publish-linkedin.ts (#506)
  *
+ * #3627 (260716): `### comment_diaria`/`### comment_pixel` deixaram de ser
+ * gerados pelo `social-linkedin` agent (decisão do editor — postagem manual
+ * de comentários auxiliares não compensava mais o atrito). O código de
+ * extração/dispatch desses 2 subtypes (`extractCommentDiaria`,
+ * `extractCommentPixel`, o bloco "COMMENT_DIARIA"/"COMMENT_PIXEL" em `main()`,
+ * `webhookTarget: "pixel"`) permanece por 2 motivos: (1) já tratava ausência
+ * de forma graceful (backward-compat com `03-social.md` pré-#595 — ver
+ * "schema pré-#595, skip" abaixo), então nunca bloqueou o dispatch; (2) ainda
+ * lê `06-social-published.json` histórico que pode conter entries desses
+ * subtypes. Daqui pra frente, `03-social.md` novo nunca mais tem essas
+ * subseções — os 2 blocos ficam permanentemente inertes (extraem `null`,
+ * fazem log e `continue`), mas não são mais alcançáveis com efeito prático.
+ *
  * Posta no LinkedIn company page (Diar.ia). 2 caminhos de fire:
  *   - "fire-now": POSTa direto no webhook Make.com (Scenario A "Integration LinkedIn")
  *     que executa o post imediatamente via módulo LinkedIn.

@@ -531,12 +531,12 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       npx tsx scripts/check-humanizer-social.ts --check --edition-dir {EDITION_DIR}/
       ```
       - **`legacy: true`** (sentinel gravado antes do #3446 — sem baseline por-seção confiável): pular pro **fluxo FULL-FILE** (6.2' abaixo).
-      - **`legacy: false`**: `changed_sections` traz os blocos exatos tocados (`main_d{N}`, `comment_pixel_d{N}`, `post_pixel`). Seguir o **fluxo SCOPED** (6.2-6.4).
+      - **`legacy: false`**: `changed_sections` traz os blocos exatos tocados (`main_d{N}`, `post_pixel` — **#3627**: `comment_pixel_d{N}` deixou de ser gerado, então nunca mais aparece aqui na prática; a função tolera a ausência sem mudança de código). Seguir o **fluxo SCOPED** (6.2-6.4).
 
    **Fluxo SCOPED (`legacy: false`):**
 
    **6.2** — Snapshot pré-humanização: `cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/.stage4-pre-scoped-humanize.md`.
-   **6.3** — **Rodar o humanizador SCOPED** — invocar a Skill pedindo explicitamente que **só** os blocos de `changed_sections` sejam reescritos (traduzir cada nome pra prosa: `main_d{N}` = texto principal de `## d{N}`; `comment_pixel_d{N}` = bloco `### comment_pixel` dentro de `## d{N}`; `post_pixel` = bloco `## post_pixel`). Instruir explicitamente para copiar todo o resto verbatim, sem tocar. Rodar `mcp__clarice__correct_text` no `## post_pixel` **só se `"post_pixel"` estiver em `changed_sections`**.
+   **6.3** — **Rodar o humanizador SCOPED** — invocar a Skill pedindo explicitamente que **só** os blocos de `changed_sections` sejam reescritos (traduzir cada nome pra prosa: `main_d{N}` = texto principal de `## d{N}`; `post_pixel` = bloco `## post_pixel`). Instruir explicitamente para copiar todo o resto verbatim, sem tocar. Rodar `mcp__clarice__correct_text` no `## post_pixel` **só se `"post_pixel"` estiver em `changed_sections`**.
    **6.4** — **Verificar que o escopo foi respeitado:**
       ```bash
       npx tsx scripts/verify-scoped-humanization.ts \

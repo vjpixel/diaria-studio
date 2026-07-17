@@ -831,7 +831,7 @@ describe("lintLinkedinSchema (#595)", () => {
     );
   });
 
-  it("ok=false quando comment_diaria ausente em d2", () => {
+  it("#3627: ok=true quando comment_diaria/comment_pixel ausentes em d2 (não são mais exigidos)", () => {
     const dWithoutComments = `\n${"X".repeat(1300)}\n`;
     const md = buildMd({
       d1: fullDestaque(),
@@ -839,21 +839,26 @@ describe("lintLinkedinSchema (#595)", () => {
       d3: fullDestaque(),
     });
     const r = lintLinkedinSchema(md);
-    assert.equal(r.ok, false);
-    const errs = r.errors.filter((e) => e.destaque === "d2");
-    assert.ok(errs.some((e) => e.rule === "missing_comment_diaria"));
-    assert.ok(errs.some((e) => e.rule === "missing_comment_pixel"));
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+    const d2 = r.destaques.find((d) => d.destaque === "d2");
+    assert.ok(d2);
+    assert.equal(d2!.has_comment_diaria, false);
+    assert.equal(d2!.has_comment_pixel, false);
+    assert.ok(!r.errors.some((e) => e.rule === "missing_comment_diaria"));
+    assert.ok(!r.errors.some((e) => e.rule === "missing_comment_pixel"));
   });
 
-  it("ok=false quando comment_pixel ausente em d3", () => {
-    const dPartial = `\n${"X".repeat(1300)}\n\n### comment_diaria\n\nEdição completa em {edition_url}\n\nReceba em diar.ia.br\n\nMais sobre o caso.\n`;
-    const md = buildMd({ d1: fullDestaque(), d2: fullDestaque(), d3: dPartial });
+  it("#3627: ok=true quando NENHUM destaque tem comment_diaria/comment_pixel (formato real pós-#3627, main only)", () => {
+    const mainOnly = `\n${"X".repeat(1300)}\n`;
+    const md = buildMd({ d1: mainOnly, d2: mainOnly, d3: mainOnly });
     const r = lintLinkedinSchema(md);
-    assert.equal(r.ok, false);
-    const errs = r.errors.filter((e) => e.destaque === "d3");
-    assert.ok(errs.some((e) => e.rule === "missing_comment_pixel"));
-    // comment_diaria está presente
-    assert.ok(!errs.some((e) => e.rule === "missing_comment_diaria"));
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
+    assert.equal(r.destaques.length, 3);
+    for (const d of r.destaques) {
+      assert.equal(d.has_main, true);
+      assert.equal(d.has_comment_diaria, false);
+      assert.equal(d.has_comment_pixel, false);
+    }
   });
 
   it("warning de char count quando main muito curto", () => {

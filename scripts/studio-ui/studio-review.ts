@@ -380,7 +380,7 @@ function lintSocial(md: string): LintReport {
     runCheck("cta-format", "CTAs LinkedIn/Facebook no formato certo (#602)", true, () => lintSocialMd(md)),
     runCheck("relative-time", "Sem timestamp relativo em post social (#877)", true, () => lintSocialRelativeTime(md)),
     runCheck("no-trailing-question", "Post não encerra com pergunta (#1762)", true, () => lintTrailingQuestion(md)),
-    runCheck("linkedin-schema", "3 textos por destaque no LinkedIn (#595)", true, () => lintLinkedinSchema(md)),
+    runCheck("linkedin-schema", "Post principal por destaque no LinkedIn (#595, #3627)", true, () => lintLinkedinSchema(md)),
     runCheck("post-pixel-matches-d1", "Post pessoal do Pixel alinhado ao D1 (#1861)", true, () => lintPostPixelMatchesD1(md)),
     runCheck("personal-post-deixis", "Sem deixis de newsletter em post pessoal (#2148)", true, () => lintPersonalPostNewsletterDeixis(md)),
     runCheck("no-email-cta-linkedin", "Sem CTA de e-mail no LinkedIn (#2458)", true, () => lintLinkedinEmailCTA(md)),

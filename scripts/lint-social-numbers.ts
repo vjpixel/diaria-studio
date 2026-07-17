@@ -237,6 +237,15 @@ export function lintSocialNumbers(socialMd: string, approved: ApprovedShape): De
 
 // ---------------------------------------------------------------------------
 // comment_diaria count lint (#2014)
+//
+// #3627: `### comment_diaria` deixou de ser gerado pelo social-linkedin
+// (decisão do editor, 260716). `parseCommentDiariaByDestaque` sempre retorna
+// um Map vazio pra `03-social.md` novos, então `lintCommentDiariaCount` nunca
+// mais encontra findings — permanece só como parsing puro (já era WARN-only,
+// não bloqueava a pipeline) e cobertura de `03-social.md` legado que ainda
+// tenha a subseção. `{outros_count}` do `## post_pixel` (único lugar que
+// ainda usa o placeholder, #3052) é resolvido separadamente em Stage 6 por
+// `scripts/resolve-post-pixel.ts` — não passa por este lint.
 // ---------------------------------------------------------------------------
 
 /**

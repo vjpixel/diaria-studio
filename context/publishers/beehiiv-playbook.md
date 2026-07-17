@@ -772,8 +772,9 @@ Se `hasA` ou `hasB` for `false`, registrar em `unfixed_issues[]` com `reason: "m
 ### 6.1. Gravar 05-edition-url.txt (#2454)
 
 **IMEDIATAMENTE após salvar o draft**, gravar a URL pública prevista em `_internal/05-edition-url.txt`.
-Esta URL é necessária pelo `publish-linkedin.ts` (Step 5c-3 do orchestrator-stage-5) para substituir
-o placeholder `{edition_url}` no `comment_diaria` antes do dispatch do social.
+Esta URL é necessária pelo `publish-linkedin.ts` (Step 5c-3 do orchestrator-stage-5) e por
+`scripts/resolve-post-pixel.ts` para substituir o placeholder `{edition_url}` no `## post_pixel`
+(#3627: antes também no `comment_diaria`, aposentado) antes do dispatch do social.
 
 **O dispatch do social (LinkedIn + Facebook) só ocorre APÓS este passo** (#2454) — nunca em paralelo.
 
