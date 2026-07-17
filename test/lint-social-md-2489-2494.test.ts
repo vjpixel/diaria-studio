@@ -12,78 +12,14 @@ import {
 } from "../scripts/lint-social-md.ts";
 
 // ---------------------------------------------------------------------------
-// #2489: lintLinkedinPageLink — cpStart guard (comment_pixel antes de comment_diaria)
-// ---------------------------------------------------------------------------
-
-describe("lintLinkedinPageLink — cpStart guard (#2489)", () => {
-  it("PASSA quando comment_pixel vem antes de comment_diaria (ordem invertida)", () => {
-    // Reproduz o bug: se comment_pixel vier antes de comment_diaria, cpStart < cdStart
-    // → end ficava = cpStart < start → slice vazio → falso-positivo "link ausente".
-    const md = [
-      "# LinkedIn",
-      "",
-      "## d1",
-      "",
-      "Texto editorial d1.",
-      "",
-      "### comment_pixel",
-      "",
-      "Comentário pessoal antes do diaria.",
-      "",
-      "### comment_diaria",
-      "",
-      "Edição completa em {edition_url}",
-      "",
-      "Siga a Diar.ia em linkedin.com/company/diar.ia.br",
-      "",
-      "## post_pixel",
-      "",
-      "<!-- destaque: d1 -->",
-      "",
-      "Post pessoal.",
-      "",
-      "Siga a Diar.ia em linkedin.com/company/diar.ia.br",
-      "",
-      "# Facebook",
-      "",
-      "## d1",
-      "",
-      "fb",
-    ].join("\n");
-    const r = lintLinkedinPageLink(md);
-    // O link está presente no comment_diaria — deve PASSAR, não falso-positivo
-    assert.equal(r.ok, true, `falso-positivo com cpStart < cdStart: ${JSON.stringify(r.errors)}`);
-  });
-
-  it("FALHA quando comment_diaria SEM link e comment_pixel vem antes (ordem invertida)", () => {
-    // Garante que o guard não cega o lint: ausência real de link ainda é detectada
-    const md = [
-      "# LinkedIn",
-      "",
-      "## d1",
-      "",
-      "Texto editorial d1.",
-      "",
-      "### comment_pixel",
-      "",
-      "Comentário antes.",
-      "",
-      "### comment_diaria",
-      "",
-      "Edição completa em {edition_url}",
-      "",
-      "# Facebook",
-      "",
-      "## d1",
-      "",
-      "fb",
-    ].join("\n");
-    const r = lintLinkedinPageLink(md);
-    assert.equal(r.ok, false, "link ausente com ordem invertida deve falhar");
-    assert.ok(r.errors.some((e) => e.destaque === "d1"), JSON.stringify(r.errors));
-  });
-});
-
+// #2489 (cpStart guard): a lógica cdStart/cpStart pertencia ao check por-destaque
+// de `### comment_diaria` em lintLinkedinPageLink, removido em #3645 depois que
+// #3627 aposentou a geração dessa subseção (o check tinha virado um no-op
+// permanente — nunca achava `comment_diaria`, nunca reportava erro). Sem essa
+// checagem, o guard cpStart/cdStart deixou de existir; os 2 testes que a
+// exercitavam foram removidos junto (a cobertura de "comment_diaria não é mais
+// checado" já está em test/lint-social-md.test.ts, describe("lintLinkedinPageLink
+// (#2458)")).
 // ---------------------------------------------------------------------------
 // #2489: EMAIL_CTA_RE simplificado — verificar cobertura das variantes originais
 // ---------------------------------------------------------------------------
@@ -159,46 +95,11 @@ describe("EMAIL_CTA_RE simplificado (#2489) — cobertura semântica mantida", (
 // ---------------------------------------------------------------------------
 
 describe("lintLinkedinPageLink — msgs de erro usam DIARIA_LINKEDIN_PAGE_SLUG (#2489)", () => {
-  it("mensagem de erro do comment_diaria contém o slug canônico", () => {
-    const md = [
-      "# LinkedIn",
-      "",
-      "## d1",
-      "",
-      "Texto editorial d1.",
-      "",
-      "### comment_diaria",
-      "",
-      "Edicao completa em {edition_url}",
-      "",
-      "### comment_pixel",
-      "",
-      "Comentário pessoal.",
-      "",
-      `## post_pixel`,
-      "",
-      "<!-- destaque: d1 -->",
-      "",
-      "Post pessoal.",
-      "",
-      `Siga a Diar.ia em ${DIARIA_LINKEDIN_PAGE_SLUG}`,
-      "",
-      "# Facebook",
-      "",
-      "## d1",
-      "",
-      "fb",
-    ].join("\n");
-    const r = lintLinkedinPageLink(md);
-    assert.equal(r.ok, false, "deve falhar — comment_diaria sem link");
-    const cdErr = r.errors.find((e) => e.section === "comment_diaria");
-    assert.ok(cdErr, "erro em comment_diaria esperado");
-    assert.ok(
-      cdErr!.detail.includes(DIARIA_LINKEDIN_PAGE_SLUG),
-      `mensagem de erro deve conter "${DIARIA_LINKEDIN_PAGE_SLUG}", got: ${cdErr!.detail}`,
-    );
-  });
-
+  // #3645: o teste original ("mensagem de erro do comment_diaria contém o slug
+  // canônico") exercitava o check por-destaque de `### comment_diaria`, removido
+  // de lintLinkedinPageLink depois que #3627 aposentou a geração dessa subseção
+  // (o check já não achava nada pra checar). post_pixel é o único bloco que
+  // ainda produz erro com mensagem — cobertura abaixo.
   it("mensagem de erro do post_pixel contém o slug canônico", () => {
     const md = [
       "# LinkedIn",

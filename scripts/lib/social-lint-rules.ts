@@ -743,11 +743,22 @@ export interface LinkedinPageLinkResult {
 
 /**
  * #2458: Valida que o link da página da Diar.ia no LinkedIn está presente em:
- *   - Cada `### comment_diaria` (CTA de follow da página)
  *   - O `## post_pixel` (CTA de follow no post pessoal)
  *
  * O link aceito: `linkedin.com/company/diar.ia.br` (sem https://, sem ponto).
  * Posts principais `## d{N}` ficam 100% editoriais (sem URL, conforme #595).
+ *
+ * #3645: até #3627, esta função também checava `### comment_diaria` (CTA de
+ * follow-a-página em cada um dos 3 posts principais `## d{N}`, requisito
+ * original de #2458). #3627 removeu a geração de `### comment_diaria` — a
+ * subseção nunca mais existe, então esse checável ficou permanentemente
+ * vacuamente-verde (nunca achava a subseção, nunca reportava erro, mas o
+ * gate continuava "passando"). Removido explicitamente aqui em vez de deixado
+ * morto-mas-verde. **O requisito de follow-CTA nos 3 posts principais NÃO
+ * tem, hoje, nenhum mecanismo de enforcement** — se ainda for desejado,
+ * decidir onde esse CTA deve viver (main post `## d{N}` é proibido de conter
+ * URL/menção por #595) é uma decisão editorial pendente do editor, não
+ * resolvida por este lint. Ver #3645.
  */
 export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
   const errors: LinkedinPageLinkError[] = [];
@@ -760,38 +771,6 @@ export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
     DIARIA_LINKEDIN_PAGE_SLUG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
     "i",
   );
-
-  // --- Checar cada comment_diaria ---
-  // #2458 fix (self-review): prefixar "\n" para casar `## d1` no início da seção
-  // (sem newline anterior) e aceitar trailing content/espaços no header (`[^\n]*`),
-  // senão o primeiro destaque escaparia silenciosamente do check.
-  const chunks = ("\n" + linkedinSection).split(/\n## (d\d+)[^\n]*\n/);
-  for (let i = 1; i < chunks.length; i += 2) {
-    const destaque = chunks[i];
-    const body = chunks[i + 1] ?? "";
-    // Extrair texto do comment_diaria
-    const cdStart = body.search(/\n### comment_diaria\b/);
-    const cpStart = body.search(/\n### comment_pixel\b/);
-    if (cdStart === -1) continue; // #3627: sem comment_diaria (esperado — não é mais gerado), no-op
-    const start = body.indexOf("\n", cdStart + 1) + 1;
-    // #2489: guard — se comment_pixel vier antes de comment_diaria (ou ausente),
-    // cpStart ≤ cdStart produz slice vazio → falso-positivo "link ausente".
-    // Usar body.length como fallback garante que o texto inteiro do comment_diaria
-    // é avaliado nesses casos.
-    const end = cpStart !== -1 && cpStart > cdStart ? cpStart : body.length;
-    const cdText = body.slice(start, end).replace(/<!--[\s\S]*?-->/g, "").trim();
-    if (!pageRe.test(cdText)) {
-      errors.push({
-        section: "comment_diaria",
-        destaque,
-        // #2489: usar a const canônica nas msgs de erro para que mudar o slug
-        // atualize automaticamente todas as mensagens (evita drift).
-        detail:
-          `${destaque}/comment_diaria: link da página da Diar.ia no LinkedIn ausente. ` +
-          `Adicionar "${DIARIA_LINKEDIN_PAGE_SLUG}" no CTA (#2458).`,
-      });
-    }
-  }
 
   // --- Checar post_pixel ---
   const text = "\n" + linkedinSection.replace(/\r\n/g, "\n");

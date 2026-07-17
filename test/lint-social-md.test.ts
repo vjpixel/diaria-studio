@@ -1737,24 +1737,31 @@ describe("lintLinkedinPageLink (#2458)", () => {
     assert.equal(r.ok, true, JSON.stringify(r.errors));
   });
 
-  it("FALHA: comment_diaria de d1 sem link da página", () => {
+  it("#3645: comment_diaria de d1 SEM link da página NÃO falha mais (check removido pós-#3627)", () => {
+    // Até #3627 isto disparava um erro em `comment_diaria`/d1. #3627 aposentou a
+    // geração da subseção `### comment_diaria` — o check correspondente virou
+    // um no-op permanente (#3645), então foi removido explicitamente da função
+    // em vez de deixado morto-mas-verde. post_pixel (não tocado aqui) segue com
+    // link válido, então o resultado geral é ok=true.
     const md = mkLinkedinMd({
       commentDiariaD1: "Edição completa em {edition_url}",
     });
     const r = lintLinkedinPageLink(md);
-    assert.equal(r.ok, false);
-    const e = r.errors.find((x) => x.section === "comment_diaria" && x.destaque === "d1");
-    assert.ok(e, `esperava erro em d1/comment_diaria, achei: ${JSON.stringify(r.errors)}`);
+    assert.equal(r.ok, true, `comment_diaria sem link não deve mais ser flagado: ${JSON.stringify(r.errors)}`);
+    assert.ok(
+      !r.errors.some((x) => x.section === "comment_diaria"),
+      "não deve existir mais nenhum erro de section=comment_diaria (#3645)",
+    );
   });
 
-  it("FALHA: comment_diaria de d3 sem link da página", () => {
+  it("#3645: comment_diaria ausente/sem link em d1+d2+d3 simultaneamente NÃO falha mais", () => {
     const md = mkLinkedinMd({
+      commentDiariaD1: "Edição completa em {edition_url}",
+      commentDiariaD2: "Edição completa em {edition_url}",
       commentDiariaD3: "Edição completa em {edition_url}",
     });
     const r = lintLinkedinPageLink(md);
-    assert.equal(r.ok, false);
-    const e = r.errors.find((x) => x.section === "comment_diaria" && x.destaque === "d3");
-    assert.ok(e, `esperava erro em d3/comment_diaria, achei: ${JSON.stringify(r.errors)}`);
+    assert.equal(r.ok, true, JSON.stringify(r.errors));
   });
 
   it("FALHA: post_pixel sem link da página", () => {
@@ -1767,12 +1774,10 @@ describe("lintLinkedinPageLink (#2458)", () => {
     assert.ok(e, `esperava erro em post_pixel, achei: ${JSON.stringify(r.errors)}`);
   });
 
-  it("PASSA: comment_diaria com URL completa 'https://linkedin.com/company/diar.ia.br'", () => {
+  it("PASSA: post_pixel com URL completa 'https://linkedin.com/company/diar.ia.br'", () => {
     // Aceita qualquer forma que contenha 'linkedin.com/company/diar.ia.br'
     const md = mkLinkedinMd({
-      commentDiariaD1: "Edição completa em {edition_url}\n\nSiga em https://linkedin.com/company/diar.ia.br",
-      commentDiariaD2: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diar.ia.br",
-      commentDiariaD3: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diar.ia.br",
+      postPixel: "Texto do post pessoal.\n\nSiga em https://linkedin.com/company/diar.ia.br",
     });
     const r = lintLinkedinPageLink(md);
     assert.equal(r.ok, true, JSON.stringify(r.errors));
@@ -1788,19 +1793,19 @@ describe("lintLinkedinPageLink (#2458)", () => {
     assert.equal(DIARIA_LINKEDIN_PAGE_SLUG, "linkedin.com/company/diar.ia.br");
   });
 
-  it("FALHA: comment_diaria com o slug ANTIGO (company/diaria sem .br) (#2675)", () => {
+  it("FALHA: post_pixel com o slug ANTIGO (company/diaria sem .br) (#2675)", () => {
     // #2675 regressão: o handle antigo aponta pra uma página inexistente.
     // O lint deve rejeitá-lo — garante que pageRe casa só o slug canônico atual.
+    // (#3645: este teste cobria comment_diaria antes de #3627 aposentar a
+    // subseção; migrado pra post_pixel, o único bloco ainda checado.)
     const md = mkLinkedinMd({
-      commentDiariaD1: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diaria",
-      commentDiariaD2: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diaria",
-      commentDiariaD3: "Edição completa em {edition_url}\n\nSiga em linkedin.com/company/diaria",
+      postPixel: "Texto do post pessoal.\n\nSiga em linkedin.com/company/diaria",
     });
     const r = lintLinkedinPageLink(md);
     assert.equal(r.ok, false, "slug antigo company/diaria deveria falhar o lint");
     assert.ok(
-      r.errors.some((x) => x.section === "comment_diaria"),
-      `esperava erro de comment_diaria, achei: ${JSON.stringify(r.errors)}`,
+      r.errors.some((x) => x.section === "post_pixel"),
+      `esperava erro de post_pixel, achei: ${JSON.stringify(r.errors)}`,
     );
   });
 
@@ -1829,8 +1834,8 @@ describe("lintLinkedinPageLink (#2458)", () => {
         rmSync(dir, { recursive: true, force: true });
       }
     };
-    // Sem link → exit 1
-    const noLink = mkLinkedinMd({ commentDiariaD1: "Edição completa em {edition_url}" });
+    // Sem link → exit 1 (#3645: só post_pixel controla o exit code agora)
+    const noLink = mkLinkedinMd({ postPixel: "Texto do post pessoal sobre o D1." });
     assert.equal(run(noLink).status, 1, "sem link da página → exit 1");
     // Com link → exit 0
     assert.equal(run(mkLinkedinMd({})).status, 0, "com link da página → exit 0");
@@ -1838,27 +1843,6 @@ describe("lintLinkedinPageLink (#2458)", () => {
 });
 
 describe("lintLinkedinPageLink — fixes self-review (#2458)", () => {
-  it("d1 no início da seção (sem newline anterior) NÃO escapa do split", () => {
-    // Reproduz o bug do chunk-split: '## d1' logo após '# LinkedIn' — sem o prefixo
-    // "\n" o primeiro destaque era pulado e um comment_diaria sem link passava.
-    const md = [
-      "# LinkedIn",
-      "## d1",
-      "Texto editorial d1.",
-      "### comment_diaria",
-      "Edição completa em {edition_url}", // <- falta o link da página
-      "### comment_pixel",
-      "Comentário pessoal.",
-      "",
-      "# Facebook",
-      "## d1",
-      "fb",
-    ].join("\n");
-    const r = lintLinkedinPageLink(md);
-    assert.equal(r.ok, false, "d1 comment_diaria sem link deve falhar (não escapar do split)");
-    assert.ok(r.errors.some((e) => e.destaque === "d1"), JSON.stringify(r.errors));
-  });
-
   it("drift guard: platform.config.json espelha DIARIA_LINKEDIN_PAGE_SLUG", async () => {
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
