@@ -248,6 +248,14 @@ body.chat-drawer-present.chat-drawer-collapsed {
   background: var(--paper);
   color: var(--ink);
 }
+/* #3561: campo de secret (token/credencial/senha, cat. A do develop) —
+   mesma caixa, borda sólida + cor de alerta pra sinalizar "isto é mascarado
+   e nunca fica visível", distinto do "Other" livre comum (borda tracejada). */
+.chat-permission-other-sensitive {
+  border-style: solid;
+  border-color: #c0392b;
+}
+.chat-permission-other-sensitive::placeholder { opacity: 0.65; }
 .chat-permission-submit {
   align-self: flex-start;
   background: var(--brand);

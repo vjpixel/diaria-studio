@@ -47,3 +47,35 @@ export function planHydrationCards(pending, renderedIds) {
   const rendered = renderedIds instanceof Set ? renderedIds : new Set(renderedIds);
   return pending.filter((p) => !rendered.has(p.toolUseId));
 }
+
+// ─── detecção de pergunta sensível (#3561, gate cat. A do develop) ────────
+//
+// `.claude/skills/diaria-develop/SKILL.md` §Fase 0.5 pede o editor colar
+// tokens/credenciais (cat. A) — quando essa pergunta chega via
+// `AskUserQuestion` (ex: sessão de chat rodando /diaria-develop), o campo
+// livre "Other" do card (chat-drawer.js) precisa NUNCA ecoar o valor digitado
+// em nenhum lugar visível (#3561 critério de aceite). `plan.json` já garante
+// isso do lado do servidor (SKILL.md: "o plan.json nunca armazena o valor de
+// um token") — esta função é o sinal client-side pra mascarar o INPUT
+// (type="password" em vez de "text") e limpar o valor da tela assim que a
+// resposta é enviada. Heurística textual (best-effort, sem contrato
+// dedicado do SDK pra "esta pergunta pede um secret") — cobre os termos que
+// o próprio SKILL.md usa pra cat. A: token, credencial, senha, API key,
+// secret, chave de API.
+
+const SENSITIVE_RE = /\b(token|credencial|secret|senha|password|api[\s-]?key|chave\s+de\s+api)\b/i;
+
+/**
+ * Detecta se UMA pergunta (`{header, question}`, mesmo shape de
+ * `ChatPermissionQuestion`) provavelmente pede um valor sensível (token/
+ * credencial/senha) — o texto de `header` OU `question` bate no padrão.
+ * Pura, sem I/O; sempre retorna boolean, nunca lança mesmo com input
+ * malformado (fail-closed pro lado seguro: input inesperado -> `false`, o
+ * campo continua padrão "text" em vez de quebrar a renderização do card).
+ */
+export function isSensitiveQuestion(q) {
+  if (!q || typeof q !== "object") return false;
+  const header = typeof q.header === "string" ? q.header : "";
+  const question = typeof q.question === "string" ? q.question : "";
+  return SENSITIVE_RE.test(header) || SENSITIVE_RE.test(question);
+}

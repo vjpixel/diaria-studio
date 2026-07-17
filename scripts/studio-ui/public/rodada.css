@@ -1,0 +1,46 @@
+/* rodada.css (#3561) — acompanhamento de rodada overnight/develop. Estende
+   style.css (#3555) + triagem.css (#3562, reusa .filters-bar/.triage-table/
+   .priority-badge/.alert-banner), mesma fonte de tokens (/tokens.generated.css). */
+
+.round-kind-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.round-kind-tab {
+  font: inherit;
+  padding: 0.4rem 1rem;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--paper-alt);
+  color: var(--ink);
+  cursor: pointer;
+}
+.round-kind-tab.active {
+  background: var(--brand);
+  color: var(--on-ink);
+  border-color: var(--brand);
+  font-weight: 700;
+}
+
+.round-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.5rem 1.5rem;
+  margin: 0.5rem 0 1rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-alt);
+}
+.round-meta div { display: flex; flex-direction: column; gap: 0.15rem; }
+.round-meta dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.65;
+}
+.round-meta dd { margin: 0; }
+
+.round-queue-table td, .round-timeline-table td { vertical-align: top; }
