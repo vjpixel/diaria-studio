@@ -341,6 +341,142 @@ export async function fetchPlanCredits(
 export const LASTGOOD_CAMPAIGNS_KEY = "dash:lastgood:campaigns";
 
 /**
+ * #3644: coalescing de requests concorrentes DENTRO do mesmo isolate — a
+ * defesa PRIMÁRIA e determinística contra o thundering-herd. Cloudflare
+ * Workers processam múltiplas requests concorrentes na MESMA instância de
+ * isolate via event loop cooperativo dentro de um colo (isolates são
+ * reaproveitados entre requests, especialmente sob carga sustentada) — então
+ * isto cobre o caso mais comum: 2+ requests em cache-miss chegando "ao mesmo
+ * tempo" no mesmo colo.
+ *
+ * `Map.get`/`Map.set` são SÍNCRONOS — sem `await` entre o check e o set,
+ * não existe janela de corrida possível dentro de um isolate (JS é
+ * single-threaded: nenhuma outra continuação pode intercalar entre essas
+ * duas linhas). Diferente de um lock via KV (get+put são operações
+ * assíncronas separadas — ver `tryAcquireRefreshLock` abaixo —, então
+ * SEMPRE existe uma janela TOCTOU entre elas, mesmo com truques de
+ * write-then-readback: validado empiricamente durante o self-review desta
+ * PR, uma tentativa anterior de fechar essa janela via token+readback no KV
+ * NÃO resolvia a corrida de forma confiável sob o scheduling real de
+ * microtasks do V8/Node — só o Map em memória dá a garantia real).
+ *
+ * Limitação honesta: isolates DIFERENTES (cross-colo, ou uma instância nova
+ * subindo no mesmo colo) não compartilham este Map. Para esse caso mais raro
+ * (mas real — é o cenário principal descrito na issue: "colos diferentes"),
+ * o lock via KV (`tryAcquireRefreshLock`/`buildInflightCoalescedFallback`)
+ * é a segunda linha de defesa — best-effort, reduz a chance sem eliminá-la
+ * (fechar isso por completo exigiria um Durable Object; decisão explícita
+ * de não introduzir infra nova pra isso, ver "zero custo recorrente" em
+ * CLAUDE.md).
+ */
+const inflightRefreshes = new Map<string, Promise<unknown>>();
+
+// #3644: contador de OBSERVABILIDADE PRA TESTE, incrementado a cada chamada de
+// `coalesceRefresh` (hit ou miss) por routeKey. Nunca lido por lógica de
+// produção -- existe só pra testes de corrida conseguirem esperar
+// deterministicamente por "a 2ª chamada concorrente já chegou no checkpoint de
+// coalescing" (`getCoalesceCallCount`) em vez de estimar quantos ticks isso
+// leva. Achado em CI (não reproduzido localmente): o caminho até este
+// checkpoint na rota `/` passa por `isAuthenticated` (2x
+// `crypto.subtle.digest`, despacho real via WebCrypto/threadpool -- timing
+// não-determinístico o bastante entre ambientes pra quebrar suposições de
+// "N ticks bastam").
+const coalesceCallCounts = new Map<string, number>();
+/** Exported for tests only -- ver comentário de `coalesceCallCounts` acima. */
+export function getCoalesceCallCount(routeKey: string): number {
+  return coalesceCallCounts.get(routeKey) ?? 0;
+}
+
+/**
+ * Compartilha UMA única execução de `run()` entre todas as chamadas
+ * concorrentes com a mesma `routeKey` (enquanto a 1ª ainda não resolveu).
+ * A 2ª chamada em diante recebe a MESMA promise da 1ª — não dispara `run()`
+ * de novo. Remove a entrada do Map assim que `run()` resolve/rejeita
+ * (sucesso ou erro), pra não segurar chamadas futuras além da janela real
+ * de execução.
+ */
+export function coalesceRefresh<T>(routeKey: string, run: () => Promise<T>): Promise<T> {
+  coalesceCallCounts.set(routeKey, (coalesceCallCounts.get(routeKey) ?? 0) + 1);
+  const existing = inflightRefreshes.get(routeKey);
+  if (existing) return existing as Promise<T>;
+  const promise = run().finally(() => {
+    inflightRefreshes.delete(routeKey);
+  });
+  inflightRefreshes.set(routeKey, promise);
+  return promise;
+}
+
+/**
+ * #3644: lock de coalescing via KV, por rota cacheável ("/" ou
+ * "/api/campaigns") — SEGUNDA linha de defesa, pra requests concorrentes que
+ * batem em isolates/colos DIFERENTES (fora do alcance de `coalesceRefresh`,
+ * que só coalesce dentro do mesmo isolate). `caches.default` é PER-COLO (não
+ * global) — duas requests em colos diferentes veem cache-miss independente e
+ * cada uma dispara a sequência completa (~150 chamadas Brevo).
+ *
+ * IMPORTANTE (honestidade do trade-off): KV não tem compare-and-swap — isto
+ * NÃO é uma trava atômica cross-colo. Duas requests ainda podem, em teoria,
+ * passar pelo `get()` (ambas veem "sem lock") antes que qualquer uma tenha
+ * concluído o `put()` — a mesma limitação que motivou a sugestão da issue de
+ * que só Durable Object fecharia essa janela de verdade. Decisão explícita
+ * (PR #3644, alinhada com "zero custo recorrente" do CLAUDE.md): não
+ * introduzir infra nova (DO) pra fechar uma janela residual de dezenas de ms
+ * quando esta trava já reduz a janela de "duração inteira do live-fetch"
+ * (segundos, ~150 chamadas) pra "duração de 1 KV get+put" — cobrindo o
+ * padrão mais comum na prática (2ª request chega enquanto a 1ª já está em
+ * voo há algum tempo, não literalmente no mesmo instante).
+ */
+export const REFRESH_LOCK_KEY_PREFIX = "dash:refresh:inflight:";
+export const REFRESH_LOCK_TTL_SECS = 30;
+
+/**
+ * Tenta adquirir o lock de refresh pra `routeKey`. `true` = lock adquirido
+ * (caller deve prosseguir com o live-fetch e, ao final, chamar
+ * `releaseRefreshLock`); `false` = outra request já está com o lock — caller
+ * deve tentar servir um fallback stale (`buildInflightCoalescedFallback`/
+ * `buildInflightCoalescedCampaignsJson`) em vez de fazer o live-fetch.
+ *
+ * Fail-open em qualquer instabilidade do KV (sem binding, erro de leitura,
+ * erro de escrita) — nunca bloqueia um fetch por causa do lock em si; o pior
+ * caso degrada pro comportamento pré-#3644 (sem coalescing cross-colo, mas
+ * `coalesceRefresh` acima continua protegendo o caso same-isolate).
+ */
+export async function tryAcquireRefreshLock(
+  env: Pick<Env, "STATS_CACHE">,
+  routeKey: string,
+): Promise<boolean> {
+  const kv = env.STATS_CACHE;
+  if (!kv) return true;
+  const key = REFRESH_LOCK_KEY_PREFIX + routeKey;
+  try {
+    const existing = await kv.get(key);
+    if (existing) return false;
+  } catch {
+    return true; // KV instável na leitura -- fail-open
+  }
+  await kv.put(key, String(Date.now()), { expirationTtl: REFRESH_LOCK_TTL_SECS }).catch(() => {
+    /* falha de escrita do lock nunca bloqueia -- best-effort */
+  });
+  return true;
+}
+
+/**
+ * Libera o lock adquirido por `tryAcquireRefreshLock` (chamar só quando o
+ * caller de fato adquiriu). Best-effort: se falhar, o TTL de
+ * `REFRESH_LOCK_TTL_SECS` garante que o lock expira sozinho de qualquer jeito.
+ */
+export async function releaseRefreshLock(
+  env: Pick<Env, "STATS_CACHE">,
+  routeKey: string,
+): Promise<void> {
+  const kv = env.STATS_CACHE;
+  if (!kv) return;
+  await kv.delete(REFRESH_LOCK_KEY_PREFIX + routeKey).catch(() => {
+    /* best-effort -- TTL cobre o resto */
+  });
+}
+
+/**
  * #3080: janela de campanhas ENVIADAS buscada nas agregações do dashboard
  * ("Totais por mês", "Volume no ciclo", "Open rate por dia da semana", saúde
  * da Rampa). Pré-#3079 este fetch era SÍNCRONO na rota `/` — 50 mantinha a
@@ -770,6 +906,116 @@ export async function buildRateLimitFallback(
     );
     return rateLimitResponse(retryAfterSecs, true);
   }
+}
+
+/**
+ * #3644: banner de coalescing -- distinto do banner de rate-limit
+ * (`injectStaleBanner`) porque a causa é diferente: não é a Brevo em 429, é
+ * este próprio worker segurando uma 2ª request concorrente pra não duplicar
+ * o live-fetch. Wording honesto evita alarmar o editor com "rate limit"
+ * quando na verdade é uma otimização funcionando como esperado.
+ */
+export function injectInflightBanner(html: string): string {
+  const banner =
+    `<div style="background:#DCEEFB;color:#0b4a6f;padding:10px 16px;text-align:center;` +
+    `font-family:system-ui,sans-serif;font-size:14px;border-bottom:1px solid #A9D6F5;">` +
+    `🔄 Atualização já em andamento (outra visita concorrente) — mostrando o último dado bom conhecido. ` +
+    `Recarregue em alguns segundos.</div>`;
+  if (/<body[^>]*>/i.test(html)) {
+    return html.replace(/<body[^>]*>/i, (m) => m + banner);
+  }
+  return banner + html;
+}
+
+/**
+ * #3644: fallback servido pela rota `/` quando `tryAcquireRefreshLock` sinaliza
+ * que outra request já está no meio do live-fetch. Reusa o mesmo payload STALE
+ * (`dash:lastgood:campaigns`) + abas de KV frescas que `buildRateLimitFallback`
+ * usa pro caso de 429 -- mas com banner honesto (não é rate-limit da Brevo) e
+ * sem `Retry-After` (a janela é de segundos, não o reset da Brevo).
+ *
+ * Retorna `null` quando não há stale bom pra servir (KV ausente/vazio, ou o
+ * re-render falhar) -- nesse caso o caller deve prosseguir com o live-fetch
+ * mesmo sem o lock (fail-open: pior caso é idêntico ao comportamento
+ * pré-#3644, nunca pior).
+ */
+export async function buildInflightCoalescedFallback(
+  env: Env,
+  planCreditsOverride?: number | null,
+): Promise<Response | null> {
+  if (!env.STATS_CACHE) return null;
+  const staleCampaignsRaw = (await env.STATS_CACHE
+    .get(LASTGOOD_CAMPAIGNS_KEY, "json")
+    .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[]; campaignsLimit?: unknown } | null;
+  if (!staleCampaignsRaw) return null;
+  const staleCampaignsLimit =
+    typeof staleCampaignsRaw.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
+  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, "kv-only");
+  const planCredits =
+    typeof planCreditsOverride === "number"
+      ? planCreditsOverride
+      : await fetchPlanCredits(env, "kv-only").catch(() => null);
+  const rawCampaigns = staleCampaignsRaw.campaigns;
+  const rawScheduled = staleCampaignsRaw.scheduled;
+  const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
+    typeof renderDashboardHtml
+  >[0];
+  const staleScheduled = (Array.isArray(rawScheduled) ? rawScheduled : []) as Parameters<
+    typeof renderDashboardHtml
+  >[1];
+  try {
+    const html = renderDashboardHtml(
+      staleCampaigns,
+      staleScheduled,
+      cohorts,
+      mvStatus,
+      contactsSummary,
+      couponUsage,
+      eiaEngagement,
+      planCredits,
+      null,
+      staleCampaignsLimit,
+    );
+    return new Response(injectInflightBanner(html), {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-Dashboard-Stale": "inflight-coalesced",
+      },
+    });
+  } catch (renderErr) {
+    console.error(
+      "[#3644] fallback de coalescing (/) falhou ao re-renderizar -- caller deve prosseguir com o live-fetch:",
+      renderErr instanceof Error ? renderErr.message : renderErr,
+    );
+    return null;
+  }
+}
+
+/**
+ * #3644: equivalente ao fallback acima, mas pra `/api/campaigns` (resposta
+ * JSON crua, não HTML renderizado). Reusa o mesmo `campaigns` gravado em
+ * `dash:lastgood:campaigns` pela rota `/` -- mesmo shape (`CampaignRow[]`),
+ * já que ambas as rotas chamam `fetchRecentCampaigns`. `null` quando não há
+ * stale bom (caller deve prosseguir com o live-fetch, fail-open).
+ */
+export async function buildInflightCoalescedCampaignsJson(
+  env: Pick<Env, "STATS_CACHE">,
+  limit: number,
+): Promise<Response | null> {
+  if (!env.STATS_CACHE) return null;
+  const staleCampaignsRaw = (await env.STATS_CACHE
+    .get(LASTGOOD_CAMPAIGNS_KEY, "json")
+    .catch(() => null)) as { campaigns?: unknown[] } | null;
+  const rawCampaigns = staleCampaignsRaw?.campaigns;
+  if (!Array.isArray(rawCampaigns) || rawCampaigns.length === 0) return null;
+  return new Response(JSON.stringify(rawCampaigns.slice(0, limit), null, 2), {
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "X-Dashboard-Stale": "inflight-coalesced",
+    },
+  });
 }
 
 /** Erro especial para 429 — carrega o header Retry-After da Brevo. */

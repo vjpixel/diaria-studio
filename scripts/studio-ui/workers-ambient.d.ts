@@ -19,8 +19,9 @@
  * de vista do root project até esta fatia).
  *
  * Shim MÍNIMO — só a superfície de fato usada pelos call sites importados
- * aqui (confirmado por grep em ambos os workers: só `.get`/`.put`, nenhum
- * `.list`/`.delete`/`.getWithMetadata`). NÃO substitui
+ * aqui (confirmado por grep em ambos os workers: `.get`/`.put`/`.delete`
+ * — `.delete` adicionado em #3644 (`releaseRefreshLock`, brevo-dashboard);
+ * nenhum `.list`/`.getWithMetadata`). NÃO substitui
  * `@cloudflare/workers-types` (cada worker mantém a dependência real no
  * próprio `tsconfig.json`/`node_modules`, usada pelo deploy via `wrangler`) —
  * só o suficiente para o `tsc` da raiz não quebrar ao seguir os imports.
@@ -45,6 +46,7 @@ interface KVNamespace {
     value: string | ArrayBuffer | ArrayBufferView | ReadableStream,
     options?: KVNamespacePutOptions,
   ): Promise<void>;
+  delete(key: string): Promise<void>;
 }
 
 interface CacheStorage {
