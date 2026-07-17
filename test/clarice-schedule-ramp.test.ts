@@ -68,6 +68,10 @@ describe("parseExtraEmailArg (#3593 item 2 — --extra-email)", () => {
   it("entradas sem formato de email são descartadas (não quebra o import)", () => {
     assert.deepEqual(parseExtraEmailArg("a@b.com,not-an-email,"), ["a@b.com"]);
   });
+
+  it("#self-review: deduplica case-insensitive (mantém a 1ª grafia) — evita drift entre entry.count e o CSV real", () => {
+    assert.deepEqual(parseExtraEmailArg("A@b.com,a@B.com,a@b.com"), ["A@b.com"]);
+  });
 });
 
 describe("buildRampCsv (#3593 item 2 — CSV disjunto por wave + extra-email anexado)", () => {

@@ -94,7 +94,7 @@ import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { segmentRampWarm, excludeCommittedToQueuedCampaigns, type StoreRow } from "./lib/clarice-segment.ts";
 import { monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { checkEiaGuard, applyVerifyResults } from "./clarice-schedule-sends.ts";
-import { findExistingConflicts, normalizeImportCsv, type WaveDef } from "./clarice-import-waves.ts";
+import { findExistingConflicts, normalizeImportCsv, countRows, type WaveDef } from "./clarice-import-waves.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { extractPlanCredits } from "../workers/brevo-dashboard/src/brevo-api.ts";
 import {
@@ -179,13 +179,28 @@ export function sliceIntoVolumes<T>(ordered: T[], volumes: number[]): T[][] {
 // Audiência (#3593 item 2) — CSV + manifest (mesmo shape que clarice-import-waves.ts espera)
 // ---------------------------------------------------------------------------
 
-/** `--extra-email a@b.com,c@d.com` → array normalizado (trim, sem vazios). Pura, testável. */
+/**
+ * `--extra-email a@b.com,c@d.com` → array normalizado (trim, sem vazios,
+ * DEDUPLICADO case-insensitive — mantém a 1ª grafia). Pura, testável.
+ *
+ * Dedup aqui (não só em `buildRampCsv`) é o que mantém `entry.count`
+ * (derivado do CSV real via `countRows`) consistente — sem isso, um
+ * `--extra-email a@b.com,a@b.com` geraria 1 linha real no CSV mas o operador
+ * poderia inferir 2 a partir do argumento cru.
+ */
 export function parseExtraEmailArg(raw: string | undefined): string[] {
   if (!raw) return [];
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && /\S+@\S+\.\S+/.test(s));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim();
+    if (trimmed.length === 0 || !/\S+@\S+\.\S+/.test(trimmed)) continue;
+    const norm = trimmed.toLowerCase();
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(trimmed);
+  }
+  return out;
 }
 
 /** 1º nome p/ personalização — mesma convenção de clarice-build-waves-store.ts. */
@@ -314,8 +329,12 @@ export async function pollUntilCount(
   expectedMin: number,
   opts: { maxAttempts?: number; delayMs?: number; sleepFn?: (ms: number) => Promise<void> } = {},
 ): Promise<PollResult> {
-  const maxAttempts = opts.maxAttempts ?? 6;
-  const delayMs = opts.delayMs ?? 10_000;
+  // #self-review: default 12×15s = até 3min de espera — memória #260716 registra
+  // "10k leva ~1-2min" pro import assíncrono da Brevo; o default anterior
+  // (6×10s = 60s) provavelmente marcaria `matched:false` (falso negativo) em
+  // waves de produção normais, mesmo com o import de fato tendo sucesso.
+  const maxAttempts = opts.maxAttempts ?? 12;
+  const delayMs = opts.delayMs ?? 15_000;
   const sleepFn = opts.sleepFn ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   let last = 0;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -506,13 +525,20 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     groups.forEach((g, i) => {
       const csv = buildRampCsv(g, extraEmails);
       writeFileSync(resolve(rampDir, manifest[i].file), csv, "utf8");
+      // #self-review: `count` deriva do CSV REAL (countRows, mesma função de
+      // clarice-import-waves.ts) em vez de recalcular via aritmética manual —
+      // uma versão anterior somava `g.length + extraEmails.filter(...)`, que
+      // divergia do CSV de fato escrito sempre que `--extra-email` continha
+      // uma entrada já presente na audiência de OUTRA wave mas coincidia em
+      // grafia distinta (edge case de dedup). Contar o CSV escrito é a fonte
+      // única de verdade — não pode divergir por construção.
       entries.push({
         key: manifest[i].key,
         day: dayLabels[i],
         file: manifest[i].file,
         desc: manifest[i].desc,
         volume: volumes[i],
-        count: g.length + extraEmails.filter((e) => !g.some((r) => r.email.trim().toLowerCase() === e.trim().toLowerCase())).length,
+        count: countRows(csv),
         status: "planned",
       });
       console.error(`  ${manifest[i].key} (${dayLabels[i]}): ${g.length.toLocaleString("pt-BR")}/${volumes[i].toLocaleString("pt-BR")} contatos → ${manifest[i].file}`);
