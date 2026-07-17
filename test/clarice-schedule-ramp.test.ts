@@ -19,10 +19,14 @@ import {
   DEFAULT_DASHBOARD_LIMIT,
   DASHBOARD_WORKER_CLAMP,
   shouldSkipImport,
+  hasPassedImportPhase,
+  WAVE_STATUS_ORDER,
   resolveImportStatus,
   assertImportUsable,
   buildImportFileBody,
   checkAllCampaignsCreated,
+  runScheduleLoop,
+  type CampaignEntryLike,
 } from "../scripts/clarice-schedule-ramp.ts";
 import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
@@ -383,6 +387,46 @@ describe("shouldSkipImport (#3643 bug 1 — retry-skip gatava em listId, não em
   it("status \"import_incomplete\" (poll não bateu) → NÃO pula, permite re-tentar", () => {
     assert.equal(shouldSkipImport({ status: "import_incomplete" }), false);
   });
+
+  it("BUG #3652: status \"draft\" (pós --create) — antes só reconhecia o literal \"imported\" e clobbrava; agora pula", () => {
+    assert.equal(shouldSkipImport({ status: "draft" }), true);
+  });
+
+  it("BUG #3652: status \"scheduled\" (pós --schedule) — antes só reconhecia o literal \"imported\" e clobbrava; agora pula", () => {
+    assert.equal(shouldSkipImport({ status: "scheduled" }), true);
+  });
+});
+
+describe("hasPassedImportPhase / WAVE_STATUS_ORDER (#3652 bug 1 — check reusável, não literal espalhado)", () => {
+  it("ordem do ciclo de vida: import_incomplete fica ANTES de imported (retryable, não é progresso)", () => {
+    assert.ok(WAVE_STATUS_ORDER.indexOf("import_incomplete") < WAVE_STATUS_ORDER.indexOf("imported"));
+  });
+
+  it("imported/draft/scheduled → true (já passou da fase de import)", () => {
+    assert.equal(hasPassedImportPhase("imported"), true);
+    assert.equal(hasPassedImportPhase("draft"), true);
+    assert.equal(hasPassedImportPhase("scheduled"), true);
+  });
+
+  it("planned/list_created/import_incomplete → false (ainda não passou, ou não confirmou)", () => {
+    assert.equal(hasPassedImportPhase("planned"), false);
+    assert.equal(hasPassedImportPhase("list_created"), false);
+    assert.equal(hasPassedImportPhase("import_incomplete"), false);
+  });
+
+  it("#self-review: --import não clobbra draft/scheduled — a entry nem chega no código que sobrescreveria status, porque shouldSkipImport (que delega pra hasPassedImportPhase) já a pula com `continue` antes de qualquer POST/atribuição de status (ver scripts/clarice-schedule-ramp.ts main(), bloco --import)", () => {
+    // Prova indireta: simula a decisão que o loop de --import toma pra uma
+    // wave já avançada — se shouldSkipImport(entry) é true, o loop faz
+    // `continue` e `entry.status` nunca é reatribuído nesta invocação.
+    const entry = { key: "w1", status: "scheduled" as const, listId: 42, count: 100 };
+    const originalStatus = entry.status;
+    if (shouldSkipImport(entry)) {
+      // no-op — é exatamente o que o loop real faz: pula sem tocar em entry.status
+    } else {
+      (entry as { status: string }).status = "imported"; // simula o clobber do bug original
+    }
+    assert.equal(entry.status, originalStatus, "status não deveria ter sido tocado");
+  });
 });
 
 describe("resolveImportStatus (#3643 bug 2 — status \"imported\" era setado mesmo com poll.matched=false)", () => {
@@ -466,4 +510,141 @@ describe("checkAllCampaignsCreated (#3643 bug 4 — --schedule agendava parcial 
     assert.equal(result.ready, false);
     assert.deepEqual(result.missingKeys, ["w1", "w2"]);
   });
+});
+
+// -----------------------------------------------------------------------------
+// #3652 — 2 gaps residuais do fix do #3643 (status clobbering + mid-loop schedule failure)
+// -----------------------------------------------------------------------------
+
+describe("runScheduleLoop (#3652 bug 2 — persistência per-iteração, não em lote no fim)", () => {
+  function wave(overrides: Partial<CampaignEntryLike> & { key: string; campaignId: number }): CampaignEntryLike {
+    return {
+      listId: 1,
+      subject: "Assunto",
+      scheduledAt: "2026-08-01T09:00:00.000Z",
+      status: "draft",
+      ...overrides,
+    };
+  }
+
+  it("caminho feliz: todas as waves são PUT + verificadas + persistidas → todas \"scheduled\"", async () => {
+    const w1 = wave({ key: "w1", campaignId: 1 });
+    const w2 = wave({ key: "w2", campaignId: 2 });
+    const campaignsView = [w1, w2];
+    const putCalls: string[] = [];
+    const writes: string[] = [];
+
+    await runScheduleLoop(campaignsView, "/fake/ramp-summary.json", {
+      putFn: async (v) => { putCalls.push(v.key); },
+      verifyFn: async () => ({ status: "scheduled" }),
+      writeFn: (_p, content) => { writes.push(content); },
+      logFn: () => {},
+      now: () => new Date("2026-07-17T00:00:00Z"),
+    });
+
+    assert.deepEqual(putCalls, ["w1", "w2"]);
+    assert.equal(w1.status, "scheduled");
+    assert.equal(w2.status, "scheduled");
+    assert.equal(writes.length, 2, "1 write por wave persistida — não 1 write em lote no fim");
+  });
+
+  it("wave já \"scheduled\" → pulada sem chamar putFn (idempotente)", async () => {
+    const w1 = wave({ key: "w1", campaignId: 1, status: "scheduled" });
+    const putCalls: string[] = [];
+
+    await runScheduleLoop([w1], "/fake/ramp-summary.json", {
+      putFn: async (v) => { putCalls.push(v.key); },
+      verifyFn: async () => ({ status: "scheduled" }),
+      logFn: () => {},
+    });
+
+    assert.deepEqual(putCalls, [], "wave já agendada não deveria disparar novo PUT");
+  });
+
+  it(
+    "BUG #3652 bug 2: putFn da wave 2 lança (timeout/5xx/rate-limit) — wave 1 JÁ foi persistida " +
+    "como \"scheduled\" ANTES da exceção propagar, e wave 3 nunca é tentada",
+    async () => {
+      const w1 = wave({ key: "w1", campaignId: 1 });
+      const w2 = wave({ key: "w2", campaignId: 2 });
+      const w3 = wave({ key: "w3", campaignId: 3 });
+      const campaignsView = [w1, w2, w3];
+      const putCalls: string[] = [];
+      const writes: string[] = [];
+
+      await assert.rejects(
+        runScheduleLoop(campaignsView, "/fake/ramp-summary.json", {
+          putFn: async (v) => {
+            putCalls.push(v.key);
+            if (v.key === "w2") throw new Error("Brevo 503 (simulado, não é campaignId ausente)");
+          },
+          verifyFn: async () => ({ status: "scheduled" }),
+          writeFn: (_p, content) => { writes.push(content); },
+          logFn: () => {},
+          now: () => new Date("2026-07-17T00:00:00Z"),
+        }),
+        /503/,
+      );
+
+      assert.deepEqual(putCalls, ["w1", "w2"], "w3 nunca deveria ser tentada depois que w2 lançou");
+      assert.equal(w1.status, "scheduled", "w1 deveria ter sido persistida ANTES da exceção de w2 propagar");
+      assert.equal(w2.status, "draft", "w2 não avança — seu próprio putFn falhou");
+      assert.equal(w3.status, "draft", "w3 nunca foi tentada");
+      assert.equal(writes.length, 1, "exatamente 1 write — a persistência de w1, antes da exceção de w2");
+      const persisted = JSON.parse(writes[0]) as Array<{ key: string; status: string }>;
+      assert.equal(persisted.find((e) => e.key === "w1")?.status, "scheduled");
+    },
+  );
+
+  it("verifyFn rejeita (GET-verify falha) → status local NÃO atualizado, não lança, loop continua pra próxima wave", async () => {
+    const w1 = wave({ key: "w1", campaignId: 1 });
+    const w2 = wave({ key: "w2", campaignId: 2 });
+    const campaignsView = [w1, w2];
+
+    await runScheduleLoop(campaignsView, "/fake/ramp-summary.json", {
+      putFn: async () => {},
+      verifyFn: async (v) => {
+        if (v.key === "w1") throw new Error("GET timeout");
+        return { status: "scheduled" };
+      },
+      writeFn: () => {},
+      logFn: () => {},
+      now: () => new Date("2026-07-17T00:00:00Z"),
+    });
+
+    assert.equal(w1.status, "draft", "GET-verify falhou — status local não deveria avançar (mesmo com PUT real aceito)");
+    assert.equal(w2.status, "scheduled");
+  });
+
+  it("scheduledAt no passado → lança sem chamar putFn (guard preservado do loop original)", async () => {
+    const w1 = wave({ key: "w1", campaignId: 1, scheduledAt: "2026-07-01T09:00:00.000Z" });
+    const putCalls: string[] = [];
+    await assert.rejects(
+      runScheduleLoop([w1], "/fake/ramp-summary.json", {
+        putFn: async (v) => { putCalls.push(v.key); },
+        verifyFn: async () => ({ status: "scheduled" }),
+        logFn: () => {},
+        now: () => new Date("2026-07-17T00:00:00Z"),
+      }),
+      /passado\/presente/,
+    );
+    assert.deepEqual(putCalls, []);
+  });
+
+  it(
+    "interação com bug 1: o status \"scheduled\" persistido por runScheduleLoop é reconhecido por " +
+    "hasPassedImportPhase/shouldSkipImport como já-avançado (--import subsequente pularia a wave)",
+    async () => {
+      const w1 = wave({ key: "w1", campaignId: 1 });
+      await runScheduleLoop([w1], "/fake/ramp-summary.json", {
+        putFn: async () => {},
+        verifyFn: async () => ({ status: "scheduled" }),
+        writeFn: () => {},
+        logFn: () => {},
+        now: () => new Date("2026-07-17T00:00:00Z"),
+      });
+      assert.equal(w1.status, "scheduled");
+      assert.equal(shouldSkipImport(w1), true, "shouldSkipImport deveria reconhecer o status escrito por runScheduleLoop");
+    },
+  );
 });

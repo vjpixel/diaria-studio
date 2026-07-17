@@ -415,17 +415,57 @@ export interface RampWaveEntry {
 }
 
 /**
+ * Ordem do ciclo de vida da wave — usada por `hasPassedImportPhase` pra
+ * decidir se um status já avançou PARA ALÉM da fase de import. Ordem
+ * importa: `"import_incomplete"` fica ANTES de `"imported"` de propósito —
+ * é terminal-mas-NÃO-confirmado (o poll não bateu a contagem esperada),
+ * então um retry de `--import` deve reprocessá-lo, não pulá-lo. `"imported"`,
+ * `"draft"` (pós `--create`) e `"scheduled"` (pós `--schedule`) são todos
+ * ">= imported" — a wave já passou do import com sucesso e progrediu.
+ */
+export const WAVE_STATUS_ORDER: readonly RampWaveEntry["status"][] = [
+  "planned",
+  "list_created",
+  "import_incomplete",
+  "imported",
+  "draft",
+  "scheduled",
+];
+
+/**
+ * #3652 bug 1: um status "já passou da fase de import" — reusável, em vez de
+ * comparações literais espalhadas pelas 3 fases. Pura, testável.
+ */
+export function hasPassedImportPhase(status: RampWaveEntry["status"]): boolean {
+  return WAVE_STATUS_ORDER.indexOf(status) >= WAVE_STATUS_ORDER.indexOf("imported");
+}
+
+/**
  * #3643 bug 1: decide se uma wave já foi IMPORTADA COM SUCESSO e deve ser
  * pulada num re-run de `--import`. Antes, o skip-check gatava em
  * `entry.listId !== undefined` — mas `listId` é gravado ANTES da chamada
  * `/contacts/import` ser sequer tentada, então um import que falhasse
  * (rede, 5xx, CSV malformado) deixava a wave PERMANENTEMENTE pulada em
  * re-runs futuros, com uma lista Brevo vazia. Gatear em `status === "imported"`
- * (só setado após confirmação, ver `resolveImportStatus`) corrige isso — um
- * retry após falha vê `status` intermediário e tenta de novo. Pura, testável.
+ * (só setado após confirmação, ver `resolveImportStatus`) corrigiu isso — um
+ * retry após falha vê `status` intermediário e tenta de novo.
+ *
+ * #3652 bug 1 (gap residual do fix acima): reconhecer só o literal
+ * `"imported"` não bastava — o ciclo de vida da wave avança por mais 2
+ * estados depois (`"draft"` pós `--create`, `"scheduled"` pós `--schedule`).
+ * Como o script não tem flag pra targetar 1 wave específica, um retry de
+ * `--import` pra recuperar 1 wave que falhou necessariamente reprocessa TODO
+ * o manifest — inclusive waves já avançadas pra `"draft"`/`"scheduled"` numa
+ * rodada anterior do ramp multi-dia. `entry.listId` permanece setado pra
+ * sempre (nunca é limpo por fases posteriores), então o `--import` reusava a
+ * lista existente, re-POSTava `/contacts/import` incondicionalmente, e
+ * sobrescrevia `entry.status` de volta pra `"imported"`/`"import_incomplete"`
+ * — CLOBBERING o status mais avançado. Agora usa `hasPassedImportPhase`, que
+ * reconhece QUALQUER status "imported"/"draft"/"scheduled" como já concluído
+ * — a wave nunca chega no código que sobrescreveria seu status. Pura, testável.
  */
 export function shouldSkipImport(entry: Pick<RampWaveEntry, "status">): boolean {
-  return entry.status === "imported";
+  return hasPassedImportPhase(entry.status);
 }
 
 /**
@@ -501,6 +541,82 @@ export interface CampaignsReadyCheck {
 export function checkAllCampaignsCreated(entries: Array<{ key: string; campaignId?: number }>): CampaignsReadyCheck {
   const missingKeys = entries.filter((e) => e.campaignId === undefined).map((e) => e.key);
   return { ready: missingKeys.length === 0, missingKeys };
+}
+
+// ---------------------------------------------------------------------------
+// --schedule loop (#3652 bug 2 — persistência per-iteração)
+// ---------------------------------------------------------------------------
+
+export type CampaignEntryLike = {
+  key: string;
+  campaignId: number;
+  listId: number;
+  subject: string;
+  scheduledAt: string;
+  status: "draft" | "scheduled";
+};
+
+export interface ScheduleLoopDeps {
+  /** Executa o PUT real de agendamento (`brevoPut .../emailCampaigns/{id}`). */
+  putFn: (view: CampaignEntryLike) => Promise<void>;
+  /** Executa o GET-verify pós-PUT (`brevoGetCampaign`). */
+  verifyFn: (view: CampaignEntryLike) => Promise<{ status: string }>;
+  writeFn?: (path: string, content: string) => void;
+  logFn?: (msg: string) => void;
+  now?: () => Date;
+}
+
+/**
+ * #3652 bug 2: roda o loop de `--schedule` persistindo o resultado de CADA
+ * wave (`applyVerifyResults`, que já grava em disco por-entry — ver docstring
+ * em clarice-schedule-sends.ts) IMEDIATAMENTE após seu `putFn`+`verifyFn`,
+ * ANTES de tentar a próxima wave.
+ *
+ * Antes (gap residual do fix do #3643 bug 4): `checkAllCampaignsCreated` só
+ * validava `campaignId !== undefined` ANTES do loop começar — não protegia
+ * contra um `putFn` (brevoPut) falhar por QUALQUER outro motivo (timeout,
+ * 5xx, rate-limit transiente) NO MEIO do loop. O loop antigo acumulava todas
+ * as views cujo `putFn` teve sucesso em `toVerify` e só chamava
+ * `applyVerifyResults` UMA VEZ, depois do loop inteiro terminar — se a wave N
+ * lançasse, a exceção propagava ANTES da persistência rodar, perdendo o
+ * rastro local das waves 1..N-1 cujo agendamento JÁ foi aceito (imutável) na
+ * Brevo. Mesma classe de bug que o #3643 bug 4 eliminou, só que via um
+ * gatilho diferente (não coberto por `checkAllCampaignsCreated`).
+ *
+ * Agora: cada wave é PUT + GET-verify + persistida antes de seguir pra
+ * próxima. Se `putFn` de uma wave lançar, a exceção ainda propaga (mesmo
+ * contrato de antes — `main().catch()` trata como erro fatal), mas só DEPOIS
+ * de garantir que toda wave anterior bem-sucedida já está gravada em disco.
+ * `verifyFn` nunca precisa de try/catch aqui — passa por `Promise.allSettled`
+ * (mesmo padrão do loop antigo) e `applyVerifyResults` já trata rejection
+ * sem lançar (warn + status local não atualizado, retry seguro).
+ */
+export async function runScheduleLoop(
+  campaignsView: CampaignEntryLike[],
+  rampSummaryPath: string,
+  deps: ScheduleLoopDeps,
+): Promise<void> {
+  const writeFn = deps.writeFn ?? ((p, c) => writeFileAtomic(p, c));
+  const logFn = deps.logFn ?? ((m) => console.error(m));
+  const now = deps.now ?? (() => new Date());
+
+  for (const view of campaignsView) {
+    if (view.status === "scheduled") {
+      logFn(`↷ ${view.key} já agendada — pulando`);
+      continue;
+    }
+    if (!view.scheduledAt) throw new Error(`${view.key}: scheduledAt ausente — recrie via --create.`);
+    if (new Date(view.scheduledAt) <= now()) {
+      throw new Error(`--schedule: ${view.key} (campanha #${view.campaignId}) tem scheduledAt no passado/presente (${view.scheduledAt}).`);
+    }
+
+    await deps.putFn(view); // brevoPut REAL — agendamento aceito e imutável na Brevo a partir daqui
+
+    // #3652 bug 2: persiste ESTA wave IMEDIATAMENTE — se a PRÓXIMA falhar, o
+    // registro local desta já está gravado, não some junto com a exceção.
+    const settled = await Promise.allSettled([deps.verifyFn(view)]);
+    applyVerifyResults(settled, [view], campaignsView, rampSummaryPath, writeFn, logFn);
+  }
 }
 
 function rampSummaryPath(rampDir: string): string {
@@ -855,7 +971,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // de `entries` (MESMA referência de array/objetos, não uma cópia): mutar via
       // a view propaga pro `entries` real, e o `writeFn` grava o `entries` completo
       // (não só o subconjunto agendado nesta invocação) em ramp-summary.json.
-      type CampaignEntryLike = { key: string; campaignId: number; listId: number; subject: string; scheduledAt: string; status: "draft" | "scheduled" };
       const campaignsView = entries as unknown as CampaignEntryLike[];
 
       // #3643 bug 4: filtra/valida ANTES de qualquer PUT — igual ao padrão
@@ -879,29 +994,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
         );
       }
 
-      const toVerify: CampaignEntryLike[] = [];
-      for (const view of campaignsView) {
-        if (view.status === "scheduled") {
-          console.error(`↷ ${view.key} já agendada — pulando`);
-          continue;
-        }
-        if (!view.scheduledAt) throw new Error(`${view.key}: scheduledAt ausente — recrie via --create.`);
-        if (new Date(view.scheduledAt) <= new Date()) {
-          throw new Error(`--schedule: ${view.key} (campanha #${view.campaignId}) tem scheduledAt no passado/presente (${view.scheduledAt}).`);
-        }
-        await brevoPut(apiKey, `/emailCampaigns/${view.campaignId}`, { scheduledAt: view.scheduledAt });
-        toVerify.push(view);
-      }
-
-      const verifySettled = await Promise.allSettled(toVerify.map((c) => brevoGetCampaign(apiKey, c.campaignId)));
-      applyVerifyResults(
-        verifySettled,
-        toVerify,
-        campaignsView,
-        rampSummaryPath(rampDir),
-        (_p, content) => writeFileAtomic(_p, content),
-        (msg) => console.error(msg),
-      );
+      // #3652 bug 2: cada wave é PUT + GET-verify + persistida ANTES de
+      // seguir pra próxima — não mais "PUT todas, verifica/persiste no fim"
+      // (ver docstring de `runScheduleLoop`).
+      await runScheduleLoop(campaignsView, rampSummaryPath(rampDir), {
+        putFn: async (view) => { await brevoPut(apiKey, `/emailCampaigns/${view.campaignId}`, { scheduledAt: view.scheduledAt }); },
+        verifyFn: (view) => brevoGetCampaign(apiKey, view.campaignId),
+      });
     }
   }
 
