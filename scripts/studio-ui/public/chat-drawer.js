@@ -589,6 +589,16 @@ async function sendMessage(text) {
           } else {
             setToggleStatus("ok");
           }
+        } else if (eventName === "chat-error") {
+          // runChatTurn (studio-chat.ts) é fail-soft por design: qualquer
+          // exceção vira este evento em vez de propagar/derrubar a conexão.
+          // Sem este handler, o evento chegava e era silenciosamente
+          // ignorado (nenhum case do switch batia) — a tela ficava muda
+          // ("não responde") até o stream fechar sozinho, sem explicação.
+          // Reusa onError (mesmo objeto handlers) em vez de duplicar as 3
+          // chamadas — this é o próprio objeto handlers aqui, já que este
+          // método é invocado como handlers.onEvent(...).
+          this.onError(data.message || "a sessão terminou com erro — ver detalhes no terminal/run-log.");
         }
       },
       onError(message) {
