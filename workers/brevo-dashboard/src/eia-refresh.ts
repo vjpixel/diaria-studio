@@ -59,9 +59,9 @@ interface PollEditionsResponse {
  * rede/HTTP/shape — o caller (`refreshEiaEngagement`) converte pra
  * `{ok:false}`. Exportado pra teste.
  */
-export async function fetchClariceEditions(workerUrl: string): Promise<string[]> {
+export async function fetchClariceEditions(workerUrl: string, fetchImpl: typeof fetch = fetch): Promise<string[]> {
   const url = `${workerUrl}/editions?brand=clarice`;
-  const res = await fetch(url, {
+  const res = await fetchImpl(url, {
     headers: { Accept: "application/json" },
     signal: AbortSignal.timeout(10_000),
   });
@@ -82,10 +82,14 @@ export async function fetchClariceEditions(workerUrl: string): Promise<string[]>
  * fail-soft de `fetchEditionStats` no script (edição sem votos = skip).
  * Exportado pra teste.
  */
-export async function fetchCycleStats(workerUrl: string, cycle: string): Promise<PollStatsResponse | null> {
+export async function fetchCycleStats(
+  workerUrl: string,
+  cycle: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<PollStatsResponse | null> {
   const url = `${workerUrl}/stats?edition=${encodeURIComponent(cycle)}&brand=clarice`;
   try {
-    const res = await fetch(url, {
+    const res = await fetchImpl(url, {
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(10_000),
     });
@@ -106,13 +110,14 @@ export async function fetchCycleStats(workerUrl: string, cycle: string): Promise
  */
 export async function buildEiaEngagementFromPoll(
   workerUrl: string = DEFAULT_POLL_WORKER_URL,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<EiaEngagementSummary> {
-  const cycles = await fetchClariceEditions(workerUrl);
+  const cycles = await fetchClariceEditions(workerUrl, fetchImpl);
   const editions: EiaEngagementEdition[] = [];
 
   for (let i = 0; i < cycles.length; i += FETCH_BATCH) {
     const batch = cycles.slice(i, i + FETCH_BATCH);
-    const results = await Promise.all(batch.map((cycle) => fetchCycleStats(workerUrl, cycle)));
+    const results = await Promise.all(batch.map((cycle) => fetchCycleStats(workerUrl, cycle, fetchImpl)));
     for (let j = 0; j < results.length; j++) {
       const stats = results[j];
       if (!stats) continue;
@@ -155,7 +160,11 @@ export async function refreshEiaEngagement(
 ): Promise<RefreshEiaEngagementResult> {
   try {
     if (!env.STATS_CACHE) return { ok: false, error: "STATS_CACHE KV binding ausente" };
-    const summary = await buildEiaEngagementFromPoll(workerUrl);
+    // #3676: prefere o service binding (evita fetch() worker-to-worker via
+    // *.workers.dev, que reproduziu 404 em produção); cai pro fetch() público
+    // quando o binding não está configurado (dev local/testes).
+    const fetchImpl = env.POLL_WORKER ? env.POLL_WORKER.fetch.bind(env.POLL_WORKER) : fetch;
+    const summary = await buildEiaEngagementFromPoll(workerUrl, fetchImpl as typeof fetch);
     await env.STATS_CACHE.put(EIA_ENGAGEMENT_KV_KEY, JSON.stringify(summary));
     return { ok: true, editionsCount: summary.editions.length };
   } catch (e) {

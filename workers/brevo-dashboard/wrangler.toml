@@ -29,6 +29,15 @@ binding = "STATS_CACHE"
 id = "2f87d65d735c499ab8f465774d0167e2"
 preview_id = "2f87d65d735c499ab8f465774d0167e2" # mesma namespace -- ok para dev local
 
+# Service binding pro worker `poll` (#3676) -- fetch() público a *.workers.dev
+# do MESMO account, de dentro de um Worker, não é confiável (reproduzido em
+# produção como 404 em GET /editions?brand=clarice, enquanto a mesma URL
+# respondia 200 normalmente fora da rede da Cloudflare). Service binding
+# evita esse round-trip via workers.dev inteiramente -- ver eia-refresh.ts.
+[[services]]
+binding = "POLL_WORKER"
+service = "poll"
+
 # Build step (#2107): gera ds-tokens.generated.ts a partir de design-tokens.ts
 # antes de compilar o Worker. Garante que tokens nunca ficam stale no bundle.
 # `npx tsx ../../scripts/generate-worker-tokens.ts` lê a fonte canônica no
