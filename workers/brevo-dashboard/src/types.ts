@@ -16,8 +16,11 @@ export interface Env {
    * (curl direto). Service binding evita esse round-trip via workers.dev
    * inteiramente. Opcional (`?`) pra não quebrar testes/dev local sem o
    * binding configurado — eia-refresh.ts cai em fetch() público nesse caso.
+   * Tipo estrutural (não o `Fetcher` ambiente do @cloudflare/workers-types)
+   * porque este arquivo é importado por scripts/ (tsconfig raiz, sem esse
+   * global) além do próprio Worker.
    */
-  POLL_WORKER?: Fetcher;
+  POLL_WORKER?: { fetch: typeof fetch };
 }
 
 export interface BrevoCampaignStats {
