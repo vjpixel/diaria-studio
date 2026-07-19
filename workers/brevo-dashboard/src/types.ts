@@ -8,6 +8,19 @@ export interface Env {
   COUPONS_TAB_ENABLED?: string;
   /** Shared-token for cookie auth. Wrangler secret — if unset, fail-CLOSED: access is denied (#2748; never bypassed). */
   AUTH_TOKEN?: string;
+  /**
+   * Service binding pro worker `poll` (#3676). Chamadas worker-to-worker via
+   * fetch() público a *.workers.dev do MESMO account não são confiáveis —
+   * reproduzido em produção como 404 (GET /editions?brand=clarice), enquanto
+   * a mesma URL respondia 200 normalmente de fora da rede da Cloudflare
+   * (curl direto). Service binding evita esse round-trip via workers.dev
+   * inteiramente. Opcional (`?`) pra não quebrar testes/dev local sem o
+   * binding configurado — eia-refresh.ts cai em fetch() público nesse caso.
+   * Tipo estrutural (não o `Fetcher` ambiente do @cloudflare/workers-types)
+   * porque este arquivo é importado por scripts/ (tsconfig raiz, sem esse
+   * global) além do próprio Worker.
+   */
+  POLL_WORKER?: { fetch: typeof fetch };
 }
 
 export interface BrevoCampaignStats {

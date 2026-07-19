@@ -247,6 +247,46 @@ describe("refreshEiaEngagement (#3257)", () => {
       globalThis.fetch = orig;
     }
   });
+
+  // #3676: fetch() worker-to-worker via *.workers.dev do MESMO account
+  // reproduziu 404 em produção (GET /editions?brand=clarice), enquanto a
+  // mesma URL respondia 200 fora da rede da Cloudflare. Fix: service binding
+  // POLL_WORKER, preferido sobre o fetch() público quando presente.
+  test("env.POLL_WORKER presente → usa o service binding, NUNCA o fetch() público", async () => {
+    const orig = globalThis.fetch;
+    let globalFetchCalled = false;
+    // @ts-ignore — se isso for chamado, o bug reintroduziu o round-trip via workers.dev.
+    globalThis.fetch = async () => {
+      globalFetchCalled = true;
+      throw new Error("fetch() público não deveria ser chamado com POLL_WORKER presente");
+    };
+    const bindingCalls: string[] = [];
+    const pollWorkerBinding = {
+      fetch: async (url: string | URL) => {
+        const urlStr = String(url);
+        bindingCalls.push(urlStr);
+        if (urlStr.includes("/editions")) {
+          return { ok: true, status: 200, json: async () => ({ brand: "clarice", editions: ["2606-07"] }) } as Response;
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ total: 10, voted_a: 6, voted_b: 4, correct_answer: "A", correct_count: 6, correct_pct: 60 }),
+        } as Response;
+      },
+    };
+    const kv = makeStatsCacheKv();
+    const env = { STATS_CACHE: kv, POLL_WORKER: pollWorkerBinding } as unknown as Env;
+    try {
+      const result = await refreshEiaEngagement(env, WORKER_URL);
+      assert.deepEqual(result, { ok: true, editionsCount: 1 });
+      assert.equal(globalFetchCalled, false, "fetch() público não deve ser chamado quando POLL_WORKER existe");
+      assert.ok(bindingCalls.some((u) => u.includes("/editions")), "binding deve ter sido usado pro /editions");
+      assert.ok(bindingCalls.some((u) => u.includes("/stats")), "binding deve ter sido usado pro /stats");
+    } finally {
+      globalThis.fetch = orig;
+    }
+  });
 });
 
 // ── POST /api/eia/refresh — integração via router (#3257) ───────────────────
