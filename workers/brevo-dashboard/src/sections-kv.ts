@@ -20,6 +20,10 @@ import {
   BILLING_CYCLE_MINUTE,
   type BillingCycleWindow,
 } from "./billing-cycle.ts";
+import { DEFAULT_POLL_WORKER_URL } from "./eia-refresh.ts";
+
+/** Só ciclos mensais (YYMM-MM) têm leaderboard — edições diárias (AAMMDD) não. */
+const MONTHLY_CYCLE_RE = /^\d{4}-\d{2}$/;
 
 // #2875: formatter pt-BR de contagem inteira — estava duplicado em
 // renderContactsSummarySection e renderCohortsTabPanel (mesmo corpo, 2
@@ -1302,10 +1306,15 @@ export function renderEiaEngagementSection(
     // (#2875): mesmos formatters NaN-safe usados em renderCohortsTabPanel.
     const total = countOrDash(e.total_votes);
     const pctFmt = pctOrDash(e.pct_correct);
+    // #3676: link pro leaderboard do ciclo — só ciclos mensais têm essa rota.
+    const leaderboardCell = MONTHLY_CYCLE_RE.test(e.edition)
+      ? `<a href="${DEFAULT_POLL_WORKER_URL}/leaderboard/${encodeURIComponent(e.edition)}?brand=clarice" target="_blank" rel="noopener">Ver →</a>`
+      : "—";
     return `<tr>
       <td><strong>${escHtml(e.edition)}</strong></td>
       <td>${total}</td>
       <td>${escHtml(pctFmt)}</td>
+      <td>${leaderboardCell}</td>
     </tr>`;
   }).join("\n");
 
@@ -1321,6 +1330,7 @@ export function renderEiaEngagementSection(
         <th scope="col" title="Edição da Clarice News: AAMMDD (diária) ou AAMM-MM (ciclo mensal)">Edição</th>
         <th scope="col" title="Total de votos registrados na edição">Votos</th>
         <th scope="col" title="Porcentagem de acerto da edição, quando gabarito configurado">% acerto</th>
+        <th scope="col" title="Leaderboard público do ciclo (só disponível para ciclos mensais)">Leaderboard</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>

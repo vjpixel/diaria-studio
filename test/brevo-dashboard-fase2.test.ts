@@ -3629,6 +3629,31 @@ describe("renderEiaEngagementSection — aceita ciclo MENSAL YYMM-MM (#2903)", (
   });
 });
 
+// #3676: link pro leaderboard do ciclo mensal na tabela "Por edição"
+describe("renderEiaEngagementSection — link de leaderboard por ciclo (#3676)", () => {
+  test("ciclo mensal (YYMM-MM) ganha link pro leaderboard público brand=clarice", () => {
+    const summary: EiaEngagementSummary = {
+      editions: [{ edition: "2606-07", total_votes: 120, voted_a: 70, voted_b: 50, pct_correct: 58 }] as EiaEngagementEdition[],
+      updated_at: null,
+    };
+    const html = renderEiaEngagementSection(summary);
+    assert.match(
+      html,
+      /<a href="https:\/\/poll\.diaria\.workers\.dev\/leaderboard\/2606-07\?brand=clarice"/,
+      "deve linkar pro leaderboard do ciclo, brand=clarice",
+    );
+  });
+
+  test("edição diária (AAMMDD) não ganha link de leaderboard (mostra travessão)", () => {
+    const summary: EiaEngagementSummary = {
+      editions: [{ edition: "260418", total_votes: 1, voted_a: 1, voted_b: 0, pct_correct: 100 }] as EiaEngagementEdition[],
+      updated_at: null,
+    };
+    const html = renderEiaEngagementSection(summary);
+    assert.doesNotMatch(html, /leaderboard/, "edição diária não tem rota de leaderboard mensal");
+  });
+});
+
 // ─── #3081: pct() denominador 0 → "—" (não "0.0%") ───────────────────────────
 //
 // Antes, denominador 0 retornava "0.0%" — afirma um dado real (taxa medida
