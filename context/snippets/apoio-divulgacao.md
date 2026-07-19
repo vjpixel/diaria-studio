@@ -5,34 +5,29 @@ editor quer promover o apoio numa edição diária. Não é auto-inserido por
 padrão (diferente do 📚 livros, #2527) — o editor cola este bloco na lacuna
 desejada quando quiser rodar a divulgação.
 
-Formato (título + intro + lista + CTA — #3374): o corpo tem 4 parágrafos
-separados por linha em branco — (1) título curto, sem marcador/emoji;
-(2) frase de introdução aos benefícios, terminando em ":"; (3) bloco de
-lista `- item` (1 por linha) — vira `<ul><li>` real no HTML, não texto com
-hífen literal; (4) o CTA sozinho como `[texto](url)` — por ser o ÚNICO
-conteúdo do parágrafo, `shouldForceCtaPill` detecta e vira botão pill
+Formato (título + 2 parágrafos + CTA — versão "missão", #3687/260720): o corpo
+tem 4 parágrafos separados por linha em branco — (1) título curto, sem
+marcador/emoji; (2) frase de missão ("me ajuda a manter isso de pé"), NÃO uma
+lista de recompensas; (3) linha de preço/tier ("a partir de R$5", "cada nível
+libera um tipo de recompensa"); (4) o CTA sozinho como `[texto](url)` — por ser
+o ÚNICO conteúdo do parágrafo, `shouldForceCtaPill` detecta e vira botão pill
 centralizado (ver newsletter-render-html.ts).
 
-Sem `**...**` embrulhando o BLOCO INTEIRO — texto plano no nível do bloco vira
-peso normal (#3373, o peso da fonte do box SÓ-TEXTO de 1 parágrafo é
-controlado pelo bold-wrap da fonte; este bloco é multi-parágrafo e nem passa
-por esse caminho). Dentro de cada item da lista, o `**label**` em negrito é
-INLINE (processInlineLinks já converte `**...**` → `<strong>`, #2532) — só o
-rótulo do benefício fica em negrito, a descrição depois do hífen fica normal.
+Decisão editorial (260720): o box tende para "estou ajudando" (missão), não
+para "o que ganho" (transacional). Removida a lista enumerada de benefícios
+porque (a) dava a impressão de que o apoiador ganha TODOS os itens, quando na
+verdade dependem do nível de contribuição no apoia.se, e (b) patronato converte
+por pertencimento, não por transação a R$5/mês. Substitui a versão anterior
+(título + lista de 5 benefícios), aprovada em 260713.
 
-Aprovado pelo editor na edição 260713 (260712) — revisado 3x (1ª versão
-inline sem lista, 2ª com lista + botão + emoji removido, 3ª com labels em
-negrito + título ajustado + botão encurtado pra só "Conheça").
+Sem `**...**` embrulhando o BLOCO INTEIRO — texto plano no nível do bloco vira
+peso normal (#3373). Multi-parágrafo, não passa pelo bold-wrap de bloco só-texto.
 -->
 
-A diar.ia.br lançou um programa de apoio
+Apoie a diar.ia.br
 
-Quem contribui ajuda a manter a curadoria diária gratuita e ganha benefícios como:
+Todo dia eu leio, filtro e resumo o que importa em IA pra te entregar de graça. Quem apoia é quem mantém isso de pé — e me ajuda a ir além.
 
-- **Artigo Especial** - um mergulho fundo num tema do momento, escolhido por apoiadores
-- **Bastidores da produção** - como o pipeline funciona por trás da newsletter
-- **Panorama do Mês** - recap conectando notícias do último mês
-- **Acesso antecipado** a novos projetos
-- **Sorteios mensais** de brindes
+O apoio começa em R$5 por mês, e cada nível libera um tipo de recompensa.
 
-[Conheça](https://apoia.se/diaria)
+[Quero apoiar](https://apoia.se/diaria)
