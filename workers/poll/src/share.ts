@@ -143,13 +143,28 @@ export function buildShareText(payload: SharePayload): string {
 }
 
 /**
- * Pure: JS de wiring dos botões de compartilhamento (Web Share API + fallback
- * copiar-link), delegado a partir de `containerSelector` — funciona tanto pro
- * bloco renderizado direto em `votePageHtml` (container = `#jogar-share-card`,
- * presente no load) quanto pro bloco injetado dinamicamente em `/jogar`
- * (container = `#jogar-result-slot`, presente no load MESMO antes do conteúdo
- * ser injetado — delegação de evento cobre filhos futuros). Retorna a tag
- * `<script>` completa, pronta pra interpolar.
+ * Pure: JS de wiring dos botões de compartilhamento (Web Share API + WhatsApp
+ * + fallback copiar-link), delegado a partir de `containerSelector` —
+ * funciona tanto pro bloco renderizado direto em `votePageHtml` (container =
+ * `#jogar-share-card`, presente no load) quanto pro bloco injetado
+ * dinamicamente em `/jogar` (container = `#jogar-result-slot`/
+ * `#seq-share-slot`, presente no load MESMO antes do conteúdo ser injetado —
+ * delegação de evento cobre filhos futuros). Retorna a tag `<script>`
+ * completa, pronta pra interpolar.
+ *
+ * #3679: botão WhatsApp dedicado (`data-share-action="whatsapp"`, link
+ * `wa.me`) — o "Compartilhar" (Web Share API) já abre o share sheet do SO em
+ * mobile, que PODE incluir o WhatsApp, mas (a) não existe em desktop
+ * (`navigator.share` ausente na maioria dos browsers desktop, cai direto pro
+ * fallback "copiar link") e (b) exige 1 tap a mais (escolher o app dentro do
+ * share sheet) — um link `wa.me` abre o WhatsApp em 1 clique em qualquer
+ * plataforma. `wa.me` só aceita 1 parâmetro `text` (sem `url` separado) —
+ * manda só `shareUrl` (mesmo dado que a ação "copy" já usa sozinha), não
+ * `shareText` + url concatenados: a página de destino (`/share/{token}` ou
+ * `/quiz-share/{token}`) já tem meta tags OG (`renderSeoMeta`, `imageUrl`) que
+ * o WhatsApp busca sozinho pra montar o preview rico (card + texto) ao
+ * desenrolar o link — grudar o texto também na mensagem duplicaria a
+ * informação que o unfurl já mostra.
  */
 export function shareButtonScript(containerSelector: string): string {
   return `<script>
@@ -161,8 +176,13 @@ export function shareButtonScript(containerSelector: string): string {
     if (!target || !container.contains(target)) return;
     var shareUrl = target.getAttribute("data-share-url");
     var shareText = target.getAttribute("data-share-text");
-    if (target.getAttribute("data-share-action") === "native" && navigator.share) {
+    var action = target.getAttribute("data-share-action");
+    if (action === "native" && navigator.share) {
       navigator.share({ text: shareText, url: shareUrl }).catch(function () {});
+      return;
+    }
+    if (action === "whatsapp") {
+      window.open("https://wa.me/?text=" + encodeURIComponent(shareUrl), "_blank", "noopener");
       return;
     }
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -188,11 +208,15 @@ export function shareButtonScript(containerSelector: string): string {
 export function renderShareCardBlock(token: string, payload: SharePayload): string {
   const text = buildShareText(payload);
   const shareUrlNative = `${POLL_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=social`;
+  // #3679: utm_medium próprio (não reusa "social" do botão nativo) — funil
+  // mensurável separa quem veio de WhatsApp de quem veio do share sheet do SO.
+  const shareUrlWhatsapp = `${POLL_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=whatsapp`;
   const shareUrlCopy = `${POLL_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=copy`;
   return `<div id="jogar-share-card" class="share-card">
   <p class="share-text">${htmlEscape(text)}</p>
   <div class="share-actions">
     <button type="button" data-share-action="native" data-share-url="${htmlEscape(shareUrlNative)}" data-share-text="${htmlEscape(text)}">Compartilhar</button>
+    <button type="button" data-share-action="whatsapp" data-share-url="${htmlEscape(shareUrlWhatsapp)}" data-share-text="${htmlEscape(text)}">WhatsApp</button>
     <button type="button" data-share-action="copy" data-share-url="${htmlEscape(shareUrlCopy)}" data-share-text="${htmlEscape(text)}">Copiar link</button>
   </div>
 </div>`;
@@ -375,11 +399,17 @@ export function buildQuizShareText(payload: QuizSharePayload): string {
 export function renderQuizShareCardBlock(token: string, payload: QuizSharePayload): string {
   const text = buildQuizShareText(payload);
   const shareUrlNative = `${POLL_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=social`;
+  // #3679: mesmo racional de renderShareCardBlock — utm_medium próprio pro
+  // WhatsApp, não reusa "social". Cobre tanto o resultado do quiz relâmpago
+  // quanto a tela final da sequência mensal (`showFinal` em jogar.ts reusa
+  // literalmente este bloco via `/jogar/quiz/result`).
+  const shareUrlWhatsapp = `${POLL_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=whatsapp`;
   const shareUrlCopy = `${POLL_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=copy`;
   return `<div id="jogar-quiz-share-card" class="share-card">
   <p class="share-text">${htmlEscape(text)}</p>
   <div class="share-actions">
     <button type="button" data-share-action="native" data-share-url="${htmlEscape(shareUrlNative)}" data-share-text="${htmlEscape(text)}">Compartilhar</button>
+    <button type="button" data-share-action="whatsapp" data-share-url="${htmlEscape(shareUrlWhatsapp)}" data-share-text="${htmlEscape(text)}">WhatsApp</button>
     <button type="button" data-share-action="copy" data-share-url="${htmlEscape(shareUrlCopy)}" data-share-text="${htmlEscape(text)}">Copiar link</button>
   </div>
 </div>`;

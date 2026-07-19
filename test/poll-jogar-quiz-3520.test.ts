@@ -384,6 +384,14 @@ describe("GET /jogar/quiz/result (#3520)", () => {
     assert.deepEqual(decoded, { score: 4, total: 5 });
   });
 
+  it("#3679: card inclui botão WhatsApp com utm_medium próprio (não reusa 'social')", async () => {
+    const env = makeEnv();
+    const res = await handleQuizResult(new URL("https://poll.test/jogar/quiz/result?score=4&total=5"), env);
+    const html = await res.text();
+    assert.match(html, /data-share-action="whatsapp"/);
+    assert.match(html, /\/quiz-share\/[^"?]+\?utm_medium=whatsapp/);
+  });
+
   it("score/total inválidos → 400", async () => {
     const env = makeEnv();
     const res = await handleQuizResult(new URL("https://poll.test/jogar/quiz/result?score=10&total=5"), env);
