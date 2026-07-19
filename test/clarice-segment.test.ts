@@ -837,15 +837,21 @@ test("excludeCommittedToQueuedCampaigns: contato em lista com campanha queued é
   );
 });
 
-test("excludeCommittedToQueuedCampaigns: contato em lista cuja campanha já foi SENT não é afetado (comportamento inalterado — já coberto por sends_count)", () => {
-  // Campanha já enviada não aparece em queuedListIds (só status=queued é
-  // consultado) — então mesmo contato de uma lista de campanha `sent` passa
-  // batido por esta função; o corte de repetição pra ele já é feito à
-  // montante por isFirstSend/sends_count>0.
+test("excludeCommittedToQueuedCampaigns: a função só enxerga o Set que recebe — lista de campanha SENT fora do Set passa batido (função pura, não busca sozinha)", () => {
+  // #3682 CORRIGIU a suposição original deste teste ("já coberto por
+  // sends_count" — falsa, ver incidente 260716-260721: sync incremental do
+  // store tem lag e sends_count=0 não distingue "nunca recebeu" de "recebeu,
+  // mas o store ainda não propagou"). A função em si continua PURA e cega ao
+  // status da campanha — só filtra pelo Set que o CALLER decide passar. Em
+  // produção (weekly-send-plan-audience.ts/clarice-schedule-ramp.ts/
+  // cohort-order-dryrun.ts) esse Set agora vem de
+  // `fetchCommittedCampaignListIds` (queued+sent, #3682), não mais só
+  // `fetchQueuedCampaignListIds` — ver test/brevo-committed-campaigns-3682.test.ts
+  // pro cenário completo (fetch real → união → exclusão).
   const rows = [
     row({ email: "already-sent@x.com", sends_count: 1, brevo_list_ids: '["50"]' }),
   ];
-  const queuedListIds = new Set(["68"]); // lista 50 (da campanha sent) não está aqui
+  const queuedListIds = new Set(["68"]); // lista 50 (da campanha sent) não está aqui NESTE Set
   const result = excludeCommittedToQueuedCampaigns(rows, queuedListIds);
   assert.deepEqual(result.map((r) => r.email), ["already-sent@x.com"]);
 });

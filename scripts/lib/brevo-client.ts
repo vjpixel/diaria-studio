@@ -333,6 +333,16 @@ export async function brevoGet(
 // seleção de audiência contatos comprometidos com um envio ainda não disparado
 // (`sends_count=0` sozinho não distingue "nunca agendado" de "agendado, ainda
 // não enviado" — ver clarice-segment.ts `excludeCommittedToQueuedCampaigns`).
+//
+// #3682 (P1): `status=queued` sozinho não basta — `sends_count` local também
+// não distingue "nunca recebeu" de "recebeu, mas o sync incremental do store
+// (task diária 03:40) ainda não propagou o incremento" (lag observado: até
+// ~1 dia no incidente real, envios 07-12/07-14 só apareceram como
+// `sends_count=1` no snapshot de 07-17). Um build de audiência rodado NESSA
+// janela de lag re-seleciona contatos que JÁ receberam um envio `sent` do
+// ciclo. `fetchSentCampaignListIds`/`fetchCommittedCampaignListIds` fecham
+// esse furo consultando a Brevo AO VIVO (imune ao lag do store) — mesma
+// mecânica de paginação, só trocando o `status`.
 // ---------------------------------------------------------------------------
 
 interface BrevoCampaignListRef {
@@ -349,28 +359,21 @@ interface BrevoCampaignsResponse {
 }
 
 /**
- * Busca (paginado, `GET /v3/emailCampaigns?status=queued`) todas as listas
- * Brevo que alimentam alguma campanha AGENDADA mas ainda não enviada, e
- * devolve o Set de `list_id` (como string, mesma forma serializada de
- * `brevo_list_ids` no store — ver `parseBrevoListIds`).
- *
- * `status=queued` é o status Brevo pra "agendado, na fila, ainda não
- * disparado" (distinto de `sent`) — mesma distinção que motivou o guard #573
- * (`resolveBeehiivState` etc) pra Beehiiv; aqui o equivalente pra Brevo.
- *
- * Usa `brevoGet` (retry-on-429/5xx embutido, fail-alto em outros erros) —
- * nunca engole falha silenciosamente: se a Brevo estiver inacessível, quem
- * chama deve tratar a exceção como bloqueio de `--write` (fail-safe: na
- * dúvida, não escrever audiência sem essa checagem).
+ * Busca (paginado, `GET /v3/emailCampaigns?status={status}`) todas as listas
+ * Brevo que alimentam alguma campanha do status dado, e devolve o Set de
+ * `list_id` (como string, mesma forma serializada de `brevo_list_ids` no
+ * store — ver `parseBrevoListIds`). Compartilhada por
+ * `fetchQueuedCampaignListIds`/`fetchSentCampaignListIds` — mesma paginação,
+ * só o filtro de status muda.
  */
-export async function fetchQueuedCampaignListIds(apiKey: string): Promise<Set<string>> {
+async function fetchCampaignListIdsByStatus(apiKey: string, status: "queued" | "sent"): Promise<Set<string>> {
   const out = new Set<string>();
   let offset = 0;
   const limit = 50;
   for (;;) {
     const { body } = await brevoGet(
       apiKey,
-      `/emailCampaigns?status=queued&limit=${limit}&offset=${offset}`,
+      `/emailCampaigns?status=${status}&limit=${limit}&offset=${offset}`,
     );
     const campaigns = (body as BrevoCampaignsResponse)?.campaigns ?? [];
     for (const c of campaigns) {
@@ -382,4 +385,43 @@ export async function fetchQueuedCampaignListIds(apiKey: string): Promise<Set<st
     offset += limit;
   }
   return out;
+}
+
+/**
+ * `status=queued` é o status Brevo pra "agendado, na fila, ainda não
+ * disparado" (distinto de `sent`) — mesma distinção que motivou o guard #573
+ * (`resolveBeehiivState` etc) pra Beehiiv; aqui o equivalente pra Brevo.
+ *
+ * Usa `brevoGet` (retry-on-429/5xx embutido, fail-alto em outros erros) —
+ * nunca engole falha silenciosamente: se a Brevo estiver inacessível, quem
+ * chama deve tratar a exceção como bloqueio de `--write` (fail-safe: na
+ * dúvida, não escrever audiência sem essa checagem).
+ */
+export async function fetchQueuedCampaignListIds(apiKey: string): Promise<Set<string>> {
+  return fetchCampaignListIdsByStatus(apiKey, "queued");
+}
+
+/**
+ * #3682: `status=sent` — mesma mecânica de `fetchQueuedCampaignListIds`, mas
+ * pra campanhas JÁ DISPARADAS. Fonte de verdade ao vivo, imune ao lag de
+ * propagação de `sends_count` no store local (ver comentário do bloco acima).
+ */
+export async function fetchSentCampaignListIds(apiKey: string): Promise<Set<string>> {
+  return fetchCampaignListIdsByStatus(apiKey, "sent");
+}
+
+/**
+ * #3682: entrypoint recomendado pros consumidores de exclusão de audiência
+ * (`weekly-send-plan-audience.ts`, `clarice-schedule-ramp.ts`,
+ * `cohort-order-dryrun.ts`) — união de `queued` + `sent`, buscados em
+ * paralelo. Um contato comprometido com QUALQUER campanha do ciclo (agendada
+ * OU já disparada) deve ser excluído da próxima seleção; `sends_count=0`
+ * local não é confiável sozinho pra nenhum dos dois casos.
+ */
+export async function fetchCommittedCampaignListIds(apiKey: string): Promise<Set<string>> {
+  const [queued, sent] = await Promise.all([
+    fetchQueuedCampaignListIds(apiKey),
+    fetchSentCampaignListIds(apiKey),
+  ]);
+  return new Set([...queued, ...sent]);
 }
