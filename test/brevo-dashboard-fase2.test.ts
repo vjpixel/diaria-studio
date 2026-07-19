@@ -3631,16 +3631,19 @@ describe("renderEiaEngagementSection — aceita ciclo MENSAL YYMM-MM (#2903)", (
 
 // #3676: link pro leaderboard do ciclo mensal na tabela "Por edição"
 describe("renderEiaEngagementSection — link de leaderboard por ciclo (#3676)", () => {
-  test("ciclo mensal (YYMM-MM) ganha link pro leaderboard público brand=clarice", () => {
+  test("ciclo mensal (YYMM-MM) ganha link pro leaderboard ANUAL público brand=clarice (#3684)", () => {
     const summary: EiaEngagementSummary = {
       editions: [{ edition: "2606-07", total_votes: 120, voted_a: 70, voted_b: 50, pct_correct: 58 }] as EiaEngagementEdition[],
       updated_at: null,
     };
     const html = renderEiaEngagementSection(summary);
+    // #3684: leaderboard Clarice é ANUAL por ano-calendário — o ciclo "2606-07"
+    // (YYMM-MM) vira /leaderboard/2026, não /leaderboard/2606-07 (que resolvia
+    // "ano" 2606 → "Ano inválido"). Ver test/eia-engagement-leaderboard-link-3684.
     assert.match(
       html,
-      /<a href="https:\/\/poll\.diaria\.workers\.dev\/leaderboard\/2606-07\?brand=clarice"/,
-      "deve linkar pro leaderboard do ciclo, brand=clarice",
+      /<a href="https:\/\/poll\.diaria\.workers\.dev\/leaderboard\/2026\?brand=clarice"/,
+      "deve linkar pro leaderboard ANUAL (ano-calendário), brand=clarice",
     );
   });
 

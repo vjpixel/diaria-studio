@@ -22,8 +22,29 @@ import {
 } from "./billing-cycle.ts";
 import { DEFAULT_POLL_WORKER_URL } from "./eia-refresh.ts";
 
-/** Só ciclos mensais (YYMM-MM) têm leaderboard — edições diárias (AAMMDD) não. */
-const MONTHLY_CYCLE_RE = /^\d{4}-\d{2}$/;
+/**
+ * #3684: deriva o ANO-CALENDÁRIO (YYYY) do leaderboard Clarice a partir de um
+ * ciclo `YYMM-MM` (conteúdo-envio, ex: "2606-07").
+ *
+ * O leaderboard da Clarice é ANUAL por ano-calendário — `BRAND_INFO.clarice.
+ * leaderboardPeriod === "year"` + `handleLeaderboardByYear` em
+ * workers/poll/src/leaderboard-routes.ts, que valida `/^\d{4}$/` E 2000–2099 e
+ * agrega os snapshots `score-by-month:{YYYY}-{MM}`. O ciclo da aba Engajamento
+ * é `YYMM-MM` (o `2606` é YYMM, NÃO YYYY): passar o ciclo cru pra rota gerava
+ * o "ano" 2606 → "Ano inválido. Use formato YYYY". Aqui `20 + YY(conteúdo)` dá
+ * o ano correto (2026), mesma fórmula de `editionToMonthSlug`/
+ * `legacyMonthlyEditionForCycle` no poll lib (mantida local pra não acoplar o
+ * worker da dashboard ao bundle do poll). Retorna null se `cycle` não é
+ * YYMM-MM ou o mês de conteúdo é inválido (0/>12).
+ */
+export function clariceCycleLeaderboardYear(cycle: string): string | null {
+  const m = cycle.match(/^(\d{2})(\d{2})-\d{2}$/);
+  if (!m) return null;
+  const [, yy, mm] = m;
+  const mmNum = parseInt(mm, 10);
+  if (mmNum < 1 || mmNum > 12) return null;
+  return `20${yy}`;
+}
 
 // #2875: formatter pt-BR de contagem inteira — estava duplicado em
 // renderContactsSummarySection e renderCohortsTabPanel (mesmo corpo, 2
@@ -1306,9 +1327,12 @@ export function renderEiaEngagementSection(
     // (#2875): mesmos formatters NaN-safe usados em renderCohortsTabPanel.
     const total = countOrDash(e.total_votes);
     const pctFmt = pctOrDash(e.pct_correct);
-    // #3676: link pro leaderboard do ciclo — só ciclos mensais têm essa rota.
-    const leaderboardCell = MONTHLY_CYCLE_RE.test(e.edition)
-      ? `<a href="${DEFAULT_POLL_WORKER_URL}/leaderboard/${encodeURIComponent(e.edition)}?brand=clarice" target="_blank" rel="noopener">Ver →</a>`
+    // #3676: link pro leaderboard do ciclo. #3684: o leaderboard Clarice é
+    // ANUAL — o ciclo YYMM-MM vira o ano-calendário (/leaderboard/{YYYY}), não
+    // o ciclo cru (que resolvia "ano" 2606 → "Ano inválido").
+    const leaderboardYear = clariceCycleLeaderboardYear(e.edition);
+    const leaderboardCell = leaderboardYear
+      ? `<a href="${DEFAULT_POLL_WORKER_URL}/leaderboard/${leaderboardYear}?brand=clarice" target="_blank" rel="noopener">Ver →</a>`
       : "—";
     return `<tr>
       <td><strong>${escHtml(e.edition)}</strong></td>
