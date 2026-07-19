@@ -1,5 +1,5 @@
 <!--
-Bloco canônico de ENCERRAMENTO — convite social (LinkedIn/Facebook) + apoio via
+Bloco canônico de ENCERRAMENTO — convite social (LinkedIn/Facebook/Instagram) + apoio via
 Apoia.se. Fonte única reaproveitada tanto no diário (seção `PARA ENCERRAR`,
 injetada por `scripts/stitch-newsletter.ts` via `scripts/lib/shared/
 encerramento-snippet.ts`) quanto no mensal (seção `PARA ENCERRAR`, escrita
@@ -18,10 +18,10 @@ dois formatos; só a cláusula de abertura muda):
   - Mensal:  "Essa edição mensal nasce da **diar.ia.br**, newsletter diária
              gratuita sobre IA. " (nota o espaço final antes de "Quem quiser")
 
-O parágrafo de convite social (LinkedIn/Facebook) é IDÊNTICO nos dois
-formatos — sem parametrização.
+O parágrafo de convite social (LinkedIn/Facebook/Instagram) é IDÊNTICO nos
+dois formatos — sem parametrização.
 -->
 
 {{OPENING}}Quem quiser apoiar a curadoria pode contribuir a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria) e ganhar recompensas como artigo especial do mês, bastidores da produção e acesso antecipado a novos projetos.
 
-Agora que chegou ao final da edição, que tal interagir em uma publicação da **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/) ou no [Facebook](https://www.facebook.com/diar.ia.br)?
+Agora que chegou ao final da edição, que tal interagir em uma publicação da **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), no [Facebook](https://www.facebook.com/diar.ia.br) ou no [Instagram](https://www.instagram.com/diar.ia.br)?

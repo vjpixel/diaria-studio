@@ -88,7 +88,7 @@ describe("wrapEmail — shell de marca co-brand Clarice × Diar.ia (#2645)", () 
     }
     assert.ok(html.includes("facebook.com/diar.ia.br"), "URL do Facebook ausente/incorreta");
     assert.ok(html.includes("linkedin.com/company/diar.ia.br"), "URL do LinkedIn ausente/incorreta");
-    assert.ok(html.includes("instagram.com/diaria"), "URL do Instagram ausente/incorreta");
+    assert.ok(html.includes("instagram.com/diar.ia.br"), "URL do Instagram ausente/incorreta");
     assert.ok(html.includes("threads.net/@diar.ia.br"), "URL do Threads ausente/incorreta");
   });
 

@@ -196,8 +196,8 @@ describe("URLs canônicas LinkedIn/Instagram/Threads (#2790)", () => {
   });
 
   it("DIARIA_INSTAGRAM_SLUG/URL têm o handle canônico", () => {
-    assert.equal(DIARIA_INSTAGRAM_SLUG, "instagram.com/diaria");
-    assert.equal(DIARIA_INSTAGRAM_URL, "https://www.instagram.com/diaria");
+    assert.equal(DIARIA_INSTAGRAM_SLUG, "instagram.com/diar.ia.br");
+    assert.equal(DIARIA_INSTAGRAM_URL, "https://www.instagram.com/diar.ia.br");
   });
 
   it("DIARIA_THREADS_SLUG/URL têm o handle canônico", () => {
@@ -230,7 +230,7 @@ describe("URLs canônicas LinkedIn/Instagram/Threads (#2790)", () => {
     ];
     const bannedLiterals = [
       "https://www.linkedin.com/company/diar.ia.br",
-      "https://www.instagram.com/diaria",
+      "https://www.instagram.com/diar.ia.br",
       "https://www.threads.net/@diar.ia.br",
     ];
     for (const file of consumers) {
