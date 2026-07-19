@@ -279,8 +279,16 @@ export function parseBrevoListIds(raw: string | null | undefined): string[] {
  *
  * `queuedListIds` vem de uma consulta FRESCA à Brevo (`GET /v3/emailCampaigns
  * ?status=queued` → `recipients.lists` de cada campanha) — ver
- * `fetchQueuedCampaignListIds` neste módulo. Aqui só a parte PURA/testável:
- * cruza `brevo_list_ids` de cada linha contra o Set de listas comprometidas.
+ * `fetchQueuedCampaignListIds` (scripts/lib/brevo-client.ts). Aqui só a parte
+ * PURA/testável: cruza `brevo_list_ids` de cada linha contra o Set de listas
+ * comprometidas — a função é agnóstica a QUAL status alimentou o Set.
+ *
+ * #3682: os callers de produção agora passam a UNIÃO de `queued` + `sent`
+ * (`fetchCommittedCampaignListIds`, brevo-client.ts) — `sends_count=0` local
+ * não distingue "nunca recebeu" de "recebeu, mas o sync incremental do store
+ * ainda não propagou" (lag observado ~1 dia no incidente 260716-260721).
+ * Passar só `queued` (como o nome do parâmetro ainda sugere, mantido por
+ * compat) cobre só a metade AGENDADA do problema.
  *
  * Não distingue send_eligible/isFirstSend — é uma camada adicional aplicada
  * SOBRE o resultado de `segmentRampWarm`/`segmentFromStore`/etc, não um

@@ -43,7 +43,7 @@ import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { excludeCommittedToQueuedCampaigns, segmentRampWarm, type StoreRow } from "./lib/clarice-segment.ts";
 import { CLARICE_BASE, ensureDir } from "./lib/clarice-paths.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { brevoGet, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
+import { brevoGet, fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
 
 /**
  * DUPLICADO de `extractPlanCredits` (workers/brevo-dashboard/src/brevo-api.ts,
@@ -161,31 +161,35 @@ async function run(
     }
   }
 
-  // #2994 (P0): contatos em listas com campanha AGENDADA (queued) mas ainda não
-  // enviada precisam ser excluídos ANTES de fatiar volumes — `sends_count=0`
-  // sozinho não distingue "nunca agendado" de "agendado, ainda não disparado"
-  // (campanha Brevo agendada é imutável — um duplicado só seria descoberto
-  // tarde demais, ver incidente 260706 na issue). Fail-safe: sem a chave (ou
-  // se a consulta falhar), `--write` é bloqueado; dry-run prossegue com aviso
+  // #2994/#3682 (P0/P1): contatos em listas com campanha AGENDADA (queued) OU
+  // JÁ DISPARADA (sent) do ciclo precisam ser excluídos ANTES de fatiar
+  // volumes — `sends_count=0` sozinho não distingue "nunca agendado" de
+  // "agendado, ainda não disparado" (campanha Brevo agendada é imutável, ver
+  // incidente 260706), NEM "nunca recebeu" de "recebeu, mas o sync
+  // incremental do store ainda não propagou o incremento" (lag observado de
+  // até ~1 dia, incidente 260716-260721: envios 4-5 do mensal 2606
+  // reenviaram 100% pra quem já tinha recebido nas ondas 1-3, #3682). Fetch
+  // AO VIVO na Brevo — imune ao lag do store. Fail-safe: sem a chave (ou se
+  // a consulta falhar), `--write` é bloqueado; dry-run prossegue com aviso
   // (não bloqueia inspeção/planejamento, só a escrita real dos CSVs).
-  let queuedListIds: Set<string> = new Set();
+  let committedListIds: Set<string> = new Set();
   if (apiKey) {
     try {
-      queuedListIds = await fetchQueuedCampaignListIds(apiKey);
-      if (queuedListIds.size > 0) {
+      committedListIds = await fetchCommittedCampaignListIds(apiKey);
+      if (committedListIds.size > 0) {
         console.log(
-          `Campanhas agendadas (queued) detectadas — ${queuedListIds.size} lista(s) comprometida(s) serão excluídas da seleção.`,
+          `Campanhas agendadas/já disparadas detectadas — ${committedListIds.size} lista(s) comprometida(s) serão excluídas da seleção.`,
         );
       }
     } catch (err) {
-      console.warn(`⚠️  Não foi possível consultar campanhas agendadas (queued) na Brevo: ${err instanceof Error ? err.message : err}`);
+      console.warn(`⚠️  Não foi possível consultar campanhas agendadas/disparadas na Brevo: ${err instanceof Error ? err.message : err}`);
       if (opts.write) {
-        console.error("❌ --write requer a checagem de campanhas agendadas (queued) bem-sucedida — evita envio duplicado. Abortando.");
+        console.error("❌ --write requer a checagem de campanhas agendadas/disparadas bem-sucedida — evita envio duplicado. Abortando.");
         process.exit(1);
       }
     }
   } else if (opts.write) {
-    console.error("❌ --write requer BREVO_CLARICE_API_KEY (checagem de campanhas agendadas/queued é obrigatória — evita envio duplicado). Abortando.");
+    console.error("❌ --write requer BREVO_CLARICE_API_KEY (checagem de campanhas agendadas/disparadas é obrigatória — evita envio duplicado). Abortando.");
     process.exit(1);
   }
 
@@ -206,11 +210,11 @@ async function run(
   }
 
   const rampWarm = segmentRampWarm(rows) as AudienceRow[];
-  const ordered = excludeCommittedToQueuedCampaigns(rampWarm, queuedListIds);
+  const ordered = excludeCommittedToQueuedCampaigns(rampWarm, committedListIds);
   const committedExcluded = rampWarm.length - ordered.length;
   if (committedExcluded > 0) {
     console.log(
-      `Excluídos ${committedExcluded.toLocaleString("pt-BR")} contato(s) já comprometidos com uma campanha agendada (queued) — evita envio duplicado.`,
+      `Excluídos ${committedExcluded.toLocaleString("pt-BR")} contato(s) já comprometidos com uma campanha agendada ou já disparada — evita envio duplicado.`,
     );
   }
   console.log(`Audiência elegível (1º envio, send_eligible, verificado): ${ordered.length.toLocaleString("pt-BR")} contatos.`);

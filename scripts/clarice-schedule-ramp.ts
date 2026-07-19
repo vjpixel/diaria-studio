@@ -23,8 +23,9 @@
  *   2. --build-audience:  segmenta `ramp-warm` do store local (mesmo predicado
  *                  de `scripts/lib/clarice-segment.ts` — elegível, nunca
  *                  enviado, mv_bucket verificado), exclui quem já está
- *                  comprometido com uma campanha AGENDADA (queued, #2994) e
- *                  fatia nos 3 volumes (ordem preservada, cohortSendRank
+ *                  comprometido com uma campanha AGENDADA (queued, #2994) OU
+ *                  JÁ DISPARADA (sent, #3682 — imune ao lag de sends_count
+ *                  local) e fatia nos 3 volumes (ordem preservada, cohortSendRank
  *                  morno→frio). `--extra-email` anexa email(s) fixo(s) nas 3
  *                  listas SEM remover ninguém. Valida crédito Brevo cobre a
  *                  soma ANTES de escrever qualquer CSV. Escreve
@@ -99,7 +100,7 @@ import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { brevoPost, brevoPut, brevoGetCampaign, brevoGetList, brevoGet, brevoListAllLists, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
+import { brevoPost, brevoPut, brevoGetCampaign, brevoGetList, brevoGet, brevoListAllLists, fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
 import { clariceRampDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { segmentRampWarm, excludeCommittedToQueuedCampaigns, type StoreRow } from "./lib/clarice-segment.ts";
@@ -751,10 +752,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       process.exit(1);
     }
 
-    // #2994: exclui quem já está comprometido com uma campanha AGENDADA (queued) — mesmo guard de weekly-send-plan-audience.ts.
-    const queuedListIds = await fetchQueuedCampaignListIds(apiKey);
-    if (queuedListIds.size > 0) {
-      console.error(`Campanhas agendadas (queued) detectadas — ${queuedListIds.size} lista(s) comprometida(s) serão excluídas.`);
+    // #2994/#3682: exclui quem já está comprometido com uma campanha AGENDADA
+    // (queued) OU JÁ DISPARADA (sent, imune ao lag de sends_count local) —
+    // mesmo guard de weekly-send-plan-audience.ts.
+    const committedListIds = await fetchCommittedCampaignListIds(apiKey);
+    if (committedListIds.size > 0) {
+      console.error(`Campanhas agendadas/já disparadas detectadas — ${committedListIds.size} lista(s) comprometida(s) serão excluídas.`);
     }
 
     const db = openClariceDb(getArg(argv, "db") || DEFAULT_DB_PATH);
@@ -772,7 +775,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
 
     const rampWarm = segmentRampWarm(rows) as (StoreRow & { name: string | null })[];
-    const ordered = excludeCommittedToQueuedCampaigns(rampWarm, queuedListIds) as (StoreRow & { name: string | null })[];
+    const ordered = excludeCommittedToQueuedCampaigns(rampWarm, committedListIds) as (StoreRow & { name: string | null })[];
     console.error(`Audiência elegível (ramp-warm): ${ordered.length.toLocaleString("pt-BR")} contatos.`);
 
     const extraEmails = parseExtraEmailArg(getArg(argv, "extra-email"));

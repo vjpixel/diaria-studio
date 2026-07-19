@@ -13,14 +13,15 @@
  * NÃO dispara, NÃO escreve nada além do relatório opcional (`--out`) — só lê
  * o store (#2647) e imprime um relatório comparativo lado a lado.
  *
- * Paridade preview vs. real (#2994/#3015): se `BREVO_CLARICE_API_KEY` estiver
- * definida, faz UMA consulta opcional e não-bloqueante à Brevo
- * (`fetchQueuedCampaignListIds`) pra excluir do universo firstSend contatos
- * já comprometidos com uma campanha `queued` — mesmo guard aplicado em
- * `clarice-build-edition-sends.ts`/`weekly-send-plan-audience.ts`, senão o
- * preview aqui divergiria do que o build real selecionaria. Sem a chave, ou
- * se a consulta falhar, o script segue normalmente sem o filtro (avisando) —
- * é uma ferramenta de inspeção read-only, nunca bloqueia por causa disso.
+ * Paridade preview vs. real (#2994/#3015/#3682): se `BREVO_CLARICE_API_KEY`
+ * estiver definida, faz UMA consulta opcional e não-bloqueante à Brevo
+ * (`fetchCommittedCampaignListIds`) pra excluir do universo firstSend
+ * contatos já comprometidos com uma campanha `queued` OU já `sent` — mesmo
+ * guard aplicado em `clarice-build-edition-sends.ts`/
+ * `weekly-send-plan-audience.ts`, senão o preview aqui divergiria do que o
+ * build real selecionaria. Sem a chave, ou se a consulta falhar, o script
+ * segue normalmente sem o filtro (avisando) — é uma ferramenta de inspeção
+ * read-only, nunca bloqueia por causa disso.
  *
  * ⚠️ O relatório contém EMAILS (PII) nas top-N posições de cada ordem — mesma
  * ressalva de scripts/lib/clarice-waves-dryrun.ts: manter local, não commitar.
@@ -36,7 +37,7 @@ import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
 import { loadStoreRows, isFirstSend, excludeCommittedToQueuedCampaigns, type StoreRow } from "./lib/clarice-segment.ts";
 import { cohortSendRank } from "./lib/cohorts.ts";
 import { getArg, isMainModule } from "./lib/cli-args.ts";
-import { fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
+import { fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
 
 const DEFAULT_TOP = 50;
 
@@ -194,26 +195,26 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     process.exit(1);
   }
 
-  // #2994/#3015: paridade preview vs. real — opcional, nunca bloqueia (ver docstring).
+  // #2994/#3015/#3682: paridade preview vs. real — opcional, nunca bloqueia (ver docstring).
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
   if (apiKey) {
     try {
-      const queuedListIds = await fetchQueuedCampaignListIds(apiKey);
-      if (queuedListIds.size > 0) {
+      const committedListIds = await fetchCommittedCampaignListIds(apiKey);
+      if (committedListIds.size > 0) {
         const before = rows.length;
-        rows = excludeCommittedToQueuedCampaigns(rows, queuedListIds);
+        rows = excludeCommittedToQueuedCampaigns(rows, committedListIds);
         const excluded = before - rows.length;
         if (excluded > 0) {
           console.error(
-            `🔒 excludeCommittedToQueuedCampaigns (#2994/#3015): ${excluded} contato(s) já comprometidos com campanha agendada (queued) — excluídos do preview.`,
+            `🔒 excludeCommittedToQueuedCampaigns (#2994/#3015/#3682): ${excluded} contato(s) já comprometidos com campanha agendada ou já disparada — excluídos do preview.`,
           );
         }
       }
     } catch (err) {
-      console.warn(`⚠️  Não foi possível consultar campanhas agendadas (queued) na Brevo — preview segue sem o filtro: ${err instanceof Error ? err.message : err}`);
+      console.warn(`⚠️  Não foi possível consultar campanhas agendadas/disparadas na Brevo — preview segue sem o filtro: ${err instanceof Error ? err.message : err}`);
     }
   } else {
-    console.warn("⚠️  BREVO_CLARICE_API_KEY não definida — preview segue sem excluir campanhas agendadas (queued).");
+    console.warn("⚠️  BREVO_CLARICE_API_KEY não definida — preview segue sem excluir campanhas agendadas/já disparadas.");
   }
 
   const cmp = compareOrders(rows, top);
