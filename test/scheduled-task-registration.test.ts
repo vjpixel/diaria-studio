@@ -100,7 +100,7 @@ describe("setup de scheduled task: nunca Set-ScheduledTask -Description (#3560, 
   }
 });
 
-describe("setup de scheduled task: preserva estado Disabled após Register-ScheduledTask -Force (#3775)", () => {
+describe("setup de scheduled task: preserva estado Disabled após Register-ScheduledTask -Force (#3775, estendido #3780)", () => {
   // Register-ScheduledTask -Force substitui a task INTEIRA (ao contrário de
   // Set-ScheduledTask, que só atualiza os campos passados) — qualquer
   // propriedade não especificada na chamada volta ao default, incluindo
@@ -109,14 +109,19 @@ describe("setup de scheduled task: preserva estado Disabled após Register-Sched
   // Register-ScheduledTask -Force reativa a task silenciosamente, sem log
   // nem aviso — desfazendo um Disable manual do editor.
   //
-  // Escopo desta asserção: só os 2 scripts corrigidos pelo #3775 até agora.
-  // scripts/studio/setup-studio-service.ps1, scripts/studio/setup-remote-tunnel.ps1
-  // e scripts/overnight/setup-watchdog-schedule.ps1 têm o MESMO padrão
-  // Register-ScheduledTask -Force sem preservar Disabled — bug latente,
-  // fora do escopo do #3775 (não citados na issue), tratar em issue própria.
+  // #3775 corrigiu 2 scripts (setup-clarice-sync-schedule.ps1,
+  // setup-edicao-schedule.ps1). #3780 estendeu o MESMO fix aos 3 scripts
+  // originalmente corrigidos pelo #3757 (Set-ScheduledTask -Description ->
+  // Register-ScheduledTask -Force) que tinham o mesmo bug latente:
+  // setup-studio-service.ps1, setup-remote-tunnel.ps1,
+  // setup-watchdog-schedule.ps1. Todos os 5 scripts de registro de task do
+  // repo agora cobertos.
   const FIXED_FILES = [
     "scripts/setup-clarice-sync-schedule.ps1",
     "scripts/overnight/setup-edicao-schedule.ps1",
+    "scripts/studio/setup-studio-service.ps1",
+    "scripts/studio/setup-remote-tunnel.ps1",
+    "scripts/overnight/setup-watchdog-schedule.ps1",
   ];
 
   for (const rel of FIXED_FILES) {

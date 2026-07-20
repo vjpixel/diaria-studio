@@ -279,6 +279,17 @@ $Settings = New-ScheduledTaskSettingsSet `
 # (falhava com "NamedParameterNotFound" ao re-rodar sobre uma task existente).
 $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description $TaskDesc -RunLevel Limited -Force | Out-Null
+
+# #3780 (mesmo bug do #3775): Register-ScheduledTask -Force substitui a task
+# INTEIRA (ao contrário de Set-ScheduledTask, que só atualiza os campos
+# passados) — qualquer propriedade não especificada nesta chamada volta ao
+# default, incluindo Enabled=True. Se o editor tinha desabilitado a task
+# manualmente, restaurar esse estado aqui; senão o -Force reativa a task
+# silenciosamente, sem log nem aviso.
+if ($ExistingTask -and $ExistingTask.State -eq "Disabled") {
+    Disable-ScheduledTask -TaskName $TaskName | Out-Null
+}
+
 if ($ExistingTask) {
     Write-Output "Task '$TaskName' atualizada."
 } else {
