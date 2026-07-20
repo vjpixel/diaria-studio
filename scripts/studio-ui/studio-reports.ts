@@ -176,6 +176,134 @@ function escHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Só linkifica esquemas conhecidos-seguros — nunca `javascript:`/`data:` etc.
+ * (defesa extra: o conteúdo vem de output de agente, não de input confiável). */
+function isSafeUrl(url: string): boolean {
+  return /^(https?:\/\/|\/|#|mailto:)/i.test(url);
+}
+
+/** Aplica as transformações inline markdown→HTML (bold, código, link) a um
+ * trecho de texto que já passou por `escHtml` — nunca chamar em texto cru. */
+function renderInline(escapedText: string): string {
+  let s = escapedText;
+  s = s.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, label: string, url: string) =>
+    isSafeUrl(url) ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>` : label,
+  );
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  return s;
+}
+
+function renderTable(rows: string[][]): string {
+  const [header, ...body] = rows;
+  const thead = `<thead><tr>${header.map((c) => `<th>${renderInline(c)}</th>`).join("")}</tr></thead>`;
+  const tbody = body.length
+    ? `<tbody>${body.map((r) => `<tr>${r.map((c) => `<td>${renderInline(c)}</td>`).join("")}</tr>`).join("")}</tbody>`
+    : "";
+  return `<table>${thead}${tbody}</table>`;
+}
+
+/**
+ * Renderer markdown→HTML mínimo, zero-dep (#3784 — decisão do briefing: sem
+ * lib `marked`/similar, "zero custo recorrente" também vale pra dependências
+ * novas). Cobre o que `data/overnight|develop/{sessão}/report.md` de fato usa:
+ * headings `#`/`##`/`###`, `**bold**`, `---` como `<hr>`, parágrafos, listas
+ * `- item` e tabelas markdown (`| col | col |` + linha separadora `|---|---|`).
+ * Não é um parser CommonMark completo (sem blockquotes, listas aninhadas,
+ * numeradas, itálico, etc.) — suficiente pra leitura no Studio sem investir
+ * num parser novo nesta fatia.
+ *
+ * **Ordem de segurança:** escapa o texto CRU inteiro primeiro (`escHtml`), só
+ * depois aplica as transformações markdown em cima do texto já escapado —
+ * HTML embutido no markdown (ex: um agente reportando `<script>` em texto
+ * livre) nunca vira tag real, só entidade visível.
+ */
+export function renderMarkdownToHtml(raw: string): string {
+  const lines = escHtml(raw).split("\n");
+  const out: string[] = [];
+  let paragraph: string[] = [];
+  let listOpen = false;
+  let tableRows: string[][] | null = null;
+
+  const flushParagraph = () => {
+    if (paragraph.length) {
+      out.push(`<p>${paragraph.join(" ")}</p>`);
+      paragraph = [];
+    }
+  };
+  const closeList = () => {
+    if (listOpen) {
+      out.push("</ul>");
+      listOpen = false;
+    }
+  };
+  const closeTable = () => {
+    if (tableRows && tableRows.length) {
+      out.push(renderTable(tableRows));
+    }
+    tableRows = null;
+  };
+  const closeBlocks = () => {
+    flushParagraph();
+    closeList();
+    closeTable();
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (line === "") {
+      closeBlocks();
+      continue;
+    }
+    if (/^-{3,}$/.test(line)) {
+      closeBlocks();
+      out.push("<hr>");
+      continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      closeBlocks();
+      const level = heading[1].length;
+      out.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
+      continue;
+    }
+    if (line.startsWith("|") && line.endsWith("|")) {
+      flushParagraph();
+      closeList();
+      const cells = line
+        .slice(1, -1)
+        .split("|")
+        .map((c) => c.trim());
+      const isSeparatorRow = cells.every((c) => /^:?-+:?$/.test(c));
+      if (isSeparatorRow && tableRows) {
+        continue; // linha `|---|---|` do header — não vira row de dados.
+      }
+      if (!tableRows) tableRows = [];
+      tableRows.push(cells);
+      continue;
+    }
+    closeTable();
+
+    const listItem = line.match(/^[-*]\s+(.+)$/);
+    if (listItem) {
+      flushParagraph();
+      if (!listOpen) {
+        out.push("<ul>");
+        listOpen = true;
+      }
+      out.push(`<li>${renderInline(listItem[1])}</li>`);
+      continue;
+    }
+    closeList();
+
+    paragraph.push(renderInline(line));
+  }
+  closeBlocks();
+
+  return out.join("\n");
+}
+
 /**
  * Resolve o conteúdo servível (HTTP) de uma `ReportEntry`.
  *
@@ -186,10 +314,9 @@ function escHtml(s: string): string {
  *
  * `.html` é servido cru (edição/mensal já produzem HTML completo). Qualquer
  * outra extensão (`.md` — overnight/develop ainda geram markdown puro,
- * `report.md`) vira um wrap HTML mínimo (escape + `<pre>`), sem dependência
- * de lib de markdown — fidelidade menor que renderizar markdown de verdade,
- * mas suficiente pra leitura no celular/desktop sem investir num parser novo
- * nesta fatia.
+ * `report.md`) vira um wrap HTML mínimo com o corpo passado por
+ * `renderMarkdownToHtml` (#3784) — headings/bold/hr/listas/tabelas viram
+ * elementos de verdade em vez de markdown cru dentro de um `<pre>`.
  */
 export function resolveReportHtml(rootDir: string, entry: ReportEntry): ReportRenderResult {
   const rootAbs = resolve(rootDir);
@@ -224,14 +351,21 @@ export function resolveReportHtml(rootDir: string, entry: ReportEntry): ReportRe
 <meta charset="utf-8">
 <title>${escHtml(entry.title)}</title>
 <style>
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 24px; color: #222; }
-pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; line-height: 1.6; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 24px; color: #222; line-height: 1.6; }
 h1 { font-size: 18px; border-bottom: 2px solid #2563eb; padding-bottom: 8px; }
+h2 { font-size: 16px; margin-top: 28px; }
+h3 { font-size: 14px; margin-top: 20px; }
+hr { border: none; border-top: 1px solid #ddd; margin: 20px 0; }
+table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
+code { background: #f1f1f1; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
+ul { padding-left: 20px; }
+a { color: #2563eb; }
 </style>
 </head>
 <body>
 <h1>${escHtml(entry.title)}</h1>
-<pre>${escHtml(raw)}</pre>
+${renderMarkdownToHtml(raw)}
 </body>
 </html>`;
   return { ok: true, html: wrapped };
