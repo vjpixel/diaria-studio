@@ -93,9 +93,20 @@ function trackBadge(track) {
   return `<span class="track-badge track-${track}">${track}</span>`;
 }
 
+// #3715 — significado de cada valor de Classificação (dispatchTrack), espelhando
+// studio-waves.ts::classifyDispatchTrack. Exposto como tooltip (title=) em cada
+// badge — a tabela não tinha nenhuma explicação por-valor, só a nota genérica
+// acima do cabeçalho.
+const DISPATCH_TRACK_EXPLAIN = {
+  elegivel: "elegível — sem sinal de bloqueio; entra na análise de cluster/dispatch de onda.",
+  bloqueada: "bloqueada — tem label de bloqueio real (ex: conta externa/decisão/credencial) e não entra na onda.",
+  ambigua: "ambígua — o texto sugere possível bloqueio, mas é marcador fraco (não label); fica fora do dispatch automático até triagem humana.",
+};
+
 function dispatchBadge(track) {
   const labelPt = { elegivel: "elegível", bloqueada: "bloqueada", ambigua: "ambígua" }[track] ?? track;
-  return `<span class="dispatch-badge dispatch-${track}">${labelPt}</span>`;
+  const title = DISPATCH_TRACK_EXPLAIN[track] ?? "";
+  return `<span class="dispatch-badge dispatch-${track}" title="${escapeHtml(title)}">${labelPt}</span>`;
 }
 
 function ciBadge(ciState) {

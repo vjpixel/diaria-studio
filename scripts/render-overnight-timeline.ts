@@ -139,7 +139,7 @@ function getEndLabel(tl: IssueTimeline | undefined, status?: string): string {
   if (tl?.draft) return "draft";
   if (tl?.pulada) return "pulada";
   if (!tl?.dispatch && status === EPIC_DEFERRED_STATUS) return "concluída (fora do timeline)";
-  if (!tl) return "—";
+  if (!tl?.dispatch) return "—";
   return "em andamento";
 }
 

@@ -267,12 +267,37 @@ describe("buildTimelineRows — #3072: EPIC deferido não fica preso em 'em anda
     assert.equal(rows[0].endLabel, "concluída (fora do timeline)");
   });
 
-  it("status 'elegivel' comum (não-EPIC) sem timeline → continua 'em andamento' (comportamento pré-existente preservado)", () => {
+  it("status 'elegivel' comum (não-EPIC) sem timeline (objeto {}) → fim '—', não 'em andamento' (#3712)", () => {
     const plan = makePlan([
       { number: 4003, batch: null, status: "elegivel", timeline: {} },
     ]);
     const rows = buildTimelineRows(plan);
-    assert.equal(rows[0].endLabel, "em andamento");
+    assert.equal(rows[0].endLabel, "—");
+  });
+});
+
+// #3712 — issue na fila (sem `dispatch`) não pode aparecer como "em andamento".
+// Bug: o guard antigo era `if (!tl) return "—"`, que só cobria timeline
+// COMPLETAMENTE ausente (undefined). Um `timeline: {}` (ou parcial sem
+// `dispatch`) passava pelos primeiros guards, não batia em `!tl`, e caía no
+// fallback "em andamento" — mesmo a issue nunca tendo sido despachada.
+describe("buildTimelineRows — #3712: issue não despachada não vira 'em andamento'", () => {
+  it("timeline: {} (objeto vazio, sem dispatch) e status não-EPIC_DEFERRED → fim '—'", () => {
+    const plan = makePlan([
+      { number: 3712, batch: null, status: "elegivel", timeline: {} },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].endLabel, "—");
+    assert.equal(rows[0].fim, "—");
+  });
+
+  it("sem campo `timeline` (undefined) e status não-EPIC_DEFERRED → fim '—' (comportamento já correto, preservado)", () => {
+    const plan = makePlan([
+      { number: 3713, batch: null, status: "elegivel" },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].endLabel, "—");
+    assert.equal(rows[0].fim, "—");
   });
 });
 
