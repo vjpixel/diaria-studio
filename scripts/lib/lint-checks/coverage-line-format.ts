@@ -28,11 +28,16 @@
 const LEGACY_COVERAGE_LINE_RE =
   /^Para esta edi[çc][ãa]o, eu \(o editor\) enviei \d+ submiss(?:ão|ões) e a Diar\.ia encontrou outros (?:\d+|\?\?\?) artigos?\. (?:Selecionamos o artigo mais relevante|Selecionamos os \d+ mais relevantes)/i;
 
+// #3731: "enviados"/"encontrados" também aceitam forma singular (`s?`) — o
+// comentário #701 acima só cobria "submissão"/"artigo"/"o artigo mais
+// relevante"; "1 enviados"/"1 encontrados" (concordância errada) ainda
+// batiam aqui mesmo depois do fix de `formatCoverageLine`/
+// `buildWelcomeCoverageSentence` pra "1 enviado"/"1 encontrado".
 const NEW_COVERAGE_LINE_RE =
-  /^Para esta edi[çc][ãa]o, a diar\.ia\.br analisou (?:\d+|\?\?\?) artigos?: \d+ enviados pelo editor, [^,]+, e (?:\d+|\?\?\?) encontrados automaticamente\. Após a curadoria, (?:foi selecionado o artigo mais relevante|foram selecionados os \d+ mais relevantes)/i;
+  /^Para esta edi[çc][ãa]o, a diar\.ia\.br analisou (?:\d+|\?\?\?) artigos?: \d+ enviados? pelo editor, [^,]+, e (?:\d+|\?\?\?) encontrados? automaticamente\. Após a curadoria, (?:foi selecionado o artigo mais relevante|foram selecionados os \d+ mais relevantes)/i;
 
 const WELCOME_COVERAGE_LINE_RE =
-  /^Nesta edi[çc][ãa]o, a IA analisou (?:\d+|\?\?\?) artigos? \(\d+ enviados por mim e (?:\d+|\?\?\?) encontrados automaticamente\) e (?:selecionei o artigo mais relevante|selecionei os \d+ mais relevantes)/i;
+  /^Nesta edi[çc][ãa]o, a IA analisou (?:\d+|\?\?\?) artigos? \(\d+ enviados? por mim e (?:\d+|\?\?\?) encontrados? automaticamente\) e (?:selecionei o artigo mais relevante|selecionei os \d+ mais relevantes)/i;
 
 export const COVERAGE_LINE_RE = new RegExp(
   `(?:${LEGACY_COVERAGE_LINE_RE.source})|(?:${NEW_COVERAGE_LINE_RE.source})|(?:${WELCOME_COVERAGE_LINE_RE.source})`,

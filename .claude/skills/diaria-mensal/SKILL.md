@@ -504,6 +504,8 @@ Em modo `local`, fechar a aba ANTES de matar o processo (best-effort, nunca bloq
 2. Para a aba cujo `tabId` bata com `preview_url_tab_id` (`preview-server-url.json`), OU cuja URL aponte pra `127.0.0.1` (fallback — pega aba de um `retry`/`editar` anterior sem `tabId` persistido): (a) **página-cortina** — `mcp__claude-in-chrome__navigate` com `url: "about:blank"` nesse `tabId`; (b) `mcp__claude-in-chrome__tabs_close_mcp` nesse `tabId`.
 3. Nenhuma aba encontrada, ou MCP indisponível: pular sem erro. Em `cloud`: pular inteiramente.
 
+   **Exceção consciente ao #738 (CLAUDE.md)** — #3732: o `claude-in-chrome` indisponível/desconectado AQUI (só neste passo de teardown pós-gate, nunca no fluxo principal da Etapa 4) não renderiza halt banner nem aguarda resposta. Racional: o gate humano já foi respondido (`sim` — o editor já aprovou) antes deste passo rodar; falhar a limpeza de uma aba órfã não deveria reverter ou travar uma aprovação que o editor já deu. O #738 nunca listou este passo de teardown como dependente do Chrome MCP. Mesmo padrão de exceção documentada já usado pro Gmail MCP no relatório final de `/diaria-overnight` (`.claude/skills/diaria-overnight/SKILL.md`, regra 4 da seção de relatório) e pro teardown equivalente do orchestrator diário (`.claude/agents/orchestrator-stage-4.md`, §4d) — não citar esta exceção como precedente fora deste passo específico de teardown.
+
 ```bash
 PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('data/monthly/$CYCLE/_internal/preview-server-url.json','utf8')).preview_url_pid||'')}catch(e){}")
 [ -n "$PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$PID"

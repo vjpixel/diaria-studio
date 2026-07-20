@@ -149,6 +149,20 @@ describe("normalizeKnownUrl — links de curadoria migrados (#2261, #3698)", () 
       "https://cursos.diar.ia.br",
     );
   });
+  it("#3730: cursos.diaria.workers.dev com query string preserva o path/query no domínio novo (não trunca)", () => {
+    // Bug: as entradas do Worker casam só o domínio (lookahead), mas
+    // substituíam a URL INTEIRA por uma string fixa — ?theme=mcp sumia.
+    assert.equal(
+      normalizeKnownUrl("https://cursos.diaria.workers.dev/?theme=mcp"),
+      "https://cursos.diar.ia.br/?theme=mcp",
+    );
+  });
+  it("#3730: livros.diaria.workers.dev com path + query também preserva o resto da URL", () => {
+    assert.equal(
+      normalizeKnownUrl("https://livros.diaria.workers.dev/catalogo?ref=x"),
+      "https://livros.diar.ia.br/catalogo?ref=x",
+    );
+  });
   it("não toca URLs não-migradas nem o domínio de marca já-terminal (idempotente)", () => {
     assert.equal(normalizeKnownUrl("https://exame.com/ia/x"), "https://exame.com/ia/x");
     assert.equal(normalizeKnownUrl("https://cursos.diar.ia.br"), "https://cursos.diar.ia.br");

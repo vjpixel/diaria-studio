@@ -1698,6 +1698,33 @@ describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boa
     assert.equal(extractCoverageLineTrailer(md), null);
   });
 
+  it("#3726: 2 blocos bold-wrap DISTINTOS (separados por ---) na região de intro — só o 1º vira callout, o resto vira trailer sem fusão", () => {
+    // Bug: o regex greedy original ia do 1º `**` ao ÚLTIMO `**$` da região de
+    // intro INTEIRA, mesclando os 2 blocos (e o `---` entre eles) num só
+    // callout — e extractCoverageLineTrailer (mesma lógica) saía vazio.
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Callout real.**",
+      "",
+      "---",
+      "",
+      "**acompanhe de perto**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const callout = extractIntroCallout(md);
+    assert.equal(callout, "Callout real.", "só o 1º bloco bold-wrap deve virar o callout");
+    assert.doesNotMatch(callout ?? "", /acompanhe de perto/, "o 2º bloco não deve ser fundido no callout");
+    const trailer = extractCoverageLineTrailer(md);
+    assert.match(trailer ?? "", /acompanhe de perto/, "o 2º bloco deve sobrar como trailer, não sumir");
+    assert.doesNotMatch(trailer ?? "", /Callout real/, "o trailer não deve conter o texto do callout");
+  });
+
   it("#3705 regressão: renderHTML NÃO duplica o parágrafo do callout quando ele fica no meio da intro (bug real da edição 260720)", () => {
     const md = buildMdWithMidCallout();
     const content = {
@@ -1727,6 +1754,49 @@ describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boa
     assert.ok(trailerIdx < destaqueIdx, "trailer deve vir antes do 1º destaque");
   });
 
+  it("#3725: renderCoverageTrailer (via renderHTML) com texto de 1 parágrafo contendo link markdown vira <a>", () => {
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Callout no meio do bloco de boas-vindas.**",
+      "",
+      "---",
+      "",
+      "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "**[Título do destaque](https://example.com/d1)**",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Importa por isso.",
+    ].join("\n");
+    const content = {
+      title: "Título do destaque",
+      subtitle: "",
+      coverImage: "",
+      destaques: [{ title: "Título do destaque", url: "https://example.com/d1", body: "Corpo do destaque.", why: "Importa por isso.", category: "🚀 LANÇAMENTO", credit: null }],
+      eia: { credit: "", correctAnswer: null },
+      sections: [],
+      sorteio: null,
+      encerrar: null,
+      erroIntencional: null,
+      coverageLine: extractCoverageLine(md),
+      introCallout: extractIntroCallout(md),
+      coverageLineTrailer: extractCoverageLineTrailer(md),
+    };
+    const html = renderHTML(content);
+    assert.match(html, /<a href="https:\/\/apoia\.se\/diaria"[^>]*>considere apoiar o projeto<\/a>/);
+    assert.doesNotMatch(html, /\[considere apoiar o projeto\]/);
+  });
+
   it("#3461: renderCoverage processa bloco multi-parágrafo com links markdown (um <p> por parágrafo)", () => {
     // Bug 260715: antes desta correção, renderCoverage só tratava o texto como
     // parágrafo único via escText — um bloco multi-parágrafo com [texto](url)
@@ -1742,6 +1812,15 @@ describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boa
     assert.match(html, /<a href="https:\/\/www\.linkedin\.com\/in\/vjpixel\/"[^>]*>Pixel<\/a>/);
     assert.match(html, /<a href="https:\/\/apoia\.se\/diaria"[^>]*>considere apoiar o projeto<\/a>/);
     assert.doesNotMatch(html, /\[Pixel\]/);
+  });
+
+  it("#3725: renderCoverage com texto de 1 parágrafo contendo link markdown vira <a>, não texto literal", () => {
+    // Bug: o branch de 1 parágrafo usava escText (nunca processa link markdown),
+    // então `[texto](url)` aparecia literal no HTML final em vez de virar <a>.
+    const text = "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).";
+    const html = renderCoverage(text);
+    assert.match(html, /<a href="https:\/\/apoia\.se\/diaria"[^>]*>considere apoiar o projeto<\/a>/);
+    assert.doesNotMatch(html, /\[considere apoiar o projeto\]/);
   });
 
   it("renderHTML inclui o bloco de cobertura antes do primeiro destaque", () => {

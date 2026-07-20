@@ -249,10 +249,17 @@ export function formatCoverageLine(args: {
     args.selected === 1
       ? "selecionei o artigo mais relevante"
       : `selecionei os ${args.selected} mais relevantes`;
+  // #3731: pluralização condicional também pra "artigos"/"enviados"/"encontrados"
+  // — o comentário #701 acima só cobria `selPhrase`; "1 artigos"/"1 enviados"/
+  // "1 encontrados" ainda caíam no leitor quando total/editorSubmissions/
+  // diariaDiscovered valiam 1.
+  const totalWord = total === 1 ? "artigo" : "artigos";
+  const enviadosWord = args.editorSubmissions === 1 ? "enviado" : "enviados";
+  const encontradosWord = args.diariaDiscovered === 1 ? "encontrado" : "encontrados";
   return [
     "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
     "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
-    `Nesta edição, a IA analisou ${total} artigos (${args.editorSubmissions} enviados por mim e ${args.diariaDiscovered} encontrados automaticamente) e ${selPhrase}.`,
+    `Nesta edição, a IA analisou ${total} ${totalWord} (${args.editorSubmissions} ${enviadosWord} por mim e ${args.diariaDiscovered} ${encontradosWord} automaticamente) e ${selPhrase}.`,
     "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
   ].join("\n\n");
 }
