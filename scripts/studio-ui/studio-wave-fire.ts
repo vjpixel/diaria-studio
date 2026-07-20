@@ -271,7 +271,15 @@ const WAVE_PUBLISH_GUARD_RE =
  * entre `git` e o subcomando (#3738 Gap 3 — ex: `git -C ../other-worktree
  * checkout master`, `git.exe checkout master`) via um grupo não-capturante
  * que consome tokens que NÃO são um dos quatro subcomandos até achar um que
- * seja.
+ * seja. O ponto de parada de cada subcomando exige fronteira de TOKEN
+ * (`(?=\s|$)`, não `\b`) — `\b` sozinho também "acha" esses quatro nomes
+ * quando são só PREFIXO de um token maior (nome de arquivo/branch que
+ * começa com a palavra, ex: `reset-connection-pool`, `checkout-flow.ts`):
+ * `\b` marca fronteira entre char de palavra e não-palavra, e `-`/`.` já
+ * contam como não-palavra, então `reset\b`/`checkout\b` casavam mesmo sem
+ * ser o subcomando de verdade (#3745 — regex casava substring em posição
+ * errada; resultado allow/deny não mudava, já que o guard nega por padrão
+ * de qualquer forma, mas o motivo do log ficava impreciso).
  *
  * `.claude/settings.json` já allowlista `Bash(git checkout *)`/
  * `Bash(git push *)` incondicionalmente — o que, pelo funcionamento do SDK
@@ -284,7 +292,7 @@ const WAVE_PUBLISH_GUARD_RE =
  * allow-list numa sessão supervisionada), não desta issue.
  */
 const WAVE_WORKTREE_GUARD_RE =
-  /\bgit(?:\.exe)?\s+(?:(?!checkout\b|pull\b|stash\b|reset\b)\S+\s+)*(?:checkout|pull|stash|reset)\b/i;
+  /\bgit(?:\.exe)?\s+(?:(?!(?:checkout|pull|stash|reset)(?:\s|$))\S+\s+)*(?:checkout|pull|stash|reset)(?:\s|$)/i;
 
 export interface WaveToolDecision {
   allow: boolean;

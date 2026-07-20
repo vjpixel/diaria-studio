@@ -200,6 +200,18 @@ describe("evaluateWaveTool (#3702) — guard de publicação como código", () =
     assert.doesNotMatch(log.reason ?? "", /guard de working-tree/);
   });
 
+  it("não bloqueia via o guard de working-tree quando checkout/reset é só PREFIXO de nome de arquivo/branch, não o subcomando real (#3745)", () => {
+    // "reset-connection-pool" É um nome de branch legítimo — não é `git reset`.
+    const branchName = evaluateWaveTool("Bash", { command: "git branch -d reset-connection-pool" });
+    assert.equal(branchName.allow, false); // ainda negado pelo default conservador...
+    assert.doesNotMatch(branchName.reason ?? "", /guard de working-tree/); // ...mas não com essa reason
+
+    // "checkout-flow.ts" É um path de arquivo — não é `git checkout`.
+    const filePath = evaluateWaveTool("Bash", { command: "git diff -- checkout-flow.ts" });
+    assert.equal(filePath.allow, false);
+    assert.doesNotMatch(filePath.reason ?? "", /guard de working-tree/);
+  });
+
   it("nega Bash que roda clarice-import-*", () => {
     const decision = evaluateWaveTool("Bash", { command: "npx tsx scripts/clarice-import-waves.ts --cycle 2605-06" });
     assert.equal(decision.allow, false);
