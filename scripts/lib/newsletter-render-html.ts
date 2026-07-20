@@ -346,11 +346,15 @@ export function renderCoverage(text: string): string {
   // #3725: mesmo texto de 1 parágrafo pode conter link markdown ([texto](url))
   // — processInlineLinks escapa E processa links, então é seguro mesmo sem
   // link nenhum (equivalente ao escText anterior nesse caso).
-  // #3737: o branch de 1 parágrafo usa tokenizeInline(text, escText, inlineLinkHtml)
-  // em vez de processInlineLinks — escText já compõe o word-joiner anti-linkify
-  // (#2008), que processInlineLinks nunca aplicou. Mesmo padrão de renderBodyInline.
+  // #3737: tanto o branch de 1 parágrafo quanto o multi-parágrafo usam
+  // tokenizeInline(p, escText, inlineLinkHtml) em vez de processInlineLinks —
+  // escText já compõe o word-joiner anti-linkify (#2008), que processInlineLinks
+  // nunca aplicou. Mesmo padrão de renderBodyInline. Fix inicial só cobriu o
+  // branch de 1 parágrafo (self-review #3742 finding 1) — o multi-parágrafo
+  // tinha exatamente a mesma classe de bug (domínio .ai em texto puro perdendo
+  // a proteção em QUALQUER parágrafo, não só quando o texto inteiro é 1 só).
   const inner = paras.length > 1
-    ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", processInlineLinks(p))).join("\n  ")
+    ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", tokenizeInline(p, escText, inlineLinkHtml))).join("\n  ")
     : bodyP("0", tokenizeInline(text, escText, inlineLinkHtml));
   return `<!-- INTRO (coverage) -->
 <tr><td class="pad" style="padding:44px 32px 8px;">
@@ -367,10 +371,11 @@ export function renderCoverage(text: string): string {
 function renderCoverageTrailer(text: string): string {
   const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   // #3725: ver nota equivalente em renderCoverage acima.
-  // #3737: idem — branch de 1 parágrafo usa tokenizeInline(text, escText, inlineLinkHtml)
-  // pra preservar o word-joiner anti-linkify de escText.
+  // #3737: idem — ambos os branches usam tokenizeInline(p, escText, inlineLinkHtml)
+  // pra preservar o word-joiner anti-linkify de escText (self-review #3742
+  // finding 1: o fix inicial só cobria o branch de 1 parágrafo).
   const inner = paras.length > 1
-    ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", processInlineLinks(p))).join("\n  ")
+    ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", tokenizeInline(p, escText, inlineLinkHtml))).join("\n  ")
     : bodyP("0", tokenizeInline(text, escText, inlineLinkHtml));
   return `<!-- INTRO (coverage trailer, pós-callout, #3705) -->
 <tr><td class="pad" style="padding:12px 32px 0;">

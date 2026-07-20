@@ -1864,6 +1864,52 @@ describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boa
     assert.match(html, /Runway\.&#8288;ai/);
   });
 
+  it("#3742 self-review finding 1: renderCoverageTrailer (via renderHTML) com trailer MULTI-parágrafo também preserva word-joiner em domínio .ai", () => {
+    // Mesma classe de bug do #3737, no branch multi-parágrafo — o fix inicial
+    // só cobria o branch de 1 parágrafo em renderCoverageTrailer.
+    const md = [
+      "Olá! Eu sou o Pixel, editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Callout no meio do bloco de boas-vindas.**",
+      "",
+      "---",
+      "",
+      "Primeiro parágrafo do trailer.",
+      "",
+      "Hoje testamos o Runway.ai e o resultado impressionou.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "**[Título do destaque](https://example.com/d1)**",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Importa por isso.",
+    ].join("\n");
+    const content = {
+      title: "Título do destaque",
+      subtitle: "",
+      coverImage: "",
+      destaques: [{ title: "Título do destaque", url: "https://example.com/d1", body: "Corpo do destaque.", why: "Importa por isso.", category: "🚀 LANÇAMENTO", credit: null }],
+      eia: { credit: "", correctAnswer: null },
+      sections: [],
+      sorteio: null,
+      encerrar: null,
+      erroIntencional: null,
+      coverageLine: extractCoverageLine(md),
+      introCallout: extractIntroCallout(md),
+      coverageLineTrailer: extractCoverageLineTrailer(md),
+    };
+    const html = renderHTML(content);
+    assert.match(html, /Runway\.&#8288;ai/);
+  });
+
   it("#3461: renderCoverage processa bloco multi-parágrafo com links markdown (um <p> por parágrafo)", () => {
     // Bug 260715: antes desta correção, renderCoverage só tratava o texto como
     // parágrafo único via escText — um bloco multi-parágrafo com [texto](url)
@@ -1896,6 +1942,17 @@ describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boa
     // então "Runway.ai" em texto puro (sem link markdown) perdia a proteção
     // contra auto-linkify de clientes de email.
     const html = renderCoverage("Hoje testamos o Runway.ai e o resultado impressionou.");
+    assert.match(html, /Runway\.&#8288;ai/);
+  });
+
+  it("#3742 self-review finding 1: renderCoverage com texto MULTI-parágrafo também preserva word-joiner em domínio .ai (qualquer parágrafo, não só o 1º)", () => {
+    // Mesma classe de bug do #3737, no branch multi-parágrafo (paras.length > 1)
+    // — o fix inicial só cobriu o branch de 1 parágrafo.
+    const text = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "Hoje testamos o Runway.ai e o resultado impressionou.",
+    ].join("\n\n");
+    const html = renderCoverage(text);
     assert.match(html, /Runway\.&#8288;ai/);
   });
 
