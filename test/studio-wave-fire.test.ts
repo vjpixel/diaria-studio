@@ -14,10 +14,23 @@ import {
   parseWaveFireRequestBody,
   buildWaveFireCoordinatorPrompt,
   evaluateWaveTool,
+  evaluateIssueTerminalState,
+  checkIssueTerminalState,
+  checkAllIssuesTerminalState,
   runWaveFire,
   type QueryFn,
+  type IssueTerminalCheck,
+  type GhIssueRunFn,
 } from "../scripts/studio-ui/studio-wave-fire.ts";
 import type { ChatWireEvent } from "../scripts/studio-ui/studio-chat.ts";
+
+/** Mock de `checkTerminalStateFn` que reporta TODAS as issues como terminais
+ * — usado nos testes de `runWaveFire` que não são sobre #3765 especificamente,
+ * pra não depender de `gh` real (que não existe no cwd fake "/repo" desses
+ * testes). */
+function allTerminal(issueNumbers: number[]): IssueTerminalCheck[] {
+  return issueNumbers.map((n) => ({ issueNumber: n, terminal: true, reason: "mock: sempre terminal" }));
+}
 
 describe("parseWaveFireRequestBody (#3702)", () => {
   it("aceita um corpo válido com issueNumbers", () => {
@@ -269,6 +282,7 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
       issueNumbers: [101, 202],
       cwd: "/repo",
       queryFn: fakeQuery,
+      checkTerminalStateFn: allTerminal,
       onEvent: (e) => received.push(e),
     });
 
@@ -291,7 +305,13 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
       return gen() as unknown as ReturnType<QueryFn>;
     };
 
-    await runWaveFire({ issueNumbers: [101], cwd: "/repo", queryFn: fakeQuery, onEvent: () => {} });
+    await runWaveFire({
+      issueNumbers: [101],
+      cwd: "/repo",
+      queryFn: fakeQuery,
+      checkTerminalStateFn: allTerminal,
+      onEvent: () => {},
+    });
 
     assert.ok(Array.isArray(capturedOptions.disallowedTools));
     assert.ok((capturedOptions.disallowedTools as string[]).includes("ScheduleWakeup"));
@@ -316,7 +336,13 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
     };
 
     const received: ChatWireEvent[] = [];
-    await runWaveFire({ issueNumbers: [101], cwd: "/repo", queryFn: fakeQuery, onEvent: (e) => received.push(e) });
+    await runWaveFire({
+      issueNumbers: [101],
+      cwd: "/repo",
+      queryFn: fakeQuery,
+      checkTerminalStateFn: allTerminal,
+      onEvent: (e) => received.push(e),
+    });
 
     assert.equal(received.length, 2);
     assert.equal(received[0].event, "chat-tool");
@@ -352,8 +378,201 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
       cwd: "/repo",
       maxConcurrency: 2,
       queryFn: fakeQuery,
+      checkTerminalStateFn: allTerminal,
       onEvent: () => {},
     });
     assert.match(capturedPrompt, /teto de concorrência 2/);
+  });
+
+  // #3765 — regressão: o guard do #3753 (disallowedTools) só bloqueia
+  // ScheduleWakeup/CronCreate; a coordenadora ainda pode "desistir
+  // silenciosamente" terminando o turno sem chamar tool nenhuma (ou sem
+  // dispatchar/mergear nada). Simula exatamente esse cenário: o `queryFn`
+  // termina normalmente (sem lançar, sem tool calls) e a validação pós-turno
+  // precisa detectar que a issue não chegou a estado terminal.
+  it("#3765: turno termina sem tool calls e sem PR dispatchado -> validação pós-turno emite chat-error", async () => {
+    const fakeQuery: QueryFn = () => {
+      async function* gen() {
+        // coordenadora "desiste silenciosamente": só o `result` final, nenhum
+        // tool_use no meio — exatamente o padrão que disallowedTools não cobre.
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "vou aguardar o CI terminar e retomar depois",
+          session_id: "s1",
+        } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    const received: ChatWireEvent[] = [];
+    let checkedIssueNumbers: number[] | undefined;
+    await runWaveFire({
+      issueNumbers: [101, 202],
+      cwd: "/repo",
+      queryFn: fakeQuery,
+      checkTerminalStateFn: (issueNumbers) => {
+        checkedIssueNumbers = issueNumbers;
+        // #101 mergeou de verdade (fechada); #202 é a issue "abandonada" —
+        // segue aberta, sem comentário de diagnóstico.
+        return [
+          { issueNumber: 101, terminal: true, reason: "issue fechada (efeito de PR mergeado com Closes)" },
+          { issueNumber: 202, terminal: false, reason: "issue segue aberta, sem comentário pós-dispatch" },
+        ];
+      },
+      onEvent: (e) => received.push(e),
+    });
+
+    assert.deepEqual(checkedIssueNumbers, [101, 202]);
+    // chat-done do turno + chat-error da validação pós-turno.
+    assert.equal(received.length, 2);
+    assert.equal(received[0].event, "chat-done");
+    assert.equal(received[1].event, "chat-error");
+    if (received[1].event === "chat-error") {
+      assert.match(received[1].data.message, /#202/);
+      assert.match(received[1].data.message, /não chegaram a estado terminal/);
+      assert.doesNotMatch(received[1].data.message, /#101 \(/); // #101 é terminal, não deve aparecer no detalhe
+    }
+  });
+
+  it("#3765: todas as issues terminais -> nenhum chat-error extra é emitido", async () => {
+    const fakeQuery: QueryFn = () => {
+      async function* gen() {
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    const received: ChatWireEvent[] = [];
+    await runWaveFire({
+      issueNumbers: [101],
+      cwd: "/repo",
+      queryFn: fakeQuery,
+      checkTerminalStateFn: allTerminal,
+      onEvent: (e) => received.push(e),
+    });
+
+    assert.equal(received.length, 1);
+    assert.equal(received[0].event, "chat-done");
+  });
+
+  it("#3765: falha na própria validação pós-turno (gh indisponível) vira chat-error, nunca sucesso silencioso", async () => {
+    const fakeQuery: QueryFn = () => {
+      async function* gen() {
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    const received: ChatWireEvent[] = [];
+    await runWaveFire({
+      issueNumbers: [101],
+      cwd: "/repo",
+      queryFn: fakeQuery,
+      checkTerminalStateFn: () => {
+        throw new Error("gh: command not found");
+      },
+      onEvent: (e) => received.push(e),
+    });
+
+    assert.equal(received.length, 2);
+    assert.equal(received[0].event, "chat-done");
+    assert.equal(received[1].event, "chat-error");
+    if (received[1].event === "chat-error") {
+      assert.match(received[1].data.message, /validação pós-turno/);
+    }
+  });
+});
+
+describe("evaluateIssueTerminalState (#3765) — decisão pura, sem I/O", () => {
+  const since = "2026-07-20T10:00:00.000Z";
+
+  it("issue fechada -> terminal", () => {
+    const r = evaluateIssueTerminalState(101, { state: "CLOSED", comments: [] }, since);
+    assert.equal(r.terminal, true);
+    assert.match(r.reason, /fechada/);
+  });
+
+  it("issue aberta sem comentário pós-dispatch -> NÃO terminal", () => {
+    const r = evaluateIssueTerminalState(101, { state: "OPEN", comments: [] }, since);
+    assert.equal(r.terminal, false);
+    assert.match(r.reason, /#3765/);
+  });
+
+  it("issue aberta com comentário ANTES do dispatch -> NÃO terminal (evita falso-positivo de comentário velho)", () => {
+    const r = evaluateIssueTerminalState(
+      101,
+      { state: "OPEN", comments: [{ createdAt: "2026-07-19T08:00:00.000Z" }] },
+      since,
+    );
+    assert.equal(r.terminal, false);
+  });
+
+  it("issue aberta com comentário DEPOIS do dispatch -> terminal (diagnóstico documentado)", () => {
+    const r = evaluateIssueTerminalState(
+      101,
+      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z" }] },
+      since,
+    );
+    assert.equal(r.terminal, true);
+    assert.match(r.reason, /comentário pós-dispatch/);
+  });
+
+  it("raw null (gh falhou) -> NÃO terminal, conservador", () => {
+    const r = evaluateIssueTerminalState(101, null, since);
+    assert.equal(r.terminal, false);
+    assert.match(r.reason, /falhou ou retornou formato inesperado/);
+  });
+
+  it("state ausente/malformado -> NÃO terminal", () => {
+    const r = evaluateIssueTerminalState(101, {}, since);
+    assert.equal(r.terminal, false);
+  });
+
+  it("state é case-insensitive ('closed' minúsculo também conta)", () => {
+    const r = evaluateIssueTerminalState(101, { state: "closed", comments: [] }, since);
+    assert.equal(r.terminal, true);
+  });
+});
+
+describe("checkIssueTerminalState / checkAllIssuesTerminalState (#3765) — I/O via GhIssueRunFn injetável", () => {
+  it("gh issue view com sucesso e state CLOSED -> terminal, sem parse de comments necessário", () => {
+    const run: GhIssueRunFn = (args) => {
+      assert.deepEqual(args, ["issue", "view", "101", "--json", "state,comments"]);
+      return { status: 0, stdout: JSON.stringify({ state: "CLOSED", comments: [] }), stderr: "" };
+    };
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
+    assert.equal(r.terminal, true);
+  });
+
+  it("gh falha (status != 0) -> NÃO terminal", () => {
+    const run: GhIssueRunFn = () => ({ status: 1, stdout: "", stderr: "gh: not found" });
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
+    assert.equal(r.terminal, false);
+  });
+
+  it("gh retorna JSON inválido -> NÃO terminal (nunca lança)", () => {
+    const run: GhIssueRunFn = () => ({ status: 0, stdout: "{not json", stderr: "" });
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
+    assert.equal(r.terminal, false);
+  });
+
+  it("checkAllIssuesTerminalState checa cada issue da lista, na ordem, via o mesmo run", () => {
+    const seenNumbers: string[] = [];
+    const run: GhIssueRunFn = (args) => {
+      seenNumbers.push(args[2]);
+      const state = args[2] === "101" ? "CLOSED" : "OPEN";
+      return { status: 0, stdout: JSON.stringify({ state, comments: [] }), stderr: "" };
+    };
+    const results = checkAllIssuesTerminalState([101, 202], "/repo", "2026-07-20T10:00:00.000Z", run);
+    assert.deepEqual(seenNumbers, ["101", "202"]);
+    assert.deepEqual(
+      results.map((r) => [r.issueNumber, r.terminal]),
+      [
+        [101, true],
+        [202, false],
+      ],
+    );
   });
 });

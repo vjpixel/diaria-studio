@@ -207,7 +207,12 @@ import {
 // #3702: dispara a sessão coordenadora de uma onda (fan-out via Agent tool
 // isolation:worktree + gate 2 + merge serial) — arquivo próprio, import
 // isolado (nenhuma outra rota depende dele). Ver studio-wave-fire.ts.
-import { parseWaveFireRequestBody, runWaveFire, type QueryFn as WaveFireQueryFn } from "./studio-wave-fire.ts";
+import {
+  parseWaveFireRequestBody,
+  runWaveFire,
+  type QueryFn as WaveFireQueryFn,
+  type IssueTerminalCheck,
+} from "./studio-wave-fire.ts";
 // #3559: painel de revisão de conteúdo rica — arquivos próprios desta fatia,
 // import isolado (nenhuma outra rota depende deles). Ver studio-review.ts.
 import {
@@ -312,6 +317,10 @@ export interface StudioServerOptions {
   /** Teto de concorrência de `POST /api/waves/fire` — default 6, mesmo teto
    * de `GET /api/waves` (`studio-waves.ts`). */
   waveFireMaxConcurrency?: number;
+  /** #3765 — injetável pra testes: substitui a validação pós-turno de
+   * estado terminal (`gh issue view` real) por um fake. Produção usa o
+   * default de `studio-wave-fire.ts` (`checkAllIssuesTerminalState`). */
+  waveFireCheckTerminalStateFn?: (issueNumbers: number[], cwd: string, sinceIso: string) => IssueTerminalCheck[];
 }
 
 export interface StudioServer {
@@ -638,7 +647,13 @@ async function handleApiWavesFire(
   rootDir: string,
   req: IncomingMessage,
   res: ServerResponse,
-  opts: { enabled: boolean; queryFn?: WaveFireQueryFn; maxBodyBytes: number; maxConcurrency?: number },
+  opts: {
+    enabled: boolean;
+    queryFn?: WaveFireQueryFn;
+    maxBodyBytes: number;
+    maxConcurrency?: number;
+    checkTerminalStateFn?: (issueNumbers: number[], cwd: string, sinceIso: string) => IssueTerminalCheck[];
+  },
 ): Promise<void> {
   if (!opts.enabled) {
     sendJson(res, 501, {
@@ -678,6 +693,7 @@ async function handleApiWavesFire(
     cwd: rootDir,
     queryFn: opts.queryFn,
     maxConcurrency: opts.maxConcurrency,
+    checkTerminalStateFn: opts.checkTerminalStateFn,
     abortController,
     onEvent: (wireEvent) => {
       try {
@@ -1004,6 +1020,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const waveFireQueryFn = opts.waveFireQueryFn;
   const waveFireEnabled = opts.waveFireEnabled ?? false;
   const waveFireMaxConcurrency = opts.waveFireMaxConcurrency ?? 6;
+  const waveFireCheckTerminalStateFn = opts.waveFireCheckTerminalStateFn;
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -1060,6 +1077,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
           queryFn: waveFireQueryFn,
           maxBodyBytes: chatMaxBodyBytes,
           maxConcurrency: waveFireMaxConcurrency,
+          checkTerminalStateFn: waveFireCheckTerminalStateFn,
         }).catch((e) => {
           if (!res.headersSent) {
             sendJson(res, 500, { error: (e as Error).message });

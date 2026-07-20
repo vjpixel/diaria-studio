@@ -171,6 +171,7 @@
  *   Studio passar a aceitar disparos reais só por atualizar o código.
  */
 
+import { spawnSync } from "node:child_process";
 import type { CanUseTool, Options, PermissionResult, Query } from "@anthropic-ai/claude-agent-sdk";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import { sdkMessageToChatEvents, describeChatError, type ChatWireEvent } from "./studio-chat.ts";
@@ -391,6 +392,140 @@ function makeWaveSafeCanUseTool(): CanUseTool {
   };
 }
 
+// ─── validação pós-turno de estado terminal (#3765) ────────────────────────
+
+/**
+ * #3765 — o guard do #3753 (`disallowedTools: ["ScheduleWakeup", "CronCreate"]`
+ * acima) só bloqueia essas 2 tool calls nomeadas. Mas a causa-raiz documentada
+ * no topo do módulo é mais ampla: quando o `for await` de `runWaveFire`
+ * termina — por QUALQUER razão, inclusive a coordenadora simplesmente
+ * escrevendo um resumo em texto puro sem chamar nenhuma tool ("vou aguardar o
+ * CI e retomar depois") — a stream SSE fecha e `handleApiWavesFire` trata
+ * isso como sucesso incondicional. Nada nesse fluxo confirma que a onda de
+ * fato avançou. `disallowedTools` não cobre "decidir não chamar tool
+ * nenhuma" — só chamadas específicas.
+ *
+ * Este bloco valida, DEPOIS que o turno termina sem lançar, que cada
+ * `issueNumber` da onda chegou a um estado que só é alcançável por trabalho
+ * real: (a) a issue foi FECHADA (efeito colateral de um PR mergeado com
+ * `Closes #N`), ou (b) a issue segue aberta mas tem um comentário criado
+ * DEPOIS do início deste turno (`sinceIso`) — o padrão já usado no fluxo
+ * overnight normal pra documentar falha/bloqueio sem fechar a issue. Um
+ * comentário anterior ao início do turno não conta (evita falso-positivo:
+ * uma issue com histórico de comentários antigos não vira "terminal" só por
+ * já ter discussão prévia à onda).
+ *
+ * Verificação via `gh issue view --json state,comments` — determinístico,
+ * mesmo espírito de "validar afirmações de subagent sobre estado externo via
+ * TS determinístico" do CLAUDE.md (#573): nunca confiar só no resumo em
+ * texto que a coordenadora produziu.
+ */
+export interface IssueTerminalCheck {
+  issueNumber: number;
+  terminal: boolean;
+  reason: string;
+}
+
+export interface GhIssueRunResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+/** Mesmo shape de `GhRunFn` (`studio-issues.ts`) — não importado direto pra
+ * manter este módulo sem dependência cruzada, mas o contrato é idêntico
+ * (injeção de teste sem spawnar `gh` de verdade). */
+export type GhIssueRunFn = (args: string[], cwd: string) => GhIssueRunResult;
+
+function defaultGhIssueRun(args: string[], cwd: string): GhIssueRunResult {
+  const result = spawnSync("gh", args, { cwd, encoding: "utf8" });
+  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+}
+
+interface GhIssueViewRaw {
+  state?: string;
+  comments?: Array<{ createdAt?: string }>;
+}
+
+/**
+ * Decisão pura pra 1 issue — separada da chamada de `gh` pra ser testável
+ * sem mockar spawn. `raw === null` cobre tanto "gh falhou" (status != 0,
+ * binário ausente, etc.) quanto "resposta não é o JSON esperado" — em ambos
+ * os casos, tratamos como NÃO-terminal (conservador: falha em CONFIRMAR
+ * sucesso nunca deve virar sucesso silencioso, mesmo espírito do resto deste
+ * módulo).
+ */
+export function evaluateIssueTerminalState(
+  issueNumber: number,
+  raw: GhIssueViewRaw | null,
+  sinceIso: string,
+): IssueTerminalCheck {
+  if (raw === null || typeof raw.state !== "string") {
+    return {
+      issueNumber,
+      terminal: false,
+      reason: `gh issue view #${issueNumber} falhou ou retornou formato inesperado — não foi possível confirmar estado terminal`,
+    };
+  }
+  if (raw.state.toUpperCase() === "CLOSED") {
+    return { issueNumber, terminal: true, reason: "issue fechada (efeito de PR mergeado com Closes)" };
+  }
+  const since = Date.parse(sinceIso);
+  const comments = Array.isArray(raw.comments) ? raw.comments : [];
+  const hasPostDispatchComment = comments.some((c) => {
+    const t = typeof c?.createdAt === "string" ? Date.parse(c.createdAt) : NaN;
+    return Number.isFinite(t) && Number.isFinite(since) && t >= since;
+  });
+  if (hasPostDispatchComment) {
+    return {
+      issueNumber,
+      terminal: true,
+      reason: "issue aberta mas com comentário pós-dispatch (falha/bloqueio documentado)",
+    };
+  }
+  return {
+    issueNumber,
+    terminal: false,
+    reason:
+      "issue segue aberta, sem comentário pós-dispatch documentando falha — a coordenadora pode ter desistido " +
+      "silenciosamente (turno terminou sem tool calls / sem PR em estado terminal, #3765)",
+  };
+}
+
+/** I/O — 1 issue via `gh issue view`. */
+export function checkIssueTerminalState(
+  issueNumber: number,
+  cwd: string,
+  sinceIso: string,
+  run: GhIssueRunFn = defaultGhIssueRun,
+): IssueTerminalCheck {
+  const result = run(["issue", "view", String(issueNumber), "--json", "state,comments"], cwd);
+  if (result.status !== 0) {
+    return evaluateIssueTerminalState(issueNumber, null, sinceIso);
+  }
+  try {
+    const parsed = JSON.parse(result.stdout) as GhIssueViewRaw;
+    return evaluateIssueTerminalState(issueNumber, parsed, sinceIso);
+  } catch {
+    return evaluateIssueTerminalState(issueNumber, null, sinceIso);
+  }
+}
+
+/**
+ * Checa TODAS as issues da onda. Default real usado por `runWaveFire`;
+ * testes injetam `checkTerminalStateFn` (ver `RunWaveFireOptions`) com um
+ * `GhIssueRunFn` fake, sem spawnar `gh` de verdade — mesmo padrão de
+ * `queryFn`/`ghRun` já usado no resto do módulo/`studio-issues.ts`.
+ */
+export function checkAllIssuesTerminalState(
+  issueNumbers: number[],
+  cwd: string,
+  sinceIso: string,
+  run: GhIssueRunFn = defaultGhIssueRun,
+): IssueTerminalCheck[] {
+  return issueNumbers.map((n) => checkIssueTerminalState(n, cwd, sinceIso, run));
+}
+
 // ─── invocação real do SDK (I/O, injetável — mesmo padrão de studio-chat.ts) ──
 
 export type QueryFn = (params: { prompt: string; options?: Options }) => Query;
@@ -410,6 +545,10 @@ export interface RunWaveFireOptions {
   queryFn?: QueryFn;
   abortController?: AbortController;
   maxConcurrency?: number;
+  /** #3765 — injetável pra testes: checa estado terminal de cada issue da
+   * onda sem spawnar `gh` de verdade. Produção usa o default real
+   * (`checkAllIssuesTerminalState`, que roda `gh issue view` de fato). */
+  checkTerminalStateFn?: (issueNumbers: number[], cwd: string, sinceIso: string) => IssueTerminalCheck[];
 }
 
 /**
@@ -426,6 +565,10 @@ export interface RunWaveFireOptions {
 export async function runWaveFire(opts: RunWaveFireOptions): Promise<void> {
   const runQuery = opts.queryFn ?? defaultQueryFn;
   const prompt = buildWaveFireCoordinatorPrompt(opts.issueNumbers, { maxConcurrency: opts.maxConcurrency });
+  // #3765 — cutoff pra "comentário pós-dispatch": capturado ANTES do turno
+  // começar, pra um comentário já existente na issue (de uma rodada
+  // anterior) nunca ser mal-interpretado como diagnóstico DESTE turno.
+  const startedAt = new Date().toISOString();
 
   try {
     const stream = runQuery({
@@ -449,6 +592,41 @@ export async function runWaveFire(opts: RunWaveFireOptions): Promise<void> {
       for (const wireEvent of sdkMessageToChatEvents(msg)) {
         opts.onEvent(wireEvent);
       }
+    }
+
+    // #3765 — o `for await` acima terminou sem lançar, mas isso só significa
+    // que o TURNO do SDK terminou normalmente (inclusive se a coordenadora
+    // simplesmente parou de chamar tools e escreveu um resumo em texto).
+    // Não confiar nisso como "a onda avançou" — validar deterministicamente
+    // via `gh` que toda issue chegou a um estado só alcançável por trabalho
+    // real (fechada, ou aberta com comentário de diagnóstico pós-dispatch).
+    let terminalResults: IssueTerminalCheck[];
+    try {
+      const checkFn = opts.checkTerminalStateFn ?? checkAllIssuesTerminalState;
+      terminalResults = checkFn(opts.issueNumbers, opts.cwd, startedAt);
+    } catch (e) {
+      opts.onEvent({
+        event: "chat-error",
+        data: {
+          message:
+            `onda terminou o turno sem erro, mas a validação pós-turno de estado terminal (gh issue view) falhou: ` +
+            `${e instanceof Error ? e.message : String(e)}. Não foi possível confirmar que a onda avançou — verifique manualmente.`,
+        },
+      });
+      return;
+    }
+    const nonTerminal = terminalResults.filter((r) => !r.terminal);
+    if (nonTerminal.length > 0) {
+      const detail = nonTerminal.map((r) => `#${r.issueNumber} (${r.reason})`).join("; ");
+      opts.onEvent({
+        event: "chat-error",
+        data: {
+          message:
+            `onda terminou o turno sem erro, mas ${nonTerminal.length} de ${opts.issueNumbers.length} issue(s) não ` +
+            `chegaram a estado terminal: ${detail}. A coordenadora pode ter desistido silenciosamente (turno sem ` +
+            `tool calls suficientes / sem PR mergeado, #3765) — verifique manualmente antes de considerar a onda concluída.`,
+        },
+      });
     }
   } catch (e) {
     opts.onEvent({ event: "chat-error", data: { message: describeChatError(e) } });
