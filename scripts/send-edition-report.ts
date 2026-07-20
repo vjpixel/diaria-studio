@@ -3,8 +3,15 @@
  *
  * Gera report HTML + JSON summary de uma edicao completa, agregando timing
  * por stage, highlights, status de publicacao e warnings/errors do run-log.
- * Output vai pra stdout (HTML) + stderr (JSON summary) para o orchestrator
- * repassar via Gmail MCP `create_draft`.
+ * Output vai pra stdout (HTML) + stderr (JSON summary).
+ *
+ * #3714 (decisão do editor, 260720): quando `--out` é passado, o relatório
+ * escrito é registrado na superfície de Relatórios do Studio
+ * (`scripts/studio-ui/studio-reports.ts::registerReport` via `writeReportFile`
+ * — file-based, fail-soft, nunca depende do Studio estar no ar) e a URL sai
+ * no summary JSON como `studio_report_url`. **Substitui** o antigo fluxo de
+ * o orchestrator repassar o HTML via Gmail MCP `create_draft` — esse call
+ * site foi removido de `.claude/agents/orchestrator-stage-6.md` (6b-8).
  *
  * Uso:
  *   npx tsx scripts/send-edition-report.ts --edition 260525 --edition-dir data/editions/260525/
@@ -17,8 +24,8 @@
  *   5. data/run-log.jsonl — warnings/errors filtrados pela edicao
  *
  * Outputs:
- *   stdout: HTML email body
- *   stderr: JSON summary { edition, total_duration_ms, stages, highlights, warnings_count, errors_count }
+ *   stdout: HTML (sem --out) ou nada (--out escreve em disco + registra no Studio)
+ *   stderr: JSON summary { edition, total_duration_ms, stages, highlights, warnings_count, errors_count, studio_report_url }
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -36,6 +43,7 @@ import {
   loadDoc,
 } from "./update-stage-status.ts";
 import { computeBraveCreditStats, type BraveCreditStats } from "./lib/brave-credits.ts"; // #1558
+import { registerReport, reportId } from "./studio-ui/studio-reports.ts"; // #3714
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -72,6 +80,13 @@ export interface ReportSummary {
   warnings_count: number;
   errors_count: number;
   brave_credits?: BraveCreditStats; // #1558
+  /** #3714: URL do relatório na superfície de Relatórios do Studio (porta
+   * default 4174, `STUDIO_PORT` overridável) — `null` quando o registro
+   * falhou (fail-soft) ou quando `--out` não foi passado (nada foi escrito
+   * em disco pra registrar). Substitui o antigo campo implícito de draft de
+   * Gmail — o caller (orchestrator-stage-6.md 6b-8) imprime esta URL no
+   * resumo final em vez de criar o draft. */
+  studio_report_url?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +528,7 @@ export function buildSummary(
   social: PublishedSocial | null,
   warningsCount: number,
   errorsCount: number,
+  studioReportUrl: string | null = null, // #3714
 ): ReportSummary {
   const stages: StageSummary[] = stageDoc.rows.map((r) => ({
     stage: r.stage,
@@ -540,6 +556,7 @@ export function buildSummary(
     warnings_count: warningsCount,
     errors_count: errorsCount,
     brave_credits: computeBraveCreditStats(edition), // #1558
+    studio_report_url: studioReportUrl, // #3714
   };
 }
 
@@ -547,16 +564,34 @@ export function buildSummary(
 // CLI
 // ---------------------------------------------------------------------------
 
+/** Converte um path absoluto pra relativo a `ROOT`, sempre "/"-separado —
+ * formato exigido por `ReportRegistryInput.htmlPath` (#3714, portável entre
+ * OSes/máquinas via o junction `data/` do OneDrive). */
+function toRepoRelativePosix(absPath: string): string {
+  const rel = absPath.startsWith(ROOT) ? absPath.slice(ROOT.length) : absPath;
+  return rel.replace(/^[\\/]+/, "").split("\\").join("/");
+}
+
 /**
  * #1950: escreve o HTML do relatório + o manifest md5 (.edition-report-md5.txt).
  * Ponto ÚNICO desse contrato (#1579 edition-report-not-rewritten) — usado tanto
  * pelo `main()` (caminho --out) quanto por `writeEditionReport` (refresh-dedup),
  * pra os dois nunca divergirem nos bytes/manifest.
+ *
+ * #3714: também registra o relatório na superfície de Relatórios do Studio
+ * (`registerReport`, file-based, fail-soft) sempre que `edition` é passado —
+ * ambos os call sites (`main()` e `writeEditionReport`) sempre têm a edição
+ * disponível, então o registro cobre incondicionalmente todo caminho que
+ * produz `edition-report.html`. Substitui o antigo draft de e-mail (#3714,
+ * decisão do editor 260720) — este script nunca criou o draft diretamente
+ * (isso é `orchestrator-stage-6.md` 6b-8), então aqui só cabia adicionar o
+ * registro; a remoção do `create_draft` é no agent prompt.
  */
 export function writeReportFile(
   editionDir: string,
   outPath: string,
   html: string,
+  edition?: string,
 ): { md5: string; absOut: string } {
   const absOut = resolve(ROOT, outPath);
   mkdirSync(dirname(absOut), { recursive: true });
@@ -565,6 +600,14 @@ export function writeReportFile(
   const manifestPath = resolve(editionDir, "_internal", ".edition-report-md5.txt");
   mkdirSync(dirname(manifestPath), { recursive: true });
   writeFileSync(manifestPath, md5 + "\n", "utf8");
+  if (edition) {
+    registerReport(ROOT, {
+      kind: "edicao",
+      sessionId: edition,
+      title: `Diar.ia — relatório de edição ${edition}`,
+      htmlPath: toRepoRelativePosix(absOut),
+    });
+  }
   return { md5, absOut };
 }
 
@@ -599,7 +642,7 @@ export function writeEditionReport(
     loadSocialPreviewUrl(editionDir),
     loadNewsletterUrl(editionDir), // #3466
   );
-  const { md5, absOut } = writeReportFile(editionDir, outPath, html);
+  const { md5, absOut } = writeReportFile(editionDir, outPath, html, edition);
   return { md5, outPath: absOut };
 }
 
@@ -646,16 +689,28 @@ async function main(): Promise<void> {
   );
 
   // #1579: quando --out passado, escreve arquivo + grava manifest com md5
-  // pra invariant edition-report-not-rewritten poder verificar que o
-  // Gmail draft criado downstream usa os mesmos bytes (caso 260529:
+  // pra invariant edition-report-not-rewritten poder verificar que quem
+  // consome o arquivo downstream (#3714: o registro na superfície de
+  // Relatórios do Studio — antes era o draft de Gmail, caso 260529:
   // orchestrator reescreveu htmlBody com narrativa custom em vez de ler o
-  // arquivo).
+  // arquivo) usa os mesmos bytes gerados aqui.
+  // #3714: writeReportFile já registra na superfície do Studio (fail-soft,
+  // file-based) quando `edition` é passado — a URL sai também no summary
+  // JSON (stderr) como `studio_report_url`, pro caller (orchestrator-stage-6)
+  // imprimir no resumo final em vez do antigo draft de Gmail.
   if (outPath) {
-    const { md5, absOut } = writeReportFile(editionDir, outPath, html);
+    const { md5, absOut } = writeReportFile(editionDir, outPath, html, edition);
     process.stderr.write(`[send-edition-report] wrote ${absOut} (md5: ${md5.slice(0, 8)})\n`);
   } else {
     process.stdout.write(html);
   }
+
+  // #3714: URL só existe quando o arquivo foi de fato escrito+registrado
+  // (`--out` passado) — sem `--out`, nada foi persistido em disco pra
+  // registrar (o HTML foi só pro stdout).
+  const studioReportUrl = outPath
+    ? `http://127.0.0.1:${process.env.STUDIO_PORT ?? "4174"}/relatorios/${reportId("edicao", edition)}`
+    : null;
 
   // JSON summary to stderr
   const summary = buildSummary(
@@ -666,6 +721,7 @@ async function main(): Promise<void> {
     social,
     warnings.length,
     errors.length,
+    studioReportUrl,
   );
   process.stderr.write(JSON.stringify(summary, null, 2) + "\n");
 }

@@ -1,6 +1,6 @@
 ---
 name: diaria-overnight
-description: Assume o turno no fim do dia (#2021) — varre as issues abertas, faz briefing interativo com o editor antes dele sair, e resolve a fila autonomamente até esgotá-la (PR → CI → auto-merge), com code-review consolidado pós-rodada (#2039). Ao final, deixa rascunho de relatório no Gmail + resumo no terminal. Uso — `/diaria-overnight [--dry-run] [--bugs] [--priority P0,P1,P2,P3]`.
+description: Assume o turno no fim do dia (#2021) — varre as issues abertas, faz briefing interativo com o editor antes dele sair, e resolve a fila autonomamente até esgotá-la (PR → CI → auto-merge), com code-review consolidado pós-rodada (#2039). Ao final, registra o relatório na superfície de Relatórios do Studio (#3714) + resumo no terminal. Uso — `/diaria-overnight [--dry-run] [--bugs] [--priority P0,P1,P2,P3]`.
 disable-model-invocation: true
 model: sonnet
 effort: high
@@ -8,7 +8,7 @@ effort: high
 
 # /diaria-overnight
 
-O editor invoca esta skill ao encerrar o expediente. Você assume o turno: varre a fila de issues do GitHub, tira todas as dúvidas com o editor **antes** dele sair (briefing único), e depois trabalha a fila de forma 100% autônoma **até esgotá-la** (#2039 — sem deadline de tempo). Ao final, roda um code-review consolidado do diff da noite e compila o relatório (rascunho no Gmail + resumo no terminal).
+O editor invoca esta skill ao encerrar o expediente. Você assume o turno: varre a fila de issues do GitHub, tira todas as dúvidas com o editor **antes** dele sair (briefing único), e depois trabalha a fila de forma 100% autônoma **até esgotá-la** (#2039 — sem deadline de tempo). Ao final, roda um code-review consolidado do diff da noite e compila o relatório (registro na superfície de Relatórios do Studio, #3714, + resumo no terminal).
 
 Escopo = **resolver issues de código/config/docs do repo**. Fora de escopo: executar a pipeline editorial (pesquisa, escrita, publicação de edição) — mudanças em código de publishers/Workers SÃO elegíveis, mas *disparar* publicação não.
 
@@ -374,7 +374,7 @@ Triagem dos findings:
 0. **Encerrar sessão overnight ativa (#3322)**: rodar `npx tsx scripts/overnight-session-marker.ts --end` — remove `data/overnight/.active-session-{hostname}.json` gravado na Fase 0 passo 1, pra `pr-create-review.mjs` parar de dar `low` effort em PRs abertos nesta máquina depois que a rodada de fato terminou (manuais, `/diaria-develop`, etc). Idempotente — no-op se o marker já não existir. Rodar mesmo nos caminhos de encerramento antecipado (guard de colisão editorial, erro irrecuperável) — sempre que esta fase é alcançada, a rodada está terminando.
 1. Compilar o digest da noite a partir de `plan.json` + run-log (filtrado por `agent: "overnight"` + AAMMDD da rodada), **agrupado por PR** (lotes listam suas issues juntas):
    - **Modo da rodada** (#3375): se `bugs_only: true` em `plan.json`, abrir o digest com uma linha `Modo: --bugs (só issues com label bug)` — inclui a contagem de issues excluídas por não terem a label (registrada nos passos 3/1 da Fase 0/1), pra o editor saber que a rodada foi deliberadamente restrita, não que o backlog de enhancements ficou vazio. **Modo de prioridade** (#3499): se `priority_filter` não for `null` em `plan.json`, adicionar (ou combinar na mesma linha, se `--bugs` também ativo) `Modo: --priority {lista} (só issues com label de prioridade ∈ {lista})` — inclui a contagem de issues excluídas por não baterem a prioridade (registrada nos passos 3/1 da Fase 0/1). Com as duas flags ativas: `Modo: --bugs --priority {lista} (só bugs com prioridade ∈ {lista})`, com a contagem de exclusões de cada filtro.
-   - **Coordenador** (#2993): linha `Coordenador: {model} / {effort}` com os valores **CONFIGURADOS** no frontmatter desta skill (ex: `Coordenador: sonnet / high`) — não auto-relatado (ver o evento `coordinator_model` logado na Fase 0 passo 1). Se algum `stall_events`/intervenção do editor mid-rodada sugerir reversão de modelo/effort (limitação #2941 — troca de turno), anotar a ressalva na mesma linha. Esta linha entra tanto no resumo do terminal (passo 5) quanto no rascunho do Gmail (passo 3) — mesma fonte, os dois derivam deste digest,
+   - **Coordenador** (#2993): linha `Coordenador: {model} / {effort}` com os valores **CONFIGURADOS** no frontmatter desta skill (ex: `Coordenador: sonnet / high`) — não auto-relatado (ver o evento `coordinator_model` logado na Fase 0 passo 1). Se algum `stall_events`/intervenção do editor mid-rodada sugerir reversão de modelo/effort (limitação #2941 — troca de turno), anotar a ressalva na mesma linha. Esta linha entra tanto no resumo do terminal (passo 5) quanto no relatório registrado no Studio (passo 3, #3714) — mesma fonte, os dois derivam deste digest,
    - **Custo estimado do coordenador** (#3453 Rec 1): se houver eventos `coordinator_tokens_estimate` no run-log da rodada, somar/resumir numa linha `Coordenador (tokens estimados): ~N (fonte: {harness_usage | context_size_proxy})`; se todos vierem `unavailable`, escrever `Coordenador (tokens): não instrumentável neste harness` — o editor precisa saber se a lacuna do #3453 Rec 1 foi de fato preenchida nesta rodada ou não. É o dado que permite comparar o custo desta rodada (`high`) contra rodadas `xhigh` anteriores,
    - resolvidas (com links de PR e commits de merge — estados confirmados via `gh pr view`, nunca de memória),
    - puladas e por quê (sem briefing, bloqueio externo, CI vermelho persistente — com link do draft),
@@ -388,9 +388,15 @@ Triagem dos findings:
      O script lê o campo `timeline` de cada issue no `plan.json` e imprime a tabela markdown `unidade | início | fim | duração | fix-iterations` + total da rodada + unidade mais lenta. Degrada graciosamente: issues sem campo `timeline` (rodadas anteriores ao #2099 ou unidades interrompidas) aparecem na tabela com `—` nos campos de horário e duração — a tabela nunca quebra. Esta seção é a fonte primária de observabilidade de tempo; `plan.json` é a fonte do relatório (pós-compaction o run-log pode ser grande),
    - estado final da fila (`gh issue list` fresco).
 2. Salvar em `data/overnight/{AAMMDD}/report.md` (AAMMDD do `plan.json`, não recomputado).
-3. Criar **rascunho** no Gmail via MCP `create_draft` para `vjpixel@gmail.com`, subject `Diar.ia overnight {AAMMDD} — {X} resolvidas, {Y} puladas, {Z} findings` (omitir `{Z} findings` se o review não rodou; acrescentar `+ hotfix` se houve). **Atenção à semântica: `create_draft` NÃO envia** — o rascunho fica em Drafts, sem notificação. O canal primário do relatório é o **resumo no terminal** (passo 5); o draft é cópia formatada pra arquivo/encaminhamento.
-4. **Fail-soft**: Gmail MCP indisponível → NÃO travar. Esta é uma exceção consciente e local ao #738 (que protege stages de edição em andamento): aqui não há pipeline pra corromper e ninguém presente pra responder ao halt — avisar no terminal que o relatório ficou só local e encerrar normalmente. Não citar esta exceção como precedente fora do relatório overnight.
-5. Imprimir o resumo no terminal — é a primeira coisa que o editor vê ao voltar.
+3. **Registrar o relatório na superfície de Relatórios do Studio (#3714, decisão do editor 260720 — substitui o antigo draft de Gmail, não soma a ele):**
+   ```bash
+   npx tsx scripts/register-report.ts --kind overnight --id {AAMMDD} \
+     --title "Diar.ia overnight {AAMMDD} — {X} resolvidas, {Y} puladas, {Z} findings" \
+     --html-path data/overnight/{AAMMDD}/report.md
+   ```
+   (mesmo título usado historicamente no assunto do e-mail — omitir `{Z} findings` se o review não rodou; acrescentar `+ hotfix` se houve). **File-based, nunca uma chamada HTTP** — o comando só escreve em `data/reports/index.jsonl`; funciona igual com o Studio (`npm run studio`) parado ou no ar, e o relatório aparece em `/relatorios` na próxima vez que a página carregar/pollar. O comando imprime a URL em stdout — capturar pro resumo do terminal (passo 5). **Não criar mais draft via `create_draft` aqui** — esse call site foi removido.
+4. **Fail-soft**: falha do `register-report.ts` (rara — é só escrita local em disco) → NÃO travar. Mesma exceção consciente e local ao #738 já documentada aqui: avisar no terminal que o relatório ficou só local (`report.md`) e encerrar normalmente. Não citar esta exceção como precedente fora do relatório overnight.
+5. Imprimir o resumo no terminal — é a primeira coisa que o editor vê ao voltar. Incluir a linha `Relatório: {URL do Studio}` (capturada no passo 3); se o registro falhou (passo 4), `Relatório: só local (data/overnight/{AAMMDD}/report.md) — registro no Studio falhou, ver warn acima`.
 
 ## Regras
 

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diar.ia Studio — Relatórios</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+  <link rel="stylesheet" href="/chat-drawer.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <a class="statusbar-item back-link" href="/">&larr; Painel</a>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Relatórios</h1>
+      <p class="hint">
+        Relatórios de fim de trabalho (edição diária, <code>/diaria-overnight</code>,
+        <code>/diaria-develop</code>) — mais recentes no topo. Substitui o antigo
+        draft de e-mail (#3714): cada relatório é registrado aqui pelo próprio
+        script que o gera (<code>data/reports/index.jsonl</code>), sem depender do
+        Studio estar no ar no momento da geração.
+      </p>
+
+      <div id="reports-error" class="panel alert-banner" hidden></div>
+      <div id="reports-empty" class="hint" hidden>Nenhum relatório registrado ainda.</div>
+
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr><th>Tipo</th><th>Sessão</th><th>Título</th><th>Gerado em</th><th></th></tr>
+          </thead>
+          <tbody id="reports-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/relatorios.js" type="module"></script>
+  <script src="/chat-drawer.js" type="module"></script>
+</body>
+</html>
