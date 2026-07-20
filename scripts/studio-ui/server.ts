@@ -48,6 +48,18 @@
  *     qualquer página, sem depender do stream SSE ao vivo que originou a
  *     pergunta (fix do bug "gate pendente inalcançável" — ver `studio-chat.ts`
  *     `listPendingPermissionRequestsFull`).
+ *   - `POST /api/waves/fire` (#3702) — dispara a sessão COORDENADORA de uma
+ *     onda já composta por `GET /api/waves`: usa a tool `Agent` do próprio
+ *     Claude Code (`isolation: "worktree"`, mesmo mecanismo do
+ *     `/diaria-develop`) pra fan-out paralelo, gate 2 determinístico +
+ *     merge serial — ver `studio-wave-fire.ts` pro design completo (por que
+ *     1 sessão coordenadora, não N sessões cruas; guard de publicação como
+ *     código). **Gateada por `STUDIO_WAVE_FIRE_ENABLED=1` (OFF por
+ *     padrão)** — a orquestração nunca foi validada contra o SDK real;
+ *     enquanto a flag está desligada, responde 501. Streaming SSE, mesmo
+ *     transporte de `/api/chat`. O botão da UI (`fire-wave-btn`,
+ *     `triagem.html`) continua desabilitado nesta fatia — só o endpoint
+ *     existe.
  *   - `GET /revisao/:aammdd` — painel de revisão de conteúdo rica (#3559):
  *     mesma estratégia de rewrite, servindo `public/revisao.html`. Consome
  *     `GET/PUT /api/editions/:aammdd/review/:slug` (`slug` = categorized |
@@ -170,6 +182,10 @@ import {
   listPendingPermissionRequestsFull,
   type QueryFn,
 } from "./studio-chat.ts";
+// #3702: dispara a sessão coordenadora de uma onda (fan-out via Agent tool
+// isolation:worktree + gate 2 + merge serial) — arquivo próprio, import
+// isolado (nenhuma outra rota depende dele). Ver studio-wave-fire.ts.
+import { parseWaveFireRequestBody, runWaveFire, type QueryFn as WaveFireQueryFn } from "./studio-wave-fire.ts";
 // #3559: painel de revisão de conteúdo rica — arquivos próprios desta fatia,
 // import isolado (nenhuma outra rota depende deles). Ver studio-review.ts.
 import {
@@ -261,6 +277,19 @@ export interface StudioServerOptions {
   enableSnapshotPush?: boolean;
   /** Intervalo (ms) do push periódico — default 5min (`studio-snapshot-watcher.ts`). */
   snapshotPushIntervalMs?: number;
+  /** `query()` injetável pra `POST /api/waves/fire` (#3702) — testes mockam
+   * a sessão coordenadora sem spawnar o CLI real; produção usa o default de
+   * `studio-wave-fire.ts`. */
+  waveFireQueryFn?: WaveFireQueryFn;
+  /** Liga `POST /api/waves/fire` de verdade — OFF por padrão (inclusive em
+   * testes que não setam isso explicitamente). A orquestração nunca foi
+   * validada contra o SDK real (#3702); com a flag desligada, a rota
+   * responde 501 em vez de aceitar disparos. `main()` liga a partir de
+   * `STUDIO_WAVE_FIRE_ENABLED=1` no uso real. */
+  waveFireEnabled?: boolean;
+  /** Teto de concorrência de `POST /api/waves/fire` — default 6, mesmo teto
+   * de `GET /api/waves` (`studio-waves.ts`). */
+  waveFireMaxConcurrency?: number;
 }
 
 export interface StudioServer {
@@ -542,6 +571,77 @@ async function handleApiChatAnswer(
     response: parsed.value.response,
   });
   sendJson(res, result.ok ? 200 : 404, result);
+}
+
+/**
+ * `POST /api/waves/fire` (#3702) — dispara a sessão coordenadora de uma onda
+ * já composta por `GET /api/waves`. Gateada por `opts.enabled`
+ * (`STUDIO_WAVE_FIRE_ENABLED=1`, OFF por padrão): a orquestração real
+ * (fan-out via `Agent` tool `isolation: "worktree"` + gate 2 + merge serial,
+ * `studio-wave-fire.ts`) nunca foi validada contra o SDK real, então o
+ * código existe e é testado com `queryFn` mockado (mesmo padrão de
+ * `POST /api/chat`, #3556), mas fica inerte por padrão — responde 501 em vez
+ * de aceitar um disparo, pra nenhuma instância existente do Studio passar a
+ * aceitar disparos reais só por atualizar o código. Quando habilitado,
+ * streaming SSE — mesmo transporte de `POST /api/chat`.
+ */
+async function handleApiWavesFire(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  opts: { enabled: boolean; queryFn?: WaveFireQueryFn; maxBodyBytes: number; maxConcurrency?: number },
+): Promise<void> {
+  if (!opts.enabled) {
+    sendJson(res, 501, {
+      error:
+        "disparo de onda desabilitado nesta instância (STUDIO_WAVE_FIRE_ENABLED não setado) — orquestração ainda não validada ao vivo, ver #3702.",
+    });
+    return;
+  }
+
+  let raw: string;
+  try {
+    raw = await readRequestBody(req, opts.maxBodyBytes);
+  } catch (e) {
+    sendJson(res, 413, { error: (e as Error).message });
+    return;
+  }
+
+  const parsed = parseWaveFireRequestBody(raw, { maxConcurrency: opts.maxConcurrency });
+  if (!parsed.ok) {
+    sendJson(res, 400, { error: parsed.error });
+    return;
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+  res.write(formatSseComment("connected"));
+
+  const abortController = new AbortController();
+  const onClose = () => abortController.abort();
+  req.on("close", onClose);
+
+  await runWaveFire({
+    issueNumbers: parsed.value.issueNumbers,
+    cwd: rootDir,
+    queryFn: opts.queryFn,
+    maxConcurrency: opts.maxConcurrency,
+    abortController,
+    onEvent: (wireEvent) => {
+      try {
+        res.write(formatSseEvent(wireEvent.event, wireEvent.data));
+      } catch {
+        // conexão já fechada — a sessão coordenadora segue rodando de
+        // qualquer forma; só não há mais pra onde emitir o evento.
+      }
+    },
+  });
+
+  req.off("close", onClose);
+  res.end();
 }
 
 function handleTokensCss(res: ServerResponse): void {
@@ -835,6 +935,9 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const ghRun = opts.ghRun;
   const chatQueryFn = opts.chatQueryFn;
   const chatMaxBodyBytes = opts.chatMaxBodyBytes ?? 256_000;
+  const waveFireQueryFn = opts.waveFireQueryFn;
+  const waveFireEnabled = opts.waveFireEnabled ?? false;
+  const waveFireMaxConcurrency = opts.waveFireMaxConcurrency ?? 6;
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -869,6 +972,29 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
           return;
         }
         handleApiChatAnswer(rootDir, req, res, { maxBodyBytes: chatMaxBodyBytes }).catch((e) => {
+          if (!res.headersSent) {
+            sendJson(res, 500, { error: (e as Error).message });
+          } else {
+            res.end();
+          }
+        });
+        return;
+      }
+
+      // #3702: dispara a sessão coordenadora de uma onda — mesmo tratamento
+      // "rota de mutação checada antes do guard read-only" de /api/chat
+      // acima. Gateada por waveFireEnabled (ver handleApiWavesFire).
+      if (urlPath === "/api/waves/fire") {
+        if (req.method !== "POST") {
+          sendJson(res, 405, { error: "POST obrigatório em /api/waves/fire" });
+          return;
+        }
+        handleApiWavesFire(rootDir, req, res, {
+          enabled: waveFireEnabled,
+          queryFn: waveFireQueryFn,
+          maxBodyBytes: chatMaxBodyBytes,
+          maxConcurrency: waveFireMaxConcurrency,
+        }).catch((e) => {
           if (!res.headersSent) {
             sendJson(res, 500, { error: (e as Error).message });
           } else {
@@ -923,7 +1049,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
 
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556) e as rotas de ação do #3559/#3602" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556), POST /api/waves/fire (#3702) e as rotas de ação do #3559/#3602" });
         return;
       }
 
@@ -1135,8 +1261,12 @@ async function main(): Promise<void> {
   // Fail-soft mesmo ligado sem credenciais: o watcher só pula o push (ver
   // pushStudioSnapshot's skippedReason="missing-credentials"), nunca lança.
   const enableSnapshotPush = !parseCliArgs(process.argv.slice(2)).flags.has("no-snapshot-push");
+  // #3702: OFF por padrão — a orquestração de onda real nunca foi validada
+  // contra o SDK real (ver studio-wave-fire.ts). Opt-in explícito via env,
+  // não flag de CLI, pra não ser ligado sem querer num `npm run studio` comum.
+  const waveFireEnabled = process.env.STUDIO_WAVE_FIRE_ENABLED === "1";
 
-  const server = await startStudioServer({ port, rootDir, enableSnapshotPush });
+  const server = await startStudioServer({ port, rootDir, enableSnapshotPush, waveFireEnabled });
   console.log(`[studio-server] ${server.url} (rootDir=${server.rootDir})`);
 
   const shutdown = () => {

@@ -298,6 +298,148 @@ describe("POST /api/chat (#3556) — com chatQueryFn mockado (sem SDK real)", ()
   });
 });
 
+describe("POST /api/waves/fire (#3702) — desabilitado por padrão", () => {
+  let root: string;
+  let server: StudioServer;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-server-wave-fire-off-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    // waveFireEnabled NÃO setado -> default false, mesmo sem env var.
+    server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("501 quando waveFireEnabled não está ligado, mesmo com corpo válido", async () => {
+    const res = await fetch(new URL("/api/waves/fire", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ issueNumbers: [101] }),
+    });
+    assert.equal(res.status, 501);
+    const body = await res.json();
+    assert.match(body.error, /STUDIO_WAVE_FIRE_ENABLED/);
+  });
+
+  it("GET /api/waves/fire é rejeitado com 405 — só POST é aceito nessa rota", async () => {
+    const res = await fetch(new URL("/api/waves/fire", server.url));
+    assert.equal(res.status, 405);
+  });
+});
+
+describe("POST /api/waves/fire (#3702) — habilitado, com waveFireQueryFn mockado (sem SDK real)", () => {
+  let root: string;
+  let server: StudioServer;
+  let lastPrompt: string | undefined;
+  let lastOptions: { cwd?: string; permissionMode?: string; canUseTool?: unknown } | undefined;
+  let queryFn: QueryFn;
+
+  function makeFakeQuery(messages: SDKMessage[]): QueryFn {
+    return (params) => {
+      lastPrompt = params.prompt as string;
+      lastOptions = params.options as typeof lastOptions;
+      async function* gen() {
+        for (const m of messages) yield m;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+  }
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-server-wave-fire-on-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    queryFn = (params) => makeFakeQuery([])(params);
+    server = await startStudioServer({
+      port: 0,
+      rootDir: root,
+      pollIntervalMs: 30,
+      waveFireEnabled: true,
+      waveFireQueryFn: (params) => queryFn(params),
+    });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function setQueryFn(fn: QueryFn) {
+    queryFn = fn;
+  }
+
+  it("400 quando o corpo não tem 'issueNumbers'", async () => {
+    const res = await fetch(new URL("/api/waves/fire", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error, /issueNumbers/);
+  });
+
+  it("400 quando a onda excede o teto de concorrência (default 6)", async () => {
+    const res = await fetch(new URL("/api/waves/fire", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ issueNumbers: [1, 2, 3, 4, 5, 6, 7] }),
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it("200 + SSE: dispara a sessão coordenadora com cwd=rootDir e streama os eventos traduzidos", async () => {
+    setQueryFn(
+      makeFakeQuery([
+        {
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "tu-1", name: "Agent", input: { issue: 101 } }] },
+        } as unknown as SDKMessage,
+        { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage,
+      ]),
+    );
+
+    const res = await fetch(new URL("/api/waves/fire", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ issueNumbers: [101] }),
+    });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /text\/event-stream/);
+
+    const body = await res.text();
+    const events = parseSseBody(body);
+    assert.deepEqual(
+      events.map((e) => e.event),
+      ["chat-tool", "chat-done"],
+    );
+    assert.match(lastPrompt ?? "", /#101/);
+    assert.equal(lastOptions?.cwd, root);
+    assert.equal(lastOptions?.permissionMode, "default");
+    assert.equal(typeof lastOptions?.canUseTool, "function");
+  });
+
+  it("fail-soft: queryFn que lança vira evento chat-error no stream, resposta continua 200", async () => {
+    setQueryFn(() => {
+      throw new Error("spawn claude ENOENT");
+    });
+
+    const res = await fetch(new URL("/api/waves/fire", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ issueNumbers: [202] }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    const events = parseSseBody(body);
+    assert.equal(events.length, 1);
+    assert.equal(events[0].event, "chat-error");
+  });
+});
+
 /** Lê incrementalmente um `Response` SSE (via `getReader()`, igual ao
  * `chat-drawer.js` real — `EventSource` não suporta POST), chamando
  * `onEvent` pra cada `{event, data}` assim que chega. Usado pro round-trip

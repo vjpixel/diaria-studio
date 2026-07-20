@@ -8,13 +8,15 @@
  * (que precisam serializar entre si), e propor a onda paralela máxima seguros
  * = 1 representante por cluster que se toca + todos os singletons.
  *
- * **Isto é só visualização.** Nada aqui dispara worktree, subagente
- * implementador, PR ou merge — o botão "disparar onda" da UI fica
- * deliberadamente desabilitado (ver `public/triagem.js`) até a camada
- * interativa #3556 (chat-drawer/sessão SDK) e #3557 (ações via sessão)
- * existirem para de fato executar. O objetivo desta fatia é dar ao editor a
- * MESMA visão que o coordenador do `/diaria-develop` monta manualmente no
- * Gate de Onda, sem ainda poder apertar o gatilho pela UI.
+ * **Isto continua sendo só visualização.** Nada NESTE arquivo dispara
+ * worktree, subagente implementador, PR ou merge — só compõe a proposta de
+ * onda (clusters + teto de concorrência). A execução de fato (#3702) mora em
+ * `studio-wave-fire.ts`/`POST /api/waves/fire`, gateada por
+ * `STUDIO_WAVE_FIRE_ENABLED` e nunca validada ao vivo — o botão "disparar
+ * onda" da UI (`public/triagem.js`) segue deliberadamente desabilitado até
+ * essa validação acontecer (ver doc-comment de `studio-wave-fire.ts`). O
+ * objetivo desta fatia continua sendo dar ao editor a MESMA visão que o
+ * coordenador do `/diaria-develop` monta manualmente no Gate de Onda.
  *
  * Heurística de extração de arquivo (não é o mesmo grep-com-julgamento que o
  * coordenador faz lendo a issue inteira — aqui é regex puro sobre
