@@ -139,6 +139,27 @@ const PREVIEW_HINTS = {
     "salvo diretamente (sem passar pelo Markdown).",
 };
 
+// #3687: mantém a sessão de chat (chat-drawer.js, painel fixo à esquerda)
+// sincronizada com o que está aberto AQUI — edição + arquivo + aba ativa,
+// os mesmos 3 valores que o header já mostra (el.titulo/el.arquivo/aba
+// ativa em rv-tabs). Chamada de dentro de `renderTabs()` (chamada toda vez
+// que `currentSlug` muda, ver `loadFile()`) em vez de só uma vez ao montar —
+// é isso que garante que o contexto ACOMPANHA o editor trocando de aba, não
+// fica preso no estado de quando a página abriu (critério de aceite do
+// #3687: "deve atualizar quando o editor troca de edição, de arquivo ou de
+// aba"). Fail-soft: se `window.diariaStudioChat` ainda não montou (ordem de
+// script) ou não expõe `setContext`, não faz nada — mesmo guard já usado por
+// `fillChatWithPrompt` abaixo.
+function syncChatContext() {
+  if (!window.diariaStudioChat || typeof window.diariaStudioChat.setContext !== "function") return;
+  const activeTabBtn = el.tabs.querySelector(`.rv-tab[data-slug="${currentSlug}"]`);
+  window.diariaStudioChat.setContext({
+    edition: aammdd,
+    file: FILE_LABELS[currentSlug],
+    tab: activeTabBtn ? activeTabBtn.textContent.trim() : currentSlug,
+  });
+}
+
 function renderTabs() {
   el.tabs.querySelectorAll(".rv-tab").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.slug === currentSlug);
@@ -148,6 +169,7 @@ function renderTabs() {
   const previewTabBtn = el.sideTabs.querySelector('[data-pane="preview"]');
   if (previewTabBtn) previewTabBtn.textContent = PREVIEW_TAB_LABELS[currentSlug] || PREVIEW_TAB_LABELS.reviewed;
   if (el.previewHint) el.previewHint.innerHTML = PREVIEW_HINTS[currentSlug] || PREVIEW_HINTS.default;
+  syncChatContext();
 }
 
 // #3635: consulta a mesma rota genérica de diff (`.../review/html-final/diff`)

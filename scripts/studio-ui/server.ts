@@ -504,7 +504,9 @@ function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<string
  * conduz UM turno via `runChatTurn`, streamando cada evento traduzido pro
  * browser. `chat-init`/`chat-done` atualizam a sessão em memória pro próximo
  * turno resolver `resume` corretamente (1 sessão ad-hoc por `rootDir`, ver
- * `studio-chat.ts`).
+ * `studio-chat.ts`). `parsed.value.context` (#3687 — edição/arquivo/aba
+ * abertos no painel, reenviado a cada turno pelo cliente) é repassado direto
+ * pra `runChatTurn`, que o prefixa no `prompt` via `buildChatPrompt`.
  *
  * Único handler do server que escreve estado em memória — todo o resto do
  * arquivo permanece read-only (ver doc-comment do módulo).
@@ -547,6 +549,7 @@ async function handleApiChat(
     message: parsed.value.message,
     sessionId,
     cwd: rootDir,
+    context: parsed.value.context,
     queryFn: opts.queryFn,
     abortController,
     onEvent: (wireEvent) => {

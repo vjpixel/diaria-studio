@@ -299,6 +299,43 @@ describe("POST /api/chat (#3556) — com chatQueryFn mockado (sem SDK real)", ()
     assert.equal(lastOptions?.resume, "sess-persisted");
   });
 
+  it("regressão (#3687): 'context' do corpo HTTP chega no 'prompt' enviado ao SDK, prefixado à mensagem", async () => {
+    setQueryFn(
+      makeFakeQuery([
+        { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "sess-ctx" } as unknown as SDKMessage,
+      ]),
+    );
+    const res = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: "passe a Clarice no texto de introdução",
+        context: { edition: "260720", file: "02-reviewed.md", tab: "02 — Newsletter" },
+      }),
+    });
+    assert.equal(res.status, 200);
+    await res.text(); // drena o stream antes de checar lastPrompt (mesmo padrão dos testes acima).
+    assert.equal(
+      lastPrompt,
+      '[Contexto do painel Studio: edição 260720 · arquivo 02-reviewed.md · aba "02 — Newsletter"]\n\npasse a Clarice no texto de introdução',
+    );
+  });
+
+  it("sem 'context' no corpo HTTP, 'prompt' é a mensagem crua (comportamento pré-#3687 inalterado)", async () => {
+    setQueryFn(
+      makeFakeQuery([
+        { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "sess-noctx" } as unknown as SDKMessage,
+      ]),
+    );
+    const res = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "oi" }),
+    });
+    await res.text();
+    assert.equal(lastPrompt, "oi");
+  });
+
   it("'reset: true' limpa a sessão em memória antes do turno — 'resume' fica ausente", async () => {
     setQueryFn(
       makeFakeQuery([

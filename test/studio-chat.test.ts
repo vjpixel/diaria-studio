@@ -26,6 +26,8 @@ import {
   listPendingPermissionRequests,
   listPendingPermissionRequestsFull,
   resolvePendingPermissionRequest,
+  formatChatContextBlock,
+  buildChatPrompt,
   type ChatWireEvent,
   type ChatPermissionRequestEvent,
   type QueryFn,
@@ -80,6 +82,93 @@ describe("parseChatRequestBody (#3556)", () => {
   it("corpo vazio (string em branco) é tratado como objeto vazio -> rejeita por falta de message", () => {
     const result = parseChatRequestBody("");
     assert.equal(result.ok, false);
+  });
+});
+
+describe("parseChatRequestBody — 'context' do painel (#3687)", () => {
+  it("aceita 'context' ausente -> value.context fica undefined", () => {
+    const result = parseChatRequestBody(JSON.stringify({ message: "oi" }));
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.value.context, undefined);
+  });
+
+  it("aceita 'context' com edição/arquivo/aba", () => {
+    const result = parseChatRequestBody(
+      JSON.stringify({ message: "oi", context: { edition: "260720", file: "02-reviewed.md", tab: "02 — Newsletter" } }),
+    );
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.deepEqual(result.value.context, {
+        edition: "260720",
+        file: "02-reviewed.md",
+        tab: "02 — Newsletter",
+      });
+    }
+  });
+
+  it("aceita 'context' parcial (só edição, ex: edicao.js sem aba/arquivo)", () => {
+    const result = parseChatRequestBody(JSON.stringify({ message: "oi", context: { edition: "260720" } }));
+    assert.equal(result.ok, true);
+    if (result.ok) assert.deepEqual(result.value.context, { edition: "260720" });
+  });
+
+  it("aceita 'context' vazio ({}) -> objeto vazio, não erro", () => {
+    const result = parseChatRequestBody(JSON.stringify({ message: "oi", context: {} }));
+    assert.equal(result.ok, true);
+    if (result.ok) assert.deepEqual(result.value.context, {});
+  });
+
+  it("rejeita 'context' de tipo errado (array, string, número)", () => {
+    assert.equal(parseChatRequestBody(JSON.stringify({ message: "oi", context: [] })).ok, false);
+    assert.equal(parseChatRequestBody(JSON.stringify({ message: "oi", context: "260720" })).ok, false);
+    assert.equal(parseChatRequestBody(JSON.stringify({ message: "oi", context: 5 })).ok, false);
+  });
+
+  it("rejeita campo de 'context' com tipo errado", () => {
+    assert.equal(parseChatRequestBody(JSON.stringify({ message: "oi", context: { edition: 260720 } })).ok, false);
+    assert.equal(parseChatRequestBody(JSON.stringify({ message: "oi", context: { file: 5 } })).ok, false);
+    assert.equal(parseChatRequestBody(JSON.stringify({ message: "oi", context: { tab: null } })).ok, false);
+  });
+
+  it("ignora campos desconhecidos dentro de 'context' (fail-open, não trava a request)", () => {
+    const result = parseChatRequestBody(JSON.stringify({ message: "oi", context: { edition: "260720", bogus: "x" } }));
+    assert.equal(result.ok, true);
+    if (result.ok) assert.deepEqual(result.value.context, { edition: "260720" });
+  });
+});
+
+describe("formatChatContextBlock / buildChatPrompt (#3687)", () => {
+  it("sem contexto -> bloco vazio, prompt igual à mensagem original", () => {
+    assert.equal(formatChatContextBlock(undefined), "");
+    assert.equal(buildChatPrompt("passe a Clarice no texto de introdução", undefined), "passe a Clarice no texto de introdução");
+  });
+
+  it("contexto vazio ({}) -> bloco vazio, mesmo tratamento de 'sem contexto'", () => {
+    assert.equal(formatChatContextBlock({}), "");
+    assert.equal(buildChatPrompt("oi", {}), "oi");
+  });
+
+  it("contexto completo -> bloco com edição, arquivo e aba, prefixado ao prompt", () => {
+    const context = { edition: "260720", file: "02-reviewed.md", tab: "02 — Newsletter" };
+    const block = formatChatContextBlock(context);
+    assert.equal(block, '[Contexto do painel Studio: edição 260720 · arquivo 02-reviewed.md · aba "02 — Newsletter"]');
+    // regressão do cenário REAL da issue #3687: editor com a edição/arquivo
+    // abertos digita uma referência implícita ("esse texto") — o prompt que
+    // chega ao modelo precisa carregar o bloco de contexto ANTES da
+    // mensagem, na mesma ordem que um editor leria.
+    const prompt = buildChatPrompt("passe a Clarice no texto de introdução", context);
+    assert.equal(
+      prompt,
+      '[Contexto do painel Studio: edição 260720 · arquivo 02-reviewed.md · aba "02 — Newsletter"]\n\npasse a Clarice no texto de introdução',
+    );
+  });
+
+  it("contexto parcial (só edição) -> bloco só com o campo presente", () => {
+    assert.equal(formatChatContextBlock({ edition: "260720" }), "[Contexto do painel Studio: edição 260720]");
+  });
+
+  it("campos com só espaço em branco são tratados como ausentes", () => {
+    assert.equal(formatChatContextBlock({ edition: "  ", file: "", tab: undefined }), "");
   });
 });
 
@@ -485,6 +574,41 @@ describe("runChatTurn (#3556) — com queryFn mockado (sem SDK real)", () => {
     if (received[0].event === "chat-error") {
       assert.match(received[0].data.message, /CLI do Claude Code não encontrado/);
     }
+  });
+
+  it("regressão (#3687): context do painel chega no 'prompt' enviado ao SDK, prefixado à mensagem", async () => {
+    let capturedPrompt: string | undefined;
+    const fakeQuery: QueryFn = (params) => {
+      capturedPrompt = params.prompt as string;
+      async function* gen() {
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    await runChatTurn({
+      message: "passe a Clarice no texto de introdução",
+      cwd: "/repo",
+      context: { edition: "260720", file: "02-reviewed.md", tab: "02 — Newsletter" },
+      queryFn: fakeQuery,
+      onEvent: () => {},
+    });
+    assert.equal(
+      capturedPrompt,
+      '[Contexto do painel Studio: edição 260720 · arquivo 02-reviewed.md · aba "02 — Newsletter"]\n\npasse a Clarice no texto de introdução',
+    );
+  });
+
+  it("sem context, o 'prompt' enviado ao SDK é a mensagem crua (comportamento pré-#3687 inalterado)", async () => {
+    let capturedPrompt: string | undefined;
+    const fakeQuery: QueryFn = (params) => {
+      capturedPrompt = params.prompt as string;
+      async function* gen() {
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    await runChatTurn({ message: "oi", cwd: "/repo", queryFn: fakeQuery, onEvent: () => {} });
+    assert.equal(capturedPrompt, "oi");
   });
 
   it("fail-soft: generator que lança no meio do stream vira chat-error após os eventos já emitidos", async () => {
