@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +10,7 @@ import {
   readInboxLinkCountFromMarker,
   readInjectPoolSizeFromMarker,
   computeDiariaDiscovered,
+  getTotalEditorSubmissions,
 } from "../scripts/lib/inbox-stats.ts";
 import { checkCoverageLine } from "../scripts/lint-newsletter-md.ts";
 
@@ -178,6 +179,125 @@ describe("countEditorSubmissions (#592, #609, #1486)", () => {
     const { path, cleanup } = withArchive(sampleArchive);
     try {
       assert.equal(countEditorSubmissions(path), 4);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("getTotalEditorSubmissions (#3696)", () => {
+  function withFixture(
+    archiveContent: string,
+    marker: Record<string, unknown> | null,
+    capturedNewsletters: unknown[] | null = null,
+  ): { archivePath: string; internalDir: string; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-total-submissions-"));
+    const archivePath = join(dir, "archive.md");
+    writeFileSync(archivePath, archiveContent, "utf8");
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    if (marker) {
+      writeFileSync(
+        join(internalDir, ".marker-inject-inbox-urls.json"),
+        JSON.stringify(marker),
+        "utf8",
+      );
+    }
+    if (capturedNewsletters) {
+      writeFileSync(
+        join(internalDir, "captured-newsletters.json"),
+        JSON.stringify(capturedNewsletters),
+        "utf8",
+      );
+    }
+    return { archivePath, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("caso real 260720: 3 blocos no archive (só editor) + 9 newsletters capturadas = 12 (não 3)", () => {
+    // sampleArchive tem 4 blocos, mas aqui simulamos o cenário da issue: só os
+    // forwards diretos do editor foram parseados pro archive (3), e as 9
+    // newsletters vieram 100% pelo caminho "captured-articles" — nunca criam
+    // bloco em inbox.md (#1520).
+    const archiveWithOnlyEditorBlocks = `## 2026-07-19T10:00:00.000Z
+- **from:** Angelo Pixel <vjpixel@gmail.com>
+
+## 2026-07-19T11:00:00.000Z
+- **from:** Angelo Pixel <vjpixel@gmail.com>
+
+## 2026-07-19T12:00:00.000Z
+- **from:** Angelo Pixel <vjpixel@gmail.com>
+`;
+    const { archivePath, internalDir, cleanup } = withFixture(
+      archiveWithOnlyEditorBlocks,
+      {
+        editor_blocks: 3,
+        newsletter_blocks: 0,
+        newsletter_source: "captured-articles",
+        captured_newsletter_count: 9,
+      },
+    );
+    try {
+      assert.equal(countEditorSubmissions(archivePath), 3, "sozinha, subcontava (bug #3696)");
+      assert.equal(getTotalEditorSubmissions(archivePath, internalDir), 12, "3 blocos + 9 capturadas");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("newsletter_source ausente/captured_newsletter_count sem número → fallback lê captured-newsletters.json direto", () => {
+    const { archivePath, internalDir, cleanup } = withFixture(
+      "## 2026-07-19T10:00:00.000Z\n- **from:** editor@example.com\n",
+      { editor_blocks: 1, newsletter_source: "captured-articles" }, // sem captured_newsletter_count
+      [{ thread_id: "a" }, { thread_id: "b" }],
+    );
+    try {
+      assert.equal(getTotalEditorSubmissions(archivePath, internalDir), 3, "1 bloco + 2 do fallback file");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("newsletter_source === 'inbox-md' → NÃO soma captured_newsletter_count (já contado nos blocos)", () => {
+    // Quando o caminho é inbox-md, as newsletters JÁ viraram blocos no
+    // archive — countEditorSubmissions (que conta TODOS os blocos) já as
+    // inclui. Somar de novo duplicaria.
+    const { archivePath, internalDir, cleanup } = withFixture(
+      sampleArchive, // 4 blocos (2 editor + 2 forwards)
+      {
+        editor_blocks: 2,
+        newsletter_blocks: 2,
+        newsletter_source: "inbox-md",
+        captured_newsletter_count: 0,
+      },
+    );
+    try {
+      assert.equal(getTotalEditorSubmissions(archivePath, internalDir), 4, "não duplica — só os blocos do archive");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("marker ausente → cai pra countEditorSubmissions sozinha (comportamento anterior)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-total-submissions-nomarker-"));
+    const archivePath = join(dir, "archive.md");
+    writeFileSync(archivePath, sampleArchive, "utf8");
+    try {
+      assert.equal(
+        getTotalEditorSubmissions(archivePath, join(dir, "_internal")),
+        4,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("marker presente mas sem newsletter_source (formato pre-#1520) → não soma nada extra", () => {
+    const { archivePath, internalDir, cleanup } = withFixture(sampleArchive, {
+      editor_blocks: 2,
+      newsletter_blocks: 2,
+    });
+    try {
+      assert.equal(getTotalEditorSubmissions(archivePath, internalDir), 4);
     } finally {
       cleanup();
     }

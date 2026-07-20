@@ -310,6 +310,33 @@ const COVERAGE_LINE_RE =
   /^Para esta edição, eu \(o editor\) enviei [^\n]+ submissões,?\s+e a Diar\.ia encontrou outros [^\n]+ artigos\. Selecionamos os [^\n]+ mais relevantes para as pessoas que assinam a newsletter\.[ \t]*$/m;
 
 /**
+ * #3696: reconhece a SENTENÇA de contagem dentro do bloco de boas-vindas
+ * (#3461, formato padrão desde a edição 260715 — "Olá! Eu sou o [Pixel]...").
+ * Diferente de `COVERAGE_LINE_RE` (que casa a linha LEGADA inteira, começando
+ * em "Para esta edição, eu..."), este regex casa só a sentença de contagem —
+ * "Nesta edição, a IA analisou N artigos (X enviados por mim e Y encontrados
+ * automaticamente) e selecionei os Z mais relevantes." — embutida no meio do
+ * parágrafo final do bloco (ver `formatCoverageLine` em `lib/inbox-stats.ts`).
+ * A substituição preserva os parágrafos de saudação/CTA ao redor.
+ *
+ * Bug raiz (#3696): antes desta extensão, `COVERAGE_LINE_RE` só reconhecia o
+ * formato legado — desde que o bloco de boas-vindas virou padrão (#3461,
+ * 260715), este script saía com exit 1 ("MD não tem linha de cobertura") em
+ * TODA edição, e como `orchestrator-stage-2.md` trata essa falha como
+ * fail-soft, o erro era engolido silenciosamente por ~2 meses (o mecanismo
+ * de correção do X ficou desativado de fato).
+ */
+export const WELCOME_COVERAGE_SENTENCE_RE =
+  /Nesta edição, a IA analisou \d+ artigos? \(\d+ enviados por mim e \d+ encontrados automaticamente\) e (?:selecionei o artigo mais relevante|selecionei os \d+ mais relevantes)\./;
+
+/** #3696: monta a sentença de contagem no formato do bloco de boas-vindas — mesmo template de `formatCoverageLine` (`lib/inbox-stats.ts`), só que localmente pra não criar dependência circular script→script. */
+function buildWelcomeCoverageSentence(x: number, y: number, z: number): string {
+  const total = x + y;
+  const selPhrase = z === 1 ? "selecionei o artigo mais relevante" : `selecionei os ${z} mais relevantes`;
+  return `Nesta edição, a IA analisou ${total} artigos (${x} enviados por mim e ${y} encontrados automaticamente) e ${selPhrase}.`;
+}
+
+/**
  * #2878: linha de aviso que substitui a linha de cobertura quando
  * `capture_failed` está setado no marker — nunca afirma "0 submissões"
  * quando a causa real é `fetch-newsletter-threads.ts` (0b-bis) tendo saído
@@ -334,6 +361,10 @@ export function renderCaptureFailedLine(reason: string): string {
  * anterior deixou o aviso (captura falhou) e agora a captura foi corrigida
  * (marker não sinaliza mais `capture_failed`), então a linha real de
  * cobertura volta a substituir o aviso.
+ *
+ * #3696: também reconhece o formato de bloco de boas-vindas (#3461, padrão
+ * desde 260715) via `WELCOME_COVERAGE_SENTENCE_RE` — substitui só a sentença
+ * de contagem, preservando saudação/CTA ao redor intactos.
  */
 export function rewriteCoverageLine(
   md: string,
@@ -350,6 +381,11 @@ export function rewriteCoverageLine(
     const updated = md.replace(CAPTURE_FAILED_LINE_RE, newLine);
     return { md: updated, changed: updated !== md };
   }
+  if (WELCOME_COVERAGE_SENTENCE_RE.test(md)) {
+    const newSentence = buildWelcomeCoverageSentence(x, y, z);
+    const updated = md.replace(WELCOME_COVERAGE_SENTENCE_RE, newSentence);
+    return { md: updated, changed: updated !== md };
+  }
   return { md, changed: false };
 }
 
@@ -358,6 +394,10 @@ export function rewriteCoverageLine(
  * — idempotente) pela linha de aviso `capture_failed`. Usada por `main()`
  * quando o marker sinaliza que a captura de newsletters falhou — X seria
  * subcontado ("0 submissões") sem isso.
+ *
+ * #3696: também reconhece o formato de bloco de boas-vindas — substitui só a
+ * sentença de contagem (`WELCOME_COVERAGE_SENTENCE_RE`) pelo aviso,
+ * preservando saudação/CTA ao redor.
  */
 export function rewriteCoverageLineAsCaptureFailed(
   md: string,
@@ -370,6 +410,10 @@ export function rewriteCoverageLineAsCaptureFailed(
   }
   if (COVERAGE_LINE_RE.test(md)) {
     const updated = md.replace(COVERAGE_LINE_RE, newLine);
+    return { md: updated, changed: updated !== md };
+  }
+  if (WELCOME_COVERAGE_SENTENCE_RE.test(md)) {
+    const updated = md.replace(WELCOME_COVERAGE_SENTENCE_RE, newLine);
     return { md: updated, changed: updated !== md };
   }
   return { md, changed: false };
@@ -442,8 +486,12 @@ function main(): void {
     ? rewriteCoverageLineAsCaptureFailed(md, captureFailure.error ?? "motivo desconhecido")
     : rewriteCoverageLine(md, x, y, z);
 
-  if (!COVERAGE_LINE_RE.test(md) && !CAPTURE_FAILED_LINE_RE.test(md)) {
-    console.error("MD não tem linha de cobertura — esperava primeira linha começando com 'Para esta edição, eu (o editor) enviei...'");
+  if (
+    !COVERAGE_LINE_RE.test(md) &&
+    !CAPTURE_FAILED_LINE_RE.test(md) &&
+    !WELCOME_COVERAGE_SENTENCE_RE.test(md)
+  ) {
+    console.error("MD não tem linha de cobertura — esperava primeira linha começando com 'Para esta edição, eu (o editor) enviei...' ou a sentença 'Nesta edição, a IA analisou...' dentro do bloco de boas-vindas (#3461/#3696).");
     process.exit(1);
   }
   const isCheckMode = flags.has("check");

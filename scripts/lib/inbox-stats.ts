@@ -40,19 +40,20 @@ const DEFAULT_EDITOR_EMAIL = CLARICE_SEED_EMAIL;
  *
  * Retorna null se o marker ausente/sem os campos (caller faz fallback).
  */
-function readInjectMarker(internalDir: string): {
+interface InjectMarkerFields {
   total_editor_urls?: number;
   total_newsletter_urls?: number;
   total_pool_size?: number;
-} | null {
+  newsletter_source?: string;
+  captured_newsletter_count?: number;
+}
+
+function readInjectMarker(internalDir: string): InjectMarkerFields | null {
   const markerPath = join(internalDir, ".marker-inject-inbox-urls.json");
   if (!existsSync(markerPath)) return null;
   try {
-    const raw = JSON.parse(readFileSync(markerPath, "utf8")) as {
-      total_editor_urls?: number;
-      total_newsletter_urls?: number;
-      total_pool_size?: number;
-      details?: { total_editor_urls?: number; total_newsletter_urls?: number; total_pool_size?: number };
+    const raw = JSON.parse(readFileSync(markerPath, "utf8")) as InjectMarkerFields & {
+      details?: InjectMarkerFields;
     };
     return raw.details ?? raw;
   } catch {
@@ -133,6 +134,68 @@ export function countEditorSubmissions(
   }
   const blocks = text.split(/^## /m).slice(1);
   return blocks.length;
+}
+
+/**
+ * #1541: conta entradas em `{internalDir}/captured-newsletters.json` — 1 por
+ * newsletter thread capturada (não por URL extraída). Duplica
+ * `readCapturedNewsletterCount` de `sync-coverage-line.ts` (mesmo arquivo,
+ * mesma semântica) — mantido aqui pra `getTotalEditorSubmissions` não
+ * importar de `scripts/sync-coverage-line.ts` (script top-level, não lib).
+ */
+function readCapturedNewsletterCountFile(internalDir: string): number {
+  const capPath = join(internalDir, "captured-newsletters.json");
+  if (!existsSync(capPath)) return 0;
+  try {
+    const data = JSON.parse(readFileSync(capPath, "utf8"));
+    return Array.isArray(data) ? data.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * #3696: X real de "enviados por mim" = blocos do inbox archive
+ * (`countEditorSubmissions`) + newsletters capturadas fora do inbox.md
+ * quando o marker sinaliza `newsletter_source: "captured-articles"`
+ * (`fetch-newsletter-threads.ts` → `capture-newsletter-urls.ts`, Stage 0
+ * §0b-bis — Cyberman/Superhuman/TLDR/Lenny's/Marktechpost/7min.ai).
+ *
+ * Bug raiz (#3696): quando as newsletters vêm pelo caminho "captured-articles"
+ * (refatoração #1520, "no inbox.md intermediary"), elas NUNCA criam bloco em
+ * `inbox.md` — `countEditorSubmissions` sozinha não tem visibilidade sobre
+ * elas, subcontando X. Caso real 260720: `countEditorSubmissions` = 3
+ * (editor_blocks), mas `captured_newsletter_count` = 9 — X correto = 12.
+ *
+ * Quando `newsletter_source` é `"inbox-md"` (newsletters forwardadas
+ * preservando o sender original, sem o caminho de captura), os blocos JÁ
+ * estão no inbox.md e `countEditorSubmissions` (que conta TODOS os blocos,
+ * #1486) já os inclui — somar `captured_newsletter_count` aqui duplicaria.
+ * Só soma quando `newsletter_source === "captured-articles"` (0 blocos
+ * gravados nesse caminho, #1520).
+ *
+ * Marker ausente/incompleto → apenas `countEditorSubmissions` (comportamento
+ * anterior, sem dado extra disponível pra somar).
+ *
+ * Mesma lógica de composição que `sync-coverage-line.ts:readSubmissionsCountFromMarker`
+ * já implementa (via `editor_blocks + captured_newsletter_count`) — aqui
+ * reescrita sobre a contagem de blocos do ARCHIVE (não o `editor_blocks` do
+ * marker), que é o dado disponível em `apply-gate-edits.ts` (Stage 1, roda
+ * antes do inbox.md ser arquivado — #680).
+ */
+export function getTotalEditorSubmissions(
+  inboxArchivePath: string,
+  internalDir: string,
+  editorEmail?: string,
+): number {
+  const directBlocks = countEditorSubmissions(inboxArchivePath, editorEmail);
+  const marker = readInjectMarker(internalDir);
+  if (!marker || marker.newsletter_source !== "captured-articles") return directBlocks;
+  const captured =
+    typeof marker.captured_newsletter_count === "number"
+      ? marker.captured_newsletter_count
+      : readCapturedNewsletterCountFile(internalDir);
+  return directBlocks + captured;
 }
 
 // (resolveInboxArchivePath removida em #1008 — dead code, knip findings)

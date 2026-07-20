@@ -21,6 +21,7 @@ import {
   readCaptureFailedFromMarker,
   readCapturedNewsletterCount,
   parsePoolArticles,
+  WELCOME_COVERAGE_SENTENCE_RE,
 } from "../scripts/sync-coverage-line.ts";
 
 describe("parsePoolArticles (#1404)", () => {
@@ -500,6 +501,77 @@ Resto.`;
     assert.ok(r.changed);
     assert.match(r.md, /enviei 8 submissões e a Diar\.ia/);
     assert.match(r.md, /Selecionamos os 12 mais relevantes/);
+  });
+});
+
+describe("rewriteCoverageLine — bloco de boas-vindas #3461 (regressão #3696)", () => {
+  // Fixture no formato ATUAL (#3461, padrão desde 260715) — 4 parágrafos,
+  // gerado pelo mesmo template de `formatCoverageLine` (lib/inbox-stats.ts).
+  // Antes do fix #3696, COVERAGE_LINE_RE (só formato legado) nunca casava
+  // aqui — rewriteCoverageLine saía silenciosamente com changed:false em
+  // TODA edição publicada desde 260715 (o mecanismo de correção do X ficava
+  // desativado de fato).
+  function welcomeBlockMd(x: number, y: number, z: number): string {
+    const selPhrase = z === 1 ? "selecionei o artigo mais relevante" : `selecionei os ${z} mais relevantes`;
+    return [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
+      "",
+      `Nesta edição, a IA analisou ${x + y} artigos (${x} enviados por mim e ${y} encontrados automaticamente) e ${selPhrase}.`,
+      "",
+      "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1**",
+      "",
+      "Resto.",
+    ].join("\n");
+  }
+
+  it("caso real 260720: reescreve X=3→12 preservando saudação/CTA ao redor", () => {
+    const md = welcomeBlockMd(3, 164, 12);
+    const r = rewriteCoverageLine(md, 12, 164, 12);
+    assert.ok(r.changed);
+    assert.match(
+      r.md,
+      /Nesta edição, a IA analisou 176 artigos \(12 enviados por mim e 164 encontrados automaticamente\) e selecionei os 12 mais relevantes\./,
+    );
+    // Saudação e CTA de apoio preservados intactos.
+    assert.match(r.md, /^Olá! Eu sou o \[Pixel\]\(https:\/\/www\.linkedin\.com\/in\/vjpixel\/\), editor dessa newsletter\./);
+    assert.match(r.md, /\[considere apoiar o projeto\]\(https:\/\/apoia\.se\/diaria\)\./);
+  });
+
+  it("no-op quando números já corretos (idempotente)", () => {
+    const md = welcomeBlockMd(12, 164, 12);
+    const r = rewriteCoverageLine(md, 12, 164, 12);
+    assert.equal(r.changed, false);
+  });
+
+  it("concordância singular quando z=1 (selecionei o artigo mais relevante)", () => {
+    const md = welcomeBlockMd(5, 10, 3);
+    const r = rewriteCoverageLine(md, 5, 10, 1);
+    assert.ok(r.changed);
+    assert.match(r.md, /e selecionei o artigo mais relevante\./);
+  });
+
+  it("main() não sai com exit 1 pro formato de boas-vindas — WELCOME_COVERAGE_SENTENCE_RE reconhece a sentença", () => {
+    // Regressão direta do bug: antes, nem COVERAGE_LINE_RE nem
+    // CAPTURE_FAILED_LINE_RE casavam este MD — main() abortava com "MD não
+    // tem linha de cobertura" em toda edição desde 260715.
+    const md = welcomeBlockMd(12, 164, 12);
+    assert.ok(WELCOME_COVERAGE_SENTENCE_RE.test(md));
+  });
+
+  it("rewriteCoverageLineAsCaptureFailed também reconhece o bloco de boas-vindas", () => {
+    const md = welcomeBlockMd(3, 164, 12);
+    const r = rewriteCoverageLineAsCaptureFailed(md, "invalid_client");
+    assert.ok(r.changed);
+    assert.doesNotMatch(r.md, /Nesta edição, a IA analisou/);
+    assert.match(r.md, /contagem de submissões indisponível \(captura de newsletters falhou: invalid_client\)/);
+    // Saudação preservada.
+    assert.match(r.md, /^Olá! Eu sou o \[Pixel\]/);
   });
 });
 
