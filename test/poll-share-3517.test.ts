@@ -154,7 +154,7 @@ describe("buildShareText (#3517)", () => {
   it("#3717: aponta pra eia.diar.ia.br/jogar (custom domain real), não diar.ia.br/jogar (site de marketing)", () => {
     for (const correct of [true, false, null] as const) {
       const text = buildShareText({ edition: "260716", correct });
-      assert.match(text, new RegExp(`${PUBLIC_GAME_DISPLAY_HOST}/jogar$`));
+      assert.ok(text.endsWith(`${PUBLIC_GAME_DISPLAY_HOST}/jogar`), `deveria terminar em ${PUBLIC_GAME_DISPLAY_HOST}/jogar: ${text}`);
       assert.doesNotMatch(text, /(?<!eia\.)diar\.ia\.br\/jogar/);
     }
   });
@@ -163,7 +163,7 @@ describe("buildShareText (#3517)", () => {
 describe("buildQuizShareText (#3717)", () => {
   it("aponta pra eia.diar.ia.br/jogar/quiz (custom domain real), não diar.ia.br/jogar/quiz", () => {
     const text = buildQuizShareText({ score: 4, total: 5 });
-    assert.match(text, new RegExp(`${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz$`));
+    assert.ok(text.endsWith(`${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz`), `deveria terminar em ${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz: ${text}`);
     assert.doesNotMatch(text, /(?<!eia\.)diar\.ia\.br\/jogar/);
   });
 });
@@ -213,7 +213,7 @@ describe("renderShareCardSvg (#3517) — OG image dinâmica", () => {
 
   it("#3717: watermark aponta pra eia.diar.ia.br/jogar, não diar.ia.br/jogar (site de marketing)", () => {
     const svg = renderShareCardSvg({ edition: "260716", correct: true });
-    assert.match(svg, new RegExp(`>${PUBLIC_GAME_DISPLAY_HOST}/jogar<`));
+    assert.ok(svg.includes(`>${PUBLIC_GAME_DISPLAY_HOST}/jogar<`), `watermark deveria conter >${PUBLIC_GAME_DISPLAY_HOST}/jogar<`);
     assert.doesNotMatch(svg, /(?<!eia\.)diar\.ia\.br\/jogar/);
   });
 });
@@ -222,7 +222,7 @@ describe("renderQuizShareCardSvg (#3717) — watermark do card de quiz", () => {
   it("watermark aponta pra eia.diar.ia.br/jogar/quiz, não diar.ia.br/jogar/quiz (site de marketing)", () => {
     const payload: QuizSharePayload = { score: 4, total: 5 };
     const svg = renderQuizShareCardSvg(payload);
-    assert.match(svg, new RegExp(`>${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz<`));
+    assert.ok(svg.includes(`>${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz<`), `watermark deveria conter >${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz<`);
     assert.doesNotMatch(svg, /(?<!eia\.)diar\.ia\.br\/jogar/);
   });
 });
