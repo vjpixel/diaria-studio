@@ -246,6 +246,54 @@ describe("renderMarkdownToHtml (#3784 — renderer mínimo zero-dep)", () => {
     assert.ok(!html.includes("<img"));
     assert.match(html, /&lt;img/);
   });
+
+  it("#3788 Bug 1: href com aspas duplas/simples nunca quebra pra um 2º atributo HTML (XSS via onmouseover)", () => {
+    // PoC exato da issue #3788.
+    const html = renderMarkdownToHtml(`[click me](https://x.example"onmouseover="document.title='pwned')`);
+    // Nunca uma quebra de atributo real — nada de `" onmouseover="` com aspas literais.
+    assert.ok(!html.includes('" onmouseover="'));
+    assert.ok(!html.includes("'pwned'"));
+    assert.ok(!html.includes('onmouseover="document'));
+    // A URL inteira (aspas/apóstrofos virados entidade) fica dentro do valor do atributo href.
+    assert.match(
+      html,
+      /<a href="https:\/\/x\.example&quot;onmouseover=&quot;document\.title=&#39;pwned&#39;" target="_blank" rel="noopener noreferrer">click me<\/a>/,
+    );
+  });
+
+  it("#3788 Bug 2: URL protocol-relative (//host) não passa no allowlist — nunca vira link clicável", () => {
+    // PoC exato da issue #3788.
+    const html = renderMarkdownToHtml("[go](//evil.example/phish)");
+    assert.ok(!html.includes("<a "));
+    assert.ok(!html.includes("href="));
+    assert.ok(!html.includes("//evil.example"));
+    assert.match(html, /go/); // label continua visível como texto puro
+  });
+
+  it("#3788 Bug 2 (controle): path relativo interno de barra única continua linkificável", () => {
+    const html = renderMarkdownToHtml("[outro relatório](/relatorios/overnight-260719)");
+    assert.match(html, /<a href="\/relatorios\/overnight-260719"/);
+  });
+
+  it("#3788 Bug 3: URL com ** não corrompe o href (renderInline não re-escaneia o <a> já montado)", () => {
+    // PoC exato da issue #3788 (adaptado pra `**` em vez de crase).
+    const html = renderMarkdownToHtml("[texto](https://evil.com/**pwn**)");
+    assert.ok(!html.includes("<strong>pwn</strong>"));
+    assert.ok(!html.includes('href="https://evil.com/<strong>'));
+    assert.match(html, /<a href="https:\/\/evil\.com\/\*\*pwn\*\*" target="_blank" rel="noopener noreferrer">texto<\/a>/);
+  });
+
+  it("#3788 Bug 3: URL com crase não corrompe o href", () => {
+    const html = renderMarkdownToHtml("[texto](https://evil.com/`pwn`)");
+    assert.ok(!html.includes("<code>pwn</code>"));
+    assert.ok(!html.includes('href="https://evil.com/<code>'));
+    assert.match(html, /<a href="https:\/\/evil\.com\/`pwn`" target="_blank" rel="noopener noreferrer">texto<\/a>/);
+  });
+
+  it("bold/código legítimos no LABEL do link continuam funcionando (não regressão do fix do Bug 3)", () => {
+    const html = renderMarkdownToHtml("[**PR #3800**](https://github.com/x/y/pull/3800)");
+    assert.match(html, /<a href="https:\/\/github\.com\/x\/y\/pull\/3800"[^>]*><strong>PR #3800<\/strong><\/a>/);
+  });
 });
 
 describe("resolveReportHtml (#3714)", () => {
