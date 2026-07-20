@@ -46,12 +46,10 @@ const REQUIRED_INVARIANTS = [
   "Etapa 5",
   // Critical operational invariants
   "GATE HUMANO",
-  "drive-sync.ts",
   "01-categorized.md",
   "01-approved.json",
   // Anti-skip guards
   "validate-pool",                         // inject-inbox-urls sentinel
-  "drive_sync",                            // Stage 1w anti-skip
   // Stage 5 publication safety
   "confirmação explícita",
   // Smoke-compatible sections
@@ -217,7 +215,7 @@ describe("orchestrator-prompt (#634)", () => {
     );
   });
 
-  it("#2365: stage-3 lint/image-gen/drive-sync/gate são condicionais a destaque_count (não hardcoded d1/d2/d3)", () => {
+  it("#2365/#3636: stage-3 lint/image-gen/gate/sentinel são condicionais a destaque_count (não hardcoded d1/d2/d3)", () => {
     const stage3 = contents["orchestrator-stage-3.md"];
 
     // P2 fix: lint loop NÃO deve instruir "Para cada destaque d1, d2, d3" sem condicional
@@ -226,18 +224,24 @@ describe("orchestrator-prompt (#634)", () => {
       "stage-3 ainda contém loop hardcoded 'Para cada destaque d1, d2, d3' — deve ser condicional a destaque_count",
     );
 
-    // Condicional presente nos 3 pontos afetados (lint, drive-sync, gate)
+    // Condicional presente nos pontos afetados (lint, gen, gate, sentinel — #3636
+    // removeu os pontos drive-pull/drive-push que existiam aqui antes)
     const conditionalMatches = (stage3.match(/destaque_count/g) ?? []).length;
     assert.ok(
       conditionalMatches >= 5,
-      `stage-3 deve referenciar destaque_count ≥5× (lint+gen+drive-pull+drive-push+gate+sentinel) — encontrado: ${conditionalMatches}`,
+      `stage-3 deve referenciar destaque_count ≥5× (lint+gen+gate+sentinel×2) — encontrado: ${conditionalMatches}`,
     );
 
-    // P3 fix: drive-sync push NÃO deve ter linha única hardcoded com 04-d3 sem condicional
-    // (verificar que 04-d3-2x1.jpg e 04-d3-1x1.jpg aparecem sob comentário "destaque_count=3:")
-    const d3Push = stage3.indexOf("04-d3-2x1.jpg");
-    assert.ok(d3Push !== -1, "04-d3-2x1.jpg ausente no stage-3 — deve estar no bloco condicional destaque_count=3");
-    const contextBefore = stage3.slice(Math.max(0, d3Push - 200), d3Push);
+    // P3 fix (#3636: sentinel é o único lugar com comentário-condicional
+    // "# destaque_count=N:" agora que o bloco drive-sync push foi removido):
+    // verificar que 04-d3-2x1.jpg e 04-d3-1x1.jpg aparecem sob comentário
+    // "destaque_count=3:" no bloco do sentinel.
+    const sentinelIdx = stage3.indexOf("Escrever sentinel de conclusão do Stage 3");
+    assert.ok(sentinelIdx !== -1, "seção 'Escrever sentinel de conclusão do Stage 3' ausente no stage-3");
+    const sentinelSection = stage3.slice(sentinelIdx);
+    const d3Sentinel = sentinelSection.indexOf("04-d3-2x1.jpg");
+    assert.ok(d3Sentinel !== -1, "04-d3-2x1.jpg ausente no bloco do sentinel — deve estar no bloco condicional destaque_count=3");
+    const contextBefore = sentinelSection.slice(Math.max(0, d3Sentinel - 200), d3Sentinel);
     assert.ok(
       contextBefore.includes("destaque_count=3"),
       "04-d3-2x1.jpg deve aparecer apenas sob comentário '# destaque_count=3:' — sem condicional encontrado no contexto",

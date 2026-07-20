@@ -12,7 +12,7 @@ Executa a pipeline completa da Diar.ia. **Modo default: pre-gate** (#1523) — S
 - `$1` = data da edição no formato `AAMMDD` (ex: `260418`). **Se não passar, perguntar explicitamente** — nunca inferir a partir de `today()`. Sugerir amanhã como atalho principal (regra D+1 — edição é sempre o dia seguinte à pesquisa), com hoje como secundário, mas exigir confirmação:
   > "Você não passou a data da edição. Qual edição você quer processar? amanhã ({AAMMDD_amanha}) / hoje ({AAMMDD_hoje}) / outra (informe AAMMDD)"
 - `--window N` (ou `--window-days N`, opcional) = janela de publicação em dias (inteiro ≥ 1). Quando presente, usar `window_days = N` direto, **sem perguntar**. Ausente → assumir o default (4 dias) silenciosamente, **sem gate** (#1751).
-- `--no-gates` (opcional) = pular TODOS os gates, inclusive o gate de revisão do Stage 4 e a confirmação interativa do Stage 5. Auto-aprova tudo. Drive sync, social scheduling e demais comportamentos permanecem normais.
+- `--no-gates` (opcional) = pular TODOS os gates, inclusive o gate de revisão do Stage 4 e a confirmação interativa do Stage 5. Auto-aprova tudo. Social scheduling e demais comportamentos permanecem normais.
 - `--skip {canal[,canal...]}` (opcional, CSV) = encaminha lista de canais ao Stage 5 como `skip_channels`. Canais suportados: `newsletter`, `linkedin`, `facebook`. Canais listados ficam `pending_manual` no consent (`build-publish-consent.ts --skip "{lista}"`, path 1 de §5b); o Stage 5 executa pré-render completo mas NÃO dispatcha esses canais. Sem `--skip`, o comportamento default do Stage 5 (#1326) se aplica — se editor não responder ao gate interativo, tudo é automático. Use `--skip newsletter,linkedin,facebook` em runs headless/automáticas (Task Scheduler) para impedir dispatch sem supervisão (#2068).
 
 ## Pré-requisitos
@@ -55,7 +55,7 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator \
 
 **Regras invariáveis:**
 - **Nunca bloquear a edição por falha de sync** — `proceed` é sempre `true` no resultado. Falha de sync vira warning, nunca halt.
-- **Só no início, nunca mid-edição.** Distinto do #494 (pull de arquivos Drive mid-stage).
+- **Só no início, nunca mid-edição.**
 - **Idempotente no resume.** Re-rodar `/diaria-edicao {mesmo AAMMDD}` faz o sync novamente sem efeito colateral indesejado.
 - **Nunca forçar merge.** Usa `--ff-only` exclusivamente; divergência vira warn.
 
@@ -109,7 +109,7 @@ Variáveis pra alimentar o playbook (passar mentalmente como contexto, não como
 
 
 Sequência de etapas (do playbook em `.claude/agents/orchestrator.md`):
-- **§ 0 Setup** — resume detection, Drive sync flag, Chrome MCP probe, refresh `past-editions.md`, inbox drain, log de início
+- **§ 0 Setup** — resume detection, Chrome MCP probe, refresh `past-editions.md`, inbox drain, log de início
 - **§ 1 Etapa 1 — Pesquisa** (É IA? dispatcha em background) → auto-approve
 - **§ 2 Etapa 2 — Escrita** (newsletter + social em paralelo) → auto-approve
 - **§ 3 Etapa 3 — Imagens** (É IA? gate + imagens de destaque) → auto-approve

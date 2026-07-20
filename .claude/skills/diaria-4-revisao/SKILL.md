@@ -50,7 +50,7 @@ Verificar sentinel Stage 3, marcar Stage 4 `running`, sync pull.
 
 Coleta destaques (D1/D2/D3 com títulos e URLs), verifica acessibilidade, roda lints (`validate-lancamentos.ts`, `lint-newsletter-md.ts`), lista imagens e social hooks. Apresenta ao editor num gate visual limpo com link para newsletter HTML preview + social preview.
 
-Respostas aceitas: `sim` (aprovar), `editar` (halt para Drive, re-rodar), `ajustar` (edição inline no chat, volta ao gate), `abortar` (encerrar sem sentinel).
+Respostas aceitas: `sim` (aprovar), `editar` (halt para edição local/Studio, re-rodar), `ajustar` (edição inline no chat, volta ao gate), `abortar` (encerrar sem sentinel).
 
 Com `--no-gates` (ou `auto_approve = true`): pular o gate, ir direto ao sentinel.
 

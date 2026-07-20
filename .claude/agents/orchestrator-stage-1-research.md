@@ -348,7 +348,7 @@ Resultado `{ demoted[], checked }`. Logar info. Se `demoted.length > 0`: surfar 
 4. **Guard (gate-critical):** se `flagged > 0`, **surfar no gate da Etapa 1** cada item flagado: `⚠️ vídeo sem URL de YouTube verificável — cole o link ({título})`. O editor cola a URL correta manualmente no MD antes de aprovar, ou remove o item de VÍDEOS.
 5. Se `video` bucket vazio (nenhum item), pular este passo inteiro (info no run-log).
 
-Backstop gate-blocking em Stage 4 (`lint-newsletter-md.ts --check video-links-are-youtube`, ver `orchestrator-stage-4.md` §4c.2) garante que nenhum item não-YouTube sobrevive até a publicação, mesmo que este passo seja pulado ou o editor cole um link errado no Drive.
+Backstop gate-blocking em Stage 4 (`lint-newsletter-md.ts --check video-links-are-youtube`, ver `orchestrator-stage-4.md` §4c.2) garante que nenhum item não-YouTube sobrevive até a publicação, mesmo que este passo seja pulado ou o editor cole um link errado.
 
 **Instrumentação type_hint vs categorize (#1718 fase 1) — silenciosa, append-only:** mede a divergência entre o `type_hint` do source-researcher e a decisão de lançamento do categorize, sem mudar nada. Acumula o dado pra decidir (em ~2 semanas) se vale inverter o ônus (type_hint primário). Nunca bloqueia:
 ```bash
@@ -542,13 +542,6 @@ O script produz o formato combinado (seção Destaques vazia no topo + seções 
 
 **Regra absoluta**: qualquer mudança no `_internal/01-categorized.json` (edição, retry, regeneração do scorer) deve ser seguida de nova chamada deste script para manter o MD em sincronia. Se só mudou o JSON sem re-rodar o renderizador, o MD está stale — isso é um bug.
 
-### 1v-early. Push incremental ao Drive (#903)
-
-Subir `01-categorized.md` agora — antes de 1v-bis/1w-bis/1w. Editor começa a revisar enquanto pipeline ainda lint+valida. Falha não bloqueia (1w sobe de novo como fallback obrigatório).
-```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 1 --files 01-categorized.md
-```
-
 ### 1v-bis. Lint LANÇAMENTOS — bloqueia URLs não-oficiais antes do gate (#587)
 
 Antes de apresentar o gate, validar que items em `## Lançamentos` do MD têm URL oficial (per regra invariável #160). Sem este check, o editor podia mover artigos com URL não-oficial pra LANÇAMENTOS no gate, e o writer da Etapa 2 silenciosamente reclassificava pra OUTRAS NOTÍCIAS — quebrando o contrato de aprovação.
@@ -592,34 +585,6 @@ npx tsx scripts/review-highlight-source.ts --approved {EDITION_DIR}/_internal/01
 ```
 
 Se `flagged[]` não-vazio, **surfar no gate** cada destaque com a fonte oficial sugerida (`suggested_domain`), pra o editor trocar a URL pela newsroom/site oficial. (Busca ativa + substituição automática é fase 2 do #1699 — aqui só sinaliza melhor.)
-
-### 1w. Sync push do MD para o Drive (antes do gate) — OBRIGATÓRIO (#577)
-
-**Sem este push, o gate da Etapa 1 expõe MD apenas localmente** — editor não consegue revisar no Drive (mobile, telas grandes). Bug recorrente: orchestrator skipa silenciosamente este passo em sessões longas. **Não é opcional.**
-
-Se `{EDITION_DIR}/01-eia.md` existir (É IA? já completou em background):
-```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR} --stage 1 --files 01-categorized.md,01-eia-A.jpg,01-eia-B.jpg
-```
-**Nota (#582):** `01-eia.md` **não vai pro Drive** — conteúdo (linha de crédito + gabarito) já está embutido em `01-categorized.md` (#371). Arquivo permanece local pra scripts (`render-categorized-md`, `normalize-newsletter`, `lint`, `eia-compose`, `publish-monthly`).
-
-Se `01-eia.md` ainda não existir (É IA? ainda processando):
-```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR} --stage 1 --files 01-categorized.md
-```
-Anotar resultado em `sync_results[1]`; falhas reais (não warning) abortam. Falhas warning podem prosseguir mas precisam ser mencionadas no gate.
-
-**Verificação anti-skip (#577, #694)**: antes de apresentar o gate (passo 1x), se `DRIVE_SYNC = true`, confirmar que o cache registra push recente do `01-categorized.md`:
-
-```bash
-npx tsx scripts/check-drive-push.ts --edition {AAMMDD} --file 01-categorized.md
-```
-
-- Exit 0: pushed ok (ou drive_sync=false) — prosseguir
-- Exit 1: não pushed (step 1w skipado) — **re-rodar o push** antes do gate
-- Exit 2: schema inesperado no cache — logar warn e prosseguir (evita falso FATAL em refactors do drive-sync)
-
-Se `drive_sync = false` em `platform.config.json`, o script exita 0 silenciosamente.
 
 ### 1w-quint. Validator anti-skip de 1f (#1091)
 
@@ -691,7 +656,6 @@ Apresentar ao usuário:
    📊 {total_brutos} artigos garimpados → {kept_dedup} após dedup → {total_categorized} categorizados
 
    📄 Abra {EDITION_DIR}/01-categorized.md para revisar.
-   📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/01-categorized.md
 
    ✏️  Candidatos recomendados pelo scorer estão marcados com ⭐.
        Mova exatamente 3 linhas para a seção "Destaques" no topo do arquivo.
@@ -724,7 +688,7 @@ Apresentar ao usuário:
        Candidato:  "{candidate_title}"
        Publicado:  "{matched_title}" ({matched_edition}) | Sim.: {jaccard*100}% → trocar candidato.
    ```
-   `secondary_warnings[]` não-vazio (RADAR/LANÇAMENTOS): `⚠️ RADAR REPETIDO — [{bucket}] empresa+tema cobertos em {matched_edition}: "{item_title}" ({item_url}) ← "{matched_title}" | Empresa: {shared_entities} | {theme_evidence} → trocar ou manter se ângulo novo.` (#2684 item 7 — `item_url` incluído pra o editor identificar o item exato no gate mobile/Drive, onde título sozinho pode ser ambíguo.)
+   `secondary_warnings[]` não-vazio (RADAR/LANÇAMENTOS): `⚠️ RADAR REPETIDO — [{bucket}] empresa+tema cobertos em {matched_edition}: "{item_title}" ({item_url}) ← "{matched_title}" | Empresa: {shared_entities} | {theme_evidence} → trocar ou manter se ângulo novo.` (#2684 item 7 — `item_url` incluído pra o editor identificar o item exato no gate mobile, onde título sozinho pode ser ambíguo.)
 
 5. **Relatório de saúde das fontes:**
    - `⚠️` por fonte com outcome não-ok *nesta execução*.
@@ -740,12 +704,8 @@ Apresentar ao usuário:
     --json {EDITION_DIR}/_internal/01-categorized.json \
     --out {EDITION_DIR}/_internal/01-approved.json
   ```
-  `--auto` simula um MD sem edição (seção Destaques vazia, buckets intactos) e aplica o mesmo slice `highlights: first-3` do fluxo com gate — **nunca copiar `01-categorized.json` literal pra `01-approved.json`** (preservaria os 6 highlights do scorer em vez de 3). Seguir direto pro passo "Pós-gate-apply invariants" abaixo (pula o re-render/validate-lancamentos/push do MD — não há edição do editor pra refletir).
-- **Gate humano normal — pull do MD** (o editor pode ter editado no Drive):
-  ```bash
-  npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDITION_DIR}/ --stage 1 --files 01-categorized.md
-  ```
-  Se o pull falhar, usar a versão local.
+  `--auto` simula um MD sem edição (seção Destaques vazia, buckets intactos) e aplica o mesmo slice `highlights: first-3` do fluxo com gate — **nunca copiar `01-categorized.json` literal pra `01-approved.json`** (preservaria os 6 highlights do scorer em vez de 3). Seguir direto pro passo "Pós-gate-apply invariants" abaixo (pula o re-render/validate-lancamentos — não há edição do editor pra refletir).
+- **Gate humano normal.** O editor edita `01-categorized.md` diretamente (local ou via Studio, que escreve no arquivo local) — não há round-trip a esperar.
 - **Aplicar as edições do gate** via `scripts/apply-gate-edits.ts`:
   ```bash
   npx tsx scripts/apply-gate-edits.ts \
@@ -770,10 +730,6 @@ Apresentar ao usuário:
   npx tsx scripts/validate-lancamentos.ts {EDITION_DIR}/01-categorized.md
   ```
   Se exit code != 0: avisar o editor — `"⚠️ validate-lancamentos detectou URLs não-oficiais OU itens sem sinal de produto (not_a_tool, #1968) em LANÇAMENTOS. Mover pra NOTÍCIAS, ou allowlistar slug atípico legítimo em seed/lancamentos-tool-allowlist.txt."` — mas **não bloquear automaticamente**.
-  Push do MD atualizado de volta para o Drive:
-  ```bash
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 1 --files 01-categorized.md
-  ```
 - **Pós-gate-apply invariants (#1007 Fase 1)** — agora `01-approved.json` existe:
   ```bash
   npx tsx scripts/check-invariants.ts --stage 1 --edition-dir {EDITION_DIR}/

@@ -176,12 +176,6 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
 
 ### 2b. Processar newsletter
 
-- **Pull pós-gate** (antes de qualquer edição local pós-aprovação):
-  ```bash
-  npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDITION_DIR}/ --stage 2 --files 02-reviewed.md
-  ```
-  Garante que edições manuais do editor no Drive durante a revisão do gate não sejam sobrescritas pelo processamento local. Se o pull falhar, usar versão local e logar warn.
-
 - **Lint seções vs buckets (#165).** Antes de qualquer processamento, validar que cada URL nas seções LANÇAMENTOS / PESQUISAS / OUTRAS NOTÍCIAS bate com o bucket correspondente em `_internal/01-approved-capped.json`:
   ```bash
   npx tsx scripts/lint-newsletter-md.ts \
@@ -440,21 +434,7 @@ npx tsx scripts/lint-social-md.ts --check personal-post-no-newsletter-deixis --m
 Exit 1 = ocorrências de "esta newsletter", "essa newsletter", "nossa newsletter" (e variantes com "boletim", "edição") em `## post_pixel`. **Incluir ocorrências no prompt do gate** com sugestão de substituição. Fix: reescrever como fato biográfico ("a newsletter de IA que escrevo") em vez de contexto compartilhado. Não bloqueia automaticamente — editor decide se reescreve ou aceita (casos de borda: citação direta de entrevistado).
 Flaga quando a última frase do post principal (corpo de `## d{N}`) termina em "?". Perguntas retóricas no meio e perguntas entre aspas são ignoradas. Exit 1 = **incluir os matches no prompt do gate** (platform + destaque + frase) — editor decide reescrever o fim como afirmação ou aceitar. Fix preferido: re-disparar o agent social correspondente pra fechar com afirmação.
 
-### 2d. Sync push + gate unificado
-
-- **Sync push antes do gate:**
-  ```bash
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 2 --files 02-reviewed.md,03-social.md,_internal/02-clarice-diff.md --on-conflict pull-merge --fail-on-conflict
-  ```
-  - `--on-conflict pull-merge` (#963): quando Drive foi modificado depois do último push, tenta 3-way merge automático via `git merge-file --diff3` usando snapshot pre-push como base. Edits disjuntos (pipeline mexeu em D2, editor mexeu em D3) merge clean e seguem.
-  - `--fail-on-conflict` (#977): quando 3-way detecta overlap real (mesma região editada por ambos), exit 2. Markers `<<<<<<<` ficam em local pra editor resolver.
-  - Anotar resultado em `sync_results[2]`. Exit 0 = OK (com ou sem warnings não-conflito); Exit 2 = CONFLICT real — **parar imediatamente** e renderizar halt banner:
-  ```bash
-  npx tsx scripts/render-halt-banner.ts \
-    --stage "2 — Escrita" \
-    --reason "drive-sync 3-way merge tem conflitos não-resolvíveis: editor e pipeline editaram a mesma região" \
-    --action "abrir 02-reviewed.md, resolver markers <<<<<<<, e re-rodar drive-sync push"
-  ```
+### 2d. Gate unificado
 
 - **Pre-gate invariants (#1007 Fase 1).** Antes do gate, rodar lints como invariantes (defense-in-depth — lints individuais já rodaram, mas registry centraliza):
   ```bash
@@ -478,8 +458,6 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`) termina em "
 
   Social — revise {EDITION_DIR}/03-social.md:
       — 3 posts LinkedIn (d1/d2/d3) + 3 posts Facebook (d1/d2/d3)
-
-  📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/
   ```
   Quando o editor responder "sim", os arquivos locais são os textos finais.
 

@@ -60,7 +60,7 @@
     "slot2": "livros-divulgacao.md",
     "slot3": "indicacao-ferramenta.md"
   },
-  "drive_sync": true,
+  "drive_sync": false,
   "logging": {
     "path": "data/run-log.jsonl"
   },

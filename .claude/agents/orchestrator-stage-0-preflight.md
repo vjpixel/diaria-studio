@@ -35,7 +35,7 @@ description: Stage 0 do orchestrator Diar.ia — setup, parâmetros, checks pré
 - Criar o diretório e subdiretório interno se não existirem: `Bash("mkdir -p {EDITION_DIR}/_internal")`.
   **Nota (#3530 — migrado; supersede a nota #3526):** este `mkdir` (e toda referência subsequente dentro de Stages 0-3) usa `{EDITION_DIR}` resolvido acima — mesmo padrão disk-aware que `orchestrator-stage-{4,5,6}.md` já usam desde #3025. Compat bidirecional: uma edição criada ANTES desta migração (flat) continua sendo encontrada e usada em flat pelo resume (§0b) — `resolveEditionDir()` prioriza o que já existe no disco sobre o layout default. Só edições **novas** (que ainda não têm diretório em nenhum layout) passam a nascer em nested. Não requer `migrate-edition-layout.ts --execute` (Gate B) — coexistência dos dois layouts é o estado normal até essa migração rodar.
 - **Receber `window_days` como parâmetro de entrada.** A skill que disparou este orchestrator já perguntou e confirmou a janela com o usuário antes de disparar. **Se não receber** (retrocompat), usar default: segunda/terça = 4, quarta-sexta = 3 — calcular via Bash node. Armazenar `window_days` — usado em Stage 1.
-- **Receber `auto_approve` (opcional, default `false`).** Se `true`: auto-aprovar todos os gates, manter Drive sync ativo, manter social scheduling normal. No Stage 1, gerar `_internal/01-approved.json` via `npx tsx scripts/apply-gate-edits.ts --auto --json ... --out ...` (nunca copiar `_internal/01-categorized.json` literal — #3459, perdia o slice `highlights: first-3`).
+- **Receber `auto_approve` (opcional, default `false`).** Se `true`: auto-aprovar todos os gates, manter social scheduling normal. No Stage 1, gerar `_internal/01-approved.json` via `npx tsx scripts/apply-gate-edits.ts --auto --json ... --out ...` (nunca copiar `_internal/01-categorized.json` literal — #3459, perdia o slice `highlights: first-3`).
 
 ### 0b. Resume-aware
 
@@ -109,7 +109,6 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
 ### 0c. Inicialização de log + stage-status (#1217 — removed cost.md)
 
 - **Log de início:** `Bash("npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level info --message 'edition run started'")`.
-- **Ler flag de Drive sync.** Ler `platform.config.json` e armazenar `DRIVE_SYNC = platform.config.drive_sync` (default `true` se ausente). Se `DRIVE_SYNC = false`, informar ao usuário. Todos os blocos de sync verificam esta flag — se `false`, pular silenciosamente.
 - **Pre-flight unificado de travas externas (#2358) — rodar ANTES dos checks individuais.** Agrega todos os checks de autenticação externos num único resumo de prontidão antes de gastar tokens em pesquisa. Travas que vencem silenciosamente (OAuth expirado, token CF inválido, API key ausente) são detectadas aqui, não no meio do stage que as usa:
   ```bash
   npx tsx scripts/lib/preflight-external-locks.ts
@@ -135,17 +134,6 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
   npx tsx scripts/check-cloudflare-token.ts
   ```
   Exit 0 = ativo OU erro de rede transitório (não bloqueia pipeline — soft note no stderr). Exit 1 = ausente/inválido/não-ativo → stderr traz banner com ação (`wrangler login` ou renovar no `.env`). (Exit 2 removido em #2306 — transitório agora sai 0.) Se exit 1, **alertar o editor com o banner** e perguntar se renova agora ou continua (impacto: `maintain-valid-editions` e KV do É IA? vão falhar no §0d.bis). Setar `CLOUDFLARE_TOKEN_OK = false` em sessão se exit 1 — §0d.bis usa pra decidir se tenta ou salta com halt.
-- **Pre-flight health check Drive (#121).** Se `DRIVE_SYNC = true`, rodar:
-  ```bash
-  npx tsx scripts/drive-sync.ts --health-check
-  ```
-  Output JSON: `{ ok: true, latency_ms }` (exit 0) ou `{ ok: false, error, remediation }` (exit 2). Se `ok: false`, alertar editor antes de prosseguir:
-  > 🔐 Drive sync auth quebrada antes de iniciar a edição: {error}
-  > {remediation}
-  >
-  > Continuar mesmo assim (sem Drive sync esta sessão) [y] ou abortar pra fix [n]?
-
-  Se editor responder `n`, abortar. Se `y`, setar `DRIVE_SYNC = false` em sessão pra resto do pipeline.
 - **Pre-flight Clarice REST (#1329).** Pinga `https://cortex.clarice.ai/api-correction` antes do Stage 2 saber se o fallback REST está saudável. Não bloqueia — só armazena `CLARICE_REST` (`true`/`false`) em sessão:
   ```bash
   npx tsx scripts/clarice-healthcheck.ts
@@ -156,7 +144,7 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
   - **Na Etapa 5**: checar `CHROME_MCP`. Se `false`, gravar `_internal/05-published.json` com `status: "skipped"` e LinkedIn entries com `status: "pending_manual"`. Não falhar.
 - **Pre-flight Gmail MCP (#3451, espelha #143).** Tentar `mcp__claude_ai_Gmail__list_labels` (leitura barata, sem side-effect). Setar `GMAIL_MCP = true` se sucesso; se erro, `GMAIL_MCP = false` e logar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn --message "mcp_disconnect: claude_ai_Gmail" --details '{"server":"claude_ai_Gmail","kind":"mcp_disconnect"}'` (mesmo evento estruturado que `collect-edition-signals.ts` já pareia com `mcp_reconnect:` pra medir duração, #766 — nada novo a instrumentar aqui). **Em modo interativo**, alertar editor e aguardar `[y/n]`; **em `auto_approve`**, prosseguir silenciosamente. Cobre só os passos que usam o MCP claude.ai Gmail (0n CI-failures, 0-replies) — 0b-bis (auto-capture de newsletters) usa a Gmail REST API direto via OAuth (`data/.credentials.json`), caminho de auth separado, não depende deste flag. 0n e 0-replies já tratam Gmail MCP indisponível como skip fail-soft individualmente — este preflight só antecipa o aviso pro editor antes de gastar tokens em pesquisa, não muda o comportamento de skip já existente.
 - **Pre-flight Beehiiv MCP (#3451, espelha #143).** Tentar `mcp__claude_ai_Beehiiv__get_current_user` (leitura barata, sem side-effect). Setar `BEEHIIV_MCP = true` se sucesso; se erro, `BEEHIIV_MCP = false` e logar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 0 --agent orchestrator --level warn --message "mcp_disconnect: claude_ai_Beehiiv" --details '{"server":"claude_ai_Beehiiv","kind":"mcp_disconnect"}'`. **Em modo interativo**, alertar editor e aguardar `[y/n]`; **em `auto_approve`**, prosseguir silenciosamente. Cobre só os passos que usam o MCP claude.ai Beehiiv (0h.2 clicks enricher, 0-replies fallback remoto, correção de slug no Stage 6) — o dedup refresh (0d) usa a REST API direta via `BEEHIIV_API_KEY` e não depende deste flag.
-- **Inicializar `stage-status.md` (#960, #1217).** Single source of truth pra timing + custo + tokens + modelos. `_internal/cost.md` (legado pré-#1217) foi removido — era redundante com stage-status e nunca foi preenchido na prática. Doc unificado de tempo + custo, atualizado incrementalmente durante o pipeline e visível no Drive. Editor abre durante runs longos pra ver progresso ao invés de esperar fim. Rodar:
+- **Inicializar `stage-status.md` (#960, #1217).** Single source of truth pra timing + custo + tokens + modelos. `_internal/cost.md` (legado pré-#1217) foi removido — era redundante com stage-status e nunca foi preenchido na prática. Doc unificado de tempo + custo, atualizado incrementalmente durante o pipeline. Editor abre localmente durante runs longos pra ver progresso ao invés de esperar fim. Rodar:
   ```bash
   npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --init
   ```
@@ -167,11 +155,6 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
     npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --reconcile-running
     ```
 
-  Push ao Drive logo após init:
-  ```bash
-  npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 0 --files stage-status.md
-  ```
-  Falha não bloqueia (`stage-status.md` é observabilidade, não estado canônico).
   - **Marcar Stage 0 `running` logo após o init (#1783).** Sem isso o Stage 0 nunca passa por `running`, fica sem `start`, e o relatório mostra `-` na duração do preflight. **Não** passar `--start` — o auto-carimbo (#1789) põe `start = now` se ainda não há (e preserva o original em resume):
     ```bash
     npx tsx scripts/update-stage-status.ts --edition-dir {EDITION_DIR}/ --stage 0 --status running
@@ -188,7 +171,7 @@ Se `fetch-newsletter-threads.ts` retornar exit 1 (credenciais inválidas, OAuth 
     --stage N --status done --end "{ISO_now}" --duration-ms {ms} \
     [--cost-usd X] [--tokens-in N] [--tokens-out N] [--models "haiku-4-5,opus-4-7"]
   ```
-  E re-push do `stage-status.md` ao Drive depois de cada update. Cost/tokens/models opcionais — campos vazios viram `-` no MD.
+  Cost/tokens/models opcionais — campos vazios viram `-` no MD.
 
 ### 0d. Refresh automático de dedup (#895)
 

@@ -22,7 +22,7 @@ Self-contained — você (top-level Claude Code) executa todo o playbook aqui, s
 Os blocos Bash/Agent abaixo usam placeholders. **O Claude executando este skill substitui pelos valores reais antes de invocar cada tool.**
 
 - `$1` → AAMMDD recebido como argumento (ex: `260423`). Aparece em prompts de Agent e em `--edition $1` (scripts que já resolvem o layout internamente).
-- `{YYMM}` → primeiros 4 chars de `$1` (ex: `2604`). Aparece no path do Drive e no gate output.
+- `{YYMM}` → primeiros 4 chars de `$1` (ex: `2604`). Usado na resolução do layout nested de edições.
 - `{EDIR}` → diretório REAL da edição no disco (#2463/#3024). **Nunca** monta como `data/editions/$1` — a edição pode estar no layout flat legado OU no nested novo (`data/editions/{YYMM}/$1`), dependendo de quando foi criada. Resolver **uma vez**, no Passo 0b abaixo, e reusar em todos os paths deste skill:
   ```bash
   EDIR=$(npx tsx scripts/lib/find-current-edition.ts --resolve $1)
@@ -41,12 +41,12 @@ Antes de qualquer leitura/escrita em arquivo da edição, resolver `{EDIR}` (ver
 **Defensive cleanup primeiro:** varrer `TaskList()` e marcar como `completed` qualquer task `in_progress` de Stages anteriores (`Stage 0*`, `Stage 1*`). Cobre o caso de Stage 1 ter aprovado o gate sem fechar `Stage 1x` (bug histórico — issue #904).
 
 **Em seguida**, criar tasks pra esta etapa via `TaskCreate` (uma por sub-stage):
-- `Stage 2a — drive pull (input)`
-- `Stage 2b — caps editoriais + dispatch paralelo (writer + social)`
-- `Stage 2c — merge social + push intermediário`
+- `Stage 2a — validar input + caps editoriais`
+- `Stage 2b — dispatch paralelo (writer + social)`
+- `Stage 2c — merge social`
 - `Stage 2d — newsletter Clarice + humanize + lints`
 - `Stage 2e — social Clarice + humanize`
-- `Stage 2f — drive push final`
+- `Stage 2f — validações finais`
 - `Stage 2g — gate humano`
 - `Stage 2h — title-picker fallback (pós-gate)`
 
@@ -82,16 +82,6 @@ Comportamentos por opção:
 **Sem snapshot pré-Clarice** (resume "antigo" de antes do #874): preservar comportamento original. Sem `--no-gate`: perguntar `"02-reviewed.md já existe — regenerar (sim/não)?"`. Se "não", usar o arquivo existente e ir direto ao gate. Com `--no-gate`: assumir que está OK, pular regeneração.
 
 Mesma lógica para `03-social.md` quando `$2 = social` (ou sem argumento) — sem o gancho mid-Clarice (social não tem snapshot pré-Clarice; double-apply em social é menos danoso porque seções são curtas).
-
-## Passo 1 — Drive sync pull (input)
-
-Puxar versão mais recente de `01-approved.json` do Drive:
-
-```bash
-npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDIR}/ --stage 2 --files _internal/01-approved.json
-```
-
-Falha de sync = warning, **nunca bloqueia**.
 
 ## Passo 1b — Aplicar caps editoriais Stage 2 (#358, #907)
 
@@ -229,18 +219,13 @@ Dispatchar só `writer`. Pular steps de social abaixo.
 
 Dispatchar `social-linkedin` + `social-facebook` + `social-instagram` (#3486) em paralelo. Pular steps de newsletter abaixo.
 
-## Passo 2b — Push incremental ao Drive (#958)
-
-**Importante:** push **independente** de newsletter e social — cada um sobe ao Drive **assim que o agent correspondente termina**, sem esperar o outro. Editor que abre o Drive no celular logo após disparar `/diaria-2-escrita` vê o rascunho da newsletter ~20-30s depois (vs ~60-90s no fluxo antigo que agrupava). Falha não bloqueia.
+## Passo 2b — Merge dos outputs
 
 ### 2b-news — assim que `writer` retornar
 
 ```bash
 cp {EDIR}/_internal/02-draft.md {EDIR}/02-reviewed.md
-npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 02-reviewed.md
 ```
-
-Não esperar social terminar. Disparar antes mesmo de `social-linkedin` / `social-facebook` retornarem.
 
 ### 2b-soc — assim que `social-linkedin`, `social-facebook` E `social-instagram` retornarem
 
@@ -248,7 +233,6 @@ Não esperar social terminar. Disparar antes mesmo de `social-linkedin` / `socia
 
 ```bash
 npx tsx scripts/merge-social-md.ts --edition-dir {EDIR}/
-npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 03-social.md
 ```
 
 Se `$2 = newsletter`, só roda 2b-news (pula 2b-soc).
@@ -437,16 +421,6 @@ npx tsx scripts/verify-clarice-url-stability.ts \
 
 Exit 0 = URLs em LANÇAMENTOS estáveis. Exit 1 = URL alterada — incluir output (com diff `antes/depois`) no prompt do gate humano. Não auto-restaurar — editor decide se aceita a versão pós-Clarice ou restaura manualmente em `02-reviewed.md`.
 
-### 3e. Push incremental ao Drive (#903)
-
-Newsletter pós-Clarice/humanize está estável. Subir pro Drive **agora** — não esperar o social terminar (passo 4). Editor pode revisar `02-reviewed.md` no celular enquanto a pipeline de social ainda processa em paralelo. Falha não bloqueia (passo 5 sobe novamente como fallback).
-
-```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 02-reviewed.md
-```
-
-Pular se `$2 = social` (newsletter não foi processada nessa run).
-
 ## Passo 4 — Processar social (pular se `$2 = newsletter`)
 
 ### 4a. Cleanup dos tmp files (merge já feito no Passo 2b)
@@ -520,27 +494,9 @@ cp {EDIR}/_internal/03-social.pre-humanize.md {EDIR}/03-social.md
 
 Falha **não bloqueia**.
 
-### 4d. Push incremental ao Drive (#903)
+## Passo 5 — Cleanup dos snapshots intermediários
 
-Social pós-Clarice/humanize está estável. Subir pro Drive **agora** — independente da newsletter (passo 3 pode já ter terminado e subido em 3e, ou ainda estar processando). Editor revisa cada arquivo assim que estabiliza, sem esperar a pipeline inteira. Falha não bloqueia (passo 5 sobe novamente como fallback).
-
-```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 03-social.md
-```
-
-Pular se `$2 = newsletter` (social não foi processado nessa run).
-
-## Passo 5 — Drive sync push (final fallback)
-
-Re-roda o push com **ambos** os arquivos. Garante que qualquer alteração pós-3e/4d (ex: editor mexendo no arquivo entre passos) seja capturada, e cobre o caso onde os pushes incrementais falharam silenciosamente. Pulado individualmente quando `$2` limita escopo.
-
-```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 02-reviewed.md,03-social.md
-```
-
-Anotar warnings pra mencionar no gate. Falha não bloqueia.
-
-Após o push, limpar os snapshots intermediários (não precisam mais — rollback foi concluído ou não foi necessário). **Manter** `_internal/02-pre-clarice.md` até o gate humano fechar — ele é o sinal pra resume mid-Clarice (#874) e some só após o sentinel do Stage 2 ser escrito (Passo 7 ou Passo 6 com `--no-gate`):
+Limpar os snapshots intermediários (não precisam mais — rollback foi concluído ou não foi necessário). **Manter** `_internal/02-pre-clarice.md` até o gate humano fechar — ele é o sinal pra resume mid-Clarice (#874) e some só após o sentinel do Stage 2 ser escrito (Passo 7 ou Passo 6 com `--no-gate`):
 
 ```bash
 for f in \
@@ -566,7 +522,6 @@ Etapa 2 — Escrita pronta.
        ou aprove direto pra deixar o title-picker (Sonnet) escolher.
 
 📁 Social: {EDIR}/03-social.md
-📁 Drive: Work/Startups/diar.ia/edicoes/{YYMM}/$1/
 
 Newsletter — Clarice: A aplicadas, B skipadas
 Social — Clarice: C aplicadas, D skipadas
@@ -575,7 +530,7 @@ Posts gerados:
 - LinkedIn d1 / d2 / d3
 - Facebook d1 / d2 / d3
 
-(pode editar diretamente no arquivo ou no Drive antes de aprovar)
+(pode editar diretamente no arquivo, local ou via Studio, antes de aprovar)
 
 Aprovar (sim) / pedir retry / editar manualmente?
 ```
@@ -586,13 +541,9 @@ Aguardar resposta. Se "sim", **continuar para Passo 7 (title-picker fallback)**.
 
 **Roda APÓS aprovação do gate** — só se o editor não podou os títulos manualmente. Per `.claude/agents/title-picker.md` #159: este agent é fallback pra quando o editor confia na decisão automática.
 
-Se editor já editou diretamente no arquivo/Drive antes de aprovar, este passo é no-op (lint passa).
+Se editor já editou diretamente no arquivo antes de aprovar, este passo é no-op (lint passa).
 
 ```bash
-# Pull pós-aprovação (editor pode ter podado no Drive)
-npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDIR}/ --stage 2 --files 02-reviewed.md
-
-# Verificar titles-per-highlight
 npx tsx scripts/lint-newsletter-md.ts --check titles-per-highlight --md {EDIR}/02-reviewed.md
 ```
 
@@ -621,12 +572,6 @@ npx tsx scripts/insert-titulo-subtitulo.ts \
 ```
 
 Falha = warning, **não bloqueia** (gate já aprovou). Se parse de DESTAQUEs quebrar, editor preenche manualmente como antes.
-
-## Passo 7c — Push final ao Drive
-
-```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 2 --files 02-reviewed.md
-```
 
 Erro do agent (Passo 7) reportado ao editor — sem fallback automático adicional.
 
