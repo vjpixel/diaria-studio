@@ -485,87 +485,182 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
   });
 });
 
-describe("evaluateIssueTerminalState (#3765) — decisão pura, sem I/O", () => {
+describe("evaluateIssueTerminalState (#3765/#3772) — decisão pura, sem I/O", () => {
   const since = "2026-07-20T10:00:00.000Z";
+  const bot = "vjpixel";
 
-  it("issue fechada -> terminal", () => {
-    const r = evaluateIssueTerminalState(101, { state: "CLOSED", comments: [] }, since);
+  it("issue fechada COM PR vinculado -> terminal (#3772 Bug 1: caminho positivo real)", () => {
+    const r = evaluateIssueTerminalState(
+      101,
+      { state: "CLOSED", comments: [], closedByPullRequestsReferences: [{ number: 202 }] },
+      since,
+      bot,
+    );
     assert.equal(r.terminal, true);
-    assert.match(r.reason, /fechada/);
+    assert.match(r.reason, /PR vinculado/);
+  });
+
+  it("#3772 Bug 1 — issue fechada MANUALMENTE, sem PR vinculado -> NÃO terminal (regressão)", () => {
+    const r = evaluateIssueTerminalState(
+      101,
+      { state: "CLOSED", comments: [], closedByPullRequestsReferences: [] },
+      since,
+      bot,
+    );
+    assert.equal(r.terminal, false);
+    assert.match(r.reason, /SEM PR vinculado/);
+  });
+
+  it("#3772 Bug 1 — issue fechada, closedByPullRequestsReferences ausente do payload -> NÃO terminal", () => {
+    const r = evaluateIssueTerminalState(101, { state: "CLOSED", comments: [] }, since, bot);
+    assert.equal(r.terminal, false);
   });
 
   it("issue aberta sem comentário pós-dispatch -> NÃO terminal", () => {
-    const r = evaluateIssueTerminalState(101, { state: "OPEN", comments: [] }, since);
+    const r = evaluateIssueTerminalState(101, { state: "OPEN", comments: [] }, since, bot);
     assert.equal(r.terminal, false);
     assert.match(r.reason, /#3765/);
   });
 
-  it("issue aberta com comentário ANTES do dispatch -> NÃO terminal (evita falso-positivo de comentário velho)", () => {
+  it("issue aberta com comentário do BOT ANTES do dispatch -> NÃO terminal (evita falso-positivo de comentário velho)", () => {
     const r = evaluateIssueTerminalState(
       101,
-      { state: "OPEN", comments: [{ createdAt: "2026-07-19T08:00:00.000Z" }] },
+      { state: "OPEN", comments: [{ createdAt: "2026-07-19T08:00:00.000Z", author: { login: bot } }] },
       since,
+      bot,
     );
     assert.equal(r.terminal, false);
   });
 
-  it("issue aberta com comentário DEPOIS do dispatch -> terminal (diagnóstico documentado)", () => {
+  it("issue aberta com comentário do BOT DEPOIS do dispatch -> terminal (diagnóstico documentado)", () => {
+    const r = evaluateIssueTerminalState(
+      101,
+      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z", author: { login: bot } }] },
+      since,
+      bot,
+    );
+    assert.equal(r.terminal, true);
+    assert.match(r.reason, /comentário pós-dispatch da própria automação/);
+  });
+
+  it("#3772 Bug 2 — comentário pós-dispatch de AUTOR DIFERENTE do bot -> NÃO terminal (regressão)", () => {
+    const r = evaluateIssueTerminalState(
+      101,
+      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z", author: { login: "outro-usuario" } }] },
+      since,
+      bot,
+    );
+    assert.equal(r.terminal, false);
+    assert.match(r.reason, /#3765/);
+  });
+
+  it("#3772 Bug 2 — comentário pós-dispatch sem author no payload -> NÃO terminal (fail-closed)", () => {
     const r = evaluateIssueTerminalState(
       101,
       { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z" }] },
       since,
+      bot,
     );
-    assert.equal(r.terminal, true);
-    assert.match(r.reason, /comentário pós-dispatch/);
+    assert.equal(r.terminal, false);
+  });
+
+  it("#3772 Bug 2 — botLogin null (não foi possível resolver a conta) -> comentário nunca conta, NÃO terminal", () => {
+    const r = evaluateIssueTerminalState(
+      101,
+      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z", author: { login: bot } }] },
+      since,
+      null,
+    );
+    assert.equal(r.terminal, false);
   });
 
   it("raw null (gh falhou) -> NÃO terminal, conservador", () => {
-    const r = evaluateIssueTerminalState(101, null, since);
+    const r = evaluateIssueTerminalState(101, null, since, bot);
     assert.equal(r.terminal, false);
     assert.match(r.reason, /falhou ou retornou formato inesperado/);
   });
 
   it("state ausente/malformado -> NÃO terminal", () => {
-    const r = evaluateIssueTerminalState(101, {}, since);
+    const r = evaluateIssueTerminalState(101, {}, since, bot);
     assert.equal(r.terminal, false);
   });
 
-  it("state é case-insensitive ('closed' minúsculo também conta)", () => {
-    const r = evaluateIssueTerminalState(101, { state: "closed", comments: [] }, since);
+  it("state é case-insensitive ('closed' minúsculo também conta, com PR vinculado)", () => {
+    const r = evaluateIssueTerminalState(
+      101,
+      { state: "closed", comments: [], closedByPullRequestsReferences: [{ number: 202 }] },
+      since,
+      bot,
+    );
     assert.equal(r.terminal, true);
   });
 });
 
-describe("checkIssueTerminalState / checkAllIssuesTerminalState (#3765) — I/O via GhIssueRunFn injetável", () => {
-  it("gh issue view com sucesso e state CLOSED -> terminal, sem parse de comments necessário", () => {
+describe("checkIssueTerminalState / checkAllIssuesTerminalState (#3765/#3772) — I/O via GhIssueRunFn/GhAuthLoginFn injetáveis", () => {
+  it("gh issue view com sucesso, CLOSED + PR vinculado -> terminal", () => {
     const run: GhIssueRunFn = (args) => {
-      assert.deepEqual(args, ["issue", "view", "101", "--json", "state,comments"]);
-      return { status: 0, stdout: JSON.stringify({ state: "CLOSED", comments: [] }), stderr: "" };
+      assert.deepEqual(args, ["issue", "view", "101", "--json", "state,comments,closedByPullRequestsReferences"]);
+      return {
+        status: 0,
+        stdout: JSON.stringify({ state: "CLOSED", comments: [], closedByPullRequestsReferences: [{ number: 9 }] }),
+        stderr: "",
+      };
     };
-    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", "vjpixel", run);
     assert.equal(r.terminal, true);
+  });
+
+  it("#3772 Bug 1 (regressão via I/O) — gh retorna CLOSED sem closedByPullRequestsReferences -> NÃO terminal", () => {
+    const run: GhIssueRunFn = () => ({
+      status: 0,
+      stdout: JSON.stringify({ state: "CLOSED", comments: [], closedByPullRequestsReferences: [] }),
+      stderr: "",
+    });
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", "vjpixel", run);
+    assert.equal(r.terminal, false);
+  });
+
+  it("#3772 Bug 2 (regressão via I/O) — comentário pós-dispatch de outro autor -> NÃO terminal", () => {
+    const run: GhIssueRunFn = () => ({
+      status: 0,
+      stdout: JSON.stringify({
+        state: "OPEN",
+        comments: [{ createdAt: "2026-07-20T11:00:00.000Z", author: { login: "editor-humano" } }],
+      }),
+      stderr: "",
+    });
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", "vjpixel", run);
+    assert.equal(r.terminal, false);
   });
 
   it("gh falha (status != 0) -> NÃO terminal", () => {
     const run: GhIssueRunFn = () => ({ status: 1, stdout: "", stderr: "gh: not found" });
-    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", "vjpixel", run);
     assert.equal(r.terminal, false);
   });
 
   it("gh retorna JSON inválido -> NÃO terminal (nunca lança)", () => {
     const run: GhIssueRunFn = () => ({ status: 0, stdout: "{not json", stderr: "" });
-    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", "vjpixel", run);
     assert.equal(r.terminal, false);
   });
 
-  it("checkAllIssuesTerminalState checa cada issue da lista, na ordem, via o mesmo run", () => {
+  it("checkAllIssuesTerminalState checa cada issue da lista, na ordem, via o mesmo run, resolvendo botLogin 1x", () => {
     const seenNumbers: string[] = [];
     const run: GhIssueRunFn = (args) => {
       seenNumbers.push(args[2]);
       const state = args[2] === "101" ? "CLOSED" : "OPEN";
-      return { status: 0, stdout: JSON.stringify({ state, comments: [] }), stderr: "" };
+      const closedByPullRequestsReferences = args[2] === "101" ? [{ number: 9 }] : [];
+      return { status: 0, stdout: JSON.stringify({ state, comments: [], closedByPullRequestsReferences }), stderr: "" };
     };
-    const results = checkAllIssuesTerminalState([101, 202], "/repo", "2026-07-20T10:00:00.000Z", run);
+    let authLoginCalls = 0;
+    const authLoginFn = (cwd: string) => {
+      authLoginCalls += 1;
+      assert.equal(cwd, "/repo");
+      return "vjpixel";
+    };
+    const results = checkAllIssuesTerminalState([101, 202], "/repo", "2026-07-20T10:00:00.000Z", run, authLoginFn);
+    assert.equal(authLoginCalls, 1, "botLogin deve ser resolvido 1x por onda, não 1x por issue");
     assert.deepEqual(seenNumbers, ["101", "202"]);
     assert.deepEqual(
       results.map((r) => [r.issueNumber, r.terminal]),

@@ -415,10 +415,21 @@ function makeWaveSafeCanUseTool(): CanUseTool {
  * uma issue com histórico de comentários antigos não vira "terminal" só por
  * já ter discussão prévia à onda).
  *
- * Verificação via `gh issue view --json state,comments` — determinístico,
- * mesmo espírito de "validar afirmações de subagent sobre estado externo via
- * TS determinístico" do CLAUDE.md (#573): nunca confiar só no resumo em
- * texto que a coordenadora produziu.
+ * Verificação via `gh issue view --json state,comments,closedByPullRequestsReferences`
+ * — determinístico, mesmo espírito de "validar afirmações de subagent sobre
+ * estado externo via TS determinístico" do CLAUDE.md (#573): nunca confiar só
+ * no resumo em texto que a coordenadora produziu.
+ *
+ * #3772 — dois gaps do fix original (#3765) corrigidos aqui: (1) `state ===
+ * "CLOSED"` sozinho NÃO é mais prova incondicional de PR mergeado — só conta
+ * se `closedByPullRequestsReferences` também vier não-vazio (um `gh issue
+ * close N` direto, sem PR, produz CLOSED com essa lista vazia e agora é
+ * tratado como NÃO-terminal); (2) comentário pós-dispatch só conta como
+ * diagnóstico se o `author.login` bater com a conta autenticada da própria
+ * automação (`gh api user --jq .login`, resolvida 1x por onda) — um
+ * comentário de terceiro (editor humano comentando manualmente, ou uma
+ * sessão overnight/develop paralela na mesma issue) não conta mais como
+ * "trabalho real documentado".
  */
 export interface IssueTerminalCheck {
   issueNumber: number;
@@ -444,7 +455,16 @@ function defaultGhIssueRun(args: string[], cwd: string): GhIssueRunResult {
 
 interface GhIssueViewRaw {
   state?: string;
-  comments?: Array<{ createdAt?: string }>;
+  /** #3772 Bug 1 — precisa vir junto do `state` pra distinguir "fechada via PR
+   * mergeado" (efeito real de `Closes #N`) de "fechada manualmente" (ex: a
+   * coordenadora rodou `gh issue close N` direto — não bloqueado por
+   * `evaluateWaveTool`, já que o comando não bate em nenhum dos dois
+   * blocklists de `Bash`). Vazio/ausente = não foi um PR que fechou a issue. */
+  closedByPullRequestsReferences?: Array<{ number?: number }>;
+  /** #3772 Bug 2 — `author.login` de cada comentário vem de graça no mesmo
+   * `--json comments` (não é um field top-level extra), mas o código anterior
+   * simplesmente não declarava o campo no tipo nem o lia. */
+  comments?: Array<{ createdAt?: string; author?: { login?: string } }>;
 }
 
 /**
@@ -454,11 +474,19 @@ interface GhIssueViewRaw {
  * os casos, tratamos como NÃO-terminal (conservador: falha em CONFIRMAR
  * sucesso nunca deve virar sucesso silencioso, mesmo espírito do resto deste
  * módulo).
+ *
+ * `botLogin` (#3772) — o login autenticado (`gh api user --jq .login`) da
+ * conta que RODA a automação, resolvido 1x por `checkAllIssuesTerminalState`
+ * e propagado aqui. `null` cobre "não foi possível determinar a conta de
+ * forma confiável" — tratado como NUNCA bater com nenhum autor de comentário
+ * (fail-closed, mesmo espírito do resto do módulo: falha em confirmar quem
+ * comentou nunca deve virar "confirmado" por omissão).
  */
 export function evaluateIssueTerminalState(
   issueNumber: number,
   raw: GhIssueViewRaw | null,
   sinceIso: string,
+  botLogin: string | null,
 ): IssueTerminalCheck {
   if (raw === null || typeof raw.state !== "string") {
     return {
@@ -467,29 +495,69 @@ export function evaluateIssueTerminalState(
       reason: `gh issue view #${issueNumber} falhou ou retornou formato inesperado — não foi possível confirmar estado terminal`,
     };
   }
-  if (raw.state.toUpperCase() === "CLOSED") {
-    return { issueNumber, terminal: true, reason: "issue fechada (efeito de PR mergeado com Closes)" };
-  }
-  const since = Date.parse(sinceIso);
-  const comments = Array.isArray(raw.comments) ? raw.comments : [];
-  const hasPostDispatchComment = comments.some((c) => {
-    const t = typeof c?.createdAt === "string" ? Date.parse(c.createdAt) : NaN;
-    return Number.isFinite(t) && Number.isFinite(since) && t >= since;
-  });
-  if (hasPostDispatchComment) {
+  const isClosed = raw.state.toUpperCase() === "CLOSED";
+  const closedByMergedPr =
+    Array.isArray(raw.closedByPullRequestsReferences) && raw.closedByPullRequestsReferences.length > 0;
+  if (isClosed && closedByMergedPr) {
     return {
       issueNumber,
       terminal: true,
-      reason: "issue aberta mas com comentário pós-dispatch (falha/bloqueio documentado)",
+      reason: "issue fechada com PR vinculado (closedByPullRequestsReferences não-vazio) — efeito de PR mergeado com Closes",
+    };
+  }
+  const since = Date.parse(sinceIso);
+  const comments = Array.isArray(raw.comments) ? raw.comments : [];
+  const hasPostDispatchBotComment = comments.some((c) => {
+    const t = typeof c?.createdAt === "string" ? Date.parse(c.createdAt) : NaN;
+    const authorLogin = c?.author?.login;
+    return (
+      Number.isFinite(t) &&
+      Number.isFinite(since) &&
+      t >= since &&
+      botLogin !== null &&
+      typeof authorLogin === "string" &&
+      authorLogin === botLogin
+    );
+  });
+  if (hasPostDispatchBotComment) {
+    return {
+      issueNumber,
+      terminal: true,
+      reason: "issue aberta mas com comentário pós-dispatch da própria automação (falha/bloqueio documentado)",
+    };
+  }
+  if (isClosed) {
+    // #3772 Bug 1 — fechada mas SEM PR vinculado: não confiar cegamente em
+    // `state === CLOSED` como prova de trabalho real. Um `gh issue close N`
+    // direto (abandono silencioso) produz exatamente este shape.
+    return {
+      issueNumber,
+      terminal: false,
+      reason:
+        "issue fechada mas SEM PR vinculado (closedByPullRequestsReferences vazio) e sem comentário pós-dispatch " +
+        "da automação documentando a causa — fechamento manual (ex: gh issue close) não é prova de trabalho real (#3772)",
     };
   }
   return {
     issueNumber,
     terminal: false,
     reason:
-      "issue segue aberta, sem comentário pós-dispatch documentando falha — a coordenadora pode ter desistido " +
-      "silenciosamente (turno terminou sem tool calls / sem PR em estado terminal, #3765)",
+      "issue segue aberta, sem comentário pós-dispatch da automação documentando falha — a coordenadora pode ter " +
+      "desistido silenciosamente (turno terminou sem tool calls / sem PR em estado terminal, #3765)",
   };
+}
+
+/** I/O — login autenticado da conta que roda a automação (#3772 Bug 2).
+ * `gh api user` é 1 chamada barata contra a API REST (não precisa de campo
+ * extra no `gh issue view`); resolvido 1x por onda em
+ * `checkAllIssuesTerminalState`, não por issue. */
+export type GhAuthLoginFn = (cwd: string) => string | null;
+
+function defaultGhAuthLogin(cwd: string): string | null {
+  const result = spawnSync("gh", ["api", "user", "--jq", ".login"], { cwd, encoding: "utf8" });
+  if (result.status !== 0) return null;
+  const login = (result.stdout ?? "").trim();
+  return login.length > 0 ? login : null;
 }
 
 /** I/O — 1 issue via `gh issue view`. */
@@ -497,17 +565,21 @@ export function checkIssueTerminalState(
   issueNumber: number,
   cwd: string,
   sinceIso: string,
+  botLogin: string | null,
   run: GhIssueRunFn = defaultGhIssueRun,
 ): IssueTerminalCheck {
-  const result = run(["issue", "view", String(issueNumber), "--json", "state,comments"], cwd);
+  const result = run(
+    ["issue", "view", String(issueNumber), "--json", "state,comments,closedByPullRequestsReferences"],
+    cwd,
+  );
   if (result.status !== 0) {
-    return evaluateIssueTerminalState(issueNumber, null, sinceIso);
+    return evaluateIssueTerminalState(issueNumber, null, sinceIso, botLogin);
   }
   try {
     const parsed = JSON.parse(result.stdout) as GhIssueViewRaw;
-    return evaluateIssueTerminalState(issueNumber, parsed, sinceIso);
+    return evaluateIssueTerminalState(issueNumber, parsed, sinceIso, botLogin);
   } catch {
-    return evaluateIssueTerminalState(issueNumber, null, sinceIso);
+    return evaluateIssueTerminalState(issueNumber, null, sinceIso, botLogin);
   }
 }
 
@@ -515,15 +587,19 @@ export function checkIssueTerminalState(
  * Checa TODAS as issues da onda. Default real usado por `runWaveFire`;
  * testes injetam `checkTerminalStateFn` (ver `RunWaveFireOptions`) com um
  * `GhIssueRunFn` fake, sem spawnar `gh` de verdade — mesmo padrão de
- * `queryFn`/`ghRun` já usado no resto do módulo/`studio-issues.ts`.
+ * `queryFn`/`ghRun` já usado no resto do módulo/`studio-issues.ts`. Resolve
+ * `botLogin` UMA vez pra onda inteira (não 1x por issue, #3772) via
+ * `authLoginFn` — mesmo padrão de injeção de `run`.
  */
 export function checkAllIssuesTerminalState(
   issueNumbers: number[],
   cwd: string,
   sinceIso: string,
   run: GhIssueRunFn = defaultGhIssueRun,
+  authLoginFn: GhAuthLoginFn = defaultGhAuthLogin,
 ): IssueTerminalCheck[] {
-  return issueNumbers.map((n) => checkIssueTerminalState(n, cwd, sinceIso, run));
+  const botLogin = authLoginFn(cwd);
+  return issueNumbers.map((n) => checkIssueTerminalState(n, cwd, sinceIso, botLogin, run));
 }
 
 // ─── invocação real do SDK (I/O, injetável — mesmo padrão de studio-chat.ts) ──
