@@ -15,6 +15,7 @@ import {
   sectionHeaderRegex,
   ALL_SECTION_NAMES_PATTERN,
 } from "./section-naming.ts";
+import { countDoubleAsterisk } from "./lint-checks/callout-placement.ts"; // #3762
 
 // ── Category → emoji mapping (matches Beehiiv template) ──────────────
 export const CATEGORY_EMOJI: Record<string, string> = {
@@ -785,14 +786,27 @@ export function extractCoverageLineTrailer(text: string): string | null {
   // mis-render SILENCIOSO, pior que o vazamento literal que #3740 corrigiu
   // (aquele pelo menos era visivelmente quebrado).
   //
-  // Fix: só remover os marcadores externos quando o MEIO capturado não tiver
-  // nenhum outro par `**...**` completo — confirma que é de fato um único
-  // bloco, não múltiplos spans. Em caso de ambiguidade (par aninhado
-  // presente), mais seguro NÃO remover os marcadores — volta ao
-  // comportamento pré-#3740 (`**` literal visível), corrompido mas visível,
-  // em vez de corromper a formatação em silêncio.
+  // #3762: o guard do #3744 acima ("MEIO capturado não tem par completo")
+  // ainda escapava em 3 formas — contagem ÍMPAR (marcador órfão, ex:
+  // "**foo **bar**" — o MEIO só tem 1 ocorrência de `**`, `test()` falha, o
+  // strip acontecia e o marcador órfão vazava literal); e um padrão de 2
+  // marcadores adjacentes específico ("**foo**bar**", 3 marcadores totais)
+  // que manglava o texto do mesmo jeito. Contar só o MEIO é insuficiente — a
+  // ambiguidade real só se resolve olhando o trailer INTEIRO.
+  //
+  // Fix: mesma convenção de `isSingleBoldWrap`
+  // (`lint-checks/callout-placement.ts` #3315) — `countDoubleAsterisk` no
+  // trailer INTEIRO (antes de extrair o grupo) exigindo EXATAMENTE 2
+  // ocorrências (abertura + fechamento, nada mais) confirma sem ambiguidade
+  // que é um único bloco bold-wrap. Qualquer contagem diferente de 2 (ímpar =
+  // marcador órfão; par >2 = múltiplos spans OU bloco único com ênfase
+  // aninhada interna redundante — as duas formas são estruturalmente
+  // indistinguíveis por contagem, mesma ambiguidade do caso #3744 acima) →
+  // mais seguro NÃO remover os marcadores, preserva o texto bruto (`**`
+  // literal visível, corrompido mas visível, em vez de corromper a
+  // formatação em silêncio).
   const boldWrapMatch = trailer.match(/^\*\*\s*([\s\S]+)\*\*\s*$/);
-  if (boldWrapMatch && !/\*\*[\s\S]*?\*\*/.test(boldWrapMatch[1])) {
+  if (boldWrapMatch && countDoubleAsterisk(trailer) === 2) {
     return boldWrapMatch[1].trim();
   }
   return trailer;

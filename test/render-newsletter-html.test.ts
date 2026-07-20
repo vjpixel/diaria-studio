@@ -1789,6 +1789,104 @@ describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boa
     );
   });
 
+  it("#3762: trailer com marcador ÓRFÃO (contagem ÍMPAR de **) não é mais stripado — guard do #3744 checava só o MEIO e deixava passar", () => {
+    // Bug do guard do #3744: `/\*\*[\s\S]*?\*\*/.test(boldWrapMatch[1])` só
+    // falha (permite strip) quando o MEIO não tem NENHUM par completo de `**`.
+    // Um marcador órfão solto no meio ("**Aviso ** importante: ...**" — o
+    // MEIO "Aviso ** importante: ...!" tem só 1 ocorrência de `**`, não um
+    // par) passava despercebido: o guard via "sem par completo" e deixava o
+    // strip acontecer, vazando o `**` órfão literal no resultado.
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Callout real.**",
+      "",
+      "---",
+      "",
+      "**Aviso ** importante: confira o produto novo hoje!**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const trailer = extractCoverageLineTrailer(md);
+    assert.equal(
+      trailer,
+      "**Aviso ** importante: confira o produto novo hoje!**",
+      "contagem ÍMPAR (3) de ** no trailer inteiro — ambíguo, não remove os marcadores externos",
+    );
+    assert.notEqual(
+      trailer,
+      "Aviso ** importante: confira o produto novo hoje!",
+      "não deve produzir a forma corrompida (marcadores externos removidos, órfão sobrando no meio)",
+    );
+  });
+
+  it("#3762: trailer com bloco único e ênfase aninhada interna (contagem par >2) — mesma ambiguidade estrutural do #3744, marcadores preservados", () => {
+    // "**Aviso importante: **não esqueça** de votar hoje.**" tem 4
+    // ocorrências de ** no total — estruturalmente indistinguível (por pura
+    // contagem de marcadores) do caso #3744 acima ("**Atenção:** ... **Não
+    // perca!**", também 4 ocorrências): ambos têm a forma
+    // **A**B**C** (4 marcadores, 3 segmentos de texto). Sem uma forma
+    // confiável de diferenciar "1 bloco com ênfase redundante interna" de "2
+    // spans independentes" só pela contagem, o guard trata os dois IGUAL —
+    // ambíguo, preserva o texto bruto. Não é regressão: o comportamento pré-
+    // #3762 para este caso específico já era "não remove" (guard do #3744
+    // via o par completo "**não esqueça**" no meio e recusava o strip pelo
+    // mesmo motivo, por um caminho diferente).
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Callout real.**",
+      "",
+      "---",
+      "",
+      "**Aviso importante: **não esqueça** de votar hoje.**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const trailer = extractCoverageLineTrailer(md);
+    assert.equal(
+      trailer,
+      "**Aviso importante: **não esqueça** de votar hoje.**",
+      "contagem par (4) mas ≠2 — mesma ambiguidade do #3744, não remove os marcadores externos",
+    );
+  });
+
+  it("#3762: trailer com 2 marcadores adjacentes específicos ('**foo**bar**', 3 ocorrências) não é mais manglado", () => {
+    // Bug do guard do #3744: o MEIO capturado ("foo**bar") tinha só 1
+    // ocorrência de `**` (sem par completo) → guard permitia o strip →
+    // resultado "foo**bar" (marcador solto no meio, formatação quebrada).
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Callout real.**",
+      "",
+      "---",
+      "",
+      "**foo**bar**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const trailer = extractCoverageLineTrailer(md);
+    assert.equal(
+      trailer,
+      "**foo**bar**",
+      "contagem ÍMPAR (3) de ** no trailer inteiro — ambíguo, não remove os marcadores externos",
+    );
+    assert.notEqual(trailer, "foo**bar", "não deve produzir a forma corrompida (mangled)");
+  });
+
   it("#3741: callout único com --- interno (separador decorativo dentro do próprio texto) não desaparece", () => {
     // Bug pior que o do #3726: a segmentação por `---` isolado corta um
     // callout LEGÍTIMO ao meio quando ele tem, no seu próprio conteúdo, um
