@@ -1005,6 +1005,21 @@ export default {
       return Response.redirect(target.toString(), 301);
     }
 
+    // #3701: raiz (`/`) → 301 pra `/jogar`. O aceite da issue #3701 assume
+    // que `eia.diar.ia.br/` já cai no jogo do dia ("comportamento atual do
+    // root, confirmado") — mas antes desta linha o router não tinha NENHUM
+    // handler pra `path === "/"` (nem em poll.diaria.workers.dev/, nunca
+    // usado por link nenhum até agora), então o custom domain novo caía
+    // direto no 404 JSON genérico do fim do dispatcher. Sem host-gating: o
+    // redirect é universal (GET, qualquer host) — mais simples de testar/
+    // manter, e inofensivo em poll.diaria.workers.dev/ (nenhum link aponta
+    // pra lá hoje).
+    if (path === "/" && request.method === "GET") {
+      const target = new URL(request.url);
+      target.pathname = "/jogar";
+      return Response.redirect(target.toString(), 301);
+    }
+
     // #1420: fail-loud com 503 quando secrets ausentes (em vez de 500
     // generic crash). Diagnóstico explícito facilita debug pós-deploy
     // sem secrets re-setados (#1415). Method-aware pra não regredir
