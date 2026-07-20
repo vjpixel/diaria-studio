@@ -99,3 +99,48 @@ describe("setup de scheduled task: nunca Set-ScheduledTask -Description (#3560, 
     }
   }
 });
+
+describe("setup de scheduled task: preserva estado Disabled após Register-ScheduledTask -Force (#3775)", () => {
+  // Register-ScheduledTask -Force substitui a task INTEIRA (ao contrário de
+  // Set-ScheduledTask, que só atualiza os campos passados) — qualquer
+  // propriedade não especificada na chamada volta ao default, incluindo
+  // Enabled=True. Verificado empiricamente (260720): desabilitar a task via
+  // Disable-ScheduledTask e re-rodar o branch de update com
+  // Register-ScheduledTask -Force reativa a task silenciosamente, sem log
+  // nem aviso — desfazendo um Disable manual do editor.
+  //
+  // Escopo desta asserção: só os 2 scripts corrigidos pelo #3775 até agora.
+  // scripts/studio/setup-studio-service.ps1, scripts/studio/setup-remote-tunnel.ps1
+  // e scripts/overnight/setup-watchdog-schedule.ps1 têm o MESMO padrão
+  // Register-ScheduledTask -Force sem preservar Disabled — bug latente,
+  // fora do escopo do #3775 (não citados na issue), tratar em issue própria.
+  const FIXED_FILES = [
+    "scripts/setup-clarice-sync-schedule.ps1",
+    "scripts/overnight/setup-edicao-schedule.ps1",
+  ];
+
+  for (const rel of FIXED_FILES) {
+    const file = join(ROOT, ...rel.split("/"));
+    const source = readFileSync(file, "utf8");
+    const lines = logicalLines(source);
+
+    it(`${rel}: reaplica Disable-ScheduledTask quando a task existente estava Disabled`, () => {
+      const registerIdx = lines.findIndex(
+        (l) => /Register-ScheduledTask\b/.test(l) && /-Force\b/.test(l),
+      );
+      assert.ok(registerIdx >= 0, "esperava um Register-ScheduledTask ... -Force no script");
+
+      const after = lines.slice(registerIdx + 1).join("\n");
+      assert.match(
+        after,
+        /\$Existing[\s\S]{0,40}-eq\s+["']Disabled["']/,
+        "esperava um check pós-Register do estado Disabled da task existente ($Existing.State -eq \"Disabled\")",
+      );
+      assert.match(
+        after,
+        /Disable-ScheduledTask\s+-TaskName\s+\$TaskName/,
+        "esperava uma chamada Disable-ScheduledTask -TaskName $TaskName pra restaurar o estado Disabled perdido pelo -Force",
+      );
+    });
+  }
+});
