@@ -10,8 +10,15 @@
  * abaixo — o guard `entry.status === "error"` exclui essas entradas da contagem,
  * mas ainda usa seu `quota_remaining` pra atualizar `quota_remaining_last_seen`.
  *
- * Free tier: 2000 queries/mês. Counter local dá visibilidade imediata —
- * dashboard Brave tem ~1h de delay.
+ * Free tier: 2000 queries/mês (⚠️ #3707: possivelmente desatualizado — a conta
+ * pode ter migrado pra um plano pago por budget, ver nota em `FREE_TIER_LIMIT`
+ * abaixo). Counter local dá visibilidade imediata — dashboard Brave tem ~1h de
+ * delay.
+ *
+ * (#3707) O alerta (`percent_used`/`alert_level`/`effective_used` em
+ * `computeBraveCreditStats`) usa EXCLUSIVAMENTE `queries_this_month_real` —
+ * nunca o header `X-RateLimit-Remaining`. Ver o comentário extenso dentro de
+ * `computeBraveCreditStats` para o incidente que motivou essa mudança.
  *
  * ## Semântica de query (#2378, revisado #3389)
  *
@@ -208,23 +215,30 @@ export interface BraveCreditStats {
   percent_used: number;
   projected_month_end: number | null;
   alert_level: "ok" | "warn" | "critical";
-  // (#2608 C) reconciliação com quota real via header X-RateLimit-Remaining
+  // (#2608 C) reconciliação com quota real via header X-RateLimit-Remaining —
+  // (#3707) estes campos permanecem só DIAGNÓSTICOS/de reconciliação (consumidos
+  // por `reconcile-brave-path-b.ts`); nenhum deles alimenta mais o alerta abaixo.
   quota_remaining_last_seen?: number; // last value seen from Brave API header
   delta_untracked?: number; // real_used − local_counted (queries not tracked locally)
-  // base do alerta: o MAIOR entre contagem local e uso real do header Brave.
+  // (#3707) base do alerta: SEMPRE `queries_this_month_real` — o header
+  // X-RateLimit-Remaining não promove mais este valor (ver comentário extenso
+  // em `computeBraveCreditStats`, incidente #3707). `alert_basis` permanece
+  // union por compat de shape, mas hoje é sempre "local".
   effective_used: number;
   alert_basis: "local" | "brave_header";
   // (#3002) true quando o header foi descartado por divergência implausível
   // vs. a contagem local (sinal de ciclo de rate-limit desalinhado do Brave,
-  // não uso real subnotificado).
+  // não uso real subnotificado). (#3707) Continua computado como sinal
+  // diagnóstico no relatório — só não afeta mais o alerta.
   header_discarded?: true;
   // (#3122) uso absoluto derivado do header (`FREE_TIER_LIMIT - quota_remaining_last_seen`,
   // clampado ≥0), SEM o desconto de `queries_this_month` e SEM o guard de descarte
   // de #3002 aplicado ao valor em si (só reflete se o header foi lido — permanece
   // ausente quando não há `quota_remaining` este mês). Existe para consumidores
   // (como `reconcile-brave-path-b.ts`) que precisam do valor cumulativo bruto do
-  // ciclo de cobrança do Brave para diffar contra uma leitura anterior — usar
-  // `delta_untracked`/`effective_used` para relato ao editor, não este campo.
+  // ciclo de cobrança do Brave para diffar contra uma leitura anterior — (#3707)
+  // NÃO usar para relato de alerta ao editor (isso é `percent_used`/`alert_level`,
+  // ambos derivados de `queries_this_month_real`).
   real_used_raw?: number;
   // (#3389) idade, em horas, da entrada que produziu `quota_remaining_last_seen`
   // (now − timestamp dessa entrada). Defesa em profundidade complementar ao fix
@@ -238,6 +252,12 @@ export interface BraveCreditStats {
   quota_remaining_age_hours?: number;
 }
 
+// (#3707 hipótese 1, NÃO resolvida nesta rodada) Este valor pode estar desatualizado —
+// o dashboard oficial da Brave, checado ao vivo em 260720, mostrou um plano pago
+// por budget em dólar ($5/mês), sem menção a "2000 queries grátis". Fora de escopo
+// aqui (precisaria de API/export de custo real da Brave, que não existe ainda);
+// o fix desta issue (ver `computeBraveCreditStats`) evita o sintoma (alerta falso)
+// trocando a base de cálculo, mas não resolve se 2000 é o denominador certo.
 export const FREE_TIER_LIMIT = 2000;
 const WARN_THRESHOLD = 0.8;
 const CRITICAL_THRESHOLD = 0.95;
@@ -347,6 +367,13 @@ export function computeBraveCreditStats(
   // (#3002) Descartar o header quando ele diverge implausivelmente da contagem
   // local — sinal de ciclo de rate-limit desalinhado do Brave, não subnotificação
   // real. Ver comentário de HEADER_DIVERGENCE_DISCARD_RATIO acima.
+  //
+  // (#3707) Estes campos (`real_used`/`header_discarded`/`real_used_for_alert`/
+  // `delta_untracked` abaixo) permanecem DIAGNÓSTICOS — expostos em
+  // `real_used_raw`/`header_discarded`/`delta_untracked` pro relatório e
+  // consumidos por `reconcile-brave-path-b.ts` (#3122) pra estimar Path B. Mas
+  // NENHUM deles alimenta mais `effective_used`/`alert_basis`/`alert_level`
+  // abaixo — ver o comentário logo depois pra por quê.
   let header_discarded: true | undefined;
   let real_used_for_alert = real_used;
   if (
@@ -357,35 +384,43 @@ export function computeBraveCreditStats(
     real_used_for_alert = undefined;
   }
 
-  // Alerta: o header X-RateLimit-Remaining do Brave inclui o Path B (WebSearch
-  // dos agentes) que NÃO passa pelo counter local — quando plausível, dirigir o
-  // alerta pelo MAIOR entre contagem local e uso real do header, pra nunca
-  // subnotificar. (Causa original do esgotamento de jun/2026 — #2668: local=999
-  // mas Brave contava 1951; o alerta confiava nos 999 → "ok" → voamos pelo $5.
-  // Esse caso segue coberto: divergência ~2× não é descartada.) Quando o header
-  // foi descartado por divergência implausível (#3002), cair pra contagem local.
-  let effective_used = queries_this_month;
-  let alert_basis: BraveCreditStats["alert_basis"] = "local";
-  if (real_used_for_alert !== undefined && real_used_for_alert > effective_used) {
-    effective_used = real_used_for_alert;
-    alert_basis = "brave_header";
-  }
+  // (#3707) Alerta agora deriva EXCLUSIVAMENTE de `queries_this_month_real` — o
+  // header `X-RateLimit-Remaining` NUNCA mais promove `effective_used`/
+  // `alert_basis`. Isto reverte deliberadamente a heurística de #2668 (que
+  // promovia o alerta pro header quando plausivelmente > contagem local, pra
+  // capturar Path B subnotificado) em favor de nunca mais alertar a partir de
+  // um header cuja confiabilidade é incerta: incidente #3707 (edição 260720)
+  // reportou "critical 100.4%" com o dashboard oficial da Brave mostrando 44%
+  // de um budget pago — o header (parseado com `parseInt` sobre um valor que a
+  // doc da Brave documenta como potencialmente multi-valor/CSV, uma janela por
+  // rate-limit) alimentou `reconcile-brave-path-b.ts`, que injetou ~1566
+  // entradas `estimated` fantasma em `queries_this_month`, disparando o falso
+  // positivo. `queries_this_month_real` bateu EXATO com o dashboard real (442)
+  // nesse incidente — é a única fonte que se provou confiável. Trade-off aceito
+  // conscientemente: o cenário legítimo que motivou #2668 (Path B genuinamente
+  // subnotificado, local baixo mas header alto e plausível) deixa de ser
+  // capturado pelo ALERTA — mas os campos diagnósticos acima continuam expostos
+  // pro relatório/reconcile, então o sinal não desaparece, só para de gatilhar
+  // "critical" por conta própria.
+  const effective_used = queries_this_month_real;
+  const alert_basis: BraveCreditStats["alert_basis"] = "local";
 
   // (#2608 C) delta = queries cobradas pelo Brave − (reais + estimadas locais).
   // delta ≈ 0 → estimativas corretas; delta > 0 → gap não explicado (Path B > estimativa).
   // (#3002) Quando o header foi descartado, delta_untracked fica ausente — ele
   // não representa mais um gap real, e mostrá-lo confundiria o relatório.
+  // (#3707) Continua calculado a partir de `queries_this_month` (não muda) —
+  // é consumido por `reconcile-brave-path-b.ts`, que segue com sua própria
+  // lógica de reconciliação, independente da mudança de base do alerta aqui.
   const delta_untracked =
     real_used_for_alert !== undefined ? real_used_for_alert - queries_this_month : undefined;
 
-  // Projeção: extrapolar linear pelo dia do mês. Base = effective_used quando o
-  // header é autoritativo (senão a projeção contradiria o alerta: "97% crítico"
-  // + "projeção ~5"); senão só queries reais locais (estimativas vêm em lote
-  // único no Stage 1 → incluí-las inflaria ~10× a projeção no início do mês).
+  // Projeção: extrapolar linear pelo dia do mês, a partir de queries_this_month_real
+  // (#3707 — mesma base do alerta agora; estimativas Path B vêm em lote único no
+  // Stage 1 → incluí-las inflaria ~10× a projeção no início do mês).
   const dayOfMonth = now.getUTCDate();
   const daysInMonth = new Date(now.getUTCFullYear(), now.getUTCMonth() + 1, 0).getDate();
-  const projectionBase =
-    alert_basis === "brave_header" ? effective_used : queries_this_month_real;
+  const projectionBase = queries_this_month_real;
   const projected_month_end =
     dayOfMonth > 0 ? Math.round((projectionBase / dayOfMonth) * daysInMonth) : null;
 
