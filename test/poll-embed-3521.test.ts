@@ -38,6 +38,7 @@ import {
   resolveEmbedPartnerSlug,
 } from "../workers/poll/src/embed.ts";
 import worker, { applyFrameDenyHeaders, type Env } from "../workers/poll/src/index.ts";
+import { PUBLIC_GAME_DISPLAY_HOST } from "../workers/poll/src/lib.ts";
 
 function makeMapKV(initial: Record<string, string> = {}) {
   const m = new Map<string, string>(Object.entries(initial));
@@ -188,6 +189,11 @@ describe("renderEmbedPageHtml (#3521)", () => {
 
   it("CTA de assinatura carrega a URL com UTM do parceiro passado", () => {
     assert.match(html, /utm_campaign=clarice/);
+  });
+
+  it("#3766: texto visível do link 'jogar mais' usa PUBLIC_GAME_DISPLAY_HOST (eia.diar.ia.br), não a string hardcoded 'diar.ia.br' (mesma inconsistência que #3717 corrigiu em share.ts — href já usava o domínio certo, a copy visível não)", () => {
+    assert.match(html, new RegExp(`Jogar mais em ${PUBLIC_GAME_DISPLAY_HOST} →`));
+    assert.doesNotMatch(html, /Jogar mais em diar\.ia\.br/);
   });
 
   it("script JS nunca faz window.location.href = voteUrl (só window.open/link — nunca navega o próprio iframe)", () => {

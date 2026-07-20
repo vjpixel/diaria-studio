@@ -99,7 +99,7 @@
  *      truncado do share token, ver header de share.ts).
  */
 import type { Env } from "./index";
-import { htmlEscape, PUBLIC_GAME_BASE_URL } from "./lib";
+import { htmlEscape, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST } from "./lib";
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { resolveJogarEdition } from "./jogar";
 import { shareButtonScript } from "./share";
@@ -270,7 +270,7 @@ export function renderEmbedPageHtml(opts: EmbedPageOptions): string {
   <a class="subscribe-btn" href="${htmlEscape(subscribeUrl)}" target="_blank" rel="noopener">Assinar a Diar.ia</a>
 </div>
 
-<p class="widget-footer"><a href="${htmlEscape(jogarUrl)}" target="_blank" rel="noopener">Jogar mais em diar.ia.br →</a></p>
+<p class="widget-footer"><a href="${htmlEscape(jogarUrl)}" target="_blank" rel="noopener">Jogar mais em ${PUBLIC_GAME_DISPLAY_HOST} →</a></p>
 
 <script>
 (function () {
