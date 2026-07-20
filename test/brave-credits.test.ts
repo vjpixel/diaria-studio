@@ -367,6 +367,8 @@ describe("computeBraveCreditStats", () => {
   // Este teste ANTES esperava alert_basis="brave_header"/critical — essa era a
   // manifestação do próprio bug #3002 (ver issue: dashboard oficial Brave
   // mostrou 55 requests no mês real, não 1951).
+  // (#3707) header_discarded continua computado como sinal diagnóstico — só não
+  // afeta mais o alerta em si (que agora é sempre queries_this_month_real).
   it("descarta header quando diverge implausivelmente do local (regressão #3002)", () => {
     const path = makeTmpPath();
     const now = new Date("2026-06-29T12:00:00Z");
@@ -392,15 +394,27 @@ describe("computeBraveCreditStats", () => {
     rmSync(path, { force: true });
   });
 
-  // (#2668, ainda coberto após #3002) Contagem local baixa-mas-plausível MAS header
-  // Brave mais alto, com divergência MODESTA (~2×, não 390×) → o header ainda deve
-  // ser autoritativo. Este é o caso legítimo que motivou #2668 originalmente:
-  // Path B (WebSearch dos agentes) genuinamente subnotificado pela contagem local.
-  it("mantém header quando a divergência é modesta e plausível (#2668 preservado)", () => {
+  // (#2668, deliberadamente REVERTIDO por #3707) Este teste ANTES protegia a
+  // promoção do alerta pro header quando a divergência local↔header era modesta
+  // (~2×) — o cenário legítimo de Path B subnotificado que motivou o #2668
+  // original (esgotamento dos $5 em jun/2026: local=999, Brave contava 1951, o
+  // alerta confiava no local → "ok" → estourou o orçamento). O #3707 (incidente
+  // real, edição 260720: alerta "critical 100.4%" com o dashboard oficial da
+  // Brave mostrando 44% de um budget pago) mostrou que o header
+  // X-RateLimit-Remaining não é confiável o bastante pra servir de base de
+  // alerta sozinho — provavelmente multi-valor/CSV (uma janela por rate-limit, cf.
+  // issue #3707 hipótese 2, não confirmado por falta de BRAVE_API_KEY live) e
+  // FREE_TIER_LIMIT pode nem refletir mais o plano da conta (hipótese 1).
+  // Decisão consciente (#3707): abrir mão desta proteção específica (Path B
+  // subnotificado só detectável via header) em troca de nunca mais alertar
+  // falso-positivo a partir de um header não confiável — queries_this_month_real
+  // foi a ÚNICA fonte que bateu exatamente com o dashboard real no incidente.
+  it("NÃO promove mais o alerta pro header, mesmo com divergência modesta/plausível (#2668 revertido por #3707)", () => {
     const path = makeTmpPath();
     const now = new Date("2026-06-29T12:00:00Z");
     // 999 entradas locais (Path A), header diz quota_remaining=49 → real_used=1951.
-    // Ratio vs. local (999) = ~1.95× << threshold (10×) → header plausível, mantido.
+    // Ratio vs. local (999) = ~1.95× << threshold (10×) → header NÃO é descartado
+    // por #3002, mas (#3707) isso não importa mais pro alerta — só é diagnóstico.
     const lines = Array.from({ length: 998 }, (_, i) =>
       JSON.stringify({ timestamp: "2026-06-29T10:00:00Z", query: `q${i}`, status: "ok" }),
     );
@@ -410,11 +424,52 @@ describe("computeBraveCreditStats", () => {
     writeFileSync(path, lines.join("\n"), "utf8");
     const stats = computeBraveCreditStats(null, path, now);
     assert.equal(stats.queries_this_month, 999, "contagem local permanece 999");
-    assert.equal(stats.effective_used, 1951, "base do alerta = real_used do header (1951)");
-    assert.equal(stats.alert_basis, "brave_header");
-    assert.equal(stats.header_discarded, undefined, "header plausível não deve ser descartado");
-    assert.equal(stats.alert_level, "critical", "deve ser critical (1951/2000=97.5%)");
-    assert.ok(stats.projected_month_end! > 1900, `projeção (${stats.projected_month_end}) deve refletir o header, não a local`);
+    assert.equal(stats.effective_used, 999, "base do alerta é sempre queries_this_month_real, nunca o header (#3707)");
+    assert.equal(stats.alert_basis, "local", "alert_basis é sempre local pós-#3707");
+    assert.equal(stats.header_discarded, undefined, "header plausível não é descartado — continua exposto pra diagnóstico");
+    assert.equal(stats.real_used_raw, 1951, "real_used_raw continua exposto (reconcile-brave-path-b.ts ainda o usa)");
+    assert.equal(stats.alert_level, "ok", "999/2000=49.95% — NÃO é mais critical, mesmo com header sugerindo 1951");
+    assert.equal(stats.projected_month_end, 1033, "projeção agora deriva só de queries_this_month_real (999/29*30≈1033), não do header");
+    rmSync(path, { force: true });
+  });
+
+  // (#3707) REGRESSÃO PRINCIPAL — reproduz o incidente real da issue (edição
+  // 260720): reconcile-brave-path-b.ts injetou ~1566 entradas `estimated` a
+  // partir de um header mal-interpretado, inflando queries_this_month pra 2008
+  // (real 442 + estimated 1566) e disparando "critical 100.4%" — enquanto o
+  // dashboard oficial da Brave mostrava só 44% de budget usado, e
+  // queries_this_month_real (442) batia exato com o "Requests this month" real.
+  // O fix: o alerta ignora completamente as entradas estimated (pollution ou
+  // não) e usa só queries_this_month_real.
+  it("alerta ignora entradas estimated infladas por reconcile — usa só queries_this_month_real (fix #3707, edição 260720)", () => {
+    const path = makeTmpPath();
+    const now = new Date("2026-07-20T12:00:00Z");
+    const lines: string[] = [];
+    // 442 reais — bate exato com o "Requests this month: 442" do dashboard real.
+    for (let i = 0; i < 442; i++) {
+      lines.push(JSON.stringify({ timestamp: "2026-07-19T10:00:00Z", query: `q${i}`, status: "ok" }));
+    }
+    // 1566 estimated injetadas por reconcile-brave-path-b.ts (source: path-b-reconcile)
+    // a partir do header mal-interpretado — simula o estado real reportado na issue.
+    for (let i = 0; i < 1566; i++) {
+      lines.push(
+        JSON.stringify({
+          timestamp: "2026-07-19T10:05:00Z",
+          query: `[estimated:path-b-reconcile:${i + 1}/1566]`,
+          status: "ok",
+          estimated: true,
+          source: "path-b-reconcile",
+        }),
+      );
+    }
+    writeFileSync(path, lines.join("\n"), "utf8");
+    const stats = computeBraveCreditStats(null, path, now);
+    assert.equal(stats.queries_this_month_real, 442, "real bate exato com o dashboard oficial");
+    assert.equal(stats.queries_this_month, 2008, "total combinado (real+estimated) ainda reflete a poluição — informativo, não usado no alerta");
+    // ANTES do fix: effective_used=2008 → percent_used=100.4% → alert_level="critical" (falso positivo real).
+    assert.equal(stats.effective_used, 442, "alerta usa só a contagem real, ignorando as 1566 estimated");
+    assert.equal(stats.percent_used, 22.1, "442/2000=22.1% — não 100.4%");
+    assert.equal(stats.alert_level, "ok", "não deve mais alertar critical com esse estado de arquivo");
     rmSync(path, { force: true });
   });
 
@@ -564,7 +619,11 @@ describe("computeBraveCreditStats — leitura fresca do header durante exaustão
     // CRÍTICO: a entrada error NÃO conta como query real — só as 1000 de 260709 contam.
     assert.equal(stats.queries_this_month_real, 1000, "entrada status=error não deve inflar o contador real");
     assert.equal(stats.queries_this_edition_real, 0, "a única entrada desta edição é status=error — não conta");
-    assert.equal(stats.alert_level, "critical", "1951/2000 = 97.55% — critical é uma leitura FRESCA confirmada, não um eco congelado");
+    // (#3707) alert_level agora deriva só de queries_this_month_real (1000/2000=50%,
+    // "ok") — não mais do header (que seria 1951/2000=97.55%, "critical"). A leitura
+    // fresca do header continua exposta via quota_remaining_last_seen/age_hours
+    // abaixo pra diagnóstico/reconcile (#3122), mas não gate mais o alerta.
+    assert.equal(stats.alert_level, "ok", "1000/2000=50% — alerta não deriva mais do header (#3707)");
     // A leitura foi feita 3h antes de `now` (09:00 vs 12:00 do mesmo dia) — fresca.
     assert.equal(stats.quota_remaining_age_hours, 3, "leitura de hoje às 09:00, now=12:00 → 3h de idade");
     rmSync(path, { force: true });
@@ -587,12 +646,15 @@ describe("computeBraveCreditStats — leitura fresca do header durante exaustão
       "utf8",
     );
     const stats = computeBraveCreditStats("260713", path, now);
-    // O alerta ainda mostra critical (correto, o free tier de fato está esgotado),
-    // mas ZERO evidência de que essa leitura foi reconfirmada nesta edição —
+    // ZERO evidência de que essa leitura foi reconfirmada nesta edição —
     // exatamente o sintoma relatado: brave-credits.jsonl "silencioso" desde 260709.
     assert.equal(stats.quota_remaining_last_seen, 49);
     assert.equal(stats.queries_this_edition, 0, "260713 não deixou NENHUM rastro no jsonl — o sintoma relatado na issue");
-    assert.equal(stats.alert_level, "critical");
+    // (#3707) alert_level não deriva mais do header — 1000 reais/2000=50%, "ok".
+    // A preocupação original do #3389 (header obsoleto sendo lido como "critical"
+    // fresco) fica moot pro alerta em si pós-#3707; quota_remaining_age_hours
+    // abaixo segue expondo a idade da leitura pra diagnóstico/reconcile.
+    assert.equal(stats.alert_level, "ok", "1000/2000=50% — não deriva mais do header (#3707)");
     // (#3389 defesa em profundidade) quota_remaining_age_hours EXPÕE que essa
     // leitura tem 4 dias (96h) — mesmo que o fix principal (gravar header em
     // erros) por algum motivo não capture uma leitura nova, o relatório agora
