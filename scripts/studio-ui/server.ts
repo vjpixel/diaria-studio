@@ -89,6 +89,22 @@
  *     `POST /api/apoios/contacts/:id/outreach` (CRUD de contato + tracking
  *     de outreach) — ver `studio-apoios.ts` pro detalhe. Dado pessoal: só em
  *     `data/apoia-se/contacts.jsonl` (junction OneDrive, nunca no repo).
+ *   - `GET /api/reports` (#3714) — lista os relatórios de fim de trabalho
+ *     (edição diária, overnight, develop, mensal) registrados no índice
+ *     file-based `data/reports/index.jsonl` (`studio-reports.ts::listReports`),
+ *     mais recentes primeiro. Substitui o antigo draft de e-mail (decisão do
+ *     editor #3714, 260720) — o registro é feito pelos próprios scripts que
+ *     geram cada relatório (`send-edition-report.ts`, `register-report.ts`
+ *     no fecho de overnight/develop), nunca via chamada HTTP a este server
+ *     (que pode estar parado no momento em que o relatório é gerado).
+ *   - `GET /relatorios/:id` (#3714) — serve o CONTEÚDO do relatório
+ *     resolvido (`resolveReportHtml`): HTML cru se o registro apontar pra um
+ *     `.html`, ou um wrap HTML mínimo se apontar pra um `.md` (overnight/
+ *     develop ainda geram markdown puro). 404 se o id nunca foi registrado
+ *     ou o arquivo referenciado sumiu do disco.
+ *   - `GET /relatorios` — cockpit de Relatórios (#3714): mesma estratégia de
+ *     rewrite de `/triagem`/`/rodada`/`/apoios`, servindo
+ *     `public/relatorios.html`. Consome `GET /api/reports`.
  *   - Notificação Telegram (#3564, sem rota HTTP própria): um watcher em
  *     background, subido por `startStudioServer` e fechado em `close()`,
  *     observa `gatesPending`/`chatPermissionsPending` (mesmo `buildStudioState`
@@ -168,6 +184,12 @@ import { buildWaveProposal } from "./studio-waves.ts";
 // overnight/develop já em andamento/resumível — arquivo próprio desta
 // fatia, import isolado (nenhuma outra rota depende dele). Ver studio-round.ts.
 import { buildRoundPayload, isRoundKind } from "./studio-round.ts";
+// #3714: superfície de Relatórios — lista + serve os relatórios de fim de
+// trabalho (edição/overnight/develop/mensal) registrados via
+// `scripts/register-report.ts` (overnight/develop) ou direto por
+// `send-edition-report.ts` (edição). Read-only: só lê o registry + os
+// arquivos de relatório já persistidos por outros scripts — ver studio-reports.ts.
+import { listReports, getReportById, resolveReportHtml } from "./studio-reports.ts";
 import { buildDiariaDashboardHtml } from "./dashboard-diaria.ts";
 import { buildClariceDashboardHtml } from "./dashboard-clarice.ts";
 import {
@@ -428,6 +450,30 @@ function handleApiRound(rootDir: string, kind: string, res: ServerResponse): voi
     return;
   }
   sendJson(res, 200, buildRoundPayload(rootDir, kind));
+}
+
+/** `GET /api/reports` (#3714) — lista os relatórios registrados, mais
+ * recentes primeiro (`listReports` já ordena). Sempre 200: `listReports` é
+ * fail-soft (registry ausente/corrompido vira `[]`, nunca lança). */
+function handleApiReports(rootDir: string, res: ServerResponse): void {
+  sendJson(res, 200, { reports: listReports(rootDir) });
+}
+
+/** `GET /relatorios/:id` (#3714) — serve o CONTEÚDO do relatório (não uma
+ * view SPA) resolvido por `resolveReportHtml`: HTML cru se o arquivo
+ * registrado for `.html` (edição/mensal), ou um wrap HTML mínimo se for
+ * `.md` (overnight/develop, ainda markdown puro). 404 quando o id nunca foi
+ * registrado; 404 também quando o arquivo referenciado sumiu do disco
+ * (`resolveReportHtml` retorna `ok:false` nesse caso — mesmo status, corpo
+ * HTML já explica o motivo). */
+function handleReportContent(rootDir: string, id: string, res: ServerResponse): void {
+  const entry = getReportById(rootDir, id);
+  if (!entry) {
+    sendHtml(res, 404, `<!doctype html><p>relatório não encontrado: ${escHtmlLite(id)}</p>`);
+    return;
+  }
+  const rendered = resolveReportHtml(rootDir, entry);
+  sendHtml(res, rendered.ok ? 200 : 404, rendered.html);
 }
 
 /** Coleta o corpo da request em memória, com um teto de bytes pra evitar que
@@ -1086,6 +1132,16 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiRound(rootDir, roundMatch[1], res);
         return;
       }
+      // #3714: superfície de Relatórios — lista (JSON) + conteúdo (HTML).
+      if (urlPath === "/api/reports") {
+        handleApiReports(rootDir, res);
+        return;
+      }
+      const reportContentMatch = urlPath.match(/^\/relatorios\/([^/]+)$/);
+      if (reportContentMatch) {
+        handleReportContent(rootDir, decodeURIComponent(reportContentMatch[1]), res);
+        return;
+      }
       // #3602: CRM de apoios — GET (POST/PUT de mutação já tratados acima,
       // antes do guard de método).
       if (urlPath === "/api/apoios") {
@@ -1190,6 +1246,17 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #3602: mesma estratégia de rewrite — a página busca /api/apoios.
       if (urlPath === "/apoios" || urlPath === "/apoios/") {
         const served = serveStaticFile(PUBLIC_DIR, "/apoios.html", res);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #3714: mesma estratégia de rewrite — a página busca /api/reports.
+      // Só o path BARE (sem id) — `/relatorios/:id` (conteúdo do relatório em
+      // si) já foi tratado acima, antes deste bloco.
+      if (urlPath === "/relatorios" || urlPath === "/relatorios/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/relatorios.html", res);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");

@@ -385,15 +385,14 @@ ficar presa em `running` ate reconciliacao (ver `reconcileZombieRunningRows` em
 `scripts/overnight-statusline.ts`, que detecta `.step-6-done.json` presente + row `running`
 e corrige a exibicao sem escrita).
 
-### 6b-8. Regenerar o report + criar o rascunho de e-mail (#1510, #3457) — ULTIMO passo do pipeline
+### 6b-8. Regenerar o report + registrar na superfície do Studio (#1510, #3457, #3714) — ULTIMO passo do pipeline
 
 Com o Stage 6 ja `done` (timer fechado em 6b-7), regenerar `edition-report.html`: agora a
 linha do Stage 6 na tabela tem `end`/duracao carimbados, entao a duracao total do relatorio
 reflete o processamento real do stage (Schedule Beehiiv, verificacao, purga de leaderboard,
 auto-reporter) em vez de ficar subcontada por excluir esse tempo (causa-raiz #3457 — o
 report antigo era gerado, e o e-mail montado a partir dele, ANTES do Stage 6 fechar o
-timer). So depois disso, criar o rascunho do e-mail — a criacao do rascunho e a acao
-literalmente final do pipeline inteiro:
+timer). So depois disso, o comando abaixo — a ultima acao do pipeline inteiro:
 
 ```bash
 npx tsx scripts/send-edition-report.ts \
@@ -402,14 +401,26 @@ npx tsx scripts/send-edition-report.ts \
   --out {EDITION_DIR}/_internal/edition-report.html
 ```
 
-**INVARIANTE (#1579):** Enviar via Gmail MCP `create_draft` (to: `vjpixel@gmail.com`, subject: `Diar.ia {AAMMDD} — relatorio de edicao`, htmlBody: `readFileSync('_internal/edition-report.html', 'utf8')` LITERAL — o arquivo REGENERADO nesta etapa, nao o descartavel de 6b-6). **NUNCA construir htmlBody programaticamente.**
+**#3714 (decisão do editor, 260720 — substitui o antigo draft de Gmail, não soma a ele):**
+o comando acima já registra o relatório na superfície de Relatórios do Studio
+(`scripts/studio-ui/studio-reports.ts::registerReport`, chamado de dentro de
+`writeReportFile` — file-based, fail-soft, nunca depende do `npm run studio` estar no ar) e
+imprime o summary JSON em stderr com o campo `studio_report_url`. Ler esse campo do JSON e
+usar essa URL no "Resumo final" (abaixo) como o link do relatório — **NÃO criar mais draft
+via `mcp__claude_ai_Gmail__create_draft` aqui** (o invariante #1579 antigo — enviar
+`edition-report.html` LITERAL via Gmail — foi removido junto com o call site; o arquivo
+REGENERADO nesta etapa agora só alimenta o registro no Studio, não um e-mail).
 
-**Falha nao bloqueia** — logar warn e seguir.
+**Falha nao bloqueia** — logar warn e seguir (o registro no Studio já é fail-soft por
+construção; esta nota cobre falha do próprio `send-edition-report.ts`, ex: edition-dir
+inacessível).
 
 ---
 
 ## Resumo final (apos auto-reporter + relatorio)
 
 Apos auto-reporter, apresentar resumo consolidado da edicao. **Nao enumerar as issues criadas pelo auto-reporter (#1825)** — reportar so a contagem. Se alguma parte foi pulada, incluir bloco de retomada explicito.
+
+**#3714:** incluir a linha `Relatório: {studio_report_url}` (valor lido do summary JSON de 6b-8) — é o link primário do relatório desta edição agora que o draft de Gmail foi removido. Se `studio_report_url` vier `null` (registro falhou, fail-soft), reportar `Relatório: só local (_internal/edition-report.html) — registro no Studio falhou, ver warn acima` em vez de omitir a linha.
 
 Se nenhum stage foi pulado, omitir esse bloco — so listar outputs e metricas finais.

@@ -123,6 +123,9 @@
 .track-overnight { border-color: var(--brand); color: var(--brand); }
 .track-develop { border-color: #5319e7; color: #5319e7; }
 .track-other { opacity: 0.6; }
+/* #3714: kinds da superfície de Relatórios (relatorios.js reusa .track-badge) */
+.track-edicao { border-color: #1a7f37; color: #1a7f37; }
+.track-mensal { border-color: #b45309; color: #b45309; }
 
 .label-chip {
   display: inline-block;

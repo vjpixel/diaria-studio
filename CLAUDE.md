@@ -52,7 +52,7 @@ O fluxo editorial é modelado como 6 etapas com gate humano em 2 delas (Stage 4:
    - `/diaria-inbox` — drena manualmente o Gmail pra ver submissões antes de iniciar a edição.
    - `/diaria-log [edition] [level]` — lê `data/run-log.jsonl`; use quando algo der errado e quiser que eu investigue. Ex: `/diaria-log 260418 error`.
    - `/diaria-source-health [fonte]` — visão geral ou auditoria individual da saúde das fontes (successes, failures, timeouts, duração, últimas execuções). `data/sources/{slug}.jsonl` é o log append-only por fonte.
-**Fim do dia:** `/diaria-overnight [--dry-run]` — fora do fluxo de edição. Varre as issues abertas, faz briefing interativo com o editor antes dele sair, e resolve a fila autonomamente até esgotá-la (PR → CI → auto-merge, 1 unidade por vez). Ao final, code-review consolidado do diff da noite + rascunho de relatório no Gmail + resumo no terminal (#2021).
+**Fim do dia:** `/diaria-overnight [--dry-run]` — fora do fluxo de edição. Varre as issues abertas, faz briefing interativo com o editor antes dele sair, e resolve a fila autonomamente até esgotá-la (PR → CI → auto-merge, 1 unidade por vez). Ao final, code-review consolidado do diff da noite + registro do relatório na superfície de Relatórios do Studio (`/relatorios`, #3714) + resumo no terminal (#2021).
 
 **Watchdog de stall overnight (#2688):** `scripts/overnight-watchdog.ts` — roda via Task Scheduler a cada 10 min e detecta stall por tempo mesmo quando o coordenador está completamente parado (caso não coberto pelo #2379, que é event-driven). Arme local one-time: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\overnight\setup-watchdog-schedule.ps1`. Ver `docs/overnight-watchdog-setup.md`.
 
@@ -185,6 +185,7 @@ scripts/          # utilitários TypeScript (Node)
                   # a falha força a pergunta "isso devia ser genérico?" (aí move pra shared/ via git mv)
 data/past-editions.md    # gerado (#1847: movido de context/ — regenera todo Stage 0, não cacheado)
 data/editions/{AAMMDD}/  # outputs por edição (gate-facing no root, pipeline internals em _internal/)
+data/reports/index.jsonl # registry file-based da superfície de Relatórios do Studio (#3714) — aponta pros relatórios já persistidos (edition-report.html, data/overnight|develop/{AAMMDD}/report.md), não os duplica
 platform.config.json     # { newsletter: "beehiiv", socials: [...] }
 ```
 

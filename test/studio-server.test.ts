@@ -88,6 +88,48 @@ describe("studio-server (#3555)", () => {
     assert.match(res.headers.get("content-type") ?? "", /application\/json/);
   });
 
+  // #3714 — superfície de Relatórios. Cobertura fina de integração (rota +
+  // registro real via registerReport, sem servidor real gerando o
+  // relatório): a lógica pura fica em test/studio-reports.test.ts.
+  it("GET /api/reports retorna 200 com lista vazia quando nada foi registrado", async () => {
+    const res = await fetch(new URL("/api/reports", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.reports, []);
+  });
+
+  it("GET /relatorios/:id serve o conteúdo registrado; id desconhecido é 404", async () => {
+    const { registerReport } = await import("../scripts/studio-ui/studio-reports.ts");
+    mkdirSync(join(root, "data", "overnight", "260720"), { recursive: true });
+    writeFileSync(join(root, "data", "overnight", "260720", "report.md"), "# Diar.ia overnight 260720\n\n3 resolvidas.");
+    registerReport(root, {
+      kind: "overnight",
+      sessionId: "260720",
+      title: "Diar.ia overnight 260720 — 3 resolvidas",
+      htmlPath: "data/overnight/260720/report.md",
+    });
+
+    const listRes = await fetch(new URL("/api/reports", server.url));
+    const listBody = await listRes.json();
+    assert.equal(listBody.reports.length, 1);
+    assert.equal(listBody.reports[0].id, "overnight-260720");
+
+    const contentRes = await fetch(new URL("/relatorios/overnight-260720", server.url));
+    assert.equal(contentRes.status, 200);
+    assert.match(contentRes.headers.get("content-type") ?? "", /text\/html/);
+    const html = await contentRes.text();
+    assert.match(html, /3 resolvidas/); // markdown wrapado, conteúdo original preservado
+
+    const missingRes = await fetch(new URL("/relatorios/overnight-999999", server.url));
+    assert.equal(missingRes.status, 404);
+  });
+
+  it("GET /relatorios serve o cockpit (rewrite pra relatorios.html)", async () => {
+    const res = await fetch(new URL("/relatorios", server.url));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /text\/html/);
+  });
+
   it("GET / serve a SPA (index.html)", async () => {
     const res = await fetch(new URL("/", server.url));
     assert.equal(res.status, 200);

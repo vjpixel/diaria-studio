@@ -332,7 +332,12 @@ export function ensureEditionReport(editionsRoot: string, post: Post): boolean {
   const reportPath = resolve(dirPath, "_internal", "edition-report.html");
   if (existsSync(reportPath)) return false; // já existe — não re-gera
   try {
-    writeEditionReport(edition, dirPath, reportPath);
+    const { registered } = writeEditionReport(edition, dirPath, reportPath);
+    if (!registered) {
+      process.stderr.write(
+        `[refresh-dedup] warn: edition-report de ${edition} escrito, mas registro no Studio falhou (#3714) — ver warn de send-edition-report acima\n`,
+      );
+    }
     return true;
   } catch (e) {
     process.stderr.write(
