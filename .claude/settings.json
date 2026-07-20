@@ -2,7 +2,7 @@
   "statusLine": {
     "type": "command",
     "command": "npx tsx scripts/overnight-statusline.ts",
-    "refreshInterval": 30
+    "refreshInterval": 5
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
