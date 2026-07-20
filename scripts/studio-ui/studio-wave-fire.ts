@@ -448,9 +448,49 @@ export interface GhIssueRunResult {
  * (injeção de teste sem spawnar `gh` de verdade). */
 export type GhIssueRunFn = (args: string[], cwd: string) => GhIssueRunResult;
 
-function defaultGhIssueRun(args: string[], cwd: string): GhIssueRunResult {
-  const result = spawnSync("gh", args, { cwd, encoding: "utf8" });
+/** #3773 — teto de tempo pra cada `spawnSync("gh", ...)` deste módulo. Sem
+ * isso, um `gh auth` expirado ou a API do GitHub lenta/rate-limited pendura
+ * `spawnSync` (bloqueante) INDEFINIDAMENTE, travando o event loop do Node —
+ * e como `checkAllIssuesTerminalState` roda essas chamadas em série dentro
+ * do mesmo processo do studio-server, qualquer outra rota HTTP concorrente
+ * (chat drawer, autosave do painel de revisão) trava junto. Viola CLAUDE.md
+ * #738 ("Stall silencioso > 60s é inaceitável"). 10s é generoso pra latência
+ * normal do `gh` e, combinado ao teto de concorrência de onda (6 issues,
+ * `parseWaveFireRequestBody`), limita o pior caso sequencial a ~70s (6×
+ * `gh issue view` + 1× `gh api user` pro `botLogin`, todos com este mesmo
+ * teto) — ainda um stall real, mas BOUNDED em vez de indefinido; paralelizar essas N
+ * chamadas exigiria trocar `spawnSync` (bloqueante) por `spawn` assíncrono
+ * em toda a cadeia de injeção de teste (`GhIssueRunFn` teria que virar
+ * `Promise`-based, tocando ~15 casos de teste em
+ * `test/studio-wave-fire.test.ts`) — fora do escopo mínimo deste fix,
+ * documentado no PR como follow-up. Quando `spawnSync` estoura o timeout,
+ * `result.status` vem `null` (processo morto via SIGTERM) — já cai no ramo
+ * "status !== 0" existente abaixo, tratado como falha/não-terminal. */
+export const GH_SPAWN_TIMEOUT_MS = 10_000;
+
+/**
+ * Wrapper fino sobre `spawnSync` compartilhado pelos dois defaults deste
+ * módulo (`defaultGhIssueRun`, `defaultGhAuthLogin`) — extraído (em vez de
+ * duplicar a chamada) pra permitir um teste de regressão real do #3773:
+ * `bin`/`timeoutMs` são parametrizados (produção sempre usa `"gh"` +
+ * `GH_SPAWN_TIMEOUT_MS`) só pra o teste poder substituir por um binário
+ * genuinamente lento (`process.execPath` com um `setTimeout` maior que o
+ * timeout dado) e um timeout curto, provando que `spawnSync` de fato mata o
+ * processo pendurado em vez de bloquear o event loop indefinidamente — sem
+ * precisar de `gh` instalado nem esperar os 10s reais de produção.
+ */
+export function spawnGhSync(
+  args: string[],
+  cwd: string,
+  timeoutMs: number = GH_SPAWN_TIMEOUT_MS,
+  bin: string = "gh",
+): GhIssueRunResult {
+  const result = spawnSync(bin, args, { cwd, encoding: "utf8", timeout: timeoutMs });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+}
+
+function defaultGhIssueRun(args: string[], cwd: string): GhIssueRunResult {
+  return spawnGhSync(args, cwd);
 }
 
 interface GhIssueViewRaw {
@@ -554,7 +594,10 @@ export function evaluateIssueTerminalState(
 export type GhAuthLoginFn = (cwd: string) => string | null;
 
 function defaultGhAuthLogin(cwd: string): string | null {
-  const result = spawnSync("gh", ["api", "user", "--jq", ".login"], { cwd, encoding: "utf8" });
+  // #3773 — mesmo teto de `defaultGhIssueRun`; esta chamada roda só 1x por
+  // onda (não 1x por issue), mas ainda pode pendurar o event loop
+  // indefinidamente sem `timeout` se `gh auth` estiver degradado.
+  const result = spawnGhSync(["api", "user", "--jq", ".login"], cwd);
   if (result.status !== 0) return null;
   const login = (result.stdout ?? "").trim();
   return login.length > 0 ? login : null;
