@@ -126,18 +126,6 @@ export async function driveFindFolderByNames(
   return null;
 }
 
-/**
- * Acha arquivo (não-folder) por nome dentro de um parent.
- * Exclui folders pra evitar match espúrio se houver pasta com mesmo nome.
- */
-export async function driveFindFileInParent(name: string, parentId: string): Promise<DriveFileEntry | null> {
-  const safe = escapeDriveQueryString(name);
-  const files = await driveList(
-    `name = '${safe}' and '${parentId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`
-  );
-  return files[0] ?? null;
-}
-
 /** Cria pasta vazia em parent. Retorna ID da pasta criada. */
 export async function driveCreateFolder(name: string, parentId: string): Promise<string> {
   const res = await gFetchRetry(`${DRIVE_API}/files`, {
