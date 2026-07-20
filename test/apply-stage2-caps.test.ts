@@ -354,6 +354,134 @@ describe("apply-stage2-caps CLI — coverage.line recalc (#906)", () => {
     }
   });
 
+  // #3763: apply-gate-edits.ts (Stage 1, #3709) já troca coverage.line pelo
+  // aviso de capture_failed quando o marker sinaliza falha de captura de
+  // newsletters. apply-stage2-caps.ts (Stage 2, rodado logo em seguida no
+  // mesmo fluxo) NÃO pode sobrescrever esse aviso com um recalc confiante —
+  // mesmo guard que apply-gate-edits.ts e sync-coverage-line.ts (#2878) já
+  // aplicam, lendo o marker adjacente ao --in.
+  it("marker sinaliza capture_failed → CLI preserva o aviso em vez de recalcular coverage.line (#3763)", async () => {
+    const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { spawnSync } = await import("node:child_process");
+
+    const dir = mkdtempSync(join(tmpdir(), "apply-caps-capture-failed-"));
+    try {
+      const inPath = join(dir, "01-approved.json");
+      const outPath = join(dir, "01-approved-capped.json");
+      const warningLine =
+        "⚠️ contagem de submissões indisponível (captura de newsletters falhou: 401 unauthorized) — recompute após reautenticar.";
+      writeFileSync(
+        inPath,
+        JSON.stringify({
+          highlights: [{ url: "h1" }, { url: "h2" }, { url: "h3" }],
+          lancamento: [{ url: "l1" }, { url: "l2" }],
+          radar: new Array(20).fill({}).map((_, i) => ({ url: `n${i}` })),
+          coverage: {
+            editor_submitted: 0,
+            diaria_discovered: 0,
+            selected: 30,
+            line: warningLine,
+          },
+        }),
+        "utf8",
+      );
+      // Marker vive no MESMO dir que --in (apply-stage2-caps.ts usa
+      // dirname(inPath) como inboxMarkerDir, espelhando apply-gate-edits.ts).
+      writeFileSync(
+        join(dir, ".marker-inject-inbox-urls.json"),
+        JSON.stringify({
+          editor_blocks: 0,
+          newsletter_source: "captured-articles",
+          captured_newsletter_count: 0,
+          capture_failed: true,
+          capture_error: "401 unauthorized",
+        }),
+        "utf8",
+      );
+
+      const projectRoot = join(import.meta.dirname, "..");
+      const scriptPath = join(projectRoot, "scripts", "apply-stage2-caps.ts");
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", scriptPath, "--in", inPath, "--out", outPath],
+        { cwd: projectRoot, encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+
+      const capped = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.equal(
+        capped.coverage.line,
+        warningLine,
+        "coverage.line deve permanecer o aviso de capture_failed — apply-stage2-caps.ts não pode sobrescrever com um recalc confiante",
+      );
+      assert.doesNotMatch(
+        capped.coverage.line,
+        /Nesta edição, a IA analisou/,
+        "não deve renderizar a frase normal quando a captura falhou",
+      );
+      // #906 continua vivo: selected ainda é recalculado (só a linha muda).
+      assert.equal(capped.coverage.selected, 12, "selected ainda recalcula pós-caps mesmo com capture_failed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("marker sem capture_failed → coverage.line recalcula normalmente (regressão: não quebra o caminho feliz, #3763)", async () => {
+    const { mkdtempSync, writeFileSync, readFileSync, rmSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const { spawnSync } = await import("node:child_process");
+
+    const dir = mkdtempSync(join(tmpdir(), "apply-caps-capture-ok-"));
+    try {
+      const inPath = join(dir, "01-approved.json");
+      const outPath = join(dir, "01-approved-capped.json");
+      writeFileSync(
+        inPath,
+        JSON.stringify({
+          highlights: [{ url: "h1" }, { url: "h2" }, { url: "h3" }],
+          lancamento: [{ url: "l1" }, { url: "l2" }],
+          radar: new Array(20).fill({}).map((_, i) => ({ url: `n${i}` })),
+          coverage: {
+            editor_submitted: 5,
+            diaria_discovered: 100,
+            selected: 30,
+            line: "linha antiga qualquer",
+          },
+        }),
+        "utf8",
+      );
+      writeFileSync(
+        join(dir, ".marker-inject-inbox-urls.json"),
+        JSON.stringify({
+          editor_blocks: 5,
+          newsletter_source: "inbox-md",
+        }),
+        "utf8",
+      );
+
+      const projectRoot = join(import.meta.dirname, "..");
+      const scriptPath = join(projectRoot, "scripts", "apply-stage2-caps.ts");
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", scriptPath, "--in", inPath, "--out", outPath],
+        { cwd: projectRoot, encoding: "utf8" },
+      );
+      assert.equal(r.status, 0, r.stderr);
+
+      const capped = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.match(
+        capped.coverage.line,
+        /Nesta edição, a IA analisou 105 artigos/,
+        "sem capture_failed, coverage.line deve recalcular normalmente (comportamento #906 preservado)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("atomic write não deixa .tmp órfão após sucesso (review #921 P1)", async () => {
     const { mkdtempSync, writeFileSync, existsSync, rmSync } = await import("node:fs");
     const { join } = await import("node:path");

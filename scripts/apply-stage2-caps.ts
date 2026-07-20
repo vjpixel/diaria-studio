@@ -24,7 +24,11 @@ import {
   STAGE_2_MAX_USE_MELHOR,
   type ApprovedJson,
 } from "./lib/apply-stage2-caps.ts";
-import { formatCoverageLine } from "./lib/inbox-stats.ts";
+import {
+  formatCoverageLine,
+  readCaptureFailedFromMarker,
+  renderCaptureFailedLine,
+} from "./lib/inbox-stats.ts";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 interface CoverageLike {
@@ -56,6 +60,17 @@ function main(): void {
   // #906 — recalcular coverage.line com o `selected` real pós-caps. Sem
   // isso, o writer copia coverage.line literal e a intro fica com "30
   // mais relevantes" mesmo quando a edição publica 12 artigos.
+  //
+  // #3763: mas #906 recalcula incondicionalmente — se `apply-gate-edits.ts`
+  // (Stage 1, #3709) já trocou coverage.line pelo aviso de capture_failed
+  // (fetch-newsletter-threads.ts falhou por auth/rede), este passo sobrescrevia
+  // o aviso com uma frase confiante ("Nesta edição, a IA analisou N artigos...")
+  // construída a partir dos mesmos números não confiáveis. Mesmo guard que
+  // apply-gate-edits.ts e sync-coverage-line.ts (#2878) já aplicam: se o marker
+  // (adjacente ao --in, mesmo dir de inPath) sinaliza capture_failed, preserva o
+  // aviso — não recalcula.
+  const inboxMarkerDir = dirname(inPath);
+  const captureFailure = readCaptureFailedFromMarker(inboxMarkerDir);
   const cov = capped.coverage as CoverageLike | undefined;
   if (cov && typeof cov.editor_submitted === "number" && typeof cov.diaria_discovered === "number") {
     const selectedCapped =
@@ -67,11 +82,21 @@ function main(): void {
     capped.coverage = {
       ...cov,
       selected: selectedCapped,
-      line: formatCoverageLine({
-        editorSubmissions: cov.editor_submitted,
-        diariaDiscovered: cov.diaria_discovered,
-        selected: selectedCapped,
-      }),
+      line: captureFailure.failed
+        ? renderCaptureFailedLine(captureFailure.error ?? "motivo desconhecido")
+        : formatCoverageLine({
+            editorSubmissions: cov.editor_submitted,
+            diariaDiscovered: cov.diaria_discovered,
+            selected: selectedCapped,
+          }),
+    };
+  } else if (cov && captureFailure.failed) {
+    // #3763: mesmo sem editor_submitted/diaria_discovered numéricos (coverage
+    // parcial/legado), ainda preserva o aviso se já presente — nunca deixa o
+    // ramo sem cov.editor_submitted apagar um aviso existente silenciosamente.
+    capped.coverage = {
+      ...cov,
+      line: renderCaptureFailedLine(captureFailure.error ?? "motivo desconhecido"),
     };
   }
 
