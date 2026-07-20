@@ -170,7 +170,6 @@ export function getReportById(rootDir: string, id: string): ReportEntry | null {
 export interface ReportRenderResult {
   ok: boolean;
   html: string;
-  contentType: string;
 }
 
 function escHtml(s: string): string {
@@ -196,13 +195,12 @@ export function resolveReportHtml(rootDir: string, entry: ReportEntry): ReportRe
   const rootAbs = resolve(rootDir);
   const abs = resolve(rootDir, entry.htmlPath);
   if (abs !== rootAbs && !abs.startsWith(rootAbs + sep)) {
-    return { ok: false, html: `<!doctype html><p>path inválido</p>`, contentType: "text/html; charset=utf-8" };
+    return { ok: false, html: `<!doctype html><p>path inválido</p>` };
   }
   if (!existsSync(abs)) {
     return {
       ok: false,
       html: `<!doctype html><p>arquivo do relatório não encontrado: ${escHtml(entry.htmlPath)}</p>`,
-      contentType: "text/html; charset=utf-8",
     };
   }
 
@@ -213,12 +211,11 @@ export function resolveReportHtml(rootDir: string, entry: ReportEntry): ReportRe
     return {
       ok: false,
       html: `<!doctype html><p>falha ao ler o relatório: ${escHtml((e as Error).message)}</p>`,
-      contentType: "text/html; charset=utf-8",
     };
   }
 
   if (abs.toLowerCase().endsWith(".html")) {
-    return { ok: true, html: raw, contentType: "text/html; charset=utf-8" };
+    return { ok: true, html: raw };
   }
 
   const wrapped = `<!doctype html>
@@ -237,5 +234,5 @@ h1 { font-size: 18px; border-bottom: 2px solid #2563eb; padding-bottom: 8px; }
 <pre>${escHtml(raw)}</pre>
 </body>
 </html>`;
-  return { ok: true, html: wrapped, contentType: "text/html; charset=utf-8" };
+  return { ok: true, html: wrapped };
 }

@@ -4,8 +4,9 @@
  * Trava a instrução de tornar verificável o modelo/effort do coordenador
  * (fixado pelo frontmatter em #2941): um log de startup no run-log.jsonl na
  * Fase 0, e uma linha "Coordenador: {model} / {effort}" no relatório final
- * (terminal + rascunho Gmail), ambos a partir do valor CONFIGURADO — nunca
- * do auto-relato do assistente, que não é 100% confiável.
+ * (terminal + relatório registrado no Studio, #3714), ambos a partir do
+ * valor CONFIGURADO — nunca do auto-relato do assistente, que não é 100%
+ * confiável.
  *
  * Não testa comportamento do LLM (SKILL.md é prompt); testa presença/ausência
  * de strings no texto-fonte, como writer-monthly-prompt.test.ts.
@@ -36,7 +37,7 @@ describe("diaria-overnight — modelo/effort do coordenador verificável (#2993)
     );
   });
 
-  it("Fase 2 inclui a linha 'Coordenador: {model} / {effort}' no digest compartilhado (terminal + Gmail)", () => {
+  it("Fase 2 inclui a linha 'Coordenador: {model} / {effort}' no digest compartilhado (terminal + relatório Studio)", () => {
     assert.match(
       content,
       /linha `Coordenador: \{model\} \/ \{effort\}` com os valores \*\*CONFIGURADOS\*\* no frontmatter/,
@@ -44,7 +45,7 @@ describe("diaria-overnight — modelo/effort do coordenador verificável (#2993)
     );
     assert.match(
       content,
-      /Esta linha entra tanto no resumo do terminal \(passo 5\) quanto no rascunho do Gmail \(passo 3\)/,
+      /Esta linha entra tanto no resumo do terminal \(passo 5\) quanto no relatório registrado no Studio \(passo 3, #3714\)/,
       "deve deixar explícito que a linha vale para os dois canais do relatório",
     );
   });

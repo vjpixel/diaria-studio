@@ -205,7 +205,6 @@ describe("resolveReportHtml (#3714)", () => {
     const rendered = resolveReportHtml(r, entry);
     assert.equal(rendered.ok, true);
     assert.equal(rendered.html, "<h1>Relatório</h1>");
-    assert.match(rendered.contentType, /text\/html/);
   });
 
   it(".md vira wrap HTML mínimo (escapado, preserva o conteúdo original)", () => {

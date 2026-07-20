@@ -592,7 +592,7 @@ export function writeReportFile(
   outPath: string,
   html: string,
   edition?: string,
-): { md5: string; absOut: string } {
+): { md5: string; absOut: string; registered: boolean } {
   const absOut = resolve(ROOT, outPath);
   mkdirSync(dirname(absOut), { recursive: true });
   writeFileSync(absOut, html, "utf8");
@@ -600,15 +600,20 @@ export function writeReportFile(
   const manifestPath = resolve(editionDir, "_internal", ".edition-report-md5.txt");
   mkdirSync(dirname(manifestPath), { recursive: true });
   writeFileSync(manifestPath, md5 + "\n", "utf8");
+  let registered = true;
   if (edition) {
-    registerReport(ROOT, {
+    const result = registerReport(ROOT, {
       kind: "edicao",
       sessionId: edition,
       title: `Diar.ia — relatório de edição ${edition}`,
       htmlPath: toRepoRelativePosix(absOut),
     });
+    registered = result.ok;
+    if (!result.ok) {
+      process.stderr.write(`[send-edition-report] warn: registro no Studio falhou (#3714): ${result.error}\n`);
+    }
   }
-  return { md5, absOut };
+  return { md5, absOut, registered };
 }
 
 /**
@@ -622,7 +627,7 @@ export function writeEditionReport(
   edition: string,
   editionDir: string,
   outPath: string,
-): { md5: string; outPath: string } {
+): { md5: string; outPath: string; registered: boolean } {
   if (!existsSync(editionDir)) {
     throw new Error(`edition dir não encontrado: ${editionDir}`);
   }
@@ -642,8 +647,8 @@ export function writeEditionReport(
     loadSocialPreviewUrl(editionDir),
     loadNewsletterUrl(editionDir), // #3466
   );
-  const { md5, absOut } = writeReportFile(editionDir, outPath, html, edition);
-  return { md5, outPath: absOut };
+  const { md5, absOut, registered } = writeReportFile(editionDir, outPath, html, edition);
+  return { md5, outPath: absOut, registered };
 }
 
 async function main(): Promise<void> {
@@ -698,17 +703,21 @@ async function main(): Promise<void> {
   // file-based) quando `edition` é passado — a URL sai também no summary
   // JSON (stderr) como `studio_report_url`, pro caller (orchestrator-stage-6)
   // imprimir no resumo final em vez do antigo draft de Gmail.
+  let registered = false;
   if (outPath) {
-    const { md5, absOut } = writeReportFile(editionDir, outPath, html, edition);
-    process.stderr.write(`[send-edition-report] wrote ${absOut} (md5: ${md5.slice(0, 8)})\n`);
+    const result = writeReportFile(editionDir, outPath, html, edition);
+    registered = result.registered;
+    process.stderr.write(`[send-edition-report] wrote ${result.absOut} (md5: ${result.md5.slice(0, 8)})\n`);
   } else {
     process.stdout.write(html);
   }
 
-  // #3714: URL só existe quando o arquivo foi de fato escrito+registrado
-  // (`--out` passado) — sem `--out`, nada foi persistido em disco pra
-  // registrar (o HTML foi só pro stdout).
-  const studioReportUrl = outPath
+  // #3714: URL só existe quando o arquivo foi de fato escrito E registrado
+  // (`--out` passado + `registerReport` retornou `ok`) — sem `--out`, nada
+  // foi persistido em disco; com `--out` mas registro falho, a URL levaria
+  // a um 404 no Studio (achado do self-review, #573: nunca afirmar estado
+  // externo sem checar o resultado real da operação).
+  const studioReportUrl = registered
     ? `http://127.0.0.1:${process.env.STUDIO_PORT ?? "4174"}/relatorios/${reportId("edicao", edition)}`
     : null;
 
