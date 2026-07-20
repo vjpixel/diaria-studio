@@ -30,13 +30,13 @@ import { resolve, dirname } from "node:path";
 import { canonicalize as canonicalize_, sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { computeTotalConsidered } from "./lib/categorized-stats.ts";
 import {
-  countEditorSubmissions,
+  getTotalEditorSubmissions,
   formatCoverageLine,
   resolveEditorEmail,
   readInboxLinkCountFromMarker,
   readInjectPoolSizeFromMarker,
   computeDiariaDiscovered,
-} from "./lib/inbox-stats.ts"; // #592, #609, #1864
+} from "./lib/inbox-stats.ts"; // #592, #609, #1864, #3696
 import type { Article, Highlight, CategorizedJson, ApprovedJson } from "./lib/schemas/edition-state.ts";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
@@ -340,7 +340,13 @@ function main() {
   // #592 + #609: linha de cobertura — submissões / descobertos / selecionados
   const platformConfigPath = resolve(ROOT, "platform.config.json");
   const editorEmail = resolveEditorEmail(platformConfigPath);
-  const editorSubmissions = countEditorSubmissions(inboxMdPath, editorEmail); // X = nº de e-mails
+  const inboxMarkerDir = dirname(jsonPath);
+  // #3696: X = blocos do inbox archive + newsletters capturadas fora do
+  // inbox.md (caminho "captured-articles", #1520) — antes, só
+  // `countEditorSubmissions` sozinha, que não enxerga `captured-newsletters.json`
+  // e subcontava X sempre que 0b-bis alimentava newsletters pelo caminho de
+  // captura direta (caso real 260720: 3 em vez de 12).
+  const editorSubmissions = getTotalEditorSubmissions(inboxMdPath, inboxMarkerDir, editorEmail); // X = nº de e-mails
   const totalSelected =
     approved.highlights.length +
     approved.lancamento.length +
@@ -356,7 +362,6 @@ function main() {
   // (escritos no inject). Antes, subtrair os links pré-filtro de `totalConsidered`
   // (pós-categorize) zerava o Y (138 − 157 < 0 → 0) (#1864 review). Fallback
   // (marker ausente): totalConsidered − editorSubmissions (comportamento antigo).
-  const inboxMarkerDir = dirname(jsonPath);
   const diariaDiscovered = computeDiariaDiscovered({
     rawPoolSize: readInjectPoolSizeFromMarker(inboxMarkerDir),
     inboxLinks: readInboxLinkCountFromMarker(inboxMarkerDir),
