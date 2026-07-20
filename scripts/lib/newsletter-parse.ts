@@ -546,6 +546,21 @@ export function parseEIA(text: string, editionDir: string): EIA {
  * A linha é injetada pelo writer no topo do reviewed.md (após TÍTULO/SUBTÍTULO e
  * antes do primeiro destaque). #1097 mantém os números sincronizados com Stage 1.
  */
+/** Captura de `startIdx` até o próximo boundary estrutural (`---` isolado em
+ * linha própria, ou `**DESTAQUE`) — o que vier primeiro. Sem boundary (MD
+ * malformado) captura até o fim do texto — defensivo, não deveria ocorrer em
+ * MD bem formado. Compartilhado pelos dois caminhos de `extractCoverageLine`
+ * (#3691 — antes só existia inline no caminho ancorado no CTA). */
+function captureUntilStructuralBoundary(text: string, startIdx: number): string {
+  const rest = text.slice(startIdx);
+  const sepMatch = rest.match(/^---[ \t]*\r?$/m);
+  const destMatch = rest.match(/^\*\*DESTAQUE/m);
+  let endIdx = rest.length;
+  if (sepMatch?.index !== undefined) endIdx = Math.min(endIdx, sepMatch.index);
+  if (destMatch?.index !== undefined) endIdx = Math.min(endIdx, destMatch.index);
+  return rest.slice(0, endIdx).trim();
+}
+
 export function extractCoverageLine(text: string): string | null {
   // #3461: formato novo (padrão a partir de 260715) — bloco de boas-vindas
   // multi-parágrafo, sem negrito, começando com "Olá! Eu sou o [Pixel](...)"
@@ -557,21 +572,25 @@ export function extractCoverageLine(text: string): string | null {
   // descartado silenciosamente do HTML mesmo presente no MD (o editor tinha
   // que colar o parágrafo extra ANTES da frase-fronteira, frágil). Agora a
   // frase-CTA só ANCORA o início do bloco — a captura real se estende até o
-  // próximo boundary estrutural (`---` isolado em linha própria, ou o próximo
-  // `**DESTAQUE`), o que vier primeiro. Sem boundary (MD malformado) captura
-  // até o fim do texto — defensivo, não deveria ocorrer em MD bem formado.
+  // próximo boundary estrutural, via `captureUntilStructuralBoundary`.
   const anchorMatch = text.match(
     /^Olá! Eu sou o [\s\S]*?considere apoiar o projeto\]\([^)]+\)\./m,
   );
   if (anchorMatch) {
-    const startIdx = anchorMatch.index ?? 0;
-    const rest = text.slice(startIdx);
-    const sepMatch = rest.match(/^---[ \t]*\r?$/m);
-    const destMatch = rest.match(/^\*\*DESTAQUE/m);
-    let endIdx = rest.length;
-    if (sepMatch?.index !== undefined) endIdx = Math.min(endIdx, sepMatch.index);
-    if (destMatch?.index !== undefined) endIdx = Math.min(endIdx, destMatch.index);
-    return rest.slice(0, endIdx).trim();
+    return captureUntilStructuralBoundary(text, anchorMatch.index ?? 0);
+  }
+
+  // #3691: fallback — bloco de boas-vindas SEM a frase-CTA de apoio (o editor
+  // pode remover essa frase deliberadamente, ex: pra não competir com outro
+  // CTA já presente na edição). Sem este fallback, o bloco inteiro era
+  // descartado em silêncio do HTML mesmo presente no MD — incidente real na
+  // edição 260720, onde a intro inteira (incluindo aviso de lançamento)
+  // sumiu do preview porque a frase-CTA fixa não estava mais lá. Basta o
+  // bloco COMEÇAR com a saudação padrão — mesmo sinal "inequívoco" usado
+  // acima, só que sem exigir a frase-CTA como parte do match.
+  const welcomeMatch = text.match(/^Olá! Eu sou o [^\n]+$/m);
+  if (welcomeMatch) {
+    return captureUntilStructuralBoundary(text, welcomeMatch.index ?? 0);
   }
 
   // Formatos legados (linha única): #592/#609 original + #3456.

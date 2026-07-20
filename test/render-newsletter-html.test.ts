@@ -1580,6 +1580,36 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     );
   });
 
+  it("#3691: extrai o bloco de boas-vindas SEM a frase-CTA de apoio (editor removeu deliberadamente)", () => {
+    // Incidente real 260720: a frase-CTA fixa "considere apoiar o projeto"
+    // foi removida da intro (pra não competir com outro CTA na edição) — sem
+    // este fallback, extractCoverageLine retornava null e a intro inteira
+    // (incluindo um aviso de lançamento) sumia do HTML em silêncio.
+    const md = [
+      "TÍTULO",
+      "",
+      "Headline de teste",
+      "",
+      "---",
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Amanhã é um dia especial.",
+      "",
+      "Nesta edição, a IA analisou 167 artigos (3 enviados por mim e 164 encontrados automaticamente).",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const line = extractCoverageLine(md);
+    assert.ok(line, "coverage line (welcome sem CTA) deve ser extraída");
+    assert.match(line!, /^Olá! Eu sou o \[Pixel\]/);
+    assert.match(line!, /Amanhã é um dia especial\./);
+    assert.match(line!, /Nesta edição, a IA analisou 167 artigos/);
+    assert.doesNotMatch(line!, /---/);
+    assert.doesNotMatch(line!, /DESTAQUE/);
+  });
+
   it("renderCoverage retorna <tr> com texto escapado", () => {
     const text = "Para esta edição, eu (o editor) enviei 5 submissões & a Diar.ia encontrou outros 80 artigos.";
     const html = renderCoverage(text);
