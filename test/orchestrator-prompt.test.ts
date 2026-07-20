@@ -370,3 +370,52 @@ describe("orchestrator — sem `\\n` literal em comandos (hotfix 260621)", () =>
     });
   }
 });
+
+describe("#3727: teardown do fallback 127.0.0.1 exclui explicitamente a porta fixa do Studio", () => {
+  // Achado do review consolidado (Fase 1.5, rodada 260719) sobre a PR #3718
+  // (fix do #3700): o fallback de varredura `tabs_context_mcp` por abas
+  // apontando pra `127.0.0.1` não escopava por porta — o Studio
+  // (`scripts/studio-ui/server.ts`, porta fixa default 4174) também roda em
+  // loopback e podia ser fechado junto com a aba de preview morta, derrubando
+  // a sessão do editor sem aviso. Guard: a instrução de fallback (diário e
+  // mensal) precisa mencionar explicitamente a exclusão da porta do Studio
+  // perto da menção a `127.0.0.1`.
+  const cases: Array<{ label: string; path: string }> = [
+    { label: "orchestrator-stage-4.md (diário)", path: resolve(AGENTS_DIR, "orchestrator-stage-4.md") },
+    {
+      label: "diaria-mensal/SKILL.md (mensal)",
+      path: resolve(ROOT, ".claude/skills/diaria-mensal/SKILL.md"),
+    },
+  ];
+
+  for (const { label, path } of cases) {
+    it(`${label}: fallback tabs_context_mcp por 127.0.0.1 exclui a porta 4174 do Studio`, () => {
+      const content = readFileSync(path, "utf8");
+      // O arquivo pode mencionar 127.0.0.1 em outros contextos (ex: descrição
+      // do servidor de preview em si) — o que importa é a instrução do
+      // fallback de teardown, identificável pela menção a "tabs_context_mcp"
+      // colada à mesma frase.
+      const occurrences: number[] = [];
+      let searchFrom = 0;
+      for (;;) {
+        const idx = content.indexOf("127.0.0.1", searchFrom);
+        if (idx === -1) break;
+        occurrences.push(idx);
+        searchFrom = idx + 1;
+      }
+      assert.ok(occurrences.length > 0, `${label} deve mencionar 127.0.0.1 no teardown do fallback`);
+
+      const fallbackWindow = occurrences
+        .map((idx) => content.slice(Math.max(0, idx - 300), idx + 500))
+        .find((window) => window.includes("tabs_context_mcp") || window.includes("fallback"));
+      assert.ok(
+        fallbackWindow,
+        `${label}: nenhuma menção a 127.0.0.1 está próxima da instrução de fallback de teardown (tabs_context_mcp)`,
+      );
+      assert.ok(
+        fallbackWindow.includes("4174"),
+        `${label}: fallback 127.0.0.1 deve excluir explicitamente a porta 4174 (Studio) — #3727`,
+      );
+    });
+  }
+});
