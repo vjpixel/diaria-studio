@@ -11,6 +11,8 @@ import {
   readInjectPoolSizeFromMarker,
   computeDiariaDiscovered,
   getTotalEditorSubmissions,
+  readCaptureFailedFromMarker,
+  renderCaptureFailedLine,
 } from "../scripts/lib/inbox-stats.ts";
 import { checkCoverageLine } from "../scripts/lint-newsletter-md.ts";
 
@@ -301,6 +303,78 @@ describe("getTotalEditorSubmissions (#3696)", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+describe("readCaptureFailedFromMarker (#3709 — mesmo guard do #2878, agora no Stage 1)", () => {
+  function setup(marker: Record<string, unknown> | null): string {
+    const dir = mkdtempSync(join(tmpdir(), "capture-failed-"));
+    if (marker) {
+      writeFileSync(join(dir, ".marker-inject-inbox-urls.json"), JSON.stringify(marker), "utf8");
+    }
+    return dir;
+  }
+
+  it("capture_failed: true no marker → failed=true com o capture_error", () => {
+    const dir = setup({ capture_failed: true, capture_error: "401 unauthorized" });
+    try {
+      assert.deepEqual(readCaptureFailedFromMarker(dir), { failed: true, error: "401 unauthorized" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("capture_failed: true sem capture_error → mensagem default 'motivo desconhecido'", () => {
+    const dir = setup({ capture_failed: true });
+    try {
+      assert.deepEqual(readCaptureFailedFromMarker(dir), { failed: true, error: "motivo desconhecido" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("suporta campo em `details` (shape novo)", () => {
+    const dir = setup({ details: { capture_failed: true, capture_error: "timeout" } });
+    try {
+      assert.deepEqual(readCaptureFailedFromMarker(dir), { failed: true, error: "timeout" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("capture_failed ausente/false → failed=false", () => {
+    const d1 = setup({ captured_newsletter_count: 9 });
+    const d2 = setup({ capture_failed: false });
+    try {
+      assert.deepEqual(readCaptureFailedFromMarker(d1), { failed: false });
+      assert.deepEqual(readCaptureFailedFromMarker(d2), { failed: false });
+    } finally {
+      rmSync(d1, { recursive: true, force: true });
+      rmSync(d2, { recursive: true, force: true });
+    }
+  });
+
+  it("marker ausente → failed=false (nunca inventa failed:true por ausência de dado)", () => {
+    assert.deepEqual(readCaptureFailedFromMarker(join(tmpdir(), "nao-existe-dir-xyz-3709")), { failed: false });
+  });
+
+  it("marker corrompido → failed=false (fail-soft)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "capture-failed-corrupt-"));
+    writeFileSync(join(dir, ".marker-inject-inbox-urls.json"), "not json", "utf8");
+    try {
+      assert.deepEqual(readCaptureFailedFromMarker(dir), { failed: false });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("renderCaptureFailedLine (#3709)", () => {
+  it("formata o aviso com o motivo passado", () => {
+    assert.equal(
+      renderCaptureFailedLine("401 unauthorized"),
+      "⚠️ contagem de submissões indisponível (captura de newsletters falhou: 401 unauthorized) — recompute após reautenticar.",
+    );
   });
 });
 

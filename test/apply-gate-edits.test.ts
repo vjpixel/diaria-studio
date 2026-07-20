@@ -546,4 +546,91 @@ describe("apply-gate-edits CLI --auto (#3459)", () => {
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /Uso:/);
   });
+
+  // #3709: mesmo guard que #2878 já aplica em sync-coverage-line.ts (Stage 2),
+  // agora também aqui (Stage 1) — quando o marker `.marker-inject-inbox-urls.json`
+  // (escrito adjacente ao --json, no mesmo dir) sinaliza `capture_failed: true`,
+  // a linha de cobertura no 01-approved.json não pode afirmar um X composto a
+  // partir de dados que a Stage 0 §0b-bis não conseguiu capturar.
+  it("marker sinaliza capture_failed → coverage.line vira aviso, não um X composto", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apply-gate-edits-capture-failed-"));
+    try {
+      const jsonPath = join(dir, "01-categorized.json");
+      const outPath = join(dir, "01-approved.json");
+      writeFileSync(jsonPath, JSON.stringify(makeCategorizedWithSixHighlights()), "utf8");
+      // Marker vive no MESMO dir que --json (apply-gate-edits.ts usa
+      // dirname(jsonPath) como inboxMarkerDir).
+      writeFileSync(
+        join(dir, ".marker-inject-inbox-urls.json"),
+        JSON.stringify({
+          editor_blocks: 0,
+          newsletter_source: "captured-articles",
+          captured_newsletter_count: 0,
+          capture_failed: true,
+          capture_error: "401 unauthorized",
+        }),
+        "utf8",
+      );
+      const inboxMdPath = join(dir, "inbox-nao-existe.md"); // #ausente de propósito
+
+      const r = runCli([
+        "--auto",
+        "--json", jsonPath,
+        "--out", outPath,
+        "--inbox-md", inboxMdPath,
+      ]);
+      assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
+
+      const approved = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.ok(approved.coverage, "coverage deve estar presente mesmo com capture_failed (invariant coverage-line-present)");
+      assert.equal(
+        approved.coverage.line,
+        "⚠️ contagem de submissões indisponível (captura de newsletters falhou: 401 unauthorized) — recompute após reautenticar.",
+        "coverage.line deve ser o aviso, nunca um X composto a partir de captura falha (mesma falha que #2878 corrigiu no Stage 2)",
+      );
+      assert.doesNotMatch(
+        approved.coverage.line,
+        /^Olá! Eu sou o \[Pixel\]/,
+        "não deve renderizar o bloco de boas-vindas normal quando a captura falhou",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("marker sem capture_failed → coverage.line normal (regressão: não quebra o caminho feliz)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "apply-gate-edits-capture-ok-"));
+    try {
+      const jsonPath = join(dir, "01-categorized.json");
+      const outPath = join(dir, "01-approved.json");
+      writeFileSync(jsonPath, JSON.stringify(makeCategorizedWithSixHighlights()), "utf8");
+      writeFileSync(
+        join(dir, ".marker-inject-inbox-urls.json"),
+        JSON.stringify({
+          editor_blocks: 2,
+          newsletter_source: "captured-articles",
+          captured_newsletter_count: 9,
+        }),
+        "utf8",
+      );
+      const inboxMdPath = join(dir, "inbox-nao-existe.md");
+
+      const r = runCli([
+        "--auto",
+        "--json", jsonPath,
+        "--out", outPath,
+        "--inbox-md", inboxMdPath,
+      ]);
+      assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
+
+      const approved = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.match(
+        approved.coverage.line,
+        /^Olá! Eu sou o \[Pixel\]/,
+        "sem capture_failed, coverage.line deve seguir o formato normal (formatCoverageLine)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

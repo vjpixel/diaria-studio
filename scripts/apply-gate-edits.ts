@@ -36,7 +36,9 @@ import {
   readInboxLinkCountFromMarker,
   readInjectPoolSizeFromMarker,
   computeDiariaDiscovered,
-} from "./lib/inbox-stats.ts"; // #592, #609, #1864, #3696
+  readCaptureFailedFromMarker,
+  renderCaptureFailedLine,
+} from "./lib/inbox-stats.ts"; // #592, #609, #1864, #3696, #3709
 import type { Article, Highlight, CategorizedJson, ApprovedJson } from "./lib/schemas/edition-state.ts";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
@@ -368,16 +370,26 @@ function main() {
     totalConsidered: computeTotalConsidered(jsonPath, data),
     editorSubmissions,
   });
+  // #3709: mesmo guard que #2878 já aplica em `sync-coverage-line.ts` (Stage
+  // 2), agora também aqui (Stage 1) — se `fetch-newsletter-threads.ts` (0b-bis)
+  // falhou por auth/rede, `editorSubmissions` acima pode estar subcontado
+  // (captured_newsletter_count: 0 indistinguível de "editor não enviou nada").
+  // Não afirmar um X que não pode confiar já no 01-approved.json — trocar a
+  // linha por um aviso gate-blocking em vez de publicar um número plausível
+  // mas errado.
+  const captureFailure = readCaptureFailedFromMarker(inboxMarkerDir);
   if (diariaDiscovered !== null) {
     approved.coverage = {
       editor_submitted: editorSubmissions,
       diaria_discovered: diariaDiscovered,
       selected: totalSelected,
-      line: formatCoverageLine({
-        editorSubmissions,
-        diariaDiscovered,
-        selected: totalSelected,
-      }),
+      line: captureFailure.failed
+        ? renderCaptureFailedLine(captureFailure.error ?? "motivo desconhecido")
+        : formatCoverageLine({
+            editorSubmissions,
+            diariaDiscovered,
+            selected: totalSelected,
+          }),
     };
   }
 

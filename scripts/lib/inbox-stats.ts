@@ -46,6 +46,8 @@ interface InjectMarkerFields {
   total_pool_size?: number;
   newsletter_source?: string;
   captured_newsletter_count?: number;
+  capture_failed?: boolean;
+  capture_error?: string;
 }
 
 function readInjectMarker(internalDir: string): InjectMarkerFields | null {
@@ -196,6 +198,44 @@ export function getTotalEditorSubmissions(
       ? marker.captured_newsletter_count
       : readCapturedNewsletterCountFile(internalDir);
   return directBlocks + captured;
+}
+
+/**
+ * #3709: mesmo guard que `sync-coverage-line.ts:readCaptureFailedFromMarker`
+ * (#2878) já aplica no Stage 2, agora também no Stage 1 (`apply-gate-edits.ts`,
+ * ponto de chamada mais cedo no pipeline). Quando `fetch-newsletter-threads.ts`
+ * (Stage 0 §0b-bis) falha por auth/rede, `newsletter_source` pode resolver pra
+ * `"captured-articles"` com `captured_newsletter_count: 0` (ou cair pra
+ * `"inbox-md"`), e `getTotalEditorSubmissions` compõe silenciosamente um X
+ * plausível mas errado — mesmo failure mode que #2878 corrigiu no Stage 2, um
+ * stage antes.
+ *
+ * Duplica (não importa) a lógica equivalente de `scripts/sync-coverage-line.ts`
+ * pelo mesmo motivo de `readCapturedNewsletterCountFile` acima: este módulo é
+ * lib, aquele é script top-level — evita import script→script.
+ *
+ * Retorna `{ failed: false }` quando o marker está ausente, corrompido, ou não
+ * sinaliza falha — nunca inventa `failed: true` por ausência de dado.
+ */
+export function readCaptureFailedFromMarker(
+  internalDir: string,
+): { failed: boolean; error?: string } {
+  const data = readInjectMarker(internalDir);
+  if (!data) return { failed: false };
+  if (data.capture_failed === true) {
+    return { failed: true, error: data.capture_error ?? "motivo desconhecido" };
+  }
+  return { failed: false };
+}
+
+/**
+ * #3709: mesmo texto de aviso que `sync-coverage-line.ts:renderCaptureFailedLine`
+ * (#2878) — trocado por `formatCoverageLine` quando `readCaptureFailedFromMarker`
+ * sinaliza falha, pra não afirmar um X que não pode confiar já no
+ * `01-approved.json` (`apply-gate-edits.ts`, Stage 1).
+ */
+export function renderCaptureFailedLine(reason: string): string {
+  return `⚠️ contagem de submissões indisponível (captura de newsletters falhou: ${reason}) — recompute após reautenticar.`;
 }
 
 // (resolveInboxArchivePath removida em #1008 — dead code, knip findings)
