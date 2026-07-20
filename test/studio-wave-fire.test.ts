@@ -163,6 +163,16 @@ describe("buildWaveFireCoordinatorPrompt (#3702)", () => {
     assert.ok(mergeIdx >= 0 && closeIdx >= 0 && mergeIdx < closeIdx, "gh issue close deve vir depois do merge serial");
   });
 
+  it("#3781+#3782 (self-review): o --comment do fallback 'gh issue close' também carrega o marcador — senão evaluateIssueTerminalState trataria esse fechamento manual como NÃO-terminal (falso-negativo introduzido pela combinação dos dois fixes)", () => {
+    const prompt = buildWaveFireCoordinatorPrompt([101]);
+    const closeIdx = prompt.indexOf("gh issue close {numero}");
+    assert.ok(closeIdx >= 0);
+    // o marcador precisa aparecer na MESMA instrução do gh issue close (não só em algum lugar do prompt) —
+    // pega uma janela de texto ao redor do trecho pra confirmar que estão colados.
+    const window = prompt.slice(closeIdx, closeIdx + 200);
+    assert.ok(window.includes(WAVE_DIAGNOSTIC_COMMENT_PREFIX), "o --comment do gh issue close deve incluir o marcador");
+  });
+
   it("#3782: instrui a coordenadora a prefixar comentários de diagnóstico com o marcador literal", () => {
     const prompt = buildWaveFireCoordinatorPrompt([101]);
     assert.ok(prompt.includes(WAVE_DIAGNOSTIC_COMMENT_PREFIX), "prompt deve citar o marcador literal");
