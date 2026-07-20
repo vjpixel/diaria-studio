@@ -4,6 +4,13 @@ compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
+# #3701: domínio de marca pro jogo público "É IA?" (eia.diar.ia.br → /jogar).
+# workers_dev = true continua ativo — links de voto/img/stats de edições já
+# enviadas apontam pra poll.diaria.workers.dev e precisam continuar vivos.
+[[routes]]
+pattern = "eia.diar.ia.br"
+custom_domain = true
+
 [[kv_namespaces]]
 binding = "POLL"
 id = "72784da4ae39444481eb422ebac357c6"

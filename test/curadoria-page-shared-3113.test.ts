@@ -85,8 +85,9 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
   it("renderCuradoriaFooter monta os 4 links + texto de crédito, escapando HTML", () => {
     const html = renderCuradoriaFooter('diar.ia.br — curadoria de <script>');
     assert.match(html, /<a href="https:\/\/diar\.ia\.br">Diar\.ia<\/a>/);
-    assert.match(html, /<a href="https:\/\/cursos\.diaria\.workers\.dev\/">Cursos<\/a>/);
-    assert.match(html, /<a href="https:\/\/livros\.diaria\.workers\.dev\/">Livros<\/a>/);
+    // #3698: domínio de marca (era cursos/livros.diaria.workers.dev).
+    assert.match(html, /<a href="https:\/\/cursos\.diar\.ia\.br\/">Cursos<\/a>/);
+    assert.match(html, /<a href="https:\/\/livros\.diar\.ia\.br\/">Livros<\/a>/);
     assert.match(html, /<a href="https:\/\/poll\.diaria\.workers\.dev\/leaderboard">É IA\?<\/a>/);
     assert.doesNotMatch(html, /<script>/, "texto de crédito deve ser escapado");
     assert.match(html, /&lt;script&gt;/);

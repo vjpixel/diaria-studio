@@ -196,8 +196,9 @@ describe("renderSharePageHtml (#3517) — página /share/{token}, destino dos un
       payload: { edition: "260716", correct: true },
       utmMedium: "social",
     });
-    assert.match(html, /<meta property="og:image" content="https:\/\/poll\.diaria\.workers\.dev\/og\/260716\.1\.abc123">/);
-    assert.match(html, /<meta name="twitter:image" content="https:\/\/poll\.diaria\.workers\.dev\/og\/260716\.1\.abc123">/);
+    // #3701: og:image/twitter:image agora no domínio de marca do jogo (era poll.diaria.workers.dev).
+    assert.match(html, /<meta property="og:image" content="https:\/\/eia\.diar\.ia\.br\/og\/260716\.1\.abc123">/);
+    assert.match(html, /<meta name="twitter:image" content="https:\/\/eia\.diar\.ia\.br\/og\/260716\.1\.abc123">/);
     assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
   });
 
@@ -289,7 +290,8 @@ describe("integração /vote?brand=web (#3517, self-review #2038) — card embut
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /id="jogar-share-card"/);
-    const match = /data-share-url="https:\/\/poll\.diaria\.workers\.dev\/share\/([^"?]+)\?utm_medium=social"/.exec(html);
+    // #3701: share URL agora no domínio de marca do jogo (era poll.diaria.workers.dev).
+    const match = /data-share-url="https:\/\/eia\.diar\.ia\.br\/share\/([^"?]+)\?utm_medium=social"/.exec(html);
     assert.ok(match, "share URL com token não encontrada no HTML de resultado");
     const token = decodeURIComponent(match![1]);
     const decoded = await decodeShareToken(env.POLL_SECRET, token);

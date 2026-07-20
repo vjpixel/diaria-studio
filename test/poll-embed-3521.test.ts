@@ -147,10 +147,9 @@ describe("buildEmbedSubscribeUrl / buildEmbedJogarUrl (#3521) — UTM do funil e
     assert.equal(parsed.searchParams.get("utm_campaign"), "clarice");
   });
 
-  it("jogar URL é absoluta (poll.diaria.workers.dev — não diar.ia.br, mesmo racional #2613)", () => {
+  it("jogar URL é absoluta no domínio de marca do jogo (#3701 — eia.diar.ia.br, não o apex diar.ia.br que faz redirect e dropava query-string, #2613)", () => {
     const url = buildEmbedJogarUrl("clarice");
-    assert.match(url, /^https:\/\/poll\.diaria\.workers\.dev\/jogar\?/);
-    assert.doesNotMatch(url, /diar\.ia\.br/);
+    assert.match(url, /^https:\/\/eia\.diar\.ia\.br\/jogar\?/);
   });
 
   it("utm_campaign reflete o partnerSlug (mensurável por parceiro, count-subscriptions-by-utm.ts)", () => {

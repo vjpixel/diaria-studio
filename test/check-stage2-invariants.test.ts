@@ -768,6 +768,68 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
     }
   });
 
+  // #3698/#3701: domínios de marca (Workers Custom Domain) — cutover reader-facing.
+  it("cursos.diar.ia.br (domínio de marca) NÃO bloqueia mesmo ausente do cache (#3698)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `${REVIEWED_WITH_FM}\n[Cursos](https://cursos.diar.ia.br)`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, true, "cursos.diar.ia.br deve ser allowlistado");
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("livros.diar.ia.br (domínio de marca) NÃO bloqueia mesmo ausente do cache (#3698)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `${REVIEWED_WITH_FM}\n[Livros](https://livros.diar.ia.br)`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, true, "livros.diar.ia.br deve ser allowlistado");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("eia.diar.ia.br (domínio de marca do É IA?) NÃO bloqueia mesmo ausente do cache (#3701)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `${REVIEWED_WITH_FM}\n[Leaderboard](https://eia.diar.ia.br/leaderboard)`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, true, "eia.diar.ia.br deve ser allowlistado");
+    } finally {
+      cleanup();
+    }
+  });
+
   it("URL editorial externa desconhecida AINDA bloqueia (allowlist não é permissiva)", () => {
     // Garantia de que a allowlist só cobre os Workers específicos, não qualquer URL.
     const { dir, cleanup } = mkEdition();

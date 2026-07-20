@@ -261,12 +261,12 @@ describe("SEO/compartilhamento — meta tags (#3106)", () => {
   it("og:title, og:description e og:url presentes", () => {
     assert.match(html, /<meta property="og:title" content="Livros sobre IA · Diar\.ia">/);
     assert.match(html, /<meta property="og:description" content="[^"]+">/);
-    assert.match(html, /<meta property="og:url" content="https:\/\/livros\.diaria\.workers\.dev\/">/);
+    assert.match(html, /<meta property="og:url" content="https:\/\/livros\.diar\.ia\.br\/">/);
     assert.match(html, /<meta property="og:type" content="website">/);
   });
 
-  it("canonical aponta pro domínio certo (livros.diaria.workers.dev)", () => {
-    assert.match(html, /<link rel="canonical" href="https:\/\/livros\.diaria\.workers\.dev\/">/);
+  it("canonical aponta pro domínio certo (livros.diar.ia.br)", () => {
+    assert.match(html, /<link rel="canonical" href="https:\/\/livros\.diar\.ia\.br\/">/);
   });
 
   it("twitter card presente (summary, sem imagem grande)", () => {

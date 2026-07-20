@@ -66,7 +66,7 @@
  *     converter tráfego pro jogo, alinhado ao objetivo do EPIC #3514
  *     ("motor de divulgação").
  */
-import { AAMMDD_RE, htmlEscape, formatEditionDate, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, POLL_BASE_URL } from "./lib";
+import { AAMMDD_RE, htmlEscape, formatEditionDate, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { hmacSign } from "./index";
 
@@ -207,11 +207,11 @@ export function shareButtonScript(containerSelector: string): string {
  */
 export function renderShareCardBlock(token: string, payload: SharePayload): string {
   const text = buildShareText(payload);
-  const shareUrlNative = `${POLL_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=social`;
+  const shareUrlNative = `${PUBLIC_GAME_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=social`;
   // #3679: utm_medium próprio (não reusa "social" do botão nativo) — funil
   // mensurável separa quem veio de WhatsApp de quem veio do share sheet do SO.
-  const shareUrlWhatsapp = `${POLL_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=whatsapp`;
-  const shareUrlCopy = `${POLL_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=copy`;
+  const shareUrlWhatsapp = `${PUBLIC_GAME_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=whatsapp`;
+  const shareUrlCopy = `${PUBLIC_GAME_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=copy`;
   return `<div id="jogar-share-card" class="share-card">
   <p class="share-text">${htmlEscape(text)}</p>
   <div class="share-actions">
@@ -266,7 +266,7 @@ export interface SharePageOptions {
 export function renderSharePageHtml(opts: SharePageOptions): string {
   const { token, payload, utmMedium } = opts;
   const text = buildShareText(payload);
-  const ogImageUrl = `${POLL_BASE_URL}/og/${encodeURIComponent(token)}`;
+  const ogImageUrl = `${PUBLIC_GAME_BASE_URL}/og/${encodeURIComponent(token)}`;
   const jogarHref = `/jogar?utm_source=share&utm_medium=${encodeURIComponent(utmMedium || "link")}`;
   const pageTitle = "É IA? — resultado compartilhado | Diar.ia";
   const seoMeta = renderSeoMeta({
@@ -274,6 +274,7 @@ export function renderSharePageHtml(opts: SharePageOptions): string {
     description: text,
     path: `/share/${encodeURIComponent(token)}`,
     imageUrl: ogImageUrl,
+    brand: "web", // #3701: share pages são exclusivas do brand web (ver header do arquivo)
   });
 
   return `<!DOCTYPE html>
@@ -398,13 +399,13 @@ export function buildQuizShareText(payload: QuizSharePayload): string {
  * exatamente este bloco, não uma página inteira pra extrair de dentro). */
 export function renderQuizShareCardBlock(token: string, payload: QuizSharePayload): string {
   const text = buildQuizShareText(payload);
-  const shareUrlNative = `${POLL_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=social`;
+  const shareUrlNative = `${PUBLIC_GAME_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=social`;
   // #3679: mesmo racional de renderShareCardBlock — utm_medium próprio pro
   // WhatsApp, não reusa "social". Cobre tanto o resultado do quiz relâmpago
   // quanto a tela final da sequência mensal (`showFinal` em jogar.ts reusa
   // literalmente este bloco via `/jogar/quiz/result`).
-  const shareUrlWhatsapp = `${POLL_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=whatsapp`;
-  const shareUrlCopy = `${POLL_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=copy`;
+  const shareUrlWhatsapp = `${PUBLIC_GAME_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=whatsapp`;
+  const shareUrlCopy = `${PUBLIC_GAME_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=copy`;
   return `<div id="jogar-quiz-share-card" class="share-card">
   <p class="share-text">${htmlEscape(text)}</p>
   <div class="share-actions">
@@ -445,7 +446,7 @@ export interface QuizSharePageOptions {
 export function renderQuizSharePageHtml(opts: QuizSharePageOptions): string {
   const { token, payload, utmMedium } = opts;
   const text = buildQuizShareText(payload);
-  const ogImageUrl = `${POLL_BASE_URL}/quiz-og/${encodeURIComponent(token)}`;
+  const ogImageUrl = `${PUBLIC_GAME_BASE_URL}/quiz-og/${encodeURIComponent(token)}`;
   const jogarHref = `/jogar/quiz?utm_source=share&utm_medium=${encodeURIComponent(utmMedium || "link")}`;
   const pageTitle = "É IA? — quiz relâmpago | Diar.ia";
   const seoMeta = renderSeoMeta({
@@ -453,6 +454,7 @@ export function renderQuizSharePageHtml(opts: QuizSharePageOptions): string {
     description: text,
     path: `/quiz-share/${encodeURIComponent(token)}`,
     imageUrl: ogImageUrl,
+    brand: "web", // #3701: share pages são exclusivas do brand web (ver header do arquivo)
   });
 
   return `<!DOCTYPE html>

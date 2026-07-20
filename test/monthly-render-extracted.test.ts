@@ -127,34 +127,43 @@ describe("wrapEmail — shell de marca co-brand Clarice × Diar.ia (#2645)", () 
   });
 });
 
-describe("normalizeKnownUrl — links de curadoria migrados (#2261)", () => {
-  it("reescreve cursos-gratuitos-de-ia (Beehiiv 404) → cursos.diaria.workers.dev", () => {
+describe("normalizeKnownUrl — links de curadoria migrados (#2261, #3698)", () => {
+  it("reescreve cursos-gratuitos-de-ia (Beehiiv 404) → cursos.diar.ia.br (domínio de marca, #3698)", () => {
     assert.equal(
       normalizeKnownUrl("https://diaria.beehiiv.com/cursos-gratuitos-de-ia"),
-      "https://cursos.diaria.workers.dev",
+      "https://cursos.diar.ia.br",
     );
   });
-  it("reescreve livros-sobre-ia (Beehiiv 404) → livros.diaria.workers.dev, ignorando ?utm", () => {
+  it("reescreve livros-sobre-ia (Beehiiv 404) → livros.diar.ia.br (domínio de marca, #3698), ignorando ?utm", () => {
     assert.equal(
       normalizeKnownUrl("https://diaria.beehiiv.com/livros-sobre-ia?utm_source=x"),
-      "https://livros.diaria.workers.dev",
+      "https://livros.diar.ia.br",
     );
   });
-  it("não toca URLs não-migradas", () => {
+  // #3698: o próprio Worker (cursos/livros.diaria.workers.dev) agora também é
+  // reescrito pro domínio de marca — conteúdo antigo/cacheado que ainda
+  // referencia o subdomínio legado sai correto no render mensal.
+  it("reescreve cursos.diaria.workers.dev (legado do Worker) → cursos.diar.ia.br (#3698)", () => {
+    assert.equal(
+      normalizeKnownUrl("https://cursos.diaria.workers.dev"),
+      "https://cursos.diar.ia.br",
+    );
+  });
+  it("não toca URLs não-migradas nem o domínio de marca já-terminal (idempotente)", () => {
     assert.equal(normalizeKnownUrl("https://exame.com/ia/x"), "https://exame.com/ia/x");
-    assert.equal(normalizeKnownUrl("https://cursos.diaria.workers.dev"), "https://cursos.diaria.workers.dev");
+    assert.equal(normalizeKnownUrl("https://cursos.diar.ia.br"), "https://cursos.diar.ia.br");
   });
   it("não faz over-match em sufixo com hífen (ex: -de-ia-2024)", () => {
     const other = "https://diaria.beehiiv.com/cursos-gratuitos-de-ia-2024";
     assert.equal(normalizeKnownUrl(other), other, "página diferente não deve ser reescrita");
   });
   it("aceita fim de segmento: trailing slash, ?query, #hash", () => {
-    assert.equal(normalizeKnownUrl("https://diaria.beehiiv.com/cursos-gratuitos-de-ia/"), "https://cursos.diaria.workers.dev");
-    assert.equal(normalizeKnownUrl("https://diaria.beehiiv.com/cursos-gratuitos-de-ia#x"), "https://cursos.diaria.workers.dev");
+    assert.equal(normalizeKnownUrl("https://diaria.beehiiv.com/cursos-gratuitos-de-ia/"), "https://cursos.diar.ia.br");
+    assert.equal(normalizeKnownUrl("https://diaria.beehiiv.com/cursos-gratuitos-de-ia#x"), "https://cursos.diar.ia.br");
   });
   it("renderInline aplica a normalização no href do link de curadoria", () => {
     const html = renderInline("[Cursos gratuitos](https://diaria.beehiiv.com/cursos-gratuitos-de-ia)");
-    assert.match(html, /href="https:\/\/cursos\.diaria\.workers\.dev"/);
+    assert.match(html, /href="https:\/\/cursos\.diar\.ia\.br"/);
     assert.doesNotMatch(html, /beehiiv\.com\/cursos/);
   });
 });

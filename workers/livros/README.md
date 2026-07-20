@@ -2,7 +2,9 @@
 
 Hosting da página piloto **Livros sobre IA** da Diar.ia. Worker de *static
 assets* (sem script) servindo um único HTML em
-`https://livros.diaria.workers.dev/`.
+`https://livros.diar.ia.br/` (domínio de marca, #3698) — também acessível via
+`https://livros.diaria.workers.dev/` (mantido por compat de links já
+enviados em edições passadas).
 
 ## Fonte de verdade
 

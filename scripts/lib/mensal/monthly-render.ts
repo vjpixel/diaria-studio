@@ -157,8 +157,8 @@ function renderTextInline(s: string): string {
 /**
  * #2261: normaliza URLs de curadoria que migraram de domínio. As páginas de
  * cursos/livros saíram do Beehiiv (`diaria.beehiiv.com/cursos-gratuitos-de-ia`,
- * `/livros-sobre-ia`) — que agora dão **404** — pros Workers atuais
- * (`cursos.diaria.workers.dev`, `livros.diaria.workers.dev`, iguais ao diário).
+ * `/livros-sobre-ia`) — que agora dão **404** — pros domínios de marca atuais
+ * (`cursos.diar.ia.br`, `livros.diar.ia.br`, #3698, iguais ao diário).
  * Aplicado em TODO href do render mensal (defensivo): mesmo que o draft do
  * `writer-monthly` nasça com o link velho, o email sai com o correto — e o ciclo
  * 2605-06 (cujo S2/S3 reusa este conteúdo) é corrigido sem reescrever o draft.
@@ -167,8 +167,13 @@ function renderTextInline(s: string): string {
  * Adicionar aqui se outra página migrar.
  */
 const LEGACY_URL_FIXES: Array<[RegExp, string]> = [
-  [/^https?:\/\/diaria\.beehiiv\.com\/cursos-gratuitos-de-ia(?=$|[/?#])/i, "https://cursos.diaria.workers.dev"],
-  [/^https?:\/\/diaria\.beehiiv\.com\/livros-sobre-ia(?=$|[/?#])/i, "https://livros.diaria.workers.dev"],
+  [/^https?:\/\/diaria\.beehiiv\.com\/cursos-gratuitos-de-ia(?=$|[/?#])/i, "https://cursos.diar.ia.br"],
+  [/^https?:\/\/diaria\.beehiiv\.com\/livros-sobre-ia(?=$|[/?#])/i, "https://livros.diar.ia.br"],
+  // #3698: cutover do próprio Worker (cursos/livros.diaria.workers.dev) pro
+  // domínio de marca — mesma defesa de conteúdo antigo/cacheado que ainda
+  // referencia o subdomínio legado.
+  [/^https?:\/\/cursos\.diaria\.workers\.dev(?=$|[/?#])/i, "https://cursos.diar.ia.br"],
+  [/^https?:\/\/livros\.diaria\.workers\.dev(?=$|[/?#])/i, "https://livros.diar.ia.br"],
 ];
 
 export function normalizeKnownUrl(url: string): string {

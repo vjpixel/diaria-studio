@@ -1282,3 +1282,34 @@ describe("/img/{key} aceita HEAD além de GET (regressão)", () => {
     assert.equal(res.status, 404);
   });
 });
+
+describe("GET / — 301 pra /jogar (#3701)", () => {
+  // Regressão: antes desta issue o router não tinha NENHUM handler pra
+  // `path === "/"` — o custom domain novo eia.diar.ia.br/ caía direto no
+  // 404 JSON genérico do fim do dispatcher, contradizendo o aceite da
+  // própria issue #3701 ("eia.diar.ia.br/ cai em /jogar, comportamento
+  // atual do root, confirmado" — que na verdade nunca existiu).
+  function baseEnv(): Env {
+    return { POLL_SECRET: "", ADMIN_SECRET: "", ALLOWED_ORIGINS: "" } as unknown as Env;
+  }
+
+  it("raiz redireciona (301) pra /jogar, preservando o host", async () => {
+    const req = new Request("https://eia.diar.ia.br/", { method: "GET" });
+    const res = await poll.fetch(req, baseEnv());
+    assert.equal(res.status, 301);
+    assert.equal(res.headers.get("Location"), "https://eia.diar.ia.br/jogar");
+  });
+
+  it("funciona também no host legado poll.diaria.workers.dev (universal, sem host-gating)", async () => {
+    const req = new Request("https://poll.diaria.workers.dev/", { method: "GET" });
+    const res = await poll.fetch(req, baseEnv());
+    assert.equal(res.status, 301);
+    assert.equal(res.headers.get("Location"), "https://poll.diaria.workers.dev/jogar");
+  });
+
+  it("método não-GET na raiz NÃO redireciona (cai no 404 padrão)", async () => {
+    const req = new Request("https://eia.diar.ia.br/", { method: "POST" });
+    const res = await poll.fetch(req, baseEnv());
+    assert.notEqual(res.status, 301);
+  });
+});

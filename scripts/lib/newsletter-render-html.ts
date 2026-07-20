@@ -58,6 +58,12 @@ const FONT_LABEL = FONTS.sans;
 // inject-poll-sig.ts foi removido. Sintaxe Beehiiv: SEM espaços, SEM prefix.
 // (validado contra docs oficiais 2026-05-11).
 const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
+// #3701: domínio de marca do jogo público "É IA?" — usado SÓ pros links
+// reader-facing de promoção do jogo (arquivo/leaderboard). O link de VOTO
+// (`buildVoteUrl` abaixo, embutido por subscriber via merge tag `{{email}}`)
+// continua em `POLL_WORKER_URL` por compat — não é promoção, é o endpoint
+// interno de ação que já está embutido em edições enviadas.
+const PUBLIC_GAME_BASE_URL = "https://eia.diar.ia.br";
 
 // #3524: ponte cross-canal email → arquivo do site (última sub-issue do EPIC
 // #3514). UTM fixo do funil newsletter→site — mesma disciplina de 3
@@ -82,7 +88,7 @@ export function buildJogarArchiveUrl(): string {
     utm_medium: EIA_ARCHIVE_UTM_MEDIUM,
     utm_campaign: EIA_ARCHIVE_UTM_CAMPAIGN,
   });
-  return `${POLL_WORKER_URL}/jogar/arquivo?${params.toString()}`;
+  return `${PUBLIC_GAME_BASE_URL}/jogar/arquivo?${params.toString()}`;
 }
 
 /**
@@ -945,7 +951,7 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
   const period = eia.leaderboardPeriod ? ` de ${eia.leaderboardPeriod}` : "";
   // URL histórica permanente do mês (#1345). Linka o bloco quando o slug existe.
   const slug = eia.leaderboardPeriodSlug || "";
-  const lbUrl = slug ? `${POLL_WORKER_URL}/leaderboard/${slug}` : "";
+  const lbUrl = slug ? `${PUBLIC_GAME_BASE_URL}/leaderboard/${slug}` : "";
   const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;`;
 
   // Sem líderes ainda (ex: 1ª edição do mês) — em vez de omitir o bloco,
@@ -984,7 +990,7 @@ export function renderLeaderboardTop1Row(eia: EIA, paragraphStyle: string): stri
  * mais acerta o "É IA?" toda edição.
  */
 export function renderLeaderboardLinkRow(paragraphStyle: string): string {
-  const url = `${POLL_WORKER_URL}/leaderboard`;
+  const url = `${PUBLIC_GAME_BASE_URL}/leaderboard`;
   // #3103: `display:inline-block;padding:4px 0` engorda a área de toque do CTA
   // (era só o texto do link, sem padding — alvo de toque apertado em mobile).
   const linkStyle = `color:${TEAL};text-decoration:underline;font-weight:bold;display:inline-block;padding:4px 0;`;

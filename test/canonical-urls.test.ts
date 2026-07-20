@@ -16,6 +16,8 @@ import {
   DIARIA_INSTAGRAM_URL,
   DIARIA_THREADS_SLUG,
   DIARIA_THREADS_URL,
+  DIARIA_CURSOS_URL,
+  DIARIA_LIVROS_URL,
 } from "../scripts/lib/canonical-urls.ts";
 
 describe("getCanonicalUrls (#1456)", () => {
@@ -170,10 +172,33 @@ describe("findMismatchedUrls (#1456)", () => {
     assert.deepEqual(findMismatchedUrls(md, approved), []);
   });
 
+  // #3698/#3701 regression: domínios de marca (Workers Custom Domain) dos
+  // mesmos 3 Workers precisam continuar allowlistados ao lado dos legados
+  // `*.diaria.workers.dev` acima — sem isso, o cutover do link reader-facing
+  // (rodapé "Acesse:", CTA do É IA?) faria urls_accessible flagar
+  // not_in_cache pro domínio novo.
+  it("ignora os domínios de marca cursos/livros/eia.diar.ia.br (#3698/#3701)", () => {
+    const approved = { radar: [{ title: "N", url: "https://example.com/n" }] };
+    const md = `
+[**N**](https://example.com/n)
+[Cursos](https://cursos.diar.ia.br)
+[Livros](https://livros.diar.ia.br)
+[É IA?](https://eia.diar.ia.br/leaderboard)
+`;
+    assert.deepEqual(findMismatchedUrls(md, approved), []);
+  });
+
   it("DIARIA_FACEBOOK_PAGE_SLUG/URL têm o handle canônico e FOOTER_DOMAINS deriva dele (#2695)", () => {
     assert.equal(DIARIA_FACEBOOK_PAGE_SLUG, "facebook.com/diar.ia.br");
     assert.equal(DIARIA_FACEBOOK_PAGE_URL, "https://www.facebook.com/diar.ia.br");
     assert.ok(FOOTER_DOMAINS.includes(DIARIA_FACEBOOK_PAGE_SLUG));
+  });
+
+  it("DIARIA_CURSOS_URL/DIARIA_LIVROS_URL apontam pro domínio de marca (#3698)", () => {
+    assert.equal(DIARIA_CURSOS_URL, "https://cursos.diar.ia.br");
+    assert.equal(DIARIA_LIVROS_URL, "https://livros.diar.ia.br");
+    assert.ok(FOOTER_DOMAINS.some((d) => DIARIA_CURSOS_URL.includes(d)));
+    assert.ok(FOOTER_DOMAINS.some((d) => DIARIA_LIVROS_URL.includes(d)));
   });
 
   it("retorna vazio quando MD não introduziu URLs novas", () => {

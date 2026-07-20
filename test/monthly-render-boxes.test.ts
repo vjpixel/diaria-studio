@@ -52,7 +52,9 @@ describe("renderCtaButton centralizado (à prova de balas)", () => {
   it("envolve o pill num td align=center", () => {
     const html = renderCtaButton("→ [Confira a página de livros](https://livros.diaria.workers.dev)");
     assert.ok(html.includes('<td align="center">'), "td wrapper centralizado (Gmail ignora margin:auto)");
-    assert.ok(html.includes("https://livros.diaria.workers.dev"), "href preservado");
+    // #3698: normalizeKnownUrl reescreve o legado *.diaria.workers.dev pro
+    // domínio de marca — href normalizado, não mais o literal de entrada.
+    assert.ok(html.includes("https://livros.diar.ia.br"), "href normalizado pro domínio de marca");
     assert.ok(!html.includes("→"), "seta não aparece no botão");
   });
 });

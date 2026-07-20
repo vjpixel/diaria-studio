@@ -1147,19 +1147,25 @@ export function stripBoxDivulgacao3(text: string): string {
 
 /**
  * #2136/#2978/#3204: discrimina se um box de divulgação é o de livros (link
- * para livros.diaria.workers.dev) ou outro box (ex: divulgação CLARICE). A
+ * para livros.diar.ia.br) ou outro box (ex: divulgação CLARICE). A
  * imagem livros_promo só deve ser associada ao box de livros. Marcador-
  * agnóstico desde #3204 — o antigo atalho por emoji (`/^\s*📚/`) foi removido;
  * o link de destino já era (e continua sendo) sinal suficiente e estrutural.
+ *
+ * #3698: casa TANTO o domínio de marca (`livros.diar.ia.br`, canônico desde
+ * esta issue) QUANTO o legado `livros.diaria.workers.dev` (edições em voo no
+ * Drive/gate podem ter sido escritas antes do cutover; sem o fallback, o box
+ * dessas edições deixaria de ser reconhecido como "box de livros" e perderia
+ * a imagem livros_promo silenciosamente).
  */
 export function isBoxDivulgacaoLivros(text: string | null | undefined): boolean {
   if (!text) return false;
   // #260622: box combinado Livros+Cursos NÃO é o promo de livros — é um box de
   // seções com múltiplos CTAs (renderizado como texto, sem o screenshot da
-  // página de livros). Se o texto também linka cursos.diaria.workers.dev,
-  // tratar como box de seções (false), não promo de livros.
-  if (/cursos\.diaria\.workers\.dev/i.test(text)) return false;
-  return /livros\.diaria\.workers\.dev/i.test(text);
+  // página de livros). Se o texto também linka o domínio de cursos (marca ou
+  // legado workers.dev), tratar como box de seções (false), não promo de livros.
+  if (/cursos\.(?:diar\.ia\.br|diaria\.workers\.dev)/i.test(text)) return false;
+  return /livros\.(?:diar\.ia\.br|diaria\.workers\.dev)/i.test(text);
 }
 
 /**
@@ -1168,7 +1174,7 @@ export function isBoxDivulgacaoLivros(text: string | null | undefined): boolean 
  * existe — upload-images-public roda antes). Graceful: ausente → null.
  *
  * #2136/#2978/#2978-slot2-parity: só retorna a imagem se o box for o de
- * livros. Box 📣 CLARICE (e outros sem link livros.diaria.workers.dev) →
+ * livros. Box 📣 CLARICE (e outros sem link livros.diar.ia.br) →
  * null (sem hero). Compartilhado pelos 2 slots — o box de livros pode cair
  * tanto no slot 1 (gap D1/D2) quanto no slot 2 (gap D2/D3), a depender da
  * ordem de conteúdo da edição (ver `test/flexible-callout-position.test.ts`).
@@ -1407,7 +1413,7 @@ export function unescapeMd(s: string): string {
  * Writer agent às vezes emite links no formato:
  *
  *   - [Melhores cursos grátis de IA](
- *   https://cursos.diaria.workers.dev
+ *   https://cursos.diar.ia.br
  *   )
  *
  * O parser markdown (`processInlineLinks`) opera linha-a-linha, então

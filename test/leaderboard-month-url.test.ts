@@ -19,7 +19,7 @@ import {
 } from "../scripts/render-newsletter-html.ts";
 
 const STYLE = "font-family:sans-serif;";
-const LB = "https://poll.diaria.workers.dev/leaderboard";
+const LB = "https://eia.diar.ia.br/leaderboard"; // #3701: domínio de marca (era poll.diaria.workers.dev)
 
 function baseEia(overrides: Partial<EIA> = {}): EIA {
   return {
