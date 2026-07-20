@@ -18,6 +18,7 @@ import {
   listReports,
   getReportById,
   resolveReportHtml,
+  renderMarkdownToHtml,
   reportId,
   isReportKind,
   type ReportEntry,
@@ -186,6 +187,67 @@ describe("registerReport / listReports (#3714)", () => {
   });
 });
 
+describe("renderMarkdownToHtml (#3784 — renderer mínimo zero-dep)", () => {
+  it("headings h1/h2/h3", () => {
+    const html = renderMarkdownToHtml("# Título\n## Sub\n### Sub-sub");
+    assert.match(html, /<h1>Título<\/h1>/);
+    assert.match(html, /<h2>Sub<\/h2>/);
+    assert.match(html, /<h3>Sub-sub<\/h3>/);
+  });
+
+  it("bold **texto** -> <strong>", () => {
+    const html = renderMarkdownToHtml("Isto é **importante** aqui.");
+    assert.match(html, /<strong>importante<\/strong>/);
+    assert.ok(!html.includes("**"));
+  });
+
+  it("--- vira <hr>, não heading nem texto cru", () => {
+    const html = renderMarkdownToHtml("Antes\n\n---\n\nDepois");
+    assert.match(html, /<hr>/);
+    assert.ok(!html.includes("---"));
+  });
+
+  it("lista `- item` vira <ul><li>", () => {
+    const html = renderMarkdownToHtml("- primeiro\n- segundo\n- terceiro");
+    assert.match(html, /<ul>/);
+    assert.match(html, /<li>primeiro<\/li>/);
+    assert.match(html, /<li>segundo<\/li>/);
+    assert.match(html, /<\/ul>/);
+  });
+
+  it("parágrafos simples viram <p>", () => {
+    const html = renderMarkdownToHtml("Primeira linha.\n\nSegunda linha.");
+    assert.match(html, /<p>Primeira linha\.<\/p>/);
+    assert.match(html, /<p>Segunda linha\.<\/p>/);
+  });
+
+  it("tabela markdown (header + separador + rows) vira <table>", () => {
+    const html = renderMarkdownToHtml(
+      "| Issue | PR |\n|---|---|\n| #3784 | [#3800](https://github.com/x/y/pull/3800) |",
+    );
+    assert.match(html, /<table>/);
+    assert.match(html, /<th>Issue<\/th>/);
+    assert.match(html, /<th>PR<\/th>/);
+    assert.match(html, /<td>#3784<\/td>/);
+    assert.ok(!html.includes("|---|")); // linha separadora não vira row de dados
+  });
+
+  it("link [texto](url) http(s) vira <a>; esquema não-seguro (javascript:) não linkifica", () => {
+    const htmlOk = renderMarkdownToHtml("[PR #3800](https://github.com/x/y/pull/3800)");
+    assert.match(htmlOk, /<a href="https:\/\/github\.com\/x\/y\/pull\/3800"[^>]*>PR #3800<\/a>/);
+
+    const htmlUnsafe = renderMarkdownToHtml("[clique](javascript:alert(1))");
+    assert.ok(!htmlUnsafe.includes("<a "));
+    assert.ok(!htmlUnsafe.includes("javascript:"));
+  });
+
+  it("HTML embutido no markdown cru nunca vira tag real (XSS)", () => {
+    const html = renderMarkdownToHtml("Texto com <img src=x onerror=alert(1)> no meio");
+    assert.ok(!html.includes("<img"));
+    assert.match(html, /&lt;img/);
+  });
+});
+
 describe("resolveReportHtml (#3714)", () => {
   it("serve .html cru, content-type text/html", () => {
     const r = makeRoot();
@@ -207,10 +269,13 @@ describe("resolveReportHtml (#3714)", () => {
     assert.equal(rendered.html, "<h1>Relatório</h1>");
   });
 
-  it(".md vira wrap HTML mínimo (escapado, preserva o conteúdo original)", () => {
+  it(".md vira markdown renderizado de verdade (headings/hr/bold), HTML embutido continua escapado (#3784)", () => {
     const r = makeRoot();
     mkdirSync(join(r, "data", "overnight", "260720"), { recursive: true });
-    writeFileSync(resolve(r, "data/overnight/260720/report.md"), "# Overnight\n\n<script>alert(1)</script> & coisas");
+    writeFileSync(
+      resolve(r, "data/overnight/260720/report.md"),
+      "# Overnight\n\n**Modo:** bugs\n\n---\n\n<script>alert(1)</script> & coisas",
+    );
 
     const entry: ReportEntry = {
       id: "overnight-260720",
@@ -223,8 +288,12 @@ describe("resolveReportHtml (#3714)", () => {
     };
     const rendered = resolveReportHtml(r, entry);
     assert.equal(rendered.ok, true);
-    assert.match(rendered.html, /<pre>/);
-    assert.match(rendered.html, /# Overnight/);
+    // markdown vira HTML de verdade, não texto literal dentro de <pre>.
+    assert.match(rendered.html, /<h1>Overnight<\/h1>/);
+    assert.match(rendered.html, /<strong>Modo:<\/strong>/);
+    assert.match(rendered.html, /<hr>/);
+    assert.ok(!rendered.html.includes("# Overnight")); // não sobrou marcador cru
+    assert.ok(!rendered.html.includes("**Modo:**"));
     // conteúdo do markdown é escapado, nunca interpretado como HTML/JS.
     assert.ok(!rendered.html.includes("<script>alert(1)</script>"));
     assert.match(rendered.html, /&lt;script&gt;/);
