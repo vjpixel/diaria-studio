@@ -103,24 +103,22 @@ $Settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -RunOnlyIfNetworkAvailable
 
-# Registrar (idempotente via -Force)
+# Registrar (idempotente). Register-ScheduledTask -Force cria OU sobrescreve e
+# aceita -Description. NÃO usar Set-ScheduledTask no branch de update: ele não
+# tem parâmetro -Description (falhava com "NamedParameterNotFound" ao re-rodar
+# sobre uma task existente — #3757/#3764).
 $Existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+Register-ScheduledTask `
+    -TaskName    $TaskName `
+    -Action      $Action `
+    -Trigger     $Trigger `
+    -Settings    $Settings `
+    -Description $TaskDesc `
+    -RunLevel    Limited `
+    -Force | Out-Null
 if ($Existing) {
-    Set-ScheduledTask `
-        -TaskName $TaskName `
-        -Action $Action `
-        -Trigger $Trigger `
-        -Settings $Settings `
-        -Description $TaskDesc
     Write-Output "Task '$TaskName' atualizada."
 } else {
-    Register-ScheduledTask `
-        -TaskName $TaskName `
-        -Action $Action `
-        -Trigger $Trigger `
-        -Settings $Settings `
-        -Description $TaskDesc `
-        -RunLevel Limited
     Write-Output "Task '$TaskName' registrada."
 }
 
