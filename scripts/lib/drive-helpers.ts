@@ -1,13 +1,13 @@
 /**
  * drive-helpers.ts — helpers compartilhados da Google Drive API v3.
  *
- * Compartilhado por `drive-sync.ts`, `sync-report.ts`, `upload-report-to-drive.ts`
- * (#1308 itens 2, 4) — evita reimplementar gFetchRetry + helpers de listagem +
- * builder de multipart body.
+ * Usado por `drive-sync.ts` (#1308 itens 2, 4) — evita reimplementar
+ * gFetchRetry + helpers de listagem + builder de multipart body.
  *
  * Histórico: `drive-sync.ts` tinha versões privadas com retry exponencial pra
- * erros transientes (429/5xx). `upload-report-to-drive.ts` tinha versões cruas
- * sem retry. A unificação aqui dá retry resiliente pros 2 scripts (#1308 #8).
+ * erros transientes (429/5xx); a extração aqui deu retry resiliente. Também
+ * era compartilhado por `sync-report.ts`/`upload-report-to-drive.ts`
+ * (removidos em #3713 — mecanismo de relatórios no Drive descontinuado).
  */
 
 import { gFetch } from "../google-auth.ts";
