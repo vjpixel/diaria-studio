@@ -34,6 +34,7 @@
 
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
+import { escHtml } from "../lib/html-escape.ts";
 
 export type ReportKind = "edicao" | "overnight" | "develop" | "mensal";
 
@@ -172,25 +173,53 @@ export interface ReportRenderResult {
   html: string;
 }
 
-function escHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** Só linkifica esquemas conhecidos-seguros — nunca `javascript:`/`data:` etc.
+ * (defesa extra: o conteúdo vem de output de agente, não de input confiável).
+ * `/` sozinho é aceito (path relativo interno, ex: `/relatorios/outro-id`),
+ * mas `//` (URL protocol-relative — resolve pro esquema da página atual,
+ * `https:` em produção) é explicitamente rejeitado (#3788 Bug 2): sem essa
+ * negative lookahead, `//evil.example/phish` casava no ramo `\/` sozinho e
+ * virava um link clicável de phishing que escapou do allowlist. Bloqueia
+ * também `/\` (barra seguida de contrabarra, ex: `/\evil.example/phish`) —
+ * browsers normalizam `\` pra `/` na posição de authority delimiter, então
+ * essa variante é o MESMO bypass do Bug 2 com um caractere diferente
+ * (achado no self-review desta PR, nunca reportado na issue original). */
+function isSafeUrl(url: string): boolean {
+  return /^(https?:\/\/|mailto:|#|\/(?![/\\]))/i.test(url);
 }
 
-/** Só linkifica esquemas conhecidos-seguros — nunca `javascript:`/`data:` etc.
- * (defesa extra: o conteúdo vem de output de agente, não de input confiável). */
-function isSafeUrl(url: string): boolean {
-  return /^(https?:\/\/|\/|#|mailto:)/i.test(url);
+/** Aplica só bold/código (nunca link) — usado tanto no texto fora de links
+ * quanto no LABEL de um link (nunca na URL, ver `renderInline`). */
+function applyBoldCode(s: string): string {
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  return s;
 }
 
 /** Aplica as transformações inline markdown→HTML (bold, código, link) a um
- * trecho de texto que já passou por `escHtml` — nunca chamar em texto cru. */
+ * trecho de texto que já passou por `escHtml` — nunca chamar em texto cru.
+ *
+ * **Ordem deliberada (#3788 Bug 3):** link é processado PRIMEIRO — extrai
+ * label+url, aplica bold/código só ao LABEL (nunca à URL) e protege a tag
+ * `<a>` já montada com um placeholder opaco (sem `*`/crase) antes dos passes
+ * de bold/código rodarem sobre o resto do texto. Sem isso, uma URL contendo
+ * `**` ou crase seria re-escaneada pelos passes seguintes e o `href` sairia
+ * corrompido (`href="https://evil.com/<strong>pwn</strong>"`) — a versão
+ * anterior processava link→bold→code em sequência sobre a MESMA string
+ * mutável, deixando o href exposto a esse re-scan. */
 function renderInline(escapedText: string): string {
-  let s = escapedText;
-  s = s.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, label: string, url: string) =>
-    isSafeUrl(url) ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>` : label,
-  );
-  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  const placeholders: string[] = [];
+  let s = escapedText.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, label: string, url: string) => {
+    if (!isSafeUrl(url)) return applyBoldCode(label);
+    const anchor = `<a href="${url}" target="_blank" rel="noopener noreferrer">${applyBoldCode(label)}</a>`;
+    const token = `__mdlink_${placeholders.length}__`;
+    placeholders.push(anchor);
+    return token;
+  });
+  s = applyBoldCode(s);
+  placeholders.forEach((anchor, i) => {
+    s = s.split(`__mdlink_${i}__`).join(anchor);
+  });
   return s;
 }
 
