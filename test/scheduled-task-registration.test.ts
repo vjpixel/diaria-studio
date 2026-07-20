@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 
 const SCRIPTS = [
   "../scripts/studio/setup-remote-tunnel.ps1",
+  "../scripts/studio/setup-studio-service.ps1",
   "../scripts/overnight/setup-watchdog-schedule.ps1",
 ];
 
