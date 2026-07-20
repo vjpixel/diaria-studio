@@ -377,6 +377,60 @@ describe("renderMarkdownToHtml (#3784 — renderer mínimo zero-dep)", () => {
     });
   });
 
+  describe("#3797 Bug 1: code-span roda antes de bold/itálico — sintaxe literal dentro de crase não é corrompida", () => {
+    it("PoC exato da issue: `**bold**` fica <code>**bold**</code> literal, não <code><strong>bold</strong></code>", () => {
+      const html = renderMarkdownToHtml("`**bold**`");
+      assert.match(html, /<code>\*\*bold\*\*<\/code>/);
+      assert.ok(!html.includes("<strong>"));
+    });
+
+    it("PoC exato da issue: `_italico_` fica <code>_italico_</code> literal, não <code><em>italico</em></code>", () => {
+      const html = renderMarkdownToHtml("`_italico_`");
+      assert.match(html, /<code>_italico_<\/code>/);
+      assert.ok(!html.includes("<em>"));
+    });
+
+    it("controle: bold/itálico legítimos FORA de crase continuam funcionando (não regressão)", () => {
+      const html = renderMarkdownToHtml("Isto é **negrito** e isto é _itálico_, mas `**isto**` é código.");
+      assert.match(html, /<strong>negrito<\/strong>/);
+      assert.match(html, /<em>itálico<\/em>/);
+      assert.match(html, /<code>\*\*isto\*\*<\/code>/);
+    });
+
+    it("controle: code-span comum (sem marcadores de ênfase dentro) continua funcionando", () => {
+      const html = renderMarkdownToHtml("Rodar `npx tsx scripts/foo.ts` no terminal.");
+      assert.match(html, /<code>npx tsx scripts\/foo\.ts<\/code>/);
+    });
+  });
+
+  describe("#3797 Bug 2: restauração de placeholder de link é posicionalmente segura (token aleatório por chamada)", () => {
+    it("PoC exato da issue: label do 1º link igual ao padrão do token do 2º link não gera <a> aninhado nem link duplicado", () => {
+      const html = renderMarkdownToHtml(
+        "[__mdlink_1__](https://good.example/a) [b](https://evil.example/take-over)",
+      );
+      // nenhum aninhamento de <a> dentro de <a>.
+      assert.ok(!/<a\b[^>]*>[^<]*<a\b/.test(html));
+      // exatamente 2 âncoras no total (1 por link legítimo, sem duplicação).
+      assert.equal((html.match(/<a\b/g) ?? []).length, 2);
+      assert.match(
+        html,
+        /<a href="https:\/\/good\.example\/a" target="_blank" rel="noopener noreferrer">__mdlink_1__<\/a>/,
+      );
+      assert.match(
+        html,
+        /<a href="https:\/\/evil\.example\/take-over" target="_blank" rel="noopener noreferrer">b<\/a>/,
+      );
+    });
+
+    it("controle: múltiplos links normais na mesma linha continuam restaurando corretamente (não regressão)", () => {
+      const html = renderMarkdownToHtml("[um](https://a.example) e [dois](https://b.example) e [três](https://c.example)");
+      assert.equal((html.match(/<a\b/g) ?? []).length, 3);
+      assert.match(html, /<a href="https:\/\/a\.example"[^>]*>um<\/a>/);
+      assert.match(html, /<a href="https:\/\/b\.example"[^>]*>dois<\/a>/);
+      assert.match(html, /<a href="https:\/\/c\.example"[^>]*>três<\/a>/);
+    });
+  });
+
   describe("#3790: code fence", () => {
     it("PoC exato da issue: bloco de 3 linhas vira <pre><code> com quebras de linha intactas", () => {
       const html = renderMarkdownToHtml("```ts\nfunction foo() {\n  return 1;\n}\n```");
@@ -412,6 +466,57 @@ describe("renderMarkdownToHtml (#3784 — renderer mínimo zero-dep)", () => {
       const html = renderMarkdownToHtml("```\nlinha 1\n\n---\nlinha 2\n```");
       assert.match(html, /<pre><code>linha 1\n\n---\nlinha 2<\/code><\/pre>/);
       assert.ok(!html.includes("<hr>"));
+    });
+
+    describe("#3796 Bug 1: fechamento de fence compara comprimento com a abertura", () => {
+      it("PoC exato da issue: fence de 4 backticks não fecha numa linha interna de 3 backticks", () => {
+        const html = renderMarkdownToHtml(
+          "````\nexample line before\n```\nmore text [link](https://exemplo.com)\n````",
+        );
+        // conteúdo inteiro (inclusive a linha de 3 backticks e o link) fica
+        // literal dentro do <pre><code> — nunca reprocessado como markdown.
+        assert.match(
+          html,
+          /<pre><code>example line before\n```\nmore text \[link\]\(https:\/\/exemplo\.com\)<\/code><\/pre>/,
+        );
+        assert.ok(!html.includes("<a ")); // link NÃO vira clicável (ainda dentro do fence)
+        assert.ok(!html.includes("<p>")); // não escapou pra parágrafo
+      });
+
+      it("link DEPOIS do fechamento real (4 backticks) continua clicável — fechamento na posição certa", () => {
+        const html = renderMarkdownToHtml(
+          "````\ncode here\n```\nmore code\n````\n[real link](https://exemplo.com)",
+        );
+        assert.match(html, /<pre><code>code here\n```\nmore code<\/code><\/pre>/);
+        assert.match(
+          html,
+          /<p><a href="https:\/\/exemplo\.com" target="_blank" rel="noopener noreferrer">real link<\/a><\/p>/,
+        );
+      });
+
+      it("controle: fence de 3 fecha numa linha de 3 (não regressão do caso comum)", () => {
+        const html = renderMarkdownToHtml("```\nconteudo\n```");
+        assert.match(html, /<pre><code>conteudo<\/code><\/pre>/);
+      });
+
+      it("controle: fence de 3 fecha numa linha de 4+ backticks (fechamento mais longo que a abertura é válido)", () => {
+        const html = renderMarkdownToHtml("```\nconteudo\n````");
+        assert.match(html, /<pre><code>conteudo<\/code><\/pre>/);
+      });
+    });
+
+    describe("#3796 Bug 2: fence aberto sem conteúdo antes do EOF não é descartado em silêncio", () => {
+      it("PoC exato da issue: fence some sem nenhuma linha de conteúdo -> marcador preservado como <pre><code></code></pre> vazio, não desaparece", () => {
+        const html = renderMarkdownToHtml("algum texto\n```");
+        assert.match(html, /<p>algum texto<\/p>/);
+        assert.match(html, /<pre><code><\/code><\/pre>/);
+      });
+
+      it("controle: com 1+ linha de conteúdo antes do EOF continua funcionando (não regressão)", () => {
+        const html = renderMarkdownToHtml("algum texto\n```\nconteudo perdido?");
+        assert.match(html, /<p>algum texto<\/p>/);
+        assert.match(html, /<pre><code>conteudo perdido\?<\/code><\/pre>/);
+      });
     });
   });
 
@@ -498,6 +603,37 @@ describe("resolveReportHtml (#3714)", () => {
     const rendered = resolveReportHtml(r, entry);
     assert.equal(rendered.ok, false);
     assert.match(rendered.html, /não encontrado/);
+  });
+
+  it("#3798: <style> inline cobre overflow-x/white-space de <pre> e padding de <ol> — evita overflow horizontal no Studio mobile", () => {
+    const r = makeRoot();
+    mkdirSync(join(r, "data", "overnight", "260720"), { recursive: true });
+    writeFileSync(
+      resolve(r, "data/overnight/260720/report.md"),
+      "```\nnpx tsx scripts/foo.ts --uma-flag-bem-comprida --outra-flag-tambem-comprida\n```\n\n1. primeiro\n2. segundo",
+    );
+
+    const entry: ReportEntry = {
+      id: "overnight-260720",
+      kind: "overnight",
+      sessionId: "260720",
+      title: "Overnight 260720",
+      htmlPath: "data/overnight/260720/report.md",
+      createdAt: new Date().toISOString(),
+      url: "/relatorios/overnight-260720",
+    };
+    const rendered = resolveReportHtml(r, entry);
+    assert.equal(rendered.ok, true);
+    // regra de overflow/quebra de linha presente pra <pre> (code fence gerado
+    // pelo renderer não estoura a largura da página em telas estreitas).
+    assert.match(rendered.html, /pre\s*\{[^}]*overflow-x:\s*auto/);
+    assert.match(rendered.html, /pre\s*\{[^}]*white-space:\s*pre-wrap/);
+    // <ol> (lista numerada, também gerada pelo renderer) tem padding —
+    // não herda estilo nenhum antes do fix.
+    assert.match(rendered.html, /ol\s*\{[^}]*padding-left/);
+    // confirma que o HTML final realmente contém os elementos que a regra protege.
+    assert.match(rendered.html, /<pre><code>/);
+    assert.match(rendered.html, /<ol>/);
   });
 
   it("path traversal (htmlPath absoluto escapando rootDir) -> ok:false, nunca lê fora de rootDir", () => {
