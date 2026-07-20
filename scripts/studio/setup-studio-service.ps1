@@ -138,6 +138,17 @@ Register-ScheduledTask `
     -Description $TaskDesc `
     -RunLevel    Limited `
     -Force | Out-Null
+
+# #3780 (mesmo bug do #3775): Register-ScheduledTask -Force substitui a task
+# INTEIRA (ao contrário de Set-ScheduledTask, que só atualiza os campos
+# passados) — qualquer propriedade não especificada nesta chamada volta ao
+# default, incluindo Enabled=True. Se o editor tinha desabilitado a task
+# manualmente, restaurar esse estado aqui; senão o -Force reativa a task
+# silenciosamente, sem log nem aviso.
+if ($Existing -and $Existing.State -eq "Disabled") {
+    Disable-ScheduledTask -TaskName $TaskName | Out-Null
+}
+
 if ($Existing) {
     Write-Output "Task '$TaskName' atualizada."
 } else {
