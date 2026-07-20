@@ -30,7 +30,13 @@ import { createHash } from "node:crypto";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseSections, mergeWithNewJson } from "./apply-gate-edits.ts";
 import { computeTotalConsidered as computeTotalConsideredLib } from "./lib/categorized-stats.ts";
-import { countEditorSubmissions, formatCoverageLine, resolveEditorEmail } from "./lib/inbox-stats.ts";
+import {
+  countEditorSubmissions,
+  formatCoverageLine,
+  resolveEditorEmail,
+  readCaptureFailedFromMarker,
+  renderCaptureFailedLine,
+} from "./lib/inbox-stats.ts";
 import { readEiaAnswer } from "./lib/eia-answer.ts";
 import { parseArgs as parseArgsLib, isMainModule } from "./lib/cli-args.ts";
 
@@ -651,6 +657,18 @@ function main() {
     inputCoverage: (data as unknown as { coverage?: { line?: string } }).coverage,
     siblingCoverage,
     fallback: () => {
+      // #3774: mesmo guard que #3709 (apply-gate-edits.ts, Stage 1) e #3768
+      // (apply-stage2-caps.ts, Stage 2) já aplicam — este é o 4º call site que
+      // compõe coverage.line, e o único que renderiza o documento que o editor
+      // efetivamente lê no GATE HUMANO (01-categorized.md, pré-01-approved.json).
+      // Se fetch-newsletter-threads.ts (Stage 0 §0b-bis) falhou por auth/rede,
+      // o marker sinaliza capture_failed — não afirmar um X composto a partir de
+      // dados que a captura não conseguiu confirmar.
+      const inboxMarkerDir = dirname(cli.in);
+      const captureFailure = readCaptureFailedFromMarker(inboxMarkerDir);
+      if (captureFailure.failed) {
+        return renderCaptureFailedLine(captureFailure.error ?? "motivo desconhecido");
+      }
       const inboxMdPath = cli.inboxMd ?? resolve(ROOT, "data/inbox.md");
       const platformConfigPath = resolve(ROOT, "platform.config.json");
       const editorEmail = resolveEditorEmail(platformConfigPath);

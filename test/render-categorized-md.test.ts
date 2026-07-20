@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -914,5 +915,110 @@ describe("renderSection startNumber (#579)", () => {
     );
     assert.match(result, /5\. \[80\] T1/);
     assert.match(result, /6\. \[70\] T2/);
+  });
+});
+
+describe("render-categorized-md CLI --in 01-categorized.json — guard de capture_failed (#3774)", () => {
+  // #3774: render-categorized-md.ts é o 4º call site que compõe coverage.line
+  // (depois de #3709 apply-gate-edits.ts, #2878 sync-coverage-line.ts, #3768
+  // apply-stage2-caps.ts) e o ÚNICO que renderiza o documento que o editor
+  // efetivamente LÊ no gate humano (01-categorized.md, ANTES de
+  // 01-approved.json existir). Cenário real: fetch-newsletter-threads.ts
+  // (Stage 0 §0b-bis) falha por OAuth expirado, o marker grava
+  // capture_failed:true, mas o render pré-gate nunca olhava pro marker —
+  // o editor via uma contagem fabricada no exato momento da decisão do gate.
+  function runCli(args: string[]) {
+    const projectRoot = join(import.meta.dirname, "..");
+    const scriptPath = join(projectRoot, "scripts", "render-categorized-md.ts");
+    return spawnSync(process.execPath, ["--import", "tsx", scriptPath, ...args], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      timeout: 15000,
+    });
+  }
+
+  function makeMinimalCategorized() {
+    return {
+      highlights: [],
+      runners_up: [],
+      lancamento: [{ url: "https://l.example/1", title: "Lançamento 1", score: 70 }],
+      radar: [{ url: "https://r.example/1", title: "Radar 1", score: 60 }],
+      use_melhor: [],
+      video: [],
+    };
+  }
+
+  it("marker sinaliza capture_failed → 01-categorized.md (pré-gate) mostra o aviso, não um X fabricado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "render-categorized-capture-failed-"));
+    try {
+      const internalDir = join(dir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      const jsonPath = join(internalDir, "01-categorized.json");
+      const mdPath = join(dir, "01-categorized.md");
+      writeFileSync(jsonPath, JSON.stringify(makeMinimalCategorized()), "utf8");
+      // Marker vive no MESMO dir que --in (mesmo contrato de apply-gate-edits.ts
+      // / apply-stage2-caps.ts: dirname(cli.in)).
+      writeFileSync(
+        join(internalDir, ".marker-inject-inbox-urls.json"),
+        JSON.stringify({
+          editor_blocks: 0,
+          newsletter_source: "captured-articles",
+          captured_newsletter_count: 0,
+          capture_failed: true,
+          capture_error: "401 unauthorized",
+        }),
+        "utf8",
+      );
+
+      const r = runCli(["--in", jsonPath, "--out", mdPath, "--edition", "260720"]);
+      assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
+
+      const md = readFileSync(mdPath, "utf8");
+      assert.match(
+        md,
+        /⚠️ contagem de submissões indisponível \(captura de newsletters falhou: 401 unauthorized\) — recompute após reautenticar\./,
+        "01-categorized.md deve conter o aviso de capture_failed no lugar da linha de cobertura normal",
+      );
+      assert.doesNotMatch(
+        md,
+        /^Olá! Eu sou o \[Pixel\]/m,
+        "não deve renderizar o bloco de boas-vindas normal (com X fabricado) quando a captura falhou",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("marker sem capture_failed → 01-categorized.md segue com a linha de cobertura normal (regressão: caminho feliz preservado)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "render-categorized-capture-ok-"));
+    try {
+      const internalDir = join(dir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      const jsonPath = join(internalDir, "01-categorized.json");
+      const mdPath = join(dir, "01-categorized.md");
+      writeFileSync(jsonPath, JSON.stringify(makeMinimalCategorized()), "utf8");
+      writeFileSync(
+        join(internalDir, ".marker-inject-inbox-urls.json"),
+        JSON.stringify({
+          editor_blocks: 2,
+          newsletter_source: "captured-articles",
+          captured_newsletter_count: 9,
+        }),
+        "utf8",
+      );
+
+      const r = runCli(["--in", jsonPath, "--out", mdPath, "--edition", "260720"]);
+      assert.equal(r.status, 0, `CLI falhou: ${r.stderr}`);
+
+      const md = readFileSync(mdPath, "utf8");
+      assert.match(
+        md,
+        /^Olá! Eu sou o \[Pixel\]/m,
+        "sem capture_failed, 01-categorized.md deve seguir com o bloco de boas-vindas normal",
+      );
+      assert.doesNotMatch(md, /captura de newsletters falhou/, "não deve mostrar aviso de capture_failed no caminho feliz");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
