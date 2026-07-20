@@ -288,6 +288,8 @@ async function saveCurrent() {
         if (currentSlug === slugAtSaveStart) {
           dirty = false; // evita o confirm() de "descartar edições" dentro de loadFile()
           await loadFile(slugAtSaveStart, { force: true });
+          el.saveStatus.textContent = "Recarregado — suas edições não salvas foram descartadas.";
+          el.saveStatus.className = "rv-save-status";
         }
         return;
       }

@@ -165,6 +165,17 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
       assert.equal(body.ok, true);
       assert.equal(body.conflict, undefined);
     });
+
+    it("PUT com 'expectedModifiedAt' de tipo errado (não string, não null) retorna 400 — nunca vira conflito por acidente", async () => {
+      const put = await fetch(new URL(`/api/editions/${conflictAammdd}/review/social`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "corpo malformado", expectedModifiedAt: 12345 }),
+      });
+      assert.equal(put.status, 400);
+      const body = await put.json();
+      assert.match(body.error, /expectedModifiedAt/);
+    });
   });
 
   it("PUT sem 'content' no corpo retorna 400", async () => {

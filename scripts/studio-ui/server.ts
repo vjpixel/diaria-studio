@@ -850,10 +850,15 @@ async function handleReviewSave(
   // ausente do corpo mantém compat com clients antigos (pula a checagem de
   // divergência, mesmo comportamento de antes). `force: true` ignora
   // divergência detectada (editor já confirmou no dialog de conflito).
-  const expectedModifiedAt =
-    parsed && "expectedModifiedAt" in parsed
-      ? ((parsed.expectedModifiedAt ?? null) as string | null)
-      : undefined;
+  let expectedModifiedAt: string | null | undefined;
+  if (parsed && "expectedModifiedAt" in parsed) {
+    const raw = parsed.expectedModifiedAt ?? null;
+    if (raw !== null && typeof raw !== "string") {
+      sendJson(res, 400, { error: "campo 'expectedModifiedAt' precisa ser string ISO ou null" });
+      return;
+    }
+    expectedModifiedAt = raw;
+  }
   const force = parsed?.force === true;
   const result = saveReviewFile(rootDir, aammdd, slug, content, { expectedModifiedAt, force });
   const status = result.ok ? 200 : result.conflict ? 409 : 400;
