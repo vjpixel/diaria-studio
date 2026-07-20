@@ -97,8 +97,13 @@ const EMOJI_LEAD_RE =
  * `countDoubleAsterisk` em `newsletter-render-html.ts` (não exportada de lá —
  * duplicada aqui, escopo pequeno o bastante pra não justificar mover pra
  * shared/).
+ *
+ * #3762: exportada — reusada por `extractCoverageLineTrailer`
+ * (`newsletter-parse.ts`) pro mesmo guard de ambiguidade (exigir EXATAMENTE 2
+ * ocorrências de `**` no blob inteiro pra confirmar bold-wrap único), em vez
+ * de duplicar uma 3ª cópia.
  */
-function countDoubleAsterisk(str: string): number {
+export function countDoubleAsterisk(str: string): number {
   let count = 0;
   let idx = str.indexOf("**");
   while (idx !== -1) {
