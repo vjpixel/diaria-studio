@@ -115,6 +115,13 @@ function renderHeader(detail) {
       el.reviewLink.style.display = "none";
     }
   }
+  // #3687: esta página não tem "arquivo"/"aba" (é a timeline de estágios da
+  // edição, não o editor de conteúdo — ver revisao.js pra esse par) — só a
+  // edição mesmo entra no contexto do chat. Fail-soft: mesmo guard de
+  // revisao.js (`syncChatContext`) pra ordem de script.
+  if (window.diariaStudioChat && typeof window.diariaStudioChat.setContext === "function") {
+    window.diariaStudioChat.setContext({ edition: detail.edition });
+  }
 }
 
 function renderNotFound(detail) {

@@ -54,6 +54,19 @@
 // isso de forma trivial via `resume`; o card pendente (critério de aceite
 // obrigatório do #3617) é reidratado, o histórico de texto cru fica pendente
 // de investigação futura.
+//
+// #3687: a sessão de chat não sabia qual edição/arquivo/aba estavam abertos
+// no painel ao lado — referências implícitas do editor ("passe a Clarice
+// nesse texto") não resolviam sozinhas. `setContext(ctx)` (exposto em
+// `window.diariaStudioChat`, mesmo padrão de `prefillMessage`) guarda o
+// estado mais recente informado pela página host; `sendMessage` reenvia esse
+// estado em CADA turno (campo `context` do corpo de `POST /api/chat` — ver
+// `ChatPanelContext`/`buildChatPrompt` em `studio-chat.ts`), então ele
+// acompanha o editor trocando de edição/arquivo/aba entre mensagens, não só
+// no momento em que o drawer foi montado. Páginas sem esse conceito
+// (triagem/apoios/rodada) simplesmente nunca chamam `setContext` — o campo
+// fica `null` e nenhum bloco de contexto é enviado, comportamento idêntico
+// ao pré-#3687.
 
 import { parsePendingChatResponse, planHydrationCards, isSensitiveQuestion } from "./chat-hydration.js";
 
@@ -75,6 +88,25 @@ function persistSessionId(id) {
   } catch {
     // best-effort — ver comentário acima.
   }
+}
+
+// ─── contexto do painel (#3687) ────────────────────────────────────────────
+
+// Estado mais recente informado pela página host via `setContext` — `null`
+// enquanto nenhuma página chamou (ou numa página sem esse conceito, ex:
+// triagem/apoios/rodada). Não persiste em localStorage de propósito: é
+// estado de NAVEGAÇÃO da aba atual, não de sessão — recarregar/trocar de
+// página deve refletir o painel que está de fato aberto agora, nunca um
+// valor obsoleto de uma visita anterior.
+let panelContext = null;
+
+/** Substitui o contexto do painel (edição/arquivo/aba) por inteiro — a
+ * página host chama de novo a cada mudança relevante (ex: `revisao.js` em
+ * `renderTabs()`), não só uma vez ao montar. `ctx` nulo/não-objeto limpa o
+ * contexto (mensagem seguinte não leva bloco nenhum) em vez de lançar —
+ * mesma disciplina fail-soft do resto do drawer. */
+function setContext(ctx) {
+  panelContext = ctx && typeof ctx === "object" ? { ...ctx } : null;
 }
 
 // ─── DOM ────────────────────────────────────────────────────────────────
@@ -559,7 +591,7 @@ async function sendMessage(text) {
 
   let sawDelta = false;
   await streamChat(
-    { message: text, sessionId: sessionId ?? undefined, reset },
+    { message: text, sessionId: sessionId ?? undefined, reset, context: panelContext ?? undefined },
     {
       onEvent(eventName, data) {
         if (eventName === "chat-init") {
@@ -648,4 +680,4 @@ function prefillMessage(text) {
 // Ponto de extensão pras fatias seguintes (#3561 briefings) — um botão de
 // outra tela chama isto pra rodar uma mensagem nesta MESMA sessão sem
 // duplicar a mecânica de streaming/parsing acima.
-window.diariaStudioChat = { sendMessage, openDrawer: expandDrawer, prefillMessage };
+window.diariaStudioChat = { sendMessage, openDrawer: expandDrawer, prefillMessage, setContext };

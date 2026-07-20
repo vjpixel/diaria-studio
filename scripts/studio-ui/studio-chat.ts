@@ -28,6 +28,21 @@
  * `chat-error` no stream — nunca derruba o processo do studio-server nem a
  * request HTTP.
  *
+ * #3687 (contexto do painel): o chat drawer é injetado em toda página do
+ * Studio, mas até aqui a sessão SDK não sabia qual edição/arquivo/aba
+ * estavam abertos no painel ao lado — referências implícitas do editor
+ * ("passe a Clarice nesse texto") não resolviam sozinhas. `ChatPanelContext`
+ * (edição/arquivo/aba, todos opcionais) chega no corpo de `POST /api/chat`
+ * (`ChatRequest.context`, populado client-side por `chat-drawer.js`
+ * `setContext` — chamado pelas páginas que têm esse estado, ex: `revisao.js`
+ * a cada `renderTabs()`) e `buildChatPrompt` o serializa como um bloco
+ * `[Contexto do painel Studio: ...]` prefixado ANTES da mensagem do editor
+ * no `prompt` enviado ao SDK — nunca na bolha visível do chat (a UI mostra
+ * só o texto que o editor digitou). Como o contexto viaja em CADA turno (não
+ * só na abertura da sessão), atualiza dinamicamente conforme o editor troca
+ * de edição/arquivo/aba entre mensagens, sem exigir um evento de
+ * sincronização à parte.
+ *
  * #3557 (gates): qualquer tool call que exigiria um prompt interativo (ou
  * seja, não já pré-aprovado por `.claude/settings.json`/`allowedTools`)
  * continua NEGADA — EXCETO `AskUserQuestion`, escopo estrito desta fatia.
@@ -118,6 +133,27 @@ export type ChatWireEvent =
   | ChatDoneEvent
   | ChatErrorEvent;
 
+// ─── contexto do painel (#3687) ─────────────────────────────────────────────
+
+/**
+ * Estado do painel Studio no momento do turno — edição/arquivo/aba ativos,
+ * tal como o header da página os mostra (ver `revisao.js` `renderTabs()`).
+ * Todos os campos são opcionais: uma página sem esse conceito (ex:
+ * triagem/apoios/rodada, que não abrem uma edição) simplesmente não chama
+ * `setContext` no cliente, e o turno segue sem bloco de contexto — nunca um
+ * requisito bloqueante pro chat funcionar.
+ */
+export interface ChatPanelContext {
+  /** AAMMDD da edição aberta (ex: "260720") — como aparece no header "Edição". */
+  edition?: string;
+  /** Arquivo do stage selecionado (ex: "02-reviewed.md") — como aparece no header "Arquivo". */
+  file?: string;
+  /** Rótulo da aba ativa (ex: "02 — Newsletter") — como aparece nos botões de aba. */
+  tab?: string;
+}
+
+const CHAT_CONTEXT_KEYS = ["edition", "file", "tab"] as const;
+
 // ─── parsing do corpo de POST /api/chat (puro) ─────────────────────────────
 
 export interface ChatRequest {
@@ -127,6 +163,11 @@ export interface ChatRequest {
   /** `true` força uma sessão nova mesmo que exista uma em memória — botão
    * "nova conversa" do drawer. */
   reset?: boolean;
+  /** Estado do painel (edição/arquivo/aba) no momento deste turno (#3687) —
+   * ver `buildChatPrompt`. Reenviado a CADA turno pelo cliente (não só na
+   * abertura da sessão), então acompanha o editor trocando de edição/arquivo/
+   * aba entre mensagens. */
+  context?: ChatPanelContext;
 }
 
 export type ParsedChatRequest =
@@ -155,14 +196,65 @@ export function parseChatRequestBody(raw: string): ParsedChatRequest {
   if (obj.reset !== undefined && typeof obj.reset !== "boolean") {
     return { ok: false, error: "'reset' deve ser boolean quando presente" };
   }
+  let context: ChatPanelContext | undefined;
+  if (obj.context !== undefined) {
+    if (typeof obj.context !== "object" || obj.context === null || Array.isArray(obj.context)) {
+      return { ok: false, error: "'context' deve ser um objeto quando presente" };
+    }
+    const ctxObj = obj.context as Record<string, unknown>;
+    const parsedContext: ChatPanelContext = {};
+    for (const key of CHAT_CONTEXT_KEYS) {
+      if (ctxObj[key] === undefined) continue;
+      if (typeof ctxObj[key] !== "string") {
+        return { ok: false, error: `'context.${key}' deve ser string quando presente` };
+      }
+      parsedContext[key] = ctxObj[key] as string;
+    }
+    context = parsedContext;
+  }
   return {
     ok: true,
     value: {
       message: obj.message,
       sessionId: obj.sessionId as string | undefined,
       reset: obj.reset === true,
+      context,
     },
   };
+}
+
+// ─── montagem do prompt com o bloco de contexto (#3687, pura) ─────────────
+
+/**
+ * Serializa `ChatPanelContext` num bloco de UMA linha pra prefixar o prompt
+ * — nunca a bolha visível do chat (ver `handleApiChat`/`chat-drawer.js`, que
+ * mostram só o texto cru do editor). Campos ausentes/vazios são omitidos;
+ * sem NENHUM campo preenchido, retorna string vazia (nenhum bloco é
+ * emitido). Pura — usada tanto por `buildChatPrompt` quanto testável
+ * isoladamente.
+ */
+export function formatChatContextBlock(context: ChatPanelContext | undefined): string {
+  if (!context) return "";
+  const parts: string[] = [];
+  if (context.edition && context.edition.trim()) parts.push(`edição ${context.edition.trim()}`);
+  if (context.file && context.file.trim()) parts.push(`arquivo ${context.file.trim()}`);
+  if (context.tab && context.tab.trim()) parts.push(`aba "${context.tab.trim()}"`);
+  if (parts.length === 0) return "";
+  return `[Contexto do painel Studio: ${parts.join(" · ")}]`;
+}
+
+/**
+ * Monta o `prompt` final enviado ao SDK: o bloco de contexto (se houver
+ * algum campo preenchido) numa linha, uma linha em branco, e a mensagem cru
+ * do editor — igual ao formato que `describeChatError`/o resto do módulo já
+ * usa pra texto legível. Sem contexto (nenhum campo preenchido), devolve
+ * `message` inalterada — é o que garante que sessões de páginas sem esse
+ * conceito (triagem/apoios/rodada) continuem funcionando exatamente como
+ * antes do #3687.
+ */
+export function buildChatPrompt(message: string, context: ChatPanelContext | undefined): string {
+  const block = formatChatContextBlock(context);
+  return block ? `${block}\n\n${message}` : message;
 }
 
 // ─── parsing do corpo de POST /api/chat/answer (puro, #3557) ───────────────
@@ -678,6 +770,10 @@ export interface RunChatTurnOptions {
   /** cwd da sessão do Agent SDK — sempre a raiz do repo (`rootDir` do studio-server),
    * pra carregar CLAUDE.md/skills/MCPs locais igual ao terminal. */
   cwd: string;
+  /** Estado do painel (edição/arquivo/aba) no momento deste turno (#3687) —
+   * prefixado ao `message` via `buildChatPrompt` antes de virar o `prompt`
+   * enviado ao SDK. Omitido = comportamento idêntico ao pré-#3687. */
+  context?: ChatPanelContext;
   onEvent: (event: ChatWireEvent) => void;
   queryFn?: QueryFn;
   /** Repassado direto pro `Options.abortController` do SDK — o caller (o
@@ -708,7 +804,7 @@ export async function runChatTurn(opts: RunChatTurnOptions): Promise<void> {
   const turnPermissionIds = new Set<string>();
   try {
     const stream = runQuery({
-      prompt: opts.message,
+      prompt: buildChatPrompt(opts.message, opts.context),
       options: {
         cwd: opts.cwd,
         resume: opts.sessionId,
