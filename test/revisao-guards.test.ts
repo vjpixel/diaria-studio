@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import {
   shouldConfirmDivergenceGuard,
   DIVERGENCE_CONFIRM_MESSAGE,
+  SAVE_CONFLICT_CONFIRM_MESSAGE,
 } from "../scripts/studio-ui/public/revisao-guards.js";
 
 describe("shouldConfirmDivergenceGuard (#3668 gap 2)", () => {
@@ -64,5 +65,22 @@ describe("DIVERGENCE_CONFIRM_MESSAGE (#3668 gap 1)", () => {
     assert.match(DIVERGENCE_CONFIRM_MESSAGE, /newsletter-final\.html/);
     assert.match(DIVERGENCE_CONFIRM_MESSAGE, /re-render futuro/);
     assert.match(DIVERGENCE_CONFIRM_MESSAGE, /sem aviso automático da pipeline/);
+  });
+});
+
+// #3729 — warn-before-save: mensagem mostrada quando o server responde 409
+// pra um PUT de save (o arquivo mudou em disco desde o último load — o
+// pipeline escreveu por baixo). Mesmo padrão de teste de
+// DIVERGENCE_CONFIRM_MESSAGE acima: só a mensagem PURA, sem harness de DOM.
+describe("SAVE_CONFLICT_CONFIRM_MESSAGE (#3729)", () => {
+  it("descreve o fato observável (arquivo mudou desde a abertura do painel) e aponta o pipeline como causa provável", () => {
+    assert.match(SAVE_CONFLICT_CONFIRM_MESSAGE, /mudou desde que você abriu/);
+    assert.match(SAVE_CONFLICT_CONFIRM_MESSAGE, /pipeline/);
+  });
+
+  it("comunica as 2 opções reais: sobrescrever (OK) ou recarregar descartando edições locais (Cancelar)", () => {
+    assert.match(SAVE_CONFLICT_CONFIRM_MESSAGE, /OK.*SOBRESCREVER/is);
+    assert.match(SAVE_CONFLICT_CONFIRM_MESSAGE, /Cancelar.*RECARREGAR/is);
+    assert.match(SAVE_CONFLICT_CONFIRM_MESSAGE, /perdidas/);
   });
 });

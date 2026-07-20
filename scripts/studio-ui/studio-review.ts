@@ -245,25 +245,86 @@ export function readReviewFile(rootDir: string, aammdd: string, slug: string): R
   };
 }
 
+export interface SaveReviewOptions {
+  /**
+   * mtime (ISO 8601) do arquivo tal como o client o viu quando abriu/carregou
+   * o painel (`GET .../review/:slug` → `modifiedAt`, `null` quando o arquivo
+   * ainda não existia naquele momento) — usado pra detectar escrita
+   * concorrente (#3729: editor salva no Studio no exato momento em que o
+   * pipeline reescreveu o mesmo arquivo por baixo — title-picker, Clarice,
+   * humanizador). `undefined` (campo omitido) pula a checagem inteiramente —
+   * mantém compat com chamadas que não têm noção de baseline temporal (scripts
+   * internos, `resetBaseline`, chamadas de teste pré-#3729).
+   */
+  expectedModifiedAt?: string | null;
+  /**
+   * `true` = ignora divergência detectada e sobrescreve mesmo assim — usado
+   * quando o client já avisou o editor (dialog de conflito) e ele confirmou
+   * explicitamente que quer sobrescrever (#3729).
+   */
+  force?: boolean;
+}
+
 export interface SaveReviewResult {
   ok: boolean;
   error?: string;
   filename: string;
   modifiedAt: string | null;
+  /**
+   * `true` quando o save foi recusado por divergência entre
+   * `expectedModifiedAt` e o mtime atual em disco (#3729) — o caller HTTP
+   * responde 409 (não 400) nesse caso, pro client distinguir "erro" de
+   * "conflito, decida o que fazer".
+   */
+  conflict?: boolean;
+  /** mtime atual em disco no momento da tentativa — só presente quando
+   * `conflict` é `true`, pro client decidir entre sobrescrever (force) ou
+   * recarregar a versão do disco. */
+  currentModifiedAt?: string | null;
+}
+
+/** mtime (ISO) do arquivo em disco agora, ou `null` se ele não existe. */
+function currentMtimeOf(filePath: string): string | null {
+  return existsSync(filePath) ? statSync(filePath).mtime.toISOString() : null;
 }
 
 /** Escreve o conteúdo inteiro do editor de volta no arquivo — o Studio é a
- * sessão local ativa do editor (ver nota de design no topo do arquivo). */
+ * sessão local ativa do editor (ver nota de design no topo do arquivo).
+ *
+ * #3729 (warn-before-save): quando `opts.expectedModifiedAt` é fornecido (não
+ * `undefined`) e `opts.force` não é `true`, compara contra o mtime ATUAL em
+ * disco antes de escrever. Divergência (ex: pipeline reescreveu o arquivo
+ * depois que o editor abriu o painel) aborta o write e retorna
+ * `{ conflict: true }` em vez de sobrescrever silenciosamente — mesmo padrão
+ * de reference do guard de divergência client-side já usado pro slug
+ * `html-final` desde #3635, mas aqui detectando divergência do PRÓPRIO
+ * arquivo sendo salvo, não de um arquivo derivado. Escopo explícito: protege
+ * o save do EDITOR de sobrescrever uma escrita do PIPELINE — não o inverso
+ * (ver CLAUDE.md, risco residual documentado). */
 export function saveReviewFile(
   rootDir: string,
   aammdd: string,
   slug: string,
   content: string,
+  opts: SaveReviewOptions = {},
 ): SaveReviewResult {
   const resolved = resolveReviewFile(rootDir, aammdd, slug);
   if (!resolved) return { ok: false, error: "AAMMDD ou arquivo inválido", filename: "", modifiedAt: null };
   if (!existsSync(resolved.editionDir)) {
     return { ok: false, error: `edição não encontrada: ${aammdd}`, filename: resolved.filename, modifiedAt: null };
+  }
+  if (!opts.force && opts.expectedModifiedAt !== undefined) {
+    const currentModifiedAt = currentMtimeOf(resolved.filePath);
+    if (currentModifiedAt !== opts.expectedModifiedAt) {
+      return {
+        ok: false,
+        error: "o arquivo foi modificado desde que você abriu o painel — recarregue ou sobrescreva explicitamente",
+        filename: resolved.filename,
+        modifiedAt: currentModifiedAt,
+        conflict: true,
+        currentModifiedAt,
+      };
+    }
   }
   try {
     // mkdir recursivo do dirname — no-op pros 3 slugs de raiz (dirname já é

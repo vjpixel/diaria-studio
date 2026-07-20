@@ -91,6 +91,93 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.equal(getBody.baseline, TWO_DESTAQUES_MD, "baseline continua a versão original do agente");
   });
 
+  // #3729 (warn-before-save): o server recusa o PUT com 409 quando
+  // `expectedModifiedAt` (mtime que o client viu no GET) diverge do mtime
+  // ATUAL em disco — protege contra o editor sobrescrever silenciosamente uma
+  // escrita do pipeline (title-picker/Clarice/humanizador) feita depois que o
+  // painel carregou o arquivo. Edição PRÓPRIA (260718, isolada de 260716) —
+  // os testes abaixo mutam 03-social.md repetidamente e não deveriam afetar
+  // os testes de social-preview.html/lint mais abaixo, que dependem do
+  // conteúdo fixo escrito em 260716 no `before()`.
+  describe("PUT .../review/:slug — conflito de escrita concorrente (#3729)", () => {
+    const conflictAammdd = "260718";
+    let conflictEditionDir: string;
+
+    before(() => {
+      conflictEditionDir = join(root, "data", "editions", conflictAammdd);
+      mkdirSync(join(conflictEditionDir, "_internal"), { recursive: true });
+      writeFileSync(join(conflictEditionDir, "03-social.md"), "conteúdo original do agente", "utf8");
+    });
+
+    it("PUT com expectedModifiedAt divergente do mtime atual retorna 409 e NÃO sobrescreve o arquivo", async () => {
+      const getRes = await fetch(new URL(`/api/editions/${conflictAammdd}/review/social`, server.url));
+      const staleModifiedAt = (await getRes.json()).modifiedAt;
+      assert.ok(staleModifiedAt);
+
+      // Pipeline "escreve por baixo" via write direto no disco (mesmo caminho
+      // que Edit/Write do agente usam — não passa pela rota HTTP).
+      writeFileSync(join(conflictEditionDir, "03-social.md"), "versão do pipeline pós-load", "utf8");
+
+      const put = await fetch(new URL(`/api/editions/${conflictAammdd}/review/social`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "edição do editor sobre a versão antiga",
+          expectedModifiedAt: staleModifiedAt,
+        }),
+      });
+      assert.equal(put.status, 409);
+      const putBody = await put.json();
+      assert.equal(putBody.ok, false);
+      assert.equal(putBody.conflict, true);
+      assert.ok(putBody.currentModifiedAt);
+      assert.notEqual(putBody.currentModifiedAt, staleModifiedAt);
+      assert.equal(readFileSync(join(conflictEditionDir, "03-social.md"), "utf8"), "versão do pipeline pós-load");
+    });
+
+    it("PUT com force:true sobrescreve mesmo com expectedModifiedAt divergente (editor confirmou o conflito)", async () => {
+      const getRes = await fetch(new URL(`/api/editions/${conflictAammdd}/review/social`, server.url));
+      const staleModifiedAt = (await getRes.json()).modifiedAt;
+
+      writeFileSync(join(conflictEditionDir, "03-social.md"), "versão do pipeline pós-load 2", "utf8");
+
+      const put = await fetch(new URL(`/api/editions/${conflictAammdd}/review/social`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "sobrescrita forçada",
+          expectedModifiedAt: staleModifiedAt,
+          force: true,
+        }),
+      });
+      assert.equal(put.status, 200);
+      assert.equal(readFileSync(join(conflictEditionDir, "03-social.md"), "utf8"), "sobrescrita forçada");
+    });
+
+    it("PUT sem 'expectedModifiedAt' no corpo (client antigo) pula a checagem — compat retroativa", async () => {
+      const put = await fetch(new URL(`/api/editions/${conflictAammdd}/review/social`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "sem baseline informado, mesmo assim salva" }),
+      });
+      assert.equal(put.status, 200);
+      const body = await put.json();
+      assert.equal(body.ok, true);
+      assert.equal(body.conflict, undefined);
+    });
+
+    it("PUT com 'expectedModifiedAt' de tipo errado (não string, não null) retorna 400 — nunca vira conflito por acidente", async () => {
+      const put = await fetch(new URL(`/api/editions/${conflictAammdd}/review/social`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "corpo malformado", expectedModifiedAt: 12345 }),
+      });
+      assert.equal(put.status, 400);
+      const body = await put.json();
+      assert.match(body.error, /expectedModifiedAt/);
+    });
+  });
+
   it("PUT sem 'content' no corpo retorna 400", async () => {
     const res = await fetch(new URL("/api/editions/260716/review/reviewed", server.url), {
       method: "PUT",
@@ -512,6 +599,41 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
   // (reabilitado no finally, mesmo se o try lançar). Não elimina a corrida
   // sozinho (não impede trocar de aba), mas reduz o risco de duplo-clique
   // concorrente e é parte do fix.
+  // #3729 (warn-before-save): saveCurrent() envia expectedModifiedAt (mtime
+  // visto no último load) no PUT, trata 409 mostrando SAVE_CONFLICT_CONFIRM_MESSAGE,
+  // e no caminho de confirmação faz retry com force:true — mesmo padrão de
+  // "contrato estático" dos demais testes deste bloco (sem harness de DOM
+  // pra revisao.js).
+  it("#3729: revisao.js importa SAVE_CONFLICT_CONFIRM_MESSAGE de revisao-guards.js e envia expectedModifiedAt no PUT de saveCurrent()", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /from ["']\.\/revisao-guards\.js["']/);
+    assert.match(body, /SAVE_CONFLICT_CONFIRM_MESSAGE/);
+    assert.match(body, /let loadedModifiedAt = null;/);
+    const fnStart = body.indexOf("async function saveCurrent()");
+    const fnEnd = body.indexOf("\nfunction renderDiff", fnStart);
+    const fnBody = body.slice(fnStart, fnEnd >= 0 ? fnEnd : undefined);
+    assert.match(fnBody, /expectedModifiedAt:\s*expectedModifiedAtAtSaveStart/);
+    assert.match(fnBody, /status === 409/);
+    assert.match(fnBody, /window\.confirm\(SAVE_CONFLICT_CONFIRM_MESSAGE\)/);
+    // caminho "sobrescrever": retry com force:true
+    assert.match(fnBody, /force:\s*true/);
+    // caminho "recarregar": não deveria enviar mais um PUT — deveria chamar
+    // loadFile de volta pro mesmo slug pra descartar a edição local.
+    assert.match(fnBody, /await loadFile\(slugAtSaveStart,\s*\{\s*force:\s*true\s*\}\)/);
+  });
+
+  it("#3729: loadFile() captura body.modifiedAt em loadedModifiedAt (baseline temporal usado no próximo save)", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function loadFile(");
+    const fnEnd = body.indexOf("\nfunction refreshPreviewIfOpen", fnStart);
+    const fnBody = body.slice(fnStart, fnEnd);
+    assert.match(fnBody, /loadedModifiedAt = null;/);
+    assert.match(fnBody, /loadedModifiedAt = body\.modifiedAt \?\? null;/);
+  });
+
   it("#3672: saveCurrent() desabilita rv-save-btn durante o save e reabilita no finally", async () => {
     const res = await fetch(new URL("/revisao.js", server.url));
     const body = await res.text();

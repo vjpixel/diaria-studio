@@ -7,7 +7,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -149,6 +149,113 @@ describe("readReviewFile / saveReviewFile / resetBaseline (#3559)", () => {
     assert.equal(reset.ok, true);
     const state = readReviewFile(root, "260716", "reviewed");
     assert.equal(state.baseline, "v2");
+  });
+});
+
+// #3729 (warn-before-save): editor (Studio) e pipeline (title-picker, Clarice,
+// humanizador — todos via Edit/Write do agente) escrevem DIRETO no mesmo
+// 02-reviewed.md/03-social.md sem lock/CAS. `saveReviewFile` agora aceita um
+// `expectedModifiedAt` (mtime visto pelo client no load) e recusa o write —
+// em vez de sobrescrever silenciosamente — quando o mtime ATUAL em disco
+// diverge, sinalizando `conflict: true` pro caller HTTP responder 409.
+describe("saveReviewFile — conflito de escrita concorrente (#3729 warn-before-save)", () => {
+  let root: string;
+  let editionDir: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-review-conflict-"));
+    editionDir = makeEdition(root, "260716");
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("happy path: expectedModifiedAt bate com o mtime atual em disco (sem mudança externa) — save funciona normalmente", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "versão do agente", "utf8");
+    const loaded = readReviewFile(root, "260716", "reviewed");
+    assert.ok(loaded.modifiedAt);
+    const result = saveReviewFile(root, "260716", "reviewed", "edição do editor", {
+      expectedModifiedAt: loaded.modifiedAt,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.conflict, undefined);
+    assert.equal(readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8"), "edição do editor");
+  });
+
+  it("recusa o save (conflict:true) quando o arquivo mudou em disco depois que o client carregou (pipeline escreveu por baixo)", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "versão do agente", "utf8");
+    const loaded = readReviewFile(root, "260716", "reviewed");
+    const staleModifiedAt = loaded.modifiedAt;
+    assert.ok(staleModifiedAt);
+
+    // Pipeline reescreve o arquivo "por baixo" (title-picker/Clarice/
+    // humanizador) DEPOIS que o client leu — utimesSync garante um mtime
+    // estritamente mais novo de forma determinística (não depende de um gap
+    // real de relógio entre os dois writeFileSync, que poderia colidir em
+    // filesystems com resolução de mtime grosseira).
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "versão do pipeline pós-load", "utf8");
+    const newerDate = new Date(Date.parse(staleModifiedAt!) + 5000);
+    utimesSync(resolve(editionDir, "02-reviewed.md"), newerDate, newerDate);
+
+    const result = saveReviewFile(root, "260716", "reviewed", "edição do editor sobre a versão antiga", {
+      expectedModifiedAt: staleModifiedAt,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.conflict, true);
+    assert.ok(result.currentModifiedAt);
+    assert.notEqual(result.currentModifiedAt, staleModifiedAt);
+    // O ponto central do fix: a escrita do pipeline NUNCA é sobrescrita
+    // silenciosamente — o conteúdo em disco permanece o do pipeline.
+    assert.equal(readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8"), "versão do pipeline pós-load");
+  });
+
+  it("force:true ignora a divergência detectada e sobrescreve mesmo assim (editor confirmou no dialog de conflito)", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "versão do agente", "utf8");
+    const loaded = readReviewFile(root, "260716", "reviewed");
+    const staleModifiedAt = loaded.modifiedAt;
+    assert.ok(staleModifiedAt);
+
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "versão do pipeline pós-load", "utf8");
+    const newerDate = new Date(Date.parse(staleModifiedAt!) + 5000);
+    utimesSync(resolve(editionDir, "02-reviewed.md"), newerDate, newerDate);
+
+    const result = saveReviewFile(root, "260716", "reviewed", "sobrescrita forçada pelo editor", {
+      expectedModifiedAt: staleModifiedAt,
+      force: true,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.conflict, undefined);
+    assert.equal(readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8"), "sobrescrita forçada pelo editor");
+  });
+
+  it("expectedModifiedAt omitido (assinatura de 4 args, sem opts) pula a checagem inteiramente — compat com chamadas antigas/scripts internos", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "versão do agente", "utf8");
+    readReviewFile(root, "260716", "reviewed");
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "versão do pipeline pós-load", "utf8");
+    const result = saveReviewFile(root, "260716", "reviewed", "edição sem baseline informado");
+    assert.equal(result.ok, true);
+    assert.equal(result.conflict, undefined);
+  });
+
+  it("expectedModifiedAt:null (arquivo ainda não existia no load) detecta conflito quando o pipeline CRIA o arquivo nesse meio tempo", () => {
+    // Cenário: editor abre o painel numa edição onde 02-reviewed.md ainda não
+    // existe (Stage 2 não terminou) — GET retorna modifiedAt:null. Nesse meio
+    // tempo o pipeline termina o Stage 2 e cria o arquivo. Sem recarregar, um
+    // save às cegas deveria recusar (o arquivo passou de inexistente a
+    // existente — divergência real, mesma classe de risco do #3729).
+    const loaded = readReviewFile(root, "260716", "reviewed");
+    assert.equal(loaded.exists, false);
+    assert.equal(loaded.modifiedAt, null);
+
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "versão recém-criada pelo pipeline", "utf8");
+
+    const result = saveReviewFile(
+      root,
+      "260716",
+      "reviewed",
+      "edição feita achando que o arquivo não existia",
+      { expectedModifiedAt: null },
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.conflict, true);
+    assert.equal(readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8"), "versão recém-criada pelo pipeline");
   });
 });
 
