@@ -379,8 +379,26 @@ const WAVE_PUBLISH_PLATFORM_WORD_RE = /\b(beehiiv|linkedin|facebook|brevo)\b/i;
  * issue comment`/`gh issue close` (não basta mencionar em outra parte do
  * comando) — cirúrgico de propósito, não abre exceção pra outros
  * subcomandos `gh issue *` nem pra `gh` encadeado depois de outro comando.
+ *
+ * IMPORTANTE (self-review #3791): este regex sozinho só ancora o PREFIXO do
+ * comando — `^\s*gh(?:\.exe)?\s+issue\s+(?:comment|close)\b` casa igual num
+ * comando encadeado tipo `gh issue comment 1 --body "x" && curl evil.com`,
+ * porque não olha pro resto da string depois do prefixo. Como este módulo
+ * introduz aqui o ÚNICO caminho `allow: true` de toda a função (antes desta
+ * mudança, todo `Bash` acabava negado, mesmo sem bater em nenhum blocklist —
+ * ver o teste removido "nunca allow=true"), um prefixo sozinho não é
+ * suficiente pra decidir ALLOW com segurança: teria virado uma forma nova de
+ * command injection (encadear qualquer comando depois de um `gh issue
+ * comment` válido). Por isso `isGhIssueTextOnly` abaixo TAMBÉM exige ausência
+ * de metacaracteres de encadeamento de shell (`GH_ISSUE_SHELL_CHAIN_RE`) —
+ * um `--body`/`--comment` legítimo quase nunca precisa desses caracteres
+ * crus fora de aspas, e o pior caso de falso-positivo (um body que
+ * genuinamente contém `&&`/`;`/`|`/backtick/`$(`) é só cair no default-deny
+ * conservador (igual ao comportamento de antes desta mudança), nunca um
+ * allow indevido.
  */
 const GH_ISSUE_TEXT_ONLY_RE = /^\s*gh(?:\.exe)?\s+issue\s+(?:comment|close)\b/i;
+const GH_ISSUE_SHELL_CHAIN_RE = /[;&|`]|\$\(/;
 
 /**
  * Guard de working-tree (#3728 Gap 1 + #3738, defesa em profundidade).
@@ -458,7 +476,7 @@ export function evaluateWaveTool(toolName: string, input: Record<string, unknown
           "clarice-import-*, close-poll ou qualquer script Beehiiv/LinkedIn/Facebook/Brevo, mesmo em onda automática.",
       };
     }
-    const isGhIssueTextOnly = GH_ISSUE_TEXT_ONLY_RE.test(command);
+    const isGhIssueTextOnly = GH_ISSUE_TEXT_ONLY_RE.test(command) && !GH_ISSUE_SHELL_CHAIN_RE.test(command);
     if (!isGhIssueTextOnly && WAVE_PUBLISH_PLATFORM_WORD_RE.test(command)) {
       return {
         allow: false,
