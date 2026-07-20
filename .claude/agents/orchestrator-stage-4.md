@@ -74,12 +74,6 @@ npx tsx scripts/render-halt-banner.ts \
   ```bash
   npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator --level info --message 'etapa 4 revisao started'
   ```
-- **Sync pull antes de começar** (todos os arquivos que entram na revisão + pre-render):
-  ```bash
-  npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDITION_DIR}/ --stage 4 --files 02-reviewed.md,01-eia-A.jpg,01-eia-B.jpg,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg
-  ```
-  Editor pode ter refinado texto/imagens no Drive.
-
 ### 4b. Pré-render técnico
 
 **Pré-render completo sempre roda** (independente de `auto_approve`) — garante que `newsletter-final.html` e previews estejam prontos pra revisão e pra publicação. Com `--no-gates` o gate é pulado, mas o pré-render nunca é.
@@ -197,7 +191,7 @@ Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 
 `no-untranslated-summary` (#3196): **GATE-BLOCKING** quando exit 1 — item de LANÇAMENTOS/RADAR/USE MELHOR com marcador literal `[TRADUZIR]` OU descrição detectada como inglês pela heurística de stopwords (mesmo sem o marcador, caso o humanizador tenha removido o prefixo sem traduzir o texto). `stitch-newsletter.ts` injeta `[TRADUZIR] ` em descrições EN e depende do humanizador (LLM) pra traduzir — sem este lint, o item vazava pro gate/publicação intacto (incidente 260709). Ação: traduzir a descrição pra PT-BR em `02-reviewed.md` e remover o prefixo `[TRADUZIR] ` antes de aprovar.
 
-`video-links-are-youtube` (#3202): **GATE-BLOCKING** quando exit 1 — item da seção VÍDEOS com URL fora de `youtube.com`/`youtu.be` (regra editorial nova: `context/editorial-rules.md` — Seção "Vídeos"). A resolução automática roda no Stage 1 (`scripts/resolve-video-youtube.ts`, passo 1m-quinquies — busca `site:youtube.com` + substitui a URL quando há match confiável, ou flaga `video_url_unverified` no gate da Etapa 1 quando não há); este lint é o backstop que garante que nada não-YouTube sobrevive até a publicação, mesmo se a resolução foi pulada ou o editor colou um link não-YouTube manualmente no Drive. Caso real (260709): página oficial da OpenAI hospedando a livestream "Introducing GPT-Live" bloqueou o bot (403) e acabou reusada como URL do vídeo, duplicando o link de um destaque. Ação: substituir pela URL do YouTube equivalente (`youtube.com/watch?v=...` ou `youtu.be/...`) em `02-reviewed.md` antes de aprovar, ou remover o item de VÍDEOS.
+`video-links-are-youtube` (#3202): **GATE-BLOCKING** quando exit 1 — item da seção VÍDEOS com URL fora de `youtube.com`/`youtu.be` (regra editorial nova: `context/editorial-rules.md` — Seção "Vídeos"). A resolução automática roda no Stage 1 (`scripts/resolve-video-youtube.ts`, passo 1m-quinquies — busca `site:youtube.com` + substitui a URL quando há match confiável, ou flaga `video_url_unverified` no gate da Etapa 1 quando não há); este lint é o backstop que garante que nada não-YouTube sobrevive até a publicação, mesmo se a resolução foi pulada ou o editor colou um link não-YouTube manualmente. Caso real (260709): página oficial da OpenAI hospedando a livestream "Introducing GPT-Live" bloqueou o bot (403) e acabou reusada como URL do vídeo, duplicando o link de um destaque. Ação: substituir pela URL do YouTube equivalente (`youtube.com/watch?v=...` ou `youtu.be/...`) em `02-reviewed.md` antes de aprovar, ou remover o item de VÍDEOS.
 
 `title-publisher-suffix` + `title-trailing-period` (#2664/#2672): **WARN-ONLY** — exibir matches como ⚠️ no `{violations_block}` com linha + sufixo/título, sem bloquear o gate. A normalização automática roda no Stage 1 (`enrich-inbox-articles.ts` → `normalizeItemTitle`); estes lints são backstop pré-gate para resíduos que escapam (títulos gerados pelo writer LLM ou curados pelo editor). O check de sufixo usa heurística de 1–4 palavras (pode ter falso-positivo em traço editorial legítimo) — por isso WARN, não BLOCK. Ação sugerida ao editor: remover o sufixo de veículo / ponto final em `02-reviewed.md` antes de aprovar.
 
@@ -205,7 +199,7 @@ Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 
 `mid-sentence-ellipsis` (#3196): **WARN-ONLY** — exibir matches como ⚠️ no `{violations_block}` com seção + linha + trecho da descrição. Backstop irmão de `no-trailing-ellipsis`, mas pro caso da reticência aparecer no MEIO da descrição (não só no fim) — sintoma de outlet (ex: G1) truncando a própria meta-description no meio da frase. Heurística ampla sem allowlist (mesma justificativa #2715): também pode disparar em reticência estilística legítima no meio de uma frase — o editor decide caso a caso. Ação sugerida: reescrever a descrição em `02-reviewed.md` antes de aprovar, se de fato for truncamento da fonte.
 
-`stacked-intro-callouts` (#2729): **WARN-ONLY** — exibir matches como ⚠️ no `{violations_block}` com as linhas dos blocos empilhados. Detecta ≥2 blocos `**(🎉|📣)…**` na região de intro (antes do 1º `**DESTAQUE`) — `extractIntroCallout` (#2727) é greedy e funde os 2 blocos num só, vazando `**` internos como texto literal e perdendo o separador "Divulgação" do bloco patrocinado. `inject-champions-callout.ts` (Stage 3) já pula a auto-injeção quando um callout preexiste, mas isso não cobre colagem manual de 2 blocos pelo editor no Drive — daí o lint como backstop. Ação sugerida: mesclar os 2 CTAs num único bloco, ou mover o 2º para uma lacuna entre destaques (box de divulgação).
+`stacked-intro-callouts` (#2729): **WARN-ONLY** — exibir matches como ⚠️ no `{violations_block}` com as linhas dos blocos empilhados. Detecta ≥2 blocos `**(🎉|📣)…**` na região de intro (antes do 1º `**DESTAQUE`) — `extractIntroCallout` (#2727) é greedy e funde os 2 blocos num só, vazando `**` internos como texto literal e perdendo o separador "Divulgação" do bloco patrocinado. `inject-champions-callout.ts` (Stage 3) já pula a auto-injeção quando um callout preexiste, mas isso não cobre colagem manual de 2 blocos pelo editor — daí o lint como backstop. Ação sugerida: mesclar os 2 CTAs num único bloco, ou mover o 2º para uma lacuna entre destaques (box de divulgação).
 
 `orphan-box-in-gap` (#3204, estendido pro slot 3 em #3476): **GATE-BLOCKING** quando exit 1. Backstop pós marcador-agnóstico — `newsletter-parse.ts`'s `locateBoxInGap`/`locateBoxAfterLastDestaque` (Stage 4 pre-render, via `render-newsletter-html.ts`) já detecta o box de divulgação numa lacuna D1/D2, D2/D3, OU na região pós-último-destaque (slot 3, entre D3/D2 e USE MELHOR/É IA?) por POSIÇÃO (qualquer bloco `---`-isolado após o próprio destaque), não por um allowlist de marcadores emoji — um marcador novo (📖, 🎥, 🎁, 🔧, ...) não precisa mais de nenhuma mudança de código. Este lint cobre os 2 jeitos de isso AINDA falhar silenciosamente: (a) um bloco com CARA de box (bold-line inteiro `**...**` OU parágrafo emoji-led) colado DENTRO da seção do destaque anterior, sem `---` isolando-o — não vira box, é absorvido no corpo/why do destaque (caso 260609); (b) uma lacuna/região com MAIS de 1 bloco `---`-isolado extra — ambíguo, só o 1º vira box, o(s) demais seria(m) descartado(s) em silêncio. Ação sugerida ao editor: isolar o box em sua PRÓPRIA seção, entre o `---` que fecha o destaque/box anterior e o `---` que abre o próximo — exatamente 1 bloco extra por lacuna/região. Gate só pode ser aprovado (`sim`) após lint verde (exit 0).
 
@@ -411,11 +405,6 @@ Exit code handling — **GATE-BLOCKING**, mesmo padrão que `check-humanizer-soc
 
 ### 4d. Gate humano (#1694)
 
-**Sync push antes do gate (#507):** Subir outputs pra o editor revisar no Drive antes de aprovar:
-```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDITION_DIR}/ --stage 4 --files 02-reviewed.md,03-social.md,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,01-eia-A.jpg,01-eia-B.jpg
-```
-
 **GATE HUMANO — RESUMO CONSOLIDADO (#1694):**
 
 Apresentar ao editor numa visualização limpa:
@@ -427,7 +416,6 @@ Apresentar ao editor numa visualização limpa:
 
 📰 Newsletter HTML:   {newsletter_url}
 📱 Social preview:   {social_url}
-📁 Drive:            Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/
 
 ━━━ DESTAQUES ━━━━━━━━━━━━━━━━━━━━━━
 
@@ -468,7 +456,7 @@ Facebook  D3  "{hook_d3_facebook}"
 Aprovar e prosseguir para Publicação (Etapa 5)?
 
   sim     → segue para /diaria-5-publicacao (dispatch automático)
-  editar  → halt; editor edita no Drive → pull → responde "sim" quando pronto
+  editar  → halt; editor edita localmente (ou via Studio) → responde "sim" quando pronto
   ajustar → editor dita a mudança no chat; orchestrator aplica e re-apresenta o resumo
   abortar → encerra sem publicar (sentinel não escrito)
   Qualquer outra resposta → repetir prompt (fail-closed)
@@ -503,7 +491,7 @@ SOCIAL_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{ED
 ```
 Best-effort — `serve-preview.ts --stop-pid` já não é fatal quando o PID não existe mais (processo já morto, sessão reiniciada); nunca bloquear o encerramento do gate por causa disso. Mesma regra vale pro fechamento de aba acima (passos 1-3).
 
-**"editar":** rodar o teardown acima, depois `update-stage-status --stage 4 --status pending` + halt banner. NÃO escrever sentinel. Editor edita no Drive e re-roda quando pronto (um novo preview local é servido do zero na próxima passada por §4b). Adequado para revisões longas ou fora do terminal.
+**"editar":** rodar o teardown acima, depois `update-stage-status --stage 4 --status pending` + halt banner. NÃO escrever sentinel. Editor edita localmente (ou via Studio) e re-roda quando pronto (um novo preview local é servido do zero na próxima passada por §4b). Adequado para revisões longas ou fora do terminal.
 
 **"ajustar":** ver §4d.1 abaixo — edição inline no chat, orchestrator aplica e volta ao gate. Adequado para tweaks rápidos. **Não** rodar o teardown aqui.
 
@@ -515,7 +503,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
 
 **Fluxo:**
 
-1. **Pull antes de editar** (#494): `drive-sync --mode pull --stage 4 --files 02-reviewed.md` (e `03-social.md` se a mudança afetar social).
+1. **Arquivos já estão localmente atualizados** — sem round-trip externo a aguardar antes de editar (Studio, se usado pelo editor pra revisão fora do terminal, grava direto no arquivo local).
 2. **Aplicar edição cirúrgica** em `02-reviewed.md` seguindo #495: substituições linha-a-linha mínimas via `Edit` com `old_string` mínimo. Nunca substituir blocos grandes.
 3. **Cascata de título (crítico):** se a mudança alterar um TÍTULO de destaque:
    - O orchestrator **avisa** o editor: "Essa mudança afeta a imagem e os posts sociais do D{N} — vou re-gerar os passos afetados."
@@ -591,7 +579,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
 7. **Voltar ao §4d** (re-apresentar o resumo consolidado atualizado) — loop até o editor responder `sim` ou `abortar`. `ajustar` pode ser repetido N vezes.
 
 **Distinção `editar` vs `ajustar`:**
-- `editar`: round-trip via Drive — adequado para revisões longas, múltiplas seções, ou quando o editor não está no terminal.
+- `editar`: edição fora do fluxo de chat (local ou via Studio) — adequado para revisões longas, múltiplas seções, ou quando o editor não está no terminal.
 - `ajustar`: inline no chat — adequado para tweaks rápidos (título, palavra, link), orchestrator aplica na hora.
 - Ambos voltam ao gate; `sim` só depois de aprovação explícita.
 

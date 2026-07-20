@@ -19,12 +19,6 @@ Você é o orquestrador da pipeline de produção da newsletter **Diar.ia**. Seu
    - **Exceção: `auto_approve = true`.** Se receber no prompt, **pular todos os gates humanos** — auto-aprovar imediatamente e prosseguir sem aguardar input. Continuar logando e gravando outputs normalmente. Ao final de cada gate, emitir apenas `[AUTO] Stage {N} auto-approved` no output (não apresentar o resumo completo ao usuário). **No Stage 1, NUNCA copiar `_internal/01-categorized.json` literal para `_internal/01-approved.json`** (#3459 — copiava os 6 highlights do scorer sem aplicar o slice de first-3). Rodar `npx tsx scripts/apply-gate-edits.ts --auto --json data/editions/{AAMMDD}/_internal/01-categorized.json --out data/editions/{AAMMDD}/_internal/01-approved.json` — o modo `--auto` simula um MD sem edição humana (Destaques vazio, buckets intactos) e aplica o mesmo slice `highlights: first-3` do fluxo com gate.
 3. **Stateless por stage.** Cada stage lê do filesystem o output do anterior — nunca passa contexto gigante por memória. Isso permite retry de um stage isolado.
 4. **Leia `context/` no início.** Todos os subagentes já recebem `context/` no prompt. Você deve validar que `editorial-rules.md` e `sources.md` existem e não são placeholders antes de começar (um arquivo é placeholder se contém `PLACEHOLDER`, `TODO: regenerar`, ou tem <200 bytes). Se `sources.md` estiver placeholder, pause e instrua o usuário a rodar `npm run sync-sources`. Se `editorial-rules.md` estiver placeholder, pause e peça regeneração manual.
-5. **Sync bidirecional com Drive (`scripts/drive-sync.ts`).** Entre stages, manter `Work/Startups/diar.ia/edicoes/{YYMM}/{AAMMDD}/` no Drive em sincronia com `data/editions/{AAMMDD}/`:
-   - **Push** (modo `"push"`) **antes do gate humano** dos stages 1, 2, 3, 4 — sobe os outputs do stage para o editor poder revisar no celular antes de aprovar no terminal.
-   - **Pull** (modo `"pull"`) **antes de disparar** os stages 3, 4, 5 — puxa a versão mais recente dos inputs que aquele stage consome (caso o editor tenha editado direto no Drive desde o último push).
-   - Chamar via `Bash("npx tsx scripts/drive-sync.ts --mode {push|pull} --edition-dir {edition_dir} --stage {N} --files {file1.md,file2.jpg}")`. Ler JSON de stdout; warnings no output — **nunca bloqueiam o pipeline**. Registrar o resultado em `sync_results[stage]` do state da edição (telemetria).
-   - **Surface no gate (#121).** Se `JSON.warnings.length > 0` após qualquer sync push, **incluir no resumo do gate humano** uma linha tipo: `⚠️ Drive sync: {N} warning(s) em Stage {N} — detalhes em /diaria-log filtrando agent=drive-sync`. Tracking acumulado: contar stages com sync degradado em `sync_results`; se ≥3 stages consecutivos retornam warnings, escalar mensagem para `🔴 Drive sync degradado em N stages consecutivos — verificar credenciais (data/.credentials.json) ou rodar npx tsx scripts/oauth-setup.ts pra re-autenticar`. Não bloqueia, mas torna o estado visível pro editor reagir.
-   - Lista de arquivos por stage hardcoded nos sub-arquivos de detalhe. Só outputs finais entram — prompts e raws ficam local.
 
 ---
 
@@ -85,12 +79,6 @@ Resumo:
 Aprovar e seguir para Etapa {N+1}? (sim / editar / retry)
 ```
 
-### Drive sync — comportamento geral
-
-- Todos os blocos de push/pull verificam `DRIVE_SYNC` (lido de `platform.config.json`) antes de chamar `drive-sync.ts`. Se `false`, pular silenciosamente.
-- Falha de sync vira warning, nunca bloqueia o pipeline.
-- Tracking acumulado: contar stages com sync degradado em `sync_results`; ≥3 consecutivos → escalar mensagem de degradação para o editor (ver Princípio 5 acima).
-
 ### MCP disconnect — logging + halt banner (#759, #737)
 
 **Aplica-se a Stages 0-3** (Stages 4-6 têm cópia local própria — seus skills isolados não leem este arquivo raiz). Ao detectar `<system-reminder>` de MCP disconnect (subset varia por stage: 0/1 = Beehiiv+Gmail; 2 = +Clarice; 3 = +API de imagem), logar `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage {N} --agent orchestrator --level warn --message "mcp_disconnect: {server}" --details '{"server":"{server}","kind":"mcp_disconnect"}'` (reconexão: mesmo comando com `--level info --message "mcp_reconnect: {server}"`, persiste em `data/run-log.jsonl`) e **sempre acompanhar** com halt banner: `npx tsx scripts/render-halt-banner.ts --stage "{N} — {nome do stage}" --reason "mcp__{server} desconectado" --action "reconecte e responda 'retry', ou 'abort' para abortar"`.
@@ -124,7 +112,7 @@ Padrão: P2 (vira issue automática via auto-reporter). P3 = cleanup que não va
 
 ### Cost + timing tracking (#1217, #3441)
 
-`stage-status.md` (#960) é o **single source of truth** pra timing + custo + tokens + modelos por stage. Atualizar incrementalmente via `scripts/update-stage-status.ts` ao começar (`--status running --start ISO`) e ao terminar (`--status done --end ISO --duration-ms X`) cada stage. JSON sidecar em `_internal/stage-status.json` (canonical, gitignored); MD na raiz da edição (presentation, visível no Drive durante runs).
+`stage-status.md` (#960) é o **single source of truth** pra timing + custo + tokens + modelos por stage. Atualizar incrementalmente via `scripts/update-stage-status.ts` ao começar (`--status running --start ISO`) e ao terminar (`--status done --end ISO --duration-ms X`) cada stage. JSON sidecar em `_internal/stage-status.json` (canonical, gitignored); MD na raiz da edição (presentation).
 
 `_internal/cost.md` foi removido em #1217 — era redundante e nunca foi preenchido na prática.
 

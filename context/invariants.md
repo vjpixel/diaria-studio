@@ -2,16 +2,18 @@
 
 _Gerado automaticamente por `scripts/regen-invariants.ts` a partir de issues GitHub com label `convention`. Não editar diretamente — alterações são sobrescritas no próximo run._
 
-Última atualização: 2026-05-08T04:01:49.886Z
-Fonte: 13 issue(s) com label `convention`.
+Última atualização: 2026-07-20T04:54:15.938Z
+Fonte: 18 issue(s) com label `convention`.
 
 ## Drive sync
 
 - (#495) **Ao aplicar transformações de formatação em arquivos editáveis pelo editor, fazer substituições cirúrgicas — uma linha por vez — que toquem apenas o padrão a transformar, sem incluir linhas adjacentes que o editor pode ter alterado.**
-- (#494) **Antes de qualquer `Edit` ou `Write` em arquivo que existe no Drive, sempre fazer pull primeiro.**
 
 ## Publicação
 
+- (#1397) diaria-test: rodar SEMPRE todos os stages (remover --with-publish, sem skip silencioso)
+- (#1327) Beehiiv playbook: remover/marcar caminho 15+ passos (chunked) como deprecated — só Worker-hosted é default
+- (#1326) Stage 4: tudo automático por padrão (não tudo manual)
 - (#573) guard: filter future-dated Beehiiv posts antes de tratar como published (#572 follow-up)
 - (#336) Stage 5 publish: SEMPRE perguntar editor antes de disparar (manual vs automático)
 
@@ -27,6 +29,7 @@ Fonte: 13 issue(s) com label `convention`.
 
 ## Editorial
 
+- (#3436) Destaques nunca devem ser selecionados do bucket USE MELHOR
 - (#962) ux: categorized/reviewed devem dizer só qual imagem é IA (não qual é real)
 - (#160) Seção 'Lançamentos' deve ter apenas links de site oficial da empresa lançadora
 
@@ -37,4 +40,6 @@ Fonte: 13 issue(s) com label `convention`.
 
 ## Outros
 
+- (#3219) Padronizar bloco final (redes sociais + apoio) em todas as edições, diária e mensal
+- (#1172) convention: sempre consultar dashboard pra decidir próxima wave da migração Clarice
 - (#959) link-verify-bodies/ acumula 12+ MB de HTML em _internal/, infla contexto da Stage 2

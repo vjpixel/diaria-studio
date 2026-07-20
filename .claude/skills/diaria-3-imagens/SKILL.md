@@ -79,16 +79,6 @@ Aguardar resposta. Se "sim", continuar. Se "dia anterior", re-rodar eia-composer
 
 ## Parte 2 — Imagens de destaque (pular se `$2 = eia`)
 
-### 2a. Drive sync pull
-
-Puxar prompts do Drive (caso o editor tenha editado):
-
-```bash
-npx tsx scripts/drive-sync.ts --mode pull --edition-dir {EDIR}/ --stage 3 --files _internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
-```
-
-Falha = warning, **nunca bloqueia**.
-
 ### 2a-bis. Match prompts → destaques atuais (#606)
 
 Editor pode ter reordenado destaques no gate da Etapa 2 (D1↔D3, etc.).
@@ -124,16 +114,6 @@ Se a imagem já existir e não quiser regenerar, script sai com exit 0. Para for
 
 Backend padrão: Gemini (`gemini-3.1-flash-image-preview`, ~15s por imagem). Para ComfyUI, setar `image_generator: "comfyui"` em `platform.config.json`.
 
-### 2c. Drive sync push
-
-```bash
-npx tsx scripts/drive-sync.ts --mode push --edition-dir {EDIR}/ --stage 3 --files 01-eia-A.jpg,01-eia-B.jpg,04-d1-2x1.jpg,04-d1-1x1.jpg,04-d2-1x1.jpg,04-d3-1x1.jpg,04-d1-sd-prompt.json,04-d2-sd-prompt.json,04-d3-sd-prompt.json,_internal/01-eia-meta.json,_internal/02-d1-prompt.md,_internal/02-d2-prompt.md,_internal/02-d3-prompt.md
-```
-
-> **Nota (#582):** `01-eia.md` **não vai pro Drive** — conteúdo (linha de crédito + gabarito A/B) já está embutido em `01-categorized.md` via `render-categorized-md.ts` (#371) e `eia_answer` é propagado pra `02-reviewed.md` frontmatter via `normalize-newsletter.ts` (#744). Arquivo permanece local pra scripts consumirem.
-
-Anotar warnings pra mencionar no gate. Falha não bloqueia.
-
 ### 2d. Gate unificado de imagens
 
 **Se `--no-gate`:** pular. Emitir `[AUTO] Etapa 3 auto-aprovada` e finalizar.
@@ -151,8 +131,6 @@ Imagens de destaque:
   📁 {EDIR}/04-d1-2x1.jpg  (+ 04-d1-1x1.jpg)
   📁 {EDIR}/04-d2-1x1.jpg
   📁 {EDIR}/04-d3-1x1.jpg
-
-[⚠️ Drive sync: N warning(s)] (se houve)
 
 Aprovar (sim) / regenerar imagem individual (ex: "d2") / pedir retry completo?
 ```

@@ -18,7 +18,7 @@ Estrutura linear: cada seção completa, instala e valida um componente. Não pu
 | Conta Beehiiv | Scale+ | https://www.beehiiv.com/ (necessário pra MCP oficial) |
 | Conta Gmail | comum | pra inbox editorial |
 | Conta Meta Business | com Página FB + App Graph API | pra publicação Facebook |
-| Google Cloud Console | projeto criado | pra OAuth (Drive + Gmail) |
+| Google Cloud Console | projeto criado | pra OAuth (inbox-drain + upload de imagens sociais) |
 
 ---
 
@@ -54,7 +54,7 @@ cp .env.example .env
 |---|---|---|
 | `CLARICE_API_KEY` | MCP Clarice (revisão PT-BR) | conta Clarice.ai |
 | `GEMINI_API_KEY` | Stages 4–5 (imagens via Gemini) | https://aistudio.google.com/apikey |
-| `GOOGLE_CLIENT_ID` | Drive sync + Gmail inbox | Console Cloud → Credentials → OAuth Client ID (Desktop app) |
+| `GOOGLE_CLIENT_ID` | Gmail inbox-drain + upload de imagens sociais | Console Cloud → Credentials → OAuth Client ID (Desktop app) |
 | `GOOGLE_CLIENT_SECRET` | idem | mesma tela |
 
 No Windows, use `setx` ou `[Environment]::SetEnvironmentVariable(...)` pra persistir — requer reabrir o terminal.
@@ -114,9 +114,9 @@ Só se quiser que o Claude crie issues/PRs automaticamente.
 
 ---
 
-## 5. Google OAuth (Drive sync)
+## 5. Google OAuth (Gmail inbox-drain + upload de imagens sociais)
 
-Setup único pra permitir sync dos outputs de edição com Drive.
+Setup único de OAuth. O mesmo refresh token cobre inbox-drain (submissões do editor via `diariaeditor@gmail.com`) e upload de imagens sociais. **Não é mais usado pelo Drive sync da pipeline diária** — o Drive sync foi aposentado em #3636 (Studio + Cloudflare Tunnel/#3560 cobrem revisão mobile agora); `scripts/drive-sync.ts` e `scripts/oauth-setup.ts` continuam no repo mas nenhuma etapa do pipeline os invoca automaticamente.
 
 1. Pré-req: `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` no `.env`.
 2. Rodar:
@@ -130,7 +130,7 @@ Validar:
 
 ```bash
 # deve listar sem erro
-npx tsx -e "import('./scripts/drive-sync.ts').then(m => console.log('Drive sync loaded'))"
+npx tsx -e "import('./scripts/google-auth.ts').then(m => console.log('Google auth loaded'))"
 ```
 
 ### 5.1 Configurar consent screen (#1424)
@@ -243,7 +243,6 @@ Opcional (pode rodar depois da 1ª edição):
 ```
 
 Essa skill roda a pipeline completa mas:
-- Pula Drive sync (sem poluir Drive real).
 - Agenda social 10 dias no futuro (sem spam real).
 - Usa edição de teste 999999 por default.
 
@@ -287,7 +286,7 @@ Acompanhar cada gate e validar que funciona. Se falhar em algum stage, ver `/dia
 ### `fb_post_id` missing depois de Stage 6
 - `data/.fb-credentials.json` ausente ou com token expirado. Revisar seção 6.
 
-### Drive sync falha silenciosamente
+### inbox-drain / upload de imagens sociais falham silenciosamente
 - Token OAuth caducou. `npx tsx scripts/oauth-setup.ts` de novo.
 
 ### `npm test` falha em CI mas passa local
