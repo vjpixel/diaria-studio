@@ -300,6 +300,137 @@ describe("renderMarkdownToHtml (#3784 — renderer mínimo zero-dep)", () => {
     const html = renderMarkdownToHtml("[**PR #3800**](https://github.com/x/y/pull/3800)");
     assert.match(html, /<a href="https:\/\/github\.com\/x\/y\/pull\/3800"[^>]*><strong>PR #3800<\/strong><\/a>/);
   });
+
+  describe("#3789: separador de tabela é decidido por posição, não por truthiness", () => {
+    it("PoC exato da issue: linha dash-like no MEIO do corpo é dado real, não descartada", () => {
+      const html = renderMarkdownToHtml("| A | B |\n|---|---|\n| x | y |\n| -- | -- |\n| z | w |");
+      // única tabela, com a linha `-- | --` preservada como row de dados.
+      assert.match(html, /<td>x<\/td><td>y<\/td>/);
+      assert.match(html, /<td>--<\/td><td>--<\/td>/);
+      assert.match(html, /<td>z<\/td><td>w<\/td>/);
+      // 3 rows de dados no tbody (nenhuma foi descartada).
+      const tbodyMatch = html.match(/<tbody>(.*)<\/tbody>/);
+      assert.ok(tbodyMatch);
+      assert.equal((tbodyMatch![1].match(/<tr>/g) ?? []).length, 3);
+    });
+
+    it("controle: separador real logo após o header continua funcionando (não regressão)", () => {
+      const html = renderMarkdownToHtml("| Issue | PR |\n|---|---|\n| #3789 | #3800 |\n| #3790 | #3801 |");
+      assert.match(html, /<th>Issue<\/th><th>PR<\/th>/);
+      assert.ok(!html.includes("<td>---</td>")); // separador não vira row
+      const tbodyMatch = html.match(/<tbody>(.*)<\/tbody>/);
+      assert.ok(tbodyMatch);
+      assert.equal((tbodyMatch![1].match(/<tr>/g) ?? []).length, 2);
+    });
+
+    it("duas tabelas consecutivas sem linha em branco: o separador da 2ª tabela não desaparece mais (fica visível como dado, ainda que fundida na mesma <table>)", () => {
+      const html = renderMarkdownToHtml(
+        "| A | B |\n|---|---|\n| x | y |\n| C | D |\n|---|---|\n| p | q |",
+      );
+      // nenhum conteúdo textual desaparece silenciosamente — inclusive o
+      // separador da 2ª tabela, que antes do fix era engolido sem deixar rastro.
+      assert.match(html, /<td>C<\/td><td>D<\/td>/);
+      assert.match(html, /<td>---<\/td><td>---<\/td>/);
+      assert.match(html, /<td>p<\/td><td>q<\/td>/);
+    });
+  });
+
+  describe("#3790: itálico", () => {
+    it("PoC exato da issue: _(nenhuma unidade registrada)_ (já em uso em scripts/render-overnight-timeline.ts) vira <em>", () => {
+      const html = renderMarkdownToHtml("_(nenhuma unidade registrada)_");
+      assert.match(html, /<em>\(nenhuma unidade registrada\)<\/em>/);
+      assert.ok(!html.includes("_("));
+    });
+
+    it("*itálico* com asterisco simples também vira <em>", () => {
+      const html = renderMarkdownToHtml("Isto é *importante* aqui.");
+      assert.match(html, /<em>importante<\/em>/);
+    });
+
+    it("controle: **bold** continua funcionando depois de adicionar itálico (não vira <em> por engano)", () => {
+      const html = renderMarkdownToHtml("Isto é **muito importante** aqui.");
+      assert.match(html, /<strong>muito importante<\/strong>/);
+      assert.ok(!html.includes("<em>"));
+    });
+
+    it("controle: identificador snake_case no meio de uma frase não vira itálico por engano", () => {
+      const html = renderMarkdownToHtml("Rodar `verify_stage_2` ou o arquivo config_file_name.ts.");
+      assert.ok(!html.includes("<em>"));
+    });
+
+    it("controle: marcador de lista `- item`/`* item` não é confundido com itálico", () => {
+      const html = renderMarkdownToHtml("- primeiro\n- segundo");
+      assert.match(html, /<li>primeiro<\/li>/);
+      assert.ok(!html.includes("<em>"));
+    });
+
+    it("itálico dentro de um item de lista continua funcionando", () => {
+      const html = renderMarkdownToHtml("- item com *ênfase* no meio");
+      assert.match(html, /<li>item com <em>ênfase<\/em> no meio<\/li>/);
+    });
+
+    it("placeholder de link (__mdlink_N__) não é afetado pelo itálico de underscore", () => {
+      const html = renderMarkdownToHtml("[PR #3800](https://github.com/x/y/pull/3800) e mais texto.");
+      assert.match(html, /<a href="https:\/\/github\.com\/x\/y\/pull\/3800"[^>]*>PR #3800<\/a>/);
+      assert.ok(!html.includes("<em>"));
+      assert.ok(!html.includes("mdlink"));
+    });
+  });
+
+  describe("#3790: code fence", () => {
+    it("PoC exato da issue: bloco de 3 linhas vira <pre><code> com quebras de linha intactas", () => {
+      const html = renderMarkdownToHtml("```ts\nfunction foo() {\n  return 1;\n}\n```");
+      assert.match(html, /<pre><code>function foo\(\) \{\n {2}return 1;\n\}<\/code><\/pre>/);
+      assert.ok(!html.includes("```"));
+      assert.ok(!html.includes("<p>")); // não colapsou num parágrafo
+    });
+
+    it("conteúdo do code fence não é reprocessado como markdown (** e _ ficam literais)", () => {
+      const html = renderMarkdownToHtml("```\n**not bold** and _not italic_\n```");
+      assert.ok(!html.includes("<strong>"));
+      assert.ok(!html.includes("<em>"));
+      assert.match(html, /\*\*not bold\*\* and _not italic_/);
+    });
+
+    it("fence sem linguagem funciona igual", () => {
+      const html = renderMarkdownToHtml("```\nplain code\n```");
+      assert.match(html, /<pre><code>plain code<\/code><\/pre>/);
+    });
+
+    it("HTML embutido dentro de um code fence continua escapado (XSS)", () => {
+      const html = renderMarkdownToHtml("```\n<script>alert(1)</script>\n```");
+      assert.ok(!html.includes("<script>alert"));
+      assert.match(html, /&lt;script&gt;/);
+    });
+
+    it("fence não fechado até o fim do texto ainda assim preserva o conteúdo coletado (markdown malformado, fail-soft)", () => {
+      const html = renderMarkdownToHtml("```\nlinha 1\nlinha 2");
+      assert.match(html, /<pre><code>linha 1\nlinha 2<\/code><\/pre>/);
+    });
+
+    it("linhas em branco / --- dentro do fence não são tratadas como separador de bloco ou <hr>", () => {
+      const html = renderMarkdownToHtml("```\nlinha 1\n\n---\nlinha 2\n```");
+      assert.match(html, /<pre><code>linha 1\n\n---\nlinha 2<\/code><\/pre>/);
+      assert.ok(!html.includes("<hr>"));
+    });
+  });
+
+  describe("#3790: lista numerada", () => {
+    it("PoC exato da issue: 1. primeiro / 2. segundo vira <ol><li>, preserva enumeração estrutural", () => {
+      const html = renderMarkdownToHtml("1. primeiro\n2. segundo");
+      assert.match(html, /<ol>/);
+      assert.match(html, /<li>primeiro<\/li>/);
+      assert.match(html, /<li>segundo<\/li>/);
+      assert.match(html, /<\/ol>/);
+      assert.ok(!html.includes("<p>")); // não colapsou num parágrafo
+    });
+
+    it("trocar de <ul> pra <ol> no meio do documento fecha a lista anterior corretamente", () => {
+      const html = renderMarkdownToHtml("- bullet um\n1. numerado um\n2. numerado dois");
+      assert.match(html, /<ul>\n<li>bullet um<\/li>\n<\/ul>/);
+      assert.match(html, /<ol>\n<li>numerado um<\/li>\n<li>numerado dois<\/li>\n<\/ol>/);
+    });
+  });
 });
 
 describe("resolveReportHtml (#3714)", () => {
