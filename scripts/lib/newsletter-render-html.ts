@@ -346,9 +346,12 @@ export function renderCoverage(text: string): string {
   // #3725: mesmo texto de 1 parágrafo pode conter link markdown ([texto](url))
   // — processInlineLinks escapa E processa links, então é seguro mesmo sem
   // link nenhum (equivalente ao escText anterior nesse caso).
+  // #3737: o branch de 1 parágrafo usa tokenizeInline(text, escText, inlineLinkHtml)
+  // em vez de processInlineLinks — escText já compõe o word-joiner anti-linkify
+  // (#2008), que processInlineLinks nunca aplicou. Mesmo padrão de renderBodyInline.
   const inner = paras.length > 1
     ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", processInlineLinks(p))).join("\n  ")
-    : bodyP("0", processInlineLinks(text));
+    : bodyP("0", tokenizeInline(text, escText, inlineLinkHtml));
   return `<!-- INTRO (coverage) -->
 <tr><td class="pad" style="padding:44px 32px 8px;">
   ${inner}
@@ -364,9 +367,11 @@ export function renderCoverage(text: string): string {
 function renderCoverageTrailer(text: string): string {
   const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   // #3725: ver nota equivalente em renderCoverage acima.
+  // #3737: idem — branch de 1 parágrafo usa tokenizeInline(text, escText, inlineLinkHtml)
+  // pra preservar o word-joiner anti-linkify de escText.
   const inner = paras.length > 1
     ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", processInlineLinks(p))).join("\n  ")
-    : bodyP("0", processInlineLinks(text));
+    : bodyP("0", tokenizeInline(text, escText, inlineLinkHtml));
   return `<!-- INTRO (coverage trailer, pós-callout, #3705) -->
 <tr><td class="pad" style="padding:12px 32px 0;">
   ${inner}

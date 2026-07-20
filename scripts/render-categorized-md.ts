@@ -463,6 +463,33 @@ export function resolveCoverageLine(opts: {
   return opts.fallback();
 }
 
+/**
+ * #3739: fallback DO fallback de `resolveCoverageLine` — usado quando
+ * `totalConsidered` não pôde ser computado (nem `total_considered` no JSON,
+ * nem `tmp-categorized.json` no disco), então `diariaDiscovered` é `null` e
+ * `formatCoverageLine` (que exige os 2 números) não pode ser chamada. Os
+ * campos desconhecidos saem como placeholder `???`, mas os campos conhecidos
+ * (`editorSubmissions`, `totalSelected`) precisam da mesma pluralização
+ * condicional que `formatCoverageLine` (#3731) e `buildWelcomeCoverageSentence`
+ * (`sync-coverage-line.ts`) já aplicam — este era o 3º produtor com o mesmo
+ * gap ("1 enviados"/"selecionei os 1 mais relevantes" sempre no plural).
+ *
+ * **Pura** — exportada para teste direto, isolada da leitura de disco em `main()`.
+ */
+export function formatCoverageLineUnknownTotal(editorSubmissions: number, totalSelected: number): string {
+  const enviadosWord = editorSubmissions === 1 ? "enviado" : "enviados";
+  const selPhrase =
+    totalSelected === 1
+      ? "selecionei o artigo mais relevante"
+      : `selecionei os ${totalSelected} mais relevantes`;
+  return [
+    "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+    "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
+    `Nesta edição, a IA analisou ??? artigos (${editorSubmissions} ${enviadosWord} por mim e ??? encontrados automaticamente) e ${selPhrase}.`,
+    "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+  ].join("\n\n");
+}
+
 // ---------- Coverage metrics (#477) -------------------------------------
 
 /**
@@ -633,12 +660,7 @@ function main() {
         : null;
       return diariaDiscovered !== null
         ? formatCoverageLine({ editorSubmissions, diariaDiscovered, selected: totalSelected })
-        : [
-            "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
-            "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
-            `Nesta edição, a IA analisou ??? artigos (${editorSubmissions} enviados por mim e ??? encontrados automaticamente) e selecionei os ${totalSelected} mais relevantes.`,
-            "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
-          ].join("\n\n");
+        : formatCoverageLineUnknownTotal(editorSubmissions, totalSelected);
     },
   }) + "\n\n";
 

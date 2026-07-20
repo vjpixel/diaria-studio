@@ -1725,6 +1725,31 @@ describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boa
     assert.doesNotMatch(trailer ?? "", /Callout real/, "o trailer não deve conter o texto do callout");
   });
 
+  it("#3740: 2 blocos bold-wrap empilhados — extractCoverageLineTrailer NÃO vaza os marcadores ** literais do 2º bloco", () => {
+    // Bug: extractIntroCallout usa um grupo de captura pra remover os `**`
+    // do 1º bloco, mas extractCoverageLineTrailer fatiava o texto bruto —
+    // quando o próprio trailer é um bloco bold-wrap completo (2º bloco), os
+    // marcadores `**` sobreviviam literais no resultado.
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Callout real.**",
+      "",
+      "---",
+      "",
+      "**acompanhe de perto**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const trailer = extractCoverageLineTrailer(md);
+    assert.equal(trailer, "acompanhe de perto", "trailer deve vir sem os marcadores ** externos");
+    assert.doesNotMatch(trailer ?? "", /\*\*/, "trailer não deve conter ** literal");
+  });
+
   it("#3705 regressão: renderHTML NÃO duplica o parágrafo do callout quando ele fica no meio da intro (bug real da edição 260720)", () => {
     const md = buildMdWithMidCallout();
     const content = {
@@ -1797,6 +1822,48 @@ describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boa
     assert.doesNotMatch(html, /\[considere apoiar o projeto\]/);
   });
 
+  it("#3737: renderCoverageTrailer (via renderHTML) com texto de 1 parágrafo preserva word-joiner anti-linkify em domínio .ai", () => {
+    const md = [
+      "Olá! Eu sou o Pixel, editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Callout no meio do bloco de boas-vindas.**",
+      "",
+      "---",
+      "",
+      "Hoje testamos o Runway.ai e o resultado impressionou.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "**[Título do destaque](https://example.com/d1)**",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Importa por isso.",
+    ].join("\n");
+    const content = {
+      title: "Título do destaque",
+      subtitle: "",
+      coverImage: "",
+      destaques: [{ title: "Título do destaque", url: "https://example.com/d1", body: "Corpo do destaque.", why: "Importa por isso.", category: "🚀 LANÇAMENTO", credit: null }],
+      eia: { credit: "", correctAnswer: null },
+      sections: [],
+      sorteio: null,
+      encerrar: null,
+      erroIntencional: null,
+      coverageLine: extractCoverageLine(md),
+      introCallout: extractIntroCallout(md),
+      coverageLineTrailer: extractCoverageLineTrailer(md),
+    };
+    const html = renderHTML(content);
+    assert.match(html, /Runway\.&#8288;ai/);
+  });
+
   it("#3461: renderCoverage processa bloco multi-parágrafo com links markdown (um <p> por parágrafo)", () => {
     // Bug 260715: antes desta correção, renderCoverage só tratava o texto como
     // parágrafo único via escText — um bloco multi-parágrafo com [texto](url)
@@ -1821,6 +1888,15 @@ describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boa
     const html = renderCoverage(text);
     assert.match(html, /<a href="https:\/\/apoia\.se\/diaria"[^>]*>considere apoiar o projeto<\/a>/);
     assert.doesNotMatch(html, /\[considere apoiar o projeto\]/);
+  });
+
+  it("#3737: renderCoverage com texto de 1 parágrafo preserva word-joiner anti-linkify em domínio .ai", () => {
+    // Bug: o fix do #3725 trocou escText por processInlineLinks no branch de
+    // 1 parágrafo — processInlineLinks nunca aplica applyWordJoiner (#2008),
+    // então "Runway.ai" em texto puro (sem link markdown) perdia a proteção
+    // contra auto-linkify de clientes de email.
+    const html = renderCoverage("Hoje testamos o Runway.ai e o resultado impressionou.");
+    assert.match(html, /Runway\.&#8288;ai/);
   });
 
   it("renderHTML inclui o bloco de cobertura antes do primeiro destaque", () => {

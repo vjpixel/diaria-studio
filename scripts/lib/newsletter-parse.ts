@@ -735,7 +735,15 @@ export function extractCoverageLineTrailer(text: string): string | null {
   const sepMatch = afterClosingSep.match(/^---[ \t]*\r?$/m);
   const endIdx = sepMatch?.index !== undefined ? sepMatch.index : afterClosingSep.length;
   const trailer = afterClosingSep.slice(0, endIdx).trim();
-  return trailer || null;
+  if (!trailer) return null;
+  // #3740: quando o trailer inteiro é OUTRO bloco bold-wrap completo (2
+  // blocos bold-wrap empilhados na intro, separados por `---`), remover os
+  // marcadores `**` externos — mesmo tratamento que extractIntroCallout já
+  // aplica ao 1º bloco via grupo de captura (linha acima). Sem isso, o 2º
+  // bloco vazava com `**` literais no HTML final (extractIntroCallout, ao
+  // contrário, nunca tinha esse bug — sempre usou o grupo de captura).
+  const boldWrapMatch = trailer.match(/^\*\*\s*([\s\S]+)\*\*\s*$/);
+  return boldWrapMatch ? boldWrapMatch[1].trim() : trailer;
 }
 
 /**
