@@ -1580,6 +1580,34 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     );
   });
 
+  it("#3691: bloco de boas-vindas SEM a frase-CTA de apoio ainda é capturado (fallback)", () => {
+    // Bug real, edição 260720: o editor removeu a frase-CTA "considere
+    // apoiar o projeto" do bloco de boas-vindas (pra não competir com o box
+    // de apoio dedicado). Sem fallback, extractCoverageLine retornava null
+    // e renderCoverage não renderizava nada — a intro inteira sumia do HTML
+    // em silêncio, mesmo presente no 02-reviewed.md.
+    const md = [
+      "TÍTULO",
+      "",
+      "Headline de teste",
+      "",
+      "---",
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Hoje a Anthropic lançou uma novidade grande, então priorizei cobrir isso em detalhe.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const line = extractCoverageLine(md);
+    assert.ok(line, "coverage line (welcome sem CTA) deve ser extraída, não null");
+    assert.match(line!, /^Olá! Eu sou o \[Pixel\]/);
+    assert.match(line!, /Hoje a Anthropic lançou uma novidade grande/);
+    assert.doesNotMatch(line!, /---/);
+    assert.doesNotMatch(line!, /DESTAQUE/);
+  });
+
   it("renderCoverage retorna <tr> com texto escapado", () => {
     const text = "Para esta edição, eu (o editor) enviei 5 submissões & a Diar.ia encontrou outros 80 artigos.";
     const html = renderCoverage(text);

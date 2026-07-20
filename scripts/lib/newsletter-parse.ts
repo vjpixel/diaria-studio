@@ -564,19 +564,40 @@ export function extractCoverageLine(text: string): string | null {
     /^Olá! Eu sou o [\s\S]*?considere apoiar o projeto\]\([^)]+\)\./m,
   );
   if (anchorMatch) {
-    const startIdx = anchorMatch.index ?? 0;
-    const rest = text.slice(startIdx);
-    const sepMatch = rest.match(/^---[ \t]*\r?$/m);
-    const destMatch = rest.match(/^\*\*DESTAQUE/m);
-    let endIdx = rest.length;
-    if (sepMatch?.index !== undefined) endIdx = Math.min(endIdx, sepMatch.index);
-    if (destMatch?.index !== undefined) endIdx = Math.min(endIdx, destMatch.index);
-    return rest.slice(0, endIdx).trim();
+    return captureUntilCoverageBoundary(text, anchorMatch.index ?? 0);
+  }
+
+  // #3691: fallback quando o editor remove a frase-CTA de apoio do bloco de
+  // boas-vindas (ex: pra não competir com o box de apoio dedicado) — a
+  // âncora do CTA deixa de ser obrigatória pra reconhecer o bloco, só o
+  // início "Olá! Eu sou o" é exigido. Sem isso, extractCoverageLine
+  // retornava null e a intro inteira sumia do HTML em silêncio (caso real:
+  // edição 260720).
+  const welcomeMatch = text.match(/^Olá! Eu sou o [^\n]*$/m);
+  if (welcomeMatch) {
+    return captureUntilCoverageBoundary(text, welcomeMatch.index ?? 0);
   }
 
   // Formatos legados (linha única): #592/#609 original + #3456.
   const m = text.match(/^Para esta edição,[^\n]+$/m);
   return m ? m[0].trim() : null;
+}
+
+/**
+ * #3691: captura do início do bloco de boas-vindas até o próximo boundary
+ * estrutural (`---` isolado em linha própria, ou o próximo `**DESTAQUE`), o
+ * que vier primeiro. Sem boundary (MD malformado) captura até o fim do
+ * texto — defensivo, não deveria ocorrer em MD bem formado. Compartilhado
+ * entre o path ancorado no CTA de apoio e o fallback sem CTA.
+ */
+function captureUntilCoverageBoundary(text: string, startIdx: number): string {
+  const rest = text.slice(startIdx);
+  const sepMatch = rest.match(/^---[ \t]*\r?$/m);
+  const destMatch = rest.match(/^\*\*DESTAQUE/m);
+  let endIdx = rest.length;
+  if (sepMatch?.index !== undefined) endIdx = Math.min(endIdx, sepMatch.index);
+  if (destMatch?.index !== undefined) endIdx = Math.min(endIdx, destMatch.index);
+  return rest.slice(0, endIdx).trim();
 }
 
 /**
