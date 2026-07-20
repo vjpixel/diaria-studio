@@ -14,6 +14,7 @@ import { join } from "node:path";
 import type { CanUseTool, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
 import type { QueryFn } from "../scripts/studio-ui/studio-chat.ts";
+import type { IssueTerminalCheck } from "../scripts/studio-ui/studio-wave-fire.ts";
 
 /** Parseia um corpo SSE completo (já lido inteiro) em `{event, data}[]` —
  * mesmo formato de `formatSseEvent`. Ignora linhas de comentário (heartbeat). */
@@ -416,6 +417,11 @@ describe("POST /api/waves/fire (#3702) — habilitado, com waveFireQueryFn mocka
   let lastPrompt: string | undefined;
   let lastOptions: { cwd?: string; permissionMode?: string; canUseTool?: unknown } | undefined;
   let queryFn: QueryFn;
+  // #3765: default = tudo terminal (mesmo espírito do #3702 original — não
+  // queremos que o guard novo quebre os testes pré-existentes que não são
+  // sobre ele). Testes específicos do #3765 trocam via `setCheckTerminalStateFn`.
+  let checkTerminalStateFn: (issueNumbers: number[]) => IssueTerminalCheck[] = (issueNumbers) =>
+    issueNumbers.map((n) => ({ issueNumber: n, terminal: true, reason: "mock: sempre terminal" }));
 
   function makeFakeQuery(messages: SDKMessage[]): QueryFn {
     return (params) => {
@@ -438,6 +444,12 @@ describe("POST /api/waves/fire (#3702) — habilitado, com waveFireQueryFn mocka
       pollIntervalMs: 30,
       waveFireEnabled: true,
       waveFireQueryFn: (params) => queryFn(params),
+      // #3765: sem isto, o studio-server rodaria `gh issue view` de verdade
+      // (não existe repo/gh nesse tmpdir) após CADA turno bem-sucedido,
+      // emitindo um chat-error extra e quebrando as asserções de evento
+      // abaixo. Mock reporta terminal=true por padrão; testes específicos
+      // do #3765 sobrescrevem via `setCheckTerminalStateFn`.
+      waveFireCheckTerminalStateFn: (issueNumbers) => checkTerminalStateFn(issueNumbers),
     });
   });
 
@@ -448,6 +460,10 @@ describe("POST /api/waves/fire (#3702) — habilitado, com waveFireQueryFn mocka
 
   function setQueryFn(fn: QueryFn) {
     queryFn = fn;
+  }
+
+  function setCheckTerminalStateFn(fn: (issueNumbers: number[]) => IssueTerminalCheck[]) {
+    checkTerminalStateFn = fn;
   }
 
   it("400 quando o corpo não tem 'issueNumbers'", async () => {
@@ -516,6 +532,44 @@ describe("POST /api/waves/fire (#3702) — habilitado, com waveFireQueryFn mocka
     const events = parseSseBody(body);
     assert.equal(events.length, 1);
     assert.equal(events[0].event, "chat-error");
+  });
+
+  it("#3765: turno termina sem tool calls (coordenadora desiste silenciosamente) -> validação pós-turno emite chat-error, resposta continua 200", async () => {
+    setQueryFn(
+      makeFakeQuery([
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "vou aguardar o CI terminar e retomar depois",
+          session_id: "s1",
+        } as unknown as SDKMessage,
+      ]),
+    );
+    setCheckTerminalStateFn((issueNumbers) =>
+      issueNumbers.map((n) => ({ issueNumber: n, terminal: false, reason: "issue segue aberta, sem comentário pós-dispatch" })),
+    );
+
+    const res = await fetch(new URL("/api/waves/fire", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ issueNumbers: [303] }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    const events = parseSseBody(body);
+    assert.deepEqual(
+      events.map((e) => e.event),
+      ["chat-done", "chat-error"],
+    );
+    const errorData = events[1].data as { message: string };
+    assert.match(errorData.message, /#303/);
+    assert.match(errorData.message, /não chegaram a estado terminal/);
+
+    // restaura o default (all-terminal) pros testes seguintes deste describe.
+    setCheckTerminalStateFn((issueNumbers) =>
+      issueNumbers.map((n) => ({ issueNumber: n, terminal: true, reason: "mock: sempre terminal" })),
+    );
   });
 });
 
