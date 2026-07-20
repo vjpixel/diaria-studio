@@ -14,6 +14,7 @@ import {
   computeTotalConsidered,
   extractEaiAnswer,
   renderDestaquesFromApproved,
+  formatCoverageLineUnknownTotal,
 } from "../scripts/render-categorized-md.ts";
 
 describe("getDate", () => {
@@ -748,6 +749,38 @@ describe("computeTotalConsidered (#477) — métricas de cobertura", () => {
     const result = computeTotalConsidered(dir + "/_internal/01-categorized.json", data);
     assert.equal(result, 99);
     rmSync(dir, { recursive: true });
+  });
+});
+
+describe("formatCoverageLineUnknownTotal (#3739) — 3º produtor com o mesmo gap de pluralização do #3731", () => {
+  it("plural: enviadosWord e selPhrase no plural pra contagens != 1", () => {
+    const line = formatCoverageLineUnknownTotal(2, 3);
+    assert.match(line, /2 enviados por mim/);
+    assert.match(line, /selecionei os 3 mais relevantes/);
+  });
+
+  it("singular: 1 enviado por mim (não '1 enviados')", () => {
+    const line = formatCoverageLineUnknownTotal(1, 3);
+    assert.match(line, /1 enviado por mim/);
+    assert.doesNotMatch(line, /1 enviados por mim/);
+  });
+
+  it("singular: selecionei o artigo mais relevante (não 'os 1 mais relevantes')", () => {
+    const line = formatCoverageLineUnknownTotal(2, 1);
+    assert.match(line, /selecionei o artigo mais relevante/);
+    assert.doesNotMatch(line, /selecionei os 1 mais relevantes/);
+  });
+
+  it("singular em ambos: 1 enviado + 1 selecionado", () => {
+    const line = formatCoverageLineUnknownTotal(1, 1);
+    assert.match(line, /1 enviado por mim/);
+    assert.match(line, /selecionei o artigo mais relevante/);
+  });
+
+  it("mantém o placeholder ??? pros números desconhecidos (total e encontrados)", () => {
+    const line = formatCoverageLineUnknownTotal(1, 1);
+    assert.match(line, /a IA analisou \?\?\? artigos/);
+    assert.match(line, /\?\?\? encontrados automaticamente/);
   });
 });
 
