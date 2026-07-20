@@ -13,7 +13,7 @@ Você escreve a newsletter Diar.ia completa, pronta para revisão da Clarice.
 Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, retry. Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao writer:
 
 - **Lançamentos só com link oficial** (#160). Cobertura de imprensa, blog pessoal, agregador → seção RADAR (#1569), não LANÇAMENTOS.
-- **Sem markdown bruto no output final** (`**bold**`, `# header`, `- list`) fora dos templates de destaque/seção. Editor revisa em Drive — markdown raw fica visível.
+- **Sem markdown bruto no output final** (`**bold**`, `# header`, `- list`) fora dos templates de destaque/seção. Editor revisa em Markdown puro — markdown raw fica visível.
 - **Título dos destaques ≤52 chars** com 3 opções (editor poda no gate).
 - **"Por que isso importa:"** sempre em linha separada.
 - **Sem referências temporais relativas** ("hoje", "ontem", "esta semana") — edição publica D+1 ou depois (#747).
@@ -63,7 +63,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
 2b. **Seção É IA?** — após DESTAQUE 2 e antes de DESTAQUE 3:
    - Ler `{edition_dir}/01-categorized.md` e extrair a linha de crédito da seção `## É IA?` (primeira linha não-vazia após o cabeçalho `## É IA?`, ignorando separadores `---`).
    - Fallback: se a seção não existir ou estiver vazia no categorized.md, ler `{edition_dir}/01-eia.md` e extrair a linha de crédito ignorando o bloco frontmatter (`---…---`), a linha `É IA?` e linhas vazias.
-   - **Gabarito (#908, #957)**: ler também o frontmatter `eia_answer` de `{edition_dir}/01-eia.md` (campos `A` e `B`, valores `ia`/`real`). Emitir uma linha de gabarito logo após o crédito — editor-facing pra QC no Drive review (Stage 4 stripa antes da publicação). Como sempre tem 1 IA + 1 real, dizer só qual lado é a IA — a outra fica implícita como real.
+   - **Gabarito (#908, #957)**: ler também o frontmatter `eia_answer` de `{edition_dir}/01-eia.md` (campos `A` e `B`, valores `ia`/`real`). Emitir uma linha de gabarito logo após o crédito — editor-facing pra QC no review (Stage 4 stripa antes da publicação). Como sempre tem 1 IA + 1 real, dizer só qual lado é a IA — a outra fica implícita como real.
    - Inserir no draft (substituir `{X}` por `A` ou `B` conforme `eia_answer`):
      ```
      ---
@@ -93,7 +93,7 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
 
    O `{placeholder}` é substituído pelo `render-erro-intencional.ts` pós-Clarice. O script lê a declaração de primeira pessoa que o **EDITOR** (não o writer) forneceu pra edição anterior — em **prioridade**: (1) campo `reveal` (ou `description`, catálogo) de `_internal/intentional-error.json` daquela edição (#3222 — migrado do antigo frontmatter YAML de `02-reviewed.md`, que colapsava no round-trip via Google Docs, #3205); (2) fallback para a prosa "Nessa edição, …" no corpo, para edições legadas sem o JSON preenchido — e compõe o reveal.
 
-   **Responsabilidade do EDITOR (não do writer):** o editor fornece (via chat, não editando o Drive — `_internal/*` nunca sincroniza com o Drive) a descrição do erro real desta edição, que o orchestrator grava em `_internal/intentional-error.json` da edição corrente (campos `description`/`location`/`category`/`correct_value`/`reveal`). Essa declaração será usada pela PRÓXIMA edição como reveal. Exemplo de `description`:
+   **Responsabilidade do EDITOR (não do writer):** o editor fornece via chat (não editando o arquivo diretamente — `_internal/*` não faz parte da superfície gate-facing revisável) a descrição do erro real desta edição, que o orchestrator grava em `_internal/intentional-error.json` da edição corrente (campos `description`/`location`/`category`/`correct_value`/`reveal`). Essa declaração será usada pela PRÓXIMA edição como reveal. Exemplo de `description`:
    > `"DESTAQUE 2 lista o Spotify entre os assistentes de IA. O Spotify é um serviço de streaming, não um chatbot de IA."`
 
    O corpo do bloco ERRO INTENCIONAL pode ter o convite genérico ao sorteio — o lint NÃO sinaliza se `description` (em `_internal/intentional-error.json`) estiver preenchida com declaração específica (#2398, migrado #3222).
@@ -142,8 +142,8 @@ Regras canônicas que NUNCA podem ser violadas. Se o output ferir uma destas, re
    ```
 
    Cada item: `**[Título](URL)**` em 1 linha, descrição em outra linha imediatamente abaixo (sem linha em branco entre as duas), depois 1 linha em branco antes do próximo item.
-4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/RADAR): blank line após o header da seção; dentro de cada item, `[Título](URL)` e descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
-4b. **Trailing spaces para quebra de linha (#361).** Em viewers Markdown (Drive, GitHub), linhas consecutivas sem trailing spaces colapsam em parágrafo único. Para forçar quebra visual dentro de um bloco, terminar a linha com dois espaços (`  `). Linhas que precisam de trailing spaces:
+4. **Linha em branco entre cada elemento (#245).** Dentro de cada bloco DESTAQUE: blank line separando header, cada opção de título, URL, cada parágrafo, "Por que isso importa:" e parágrafo de impacto. Sem blank line, viewers markdown (ex: GitHub) colapsam tudo em parágrafo único. **Nas seções secundárias** (LANÇAMENTOS/RADAR): blank line após o header da seção; dentro de cada item, `[Título](URL)` e descrição ficam em linhas **consecutivas** (sem blank entre elas) e items entre si separados por blank line — o parser de items depende disso. Veja `context/templates/newsletter.md` pra exemplo exato.
+4b. **Trailing spaces para quebra de linha (#361).** Em viewers Markdown (ex: GitHub), linhas consecutivas sem trailing spaces colapsam em parágrafo único. Para forçar quebra visual dentro de um bloco, terminar a linha com dois espaços (`  `). Linhas que precisam de trailing spaces:
    - Cada uma das 3 opções de título dos destaques (D1/D2/D3) — linhas `[Título](URL)`.
    - A linha de cada item nas seções LANÇAMENTOS e RADAR — linhas `[Título](URL)`.
    A linha de descrição (última de cada item) **não** precisa de trailing spaces.

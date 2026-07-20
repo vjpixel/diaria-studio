@@ -2,13 +2,13 @@
 
 Formato exato do output da edição. Seguir rigorosamente.
 
-**Importante (#245, #334):** sempre uma linha em branco entre qualquer elemento — header, título, URL, parágrafo. Isso vale tanto nos blocos DESTAQUE quanto nas seções secundárias (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS). Sem linhas em branco, viewers markdown (Drive preview, GitHub) colapsam tudo em parágrafo único ilegível.
+**Importante (#245, #334):** sempre uma linha em branco entre qualquer elemento — header, título, URL, parágrafo. Isso vale tanto nos blocos DESTAQUE quanto nas seções secundárias (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS). Sem linhas em branco, viewers markdown (ex: GitHub) colapsam tudo em parágrafo único ilegível.
 
 **Formato URL (#599 — atualizado):** URL fica **embedada no próprio título via markdown link** `[Título](URL)` em vez de linha solo separada. Aplica-se tanto a destaques (cada uma das 3 opções) quanto a seções secundárias (cada item). Vantagem: menos ruído visual, título vira CTA clicável, mobile-friendly. Parsers aceitam ambos os formatos (legacy URL solo + inline) durante a transição.
 
 **Linha de cobertura (#592, #609):** primeira linha do reviewed.md, formato literal copiado de `_internal/01-approved.json` campo `coverage.line`. Padrão esperado:
 
-**Negrito em headers/títulos (#590):** nomes de seção e títulos saem em **negrito** (`**...**`) para hierarquia visual no Drive review (mobile). URLs e parágrafos seguem plain. Markdown link `[Título](URL)` é compatível com bold via `**[Título](URL)**`.
+**Negrito em headers/títulos (#590):** nomes de seção e títulos saem em **negrito** (`**...**`) para hierarquia visual no review (mobile). URLs e parágrafos seguem plain. Markdown link `[Título](URL)` é compatível com bold via `**[Título](URL)**`.
 
 ```
 Para esta edição, eu (o editor) enviei X submissões e a diar.ia.br encontrou outros Y artigos. Selecionamos os Z mais relevantes para as pessoas que assinam a newsletter.
@@ -113,7 +113,7 @@ Nessa edição da **diar.ia.br**, usei Claude Code para automatizar parte da pes
 Agora que chegou ao final da edição, que tal interagir em uma publicação da **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), no [Facebook](https://www.facebook.com/diar.ia.br) ou no [Instagram](https://www.instagram.com/diar.ia.br)?
 ```
 
-**Seções 🎁 SORTEIO + 🙋🏼‍♀️ PARA ENCERRAR (#1076):** copiadas literalmente do template Beehiiv original. Texto + links de afiliados (Wispr/Clarice/Beehiiv) mudam raramente — editor pode editar no Drive entre Stage 2 gate e publish quando precisar. Render parseia ambos como blocos editoriais (kicker + parágrafos + lista "Acesse:"), sem boxes. Pixel pediu "no reviewed" (#1076) pra ter visibilidade + edição fácil em vez de hardcoded no script. `render-newsletter-html.ts` graceful — se algum bloco ausente, omite na renderização (não falha).
+**Seções 🎁 SORTEIO + 🙋🏼‍♀️ PARA ENCERRAR (#1076):** copiadas literalmente do template Beehiiv original. Texto + links de afiliados (Wispr/Clarice/Beehiiv) mudam raramente — editor pode editar localmente (ou via Studio) entre Stage 2 gate e publish quando precisar. Render parseia ambos como blocos editoriais (kicker + parágrafos + lista "Acesse:"), sem boxes. Pixel pediu "no reviewed" (#1076) pra ter visibilidade + edição fácil em vez de hardcoded no script. `render-newsletter-html.ts` graceful — se algum bloco ausente, omite na renderização (não falha).
 
 **Parágrafo de apoio + convite social em PARA ENCERRAR (#3219, ordem #3368):** o parágrafo de apoio (Apoia.se) e o convite social (LinkedIn/Facebook) são injetados por `scripts/stitch-newsletter.ts` a partir do snippet canônico `context/snippets/encerramento-social-apoio.md` — a mesma fonte usada pelo `writer-monthly` na edição mensal (`PARA ENCERRAR` lá também). Desde #3368 (pedido do editor na edição 260713), o parágrafo de apoio é o PRIMEIRO parágrafo da seção (logo após o cabeçalho, antes de ferramentas/Acesse) e o convite social continua sendo o ÚLTIMO — só no diário; o mensal não mudou. Editar o texto/links no snippet propaga pros dois formatos; não editar diretamente em `stitch-newsletter.ts` nem duplicar o texto em outro lugar.
 
