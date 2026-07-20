@@ -274,12 +274,14 @@ $Settings = New-ScheduledTaskSettingsSet `
     -RestartInterval      (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit   (New-TimeSpan -Hours 0) # 0 = sem limite (processo de longa duração)
 
+# Register-ScheduledTask -Force cria OU sobrescreve (idempotente) e aceita -Description.
+# NÃO usar Set-ScheduledTask no branch de update: ele não tem parâmetro -Description
+# (falhava com "NamedParameterNotFound" ao re-rodar sobre uma task existente).
 $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description $TaskDesc -RunLevel Limited -Force | Out-Null
 if ($ExistingTask) {
-    Set-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description $TaskDesc
     Write-Output "Task '$TaskName' atualizada."
 } else {
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Description $TaskDesc -RunLevel Limited
     Write-Output "Task '$TaskName' registrada — vai iniciar automaticamente no próximo logon."
 }
 
