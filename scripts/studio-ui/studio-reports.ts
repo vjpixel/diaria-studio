@@ -188,16 +188,34 @@ function isSafeUrl(url: string): boolean {
   return /^(https?:\/\/|mailto:|#|\/(?![/\\]))/i.test(url);
 }
 
-/** Aplica só bold/código (nunca link) — usado tanto no texto fora de links
- * quanto no LABEL de um link (nunca na URL, ver `renderInline`). */
-function applyBoldCode(s: string): string {
+/** Aplica bold/itálico/código (nunca link) — usado tanto no texto fora de
+ * links quanto no LABEL de um link (nunca na URL, ver `renderInline`).
+ *
+ * **Ordem bold → itálico → código (#3790):** bold (`**x**`) roda primeiro e
+ * consome TODOS os pares de asterisco duplo, então quando o passe de itálico
+ * roda depois não sobra `**` pra confundir com `*x*` (evita que
+ * `**negrito**` vire itálico-de-asterisco-solto por acidente). Os regexes de
+ * itálico exigem fronteira de palavra (`\w`) nas bordas — isso é o que
+ * protege tanto identificadores `snake_case`/`__mdlink_N__` (o placeholder de
+ * link do `renderInline`, que tem underscore colado a `\w` dos dois lados em
+ * todo underscore interno) quanto o marcador de lista `- item`/`* item`
+ * (que já foi consumido pela regex de item de lista ANTES desta função ser
+ * chamada — o `*`/`-` inicial nunca chega aqui) de virarem itálico por
+ * engano. Código roda por último — os regexes de itálico exigem que o
+ * delimitador não seja seguido/precedido de espaço, então `` `2 * 3` `` (com
+ * espaços) e `` `foo_bar` `` (underscore mid-word) nunca casam mesmo antes de
+ * virarem `<code>`. */
+function applyInlineMarks(s: string): string {
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)/g, "<em>$1</em>");
+  s = s.replace(/(?<!\w)_(?!\s)([^_\n]+?)(?<!\s)_(?!\w)/g, "<em>$1</em>");
   s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
   return s;
 }
 
-/** Aplica as transformações inline markdown→HTML (bold, código, link) a um
- * trecho de texto que já passou por `escHtml` — nunca chamar em texto cru.
+/** Aplica as transformações inline markdown→HTML (bold, itálico, código,
+ * link) a um trecho de texto que já passou por `escHtml` — nunca chamar em
+ * texto cru.
  *
  * **Ordem deliberada (#3788 Bug 3):** link é processado PRIMEIRO — extrai
  * label+url, aplica bold/código só ao LABEL (nunca à URL) e protege a tag
@@ -210,13 +228,13 @@ function applyBoldCode(s: string): string {
 function renderInline(escapedText: string): string {
   const placeholders: string[] = [];
   let s = escapedText.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, label: string, url: string) => {
-    if (!isSafeUrl(url)) return applyBoldCode(label);
-    const anchor = `<a href="${url}" target="_blank" rel="noopener noreferrer">${applyBoldCode(label)}</a>`;
+    if (!isSafeUrl(url)) return applyInlineMarks(label);
+    const anchor = `<a href="${url}" target="_blank" rel="noopener noreferrer">${applyInlineMarks(label)}</a>`;
     const token = `__mdlink_${placeholders.length}__`;
     placeholders.push(anchor);
     return token;
   });
-  s = applyBoldCode(s);
+  s = applyInlineMarks(s);
   placeholders.forEach((anchor, i) => {
     s = s.split(`__mdlink_${i}__`).join(anchor);
   });
@@ -236,23 +254,32 @@ function renderTable(rows: string[][]): string {
  * Renderer markdown→HTML mínimo, zero-dep (#3784 — decisão do briefing: sem
  * lib `marked`/similar, "zero custo recorrente" também vale pra dependências
  * novas). Cobre o que `data/overnight|develop/{sessão}/report.md` de fato usa:
- * headings `#`/`##`/`###`, `**bold**`, `---` como `<hr>`, parágrafos, listas
- * `- item` e tabelas markdown (`| col | col |` + linha separadora `|---|---|`).
- * Não é um parser CommonMark completo (sem blockquotes, listas aninhadas,
- * numeradas, itálico, etc.) — suficiente pra leitura no Studio sem investir
- * num parser novo nesta fatia.
+ * headings `#`/`##`/`###`, `**bold**`, `*itálico*`/`_itálico_` (#3790), `---`
+ * como `<hr>`, parágrafos, listas `- item` e `1. item` (#3790), code fences
+ * ` ``` ` (#3790, preservado literal em `<pre><code>`, sem syntax highlight)
+ * e tabelas markdown (`| col | col |` + linha separadora `|---|---|`, só na
+ * posição imediatamente após o header — #3789). Não é um parser CommonMark
+ * completo (sem blockquotes, listas aninhadas, etc.) — suficiente pra leitura
+ * no Studio sem investir num parser novo nesta fatia.
  *
  * **Ordem de segurança:** escapa o texto CRU inteiro primeiro (`escHtml`), só
  * depois aplica as transformações markdown em cima do texto já escapado —
  * HTML embutido no markdown (ex: um agente reportando `<script>` em texto
- * livre) nunca vira tag real, só entidade visível.
+ * livre) nunca vira tag real, só entidade visível. Isso inclui o conteúdo de
+ * code fences: como o `escHtml` já rodou sobre o texto inteiro ANTES do split
+ * por linha, o conteúdo dentro de ` ``` ` já está seguro sem precisar de
+ * processamento adicional (e sem re-rodar markdown inline dentro do bloco —
+ * code é sempre literal).
  */
 export function renderMarkdownToHtml(raw: string): string {
   const lines = escHtml(raw).split("\n");
   const out: string[] = [];
   let paragraph: string[] = [];
-  let listOpen = false;
+  let ulOpen = false;
+  let olOpen = false;
   let tableRows: string[][] | null = null;
+  let codeFenceOpen = false;
+  let codeFenceLines: string[] = [];
 
   const flushParagraph = () => {
     if (paragraph.length) {
@@ -260,10 +287,16 @@ export function renderMarkdownToHtml(raw: string): string {
       paragraph = [];
     }
   };
-  const closeList = () => {
-    if (listOpen) {
+  const closeUl = () => {
+    if (ulOpen) {
       out.push("</ul>");
-      listOpen = false;
+      ulOpen = false;
+    }
+  };
+  const closeOl = () => {
+    if (olOpen) {
+      out.push("</ol>");
+      olOpen = false;
     }
   };
   const closeTable = () => {
@@ -274,13 +307,39 @@ export function renderMarkdownToHtml(raw: string): string {
   };
   const closeBlocks = () => {
     flushParagraph();
-    closeList();
+    closeUl();
+    closeOl();
     closeTable();
+  };
+  const flushCodeFence = () => {
+    out.push(`<pre><code>${codeFenceLines.join("\n")}</code></pre>`);
+    codeFenceLines = [];
+    codeFenceOpen = false;
   };
 
   for (const rawLine of lines) {
+    // Code fence é tratado ANTES de qualquer outra detecção de sintaxe —
+    // enquanto aberto, TODA linha (inclusive vazia, `---`, `| tabela |`) é
+    // conteúdo literal do bloco, nunca reinterpretada como markdown (#3790).
+    if (codeFenceOpen) {
+      if (/^`{3,}\s*$/.test(rawLine.trim())) {
+        flushCodeFence();
+      } else {
+        codeFenceLines.push(rawLine);
+      }
+      continue;
+    }
+
     const line = rawLine.trim();
 
+    if (/^`{3,}/.test(line)) {
+      // Abre o fence — a info string opcional (ex: ```ts) é descartada, sem
+      // syntax highlight (#3790).
+      closeBlocks();
+      codeFenceOpen = true;
+      codeFenceLines = [];
+      continue;
+    }
     if (line === "") {
       closeBlocks();
       continue;
@@ -299,14 +358,20 @@ export function renderMarkdownToHtml(raw: string): string {
     }
     if (line.startsWith("|") && line.endsWith("|")) {
       flushParagraph();
-      closeList();
+      closeUl();
+      closeOl();
       const cells = line
         .slice(1, -1)
         .split("|")
         .map((c) => c.trim());
       const isSeparatorRow = cells.every((c) => /^:?-+:?$/.test(c));
-      if (isSeparatorRow && tableRows) {
-        continue; // linha `|---|---|` do header — não vira row de dados.
+      // #3789: só a linha imediatamente seguinte ao header (posição — quando
+      // `tableRows` tem exatamente 1 linha, o header, e nada mais) pode ser
+      // tratada como separador `|---|---|`. Uma linha dash-like em qualquer
+      // OUTRA posição do bloco é dado real (ex: placeholder de "N/A"),
+      // preservada como row — nunca descartada silenciosamente.
+      if (isSeparatorRow && tableRows && tableRows.length === 1) {
+        continue;
       }
       if (!tableRows) tableRows = [];
       tableRows.push(cells);
@@ -317,18 +382,36 @@ export function renderMarkdownToHtml(raw: string): string {
     const listItem = line.match(/^[-*]\s+(.+)$/);
     if (listItem) {
       flushParagraph();
-      if (!listOpen) {
+      closeOl();
+      if (!ulOpen) {
         out.push("<ul>");
-        listOpen = true;
+        ulOpen = true;
       }
       out.push(`<li>${renderInline(listItem[1])}</li>`);
       continue;
     }
-    closeList();
+    closeUl();
+
+    const orderedItem = line.match(/^\d+\.\s+(.+)$/);
+    if (orderedItem) {
+      flushParagraph();
+      if (!olOpen) {
+        out.push("<ol>");
+        olOpen = true;
+      }
+      out.push(`<li>${renderInline(orderedItem[1])}</li>`);
+      continue;
+    }
+    closeOl();
 
     paragraph.push(renderInline(line));
   }
   closeBlocks();
+  // Fence nunca fechado até o fim do texto (markdown malformado) — flush
+  // gracioso do que foi coletado em vez de perder o conteúdo (#3790).
+  if (codeFenceOpen && codeFenceLines.length) {
+    flushCodeFence();
+  }
 
   return out.join("\n");
 }
