@@ -32,8 +32,6 @@ export interface GhSpawnResult {
   stderr: string;
 }
 
-export type GhSpawnRunFn = (args: string[], cwd: string) => GhSpawnResult;
-
 /** Teto de tempo pra cada `spawnSync("gh", ...)` — ver doc-comment do módulo.
  * 10s é generoso pra latência normal do `gh` mas BOUNDED em vez de
  * indefinido. Quando `spawnSync` estoura o timeout, `result.status` vem
