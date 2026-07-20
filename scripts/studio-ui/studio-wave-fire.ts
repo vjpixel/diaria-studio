@@ -117,6 +117,38 @@
  * (ex.: comandos que não batem em nenhum padrão pré-aprovado) e como
  * documentação executável da intenção do módulo.
  *
+ * ## Guard de "espera de CI" como CÓDIGO, não só prosa (#3753)
+ *
+ * Validação ao vivo do #3720 (sessão 260720) achou que a coordenadora, ao ver
+ * CI ainda rodando nos PRs recém-abertos, chamou a tool `ScheduleWakeup` (2x,
+ * delay 300s) esperando ser retomada mais tarde pra checar `gh pr checks` de
+ * novo. Isso nunca acontece: `ScheduleWakeup` agenda a retomada da sessão
+ * PRINCIPAL do harness CLI interativo — não existe nada do lado do
+ * `studio-server` que escute esse agendamento e dispare uma continuação desta
+ * sessão `query()` específica (ela é uma chamada de biblioteca embutida no
+ * processo do servidor, iniciada por uma requisição HTTP e streamada via
+ * SSE; quando o `for await` deste módulo termina, a stream acaba e não sobra
+ * nenhum processo escutando). O resultado observado: a onda trava
+ * permanentemente sem qualquer `chat-error` — a resposta SSE fecha
+ * normalmente porque, do ponto de vista do SDK, o turno terminou com
+ * sucesso.
+ *
+ * A prosa do prompt (`buildWaveFireCoordinatorPrompt`, passo 3) já instrui a
+ * coordenadora a esperar CI via polling síncrono bloqueante (`gh pr checks
+ * {pr} --watch` ou um loop `Bash` com `sleep`/retry) dentro do mesmo turno, e
+ * a nunca usar `ScheduleWakeup`. Mas, igual ao guard de publicação acima,
+ * prosa sozinha é insuficiente pra uma sessão sem supervisão — por isso
+ * `runWaveFire` também passa `disallowedTools: ["ScheduleWakeup",
+ * "CronCreate"]` pro SDK (`Options.disallowedTools`, "removed from the
+ * model's context and cannot be used, even if they would otherwise be
+ * allowed" — mais forte que `canUseTool`/`evaluateWaveTool`, que só age
+ * quando o SDK de fato consulta o handler; ver "LIMITAÇÃO CONHECIDA" acima
+ * sobre como esse consult pode ser pulado). `CronCreate` entra pelo mesmo
+ * motivo de raiz de `ScheduleWakeup` (agenda uma retomada futura que nenhum
+ * listener externo vai disparar pra esta sessão embutida) mesmo sem ter sido
+ * o mecanismo observado no incidente — é o mesmo bug de arquitetura, não um
+ * segundo bug.
+ *
  * ## O que NÃO está nesta fatia (documentado explicitamente, #3702)
  *
  * - **Validação ao vivo**: nunca foi disparado contra o SDK real — o
@@ -237,19 +269,28 @@ export function buildWaveFireCoordinatorPrompt(issueNumbers: number[], opts: Wav
     `   ${maxConcurrency} worktrees abertos ao mesmo tempo.`,
     `2. Espere cada Agent retornar. Cada retorno traz (idealmente) um número de PR. Se um agente falhar/não abrir`,
     `   PR, registre a falha e siga para as demais issues — uma falha isolada não aborta a onda inteira.`,
-    `3. Para cada PR aberto, rode o GATE 2 determinístico (mesmo do overnight/develop, #2210/#2222) ANTES de`,
-    `   mergear: (a) \`gh pr checks {pr} --json bucket,name\` — todo bucket precisa ser "pass"; (b) via`,
+    `3. ANTES do Gate 2, espere o CI de cada PR terminar via POLLING SÍNCRONO BLOQUEANTE, dentro deste MESMO turno:`,
+    `   \`gh pr checks {pr} --watch\` (bloqueia até o CI resolver) ou um loop \`Bash\` com \`sleep\`/retry chamando`,
+    `   \`gh pr checks {pr} --json bucket,name\` até nenhum bucket ficar "pending". NUNCA use \`ScheduleWakeup\` (nem`,
+    `   \`CronCreate\`/qualquer outro agendamento) pra esperar o CI — essa tool nem está disponível nesta sessão`,
+    `   (removida via disallowedTools), e mesmo que estivesse: você é uma sessão query() do Agent SDK embutida no`,
+    `   studio-server, sem NADA do lado do servidor que escute um agendamento e retome esta sessão específica —`,
+    `   agendar um wakeup aqui deixa a onda travada pra sempre, sem qualquer sinalização de erro pro chamador`,
+    `   HTTP (achado real, #3753). Toda espera precisa acontecer dentro desta mesma invocação, nunca delegada`,
+    `   pra uma retomada futura.`,
+    `4. Só então, para cada PR aberto, rode o GATE 2 determinístico (mesmo do overnight/develop, #2210/#2222)`,
+    `   ANTES de mergear: (a) \`gh pr checks {pr} --json bucket,name\` — todo bucket precisa ser "pass"; (b) via`,
     `   \`gh api graphql\`, checar que não há review threads não-resolvidas excluindo as marcadas FORBIDDEN.`,
     `   Só prossiga pro merge se AMBAS as condições passarem.`,
-    `4. MERGE É SEMPRE SERIAL — nunca rode dois \`gh pr merge\` ao mesmo tempo, mesmo com múltiplos PRs prontos.`,
+    `5. MERGE É SEMPRE SERIAL — nunca rode dois \`gh pr merge\` ao mesmo tempo, mesmo com múltiplos PRs prontos.`,
     `   Um de cada vez: \`gh pr merge {pr} --squash\`, confirme sucesso, só então passe pro próximo PR pronto.`,
-    `5. IMPORTANTE — nunca rode \`git checkout\`/\`git pull\`/\`git stash\`/qualquer comando que mude o working tree`,
+    `6. IMPORTANTE — nunca rode \`git checkout\`/\`git pull\`/\`git stash\`/qualquer comando que mude o working tree`,
     `   da pasta em que VOCÊ (coordenadora) está rodando — essa pasta pode estar em uso ativo numa sessão manual`,
     `   do editor em paralelo (incidente real: colisão de working tree, 260716). Toda mutação de arquivo acontece`,
     `   SÓ dentro dos worktrees isolados que os Agent dispatchados criam sozinhos via \`isolation: "worktree"\`.`,
     `   Suas ações diretas (fora do Agent tool) ficam limitadas a comandos \`gh\` (API-level, não tocam o working`,
     `   tree local).`,
-    `6. NUNCA rode \`scripts/publish-*\`, \`clarice-schedule-sends\`, \`clarice-import-*\`, \`close-poll\`, ou qualquer`,
+    `7. NUNCA rode \`scripts/publish-*\`, \`clarice-schedule-sends\`, \`clarice-import-*\`, \`close-poll\`, ou qualquer`,
     `   script que toque Beehiiv/LinkedIn/Facebook/Brevo — nem você, nem instrua os agentes dispatchados a rodar`,
     `   (guard de publicação, INVARIANTE, ${dispatchRulesPath} §1).`,
     ``,
@@ -395,6 +436,11 @@ export async function runWaveFire(opts: RunWaveFireOptions): Promise<void> {
         includePartialMessages: true,
         permissionMode: "default",
         canUseTool: makeWaveSafeCanUseTool(),
+        // #3753 — nunca esperar CI via retomada externa: essas tools agendam uma
+        // continuação futura que nada do lado do studio-server escuta pra esta
+        // sessão embutida (ver doc-comment do módulo, "Guard de espera de CI").
+        // Removidas do contexto do modelo por completo (mais forte que canUseTool).
+        disallowedTools: ["ScheduleWakeup", "CronCreate"],
         abortController: opts.abortController,
       },
     });

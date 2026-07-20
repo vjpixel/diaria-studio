@@ -129,6 +129,18 @@ describe("buildWaveFireCoordinatorPrompt (#3702)", () => {
     assert.match(prompt, /close-poll/);
     assert.match(prompt, /Beehiiv\/LinkedIn\/Facebook\/Brevo/);
   });
+
+  it("proíbe ScheduleWakeup e instrui polling síncrono bloqueante pra esperar CI (#3753)", () => {
+    const prompt = buildWaveFireCoordinatorPrompt([101]);
+    assert.match(prompt, /NUNCA use `ScheduleWakeup`/);
+    assert.match(prompt, /POLLING SÍNCRONO BLOQUEANTE/);
+    assert.match(prompt, /gh pr checks \{pr\} --watch/);
+    assert.match(prompt, /CronCreate/);
+    // a instrução de espera precisa vir ANTES do Gate 2 no texto do prompt
+    const waitIdx = prompt.indexOf("POLLING SÍNCRONO BLOQUEANTE");
+    const gate2Idx = prompt.indexOf("GATE 2 determinístico");
+    assert.ok(waitIdx >= 0 && gate2Idx >= 0 && waitIdx < gate2Idx, "espera de CI deve preceder o Gate 2 no prompt");
+  });
 });
 
 describe("evaluateWaveTool (#3702) — guard de publicação como código", () => {
@@ -267,6 +279,23 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
     assert.equal(typeof capturedOptions.canUseTool, "function");
     assert.equal(received.length, 1);
     assert.equal(received[0].event, "chat-done");
+  });
+
+  it("remove ScheduleWakeup/CronCreate do toolset via disallowedTools (#3753 — guard mais forte que canUseTool)", async () => {
+    let capturedOptions: Record<string, unknown> = {};
+    const fakeQuery: QueryFn = (params) => {
+      capturedOptions = (params.options ?? {}) as Record<string, unknown>;
+      async function* gen() {
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    await runWaveFire({ issueNumbers: [101], cwd: "/repo", queryFn: fakeQuery, onEvent: () => {} });
+
+    assert.ok(Array.isArray(capturedOptions.disallowedTools));
+    assert.ok((capturedOptions.disallowedTools as string[]).includes("ScheduleWakeup"));
+    assert.ok((capturedOptions.disallowedTools as string[]).includes("CronCreate"));
   });
 
   it("traduz tool calls (Agent, Bash) via o mesmo tradutor do chat drawer", async () => {
