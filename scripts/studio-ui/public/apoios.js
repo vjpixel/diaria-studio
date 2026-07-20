@@ -42,7 +42,8 @@ const el = {
   outreachForm: document.getElementById("outreach-form"),
   outreachId: document.getElementById("outreach-id"),
   outreachDate: document.getElementById("outreach-date"),
-  outreachChannel: document.getElementById("outreach-channel"),
+  outreachChannelGroup: document.getElementById("outreach-channel-group"),
+  outreachChannelOther: document.getElementById("outreach-channel-other"),
   outreachResponded: document.getElementById("outreach-responded"),
   outreachFollowup: document.getElementById("outreach-followup"),
   outreachNote: document.getElementById("outreach-note"),
@@ -299,11 +300,33 @@ el.editForm.addEventListener("submit", async (ev) => {
   }
 });
 
+// #3677: canal do outreach virou radio buttons (Email/WhatsApp/LinkedIn +
+// "Outro" com campo de texto livre) em vez de input de texto solto. O
+// payload salvo (`channel`) continua sendo string livre — só a UX de
+// entrada mudou.
+function getSelectedOutreachChannel() {
+  const checked = el.outreachChannelGroup.querySelector('input[name="outreach-channel"]:checked');
+  const value = checked ? checked.value : "";
+  return value === "outro" ? el.outreachChannelOther.value.trim() : value;
+}
+
+function setOutreachChannelOtherVisible(visible) {
+  el.outreachChannelOther.hidden = !visible;
+  el.outreachChannelOther.required = visible;
+  if (!visible) el.outreachChannelOther.value = "";
+}
+
+el.outreachChannelGroup.addEventListener("change", (ev) => {
+  setOutreachChannelOtherVisible(ev.target.value === "outro");
+});
+
 function openOutreachDialog(contact) {
   el.outreachError.hidden = true;
   el.outreachId.value = contact.id;
   el.outreachDate.value = new Date().toISOString().slice(0, 10);
-  el.outreachChannel.value = "";
+  const emailRadio = el.outreachChannelGroup.querySelector('input[value="email"]');
+  if (emailRadio) emailRadio.checked = true;
+  setOutreachChannelOtherVisible(false);
   el.outreachResponded.checked = false;
   el.outreachFollowup.checked = false;
   el.outreachNote.value = "";
@@ -318,7 +341,7 @@ el.outreachForm.addEventListener("submit", async (ev) => {
   const id = el.outreachId.value;
   const body = {
     date: el.outreachDate.value,
-    channel: el.outreachChannel.value,
+    channel: getSelectedOutreachChannel(),
     responded: el.outreachResponded.checked,
     followupPending: el.outreachFollowup.checked,
     note: el.outreachNote.value,

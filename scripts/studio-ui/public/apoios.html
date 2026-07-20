@@ -143,10 +143,16 @@
         <span class="label">Data</span>
         <input type="date" id="outreach-date" required />
       </label>
-      <label class="form-field">
+      <div class="form-field form-field-wide">
         <span class="label">Canal</span>
-        <input type="text" id="outreach-channel" placeholder="email, whatsapp, linkedin…" required />
-      </label>
+        <div class="radio-group" id="outreach-channel-group">
+          <label class="radio-option"><input type="radio" name="outreach-channel" value="email" checked /> Email</label>
+          <label class="radio-option"><input type="radio" name="outreach-channel" value="whatsapp" /> WhatsApp</label>
+          <label class="radio-option"><input type="radio" name="outreach-channel" value="linkedin" /> LinkedIn</label>
+          <label class="radio-option"><input type="radio" name="outreach-channel" value="outro" /> Outro</label>
+        </div>
+        <input type="text" id="outreach-channel-other" placeholder="qual canal?" hidden />
+      </div>
       <label class="form-field-check">
         <input type="checkbox" id="outreach-responded" /> Respondeu
       </label>

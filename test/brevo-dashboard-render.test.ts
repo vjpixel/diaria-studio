@@ -63,24 +63,19 @@ test("renderDashboardHtml prefers globalStats (with MPP) over campaignStats[0]",
   const html = renderDashboardHtml(campaigns);
 
   // 26 opens com MPP / 48 delivered = 54.2%
-  // 20 opens reais (26 - 6 MPP) / 48 = 41.7%
-  // 14 trackableViews / 48 delivered = 29.2%
-  // #3040: Layout top: "54.2% (41.7% sem MPP · 29.2% trackable)" — a coluna
-  // Trackable standalone foi removida e incorporada ao parêntese de Opens.
-  // Layout bottom: "26 (20 · 14)" — total, sem-MPP, trackable (mesma ordem do top).
+  // #3678: célula Opens simplificada — só taxa total + count total, sem o
+  // parêntese "(X% sem MPP · Y% trackable)" que existia desde #1153/#3040.
 
   // Rate com MPP no topo (bold/teal via .metric)
   assert.ok(html.includes("54.2%"), "deveria mostrar open rate com MPP = 54.2% (26/48)");
 
-  // Rate sem MPP + trackable em parens, normal-color (.rate-inline). #3084: o
-  // membro "· Z% trackable" agora vai num <span class="trackable-clause">
-  // aninhado (escondido via CSS em mobile) — regex acomoda essa tag extra.
-  assert.ok(/54\.2% <span class="rate-inline">\(41\.7% sem MPP<span class="trackable-clause"> · 29\.2% trackable<\/span>\)<\/span>/.test(html),
-    "parêntese de Opens deve combinar '41.7% sem MPP · 29.2% trackable' com class rate-inline (#3040)");
+  // Sem parêntese/span rate-inline na célula Opens (#3678).
+  assert.ok(!/54\.2%\s*<span class="rate-inline">/.test(html),
+    "célula Opens não deve mais ter parêntese com sem-MPP/trackable (#3678)");
 
-  // Count na linha de baixo: total (sem MPP · trackable)
-  assert.ok(/<small>26 \(20 · 14\)<\/small>/.test(html),
-    "count deve mostrar '26 (20 · 14)' — total, sem-MPP e trackable em parens (#3040)");
+  // Count na linha de baixo: só o total.
+  assert.ok(/<small>26<\/small>/.test(html),
+    "count de Opens deve mostrar só o total '26', sem breakdown (#3678)");
 
   // Não deve mostrar formato antigo "X + Y MPP"
   assert.ok(!/\+\s*\d+\s*MPP/.test(html), "não deve usar mais o formato 'N + N MPP'");
@@ -197,16 +192,14 @@ test("renderDashboardHtml não mostra 'X subs' na coluna Lista", () => {
   assert.ok(!/\d+\s+subs/.test(html), "não deve mostrar 'N subs' em nenhum lugar do HTML");
 });
 
-test("renderDashboardHtml: layout SEM MPP e SEM trackable é simples — taxa única + count único, sem parens redundantes", () => {
-  // Quando appleMppOpens=0 E trackableViews está ausente, não tem sentido
-  // mostrar "20 (20)" ou "X% (X%)". Layout simples: só "X%" no top e só "20"
-  // no bottom. Nota (#3056): quando appleMppOpens=0 mas trackableViews ESTÁ
-  // presente, a célula agora mostra "(X% trackable)" no parêntese — ver teste
-  // "#3056: célula Opens mostra trackable sozinho..." em
-  // brevo-dashboard-fase2.test.ts. Este teste isola o caso genuinamente sem
-  // NENHUM dado extra pra mostrar (trackableViews ausente, mesmo cast usado
-  // no teste "#3040: MPP presente mas trackableViews ausente" logo abaixo).
-  const campaigns = [{
+test("#3678: célula Opens é sempre taxa total + count total, independente de MPP/trackable", () => {
+  // Antes do #3678 o layout variava conforme presença de MPP/trackableViews
+  // (#1153/#3040/#3056/#3084). O editor pediu simplificação — a célula
+  // Opens SEMPRE mostra só a taxa total (com MPP, igual UI da Brevo) e o
+  // count total, sem parêntese, independente do que os dados de MPP/trackable
+  // contenham. Cobrimos os 2 casos que antes divergiam: sem MPP/sem trackable,
+  // e com MPP/sem trackable.
+  const noMppNoTrackable = [{
     ...baseCampaign,
     statistics: {
       globalStats: {
@@ -219,28 +212,14 @@ test("renderDashboardHtml: layout SEM MPP e SEM trackable é simples — taxa ú
     },
   }];
 
-  const html = renderDashboardHtml(campaigns);
+  const html1 = renderDashboardHtml(noMppNoTrackable);
+  assert.ok(html1.includes("41.7%"), "deveria mostrar 41.7% (20/48)");
+  assert.ok(!/<span class="rate-inline">/.test(html1),
+    "célula Opens não deve mais ter span rate-inline (#3678)");
+  assert.ok(/<small>20<\/small>/.test(html1), "count deve ser '20' puro, sem parens");
+  assert.ok(!/\+\s*\d+\s*MPP/.test(html1), "não deve ter '+ N MPP' quando appleMppOpens=0");
 
-  // Taxa única no topo (20/48 = 41.7%), sem span rate-inline pra parens
-  assert.ok(html.includes("41.7%"), "deveria mostrar 41.7% (20/48)");
-  assert.ok(!/<span class="rate-inline">/.test(html),
-    "não deve ter span rate-inline (usado pra parens) quando appleMppOpens=0 e trackableViews ausente");
-
-  // Count único embaixo (20), sem parens
-  assert.ok(/<small>20<\/small>/.test(html), "count deve ser '20' puro, sem parens");
-  assert.ok(!/<small>20 \(20\)<\/small>/.test(html),
-    "não deve mostrar '20 (20)' — redundante quando appleMppOpens=0 e trackableViews ausente");
-
-  // Nenhuma anotação MPP no row
-  assert.ok(!/\+\s*\d+\s*MPP/.test(html), "não deve ter '+ N MPP' quando appleMppOpens=0");
-});
-
-test("#3040: MPP presente mas trackableViews ausente — parêntese de Opens mantém formato antigo (só sem MPP)", () => {
-  // O campo trackableViews é `latente` no shape real da Brevo (comentário #2086 B2):
-  // pode estar ausente mesmo com o tipo TS marcando-o como obrigatório. Simulamos
-  // esse caso via cast (mesmo padrão usado em outros testes do repo pra runtime
-  // divergente do tipo declarado).
-  const campaigns = [{
+  const mppNoTrackable = [{
     ...baseCampaign,
     statistics: {
       globalStats: {
@@ -253,19 +232,11 @@ test("#3040: MPP presente mas trackableViews ausente — parêntese de Opens man
     },
   }];
 
-  const html = renderDashboardHtml(campaigns);
-
-  // Top: só "54.2% (41.7%)" — sem cláusula "trackable" no parêntese (#3040).
-  // Nota: a palavra "trackable" ainda aparece no tooltip ESTÁTICO do <th> Opens
-  // (explica a coluna em geral, não depende do dado da linha) — não testado aqui.
-  assert.ok(/54\.2% <span class="rate-inline">\(41\.7%\)<\/span>/.test(html),
-    "sem trackableViews, parêntese de Opens deve mostrar só a taxa sem-MPP (formato pré-#3040)");
-  assert.ok(!/rate-inline">\([^)]*trackable/.test(html),
-    "a cláusula 'trackable' não deve aparecer dentro do parêntese da célula quando o dado está ausente");
-
-  // Bottom: só "26 (20)" — sem 3º número.
-  assert.ok(/<small>26 \(20\)<\/small>/.test(html),
-    "sem trackableViews, count de Opens deve mostrar só total e sem-MPP (formato pré-#3040)");
+  const html2 = renderDashboardHtml(mppNoTrackable);
+  assert.ok(html2.includes("54.2%"), "deveria mostrar 54.2% (26/48), taxa total com MPP");
+  assert.ok(!/54\.2%\s*<span class="rate-inline">/.test(html2),
+    "célula Opens não deve mostrar parêntese sem-MPP mesmo com MPP presente (#3678)");
+  assert.ok(/<small>26<\/small>/.test(html2), "count deve mostrar só o total '26' (#3678)");
 });
 
 test("renderDashboardHtml: não renderiza botão de refresh (redundante com F5)", () => {

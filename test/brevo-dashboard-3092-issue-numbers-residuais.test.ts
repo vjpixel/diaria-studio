@@ -11,10 +11,13 @@
  *  - footer global: "...em vez de circuit breaker (#3091; ver nota da própria
  *    tabela)." — legenda visível em toda página
  *
- * Nota: "#2871" em renderAbcSection (placeholder de reset do teste A/B/C) NÃO
- * foi removido — tem teste dedicado (test/brevo-dashboard-fase2.test.ts,
- * "#2871") que EXIGE a presença do número como referência à decisão
- * documentada do editor. Esse caso é intencional, não um leak acidental.
+ * Nota (histórica, #3675): "#2871" em renderAbcSection (placeholder de reset
+ * do teste A/B/C) era deliberadamente preservado aqui — tinha teste dedicado
+ * (test/brevo-dashboard-fase2.test.ts) que EXIGIA a presença do número como
+ * referência à decisão documentada do editor. O #3675 removeu o placeholder
+ * inteiro (vestigial — os testes atuais já aparecem em "Resumo A/B/C por
+ * Audiência"), então essa exceção não se aplica mais; documentada aqui só
+ * pra contexto histórico do porquê a regra geral tinha uma exceção.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
