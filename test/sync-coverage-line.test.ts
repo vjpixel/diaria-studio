@@ -556,6 +556,42 @@ describe("rewriteCoverageLine — bloco de boas-vindas #3461 (regressão #3696)"
     assert.match(r.md, /e selecionei o artigo mais relevante\./);
   });
 
+  it("#3731: concordância singular quando x=1 (1 enviado, não '1 enviados')", () => {
+    const md = welcomeBlockMd(5, 10, 3);
+    const r = rewriteCoverageLine(md, 1, 10, 3);
+    assert.ok(r.changed);
+    assert.match(r.md, /\(1 enviado por mim e 10 encontrados automaticamente\)/);
+    assert.doesNotMatch(r.md, /1 enviados/);
+  });
+
+  it("#3731: concordância singular quando y=1 (1 encontrado, não '1 encontrados')", () => {
+    const md = welcomeBlockMd(5, 10, 3);
+    const r = rewriteCoverageLine(md, 5, 1, 3);
+    assert.ok(r.changed);
+    assert.match(r.md, /\(5 enviados por mim e 1 encontrado automaticamente\)/);
+    assert.doesNotMatch(r.md, /1 encontrados/);
+  });
+
+  it("#3731: concordância singular quando total=x+y=1 (analisou 1 artigo, não '1 artigos')", () => {
+    const md = welcomeBlockMd(5, 10, 3);
+    const r = rewriteCoverageLine(md, 1, 0, 1);
+    assert.ok(r.changed);
+    assert.match(r.md, /analisou 1 artigo \(1 enviado por mim e 0 encontrados automaticamente\)/);
+    assert.doesNotMatch(r.md, /1 artigos/);
+  });
+
+  it("#3731: WELCOME_COVERAGE_SENTENCE_RE reconhece a forma singular (idempotência — reprocessar não quebra o match)", () => {
+    const md = welcomeBlockMd(5, 10, 3);
+    const r = rewriteCoverageLine(md, 1, 1, 1);
+    assert.ok(r.changed);
+    // A sentença singular resultante ainda precisa ser reconhecida numa
+    // 2ª passada (idempotência) — sem isso, um re-sync na mesma edição
+    // sairia com "MD não tem linha de cobertura".
+    assert.ok(WELCOME_COVERAGE_SENTENCE_RE.test(r.md));
+    const r2 = rewriteCoverageLine(r.md, 1, 1, 1);
+    assert.equal(r2.changed, false, "reprocessar com os mesmos números deve ser no-op");
+  });
+
   it("main() não sai com exit 1 pro formato de boas-vindas — WELCOME_COVERAGE_SENTENCE_RE reconhece a sentença", () => {
     // Regressão direta do bug: antes, nem COVERAGE_LINE_RE nem
     // CAPTURE_FAILED_LINE_RE casavam este MD — main() abortava com "MD não

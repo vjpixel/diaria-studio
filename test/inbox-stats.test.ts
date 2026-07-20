@@ -344,7 +344,40 @@ describe("formatCoverageLine (#3461 — bloco de boas-vindas, padrão desde 2607
       diariaDiscovered: 1,
       selected: 1,
     });
-    assert.match(line, /Nesta edição, a IA analisou 2 artigos \(1 enviados por mim e 1 encontrados automaticamente\) e selecionei o artigo mais relevante\./);
+    // #3731: "1 enviado"/"1 encontrado" (singular) — antes deste fix, o
+    // template flexionava "artigos"/selPhrase mas mantinha "enviados"/
+    // "encontrados" fixos no plural mesmo pra contagem 1.
+    assert.match(line, /Nesta edição, a IA analisou 2 artigos \(1 enviado por mim e 1 encontrado automaticamente\) e selecionei o artigo mais relevante\./);
+  });
+
+  it("#3731: concordância singular quando editorSubmissions=1 (1 enviado, não '1 enviados')", () => {
+    const line = formatCoverageLine({
+      editorSubmissions: 1,
+      diariaDiscovered: 50,
+      selected: 3,
+    });
+    assert.match(line, /\(1 enviado por mim e 50 encontrados automaticamente\)/);
+    assert.doesNotMatch(line, /1 enviados/);
+  });
+
+  it("#3731: concordância singular quando diariaDiscovered=1 (1 encontrado, não '1 encontrados')", () => {
+    const line = formatCoverageLine({
+      editorSubmissions: 5,
+      diariaDiscovered: 1,
+      selected: 3,
+    });
+    assert.match(line, /\(5 enviados por mim e 1 encontrado automaticamente\)/);
+    assert.doesNotMatch(line, /1 encontrados/);
+  });
+
+  it("#3731: concordância singular quando total=editorSubmissions+diariaDiscovered=1 (analisou 1 artigo)", () => {
+    const line = formatCoverageLine({
+      editorSubmissions: 1,
+      diariaDiscovered: 0,
+      selected: 1,
+    });
+    assert.match(line, /analisou 1 artigo \(1 enviado por mim e 0 encontrados automaticamente\)/);
+    assert.doesNotMatch(line, /analisou 1 artigos/);
   });
 });
 

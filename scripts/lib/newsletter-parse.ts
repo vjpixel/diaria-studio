@@ -662,17 +662,43 @@ export function reconcileCoverageCount(line: string, count: number): string {
  * Diferente da coverage line: renderizado como callout com borda, não some no
  * meio do parágrafo cinza (feedback 260601 — sorteio não era encontrado no topo).
  */
+// #3726: separador `---` isolado em linha própria — mesmo boundary usado por
+// `GAP_SEPARATOR_RE` (ver embaixo). Delimita segmentos dentro da região de
+// intro pra evitar que o regex greedy do callout cruze pra outro bloco
+// bold-wrap distinto (ver `boldWrapSegments`).
+const INTRO_SEGMENT_SEP_RE = /^---[ \t]*\r?$/gm;
+
+/**
+ * #3726: divide `introRegion` em segmentos delimitados por `---` isolado,
+ * preservando o offset absoluto de cada segmento (pra permitir slicing
+ * posterior em `extractCoverageLineTrailer`). O regex de bloco bold-wrap
+ * roda DENTRO de cada segmento (nunca cruza um `---`) — mantém o
+ * comportamento greedy original (#260701) para callouts multi-parágrafo com
+ * sub-linhas `**bold**` internas (sem `---` entre elas), mas evita que 2
+ * blocos bold-wrap SEPARADOS por `---` (ex: callout real + uma 2ª linha em
+ * negrito isolada mais adiante) sejam fundidos num só, com o `---` entre eles
+ * vazando como texto literal.
+ */
+function boldWrapSegments(introRegion: string): { text: string; offset: number }[] {
+  const segments: { text: string; offset: number }[] = [];
+  let cursor = 0;
+  let sep: RegExpExecArray | null;
+  INTRO_SEGMENT_SEP_RE.lastIndex = 0;
+  while ((sep = INTRO_SEGMENT_SEP_RE.exec(introRegion))) {
+    segments.push({ text: introRegion.slice(cursor, sep.index), offset: cursor });
+    cursor = sep.index + sep[0].length;
+  }
+  segments.push({ text: introRegion.slice(cursor), offset: cursor });
+  return segments;
+}
+
 export function extractIntroCallout(text: string): string | null {
   const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
-  // Greedy (#260701): captura até o ÚLTIMO `**` em fim de linha da região intro,
-  // permitindo sub-linhas totalmente em negrito (`**Sorteio**`) dentro do box.
-  // Seguro porque a região antes do 1º DESTAQUE contém só a coverage line (sem
-  // `**`) + o único callout — o último `**$` é o fechamento do box. #3232:
-  // não exige mais que o bloco comece com 🎉/📣 — QUALQUER bloco bold-wrap
-  // nessa região é o candidato (TÍTULO/SUBTÍTULO/coverage line nunca são
-  // bold-wrapped, então não há ambiguidade).
-  const m = introRegion.match(/^\*\*\s*([\s\S]+)\*\*\s*$/m);
-  return m ? m[1].trim() : null;
+  for (const seg of boldWrapSegments(introRegion)) {
+    const m = seg.text.match(/^\*\*\s*([\s\S]+)\*\*\s*$/m);
+    if (m) return m[1].trim();
+  }
+  return null;
 }
 
 /**
@@ -689,9 +715,19 @@ export function extractIntroCallout(text: string): string | null {
  */
 export function extractCoverageLineTrailer(text: string): string | null {
   const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
-  const calloutMatch = introRegion.match(/^\*\*\s*([\s\S]+)\*\*\s*$/m);
-  if (!calloutMatch || calloutMatch.index === undefined) return null;
-  const rest = introRegion.slice(calloutMatch.index + calloutMatch[0].length);
+  // #3726: mesma segmentação por `---` de extractIntroCallout (ver
+  // `boldWrapSegments`) — precisa da posição ABSOLUTA (dentro de
+  // `introRegion`, não do segmento) pra fatiar o texto que vem depois.
+  let calloutEnd: number | undefined;
+  for (const seg of boldWrapSegments(introRegion)) {
+    const m = seg.text.match(/^\*\*\s*([\s\S]+)\*\*\s*$/m);
+    if (m && m.index !== undefined) {
+      calloutEnd = seg.offset + m.index + m[0].length;
+      break;
+    }
+  }
+  if (calloutEnd === undefined) return null;
+  const rest = introRegion.slice(calloutEnd);
   // O primeiro `---` logo após o callout é o boundary que FECHA o box (#3705)
   // — precisa ser descartado antes de procurar o boundary que fecha o trailer,
   // senão o match cai nele mesmo e o trailer sai vazio.

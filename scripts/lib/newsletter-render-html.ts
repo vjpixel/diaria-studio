@@ -343,9 +343,12 @@ export function renderCoverage(text: string): string {
   // e um `<p>` por parágrafo. Formatos legados (linha única, sem `\n\n`)
   // continuam pelo caminho antigo (escText — nunca tiveram links).
   const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  // #3725: mesmo texto de 1 parágrafo pode conter link markdown ([texto](url))
+  // — processInlineLinks escapa E processa links, então é seguro mesmo sem
+  // link nenhum (equivalente ao escText anterior nesse caso).
   const inner = paras.length > 1
     ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", processInlineLinks(p))).join("\n  ")
-    : bodyP("0", escText(text));
+    : bodyP("0", processInlineLinks(text));
   return `<!-- INTRO (coverage) -->
 <tr><td class="pad" style="padding:44px 32px 8px;">
   ${inner}
@@ -360,9 +363,10 @@ export function renderCoverage(text: string): string {
  */
 function renderCoverageTrailer(text: string): string {
   const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  // #3725: ver nota equivalente em renderCoverage acima.
   const inner = paras.length > 1
     ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", processInlineLinks(p))).join("\n  ")
-    : bodyP("0", escText(text));
+    : bodyP("0", processInlineLinks(text));
   return `<!-- INTRO (coverage trailer, pós-callout, #3705) -->
 <tr><td class="pad" style="padding:12px 32px 0;">
   ${inner}

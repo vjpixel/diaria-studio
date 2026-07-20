@@ -166,18 +166,31 @@ function renderTextInline(s: string): string {
  * ou `#`) — NÃO um hífen de continuação (evita over-match em `...-de-ia-2024`).
  * Adicionar aqui se outra página migrar.
  */
-const LEGACY_URL_FIXES: Array<[RegExp, string]> = [
+// #3730: 3º elemento opcional `preserveSuffix` — quando `true`, a URL final
+// preserva o path/query/hash que vier depois do trecho casado (via
+// `url.replace`, o lookahead `(?=$|[/?#])` garante que esse resto nunca é
+// consumido pelo match). As 2 entradas do Worker (`cursos`/`livros.diaria.workers.dev`,
+// #3698) casam só o domínio — qualquer coisa depois pertence à página NOVA e
+// não pode ser descartada (bug: `?theme=mcp` sumia). As 2 entradas mais
+// antigas (`diaria.beehiiv.com/...`) continuam com `preserveSuffix` omitido —
+// mapeiam uma PÁGINA inteira pra outra URL fixa; descartar `?utm`/trailing
+// slash/hash é o comportamento testado e desejado (#2261), não um bug.
+type LegacyUrlFix = readonly [RegExp, string, boolean?];
+
+const LEGACY_URL_FIXES: LegacyUrlFix[] = [
   [/^https?:\/\/diaria\.beehiiv\.com\/cursos-gratuitos-de-ia(?=$|[/?#])/i, "https://cursos.diar.ia.br"],
   [/^https?:\/\/diaria\.beehiiv\.com\/livros-sobre-ia(?=$|[/?#])/i, "https://livros.diar.ia.br"],
   // #3698: cutover do próprio Worker (cursos/livros.diaria.workers.dev) pro
   // domínio de marca — mesma defesa de conteúdo antigo/cacheado que ainda
   // referencia o subdomínio legado.
-  [/^https?:\/\/cursos\.diaria\.workers\.dev(?=$|[/?#])/i, "https://cursos.diar.ia.br"],
-  [/^https?:\/\/livros\.diaria\.workers\.dev(?=$|[/?#])/i, "https://livros.diar.ia.br"],
+  [/^https?:\/\/cursos\.diaria\.workers\.dev(?=$|[/?#])/i, "https://cursos.diar.ia.br", true],
+  [/^https?:\/\/livros\.diaria\.workers\.dev(?=$|[/?#])/i, "https://livros.diar.ia.br", true],
 ];
 
 export function normalizeKnownUrl(url: string): string {
-  for (const [re, fixed] of LEGACY_URL_FIXES) if (re.test(url)) return fixed;
+  for (const [re, fixed, preserveSuffix] of LEGACY_URL_FIXES) {
+    if (re.test(url)) return preserveSuffix ? url.replace(re, fixed) : fixed;
+  }
   // #2975: cobre links `diaria.beehiiv.com` escritos como markdown `[texto](url)`
   // pelo writer-monthly (boilerplate APRESENTAÇÃO, CTA de ENCERRAMENTO) — não só
   // o wordmark automático (`renderTextInline`/`applyBrandWordmark`).

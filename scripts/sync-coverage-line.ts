@@ -326,14 +326,27 @@ const COVERAGE_LINE_RE =
  * fail-soft, o erro era engolido silenciosamente por ~2 meses (o mecanismo
  * de correção do X ficou desativado de fato).
  */
+// #3731: "enviados"/"encontrados" também aceitam forma singular (`s?`) — o
+// gap original só flexionava "artigos?"/selPhrase; "1 enviados"/"1
+// encontrados" (concordância errada) ainda batiam mesmo depois do fix de
+// `buildWelcomeCoverageSentence` abaixo pra "1 enviado"/"1 encontrado".
 export const WELCOME_COVERAGE_SENTENCE_RE =
-  /Nesta edição, a IA analisou \d+ artigos? \(\d+ enviados por mim e \d+ encontrados automaticamente\) e (?:selecionei o artigo mais relevante|selecionei os \d+ mais relevantes)\./;
+  /Nesta edição, a IA analisou \d+ artigos? \(\d+ enviados? por mim e \d+ encontrados? automaticamente\) e (?:selecionei o artigo mais relevante|selecionei os \d+ mais relevantes)\./;
 
-/** #3696: monta a sentença de contagem no formato do bloco de boas-vindas — mesmo template de `formatCoverageLine` (`lib/inbox-stats.ts`), só que localmente pra não criar dependência circular script→script. */
+/**
+ * #3696: monta a sentença de contagem no formato do bloco de boas-vindas — mesmo template de `formatCoverageLine` (`lib/inbox-stats.ts`), só que localmente pra não criar dependência circular script→script.
+ *
+ * #3731: pluralização condicional também pra "artigos"/"enviados"/
+ * "encontrados" (antes só `selPhrase` flexionava) — "1 artigos"/"1
+ * enviados"/"1 encontrados" é gramaticalmente errado em PT-BR.
+ */
 function buildWelcomeCoverageSentence(x: number, y: number, z: number): string {
   const total = x + y;
   const selPhrase = z === 1 ? "selecionei o artigo mais relevante" : `selecionei os ${z} mais relevantes`;
-  return `Nesta edição, a IA analisou ${total} artigos (${x} enviados por mim e ${y} encontrados automaticamente) e ${selPhrase}.`;
+  const totalWord = total === 1 ? "artigo" : "artigos";
+  const enviadosWord = x === 1 ? "enviado" : "enviados";
+  const encontradosWord = y === 1 ? "encontrado" : "encontrados";
+  return `Nesta edição, a IA analisou ${total} ${totalWord} (${x} ${enviadosWord} por mim e ${y} ${encontradosWord} automaticamente) e ${selPhrase}.`;
 }
 
 /**
