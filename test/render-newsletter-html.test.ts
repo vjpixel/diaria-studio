@@ -18,6 +18,8 @@ import {
   renderLeaderboardTop1Row,
   extractTemplateBlock,
   extractCoverageLine,
+  extractCoverageLineTrailer,
+  extractIntroCallout,
   reconcileCoverageCount,
   renderCoverage,
   unescapeMd,
@@ -1618,6 +1620,111 @@ describe("extractCoverageLine + renderCoverage (#1093)", () => {
     // #2532: a marca "Diar.ia" renderiza como wordmark diar.ia.br (pontos teal);
     // o escape do & precede o wordmark, garantindo que ambos coexistem.
     assert.match(html, /&amp; a <strong>diar<span style="color:#00A0A0">\.<\/span>ia<span style="color:#00A0A0">\.br<\/span><\/strong> encontrou/);
+  });
+});
+
+describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boas-vindas", () => {
+  function buildMdWithMidCallout() {
+    return [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "Parágrafo do meio, antes do callout.",
+      "",
+      "---",
+      "",
+      "**Callout no meio do bloco de boas-vindas.**",
+      "",
+      "---",
+      "",
+      "Parágrafo final, depois do callout — este é o trailer.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "**[Título do destaque](https://example.com/d1)**",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Importa por isso.",
+    ].join("\n");
+  }
+
+  it("extractCoverageLine para no primeiro --- (antes do callout, não engole o bold-wrap)", () => {
+    const md = buildMdWithMidCallout();
+    const line = extractCoverageLine(md);
+    assert.ok(line, "coverage line deve ser extraída");
+    assert.match(line!, /^Olá! Eu sou o \[Pixel\]/);
+    assert.match(line!, /Parágrafo do meio, antes do callout\.$/);
+    assert.doesNotMatch(line!, /Callout no meio/);
+    assert.doesNotMatch(line!, /Parágrafo final/);
+  });
+
+  it("extractIntroCallout captura só o bloco bold-wrap, não o trailer", () => {
+    const callout = extractIntroCallout(buildMdWithMidCallout());
+    assert.equal(callout, "Callout no meio do bloco de boas-vindas.");
+  });
+
+  it("extractCoverageLineTrailer captura o texto DEPOIS do callout, até o próximo boundary", () => {
+    const trailer = extractCoverageLineTrailer(buildMdWithMidCallout());
+    assert.equal(trailer, "Parágrafo final, depois do callout — este é o trailer.");
+  });
+
+  it("extractCoverageLineTrailer retorna null quando não há callout na região de intro", () => {
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    assert.equal(extractCoverageLineTrailer(md), null);
+  });
+
+  it("extractCoverageLineTrailer retorna null quando o callout já é o último elemento da intro (sem trailer)", () => {
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Callout no fim, sem nada depois.**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    assert.equal(extractCoverageLineTrailer(md), null);
+  });
+
+  it("#3705 regressão: renderHTML NÃO duplica o parágrafo do callout quando ele fica no meio da intro (bug real da edição 260720)", () => {
+    const md = buildMdWithMidCallout();
+    const content = {
+      title: "Título do destaque",
+      subtitle: "",
+      coverImage: "",
+      destaques: [{ title: "Título do destaque", url: "https://example.com/d1", body: "Corpo do destaque.", why: "Importa por isso.", category: "🚀 LANÇAMENTO", credit: null }],
+      eia: { credit: "", correctAnswer: null },
+      sections: [],
+      sorteio: null,
+      encerrar: null,
+      erroIntencional: null,
+      coverageLine: extractCoverageLine(md),
+      introCallout: extractIntroCallout(md),
+      coverageLineTrailer: extractCoverageLineTrailer(md),
+    };
+    const html = renderHTML(content);
+    const calloutOccurrences = html.split("Callout no meio do bloco de boas-vindas").length - 1;
+    const trailerOccurrences = html.split("Parágrafo final, depois do callout").length - 1;
+    assert.equal(calloutOccurrences, 1, "callout deve aparecer exatamente 1 vez (sem duplicação)");
+    assert.equal(trailerOccurrences, 1, "trailer deve aparecer exatamente 1 vez");
+    // Ordem: callout (dentro do box com borda) ANTES do trailer, que vem ANTES do 1º destaque.
+    const calloutIdx = html.indexOf("Callout no meio do bloco de boas-vindas");
+    const trailerIdx = html.indexOf("Parágrafo final, depois do callout");
+    const destaqueIdx = html.indexOf("Título do destaque");
+    assert.ok(calloutIdx < trailerIdx, "callout deve vir antes do trailer");
+    assert.ok(trailerIdx < destaqueIdx, "trailer deve vir antes do 1º destaque");
   });
 
   it("#3461: renderCoverage processa bloco multi-parágrafo com links markdown (um <p> por parágrafo)", () => {

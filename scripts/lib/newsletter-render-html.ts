@@ -347,6 +347,23 @@ export function renderCoverage(text: string): string {
 }
 
 /**
+ * #3705: mesmo estilo tipográfico de `renderCoverage`, mas SEM o padding de
+ * topo de página (44px) — usado quando sobra texto de coverage DEPOIS do
+ * introCallout (callout posicionado no meio do bloco de boas-vindas, não no
+ * fim). Renderiza logo após o callout, antes do 1º destaque.
+ */
+function renderCoverageTrailer(text: string): string {
+  const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const inner = paras.length > 1
+    ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", processInlineLinks(p))).join("\n  ")
+    : bodyP("0", escText(text));
+  return `<!-- INTRO (coverage trailer, pós-callout, #3705) -->
+<tr><td class="pad" style="padding:12px 32px 0;">
+  ${inner}
+</td></tr>`;
+}
+
+/**
  * #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo). DS: box
  * "painel" (bege), texto peso 600. Links via processInlineLinks (underline teal).
  *
@@ -1248,6 +1265,14 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
       false,
       introSponsored,
     ));
+  }
+
+  // #3705: texto de coverage que ficou DEPOIS do callout no MD (editor quis o
+  // callout NO MEIO do bloco de boas-vindas). Renderizado logo após o callout,
+  // antes do 1º destaque — mesmo estilo tipográfico da coverage line, sem o
+  // padding de topo de página (não é o 1º bloco do email).
+  if (content.coverageLineTrailer) {
+    parts.push(renderCoverageTrailer(content.coverageLineTrailer));
   }
 
   const includeEia = !!(!opts.excludeEia && content.eia.credit);

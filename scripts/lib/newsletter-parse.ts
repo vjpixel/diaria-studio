@@ -105,6 +105,12 @@ export interface NewsletterContent {
    * com borda teal — diferente da coverage line (cinza itálico), pra não passar
    * despercebido. */
   introCallout?: string | null;
+  /** #3705: texto de coverage que fica DEPOIS do introCallout no MD (ex: editor
+   * quer o callout entre 2 parágrafos de boas-vindas, não só no final). Como
+   * renderHTML sempre emite coverageLine → introCallout → destaques nessa
+   * ordem fixa, esse texto não caberia em nenhum dos dois — é capturado à
+   * parte e renderizado logo após o callout, antes do 1º destaque. */
+  coverageLineTrailer?: string | null;
   /** Box de divulgação (#2978, marcador-agnóstico desde #3204) posicionado
    * ENTRE o 1º e o 2º destaque — SLOT fixo por posição (gap D1/D2),
    * independente do formato de conteúdo. Aceita QUALQUER bloco isolado por
@@ -667,6 +673,33 @@ export function extractIntroCallout(text: string): string | null {
   // bold-wrapped, então não há ambiguidade).
   const m = introRegion.match(/^\*\*\s*([\s\S]+)\*\*\s*$/m);
   return m ? m[1].trim() : null;
+}
+
+/**
+ * #3705: captura o texto de coverage que fica DEPOIS do introCallout na região
+ * de intro (entre o fechamento do bloco bold-wrap e o próximo boundary
+ * estrutural — `---` isolado ou `**DESTAQUE`). Existe porque o editor pode
+ * querer o callout NO MEIO do bloco de boas-vindas (ex: entre o parágrafo de
+ * lançamento e o parágrafo final de cobertura), não só no fim — sem essa
+ * captura separada, esse texto ficaria fora tanto de `extractCoverageLine`
+ * (que para no primeiro boundary, ANTES do callout) quanto de
+ * `extractIntroCallout` (que só pega o bloco bold-wrap), e sumiria em
+ * silêncio do HTML (mesma classe de bug que #3691/#3232 corrigiram).
+ * `renderHTML` renderiza esse texto logo após o callout, antes do 1º destaque.
+ */
+export function extractCoverageLineTrailer(text: string): string | null {
+  const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
+  const calloutMatch = introRegion.match(/^\*\*\s*([\s\S]+)\*\*\s*$/m);
+  if (!calloutMatch || calloutMatch.index === undefined) return null;
+  const rest = introRegion.slice(calloutMatch.index + calloutMatch[0].length);
+  // O primeiro `---` logo após o callout é o boundary que FECHA o box (#3705)
+  // — precisa ser descartado antes de procurar o boundary que fecha o trailer,
+  // senão o match cai nele mesmo e o trailer sai vazio.
+  const afterClosingSep = rest.replace(/^[ \t\r\n]*---[ \t]*\r?\n/, "");
+  const sepMatch = afterClosingSep.match(/^---[ \t]*\r?$/m);
+  const endIdx = sepMatch?.index !== undefined ? sepMatch.index : afterClosingSep.length;
+  const trailer = afterClosingSep.slice(0, endIdx).trim();
+  return trailer || null;
 }
 
 /**
@@ -1288,6 +1321,11 @@ export function extractContent(editionDir: string): NewsletterContent {
     : rawCoverageLine;
   // #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo).
   const introCallout = extractIntroCallout(reviewedText);
+  // #3705: texto de coverage pós-callout (callout no meio do bloco de boas-vindas).
+  const rawCoverageLineTrailer = extractCoverageLineTrailer(reviewedText);
+  const coverageLineTrailer = rawCoverageLineTrailer
+    ? reconcileCoverageCount(rawCoverageLineTrailer, renderedItemCount)
+    : rawCoverageLineTrailer;
   // #2978: box de divulgação slot 1 (gap D1/D2) e slot 2 (gap D2/D3) — cada
   // slot é fixo por posição, aceitando qualquer formato (bold-line 📚/📣/🎉
   // OU carrinho 🛒).
@@ -1331,6 +1369,7 @@ export function extractContent(editionDir: string): NewsletterContent {
     erroIntencional,
     coverageLine,
     introCallout,
+    coverageLineTrailer,
     boxDivulgacao1,
     boxDivulgacao1Image,
     boxDivulgacao1Bold,
