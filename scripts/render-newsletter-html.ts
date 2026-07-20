@@ -41,6 +41,7 @@ export {
   fallbackEIA,
   parseEIA,
   extractCoverageLine,
+  extractCoverageLineTrailer,
   reconcileCoverageCount,
   extractIntroCallout,
   extractBoxDivulgacao1,
