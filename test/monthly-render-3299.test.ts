@@ -72,7 +72,8 @@ describe("#3299 — renderInline (mensal): **[label](url)** vira <strong><a>, se
 
   it("normalização de URL (#2261) e wordmark (#2532/#template-branding) continuam funcionando dentro do bold-wrap", () => {
     const out = renderInline("**[Cursos](https://diaria.beehiiv.com/cursos-gratuitos-de-ia)**");
-    assert.match(out, /href="https:\/\/cursos\.diaria\.workers\.dev"/, `normalização de URL legada não aplicada: ${out}`);
+    // #3698: domínio de marca (era cursos.diaria.workers.dev).
+    assert.match(out, /href="https:\/\/cursos\.diar\.ia\.br"/, `normalização de URL legada não aplicada: ${out}`);
     assert.match(out, /<strong><a/, `bold-wrap não aplicado: ${out}`);
   });
 });

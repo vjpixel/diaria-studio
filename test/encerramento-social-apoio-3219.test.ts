@@ -165,8 +165,9 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     const out = buildParaEncerrar();
     assert.match(out, /\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/);
     assert.match(out, /usei Claude Code para automatizar parte da pesquisa/);
-    assert.match(out, /- \[Cursos de IA\]\(https:\/\/cursos\.diaria\.workers\.dev\)/);
-    assert.match(out, /- \[Livros sobre IA\]\(https:\/\/livros\.diaria\.workers\.dev\)/);
+    // #3698: domínio de marca (era cursos/livros.diaria.workers.dev).
+    assert.match(out, /- \[Cursos de IA\]\(https:\/\/cursos\.diar\.ia\.br\)/);
+    assert.match(out, /- \[Livros sobre IA\]\(https:\/\/livros\.diar\.ia\.br\)/);
   });
 
   it("buildParaEncerrar inclui o parágrafo de apoio (Apoia.se) e o convite social do snippet", () => {
