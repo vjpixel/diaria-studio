@@ -34,6 +34,7 @@
 
 import { existsSync, mkdirSync, readFileSync, appendFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
+import { randomUUID } from "node:crypto";
 import { escHtml } from "../lib/html-escape.ts";
 
 export type ReportKind = "edicao" | "overnight" | "develop" | "mensal";
@@ -191,25 +192,44 @@ function isSafeUrl(url: string): boolean {
 /** Aplica bold/itálico/código (nunca link) — usado tanto no texto fora de
  * links quanto no LABEL de um link (nunca na URL, ver `renderInline`).
  *
- * **Ordem bold → itálico → código (#3790):** bold (`**x**`) roda primeiro e
- * consome TODOS os pares de asterisco duplo, então quando o passe de itálico
- * roda depois não sobra `**` pra confundir com `*x*` (evita que
- * `**negrito**` vire itálico-de-asterisco-solto por acidente). Os regexes de
- * itálico exigem fronteira de palavra (`\w`) nas bordas — isso é o que
- * protege tanto identificadores `snake_case`/`__mdlink_N__` (o placeholder de
- * link do `renderInline`, que tem underscore colado a `\w` dos dois lados em
- * todo underscore interno) quanto o marcador de lista `- item`/`* item`
- * (que já foi consumido pela regex de item de lista ANTES desta função ser
- * chamada — o `*`/`-` inicial nunca chega aqui) de virarem itálico por
- * engano. Código roda por último — os regexes de itálico exigem que o
- * delimitador não seja seguido/precedido de espaço, então `` `2 * 3` `` (com
- * espaços) e `` `foo_bar` `` (underscore mid-word) nunca casam mesmo antes de
- * virarem `<code>`. */
+ * **Código roda PRIMEIRO, via extração por placeholder (#3797).** Antes,
+ * código rodava por último, assumindo que os regexes de itálico (que exigem
+ * delimitador não seguido/precedido de espaço) nunca casariam dentro de um
+ * code-span já formado. Isso não cobre o caso em que o delimitador de ênfase
+ * É o próprio conteúdo do code-span — bold ou itálico entre crases — onde
+ * bold/itálico rodando antes do código corrompem a sintaxe literal que o
+ * autor queria mostrar crua (ex: comentário/PR que documenta a sintaxe deste
+ * próprio renderer). Agora cada code-span é extraído primeiro pro array
+ * `codeSpans`, substituído por um token opaco (prefixo/sufixo `@@mdcode:...@@`
+ * com um componente ALEATÓRIO por chamada — `session`, via `randomUUID()` —
+ * pra nunca colidir com texto real do documento, mesma disciplina
+ * anti-colisão usada pelo placeholder de link em `renderInline`) e só
+ * restaurado depois que bold/itálico já rodaram sobre o resto da string — o
+ * conteúdo do code-span nunca é reprocessado.
+ *
+ * **Ordem bold → itálico (#3790), depois restauração do código.** bold
+ * (`**x**`) roda primeiro e consome TODOS os pares de asterisco duplo, então
+ * quando o passe de itálico roda depois não sobra `**` pra confundir com
+ * `*x*` (evita que `**negrito**` vire itálico-de-asterisco-solto por
+ * acidente). Os regexes de itálico exigem fronteira de palavra (`\w`) nas
+ * bordas — isso é o que protege identificadores `snake_case` e o marcador de
+ * lista `- item`/`* item` (que já foi consumido pela regex de item de lista
+ * ANTES desta função ser chamada — o `*`/`-` inicial nunca chega aqui) de
+ * virarem itálico por engano. */
 function applyInlineMarks(s: string): string {
+  const session = randomUUID().replace(/-/g, "");
+  const codeSpans: string[] = [];
+  s = s.replace(/`([^`]+)`/g, (_m, code: string) => {
+    const token = `@@mdcode:${session}:${codeSpans.length}@@`;
+    codeSpans.push(`<code>${code}</code>`);
+    return token;
+  });
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)/g, "<em>$1</em>");
   s = s.replace(/(?<!\w)_(?!\s)([^_\n]+?)(?<!\s)_(?!\w)/g, "<em>$1</em>");
-  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  codeSpans.forEach((code, i) => {
+    s = s.split(`@@mdcode:${session}:${i}@@`).join(code);
+  });
   return s;
 }
 
@@ -224,19 +244,37 @@ function applyInlineMarks(s: string): string {
  * `**` ou crase seria re-escaneada pelos passes seguintes e o `href` sairia
  * corrompido (`href="https://evil.com/<strong>pwn</strong>"`) — a versão
  * anterior processava link→bold→code em sequência sobre a MESMA string
- * mutável, deixando o href exposto a esse re-scan. */
+ * mutável, deixando o href exposto a esse re-scan.
+ *
+ * **Restauração do placeholder é posicionalmente segura via token aleatório
+ * por chamada (#3797 Bug 2).** Antes, o token era `__mdlink_N__` — um padrão
+ * PREVISÍVEL — e a restauração usava `split/join` (substitui TODA ocorrência
+ * da substring, não só a posição onde o placeholder foi de fato inserido).
+ * Se o LABEL de um link contivesse literalmente o texto de um token que
+ * ainda ia ser criado por um link processado depois na mesma linha (ex:
+ * `[__mdlink_1__](url-boa)` seguido de um 2º link que gera exatamente o
+ * token `__mdlink_1__`), a passada de restauração do 2º link casava também
+ * essa ocorrência "acidental" dentro do label do 1º — produzindo `<a>`
+ * aninhado (HTML inválido) e uma repetição indevida do 2º link. Agora o
+ * token inclui um componente aleatório (`session`, via `randomUUID()`)
+ * gerado UMA vez por chamada de `renderInline` — nenhum texto de usuário
+ * (que só chega até aqui depois de `escHtml`, então nunca contém o padrão
+ * `@@mdlink:...@@` cru gerado nesta invocação específica) pode colidir com
+ * ele, então o `split/join` continua simples mas agora é seguro: garantido
+ * que a única ocorrência da string é a que foi inserida por este código. */
 function renderInline(escapedText: string): string {
+  const session = randomUUID().replace(/-/g, "");
   const placeholders: string[] = [];
   let s = escapedText.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, label: string, url: string) => {
     if (!isSafeUrl(url)) return applyInlineMarks(label);
     const anchor = `<a href="${url}" target="_blank" rel="noopener noreferrer">${applyInlineMarks(label)}</a>`;
-    const token = `__mdlink_${placeholders.length}__`;
+    const token = `@@mdlink:${session}:${placeholders.length}@@`;
     placeholders.push(anchor);
     return token;
   });
   s = applyInlineMarks(s);
   placeholders.forEach((anchor, i) => {
-    s = s.split(`__mdlink_${i}__`).join(anchor);
+    s = s.split(`@@mdlink:${session}:${i}@@`).join(anchor);
   });
   return s;
 }
@@ -280,6 +318,11 @@ export function renderMarkdownToHtml(raw: string): string {
   let tableRows: string[][] | null = null;
   let codeFenceOpen = false;
   let codeFenceLines: string[] = [];
+  // #3796: comprimento (nº de backticks) da fence de ABERTURA — CommonMark
+  // exige que o fechamento tenha comprimento >= abertura, senão uma fence de
+  // 4 backticks fecharia numa linha interna de só 3 (conteúdo que devia ficar
+  // literal dentro do bloco escaparia e seria reprocessado como markdown).
+  let codeFenceMarkerLen = 0;
 
   const flushParagraph = () => {
     if (paragraph.length) {
@@ -315,6 +358,7 @@ export function renderMarkdownToHtml(raw: string): string {
     out.push(`<pre><code>${codeFenceLines.join("\n")}</code></pre>`);
     codeFenceLines = [];
     codeFenceOpen = false;
+    codeFenceMarkerLen = 0;
   };
 
   for (const rawLine of lines) {
@@ -322,7 +366,12 @@ export function renderMarkdownToHtml(raw: string): string {
     // enquanto aberto, TODA linha (inclusive vazia, `---`, `| tabela |`) é
     // conteúdo literal do bloco, nunca reinterpretada como markdown (#3790).
     if (codeFenceOpen) {
-      if (/^`{3,}\s*$/.test(rawLine.trim())) {
+      // #3796: só fecha se o comprimento da fence de fechamento for >= o da
+      // abertura (CommonMark) — uma fence de 4 backticks não fecha numa
+      // linha interna de 3 (ex: bloco que documenta code fences de 3
+      // backticks dentro de um bloco de 4).
+      const closeMatch = rawLine.trim().match(/^(`{3,})\s*$/);
+      if (closeMatch && closeMatch[1].length >= codeFenceMarkerLen) {
         flushCodeFence();
       } else {
         codeFenceLines.push(rawLine);
@@ -332,12 +381,15 @@ export function renderMarkdownToHtml(raw: string): string {
 
     const line = rawLine.trim();
 
-    if (/^`{3,}/.test(line)) {
+    const fenceOpen = line.match(/^(`{3,})/);
+    if (fenceOpen) {
       // Abre o fence — a info string opcional (ex: ```ts) é descartada, sem
-      // syntax highlight (#3790).
+      // syntax highlight (#3790). Guarda o comprimento (#3796) pra comparar
+      // no fechamento.
       closeBlocks();
       codeFenceOpen = true;
       codeFenceLines = [];
+      codeFenceMarkerLen = fenceOpen[1].length;
       continue;
     }
     if (line === "") {
@@ -409,7 +461,12 @@ export function renderMarkdownToHtml(raw: string): string {
   closeBlocks();
   // Fence nunca fechado até o fim do texto (markdown malformado) — flush
   // gracioso do que foi coletado em vez de perder o conteúdo (#3790).
-  if (codeFenceOpen && codeFenceLines.length) {
+  // #3796: dispara mesmo com ZERO linhas de conteúdo coletadas (fence abre e
+  // o input acaba ali) — antes o guard `&& codeFenceLines.length` descartava
+  // esse caso em silêncio, sumindo com o marcador de abertura sem rastro
+  // nenhum. Agora emite `<pre><code></code></pre>` vazio, preservando o fato
+  // de que um fence foi aberto.
+  if (codeFenceOpen) {
     flushCodeFence();
   }
 
@@ -429,6 +486,14 @@ export function renderMarkdownToHtml(raw: string): string {
  * `report.md`) vira um wrap HTML mínimo com o corpo passado por
  * `renderMarkdownToHtml` (#3784) — headings/bold/hr/listas/tabelas viram
  * elementos de verdade em vez de markdown cru dentro de um `<pre>`.
+ *
+ * **`<pre>`/`<code>`/`<ol>` no CSS inline (#3798).** `renderMarkdownToHtml`
+ * gera `<pre><code>` (code fences) e `<ol>` (listas numeradas) a partir de
+ * `report.md`, mas o bloco `<style>` original só cobria `<code>` inline,
+ * `<ul>` e headings — sem `overflow-x`/`white-space` em `<pre>`, uma linha
+ * longa de code fence (comum: comando `npx tsx ... --flag` no relatório)
+ * estoura a largura da página no Studio mobile (#3560), já que browsers não
+ * quebram linha em `<pre>` por padrão.
  */
 export function resolveReportHtml(rootDir: string, entry: ReportEntry): ReportRenderResult {
   const rootAbs = resolve(rootDir);
@@ -471,7 +536,9 @@ hr { border: none; border-top: 1px solid #ddd; margin: 20px 0; }
 table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
 th, td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; vertical-align: top; }
 code { background: #f1f1f1; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
-ul { padding-left: 20px; }
+pre { overflow-x: auto; white-space: pre-wrap; word-break: break-word; background: #f8f8f8; padding: 12px; border-radius: 4px; }
+pre code { background: none; padding: 0; }
+ul, ol { padding-left: 20px; }
 a { color: #2563eb; }
 </style>
 </head>
