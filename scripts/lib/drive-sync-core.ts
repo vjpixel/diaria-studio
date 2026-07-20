@@ -135,8 +135,8 @@ export const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
 
 // ---------------------------------------------------------------------------
 // Retry, helpers de listagem e escape de query agora vivem em
-// scripts/lib/drive-helpers.ts (#1308 itens 2 + 4 — compartilhado com
-// sync-report.ts e upload-report-to-drive.ts).
+// scripts/lib/drive-helpers.ts (#1308 itens 2 + 4 — antes também compartilhado
+// com sync-report.ts/upload-report-to-drive.ts, removidos em #3713).
 // ---------------------------------------------------------------------------
 
 /**
