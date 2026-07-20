@@ -26,7 +26,7 @@ peso normal (#3373). Multi-parágrafo, não passa pelo bold-wrap de bloco só-te
 
 Apoie a diar.ia.br
 
-Todo dia eu leio, filtro e resumo o que importa em IA pra te entregar de graça. Quem apoia é quem mantém isso de pé — e me ajuda a ir além.
+A curadoria diária que você recebe é fruto de um trabalho constante — ler, filtrar, priorizar, editar. Se isso te ajuda, apoiar é uma forma de retribuir.
 
 O apoio começa em R$5 por mês, e cada nível libera um tipo de recompensa.
 
