@@ -1,6 +1,6 @@
 # Regras Editoriais Absolutas — diar.ia.br
 
-A **diar.ia.br** é uma newsletter diária brasileira de IA ("5 minutos diários pra se manter atualizado e usar melhor a IA"), publicada em português, voltada a profissionais de **tecnologia, finanças e consultoria no Brasil**.
+A **diar.ia.br** é uma newsletter diária brasileira de IA ("5 minutos diários pra se manter atualizado e usar melhor as IAs"), publicada em português, voltada a profissionais de **tecnologia, finanças e consultoria no Brasil**.
 
 Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstância.
 
