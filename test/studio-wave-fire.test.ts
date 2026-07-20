@@ -143,6 +143,31 @@ describe("evaluateWaveTool (#3702) — guard de publicação como código", () =
     assert.equal(decision.allow, false);
   });
 
+  it("nega Bash que roda clarice-schedule-group.ts / clarice-schedule-ramp.ts (#3728 Gap 2 — prefixo, não só nome exato)", () => {
+    const group = evaluateWaveTool("Bash", { command: "npx tsx scripts/clarice-schedule-group.ts --group T1-W3" });
+    assert.equal(group.allow, false);
+    assert.match(group.reason ?? "", /guard de publicação/);
+
+    const ramp = evaluateWaveTool("Bash", { command: "npx tsx scripts/clarice-schedule-ramp.ts" });
+    assert.equal(ramp.allow, false);
+    assert.match(ramp.reason ?? "", /guard de publicação/);
+  });
+
+  it("nega Bash que roda git checkout/git pull/git stash na pasta principal (#3728 Gap 1 — defesa em profundidade)", () => {
+    const checkout = evaluateWaveTool("Bash", { command: "git checkout master" });
+    assert.equal(checkout.allow, false);
+    assert.match(checkout.reason ?? "", /guard de working-tree/);
+    assert.match(checkout.reason ?? "", /260716/);
+
+    const pull = evaluateWaveTool("Bash", { command: "git pull --ff-only" });
+    assert.equal(pull.allow, false);
+    assert.match(pull.reason ?? "", /guard de working-tree/);
+
+    const stash = evaluateWaveTool("Bash", { command: "git stash pop" });
+    assert.equal(stash.allow, false);
+    assert.match(stash.reason ?? "", /guard de working-tree/);
+  });
+
   it("nega Bash que roda clarice-import-*", () => {
     const decision = evaluateWaveTool("Bash", { command: "npx tsx scripts/clarice-import-waves.ts --cycle 2605-06" });
     assert.equal(decision.allow, false);
