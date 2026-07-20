@@ -105,6 +105,12 @@ export interface NewsletterContent {
    * com borda teal — diferente da coverage line (cinza itálico), pra não passar
    * despercebido. */
   introCallout?: string | null;
+  /** #3705: texto de coverage que fica DEPOIS do introCallout no MD (ex: editor
+   * quer o callout entre 2 parágrafos de boas-vindas, não só no final). Como
+   * renderHTML sempre emite coverageLine → introCallout → destaques nessa
+   * ordem fixa, esse texto não caberia em nenhum dos dois — é capturado à
+   * parte e renderizado logo após o callout, antes do 1º destaque. */
+  coverageLineTrailer?: string | null;
   /** Box de divulgação (#2978, marcador-agnóstico desde #3204) posicionado
    * ENTRE o 1º e o 2º destaque — SLOT fixo por posição (gap D1/D2),
    * independente do formato de conteúdo. Aceita QUALQUER bloco isolado por
@@ -564,19 +570,40 @@ export function extractCoverageLine(text: string): string | null {
     /^Olá! Eu sou o [\s\S]*?considere apoiar o projeto\]\([^)]+\)\./m,
   );
   if (anchorMatch) {
-    const startIdx = anchorMatch.index ?? 0;
-    const rest = text.slice(startIdx);
-    const sepMatch = rest.match(/^---[ \t]*\r?$/m);
-    const destMatch = rest.match(/^\*\*DESTAQUE/m);
-    let endIdx = rest.length;
-    if (sepMatch?.index !== undefined) endIdx = Math.min(endIdx, sepMatch.index);
-    if (destMatch?.index !== undefined) endIdx = Math.min(endIdx, destMatch.index);
-    return rest.slice(0, endIdx).trim();
+    return captureUntilCoverageBoundary(text, anchorMatch.index ?? 0);
+  }
+
+  // #3691: fallback quando o editor remove a frase-CTA de apoio do bloco de
+  // boas-vindas (ex: pra não competir com o box de apoio dedicado) — a
+  // âncora do CTA deixa de ser obrigatória pra reconhecer o bloco, só o
+  // início "Olá! Eu sou o" é exigido. Sem isso, extractCoverageLine
+  // retornava null e a intro inteira sumia do HTML em silêncio (caso real:
+  // edição 260720).
+  const welcomeMatch = text.match(/^Olá! Eu sou o [^\n]*$/m);
+  if (welcomeMatch) {
+    return captureUntilCoverageBoundary(text, welcomeMatch.index ?? 0);
   }
 
   // Formatos legados (linha única): #592/#609 original + #3456.
   const m = text.match(/^Para esta edição,[^\n]+$/m);
   return m ? m[0].trim() : null;
+}
+
+/**
+ * #3691: captura do início do bloco de boas-vindas até o próximo boundary
+ * estrutural (`---` isolado em linha própria, ou o próximo `**DESTAQUE`), o
+ * que vier primeiro. Sem boundary (MD malformado) captura até o fim do
+ * texto — defensivo, não deveria ocorrer em MD bem formado. Compartilhado
+ * entre o path ancorado no CTA de apoio e o fallback sem CTA.
+ */
+function captureUntilCoverageBoundary(text: string, startIdx: number): string {
+  const rest = text.slice(startIdx);
+  const sepMatch = rest.match(/^---[ \t]*\r?$/m);
+  const destMatch = rest.match(/^\*\*DESTAQUE/m);
+  let endIdx = rest.length;
+  if (sepMatch?.index !== undefined) endIdx = Math.min(endIdx, sepMatch.index);
+  if (destMatch?.index !== undefined) endIdx = Math.min(endIdx, destMatch.index);
+  return rest.slice(0, endIdx).trim();
 }
 
 /**
@@ -646,6 +673,33 @@ export function extractIntroCallout(text: string): string | null {
   // bold-wrapped, então não há ambiguidade).
   const m = introRegion.match(/^\*\*\s*([\s\S]+)\*\*\s*$/m);
   return m ? m[1].trim() : null;
+}
+
+/**
+ * #3705: captura o texto de coverage que fica DEPOIS do introCallout na região
+ * de intro (entre o fechamento do bloco bold-wrap e o próximo boundary
+ * estrutural — `---` isolado ou `**DESTAQUE`). Existe porque o editor pode
+ * querer o callout NO MEIO do bloco de boas-vindas (ex: entre o parágrafo de
+ * lançamento e o parágrafo final de cobertura), não só no fim — sem essa
+ * captura separada, esse texto ficaria fora tanto de `extractCoverageLine`
+ * (que para no primeiro boundary, ANTES do callout) quanto de
+ * `extractIntroCallout` (que só pega o bloco bold-wrap), e sumiria em
+ * silêncio do HTML (mesma classe de bug que #3691/#3232 corrigiram).
+ * `renderHTML` renderiza esse texto logo após o callout, antes do 1º destaque.
+ */
+export function extractCoverageLineTrailer(text: string): string | null {
+  const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
+  const calloutMatch = introRegion.match(/^\*\*\s*([\s\S]+)\*\*\s*$/m);
+  if (!calloutMatch || calloutMatch.index === undefined) return null;
+  const rest = introRegion.slice(calloutMatch.index + calloutMatch[0].length);
+  // O primeiro `---` logo após o callout é o boundary que FECHA o box (#3705)
+  // — precisa ser descartado antes de procurar o boundary que fecha o trailer,
+  // senão o match cai nele mesmo e o trailer sai vazio.
+  const afterClosingSep = rest.replace(/^[ \t\r\n]*---[ \t]*\r?\n/, "");
+  const sepMatch = afterClosingSep.match(/^---[ \t]*\r?$/m);
+  const endIdx = sepMatch?.index !== undefined ? sepMatch.index : afterClosingSep.length;
+  const trailer = afterClosingSep.slice(0, endIdx).trim();
+  return trailer || null;
 }
 
 /**
@@ -1267,6 +1321,11 @@ export function extractContent(editionDir: string): NewsletterContent {
     : rawCoverageLine;
   // #1648: CTA de destaque no topo (ex: convite pro sorteio ao vivo).
   const introCallout = extractIntroCallout(reviewedText);
+  // #3705: texto de coverage pós-callout (callout no meio do bloco de boas-vindas).
+  const rawCoverageLineTrailer = extractCoverageLineTrailer(reviewedText);
+  const coverageLineTrailer = rawCoverageLineTrailer
+    ? reconcileCoverageCount(rawCoverageLineTrailer, renderedItemCount)
+    : rawCoverageLineTrailer;
   // #2978: box de divulgação slot 1 (gap D1/D2) e slot 2 (gap D2/D3) — cada
   // slot é fixo por posição, aceitando qualquer formato (bold-line 📚/📣/🎉
   // OU carrinho 🛒).
@@ -1310,6 +1369,7 @@ export function extractContent(editionDir: string): NewsletterContent {
     erroIntencional,
     coverageLine,
     introCallout,
+    coverageLineTrailer,
     boxDivulgacao1,
     boxDivulgacao1Image,
     boxDivulgacao1Bold,
