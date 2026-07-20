@@ -345,10 +345,25 @@ export function buildWaveFireCoordinatorPrompt(issueNumbers: number[], opts: Wav
 // ─── guard de publicação como código (puro, defesa em profundidade) ───────
 
 /**
- * Bloqueia EXECUÇÃO de publisher — incondicional, nunca isento (#3791: esta
- * metade do guard nunca muda pra nenhum comando, inclusive `gh issue
- * comment`/`gh issue close`; separada da checagem de palavra-solta abaixo
- * justamente pra manter esse pedaço incondicional depois do fix).
+ * Bloqueia EXECUÇÃO de publisher. #3791 original: incondicional, nunca isento
+ * pra nenhum comando, inclusive `gh issue comment`/`gh issue close` —
+ * separada da checagem de palavra-solta abaixo justamente pra manter esse
+ * pedaço incondicional.
+ *
+ * #3795 Bug 2: essa premissa causava falso-negativo funcional — um
+ * comentário de diagnóstico 100% texto (`gh issue comment ... --body
+ * "agente tentou rodar scripts/publish-facebook.ts e foi bloqueado"`) SEM
+ * nenhum metacaractere de encadeamento (`GH_ISSUE_SHELL_CHAIN_RE` não bate)
+ * recebia `allow: false` só por MENCIONAR o path do script em prosa, mesmo
+ * não sendo execução nenhuma — o mesmo raciocínio que já isentava
+ * `WAVE_PUBLISH_PLATFORM_WORD_RE` (menção textual != execução) se aplica
+ * aqui igualmente. Isento agora também pra `gh issue comment`/`gh issue
+ * close` quando `isGhIssueTextOnly` é true — ou seja, quando já é garantido
+ * (pelo `GH_ISSUE_SHELL_CHAIN_RE`) que não há como o resto da string ser
+ * INTERPRETADO como comando adicional pelo shell. Um comando que de fato
+ * ENCADEIA execução (`gh issue comment 1 --body x && scripts/publish-*`)
+ * tem `&&` e portanto falha `isGhIssueTextOnly` — cai no guard normal,
+ * `allow: false`.
  */
 const WAVE_PUBLISH_SCRIPT_EXEC_RE = /\bscripts[\\/](publish-|clarice-schedule-|clarice-import-)|close-poll\.ts/i;
 
@@ -396,9 +411,17 @@ const WAVE_PUBLISH_PLATFORM_WORD_RE = /\b(beehiiv|linkedin|facebook|brevo)\b/i;
  * genuinamente contém `&&`/`;`/`|`/backtick/`$(`) é só cair no default-deny
  * conservador (igual ao comportamento de antes desta mudança), nunca um
  * allow indevido.
+ *
+ * #3795 Bug 1: o char class original (`[;&|`\n]|\$\(`) não cobria `<`/`>` —
+ * redirect (`> arquivo`) e process substitution (`> >(comando)`) passavam
+ * batidos como "sem encadeamento" e um `gh issue comment ... > >(touch
+ * /tmp/pwned)` (ou `> .claude/settings.json`, sobrescrevendo o próprio
+ * allow-list) recebia `allow: true` indevido. `<`/`>` adicionados ao char
+ * class — mesmo espírito conservador: falso-positivo (body legítimo que
+ * usa `<`/`>` cru) só cai no default-deny, nunca allow indevido.
  */
 const GH_ISSUE_TEXT_ONLY_RE = /^\s*gh(?:\.exe)?\s+issue\s+(?:comment|close)\b/i;
-const GH_ISSUE_SHELL_CHAIN_RE = /[;&|`\n]|\$\(/;
+const GH_ISSUE_SHELL_CHAIN_RE = /[;&|`\n<>]|\$\(/;
 
 /**
  * Guard de working-tree (#3728 Gap 1 + #3738, defesa em profundidade).
@@ -440,25 +463,49 @@ export interface WaveToolDecision {
  * Decisão pura pra 1 tool call da sessão coordenadora — separada de
  * `makeWaveSafeCanUseTool` (que é só o wrapper async exigido pelo shape
  * `CanUseTool` do SDK) pra ser testável sem mockar o SDK. Camadas:
- * (1) blocklist de working-tree (#3728 Gap 1, #3738 Gaps 1+3), INVARIANTE, nunca contornável;
- * (2) blocklist de EXECUÇÃO de publisher, INVARIANTE, nunca contornável — nem pra
- * `gh issue comment`/`gh issue close`; (3) `gh issue comment`/`gh issue close` (#3791) são
- * explicitamente ALLOW aqui — a única exceção ao default conservador, porque são text-only
- * (nunca executam nada) e o prompt da coordenadora depende deles pro marcador de diagnóstico
- * (#3782) e fallback de fechamento (#3781); a checagem de palavra-solta da camada de publicação
- * NÃO se aplica a esses 2 subcomandos (ver `GH_ISSUE_TEXT_ONLY_RE`); (4) checagem de
- * palavra-solta de plataforma pra qualquer outro `Bash`, INVARIANTE; (5) fora disso, nega por
- * padrão (mesmo espírito conservador do chat drawer, `studio-chat.ts` `denyToolResult`) — esta
- * sessão roda sem supervisão humana, então "permitir por padrão" é o erro mais caro possível
- * aqui. `.claude/settings.json` já resolveu (allow) tudo que a coordenadora legitimamente
- * precisa ANTES desta função ser chamada na maioria dos casos — ela só é invocada pro resíduo
- * que pediria um prompt interativo (ver doc-comment do módulo); o ALLOW explícito de (3) é
- * defesa em profundidade pro caso desse resíduo incluir `gh issue comment`/`close` mesmo assim.
+ * (0) `isGhIssueTextOnly` — calculado primeiro, ANTES de qualquer blocklist:
+ * `gh issue comment`/`gh issue close` (#3791) sem nenhum metacaractere de
+ * encadeamento de shell (`GH_ISSUE_SHELL_CHAIN_RE`, estendido em #3795 pra
+ * cobrir `<`/`>`) é garantidamente text-only — o resto da string só pode ser
+ * argumento literal de `--body`/`--comment`, nunca comando adicional
+ * interpretado pelo shell; (1) blocklist de working-tree (#3728 Gap 1, #3738
+ * Gaps 1+3), INVARIANTE pra qualquer comando que NÃO seja `isGhIssueTextOnly`;
+ * (2) blocklist de EXECUÇÃO de publisher, INVARIANTE pra qualquer comando que
+ * NÃO seja `isGhIssueTextOnly` (#3795 Bug 2 — a isenção de #3791, que
+ * originalmente só cobria a camada de palavra-solta (4), foi estendida pras
+ * camadas (1) e (2) também: menção textual a `git checkout`/`scripts/publish-*`
+ * dentro de um comentário de diagnóstico legítimo não é execução de nada,
+ * mesmo raciocínio que já isentava (4)); (3) se `isGhIssueTextOnly`, ALLOW
+ * explícito aqui — a única exceção ao default conservador, necessário pro
+ * marcador de diagnóstico (#3782) e fallback de fechamento (#3781) da
+ * coordenadora; (4) checagem de palavra-solta de plataforma pra qualquer
+ * outro `Bash` que NÃO seja `isGhIssueTextOnly`, INVARIANTE; (5) fora disso,
+ * nega por padrão (mesmo espírito conservador do chat drawer, `studio-chat.ts`
+ * `denyToolResult`) — esta sessão roda sem supervisão humana, então "permitir
+ * por padrão" é o erro mais caro possível aqui. `.claude/settings.json` já
+ * resolveu (allow) tudo que a coordenadora legitimamente precisa ANTES desta
+ * função ser chamada na maioria dos casos — ela só é invocada pro resíduo que
+ * pediria um prompt interativo (ver doc-comment do módulo); o ALLOW explícito
+ * de (3) é defesa em profundidade pro caso desse resíduo incluir `gh issue
+ * comment`/`close` mesmo assim.
  */
 export function evaluateWaveTool(toolName: string, input: Record<string, unknown>): WaveToolDecision {
   if (toolName === "Bash" && typeof input.command === "string") {
     const command = input.command;
-    if (WAVE_WORKTREE_GUARD_RE.test(command)) {
+    // #3795 Bug 2: calculado ANTES das 3 camadas de blocklist (working-tree,
+    // script-exec, palavra-solta) — `gh issue comment`/`gh issue close` sem
+    // NENHUM metacaractere de encadeamento de shell (`GH_ISSUE_SHELL_CHAIN_RE`)
+    // é garantidamente text-only: o resto da string não pode ser interpretado
+    // como comando adicional pelo shell, só como argumento literal de
+    // `--body`/`--comment`. Isso vale igualmente pras 3 camadas, não só pra
+    // palavra-solta (#3791 original isentava só essa última) — menção textual
+    // a `git checkout`/`scripts/publish-*`/`beehiiv` dentro de um comentário
+    // de diagnóstico legítimo não é execução de nada. Um comando que de fato
+    // ENCADEIA outro comando (`&&`, `;`, `|`, backtick, `$(`, `<`/`>`) falha
+    // esta checagem e cai no guard normal (default-deny se nenhum outro
+    // caminho de allow existir).
+    const isGhIssueTextOnly = GH_ISSUE_TEXT_ONLY_RE.test(command) && !GH_ISSUE_SHELL_CHAIN_RE.test(command);
+    if (!isGhIssueTextOnly && WAVE_WORKTREE_GUARD_RE.test(command)) {
       return {
         allow: false,
         reason:
@@ -468,7 +515,7 @@ export function evaluateWaveTool(toolName: string, input: Record<string, unknown
           "acontece só dentro dos worktrees isolados dispatchados via Agent.",
       };
     }
-    if (WAVE_PUBLISH_SCRIPT_EXEC_RE.test(command)) {
+    if (!isGhIssueTextOnly && WAVE_PUBLISH_SCRIPT_EXEC_RE.test(command)) {
       return {
         allow: false,
         reason:
@@ -476,7 +523,6 @@ export function evaluateWaveTool(toolName: string, input: Record<string, unknown
           "clarice-import-*, close-poll ou qualquer script Beehiiv/LinkedIn/Facebook/Brevo, mesmo em onda automática.",
       };
     }
-    const isGhIssueTextOnly = GH_ISSUE_TEXT_ONLY_RE.test(command) && !GH_ISSUE_SHELL_CHAIN_RE.test(command);
     if (!isGhIssueTextOnly && WAVE_PUBLISH_PLATFORM_WORD_RE.test(command)) {
       return {
         allow: false,
@@ -489,10 +535,11 @@ export function evaluateWaveTool(toolName: string, input: Record<string, unknown
       return {
         allow: true,
         reason:
-          "gh issue comment/close (#3791): subcomando text-only, nunca executa nada — necessário pro marcador de " +
-          "diagnóstico (#3782) e pro fallback de fechamento manual (#3781) da coordenadora. Isento da checagem de " +
-          "palavra-solta do guard de publicação: menção textual a uma plataforma bloqueadora dentro de um " +
-          "comentário de diagnóstico legítimo não é execução de publisher.",
+          "gh issue comment/close (#3791, isenção estendida em #3795): subcomando text-only, nunca executa nada — " +
+          "necessário pro marcador de diagnóstico (#3782) e pro fallback de fechamento manual (#3781) da " +
+          "coordenadora. Isento das 3 camadas de blocklist (working-tree, script-exec, palavra-solta de " +
+          "publicação): menção textual a um comando/plataforma bloqueada dentro de um comentário de diagnóstico " +
+          "legítimo não é execução de nada.",
       };
     }
   }

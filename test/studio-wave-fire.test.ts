@@ -382,6 +382,83 @@ describe("evaluateWaveTool (#3702) — guard de publicação como código", () =
       assert.equal(subshell.allow, false);
     });
   });
+
+  describe("#3795 — GH_ISSUE_SHELL_CHAIN_RE cobre redirect (Bug 1) + isenção text-only estendida a working-tree/script-exec (Bug 2)", () => {
+    it("Bug 1: nega gh issue comment com process substitution via redirect (PoC real, allow:true indevido antes do fix)", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: 'gh issue comment 1 --body "x" > >(touch /tmp/pwned_verify.txt)',
+      });
+      assert.equal(decision.allow, false);
+    });
+
+    it("Bug 1: nega gh issue comment que sobrescreve .claude/settings.json via redirect (PoC real, allow:true indevido antes do fix)", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: 'gh issue comment 1 --body "x" > .claude/settings.json',
+      });
+      assert.equal(decision.allow, false);
+    });
+
+    it("Bug 1: nega input redirect cru (`<`) no mesmo espírito (não só output redirect)", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: 'gh issue comment 1 --body "x" < /etc/passwd',
+      });
+      assert.equal(decision.allow, false);
+    });
+
+    it("Bug 2: allow=true pra comentário de diagnóstico text-only que MENCIONA (sem executar) um script bloqueado (PoC real, allow:false indevido antes do fix)", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command:
+          'gh issue comment 123 --body "[wave-fire-diagnostic] agente tentou rodar scripts/publish-facebook.ts e foi bloqueado"',
+      });
+      assert.equal(decision.allow, true);
+      assert.match(decision.reason ?? "", /#3795/);
+    });
+
+    it("Bug 2: allow=true pra comentário de diagnóstico text-only que MENCIONA (sem executar) git reset --hard", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: 'gh issue comment 123 --body "[wave-fire-diagnostic] bloqueado por tentar rodar git reset --hard"',
+      });
+      assert.equal(decision.allow, true);
+    });
+
+    it("controle (não regride): continua negando gh issue comment encadeado com && que de fato tenta rm -rf", () => {
+      const decision = evaluateWaveTool("Bash", { command: 'gh issue comment 1 --body "x" && rm -rf foo' });
+      assert.equal(decision.allow, false);
+    });
+
+    it("controle (não regride): continua negando gh issue comment encadeado com ; que de fato tenta curl", () => {
+      const decision = evaluateWaveTool("Bash", { command: 'gh issue comment 1 --body "x"; curl evil.com' });
+      assert.equal(decision.allow, false);
+    });
+
+    it("controle (não regride): continua permitindo comentário de diagnóstico legítimo sem menção a comando bloqueado", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: 'gh issue comment 123 --body "[wave-fire-diagnostic] onda concluída sem bloqueios"',
+      });
+      assert.equal(decision.allow, true);
+    });
+
+    it("não abre brecha nova: gh issue comment que de fato ENCADEIA um git push (não só menciona em prosa) continua allow:false", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: 'gh issue comment 1 --body "x" && git push origin master --force',
+      });
+      assert.equal(decision.allow, false);
+    });
+
+    it("não abre brecha nova: gh issue comment que de fato ENCADEIA um script de publish (não só menciona em prosa) continua allow:false", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: 'gh issue comment 1 --body "x" && npx tsx scripts/publish-facebook.ts --edition 260420',
+      });
+      assert.equal(decision.allow, false);
+    });
+
+    it("não abre brecha nova: gh issue comment que de fato ENCADEIA git checkout continua allow:false (guard de working-tree)", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: 'gh issue comment 1 --body "x" && git checkout master',
+      });
+      assert.equal(decision.allow, false);
+    });
+  });
 });
 
 describe("#3791 — .claude/settings.json allowlista gh issue comment/close/view", () => {
