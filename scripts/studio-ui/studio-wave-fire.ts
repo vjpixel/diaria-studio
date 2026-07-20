@@ -171,10 +171,16 @@
  *   Studio passar a aceitar disparos reais só por atualizar o código.
  */
 
-import { spawnSync } from "node:child_process";
 import type { CanUseTool, Options, PermissionResult, Query } from "@anthropic-ai/claude-agent-sdk";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import { sdkMessageToChatEvents, describeChatError, type ChatWireEvent } from "./studio-chat.ts";
+import { spawnGhSync, GH_SPAWN_TIMEOUT_MS, type GhSpawnResult } from "./gh-run.ts";
+
+// #3783 — `spawnGhSync`/`GH_SPAWN_TIMEOUT_MS` moraram aqui até #3773; movidos
+// pra `gh-run.ts` (módulo compartilhado com `studio-issues.ts`, que tinha o
+// mesmo gap de spawnSync sem timeout). Re-exportados aqui pra não quebrar os
+// call sites/testes existentes que importam de `studio-wave-fire.ts`.
+export { spawnGhSync, GH_SPAWN_TIMEOUT_MS };
 
 // ─── parsing do corpo de POST /api/waves/fire (puro) ───────────────────────
 
@@ -236,6 +242,20 @@ export interface WaveFirePromptOptions {
 }
 
 /**
+ * Marcador literal (#3782) que a coordenadora é instruída a prefixar em
+ * qualquer comentário de diagnóstico/falha que ela mesma poste numa issue
+ * (`buildWaveFireCoordinatorPrompt` passo 2). Substitui `author.login` como
+ * sinal de "quem escreveu este comentário": este repo é de operador único
+ * (`gh auth status` sempre a mesma conta pra coordenadora, editor humano
+ * comentando manualmente, e qualquer sessão overnight/develop paralela) —
+ * `author.login === botLogin` era verdadeiro nos 3 casos, então o filtro do
+ * #3772 Bug 2 não distinguia nada na prática. `evaluateIssueTerminalState`
+ * exige que o `body` do comentário comece com este marcador pra contar como
+ * diagnóstico pós-dispatch da própria automação.
+ */
+export const WAVE_DIAGNOSTIC_COMMENT_PREFIX = "[wave-fire-diagnostic]";
+
+/**
  * Monta o prompt da sessão coordenadora — pura (sem I/O), testável por
  * substring. Espelha em linguagem natural o protocolo já documentado em
  * `.claude/skills/diaria-develop/SKILL.md` §"Paralelização segura no
@@ -248,6 +268,7 @@ export function buildWaveFireCoordinatorPrompt(issueNumbers: number[], opts: Wav
   const maxConcurrency = opts.maxConcurrency ?? 6;
   const dispatchRulesPath = opts.dispatchRulesPath ?? "context/overnight-dispatch-rules.md";
   const issueList = issueNumbers.map((n) => `#${n}`).join(", ");
+  const marker = WAVE_DIAGNOSTIC_COMMENT_PREFIX;
 
   return [
     `Você é a sessão COORDENADORA de uma onda disparada pelo Studio ("disparar onda", #3702).`,
@@ -264,12 +285,18 @@ export function buildWaveFireCoordinatorPrompt(issueNumbers: number[], opts: Wav
     `   - isolation: "worktree"`,
     `   - model: "sonnet" (explícito — nunca herdado)`,
     `   - prompt citando \`${dispatchRulesPath}\` (leia esse arquivo no início da própria sessão) + o número da`,
-    `     issue + branch \`develop/fix-{numero}\` + "abra PR com \`Refs #{numero}\`, self-review obrigatório (#2038),`,
-    `     nunca faça merge você mesma — a coordenadora cuida do merge".`,
+    `     issue + branch \`develop/fix-{numero}\` + "abra PR com \`Closes #{numero}\` (closing keyword real do GitHub —`,
+    `     NUNCA \`Refs #{numero}\`, que não fecha a issue nem popula closedByPullRequestsReferences, #3781), self-review`,
+    `     obrigatório (#2038), nunca faça merge você mesma — a coordenadora cuida do merge".`,
     `   Envie até ${maxConcurrency} dessas tool calls NA MESMA mensagem (concorrência real) — nunca mais que`,
     `   ${maxConcurrency} worktrees abertos ao mesmo tempo.`,
     `2. Espere cada Agent retornar. Cada retorno traz (idealmente) um número de PR. Se um agente falhar/não abrir`,
-    `   PR, registre a falha e siga para as demais issues — uma falha isolada não aborta a onda inteira.`,
+    `   PR, registre a falha via \`gh issue comment {numero} --body "${marker} <descrição da falha/bloqueio>"\` e siga`,
+    `   para as demais issues — uma falha isolada não aborta a onda inteira. O prefixo literal \`${marker}\` no INÍCIO`,
+    `   do corpo do comentário é OBRIGATÓRIO — é o único jeito da validação pós-turno (#3782) diferenciar um`,
+    `   comentário de diagnóstico SEU de um comentário manual do editor ou de outra sessão overnight/develop`,
+    `   paralela na mesma issue: este repo é de operador único, as 3 fontes autenticam com a MESMA conta \`gh\`, então`,
+    `   \`author.login\` sozinho nunca distingue quem escreveu o quê.`,
     `3. ANTES do Gate 2, espere o CI de cada PR terminar via POLLING SÍNCRONO BLOQUEANTE, dentro deste MESMO turno:`,
     `   \`gh pr checks {pr} --watch\` (bloqueia até o CI resolver) ou um loop \`Bash\` com \`sleep\`/retry chamando`,
     `   \`gh pr checks {pr} --json bucket,name\` até nenhum bucket ficar "pending". NUNCA use \`ScheduleWakeup\` (nem`,
@@ -285,6 +312,11 @@ export function buildWaveFireCoordinatorPrompt(issueNumbers: number[], opts: Wav
     `   Só prossiga pro merge se AMBAS as condições passarem.`,
     `5. MERGE É SEMPRE SERIAL — nunca rode dois \`gh pr merge\` ao mesmo tempo, mesmo com múltiplos PRs prontos.`,
     `   Um de cada vez: \`gh pr merge {pr} --squash\`, confirme sucesso, só então passe pro próximo PR pronto.`,
+    `   Depois de CADA merge, confirme que a issue correspondente fechou (o \`Closes #{numero}\` do PR deveria fechar`,
+    `   automaticamente). Se a issue seguir \`OPEN\` (\`gh issue view {numero} --json state\`) alguns segundos depois —`,
+    `   rede lenta, delay de propagação do GitHub — feche explicitamente com \`gh issue close {numero} --comment`,
+    `   "${marker} fechada via PR #{pr} (squash-merge)"\` (o marcador é OBRIGATÓRIO aqui também — sem ele, este`,
+    `   fechamento manual conta como NÃO-terminal na validação pós-turno, #3782) antes de seguir pro próximo PR pronto (#3781).`,
     `6. IMPORTANTE — nunca rode \`git checkout\`/\`git pull\`/\`git stash\`/qualquer comando que mude o working tree`,
     `   da pasta em que VOCÊ (coordenadora) está rodando — essa pasta pode estar em uso ativo numa sessão manual`,
     `   do editor em paralelo (incidente real: colisão de working tree, 260716). Toda mutação de arquivo acontece`,
@@ -424,12 +456,19 @@ function makeWaveSafeCanUseTool(): CanUseTool {
  * "CLOSED"` sozinho NÃO é mais prova incondicional de PR mergeado — só conta
  * se `closedByPullRequestsReferences` também vier não-vazio (um `gh issue
  * close N` direto, sem PR, produz CLOSED com essa lista vazia e agora é
- * tratado como NÃO-terminal); (2) comentário pós-dispatch só conta como
- * diagnóstico se o `author.login` bater com a conta autenticada da própria
- * automação (`gh api user --jq .login`, resolvida 1x por onda) — um
- * comentário de terceiro (editor humano comentando manualmente, ou uma
- * sessão overnight/develop paralela na mesma issue) não conta mais como
- * "trabalho real documentado".
+ * tratado como NÃO-terminal); (2) [SUBSTITUÍDO no #3782 — ver abaixo]
+ * comentário pós-dispatch originalmente só contava como diagnóstico se o
+ * `author.login` batesse com a conta autenticada da própria automação.
+ *
+ * #3782 — o filtro por `author.login` do #3772 Bug 2 não distinguia nada na
+ * prática: este repo é de operador único, então a coordenadora, um editor
+ * humano comentando manualmente, e qualquer sessão overnight/develop
+ * paralela autenticam TODAS com a mesma conta `gh` (`vjpixel`) —
+ * `author.login === botLogin` era verdadeiro nos 3 casos. Substituído por um
+ * marcador literal (`WAVE_DIAGNOSTIC_COMMENT_PREFIX`) que só a própria
+ * coordenadora escreve no início do `body` de um comentário de diagnóstico
+ * (`buildWaveFireCoordinatorPrompt` passo 2) — sinal que de fato distingue
+ * intenção, já que autoria de conta não distingue neste repo.
  */
 export interface IssueTerminalCheck {
   issueNumber: number;
@@ -437,57 +476,12 @@ export interface IssueTerminalCheck {
   reason: string;
 }
 
-export interface GhIssueRunResult {
-  status: number | null;
-  stdout: string;
-  stderr: string;
-}
+export type GhIssueRunResult = GhSpawnResult;
 
 /** Mesmo shape de `GhRunFn` (`studio-issues.ts`) — não importado direto pra
  * manter este módulo sem dependência cruzada, mas o contrato é idêntico
  * (injeção de teste sem spawnar `gh` de verdade). */
 export type GhIssueRunFn = (args: string[], cwd: string) => GhIssueRunResult;
-
-/** #3773 — teto de tempo pra cada `spawnSync("gh", ...)` deste módulo. Sem
- * isso, um `gh auth` expirado ou a API do GitHub lenta/rate-limited pendura
- * `spawnSync` (bloqueante) INDEFINIDAMENTE, travando o event loop do Node —
- * e como `checkAllIssuesTerminalState` roda essas chamadas em série dentro
- * do mesmo processo do studio-server, qualquer outra rota HTTP concorrente
- * (chat drawer, autosave do painel de revisão) trava junto. Viola CLAUDE.md
- * #738 ("Stall silencioso > 60s é inaceitável"). 10s é generoso pra latência
- * normal do `gh` e, combinado ao teto de concorrência de onda (6 issues,
- * `parseWaveFireRequestBody`), limita o pior caso sequencial a ~70s (6×
- * `gh issue view` + 1× `gh api user` pro `botLogin`, todos com este mesmo
- * teto) — ainda um stall real, mas BOUNDED em vez de indefinido; paralelizar essas N
- * chamadas exigiria trocar `spawnSync` (bloqueante) por `spawn` assíncrono
- * em toda a cadeia de injeção de teste (`GhIssueRunFn` teria que virar
- * `Promise`-based, tocando ~15 casos de teste em
- * `test/studio-wave-fire.test.ts`) — fora do escopo mínimo deste fix,
- * documentado no PR como follow-up. Quando `spawnSync` estoura o timeout,
- * `result.status` vem `null` (processo morto via SIGTERM) — já cai no ramo
- * "status !== 0" existente abaixo, tratado como falha/não-terminal. */
-export const GH_SPAWN_TIMEOUT_MS = 10_000;
-
-/**
- * Wrapper fino sobre `spawnSync` compartilhado pelos dois defaults deste
- * módulo (`defaultGhIssueRun`, `defaultGhAuthLogin`) — extraído (em vez de
- * duplicar a chamada) pra permitir um teste de regressão real do #3773:
- * `bin`/`timeoutMs` são parametrizados (produção sempre usa `"gh"` +
- * `GH_SPAWN_TIMEOUT_MS`) só pra o teste poder substituir por um binário
- * genuinamente lento (`process.execPath` com um `setTimeout` maior que o
- * timeout dado) e um timeout curto, provando que `spawnSync` de fato mata o
- * processo pendurado em vez de bloquear o event loop indefinidamente — sem
- * precisar de `gh` instalado nem esperar os 10s reais de produção.
- */
-export function spawnGhSync(
-  args: string[],
-  cwd: string,
-  timeoutMs: number = GH_SPAWN_TIMEOUT_MS,
-  bin: string = "gh",
-): GhIssueRunResult {
-  const result = spawnSync(bin, args, { cwd, encoding: "utf8", timeout: timeoutMs });
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
-}
 
 function defaultGhIssueRun(args: string[], cwd: string): GhIssueRunResult {
   return spawnGhSync(args, cwd);
@@ -501,10 +495,12 @@ interface GhIssueViewRaw {
    * `evaluateWaveTool`, já que o comando não bate em nenhum dos dois
    * blocklists de `Bash`). Vazio/ausente = não foi um PR que fechou a issue. */
   closedByPullRequestsReferences?: Array<{ number?: number }>;
-  /** #3772 Bug 2 — `author.login` de cada comentário vem de graça no mesmo
-   * `--json comments` (não é um field top-level extra), mas o código anterior
-   * simplesmente não declarava o campo no tipo nem o lia. */
-  comments?: Array<{ createdAt?: string; author?: { login?: string } }>;
+  /** #3782 — `gh issue view --json comments` já traz `body` de graça pra cada
+   * comentário (não é um field top-level extra), então checar o prefixo do
+   * marcador não custa uma chamada a mais. `author.login` continua
+   * declarado/lido mas NÃO é mais usado pra decidir terminalidade (#3782 —
+   * ver doc-comment acima). */
+  comments?: Array<{ createdAt?: string; body?: string; author?: { login?: string } }>;
 }
 
 /**
@@ -514,19 +510,11 @@ interface GhIssueViewRaw {
  * os casos, tratamos como NÃO-terminal (conservador: falha em CONFIRMAR
  * sucesso nunca deve virar sucesso silencioso, mesmo espírito do resto deste
  * módulo).
- *
- * `botLogin` (#3772) — o login autenticado (`gh api user --jq .login`) da
- * conta que RODA a automação, resolvido 1x por `checkAllIssuesTerminalState`
- * e propagado aqui. `null` cobre "não foi possível determinar a conta de
- * forma confiável" — tratado como NUNCA bater com nenhum autor de comentário
- * (fail-closed, mesmo espírito do resto do módulo: falha em confirmar quem
- * comentou nunca deve virar "confirmado" por omissão).
  */
 export function evaluateIssueTerminalState(
   issueNumber: number,
   raw: GhIssueViewRaw | null,
   sinceIso: string,
-  botLogin: string | null,
 ): IssueTerminalCheck {
   if (raw === null || typeof raw.state !== "string") {
     return {
@@ -547,23 +535,16 @@ export function evaluateIssueTerminalState(
   }
   const since = Date.parse(sinceIso);
   const comments = Array.isArray(raw.comments) ? raw.comments : [];
-  const hasPostDispatchBotComment = comments.some((c) => {
+  const hasPostDispatchDiagnosticComment = comments.some((c) => {
     const t = typeof c?.createdAt === "string" ? Date.parse(c.createdAt) : NaN;
-    const authorLogin = c?.author?.login;
-    return (
-      Number.isFinite(t) &&
-      Number.isFinite(since) &&
-      t >= since &&
-      botLogin !== null &&
-      typeof authorLogin === "string" &&
-      authorLogin === botLogin
-    );
+    const body = typeof c?.body === "string" ? c.body : "";
+    return Number.isFinite(t) && Number.isFinite(since) && t >= since && body.startsWith(WAVE_DIAGNOSTIC_COMMENT_PREFIX);
   });
-  if (hasPostDispatchBotComment) {
+  if (hasPostDispatchDiagnosticComment) {
     return {
       issueNumber,
       terminal: true,
-      reason: "issue aberta mas com comentário pós-dispatch da própria automação (falha/bloqueio documentado)",
+      reason: `issue aberta mas com comentário de diagnóstico pós-dispatch da própria automação (marcador "${WAVE_DIAGNOSTIC_COMMENT_PREFIX}", #3782)`,
     };
   }
   if (isClosed) {
@@ -574,33 +555,18 @@ export function evaluateIssueTerminalState(
       issueNumber,
       terminal: false,
       reason:
-        "issue fechada mas SEM PR vinculado (closedByPullRequestsReferences vazio) e sem comentário pós-dispatch " +
-        "da automação documentando a causa — fechamento manual (ex: gh issue close) não é prova de trabalho real (#3772)",
+        "issue fechada mas SEM PR vinculado (closedByPullRequestsReferences vazio) e sem comentário de diagnóstico " +
+        "pós-dispatch da automação documentando a causa — fechamento manual (ex: gh issue close) não é prova de trabalho real (#3772)",
     };
   }
   return {
     issueNumber,
     terminal: false,
     reason:
-      "issue segue aberta, sem comentário pós-dispatch da automação documentando falha — a coordenadora pode ter " +
-      "desistido silenciosamente (turno terminou sem tool calls / sem PR em estado terminal, #3765)",
+      `issue segue aberta, sem comentário de diagnóstico pós-dispatch (marcador "${WAVE_DIAGNOSTIC_COMMENT_PREFIX}") da ` +
+      "automação — a coordenadora pode ter desistido silenciosamente (turno terminou sem tool calls / sem PR em " +
+      "estado terminal, #3765)",
   };
-}
-
-/** I/O — login autenticado da conta que roda a automação (#3772 Bug 2).
- * `gh api user` é 1 chamada barata contra a API REST (não precisa de campo
- * extra no `gh issue view`); resolvido 1x por onda em
- * `checkAllIssuesTerminalState`, não por issue. */
-export type GhAuthLoginFn = (cwd: string) => string | null;
-
-function defaultGhAuthLogin(cwd: string): string | null {
-  // #3773 — mesmo teto de `defaultGhIssueRun`; esta chamada roda só 1x por
-  // onda (não 1x por issue), mas ainda pode pendurar o event loop
-  // indefinidamente sem `timeout` se `gh auth` estiver degradado.
-  const result = spawnGhSync(["api", "user", "--jq", ".login"], cwd);
-  if (result.status !== 0) return null;
-  const login = (result.stdout ?? "").trim();
-  return login.length > 0 ? login : null;
 }
 
 /** I/O — 1 issue via `gh issue view`. */
@@ -608,7 +574,6 @@ export function checkIssueTerminalState(
   issueNumber: number,
   cwd: string,
   sinceIso: string,
-  botLogin: string | null,
   run: GhIssueRunFn = defaultGhIssueRun,
 ): IssueTerminalCheck {
   const result = run(
@@ -616,13 +581,13 @@ export function checkIssueTerminalState(
     cwd,
   );
   if (result.status !== 0) {
-    return evaluateIssueTerminalState(issueNumber, null, sinceIso, botLogin);
+    return evaluateIssueTerminalState(issueNumber, null, sinceIso);
   }
   try {
     const parsed = JSON.parse(result.stdout) as GhIssueViewRaw;
-    return evaluateIssueTerminalState(issueNumber, parsed, sinceIso, botLogin);
+    return evaluateIssueTerminalState(issueNumber, parsed, sinceIso);
   } catch {
-    return evaluateIssueTerminalState(issueNumber, null, sinceIso, botLogin);
+    return evaluateIssueTerminalState(issueNumber, null, sinceIso);
   }
 }
 
@@ -630,19 +595,18 @@ export function checkIssueTerminalState(
  * Checa TODAS as issues da onda. Default real usado por `runWaveFire`;
  * testes injetam `checkTerminalStateFn` (ver `RunWaveFireOptions`) com um
  * `GhIssueRunFn` fake, sem spawnar `gh` de verdade — mesmo padrão de
- * `queryFn`/`ghRun` já usado no resto do módulo/`studio-issues.ts`. Resolve
- * `botLogin` UMA vez pra onda inteira (não 1x por issue, #3772) via
- * `authLoginFn` — mesmo padrão de injeção de `run`.
+ * `queryFn`/`ghRun` já usado no resto do módulo/`studio-issues.ts`. Desde o
+ * #3782 não resolve mais `botLogin` (removido — ver doc-comment de
+ * `evaluateIssueTerminalState`), então não precisa mais de uma chamada
+ * `gh api user` extra por onda.
  */
 export function checkAllIssuesTerminalState(
   issueNumbers: number[],
   cwd: string,
   sinceIso: string,
   run: GhIssueRunFn = defaultGhIssueRun,
-  authLoginFn: GhAuthLoginFn = defaultGhAuthLogin,
 ): IssueTerminalCheck[] {
-  const botLogin = authLoginFn(cwd);
-  return issueNumbers.map((n) => checkIssueTerminalState(n, cwd, sinceIso, botLogin, run));
+  return issueNumbers.map((n) => checkIssueTerminalState(n, cwd, sinceIso, run));
 }
 
 // ─── invocação real do SDK (I/O, injetável — mesmo padrão de studio-chat.ts) ──
