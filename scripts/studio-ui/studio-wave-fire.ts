@@ -57,17 +57,25 @@
  * ponto do botão — clicar e a onda inteira roda sozinha), adicionamos um
  * `canUseTool` (`makeWaveSafeCanUseTool`) que nega DETERMINISTICAMENTE
  * qualquer `Bash` cujo comando toque `scripts/publish-*`,
- * `clarice-schedule-sends`, `clarice-import-*`, `close-poll`, ou qualquer
- * script Beehiiv/LinkedIn/Facebook/Brevo — mesmo que um prompt mal-formado
- * ou um agente dispatchado tentasse. Fora do blocklist, o `canUseTool`
- * segue o padrão CONSERVADOR de `studio-chat.ts` (nega por padrão qualquer
- * tool call que `.claude/settings.json` não resolveu sozinho) — a sessão
- * coordenadora deliberadamente NÃO expande permissões além do que um
- * terminal interativo já teria; qualquer lacuna real (ex: `gh api graphql`
- * pro gate de threads não estar no `allow` de `.claude/settings.json`) vai
- * aparecer como um evento de denial no stream em vez de travar
- * silenciosamente — e é um item explícito do follow-up de validação ao vivo
- * (a issue de escopo restante, ver PR body do #3702).
+ * `clarice-schedule-` (prefixo — cobre `clarice-schedule-sends`,
+ * `clarice-schedule-group`, `clarice-schedule-ramp`, mesmo blast radius de
+ * agendamento real de campanha Brevo, #3728 Gap 2), `clarice-import-*`,
+ * `close-poll`, ou qualquer script Beehiiv/LinkedIn/Facebook/Brevo — mesmo
+ * que um prompt mal-formado ou um agente dispatchado tentasse. Também nega
+ * DETERMINISTICAMENTE `git checkout`/`git pull`/`git stash` (#3728 Gap 1,
+ * defesa em profundidade — `.claude/settings.json` já allowlista
+ * `git checkout`/`git push` incondicionalmente, então esses comandos tendem
+ * a ser auto-aprovados ANTES desta função ser chamada; o guard aqui cobre
+ * qualquer caminho onde ela seja de fato invocada). Fora do blocklist, o
+ * `canUseTool` segue o padrão CONSERVADOR de `studio-chat.ts` (nega por
+ * padrão qualquer tool call que `.claude/settings.json` não resolveu
+ * sozinho) — a sessão coordenadora deliberadamente NÃO expande permissões
+ * além do que um terminal interativo já teria; a lacuna real que sobra
+ * (`gh api graphql` pro gate de threads não estar no `allow` de
+ * `.claude/settings.json`, #3728 Gap 3) vai aparecer como um evento de
+ * denial no stream em vez de travar silenciosamente — é escopo do #3720
+ * (validação ao vivo + extensão do allow-list, sessão supervisionada
+ * `/diaria-develop`, não overnight), não desta fatia.
  *
  * ## O que NÃO está nesta fatia (documentado explicitamente, #3702)
  *
@@ -213,7 +221,20 @@ export function buildWaveFireCoordinatorPrompt(issueNumbers: number[], opts: Wav
 // ─── guard de publicação como código (puro, defesa em profundidade) ───────
 
 const WAVE_PUBLISH_GUARD_RE =
-  /\bscripts[\\/](publish-|clarice-schedule-sends|clarice-import-)|close-poll\.ts|\b(beehiiv|linkedin|facebook|brevo)\b/i;
+  /\bscripts[\\/](publish-|clarice-schedule-|clarice-import-)|close-poll\.ts|\b(beehiiv|linkedin|facebook|brevo)\b/i;
+
+/**
+ * Guard de working-tree (#3728 Gap 1, defesa em profundidade). `.claude/settings.json`
+ * já allowlista `Bash(git checkout *)`/`Bash(git push *)` incondicionalmente — o que,
+ * pelo funcionamento do SDK descrito no doc-comment do módulo, significa que esses
+ * comandos costumam ser auto-aprovados ANTES desta função sequer ser invocada. Este
+ * regex é registrado mesmo assim (mesmo padrão de `WAVE_PUBLISH_GUARD_RE`) pra cobrir
+ * qualquer caminho onde `evaluateWaveTool` seja de fato chamada pra esses comandos —
+ * a lacuna real de settings.json (`git checkout`/`git push` incondicionais) é escopo
+ * do #3720 (validação ao vivo + extensão do allow-list numa sessão supervisionada),
+ * não desta issue.
+ */
+const WAVE_WORKTREE_GUARD_RE = /\bgit\s+(checkout|pull|stash)\b/i;
 
 export interface WaveToolDecision {
   allow: boolean;
@@ -223,8 +244,9 @@ export interface WaveToolDecision {
 /**
  * Decisão pura pra 1 tool call da sessão coordenadora — separada de
  * `makeWaveSafeCanUseTool` (que é só o wrapper async exigido pelo shape
- * `CanUseTool` do SDK) pra ser testável sem mockar o SDK. Duas camadas:
- * (1) blocklist de publicação, INVARIANTE, nunca contornável; (2) fora
+ * `CanUseTool` do SDK) pra ser testável sem mockar o SDK. Três camadas:
+ * (1) blocklist de working-tree (#3728 Gap 1), INVARIANTE, nunca contornável;
+ * (2) blocklist de publicação, INVARIANTE, nunca contornável; (3) fora
  * disso, nega por padrão (mesmo espírito conservador do chat drawer,
  * `studio-chat.ts` `denyToolResult`) — esta sessão roda sem supervisão
  * humana, então "permitir por padrão" é o erro mais caro possível aqui.
@@ -233,13 +255,25 @@ export interface WaveToolDecision {
  * pro resíduo que pediria um prompt interativo (ver doc-comment do módulo).
  */
 export function evaluateWaveTool(toolName: string, input: Record<string, unknown>): WaveToolDecision {
-  if (toolName === "Bash" && typeof input.command === "string" && WAVE_PUBLISH_GUARD_RE.test(input.command)) {
-    return {
-      allow: false,
-      reason:
-        "guard de publicação (INVARIANTE): esta sessão nunca dispara scripts/publish-*, clarice-schedule-sends, " +
-        "clarice-import-*, close-poll ou qualquer script Beehiiv/LinkedIn/Facebook/Brevo, mesmo em onda automática.",
-    };
+  if (toolName === "Bash" && typeof input.command === "string") {
+    if (WAVE_WORKTREE_GUARD_RE.test(input.command)) {
+      return {
+        allow: false,
+        reason:
+          "guard de working-tree (INVARIANTE, defesa em profundidade): esta sessão coordenadora nunca roda " +
+          "git checkout/git pull/git stash na pasta principal — ela pode estar em uso ativo numa sessão manual " +
+          "do editor em paralelo (incidente real: colisão de working tree, 260716). Toda mutação de arquivo " +
+          "acontece só dentro dos worktrees isolados dispatchados via Agent.",
+      };
+    }
+    if (WAVE_PUBLISH_GUARD_RE.test(input.command)) {
+      return {
+        allow: false,
+        reason:
+          "guard de publicação (INVARIANTE): esta sessão nunca dispara scripts/publish-*, clarice-schedule-*, " +
+          "clarice-import-*, close-poll ou qualquer script Beehiiv/LinkedIn/Facebook/Brevo, mesmo em onda automática.",
+      };
+    }
   }
   return {
     allow: false,
