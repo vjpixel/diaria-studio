@@ -544,7 +544,7 @@ export function evaluateIssueTerminalState(
     return {
       issueNumber,
       terminal: true,
-      reason: "issue aberta mas com comentário de diagnóstico pós-dispatch da própria automação (marcador WAVE_DIAGNOSTIC_COMMENT_PREFIX, #3782)",
+      reason: `issue aberta mas com comentário de diagnóstico pós-dispatch da própria automação (marcador "${WAVE_DIAGNOSTIC_COMMENT_PREFIX}", #3782)`,
     };
   }
   if (isClosed) {
@@ -563,7 +563,7 @@ export function evaluateIssueTerminalState(
     issueNumber,
     terminal: false,
     reason:
-      "issue segue aberta, sem comentário de diagnóstico pós-dispatch (marcador WAVE_DIAGNOSTIC_COMMENT_PREFIX) da " +
+      `issue segue aberta, sem comentário de diagnóstico pós-dispatch (marcador "${WAVE_DIAGNOSTIC_COMMENT_PREFIX}") da ` +
       "automação — a coordenadora pode ter desistido silenciosamente (turno terminou sem tool calls / sem PR em " +
       "estado terminal, #3765)",
   };
