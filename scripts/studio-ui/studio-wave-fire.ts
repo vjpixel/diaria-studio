@@ -398,7 +398,7 @@ const WAVE_PUBLISH_PLATFORM_WORD_RE = /\b(beehiiv|linkedin|facebook|brevo)\b/i;
  * allow indevido.
  */
 const GH_ISSUE_TEXT_ONLY_RE = /^\s*gh(?:\.exe)?\s+issue\s+(?:comment|close)\b/i;
-const GH_ISSUE_SHELL_CHAIN_RE = /[;&|`]|\$\(/;
+const GH_ISSUE_SHELL_CHAIN_RE = /[;&|`\n]|\$\(/;
 
 /**
  * Guard de working-tree (#3728 Gap 1 + #3738, defesa em profundidade).
