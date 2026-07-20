@@ -6,7 +6,10 @@
  *
  * Design: fundo papel #FBFAF6, acento teal #00A0A0, texto ink #171411.
  * Wordmark central "diar.ia.br" com separadores em teal.
- * Subtítulo "newsletter diária de IA" em sans.
+ * Subtítulo: tagline oficial plural (#3705), em 2 linhas, sans, substituindo
+ * o antigo "newsletter diária de IA" genérico — a tagline já comunica
+ * "newsletter diária" ("5 minutos diários..."), então mantinha as duas seria
+ * redundante (decisão de design documentada no PR #3705).
  *
  * Uso:
  *   npx tsx scripts/gen-default-thumbnail.ts [--out assets/default-thumbnail-1200x630.png]
@@ -16,6 +19,13 @@
  *
  * Tecnologia: monta SVG inline + rasteriza via sharp (já dependência do projeto).
  * Georgia não existe em CI headless — usada com fallback genérico serif.
+ *
+ * Clamp de font-size da tagline: mesmo cuidado do `buildBannerSvg` em
+ * gen-social-banner.ts (#3695/#3703) — 1200×630 (1.9:1) é bem mais "quadrado"
+ * que os banners de LinkedIn (5.9:1)/Facebook (2.6:1), então o tamanho da
+ * tagline é limitado tanto por largura disponível (chars × largura estimada
+ * por char) quanto por um teto absoluto, e nunca só por altura — senão a
+ * linha mais longa estoura o canvas.
  */
 
 import { writeFileSync, mkdirSync } from "node:fs";
@@ -35,9 +45,18 @@ const COLOR_PAPER = COLORS.paper;
 const COLOR_TEAL = COLORS.brand;
 const COLOR_INK = COLORS.ink;
 const FONT_SERIF = FONTS.serif;
+const FONT_SANS = "'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif";
 
 const W = 1200;
 const H = 630;
+
+// Tagline oficial plural (#3705, mesma forma de context/editorial-rules.md e
+// gen-social-banner.ts) — quebrada em 2 linhas balanceadas no mesmo ponto que
+// o banner do LinkedIn/Facebook usa ("...se manter" / "atualizado..."), só
+// que em sentence case + sans (não uppercase/mono) pra combinar com o resto
+// deste design (subtítulo original também era sentence case sans).
+export const TAGLINE_LINE_1 = "5 minutos diários pra se manter";
+export const TAGLINE_LINE_2 = "atualizado e usar melhor as IAs.";
 
 function buildSvg(): string {
   // Wordmark breakdown: diar.ia.br
@@ -45,6 +64,28 @@ function buildSvg(): string {
   // Layout: centralized horizontally and vertically.
   // Wordmark font-size 96, subtitle font-size 28.
   // A barra teal horizontal decorativa (accent rule) acima do wordmark.
+
+  // Clamp de font-size da tagline (#3705, mesmo cuidado do buildBannerSvg em
+  // gen-social-banner.ts): limitado por largura disponível E por um teto
+  // absoluto — a tagline é elemento secundário ao wordmark "diar.ia.br", não
+  // deve competir em destaque visual, e 1200×630 tem folga de largura de
+  // sobra (diferente do Facebook 2.6:1, onde o clamp width-based é o que
+  // efetivamente governa). Ambos os limites coexistem pra que o cálculo
+  // continue correto se a tagline mudar de novo no futuro (#3695 já trocou
+  // 1×).
+  const pad = 80; // mesma margem horizontal do resto do layout (accent bar, url hint)
+  const availableWidth = W - pad * 2;
+  const letterSpacing = 0.4;
+  const maxLineLen = Math.max(TAGLINE_LINE_1.length, TAGLINE_LINE_2.length);
+  // Sans regular (não-bold) — fator mais enxuto que o 0.65em/char do mono
+  // bold do banner, ainda conservador o bastante pra nunca estourar.
+  const widthBasedSize = Math.floor(
+    (availableWidth - letterSpacing * (maxLineLen - 1)) / (maxLineLen * 0.52),
+  );
+  const taglineSize = Math.max(16, Math.min(32, widthBasedSize));
+  const lineGap = Math.round(taglineSize * 1.5);
+  const taglineLine1Y = 372;
+  const taglineLine2Y = taglineLine1Y + lineGap;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
@@ -77,25 +118,38 @@ function buildSvg(): string {
   <!-- Teal underline accent below wordmark -->
   <rect x="390" y="315" width="420" height="4" rx="2" fill="${COLOR_TEAL}" opacity="0.6"/>
 
-  <!-- Subtitle -->
+  <!-- Tagline oficial (2 linhas, substitui o antigo subtítulo genérico "newsletter
+       diária de IA" — #3705: a tagline já comunica "newsletter diária") -->
   <text
     x="50%"
-    y="380"
+    y="${taglineLine1Y}"
     text-anchor="middle"
-    font-family="'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif"
-    font-size="26"
+    font-family="${FONT_SANS}"
+    font-size="${taglineSize}"
     font-weight="400"
-    letter-spacing="2"
+    letter-spacing="${letterSpacing}"
     fill="${COLOR_INK}"
-    opacity="0.55"
+    opacity="0.72"
     dominant-baseline="alphabetic"
-  >newsletter diária de IA</text>
+  >${TAGLINE_LINE_1}</text>
+  <text
+    x="50%"
+    y="${taglineLine2Y}"
+    text-anchor="middle"
+    font-family="${FONT_SANS}"
+    font-size="${taglineSize}"
+    font-weight="400"
+    letter-spacing="${letterSpacing}"
+    fill="${COLOR_INK}"
+    opacity="0.72"
+    dominant-baseline="alphabetic"
+  >${TAGLINE_LINE_2}</text>
 
   <!-- URL hint bottom-left -->
   <text
     x="80"
     y="${H - 48}"
-    font-family="'Geist', 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+    font-family="${FONT_SANS}"
     font-size="18"
     font-weight="400"
     fill="${COLOR_TEAL}"
