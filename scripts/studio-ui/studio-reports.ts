@@ -179,9 +179,13 @@ export interface ReportRenderResult {
  * mas `//` (URL protocol-relative — resolve pro esquema da página atual,
  * `https:` em produção) é explicitamente rejeitado (#3788 Bug 2): sem essa
  * negative lookahead, `//evil.example/phish` casava no ramo `\/` sozinho e
- * virava um link clicável de phishing que escapou do allowlist. */
+ * virava um link clicável de phishing que escapou do allowlist. Bloqueia
+ * também `/\` (barra seguida de contrabarra, ex: `/\evil.example/phish`) —
+ * browsers normalizam `\` pra `/` na posição de authority delimiter, então
+ * essa variante é o MESMO bypass do Bug 2 com um caractere diferente
+ * (achado no self-review desta PR, nunca reportado na issue original). */
 function isSafeUrl(url: string): boolean {
-  return /^(https?:\/\/|mailto:|#|\/(?!\/))/i.test(url);
+  return /^(https?:\/\/|mailto:|#|\/(?![/\\]))/i.test(url);
 }
 
 /** Aplica só bold/código (nunca link) — usado tanto no texto fora de links

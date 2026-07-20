@@ -275,6 +275,12 @@ describe("renderMarkdownToHtml (#3784 — renderer mínimo zero-dep)", () => {
     assert.match(html, /<a href="\/relatorios\/overnight-260719"/);
   });
 
+  it("#3788 Bug 2 (variante achada no self-review): /\\evil.com (contrabarra) — browsers normalizam \\ pra / na posição de authority delimiter, mesmo bypass do protocol-relative com outro caractere", () => {
+    const html = renderMarkdownToHtml("[go](/\\evil.example/phish)");
+    assert.ok(!html.includes("<a "));
+    assert.ok(!html.includes("href="));
+  });
+
   it("#3788 Bug 3: URL com ** não corrompe o href (renderInline não re-escaneia o <a> já montado)", () => {
     // PoC exato da issue #3788 (adaptado pra `**` em vez de crase).
     const html = renderMarkdownToHtml("[texto](https://evil.com/**pwn**)");
