@@ -1750,6 +1750,64 @@ describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boa
     assert.doesNotMatch(trailer ?? "", /\*\*/, "trailer não deve conter ** literal");
   });
 
+  it("#3741: callout único com --- interno (separador decorativo dentro do próprio texto) não desaparece", () => {
+    // Bug pior que o do #3726: a segmentação por `---` isolado corta um
+    // callout LEGÍTIMO ao meio quando ele tem, no seu próprio conteúdo, um
+    // `---` isolado em linha própria — a abertura `**` fica num segmento, o
+    // fechamento `**` no seguinte, e NENHUM dos dois bate no regex
+    // isoladamente. Antes do fix, extractIntroCallout retornava null e o
+    // callout inteiro sumia do HTML, silenciosamente.
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Aviso importante",
+      "",
+      "---",
+      "",
+      "Continuação do aviso.**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const callout = extractIntroCallout(md);
+    assert.ok(callout, "callout não deve sumir (bug #3741)");
+    assert.match(callout!, /^Aviso importante/);
+    assert.match(callout!, /Continuação do aviso\.$/);
+    // o --- interno é conteúdo decorativo do próprio callout, preservado
+    assert.match(callout!, /---/);
+    // sem marcadores ** externos vazando
+    assert.doesNotMatch(callout!, /^\*\*|\*\*$/);
+  });
+
+  it("#3741: regressão do #3726 continua correta (fallback não funde 2 blocos DISTINTOS)", () => {
+    // Garante que o fallback introduzido pelo #3741 (regex guloso na região
+    // INTEIRA quando nenhum segmento bate isoladamente) nunca é alcançado
+    // quando existem 2 blocos bold-wrap DISTINTOS — cada um já bate sozinho
+    // no seu próprio segmento, então o loop por segmento retorna antes do
+    // fallback entrar em cena.
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Callout real.**",
+      "",
+      "---",
+      "",
+      "**acompanhe de perto**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const callout = extractIntroCallout(md);
+    assert.equal(callout, "Callout real.", "só o 1º bloco bold-wrap deve virar o callout");
+    assert.doesNotMatch(callout ?? "", /acompanhe de perto/, "o 2º bloco não deve ser fundido no callout");
+  });
+
   it("#3705 regressão: renderHTML NÃO duplica o parágrafo do callout quando ele fica no meio da intro (bug real da edição 260720)", () => {
     const md = buildMdWithMidCallout();
     const content = {

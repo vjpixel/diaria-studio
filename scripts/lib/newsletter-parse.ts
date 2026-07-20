@@ -692,13 +692,51 @@ function boldWrapSegments(introRegion: string): { text: string; offset: number }
   return segments;
 }
 
-export function extractIntroCallout(text: string): string | null {
-  const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
+const BOLD_WRAP_RE = /^\*\*\s*([\s\S]+)\*\*\s*$/m;
+
+/**
+ * #3741: encontra o bloco bold-wrap da região de intro, com posição absoluta
+ * do fim do match (`matchEnd`, usado por `extractCoverageLineTrailer` pra
+ * fatiar o trailer). Primeiro tenta por SEGMENTO (`boldWrapSegments`,
+ * comportamento #3726: nunca funde 2 blocos bold-wrap DISTINTOS separados por
+ * `---`). Só quando NENHUM segmento isoladamente bate no padrão — não quando
+ * achou candidatos mas todos vazios — tenta o regex guloso na região INTEIRA
+ * (sem segmentação) como fallback.
+ *
+ * Esse fallback existe pro caso de um callout LEGÍTIMO único cujo próprio
+ * conteúdo tem um `---` isolado em linha própria (separador decorativo
+ * interno do texto do callout, não boundary entre 2 blocos). A segmentação
+ * do #3726 corta esse callout ao meio — abertura `**` sobra num segmento,
+ * fechamento `**` sobra no segmento seguinte — e nenhum dos dois,
+ * isoladamente, bate no regex. Sem o fallback, `extractIntroCallout` retorna
+ * `null` e o callout inteiro some do HTML renderizado, sem erro (bug pior que
+ * o que #3726 corrigiu, ver test/render-newsletter-html.test.ts).
+ *
+ * É seguro contra o regresso do #3726 porque o fallback só roda quando o loop
+ * por segmento não achou NENHUM match — o cenário do #3726 (2 blocos bold-wrap
+ * DISTINTOS, cada um com abertura+fechamento `**` completos no seu próprio
+ * segmento) sempre encontra um match já no 1º segmento e retorna antes de
+ * chegar aqui.
+ */
+function findIntroCalloutMatch(
+  introRegion: string,
+): { groupText: string; matchEnd: number } | null {
   for (const seg of boldWrapSegments(introRegion)) {
-    const m = seg.text.match(/^\*\*\s*([\s\S]+)\*\*\s*$/m);
-    if (m) return m[1].trim();
+    const m = seg.text.match(BOLD_WRAP_RE);
+    if (m && m.index !== undefined) {
+      return { groupText: m[1].trim(), matchEnd: seg.offset + m.index + m[0].length };
+    }
+  }
+  const whole = introRegion.match(BOLD_WRAP_RE);
+  if (whole && whole.index !== undefined) {
+    return { groupText: whole[1].trim(), matchEnd: whole.index + whole[0].length };
   }
   return null;
+}
+
+export function extractIntroCallout(text: string): string | null {
+  const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
+  return findIntroCalloutMatch(introRegion)?.groupText ?? null;
 }
 
 /**
@@ -715,19 +753,12 @@ export function extractIntroCallout(text: string): string | null {
  */
 export function extractCoverageLineTrailer(text: string): string | null {
   const introRegion = text.split(/^\*\*DESTAQUE/m)[0];
-  // #3726: mesma segmentação por `---` de extractIntroCallout (ver
-  // `boldWrapSegments`) — precisa da posição ABSOLUTA (dentro de
+  // #3726/#3741: mesma detecção de bloco bold-wrap de extractIntroCallout
+  // (ver `findIntroCalloutMatch`) — precisa da posição ABSOLUTA (dentro de
   // `introRegion`, não do segmento) pra fatiar o texto que vem depois.
-  let calloutEnd: number | undefined;
-  for (const seg of boldWrapSegments(introRegion)) {
-    const m = seg.text.match(/^\*\*\s*([\s\S]+)\*\*\s*$/m);
-    if (m && m.index !== undefined) {
-      calloutEnd = seg.offset + m.index + m[0].length;
-      break;
-    }
-  }
-  if (calloutEnd === undefined) return null;
-  const rest = introRegion.slice(calloutEnd);
+  const calloutMatch = findIntroCalloutMatch(introRegion);
+  if (!calloutMatch) return null;
+  const rest = introRegion.slice(calloutMatch.matchEnd);
   // O primeiro `---` logo após o callout é o boundary que FECHA o box (#3705)
   // — precisa ser descartado antes de procurar o boundary que fecha o trailer,
   // senão o match cai nele mesmo e o trailer sai vazio.
