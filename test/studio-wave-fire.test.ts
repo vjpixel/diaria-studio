@@ -9,6 +9,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   parseWaveFireRequestBody,
@@ -26,6 +29,8 @@ import {
   type GhIssueRunFn,
 } from "../scripts/studio-ui/studio-wave-fire.ts";
 import type { ChatWireEvent } from "../scripts/studio-ui/studio-chat.ts";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Mock de `checkTerminalStateFn` que reporta TODAS as issues como terminais
  * — usado nos testes de `runWaveFire` que não são sobre #3765 especificamente,
@@ -295,9 +300,81 @@ describe("evaluateWaveTool (#3702) — guard de publicação como código", () =
     assert.match(decision.reason ?? "", /confirmação interativa/);
   });
 
-  it("nunca allow=true na implementação atual (documentado — settings.json resolve os casos legítimos ANTES desta função ser chamada)", () => {
+  it("nunca allow=true pra tools fora do Bash, nem pra Bash fora da exceção gh issue comment/close (#3791 — settings.json resolve os demais casos legítimos ANTES desta função ser chamada)", () => {
     assert.equal(evaluateWaveTool("Agent", {}).allow, false);
     assert.equal(evaluateWaveTool("Read", { file_path: "foo.ts" }).allow, false);
+    assert.equal(evaluateWaveTool("Bash", { command: "gh pr checks 123" }).allow, false);
+  });
+
+  describe("#3791 — gh issue comment/close isentos do guard de publicação (menção textual != execução)", () => {
+    it("(a) allow=true pra gh issue comment mencionando uma plataforma bloqueadora (comentário de diagnóstico legítimo)", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: 'gh issue comment 123 --body "[wave-fire-diagnostic] bloqueado por falta de credencial do Beehiiv"',
+      });
+      assert.equal(decision.allow, true);
+      assert.match(decision.reason ?? "", /#3791/);
+    });
+
+    it("(a) allow=true pra gh issue close mencionando uma plataforma bloqueadora", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: 'gh issue close 123 --comment "[wave-fire-diagnostic] fechada via PR #456 — resolvia bug do LinkedIn"',
+      });
+      assert.equal(decision.allow, true);
+    });
+
+    it("(a) allow=true pra gh issue comment/close SEM menção a plataforma (caso comum, não só o de diagnóstico)", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "gh issue comment 123 --body \"feito\"" }).allow, true);
+      assert.equal(evaluateWaveTool("Bash", { command: "gh issue close 123" }).allow, true);
+    });
+
+    it("(a) tolera gh.exe (mesmo padrão do guard de working-tree)", () => {
+      assert.equal(
+        evaluateWaveTool("Bash", { command: 'gh.exe issue comment 123 --body "bloqueado por Beehiiv"' }).allow,
+        true,
+      );
+    });
+
+    it("(b) continua NEGANDO comandos que de fato EXECUTAM publishers, mesmo que o comando mencione uma issue por engano", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: "npx tsx scripts/publish-facebook.ts --edition 260420 # issue 123",
+      });
+      assert.equal(decision.allow, false);
+      assert.match(decision.reason ?? "", /guard de publicação/);
+    });
+
+    it("(b) continua NEGANDO gh issue LIST/VIEW/edit (subcomandos gh issue fora do escopo cirúrgico comment/close) que mencionem plataforma", () => {
+      const list = evaluateWaveTool("Bash", { command: 'gh issue list --search "beehiiv"' });
+      assert.equal(list.allow, false);
+      assert.match(list.reason ?? "", /guard de publicação/);
+
+      const edit = evaluateWaveTool("Bash", { command: 'gh issue edit 123 --body "menciona linkedin"' });
+      assert.equal(edit.allow, false);
+      assert.match(edit.reason ?? "", /guard de publicação/);
+    });
+
+    it("(b) continua NEGANDO qualquer outro Bash (não gh issue comment/close) que mencione plataforma", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "curl https://api.brevo.com/v3/whatever" }).allow, false);
+      assert.equal(evaluateWaveTool("Bash", { command: "echo testing linkedin webhook" }).allow, false);
+    });
+
+    it("(b) guard de working-tree continua tendo precedência sobre a isenção gh issue (não que colidam, mas documenta ordem)", () => {
+      const decision = evaluateWaveTool("Bash", { command: "git checkout master && gh issue comment 1 --body x" });
+      assert.equal(decision.allow, false);
+      assert.match(decision.reason ?? "", /guard de working-tree/);
+    });
+  });
+});
+
+describe("#3791 — .claude/settings.json allowlista gh issue comment/close/view", () => {
+  it("(c) settings.json commitado tem as 3 novas entradas de allow", () => {
+    const settingsPath = resolve(ROOT, ".claude/settings.json");
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8")) as {
+      permissions?: { allow?: string[] };
+    };
+    const allow = settings.permissions?.allow ?? [];
+    assert.ok(allow.includes("Bash(gh issue comment *)"), "falta Bash(gh issue comment *) em .claude/settings.json");
+    assert.ok(allow.includes("Bash(gh issue close *)"), "falta Bash(gh issue close *) em .claude/settings.json");
+    assert.ok(allow.includes("Bash(gh issue view *)"), "falta Bash(gh issue view *) em .claude/settings.json");
   });
 });
 
