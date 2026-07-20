@@ -456,8 +456,9 @@ export type GhIssueRunFn = (args: string[], cwd: string) => GhIssueRunResult;
  * (chat drawer, autosave do painel de revisão) trava junto. Viola CLAUDE.md
  * #738 ("Stall silencioso > 60s é inaceitável"). 10s é generoso pra latência
  * normal do `gh` e, combinado ao teto de concorrência de onda (6 issues,
- * `parseWaveFireRequestBody`), limita o pior caso sequencial a ~60s — ainda
- * um stall real, mas BOUNDED em vez de indefinido; paralelizar essas N
+ * `parseWaveFireRequestBody`), limita o pior caso sequencial a ~70s (6×
+ * `gh issue view` + 1× `gh api user` pro `botLogin`, todos com este mesmo
+ * teto) — ainda um stall real, mas BOUNDED em vez de indefinido; paralelizar essas N
  * chamadas exigiria trocar `spawnSync` (bloqueante) por `spawn` assíncrono
  * em toda a cadeia de injeção de teste (`GhIssueRunFn` teria que virar
  * `Promise`-based, tocando ~15 casos de teste em
