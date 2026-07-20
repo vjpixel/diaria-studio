@@ -23,6 +23,7 @@ import {
   summarizeChecks,
   fetchTriageData,
   clearTriageCache,
+  defaultGhRun,
   type GhRunFn,
   type GhIssueRaw,
   type GhPrRaw,
@@ -339,5 +340,35 @@ describe("fetchTriageData (#3562)", () => {
     const callsAfterFirst = calls;
     fetchTriageData("/tmp/root-h", { run, cacheTtlMs: 60_000, now: () => 1000, forceRefresh: true });
     assert.ok(calls > callsAfterFirst);
+  });
+});
+
+describe("defaultGhRun timeout (#3783 — regressão)", () => {
+  it("mata um processo pendurado dentro do timeout dado, em vez de bloquear indefinidamente (mesmo padrão do #3773 pra spawnGhSync)", () => {
+    // Regressão do bug real: `defaultGhRun` chamava `spawnSync("gh", ...)` sem
+    // `timeout` — exatamente o gap que o #3773 já tinha corrigido no módulo
+    // irmão (`studio-wave-fire.ts`), nunca reusado aqui até o #3783. Mais
+    // severo aqui: `defaultGhRun` alimenta `fetchTriageData`, chamada por
+    // `GET /api/issues`/`GET /api/waves` — rotas de uso normal do Studio, não
+    // gateadas por env var. Simulamos com um processo Node genuíno que dorme
+    // 60s — MUITO mais que o `timeoutMs` de 300ms dado — e provamos que
+    // `defaultGhRun` retorna rápido em vez de esperar os 60s completos.
+    // `timeoutMs`/`bin` paramétricos existem SÓ pra este teste (produção
+    // sempre usa `"gh"` + `GH_SPAWN_TIMEOUT_MS`, ver doc-comment de
+    // `defaultGhRun`).
+    const start = Date.now();
+    const result = defaultGhRun(
+      ["-e", "setTimeout(() => {}, 60000)"],
+      process.cwd(),
+      300, // timeoutMs bem menor que os 60s do processo pendurado
+      process.execPath, // "node" real — não precisa de `gh` instalado
+    );
+    const elapsedMs = Date.now() - start;
+
+    assert.ok(elapsedMs < 10_000, `defaultGhRun não deveria esperar perto dos 60s do processo pendurado (levou ${elapsedMs}ms)`);
+    // `spawnSync` mata o processo via sinal quando estoura o timeout —
+    // `status` vem `null`, o mesmo shape que `runGhJson` já trata como falha
+    // (`status !== 0`), então este cenário nunca vira sucesso silencioso.
+    assert.equal(result.status, null, "processo morto por timeout reporta status null, não 0");
   });
 });

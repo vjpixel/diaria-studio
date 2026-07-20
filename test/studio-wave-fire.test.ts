@@ -20,6 +20,7 @@ import {
   runWaveFire,
   spawnGhSync,
   GH_SPAWN_TIMEOUT_MS,
+  WAVE_DIAGNOSTIC_COMMENT_PREFIX,
   type QueryFn,
   type IssueTerminalCheck,
   type GhIssueRunFn,
@@ -143,6 +144,30 @@ describe("buildWaveFireCoordinatorPrompt (#3702)", () => {
     assert.match(prompt, /clarice-schedule-sends/);
     assert.match(prompt, /close-poll/);
     assert.match(prompt, /Beehiiv\/LinkedIn\/Facebook\/Brevo/);
+  });
+
+  it("#3781: instrui PR com 'Closes #{numero}', nunca como a instrução positiva — 'Refs #{numero}' só aparece como antipadrão citado junto de NUNCA", () => {
+    const prompt = buildWaveFireCoordinatorPrompt([101]);
+    assert.match(prompt, /Closes #\{numero\}/);
+    // regressão do bug real: "Refs #{numero}" ainda pode aparecer no texto (citado como o que NÃO fazer),
+    // mas só junto da palavra NUNCA logo antes — nunca como a instrução positiva sozinha.
+    assert.ok(prompt.includes("NUNCA `Refs #{numero}`"), "prompt deve citar 'Refs #{numero}' só como antipadrão, prefixado por NUNCA");
+  });
+
+  it("#3781: instrui gh issue close como fallback quando o merge com Closes não fechar a issue sozinho", () => {
+    const prompt = buildWaveFireCoordinatorPrompt([101]);
+    assert.match(prompt, /gh issue close \{numero\}/);
+    // a instrução de fechar manualmente precisa vir DEPOIS do passo de merge serial no texto do prompt.
+    const mergeIdx = prompt.indexOf("MERGE É SEMPRE SERIAL");
+    const closeIdx = prompt.indexOf("gh issue close {numero}");
+    assert.ok(mergeIdx >= 0 && closeIdx >= 0 && mergeIdx < closeIdx, "gh issue close deve vir depois do merge serial");
+  });
+
+  it("#3782: instrui a coordenadora a prefixar comentários de diagnóstico com o marcador literal", () => {
+    const prompt = buildWaveFireCoordinatorPrompt([101]);
+    assert.ok(prompt.includes(WAVE_DIAGNOSTIC_COMMENT_PREFIX), "prompt deve citar o marcador literal");
+    assert.match(prompt, /gh issue comment \{numero\} --body/);
+    assert.match(prompt, /OBRIGATÓRIO/);
   });
 
   it("proíbe ScheduleWakeup e instrui polling síncrono bloqueante pra esperar CI (#3753)", () => {
@@ -487,16 +512,15 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
   });
 });
 
-describe("evaluateIssueTerminalState (#3765/#3772) — decisão pura, sem I/O", () => {
+describe("evaluateIssueTerminalState (#3765/#3772/#3782) — decisão pura, sem I/O", () => {
   const since = "2026-07-20T10:00:00.000Z";
-  const bot = "vjpixel";
+  const marker = WAVE_DIAGNOSTIC_COMMENT_PREFIX;
 
   it("issue fechada COM PR vinculado -> terminal (#3772 Bug 1: caminho positivo real)", () => {
     const r = evaluateIssueTerminalState(
       101,
       { state: "CLOSED", comments: [], closedByPullRequestsReferences: [{ number: 202 }] },
       since,
-      bot,
     );
     assert.equal(r.terminal, true);
     assert.match(r.reason, /PR vinculado/);
@@ -507,83 +531,87 @@ describe("evaluateIssueTerminalState (#3765/#3772) — decisão pura, sem I/O", 
       101,
       { state: "CLOSED", comments: [], closedByPullRequestsReferences: [] },
       since,
-      bot,
     );
     assert.equal(r.terminal, false);
     assert.match(r.reason, /SEM PR vinculado/);
   });
 
   it("#3772 Bug 1 — issue fechada, closedByPullRequestsReferences ausente do payload -> NÃO terminal", () => {
-    const r = evaluateIssueTerminalState(101, { state: "CLOSED", comments: [] }, since, bot);
+    const r = evaluateIssueTerminalState(101, { state: "CLOSED", comments: [] }, since);
     assert.equal(r.terminal, false);
   });
 
   it("issue aberta sem comentário pós-dispatch -> NÃO terminal", () => {
-    const r = evaluateIssueTerminalState(101, { state: "OPEN", comments: [] }, since, bot);
+    const r = evaluateIssueTerminalState(101, { state: "OPEN", comments: [] }, since);
     assert.equal(r.terminal, false);
     assert.match(r.reason, /#3765/);
   });
 
-  it("issue aberta com comentário do BOT ANTES do dispatch -> NÃO terminal (evita falso-positivo de comentário velho)", () => {
+  it("issue aberta com comentário MARCADO mas ANTES do dispatch -> NÃO terminal (evita falso-positivo de comentário velho)", () => {
     const r = evaluateIssueTerminalState(
       101,
-      { state: "OPEN", comments: [{ createdAt: "2026-07-19T08:00:00.000Z", author: { login: bot } }] },
+      { state: "OPEN", comments: [{ createdAt: "2026-07-19T08:00:00.000Z", body: `${marker} falha antiga` }] },
       since,
-      bot,
     );
     assert.equal(r.terminal, false);
   });
 
-  it("issue aberta com comentário do BOT DEPOIS do dispatch -> terminal (diagnóstico documentado)", () => {
+  it("issue aberta com comentário MARCADO DEPOIS do dispatch -> terminal (diagnóstico documentado, #3782)", () => {
     const r = evaluateIssueTerminalState(
       101,
-      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z", author: { login: bot } }] },
+      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z", body: `${marker} agente não conseguiu abrir PR` }] },
       since,
-      bot,
     );
     assert.equal(r.terminal, true);
-    assert.match(r.reason, /comentário pós-dispatch da própria automação/);
+    assert.match(r.reason, /comentário de diagnóstico pós-dispatch/);
   });
 
-  it("#3772 Bug 2 — comentário pós-dispatch de AUTOR DIFERENTE do bot -> NÃO terminal (regressão)", () => {
+  it("#3782 (regressão central) — comentário pós-dispatch SEM o marcador -> NÃO terminal, mesmo de qualquer autor (repo de operador único: author.login não distingue nada)", () => {
+    // Esta é EXATAMENTE a falha que o #3782 reporta: no repo de operador único
+    // qualquer comentário pós-dispatch (editor humano comentando manualmente,
+    // ou outra sessão overnight/develop na mesma issue) tem o MESMO
+    // author.login que a coordenadora — sem o marcador, não pode contar como
+    // diagnóstico real.
     const r = evaluateIssueTerminalState(
       101,
-      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z", author: { login: "outro-usuario" } }] },
+      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z", body: "vou revisar isso amanhã", author: { login: "vjpixel" } }] },
       since,
-      bot,
     );
     assert.equal(r.terminal, false);
     assert.match(r.reason, /#3765/);
   });
 
-  it("#3772 Bug 2 — comentário pós-dispatch sem author no payload -> NÃO terminal (fail-closed)", () => {
+  it("#3782 — comentário pós-dispatch COM o marcador conta como diagnóstico independente do author.login (author irrelevante agora)", () => {
     const r = evaluateIssueTerminalState(
       101,
-      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z" }] },
+      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z", body: `${marker} bloqueado`, author: { login: "vjpixel" } }] },
       since,
-      bot,
+    );
+    assert.equal(r.terminal, true);
+  });
+
+  it("#3782 — comentário pós-dispatch com o marcador NO MEIO do body (não no início) -> NÃO terminal (exige prefixo)", () => {
+    const r = evaluateIssueTerminalState(
+      101,
+      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z", body: `nota: ${marker} isso não conta` }] },
+      since,
     );
     assert.equal(r.terminal, false);
   });
 
-  it("#3772 Bug 2 — botLogin null (não foi possível resolver a conta) -> comentário nunca conta, NÃO terminal", () => {
-    const r = evaluateIssueTerminalState(
-      101,
-      { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z", author: { login: bot } }] },
-      since,
-      null,
-    );
+  it("comentário pós-dispatch sem body no payload -> NÃO terminal (nunca lança)", () => {
+    const r = evaluateIssueTerminalState(101, { state: "OPEN", comments: [{ createdAt: "2026-07-20T11:00:00.000Z" }] }, since);
     assert.equal(r.terminal, false);
   });
 
   it("raw null (gh falhou) -> NÃO terminal, conservador", () => {
-    const r = evaluateIssueTerminalState(101, null, since, bot);
+    const r = evaluateIssueTerminalState(101, null, since);
     assert.equal(r.terminal, false);
     assert.match(r.reason, /falhou ou retornou formato inesperado/);
   });
 
   it("state ausente/malformado -> NÃO terminal", () => {
-    const r = evaluateIssueTerminalState(101, {}, since, bot);
+    const r = evaluateIssueTerminalState(101, {}, since);
     assert.equal(r.terminal, false);
   });
 
@@ -592,13 +620,14 @@ describe("evaluateIssueTerminalState (#3765/#3772) — decisão pura, sem I/O", 
       101,
       { state: "closed", comments: [], closedByPullRequestsReferences: [{ number: 202 }] },
       since,
-      bot,
     );
     assert.equal(r.terminal, true);
   });
 });
 
-describe("checkIssueTerminalState / checkAllIssuesTerminalState (#3765/#3772) — I/O via GhIssueRunFn/GhAuthLoginFn injetáveis", () => {
+describe("checkIssueTerminalState / checkAllIssuesTerminalState (#3765/#3772/#3782) — I/O via GhIssueRunFn injetável", () => {
+  const marker = WAVE_DIAGNOSTIC_COMMENT_PREFIX;
+
   it("gh issue view com sucesso, CLOSED + PR vinculado -> terminal", () => {
     const run: GhIssueRunFn = (args) => {
       assert.deepEqual(args, ["issue", "view", "101", "--json", "state,comments,closedByPullRequestsReferences"]);
@@ -608,7 +637,7 @@ describe("checkIssueTerminalState / checkAllIssuesTerminalState (#3765/#3772) �
         stderr: "",
       };
     };
-    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", "vjpixel", run);
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
     assert.equal(r.terminal, true);
   });
 
@@ -618,36 +647,49 @@ describe("checkIssueTerminalState / checkAllIssuesTerminalState (#3765/#3772) �
       stdout: JSON.stringify({ state: "CLOSED", comments: [], closedByPullRequestsReferences: [] }),
       stderr: "",
     });
-    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", "vjpixel", run);
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
     assert.equal(r.terminal, false);
   });
 
-  it("#3772 Bug 2 (regressão via I/O) — comentário pós-dispatch de outro autor -> NÃO terminal", () => {
+  it("#3782 (regressão via I/O) — comentário pós-dispatch SEM marcador -> NÃO terminal", () => {
     const run: GhIssueRunFn = () => ({
       status: 0,
       stdout: JSON.stringify({
         state: "OPEN",
-        comments: [{ createdAt: "2026-07-20T11:00:00.000Z", author: { login: "editor-humano" } }],
+        comments: [{ createdAt: "2026-07-20T11:00:00.000Z", body: "comentário do editor sem o marcador", author: { login: "vjpixel" } }],
       }),
       stderr: "",
     });
-    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", "vjpixel", run);
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
     assert.equal(r.terminal, false);
+  });
+
+  it("#3782 (regressão via I/O) — comentário pós-dispatch COM marcador -> terminal", () => {
+    const run: GhIssueRunFn = () => ({
+      status: 0,
+      stdout: JSON.stringify({
+        state: "OPEN",
+        comments: [{ createdAt: "2026-07-20T11:00:00.000Z", body: `${marker} sem allowlist pra isso`, author: { login: "vjpixel" } }],
+      }),
+      stderr: "",
+    });
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
+    assert.equal(r.terminal, true);
   });
 
   it("gh falha (status != 0) -> NÃO terminal", () => {
     const run: GhIssueRunFn = () => ({ status: 1, stdout: "", stderr: "gh: not found" });
-    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", "vjpixel", run);
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
     assert.equal(r.terminal, false);
   });
 
   it("gh retorna JSON inválido -> NÃO terminal (nunca lança)", () => {
     const run: GhIssueRunFn = () => ({ status: 0, stdout: "{not json", stderr: "" });
-    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", "vjpixel", run);
+    const r = checkIssueTerminalState(101, "/repo", "2026-07-20T10:00:00.000Z", run);
     assert.equal(r.terminal, false);
   });
 
-  it("checkAllIssuesTerminalState checa cada issue da lista, na ordem, via o mesmo run, resolvendo botLogin 1x", () => {
+  it("checkAllIssuesTerminalState checa cada issue da lista, na ordem, via o mesmo run", () => {
     const seenNumbers: string[] = [];
     const run: GhIssueRunFn = (args) => {
       seenNumbers.push(args[2]);
@@ -655,14 +697,7 @@ describe("checkIssueTerminalState / checkAllIssuesTerminalState (#3765/#3772) �
       const closedByPullRequestsReferences = args[2] === "101" ? [{ number: 9 }] : [];
       return { status: 0, stdout: JSON.stringify({ state, comments: [], closedByPullRequestsReferences }), stderr: "" };
     };
-    let authLoginCalls = 0;
-    const authLoginFn = (cwd: string) => {
-      authLoginCalls += 1;
-      assert.equal(cwd, "/repo");
-      return "vjpixel";
-    };
-    const results = checkAllIssuesTerminalState([101, 202], "/repo", "2026-07-20T10:00:00.000Z", run, authLoginFn);
-    assert.equal(authLoginCalls, 1, "botLogin deve ser resolvido 1x por onda, não 1x por issue");
+    const results = checkAllIssuesTerminalState([101, 202], "/repo", "2026-07-20T10:00:00.000Z", run);
     assert.deepEqual(seenNumbers, ["101", "202"]);
     assert.deepEqual(
       results.map((r) => [r.issueNumber, r.terminal]),

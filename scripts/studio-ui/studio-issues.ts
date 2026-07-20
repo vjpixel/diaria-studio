@@ -34,10 +34,15 @@
  * `statusCheckRollup,reviewDecision` no `gh pr list` — mesmas 2 chamadas já
  * existentes, sem nenhuma chamada extra por item (crítico pra não estourar
  * rate limit, mesma preocupação do design original).
+ *
+ * `defaultGhRun` roda via `spawnGhSync` (`gh-run.ts`, compartilhado com
+ * `studio-wave-fire.ts`), sempre com `timeout` (#3783 — antes chamava
+ * `spawnSync` direto sem teto, o mesmo gap que o #3773 já tinha corrigido no
+ * módulo irmão; ver doc-comment de `defaultGhRun` abaixo).
  */
 
-import { spawnSync } from "node:child_process";
 import { extractFilePaths, classifyDispatchTrack, type DispatchTrack } from "./studio-waves.ts";
+import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "./gh-run.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────
 
@@ -268,9 +273,29 @@ const ISSUE_FIELDS = "number,title,url,state,labels,createdAt,updatedAt,body";
 const PR_FIELDS =
   "number,title,url,state,isDraft,headRefName,labels,createdAt,updatedAt,statusCheckRollup,reviewDecision";
 
-function defaultGhRun(args: string[], cwd: string): GhRunResult {
-  const result = spawnSync("gh", args, { cwd, encoding: "utf8" });
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+/**
+ * #3783 — antes, este `spawnSync` chamava `gh` direto SEM `timeout`, exatamente
+ * o mesmo gap que o #3773 já tinha corrigido no módulo irmão
+ * (`studio-wave-fire.ts::defaultGhIssueRun`) extraindo `spawnGhSync` — só que
+ * nunca reusado aqui. Mais severo aqui que lá: `defaultGhRun` alimenta
+ * `fetchTriageData`, chamada por `GET /api/issues`/`GET /api/waves` — rotas
+ * de USO NORMAL do Studio (Triagem), não gateadas por env var. Se `gh auth`
+ * expirar ou a API do GitHub degradar enquanto o editor navega o Studio,
+ * `spawnSync` sem timeout travava o event loop indefinidamente (CLAUDE.md
+ * #738). Corrigido reusando `spawnGhSync`/`GH_SPAWN_TIMEOUT_MS` do módulo
+ * compartilhado `gh-run.ts` (extraído nesta mesma leva, #3783). `timeoutMs`/
+ * `bin` são parametrizados só pra teste (produção sempre usa
+ * `GH_SPAWN_TIMEOUT_MS` + `"gh"`, mesmo padrão de `spawnGhSync`) — permite
+ * provar com um processo genuinamente travado que `defaultGhRun` retorna
+ * rápido em vez de bloquear indefinidamente, sem precisar de `gh` instalado.
+ */
+export function defaultGhRun(
+  args: string[],
+  cwd: string,
+  timeoutMs: number = GH_SPAWN_TIMEOUT_MS,
+  bin: string = "gh",
+): GhRunResult {
+  return spawnGhSync(args, cwd, timeoutMs, bin);
 }
 
 function runGhJson(run: GhRunFn, cwd: string, args: string[]): unknown[] {
