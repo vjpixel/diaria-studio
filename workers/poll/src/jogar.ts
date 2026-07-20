@@ -384,6 +384,7 @@ export function renderJogarPageHtml(opts: JogarPageOptions): string {
     title: pageTitle,
     description: `Duas imagens, uma gerada por IA. Adivinhe qual e entre no ranking público do É IA? — edição de ${dateLabel}.`,
     path: "/jogar",
+    brand: JOGAR_BRAND,
   });
 
   return `<!DOCTYPE html>
@@ -876,6 +877,7 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
     title: pageTitle,
     description: `Jogue a sequência de pares do "É IA?" do mês anterior — acerte o máximo possível e entre no leaderboard mensal.`,
     path: "/jogar",
+    brand: JOGAR_BRAND,
   });
 
   // Self-review #2038 (achado corrigido, não só comentado): esta função
@@ -1467,6 +1469,7 @@ export function renderJogarArchiveHtml(editions: string[], year: string): string
     title: pageTitle,
     description: `Jogue pares de edições passadas do "É IA?" — arquivo de ${htmlEscape(year)} da ${info.name}. Adivinhe qual imagem foi gerada por IA.`,
     path: "/jogar/arquivo",
+    brand: JOGAR_BRAND,
   });
 
   return `<!DOCTYPE html>
@@ -1665,6 +1668,7 @@ export function renderJogarQuizPageHtml(editions: string[]): string {
     title: pageTitle,
     description: `${total > 0 ? total : "Vários"} pares seguidos, direto do "É IA?" — acerte o máximo possível e compartilhe seu placar.`,
     path: "/jogar/quiz",
+    brand: JOGAR_BRAND,
   });
 
   const emptyStateHtml = `<p class="sub">Ainda não há edições fechadas suficientes pra montar o quiz relâmpago — volte em breve.</p>

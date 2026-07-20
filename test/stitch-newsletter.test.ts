@@ -624,8 +624,9 @@ Foto descrição.
       assert.match(result, /SORTEIO/);
       assert.match(result, /PARA ENCERRAR/);
       // 260611: páginas Beehiiv extintas → links fixos apontam pros Workers
-      assert.match(result, /cursos\.diaria\.workers\.dev/);
-      assert.match(result, /livros\.diaria\.workers\.dev/);
+      // #3698: e agora pro domínio de marca (era *.diaria.workers.dev).
+      assert.match(result, /cursos\.diar\.ia\.br/);
+      assert.match(result, /livros\.diar\.ia\.br/);
     } finally {
       cleanup();
     }
@@ -1035,7 +1036,7 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
     assert.match(block!, /^\*\*\s*A diar\.ia\.br mantém/);
     assert.match(block!, /\*\*$/);
     assert.match(block!, /curadoria de livros/i);
-    assert.match(block!, /livros\.diaria\.workers\.dev/);
+    assert.match(block!, /livros\.diar\.ia\.br/); // #3698: domínio de marca (era livros.diaria.workers.dev)
   });
 
   it("default (sponsor on, #3212): injeta o callout de recomendação de leitura entre D1 e D2 + extractBoxDivulgacao1 o acha", () => {

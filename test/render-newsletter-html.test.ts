@@ -878,7 +878,7 @@ describe("renderHTML excludeEia + renderEiaStandalone (#1046)", () => {
     // fixtureComEia não tem leaderboardPodium nem leaderboardPeriodSlug → o pódio
     // (renderLeaderboardTop1Row) é omitido, mas o link persistente DEVE aparecer.
     const html = renderHTML(fixtureComEia);
-    assert.match(html, /href="https:\/\/poll\.diaria\.workers\.dev\/leaderboard"/);
+    assert.match(html, /href="https:\/\/eia\.diar\.ia\.br\/leaderboard"/); // #3701: domínio de marca (era poll.diaria.workers.dev)
     assert.match(html, /Veja o ranking de quem mais acerta/);
     // sem pódio nesta edição (sem "Vencedores")
     assert.doesNotMatch(html, /Vencedores/);

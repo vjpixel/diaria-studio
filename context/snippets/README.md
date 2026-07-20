@@ -94,7 +94,7 @@ pelo slot nem pelo emoji:
 
 | Arquivo | Slot(s) | Formato | Auto-injetável via `boxes_divulgacao`? | Quando usar |
 |---|---|---|---|---|
-| `livros-divulgacao.md` | Slot 1, 2 (default) ou 3 | bold-line/mid-callout | **Sim** — é o default de `slot2` (#3212) | Curadoria própria (`livros.diaria.workers.dev`), roda sem intervenção na maioria das edições (#2527). |
+| `livros-divulgacao.md` | Slot 1, 2 (default) ou 3 | bold-line/mid-callout | **Sim** — é o default de `slot2` (#3212) | Curadoria própria (`livros.diar.ia.br`), roda sem intervenção na maioria das edições (#2527). |
 | `clarice-divulgacao.md` | Slot 1, 2 ou 3 | bold-line/mid-callout, link de afiliado (`?via=diaria`) | **Sim** | Trocar o config quando quiser rodar a campanha Clarice no lugar de livros (era o default pré-#2527). Também reusado no mensal como seção própria. |
 | `alexa-plus-divulgacao.md` | Slot 1, 2 ou 3 | carrinho/CTA pill, com disclosure de comissão no próprio corpo | **Sim** (último parágrafo é só o link CTA — sinal estrutural) | Trocar o config quando quiser divulgar a campanha de afiliado Alexa+. |
 | `recomendacao-leitura.md` | Slot 1 (default) ou qualquer outro | bold-line/mid-callout genérico (só 1 link no bloco, nenhum parágrafo CTA-only → não vira carrinho) | **Sim** (#3306) — `loadDivulgacaoSnippet` tem um 3º fallback genérico: quando o conteúdo não bate bold-line nem carrinho, devolve o texto cru em vez de `null`. É o default de `slot1` desde #3212. | Default automático — não precisa fazer nada. Recomendação de leitura pessoal (livro/artigo) com link afiliado; título+autor em negrito-com-link, 1 comentário pessoal em 1ª pessoa, sem CTA pill. Editor substitui o conteúdo a cada reuso (troca manual do arquivo/edição pontual). |
@@ -118,7 +118,7 @@ por slot).
 - **Sem marcador emoji (#3475).** O parse/render decide formato e posição
   100% por estrutura (posição no texto, presença de `---`, contagem de
   links, parágrafo CTA-only) e por sinal de conteúdo (link de afiliado pra
-  `isSponsoredCallout`, link `livros.diaria.workers.dev` pra
+  `isSponsoredCallout`, link `livros.diar.ia.br` pra
   `isBoxDivulgacaoLivros`) — nunca por qual emoji abre o bloco (#3204/#3232).
   O sistema antigo de marcadores (`stripCalloutMarker`, que reconhecia
   `📣`/`📚`/`📖`/`🎉` só pra fins cosméticos) foi removido — os 4 arquivos

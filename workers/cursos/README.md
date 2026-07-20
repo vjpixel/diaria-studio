@@ -1,7 +1,9 @@
 # workers/cursos (#1745)
 
 Hosting da página **Cursos sobre IA** da Diar.ia. Worker de *static assets*
-(sem script) servindo um único HTML em `https://cursos.diaria.workers.dev/`.
+(sem script) servindo um único HTML em `https://cursos.diar.ia.br/` (domínio
+de marca, #3698) — também acessível via `https://cursos.diaria.workers.dev/`
+(mantido por compat de links já enviados em edições passadas).
 
 Gêmea da `workers/livros` (#1744) — mesmo padrão e design editorial.
 

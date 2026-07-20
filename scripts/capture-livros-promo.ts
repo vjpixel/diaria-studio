@@ -2,7 +2,7 @@
 /**
  * capture-livros-promo.ts (#2071)
  *
- * Captura screenshot da página de livros (livros.diaria.workers.dev) e grava
+ * Captura screenshot da página de livros (livros.diar.ia.br) e grava
  * como `04-livros-promo.jpg` no diretório da edição. Idempotente: só grava
  * se o md5 do screenshot novo difere do cache (`{editionDir}/04-livros-promo.jpg`).
  *
@@ -43,8 +43,8 @@ import { isMainModule } from "./lib/cli-args.ts";
 // Injetável nos testes (default = puppeteer real).
 export type CaptureFn = (url: string, outPath: string) => Promise<void>;
 
-/** URL canônica da página de livros. */
-export const LIVROS_URL = "https://livros.diaria.workers.dev";
+/** URL canônica da página de livros (domínio de marca, #3698). */
+export const LIVROS_URL = "https://livros.diar.ia.br";
 /** Filename dentro de editionDir. */
 export const LIVROS_PROMO_FILENAME = "04-livros-promo.jpg";
 

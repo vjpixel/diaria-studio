@@ -217,8 +217,8 @@ const FULL_FIXTURE: NewsletterContent = {
 
   encerrar: `Chegou ao fim de mais uma edição da Diar.ia. Se esse conteúdo ajudou você a entender melhor o que está acontecendo com IA, compartilhe com alguém que também precisa saber.
 
-- [Cursos de IA](https://cursos.diaria.workers.dev)
-- [Livros sobre IA](https://livros.diaria.workers.dev)
+- [Cursos de IA](https://cursos.diar.ia.br)
+- [Livros sobre IA](https://livros.diar.ia.br)
 - [Newsletter no Beehiiv](https://diaria.beehiiv.com)
 
 Agora que chegou até aqui, aproveite e responda o É IA? de hoje — leva menos de 10 segundos e te coloca no ranking do mês.`,
@@ -503,7 +503,7 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     assert.ok(html.includes("1º Davyd"), "1º lugar ausente");
     assert.ok(html.includes("2º Luisao P"), "2º lugar ausente");
     assert.ok(
-      html.includes("poll.diaria.workers.dev/leaderboard/2026-05"),
+      html.includes("eia.diar.ia.br/leaderboard/2026-05"), // #3701: domínio de marca (era poll.diaria.workers.dev)
       "link histórico leaderboard ausente",
     );
   });

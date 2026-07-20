@@ -1003,6 +1003,22 @@ export function validateNickname(cleanName: string): string | null {
 
 export const POLL_BASE_URL = "https://poll.diaria.workers.dev";
 
+/**
+ * #3701: domínio de marca do jogo público "É IA?" — `eia.diar.ia.br`, um
+ * Workers Custom Domain apontando pro mesmo worker `poll` (ver
+ * `workers/poll/wrangler.toml`). Usado SÓ para canonical/og:url/share/embed
+ * do brand `web` (`renderSeoMeta` abaixo, `buildEmbedJogarUrl` em embed.ts) —
+ * pra que SEO e compartilhamento social do jogo público carreguem a URL de
+ * marca em vez do subdomínio genérico `workers.dev`.
+ *
+ * `POLL_BASE_URL` continua valendo para: (a) TODOS os endpoints internos
+ * (voto/img/stats/leaderboard-brand-diaria) — links já embutidos em edições
+ * enviadas apontam pra `poll.diaria.workers.dev` e precisam continuar vivos
+ * (não reescrever, ~300 referências); (b) os brands `diaria`/`clarice`, que
+ * não têm domínio de marca próprio neste worker.
+ */
+export const PUBLIC_GAME_BASE_URL = "https://eia.diar.ia.br";
+
 /** Favicon SVG inline (data-URI) — marca "d.." em branco num CÍRCULO teal,
  * transparente fora (teal aparece em qualquer tab). Composição canônica do
  * avatar (ver diaria-design guidelines/avatar-proportion.md): "d" como <path>
@@ -1021,18 +1037,24 @@ export interface SeoMetaOptions {
   title: string;
   /** Descrição curta — <meta name="description">, og:description, twitter:description. */
   description: string;
-  /** Path relativo (começando com "/"), combinado com POLL_BASE_URL para canonical/og:url. */
+  /** Path relativo (começando com "/"), combinado com POLL_BASE_URL (ou
+   * PUBLIC_GAME_BASE_URL quando `brand === "web"`) para canonical/og:url. */
   path: string;
   /** #3517: URL absoluta (http/https, buscável via GET) pra og:image/twitter:image.
    * Omitido → comportamento pré-#3517 inalterado (sem tag de imagem,
    * twitter:card=summary — ver rationale #3106 acima). Presente → tags de
    * imagem entram e twitter:card vira summary_large_image (preview rico). */
   imageUrl?: string;
+  /** #3701: quando `"web"`, canonical/og:url usam `PUBLIC_GAME_BASE_URL`
+   * (`eia.diar.ia.br`) em vez de `POLL_BASE_URL`. Omitido/outros brands →
+   * comportamento pré-#3701 inalterado (`POLL_BASE_URL`). */
+  brand?: Brand;
 }
 
 /** Monta o bloco de tags <head> de SEO/compartilhamento. Pure. */
 export function renderSeoMeta(opts: SeoMetaOptions): string {
-  const url = `${POLL_BASE_URL}${opts.path}`;
+  const base = opts.brand === "web" ? PUBLIC_GAME_BASE_URL : POLL_BASE_URL;
+  const url = `${base}${opts.path}`;
   const t = htmlEscape(opts.title);
   const d = htmlEscape(opts.description);
   const u = htmlEscape(url);

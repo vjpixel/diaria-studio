@@ -99,7 +99,7 @@
  *      truncado do share token, ver header de share.ts).
  */
 import type { Env } from "./index";
-import { htmlEscape, POLL_BASE_URL } from "./lib";
+import { htmlEscape, PUBLIC_GAME_BASE_URL } from "./lib";
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { resolveJogarEdition } from "./jogar";
 import { shareButtonScript } from "./share";
@@ -149,7 +149,7 @@ export function buildEmbedJogarUrl(partnerSlug: string): string {
     utm_medium: EMBED_UTM_MEDIUM,
     utm_campaign: partnerSlug,
   });
-  return `${POLL_BASE_URL}/jogar?${params.toString()}`;
+  return `${PUBLIC_GAME_BASE_URL}/jogar?${params.toString()}`;
 }
 
 // ── Allowlist de embutimento (CSP frame-ancestors) ──────────────────────────

@@ -57,9 +57,9 @@ const baseEia: EIA = {
 };
 
 describe("buildJogarArchiveUrl (#3524) — URL do arquivo com UTM do funil newsletter→site", () => {
-  it("aponta pro worker /jogar/arquivo", () => {
+  it("aponta pro domínio de marca /jogar/arquivo (#3701 — era poll.diaria.workers.dev)", () => {
     const url = buildJogarArchiveUrl();
-    assert.match(url, /^https:\/\/poll\.diaria\.workers\.dev\/jogar\/arquivo\?/);
+    assert.match(url, /^https:\/\/eia\.diar\.ia\.br\/jogar\/arquivo\?/);
   });
 
   it("carrega utm_source=newsletter (literal da issue #3524)", () => {

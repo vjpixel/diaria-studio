@@ -142,8 +142,8 @@ export interface CuradoriaNavLink {
  */
 export const CURADORIA_NAV_LINKS: readonly CuradoriaNavLink[] = [
   { label: "Diar.ia", url: "https://diar.ia.br" },
-  { label: "Cursos", url: "https://cursos.diaria.workers.dev/" },
-  { label: "Livros", url: "https://livros.diaria.workers.dev/" },
+  { label: "Cursos", url: "https://cursos.diar.ia.br/" }, // #3698: domínio de marca
+  { label: "Livros", url: "https://livros.diar.ia.br/" }, // #3698: domínio de marca
   { label: "É IA?", url: "https://poll.diaria.workers.dev/leaderboard" },
 ];
 

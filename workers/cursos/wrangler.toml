@@ -1,7 +1,9 @@
 # workers/cursos — hosting da página "Cursos sobre IA" (#1745).
 #
 # Worker de static assets (sem script): serve workers/cursos/public/index.html
-# em https://cursos.diaria.workers.dev/. O HTML é gerado por
+# em https://cursos.diar.ia.br/ (domínio de marca, #3698) — também acessível
+# via https://cursos.diaria.workers.dev/ (mantido por compat de links já
+# enviados em edições passadas). O HTML é gerado por
 # `scripts/build-cursos-page.ts` a partir de `seed/courses/cursos-ia.json`
 # (fonte de verdade, versionada). REGENERAR antes do deploy quando o seed mudar:
 #
@@ -13,6 +15,13 @@
 name = "cursos"
 compatibility_date = "2024-09-23"
 workers_dev = true
+
+# #3698: domínio de marca (cursos.diar.ia.br). workers_dev = true continua
+# ativo — links já enviados em edições passadas apontam pra
+# cursos.diaria.workers.dev e precisam continuar vivos.
+[[routes]]
+pattern = "cursos.diar.ia.br"
+custom_domain = true
 
 [assets]
 directory = "./public"

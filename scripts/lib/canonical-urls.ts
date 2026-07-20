@@ -95,6 +95,24 @@ export const DIARIA_THREADS_URL = `https://www.${DIARIA_THREADS_SLUG}`;
  */
 export const DIARIA_APOIASE_URL = "https://apoia.se/diaria";
 
+/**
+ * URL canônica da página "Cursos sobre IA" (#3698) — domínio de marca
+ * (Workers Custom Domain, `workers/cursos/wrangler.toml`) em vez do
+ * subdomínio genérico `cursos.diaria.workers.dev` (mantido só por compat de
+ * links já enviados em edições passadas — ver `FOOTER_DOMAINS` abaixo).
+ * Fonte única pra referências reader-facing (rodapé/box de divulgação); o
+ * build script (`build-cursos-page.ts`) mantém seu próprio `PAGE_URL` (usa
+ * pra canonical/og:url da própria página, cross-checado contra
+ * `CURADORIA_NAV_LINKS` por `test/build-cursos-page.test.ts`).
+ */
+export const DIARIA_CURSOS_URL = "https://cursos.diar.ia.br";
+
+/**
+ * URL canônica da página "Livros sobre IA" (#3698) — análogo a
+ * `DIARIA_CURSOS_URL` acima.
+ */
+export const DIARIA_LIVROS_URL = "https://livros.diar.ia.br";
+
 interface ArticleLike {
   url?: string;
   title?: string;
@@ -218,6 +236,13 @@ export const FOOTER_DOMAINS = [
   "cursos.diaria.workers.dev",
   "livros.diaria.workers.dev",
   "poll.diaria.workers.dev",
+  // #3698/#3701: domínios de marca dos mesmos 3 Workers (Custom Domain) —
+  // workers.dev acima continua allowlistado por compat de links já enviados
+  // em edições passadas; os domínios de marca abaixo são o destino canônico
+  // pros links novos (rodapé/CTA reader-facing).
+  "cursos.diar.ia.br",
+  "livros.diar.ia.br",
+  "eia.diar.ia.br",
   // #3028: links de afiliado da Amazon nos boxes de divulgação — box Alexa
   // (link.amazon, gerado pelo SiteStripe) + box de livros (amzn.to shortener).
   // Bloqueiam crawler por design (anti-bot) mas são promo legítima aprovada

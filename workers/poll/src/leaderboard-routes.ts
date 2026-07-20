@@ -680,6 +680,7 @@ function renderLeaderboardHtml(
     title: pageTitle,
     description: `Quem mais acertou ${periodNoun} qual imagem foi gerada por IA no jogo "É IA?" da ${info.name}. Veja o ranking dos leitores.`,
     path,
+    brand,
   });
   // #3108: sub-copy com 2 links (diar.ia.br + Clarice) é EXCLUSIVA do brand
   // clarice — cross-promoção só faz sentido pra quem está na newsletter mensal.
@@ -917,6 +918,7 @@ export function renderArchiveListHtml(
     title: pageTitle,
     description: `Vote retroativamente nas edições de ${year} do jogo "É IA?" e concorra no leaderboard anual da ${info.name}.`,
     path: archiveHref(brand, year),
+    brand,
   });
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1004,6 +1006,7 @@ export function renderArchiveVoteHtml(
     title: pageTitle,
     description: `Qual imagem foi gerada por IA? Vote na edição de ${dateLabel}${leaderboardYearNote} e valha ponto no leaderboard anual de ${year} da ${info.name}.`,
     path: archiveHref(brand, year, edition),
+    brand,
   });
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">

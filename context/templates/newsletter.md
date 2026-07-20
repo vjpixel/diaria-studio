@@ -107,8 +107,8 @@ Nessa edição da **diar.ia.br**, usei Claude Code para automatizar parte da pes
 
 **Acesse:**
 
-- [Melhores cursos grátis de IA](https://cursos.diaria.workers.dev)
-- [Curadoria de livros sobre IA](https://livros.diaria.workers.dev)
+- [Melhores cursos grátis de IA](https://cursos.diar.ia.br)
+- [Curadoria de livros sobre IA](https://livros.diar.ia.br)
 
 Agora que chegou ao final da edição, que tal interagir em uma publicação da **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), no [Facebook](https://www.facebook.com/diar.ia.br) ou no [Instagram](https://www.instagram.com/diar.ia.br)?
 ```

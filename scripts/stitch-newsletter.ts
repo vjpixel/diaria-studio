@@ -31,7 +31,12 @@ import {
   normalizeDashToParens,
 } from "./lib/use-melhor-curation.ts"; // #2447/#2450
 import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts"; // #2464 finding 5 — evitar cópia de regex
-import { DIARIA_FACEBOOK_PAGE_URL, DIARIA_LINKEDIN_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695/#2790 fonte única
+import {
+  DIARIA_FACEBOOK_PAGE_URL,
+  DIARIA_LINKEDIN_PAGE_URL,
+  DIARIA_CURSOS_URL,
+  DIARIA_LIVROS_URL,
+} from "./lib/canonical-urls.ts"; // #2695/#2790/#3698 fonte única
 import {
   splitEncerramentoSocialApoio,
   renderEncerramentoSocialApoio,
@@ -80,8 +85,8 @@ Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse
   // snippet compartilhado com o mensal.
   para_encerrar_tools: `Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
 
-- [Cursos de IA](https://cursos.diaria.workers.dev)
-- [Livros sobre IA](https://livros.diaria.workers.dev)`,
+- [Cursos de IA](${DIARIA_CURSOS_URL})
+- [Livros sobre IA](${DIARIA_LIVROS_URL})`,
 
   erro_intencional_placeholder: `**ERRO INTENCIONAL**
 
