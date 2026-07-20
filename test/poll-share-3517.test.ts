@@ -146,13 +146,19 @@ describe("buildShareText (#3517)", () => {
 });
 
 describe("renderShareCardBlock (#3517) — bloco reusado por votePageHtml e /jogar", () => {
-  it("contém id=jogar-share-card e os 2 botões de ação apontando pra /share/{token}", () => {
+  it("contém id=jogar-share-card e os 3 botões de ação apontando pra /share/{token}", () => {
     const html = renderShareCardBlock("260716.1.abc123", { edition: "260716", correct: true });
     assert.match(html, /id="jogar-share-card"/);
     assert.match(html, /data-share-action="native"/);
     assert.match(html, /data-share-action="copy"/);
     assert.match(html, /\/share\/260716\.1\.abc123\?utm_medium=social/);
     assert.match(html, /\/share\/260716\.1\.abc123\?utm_medium=copy/);
+  });
+
+  it("#3679: botão WhatsApp com utm_medium próprio (não reusa 'social')", () => {
+    const html = renderShareCardBlock("260716.1.abc123", { edition: "260716", correct: true });
+    assert.match(html, /data-share-action="whatsapp"/);
+    assert.match(html, /\/share\/260716\.1\.abc123\?utm_medium=whatsapp/);
   });
 
   it("htmlEscape no texto/token — sem XSS via payload adulterado hipotético", () => {
