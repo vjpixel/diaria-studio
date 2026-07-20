@@ -1440,13 +1440,14 @@ describe("#2442 renderMonthlyTotalsSection novo formato", () => {
     assert.doesNotMatch(html, /<td class="alert">1\.5%<br><small>15<\/small><\/td>/, "célula de bounces (hard 1.0%/total 1.5%, ambos abaixo do threshold) NÃO deve ter class alert");
   });
 
-  test("#3040: coluna Trackable standalone foi removida da tabela Envios (incorporada ao Opens)", () => {
+  test("#3040/#3678: coluna Trackable standalone segue removida; tooltip de Opens não menciona mais trackable (#3678)", () => {
     const html = renderDashboardHtml(allCampaigns);
     // Header "Trackable 📍" não deve mais existir como <th> separado na tabela Envios.
     const campaignSection = html.match(/id="campaigns-table"[\s\S]*?<\/section>/)?.[0] ?? "";
     assert.doesNotMatch(campaignSection, /Trackable 📍/, "th 'Trackable 📍' não deve mais existir (#3040)");
-    // A métrica trackable segue viva, só que dentro do tooltip do header Opens.
-    assert.match(campaignSection, /trackable/, "menção a 'trackable' deve seguir presente (agora no tooltip de Opens, #3040)");
+    // #3678: a célula Opens não mostra mais o breakdown de trackable — o
+    // tooltip do header não precisa mais explicar essa métrica.
+    assert.doesNotMatch(campaignSection, /trackable/, "tooltip de Opens não deve mais mencionar trackable (#3678)");
   });
 
   test("formato de célula: taxa em cima + count absoluto em <small> (espelha Envios)", () => {
@@ -1620,58 +1621,26 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     },
   };
 
-  test("#3040: header Opens da tabela Envios (não mais Trackable standalone) menciona trackable no tooltip", () => {
+  test("#3678: header Opens da tabela Envios não menciona mais MPP/trackable no tooltip (célula simplificada)", () => {
     const html = renderDashboardHtml([baseCampaign]);
     // Escopar à tabela Envios (id=campaigns-table) — a aba Engajamento tem OUTRO
-    // header "Opens 👁️" (sections-kv.ts, tabela mensal), que não foi tocado por #3040.
+    // header "Opens 👁️" (sections-kv.ts, tabela mensal), que não foi tocado por #3678.
     const campaignSection = html.match(/id="campaigns-table"[\s\S]*?<\/section>/)?.[0] ?? "";
     assert.doesNotMatch(campaignSection, />Trackable 📍</, "não deve mais ter <th> 'Trackable 📍' standalone (#3040)");
     assert.match(campaignSection, /Opens 👁️<\/th>/, "header Opens deve seguir presente");
-    // o tooltip do th Opens agora explica a métrica trackable também.
+    // #3678: célula Opens virou só a taxa total — o tooltip não precisa mais
+    // explicar trackable/MPP (dado não é mais exibido na célula).
     const opensTh = campaignSection.match(/<th scope="col" title="[^"]*">Opens 👁️<\/th>/)?.[0] ?? "";
-    assert.match(opensTh, /trackable/, "tooltip do header Opens na tabela Envios deve mencionar trackable (#3040)");
+    assert.doesNotMatch(opensTh, /trackable/, "tooltip do header Opens não deve mais mencionar trackable (#3678)");
   });
 
-  test("#3040: célula Opens combina taxa/count trackable no parêntese (mppOpens>0 + trackableViews presente)", () => {
+  test("#3678: célula Opens mostra só taxa total + count total mesmo com MPP e trackableViews presentes", () => {
     const html = renderDashboardHtml([baseCampaign]);
-    // uniqueViews=20, appleMppOpens=5 (default) → opensNoMpp=15 → 31.3% sem MPP.
-    // trackableViews=15/delivered=48 → 31.3% trackable (coincide com sem-MPP nesta fixture).
-    // #3084: o membro "· Z% trackable" agora vai num <span class="trackable-clause">
-    // aninhado (escondido via CSS em mobile) — o regex precisa acomodar essa tag extra.
-    assert.match(
-      html,
-      /41\.7% <span class="rate-inline">\(31\.3% sem MPP<span class="trackable-clause"> · 31\.3% trackable<\/span>\)<\/span>/,
-      "célula Opens deve combinar taxa sem-MPP + taxa trackable no parêntese (#3040)",
-    );
-    // count trackable (15) na linha <small>, junto do count sem-MPP (15).
-    assert.match(html, /<small>20 \(15 · 15\)<\/small>/, "count de Opens deve incluir sem-MPP e trackable (#3040)");
-  });
-
-  test("#3056: célula Opens mostra trackable sozinho quando NÃO há MPP mas HÁ trackable (regressão do #3040)", () => {
-    // Terceiro estado, não coberto pelos testes originais do #3040: campanha
-    // sem opens via Apple MPP (comum — nem toda campanha dispara MPP) mas COM
-    // trackableViews válido. Antes do #3040 esse dado tinha coluna própria
-    // (sempre renderizada); o merge do #3040 só anexava trackable DENTRO do
-    // branch `mppOpens > 0`, então o dado sumia por completo quando
-    // mppOpens===0. O fix cobre esse terceiro caso.
-    const noMppTrackableCampaign = {
-      ...baseCampaign,
-      id: 2,
-      statistics: {
-        // appleMppOpens: 0 → mppOpens===0; trackableViews presente → hasTrackable===true.
-        globalStats: makeGlobalStats({ sent: 104, delivered: 100, uniqueViews: 25, trackableViews: 20, appleMppOpens: 0 }),
-      },
-    };
-    const html = renderDashboardHtml([noMppTrackableCampaign]);
-    // openRate = 25/100 = 25.0%; trackableRate = 20/100 = 20.0%. Sem "sem MPP"
-    // no parêntese (mppOpens===0 já significa openRate === openRateNoMpp).
-    assert.match(
-      html,
-      /25\.0% <span class="rate-inline">\(20\.0% trackable\)<\/span>/,
-      "célula Opens deve mostrar a taxa trackable sozinha no parêntese quando não há MPP (#3056)",
-    );
-    // count trackable (20) na linha <small>, sem count "sem MPP" (que não existe nesse caso).
-    assert.match(html, /<small>25 \(20 trackable\)<\/small>/, "count de Opens deve incluir o trackable mesmo sem MPP (#3056)");
+    // uniqueViews=20/delivered=48 = 41.7% — a taxa total (com MPP), sem
+    // parêntese de sem-MPP/trackable (#3678 removeu o breakdown).
+    assert.match(html, /41\.7%/, "célula Opens deve mostrar a taxa total 41.7% (20/48)");
+    assert.doesNotMatch(html, /<span class="rate-inline">\(/, "célula Opens não deve mais ter parêntese de sem-MPP/trackable (#3678)");
+    assert.match(html, /<small>20<\/small>/, "count de Opens deve mostrar só o total '20' (#3678)");
   });
 
   test("seção day-summary foi REMOVIDA da aba Engajamento (#2736, supersede #2523)", () => {
@@ -1683,7 +1652,14 @@ describe("renderDashboardHtml: integração fase 2 (#2086)", () => {
     assert.doesNotMatch(html, /id="day-summary"/, "seção day-summary não deve mais aparecer (#2736)");
     assert.doesNotMatch(html, /Resumo D1–D5/, "título 'Resumo D1–D5' não deve mais aparecer (#2736)");
     // #2600: renderAbcSection segue presente — só D1-D5 saiu, não A/B/C.
-    assert.match(html, /id="abc-summary"/, "seção abc-summary segue presente (não removida)");
+    // cycle2605Campaigns tem scheduledAt ausente (pré-reset #2871) → abcRows
+    // zerado → seção oculta desde #3675 (placeholder removido). Exercita a
+    // machinery com uma variante pós-reset das MESMAS campanhas, só pra
+    // confirmar que abc-summary não foi colateralmente apagado junto com
+    // day-summary (o ponto real deste teste).
+    const postReset = cycle2605Campaigns.map((c) => ({ ...c, scheduledAt: "2026-07-10T06:00:00.000-03:00" }));
+    const htmlPostReset = renderDashboardHtml(postReset);
+    assert.match(htmlPostReset, /id="abc-summary"/, "seção abc-summary segue presente (não removida)");
   });
 
   test("volume-ciclo segue presente (day-summary removida, #2736)", () => {
@@ -3093,7 +3069,7 @@ describe("#2542: tab navigation — estrutura HTML das abas", () => {
 
 // ─── #2600: Resumo A/B/C restaurado como seção principal ─────────────────────
 
-describe("reset A/B/C 260702 (#2871): isPostAbcReset + placeholder condicional", () => {
+describe("reset A/B/C 260702 (#2871): isPostAbcReset (#3675: placeholder 'aguardando novo teste' removido — vestigial)", () => {
   test("isPostAbcReset: pós-corte → true; exatamente no corte → true; pré-corte → false", () => {
     assert.equal(isPostAbcReset({ scheduledAt: "2026-07-10T06:00:00.000-03:00" }), true);
     assert.equal(isPostAbcReset({ scheduledAt: ABC_RESET_AT }), true);
@@ -3105,41 +3081,28 @@ describe("reset A/B/C 260702 (#2871): isPostAbcReset + placeholder condicional",
     assert.equal(isPostAbcReset({ scheduledAt: "não-é-data" }), false);
   });
 
-  test("all-zero SEM resetNote → oculta (neutro, comportamento pré-reset preservado)", () => {
+  test("all-zero → sempre oculta, com ou sem opts (#3675: placeholder do reset removido)", () => {
     const emptyRows = [
       { cell: "A" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
       { cell: "B" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
       { cell: "C" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
     ];
     assert.equal(renderAbcSection(emptyRows), "");
+    // opts custom (título/id) não resuscita o placeholder — zero é zero.
+    assert.equal(renderAbcSection(emptyRows, { title: "Custom", id: "custom-id" }), "");
   });
 
-  test("all-zero COM resetNote → placeholder com data derivada de ABC_RESET_AT", () => {
-    const emptyRows = [
-      { cell: "A" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
-      { cell: "B" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
-      { cell: "C" as const, totalViews: 0, totalDelivered: 0, openRate: 0, campaignCount: 0, organicOpenRate: null },
-    ];
-    const html = renderAbcSection(emptyRows, true);
-    assert.match(html, /aguardando novo teste/);
-    assert.match(html, /variante B venceu/);
-    // Data exibida DERIVA do const (achado A2 do review #2870 — sem drift):
-    assert.match(html, /03\/07\/2026/);
-    assert.match(html, /#2871/);
-    assert.doesNotMatch(html, /Célula A/, "tabela de células não renderiza zerada");
-  });
-
-  test("integração renderDashboardHtml: ciclo com células só pré-reset → placeholder (o corte causou o zero)", () => {
-    // allCampaigns têm scheduledAt null (fixtures legadas) → isPostAbcReset false
-    // → abcRows zerado; abcRowsAll (sem filtro) tem células → resetNote=true.
+  test("integração renderDashboardHtml: ciclo com células só pré-reset → nada renderiza (#3675, era placeholder antes)", () => {
+    // allCampaigns têm scheduledAt null (fixtures legadas) → isPostAbcReset
+    // false → abcRows zerado → seção oculta (sem mais o texto explicativo do reset).
     const html = renderDashboardHtml(allCampaigns);
-    assert.match(html, /aguardando novo teste/);
+    assert.doesNotMatch(html, /aguardando novo teste/, "placeholder do reset foi removido (#3675)");
     assert.doesNotMatch(html, /Célula A/);
   });
 
   test("integração renderDashboardHtml: ciclo SEM células A/B/C (S2/S3 puro) → nada renderiza (neutro)", () => {
     // Campanha sem sufixo -A/-B/-C: participa do ciclo (detectActiveCycle) mas
-    // não do A/B/C → abcRowsAll TAMBÉM zerado → sem placeholder (achado A1/B1).
+    // não do A/B/C → abcRows zerado → seção oculta.
     const s2Only = [{ ...allCampaigns[0], id: 950, name: "Clarice News 2605 d08 (qua)" }];
     const html = renderDashboardHtml(s2Only);
     assert.doesNotMatch(html, /aguardando novo teste/);
@@ -3686,9 +3649,10 @@ describe("#3081 pct(): denominador 0 → '—'", () => {
   });
 
   // Achado (a) do review: os demais callers de pct() em renderDashboardHtml
-  // (openRate, ctor, bounceRate, unsubRate, openRateNoMpp, trackableRate e a
-  // coluna Delivered) também herdam o novo contrato "—" quando o denominador
-  // é 0. Isso é alcançável quando `globalStats.sent` é 0 (gsIsReal falso) MAS
+  // (openRate, ctor, bounceRate, unsubRate e a coluna Delivered — openRateNoMpp
+  // e trackableRate foram removidos em #3678 junto com o parêntese da célula
+  // Opens) também herdam o novo contrato "—" quando o denominador é 0. Isso é
+  // alcançável quando `globalStats.sent` é 0 (gsIsReal falso) MAS
   // existe um `campaignStats[0]` truthy com sent/delivered também 0 — o
   // branch `if (!s) return ...` (sem stats) só checa truthiness do objeto,
   // não `sent > 0` (essa checagem é feita só pra decidir globalStats vs

@@ -243,7 +243,7 @@ describe("aggregateAbcByAudience", () => {
     assert.equal(renderAbcAudienceSection("9999-99", empty), "");
   });
 
-  test("renderAbcAudienceSection: renderiza as 3 tabelas com CTOR/click rate/unsub e tags de LÍDER", () => {
+  test("renderAbcAudienceSection: renderiza as 3 tabelas com CTOR/unsub e tags de LÍDER (#3675: Click rate e Bounce/Spam removidas)", () => {
     const result = aggregateAbcByAudience([...cold, ...warm], cycle);
     const html = renderAbcAudienceSection(cycle, result);
     assert.match(html, /Resumo A\/B\/C por Audiência/);
@@ -251,9 +251,20 @@ describe("aggregateAbcByAudience", () => {
     assert.match(html, /Fria \(nunca recebeu\)/);
     assert.match(html, /Quente \(já engajada\)/);
     assert.match(html, />CTOR</);
-    assert.match(html, />Click rate</);
+    // #3675: coluna Click rate removida a pedido do editor — a tag ▲CLIQUE
+    // migrou pra célula de CTOR (não some, só muda de coluna).
+    assert.doesNotMatch(html, />Click rate</, "coluna Click rate não deve mais existir (#3675)");
+    assert.doesNotMatch(html, />Bounce \/ Spam</, "coluna Bounce / Spam não deve mais existir (#3675)");
     assert.match(html, /▲ ABERTURA/);
     assert.match(html, /▲ CLIQUE/);
+  });
+
+  test("renderAbcAudienceSection: tag ▲CLIQUE aparece na célula de CTOR, não numa coluna Click rate separada (#3675)", () => {
+    const result = aggregateAbcByAudience([...cold, ...warm], cycle);
+    const html = renderAbcAudienceSection(cycle, result);
+    // A tag deve estar imediatamente após um valor de CTOR (%), não isolada
+    // numa célula própria — confirma que migrou pra dentro do <td> de CTOR.
+    assert.match(html, /class="metric">[\d.]+%\s*<strong[^>]*>▲ CLIQUE<\/strong><\/td>/);
   });
 
 });

@@ -59,6 +59,18 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.ok(body.includes("contacts-list"));
   });
 
+  it("#3677: dialog de outreach usa radio buttons pro canal (Email/WhatsApp/LinkedIn/Outro), não input de texto livre", async () => {
+    const res = await fetch(new URL("/apoios", server.url));
+    const body = await res.text();
+    assert.ok(!body.includes('id="outreach-channel" '), "input de texto livre antigo não deve mais existir");
+    assert.ok(body.includes('id="outreach-channel-group"'), "grupo de radio buttons do canal deve existir");
+    assert.ok(body.includes('name="outreach-channel" value="email"'), "opção Email deve existir");
+    assert.ok(body.includes('name="outreach-channel" value="whatsapp"'), "opção WhatsApp deve existir");
+    assert.ok(body.includes('name="outreach-channel" value="linkedin"'), "opção LinkedIn deve existir");
+    assert.ok(body.includes('name="outreach-channel" value="outro"'), "opção Outro deve existir");
+    assert.ok(body.includes('id="outreach-channel-other"'), "campo de texto livre condicional 'Outro' deve existir");
+  });
+
   it("aceita /apoios/ com trailing slash", async () => {
     const res = await fetch(new URL("/apoios/", server.url));
     assert.equal(res.status, 200);

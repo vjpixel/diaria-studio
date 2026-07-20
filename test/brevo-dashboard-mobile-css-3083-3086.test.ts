@@ -12,6 +12,11 @@
  *    `.rate-inline` gets `white-space: nowrap`, and the "· Z% trackable" member
  *    is wrapped in a `.trackable-clause` span hidden under the existing
  *    `@media (max-width: 700px)` block.
+ *    (#3678: the Opens cell parenthetical was removed entirely — the Opens
+ *    cell no longer emits `.rate-inline`/`.trackable-clause` at all. `.rate-inline`
+ *    itself survives because the A/B/C-por-audiência table, sections-kv.ts,
+ *    still uses it for its own "sem MPP" aside; `.trackable-clause` became
+ *    dead CSS and was removed along with its media-query rule.)
  *  - #3085: the first column (row label) of wide scrollable tables (Envios,
  *    Totais por mês, Cohorts) wasn't sticky, so it scrolled away horizontally.
  *    Fix: `.table-wrap td:first-child`/`th:first-child` get `position: sticky;
@@ -44,25 +49,21 @@ test("#3083: .tab-bar vira scroll horizontal próprio e .tab-label nunca quebra/
   assert.match(tabLabelRule, /flex-shrink:\s*0/, ".tab-label nunca deve encolher a ponto de cortar texto (#3083)");
 });
 
-test("#3084: .rate-inline tem white-space:nowrap e .trackable-clause é escondido em mobile", () => {
+test("#3084: .rate-inline tem white-space:nowrap (#3678: .trackable-clause removido — dead CSS após simplificação da célula Opens)", () => {
   const html = renderDashboardHtml([]);
   const styleBlock = html.match(/<style>[\s\S]*?<\/style>/)?.[0] ?? "";
 
+  // .rate-inline sobrevive (usado pela tabela A/B/C por audiência,
+  // sections-kv.ts) — mantém nowrap.
   const rateInlineRule = styleBlock.match(/td \.rate-inline\s*\{[^}]*white-space[^}]*\}/)?.[0] ?? "";
   assert.match(rateInlineRule, /white-space:\s*nowrap/, "td .rate-inline deve ter white-space: nowrap (#3084)");
 
-  // .trackable-clause só deve ser escondido DENTRO do media query mobile
-  // existente — não escondido globalmente (isso apagaria o dado em desktop).
-  const mediaBlock = styleBlock.match(/@media \(max-width: 700px\)\s*\{[\s\S]*?\n\s*\}/)?.[0] ?? "";
-  assert.match(mediaBlock, /\.trackable-clause\s*\{\s*display:\s*none;?\s*\}/, ".trackable-clause deve ser escondido no media query mobile (#3084)");
-  assert.doesNotMatch(
-    styleBlock.replace(mediaBlock, ""),
-    /\.trackable-clause\s*\{\s*display:\s*none/,
-    ".trackable-clause não deve ser escondido fora do media query (#3084)",
-  );
+  // .trackable-clause não tem mais nenhum emissor (#3678 removeu o breakdown
+  // da célula Opens) — a regra CSS foi removida junto, não deve mais existir.
+  assert.doesNotMatch(styleBlock, /\.trackable-clause/, ".trackable-clause não deve mais existir no CSS — dead code após #3678");
 });
 
-test("#3084: célula Opens com sem-MPP+trackable envolve o membro trackable num span.trackable-clause", () => {
+test("#3678: célula Opens não emite mais .rate-inline nem .trackable-clause mesmo com MPP e trackableViews presentes", () => {
   const baseCampaign = {
     id: 1,
     name: "Test campaign",
@@ -94,15 +95,9 @@ test("#3084: célula Opens com sem-MPP+trackable envolve o membro trackable num 
 
   const html = renderDashboardHtml([baseCampaign as any]);
 
-  // O membro "· Z% trackable" precisa estar dentro de um span.trackable-clause
-  // ANINHADO dentro do span.rate-inline (não substituindo-o) — o "X% sem MPP"
-  // sozinho continua fora do span escondível, pra sempre sobrar algo legível
-  // em mobile.
-  assert.match(
-    html,
-    /<span class="rate-inline">\([\d.]+% sem MPP<span class="trackable-clause"> · [\d.]+% trackable<\/span>\)<\/span>/,
-    "o membro trackable deve estar num span.trackable-clause aninhado dentro de .rate-inline (#3084)",
-  );
+  assert.doesNotMatch(html, /\.trackable-clause"|class="trackable-clause"/, "célula Opens não deve mais emitir span.trackable-clause (#3678)");
+  // Sanity: a taxa total (54.2% = 26/48) segue presente, só sem o parêntese.
+  assert.match(html, /54\.2%/, "taxa total de Opens deve seguir presente (#3678)");
 });
 
 test("#3085: primeira coluna de .table-wrap é sticky, canto superior-esquerdo por cima de tudo", () => {

@@ -82,6 +82,22 @@
   font-size: 0.85rem;
   opacity: 1;
 }
+/* #3677: grupo de radio buttons do campo Canal (outreach) — mesma pílula
+   visual do form-field-check, em linha, com wrap pra telas estreitas. */
+.radio-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1rem;
+}
+.radio-option {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  text-transform: none;
+  font-size: 0.85rem;
+  opacity: 1;
+  cursor: pointer;
+}
 .contact-form input[type="text"],
 .contact-form input[type="date"],
 .contact-form textarea {

@@ -151,47 +151,14 @@ export function renderDashboardHtml(
       const bounceAlert = isBounceBreach(hardBounceRateNum, bounceRateNum);
       const unsubAlert = unsubRateNum >= 3;
       const spamAlert = spamRateNum >= 0.1;
-      const mppOpens = gsIsReal ? (gs?.appleMppOpens ?? 0) : 0;
-      const opensNoMpp = s.uniqueViews - mppOpens;
-      const openRateNoMpp = pct(opensNoMpp, s.delivered);
 
-      // #2086 B2 / #3040: trackableViewsRate = trackableViews / delivered.
-      // Indica emails com rastreamento real (exclui MPP/bots que não carregam pixel).
-      // `!= null` (não `??`) porque o campo pode estar AUSENTE no shape real da
-      // Brevo (latente em campaignStats) — precisamos distinguir "sem dado" de
-      // "0 aberturas trackable reais": #3040 só anexa esse dado ao parêntese de
-      // Opens quando ele de fato existe.
-      const hasTrackable = s.trackableViews != null;
-      const trackableRate = pct(s.trackableViews ?? 0, s.delivered);
-
-      // Opens cell tem layout duplo quando há MPP (#1153): top mostra
-      // "taxa-com-MPP (taxa-sem-MPP)" e bottom mostra "count-total (count-sem-MPP)".
-      // #3040: coluna Trackable 📍 standalone foi removida — quando há MPP E
-      // trackable, o parêntese de Opens ganha um segundo membro ("sem MPP" +
-      // "trackable"); quando há MPP mas trackable está ausente, mantém o
-      // formato antigo (só "sem MPP").
-      // #3056 (regressão do #3040): quando NÃO há MPP mas HÁ trackable, o dado
-      // trackable não pode simplesmente desaparecer — antes do #3040 ele tinha
-      // sua própria coluna sempre renderizada. Mostramos o trackable sozinho
-      // no parêntese (sem o membro "sem MPP", que não existe nesse caso —
-      // mppOpens=0 já significa openRate === openRateNoMpp).
-      // #3084: o membro "· Z% trackable" vai num <span class="trackable-clause">
-      // pra poder ser escondido em mobile (media query acima) sem perder o
-      // "X% (Y% sem MPP)" — que sozinho já cabe numa linha.
-      const opensTopLine = mppOpens > 0
-        ? hasTrackable
-          ? `${openRate} <span class="rate-inline">(${openRateNoMpp} sem MPP<span class="trackable-clause"> · ${trackableRate} trackable</span>)</span>`
-          : `${openRate} <span class="rate-inline">(${openRateNoMpp})</span>`
-        : hasTrackable
-          ? `${openRate} <span class="rate-inline">(${trackableRate} trackable)</span>`
-          : openRate;
-      const opensBottomLine = mppOpens > 0
-        ? hasTrackable
-          ? `${s.uniqueViews} (${opensNoMpp} · ${s.trackableViews})`
-          : `${s.uniqueViews} (${opensNoMpp})`
-        : hasTrackable
-          ? `${s.uniqueViews} (${s.trackableViews} trackable)`
-          : `${s.uniqueViews}`;
+      // #3678: célula Opens simplificada a pedido do editor — só a taxa total
+      // e o count total, sem o parêntese "(X% sem MPP · Y% trackable)" que
+      // vinha sendo refinado desde #1153/#2086/#3040/#3056/#3084. O dado
+      // computado (trackableViews/appleMppOpens) continua disponível via
+      // `/api/campaigns` cru — a mudança é só de display, não de coleta.
+      const opensTopLine = openRate;
+      const opensBottomLine = `${s.uniqueViews}`;
 
       // #1132/dashboard: strip parênteses do nome da lista pra display
       // (Brevo nomes têm "(150 contatos)" hardcoded). O size real vem do
@@ -295,16 +262,14 @@ export function renderDashboardHtml(
   // D1–D5 mantido como seção SEPARADA logo após.
   // Reset A/B/C (#2871): o filtro fica AQUI no call site — aggregateAbcSummary
   // permanece pura (review #2870: embutir o cutoff nela quebrava a cobertura
-  // das regressões #2199/#2600 e armava um trap pra callers futuros). O
-  // placeholder só aparece quando o CORTE causou o zero (havia células
-  // pré-reset); ciclo sem A/B/C planejado segue renderizando nada (neutro).
-  const abcRowsAll = activeCycle ? aggregateAbcSummary(campaigns, activeCycle) : [];
+  // das regressões #2199/#2600 e armava um trap pra callers futuros). Zero
+  // células (seja pelo corte, seja por ciclo sem A/B/C planejado) → a seção
+  // não renderiza nada (#3675 removeu o placeholder explicativo do reset,
+  // vestigial desde que "Resumo A/B/C por Audiência" virou a leitura primária).
   const abcRows = activeCycle
     ? aggregateAbcSummary(campaigns.filter(isPostAbcReset), activeCycle)
     : [];
-  const abcResetNote =
-    abcRowsAll.some((r) => r.campaignCount > 0) && abcRows.every((r) => r.campaignCount === 0);
-  const abcSection = activeCycle ? renderAbcSection(abcRows, abcResetNote) : "";
+  const abcSection = activeCycle ? renderAbcSection(abcRows) : "";
   // #2889: Resumo A/B/C dos testes MENSAIS — UMA seção por (ciclo + dia de
   // envio), separadas do diário e entre si (dois testes do mesmo ciclo com o
   // mesmo naming, ex: engajado sexta + cold domingo, viram seções distintas
@@ -313,7 +278,7 @@ export function renderDashboardHtml(
   const monthlyAbcGroups = groupMonthlyAbcTests(campaigns);
   const monthlyAbcSectionsByDate = monthlyAbcGroups
     .map((g) =>
-      renderAbcSection(aggregateAbcSummary(g.campaigns, g.cycle), false, {
+      renderAbcSection(aggregateAbcSummary(g.campaigns, g.cycle), {
         title: `Resumo A/B/C — Mensal (${g.cycle} · ${g.dateLabel})`,
         // id inclui ciclo+data (a chave real do grupo) — só a data poderia
         // colidir se 2 ciclos testassem no mesmo dia (review #2905).
@@ -526,11 +491,8 @@ ${monthlyAbcSectionsByDate}
   .alert-label { font-weight: 600; color: var(--alert); }
   /* #2880: linha Total das tabelas do store — destacada, borda superior. */
   tr.total-row td { font-weight: 700; border-top: 2px solid var(--rule); }
-  /* #3084: célula Opens quebrava em até 4 linhas em mobile (ex: "27.4%
-     (20.6% sem MPP · 17.1% trackable)") esticando as linhas da tabela Envios.
-     nowrap mantém o parêntese inteiro numa linha; em telas estreitas o
-     .trackable-clause (membro "· Z% trackable") é escondido — ver media query
-     abaixo — deixando só "X% (Y% sem MPP)". */
+  /* #3084: nowrap evita quebra em várias linhas em telas estreitas (usado
+     pelo parêntese "sem MPP" da tabela A/B/C por audiência, sections-kv.ts). */
   td .rate-inline { font-weight: normal; color: var(--ink); white-space: nowrap; }
   /* #3089: mesmo ajuste de folga de contraste do .sub acima (0.6 → 0.65). */
   td small { color: var(--ink); opacity: 0.65; font-weight: normal; }
@@ -669,9 +631,6 @@ ${monthlyAbcSectionsByDate}
     table { font-size: 0.8rem; }
     th, td { padding: 6px 4px; }
     .tab-label { padding: 6px 10px; font-size: 0.8rem; }
-    /* #3084: esconde o membro "· Z% trackable" da célula Opens em mobile —
-       deixa só "X% (Y% sem MPP)" pra caber numa linha. */
-    .trackable-clause { display: none; }
   }
 </style>
 </head>
@@ -942,7 +901,7 @@ export const ENVIOS_COLUMNS: Array<{ label: string; tooltip: string }> = [
   {
     label: "Opens 👁️",
     tooltip:
-      "Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas. Entre parênteses (quando há dado de MPP): taxa sem Apple MPP e, quando disponível, taxa trackable — trackableViews ÷ delivered, aperturas com pixel rastreável que exclui MPP/bots que não disparam pixel (sinal mais limpo de engajamento real).",
+      "Aberturas únicas. Inclui Apple MPP e bots/proxies. Bench: 15-25% B2C, 30-45% engajadas.",
   },
   {
     label: "CTOR 🖱️",
@@ -1768,22 +1727,23 @@ export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): 
   const rows = orderedRows
     .map((c) => {
       if (c.campaignCount === 0) {
-        return `<tr><td><strong>Célula ${c.cell}</strong></td><td colspan="8" style="opacity:0.5;">— sem envios —</td></tr>`;
+        return `<tr><td><strong>Célula ${c.cell}</strong></td><td colspan="6" style="opacity:0.5;">— sem envios —</td></tr>`;
       }
       // #3088: teal (--brand) falha AA em texto pequeno — tags de destaque
       // voltam a --ink (negrito + ▲ já diferenciam visualmente).
       const openTag = c.cell === leaderOpenRate ? ` <strong style="color:${DS.ink}">▲ ABERTURA</strong>` : "";
+      // #3675: colunas Click rate e Bounce/Spam removidas (pedido do editor,
+      // preferência de UI). A tag ▲CLIQUE (critério decisório real, #2976)
+      // migrou pra célula de CTOR — não some, só muda de coluna.
       const clickTag = c.cell === leaderClickRate ? ` <strong style="color:${DS.ink}">▲ CLIQUE</strong>` : "";
       return `<tr>
         <td><strong>Célula ${c.cell}</strong></td>
         <td>${c.campaignCount}</td>
         <td>${c.delivered.toLocaleString("pt-BR")}</td>
         <td class="metric">${c.openRate.toFixed(1)}%${openTag}</td>
-        <td class="metric">${c.ctor.toFixed(1)}%</td>
-        <td class="metric">${c.clickRate.toFixed(2)}%${clickTag}</td>
+        <td class="metric">${c.ctor.toFixed(1)}%${clickTag}</td>
         <td>${c.clicks.toLocaleString("pt-BR")}</td>
         <td>${c.unsubRate.toFixed(2)}%</td>
-        <td>${c.bounceRate.toFixed(2)}% / ${c.spamRate.toFixed(3)}%</td>
       </tr>`;
     })
     .join("\n");
@@ -1821,11 +1781,9 @@ export function renderAbcAudienceTable(title: string, table: AbcAudienceTable): 
         <th scope="col" title="Dias/envios contabilizados">Envios</th>
         <th scope="col" title="Total entregue">Delivered</th>
         <th scope="col" title="Aberturas únicas ÷ delivered">Open rate</th>
-        <th scope="col" title="CTOR = cliques únicos ÷ aberturas — qualidade da abertura">CTOR</th>
-        <th scope="col" title="Cliques únicos ÷ delivered — o &quot;fundo do poço&quot; do engajamento, decide o vencedor real">Click rate</th>
+        <th scope="col" title="CTOR = cliques únicos ÷ aberturas — qualidade da abertura entre quem abriu; ▲CLIQUE marca o vencedor por cliques únicos ÷ delivered, o &quot;fundo do poço&quot; do engajamento (#2976)">CTOR</th>
         <th scope="col" title="Total de cliques únicos">Cliques</th>
         <th scope="col" title="Descadastros ÷ sent">Unsub</th>
-        <th scope="col" title="Bounce (hard+soft) ÷ sent / Spam ÷ sent">Bounce / Spam</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
@@ -2254,7 +2212,6 @@ export function renderWeekdaySection(
  */
 export function renderAbcSection(
   abcRows: CellSummary[],
-  resetNote = false,
   opts: { title?: string; id?: string } = {},
 ): string {
   // #2889: título/id parametrizáveis pra reusar no Resumo A/B/C MENSAL (default = diário S1).
@@ -2262,20 +2219,12 @@ export function renderAbcSection(
   // dados (ver aggregateAbcSummary), não mais um corte fixo de 7 dias.
   const secTitle = opts.title ?? "Resumo A/B/C — S1";
   const secId = opts.id ?? "abc-summary";
-  if (abcRows.every((r) => r.campaignCount === 0)) {
-    // Sem resetNote (ciclo sem A/B/C planejado, ex: S2/S3 puro): oculta, como
-    // sempre. Com resetNote (#2871 — o corte do reset removeu células reais):
-    // placeholder explicativo — sumir seria indistinguível de bug de dado.
-    if (!resetNote) return "";
-    const resetDate = new Date(ABC_RESET_AT).toLocaleDateString("pt-BR", {
-      timeZone: "America/Sao_Paulo",
-    });
-    return `
-<section class="phase2-section" id="${secId}">
-  <h2 class="section-title">Resumo A/B/C — aguardando novo teste</h2>
-  <p class="section-note">Zerado a pedido do editor (#2871): resultados do teste do ciclo 2605 estão documentados — <strong>variante B venceu</strong> (consolidada em d06). Campanhas de teste agendadas a partir de <strong>${resetDate}</strong> repopulam esta tabela automaticamente.</p>
-</section>`;
-  }
+  // #3675: o placeholder "aguardando novo teste" (explicava o reset #2871 do
+  // ciclo 2605 — variante B venceu, consolidada em d06) ficou vestigial: os
+  // testes atuais já aparecem em "Resumo A/B/C por Audiência"
+  // (renderAbcAudienceSection, populado com dado real do ciclo corrente).
+  // Zero células → sempre oculta, sem distinguir mais o motivo do zero.
+  if (abcRows.every((r) => r.campaignCount === 0)) return "";
 
   const sampledRows = abcRows.filter((r) => r.campaignCount > 0);
   const allSampled = sampledRows.length >= 2;
