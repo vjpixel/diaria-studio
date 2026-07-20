@@ -45,6 +45,7 @@ import { extractTemplateBlock } from "../scripts/lib/newsletter-parse.ts";
 import {
   DIARIA_LINKEDIN_PAGE_URL,
   DIARIA_FACEBOOK_PAGE_URL,
+  DIARIA_INSTAGRAM_URL,
   DIARIA_APOIASE_URL,
 } from "../scripts/lib/canonical-urls.ts";
 
@@ -75,7 +76,7 @@ describe("context/snippets/encerramento-social-apoio.md (#3219)", () => {
     assert.match(raw, /acesso antecipado a novos projetos/);
   });
 
-  it("convite social usa os links canônicos de LinkedIn/Facebook (não hardcoda de novo)", () => {
+  it("convite social usa os links canônicos de LinkedIn/Facebook/Instagram (não hardcoda de novo)", () => {
     assert.match(
       raw,
       new RegExp(`\\[LinkedIn\\]\\(${DIARIA_LINKEDIN_PAGE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`),
@@ -83,6 +84,10 @@ describe("context/snippets/encerramento-social-apoio.md (#3219)", () => {
     assert.match(
       raw,
       new RegExp(`\\[Facebook\\]\\(${DIARIA_FACEBOOK_PAGE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`),
+    );
+    assert.match(
+      raw,
+      new RegExp(`\\[Instagram\\]\\(${DIARIA_INSTAGRAM_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`),
     );
   });
 
@@ -206,7 +211,7 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
 
   it("o convite social é o ÚLTIMO parágrafo da seção (#3368)", () => {
     const out = buildParaEncerrar();
-    assert.match(out.trimEnd(), /Agora que chegou ao final da edição, que tal interagir em uma publicação da \*\*diar\.ia\.br\*\* no \[LinkedIn\]\([^)]+\) ou no \[Facebook\]\([^)]+\)\?$/);
+    assert.match(out.trimEnd(), /Agora que chegou ao final da edição, que tal interagir em uma publicação da \*\*diar\.ia\.br\*\* no \[LinkedIn\]\([^)]+\), no \[Facebook\]\([^)]+\) ou no \[Instagram\]\([^)]+\)\?$/);
   });
 });
 

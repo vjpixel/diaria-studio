@@ -68,7 +68,11 @@ export const DIARIA_LINKEDIN_PAGE_URL = `https://www.${DIARIA_LINKEDIN_PAGE_SLUG
  * — nenhuma fonte única. Centralizado aqui pro mesmo padrão do
  * Facebook/LinkedIn acima.
  */
-export const DIARIA_INSTAGRAM_SLUG = "instagram.com/diaria";
+// Handle atualizado de `@diaria` → `@diar.ia.br` (o handle real do canal, alinhado
+// a LinkedIn/Facebook que já usam o slug `diar.ia.br`; `@diaria` do #2790 estava
+// desatualizado). Propaga pro rodapé do mensal (monthly-render SOCIAL_LINKS),
+// atribuição de CTR (build-link-ctr ownChannels) e o CTA de encerramento.
+export const DIARIA_INSTAGRAM_SLUG = "instagram.com/diar.ia.br";
 
 /** URL completa (com protocolo + `www.`) derivada do slug acima. */
 export const DIARIA_INSTAGRAM_URL = `https://www.${DIARIA_INSTAGRAM_SLUG}`;
