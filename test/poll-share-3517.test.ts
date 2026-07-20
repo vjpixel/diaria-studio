@@ -17,17 +17,21 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildShareText,
+  buildQuizShareText,
   decodeShareToken,
   deserializeSharePayload,
   encodeShareToken,
   renderShareCardBlock,
   renderShareCardSvg,
   renderSharePageHtml,
+  renderQuizShareCardSvg,
   serializeSharePayload,
   type SharePayload,
+  type QuizSharePayload,
 } from "../workers/poll/src/share.ts";
 import { anonEmailForToken } from "../workers/poll/src/jogar.ts";
 import worker, { type Env } from "../workers/poll/src/index.ts";
+import { PUBLIC_GAME_DISPLAY_HOST } from "../workers/poll/src/lib.ts";
 
 function makeMapKV(initial: Record<string, string> = {}) {
   const m = new Map<string, string>(Object.entries(initial));
@@ -143,6 +147,25 @@ describe("buildShareText (#3517)", () => {
     assert.doesNotMatch(text, /Acertei/);
     assert.doesNotMatch(text, /Não foi dessa vez/);
   });
+
+  // #3717: watermark/copy hardcodavam "diar.ia.br/jogar" (o site de marketing
+  // no Beehiiv, não este worker) — nunca resolvia de fato pro jogo. Agora usa
+  // PUBLIC_GAME_DISPLAY_HOST (derivado de PUBLIC_GAME_BASE_URL = eia.diar.ia.br).
+  it("#3717: aponta pra eia.diar.ia.br/jogar (custom domain real), não diar.ia.br/jogar (site de marketing)", () => {
+    for (const correct of [true, false, null] as const) {
+      const text = buildShareText({ edition: "260716", correct });
+      assert.match(text, new RegExp(`${PUBLIC_GAME_DISPLAY_HOST}/jogar$`));
+      assert.doesNotMatch(text, /(?<!eia\.)diar\.ia\.br\/jogar/);
+    }
+  });
+});
+
+describe("buildQuizShareText (#3717)", () => {
+  it("aponta pra eia.diar.ia.br/jogar/quiz (custom domain real), não diar.ia.br/jogar/quiz", () => {
+    const text = buildQuizShareText({ score: 4, total: 5 });
+    assert.match(text, new RegExp(`${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz$`));
+    assert.doesNotMatch(text, /(?<!eia\.)diar\.ia\.br\/jogar/);
+  });
 });
 
 describe("renderShareCardBlock (#3517) — bloco reusado por votePageHtml e /jogar", () => {
@@ -186,6 +209,21 @@ describe("renderShareCardSvg (#3517) — OG image dinâmica", () => {
   it("nunca contém PII (sem @ — payload não carrega email/token)", () => {
     const svg = renderShareCardSvg({ edition: "260716", correct: true });
     assert.doesNotMatch(svg, /@/);
+  });
+
+  it("#3717: watermark aponta pra eia.diar.ia.br/jogar, não diar.ia.br/jogar (site de marketing)", () => {
+    const svg = renderShareCardSvg({ edition: "260716", correct: true });
+    assert.match(svg, new RegExp(`>${PUBLIC_GAME_DISPLAY_HOST}/jogar<`));
+    assert.doesNotMatch(svg, /(?<!eia\.)diar\.ia\.br\/jogar/);
+  });
+});
+
+describe("renderQuizShareCardSvg (#3717) — watermark do card de quiz", () => {
+  it("watermark aponta pra eia.diar.ia.br/jogar/quiz, não diar.ia.br/jogar/quiz (site de marketing)", () => {
+    const payload: QuizSharePayload = { score: 4, total: 5 };
+    const svg = renderQuizShareCardSvg(payload);
+    assert.match(svg, new RegExp(`>${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz<`));
+    assert.doesNotMatch(svg, /(?<!eia\.)diar\.ia\.br\/jogar/);
   });
 });
 

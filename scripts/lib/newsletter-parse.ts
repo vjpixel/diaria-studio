@@ -773,8 +773,29 @@ export function extractCoverageLineTrailer(text: string): string | null {
   // aplica ao 1º bloco via grupo de captura (linha acima). Sem isso, o 2º
   // bloco vazava com `**` literais no HTML final (extractIntroCallout, ao
   // contrário, nunca tinha esse bug — sempre usou o grupo de captura).
+  //
+  // #3744: o regex acima é guloso — `[\s\S]+` casa até o ÚLTIMO `**` do
+  // trailer, não necessariamente o par que fecha o PRIMEIRO. Quando o trailer
+  // tem 2 spans bold INDEPENDENTES (não um bloco só) — ex:
+  // "**Atenção:** hoje tem edição especial. **Não perca!**" — o match
+  // engloba os 2 spans, e remover só os marcadores mais EXTERNOS deixa o par
+  // do MEIO sobrando: "Atenção:** hoje tem edição especial. **Não perca!".
+  // O HTML final então interpreta ESSE par sobrando como o bold, invertendo
+  // o negrito (meio fica em negrito, "Atenção:"/"Não perca!" não ficam) —
+  // mis-render SILENCIOSO, pior que o vazamento literal que #3740 corrigiu
+  // (aquele pelo menos era visivelmente quebrado).
+  //
+  // Fix: só remover os marcadores externos quando o MEIO capturado não tiver
+  // nenhum outro par `**...**` completo — confirma que é de fato um único
+  // bloco, não múltiplos spans. Em caso de ambiguidade (par aninhado
+  // presente), mais seguro NÃO remover os marcadores — volta ao
+  // comportamento pré-#3740 (`**` literal visível), corrompido mas visível,
+  // em vez de corromper a formatação em silêncio.
   const boldWrapMatch = trailer.match(/^\*\*\s*([\s\S]+)\*\*\s*$/);
-  return boldWrapMatch ? boldWrapMatch[1].trim() : trailer;
+  if (boldWrapMatch && !/\*\*[\s\S]*?\*\*/.test(boldWrapMatch[1])) {
+    return boldWrapMatch[1].trim();
+  }
+  return trailer;
 }
 
 /**

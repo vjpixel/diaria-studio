@@ -1019,6 +1019,16 @@ export const POLL_BASE_URL = "https://poll.diaria.workers.dev";
  */
 export const PUBLIC_GAME_BASE_URL = "https://eia.diar.ia.br";
 
+/**
+ * #3717: forma "curta" (sem protocolo) de `PUBLIC_GAME_BASE_URL`, pra copy de
+ * watermark/share text que mostra um domínio "digitável" (ex: watermark do
+ * SVG do share-card, texto de `buildShareText`/`buildQuizShareText` em
+ * share.ts) — nunca um link clicável de verdade nesses contextos. Derivado de
+ * `PUBLIC_GAME_BASE_URL` (não redeclarado) pra não ter 2 fontes de verdade do
+ * mesmo domínio de marca.
+ */
+export const PUBLIC_GAME_DISPLAY_HOST = PUBLIC_GAME_BASE_URL.replace(/^https?:\/\//, "");
+
 /** Favicon SVG inline (data-URI) — marca "d.." em branco num CÍRCULO teal,
  * transparente fora (teal aparece em qualquer tab). Composição canônica do
  * avatar (ver diaria-design guidelines/avatar-proportion.md): "d" como <path>

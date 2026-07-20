@@ -1750,6 +1750,45 @@ describe("extractCoverageLineTrailer (#3705) — callout no MEIO do bloco de boa
     assert.doesNotMatch(trailer ?? "", /\*\*/, "trailer não deve conter ** literal");
   });
 
+  it("#3744: trailer com 2 spans bold INDEPENDENTES não é corrompido — marcadores externos ficam intactos (mais seguro que remover errado)", () => {
+    // Bug do fix do #3740: o regex guloso `^\*\*...\*\*$` assume que qualquer
+    // trailer começando/terminando com `**` é UM bloco só — mas aqui são 2
+    // spans bold distintos cercando texto normal. Remover só os marcadores
+    // mais externos deixava o par do MEIO sobrando ("Atenção:** ... **Não
+    // perca!"), e o renderer final interpretava ESSE par como o bold —
+    // "Atenção:"/"Não perca!" perdiam o negrito, o texto do meio ganhava
+    // (mis-render silencioso, pior que o vazamento literal pré-#3740).
+    const md = [
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor da diar.ia.br.",
+      "",
+      "---",
+      "",
+      "**Callout real.**",
+      "",
+      "---",
+      "",
+      "**Atenção:** hoje tem edição especial. **Não perca!**",
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+    ].join("\n");
+    const trailer = extractCoverageLineTrailer(md);
+    assert.equal(
+      trailer,
+      "**Atenção:** hoje tem edição especial. **Não perca!**",
+      "ambíguo (2 spans bold independentes) — não remove os marcadores externos, preserva o texto bruto",
+    );
+    // A prova mais direta do bug: SE o fix regredisse pro regex guloso puro,
+    // o par do meio ficaria sobrando isolado (sem abrir/fechar corretos ao
+    // redor de "Atenção:"/"Não perca!") — checagem negativa do padrão corrompido.
+    assert.notEqual(
+      trailer,
+      "Atenção:** hoje tem edição especial. **Não perca!",
+      "não deve produzir a forma corrompida (marcadores externos removidos, par do meio sobrando)",
+    );
+  });
+
   it("#3741: callout único com --- interno (separador decorativo dentro do próprio texto) não desaparece", () => {
     // Bug pior que o do #3726: a segmentação por `---` isolado corta um
     // callout LEGÍTIMO ao meio quando ele tem, no seu próprio conteúdo, um

@@ -66,7 +66,7 @@
  *     converter tráfego pro jogo, alinhado ao objetivo do EPIC #3514
  *     ("motor de divulgação").
  */
-import { AAMMDD_RE, htmlEscape, formatEditionDate, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca
+import { AAMMDD_RE, htmlEscape, formatEditionDate, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { hmacSign } from "./index";
 
@@ -134,12 +134,12 @@ export function buildShareText(payload: SharePayload): string {
   const dateLabel = formatEditionDate(payload.edition);
   const question = "Você consegue diferenciar uma foto real de uma gerada por IA?";
   if (payload.correct === true) {
-    return `Acertei o "É IA?" de hoje (${dateLabel})! ${question} diar.ia.br/jogar`;
+    return `Acertei o "É IA?" de hoje (${dateLabel})! ${question} ${PUBLIC_GAME_DISPLAY_HOST}/jogar`;
   }
   if (payload.correct === false) {
-    return `Não foi dessa vez no "É IA?" de hoje (${dateLabel}). ${question} diar.ia.br/jogar`;
+    return `Não foi dessa vez no "É IA?" de hoje (${dateLabel}). ${question} ${PUBLIC_GAME_DISPLAY_HOST}/jogar`;
   }
-  return `Já votei no "É IA?" de hoje (${dateLabel}) — resultado sai em breve. ${question} diar.ia.br/jogar`;
+  return `Já votei no "É IA?" de hoje (${dateLabel}) — resultado sai em breve. ${question} ${PUBLIC_GAME_DISPLAY_HOST}/jogar`;
 }
 
 /**
@@ -243,7 +243,7 @@ export function renderShareCardSvg(payload: SharePayload): string {
   <text x="80" y="280" font-family="${DS_FONTS.serif}" font-size="96" font-weight="700" fill="${DS_COLORS.ink}">${htmlEscape(resultLabel)}</text>
   <text x="80" y="350" font-family="${DS_FONTS.sans}" font-size="36" fill="${DS_COLORS.ink}">${sub}</text>
   <text x="80" y="410" font-family="${DS_FONTS.sans}" font-size="26" fill="${DS_COLORS.ink}">Edição de ${dateLabel}</text>
-  <text x="80" y="570" font-family="${DS_FONTS.sans}" font-size="32" font-weight="700" fill="${DS_COLORS.brand}">diar.ia.br/jogar</text>
+  <text x="80" y="570" font-family="${DS_FONTS.sans}" font-size="32" font-weight="700" fill="${DS_COLORS.brand}">${PUBLIC_GAME_DISPLAY_HOST}/jogar</text>
 </svg>`;
 }
 
@@ -388,7 +388,7 @@ export async function decodeQuizShareToken(secret: string, token: string): Promi
 /** Pure: texto de compartilhamento do resultado do quiz. */
 export function buildQuizShareText(payload: QuizSharePayload): string {
   const { score, total } = payload;
-  return `Acertei ${score} de ${total} no quiz relâmpago do "É IA?"! Você consegue diferenciar uma foto real de uma gerada por IA? diar.ia.br/jogar/quiz`;
+  return `Acertei ${score} de ${total} no quiz relâmpago do "É IA?"! Você consegue diferenciar uma foto real de uma gerada por IA? ${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz`;
 }
 
 /** Pure: bloco HTML do card de compartilhamento do quiz — reusa literalmente
@@ -429,7 +429,7 @@ export function renderQuizShareCardSvg(payload: QuizSharePayload): string {
   <text x="80" y="150" font-family="${DS_FONTS.sans}" font-size="30" font-weight="700" letter-spacing="4" fill="${DS_COLORS.ink}">É IA? — QUIZ RELÂMPAGO</text>
   <text x="80" y="300" font-family="${DS_FONTS.serif}" font-size="120" font-weight="700" fill="${DS_COLORS.ink}">${htmlEscape(resultLabel)}</text>
   <text x="80" y="365" font-family="${DS_FONTS.sans}" font-size="36" fill="${DS_COLORS.ink}">${htmlEscape(sub)}</text>
-  <text x="80" y="570" font-family="${DS_FONTS.sans}" font-size="32" font-weight="700" fill="${DS_COLORS.brand}">diar.ia.br/jogar/quiz</text>
+  <text x="80" y="570" font-family="${DS_FONTS.sans}" font-size="32" font-weight="700" fill="${DS_COLORS.brand}">${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz</text>
 </svg>`;
 }
 
