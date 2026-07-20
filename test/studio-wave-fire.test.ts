@@ -168,6 +168,37 @@ describe("evaluateWaveTool (#3702) — guard de publicação como código", () =
     assert.match(stash.reason ?? "", /guard de working-tree/);
   });
 
+  it("nega Bash que roda git reset (#3738 Gap 1 — comando literal do incidente 260716, 'git reset --hard')", () => {
+    const decision = evaluateWaveTool("Bash", { command: "git reset --hard origin/master" });
+    assert.equal(decision.allow, false);
+    assert.match(decision.reason ?? "", /guard de working-tree/);
+  });
+
+  it("nega git checkout/pull/stash/reset mesmo com flags entre 'git' e o subcomando (#3738 Gap 3 — regex evadível)", () => {
+    const withDashC = evaluateWaveTool("Bash", { command: "git -C ../other-worktree checkout master" });
+    assert.equal(withDashC.allow, false);
+    assert.match(withDashC.reason ?? "", /guard de working-tree/);
+
+    const withGitExe = evaluateWaveTool("Bash", { command: "git.exe checkout master" });
+    assert.equal(withGitExe.allow, false);
+    assert.match(withGitExe.reason ?? "", /guard de working-tree/);
+
+    const withMultipleFlags = evaluateWaveTool("Bash", {
+      command: "git --no-pager -C ../other-worktree reset --hard HEAD~1",
+    });
+    assert.equal(withMultipleFlags.allow, false);
+    assert.match(withMultipleFlags.reason ?? "", /guard de working-tree/);
+  });
+
+  it("não bloqueia comandos git inócuos sem checkout/pull/stash/reset (nenhum falso-positivo óbvio)", () => {
+    assert.equal(evaluateWaveTool("Bash", { command: "git status" }).allow, false); // negado por ser fora do blocklist mas não pelo guard de working-tree
+    const status = evaluateWaveTool("Bash", { command: "git status" });
+    assert.doesNotMatch(status.reason ?? "", /guard de working-tree/);
+
+    const log = evaluateWaveTool("Bash", { command: "git log --oneline -5" });
+    assert.doesNotMatch(log.reason ?? "", /guard de working-tree/);
+  });
+
   it("nega Bash que roda clarice-import-*", () => {
     const decision = evaluateWaveTool("Bash", { command: "npx tsx scripts/clarice-import-waves.ts --cycle 2605-06" });
     assert.equal(decision.allow, false);

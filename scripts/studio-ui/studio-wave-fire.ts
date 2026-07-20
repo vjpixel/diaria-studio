@@ -62,20 +62,58 @@
  * agendamento real de campanha Brevo, #3728 Gap 2), `clarice-import-*`,
  * `close-poll`, ou qualquer script Beehiiv/LinkedIn/Facebook/Brevo — mesmo
  * que um prompt mal-formado ou um agente dispatchado tentasse. Também nega
- * DETERMINISTICAMENTE `git checkout`/`git pull`/`git stash` (#3728 Gap 1,
- * defesa em profundidade — `.claude/settings.json` já allowlista
- * `git checkout`/`git push` incondicionalmente, então esses comandos tendem
- * a ser auto-aprovados ANTES desta função ser chamada; o guard aqui cobre
- * qualquer caminho onde ela seja de fato invocada). Fora do blocklist, o
- * `canUseTool` segue o padrão CONSERVADOR de `studio-chat.ts` (nega por
- * padrão qualquer tool call que `.claude/settings.json` não resolveu
- * sozinho) — a sessão coordenadora deliberadamente NÃO expande permissões
- * além do que um terminal interativo já teria; a lacuna real que sobra
- * (`gh api graphql` pro gate de threads não estar no `allow` de
- * `.claude/settings.json`, #3728 Gap 3) vai aparecer como um evento de
- * denial no stream em vez de travar silenciosamente — é escopo do #3720
- * (validação ao vivo + extensão do allow-list, sessão supervisionada
- * `/diaria-develop`, não overnight), não desta fatia.
+ * DETERMINISTICAMENTE `git checkout`/`git pull`/`git stash`/`git reset`
+ * (#3728 Gap 1 + #3738 — defesa em profundidade, ver limitação conhecida
+ * abaixo). Fora do blocklist, o `canUseTool` segue o padrão CONSERVADOR de
+ * `studio-chat.ts` (nega por padrão qualquer tool call que
+ * `.claude/settings.json` não resolveu sozinho) — a sessão coordenadora
+ * deliberadamente NÃO expande permissões além do que um terminal interativo
+ * já teria; a lacuna real que sobra (`gh api graphql` pro gate de threads
+ * não estar no `allow` de `.claude/settings.json`, #3728 Gap 3 original) vai
+ * aparecer como um evento de denial no stream em vez de travar
+ * silenciosamente — é escopo do #3720 (validação ao vivo + extensão do
+ * allow-list, sessão supervisionada `/diaria-develop`, não overnight), não
+ * desta fatia.
+ *
+ * ## LIMITAÇÃO CONHECIDA — dois guards são bypassados por `.claude/settings.json` (#3738)
+ *
+ * Investigação do #3738 (Fase 1.5b, angle A) confirmou por leitura direta de
+ * `.claude/settings.json` que dois blocos deste módulo NUNCA são de fato
+ * alcançados pra uma classe inteira de comandos, porque o SDK resolve o
+ * allow-list de `settings.json` ANTES de invocar `canUseTool` (precedência
+ * do harness, não bug deste módulo):
+ *
+ * (a) **Guard de working-tree** (`WAVE_WORKTREE_GUARD_RE`) — efetivo pra
+ *     `git pull`/`git stash`/`git reset` (nenhum dos três está pré-aprovado
+ *     em `settings.json`), mas **NÃO** pra `git checkout`/`git push` — ambos
+ *     já allowlistados incondicionalmente (`"Bash(git checkout *)"`,
+ *     `"Bash(git push *)"`, `.claude/settings.json` linhas ~31-32). Um
+ *     `git checkout master` disparado pela coordenadora é auto-aprovado pelo
+ *     harness antes de `evaluateWaveTool` sequer rodar.
+ * (b) **Guard de publicação** (`WAVE_PUBLISH_GUARD_RE`, o guard PRINCIPAL do
+ *     módulo) — `.claude/settings.json` também tem `"Bash(npx tsx
+ *     scripts/*.ts)"` no allow-list incondicional. Isso cobre QUALQUER
+ *     script invocado nesse formato, inclusive os próprios scripts que este
+ *     guard tenta bloquear: `npx tsx scripts/publish-facebook.ts`,
+ *     `npx tsx scripts/clarice-schedule-sends.ts`,
+ *     `npx tsx scripts/clarice-import-waves.ts`,
+ *     `npx tsx scripts/close-poll.ts`. Todos batem no padrão já pré-aprovado
+ *     e portanto nunca chegam a `evaluateWaveTool`. Isso undermina a
+ *     alegação CENTRAL do módulo (bloquear publicação real numa sessão sem
+ *     supervisão) — não é uma proteção secundária como (a), é a proteção
+ *     primária.
+ *
+ * Nenhum dos dois é corrigível com um fix mecânico neste arquivo — corrigir
+ * de verdade exige restringir ou remover essas entradas do allow-list de
+ * `.claude/settings.json` (potencialmente só no contexto de uma sessão
+ * wave-fire, não globalmente, já que outras skills legitimamente precisam
+ * desses padrões amplos). Essa é uma decisão de arquitetura/produto, não um
+ * fix de regex — **o lugar certo pra resolver é o #3720** (validação
+ * supervisionada + decisão sobre o allow-list, sessão `/diaria-develop` com
+ * o editor presente). Os regexes abaixo continuam valendo como defesa em
+ * profundidade pro resíduo de casos onde `canUseTool` é de fato invocado
+ * (ex.: comandos que não batem em nenhum padrão pré-aprovado) e como
+ * documentação executável da intenção do módulo.
  *
  * ## O que NÃO está nesta fatia (documentado explicitamente, #3702)
  *
@@ -224,17 +262,27 @@ const WAVE_PUBLISH_GUARD_RE =
   /\bscripts[\\/](publish-|clarice-schedule-|clarice-import-)|close-poll\.ts|\b(beehiiv|linkedin|facebook|brevo)\b/i;
 
 /**
- * Guard de working-tree (#3728 Gap 1, defesa em profundidade). `.claude/settings.json`
- * já allowlista `Bash(git checkout *)`/`Bash(git push *)` incondicionalmente — o que,
- * pelo funcionamento do SDK descrito no doc-comment do módulo, significa que esses
- * comandos costumam ser auto-aprovados ANTES desta função sequer ser invocada. Este
- * regex é registrado mesmo assim (mesmo padrão de `WAVE_PUBLISH_GUARD_RE`) pra cobrir
- * qualquer caminho onde `evaluateWaveTool` seja de fato chamada pra esses comandos —
- * a lacuna real de settings.json (`git checkout`/`git push` incondicionais) é escopo
- * do #3720 (validação ao vivo + extensão do allow-list numa sessão supervisionada),
- * não desta issue.
+ * Guard de working-tree (#3728 Gap 1 + #3738, defesa em profundidade).
+ * Bloqueia `checkout`/`pull`/`stash`/`reset` (#3738 Gap 1 — `reset` estava
+ * faltando; foi o comando literal do incidente 260716, `git reset --hard`,
+ * que passava batido pelo regex anterior). Tolerante a flags/argumentos
+ * entre `git` e o subcomando (#3738 Gap 3 — ex: `git -C ../other-worktree
+ * checkout master`, `git.exe checkout master`) via um grupo não-capturante
+ * que consome tokens que NÃO são um dos quatro subcomandos até achar um que
+ * seja.
+ *
+ * `.claude/settings.json` já allowlista `Bash(git checkout *)`/
+ * `Bash(git push *)` incondicionalmente — o que, pelo funcionamento do SDK
+ * descrito no doc-comment do módulo, significa que `git checkout`/`git
+ * push` costumam ser auto-aprovados ANTES desta função sequer ser invocada.
+ * Este regex é EFETIVO pra `git pull`/`git stash`/`git reset` (nenhum dos
+ * três está pré-aprovado em `settings.json`) mas NÃO pra `git checkout`/
+ * `git push` — ver seção "LIMITAÇÃO CONHECIDA" no topo do módulo. A lacuna
+ * real de settings.json é escopo do #3720 (validação ao vivo + extensão do
+ * allow-list numa sessão supervisionada), não desta issue.
  */
-const WAVE_WORKTREE_GUARD_RE = /\bgit\s+(checkout|pull|stash)\b/i;
+const WAVE_WORKTREE_GUARD_RE =
+  /\bgit(?:\.exe)?\s+(?:(?!checkout\b|pull\b|stash\b|reset\b)\S+\s+)*(?:checkout|pull|stash|reset)\b/i;
 
 export interface WaveToolDecision {
   allow: boolean;
@@ -245,7 +293,7 @@ export interface WaveToolDecision {
  * Decisão pura pra 1 tool call da sessão coordenadora — separada de
  * `makeWaveSafeCanUseTool` (que é só o wrapper async exigido pelo shape
  * `CanUseTool` do SDK) pra ser testável sem mockar o SDK. Três camadas:
- * (1) blocklist de working-tree (#3728 Gap 1), INVARIANTE, nunca contornável;
+ * (1) blocklist de working-tree (#3728 Gap 1, #3738 Gaps 1+3), INVARIANTE, nunca contornável;
  * (2) blocklist de publicação, INVARIANTE, nunca contornável; (3) fora
  * disso, nega por padrão (mesmo espírito conservador do chat drawer,
  * `studio-chat.ts` `denyToolResult`) — esta sessão roda sem supervisão
@@ -261,7 +309,7 @@ export function evaluateWaveTool(toolName: string, input: Record<string, unknown
         allow: false,
         reason:
           "guard de working-tree (INVARIANTE, defesa em profundidade): esta sessão coordenadora nunca roda " +
-          "git checkout/git pull/git stash na pasta principal — ela pode estar em uso ativo numa sessão manual " +
+          "git checkout/git pull/git stash/git reset na pasta principal — ela pode estar em uso ativo numa sessão manual " +
           "do editor em paralelo (incidente real: colisão de working tree, 260716). Toda mutação de arquivo " +
           "acontece só dentro dos worktrees isolados dispatchados via Agent.",
       };
