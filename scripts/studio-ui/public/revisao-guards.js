@@ -49,3 +49,25 @@ export const DIVERGENCE_CONFIRM_MESSAGE =
   "painel (pode ser edição sua ou re-render do agente). Salvar 02-reviewed.md agora não altera o HTML — " +
   "mas um re-render futuro a partir dele (rodar a Etapa 4 de novo) vai descartar essas mudanças sem " +
   "aviso automático da pipeline. Salvar mesmo assim?";
+
+// #3729 — warn-before-save: o EDITOR (Studio) e o PIPELINE (title-picker,
+// Clarice, humanizador, todos via Edit/Write do agente) escrevem DIRETO no
+// mesmo `02-reviewed.md`/`03-social.md` compartilhado, sem lock nem CAS. Se o
+// pipeline reescrever o arquivo entre o momento em que o editor abriu o
+// painel e o momento em que clica "Salvar", o PUT normal sobrescreveria essa
+// escrita do pipeline silenciosamente. O server detecta isso comparando o
+// mtime que o client viu no GET (`expectedModifiedAt`) contra o mtime ATUAL
+// em disco (`saveReviewFile` em studio-review.ts) e responde 409 em vez de
+// escrever — este módulo só hospeda a mensagem PURA mostrada nesse caso
+// (mesmo padrão de DIVERGENCE_CONFIRM_MESSAGE acima: nenhuma lógica de
+// DOM/fetch aqui, só texto testável sem harness).
+//
+// Escopo explícito (decisão do coordenador, comentário #3729 260720): isto
+// protege o save do EDITOR de sobrescrever uma escrita do PIPELINE — não o
+// inverso (pipeline sobrescrevendo uma edição do editor ainda não salva).
+// Risco residual documentado em CLAUDE.md.
+export const SAVE_CONFLICT_CONFIRM_MESSAGE =
+  "O arquivo mudou desde que você abriu este painel — provavelmente o pipeline salvou uma versão nova " +
+  "(ex: title-picker, correção Clarice, humanizador) enquanto você editava. Clique OK para SOBRESCREVER " +
+  "com a sua versão mesmo assim, ou Cancelar para RECARREGAR a versão mais recente do disco (suas " +
+  "edições não salvas nesta aba serão perdidas).";

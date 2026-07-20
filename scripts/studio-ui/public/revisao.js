@@ -9,7 +9,11 @@
 // conteúdo ainda-não-salvo do textarea (documentado no hint da UI).
 
 import { buildRewriteTitlePrompt, buildRegenerateImagePrompt } from "./revisao-prompts.js";
-import { shouldConfirmDivergenceGuard, DIVERGENCE_CONFIRM_MESSAGE } from "./revisao-guards.js";
+import {
+  shouldConfirmDivergenceGuard,
+  DIVERGENCE_CONFIRM_MESSAGE,
+  SAVE_CONFLICT_CONFIRM_MESSAGE,
+} from "./revisao-guards.js";
 
 const SLUGS = ["categorized", "reviewed", "social", "html-final"];
 const FILE_LABELS = {
@@ -37,6 +41,15 @@ let dirty = false;
 // estado fresco do servidor antes de decidir mostrar o confirm() (#3668 gap
 // 3: evita TOCTOU de aba aberta há tempo ou edição concorrente).
 let htmlFinalDiverged = false;
+// #3729: mtime (ISO) do arquivo ATUALMENTE aberto tal como visto no último
+// GET bem-sucedido (`loadFile()`) — `null` quando o arquivo ainda não existia
+// naquele momento. Enviado de volta como `expectedModifiedAt` no PUT de
+// `saveCurrent()`; o server (saveReviewFile em studio-review.ts) compara
+// contra o mtime ATUAL em disco e responde 409 se divergir (o pipeline
+// reescreveu o arquivo por baixo entre o load e o save). Atualizado só
+// quando `loadFile()`/save bem-sucedido se referem ao slug ainda ativo — o
+// mesmo cuidado de "snapshot" já documentado em saveCurrent() abaixo.
+let loadedModifiedAt = null;
 
 const el = {
   backLink: document.getElementById("back-link"),
@@ -162,6 +175,10 @@ async function loadFile(slug, { force } = {}) {
   el.fileStatus.textContent = "Carregando…";
   el.pullStatus.textContent = "";
   dirty = false;
+  // #3729: reseta o baseline temporal ANTES do fetch — se o load falhar (ou o
+  // arquivo não existir ainda), não deve sobrar um `loadedModifiedAt` de um
+  // slug/estado anterior associado à aba agora ativa.
+  loadedModifiedAt = null;
 
   const { ok, body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/${slug}`);
   el.editor.disabled = false;
@@ -178,6 +195,7 @@ async function loadFile(slug, { force } = {}) {
   }
   el.editor.value = body.content;
   el.fileStatus.textContent = `Modificado ${fmtTime(body.modifiedAt)}`;
+  loadedModifiedAt = body.modifiedAt ?? null;
   if (body.pull && body.pull.attempted) {
     el.pullStatus.textContent = body.pull.ok
       ? "Pull do Drive (#494) ok antes de abrir."
@@ -213,6 +231,11 @@ async function saveCurrent() {
   // robusta, independente de qualquer trava de UI.
   const slugAtSaveStart = currentSlug;
   const contentAtSaveStart = el.editor.value;
+  // #3729: snapshot do mtime visto no último load bem-sucedido DESTE slug —
+  // mesmo princípio do snapshot de slug/conteúdo acima (#3672): capturado
+  // ANTES de qualquer await, nunca lido "ao vivo" depois (uma troca de aba
+  // durante o guard reatribuiria `loadedModifiedAt` pro slug novo).
+  const expectedModifiedAtAtSaveStart = loadedModifiedAt;
   el.saveBtn.disabled = true;
   try {
     // #3635/#3668: guard — salvar 02-reviewed.md enquanto o HTML final já
@@ -238,11 +261,38 @@ async function saveCurrent() {
     }
     el.saveStatus.textContent = "Salvando…";
     el.saveStatus.className = "rv-save-status";
-    const { ok, body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/${slugAtSaveStart}`, {
+    const putUrl = `/api/editions/${encodeURIComponent(aammdd)}/review/${slugAtSaveStart}`;
+    let { ok, status, body } = await fetchJson(putUrl, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: contentAtSaveStart }),
+      body: JSON.stringify({ content: contentAtSaveStart, expectedModifiedAt: expectedModifiedAtAtSaveStart }),
     });
+
+    // #3729: 409 = o server detectou que o arquivo em disco mudou desde que
+    // este painel o carregou (o pipeline reescreveu por baixo — title-picker,
+    // Clarice, humanizador). Avisa antes de decidir: OK sobrescreve mesmo
+    // assim (retry com `force: true`, SEM `expectedModifiedAt` — o editor já
+    // confirmou), Cancelar recarrega a versão do disco e descarta a edição
+    // local não salva desta aba.
+    if (!ok && status === 409) {
+      const overwrite = window.confirm(SAVE_CONFLICT_CONFIRM_MESSAGE);
+      if (overwrite) {
+        ({ ok, status, body } = await fetchJson(putUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: contentAtSaveStart, force: true }),
+        }));
+      } else {
+        el.saveStatus.textContent = "Não salvo — recarregando a versão mais recente do disco…";
+        el.saveStatus.className = "rv-save-status";
+        if (currentSlug === slugAtSaveStart) {
+          dirty = false; // evita o confirm() de "descartar edições" dentro de loadFile()
+          await loadFile(slugAtSaveStart, { force: true });
+        }
+        return;
+      }
+    }
+
     if (ok && body && body.ok) {
       el.saveStatus.textContent = `Salvo ${fmtTime(body.modifiedAt)}`;
       el.saveStatus.className = "rv-save-status ok";
@@ -253,6 +303,11 @@ async function saveCurrent() {
       if (currentSlug === slugAtSaveStart) {
         dirty = false;
         el.fileStatus.textContent = `Modificado ${fmtTime(body.modifiedAt)}`;
+        // #3729: atualiza o baseline temporal pro que acabou de ser gravado —
+        // sem isso, o PRÓXIMO save deste mesmo slug compararia contra o mtime
+        // pré-save (sempre divergente) e disparia um falso-positivo de
+        // conflito a cada save consecutivo.
+        loadedModifiedAt = body.modifiedAt;
       }
       if (slugAtSaveStart === "html-final") {
         // #3672 (self-review): refresh PÓS-save isolado num try/catch

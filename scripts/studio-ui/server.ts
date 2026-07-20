@@ -839,13 +839,25 @@ async function handleReviewSave(
     sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
     return;
   }
-  const content = (body as { content?: unknown } | null)?.content;
+  const parsed = body as { content?: unknown; expectedModifiedAt?: unknown; force?: unknown } | null;
+  const content = parsed?.content;
   if (typeof content !== "string") {
     sendJson(res, 400, { error: "campo 'content' (string) é obrigatório no corpo" });
     return;
   }
-  const result = saveReviewFile(rootDir, aammdd, slug, content);
-  sendJson(res, result.ok ? 200 : 400, result);
+  // #3729: `expectedModifiedAt` (mtime ISO visto pelo client ao abrir o
+  // painel, ou `null` quando o arquivo ainda não existia) é opcional — campo
+  // ausente do corpo mantém compat com clients antigos (pula a checagem de
+  // divergência, mesmo comportamento de antes). `force: true` ignora
+  // divergência detectada (editor já confirmou no dialog de conflito).
+  const expectedModifiedAt =
+    parsed && "expectedModifiedAt" in parsed
+      ? ((parsed.expectedModifiedAt ?? null) as string | null)
+      : undefined;
+  const force = parsed?.force === true;
+  const result = saveReviewFile(rootDir, aammdd, slug, content, { expectedModifiedAt, force });
+  const status = result.ok ? 200 : result.conflict ? 409 : 400;
+  sendJson(res, status, result);
 }
 
 function handleReviewResetBaseline(rootDir: string, aammdd: string, slug: string, res: ServerResponse): void {
