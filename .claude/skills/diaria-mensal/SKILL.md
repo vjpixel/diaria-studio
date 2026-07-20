@@ -343,9 +343,18 @@ npx tsx scripts/serve-preview.ts \
 ```
 Rodar com `run_in_background: true` no Bash tool. Ler `preview_url` (e
 `preview_url_pid`, pra teardown) de `preview-server-url.json`. Em modo `local`
-(`scripts/lib/exec-mode.ts`), pode-se navegar o Chrome do editor pra essa URL
-(`mcp__claude-in-chrome__navigate`); em `cloud`, só logar a URL — sem navegação
-(sem Chrome do editor na sessão).
+(`scripts/lib/exec-mode.ts`), pode-se navegar o Chrome do editor pra essa URL:
+`mcp__claude-in-chrome__tabs_context_mcp` (obter/criar o `tabId` do grupo MCP)
+→ `mcp__claude-in-chrome__navigate` com esse `tabId` e `url: {preview_url}`;
+em `cloud`, só logar a URL — sem navegação (sem Chrome do editor na sessão).
+
+**#3700 — persistir o `tabId` usado**, no mesmo JSON, pra o teardown da Etapa 4e
+conseguir fechar a aba (não só matar o servidor — sem isso a aba fica órfã
+apontando pro loopback morto e o "Continuar de onde parei" do Chrome a reabre a
+cada restart):
+```bash
+node -e "const p='data/monthly/$CYCLE/_internal/preview-server-url.json';const j=JSON.parse(require('fs').readFileSync(p,'utf8'));j.preview_url_tab_id={tab_id};require('fs').writeFileSync(p,JSON.stringify(j,null,2));"
+```
 
 ### Gate Etapa 3 (pulado com `--no-gate`)
 
@@ -488,7 +497,13 @@ Aprovar? sim / editar / retry
 - `editar` → editor edita `draft.md` local/Drive; re-rodar 4a→4b→4c→4d após confirmação (4b já encerra o servidor de preview anterior e sobe um novo — sem teardown manual aqui).
 - `retry` → re-rodar 4b→4c→4d (mesmo draft, novo preview/lint/fact-check — útil se só o preview falhou em 4b; mesmo stop-old→serve-new de 4b).
 
-Após aprovação (`sim`), encerrar o servidor de preview local (#3546 — Etapa 5 não precisa dele, publica direto no Brevo) e gravar o checkpoint (#2795):
+Após aprovação (`sim`), encerrar o servidor de preview local (#3546 — Etapa 5 não precisa dele, publica direto no Brevo) E a aba do Chrome (#3700 — mesma causa raiz do diário: `--stop-pid` só mata o processo, nunca a aba que `navigate` abriu, e ela fica órfã apontando pro loopback morto até o Chrome a reabrir num "Continuar de onde parei"), e gravar o checkpoint (#2795):
+
+Em modo `local`, fechar a aba ANTES de matar o processo (best-effort, nunca bloqueante):
+1. `mcp__claude-in-chrome__tabs_context_mcp` — listar as abas do grupo MCP atual.
+2. Para a aba cujo `tabId` bata com `preview_url_tab_id` (`preview-server-url.json`), OU cuja URL aponte pra `127.0.0.1` (fallback — pega aba de um `retry`/`editar` anterior sem `tabId` persistido): (a) **página-cortina** — `mcp__claude-in-chrome__navigate` com `url: "about:blank"` nesse `tabId`; (b) `mcp__claude-in-chrome__tabs_close_mcp` nesse `tabId`.
+3. Nenhuma aba encontrada, ou MCP indisponível: pular sem erro. Em `cloud`: pular inteiramente.
+
 ```bash
 PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('data/monthly/$CYCLE/_internal/preview-server-url.json','utf8')).preview_url_pid||'')}catch(e){}")
 [ -n "$PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$PID"

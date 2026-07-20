@@ -127,7 +127,12 @@ npx tsx scripts/render-halt-banner.ts \
       --file {EDITION_DIR}/_internal/newsletter-final-embedded.html --port 0 \
       --persist-to {EDITION_DIR}/_internal/04-newsletter-url.json --field newsletter_url &
     ```
-    Rodar com `run_in_background: true` no Bash tool. Ler `newsletter_url` (e `newsletter_url_pid`, guardado pro teardown) de `04-newsletter-url.json` pra popular `{newsletter_url}` no resumo do gate (§4d). Em modo `local` (`scripts/lib/exec-mode.ts`), pode-se navegar o Chrome do editor pra essa URL (`mcp__claude-in-chrome__navigate`) pra revisão visual assistida; em `cloud`, só logar a URL — sem navegação (sem Chrome do editor na sessão, ver issue #3546 "Fora de escopo").
+    Rodar com `run_in_background: true` no Bash tool. Ler `newsletter_url` (e `newsletter_url_pid`, guardado pro teardown) de `04-newsletter-url.json` pra popular `{newsletter_url}` no resumo do gate (§4d). Em modo `local` (`scripts/lib/exec-mode.ts`), pode-se navegar o Chrome do editor pra essa URL pra revisão visual assistida: `mcp__claude-in-chrome__tabs_context_mcp` (obter/criar o `tabId` do grupo MCP) → `mcp__claude-in-chrome__navigate` com esse `tabId` e `url: {newsletter_url}`. Em `cloud`, só logar a URL — sem navegação (sem Chrome do editor na sessão, ver issue #3546 "Fora de escopo").
+
+    **#3700 — persistir o `tabId` usado**, no mesmo JSON, pra o teardown de §4d/§4e conseguir fechar a aba (não só matar o servidor — sem isso a aba fica órfã apontando pro loopback morto e o "Continuar de onde parei" do Chrome a reabre a cada restart):
+    ```bash
+    node -e "const p='{EDITION_DIR}/_internal/04-newsletter-url.json';const j=JSON.parse(require('fs').readFileSync(p,'utf8'));j.newsletter_url_tab_id={tab_id};require('fs').writeFileSync(p,JSON.stringify(j,null,2));"
+    ```
 
 3. Pre-render do social preview HTML + servir localmente (mesmo padrão do step 2b acima):
    ```bash
@@ -146,6 +151,7 @@ npx tsx scripts/render-halt-banner.ts \
      --file {EDITION_DIR}/_internal/social-preview-embedded.html --port 0 \
      --persist-to {EDITION_DIR}/_internal/05-social-preview.json --field social_preview_url &
    ```
+   Mesmo padrão do step 2b acima pro `navigate`/`tabId` — se o Chrome do editor for navegado pra `{social_url}`, persistir `social_preview_url_tab_id` em `05-social-preview.json` (mesmo mecanismo, #3700).
 
 4. close-poll (set gabarito — idempotente):
    ```bash
@@ -482,14 +488,20 @@ npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 4 --agent orchestrator -
   --message "gate revisao response: {sim|editar|ajustar|abortar}"
 ```
 
-**Teardown dos preview servers locais (#3546) — rodar em QUALQUER branch TERMINAL do gate (`sim`, `editar`, `abortar`); NUNCA em `ajustar`** (que já encerra→re-serve a cada re-render nos passos de §4d.1, mantendo o gate vivo com um preview atual):
+**Teardown dos preview servers locais (#3546) e das abas do Chrome (#3700) — rodar em QUALQUER branch TERMINAL do gate (`sim`, `editar`, `abortar`); NUNCA em `ajustar`** (que já encerra→re-serve a cada re-render nos passos de §4d.1, mantendo o gate vivo com um preview atual):
+
+Em modo `local`, fechar as abas ANTES de matar os processos. Causa raiz da #3700: `--stop-pid` só derruba o processo do servidor — nunca a aba do Chrome que `navigate` abriu em §4b. Sem fechar a aba, ela sobrevive apontando pro loopback morto e o "Continuar de onde parei" do Chrome a reabre a cada restart. Passos (best-effort, nunca bloqueante):
+1. `mcp__claude-in-chrome__tabs_context_mcp` — listar as abas do grupo MCP atual.
+2. Para cada aba cujo `tabId` bata com `newsletter_url_tab_id` (`04-newsletter-url.json`) ou `social_preview_url_tab_id` (`05-social-preview.json`), OU cuja URL aponte pra `127.0.0.1` (fallback — pega aba de um re-serve anterior sem `tabId` persistido, ex: fluxo `ajustar` de §4d.1): (a) **página-cortina** — `mcp__claude-in-chrome__navigate` com `url: "about:blank"` nesse `tabId`, garante que o session restore não reabra o loopback morto mesmo se o close falhar; (b) `mcp__claude-in-chrome__tabs_close_mcp` nesse `tabId`.
+3. Nenhuma aba encontrada, ou MCP indisponível/aba já fechada pelo editor: pular sem erro. Em `cloud`: pular inteiramente (nenhuma aba foi aberta em §4b).
+
 ```bash
 NEWS_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/04-newsletter-url.json','utf8')).newsletter_url_pid||'')}catch(e){}")
 [ -n "$NEWS_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$NEWS_PID"
 SOCIAL_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/05-social-preview.json','utf8')).social_preview_url_pid||'')}catch(e){}")
 [ -n "$SOCIAL_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$SOCIAL_PID"
 ```
-Best-effort — `serve-preview.ts --stop-pid` já não é fatal quando o PID não existe mais (processo já morto, sessão reiniciada); nunca bloquear o encerramento do gate por causa disso.
+Best-effort — `serve-preview.ts --stop-pid` já não é fatal quando o PID não existe mais (processo já morto, sessão reiniciada); nunca bloquear o encerramento do gate por causa disso. Mesma regra vale pro fechamento de aba acima (passos 1-3).
 
 **"editar":** rodar o teardown acima, depois `update-stage-status --stage 4 --status pending` + halt banner. NÃO escrever sentinel. Editor edita no Drive e re-roda quando pronto (um novo preview local é servido do zero na próxima passada por §4b). Adequado para revisões longas ou fora do terminal.
 
@@ -587,7 +599,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
 
 **Após aprovação do gate** (ou imediatamente em `auto_approve = true` após §4b):
 
-**Teardown dos preview servers locais (#3546)** — rodar aqui também no caminho `auto_approve = true` (gate pulado inteiramente, mas os servidores de §4b sobem do mesmo jeito no pré-render). Se o editor já respondeu `sim` no gate humano, o teardown já rodou em §4d — idempotente, seguro repetir (mesmo bloco):
+**Teardown dos preview servers locais (#3546) e das abas do Chrome (#3700)** — rodar aqui também no caminho `auto_approve = true` (gate pulado inteiramente, mas os servidores/abas de §4b sobem do mesmo jeito no pré-render). Se o editor já respondeu `sim` no gate humano, o teardown (fechamento de aba incluído — mesmo procedimento de §4d, passos 1-3) já rodou em §4d — idempotente, seguro repetir (mesmo bloco):
 ```bash
 NEWS_PID=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('{EDITION_DIR}/_internal/04-newsletter-url.json','utf8')).newsletter_url_pid||'')}catch(e){}")
 [ -n "$NEWS_PID" ] && npx tsx scripts/serve-preview.ts --stop-pid "$NEWS_PID"
