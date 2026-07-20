@@ -86,10 +86,12 @@
  * (a) **Guard de working-tree** (`WAVE_WORKTREE_GUARD_RE`) — efetivo pra
  *     `git pull`/`git stash`/`git reset` (nenhum dos três está pré-aprovado
  *     em `settings.json`), mas **NÃO** pra `git checkout`/`git push` — ambos
- *     já allowlistados incondicionalmente (`"Bash(git checkout *)"`,
- *     `"Bash(git push *)"`, `.claude/settings.json` linhas ~31-32). Um
- *     `git checkout master` disparado pela coordenadora é auto-aprovado pelo
- *     harness antes de `evaluateWaveTool` sequer rodar.
+ *     já allowlistados incondicionalmente em `.claude/settings.json`
+ *     (`"Bash(git checkout *)"`, `"Bash(git push *)"` no bloco
+ *     `permissions.allow` — não citamos número de linha aqui de propósito,
+ *     drifta fácil; buscar pela string literal). Um `git checkout master`
+ *     disparado pela coordenadora é auto-aprovado pelo harness antes de
+ *     `evaluateWaveTool` sequer rodar.
  * (b) **Guard de publicação** (`WAVE_PUBLISH_GUARD_RE`, o guard PRINCIPAL do
  *     módulo) — `.claude/settings.json` também tem `"Bash(npx tsx
  *     scripts/*.ts)"` no allow-list incondicional. Isso cobre QUALQUER

@@ -190,12 +190,13 @@ describe("evaluateWaveTool (#3702) — guard de publicação como código", () =
     assert.match(withMultipleFlags.reason ?? "", /guard de working-tree/);
   });
 
-  it("não bloqueia comandos git inócuos sem checkout/pull/stash/reset (nenhum falso-positivo óbvio)", () => {
-    assert.equal(evaluateWaveTool("Bash", { command: "git status" }).allow, false); // negado por ser fora do blocklist mas não pelo guard de working-tree
+  it("não bloqueia comandos git inócuos via o guard de working-tree especificamente (ainda negados pelo default conservador, mas por outro motivo)", () => {
     const status = evaluateWaveTool("Bash", { command: "git status" });
+    assert.equal(status.allow, false); // negado pelo default conservador (fora de qualquer blocklist), não pelo guard de working-tree
     assert.doesNotMatch(status.reason ?? "", /guard de working-tree/);
 
     const log = evaluateWaveTool("Bash", { command: "git log --oneline -5" });
+    assert.equal(log.allow, false);
     assert.doesNotMatch(log.reason ?? "", /guard de working-tree/);
   });
 
