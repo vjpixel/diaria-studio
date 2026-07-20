@@ -204,7 +204,7 @@ ${renderCuradoriaFooterStyles()}
       <p class="eyebrow">Diar.ia · Curadoria</p>
       <hr class="rule">
       <h1>Livros sobre IA<span class="dot" aria-hidden="true">.</span></h1>
-      <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor a IA</p>
+      <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
       <p class="lede">Uma seleção dos melhores livros sobre inteligência artificial, reunida a partir de mais de 10 listas e ranqueada por um critério subjetivo (prêmios do livro ou do autor) e um objetivo (nota na Amazon). Quando há edição em português, é ela que aparece.</p>
       <p class="lede">Os links são de afiliado — comprando por eles, você apoia a Diar.ia sem pagar nada a mais.</p>
     </div>

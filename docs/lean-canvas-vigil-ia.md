@@ -37,7 +37,7 @@ Mass market (escala futura): leitores de newsletters tech genéricas que querem 
 
 ## 3. Unique Value Proposition
 
-**"5 minutos diários pra se manter atualizado e usar melhor a IA."** (tagline única, #3577 — 2026-07-16)
+**"5 minutos diários pra se manter atualizado e usar melhor as IAs."** (tagline única, #3577 — 2026-07-16; plural desde #3695 — 2026-07-19)
 
 Subtexto:
 - Curadoria humana (não agregador algorítmico), em português, com frame editorial: "por que isso importa" e o que muda pro leitor profissional no Brasil

@@ -1,13 +1,16 @@
 /**
- * tagline-oficial.test.ts (#3577)
+ * tagline-oficial.test.ts (#3577, atualizado #3695)
  *
  * Regressão pro #633: PR #3583 substituiu as 3 variantes antigas de tagline
- * pela oficial ("5 minutos diários pra se manter atualizado e usar melhor a
- * IA.") em `context/editorial-rules.md` (maior alavanca — entra no system
- * prompt de todos os writer agents), `scripts/build-cursos-page.ts` e
+ * pela oficial em `context/editorial-rules.md` (maior alavanca — entra no
+ * system prompt de todos os writer agents), `scripts/build-cursos-page.ts` e
  * `scripts/build-livros-page.ts`, mas mergeou sem teste guardando a troca.
  * Este arquivo fecha essa lacuna: garante que a tagline oficial aparece nessas
- * superfícies e que nenhuma das 3 variantes antigas volta por engano.
+ * superfícies e que nenhuma das variantes antigas volta por engano.
+ *
+ * #3695 (2026-07-19): forma singular "usar melhor a IA" trocada pela plural
+ * "usar melhor as IAs" — decisão do editor, "as IAs" é a nova forma canônica.
+ * A forma singular vira variante proibida.
  */
 
 import { describe, it } from "node:test";
@@ -21,12 +24,13 @@ import { renderLivrosPage, type Book } from "../scripts/build-livros-page.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-const TAGLINE_OFICIAL = "5 minutos diários pra se manter atualizado e usar melhor a IA";
+const TAGLINE_OFICIAL = "5 minutos diários pra se manter atualizado e usar melhor as IAs";
 
 const VARIANTES_ANTIGAS = [
   "Seu filtro no caos de notícias sobre IA",
   "As notícias essenciais sobre IA em 5 minutos, diariamente.",
   "notícias essenciais sobre IA em 5 minutos",
+  "usar melhor a IA",
 ];
 
 function course(over: Partial<Course> = {}): Course {
