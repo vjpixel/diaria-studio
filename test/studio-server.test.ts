@@ -894,3 +894,139 @@ describe("GET /api/chat/pending (#3617) — hidratação do chat drawer", () => 
     assert.equal(res.status, 405);
   });
 });
+
+describe("GET /api/chat/history (#3803) — reidratação do TRANSCRIPT do chat drawer", () => {
+  let root: string;
+  let server: StudioServer;
+  let queryFn: QueryFn;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-server-chat-history-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    queryFn = () => {
+      async function* gen() {}
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    server = await startStudioServer({
+      port: 0,
+      rootDir: root,
+      pollIntervalMs: 30,
+      chatQueryFn: (params) => queryFn(params),
+    });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("200 com history:[] quando nenhuma mensagem foi trocada ainda", async () => {
+    const res = await fetch(new URL("/api/chat/history", server.url));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /application\/json/);
+    const body = (await res.json()) as { history: unknown[]; sessionId: string | null };
+    assert.deepEqual(body.history, []);
+    assert.equal(body.sessionId, null);
+  });
+
+  it("regressão (#3803): após um turno completo, o histórico traz a mensagem do editor + a resposta do assistente + o chip de tool — o mesmo transcript que sumia ao navegar de página", async () => {
+    queryFn = (params) => {
+      async function* gen() {
+        const canUseTool = params.options?.canUseTool as CanUseTool;
+        yield { type: "system", subtype: "init", session_id: "s-hist-1", model: "m", cwd: root } as unknown as SDKMessage;
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "tu-hist-1", name: "Read", input: { file_path: "x.md" } }] },
+        } as unknown as SDKMessage;
+        yield {
+          type: "stream_event",
+          event: { type: "content_block_delta", delta: { type: "text_delta", text: "Ol" } },
+        } as unknown as SDKMessage;
+        yield {
+          type: "stream_event",
+          event: { type: "content_block_delta", delta: { type: "text_delta", text: "á!" } },
+        } as unknown as SDKMessage;
+        yield {
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "tu-hist-1", is_error: false }] },
+        } as unknown as SDKMessage;
+        yield { type: "result", subtype: "success", is_error: false, result: "Olá!", session_id: "s-hist-1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    const chatRes = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "oi, tudo bem?" }),
+    });
+    assert.equal(chatRes.status, 200);
+    await chatRes.text(); // drena o stream até o fim (chat-done) antes de checar o histórico.
+
+    const res = await fetch(new URL("/api/chat/history", server.url));
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      history: Array<{ kind: string; seq: number; text?: string; toolUseId?: string; status?: string }>;
+      sessionId: string | null;
+    };
+    assert.equal(body.sessionId, "s-hist-1");
+    assert.deepEqual(
+      body.history.map((e) => e.kind),
+      ["user", "tool", "assistant", "tool"],
+    );
+    assert.equal(body.history[0].text, "oi, tudo bem?");
+    assert.equal(body.history[1].toolUseId, "tu-hist-1");
+    assert.equal(body.history[1].status, "start");
+    assert.equal(body.history[2].text, "Olá!");
+    assert.equal(body.history[3].status, "end");
+    // seq estritamente crescente, na ordem de emissão.
+    for (let i = 1; i < body.history.length; i++) {
+      assert.ok(body.history[i].seq > body.history[i - 1].seq);
+    }
+  });
+
+  it("?sessionId= que NÃO bate com a sessão corrente do servidor devolve history:[] (transcript de conversa já superada não reaparece)", async () => {
+    const res = await fetch(new URL("/api/chat/history?sessionId=sessao-antiga-inexistente", server.url));
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { history: unknown[]; sessionId: string | null };
+    assert.deepEqual(body.history, [], "sessionId divergente da corrente -> não reidrata transcript alheio");
+    assert.equal(body.sessionId, "s-hist-1");
+  });
+
+  it("?sessionId= que BATE com a sessão corrente devolve o histórico normalmente", async () => {
+    const res = await fetch(new URL("/api/chat/history?sessionId=s-hist-1", server.url));
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { history: unknown[] };
+    assert.equal(body.history.length, 4);
+  });
+
+  it("'nova conversa' (reset:true) zera o histórico servido por /api/chat/history", async () => {
+    queryFn = (params) => {
+      async function* gen() {
+        yield { type: "system", subtype: "init", session_id: "s-hist-2", model: "m", cwd: root } as unknown as SDKMessage;
+        yield { type: "result", subtype: "success", is_error: false, result: "novo turno", session_id: "s-hist-2" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    const chatRes = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "mensagem pós-reset", reset: true }),
+    });
+    assert.equal(chatRes.status, 200);
+    await chatRes.text();
+
+    const res = await fetch(new URL("/api/chat/history", server.url));
+    const body = (await res.json()) as { history: Array<{ text?: string }> };
+    // só a mensagem do turno NOVO — o transcript anterior (4 entries do teste
+    // de regressão acima) foi descartado pelo reset, nunca reidrataria numa
+    // navegação futura como conversa "antiga" misturada com a nova.
+    assert.equal(body.history.length, 2);
+    assert.equal(body.history[0].text, "mensagem pós-reset");
+  });
+
+  it("POST em /api/chat/history não é permitido (rota GET-only)", async () => {
+    const res = await fetch(new URL("/api/chat/history", server.url), { method: "POST" });
+    assert.equal(res.status, 405);
+  });
+});

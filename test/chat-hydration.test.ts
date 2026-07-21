@@ -23,6 +23,8 @@ import {
   parsePendingChatResponse,
   planHydrationCards,
   isSensitiveQuestion,
+  parseChatHistoryResponse,
+  planHistoryReplay,
 } from "../scripts/studio-ui/public/chat-hydration.js";
 
 const VALID_QUESTIONS = [
@@ -219,5 +221,99 @@ describe("isSensitiveQuestion (#3561)", () => {
     assert.equal(isSensitiveQuestion("string"), false);
     assert.equal(isSensitiveQuestion({}), false);
     assert.equal(isSensitiveQuestion({ header: 123, question: null }), false);
+  });
+});
+
+/**
+ * #3803 — regressão do bug "Studio chat: transcript some ao clicar em link":
+ * navegar entre páginas do Studio (MPA, cada página reinjeta chat-drawer.js
+ * do zero) esvaziava a tela do chat mesmo com a sessão do Agent SDK viva no
+ * servidor (via `resume`) — só o gate pendente (#3617) sobrevivia à
+ * navegação. `parseChatHistoryResponse`/`planHistoryReplay` são a metade
+ * "cliente decide o que falta desenhar" do fix; a metade "servidor
+ * acumula/serve o histórico" é coberta por `test/studio-chat.test.ts`
+ * (`appendChatHistoryUserMessage`/`appendChatHistoryEvent`/`getChatHistory`).
+ */
+describe("parseChatHistoryResponse (#3803)", () => {
+  it("normaliza um payload válido com múltiplas entries, preservando a ordem", () => {
+    const result = parseChatHistoryResponse({
+      history: [
+        { kind: "user", seq: 1, ts: 1, text: "oi" },
+        { kind: "assistant", seq: 2, ts: 2, text: "olá!", isError: false },
+      ],
+    });
+    assert.equal(result.length, 2);
+    assert.equal(result[0].kind, "user");
+    assert.equal(result[1].kind, "assistant");
+  });
+
+  it("payload sem 'history' (ou não-array) vira lista vazia, sem lançar", () => {
+    assert.deepEqual(parseChatHistoryResponse({}), []);
+    assert.deepEqual(parseChatHistoryResponse({ history: "não é array" }), []);
+    assert.deepEqual(parseChatHistoryResponse(null), []);
+    assert.deepEqual(parseChatHistoryResponse(undefined), []);
+  });
+
+  it("descarta entradas sem 'seq' numérico ou sem 'kind' string, mantendo as demais", () => {
+    const result = parseChatHistoryResponse({
+      history: [
+        { kind: "user", seq: "1", text: "seq como string, inválido" },
+        { seq: 2, text: "sem kind" },
+        { kind: "user", seq: 3, text: "válida" },
+      ],
+    });
+    assert.equal(result.length, 1);
+    assert.equal((result[0] as { text: string }).text, "válida");
+  });
+
+  it("payload malformado (entry não-objeto) é descartado sem lançar", () => {
+    const result = parseChatHistoryResponse({ history: [null, "string", 42, { kind: "user", seq: 1, text: "ok" }] });
+    assert.equal(result.length, 1);
+  });
+});
+
+describe("planHistoryReplay (#3803)", () => {
+  const entries = [
+    { kind: "user", seq: 1, text: "oi" },
+    { kind: "assistant", seq: 2, text: "olá!" },
+    { kind: "tool", seq: 3, toolUseId: "tu-1", status: "start" },
+  ];
+
+  it("lastSeq=0 (nada renderizado ainda) -> devolve tudo, na ordem, e nextSeq = maior seq", () => {
+    const { toRender, nextSeq } = planHistoryReplay(entries, 0);
+    assert.deepEqual(toRender.map((e) => e.seq), [1, 2, 3]);
+    assert.equal(nextSeq, 3);
+  });
+
+  it("lastSeq no meio -> devolve só as entries com seq MAIOR, dedupe da regressão #3803", () => {
+    const { toRender, nextSeq } = planHistoryReplay(entries, 1);
+    assert.deepEqual(toRender.map((e) => e.seq), [2, 3]);
+    assert.equal(nextSeq, 3);
+  });
+
+  it("lastSeq >= maior seq -> nada a renderizar (2ª chamada de hidratação não duplica)", () => {
+    const { toRender, nextSeq } = planHistoryReplay(entries, 3);
+    assert.deepEqual(toRender, []);
+    assert.equal(nextSeq, 3, "nextSeq não regride quando não há entries novas");
+  });
+
+  it("lista de entries vazia -> nada a renderizar, nextSeq preserva lastSeq", () => {
+    const { toRender, nextSeq } = planHistoryReplay([], 5);
+    assert.deepEqual(toRender, []);
+    assert.equal(nextSeq, 5);
+  });
+
+  it("lastSeq omitido default pra 0 (replay inicial do mount)", () => {
+    const { toRender } = planHistoryReplay(entries);
+    assert.equal(toRender.length, 3);
+  });
+
+  it("simula 2 hidratações sucessivas na mesma página sem duplicar nenhuma entry", () => {
+    const first = planHistoryReplay(entries, 0);
+    assert.deepEqual(first.toRender.map((e) => e.seq), [1, 2, 3]);
+    // servidor ganhou 1 entry nova entre as duas chamadas:
+    const grown = [...entries, { kind: "user", seq: 4, text: "nova mensagem" }];
+    const second = planHistoryReplay(grown, first.nextSeq);
+    assert.deepEqual(second.toRender.map((e) => e.seq), [4], "só a entry NOVA, nenhuma repetida");
   });
 });

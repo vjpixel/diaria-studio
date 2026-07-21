@@ -596,6 +596,206 @@ export function setSessionId(rootDir: string, sessionId: string): void {
 export function clearSession(rootDir: string): void {
   sessionIdByRoot.delete(rootDir);
   clearSessionToolAllowlist(rootDir); // #3804: "nova conversa" também zera tools "sempre permitir".
+  clearChatHistory(rootDir); // #3803: "nova conversa" também zera o histórico reidratável.
+}
+
+// ─── histórico de mensagens por sessão (#3803) ─────────────────────────────
+//
+// 1 buffer em memória por `rootDir` (mesmo padrão de `sessionIdByRoot`/
+// `pendingByRoot`/`sessionAllowByRoot` acima — sem persistência em disco;
+// aceitável porque o próprio ponteiro de sessão do SDK (`sessionId`/`resume`)
+// já é só-memória com o mesmo trade-off, ver comentário de topo do módulo).
+// Cobre o TODO(#3561/#3562) órfão citado no topo de `chat-drawer.js`:
+// mensagens do editor + texto final do assistente + chips de tool call de
+// turnos ANTERIORES somem hoje ao navegar entre páginas (MPA — cada página
+// reinjeta o script do zero) mesmo com a sessão do Agent SDK viva no
+// servidor via `resume`; só o gate pendente (#3617) já era reidratado.
+//
+// Cada entry carrega um `seq` monotônico por `rootDir` (nunca reciclado,
+// mesmo com o cap de `MAX_HISTORY_ENTRIES` removendo entries antigas) — é o
+// que permite ao cliente (`chat-hydration.js` `planHistoryReplay`) saber
+// quais entries já renderizou sem precisar de um id por tipo (mensagens de
+// usuário/assistente não têm `toolUseId` como as de tool).
+
+const MAX_HISTORY_ENTRIES = 400; // cap por rootDir — sem isso o buffer cresce sem limite ao longo de um dia de trabalho (memory leak de processo de vida longa).
+
+export interface ChatHistoryUserEntry {
+  kind: "user";
+  seq: number;
+  ts: number;
+  text: string;
+}
+export interface ChatHistoryAssistantEntry {
+  kind: "assistant";
+  seq: number;
+  ts: number;
+  text: string;
+  isError: boolean;
+}
+export interface ChatHistoryToolEntry {
+  kind: "tool";
+  seq: number;
+  ts: number;
+  toolUseId: string;
+  /** Vazio nas entries `status: "end"` — `ChatToolEndEvent` não carrega
+   * `name` (ver interface acima); o cliente já resolve o chip certo pelo
+   * Map de `toolUseId` no fluxo ao vivo, mesma coisa no replay. */
+  name: string;
+  status: "start" | "end" | "denied";
+  input?: unknown;
+  isError?: boolean;
+  reason?: string;
+}
+export interface ChatHistoryNoteEntry {
+  kind: "error";
+  seq: number;
+  ts: number;
+  text: string;
+}
+export type ChatHistoryEntry =
+  | ChatHistoryUserEntry
+  | ChatHistoryAssistantEntry
+  | ChatHistoryToolEntry
+  | ChatHistoryNoteEntry;
+
+const historyByRoot = new Map<string, ChatHistoryEntry[]>();
+const historySeqByRoot = new Map<string, number>();
+// Entry do turno CORRENTE sendo acumulada (deltas de texto) — 1 por
+// `rootDir`, já que só existe 1 turno em voo por vez por `rootDir` (mesmo
+// invariante de "1 sessão ad-hoc por processo" do resto do módulo). Ausente
+// (`undefined`) fora de um turno em andamento.
+const currentAssistantEntryByRoot = new Map<string, ChatHistoryAssistantEntry>();
+
+function nextHistorySeq(rootDir: string): number {
+  const seq = (historySeqByRoot.get(rootDir) ?? 0) + 1;
+  historySeqByRoot.set(rootDir, seq);
+  return seq;
+}
+
+function pushHistoryEntry(rootDir: string, entry: ChatHistoryEntry): void {
+  let list = historyByRoot.get(rootDir);
+  if (!list) {
+    list = [];
+    historyByRoot.set(rootDir, list);
+  }
+  list.push(entry);
+  if (list.length > MAX_HISTORY_ENTRIES) list.splice(0, list.length - MAX_HISTORY_ENTRIES);
+}
+
+/** Registra a mensagem do EDITOR no histórico — chamado por `handleApiChat`
+ * (server.ts) antes de `runChatTurn`, já que o texto digitado nunca passa por
+ * `sdkMessageToChatEvents` (o SDK só recebe o `prompt` final montado por
+ * `buildChatPrompt`, não emite nenhum evento de "eco" da entrada). Também
+ * fecha qualquer entry de assistente do turno ANTERIOR que porventura tenha
+ * ficado aberta (ex: turno anterior abortado a meio de um delta) — o próximo
+ * delta deste turno novo abre uma entry própria, nunca continua a bolha do
+ * turno passado. */
+export function appendChatHistoryUserMessage(rootDir: string, text: string): void {
+  currentAssistantEntryByRoot.delete(rootDir);
+  pushHistoryEntry(rootDir, { kind: "user", seq: nextHistorySeq(rootDir), ts: Date.now(), text });
+}
+
+/** Traduz um `ChatWireEvent` (o MESMO já emitido pro SSE do browser em
+ * `handleApiChat`) em 0-1 entries de histórico — chamado pelo `onEvent`
+ * callback logo depois do `res.write` daquele evento. Puramente aditivo ao
+ * buffer em memória; nunca lança (mesma disciplina fail-soft do resto do
+ * módulo — uma falha aqui não pode derrubar o turno real). Deltas de texto
+ * (`chat-delta`) são acumulados na MESMA entry (mutada em lugar, mesma
+ * referência já empurrada ao buffer) até `chat-done` fechar o turno — 1
+ * bolha de assistente por turno no replay, igual ao comportamento ao vivo
+ * (`currentAssistantBody()`/`finalizeAssistantMessage()` em chat-drawer.js). */
+export function appendChatHistoryEvent(rootDir: string, event: ChatWireEvent): void {
+  if (event.event === "chat-delta") {
+    let entry = currentAssistantEntryByRoot.get(rootDir);
+    if (!entry) {
+      entry = { kind: "assistant", seq: nextHistorySeq(rootDir), ts: Date.now(), text: "", isError: false };
+      currentAssistantEntryByRoot.set(rootDir, entry);
+      pushHistoryEntry(rootDir, entry); // mesma referência — mutações abaixo refletem no buffer sem reinserir.
+    }
+    entry.text += event.data.text;
+    return;
+  }
+  if (event.event === "chat-tool") {
+    if (event.data.status === "start") {
+      pushHistoryEntry(rootDir, {
+        kind: "tool",
+        seq: nextHistorySeq(rootDir),
+        ts: Date.now(),
+        toolUseId: event.data.toolUseId,
+        name: event.data.name,
+        status: "start",
+        input: event.data.input,
+      });
+    } else if (event.data.status === "end") {
+      pushHistoryEntry(rootDir, {
+        kind: "tool",
+        seq: nextHistorySeq(rootDir),
+        ts: Date.now(),
+        toolUseId: event.data.toolUseId,
+        name: "",
+        status: "end",
+        isError: event.data.isError,
+      });
+    } else if (event.data.status === "denied") {
+      pushHistoryEntry(rootDir, {
+        kind: "tool",
+        seq: nextHistorySeq(rootDir),
+        ts: Date.now(),
+        toolUseId: event.data.toolUseId,
+        name: event.data.name,
+        status: "denied",
+        reason: event.data.reason,
+      });
+    }
+    return;
+  }
+  if (event.event === "chat-done") {
+    let entry = currentAssistantEntryByRoot.get(rootDir);
+    if (entry) {
+      entry.isError = event.data.isError;
+      // Fallback sem streaming parcial (CLI antigo) — mesmo caso que
+      // `chat-drawer.js` cobre client-side via `sawDelta`.
+      if (!entry.text && event.data.result) entry.text = event.data.result;
+    } else if (event.data.result) {
+      // #3803: turno sem NENHUM `chat-delta` (streaming parcial desligado)
+      // ainda produz uma entry de histórico — sem isto, uma sessão sem
+      // partial-message streaming nunca teria a resposta do assistente
+      // reidratada, mesmo já mostrando ela ao vivo (client-side, mesmo
+      // fallback via `sawDelta`/`data.result` em chat-drawer.js).
+      entry = { kind: "assistant", seq: nextHistorySeq(rootDir), ts: Date.now(), text: event.data.result, isError: event.data.isError };
+      pushHistoryEntry(rootDir, entry);
+    }
+    currentAssistantEntryByRoot.delete(rootDir);
+    return;
+  }
+  if (event.event === "chat-error") {
+    currentAssistantEntryByRoot.delete(rootDir);
+    pushHistoryEntry(rootDir, {
+      kind: "error",
+      seq: nextHistorySeq(rootDir),
+      ts: Date.now(),
+      text: event.data.message,
+    });
+  }
+}
+
+/** Lista o histórico completo em buffer pro `rootDir` — consumido por
+ * `GET /api/chat/history` (server.ts). Ordenado por `seq` crescente (ordem de
+ * inserção; o cap de `MAX_HISTORY_ENTRIES` só descarta as entries mais
+ * ANTIGAS, nunca reordena as que sobram). */
+export function getChatHistory(rootDir: string): ChatHistoryEntry[] {
+  return historyByRoot.get(rootDir) ?? [];
+}
+
+/** Limpa o histórico em buffer do `rootDir` — chamado por `clearSession`
+ * ("nova conversa" no drawer) pra uma conversa nova nunca reidratar o
+ * transcript da conversa anterior numa navegação futura. NÃO reseta
+ * `historySeqByRoot`: `seq` precisa continuar monotônico pro cliente nunca
+ * reinterpretar um `seq` reciclado como "já visto" (ver `planHistoryReplay`,
+ * chat-hydration.js). */
+export function clearChatHistory(rootDir: string): void {
+  historyByRoot.delete(rootDir);
+  currentAssistantEntryByRoot.delete(rootDir);
 }
 
 // ─── gates pendentes: fila de AskUserQuestion aguardando resposta (#3557) ──
