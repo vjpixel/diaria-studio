@@ -552,16 +552,18 @@ export function stitchNewsletter(input: StitchInput): string {
     "",
   );
 
-  if (lancamentos) {
-    parts.push(lancamentos);
+  // #3820: VÍDEOS antes de LANÇAMENTOS (ordem canônica permanente, decisão
+  // editorial 260722). Histórico: #3100 (gate 260708) já tinha movido VÍDEOS
+  // pra antes de RADAR mas ainda depois de LANÇAMENTOS; #3820 sobe mais um
+  // degrau — VÍDEOS agora abre as seções secundárias pós-É-IA?/USE-MELHOR.
+  if (videos) {
+    parts.push(videos);
     parts.push("");
     parts.push("---");
     parts.push("");
   }
-  // #3100: VÍDEO antes de RADAR (ordem canônica permanente, decisão editorial
-  // do gate 260708 — antes o VÍDEO vinha depois do RADAR).
-  if (videos) {
-    parts.push(videos);
+  if (lancamentos) {
+    parts.push(lancamentos);
     parts.push("");
     parts.push("---");
     parts.push("");

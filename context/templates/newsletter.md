@@ -49,11 +49,19 @@ Por que isso importa:
 
 ---
 
-**🛠️ USE MELHOR** (opcional, #1568 — omitir bloco inteiro se editor não selecionou candidato no gate. Posição #1633: antes de LANÇAMENTOS)
+**🛠️ USE MELHOR** (opcional, #1568 — omitir bloco inteiro se editor não selecionou candidato no gate. Posição #1633: antes de LANÇAMENTOS; #3820: É IA? entra logo depois deste bloco, injetada separadamente pelo orchestrator — não faz parte deste template)
 
 **[Título acionável do item](URL)**
 
 [Frase descritiva curta em 1 linha — ferramenta/técnica, tempo estimado entre parênteses. #1634: título no idioma original, nunca traduzir]
+
+---
+
+**VÍDEOS** (opcional — omitir se bucket vazio. #3820: reordenada pra antes de LANÇAMENTOS, ordem alvo USE MELHOR → É IA? → VÍDEOS → LANÇAMENTOS → RADAR)
+
+**[Título do Vídeo]** — [Canal](URL)
+
+[Frase descritiva em 1 linha]
 
 ---
 
@@ -72,14 +80,6 @@ Por que isso importa:
 **📡 RADAR**
 
 [mesmo formato de Lançamentos — linha em branco entre cada elemento. Aqui caem todos os itens secundários que não viraram destaque: notícias, opiniões e papers/pesquisas.]
-
----
-
-**VÍDEOS** (opcional — omitir se bucket vazio)
-
-**[Título do Vídeo]** — [Canal](URL)
-
-[Frase descritiva em 1 linha]
 
 ---
 

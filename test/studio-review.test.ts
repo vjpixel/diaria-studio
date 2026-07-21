@@ -20,7 +20,6 @@ import {
   runReviewLints,
   buildReviewPreviewHtml,
   buildSocialPreviewHtml,
-  pullReviewFileBestEffort,
   resolveReviewImagePath,
   REVIEW_FILES,
 } from "../scripts/studio-ui/studio-review.ts";
@@ -305,21 +304,6 @@ describe("html-final (#3635) — read/save/mkdir/pull-skip", () => {
       "<html>primeira vez</html>",
     );
     rmSync(bareRoot, { recursive: true, force: true });
-  });
-
-  it("pullReviewFileBestEffort pula html-final sem spawnar nada (_internal/* não sincroniza com Drive)", () => {
-    writeFileSync(resolve(editionDir, "_internal", "newsletter-final.html"), "<html></html>", "utf8");
-    let called = false;
-    const fakeSpawn = () => {
-      called = true;
-      return { status: 0, stdout: "{}", stderr: "", error: undefined } as ReturnType<
-        typeof import("node:child_process").spawnSync
-      >;
-    };
-    const result = pullReviewFileBestEffort(root, "260716", "html-final", fakeSpawn as never);
-    assert.equal(result.attempted, false);
-    assert.equal(result.ok, false);
-    assert.equal(called, false);
   });
 });
 
@@ -710,48 +694,5 @@ describe("resolveReviewImagePath (#3559 — achado 260716)", () => {
   it("extensão fora da allowlist (ex: .md, .json) → null mesmo se o arquivo existir", () => {
     writeFileSync(resolve(editionDir, "02-reviewed.md"), "conteudo", "utf8");
     assert.equal(resolveReviewImagePath(editionDir, "02-reviewed.md"), null);
-  });
-});
-
-describe("pullReviewFileBestEffort (#3559 — #494)", () => {
-  let root: string;
-  beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "studio-review-pull-"));
-    makeEdition(root, "260716");
-  });
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
-
-  it("nunca lança — spawnFn injetado simula sucesso", () => {
-    const fakeSpawn = () =>
-      ({ status: 0, stdout: JSON.stringify({ pulled: [] }), stderr: "", error: undefined }) as ReturnType<
-        typeof import("node:child_process").spawnSync
-      >;
-    const result = pullReviewFileBestEffort(root, "260716", "reviewed", fakeSpawn as never);
-    assert.equal(result.attempted, true);
-    assert.equal(result.ok, true);
-  });
-
-  it("falha do subprocess vira warning fail-soft (ok:false), não lança", () => {
-    const fakeSpawn = () =>
-      ({ status: 1, stdout: "", stderr: "offline", error: undefined }) as ReturnType<
-        typeof import("node:child_process").spawnSync
-      >;
-    const result = pullReviewFileBestEffort(root, "260716", "reviewed", fakeSpawn as never);
-    assert.equal(result.attempted, true);
-    assert.equal(result.ok, false);
-    assert.match(result.error ?? "", /offline/);
-  });
-
-  it("edição inexistente → attempted:false, sem spawnar nada", () => {
-    let called = false;
-    const fakeSpawn = () => {
-      called = true;
-      return { status: 0, stdout: "{}", stderr: "", error: undefined } as ReturnType<
-        typeof import("node:child_process").spawnSync
-      >;
-    };
-    const result = pullReviewFileBestEffort(root, "999999", "reviewed", fakeSpawn as never);
-    assert.equal(result.attempted, false);
-    assert.equal(called, false);
   });
 });

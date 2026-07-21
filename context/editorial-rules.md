@@ -117,11 +117,19 @@ Categorias de frontmatter por risco:
 
 Validator: `checkIntentionalErrorSafety(category)` em `scripts/lib/lint-checks/intentional-error.ts` — chamado por `lint-newsletter-md.ts --check intentional-error-flagged` (Stage 5, antes de criar draft no Beehiiv). Emite `warn` não-bloqueante para categorias ⚠️ com instrução de verificar contra as 2 regras.
 
+**Regra 3 — Nunca sobre fato central de um DESTAQUE (#3808).** Independente da categoria de frontmatter, o erro **nunca** pode alterar o fato central de um DESTAQUE — o que o leitor levaria como "a notícia em si": funding, specs técnicas, dado de negócio, fato sobre a empresa coberta. Um leitor que não pegar o erro não pode sair acreditando em algo falso sobre o mundo real a partir do destaque principal da edição.
+
+Preferências de forma (não-obrigatórias, mas defaults ao propor candidato):
+- Preferir erro **cômico/leve** — trocadilho, erro ortográfico bobo, nome trocado de forma óbvia (ex: "Craude" em vez de "Claude"), detalhe de trivia/crédito secundário — em vez de inflação de magnitude sobre um fato real.
+- Preferir plantar em menção **lateral/secundária** do texto (ex: uma referência de passagem, não a frase que carrega a informação principal do destaque).
+
+Caso real (edição 260721): o editor rejeitou 2 rodadas de propostas (erros numéricos sutis nos destaques, depois inflações de ordem de grandeza) antes de escolher "chamar Claude de Craude" — erro ortográfico sem conteúdo informacional, plantado numa menção lateral. Quem propõe candidatos de erro intencional (orchestrator, no chat com o editor) deve aplicar este filtro por padrão — ver `.claude/agents/orchestrator-stage-2.md` §"Filtro de segurança ao PROPOR candidatos".
+
 ---
 
 ## Seção "Vídeos" (#359)
 
-Seção opcional após Outras Notícias. Máximo 2 vídeos por edição. Se o bucket estiver vazio, omitir a seção inteira (incluindo o cabeçalho).
+Seção opcional. Máximo 2 vídeos por edição. Se o bucket estiver vazio, omitir a seção inteira (incluindo o cabeçalho). **Ordem das seções secundárias (#3820, decisão editorial 260722): USE MELHOR → É IA? → VÍDEOS → LANÇAMENTOS → RADAR** — VÍDEOS vem sempre antes de LANÇAMENTOS (histórico: #3100 já tinha subido VÍDEOS pra antes de RADAR; #3820 sobe mais um degrau, antes de LANÇAMENTOS também).
 
 **Itens da seção VÍDEO usam link do YouTube. Nunca linkar página que apenas embeda o vídeo (#3202).** Toda URL da seção deve ser `youtube.com/watch?v=...` ou `youtu.be/...` — nunca a página de blog/site oficial que hospeda o player (ex: página de anúncio da própria empresa com o vídeo embedado). Se o editor indicar um vídeo fora do YouTube, o pipeline busca automaticamente o vídeo equivalente no YouTube (Stage 1, `scripts/resolve-video-youtube.ts`, scoped a `site:youtube.com`) e substitui a URL antes do gate. Sem correspondência confiável, o item NUNCA cai de volta pra URL não-YouTube — fica flagado no gate ("vídeo sem URL de YouTube verificável — cole o link") para o editor colar o link manualmente. Validação: `npx tsx scripts/lint-newsletter-md.ts --check video-links-are-youtube --md <md>` (exit ≠0, GATE-BLOCKING, se houver URL não-YouTube na seção). Caso real (260709): "Introducing GPT-Live" só existia acessível na página oficial da OpenAI (bloqueava o bot, 403) — sem resolução automática, a URL oficial acabou reusada, duplicando o link de outro destaque.
 

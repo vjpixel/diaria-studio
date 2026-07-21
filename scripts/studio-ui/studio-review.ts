@@ -20,8 +20,9 @@
  *   - Save é ESCRITA DIRETA do conteúdo inteiro — o Studio *é* a sessão local
  *     do editor (não um agente fazendo edição cirúrgica de terceiros); #495
  *     mira em agentes editando por cima do editor, não o editor editando o
- *     próprio conteúdo. #494 (pull antes de abrir) é endereçado por
- *     `pullReviewFileBestEffort`, chamado pelo caller HTTP antes do read.
+ *     próprio conteúdo. #494 (pull do Drive antes de abrir) foi removido em
+ *     #3723 — #3636 já tinha aposentado o Drive sync do fluxo diário, então
+ *     a pasta da edição não existe mais lá pra puxar.
  *   - Lints reusam as funções PURAS já exportadas por
  *     `lint-newsletter-md.ts` / `lint-social-md.ts` / `validate-lancamentos.ts`
  *     — nenhuma regra é reimplementada aqui, só orquestrada. Fail-soft por
@@ -36,8 +37,7 @@
  *     só o preview acima, que é derivado do MD). Opt-in, "última milha":
  *     reusa a mesma máquina de read/save/diff/baseline dos outros 3 slugs
  *     (generalizada via `REVIEW_FILES`), mas SEM lints (HTML não-Markdown,
- *     ver `lintHtmlFinal`) e SEM pull do Drive (`_internal/*` nunca
- *     sincroniza, ver `REVIEW_STAGE`). Risco explícito: qualquer re-render a
+ *     ver `lintHtmlFinal`). Risco explícito: qualquer re-render a
  *     partir do MD (rodar a Etapa 4 de novo) sobrescreve edições manuais
  *     feitas aqui sem aviso automático da pipeline — o guard de divergência
  *     fica do lado do cliente (`revisao.js`), que consulta
@@ -56,7 +56,6 @@ import {
   statSync,
 } from "node:fs";
 import { resolve, dirname, basename, extname } from "node:path";
-import { spawnSync } from "node:child_process";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 import { diffLines, diffIsEmpty, type DiffLine } from "./text-diff.ts";
 import { extractContent } from "../lib/newsletter-parse.ts";
@@ -124,18 +123,6 @@ export const REVIEW_FILES: Record<ReviewSlug, string> = {
   // como camada de acabamento OPT-IN, fora do fluxo de lint/Drive/MD — ver
   // nota de design no topo do arquivo.
   "html-final": "_internal/newsletter-final.html",
-};
-
-/** Stage de pipeline associado a cada arquivo — usado só como metadado pro
- * `--stage` de `drive-sync.ts` (#494); não afeta comportamento do pull.
- * `html-final` deliberadamente SEM entrada: `_internal/*` nunca sincroniza
- * com o Drive (convenção #959/#1022 — só sobe o que o editor de fato edita
- * na superfície gate-facing), então `pullReviewFileBestEffort` pula o
- * pull inteiramente pra este slug. */
-const REVIEW_STAGE: Partial<Record<ReviewSlug, number>> = {
-  categorized: 1,
-  reviewed: 2,
-  social: 2,
 };
 
 export function isReviewSlug(v: string): v is ReviewSlug {
@@ -709,67 +696,9 @@ function errorHtml(title: string, message: string): string {
     `<h1>${escHtml(title)}</h1><p>${escHtml(message)}</p></body></html>`;
 }
 
-// ── Pull do Drive antes de abrir (#494) — best-effort, fail-soft ────────
-
-export interface PullResult {
-  attempted: boolean;
-  ok: boolean;
-  detail?: unknown;
-  error?: string;
-}
-
-export type SpawnFn = typeof spawnSync;
-
-/**
- * Chama `scripts/drive-sync.ts --mode pull` pro arquivo, best-effort (#494).
- * Nunca lança — falha (offline, sem credenciais, sem cache) vira
- * `{ ok: false, error }`, não bloqueia a leitura do arquivo local (mesmo
- * invariante fail-soft documentado em CLAUDE.md "Sync com Google Drive").
- * `spawnFn` é injetável pra testes (evita spawnar processo real).
- */
-export function pullReviewFileBestEffort(
-  rootDir: string,
-  aammdd: string,
-  slug: ReviewSlug,
-  spawnFn: SpawnFn = spawnSync,
-): PullResult {
-  const resolved = resolveReviewFile(rootDir, aammdd, slug);
-  if (!resolved) return { attempted: false, ok: false, error: "AAMMDD ou arquivo inválido" };
-  if (!existsSync(resolved.editionDir)) return { attempted: false, ok: false, error: "edição não encontrada" };
-  const stage = REVIEW_STAGE[slug];
-  if (stage === undefined) {
-    // `html-final` é `_internal/*` — nunca sincroniza com o Drive (ver nota
-    // em REVIEW_STAGE). Pular sem spawnar drive-sync.ts.
-    return { attempted: false, ok: false, error: "arquivo _internal/* não sincroniza com o Drive (#959/#1022)" };
-  }
-
-  try {
-    const scriptPath = resolve(rootDir, "scripts", "drive-sync.ts");
-    const editionDirArg = resolved.editionDir.startsWith(rootDir)
-      ? resolved.editionDir.slice(rootDir.length).replace(/^[\\/]/, "")
-      : resolved.editionDir;
-    const proc = spawnFn(
-      process.execPath,
-      [
-        "--import", "tsx",
-        scriptPath,
-        "--mode", "pull",
-        "--edition-dir", editionDirArg,
-        "--stage", String(stage),
-        "--files", resolved.filename,
-      ],
-      { cwd: rootDir, encoding: "utf8", timeout: 20_000 },
-    );
-    if (proc.error) return { attempted: true, ok: false, error: proc.error.message };
-    if (proc.status !== 0) {
-      return { attempted: true, ok: false, error: proc.stderr || `drive-sync saiu com status ${proc.status}` };
-    }
-    try {
-      return { attempted: true, ok: true, detail: JSON.parse(proc.stdout) };
-    } catch {
-      return { attempted: true, ok: true, detail: proc.stdout };
-    }
-  } catch (e) {
-    return { attempted: true, ok: false, error: (e as Error).message };
-  }
-}
+// #3723: pull do Drive antes de abrir (#494) foi removido — #3636 aposentou
+// o Drive sync do fluxo diário (Studio grava direto no arquivo local via
+// PUT, não há mais cópia externa no Drive pra puxar). A função
+// `pullReviewFileBestEffort` chamava `scripts/drive-sync.ts --mode pull` a
+// cada GET e sempre falhava fail-soft (pasta da edição não existe mais lá) —
+// puro desperdício de latência, nunca um bug funcional. Ver PR de remoção.

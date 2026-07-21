@@ -28,7 +28,11 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import type { SpawnFn } from "./studio-review.ts";
+
+// #3723: era importado de `studio-review.ts` (definido lá pro agora-removido
+// `pullReviewFileBestEffort`) — tipo genérico sem relação com o pull do
+// Drive, então fica local aqui em vez de reintroduzir a dependência.
+type SpawnFn = typeof spawnSync;
 
 export interface SwapDestaqueRequest {
   aammdd: string;
