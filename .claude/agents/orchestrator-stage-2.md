@@ -334,7 +334,7 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   ```bash
   npx tsx scripts/sync-coverage-line.ts --edition-dir {EDITION_DIR}/
   ```
-  Auto-calcula X (editor_submitted + newsletter_extracted + source:inbox no pool inicial), Y (auto-found = total - X), Z (itens visíveis no 02-reviewed.md final). Substitui a linha "Para esta edição..." no topo do MD. Antes era chutada pelo writer LLM e ficava stale após podas. Stdout: `{ x, y, z, changed, mdPath }`. Falha não-bloqueante (log warn) — números errados são cosméticos, não bloqueiam publicação.
+  Auto-calcula X = nº de **e-mails/threads** recebidos em `diariaeditor@gmail.com` (1 e-mail = 1 submissão, independente de quantas URLs carrega — lido do marker `.marker-inject-inbox-urls.json`), Y = `pool.length - inboxLinks` (onde `inboxLinks` é a contagem de **LINKS** que entraram pelo canal do editor, não a contagem de e-mails — misturar essas unidades foi o bug do #1864; sem `inboxLinkCount`/marker legado, cai no fallback `pool - X`, caso degradado, não o comportamento canônico), Z (itens visíveis no 02-reviewed.md final). Substitui a linha "Para esta edição..." no topo do MD. Antes era chutada pelo writer LLM e ficava stale após podas. Stdout: `{ x, y, z, changed, mdPath }`. Falha não-bloqueante (log warn) — números errados são cosméticos, não bloqueiam publicação. Fonte de verdade: `countEditorVsAuto` em `scripts/sync-coverage-line.ts` — não reparafrasear a lógica aqui, conferir o código se divergir (#3807).
 
 - **Render ERRO INTENCIONAL obrigatório (#1073):** após Clarice (e antes do gate humano), rodar:
   ```bash

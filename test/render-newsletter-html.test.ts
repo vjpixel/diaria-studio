@@ -34,7 +34,7 @@ import {
   singularizeSectionName,
   pickErroIntencionalReveal,
 } from "../scripts/render-newsletter-html.ts";
-import { DS_STYLE_BLOCK, mdInlineToHtml, renderHeroImageInner } from "../scripts/lib/newsletter-render-html.ts";
+import { DS_STYLE_BLOCK, mdInlineToHtml, renderHeroImageInner, renderErroIntencionalReveal } from "../scripts/lib/newsletter-render-html.ts";
 
 describe("pickErroIntencionalReveal (#1859)", () => {
   it("caminho feliz: parágrafo com prefixo 'Na última edição'", () => {
@@ -96,6 +96,98 @@ describe("pickErroIntencionalReveal (#1859)", () => {
       pickErroIntencionalReveal(text),
       "Na edição anterior, atribuímos a frase à pessoa errada.",
     );
+  });
+});
+
+describe("renderErroIntencionalReveal fail-loud regression (#3809)", () => {
+  /**
+   * Regression for #3809: quando o editor escreve o parágrafo de reveal
+   * diretamente sem bater no prefixo literal nem nas palavras-gancho do
+   * fallback, pickErroIntencionalReveal retorna null e o box simplesmente
+   * sumia do HTML sem NENHUM aviso — diferente do caminho de fallback (que
+   * já loga). Conteúdo obrigatório (mecânica de sorteio, #1073) sumindo
+   * silenciosamente é o bug; a função deve emitir console.error nesse caso.
+   */
+  it("emite console.error quando texto tem conteúdo mas nenhum parágrafo bate no reveal", () => {
+    // Não começa com "Na última edição" e não contém nenhuma palavra-gancho
+    // temporal (último/anterior/passado/ontem/edições) — nem prefixo nem
+    // fallback reconhecem este parágrafo.
+    const text =
+      "escrevi que o Inkling, da Thinking Machines, tinha 1,2 trilhão de parâmetros — na real são 975 bilhões.";
+
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+
+    let html: string;
+    try {
+      html = renderErroIntencionalReveal(text);
+    } finally {
+      console.error = origError;
+    }
+
+    assert.equal(html, "", "sem reveal reconhecível, o box não deve renderizar");
+    assert.ok(errors.length > 0, "deve emitir console.error quando o reveal não é reconhecido");
+    assert.ok(
+      errors.some((e) => /ERRO INTENCIONAL|reveal/i.test(e)),
+      `esperado aviso sobre reveal não reconhecido, obtido: ${errors.join(" | ")}`,
+    );
+  });
+
+  it("NÃO emite console.error quando o texto está vazio", () => {
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+
+    let html: string;
+    try {
+      html = renderErroIntencionalReveal("   ");
+    } finally {
+      console.error = origError;
+    }
+
+    assert.equal(html, "");
+    assert.equal(errors.length, 0, "texto vazio não deve disparar aviso (não é conteúdo real perdido)");
+  });
+
+  it("NÃO emite console.error quando o texto é só placeholder ({PREENCHER...})", () => {
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+
+    let html: string;
+    try {
+      html = renderErroIntencionalReveal("Nessa edição, {PREENCHER_NARRATIVA_DO_ERRO}.");
+    } finally {
+      console.error = origError;
+    }
+
+    assert.equal(html, "");
+    assert.equal(errors.length, 0, "placeholder não preenchido não deve disparar aviso de conteúdo perdido");
+  });
+
+  it("continua sem console.error no caminho feliz (reveal reconhecido)", () => {
+    const errors: string[] = [];
+    const origError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+
+    let html: string;
+    try {
+      html = renderErroIntencionalReveal("Na última edição, escrevi X onde deveria ser Y.");
+    } finally {
+      console.error = origError;
+    }
+
+    assert.match(html, /escrevi X onde deveria ser Y/);
+    assert.equal(errors.length, 0, "caminho feliz não deve emitir warning");
   });
 });
 
