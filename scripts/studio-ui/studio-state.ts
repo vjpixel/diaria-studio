@@ -67,10 +67,41 @@ export interface StudioState {
 
 const AAMMDD_RE = /^\d{6}$/;
 
+/**
+ * #3802: uma edição com `_internal/05-published.json` mostrando
+ * `status === "published"` OU `scheduled_at` setado já está publicada/
+ * agendada — trata-se de fato como concluída independente do que
+ * `stage-status.json` diz. Guard análogo ao já usado por
+ * `find-current-edition.ts` (stage 6, ver comentário lá): cobre o caso de um
+ * stage anterior (ex: 3) ficar órfão em `"running"` porque a chamada de
+ * `update-stage-status.ts --status done` falhou ou foi pulada silenciosamente
+ * mid-run, mesmo com stages posteriores (4, 5, 6) já `done` no doc.
+ */
+export function isEditionPublishedOrScheduled(editionDirAbs: string): boolean {
+  const publishedPath = resolve(editionDirAbs, "_internal", "05-published.json");
+  if (!existsSync(publishedPath)) return false;
+  try {
+    const pub = JSON.parse(readFileSync(publishedPath, "utf8")) as {
+      scheduled_at?: string;
+      status?: string;
+    };
+    return Boolean(pub.scheduled_at) || pub.status === "published";
+  } catch {
+    return false; // JSON corrompido — não assume publicado, deixa a lógica normal decidir
+  }
+}
+
 /** Determina o estágio-corrente de uma edição a partir do StageStatusDoc:
  * primeiro stage 1-6 que não está `done`. Se todos estão `done`, "done".
+ *
+ * `editionDirAbs` (opcional, #3802): quando informado, checa
+ * `isEditionPublishedOrScheduled` ANTES de olhar o doc — uma edição já
+ * publicada/agendada é sempre `"done"`, mesmo que `stage-status.json` tenha
+ * um stage órfão em `"running"`. Omitir o parâmetro preserva o comportamento
+ * doc-only (usado por callers que só têm o doc em mãos, ex: testes diretos).
  */
-export function currentStageFromDoc(doc: StageStatusDoc): CurrentStage {
+export function currentStageFromDoc(doc: StageStatusDoc, editionDirAbs?: string): CurrentStage {
+  if (editionDirAbs && isEditionPublishedOrScheduled(editionDirAbs)) return "done";
   const relevant = doc.rows.filter((r) => r.stage >= 1 && r.stage <= 6);
   if (relevant.length === 0) return "unknown";
   const pending = relevant
@@ -120,7 +151,12 @@ export function listEditionSummaries(
     let stageLabel = "Desconhecido";
     if (hasStageStatus) {
       const doc = loadDoc(editionDirAbs, aammdd);
-      currentStage = currentStageFromDoc(doc);
+      currentStage = currentStageFromDoc(doc, editionDirAbs);
+      stageLabel = stageLabelFor(currentStage);
+    } else if (isEditionPublishedOrScheduled(editionDirAbs)) {
+      // #3802: mesmo sem stage-status.json (edições pré-#960 ou corrompidas),
+      // 05-published.json publicado/agendado já basta pra tratar como done.
+      currentStage = "done";
       stageLabel = stageLabelFor(currentStage);
     }
 

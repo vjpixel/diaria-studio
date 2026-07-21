@@ -10,6 +10,7 @@ import {
   buildStudioState,
   currentStageFromDoc,
   findLatestPlanPath,
+  isEditionPublishedOrScheduled,
   listEditionSummaries,
   pickCurrentEdition,
   stageLabelFor,
@@ -58,6 +59,124 @@ describe("currentStageFromDoc (#3555)", () => {
   });
   it("retorna 'unknown' quando não há linhas 1-6", () => {
     assert.equal(currentStageFromDoc({ edition: "x", rows: [], generated_at: "" }), "unknown");
+  });
+
+  it("#3802: stage 3 órfão em 'running' + 4-6 done, mas 05-published.json publicado → 'done', não 3", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      const aammdd = "260703";
+      makeEditionFiles(root, aammdd, [
+        "_internal/05-published.json",
+        "04-d1-1x1.jpg", // evidência adicional de que a edição seguiu adiante
+      ]);
+      const editionDir = join(root, "data", "editions", aammdd);
+      writeFileSync(
+        join(editionDir, "_internal", "05-published.json"),
+        JSON.stringify({
+          status: "published",
+          scheduled_at: "2026-07-03T06:00:00Z",
+          published_at: "2026-07-03T06:00:00Z",
+        }),
+      );
+
+      let doc = makeInitialDoc(aammdd);
+      doc = applyUpdate(doc, { stage: 1, status: "done" });
+      doc = applyUpdate(doc, { stage: 2, status: "done" });
+      // Stage 3 nunca recebeu --status done (falha silenciosa na chamada real, #3802) —
+      // fica órfão em "running", sem `end`/`duration_ms`.
+      doc = applyUpdate(doc, { stage: 3, status: "running", start: "2026-07-02T18:02:14Z" });
+      doc = applyUpdate(doc, { stage: 4, status: "done" });
+      doc = applyUpdate(doc, { stage: 5, status: "done" });
+      doc = applyUpdate(doc, { stage: 6, status: "done" });
+
+      // Sem o guard, cairia no primeiro not-done por número = stage 3.
+      assert.equal(currentStageFromDoc(doc, editionDir), "done");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("sem editionDirAbs (uso doc-only), continua reportando o stage órfão (comportamento preservado)", () => {
+    let doc = makeInitialDoc("260703");
+    doc = applyUpdate(doc, { stage: 1, status: "done" });
+    doc = applyUpdate(doc, { stage: 2, status: "done" });
+    doc = applyUpdate(doc, { stage: 3, status: "running" });
+    doc = applyUpdate(doc, { stage: 4, status: "done" });
+    doc = applyUpdate(doc, { stage: 5, status: "done" });
+    doc = applyUpdate(doc, { stage: 6, status: "done" });
+    assert.equal(currentStageFromDoc(doc), 3);
+  });
+});
+
+describe("isEditionPublishedOrScheduled (#3802)", () => {
+  it("false quando 05-published.json não existe", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      makeEditionFiles(root, "260716", ["01-categorized.md"]);
+      assert.equal(
+        isEditionPublishedOrScheduled(join(root, "data", "editions", "260716")),
+        false,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("true quando status === 'published'", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      makeEditionFiles(root, "260716", ["_internal/05-published.json"]);
+      const editionDir = join(root, "data", "editions", "260716");
+      writeFileSync(
+        join(editionDir, "_internal", "05-published.json"),
+        JSON.stringify({ status: "published" }),
+      );
+      assert.equal(isEditionPublishedOrScheduled(editionDir), true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("true quando scheduled_at está setado (mesmo sem status='published')", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      makeEditionFiles(root, "260716", ["_internal/05-published.json"]);
+      const editionDir = join(root, "data", "editions", "260716");
+      writeFileSync(
+        join(editionDir, "_internal", "05-published.json"),
+        JSON.stringify({ status: "draft", scheduled_at: "2026-07-17T06:00:00Z" }),
+      );
+      assert.equal(isEditionPublishedOrScheduled(editionDir), true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("false quando nem status='published' nem scheduled_at (ex: ainda em draft)", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      makeEditionFiles(root, "260716", ["_internal/05-published.json"]);
+      const editionDir = join(root, "data", "editions", "260716");
+      writeFileSync(
+        join(editionDir, "_internal", "05-published.json"),
+        JSON.stringify({ status: "draft" }),
+      );
+      assert.equal(isEditionPublishedOrScheduled(editionDir), false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("false em JSON corrompido (fail-soft, não lança)", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      makeEditionFiles(root, "260716", ["_internal/05-published.json"]);
+      const editionDir = join(root, "data", "editions", "260716");
+      writeFileSync(join(editionDir, "_internal", "05-published.json"), "{ not json");
+      assert.equal(isEditionPublishedOrScheduled(editionDir), false);
+    } finally {
+      cleanup();
+    }
   });
 });
 
@@ -116,6 +235,34 @@ describe("listEditionSummaries (#3555)", () => {
         summaries.map((s) => s.edition),
         ["260716", "260705"],
       );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#3802: edição publicada com stage 3 órfão 'running' vira currentStage 'done', não 3", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      const aammdd = "260703";
+      makeEditionFiles(root, aammdd, ["_internal/05-published.json"]);
+      const editionDir = join(root, "data", "editions", aammdd);
+      writeFileSync(
+        join(editionDir, "_internal", "05-published.json"),
+        JSON.stringify({ status: "published", scheduled_at: "2026-07-03T06:00:00Z" }),
+      );
+
+      let doc = makeInitialDoc(aammdd);
+      doc = applyUpdate(doc, { stage: 1, status: "done" });
+      doc = applyUpdate(doc, { stage: 2, status: "done" });
+      doc = applyUpdate(doc, { stage: 3, status: "running", start: "2026-07-02T18:02:14Z" });
+      doc = applyUpdate(doc, { stage: 4, status: "done" });
+      doc = applyUpdate(doc, { stage: 5, status: "done" });
+      doc = applyUpdate(doc, { stage: 6, status: "done" });
+      saveDoc(editionDir, doc);
+
+      const summaries = listEditionSummaries(root);
+      assert.equal(summaries[0].currentStage, "done");
+      assert.equal(summaries[0].stageLabel, "Concluída");
     } finally {
       cleanup();
     }
@@ -315,6 +462,50 @@ describe("buildStudioState (#3555)", () => {
           { edition: "260711", stage: 6 },
         ],
       );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("#3802: reprodução do incidente — edição de 17 dias atrás com stage órfão não vira 'currentEdition' quando edições recentes já estão 'done'", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      // Edição antiga (260703) com stage 3 órfão em "running", mas de fato
+      // publicada e agendada há semanas (achado #3802, 260720).
+      const oldAammdd = "260703";
+      makeEditionFiles(root, oldAammdd, ["_internal/05-published.json"]);
+      const oldDir = join(root, "data", "editions", oldAammdd);
+      writeFileSync(
+        join(oldDir, "_internal", "05-published.json"),
+        JSON.stringify({ status: "published", scheduled_at: "2026-07-03T06:00:00Z" }),
+      );
+      let oldDoc = makeInitialDoc(oldAammdd);
+      oldDoc = applyUpdate(oldDoc, { stage: 1, status: "done" });
+      oldDoc = applyUpdate(oldDoc, { stage: 2, status: "done" });
+      oldDoc = applyUpdate(oldDoc, { stage: 3, status: "running", start: "2026-07-02T18:02:14Z" });
+      oldDoc = applyUpdate(oldDoc, { stage: 4, status: "done" });
+      oldDoc = applyUpdate(oldDoc, { stage: 5, status: "done" });
+      oldDoc = applyUpdate(oldDoc, { stage: 6, status: "done" });
+      saveDoc(oldDir, oldDoc);
+
+      // Edições recentes, corretamente 'done' de ponta a ponta.
+      for (const aammdd of ["260718", "260719"]) {
+        const dir = join(root, "data", "editions", aammdd);
+        let doc = makeInitialDoc(aammdd);
+        for (let s = 1; s <= 6; s++) doc = applyUpdate(doc, { stage: s, status: "done" });
+        makeEditionFiles(root, aammdd, []);
+        saveDoc(dir, doc);
+      }
+
+      const state = buildStudioState(root);
+      // Sem o guard, o scan (mais recente → mais antigo) encontraria só
+      // edições 'done' em 260718/260719, mas 260703 apareceria com
+      // currentStage=3 (não 'done') — pickCurrentEdition a escolheria como
+      // "corrente" mesmo sendo a mais antiga da lista.
+      assert.notEqual(state.currentEdition, oldAammdd);
+      assert.equal(state.currentEdition, "260719"); // mais recente, todas done
+      const oldSummary = state.editions.find((e) => e.edition === oldAammdd);
+      assert.equal(oldSummary?.currentStage, "done");
     } finally {
       cleanup();
     }
