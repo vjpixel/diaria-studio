@@ -110,7 +110,7 @@ Nessa edição da **diar.ia.br**, usei Claude Code para automatizar parte da pes
 - [Melhores cursos grátis de IA](https://cursos.diar.ia.br)
 - [Curadoria de livros sobre IA](https://livros.diar.ia.br)
 
-Agora que chegou ao final da edição, que tal interagir em uma publicação da **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), no [Facebook](https://www.facebook.com/diar.ia.br) ou no [Instagram](https://www.instagram.com/diar.ia.br)?
+Agora que chegou ao final da edição, que tal seguir a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), no [Facebook](https://www.facebook.com/diar.ia.br) ou no [Instagram](https://www.instagram.com/diar.ia.br)? Todo dia publicamos por lá um resumo das 3 principais notícias.
 ```
 
 **Seções 🎁 SORTEIO + 🙋🏼‍♀️ PARA ENCERRAR (#1076):** copiadas literalmente do template Beehiiv original. Texto + links de afiliados (Wispr/Clarice/Beehiiv) mudam raramente — editor pode editar localmente (ou via Studio) entre Stage 2 gate e publish quando precisar. Render parseia ambos como blocos editoriais (kicker + parágrafos + lista "Acesse:"), sem boxes. Pixel pediu "no reviewed" (#1076) pra ter visibilidade + edição fácil em vez de hardcoded no script. `render-newsletter-html.ts` graceful — se algum bloco ausente, omite na renderização (não falha).
