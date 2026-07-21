@@ -349,8 +349,17 @@ export { isTestAccount, TEST_ACCOUNT_PATTERNS } from "./cohorts.ts";
 //   2. priority_points > 0 (engajamento real — abertura ou opt-in, #2876):
 //      mesmo override que já cobre mv_rejected/mv_unknown; mv_unverified é a
 //      irmã ausente, agora coerente com a mesma estrutura.
-// `mv_rejected` e `mv_unknown` continuam cortando normalmente (checados
-// acima, mesma ordem de prioridade).
+//
+// #3819 (decisão do editor, 260721): a isenção de cohort `assinantes-ativos`
+// (item 1 acima) foi ESTENDIDA de `mv_unverified` também pra `mv_rejected` e
+// `mv_unknown` — regra invariável "assinante ativo é SEMPRE send_eligible".
+// Até #3819, um contato que virou pagante DEPOIS de ser verificado como lead
+// (mv_bucket='rejected'/'unknown' herdado) continuava cortado mesmo pagando —
+// a isenção só cobria o ramo "nunca verificado". `mv_rejected`/`mv_unknown`
+// continuam cortando normalmente para cohorts NÃO isentos (checados acima,
+// mesma ordem de prioridade). Supressões de consentimento/entrega real
+// (unsubscribed/blacklist/hard_bounce/complaint) NUNCA são isentas — intocáveis
+// mesmo para pagante.
 // ---------------------------------------------------------------------------
 
 export const SOFT_BOUNCE_LIMIT = 3;
@@ -390,11 +399,14 @@ export interface EligibilityInput {
    */
   priority_points: number;
   /**
-   * cohort do contato (#2857 fase C — modelo canônico). Usado SÓ pra isentar
-   * `assinantes-ativos` (pagante Stripe) da exigência de `mv_unverified`
-   * (#2888) — mesma isenção do corte original #2656, que checava
-   * `tier === 1`. `tier` virou coluna legada read-only na fase C; cohort é a
-   * fonte de verdade atual pra essa distinção.
+   * cohort do contato (#2857 fase C — modelo canônico). Usado pra isentar
+   * `assinantes-ativos` (pagante Stripe) de TODOS os cortes de MillionVerifier
+   * — `mv_unverified` (#2888, mesma isenção do corte original #2656, que
+   * checava `tier === 1`), e desde #3819 também `mv_rejected`/`mv_unknown`
+   * (assinante ativo é SEMPRE send_eligible — pagamento já valida o e-mail,
+   * nenhum veredito do MV deve suprimir um pagante). `tier` virou coluna
+   * legada read-only na fase C; cohort é a fonte de verdade atual pra essa
+   * distinção.
    */
   cohort: string | null | undefined;
 }
@@ -414,14 +426,24 @@ export function classifyEligibility(i: EligibilityInput): {
   // #2876: pontuação positiva sobrepõe o veredito estático do MV (reject/
   // unknown). Só o corte de MV é sobreposto — os sinais acima já cortaram.
   const engaged = i.priority_points > 0;
-  if (i.mv_bucket === "rejected" && !engaged)
+  // #3819: assinante-ativo (pagante Stripe) é SEMPRE send_eligible — quem paga
+  // tem e-mail que comprovadamente funciona. Nenhum veredito do MillionVerifier
+  // (rejected/unknown/nunca-verificado) deve suprimir um pagante — mesma
+  // isenção de `isMvExemptCohort` já usada abaixo pro corte mv_unverified,
+  // agora estendida aos cortes mv_rejected/mv_unknown (achado #3819: antes só
+  // cobria mv_unverified, deixando 44 assinantes-ativos cortados por
+  // mv_bucket='rejected'/'unknown' herdado de quando eram lead). Supressões
+  // de consentimento/entrega real (unsubscribed/blacklist/hard_bounce/
+  // complaint) continuam valendo sempre — checadas ANTES, não são afetadas.
+  const mvExempt = isMvExemptCohort(i.cohort);
+  if (i.mv_bucket === "rejected" && !engaged && !mvExempt)
     return { send_eligible: false, ineligible_reason: "mv_rejected" };
   // MV inconclusivo (unknown/reverify/unverified/error, #2735) — mesma lógica
   // defensiva de rejected, mas NÃO é permanente: o registro fica no store (só
   // send_eligible=0), então uma re-verificação futura pode reabilitar. Contatos
   // nunca submetidos ao MV (mv_bucket NULL, ex: T01 ativo) não são afetados —
   // só quem tem uma linha `-unknown.csv` ingerida de fato.
-  if (i.mv_bucket === "unknown" && !engaged)
+  if (i.mv_bucket === "unknown" && !engaged && !mvExempt)
     return { send_eligible: false, ineligible_reason: "mv_unknown" };
   if (i.dispute_losses > 0)
     return { send_eligible: false, ineligible_reason: "dispute" };
@@ -444,7 +466,7 @@ export function classifyEligibility(i: EligibilityInput): {
   // `isMvExemptCohort` (cohorts.ts) — mesmo predicado usado por
   // `verify-emails-mv.ts` pra recusar `--cohort assinantes-ativos`. Um 2º
   // cohort isento no futuro só precisa mudar num lugar.
-  if (!i.mv_bucket && !isMvExemptCohort(i.cohort) && !engaged)
+  if (!i.mv_bucket && !mvExempt && !engaged)
     return { send_eligible: false, ineligible_reason: "mv_unverified" };
   return { send_eligible: true, ineligible_reason: null };
 }

@@ -522,6 +522,58 @@ test("eligibility #2888: unsubscribed + mv_bucket null + cohort assinantes-ativo
   assert.equal(r.ineligible_reason, "unsubscribed");
 });
 
+// #3819 — isenção de MV do cohort assinantes-ativos estendida de mv_unverified
+// (único ramo coberto até aqui) também pra mv_rejected/mv_unknown: assinante
+// ativo é SEMPRE send_eligible, mesmo carregando um mv_bucket negativo herdado
+// de quando era lead.
+// ---------------------------------------------------------------------------
+
+test("eligibility #3819: cohort assinantes-ativos + mv_bucket rejected → ELEGÍVEL (pagante nunca é cortado por MV)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "rejected", cohort: "assinantes-ativos" });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #3819: cohort assinantes-ativos + mv_bucket unknown → ELEGÍVEL (pagante nunca é cortado por MV)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "unknown", cohort: "assinantes-ativos" });
+  assert.equal(r.send_eligible, true);
+  assert.equal(r.ineligible_reason, null);
+});
+
+test("eligibility #3819: cohort NÃO isento (ex-assinantes) + mv_bucket rejected → SEGUE mv_rejected (sem regressão)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "rejected", cohort: "ex-assinantes" });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_rejected");
+});
+
+test("eligibility #3819: cohort NÃO isento (ex-assinantes) + mv_bucket unknown → SEGUE mv_unknown (sem regressão)", () => {
+  const r = classifyEligibility({ ...CLEAN, mv_bucket: "unknown", cohort: "ex-assinantes" });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "mv_unknown");
+});
+
+test("eligibility #3819: cohort assinantes-ativos + unsubscribed + mv_bucket rejected → SEGUE unsubscribed (consentimento intocável mesmo p/ pagante)", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    mv_bucket: "rejected",
+    cohort: "assinantes-ativos",
+    unsubscribed: true,
+  });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "unsubscribed");
+});
+
+test("eligibility #3819: cohort assinantes-ativos + hard_bounced + mv_bucket unknown → SEGUE hard_bounce (entrega real intocável mesmo p/ pagante)", () => {
+  const r = classifyEligibility({
+    ...CLEAN,
+    mv_bucket: "unknown",
+    cohort: "assinantes-ativos",
+    hard_bounced: true,
+  });
+  assert.equal(r.send_eligible, false);
+  assert.equal(r.ineligible_reason, "hard_bounce");
+});
+
 test("eligibility: dispute_losses > 0 → dispute", () => {
   assert.equal(
     classifyEligibility({ ...CLEAN, dispute_losses: 12.5 }).ineligible_reason,
@@ -786,10 +838,13 @@ test("recomputeDerived #2888: mv_bucket NULL volta a cortar (exceto assinantes-a
   db.prepare(
     "INSERT INTO clarice_users (email, tier, opens_count, sends_count) VALUES (?, 3, ?, ?)",
   ).run("engajado-nv@x.com", 2, 2);
-  // tier 1, mv_bucket='rejected' de vida anterior como lead → continua mv_rejected,
-  // não isento (ordem de prioridade intacta — checado ANTES do corte mv_unverified)
+  // tier 1 (assinante ativo), mv_bucket='rejected' de vida anterior como lead
+  // → ELEGÍVEL desde #3819 (isenção de MV do cohort assinantes-ativos
+  // estendida de mv_unverified também pra mv_rejected/mv_unknown — pagante
+  // nunca é cortado por veredito do MV).
   db.prepare("INSERT INTO clarice_users (email, tier, mv_bucket) VALUES (?, 1, 'rejected')").run("t1rej@x.com");
-  // tier 3, mv_bucket='unknown' → continua mv_unknown, sem regressão (#2735)
+  // tier 3 (lead, NÃO isento), mv_bucket='unknown' → continua mv_unknown, sem
+  // regressão (#2735) — a isenção #3819 é só pro cohort assinantes-ativos.
   db.prepare("INSERT INTO clarice_users (email, tier, mv_bucket) VALUES (?, 3, 'unknown')").run("unk@x.com");
 
   recomputeDerived(db);
@@ -817,19 +872,22 @@ test("recomputeDerived #2888: mv_bucket NULL volta a cortar (exceto assinantes-a
   assert.equal(engajadoNv.send_eligible, 1);
   assert.equal(engajadoNv.ineligible_reason, null);
 
+  // #3819: assinante-ativo (tier 1 → cohort assinantes-ativos) é SEMPRE
+  // send_eligible — mv_bucket='rejected' herdado de vida como lead não corta.
   const t1rej = get("t1rej@x.com");
-  assert.equal(t1rej.send_eligible, 0);
-  assert.equal(t1rej.ineligible_reason, "mv_rejected");
+  assert.equal(t1rej.send_eligible, 1);
+  assert.equal(t1rej.ineligible_reason, null);
 
   const unk = get("unk@x.com");
   assert.equal(unk.send_eligible, 0);
   assert.equal(unk.ineligible_reason, "mv_unknown");
 
-  // soma de inelegíveis bate com o esperado: nv, semtier, t1rej, unk = 4 de 7
+  // soma de inelegíveis bate com o esperado: nv, semtier, unk = 3 de 7
+  // (t1rej virou elegível desde #3819 — deixou de contar aqui)
   const total = db
     .prepare("SELECT COUNT(*) n FROM clarice_users WHERE send_eligible = 0")
     .get() as { n: number };
-  assert.equal(total.n, 4);
+  assert.equal(total.n, 3);
 
   db.close();
 });
