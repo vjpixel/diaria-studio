@@ -105,7 +105,7 @@
       "mode": "draft_or_schedule",
       "instagram": {
         "enabled": false,
-        "disabled_reason": "260717: editor pediu bloqueio manual — precisa definir um formato próprio pro Instagram (diferente do que o pipeline usa hoje) antes de reativar. Reative setando enabled:true quando o novo formato estiver pronto."
+        "disabled_reason": "260721: canal @diar.ia.br lançado e agendamento via Worker implementado (#3817). Mantido desligado APENAS para a 260722, que já estava em voo — sem isso o Stage 5 publicaria os 3 posts juntos às ~4h BRT, os primeiros do canal. Reative setando enabled:true assim que o Stage 5 da 260722 concluir; a estreia na 260723 já sai espaçada (10:00/12:30/17:30) via Worker. O bloqueio de formato de 260717 não é mais o motivo — editor decidiu em 260721 seguir sem carrossel, mantendo o formato atual."
       },
       "linkedin": {
         "make_webhook_url": "https://hook.us2.make.com/dmikx9ktrmee9woy1synf5vvgo5qhx2t",

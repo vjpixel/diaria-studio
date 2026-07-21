@@ -52,8 +52,10 @@ export interface ComputeScheduleInput {
   editionDate: string;
   destaque: "d1" | "d2" | "d3";
   /** Mantido para compatibilidade de API. O schedule é atualmente unificado entre
-   *  plataformas (#345). Pode ser usado no futuro para overrides por plataforma. */
-  platform: "linkedin" | "facebook";
+   *  plataformas (#345). Pode ser usado no futuro para overrides por plataforma.
+   *  #3817: "instagram" adicionado — mesmo fallback_schedule unificado, só muda
+   *  o rótulo usado nos logs de non-zero dayOffset / past-slot shift abaixo. */
+  platform: "linkedin" | "facebook" | "instagram";
   dayOffsetOverride?: number;
   /**
    * Injetável para testes (#2552). Defaults para `Date.now()`.
@@ -326,7 +328,7 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
 interface CliFlags {
   edition: string;
   destaque: "d1" | "d2" | "d3";
-  platform: "linkedin" | "facebook";
+  platform: "linkedin" | "facebook" | "instagram";
   dayOffset?: number;
   configPath?: string;
 }
@@ -359,13 +361,13 @@ export function parseCliArgs(argv: string[]): CliFlags | { error: string } {
   if (!destaque || !/^d[123]$/.test(destaque)) {
     return { error: "missing/invalid --destaque (d1|d2|d3)" };
   }
-  if (!platform || !/^(linkedin|facebook)$/.test(platform)) {
-    return { error: "missing/invalid --platform (linkedin|facebook)" };
+  if (!platform || !/^(linkedin|facebook|instagram)$/.test(platform)) {
+    return { error: "missing/invalid --platform (linkedin|facebook|instagram)" };
   }
   return {
     edition,
     destaque: destaque as "d1" | "d2" | "d3",
-    platform: platform as "linkedin" | "facebook",
+    platform: platform as "linkedin" | "facebook" | "instagram",
     dayOffset,
     configPath,
   };
@@ -377,7 +379,7 @@ function main(): void {
   if ("error" in parsed) {
     console.error(`Erro: ${parsed.error}`);
     console.error(
-      "Uso: compute-social-schedule.ts --edition AAMMDD --destaque d1|d2|d3 --platform linkedin|facebook [--day-offset N] [--config path]",
+      "Uso: compute-social-schedule.ts --edition AAMMDD --destaque d1|d2|d3 --platform linkedin|facebook|instagram [--day-offset N] [--config path]",
     );
     process.exit(2);
   }

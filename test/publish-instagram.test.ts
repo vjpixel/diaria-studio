@@ -5,7 +5,7 @@
  * com mock da API (sem chamadas reais), incluindo o caso de imagem ausente.
  */
 
-import { describe, it } from "node:test";
+import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -14,6 +14,8 @@ import {
   extractDestaquesFromSocialMd,
   extractPostText,
   truncateCaption,
+  postToWorkerQueue,
+  type InstagramQueuePayload,
 } from "../scripts/publish-instagram.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -403,5 +405,153 @@ describe("Retry com backoff exponencial", () => {
   it("em test-mode, pula o sleep entre tentativas", () => {
     // Análogo a publish-facebook.ts: !isTest guard no setTimeout
     assert.match(SRC, /isTest/, "deve respeitar isTest para pular delay");
+  });
+});
+
+// ─── #3817 --schedule: enfileiramento via Worker (postToWorkerQueue) ────────
+
+describe("#3817 postToWorkerQueue (--schedule enfileira no Worker em vez de publicar)", () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  it("POSTa pro endpoint /queue com channel:instagram e retorna a resposta parseada", async () => {
+    let capturedUrl = "";
+    let capturedBody: Record<string, unknown> | null = null;
+    let capturedToken = "";
+    globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
+      capturedUrl = typeof url === "string" ? url : (url as Request).url;
+      capturedBody = init?.body ? JSON.parse(init.body as string) : null;
+      capturedToken = new Headers(init?.headers).get("X-Diaria-Token") ?? "";
+      return new Response(
+        JSON.stringify({
+          queued: true,
+          key: "queue:2026-07-23T10:00:00.000Z:uuid-1",
+          scheduled_at: "2026-07-23T10:00:00.000Z",
+          destaque: "d1",
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    try {
+      const payload: InstagramQueuePayload = {
+        text: "Legenda #ia",
+        image_url: "https://poll.diaria.workers.dev/img/img-260723-04-d1-1x1.jpg",
+        scheduled_at: "2026-07-23T10:00:00.000Z",
+        destaque: "d1",
+        channel: "instagram",
+      };
+      const res = await postToWorkerQueue("https://worker.test/", "tok123", payload);
+      assert.equal(capturedUrl, "https://worker.test/queue", "deve normalizar trailing slash e ir pro /queue");
+      assert.equal(capturedToken, "tok123", "deve mandar o token no header X-Diaria-Token");
+      assert.equal(capturedBody?.channel, "instagram");
+      assert.equal(capturedBody?.destaque, "d1");
+      assert.equal(res.queued, true);
+      assert.equal(res.key, "queue:2026-07-23T10:00:00.000Z:uuid-1");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("retenta em falha HTTP e lança erro claro após esgotar as tentativas", async () => {
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts++;
+      return new Response("worker down", { status: 500 });
+    }) as typeof fetch;
+
+    try {
+      await assert.rejects(
+        () =>
+          postToWorkerQueue(
+            "https://worker.test",
+            "tok",
+            {
+              text: "x",
+              image_url: "https://x.test/i.jpg",
+              scheduled_at: "2026-07-23T10:00:00Z",
+              destaque: "d1",
+              channel: "instagram",
+            },
+            2,
+          ),
+        /Worker queue HTTP 500/,
+      );
+      assert.equal(attempts, 2, "deve tentar exatamente maxAttempts vezes");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("lança erro claro quando resposta do Worker não bate o schema esperado", async () => {
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ queued: false }), { status: 200 })) as typeof fetch;
+
+    try {
+      await assert.rejects(
+        () =>
+          postToWorkerQueue(
+            "https://worker.test",
+            "tok",
+            {
+              text: "x",
+              image_url: "https://x.test/i.jpg",
+              scheduled_at: "2026-07-23T10:00:00Z",
+              destaque: "d1",
+              channel: "instagram",
+            },
+            1,
+          ),
+        /Worker response inválido/,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ─── #3817 --schedule: verificação estática do modo agendamento ─────────────
+
+describe("#3817 --schedule: modo agendamento (verificação estática do script)", () => {
+  it("flag --schedule é opt-in — default preserva publicação imediata", () => {
+    assert.match(SRC, /doSchedule = flags\.has\("schedule"\)/, "deve ler --schedule via flags.has");
+  });
+
+  it("resolve scheduled_at via computeScheduledAt com platform instagram (mesma fonte de FB/LinkedIn)", () => {
+    assert.match(SRC, /computeScheduledAt/, "deve importar/usar computeScheduledAt");
+    assert.match(SRC, /platform: "instagram"/, "deve passar platform: 'instagram'");
+  });
+
+  it("payload de enfileiramento inclui channel: instagram", () => {
+    assert.match(SRC, /channel: "instagram"/, "payload do Worker deve marcar channel instagram");
+  });
+
+  it("grava status 'scheduled' com scheduled_at real (não null) no modo --schedule", () => {
+    assert.match(SRC, /status: "scheduled"/, "modo --schedule deve gravar status scheduled");
+  });
+
+  it("reusa DIARIA_LINKEDIN_CRON_URL / DIARIA_LINKEDIN_CRON_TOKEN (mesmo Worker do LinkedIn)", () => {
+    assert.match(SRC, /DIARIA_LINKEDIN_CRON_URL/, "deve ler DIARIA_LINKEDIN_CRON_URL");
+    assert.match(SRC, /DIARIA_LINKEDIN_CRON_TOKEN/, "deve ler DIARIA_LINKEDIN_CRON_TOKEN");
+  });
+
+  it("fail-fast quando --schedule é passado sem o Worker configurado", () => {
+    assert.match(
+      SRC,
+      /ERRO: --schedule passado mas o Cloudflare Worker não está configurado/,
+      "deve abortar com mensagem clara em vez de degradar silenciosamente",
+    );
+  });
+
+  it("sem --schedule, comportamento de publicação imediata permanece intocado (status published)", () => {
+    // O branch --schedule sempre faz `continue` antes do fluxo de publicação imediata —
+    // então o código de createMediaContainer/publishMediaContainer nunca roda em modo --schedule.
+    assert.match(
+      SRC,
+      /continue; \/\/ não cai no fluxo de publicação imediata abaixo/,
+      "branch --schedule deve pular o fluxo de publicação imediata via continue",
+    );
   });
 });

@@ -1,10 +1,18 @@
 /**
  * diaria-linkedin-cron — Cloudflare Worker (#TBD)
  *
- * Fila de posts LinkedIn agendados pra Diar.ia. Substitui o agendamento via
- * Make.com Data Store (que não funcionou — ver
- * `feedback_make_searchrecord_mapping_unsolved.md`).
+ * Fila de posts agendados pra Diar.ia. Nasceu exclusivo pro LinkedIn
+ * (substituindo o agendamento via Make.com Data Store, que não funcionou —
+ * ver `feedback_make_searchrecord_mapping_unsolved.md`), e desde #3817
+ * também agenda o Instagram — mesmo Worker, mesma fila KV, campo `channel`
+ * na entry decide o branch de disparo (ver dispatch.ts). Motivo do Instagram
+ * ter entrado aqui em vez de ganhar Worker próprio: a API de Content
+ * Publishing do Instagram não tem agendamento nativo (media_publish sempre
+ * publica na hora) e o media container expira em 24h — a mesma infra de
+ * agendamento preciso (DO alarms) + guardar payload completo até o disparo
+ * já resolvia exatamente esse problema pro LinkedIn.
  *
+
  * Arquitetura (#1168 — Durable Object alarms):
  *   1. publish-linkedin.ts POSTa pra /queue com {text, image_url, scheduled_at, destaque}
  *   2. KV armazena com key lex-sortable, valor JSON
@@ -53,8 +61,12 @@
  * (30 dias) via expirationTtl. Janela suficiente pra editor revisar/agir sem acumular.
  *
  * Secrets (via `wrangler secret put`):
- *   DIARIA_TOKEN       → header X-Diaria-Token pra autenticar /queue, /list e /dlq
- *   MAKE_WEBHOOK_URL   → URL do webhook Make (Scenario A "Integration LinkedIn")
+ *   DIARIA_TOKEN                   → header X-Diaria-Token pra autenticar /queue, /list e /dlq
+ *   MAKE_WEBHOOK_URL               → URL do webhook Make (Scenario A "Integration LinkedIn")
+ *   INSTAGRAM_BUSINESS_ACCOUNT_ID  → (#3817) conta @diar.ia.br pra channel="instagram"
+ *   INSTAGRAM_ACCESS_TOKEN         → (#3817) token de página com escopo instagram_content_publish
+ * Vars (via [vars] no wrangler.toml, não-secretas):
+ *   INSTAGRAM_API_VERSION          → (#3817) default "v25.0" se ausente (aplicado em dispatch.ts)
  */
 
 export interface Env {
@@ -67,10 +79,20 @@ export interface Env {
   MAKE_PIXEL_WEBHOOK_URL?: string;
   // #1168 — Durable Object namespace pra alarms por item.
   LINKEDIN_SCHEDULER: DurableObjectNamespace;
+  // #3817 — credenciais Graph API pro canal Instagram (Content Publishing).
+  // Opcionais pra backward-compat: se ausentes quando um item channel="instagram"
+  // for disparado, vai pra DLQ com motivo claro (mesmo padrão do
+  // MAKE_PIXEL_WEBHOOK_URL ausente, ver dispatch.ts::resolveInstagramCreds).
+  INSTAGRAM_BUSINESS_ACCOUNT_ID?: string;
+  INSTAGRAM_ACCESS_TOKEN?: string;
+  INSTAGRAM_API_VERSION?: string; // default "v25.0" aplicado em dispatch.ts
 }
 
 export type WebhookTarget = "diaria" | "pixel";
 export type QueueAction = "post" | "comment";
+// #3817 — canal de disparo. Ausente/undefined = "linkedin" SEMPRE (backward-compat
+// obrigatória: entries já em produção no KV nunca tiveram este campo).
+export type QueueChannel = "linkedin" | "instagram";
 
 export interface QueueEntry {
   text: string;
@@ -84,6 +106,8 @@ export interface QueueEntry {
   webhook_target?: WebhookTarget;
   action?: QueueAction;
   parent_destaque?: string; // qual destaque o comment pertence (auditoria)
+  // #3817 — canal de disparo. Ver QueueChannel acima — default "linkedin".
+  channel?: QueueChannel;
   // (#2230 bug 2 fix) Tombstone de cancelamento: setado por handleQueueDelete quando
   // o KV.delete falha após o DO cancel. O cron detecta este flag, pula o item sem
   // postar, e o deleta do KV (cleanup do tombstone).
@@ -202,6 +226,8 @@ export function isLegacyKey(key: string): boolean {
 
 export * from "./durable-object";
 import { LinkedInScheduler, type DoStoredPayload } from "./durable-object";
+export * from "./dispatch";
+import { resolveInstagramCreds } from "./dispatch";
 
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   if (!isAuthorized(request, env)) {
@@ -255,6 +281,18 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     }
   }
 
+  // #3817 — Validar channel (opcional; ausente = "linkedin" default aplicado
+  // em dispatch.ts::fireQueueEntry — backward-compat com entries já no KV).
+  if (body.channel !== undefined && body.channel !== "linkedin" && body.channel !== "instagram") {
+    return json({ error: "channel must be 'linkedin' or 'instagram'" }, 400);
+  }
+  // Instagram Graph API (Content Publishing) exige imagem — sem ela o
+  // container nem chega a ser criado. Falhar aqui (enqueue) é melhor que
+  // falhar só no disparo, horas/dias depois.
+  if (body.channel === "instagram" && !body.image_url) {
+    return json({ error: "image_url is required when channel='instagram'" }, 400);
+  }
+
   // #882 — Validar tamanho de payload pra evitar abuso de KV (cap por valor é
   // ~25MB, mas posts LinkedIn maiores que 10k caracteres são quase certamente
   // erro/abuso) e proteger fetch downstream.
@@ -295,6 +333,8 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.webhook_target !== undefined && { webhook_target: body.webhook_target as WebhookTarget }),
     ...(body.action !== undefined && { action: body.action as QueueAction }),
     ...(body.parent_destaque !== undefined && { parent_destaque: body.parent_destaque as string }),
+    // #3817 — omitido se undefined: entries sem channel resolvem "linkedin" (default)
+    ...(body.channel !== undefined && { channel: body.channel as QueueEntry["channel"] }),
   };
   await env.LINKEDIN_QUEUE.put(key, JSON.stringify(entry));
 
@@ -329,12 +369,18 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   try {
     const doId = env.LINKEDIN_SCHEDULER.idFromName(key);
     const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+    // #3817 — capturar credenciais Instagram no momento do enqueue, igual já
+    // é feito com webhookUrl/pixelWebhookUrl: o DO não tem acesso a `env` no
+    // alarm() (só ao payload persistido), então tudo que o disparo precisar
+    // tem que estar aqui.
+    const igCreds = resolveInstagramCreds(env);
     const armPayload: DoStoredPayload & { scheduledAtMs: number } = {
       scheduledAtMs: scheduledMs,
       key,
       entry,
       webhookUrl: env.MAKE_WEBHOOK_URL,
       ...(env.MAKE_PIXEL_WEBHOOK_URL !== undefined && { pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL }),
+      ...(igCreds !== undefined && { instagram: igCreds }),
     };
     const armRes = await doStub.fetch("https://do/arm", {
       method: "POST",
@@ -667,12 +713,17 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
     try {
       const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
       const doStub = env.LINKEDIN_SCHEDULER.get(doId);
+      // #3817 — mesma captura de credenciais Instagram do enqueue (handleEnqueue),
+      // necessária pra items legacy re-armados após um deploy que introduziu
+      // channel="instagram" ou rotacionou o secret.
+      const igCreds = resolveInstagramCreds(env);
       const armPayload: DoStoredPayload & { scheduledAtMs: number } = {
         scheduledAtMs: scheduledMs,
         key: k.name,
         entry,
         webhookUrl: env.MAKE_WEBHOOK_URL,
         ...(env.MAKE_PIXEL_WEBHOOK_URL !== undefined && { pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL }),
+        ...(igCreds !== undefined && { instagram: igCreds }),
       };
       const armRes = await doStub.fetch("https://do/arm", {
         method: "POST",

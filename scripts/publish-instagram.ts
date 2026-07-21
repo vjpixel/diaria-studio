@@ -9,17 +9,35 @@
  *   (1) POST /{ig-user-id}/media          → cria media container (image_url + caption)
  *   (2) POST /{ig-user-id}/media_publish   → publica o container
  *
- * NOTA: A API de agendamento do Instagram (published=false + scheduled_publish_time)
- * exige o escopo "instagram_content_publish" + a conta precisa ter o recurso
- * "Content Publishing" aprovado (apenas disponível em Business/Creator accounts
- * via Instagram Graph API v18+). Se o conta não tiver o recurso, a publicação
- * é imediata. Este script publica imediato por padrão (sem --schedule).
- * Para agendar: implementar quando o recurso for ativado na conta.
+ * AGENDAMENTO (#3817): a API de Content Publishing do Instagram NÃO tem
+ * agendamento nativo — não existe `scheduled_publish_time`/`published=false`
+ * pro Instagram (isso é exclusivo do Facebook); `media_publish` sempre publica
+ * no instante da chamada, sem exceção. Não existe "recurso a ser ativado na
+ * conta" que mude isso — o comentário antigo desta nota sugeria esperar por
+ * tal recurso; essa era a premissa errada corrigida pelo próprio #3817.
+ *
+ * Agendar exige um scheduler próprio: `--schedule` enfileira o post no Worker
+ * `diaria-linkedin-cron` (generalizado em #3817 pra suportar `channel:
+ * "instagram"` além de LinkedIn), que dispara no horário exato via Durable
+ * Object alarm (fallback cron a cada 5min). Como o media container do Instagram
+ * expira em 24h e a edição é sempre D+1, o Worker guarda legenda + URL
+ * pública da imagem e roda os 2 passos completos (criar container + publicar)
+ * no MOMENTO do disparo — nunca no momento do agendamento, que sempre
+ * estaria fora da janela de 24h se o container fosse criado ali.
+ *
+ * Sem `--schedule` (default): publica imediato, sem passar pelo Worker —
+ * comportamento inalterado desde a versão original deste script.
  *
  * Uso:
  *   npx tsx scripts/publish-instagram.ts \
  *     --edition-dir data/editions/260422/ \
+ *     [--schedule]          # enfileira no Worker em vez de publicar imediato (#3817)
  *     [--skip-existing]     # pula posts já em 06-social-published.json
+ *
+ * `--schedule` requer o MESMO Worker já usado pelo LinkedIn:
+ *   DIARIA_LINKEDIN_CRON_URL / DIARIA_LINKEDIN_CRON_TOKEN no env, OU
+ *   publishing.social.linkedin.cloudflare_worker_url em platform.config.json
+ *   (mesma instância de Worker — não é um Worker separado pro Instagram).
  *
  * Resume-aware: lê 06-social-published.json e pula posts instagram já publicados.
  * Append imediato após cada post para proteger contra crash.
@@ -37,6 +55,9 @@ import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-publ
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts)
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
+import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
+import { CONFIG } from "./lib/config.ts";
+import { parseWorkerQueueResponse } from "./lib/schemas/linkedin-payload.ts"; // shape genérico { queued, key, scheduled_at, destaque } — reusado pro Instagram (#3817)
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -199,6 +220,67 @@ async function fetchPermalink(
   }
 }
 
+/**
+ * Enfileira um post Instagram no Worker `diaria-linkedin-cron` (#3817 — Worker
+ * generalizado pra suportar `channel: "instagram"` além de LinkedIn). Espelha
+ * `postToWorkerQueue` de `publish-linkedin.ts` — mesmo endpoint `/queue`,
+ * mesmo header de auth, mesmo formato de resposta (`parseWorkerQueueResponse`).
+ *
+ * O Worker guarda a entry completa (caption + image_url) e roda os 2 passos
+ * da Graph API (criar container + publicar) no MOMENTO do disparo — nunca
+ * agora, pra não esbarrar na expiração de 24h do container (ver header deste
+ * arquivo).
+ */
+export interface InstagramQueuePayload {
+  text: string;
+  image_url: string;
+  scheduled_at: string;
+  destaque: string;
+  channel: "instagram";
+}
+
+export async function postToWorkerQueue(
+  workerUrl: string,
+  token: string,
+  payload: InstagramQueuePayload,
+  maxAttempts = 2,
+): Promise<{ queued: true; key: string; scheduled_at: string; destaque: string }> {
+  const queueUrl = workerUrl.replace(/\/+$/, "") + "/queue";
+  let lastError: Error | null = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(queueUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Diaria-Token": token,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
+      });
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`Worker queue HTTP ${res.status}: ${body.slice(0, 300)}`);
+      }
+      const text = await res.text();
+      try {
+        return parseWorkerQueueResponse(JSON.parse(text));
+      } catch (parseErr) {
+        throw new Error(
+          `Worker response inválido (schema ou JSON): ${text.slice(0, 200)} — ${(parseErr as Error).message}`,
+        );
+      }
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      console.error(`[publish-instagram] worker attempt ${attempt} failed: ${lastError.message}`);
+      if (attempt < maxAttempts) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+  throw lastError ?? new Error("worker_queue_failed");
+}
+
 async function main() {
   const { flags, values } = parseArgs(process.argv.slice(2));
   const editionDirArg = values["edition-dir"];
@@ -209,6 +291,9 @@ async function main() {
   const editionDir = resolve(ROOT, editionDirArg);
   const skipExisting = !flags.has("no-skip-existing");
   const isTest = flags.has("test-mode");
+  // #3817 — --schedule enfileira no Worker em vez de publicar imediato.
+  // Default (sem a flag) preserva o comportamento original: publica na hora.
+  const doSchedule = flags.has("schedule");
 
   // #3635: kill-switch manual do editor via platform.config.json — mesmo
   // padrão de graceful-skip (exit 0) das credenciais ausentes abaixo, mas
@@ -224,6 +309,42 @@ async function main() {
         "Reative setando publishing.social.instagram.enabled:true quando pronto.",
     );
     process.exit(0);
+  }
+
+  // #3817 — Resolver Worker URL/token quando --schedule é passado. Reusa o
+  // MESMO Worker do LinkedIn (`diaria-linkedin-cron`, generalizado em #3817
+  // pra suportar channel="instagram") — mesma fila KV, mesmo endpoint /queue,
+  // mesmos env vars (é literalmente a mesma instância de Worker).
+  let workerUrl = "";
+  let workerToken = "";
+  if (doSchedule) {
+    workerUrl =
+      process.env.DIARIA_LINKEDIN_CRON_URL ??
+      platformConfig?.publishing?.social?.instagram?.cloudflare_worker_url ??
+      platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
+      "";
+    workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+    // #923-like fail-fast (publish-linkedin.ts): sem Worker configurado,
+    // --schedule não tem pra onde ir — a API do Instagram não agenda nativo
+    // (ver header deste arquivo), então NÃO existe fallback de fire-now
+    // "que ao menos publica"; abortar é mais seguro que publicar às cegas.
+    if (!workerUrl || !workerToken) {
+      console.error(
+        [
+          "ERRO: --schedule passado mas o Cloudflare Worker não está configurado.",
+          "  DIARIA_LINKEDIN_CRON_URL: " + (workerUrl ? "set" : "MISSING"),
+          "  DIARIA_LINKEDIN_CRON_TOKEN: " + (workerToken ? "set (length=" + workerToken.length + ")" : "MISSING"),
+          "",
+          "A API do Instagram não agenda nativamente (#3817) — sem o Worker",
+          "não há como agendar. Resolução:",
+          "  1. Confirmar .env.local com DIARIA_LINKEDIN_CRON_TOKEN",
+          "  2. Confirmar platform.config.json (ou env DIARIA_LINKEDIN_CRON_URL)",
+          "     com cloudflare_worker_url em publishing.social.linkedin (ou .instagram)",
+          "  3. OU rodar SEM --schedule pra publicar imediatamente conscientemente",
+        ].join("\n"),
+      );
+      process.exit(2);
+    }
   }
 
   // Carregar credenciais — env vars obrigatórias em runtime
@@ -395,6 +516,68 @@ async function main() {
       continue;
     }
 
+    // #3817 — modo --schedule: enfileira no Worker em vez de publicar agora.
+    // scheduled_at vem da MESMA fonte usada por Facebook/LinkedIn
+    // (fallback_schedule: d1 10:00, d2 12:30, d3 17:30 — compute-social-schedule.ts).
+    if (doSchedule) {
+      let scheduledIso: string;
+      try {
+        scheduledIso = computeScheduledAt({
+          config: platformConfig,
+          editionDate,
+          destaque: d as "d1" | "d2" | "d3",
+          platform: "instagram",
+        });
+      } catch (e: any) {
+        console.error(`SKIP instagram/${d}: schedule_error: ${e.message}`);
+        const entry: PostEntry = {
+          platform: "instagram",
+          destaque: d,
+          url: null,
+          status: "failed",
+          scheduled_at: null,
+          reason: `schedule_error: ${e.message}`,
+        };
+        tagAndAppend(entry);
+        results.push(entry);
+        continue;
+      }
+
+      try {
+        const response = await postToWorkerQueue(workerUrl, workerToken, {
+          text: caption,
+          image_url: imageUrl,
+          scheduled_at: scheduledIso,
+          destaque: d,
+          channel: "instagram",
+        });
+        const entry: PostEntry = {
+          platform: "instagram",
+          destaque: d,
+          url: null,
+          status: "scheduled",
+          scheduled_at: scheduledIso,
+          worker_queue_key: response.key,
+        };
+        tagAndAppend(entry);
+        results.push(entry);
+        console.log(`OK instagram/${d} — scheduled at ${scheduledIso} (worker_queue_key=${response.key})`);
+      } catch (e: any) {
+        console.error(`FAILED instagram/${d}: ${e.message}`);
+        const entry: PostEntry = {
+          platform: "instagram",
+          destaque: d,
+          url: null,
+          status: "failed",
+          scheduled_at: null,
+          reason: e.message,
+        };
+        tagAndAppend(entry);
+        results.push(entry);
+      }
+      continue; // não cai no fluxo de publicação imediata abaixo
+    }
+
     // Publicar com retry + exponential backoff (análogo a publish-facebook.ts)
     let lastError = "";
     let success = false;
@@ -468,6 +651,7 @@ async function main() {
   const summary = {
     total: results.length,
     published: results.filter((r) => r.status === "published").length,
+    scheduled: results.filter((r) => r.status === "scheduled").length, // #3817 — modo --schedule
     failed: results.filter((r) => r.status === "failed").length,
     skipped: skippedCount,
   };

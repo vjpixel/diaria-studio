@@ -1,18 +1,21 @@
-import type { Env, QueueEntry, WebhookTarget, QueueAction } from "./index";
-import { CLAIM_TTL_MS, FETCH_TIMEOUT_MS } from "./index";
-import { isUnsupportedCommentTarget } from "./guards";
+import type { QueueEntry } from "./index";
+import { CLAIM_TTL_MS } from "./index";
+import { fireQueueEntry, type InstagramCreds } from "./dispatch";
 
 // ── LinkedInScheduler — Durable Object (#1168) ────────────────────────────
 
 /**
  * Payload armazenado no DO storage, contendo tudo que alarm() precisa pra
- * disparar o webhook sem acesso ao KV ou ao env do Worker.
+ * disparar o post sem acesso ao KV ou ao env do Worker.
  */
 export interface DoStoredPayload {
   key: string;               // KV key do item (usado em logs)
-  entry: QueueEntry;         // entry completa (texto, webhook_target, action, etc.)
+  entry: QueueEntry;         // entry completa (texto, webhook_target, action, channel, etc.)
   webhookUrl: string;        // MAKE_WEBHOOK_URL resolvido no momento do enqueue
   pixelWebhookUrl?: string;  // MAKE_PIXEL_WEBHOOK_URL (opcional)
+  // #3817 — credenciais Graph API do Instagram, capturadas no enqueue (o DO
+  // não tem acesso a `env` no alarm() — só ao que foi persistido aqui).
+  instagram?: InstagramCreds;
 }
 
 /**
@@ -224,49 +227,33 @@ export class LinkedInScheduler {
       return;
     }
 
-    const { key, entry, webhookUrl: defaultWebhookUrl, pixelWebhookUrl } = payload;
-    const webhookTarget: WebhookTarget = entry.webhook_target ?? "diaria";
-    const action: QueueAction = entry.action ?? "post";
+    const { key, entry, webhookUrl, pixelWebhookUrl, instagram } = payload;
+    const channel = entry.channel ?? "linkedin";
 
-    // (#3667) Guard equivalente ao de fire.ts (#3662, extraído pra
-    // isUnsupportedCommentTarget() em guards.ts): action="comment" com
-    // webhookTarget != "pixel" nunca deve ser disparado pro Make — o módulo
-    // "diaria" não suporta "Create Comment", o Make sempre rejeitaria com
-    // `Missing value of required parameter 'url'`. alarm() é o caminho
-    // PRIMÁRIO de disparo (armado via /arm no enqueue) — sem este guard, uma
-    // entry residual/regressão futura reproduziria o bug original do #3662
-    // mesmo com o guard de fire.ts em vigor (aquele só cobre o fallback cron).
+    // (#3817) fireQueueEntry() é o ponto único de dispatch, compartilhado com
+    // fireDueItems (cron path, fire.ts) — decide o branch linkedin/instagram
+    // e devolve um outcome puro (fired | failed | dlq). Guards que antes
+    // viviam inline aqui (#3662/#3667 isUnsupportedCommentTarget, pixel sem
+    // URL configurada) agora moram em dispatch.ts::fireQueueEntry.
     //
     // Diferente de fire.ts, alarm() não tem acesso a env.LINKEDIN_QUEUE (só
-    // ao DO storage) — não dá pra escrever a entry em dlq: diretamente aqui.
-    // Libera o claim e retorna sem postar, deixando a KV entry intocada: o
-    // próximo ciclo do cron (fireDueItems) processa essa mesma entry e
-    // aplica o MESMO guard, que aí sim escreve em dlq: via KV.
-    if (isUnsupportedCommentTarget(action, webhookTarget)) {
+    // ao DO storage) — outcome "dlq" aqui só libera o claim sem postar,
+    // deixando a KV entry intocada: o próximo ciclo do cron (fireDueItems)
+    // processa essa mesma entry, aplica o MESMO guard puro, e aí sim escreve
+    // em dlq: via KV.
+    const outcome = await fireQueueEntry(entry, { webhookUrl, pixelWebhookUrl, instagram });
+
+    if (outcome.status === "dlq") {
       await this.state.storage.delete("claiming");
       await this.state.storage.delete("claimed_at");
       console.error(
-        `[DO alarm] ${key} action=comment but webhookTarget=${webhookTarget} (só "pixel" suporta comment) — releasing claim without firing, cron will DLQ`,
+        `[DO alarm] ${key} dlq guard: ${outcome.reason} — releasing claim without firing, cron will DLQ`,
       );
       return;
     }
 
-    let webhookUrl: string;
-    if (webhookTarget === "pixel") {
-      if (!pixelWebhookUrl) {
-        // Configuração incompleta — libera claim pra cron tentar (vai pra DLQ direto).
-        await this.state.storage.delete("claiming");
-        await this.state.storage.delete("claimed_at");
-        console.error(`[DO alarm] pixel entry ${key} but pixelWebhookUrl not stored — releasing claim`);
-        return;
-      }
-      webhookUrl = pixelWebhookUrl;
-    } else {
-      webhookUrl = defaultWebhookUrl;
-    }
-
     // (#2219 bug 3) Estado 2 fases: `claiming:true` (claim ganho, fetch em andamento)
-    // → `fired:true` + delete `claiming` (SÓ após sucesso do webhook).
+    // → `fired:true` + delete `claiming` (SÓ após sucesso do disparo).
     //
     // Trade-off dup×loss:
     //   - Se setar fired ANTES do fetch (padrão anterior): crash mid-flight → fired=true
@@ -275,8 +262,9 @@ export class LinkedInScheduler {
     //   - Com 2 fases: crash mid-flight → claiming=true, fired=false/undefined →
     //     o cron vê `claiming` (não `fired`) e re-tenta → risco de dup se o webhook
     //     foi parcialmente entregue mas retornou erro por timeout. Escolha: possível DUP.
-    //   - Dup é preferível a LOSS para posts LinkedIn: dup é visível (editor pode deletar
-    //     o duplicado); post perdido é invisível e passa a falsa impressão de sucesso.
+    //   - Dup é preferível a LOSS para posts LinkedIn/Instagram: dup é visível (editor
+    //     pode deletar o duplicado); post perdido é invisível e passa a falsa
+    //     impressão de sucesso.
     //   - O claim atomico (via /claim) já elimina o dup CRON↔ALARM (o caso 90%);
     //     o dup residual é apenas no cenário de crash mid-flight + cron re-tenta
     //     (cenário extremamente raro — CF DO tem retry interno).
@@ -284,73 +272,48 @@ export class LinkedInScheduler {
     // Telemetria de item-loss: cron detecta `claiming=true` sem `fired=true` e loga
     // DLQ-style error pra investigação, permitindo recuperação manual pelo editor.
 
-    try {
-      const res = await fetch(webhookUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: entry.text,
-          image_url: entry.image_url,
-          scheduled_at: entry.scheduled_at,
-          destaque: entry.destaque,
-          action,
-          ...(entry.parent_destaque !== undefined && { parent_destaque: entry.parent_destaque }),
-        }),
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      });
-
-      if (res.ok) {
-        // (#2230 bug 1 fix) Sucesso: gravar fired=true DURÁVEL + limpar payload ANTES
-        // de liberar o claim. Dupla proteção contra double-post via alarm re-disparado:
-        //   1. fired=true: tryClaim() retorna false imediatamente (caminho rápido).
-        //   2. payload deletado: mesmo que o claim TTL expire e alarm() re-entre,
-        //      a leitura de payload retorna null → abort sem postar.
-        // O comentário anterior "alarm não poderá re-disparar sem KV entry" estava ERRADO
-        // (#2230 bug 1): alarm lê DO storage, não KV. Fix: payload limpo no DO storage.
-        //
-        // Retry de 3x pra garantir que fired=true persiste (transitório CF storage error).
-        // Sem retry, uma falha aqui deixa o DO em claiming=true,fired=false → o cron
-        // pode re-clamar via TTL e re-postar (double-post).
-        let firedPersisted = false;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            await this.state.storage.put("fired", true);
-            await this.state.storage.delete("payload");   // payload limpo — alarm re-entry posta nada
-            await this.state.storage.delete("claiming");
-            await this.state.storage.delete("claimed_at");
-            firedPersisted = true;
-            break;
-          } catch (storageErr) {
-            console.warn(`[DO alarm] storage put fired attempt ${attempt + 1} failed: ${(storageErr as Error).message}`);
-            if (attempt < 2) await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
-          }
+    if (outcome.status === "fired") {
+      // (#2230 bug 1 fix) Sucesso: gravar fired=true DURÁVEL + limpar payload ANTES
+      // de liberar o claim. Dupla proteção contra double-post via alarm re-disparado:
+      //   1. fired=true: tryClaim() retorna false imediatamente (caminho rápido).
+      //   2. payload deletado: mesmo que o claim TTL expire e alarm() re-entre,
+      //      a leitura de payload retorna null → abort sem postar.
+      // O comentário anterior "alarm não poderá re-disparar sem KV entry" estava ERRADO
+      // (#2230 bug 1): alarm lê DO storage, não KV. Fix: payload limpo no DO storage.
+      //
+      // Retry de 3x pra garantir que fired=true persiste (transitório CF storage error).
+      // Sem retry, uma falha aqui deixa o DO em claiming=true,fired=false → o cron
+      // pode re-clamar via TTL e re-postar (double-post).
+      let firedPersisted = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await this.state.storage.put("fired", true);
+          await this.state.storage.delete("payload");   // payload limpo — alarm re-entry posta nada
+          await this.state.storage.delete("claiming");
+          await this.state.storage.delete("claimed_at");
+          firedPersisted = true;
+          break;
+        } catch (storageErr) {
+          console.warn(`[DO alarm] storage put fired attempt ${attempt + 1} failed: ${(storageErr as Error).message}`);
+          if (attempt < 2) await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
         }
-        if (!firedPersisted) {
-          // Storage persistentemente indisponível — logar crítico mas não lançar
-          // (CF alarm não re-tenta se alarm() não lança; deixamos cron detectar via claiming=true).
-          console.error(`[DO alarm] CRITICAL: failed to persist fired=true after 3 attempts — key=${key}; double-post risk if alarm re-fires via TTL`);
-        }
-        console.log(
-          `[DO alarm] fired ok key=${key} target=${webhookTarget} action=${action} destaque=${entry.destaque} fired_persisted=${firedPersisted}`,
-        );
-        // KV entry permanece até o cron path a encontrar e deletar (com idempotência:
-        // cron verifica DO /status, vê fired:true, deleta KV sem re-disparar webhook).
-        // Trade-off: item pode aparecer em /list por até 5min após fire. Aceitável.
-      } else {
-        // Fire falhou — libera o claim pra cron fallback tentar via retry normal.
-        await this.state.storage.delete("claiming");
-        await this.state.storage.delete("claimed_at");
-        const body = await res.text();
-        console.error(
-          `[DO alarm] fire failed key=${key} status=${res.status}: ${body.slice(0, 200)}`,
-        );
       }
-    } catch (e) {
-      // Timeout ou exception — libera o claim pra cron fallback.
+      if (!firedPersisted) {
+        // Storage persistentemente indisponível — logar crítico mas não lançar
+        // (CF alarm não re-tenta se alarm() não lança; deixamos cron detectar via claiming=true).
+        console.error(`[DO alarm] CRITICAL: failed to persist fired=true after 3 attempts — key=${key}; double-post risk if alarm re-fires via TTL`);
+      }
+      console.log(
+        `[DO alarm] fired ok key=${key} channel=${channel} destaque=${entry.destaque} fired_persisted=${firedPersisted}`,
+      );
+      // KV entry permanece até o cron path a encontrar e deletar (com idempotência:
+      // cron verifica DO /status, vê fired:true, deleta KV sem re-disparar webhook).
+      // Trade-off: item pode aparecer em /list por até 5min após fire. Aceitável.
+    } else {
+      // outcome.status === "failed" — libera o claim pra cron fallback tentar via retry normal.
       await this.state.storage.delete("claiming");
       await this.state.storage.delete("claimed_at");
-      const err = e as Error;
-      console.error(`[DO alarm] fire exception key=${key}: ${err.message}`);
+      console.error(`[DO alarm] fire failed key=${key} channel=${channel}: ${outcome.reason}`);
     }
   }
 }
