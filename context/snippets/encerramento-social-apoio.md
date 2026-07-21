@@ -24,4 +24,4 @@ dois formatos — sem parametrização.
 
 {{OPENING}}Quem quiser apoiar a curadoria pode contribuir a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria) e ganhar recompensas como artigo especial do mês, bastidores da produção e acesso antecipado a novos projetos.
 
-Agora que chegou ao final da edição, que tal interagir em uma publicação da **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), no [Facebook](https://www.facebook.com/diar.ia.br) ou no [Instagram](https://www.instagram.com/diar.ia.br)?
+Agora que chegou ao final da edição, que tal seguir a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), no [Facebook](https://www.facebook.com/diar.ia.br) ou no [Instagram](https://www.instagram.com/diar.ia.br)? Todo dia publicamos por lá um resumo das 3 principais notícias.
