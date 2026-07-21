@@ -1,12 +1,15 @@
-import type { Env, QueueEntry, WebhookTarget, QueueAction } from "./index";
-import { buildDlqKey, MAX_RETRIES, DLQ_TTL_SECONDS, FETCH_TIMEOUT_MS } from "./index";
-import { isUnsupportedCommentTarget } from "./guards";
+import type { Env, QueueEntry } from "./index";
+import { buildDlqKey, MAX_RETRIES, DLQ_TTL_SECONDS } from "./index";
+import { fireQueueEntry, resolveInstagramCreds } from "./dispatch";
 
 // ── Cron handler — fira items maduros ──────────────────────────────────────
 
 /**
  * #880 — move entry pra dlq:{uuid} após esgotar retries.
- * #881 — fetch ao Make tem timeout via AbortSignal (FETCH_TIMEOUT_MS).
+ * #881 — fetch (Make ou Instagram Graph API, via dispatch.ts) tem timeout via
+ * AbortSignal (FETCH_TIMEOUT_MS).
+ * #3817 — o disparo em si (linkedin vs instagram) é delegado a
+ * fireQueueEntry() (dispatch.ts), compartilhado com alarm() (durable-object.ts).
  */
 export async function fireDueItems(env: Env): Promise<{ fired: number; errors: number; dlq: number }> {
   const now = Date.now();
@@ -133,49 +136,24 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       } catch { /* non-fatal — eviction limpará o DO */ }
     };
 
-    // #595 — Resolver webhook URL por target. Default "diaria" pra backward-compat.
-    // Pixel target sem MAKE_PIXEL_WEBHOOK_URL configurado → DLQ direto, evita loop.
-    const webhookTarget: WebhookTarget = entry.webhook_target ?? "diaria";
-    const action: QueueAction = entry.action ?? "post";
-    let webhookUrl: string;
-    if (webhookTarget === "pixel") {
-      if (!env.MAKE_PIXEL_WEBHOOK_URL) {
-        // (#2219 bug 1 fix) Liberar claim ANTES de ir pro DLQ — sem isso o DO
-        // fica com claiming=true permanente e o alarm fica travado até eviction.
-        await releaseCronClaim();
-        // Sem URL Pixel → DLQ imediato (não retry, não dá pra resolver).
-        const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
-        await env.LINKEDIN_QUEUE.put(
-          dlqKey,
-          JSON.stringify({ ...entry, retry_count: MAX_RETRIES }),
-          { expirationTtl: DLQ_TTL_SECONDS },
-        );
-        await env.LINKEDIN_QUEUE.delete(k.name);
-        console.error(
-          `[fire] ${k.name} dropped to dlq: webhook_target=pixel but MAKE_PIXEL_WEBHOOK_URL not configured (dlq_key=${dlqKey})`,
-        );
-        dlq++;
-        continue;
-      }
-      webhookUrl = env.MAKE_PIXEL_WEBHOOK_URL;
-    } else {
-      webhookUrl = env.MAKE_WEBHOOK_URL;
-    }
+    // (#3817) fireQueueEntry() é o ponto único de dispatch, compartilhado com
+    // alarm() (durable-object.ts) — decide o branch linkedin/instagram a
+    // partir de `entry.channel` (default "linkedin") e devolve um outcome
+    // puro (fired | failed | dlq). Os guards que antes eram checados inline
+    // aqui (pixel sem MAKE_PIXEL_WEBHOOK_URL, #3662/#3667
+    // isUnsupportedCommentTarget) agora moram em dispatch.ts — esta função só
+    // decide O QUE FAZER com o outcome (DLQ direto vs incrementar retry vs
+    // marcar fired), que é mecânica específica do cron (acesso a KV).
+    const config = {
+      webhookUrl: env.MAKE_WEBHOOK_URL,
+      pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL,
+      instagram: resolveInstagramCreds(env),
+    };
+    const outcome = await fireQueueEntry(entry, config);
 
-    // (#3662) Guard: o módulo LinkedIn do Make Diar.ia (webhookTarget != "pixel")
-    // não suporta "Create Comment" — o comentário na montagem do payload abaixo
-    // já documenta que "Pixel só aceita comment", ou seja, webhook_target="pixel"
-    // é o ÚNICO caso onde action="comment" é válido. Uma entry residual (fila
-    // pré-#3627, que removeu a geração de comments) ou regressão futura com
-    // action="comment" + webhookTarget="diaria" geraria erro
-    // `Missing value of required parameter 'url'` no Make, 5 retries, DLQ, e
-    // email de erro pro editor — não adianta re-tentar, o Make sempre rejeita o
-    // mesmo payload. Rejeitar cedo, direto pra DLQ, mesmo padrão do bloco
-    // pixel-sem-webhook-url acima.
-    // (#3667) Decisão extraída pra isUnsupportedCommentTarget() (guards.ts) —
-    // reusada também por alarm() (durable-object.ts), que aplica o mesmo guard
-    // mas libera o claim em vez de escrever DLQ (sem acesso a KV).
-    if (isUnsupportedCommentTarget(action, webhookTarget)) {
+    if (outcome.status === "dlq") {
+      // (#2219 bug 1 fix) Liberar claim ANTES de ir pro DLQ — sem isso o DO
+      // fica com claiming=true permanente e o alarm fica travado até eviction.
       await releaseCronClaim();
       const dlqKey = buildDlqKey(k.name, entry.scheduled_at);
       await env.LINKEDIN_QUEUE.put(
@@ -184,120 +162,82 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
         { expirationTtl: DLQ_TTL_SECONDS },
       );
       await env.LINKEDIN_QUEUE.delete(k.name);
-      console.error(
-        `[fire] ${k.name} dropped to dlq: action=comment but webhook_target=${webhookTarget} (só "pixel" suporta comment) (dlq_key=${dlqKey})`,
-      );
+      console.error(`[fire] ${k.name} dropped to dlq: ${outcome.reason} (dlq_key=${dlqKey})`);
       dlq++;
       continue;
     }
 
-    // Disparar webhook Make (#881 — com timeout)
     let succeeded = false;
-    try {
-      const res = await fetch(webhookUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: entry.text,
-          image_url: entry.image_url,
-          scheduled_at: entry.scheduled_at,
-          destaque: entry.destaque,
-          // #595 — forward action + parent_destaque pro Make scenario.
-          // Make Diar.ia faz Router por action; Pixel só aceita "comment".
-          action,
-          ...(entry.parent_destaque !== undefined && { parent_destaque: entry.parent_destaque }),
-        }),
-        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      });
-
-      if (res.ok) {
-        await env.LINKEDIN_QUEUE.delete(k.name);
-        // (#2235 fix) Transicionar DO para fired=true + limpar payload com retry robusto.
-        // CRÍTICO: alarm() lê o PAYLOAD do DO storage, NÃO do KV. Sem fired=true E sem
-        // payload no DO, o alarm não tem o quê postar mesmo se re-disparar via TTL expiry.
-        // Dupla proteção (espelhando o alarm path em alarm()):
-        //   1. fired=true: tryClaim() retorna false imediatamente.
-        //   2. payload deletado por /status-set-fired: alarm re-entry aborta cedo (payload missing).
-        // Sem retry aqui, uma falha silenciosa deixa o DO em claiming=true+fired=false+payload
-        // presente → cron pode re-clamar via TTL e re-postar (double-post).
-        //
-        // (#2235 fix F8) DO stub içado pra fora do loop: idFromName()+get() é O(1) mas
-        // chamado 3× no loop original sem necessidade — içar evita redundância e simplifica.
-        let firedSetOk = false;
-        let sfDoStub: { fetch: (url: string, init?: RequestInit) => Promise<Response> } | null = null;
+    if (outcome.status === "fired") {
+      await env.LINKEDIN_QUEUE.delete(k.name);
+      // (#2235 fix) Transicionar DO para fired=true + limpar payload com retry robusto.
+      // CRÍTICO: alarm() lê o PAYLOAD do DO storage, NÃO do KV. Sem fired=true E sem
+      // payload no DO, o alarm não tem o quê postar mesmo se re-disparar via TTL expiry.
+      // Dupla proteção (espelhando o alarm path em alarm()):
+      //   1. fired=true: tryClaim() retorna false imediatamente.
+      //   2. payload deletado por /status-set-fired: alarm re-entry aborta cedo (payload missing).
+      // Sem retry aqui, uma falha silenciosa deixa o DO em claiming=true+fired=false+payload
+      // presente → cron pode re-clamar via TTL e re-postar (double-post).
+      //
+      // (#2235 fix F8) DO stub içado pra fora do loop: idFromName()+get() é O(1) mas
+      // chamado 3× no loop original sem necessidade — içar evita redundância e simplifica.
+      let firedSetOk = false;
+      let sfDoStub: { fetch: (url: string, init?: RequestInit) => Promise<Response> } | null = null;
+      try {
+        const sfDoId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
+        sfDoStub = env.LINKEDIN_SCHEDULER.get(sfDoId);
+      } catch { /* binding ausente — sfDoStub permanece null */ }
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (!sfDoStub) break;
         try {
-          const sfDoId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
-          sfDoStub = env.LINKEDIN_SCHEDULER.get(sfDoId);
-        } catch { /* binding ausente — sfDoStub permanece null */ }
-        for (let attempt = 0; attempt < 3; attempt++) {
-          if (!sfDoStub) break;
-          try {
-            const sfRes = await sfDoStub.fetch("https://do/status-set-fired", { method: "POST" });
-            if (sfRes.ok) {
-              firedSetOk = true;
-              break;
-            }
-            console.warn(`[fire] /status-set-fired attempt ${attempt + 1} returned ${sfRes.status} for key=${k.name}`);
-          } catch (sfErr) {
-            // (#2235 fix F9) String(sfErr) em vez de (sfErr as Error).message — undefined pra não-Error
-            console.warn(`[fire] /status-set-fired attempt ${attempt + 1} failed for key=${k.name}: ${String(sfErr)}`);
+          const sfRes = await sfDoStub.fetch("https://do/status-set-fired", { method: "POST" });
+          if (sfRes.ok) {
+            firedSetOk = true;
+            break;
           }
-          if (attempt < 2) await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
+          console.warn(`[fire] /status-set-fired attempt ${attempt + 1} returned ${sfRes.status} for key=${k.name}`);
+        } catch (sfErr) {
+          // (#2235 fix F9) String(sfErr) em vez de (sfErr as Error).message — undefined pra não-Error
+          console.warn(`[fire] /status-set-fired attempt ${attempt + 1} failed for key=${k.name}: ${String(sfErr)}`);
         }
-        if (!firedSetOk) {
-          // Falha persistente: KV já deletado, mas DO ainda tem payload + claiming=true.
-          // (#2235 fix F1) Chamar /cancel best-effort: sem payload, alarm re-entry não tem o quê
-          // postar mesmo que re-claime via TTL. Invariante: payload limpo ⇒ sem re-post.
-          // Se /cancel também falhar, NÃO há mais o que fazer (KV já deletado) — logar crítico.
-          let cancelledViaCancel = false;
-          if (sfDoStub) {
-            try {
-              const cancelRes = await sfDoStub.fetch("https://do/cancel", { method: "POST" });
-              cancelledViaCancel = cancelRes.ok;
-              if (cancelRes.ok) {
-                console.warn(`[fire] /status-set-fired failed after 3 attempts for key=${k.name} — called /cancel to clear payload (double-post prevention)`);
-              } else {
-                console.error(`[fire] CRITICAL: /status-set-fired AND /cancel failed for key=${k.name} status=${cancelRes.status} — DO payload may remain, double-post risk if alarm re-fires via TTL`);
-              }
-            } catch (cancelErr) {
-              console.error(`[fire] CRITICAL: /status-set-fired AND /cancel threw for key=${k.name}: ${String(cancelErr)} — DO payload may remain, double-post risk if alarm re-fires via TTL`);
-            }
-          } else {
-            console.error(`[fire] CRITICAL: /status-set-fired skipped (DO binding absent) for key=${k.name} — double-post risk if alarm re-fires via TTL`);
-          }
-          void cancelledViaCancel; // loggado acima
-        }
-        console.log(
-          `[fire] ${k.name} fired (target=${webhookTarget} action=${action} destaque=${entry.destaque}, scheduled=${entry.scheduled_at})`,
-        );
-        fired++;
-        succeeded = true;
-      } else {
-        const body = await res.text();
-        // Liberar claim no DO pra próximo retry do cron poder tentar de novo.
-        try {
-          const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
-          const doStub = env.LINKEDIN_SCHEDULER.get(doId);
-          await doStub.fetch("https://do/release-claim", { method: "POST" });
-        } catch { /* non-fatal */ }
-        console.error(
-          `[fire] ${k.name} make webhook returned HTTP ${res.status}: ${body.slice(0, 200)}`,
-        );
+        if (attempt < 2) await new Promise(r => setTimeout(r, 50 * (attempt + 1)));
       }
-    } catch (e) {
-      const err = e as Error;
-      // Liberar claim no DO pra próximo retry do cron poder tentar de novo.
+      if (!firedSetOk) {
+        // Falha persistente: KV já deletado, mas DO ainda tem payload + claiming=true.
+        // (#2235 fix F1) Chamar /cancel best-effort: sem payload, alarm re-entry não tem o quê
+        // postar mesmo que re-claime via TTL. Invariante: payload limpo ⇒ sem re-post.
+        // Se /cancel também falhar, NÃO há mais o que fazer (KV já deletado) — logar crítico.
+        let cancelledViaCancel = false;
+        if (sfDoStub) {
+          try {
+            const cancelRes = await sfDoStub.fetch("https://do/cancel", { method: "POST" });
+            cancelledViaCancel = cancelRes.ok;
+            if (cancelRes.ok) {
+              console.warn(`[fire] /status-set-fired failed after 3 attempts for key=${k.name} — called /cancel to clear payload (double-post prevention)`);
+            } else {
+              console.error(`[fire] CRITICAL: /status-set-fired AND /cancel failed for key=${k.name} status=${cancelRes.status} — DO payload may remain, double-post risk if alarm re-fires via TTL`);
+            }
+          } catch (cancelErr) {
+            console.error(`[fire] CRITICAL: /status-set-fired AND /cancel threw for key=${k.name}: ${String(cancelErr)} — DO payload may remain, double-post risk if alarm re-fires via TTL`);
+          }
+        } else {
+          console.error(`[fire] CRITICAL: /status-set-fired skipped (DO binding absent) for key=${k.name} — double-post risk if alarm re-fires via TTL`);
+        }
+        void cancelledViaCancel; // loggado acima
+      }
+      console.log(
+        `[fire] ${k.name} fired (channel=${entry.channel ?? "linkedin"} destaque=${entry.destaque}, scheduled=${entry.scheduled_at})`,
+      );
+      fired++;
+      succeeded = true;
+    } else {
+      // outcome.status === "failed" — liberar claim no DO pra próximo retry do cron poder tentar de novo.
       try {
         const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
         const doStub = env.LINKEDIN_SCHEDULER.get(doId);
         await doStub.fetch("https://do/release-claim", { method: "POST" });
       } catch { /* non-fatal */ }
-      // AbortError surge se AbortSignal.timeout dispara antes do Make responder
-      if (err.name === "AbortError" || err.name === "TimeoutError") {
-        console.error(`[fire] ${k.name} fetch timeout after ${FETCH_TIMEOUT_MS}ms`);
-      } else {
-        console.error(`[fire] ${k.name} fetch failed: ${err.message}`);
-      }
+      console.error(`[fire] ${k.name} fire failed: ${outcome.reason}`);
     }
 
     if (succeeded) continue;

@@ -35,6 +35,14 @@ tag = "v1-linkedin-scheduler"
 # API idêntico. NOTA: este worker está em DEPLOY-HOLD (#2235) — não deployar ainda.
 new_sqlite_classes = ["LinkedInScheduler"]
 
+# #3817 — canal Instagram (Graph API direta, sem Make). Secrets via
+# `wrangler secret put INSTAGRAM_BUSINESS_ACCOUNT_ID` / `INSTAGRAM_ACCESS_TOKEN`
+# (conta @diar.ia.br, token de página com escopo instagram_content_publish).
+# Ausentes = itens channel="instagram" vão pra DLQ com motivo claro no disparo
+# (mesmo padrão do MAKE_PIXEL_WEBHOOK_URL ausente — ver dispatch.ts).
+[vars]
+INSTAGRAM_API_VERSION = "v25.0"
+
 # Cron trigger — a cada 5 minutos (FALLBACK após #1168).
 # Histórico: PR #1167 mudou pra */3 como mitigação de lag observado no #1146
 # (Cloudflare cron tem SLA "~5min" mas lagou 10-15min em 2026-05-12). Decisão

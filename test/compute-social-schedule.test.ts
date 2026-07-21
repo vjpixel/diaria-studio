@@ -665,6 +665,24 @@ describe("parseCliArgs", () => {
     });
   });
 
+  it("aceita --platform instagram (#3817)", () => {
+    const r = parseCliArgs([
+      "--edition",
+      "260428",
+      "--destaque",
+      "d1",
+      "--platform",
+      "instagram",
+    ]);
+    assert.deepEqual(r, {
+      edition: "260428",
+      destaque: "d1",
+      platform: "instagram",
+      dayOffset: undefined,
+      configPath: undefined,
+    });
+  });
+
   it("erro: --platform inválido", () => {
     const r = parseCliArgs([
       "--edition",
@@ -675,7 +693,7 @@ describe("parseCliArgs", () => {
       "twitter",
     ]);
     assert.deepEqual(r, {
-      error: "missing/invalid --platform (linkedin|facebook)",
+      error: "missing/invalid --platform (linkedin|facebook|instagram)",
     });
   });
 });
