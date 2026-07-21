@@ -231,9 +231,24 @@ export function isSponsoredCallout(text: string | null | undefined): boolean {
  * Linha do separador "● DIVULGAÇÃO" (kicker com régua, #1940). Desde 260611
  * (pedido do editor, supersede a régua nua do #2069) TODO box de divulgação — 📣
  * patrocinado, 📚 promo interna, 🎉 CTA — recebe este kicker antes do box.
+ *
+ * 260721 (pedido do editor): label parametrizável — um box de
+ * agradecimento a apoiadores ocupando um slot de divulgação (ex: entre D1/D2)
+ * não é conteúdo patrocinado/promocional, e rotulá-lo "Divulgação" é
+ * factualmente incorreto. Ver `isAgradecimentoBox`.
  */
-export function renderDivulgacaoSeparator(): string {
-  return `<tr><td class="pad" style="padding:32px 32px 0;">${renderKicker("Divulgação")}</td></tr>`;
+export function renderDivulgacaoSeparator(label = "Divulgação"): string {
+  return `<tr><td class="pad" style="padding:32px 32px 0;">${renderKicker(label)}</td></tr>`;
+}
+
+/**
+ * 260721: detecta um box de agradecimento a apoiadores (ex: "Agradeço aos
+ * novos apoiadores..."), ocupando um slot de divulgação (D1/D2, D2/D3 ou
+ * pós-D3) sem ser conteúdo patrocinado/promocional — recebe o kicker
+ * "Agradecimento" em vez de "Divulgação" em `renderHTML`.
+ */
+export function isAgradecimentoBox(text: string | null | undefined): boolean {
+  return !!text && /^\s*Agrade[çc]o\b/iu.test(text);
 }
 
 /**
@@ -353,9 +368,13 @@ export function renderCoverage(text: string): string {
   // branch de 1 parágrafo (self-review #3742 finding 1) — o multi-parágrafo
   // tinha exatamente a mesma classe de bug (domínio .ai em texto puro perdendo
   // a proteção em QUALQUER parágrafo, não só quando o texto inteiro é 1 só).
+  // 260721: parágrafo `- item`/`* item` (1 por linha, ex: links de redes
+  // sociais do bloco de boas-vindas) vira `<ul><li>` real em vez de ser
+  // engolido como prosa contínua num único `<p>` — mesmo tratamento já usado
+  // no corpo de box de divulgação/introCallout (#3374).
   const inner = paras.length > 1
-    ? paras.map((p, i) => bodyP(i === 0 ? "0" : "12px 0 0", tokenizeInline(p, escText, inlineLinkHtml))).join("\n  ")
-    : bodyP("0", tokenizeInline(text, escText, inlineLinkHtml));
+    ? paras.map((p, i) => isBulletParagraph(p) ? renderBulletList(p, i === 0 ? "0" : "12px") : bodyP(i === 0 ? "0" : "12px 0 0", tokenizeInline(p, escText, inlineLinkHtml))).join("\n  ")
+    : isBulletParagraph(text) ? renderBulletList(text, "0") : bodyP("0", tokenizeInline(text, escText, inlineLinkHtml));
   return `<!-- INTRO (coverage) -->
 <tr><td class="pad" style="padding:44px 32px 8px;">
   ${inner}
@@ -496,6 +515,15 @@ export function renderIntroCallout(
   const paras = text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   const ceremony = hasCeremonyMarker(paras[0] ?? "");
   const sectionTitle = firstLineIsSectionTitle(paras);
+  // 260721: box de agradecimento a apoiadores tem um parágrafo CTA-only
+  // ("[Quero apoiar também](...)"), então `shouldForceCtaPill` corretamente
+  // força o botão pill — mas isso também empurra o 1º parágrafo pro branch de
+  // TÍTULO serif 26px (linha 542 abaixo), que é pra conteúdo patrocinado/
+  // divulgação com título de verdade, não pra uma frase de agradecimento em
+  // prosa corrida. `agradecimento` sobrescreve só o ESTILO do 1º parágrafo
+  // (corpo normal em vez de título) — a extração do botão CTA (linhas
+  // 568+ abaixo) continua intacta.
+  const agradecimento = isAgradecimentoBox(text);
   let inner: string;
   // #3460: multi-parágrafo não-patrocinado e sem CTA pill forçado — nota
   // pessoal do editor (ex: boas-vindas), não anúncio/box de divulgação com
@@ -532,7 +560,9 @@ export function renderIntroCallout(
     // #260701 review: estilo do header body-size (título + sub-cabeçalho) num só
     // lugar — evita divergência silenciosa entre os 2 usos (cf. lbStyle em renderEIA).
     const bodyHeadingStyle = `font-family:${FONT_HEADING};font-weight:600;font-size:16px;line-height:1.4;color:${TEXT_COLOR};`;
-    const titleHtml = titleStyle === "body"
+    const titleHtml = agradecimento
+      ? renderBoxParagraph(title, "0")
+      : titleStyle === "body"
       ? `<p style="margin:0 0 10px;${bodyHeadingStyle}">${processInlineLinks(title)}</p>`
       : `<p style="margin:0 0 14px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(title)}</p>`;
 
@@ -1305,7 +1335,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // marcador emoji. TODO box de divulgação recebe o kicker "● DIVULGAÇÃO"
     // antes (260611, supersede #1940/#2069).
     if (content.boxDivulgacao1 && i === 0) {
-      parts.push(renderDivulgacaoSeparator());
+      parts.push(renderDivulgacaoSeparator(isAgradecimentoBox(content.boxDivulgacao1) ? "Agradecimento" : "Divulgação"));
       parts.push(
         renderBoxDivulgacao(
           content.boxDivulgacao1,
@@ -1317,7 +1347,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // #2978: box de divulgação slot 2 — SEMPRE na lacuna D2/D3 (após D2, i===1).
     // Só existe em edições de 3 destaques (sem gap D2/D3 em edições de 2).
     if (content.boxDivulgacao2 && i === 1) {
-      parts.push(renderDivulgacaoSeparator());
+      parts.push(renderDivulgacaoSeparator(isAgradecimentoBox(content.boxDivulgacao2) ? "Agradecimento" : "Divulgação"));
       // #2978-slot2-parity: passa a imagem (quando presente) igual ao slot 1 —
       // antes caía sempre em renderMidCallout(text, null) → degradava pro box
       // só-texto (sem imagem/CTA-pill) mesmo quando o box de livros caía aqui.
@@ -1334,7 +1364,7 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // Diferente do slot 2 (só existe com D3), o slot 3 existe em QUALQUER
     // contagem de destaques — não é uma lacuna ENTRE destaques.
     if (content.boxDivulgacao3 && i === content.destaques.length - 1) {
-      parts.push(renderDivulgacaoSeparator());
+      parts.push(renderDivulgacaoSeparator(isAgradecimentoBox(content.boxDivulgacao3) ? "Agradecimento" : "Divulgação"));
       parts.push(
         renderBoxDivulgacao(
           content.boxDivulgacao3,
