@@ -21,8 +21,10 @@ import {
   buildReviewPreviewHtml,
   buildSocialPreviewHtml,
   resolveReviewImagePath,
+  applyDestaqueTitleEdit,
   REVIEW_FILES,
 } from "../scripts/studio-ui/studio-review.ts";
+import { parseDestaques } from "../scripts/extract-destaques.ts";
 
 const TWO_DESTAQUES_MD = [
   "**DESTAQUE 1 | LANÇAMENTO**",
@@ -694,5 +696,99 @@ describe("resolveReviewImagePath (#3559 — achado 260716)", () => {
   it("extensão fora da allowlist (ex: .md, .json) → null mesmo se o arquivo existir", () => {
     writeFileSync(resolve(editionDir, "02-reviewed.md"), "conteudo", "utf8");
     assert.equal(resolveReviewImagePath(editionDir, "02-reviewed.md"), null);
+  });
+});
+
+describe("applyDestaqueTitleEdit (#3806 — Opção B spike: edição visual do título)", () => {
+  let root: string;
+  let editionDir: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-review-field-edit-"));
+    editionDir = makeEdition(root, "260721");
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it("round-trip completo: visão -> região-do-MD -> lint -> save — só o título de D1 muda, resto do arquivo intocado", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    const result = applyDestaqueTitleEdit(root, "260721", 1, "Novo título revisado d1");
+    assert.equal(result.ok, true);
+    assert.ok(result.modifiedAt);
+    assert.ok(result.lint, "deveria rodar os lints de sempre sobre o conteúdo novo");
+
+    const onDisk = readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8");
+    const destaques = parseDestaques(onDisk);
+    assert.equal(destaques[0].title, "Novo título revisado d1");
+    // D2 e o resto de D1 (corpo/why/url) continuam intocados.
+    assert.equal(destaques[1].title, "Modelos de linguagem superam humanos em diagnóstico");
+    assert.equal(destaques[0].url, "https://example.com/1");
+    assert.ok(destaques[0].body.includes("Corpo do primeiro destaque"));
+  });
+
+  it("lint reporta falha (ex: título > 52 chars) sem impedir o save — mesma rede de segurança de sempre, não um novo gate bloqueante", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    const tituloGigante = "Título propositalmente enorme pra estourar o limite de 52 caracteres do lint";
+    const result = applyDestaqueTitleEdit(root, "260721", 1, tituloGigante);
+    assert.equal(result.ok, true); // salva normalmente — lint é reportado, não bloqueia o save
+    const titleLenCheck = result.lint!.checks.find((c) => c.id === "title-length");
+    assert.ok(titleLenCheck);
+    assert.equal(titleLenCheck!.ok, false);
+    assert.equal(result.lint!.ok, false); // agregado reflete a falha blocking
+  });
+
+  it("respeita o guard de conflito mtime (#3729) — reusa saveReviewFile sem duplicar a checagem", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    const loaded = readReviewFile(root, "260721", "reviewed");
+    const staleModifiedAt = loaded.modifiedAt;
+    assert.ok(staleModifiedAt);
+
+    // Pipeline/painel escreve por baixo depois que o client "abriu" (leu).
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD.replace("LANÇAMENTO", "LANÇAMENTO-PÓS"), "utf8");
+    const newerDate = new Date(Date.parse(staleModifiedAt!) + 5000);
+    utimesSync(resolve(editionDir, "02-reviewed.md"), newerDate, newerDate);
+
+    const result = applyDestaqueTitleEdit(root, "260721", 1, "Edição sobre versão velha", {
+      expectedModifiedAt: staleModifiedAt,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.conflict, true);
+    // conteúdo em disco (a escrita "concorrente") não foi sobrescrito.
+    assert.match(readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8"), /LANÇAMENTO-PÓS/);
+  });
+
+  it("force:true ignora a divergência e salva mesmo assim", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    const loaded = readReviewFile(root, "260721", "reviewed");
+    const staleModifiedAt = loaded.modifiedAt;
+
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    const newerDate = new Date(Date.parse(staleModifiedAt!) + 5000);
+    utimesSync(resolve(editionDir, "02-reviewed.md"), newerDate, newerDate);
+
+    const result = applyDestaqueTitleEdit(root, "260721", 1, "Edição forçada", {
+      expectedModifiedAt: staleModifiedAt,
+      force: true,
+    });
+    assert.equal(result.ok, true);
+    const destaques = parseDestaques(readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8"));
+    assert.equal(destaques[0].title, "Edição forçada");
+  });
+
+  it("02-reviewed.md ainda não existe -> ok:false com mensagem clara", () => {
+    const result = applyDestaqueTitleEdit(root, "260721", 1, "qualquer título");
+    assert.equal(result.ok, false);
+    assert.match(result.error!, /ainda não existe/);
+  });
+
+  it("destaque N inexistente no arquivo -> ok:false, propaga o erro de replaceDestaqueTitleInMd", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8"); // só tem D1/D2
+    const result = applyDestaqueTitleEdit(root, "260721", 3, "título d3 inexistente");
+    assert.equal(result.ok, false);
+    assert.match(result.error!, /DESTAQUE 3.*não encontrado/);
+  });
+
+  it("AAMMDD inválido -> ok:false", () => {
+    const result = applyDestaqueTitleEdit(root, "nope", 1, "título");
+    assert.equal(result.ok, false);
+    assert.match(result.error!, /inválido/);
   });
 });

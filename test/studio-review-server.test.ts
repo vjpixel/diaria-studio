@@ -300,6 +300,91 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.equal(res.status, 405);
   });
 
+  // #3806 (Opção B spike) — edição visual de UM campo (título de destaque) na
+  // visão renderizada. Edição PRÓPRIA (260719, isolada de 260716/260718) —
+  // mesmo cuidado documentado acima pro bloco de conflito do #3729.
+  describe("PUT .../review/reviewed/destaque-title (#3806)", () => {
+    const fieldAammdd = "260719";
+    let fieldEditionDir: string;
+
+    before(() => {
+      fieldEditionDir = join(root, "data", "editions", fieldAammdd);
+      mkdirSync(join(fieldEditionDir, "_internal"), { recursive: true });
+      writeFileSync(join(fieldEditionDir, "02-reviewed.md"), TWO_DESTAQUES_MD, "utf8");
+    });
+
+    it("round-trip fim-a-fim: PUT altera só o título de D1, lint vem junto, resto do arquivo intocado", async () => {
+      const put = await fetch(new URL(`/api/editions/${fieldAammdd}/review/reviewed/destaque-title`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ n: 1, title: "Título revisado via painel" }),
+      });
+      assert.equal(put.status, 200);
+      const body = await put.json();
+      assert.equal(body.ok, true);
+      assert.ok(body.lint, "resposta deveria incluir o relatório de lint");
+
+      const onDisk = readFileSync(join(fieldEditionDir, "02-reviewed.md"), "utf8");
+      assert.match(onDisk, /Título revisado via painel/);
+      assert.match(onDisk, /Modelos de linguagem superam humanos em diagnóstico/, "D2 intocado");
+      assert.match(onDisk, /Corpo do primeiro destaque com contexto suficiente\./, "corpo de D1 intocado");
+    });
+
+    it("corpo sem 'n' válido (1/2/3) retorna 400", async () => {
+      const res = await fetch(new URL(`/api/editions/${fieldAammdd}/review/reviewed/destaque-title`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ n: 9, title: "x" }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    it("corpo sem 'title' (ou vazio) retorna 400", async () => {
+      const res = await fetch(new URL(`/api/editions/${fieldAammdd}/review/reviewed/destaque-title`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ n: 1, title: "   " }),
+      });
+      assert.equal(res.status, 400);
+    });
+
+    it("destaque N inexistente no arquivo retorna 400 com o erro propagado", async () => {
+      const res = await fetch(new URL(`/api/editions/${fieldAammdd}/review/reviewed/destaque-title`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ n: 3, title: "título d3 inexistente" }),
+      });
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.match(body.error ?? "", /DESTAQUE 3/);
+    });
+
+    it("mtime obsoleto (expectedModifiedAt divergente) retorna 409, sem sobrescrever", async () => {
+      const get = await fetch(new URL(`/api/editions/${fieldAammdd}/review/reviewed`, server.url));
+      const getBody = await get.json();
+      const staleModifiedAt = getBody.modifiedAt;
+      assert.ok(staleModifiedAt);
+
+      // simula o painel salvando por baixo entre o GET acima e o PUT abaixo.
+      writeFileSync(join(fieldEditionDir, "02-reviewed.md"), TWO_DESTAQUES_MD.replace("LANÇAMENTO", "LANÇAMENTO-NOVO"), "utf8");
+
+      const put = await fetch(new URL(`/api/editions/${fieldAammdd}/review/reviewed/destaque-title`, server.url), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ n: 1, title: "edição sobre versão velha", expectedModifiedAt: staleModifiedAt }),
+      });
+      assert.equal(put.status, 409);
+      const body = await put.json();
+      assert.equal(body.conflict, true);
+      assert.match(readFileSync(join(fieldEditionDir, "02-reviewed.md"), "utf8"), /LANÇAMENTO-NOVO/);
+    });
+
+    it("GET nesta rota não casa nenhum handler read-only (rota é PUT-only) — 404 'rota desconhecida', não um 200/500 silencioso", async () => {
+      const res = await fetch(new URL(`/api/editions/${fieldAammdd}/review/reviewed/destaque-title`, server.url));
+      assert.equal(res.status, 404);
+    });
+  });
+
   // #3635 — editor de última milha do HTML final publicado de verdade.
   it("GET .../review/html-final antes da Etapa 4: exists:false, sem erro", async () => {
     const res = await fetch(new URL("/api/editions/260716/review/html-final", server.url));
@@ -656,5 +741,50 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
       fnBody,
       /try\s*\{[\s\S]*await loadFile\(currentSlug\);[\s\S]*await refreshDivergenceBanner\(\);[\s\S]*setConn\("ok"\);[\s\S]*\}\s*catch[\s\S]*setConn\("down"\);[\s\S]*\}/,
     );
+  });
+
+  // #3806 (Opção B spike) — edição visual do título de destaque direto no
+  // preview renderizado. Mesmo padrão "contrato estático" dos casos acima
+  // (sem harness de DOM pra revisao.js neste projeto): a lógica PURA tem
+  // cobertura direta em test/revisao-inline-edit.test.ts; aqui confirmamos
+  // o WIRING (arquivo servido, import presente, escopo restrito à aba
+  // 'reviewed', PUT usa o endpoint certo).
+  it("GET /revisao-inline-edit.js serve o módulo com as funções puras exportadas", async () => {
+    const res = await fetch(new URL("/revisao-inline-edit.js", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /export function sanitizeInlineTitleText/);
+    assert.match(body, /export function shouldSaveInlineTitle/);
+    assert.match(body, /export function buildDestaqueTitleSavePayload/);
+  });
+
+  it("GET /revisao.js importa revisao-inline-edit.js e usa suas funções (não reimplementa a lógica inline)", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    assert.match(body, /from ["']\.\/revisao-inline-edit\.js["']/);
+    assert.match(body, /sanitizeInlineTitleText/);
+    assert.match(body, /shouldSaveInlineTitle/);
+    assert.match(body, /buildDestaqueTitleSavePayload/);
+  });
+
+  it("setupInlineTitleEditing() só habilita edição inline quando currentSlug === 'reviewed'", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("function setupInlineTitleEditing()");
+    assert.ok(fnStart >= 0, "setupInlineTitleEditing deveria existir em revisao.js");
+    const fnEnd = body.indexOf("\nfunction activateSidePane", fnStart);
+    const fnBody = body.slice(fnStart, fnEnd >= 0 ? fnEnd : undefined);
+    assert.match(fnBody, /if \(currentSlug !== "reviewed"\) return;/);
+  });
+
+  it("saveInlineTitle() faz PUT em .../review/reviewed/destaque-title (nunca no slug ativo, sempre 'reviewed' fixo)", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function saveInlineTitle(");
+    assert.ok(fnStart >= 0, "saveInlineTitle deveria existir em revisao.js");
+    const fnEnd = body.indexOf("\nfunction injectInlineEditAffordanceStyle", fnStart);
+    const fnBody = body.slice(fnStart, fnEnd >= 0 ? fnEnd : undefined);
+    assert.match(fnBody, /\/review\/reviewed\/destaque-title/);
+    assert.match(fnBody, /method: "PUT"/);
   });
 });

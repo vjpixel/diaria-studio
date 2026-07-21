@@ -65,12 +65,19 @@
 
 import type {
   CanUseTool,
+  HookCallback,
+  HookEvent,
+  HookCallbackMatcher,
+  HookJSONOutput,
   Options,
   PermissionResult,
   Query,
   SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import { statSync } from "node:fs";
+import { resolve, relative } from "node:path";
+import { REVIEW_FILES } from "./studio-review.ts";
 
 // ─── contrato de wire (testável sem SDK real) ──────────────────────────────
 
@@ -597,6 +604,7 @@ export function clearSession(rootDir: string): void {
   sessionIdByRoot.delete(rootDir);
   clearSessionToolAllowlist(rootDir); // #3804: "nova conversa" também zera tools "sempre permitir".
   clearChatHistory(rootDir); // #3803: "nova conversa" também zera o histórico reidratável.
+  clearKnownFileMtimeTracking(rootDir); // #3806: "nova conversa" também zera o que a sessão "sabia" sobre mtimes.
 }
 
 // ─── histórico de mensagens por sessão (#3803) ─────────────────────────────
@@ -1052,6 +1060,215 @@ export function watchPendingChatPermissions(
   return { close: () => clearInterval(interval) };
 }
 
+// ─── guard de frescor (#3806, requisito adicional) ─────────────────────────
+//
+// Risco residual do #3729 documentado em CLAUDE.md: o "sentido inverso" —
+// o AGENTE (chat drawer) sobrescrever uma edição que o EDITOR acabou de
+// salvar no painel do Studio (`saveReviewFile`), porque a sessão do drawer
+// (`resume` em `runChatTurn`) mantém em contexto uma cópia do arquivo lida
+// num turno anterior, que pode ter envelhecido entre turnos.
+//
+// Mecanismo (item 1 do requisito, recomendado): um par de hooks EM PROCESSO
+// (`Options.hooks`, passados direto pro `query()` — não um script externo de
+// `.claude/settings.json`) plugado em `runChatTurn`:
+//   - `PostToolUse` (Read/Edit/Write): grava o mtime ATUAL em disco do
+//     `file_path` tocado — é o "carimbo de frescor" que o agente carrega
+//     depois de ler OU escrever aquele arquivo com sucesso.
+//   - `PreToolUse` (Edit/Write): compara o mtime ATUAL em disco contra o
+//     último carimbo gravado; se divergirem (o painel salvou por baixo desde
+//     a última leitura/escrita do agente), BLOQUEIA com `decision: "block"` +
+//     mensagem instruindo reler antes de editar de novo.
+//
+// Importante: `Edit`/`Write` estão em `permissions.allow` de
+// `.claude/settings.json` (allowlist incondicional) — chamadas a essas tools
+// NUNCA chegam em `canUseTool` (`makeInteractiveCanUseTool` abaixo), só tools
+// que cairiam no caminho "ask" passam por ali (ver doc-comment do #3804 mais
+// acima). Por isso este guard não pode viver dentro de
+// `makeInteractiveCanUseTool` (a sugestão textual da issue #3806 não se
+// aplica tal qual) — hooks de `PreToolUse`/`PostToolUse` são o único ponto de
+// interceptação que roda INCONDICIONALMENTE antes/depois da tool executar,
+// independente de allowlist (`PreToolUse hook denies bypass canUseTool`, ver
+// coment. do SDK em `sdk.d.ts` no evento `PermissionDenied`).
+//
+// Escopo restrito a "arquivos revisáveis" (`REVIEW_FILES` de
+// `studio-review.ts` — os mesmos 4 slugs que o painel edita) — nunca bloqueia
+// Edit/Write em `scripts/*.ts` ou qualquer outro arquivo do repo, cujo mtime
+// muda o tempo todo por motivos sem relação com o Studio.
+
+/** Mapa em memória (1 por `rootDir`, mesmo padrão dos outros Maps deste
+ * módulo) do último mtime (ISO) que a sessão do drawer observou pra cada
+ * path absoluto — atualizado depois de um `Read`/`Edit`/`Write` bem-sucedido
+ * (`Edit`/`Write` também atualizam: depois do PRÓPRIO write do agente, o
+ * mtime novo já reflete o que o agente sabe, então a 2ª edição no mesmo turno
+ * não deve ser bloqueada por comparação contra o carimbo PRÉ-edição). */
+const lastKnownMtimeByRoot = new Map<string, Map<string, string>>();
+
+function lastKnownMtimeMapFor(rootDir: string): Map<string, string> {
+  let m = lastKnownMtimeByRoot.get(rootDir);
+  if (!m) {
+    m = new Map();
+    lastKnownMtimeByRoot.set(rootDir, m);
+  }
+  return m;
+}
+
+/** Grava o mtime observado pro `absPath` dado — chamado pelo hook
+ * `PostToolUse` (ver `makeEditGuardPostToolUseHook`), exportado só pra
+ * permitir teste direto sem passar pelo hook completo. */
+export function recordKnownFileMtime(rootDir: string, absPath: string, mtimeIso: string): void {
+  lastKnownMtimeMapFor(rootDir).set(absPath, mtimeIso);
+}
+
+/** Último mtime conhecido pro `absPath` dado — `undefined` se a sessão nunca
+ * leu/escreveu esse arquivo (sem baseline pra comparar, ver
+ * `evaluateEditGuard`). */
+export function getKnownFileMtime(rootDir: string, absPath: string): string | undefined {
+  return lastKnownMtimeByRoot.get(rootDir)?.get(absPath);
+}
+
+/** Limpa o mapa de frescor do `rootDir` — chamado por `clearSession` ("nova
+ * conversa" também zera o que a sessão anterior "sabia" sobre mtimes, mesmo
+ * padrão de `clearSessionToolAllowlist`/`clearChatHistory`). */
+export function clearKnownFileMtimeTracking(rootDir: string): void {
+  lastKnownMtimeByRoot.delete(rootDir);
+}
+
+/** mtime (ISO) atual em disco do path dado, ou `null` se o arquivo não existe
+ * (nunca lança — path inválido/removido é um resultado válido, não uma
+ * exceção). */
+function statMtimeIso(absPath: string): string | null {
+  try {
+    return statSync(absPath).mtime.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+/** Extrai `file_path` de um `tool_input` cru (`Read`/`Edit`/`Write` usam
+ * todos o mesmo campo) — pura, defensiva (nunca lança; shape inesperado vira
+ * `null`). */
+export function extractFilePathInput(input: unknown): string | null {
+  if (typeof input !== "object" || input === null) return null;
+  const fp = (input as Record<string, unknown>).file_path;
+  return typeof fp === "string" && fp.trim() !== "" ? fp : null;
+}
+
+/** Nomes de arquivo (relativos a `data/editions/{AAMMDD}/`) que o painel do
+ * Studio edita — mesma fonte que `studio-review.ts` usa pra resolver os 4
+ * slugs revisáveis (`REVIEW_FILES`), normalizados pra comparação com
+ * separador `/` (funciona em Windows e POSIX). Módulo-level (não recomputado
+ * por chamada) — a lista é estática. */
+const GUARDED_RELATIVE_FILENAMES = new Set(
+  Object.values(REVIEW_FILES).map((f) => f.replace(/\\/g, "/")),
+);
+
+/** `true` quando `absPath` é um dos 4 arquivos revisáveis (`REVIEW_FILES`) de
+ * ALGUMA edição sob `data/editions/{AAMMDD}/` — o escopo do guard de
+ * frescor (#3806). Pura (só manipulação de string de path, sem tocar disco):
+ * `resolve`/`relative` do Node operam em strings, não fazem I/O. */
+export function isGuardedReviewPath(rootDir: string, absPath: string): boolean {
+  const editionsRoot = resolve(rootDir, "data", "editions");
+  const rel = relative(editionsRoot, resolve(absPath)).replace(/\\/g, "/");
+  if (rel === "" || rel.startsWith("..")) return false;
+  const parts = rel.split("/");
+  if (parts.length < 2) return false; // precisa de {aammdd}/{arquivo}, no mínimo 2 segmentos
+  const [aammdd, ...rest] = parts;
+  if (!/^\d{6}$/.test(aammdd)) return false;
+  return GUARDED_RELATIVE_FILENAMES.has(rest.join("/"));
+}
+
+export const EDIT_GUARD_STALE_MESSAGE = (filePath: string): string =>
+  `O arquivo ${filePath} foi modificado (provavelmente salvo no painel do Studio) desde a última vez que ` +
+  `você o leu nesta sessão de chat. Releia o arquivo com Read antes de editar de novo — não prossiga com ` +
+  `o conteúdo antigo que está no seu contexto.`;
+
+export interface EditGuardCheckResult {
+  blocked: boolean;
+  reason?: string;
+}
+
+/** Decisão PURA do guard — recebe os mtimes já resolvidos (sem tocar disco
+ * aqui), pra ser testável com fixtures simples. `isGuarded=false` (arquivo
+ * fora do escopo de `REVIEW_FILES`) e `lastReadMtime=undefined` (sessão nunca
+ * viu esse arquivo — Read é pré-requisito do próprio Edit/Write em arquivo
+ * PREEXISTENTE, então isso só ocorre em Write de arquivo novo, sem
+ * divergência possível) sempre liberam. Bloqueia só quando o mtime atual em
+ * disco diverge do último conhecido — o caso concreto do #3806. */
+export function evaluateEditGuard(params: {
+  filePath: string;
+  isGuarded: boolean;
+  lastReadMtime: string | undefined;
+  currentMtime: string | null;
+}): EditGuardCheckResult {
+  if (!params.isGuarded) return { blocked: false };
+  if (params.lastReadMtime === undefined) return { blocked: false };
+  if (params.currentMtime === null) return { blocked: false }; // arquivo sumiu — fora do escopo deste guard
+  if (params.currentMtime === params.lastReadMtime) return { blocked: false };
+  return { blocked: true, reason: EDIT_GUARD_STALE_MESSAGE(params.filePath) };
+}
+
+/** Hook `PostToolUse` (#3806): depois de um `Read`/`Edit`/`Write` bem-sucedido
+ * sobre um arquivo revisável, grava o mtime ATUAL em disco como "o que o
+ * agente sabe" — inclui `Edit`/`Write` (não só `Read`) pra que uma 2ª edição
+ * no MESMO turno não seja bloqueada comparando contra o carimbo PRÉ-edição
+ * (a própria escrita do agente já é conhecimento fresco válido). */
+function makeEditGuardPostToolUseHook(rootDir: string): HookCallback {
+  return async (input) => {
+    if (input.hook_event_name !== "PostToolUse") return {};
+    if (input.tool_name !== "Read" && input.tool_name !== "Edit" && input.tool_name !== "Write") return {};
+    const filePath = extractFilePathInput(input.tool_input);
+    if (!filePath) return {};
+    const abs = resolve(filePath);
+    const mtime = statMtimeIso(abs);
+    if (mtime !== null) recordKnownFileMtime(rootDir, abs, mtime);
+    return {};
+  };
+}
+
+/** Hook `PreToolUse` (#3806): antes de um `Edit`/`Write` rodar de fato,
+ * compara o mtime atual em disco contra o último conhecido pela sessão
+ * (`lastKnownMtimeByRoot`, atualizado pelo hook `PostToolUse` acima) — se
+ * divergirem, bloqueia com `decision: "block"` (nunca deixa a escrita
+ * acontecer em cima de uma cópia velha). */
+function makeEditGuardPreToolUseHook(rootDir: string): HookCallback {
+  return async (input): Promise<HookJSONOutput> => {
+    if (input.hook_event_name !== "PreToolUse") return {};
+    if (input.tool_name !== "Edit" && input.tool_name !== "Write") return {};
+    const filePath = extractFilePathInput(input.tool_input);
+    if (!filePath) return {};
+    const abs = resolve(filePath);
+    const result = evaluateEditGuard({
+      filePath,
+      isGuarded: isGuardedReviewPath(rootDir, abs),
+      lastReadMtime: getKnownFileMtime(rootDir, abs),
+      currentMtime: statMtimeIso(abs),
+    });
+    if (!result.blocked) return {};
+    return {
+      decision: "block",
+      reason: result.reason,
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: result.reason,
+      },
+    };
+  };
+}
+
+/** Monta o `Options.hooks` completo do guard de frescor (#3806) — 1 matcher
+ * por evento, sem `matcher` (roda pra TODA tool call; o filtro por
+ * `tool_name` é feito dentro do próprio callback, mesmo padrão de
+ * simplicidade de `makeInteractiveCanUseTool`). Exportado pra teste direto
+ * (`runChatTurn` usa isto via `options.hooks` — os testes existentes já
+ * capturam `params.options` no `queryFn` fake). */
+export function makeEditFreshnessGuardHooks(rootDir: string): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+  return {
+    PostToolUse: [{ hooks: [makeEditGuardPostToolUseHook(rootDir)] }],
+    PreToolUse: [{ hooks: [makeEditGuardPreToolUseHook(rootDir)] }],
+  };
+}
+
 // ─── invocação real do SDK (I/O, injetável) ────────────────────────────────
 
 export type QueryFn = (params: { prompt: string; options?: Options }) => Query;
@@ -1194,6 +1411,12 @@ export async function runChatTurn(opts: RunChatTurnOptions): Promise<void> {
         includePartialMessages: true,
         permissionMode: "default",
         canUseTool: makeInteractiveCanUseTool(opts.cwd, opts.onEvent, turnPermissionIds),
+        // #3806: guard de frescor — roda INDEPENDENTE de `canUseTool` acima
+        // (Edit/Write são pré-aprovados por `.claude/settings.json`, nunca
+        // chegam em `canUseTool`; ver doc-comment da seção "guard de
+        // frescor"). Bloqueia Edit/Write sobre um arquivo revisável cujo
+        // mtime em disco divergiu do último conhecido pela sessão.
+        hooks: makeEditFreshnessGuardHooks(opts.cwd),
         abortController: opts.abortController,
       },
     });

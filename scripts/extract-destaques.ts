@@ -185,6 +185,110 @@ export function parseDestaques(raw: string): Destaque[] {
   return destaques;
 }
 
+// ── Edição visual de campo (#3806, Opção B — spike título de destaque) ────
+
+export interface ReplaceDestaqueTitleResult {
+  ok: boolean;
+  md?: string;
+  error?: string;
+}
+
+// Reconstrução da linha de título quando ela é um inline-link (#599),
+// preservando a convenção de negrito ORIGINAL da linha (#590 outer-wrap,
+// #1051 inner-wrap) — o objetivo é trocar SÓ o texto do título, nunca o
+// formato ao redor dele. Regex deliberadamente mais simples que o parser
+// completo de `inline-link.ts` (sem scan de balanceamento de parênteses
+// explícito) — como os 3 padrões abaixo são ANCORADOS no fim da linha
+// (`$`), o backtracking guloso do próprio regex já resolve URLs com
+// parênteses literais (Wikipedia, `arquivo (1).pdf`) corretamente sem
+// precisar de scan manual (ver teste "regex simplificado... ainda lida bem
+// com URL contendo parênteses" em extract-destaques.test.ts). O fallback de
+// recusa abaixo (`isInlineLinkLine` true mas nenhum dos 3 regex casa) é
+// defensivo pra shapes que não conseguimos enumerar com confiança — preferir
+// recusar explicitamente a arriscar reconstrução errada.
+const OUTER_BOLD_LINK_RE = /^\*\*\[(.+)\]\((https?:\/\/\S+)\)\*\*$/;
+const INNER_BOLD_LINK_RE = /^\[\*\*(.+)\*\*\]\((https?:\/\/\S+)\)$/;
+const PLAIN_LINK_RE = /^\[(.+)\]\((https?:\/\/\S+)\)$/;
+
+/**
+ * Reconstrói a linha de título inline-link com `newTitle` no lugar do texto
+ * antigo, preservando URL + convenção de negrito. `null` quando a linha
+ * casa como inline-link (`isInlineLinkLine` concorda) mas em formato
+ * complexo demais pro regex simplificado acima (ex: URL com parênteses
+ * literais) — o caller trata isso como falha explícita, nunca reconstrução
+ * arriscada.
+ */
+function rebuildInlineLinkTitleLine(originalTrimmed: string, newTitle: string): string | null {
+  const outer = originalTrimmed.match(OUTER_BOLD_LINK_RE);
+  if (outer) return `**[${newTitle}](${outer[2]})**`;
+  const inner = originalTrimmed.match(INNER_BOLD_LINK_RE);
+  if (inner) return `[**${newTitle}**](${inner[2]})`;
+  const plain = originalTrimmed.match(PLAIN_LINK_RE);
+  if (plain) return `[${newTitle}](${plain[2]})`;
+  return null;
+}
+
+/**
+ * Substitui SOMENTE a linha do título do destaque `n` no MD bruto de
+ * `02-reviewed.md`, preservando literalmente todo o resto do arquivo (demais
+ * destaques, categorias, URLs, corpo, "Por que isso importa", separadores
+ * `---`, seções fora dos destaques) — a peça central do round-trip
+ * visão→região-do-MD do #3806 (Opção B). Localiza o header/título com a
+ * MESMA lógica de `parseDestaques` (header `DESTAQUE N | categoria`, título =
+ * 1ª linha não-vazia após o header dentro do bloco), mas trabalhando sobre
+ * ÍNDICES DE LINHA GLOBAIS do arquivo inteiro (não duplica parsing de
+ * body/why/url, que não mudam nesta operação).
+ *
+ * Espera exatamente 1 linha de título no bloco (pós-gate, ver
+ * `countTitlesPerHighlight` em lint-newsletter-md.ts — `02-reviewed.md` já
+ * chegou aqui podado a 1 título só; múltiplas opções pré-gate não são o caso
+ * de uso desta função).
+ *
+ * Falha (`ok:false`, nunca lança) quando: destaque `n` não existe no arquivo,
+ * o bloco não tem linha de título, o novo título é vazio, ou o título
+ * original é um inline-link em formato complexo demais pra reconstruir com
+ * confiança.
+ */
+export function replaceDestaqueTitleInMd(raw: string, n: 1 | 2 | 3, newTitle: string): ReplaceDestaqueTitleResult {
+  const trimmedTitle = newTitle.trim().replace(/\s+/g, ' ');
+  if (!trimmedTitle) return { ok: false, error: 'título não pode ser vazio' };
+
+  const eol = /\r\n/.test(raw) ? '\r\n' : '\n';
+  const lines = raw.split(/\r?\n/);
+
+  const headerRe = new RegExp(`^(?:\\*\\*)?DESTAQUE\\s+${n}\\s*\\|`);
+  const headerIdx = lines.findIndex((l) => headerRe.test(l.trim()));
+  if (headerIdx === -1) return { ok: false, error: `DESTAQUE ${n} não encontrado no arquivo` };
+
+  let blockEnd = lines.length;
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    if (/^---\s*$/.test(lines[i].trim())) { blockEnd = i; break; }
+  }
+
+  let titleIdx = -1;
+  for (let i = headerIdx + 1; i < blockEnd; i++) {
+    if (lines[i].trim().length > 0) { titleIdx = i; break; }
+  }
+  if (titleIdx === -1) return { ok: false, error: `DESTAQUE ${n}: bloco vazio, sem linha de título` };
+
+  const originalTrimmed = lines[titleIdx].trim();
+  const inlineLine = rebuildInlineLinkTitleLine(originalTrimmed, trimmedTitle);
+  if (inlineLine !== null) {
+    lines[titleIdx] = inlineLine;
+    return { ok: true, md: lines.join(eol) };
+  }
+  if (isInlineLinkLine(originalTrimmed)) {
+    return {
+      ok: false,
+      error: `DESTAQUE ${n}: título em formato de link inline complexo demais pra edição visual — edite via Markdown`,
+    };
+  }
+  // Formato "novo" (#172/#245): título isolado numa linha, URL na linha
+  // seguinte — substitui só o texto da linha do título.
+  lines[titleIdx] = trimmedTitle;
+  return { ok: true, md: lines.join(eol) };
+}
+
 /**
  * Build subtitle from D2 and D3 titles.
  * Exported so render-newsletter-html.ts uses the same logic.

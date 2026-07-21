@@ -247,6 +247,7 @@ import {
   buildReviewPreviewHtml,
   buildSocialPreviewHtml,
   resolveReviewImagePath,
+  applyDestaqueTitleEdit,
 } from "./studio-review.ts";
 import { runSwapDestaque, type SwapDestaqueRequest } from "./studio-review-actions.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
@@ -982,6 +983,57 @@ async function handleReviewSave(
   sendJson(res, status, result);
 }
 
+/**
+ * #3806 (Opção B spike): `PUT /api/editions/:aammdd/review/reviewed/destaque-title`
+ * — edição visual de UM campo (título de destaque) na visão renderizada, sem
+ * expor o Markdown cru. Corpo: `{n: 1|2|3, title: string, expectedModifiedAt?,
+ * force?}` — mesmo shape de guard de conflito de `handleReviewSave` (#3729),
+ * reusado sem duplicação via `applyDestaqueTitleEdit` (que já chama
+ * `saveReviewFile` internamente). Resposta inclui `lint` (rede de segurança
+ * de sempre, não bloqueia o save — mesmo comportamento do editor de MD: o
+ * editor decide o que fazer com um lint vermelho).
+ */
+async function handleReviewFieldDestaqueTitle(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  aammdd: string,
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, REVIEW_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const parsed = body as { n?: unknown; title?: unknown; expectedModifiedAt?: unknown; force?: unknown } | null;
+  const n = parsed?.n;
+  if (n !== 1 && n !== 2 && n !== 3) {
+    sendJson(res, 400, { error: "campo 'n' (1, 2 ou 3) é obrigatório no corpo" });
+    return;
+  }
+  const title = parsed?.title;
+  if (typeof title !== "string" || title.trim() === "") {
+    sendJson(res, 400, { error: "campo 'title' (string não-vazia) é obrigatório no corpo" });
+    return;
+  }
+  // #3729: mesmo contrato de expectedModifiedAt/force de handleReviewSave —
+  // ver comentário lá pro rationale completo (não duplicado aqui).
+  let expectedModifiedAt: string | null | undefined;
+  if (parsed && "expectedModifiedAt" in parsed) {
+    const raw = parsed.expectedModifiedAt ?? null;
+    if (raw !== null && typeof raw !== "string") {
+      sendJson(res, 400, { error: "campo 'expectedModifiedAt' precisa ser string ISO ou null" });
+      return;
+    }
+    expectedModifiedAt = raw;
+  }
+  const force = parsed?.force === true;
+  const result = applyDestaqueTitleEdit(rootDir, aammdd, n, title, { expectedModifiedAt, force });
+  const status = result.ok ? 200 : result.conflict ? 409 : 400;
+  sendJson(res, status, result);
+}
+
 function handleReviewResetBaseline(rootDir: string, aammdd: string, slug: string, res: ServerResponse): void {
   if (!isReviewSlug(slug)) {
     sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
@@ -1214,6 +1266,17 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         );
         return;
       }
+      // #3806 (Opção B spike): edição visual de campo — checada ANTES do
+      // `resetBaselineMatch` abaixo por convenção (rotas de escrita mais
+      // específicas primeiro), embora os regex não colidam de fato (`/lint`
+      // vs `/destaque-title` são sufixos distintos).
+      const destaqueTitleMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/reviewed\/destaque-title$/);
+      if (req.method === "PUT" && destaqueTitleMatch) {
+        handleReviewFieldDestaqueTitle(rootDir, req, res, destaqueTitleMatch[1]).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
       const resetBaselineMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/review\/([^/]+)\/reset-baseline$/);
       if (req.method === "POST" && resetBaselineMatch) {
         handleReviewResetBaseline(rootDir, resetBaselineMatch[1], resetBaselineMatch[2], res);
@@ -1248,7 +1311,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
 
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556), POST /api/waves/fire (#3702) e as rotas de ação do #3559/#3602" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556), POST /api/waves/fire (#3702) e as rotas de ação do #3559/#3602/#3806" });
         return;
       }
 
