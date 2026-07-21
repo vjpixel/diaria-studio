@@ -444,7 +444,6 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
     const body = chunks[i + 1] ?? "";
 
     // Splitar por `### comment_diaria` e `### comment_pixel`.
-    const mainEnd = body.search(/\n### comment_diaria\b/);
     const commentDiariaStart = body.search(/\n### comment_diaria\b/);
     const commentPixelStart = body.search(/\n### comment_pixel\b/);
 
@@ -452,10 +451,16 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
     let commentDiariaText = "";
     let commentPixelText = "";
 
-    if (mainEnd === -1) {
-      mainText = body;
+    if (commentDiariaStart !== -1) {
+      mainText = body.slice(0, commentDiariaStart);
     } else {
-      mainText = body.slice(0, mainEnd);
+      // #3627: sem comment_diaria, o body do ÚLTIMO destaque (ex: d3) se
+      // estende até o fim da seção da plataforma — sem boundary, ele
+      // engole siblings seguintes (## eia, ## post_pixel). Parar no
+      // próximo `## ` sibling, igual ao fix já aplicado a commentPixelText
+      // (#1690).
+      const nextSibling = body.search(/\n## /);
+      mainText = nextSibling !== -1 ? body.slice(0, nextSibling) : body;
     }
     if (commentDiariaStart !== -1) {
       const start = body.indexOf("\n", commentDiariaStart + 1) + 1;

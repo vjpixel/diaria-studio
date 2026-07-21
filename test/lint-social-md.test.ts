@@ -848,6 +848,27 @@ describe("lintLinkedinSchema (#595)", () => {
     assert.ok(!r.errors.some((e) => e.rule === "missing_comment_pixel"));
   });
 
+  it("#3627+#1690 regressão: sem comment_diaria, mainText do ÚLTIMO destaque (d3) não deve engolir ## eia / ## post_pixel siblings", () => {
+    const mainOnly = `\n${"X".repeat(1300)}\n`;
+    const base = buildMd({ d1: mainOnly, d2: mainOnly, d3: mainOnly });
+    // Formato real pós-#3627: d3 é o último "## d{N}" — sem comment_diaria como
+    // boundary, mainText não tinha onde parar e vazava pra dentro de ## eia e
+    // ## post_pixel (achado ao rodar a edição 260721 de verdade).
+    const md =
+      base +
+      "\n\n## eia\n\nTexto da seção É IA?, não deveria contar como parte do d3.\n\n" +
+      "## post_pixel\n\nMais {outros_count} destaques em {edition_url}.\n\n" +
+      `Siga a Diar.ia em linkedin.com/company/diar.ia.br\n`;
+    const r = lintLinkedinSchema(md);
+    const d3 = r.destaques.find((d) => d.destaque === "d3");
+    assert.ok(d3, "d3 presente");
+    assert.equal(d3!.main_chars, 1300, "main de d3 não deve incluir ## eia nem ## post_pixel");
+    assert.ok(
+      !r.errors.some((e) => e.destaque === "d3" && e.rule === "main_post_mentions_diaria"),
+      "d3 não deve herdar menção a Diar.ia vinda do post_pixel: " + JSON.stringify(r.errors),
+    );
+  });
+
   it("#3627: ok=true quando NENHUM destaque tem comment_diaria/comment_pixel (formato real pós-#3627, main only)", () => {
     const mainOnly = `\n${"X".repeat(1300)}\n`;
     const md = buildMd({ d1: mainOnly, d2: mainOnly, d3: mainOnly });
