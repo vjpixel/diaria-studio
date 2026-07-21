@@ -114,6 +114,18 @@ export interface ChatPermissionRequestEvent {
   event: "chat-permission-request";
   data: { toolUseId: string; questions: ChatPermissionQuestion[]; askedAt: number };
 }
+/** #3804 (follow-up do #3557): emitido quando a sessão do drawer chama uma
+ * tool que NÃO é `AskUserQuestion` e que não está pré-aprovada por
+ * `.claude/settings.json`/`allowedTools` (ex: um `Bash` com sintaxe fora dos
+ * padrões do allowlist — o caso que travava `/diaria-edicao` rodado pelo
+ * drawer). Em vez de negar direto (comportamento do #3557), o browser
+ * renderiza um card aprovar/negar mostrando `toolName` + um preview legível
+ * de `input`, e responde via `POST /api/chat/tool-decision`. Sem timeout,
+ * mesma semântica bloqueante do gate de `AskUserQuestion`. */
+export interface ChatToolPermissionRequestEvent {
+  event: "chat-tool-permission-request";
+  data: { toolUseId: string; toolName: string; input: unknown; askedAt: number };
+}
 export interface ChatDoneEvent {
   event: "chat-done";
   data: { sessionId: string | null; isError: boolean; result: string | null };
@@ -130,6 +142,7 @@ export type ChatWireEvent =
   | ChatToolEndEvent
   | ChatToolDeniedEvent
   | ChatPermissionRequestEvent
+  | ChatToolPermissionRequestEvent
   | ChatDoneEvent
   | ChatErrorEvent;
 
@@ -312,6 +325,48 @@ export function parseChatAnswerRequestBody(raw: string): ParsedChatAnswerRequest
     ok: true,
     value: { toolUseId: obj.toolUseId, answers, response: obj.response as string | undefined },
   };
+}
+
+// ─── parsing do corpo de POST /api/chat/tool-decision (puro, #3804) ────────
+
+/** Decisão do editor sobre um gate de tool (não-`AskUserQuestion`): rodar uma
+ * vez (`allow`), rodar e não perguntar de novo por esta tool nesta sessão
+ * (`always` — adiciona `toolName` ao allowlist em memória do `rootDir`, ver
+ * `resolvePendingToolPermission`), ou negar (`deny`). */
+export type ChatToolDecision = "allow" | "always" | "deny";
+
+const TOOL_DECISIONS: readonly ChatToolDecision[] = ["allow", "always", "deny"];
+
+export interface ChatToolDecisionRequest {
+  toolUseId: string;
+  decision: ChatToolDecision;
+}
+
+export type ParsedChatToolDecisionRequest =
+  | { ok: true; value: ChatToolDecisionRequest }
+  | { ok: false; error: string };
+
+/** Valida + normaliza o corpo cru (string JSON) de `POST /api/chat/tool-decision`
+ * (#3804). Pura — nunca lança, sempre retorna um resultado tagged, mesmo
+ * padrão de `parseChatAnswerRequestBody`. */
+export function parseChatToolDecisionRequestBody(raw: string): ParsedChatToolDecisionRequest {
+  let parsed: unknown;
+  try {
+    parsed = raw.trim() === "" ? {} : JSON.parse(raw);
+  } catch (e) {
+    return { ok: false, error: `corpo não é JSON válido: ${(e as Error).message}` };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { ok: false, error: "corpo deve ser um objeto JSON" };
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (typeof obj.toolUseId !== "string" || obj.toolUseId.trim() === "") {
+    return { ok: false, error: "campo 'toolUseId' é obrigatório (string não-vazia)" };
+  }
+  if (typeof obj.decision !== "string" || !TOOL_DECISIONS.includes(obj.decision as ChatToolDecision)) {
+    return { ok: false, error: "campo 'decision' deve ser 'allow', 'always' ou 'deny'" };
+  }
+  return { ok: true, value: { toolUseId: obj.toolUseId, decision: obj.decision as ChatToolDecision } };
 }
 
 // ─── AskUserQuestion: parsing do input + montagem do updatedInput (#3557) ──
@@ -540,6 +595,7 @@ export function setSessionId(rootDir: string, sessionId: string): void {
 
 export function clearSession(rootDir: string): void {
   sessionIdByRoot.delete(rootDir);
+  clearSessionToolAllowlist(rootDir); // #3804: "nova conversa" também zera tools "sempre permitir".
 }
 
 // ─── gates pendentes: fila de AskUserQuestion aguardando resposta (#3557) ──
@@ -552,15 +608,48 @@ export function clearSession(rootDir: string): void {
 // tool call pelo mesmo id).
 
 interface PendingPermissionRequest {
+  /** `"question"` = gate de `AskUserQuestion` (#3557, resolve com
+   * `{behavior:'allow', updatedInput}`); `"tool"` = gate de tool genérica
+   * (#3804, resolve com `{behavior:'allow'}` ou `{behavior:'deny'}`). */
+  kind: "question" | "tool";
   toolUseId: string;
   toolName: string;
   input: Record<string, unknown>;
+  /** Preenchido só quando `kind === "question"`; `[]` pros gates de tool. */
   questions: ChatPermissionQuestion[];
   askedAt: number;
   resolve: (result: PermissionResult) => void;
 }
 
 const pendingByRoot = new Map<string, Map<string, PendingPermissionRequest>>();
+
+// #3804: allowlist EM MEMÓRIA por `rootDir` de tools que o editor mandou
+// "sempre permitir nesta sessão" (decisão `always` de um gate de tool). É
+// consultada no topo de `makeInteractiveCanUseTool` antes de emitir qualquer
+// gate novo — aprovar `Bash` uma vez com "sempre" faz o resto dos Bash do
+// turno/sessão rodarem sem re-perguntar (necessário pra rodar um pipeline
+// inteiro pelo drawer sem dezenas de cliques). Escopo estrito: só vale nesta
+// instância do processo (some no restart do studio-server), nunca é
+// persistido em disco nem toca `.claude/settings.json` — o editor reautoriza
+// a cada dia de trabalho, de propósito (o Studio é exposto via túnel).
+const sessionAllowByRoot = new Map<string, Set<string>>();
+
+function sessionAllowFor(rootDir: string): Set<string> {
+  let s = sessionAllowByRoot.get(rootDir);
+  if (!s) {
+    s = new Set();
+    sessionAllowByRoot.set(rootDir, s);
+  }
+  return s;
+}
+
+/** Limpa a allowlist em memória de tools "sempre permitir" do `rootDir`
+ * (#3804). Chamado por `clearSession` — "nova conversa" no drawer zera também
+ * as aprovações permanentes da sessão anterior, pra uma conversa nova nunca
+ * herdar um `Bash` liberado sem o editor reautorizar. */
+export function clearSessionToolAllowlist(rootDir: string): void {
+  sessionAllowByRoot.delete(rootDir);
+}
 
 function pendingMapFor(rootDir: string): Map<string, PendingPermissionRequest> {
   let m = pendingByRoot.get(rootDir);
@@ -572,11 +661,14 @@ function pendingMapFor(rootDir: string): Map<string, PendingPermissionRequest> {
 }
 
 export interface PendingPermissionSummary {
+  /** #3804: `"question"` (AskUserQuestion) ou `"tool"` (gate de Bash/etc.). */
+  kind: "question" | "tool";
   toolUseId: string;
   toolName: string;
   askedAt: number;
   /** Texto da 1ª pergunta — só pra preview/tooltip do badge global, não o
-   * form completo (esse chega via `chat-permission-request`). */
+   * form completo (esse chega via `chat-permission-request`). `null` pros
+   * gates de tool (#3804), que não têm perguntas. */
   firstQuestion: string | null;
 }
 
@@ -588,6 +680,7 @@ export function listPendingPermissionRequests(rootDir: string): PendingPermissio
   return [...pendingMapFor(rootDir).values()]
     .sort((a, b) => a.askedAt - b.askedAt)
     .map((p) => ({
+      kind: p.kind,
       toolUseId: p.toolUseId,
       toolName: p.toolName,
       askedAt: p.askedAt,
@@ -603,10 +696,19 @@ export function listPendingPermissionRequests(rootDir: string): PendingPermissio
  * `chatPermissionsPending`/`PendingPermissionSummary` só expõe `firstQuestion`,
  * resumo insuficiente pra renderizar o form). */
 export interface PendingPermissionFull {
+  /** #3804: `"question"` (AskUserQuestion) ou `"tool"` (gate de Bash/etc.). */
+  kind: "question" | "tool";
   toolUseId: string;
   toolName: string;
   askedAt: number;
+  /** Preenchido só pros gates de `AskUserQuestion` (`kind === "question"`);
+   * `[]` pros gates de tool. */
   questions: ChatPermissionQuestion[];
+  /** Input cru da tool (ex: `{command: "..."}` de um `Bash`) — preenchido só
+   * pros gates de tool (`kind === "tool"`, #3804), pro cliente reidratar o
+   * card mostrando o mesmo preview do fluxo ao vivo. `undefined` pros gates
+   * de pergunta. */
+  input?: unknown;
 }
 
 /** Mesma fonte de `listPendingPermissionRequests` (o Map em memória de
@@ -619,10 +721,12 @@ export function listPendingPermissionRequestsFull(rootDir: string): PendingPermi
   return [...pendingMapFor(rootDir).values()]
     .sort((a, b) => a.askedAt - b.askedAt)
     .map((p) => ({
+      kind: p.kind,
       toolUseId: p.toolUseId,
       toolName: p.toolName,
       askedAt: p.askedAt,
       questions: p.questions,
+      ...(p.kind === "tool" ? { input: p.input } : {}),
     }));
 }
 
@@ -645,11 +749,67 @@ export function resolvePendingPermissionRequest(
       error: `nenhum gate pendente com toolUseId "${toolUseId}" — pode já ter sido respondido, ou a sessão foi reiniciada/abortada.`,
     };
   }
+  if (pending.kind !== "question") {
+    // #3804: gate de tool (Bash/etc.) não se resolve por resposta de
+    // pergunta — o cliente deve usar `POST /api/chat/tool-decision`. Não
+    // consome a entry (retorna erro sem `map.delete`) pra não deixar a
+    // Promise pendurada sem resolução.
+    return {
+      ok: false,
+      error: `gate "${toolUseId}" é de tool (${pending.toolName}), não de AskUserQuestion — responda via /api/chat/tool-decision.`,
+    };
+  }
   map.delete(toolUseId);
   pending.resolve({
     behavior: "allow",
     updatedInput: buildAskUserQuestionUpdatedInput(pending.input, answer),
   });
+  return { ok: true };
+}
+
+/** Resolve um gate de TOOL pendente (não-`AskUserQuestion`, #3804) pro
+ * `toolUseId` dado, com a decisão do editor:
+ *   - `allow`  → `{behavior:'allow'}` (roda a tool com o input original);
+ *   - `always` → idem, e adiciona `toolName` ao allowlist em memória do
+ *     `rootDir` (`sessionAllowByRoot`), pra próximas chamadas da mesma tool
+ *     nesta sessão rodarem sem re-perguntar;
+ *   - `deny`   → `{behavior:'deny', message}` (a tool não roda; o modelo
+ *     recebe o motivo e segue).
+ * Chamado pelo handler de `POST /api/chat/tool-decision`. Idempotente por
+ * construção (remove a entry antes de resolver — 2ª chamada cai no
+ * "não encontrado"). Rejeita com erro se o gate for de pergunta
+ * (`kind === "question"`), simétrico ao guard em `resolvePendingPermissionRequest`. */
+export function resolvePendingToolPermission(
+  rootDir: string,
+  toolUseId: string,
+  decision: ChatToolDecision,
+): { ok: true } | { ok: false; error: string } {
+  const map = pendingMapFor(rootDir);
+  const pending = map.get(toolUseId);
+  if (!pending) {
+    return {
+      ok: false,
+      error: `nenhum gate pendente com toolUseId "${toolUseId}" — pode já ter sido respondido, ou a sessão foi reiniciada/abortada.`,
+    };
+  }
+  if (pending.kind !== "tool") {
+    return {
+      ok: false,
+      error: `gate "${toolUseId}" é de AskUserQuestion, não de tool — responda via /api/chat/answer.`,
+    };
+  }
+  map.delete(toolUseId);
+  if (decision === "deny") {
+    pending.resolve({
+      behavior: "deny",
+      message: `Editor negou "${pending.toolName}" pelo card do chat drawer.`,
+    });
+    return { ok: true };
+  }
+  if (decision === "always") {
+    sessionAllowFor(rootDir).add(pending.toolName);
+  }
+  pending.resolve({ behavior: "allow" });
   return { ok: true };
 }
 
@@ -700,31 +860,31 @@ function defaultQueryFn(params: { prompt: string; options?: Options }): Query {
   return sdkQuery(params);
 }
 
-function denyToolResult(toolName: string): PermissionResult {
-  return {
-    behavior: "deny",
-    message:
-      `Permissão para "${toolName}" exigiria confirmação interativa — o chat drawer só intercepta ` +
-      `AskUserQuestion como form clicável (#3557); outras tool calls seguem negadas por padrão. Rode ` +
-      `essa ação pelo terminal, ou aprove a ferramenta em .claude/settings.json se for segura pra automatizar.`,
-  };
-}
-
 /**
- * #3557 — a peça-chave que a issue-mãe (#3554) descreve como "interceptar
- * AskUserQuestion / permission prompts -> form clicável na UI". Qualquer
- * tool call que chegaria a um prompt interativo (ou seja, NÃO já resolvido
- * allow/deny por `.claude/settings.json`/`allowedTools` — essas nunca
- * invocam este callback) continua sendo NEGADA — **exceto** `AskUserQuestion`,
- * que passa a: (1) parsear `questions[]` via `parseAskUserQuestionInput`
- * (nega com mensagem clara se o shape vier malformado); (2) emitir
- * `chat-permission-request` pro browser via `onEvent`; (3) registrar a
- * Promise de resolução em `pendingByRoot` (chaveada por `toolUseID`) e
- * `turnPermissionIds` (limpeza de fim-de-turno, ver `runChatTurn`); (4)
- * retornar essa Promise PENDENTE — sem timeout, resolvida só quando
- * `resolvePendingPermissionRequest` for chamado (via `POST /api/chat/answer`).
- * Ampliar esse tratamento pra outras tools é fora de escopo desta issue (ver
- * corpo do #3557 — "Escopo estrito").
+ * #3557 + #3804 — a peça que a issue-mãe (#3554) descreve como "interceptar
+ * AskUserQuestion / permission prompts -> form clicável na UI". Qualquer tool
+ * call que chegaria a um prompt interativo (ou seja, NÃO já resolvida
+ * allow/deny por `.claude/settings.json`/`allowedTools` — essas nunca invocam
+ * este callback) vira um gate clicável na UI, em vez de ser negada de cara:
+ *
+ *   - `AskUserQuestion` (#3557): parseia `questions[]` via
+ *     `parseAskUserQuestionInput` (nega com mensagem clara se o shape vier
+ *     malformado), emite `chat-permission-request` e espera a resposta via
+ *     `POST /api/chat/answer` (`resolvePendingPermissionRequest`).
+ *   - qualquer OUTRA tool (#3804 — Bash, Edit, etc.): emite
+ *     `chat-tool-permission-request` com `{toolName, input}` e espera a
+ *     decisão do editor (`allow`/`always`/`deny`) via
+ *     `POST /api/chat/tool-decision` (`resolvePendingToolPermission`). É o que
+ *     destrava rodar `/diaria-edicao` pelo drawer, cujo playbook usa Bash com
+ *     sintaxe fora dos padrões do allowlist (variável/`$(...)`/condicional).
+ *
+ * Curto-circuito (#3804): tools que o editor já mandou "sempre permitir nesta
+ * sessão" (decisão `always`, em `sessionAllowByRoot`) são aprovadas
+ * imediatamente aqui, sem emitir gate nem esperar — pra um pipeline inteiro
+ * não exigir um clique por comando. Ambos os tipos de gate registram a
+ * Promise em `pendingByRoot` (chaveada por `toolUseID`) + `turnPermissionIds`
+ * (limpeza de fim-de-turno, ver `runChatTurn`); sem timeout, mesma semântica
+ * bloqueante do terminal.
  */
 function makeInteractiveCanUseTool(
   rootDir: string,
@@ -732,30 +892,48 @@ function makeInteractiveCanUseTool(
   turnPermissionIds: Set<string>,
 ): CanUseTool {
   return async (toolName, input, options) => {
-    if (toolName !== "AskUserQuestion") {
-      return denyToolResult(toolName);
-    }
-
-    const questions = parseAskUserQuestionInput(input);
-    if (!questions) {
-      return {
-        behavior: "deny",
-        message:
-          "AskUserQuestion chegou com input malformado — não foi possível renderizar o form no chat drawer.",
-      };
-    }
-
     const toolUseId = options.toolUseID;
     const askedAt = Date.now();
-    turnPermissionIds.add(toolUseId);
-    onEvent({ event: "chat-permission-request", data: { toolUseId, questions, askedAt } });
 
+    if (toolName === "AskUserQuestion") {
+      const questions = parseAskUserQuestionInput(input);
+      if (!questions) {
+        return {
+          behavior: "deny",
+          message:
+            "AskUserQuestion chegou com input malformado — não foi possível renderizar o form no chat drawer.",
+        };
+      }
+      turnPermissionIds.add(toolUseId);
+      onEvent({ event: "chat-permission-request", data: { toolUseId, questions, askedAt } });
+      return new Promise<PermissionResult>((resolve) => {
+        pendingMapFor(rootDir).set(toolUseId, {
+          kind: "question",
+          toolUseId,
+          toolName,
+          input,
+          questions,
+          askedAt,
+          resolve,
+        });
+      });
+    }
+
+    // #3804: tool genérica. Curto-circuito se já foi "sempre permitida" nesta
+    // sessão — roda sem gate nem espera.
+    if (sessionAllowFor(rootDir).has(toolName)) {
+      return { behavior: "allow" };
+    }
+
+    turnPermissionIds.add(toolUseId);
+    onEvent({ event: "chat-tool-permission-request", data: { toolUseId, toolName, input, askedAt } });
     return new Promise<PermissionResult>((resolve) => {
       pendingMapFor(rootDir).set(toolUseId, {
+        kind: "tool",
         toolUseId,
         toolName,
         input,
-        questions,
+        questions: [],
         askedAt,
         resolve,
       });

@@ -96,6 +96,50 @@ describe("parsePendingChatResponse (#3617)", () => {
     assert.equal(result[0].toolName, "AskUserQuestion");
     assert.equal(typeof result[0].askedAt, "number");
   });
+
+  it("entrada sem 'kind' é tratada como 'question' (retrocompat pré-#3804)", () => {
+    const result = parsePendingChatResponse({
+      pending: [{ toolUseId: "tu-1", toolName: "AskUserQuestion", askedAt: 1, questions: VALID_QUESTIONS }],
+    });
+    assert.equal(result.length, 1);
+    assert.equal(result[0].kind, "question");
+  });
+
+  it("normaliza um gate de tool (kind:'tool', #3804) com toolName+input, sem exigir questions", () => {
+    const result = parsePendingChatResponse({
+      pending: [
+        { kind: "tool", toolUseId: "tu-bash", toolName: "Bash", askedAt: 7, input: { command: "ls" } },
+      ],
+    });
+    assert.equal(result.length, 1);
+    assert.equal(result[0].kind, "tool");
+    assert.equal(result[0].toolUseId, "tu-bash");
+    assert.equal(result[0].toolName, "Bash");
+    assert.deepEqual(result[0].input, { command: "ls" });
+  });
+
+  it("descarta gate de tool sem 'toolName' válido", () => {
+    const result = parsePendingChatResponse({
+      pending: [
+        { kind: "tool", toolUseId: "tu-1", input: { command: "ls" } },
+        { kind: "tool", toolUseId: "tu-2", toolName: "", input: {} },
+      ],
+    });
+    assert.equal(result.length, 0);
+  });
+
+  it("payload misto (pergunta + tool) preserva ambos, na ordem, com kind correto", () => {
+    const result = parsePendingChatResponse({
+      pending: [
+        { kind: "question", toolUseId: "tu-q", toolName: "AskUserQuestion", askedAt: 1, questions: VALID_QUESTIONS },
+        { kind: "tool", toolUseId: "tu-t", toolName: "Bash", askedAt: 2, input: { command: "x" } },
+      ],
+    });
+    assert.deepEqual(result.map((p) => [p.toolUseId, p.kind]), [
+      ["tu-q", "question"],
+      ["tu-t", "tool"],
+    ]);
+  });
 });
 
 describe("planHydrationCards (#3617)", () => {

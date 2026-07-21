@@ -43,10 +43,17 @@
  *     que esta rota resolve a Promise pendente, sem coordenação extra aqui.
  *     `GET /api/state`/`GET /api/events` expõem `chatPermissionsPending`
  *     (badge global) via `studio-state.ts`.
- *   - `GET /api/chat/pending` (#3617) — payload COMPLETO (`questions[]`) dos
- *     gates pendentes, pra `chat-drawer.js` reidratar o card ao montar
- *     qualquer página, sem depender do stream SSE ao vivo que originou a
- *     pergunta (fix do bug "gate pendente inalcançável" — ver `studio-chat.ts`
+ *   - `POST /api/chat/tool-decision` — gate de TOOL (#3804): resolve um
+ *     `chat-tool-permission-request` pendente (a sessão chamou uma tool
+ *     não-`AskUserQuestion` fora do allowlist, ex: um `Bash` do playbook de
+ *     `/diaria-edicao`) com `{decision: allow|always|deny}`. Simétrico a
+ *     `/api/chat/answer` — mesmo mecanismo de Promise pendurada em
+ *     `studio-chat.ts` (`resolvePendingToolPermission`).
+ *   - `GET /api/chat/pending` (#3617) — payload COMPLETO (`questions[]` pros
+ *     gates de pergunta, `input` pros gates de tool #3804) dos gates
+ *     pendentes, pra `chat-drawer.js` reidratar o card ao montar qualquer
+ *     página, sem depender do stream SSE ao vivo que originou a pergunta (fix
+ *     do bug "gate pendente inalcançável" — ver `studio-chat.ts`
  *     `listPendingPermissionRequestsFull`).
  *   - `POST /api/waves/fire` (#3702) — dispara a sessão COORDENADORA de uma
  *     onda já composta por `GET /api/waves`: usa a tool `Agent` do próprio
@@ -195,11 +202,13 @@ import { buildClariceDashboardHtml } from "./dashboard-clarice.ts";
 import {
   parseChatRequestBody,
   parseChatAnswerRequestBody,
+  parseChatToolDecisionRequestBody,
   runChatTurn,
   getSessionId,
   setSessionId,
   clearSession,
   resolvePendingPermissionRequest,
+  resolvePendingToolPermission,
   watchPendingChatPermissions,
   listPendingPermissionRequestsFull,
   type QueryFn,
@@ -575,9 +584,17 @@ async function handleApiChat(
       // aparece pro badge global via `/api/state` pra qualquer outra aba
       // conectada, e `POST /api/chat/answer` continua funcionando
       // normalmente quando alguém finalmente responder.
-      if (wireEvent.event === "chat-permission-request" && (res.writableEnded || res.destroyed)) {
+      if (
+        (wireEvent.event === "chat-permission-request" ||
+          wireEvent.event === "chat-tool-permission-request") &&
+        (res.writableEnded || res.destroyed)
+      ) {
+        const kind =
+          wireEvent.event === "chat-tool-permission-request"
+            ? `gate de tool (${wireEvent.data.toolName})`
+            : "AskUserQuestion";
         console.warn(
-          `[studio-chat] AskUserQuestion pendente (toolUseId=${wireEvent.data.toolUseId}) sem UI/SSE conectada no momento — a sessão continua esperando a resposta do editor.`,
+          `[studio-chat] ${kind} pendente (toolUseId=${wireEvent.data.toolUseId}) sem UI/SSE conectada no momento — a sessão continua esperando a resposta do editor.`,
         );
       }
       try {
@@ -628,6 +645,40 @@ async function handleApiChatAnswer(
     answers: parsed.value.answers,
     response: parsed.value.response,
   });
+  sendJson(res, result.ok ? 200 : 404, result);
+}
+
+/**
+ * `POST /api/chat/tool-decision` (#3804) — resolve um gate de TOOL pendente
+ * (Bash/Edit/etc., não-`AskUserQuestion`). Corpo: `{toolUseId, decision}`
+ * (`parseChatToolDecisionRequestBody`), `decision ∈ {allow, always, deny}`.
+ * Simétrico a `handleApiChatAnswer`: a resolução (`resolvePendingToolPermission`)
+ * destrava a Promise pendurada no `for await` de `runChatTurn` da OUTRA
+ * request (a stream SSE de `POST /api/chat`), que retoma sozinha — a tool roda
+ * (allow/always) ou o modelo recebe o deny e segue. `always` também libera a
+ * tool pro resto da sessão (allowlist em memória, ver studio-chat.ts).
+ */
+async function handleApiChatToolDecision(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  opts: { maxBodyBytes: number },
+): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readRequestBody(req, opts.maxBodyBytes);
+  } catch (e) {
+    sendJson(res, 413, { error: (e as Error).message });
+    return;
+  }
+
+  const parsed = parseChatToolDecisionRequestBody(raw);
+  if (!parsed.ok) {
+    sendJson(res, 400, { error: parsed.error });
+    return;
+  }
+
+  const result = resolvePendingToolPermission(rootDir, parsed.value.toolUseId, parsed.value.decision);
   sendJson(res, result.ok ? 200 : 404, result);
 }
 
@@ -1055,6 +1106,23 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
           return;
         }
         handleApiChatAnswer(rootDir, req, res, { maxBodyBytes: chatMaxBodyBytes }).catch((e) => {
+          if (!res.headersSent) {
+            sendJson(res, 500, { error: (e as Error).message });
+          } else {
+            res.end();
+          }
+        });
+        return;
+      }
+
+      // #3804: resolve um gate de TOOL pendente (Bash/etc.) — mesmo tratamento
+      // "rota de mutação checada antes do guard read-only" de /api/chat/answer.
+      if (urlPath === "/api/chat/tool-decision") {
+        if (req.method !== "POST") {
+          sendJson(res, 405, { error: "POST obrigatório em /api/chat/tool-decision" });
+          return;
+        }
+        handleApiChatToolDecision(rootDir, req, res, { maxBodyBytes: chatMaxBodyBytes }).catch((e) => {
           if (!res.headersSent) {
             sendJson(res, 500, { error: (e as Error).message });
           } else {
