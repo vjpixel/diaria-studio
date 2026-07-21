@@ -424,6 +424,44 @@ const GH_ISSUE_TEXT_ONLY_RE = /^\s*gh(?:\.exe)?\s+issue\s+(?:comment|close)\b/i;
 const GH_ISSUE_SHELL_CHAIN_RE = /[;&|`\n<>]|\$\(/;
 
 /**
+ * #3801 — allowlist explícita de flags pra `gh issue comment`/`gh issue
+ * close`, fechando uma exfiltração de segredo que `GH_ISSUE_TEXT_ONLY_RE` +
+ * `GH_ISSUE_SHELL_CHAIN_RE` sozinhos não cobriam: essas duas checagens só
+ * ancoram o PREFIXO do subcomando e a ausência de metacaracteres de
+ * encadeamento de SHELL — nenhuma delas olha pra quais FLAGS do próprio `gh`
+ * seguem. `--body-file`/`-F` (comment) e `--comment-file` (close) são flags
+ * NATIVAS do `gh` CLI que leem o conteúdo de um arquivo local e o publicam
+ * como corpo do comentário — sem passar por shell nenhum, então nenhuma
+ * checagem de metacaractere jamais pegaria isso. Resultado pré-fix: `gh issue
+ * comment 123 --body-file .env` recebia `allow: true` (nenhum char de
+ * `GH_ISSUE_SHELL_CHAIN_RE` presente), dando à coordenadora headless um
+ * primitivo "ler qualquer arquivo local legível e publicar publicamente como
+ * comentário de issue" — sem execução de comando (não é RCE), mas é
+ * exfiltração de segredo direta (`.env`, `.claude/settings.json`, etc).
+ *
+ * Fix: em vez de blocklist (rejeitar `--body-file`/`-F`/`--comment-file` por
+ * nome — sempre vulnerável a uma flag equivalente futura do `gh` CLI que a
+ * gente não pensou em blocklistar), este regex exige que o comando INTEIRO
+ * (âncoras `^...$`) tenha exatamente a forma:
+ * `gh[.exe] issue comment|close <id numérico> [(--body|--comment|-b|-c)(=| )
+ * <valor>]` — nenhum outro token, nenhuma flag adicional, nada sobrando. O
+ * `<valor>` pode ser uma string entre aspas simples/duplas (aceita QUALQUER
+ * conteúdo dentro — inclusive menção textual a `git checkout`/`scripts/
+ * publish-*`/nomes de plataforma, isso é conteúdo de comentário legítimo,
+ * não execução, mesmo raciocínio de #3795 Bug 2) ou um token sem espaço
+ * (`--body=valor`). Qualquer flag fora do allowlist (`--body-file`, `-F`,
+ * `--comment-file`, ou a MESMA flag com `=` em vez de espaço, ex:
+ * `--body-file=.env` — conferido no self-review, ver teste de regressão)
+ * deixa sobra de texto que a âncora `$` não consome — `test()` retorna
+ * `false`, `isGhIssueTextOnly` vira `false`, e o comando cai no guard normal
+ * (default-deny, já que nenhuma das flags-alvo aparece nos outros
+ * blocklists). Múltiplas flags (`--body "x" --body-file leak`) também falham
+ * pelo mesmo motivo — o grupo opcional só casa UMA vez.
+ */
+const GH_ISSUE_ALLOWED_SHAPE_RE =
+  /^\s*gh(?:\.exe)?\s+issue\s+(?:comment|close)\s+\d+\s*(?:(?:--body|--comment|-b|-c)(?:=|\s+)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+))?\s*$/i;
+
+/**
  * Guard de working-tree (#3728 Gap 1 + #3738, defesa em profundidade).
  * Bloqueia `checkout`/`pull`/`stash`/`reset` (#3738 Gap 1 — `reset` estava
  * faltando; foi o comando literal do incidente 260716, `git reset --hard`,
@@ -466,9 +504,13 @@ export interface WaveToolDecision {
  * (0) `isGhIssueTextOnly` — calculado primeiro, ANTES de qualquer blocklist:
  * `gh issue comment`/`gh issue close` (#3791) sem nenhum metacaractere de
  * encadeamento de shell (`GH_ISSUE_SHELL_CHAIN_RE`, estendido em #3795 pra
- * cobrir `<`/`>`) é garantidamente text-only — o resto da string só pode ser
- * argumento literal de `--body`/`--comment`, nunca comando adicional
- * interpretado pelo shell; (1) blocklist de working-tree (#3728 Gap 1, #3738
+ * cobrir `<`/`>`) E cuja forma inteira bate com o allowlist de flags
+ * `GH_ISSUE_ALLOWED_SHAPE_RE` (#3801 — só `--body`/`--comment`/`-b`/`-c`,
+ * nunca `--body-file`/`-F`/`--comment-file`, que leem arquivo local em vez de
+ * receber argumento literal) é garantidamente text-only — o resto da string
+ * só pode ser argumento literal de `--body`/`--comment`, nunca comando
+ * adicional interpretado pelo shell nem leitura de arquivo; (1) blocklist de
+ * working-tree (#3728 Gap 1, #3738
  * Gaps 1+3), INVARIANTE pra qualquer comando que NÃO seja `isGhIssueTextOnly`;
  * (2) blocklist de EXECUÇÃO de publisher, INVARIANTE pra qualquer comando que
  * NÃO seja `isGhIssueTextOnly` (#3795 Bug 2 — a isenção de #3791, que
@@ -504,7 +546,20 @@ export function evaluateWaveTool(toolName: string, input: Record<string, unknown
     // ENCADEIA outro comando (`&&`, `;`, `|`, backtick, `$(`, `<`/`>`) falha
     // esta checagem e cai no guard normal (default-deny se nenhum outro
     // caminho de allow existir).
-    const isGhIssueTextOnly = GH_ISSUE_TEXT_ONLY_RE.test(command) && !GH_ISSUE_SHELL_CHAIN_RE.test(command);
+    //
+    // #3801: NENHUMA das duas checagens acima olha pra quais FLAGS do `gh`
+    // seguem o subcomando — `--body-file`/`-F`/`--comment-file` são flags
+    // nativas que LEEM UM ARQUIVO LOCAL e o publicam como corpo do
+    // comentário, sem shell nenhum envolvido (não têm os metacaracteres de
+    // `GH_ISSUE_SHELL_CHAIN_RE`). `GH_ISSUE_ALLOWED_SHAPE_RE` fecha essa
+    // brecha exigindo que o comando INTEIRO seja exatamente `gh issue
+    // comment|close <id> [(--body|--comment|-b|-c)(=| )<valor>]` — qualquer
+    // flag de leitura de arquivo (ou qualquer flag fora do allowlist) deixa
+    // sobra de texto que a âncora `$` não consome, reprovando a checagem.
+    const isGhIssueTextOnly =
+      GH_ISSUE_TEXT_ONLY_RE.test(command) &&
+      !GH_ISSUE_SHELL_CHAIN_RE.test(command) &&
+      GH_ISSUE_ALLOWED_SHAPE_RE.test(command);
     if (!isGhIssueTextOnly && WAVE_WORKTREE_GUARD_RE.test(command)) {
       return {
         allow: false,
