@@ -29,8 +29,15 @@
 // SSE já aberta desta MESMA sendMessage() retoma sozinha assim que o server
 // resolve a Promise pendente (o `chat-tool` "end" da própria AskUserQuestion
 // chega depois, pela mesma stream). Sem timeout por design — só mostramos
-// "esperando há Xmin" client-side. Qualquer OUTRA tool call negada continua
-// aparecendo como chip "negado" (`onToolDenied`, inalterado).
+// "esperando há Xmin" client-side.
+//
+// #3804: qualquer OUTRA tool não-allowlistada (Bash/Edit/etc.) também deixou
+// de ser negada de cara — emite `chat-tool-permission-request` e este módulo
+// renderiza um card aprovar/negar (`onToolPermissionRequest`) com o preview
+// do input + 3 botões (Aprovar / Sempre nesta sessão / Negar), resolvido via
+// `POST /api/chat/tool-decision`. É o que destrava rodar o pipeline
+// (`/diaria-edicao`, cheio de Bash) pelo drawer. O chip "negado"
+// (`onToolDenied`) segue só pro caso de uma deny vinda do próprio SDK.
 //
 // #3617 — BUG que este redesenho corrige por construção: o card de
 // AskUserQuestion só era renderizado como parte do stream AO VIVO da chamada
@@ -485,6 +492,108 @@ function onPermissionRequest(data) {
   expandDrawer();
 }
 
+// ─── gate de TOOL (Bash/etc.) como card aprovar/negar (#3804) ─────────────
+
+/** Resumo legível do input de uma tool pro card de aprovação — o que o editor
+ * precisa ver pra decidir. Casos comuns primeiro (o comando de um Bash, o
+ * arquivo de um Edit/Write/Read), fallback genérico é o JSON compacto
+ * truncado. Pura, defensiva (input pode vir com qualquer shape). */
+function toolInputSummary(toolName, input) {
+  if (!input || typeof input !== "object") return "";
+  if (typeof input.command === "string") return input.command; // Bash
+  if (typeof input.file_path === "string") return input.file_path; // Edit/Write/Read/NotebookEdit
+  if (typeof input.path === "string") return input.path;
+  if (typeof input.pattern === "string") return input.pattern; // Grep/Glob
+  if (typeof input.url === "string") return input.url; // WebFetch
+  try {
+    const json = JSON.stringify(input);
+    return json.length > 400 ? json.slice(0, 400) + "…" : json;
+  } catch {
+    return "";
+  }
+}
+
+/** Renderiza um gate de tool não-`AskUserQuestion` (#3804) como card com o
+ * nome da tool + preview do input + três botões: "Aprovar" (rodar uma vez),
+ * "Sempre nesta sessão" (rodar + não perguntar de novo por esta tool) e
+ * "Negar". Resolve via `POST /api/chat/tool-decision`. Mesmo `permissionCards`
+ * do gate de pergunta (dedup live/hidratação por `toolUseId`), mesmo relógio
+ * "esperando há Xmin", mesma expansão automática do drawer. */
+function onToolPermissionRequest(data) {
+  if (permissionCards.has(data.toolUseId)) return; // já renderizado — evita duplicar em race hidratação/SSE.
+
+  const card = document.createElement("div");
+  card.className = "chat-permission-card chat-tool-permission-card";
+  permissionCards.set(data.toolUseId, card);
+
+  const waitedEl = document.createElement("div");
+  waitedEl.className = "chat-permission-waited";
+  waitedEl.textContent = formatWaited(data.askedAt);
+  card.appendChild(waitedEl);
+  const waitedTimer = setInterval(() => {
+    waitedEl.textContent = formatWaited(data.askedAt);
+  }, 15_000);
+
+  const header = document.createElement("span");
+  header.className = "chat-permission-header-chip";
+  header.textContent = `▸ ${data.toolName}`;
+  card.appendChild(header);
+
+  const summary = toolInputSummary(data.toolName, data.input);
+  if (summary) {
+    const pre = document.createElement("pre");
+    pre.className = "chat-tool-permission-input";
+    pre.textContent = summary;
+    card.appendChild(pre);
+  }
+
+  const btnRow = document.createElement("div");
+  btnRow.className = "chat-tool-permission-actions";
+
+  // 3 decisões, mesma semântica do prompt de 3 vias do terminal. `label` só
+  // pra UI; `decision` é o que viaja pro servidor.
+  const decisions = [
+    { decision: "allow", label: "Aprovar", cls: "allow" },
+    { decision: "always", label: "Sempre nesta sessão", cls: "always" },
+    { decision: "deny", label: "Negar", cls: "deny" },
+  ];
+
+  async function decide(decision) {
+    for (const b of btnRow.querySelectorAll("button")) b.disabled = true;
+    try {
+      const res = await fetch("/api/chat/tool-decision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toolUseId: data.toolUseId, decision }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.ok === false) throw new Error(body.error || `HTTP ${res.status}`);
+      clearInterval(waitedTimer);
+      card.classList.add("resolved");
+      card.classList.add(`decision-${decision}`);
+    } catch (e) {
+      for (const b of btnRow.querySelectorAll("button")) b.disabled = false;
+      appendErrorNote(`falha ao enviar decisão: ${e.message}`);
+    }
+  }
+
+  for (const d of decisions) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `chat-tool-permission-btn ${d.cls}`;
+    btn.textContent = d.label;
+    btn.addEventListener("click", () => decide(d.decision));
+    btnRow.appendChild(btn);
+  }
+  card.appendChild(btnRow);
+
+  el.messages.appendChild(card);
+  scrollToBottom();
+  // #3617: mesma razão do gate de pergunta — um gate pendente nunca fica
+  // escondido atrás de um drawer colapsado.
+  expandDrawer();
+}
+
 // #3617: hidratação — busca os gates pendentes REAIS da sessão do servidor
 // (não só o contador global de `/api/events`) e reidrata o(s) card(s)
 // completo(s) com o MESMO `onPermissionRequest` do fluxo ao vivo. Roda uma
@@ -500,7 +609,10 @@ async function hydratePendingPermissions() {
     const json = await res.json();
     const pending = parsePendingChatResponse(json);
     const toRender = planHydrationCards(pending, permissionCards.keys());
-    for (const p of toRender) onPermissionRequest(p);
+    for (const p of toRender) {
+      if (p.kind === "tool") onToolPermissionRequest(p);
+      else onPermissionRequest(p);
+    }
   } catch {
     // best-effort — studio-server offline/erro de rede no momento da
     // hidratação; o badge global (via /api/events) ainda vai sinalizar o
@@ -606,6 +718,8 @@ async function sendMessage(text) {
           else if (data.status === "denied") onToolDenied(data);
         } else if (eventName === "chat-permission-request") {
           onPermissionRequest(data);
+        } else if (eventName === "chat-tool-permission-request") {
+          onToolPermissionRequest(data);
         } else if (eventName === "chat-done") {
           if (data.sessionId) persistSessionId(data.sessionId);
           finalizeAssistantMessage();

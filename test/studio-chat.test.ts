@@ -11,10 +11,11 @@
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import type { CanUseTool, PermissionResult, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   parseChatRequestBody,
   parseChatAnswerRequestBody,
+  parseChatToolDecisionRequestBody,
   parseAskUserQuestionInput,
   buildAskUserQuestionUpdatedInput,
   sdkMessageToChatEvents,
@@ -26,6 +27,8 @@ import {
   listPendingPermissionRequests,
   listPendingPermissionRequestsFull,
   resolvePendingPermissionRequest,
+  resolvePendingToolPermission,
+  clearSessionToolAllowlist,
   formatChatContextBlock,
   buildChatPrompt,
   type ChatWireEvent,
@@ -217,6 +220,34 @@ describe("parseChatAnswerRequestBody (#3557)", () => {
       parseChatAnswerRequestBody(JSON.stringify({ toolUseId: "tu-1", answers: { a: "b" }, response: 5 })).ok,
       false,
     );
+  });
+});
+
+describe("parseChatToolDecisionRequestBody (#3804)", () => {
+  it("aceita as três decisões válidas", () => {
+    for (const decision of ["allow", "always", "deny"] as const) {
+      const result = parseChatToolDecisionRequestBody(JSON.stringify({ toolUseId: "tu-1", decision }));
+      assert.equal(result.ok, true, `decision=${decision} deveria ser aceita`);
+      if (result.ok) {
+        assert.equal(result.value.toolUseId, "tu-1");
+        assert.equal(result.value.decision, decision);
+      }
+    }
+  });
+
+  it("rejeita JSON inválido", () => {
+    assert.equal(parseChatToolDecisionRequestBody("{not json").ok, false);
+  });
+
+  it("rejeita 'toolUseId' ausente ou vazio", () => {
+    assert.equal(parseChatToolDecisionRequestBody(JSON.stringify({ decision: "allow" })).ok, false);
+    assert.equal(parseChatToolDecisionRequestBody(JSON.stringify({ toolUseId: "", decision: "allow" })).ok, false);
+  });
+
+  it("rejeita 'decision' ausente ou fora do conjunto {allow, always, deny}", () => {
+    assert.equal(parseChatToolDecisionRequestBody(JSON.stringify({ toolUseId: "tu-1" })).ok, false);
+    assert.equal(parseChatToolDecisionRequestBody(JSON.stringify({ toolUseId: "tu-1", decision: "yes" })).ok, false);
+    assert.equal(parseChatToolDecisionRequestBody(JSON.stringify({ toolUseId: "tu-1", decision: 1 })).ok, false);
   });
 });
 
@@ -632,15 +663,15 @@ describe("runChatTurn (#3556) — com queryFn mockado (sem SDK real)", () => {
   });
 });
 
-describe("runChatTurn (#3557) — AskUserQuestion vira gate (form), não denial automática", () => {
+describe("runChatTurn (#3557/#3804) — AskUserQuestion e tools viram gates, não denial automática", () => {
   // #633: regressão que prova o mecanismo fim-a-fim descrito no PR —
   // "sessão de brinquedo que chama AskUserQuestion -> form -> resposta ->
   // assert da continuação". O `fakeQuery` abaixo é o único jeito de exercer
   // isso sem spawnar o SDK real: ele chama `options.canUseTool` ele mesmo
   // (a mesma função que o SDK de verdade chamaria), simulando também uma 2ª
-  // tool call (Bash) pra provar que o escopo ampliado NÃO vazou pra outras
-  // tools (critério (d) do #3557).
-  it("(a) emite chat-permission-request; (b) resolve via resolvePendingPermissionRequest; (c) a sessão continua; (d) outra tool call segue negada", async () => {
+  // tool call (Bash) — que no #3804 deixou de ser negada e passou a virar um
+  // gate de tool aprovável (critério (d), reescrito).
+  it("(a) emite chat-permission-request; (b) resolve via resolvePendingPermissionRequest; (c) a sessão continua; (d) outra tool call vira gate de tool aprovável (#3804)", async () => {
     const ROOT = "/tmp/root-askuserquestion-e2e";
     const askInput = {
       questions: [
@@ -655,8 +686,6 @@ describe("runChatTurn (#3557) — AskUserQuestion vira gate (form), não denial 
         },
       ],
     };
-
-    let capturedBashDenial: PermissionResult | null = null;
 
     const fakeQuery: QueryFn = (params) => {
       async function* gen() {
@@ -690,18 +719,20 @@ describe("runChatTurn (#3557) — AskUserQuestion vira gate (form), não denial 
           } as unknown as SDKMessage;
         }
 
-        // (d) uma 2ª tool call, FORA do escopo desta issue, continua negada.
-        capturedBashDenial = await canUseTool("Bash", { command: "ls" }, {
+        // (d) #3804: uma 2ª tool call (Bash) NÃO é mais negada de cara — vira
+        // um gate de tool que o editor aprova. O generator fica suspenso no
+        // await até `resolvePendingToolPermission` resolver com allow.
+        const bashResult = await canUseTool("Bash", { command: "ls" }, {
           signal,
           toolUseID: "tu-bash-1",
           requestId: "req-2",
         });
+        assert.equal(bashResult?.behavior, "allow");
         yield {
-          type: "system",
-          subtype: "permission_denied",
-          tool_name: "Bash",
-          tool_use_id: "tu-bash-1",
-          message: capturedBashDenial?.behavior === "deny" ? capturedBashDenial.message : "",
+          type: "user",
+          message: {
+            content: [{ type: "tool_result", tool_use_id: "tu-bash-1", is_error: false, content: "ok" }],
+          },
         } as unknown as SDKMessage;
 
         yield { type: "result", subtype: "success", is_error: false, result: "fim", session_id: "s1" } as unknown as SDKMessage;
@@ -749,6 +780,21 @@ describe("runChatTurn (#3557) — AskUserQuestion vira gate (form), não denial 
     // removido da lista de pendentes assim que respondido.
     assert.equal(listPendingPermissionRequests(ROOT).length, 0);
 
+    // #3804: a AskUserQuestion resolvida faz o generator avançar até a 2ª
+    // tool call (Bash), que agora emite um gate de tool. Dá um tick pra ele
+    // chegar lá e aprova via `resolvePendingToolPermission` (o que
+    // POST /api/chat/tool-decision chama).
+    await new Promise((r) => setImmediate(r));
+    const toolPermEvent = received.find(
+      (e): e is Extract<ChatWireEvent, { event: "chat-tool-permission-request" }> =>
+        e.event === "chat-tool-permission-request",
+    );
+    assert.ok(toolPermEvent, "esperava um chat-tool-permission-request pro Bash");
+    assert.equal(toolPermEvent.data.toolName, "Bash");
+    assert.equal((toolPermEvent.data.input as { command?: string }).command, "ls");
+    const bashResolve = resolvePendingToolPermission(ROOT, "tu-bash-1", "allow");
+    assert.deepEqual(bashResolve, { ok: true });
+
     await turnPromise;
 
     // (c) a sessão prosseguiu: tool_result da AskUserQuestion virou um
@@ -764,16 +810,14 @@ describe("runChatTurn (#3557) — AskUserQuestion vira gate (form), não denial 
     assert.equal(doneEvent?.data.isError, false);
     assert.equal(doneEvent?.data.result, "fim");
 
-    // (d) a 2ª tool call (Bash) foi negada de verdade pelo canUseTool, e o
-    // sinal chegou ao browser como chat-tool "denied" — regressão de escopo:
-    // o #3557 não deve ter aberto a porta pra mais nada além de AskUserQuestion.
-    assert.ok(capturedBashDenial);
-    assert.equal((capturedBashDenial as PermissionResult).behavior, "deny");
-    const bashDenied = toolEvents.find(
+    // (d) #3804: a 2ª tool call (Bash) foi APROVADA pelo gate e rodou —
+    // chegou ao browser como chat-tool "end", não "denied". O escopo do #3557
+    // foi deliberadamente ampliado pra qualquer tool via card de decisão.
+    const bashEnd = toolEvents.find(
       (e) => e.event === "chat-tool" && (e.data as { toolUseId?: string }).toolUseId === "tu-bash-1",
     );
-    assert.ok(bashDenied, "esperava um chat-tool 'denied' pra tu-bash-1");
-    assert.equal((bashDenied?.data as { status?: string }).status, "denied");
+    assert.ok(bashEnd, "esperava um chat-tool 'end' pra tu-bash-1 (aprovado)");
+    assert.equal((bashEnd?.data as { status?: string }).status, "end");
   });
 
   it("AskUserQuestion com input malformado é negada, sem emitir chat-permission-request", async () => {
@@ -911,5 +955,148 @@ describe("listPendingPermissionRequestsFull (#3617) — payload completo pra hid
     await new Promise((r) => setImmediate(r));
     assert.equal(listPendingPermissionRequestsFull(`${ROOT}-a`).length, 1);
     assert.equal(listPendingPermissionRequestsFull(`${ROOT}-b`).length, 0);
+  });
+});
+
+describe("gate de tool (#3804) — Bash/etc. vira card aprovar/negar, não denial", () => {
+  // Cada `it` usa seu próprio rootDir pra não vazar allowlist de sessão
+  // ("always") nem pendentes entre casos — o estado de studio-chat.ts é
+  // global por rootDir (Maps em memória).
+
+  /** Dispara UMA tool call via um turno de brinquedo, sem aguardar resolução
+   * — deixa a Promise pendente no Map. Devolve um objeto cujo `.result` é
+   * preenchido quando a tool call finalmente resolve (allow/deny). */
+  function openToolGate(root: string, toolName: string, input: Record<string, unknown>, toolUseId: string) {
+    const captured: { result: { behavior: string; message?: string } | null } = { result: null };
+    const received: ChatWireEvent[] = [];
+    const fakeQuery: QueryFn = (params) => {
+      async function* gen() {
+        const canUseTool = params.options?.canUseTool as CanUseTool;
+        const r = await canUseTool(toolName, input, {
+          signal: new AbortController().signal,
+          toolUseID: toolUseId,
+          requestId: `req-${toolUseId}`,
+        });
+        captured.result = r as { behavior: string; message?: string };
+        // segura o turno aberto pós-resolução pra ele não morrer e limpar o
+        // que não precisamos; o teste não aguarda o turno.
+        await new Promise(() => {});
+        yield undefined as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    void runChatTurn({ message: "oi", cwd: root, queryFn: fakeQuery, onEvent: (e) => received.push(e) });
+    return { captured, received };
+  }
+
+  it("emite chat-tool-permission-request com toolName+input e registra pendente kind:'tool'", async () => {
+    const ROOT = "/tmp/root-tool-gate-emit";
+    const { received } = openToolGate(ROOT, "Bash", { command: "npx tsx scripts/x.ts" }, "tu-g-1");
+    await new Promise((r) => setImmediate(r));
+
+    const ev = received.find(
+      (e): e is Extract<ChatWireEvent, { event: "chat-tool-permission-request" }> =>
+        e.event === "chat-tool-permission-request",
+    );
+    assert.ok(ev, "esperava chat-tool-permission-request");
+    assert.equal(ev.data.toolName, "Bash");
+    assert.equal((ev.data.input as { command?: string }).command, "npx tsx scripts/x.ts");
+
+    // aparece na lista de pendentes com kind 'tool' + input (pra badge + hidratação).
+    const full = listPendingPermissionRequestsFull(ROOT);
+    assert.equal(full.length, 1);
+    assert.equal(full[0].kind, "tool");
+    assert.equal(full[0].toolName, "Bash");
+    assert.deepEqual(full[0].input, { command: "npx tsx scripts/x.ts" });
+    const summary = listPendingPermissionRequests(ROOT);
+    assert.equal(summary[0].kind, "tool");
+    assert.equal(summary[0].firstQuestion, null);
+  });
+
+  it("decision 'allow' resolve a tool call com behavior:'allow' e some da lista de pendentes", async () => {
+    const ROOT = "/tmp/root-tool-gate-allow";
+    const { captured } = openToolGate(ROOT, "Bash", { command: "ls" }, "tu-g-allow");
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(resolvePendingToolPermission(ROOT, "tu-g-allow", "allow"), { ok: true });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(captured.result?.behavior, "allow");
+    assert.equal(listPendingPermissionRequestsFull(ROOT).length, 0);
+  });
+
+  it("decision 'deny' resolve com behavior:'deny' + mensagem", async () => {
+    const ROOT = "/tmp/root-tool-gate-deny";
+    const { captured } = openToolGate(ROOT, "Bash", { command: "rm x" }, "tu-g-deny");
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(resolvePendingToolPermission(ROOT, "tu-g-deny", "deny"), { ok: true });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(captured.result?.behavior, "deny");
+    assert.match(captured.result?.message ?? "", /negou/i);
+  });
+
+  it("decision 'always' aprova E libera a MESMA tool pro resto da sessão sem novo gate", async () => {
+    const ROOT = "/tmp/root-tool-gate-always";
+    // 1ª chamada: abre gate, editor escolhe 'always'.
+    const first = openToolGate(ROOT, "Bash", { command: "echo a" }, "tu-always-1");
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(resolvePendingToolPermission(ROOT, "tu-always-1", "always"), { ok: true });
+    await new Promise((r) => setImmediate(r));
+    assert.equal(first.captured.result?.behavior, "allow");
+
+    // 2ª chamada da MESMA tool: curto-circuito — allow imediato, NENHUM gate
+    // emitido e nada pendente.
+    const second = openToolGate(ROOT, "Bash", { command: "echo b" }, "tu-always-2");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(second.captured.result?.behavior, "allow");
+    assert.equal(
+      second.received.some((e) => e.event === "chat-tool-permission-request"),
+      false,
+      "2ª chamada não deveria emitir gate depois de 'always'",
+    );
+    assert.equal(listPendingPermissionRequestsFull(ROOT).length, 0);
+
+    // uma tool DIFERENTE ainda abre gate (o allow é por nome de tool).
+    const other = openToolGate(ROOT, "Edit", { file_path: "a.ts" }, "tu-always-edit");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(
+      other.received.some((e) => e.event === "chat-tool-permission-request"),
+      true,
+      "tool diferente ainda deve abrir gate",
+    );
+  });
+
+  it("clearSession zera a allowlist 'always' — nova conversa reautoriza", async () => {
+    const ROOT = "/tmp/root-tool-gate-clear";
+    const first = openToolGate(ROOT, "Bash", { command: "echo a" }, "tu-clr-1");
+    await new Promise((r) => setImmediate(r));
+    resolvePendingToolPermission(ROOT, "tu-clr-1", "always");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(first.captured.result?.behavior, "allow");
+
+    clearSession(ROOT); // "nova conversa"
+
+    // pós-clear, a mesma tool volta a abrir gate.
+    const after = openToolGate(ROOT, "Bash", { command: "echo b" }, "tu-clr-2");
+    await new Promise((r) => setImmediate(r));
+    assert.equal(
+      after.received.some((e) => e.event === "chat-tool-permission-request"),
+      true,
+      "após clearSession, 'always' anterior não vale mais",
+    );
+    // limpeza direta também disponível.
+    clearSessionToolAllowlist(ROOT);
+  });
+
+  it("guards de tipo cruzado: resolver de pergunta rejeita gate de tool e vice-versa", async () => {
+    const ROOT = "/tmp/root-tool-gate-crosskind";
+    openToolGate(ROOT, "Bash", { command: "ls" }, "tu-x-tool");
+    await new Promise((r) => setImmediate(r));
+
+    // resolver de AskUserQuestion recusa um gate de tool (sem consumir a entry).
+    const wrong = resolvePendingPermissionRequest(ROOT, "tu-x-tool", { answers: { a: "b" } });
+    assert.equal(wrong.ok, false);
+    assert.equal(listPendingPermissionRequestsFull(ROOT).length, 1, "entry não consumida pelo resolver errado");
+
+    // id inexistente → erro.
+    assert.equal(resolvePendingToolPermission(ROOT, "tu-nao-existe", "allow").ok, false);
   });
 });

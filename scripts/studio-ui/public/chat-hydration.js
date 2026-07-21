@@ -11,13 +11,20 @@
 // `chat-permission-request`) já usa — sem duplicar a lógica de render.
 
 /**
- * Valida + normaliza o corpo JSON de `GET /api/chat/pending` (#3617) num
- * array de payloads prontos pra alimentar o renderer de card
- * (`onPermissionRequest` em chat-drawer.js), no mesmo shape de
- * `data` do evento `chat-permission-request` (`{toolUseId, questions,
- * askedAt}`). Nunca lança — qualquer entrada malformada é descartada
- * silenciosamente em vez de quebrar a hidratação inteira (fail-soft, mesmo
- * princípio de `parseAskUserQuestionInput` em studio-chat.ts).
+ * Valida + normaliza o corpo JSON de `GET /api/chat/pending` (#3617/#3804) num
+ * array de payloads prontos pra alimentar os renderers de card em
+ * chat-drawer.js. Cada entrada carrega `kind`:
+ *   - `"question"` → `{kind, toolUseId, toolName, askedAt, questions}`, shape
+ *     de `data` do evento `chat-permission-request` (renderer
+ *     `onPermissionRequest`);
+ *   - `"tool"` (#3804) → `{kind, toolUseId, toolName, askedAt, input}`, shape
+ *     de `data` do evento `chat-tool-permission-request` (renderer
+ *     `onToolPermissionRequest`).
+ * Entradas sem `kind` são tratadas como `"question"` (retrocompat com o
+ * payload pré-#3804, que só tinha gates de pergunta). Nunca lança — qualquer
+ * entrada malformada é descartada silenciosamente em vez de quebrar a
+ * hidratação inteira (fail-soft, mesmo princípio de `parseAskUserQuestionInput`
+ * em studio-chat.ts).
  */
 export function parsePendingChatResponse(json) {
   if (!json || typeof json !== "object" || !Array.isArray(json.pending)) return [];
@@ -25,13 +32,20 @@ export function parsePendingChatResponse(json) {
   for (const p of json.pending) {
     if (!p || typeof p !== "object") continue;
     if (typeof p.toolUseId !== "string" || p.toolUseId.trim() === "") continue;
-    if (!Array.isArray(p.questions) || p.questions.length === 0) continue;
-    out.push({
-      toolUseId: p.toolUseId,
-      toolName: typeof p.toolName === "string" ? p.toolName : "AskUserQuestion",
-      askedAt: typeof p.askedAt === "number" ? p.askedAt : Date.now(),
-      questions: p.questions,
-    });
+    const askedAt = typeof p.askedAt === "number" ? p.askedAt : Date.now();
+    if (p.kind === "tool") {
+      if (typeof p.toolName !== "string" || p.toolName.trim() === "") continue;
+      out.push({ kind: "tool", toolUseId: p.toolUseId, toolName: p.toolName, askedAt, input: p.input });
+    } else {
+      if (!Array.isArray(p.questions) || p.questions.length === 0) continue;
+      out.push({
+        kind: "question",
+        toolUseId: p.toolUseId,
+        toolName: typeof p.toolName === "string" ? p.toolName : "AskUserQuestion",
+        askedAt,
+        questions: p.questions,
+      });
+    }
   }
   return out;
 }
