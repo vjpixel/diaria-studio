@@ -225,11 +225,12 @@ test("loadStoreRows + segmentFromStore: ponta-a-ponta sobre o store", () => {
   db.close();
 });
 
-test("loadStoreRows + segmentFromStore: mv_result=unknown fica FORA de toda wave (#2735)", () => {
+test("loadStoreRows + segmentFromStore: mv_result=unknown fica FORA de toda wave pra cohort NÃO isento (#2735)", () => {
   const db = openClariceDb(":memory:");
   // mv_result="unknown" (linha de um mv-export-*-unknown.csv ingerida no store)
+  // tier 3 (lead, cohort NÃO isento de MV) — #3819 isenta só assinantes-ativos.
   db.prepare(
-    "INSERT INTO clarice_users (email, tier, mv_result, mv_bucket) VALUES (?, 1, 'unknown', 'unknown')",
+    "INSERT INTO clarice_users (email, tier, mv_result, mv_bucket) VALUES (?, 3, 'unknown', 'unknown')",
   ).run("inconclusivo@x.com");
   // controle: mv_result="ok" (verified) continua elegível e entra em firstSend
   db.prepare(
@@ -252,6 +253,28 @@ test("loadStoreRows + segmentFromStore: mv_result=unknown fica FORA de toda wave
 
   // sem regressão: mv_result="ok" continua elegível e vai pra 1º envio (firstSend).
   assert.deepEqual(s.firstSend.map((r) => r.email), ["ok@x.com"]);
+
+  db.close();
+});
+
+test("loadStoreRows + segmentFromStore #3819: mv_bucket=unknown NÃO exclui assinante-ativo (tier 1 → cohort isento de MV)", () => {
+  const db = openClariceDb(":memory:");
+  // tier 1 (assinante ativo) com mv_bucket='unknown' herdado de vida anterior
+  // como lead → ELEGÍVEL desde #3819 (pagante nunca é cortado por MV) e entra
+  // em firstSend normalmente (nunca enviado, sends_count=0).
+  db.prepare(
+    "INSERT INTO clarice_users (email, tier, mv_result, mv_bucket) VALUES (?, 1, 'unknown', 'unknown')",
+  ).run("assinante-mv-unknown@x.com");
+  recomputeDerived(db);
+
+  const rows = loadStoreRows(db);
+  const assinante = rows.find((r) => r.email === "assinante-mv-unknown@x.com")!;
+  assert.equal(assinante.send_eligible, 1);
+  assert.equal(assinante.ineligible_reason, null);
+
+  const s = segmentFromStore(rows);
+  assert.deepEqual(s.firstSend.map((r) => r.email), ["assinante-mv-unknown@x.com"]);
+  assert.deepEqual(s.excluded, []);
 
   db.close();
 });
