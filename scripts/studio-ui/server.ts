@@ -55,6 +55,16 @@
  *     página, sem depender do stream SSE ao vivo que originou a pergunta (fix
  *     do bug "gate pendente inalcançável" — ver `studio-chat.ts`
  *     `listPendingPermissionRequestsFull`).
+ *   - `GET /api/chat/history` (#3803) — payload do TRANSCRIPT já acumulado
+ *     (mensagens do editor + texto final do assistente + chips de tool call
+ *     de turnos ANTERIORES) pro `rootDir` corrente, mesmo princípio do
+ *     `/api/chat/pending` acima mas cobrindo o histórico de MENSAGENS em vez
+ *     do gate pendente — fecha o TODO(#3561/#3562) órfão citado no topo de
+ *     `chat-drawer.js` (navegação entre páginas do Studio esvaziava o
+ *     transcript visível mesmo com a sessão do Agent SDK viva no servidor).
+ *     `?sessionId=` opcional invalida (resposta vazia) um transcript
+ *     atrelado a uma sessão já superada — ver `studio-chat.ts`
+ *     `getChatHistory`/`appendChatHistoryEvent`.
  *   - `POST /api/waves/fire` (#3702) — dispara a sessão COORDENADORA de uma
  *     onda já composta por `GET /api/waves`: usa a tool `Agent` do próprio
  *     Claude Code (`isolation: "worktree"`, mesmo mecanismo do
@@ -211,6 +221,9 @@ import {
   resolvePendingToolPermission,
   watchPendingChatPermissions,
   listPendingPermissionRequestsFull,
+  appendChatHistoryUserMessage,
+  appendChatHistoryEvent,
+  getChatHistory,
   type QueryFn,
 } from "./studio-chat.ts";
 // #3702: dispara a sessão coordenadora de uma onda (fan-out via Agent tool
@@ -353,6 +366,34 @@ function handleApiState(rootDir: string, res: ServerResponse): void {
  * gate pendente); não há "erro" possível numa leitura de Map em memória. */
 function handleApiChatPending(rootDir: string, res: ServerResponse): void {
   sendJson(res, 200, { pending: listPendingPermissionRequestsFull(rootDir) });
+}
+
+/** `GET /api/chat/history` (#3803) — payload do TRANSCRIPT já acumulado pro
+ * `rootDir` corrente (mensagens do editor + texto final do assistente +
+ * chips de tool call de turnos ANTERIORES) — o gap órfão citado no TODO de
+ * topo de `chat-drawer.js` (#3561/#3562 nunca cobriram isso; só o gate
+ * pendente foi reidratado, #3617). Reusa `getChatHistory` (mesmo buffer em
+ * memória de `studio-chat.ts` que `appendChatHistoryUserMessage`/
+ * `appendChatHistoryEvent` já alimentam dentro de `handleApiChat` — não
+ * duplica estado).
+ *
+ * `?sessionId=` é opcional; quando presente E o servidor já tem uma sessão
+ * corrente DIFERENTE pro `rootDir` (`getSessionId`), a resposta vem VAZIA —
+ * o `sessionId` que o cliente guarda em localStorage é de uma conversa já
+ * superada (reset disparado por outra aba, ou processo reiniciado depois de
+ * uma sessão nova), então o transcript antigo não deve reaparecer atrelado a
+ * um ponteiro que o servidor não reconhece mais como corrente. Sem
+ * `sessionId` na query (cliente ainda sem nenhuma conversa) ou sem sessão
+ * corrente no servidor (processo acabou de subir), serve o buffer como está
+ * — mesma disciplina "sempre 200, nunca erro" de `handleApiChatPending`. */
+function handleApiChatHistory(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
+  const queriedSessionId = new URL(req.url ?? "/", "http://localhost").searchParams.get("sessionId");
+  const currentSessionId = getSessionId(rootDir);
+  if (queriedSessionId && currentSessionId && queriedSessionId !== currentSessionId) {
+    sendJson(res, 200, { history: [], sessionId: currentSessionId });
+    return;
+  }
+  sendJson(res, 200, { history: getChatHistory(rootDir), sessionId: currentSessionId ?? null });
 }
 
 function handleApiEdition(rootDir: string, aammdd: string, res: ServerResponse): void {
@@ -551,6 +592,10 @@ async function handleApiChat(
 
   if (parsed.value.reset) clearSession(rootDir);
   const sessionId = parsed.value.sessionId ?? getSessionId(rootDir);
+  // #3803: a mensagem do editor nunca passa por `sdkMessageToChatEvents` (o
+  // SDK só vê o `prompt` final montado por `buildChatPrompt`) — registrada
+  // aqui, direto, pro histórico reidratável cobrir também o lado do editor.
+  appendChatHistoryUserMessage(rootDir, parsed.value.message);
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -577,6 +622,9 @@ async function handleApiChat(
       if (wireEvent.event === "chat-done" && wireEvent.data.sessionId) {
         setSessionId(rootDir, wireEvent.data.sessionId);
       }
+      // #3803: acumula no buffer de histórico reidratável — mesmo evento já
+      // traduzido pro SSE do browser, sem I/O extra nem depender do SDK.
+      appendChatHistoryEvent(rootDir, wireEvent);
       // #3557 (fallback): se o navegador que abriu este turno já se
       // desconectou no instante em que a AskUserQuestion chega, não há UI
       // pra renderizar o form agora — logamos um aviso, mas a sessão SEGUE
@@ -1213,6 +1261,13 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // não colidir com o guard genérico de rota de API desconhecida abaixo.
       if (urlPath === "/api/chat/pending") {
         handleApiChatPending(rootDir, res);
+        return;
+      }
+      // #3803: reidratação do TRANSCRIPT do chat drawer — mesmo motivo de
+      // checagem antecipada do bloco acima (não colidir com o guard genérico
+      // de rota de API desconhecida mais abaixo).
+      if (urlPath === "/api/chat/history") {
+        handleApiChatHistory(rootDir, req, res);
         return;
       }
       if (urlPath === "/api/events") {

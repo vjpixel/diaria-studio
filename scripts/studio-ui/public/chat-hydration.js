@@ -62,6 +62,54 @@ export function planHydrationCards(pending, renderedIds) {
   return pending.filter((p) => !rendered.has(p.toolUseId));
 }
 
+// ─── histórico de transcript (#3803) ───────────────────────────────────────
+//
+// `chat-drawer.js` reidrata o TRANSCRIPT completo (mensagens do editor +
+// texto final do assistente + chips de tool call de turnos ANTERIORES) ao
+// montar em qualquer página, ao lado de `hydratePendingPermissions()` — fecha
+// o TODO(#3561/#3562) órfão citado no topo daquele arquivo. `parseChatHistoryResponse`
+// normaliza o payload cru de `GET /api/chat/history`; `planHistoryReplay` é a
+// lógica PURA de "o que ainda falta renderizar", testável sem DOM, mesmo
+// papel de `planHydrationCards` acima só que indexada por `seq` monotônico
+// (entries de usuário/assistente não têm `toolUseId` como as de tool, então
+// dedup por Set de ids não serve aqui).
+
+/**
+ * Valida + normaliza o corpo JSON de `GET /api/chat/history` (#3803) num
+ * array de entries prontas pro planner/renderer consumirem. Cada entry
+ * precisa minimamente de `seq` (number) + `kind` (string) — o resto do shape
+ * varia por `kind` (`user`/`assistant`/`tool`/`error`, ver `ChatHistoryEntry`
+ * em studio-chat.ts) e é repassado como está pro dispatcher de render em
+ * chat-drawer.js. Nunca lança — entrada malformada é descartada em vez de
+ * quebrar a hidratação inteira (mesmo princípio de `parsePendingChatResponse`).
+ */
+export function parseChatHistoryResponse(json) {
+  if (!json || typeof json !== "object" || !Array.isArray(json.history)) return [];
+  const out = [];
+  for (const e of json.history) {
+    if (!e || typeof e !== "object") continue;
+    if (typeof e.seq !== "number" || typeof e.kind !== "string") continue;
+    out.push(e);
+  }
+  return out;
+}
+
+/**
+ * Lógica PURA de replay: dado o histórico completo já normalizado (ordenado
+ * por `seq` crescente, como o servidor emite) e o maior `seq` já renderizado
+ * nesta página (`lastSeq`, `0` = nada renderizado ainda), devolve só as
+ * entries novas (`seq > lastSeq`, na mesma ordem) e o novo high-water mark a
+ * guardar. Cobre tanto o replay inicial do mount (`lastSeq=0` -> tudo é
+ * "novo") quanto uma 2ª chamada de hidratação na mesma vida da página (ex:
+ * um futuro caminho de retry/reconexão) sem duplicar entries já desenhadas —
+ * o risco apontado no self-review desta issue (#3803).
+ */
+export function planHistoryReplay(entries, lastSeq = 0) {
+  const toRender = entries.filter((e) => e.seq > lastSeq);
+  const nextSeq = toRender.reduce((max, e) => Math.max(max, e.seq), lastSeq);
+  return { toRender, nextSeq };
+}
+
 // ─── detecção de pergunta sensível (#3561, gate cat. A do develop) ────────
 //
 // `.claude/skills/diaria-develop/SKILL.md` §Fase 0.5 pede o editor colar

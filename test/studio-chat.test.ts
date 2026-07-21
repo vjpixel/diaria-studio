@@ -31,6 +31,10 @@ import {
   clearSessionToolAllowlist,
   formatChatContextBlock,
   buildChatPrompt,
+  appendChatHistoryUserMessage,
+  appendChatHistoryEvent,
+  getChatHistory,
+  clearChatHistory,
   type ChatWireEvent,
   type ChatPermissionRequestEvent,
   type QueryFn,
@@ -553,6 +557,156 @@ describe("sessão em memória por rootDir (#3556)", () => {
     clearSession(ROOT_A);
     assert.equal(getSessionId(ROOT_A), undefined);
     assert.equal(getSessionId(ROOT_B), "sess-b");
+  });
+});
+
+/**
+ * #3803 — regressão do bug "transcript some ao clicar em link": navegar
+ * entre páginas do Studio (MPA, cada página reinjeta chat-drawer.js do zero)
+ * esvaziava a tela do chat mesmo com a sessão do Agent SDK viva no servidor
+ * via `resume`. Este buffer em memória (mesmo padrão de `sessionIdByRoot`
+ * acima) é o que `GET /api/chat/history` serve pro cliente reidratar o
+ * transcript visível — cobre a metade "servidor acumula/serve o histórico"
+ * do mecanismo; a metade "cliente decide o que falta desenhar" é coberta por
+ * `test/chat-hydration.test.ts` (`planHistoryReplay`).
+ */
+describe("histórico de mensagens por rootDir (#3803)", () => {
+  const ROOT_A = "/tmp/hist-root-a";
+  const ROOT_B = "/tmp/hist-root-b";
+
+  beforeEach(() => {
+    clearChatHistory(ROOT_A);
+    clearChatHistory(ROOT_B);
+  });
+
+  it("buffer vazio no início", () => {
+    assert.deepEqual(getChatHistory(ROOT_A), []);
+  });
+
+  it("appendChatHistoryUserMessage registra a mensagem do editor com seq crescente", () => {
+    appendChatHistoryUserMessage(ROOT_A, "primeira mensagem");
+    appendChatHistoryUserMessage(ROOT_A, "segunda mensagem");
+    const history = getChatHistory(ROOT_A);
+    assert.equal(history.length, 2);
+    assert.equal(history[0].kind, "user");
+    assert.equal((history[0] as { text: string }).text, "primeira mensagem");
+    assert.equal((history[1] as { text: string }).text, "segunda mensagem");
+    assert.ok(history[1].seq > history[0].seq, "seq deve ser monotônico");
+  });
+
+  it("chat-delta acumula na MESMA entry de assistente até chat-done fechar o turno", () => {
+    appendChatHistoryEvent(ROOT_A, { event: "chat-delta", data: { text: "Ol" } });
+    appendChatHistoryEvent(ROOT_A, { event: "chat-delta", data: { text: "á!" } });
+    appendChatHistoryEvent(ROOT_A, { event: "chat-done", data: { sessionId: "s1", isError: false, result: null } });
+    const history = getChatHistory(ROOT_A);
+    assert.equal(history.length, 1);
+    assert.equal(history[0].kind, "assistant");
+    assert.equal((history[0] as { text: string }).text, "Olá!");
+  });
+
+  it("um novo turno (novo chat-delta após chat-done) abre uma entry de assistente NOVA, não continua a antiga", () => {
+    appendChatHistoryEvent(ROOT_A, { event: "chat-delta", data: { text: "turno 1" } });
+    appendChatHistoryEvent(ROOT_A, { event: "chat-done", data: { sessionId: "s1", isError: false, result: null } });
+    appendChatHistoryEvent(ROOT_A, { event: "chat-delta", data: { text: "turno 2" } });
+    const history = getChatHistory(ROOT_A);
+    assert.equal(history.length, 2);
+    assert.equal((history[0] as { text: string }).text, "turno 1");
+    assert.equal((history[1] as { text: string }).text, "turno 2");
+  });
+
+  it("appendChatHistoryUserMessage fecha qualquer entry de assistente aberta do turno anterior (abort a meio de delta)", () => {
+    appendChatHistoryEvent(ROOT_A, { event: "chat-delta", data: { text: "resposta cortada" } });
+    // turno abortado — nenhum chat-done chega, o editor manda uma NOVA mensagem:
+    appendChatHistoryUserMessage(ROOT_A, "nova pergunta");
+    appendChatHistoryEvent(ROOT_A, { event: "chat-delta", data: { text: "resposta nova" } });
+    const history = getChatHistory(ROOT_A);
+    assert.deepEqual(
+      history.map((e) => e.kind),
+      ["assistant", "user", "assistant"],
+    );
+    assert.equal((history[0] as { text: string }).text, "resposta cortada");
+    assert.equal((history[2] as { text: string }).text, "resposta nova");
+  });
+
+  it("chat-tool start/end/denied viram entries próprias, preservando toolUseId/status", () => {
+    appendChatHistoryEvent(ROOT_A, {
+      event: "chat-tool",
+      data: { toolUseId: "tu-1", name: "Bash", status: "start", input: { command: "ls" } },
+    });
+    appendChatHistoryEvent(ROOT_A, {
+      event: "chat-tool",
+      data: { toolUseId: "tu-1", status: "end", isError: false },
+    });
+    appendChatHistoryEvent(ROOT_A, {
+      event: "chat-tool",
+      data: { toolUseId: "tu-2", name: "Write", status: "denied", reason: "negado" },
+    });
+    const history = getChatHistory(ROOT_A);
+    assert.equal(history.length, 3);
+    assert.deepEqual(history.map((e) => e.kind), ["tool", "tool", "tool"]);
+    const [start, end, denied] = history as Array<{
+      toolUseId: string;
+      status: string;
+      name: string;
+      isError?: boolean;
+      reason?: string;
+    }>;
+    assert.equal(start.toolUseId, "tu-1");
+    assert.equal(start.status, "start");
+    assert.equal(start.name, "Bash");
+    assert.equal(end.toolUseId, "tu-1");
+    assert.equal(end.status, "end");
+    assert.equal(end.isError, false);
+    assert.equal(denied.toolUseId, "tu-2");
+    assert.equal(denied.status, "denied");
+    assert.equal(denied.reason, "negado");
+  });
+
+  it("chat-error vira entry 'error' e fecha a entry de assistente aberta", () => {
+    appendChatHistoryEvent(ROOT_A, { event: "chat-delta", data: { text: "meio de resposta" } });
+    appendChatHistoryEvent(ROOT_A, { event: "chat-error", data: { message: "rate limit" } });
+    const history = getChatHistory(ROOT_A);
+    assert.deepEqual(
+      history.map((e) => e.kind),
+      ["assistant", "error"],
+    );
+    assert.equal((history[1] as { text: string }).text, "rate limit");
+  });
+
+  it("histórico de rootDirs diferentes não se mistura", () => {
+    appendChatHistoryUserMessage(ROOT_A, "mensagem A");
+    appendChatHistoryUserMessage(ROOT_B, "mensagem B");
+    assert.equal(getChatHistory(ROOT_A).length, 1);
+    assert.equal(getChatHistory(ROOT_B).length, 1);
+    assert.equal((getChatHistory(ROOT_A)[0] as { text: string }).text, "mensagem A");
+  });
+
+  it("clearChatHistory zera só o rootDir indicado", () => {
+    appendChatHistoryUserMessage(ROOT_A, "mensagem A");
+    appendChatHistoryUserMessage(ROOT_B, "mensagem B");
+    clearChatHistory(ROOT_A);
+    assert.deepEqual(getChatHistory(ROOT_A), []);
+    assert.equal(getChatHistory(ROOT_B).length, 1);
+  });
+
+  it("clearSession ('nova conversa') também zera o histórico — regressão: não reidratar transcript de conversa anterior", () => {
+    appendChatHistoryUserMessage(ROOT_A, "mensagem antiga");
+    clearSession(ROOT_A);
+    assert.deepEqual(getChatHistory(ROOT_A), []);
+  });
+
+  it("cap de MAX_HISTORY_ENTRIES descarta as entries mais ANTIGAS, mantendo seq monotônico", () => {
+    for (let i = 0; i < 410; i++) appendChatHistoryUserMessage(ROOT_A, `msg-${i}`);
+    const history = getChatHistory(ROOT_A);
+    assert.equal(history.length, 400, "buffer capado em 400 entries");
+    // as 10 mais antigas (msg-0..msg-9) foram descartadas — a mais antiga
+    // que sobra é msg-10.
+    assert.equal((history[0] as { text: string }).text, "msg-10");
+    assert.equal((history[history.length - 1] as { text: string }).text, "msg-409");
+    // seq segue estritamente crescente mesmo após o trim.
+    for (let i = 1; i < history.length; i++) {
+      assert.ok(history[i].seq > history[i - 1].seq);
+    }
   });
 });
 

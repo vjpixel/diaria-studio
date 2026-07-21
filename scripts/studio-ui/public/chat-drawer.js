@@ -56,11 +56,20 @@
 // clique nenhum. A lógica pura de parse/dedupe fica em `chat-hydration.js`
 // (testável sem DOM — este arquivo toca `document` no top-level e não pode
 // ser importado num teste Node puro).
-// TODO(#3561/#3562): histórico completo de mensagens de turnos anteriores
-// (não só o gate pendente) não é reidratado nesta fatia — o SDK não expõe
-// isso de forma trivial via `resume`; o card pendente (critério de aceite
-// obrigatório do #3617) é reidratado, o histórico de texto cru fica pendente
-// de investigação futura.
+// #3803: o TODO acima (histórico completo de mensagens de turnos anteriores)
+// foi fechado — não via `resume` do SDK (que de fato não expõe isso), e sim
+// com um buffer de histórico em memória por `rootDir` do lado do servidor
+// (`studio-chat.ts` `appendChatHistoryUserMessage`/`appendChatHistoryEvent`,
+// alimentado dentro do MESMO `handleApiChat` que já emite os eventos SSE).
+// `GET /api/chat/history` serve esse buffer; `hydrateChatHistory` abaixo o
+// busca ao montar em QUALQUER página e reproduz cada entry (mensagem do
+// editor, texto final do assistente, chip de tool start/end/denied) usando
+// os MESMOS renderers do fluxo ao vivo (`appendUserMessage`,
+// `currentAssistantBody`/`finalizeAssistantMessage`, `onToolStart`/
+// `onToolEnd`/`onToolDenied`) — nenhuma lógica de render duplicada. A lógica
+// pura de "quais entries ainda faltam desenhar" (por `seq` monotônico, dedup
+// contra re-hidratação) fica em `chat-hydration.js` `planHistoryReplay`,
+// testável sem DOM, mesmo padrão de `planHydrationCards`.
 //
 // #3687: a sessão de chat não sabia qual edição/arquivo/aba estavam abertos
 // no painel ao lado — referências implícitas do editor ("passe a Clarice
@@ -75,7 +84,13 @@
 // fica `null` e nenhum bloco de contexto é enviado, comportamento idêntico
 // ao pré-#3687.
 
-import { parsePendingChatResponse, planHydrationCards, isSensitiveQuestion } from "./chat-hydration.js";
+import {
+  parsePendingChatResponse,
+  planHydrationCards,
+  isSensitiveQuestion,
+  parseChatHistoryResponse,
+  planHistoryReplay,
+} from "./chat-hydration.js";
 
 const STORAGE_KEY = "diaria-studio-chat-session-id";
 const COLLAPSE_STORAGE_KEY = "diaria-studio-chat-collapsed";
@@ -620,7 +635,70 @@ async function hydratePendingPermissions() {
     // tenta hidratar de novo.
   }
 }
-hydratePendingPermissions();
+
+// ─── histórico de transcript (#3803) ───────────────────────────────────────
+
+// Maior `seq` já reproduzido nesta página — module-scoped (não localStorage:
+// é estado de MONTAGEM desta página, mesmo princípio de `panelContext`
+// acima). `planHistoryReplay` (chat-hydration.js) usa isto pra nunca
+// re-renderizar a mesma entry 2x, mesmo se `hydrateChatHistory` rodar mais
+// de uma vez na vida desta página (não acontece hoje — só chamada 1x no
+// mount, mas o guard é de graça e deixa a função seguramente reentrante).
+let lastHistorySeq = 0;
+
+/** Reproduz UMA entry de histórico (`ChatHistoryEntry`, ver studio-chat.ts)
+ * usando o MESMO renderer que o fluxo ao vivo já usa pro tipo equivalente —
+ * nenhuma lógica de render duplicada. Entry de tipo desconhecido é ignorada
+ * (fail-soft, mesma disciplina do resto do drawer). */
+function replayHistoryEntry(entry) {
+  if (entry.kind === "user") {
+    appendUserMessage(entry.text);
+  } else if (entry.kind === "assistant") {
+    // Reproduz o texto FINAL de uma vez (sem re-simular o streaming
+    // token-a-token) — `currentAssistantBody()` cria uma bolha nova (nenhuma
+    // `.current` existe ainda neste ponto do replay) e `finalizeAssistantMessage()`
+    // a fecha imediatamente, igual ao fluxo ao vivo no fim de um turno.
+    currentAssistantBody().textContent = entry.text;
+    finalizeAssistantMessage();
+  } else if (entry.kind === "tool") {
+    if (entry.status === "start") onToolStart({ toolUseId: entry.toolUseId, name: entry.name, input: entry.input });
+    else if (entry.status === "end") onToolEnd({ toolUseId: entry.toolUseId, isError: entry.isError === true });
+    else if (entry.status === "denied") {
+      onToolDenied({ toolUseId: entry.toolUseId, name: entry.name, reason: entry.reason ?? "" });
+    }
+  } else if (entry.kind === "error") {
+    appendErrorNote(entry.text);
+  }
+}
+
+/** Busca `GET /api/chat/history` e reproduz o transcript de turnos
+ * ANTERIORES ao montar o drawer em qualquer página — fecha o gap #3803
+ * (navegar entre páginas do Studio esvaziava a tela do chat mesmo com a
+ * sessão do Agent SDK viva no servidor, TODO órfão desde #3561/#3562). Roda
+ * ANTES de `hydratePendingPermissions()` (chamada abaixo) pra manter a ordem
+ * cronológica certa: transcript passado primeiro, gate pendente (a
+ * interação mais recente/em aberto) por último. */
+async function hydrateChatHistory() {
+  try {
+    const qs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+    const res = await fetch(`/api/chat/history${qs}`);
+    if (!res.ok) return;
+    const json = await res.json();
+    const history = parseChatHistoryResponse(json);
+    const { toRender, nextSeq } = planHistoryReplay(history, lastHistorySeq);
+    for (const entry of toRender) replayHistoryEntry(entry);
+    lastHistorySeq = nextSeq;
+  } catch {
+    // best-effort — mesma disciplina de `hydratePendingPermissions`: sem
+    // transcript nesta hidratação, o chat segue funcional pra mensagens
+    // novas, só sem o histórico visual desta sessão.
+  }
+}
+
+(async () => {
+  await hydrateChatHistory();
+  await hydratePendingPermissions();
+})();
 
 // ─── parsing SSE manual (fetch não dá EventSource pra POST) ────────────
 
