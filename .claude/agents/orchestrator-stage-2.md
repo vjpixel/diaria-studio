@@ -127,8 +127,8 @@ O script é determinístico, sem LLM. Ordem canonical (#3476):
 - box de divulgação slot 3 (pós-último-destaque — D3 se existir, senão D2)
 - **🛠️ USE MELHOR** (se houver candidato selecionado)
 - É IA? section (lê `01-eia.md` se existir, strip frontmatter YAML) — **#3476: agora DEPOIS de USE MELHOR** (antes ficava logo após o último destaque, #2546); se a edição não tiver USE MELHOR, É IA? cai logo após o box do slot 3
-- **LANÇAMENTOS** (formato canonical `**[title](url)**` + summary, singular/plural conforme count #1324)
-- **VÍDEOS**, **RADAR** (idem; omite seção vazia — RADAR mergeia PESQUISAS + OUTRAS NOTÍCIAS, #1569)
+- **VÍDEOS** (formato canonical `**[title](url)**` + summary, singular/plural conforme count #1324) — **#3820: agora ANTES de LANÇAMENTOS** (decisão editorial 260722; antes ficava depois, #3100 só tinha subido VÍDEOS pra antes de RADAR)
+- **LANÇAMENTOS**, **RADAR** (idem; omite seção vazia — RADAR mergeia PESQUISAS + OUTRAS NOTÍCIAS, #1569)
 - **ERRO INTENCIONAL** placeholder (`render-erro-intencional.ts` re-insere ao final pós-Clarice — auto-converge)
 - **🎁 SORTEIO** + **🙋🏼‍♀️ PARA ENCERRAR** (texto fixo)
 
@@ -345,6 +345,8 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   Substitui o placeholder do writer pelo reveal do erro anterior (`Na última edição, …`) + preserva ou insere placeholder pra `Nessa edição, …` (autor preenche manualmente). Também garante que `_internal/intentional-error.json` existe (escreve placeholder `{PREENCHER}` se ausente — #3222, campos estruturados description/location/category/correct_value/reveal, sibling de `02-reviewed.md`, **nunca** sincroniza com o Drive). **Falha = abortar Stage 2** (não silenciar). Justificativa: sem o script, edição vai com `{placeholder, script render-erro-intencional.ts substitui pós-Clarice}` literal no MD; quando colado manualmente no Beehiiv (#1083), aparece como texto bruto no email — contamina UX e mata o concurso "Ache o erro".
 
   **Coletar os campos do editor (#3222).** Diferente de antes (editor editava o frontmatter YAML direto no Google Doc via Drive), o JSON não passa pelo Drive — pergunte ao editor no gate (ou antes dele, se a sessão já tiver essa info) a descrição do erro proposital desta edição (o que está errado / onde / categoria / valor correto / frase de reveal em 1ª pessoa pra próxima edição) e grave direto em `{EDITION_DIR}/_internal/intentional-error.json`, substituindo os placeholders `{PREENCHER}`. Isso é o único lugar onde o editor "edita" esse dado agora — nunca via Drive.
+
+  **Filtro de segurança ao PROPOR candidatos (#3808).** Se você (o orquestrador) sugerir candidatos de erro em vez de só perguntar em aberto, aplicar por padrão as 3 diretrizes de `context/editorial-rules.md` §10 antes de apresentar ao editor: (1) nunca alterar um fato central de um DESTAQUE (funding, specs, dado de negócio — o que o leitor levaria como "notícia real"); (2) preferir erro cômico/leve (trocadilho, erro ortográfico bobo, nome trocado de forma óbvia como "Craude" em vez de "Claude") em vez de inflação de magnitude sobre um fato real; (3) preferir plantar em menção lateral/secundária do texto, não na frase que carrega a informação principal do destaque. Caso real (edição 260721): o editor rejeitou 2 rodadas de propostas (erros numéricos sutis nos destaques, depois inflações de ordem de grandeza) antes de aceitar "Craude" — puramente ortográfico, plantado numa menção lateral.
 
 - **Validator final Stage 2 (#1072, #1073):** antes do gate humano, rodar invariant check que detecta passos pulados silenciosamente:
   ```bash

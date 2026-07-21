@@ -60,7 +60,6 @@ const el = {
   notFound: document.getElementById("rv-not-found"),
   tabs: document.getElementById("rv-tabs"),
   fileStatus: document.getElementById("rv-file-status"),
-  pullStatus: document.getElementById("rv-pull-status"),
   htmlFinalNote: document.getElementById("rv-html-final-note"),
   divergenceBanner: document.getElementById("rv-divergence-banner"),
   editor: document.getElementById("rv-editor"),
@@ -195,7 +194,6 @@ async function loadFile(slug, { force } = {}) {
   el.editor.value = "";
   el.editor.disabled = true;
   el.fileStatus.textContent = "Carregando…";
-  el.pullStatus.textContent = "";
   dirty = false;
   // #3729: reseta o baseline temporal ANTES do fetch — se o load falhar (ou o
   // arquivo não existir ainda), não deve sobrar um `loadedModifiedAt` de um
@@ -218,13 +216,6 @@ async function loadFile(slug, { force } = {}) {
   el.editor.value = body.content;
   el.fileStatus.textContent = `Modificado ${fmtTime(body.modifiedAt)}`;
   loadedModifiedAt = body.modifiedAt ?? null;
-  if (body.pull && body.pull.attempted) {
-    el.pullStatus.textContent = body.pull.ok
-      ? "Pull do Drive (#494) ok antes de abrir."
-      : `Pull do Drive não concluiu (fail-soft, ignorado): ${body.pull.error || "motivo desconhecido"}`;
-  } else {
-    el.pullStatus.textContent = "";
-  }
   refreshPreviewIfOpen();
 }
 

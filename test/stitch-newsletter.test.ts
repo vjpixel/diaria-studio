@@ -156,8 +156,9 @@ describe("stitchNewsletter (#1463)", () => {
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
       });
-      // Ordem canonical (#2546, VÍDEO/RADAR trocados em #3100): coverage > D1 > D2 > D3 >
-      // É IA? > USE MELHOR > LANÇAMENTOS > VÍDEO > RADAR > ERRO > SORTEIO > PARA ENCERRAR
+      // Ordem canonical (#2546, VÍDEO/RADAR trocados em #3100, VÍDEO subiu pra
+      // antes de LANÇAMENTOS em #3820): coverage > D1 > D2 > D3 >
+      // É IA? > USE MELHOR > VÍDEO > LANÇAMENTOS > RADAR > ERRO > SORTEIO > PARA ENCERRAR
       // RADAR mergea radar + radar em uma só seção (papers + notícias).
       assert.match(result, /enviei 5 e a Diar\.ia 100/);
       const d2Pos = result.indexOf("DESTAQUE 2");
@@ -715,6 +716,46 @@ describe("#3100 — VÍDEO antes de RADAR (ordem canônica permanente, gate 2607
       });
       assert.match(result, /📺 VÍDEO/);
       assert.doesNotMatch(result, /📡 RADAR/);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("#3820 — VÍDEOS antes de LANÇAMENTOS (ordem canônica permanente, decisão editorial 260722)", () => {
+  function setupEdition() {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-video-lancamentos-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+    writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+    writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+    return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("com LANÇAMENTOS e VÍDEO presentes, VÍDEO aparece antes de LANÇAMENTOS no MD final", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({
+          coverage: { line: "Coverage." },
+          lancamento: [{ title: "L1", url: "https://l.com/1", summary: "ldesc" }],
+          video: [{ title: "V1", url: "https://v.com/1", summary: "vdesc" }],
+        }),
+      );
+      const result = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+      });
+      const videoPos = result.indexOf("📺 VÍDEO");
+      const lancPos = result.indexOf("🚀 LANÇAMENTO");
+      assert.ok(videoPos > 0, "seção VÍDEO deve aparecer");
+      assert.ok(lancPos > 0, "seção LANÇAMENTOS deve aparecer");
+      assert.ok(videoPos < lancPos, `VÍDEO deve vir antes de LANÇAMENTOS (video=${videoPos} lanc=${lancPos})`);
     } finally {
       cleanup();
     }

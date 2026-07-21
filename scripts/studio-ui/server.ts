@@ -246,7 +246,6 @@ import {
   runReviewLints,
   buildReviewPreviewHtml,
   buildSocialPreviewHtml,
-  pullReviewFileBestEffort,
   resolveReviewImagePath,
 } from "./studio-review.ts";
 import { runSwapDestaque, type SwapDestaqueRequest } from "./studio-review-actions.ts";
@@ -875,12 +874,12 @@ function handleReviewGet(rootDir: string, aammdd: string, slug: string, res: Ser
     sendJson(res, 400, { error: "arquivo de revisão desconhecido", slug });
     return;
   }
-  // #494: pull best-effort do Drive antes de abrir — fail-soft (offline, sem
-  // credenciais, sem cache viram `pull.ok === false`, nunca bloqueiam a
-  // leitura do arquivo local).
-  const pull = pullReviewFileBestEffort(rootDir, aammdd, slug);
+  // #3723: pull best-effort do Drive (#494) removido — #3636 aposentou o
+  // Drive sync do fluxo diário, então a pasta da edição nunca mais existe lá
+  // e a chamada só desperdiçava latência a cada GET (spawnSync + falha
+  // silenciosa garantida).
   const state = readReviewFile(rootDir, aammdd, slug);
-  sendJson(res, state.ok ? 200 : 400, { ...state, pull });
+  sendJson(res, state.ok ? 200 : 400, state);
 }
 
 function handleReviewDiff(rootDir: string, aammdd: string, slug: string, res: ServerResponse): void {

@@ -64,7 +64,6 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.equal(body.exists, true);
     assert.equal(body.content, TWO_DESTAQUES_MD);
     assert.equal(body.baseline, TWO_DESTAQUES_MD);
-    assert.ok(body.pull); // #494 — best-effort, presente mesmo que falhe
   });
 
   it("GET com slug desconhecido retorna 400", async () => {
@@ -308,8 +307,6 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.equal(body.exists, false);
-    // #959/#1022: _internal/* nunca sincroniza com Drive — pull nem tenta.
-    assert.equal(body.pull.attempted, false);
   });
 
   it("PUT .../review/html-final grava _internal/newsletter-final.html (cria a pasta se preciso) e reflete no GET/diff", async () => {
