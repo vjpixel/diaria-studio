@@ -1741,6 +1741,41 @@ describe("checkCoverageLine standalone (--check coverage-line-format, #1207)", (
     const r = checkCoverageLine(md);
     assert.equal(r.ok, true);
   });
+
+  it("#3810: bloco TÍTULO/SUBTÍTULO sem `---` de fechamento não deve mascarar a linha de cobertura real", () => {
+    // Regressão 260721: quando insert-titulo-subtitulo.ts (ou edição manual)
+    // deixa o bloco TÍTULO/SUBTÍTULO SEM o `---` terminador, o único `---` do
+    // documento inteiro fica muito mais abaixo (ex: separador antes de
+    // "DESTAQUE 1"), bem além da janela curta esperada logo após o bloco. O
+    // código antigo pegava esse `---` distante como fim do bloco e descartava
+    // tudo antes dele — inclusive a linha de cobertura real — fazendo
+    // checkCoverageLine falhar silenciosamente mesmo com a linha presente e
+    // válida. Padding abaixo empurra o `---` real para além da janela de 20
+    // linhas usada pela detecção do bloco TÍTULO/SUBTÍTULO.
+    const padding = Array.from({ length: 25 }, (_, i) => `Parágrafo de enchimento ${i}.`).join("\n\n");
+    const md = [
+      "TÍTULO",
+      "",
+      "TSE cita IA como risco às eleições 2026",
+      "",
+      "SUBTÍTULO",
+      "",
+      "Austrália obriga datacenters a bancar renováveis | Como a NVIDIA usa Codex em produção",
+      "",
+      // --- ausente aqui (bug) ---
+      "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+      "",
+      "Nesta edição, a IA analisou 265 artigos (10 enviados por mim e 255 encontrados automaticamente) e selecionei os 11 mais relevantes.",
+      "",
+      padding,
+      "",
+      "---",
+      "",
+      "**DESTAQUE 1 | 💼 MERCADO**",
+    ].join("\n");
+    const r = checkCoverageLine(md);
+    assert.equal(r.ok, true, `firstLine extracted: "${r.firstLine}"`);
+  });
 });
 
 describe("lintMultilineLinks (#1213)", () => {

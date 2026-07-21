@@ -1157,7 +1157,27 @@ export function mdInlineToHtml(s: string): string {
  */
 export function renderErroIntencionalReveal(text: string): string {
   const reveal = pickErroIntencionalReveal(text);
-  if (!reveal) return "";
+  if (!reveal) {
+    // #3809: pickErroIntencionalReveal só reconhece 2 caminhos (prefixo
+    // literal "Na última edição" ou fallback por palavra-gancho temporal).
+    // Quando NENHUM dos dois bate mas o bloco ERRO INTENCIONAL tem conteúdo
+    // real (não vazio, não placeholder `{PREENCHER...}`), o reveal é
+    // conteúdo obrigatório (mecânica de sorteio, #1073) que está sendo
+    // descartado silenciosamente — diferente do caminho de fallback (que já
+    // avisa via console.error), este caminho de falha TOTAL não avisava
+    // ninguém, e uma edição podia ser publicada sem o reveal do erro
+    // anterior sem que ninguém percebesse até um leitor reclamar.
+    const isEmptyOrPlaceholder = !text.trim() || /\{PREENCHER/i.test(text);
+    if (!isEmptyOrPlaceholder) {
+      console.error(
+        `[render-newsletter-html] #3809: bloco ERRO INTENCIONAL tem conteúdo mas ` +
+          `nenhum parágrafo foi reconhecido como reveal (nem prefixo "Na última ` +
+          `edição", nem palavra-gancho temporal) — box de reveal NÃO será renderizado. ` +
+          `Texto: "${text.trim().slice(0, 80)}…"`,
+      );
+    }
+    return "";
+  }
   // DS: box "contorno" (papel + borda bege) logo abaixo dos parágrafos do
   // Sorteio — diferencia o reveal (informativo) dos painéis preenchidos.
   // Top padding pequeno (14px) pra encostar na seção acima, sem kicker próprio.

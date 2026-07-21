@@ -64,6 +64,22 @@ function stripFrontmatter(md: string): string {
 }
 
 /**
+ * Retorna o índice de char logo após a n-ésima quebra de linha (`\n`) do
+ * texto, ou `text.length` se o texto tiver menos linhas que `n`. Usado pra
+ * delimitar uma janela-prefixo de `text` sem alterar quebras de linha
+ * (CRLF/LF) — os índices resultantes continuam válidos no texto original.
+ */
+function nthLineEndIndex(text: string, n: number): number {
+  let idx = -1;
+  for (let i = 0; i < n; i++) {
+    const next = text.indexOf("\n", idx + 1);
+    if (next === -1) return text.length;
+    idx = next;
+  }
+  return idx + 1;
+}
+
+/**
  * Skip `TÍTULO` / `SUBTÍTULO` header block (#916) — inserido por
  * `insert-titulo-subtitulo.ts` no topo do `02-reviewed.md` pra alimentar
  * subject + preview text do Beehiiv. O bloco termina em `---`. Coverage
@@ -71,13 +87,40 @@ function stripFrontmatter(md: string): string {
  *
  * Sem este skip, `checkCoverageLine` em 02-reviewed.md falsamente reporta
  * "TÍTULO" como primeira linha e marca formato inválido (#1207).
+ *
+ * #3810: o `---` de fechamento é procurado numa JANELA CURTA de linhas
+ * após o início do bloco — não no documento inteiro. O formato documentado
+ * por `insert-titulo-subtitulo.ts` (TÍTULO/blank/título/blank/SUBTÍTULO/
+ * blank/subtítulo/blank/---) cabe em ~9 linhas; damos folga generosa (20)
+ * pra títulos incomuns sem abrir mão da proteção. Antes, quando o `---`
+ * emitido pelo script estava ausente (causa raiz não investigada — talvez
+ * edição manual), o código caía no primeiro `---` de TODO o documento (ex:
+ * o separador antes de "DESTAQUE 1"), descartando como "bloco
+ * TÍTULO/SUBTÍTULO" um trecho enorme que incluía a linha de cobertura real
+ * — `checkCoverageLine` então reportava ausência silenciosamente. Se nenhum
+ * `---` aparece na janela, tratamos como bloco malformado e NÃO removemos
+ * nada — fail-open: o body original segue pra frente e a linha de
+ * cobertura, se existir mais abaixo, ainda é encontrada pela busca global
+ * de `checkCoverageLine`.
  */
 function stripTituloSubtituloBlock(md: string): string {
   const firstLine = md.split(/\r?\n/).find((l) => l.trim().length > 0);
   if (!firstLine || !/^T[ÍI]TULO$/i.test(firstLine.trim())) return md;
-  // Procurar primeiro `---` em linha própria — fim do bloco TÍTULO/SUBTÍTULO.
-  const dashMatch = md.match(/^---\s*$/m);
+
+  const WINDOW_LINES = 20;
+  const windowEnd = nthLineEndIndex(md, WINDOW_LINES);
+  const windowText = md.slice(0, windowEnd);
+  const dashMatch = windowText.match(/^---\s*$/m);
   if (!dashMatch || dashMatch.index === undefined) return md;
+
+  // Defesa extra: se algum conteúdo suspeito (a própria linha de cobertura)
+  // aparece antes do `---` encontrado, esse `---` provavelmente não é o
+  // terminador do bloco TÍTULO/SUBTÍTULO — não arrisca descartar conteúdo real.
+  const beforeDash = md.slice(0, dashMatch.index);
+  if (beforeDash.split("\n").some((l) => COVERAGE_LINE_RE.test(l.trim()))) {
+    return md;
+  }
+
   const afterDash = md.slice(dashMatch.index + dashMatch[0].length);
   // Pular newline depois do ---
   return afterDash.replace(/^\r?\n+/, "");
