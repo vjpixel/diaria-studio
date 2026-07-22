@@ -66,6 +66,16 @@ export interface StudioState {
 }
 
 const AAMMDD_RE = /^\d{6}$/;
+/**
+ * #3841 (mitigação mínima, stopgap): variante de `AAMMDD_RE` que também aceita
+ * o sufixo de letra minúscula usado manualmente pra 2ª+ rodada do mesmo dia
+ * (`260721b`, `260721c`, ...). Escopo só de `findLatestPlanPath` — o resto do
+ * arquivo usa `AAMMDD_RE` puro pra edições (`data/editions/`), que não têm
+ * essa convenção de sufixo. Identidade real de rodada (ISO `started_at` +
+ * diretório único) é o item 1 do fix completo, fora de escopo aqui — ver
+ * issue.
+ */
+const AAMMDD_SESSION_RE = /^\d{6}[a-z]?$/;
 
 /**
  * #3802: uma edição com `_internal/05-published.json` mostrando
@@ -195,6 +205,28 @@ export function pickCurrentEdition(editions: StudioEditionSummary[]): string | n
  * — diretórios nomeados por data-rótulo da sessão (não necessariamente a data
  * de edição — ver CLAUDE.md `/diaria-develop`). Retorna null se não houver
  * nenhum.
+ *
+ * #3841 (mitigação mínima, stopgap — identidade real de rodada fica pro
+ * `/diaria-develop`, ver issue): antes desta correção, o filtro exigia
+ * `AAMMDD_RE` (6 dígitos exatos) e a escolha era por `.sort().reverse()`
+ * lexicográfico do NOME do diretório. Dois defeitos empilhados:
+ *   1. `260721b` (sufixo manual pra 2ª+ rodada do mesmo dia) nunca competia —
+ *      o regex excluía o diretório inteiro, então uma sessão mais recente com
+ *      sufixo ficava invisível e a mais antiga (sem sufixo) sempre "vencia".
+ *   2. Mesmo cobrindo o sufixo, ordenar por NOME do diretório não reflete
+ *      necessariamente qual rodada começou por último — `260721` pode ter
+ *      mtime mais recente que `260721b` (ou até que `260722`) dependendo de
+ *      quando cada uma de fato rodou.
+ * Fix: aceitar sufixo de letra minúscula (`AAMMDD_SESSION_RE`) E escolher
+ * pelo mtime do `plan.json` de cada candidato (mais recente vence), não pelo
+ * nome do diretório. mtime é lido no momento da chamada — se outra sessão
+ * está escrevendo o arquivo agora mesmo, isso só faz o mtime dela ficar ainda
+ * mais recente, o que é o comportamento desejado (sessão ativa = "mais
+ * recente" de fato). Em empate de mtime (granularidade do filesystem pode
+ * colapsar 2 escritas muito próximas no mesmo tick — visto em teste local),
+ * desempata pelo NOME do diretório (desc.) como critério secundário — mesma
+ * heurística "mais recente vence" de antes, só usada como fallback, não como
+ * critério primário.
  */
 export function findLatestPlanPath(rootDir: string, kind: "overnight" | "develop"): string | null {
   const base = resolve(rootDir, "data", kind);
@@ -206,21 +238,31 @@ export function findLatestPlanPath(rootDir: string, kind: "overnight" | "develop
     return null;
   }
   const sessionDirs = entries
-    .filter((e) => AAMMDD_RE.test(e))
+    .filter((e) => AAMMDD_SESSION_RE.test(e))
     .filter((e) => {
       try {
         return statSync(resolve(base, e)).isDirectory();
       } catch {
         return false;
       }
-    })
-    .sort()
-    .reverse();
+    });
+
+  const candidates: Array<{ dir: string; planPath: string; mtimeMs: number }> = [];
   for (const dir of sessionDirs) {
     const planPath = resolve(base, dir, "plan.json");
-    if (existsSync(planPath)) return planPath;
+    try {
+      candidates.push({ dir, planPath, mtimeMs: statSync(planPath).mtimeMs });
+    } catch {
+      // sem plan.json escrito ainda (ou não-legível) — não é candidato
+    }
   }
-  return null;
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => {
+    if (b.mtimeMs !== a.mtimeMs) return b.mtimeMs - a.mtimeMs;
+    return a.dir < b.dir ? 1 : a.dir > b.dir ? -1 : 0;
+  });
+  return candidates[0].planPath;
 }
 
 /** Resume um `plan.json` (formato overnight/develop) em contagens por status.
