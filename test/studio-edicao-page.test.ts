@@ -69,6 +69,25 @@ describe("GET /edicao/:aammdd (#3558)", () => {
     assert.match(res.headers.get("content-type") ?? "", /text\/css/);
   });
 
+  // #3871: idade do último evento pra um stage "current" — módulo puro
+  // servido separado (mesmo padrão de revisao-guards.js), mais o contrato
+  // estático de que edicao.js de fato importa e usa a função (cobertura
+  // direta da lógica em test/edicao-stage-age.test.ts).
+  it("GET /edicao-stage-age.js serve o módulo com computeStageAge exportado", async () => {
+    const res = await fetch(new URL("/edicao-stage-age.js", server.url));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /javascript/);
+    const body = await res.text();
+    assert.match(body, /export function computeStageAge/);
+  });
+
+  it("GET /edicao.js importa edicao-stage-age.js e usa computeStageAge no render da timeline (#3871)", async () => {
+    const res = await fetch(new URL("/edicao.js", server.url));
+    const body = await res.text();
+    assert.match(body, /from ["']\.\/edicao-stage-age\.js["']/);
+    assert.match(body, /computeStageAge\(stage, logBuffer\)/);
+  });
+
   it("POST /edicao/260716 continua rejeitado com 405 (guard read-only vale pra toda rota, #3555)", async () => {
     const res = await fetch(new URL("/edicao/260716", server.url), { method: "POST" });
     assert.equal(res.status, 405);
