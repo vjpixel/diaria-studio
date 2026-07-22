@@ -9,6 +9,8 @@
 // /api/state, /api/editions/:aammdd e o SSE /api/events já existentes
 // (fatia 1, #3555) e desenha.
 
+import { computeStageAge } from "./edicao-stage-age.js";
+
 const STAGE_ORDER = [0, 1, 2, 3, 4, 5, 6];
 const STAGE_LABELS = {
   0: "Setup + dedup",
@@ -154,10 +156,22 @@ function renderTimeline(detail) {
     const durationText = row && row.duration_ms !== undefined ? fmtDuration(row.duration_ms) : "—";
     const timesText = row && row.start ? `${fmtTime(row.start)}${row.end ? " → " + fmtTime(row.end) : ""}` : "—";
 
+    // #3871: pra um stage "current", "status-running" sozinho não diz se
+    // está de fato avançando ou travado — um current há 2min e um current
+    // há 2h renderizavam idêntico. Calcula a idade do último evento de
+    // run-log deste stage (já em `logBuffer`, filtrado por edição) e mostra
+    // como texto auxiliar ao lado do badge; `stale` (sem eventos OU acima do
+    // limiar) promove o texto pro mesmo tratamento visual do banner ⚠ do
+    // espelho remoto (`renderStudioSnapshotHtml`, #3565).
+    const stageAge = isCurrent ? computeStageAge(stage, logBuffer) : null;
+    const stageAgeHtml = stageAge
+      ? ` <span class="stage-age${stageAge.stale ? " stage-age-stale" : ""}">${stageAge.stale ? "⚠ " : ""}${stageAge.label}</span>`
+      : "";
+
     header.innerHTML = `
       <span class="stage-num">${stage}</span>
       <span class="stage-label">${STAGE_LABELS[stage]}</span>
-      <span class="stage-status-badge">${status}${isGate ? " · gate pendente" : ""}</span>
+      <span class="stage-status-badge">${status}${isGate ? " · gate pendente" : ""}${stageAgeHtml}</span>
       <span class="stage-times">${timesText}</span>
       <span class="stage-duration">${durationText}</span>
       <span class="stage-caret">${expandedStage === stage ? "▲" : "▼"}</span>
@@ -368,5 +382,14 @@ function connect() {
     scheduleRefetch();
   });
 }
+
+// #3871: sem isto, um stage "current" genuinamente TRAVADO (sem log novo
+// chegando) nunca dispara re-render — o texto de idade ficaria congelado no
+// valor de quando a página carregou, exatamente o cenário que este recurso
+// deveria denunciar. Tick puramente local (renderTimeline só redesenha a
+// partir do que já está em `currentDetail`/`logBuffer`, sem fetch novo).
+setInterval(() => {
+  if (currentDetail) renderTimeline(currentDetail);
+}, 30_000);
 
 init();

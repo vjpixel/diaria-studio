@@ -68,6 +68,21 @@
   text-transform: uppercase;
   opacity: 0.8;
 }
+/* #3871: idade do último evento de log pra um stage "current" — texto
+   auxiliar discreto por padrão; quando `stale` (sem eventos OU acima do
+   limiar, ver STAGE_AGE_STALE_MINUTES em edicao-stage-age.js) escala pro
+   mesmo tratamento visual de alerta usado no espelho remoto (banner ⚠ de
+   renderStudioSnapshotHtml, #3565). */
+.stage-age {
+  text-transform: none;
+  opacity: 0.75;
+  font-weight: 400;
+}
+.stage-age-stale {
+  color: #c07800;
+  opacity: 1;
+  font-weight: 600;
+}
 .stage-times, .stage-duration {
   font-family: var(--font-mono);
   font-size: 0.8rem;
