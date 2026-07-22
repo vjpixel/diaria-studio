@@ -165,15 +165,19 @@ export async function startPreviewServer(
  * Best-effort: abre `url` no browser default do SO — mesmo padrão de
  * `scripts/oauth-setup.ts` (`openBrowser`). Usado só em modo `local`
  * (caller decide via `detectExecMode`); nunca chamado em `cloud`.
+ *
+ * `execImpl` é um seam injetável (#3902) — default é o `exec` real do
+ * `node:child_process`, nenhum call site de produção muda. Testes passam um
+ * stub pra nunca abrir um browser de verdade durante a suíte.
  */
-export function openInBrowser(url: string): void {
+export function openInBrowser(url: string, execImpl: typeof exec = exec): void {
   const cmd =
     process.platform === "win32"
       ? `start "" "${url}"`
       : process.platform === "darwin"
         ? `open "${url}"`
         : `xdg-open "${url}"`;
-  exec(cmd);
+  execImpl(cmd);
 }
 
 /**
