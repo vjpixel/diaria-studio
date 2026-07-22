@@ -868,61 +868,75 @@ async function sendMessage(text) {
   pendingReset = false;
 
   let sawDelta = false;
-  await streamChat(
-    { message: text, sessionId: sessionId ?? undefined, reset, context: panelContext ?? undefined },
-    {
-      onEvent(eventName, data) {
-        if (eventName === "chat-init") {
-          if (data.sessionId) persistSessionId(data.sessionId);
-        } else if (eventName === "chat-delta") {
-          sawDelta = true;
-          currentAssistantBody().textContent += data.text;
-          scrollToBottom();
-        } else if (eventName === "chat-tool") {
-          if (data.status === "start") onToolStart(data);
-          else if (data.status === "end") onToolEnd(data);
-          else if (data.status === "denied") onToolDenied(data);
-        } else if (eventName === "chat-permission-request") {
-          onPermissionRequest(data);
-        } else if (eventName === "chat-tool-permission-request") {
-          onToolPermissionRequest(data);
-        } else if (eventName === "chat-done") {
-          if (data.sessionId) persistSessionId(data.sessionId);
-          finalizeAssistantMessage();
-          if (!sawDelta && data.result) {
-            // Sessão sem partial-message streaming habilitado no CLI
-            // conectado (versões antigas) — ainda mostra a resposta final.
-            currentAssistantBody().textContent = data.result;
+  try {
+    await streamChat(
+      { message: text, sessionId: sessionId ?? undefined, reset, context: panelContext ?? undefined },
+      {
+        onEvent(eventName, data) {
+          if (eventName === "chat-init") {
+            if (data.sessionId) persistSessionId(data.sessionId);
+          } else if (eventName === "chat-delta") {
+            sawDelta = true;
+            currentAssistantBody().textContent += data.text;
+            scrollToBottom();
+          } else if (eventName === "chat-tool") {
+            if (data.status === "start") onToolStart(data);
+            else if (data.status === "end") onToolEnd(data);
+            else if (data.status === "denied") onToolDenied(data);
+          } else if (eventName === "chat-permission-request") {
+            onPermissionRequest(data);
+          } else if (eventName === "chat-tool-permission-request") {
+            onToolPermissionRequest(data);
+          } else if (eventName === "chat-done") {
+            if (data.sessionId) persistSessionId(data.sessionId);
             finalizeAssistantMessage();
+            if (!sawDelta && data.result) {
+              // Sessão sem partial-message streaming habilitado no CLI
+              // conectado (versões antigas) — ainda mostra a resposta final.
+              currentAssistantBody().textContent = data.result;
+              finalizeAssistantMessage();
+            }
+            if (data.isError) {
+              appendErrorNote("a sessão terminou com erro — ver detalhes no terminal/run-log.");
+              setToggleStatus("down");
+            } else {
+              setToggleStatus("ok");
+            }
+          } else if (eventName === "chat-error") {
+            // runChatTurn (studio-chat.ts) é fail-soft por design: qualquer
+            // exceção vira este evento em vez de propagar/derrubar a conexão.
+            // Sem este handler, o evento chegava e era silenciosamente
+            // ignorado (nenhum case do switch batia) — a tela ficava muda
+            // ("não responde") até o stream fechar sozinho, sem explicação.
+            // Reusa onError (mesmo objeto handlers) em vez de duplicar as 3
+            // chamadas — this é o próprio objeto handlers aqui, já que este
+            // método é invocado como handlers.onEvent(...).
+            this.onError(data.message || "a sessão terminou com erro — ver detalhes no terminal/run-log.");
           }
-          if (data.isError) {
-            appendErrorNote("a sessão terminou com erro — ver detalhes no terminal/run-log.");
-            setToggleStatus("down");
-          } else {
-            setToggleStatus("ok");
-          }
-        } else if (eventName === "chat-error") {
-          // runChatTurn (studio-chat.ts) é fail-soft por design: qualquer
-          // exceção vira este evento em vez de propagar/derrubar a conexão.
-          // Sem este handler, o evento chegava e era silenciosamente
-          // ignorado (nenhum case do switch batia) — a tela ficava muda
-          // ("não responde") até o stream fechar sozinho, sem explicação.
-          // Reusa onError (mesmo objeto handlers) em vez de duplicar as 3
-          // chamadas — this é o próprio objeto handlers aqui, já que este
-          // método é invocado como handlers.onEvent(...).
-          this.onError(data.message || "a sessão terminou com erro — ver detalhes no terminal/run-log.");
-        }
+        },
+        onError(message) {
+          finalizeAssistantMessage();
+          appendErrorNote(message);
+          setToggleStatus("down");
+        },
       },
-      onError(message) {
-        finalizeAssistantMessage();
-        appendErrorNote(message);
-        setToggleStatus("down");
-      },
-    },
-  );
-
-  sending = false;
-  el.send.disabled = false;
+    );
+  } catch {
+    // #3887: rede caiu a meio-turno (o `fetch` de `streamChat` rejeita, ou o
+    // loop `reader.read()` dentro dela rejeita) — antes deste catch, a
+    // promise de `streamChat` rejeitava SEM handler e nem o resto desta
+    // função nem o `finally` abaixo rodavam: `sending`/`el.send.disabled`
+    // nunca eram restaurados e o botão Enviar ficava morto até reload, sem
+    // nenhuma mensagem de erro pro editor (achado #3887).
+    // `finalizeAssistantMessage()` fecha qualquer bolha ".current" ainda
+    // aberta (o turno pode ter caído no meio de um delta).
+    finalizeAssistantMessage();
+    appendErrorNote("conexão perdida — tente reenviar");
+    setToggleStatus("down");
+  } finally {
+    sending = false;
+    el.send.disabled = false;
+  }
 }
 
 // #3556 self-review: só limpar o textarea quando a mensagem VAI ser
