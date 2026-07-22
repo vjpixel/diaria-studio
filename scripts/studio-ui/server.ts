@@ -337,6 +337,7 @@ import {
   parseUpdateContactBody,
   type ApoiosMutationResult,
 } from "./studio-apoios.ts";
+import type { DrainApoiaSeResult } from "../lib/apoia-se-gmail-drain.ts";
 // #3564: notificação Telegram (gate 4/6 pendente + AskUserQuestion pendente
 // no chat) com dedup — arquivo próprio desta fatia, import isolado (nenhuma
 // outra rota depende dele). Ver studio-telegram-notify.ts.
@@ -442,6 +443,16 @@ export interface StudioServerOptions {
    * responde 501 em vez de aceitar disparos. `main()` liga a partir de
    * `STUDIO_WAVE_FIRE_ENABLED=1` no uso real. */
   waveFireEnabled?: boolean;
+  /** Drain de Gmail injetável pra `POST /api/apoios/refresh` (#3859 metade 1)
+   * — sem isso, `handleApiApoiosRefresh` chama `refreshApoiosData` sem
+   * `opts.gmailDrain`, caindo no default real (`drainApoiaSeNotifications`),
+   * que lê `data/.credentials.json` por um path fixo (`google-auth.ts`,
+   * resolvido a partir do próprio módulo, não de `rootDir`) — um teste com
+   * `rootDir` isolado (tmpdir) ainda assim bate no Gmail REAL se a máquina
+   * tiver credenciais válidas (achado em produção: `test/studio-apoios-page.test.ts`
+   * esperava 1 contato e recebeu 17, vindos de notificações reais da conta).
+   * Testes HTTP-level devem injetar um no-op aqui; produção usa o default. */
+  apoiosGmailDrain?: () => Promise<DrainApoiaSeResult>;
   /** Teto de concorrência de `POST /api/waves/fire` — default 6, mesmo teto
    * de `GET /api/waves` (`studio-waves.ts`). */
   waveFireMaxConcurrency?: number;
@@ -1250,8 +1261,12 @@ function handleApiApoiosGet(rootDir: string, res: ServerResponse): void {
  * `refreshApoiosData` em `studio-apoios.ts`. Sempre 200: fail-soft no mesmo
  * padrão de `handleApiApoiosGet` (falha de qualquer uma das duas etapas vira
  * `error` no payload, nunca derruba a outra nem a rota). */
-function handleApiApoiosRefresh(rootDir: string, res: ServerResponse): void {
-  refreshApoiosData(rootDir)
+function handleApiApoiosRefresh(
+  rootDir: string,
+  res: ServerResponse,
+  gmailDrain?: () => Promise<DrainApoiaSeResult>,
+): void {
+  refreshApoiosData(rootDir, { gmailDrain })
     .then((data) => sendJson(res, 200, data))
     .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
 }
@@ -1343,6 +1358,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const waveFireEnabled = opts.waveFireEnabled ?? false;
   const waveFireMaxConcurrency = opts.waveFireMaxConcurrency ?? 6;
   const waveFireCheckTerminalStateFn = opts.waveFireCheckTerminalStateFn;
+  const apoiosGmailDrain = opts.apoiosGmailDrain;
   const integrationsFetchImpl = opts.integrationsFetchImpl;
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -1478,7 +1494,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // corrente na apoia.se (metade 2). Mesmo tratamento das rotas de
       // escrita acima (checada antes do guard genérico de método).
       if (urlPath === "/api/apoios/refresh" && req.method === "POST") {
-        handleApiApoiosRefresh(rootDir, res);
+        handleApiApoiosRefresh(rootDir, res, apoiosGmailDrain);
         return;
       }
       // #3861: botão "Atualizar É IA?" — mesmo tratamento das rotas de
