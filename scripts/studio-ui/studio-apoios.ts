@@ -48,8 +48,9 @@
  *
  * **Escopo atual** (ver PR body pro incremento anotado): CRUD básico de
  * contato (criar/editar/adicionar email/notas) + status cruzado + visão de
- * campanha. Fora de escopo: busca/filtro server-side (a UI filtra
- * client-side sobre o snapshot, mesmo padrão de `triagem.js`).
+ * campanha + visão por grupo/nível de recompensa. Fora de escopo:
+ * busca/filtro server-side (a UI filtra client-side sobre o snapshot, mesmo
+ * padrão de `triagem.js`).
  *
  * **Taxa de abertura Beehiiv (#3612):** sinal adicional de engajamento,
  * INDEPENDENTE do status de apoio acima — vem de um cache separado
