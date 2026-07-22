@@ -265,9 +265,29 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
  * diferente entre os dois lados.
  *
  * Sem bloco mirror em `02-reviewed.md` (edição legada, ou stitch ainda não
- * rodou) → `[]`, nada a comparar. Severity "error" (gate-blocking) — a
- * divergência silenciosa é exatamente o tipo de falha que #1007 Fase 1 existe
- * pra impedir: o email sai errado sem que ninguém veja o aviso antes.
+ * rodou) → `[]`, nada a comparar.
+ *
+ * **Severity "warning", não "error" (decisão conservadora, self-review
+ * #3825).** A issue original pedia GATE-BLOCKING "ou pelo menos warn-loud —
+ * nunca silencioso", deixando a escolha em aberto. `warning` ainda aparece
+ * no `{violations_block}` do gate humano do Stage 4 (nunca silencioso —
+ * `orchestrator-stage-4.md` linha 471 lista ⚠️ junto com ❌), mas não falha
+ * o exit code. Motivo: o mirror em `02-reviewed.md` é inserido verbatim de
+ * `01-eia.md` no stitch (Stage 2, `stitch-newsletter.ts::readEiaBlock`), mas
+ * DEPOIS passa pelo humanizador + Clarice — ambos operam sobre o
+ * `02-normalized.md`/`02-humanized.md` INTEIRO, sem exclusão de seção (ver
+ * `orchestrator-stage-2.md` §2b/§2c) — enquanto `01-eia.md` nunca é
+ * re-processado por nenhum dos dois. Já existe precedente no repo pra esse
+ * risco: `verify-clarice-url-stability` (#873) trata "Clarice alterou texto"
+ * como WARNING, não ERROR, porque é comportamento esperado do pipeline, não
+ * necessariamente erro editorial. Uma correção de pontuação/grafia do
+ * humanizador ou da Clarice na legenda (texto curto, não narrativo — mais
+ * provável de sofrer edição mínima que os destaques em si) bastaria pra
+ * disparar `error` TODA edição, mesmo sem nenhuma ação do editor — "crying
+ * wolf" que treina o editor a ignorar o gate. `error` fica como follow-up se
+ * a observação em produção mostrar que o mirror sai idêntico ao 01-eia.md
+ * na prática (sem essa erosão), ou com um comparador tolerante a reescrita
+ * leve.
  */
 function checkEiaCreditSynced(editionDir: string): InvariantViolation[] {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
@@ -299,7 +319,7 @@ function checkEiaCreditSynced(editionDir: string): InvariantViolation[] {
         `Fix: editar 01-eia.md com a legenda correta — editar só 02-reviewed.md não tem ` +
         `efeito no email enviado (incidente 260722, #3825).`,
       source_issue: "#3825",
-      severity: "error",
+      severity: "warning",
       file: eiaPath,
     });
   }
@@ -314,7 +334,7 @@ function checkEiaCreditSynced(editionDir: string): InvariantViolation[] {
         `01-eia.md: "${real.prevResultLine ?? "(ausente)"}". ` +
         `Fix: editar 01-eia.md — editar só 02-reviewed.md não tem efeito no email enviado (#3825).`,
       source_issue: "#3825",
-      severity: "error",
+      severity: "warning",
       file: eiaPath,
     });
   }

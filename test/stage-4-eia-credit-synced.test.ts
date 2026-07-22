@@ -3,10 +3,18 @@
  *
  * O bloco `**É IA?**` em `02-reviewed.md` é só espelho/preview pro editor —
  * `extractContent` (newsletter-parse.ts) SEMPRE lê o crédito real de
- * `01-eia.md`. Este check (gate-blocking, Stage 4) detecta quando os dois
- * ficam fora de sincronia — caso real 260722: editor corrigiu a legenda em
+ * `01-eia.md`. Este check (Stage 4) detecta quando os dois ficam fora de
+ * sincronia — caso real 260722: editor corrigiu a legenda em
  * `02-reviewed.md` (a aba que o Studio abre), `01-eia.md` nunca foi tocado, e
  * o HTML publicado saiu com o crédito antigo, sem nenhum aviso.
+ *
+ * Severity "warning" (não "error") — decisão conservadora documentada no
+ * docstring de `checkEiaCreditSynced`: o mirror passa pelo humanizador +
+ * Clarice (Stage 2, escopo full-document, sem exclusão de seção) DEPOIS do
+ * stitch, enquanto `01-eia.md` nunca é re-processado — uma correção mínima
+ * de pontuação/grafia bastaria pra disparar `error` toda edição, mesmo sem
+ * ação do editor. "warning" ainda aparece no `{violations_block}` do gate
+ * humano (nunca silencioso), só não falha o exit code.
  *
  * Espelha o padrão de test/stage-4-capture-failed-invariant.test.ts.
  */
@@ -83,7 +91,7 @@ describe("checkEiaCreditSynced (#3825)", () => {
     }
   });
 
-  it("(2) credit DIVERGENTE → violação error apontando qual arquivo é real e qual precisa ser editado", () => {
+  it("(2) credit DIVERGENTE → violação warning apontando qual arquivo é real e qual precisa ser editado", () => {
     const dir = makeEditionDir();
     try {
       writeEia(dir, "**É IA?**\n\nFoto da ave-do-paraíso, legenda ANTIGA (errada).\n");
@@ -91,7 +99,7 @@ describe("checkEiaCreditSynced (#3825)", () => {
       const violations = checkEiaCreditSynced(dir);
       const creditViolation = violations.find((v) => v.rule === "eia-credit-synced");
       assert.ok(creditViolation, "deveria reportar divergência de credit");
-      assert.equal(creditViolation!.severity, "error");
+      assert.equal(creditViolation!.severity, "warning");
       assert.equal(creditViolation!.source_issue, "#3825");
       assert.match(creditViolation!.message, /01-eia\.md/);
       assert.match(creditViolation!.message, /02-reviewed\.md/);
@@ -136,7 +144,7 @@ describe("checkEiaCreditSynced (#3825)", () => {
         creditViolation,
         "deveria detectar que 01-eia.md ficou stale após edição só no mirror",
       );
-      assert.equal(creditViolation!.severity, "error");
+      assert.equal(creditViolation!.severity, "warning");
       assert.equal(creditViolation!.file, resolve(dir, "01-eia.md"));
       // A mensagem deve instruir editar 01-eia.md (não 02-reviewed.md de novo).
       assert.match(creditViolation!.message, /editar 01-eia\.md/i);
@@ -162,7 +170,7 @@ describe("checkEiaCreditSynced (#3825)", () => {
         (v) => v.rule === "eia-prev-result-line-synced",
       );
       assert.ok(prevResultViolation, "deveria reportar divergência de prevResultLine");
-      assert.equal(prevResultViolation!.severity, "error");
+      assert.equal(prevResultViolation!.severity, "warning");
       // credit bate — não deveria também reportar eia-credit-synced.
       assert.ok(!violations.some((v) => v.rule === "eia-credit-synced"));
     } finally {
@@ -224,7 +232,7 @@ describe("STAGE_4_RULES registry (#3825)", () => {
     assert.ok(ids.includes("eia-credit-synced"));
   });
 
-  it("a regra registrada é severity error via run() (gate-blocking)", () => {
+  it("a regra registrada é severity warning via run() (surfaced no gate, não gate-blocking — decisão conservadora #3825)", () => {
     const rule = STAGE_4_RULES.find((r) => r.id === "eia-credit-synced");
     assert.ok(rule);
     const dir = makeEditionDir();
@@ -233,7 +241,7 @@ describe("STAGE_4_RULES registry (#3825)", () => {
       writeReviewed(dir, "**É IA?**\n\nCrédito espelho divergente.");
       const violations = rule!.run(dir);
       assert.ok(violations.length > 0);
-      assert.ok(violations.every((v) => v.severity === "error"));
+      assert.ok(violations.every((v) => v.severity === "warning"));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
