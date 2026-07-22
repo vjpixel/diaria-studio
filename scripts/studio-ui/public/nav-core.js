@@ -10,14 +10,19 @@
 // drift (rota real sem entrada aqui, ou entrada aqui apontando pra rota que
 // não existe).
 //
-// Dashboards (/painel/diaria, /painel/clarice) ficam de fora de
-// `NAV_ITEMS`/detecção de item ativo: são documentos HTML AUTOCONTIDOS
-// renderizados pelo mesmo código dos Workers de produção
-// (dashboard-diaria.ts/dashboard-clarice.ts, #3563) — não usam este shell,
-// não têm `#app-nav`, e injetar o nav ali tocaria o render COMPARTILHADO com
-// o deploy real (fora de escopo desta issue). Continuam abrindo em nova aba,
-// mesmo padrão já usado pelo link "Painéis" do index desde #3555/#3563 — só
-// migraram de lugar (agora vivem dentro do menu unificado).
+// #3853: /painel/diaria passou a ser página nativa do menu (item
+// "painel-diaria" em NAV_ITEMS, abaixo) — `renderDashboardHtml`
+// (`workers/diaria-dashboard/src/index.ts`) agora injeta os assets
+// compartilhados (tokens/nav/chat-drawer) + `#app-nav` + `window.STUDIO_PAGE`
+// QUANDO `studioMode: true`, gate que só `dashboard-diaria.ts` (studio-server)
+// liga — o deploy de produção do MESMO Worker (studioMode false/ausente)
+// continua servindo o documento autocontido de sempre, sem esses assets.
+//
+// /painel/clarice CONTINUA fora de NAV_ITEMS (em DASHBOARD_LINKS abaixo) —
+// mesma situação que /painel/diaria tinha antes desta issue (documento
+// autocontido renderizado por dashboard-clarice.ts, sem `#app-nav`); virar
+// página nativa também é um follow-up natural e idêntico, fora do escopo
+// desta issue (#3853 pediu especificamente a dashboard diária).
 //
 // #3848: rota /integracoes agora existe (página de status de todas as
 // integrações — APIs + MCPs) — incluída em NAV_ITEMS abaixo.
@@ -34,12 +39,14 @@ export const NAV_ITEMS = [
   { id: "apoios", label: "Apoios", href: "/apoios", pageIds: ["apoios"] },
   { id: "relatorios", label: "Relatórios", href: "/relatorios", pageIds: ["relatorios"] },
   { id: "integracoes", label: "Integrações", href: "/integracoes", pageIds: ["integracoes"] },
+  // #3853: label igual ao que já existia em DASHBOARD_LINKS (não é copy nova)
+  // — mantém distinção clara do "Dashboard Clarice" que continua abaixo.
+  { id: "painel-diaria", label: "Dashboard diária", href: "/painel/diaria", pageIds: ["painel-diaria"] },
 ];
 
 /** Documentos autocontidos (ver docstring acima) — sempre abrem em nova aba,
  * nunca participam da detecção de item ativo. */
 export const DASHBOARD_LINKS = [
-  { label: "Dashboard diária", href: "/painel/diaria" },
   { label: "Dashboard Clarice", href: "/painel/clarice" },
 ];
 

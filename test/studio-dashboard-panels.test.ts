@@ -44,6 +44,18 @@ describe("buildDiariaDashboardHtml (#3563, endereça #3550)", () => {
     assert.match(html, /id="eia-refresh-btn"/);
     assert.match(html, /\/api\/painel\/eia\/refresh/);
   });
+
+  it("(#3853): inclui os assets do menu unificado do Studio (studioMode:true) — página nativa, não mais documento à parte", async () => {
+    const html = await buildDiariaDashboardHtml();
+    assert.match(html, /<link rel="stylesheet" href="\/tokens\.generated\.css"/);
+    assert.match(html, /<link rel="stylesheet" href="\/style\.css"/);
+    assert.match(html, /<link rel="stylesheet" href="\/nav\.css"/);
+    assert.match(html, /<link rel="stylesheet" href="\/chat-drawer\.css"/);
+    assert.match(html, /id="app-nav" class="app-nav" aria-label="Navegação do Studio"/);
+    assert.match(html, /window\.STUDIO_PAGE = "painel-diaria";/);
+    assert.match(html, /<script src="\/nav\.js" type="module">/);
+    assert.match(html, /<script src="\/chat-drawer\.js" type="module">/);
+  });
 });
 
 describe("studio-server — painéis embutidos (#3563)", () => {
@@ -74,6 +86,15 @@ describe("studio-server — painéis embutidos (#3563)", () => {
     assert.match(res.headers.get("content-type") ?? "", /text\/html/);
     const body = await res.text();
     assert.match(body, /Dashboard Operacional/);
+  });
+
+  it("(#3853): GET /painel/diaria inclui #app-nav, /nav.js e window.STUDIO_PAGE = \"painel-diaria\" (contrato HTTP real, mesmo padrão de test/studio-nav.test.ts)", async () => {
+    const res = await fetch(new URL("/painel/diaria", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.ok(body.includes('id="app-nav"'), "falta o mount point #app-nav");
+    assert.ok(body.includes('src="/nav.js"'), "falta o script nav.js");
+    assert.ok(body.includes('window.STUDIO_PAGE = "painel-diaria";'), "STUDIO_PAGE não bate com \"painel-diaria\"");
   });
 
   it("POST /painel/diaria é rejeitado — guard read-only global (#3555)", async () => {

@@ -544,6 +544,15 @@ export interface RenderDashboardOptions {
    * servido em produção. Parâmetro explícito, não detecção de ambiente (o
    * mesmo módulo serve os dois contextos — ver docstring de
    * `dashboard-diaria.ts`).
+   *
+   * #3853: a mesma flag agora TAMBÉM liga o menu de navegação unificado do
+   * Studio (assets `tokens.generated.css`/`style.css`/`nav.css`/
+   * `chat-drawer.css`, o container `#app-nav`, e `window.STUDIO_PAGE` +
+   * `nav.js`/`chat-drawer.js`) — `/painel/diaria` deixa de ser um documento
+   * autocontido à parte e passa a participar do shell/nav compartilhado do
+   * Studio, exatamente como qualquer outra página (`triagem.html` etc.). Pelo
+   * mesmo motivo do botão É IA? acima: produção (Worker sem `studioMode`)
+   * nunca carrega esses assets — eles só existem no studio-server.
    */
   studioMode?: boolean;
 }
@@ -555,6 +564,59 @@ export interface RenderDashboardOptions {
 function renderEiaRefreshButtonHtml(studioMode: boolean): string {
   if (!studioMode) return "";
   return `<p class="section-note"><button type="button" id="eia-refresh-btn" class="eia-refresh-btn" aria-busy="false">Atualizar É IA?</button> <span id="eia-refresh-status" class="muted" role="status" aria-live="polite"></span></p>`;
+}
+
+/**
+ * #3853: `<link>` dos assets compartilhados do Studio (tokens de cor/fonte,
+ * folha de estilo base, nav, chat drawer) — vazio fora do `studioMode`.
+ * Produção (Worker) não tem rota equivalente pra nenhum desses arquivos;
+ * eles só são servidos pelo studio-server (`scripts/studio-ui/server.ts`,
+ * `PUBLIC_DIR`/`handleTokensCss`). Mesma ordem de inclusão de
+ * `scripts/studio-ui/public/triagem.html` (referência do padrão).
+ */
+function renderStudioNavHeadAssetsHtml(studioMode: boolean): string {
+  if (!studioMode) return "";
+  return `
+<link rel="stylesheet" href="/tokens.generated.css" />
+<link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="/nav.css" />
+<link rel="stylesheet" href="/chat-drawer.css" />`;
+}
+
+/**
+ * #3853: container do menu de navegação unificado (`nav.js` monta o
+ * conteúdo real em `#app-nav`, ver `scripts/studio-ui/public/nav.js`) +
+ * rótulo curto da página na `.statusbar` compartilhada (mesmo padrão de
+ * `apoios.html`/`triagem.html` — `.statusbar` já vem de `style.css`). Vazio
+ * fora do `studioMode`.
+ */
+function renderStudioNavContainerHtml(studioMode: boolean): string {
+  if (!studioMode) return "";
+  return `
+<header class="statusbar">
+  <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
+  <div class="statusbar-item">
+    <span class="label">Painel</span>
+    <span class="value">Dashboard diária</span>
+  </div>
+</header>`;
+}
+
+/**
+ * #3853: `window.STUDIO_PAGE` + `nav.js` + `chat-drawer.js`, no fim do
+ * `<body>` — mesma ordem/padrão de qualquer página Studio (ver
+ * `scripts/studio-ui/public/triagem.html`). `nav.js` lê `window.STUDIO_PAGE`
+ * pra resolver o item ativo do menu (`resolveActiveNavId`, `nav-core.js`) —
+ * o id `"painel-diaria"` precisa existir em `NAV_ITEMS` (movido de
+ * `DASHBOARD_LINKS` nesta mesma issue, ver `nav-core.js`). Vazio fora do
+ * `studioMode`.
+ */
+function renderStudioNavScriptsHtml(studioMode: boolean): string {
+  if (!studioMode) return "";
+  return `
+<script>window.STUDIO_PAGE = "painel-diaria";</script>
+<script src="/nav.js" type="module"></script>
+<script src="/chat-drawer.js" type="module"></script>`;
 }
 
 export function renderPollEiaSection(data: DashboardData, opts: RenderDashboardOptions = {}): string {
@@ -980,16 +1042,16 @@ export function renderDashboardHtml(data: DashboardData, opts: RenderDashboardOp
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Diar.ia Dashboard Operacional</title>
+<title>Diar.ia Dashboard Operacional</title>${renderStudioNavHeadAssetsHtml(opts.studioMode === true)}
 <style>
-  :root {
+${opts.studioMode === true ? "" : `  :root {
     --brand: ${DS.brand};
     --ink: ${DS.ink};
     --paper: ${DS.paper};
     --paper-alt: ${DS.paperAlt};
     --rule: ${DS.rule};
   }
-  body { font-family: ${DSF.sans}; max-width: 1200px; margin: 30px auto; padding: 0 20px; background: var(--paper); color: var(--ink); }
+`}  body { font-family: ${DSF.sans}; max-width: 1200px; margin: 30px auto; padding: 0 20px; background: var(--paper); color: var(--ink); }
   h1 { font-size: 1.6rem; margin: 0 0 4px 0; color: var(--ink); }
   .sub { color: var(--ink); opacity: 0.6; font-size: 0.9rem; margin: 0 0 24px 0; }
   .dash-section { margin: 32px 0 8px 0; }
@@ -1002,7 +1064,15 @@ export function renderDashboardHtml(data: DashboardData, opts: RenderDashboardOp
   /* #3097: opacity explícita (não herdada de small, que é 0.6, ~3.40:1) —
      alerta de ação (streak de falhas, "sem match") precisa ser MAIS legível
      que dados neutros, não menos. Sem cor nova: só reforça a mesma --alert. */
-  .alert-text { color: #C00000; opacity: 1; font-weight: 600; }
+  .alert-text { color: #C00000; opacity: 1; font-weight: 600; }${opts.studioMode === true ? `
+  /* #3853: #C00000 fixo mede só ~2.83:1 contra o novo --paper escuro (tokens
+     de studioMode, dark mode) — abaixo até de AA large text (3:1). Só neste
+     bloco (studioMode) porque produção não carrega tokens.generated.css (sem
+     --status-danger disponível ali) — ver STATUS_COLORS_DARK em tokens-css.ts,
+     que já calibra --status-danger pro fundo escuro. */
+  @media (prefers-color-scheme: dark) {
+    .alert-text { color: var(--status-danger); }
+  }` : ""}
   /* #3861: botão "Atualizar É IA?" — só renderizado quando studioMode=true
      (ver renderEiaRefreshButtonHtml), mas a regra em si é inofensiva mesmo
      no HTML de produção (nenhum elemento .eia-refresh-btn existe lá). */
@@ -1102,7 +1172,7 @@ export function renderDashboardHtml(data: DashboardData, opts: RenderDashboardOp
   }
 </style>
 </head>
-<body>
+<body>${renderStudioNavContainerHtml(opts.studioMode === true)}
 <h1>Diar.ia — Dashboard Operacional</h1>
 <p class="sub">Dados locais (último push: ${escHtml(generatedAt)}). Carregado às ${escHtml(now)} BRT.</p>
 
@@ -1208,7 +1278,7 @@ ${audienceSection}
   syncAria();
 })();
 </script>
-${opts.studioMode === true ? renderEiaRefreshScript() : ""}
+${opts.studioMode === true ? renderEiaRefreshScript() : ""}${renderStudioNavScriptsHtml(opts.studioMode === true)}
 </body>
 </html>`;
 }
