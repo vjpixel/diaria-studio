@@ -3,11 +3,16 @@
 // visão de campanha. Vanilla JS, sem build step (mesmo princípio de
 // triagem.js/app.js — #3555/#3562).
 //
-// Toda mutação (adicionar contato, editar) chama POST/PUT
-// /api/apoios/contacts[...] (studio-apoios.ts) e depois refaz o fetch
-// completo de /api/apoios — sem estado otimista client-side, mais simples e
-// sempre consistente com o servidor (fonte única de verdade é o
-// contacts.jsonl).
+// A mutação de edição (editar contato) chama PUT /api/apoios/contacts/:id
+// (studio-apoios.ts) e depois refaz o fetch completo de /api/apoios — sem
+// estado otimista client-side, mais simples e sempre consistente com o
+// servidor (fonte única de verdade é o contacts.jsonl).
+//
+// #3862 (decisão do editor 260722): o form manual "Adicionar contato" foi
+// removido — contatos passam a vir do e-mail/apoia.se (#3859), não digitados à
+// mão. O endpoint POST /api/apoios/contacts CONTINUA existindo (será o ponto de
+// entrada da importação automática, #3859 metade 1); só a UI de cadastro
+// manual saiu. `parseEmailsInput` segue em uso pelo form de EDIÇÃO.
 //
 // #3844 (decisão do editor 260721): os recursos de follow-up/outreach
 // (tracking de contato, dialog de registro, tiles de contactados/follow-ups
@@ -29,11 +34,6 @@ const el = {
   tileTotal: document.getElementById("tile-total"),
   tileConverted: document.getElementById("tile-converted"),
   tileValue: document.getElementById("tile-value"),
-  addForm: document.getElementById("add-contact-form"),
-  newName: document.getElementById("new-name"),
-  newEmails: document.getElementById("new-emails"),
-  newNotes: document.getElementById("new-notes"),
-  addError: document.getElementById("add-contact-error"),
   contactsCount: document.getElementById("contacts-count"),
   filterStatus: document.getElementById("filter-status"),
   refreshBtn: document.getElementById("refresh-btn"),
@@ -224,30 +224,6 @@ el.refreshStatusBtn.addEventListener("click", () => refreshApoiosStatus());
 el.filterStatus.addEventListener("change", () => {
   filters.status = el.filterStatus.value;
   renderContacts();
-});
-
-el.addForm.addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  el.addError.hidden = true;
-  const body = {
-    name: el.newName.value,
-    emails: parseEmailsInput(el.newEmails.value),
-    notes: el.newNotes.value,
-  };
-  try {
-    const res = await fetch("/api/apoios/contacts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const result = await res.json();
-    if (!res.ok || !result.ok) throw new Error(result.error ?? `HTTP ${res.status}`);
-    el.addForm.reset();
-    await fetchApoios();
-  } catch (e) {
-    el.addError.hidden = false;
-    el.addError.textContent = String(e.message ?? e);
-  }
 });
 
 el.contactsList.addEventListener("click", (ev) => {
