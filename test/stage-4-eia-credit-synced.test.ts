@@ -30,6 +30,12 @@ function makeEditionDir(): string {
 }
 
 function writeReviewed(dir: string, eiaBlock: string): void {
+  // Ordem espelha stitch-newsletter.ts (Stage 2 atual): destaques primeiro
+  // (D1/D2/D3), bloco É IA? DEPOIS do último destaque (não entre D2/D3 —
+  // essa era a instrução do writer.md legado, single-writer). Extração é
+  // position-agnostic (extractEiaMirrorBlock só procura o bloco `---`-isolado
+  // cujo header casa EIA_HEADER_RE, em qualquer posição), mas manter a ordem
+  // real aqui deixa o fixture fiel ao MD que a pipeline de fato produz.
   const md = [
     "Para esta edição, eu (o editor) enviei 3 submissões e a Diar.ia encontrou outros 40 artigos. Selecionamos os 12 mais relevantes para as pessoas que assinam a newsletter.",
     "",
@@ -53,10 +59,6 @@ function writeReviewed(dir: string, eiaBlock: string): void {
     "",
     "---",
     "",
-    eiaBlock,
-    "",
-    "---",
-    "",
     "**DESTAQUE 3 | CULTURA**",
     "",
     "**[Título do D3](https://x.com/d3)**",
@@ -64,6 +66,17 @@ function writeReviewed(dir: string, eiaBlock: string): void {
     "Corpo do D3.",
     "",
     "Por que isso importa: razão.",
+    "",
+    "---",
+    "",
+    eiaBlock,
+    "",
+    "---",
+    "",
+    "**LANÇAMENTOS**",
+    "",
+    "**[Um lançamento](https://x.com/l1)**",
+    "Descrição do lançamento.",
   ].join("\n");
   writeFileSync(resolve(dir, "02-reviewed.md"), md, "utf8");
 }
