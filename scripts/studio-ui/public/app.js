@@ -9,6 +9,8 @@
 // próprios que reusam `renderState`/`fetchEditionDetail` em vez de duplicar
 // o parsing de SSE.
 
+import { createLogDeduper } from "./log-dedup.js";
+
 const STAGE_ORDER = [1, 2, 3, 4, 5, 6];
 const STAGE_LABELS = {
   1: "Pesquisa",
@@ -24,6 +26,7 @@ const el = {
   stage: document.getElementById("statusbar-stage"),
   gates: document.getElementById("statusbar-gates"),
   overnight: document.getElementById("statusbar-overnight"),
+  updated: document.getElementById("statusbar-updated"),
   connDot: document.getElementById("conn-dot"),
   connLabel: document.getElementById("conn-label"),
   timeline: document.getElementById("timeline"),
@@ -38,9 +41,29 @@ const el = {
 
 let lastCurrentEdition = null;
 
+// #3891 (item 6): o reconnect do SSE reenvia a TAIL inteira via `log-init`
+// (ver doc-comment de log-dedup.js) — sem isto, cada reconexão duplicava as
+// linhas já vistas no "Log ao vivo". Cap alinhado ao limite de linhas
+// visíveis no DOM (300, ver `appendLogRow` abaixo).
+const logDeduper = createLogDeduper(300);
+
 function setConn(status) {
   el.connDot.className = "dot " + status; // "ok" | "down" | ""
   el.connLabel.textContent = status === "ok" ? "conectado" : status === "down" ? "desconectado" : "conectando…";
+}
+
+// #3891 (item 8): "Atualizado HH:MM" no header — cronometra o último render
+// bem-sucedido de `onState` (chamado a cada evento SSE `state`, empurrado
+// pelo servidor a cada mudança relevante — não um poll do client). Sem isto,
+// não havia sinal nenhum de QUANDO a página foi atualizada pela última vez
+// (a lacuna que a própria auditoria #3866/R1 apontou).
+function markUpdatedNow() {
+  if (!el.updated) return;
+  el.updated.textContent = new Date().toLocaleTimeString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function renderStatusbar(state) {
@@ -112,6 +135,9 @@ async function fetchEditionDetail(aammdd) {
 }
 
 function appendLogRow(event) {
+  // #3891: dedup ANTES de tocar o DOM — cobre tanto o `log-init` (rajada no
+  // reconnect) quanto o `log` incremental (mesmo caminho de código).
+  if (!logDeduper.isNew(event)) return;
   const row = document.createElement("div");
   const level = (event && event.level) || "info";
   row.className = `log-row ${level}`;
@@ -141,6 +167,7 @@ async function onState(state) {
     lastCurrentEdition = null;
     renderTimeline(null);
   }
+  markUpdatedNow();
 }
 
 let refetchTimer = null;

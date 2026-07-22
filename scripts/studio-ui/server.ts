@@ -250,7 +250,7 @@ import { watchPlanFiles, type PlanWatchHandle } from "./plan-watch.ts";
 // KV do worker diaria-dashboard. Ver studio-snapshot-watcher.ts.
 import { watchAndPushStudioSnapshot, type StudioSnapshotWatchHandle } from "./studio-snapshot-watcher.ts";
 import { formatSseEvent, formatSseComment } from "./sse.ts";
-import { serveStaticFile, mimeFor } from "./static-serve.ts";
+import { serveStaticFile, mimeFor, SECURITY_HEADERS } from "./static-serve.ts";
 import { buildTokensCss } from "./tokens-css.ts";
 import { fetchTriageData, type GhRunFn } from "./studio-issues.ts";
 import { buildWaveProposal } from "./studio-waves.ts";
@@ -355,6 +355,11 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(payload),
+    // #3891 (item 10): nosniff em toda resposta JSON — defesa em profundidade
+    // barata (mesma constante de static-serve.ts, mas só o header de
+    // MIME-sniffing: CSP não faz sentido pra uma resposta que nunca é
+    // renderizada como página).
+    "X-Content-Type-Options": SECURITY_HEADERS["X-Content-Type-Options"],
   });
   res.end(payload);
 }
@@ -1554,7 +1559,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // valida o AAMMDD e busca dados via /api/editions/:aammdd (mesmo guard
       // de 400/404 já coberto por handleApiEdition).
       if (/^\/edicao\/[^/]+\/?$/.test(urlPath)) {
-        const served = serveStaticFile(PUBLIC_DIR, "/edicao.html", res);
+        const served = serveStaticFile(PUBLIC_DIR, "/edicao.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
@@ -1564,7 +1569,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #3559: mesma estratégia de rewrite — a página busca
       // /api/editions/:aammdd/review/:slug (+ diff/lint/preview.html).
       if (/^\/revisao\/[^/]+\/?$/.test(urlPath)) {
-        const served = serveStaticFile(PUBLIC_DIR, "/revisao.html", res);
+        const served = serveStaticFile(PUBLIC_DIR, "/revisao.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
@@ -1573,7 +1578,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       // #3562: mesma estratégia de rewrite — a página busca /api/issues.
       if (urlPath === "/triagem" || urlPath === "/triagem/") {
-        const served = serveStaticFile(PUBLIC_DIR, "/triagem.html", res);
+        const served = serveStaticFile(PUBLIC_DIR, "/triagem.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
@@ -1582,7 +1587,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       // #3561: mesma estratégia de rewrite — a página busca /api/round/:kind.
       if (urlPath === "/rodada" || urlPath === "/rodada/") {
-        const served = serveStaticFile(PUBLIC_DIR, "/rodada.html", res);
+        const served = serveStaticFile(PUBLIC_DIR, "/rodada.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
@@ -1591,7 +1596,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       // #3602: mesma estratégia de rewrite — a página busca /api/apoios.
       if (urlPath === "/apoios" || urlPath === "/apoios/") {
-        const served = serveStaticFile(PUBLIC_DIR, "/apoios.html", res);
+        const served = serveStaticFile(PUBLIC_DIR, "/apoios.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
@@ -1600,7 +1605,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       // #3848: mesma estratégia de rewrite — a página busca /api/integrations.
       if (urlPath === "/integracoes" || urlPath === "/integracoes/") {
-        const served = serveStaticFile(PUBLIC_DIR, "/integracoes.html", res);
+        const served = serveStaticFile(PUBLIC_DIR, "/integracoes.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
@@ -1611,7 +1616,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // Só o path BARE (sem id) — `/relatorios/:id` (conteúdo do relatório em
       // si) já foi tratado acima, antes deste bloco.
       if (urlPath === "/relatorios" || urlPath === "/relatorios/") {
-        const served = serveStaticFile(PUBLIC_DIR, "/relatorios.html", res);
+        const served = serveStaticFile(PUBLIC_DIR, "/relatorios.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
@@ -1619,7 +1624,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         return;
       }
 
-      const served = serveStaticFile(PUBLIC_DIR, urlPath, res);
+      const served = serveStaticFile(PUBLIC_DIR, urlPath, res, req);
       if (!served) {
         res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("Not found");

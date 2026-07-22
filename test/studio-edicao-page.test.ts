@@ -83,6 +83,21 @@ describe("GET /edicao/:aammdd (#3558)", () => {
     assert.ok(body.includes('id="edicao-log-list" class="log-list" aria-live="polite"'));
   });
 
+  it("#3891 (item 8): edicao.html expõe 'Atualizado HH:MM' no statusbar do cockpit, e edicao.js cronometra o último renderAll()", async () => {
+    const html = await (await fetch(new URL("/edicao/260716", server.url))).text();
+    assert.ok(html.includes('id="statusbar-updated" aria-live="polite"'), "faltava o elemento de staleness no header do cockpit");
+
+    const js = await (await fetch(new URL("/edicao.js", server.url))).text();
+    assert.ok(js.includes("statusbar-updated"), "edicao.js precisa mapear o elemento");
+    assert.ok(js.includes("markUpdatedNow"), "precisa existir a função que cronometra o último renderAll()");
+  });
+
+  it("#3891 (item 6): edicao.js importa log-dedup.js e guarda pushLogEvents atrás do dedup (reconnect do SSE reenvia a tail inteira via log-init)", async () => {
+    const js = await (await fetch(new URL("/edicao.js", server.url))).text();
+    assert.ok(js.includes('from "./log-dedup.js"'), "edicao.js precisa importar o deduplicador");
+    assert.ok(js.includes("logDeduper.isNew"), "pushLogEvents precisa checar o dedup antes de bufferizar");
+  });
+
   it("continua servindo o shell mesmo pra AAMMDD que não existe no disco — o 404 real vem de /api/editions no browser", async () => {
     const res = await fetch(new URL("/edicao/999999", server.url));
     assert.equal(res.status, 200);
