@@ -560,6 +560,98 @@ describe("renderPollEiaSection (#2475)", () => {
   });
 });
 
+// ─── Botão "Atualizar É IA?" — exclusivo do studio-server (#3861) ────────────
+
+describe("renderPollEiaSection — botão 'Atualizar É IA?' (#3861)", () => {
+  function makeBase(): import("../workers/diaria-dashboard/src/types.ts").DashboardData {
+    return {
+      generated_at: "2026-06-21T00:00:00Z",
+      schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null,
+      overnight: { runs: [], total_runs: 0 },
+      use_melhor: null,
+      poll_eia: null,
+      stubs: [],
+    };
+  }
+
+  test("sem opts (default) — botão NÃO aparece, mesmo com poll_eia=null (stub)", async () => {
+    const { renderPollEiaSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderPollEiaSection(makeBase());
+    assert.ok(!html.includes("eia-refresh-btn"), "sem studioMode, o botão não deve existir no HTML (default de produção)");
+  });
+
+  test("opts.studioMode=false explícito — botão NÃO aparece", async () => {
+    const { renderPollEiaSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderPollEiaSection(makeBase(), { studioMode: false });
+    assert.ok(!html.includes("eia-refresh-btn"));
+  });
+
+  test("opts.studioMode=true — botão aparece mesmo sem dados (stub)", async () => {
+    const { renderPollEiaSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderPollEiaSection(makeBase(), { studioMode: true });
+    assert.ok(html.includes('id="eia-refresh-btn"'), "botão deve aparecer no branch stub quando studioMode=true");
+    assert.ok(html.includes("Atualizar É IA?"));
+  });
+
+  test("opts.studioMode=true — botão aparece também com dados reais", async () => {
+    const { renderPollEiaSection } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = makeBase();
+    data.poll_eia = {
+      source: "push",
+      last_edition: "260622",
+      updated_at: "2026-06-22T22:00:00Z",
+      editions: [{ edition: "260622", total_votes: 47, voted_a: 30, voted_b: 17, pct_correct: 64, correct_choice: "A" }],
+      leaderboard: [],
+    };
+    const html = renderPollEiaSection(data, { studioMode: true });
+    assert.ok(html.includes('id="eia-refresh-btn"'));
+  });
+});
+
+describe("renderDashboardHtml — botão + script 'Atualizar É IA?' são exclusivos do studioMode (#3861)", () => {
+  function makeMinimalData(): import("../workers/diaria-dashboard/src/types.ts").DashboardData {
+    return {
+      generated_at: "2026-06-26T00:00:00Z",
+      schema_version: 1,
+      source_health: { entries: [], total: 0, verde: 0, amarelo: 0, vermelho: 0, generated_at: "" },
+      ctr: null,
+      overnight: { runs: [], total_runs: 0 },
+      use_melhor: null,
+      poll_eia: null,
+      stubs: [],
+    };
+  }
+
+  test("regressão: renderDashboardHtml(data) SEM 2º argumento (uso do Worker de produção) nunca inclui o botão/endpoint", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    // A classe CSS .eia-refresh-btn pode existir no <style> (inofensiva, sem
+    // elemento correspondente) — o que NUNCA pode existir em produção é o
+    // elemento <button id="eia-refresh-btn"> em si nem o endpoint que ele chama.
+    assert.ok(!html.includes('id="eia-refresh-btn"'), "Worker de produção (sem opts) nunca deve renderizar o elemento do botão");
+    assert.ok(!html.includes("/api/painel/eia/refresh"), "Worker de produção nunca deve referenciar o endpoint exclusivo do Studio");
+  });
+
+  test("renderDashboardHtml(data, {studioMode:true}) inclui o botão E o script que chama /api/painel/eia/refresh", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData(), { studioMode: true });
+    assert.ok(html.includes('id="eia-refresh-btn"'), "deve incluir o botão");
+    assert.ok(html.includes("/api/painel/eia/refresh"), "o script deve referenciar o endpoint de refresh");
+    // O botão deve estar dentro do panel-eia (mesma aba do poll), não solto no documento.
+    const panel = html.match(/id="panel-eia"[\s\S]*?(?=id="panel-audiencia")/)?.[0] ?? "";
+    assert.ok(panel.includes("eia-refresh-btn"), "o botão deve estar dentro do panel-eia");
+  });
+
+  test("renderDashboardHtml(data, {studioMode:false}) explícito é idêntico ao default (sem botão)", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData(), { studioMode: false });
+    assert.ok(!html.includes('id="eia-refresh-btn"'));
+    assert.ok(!html.includes("/api/painel/eia/refresh"));
+  });
+});
+
 // ─── Testes de renderDashboardHtml com as novas seções ───────────────────────
 
 describe("renderDashboardHtml com use_melhor e poll_eia (#2474, #2475)", () => {

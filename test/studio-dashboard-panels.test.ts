@@ -38,6 +38,12 @@ describe("buildDiariaDashboardHtml (#3563, endereça #3550)", () => {
     assert.match(html, /id="tab-eia"/);
     assert.match(html, /id="panel-eia"/);
   });
+
+  it("inclui o botão 'Atualizar É IA?' (#3861 — exclusivo do studio-server, studioMode:true)", async () => {
+    const html = await buildDiariaDashboardHtml();
+    assert.match(html, /id="eia-refresh-btn"/);
+    assert.match(html, /\/api\/painel\/eia\/refresh/);
+  });
 });
 
 describe("studio-server — painéis embutidos (#3563)", () => {

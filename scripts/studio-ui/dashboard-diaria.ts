@@ -11,9 +11,13 @@
  * vem embutida a partir de `data/poll-eia-summary.json` — cobre o pedido de
  * embed do dashboard "poll" (#3563) sem view separada: o poll é uma ABA do
  * MESMO documento, não um painel à parte. `data/poll-eia-summary.json` é
- * populado por `npx tsx scripts/build-poll-eia-data.ts --push` (fora do
- * escopo desta fatia rodar isso automaticamente — o painel só LÊ o arquivo se
- * ele existir, graceful caso contrário, mesmo comportamento do Worker).
+ * populado por `npx tsx scripts/build-poll-eia-data.ts --push` — ou, desde
+ * #3861, pelo botão "Atualizar É IA?" da própria aba (`POST
+ * /api/painel/eia/refresh`, ver `server.ts`). `buildDiariaDashboardHtml` é o
+ * ÚNICO caller que passa `{studioMode: true}` pra `renderDashboardHtml` —
+ * é isso que liga o botão SÓ nesta superfície (studio-server), nunca no HTML
+ * servido pelo Worker de produção (que chama `renderDashboardHtml(data)` sem
+ * 2º argumento, ver o fetch handler no fim de `workers/diaria-dashboard/src/index.ts`).
  *
  * Limitação conhecida (documentada, não uma regressão nova desta fatia):
  * `buildDashboardData()` (e os builders que ela chama) resolvem `data/`
@@ -48,9 +52,14 @@
 
 import { buildDashboardData } from "../build-diaria-dashboard-data.ts";
 
-let renderDashboardHtmlPromise: Promise<(data: ReturnType<typeof buildDashboardData>) => string> | null = null;
+type RenderDashboardHtmlFn = (
+  data: ReturnType<typeof buildDashboardData>,
+  opts?: { studioMode?: boolean },
+) => string;
 
-function loadRenderDashboardHtml(): Promise<(data: ReturnType<typeof buildDashboardData>) => string> {
+let renderDashboardHtmlPromise: Promise<RenderDashboardHtmlFn> | null = null;
+
+function loadRenderDashboardHtml(): Promise<RenderDashboardHtmlFn> {
   if (!renderDashboardHtmlPromise) {
     renderDashboardHtmlPromise = import("../../workers/diaria-dashboard/src/index.ts").then(
       (mod) => mod.renderDashboardHtml,
@@ -69,5 +78,8 @@ function loadRenderDashboardHtml(): Promise<(data: ReturnType<typeof buildDashbo
 export async function buildDiariaDashboardHtml(): Promise<string> {
   const data = buildDashboardData();
   const renderDashboardHtml = await loadRenderDashboardHtml();
-  return renderDashboardHtml(data);
+  // #3861: studioMode:true liga o botão "Atualizar É IA?" — SÓ aqui, nunca no
+  // fetch handler do Worker de produção (que chama renderDashboardHtml(data)
+  // sem 2º argumento).
+  return renderDashboardHtml(data, { studioMode: true });
 }

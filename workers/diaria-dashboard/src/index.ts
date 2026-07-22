@@ -533,11 +533,37 @@ export function renderUseMelhorSection(data: DashboardData, now: Date = new Date
 </section>`;
 }
 
-export function renderPollEiaSection(data: DashboardData): string {
+export interface RenderDashboardOptions {
+  /**
+   * #3861: liga o botão "Atualizar É IA?" (+ o script que o alimenta) na aba
+   * É IA?. **Exclusivo do studio-server** — `buildDiariaDashboardHtml`
+   * (`scripts/studio-ui/dashboard-diaria.ts`) é o ÚNICO caller que passa
+   * `true`. O fetch handler do Worker de produção, no fim deste arquivo,
+   * chama `renderDashboardHtml(data)` sem 2º argumento — `studioMode` fica
+   * `false` por default, então o botão/endpoint NUNCA aparecem no HTML
+   * servido em produção. Parâmetro explícito, não detecção de ambiente (o
+   * mesmo módulo serve os dois contextos — ver docstring de
+   * `dashboard-diaria.ts`).
+   */
+  studioMode?: boolean;
+}
+
+/** #3861: HTML do botão "Atualizar É IA?" — vazio (sem custo) quando
+ * `studioMode` não é `true`. O endpoint que ele chama
+ * (`POST /api/painel/eia/refresh`) só existe no studio-server
+ * (`scripts/studio-ui/server.ts`); não há rota equivalente no Worker. */
+function renderEiaRefreshButtonHtml(studioMode: boolean): string {
+  if (!studioMode) return "";
+  return `<p class="section-note"><button type="button" id="eia-refresh-btn" class="eia-refresh-btn">Atualizar É IA?</button> <span id="eia-refresh-status" class="muted" role="status" aria-live="polite"></span></p>`;
+}
+
+export function renderPollEiaSection(data: DashboardData, opts: RenderDashboardOptions = {}): string {
   const poll = data.poll_eia;
+  const refreshButtonHtml = renderEiaRefreshButtonHtml(opts.studioMode === true);
   if (!poll) {
     return `<section class="dash-section" id="poll-eia">
   <h2 class="section-title">É IA? (poll)</h2>
+  ${refreshButtonHtml}
   <p class="section-note muted">Dados não disponíveis. Requer push do <code>workers/poll</code>.</p>
   <p class="section-note muted">
     Para habilitar: o worker poll precisa escrever <code>data/poll-eia-summary.json</code>
@@ -601,6 +627,7 @@ export function renderPollEiaSection(data: DashboardData): string {
 
   return `<section class="dash-section" id="poll-eia">
   <h2 class="section-title">É IA? (poll)</h2>
+  ${refreshButtonHtml}
   <p class="section-note">${editions.length} edições com dados de poll · Atualizado: ${updatedAt} · Fonte: <code>${escHtml(poll.source)}</code></p>
   <p class="section-note muted">Votos de teste do editor excluídos (pixel@memelab.com.br + vjpixel@gmail.com).</p>
 
@@ -924,7 +951,7 @@ ${staleBanner}
 
 // ─── Render completo ──────────────────────────────────────────────────────────
 
-export function renderDashboardHtml(data: DashboardData): string {
+export function renderDashboardHtml(data: DashboardData, opts: RenderDashboardOptions = {}): string {
   const now = new Date().toLocaleString("pt-BR", {
     timeZone: "America/Sao_Paulo",
     day: "2-digit",
@@ -943,7 +970,7 @@ export function renderDashboardHtml(data: DashboardData): string {
   const ctrSection = renderCtrSection(data);
   const overnightSection = renderOvernightSection(data);
   const useMelhorSection = renderUseMelhorSection(data);
-  const pollEiaSection = renderPollEiaSection(data);
+  const pollEiaSection = renderPollEiaSection(data, opts);
   const topClickedRecentSection = renderTopClickedRecentSection(data);
   const audienceSection = renderAudienceSection(data);
   const stubsSection = renderStubsSection(data.stubs ?? []);
@@ -976,6 +1003,12 @@ export function renderDashboardHtml(data: DashboardData): string {
      alerta de ação (streak de falhas, "sem match") precisa ser MAIS legível
      que dados neutros, não menos. Sem cor nova: só reforça a mesma --alert. */
   .alert-text { color: #C00000; opacity: 1; font-weight: 600; }
+  /* #3861: botão "Atualizar É IA?" — só renderizado quando studioMode=true
+     (ver renderEiaRefreshButtonHtml), mas a regra em si é inofensiva mesmo
+     no HTML de produção (nenhum elemento .eia-refresh-btn existe lá). */
+  .eia-refresh-btn { font-family: inherit; font-size: 0.85rem; padding: 6px 12px; border-radius: 4px; border: 1px solid var(--rule); background: var(--paper-alt); color: var(--ink); cursor: pointer; }
+  .eia-refresh-btn:hover:not(:disabled) { border-color: var(--brand); color: var(--brand); }
+  .eia-refresh-btn:disabled { opacity: 0.6; cursor: default; }
   .table-wrap { overflow-x: auto; }
   /* #3075: Saúde das fontes é a tabela mais longa do dashboard — o th
      position:sticky (acima) só funciona com um scroll container vertical de
@@ -1175,8 +1208,54 @@ ${audienceSection}
   syncAria();
 })();
 </script>
+${opts.studioMode === true ? renderEiaRefreshScript() : ""}
 </body>
 </html>`;
+}
+
+/**
+ * #3861: script do botão "Atualizar É IA?" — só emitido por `renderDashboardHtml`
+ * quando `studioMode` é `true` (nunca no HTML do Worker de produção, ver
+ * `RenderDashboardOptions`). Dispara `POST /api/painel/eia/refresh` (rota
+ * exclusiva do studio-server, `scripts/studio-ui/server.ts`) e, em sucesso,
+ * recarrega o documento inteiro — o painel é renderizado server-side a cada
+ * load (não há um framework client-side aqui), então um reload simples já
+ * reflete o `data/poll-eia-summary.json` recém-escrito, sem precisar de
+ * re-render parcial da seção via JS.
+ */
+function renderEiaRefreshScript(): string {
+  return `<script>
+(function () {
+  var btn = document.getElementById('eia-refresh-btn');
+  if (!btn) return;
+  var status = document.getElementById('eia-refresh-status');
+  var originalText = btn.textContent;
+  btn.addEventListener('click', function () {
+    btn.disabled = true;
+    btn.textContent = 'Atualizando…';
+    if (status) status.textContent = '';
+    fetch('/api/painel/eia/refresh', { method: 'POST' })
+      .then(function (res) {
+        return res.json().then(function (body) { return { httpOk: res.ok, status: res.status, body: body }; });
+      })
+      .then(function (r) {
+        if (!r.httpOk || !r.body || r.body.ok !== true) {
+          var msg = (r.body && r.body.error) ? r.body.error : ('HTTP ' + r.status);
+          if (status) status.textContent = 'Falha: ' + msg;
+          btn.disabled = false;
+          btn.textContent = originalText;
+          return;
+        }
+        location.reload();
+      })
+      .catch(function (e) {
+        if (status) status.textContent = 'Falha: ' + (e && e.message ? e.message : e);
+        btn.disabled = false;
+        btn.textContent = originalText;
+      });
+  });
+})();
+</script>`;
 }
 
 // ─── Fetch handler ────────────────────────────────────────────────────────────
