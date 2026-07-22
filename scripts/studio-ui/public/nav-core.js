@@ -19,9 +19,8 @@
 // mesmo padrão já usado pelo link "Painéis" do index desde #3555/#3563 — só
 // migraram de lugar (agora vivem dentro do menu unificado).
 //
-// #3848 (rota /integracoes) ainda NÃO existe — não incluído aqui de
-// propósito (link morto seria pior que a ausência); adicionar quando a rota
-// existir de fato.
+// #3848: rota /integracoes agora existe (página de status de todas as
+// integrações — APIs + MCPs) — incluída em NAV_ITEMS abaixo.
 
 /** Destinos de PÁGINA do Studio (item ativo é decidido por `pageIds`,
  * comparado contra `window.STUDIO_PAGE`). `href: null` significa "resolvido
@@ -34,6 +33,7 @@ export const NAV_ITEMS = [
   { id: "revisao", label: "Revisão", href: null, pageIds: ["revisao"] },
   { id: "apoios", label: "Apoios", href: "/apoios", pageIds: ["apoios"] },
   { id: "relatorios", label: "Relatórios", href: "/relatorios", pageIds: ["relatorios"] },
+  { id: "integracoes", label: "Integrações", href: "/integracoes", pageIds: ["integracoes"] },
 ];
 
 /** Documentos autocontidos (ver docstring acima) — sempre abrem em nova aba,

@@ -126,6 +126,16 @@
  *   - `GET /relatorios` — cockpit de Relatórios (#3714): mesma estratégia de
  *     rewrite de `/triagem`/`/rodada`/`/apoios`, servindo
  *     `public/relatorios.html`. Consome `GET /api/reports`.
+ *   - `GET /api/integrations` (#3848) — status de todas as integrações
+ *     (APIs via key/token em `.env` + MCPs): configurada? alcançável? última
+ *     checagem? Probe real (fetch de verdade) pras mais críticas (Beehiiv,
+ *     Facebook/Instagram Graph, Cloudflare, Clarice cortex REST, Worker
+ *     LinkedIn `/health`); as demais só "configurada? sim/não" — ver
+ *     `studio-integrations.ts` pro detalhe e o motivo por integração.
+ *     `?refresh=1` bypassa o cache de 5min. Nunca expõe valor de secret, só
+ *     nome de env var ausente.
+ *   - `GET /integracoes` — página de status (#3848): mesma estratégia de
+ *     rewrite de `/apoios`/`/relatorios`, servindo `public/integracoes.html`.
  *   - Notificação Telegram (#3564, sem rota HTTP própria): um watcher em
  *     background, subido por `startStudioServer` e fechado em `close()`,
  *     observa `gatesPending`/`chatPermissionsPending` (mesmo `buildStudioState`
@@ -271,6 +281,10 @@ import {
   maybeNotifyChatDone,
   type TelegramNotifyWatchHandle,
 } from "./studio-telegram-notify.ts";
+// #3848: status de todas as integrações (APIs + MCPs) — arquivo próprio
+// desta fatia, import isolado (nenhuma outra rota depende dele). Ver
+// studio-integrations.ts.
+import { buildIntegrationsData } from "./studio-integrations.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -356,6 +370,11 @@ export interface StudioServerOptions {
    * estado terminal (`gh issue view` real) por um fake. Produção usa o
    * default de `studio-wave-fire.ts` (`checkAllIssuesTerminalState`). */
   waveFireCheckTerminalStateFn?: (issueNumbers: number[], cwd: string, sinceIso: string) => IssueTerminalCheck[];
+  /** `fetch` injetável pra `GET /api/integrations` (#3848) — testes SEMPRE
+   * passam um mock que nunca bate em rede real (proibido testar os probes
+   * ao vivo, ver doc-comment de `studio-integrations.ts`). Produção usa o
+   * default (`fetch` global) de `buildIntegrationsData`. */
+  integrationsFetchImpl?: typeof fetch;
 }
 
 export interface StudioServer {
@@ -1150,6 +1169,24 @@ async function handleApiApoiosUpdate(
   sendApoiosMutationResult(res, result);
 }
 
+// ── #3848: status de todas as integrações (APIs + MCPs) ────────────────
+
+/** `GET /api/integrations` — status de todas as integrações (#3848). Sempre
+ * 200: `buildIntegrationsData` é fail-soft por design (cada integração é
+ * avaliada isoladamente, nenhum probe individual derruba a resposta).
+ * `?refresh=1` bypassa o cache de 5min (botão "Atualizar" da UI). */
+function handleApiIntegrations(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  fetchImpl?: typeof fetch,
+): void {
+  const forceRefresh = new URL(req.url ?? "/", "http://localhost").searchParams.get("refresh") === "1";
+  buildIntegrationsData(rootDir, { forceRefresh, fetchImpl })
+    .then((data) => sendJson(res, 200, data))
+    .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
+}
+
 /**
  * Sobe o studio-server. `rootDir` default é `process.cwd()` (o repo aberto
  * no Claude Code); injete um tmpdir em testes.
@@ -1167,6 +1204,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const waveFireEnabled = opts.waveFireEnabled ?? false;
   const waveFireMaxConcurrency = opts.waveFireMaxConcurrency ?? 6;
   const waveFireCheckTerminalStateFn = opts.waveFireCheckTerminalStateFn;
+  const integrationsFetchImpl = opts.integrationsFetchImpl;
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -1359,6 +1397,11 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiApoiosGet(rootDir, res);
         return;
       }
+      // #3848: status de todas as integrações (APIs + MCPs).
+      if (urlPath === "/api/integrations") {
+        handleApiIntegrations(rootDir, req, res, integrationsFetchImpl);
+        return;
+      }
       // #3559: painel de revisão de conteúdo rica — leitura (GET) do arquivo,
       // diff contra baseline, lints e preview do e-mail. As rotas de ESCRITA
       // (PUT/POST) já foram tratadas acima, antes do guard de método.
@@ -1457,6 +1500,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #3602: mesma estratégia de rewrite — a página busca /api/apoios.
       if (urlPath === "/apoios" || urlPath === "/apoios/") {
         const served = serveStaticFile(PUBLIC_DIR, "/apoios.html", res);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #3848: mesma estratégia de rewrite — a página busca /api/integrations.
+      if (urlPath === "/integracoes" || urlPath === "/integracoes/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/integracoes.html", res);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");

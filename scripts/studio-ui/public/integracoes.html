@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diar.ia Studio — Integrações</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+  <link rel="stylesheet" href="/integracoes.css" />
+  <link rel="stylesheet" href="/chat-drawer.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
+    <div class="statusbar-item">
+      <span class="label">Integrações</span>
+      <span class="value" id="exec-mode-value">—</span>
+    </div>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Integrações — APIs + MCPs</h1>
+      <p class="hint">
+        Status de todas as integrações que o projeto usa, num só lugar:
+        configurada? alcançável? última checagem? Os status refletem o
+        ambiente ONDE este studio-server roda — num clone <code>cloud</code>
+        sem o junction <code>data/</code> nem <code>.env.local</code>, quase
+        tudo aparece "não configurado" (esperado, não um bug). Nunca mostra o
+        VALOR de nenhuma credencial, só presença/ausência.
+      </p>
+      <div id="integrations-error" class="panel alert-banner" hidden></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Integrações (<span id="integrations-count">0</span>)</h2>
+        <label class="filter-field">
+          <span class="label">Tipo</span>
+          <select id="filter-kind">
+            <option value="">Todos</option>
+            <option value="api">API</option>
+            <option value="mcp">MCP</option>
+          </select>
+        </label>
+        <button id="refresh-btn" type="button">Atualizar</button>
+        <span id="last-updated" class="hint"></span>
+      </div>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Nome</th>
+              <th>Tipo</th>
+              <th>Configurada?</th>
+              <th>Alcançável?</th>
+              <th>Última checagem</th>
+              <th>Nota / erro</th>
+            </tr>
+          </thead>
+          <tbody id="integrations-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>window.STUDIO_PAGE = "integracoes";</script>
+  <script src="/nav.js" type="module"></script>
+  <script src="/integracoes.js" type="module"></script>
+  <script src="/chat-drawer.js" type="module"></script>
+</body>
+</html>

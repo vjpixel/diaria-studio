@@ -1,0 +1,58 @@
+/* integracoes.css (#3848) — página de status de integrações (APIs + MCPs).
+   Reusa .table-scroll/.triage-table/.filter-field/.panel-header-row de
+   triagem.css (já linkado em integracoes.html) — só os badges de estado
+   (configurada?/alcançável?) são específicos desta página. */
+
+.kind-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  text-transform: uppercase;
+}
+.kind-api { border-color: var(--brand); color: var(--brand); }
+.kind-mcp { border-color: #5319e7; color: #5319e7; }
+
+.state-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--rule);
+  white-space: nowrap;
+}
+
+/* configured */
+.state-configured { background: #1a7f37; color: #fff; border-color: #1a7f37; }
+.state-partial { background: #f1c40f; color: #3a2e00; border-color: #f1c40f; }
+.state-not_configured { background: var(--paper-alt); opacity: 0.75; }
+.state-unknown { background: var(--paper-alt); opacity: 0.55; }
+
+/* reachable */
+.state-reachable { background: #1a7f37; color: #fff; border-color: #1a7f37; }
+.state-unreachable { background: #c0392b; color: #fff; border-color: #c0392b; }
+.state-error { background: #e67e22; color: #fff; border-color: #e67e22; }
+.state-not_verified { background: var(--paper-alt); opacity: 0.75; }
+.state-skipped { background: var(--paper-alt); opacity: 0.55; }
+
+.integrations-note {
+  font-size: 0.78rem;
+  opacity: 0.85;
+  max-width: 32rem;
+}
+.integrations-note .missing-vars {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  opacity: 0.8;
+  margin-top: 0.2rem;
+}
+.integrations-note .probe-error {
+  display: block;
+  color: #c0392b;
+  margin-top: 0.2rem;
+}
