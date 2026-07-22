@@ -44,7 +44,7 @@ de follow-up — ver §Issues de follow-up).
 12. [Status nunca é só cor](#12-status-nunca-é-só-cor)
 13. [Foco visível nunca suprimido sem substituto](#13-foco-visível-nunca-suprimido-sem-substituto)
 14. [Dark mode é responsabilidade do design system, não de cada página](#14-dark-mode-é-responsabilidade-do-design-system-não-de-cada-página)
-15. [Conector de conexão (SSE) em toda página com dado ao vivo](#15-conector-de-conexão-sse-em-toda-página-com-dado-ao-vivo)
+15. [Todo dado ao vivo mostra um indicador de status explícito — mas nomeie o que ele mede](#15-todo-dado-ao-vivo-mostra-um-indicador-de-status-explícito--mas-nomeie-o-que-ele-mede)
 16. [Notificação: badge (in-page) < push externo, nunca toast por evento de baixo valor](#16-notificação-badge-in-page--push-externo-nunca-toast-por-evento-de-baixo-valor)
 17. [Dataviz nova consome os tokens gerados, nunca hex solto](#17-dataviz-nova-consome-os-tokens-gerados-nunca-hex-solto)
 
@@ -90,7 +90,7 @@ mas **sem** o cálculo de idade — um stage "current" às 14h e ainda "current"
 ninguém percebeu" porque é a MESMA máquina, mesma sessão do Studio — não
 precisa de um snapshot remoto pra saber, só precisa olhar a hora do último
 evento do buffer de log que a página já tem em memória (`logBuffer`). 🔴
-issue aberta — ver §Issues de follow-up (#1).
+issue aberta — ver §Issues de follow-up (#3871).
 
 ## 3. Estado vazio sempre com o comando/link que resolve
 
@@ -198,6 +198,14 @@ em miniatura via abas (Visão geral primeiro, dado cru mais fundo). ✅
 conforme — usar esta cadeia como modelo ao decidir onde uma feature nova
 entra (raramente deveria pular direto pro chat).
 
+**Gap na camada final:** o cockpit (`renderGate4`/`renderGate6` em
+`edicao.js`) e o chat drawer coexistem na MESMA página, mas o cockpit nunca
+verifica/menciona se a camada final (chat) já tem a resposta esperando ali
+— o editor pode estar olhando pro card de gate estático sem perceber que a
+pergunta correspondente já está pronta pra responder um scroll abaixo. É a
+cadeia "resumo → chat" pulando o vínculo explícito entre as duas pontas.
+🔴 issue aberta — ver §Issues de follow-up (#3877).
+
 ## 9. Alvo de toque ≥24px sempre, ≥44px em controle primário
 
 **Regra (WCAG 2.2 SC 2.5.8 Target Size Minimum, nível AA, exige 24×24px CSS
@@ -215,7 +223,7 @@ o que resulta em área de toque bem abaixo de 24px verticalmente) e
 perto de 24×24px mas não claramente acima. Esse é o único menu de navegação
 GLOBAL do Studio (aparece em toda página) — um alvo pequeno demais aqui
 penaliza toda sessão mobile, não uma página isolada. 🔴 issue aberta — ver
-§Issues de follow-up (#2).
+§Issues de follow-up (#3873).
 
 ## 10. Widget ARIA custom implementa o contrato INTEIRO ou não usa o role
 
@@ -241,7 +249,7 @@ botões `role="tab"`) e `rodada.js` (`.round-kind-tabs`, mesmo `role=
 `aria-selected`, nunca implementam seta/Home/End, e todos os botões ficam no
 mesmo `tabindex` implícito (todos tabuláveis, contra o padrão "só o ativo").
 É a MESMA lição de #2622 regredindo numa superfície mais nova (#3558/#3559
-vieram depois do dashboard). 🔴 issue aberta — ver §Issues de follow-up (#3).
+vieram depois do dashboard). 🔴 issue aberta — ver §Issues de follow-up (#3875).
 
 ## 11. CSS-only vs JS-driven tabs: escolha consciente, mesmo checklist de saída
 
@@ -323,20 +331,40 @@ Studio, os 2 dashboards embutidos, a aba É IA?, os workers `livros`/`cursos`
 contradiz o próprio uso mobile do Studio (à noite, longe do desktop —
 justamente o cenário que justificou o acesso remoto do #3560) e o padrão que
 a organização já cobra de si mesma em outras superfícies com tema
-adaptativo. 🔴 issue aberta — ver §Issues de follow-up (#4).
+adaptativo. 🔴 issue aberta — ver §Issues de follow-up (#3876).
 
-## 15. Conector de conexão (SSE) em toda página com dado ao vivo
+## 15. Todo dado ao vivo mostra um indicador de status explícito — mas nomeie o que ele mede
 
-**Regra:** toda página que consome `/api/events` (SSE) mostra um indicador
-de conexão explícito — ok/conectando/desconectado — nunca assume
-silenciosamente que o stream está vivo.
+**Regra:** nenhuma página com dado que pode ficar desatualizado (SSE,
+polling, `gh`) pode deixar o usuário assumir silenciosamente que está tudo
+atualizado. Um `.dot`/label visível (ok/conectando/desconectado, ou
+equivalente) é obrigatório — mas o rótulo deve refletir o que está REALMENTE
+sendo medido, porque o repo hoje tem 3 mecanismos diferentes atrás do mesmo
+widget visual:
 
-**Onde já é assim:** `.dot`/`#conn-label` em `index.html`, `edicao.html`,
-`revisao.html`, `rodada.html`, `triagem.html`, `integracoes.html` — todas
-reusam a mesma função `setConn(status)` (replicada por módulo, mesmo
-contrato). ✅ conforme, e é o padrão a reusar (ou extrair pra um módulo
-compartilhado, já que a função é idêntica byte-a-byte em pelo menos 3
-arquivos — oportunidade de simplificação, não um bug de UX).
+1. **SSE contínuo de verdade** — `app.js`/`edicao.js`/`rodada.js` abrem
+   `EventSource("/api/events")` e atualizam o dot a cada `open`/`error` do
+   stream; "conectado" aqui significa exatamente isso.
+2. **Status de polling/REST** (`setFetchStatus`, sem SSE nenhum) —
+   `triagem.js`/`integracoes.js` não têm `EventSource` — o dot reflete só o
+   resultado da última chamada (`gh`, `/api/integrations`) e já usa rótulos
+   corretos pro que mede ("erro no gh", "N integrações", não "conectado").
+3. **Status congelado no load inicial** — `revisao.js` chama `setConn("ok"
+   |"down")` só 1x, dentro do `try/catch` de `init()` (comentário no próprio
+   arquivo, achado #3669/#3672: antes disso uma falha de rede deixava o dot
+   preso em "conectando…" pra sempre) — depois do load inicial, o dot NUNCA
+   mais atualiza, mesmo que uma chamada de salvar/lint falhe minutos depois.
+   Usa o MESMO rótulo "conectado"/"desconectado" das páginas com SSE de
+   verdade, o que sugere ao usuário uma garantia de liveness contínua que
+   esta página não oferece.
+
+**Estado atual:** os padrões 1 e 2 são ✅ conforme (cada um mede
+corretamente o que anuncia). O padrão 3 (`revisao.js`) é um ⚠️ gap
+conhecido — o rótulo "conectado" implica mais garantia de frescor do que a
+página realmente mantém; correção seria ou renomear o rótulo pra algo como
+"carregado" (sem prometer liveness), ou passar a reavaliar o status a cada
+ação de rede subsequente (salvar/lint/diff), não só no load inicial. Baixo
+risco (a página funciona; é a mensagem que engana), sem issue própria.
 
 ## 16. Notificação: badge (in-page) < push externo, nunca toast por evento de baixo valor
 
@@ -395,18 +423,15 @@ ficam registrados aqui pra quando alguém tocar o arquivo por outro motivo:
 2. **Cores de status não centralizadas** (regra 17) — consolidar
    verde/amarelo/vermelho/erro em `design-tokens.ts` como
    `STATUS_COLORS` na próxima vez que um desses arquivos for tocado.
-3. **`setConn()` duplicada por módulo** (regra 15) — mesma função
-   byte-idêntica em `app.js`/`edicao.js`/`revisao.js`/`rodada.js`/
-   `triagem.js`/`integracoes.js`. Oportunidade de extrair pra
-   `nav-core.js` ou um `conn-status.js` próprio (puro, testável), não um
-   bug de UX — registrado aqui só porque a auditoria passou por ele.
-4. **Botão "Atualizar É IA?" (`renderEiaRefreshButtonHtml`) some do
-   dashboard-diaria embutido se `data/poll-eia-summary.json` nunca foi
-   gerado** — o botão só aparece dentro do `if (!poll)` negativo (ou seja,
-   quando JÁ há dado); o estado "nunca rodei o script ainda" mostra só o
-   texto instrutivo sem o botão que resolveria isso com 1 clique. Pequeno
-   — o texto já linka o comando certo (regra 3 cumprida via texto), só não
-   oferece o atalho de botão nesse caso específico.
+3. **Indicador de conexão duplicado em 2 famílias quase-idênticas** (regra
+   15) — `setConn(status)` (SSE, mesmo corpo em `app.js`/`edicao.js`/
+   `revisao.js`) e `setFetchStatus(status, label)` (polling/`gh`, mesmo
+   corpo em `rodada.js`/`triagem.js`/`integracoes.js`) fazem
+   essencialmente a mesma coisa (`el.dot.className = "dot " + status`) com
+   assinaturas levemente diferentes. Oportunidade de consolidar numa única
+   função compartilhada (`nav-core.js` ou um `conn-status.js` próprio, puro
+   e testável) — não é um bug de UX, registrado aqui só porque a auditoria
+   passou pelos 6 arquivos.
 
 ---
 
