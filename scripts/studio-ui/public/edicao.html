@@ -33,6 +33,13 @@
       <a href="/">painel</a>.
     </div>
 
+    <!-- #3870: banner de gate pendente no TOPO do cockpit (não só o badge
+         pequeno do rail do chat) — ver gate-chat-bridge.js/renderGateBanner. -->
+    <div id="gate-chat-banner" class="panel gate-chat-banner" hidden>
+      <span id="gate-chat-banner-text"></span>
+      <button type="button" id="gate-chat-banner-btn" hidden>Responder no chat →</button>
+    </div>
+
     <section id="alerts-section" class="panel alerts-panel" hidden>
       <h2>Alertas</h2>
       <p class="hint">

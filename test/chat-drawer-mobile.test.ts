@@ -215,11 +215,11 @@ describe("chat-drawer overlay mobile (#3851)", () => {
       );
     });
 
-    it("prefillMessage e o contrato de window.diariaStudioChat continuam expostos (#3629)", () => {
+    it("prefillMessage e o contrato de window.diariaStudioChat continuam expostos (#3629, +scrollToPendingCard #3870)", () => {
       assert.match(jsBody, /function prefillMessage\(/);
       assert.match(
         jsBody,
-        /window\.diariaStudioChat\s*=\s*\{\s*sendMessage,\s*openDrawer:\s*expandDrawer,\s*prefillMessage,\s*setContext\s*\};/,
+        /window\.diariaStudioChat\s*=\s*\{\s*sendMessage,\s*openDrawer:\s*expandDrawer,\s*prefillMessage,\s*setContext,\s*scrollToPendingCard\s*\};/,
       );
     });
   });

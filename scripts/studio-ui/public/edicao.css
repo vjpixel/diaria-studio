@@ -115,6 +115,49 @@
 }
 .gate-status-idle { opacity: 0.85; }
 
+/* #3870: ponte "Responder no chat" — botão dentro do card de Gate 4/6
+   quando o gate está pendente E há card ativo no chat drawer. */
+.gate-chat-bridge-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.gate-chat-bridge-btn {
+  background: var(--brand);
+  color: var(--on-ink);
+  border: none;
+  border-radius: 6px;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.gate-chat-bridge-btn:hover { filter: brightness(1.08); }
+.gate-chat-bridge-wait {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* #3870: banner de gate pendente no topo do cockpit — mesmo destaque visual
+   de `.gate-status-pending`, mas ocupando a largura da página logo abaixo
+   do statusbar, pra não depender só do badge pequeno do rail do chat. */
+.gate-chat-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  border-color: var(--brand);
+  outline: 2px dashed var(--brand);
+  outline-offset: 2px;
+  font-weight: 600;
+}
+.gate-chat-banner .gate-chat-bridge-btn { flex-shrink: 0; }
+
 .file-list {
   list-style: none;
   margin: 0;
