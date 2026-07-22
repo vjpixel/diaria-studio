@@ -91,7 +91,10 @@ describe("POST /api/painel/eia/refresh — caminho feliz (fetch do worker poll s
   });
 
   it("200 {ok:true,summary} e escreve data/poll-eia-summary.json local", async () => {
-    const res = await fetch(new URL("/api/painel/eia/refresh", server.url), { method: "POST" });
+    // #3882: força bypass do cache (mesma flag que o botão real sempre manda)
+    // — evita que este teste dependa de rodar antes de qualquer outro teste
+    // no mesmo `root`/servidor ter deixado um poll-eia-summary.json fresco.
+    const res = await fetch(new URL("/api/painel/eia/refresh?force=1", server.url), { method: "POST" });
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.ok, true);
@@ -105,12 +108,82 @@ describe("POST /api/painel/eia/refresh — caminho feliz (fetch do worker poll s
   });
 
   it("regressão (guard de publicação): a resposta nunca inclui rastro de push remoto (só summary local)", async () => {
+    // #3882: força bypass do cache — o teste anterior já escreveu
+    // data/poll-eia-summary.json fresco nesse mesmo root; sem force=1 esta
+    // chamada serviria do cache (body ganharia `cached:true`, ver describe
+    // dedicado abaixo), o que não é o que este teste específico investiga.
+    const res = await fetch(new URL("/api/painel/eia/refresh?force=1", server.url), { method: "POST" });
+    const body = await res.json();
+    // O payload é exatamente {ok, summary?, error?, cached?} — nenhum campo
+    // adicional relacionado a KV/Cloudflare/produção (ver
+    // refreshPollEiaSummaryLocal, que nunca importa nem chama
+    // pushEiaEngagementToBrevoKv). Com force=1 o fetch é sempre real, então
+    // `cached` nem aparece (só é setado quando a resposta vem do cache).
+    assert.deepEqual(Object.keys(body).sort(), ["ok", "summary"]);
+  });
+});
+
+describe("POST /api/painel/eia/refresh — cache TTL curto + ?force=1 (#3882)", () => {
+  let root: string;
+  let server: StudioServer;
+  let origFetch: typeof globalThis.fetch;
+  let fetchCallCount: number;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-poll-eia-refresh-cache-"));
+    mkdirSync(join(root, "data", "editions", "260418"), { recursive: true });
+    server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
+
+    origFetch = globalThis.fetch;
+    fetchCallCount = 0;
+    const loopbackHost = new URL(server.url).host;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      const urlStr = String(url);
+      if (urlStr.includes(loopbackHost)) {
+        return origFetch(url as any, init);
+      }
+      fetchCallCount++;
+      if (urlStr.includes("/stats") && urlStr.includes("edition=260418")) {
+        return new Response(JSON.stringify({
+          edition: "260418", total: 10, voted_a: 6, voted_b: 4,
+          correct_answer: "A", correct_count: 6, correct_pct: 60,
+        }), { status: 200 });
+      }
+      return new Response("Not Found", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+  });
+
+  after(async () => {
+    globalThis.fetch = origFetch;
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("1ª chamada (sem cache em disco ainda) -> fetch real ao worker poll", async () => {
+    fetchCallCount = 0;
     const res = await fetch(new URL("/api/painel/eia/refresh", server.url), { method: "POST" });
     const body = await res.json();
-    // O payload é exatamente {ok, summary?, error?} — nenhum campo adicional
-    // relacionado a KV/Cloudflare/produção (ver refreshPollEiaSummaryLocal,
-    // que nunca importa nem chama pushEiaEngagementToBrevoKv).
-    assert.deepEqual(Object.keys(body).sort(), ["ok", "summary"]);
+    assert.equal(body.ok, true);
+    assert.ok(!body.cached, "1ª chamada nunca deve vir do cache — nada em disco ainda");
+    assert.ok(fetchCallCount > 0, "1ª chamada deve ter tocado a rede");
+  });
+
+  it("2ª chamada SEM ?force=1, cache ainda fresco -> serve do disco, NÃO toca rede", async () => {
+    fetchCallCount = 0;
+    const res = await fetch(new URL("/api/painel/eia/refresh", server.url), { method: "POST" });
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.cached, true, "deve reportar cached:true");
+    assert.equal(fetchCallCount, 0, "cache fresco não deveria disparar nenhum fetch de rede");
+  });
+
+  it("?force=1 ignora o cache mesmo fresco -> toca rede de novo (mesma flag que o botão real manda)", async () => {
+    fetchCallCount = 0;
+    const res = await fetch(new URL("/api/painel/eia/refresh?force=1", server.url), { method: "POST" });
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.ok(!body.cached, "force=1 nunca deve reportar cached:true");
+    assert.ok(fetchCallCount > 0, "force=1 deve ignorar o cache e tocar a rede");
   });
 });
 

@@ -93,6 +93,18 @@ function readDefaultWorkerUrl(): string {
 
 const DEFAULT_WORKER_URL = readDefaultWorkerUrl();
 
+// #3882: teto de concorrência dos fetches /stats e /leaderboard (era 5, em
+// chunking — ver mapBounded acima pra por que a pool é mais rápida que o
+// chunking antigo pra latência não-uniforme).
+const FETCH_CONCURRENCY = 6;
+
+// #3882: TTL curto do cache do refresh local — evita reprocessar TODO o fetch
+// (N edições + M meses de leaderboard) se `data/poll-eia-summary.json` já foi
+// escrito há pouco. `force:true` (o botão do Studio manda sempre) ignora o
+// cache e refaz o fetch completo — clique explícito do editor = dado fresco
+// garantido, nunca servido do que já estava em disco.
+const REFRESH_CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutos
+
 /** Editions com editions de teste do editor — excluídas do leaderboard se apareceram
  * como display_name (improvável pós-purge, mas defensivo). */
 const EDITOR_TEST_DISPLAY_NAMES = new Set<string>([
@@ -181,6 +193,36 @@ export function editionsToMonthSlugs(editions: string[]): string[] {
     if (slug) slugs.add(slug);
   }
   return [...slugs].sort();
+}
+
+// ─── Bounded concurrency pool (#3882) ────────────────────────────────────────
+
+/**
+ * Pool de workers com concorrência limitada — roda `fn` para cada item de
+ * `items` mantendo no máximo `concurrency` chamadas em voo simultaneamente.
+ * Diferente do chunking anterior (lotes de N que esperavam o lote INTEIRO
+ * terminar antes de iniciar o próximo), aqui um worker pega o próximo item
+ * assim que fica livre — sem desperdiçar capacidade quando a latência varia
+ * entre itens (ex: edições recentes respondem rápido, edições antigas sem
+ * voto ainda gastam um round-trip de 404). Resultado preserva a ordem
+ * original de `items` (indexado por posição, não por ordem de conclusão).
+ */
+export async function mapBounded<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  async function worker(): Promise<void> {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
 }
 
 // ─── Fetch helpers ────────────────────────────────────────────────────────────
@@ -275,31 +317,34 @@ export async function buildPollEiaSummaryFromApi(
   workerUrl: string = DEFAULT_WORKER_URL,
   brand: string = "diaria", // #2903: propaga pro fetch (clarice = mensal)
 ): Promise<PollEiaSummary> {
-  // 1. Busca stats de cada edição (paralelo com throttle 5 concurrent)
-  const BATCH = 5;
-  const editionResults: PollEiaEditionEntry[] = [];
-
-  for (let i = 0; i < editions.length; i += BATCH) {
-    const batch = editions.slice(i, i + BATCH);
-    const results = await Promise.all(
-      batch.map(async (edition) => {
-        const stats = await fetchEditionStats(workerUrl, edition, brand);
-        if (!stats) return null;
-        return {
-          edition,
-          total_votes: stats.total,
-          voted_a: stats.voted_a,
-          voted_b: stats.voted_b,
-          pct_correct: stats.correct_pct,
-          correct_choice: stats.correct_answer,
-          correct_count: stats.correct_count,
-        } satisfies PollEiaEditionEntry;
-      }),
-    );
-    for (const r of results) {
-      if (r !== null) editionResults.push(r);
-    }
-  }
+  // 1. Busca stats de cada edição — pool de concorrência limitada (#3882: era
+  //    chunking em lotes de 5 que esperava o LOTE INTEIRO terminar antes do
+  //    próximo; a pool `mapBounded` mantém FETCH_CONCURRENCY chamadas em voo o
+  //    tempo todo, refill assim que um slot libera — mais rápido quando a
+  //    latência varia entre edições (recentes com voto vs antigas sem voto)).
+  // Anotação explícita de tipo do retorno (em vez de `satisfies`) — evita que
+  // TS infira o literal com `correct_count` REQUERIDO (a interface o declara
+  // opcional), o que quebraria o type predicate do `.filter` logo abaixo.
+  const statsResults = await mapBounded<string, PollEiaEditionEntry | null>(
+    editions,
+    FETCH_CONCURRENCY,
+    async (edition) => {
+      const stats = await fetchEditionStats(workerUrl, edition, brand);
+      if (!stats) return null;
+      return {
+        edition,
+        total_votes: stats.total,
+        voted_a: stats.voted_a,
+        voted_b: stats.voted_b,
+        pct_correct: stats.correct_pct,
+        correct_choice: stats.correct_answer,
+        correct_count: stats.correct_count,
+      };
+    },
+  );
+  const editionResults: PollEiaEditionEntry[] = statsResults.filter(
+    (r): r is PollEiaEditionEntry => r !== null,
+  );
 
   // Ordena desc (mais recente primeiro) para o dashboard
   editionResults.sort((a, b) => (b.edition > a.edition ? 1 : -1));
@@ -315,31 +360,28 @@ export async function buildPollEiaSummaryFromApi(
   const monthSlugs = editionsToMonthSlugs(editionResults.map((r) => r.edition));
   const lbByNickname = new Map<string, { correct: number; total: number; rank: number }>();
 
-  for (let i = 0; i < monthSlugs.length; i += BATCH) {
-    const batch = monthSlugs.slice(i, i + BATCH);
-    const results = await Promise.all(
-      batch.map((slug) => fetchMonthLeaderboardJson(workerUrl, slug)),
-    );
-    for (const lb of results) {
-      if (!lb) continue;
-      for (const entry of lb.entries) {
-        const name = entry.nickname;
-        // Filtrar display names de teste (defesa; normalmente vazio pós-purge)
-        if (EDITOR_TEST_DISPLAY_NAMES.has(name)) continue;
+  const lbResults = await mapBounded(monthSlugs, FETCH_CONCURRENCY, (slug) =>
+    fetchMonthLeaderboardJson(workerUrl, slug),
+  );
+  for (const lb of lbResults) {
+    if (!lb) continue;
+    for (const entry of lb.entries) {
+      const name = entry.nickname;
+      // Filtrar display names de teste (defesa; normalmente vazio pós-purge)
+      if (EDITOR_TEST_DISPLAY_NAMES.has(name)) continue;
 
-        const existing = lbByNickname.get(name);
-        if (existing) {
-          // Acumula correct+total entre meses; mantém o melhor rank histórico
-          existing.correct += entry.correct;
-          existing.total += entry.total;
-          if (entry.rank < existing.rank) existing.rank = entry.rank;
-        } else {
-          lbByNickname.set(name, {
-            correct: entry.correct,
-            total: entry.total,
-            rank: entry.rank,
-          });
-        }
+      const existing = lbByNickname.get(name);
+      if (existing) {
+        // Acumula correct+total entre meses; mantém o melhor rank histórico
+        existing.correct += entry.correct;
+        existing.total += entry.total;
+        if (entry.rank < existing.rank) existing.rank = entry.rank;
+      } else {
+        lbByNickname.set(name, {
+          correct: entry.correct,
+          total: entry.total,
+          rank: entry.rank,
+        });
       }
     }
   }
@@ -377,6 +419,13 @@ export interface RefreshPollEiaLocalOptions {
   /** Base URL do worker poll — injetável pra testes/local (mesmo uso do
    * `--worker-url` do CLI). Default: `platform.config.json` ou o literal. */
   workerUrl?: string;
+  /** #3882: ignora o cache TTL (`REFRESH_CACHE_TTL_MS`) e força um fetch
+   * completo mesmo se `data/poll-eia-summary.json` ainda estiver fresco. O
+   * botão "Atualizar É IA?" do Studio manda `force:true` sempre (via
+   * `?force=1`) — clique explícito nunca deve voltar dado velho. Default
+   * `false` — sem essa flag, um caller que só quer o snapshot mais recente
+   * (sem garantir refresh) aproveita o cache. */
+  force?: boolean;
 }
 
 export interface RefreshPollEiaLocalResult {
@@ -385,6 +434,29 @@ export interface RefreshPollEiaLocalResult {
   summary?: PollEiaSummary;
   /** Presente só quando `ok === false` — mensagem fail-soft (nunca lança). */
   error?: string;
+  /** #3882: `true` quando a resposta veio do cache em disco (arquivo ainda
+   * dentro do TTL, nenhum fetch novo ao worker poll) — ausente/false quando
+   * houve fetch real. */
+  cached?: boolean;
+}
+
+/**
+ * #3882: lê `data/poll-eia-summary.json` e devolve o summary já parseado se
+ * `updated_at` ainda está dentro do TTL — `null` caso o arquivo não exista,
+ * esteja corrompido, ou tenha expirado (qualquer um desses casos cai de volta
+ * pro fetch completo normal). Nunca lança.
+ */
+function readCachedSummaryIfFresh(path: string): PollEiaSummary | null {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as PollEiaSummary;
+    if (!parsed.updated_at) return null;
+    const ageMs = Date.now() - new Date(parsed.updated_at).getTime();
+    if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > REFRESH_CACHE_TTL_MS) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -405,6 +477,12 @@ export interface RefreshPollEiaLocalResult {
  * Fail-soft total: nunca lança. `data/editions/` ausente, nenhuma edição
  * encontrada, falha de rede ao buscar do worker poll, ou falha de escrita em
  * disco — tudo volta como `{ok:false, error}` em vez de propagar exceção.
+ *
+ * #3882: cache TTL curto (`REFRESH_CACHE_TTL_MS`) — se `data/poll-eia-summary.json`
+ * já existe e ainda está fresco, devolve o conteúdo em disco sem tocar rede
+ * (`cached:true`), a menos que `opts.force` seja `true`. Loga (Passo 0 de
+ * diagnóstico) quantas edições o fetch real percorre e quanto tempo leva, pra
+ * distinguir se o gargalo é nº de edições ou latência por chamada.
  */
 export async function refreshPollEiaSummaryLocal(
   opts: RefreshPollEiaLocalOptions = {},
@@ -412,12 +490,21 @@ export async function refreshPollEiaSummaryLocal(
   const rootDir = opts.rootDir ?? ROOT;
   const dataDir = join(rootDir, "data");
   const editionsDir = join(dataDir, "editions");
+  const outLocalPath = join(dataDir, "poll-eia-summary.json");
 
   if (!existsSync(editionsDir)) {
     return {
       ok: false,
       error: "data/editions/ não encontrado — verifique se a junction OneDrive está montada (ver CLAUDE.md, passo 2b).",
     };
+  }
+
+  if (!opts.force) {
+    const cached = readCachedSummaryIfFresh(outLocalPath);
+    if (cached) {
+      console.log(`[eia-refresh] servindo do cache (fresco, < ${REFRESH_CACHE_TTL_MS / 1000}s) — sem fetch novo`);
+      return { ok: true, summary: cached, cached: true };
+    }
   }
 
   const editions = discoverEditions(editionsDir);
@@ -427,6 +514,11 @@ export async function refreshPollEiaSummaryLocal(
 
   const workerUrl = opts.workerUrl ?? DEFAULT_WORKER_URL;
 
+  // Passo 0 (#3882): dimensiona o fetch — quantas edições percorre e quanto
+  // tempo leva, pra saber se o gargalo real é nº de edições ou latência/chamada.
+  const t0 = Date.now();
+  console.log(`[eia-refresh] ${editions.length} edições a percorrer (worker: ${workerUrl}, concorrência: ${FETCH_CONCURRENCY})`);
+
   let summary: PollEiaSummary;
   try {
     summary = await buildPollEiaSummaryFromApi(editions, workerUrl);
@@ -434,7 +526,8 @@ export async function refreshPollEiaSummaryLocal(
     return { ok: false, error: `falha buscando dados do worker poll: ${(e as Error).message}` };
   }
 
-  const outLocalPath = join(dataDir, "poll-eia-summary.json");
+  console.log(`[eia-refresh] concluído em ${Date.now() - t0}ms (${editions.length} edições percorridas, ${summary.editions.length} com dados)`);
+
   try {
     mkdirSync(dirname(outLocalPath), { recursive: true });
     writeFileSync(outLocalPath, JSON.stringify(summary, null, 2) + "\n", "utf8");

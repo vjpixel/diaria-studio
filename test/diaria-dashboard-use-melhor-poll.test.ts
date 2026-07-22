@@ -644,6 +644,12 @@ describe("renderDashboardHtml — botão + script 'Atualizar É IA?' são exclus
     assert.ok(panel.includes("eia-refresh-btn"), "o botão deve estar dentro do panel-eia");
   });
 
+  test("#3882: script SEMPRE manda ?force=1 — clique explícito nunca deve ser servido do cache TTL do servidor", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData(), { studioMode: true });
+    assert.match(html, /fetch\('\/api\/painel\/eia\/refresh\?force=1'/, "o fetch do botão deve incluir ?force=1");
+  });
+
   test("renderDashboardHtml(data, {studioMode:false}) explícito é idêntico ao default (sem botão)", async () => {
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeMinimalData(), { studioMode: false });
