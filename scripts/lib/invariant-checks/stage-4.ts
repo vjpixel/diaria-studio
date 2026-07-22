@@ -11,6 +11,12 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { readMarker } from "../pipeline-state.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { lintIntroCount } from "../newsletter-count.ts";
+import {
+  extractEiaMirrorBlock,
+  parseEiaMirrorBlock,
+  parseEIA,
+  fallbackEIA,
+} from "../newsletter-parse.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
 import {
   checkTitlePublisherSuffix,
@@ -240,6 +246,80 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
   }
 
   return [];
+}
+
+/**
+ * #3825: o bloco `**É IA?**` em `02-reviewed.md` é só espelho/preview pro
+ * editor — `extractContent` (newsletter-parse.ts) SEMPRE lê o crédito real
+ * (legenda + "Resultado da última edição") de `01-eia.md`, nunca do mirror.
+ * Nada garantia que os dois ficassem sincronizados: o editor corrige a
+ * legenda em `02-reviewed.md` (fluxo natural — é a aba que o Studio abre),
+ * `01-eia.md` nunca é tocado, e o HTML publicado sai com o crédito ANTIGO
+ * sem nenhum aviso (incidente real 260722, erro intencional da legenda da
+ * ave corrigido só em 02-reviewed.md — reproduzido em
+ * `test/stage-4-eia-credit-synced.test.ts`).
+ *
+ * Reusa `parseEIA`/`fallbackEIA` (mesmos parsers de `extractContent`) dos
+ * dois lados via `parseEiaMirrorBlock`/`extractEiaMirrorBlock` — garante que
+ * qualquer divergência reportada é de CONTEÚDO, não de regra de parsing
+ * diferente entre os dois lados.
+ *
+ * Sem bloco mirror em `02-reviewed.md` (edição legada, ou stitch ainda não
+ * rodou) → `[]`, nada a comparar. Severity "error" (gate-blocking) — a
+ * divergência silenciosa é exatamente o tipo de falha que #1007 Fase 1 existe
+ * pra impedir: o email sai errado sem que ninguém veja o aviso antes.
+ */
+function checkEiaCreditSynced(editionDir: string): InvariantViolation[] {
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  const eiaPath = resolve(editionDir, "01-eia.md");
+  if (!existsSync(reviewedPath)) return [];
+
+  const mirrorBlock = extractEiaMirrorBlock(readFileSync(reviewedPath, "utf8"));
+  if (!mirrorBlock) return [];
+
+  const real = existsSync(eiaPath)
+    ? parseEIA(readFileSync(eiaPath, "utf8"), editionDir)
+    : fallbackEIA(editionDir);
+  const mirror = parseEiaMirrorBlock(mirrorBlock, editionDir);
+
+  const normalize = (s: string) => s.trim().replace(/\s+/g, " ");
+  const normalizeLine = (s?: string) => (s ? normalize(s) : "");
+
+  const violations: InvariantViolation[] = [];
+
+  if (normalize(real.credit) !== normalize(mirror.credit)) {
+    violations.push({
+      rule: "eia-credit-synced",
+      message:
+        `Bloco **É IA?** de 02-reviewed.md diverge do crédito real em 01-eia.md ` +
+        `(fonte que extractContent/render-newsletter-html.ts de fato usa — o bloco em ` +
+        `02-reviewed.md é só um espelho pro editor, editá-lo NÃO afeta o email publicado). ` +
+        `02-reviewed.md (cosmético): "${mirror.credit}". ` +
+        `01-eia.md (real, vai pro email): "${real.credit}". ` +
+        `Fix: editar 01-eia.md com a legenda correta — editar só 02-reviewed.md não tem ` +
+        `efeito no email enviado (incidente 260722, #3825).`,
+      source_issue: "#3825",
+      severity: "error",
+      file: eiaPath,
+    });
+  }
+
+  if (normalizeLine(real.prevResultLine) !== normalizeLine(mirror.prevResultLine)) {
+    violations.push({
+      rule: "eia-prev-result-line-synced",
+      message:
+        `Linha "Resultado da última edição" do bloco **É IA?** em 02-reviewed.md diverge ` +
+        `de 01-eia.md (mesma fonte real do render, ver eia-credit-synced acima). ` +
+        `02-reviewed.md: "${mirror.prevResultLine ?? "(ausente)"}". ` +
+        `01-eia.md: "${real.prevResultLine ?? "(ausente)"}". ` +
+        `Fix: editar 01-eia.md — editar só 02-reviewed.md não tem efeito no email enviado (#3825).`,
+      source_issue: "#3825",
+      severity: "error",
+      file: eiaPath,
+    });
+  }
+
+  return violations;
 }
 
 /**
@@ -946,6 +1026,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkImageContentFresh,
   },
   {
+    id: "eia-credit-synced",
+    description: "crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825)",
+    source_issue: "#3825",
+    stage: 4,
+    run: checkEiaCreditSynced,
+  },
+  {
     id: "intro-count-consistent",
     description: "intro line Z = contagem real de items visíveis (#1578)",
     source_issue: "#1578",
@@ -1024,6 +1111,7 @@ export {
   checkPublicImagesPopulated,
   checkSocialHashFresh,
   checkImageContentFresh,
+  checkEiaCreditSynced,
   checkIntroCountConsistent,
   checkNarrativeNotGenericPlaceholder,
   checkTruncatedSecondaryItemSummary,
