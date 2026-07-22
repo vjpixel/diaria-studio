@@ -32,6 +32,8 @@ const el = {
   logList: document.getElementById("log-list"),
   currentEditionLink: document.getElementById("current-edition-link"),
   currentEditionReviewLink: document.getElementById("current-edition-review-link"),
+  error: document.getElementById("app-error"),
+  retryBtn: document.getElementById("app-retry-btn"),
 };
 
 let lastCurrentEdition = null;
@@ -156,30 +158,48 @@ function scheduleStateRefetch() {
   }, 500);
 }
 
+// #3886: index/app.js não tinha NENHUM banner de erro dedicado (só o dot de
+// conexão) — o SSE nunca abrindo (server down, endpoint 404, etc.) deixava a
+// página inteira em branco com o único sinal sendo "desconectado" no dot,
+// fácil de não notar. `connect()` agora fecha a conexão anterior antes de
+// abrir uma nova (idempotente — clique de retry nunca duplica EventSource) e
+// alterna o banner junto com o dot.
+let eventSource = null;
+
 function connect() {
-  const source = new EventSource("/api/events");
+  if (eventSource) eventSource.close();
+  eventSource = new EventSource("/api/events");
 
-  source.addEventListener("open", () => setConn("ok"));
-  source.addEventListener("error", () => setConn("down"));
-
-  source.addEventListener("state", (ev) => {
+  eventSource.addEventListener("open", () => {
     setConn("ok");
+    el.error.hidden = true;
+  });
+  eventSource.addEventListener("error", () => {
+    setConn("down");
+    el.error.hidden = false;
+  });
+
+  eventSource.addEventListener("state", (ev) => {
+    setConn("ok");
+    el.error.hidden = true;
     onState(JSON.parse(ev.data));
   });
 
-  source.addEventListener("log-init", (ev) => {
+  eventSource.addEventListener("log-init", (ev) => {
     const events = JSON.parse(ev.data);
     for (const e of events) appendLogRow(e);
   });
 
-  source.addEventListener("log", (ev) => {
+  eventSource.addEventListener("log", (ev) => {
     appendLogRow(JSON.parse(ev.data));
     scheduleStateRefetch();
   });
 
-  source.addEventListener("plan", () => {
+  eventSource.addEventListener("plan", () => {
     scheduleStateRefetch();
   });
 }
+
+el.retryBtn.addEventListener("click", () => connect());
 
 connect();

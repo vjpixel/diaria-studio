@@ -29,6 +29,15 @@
   </header>
 
   <main>
+    <!-- #3886: checkEditionExists() podia lançar (rede/5xx) ANTES de
+         bindEvents()/renderTabs() rodarem — sem este banner + retry a tela
+         ficava morta em silêncio (painel sem SSE, diferente de app.js/
+         edicao.js, então não tem chance de se recuperar sozinho). -->
+    <div id="rv-load-error" class="panel alert-banner" role="alert" hidden>
+      Falha ao verificar a edição — verifique a conexão.
+      <button type="button" id="rv-retry-btn" class="retry-btn">Tentar de novo</button>
+    </div>
+
     <div id="rv-not-found" class="panel alert-banner" role="alert" hidden>
       Edição não encontrada no disco. Confira o AAMMDD na URL ou volte pro
       <a href="/">painel</a>.

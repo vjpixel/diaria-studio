@@ -35,6 +35,15 @@
   </header>
 
   <main>
+    <!-- #3886: banner dedicado pra quando o SSE de /api/events não consegue
+         conectar — antes só o dot "desconectado" sinalizava, sem ação
+         explícita nem `id="error"` nenhum nesta página (grep confirmou
+         zero ocorrências antes deste fix). -->
+    <div id="app-error" class="panel alert-banner" role="alert" hidden>
+      Falha ao conectar com o servidor do Studio — os dados desta página podem estar desatualizados.
+      <button type="button" id="app-retry-btn" class="retry-btn">Tentar de novo</button>
+    </div>
+
     <section class="panel">
       <h1>Edição corrente <a id="current-edition-link" href="#" style="display:none">abrir cockpit →</a> <a id="current-edition-review-link" href="#" style="display:none">revisar conteúdo →</a></h1>
       <div id="timeline" class="timeline"></div>

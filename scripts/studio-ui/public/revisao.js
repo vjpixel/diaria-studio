@@ -72,6 +72,8 @@ const el = {
   connDot: document.getElementById("conn-dot"),
   connLabel: document.getElementById("conn-label"),
   notFound: document.getElementById("rv-not-found"),
+  loadError: document.getElementById("rv-load-error"),
+  retryBtn: document.getElementById("rv-retry-btn"),
   tabs: document.getElementById("rv-tabs"),
   fileStatus: document.getElementById("rv-file-status"),
   htmlFinalNote: document.getElementById("rv-html-final-note"),
@@ -748,7 +750,11 @@ function bindEvents() {
 async function checkEditionExists() {
   const res = await fetch(`/api/editions/${encodeURIComponent(aammdd)}`);
   if (res.status === 404 || res.status === 400) return false;
-  return res.ok;
+  // #3886: antes `return res.ok` — um 5xx virava "não existe" em silêncio
+  // (banner errado, sem retry). Agora propaga pro catch de init() abaixo,
+  // que já era o único caminho de fetch inicial FORA de qualquer try/catch.
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return true;
 }
 
 async function init() {
@@ -762,7 +768,20 @@ async function init() {
   document.title = `Diar.ia Studio — Revisão ${aammdd}`;
   el.backLink.href = `/edicao/${aammdd}`;
 
-  const exists = await checkEditionExists();
+  // #3886: checkEditionExists() ficava FORA do try/catch de init() (que só
+  // começava depois de bindEvents()/renderTabs()) — uma falha de rede aqui
+  // interrompia init() antes de bindEvents() rodar: nenhum listener
+  // conectado, nenhum retry, tela morta em silêncio (o painel não tem SSE
+  // pra "salvar" o estado depois, diferente de app.js/edicao.js).
+  let exists;
+  try {
+    exists = await checkEditionExists();
+    el.loadError.hidden = true;
+  } catch (err) {
+    console.error("init() falhou ao checar existência da edição:", err);
+    el.loadError.hidden = false;
+    return;
+  }
   el.notFound.hidden = exists;
   if (!exists) return;
 
@@ -785,5 +804,7 @@ async function init() {
     setConn("down");
   }
 }
+
+el.retryBtn.addEventListener("click", () => { init(); });
 
 init();
