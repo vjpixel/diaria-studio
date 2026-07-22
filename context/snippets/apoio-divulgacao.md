@@ -22,6 +22,16 @@ por pertencimento, não por transação a R$5/mês. Substitui a versão anterior
 
 Sem `**...**` embrulhando o BLOCO INTEIRO — texto plano no nível do bloco vira
 peso normal (#3373). Multi-parágrafo, não passa pelo bold-wrap de bloco só-texto.
+
+#3824 (260721): a issue pediu tornar permanente uma versão com lista de
+bullets de recompensas (Artigo especial do mês / Panorama do Mês / Acesso
+antecipado), aprovada manualmente no gate da edição 260722. Esse formato é o
+que #3688 removeu deliberadamente 2 dias antes (decisão editorial 260720,
+"lista flat era imprecisa... patronato converte por pertencimento, não por
+transação") — reintroduzi-lo aqui reverteria essa decisão sem consulta ao
+editor. Conteúdo deste arquivo NÃO foi alterado por #3824; o conflito entre
+as duas versões (bullets vs. missão) segue pendente de decisão do editor, no
+mesmo gate onde o slot default (item 2 de #3824) também será decidido.
 -->
 
 Apoie a diar.ia.br
