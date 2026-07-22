@@ -14,6 +14,14 @@ import {
   DIVERGENCE_CONFIRM_MESSAGE,
   SAVE_CONFLICT_CONFIRM_MESSAGE,
 } from "./revisao-guards.js";
+import {
+  DESTAQUE_HEADLINE_SELECTOR,
+  MAX_EDITABLE_DESTAQUES,
+  sanitizeInlineTitleText,
+  shouldSaveInlineTitle,
+  buildDestaqueTitleSavePayload,
+  buildInlineTitleConflictMessage,
+} from "./revisao-inline-edit.js";
 
 const SLUGS = ["categorized", "reviewed", "social", "html-final"];
 const FILE_LABELS = {
@@ -77,6 +85,7 @@ const el = {
   previewFrame: document.getElementById("rv-preview-frame"),
   previewRefreshBtn: document.getElementById("rv-preview-refresh-btn"),
   previewHint: document.getElementById("rv-preview-hint"),
+  inlineEditStatus: document.getElementById("rv-inline-edit-status"),
   swapPromote: document.getElementById("rv-swap-promote"),
   swapDemote: document.getElementById("rv-swap-demote"),
   swapDrop: document.getElementById("rv-swap-drop"),
@@ -131,6 +140,15 @@ const PREVIEW_HINTS = {
     "Renderizado a partir de <code>03-social.md</code> salvo no disco (mesmo renderer " +
     "da Etapa 4, #1800) — posts de LinkedIn/Facebook/Instagram lado a lado, com quebras " +
     "de linha e hashtags como aparecem publicados. Salve antes de atualizar o preview.",
+  // #3806 (Opção B spike): só a aba "reviewed" tem os títulos de destaque
+  // editáveis diretamente no preview (clique no título, edite, Enter ou
+  // clique fora salva) — o MD por trás continua a fonte da verdade, a edição
+  // reescreve só a região do título (ver setupInlineTitleEditing() abaixo).
+  reviewed:
+    "Renderizado a partir de <code>02-reviewed.md</code> salvo no disco (mesmo caminho " +
+    "do Stage 4) — salve antes de atualizar o preview. <strong>Títulos de destaque são " +
+    "editáveis aqui</strong>: clique no título, edite, e saia do campo (ou Enter) pra " +
+    "salvar direto no Markdown, sem abrir a aba de texto cru.",
   default:
     "Renderizado a partir de <code>02-reviewed.md</code> salvo no disco (mesmo caminho " +
     "do Stage 4) — salve antes de atualizar o preview. Exceção: com a aba " +
@@ -496,6 +514,137 @@ async function refreshPreview() {
   }
 }
 
+// #3806 (Opção B spike) — edição visual do título de destaque, direto no
+// preview renderizado (iframe), sem expor o Markdown cru pro caso comum.
+//
+// Design (ver corpo do #3806 pro rationale completo):
+//   - Só habilitado quando `currentSlug === "reviewed"` — a única aba cujo
+//     conteúdo do preview (sempre derivado de 02-reviewed.md, ver
+//     buildReviewPreviewHtml em studio-review.ts) corresponde exatamente ao
+//     arquivo que a edição inline salva. Nas abas categorized/social/
+//     html-final, a edição inline fica DESLIGADA (mesmo preview de e-mail
+//     aparece pra categorized, mas editar ali salvaria em reviewed sob um
+//     rótulo de aba diferente — confuso, evitado de propósito).
+//   - ZERO mudança no render de produção (`newsletter-render-html.ts`): o
+//     `<a class="headline">` já existe no HTML normal — este código só
+//     pós-processa o DOM do iframe DEPOIS que ele carrega, adicionando
+//     `contenteditable` + listeners. O e-mail de verdade nunca passa por
+//     este arquivo.
+//   - Salva via PUT .../review/reviewed/destaque-title (server.ts), que
+//     reusa saveReviewFile por baixo — MESMO guard de conflito mtime
+//     (#3729) do editor de MD completo. Em caso de 409, esta 1ª fatia
+//     SEMPRE recarrega a versão do disco (sem oferecer "sobrescrever mesmo
+//     assim") — simplificação deliberada do spike, ver
+//     buildInlineTitleConflictMessage em revisao-inline-edit.js.
+//   - Depois de salvar (sucesso OU conflito), resincroniza o textarea/
+//     baseline via loadFile("reviewed", {force:true}) — reusa o caminho já
+//     testado em vez de duplicar reconciliação de estado aqui.
+
+/** Texto do título no momento em que o campo recebeu foco — usado por
+ * `shouldSaveInlineTitle` pra não disparar um PUT quando o blur não mudou
+ * nada de fato. `WeakMap` (não Map comum): entries somem sozinhas quando o
+ * elemento é descartado (próxima navegação do iframe recria os `<a>` do
+ * zero) — sem isso vazaria uma referência por refresh de preview. */
+const inlineTitleOriginalTextByEl = new WeakMap();
+
+async function saveInlineTitle(anchorEl, n) {
+  const original = inlineTitleOriginalTextByEl.get(anchorEl) ?? "";
+  const sanitized = sanitizeInlineTitleText(anchorEl.textContent);
+  if (!shouldSaveInlineTitle(sanitized, original)) return;
+
+  el.inlineEditStatus.textContent = `Salvando título D${n}…`;
+  el.inlineEditStatus.className = "hint";
+  const payload = buildDestaqueTitleSavePayload(n, sanitized, loadedModifiedAt);
+  let response;
+  try {
+    response = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/reviewed/destaque-title`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    el.inlineEditStatus.textContent = `Erro ao salvar título D${n}: ${(err && err.message) || err}`;
+    el.inlineEditStatus.className = "hint rv-inline-edit-err";
+    anchorEl.textContent = original; // reverte visualmente — DOM não pode divergir do disco
+    return;
+  }
+  const { ok, status, body } = response;
+
+  if (ok && body && body.ok) {
+    el.inlineEditStatus.textContent = `Título D${n} salvo ${fmtTime(body.modifiedAt)}.`;
+    el.inlineEditStatus.className = "hint rv-inline-edit-ok";
+    // Resincroniza textarea/baseline/lints com o disco (fonte única de
+    // verdade) — reusa loadFile() já testado em vez de duplicar
+    // reconciliação de estado aqui. `dirty` forçado a false ANTES: esta
+    // edição não tem relação com um estado "não salvo" do textarea do MD.
+    if (currentSlug === "reviewed") {
+      dirty = false;
+      await loadFile("reviewed", { force: true });
+    }
+    return;
+  }
+  if (status === 409) {
+    el.inlineEditStatus.textContent = buildInlineTitleConflictMessage(n);
+    el.inlineEditStatus.className = "hint rv-inline-edit-err";
+    dirty = false;
+    if (currentSlug === "reviewed") await loadFile("reviewed", { force: true });
+    return;
+  }
+  el.inlineEditStatus.textContent = `Erro ao salvar título D${n}: ${(body && body.error) || "falha desconhecida"}`;
+  el.inlineEditStatus.className = "hint rv-inline-edit-err";
+  anchorEl.textContent = original; // reverte visualmente — DOM não pode divergir do disco
+}
+
+/** Injeta um `<style>` mínimo no `iframe.contentDocument` marcando os
+ * títulos como editáveis (outline tracejado + cursor de texto) — só
+ * afeta o preview DENTRO do iframe do Studio, nunca o e-mail real (este CSS
+ * não existe em nenhum lugar que a pipeline de publicação toque). */
+function injectInlineEditAffordanceStyle(doc) {
+  const style = doc.createElement("style");
+  style.textContent =
+    `${DESTAQUE_HEADLINE_SELECTOR}[contenteditable="true"]{outline:1px dashed #9a8a5a;` +
+    `outline-offset:3px;cursor:text;border-radius:2px;}` +
+    `${DESTAQUE_HEADLINE_SELECTOR}[contenteditable="true"]:focus{outline:2px solid #2a8f5c;}`;
+  doc.head.appendChild(style);
+}
+
+/** Pós-processa o DOM do iframe (só quando `currentSlug === "reviewed"`),
+ * tornando os primeiros `MAX_EDITABLE_DESTAQUES` títulos editáveis.
+ * Fail-soft: chamado dentro de um try/catch pelo caller (listener de
+ * 'load' do iframe) — qualquer exceção aqui (ex: iframe cross-origin por
+ * algum motivo inesperado) não deveria quebrar o resto do painel. */
+function setupInlineTitleEditing() {
+  if (currentSlug !== "reviewed") return;
+  const doc = el.previewFrame.contentDocument;
+  if (!doc) return;
+  injectInlineEditAffordanceStyle(doc);
+  const anchors = doc.querySelectorAll(DESTAQUE_HEADLINE_SELECTOR);
+  anchors.forEach((anchorEl, i) => {
+    const n = i + 1;
+    if (n > MAX_EDITABLE_DESTAQUES) return;
+    anchorEl.setAttribute("contenteditable", "true");
+    anchorEl.dataset.destaqueN = String(n);
+    // Não navegar pro link real ao clicar pra editar (o próprio <a> aponta
+    // pra URL da fonte — é o comportamento do e-mail publicado, indesejado
+    // aqui dentro do preview editável).
+    anchorEl.addEventListener("click", (ev) => ev.preventDefault());
+    anchorEl.addEventListener("focus", () => {
+      inlineTitleOriginalTextByEl.set(anchorEl, anchorEl.textContent);
+    });
+    anchorEl.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault(); // título é 1 linha só — Enter salva, não quebra linha
+        anchorEl.blur();
+      }
+    });
+    anchorEl.addEventListener("blur", () => {
+      saveInlineTitle(anchorEl, n).catch((err) => {
+        console.error(`saveInlineTitle(D${n}) falhou:`, err);
+      });
+    });
+  });
+}
+
 function activateSidePane(pane) {
   el.sideTabs.querySelectorAll(".rv-tab").forEach((btn) => btn.classList.toggle("active", btn.dataset.pane === pane));
   el.paneLint.hidden = pane !== "lint";
@@ -584,6 +733,17 @@ function bindEvents() {
   el.lintBtn.addEventListener("click", runLints);
   el.resetBaselineBtn.addEventListener("click", resetBaselineCurrent);
   el.previewRefreshBtn.addEventListener("click", () => { refreshPreview().catch(showPreviewError); });
+  // #3806: cada navegação do iframe (`refreshPreview()` reatribui `src`)
+  // dispara um 'load' novo — reanexar contenteditable/listeners no DOM
+  // recém-criado do documento novo (o anterior, com seus listeners, já foi
+  // descartado junto com o documento antigo).
+  el.previewFrame.addEventListener("load", () => {
+    try {
+      setupInlineTitleEditing();
+    } catch (err) {
+      console.error("setupInlineTitleEditing() falhou:", err);
+    }
+  });
   el.swapPreviewBtn.addEventListener("click", () => runSwap(true));
   el.swapApplyBtn.addEventListener("click", () => runSwap(false));
   el.titleFillBtn.addEventListener("click", fillRewriteTitlePrompt);

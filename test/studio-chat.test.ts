@@ -9,9 +9,12 @@
  * pode ser mockada ou coberta por um teste de contrato do formato de
  * evento" — é exatamente o que este arquivo faz).
  */
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import type { CanUseTool, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import type { CanUseTool, HookCallback, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   parseChatRequestBody,
   parseChatAnswerRequestBody,
@@ -35,6 +38,13 @@ import {
   appendChatHistoryEvent,
   getChatHistory,
   clearChatHistory,
+  extractFilePathInput,
+  isGuardedReviewPath,
+  evaluateEditGuard,
+  recordKnownFileMtime,
+  getKnownFileMtime,
+  clearKnownFileMtimeTracking,
+  EDIT_GUARD_STALE_MESSAGE,
   type ChatWireEvent,
   type ChatPermissionRequestEvent,
   type QueryFn,
@@ -1252,5 +1262,229 @@ describe("gate de tool (#3804) — Bash/etc. vira card aprovar/negar, não denia
 
     // id inexistente → erro.
     assert.equal(resolvePendingToolPermission(ROOT, "tu-nao-existe", "allow").ok, false);
+  });
+});
+
+describe("guard de frescor de arquivo revisável (#3806) — funções puras", () => {
+  it("extractFilePathInput: extrai file_path de Read/Edit/Write, null pra shape estranho", () => {
+    assert.equal(extractFilePathInput({ file_path: "/a/b.md" }), "/a/b.md");
+    assert.equal(extractFilePathInput({ file_path: "  " }), null);
+    assert.equal(extractFilePathInput({ command: "ls" }), null);
+    assert.equal(extractFilePathInput(null), null);
+    assert.equal(extractFilePathInput("string crua"), null);
+    assert.equal(extractFilePathInput(undefined), null);
+  });
+
+  it("isGuardedReviewPath: só os 4 arquivos revisáveis sob data/editions/{AAMMDD}/", () => {
+    const root = "/repo";
+    assert.equal(isGuardedReviewPath(root, resolve(root, "data/editions/260720/02-reviewed.md")), true);
+    assert.equal(isGuardedReviewPath(root, resolve(root, "data/editions/260720/01-categorized.md")), true);
+    assert.equal(isGuardedReviewPath(root, resolve(root, "data/editions/260720/03-social.md")), true);
+    assert.equal(
+      isGuardedReviewPath(root, resolve(root, "data/editions/260720/_internal/newsletter-final.html")),
+      true,
+    );
+    // fora do escopo: outro arquivo qualquer da edição, mesmo sob data/editions/.
+    assert.equal(isGuardedReviewPath(root, resolve(root, "data/editions/260720/04-d1-2x1.jpg")), false);
+    // AAMMDD com formato errado.
+    assert.equal(isGuardedReviewPath(root, resolve(root, "data/editions/26072/02-reviewed.md")), false);
+    // fora de data/editions inteiramente — scripts do repo nunca são guardados.
+    assert.equal(isGuardedReviewPath(root, resolve(root, "scripts/studio-ui/studio-chat.ts")), false);
+    // path fora do rootDir.
+    assert.equal(isGuardedReviewPath(root, "/outro/lugar/data/editions/260720/02-reviewed.md"), false);
+  });
+
+  it("evaluateEditGuard: libera quando fora do escopo, sem baseline, ou mtimes iguais; bloqueia só na divergência real", () => {
+    assert.equal(
+      evaluateEditGuard({ filePath: "x", isGuarded: false, lastReadMtime: "t0", currentMtime: "t1" }).blocked,
+      false,
+      "fora do escopo (não é arquivo revisável) nunca bloqueia",
+    );
+    assert.equal(
+      evaluateEditGuard({ filePath: "x", isGuarded: true, lastReadMtime: undefined, currentMtime: "t1" }).blocked,
+      false,
+      "sem baseline (sessão nunca leu este arquivo) — nada a comparar, libera",
+    );
+    assert.equal(
+      evaluateEditGuard({ filePath: "x", isGuarded: true, lastReadMtime: "t0", currentMtime: null }).blocked,
+      false,
+      "arquivo sumiu do disco — fora do escopo deste guard",
+    );
+    assert.equal(
+      evaluateEditGuard({ filePath: "x", isGuarded: true, lastReadMtime: "t0", currentMtime: "t0" }).blocked,
+      false,
+      "mtimes iguais — sem divergência",
+    );
+    const blocked = evaluateEditGuard({ filePath: "02-reviewed.md", isGuarded: true, lastReadMtime: "t0", currentMtime: "t1" });
+    assert.equal(blocked.blocked, true);
+    assert.equal(blocked.reason, EDIT_GUARD_STALE_MESSAGE("02-reviewed.md"));
+    assert.match(blocked.reason!, /releia/i);
+  });
+
+  it("recordKnownFileMtime/getKnownFileMtime/clearKnownFileMtimeTracking: Maps isolados por rootDir", () => {
+    const A = "/tmp/mtime-map-a";
+    const B = "/tmp/mtime-map-b";
+    assert.equal(getKnownFileMtime(A, "/a/f.md"), undefined);
+    recordKnownFileMtime(A, "/a/f.md", "2026-01-01T00:00:00.000Z");
+    assert.equal(getKnownFileMtime(A, "/a/f.md"), "2026-01-01T00:00:00.000Z");
+    assert.equal(getKnownFileMtime(B, "/a/f.md"), undefined, "não vaza entre rootDirs");
+    clearKnownFileMtimeTracking(A);
+    assert.equal(getKnownFileMtime(A, "/a/f.md"), undefined);
+  });
+});
+
+describe("guard de frescor (#3806) — fim-a-fim via runChatTurn + hooks reais (fs de verdade)", () => {
+  let root: string;
+  let filePath: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-chat-editguard-"));
+    const editionDir = resolve(root, "data", "editions", "260721");
+    mkdirSync(editionDir, { recursive: true });
+    filePath = resolve(editionDir, "02-reviewed.md");
+    writeFileSync(filePath, "conteúdo inicial", "utf8");
+  });
+  afterEach(() => {
+    clearKnownFileMtimeTracking(root);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Monta um turno de brinquedo que dispara UMA tool call (Read/Edit/Write)
+   * via os hooks reais que `runChatTurn` registra em `options.hooks` — o
+   * MESMO mecanismo que o SDK de verdade invocaria (PreToolUse antes,
+   * PostToolUse depois), simulando a sequência real de um agente. */
+  async function runToolThroughHooks(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<{ pre: Awaited<ReturnType<HookCallback>>; post: Awaited<ReturnType<HookCallback>> }> {
+    let captured: { pre: Awaited<ReturnType<HookCallback>>; post: Awaited<ReturnType<HookCallback>> } | undefined;
+    const fakeQuery: QueryFn = (params) => {
+      async function* gen() {
+        const hooks = params.options?.hooks;
+        const preHook = hooks?.PreToolUse?.[0]?.hooks[0];
+        const postHook = hooks?.PostToolUse?.[0]?.hooks[0];
+        assert.ok(preHook && postHook, "runChatTurn deveria registrar os hooks do guard de frescor");
+        const baseInput = { session_id: "s1", transcript_path: "/tmp/t.jsonl", cwd: root };
+        const pre = await preHook(
+          { ...baseInput, hook_event_name: "PreToolUse", tool_name: toolName, tool_input: input, tool_use_id: "tu-1" },
+          "tu-1",
+          { signal: new AbortController().signal },
+        );
+        // Só chama o PostToolUse se o Pre não bloqueou — espelha a semântica
+        // real (tool bloqueada no Pre nunca executa, então nunca dispara Post).
+        const post =
+          pre.decision === "block"
+            ? {}
+            : await postHook(
+                { ...baseInput, hook_event_name: "PostToolUse", tool_name: toolName, tool_input: input, tool_response: {} },
+                "tu-1",
+                { signal: new AbortController().signal },
+              );
+        captured = { pre, post };
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    await runChatTurn({ message: "oi", cwd: root, queryFn: fakeQuery, onEvent: () => {} });
+    assert.ok(captured, "o generator deveria ter rodado e capturado pre/post");
+    return captured!;
+  }
+
+  it("Read seguido de Edit sem mudança externa — Edit NÃO é bloqueado", async () => {
+    await runToolThroughHooks("Read", { file_path: filePath });
+    const { pre } = await runToolThroughHooks("Edit", { file_path: filePath, old_string: "a", new_string: "b" });
+    assert.notEqual(pre.decision, "block");
+  });
+
+  it("regressão (#3806): mtime obsoleto -> Edit negado com instrução de releitura", async () => {
+    // Agente lê o arquivo (grava o mtime T0 como conhecido).
+    await runToolThroughHooks("Read", { file_path: filePath });
+
+    // Editor salva no painel do Studio ENQUANTO o arquivo já está em contexto
+    // do agente — simulado como uma escrita externa com mtime estritamente
+    // mais novo (utimesSync, determinístico — não depende de gap real de
+    // relógio entre writes, mesmo padrão de studio-review.test.ts #3729).
+    writeFileSync(filePath, "conteúdo salvo pelo editor no Studio", "utf8");
+    const known = getKnownFileMtime(root, filePath);
+    assert.ok(known);
+    const newerDate = new Date(Date.parse(known!) + 5000);
+    utimesSync(filePath, newerDate, newerDate);
+
+    // Agente tenta editar em cima do conteúdo velho que ainda está no
+    // contexto — deve ser NEGADO, não silenciosamente permitido.
+    const { pre } = await runToolThroughHooks("Edit", {
+      file_path: filePath,
+      old_string: "conteúdo inicial",
+      new_string: "edição do agente sobre versão velha",
+    });
+    assert.equal(pre.decision, "block");
+    assert.match(pre.reason ?? "", /releia/i);
+    assert.equal(pre.hookSpecificOutput?.permissionDecision, "deny");
+
+    // O conteúdo do editor no disco não foi tocado (o Edit nunca rodou de fato
+    // nesta simulação — o teste só chama o hook, não o Edit real; o ponto
+    // central é a DECISÃO do hook, verificada acima).
+  });
+
+  it("depois de um Edit bem-sucedido, o PRÓPRIO write do agente atualiza o mtime conhecido — 2ª edição no mesmo turno não é bloqueada", async () => {
+    await runToolThroughHooks("Read", { file_path: filePath });
+
+    // 1ª edição: sucesso (mtime ainda igual ao lido).
+    const first = await runToolThroughHooks("Edit", { file_path: filePath, old_string: "a", new_string: "b" });
+    assert.notEqual(first.pre.decision, "block");
+
+    // O Edit real (fora deste teste) escreveria o arquivo — simula isso
+    // avançando o mtime em disco, exatamente como writeFileSync faria.
+    writeFileSync(filePath, "conteúdo pós 1ª edição do agente", "utf8");
+    // PostToolUse do 1º Edit já deveria ter atualizado o carimbo pro mtime que
+    // vigorava então — refaz o tracking chamando Read de novo pra representar
+    // "o agente sabe do próprio write" (equivalente ao PostToolUse do Edit
+    // real, que roda IMEDIATAMENTE após o write; aqui o writeFileSync da
+    // simulação aconteceu DEPOIS do hook, por isso o Read extra).
+    await runToolThroughHooks("Read", { file_path: filePath });
+
+    // 2ª edição no mesmo "turno" (mesma sessão): não bloqueada, porque o
+    // carimbo já reflete o mtime pós-1ª-edição.
+    const second = await runToolThroughHooks("Edit", { file_path: filePath, old_string: "b", new_string: "c" });
+    assert.notEqual(second.pre.decision, "block");
+  });
+
+  it("arquivo FORA do escopo revisável (ex: scripts/*.ts) nunca é bloqueado, mesmo com mtime obsoleto", async () => {
+    const scriptPath = resolve(root, "scripts", "algum-script.ts");
+    mkdirSync(resolve(root, "scripts"), { recursive: true });
+    writeFileSync(scriptPath, "// v1", "utf8");
+    await runToolThroughHooks("Read", { file_path: scriptPath });
+
+    writeFileSync(scriptPath, "// v2 (mudança externa)", "utf8");
+    const known = getKnownFileMtime(root, scriptPath);
+    const newerDate = new Date(Date.parse(known!) + 5000);
+    utimesSync(scriptPath, newerDate, newerDate);
+
+    const { pre } = await runToolThroughHooks("Edit", { file_path: scriptPath, old_string: "v1", new_string: "v3" });
+    assert.notEqual(pre.decision, "block");
+  });
+
+  it("Write (não só Edit) também é coberto pelo guard", async () => {
+    await runToolThroughHooks("Read", { file_path: filePath });
+    writeFileSync(filePath, "conteúdo salvo pelo editor no Studio", "utf8");
+    const known = getKnownFileMtime(root, filePath);
+    const newerDate = new Date(Date.parse(known!) + 5000);
+    utimesSync(filePath, newerDate, newerDate);
+
+    const { pre } = await runToolThroughHooks("Write", { file_path: filePath, content: "sobrescrita cega do agente" });
+    assert.equal(pre.decision, "block");
+  });
+
+  it("clearSession zera o tracking de mtime — pós-clear, sem baseline, mesma tool não é bloqueada (nova conversa começa sem 'saber' de nada)", async () => {
+    await runToolThroughHooks("Read", { file_path: filePath });
+    writeFileSync(filePath, "mudança externa", "utf8");
+    const known = getKnownFileMtime(root, filePath);
+    const newerDate = new Date(Date.parse(known!) + 5000);
+    utimesSync(filePath, newerDate, newerDate);
+
+    clearSession(root); // "nova conversa"
+    assert.equal(getKnownFileMtime(root, filePath), undefined);
+
+    const { pre } = await runToolThroughHooks("Edit", { file_path: filePath, old_string: "x", new_string: "y" });
+    assert.notEqual(pre.decision, "block", "sem baseline pós-clear, nada a comparar — não deveria bloquear");
   });
 });

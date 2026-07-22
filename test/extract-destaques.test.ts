@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseDestaques, buildSubtitle } from "../scripts/extract-destaques.ts";
+import { parseDestaques, buildSubtitle, replaceDestaqueTitleInMd } from "../scripts/extract-destaques.ts";
 
 describe("parseDestaques (#172)", () => {
   it("parseia formato novo: URL imediatamente abaixo do título", () => {
@@ -407,5 +407,153 @@ describe("buildSubtitle (#1214)", () => {
     const r = buildSubtitle(huge2, long3);
     assert.equal(r.length, 200);
     assert.ok(r.endsWith("..."));
+  });
+});
+
+describe("replaceDestaqueTitleInMd (#3806 — Opção B spike: edição visual do título)", () => {
+  const THREE_DESTAQUES_NEW_FORMAT = [
+    "DESTAQUE 1 | PRODUTO",
+    "Título original d1",
+    "https://example.com/d1",
+    "",
+    "Parágrafo 1 do corpo d1.",
+    "",
+    "Parágrafo 2 do corpo d1.",
+    "",
+    "Por que isso importa:",
+    "Impacto d1.",
+    "",
+    "---",
+    "DESTAQUE 2 | PESQUISA",
+    "Título original d2",
+    "https://example.com/d2",
+    "",
+    "Corpo d2.",
+    "",
+    "Por que isso importa:",
+    "Impacto d2.",
+    "",
+    "---",
+    "DESTAQUE 3 | MERCADO",
+    "Título original d3",
+    "https://example.com/d3",
+    "",
+    "Corpo d3.",
+    "",
+    "Por que isso importa:",
+    "Impacto d3.",
+  ].join("\n");
+
+  it("formato novo (#172): substitui só a linha do título, preservando URL/corpo/why intactos", () => {
+    const result = replaceDestaqueTitleInMd(THREE_DESTAQUES_NEW_FORMAT, 1, "Título NOVO d1");
+    assert.equal(result.ok, true);
+    assert.ok(result.md);
+    // parseDestaques sobre o resultado confirma round-trip completo: só o
+    // título de D1 mudou, D2/D3 e o resto do D1 permanecem intocados.
+    const destaques = parseDestaques(result.md!);
+    assert.equal(destaques.length, 3);
+    assert.equal(destaques[0].title, "Título NOVO d1");
+    assert.equal(destaques[0].url, "https://example.com/d1");
+    assert.equal(destaques[0].body, "Parágrafo 1 do corpo d1.\n\nParágrafo 2 do corpo d1.");
+    assert.equal(destaques[0].why, "Impacto d1.");
+    assert.equal(destaques[1].title, "Título original d2");
+    assert.equal(destaques[2].title, "Título original d3");
+  });
+
+  it("byte-exato: reaplicar o MESMO título reproduz o arquivo original inalterado", () => {
+    const result = replaceDestaqueTitleInMd(THREE_DESTAQUES_NEW_FORMAT, 2, "Título original d2");
+    assert.equal(result.ok, true);
+    assert.equal(result.md, THREE_DESTAQUES_NEW_FORMAT);
+  });
+
+  it("edita D2/D3 sem tocar nos outros blocos", () => {
+    const r2 = replaceDestaqueTitleInMd(THREE_DESTAQUES_NEW_FORMAT, 2, "Título NOVO d2");
+    assert.equal(r2.ok, true);
+    const d2 = parseDestaques(r2.md!);
+    assert.equal(d2[0].title, "Título original d1");
+    assert.equal(d2[1].title, "Título NOVO d2");
+    assert.equal(d2[2].title, "Título original d3");
+
+    const r3 = replaceDestaqueTitleInMd(THREE_DESTAQUES_NEW_FORMAT, 3, "Título NOVO d3");
+    assert.equal(r3.ok, true);
+    const d3 = parseDestaques(r3.md!);
+    assert.equal(d3[0].title, "Título original d1");
+    assert.equal(d3[1].title, "Título original d2");
+    assert.equal(d3[2].title, "Título NOVO d3");
+  });
+
+  it("formato inline-link plano `[título](url)`: troca só o texto entre colchetes", () => {
+    const md = ["DESTAQUE 1 | PRODUTO", "", "[Título antigo](https://example.com/x)", "", "Corpo.", "", "Por que isso importa:", "Impacto."].join("\n");
+    const result = replaceDestaqueTitleInMd(md, 1, "Título trocado");
+    assert.equal(result.ok, true);
+    assert.match(result.md!, /^\[Título trocado\]\(https:\/\/example\.com\/x\)$/m);
+    const destaques = parseDestaques(result.md!);
+    assert.equal(destaques[0].title, "Título trocado");
+    assert.equal(destaques[0].url, "https://example.com/x");
+  });
+
+  it("formato inline-link com negrito INTERNO `[**título**](url)`: preserva o wrap interno", () => {
+    const md = ["DESTAQUE 1 | PRODUTO", "", "[**Título antigo**](https://example.com/x)", "", "Corpo.", "", "Por que isso importa:", "Impacto."].join("\n");
+    const result = replaceDestaqueTitleInMd(md, 1, "Título trocado");
+    assert.equal(result.ok, true);
+    assert.match(result.md!, /^\[\*\*Título trocado\*\*\]\(https:\/\/example\.com\/x\)$/m);
+  });
+
+  it("formato inline-link com negrito EXTERNO `**[título](url)**`: preserva o wrap externo", () => {
+    const md = ["DESTAQUE 1 | PRODUTO", "", "**[Título antigo](https://example.com/x)**", "", "Corpo.", "", "Por que isso importa:", "Impacto."].join("\n");
+    const result = replaceDestaqueTitleInMd(md, 1, "Título trocado");
+    assert.equal(result.ok, true);
+    assert.match(result.md!, /^\*\*\[Título trocado\]\(https:\/\/example\.com\/x\)\*\*$/m);
+  });
+
+  it("recusa (ok:false) quando o destaque N não existe no arquivo", () => {
+    const result = replaceDestaqueTitleInMd(THREE_DESTAQUES_NEW_FORMAT, 3, "x");
+    assert.equal(result.ok, true); // D3 existe neste fixture — sanity check
+    const md2 = ["DESTAQUE 1 | X", "Título único", "https://example.com/1"].join("\n");
+    const missing = replaceDestaqueTitleInMd(md2, 2, "Novo título");
+    assert.equal(missing.ok, false);
+    assert.match(missing.error!, /DESTAQUE 2.*não encontrado/);
+  });
+
+  it("recusa (ok:false) com título novo vazio ou só espaço", () => {
+    assert.equal(replaceDestaqueTitleInMd(THREE_DESTAQUES_NEW_FORMAT, 1, "").ok, false);
+    assert.equal(replaceDestaqueTitleInMd(THREE_DESTAQUES_NEW_FORMAT, 1, "   ").ok, false);
+  });
+
+  it("colapsa quebras de linha/espaços múltiplos no título novo (contenteditable pode inserir <br> virando \\n)", () => {
+    const result = replaceDestaqueTitleInMd(THREE_DESTAQUES_NEW_FORMAT, 1, "Título   com\nquebra   estranha");
+    assert.equal(result.ok, true);
+    const destaques = parseDestaques(result.md!);
+    assert.equal(destaques[0].title, "Título com quebra estranha");
+  });
+
+  it("preserva CRLF quando o arquivo original usa CRLF", () => {
+    const crlfMd = THREE_DESTAQUES_NEW_FORMAT.replace(/\n/g, "\r\n");
+    const result = replaceDestaqueTitleInMd(crlfMd, 1, "Título NOVO d1 CRLF");
+    assert.equal(result.ok, true);
+    assert.match(result.md!, /Título NOVO d1 CRLF\r\nhttps:\/\/example\.com\/d1/);
+    // Resto do arquivo continua CRLF (não virou LF por acidente).
+    assert.ok(result.md!.includes("Título original d2\r\n"));
+  });
+
+  it("regex simplificado (fim-de-linha ancorado) ainda lida bem com URL contendo parênteses — backtracking greedy encontra o split certo mesmo sem balanceamento explícito", () => {
+    // Não é o caso de refusal que o doc-comment de `rebuildInlineLinkTitleLine`
+    // avisa como "formato complexo demais" — esse caso só dispara pra shapes
+    // que NEM `isInlineLinkLine` aceitaria (ver comentário da função). Este
+    // teste documenta que URL-com-parênteses (caso comum: Wikipedia, `(1).pdf`)
+    // funciona normalmente, sem recusa.
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "",
+      "[Título com URL complexa](https://example.com/GPT_(modelo))",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+    ].join("\n");
+    const result = replaceDestaqueTitleInMd(md, 1, "Novo título");
+    assert.equal(result.ok, true);
+    assert.match(result.md!, /^\[Novo título\]\(https:\/\/example\.com\/GPT_\(modelo\)\)$/m);
   });
 });

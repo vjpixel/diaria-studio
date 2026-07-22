@@ -109,6 +109,9 @@ import {
   lintTrailingEditorialHook,
 } from "../lint-social-md.ts";
 import { validateLancamentos, loadToolAllowlist } from "../validate-lancamentos.ts";
+// #3806 (Opção B spike): mapeamento determinístico campo -> região do MD
+// pro título de destaque, editável na visão renderizada.
+import { replaceDestaqueTitleInMd } from "../extract-destaques.ts";
 
 // ── Arquivos revisáveis ─────────────────────────────────────────────────
 
@@ -325,6 +328,62 @@ export function saveReviewFile(
   } catch (e) {
     return { ok: false, error: (e as Error).message, filename: resolved.filename, modifiedAt: null };
   }
+}
+
+// ── Edição visual de campo (#3806, Opção B — spike título de destaque) ────
+
+export interface ApplyDestaqueTitleEditResult extends SaveReviewResult {
+  /** Lint do conteúdo NOVO (pós-edição), rodado com o mesmo `runReviewLints`
+   * de sempre — ausente quando o save falhou/teve conflito (nada foi escrito,
+   * lint sobre um conteúdo descartado não ajudaria o caller). */
+  lint?: LintReport;
+}
+
+/**
+ * Aplica a edição visual do título do destaque `n` em `02-reviewed.md`: lê o
+ * conteúdo atual, reescreve SÓ a região do título via
+ * `replaceDestaqueTitleInMd` (preserva o resto do arquivo), roda os lints de
+ * sempre sobre o resultado, e salva via `saveReviewFile` — reusando o MESMO
+ * guard de conflito mtime (`expectedModifiedAt`/`force`, #3729) sem
+ * duplicá-lo: se o conteúdo lido aqui já estiver obsoleto (o painel salvou
+ * uma versão mais nova entre o GET que o client fez e este PUT), a MESMA
+ * checagem de `saveReviewFile` recusa o write antes de qualquer coisa chegar
+ * no disco — não precisa de uma checagem extra "antes de ler" (ver PR body
+ * do #3806 pra rationale).
+ *
+ * Só o slug `reviewed` é suportado (a única região mapeada nesta 1ª fatia,
+ * ver escopo do #3806) — chamado sempre com esse slug fixo pelo caller HTTP.
+ */
+export function applyDestaqueTitleEdit(
+  rootDir: string,
+  aammdd: string,
+  n: 1 | 2 | 3,
+  newTitle: string,
+  opts: SaveReviewOptions = {},
+): ApplyDestaqueTitleEditResult {
+  const resolved = resolveReviewFile(rootDir, aammdd, "reviewed");
+  if (!resolved) return { ok: false, error: "AAMMDD inválido", filename: "", modifiedAt: null };
+  if (!existsSync(resolved.filePath)) {
+    return {
+      ok: false,
+      error: "02-reviewed.md ainda não existe nesta edição",
+      filename: resolved.filename,
+      modifiedAt: null,
+    };
+  }
+  const current = readFileSync(resolved.filePath, "utf8");
+  const replaced = replaceDestaqueTitleInMd(current, n, newTitle);
+  if (!replaced.ok || replaced.md === undefined) {
+    return {
+      ok: false,
+      error: replaced.error ?? "falha ao aplicar edição de título",
+      filename: resolved.filename,
+      modifiedAt: null,
+    };
+  }
+  const saveResult = saveReviewFile(rootDir, aammdd, "reviewed", replaced.md, opts);
+  if (!saveResult.ok) return saveResult;
+  return { ...saveResult, lint: runReviewLints(rootDir, resolved.editionDir, "reviewed", replaced.md) };
 }
 
 /** Reseta o baseline pro conteúdo atual (editor decide "isto agora é a nova
