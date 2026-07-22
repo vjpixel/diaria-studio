@@ -258,6 +258,25 @@ function expandDrawer() {
   setCollapsed(false);
 }
 
+// #3870: ponte visível gate 4/6 (cockpit, edicao.js) → card pendente deste
+// drawer. Expande o painel (mesma `expandDrawer()` de sempre) e rola até o
+// card AINDA NÃO resolvido mais antigo (`.resolved` é removido de nenhum
+// card — só adicionado quando o editor responde — então "não tem a classe"
+// == "ainda esperando"). Sem card nenhum (raro: o gate ficou pendente mas o
+// card já foi respondido/expirou por outro caminho), degrada pra só abrir o
+// painel e rolar pro fim, igual ao comportamento pré-#3870 de `openDrawer`.
+function scrollToPendingCard() {
+  expandDrawer();
+  const pendingCard = [...permissionCards.values()].find((c) => !c.classList.contains("resolved"));
+  if (!pendingCard) {
+    scrollToBottom();
+    return;
+  }
+  pendingCard.scrollIntoView({ behavior: "smooth", block: "center" });
+  pendingCard.classList.add("chat-permission-card-highlight");
+  setTimeout(() => pendingCard.classList.remove("chat-permission-card-highlight"), 2000);
+}
+
 el.expandToggle.addEventListener("click", () => {
   setCollapsed(!drawer.classList.contains("collapsed"));
 });
@@ -903,5 +922,7 @@ function prefillMessage(text) {
 
 // Ponto de extensão pras fatias seguintes (#3561 briefings) — um botão de
 // outra tela chama isto pra rodar uma mensagem nesta MESMA sessão sem
-// duplicar a mecânica de streaming/parsing acima.
-window.diariaStudioChat = { sendMessage, openDrawer: expandDrawer, prefillMessage, setContext };
+// duplicar a mecânica de streaming/parsing acima. `scrollToPendingCard`
+// (#3870) é o ponto de extensão do cockpit (`edicao.js`) pro botão
+// "Responder no chat" dos cards de Gate 4/6.
+window.diariaStudioChat = { sendMessage, openDrawer: expandDrawer, prefillMessage, setContext, scrollToPendingCard };

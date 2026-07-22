@@ -217,6 +217,12 @@ body.chat-drawer-present.chat-drawer-collapsed {
   opacity: 0.55;
   border-color: var(--rule);
 }
+/* #3870: destaque transiente (2s) quando o cockpit (edicao.js) rola até
+   este card via "Responder no chat" — só reforço visual de "é este aqui",
+   some sozinho, não afeta o estado real do card. */
+.chat-permission-card-highlight {
+  box-shadow: 0 0 0 3px var(--brand);
+}
 .chat-permission-waited {
   font-family: var(--font-mono);
   font-size: 0.7rem;
