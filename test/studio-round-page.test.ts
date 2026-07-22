@@ -66,6 +66,19 @@ describe("GET /rodada + GET /api/round/:kind (#3561)", () => {
     assert.match(css.headers.get("content-type") ?? "", /text\/css/);
   });
 
+  it("(#3874) GET /tablist-core.js — helper de navegação de tabs (WAI-ARIA APG) importado por rodada.js/revisao.js — é servido com content-type JS", async () => {
+    const res = await fetch(new URL("/tablist-core.js", server.url));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /javascript/);
+  });
+
+  it("(#3874) o shell rodada.html declara role=tab nas abas de kind (aria-selected/tabindex são geridos em runtime por rodada.js, não estáticos no HTML)", async () => {
+    const res = await fetch(new URL("/rodada", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('role="tab"'), "as abas overnight/develop precisam de role=tab (APG)");
+    assert.ok(body.includes('id="round-error" class="panel alert-banner" role="alert"'), "banner de erro precisa de role=alert");
+  });
+
   it("POST /rodada é rejeitado com 405 (guard read-only)", async () => {
     const res = await fetch(new URL("/rodada", server.url), { method: "POST" });
     assert.equal(res.status, 405);

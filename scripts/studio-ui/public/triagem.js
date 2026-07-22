@@ -24,8 +24,11 @@ const el = {
   lastUpdated: document.getElementById("last-updated"),
   issuesCount: document.getElementById("issues-count"),
   issuesBody: document.getElementById("issues-tbody"),
+  issuesEmpty: document.getElementById("issues-empty"),
   prsCount: document.getElementById("prs-count"),
   prsBody: document.getElementById("prs-tbody"),
+  prsEmpty: document.getElementById("prs-empty"),
+  dispatchTrackLegend: document.getElementById("dispatch-track-legend"),
   wavesError: document.getElementById("waves-error"),
   waveCount: document.getElementById("wave-count"),
   waveChips: document.getElementById("wave-chips"),
@@ -109,6 +112,20 @@ function dispatchBadge(track) {
   return `<span class="dispatch-badge dispatch-${track}" title="${escapeHtml(title)}">${labelPt}</span>`;
 }
 
+// #3874: o significado de cada valor de Classificação só existia como
+// `title=` (tooltip) em cada badge da tabela — tooltip não existe em touch
+// (R7 de docs/studio-ui-ux-guidelines.md). Renderiza a MESMA
+// DISPATCH_TRACK_EXPLAIN como uma legenda em texto visível, 1x por página
+// (não repetida por linha — evitaria poluir a tabela), logo acima da
+// tabela de issues. `title=` continua nos badges individuais, como reforço
+// pro hover no desktop.
+function renderDispatchTrackLegend() {
+  if (!el.dispatchTrackLegend) return;
+  el.dispatchTrackLegend.innerHTML = Object.entries(DISPATCH_TRACK_EXPLAIN)
+    .map(([track, explain]) => `<li><strong>${dispatchBadge(track)}</strong> — ${escapeHtml(explain)}</li>`)
+    .join("");
+}
+
 function ciBadge(ciState) {
   const labelPt = { green: "verde", red: "vermelho", pending: "pendente", none: "sem checks" }[ciState] ?? ciState;
   return `<span class="ci-badge ci-${ciState}">${labelPt}</span>`;
@@ -169,6 +186,23 @@ function matchesLabelFilter(labels) {
   return true;
 }
 
+// #3874: "0 resultados para este filtro" (tabela zerou por causa de um
+// filtro ativo, com dados de verdade escondidos atrás dele) é uma mensagem
+// diferente de "nenhum registro ainda" (não há dado nenhum pra mostrar) —
+// tabela só com cabeçalho e nada embaixo lê como bug em qualquer um dos 2
+// casos (R4 de docs/studio-ui-ux-guidelines.md), então sempre existe 1 dos 2
+// textos quando a lista filtrada zera. Mesmo padrão em toda tabela filtrável
+// do Studio (relatorios.js é a referência original, só que sem filtro).
+function updateEmptyState(emptyEl, filteredCount, totalCount, hasActiveFilter, emptyLabel) {
+  if (!emptyEl) return;
+  if (filteredCount > 0) {
+    emptyEl.hidden = true;
+    return;
+  }
+  emptyEl.hidden = false;
+  emptyEl.textContent = totalCount > 0 && hasActiveFilter ? "0 resultados para este filtro." : emptyLabel;
+}
+
 function renderIssuesTable() {
   const filtered = data.issues.filter(
     (i) =>
@@ -177,6 +211,8 @@ function renderIssuesTable() {
       (!filters.dispatch || i.dispatchTrack === filters.dispatch),
   );
   el.issuesCount.textContent = String(filtered.length);
+  const issuesFilterActive = Boolean(filters.priority || filters.dispatch || filters.labels.size > 0);
+  updateEmptyState(el.issuesEmpty, filtered.length, data.issues.length, issuesFilterActive, "Nenhuma issue aberta.");
   el.issuesBody.innerHTML = "";
   for (const i of filtered) {
     const tr = document.createElement("tr");
@@ -201,6 +237,8 @@ function renderPrsTable() {
       (!filters.track || p.track === filters.track),
   );
   el.prsCount.textContent = String(filtered.length);
+  const prsFilterActive = Boolean(filters.track || filters.labels.size > 0);
+  updateEmptyState(el.prsEmpty, filtered.length, data.prs.length, prsFilterActive, "Nenhum PR aberto.");
   el.prsBody.innerHTML = "";
   for (const p of filtered) {
     const tr = document.createElement("tr");
@@ -348,4 +386,6 @@ el.filterDispatch.addEventListener("change", () => {
 });
 el.refreshBtn.addEventListener("click", () => fetchIssues());
 
+// Estático (não depende de `data`) — renderiza 1x ao montar a página.
+renderDispatchTrackLegend();
 fetchIssues();

@@ -432,6 +432,33 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.ok(body.includes('id="rv-html-final-note"'));
   });
 
+  it("(#3874) os 2 tablists seguem WAI-ARIA APG: role=tab nos botões + role=tablist com aria-label nos containers; banners de erro/divergência têm role=alert", async () => {
+    const res = await fetch(new URL("/revisao/260716", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('id="rv-tabs" role="tablist" aria-label="Arquivo"'));
+    assert.ok(body.includes('id="rv-side-tabs" role="tablist" aria-label="Painel"'));
+    // 4 abas de arquivo + 3 abas de painel lateral = 7 role="tab" no total.
+    assert.equal((body.match(/role="tab"/g) ?? []).length, 7);
+    assert.ok(body.includes('id="rv-not-found" class="panel alert-banner" role="alert"'));
+    assert.ok(body.includes('id="rv-divergence-banner" role="alert"'));
+    // `#rv-side-tabs` tem painéis distintos de verdade (lint/diff/preview) —
+    // aria-controls/role=tabpanel/aria-labelledby fazem sentido aqui.
+    // `#rv-tabs` (arquivo) reusa o MESMO textarea pros 4 slugs — sem painel
+    // dedicado por aba, aria-controls não mapearia (documentado no código).
+    assert.ok(body.includes('aria-controls="rv-pane-lint"'));
+    assert.ok(body.includes('role="tabpanel" aria-labelledby="rv-tab-lint"'));
+  });
+
+  it("(#3874) GET /tablist-core.js — helper de navegação de tabs (WAI-ARIA APG) é importado por revisao.js", async () => {
+    const tablist = await fetch(new URL("/tablist-core.js", server.url));
+    assert.equal(tablist.status, 200);
+    assert.match(tablist.headers.get("content-type") ?? "", /javascript/);
+    const revisaoJs = await fetch(new URL("/revisao.js", server.url));
+    const body = await revisaoJs.text();
+    assert.match(body, /from ".\/tablist-core\.js"/);
+    assert.match(body, /syncTabAria\(/);
+  });
+
   // #3668 gap 1: o banner PERSISTENTE (sempre visível quando htmlFinalDiverged,
   // independente da aba ativa) tinha a mesma alegação categórica de autoria
   // que o confirm() de saveCurrent() — "editado manualmente" — não decidível

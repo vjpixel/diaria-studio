@@ -76,6 +76,18 @@ describe("GET /triagem + GET /api/issues (#3562)", () => {
     assert.equal(res.status, 200);
   });
 
+  it("(#3874) banners de erro têm role=alert; tabela zerada tem contêiner de estado vazio; botão desabilitado tem motivo em texto visível", async () => {
+    const res = await fetch(new URL("/triagem", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('id="triage-error" class="panel alert-banner" role="alert"'));
+    assert.ok(body.includes('id="waves-error" class="panel alert-banner" role="alert"'));
+    assert.ok(body.includes('id="wave-capacity-warning" class="alert-banner" role="alert"'));
+    assert.ok(body.includes('id="issues-empty"'));
+    assert.ok(body.includes('id="prs-empty"'));
+    assert.ok(body.includes('id="fire-wave-reason"'), "motivo do botão 'Disparar esta onda' precisa estar em texto visível, não só title=");
+    assert.ok(body.includes('id="dispatch-track-legend"'), "legenda visível de DISPATCH_TRACK_EXPLAIN precisa existir (não só title= por linha)");
+  });
+
   it("GET /triagem.js é servido com content-type JS", async () => {
     const res = await fetch(new URL("/triagem.js", server.url));
     assert.equal(res.status, 200);

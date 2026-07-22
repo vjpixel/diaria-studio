@@ -86,6 +86,14 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.equal(res.status, 200);
   });
 
+  it("(#3874) banners de erro têm role=alert; lista de contatos tem contêiner de estado vazio", async () => {
+    const res = await fetch(new URL("/apoios", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('id="apoios-error" class="panel alert-banner" role="alert"'));
+    assert.ok(body.includes('id="edit-contact-error" class="alert-banner" role="alert"'));
+    assert.ok(body.includes('id="contacts-empty"'));
+  });
+
   it("GET /apoios.js e /apoios.css são servidos normalmente (static-serve)", async () => {
     const js = await fetch(new URL("/apoios.js", server.url));
     assert.equal(js.status, 200);

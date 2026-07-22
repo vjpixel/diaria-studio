@@ -75,6 +75,14 @@ describe("GET /edicao/:aammdd (#3558)", () => {
     assert.equal(res.status, 200);
   });
 
+  it("(#3874) banner 'não encontrado' e lista de alertas têm role=alert; log da edição tem aria-live", async () => {
+    const res = await fetch(new URL("/edicao/260716", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('id="edicao-not-found" class="panel alert-banner" role="alert"'));
+    assert.ok(body.includes('id="alerts-list" role="alert" aria-live="polite"'));
+    assert.ok(body.includes('id="edicao-log-list" class="log-list" aria-live="polite"'));
+  });
+
   it("continua servindo o shell mesmo pra AAMMDD que não existe no disco — o 404 real vem de /api/editions no browser", async () => {
     const res = await fetch(new URL("/edicao/999999", server.url));
     assert.equal(res.status, 200);

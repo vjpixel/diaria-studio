@@ -29,13 +29,13 @@
   </header>
 
   <main>
-    <div id="rv-not-found" class="panel alert-banner" hidden>
+    <div id="rv-not-found" class="panel alert-banner" role="alert" hidden>
       Edição não encontrada no disco. Confira o AAMMDD na URL ou volte pro
       <a href="/">painel</a>.
     </div>
 
     <section class="panel">
-      <div class="rv-tabs" id="rv-tabs" role="tablist">
+      <div class="rv-tabs" id="rv-tabs" role="tablist" aria-label="Arquivo">
         <button type="button" class="rv-tab" data-slug="categorized" role="tab">01 — Categorizado</button>
         <button type="button" class="rv-tab" data-slug="reviewed" role="tab">02 — Newsletter</button>
         <button type="button" class="rv-tab" data-slug="social" role="tab">03 — Social</button>
@@ -49,7 +49,7 @@
         partir do Markdown (rodar a Etapa 4 de novo) descarta essas edições sem aviso
         automático da pipeline.
       </p>
-      <p class="rv-divergence-banner" id="rv-divergence-banner" hidden>
+      <p class="rv-divergence-banner" id="rv-divergence-banner" role="alert" hidden>
         HTML final foi modificado desde a última vez que o painel capturou a versão de
         referência (pode ser edição sua ou re-render do agente) — um novo re-render a
         partir do Markdown (Etapa 4) vai descartar essas mudanças. Confira a aba "HTML
@@ -69,25 +69,25 @@
     </section>
 
     <section class="panel">
-      <div class="rv-tabs" id="rv-side-tabs" role="tablist">
-        <button type="button" class="rv-tab active" data-pane="lint" role="tab">Lints</button>
-        <button type="button" class="rv-tab" data-pane="diff" role="tab">Diff</button>
-        <button type="button" class="rv-tab" data-pane="preview" role="tab">Preview do e-mail</button>
+      <div class="rv-tabs" id="rv-side-tabs" role="tablist" aria-label="Painel">
+        <button type="button" class="rv-tab active" data-pane="lint" role="tab" id="rv-tab-lint" aria-controls="rv-pane-lint">Lints</button>
+        <button type="button" class="rv-tab" data-pane="diff" role="tab" id="rv-tab-diff" aria-controls="rv-pane-diff">Diff</button>
+        <button type="button" class="rv-tab" data-pane="preview" role="tab" id="rv-tab-preview" aria-controls="rv-pane-preview">Preview do e-mail</button>
       </div>
 
-      <div id="rv-pane-lint" class="rv-pane">
+      <div id="rv-pane-lint" class="rv-pane" role="tabpanel" aria-labelledby="rv-tab-lint">
         <div id="rv-lint-results" class="rv-lint-results">
           <p class="hint">Clique em "Rodar lints" acima.</p>
         </div>
       </div>
 
-      <div id="rv-pane-diff" class="rv-pane" hidden>
+      <div id="rv-pane-diff" class="rv-pane" role="tabpanel" aria-labelledby="rv-tab-diff" hidden>
         <div id="rv-diff-view" class="rv-diff-view">
           <p class="hint">Clique em "Ver diff vs. original" acima.</p>
         </div>
       </div>
 
-      <div id="rv-pane-preview" class="rv-pane" hidden>
+      <div id="rv-pane-preview" class="rv-pane" role="tabpanel" aria-labelledby="rv-tab-preview" hidden>
         <p class="hint" id="rv-preview-hint">
           Renderizado a partir de <code>02-reviewed.md</code> salvo no disco
           (mesmo caminho do Stage 4) — salve antes de atualizar o preview.

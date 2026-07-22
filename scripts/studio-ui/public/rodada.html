@@ -36,12 +36,12 @@
         desbloqueio) aparecem como formulário no chat à esquerda, não aqui.
       </p>
 
-      <div class="round-kind-tabs" role="tablist">
-        <button type="button" class="round-kind-tab" data-kind="overnight" id="tab-overnight">Overnight</button>
-        <button type="button" class="round-kind-tab" data-kind="develop" id="tab-develop">Develop</button>
+      <div class="round-kind-tabs" role="tablist" aria-label="Tipo de rodada">
+        <button type="button" class="round-kind-tab" role="tab" data-kind="overnight" id="tab-overnight">Overnight</button>
+        <button type="button" class="round-kind-tab" role="tab" data-kind="develop" id="tab-develop">Develop</button>
       </div>
 
-      <div id="round-error" class="panel alert-banner" hidden></div>
+      <div id="round-error" class="panel alert-banner" role="alert" hidden></div>
       <div id="round-empty" class="hint" hidden>Nenhuma sessão encontrada em <code id="round-empty-dir">—</code>.</div>
 
       <dl class="round-meta" id="round-meta" hidden>
@@ -77,6 +77,7 @@
 
     <section class="panel">
       <h2>Entram na rodada (<span id="entram-count">0</span>)</h2>
+      <div id="entram-empty" class="hint" hidden>Nenhuma unidade entra na rodada.</div>
       <div class="table-scroll">
         <table class="triage-table round-queue-table">
           <thead>
@@ -90,6 +91,7 @@
     <section class="panel">
       <h2>Pendentes — Gate 1 de desbloqueio (<span id="pendente-count">0</span>)</h2>
       <p class="hint">Só aparece em rodadas <code>/diaria-develop</code>: issues aguardando o editor destravar (cat. A-E). Nunca mostra valor de credencial.</p>
+      <div id="pendente-empty" class="hint" hidden>Nenhuma unidade pendente de desbloqueio.</div>
       <div class="table-scroll">
         <table class="triage-table round-queue-table">
           <thead>
@@ -102,6 +104,7 @@
 
     <section class="panel">
       <h2>Ficam de fora (<span id="fora-count">0</span>)</h2>
+      <div id="fora-empty" class="hint" hidden>Nenhuma unidade fica de fora.</div>
       <div class="table-scroll">
         <table class="triage-table round-queue-table">
           <thead>

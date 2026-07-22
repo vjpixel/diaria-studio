@@ -28,6 +28,7 @@ const el = {
   connLabel: document.getElementById("conn-label"),
   timeline: document.getElementById("timeline"),
   editionsBody: document.getElementById("editions-tbody"),
+  editionsEmpty: document.getElementById("editions-empty"),
   logList: document.getElementById("log-list"),
   currentEditionLink: document.getElementById("current-edition-link"),
   currentEditionReviewLink: document.getElementById("current-edition-review-link"),
@@ -64,6 +65,12 @@ function renderStatusbar(state) {
 }
 
 function renderEditionsTable(state) {
+  // #3874: "nenhum registro ainda" — sem filtro nesta tabela (lista todas as
+  // edições que o servidor conhece), então nunca há o caso "0 resultados
+  // para este filtro" aqui, só "vazio de verdade" (R4 de
+  // docs/studio-ui-ux-guidelines.md — nunca tabela só com cabeçalho e nada
+  // embaixo, sem explicação).
+  el.editionsEmpty.hidden = state.editions.length > 0;
   el.editionsBody.innerHTML = "";
   for (const e of state.editions) {
     const tr = document.createElement("tr");
@@ -108,9 +115,17 @@ function appendLogRow(event) {
   row.className = `log-row ${level}`;
   const ts = event && event.timestamp ? new Date(event.timestamp).toLocaleTimeString("pt-BR") : "";
   row.innerHTML = `<span class="lvl">${level}</span><span class="msg">[${ts}] ${event && event.agent ? event.agent + ": " : ""}${event ? event.message : ""}</span>`;
-  el.logList.appendChild(row);
-  // limita o histórico visível — página de status, não um viewer de log completo.
-  while (el.logList.children.length > 300) el.logList.removeChild(el.logList.firstChild);
+  // #3874: insere no TOPO do DOM (não appendChild) — mais recente primeiro
+  // tanto visualmente quanto na ordem de leitura (teclado/leitor de tela),
+  // agora que `.log-list` não usa mais `flex-direction: column-reverse`
+  // (style.css) pra inverter só a aparência. Ver render de `log-init` abaixo:
+  // eventos chegam em ordem cronológica crescente, cada `insertBefore`
+  // empurra o anterior pra baixo — o último processado (mais recente) fica
+  // no topo, igual ao comportamento visual de antes.
+  el.logList.insertBefore(row, el.logList.firstChild);
+  // limita o histórico visível — página de status, não um viewer de log
+  // completo. Remove do FIM (mais antigo), que agora é o último filho.
+  while (el.logList.children.length > 300) el.logList.removeChild(el.logList.lastChild);
 }
 
 async function onState(state) {
