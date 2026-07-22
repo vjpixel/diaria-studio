@@ -70,3 +70,23 @@ export const SAVE_CONFLICT_CONFIRM_MESSAGE =
   "(ex: title-picker, correção Clarice, humanizador) enquanto você editava. Clique OK para SOBRESCREVER " +
   "com a sua versão mesmo assim, ou Cancelar para RECARREGAR a versão mais recente do disco (suas " +
   "edições não salvas nesta aba serão perdidas).";
+
+// #3872 (achado #3866 dimensão 2): depois de um save bem-sucedido, o painel
+// lateral que estava aberto (Diff/Lints/Preview) continuava mostrando o
+// resultado do estado ANTERIOR ao save até o editor re-clicar manualmente em
+// "Ver diff"/"Rodar lints" — risco real de aprovar o gate de revisão em cima
+// de um lint "ok" que já não reflete o conteúdo salvo.
+// `activeSidePaneAfterSave` decide qual painel re-rodar dado o estado
+// `hidden` dos 3 painéis (lidos pelo caller em revisao.js via
+// `el.paneDiff.hidden`/`el.paneLint.hidden`/`el.panePreview.hidden`) — lógica
+// PURA, sem tocar DOM/fetch, mesmo padrão dos guards acima (#633: testável
+// sem harness). Prioridade diff > lint > preview é só ordem de checagem —
+// irrelevante na prática, já que `activateSidePane()` em revisao.js garante
+// que só 1 dos 3 fica visível por vez. Retorna `null` quando nenhum painel
+// lateral está aberto (nada a re-sincronizar).
+export function activeSidePaneAfterSave({ diffHidden, lintHidden, previewHidden }) {
+  if (!diffHidden) return "diff";
+  if (!lintHidden) return "lint";
+  if (!previewHidden) return "preview";
+  return null;
+}

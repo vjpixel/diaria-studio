@@ -25,6 +25,7 @@ import {
   shouldConfirmDivergenceGuard,
   DIVERGENCE_CONFIRM_MESSAGE,
   SAVE_CONFLICT_CONFIRM_MESSAGE,
+  activeSidePaneAfterSave,
 } from "../scripts/studio-ui/public/revisao-guards.js";
 
 describe("shouldConfirmDivergenceGuard (#3668 gap 2)", () => {
@@ -82,5 +83,40 @@ describe("SAVE_CONFLICT_CONFIRM_MESSAGE (#3729)", () => {
     assert.match(SAVE_CONFLICT_CONFIRM_MESSAGE, /OK.*SOBRESCREVER/is);
     assert.match(SAVE_CONFLICT_CONFIRM_MESSAGE, /Cancelar.*RECARREGAR/is);
     assert.match(SAVE_CONFLICT_CONFIRM_MESSAGE, /perdidas/);
+  });
+});
+
+// #3872 (achado #3866 dimensão 2) — depois de um save bem-sucedido, o painel
+// lateral aberto (Diff/Lints/Preview) ficava mostrando o resultado do estado
+// ANTERIOR ao save até o editor re-clicar manualmente. `activeSidePaneAfterSave`
+// decide qual painel re-rodar dado o estado `hidden` dos 3 painéis — lógica
+// pura, testável sem harness de DOM (mesmo padrão dos guards acima).
+describe("activeSidePaneAfterSave (#3872)", () => {
+  it("retorna 'diff' quando o painel Diff está visível", () => {
+    assert.equal(
+      activeSidePaneAfterSave({ diffHidden: false, lintHidden: true, previewHidden: true }),
+      "diff",
+    );
+  });
+
+  it("retorna 'lint' quando o painel Lints está visível", () => {
+    assert.equal(
+      activeSidePaneAfterSave({ diffHidden: true, lintHidden: false, previewHidden: true }),
+      "lint",
+    );
+  });
+
+  it("retorna 'preview' quando o painel Preview está visível", () => {
+    assert.equal(
+      activeSidePaneAfterSave({ diffHidden: true, lintHidden: true, previewHidden: false }),
+      "preview",
+    );
+  });
+
+  it("retorna null quando nenhum painel lateral está aberto (nada a re-sincronizar)", () => {
+    assert.equal(
+      activeSidePaneAfterSave({ diffHidden: true, lintHidden: true, previewHidden: true }),
+      null,
+    );
   });
 });
