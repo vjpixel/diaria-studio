@@ -199,4 +199,20 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     const res = await fetch(new URL("/api/apoios/contacts", server.url), { method: "GET" });
     assert.equal(res.status, 404); // não casa nenhuma rota GET conhecida -> 404 de API desconhecida
   });
+
+  // ── #3859 metade 2: POST /api/apoios/refresh (botão "Atualizar status") ──
+
+  it("POST /api/apoios/refresh — 200 fail-soft (credenciais ausentes nesta suíte), mesmo shape de GET /api/apoios", async () => {
+    const res = await fetch(new URL("/api/apoios/refresh", server.url), { method: "POST" });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.match(body.error ?? "", /APOIA_SE_API_KEY/);
+    assert.equal(body.contacts.length, 1); // reflete o contato já criado nos testes anteriores
+    assert.equal(body.contacts[0].id, createdId);
+  });
+
+  it("GET /api/apoios/refresh (método errado) não casa nenhuma rota GET conhecida -> 404 (mesmo padrão de /api/apoios/contacts)", async () => {
+    const res = await fetch(new URL("/api/apoios/refresh", server.url));
+    assert.equal(res.status, 404);
+  });
 });

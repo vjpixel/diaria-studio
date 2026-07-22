@@ -110,6 +110,12 @@
  *     (#3844: os recursos de follow-up/outreach — incluindo a rota
  *     `POST /api/apoios/contacts/:id/outreach` — foram removidos; a área
  *     refoca em visão por grupo/nível de recompensa, ainda pendente.)
+ *     (#3859 metade 2: `POST /api/apoios/refresh` — botão "Atualizar
+ *     status", força re-consulta do mês corrente na apoia.se só pra
+ *     contatos ainda não confirmados como "apoiando" — protege o teto de
+ *     5.000 req/mês. `refreshApoiosData` em `studio-apoios.ts`. A metade 1
+ *     da issue — importar apoios novos varrendo o Gmail pessoal — segue
+ *     bloqueada em arquitetura, não implementada.)
  *   - `GET /api/reports` (#3714) — lista os relatórios de fim de trabalho
  *     (edição diária, overnight, develop, mensal) registrados no índice
  *     file-based `data/reports/index.jsonl` (`studio-reports.ts::listReports`),
@@ -177,6 +183,11 @@
  * (dado pessoal, junction OneDrive, nunca no repo/KV) — nunca tocam
  * credenciais nem a API apoia.se em modo de escrita (o cruzamento de status é
  * sempre leitura via `checkBacker`). Toda a lógica mora em `studio-apoios.ts`.
+ * (#3859 metade 2: `POST /api/apoios/refresh` é a mesma classe de exceção —
+ * só dispara LEITURAS a mais na apoia.se via `checkBacker`/`forceRefresh`,
+ * nunca escreve `contacts.jsonl`; grava só o cache `data/apoia-se/{campanha}/
+ * {YYYY-MM}.json`, já uma superfície de escrita pré-existente de
+ * `checkBacker`.)
  *
  * Ver "Decisões de design" no PR body pra rationale completo (framework
  * escolhido, estrutura de diretórios, formato das APIs, pontos de extensão).
@@ -267,6 +278,7 @@ import { resolveEditionDir } from "../lib/find-current-edition.ts";
 // isolado (nenhuma outra rota depende dele). Ver studio-apoios.ts.
 import {
   buildApoiosData,
+  refreshApoiosData,
   addContact,
   updateContactById,
   parseCreateContactBody,
@@ -1117,6 +1129,19 @@ function handleApiApoiosGet(rootDir: string, res: ServerResponse): void {
     .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
 }
 
+/** `POST /api/apoios/refresh` — botão "Atualizar status" (#3859 metade 2):
+ * força re-consulta do mês corrente na apoia.se, mas só pra contatos AINDA
+ * NÃO confirmados como "apoiando" (protege o teto de 5.000 req/mês — ver
+ * `refreshApoiosData` em `studio-apoios.ts`). Sempre 200: fail-soft no mesmo
+ * padrão de `handleApiApoiosGet`. **Metade 1 da issue (importar apoios novos
+ * varrendo o Gmail pessoal) NÃO é coberta por esta rota** — segue bloqueada
+ * em arquitetura (servidor headless sem acesso ao MCP Gmail), ver #3859. */
+function handleApiApoiosRefresh(rootDir: string, res: ServerResponse): void {
+  refreshApoiosData(rootDir)
+    .then((data) => sendJson(res, 200, data))
+    .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
+}
+
 async function handleApiApoiosCreate(rootDir: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
   let raw: string;
   try {
@@ -1335,9 +1360,16 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         );
         return;
       }
+      // #3859 (metade 2): botão "Atualizar status" — force-refresh seletivo
+      // do mês corrente na apoia.se. Mesmo tratamento das rotas de escrita
+      // acima (checada antes do guard genérico de método).
+      if (urlPath === "/api/apoios/refresh" && req.method === "POST") {
+        handleApiApoiosRefresh(rootDir, res);
+        return;
+      }
 
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556), POST /api/waves/fire (#3702) e as rotas de ação do #3559/#3602/#3806" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556), POST /api/waves/fire (#3702) e as rotas de ação do #3559/#3602/#3806/#3859" });
         return;
       }
 

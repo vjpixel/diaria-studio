@@ -13,6 +13,14 @@
 // (tracking de contato, dialog de registro, tiles de contactados/follow-ups
 // pendentes) foram removidos — a área refoca em visão por grupo/nível de
 // recompensa (parte 2 da issue, ainda pendente de decisão de produto).
+//
+// #3859 (metade 2): botão "Atualizar status" — POST /api/apoios/refresh
+// força re-consulta do mês corrente na apoia.se pra contatos ainda não
+// confirmados como "apoiando" (o refresh comum, botão "Atualizar" acima,
+// só refaz o GET — nunca bate na API de novo dentro do mesmo mês, porque
+// checkBacker cacheia por mês-competência). A metade 1 da issue (importar
+// apoios novos varrendo o Gmail pessoal) NÃO está implementada aqui — seguirá
+// bloqueada em arquitetura até existir uma ponte Studio↔sessão-com-MCP.
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -29,6 +37,7 @@ const el = {
   contactsCount: document.getElementById("contacts-count"),
   filterStatus: document.getElementById("filter-status"),
   refreshBtn: document.getElementById("refresh-btn"),
+  refreshStatusBtn: document.getElementById("refresh-status-btn"),
   lastUpdated: document.getElementById("last-updated"),
   contactsList: document.getElementById("contacts-list"),
   editDialog: document.getElementById("edit-dialog"),
@@ -179,6 +188,30 @@ async function fetchApoios() {
   renderAll();
 }
 
+// #3859 (metade 2): POST /api/apoios/refresh — força re-consulta na apoia.se
+// só pra contatos ainda não confirmados como "apoiando" (o servidor decide
+// quem — ver refreshApoiosData em studio-apoios.ts). Resposta tem o MESMO
+// formato de GET /api/apoios, então só substitui `data` e renderiza de novo
+// (mesma disciplina "sem estado otimista" do resto do arquivo).
+async function refreshApoiosStatus() {
+  el.refreshStatusBtn.disabled = true;
+  const originalLabel = el.refreshStatusBtn.textContent;
+  el.refreshStatusBtn.textContent = "Atualizando status…";
+  setFetchStatus("", "atualizando status…");
+  try {
+    const res = await fetch("/api/apoios/refresh", { method: "POST" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    data = await res.json();
+    setFetchStatus(data.error ? "down" : "ok", data.error ? "erro apoia.se" : "ok");
+  } catch (e) {
+    setFetchStatus("down", "falha ao atualizar status");
+    data = { ...data, error: String(e) };
+  }
+  renderAll();
+  el.refreshStatusBtn.disabled = false;
+  el.refreshStatusBtn.textContent = originalLabel;
+}
+
 function parseEmailsInput(raw) {
   return raw
     .split(",")
@@ -187,6 +220,7 @@ function parseEmailsInput(raw) {
 }
 
 el.refreshBtn.addEventListener("click", () => fetchApoios());
+el.refreshStatusBtn.addEventListener("click", () => refreshApoiosStatus());
 el.filterStatus.addEventListener("change", () => {
   filters.status = el.filterStatus.value;
   renderContacts();
