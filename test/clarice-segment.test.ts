@@ -718,7 +718,7 @@ test("isRampWarm: reusa isFirstSend (elegível + nunca enviado) restrito a mv_bu
   assert.equal(
     isRampWarm({ email: "a@x.com", send_eligible: 1, sends_count: 0, mv_bucket: "unknown" }),
     false,
-    "mv_bucket != verified → fora",
+    "mv_bucket != verified e cohort NÃO isento → fora",
   );
   assert.equal(
     isRampWarm({ email: "a@x.com", send_eligible: 1, sends_count: 3, mv_bucket: "verified" }),
@@ -734,6 +734,83 @@ test("isRampWarm: reusa isFirstSend (elegível + nunca enviado) restrito a mv_bu
     isRampWarm({ email: "vjpixel@gmail.com", send_eligible: 1, sends_count: 0, mv_bucket: "verified" }),
     true,
     "interno (#2809) → dentro, ramp-warm não exclui internos",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// #3826 — pagante novo (assinantes-ativos), sem mv_bucket, dispensa
+// mv_bucket='verified' via isMvExemptCohort (mesmo predicado de #3819).
+// ---------------------------------------------------------------------------
+
+test("#3826: isRampWarm dispensa mv_bucket='verified' pra cohort MV-isento (assinantes-ativos) — reusa isMvExemptCohort", () => {
+  assert.equal(
+    isRampWarm({
+      email: "pagante-novo@x.com",
+      send_eligible: 1,
+      sends_count: 0,
+      mv_bucket: null,
+      cohort: "assinantes-ativos",
+    }),
+    true,
+    "cenário real da issue: assinantes-ativos + send_eligible=1 + sends_count=0 + mv_bucket=null → dentro do ramp-warm",
+  );
+  assert.equal(
+    isRampWarm({
+      email: "pagante-novo2@x.com",
+      send_eligible: 1,
+      sends_count: 0,
+      mv_bucket: "unknown",
+      cohort: "assinantes-ativos",
+    }),
+    true,
+    "assinantes-ativos com mv_bucket presente mas != verified também dispensa (isento, não só ausente)",
+  );
+});
+
+test("#3826: sem regressão — cohort NÃO isento continua exigindo mv_bucket='verified' (comportamento original preservado)", () => {
+  assert.equal(
+    isRampWarm({
+      email: "lead-nao-verificado@x.com",
+      send_eligible: 1,
+      sends_count: 0,
+      mv_bucket: null,
+      cohort: "leads-2026-06",
+    }),
+    false,
+    "cohort não-isento + sends_count=0 + sem mv_bucket='verified' → continua FORA de ramp-warm",
+  );
+  assert.equal(
+    isRampWarm({
+      email: "sem-cohort@x.com",
+      send_eligible: 1,
+      sends_count: 0,
+      mv_bucket: undefined,
+      cohort: null,
+    }),
+    false,
+    "cohort ausente/desconhecido não é tratado como isento (isMvExemptCohort(null) === false)",
+  );
+});
+
+test("#3826: pagante com histórico de envio (sends_count>0) continua fora de ramp-warm — sem duplicar com engajados/reativacao", () => {
+  const veterano = {
+    email: "assinante-veterano@x.com",
+    send_eligible: 1,
+    sends_count: 3,
+    priority_points: 10,
+    opens_count: 2,
+    mv_bucket: null,
+    cohort: "assinantes-ativos",
+  };
+  assert.equal(
+    isRampWarm(veterano),
+    false,
+    "sends_count>0 já reprova isFirstSend, independente da isenção de MV — ramp-warm é só pra 1º envio",
+  );
+  assert.equal(
+    isEngajados(veterano),
+    true,
+    "continua elegível pra engajados normalmente (priority_points>0), sem conflito com ramp-warm",
   );
 });
 
@@ -798,12 +875,19 @@ test("segmentRampWarm: ordem cohortSendRank (morno→frio); NÃO exclui internos
   const rows: StoreRow[] = [
     row({ email: "lead@x.com", sends_count: 0, tier: 5, mv_bucket: "verified" }),
     row({ email: "ativo@x.com", sends_count: 0, tier: 1, mv_bucket: "verified" }),
-    row({ email: "unverified@x.com", sends_count: 0, tier: 1, mv_bucket: "unknown" }), // fora
+    // #3826: tier 1 → cohort assinantes-ativos → MV-isento (isMvExemptCohort)
+    // → mv_bucket='unknown' já NÃO barra mais (antes ficava "fora", ver
+    // histórico do teste no git blame — era exatamente o ponto cego da issue).
+    row({ email: "unverified@x.com", sends_count: 0, tier: 1, mv_bucket: "unknown" }),
     row({ email: "vjpixel@gmail.com", sends_count: 0, tier: 1, mv_bucket: "verified" }), // interno, mas ramp-warm não exclui
+    // lead SEM mv_bucket verified e cohort NÃO isento continua fora (sem regressão).
+    row({ email: "lead-unverified@x.com", sends_count: 0, tier: 5, mv_bucket: "unknown" }),
   ];
   assert.deepEqual(
     segmentRampWarm(rows).map((r) => r.email),
-    ["ativo@x.com", "vjpixel@gmail.com", "lead@x.com"], // ativo/vjpixel empatam por cohort (T01) → email ASC
+    // ativo/unverified/vjpixel empatam por cohort (T01, rank 0) → email ASC.
+    // lead (T05, rank>0) por último; lead-unverified fica de fora (cohort não isento, mv_bucket≠verified).
+    ["ativo@x.com", "unverified@x.com", "vjpixel@gmail.com", "lead@x.com"],
   );
 });
 

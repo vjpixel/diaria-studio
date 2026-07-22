@@ -22,7 +22,8 @@
  *                  `scripts/studio-ui/workers-ambient.d.ts`, ver PR #3593).
  *   2. --build-audience:  segmenta `ramp-warm` do store local (mesmo predicado
  *                  de `scripts/lib/clarice-segment.ts` — elegível, nunca
- *                  enviado, mv_bucket verificado), exclui quem já está
+ *                  enviado, mv_bucket verificado OU cohort MV-isento como
+ *                  assinantes-ativos, #3826), exclui quem já está
  *                  comprometido com uma campanha AGENDADA (queued, #2994) OU
  *                  JÁ DISPARADA (sent, #3682 — imune ao lag de sends_count
  *                  local) e fatia nos 3 volumes (ordem preservada, cohortSendRank

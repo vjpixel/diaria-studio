@@ -34,6 +34,7 @@ import {
   cohortFromSafra,
   cohortSendRank,
   isKnownCohortSlug,
+  isMvExemptCohort,
   INTERNAL_EMAILS,
   isTestAccount,
 } from "./cohorts.ts";
@@ -411,11 +412,33 @@ export function segmentReativacao(rows: StoreRow[]): StoreRow[] {
  * decisão do editor), `vjpixel+test*@gmail.com` nunca deveria ser destinatário
  * de envio nenhum, gated ou não; mesmo guard de defesa em profundidade que
  * `segmentFromStore`/`isEngajados`/`isReativacao` já aplicam.
+ *
+ * #3826: cohort MV-ISENTO (`isMvExemptCohort` — hoje só `assinantes-ativos`,
+ * cohorts.ts) DISPENSA `mv_bucket='verified'`. Sem isso, um pagante recém-
+ * importado (send_eligible=1 garantido por #3819, sends_count=0, sem
+ * mv_bucket porque nunca é submetido ao MV — é isento) nunca satisfazia
+ * `mv_bucket==='verified'` e ficava fora dos 3 grupos nomeados: não tem
+ * `sends_count>0` pra entrar em `engajados`/`reativacao`, e não tinha
+ * verificação MV pra entrar em `ramp-warm` — chicken-and-egg, ponto cego
+ * total (achado 260721, 45 assinantes ativos de julho, 0 alcançáveis por
+ * qualquer segmento). Mesmo racional de #3819: pagamento Stripe já valida o
+ * e-mail, MV é redundante pra esse cohort. Não reimplementa a lista de
+ * cohorts isentos — reusa `isMvExemptCohort` (fonte única compartilhada com
+ * `classifyEligibility` em clarice-db.ts e `verify-emails-mv.ts`).
+ *
+ * Ordenação: `segmentRampWarm` (abaixo) já ordena por `cohortSendRank`, que
+ * atribui `assinantes-ativos` ao rank 0 (mais quente da fila) — nenhuma
+ * mudança de ordenação foi necessária pra atender "cohort assinantes-ativos
+ * rank 0" pedido pela issue, já era o comportamento existente.
  */
 export function isRampWarm(
-  r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "mv_bucket">,
+  r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "mv_bucket" | "cohort">,
 ): boolean {
-  return isFirstSend(r) && r.mv_bucket === "verified" && !isTestAccount(r.email);
+  return (
+    isFirstSend(r) &&
+    (r.mv_bucket === "verified" || isMvExemptCohort(r.cohort)) &&
+    !isTestAccount(r.email)
+  );
 }
 
 /** Ordem de `ramp-warm`: cohortSendRank (morno→frio, mesmo eixo do 1º envio da rampa). */
