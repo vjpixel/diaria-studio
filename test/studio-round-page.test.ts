@@ -1,15 +1,17 @@
 /**
- * test/studio-round-page.test.ts (#3561, fatia 7 do epic "Studio UI" #3554)
+ * test/studio-round-page.test.ts (#3561, fatia 7 do epic "Studio UI" #3554;
+ * redesenho da sequência cronológica #3841)
  *
- * Contrato HTTP de `GET /api/round/:kind` e `GET /rodada` (server.ts):
- * shell estático servido, payload JSON com o shape esperado a partir de um
- * `plan.json` fixture no disco, guard read-only (só GET/HEAD), 400 pra kind
- * inválido, 200 com `found:false` quando não há sessão nenhuma. Mesmo
- * precedente de `test/studio-triagem-page.test.ts`.
+ * Contrato HTTP de `GET /api/round/:kind[?session=]`, `GET /api/rounds` e
+ * `GET /rodada` (server.ts): shell estático servido, payload JSON com o
+ * shape esperado a partir de um `plan.json` fixture no disco, guard
+ * read-only (só GET/HEAD), 400 pra kind inválido, 200 com `found:false`
+ * quando não há sessão nenhuma. Mesmo precedente de
+ * `test/studio-triagem-page.test.ts`.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
@@ -34,6 +36,27 @@ describe("GET /rodada + GET /api/round/:kind (#3561)", () => {
         ],
       }),
     );
+    // #3841: 2ª sessão do MESMO dia (sufixo `b`), mais ANTIGA (started_at e
+    // mtime anteriores à 260716 acima) — cobre `GET /api/rounds` (sequência
+    // cronológica) e `GET /api/round/:kind?session=` (busca uma entrada que
+    // NÃO é a mais recente do kind).
+    const dirB = join(root, "data", "overnight", "260716b");
+    mkdirSync(dirB, { recursive: true });
+    const planB = join(dirB, "plan.json");
+    writeFileSync(
+      planB,
+      JSON.stringify({
+        started_at: "2026-07-16T08:00:00Z",
+        issues: [{ number: 3, priority: "P3", status: "mergeada" }],
+      }),
+    );
+    // mtime explícito, mais ANTIGO que o de `260716/plan.json` acima — sem
+    // isto, escrever este arquivo DEPOIS faria seu mtime real ser mais
+    // recente e `findLatestPlanPath` (que ordena por mtime, #3841) passaria a
+    // devolvê-lo como "o mais recente", quebrando os testes pré-existentes
+    // que esperam `sessionId: "260716"`.
+    const older = new Date("2026-07-16T08:05:00Z");
+    utimesSync(planB, older, older);
     server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
   });
 
@@ -48,7 +71,8 @@ describe("GET /rodada + GET /api/round/:kind (#3561)", () => {
     assert.match(res.headers.get("content-type") ?? "", /text\/html/);
     const body = await res.text();
     assert.ok(body.includes("rodada.js"));
-    assert.ok(body.includes("round-kind-tabs"));
+    // #3841: abas overnight/develop deram lugar à lista cronológica única.
+    assert.ok(body.includes('id="rounds-list"'));
   });
 
   it("aceita /rodada/ com trailing slash", async () => {
@@ -72,11 +96,11 @@ describe("GET /rodada + GET /api/round/:kind (#3561)", () => {
     assert.match(res.headers.get("content-type") ?? "", /javascript/);
   });
 
-  it("(#3874) o shell rodada.html declara role=tab nas abas de kind (aria-selected/tabindex são geridos em runtime por rodada.js, não estáticos no HTML)", async () => {
+  it("(#3874) o shell rodada.html mantém role=alert nos banners de erro (lista + detalhe)", async () => {
     const res = await fetch(new URL("/rodada", server.url));
     const body = await res.text();
-    assert.ok(body.includes('role="tab"'), "as abas overnight/develop precisam de role=tab (APG)");
-    assert.ok(body.includes('id="round-error" class="panel alert-banner" role="alert"'), "banner de erro precisa de role=alert");
+    assert.ok(body.includes('id="rounds-list-error" class="panel alert-banner" role="alert"'), "banner de erro da lista precisa de role=alert");
+    assert.ok(body.includes('id="round-error" class="panel alert-banner" role="alert"'), "banner de erro do detalhe precisa de role=alert");
   });
 
   it("POST /rodada é rejeitado com 405 (guard read-only)", async () => {
@@ -114,6 +138,53 @@ describe("GET /rodada + GET /api/round/:kind (#3561)", () => {
     const res = await fetch(new URL("/rodada-round-age.js", server.url));
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") ?? "", /javascript/);
+  });
+
+  // #3841 item 2/3 — sequência cronológica de todas as rodadas.
+  it("GET /api/rounds lista TODAS as sessões (inclusive sufixo b), ordenadas por started_at desc", async () => {
+    const res = await fetch(new URL("/api/rounds", server.url));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /application\/json/);
+    const body = await res.json();
+    assert.ok(Array.isArray(body.rounds));
+    const overnightEntries = body.rounds.filter((r: { kind: string }) => r.kind === "overnight");
+    assert.equal(overnightEntries.length, 2, "260716 e 260716b devem aparecer, nenhuma invisível");
+    // Mais recente primeiro: 260716 (started_at 10:00Z) antes de 260716b (08:00Z).
+    assert.equal(overnightEntries[0].sessionId, "260716");
+    assert.equal(overnightEntries[1].sessionId, "260716b");
+    assert.equal(overnightEntries[0].startedAt, "2026-07-16T10:00:00Z");
+    assert.equal(overnightEntries[0].startedAtSource, "plan");
+    assert.equal(overnightEntries[1].totalIssues, 1);
+  });
+
+  it("GET /api/round/overnight?session=260716b retorna o DETALHE da sessão antiga, não a mais recente", async () => {
+    const res = await fetch(new URL("/api/round/overnight?session=260716b", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.found, true);
+    assert.equal(body.sessionId, "260716b");
+    assert.equal(body.queue.entram.length, 1);
+    assert.equal(body.queue.entram[0].number, 3);
+  });
+
+  it("GET /api/round/overnight?session=999999 (sessão inexistente) -> found:false, sem 500", async () => {
+    const res = await fetch(new URL("/api/round/overnight?session=999999", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.found, false);
+  });
+
+  it("GET /api/round/overnight?session=../../etc (path traversal) -> found:false, não escapa data/overnight/", async () => {
+    const res = await fetch(new URL("/api/round/overnight?session=" + encodeURIComponent("../../etc"), server.url));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.found, false);
+    assert.match(body.error ?? "", /sessionId inválido/);
+  });
+
+  it("POST /api/rounds é rejeitado com 405 — reforça o guard read-only", async () => {
+    const res = await fetch(new URL("/api/rounds", server.url), { method: "POST" });
+    assert.equal(res.status, 405);
   });
 
   it("GET /api/round/develop retorna found:false quando não há sessão develop", async () => {

@@ -67,15 +67,21 @@ export interface StudioState {
 
 const AAMMDD_RE = /^\d{6}$/;
 /**
- * #3841 (mitigação mínima, stopgap): variante de `AAMMDD_RE` que também aceita
- * o sufixo de letra minúscula usado manualmente pra 2ª+ rodada do mesmo dia
- * (`260721b`, `260721c`, ...). Escopo só de `findLatestPlanPath` — o resto do
- * arquivo usa `AAMMDD_RE` puro pra edições (`data/editions/`), que não têm
- * essa convenção de sufixo. Identidade real de rodada (ISO `started_at` +
- * diretório único) é o item 1 do fix completo, fora de escopo aqui — ver
- * issue.
+ * #3841: variante de `AAMMDD_RE` que também aceita o sufixo de letra
+ * minúscula usado manualmente pra 2ª+ rodada do mesmo dia (`260721b`,
+ * `260721c`, ...). Escopo só de sessões overnight/develop
+ * (`findLatestPlanPath`/`listSessionCandidates`/`listRoundSummaries` em
+ * `studio-round.ts`) — o resto do arquivo usa `AAMMDD_RE` puro pra edições
+ * (`data/editions/`), que não têm essa convenção de sufixo. Exportado pra
+ * `studio-round.ts` validar `sessionId` vindo de query string antes de montar
+ * um path de disco (defesa contra path traversal — #3841 item 2/3).
+ *
+ * O diretório em si continua nomeado `{AAMMDD}[sufixo]` (mudar isso é mais
+ * invasivo e não é o que a issue pede, ver SKILL.md) — a identidade REAL da
+ * rodada agora vem do `started_at` ISO gravado dentro do `plan.json`
+ * (`resolveStartedAt` abaixo), não do nome do diretório.
  */
-const AAMMDD_SESSION_RE = /^\d{6}[a-z]?$/;
+export const AAMMDD_SESSION_RE = /^\d{6}[a-z]?$/;
 
 /**
  * #3802: uma edição com `_internal/05-published.json` mostrando
@@ -228,14 +234,30 @@ export function pickCurrentEdition(editions: StudioEditionSummary[]): string | n
  * heurística "mais recente vence" de antes, só usada como fallback, não como
  * critério primário.
  */
-export function findLatestPlanPath(rootDir: string, kind: "overnight" | "develop"): string | null {
+export interface SessionCandidate {
+  /** Nome do diretório de sessão — `{AAMMDD}` ou `{AAMMDD}{sufixo}` (#3841). */
+  dir: string;
+  /** Path absoluto de `plan.json` dentro do diretório. */
+  planPath: string;
+  mtimeMs: number;
+}
+
+/**
+ * Lista TODOS os diretórios de sessão candidatos sob `data/{kind}/` que têm
+ * um `plan.json` legível — não escolhe "o mais recente" (isso é
+ * responsabilidade do chamador). Extraído de `findLatestPlanPath` (#3841 item
+ * 2/3) pra ser compartilhado com `listRoundSummaries` (`studio-round.ts`),
+ * que precisa enxergar TODAS as sessões (não só a mais recente) pra montar a
+ * sequência cronológica do painel `/rodada`.
+ */
+export function listSessionCandidates(rootDir: string, kind: "overnight" | "develop"): SessionCandidate[] {
   const base = resolve(rootDir, "data", kind);
-  if (!existsSync(base)) return null;
+  if (!existsSync(base)) return [];
   let entries: string[];
   try {
     entries = readdirSync(base);
   } catch {
-    return null;
+    return [];
   }
   const sessionDirs = entries
     .filter((e) => AAMMDD_SESSION_RE.test(e))
@@ -247,7 +269,7 @@ export function findLatestPlanPath(rootDir: string, kind: "overnight" | "develop
       }
     });
 
-  const candidates: Array<{ dir: string; planPath: string; mtimeMs: number }> = [];
+  const candidates: SessionCandidate[] = [];
   for (const dir of sessionDirs) {
     const planPath = resolve(base, dir, "plan.json");
     try {
@@ -256,13 +278,83 @@ export function findLatestPlanPath(rootDir: string, kind: "overnight" | "develop
       // sem plan.json escrito ainda (ou não-legível) — não é candidato
     }
   }
+  return candidates;
+}
+
+/**
+ * Acha o `plan.json` mais recente sob `data/{overnight|develop}/{AAMMDD}/plan.json`
+ * — diretórios nomeados por data-rótulo da sessão (não necessariamente a data
+ * de edição — ver CLAUDE.md `/diaria-develop`). Retorna null se não houver
+ * nenhum.
+ *
+ * #3841 (mitigação mínima, stopgap — identidade real de rodada fica pro
+ * `/diaria-develop`, ver issue): antes desta correção, o filtro exigia
+ * `AAMMDD_RE` (6 dígitos exatos) e a escolha era por `.sort().reverse()`
+ * lexicográfico do NOME do diretório. Dois defeitos empilhados:
+ *   1. `260721b` (sufixo manual pra 2ª+ rodada do mesmo dia) nunca competia —
+ *      o regex excluía o diretório inteiro, então uma sessão mais recente com
+ *      sufixo ficava invisível e a mais antiga (sem sufixo) sempre "vencia".
+ *   2. Mesmo cobrindo o sufixo, ordenar por NOME do diretório não reflete
+ *      necessariamente qual rodada começou por último — `260721` pode ter
+ *      mtime mais recente que `260721b` (ou até que `260722`) dependendo de
+ *      quando cada uma de fato rodou.
+ * Fix: aceitar sufixo de letra minúscula (`AAMMDD_SESSION_RE`) E escolher
+ * pelo mtime do `plan.json` de cada candidato (mais recente vence), não pelo
+ * nome do diretório. mtime é lido no momento da chamada — se outra sessão
+ * está escrevendo o arquivo agora mesmo, isso só faz o mtime dela ficar ainda
+ * mais recente, o que é o comportamento desejado (sessão ativa = "mais
+ * recente" de fato). Em empate de mtime (granularidade do filesystem pode
+ * colapsar 2 escritas muito próximas no mesmo tick — visto em teste local),
+ * desempata pelo NOME do diretório (desc.) como critério secundário — mesma
+ * heurística "mais recente vence" de antes, só usada como fallback, não como
+ * critério primário.
+ */
+export function findLatestPlanPath(rootDir: string, kind: "overnight" | "develop"): string | null {
+  const candidates = listSessionCandidates(rootDir, kind);
   if (candidates.length === 0) return null;
 
-  candidates.sort((a, b) => {
+  const sorted = [...candidates].sort((a, b) => {
     if (b.mtimeMs !== a.mtimeMs) return b.mtimeMs - a.mtimeMs;
     return a.dir < b.dir ? 1 : a.dir > b.dir ? -1 : 0;
   });
-  return candidates[0].planPath;
+  return sorted[0].planPath;
+}
+
+/**
+ * Resolve a identidade temporal real de uma rodada (#3841 item 1/2): usa
+ * `started_at` do `plan.json` quando é um ISO 8601 parseável (skills novas,
+ * pós-fix — ver `.claude/skills/diaria-overnight/SKILL.md` Fase 0 passo 1);
+ * cai pro mtime do `plan.json` quando `started_at` está ausente ou é a string
+ * legada `{AAMMDD}`/`{AAMMDD}{sufixo}` (não parseável como data — `new
+ * Date("260721")` é `Invalid Date`). `source` informa qual dos dois foi
+ * usado, pra a UI poder rotular a hora como aproximada quando for fallback.
+ */
+export function resolveStartedAt(
+  rawStartedAt: unknown,
+  mtimeMs: number,
+): { iso: string; source: "plan" | "mtime" } {
+  if (typeof rawStartedAt === "string") {
+    // #3841 achado durante a implementação: `AAMMDD_SESSION_RE` (a string
+    // legada, ex: `"260721"`) NÃO é rejeitada por `isNaN(new Date(...))`
+    // como se esperaria — `new Date("260721")` é uma data VÁLIDA (parseada
+    // como o ano 260721, 1º de janeiro, 00:00 — literalmente a causa raiz do
+    // sintoma original "INICIADA EM: 01/01, 00:00": o `fmtTime` do client só
+    // exibe dia/mês/hora/minuto, nunca o ano, então o ano absurdo fica
+    // invisível e só o "01/01, 00:00" aparece). Por isso o formato legado
+    // precisa ser rejeitado EXPLICITAMENTE por shape (`AAMMDD_SESSION_RE`)
+    // antes de sequer tentar `Date.parse` — não dá pra confiar em
+    // `isNaN(getTime())` sozinho pra distinguir "ISO real" de "AAMMDD que o
+    // parser aceitou por acidente".
+    if (!AAMMDD_SESSION_RE.test(rawStartedAt)) {
+      const d = new Date(rawStartedAt);
+      // Preserva a string bruta (não reformata via `toISOString()`) quando
+      // ela já é um ISO parseável — evita divergência espúria de precisão
+      // (ex: `"2026-07-16T10:00:00Z"` vs `"2026-07-16T10:00:00.000Z"`)
+      // contra o que a skill de fato gravou em `plan.json`.
+      if (!isNaN(d.getTime())) return { iso: rawStartedAt, source: "plan" };
+    }
+  }
+  return { iso: new Date(mtimeMs).toISOString(), source: "mtime" };
 }
 
 /** Resume um `plan.json` (formato overnight/develop) em contagens por status.

@@ -32,28 +32,21 @@
     <section class="panel">
       <h1>Acompanhamento de rodada — overnight / develop</h1>
       <p class="hint">
-        Read-only: mostra o <code>plan.json</code> da sessão MAIS RECENTE já
-        gravado por <code>/diaria-overnight</code> ou <code>/diaria-develop</code>
-        rodando no terminal. Não dispara nenhuma rodada nova nem varredura —
-        o disparo continua sendo a skill no terminal. Perguntas
+        Read-only: lista TODAS as rodadas já gravadas por
+        <code>/diaria-overnight</code> ou <code>/diaria-develop</code>, numa
+        única sequência cronológica (mais recente primeiro) — clique numa
+        entrada pra expandir a fila classificada + timeline daquela rodada.
+        Múltiplas rodadas do mesmo dia aparecem como entradas distintas, sem
+        tratamento especial (#3841). Não dispara nenhuma rodada nova nem
+        varredura — o disparo continua sendo a skill no terminal. Perguntas
         <code>AskUserQuestion</code> pendentes da sessão (briefing, gates de
         desbloqueio) aparecem como formulário no chat à esquerda, não aqui.
       </p>
 
-      <div class="round-kind-tabs" role="tablist" aria-label="Tipo de rodada">
-        <button type="button" class="round-kind-tab" role="tab" data-kind="overnight" id="tab-overnight">Overnight</button>
-        <button type="button" class="round-kind-tab" role="tab" data-kind="develop" id="tab-develop">Develop</button>
-      </div>
+      <div id="rounds-list-error" class="panel alert-banner" role="alert" hidden></div>
+      <div id="rounds-list-empty" class="hint" hidden>Nenhuma rodada encontrada em <code>data/overnight/</code> ou <code>data/develop/</code>.</div>
 
-      <div id="round-error" class="panel alert-banner" role="alert" hidden></div>
-      <div id="round-empty" class="hint" hidden>Nenhuma sessão encontrada em <code id="round-empty-dir">—</code>.</div>
-
-      <dl class="round-meta" id="round-meta" hidden>
-        <div><dt>Sessão</dt><dd id="meta-session">—</dd></div>
-        <div><dt>Iniciada em</dt><dd id="meta-started" class="mono">—</dd></div>
-        <div><dt>Loop estendido</dt><dd id="meta-loop">—</dd></div>
-        <div><dt>plan.json</dt><dd class="mono" id="meta-path">—</dd></div>
-      </dl>
+      <ul class="rounds-list" id="rounds-list" role="list"></ul>
 
       <div class="filters-bar">
         <label class="filter-field">
@@ -79,7 +72,17 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel" id="round-detail" hidden>
+      <div id="round-error" class="panel alert-banner" role="alert" hidden></div>
+      <div id="round-empty" class="hint" hidden>Nenhuma sessão encontrada em <code id="round-empty-dir">—</code>.</div>
+
+      <dl class="round-meta" id="round-meta" hidden>
+        <div><dt>Sessão</dt><dd id="meta-session">—</dd></div>
+        <div><dt>Iniciada em</dt><dd id="meta-started" class="mono">—</dd></div>
+        <div><dt>Loop estendido</dt><dd id="meta-loop">—</dd></div>
+        <div><dt>plan.json</dt><dd class="mono" id="meta-path">—</dd></div>
+      </dl>
+
       <h2>Entram na rodada (<span id="entram-count">0</span>)</h2>
       <div id="entram-empty" class="hint" hidden>Nenhuma unidade entra na rodada.</div>
       <div class="table-scroll">
@@ -90,9 +93,7 @@
           <tbody id="entram-tbody"></tbody>
         </table>
       </div>
-    </section>
 
-    <section class="panel">
       <h2>Pendentes — Gate 1 de desbloqueio (<span id="pendente-count">0</span>)</h2>
       <p class="hint">Só aparece em rodadas <code>/diaria-develop</code>: issues aguardando o editor destravar (cat. A-E). Nunca mostra valor de credencial.</p>
       <div id="pendente-empty" class="hint" hidden>Nenhuma unidade pendente de desbloqueio.</div>
@@ -104,9 +105,7 @@
           <tbody id="pendente-tbody"></tbody>
         </table>
       </div>
-    </section>
 
-    <section class="panel">
       <h2>Ficam de fora (<span id="fora-count">0</span>)</h2>
       <div id="fora-empty" class="hint" hidden>Nenhuma unidade fica de fora.</div>
       <div class="table-scroll">
@@ -117,13 +116,11 @@
           <tbody id="fora-tbody"></tbody>
         </table>
       </div>
-    </section>
 
-    <section class="panel">
       <h2>Timeline ao vivo</h2>
       <p class="hint">
         Mesma tabela do relatório final da rodada (<code>render-overnight-timeline.ts</code>,
-        #2637), atualizada automaticamente sempre que o <code>plan.json</code> mudar.
+        #2637), atualizada automaticamente sempre que o <code>plan.json</code> da rodada expandida mudar.
       </p>
       <div class="table-scroll">
         <table class="triage-table round-timeline-table">

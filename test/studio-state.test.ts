@@ -12,7 +12,9 @@ import {
   findLatestPlanPath,
   isEditionPublishedOrScheduled,
   listEditionSummaries,
+  listSessionCandidates,
   pickCurrentEdition,
+  resolveStartedAt,
   stageLabelFor,
   summarizePlan,
   type StudioEditionSummary,
@@ -417,6 +419,78 @@ describe("findLatestPlanPath — sufixo de rodada + ordenação por mtime (#3841
     } finally {
       cleanup();
     }
+  });
+});
+
+describe("listSessionCandidates (#3841 item 2/3)", () => {
+  it("array vazio quando data/{kind}/ não existe", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      assert.deepEqual(listSessionCandidates(root, "overnight"), []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("lista TODOS os candidatos (inclusive sufixo), não só o mais recente — usado por listRoundSummaries", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      mkdirSync(join(root, "data", "overnight", "260721"), { recursive: true });
+      writeFileSync(join(root, "data", "overnight", "260721", "plan.json"), "{}");
+      mkdirSync(join(root, "data", "overnight", "260721b"), { recursive: true });
+      writeFileSync(join(root, "data", "overnight", "260721b", "plan.json"), "{}");
+
+      const candidates = listSessionCandidates(root, "overnight");
+      const dirs = candidates.map((c) => c.dir).sort();
+      assert.deepEqual(dirs, ["260721", "260721b"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("diretório sem plan.json não entra na lista de candidatos", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      mkdirSync(join(root, "data", "overnight", "260721"), { recursive: true });
+      // sem plan.json escrito ainda
+      assert.deepEqual(listSessionCandidates(root, "overnight"), []);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("resolveStartedAt (#3841 item 1/2)", () => {
+  it("string ISO parseável -> preserva o valor bruto verbatim, source 'plan'", () => {
+    const r = resolveStartedAt("2026-07-22T16:37:03Z", Date.now());
+    assert.equal(r.iso, "2026-07-22T16:37:03Z");
+    assert.equal(r.source, "plan");
+  });
+
+  it("string legada não-ISO (AAMMDD) -> fallback pro mtime, source 'mtime'", () => {
+    const mtimeMs = new Date("2026-07-21T18:00:00Z").getTime();
+    const r = resolveStartedAt("260721", mtimeMs);
+    assert.equal(r.iso, new Date(mtimeMs).toISOString());
+    assert.equal(r.source, "mtime");
+  });
+
+  it("string legada com sufixo (AAMMDDb) -> mesmo fallback", () => {
+    const mtimeMs = new Date("2026-07-21T18:00:00Z").getTime();
+    const r = resolveStartedAt("260721b", mtimeMs);
+    assert.equal(r.source, "mtime");
+  });
+
+  it("ausente (undefined) -> fallback pro mtime", () => {
+    const mtimeMs = new Date("2026-07-21T18:00:00Z").getTime();
+    const r = resolveStartedAt(undefined, mtimeMs);
+    assert.equal(r.iso, new Date(mtimeMs).toISOString());
+    assert.equal(r.source, "mtime");
+  });
+
+  it("tipo não-string (ex: número) -> fallback pro mtime, nunca lança", () => {
+    const mtimeMs = new Date("2026-07-21T18:00:00Z").getTime();
+    const r = resolveStartedAt(12345, mtimeMs);
+    assert.equal(r.source, "mtime");
   });
 });
 

@@ -1,27 +1,65 @@
-/* rodada.css (#3561) — acompanhamento de rodada overnight/develop. Estende
-   style.css (#3555) + triagem.css (#3562, reusa .filters-bar/.triage-table/
-   .priority-badge/.alert-banner), mesma fonte de tokens (/tokens.generated.css). */
+/* rodada.css (#3561, redesenhado #3841) — acompanhamento de rodada
+   overnight/develop. Estende style.css (#3555) + triagem.css (#3562, reusa
+   .filters-bar/.triage-table/.priority-badge/.alert-banner), mesma fonte de
+   tokens (/tokens.generated.css). */
 
-.round-kind-tabs {
-  display: flex;
-  gap: 0.5rem;
+/* #3841: lista cronológica de TODAS as rodadas (substitui as antigas abas
+   overnight/develop — cada rodada é uma entrada, kind vira só um badge). */
+.rounds-list {
+  list-style: none;
   margin: 0.5rem 0 1rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
 }
 
-.round-kind-tab {
+.round-list-item { margin: 0; }
+
+.round-list-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
   font: inherit;
-  padding: 0.4rem 1rem;
+  text-align: left;
+  padding: 0.55rem 0.85rem;
   border: 1px solid var(--rule);
-  border-radius: 999px;
+  border-radius: 6px;
   background: var(--paper-alt);
   color: var(--ink);
   cursor: pointer;
 }
-.round-kind-tab.active {
-  background: var(--brand);
-  color: var(--on-ink);
+.round-list-row:hover { border-color: var(--brand); }
+.round-list-item.active .round-list-row {
   border-color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 8%, var(--paper-alt));
+}
+
+.round-list-kind {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
   font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+}
+.round-list-kind.kind-overnight { color: var(--brand); border-color: var(--brand); }
+.round-list-kind.kind-develop { color: var(--status-ok, var(--ink)); }
+
+.round-list-session { flex: 0 0 auto; opacity: 0.85; }
+.round-list-started { flex: 0 0 auto; opacity: 0.85; }
+.round-list-counts { flex: 1 1 auto; min-width: 0; }
+.round-list-chevron { flex: 0 0 auto; opacity: 0.6; }
+
+@media (max-width: 640px) {
+  .round-list-row {
+    flex-wrap: wrap;
+    min-height: 44px;
+  }
 }
 
 .round-meta {

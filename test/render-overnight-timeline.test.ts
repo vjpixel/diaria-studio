@@ -239,6 +239,68 @@ describe("buildTimelineRows — timeline parcial (rodada interrompida)", () => {
   });
 });
 
+// #3841 (defeito C): `plan.json` legado pode ter `timeline.merged` gravado
+// ANTES de `timeline.dispatch` (colisão de identidade de rodada — 2 sessões
+// disputando o mesmo `plan.json`). A tabela nunca deve mostrar um "fim"
+// cronologicamente anterior ao "início" nem uma duração negativa — trata
+// como dado ausente ("—"), nunca crasha, nunca inventa um valor.
+describe("buildTimelineRows — #3841: timestamps corrompidos (fim < início)", () => {
+  it("merged ANTES de dispatch → fim '—' (não o horário impossível) e duração '—'", () => {
+    const plan = makePlan([
+      {
+        number: 3802,
+        batch: null,
+        status: "mergeada",
+        timeline: {
+          dispatch: "2026-07-21T18:07:00.000Z",
+          merged: "2026-07-21T17:58:00.000Z", // ANTES do dispatch — corrompido
+        },
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].inicio, "15:07"); // BRT (UTC-3) de 18:07Z
+    assert.equal(rows[0].fim, "—");
+    assert.equal(rows[0].duracao, "—");
+    assert.equal(rows[0].durationMs, null);
+  });
+
+  it("dispatch == merged (0ms, não corrompido) continua exibindo duração 0m normalmente", () => {
+    const plan = makePlan([
+      {
+        number: 3803,
+        batch: null,
+        status: "mergeada",
+        timeline: {
+          dispatch: "2026-07-21T18:14:00.000Z",
+          merged: "2026-07-21T18:14:00.000Z",
+        },
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].fim, "15:14");
+    assert.equal(rows[0].duracao, "0m");
+    assert.equal(rows[0].durationMs, 0);
+  });
+
+  it("timestamps válidos (fim > início) não são afetados pelo guard", () => {
+    const plan = makePlan([
+      {
+        number: 3801,
+        batch: null,
+        status: "mergeada",
+        timeline: {
+          dispatch: "2026-07-21T17:40:00.000Z",
+          merged: "2026-07-21T18:06:00.000Z",
+        },
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].fim, "15:06");
+    assert.equal(rows[0].duracao, "26m");
+    assert.equal(rows[0].durationMs, 26 * 60_000);
+  });
+});
+
 // #3072 (review do #3071): EPIC deliberadamente deferido (status
 // "elegivel_especial") nunca tem timeline preenchido (nunca foi de fato
 // despachado), mas isTerminalForBar já o trata como terminal na statusLine
