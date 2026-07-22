@@ -3,7 +3,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -337,6 +337,83 @@ describe("findLatestPlanPath (#3555)", () => {
       writeFileSync(join(root, "data", "overnight", "260710", "plan.json"), "{}");
       const found = findLatestPlanPath(root, "overnight");
       assert.ok(found?.includes("260710"));
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe("findLatestPlanPath — sufixo de rodada + ordenação por mtime (#3841)", () => {
+  it("diretório com sufixo de letra minúscula (260721b) agora É reconhecido como candidato válido", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      mkdirSync(join(root, "data", "overnight", "260721b"), { recursive: true });
+      writeFileSync(join(root, "data", "overnight", "260721b", "plan.json"), "{}");
+      const found = findLatestPlanPath(root, "overnight");
+      // Pré-fix: AAMMDD_RE (6 dígitos exatos) excluía este diretório inteiro
+      // e a função retornava null mesmo havendo um plan.json de verdade.
+      assert.ok(found?.includes("260721b"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("entre 260721 (mtime mais antigo) e 260721b (mtime mais recente), escolhe 260721b", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      const planA = join(root, "data", "overnight", "260721", "plan.json");
+      const planB = join(root, "data", "overnight", "260721b", "plan.json");
+      mkdirSync(join(planA, ".."), { recursive: true });
+      mkdirSync(join(planB, ".."), { recursive: true });
+      writeFileSync(planA, "{}");
+      writeFileSync(planB, "{}");
+      const older = new Date("2026-07-21T14:34:00Z"); // overnight 14:34 BRT, já encerrada
+      const newer = new Date("2026-07-21T22:42:00Z"); // 2º overnight 19:42 BRT, ainda rodando
+      utimesSync(planA, older, older);
+      utimesSync(planB, newer, newer);
+      const found = findLatestPlanPath(root, "overnight");
+      assert.ok(found?.includes("260721b"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("cenário inverso: 260721 com mtime MAIS recente que 260722 (rodada nova já começou mas ainda sem sufixo) — escolhe por mtime, não por nome", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      // Nome lexicograficamente MAIOR ("260722") mas mtime mais ANTIGO —
+      // se a implementação regredisse pra ordenação por nome, isto pegaria.
+      const planLexBigger = join(root, "data", "overnight", "260722", "plan.json");
+      const planActuallyNewer = join(root, "data", "overnight", "260721", "plan.json");
+      mkdirSync(join(planLexBigger, ".."), { recursive: true });
+      mkdirSync(join(planActuallyNewer, ".."), { recursive: true });
+      writeFileSync(planLexBigger, "{}");
+      writeFileSync(planActuallyNewer, "{}");
+      const older = new Date("2026-07-21T08:00:00Z");
+      const newer = new Date("2026-07-22T02:00:00Z");
+      utimesSync(planLexBigger, older, older);
+      utimesSync(planActuallyNewer, newer, newer);
+      const found = findLatestPlanPath(root, "overnight")!.split("\\").join("/");
+      assert.ok(found.endsWith("260721/plan.json"), `esperava terminar em 260721/plan.json, achou: ${found}`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("sem regressão: mistura de diretórios só-numéricos e com sufixo, sem ambiguidade de mtime, ainda escolhe o mais recente corretamente", () => {
+    const { root, cleanup } = setupRoot();
+    try {
+      const dirs = ["260719", "260720", "260720b", "260721"];
+      const base = new Date("2026-07-19T10:00:00Z").getTime();
+      dirs.forEach((dir, i) => {
+        const planPath = join(root, "data", "overnight", dir, "plan.json");
+        mkdirSync(join(planPath, ".."), { recursive: true });
+        writeFileSync(planPath, "{}");
+        const t = new Date(base + i * 60 * 60 * 1000); // cada uma 1h mais nova que a anterior
+        utimesSync(planPath, t, t);
+      });
+      const found = findLatestPlanPath(root, "overnight")!.split("\\").join("/");
+      assert.ok(found.endsWith("260721/plan.json"), `esperava a última criada (260721), achou: ${found}`);
     } finally {
       cleanup();
     }
