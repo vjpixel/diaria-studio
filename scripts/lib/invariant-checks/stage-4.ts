@@ -11,6 +11,12 @@ import type { InvariantRule, InvariantViolation } from "./types.ts";
 import { readMarker } from "../pipeline-state.ts";
 import { hashFromApprovedFile } from "../social-source-hash.ts";
 import { lintIntroCount } from "../newsletter-count.ts";
+import {
+  extractEiaMirrorBlock,
+  parseEiaMirrorBlock,
+  parseEIA,
+  fallbackEIA,
+} from "../newsletter-parse.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
 import {
   checkTitlePublisherSuffix,
@@ -240,6 +246,100 @@ function checkSocialHashFresh(editionDir: string): InvariantViolation[] {
   }
 
   return [];
+}
+
+/**
+ * #3825: o bloco `**É IA?**` em `02-reviewed.md` é só espelho/preview pro
+ * editor — `extractContent` (newsletter-parse.ts) SEMPRE lê o crédito real
+ * (legenda + "Resultado da última edição") de `01-eia.md`, nunca do mirror.
+ * Nada garantia que os dois ficassem sincronizados: o editor corrige a
+ * legenda em `02-reviewed.md` (fluxo natural — é a aba que o Studio abre),
+ * `01-eia.md` nunca é tocado, e o HTML publicado sai com o crédito ANTIGO
+ * sem nenhum aviso (incidente real 260722, erro intencional da legenda da
+ * ave corrigido só em 02-reviewed.md — reproduzido em
+ * `test/stage-4-eia-credit-synced.test.ts`).
+ *
+ * Reusa `parseEIA`/`fallbackEIA` (mesmos parsers de `extractContent`) dos
+ * dois lados via `parseEiaMirrorBlock`/`extractEiaMirrorBlock` — garante que
+ * qualquer divergência reportada é de CONTEÚDO, não de regra de parsing
+ * diferente entre os dois lados.
+ *
+ * Sem bloco mirror em `02-reviewed.md` (edição legada, ou stitch ainda não
+ * rodou) → `[]`, nada a comparar.
+ *
+ * **Severity "warning", não "error" (decisão conservadora, self-review
+ * #3825).** A issue original pedia GATE-BLOCKING "ou pelo menos warn-loud —
+ * nunca silencioso", deixando a escolha em aberto. `warning` ainda aparece
+ * no `{violations_block}` do gate humano do Stage 4 (nunca silencioso —
+ * `orchestrator-stage-4.md` linha 471 lista ⚠️ junto com ❌), mas não falha
+ * o exit code. Motivo: o mirror em `02-reviewed.md` é inserido verbatim de
+ * `01-eia.md` no stitch (Stage 2, `stitch-newsletter.ts::readEiaBlock`), mas
+ * DEPOIS passa pelo humanizador + Clarice — ambos operam sobre o
+ * `02-normalized.md`/`02-humanized.md` INTEIRO, sem exclusão de seção (ver
+ * `orchestrator-stage-2.md` §2b/§2c) — enquanto `01-eia.md` nunca é
+ * re-processado por nenhum dos dois. Já existe precedente no repo pra esse
+ * risco: `verify-clarice-url-stability` (#873) trata "Clarice alterou texto"
+ * como WARNING, não ERROR, porque é comportamento esperado do pipeline, não
+ * necessariamente erro editorial. Uma correção de pontuação/grafia do
+ * humanizador ou da Clarice na legenda (texto curto, não narrativo — mais
+ * provável de sofrer edição mínima que os destaques em si) bastaria pra
+ * disparar `error` TODA edição, mesmo sem nenhuma ação do editor — "crying
+ * wolf" que treina o editor a ignorar o gate. `error` fica como follow-up se
+ * a observação em produção mostrar que o mirror sai idêntico ao 01-eia.md
+ * na prática (sem essa erosão), ou com um comparador tolerante a reescrita
+ * leve.
+ */
+function checkEiaCreditSynced(editionDir: string): InvariantViolation[] {
+  const reviewedPath = resolve(editionDir, "02-reviewed.md");
+  const eiaPath = resolve(editionDir, "01-eia.md");
+  if (!existsSync(reviewedPath)) return [];
+
+  const mirrorBlock = extractEiaMirrorBlock(readFileSync(reviewedPath, "utf8"));
+  if (!mirrorBlock) return [];
+
+  const real = existsSync(eiaPath)
+    ? parseEIA(readFileSync(eiaPath, "utf8"), editionDir)
+    : fallbackEIA(editionDir);
+  const mirror = parseEiaMirrorBlock(mirrorBlock, editionDir);
+
+  const normalize = (s: string) => s.trim().replace(/\s+/g, " ");
+  const normalizeLine = (s?: string) => (s ? normalize(s) : "");
+
+  const violations: InvariantViolation[] = [];
+
+  if (normalize(real.credit) !== normalize(mirror.credit)) {
+    violations.push({
+      rule: "eia-credit-synced",
+      message:
+        `Bloco **É IA?** de 02-reviewed.md diverge do crédito real em 01-eia.md ` +
+        `(fonte que extractContent/render-newsletter-html.ts de fato usa — o bloco em ` +
+        `02-reviewed.md é só um espelho pro editor, editá-lo NÃO afeta o email publicado). ` +
+        `02-reviewed.md (cosmético): "${mirror.credit}". ` +
+        `01-eia.md (real, vai pro email): "${real.credit}". ` +
+        `Fix: editar 01-eia.md com a legenda correta — editar só 02-reviewed.md não tem ` +
+        `efeito no email enviado (incidente 260722, #3825).`,
+      source_issue: "#3825",
+      severity: "warning",
+      file: eiaPath,
+    });
+  }
+
+  if (normalizeLine(real.prevResultLine) !== normalizeLine(mirror.prevResultLine)) {
+    violations.push({
+      rule: "eia-prev-result-line-synced",
+      message:
+        `Linha "Resultado da última edição" do bloco **É IA?** em 02-reviewed.md diverge ` +
+        `de 01-eia.md (mesma fonte real do render, ver eia-credit-synced acima). ` +
+        `02-reviewed.md: "${mirror.prevResultLine ?? "(ausente)"}". ` +
+        `01-eia.md: "${real.prevResultLine ?? "(ausente)"}". ` +
+        `Fix: editar 01-eia.md — editar só 02-reviewed.md não tem efeito no email enviado (#3825).`,
+      source_issue: "#3825",
+      severity: "warning",
+      file: eiaPath,
+    });
+  }
+
+  return violations;
 }
 
 /**
@@ -946,6 +1046,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     run: checkImageContentFresh,
   },
   {
+    id: "eia-credit-synced",
+    description: "crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825)",
+    source_issue: "#3825",
+    stage: 4,
+    run: checkEiaCreditSynced,
+  },
+  {
     id: "intro-count-consistent",
     description: "intro line Z = contagem real de items visíveis (#1578)",
     source_issue: "#1578",
@@ -1024,6 +1131,7 @@ export {
   checkPublicImagesPopulated,
   checkSocialHashFresh,
   checkImageContentFresh,
+  checkEiaCreditSynced,
   checkIntroCountConsistent,
   checkNarrativeNotGenericPlaceholder,
   checkTruncatedSecondaryItemSummary,

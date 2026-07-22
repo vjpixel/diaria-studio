@@ -1042,6 +1042,48 @@ function isPostDestaqueLandmark(firstLine: string): boolean {
 }
 
 /**
+ * #3825: extrai o bloco `**É IA?**` de `02-reviewed.md` — mirror/preview pro
+ * editor, NUNCA a fonte real consumida pelo render (`01-eia.md`, sempre lido
+ * direto em `extractContent`). Bounded pelos mesmos `---` isolados que
+ * delimitam qualquer seção (mesma técnica de split-e-filtra de
+ * `parseSections`). Retorna `null` quando o bloco não existe (edição legada
+ * sem stitch, ou stitch ainda não rodou).
+ */
+export function extractEiaMirrorBlock(text: string): string | null {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const blocks = normalized.split(/^---$/m).map((s) => s.trim()).filter(Boolean);
+  for (const block of blocks) {
+    const firstLine = block.split("\n")[0]?.trim() ?? "";
+    if (EIA_HEADER_RE.test(firstLine)) return block;
+  }
+  return null;
+}
+
+/**
+ * #3825: parseia o bloco mirror extraído por `extractEiaMirrorBlock` reusando
+ * `parseEIA` — o MESMO parser usado para `01-eia.md` — de propósito: a
+ * comparação de divergência (`checkEiaCreditSynced`, invariant-checks/
+ * stage-4.ts) precisa aplicar EXATAMENTE a mesma lógica de extração aos dois
+ * lados, senão uma diferença de parsing (não de conteúdo) viraria
+ * falso-positivo (ou pior, falso-negativo mascarando divergência real).
+ *
+ * Antes de chamar `parseEIA`, remove a linha `> Gabarito: ...` — formato
+ * inserido pelo passo 2b do `writer.md` (single-writer, legado). O fluxo
+ * atual (`writer-destaque` × 3 + `stitch-newsletter.ts::readEiaBlock`) copia
+ * `01-eia.md` verbatim e nunca inclui essa linha, mas `parseEIA` não sabe
+ * filtrá-la (ela não existe em `01-eia.md`) — sem este strip, edições no
+ * formato legado vazariam a linha pro campo `credit` e produziriam
+ * falso-positivo de divergência mesmo quando o crédito real bate.
+ */
+export function parseEiaMirrorBlock(block: string, editionDir: string): EIA {
+  const withoutGabarito = block
+    .split("\n")
+    .filter((l) => !/^>\s*Gabarito\s*:/i.test(l.trim()))
+    .join("\n");
+  return parseEIA(withoutGabarito, editionDir);
+}
+
+/**
  * #3476: localiza o box de divulgação do slot 3 — SEMPRE posicionado após o
  * ÚLTIMO destaque (D3 em edições de 3 destaques, D2 em edições de 2), antes
  * de USE MELHOR/É IA?/qualquer outra seção. Diferente de `locateBoxInGap`
