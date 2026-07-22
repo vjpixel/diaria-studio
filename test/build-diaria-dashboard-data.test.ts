@@ -706,6 +706,72 @@ describe("ordem das seções (#2193)", () => {
   });
 });
 
+// ─── #3853: /painel/diaria vira página nativa do Studio (studioMode nav) ─────
+
+describe("renderDashboardHtml — assets do menu unificado do Studio (#3853)", () => {
+  test("SEM studioMode (produção): nenhum asset do Studio aparece — contrato de não-regressão do Worker de produção", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    assert.ok(!html.includes("/tokens.generated.css"), "não deve carregar tokens.generated.css");
+    assert.ok(!html.includes("/style.css"), "não deve carregar style.css");
+    assert.ok(!html.includes("/nav.css"), "não deve carregar nav.css");
+    assert.ok(!html.includes("/chat-drawer.css"), "não deve carregar chat-drawer.css");
+    assert.ok(!html.includes("/nav.js"), "não deve carregar nav.js");
+    assert.ok(!html.includes("/chat-drawer.js"), "não deve carregar chat-drawer.js");
+    assert.ok(!html.includes('id="app-nav"'), "não deve ter o container #app-nav");
+    assert.ok(!html.includes("window.STUDIO_PAGE"), "não deve setar window.STUDIO_PAGE");
+  });
+
+  test("studioMode:false explícito produz HTML idêntico a omitir o 2º argumento (byte a byte)", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const data = makeMinimalData();
+    const htmlDefault = renderDashboardHtml(data);
+    const htmlExplicitFalse = renderDashboardHtml(data, { studioMode: false });
+    assert.equal(htmlDefault, htmlExplicitFalse);
+  });
+
+  test("SEM studioMode: continua definindo :root com os tokens DS_COLORS locais (fallback — produção não tem tokens.generated.css)", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    assert.match(html, /:root\s*\{\s*--brand:\s*#00A0A0;/);
+  });
+
+  test("COM studioMode:true: inclui os 4 links de assets compartilhados + container de nav + STUDIO_PAGE + scripts", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData(), { studioMode: true });
+    assert.match(html, /<link rel="stylesheet" href="\/tokens\.generated\.css"\s*\/>/);
+    assert.match(html, /<link rel="stylesheet" href="\/style\.css"\s*\/>/);
+    assert.match(html, /<link rel="stylesheet" href="\/nav\.css"\s*\/>/);
+    assert.match(html, /<link rel="stylesheet" href="\/chat-drawer\.css"\s*\/>/);
+    assert.match(html, /id="app-nav" class="app-nav" aria-label="Navegação do Studio"/);
+    assert.match(html, /window\.STUDIO_PAGE = "painel-diaria";/);
+    assert.match(html, /<script src="\/nav\.js" type="module">/);
+    assert.match(html, /<script src="\/chat-drawer\.js" type="module">/);
+  });
+
+  test("COM studioMode:true: NÃO redeclara :root local — tokens.generated.css (com dark mode) fica no controle", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData(), { studioMode: true });
+    assert.ok(
+      !/--brand:\s*#00A0A0;/.test(html),
+      "studioMode não deve hardcodar --brand — deixa tokens.generated.css (dark-aware) definir",
+    );
+  });
+
+  test("SEM studioMode: .alert-text mantém #C00000 fixo, sem referenciar tokens que produção não tem", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData());
+    assert.match(html, /\.alert-text\s*\{\s*color:\s*#C00000;/);
+    assert.ok(!html.includes("--status-danger"), "produção não deve referenciar --status-danger (não existe lá)");
+  });
+
+  test("COM studioMode:true: .alert-text ganha override de dark mode via --status-danger (calibrado em tokens-css.ts pro fundo escuro — #C00000 fixo mede só ~2.83:1)", async () => {
+    const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
+    const html = renderDashboardHtml(makeMinimalData(), { studioMode: true });
+    assert.match(html, /@media \(prefers-color-scheme: dark\)\s*\{\s*\.alert-text\s*\{\s*color:\s*var\(--status-danger\);/);
+  });
+});
+
 // ─── #2132 fix: detecção de --push (bug: --push sozinho caía em dry-run) ──────
 
 describe("isPushRequested (#2132 fix)", () => {

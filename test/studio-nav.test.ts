@@ -41,9 +41,9 @@ const SERVER_TS = readFileSync(resolve(REPO_ROOT, "scripts", "studio-ui", "serve
 // ─── lógica pura (nav-core.js) ──────────────────────────────────────────
 
 describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra server.ts", () => {
-  it("cobre os 7 destinos de página (home/rodada/triagem/revisao/apoios/relatorios/integracoes)", () => {
+  it("cobre os 8 destinos de página (home/rodada/triagem/revisao/apoios/relatorios/integracoes/painel-diaria)", () => {
     const ids = NAV_ITEMS.map((i) => i.id);
-    assert.deepEqual(ids, ["home", "rodada", "triagem", "revisao", "apoios", "relatorios", "integracoes"]);
+    assert.deepEqual(ids, ["home", "rodada", "triagem", "revisao", "apoios", "relatorios", "integracoes", "painel-diaria"]);
   });
 
   it("todo item (exceto revisao, que resolve em runtime) tem href estático não-vazio", () => {
@@ -81,7 +81,8 @@ describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra ser
     );
   });
 
-  it("DASHBOARD_LINKS aponta pras 2 rotas /painel/* reais de server.ts", () => {
+  it("(#3853): DASHBOARD_LINKS encolheu pra 1 rota /painel/* (só clarice — diária virou item de NAV_ITEMS)", () => {
+    assert.equal(DASHBOARD_LINKS.length, 1, "só /painel/clarice deve sobrar como documento autocontido");
     for (const d of DASHBOARD_LINKS) {
       assert.match(SERVER_TS, new RegExp(d.href.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
@@ -92,6 +93,17 @@ describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra ser
     assert.ok(item, "NAV_ITEMS precisa ter o item 'integracoes'");
     assert.equal(item.href, "/integracoes");
     assert.match(SERVER_TS, /urlPath === "\/integracoes"/, "server.ts precisa reconhecer a rota /integracoes");
+  });
+
+  it("(#3853): /painel/diaria agora É um destino de menu (não mais DASHBOARD_LINKS) — rota real continua em server.ts", () => {
+    const item = NAV_ITEMS.find((i) => i.id === "painel-diaria");
+    assert.ok(item, "NAV_ITEMS precisa ter o item 'painel-diaria'");
+    assert.equal(item.href, "/painel/diaria");
+    assert.match(SERVER_TS, /urlPath === "\/painel\/diaria"/, "server.ts precisa reconhecer a rota /painel/diaria");
+    assert.ok(
+      !DASHBOARD_LINKS.some((d) => d.href === "/painel/diaria"),
+      "/painel/diaria não deve mais estar duplicado em DASHBOARD_LINKS",
+    );
   });
 
   it("todo item de NAV_ITEMS tem pelo menos 1 pageId associado (senão nunca fica ativo)", () => {
@@ -111,6 +123,7 @@ describe("resolveActiveNavId (#3849)", () => {
     assert.equal(resolveActiveNavId("apoios"), "apoios");
     assert.equal(resolveActiveNavId("relatorios"), "relatorios");
     assert.equal(resolveActiveNavId("integracoes"), "integracoes");
+    assert.equal(resolveActiveNavId("painel-diaria"), "painel-diaria");
   });
 
   it("retorna null pra pageId desconhecido/ausente (fail-closed — nenhum item marcado ativo por engano)", () => {
@@ -133,7 +146,7 @@ describe("resolveRevisaoHref (#3849)", () => {
 });
 
 describe("buildNavHtml (#3849)", () => {
-  it("renderiza os 7 itens de página + o grupo de Dashboards", () => {
+  it("renderiza os 8 itens de página + o grupo de Dashboards", () => {
     const html = buildNavHtml("rodada", "/revisao/260722");
     assert.match(html, /id="app-nav-list"/);
     assert.match(html, /href="\/">Home<\/a>/);
@@ -144,8 +157,17 @@ describe("buildNavHtml (#3849)", () => {
     assert.match(html, /href="\/relatorios"/);
     assert.match(html, /href="\/integracoes"/);
     assert.match(html, /app-nav-group-label">Dashboards</);
-    assert.match(html, /href="\/painel\/diaria"[^>]*target="_blank"/);
     assert.match(html, /href="\/painel\/clarice"[^>]*target="_blank"/);
+  });
+
+  it("(#3853): /painel/diaria agora é item de PÁGINA — <a> normal, sem target=_blank, fora do grupo Dashboards", () => {
+    const html = buildNavHtml("rodada", "/revisao/260722");
+    assert.match(html, /<a class="app-nav-item" href="\/painel\/diaria">Dashboard diária<\/a>/);
+    assert.doesNotMatch(
+      html,
+      /href="\/painel\/diaria"[^>]*target="_blank"/,
+      "não deve mais abrir em nova aba — passou a ser navegação in-page",
+    );
   });
 
   it("marca o item ativo com a classe 'active' e aria-current", () => {
@@ -234,8 +256,18 @@ describe("GET de cada página real inclui #app-nav + nav.js + STUDIO_PAGE corret
 
   it("nenhuma rota de página real fica de fora da cobertura acima (mesma lista que NAV_ITEMS + edicao)", () => {
     const coveredPages = new Set(cases.map((c) => c.page));
+    // #3853: "painel-diaria" é exceção documentada aqui — a rota real
+    // (`/painel/diaria`) é dinâmica (renderiza `data/` via
+    // `buildDashboardData`, não parametrizável por `rootDir`, ver docstring
+    // de `dashboard-diaria.ts`), então não se presta ao root temp dedicado
+    // que este describe usa pra páginas ESTÁTICAS. O contrato equivalente
+    // (#app-nav/nav.js/STUDIO_PAGE) é coberto em
+    // test/studio-dashboard-panels.test.ts, que já roda sem `rootDir`
+    // override pelo mesmo motivo.
+    const exemptFromThisSuite = new Set(["painel-diaria"]);
     for (const item of NAV_ITEMS) {
       for (const pageId of item.pageIds) {
+        if (exemptFromThisSuite.has(pageId)) continue;
         assert.ok(coveredPages.has(pageId), `pageId "${pageId}" de NAV_ITEMS não tem uma página real testada acima`);
       }
     }
