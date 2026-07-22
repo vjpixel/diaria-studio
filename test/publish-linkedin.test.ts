@@ -85,6 +85,48 @@ describe("postToMakeWebhook (#528)", () => {
   });
 });
 
+describe("postToMakeWebhook: header x-make-apikey (#3903)", () => {
+  const webhookUrl = "https://hook.eu2.make.com/test";
+  const payload = { text: "T", image_url: null as string | null, scheduled_at: null as string | null, destaque: "d1" };
+  let saved: typeof globalThis.fetch;
+  beforeEach(() => { saved = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = saved; });
+
+  it("apiKey presente: header x-make-apikey vai no request", async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    globalThis.fetch = async (_u: string | URL | Request, o?: RequestInit) => {
+      capturedHeaders = o?.headers;
+      return new Response(JSON.stringify({ accepted: true }), { status: 200 });
+    };
+    await postToMakeWebhook(webhookUrl, payload, 1, "secret-key-123");
+    const headers = capturedHeaders as Record<string, string>;
+    assert.equal(headers["x-make-apikey"], "secret-key-123");
+    assert.equal(headers["Content-Type"], "application/json");
+  });
+
+  it("apiKey ausente (undefined): header x-make-apikey NÃO é enviado", async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    globalThis.fetch = async (_u: string | URL | Request, o?: RequestInit) => {
+      capturedHeaders = o?.headers;
+      return new Response(JSON.stringify({ accepted: true }), { status: 200 });
+    };
+    await postToMakeWebhook(webhookUrl, payload, 1);
+    const headers = capturedHeaders as Record<string, string>;
+    assert.equal("x-make-apikey" in headers, false, "header não deve existir quando apiKey é undefined");
+  });
+
+  it("apiKey='' (string vazia): header x-make-apikey NÃO é enviado (nunca vazio)", async () => {
+    let capturedHeaders: HeadersInit | undefined;
+    globalThis.fetch = async (_u: string | URL | Request, o?: RequestInit) => {
+      capturedHeaders = o?.headers;
+      return new Response(JSON.stringify({ accepted: true }), { status: 200 });
+    };
+    await postToMakeWebhook(webhookUrl, payload, 1, "");
+    const headers = capturedHeaders as Record<string, string>;
+    assert.equal("x-make-apikey" in headers, false, "header não deve existir com apiKey=''");
+  });
+});
+
 describe("postToWorkerQueue (Cloudflare Worker enqueue)", () => {
   const workerUrl = "https://diaria-linkedin-cron.diaria.workers.dev";
   const token = "test-token-abc";
@@ -718,6 +760,68 @@ describe("#595 dispatchEntry: bug regression — pixel + null scheduled_at em fi
       const entry = await dispatchEntry(input, ctx);
       assert.equal(entry.status, "draft", "diaria fire-now → draft (post imediato)");
       assert.equal(entry.route, "make_now");
+    } finally {
+      cleanup();
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("#3903: ctx.apiKey chega no header x-make-apikey do POST real ao Make (make_now)", async () => {
+    const savedFetch = globalThis.fetch;
+    let capturedHeaders: HeadersInit | undefined;
+    globalThis.fetch = async (_u: string | URL | Request, o?: RequestInit) => {
+      capturedHeaders = o?.headers;
+      return new Response(JSON.stringify({ accepted: true, request_id: "test-req" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const { dir, cleanup } = tmpDir();
+    try {
+      const input: DispatchInput = {
+        destaque: "d1",
+        subtype: "main",
+        text: "Main post",
+        imageUrl: null,
+        scheduledAt: null,
+        webhookTarget: "diaria",
+        action: "post",
+      };
+      const ctx = { ...mkCtx(dir), apiKey: "worker-secret-key" };
+      await dispatchEntry(input, ctx);
+      const headers = capturedHeaders as Record<string, string>;
+      assert.equal(headers["x-make-apikey"], "worker-secret-key");
+    } finally {
+      cleanup();
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("#3903: ctx.apiKey ausente → POST ao Make sai sem header x-make-apikey (make_now)", async () => {
+    const savedFetch = globalThis.fetch;
+    let capturedHeaders: HeadersInit | undefined;
+    globalThis.fetch = async (_u: string | URL | Request, o?: RequestInit) => {
+      capturedHeaders = o?.headers;
+      return new Response(JSON.stringify({ accepted: true, request_id: "test-req" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const { dir, cleanup } = tmpDir();
+    try {
+      const input: DispatchInput = {
+        destaque: "d1",
+        subtype: "main",
+        text: "Main post",
+        imageUrl: null,
+        scheduledAt: null,
+        webhookTarget: "diaria",
+        action: "post",
+      };
+      const ctx = mkCtx(dir); // sem apiKey
+      await dispatchEntry(input, ctx);
+      const headers = capturedHeaders as Record<string, string>;
+      assert.equal("x-make-apikey" in headers, false);
     } finally {
       cleanup();
       globalThis.fetch = savedFetch;

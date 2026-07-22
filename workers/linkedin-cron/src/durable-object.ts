@@ -13,6 +13,7 @@ export interface DoStoredPayload {
   entry: QueueEntry;         // entry completa (texto, webhook_target, action, channel, etc.)
   webhookUrl: string;        // MAKE_WEBHOOK_URL resolvido no momento do enqueue
   pixelWebhookUrl?: string;  // MAKE_PIXEL_WEBHOOK_URL (opcional)
+  webhookApiKey?: string;    // #3903 — MAKE_WEBHOOK_API_KEY resolvido no momento do enqueue (opcional)
   // #3817 — credenciais Graph API do Instagram, capturadas no enqueue (o DO
   // não tem acesso a `env` no alarm() — só ao que foi persistido aqui).
   instagram?: InstagramCreds;
@@ -227,7 +228,7 @@ export class LinkedInScheduler {
       return;
     }
 
-    const { key, entry, webhookUrl, pixelWebhookUrl, instagram } = payload;
+    const { key, entry, webhookUrl, pixelWebhookUrl, webhookApiKey, instagram } = payload;
     const channel = entry.channel ?? "linkedin";
 
     // (#3817) fireQueueEntry() é o ponto único de dispatch, compartilhado com
@@ -241,7 +242,7 @@ export class LinkedInScheduler {
     // deixando a KV entry intocada: o próximo ciclo do cron (fireDueItems)
     // processa essa mesma entry, aplica o MESMO guard puro, e aí sim escreve
     // em dlq: via KV.
-    const outcome = await fireQueueEntry(entry, { webhookUrl, pixelWebhookUrl, instagram });
+    const outcome = await fireQueueEntry(entry, { webhookUrl, pixelWebhookUrl, apiKey: webhookApiKey, instagram });
 
     if (outcome.status === "dlq") {
       await this.state.storage.delete("claiming");

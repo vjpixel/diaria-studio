@@ -147,6 +147,7 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
     const config = {
       webhookUrl: env.MAKE_WEBHOOK_URL,
       pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL,
+      apiKey: env.MAKE_WEBHOOK_API_KEY, // #3903
       instagram: resolveInstagramCreds(env),
     };
     const outcome = await fireQueueEntry(entry, config);

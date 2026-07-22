@@ -68,7 +68,8 @@ wrangler secret put DIARIA_TOKEN
 
 # URL do webhook Make (Scenario A)
 wrangler secret put MAKE_WEBHOOK_URL
-# Cola: https://hook.us2.make.com/2alvu89nbn9uo5tpvnjnhpbu22uf1sb6
+# Cola a URL do seu Scenario (gerada no passo "Copiar URL" de make-linkedin-setup.md).
+# Nunca cole/documente o valor real em texto commitado — #3903.
 ```
 
 ## Passo 4 — Deploy
