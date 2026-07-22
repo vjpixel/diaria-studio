@@ -36,6 +36,7 @@ const el = {
   connDot: document.getElementById("conn-dot"),
   connLabel: document.getElementById("conn-label"),
   notFound: document.getElementById("edicao-not-found"),
+  gateBanner: document.getElementById("gate-banner"),
   alertsSection: document.getElementById("alerts-section"),
   alertsList: document.getElementById("alerts-list"),
   timeline: document.getElementById("stage-timeline"),
@@ -222,15 +223,59 @@ function renderFileList(container, files) {
   container.appendChild(ul);
 }
 
+// #3870: ponte cockpit → card do gate no chat drawer (R7 das guidelines:
+// estado que espera o editor sempre aponta a ação). A API do drawer só existe
+// depois de chat-drawer.js montar; como todo render acontece em resposta a
+// fetch/SSE (bem depois do load dos módulos), checar em render time é seguro —
+// e o clique re-checa (o card pode ter sido resolvido nesse meio tempo).
+function chatGateApi() {
+  const api = window.diariaStudioChat;
+  return api && typeof api.focusPendingGate === "function" ? api : null;
+}
+
+// Status de gate PENDENTE com a ação apontada: com card no drawer → botão
+// "Responder no chat"; sem card (sessão no terminal) → texto explica por que
+// não há botão (a UI só observa). `skillCmd` é o fallback de terminal.
+function appendPendingGateStatus(container, gateNum, skillCmd) {
+  const status = document.createElement("p");
+  status.className = "gate-status gate-status-pending";
+  const api = chatGateApi();
+  if (api && api.hasPendingGate()) {
+    status.textContent = `Gate ${gateNum} pendente — a pergunta está esperando você no chat.`;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "gate-cta";
+    btn.textContent = "Responder no chat →";
+    btn.addEventListener("click", () => {
+      const ok = chatGateApi()?.focusPendingGate() ?? false;
+      if (!ok) {
+        // Card sumiu entre o render e o clique (resolvido, ou sessão migrou
+        // pro terminal) — degradar pro texto explicativo, nunca clique morto.
+        btn.remove();
+        status.textContent = `Gate ${gateNum} pendente — o card não está mais no chat (a sessão pode estar rodando no terminal; a UI só observa). Aprove com ${skillCmd}.`;
+      }
+    });
+    container.appendChild(status);
+    container.appendChild(btn);
+  } else {
+    status.textContent = `Gate ${gateNum} pendente — esta sessão roda no terminal (a UI só observa). Aprove com ${skillCmd}.`;
+    container.appendChild(status);
+  }
+}
+
 function renderGate4(detail) {
   el.gate4.innerHTML = "";
   if (!detail.found) return;
   const pending = detail.gatesPending.includes(4);
-  const status = document.createElement("p");
-  status.className = "gate-status " + (pending ? "gate-status-pending" : "gate-status-idle");
   if (pending) {
-    status.textContent = "Gate pendente — o editor precisa aprovar no terminal (/diaria-4-revisao) antes da publicação seguir. Interação pela UI é #3557, fora desta fatia.";
-  } else if (detail.currentStage === "unknown" || (typeof detail.currentStage === "number" && detail.currentStage < 4)) {
+    appendPendingGateStatus(el.gate4, 4, "/diaria-4-revisao");
+    const files0 = detail.gateFacingFiles.filter((f) => GATE_4_FILES.includes(f.name));
+    renderFileList(el.gate4, files0);
+    return;
+  }
+  const status = document.createElement("p");
+  status.className = "gate-status gate-status-idle";
+  if (detail.currentStage === "unknown" || (typeof detail.currentStage === "number" && detail.currentStage < 4)) {
     status.textContent = "Ainda não chegou no Stage 4.";
   } else {
     status.textContent = "Sem gate pendente aqui agora (já aprovado ou stage ainda não concluiu os pré-requisitos).";
@@ -245,18 +290,20 @@ function renderGate6(detail) {
   el.gate6.innerHTML = "";
   if (!detail.found) return;
   const pending = detail.gatesPending.includes(6);
-  const status = document.createElement("p");
-  status.className = "gate-status " + (pending ? "gate-status-pending" : "gate-status-idle");
   if (pending) {
-    status.textContent = "Gate pendente — agendamento final (Schedule Beehiiv) aguarda aprovação no terminal (/diaria-6-agendamento). Hora editável + botão Agendar são #3557, fora desta fatia.";
-  } else if (detail.currentStage === "unknown" || (typeof detail.currentStage === "number" && detail.currentStage < 6)) {
-    status.textContent = "Ainda não chegou no Stage 6.";
-  } else if (detail.currentStage === "done") {
-    status.textContent = "Pipeline concluído — ver stage-status.md para timing final.";
+    appendPendingGateStatus(el.gate6, 6, "/diaria-6-agendamento");
   } else {
-    status.textContent = "Sem gate pendente aqui agora.";
+    const status = document.createElement("p");
+    status.className = "gate-status gate-status-idle";
+    if (detail.currentStage === "unknown" || (typeof detail.currentStage === "number" && detail.currentStage < 6)) {
+      status.textContent = "Ainda não chegou no Stage 6.";
+    } else if (detail.currentStage === "done") {
+      status.textContent = "Pipeline concluído — ver stage-status.md para timing final.";
+    } else {
+      status.textContent = "Sem gate pendente aqui agora.";
+    }
+    el.gate6.appendChild(status);
   }
-  el.gate6.appendChild(status);
 
   const stageStatusFile = detail.gateFacingFiles.find((f) => f.name === "stage-status.md");
   if (stageStatusFile) {
@@ -310,7 +357,43 @@ async function fetchDetail() {
   return res.json();
 }
 
+// #3870: banner de gate pendente no topo do cockpit — o badge do drawer é
+// pequeno demais pra pendência que segura a publicação (R8: gate nunca fica
+// invisível). Idade via computeStageAge (mesma fonte da timeline): honesta,
+// derivada do run-log, nunca de heartbeat auto-declarado (R2).
+function renderGateBanner(detail) {
+  if (!el.gateBanner) return;
+  el.gateBanner.innerHTML = "";
+  const pending = detail.found ? detail.gatesPending : [];
+  if (!pending.length) {
+    el.gateBanner.hidden = true;
+    return;
+  }
+  el.gateBanner.hidden = false;
+  for (const gateNum of pending) {
+    const row = document.createElement("div");
+    row.className = "gate-banner-row";
+    const label = document.createElement("span");
+    const age = computeStageAge(gateNum, logBuffer);
+    label.textContent = `⏳ Gate ${gateNum} pendente${age && age.ageMinutes != null ? ` · esperando há ${age.ageMinutes}min` : ""}`;
+    row.appendChild(label);
+    const api = chatGateApi();
+    if (api && api.hasPendingGate()) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "gate-cta";
+      btn.textContent = "Responder no chat →";
+      btn.addEventListener("click", () => {
+        chatGateApi()?.focusPendingGate();
+      });
+      row.appendChild(btn);
+    }
+    el.gateBanner.appendChild(row);
+  }
+}
+
 function renderAll(detail) {
+  renderGateBanner(detail);
   if (!detail) return;
   currentDetail = detail;
   renderHeader(detail);

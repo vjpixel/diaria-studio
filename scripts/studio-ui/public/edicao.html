@@ -33,6 +33,11 @@
       <a href="/">painel</a>.
     </div>
 
+    <!-- #3870: gate pendente nunca fica invisível (R8) — destaque no topo do
+         cockpit, não só o badge pequeno do drawer. aria-live=polite: pausa
+         esperada (decisão), não erro. -->
+    <div id="gate-banner" class="panel gate-banner" aria-live="polite" hidden></div>
+
     <section id="alerts-section" class="panel alerts-panel" hidden>
       <h2>Alertas</h2>
       <p class="hint">

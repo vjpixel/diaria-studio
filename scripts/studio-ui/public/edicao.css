@@ -143,3 +143,31 @@
   .stage-num::before { content: "Stage "; opacity: 0.6; }
   .stage-caret { text-align: left; }
 }
+
+/* #3870: banner de gate pendente no topo + CTA de ponte pro chat drawer.
+   .gate-cta ≥44px (R12 — alvo de toque; o caso de uso âncora é o celular). */
+.gate-banner {
+  border-left: 4px solid var(--brand);
+  background: var(--paper-alt);
+}
+.gate-banner-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+  font-weight: 600;
+}
+.gate-cta {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 10px 18px;
+  border: 1px solid var(--brand);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font-weight: 600;
+  cursor: pointer;
+}
+.gate-cta:hover { background: var(--paper-alt); }

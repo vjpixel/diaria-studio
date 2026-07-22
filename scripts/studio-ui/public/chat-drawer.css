@@ -467,3 +467,13 @@ body.chat-drawer-present.chat-drawer-collapsed {
     min-width: 44px;
   }
 }
+
+/* #3870: flash de destaque quando o cockpit manda o editor pro card do gate —
+   feedback visual de "é ESTE card" após o scroll. */
+.chat-permission-card.gate-focus-flash {
+  animation: gate-focus-flash 1.6s ease;
+}
+@keyframes gate-focus-flash {
+  0%, 55% { box-shadow: 0 0 0 3px var(--brand); }
+  100% { box-shadow: none; }
+}

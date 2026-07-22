@@ -107,3 +107,52 @@ describe("GET /edicao/:aammdd (#3558)", () => {
     assert.ok("currentStage" in body);
   });
 });
+
+// #3870: wiring da ponte cockpit → card do gate no chat drawer. Sem harness de
+// DOM neste projeto (precedente documentado no header deste arquivo), o wiring
+// é verificado no nível dos assets servidos: a API existe no drawer, o cockpit
+// a consome, o banner tem o mount point, e o texto antigo de beco-sem-saída
+// ("Interação pela UI é #3557, fora desta fatia") não volta.
+describe("ponte cockpit → gate do chat (#3870)", () => {
+  let root: string;
+  let server: StudioServer;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-gate-bridge-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("chat-drawer.js expõe focusPendingGate/hasPendingGate na API global", async () => {
+    const js = await (await fetch(new URL("/chat-drawer.js", server.url))).text();
+    assert.match(js, /function focusPendingGate\(/);
+    assert.match(js, /function hasPendingGate\(/);
+    assert.match(js, /hasPendingGate,\s*\n\s*focusPendingGate/, "API exportada em window.diariaStudioChat");
+    assert.match(js, /chat-permission-card:not\(\.resolved\)/, "seletor de card pendente");
+  });
+
+  it("edicao.js consome a ponte e renderiza banner + CTA", async () => {
+    const js = await (await fetch(new URL("/edicao.js", server.url))).text();
+    assert.match(js, /focusPendingGate/);
+    assert.match(js, /appendPendingGateStatus/);
+    assert.match(js, /renderGateBanner/);
+    assert.match(js, /a UI só observa/, "fallback de sessão-terminal explica a ausência de botão");
+    assert.doesNotMatch(js, /fora desta fatia/, "texto antigo de beco-sem-saída não volta (#3870)");
+  });
+
+  it("edicao.html tem o mount do banner de gate", async () => {
+    const html = await (await fetch(new URL("/edicao/260716", server.url))).text();
+    assert.match(html, /id="gate-banner"/);
+    assert.match(html, /aria-live="polite"/);
+  });
+
+  it("edicao.css estiliza o CTA com alvo de toque ≥44px (R12)", async () => {
+    const css = await (await fetch(new URL("/edicao.css", server.url))).text();
+    assert.match(css, /\.gate-cta\s*\{[^}]*min-height:\s*44px/);
+  });
+});

@@ -904,4 +904,33 @@ function prefillMessage(text) {
 // Ponto de extensão pras fatias seguintes (#3561 briefings) — um botão de
 // outra tela chama isto pra rodar uma mensagem nesta MESMA sessão sem
 // duplicar a mecânica de streaming/parsing acima.
-window.diariaStudioChat = { sendMessage, openDrawer: expandDrawer, prefillMessage, setContext };
+// #3870: ponte cockpit → card do gate. `focusPendingGate()` expande o drawer
+// e rola até o primeiro card pendente (AskUserQuestion ou gate de tool #3804);
+// retorna false quando não há card (sessão rodando no terminal — a UI só
+// observa), pra quem chamou degradar o texto em vez de dar um clique morto (R7).
+function pendingGateCard() {
+  return el.messages.querySelector(".chat-permission-card:not(.resolved)");
+}
+
+function hasPendingGate() {
+  return !!pendingGateCard();
+}
+
+function focusPendingGate() {
+  const card = pendingGateCard();
+  if (!card) return false;
+  expandDrawer();
+  card.scrollIntoView({ behavior: "smooth", block: "center" });
+  card.classList.add("gate-focus-flash");
+  setTimeout(() => card.classList.remove("gate-focus-flash"), 1600);
+  return true;
+}
+
+window.diariaStudioChat = {
+  sendMessage,
+  openDrawer: expandDrawer,
+  prefillMessage,
+  setContext,
+  hasPendingGate,
+  focusPendingGate,
+};
