@@ -147,14 +147,13 @@ Seção opcional. Máximo 2 vídeos por edição. Se o bucket estiver vazio, omi
 
 ### Formato na newsletter
 
+**Corrigido (#3821):** o formato anterior (2 pares `[texto](...)` na mesma linha — título sem URL própria, canal com link separado) não batia em nenhum branch do parser real (`parseListItems`, `scripts/lib/newsletter-parse.ts`) e degradava pro fallback legado (item quebrado, sem link no HTML final). Formato correto: link único pro vídeo no título; canal entra como prefixo em texto plano na descrição (sem link próprio); título e descrição em linhas ADJACENTES, sem blank line entre elas (blank line separa itens entre si, não título de descrição). Ver `context/templates/newsletter.md`.
+
 ```
-VÍDEOS
+📺 VÍDEOS
 
-[Título do Vídeo] — [Canal]
-
-[URL]
-
-[Frase descritiva em 1 linha]
+[Título do Vídeo](url_do_vídeo)
+Nome do Canal — [Frase descritiva em 1 linha]
 ```
 
 ---

@@ -562,6 +562,68 @@ describe("parseSections (#172)", () => {
     assert.equal(sections[0].emoji, "📰"); // fallback graceful (sem acento → sem 📺)
   });
 
+  // #3821: item VÍDEOS no formato ANTIGO do template (2 pares `[texto](...)`
+  // na mesma linha — o primeiro sem URL própria — mais blank line até a
+  // descrição) não bate em NENHUM branch de parseListItems. Cada linha vira
+  // um item quebrado: title = texto cru (colchetes/asteriscos literais),
+  // description/url vazios. Regression guard do bug real (edição 260722).
+  it("parseListItems: item VÍDEOS formato pré-#3821 (2 links na mesma linha) degrada — url/description vazios", () => {
+    const md = [
+      "**[Título do Vídeo]** — [Canal](https://youtube.com/c/canal)",
+      "",
+      "Frase descritiva em 1 linha",
+    ].join("\n");
+    const items = parseListItems(md);
+    assert.ok(items.length >= 1, JSON.stringify(items));
+    for (const item of items) {
+      assert.equal(item.url, "", JSON.stringify(item));
+    }
+  });
+
+  // #3821: formato CORRIGIDO — link único no título, canal como prefixo em
+  // texto plano na descrição, título+descrição em linhas ADJACENTES (sem
+  // blank line entre elas). Deve parsear com url populada.
+  it("parseSections: item VÍDEOS formato corrigido (#3821) produz url populada + canal na descrição", () => {
+    const md = [
+      "**📺 VÍDEOS**",
+      "",
+      "**[Pesquisadores estudam o real impacto das demissões por IA](https://youtube.com/watch?v=xyz)**",
+      "BBC Global — Pesquisadores analisam o real impacto das demissões causadas por IA no mercado.",
+      "",
+      "---",
+    ].join("\n");
+    const sections = parseSections(md);
+    assert.equal(sections.length, 1, JSON.stringify(sections));
+    assert.equal(sections[0].name, "VÍDEOS");
+    assert.equal(sections[0].items.length, 1);
+    assert.equal(
+      sections[0].items[0].title,
+      "Pesquisadores estudam o real impacto das demissões por IA",
+    );
+    assert.equal(sections[0].items[0].url, "https://youtube.com/watch?v=xyz");
+    assert.match(sections[0].items[0].description, /^BBC Global — Pesquisadores analisam/);
+  });
+
+  // #3821: mesmo formato corrigido, com 2 itens — garante que o parser não
+  // funde os 2 vídeos num item só nem perde a URL do 2º.
+  it("parseSections: VÍDEOS corrigido com múltiplos itens preserva url de cada um", () => {
+    const md = [
+      "**📺 VÍDEOS**",
+      "",
+      "**[Título A](https://youtube.com/watch?v=a)**",
+      "Canal A — Frase A.",
+      "",
+      "**[Título B](https://youtube.com/watch?v=b)**",
+      "Canal B — Frase B.",
+      "",
+      "---",
+    ].join("\n");
+    const sections = parseSections(md);
+    assert.equal(sections[0].items.length, 2, JSON.stringify(sections));
+    assert.equal(sections[0].items[0].url, "https://youtube.com/watch?v=a");
+    assert.equal(sections[0].items[1].url, "https://youtube.com/watch?v=b");
+  });
+
   // #1737: tightening INTENCIONAL do prefixo de emoji (era o loose
   // `[^\sA-Za-zÁ-ú]+` que casava dígitos/pontuação). Agora alinhado ao lint
   // (#1691). Headers com prefixo NÃO-emoji deixam de casar. Headers canônicos

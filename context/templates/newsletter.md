@@ -2,7 +2,7 @@
 
 Formato exato do output da edição. Seguir rigorosamente.
 
-**Importante (#245, #334):** sempre uma linha em branco entre qualquer elemento — header, título, URL, parágrafo. Isso vale tanto nos blocos DESTAQUE quanto nas seções secundárias (LANÇAMENTOS/PESQUISAS/OUTRAS NOTÍCIAS). Sem linhas em branco, viewers markdown (ex: GitHub) colapsam tudo em parágrafo único ilegível.
+**Importante (#245, #334):** sempre uma linha em branco entre qualquer elemento — header, título, URL, parágrafo. Isso vale tanto nos blocos DESTAQUE quanto nas seções secundárias (LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS). Sem linhas em branco, viewers markdown (ex: GitHub) colapsam tudo em parágrafo único ilegível. **Exceção (#3821):** dentro de cada ITEM das seções secundárias, título (link) e descrição ficam em linhas ADJACENTES, sem blank line entre elas — a blank line separa ITENS entre si, não título de descrição dentro do mesmo item. O parser (`parseListItems` em `scripts/lib/newsletter-parse.ts`) depende dessa distinção: com blank line ali, cada linha vira um item quebrado sem URL.
 
 **Formato URL (#599 — atualizado):** URL fica **embedada no próprio título via markdown link** `[Título](URL)` em vez de linha solo separada. Aplica-se tanto a destaques (cada uma das 3 opções) quanto a seções secundárias (cada item). Vantagem: menos ruído visual, título vira CTA clicável, mobile-friendly. Parsers aceitam ambos os formatos (legacy URL solo + inline) durante a transição.
 
@@ -52,34 +52,30 @@ Por que isso importa:
 **🛠️ USE MELHOR** (opcional, #1568 — omitir bloco inteiro se editor não selecionou candidato no gate. Posição #1633: antes de LANÇAMENTOS; #3820: É IA? entra logo depois deste bloco, injetada separadamente pelo orchestrator — não faz parte deste template)
 
 **[Título acionável do item](URL)**
-
 [Frase descritiva curta em 1 linha — ferramenta/técnica, tempo estimado entre parênteses. #1634: título no idioma original, nunca traduzir]
 
 ---
 
-**VÍDEOS** (opcional — omitir se bucket vazio. #3820: reordenada pra antes de LANÇAMENTOS, ordem alvo USE MELHOR → É IA? → VÍDEOS → LANÇAMENTOS → RADAR)
+**📺 VÍDEOS** (opcional — omitir se bucket vazio. #3820: reordenada pra antes de LANÇAMENTOS, ordem alvo USE MELHOR → É IA? → VÍDEOS → LANÇAMENTOS → RADAR)
 
-**[Título do Vídeo]** — [Canal](URL)
-
-[Frase descritiva em 1 linha]
+**[Título do Vídeo](URL_DO_VÍDEO)**
+Nome do Canal — [Frase descritiva em 1 linha]
 
 ---
 
 **🚀 LANÇAMENTOS**
 
 **[Título do item](URL)**
-
 [Frase descritiva em 1 linha]
 
 **[Título do próximo item](URL)**
-
 [Frase descritiva]
 
 ---
 
 **📡 RADAR**
 
-[mesmo formato de Lançamentos — linha em branco entre cada elemento. Aqui caem todos os itens secundários que não viraram destaque: notícias, opiniões e papers/pesquisas.]
+[mesmo formato de Lançamentos — título e descrição em linhas adjacentes (sem blank line entre elas), blank line só entre items. Aqui caem todos os itens secundários que não viraram destaque: notícias, opiniões e papers/pesquisas.]
 
 ---
 
@@ -127,6 +123,8 @@ Agora que chegou ao final da edição, que tal seguir a **diar.ia.br** no [Linke
 O autor escreve `{curr_narrative}` manualmente no `02-reviewed.md` da edição corrente. O script `scripts/render-erro-intencional.ts` lê o `02-reviewed.md` da edição anterior, extrai a linha `Nessa edição, …` e renderiza como `Na última edição, …` na edição corrente. Fallback: `data/intentional-errors.jsonl` quando o MD anterior não tem a linha. Tom é de auto-zoeira editorial, não de competição — sorteio do mês ainda acontece via o bloco SORTEIO no template Beehiiv, separado dessa seção.
 
 URL embedada no título (#599): editor poda 2 das 3 opções no gate de Etapa 2, sobrando 1 título-com-URL. Todas as 3 opções pré-gate apontam pra **mesma URL canônica** (são variantes do mesmo título do mesmo artigo).
+
+**Formato de item da seção VÍDEOS (#3821 — corrigido):** o parser real (`parseListItems`/`parseSections` em `scripts/lib/newsletter-parse.ts`, usado pelo render HTML) só reconhece um item quando a PRIMEIRA linha do bloco é um único link markdown `[Título](URL)` — nunca 2 pares `[texto](...)` na mesma linha. O formato anterior do template (`**[Título]** — [Canal](URL)`, com o título sem URL própria) não batia em nenhum branch do parser e degradava pro fallback legado (cada linha virava um item quebrado, `url: ""`, sem link nenhum no HTML final). Formato correto: **link único pro vídeo no título**, canal entra como PREFIXO em texto plano dentro da descrição (sem link próprio), e título + descrição ficam em linhas **ADJACENTES** — sem blank line entre elas (blank line separa ITEMS entre si, não título de descrição dentro do mesmo item). Mesma convenção de LANÇAMENTOS/RADAR/USE MELHOR (ver `writer.md` passo 4) — o parser depende disso pra não confundir a linha de descrição com um novo item.
 
 ## Regras de preenchimento
 
