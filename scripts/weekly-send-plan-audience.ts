@@ -13,9 +13,13 @@
  * Audiência = `segmentRampWarm` (scripts/lib/clarice-segment.ts, #2885): 1º
  * envio (nunca recebeu, `sends_count=0`) + `send_eligible=1` + `mv_bucket=
  * 'verified'` (MillionVerifier limpo — só quem já foi verificado entra no 1º
- * contato, #1297), ordenado por `cohortSendRank` (morno→frio). Mesmo grupo
- * nomeado "ramp-warm" já usado por `clarice-build-segment.ts` — reusado aqui
- * sem duplicar a lógica de filtro/ordem.
+ * contato, #1297) — OU cohort MV-isento (`isMvExemptCohort`, hoje só
+ * `assinantes-ativos`; #3826: pagante nunca é submetido ao MV, então nunca
+ * teria `mv_bucket` — o pagamento Stripe já valida o e-mail, mesmo racional
+ * de #3819), ordenado por `cohortSendRank` (morno→frio, `assinantes-ativos`
+ * rank 0). Mesmo grupo nomeado "ramp-warm" já usado por
+ * `clarice-build-segment.ts` — reusado aqui sem duplicar a lógica de
+ * filtro/ordem.
  *
  * Valida crédito Brevo do ciclo (`GET /v3/account`) cobre a soma dos volumes
  * ANTES de escrever qualquer coisa — nunca dimensionar depois do fato

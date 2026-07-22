@@ -101,16 +101,24 @@ test("buildSegmentArtifact: grupo 'reativacao' — CSV reflete a ordem last_sent
   assert.deepEqual(emailsOf(csv), ["new@x.com", "old@x.com"]);
 });
 
-test("buildSegmentArtifact: grupo 'ramp-warm' — só mv_bucket='verified' e nunca-enviado", () => {
+test("buildSegmentArtifact: grupo 'ramp-warm' — mv_bucket='verified' OU cohort MV-isento (#3826), sempre nunca-enviado", () => {
   const rows: SegmentRow[] = [
     row({ email: "warm@x.com", sends_count: 0, tier: 1, mv_bucket: "verified" }),
     row({ email: "cold@x.com", sends_count: 0, tier: 8, mv_bucket: "verified" }),
-    row({ email: "naoverificado@x.com", sends_count: 0, tier: 1, mv_bucket: "unknown" }), // fora
+    // #3826: tier 1 → cohort assinantes-ativos → MV-isento → mv_bucket='unknown'
+    // (ou null/ausente) já não barra mais — cenário real da issue (pagante
+    // novo, nunca submetido ao MV por ser isento).
+    row({ email: "pagante-sem-mv@x.com", sends_count: 0, tier: 1, mv_bucket: "unknown" }),
     row({ email: "jaenviado@x.com", sends_count: 5, tier: 1, mv_bucket: "verified" }), // fora
+    row({ email: "leadnaoverificado@x.com", sends_count: 0, tier: 8, mv_bucket: "unknown" }), // fora: cohort NÃO isento (leads), sem regressão
   ];
   const { csv, manifestEntry } = buildSegmentArtifact(rows, "ramp-warm", 0);
-  assert.equal(manifestEntry.count, 2);
-  assert.deepEqual(emailsOf(csv), ["warm@x.com", "cold@x.com"]); // morno (T01) antes de frio (T08)
+  assert.equal(manifestEntry.count, 3);
+  assert.deepEqual(
+    emailsOf(csv),
+    // warm/pagante-sem-mv empatam (T01, cohort assinantes-ativos, rank 0) → email ASC; cold (T08) por último.
+    ["pagante-sem-mv@x.com", "warm@x.com", "cold@x.com"],
+  );
 });
 
 test("buildSegmentArtifact: 1º nome tira vírgula (Azevedo, Ana → Azevedo)", () => {
