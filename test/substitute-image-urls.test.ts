@@ -1,13 +1,15 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, utimesSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
   buildFilenameMap,
   substituteImagePlaceholders,
   checkInputHtmlFreshness,
+  htmlFinalBaselinePath,
 } from "../scripts/substitute-image-urls.ts";
+import { readReviewFile, saveReviewFile, computeReviewDiff } from "../scripts/studio-ui/studio-review.ts";
 
 describe("buildFilenameMap", () => {
   it("constrói map de filename → URL a partir de images dict", () => {
@@ -178,5 +180,91 @@ describe("#2316: checkInputHtmlFreshness — rejeita HTML mais antigo que 02-rev
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── #3829: refresh do baseline "html-final" no re-render da pipeline ───────
+
+describe("htmlFinalBaselinePath (#3829)", () => {
+  it("reconhece o newsletter-final.html canônico (dentro de _internal/)", () => {
+    const outPath = join("data", "editions", "260716", "_internal", "newsletter-final.html");
+    const baseline = htmlFinalBaselinePath(outPath);
+    assert.ok(baseline);
+    assert.match(baseline!, /_internal[\\/]studio-review-baseline[\\/]newsletter-final\.html\.md$/);
+  });
+
+  it("retorna null pra outros nomes de output (ex: newsletter-draft.html, --split)", () => {
+    assert.equal(htmlFinalBaselinePath(join("data", "editions", "260716", "_internal", "newsletter-draft.html")), null);
+    assert.equal(htmlFinalBaselinePath(join("data", "editions", "260716", "_internal", "newsletter-body.html")), null);
+  });
+
+  it("retorna null quando newsletter-final.html não está sob uma pasta _internal/ (--out de debug)", () => {
+    assert.equal(htmlFinalBaselinePath(join("data", "editions", "260716", "newsletter-final.html")), null);
+    assert.equal(htmlFinalBaselinePath(join(tmpdir(), "newsletter-final.html")), null);
+  });
+});
+
+describe("#3829: baseline html-final refresca no re-render da pipeline (regressão)", () => {
+  let root: string;
+  let editionDir: string;
+  let internalDir: string;
+  let htmlOutPath: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "diaria-html-final-baseline-"));
+    editionDir = resolve(root, "data", "editions", "260716");
+    internalDir = resolve(editionDir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    htmlOutPath = resolve(internalDir, "newsletter-final.html");
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  /** Simula o que `main()` de substitute-image-urls.ts faz ao escrever
+   * `--out .../newsletter-final.html`: grava o arquivo e, se aplicável,
+   * refresca o baseline — sem invocar o CLI/subprocess (as funções puras já
+   * são as testadas; isto evita duplicar a lógica de main() aqui). */
+  function simulatePipelineRender(html: string): void {
+    writeFileSync(htmlOutPath, html, "utf8");
+    const baselinePath = htmlFinalBaselinePath(htmlOutPath);
+    assert.ok(baselinePath, "newsletter-final.html deveria mapear pra um baseline path");
+    mkdirSync(resolve(baselinePath!, ".."), { recursive: true });
+    writeFileSync(baselinePath!, html, "utf8");
+  }
+
+  it("re-render sem edição manual pendente: diff do painel volta a isEmpty:true (banner apaga)", () => {
+    // 1) Etapa 4 gera v1. Editor abre o painel — baseline capturado = v1.
+    simulatePipelineRender("<html>v1</html>");
+    readReviewFile(root, "260716", "html-final"); // captura baseline preguiçoso, se ainda não existir
+    assert.equal(computeReviewDiff(root, "260716", "html-final").isEmpty, true);
+
+    // 2) Editor edita manualmente no Studio → v2. Banner acende (correto).
+    saveReviewFile(root, "260716", "html-final", "<html>v2 editado à mão</html>");
+    assert.equal(computeReviewDiff(root, "260716", "html-final").isEmpty, false);
+
+    // 3) Editor re-roda a Etapa 4 → pipeline re-renderiza fresh do Markdown,
+    // descartando a edição manual (o evento que o banner avisava já
+    // aconteceu). ANTES do fix (#3829): o baseline continuava em v1 e o
+    // banner ficava aceso pra sempre comparando v3 contra v1. DEPOIS do
+    // fix: o re-render refresca o baseline pro novo conteúdo.
+    simulatePipelineRender("<html>v3 gerado pela pipeline</html>");
+    const diffAfterRerender = computeReviewDiff(root, "260716", "html-final");
+    assert.equal(diffAfterRerender.isEmpty, true, "banner deveria apagar após o re-render da pipeline");
+  });
+
+  it("save do editor via Studio NÃO refresca o baseline (edição de última milha continua sinalizada)", () => {
+    simulatePipelineRender("<html>v1</html>");
+    readReviewFile(root, "260716", "html-final");
+    assert.equal(computeReviewDiff(root, "260716", "html-final").isEmpty, true);
+
+    saveReviewFile(root, "260716", "html-final", "<html>v1 + correção manual</html>");
+    const diff = computeReviewDiff(root, "260716", "html-final");
+    assert.equal(diff.isEmpty, false, "save do editor deve continuar disparando o aviso de divergência");
+    assert.ok(diff.lines.some((l) => l.type === "add" && l.text.includes("correção manual")));
+
+    // Confirma que o conteúdo do baseline em disco não mudou por causa do save
+    // (só `saveReviewFile` do arquivo principal — nunca o baseline).
+    const baselinePath = htmlFinalBaselinePath(htmlOutPath)!;
+    assert.equal(readFileSync(baselinePath, "utf8"), "<html>v1</html>");
   });
 });

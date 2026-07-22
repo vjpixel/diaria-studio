@@ -1,9 +1,9 @@
 // revisao-inline-edit.js (#3806, Opção B — spike de edição visual do título
 // de destaque) — lógica PURA da edição inline na aba Preview. Mesmo padrão
-// de revisao-guards.js/revisao-prompts.js (#3629/#3668): nenhuma exportação
-// abaixo toca `document`/`fetch` — são testáveis com fixtures puras, sem DOM
-// real (#633). A parte que TOCA o DOM (contenteditable no iframe, listeners
-// de blur/keydown) mora em revisao.js, seguindo a mesma convenção: DOM-wiring
+// de revisao-guards.js (#3668): nenhuma exportação abaixo toca
+// `document`/`fetch` — são testáveis com fixtures puras, sem DOM real
+// (#633). A parte que TOCA o DOM (contenteditable no iframe, listeners de
+// blur/keydown) mora em revisao.js, seguindo a mesma convenção: DOM-wiring
 // não é unit-testado neste repo (só as funções puras que ele chama são).
 //
 // Escopo (ver corpo do #3806): só o campo "título de destaque" nesta 1ª

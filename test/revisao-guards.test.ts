@@ -2,8 +2,8 @@
  * test/revisao-guards.test.ts (#3668) — cobertura da lógica PURA do guard de
  * divergência do painel de revisão
  * (`scripts/studio-ui/public/revisao-guards.js`). Mesmo padrão de
- * `test/revisao-prompts.test.ts` (#3629): o módulo não toca
- * `document`/`fetch`, então é testável com fixtures puras, sem DOM real.
+ * `test/chat-hydration.test.ts`: o módulo não toca `document`/`fetch`, então
+ * é testável com fixtures puras, sem DOM real.
  *
  * Regressão coberta (#3668 — 3 gaps do guard original em revisao.js,
  * introduzido em #3635/PR #3664):
