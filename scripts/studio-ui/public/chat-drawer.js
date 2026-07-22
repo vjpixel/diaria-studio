@@ -154,6 +154,7 @@ drawer.innerHTML = `
       <span class="chat-drawer-title">Chat — sessão Claude</span>
       <span class="chat-toggle-badge" id="chat-toggle-badge" style="display:none"></span>
     </button>
+    <button type="button" id="chat-mobile-close" class="chat-mobile-close" title="Fechar chat" aria-label="Fechar chat">✕</button>
     <button type="button" id="chat-reset" title="Nova conversa">nova conversa</button>
   </div>
   <div class="chat-messages" id="chat-messages"></div>
@@ -178,11 +179,31 @@ const el = {
   expandToggle: drawer.querySelector("#chat-expand-toggle"),
   toggleDot: drawer.querySelector("#chat-toggle-dot"),
   toggleBadge: drawer.querySelector("#chat-toggle-badge"),
+  mobileClose: drawer.querySelector("#chat-mobile-close"),
   messages: drawer.querySelector("#chat-messages"),
   input: drawer.querySelector("#chat-input"),
   send: drawer.querySelector("#chat-send"),
   reset: drawer.querySelector("#chat-reset"),
 };
+
+// #3851: mantém `--chat-viewport-height` (lida por chat-drawer.css só no
+// media query mobile) sincronizada com `visualViewport.height` — o teclado
+// virtual encolhe o viewport VISUAL sem necessariamente disparar um resize
+// do viewport de LAYOUT em toda engine/versão (é o clássico "footer sobe
+// atrás do teclado"). Onde `visualViewport` existe, o CSS passa a dimensionar
+// o painel pela altura REAL disponível em vez de um 100dvh estático que não
+// necessariamente reflete o teclado aberto. Fail-soft: sem a API (browser
+// antigo, ambiente de teste sem viewport real), a var nunca é setada e o
+// fallback `var(--chat-viewport-height, 100dvh)` do CSS assume sozinho.
+function syncViewportHeight() {
+  if (!window.visualViewport) return;
+  document.documentElement.style.setProperty("--chat-viewport-height", `${window.visualViewport.height}px`);
+}
+if (window.visualViewport) {
+  syncViewportHeight();
+  window.visualViewport.addEventListener("resize", syncViewportHeight);
+  window.visualViewport.addEventListener("scroll", syncViewportHeight);
+}
 
 function setToggleStatus(status) {
   // "ok" | "down" | "" (idle) — mesmo vocabulário do dot de /api/events.
@@ -239,6 +260,17 @@ function expandDrawer() {
 
 el.expandToggle.addEventListener("click", () => {
   setCollapsed(!drawer.classList.contains("collapsed"));
+});
+
+// #3851: "fechar explícito" do overlay mobile — visível só abaixo do
+// breakpoint de 720px e só quando o painel está aberto (ver chat-drawer.css,
+// `.chat-drawer:not(.collapsed) .chat-mobile-close`). Reusa exatamente o
+// mesmo `setCollapsed(true)` que `el.expandToggle` já chama quando expandido
+// — nenhuma lógica de collapse nova, só um segundo alvo com rótulo
+// inequívoco de "fechar" (o header inteiro já fecha ao re-clicar, mas sem
+// essa affordance visual).
+el.mobileClose.addEventListener("click", () => {
+  setCollapsed(true);
 });
 
 // #3556 self-review: limpar só o estado do CLIENTE (sessionId local +
