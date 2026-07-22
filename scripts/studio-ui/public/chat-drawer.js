@@ -91,6 +91,7 @@ import {
   parseChatHistoryResponse,
   planHistoryReplay,
 } from "./chat-hydration.js";
+import { computeGlobalBadgeCount, resolveBadgeClickAction } from "./chat-badge.js";
 
 const STORAGE_KEY = "diaria-studio-chat-session-id";
 const COLLAPSE_STORAGE_KEY = "diaria-studio-chat-collapsed";
@@ -210,12 +211,16 @@ function setToggleStatus(status) {
   el.toggleDot.className = "chat-toggle-dot " + status;
 }
 
-// #3557/#3617: badge de gates pendentes (AskUserQuestion aguardando
-// resposta), visível mesmo com o painel colapsado (rail fino) — fonte é
-// `state.chatPermissionsPending` (studio-state.ts), atualizado por
-// assinatura própria de `/api/events` (independente de app.js, que só
-// existe em index.html — chat-drawer.js é injetado em várias páginas e
-// precisa funcionar sozinho em todas).
+// #3557/#3617/#3888: badge GLOBAL de "algo pendente", visível mesmo com o
+// painel colapsado (rail fino) — soma gates de pipeline pendentes (Stage
+// 4/6, `state.gatesPending`) + perguntas do chat aguardando resposta
+// (`state.chatPermissionsPending`), via `computeGlobalBadgeCount`
+// (chat-badge.js). Antes do #3888 só contava `chatPermissionsPending` — um
+// gate 4/6 pendente sem card de chat aberto NESTA sessão (sessão que rodou o
+// stage já terminou ou roda no terminal) ficava invisível em 6 das 8 telas
+// do Studio. Atualizado por assinatura própria de `/api/events`
+// (independente de app.js, que só existe em index.html — chat-drawer.js é
+// injetado em várias páginas e precisa funcionar sozinho em todas).
 function setPendingBadge(count) {
   if (count > 0) {
     el.toggleBadge.textContent = String(count);
@@ -225,12 +230,24 @@ function setPendingBadge(count) {
   }
 }
 
+// #3888: espelha os 3 campos do `state` mais recente que
+// `resolveBadgeClickAction` precisa pra decidir a ação do clique no
+// badge/toggle — module-scoped (não precisa de mais que o último valor
+// recebido; o clique sempre decide com o estado MAIS RECENTE conhecido, não
+// com o estado no momento em que o listener foi registrado).
+let latestGatesPending = [];
+let latestChatPermissionsPending = [];
+let latestCurrentEdition = null;
+
 try {
   const statusEvents = new EventSource("/api/events");
   statusEvents.addEventListener("state", (ev) => {
     try {
       const state = JSON.parse(ev.data);
-      setPendingBadge(Array.isArray(state.chatPermissionsPending) ? state.chatPermissionsPending.length : 0);
+      latestGatesPending = Array.isArray(state.gatesPending) ? state.gatesPending : [];
+      latestChatPermissionsPending = Array.isArray(state.chatPermissionsPending) ? state.chatPermissionsPending : [];
+      latestCurrentEdition = typeof state.currentEdition === "string" ? state.currentEdition : null;
+      setPendingBadge(computeGlobalBadgeCount(latestGatesPending, latestChatPermissionsPending));
     } catch {
       // payload malformado — o badge simplesmente não atualiza neste tick.
     }
@@ -283,8 +300,22 @@ function scrollToPendingCard() {
   setTimeout(() => pendingCard.classList.remove("chat-permission-card-highlight"), 2000);
 }
 
+// #3888: o clique no header/badge não é mais um toggle incondicional —
+// `resolveBadgeClickAction` (chat-badge.js) decide entre 3 ações a partir do
+// `state` mais recente conhecido: card de chat pendente NESTA sessão →
+// abre/rola até ele (`scrollToPendingCard`, já expande o painel sozinho);
+// gate de pipeline pendente SEM card (sessão terminal) → navega pro cockpit
+// da edição com o gate (`/edicao/{aammdd}`, banner do #3870 explica lá);
+// nada pendente → comportamento pré-#3888, só expande/recolhe.
 el.expandToggle.addEventListener("click", () => {
-  setCollapsed(!drawer.classList.contains("collapsed"));
+  const decision = resolveBadgeClickAction(latestGatesPending, latestChatPermissionsPending, latestCurrentEdition);
+  if (decision.action === "scroll") {
+    scrollToPendingCard();
+  } else if (decision.action === "navigate") {
+    location.href = decision.href;
+  } else {
+    setCollapsed(!drawer.classList.contains("collapsed"));
+  }
 });
 
 // #3851: "fechar explícito" do overlay mobile — visível só abaixo do
