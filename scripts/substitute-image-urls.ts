@@ -26,8 +26,8 @@
  * exit code 3 em vez de substituir placeholders num HTML stale.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { resolve, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { mtimeMs } from "./lib/mtime.ts"; // #2316 fail-loud stale guard
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -135,6 +135,31 @@ export function substituteImagePlaceholders(
   return { html: result, substitutions, unresolved: [...new Set(unresolved)] };
 }
 
+/**
+ * #3829: quando `outPath` é o `_internal/newsletter-final.html` canônico da
+ * pipeline (não um `--out` arbitrário de debug/`--split`), retorna o path do
+ * baseline que o painel de revisão do Studio usa pro slug `html-final` —
+ * mesma convenção de `scripts/studio-ui/studio-review.ts` (`resolveReviewFile`:
+ * `{edition_dir}/_internal/studio-review-baseline/newsletter-final.html.md`).
+ * `null` quando o output não bate com esse shape (ex: `newsletter-draft.html`,
+ * `newsletter-body.html` do modo `--split`, ou qualquer `--out` de debug fora
+ * de um dir `_internal/`) — nesses casos não há baseline pra refrescar.
+ *
+ * Mantido self-contido aqui (em vez de importar `studio-review.ts`) de
+ * propósito: este script é invocado no caminho quente da Etapa 4/5 (agent +
+ * `prep-manual-publish.ts`), e `studio-review.ts` arrasta um grafo de imports
+ * pesado (parsers/lints/renderers do Studio) que não faz sentido carregar
+ * aqui só pra recalcular 1 path. Se a convenção de path mudar num dos dois
+ * lados, mudar no outro também (não há teste de fronteira automático pra essa
+ * duplicação pontual — só os 2 comentários cruzados).
+ */
+export function htmlFinalBaselinePath(outPath: string): string | null {
+  if (basename(outPath) !== "newsletter-final.html") return null;
+  const internalDir = dirname(outPath);
+  if (basename(internalDir) !== "_internal") return null;
+  return resolve(internalDir, "studio-review-baseline", "newsletter-final.html.md");
+}
+
 function main(): void {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const args = parseArgs(process.argv.slice(2));
@@ -199,6 +224,17 @@ function main(): void {
   if (outArg) {
     const outPath = resolve(ROOT, outArg);
     writeFileSync(outPath, result.html, "utf8");
+    // #3829: refresca o baseline do painel de revisão do Studio pro slug
+    // html-final logo após a Etapa 4 (re)escrever o HTML final — sem isso, o
+    // baseline fica travado na 1ª leitura do painel e o banner de divergência
+    // acende pra sempre a partir do 2º re-render (mesmo sem edição manual
+    // pendente do editor). Só toca o baseline quando `outPath` é de fato o
+    // `newsletter-final.html` canônico (ver `htmlFinalBaselinePath`).
+    const baselinePath = htmlFinalBaselinePath(outPath);
+    if (baselinePath) {
+      mkdirSync(dirname(baselinePath), { recursive: true });
+      writeFileSync(baselinePath, result.html, "utf8");
+    }
     console.log(
       JSON.stringify(
         {

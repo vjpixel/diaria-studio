@@ -1,6 +1,11 @@
 // revisao.js (#3559) — painel de revisão de conteúdo rica: editor + diff +
-// lints inline + preview do e-mail + ações rápidas. Vanilla JS, sem build
-// step (mesmo princípio de app.js/edicao.js — zero-custo, sem lib nova).
+// lints inline + preview do e-mail. Vanilla JS, sem build step (mesmo
+// princípio de app.js/edicao.js — zero-custo, sem lib nova). #3828: a seção
+// "Ações rápidas" (swap de destaque + prompts de reescrever título/regenerar
+// imagem) foi removida — os 2 ganchos de chat só pré-preenchiam o que o
+// editor já consegue digitar direto no chat drawer, e o swap tinha um
+// caminho de backend próprio pra replicar o que já existe como CLI
+// (`scripts/swap-destaque.ts`, que continua disponível via terminal).
 //
 // Fluxo: GET /api/editions/:aammdd/review/:slug traz {content, baseline,
 // exists, pull}. O editor edita LOCALMENTE no textarea (nada é enviado até
@@ -8,7 +13,6 @@
 // demanda (botões), lendo sempre o que está SALVO no disco — não o
 // conteúdo ainda-não-salvo do textarea (documentado no hint da UI).
 
-import { buildRewriteTitlePrompt, buildRegenerateImagePrompt } from "./revisao-prompts.js";
 import {
   shouldConfirmDivergenceGuard,
   DIVERGENCE_CONFIRM_MESSAGE,
@@ -86,20 +90,6 @@ const el = {
   previewRefreshBtn: document.getElementById("rv-preview-refresh-btn"),
   previewHint: document.getElementById("rv-preview-hint"),
   inlineEditStatus: document.getElementById("rv-inline-edit-status"),
-  swapPromote: document.getElementById("rv-swap-promote"),
-  swapDemote: document.getElementById("rv-swap-demote"),
-  swapDrop: document.getElementById("rv-swap-drop"),
-  swapPreviewBtn: document.getElementById("rv-swap-preview-btn"),
-  swapApplyBtn: document.getElementById("rv-swap-apply-btn"),
-  swapResult: document.getElementById("rv-swap-result"),
-  titleDestaque: document.getElementById("rv-title-destaque"),
-  titleInstrucao: document.getElementById("rv-title-instrucao"),
-  titleFillBtn: document.getElementById("rv-title-fill-btn"),
-  titleWarn: document.getElementById("rv-title-warn"),
-  imageDestaque: document.getElementById("rv-image-destaque"),
-  imageInstrucao: document.getElementById("rv-image-instrucao"),
-  imageFillBtn: document.getElementById("rv-image-fill-btn"),
-  imageWarn: document.getElementById("rv-image-warn"),
 };
 
 function setConn(status) {
@@ -653,69 +643,6 @@ function activateSidePane(pane) {
   if (pane === "preview") refreshPreview().catch(showPreviewError);
 }
 
-async function runSwap(dryRun) {
-  const promote = el.swapPromote.value.trim();
-  const demote = el.swapDemote.value;
-  const drop = el.swapDrop.checked;
-  if (!promote) {
-    el.swapResult.textContent = "Preencha 'Promover (bucket:índice)' antes.";
-    return;
-  }
-  if (!dryRun) {
-    const proceed = window.confirm(
-      `Aplicar swap de verdade — promove "${promote}" e substitui ${demote.toUpperCase()}${drop ? " (descartando-o)" : ""}. Confirma?`,
-    );
-    if (!proceed) return;
-  }
-  el.swapResult.textContent = dryRun ? "Pré-visualizando…" : "Aplicando…";
-  const { body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/actions/swap-destaque`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ promote, demote, drop, dryRun }),
-  });
-  el.swapResult.textContent = JSON.stringify(body, null, 2);
-  if (body && body.ok && !dryRun) {
-    // #3559: o swap real reescreve 02-reviewed.md no disco — recarrega o
-    // arquivo aberto (se for o afetado) pra refletir a mudança.
-    if (currentSlug === "reviewed") await loadFile("reviewed", { force: true });
-  }
-}
-
-// #3629: os dois ganchos "Reescrever título"/"Regenerar imagem" NÃO chamam
-// script/API diretamente — montam um prompt (função pura, ver
-// revisao-prompts.js) e pré-preenchem o textarea do chat drawer
-// (`window.diariaStudioChat.prefillMessage`, ver chat-drawer.js), sem
-// enviar. O editor revisa/edita o prompt e manda manualmente. Fail-soft: se
-// chat-drawer.js não carregou por algum motivo (ordem de script, erro de
-// rede), mostra um aviso na própria card em vez de lançar erro no console.
-function fillChatOrWarn(prompt, warnEl) {
-  warnEl.hidden = true;
-  if (!window.diariaStudioChat || typeof window.diariaStudioChat.prefillMessage !== "function") {
-    warnEl.textContent = "Chat indisponível nesta página (chat-drawer.js não carregou) — copie o prompt manualmente.";
-    warnEl.hidden = false;
-    return;
-  }
-  window.diariaStudioChat.prefillMessage(prompt);
-}
-
-function fillRewriteTitlePrompt() {
-  const prompt = buildRewriteTitlePrompt({
-    aammdd,
-    destaque: el.titleDestaque.value,
-    instrucao: el.titleInstrucao.value,
-  });
-  fillChatOrWarn(prompt, el.titleWarn);
-}
-
-function fillRegenerateImagePrompt() {
-  const prompt = buildRegenerateImagePrompt({
-    aammdd,
-    destaque: el.imageDestaque.value,
-    instrucao: el.imageInstrucao.value,
-  });
-  fillChatOrWarn(prompt, el.imageWarn);
-}
-
 function bindEvents() {
   el.tabs.querySelectorAll(".rv-tab").forEach((btn) => {
     btn.addEventListener("click", () => loadFile(btn.dataset.slug));
@@ -744,10 +671,6 @@ function bindEvents() {
       console.error("setupInlineTitleEditing() falhou:", err);
     }
   });
-  el.swapPreviewBtn.addEventListener("click", () => runSwap(true));
-  el.swapApplyBtn.addEventListener("click", () => runSwap(false));
-  el.titleFillBtn.addEventListener("click", fillRewriteTitlePrompt);
-  el.imageFillBtn.addEventListener("click", fillRegenerateImagePrompt);
   window.addEventListener("beforeunload", (e) => {
     if (dirty) { e.preventDefault(); e.returnValue = ""; }
   });

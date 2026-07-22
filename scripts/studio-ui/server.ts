@@ -87,9 +87,11 @@
  *     pra `<iframe>`) + `GET /api/editions/:aammdd/social-preview.html`
  *     (#3663 — HTML legível do `03-social.md`: posts LinkedIn/Facebook/
  *     Instagram com quebras de linha e hashtags como aparecem publicados,
- *     mesmo renderer `render-social-html.ts` que a Etapa 4 real usa) +
- *     `POST /api/editions/:aammdd/actions/swap-destaque`
- *     — ver `studio-review.ts`/`studio-review-actions.ts` pro detalhe.
+ *     mesmo renderer `render-social-html.ts` que a Etapa 4 real usa)
+ *     — ver `studio-review.ts` pro detalhe. #3828: a seção "Ações rápidas"
+ *     (swap de destaque via UI + os 2 ganchos de prompt) foi removida do
+ *     painel — `POST /api/editions/:aammdd/actions/swap-destaque` não existe
+ *     mais; `scripts/swap-destaque.ts` continua disponível via CLI.
  *   - `GET /api/round/:kind` (#3561, `kind` = `overnight` | `develop`) — fila
  *     classificada (entram/pendente/fora, com motivo) + timeline por unidade
  *     do `plan.json` MAIS RECENTE daquele kind, pra `/rodada`. Read-only:
@@ -147,16 +149,16 @@
  *
  * **Exceção controlada (#3559 — revisão de conteúdo rica):** as rotas
  * `PUT /api/editions/:aammdd/review/:slug` (salvar edição) e
- * `POST /api/editions/:aammdd/review/:slug/reset-baseline` +
- * `POST /api/editions/:aammdd/actions/swap-destaque` são a 1ª quebra
+ * `POST /api/editions/:aammdd/review/:slug/reset-baseline` são a 1ª quebra
  * deliberada do invariante read-only — a fatia de AÇÃO que #3555 previa.
  * Escopo estreito e auditável: só escrevem os 3 arquivos gate-facing de
  * revisão (`01-categorized.md`, `02-reviewed.md`, `03-social.md`) e o
- * baseline interno de diff (`_internal/studio-review-baseline/`), ou
- * invocam `scripts/swap-destaque.ts` como subprocess (mesma CLI que o
- * editor rodaria manualmente). Toda a lógica mora em `studio-review.ts` /
- * `studio-review-actions.ts` (arquivos próprios desta fatia) — ver o
- * cabeçalho de cada um pro detalhe do design.
+ * baseline interno de diff (`_internal/studio-review-baseline/`). Toda a
+ * lógica mora em `studio-review.ts` (arquivo próprio desta fatia) — ver o
+ * cabeçalho pro detalhe do design. (#3828: a rota de ação
+ * `POST /api/editions/:aammdd/actions/swap-destaque`, que invocava
+ * `scripts/swap-destaque.ts` como subprocess, foi removida — o script segue
+ * disponível via CLI direta.)
  *
  * **Exceção controlada (#3602 — CRM de apoios):** `POST /api/apoios/contacts`,
  * `PUT /api/apoios/contacts/:id` e `POST /api/apoios/contacts/:id/outreach`
@@ -249,7 +251,6 @@ import {
   resolveReviewImagePath,
   applyDestaqueTitleEdit,
 } from "./studio-review.ts";
-import { runSwapDestaque, type SwapDestaqueRequest } from "./studio-review-actions.ts";
 import { resolveEditionDir } from "../lib/find-current-edition.ts";
 // #3602: CRM simples de apoios apoia.se — arquivo próprio desta fatia, import
 // isolado (nenhuma outra rota depende dele). Ver studio-apoios.ts.
@@ -1083,30 +1084,6 @@ function handleReviewResetBaseline(rootDir: string, aammdd: string, slug: string
   sendJson(res, result.ok ? 200 : 400, result);
 }
 
-async function handleReviewSwap(
-  rootDir: string,
-  req: IncomingMessage,
-  res: ServerResponse,
-  aammdd: string,
-): Promise<void> {
-  let body: Record<string, unknown>;
-  try {
-    body = JSON.parse(await readRequestBody(req, REVIEW_MAX_BODY_BYTES)) as Record<string, unknown>;
-  } catch {
-    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
-    return;
-  }
-  const request: SwapDestaqueRequest = {
-    aammdd,
-    promote: String(body.promote ?? ""),
-    demote: String(body.demote ?? ""),
-    drop: !!body.drop,
-    dryRun: !!body.dryRun,
-  };
-  const result = runSwapDestaque(rootDir, request);
-  sendJson(res, result.ok ? 200 : 400, result);
-}
-
 // ── #3602: CRM simples de apoios apoia.se ───────────────────────────────
 
 // Corpo pequeno (nome + emails + notas livres) — 200KB é generoso e mantém o
@@ -1329,12 +1306,6 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleReviewResetBaseline(rootDir, resetBaselineMatch[1], resetBaselineMatch[2], res);
         return;
       }
-      const swapMatch = urlPath.match(/^\/api\/editions\/([^/]+)\/actions\/swap-destaque$/);
-      if (req.method === "POST" && swapMatch) {
-        handleReviewSwap(rootDir, req, res, swapMatch[1]).catch((e) => sendJson(res, 500, { error: (e as Error).message }));
-        return;
-      }
-
       // #3602: exceção estreita ao invariante read-only, mesmo padrão do
       // #3559 acima — CRUD do CRM de apoios. Checadas ANTES do guard
       // genérico de método.

@@ -1,8 +1,7 @@
 // revisao-guards.js (#3668) — lógica PURA do guard de divergência do painel
 // de revisão (`revisao.html`/`revisao.js`). Separado de propósito de
-// `revisao.js` (mesmo padrão de `revisao-prompts.js` #3629): nenhuma das
-// duas exportações abaixo toca `document`/`fetch` — são testáveis com
-// fixtures puras, sem DOM real (#633).
+// `revisao.js`: nenhuma das duas exportações abaixo toca `document`/`fetch`
+// — são testáveis com fixtures puras, sem DOM real (#633).
 //
 // Contexto (#3635, PR #3664): o guard avisa antes de salvar um dos slugs de
 // Markdown (`01-categorized`/`02-reviewed`/`03-social`) quando

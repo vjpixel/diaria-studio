@@ -158,6 +158,11 @@ export function resolveReviewFile(
   // subpasta `_internal/` aninhada dentro do baseline dir (`filename` para
   // esse slug é `_internal/newsletter-final.html`, com separador). Sem
   // efeito nos outros 3 slugs (já são basename puro, sem separador).
+  // #3829: pro slug `html-final` especificamente, esta MESMA fórmula é
+  // recalculada de forma independente em `htmlFinalBaselinePath`
+  // (`scripts/substitute-image-urls.ts`) — é lá que a Etapa 4 refresca o
+  // baseline logo após (re)escrever `newsletter-final.html`. Mudar o formato
+  // do path aqui sem espelhar lá reabre o bug do banner travado.
   const baselinePath = resolve(
     editionDir,
     "_internal",

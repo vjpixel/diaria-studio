@@ -269,31 +269,12 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.doesNotMatch(emailHtml, /conteúdo social de teste diar\.ia\.br/);
   });
 
-  it("POST .../actions/swap-destaque com corpo inválido retorna 400", async () => {
-    const res = await fetch(new URL("/api/editions/260716/actions/swap-destaque", server.url), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ promote: "bucket-invalido", demote: "d1" }),
-    });
-    assert.equal(res.status, 400);
-    const body = await res.json();
-    assert.equal(body.ok, false);
-  });
-
-  it("POST .../actions/swap-destaque bem-formado, mas sem swap-destaque.ts no rootDir de teste, falha fail-soft (400)", async () => {
-    const res = await fetch(new URL("/api/editions/260716/actions/swap-destaque", server.url), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ promote: "radar:0", demote: "d1", dryRun: true }),
-    });
-    // rootDir de teste é um tmpdir sem scripts/swap-destaque.ts real — o
-    // guard fail-soft de studio-review-actions.ts responde 400 em vez de
-    // lançar ou derrubar o servidor.
-    assert.equal(res.status, 400);
-    const body = await res.json();
-    assert.equal(body.ok, false);
-    assert.match(body.error ?? "", /swap-destaque\.ts/);
-  });
+  // #3828: a rota POST .../actions/swap-destaque foi removida junto com a
+  // seção "Ações rápidas" do painel — cobertura antiga vivia aqui (2 casos:
+  // corpo inválido → 400, corpo válido sem swap-destaque.ts no rootDir de
+  // teste → 400 fail-soft). scripts/swap-destaque.ts (CLI) e
+  // test/swap-destaque.test.ts continuam intactos — só a exposição via
+  // Studio some.
 
   it("invariante preservado: POST em rota read-only pré-existente ainda retorna 405", async () => {
     const res = await fetch(new URL("/api/state", server.url), { method: "POST" });
@@ -464,27 +445,11 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.match(body, /pode ser edição sua ou re-render do agente/);
   });
 
-  // #3629: smoke/contrato do HTML servido pros ganchos "Reescrever
-  // título"/"Regenerar imagem" — `prefillMessage` (chat-drawer.js) é
-  // puramente DOM (sem lógica pura extraível além do que já é coberto por
-  // `revisao-prompts.js`, ver test/revisao-prompts.test.ts), então a
-  // cobertura aqui é de contrato: os elementos que revisao.js espera
-  // encontrar via `getElementById` existem no HTML servido, e o script
-  // real servido expõe a 3ª função (`prefillMessage`) no objeto global.
-  it("GET /revisao/{aammdd} inclui os cards de 'Reescrever título' e 'Regenerar imagem' (não mais stub/gancho)", async () => {
-    const res = await fetch(new URL("/revisao/260716", server.url));
-    const body = await res.text();
-    assert.ok(body.includes("Reescrever título"));
-    assert.ok(body.includes("Regenerar imagem"));
-    assert.ok(body.includes('id="rv-title-destaque"'));
-    assert.ok(body.includes('id="rv-title-instrucao"'));
-    assert.ok(body.includes('id="rv-title-fill-btn"'));
-    assert.ok(body.includes('id="rv-image-destaque"'));
-    assert.ok(body.includes('id="rv-image-instrucao"'));
-    assert.ok(body.includes('id="rv-image-fill-btn"'));
-    // Stub antigo (#3559) não deve mais aparecer.
-    assert.ok(!body.includes("Não implementado nesta fatia"));
-  });
+  // #3828: a seção "Ações rápidas" (cards "Reescrever título"/"Regenerar
+  // imagem"/swap de destaque) foi removida do painel — cobertura antiga
+  // desses cards + de `/revisao-prompts.js` (módulo deletado) vivia aqui.
+  // `chat-drawer.js` em si (usado por várias outras páginas do Studio, não
+  // só /revisao) segue coberto abaixo.
 
   it("GET /chat-drawer.js expõe prefillMessage em window.diariaStudioChat", async () => {
     const res = await fetch(new URL("/chat-drawer.js", server.url));
@@ -493,14 +458,6 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     const body = await res.text();
     assert.match(body, /function prefillMessage\(/);
     assert.match(body, /window\.diariaStudioChat\s*=\s*\{[^}]*prefillMessage/);
-  });
-
-  it("GET /revisao-prompts.js serve o módulo com as 2 funções exportadas", async () => {
-    const res = await fetch(new URL("/revisao-prompts.js", server.url));
-    assert.equal(res.status, 200);
-    const body = await res.text();
-    assert.match(body, /export function buildRewriteTitlePrompt/);
-    assert.match(body, /export function buildRegenerateImagePrompt/);
   });
 
   // #3663: contrato do wiring aba social → endpoint de preview social —
@@ -512,14 +469,6 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     const body = await res.text();
     assert.match(body, /social-preview\.html/);
     assert.match(body, /currentSlug === "social"/);
-  });
-
-  it("GET /revisao.js importa revisao-prompts.js e referencia prefillMessage", async () => {
-    const res = await fetch(new URL("/revisao.js", server.url));
-    assert.equal(res.status, 200);
-    const body = await res.text();
-    assert.match(body, /from ["']\.\/revisao-prompts\.js["']/);
-    assert.match(body, /prefillMessage/);
   });
 
   // #3668 — 3 gaps do guard de divergência do HTML final (#3635/PR #3664).
