@@ -1,9 +1,18 @@
 <!--
-Bloco canônico de DIVULGAÇÃO do programa de apoio (apoia.se/diaria). Fonte
-única do box de divulgação (slot 1 D1/D2 OU slot 2 D2/D3, #2978) quando o
-editor quer promover o apoio numa edição diária. Não é auto-inserido por
-padrão (diferente do 📚 livros, #2527) — o editor cola este bloco na lacuna
-desejada quando quiser rodar a divulgação.
+Bloco canônico de DIVULGAÇÃO do programa de apoio (apoia.se/diaria).
+
+**Slot 3 fixo (#3824, 260722, decisão permanente do editor):** este é o
+default de `boxes_divulgacao.slot3` em `platform.config.json` — auto-injetado
+pelo `stitchNewsletter` em TODO daily, na região pós-último-destaque (antes de
+USE MELHOR/É IA?), mesmo tratamento que `recomendacao-leitura.md` (slot 1) e
+`livros-divulgacao.md` (slot 2). Substituiu `indicacao-ferramenta.md` nesse
+slot — o arquivo de indicação de ferramenta segue disponível pra reuso
+pontual (trocar o config quando quiser rodar essa campanha em vez da de
+apoio), mesmo padrão que `clarice-divulgacao.md` já usa.
+
+Também pode ser colado manualmente no slot 1 (D1/D2) ou slot 2 (D2/D3) se o
+editor quiser rodar a campanha numa lacuna diferente pontualmente — o parse
+do lado do render é marcador-agnóstico e não depende de qual slot o injetou.
 
 Formato (título + 2 parágrafos + lista de recompensas + CTA, #3824/260722):
 o corpo tem (1) título curto, sem marcador/emoji; (2) frase de missão ("me

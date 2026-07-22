@@ -922,7 +922,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
     ...extra,
   });
 
-  it("#3212/#3476: config default de platform.config.json injeta os 3 slots (recomendação de leitura, livros, indicação de ferramenta)", () => {
+  it("#3212/#3476/#3824: config default de platform.config.json injeta os 3 slots (recomendação de leitura, livros, apoio)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       // Sem override — lê boxes_divulgacao direto de platform.config.json.
@@ -934,9 +934,9 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
       assert.ok(slot2, "slot2 (curadoria de livros) injetado por default");
       assert.match(slot2!, /curadoria de livros/);
       const slot3 = extractBoxDivulgacao3(out);
-      assert.ok(slot3, "slot3 (indicação de ferramenta) injetado por default");
-      assert.match(slot3!, /Indicação de ferramenta/);
-      assert.match(slot3!, /Não recebi comissão/);
+      assert.ok(slot3, "slot3 (apoio-divulgacao) injetado por default (#3824)");
+      assert.match(slot3!, /Apoie a diar\.ia\.br/);
+      assert.match(slot3!, /Quero apoiar/);
     } finally {
       cleanup();
     }
@@ -947,7 +947,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
     try {
       const out = stitchNewsletter(base(dir, internalDir));
       const d3Pos = out.indexOf("DESTAQUE 3");
-      const slot3Pos = out.indexOf("Indicação de ferramenta");
+      const slot3Pos = out.indexOf("Apoie a diar.ia.br");
       const umPos = out.indexOf("USE MELHOR");
       assert.ok(slot3Pos > 0, "box3 deveria estar presente");
       assert.ok(
@@ -982,7 +982,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
       );
       const out = stitchNewsletter(base(dir, internalDir));
       assert.doesNotMatch(out, /USE MELHOR/);
-      const slot3Pos = out.indexOf("Indicação de ferramenta");
+      const slot3Pos = out.indexOf("Apoie a diar.ia.br");
       const eiaPos = out.indexOf("É IA?");
       assert.ok(slot3Pos > 0 && eiaPos > 0);
       assert.ok(slot3Pos < eiaPos, "É IA? deve vir logo após box3 quando USE MELHOR está ausente");
@@ -1008,7 +1008,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
       });
       const slot3 = extractBoxDivulgacao3(out);
       assert.ok(slot3, "slot3 deve injetar mesmo sem D3 (é pós-último-destaque, não uma lacuna D2/D3)");
-      assert.match(slot3!, /Indicação de ferramenta/);
+      assert.match(slot3!, /Apoie a diar\.ia\.br/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1023,7 +1023,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
       );
       const out = stitchNewsletter(base(dir, internalDir));
       assert.equal((out.match(/🔧/g) || []).length, 1, "só 1 marcador 🔧 (não dupla-injeta)");
-      assert.ok(!out.includes("Não recebi comissão"), "não injeta o snippet default por cima do box já colado");
+      assert.ok(!out.includes("Quero apoiar"), "não injeta o snippet default por cima do box já colado");
     } finally {
       cleanup();
     }
