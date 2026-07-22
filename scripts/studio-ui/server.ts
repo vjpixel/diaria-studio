@@ -103,10 +103,13 @@
  *   - `GET /apoios` — CRM simples de apoios apoia.se (#3602): mesma
  *     estratégia de rewrite, servindo `public/apoios.html`. Consome
  *     `GET /api/apoios` (contatos + status cruzado via `checkBacker` +
- *     agregação de campanha) e `POST /api/apoios/contacts` /
- *     `PUT /api/apoios/contacts/:id` (CRUD de contato) — ver
- *     `studio-apoios.ts` pro detalhe. Dado pessoal: só em
- *     `data/apoia-se/contacts.jsonl` (junction OneDrive, nunca no repo).
+ *     agregação de campanha) e `PUT /api/apoios/contacts/:id` (editar
+ *     contato existente) — ver `studio-apoios.ts` pro detalhe. Dado pessoal:
+ *     só em `data/apoia-se/contacts.jsonl` (junction OneDrive, nunca no
+ *     repo). (#3862: o form manual "Adicionar contato" e a rota
+ *     `POST /api/apoios/contacts` que ele chamava foram removidos — contato
+ *     passa a existir só via `createContact` chamado in-process pelo drain
+ *     de e-mail do #3859, nunca mais via HTTP.)
  *     (#3844: os recursos de follow-up/outreach — incluindo a rota
  *     `POST /api/apoios/contacts/:id/outreach` — foram removidos; a área
  *     refoca em visão por grupo/nível de recompensa, ainda pendente.)
@@ -195,19 +198,21 @@
  * `scripts/swap-destaque.ts` como subprocess, foi removida — o script segue
  * disponível via CLI direta.)
  *
- * **Exceção controlada (#3602 — CRM de apoios):** `POST /api/apoios/contacts`
- * e `PUT /api/apoios/contacts/:id` escrevem SÓ `data/apoia-se/contacts.jsonl`
- * (dado pessoal, junction OneDrive, nunca no repo/KV) — nunca tocam
- * credenciais nem a API apoia.se em modo de escrita (o cruzamento de status é
- * sempre leitura via `checkBacker`). Toda a lógica mora em `studio-apoios.ts`.
+ * **Exceção controlada (#3602 — CRM de apoios):** `PUT /api/apoios/contacts/:id`
+ * escreve SÓ `data/apoia-se/contacts.jsonl` (dado pessoal, junction OneDrive,
+ * nunca no repo/KV) — nunca toca credenciais nem a API apoia.se em modo de
+ * escrita (o cruzamento de status é sempre leitura via `checkBacker`). Toda a
+ * lógica mora em `studio-apoios.ts`. (#3862: a rota de criação manual,
+ * `POST /api/apoios/contacts`, foi removida junto com o form que a chamava —
+ * `createContact` segue existindo, mas só é invocado in-process pelo drain
+ * de e-mail abaixo, nunca mais via HTTP.)
  * (#3859: `POST /api/apoios/refresh` é a mesma classe de exceção — dispara
  * LEITURAS a mais na apoia.se via `checkBacker`/`forceRefresh` (grava só o
  * cache `data/apoia-se/{campanha}/{YYYY-MM}.json`, já uma superfície de
  * escrita pré-existente de `checkBacker`), e TAMBÉM pode escrever
  * `contacts.jsonl` quando o drain de e-mail (metade 1) encontra um apoiador
- * novo — mesmo dado pessoal, mesma pasta, mesmo padrão de escrita de
- * `POST /api/apoios/contacts` acima, só que disparado automaticamente em vez
- * de por submissão manual do form.)
+ * novo — mesmo dado pessoal, mesma pasta, disparado automaticamente pelo
+ * botão "Atualizar status" em vez de por submissão de form.)
  *
  * **Exceção controlada (#3861 — botão "Atualizar É IA?"):**
  * `POST /api/painel/eia/refresh` escreve SÓ `data/poll-eia-summary.json`
@@ -320,9 +325,7 @@ import { resolveEditionDir } from "../lib/find-current-edition.ts";
 import {
   buildApoiosData,
   refreshApoiosData,
-  addContact,
   updateContactById,
-  parseCreateContactBody,
   parseUpdateContactBody,
   type ApoiosMutationResult,
 } from "./studio-apoios.ts";
@@ -1227,23 +1230,6 @@ function handleApiApoiosRefresh(rootDir: string, res: ServerResponse): void {
     .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
 }
 
-async function handleApiApoiosCreate(rootDir: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  let raw: string;
-  try {
-    raw = await readRequestBody(req, APOIOS_MAX_BODY_BYTES);
-  } catch (e) {
-    sendJson(res, 413, { error: (e as Error).message });
-    return;
-  }
-  const parsed = parseCreateContactBody(raw);
-  if (!parsed.ok) {
-    sendJson(res, 400, { error: parsed.error });
-    return;
-  }
-  const result = addContact(rootDir, parsed.value);
-  sendJson(res, result.ok ? 201 : 400, result);
-}
-
 /** Único ponto de mapeamento resultado→status HTTP pra mutação que pode
  * alvejar um id inexistente (update) — evita duplicar (e desalinhar) o
  * `result.error.includes("não encontrado") ? 404 : 400` caso outra mutação
@@ -1450,12 +1436,10 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         return;
       }
       // #3602: exceção estreita ao invariante read-only, mesmo padrão do
-      // #3559 acima — CRUD do CRM de apoios. Checadas ANTES do guard
-      // genérico de método.
-      if (urlPath === "/api/apoios/contacts" && req.method === "POST") {
-        handleApiApoiosCreate(rootDir, req, res).catch((e) => sendJson(res, 500, { error: (e as Error).message }));
-        return;
-      }
+      // #3559 acima — CRUD do CRM de apoios. Checada ANTES do guard
+      // genérico de método. (#3862: a rota de criação manual,
+      // `POST /api/apoios/contacts`, foi removida junto com o form — só a
+      // edição de contato existente segue como mutação HTTP.)
       const apoiosUpdateMatch = urlPath.match(/^\/api\/apoios\/contacts\/([^/]+)$/);
       if (req.method === "PUT" && apoiosUpdateMatch) {
         handleApiApoiosUpdate(rootDir, req, res, decodeURIComponent(apoiosUpdateMatch[1])).catch((e) =>

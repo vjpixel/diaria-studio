@@ -46,8 +46,9 @@
  * mesmo `ContactWithStatus[]` já montado por `buildApoiosData`/
  * `refreshApoiosData` — nenhuma nova chamada de rede ou store separado.
  *
- * **Escopo atual** (ver PR body pro incremento anotado): CRUD básico de
- * contato (criar/editar/adicionar email/notas) + status cruzado + visão de
+ * **Escopo atual** (ver PR body pro incremento anotado): editar contato
+ * (nome/email/notas) via HTTP + criação SÓ in-process (drain de e-mail
+ * #3859 — cadastro manual saiu no #3862) + status cruzado + visão de
  * campanha + visão por grupo/nível de recompensa. Fora de escopo:
  * busca/filtro server-side (a UI filtra client-side sobre o snapshot, mesmo
  * padrão de `triagem.js`).
@@ -923,17 +924,6 @@ export type ApoiosMutationResult =
   | { ok: true; contact: ApoioContact }
   | { ok: false; error: string };
 
-export function addContact(rootDir: string, input: CreateContactInput): ApoiosMutationResult {
-  try {
-    const contacts = loadContacts(rootDir);
-    const contact = createContact(input);
-    saveContacts(rootDir, upsertContact(contacts, contact));
-    return { ok: true, contact };
-  } catch (e) {
-    return { ok: false, error: (e as Error).message };
-  }
-}
-
 export function updateContactById(rootDir: string, id: string, patch: UpdateContactPatch): ApoiosMutationResult {
   try {
     const contacts = loadContacts(rootDir);
@@ -948,32 +938,11 @@ export function updateContactById(rootDir: string, id: string, patch: UpdateCont
 }
 
 // ── parsing de corpo de request (puro, usado pelos handlers em server.ts) ─
+// #3862: `parseCreateContactBody` saiu junto com a rota POST /api/apoios/contacts
+// que a chamava (cadastro manual removido) — só o parse do PATCH de edição
+// segue em uso.
 
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
-
-export function parseCreateContactBody(raw: string): ParseResult<CreateContactInput> {
-  let body: unknown;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return { ok: false, error: "corpo da request precisa ser JSON válido" };
-  }
-  const b = body as Record<string, unknown>;
-  if (typeof b.name !== "string" || !b.name.trim()) {
-    return { ok: false, error: "campo 'name' (string não-vazia) é obrigatório" };
-  }
-  if (!Array.isArray(b.emails) || b.emails.length === 0 || !b.emails.every((e) => typeof e === "string")) {
-    return { ok: false, error: "campo 'emails' (array de strings, ao menos 1) é obrigatório" };
-  }
-  return {
-    ok: true,
-    value: {
-      name: b.name,
-      emails: b.emails as string[],
-      notes: typeof b.notes === "string" ? b.notes : undefined,
-    },
-  };
-}
 
 export function parseUpdateContactBody(raw: string): ParseResult<UpdateContactPatch> {
   let body: unknown;

@@ -10,9 +10,10 @@
 //
 // #3862 (decisão do editor 260722): o form manual "Adicionar contato" foi
 // removido — contatos passam a vir do e-mail/apoia.se (#3859), não digitados à
-// mão. O endpoint POST /api/apoios/contacts CONTINUA existindo (será o ponto de
-// entrada da importação automática, #3859 metade 1); só a UI de cadastro
-// manual saiu. `parseEmailsInput` segue em uso pelo form de EDIÇÃO.
+// mão. A rota POST /api/apoios/contacts que o form chamava também saiu do
+// server (server.ts/studio-apoios.ts) — a importação automática (#3859
+// metade 1) chama `createContact` direto, in-process, nunca via HTTP.
+// `parseEmailsInput` segue em uso pelo form de EDIÇÃO.
 //
 // #3844 (decisão do editor 260721): os recursos de follow-up/outreach
 // (tracking de contato, dialog de registro, tiles de contactados/follow-ups

@@ -1,10 +1,10 @@
 /**
  * test/studio-apoios-page.test.ts (#3602) — contrato HTTP do CRM de apoios:
  * `GET /apoios` faz rewrite pro shell estático (`public/apoios.html`),
- * `GET /api/apoios` serve o snapshot fail-soft de `studio-apoios.ts`, e as 2
- * rotas de mutação (`POST /api/apoios/contacts`, `PUT .../:id`) fazem CRUD
- * real sobre um `contacts.jsonl` de teste — nunca sobre `data/` real, sempre
- * um tmpdir isolado.
+ * `GET /api/apoios` serve o snapshot fail-soft de `studio-apoios.ts`, e
+ * `PUT /api/apoios/contacts/:id` (editar contato) faz CRUD real sobre um
+ * `contacts.jsonl` de teste — nunca sobre `data/` real, sempre um tmpdir
+ * isolado.
  *
  * As 3 env vars da apoia.se são deliberadamente limpas em `before`/restauradas
  * em `after` — garante que `GET /api/apoios` cai no caminho fail-soft
@@ -19,6 +19,11 @@
  * #3844 (decisão do editor 260721): a rota `POST /api/apoios/contacts/:id/outreach`
  * e o dialog de outreach na página foram removidos — os testes
  * correspondentes saíram junto.
+ *
+ * #3862 (decisão do editor 260722): a rota `POST /api/apoios/contacts`
+ * (cadastro manual) foi removida junto com o form — contato passa a existir
+ * só via `createContact` (Gmail/apoia.se, in-process) ou, nos testes deste
+ * arquivo, seed direto via `createContact`+`saveContacts` (sem HTTP).
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -26,7 +31,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
-import { openRateCachePath } from "../scripts/studio-ui/studio-apoios.ts";
+import { openRateCachePath, createContact, saveContacts } from "../scripts/studio-ui/studio-apoios.ts";
 
 const ENV_KEYS = ["APOIA_SE_API_KEY", "APOIA_SE_API_SECRET", "APOIA_SE_CAMPAIGN"] as const;
 
@@ -125,29 +130,23 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.ok(body.includes('id="reward-groups"'), "a seção reward-groups deve existir no shell");
   });
 
-  it("POST /api/apoios/contacts com corpo inválido -> 400", async () => {
+  it("regressão (#3862): POST /api/apoios/contacts não existe mais (rota removida, cai no guard de método genérico)", async () => {
     const res = await fetch(new URL("/api/apoios/contacts", server.url), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "", emails: [] }),
+      body: JSON.stringify({ name: "Fulano", emails: ["fulano@x.com"] }),
     });
-    assert.equal(res.status, 400);
+    // Sem match específico pra essa rota, POST cai no guard genérico
+    // read-only (405) — mesmo caminho de #3844 (outreach) acima.
+    assert.equal(res.status, 405);
   });
 
   let createdId = "";
 
-  it("POST /api/apoios/contacts cria contato -> 201 (regressão #3611: 'circle' no corpo é ignorado)", async () => {
-    const res = await fetch(new URL("/api/apoios/contacts", server.url), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "Fulano", emails: ["fulano@x.com"], circle: "lista VJs" }),
-    });
-    assert.equal(res.status, 201);
-    const body = await res.json();
-    assert.equal(body.ok, true);
-    assert.ok(body.contact.id);
-    assert.equal("circle" in body.contact, false);
-    createdId = body.contact.id;
+  it("seed: grava contato direto no jsonl (cadastro manual saiu no #3862 — contato só vem de createContact, Gmail/apoia.se ou fixture de teste)", () => {
+    const contact = createContact({ name: "Fulano", emails: ["fulano@x.com"] });
+    saveContacts(root, [contact]);
+    createdId = contact.id;
   });
 
   it("GET /api/apoios reflete o contato recém-criado sem o campo 'circle' (#3611)", async () => {
