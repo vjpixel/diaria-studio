@@ -183,6 +183,13 @@ Em vez de N chamadas individuais, agregar todos os resultados (researchers + dis
    ```
    Atualiza `data/source-health.json` + anexa linhas JSONL em `data/sources/{slug}.jsonl`. O script retorna JSON com `summary.sources_with_consecutive_failures_ge3` — usar no relatório do gate.
 
+**Capturar custo de tokens dos dispatches (#3748):** junto com o batch acima, monte um array `[{agent_type, usage_raw}]` a partir do bloco `<usage>` que cada dispatch `Agent` (source-researcher/discovery-searcher) retornou e rode:
+```bash
+npx tsx scripts/record-agent-costs.ts --edition-dir {EDITION_DIR}/ --edition {AAMMDD} \
+  --stage 1 --costs {EDITION_DIR}/_internal/tmp-agent-costs-stage1.json
+```
+Persiste breakdown por agent_type em `_internal/cost.json` — complementa o total do stage já capturado em `stage-status.json` (#3441), que não quebra por agente. Falha não-bloqueante (logar warn e seguir).
+
 Artigos de researchers com `status != ok` **não entram** na lista agregada (mas a saúde fica registrada).
 
 ### 1g-bis. Carry-over de candidatos não-selecionados (#655)
