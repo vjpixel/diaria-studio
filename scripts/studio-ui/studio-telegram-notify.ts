@@ -51,6 +51,34 @@
  * TODO(#3564-ci-watch): quando `studio-issues.ts` ganhar histórico de CI por
  * PR, adicionar um 3º ramo de polling aqui (draft criado por subagente +
  * CI vermelho há mais de N minutos) reusando o mesmo `notifyOnceKey`+dedup.
+ *
+ * ── Notificação de turno de chat concluído (#3822) ─────────────────────────
+ *
+ * Diferente dos dois casos acima ("está esperando você" — gate 4/6 ou
+ * `AskUserQuestion` pendente), este é o caso "acabei de terminar, e não
+ * preciso de nada de você agora": o editor manda uma tarefa pelo chat
+ * drawer, sai da tela, e quer saber quando terminou sem ficar checando o
+ * painel. NÃO é coberto por `runTelegramNotifyTick`/`buildStudioState`
+ * (polling) porque o turno pode terminar entre ticks e a mensagem perderia
+ * o timing de ser útil — em vez disso, `maybeNotifyChatDone` é chamada
+ * DIRETO pelo handler HTTP de `POST /api/chat` (`server.ts`, `handleApiChat`)
+ * no exato momento em que o evento `ChatDoneEvent` (`studio-chat.ts`) é
+ * emitido, no mesmo `onEvent` callback que já traduz eventos pro SSE do
+ * browser — sem loop de polling próprio.
+ *
+ * Threshold de duração (`CHAT_DONE_NOTIFY_THRESHOLD_MS`, default 30s):
+ * decisão conservadora tomada na implementação (#3822 deixou em aberto entre
+ * threshold-por-duração e flag explícito de opt-in) — um threshold evita
+ * notificar em toda troca curta ("ok", "obrigado") sem exigir que o editor
+ * lembre de ligar/desligar um flag toda vez que for sair da tela. Ajustável
+ * via `STUDIO_CHAT_DONE_NOTIFY_THRESHOLD_MS` (ms) sem precisar editar código,
+ * caso o editor ache 30s muito/pouco sensível na prática.
+ *
+ * Dedup: propositalmente NÃO tem (#3822 "fora de escopo" — múltiplas tarefas
+ * encadeadas rápidas no mesmo turno cada uma notifica separadamente se cada
+ * uma sozinha já passar do threshold). O próprio threshold já mitiga o caso
+ * degenerado de spam (trocas curtas ficam abaixo dele e nunca notificam) —
+ * revisar só se aparecer como problema real de verdade.
  */
 
 import {
@@ -58,8 +86,10 @@ import {
   createInMemoryNotifiedStore,
   type NotifiedStore,
   type SendTelegramNotificationOptions,
+  type TelegramNotifyResult,
 } from "../lib/telegram-notify.ts";
 import { buildStudioState, type StudioState } from "./studio-state.ts";
+import type { ChatDoneEvent } from "./studio-chat.ts";
 
 // Re-exportado por conveniência — `formatHaltNotifyMessage` mora em
 // `scripts/lib/telegram-notify.ts` (não é Studio-específico, ver doc-comment
@@ -258,4 +288,107 @@ export function startTelegramNotifyWatcher(
   }, opts.pollIntervalMs ?? 15_000);
 
   return { close: () => clearInterval(interval) };
+}
+
+// ─── notificação de turno de chat concluído (#3822) ────────────────────────
+
+/** Default do threshold de duração — só notifica turnos que levaram pelo
+ * menos isso (ver doc-comment do módulo pra motivação da escolha de 30s). */
+export const CHAT_DONE_NOTIFY_THRESHOLD_MS = 30_000;
+
+/** Resolve o threshold via `STUDIO_CHAT_DONE_NOTIFY_THRESHOLD_MS` (ms) —
+ * fallback pro default acima se ausente, vazio ou não-numérico/negativo
+ * (nunca lança; um valor malformado no env não deve derrubar o Studio). */
+export function resolveChatDoneNotifyThresholdMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.STUDIO_CHAT_DONE_NOTIFY_THRESHOLD_MS;
+  if (!raw) return CHAT_DONE_NOTIFY_THRESHOLD_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : CHAT_DONE_NOTIFY_THRESHOLD_MS;
+}
+
+/** Tamanho máximo do resumo (1ª linha da resposta final) antes de truncar
+ * com reticências — mensagem de Telegram cabe bem mais que isso, o teto é
+ * só pra manter a notificação como um PREVIEW, não a resposta inteira. */
+export const CHAT_DONE_SUMMARY_MAX_CHARS = 200;
+
+/** Legacy Telegram `parse_mode: "Markdown"` (usado por `sendTelegramNotification`
+ * via `buildTelegramSendMessageRequest`) trata asterisco, underscore, crase e
+ * colchete-abre como caracteres que abrem entidade — texto arbitrário gerado
+ * pelo modelo (o resumo aqui) pode conter um desses sem par correspondente,
+ * o que faz a Bot API responder 400 ("can't parse entities") e o envio
+ * falhar. Em vez de tentar escapar corretamente (o modo legado não suporta
+ * escape geral por barra invertida, só de alguns caracteres), o resumo — que
+ * é só um preview, perder ênfase/formatação nele é cosmético — remove os 4
+ * caracteres que abrem entidade nesse modo. O título/deep-link literais do
+ * template (que SÃO balanceados de propósito) não passam por este
+ * sanitizador. */
+function sanitizeForTelegramMarkdown(text: string): string {
+  return text.replace(/[*_`[\]]/g, "");
+}
+
+/** Extrai a 1ª linha não-vazia de `resultText`, sanitiza (ver acima) e
+ * trunca a `CHAT_DONE_SUMMARY_MAX_CHARS`. Pura. Retorna a mensagem genérica
+ * quando não há texto final (turno terminou só com tool calls, ou é um
+ * evento de erro sem `result` — `sdkMessageToChatEvents` só popula `result`
+ * no caminho de sucesso). */
+export function summarizeChatResult(resultText: string | null): string {
+  const GENERIC = "Tarefa concluída no chat drawer.";
+  if (!resultText) return GENERIC;
+  const firstLine = resultText.split("\n").find((line) => line.trim().length > 0);
+  if (!firstLine) return GENERIC;
+  const sanitized = sanitizeForTelegramMarkdown(firstLine.trim());
+  if (!sanitized) return GENERIC;
+  if (sanitized.length <= CHAT_DONE_SUMMARY_MAX_CHARS) return sanitized;
+  return `${sanitized.slice(0, CHAT_DONE_SUMMARY_MAX_CHARS - 1)}…`;
+}
+
+/** Mensagem + deep-link pra home (mesmo destino de `formatChatGateMessage` —
+ * o chat drawer é injetado em toda página, não há tela dedicada por turno).
+ * Título distingue turno concluído com erro (`isError`) do caminho feliz —
+ * `summarizeChatResult` já cai no genérico nesse caso porque `result` vem
+ * `null` em erro (`sdkMessageToChatEvents`), então o título é o único sinal
+ * de que algo deu errado. */
+export function formatChatDoneMessage(event: ChatDoneEvent, baseUrl: string): string {
+  const url = `${baseUrl}/`;
+  const title = event.data.isError
+    ? "*[Diar.ia Studio] Turno do chat terminou com erro*"
+    : "*[Diar.ia Studio] Tarefa concluída*";
+  const summary = summarizeChatResult(event.data.result);
+  return [title, summary, url].join("\n");
+}
+
+export interface ChatDoneNotifyOptions {
+  /** Envia a notificação — default `sendTelegramNotification`, injetável em
+   * testes (mesmo padrão de `TelegramNotifyTickOptions.notifyFn`). */
+  notifyFn?: (
+    text: string,
+    opts?: SendTelegramNotificationOptions,
+  ) => Promise<TelegramNotifyResult>;
+  baseUrl?: string;
+  /** Override do threshold — default `resolveChatDoneNotifyThresholdMs()`. */
+  thresholdMs?: number;
+}
+
+/**
+ * Decide se `event` (um `ChatDoneEvent` recém-emitido) merece notificação —
+ * só quando `durationMs` (medido pelo caller, ver `handleApiChat` em
+ * `server.ts`) atinge o threshold — e, se sim, envia via `notifyFn`.
+ * Chamada DIRETO do `onEvent` de `handleApiChat`, sem polling (ver
+ * doc-comment do módulo). Fail-soft: nunca lança (delega a
+ * `sendTelegramNotification`, que também não lança); um turno curto
+ * simplesmente retorna `{ok:false, skipped:true, reason:"below-threshold"}`
+ * sem tentar rede nenhuma.
+ */
+export async function maybeNotifyChatDone(
+  event: ChatDoneEvent,
+  durationMs: number,
+  opts: ChatDoneNotifyOptions = {},
+): Promise<TelegramNotifyResult & { reason?: string }> {
+  const thresholdMs = opts.thresholdMs ?? resolveChatDoneNotifyThresholdMs();
+  if (durationMs < thresholdMs) {
+    return { ok: false, skipped: true, reason: "below-threshold" };
+  }
+  const notifyFn = opts.notifyFn ?? sendTelegramNotification;
+  const baseUrl = opts.baseUrl ?? resolveStudioPublicBaseUrl();
+  return notifyFn(formatChatDoneMessage(event, baseUrl));
 }

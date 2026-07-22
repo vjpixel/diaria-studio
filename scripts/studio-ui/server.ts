@@ -266,7 +266,11 @@ import {
 // #3564: notificação Telegram (gate 4/6 pendente + AskUserQuestion pendente
 // no chat) com dedup — arquivo próprio desta fatia, import isolado (nenhuma
 // outra rota depende dele). Ver studio-telegram-notify.ts.
-import { startTelegramNotifyWatcher, type TelegramNotifyWatchHandle } from "./studio-telegram-notify.ts";
+import {
+  startTelegramNotifyWatcher,
+  maybeNotifyChatDone,
+  type TelegramNotifyWatchHandle,
+} from "./studio-telegram-notify.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -317,6 +321,15 @@ export interface StudioServerOptions {
    * generoso pra uma mensagem de chat digitada à mão, protege contra corpo
    * absurdo consumindo memória do processo. */
   chatMaxBodyBytes?: number;
+  /** Notificador injetável do evento `chat-done` (#3822) — default
+   * `maybeNotifyChatDone` (`studio-telegram-notify.ts`); testes mockam pra
+   * observar chamadas sem bater na rede do Telegram. */
+  chatDoneNotifyFn?: typeof maybeNotifyChatDone;
+  /** Relógio injetável usado só pra medir a duração de um turno de chat
+   * (#3822 — decide se `chatDoneNotifyFn` dispara, comparando contra o
+   * threshold) — default `Date.now`; testes injetam uma sequência fixa pra
+   * simular um turno "longo" sem esperar segundos de verdade. */
+  chatDoneNowFn?: () => number;
   /** #3565: liga o watcher de push periódico do snapshot pro KV (espelho
    * read-only externo, `workers/diaria-dashboard` rota `/studio`).
    * DESLIGADO por padrão — inclusive em testes, que criam `StudioServer` sem
@@ -569,12 +582,25 @@ function readRequestBody(req: IncomingMessage, maxBytes: number): Promise<string
  *
  * Único handler do server que escreve estado em memória — todo o resto do
  * arquivo permanece read-only (ver doc-comment do módulo).
+ *
+ * #3822: mede a duração do turno (`opts.nowFn`, default `Date.now`) desde
+ * ANTES de `runChatTurn` até o evento `chat-done` chegar no `onEvent` abaixo,
+ * e repassa pra `opts.chatDoneNotifyFn` (default `maybeNotifyChatDone`) —
+ * disparo direto no fluxo que já emite o evento (não um watcher de polling
+ * à parte, ver doc-comment de `studio-telegram-notify.ts`). Chamada
+ * fire-and-forget (`.catch` só loga) — nunca atrasa o `res.write`/`res.end`
+ * do turno em si, mesmo espírito fail-soft do resto do módulo.
  */
 async function handleApiChat(
   rootDir: string,
   req: IncomingMessage,
   res: ServerResponse,
-  opts: { queryFn?: QueryFn; maxBodyBytes: number },
+  opts: {
+    queryFn?: QueryFn;
+    maxBodyBytes: number;
+    chatDoneNotifyFn?: typeof maybeNotifyChatDone;
+    nowFn?: () => number;
+  },
 ): Promise<void> {
   let raw: string;
   try {
@@ -608,6 +634,10 @@ async function handleApiChat(
   const onClose = () => abortController.abort();
   req.on("close", onClose);
 
+  const nowFn = opts.nowFn ?? Date.now;
+  const chatDoneNotifyFn = opts.chatDoneNotifyFn ?? maybeNotifyChatDone;
+  const turnStartedAt = nowFn();
+
   await runChatTurn({
     message: parsed.value.message,
     sessionId,
@@ -621,6 +651,16 @@ async function handleApiChat(
       }
       if (wireEvent.event === "chat-done" && wireEvent.data.sessionId) {
         setSessionId(rootDir, wireEvent.data.sessionId);
+      }
+      // #3822: dispara DIRETO daqui (não de um watcher de polling à parte —
+      // ver doc-comment de `handleApiChat`/`studio-telegram-notify.ts`) —
+      // fire-and-forget, o `.catch` só loga; nunca atrasa o `res.write`
+      // abaixo nem a resolução deste turno.
+      if (wireEvent.event === "chat-done") {
+        const durationMs = nowFn() - turnStartedAt;
+        chatDoneNotifyFn(wireEvent, durationMs).catch((e) => {
+          console.warn(`[studio-chat] notificação de turno concluído falhou: ${(e as Error).message}`);
+        });
       }
       // #3803: acumula no buffer de histórico reidratável — mesmo evento já
       // traduzido pro SSE do browser, sem I/O extra nem depender do SDK.
@@ -1167,6 +1207,8 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const ghRun = opts.ghRun;
   const chatQueryFn = opts.chatQueryFn;
   const chatMaxBodyBytes = opts.chatMaxBodyBytes ?? 256_000;
+  const chatDoneNotifyFn = opts.chatDoneNotifyFn;
+  const chatDoneNowFn = opts.chatDoneNowFn;
   const waveFireQueryFn = opts.waveFireQueryFn;
   const waveFireEnabled = opts.waveFireEnabled ?? false;
   const waveFireMaxConcurrency = opts.waveFireMaxConcurrency ?? 6;
@@ -1183,7 +1225,12 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
           sendJson(res, 405, { error: "POST obrigatório em /api/chat" });
           return;
         }
-        handleApiChat(rootDir, req, res, { queryFn: chatQueryFn, maxBodyBytes: chatMaxBodyBytes }).catch((e) => {
+        handleApiChat(rootDir, req, res, {
+          queryFn: chatQueryFn,
+          maxBodyBytes: chatMaxBodyBytes,
+          chatDoneNotifyFn,
+          nowFn: chatDoneNowFn,
+        }).catch((e) => {
           // runChatTurn já é fail-soft (erros do SDK viram evento chat-error);
           // este catch cobre só falhas síncronas anteriores (ex: writeHead
           // já chamado e o socket morreu no meio) — sem headers ainda

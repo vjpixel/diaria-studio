@@ -378,6 +378,266 @@ describe("POST /api/chat (#3556) — com chatQueryFn mockado (sem SDK real)", ()
   });
 });
 
+describe("POST /api/chat (#3822) — notificação de turno concluído via chatDoneNotifyFn/chatDoneNowFn injetáveis", () => {
+  let root: string;
+  let server: StudioServer;
+  let queryFn: QueryFn;
+  let notifyCalls: Array<{ event: unknown; durationMs: number }>;
+  // `nowClock` é consumida em ordem por `chatDoneNowFn` — cada `it` empilha os
+  // timestamps que quer que `Date.now()` "retorne" nas 2 chamadas que
+  // `handleApiChat` faz (uma antes de `runChatTurn`, outra no `chat-done`),
+  // simulando um turno "longo" sem esperar segundos de verdade.
+  let nowClock: number[];
+
+  function makeFakeQuery(messages: SDKMessage[]): QueryFn {
+    return () => {
+      async function* gen() {
+        for (const m of messages) yield m;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+  }
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-server-chat-done-notify-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    queryFn = (params) => makeFakeQuery([])(params);
+    notifyCalls = [];
+    nowClock = [];
+    server = await startStudioServer({
+      port: 0,
+      rootDir: root,
+      pollIntervalMs: 30,
+      chatQueryFn: (params) => queryFn(params),
+      chatDoneNowFn: () => nowClock.shift() ?? 0,
+      chatDoneNotifyFn: async (event, durationMs) => {
+        notifyCalls.push({ event, durationMs });
+        return { ok: true };
+      },
+    });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function setQueryFn(fn: QueryFn) {
+    queryFn = fn;
+  }
+
+  it("turno cuja duração medida atinge o threshold injetado -> chatDoneNotifyFn é chamado 1x com o ChatDoneEvent + duração corretos", async () => {
+    setQueryFn(
+      makeFakeQuery([
+        { type: "result", subtype: "success", is_error: false, result: "Terminei a tarefa X.", session_id: "sess-long" } as unknown as SDKMessage,
+      ]),
+    );
+    // 1ª leitura (turnStartedAt) = 1_000; 2ª leitura (no chat-done) = 41_000
+    // -> durationMs = 40_000, bem acima de qualquer threshold plausível.
+    nowClock = [1_000, 41_000];
+
+    const res = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "corrige o título", reset: true }),
+    });
+    assert.equal(res.status, 200);
+    await res.text();
+
+    assert.equal(notifyCalls.length, 1);
+    assert.equal(notifyCalls[0].durationMs, 40_000);
+    assert.deepEqual(notifyCalls[0].event, {
+      event: "chat-done",
+      data: { sessionId: "sess-long", isError: false, result: "Terminei a tarefa X." },
+    });
+  });
+
+  it("chatDoneNotifyFn é fire-and-forget: notifyFn lento não atrasa o fechamento da resposta HTTP", async () => {
+    setQueryFn(
+      makeFakeQuery([
+        { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "sess-slow-notify" } as unknown as SDKMessage,
+      ]),
+    );
+    nowClock = [0, 40_000]; // acima do threshold — chatDoneNotifyFn É chamado
+    let notifyStarted = false;
+    let notifyFinished = false;
+    let releaseNotify: (() => void) | undefined;
+    const slowNotify = new Promise<void>((r) => {
+      releaseNotify = r;
+    });
+    const rootSlow = mkdtempSync(join(tmpdir(), "studio-server-chat-done-notify-slow-"));
+    mkdirSync(join(rootSlow, "data", "editions"), { recursive: true });
+    const slowServer = await startStudioServer({
+      port: 0,
+      rootDir: rootSlow,
+      pollIntervalMs: 30,
+      chatQueryFn: (params) => queryFn(params),
+      chatDoneNowFn: () => nowClock.shift() ?? 0,
+      chatDoneNotifyFn: async () => {
+        notifyStarted = true;
+        await slowNotify; // só resolve quando o teste chamar releaseNotify()
+        notifyFinished = true;
+        return { ok: true };
+      },
+    });
+    try {
+      const res = await fetch(new URL("/api/chat", slowServer.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "tarefa lenta pra notificar" }),
+      });
+      assert.equal(res.status, 200);
+      await res.text();
+      // a resposta HTTP já fechou (linha acima) — a notificação foi disparada
+      // (fire-and-forget) mas ainda não teve chance de terminar, porque
+      // `releaseNotify` só é chamado DEPOIS daqui.
+      assert.equal(notifyStarted, true, "notifyFn deveria ter sido chamado antes do res.text() resolver");
+      assert.equal(notifyFinished, false, "notifyFn NÃO deveria ter terminado ainda — a resposta não esperou por ele");
+      releaseNotify?.();
+      await slowNotify;
+    } finally {
+      await slowServer.close();
+      rmSync(rootSlow, { recursive: true, force: true });
+    }
+  });
+
+  it("chatDoneNotifyFn lançando não derruba o turno nem quebra a resposta HTTP (fail-soft do wrapper .catch em server.ts)", async () => {
+    const rootErr = mkdtempSync(join(tmpdir(), "studio-server-chat-done-notify-throw-"));
+    mkdirSync(join(rootErr, "data", "editions"), { recursive: true });
+    let throwingQueryFn: QueryFn = (params) => makeFakeQuery([])(params);
+    const throwingServer = await startStudioServer({
+      port: 0,
+      rootDir: rootErr,
+      pollIntervalMs: 30,
+      chatQueryFn: (params) => throwingQueryFn(params),
+      chatDoneNowFn: () => 0,
+      chatDoneNotifyFn: async () => {
+        throw new Error("Telegram Bot API indisponível");
+      },
+    });
+    try {
+      throwingQueryFn = makeFakeQuery([
+        { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "sess-throw" } as unknown as SDKMessage,
+      ]);
+      const res = await fetch(new URL("/api/chat", throwingServer.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "oi" }),
+      });
+      assert.equal(res.status, 200);
+      const body = await res.text();
+      const events = parseSseBody(body);
+      assert.equal(events[events.length - 1].event, "chat-done");
+    } finally {
+      await throwingServer.close();
+      rmSync(rootErr, { recursive: true, force: true });
+    }
+  });
+
+  it("turno 'curto' (5s): a duração medida por nowFn chega correta em chatDoneNotifyFn — decisão de threshold é responsabilidade da função injetada, não do wiring", async () => {
+    setQueryFn(
+      makeFakeQuery([
+        { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "sess-short" } as unknown as SDKMessage,
+      ]),
+    );
+    nowClock = [0, 5_000]; // 5s de duração
+    notifyCalls = [];
+    // #3822 self-review: esta suíte injeta `chatDoneNotifyFn` diretamente
+    // (bypassando o threshold real de `maybeNotifyChatDone`, que só é
+    // aplicado quando `chatDoneNotifyFn` NÃO é injetado) — então este teste
+    // sozinho não prova o threshold em produção; ver
+    // "maybeNotifyChatDone (#3822)" em studio-telegram-notify.test.ts pro
+    // teste real do threshold. Aqui confirmamos só que a duração É medida e
+    // repassada corretamente (5_000, não 0 nem NaN) — a decisão de notificar
+    // ou não fica a cargo de quem implementa `chatDoneNotifyFn` (o default
+    // de produção, `maybeNotifyChatDone`, já teve o threshold coberto à parte).
+    const res = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "oi", reset: true }),
+    });
+    await res.text();
+    assert.equal(notifyCalls.length, 1);
+    assert.equal(notifyCalls[0].durationMs, 5_000);
+  });
+});
+
+describe("POST /api/chat (#3822) — fail-soft real, sem injetar chatDoneNotifyFn/chatDoneNowFn (usa os defaults de produção)", () => {
+  let root: string;
+  let server: StudioServer;
+  let queryFn: QueryFn;
+  let originalToken: string | undefined;
+  let originalChatId: string | undefined;
+  let originalWatchdogChatId: string | undefined;
+
+  function makeFakeQuery(messages: SDKMessage[]): QueryFn {
+    return () => {
+      async function* gen() {
+        for (const m of messages) yield m;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+  }
+
+  before(async () => {
+    // Guard de publicação (CLAUDE.md/dispatch-rules): garante que este teste
+    // NUNCA dispare uma chamada de rede real ao Telegram, mesmo que a
+    // máquina que rodar a suíte tenha credenciais no ambiente — remove-as
+    // pra forçar `resolveTelegramCredentials` no caminho "sem credenciais"
+    // (skip silencioso), o mesmo caminho fail-soft que roda numa máquina sem
+    // nada configurado.
+    originalToken = process.env.TELEGRAM_BOT_TOKEN;
+    originalChatId = process.env.TELEGRAM_CHAT_ID;
+    originalWatchdogChatId = process.env.TELEGRAM_WATCHDOG_CHAT_ID;
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    delete process.env.TELEGRAM_CHAT_ID;
+    delete process.env.TELEGRAM_WATCHDOG_CHAT_ID;
+
+    root = mkdtempSync(join(tmpdir(), "studio-server-chat-done-notify-default-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    queryFn = (params) => makeFakeQuery([])(params);
+    // Nem `chatDoneNotifyFn` nem `chatDoneNowFn` são passados — este bloco
+    // exercita exatamente o wiring de produção (`maybeNotifyChatDone` real +
+    // `Date.now` real).
+    server = await startStudioServer({
+      port: 0,
+      rootDir: root,
+      pollIntervalMs: 30,
+      chatQueryFn: (params) => queryFn(params),
+    });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+    if (originalToken === undefined) delete process.env.TELEGRAM_BOT_TOKEN;
+    else process.env.TELEGRAM_BOT_TOKEN = originalToken;
+    if (originalChatId === undefined) delete process.env.TELEGRAM_CHAT_ID;
+    else process.env.TELEGRAM_CHAT_ID = originalChatId;
+    if (originalWatchdogChatId === undefined) delete process.env.TELEGRAM_WATCHDOG_CHAT_ID;
+    else process.env.TELEGRAM_WATCHDOG_CHAT_ID = originalWatchdogChatId;
+  });
+
+  it("turno completo sem credenciais Telegram no ambiente -> 200 normal, chat-done chega no stream, nada lança", async () => {
+    queryFn = makeFakeQuery([
+      { type: "system", subtype: "init", session_id: "sess-nodefault", model: "m", cwd: root } as unknown as SDKMessage,
+      { type: "result", subtype: "success", is_error: false, result: "tudo certo", session_id: "sess-nodefault" } as unknown as SDKMessage,
+    ]);
+    const res = await fetch(new URL("/api/chat", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "oi" }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    const events = parseSseBody(body);
+    assert.deepEqual(
+      events.map((e) => e.event),
+      ["chat-init", "chat-done"],
+    );
+  });
+});
+
 describe("POST /api/waves/fire (#3702) — desabilitado por padrão", () => {
   let root: string;
   let server: StudioServer;
