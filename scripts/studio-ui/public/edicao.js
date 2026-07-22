@@ -11,6 +11,7 @@
 
 import { computeStageAge } from "./edicao-stage-age.js";
 import { resolveGateChatBridge, formatWaitingSince, pickBannerGate } from "./gate-chat-bridge.js";
+import { createLogDeduper } from "./log-dedup.js";
 
 const STAGE_ORDER = [0, 1, 2, 3, 4, 5, 6];
 const STAGE_LABELS = {
@@ -34,6 +35,7 @@ const MAX_LOG_BUFFER = 500;
 const el = {
   titulo: document.getElementById("edicao-titulo"),
   stage: document.getElementById("edicao-stage"),
+  updated: document.getElementById("statusbar-updated"),
   connDot: document.getElementById("conn-dot"),
   connLabel: document.getElementById("conn-label"),
   notFound: document.getElementById("edicao-not-found"),
@@ -94,6 +96,19 @@ function setConn(status) {
   el.connLabel.textContent = status === "ok" ? "conectado" : status === "down" ? "desconectado" : "conectando…";
 }
 
+// #3891 (item 8): "Atualizado HH:MM" no header do cockpit — cronometra o
+// último `renderAll()` bem-sucedido (chamado no load inicial e a cada
+// `scheduleRefetch()`, mesma lacuna apontada pela auditoria #3866/R1 já
+// resolvida em app.js/index).
+function markUpdatedNow() {
+  if (!el.updated) return;
+  el.updated.textContent = new Date().toLocaleTimeString("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 const aammdd = getAammddFromPath();
 let expandedStage = null;
 // Buffer só dos eventos de run-log que pertencem a ESTA edição — o SSE
@@ -106,8 +121,13 @@ let logBuffer = [];
 // carrega essa informação — ver doc-comment de gate-chat-bridge.js).
 let chatPermissionsPending = [];
 
+// #3891 (item 6): mesmo problema/fix de app.js (ver doc-comment de
+// log-dedup.js) — o reconnect do SSE reenvia a TAIL inteira via `log-init`,
+// duplicando linhas já vistas no "Log desta edição" sem isto.
+const logDeduper = createLogDeduper(MAX_LOG_BUFFER);
+
 function pushLogEvents(events) {
-  const mine = events.filter((e) => e && e.edition === aammdd);
+  const mine = events.filter((e) => e && e.edition === aammdd && logDeduper.isNew(e));
   if (mine.length === 0) return false;
   logBuffer.push(...mine);
   if (logBuffer.length > MAX_LOG_BUFFER) logBuffer = logBuffer.slice(-MAX_LOG_BUFFER);
@@ -411,6 +431,7 @@ function renderAll(detail) {
   renderGateBanner(detail);
   renderAlerts();
   renderLogList();
+  markUpdatedNow();
 }
 
 let refetchTimer = null;

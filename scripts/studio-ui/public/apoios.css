@@ -62,7 +62,6 @@
 }
 .contact-form button[type="submit"],
 #refresh-btn,
-#refresh-status-btn,
 .dialog-actions button {
   font: inherit;
   padding: 0.4rem 0.9rem;
@@ -74,26 +73,49 @@
 }
 .contact-form button[type="submit"]:hover,
 #refresh-btn:hover,
-#refresh-status-btn:hover,
 .dialog-actions button[type="submit"]:hover {
   background: var(--brand);
   color: var(--on-ink);
   border-color: var(--brand);
+}
+
+/* #3891: "Atualizar status" (POST, consome cota apoia.se 5k/mês) tinha o
+   MESMO peso visual do "Atualizar" (GET, sem custo) lado a lado — a única
+   distinção era o `title=` (invisível em touch, mesma lacuna do R7 de
+   docs/studio-ui-ux-guidelines.md). Estilo outline (fricção proporcional,
+   R6): nunca preenchido por padrão, só no hover — e a nota inline ao lado
+   (`.quota-note` em apoios.html) reforça por que os 2 botões não são
+   equivalentes. */
+#refresh-status-btn {
+  font: inherit;
+  padding: 0.4rem 0.9rem;
+  border: 1px dashed var(--status-warn);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--status-warn);
+  cursor: pointer;
+}
+#refresh-status-btn:hover {
+  background: var(--status-warn);
+  color: var(--status-warn-ink);
+  border-style: solid;
 }
 #refresh-status-btn:disabled {
   cursor: wait;
   opacity: 0.6;
 }
 
-.panel-header-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 0.75rem;
+.quota-note {
+  font-size: 0.72rem;
+  opacity: 0.7;
+  flex-basis: 100%;
 }
-.panel-header-row h2 { margin: 0; }
-.panel-header-row .filter-field { flex-direction: row; align-items: center; gap: 0.4rem; }
+
+/* #3891: `.panel-header-row` foi movida pra triagem.css (compartilhado de
+   fato entre apoios.html/integracoes.html/triagem.html) — bug de CSS órfão
+   descoberto na auditoria #3866: integracoes.html usava a classe achando que
+   vinha de triagem.css (comentário de integracoes.css já dizia isso), mas a
+   regra só existia aqui, num arquivo que integracoes.html nunca linka. */
 
 .contacts-list {
   display: flex;
@@ -185,7 +207,8 @@
 
 @media (max-width: 640px) {
   .contact-form { flex-direction: column; align-items: stretch; }
-  .panel-header-row { flex-direction: column; align-items: stretch; }
+  /* .panel-header-row empilha via triagem.css (#3891 — mesma regra @media
+     compartilhada, ver comentário lá). */
 
   /* #3874: alvos de toque ≥44px (WCAG 2.5.5/HIG), só no breakpoint mobile —
      mesmo padrão do chat-drawer.css/triagem.css. */

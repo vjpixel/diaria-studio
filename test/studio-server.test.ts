@@ -100,6 +100,24 @@ describe("studio-server (#3555)", () => {
     assert.ok(body.includes('id="editions-empty"'), "tabela de edições recentes precisa de contêiner de estado vazio (R4)");
   });
 
+  it("#3891 (item 8): GET / expõe 'Atualizado HH:MM' no statusbar, e app.js cronometra o último render bem-sucedido", async () => {
+    const html = await (await fetch(new URL("/", server.url))).text();
+    assert.ok(html.includes('id="statusbar-updated" aria-live="polite"'), "faltava o elemento de staleness no header do index");
+
+    const js = await (await fetch(new URL("/app.js", server.url))).text();
+    assert.ok(js.includes("statusbar-updated"), "app.js precisa mapear o elemento");
+    assert.ok(js.includes("markUpdatedNow"), "precisa existir a função que cronometra o último render");
+  });
+
+  it("#3891 (item 6): app.js importa log-dedup.js e guarda appendLogRow atrás do dedup (reconnect do SSE reenvia a tail inteira via log-init)", async () => {
+    const js = await (await fetch(new URL("/app.js", server.url))).text();
+    assert.ok(js.includes('from "./log-dedup.js"'), "app.js precisa importar o deduplicador");
+    assert.ok(js.includes("logDeduper.isNew"), "appendLogRow precisa checar o dedup antes de tocar o DOM");
+
+    const dedupJs = await fetch(new URL("/log-dedup.js", server.url));
+    assert.equal(dedupJs.status, 200, "log-dedup.js precisa ser servível como asset estático");
+  });
+
   it("(#3874) GET /tokens.generated.css inclui os 4 tokens semânticos de status", async () => {
     const res = await fetch(new URL("/tokens.generated.css", server.url));
     assert.equal(res.status, 200);
@@ -151,6 +169,19 @@ describe("studio-server (#3555)", () => {
     const res = await fetch(new URL("/relatorios", server.url));
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") ?? "", /text\/html/);
+  });
+
+  it("#3891 regressão (item 2): Relatórios ganha o filtro client-side por tipo que faltava (única das 5 telas sem — taxonomia KIND_LABEL já existia)", async () => {
+    const html = await (await fetch(new URL("/relatorios", server.url))).text();
+    assert.ok(html.includes('id="filter-kind"'), "select de filtro precisa existir no shell");
+    assert.ok(html.includes('id="reports-count"'));
+    // reusa .panel-header-row/.filter-field de triagem.css (já linkado) —
+    // mesmo padrão das outras 4 telas de manutenção.
+    assert.ok(html.includes('class="panel-header-row"'));
+
+    const js = await (await fetch(new URL("/relatorios.js", server.url))).text();
+    assert.ok(js.includes("filterKind"), "wiring do select precisa existir em relatorios.js");
+    assert.ok(js.includes("0 resultados para este filtro"), "distinção 'sem resultado do filtro' vs 'vazio de verdade' (R4)");
   });
 
   it("GET / serve a SPA (index.html)", async () => {

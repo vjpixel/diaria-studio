@@ -31,6 +31,20 @@
       </p>
 
       <div id="reports-error" class="panel alert-banner" role="alert" hidden></div>
+
+      <div class="panel-header-row">
+        <h2>Registrados (<span id="reports-count">0</span>)</h2>
+        <label class="filter-field">
+          <span class="label">Tipo</span>
+          <select id="filter-kind">
+            <option value="">Todos</option>
+            <option value="edicao">Edição</option>
+            <option value="overnight">Overnight</option>
+            <option value="develop">Develop</option>
+            <option value="mensal">Mensal</option>
+          </select>
+        </label>
+      </div>
       <div id="reports-empty" class="hint" hidden>Nenhum relatório registrado ainda.</div>
 
       <div class="table-scroll">

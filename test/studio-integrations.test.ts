@@ -679,6 +679,29 @@ describe("GET /integracoes + GET /api/integrations (#3848)", () => {
     assert.match(css.headers.get("content-type") ?? "", /css/);
   });
 
+  it("#3891 regressão (item 1): .panel-header-row existe em triagem.css — o CSS que integracoes.html DE FATO linka (bug de CSS órfão: a regra vivia só em apoios.css, nunca linkado por integracoes.html)", async () => {
+    const html = await (await fetch(new URL("/integracoes", server.url))).text();
+    // integracoes.html linka triagem.css mas NUNCA apoios.css.
+    assert.ok(html.includes('href="/triagem.css"'));
+    assert.ok(!html.includes('href="/apoios.css"'));
+
+    const triagemCss = await (await fetch(new URL("/triagem.css", server.url))).text();
+    assert.match(triagemCss, /\.panel-header-row\s*\{/);
+    // regra de empilhamento mobile também precisa estar no arquivo linkado —
+    // sem isso o header título+filtro+botão não empilha em telas estreitas.
+    assert.match(triagemCss, /@media[^}]*\{[\s\S]*\.panel-header-row\s*\{\s*flex-direction:\s*column/);
+  });
+
+  it("#3891 regressão (item 9): badges not_verified/skipped têm subtexto explicativo distinto (não só a cor, quase idêntica entre os 2 estados)", async () => {
+    const js = await (await fetch(new URL("/integracoes.js", server.url))).text();
+    assert.ok(js.includes("REACHABLE_SUBTEXT"), "precisa mapear os 2 estados pra um texto explicativo");
+    assert.ok(js.includes("not_verified"));
+    assert.ok(js.includes("skipped"));
+
+    const css = await (await fetch(new URL("/integracoes.css", server.url))).text();
+    assert.match(css, /\.reachable-subtext\s*\{/);
+  });
+
   it("GET /api/integrations — 200 fail-soft, sem credenciais tudo skipped/not_verified", async () => {
     const res = await fetch(new URL("/api/integrations", server.url));
     assert.equal(res.status, 200);

@@ -70,8 +70,13 @@
           </select>
         </label>
         <button id="refresh-btn" type="button">Atualizar</button>
-        <button id="refresh-status-btn" type="button" title="Re-checa na apoia.se quem ainda não está confirmado como apoiando este mês (#3859)">Atualizar status</button>
+        <button id="refresh-status-btn" type="button" title="Re-checa na apoia.se quem ainda não está confirmado como apoiando este mês (#3859) — consome cota apoia.se (5.000 req/mês)">Atualizar status</button>
         <span id="last-updated" class="hint"></span>
+        <!-- #3891: nota visível (não só title=, invisível em touch) — o botão
+             acima tem peso visual distinto (outline) porque, ao contrário de
+             "Atualizar" (GET, sem custo), ele consome a cota mensal apertada
+             da apoia.se. -->
+        <span class="quota-note">"Atualizar status" bate na API apoia.se (cota 5.000 req/mês) — use com moderação.</span>
       </div>
       <div id="contacts-empty" class="hint" hidden>Nenhum contato ainda.</div>
       <div id="contacts-list" class="contacts-list"></div>

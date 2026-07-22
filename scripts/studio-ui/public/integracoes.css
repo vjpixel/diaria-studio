@@ -39,6 +39,18 @@
 .state-not_verified { background: var(--paper-alt); opacity: 0.75; }
 .state-skipped { background: var(--paper-alt); opacity: 0.55; }
 
+/* #3891: 1 linha de texto abaixo do badge de "Alcançável?" quando o estado é
+   `not_verified`/`skipped` — os 2 badges são quase idênticos visualmente
+   (mesma cor, opacidade próxima) mas têm origem diferente no backend (probe
+   não implementado vs credencial ausente); ver `reachableCell` em
+   integracoes.js. */
+.reachable-subtext {
+  font-size: 0.7rem;
+  opacity: 0.75;
+  margin-top: 0.15rem;
+  max-width: 14rem;
+}
+
 .integrations-note {
   font-size: 0.78rem;
   opacity: 0.85;

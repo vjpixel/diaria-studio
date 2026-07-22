@@ -78,6 +78,25 @@ function stateBadge(state, labelMap) {
   return `<span class="state-badge state-${escapeHtml(state)}">${escapeHtml(label)}</span>`;
 }
 
+// #3891: `not_verified` ("probe não implementado nesta fatia") e `skipped`
+// ("probe existe mas não tentado — falta credencial") são estados de origem
+// bem diferente no backend (ver doc-comment de `ReachableState` em
+// studio-integrations.ts), mas os badges ficavam visualmente quase idênticos
+// (mesma cor cinza, só a opacidade mudava) e o rótulo curto do badge não
+// deixa a distinção óbvia. 1 linha de texto abaixo do badge resolve sem
+// precisar de tooltip (que não existe em touch).
+const REACHABLE_SUBTEXT = {
+  not_verified: "sem probe implementado — ver nota",
+  skipped: "credencial ausente, probe não tentado",
+};
+
+function reachableCell(reachable) {
+  const badge = stateBadge(reachable, REACHABLE_LABEL);
+  const subtext = REACHABLE_SUBTEXT[reachable];
+  if (!subtext) return badge;
+  return `${badge}<div class="reachable-subtext">${escapeHtml(subtext)}</div>`;
+}
+
 function noteCell(integration) {
   const parts = [];
   if (integration.note) parts.push(escapeHtml(integration.note));
@@ -109,7 +128,7 @@ function renderIntegrations() {
       <td>${escapeHtml(integration.name)}</td>
       <td>${kindBadge(integration.kind)}</td>
       <td>${stateBadge(integration.configured, CONFIGURED_LABEL)}</td>
-      <td>${stateBadge(integration.reachable, REACHABLE_LABEL)}</td>
+      <td>${reachableCell(integration.reachable)}</td>
       <td class="mono">${escapeHtml(fmtTime(integration.checkedAt))}</td>
       <td>${noteCell(integration)}</td>
     `;
