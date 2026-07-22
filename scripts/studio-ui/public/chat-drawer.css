@@ -1,10 +1,15 @@
-/* chat-drawer.css (#3556; redesenhado no #3617) — painel FIXO à ESQUERDA,
+/* chat-drawer.css (#3556; redesenhado no #3617; overlay mobile no #3851) —
+   painel FIXO à ESQUERDA (push, empurra o conteúdo via margin-left),
    presente em TODA página do studio (index/edicao/triagem/apoios/revisao),
    sem toggle open/close que esconda o acesso a um gate pendente (só
-   collapse/expand de LARGURA — ver .chat-drawer.collapsed abaixo). Usa os
-   tokens de /tokens.generated.css (mesma convenção de style.css/#3555).
-   Injetado via chat-drawer.js — CSS próprio pra não inchar style.css com
-   algo que só o drawer usa. */
+   collapse/expand de LARGURA — ver .chat-drawer.collapsed abaixo). Isso vale
+   SÓ acima do breakpoint mobile (720px) — abaixo dele o modelo muda pra
+   overlay em tela cheia (ver o `@media (max-width: 720px)` no fim do
+   arquivo): fechado é um FAB flutuante, aberto cobre a tela inteira por
+   cima do conteúdo, nunca divide a largura. Usa os tokens de
+   /tokens.generated.css (mesma convenção de style.css/#3555). Injetado via
+   chat-drawer.js — CSS próprio pra não inchar style.css com algo que só o
+   drawer usa. */
 
 :root {
   --chat-drawer-width: 360px;
@@ -113,6 +118,28 @@ body.chat-drawer-present.chat-drawer-collapsed {
   white-space: nowrap;
 }
 #chat-reset:hover { background: rgba(255, 255, 255, 0.12); }
+
+/* #3851: botão de "fechar explícito" do overlay mobile — só existe
+   (visualmente) abaixo do breakpoint de 720px e só quando o painel está
+   ABERTO (ver override dentro do media query no fim do arquivo). Fora do
+   mobile fica sempre invisível: o desktop não tem overlay pra fechar, o
+   painel é sempre presente por design (#3617). Reusa o mesmo
+   `setCollapsed(true)` do toggle de expandir/recolher (chat-drawer.js) —
+   não é uma ação nova, só um alvo com rótulo inequívoco de "fechar" pro
+   estado tela-cheia. */
+.chat-mobile-close {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  background: transparent;
+  border: 1px solid var(--on-ink);
+  color: var(--on-ink);
+  border-radius: 4px;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
 
 .chat-messages {
   flex: 1;
@@ -348,10 +375,95 @@ body.chat-drawer-present.chat-drawer-collapsed {
   border-top: 1px dotted var(--rule);
 }
 
-/* Telas estreitas: painel expandido ocuparia demais — encolhe a largura
-   base (ainda colapsável do mesmo jeito) em vez de sobrepor o conteúdo. */
+/* #3851: mobile deixa de ser "encolhe a largura do push" (o antigo
+   `--chat-drawer-width: 78vw` espremia o conteúdo atrás pra ~22vw quando
+   aberto — inútil na prática) e vira o modelo certo pra tela pequena: chat e
+   conteúdo são ALTERNATIVAS em tela cheia, nunca lado-a-lado. Fechado = FAB
+   flutuante (não come layout nenhum); aberto = overlay 100% da tela POR
+   CIMA do conteúdo (que nunca mais tem margem reservada). Breakpoint
+   reaproveitado (720px, já existia) — decisão conservadora, não introduz um
+   segundo breakpoint novo neste componente. Desktop (acima de 720px) não é
+   tocado por nenhuma regra deste bloco. */
 @media (max-width: 720px) {
-  :root {
-    --chat-drawer-width: 78vw;
+  /* Problema 1/2 (#3851): NUNCA reserva espaço pro chat no mobile, aberto
+     ou fechado — a largura toda do conteúdo continua disponível o tempo
+     todo; o chat aberto sobrepõe por cima (overlay), não divide. */
+  body.chat-drawer-present,
+  body.chat-drawer-present.chat-drawer-collapsed {
+    margin-left: 0;
+  }
+
+  .chat-drawer {
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: auto;
+    width: 100%;
+    /* Problema 4 (#3851): cascade de fallback progressivo — cada declaração
+       inválida numa engine mais antiga é descartada SEM afetar a anterior
+       (nenhum @supports necessário): 100vh (universal) é a base; 100dvh
+       melhora o caso da barra de endereço dinâmica; var(--chat-viewport-height, …)
+       é escrita por `syncViewportHeight()` (chat-drawer.js, via
+       `window.visualViewport`) e cobre o teclado virtual em engines onde
+       nem dvh reflete o teclado — fica pelo valor calculado real do
+       viewport visível. Sem `visualViewport` no browser, a var nunca é
+       setada e o `var(..., 100dvh)` cai no próprio fallback declarado. */
+    height: 100vh;
+    height: 100dvh;
+    height: var(--chat-viewport-height, 100dvh);
+    border-right: none;
+    /* a sombra de "painel colado na borda esquerda" do desktop não faz
+       sentido numa tela cheia — o FAB colapsado (abaixo) tem a própria. */
+    box-shadow: none;
+  }
+
+  /* Problema 1/2/3 (#3851): colapsado deixa de ser um trilho de 44px preso
+     à borda esquerda (sempre ocupando espaço, mesmo fechado) e vira um FAB
+     circular flutuante num canto — o resto da tela é 100% do conteúdo. */
+  .chat-drawer.collapsed {
+    top: auto;
+    left: auto;
+    right: 1rem;
+    bottom: 1rem;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  }
+  .chat-drawer.collapsed .chat-drawer-header {
+    height: 100%;
+    padding: 0;
+    border-bottom: none;
+    justify-content: center;
+  }
+  .chat-drawer.collapsed .chat-expand-toggle {
+    flex: none;
+    justify-content: center;
+    padding: 0;
+  }
+
+  /* Problema 5 (#3851): alvos de toque ≥44px — o header/rodapé/opções do
+     drawer eram dimensionados pra mouse (padding pequeno, bem abaixo de
+     44px de altura clicável). O FAB colapsado já nasce 56×56 (acima); os
+     elementos abaixo cobrem o estado ABERTO. */
+  .chat-drawer:not(.collapsed) .chat-drawer-header,
+  .chat-drawer:not(.collapsed) .chat-expand-toggle,
+  #chat-reset,
+  .chat-mobile-close,
+  #chat-send,
+  .chat-permission-option,
+  .chat-permission-submit,
+  .chat-permission-other,
+  .chat-tool-permission-btn {
+    min-height: 44px;
+  }
+
+  /* "Fechar explícito" (#3851, direção proposta) — só aparece quando o
+     painel está expandido (tela cheia); some de novo junto com o resto do
+     header assim que colapsa pro FAB (`.chat-drawer.collapsed` já esconde
+     título/reset — ver regras no topo do arquivo). */
+  .chat-drawer:not(.collapsed) .chat-mobile-close {
+    display: inline-flex;
+    min-width: 44px;
   }
 }
