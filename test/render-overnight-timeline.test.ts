@@ -603,6 +603,100 @@ describe("durationMs armazenado na TimelineRow (#2102 — item 3)", () => {
   });
 });
 
+// #3889: `ultimoEventoISO` — ISO do timestamp `timeline.*` mais recente da
+// unidade, usado pelo Studio (rodada.js) pra calcular "idade desde o último
+// evento" de uma unidade "em andamento" (via `computeStageAge`, mesmo módulo
+// de #3871). Precisa ser o MAIS RECENTE entre TODOS os campos presentes —
+// não só `dispatch` — senão uma unidade que já avançou (pr_opened,
+// fix_iteration_N) além do dispatch original apareceria com idade
+// superestimada (falso alarme de stall).
+describe("buildTimelineRows — ultimoEventoISO (#3889)", () => {
+  it("unidade em andamento com só dispatch: ultimoEventoISO = dispatch", () => {
+    const plan = makePlan([
+      {
+        number: 20001,
+        batch: null,
+        timeline: { dispatch: "2026-07-22T10:00:00.000Z" },
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].fim, "em andamento");
+    assert.equal(rows[0].ultimoEventoISO, "2026-07-22T10:00:00.000Z");
+  });
+
+  it("unidade em andamento com dispatch + pr_opened + fix_iteration_1: ultimoEventoISO é o MAIS RECENTE (fix_iteration_1), não dispatch", () => {
+    const plan = makePlan([
+      {
+        number: 20002,
+        batch: null,
+        timeline: {
+          dispatch: "2026-07-22T09:00:00.000Z",
+          pr_opened: "2026-07-22T09:15:00.000Z",
+          fix_iteration_1: "2026-07-22T09:55:00.000Z",
+          // sem ci_green/merged — ainda "em andamento"
+        },
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].fim, "em andamento");
+    assert.equal(
+      rows[0].ultimoEventoISO,
+      "2026-07-22T09:55:00.000Z",
+      "deve usar fix_iteration_1 (mais recente), não dispatch",
+    );
+  });
+
+  it("unidade mergeada: ultimoEventoISO = merged (mais recente entre os campos)", () => {
+    const plan = makePlan([
+      {
+        number: 20003,
+        batch: null,
+        timeline: {
+          dispatch: "2026-07-22T08:00:00.000Z",
+          merged: "2026-07-22T08:30:00.000Z",
+        },
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].ultimoEventoISO, "2026-07-22T08:30:00.000Z");
+  });
+
+  it("sem timeline: ultimoEventoISO é null", () => {
+    const plan = makePlan([{ number: 20004, batch: null }]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].ultimoEventoISO, null);
+  });
+
+  it("timeline: {} (vazio, sem nenhum timestamp): ultimoEventoISO é null", () => {
+    const plan = makePlan([{ number: 20005, batch: null, timeline: {} }]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows[0].ultimoEventoISO, null);
+  });
+
+  it("lote: usa o ultimoEventoISO do timeline REPRESENTANTE (1ª issue com dispatch), mesmo critério de inicio/fim", () => {
+    const plan = makePlan([
+      {
+        number: 20006,
+        batch: "lote-w",
+        timeline: {
+          dispatch: "2026-07-22T07:00:00.000Z",
+          fix_iteration_1: "2026-07-22T07:40:00.000Z",
+        },
+      },
+      {
+        number: 20007,
+        batch: "lote-w",
+        timeline: {
+          dispatch: "2026-07-22T07:00:00.000Z",
+        },
+      },
+    ]);
+    const rows = buildTimelineRows(plan);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].ultimoEventoISO, "2026-07-22T07:40:00.000Z");
+  });
+});
+
 describe("countFixIterations dinâmico N (#2102 — item 4)", () => {
   it("fix_iteration_3 e _4 são contadas (não ignoradas)", () => {
     const plan = makePlan([

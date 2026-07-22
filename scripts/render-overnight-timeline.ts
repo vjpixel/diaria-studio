@@ -115,6 +115,27 @@ function getEnd(tl: IssueTimeline | undefined): string | undefined {
 }
 
 /**
+ * Retorna o ISO do timestamp MAIS RECENTE dentre TODOS os campos
+ * `timeline.*` presentes (dispatch, pr_opened, fix_iteration_N, ci_green,
+ * merged, draft, pulada) — não só `dispatch` (#3889). Uma unidade "em
+ * andamento" pode ter avançado por `pr_opened`/`fix_iteration_N` bem depois
+ * do dispatch original; usar só `dispatch` pra "idade desde o último evento"
+ * superestimaria staleness (ex: dispatch há 40min mas fix_iteration_1 há
+ * 5min — a unidade está viva, não travada). Ignora valores que não parseiam
+ * como data válida. `null` quando `tl` é undefined/vazio.
+ */
+function getLastEventISO(tl: IssueTimeline | undefined): string | null {
+  if (!tl) return null;
+  let latest: Date | null = null;
+  for (const v of Object.values(tl)) {
+    if (typeof v !== "string") continue;
+    const d = parseISO(v);
+    if (d && (!latest || d > latest)) latest = d;
+  }
+  return latest ? latest.toISOString() : null;
+}
+
+/**
  * Label de fim: "mergeado", "draft", "pulada", "concluída (fora do timeline)"
  * ou "em andamento".
  *
@@ -156,6 +177,12 @@ export interface TimelineRow {
   durationMs: number | null;
   fixIteracoes: number;
   endLabel: string;
+  /** ISO do timestamp `timeline.*` mais recente da unidade (dispatch |
+   *  pr_opened | fix_iteration_N | ci_green | merged | draft | pulada) — `null`
+   *  quando não há nenhum. Usado pelo Studio (`rodada.js`, #3889) pra computar
+   *  "idade desde o último evento" de uma unidade ainda "em andamento", via
+   *  `computeStageAge` (mesmo módulo puro do cockpit, #3871). */
+  ultimoEventoISO: string | null;
 }
 
 /**
@@ -208,6 +235,7 @@ export function buildTimelineRows(plan: Plan): TimelineRow[] {
       durationMs,
       fixIteracoes,
       endLabel,
+      ultimoEventoISO: getLastEventISO(tl),
     };
   }
 

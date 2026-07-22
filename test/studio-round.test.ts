@@ -8,7 +8,7 @@
  */
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildRoundPayload } from "../scripts/studio-ui/studio-round.ts";
@@ -139,6 +139,59 @@ describe("buildRoundPayload (#3561)", () => {
     const developPayload = buildRoundPayload(r, "develop");
     assert.equal(overnightPayload.found, true);
     assert.equal(developPayload.found, false);
+  });
+
+  // #3889: `updatedAt` (mtime real do plan.json) — corrige o falso-frescor do
+  // rótulo "atualizado" em rodada.js, que antes usava `new Date()` do CLIENTE
+  // (avançava a cada fetch, mesmo com plan.json parado). O servidor agora
+  // reporta quando o ARQUIVO de fato mudou pela última vez.
+  describe("updatedAt (#3889)", () => {
+    it("reflete o mtime real do plan.json no disco, não o momento da chamada", () => {
+      const r = makeRoot();
+      const dir = join(r, "data", "overnight", "260722");
+      mkdirSync(dir, { recursive: true });
+      const planPath = join(dir, "plan.json");
+      writeFileSync(planPath, JSON.stringify({ issues: [] }));
+
+      // Fixa o mtime num valor conhecido, no passado — bem diferente de "agora".
+      const fixedMtime = new Date("2026-07-22T09:00:00.000Z");
+      utimesSync(planPath, fixedMtime, fixedMtime);
+
+      const before = Date.now();
+      const payload = buildRoundPayload(r, "overnight");
+      assert.equal(payload.updatedAt, fixedMtime.toISOString());
+      // Não deve ser "agora" (o bug original: hora do fetch, não do arquivo).
+      assert.notEqual(payload.updatedAt, new Date(before).toISOString());
+    });
+
+    it("duas chamadas seguidas sem o arquivo mudar retornam o MESMO updatedAt (rótulo não avança sozinho)", () => {
+      const r = makeRoot();
+      const dir = join(r, "data", "overnight", "260722");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "plan.json"), JSON.stringify({ issues: [] }));
+
+      const first = buildRoundPayload(r, "overnight");
+      const second = buildRoundPayload(r, "overnight");
+      assert.equal(first.updatedAt, second.updatedAt);
+    });
+
+    it("nenhuma sessão encontrada -> updatedAt null", () => {
+      const r = makeRoot();
+      const payload = buildRoundPayload(r, "overnight");
+      assert.equal(payload.updatedAt, null);
+    });
+
+    it("updatedAt corresponde ao statSync().mtimeMs do plan.json (sanity check contra o filesystem real)", () => {
+      const r = makeRoot();
+      const dir = join(r, "data", "overnight", "260722");
+      mkdirSync(dir, { recursive: true });
+      const planPath = join(dir, "plan.json");
+      writeFileSync(planPath, JSON.stringify({ issues: [] }));
+
+      const payload = buildRoundPayload(r, "overnight");
+      const expected = new Date(statSync(planPath).mtimeMs).toISOString();
+      assert.equal(payload.updatedAt, expected);
+    });
   });
 
   it("resposta nunca inclui valor de secret (invariante do plan.json, #3561/#573)", () => {
