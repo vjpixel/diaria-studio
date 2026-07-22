@@ -58,7 +58,7 @@
   "boxes_divulgacao": {
     "slot1": "recomendacao-leitura.md",
     "slot2": "livros-divulgacao.md",
-    "slot3": "indicacao-ferramenta.md"
+    "slot3": "apoio-divulgacao.md"
   },
   "drive_sync": false,
   "logging": {
