@@ -35,7 +35,7 @@
  *   npx tsx scripts/clarice-cta-ab-setup.ts --apply --envio 8
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { brevoGet, brevoPost, brevoPut, brevoListAllLists } from "./lib/brevo-client.ts";
@@ -147,6 +147,54 @@ export function splitAlternate(emails: string[], qaEmail: string): { a: string[]
   return { a, b };
 }
 
+/**
+ * A e B devem ser disjuntos exceto pela cópia QA — senão um contato receberia
+ * os DOIS braços do teste (recebe A e B). Lança ao achar qualquer sobreposição
+ * fora do QA. Usado tanto no split computado quanto na verificação da membresia
+ * REAL das listas na Brevo (#3890 review).
+ */
+export function assertDisjointSplit(a: string[], b: string[], qaEmail: string): void {
+  const bSet = new Set(b);
+  const overlap = a.filter((e) => e !== qaEmail && bSet.has(e));
+  if (overlap.length > 0) {
+    throw new Error(
+      `Split A∩B não-disjunto: ${overlap.length} contato(s) nas DUAS listas ` +
+        `(ex: ${overlap.slice(0, 3).join(", ")}) — abortando pra não enviar A+B ao mesmo contato.`,
+    );
+  }
+}
+
+/** Caminho do split persistido do envio (ao lado das variantes HTML, em data/). */
+export function splitFilePath(outDir: string, envio: number): string {
+  return resolve(outDir, `envio${envio}-split.json`);
+}
+
+/**
+ * Split idempotente entre re-runs (#3890 review): na 1ª execução `--apply`
+ * computa `splitAlternate` e PERSISTE `{a,b}` em disco; em re-runs REUSA o
+ * arquivo em vez de re-derivar da ordem de paginação da Brevo — que pode mudar
+ * entre runs e, como `importEmails` só ADICIONA (nunca remove), jogaria um
+ * contato nas duas listas. Valida disjunção nos dois caminhos.
+ */
+export function loadOrCreateSplit(
+  outDir: string,
+  envio: number,
+  emails: string[],
+  qaEmail: string,
+): { a: string[]; b: string[]; reused: boolean } {
+  const path = splitFilePath(outDir, envio);
+  if (existsSync(path)) {
+    const saved = JSON.parse(readFileSync(path, "utf8")) as { a: string[]; b: string[] };
+    assertDisjointSplit(saved.a, saved.b, qaEmail);
+    return { a: saved.a, b: saved.b, reused: true };
+  }
+  const { a, b } = splitAlternate(emails, qaEmail);
+  assertDisjointSplit(a, b, qaEmail);
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(path, JSON.stringify({ a, b }, null, 2), "utf8");
+  return { a, b, reused: false };
+}
+
 // ---------------------------------------------------------------------------
 
 const API_KEY = process.env.BREVO_CLARICE_API_KEY;
@@ -228,6 +276,26 @@ async function setStatus(campaignId: number, status: string): Promise<void> {
   await brevoPut(API_KEY!, `/emailCampaigns/${campaignId}/status`, { status });
 }
 
+/**
+ * GET-verify da disjunção REAL das listas na Brevo (não só do split computado):
+ * relê a membresia de A e B e garante A∩B = {QA}. Fail-safe rodado ANTES de
+ * suspender/re-agendar as campanhas — pega contaminação de re-run mesmo se a
+ * ordem de paginação tiver mudado ou se um run anterior já tiver populado as
+ * listas de forma diferente (#3890 review).
+ */
+async function assertListsDisjointOnBrevo(
+  listA: number,
+  listB: number,
+  expectedA: number,
+  expectedB: number,
+  qaEmail: string,
+): Promise<void> {
+  const membersA = await fetchListEmails(listA, expectedA);
+  const membersB = await fetchListEmails(listB, expectedB);
+  assertDisjointSplit(membersA, membersB, qaEmail);
+  console.error(`  ✓ disjunção verificada na Brevo: #${listA}/#${listB}, A∩B = {QA}`);
+}
+
 async function processEnvio(cfg: EnvioCfg, apply: boolean, outDir: string): Promise<void> {
   console.error(`\n=== Envio ${cfg.envio} (campanha #${cfg.campaignId}, lista #${cfg.srcListId}, ${cfg.day}) ===`);
 
@@ -258,12 +326,17 @@ async function processEnvio(cfg: EnvioCfg, apply: boolean, outDir: string): Prom
 
   // 3. Split + listas novas + import (não-destrutivo; lista original fica intacta)
   const emails = await fetchListEmails(cfg.srcListId, total);
-  const { a, b } = splitAlternate(emails, EDITOR_COPY_EMAIL);
-  console.error(`  split: ${a.length} (A) / ${b.length} (B), QA ${EDITOR_COPY_EMAIL} nos dois`);
+  const { a, b, reused } = loadOrCreateSplit(outDir, cfg.envio, emails, EDITOR_COPY_EMAIL);
+  console.error(
+    `  split: ${a.length} (A) / ${b.length} (B), QA ${EDITOR_COPY_EMAIL} nos dois` +
+      (reused ? " [reusado do disco — idempotente]" : " [novo, persistido]"),
+  );
   const listA = await ensureList(`Diar.ia Mensal ${YYMM} — envio ${cfg.envio}A (cta-a ${cfg.day})`, srcList.body?.folderId);
   const listB = await ensureList(`Diar.ia Mensal ${YYMM} — envio ${cfg.envio}B (cta-b ${cfg.day})`, srcList.body?.folderId);
   await importEmails(listA, a);
   await importEmails(listB, b);
+  // Fail-safe antes de mexer nas campanhas: garante A∩B = {QA} na Brevo (#3890).
+  await assertListsDisjointOnBrevo(listA, listB, a.length, b.length, EDITOR_COPY_EMAIL);
 
   // 4. Campanha A: suspend PRIMEIRO (fail-safe), edita, re-agenda
   await setStatus(cfg.campaignId, "suspended");
