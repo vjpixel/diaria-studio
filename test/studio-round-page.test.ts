@@ -98,6 +98,24 @@ describe("GET /rodada + GET /api/round/:kind (#3561)", () => {
     assert.ok(Array.isArray(body.timeline));
   });
 
+  // #3889: `updatedAt` — mtime real do plan.json, consumido por rodada.js
+  // pro rótulo "atualizado" (corrige o falso-frescor de `new Date()` local).
+  it("(#3889) GET /api/round/overnight inclui updatedAt (mtime do plan.json), não timestamp do request", async () => {
+    const res = await fetch(new URL("/api/round/overnight", server.url));
+    const body = await res.json();
+    assert.ok(body.updatedAt, "updatedAt deve estar presente quando a sessão é encontrada");
+    assert.ok(!Number.isNaN(new Date(body.updatedAt).getTime()), "updatedAt deve ser um ISO válido");
+  });
+
+  // #3889: `rodada-round-age.js` — módulo puro de idade/staleness importado
+  // por rodada.js (mesmo padrão de edicao-stage-age.js/#3871) — precisa ser
+  // servido com content-type JS pra funcionar como ES module no browser.
+  it("(#3889) GET /rodada-round-age.js é servido com content-type JS", async () => {
+    const res = await fetch(new URL("/rodada-round-age.js", server.url));
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /javascript/);
+  });
+
   it("GET /api/round/develop retorna found:false quando não há sessão develop", async () => {
     const res = await fetch(new URL("/api/round/develop", server.url));
     assert.equal(res.status, 200);

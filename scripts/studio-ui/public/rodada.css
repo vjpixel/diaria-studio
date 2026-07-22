@@ -45,6 +45,38 @@
 
 .round-queue-table td, .round-timeline-table td { vertical-align: top; }
 
+/* #3889: unidade "em andamento" na timeline precisa se destacar — sem isso é
+   impossível distinguir uma rodada progredindo de uma travada só olhando a
+   tabela (o único resgate era abrir o terminal). Badge "rodando" + idade
+   textual (reusa `computeStageAge`, edicao-stage-age.js/#3871, ver rodada.js)
+   escalando pro mesmo tratamento visual de alerta (`--status-warn`) quando
+   `stale`. Mesmo espírito de `.stage-row.current`/`.stage-age-stale` em
+   edicao.css, com os nomes/tokens próprios desta página. */
+.round-timeline-table tr.timeline-row-running {
+  background: color-mix(in srgb, var(--brand) 10%, transparent);
+  font-weight: 600;
+}
+.timeline-badge-running {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  margin-right: 0.4rem;
+  border-radius: 3px;
+  background: var(--brand);
+  color: var(--on-ink);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.unit-age {
+  font-size: 0.78rem;
+  opacity: 0.75;
+}
+.unit-age-stale {
+  color: var(--status-warn);
+  opacity: 1;
+  font-weight: 600;
+}
+
 /* #3874: alvos de toque ≥44px (WCAG 2.5.5/HIG), só no breakpoint mobile —
    mesmo padrão já aplicado em chat-drawer.css/triagem.css. */
 @media (max-width: 640px) {

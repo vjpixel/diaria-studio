@@ -15,10 +15,13 @@
 // revisao.js).
 
 import { nextTabIndex, syncTabAria } from "./tablist-core.js";
+import { unitAge, roundFreshness } from "./rodada-round-age.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
   fetchLabel: document.getElementById("fetch-label"),
+  connDot: document.getElementById("conn-dot"),
+  connLabel: document.getElementById("conn-label"),
   sessionLabel: document.getElementById("round-session"),
   error: document.getElementById("round-error"),
   empty: document.getElementById("round-empty"),
@@ -64,6 +67,16 @@ function escapeHtml(s) {
 function setFetchStatus(status, label) {
   el.fetchDot.className = "dot " + status;
   el.fetchLabel.textContent = label;
+}
+
+// #3889: indicador de conexão do SSE (`/api/events`), separado do
+// fetch-status acima (que só reflete o REST `/api/round/:kind`). Mesmo
+// padrão de `edicao.js`/`app.js` (`setConn` + handlers `open`/`error` do
+// EventSource) — antes, uma queda de SSE aqui não tinha NENHUM sinal visual:
+// a timeline simplesmente parava de atualizar, sem aviso.
+function setConn(status) {
+  el.connDot.className = "dot " + status;
+  el.connLabel.textContent = status === "ok" ? "conectado" : status === "down" ? "desconectado" : "conectando…";
 }
 
 function fmtTime(iso) {
@@ -149,12 +162,27 @@ function renderTimeline(rows) {
     el.timelineBody.innerHTML = '<tr><td colspan="5" class="hint">nenhuma unidade registrada ainda</td></tr>';
     return;
   }
+  const now = Date.now();
   for (const row of rows) {
     const tr = document.createElement("tr");
+    // #3889: sem isto, uma unidade travada (fim === "em andamento" há horas)
+    // renderizava IDÊNTICA a uma progredindo normalmente — só dava pra saber
+    // abrindo o terminal. Badge "rodando" + idade desde o último timeline.*
+    // registrado, escalando pro mesmo tratamento visual de alerta quando
+    // `stale` (acima do limiar de `computeStageAge`).
+    const isRunning = row.fim === "em andamento";
+    if (isRunning) tr.classList.add("timeline-row-running");
+    let fimCell = escapeHtml(row.fim);
+    if (isRunning) {
+      const age = unitAge(row, now);
+      fimCell =
+        `<span class="timeline-badge-running">rodando</span>` +
+        `<span class="unit-age${age.stale ? " unit-age-stale" : ""}">${age.stale ? "⚠ " : ""}${escapeHtml(age.label)}</span>`;
+    }
     tr.innerHTML = `
       <td class="mono">${escapeHtml(row.unidade)}</td>
       <td class="mono">${escapeHtml(row.inicio)}</td>
-      <td class="mono">${escapeHtml(row.fim)}</td>
+      <td class="mono">${fimCell}</td>
       <td class="mono">${escapeHtml(row.duracao)}</td>
       <td class="mono">${row.fixIteracoes > 0 ? row.fixIteracoes : "—"}</td>
     `;
@@ -210,11 +238,29 @@ function renderAll() {
   renderQueueTable(el.foraBody, el.foraCount, queue.fora, true, el.foraEmpty, "Nenhuma unidade fica de fora.");
   renderTimeline((data && data.timeline) || []);
 
-  // Só mostra "atualizado agora" quando o fetch de fato completou com
-  // sucesso — na falha, o texto anterior (ou vazio) fica, em vez de sugerir
-  // falsamente um refresh bem-sucedido.
+  // Só mostra "atualizado" quando o fetch de fato completou com sucesso — na
+  // falha, o texto anterior (ou vazio) fica, em vez de sugerir falsamente um
+  // refresh bem-sucedido.
+  //
+  // #3889: `roundFreshness` (rodada-round-age.js) usa `data.updatedAt` (mtime
+  // REAL do plan.json, vindo do servidor) em vez de `new Date()` local —
+  // antes, uma rodada travada há horas ainda dizia "atualizado agora" a cada
+  // refresh, porque o timestamp media o momento do FETCH no cliente, não de
+  // quando os dados de fato mudaram (mesmo padrão de `data.generatedAt` em
+  // triagem.js). Quando o plan.json não muda entre duas chamadas, `updatedAt`
+  // também não muda — o rótulo não avança, denunciando o falso-frescor. O
+  // badge de possível stall (`stale`) só liga quando há unidade "em
+  // andamento" na timeline — ver doc-comment de `roundFreshness`.
   if (!fetchFailed) {
-    el.lastUpdated.textContent = data ? `atualizado ${fmtTime(new Date().toISOString())}` : "";
+    const freshness = roundFreshness(data);
+    if (freshness.updatedAt) {
+      const stallBadge = freshness.stale
+        ? ` <span class="unit-age unit-age-stale">⚠ possível stall — ${escapeHtml(freshness.ageLabel)}</span>`
+        : "";
+      el.lastUpdated.innerHTML = `atualizado ${escapeHtml(fmtTime(freshness.updatedAt))}${stallBadge}`;
+    } else {
+      el.lastUpdated.textContent = data ? "atualizado —" : "";
+    }
   }
 }
 
@@ -278,20 +324,42 @@ el.refreshBtn.addEventListener("click", () => fetchRound());
 // servidor já observa data/{overnight,develop}/**/plan.json (plan-watch.ts)
 // e emite um evento `plan` em /api/events sempre que mudar — refetch aqui
 // mantém a fila/timeline sincronizadas sem polling próprio.
-try {
-  const events = new EventSource("/api/events");
-  events.addEventListener("plan", (ev) => {
-    try {
-      const sig = JSON.parse(ev.data);
-      if (sig.kind === kind) fetchRound();
-    } catch {
-      // payload malformado — ignora este tick, o próximo refresh manual cobre.
-    }
-  });
-} catch {
-  // EventSource indisponível (ambiente de teste/sem browser real) — a página
-  // ainda funciona via "Atualizar" manual.
+//
+// #3889: antes, este `EventSource` não tinha handlers `open`/`error` nem
+// nenhum indicador visual — uma queda de SSE fazia a timeline simplesmente
+// congelar, sem aviso (o único resgate era o botão "Atualizar" manual, que o
+// editor só saberia usar se desconfiasse do problema). Agora reflete o
+// estado real em `conn-dot`/`conn-label` (mesmo padrão de `edicao.js`).
+function connect() {
+  try {
+    const events = new EventSource("/api/events");
+    events.addEventListener("open", () => setConn("ok"));
+    events.addEventListener("error", () => setConn("down"));
+    events.addEventListener("plan", (ev) => {
+      try {
+        const sig = JSON.parse(ev.data);
+        if (sig.kind === kind) fetchRound();
+      } catch {
+        // payload malformado — ignora este tick, o próximo refresh manual cobre.
+      }
+    });
+  } catch {
+    // EventSource indisponível (ambiente de teste/sem browser real) — a
+    // página ainda funciona via "Atualizar" manual; o dot fica em
+    // "conectando…" (não é uma queda real, é ausência do recurso).
+  }
 }
 
+// #3889: tick local de 30s (mesmo padrão de edicao.js, #3871) — sem isto, o
+// badge de idade por-unidade e o badge de possível stall só recalculariam no
+// próximo fetch (SSE `plan` ou clique manual). Justo o cenário de rodada
+// travada (sem eventos novos, sem SSE) nunca dispararia nenhum dos dois —
+// exatamente o que este recurso deveria denunciar. Redesenha a partir do
+// `data` já em memória, sem refetch.
+setInterval(() => {
+  if (data) renderAll();
+}, 30_000);
+
 setActiveTab();
+connect();
 fetchRound();
