@@ -17,7 +17,11 @@
 // #3844 (decisão do editor 260721): os recursos de follow-up/outreach
 // (tracking de contato, dialog de registro, tiles de contactados/follow-ups
 // pendentes) foram removidos — a área refoca em visão por grupo/nível de
-// recompensa (parte 2 da issue, ainda pendente de decisão de produto).
+// recompensa.
+//
+// #3844 parte 2 (decisão do editor 260722): visão por grupo — `rewardGroups`
+// já vem PRONTO no payload de /api/apoios (studio-apoios.ts::computeRewardGroups),
+// client só renderiza; nenhuma agregação acontece aqui.
 //
 // #3859 (metade 2): botão "Atualizar status" — POST /api/apoios/refresh
 // força re-consulta do mês corrente na apoia.se pra contatos ainda não
@@ -34,6 +38,7 @@ const el = {
   tileTotal: document.getElementById("tile-total"),
   tileConverted: document.getElementById("tile-converted"),
   tileValue: document.getElementById("tile-value"),
+  rewardGroups: document.getElementById("reward-groups"),
   contactsCount: document.getElementById("contacts-count"),
   filterStatus: document.getElementById("filter-status"),
   refreshBtn: document.getElementById("refresh-btn"),
@@ -52,7 +57,7 @@ const el = {
 };
 
 /** Snapshot bruto da última resposta de /api/apoios. */
-let data = { contacts: [], campaign: null, error: null, generatedAt: null };
+let data = { contacts: [], campaign: null, rewardGroups: null, error: null, generatedAt: null };
 
 const filters = { status: "" };
 
@@ -61,6 +66,17 @@ const STATUS_LABEL = {
   nao_apoia: "não apoia",
   apoiou_e_parou: "apoiou e parou",
   sem_dados: "sem dados",
+};
+
+// #3844 parte 2: rótulo + ordem de exibição (do nível mais alto pro mais
+// baixo — mais fácil bater o olho em quem tem mais recompensa a cumprir).
+// Faixas espelham exatamente scripts/studio-ui/studio-apoios.ts::computeRewardGroup.
+const REWARD_GROUP_ORDER = ["patrono", "mantenedor", "apoiador", "amigo"];
+const REWARD_GROUP_LABEL = {
+  patrono: "Patrono (R$50+)",
+  mantenedor: "Mantenedor (R$25–49)",
+  apoiador: "Apoiador (R$10–24)",
+  amigo: "Amigo (R$5–9)",
 };
 
 function escapeHtml(s) {
@@ -140,6 +156,42 @@ function renderTiles() {
   el.tileValue.textContent = fmtBRL(c.monthlyValueSum ?? 0);
 }
 
+// #3844 parte 2: renderiza a visão por grupo/nível de recompensa do mês
+// corrente — `rewardGroups` já vem agregado do servidor (nenhum cálculo
+// aqui). Grupo vazio ainda aparece (com "0" no contador e uma linha "ninguém
+// neste grupo este mês") — nunca desaparece silenciosamente, mesmo padrão do
+// estado vazio de `renderContacts`.
+function renderRewardGroups() {
+  const groups = data.rewardGroups ?? { amigo: [], apoiador: [], mantenedor: [], patrono: [] };
+  el.rewardGroups.innerHTML = "";
+  for (const key of REWARD_GROUP_ORDER) {
+    const contacts = groups[key] ?? [];
+    const group = document.createElement("div");
+    group.className = "reward-group";
+    const itemsHtml = contacts.length
+      ? contacts
+          .map((c) => {
+            const email = c.status?.matchedEmail ?? c.emails[0] ?? "";
+            const value = typeof c.status?.monthlyValue === "number" ? c.status.monthlyValue : 0;
+            return `<li class="reward-contact">
+              <span class="reward-contact-name">${escapeHtml(c.name)}</span>
+              <span class="reward-contact-email">${escapeHtml(email)}</span>
+              <span class="reward-contact-value">R$${fmtBRL(value)}</span>
+            </li>`;
+          })
+          .join("")
+      : `<li class="reward-group-empty">Ninguém neste grupo este mês.</li>`;
+    group.innerHTML = `
+      <h3 class="reward-group-title">
+        ${escapeHtml(REWARD_GROUP_LABEL[key] ?? key)}
+        <span class="reward-group-count">${contacts.length}</span>
+      </h3>
+      <ul class="reward-group-list">${itemsHtml}</ul>
+    `;
+    el.rewardGroups.appendChild(group);
+  }
+}
+
 function matchesFilter(contact) {
   if (!filters.status) return true;
   return contact.status.label === filters.status;
@@ -181,6 +233,7 @@ function renderContacts() {
 function renderAll() {
   renderError();
   renderTiles();
+  renderRewardGroups();
   renderContacts();
   el.lastUpdated.textContent = data.generatedAt ? `atualizado ${fmtTime(data.generatedAt)}` : "";
 }
