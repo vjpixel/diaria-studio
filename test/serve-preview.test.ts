@@ -7,18 +7,28 @@
  * porta configurável, teardown funciona, e path traversal é bloqueado.
  */
 
-import { describe, it, after } from "node:test";
+import { describe, it, after, mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   startPreviewServer,
   openInBrowser,
   type PreviewServer,
 } from "../scripts/serve-preview.ts";
+
+// `import * as childProcess from "node:child_process"` dá um namespace ESM
+// com propriedades não-configuráveis — `mock.method` não consegue redefinir
+// `exec` nele (TypeError: Cannot redefine property). `createRequire` traz o
+// objeto `module.exports` real e mutável do core module (mesmo padrão usado
+// pra mockar `fs`/`child_process` nos docs do node:test).
+const childProcess: typeof import("node:child_process") = createRequire(
+  import.meta.url,
+)("node:child_process");
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = resolve(ROOT, "scripts", "serve-preview.ts");
@@ -175,12 +185,40 @@ describe("startPreviewServer", () => {
 });
 
 describe("openInBrowser", () => {
-  it("existe e não lança sincronamente ao ser chamado (best-effort, #3546)", () => {
-    // Não verificamos que um browser de fato abre (não há display em CI) —
-    // só que a chamada não derruba o processo caller (mesmo padrão de
-    // scripts/oauth-setup.ts:openBrowser, sem try/catch porque exec() é
-    // assíncrono e não lança na chamada síncrona).
-    assert.doesNotThrow(() => openInBrowser("http://127.0.0.1:1/preview.html"));
+  // #3902: o teste original chamava openInBrowser SEM mock, o que disparava
+  // exec() real e abria o browser default do editor (127.0.0.1:1/preview.html,
+  // ERR_UNSAFE_PORT) a cada rodada da suíte local. `execImpl` é o seam
+  // injetável — os 2 testes abaixo cobrem tanto o comportamento útil quanto o
+  // regression guard (#633) de que exec() real nunca roda em ambiente de teste.
+
+  it("chama execImpl exatamente 1x, com o comando contendo a URL (#3902)", () => {
+    const calls: string[] = [];
+    const stubExec = ((command: string) => {
+      calls.push(command);
+      return {} as ReturnType<typeof childProcess.exec>;
+    }) as typeof childProcess.exec;
+
+    assert.doesNotThrow(() =>
+      openInBrowser("http://127.0.0.1:1/preview.html", stubExec),
+    );
+
+    assert.equal(calls.length, 1);
+    assert.match(calls[0], /127\.0\.0\.1:1\/preview\.html/);
+  });
+
+  it("nunca invoca o exec real do node:child_process quando um execImpl é passado — regressão #3902/#633", () => {
+    const execSpy = mock.method(childProcess, "exec", () => {
+      throw new Error("exec REAL foi chamado — o seam execImpl não foi respeitado");
+    });
+    try {
+      const stubExec = (() => ({}) as ReturnType<typeof childProcess.exec>) as typeof childProcess.exec;
+
+      openInBrowser("http://127.0.0.1:1/preview.html", stubExec);
+
+      assert.equal(execSpy.mock.callCount(), 0);
+    } finally {
+      execSpy.mock.restore();
+    }
   });
 });
 
