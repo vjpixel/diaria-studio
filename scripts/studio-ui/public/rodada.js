@@ -1,20 +1,24 @@
-// rodada.js (#3561) — acompanhamento de rodada overnight/develop: fila
-// classificada (entram/pendente/fora, com motivo) + timeline ao vivo. Vanilla
-// JS, sem build step (mesmo princípio de triagem.js/#3562). Read-only: só lê
-// GET /api/round/:kind (studio-round.ts) — nenhum botão aqui dispara rodada
-// nova; isso continua sendo /diaria-overnight`/`/diaria-develop no terminal.
+// rodada.js (#3561, redesenhado #3841) — acompanhamento de rodada
+// overnight/develop: sequência cronológica de TODAS as rodadas (mais
+// recente primeiro, GET /api/rounds) + fila classificada (entram/pendente/
+// fora, com motivo) + timeline ao vivo da entrada expandida (GET
+// /api/round/:kind?session=). Vanilla JS, sem build step (mesmo princípio de
+// triagem.js/#3562). Read-only: nenhum botão aqui dispara rodada nova; isso
+// continua sendo /diaria-overnight`/`/diaria-develop no terminal.
+//
+// #3841 — decisão de produto do editor (260721): o painel deixou de resolver
+// "a rodada mais recente" (por kind, com um seletor de abas) e passou a
+// listar TODAS as rodadas (overnight + develop) numa sequência cronológica
+// única, mais recente primeiro — múltiplas rodadas do mesmo dia são só mais
+// duas entradas adjacentes na sequência, sem caso especial. Clicar numa
+// entrada expande (accordion — só 1 expandida por vez) a fila+timeline
+// daquela rodada específica, buscada via `?session=`.
 //
 // Filtro por "label" espelha `deriveQueueLabels` de studio-round-queue.ts —
 // reimplementado aqui client-side (best-effort, mesmo padrão) em vez de
 // importar o módulo server: o filtro é sobre o texto já normalizado que o
 // servidor devolve (`reason`/`status`/`priority`), não precisa reler plan.json.
-//
-// #3874: `.round-kind-tabs` segue o padrão WAI-ARIA APG completo agora
-// (`role="tab"` já vem do HTML; `aria-selected`/tabindex roving/navegação
-// por setas são geridos aqui via tablist-core.js, compartilhado com
-// revisao.js).
 
-import { nextTabIndex, syncTabAria } from "./tablist-core.js";
 import { unitAge, roundFreshness } from "./rodada-round-age.js";
 
 const el = {
@@ -23,6 +27,10 @@ const el = {
   connDot: document.getElementById("conn-dot"),
   connLabel: document.getElementById("conn-label"),
   sessionLabel: document.getElementById("round-session"),
+  roundsListError: document.getElementById("rounds-list-error"),
+  roundsListEmpty: document.getElementById("rounds-list-empty"),
+  roundsList: document.getElementById("rounds-list"),
+  detail: document.getElementById("round-detail"),
   error: document.getElementById("round-error"),
   empty: document.getElementById("round-empty"),
   emptyDir: document.getElementById("round-empty-dir"),
@@ -45,15 +53,16 @@ const el = {
   foraBody: document.getElementById("fora-tbody"),
   foraEmpty: document.getElementById("fora-empty"),
   timelineBody: document.getElementById("timeline-tbody"),
-  tabOvernight: document.getElementById("tab-overnight"),
-  tabDevelop: document.getElementById("tab-develop"),
 };
 
-const TABS = { overnight: el.tabOvernight, develop: el.tabDevelop };
-
-/** Estado — 1 kind ativo por vez, filtros 100% client-side sobre o snapshot já buscado. */
-let kind = "overnight";
-let data = null; // último payload de /api/round/:kind
+/** Estado — `rounds` é o snapshot de `/api/rounds` (lista completa); `selected`
+ * é a entrada expandida no momento (`{kind, sessionId}` ou `null` — nenhuma
+ * expandida); `data` é o payload de detalhe (`/api/round/:kind?session=`) da
+ * entrada `selected`. Filtros são 100% client-side sobre `data` já buscado. */
+let rounds = [];
+let roundsFetchFailed = false;
+let selected = null; // { kind, sessionId } | null
+let data = null; // último payload de /api/round/:kind?session=
 const filters = { priority: "", label: "" };
 
 function escapeHtml(s) {
@@ -70,10 +79,8 @@ function setFetchStatus(status, label) {
 }
 
 // #3889: indicador de conexão do SSE (`/api/events`), separado do
-// fetch-status acima (que só reflete o REST `/api/round/:kind`). Mesmo
-// padrão de `edicao.js`/`app.js` (`setConn` + handlers `open`/`error` do
-// EventSource) — antes, uma queda de SSE aqui não tinha NENHUM sinal visual:
-// a timeline simplesmente parava de atualizar, sem aviso.
+// fetch-status acima (que só reflete o REST `/api/round(s)`). Mesmo padrão de
+// edicao.js/app.js (`setConn` + handlers `open`/`error` do EventSource).
 function setConn(status) {
   el.connDot.className = "dot " + status;
   el.connLabel.textContent = status === "ok" ? "conectado" : status === "down" ? "desconectado" : "conectando…";
@@ -99,6 +106,23 @@ function priorityBadge(priority) {
   return `<span class="priority-badge priority-${priority.toLowerCase()}">${priority}</span>`;
 }
 
+const KIND_LABEL = { overnight: "Overnight", develop: "Develop" };
+
+/** Resumo textual de status pra 1 entrada da lista de rodadas — ex: "24
+ * issues · 20 mergeadas · 2 pendentes". Só as 3 contagens mais informativas
+ * (mergeada/draft-ci-vermelho/pendente) pra não poluir a linha da lista —
+ * a contagem completa por status já está disponível na fila expandida. */
+function summarizeCounts(counts, totalIssues) {
+  const parts = [`${totalIssues} issue${totalIssues === 1 ? "" : "s"}`];
+  const merged = counts["mergeada"] ?? 0;
+  const draft = counts["draft-ci-vermelho"] ?? 0;
+  const pendente = counts["pendente"] ?? 0;
+  if (merged > 0) parts.push(`${merged} mergeada${merged === 1 ? "" : "s"}`);
+  if (draft > 0) parts.push(`${draft} draft`);
+  if (pendente > 0) parts.push(`${pendente} pendente${pendente === 1 ? "" : "s"}`);
+  return parts.join(" · ");
+}
+
 /** Mesma heurística de `deriveQueueLabels` (studio-round-queue.ts) — replicada
  * aqui pra filtro 100% client-side (sem refetch a cada troca de filtro). */
 function rowLabels(row) {
@@ -117,8 +141,7 @@ function matchesFilters(row) {
 }
 
 // #3874: "0 resultados para este filtro" vs "nenhum registro" (padrão
-// relatorios.js, R4 de docs/studio-ui-ux-guidelines.md) — mesma distinção de
-// triagem.js, aplicada aqui às 3 tabelas de fila (entram/pendente/fora).
+// relatorios.js, R4 de docs/studio-ui-ux-guidelines.md).
 function updateEmptyState(emptyEl, filteredCount, totalCount, hasActiveFilter, emptyLabel) {
   if (!emptyEl) return;
   if (filteredCount > 0) {
@@ -166,10 +189,7 @@ function renderTimeline(rows) {
   for (const row of rows) {
     const tr = document.createElement("tr");
     // #3889: sem isto, uma unidade travada (fim === "em andamento" há horas)
-    // renderizava IDÊNTICA a uma progredindo normalmente — só dava pra saber
-    // abrindo o terminal. Badge "rodando" + idade desde o último timeline.*
-    // registrado, escalando pro mesmo tratamento visual de alerta quando
-    // `stale` (acima do limiar de `computeStageAge`).
+    // renderizava IDÊNTICA a uma progredindo normalmente.
     const isRunning = row.fim === "em andamento";
     if (isRunning) tr.classList.add("timeline-row-running");
     let fimCell = escapeHtml(row.fim);
@@ -193,38 +213,42 @@ function renderTimeline(rows) {
 function renderMeta() {
   if (!data || !data.found) {
     el.meta.hidden = true;
-    // Só mostra "nenhuma sessão encontrada" quando o SERVIDOR respondeu
-    // found:false — nunca quando a própria requisição falhou (fetchFailed),
-    // senão uma falha de rede/servidor fora do ar aparenta "sessão ausente"
-    // em vez do problema real (ver banner de erro em renderAll()).
     el.empty.hidden = fetchFailed || !data || data.found !== false;
-    if (el.empty.hidden === false) el.emptyDir.textContent = `data/${kind}/`;
+    if (el.empty.hidden === false) {
+      el.emptyDir.textContent = selected ? `data/${selected.kind}/${selected.sessionId}/` : "—";
+    }
     return;
   }
   el.empty.hidden = true;
   el.meta.hidden = false;
   el.metaSession.textContent = data.sessionId ?? "—";
-  el.metaStarted.textContent = fmtTime(data.startedAt);
+  // #3841: `startedAtSource === "mtime"` significa que `plan.json` não tinha
+  // (ainda) um `started_at` ISO real — o horário exibido é o mtime do
+  // arquivo (aproximado), não a hora exata de início da rodada. Rotulado
+  // explicitamente em vez de fingir precisão que o dado não tem.
+  const approx = data.startedAtSource === "mtime" ? " (aprox., mtime do arquivo)" : "";
+  el.metaStarted.textContent = data.startedAt ? `${fmtTime(data.startedAt)}${approx}` : "—";
   el.metaLoop.textContent = data.loopEstendido === null ? "—" : data.loopEstendido ? "sim" : "não";
   el.metaPath.textContent = data.planPath ?? "—";
 }
 
 // #3561 self-review (PR #3622): `fetchFailed` distingue "a requisição pra
-// /api/round/:kind falhou" (rede, HTTP != 2xx) de `data.found === false`
-// ("o servidor respondeu 200 mas não achou nenhuma sessão desse kind") —
-// antes, o catch de fetchRound() reusava `found:false` pros dois casos, o
-// que fazia uma falha de rede exibir "Nenhuma sessão encontrada" (a mesma
-// empty-state de um plan.json genuinamente ausente) e o banner de erro dizer
-// "falha ao ler plan.json" pra um erro que nem chegou a tocar o servidor.
+// /api/round/:kind falhou" (rede, HTTP != 2xx) de `data.found === false`.
 let fetchFailed = false;
 
-function renderAll() {
-  el.sessionLabel.textContent = data && data.sessionId ? `${kind} — ${data.sessionId}` : kind;
+function renderDetail() {
+  if (!selected) {
+    el.detail.hidden = true;
+    el.sessionLabel.textContent = "—";
+    return;
+  }
+  el.detail.hidden = false;
+  el.sessionLabel.textContent = data && data.sessionId ? `${selected.kind} — ${data.sessionId}` : `${selected.kind} — ${selected.sessionId}`;
   renderMeta();
 
   if (fetchFailed) {
     el.error.hidden = false;
-    el.error.textContent = `falha ao buscar /api/round/${kind}: ${data && data.error}`;
+    el.error.textContent = `falha ao buscar /api/round/${selected.kind}: ${data && data.error}`;
   } else if (data && data.error) {
     el.error.hidden = false;
     el.error.textContent = `falha ao ler plan.json: ${data.error}`;
@@ -238,19 +262,6 @@ function renderAll() {
   renderQueueTable(el.foraBody, el.foraCount, queue.fora, true, el.foraEmpty, "Nenhuma unidade fica de fora.");
   renderTimeline((data && data.timeline) || []);
 
-  // Só mostra "atualizado" quando o fetch de fato completou com sucesso — na
-  // falha, o texto anterior (ou vazio) fica, em vez de sugerir falsamente um
-  // refresh bem-sucedido.
-  //
-  // #3889: `roundFreshness` (rodada-round-age.js) usa `data.updatedAt` (mtime
-  // REAL do plan.json, vindo do servidor) em vez de `new Date()` local —
-  // antes, uma rodada travada há horas ainda dizia "atualizado agora" a cada
-  // refresh, porque o timestamp media o momento do FETCH no cliente, não de
-  // quando os dados de fato mudaram (mesmo padrão de `data.generatedAt` em
-  // triagem.js). Quando o plan.json não muda entre duas chamadas, `updatedAt`
-  // também não muda — o rótulo não avança, denunciando o falso-frescor. O
-  // badge de possível stall (`stale`) só liga quando há unidade "em
-  // andamento" na timeline — ver doc-comment de `roundFreshness`.
   if (!fetchFailed) {
     const freshness = roundFreshness(data);
     if (freshness.updatedAt) {
@@ -264,10 +275,92 @@ function renderAll() {
   }
 }
 
-async function fetchRound() {
+/** Renderiza a lista de rounds (sequência cronológica) — 1 <li> clicável por
+ * entrada, com o estado "expandido"/"selecionado" refletido em `aria-expanded`
+ * + classe `.active`. Clique alterna: se já é a entrada selecionada, colapsa
+ * (accordion — só 1 expandida por vez); senão, seleciona a nova e busca o
+ * detalhe. */
+function renderRoundsList() {
+  if (roundsFetchFailed) {
+    el.roundsListError.hidden = false;
+    el.roundsListError.textContent = "falha ao buscar /api/rounds — tentando novamente no próximo refresh.";
+  } else {
+    el.roundsListError.hidden = true;
+  }
+
+  el.roundsListEmpty.hidden = rounds.length > 0 || roundsFetchFailed;
+
+  el.roundsList.innerHTML = "";
+  for (const r of rounds) {
+    const li = document.createElement("li");
+    li.className = "round-list-item";
+    const isSelected = Boolean(selected && selected.kind === r.kind && selected.sessionId === r.sessionId);
+    if (isSelected) li.classList.add("active");
+
+    const approx = r.startedAtSource === "mtime" ? " (aprox.)" : "";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "round-list-row";
+    btn.setAttribute("aria-expanded", String(isSelected));
+    btn.innerHTML = `
+      <span class="round-list-kind kind-${escapeHtml(r.kind)}">${escapeHtml(KIND_LABEL[r.kind] ?? r.kind)}</span>
+      <span class="round-list-session mono">${escapeHtml(r.sessionId)}</span>
+      <span class="round-list-started mono">${escapeHtml(fmtTime(r.startedAt))}${escapeHtml(approx)}</span>
+      <span class="round-list-counts hint">${escapeHtml(summarizeCounts(r.counts, r.totalIssues))}</span>
+      <span class="round-list-chevron" aria-hidden="true">${isSelected ? "▾" : "▸"}</span>
+    `;
+    btn.addEventListener("click", () => toggleRound(r.kind, r.sessionId));
+    li.appendChild(btn);
+    el.roundsList.appendChild(li);
+  }
+}
+
+function toggleRound(kind, sessionId) {
+  if (selected && selected.kind === kind && selected.sessionId === sessionId) {
+    // já expandida — colapsa (accordion)
+    selected = null;
+    data = null;
+    renderRoundsList();
+    renderDetail();
+    return;
+  }
+  selected = { kind, sessionId };
+  renderRoundsList();
+  fetchRoundDetail();
+}
+
+async function fetchRoundsList() {
+  try {
+    const res = await fetch("/api/rounds");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    rounds = Array.isArray(body.rounds) ? body.rounds : [];
+    roundsFetchFailed = false;
+    // Auto-seleciona a MAIS RECENTE (topo da sequência) na 1ª carga — corrige
+    // o defeito original (#3841): antes o painel podia mostrar a rodada
+    // ERRADA (mais antiga) por kind; agora a ordenação já é cronológica real
+    // e a 1ª entrada É a mais recente de fato, overnight ou develop.
+    if (!selected && rounds.length > 0) {
+      selected = { kind: rounds[0].kind, sessionId: rounds[0].sessionId };
+      renderRoundsList();
+      await fetchRoundDetail();
+      return;
+    }
+  } catch (e) {
+    roundsFetchFailed = true;
+    rounds = [];
+  }
+  renderRoundsList();
+}
+
+async function fetchRoundDetail() {
+  if (!selected) {
+    renderDetail();
+    return;
+  }
   setFetchStatus("", "carregando…");
   try {
-    const res = await fetch(`/api/round/${kind}`);
+    const res = await fetch(`/api/round/${selected.kind}?session=${encodeURIComponent(selected.sessionId)}`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     data = await res.json();
     fetchFailed = false;
@@ -275,61 +368,28 @@ async function fetchRound() {
   } catch (e) {
     fetchFailed = true;
     setFetchStatus("down", "falha ao buscar /api/round");
-    data = { kind, found: false, error: String(e), queue: { entram: [], pendente: [], fora: [] }, timeline: [] };
+    data = { kind: selected.kind, sessionId: selected.sessionId, found: false, error: String(e), queue: { entram: [], pendente: [], fora: [] }, timeline: [] };
   }
-  renderAll();
+  renderDetail();
 }
 
-const TAB_ORDER = ["overnight", "develop"];
-
-function setActiveTab() {
-  for (const [k, btn] of Object.entries(TABS)) {
-    btn.classList.toggle("active", k === kind);
-  }
-  syncTabAria(Object.values(TABS), (btn) => btn === TABS[kind]);
-}
-
-function selectKind(newKind) {
-  kind = newKind;
-  setActiveTab();
-  fetchRound();
-}
-
-el.tabOvernight.addEventListener("click", () => selectKind("overnight"));
-el.tabDevelop.addEventListener("click", () => selectKind("develop"));
-
-// #3874: navegação por setas (WAI-ARIA APG) — ArrowLeft/ArrowRight/Home/End
-// movem o foco E ativam a aba (ativação automática, adequada aqui: trocar
-// de kind é barato/reversível, sem razão pra exigir Enter/Espaço extra).
-el.tabOvernight.parentElement.addEventListener("keydown", (ev) => {
-  const currentIndex = TAB_ORDER.indexOf(kind);
-  const idx = nextTabIndex(ev.key, currentIndex, TAB_ORDER.length);
-  if (idx === null) return;
-  ev.preventDefault();
-  const nextKind = TAB_ORDER[idx];
-  selectKind(nextKind);
-  TABS[nextKind].focus();
-});
 el.filterPriority.addEventListener("change", () => {
   filters.priority = el.filterPriority.value;
-  renderAll();
+  renderDetail();
 });
 el.filterLabel.addEventListener("change", () => {
   filters.label = el.filterLabel.value;
-  renderAll();
+  renderDetail();
 });
-el.refreshBtn.addEventListener("click", () => fetchRound());
+el.refreshBtn.addEventListener("click", () => {
+  fetchRoundsList();
+  if (selected) fetchRoundDetail();
+});
 
 // #3561 critério de aceite "timeline ao vivo, lendo plan.json via SSE": o
 // servidor já observa data/{overnight,develop}/**/plan.json (plan-watch.ts)
 // e emite um evento `plan` em /api/events sempre que mudar — refetch aqui
-// mantém a fila/timeline sincronizadas sem polling próprio.
-//
-// #3889: antes, este `EventSource` não tinha handlers `open`/`error` nem
-// nenhum indicador visual — uma queda de SSE fazia a timeline simplesmente
-// congelar, sem aviso (o único resgate era o botão "Atualizar" manual, que o
-// editor só saberia usar se desconfiasse do problema). Agora reflete o
-// estado real em `conn-dot`/`conn-label` (mesmo padrão de `edicao.js`).
+// mantém a lista + a rodada expandida sincronizadas sem polling próprio.
 function connect() {
   try {
     const events = new EventSource("/api/events");
@@ -338,28 +398,25 @@ function connect() {
     events.addEventListener("plan", (ev) => {
       try {
         const sig = JSON.parse(ev.data);
-        if (sig.kind === kind) fetchRound();
+        // Qualquer mudança de plan.json pode afetar contagens na lista
+        // (qualquer kind/sessão) — refetch da lista é barato (leitura).
+        fetchRoundsList();
+        if (selected && sig.kind === selected.kind) fetchRoundDetail();
       } catch {
         // payload malformado — ignora este tick, o próximo refresh manual cobre.
       }
     });
   } catch {
     // EventSource indisponível (ambiente de teste/sem browser real) — a
-    // página ainda funciona via "Atualizar" manual; o dot fica em
-    // "conectando…" (não é uma queda real, é ausência do recurso).
+    // página ainda funciona via "Atualizar" manual.
   }
 }
 
-// #3889: tick local de 30s (mesmo padrão de edicao.js, #3871) — sem isto, o
-// badge de idade por-unidade e o badge de possível stall só recalculariam no
-// próximo fetch (SSE `plan` ou clique manual). Justo o cenário de rodada
-// travada (sem eventos novos, sem SSE) nunca dispararia nenhum dos dois —
-// exatamente o que este recurso deveria denunciar. Redesenha a partir do
-// `data` já em memória, sem refetch.
+// #3889: tick local de 30s (mesmo padrão de edicao.js, #3871) — recalcula
+// idade/staleness a partir do `data` já em memória, sem refetch.
 setInterval(() => {
-  if (data) renderAll();
+  if (selected) renderDetail();
 }, 30_000);
 
-setActiveTab();
 connect();
-fetchRound();
+fetchRoundsList();

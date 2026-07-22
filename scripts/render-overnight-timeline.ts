@@ -221,8 +221,19 @@ export function buildTimelineRows(plan: Plan): TimelineRow[] {
     const startStr = getStart(tl);
     const endStr = getEnd(tl);
     const start = parseISO(startStr);
-    const end = parseISO(endStr);
+    const rawEnd = parseISO(endStr);
     const endLabel = getEndLabel(tl, status);
+
+    // #3841 (defeito C — timestamps corrompidos em `plan.json` legado, ex:
+    // merge gravado ANTES do dispatch por colisão de identidade de rodada):
+    // nunca renderizar um "fim" cronologicamente anterior ao "início" — trata
+    // como dado ausente (mesmo tratamento de "sem timestamp de fim"), em vez
+    // de mostrar um horário impossível. `fmtDuration` já retornava "—" pra
+    // diff negativo (guard pré-existente desde #2099) — o gap era só a célula
+    // "fim", que continuava exibindo o timestamp bruto mesmo com a duração já
+    // escondida. Zerar `end` aqui resolve as duas colunas com a MESMA lógica.
+    const corrupted = Boolean(start && rawEnd && rawEnd.getTime() < start.getTime());
+    const end = corrupted ? null : rawEnd;
 
     const durationMs =
       start && end ? Math.max(0, end.getTime() - start.getTime()) : null;
@@ -230,7 +241,7 @@ export function buildTimelineRows(plan: Plan): TimelineRow[] {
     return {
       unidade,
       inicio: fmtHHMM(start),
-      fim: end ? fmtHHMM(end) : endLabel === "—" ? "—" : endLabel,
+      fim: end ? fmtHHMM(end) : corrupted || endLabel === "—" ? "—" : endLabel,
       duracao: fmtDuration(start, end),
       durationMs,
       fixIteracoes,

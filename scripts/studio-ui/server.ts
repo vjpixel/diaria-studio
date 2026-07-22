@@ -92,14 +92,22 @@
  *     (swap de destaque via UI + os 2 ganchos de prompt) foi removida do
  *     painel — `POST /api/editions/:aammdd/actions/swap-destaque` não existe
  *     mais; `scripts/swap-destaque.ts` continua disponível via CLI.
- *   - `GET /api/round/:kind` (#3561, `kind` = `overnight` | `develop`) — fila
+ *   - `GET /api/rounds` (#3841 item 2/3) — sequência cronológica de TODAS as
+ *     rodadas (overnight + develop), mais recente primeiro — ver
+ *     `listRoundSummaries` em `studio-round.ts`.
+ *   - `GET /api/round/:kind[?session=AAMMDD[sufixo]]` (#3561, `kind` =
+ *     `overnight` | `develop`; `?session=` #3841 item 2/3) — fila
  *     classificada (entram/pendente/fora, com motivo) + timeline por unidade
- *     do `plan.json` MAIS RECENTE daquele kind, pra `/rodada`. Read-only:
- *     visualização de uma rodada já em andamento/resumível, não dispara
- *     nenhuma varredura/sessão nova — ver `studio-round.ts`.
- *   - `GET /rodada` — acompanhamento de rodada overnight/develop (#3561):
- *     mesma estratégia de rewrite, servindo `public/rodada.html`. Consome
- *     `GET /api/round/:kind`.
+ *     do `plan.json` daquele kind, pra `/rodada`. Sem `?session=`, usa o
+ *     `plan.json` MAIS RECENTE (comportamento pré-#3841). Com `?session=`,
+ *     busca o detalhe de uma entrada específica da sequência de
+ *     `GET /api/rounds`. Read-only: visualização de uma rodada já em
+ *     andamento/resumível, não dispara nenhuma varredura/sessão nova — ver
+ *     `studio-round.ts`.
+ *   - `GET /rodada` — acompanhamento de rodada overnight/develop (#3561,
+ *     redesenhado #3841): mesma estratégia de rewrite, servindo
+ *     `public/rodada.html`. Consome `GET /api/rounds` (lista cronológica) +
+ *     `GET /api/round/:kind?session=` (detalhe da entrada expandida).
  *   - `GET /apoios` — CRM simples de apoios apoia.se (#3602): mesma
  *     estratégia de rewrite, servindo `public/apoios.html`. Consome
  *     `GET /api/apoios` (contatos + status cruzado via `checkBacker` +
@@ -257,7 +265,7 @@ import { buildWaveProposal } from "./studio-waves.ts";
 // #3561: visualização da fila classificada + timeline ao vivo de uma rodada
 // overnight/develop já em andamento/resumível — arquivo próprio desta
 // fatia, import isolado (nenhuma outra rota depende dele). Ver studio-round.ts.
-import { buildRoundPayload, isRoundKind } from "./studio-round.ts";
+import { buildRoundPayload, isRoundKind, listRoundSummaries } from "./studio-round.ts";
 // #3714: superfície de Relatórios — lista + serve os relatórios de fim de
 // trabalho (edição/overnight/develop/mensal) registrados via
 // `scripts/register-report.ts` (overnight/develop) ou direto por
@@ -592,17 +600,35 @@ function handleApiWaves(rootDir: string, res: ServerResponse, ghRun?: GhRunFn): 
   });
 }
 
-/** `GET /api/round/:kind` (#3561) — fila classificada (entram/pendente/fora,
- * com motivo) + timeline por unidade do `plan.json` MAIS RECENTE de `kind`
- * ("overnight" | "develop"). Sempre 200 com `found:false` quando não há
- * nenhuma sessão — `kind` inválido é o único 400 desta rota. Read-only:
- * `buildRoundPayload` só lê disco, nunca dispara nada (ver studio-round.ts). */
-function handleApiRound(rootDir: string, kind: string, res: ServerResponse): void {
+/** `GET /api/round/:kind[?session=AAMMDD[sufixo]]` (#3561, `?session=` #3841
+ * item 2/3) — fila classificada (entram/pendente/fora, com motivo) +
+ * timeline por unidade do `plan.json` de `kind` ("overnight" | "develop").
+ * Sem `?session=`, usa o `plan.json` MAIS RECENTE (comportamento pré-#3841
+ * preservado). Com `?session=`, busca o `plan.json` daquela sessão
+ * específica — usado pelo painel `/rodada` quando o editor expande uma
+ * entrada da sequência cronológica (`GET /api/rounds`) que não é
+ * necessariamente a mais recente. Sempre 200 com `found:false` quando não há
+ * nenhuma sessão (inclusive `session` inexistente/inválido) — `kind`
+ * inválido é o único 400 desta rota. Read-only: `buildRoundPayload` só lê
+ * disco, nunca dispara nada (ver studio-round.ts). */
+function handleApiRound(rootDir: string, kind: string, req: IncomingMessage, res: ServerResponse): void {
   if (!isRoundKind(kind)) {
     sendJson(res, 400, { error: "kind inválido — use 'overnight' ou 'develop'", kind });
     return;
   }
-  sendJson(res, 200, buildRoundPayload(rootDir, kind));
+  const session = new URL(req.url ?? "/", "http://localhost").searchParams.get("session");
+  sendJson(res, 200, buildRoundPayload(rootDir, kind, session ?? undefined));
+}
+
+/** `GET /api/rounds` (#3841 item 2/3) — sequência cronológica de TODAS as
+ * rodadas (overnight + develop), mais recente primeiro. Substitui a antiga
+ * UX de "1 rodada por kind" do painel `/rodada`: o editor não escolhe mais
+ * um kind pra ver "a rodada corrente" desse kind — vê a sequência inteira e
+ * expande a entrada que quiser (`GET /api/round/:kind?session=` busca o
+ * detalhe). Sempre 200 — `listRoundSummaries` é fail-soft por construção
+ * (entrada com `plan.json` corrompido é só omitida, nunca derruba a rota). */
+function handleApiRounds(rootDir: string, res: ServerResponse): void {
+  sendJson(res, 200, { rounds: listRoundSummaries(rootDir) });
 }
 
 /** `GET /api/reports` (#3714) — lista os relatórios registrados, mais
@@ -1509,10 +1535,18 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiWaves(rootDir, res, ghRun);
         return;
       }
+      // #3841 item 2/3: sequência cronológica de TODAS as rodadas — checada
+      // ANTES do regex de `/api/round/:kind` abaixo (não colide, mas mesma
+      // disciplina de ordenação das demais rotas de prefixo compartilhado
+      // deste arquivo, ex: `/api/chat/*` antes de `/api/events`).
+      if (urlPath === "/api/rounds") {
+        handleApiRounds(rootDir, res);
+        return;
+      }
       // #3561: fila classificada + timeline de uma rodada overnight/develop.
       const roundMatch = urlPath.match(/^\/api\/round\/([^/]+)$/);
       if (roundMatch) {
-        handleApiRound(rootDir, roundMatch[1], res);
+        handleApiRound(rootDir, roundMatch[1], req, res);
         return;
       }
       // #3714: superfície de Relatórios — lista (JSON) + conteúdo (HTML).

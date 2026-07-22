@@ -1,9 +1,11 @@
 // tablist-core.js (#3874) — lógica PURA de navegação por teclado em
 // WAI-ARIA APG tabs (role="tab"/role="tablist"), compartilhada por
-// revisao.js (2 tablists: `#rv-tabs`/`#rv-side-tabs`) e rodada.js (1
-// tablist: `#tab-overnight`/`#tab-develop`). Nenhuma das exportações toca
-// `document` — mesmo padrão de nav-core.js/revisao-guards.js (#633):
-// testável direto com fixtures puras, sem harness de DOM.
+// revisao.js (2 tablists: `#rv-tabs`/`#rv-side-tabs`). rodada.js usava um 3º
+// tablist (`#tab-overnight`/`#tab-develop`) até o redesenho #3841 — o painel
+// deixou de ter abas de kind e passou a listar todas as rodadas numa
+// sequência cronológica única (`.rounds-list`), sem tablist. Nenhuma das
+// exportações toca `document` — mesmo padrão de nav-core.js/revisao-guards.js
+// (#633): testável direto com fixtures puras, sem harness de DOM.
 //
 // Referência: WAI-ARIA Authoring Practices Guide (APG) — padrão "Tabs" com
 // ativação automática (ArrowLeft/ArrowRight/Home/End movem o foco E ativam a
