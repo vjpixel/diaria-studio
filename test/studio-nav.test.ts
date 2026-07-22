@@ -9,8 +9,9 @@
  *      Inclui um cross-check contra o SOURCE de `scripts/studio-ui/server.ts`
  *      (fonte da verdade das rotas reais, #3849) — pega drift em ambas as
  *      direções: rota real sem entrada no menu, ou entrada no menu apontando
- *      pra rota que não existe (ex: `/integracoes`, #3848, ainda não
- *      implementada nesta rodada — não deve aparecer aqui).
+ *      pra rota que não existe. `/integracoes` (#3848) foi adicionado nesta
+ *      rodada — a rota real existe agora em `server.ts`, então o item entra
+ *      em `NAV_ITEMS` como qualquer outro destino.
  *   2. Contrato HTTP: cada página real servida por `server.ts` inclui o
  *      mount point (`#app-nav`), o script `nav.js`, e o marcador
  *      `window.STUDIO_PAGE` com o valor correto — a montagem real no DOM
@@ -40,9 +41,9 @@ const SERVER_TS = readFileSync(resolve(REPO_ROOT, "scripts", "studio-ui", "serve
 // ─── lógica pura (nav-core.js) ──────────────────────────────────────────
 
 describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra server.ts", () => {
-  it("cobre os 6 destinos de página pedidos pela issue (home/rodada/triagem/revisao/apoios/relatorios)", () => {
+  it("cobre os 7 destinos de página (home/rodada/triagem/revisao/apoios/relatorios/integracoes)", () => {
     const ids = NAV_ITEMS.map((i) => i.id);
-    assert.deepEqual(ids, ["home", "rodada", "triagem", "revisao", "apoios", "relatorios"]);
+    assert.deepEqual(ids, ["home", "rodada", "triagem", "revisao", "apoios", "relatorios", "integracoes"]);
   });
 
   it("todo item (exceto revisao, que resolve em runtime) tem href estático não-vazio", () => {
@@ -86,13 +87,11 @@ describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra ser
     }
   });
 
-  it("regressão (#3848): /integracoes NÃO é um destino de menu — rota ainda não existe, link morto seria pior que ausência", () => {
-    // Checa os DADOS reais (NAV_ITEMS/DASHBOARD_LINKS), não o source bruto —
-    // o source TEM uma menção comentada explicando por que a rota está de
-    // fora (contexto útil), o que faria um grep textual cru dar falso-positivo.
-    for (const item of [...NAV_ITEMS, ...DASHBOARD_LINKS]) {
-      if (item.href) assert.doesNotMatch(item.href, /integracoes/);
-    }
+  it("(#3848): /integracoes agora É um destino de menu — rota real existe em server.ts", () => {
+    const item = NAV_ITEMS.find((i) => i.id === "integracoes");
+    assert.ok(item, "NAV_ITEMS precisa ter o item 'integracoes'");
+    assert.equal(item.href, "/integracoes");
+    assert.match(SERVER_TS, /urlPath === "\/integracoes"/, "server.ts precisa reconhecer a rota /integracoes");
   });
 
   it("todo item de NAV_ITEMS tem pelo menos 1 pageId associado (senão nunca fica ativo)", () => {
@@ -111,6 +110,7 @@ describe("resolveActiveNavId (#3849)", () => {
     assert.equal(resolveActiveNavId("revisao"), "revisao");
     assert.equal(resolveActiveNavId("apoios"), "apoios");
     assert.equal(resolveActiveNavId("relatorios"), "relatorios");
+    assert.equal(resolveActiveNavId("integracoes"), "integracoes");
   });
 
   it("retorna null pra pageId desconhecido/ausente (fail-closed — nenhum item marcado ativo por engano)", () => {
@@ -133,7 +133,7 @@ describe("resolveRevisaoHref (#3849)", () => {
 });
 
 describe("buildNavHtml (#3849)", () => {
-  it("renderiza os 6 itens de página + o grupo de Dashboards", () => {
+  it("renderiza os 7 itens de página + o grupo de Dashboards", () => {
     const html = buildNavHtml("rodada", "/revisao/260722");
     assert.match(html, /id="app-nav-list"/);
     assert.match(html, /href="\/">Home<\/a>/);
@@ -142,6 +142,7 @@ describe("buildNavHtml (#3849)", () => {
     assert.match(html, /href="\/revisao\/260722"/);
     assert.match(html, /href="\/apoios"/);
     assert.match(html, /href="\/relatorios"/);
+    assert.match(html, /href="\/integracoes"/);
     assert.match(html, /app-nav-group-label">Dashboards</);
     assert.match(html, /href="\/painel\/diaria"[^>]*target="_blank"/);
     assert.match(html, /href="\/painel\/clarice"[^>]*target="_blank"/);
@@ -205,6 +206,7 @@ describe("GET de cada página real inclui #app-nav + nav.js + STUDIO_PAGE corret
     { path: "/triagem", page: "triagem" },
     { path: "/apoios", page: "apoios" },
     { path: "/relatorios", page: "relatorios" },
+    { path: "/integracoes", page: "integracoes" },
     { path: "/edicao/260722", page: "edicao" },
     { path: "/revisao/260722", page: "revisao" },
   ];
