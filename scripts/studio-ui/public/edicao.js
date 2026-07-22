@@ -37,6 +37,8 @@ const el = {
   connDot: document.getElementById("conn-dot"),
   connLabel: document.getElementById("conn-label"),
   notFound: document.getElementById("edicao-not-found"),
+  loadError: document.getElementById("edicao-load-error"),
+  retryBtn: document.getElementById("edicao-retry-btn"),
   alertsSection: document.getElementById("alerts-section"),
   alertsList: document.getElementById("alerts-list"),
   timeline: document.getElementById("stage-timeline"),
@@ -396,7 +398,10 @@ async function fetchDetail() {
   if (res.status === 404 || res.status === 400) {
     return { edition: aammdd, found: false, currentStage: "unknown", stageLabel: "—", gatesPending: [], gateFacingFiles: [], stageStatus: null };
   }
-  if (!res.ok) return null;
+  // #3886: antes retornava null em silêncio pra qualquer !res.ok (ex: 500) —
+  // init() nunca sabia que o carregamento falhou e não tinha como mostrar o
+  // banner de erro. Agora propaga pro catch de init()/scheduleRefetch().
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
@@ -420,8 +425,16 @@ function scheduleRefetch() {
   // do último evento já basta pra "sentir ao vivo".
   if (refetchTimer) clearTimeout(refetchTimer);
   refetchTimer = setTimeout(async () => {
-    const detail = await fetchDetail();
-    if (detail) renderAll(detail);
+    try {
+      const detail = await fetchDetail();
+      if (detail) renderAll(detail);
+    } catch (err) {
+      // #3886: refetch em background (debounce pós-evento SSE) — falha aqui
+      // não deve sobrepor o conteúdo já renderizado com sucesso; só loga.
+      // fetchDetail() agora lança em !res.ok (ver comentário lá) — sem este
+      // catch viraria unhandled rejection nesta timer callback.
+      console.error("scheduleRefetch() falhou:", err);
+    }
   }, 500);
 }
 
@@ -432,18 +445,39 @@ async function init() {
     el.notFound.textContent = "URL inválida — use /edicao/AAMMDD.";
     return;
   }
-  const detail = await fetchDetail();
-  if (detail) renderAll(detail);
-  connect();
+  // #3886: antes, uma exceção em fetchDetail() (rede/5xx/JSON inválido)
+  // interrompia init() ANTES de connect() — o EventSource nunca abria, o dot
+  // ficava preso em "conectando…" pra sempre, timeline vazia, zero retry.
+  // Agora: qualquer falha mostra o banner dedicado (com botão que rechama
+  // init()) e connect() roda sempre no finally, falhe ou não o fetch inicial
+  // — o SSE pode trazer o estado depois mesmo sem o fetch ter completado.
+  try {
+    const detail = await fetchDetail();
+    if (detail) renderAll(detail);
+    el.loadError.hidden = true;
+  } catch (err) {
+    console.error("init() falhou ao carregar detalhe da edição:", err);
+    el.loadError.hidden = false;
+  } finally {
+    connect();
+  }
 }
 
+el.retryBtn.addEventListener("click", () => { init(); });
+
+// #3886: guarda a instância atual — connect() pode ser chamado de novo (via
+// retry de init()) sem abrir uma 2ª conexão SSE em paralelo; fecha a anterior
+// antes de abrir uma nova (idempotente, sem leak de listener duplicado).
+let eventSource = null;
+
 function connect() {
-  const source = new EventSource("/api/events");
+  if (eventSource) eventSource.close();
+  eventSource = new EventSource("/api/events");
 
-  source.addEventListener("open", () => setConn("ok"));
-  source.addEventListener("error", () => setConn("down"));
+  eventSource.addEventListener("open", () => setConn("ok"));
+  eventSource.addEventListener("error", () => setConn("down"));
 
-  source.addEventListener("log-init", (ev) => {
+  eventSource.addEventListener("log-init", (ev) => {
     const events = JSON.parse(ev.data);
     if (pushLogEvents(events) && currentDetail) {
       renderAlerts();
@@ -452,7 +486,7 @@ function connect() {
     }
   });
 
-  source.addEventListener("log", (ev) => {
+  eventSource.addEventListener("log", (ev) => {
     const changed = pushLogEvents([JSON.parse(ev.data)]);
     if (changed) {
       if (currentDetail) {
@@ -464,7 +498,7 @@ function connect() {
     }
   });
 
-  source.addEventListener("state", (ev) => {
+  eventSource.addEventListener("state", (ev) => {
     setConn("ok");
     // #3870: `state` já carrega `chatPermissionsPending` (mesmo shape de
     // GET /api/state) — atualiza o espelho local e reflete no gate 4/6 +
@@ -485,7 +519,7 @@ function connect() {
     scheduleRefetch();
   });
 
-  source.addEventListener("plan", () => {
+  eventSource.addEventListener("plan", () => {
     scheduleRefetch();
   });
 }

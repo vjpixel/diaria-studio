@@ -28,6 +28,15 @@
   </header>
 
   <main>
+    <!-- #3886: banner dedicado pra falha do fetch inicial (rede/5xx/JSON
+         inválido) — distinto do "não encontrada" abaixo (esse é 404/400
+         legítimo). Sem isso a exceção interrompia init() antes de connect()
+         e a tela ficava morta em silêncio. -->
+    <div id="edicao-load-error" class="panel alert-banner" role="alert" hidden>
+      Falha ao carregar dados da edição — verifique a conexão.
+      <button type="button" id="edicao-retry-btn" class="retry-btn">Tentar de novo</button>
+    </div>
+
     <div id="edicao-not-found" class="panel alert-banner" role="alert" hidden>
       Edição não encontrada no disco. Confira o AAMMDD na URL ou volte pro
       <a href="/">painel</a>.
