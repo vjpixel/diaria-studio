@@ -28,6 +28,10 @@ export interface InstagramCreds {
 export interface FireConfig {
   webhookUrl: string;
   pixelWebhookUrl?: string;
+  /** #3903 — MAKE_WEBHOOK_API_KEY, enviado como header `x-make-apikey` em todo
+   * POST ao webhook Make (diaria ou pixel). Undefined = header omitido
+   * (migração incremental, scenario Make ainda sem auth configurada). */
+  apiKey?: string;
   instagram?: InstagramCreds;
 }
 
@@ -60,13 +64,20 @@ export function resolveInstagramCreds(env: Env): InstagramCreds | undefined {
 /**
  * Dispara o post do LinkedIn via webhook Make.com (lógica idêntica à que
  * existia inline em fire.ts/durable-object.ts antes da extração #3817).
+ *
+ * `apiKey` (#3903): quando presente, enviado como header `x-make-apikey` —
+ * reativa o `authenticationMethod` que o scenario Make ANTERIOR (2270381) já
+ * tinha. Ausente = header omitido (migração incremental, sem auth ainda).
  */
-async function fireLinkedIn(entry: QueueEntry, webhookUrl: string): Promise<FireOutcome> {
+async function fireLinkedIn(entry: QueueEntry, webhookUrl: string, apiKey?: string): Promise<FireOutcome> {
   const action: QueueAction = entry.action ?? "post";
   try {
     const res = await fetch(webhookUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(apiKey ? { "x-make-apikey": apiKey } : {}),
+      },
       body: JSON.stringify({
         text: entry.text,
         image_url: entry.image_url,
@@ -252,5 +263,5 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
     webhookUrl = config.webhookUrl;
   }
 
-  return fireLinkedIn(entry, webhookUrl);
+  return fireLinkedIn(entry, webhookUrl, config.apiKey);
 }

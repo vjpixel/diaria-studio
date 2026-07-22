@@ -107,8 +107,9 @@
         "enabled": true
       },
       "linkedin": {
-        "make_webhook_url": "https://hook.us2.make.com/dmikx9ktrmee9woy1synf5vvgo5qhx2t",
+        "make_webhook_url": "",
         "make_webhook_pixel_url": "",
+        "note": "#3903: URLs de webhook Make NUNCA vão aqui — repo é público, bots já descobriram a URL antiga via commit history (1d7051ee). make_webhook_url: env MAKE_LINKEDIN_WEBHOOK_URL (.env.local, tem precedência — ver scripts/publish-linkedin.ts ~L652) ou Worker secret `wrangler secret put MAKE_WEBHOOK_URL` (workers/linkedin-cron/). make_webhook_pixel_url: só existe como Worker secret MAKE_PIXEL_WEBHOOK_URL, nunca teve equivalente local.",
         "cloudflare_worker_url": "https://diaria-linkedin-cron.diaria.workers.dev",
         "company_page_id": "110742958",
         "company_page_name": "Diar.ia",

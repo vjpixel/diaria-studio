@@ -125,19 +125,9 @@ echo "https://hook.us2.make.com/SEU_WEBHOOK_PIXEL_URL" | wrangler secret put MAK
 
 > Se você não rodar isso, o Worker vê `webhook_target=pixel` items e despacha **direto pro DLQ** com `reason: MAKE_PIXEL_WEBHOOK_URL not configured`. Não há retry — é fail-fast deliberado.
 
-### Passo 2.6 — Atualizar `platform.config.json`
+### Passo 2.6 — `platform.config.json` — NÃO commitar a URL real (#3903)
 
-```json
-"publishing": {
-  "social": {
-    "linkedin": {
-      "make_webhook_pixel_url": "https://hook.us2.make.com/SEU_WEBHOOK_PIXEL_URL"
-    }
-  }
-}
-```
-
-(Documentário — publish-linkedin não usa a URL diretamente; é pro Worker.)
+`make_webhook_pixel_url` fica **sempre `""`** em código versionado — mesma regra do `make_webhook_url` (#3903). Este campo é puramente documentário (`publish-linkedin` não lê a URL daqui, só o Worker secret do Passo 2.5 é usado de fato) — não há motivo pra versionar o valor real e todo motivo pra não fazer isso (repo público).
 
 ### Passo 2.7 — Atualizar `.env.local` (opcional)
 

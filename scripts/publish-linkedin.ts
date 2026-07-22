@@ -23,6 +23,9 @@
  *
  * Pré-requisitos:
  *   - MAKE_LINKEDIN_WEBHOOK_URL no env OU `publishing.social.linkedin.make_webhook_url` no config
+ *   - (opcional) MAKE_WEBHOOK_API_KEY no env (#3903) — enviado como header `x-make-apikey`
+ *     no POST ao webhook Make. Migração incremental: ausente = POST sem o header (warning,
+ *     não bloqueia) — comportamento de hoje, até o scenario Make ter auth habilitada.
  *   - (opcional) DIARIA_LINKEDIN_CRON_URL no env OU `publishing.social.linkedin.cloudflare_worker_url`
  *   - (opcional) DIARIA_LINKEDIN_CRON_TOKEN no env (header X-Diaria-Token pro Worker)
  *   Sem o Worker configurado, fallback é fire-now (mesmo se scheduled_at futuro) — mas
@@ -278,18 +281,28 @@ export function classifyImageCache(
 /**
  * Envia payload ao webhook Make.com com retry (até `maxAttempts` tentativas).
  * Retorna a resposta parseada ou lança em falha total.
+ *
+ * `apiKey` (#3903): quando presente, enviado como header `x-make-apikey` —
+ * reativa o `authenticationMethod` que o scenario Make ANTERIOR (2270381) já
+ * tinha configurado. Quando ausente (undefined/vazio), o header é OMITIDO —
+ * nunca enviamos `x-make-apikey: undefined`/vazio — mantendo o comportamento
+ * atual (POST sem auth) até o scenario novo ter a key configurada.
  */
 export async function postToMakeWebhook(
   webhookUrl: string,
   payload: MakeWebhookPayload,
   maxAttempts = 2,
+  apiKey?: string,
 ): Promise<MakeWebhookResponse> {
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const res = await fetch(webhookUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(apiKey ? { "x-make-apikey": apiKey } : {}),
+        },
         body: JSON.stringify(payload),
         signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
       });
@@ -388,6 +401,10 @@ export interface DispatchInput {
 export interface DispatchContext {
   publishedPath: string;
   webhookUrl: string;
+  /** #3903 — MAKE_WEBHOOK_API_KEY, repassado como header `x-make-apikey` em
+   * todo POST direto ao webhook Make (fire-now e fallback worker→make).
+   * Undefined = header omitido (migração incremental, sem auth configurada). */
+  apiKey?: string;
   workerUrl: string;
   workerToken: string;
   useWorkerForScheduled: boolean;
@@ -482,7 +499,7 @@ export async function dispatchEntry(
         console.warn(
           `[publish-linkedin] Worker falhou (${wmsg}), fallback pra Make direto (post imediato, ignora scheduled_at)`,
         );
-        const response = await postToMakeWebhook(ctx.webhookUrl, payload);
+        const response = await postToMakeWebhook(ctx.webhookUrl, payload, 2, ctx.apiKey);
         entry = {
           platform: "linkedin",
           destaque: d,
@@ -507,7 +524,7 @@ export async function dispatchEntry(
         );
       }
       console.log(`Publishing ${tag} via Make.com (fire-now)...`);
-      const response = await postToMakeWebhook(ctx.webhookUrl, payload);
+      const response = await postToMakeWebhook(ctx.webhookUrl, payload, 2, ctx.apiKey);
       entry = {
         platform: "linkedin",
         destaque: d,
@@ -662,6 +679,18 @@ async function main(): Promise<void> {
         '  2. platform.config.json → publishing.social.linkedin.make_webhook_url: "..."',
     );
     process.exit(1);
+  }
+
+  // #3903 — header x-make-apikey opcional (migração incremental: reativa o
+  // authenticationMethod que o scenario Make ANTERIOR já tinha). Ausente =
+  // POST sem o header (warning discreto, não bloqueia — comportamento atual).
+  const webhookApiKey = process.env.MAKE_WEBHOOK_API_KEY || undefined;
+  if (!webhookApiKey) {
+    console.warn(
+      "[publish-linkedin] AVISO: MAKE_WEBHOOK_API_KEY não configurado — POST ao webhook Make " +
+        "sai sem o header x-make-apikey (#3903, migração incremental). Configure quando o " +
+        "scenario Make tiver auth habilitada.",
+    );
   }
 
   // Worker URL + token: opcionais. Sem eles, fallback é fire-now via Make webhook
@@ -882,6 +911,7 @@ async function main(): Promise<void> {
   const ctx: DispatchContext = {
     publishedPath,
     webhookUrl,
+    apiKey: webhookApiKey,
     workerUrl,
     workerToken,
     useWorkerForScheduled,

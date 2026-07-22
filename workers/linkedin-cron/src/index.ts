@@ -63,6 +63,10 @@
  * Secrets (via `wrangler secret put`):
  *   DIARIA_TOKEN                   → header X-Diaria-Token pra autenticar /queue, /list e /dlq
  *   MAKE_WEBHOOK_URL               → URL do webhook Make (Scenario A "Integration LinkedIn")
+ *   MAKE_WEBHOOK_API_KEY            → (#3903) header x-make-apikey enviado no POST ao webhook
+ *                                    Make acima. Opcional — migração incremental: ausente = POST
+ *                                    sem o header (comportamento atual). Reativa o
+ *                                    authenticationMethod que o scenario ANTERIOR (2270381) já tinha.
  *   INSTAGRAM_BUSINESS_ACCOUNT_ID  → (#3817) conta @diar.ia.br pra channel="instagram"
  *   INSTAGRAM_ACCESS_TOKEN         → (#3817) token de página com escopo instagram_content_publish
  * Vars (via [vars] no wrangler.toml, não-secretas):
@@ -77,6 +81,10 @@ export interface Env {
   // só faz comments na Diar.ia company page). Opcional pra backward-compat:
   // se ausente, items com webhook_target="pixel" vão pra DLQ com reason claro.
   MAKE_PIXEL_WEBHOOK_URL?: string;
+  // #3903 — header x-make-apikey enviado em todo POST ao webhook Make (diaria
+  // e pixel). Opcional pra backward-compat: ausente = POST sem o header
+  // (comportamento atual, sem auth) — ver dispatch.ts::fireLinkedIn.
+  MAKE_WEBHOOK_API_KEY?: string;
   // #1168 — Durable Object namespace pra alarms por item.
   LINKEDIN_SCHEDULER: DurableObjectNamespace;
   // #3817 — credenciais Graph API pro canal Instagram (Content Publishing).
@@ -380,6 +388,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       entry,
       webhookUrl: env.MAKE_WEBHOOK_URL,
       ...(env.MAKE_PIXEL_WEBHOOK_URL !== undefined && { pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL }),
+      ...(env.MAKE_WEBHOOK_API_KEY !== undefined && { webhookApiKey: env.MAKE_WEBHOOK_API_KEY }),
       ...(igCreds !== undefined && { instagram: igCreds }),
     };
     const armRes = await doStub.fetch("https://do/arm", {
@@ -723,6 +732,7 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
         entry,
         webhookUrl: env.MAKE_WEBHOOK_URL,
         ...(env.MAKE_PIXEL_WEBHOOK_URL !== undefined && { pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL }),
+        ...(env.MAKE_WEBHOOK_API_KEY !== undefined && { webhookApiKey: env.MAKE_WEBHOOK_API_KEY }),
         ...(igCreds !== undefined && { instagram: igCreds }),
       };
       const armRes = await doStub.fetch("https://do/arm", {
