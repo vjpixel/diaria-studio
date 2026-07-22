@@ -30,29 +30,6 @@
   opacity: 0.65;
 }
 
-.followups-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-.followups-list li {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: baseline;
-  padding: 0.4rem 0.6rem;
-  border: 1px solid var(--rule);
-  border-radius: 4px;
-  background: var(--paper-alt);
-  font-size: 0.85rem;
-}
-.followups-list .fu-name { font-weight: 600; }
-.followups-list .fu-meta { opacity: 0.7; font-size: 0.78rem; font-family: var(--font-mono); }
-.followups-empty { opacity: 0.6; font-size: 0.85rem; }
-
 .contact-form {
   display: flex;
   flex-wrap: wrap;
@@ -67,36 +44,11 @@
   flex: 1 1 180px;
 }
 .form-field-wide { flex-basis: 100%; }
-.form-field .label,
-.form-field-check {
+.form-field .label {
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   opacity: 0.65;
-}
-.form-field-check {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  text-transform: none;
-  font-size: 0.85rem;
-  opacity: 1;
-}
-/* #3677: grupo de radio buttons do campo Canal (outreach) — mesma pílula
-   visual do form-field-check, em linha, com wrap pra telas estreitas. */
-.radio-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem 1rem;
-}
-.radio-option {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  text-transform: none;
-  font-size: 0.85rem;
-  opacity: 1;
-  cursor: pointer;
 }
 .contact-form input[type="text"],
 .contact-form input[type="date"],
@@ -167,11 +119,6 @@
   white-space: pre-wrap;
   margin: 0.3rem 0;
 }
-.contact-outreach {
-  font-size: 0.78rem;
-  opacity: 0.75;
-  margin: 0.2rem 0;
-}
 .contact-actions {
   display: flex;
   gap: 0.5rem;
@@ -216,16 +163,6 @@
 }
 .open-rate-ok { border-color: #1a73e8; color: #1a73e8; }
 .open-rate-sem-dados { border-style: dashed; opacity: 0.6; }
-
-.followup-tag {
-  display: inline-block;
-  font-size: 0.68rem;
-  text-transform: uppercase;
-  color: #e67e22;
-  border: 1px dashed #e67e22;
-  border-radius: 3px;
-  padding: 0 0.3rem;
-}
 
 .contact-dialog {
   border: 1px solid var(--rule);

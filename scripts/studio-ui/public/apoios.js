@@ -1,25 +1,26 @@
 // apoios.js (#3602) — CRM simples de apoios apoia.se: base de contatos +
 // status cruzado (apoiando/não apoia/apoiou e parou, via checkBacker) +
-// tracking de outreach + visão de campanha. Vanilla JS, sem build step
-// (mesmo princípio de triagem.js/app.js — #3555/#3562).
+// visão de campanha. Vanilla JS, sem build step (mesmo princípio de
+// triagem.js/app.js — #3555/#3562).
 //
-// Toda mutação (adicionar contato, editar, registrar outreach) chama
-// POST/PUT /api/apoios/contacts[...] (studio-apoios.ts) e depois refaz o
-// fetch completo de /api/apoios — sem estado otimista client-side, mais
-// simples e sempre consistente com o servidor (fonte única de verdade é o
+// Toda mutação (adicionar contato, editar) chama POST/PUT
+// /api/apoios/contacts[...] (studio-apoios.ts) e depois refaz o fetch
+// completo de /api/apoios — sem estado otimista client-side, mais simples e
+// sempre consistente com o servidor (fonte única de verdade é o
 // contacts.jsonl).
+//
+// #3844 (decisão do editor 260721): os recursos de follow-up/outreach
+// (tracking de contato, dialog de registro, tiles de contactados/follow-ups
+// pendentes) foram removidos — a área refoca em visão por grupo/nível de
+// recompensa (parte 2 da issue, ainda pendente de decisão de produto).
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
   fetchLabel: document.getElementById("fetch-label"),
   error: document.getElementById("apoios-error"),
   tileTotal: document.getElementById("tile-total"),
-  tileContacted: document.getElementById("tile-contacted"),
   tileConverted: document.getElementById("tile-converted"),
   tileValue: document.getElementById("tile-value"),
-  tileFollowups: document.getElementById("tile-followups"),
-  followupsCount: document.getElementById("followups-count"),
-  followupsList: document.getElementById("followups-list"),
   addForm: document.getElementById("add-contact-form"),
   newName: document.getElementById("new-name"),
   newEmails: document.getElementById("new-emails"),
@@ -38,21 +39,10 @@ const el = {
   editNotes: document.getElementById("edit-notes"),
   editError: document.getElementById("edit-contact-error"),
   editCancelBtn: document.getElementById("edit-cancel-btn"),
-  outreachDialog: document.getElementById("outreach-dialog"),
-  outreachForm: document.getElementById("outreach-form"),
-  outreachId: document.getElementById("outreach-id"),
-  outreachDate: document.getElementById("outreach-date"),
-  outreachChannelGroup: document.getElementById("outreach-channel-group"),
-  outreachChannelOther: document.getElementById("outreach-channel-other"),
-  outreachResponded: document.getElementById("outreach-responded"),
-  outreachFollowup: document.getElementById("outreach-followup"),
-  outreachNote: document.getElementById("outreach-note"),
-  outreachError: document.getElementById("outreach-error"),
-  outreachCancelBtn: document.getElementById("outreach-cancel-btn"),
 };
 
 /** Snapshot bruto da última resposta de /api/apoios. */
-let data = { contacts: [], campaign: null, pendingFollowups: [], error: null, generatedAt: null };
+let data = { contacts: [], campaign: null, error: null, generatedAt: null };
 
 const filters = { status: "" };
 
@@ -134,30 +124,10 @@ function renderError() {
 }
 
 function renderTiles() {
-  const c = data.campaign ?? { totalContacts: 0, totalContacted: 0, totalConverted: 0, monthlyValueSum: 0, pendingFollowupsCount: 0 };
+  const c = data.campaign ?? { totalContacts: 0, totalConverted: 0, monthlyValueSum: 0 };
   el.tileTotal.textContent = String(c.totalContacts);
-  el.tileContacted.textContent = String(c.totalContacted);
   el.tileConverted.textContent = String(c.totalConverted);
   el.tileValue.textContent = fmtBRL(c.monthlyValueSum ?? 0);
-  el.tileFollowups.textContent = String(c.pendingFollowupsCount);
-}
-
-function renderFollowups() {
-  const list = data.pendingFollowups ?? [];
-  el.followupsCount.textContent = String(list.length);
-  el.followupsList.innerHTML = "";
-  if (list.length === 0) {
-    el.followupsList.innerHTML = '<li class="followups-empty">Nenhum follow-up pendente.</li>';
-    return;
-  }
-  for (const f of list) {
-    const li = document.createElement("li");
-    li.innerHTML = `
-      <span class="fu-name">${escapeHtml(f.name)}</span>
-      <span class="fu-meta">último contato ${escapeHtml(f.lastOutreachDate)} via ${escapeHtml(f.lastOutreachChannel)}</span>
-    `;
-    el.followupsList.appendChild(li);
-  }
 }
 
 function matchesFilter(contact) {
@@ -172,23 +142,16 @@ function renderContacts() {
   for (const c of filtered) {
     const card = document.createElement("div");
     card.className = "contact-card";
-    const lastOutreach = c.outreach.length > 0 ? c.outreach[c.outreach.length - 1] : null;
-    const followupTag = lastOutreach && lastOutreach.followupPending ? '<span class="followup-tag">follow-up pendente</span>' : "";
     card.innerHTML = `
       <div class="contact-card-head">
         <span class="contact-name">${escapeHtml(c.name)}</span>
         ${statusBadge(c.status)}
         ${openRateBadge(c.openRate)}
-        ${followupTag}
       </div>
       <div class="contact-emails">${c.emails.map(escapeHtml).join(", ")}</div>
       ${c.notes ? `<div class="contact-notes">${escapeHtml(c.notes)}</div>` : ""}
-      <div class="contact-outreach">
-        ${c.outreach.length === 0 ? "sem outreach registrado" : `${c.outreach.length} outreach(es) — último em ${escapeHtml(lastOutreach.date)} via ${escapeHtml(lastOutreach.channel)}${lastOutreach.responded ? " (respondeu)" : ""}`}
-      </div>
       <div class="contact-actions">
         <button type="button" data-action="edit" data-id="${escapeHtml(c.id)}">Editar</button>
-        <button type="button" data-action="outreach" data-id="${escapeHtml(c.id)}">Registrar outreach</button>
       </div>
     `;
     el.contactsList.appendChild(card);
@@ -198,7 +161,6 @@ function renderContacts() {
 function renderAll() {
   renderError();
   renderTiles();
-  renderFollowups();
   renderContacts();
   el.lastUpdated.textContent = data.generatedAt ? `atualizado ${fmtTime(data.generatedAt)}` : "";
 }
@@ -261,7 +223,6 @@ el.contactsList.addEventListener("click", (ev) => {
   const contact = data.contacts.find((c) => c.id === id);
   if (!contact) return;
   if (btn.dataset.action === "edit") openEditDialog(contact);
-  if (btn.dataset.action === "outreach") openOutreachDialog(contact);
 });
 
 function openEditDialog(contact) {
@@ -297,68 +258,6 @@ el.editForm.addEventListener("submit", async (ev) => {
   } catch (e) {
     el.editError.hidden = false;
     el.editError.textContent = String(e.message ?? e);
-  }
-});
-
-// #3677: canal do outreach virou radio buttons (Email/WhatsApp/LinkedIn +
-// "Outro" com campo de texto livre) em vez de input de texto solto. O
-// payload salvo (`channel`) continua sendo string livre — só a UX de
-// entrada mudou.
-function getSelectedOutreachChannel() {
-  const checked = el.outreachChannelGroup.querySelector('input[name="outreach-channel"]:checked');
-  const value = checked ? checked.value : "";
-  return value === "outro" ? el.outreachChannelOther.value.trim() : value;
-}
-
-function setOutreachChannelOtherVisible(visible) {
-  el.outreachChannelOther.hidden = !visible;
-  el.outreachChannelOther.required = visible;
-  if (!visible) el.outreachChannelOther.value = "";
-}
-
-el.outreachChannelGroup.addEventListener("change", (ev) => {
-  setOutreachChannelOtherVisible(ev.target.value === "outro");
-});
-
-function openOutreachDialog(contact) {
-  el.outreachError.hidden = true;
-  el.outreachId.value = contact.id;
-  el.outreachDate.value = new Date().toISOString().slice(0, 10);
-  const emailRadio = el.outreachChannelGroup.querySelector('input[value="email"]');
-  if (emailRadio) emailRadio.checked = true;
-  setOutreachChannelOtherVisible(false);
-  el.outreachResponded.checked = false;
-  el.outreachFollowup.checked = false;
-  el.outreachNote.value = "";
-  el.outreachDialog.showModal();
-}
-
-el.outreachCancelBtn.addEventListener("click", () => el.outreachDialog.close());
-
-el.outreachForm.addEventListener("submit", async (ev) => {
-  ev.preventDefault();
-  el.outreachError.hidden = true;
-  const id = el.outreachId.value;
-  const body = {
-    date: el.outreachDate.value,
-    channel: getSelectedOutreachChannel(),
-    responded: el.outreachResponded.checked,
-    followupPending: el.outreachFollowup.checked,
-    note: el.outreachNote.value,
-  };
-  try {
-    const res = await fetch(`/api/apoios/contacts/${encodeURIComponent(id)}/outreach`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const result = await res.json();
-    if (!res.ok || !result.ok) throw new Error(result.error ?? `HTTP ${res.status}`);
-    el.outreachDialog.close();
-    await fetchApoios();
-  } catch (e) {
-    el.outreachError.hidden = false;
-    el.outreachError.textContent = String(e.message ?? e);
   }
 });
 

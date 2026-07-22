@@ -6,14 +6,12 @@
   <title>Diar.ia Studio</title>
   <link rel="stylesheet" href="/tokens.generated.css" />
   <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
   <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
   <header class="statusbar">
-    <a class="statusbar-item back-link" href="/triagem">Triagem &rarr;</a>
-    <a class="statusbar-item back-link" href="/rodada">Rodada &rarr;</a>
-    <a class="statusbar-item back-link" href="/apoios">Apoios &rarr;</a>
-    <a class="statusbar-item back-link" href="/relatorios">Relatórios &rarr;</a>
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
     <div class="statusbar-item">
       <span class="label">Edição</span>
       <span class="value" id="statusbar-edition">—</span>
@@ -71,6 +69,8 @@
     </section>
   </main>
 
+  <script>window.STUDIO_PAGE = "index";</script>
+  <script src="/nav.js" type="module"></script>
   <script src="/app.js" type="module"></script>
   <script src="/chat-drawer.js" type="module"></script>
 </body>

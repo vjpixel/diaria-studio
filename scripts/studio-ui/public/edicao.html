@@ -6,12 +6,13 @@
   <title>Diar.ia Studio — Edição</title>
   <link rel="stylesheet" href="/tokens.generated.css" />
   <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
   <link rel="stylesheet" href="/edicao.css" />
   <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
   <header class="statusbar">
-    <a class="statusbar-item back-link" href="/">&larr; Painel</a>
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
     <div class="statusbar-item">
       <span class="label">Edição</span>
       <span class="value" id="edicao-titulo">—</span>
@@ -64,6 +65,8 @@
     </section>
   </main>
 
+  <script>window.STUDIO_PAGE = "edicao";</script>
+  <script src="/nav.js" type="module"></script>
   <script src="/edicao.js" type="module"></script>
   <script src="/chat-drawer.js" type="module"></script>
 </body>

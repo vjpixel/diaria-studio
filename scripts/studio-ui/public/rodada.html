@@ -6,13 +6,14 @@
   <title>Diar.ia Studio — Rodada</title>
   <link rel="stylesheet" href="/tokens.generated.css" />
   <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
   <link rel="stylesheet" href="/triagem.css" />
   <link rel="stylesheet" href="/rodada.css" />
   <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
   <header class="statusbar">
-    <a class="statusbar-item back-link" href="/">&larr; Painel</a>
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
     <div class="statusbar-item">
       <span class="label">Rodada</span>
       <span class="value" id="round-session">—</span>
@@ -128,6 +129,8 @@
     </section>
   </main>
 
+  <script>window.STUDIO_PAGE = "rodada";</script>
+  <script src="/nav.js" type="module"></script>
   <script src="/rodada.js" type="module"></script>
   <script src="/chat-drawer.js" type="module"></script>
 </body>

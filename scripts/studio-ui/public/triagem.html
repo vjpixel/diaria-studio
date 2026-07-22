@@ -6,12 +6,13 @@
   <title>Diar.ia Studio — Triagem</title>
   <link rel="stylesheet" href="/tokens.generated.css" />
   <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
   <link rel="stylesheet" href="/triagem.css" />
   <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
   <header class="statusbar">
-    <a class="statusbar-item back-link" href="/">&larr; Painel</a>
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
     <div class="statusbar-item">
       <span class="label">Triagem</span>
       <span class="value">issues + PRs abertos</span>
@@ -155,6 +156,8 @@
     </section>
   </main>
 
+  <script>window.STUDIO_PAGE = "triagem";</script>
+  <script src="/nav.js" type="module"></script>
   <script src="/triagem.js" type="module"></script>
   <script src="/chat-drawer.js" type="module"></script>
 </body>
