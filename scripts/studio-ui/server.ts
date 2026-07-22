@@ -277,6 +277,8 @@ import {
   appendChatHistoryUserMessage,
   appendChatHistoryEvent,
   getChatHistory,
+  createCloseAbortGuard,
+  DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS,
   type QueryFn,
 } from "./studio-chat.ts";
 // #3702: dispara a sessão coordenadora de uma onda (fan-out via Agent tool
@@ -390,6 +392,11 @@ export interface StudioServerOptions {
    * threshold) — default `Date.now`; testes injetam uma sequência fixa pra
    * simular um turno "longo" sem esperar segundos de verdade. */
   chatDoneNowFn?: () => number;
+  /** Debounce (ms) entre o `close` da request de `/api/chat` e o abort de
+   * fato da sessão do Agent SDK (#3887) — default `DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS`
+   * (2.5s). Testes injetam um valor pequeno pra não esperar segundos de
+   * verdade num close persistente. Ver `createCloseAbortGuard` (`studio-chat.ts`). */
+  chatCloseAbortDebounceMs?: number;
   /** #3565: liga o watcher de push periódico do snapshot pro KV (espelho
    * read-only externo, `workers/diaria-dashboard` rota `/studio`).
    * DESLIGADO por padrão — inclusive em testes, que criam `StudioServer` sem
@@ -665,6 +672,7 @@ async function handleApiChat(
     maxBodyBytes: number;
     chatDoneNotifyFn?: typeof maybeNotifyChatDone;
     nowFn?: () => number;
+    closeAbortDebounceMs?: number;
   },
 ): Promise<void> {
   let raw: string;
@@ -696,8 +704,28 @@ async function handleApiChat(
   res.write(formatSseComment("connected"));
 
   const abortController = new AbortController();
-  const onClose = () => abortController.abort();
-  req.on("close", onClose);
+  // #3887: `close` já não aborta a sessão real do Agent SDK no primeiro
+  // evento — o abort de fato fica atrás de um debounce (`closeAbortGuard`,
+  // `createCloseAbortGuard` em studio-chat.ts) pra tolerar uma queda de
+  // rede transitória (celular trocando Wi-Fi→4G em cima do tunnel) sem
+  // matar o turno.
+  //
+  // Escuta tanto `req` quanto `res` (achado deste PR, não coberto pela
+  // redação original da issue): `req` é um Readable cujo 'close' já dispara
+  // perto do fim de `readRequestBody` (corpo inteiro já consumido) — pra
+  // uma request cujo corpo cabe num único chunk (o caso comum de uma
+  // mensagem de chat digitada à mão), esse 'close' já fica pra trás ANTES
+  // do listener abaixo existir, e o Node não reemite. `res` continua vivo
+  // (escrevendo a stream SSE) e É o sinal que sobrevive confiável até o
+  // socket de verdade cair — `createCloseAbortGuard.onClose()` é reentrante
+  // por design (ver doc-comment), então registrar nos dois não duplica
+  // abort nem quebra nada se algum dia os dois dispararem.
+  const closeAbortGuard = createCloseAbortGuard(
+    () => abortController.abort(),
+    opts.closeAbortDebounceMs ?? DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS,
+  );
+  req.on("close", closeAbortGuard.onClose);
+  res.on("close", closeAbortGuard.onClose);
 
   const nowFn = opts.nowFn ?? Date.now;
   const chatDoneNotifyFn = opts.chatDoneNotifyFn ?? maybeNotifyChatDone;
@@ -759,7 +787,14 @@ async function handleApiChat(
     },
   });
 
-  req.off("close", onClose);
+  req.off("close", closeAbortGuard.onClose);
+  res.off("close", closeAbortGuard.onClose);
+  // #3887: limpa o timer de debounce pendente (se `close` chegou a disparar
+  // mas o turno terminou normalmente dentro da janela) — sem isto, um
+  // `close` transitório que se resolveu sozinho ainda dispararia o abort
+  // atrasado sobre um `abortController` de um turno que já terminou (inerte
+  // na prática, mas o timer ficaria pendurado até disparar à toa).
+  closeAbortGuard.cancel();
   res.end();
 }
 
@@ -1272,6 +1307,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const chatMaxBodyBytes = opts.chatMaxBodyBytes ?? 256_000;
   const chatDoneNotifyFn = opts.chatDoneNotifyFn;
   const chatDoneNowFn = opts.chatDoneNowFn;
+  const chatCloseAbortDebounceMs = opts.chatCloseAbortDebounceMs;
   const waveFireQueryFn = opts.waveFireQueryFn;
   const waveFireEnabled = opts.waveFireEnabled ?? false;
   const waveFireMaxConcurrency = opts.waveFireMaxConcurrency ?? 6;
@@ -1294,6 +1330,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
           maxBodyBytes: chatMaxBodyBytes,
           chatDoneNotifyFn,
           nowFn: chatDoneNowFn,
+          closeAbortDebounceMs: chatCloseAbortDebounceMs,
         }).catch((e) => {
           // runChatTurn já é fail-soft (erros do SDK viram evento chat-error);
           // este catch cobre só falhas síncronas anteriores (ex: writeHead

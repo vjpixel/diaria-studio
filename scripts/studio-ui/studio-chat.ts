@@ -1358,6 +1358,75 @@ function makeInteractiveCanUseTool(
   };
 }
 
+/** Debounce default (ms) entre o `close` da request HTTP de `/api/chat` e o
+ * abort de fato da sessão do Agent SDK (#3887) — ver `createCloseAbortGuard`
+ * logo abaixo. 2.5s folga o suficiente pra uma troca de rede transitória
+ * (celular Wi-Fi→4G em cima do tunnel) sem custar segundos visíveis numa
+ * queda REAL (o editor não notaria a diferença entre abort imediato e
+ * abort com ~2.5s de atraso numa desconexão persistente). */
+export const DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS = 2500;
+
+/**
+ * Guarda o abort de uma sessão de chat atrás de um debounce (#3887).
+ *
+ * Antes: `req.on("close", () => abortController.abort())` abortava a sessão
+ * real do Agent SDK no PRIMEIRO evento de `close` — uma queda de rede
+ * transitória a meio-turno (o cenário comum é celular trocando de rede em
+ * cima do tunnel) matava o turno de verdade no servidor, sem chance de
+ * retomada, mesmo que o turno continuasse progredindo no lado do SDK
+ * (`runChatTurn` não depende da conexão HTTP pra seguir rodando — só usa
+ * `req`/`res` pra emitir os eventos, já fail-soft via try/catch em
+ * `res.write`, ver `handleApiChat`).
+ *
+ * Depois: `onClose()` (chamado pelos listeners `req.on("close", ...)` E
+ * `res.on("close", ...)` — o caller registra nos dois, ver doc-comment de
+ * `handleApiChat`) agenda o abort de verdade `debounceMs` à frente, em vez
+ * de disparar na hora. `cancel()` (chamado pelo caller assim que o turno
+ * termina normalmente, ANTES de `res.end()` — mesmo ponto que já fazia
+ * `req.off("close", ...)`) limpa o timer pendente. Se o turno termina
+ * dentro da janela de debounce (o caso "close transitório"), `cancel()`
+ * corta o abort antes dele disparar — o turno sobrevive à queda. Se o `close`
+ * persistir além de
+ * `debounceMs` sem o turno terminar (o caso "close persistente"), o abort
+ * dispara exatamente como antes do #3887.
+ *
+ * Usa `setTimeout`/`clearTimeout` globais — sem deps injetáveis, porque
+ * `node:test` `mock.timers` já intercepta o global de graça (ver
+ * `studio-chat.test.ts`), sem precisar de plumbing extra.
+ *
+ * `onClose()` é reentrante por design: o caller registra o MESMO `onClose`
+ * tanto em `req.on("close", ...)` quanto em `res.on("close", ...)` (achado
+ * deste PR — `req` sozinho não é confiável pra uma request cujo corpo já foi
+ * lido inteiro antes do listener existir, ver doc-comment de `handleApiChat`),
+ * então dois disparos (um de cada) são o caso ESPERADO, não só defensivo. A
+ * chamada seguinte cancela o timer pendente antes de agendar um novo — nunca
+ * dois timers pendentes ao mesmo tempo, e nunca dois `abort()`.
+ */
+export function createCloseAbortGuard(
+  abort: () => void,
+  debounceMs: number = DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS,
+): { onClose: () => void; cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cancel = () => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
+  return {
+    onClose: () => {
+      // #3887 regressão: NÃO chamar `abort()` direto aqui — é exatamente o
+      // bug original (abort no primeiro close, sem tolerância a blip).
+      cancel(); // reentrância defensiva — ver doc-comment acima.
+      timer = setTimeout(() => {
+        timer = undefined;
+        abort();
+      }, debounceMs);
+    },
+    cancel,
+  };
+}
+
 export interface RunChatTurnOptions {
   message: string;
   /** Sessão a retomar (se houver) — omitido = conversa nova. */
@@ -1373,8 +1442,9 @@ export interface RunChatTurnOptions {
   queryFn?: QueryFn;
   /** Repassado direto pro `Options.abortController` do SDK — o caller (o
    * handler HTTP) já cria um `AbortController` pra abortar no `close` da
-   * request; passar o mesmo objeto evita indireção de wrap-outro-controller
-   * só pra encaminhar um `signal`. */
+   * request (via `createCloseAbortGuard` acima, debounced desde #3887);
+   * passar o mesmo objeto evita indireção de wrap-outro-controller só pra
+   * encaminhar um `signal`. */
   abortController?: AbortController;
 }
 

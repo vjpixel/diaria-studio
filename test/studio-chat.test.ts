@@ -45,6 +45,8 @@ import {
   getKnownFileMtime,
   clearKnownFileMtimeTracking,
   EDIT_GUARD_STALE_MESSAGE,
+  createCloseAbortGuard,
+  DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS,
   type ChatWireEvent,
   type ChatPermissionRequestEvent,
   type QueryFn,
@@ -1486,5 +1488,77 @@ describe("guard de frescor (#3806) — fim-a-fim via runChatTurn + hooks reais (
 
     const { pre } = await runToolThroughHooks("Edit", { file_path: filePath, old_string: "x", new_string: "y" });
     assert.notEqual(pre.decision, "block", "sem baseline pós-clear, nada a comparar — não deveria bloquear");
+  });
+});
+
+describe("createCloseAbortGuard (#3887) — debounce do abort no close da request de /api/chat", () => {
+  it("close PERSISTENTE (sem cancel dentro da janela) aborta como antes — timer fake", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let abortCalls = 0;
+    const guard = createCloseAbortGuard(() => {
+      abortCalls++;
+    }, 2500);
+
+    guard.onClose();
+    assert.equal(abortCalls, 0, "não aborta na hora — só depois do debounce");
+
+    t.mock.timers.tick(2499);
+    assert.equal(abortCalls, 0, "ainda dentro da janela — não deveria ter abortado");
+
+    t.mock.timers.tick(1);
+    assert.equal(abortCalls, 1, "janela esgotada — close persistente aborta");
+  });
+
+  it("close TRANSITÓRIO (<2s, cancel chega antes do timer disparar) NÃO aborta a sessão", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let abortCalls = 0;
+    const guard = createCloseAbortGuard(() => {
+      abortCalls++;
+    }, 2500);
+
+    guard.onClose();
+    t.mock.timers.tick(1500); // < 2500ms — turno termina normalmente aqui
+    guard.cancel(); // mesmo ponto onde handleApiChat chama antes de res.end()
+
+    t.mock.timers.tick(2000); // passa MUITO da janela original
+    assert.equal(abortCalls, 0, "cancel() dentro da janela devia ter cortado o abort de vez");
+  });
+
+  it("cancel() sem nenhum close pendente é no-op seguro (turno termina sem NUNCA ter caído)", () => {
+    let abortCalls = 0;
+    const guard = createCloseAbortGuard(() => {
+      abortCalls++;
+    }, 2500);
+    assert.doesNotThrow(() => guard.cancel());
+    assert.equal(abortCalls, 0);
+  });
+
+  it("2 close() em sequência (defensivo) não duplica o abort — só o timer mais recente conta", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let abortCalls = 0;
+    const guard = createCloseAbortGuard(() => {
+      abortCalls++;
+    }, 2500);
+
+    guard.onClose();
+    t.mock.timers.tick(1000);
+    guard.onClose(); // 2º close — reagenda um novo timer de 2500ms a partir daqui
+
+    t.mock.timers.tick(2500);
+    assert.equal(abortCalls, 1, "deveria abortar exatamente 1 vez, no timer do 2º close");
+  });
+
+  it("DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS é usado quando debounceMs é omitido", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let abortCalls = 0;
+    const guard = createCloseAbortGuard(() => {
+      abortCalls++;
+    }); // sem 2º argumento — usa o default
+
+    guard.onClose();
+    t.mock.timers.tick(DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS - 1);
+    assert.equal(abortCalls, 0);
+    t.mock.timers.tick(1);
+    assert.equal(abortCalls, 1);
   });
 });
