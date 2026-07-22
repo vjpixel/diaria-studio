@@ -67,6 +67,35 @@ export type FetchPostFn = (
 ) => Promise<GraphPostResponse>;
 
 /**
+ * Resolve o ID a consultar na Graph API a partir do `fb_post_id` persistido
+ * (#3816).
+ *
+ * `publishPhoto()` (`publish-facebook.ts`) publica via `POST /{pageId}/photos`.
+ * Para foto AGENDADA (`published=false` + `scheduled_publish_time`), a
+ * resposta só traz `id` — o ID da FOTO — e não traz `post_id` (o ID composto
+ * do post de página, `{pageId}_{photoId}`). O fallback `result.post_id ||
+ * result.id` em `publish-facebook.ts` grava então o ID cru da foto em
+ * `fb_post_id`.
+ *
+ * Consultar esse ID cru (`GET /{photoId}`) resolve pra um nó `photo`, que não
+ * expõe os campos de post de página (`scheduled_publish_time`,
+ * `is_published`) — daí o `(#100) Tried accessing nonexisting field`. O ID
+ * composto `{pageId}_{photoId}` resolve pro nó `post` correto, com todos os
+ * campos disponíveis.
+ *
+ * Se `fb_post_id` já contém `"_"` (já é o ID composto — `post_id` veio na
+ * resposta original, ou é uma edição já gravada no formato correto), usa como
+ * está — idempotente, nunca duplica o prefixo. Se `pageId` não estiver
+ * disponível, retorna o id original (best-effort — sem `pageId` não dá pra
+ * compor, e ler o ID cru é estritamente melhor que não ler nada).
+ */
+export function resolveGraphPostId(fbPostId: string, pageId: string | undefined): string {
+  if (fbPostId.includes("_")) return fbPostId;
+  if (!pageId) return fbPostId;
+  return `${pageId}_${fbPostId}`;
+}
+
+/**
  * Fetch default — chama Graph API real. Pode ser substituído em testes.
  */
 /**
@@ -155,10 +184,37 @@ export function reconcilePost(
   now: Date,
 ): PostEntry {
   if (graph.error) {
+    // #3816 (3ª recorrência da mesma classe de bug — #600, #920): um erro DE
+    // LEITURA (code 100 — "Tried accessing nonexisting field", campo que não
+    // existe NAQUELE TIPO DE NÓ) não é evidência de que o post falhou, só de
+    // que a verificação ficou cega pro ID que consultou. `graph.error →
+    // failed` incondicional transformava essa cegueira em falso negativo: os
+    // 3 posts de 260721 foram publicados com sucesso (is_published=true,
+    // confirmado ao vivo) mas viraram "failed" porque a leitura usava o ID de
+    // foto em vez do ID composto do post (ver resolveGraphPostId acima).
+    // Se a entry já tem `fb_post_id` de uma criação bem-sucedida, um erro
+    // #100 não deve sobrescrever o status atual — preserva-o (scheduled
+    // continua scheduled; failed de uma rodada anterior continua failed até
+    // uma leitura conclusiva) e anota a inconclusividade via
+    // `verification_note`, pro #573 audit trail e pra um verify seguinte
+    // (rodando já com o fix (a)) não achar "nenhuma mudança" e desistir.
+    const isReadError = graph.error.code === 100;
+    const hasConfirmedCreation =
+      typeof entry.fb_post_id === "string" && entry.fb_post_id.length > 0;
+    if (isReadError && hasConfirmedCreation) {
+      return {
+        ...entry,
+        verification_note: `read_error_inconclusive_code_100: ${graph.error.message}`,
+      };
+    }
     return {
       ...entry,
       status: "failed",
       failure_reason: graph.error.message,
+      // Limpa uma nota de inconclusividade de uma rodada anterior — esta é
+      // agora uma falha real e conclusiva, não deve ficar marcada como
+      // "inconclusiva" no audit trail.
+      verification_note: undefined,
     };
   }
 
@@ -166,7 +222,15 @@ export function reconcilePost(
   const nowUnix = Math.floor(now.getTime() / 1000);
 
   if (typeof scheduledUnix === "number" && scheduledUnix > nowUnix) {
-    // Ainda no futuro — mantém scheduled
+    // Ainda no futuro. #3816 fix (c): se a entry chegou aqui como "failed"
+    // (de uma rodada anterior com erro de leitura — ex: ID de foto em vez do
+    // composto), esta leitura CONCLUSIVA confirma que o post está
+    // genuinamente agendado — corrige de volta pra "scheduled" em vez de
+    // deixar presa em "failed" pra sempre. Único outro status que chega aqui
+    // ("scheduled") passa intocado.
+    if (entry.status === "failed") {
+      return { ...entry, status: "scheduled", failure_reason: undefined, verification_note: undefined };
+    }
     return entry;
   }
 
@@ -176,13 +240,19 @@ export function reconcilePost(
       status: "published",
       url: graph.permalink_url ?? entry.url,
       published_at: graph.created_time ?? undefined,
+      // Limpa failure_reason de uma rodada "failed" anterior (#3816 fix c) —
+      // não deve sobreviver a uma promoção pra published.
+      failure_reason: undefined,
       // #2676 F2 self-review: sem `created_time`, este `published` foi inferido
       // só do `scheduled_publish_time` vencido (sem confirmação direta da API
       // de que o post existe). Marca a proveniência pra um audit #573 não ficar
       // cego pra essa diferença de confiança (vs. o caso confirmado por created_time).
-      ...(graph.created_time
-        ? {}
-        : { verification_note: "inferred_from_expired_schedule_no_created_time" }),
+      // Atribuição explícita (não spread condicional, #3816): limpa também
+      // uma verification_note "read_error_inconclusive_*" de uma rodada
+      // anterior quando esta leitura É conclusiva (created_time presente).
+      verification_note: graph.created_time
+        ? undefined
+        : "inferred_from_expired_schedule_no_created_time",
     };
   }
 
@@ -191,8 +261,16 @@ export function reconcilePost(
     ...entry,
     status: "failed",
     failure_reason: `scheduled_publish_time passou mas is_published=${graph.is_published ?? "null"}`,
+    verification_note: undefined,
   };
 }
+
+// #3816 fix (c): entries "failed" com fb_post_id são reconciliáveis — só
+// entries criadas com sucesso têm fb_post_id (falhas reais de
+// publish-facebook.ts, ex: imagem ausente, scheduled_time_invalid, nunca
+// geram um), então "failed" sem fb_post_id continua pulado corretamente logo
+// abaixo pelo guard de fbPostId.
+const RECONCILABLE_STATUSES = new Set(["scheduled", "failed"]);
 
 export async function verifyPublished(
   published: SocialPublished,
@@ -200,6 +278,8 @@ export async function verifyPublished(
   apiVersion: string,
   fetchPost: FetchPostFn = defaultFetchPost,
   now: Date = new Date(),
+  /** #3816 fix (a) — necessário pra compor `{pageId}_{fb_post_id}` na leitura. */
+  pageId?: string,
 ): Promise<{ updated: SocialPublished; changes: number }> {
   const updatedPosts: PostEntry[] = [];
   let changes = 0;
@@ -207,14 +287,22 @@ export async function verifyPublished(
   for (const entry of published.posts) {
     // fb_post_id vem do escape hatch [key: string]: unknown — narrowing manual.
     const fbPostId = entry.fb_post_id;
-    if (entry.platform !== "facebook" || entry.status !== "scheduled" || typeof fbPostId !== "string" || !fbPostId) {
+    if (
+      entry.platform !== "facebook" ||
+      !RECONCILABLE_STATUSES.has(entry.status) ||
+      typeof fbPostId !== "string" ||
+      !fbPostId
+    ) {
       updatedPosts.push(entry);
       continue;
     }
     try {
-      const graph = await fetchPost(fbPostId, pageToken, apiVersion);
+      const resolvedId = resolveGraphPostId(fbPostId, pageId);
+      const graph = await fetchPost(resolvedId, pageToken, apiVersion);
       const next = reconcilePost(entry, graph, now);
-      if (next.status !== entry.status) changes++;
+      if (next.status !== entry.status || next.verification_note !== entry.verification_note) {
+        changes++;
+      }
       updatedPosts.push(next);
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : String(e);
@@ -253,15 +341,24 @@ async function main(): Promise<void> {
   }
 
   const creds = JSON.parse(readFileSync(credsPath, "utf8")) as {
+    page_id?: string;
     page_access_token: string;
     api_version: string;
   };
   const published = JSON.parse(readFileSync(publishedPath, "utf8")) as SocialPublished;
 
+  // #3816 fix (a) — mesmo padrão de resolução de publish-facebook.ts: env var
+  // tem prioridade, arquivo legacy é fallback. Sem pageId, resolveGraphPostId
+  // faz best-effort (usa o fb_post_id cru) — degradação graciosa, não abort.
+  const pageId = process.env.FACEBOOK_PAGE_ID || creds.page_id || undefined;
+
   const { updated, changes } = await verifyPublished(
     published,
     creds.page_access_token,
     creds.api_version,
+    defaultFetchPost,
+    new Date(),
+    pageId,
   );
 
   if (changes > 0) {
