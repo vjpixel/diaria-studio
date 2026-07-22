@@ -208,11 +208,20 @@ describe("chat-drawer overlay mobile (#3851)", () => {
   });
 
   describe("regressão — comportamento pré-#3851 preservado", () => {
-    it("o toggle de expandir/recolher original continua intacto", () => {
+    // #3888: o toggle deixou de ser incondicional — o clique agora passa por
+    // `resolveBadgeClickAction` (chat-badge.js), que só cai no toggle
+    // simples (`setCollapsed`) quando NADA está pendente (nem gate de
+    // pipeline, nem card de chat). O `setCollapsed(!drawer.classList...)`
+    // continua byte-a-byte como o branch "else" desse `if` — só deixou de
+    // ser o corpo INTEIRO do listener. Cobertura completa da nova lógica de
+    // decisão em test/chat-badge.test.ts (unidade pura) e em
+    // test/chat-drawer-badge-wiring.test.ts (contrato estático servido).
+    it("o toggle de expandir/recolher original continua como fallback do 'nada pendente'", () => {
       assert.match(
         jsBody,
-        /el\.expandToggle\.addEventListener\("click", \(\) => \{\s*setCollapsed\(!drawer\.classList\.contains\("collapsed"\)\);\s*\}\);/,
+        /resolveBadgeClickAction\(latestGatesPending,\s*latestChatPermissionsPending,\s*latestCurrentEdition\)/,
       );
+      assert.match(jsBody, /\}\s*else\s*\{\s*setCollapsed\(!drawer\.classList\.contains\("collapsed"\)\);\s*\}/);
     });
 
     it("prefillMessage e o contrato de window.diariaStudioChat continuam expostos (#3629, +scrollToPendingCard #3870)", () => {
