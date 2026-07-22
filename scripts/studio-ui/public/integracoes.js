@@ -16,6 +16,7 @@ const el = {
   refreshBtn: document.getElementById("refresh-btn"),
   lastUpdated: document.getElementById("last-updated"),
   tbody: document.getElementById("integrations-tbody"),
+  empty: document.getElementById("integrations-empty"),
 };
 
 /** Snapshot bruto da última resposta de /api/integrations. */
@@ -92,6 +93,15 @@ function noteCell(integration) {
 function renderIntegrations() {
   const filtered = data.integrations.filter((i) => !filters.kind || i.kind === filters.kind);
   el.count.textContent = String(filtered.length);
+  // #3874: "0 resultados para este filtro" vs "nenhuma integração" — mesmo
+  // padrão de triagem.js/apoios.js (R4 de docs/studio-ui-ux-guidelines.md).
+  if (filtered.length === 0) {
+    el.empty.hidden = false;
+    el.empty.textContent =
+      data.integrations.length > 0 && filters.kind ? "0 resultados para este filtro." : "Nenhuma integração cadastrada.";
+  } else {
+    el.empty.hidden = true;
+  }
   el.tbody.innerHTML = "";
   for (const integration of filtered) {
     const tr = document.createElement("tr");

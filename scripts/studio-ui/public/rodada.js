@@ -8,6 +8,13 @@
 // reimplementado aqui client-side (best-effort, mesmo padrão) em vez de
 // importar o módulo server: o filtro é sobre o texto já normalizado que o
 // servidor devolve (`reason`/`status`/`priority`), não precisa reler plan.json.
+//
+// #3874: `.round-kind-tabs` segue o padrão WAI-ARIA APG completo agora
+// (`role="tab"` já vem do HTML; `aria-selected`/tabindex roving/navegação
+// por setas são geridos aqui via tablist-core.js, compartilhado com
+// revisao.js).
+
+import { nextTabIndex, syncTabAria } from "./tablist-core.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -27,10 +34,13 @@ const el = {
   lastUpdated: document.getElementById("last-updated"),
   entramCount: document.getElementById("entram-count"),
   entramBody: document.getElementById("entram-tbody"),
+  entramEmpty: document.getElementById("entram-empty"),
   pendenteCount: document.getElementById("pendente-count"),
   pendenteBody: document.getElementById("pendente-tbody"),
+  pendenteEmpty: document.getElementById("pendente-empty"),
   foraCount: document.getElementById("fora-count"),
   foraBody: document.getElementById("fora-tbody"),
+  foraEmpty: document.getElementById("fora-empty"),
   timelineBody: document.getElementById("timeline-tbody"),
   tabOvernight: document.getElementById("tab-overnight"),
   tabDevelop: document.getElementById("tab-develop"),
@@ -93,9 +103,24 @@ function matchesFilters(row) {
   return true;
 }
 
-function renderQueueTable(tbody, countEl, rows, withReason) {
+// #3874: "0 resultados para este filtro" vs "nenhum registro" (padrão
+// relatorios.js, R4 de docs/studio-ui-ux-guidelines.md) — mesma distinção de
+// triagem.js, aplicada aqui às 3 tabelas de fila (entram/pendente/fora).
+function updateEmptyState(emptyEl, filteredCount, totalCount, hasActiveFilter, emptyLabel) {
+  if (!emptyEl) return;
+  if (filteredCount > 0) {
+    emptyEl.hidden = true;
+    return;
+  }
+  emptyEl.hidden = false;
+  emptyEl.textContent = totalCount > 0 && hasActiveFilter ? "0 resultados para este filtro." : emptyLabel;
+}
+
+function renderQueueTable(tbody, countEl, rows, withReason, emptyEl, emptyLabel) {
   const filtered = rows.filter(matchesFilters);
   countEl.textContent = String(filtered.length);
+  const filterActive = Boolean(filters.priority || filters.label);
+  updateEmptyState(emptyEl, filtered.length, rows.length, filterActive, emptyLabel);
   tbody.innerHTML = "";
   for (const row of filtered) {
     const tr = document.createElement("tr");
@@ -180,9 +205,9 @@ function renderAll() {
   }
 
   const queue = (data && data.queue) || { entram: [], pendente: [], fora: [] };
-  renderQueueTable(el.entramBody, el.entramCount, queue.entram, false);
-  renderQueueTable(el.pendenteBody, el.pendenteCount, queue.pendente, true);
-  renderQueueTable(el.foraBody, el.foraCount, queue.fora, true);
+  renderQueueTable(el.entramBody, el.entramCount, queue.entram, false, el.entramEmpty, "Nenhuma unidade entra na rodada.");
+  renderQueueTable(el.pendenteBody, el.pendenteCount, queue.pendente, true, el.pendenteEmpty, "Nenhuma unidade pendente de desbloqueio.");
+  renderQueueTable(el.foraBody, el.foraCount, queue.fora, true, el.foraEmpty, "Nenhuma unidade fica de fora.");
   renderTimeline((data && data.timeline) || []);
 
   // Só mostra "atualizado agora" quando o fetch de fato completou com
@@ -209,10 +234,13 @@ async function fetchRound() {
   renderAll();
 }
 
+const TAB_ORDER = ["overnight", "develop"];
+
 function setActiveTab() {
   for (const [k, btn] of Object.entries(TABS)) {
     btn.classList.toggle("active", k === kind);
   }
+  syncTabAria(Object.values(TABS), (btn) => btn === TABS[kind]);
 }
 
 function selectKind(newKind) {
@@ -223,6 +251,19 @@ function selectKind(newKind) {
 
 el.tabOvernight.addEventListener("click", () => selectKind("overnight"));
 el.tabDevelop.addEventListener("click", () => selectKind("develop"));
+
+// #3874: navegação por setas (WAI-ARIA APG) — ArrowLeft/ArrowRight/Home/End
+// movem o foco E ativam a aba (ativação automática, adequada aqui: trocar
+// de kind é barato/reversível, sem razão pra exigir Enter/Espaço extra).
+el.tabOvernight.parentElement.addEventListener("keydown", (ev) => {
+  const currentIndex = TAB_ORDER.indexOf(kind);
+  const idx = nextTabIndex(ev.key, currentIndex, TAB_ORDER.length);
+  if (idx === null) return;
+  ev.preventDefault();
+  const nextKind = TAB_ORDER[idx];
+  selectKind(nextKind);
+  TABS[nextKind].focus();
+});
 el.filterPriority.addEventListener("change", () => {
   filters.priority = el.filterPriority.value;
   renderAll();

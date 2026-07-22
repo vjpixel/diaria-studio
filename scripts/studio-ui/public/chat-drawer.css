@@ -91,7 +91,7 @@ body.chat-drawer-present.chat-drawer-collapsed {
   flex: none;
 }
 .chat-toggle-dot.ok { background: var(--brand); }
-.chat-toggle-dot.down { background: #c0392b; }
+.chat-toggle-dot.down { background: var(--status-danger); }
 .chat-toggle-badge {
   display: inline-flex;
   align-items: center;
@@ -100,7 +100,7 @@ body.chat-drawer-present.chat-drawer-collapsed {
   height: 1.15rem;
   padding: 0 0.3rem;
   border-radius: 999px;
-  background: #c0392b;
+  background: var(--status-danger);
   color: #fff;
   font-size: 0.7rem;
   font-weight: 600;
@@ -176,11 +176,11 @@ body.chat-drawer-present.chat-drawer-collapsed {
   overflow-wrap: anywhere;
 }
 .chat-msg.system .chat-msg-body {
-  color: #b8860b;
+  color: var(--status-warn);
   font-size: 0.8rem;
 }
 .chat-msg.error .chat-msg-body {
-  color: #c0392b;
+  color: var(--status-danger);
   font-size: 0.85rem;
 }
 
@@ -198,8 +198,8 @@ body.chat-drawer-present.chat-drawer-collapsed {
 }
 .chat-tool-chip.start { opacity: 0.85; }
 .chat-tool-chip.end { opacity: 1; border-color: var(--brand); }
-.chat-tool-chip.denied { opacity: 1; border-color: #c0392b; color: #c0392b; }
-.chat-tool-chip.error { opacity: 1; border-color: #c0392b; }
+.chat-tool-chip.denied { opacity: 1; border-color: var(--status-danger); color: var(--status-danger); }
+.chat-tool-chip.error { opacity: 1; border-color: var(--status-danger); }
 
 /* #3557: card de AskUserQuestion — form clicável, sem prazo. Reidratado
    pelo #3617 a partir de GET /api/chat/pending com o MESMO markup do fluxo
@@ -280,7 +280,7 @@ body.chat-drawer-present.chat-drawer-collapsed {
    e nunca fica visível", distinto do "Other" livre comum (borda tracejada). */
 .chat-permission-other-sensitive {
   border-style: solid;
-  border-color: #c0392b;
+  border-color: var(--status-danger);
 }
 .chat-permission-other-sensitive::placeholder { opacity: 0.65; }
 .chat-permission-submit {
@@ -334,8 +334,8 @@ body.chat-drawer-present.chat-drawer-collapsed {
   color: var(--on-ink);
 }
 .chat-tool-permission-btn.always:hover { border-color: var(--brand); }
-.chat-tool-permission-btn.deny { border-color: #c0392b; color: #c0392b; }
-.chat-tool-permission-btn.deny:hover { background: #c0392b; color: var(--on-ink); }
+.chat-tool-permission-btn.deny { border-color: var(--status-danger); color: var(--status-danger); }
+.chat-tool-permission-btn.deny:hover { background: var(--status-danger); color: var(--on-ink); }
 
 .chat-drawer-footer {
   border-top: 1px solid var(--rule);

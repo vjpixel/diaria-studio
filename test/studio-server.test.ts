@@ -89,6 +89,28 @@ describe("studio-server (#3555)", () => {
     assert.match(res.headers.get("content-type") ?? "", /application\/json/);
   });
 
+  it("(#3874) GET / — log ao vivo e contadores do statusbar têm aria-live=polite (regiões atualizadas via SSE)", async () => {
+    const res = await fetch(new URL("/", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('id="log-list" class="log-list" aria-live="polite"'));
+    assert.ok(body.includes('id="statusbar-edition" aria-live="polite"'));
+    assert.ok(body.includes('id="statusbar-stage" aria-live="polite"'));
+    assert.ok(body.includes('id="statusbar-gates" aria-live="polite"'));
+    assert.ok(body.includes('id="statusbar-overnight" aria-live="polite"'));
+    assert.ok(body.includes('id="editions-empty"'), "tabela de edições recentes precisa de contêiner de estado vazio (R4)");
+  });
+
+  it("(#3874) GET /tokens.generated.css inclui os 4 tokens semânticos de status", async () => {
+    const res = await fetch(new URL("/tokens.generated.css", server.url));
+    assert.equal(res.status, 200);
+    const css = await res.text();
+    assert.match(css, /--status-ok:/);
+    assert.match(css, /--status-warn:/);
+    assert.match(css, /--status-warn-ink:/);
+    assert.match(css, /--status-danger:/);
+    assert.match(css, /--status-info:/);
+  });
+
   // #3714 — superfície de Relatórios. Cobertura fina de integração (rota +
   // registro real via registerReport, sem servidor real gerando o
   // relatório): a lógica pura fica em test/studio-reports.test.ts.

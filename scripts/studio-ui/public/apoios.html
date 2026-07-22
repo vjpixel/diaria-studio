@@ -35,7 +35,7 @@
         do cache já existente, sem nova consulta). Dado pessoal — fica só em
         <code>data/apoia-se/contacts.jsonl</code>, nunca no repo.
       </p>
-      <div id="apoios-error" class="panel alert-banner" hidden></div>
+      <div id="apoios-error" class="panel alert-banner" role="alert" hidden></div>
     </section>
 
     <section class="panel">
@@ -73,6 +73,7 @@
         <button id="refresh-status-btn" type="button" title="Re-checa na apoia.se quem ainda não está confirmado como apoiando este mês (#3859)">Atualizar status</button>
         <span id="last-updated" class="hint"></span>
       </div>
+      <div id="contacts-empty" class="hint" hidden>Nenhum contato ainda.</div>
       <div id="contacts-list" class="contacts-list"></div>
     </section>
   </main>
@@ -94,7 +95,7 @@
         <span class="label">Notas</span>
         <textarea id="edit-notes" rows="3"></textarea>
       </label>
-      <div id="edit-contact-error" class="alert-banner" hidden></div>
+      <div id="edit-contact-error" class="alert-banner" role="alert" hidden></div>
       <div class="dialog-actions">
         <button type="button" id="edit-cancel-btn">Cancelar</button>
         <button type="submit">Salvar</button>

@@ -163,8 +163,15 @@ describe("buildNavHtml (#3849)", () => {
 
   it("Revisão sem href vira <span> desabilitado, não um <a> (nunca aponta pra rota inexistente)", () => {
     const html = buildNavHtml("revisao", null);
-    assert.match(html, /<span class="app-nav-item app-nav-disabled"[^>]*>Revisão<\/span>/);
+    assert.match(html, /<span class="app-nav-item app-nav-disabled"[^>]*>Revisão /);
     assert.doesNotMatch(html, /<a[^>]*>Revisão<\/a>/);
+  });
+
+  it("(#3874) o motivo de desabilitado aparece em TEXTO VISÍVEL, não só no title= (tooltip não existe em touch)", () => {
+    const html = buildNavHtml("revisao", null);
+    assert.match(html, /<small class="app-nav-disabled-reason">\(nenhuma edição em andamento\)<\/small>/);
+    // title= continua também, pro hover no desktop — não é OU-exclusivo.
+    assert.match(html, /title="Nenhuma edição em andamento"/);
   });
 
   it("Revisão com href vira <a> normal, marcado ativo quando activeId === 'revisao'", () => {

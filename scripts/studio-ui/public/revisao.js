@@ -26,6 +26,7 @@ import {
   buildDestaqueTitleSavePayload,
   buildInlineTitleConflictMessage,
 } from "./revisao-inline-edit.js";
+import { nextTabIndex, syncTabAria } from "./tablist-core.js";
 
 const SLUGS = ["categorized", "reviewed", "social", "html-final"];
 const FILE_LABELS = {
@@ -171,6 +172,10 @@ function renderTabs() {
   el.tabs.querySelectorAll(".rv-tab").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.slug === currentSlug);
   });
+  // #3874: WAI-ARIA APG completo (R13 de docs/studio-ui-ux-guidelines.md) —
+  // `role="tab"` já vem do HTML; `aria-selected`/tabindex roving geridos
+  // aqui, junto da classe `.active` (mesmo predicado, single source).
+  syncTabAria(el.tabs.querySelectorAll(".rv-tab"), (btn) => btn.dataset.slug === currentSlug);
   el.arquivo.textContent = FILE_LABELS[currentSlug];
   el.htmlFinalNote.hidden = currentSlug !== "html-final";
   const previewTabBtn = el.sideTabs.querySelector('[data-pane="preview"]');
@@ -472,10 +477,15 @@ async function resetBaselineCurrent() {
 // #3669 bug 2b: erro de rede (fetch falha, ou o próprio fetchJson lança) não
 // pode virar unhandled promise rejection nem deixar o iframe em branco sem
 // explicação — mostra uma mensagem de erro visível no lugar do preview.
+// Nota (#3874): os hex abaixo NÃO usam var(--status-*) de propósito — este
+// HTML vira `srcdoc` de um <iframe> (documento separado, sem acesso ao
+// :root do Studio) — ver R17/comentário de .rv-preview-frame em revisao.css.
+// Alinhado ao MESMO vermelho de --status-danger (#c0392b) por consistência
+// visual, só que como literal.
 function showPreviewError(err) {
   el.previewFrame.removeAttribute("src");
   el.previewFrame.srcdoc =
-    '<p style="font-family:sans-serif;padding:1rem;color:#b00020">Erro ao carregar preview: ' +
+    '<p style="font-family:sans-serif;padding:1rem;color:#c0392b">Erro ao carregar preview: ' +
     String((err && err.message) || err) +
     "</p>";
 }
@@ -637,10 +647,27 @@ function setupInlineTitleEditing() {
 
 function activateSidePane(pane) {
   el.sideTabs.querySelectorAll(".rv-tab").forEach((btn) => btn.classList.toggle("active", btn.dataset.pane === pane));
+  syncTabAria(el.sideTabs.querySelectorAll(".rv-tab"), (btn) => btn.dataset.pane === pane);
   el.paneLint.hidden = pane !== "lint";
   el.paneDiff.hidden = pane !== "diff";
   el.panePreview.hidden = pane !== "preview";
   if (pane === "preview") refreshPreview().catch(showPreviewError);
+}
+
+// #3874: navegação por setas (WAI-ARIA APG) num `role="tablist"` — ativação
+// automática (a seta já troca de aba, sem exigir Enter/Espaço extra depois).
+// Genérico o bastante pra servir os 2 tablists desta página (`el.tabs`/
+// `el.sideTabs`), cada um com sua própria função de "ativar por índice".
+function bindTablistArrowKeys(tablistEl, activateByIndex) {
+  tablistEl.addEventListener("keydown", (ev) => {
+    const buttons = [...tablistEl.querySelectorAll(".rv-tab")];
+    const currentIndex = buttons.findIndex((b) => b.classList.contains("active"));
+    const nextIndex = nextTabIndex(ev.key, currentIndex, buttons.length);
+    if (nextIndex === null) return;
+    ev.preventDefault();
+    buttons[nextIndex].focus();
+    activateByIndex(buttons[nextIndex]);
+  });
 }
 
 function bindEvents() {
@@ -650,6 +677,8 @@ function bindEvents() {
   el.sideTabs.querySelectorAll(".rv-tab").forEach((btn) => {
     btn.addEventListener("click", () => activateSidePane(btn.dataset.pane));
   });
+  bindTablistArrowKeys(el.tabs, (btn) => loadFile(btn.dataset.slug));
+  bindTablistArrowKeys(el.sideTabs, (btn) => activateSidePane(btn.dataset.pane));
   el.editor.addEventListener("input", () => {
     dirty = true;
     el.saveStatus.textContent = "Não salvo";
@@ -674,6 +703,14 @@ function bindEvents() {
   window.addEventListener("beforeunload", (e) => {
     if (dirty) { e.preventDefault(); e.returnValue = ""; }
   });
+
+  // #3874: `#rv-side-tabs` já nasce com a aba "Lints" marcada `.active` no
+  // HTML estático (padrão pré-existente), mas `activateSidePane()` só roda
+  // no primeiro clique/ação (runDiff()/runLints()) — sem chamar aqui,
+  // `aria-selected` ficaria ausente em TODOS os botões até essa 1ª
+  // interação. `#rv-tabs` não precisa do mesmo tratamento: `renderTabs()`
+  // (chamada logo abaixo, em `init()`) já cobre o estado inicial dele.
+  syncTabAria(el.sideTabs.querySelectorAll(".rv-tab"), (btn) => btn.classList.contains("active"));
 }
 
 async function checkEditionExists() {

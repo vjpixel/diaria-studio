@@ -48,6 +48,12 @@
   cursor: not-allowed;
   white-space: nowrap;
 }
+/* #3874: motivo em texto visível (R7 de docs/studio-ui-ux-guidelines.md) —
+   menor e mais discreto que o label, mas nunca escondido atrás de hover. */
+.app-nav-disabled-reason {
+  font-size: 0.85em;
+  opacity: 0.85;
+}
 
 .app-nav-group-label {
   opacity: 0.5;

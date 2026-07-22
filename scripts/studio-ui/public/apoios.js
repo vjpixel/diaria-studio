@@ -40,6 +40,7 @@ const el = {
   refreshStatusBtn: document.getElementById("refresh-status-btn"),
   lastUpdated: document.getElementById("last-updated"),
   contactsList: document.getElementById("contacts-list"),
+  contactsEmpty: document.getElementById("contacts-empty"),
   editDialog: document.getElementById("edit-dialog"),
   editForm: document.getElementById("edit-contact-form"),
   editId: document.getElementById("edit-id"),
@@ -147,6 +148,16 @@ function matchesFilter(contact) {
 function renderContacts() {
   const filtered = data.contacts.filter(matchesFilter);
   el.contactsCount.textContent = String(filtered.length);
+  // #3874: "0 resultados para este filtro" vs "nenhum contato ainda" (padrão
+  // relatorios.js, R4 de docs/studio-ui-ux-guidelines.md) — nunca a lista só
+  // desaparece sem explicação quando o filtro de status zera o resultado.
+  if (filtered.length === 0) {
+    el.contactsEmpty.hidden = false;
+    el.contactsEmpty.textContent =
+      data.contacts.length > 0 && filters.status ? "0 resultados para este filtro." : "Nenhum contato ainda.";
+  } else {
+    el.contactsEmpty.hidden = true;
+  }
   el.contactsList.innerHTML = "";
   for (const c of filtered) {
     const card = document.createElement("div");

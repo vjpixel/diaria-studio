@@ -149,7 +149,7 @@ const drawer = document.createElement("aside");
 drawer.className = "chat-drawer" + (startCollapsed ? " collapsed" : "");
 drawer.innerHTML = `
   <div class="chat-drawer-header">
-    <button type="button" class="chat-expand-toggle" id="chat-expand-toggle" title="Expandir/recolher chat">
+    <button type="button" class="chat-expand-toggle" id="chat-expand-toggle" title="Expandir/recolher chat" aria-expanded="${String(!startCollapsed)}" aria-controls="chat-messages">
       <span class="chat-toggle-dot" id="chat-toggle-dot"></span>
       <span class="chat-drawer-title">Chat — sessão Claude</span>
       <span class="chat-toggle-badge" id="chat-toggle-badge" style="display:none"></span>
@@ -157,7 +157,7 @@ drawer.innerHTML = `
     <button type="button" id="chat-mobile-close" class="chat-mobile-close" title="Fechar chat" aria-label="Fechar chat">✕</button>
     <button type="button" id="chat-reset" title="Nova conversa">nova conversa</button>
   </div>
-  <div class="chat-messages" id="chat-messages"></div>
+  <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
   <div class="chat-drawer-footer">
     <textarea id="chat-input" placeholder="Mensagem para a sessão Claude..." rows="2"></textarea>
     <button type="button" id="chat-send">Enviar</button>
@@ -251,6 +251,12 @@ function persistCollapsed(collapsed) {
 function setCollapsed(collapsed) {
   drawer.classList.toggle("collapsed", collapsed);
   document.body.classList.toggle("chat-drawer-collapsed", collapsed);
+  // #3874: `aria-expanded` reflete o estado real do painel (mesmo padrão de
+  // `nav.js`/`app-nav-toggle`) — atualizado aqui, no ÚNICO ponto que já
+  // centraliza toda mudança de collapsed/expanded (clique no toggle, botão
+  // "fechar" mobile, e o auto-expand de `expandDrawer()` quando chega um gate
+  // novo — todos os 3 caminhos passam por esta função).
+  el.expandToggle.setAttribute("aria-expanded", String(!collapsed));
   persistCollapsed(collapsed);
 }
 

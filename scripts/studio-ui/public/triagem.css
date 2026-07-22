@@ -8,9 +8,19 @@
   margin: 0.25rem 0 0.75rem;
 }
 
+/* #3874: legenda visível do significado de cada Classificação (antes só
+   title=/tooltip — não existe em touch, R7 de docs/studio-ui-ux-guidelines.md). */
+#dispatch-track-legend {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
 .alert-banner {
-  border-color: #c0392b;
-  background: rgba(192, 57, 43, 0.08);
+  border-color: var(--status-danger);
+  background: color-mix(in srgb, var(--status-danger) 8%, transparent);
   font-size: 0.85rem;
 }
 
@@ -105,9 +115,9 @@
   border-radius: 4px;
   border: 1px solid var(--rule);
 }
-.priority-p0 { background: #c0392b; color: #fff; border-color: #c0392b; }
-.priority-p1 { background: #e67e22; color: #fff; border-color: #e67e22; }
-.priority-p2 { background: #f1c40f; color: #3a2e00; border-color: #f1c40f; }
+.priority-p0 { background: var(--status-danger); color: #fff; border-color: var(--status-danger); }
+.priority-p1 { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
+.priority-p2 { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
 .priority-p3 { background: var(--paper-alt); opacity: 0.8; }
 .priority-none { opacity: 0.4; }
 
@@ -121,11 +131,11 @@
   text-transform: lowercase;
 }
 .track-overnight { border-color: var(--brand); color: var(--brand); }
-.track-develop { border-color: #5319e7; color: #5319e7; }
+.track-develop { border-color: var(--status-info); color: var(--status-info); }
 .track-other { opacity: 0.6; }
 /* #3714: kinds da superfície de Relatórios (relatorios.js reusa .track-badge) */
-.track-edicao { border-color: #1a7f37; color: #1a7f37; }
-.track-mensal { border-color: #b45309; color: #b45309; }
+.track-edicao { border-color: var(--status-ok); color: var(--status-ok); }
+.track-mensal { border-color: var(--status-warn); color: var(--status-warn); }
 
 .label-chip {
   display: inline-block;
@@ -158,9 +168,9 @@
   border: 1px solid var(--rule);
   white-space: nowrap;
 }
-.dispatch-elegivel { border-color: #1e8e3e; color: #1e8e3e; }
-.dispatch-bloqueada { border-color: #c0392b; color: #c0392b; }
-.dispatch-ambigua { border-color: #e67e22; color: #e67e22; }
+.dispatch-elegivel { border-color: var(--status-ok); color: var(--status-ok); }
+.dispatch-bloqueada { border-color: var(--status-danger); color: var(--status-danger); }
+.dispatch-ambigua { border-color: var(--status-warn); color: var(--status-warn); }
 
 .ci-badge {
   display: inline-block;
@@ -171,9 +181,9 @@
   border: 1px solid var(--rule);
   white-space: nowrap;
 }
-.ci-green { background: #1e8e3e; color: #fff; border-color: #1e8e3e; }
-.ci-red { background: #c0392b; color: #fff; border-color: #c0392b; }
-.ci-pending { background: #f1c40f; color: #3a2e00; border-color: #f1c40f; }
+.ci-green { background: var(--status-ok); color: #fff; border-color: var(--status-ok); }
+.ci-red { background: var(--status-danger); color: #fff; border-color: var(--status-danger); }
+.ci-pending { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
 .ci-none { opacity: 0.5; }
 
 /* ─── composição de wave (#3562, entrega 2) ─────────────────────────── */
@@ -205,12 +215,12 @@
   color: var(--ink);
   white-space: nowrap;
 }
-.wave-chip-active { border-color: #1e8e3e; color: #1e8e3e; font-weight: 700; }
+.wave-chip-active { border-color: var(--status-ok); color: var(--status-ok); font-weight: 700; }
 .wave-chip-deferred { opacity: 0.65; }
 
 #wave-capacity-warning {
-  border-color: #e67e22;
-  background: rgba(230, 126, 34, 0.08);
+  border-color: var(--status-warn);
+  background: color-mix(in srgb, var(--status-warn) 8%, transparent);
   font-size: 0.85rem;
   padding: 0.5rem 0.75rem;
   margin: 0.5rem 0;
@@ -255,4 +265,19 @@
   main { padding: 1rem 0.75rem 3rem; }
   .filters-bar { flex-direction: column; align-items: stretch; }
   .wave-summary { flex-direction: column; gap: 0.75rem; }
+
+  /* #3874: alvos de toque ≥44px (WCAG 2.5.5/HIG) — mesmo padrão já aplicado
+     só no chat-drawer (chat-drawer.css); estende pro resto do Studio, só no
+     breakpoint mobile (desktop com mouse não precisa do alvo grande). */
+  #refresh-btn,
+  #fire-wave-btn {
+    min-height: 44px;
+  }
+  .wave-chip {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
 }

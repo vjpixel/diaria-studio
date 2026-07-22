@@ -44,3 +44,11 @@
 .round-meta dd { margin: 0; }
 
 .round-queue-table td, .round-timeline-table td { vertical-align: top; }
+
+/* #3874: alvos de toque ≥44px (WCAG 2.5.5/HIG), só no breakpoint mobile —
+   mesmo padrão já aplicado em chat-drawer.css/triagem.css. */
+@media (max-width: 640px) {
+  .round-kind-tab {
+    min-height: 44px;
+  }
+}

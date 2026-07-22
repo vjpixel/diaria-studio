@@ -42,7 +42,7 @@ h2 { font-size: 1.1rem; }
 .statusbar-item.conn { margin-left: auto; display: flex; align-items: center; gap: 0.4rem; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #999; display: inline-block; }
 .dot.ok { background: var(--brand); }
-.dot.down { background: #c0392b; }
+.dot.down { background: var(--status-danger); }
 
 main {
   max-width: 960px;
@@ -86,14 +86,20 @@ main {
   font-family: var(--font-mono);
   font-size: 0.78rem;
   display: flex;
-  flex-direction: column-reverse; /* mais recente no topo visual */
+  /* #3874: mais recente no topo visual vem da ORDEM DE INSERÇÃO no DOM
+     agora (ver appendLogRow em app.js/edicao.js) — não mais de
+     column-reverse. Ordem de leitura (teclado/leitor de tela) precisa bater
+     com a ordem visual (R14 de docs/studio-ui-ux-guidelines.md); com
+     column-reverse o DOM ficava cronológico (mais antigo primeiro) enquanto
+     a tela mostrava o oposto. */
+  flex-direction: column;
   gap: 2px;
 }
 .log-row { display: flex; gap: 0.5rem; padding: 2px 0; border-bottom: 1px dotted var(--rule); }
 .log-row .lvl { width: 3.2em; flex: none; text-transform: uppercase; }
 .log-row.info .lvl { color: var(--brand); }
-.log-row.warn .lvl { color: #b8860b; }
-.log-row.error .lvl { color: #c0392b; }
+.log-row.warn .lvl { color: var(--status-warn); }
+.log-row.error .lvl { color: var(--status-danger); }
 .log-row .msg { flex: 1; overflow-wrap: anywhere; }
 
 /* #3563: links pros painéis embutidos (diária/poll + Clarice-mensal) —

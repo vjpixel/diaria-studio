@@ -658,6 +658,13 @@ describe("GET /integracoes + GET /api/integrations (#3848)", () => {
     assert.ok(body.includes("integrations-tbody"));
   });
 
+  it("(#3874) banner de erro tem role=alert; tabela tem contêiner de estado vazio", async () => {
+    const res = await fetch(new URL("/integracoes", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('id="integrations-error" class="panel alert-banner" role="alert"'));
+    assert.ok(body.includes('id="integrations-empty"'));
+  });
+
   it("aceita /integracoes/ com trailing slash", async () => {
     const res = await fetch(new URL("/integracoes/", server.url));
     assert.equal(res.status, 200);

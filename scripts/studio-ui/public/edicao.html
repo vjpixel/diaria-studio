@@ -28,7 +28,7 @@
   </header>
 
   <main>
-    <div id="edicao-not-found" class="panel alert-banner" hidden>
+    <div id="edicao-not-found" class="panel alert-banner" role="alert" hidden>
       Edição não encontrada no disco. Confira o AAMMDD na URL ou volte pro
       <a href="/">painel</a>.
     </div>
@@ -41,7 +41,7 @@
         stdout do terminal (não persistidos em disco nesta fatia); ver
         "Decisões de design" no PR.
       </p>
-      <div id="alerts-list"></div>
+      <div id="alerts-list" role="alert" aria-live="polite"></div>
     </section>
 
     <section class="panel">
@@ -61,7 +61,7 @@
 
     <section class="panel">
       <h2>Log desta edição</h2>
-      <div id="edicao-log-list" class="log-list"></div>
+      <div id="edicao-log-list" class="log-list" aria-live="polite"></div>
     </section>
   </main>
 

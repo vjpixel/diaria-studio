@@ -32,7 +32,7 @@
         <code>gh pr list</code> com cache no servidor (~60s) — atualizar
         aqui não estoura o rate limit do <code>gh</code>.
       </p>
-      <div id="triage-error" class="panel alert-banner" hidden></div>
+      <div id="triage-error" class="panel alert-banner" role="alert" hidden></div>
 
       <div class="filters-bar">
         <label class="filter-field">
@@ -80,6 +80,8 @@
         marcadores de texto) que aproxima — mas não substitui — a triagem
         real da Fase 0 de <code>/diaria-develop</code>/<code>/diaria-overnight</code>.
       </p>
+      <ul class="hint" id="dispatch-track-legend"></ul>
+      <div id="issues-empty" class="hint" hidden>Nenhuma issue aberta.</div>
       <div class="table-scroll">
         <table class="triage-table">
           <thead>
@@ -105,6 +107,7 @@
         completo (#2210/#2222) — falta checar threads não-resolvidas, que
         exigiria 1 chamada extra por PR; essa coluna cobre só o pedaço de CI.
       </p>
+      <div id="prs-empty" class="hint" hidden>Nenhum PR aberto.</div>
       <div class="table-scroll">
         <table class="triage-table">
           <thead>
@@ -136,7 +139,7 @@
         (worktrees + implementadores) depende da sessão de chat/ações
         (#3556/#3557), ainda não construída.
       </p>
-      <div id="waves-error" class="panel alert-banner" hidden></div>
+      <div id="waves-error" class="panel alert-banner" role="alert" hidden></div>
       <div class="wave-summary">
         <div class="wave-block">
           <h3>Onda proposta (<span id="wave-count">0</span>)</h3>
@@ -147,12 +150,17 @@
           <div id="wave-deferred-chips" class="chip-row"></div>
         </div>
       </div>
-      <div id="wave-capacity-warning" class="alert-banner" hidden></div>
+      <div id="wave-capacity-warning" class="alert-banner" role="alert" hidden></div>
       <h3>Clusters de conflito</h3>
       <div id="wave-clusters" class="cluster-list"></div>
       <button id="fire-wave-btn" type="button" disabled title="backend pronto (POST /api/waves/fire, #3702) mas requer validação ao vivo contra o SDK real + habilitação explícita antes de ligar este botão — ver #3702">
         Disparar esta onda
       </button>
+      <p class="hint" id="fire-wave-reason">
+        Desabilitado: backend pronto (<code>POST /api/waves/fire</code>, #3702) mas
+        requer validação ao vivo contra o SDK real + habilitação explícita antes de
+        ligar este botão — ver #3702.
+      </p>
     </section>
   </main>
 

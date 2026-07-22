@@ -151,9 +151,9 @@
   border: 1px solid var(--rule);
   white-space: nowrap;
 }
-.status-apoiando { background: #1e8e3e; color: #fff; border-color: #1e8e3e; }
+.status-apoiando { background: var(--status-ok); color: #fff; border-color: var(--status-ok); }
 .status-nao_apoia { opacity: 0.55; }
-.status-apoiou_e_parou { border-color: #e67e22; color: #e67e22; }
+.status-apoiou_e_parou { border-color: var(--status-warn); color: var(--status-warn); }
 .status-sem_dados { border-style: dashed; opacity: 0.6; }
 
 /* #3612: taxa de abertura Beehiiv — mesmo tratamento visual de .status-badge,
@@ -167,7 +167,7 @@
   border: 1px solid var(--rule);
   white-space: nowrap;
 }
-.open-rate-ok { border-color: #1a73e8; color: #1a73e8; }
+.open-rate-ok { border-color: var(--status-info); color: var(--status-info); }
 .open-rate-sem-dados { border-style: dashed; opacity: 0.6; }
 
 .contact-dialog {
@@ -186,4 +186,14 @@
 @media (max-width: 640px) {
   .contact-form { flex-direction: column; align-items: stretch; }
   .panel-header-row { flex-direction: column; align-items: stretch; }
+
+  /* #3874: alvos de toque ≥44px (WCAG 2.5.5/HIG), só no breakpoint mobile —
+     mesmo padrão do chat-drawer.css/triagem.css. */
+  .contact-form button[type="submit"],
+  #refresh-btn,
+  #refresh-status-btn,
+  .dialog-actions button,
+  .contact-actions button {
+    min-height: 44px;
+  }
 }

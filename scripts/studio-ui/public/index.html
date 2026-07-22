@@ -14,19 +14,19 @@
     <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
     <div class="statusbar-item">
       <span class="label">Edição</span>
-      <span class="value" id="statusbar-edition">—</span>
+      <span class="value" id="statusbar-edition" aria-live="polite">—</span>
     </div>
     <div class="statusbar-item">
       <span class="label">Stage</span>
-      <span class="value" id="statusbar-stage">—</span>
+      <span class="value" id="statusbar-stage" aria-live="polite">—</span>
     </div>
     <div class="statusbar-item">
       <span class="label">Gates</span>
-      <span class="value" id="statusbar-gates">—</span>
+      <span class="value" id="statusbar-gates" aria-live="polite">—</span>
     </div>
     <div class="statusbar-item">
       <span class="label">Overnight</span>
-      <span class="value" id="statusbar-overnight">—</span>
+      <span class="value" id="statusbar-overnight" aria-live="polite">—</span>
     </div>
     <div class="statusbar-item conn">
       <span class="dot" id="conn-dot"></span>
@@ -42,6 +42,7 @@
 
     <section class="panel">
       <h2>Edições recentes</h2>
+      <div id="editions-empty" class="hint" hidden>Nenhuma edição registrada ainda.</div>
       <table class="editions-table">
         <thead>
           <tr>
@@ -57,7 +58,7 @@
 
     <section class="panel">
       <h2>Log ao vivo</h2>
-      <div id="log-list" class="log-list"></div>
+      <div id="log-list" class="log-list" aria-live="polite"></div>
     </section>
   </main>
 

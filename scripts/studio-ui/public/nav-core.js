@@ -74,7 +74,14 @@ export function buildNavHtml(activeId, revisaoHref) {
     const isActive = item.id === activeId;
     const href = item.id === "revisao" ? revisaoHref : item.href;
     if (!href) {
-      return `<span class="app-nav-item app-nav-disabled" title="Nenhuma edição em andamento">${escapeHtml(item.label)}</span>`;
+      // #3874: o motivo de estar desabilitado precisa estar em TEXTO VISÍVEL,
+      // não só em `title=` — tooltip não existe em touch (R7 de
+      // docs/studio-ui-ux-guidelines.md). `title` continua também, pro hover
+      // no desktop.
+      return (
+        `<span class="app-nav-item app-nav-disabled" title="Nenhuma edição em andamento">` +
+        `${escapeHtml(item.label)} <small class="app-nav-disabled-reason">(nenhuma edição em andamento)</small></span>`
+      );
     }
     return `<a class="app-nav-item${isActive ? " active" : ""}" href="${escapeHtml(href)}"${isActive ? ' aria-current="page"' : ""}>${escapeHtml(item.label)}</a>`;
   }).join("");

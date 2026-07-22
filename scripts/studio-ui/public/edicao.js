@@ -274,7 +274,13 @@ function renderAlerts() {
 
 function renderLogList() {
   el.logList.innerHTML = "";
-  for (const ev of logBuffer.slice(-300)) {
+  // #3874: `.log-list` não usa mais `flex-direction: column-reverse`
+  // (style.css) — a ordem de leitura (DOM) agora precisa bater com a ordem
+  // visual (mais recente no topo) por conta própria. Como esta função
+  // reconstrói a lista inteira a cada chamada (`innerHTML = ""` acima), basta
+  // iterar em ordem reversa (mais recente primeiro) — sem precisar de
+  // insertBefore como em app.js (que só faz append incremental).
+  for (const ev of [...logBuffer].slice(-300).reverse()) {
     const row = document.createElement("div");
     const level = ev.level || "info";
     row.className = `log-row ${level}`;

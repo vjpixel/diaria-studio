@@ -33,9 +33,9 @@
 .rv-divergence-banner {
   margin: 0.4rem 0 0;
   padding: 0.5rem 0.75rem;
-  border: 1px solid #c0392b;
+  border: 1px solid var(--status-danger);
   border-radius: 6px;
-  background: rgba(192, 57, 43, 0.1);
+  background: color-mix(in srgb, var(--status-danger) 10%, transparent);
   font-size: 0.82rem;
 }
 
@@ -61,7 +61,7 @@
 
 .rv-save-status { font-family: var(--font-mono); font-size: 0.8rem; opacity: 0.8; }
 .rv-save-status.ok { color: var(--brand); }
-.rv-save-status.err { color: #c0392b; }
+.rv-save-status.err { color: var(--status-danger); }
 
 .rv-editor {
   width: 100%;
@@ -91,8 +91,8 @@
   font-size: 0.85rem;
 }
 .rv-lint-row.ok { border-color: var(--rule); opacity: 0.75; }
-.rv-lint-row.fail { border-color: #c0392b; background: rgba(192, 57, 43, 0.08); }
-.rv-lint-row.warn { border-color: #b8860b; background: rgba(184, 134, 11, 0.08); }
+.rv-lint-row.fail { border-color: var(--status-danger); background: color-mix(in srgb, var(--status-danger) 8%, transparent); }
+.rv-lint-row.warn { border-color: var(--status-warn); background: color-mix(in srgb, var(--status-warn) 8%, transparent); }
 .rv-lint-badge {
   font-family: var(--font-mono);
   font-size: 0.72rem;
@@ -121,16 +121,22 @@
 }
 .rv-diff-line { display: flex; gap: 0.5rem; padding: 1px 0.5rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .rv-diff-line .rv-diff-gutter { flex: none; width: 1.2em; text-align: center; opacity: 0.7; }
-.rv-diff-line.add { background: rgba(46, 125, 50, 0.12); }
-.rv-diff-line.add .rv-diff-gutter { color: #2e7d32; }
-.rv-diff-line.del { background: rgba(192, 57, 43, 0.12); }
-.rv-diff-line.del .rv-diff-gutter { color: #c0392b; }
+.rv-diff-line.add { background: color-mix(in srgb, var(--status-ok) 12%, transparent); }
+.rv-diff-line.add .rv-diff-gutter { color: var(--status-ok); }
+.rv-diff-line.del { background: color-mix(in srgb, var(--status-danger) 12%, transparent); }
+.rv-diff-line.del .rv-diff-gutter { color: var(--status-danger); }
 
 .rv-preview-frame {
   width: 100%;
-  height: 600px;
+  /* #3874: altura responsiva (antes 600px fixos, estourava viewport
+     pequena) — min() cai pro menor dos 2 lados: 600px em telas altas
+     o bastante, ou 75% da altura visível da viewport em telas pequenas. */
+  height: min(600px, 75vh);
   border: 1px solid var(--rule);
   border-radius: 6px;
+  /* Hardcode intencional (R17 de docs/studio-ui-ux-guidelines.md): o
+     preview É o e-mail renderizado, que é sempre branco por design
+     editorial — nunca deve seguir --paper/--paper-alt do CHROME do Studio. */
   background: #fff;
   margin-top: 0.5rem;
 }
@@ -139,4 +145,12 @@
   .statusbar { gap: 0.75rem; }
   main { padding: 1rem 0.75rem 3rem; }
   .rv-editor { min-height: 320px; }
+  .rv-preview-frame { height: min(480px, 65vh); }
+
+  /* #3874: alvos de toque ≥44px (WCAG 2.5.5/HIG), só no breakpoint mobile —
+     mesmo padrão do chat-drawer.css/triagem.css. */
+  .rv-tab,
+  .rv-editor-toolbar button {
+    min-height: 44px;
+  }
 }
