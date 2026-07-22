@@ -68,11 +68,21 @@
  * ("apoiando") — contatos já confirmados nunca são re-tocados, protegendo o
  * teto de 5.000 req/mês da apoia.se. Cobre o cenário da issue: apoiador que
  * paga dia 15 continuaria com o `false` gravado no dia 1º até a virada do
- * mês sem esse force-refresh seletivo. A metade 1 da issue (importar apoios
- * novos varrendo o Gmail pessoal) segue FORA de escopo aqui — bloqueada em
- * arquitetura (o `studio-server` é headless/loopback-only e não tem acesso
- * ao MCP Gmail, que só existe na sessão top-level interativa; mesma lacuna
- * de `beehiiv-open-rate.json` #3612) — ver corpo da issue #3859.
+ * mês sem esse force-refresh seletivo.
+ *
+ * **Import automático via e-mail (#3859, metade 1):** o bloqueio original
+ * ("studio-server headless sem acesso a Gmail") era falso — o projeto já
+ * tem um caminho REST não-MCP pro Gmail (`scripts/google-auth.ts::gFetch` +
+ * `data/.credentials.json`), usado por `scripts/inbox-drain.ts` pro inbox
+ * editorial. `refreshApoiosData` roda esse drain (`scripts/lib/apoia-se-gmail-drain.ts`)
+ * ANTES do force-refresh de pagamento acima: busca notificações "novo apoio"
+ * do Gmail pessoal desde o último cursor (`data/apoia-se/gmail-drain-cursor.json`),
+ * e para cada `{name, email, value}` novo, cria um contato
+ * (`createContact` + `notes: "importado automaticamente via e-mail
+ * apoia.se"`) SE nenhum contato existente já tiver aquele email — nunca
+ * duplica. Fail-soft: falha do drain (token expirado, rede) não trava o
+ * force-refresh de pagamento — só registra em `error` (sem sobrescrever um
+ * erro mais crítico de credenciais/auth apoia.se, se houver).
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
@@ -90,6 +100,11 @@ import {
   type BackerStatus,
   type CheckBackerOptions,
 } from "../lib/apoia-se.ts";
+import {
+  drainApoiaSeNotifications,
+  type ApoioNotification,
+  type DrainApoiaSeResult,
+} from "../lib/apoia-se-gmail-drain.ts";
 
 // ── tipos ────────────────────────────────────────────────────────────────
 
@@ -279,6 +294,36 @@ export function upsertContact(contacts: ApoioContact[], contact: ApoioContact): 
   const copy = contacts.slice();
   copy[idx] = contact;
   return copy;
+}
+
+/**
+ * Aplica notificações "novo apoio" (já drenadas + parseadas do Gmail, #3859
+ * metade 1) sobre a lista de contatos: cria 1 contato novo por notificação
+ * cujo email NÃO bate com nenhum email já cadastrado em NENHUM contato —
+ * notificações cujo email já existe são ignoradas (nunca duplica, mesmo se
+ * a mesma pessoa aparecer 2x na mesma leva de notificações). Pure — sem I/O;
+ * o caller decide se/quando persistir com `saveContacts`.
+ */
+export function importNewApoiadoresFromGmail(
+  contacts: ApoioContact[],
+  notifications: ApoioNotification[],
+): { contacts: ApoioContact[]; mutated: boolean; imported: number } {
+  let result = contacts;
+  let imported = 0;
+  for (const notif of notifications) {
+    const email = notif.email.trim().toLowerCase();
+    if (!email) continue;
+    const alreadyExists = result.some((c) => normalizeEmailList(c.emails).includes(email));
+    if (alreadyExists) continue;
+    const created = createContact({
+      name: notif.name,
+      emails: [email],
+      notes: "importado automaticamente via e-mail apoia.se",
+    });
+    result = upsertContact(result, created);
+    imported++;
+  }
+  return { contacts: result, mutated: imported > 0, imported };
 }
 
 // ── status derivado (puro) ──────────────────────────────────────────────
@@ -651,7 +696,11 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
 
 // ── orquestração: force-refresh seletivo (#3859 — botão "Atualizar status") ─
 
-export type RefreshApoiosDataOptions = BuildApoiosDataOptions;
+export interface RefreshApoiosDataOptions extends BuildApoiosDataOptions {
+  /** Injetável pra testes — evita chamada de rede real ao Gmail (#3859
+   * metade 1). Default: `drainApoiaSeNotifications(rootDir)`. */
+  gmailDrain?: () => Promise<DrainApoiaSeResult>;
+}
 
 /**
  * Contraparte de `buildApoiosData` usada pelo botão "Atualizar status"
@@ -679,6 +728,30 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
     contacts = opts.contacts ?? loadContacts(rootDir);
   } catch (e) {
     return { contacts: [], campaign: emptyCampaignSummary(), error: (e as Error).message, generatedAt };
+  }
+
+  // #3859 metade 1: importar apoiadores novos via e-mail ANTES do
+  // force-refresh de pagamento abaixo (metade 2) — ver cabeçalho do módulo.
+  // Fail-soft por design: falha do drain (token Gmail expirado, rede) NUNCA
+  // trava o force-refresh de pagamento — só fica registrada em
+  // `gmailDrainError`, que só aparece no payload final se nenhum erro mais
+  // crítico (credenciais/auth apoia.se) tiver ocorrido depois.
+  let gmailDrainError: string | null = null;
+  try {
+    const runGmailDrain = opts.gmailDrain ?? (() => drainApoiaSeNotifications(rootDir));
+    const drainResult = await runGmailDrain();
+    if (drainResult.skipped) {
+      gmailDrainError = `import automático via e-mail apoia.se pulado (${drainResult.reason ?? "erro desconhecido"}) — status de pagamento seguiu normalmente.`;
+    } else if (drainResult.notifications.length > 0) {
+      const { contacts: updatedContacts, mutated } = importNewApoiadoresFromGmail(
+        contacts,
+        drainResult.notifications,
+      );
+      contacts = updatedContacts;
+      if (mutated) saveContacts(rootDir, contacts);
+    }
+  } catch (e) {
+    gmailDrainError = `import automático via e-mail apoia.se falhou (${(e as Error).message}) — status de pagamento seguiu normalmente.`;
   }
 
   const openRateCache = opts.openRateCache ?? loadOpenRateCache(rootDir);
@@ -766,7 +839,9 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
   return {
     contacts: withStatus,
     campaign: computeCampaignSummary(withStatus),
-    error: refreshError,
+    // refreshError (falha de credenciais/auth apoia.se) é mais crítico —
+    // nunca sobrescrito pelo gmailDrainError (fail-soft, #3859 metade 1).
+    error: refreshError ?? gmailDrainError,
     generatedAt,
   };
 }

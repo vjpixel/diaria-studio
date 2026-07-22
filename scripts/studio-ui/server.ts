@@ -110,12 +110,15 @@
  *     (#3844: os recursos de follow-up/outreach — incluindo a rota
  *     `POST /api/apoios/contacts/:id/outreach` — foram removidos; a área
  *     refoca em visão por grupo/nível de recompensa, ainda pendente.)
- *     (#3859 metade 2: `POST /api/apoios/refresh` — botão "Atualizar
- *     status", força re-consulta do mês corrente na apoia.se só pra
- *     contatos ainda não confirmados como "apoiando" — protege o teto de
- *     5.000 req/mês. `refreshApoiosData` em `studio-apoios.ts`. A metade 1
- *     da issue — importar apoios novos varrendo o Gmail pessoal — segue
- *     bloqueada em arquitetura, não implementada.)
+ *     (#3859: `POST /api/apoios/refresh` — botão "Atualizar status".
+ *     `refreshApoiosData` em `studio-apoios.ts` faz DUAS coisas em sequência:
+ *     (metade 1) drena notificações "novo apoio" do Gmail pessoal via REST
+ *     não-MCP (`scripts/lib/apoia-se-gmail-drain.ts`, mesmo mecanismo de
+ *     `inbox-drain.ts`) e cria contato automaticamente pra apoiador ainda não
+ *     cadastrado; (metade 2) força re-consulta do mês corrente na apoia.se
+ *     só pra contatos ainda não confirmados como "apoiando" — protege o teto
+ *     de 5.000 req/mês. Ambas fail-soft: falha de qualquer uma nunca derruba
+ *     a outra nem quebra a rota, só documenta em `error`.)
  *   - `GET /api/reports` (#3714) — lista os relatórios de fim de trabalho
  *     (edição diária, overnight, develop, mensal) registrados no índice
  *     file-based `data/reports/index.jsonl` (`studio-reports.ts::listReports`),
@@ -197,11 +200,14 @@
  * (dado pessoal, junction OneDrive, nunca no repo/KV) — nunca tocam
  * credenciais nem a API apoia.se em modo de escrita (o cruzamento de status é
  * sempre leitura via `checkBacker`). Toda a lógica mora em `studio-apoios.ts`.
- * (#3859 metade 2: `POST /api/apoios/refresh` é a mesma classe de exceção —
- * só dispara LEITURAS a mais na apoia.se via `checkBacker`/`forceRefresh`,
- * nunca escreve `contacts.jsonl`; grava só o cache `data/apoia-se/{campanha}/
- * {YYYY-MM}.json`, já uma superfície de escrita pré-existente de
- * `checkBacker`.)
+ * (#3859: `POST /api/apoios/refresh` é a mesma classe de exceção — dispara
+ * LEITURAS a mais na apoia.se via `checkBacker`/`forceRefresh` (grava só o
+ * cache `data/apoia-se/{campanha}/{YYYY-MM}.json`, já uma superfície de
+ * escrita pré-existente de `checkBacker`), e TAMBÉM pode escrever
+ * `contacts.jsonl` quando o drain de e-mail (metade 1) encontra um apoiador
+ * novo — mesmo dado pessoal, mesma pasta, mesmo padrão de escrita de
+ * `POST /api/apoios/contacts` acima, só que disparado automaticamente em vez
+ * de por submissão manual do form.)
  *
  * **Exceção controlada (#3861 — botão "Atualizar É IA?"):**
  * `POST /api/painel/eia/refresh` escreve SÓ `data/poll-eia-summary.json`
@@ -1207,13 +1213,14 @@ function handleApiApoiosGet(rootDir: string, res: ServerResponse): void {
     .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
 }
 
-/** `POST /api/apoios/refresh` — botão "Atualizar status" (#3859 metade 2):
- * força re-consulta do mês corrente na apoia.se, mas só pra contatos AINDA
- * NÃO confirmados como "apoiando" (protege o teto de 5.000 req/mês — ver
- * `refreshApoiosData` em `studio-apoios.ts`). Sempre 200: fail-soft no mesmo
- * padrão de `handleApiApoiosGet`. **Metade 1 da issue (importar apoios novos
- * varrendo o Gmail pessoal) NÃO é coberta por esta rota** — segue bloqueada
- * em arquitetura (servidor headless sem acesso ao MCP Gmail), ver #3859. */
+/** `POST /api/apoios/refresh` — botão "Atualizar status" (#3859, as DUAS
+ * metades): (1) drena notificações "novo apoio" do Gmail pessoal e importa
+ * contato automaticamente pra apoiador ainda não cadastrado; (2) força
+ * re-consulta do mês corrente na apoia.se, mas só pra contatos AINDA NÃO
+ * confirmados como "apoiando" (protege o teto de 5.000 req/mês) — ver
+ * `refreshApoiosData` em `studio-apoios.ts`. Sempre 200: fail-soft no mesmo
+ * padrão de `handleApiApoiosGet` (falha de qualquer uma das duas etapas vira
+ * `error` no payload, nunca derruba a outra nem a rota). */
 function handleApiApoiosRefresh(rootDir: string, res: ServerResponse): void {
   refreshApoiosData(rootDir)
     .then((data) => sendJson(res, 200, data))
@@ -1456,9 +1463,10 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         );
         return;
       }
-      // #3859 (metade 2): botão "Atualizar status" — force-refresh seletivo
-      // do mês corrente na apoia.se. Mesmo tratamento das rotas de escrita
-      // acima (checada antes do guard genérico de método).
+      // #3859 (as duas metades): botão "Atualizar status" — import automático
+      // via e-mail apoia.se (metade 1) + force-refresh seletivo do mês
+      // corrente na apoia.se (metade 2). Mesmo tratamento das rotas de
+      // escrita acima (checada antes do guard genérico de método).
       if (urlPath === "/api/apoios/refresh" && req.method === "POST") {
         handleApiApoiosRefresh(rootDir, res);
         return;
