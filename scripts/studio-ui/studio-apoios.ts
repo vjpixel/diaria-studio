@@ -38,14 +38,19 @@
  * outreach já gravados em `contacts.jsonl` são dado LEGADO, deixado quieto —
  * mesma disciplina do campo `circle` deprecado (#3611): `parseContactsJsonl`
  * simplesmente não lê o campo, e ele nunca é reintroduzido num roundtrip.
- * Visão por grupo/nível de recompensa é a PARTE 2 da #3844, fora de escopo
- * aqui (bloqueada numa decisão de produto do editor — faixas de valor R$ →
- * nível — ainda não tomada).
+ * **Visão por grupo/nível de recompensa (#3844 PARTE 2, decisão do editor
+ * 260722)** — `computeRewardGroup`/`computeRewardGroups` particionam o
+ * `monthlyValue` do mês corrente (já resolvido acima, sem chamada nova à
+ * API) nas 4 faixas confirmadas ao vivo na página real da campanha
+ * (Amigo/Apoiador/Mantenedor/Patrono). `ApoiosData.rewardGroups` reusa o
+ * mesmo `ContactWithStatus[]` já montado por `buildApoiosData`/
+ * `refreshApoiosData` — nenhuma nova chamada de rede ou store separado.
  *
  * **Escopo atual** (ver PR body pro incremento anotado): CRUD básico de
  * contato (criar/editar/adicionar email/notas) + status cruzado + visão de
- * campanha. Fora de escopo: busca/filtro server-side (a UI filtra
- * client-side sobre o snapshot, mesmo padrão de `triagem.js`).
+ * campanha + visão por grupo/nível de recompensa. Fora de escopo:
+ * busca/filtro server-side (a UI filtra client-side sobre o snapshot, mesmo
+ * padrão de `triagem.js`).
  *
  * **Taxa de abertura Beehiiv (#3612):** sinal adicional de engajamento,
  * INDEPENDENTE do status de apoio acima — vem de um cache separado
@@ -163,6 +168,8 @@ export interface ContactWithStatus extends ApoioContact {
 export interface ApoiosData {
   contacts: ContactWithStatus[];
   campaign: CampaignSummary;
+  /** Visão por grupo/nível de recompensa do mês corrente (#3844 parte 2). */
+  rewardGroups: RewardGroupsView;
   /** Mensagem de erro (data/ ausente, credenciais ausentes, 401, falha de
    * rede) — nunca impede a resposta, só documenta o motivo de status
    * incompletos/"sem_dados". `null` quando tudo correu bem. */
@@ -412,6 +419,66 @@ export function computeCampaignSummary(entries: ContactWithStatus[]): CampaignSu
   };
 }
 
+// ── visão por grupo / nível de recompensa (#3844 parte 2) ──────────────
+
+export type RewardGroup = "amigo" | "apoiador" | "mantenedor" | "patrono";
+
+/**
+ * Limiares valor (R$) → nível de recompensa — decisão do editor confirmada
+ * ao vivo na página real da campanha (https://apoia.se/diaria, 260722, ver
+ * corpo do PR/issue #3844 pra tabela completa de benefícios por nível).
+ * Regra de atribuição: MAIOR faixa cujo limiar ≤ valor. Patrono é o teto
+ * (não há nível acima).
+ */
+const REWARD_TIER_AMIGO_MIN = 5;
+const REWARD_TIER_APOIADOR_MIN = 10;
+const REWARD_TIER_MANTENEDOR_MIN = 25;
+const REWARD_TIER_PATRONO_MIN = 50;
+
+/**
+ * Particiona um valor pago no mês nas faixas de nível de recompensa acima.
+ * `undefined`/valor abaixo de `REWARD_TIER_AMIGO_MIN` (inclui negativo,
+ * defensivamente) → `null`, sem nenhum grupo pago.
+ */
+export function computeRewardGroup(thisMonthPaidValue: number | undefined): RewardGroup | null {
+  if (typeof thisMonthPaidValue !== "number" || !Number.isFinite(thisMonthPaidValue)) return null;
+  if (thisMonthPaidValue < REWARD_TIER_AMIGO_MIN) return null;
+  if (thisMonthPaidValue < REWARD_TIER_APOIADOR_MIN) return "amigo";
+  if (thisMonthPaidValue < REWARD_TIER_MANTENEDOR_MIN) return "apoiador";
+  if (thisMonthPaidValue < REWARD_TIER_PATRONO_MIN) return "mantenedor";
+  return "patrono";
+}
+
+export interface RewardGroupsView {
+  amigo: ContactWithStatus[];
+  apoiador: ContactWithStatus[];
+  mantenedor: ContactWithStatus[];
+  patrono: ContactWithStatus[];
+}
+
+export function emptyRewardGroupsView(): RewardGroupsView {
+  return { amigo: [], apoiador: [], mantenedor: [], patrono: [] };
+}
+
+/**
+ * Agrega contatos por nível de recompensa do mês corrente pra exibição no
+ * painel Apoios (#3844 parte 2). Só contatos com `status.label ===
+ * "apoiando"` têm um `monthlyValue` do mês corrente pra derivar um nível —
+ * "nao_apoia"/"apoiou_e_parou"/"sem_dados" nunca entram em grupo algum (não
+ * há valor pago ESTE mês pra particionar). Um contato com valor abaixo de
+ * R$5 (fora do intervalo hoje, mas defensivo) também fica de fora — reflete
+ * `computeRewardGroup` retornando `null`.
+ */
+export function computeRewardGroups(contacts: ContactWithStatus[]): RewardGroupsView {
+  const view = emptyRewardGroupsView();
+  for (const c of contacts) {
+    if (c.status.label !== "apoiando") continue;
+    const group = computeRewardGroup(c.status.monthlyValue);
+    if (group) view[group].push(c);
+  }
+  return view;
+}
+
 // ── I/O: contacts.jsonl ──────────────────────────────────────────────────
 
 export function contactsFilePath(rootDir: string): string {
@@ -619,7 +686,7 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
   if (!opts.contacts) {
     const dataDirError = checkDataDirAvailable(rootDir);
     if (dataDirError) {
-      return { contacts: [], campaign: emptyCampaignSummary(), error: dataDirError, generatedAt };
+      return { contacts: [], campaign: emptyCampaignSummary(), rewardGroups: emptyRewardGroupsView(), error: dataDirError, generatedAt };
     }
   }
 
@@ -627,7 +694,7 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
   try {
     contacts = opts.contacts ?? loadContacts(rootDir);
   } catch (e) {
-    return { contacts: [], campaign: emptyCampaignSummary(), error: (e as Error).message, generatedAt };
+    return { contacts: [], campaign: emptyCampaignSummary(), rewardGroups: emptyRewardGroupsView(), error: (e as Error).message, generatedAt };
   }
 
   // Taxa de abertura Beehiiv (#3612) é um sinal INDEPENDENTE do status de
@@ -644,6 +711,7 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
     return {
       contacts: withStatus,
       campaign: computeCampaignSummary(withStatus),
+      rewardGroups: computeRewardGroups(withStatus),
       error: (e as Error).message,
       generatedAt,
     };
@@ -689,6 +757,7 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
   return {
     contacts: withStatus,
     campaign: computeCampaignSummary(withStatus),
+    rewardGroups: computeRewardGroups(withStatus),
     error: fetchError,
     generatedAt,
   };
@@ -719,7 +788,7 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
   if (!opts.contacts) {
     const dataDirError = checkDataDirAvailable(rootDir);
     if (dataDirError) {
-      return { contacts: [], campaign: emptyCampaignSummary(), error: dataDirError, generatedAt };
+      return { contacts: [], campaign: emptyCampaignSummary(), rewardGroups: emptyRewardGroupsView(), error: dataDirError, generatedAt };
     }
   }
 
@@ -727,7 +796,7 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
   try {
     contacts = opts.contacts ?? loadContacts(rootDir);
   } catch (e) {
-    return { contacts: [], campaign: emptyCampaignSummary(), error: (e as Error).message, generatedAt };
+    return { contacts: [], campaign: emptyCampaignSummary(), rewardGroups: emptyRewardGroupsView(), error: (e as Error).message, generatedAt };
   }
 
   // #3859 metade 1: importar apoiadores novos via e-mail ANTES do
@@ -764,6 +833,7 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
     return {
       contacts: withStatus,
       campaign: computeCampaignSummary(withStatus),
+      rewardGroups: computeRewardGroups(withStatus),
       error: (e as Error).message,
       generatedAt,
     };
@@ -839,6 +909,7 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
   return {
     contacts: withStatus,
     campaign: computeCampaignSummary(withStatus),
+    rewardGroups: computeRewardGroups(withStatus),
     // refreshError (falha de credenciais/auth apoia.se) é mais crítico —
     // nunca sobrescrito pelo gmailDrainError (fail-soft, #3859 metade 1).
     error: refreshError ?? gmailDrainError,

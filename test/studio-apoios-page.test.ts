@@ -113,6 +113,18 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.match(body.error ?? "", /APOIA_SE_API_KEY/);
   });
 
+  it("GET /api/apoios traz 'rewardGroups' com as 4 chaves de nível, vazias sem contatos (#3844 parte 2)", async () => {
+    const res = await fetch(new URL("/api/apoios", server.url));
+    const body = await res.json();
+    assert.deepEqual(body.rewardGroups, { amigo: [], apoiador: [], mantenedor: [], patrono: [] });
+  });
+
+  it("serve a página apoios.html com a seção de visão por grupo (#3844 parte 2)", async () => {
+    const res = await fetch(new URL("/apoios", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('id="reward-groups"'), "a seção reward-groups deve existir no shell");
+  });
+
   it("POST /api/apoios/contacts com corpo inválido -> 400", async () => {
     const res = await fetch(new URL("/api/apoios/contacts", server.url), {
       method: "POST",

@@ -12,6 +12,11 @@
  * saíram daqui junto. O que sobra: a mesma disciplina de campo legado do
  * #3611 (`circle`) agora também cobre `outreach` (ver describe de
  * `parseContactsJsonl` abaixo).
+ *
+ * #3844 parte 2: `computeRewardGroup`/`computeRewardGroups` — partição de
+ * valor pago no mês em nível de recompensa (Amigo/Apoiador/Mantenedor/
+ * Patrono), com casos de fronteira exatos nos limiares confirmados pelo
+ * editor (R$5/10/25/50).
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -31,6 +36,9 @@ import {
   openRateCachePath,
   computeCampaignSummary,
   emptyCampaignSummary,
+  computeRewardGroup,
+  computeRewardGroups,
+  emptyRewardGroupsView,
   contactsFilePath,
   checkDataDirAvailable,
   loadContacts,
@@ -368,6 +376,101 @@ describe("computeCampaignSummary (#3602)", () => {
   });
 });
 
+// ─── visão por grupo / nível de recompensa (#3844 parte 2) ─────────────
+
+describe("computeRewardGroup (#3844 parte 2)", () => {
+  it("undefined -> nenhum grupo", () => {
+    assert.equal(computeRewardGroup(undefined), null);
+  });
+
+  it("0 -> nenhum grupo (abaixo do piso de R$5)", () => {
+    assert.equal(computeRewardGroup(0), null);
+  });
+
+  it("negativo -> nenhum grupo (defensivo, nunca deveria ocorrer na prática)", () => {
+    assert.equal(computeRewardGroup(-10), null);
+  });
+
+  it("R$4.99 -> nenhum grupo (abaixo do piso de R$5)", () => {
+    assert.equal(computeRewardGroup(4.99), null);
+  });
+
+  it("R$5 -> amigo (piso exato)", () => {
+    assert.equal(computeRewardGroup(5), "amigo");
+  });
+
+  it("R$9.99 -> amigo (fronteira abaixo do próximo nível)", () => {
+    assert.equal(computeRewardGroup(9.99), "amigo");
+  });
+
+  it("R$10 -> apoiador (piso exato)", () => {
+    assert.equal(computeRewardGroup(10), "apoiador");
+  });
+
+  it("R$24.99 -> apoiador (fronteira abaixo do próximo nível)", () => {
+    assert.equal(computeRewardGroup(24.99), "apoiador");
+  });
+
+  it("R$15/R$20 (valores fora do valor-base, vistos em produção) -> apoiador", () => {
+    assert.equal(computeRewardGroup(15), "apoiador");
+    assert.equal(computeRewardGroup(20), "apoiador");
+  });
+
+  it("R$25 -> mantenedor (piso exato)", () => {
+    assert.equal(computeRewardGroup(25), "mantenedor");
+  });
+
+  it("R$49.99 -> mantenedor (fronteira abaixo do próximo nível)", () => {
+    assert.equal(computeRewardGroup(49.99), "mantenedor");
+  });
+
+  it("R$50 -> patrono (piso exato)", () => {
+    assert.equal(computeRewardGroup(50), "patrono");
+  });
+
+  it("R$500 -> patrono (patrono é o teto, sem nível acima)", () => {
+    assert.equal(computeRewardGroup(500), "patrono");
+  });
+});
+
+describe("computeRewardGroups (#3844 parte 2)", () => {
+  it("emptyRewardGroupsView zera as 4 chaves", () => {
+    assert.deepEqual(emptyRewardGroupsView(), { amigo: [], apoiador: [], mantenedor: [], patrono: [] });
+  });
+
+  it("particiona uma lista de ContactWithStatus reproduzindo a distribuição de aceitação da issue (#3844)", () => {
+    const entries: ContactWithStatus[] = [
+      { ...makeContact({ id: "c1", name: "Patrono" }), status: { label: "apoiando", monthlyValue: 50 }, openRate: null },
+      { ...makeContact({ id: "c2", name: "Mantenedor" }), status: { label: "apoiando", monthlyValue: 25 }, openRate: null },
+      { ...makeContact({ id: "c3", name: "Apoiador1" }), status: { label: "apoiando", monthlyValue: 20 }, openRate: null },
+      { ...makeContact({ id: "c4", name: "Apoiador2" }), status: { label: "apoiando", monthlyValue: 10 }, openRate: null },
+      { ...makeContact({ id: "c5", name: "Amigo" }), status: { label: "apoiando", monthlyValue: 5 }, openRate: null },
+    ];
+    const groups = computeRewardGroups(entries);
+    assert.deepEqual(groups.patrono.map((c) => c.name), ["Patrono"]);
+    assert.deepEqual(groups.mantenedor.map((c) => c.name), ["Mantenedor"]);
+    assert.deepEqual(groups.apoiador.map((c) => c.name), ["Apoiador1", "Apoiador2"]);
+    assert.deepEqual(groups.amigo.map((c) => c.name), ["Amigo"]);
+  });
+
+  it("contato 'nao_apoia'/'apoiou_e_parou'/'sem_dados' nunca cai em nenhum grupo (só apoiando este mês entra)", () => {
+    const entries: ContactWithStatus[] = [
+      { ...makeContact({ id: "c1", name: "NaoApoia" }), status: { label: "nao_apoia" }, openRate: null },
+      { ...makeContact({ id: "c2", name: "Parou" }), status: { label: "apoiou_e_parou", lastPaidMonth: "2026-06" }, openRate: null },
+      { ...makeContact({ id: "c3", name: "SemDados" }), status: { label: "sem_dados" }, openRate: null },
+    ];
+    const groups = computeRewardGroups(entries);
+    assert.deepEqual(groups, emptyRewardGroupsView());
+  });
+
+  it("contato 'apoiando' sem monthlyValue (não deveria ocorrer, mas defensivo) não cai em grupo algum", () => {
+    const entries: ContactWithStatus[] = [
+      { ...makeContact({ id: "c1", name: "SemValor" }), status: { label: "apoiando" }, openRate: null },
+    ];
+    assert.deepEqual(computeRewardGroups(entries), emptyRewardGroupsView());
+  });
+});
+
 // ─── I/O: contacts.jsonl + snapshots mensais ────────────────────────────
 
 describe("loadContacts / saveContacts / checkDataDirAvailable (#3602)", () => {
@@ -612,6 +715,13 @@ describe("buildApoiosData (#3602)", () => {
       assert.equal(result.campaign.totalContacts, 3);
       assert.equal(result.campaign.totalConverted, 1);
       assert.equal(result.campaign.monthlyValueSum, 20);
+      // #3844 parte 2: rewardGroups reusa o MESMO ContactWithStatus[] já
+      // montado acima — c1 (R$20, apoiando) cai em "apoiador"; c2/c3 (não
+      // apoiando este mês) não aparecem em grupo algum.
+      assert.deepEqual(result.rewardGroups.apoiador.map((c) => c.id), ["c1"]);
+      assert.deepEqual(result.rewardGroups.amigo, []);
+      assert.deepEqual(result.rewardGroups.mantenedor, []);
+      assert.deepEqual(result.rewardGroups.patrono, []);
     } finally {
       rmSync(cacheDir, { recursive: true, force: true });
     }

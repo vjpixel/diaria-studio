@@ -30,6 +30,73 @@
   opacity: 0.65;
 }
 
+/* #3844 parte 2: visão por grupo/nível de recompensa (mês corrente). Cards
+   no mesmo padrão visual de .tile/.contact-card (border + paper-alt), em
+   grid responsivo — mesma família de .campaign-tiles. */
+.reward-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+.reward-group {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.6rem 0.85rem;
+  background: var(--paper-alt);
+}
+.reward-group-title {
+  margin: 0 0 0.4rem;
+  font-family: var(--font-serif);
+  font-weight: 400;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.reward-group-count {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  opacity: 0.75;
+}
+.reward-group-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.reward-contact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  padding: 0.2rem 0;
+  border-bottom: 1px dashed var(--rule);
+}
+.reward-contact:last-child { border-bottom: none; }
+.reward-contact-name { font-weight: 600; }
+.reward-contact-email {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+.reward-contact-value {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  opacity: 0.85;
+}
+.reward-group-empty {
+  font-size: 0.82rem;
+  opacity: 0.6;
+  font-style: italic;
+}
+
 .contact-form {
   display: flex;
   flex-wrap: wrap;
