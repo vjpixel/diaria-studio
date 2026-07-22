@@ -64,68 +64,137 @@
  * que um prompt mal-formado ou um agente dispatchado tentasse. Também nega
  * DETERMINISTICAMENTE `git checkout`/`git pull`/`git stash`/`git reset`
  * (#3728 Gap 1 + #3738 — defesa em profundidade, ver limitação conhecida
- * abaixo). Fora do blocklist, o `canUseTool` segue o padrão CONSERVADOR de
- * `studio-chat.ts` (nega por padrão qualquer tool call que
- * `.claude/settings.json` não resolveu sozinho) — a sessão coordenadora
- * deliberadamente NÃO expande permissões além do que um terminal interativo
- * já teria; a lacuna real que sobra (`gh api graphql` pro gate de threads
- * não estar no `allow` de `.claude/settings.json`, #3728 Gap 3 original) vai
- * aparecer como um evento de denial no stream em vez de travar
- * silenciosamente — é escopo do #3720 (validação ao vivo + extensão do
- * allow-list, sessão supervisionada `/diaria-develop`, não overnight), não
- * desta fatia. **Exceção pontual (#3791):** `gh issue comment`/`gh issue
- * close` são explicitamente ALLOW em `evaluateWaveTool` (não fazem parte do
- * "fora do blocklist nega por padrão") — são os 2 subcomandos text-only que
- * o protocolo do #3781/#3782 depende (marcador de diagnóstico, fallback de
- * fechamento), e `.claude/settings.json` também ganhou `Bash(gh issue
- * comment *)`/`Bash(gh issue close *)`/`Bash(gh issue view *)` no allow-list
- * incondicional (mesmo padrão de `Bash(gh pr *)` já existente) — sem isso o
- * mecanismo inteiro do #3781/#3782 era inalcançável num checkout limpo sem
- * `settings.local.json` pessoal do editor.
+ * abaixo, RESOLVIDA em #3720). Fora do blocklist e fora do allow-list
+ * explícito descrito na seção "A correção (#3720)" abaixo, `canUseTool`
+ * nega por padrão — desde que `runWaveFire` passa `settingSources: []`,
+ * `.claude/settings.json` deixou de ser consultado NESTA sessão
+ * especificamente, então toda decisão de tool call passa por
+ * `evaluateWaveTool` sem exceção (ver "LIMITAÇÃO CONHECIDA" abaixo pro
+ * histórico completo do porquê isso importa). A sessão coordenadora
+ * deliberadamente NÃO expande permissões além do estritamente necessário
+ * pro protocolo de dispatch + Gate 2 + merge que o próprio prompt
+ * (`buildWaveFireCoordinatorPrompt`) instrui: `Agent` (só com `isolation:
+ * "worktree"` explícito) e um punhado de formas EXATAS de `gh pr checks`/
+ * `gh pr merge`/`gh api graphql`/`gh issue view` (constantes
+ * `GH_PR_CHECKS_*`/`GH_PR_MERGE_SQUASH_RE`/`GH_API_GRAPHQL_*`/
+ * `GH_ISSUE_VIEW_JSON_RE` abaixo — #3720 fecha a lacuna que antes aparecia
+ * como "evento de denial no stream" pro Gate 2, #3728 Gap 3 original).
+ * **Exceção pontual (#3791):** `gh issue comment`/`gh issue close` são
+ * explicitamente ALLOW em `evaluateWaveTool` (não fazem parte do "fora do
+ * blocklist nega por padrão") — são os 2 subcomandos text-only que o
+ * protocolo do #3781/#3782 depende (marcador de diagnóstico, fallback de
+ * fechamento). `.claude/settings.json` também tem `Bash(gh issue comment
+ * *)`/`Bash(gh issue close *)`/`Bash(gh issue view *)` no allow-list
+ * incondicional (mesmo padrão de `Bash(gh pr *)` já existente) — isso
+ * continua relevante pra OUTRAS sessões que preservam `settingSources:
+ * ["user", "project", "local"]` (terminal interativo, chat drawer de
+ * `studio-chat.ts`), mas deixou de ter qualquer efeito NESTA sessão desde
+ * #3720; por isso `evaluateWaveTool` allowlista esses mesmos comandos de
+ * forma independente (`GH_ISSUE_ALLOWED_SHAPE_RE` abaixo), sem depender do
+ * `settings.json` compartilhado.
  *
- * ## LIMITAÇÃO CONHECIDA — dois guards são bypassados por `.claude/settings.json` (#3738)
+ * ## LIMITAÇÃO CONHECIDA — RESOLVIDA EM #3720 (settingSources: [])
  *
  * Investigação do #3738 (Fase 1.5b, angle A) confirmou por leitura direta de
- * `.claude/settings.json` que dois blocos deste módulo NUNCA são de fato
+ * `.claude/settings.json` que blocos deste módulo NUNCA eram de fato
  * alcançados pra uma classe inteira de comandos, porque o SDK resolve o
  * allow-list de `settings.json` ANTES de invocar `canUseTool` (precedência
  * do harness, não bug deste módulo):
  *
  * (a) **Guard de working-tree** (`WAVE_WORKTREE_GUARD_RE`) — efetivo pra
- *     `git pull`/`git stash`/`git reset` (nenhum dos três está pré-aprovado
- *     em `settings.json`), mas **NÃO** pra `git checkout`/`git push` — ambos
- *     já allowlistados incondicionalmente em `.claude/settings.json`
- *     (`"Bash(git checkout *)"`, `"Bash(git push *)"` no bloco
- *     `permissions.allow` — não citamos número de linha aqui de propósito,
- *     drifta fácil; buscar pela string literal). Um `git checkout master`
- *     disparado pela coordenadora é auto-aprovado pelo harness antes de
+ *     `git pull`/`git stash`/`git reset` (nenhum dos três estava
+ *     pré-aprovado em `settings.json`), mas **NÃO** pra `git checkout`/`git
+ *     push` — ambos allowlistados incondicionalmente em
+ *     `.claude/settings.json` (`"Bash(git checkout *)"`, `"Bash(git push
+ *     *)"` no bloco `permissions.allow`). Um `git checkout master`
+ *     disparado pela coordenadora era auto-aprovado pelo harness antes de
  *     `evaluateWaveTool` sequer rodar.
  * (b) **Guard de publicação** (`WAVE_PUBLISH_SCRIPT_EXEC_RE`/
  *     `WAVE_PUBLISH_PLATFORM_WORD_RE`, o guard PRINCIPAL do módulo —
  *     `WAVE_PUBLISH_GUARD_RE` original foi split em dois em #3791, ver
  *     doc-comment das duas constantes) — `.claude/settings.json` também tem
- *     `"Bash(npx tsx scripts/*.ts)"` no allow-list incondicional. Isso cobre
+ *     `"Bash(npx tsx scripts/*.ts)"` no allow-list incondicional. Isso cobria
  *     QUALQUER script invocado nesse formato, inclusive os próprios scripts
  *     que este guard tenta bloquear: `npx tsx scripts/publish-facebook.ts`,
  *     `npx tsx scripts/clarice-schedule-sends.ts`,
  *     `npx tsx scripts/clarice-import-waves.ts`,
- *     `npx tsx scripts/close-poll.ts`. Todos batem no padrão já pré-aprovado
- *     e portanto nunca chegam a `evaluateWaveTool`. Isso undermina a
- *     alegação CENTRAL do módulo (bloquear publicação real numa sessão sem
- *     supervisão) — não é uma proteção secundária como (a), é a proteção
- *     primária.
+ *     `npx tsx scripts/close-poll.ts`. Todos batiam no padrão já
+ *     pré-aprovado e portanto nunca chegavam a `evaluateWaveTool`. Isso
+ *     undermina a alegação CENTRAL do módulo (bloquear publicação real numa
+ *     sessão sem supervisão) — não era uma proteção secundária como (a),
+ *     era a proteção primária.
+ * (c) **Não documentado antes de #3720** — `Agent` (a tool que dispatcha
+ *     cada unidade da onda, ver `buildWaveFireCoordinatorPrompt` passo 1)
+ *     também estava no allow-list incondicional de `.claude/settings.json`
+ *     (`"Agent"`, sem qualificação de argumento nenhuma). Uma chamada
+ *     `Agent` SEM `isolation: "worktree"` (prompt mal-formado, bug futuro na
+ *     sessão coordenadora) também era auto-aprovada antes de
+ *     `evaluateWaveTool` rodar — undermina, por outro caminho, a MESMA
+ *     garantia que (a) protege ("a pasta principal nunca é tocada
+ *     diretamente pela coordenadora").
  *
- * Nenhum dos dois é corrigível com um fix mecânico neste arquivo — corrigir
- * de verdade exige restringir ou remover essas entradas do allow-list de
- * `.claude/settings.json` (potencialmente só no contexto de uma sessão
- * wave-fire, não globalmente, já que outras skills legitimamente precisam
- * desses padrões amplos). Essa é uma decisão de arquitetura/produto, não um
- * fix de regex — **o lugar certo pra resolver é o #3720** (validação
- * supervisionada + decisão sobre o allow-list, sessão `/diaria-develop` com
- * o editor presente). Os regexes abaixo continuam valendo como defesa em
- * profundidade pro resíduo de casos onde `canUseTool` é de fato invocado
- * (ex.: comandos que não batem em nenhum padrão pré-aprovado) e como
- * documentação executável da intenção do módulo.
+ * ### A correção (#3720)
+ *
+ * `runWaveFire` passa `settingSources: []` pro SDK (`Options.settingSources`
+ * — "Pass `[]` to disable filesystem settings (SDK isolation mode)", ver
+ * `node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`). Isso desliga
+ * COMPLETAMENTE a resolução de `user`/`project`/`local` settings.json pra
+ * ESTA sessão específica — `.claude/settings.json` do repo (que outras
+ * sessões continuam usando normalmente e sem mudança nenhuma, inclusive o
+ * chat drawer de `studio-chat.ts`) deixa de existir do ponto de vista do SDK
+ * aqui. Consequência: TODA decisão de tool call desta sessão passa, sem
+ * exceção, por `evaluateWaveTool` — os três bypasses acima são
+ * estruturalmente impossíveis agora (não há allow-list externo pra
+ * consultar antes de `canUseTool` sequer ser chamado).
+ *
+ * A tentação óbvia seria compensar via `Options.settings` (a "flag
+ * settings" layer, prioridade mais alta) com os MESMOS wildcards largos que
+ * `.claude/settings.json` já tinha (`Bash(git checkout *)`, `Bash(npx tsx
+ * scripts/*.ts)`, `"Agent"` sem qualificação, etc.) — isso recriaria
+ * EXATAMENTE o mesmo bypass, só que escopado a esta sessão em vez de
+ * compartilhado com o resto do repo. Rejeitado de propósito (decisão de
+ * arquitetura tomada com o editor presente): os comandos que a coordenadora
+ * de fato precisa são resolvidos INTEIRAMENTE dentro de `evaluateWaveTool` —
+ * um allow-list cirúrgico por comando (âncora de string inteira, sem
+ * metacaractere de shell, sem flag fora do esperado), mesmo padrão de rigor
+ * já usado pra `GH_ISSUE_ALLOWED_SHAPE_RE`/`GH_ISSUE_SHELL_CHAIN_RE`:
+ *
+ * - `Agent` — só com `isolation: "worktree"` explícito no input (fecha o
+ *   gap (c) acima; `subagent_type`/`model` não são validados aqui, afetam
+ *   qualidade/custo, não blast radius).
+ * - `gh pr checks {N} --watch` / `gh pr checks {N} --json bucket,name` (e
+ *   variações de ordem/subconjunto desses 2 campos) — espera de CI +
+ *   condição 1 do Gate 2 (`GH_PR_CHECKS_WATCH_RE`/`GH_PR_CHECKS_JSON_RE`).
+ * - `gh api graphql -f query="..."` — só pras 2 formas EXATAS que o Gate 2
+ *   usa (query read-only de `reviewThreads` de um PR, mutation
+ *   `resolveReviewThread` com um `threadId` variável) — qualquer outra
+ *   query/mutation, ou a mesma com texto adicional encadeado, cai no
+ *   default-deny (`GH_API_GRAPHQL_REVIEW_THREADS_RE`/
+ *   `GH_API_GRAPHQL_RESOLVE_THREAD_RE`).
+ * - `gh pr merge {N} --squash` — só essa forma exata, sem `--admin`/
+ *   `--auto` nem qualquer flag adicional (`GH_PR_MERGE_SQUASH_RE`).
+ * - `gh issue view {N} --json state` (e a forma com os 3 campos usados pela
+ *   validação pós-turno, `state,comments,closedByPullRequestsReferences`,
+ *   em qualquer ordem suportada) — confirmação de fechamento no passo 5 do
+ *   prompt (`GH_ISSUE_VIEW_JSON_RE`).
+ *
+ * **Efeito colateral aceito, documentado (não é regressão silenciosa):** com
+ * `settingSources: []`, tools antes triviais (`Read`, `Write`, `Edit`,
+ * `Glob`, `Grep`, `WebFetch`, `WebSearch`) não têm mais allow nenhum nesta
+ * sessão — a coordenadora não tem como tocar arquivo/rede diretamente, só
+ * via `Agent` (subagentes em worktree isolado) e os comandos `gh` acima.
+ * Isso não é uma regressão: o prompt da coordenadora
+ * (`buildWaveFireCoordinatorPrompt`) já a instruía a nunca fazer isso ("Sua
+ * única responsabilidade: dispatch + gate de merge serial") —
+ * `evaluateWaveTool` agora torna essa instrução também estruturalmente
+ * verdadeira, não só uma convenção de prosa.
+ *
+ * A validação ao vivo contra o SDK real (não mockada) — confirmar que a
+ * sessão de fato consegue dispatchar `Agent`, rodar o Gate 2 via `gh api
+ * graphql`, e mergear com este allow-list — é responsabilidade do
+ * COORDENADOR da sessão `/diaria-develop` (Gate B + validação ao vivo),
+ * nunca deste PR (ver "O que NÃO está nesta fatia" abaixo: nenhuma sessão
+ * real foi disparada como parte deste fix).
  *
  * ## Guard de "espera de CI" como CÓDIGO, não só prosa (#3753)
  *
@@ -461,6 +530,140 @@ const GH_ISSUE_SHELL_CHAIN_RE = /[;&|`\n<>]|\$\(/;
 const GH_ISSUE_ALLOWED_SHAPE_RE =
   /^\s*gh(?:\.exe)?\s+issue\s+(?:comment|close)\s+\d+\s*(?:(?:--body|--comment|-b|-c)(?:=|\s+)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+))?\s*$/i;
 
+// ─── #3720: comandos gh da sessão coordenadora (Gate 2 + espera de CI + merge) ──
+//
+// Com `runWaveFire` passando `settingSources: []` (ver doc-comment do
+// módulo, seção "LIMITAÇÃO CONHECIDA — RESOLVIDA EM #3720"), NENHUM comando
+// `gh` desta sessão é mais pré-aprovado por `.claude/settings.json` — cada
+// forma abaixo precisa de allow explícito aqui, ou o protocolo inteiro do
+// prompt da coordenadora (`buildWaveFireCoordinatorPrompt` passos 3-5) trava
+// na primeira tentativa. Cada constante cobre EXATAMENTE (âncoras `^...$`)
+// uma das formas citadas nesses passos do prompt — nenhuma flag adicional,
+// nenhuma variação de subcomando, nenhum metacaractere de shell tem onde se
+// esconder, porque a string inteira precisa bater no template fixo.
+
+/**
+ * #3720 — `gh pr checks {N} --watch` (passo 3: polling síncrono bloqueante
+ * de CI, "`gh pr checks {pr} --watch` (bloqueia até o CI resolver)"). Só
+ * aceita um número de PR (`\d+`) seguido exatamente de `--watch` — nenhuma
+ * flag extra, nenhum encadeamento (a âncora `$` logo depois de `--watch\s*`
+ * já reprova qualquer `&&`/`;`/`|` anexado, sem precisar de um char-class
+ * separado como o de `GH_ISSUE_SHELL_CHAIN_RE`: aqui não há um "valor livre"
+ * pra escapar, é uma forma 100% fixa).
+ */
+const GH_PR_CHECKS_WATCH_RE = /^\s*gh(?:\.exe)?\s+pr\s+checks\s+\d+\s+--watch\s*$/i;
+
+/**
+ * #3720 — `gh pr checks {N} --json bucket,name` (passos 3 e 4: loop de
+ * poll + condição 1 do Gate 2 determinístico, "todo bucket precisa ser
+ * 'pass'"). `bucket`/`name` são os 2 únicos campos que o prompt da
+ * coordenadora de fato usa — allowlist explícita dos 2 nomes (em qualquer
+ * ordem/subconjunto: `bucket,name` | `name,bucket` | `bucket` | `name`),
+ * nunca um `--jq` com expressão arbitrária (que poderia extrair qualquer
+ * outro campo do payload, incluindo potencialmente dados de outro PR via
+ * uma expressão jq malformada de propósito) — mesmo espírito conservador do
+ * resto do módulo: se a coordenadora precisar de outro campo, a chamada cai
+ * no default-deny, nunca um allow indevido.
+ */
+const GH_PR_CHECKS_JSON_RE =
+  /^\s*gh(?:\.exe)?\s+pr\s+checks\s+\d+\s+--json\s+(?:bucket,name|name,bucket|bucket|name)\s*$/i;
+
+/**
+ * #3720 — `gh pr merge {N} --squash` (passo 5: "MERGE É SEMPRE SERIAL...
+ * `gh pr merge {pr} --squash`"). Confirmado por leitura de
+ * `buildWaveFireCoordinatorPrompt` que o prompt NUNCA instrui `--admin` nem
+ * `--auto` — ambas escalam privilégio (`--admin` ignora required checks/
+ * reviews; `--auto` deixa o merge agendado sem confirmação síncrona) e por
+ * isso são deliberadamente EXCLUÍDAS do allowlist: só a forma exata `gh pr
+ * merge <N> --squash`, nenhuma flag além dela. Uma tentativa de anexar
+ * `--admin`/`--auto`/qualquer outra flag cai no default-deny.
+ */
+const GH_PR_MERGE_SQUASH_RE = /^\s*gh(?:\.exe)?\s+pr\s+merge\s+\d+\s+--squash\s*$/i;
+
+/**
+ * #3720 — `gh issue view {N} --json state` (passo 5: "Se a issue seguir
+ * OPEN (`gh issue view {numero} --json state`) alguns segundos depois").
+ * Também aceita a forma de 3 campos que a validação pós-turno deste módulo
+ * usa internamente (`checkIssueTerminalState` →
+ * `state,comments,closedByPullRequestsReferences`, ver mais abaixo) caso a
+ * coordenadora decida rodar a mesma checagem por conta própria — em
+ * qualquer uma das 2 ordens observadas (a ordem literal do código e a ordem
+ * como aparece na descrição da issue #3720). Nenhum outro campo (`body`,
+ * `title`, etc.) é aceito — read-only estritamente escopado ao que os dois
+ * call sites reais precisam.
+ */
+const GH_ISSUE_VIEW_JSON_RE =
+  /^\s*gh(?:\.exe)?\s+issue\s+view\s+\d+\s+--json\s+(?:state|state,comments,closedByPullRequestsReferences|state,closedByPullRequestsReferences,comments)\s*$/i;
+
+/**
+ * #3720 — `gh api graphql -f query="..."` pra LER review threads de um PR
+ * (passo 4, condição 2 do Gate 2: "via `gh api graphql`, checar que não há
+ * review threads não-resolvidas"). O shape é o MESMO literal de
+ * `.claude/skills/diaria-overnight/SKILL.md` (linha ~225): query fixa sobre
+ * `repository(owner:"vjpixel",name:"diaria-studio"){ pullRequest(number:N){
+ * reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage
+ * endCursor } } } } }`, com `N` (número do PR) como ÚNICA parte variável —
+ * capturado só como dígitos (`\d+`), sem espaço pra metacaractere nenhum.
+ * `owner`/`name` são LITERAIS fixos (não parametrizados) — uma query contra
+ * qualquer outro repo (`name:"outro-repo"`) não bate no regex e cai no
+ * default-deny. A âncora `^...$` cobre toda a string do comando (inclusive
+ * as aspas de fechamento do `-f query="..."` e o que vier depois) — um
+ * comando que anexe `&&`/`;`/`|`/qualquer coisa após a query válida deixa
+ * sobra de texto que o `\s*$` final não consome, então NÃO precisa de um
+ * char-class de encadeamento separado (diferente do caso `gh issue comment`,
+ * que aceita um `<valor>` livre — aqui a query INTEIRA é fixa, não há
+ * "valor livre" nenhum pra um atacante preencher com metacaracteres).
+ * Suporta só a forma double-quoted com aspas internas escapadas
+ * (`\"vjpixel\"`) — a mesma convenção do SKILL.md linha ~226 (`-f
+ * query="$QUERY"` com `$QUERY` sendo um literal single-quoted que, ao ser
+ * embutido direto sem variável de shell, precisa escapar as aspas internas
+ * pra permanecer 1 argumento válido). A forma single-quoted (`-f
+ * query='...'`) NÃO é suportada — limitação deliberada pra manter o regex
+ * tratável; se a coordenadora usar essa forma na validação ao vivo, a
+ * chamada cai no default-deny (fail-safe) e fica documentada como gap pro
+ * coordenador ajustar o prompt, nunca um allow indevido.
+ */
+const GH_API_GRAPHQL_REVIEW_THREADS_RE = new RegExp(
+  String.raw`^\s*gh(?:\.exe)?\s+api\s+graphql\s+-f\s+query="\{\s*repository\(owner:\\"vjpixel\\",name:\\"diaria-studio\\"\)\{\s*pullRequest\(number:(\d+)\)\{\s*reviewThreads\(first:100\)\{\s*nodes\{\s*id\s+isResolved\s*\}\s*pageInfo\{\s*hasNextPage\s+endCursor\s*\}\s*\}\s*\}\s*\}\s*\}"\s*$`,
+  "i",
+);
+
+/**
+ * #3720 — `gh api graphql -f query="mutation { resolveReviewThread(...) }"`
+ * pra RESOLVER 1 review thread (passo 4, mesmo Gate 2 — reusa o loop de
+ * resolução do `.claude/skills/diaria-overnight/SKILL.md` linha ~244).
+ * Mesmo raciocínio de âncora total de `GH_API_GRAPHQL_REVIEW_THREADS_RE`
+ * acima (comando inteiro fixo, só `threadId` varia, sem espaço pra
+ * metacaractere). `threadId` é um node ID opaco do GitHub GraphQL
+ * (base64url-like) — charset restrito a `[A-Za-z0-9_=-]+`, o que já exclui
+ * QUALQUER caractere de shell (aspas, `$`, backtick, `;`, `&`, `|`, `<`,
+ * `>`, espaço) do valor capturado. Isso é DELIBERADAMENTE só a mutation
+ * `resolveReviewThread` com esse shape exato — `mutation { deleteRepo(...)
+ * }` ou qualquer outra mutation cai no default-deny; o guard não confia em
+ * "começa com `mutation {`" sozinho, precisa bater o corpo inteiro.
+ */
+const GH_API_GRAPHQL_RESOLVE_THREAD_RE = new RegExp(
+  String.raw`^\s*gh(?:\.exe)?\s+api\s+graphql\s+-f\s+query="mutation\s*\{\s*resolveReviewThread\(input:\{threadId:\\"([A-Za-z0-9_=-]+)\\"\}\)\{\s*thread\{\s*id\s+isResolved\s*\}\s*\}\s*\}"\s*$`,
+  "i",
+);
+
+/**
+ * #3720 — decisão pura combinando as 6 formas acima num único predicado,
+ * usada por `evaluateWaveTool` como um allow-list independente do guard de
+ * `gh issue comment`/`close` (#3791/#3795/#3801) — comandos diferentes,
+ * mesmo espírito (âncora de string inteira, sem margem pra metacaractere).
+ */
+function isAllowedWaveCoordinatorGhCommand(command: string): boolean {
+  return (
+    GH_PR_CHECKS_WATCH_RE.test(command) ||
+    GH_PR_CHECKS_JSON_RE.test(command) ||
+    GH_PR_MERGE_SQUASH_RE.test(command) ||
+    GH_ISSUE_VIEW_JSON_RE.test(command) ||
+    GH_API_GRAPHQL_REVIEW_THREADS_RE.test(command) ||
+    GH_API_GRAPHQL_RESOLVE_THREAD_RE.test(command)
+  );
+}
+
 /**
  * Guard de working-tree (#3728 Gap 1 + #3738, defesa em profundidade).
  * Bloqueia `checkout`/`pull`/`stash`/`reset` (#3738 Gap 1 — `reset` estava
@@ -479,15 +682,16 @@ const GH_ISSUE_ALLOWED_SHAPE_RE =
  * errada; resultado allow/deny não mudava, já que o guard nega por padrão
  * de qualquer forma, mas o motivo do log ficava impreciso).
  *
- * `.claude/settings.json` já allowlista `Bash(git checkout *)`/
- * `Bash(git push *)` incondicionalmente — o que, pelo funcionamento do SDK
- * descrito no doc-comment do módulo, significa que `git checkout`/`git
- * push` costumam ser auto-aprovados ANTES desta função sequer ser invocada.
- * Este regex é EFETIVO pra `git pull`/`git stash`/`git reset` (nenhum dos
- * três está pré-aprovado em `settings.json`) mas NÃO pra `git checkout`/
- * `git push` — ver seção "LIMITAÇÃO CONHECIDA" no topo do módulo. A lacuna
- * real de settings.json é escopo do #3720 (validação ao vivo + extensão do
- * allow-list numa sessão supervisionada), não desta issue.
+ * `.claude/settings.json` allowlista `Bash(git checkout *)`/`Bash(git push
+ * *)` incondicionalmente — o que, ANTES de #3720, significava que `git
+ * checkout` era auto-aprovado pelo SDK sem sequer invocar esta função (ver
+ * seção "LIMITAÇÃO CONHECIDA — RESOLVIDA EM #3720" no topo do módulo).
+ * Desde #3720, `runWaveFire` passa `settingSources: []` — essa
+ * pré-aprovação não existe mais NESTA sessão, então este regex agora é
+ * EFETIVO pras 4 formas que ele cobre (`checkout`/`pull`/`stash`/`reset`;
+ * `git push` nunca esteve no blocklist deste regex — o prompt da
+ * coordenadora nunca precisa rodar `git push` diretamente, ela só mergeia
+ * via `gh pr merge`, então não há forma correspondente pra bloquear aqui).
  */
 const WAVE_WORKTREE_GUARD_RE =
   /\bgit(?:\.exe)?\s+(?:(?!(?:checkout|pull|stash|reset)(?:\s|$))\S+\s+)*(?:checkout|pull|stash|reset)(?:\s|$)/i;
@@ -500,8 +704,32 @@ export interface WaveToolDecision {
 /**
  * Decisão pura pra 1 tool call da sessão coordenadora — separada de
  * `makeWaveSafeCanUseTool` (que é só o wrapper async exigido pelo shape
- * `CanUseTool` do SDK) pra ser testável sem mockar o SDK. Camadas:
- * (0) `isGhIssueTextOnly` — calculado primeiro, ANTES de qualquer blocklist:
+ * `CanUseTool` do SDK) pra ser testável sem mockar o SDK. Desde #3720
+ * (`settingSources: []` em `runWaveFire`), esta função é a ÚNICA fonte de
+ * allow/deny pra sessão coordenadora — `.claude/settings.json` não é mais
+ * consultado aqui, então não há allow-list externo pra cair de volta em
+ * nenhum caso. Camadas, em ordem:
+ *
+ * (-1) `toolName === "Agent"` — allow SE E SOMENTE SE `input.isolation ===
+ * "worktree"` (#3720, fecha o gap (c) da seção "LIMITAÇÃO CONHECIDA" no topo
+ * do módulo: antes de #3720, `.claude/settings.json` allowlistava `"Agent"`
+ * incondicionalmente, então um dispatch SEM isolamento também passava
+ * batido). Checado ANTES do bloco `Bash` porque `Agent` não é `Bash` — sem
+ * este ramo, a coordenadora não conseguiria dispatchar unidade NENHUMA da
+ * onda, quebrando a função central do módulo.
+ *
+ * (0) `isAllowedWaveCoordinatorGhCommand` — calculado logo no início do
+ * ramo `Bash`, ANTES de qualquer outra checagem: as 6 formas exatas de `gh
+ * pr checks`/`gh pr merge`/`gh api graphql`/`gh issue view` que o Gate 2 +
+ * merge serial + espera de CI da coordenadora precisam (#3720, ver
+ * doc-comment de cada constante `GH_PR_CHECKS_*`/`GH_PR_MERGE_SQUASH_RE`/
+ * `GH_API_GRAPHQL_*`/`GH_ISSUE_VIEW_JSON_RE` acima). Todas são âncoras de
+ * string INTEIRA contra um template fixo — não podem colidir com nenhum dos
+ * blocklists abaixo (não mencionam plataforma, não tocam working-tree, não
+ * executam publisher), então checar antes ou depois dos blocklists dá o
+ * mesmo resultado; checar ANTES só evita trabalho redundante.
+ *
+ * (1) `isGhIssueTextOnly` — calculado antes de qualquer blocklist de texto:
  * `gh issue comment`/`gh issue close` (#3791) sem nenhum metacaractere de
  * encadeamento de shell (`GH_ISSUE_SHELL_CHAIN_RE`, estendido em #3795 pra
  * cobrir `<`/`>`) E cuja forma inteira bate com o allowlist de flags
@@ -509,31 +737,59 @@ export interface WaveToolDecision {
  * nunca `--body-file`/`-F`/`--comment-file`, que leem arquivo local em vez de
  * receber argumento literal) é garantidamente text-only — o resto da string
  * só pode ser argumento literal de `--body`/`--comment`, nunca comando
- * adicional interpretado pelo shell nem leitura de arquivo; (1) blocklist de
+ * adicional interpretado pelo shell nem leitura de arquivo; (2) blocklist de
  * working-tree (#3728 Gap 1, #3738
  * Gaps 1+3), INVARIANTE pra qualquer comando que NÃO seja `isGhIssueTextOnly`;
- * (2) blocklist de EXECUÇÃO de publisher, INVARIANTE pra qualquer comando que
+ * (3) blocklist de EXECUÇÃO de publisher, INVARIANTE pra qualquer comando que
  * NÃO seja `isGhIssueTextOnly` (#3795 Bug 2 — a isenção de #3791, que
- * originalmente só cobria a camada de palavra-solta (4), foi estendida pras
- * camadas (1) e (2) também: menção textual a `git checkout`/`scripts/publish-*`
+ * originalmente só cobria a camada de palavra-solta (5), foi estendida pras
+ * camadas (2) e (3) também: menção textual a `git checkout`/`scripts/publish-*`
  * dentro de um comentário de diagnóstico legítimo não é execução de nada,
- * mesmo raciocínio que já isentava (4)); (3) se `isGhIssueTextOnly`, ALLOW
- * explícito aqui — a única exceção ao default conservador, necessário pro
- * marcador de diagnóstico (#3782) e fallback de fechamento (#3781) da
- * coordenadora; (4) checagem de palavra-solta de plataforma pra qualquer
- * outro `Bash` que NÃO seja `isGhIssueTextOnly`, INVARIANTE; (5) fora disso,
- * nega por padrão (mesmo espírito conservador do chat drawer, `studio-chat.ts`
- * `denyToolResult`) — esta sessão roda sem supervisão humana, então "permitir
- * por padrão" é o erro mais caro possível aqui. `.claude/settings.json` já
- * resolveu (allow) tudo que a coordenadora legitimamente precisa ANTES desta
- * função ser chamada na maioria dos casos — ela só é invocada pro resíduo que
- * pediria um prompt interativo (ver doc-comment do módulo); o ALLOW explícito
- * de (3) é defesa em profundidade pro caso desse resíduo incluir `gh issue
- * comment`/`close` mesmo assim.
+ * mesmo raciocínio que já isentava (5)); (4) se `isGhIssueTextOnly`, ALLOW
+ * explícito aqui — necessário pro marcador de diagnóstico (#3782) e fallback
+ * de fechamento (#3781) da coordenadora; (5) checagem de palavra-solta de
+ * plataforma pra qualquer outro `Bash` que NÃO seja `isGhIssueTextOnly`,
+ * INVARIANTE; (6) fora disso, nega por padrão (mesmo espírito conservador
+ * do chat drawer, `studio-chat.ts` `denyToolResult`) — esta sessão roda sem
+ * supervisão humana, então "permitir por padrão" é o erro mais caro
+ * possível aqui.
  */
 export function evaluateWaveTool(toolName: string, input: Record<string, unknown>): WaveToolDecision {
+  if (toolName === "Agent") {
+    if (input.isolation === "worktree") {
+      return {
+        allow: true,
+        reason:
+          "Agent com isolation: worktree (#3720): dispatch de unidade da onda em worktree isolado, o mecanismo " +
+          "central do módulo — allow explícito passou a ser necessário porque settingSources: [] remove a " +
+          "pré-aprovação incondicional que .claude/settings.json dava a 'Agent' (ver LIMITAÇÃO CONHECIDA, gap c).",
+      };
+    }
+    return {
+      allow: false,
+      reason:
+        "Agent SEM isolation: worktree (INVARIANTE, #3720): escreveria no mesmo cwd da sessão coordenadora — a " +
+        "pasta principal, potencialmente em uso ativo numa sessão manual do editor em paralelo (incidente real: " +
+        "colisão de working tree, 260716). Toda unidade da onda precisa rodar isolada.",
+    };
+  }
   if (toolName === "Bash" && typeof input.command === "string") {
     const command = input.command;
+    // #3720: as 6 formas exatas de gh pr checks/merge/api graphql/issue view
+    // que o Gate 2 + espera de CI + merge serial da coordenadora precisam —
+    // ver doc-comment de `isAllowedWaveCoordinatorGhCommand` e das
+    // constantes que ela combina. Checado antes de qualquer blocklist
+    // (nenhuma dessas 6 formas pode colidir com eles, ver doc-comment da
+    // função acima).
+    if (isAllowedWaveCoordinatorGhCommand(command)) {
+      return {
+        allow: true,
+        reason:
+          "comando gh de Gate 2/espera de CI/merge serial (#3720): forma exata reconhecida " +
+          "(gh pr checks/gh pr merge/gh api graphql sobre review threads ou resolveReviewThread/gh issue view) — " +
+          "necessário pro protocolo de dispatch + merge da coordenadora funcionar sem .claude/settings.json.",
+      };
+    }
     // #3795 Bug 2: calculado ANTES das 3 camadas de blocklist (working-tree,
     // script-exec, palavra-solta) — `gh issue comment`/`gh issue close` sem
     // NENHUM metacaractere de encadeamento de shell (`GH_ISSUE_SHELL_CHAIN_RE`)
@@ -602,8 +858,10 @@ export function evaluateWaveTool(toolName: string, input: Record<string, unknown
     allow: false,
     reason:
       `"${toolName}" exigiria confirmação interativa que esta sessão headless não tem como dar — ` +
-      `só tools já resolvidas por .claude/settings.json rodam automaticamente aqui (#3702, escopo conservador; ` +
-      `estender o allow-list de settings.json é parte do follow-up de validação ao vivo).`,
+      `com settingSources: [] (#3720), .claude/settings.json não é consultado nesta sessão, então só as formas ` +
+      `explicitamente resolvidas aqui (Agent com isolation:worktree, gh issue comment/close, e o punhado de ` +
+      `comandos gh de Gate 2/espera de CI/merge listados acima) rodam automaticamente (#3702/#3720, escopo ` +
+      `deliberadamente conservador).`,
   };
 }
 
@@ -849,7 +1107,21 @@ export async function runWaveFire(opts: RunWaveFireOptions): Promise<void> {
       prompt,
       options: {
         cwd: opts.cwd,
-        settingSources: ["user", "project", "local"],
+        // #3720 — "SDK isolation mode": `[]` desliga COMPLETAMENTE a
+        // resolução de `user`/`project`/`local` settings.json pra esta
+        // sessão específica (`.claude/settings.json` do repo, que outras
+        // sessões continuam usando sem mudança nenhuma, deixa de existir do
+        // ponto de vista do SDK aqui). Fecha os bypasses documentados na
+        // seção "LIMITAÇÃO CONHECIDA — RESOLVIDA EM #3720" do doc-comment do
+        // módulo (git checkout/push, npx tsx scripts/*.ts, Agent sem
+        // isolation, todos pré-aprovados incondicionalmente antes desta
+        // mudança) — toda decisão de tool call passa a depender só de
+        // `evaluateWaveTool` (allow-list próprio, ver constantes acima).
+        // NUNCA reverter pra `["user", "project", "local"]` sem reabrir os
+        // 3 gaps — se um comando legítimo precisar de mais allow, adicionar
+        // um padrão explícito em `evaluateWaveTool`, não restaurar esta
+        // linha.
+        settingSources: [],
         includePartialMessages: true,
         permissionMode: "default",
         canUseTool: makeWaveSafeCanUseTool(),
