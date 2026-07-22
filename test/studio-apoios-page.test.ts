@@ -47,7 +47,15 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     }
     root = mkdtempSync(join(tmpdir(), "studio-apoios-page-"));
     mkdirSync(join(root, "data", "editions"), { recursive: true });
-    server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
+    server = await startStudioServer({
+      port: 0,
+      rootDir: root,
+      pollIntervalMs: 30,
+      // #3859: sem isto, POST /api/apoios/refresh cai no drain real de Gmail
+      // (google-auth.ts lê data/.credentials.json por path fixo, não por
+      // `rootDir`) — bateria na conta real da máquina rodando o teste.
+      apoiosGmailDrain: async () => ({ notifications: [], most_recent_iso: null, skipped: true, reason: "mock de teste" }),
+    });
   });
 
   after(async () => {
