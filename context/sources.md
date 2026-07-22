@@ -1,6 +1,6 @@
 # Fontes cadastradas — Diar.ia
 
-**Total:** 52 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
+**Total:** 53 fontes (16 marcadas Use Melhor). Gerado de `seed/sources.csv` via `npm run sync-sources`.
 
 ## Brasil
 
@@ -47,6 +47,13 @@
 - URL: https://braziljournal.com/
 - Site query: `site:braziljournal.com`
 - Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model
+
+### O Plano B
+- URL: https://oplanob.com/
+- Site query: `site:oplanob.com`
+- RSS: https://oplanob.com/feed/
+- Topic filter: AI,IA,inteligência artificial,inteligencia artificial,machine learning,LLM,GPT,Claude,Gemini,Llama,modelo de linguagem,modelos de linguagem,agente,agentic,chatbot,deep learning,rede neural,redes neurais,transformer,gerativa,generativa,multimodal,reasoning,fine-tuning,RAG,foundation model,vigilância,vigilancia,colonialismo digital
+- Low cadence: sim
 
 ## Primária
 
