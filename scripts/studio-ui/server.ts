@@ -151,7 +151,11 @@
  *     credenciais Cloudflare). O botão em si (e o `<script>` que o alimenta)
  *     só existem no HTML quando `buildDiariaDashboardHtml` passa
  *     `studioMode: true` pra `renderDashboardHtml` — nunca no Worker de
- *     produção, que renderiza o MESMO módulo sem esse parâmetro.
+ *     produção, que renderiza o MESMO módulo sem esse parâmetro. `?force=1`
+ *     (#3882, mandado sempre pelo botão) ignora o cache TTL curto de
+ *     `refreshPollEiaSummaryLocal` — sem a flag, um refresh repetido dentro do
+ *     TTL serve o `poll-eia-summary.json` já em disco sem novo fetch (o fetch
+ *     completo percorre N edições × M meses de leaderboard, historicamente >25s).
  *   - Notificação Telegram (#3564, sem rota HTTP própria): um watcher em
  *     background, subido por `startStudioServer` e fechado em `close()`,
  *     observa `gatesPending`/`chatPermissionsPending` (mesmo `buildStudioState`
@@ -1252,9 +1256,12 @@ function handleApiIntegrations(
  * pro KV do clarice-dashboard que o CLI `--push` faz (ver docstring do
  * módulo). Sempre 200: `refreshPollEiaSummaryLocal` é fail-soft por
  * construção (data/editions ausente, sem edições, falha de rede/escrita
- * viram `{ok:false,error}`, nunca uma exceção). */
-function handleApiPainelEiaRefresh(rootDir: string, res: ServerResponse): void {
-  refreshPollEiaSummaryLocal({ rootDir })
+ * viram `{ok:false,error}`, nunca uma exceção).
+ * `?force=1` (#3882) — o botão sempre manda essa flag — ignora o cache TTL
+ * curto de `refreshPollEiaSummaryLocal` e garante um fetch novo ao worker poll. */
+function handleApiPainelEiaRefresh(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
+  const force = new URL(req.url ?? "/", "http://localhost").searchParams.get("force") === "1";
+  refreshPollEiaSummaryLocal({ rootDir, force })
     .then((result) => sendJson(res, 200, result))
     .catch((e) => sendJson(res, 500, { ok: false, error: (e as Error).message }));
 }
@@ -1417,7 +1424,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #3861: botão "Atualizar É IA?" — mesmo tratamento das rotas de
       // escrita acima (checada antes do guard genérico de método).
       if (urlPath === "/api/painel/eia/refresh" && req.method === "POST") {
-        handleApiPainelEiaRefresh(rootDir, res);
+        handleApiPainelEiaRefresh(rootDir, req, res);
         return;
       }
 

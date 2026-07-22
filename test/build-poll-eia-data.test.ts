@@ -696,3 +696,152 @@ describe("refreshPollEiaSummaryLocal (#3861)", () => {
     }
   });
 });
+
+// ─── mapBounded (#3882 — pool de concorrência limitada, substitui o chunking) ─
+
+describe("mapBounded (#3882)", () => {
+  test("respeita o teto de concorrência (peak <= concurrency) e prova paralelismo real", async () => {
+    const { mapBounded } = await import("../scripts/build-poll-eia-data.ts");
+    const items = Array.from({ length: 20 }, (_, i) => i);
+    let active = 0;
+    let peak = 0;
+    await mapBounded(items, 6, async (i) => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 5));
+      active--;
+      return i;
+    });
+    assert.ok(peak <= 6, `peak deveria ser <= 6, foi ${peak}`);
+    assert.ok(peak >= 2, `peak deveria provar paralelismo real (>= 2), foi ${peak}`);
+  });
+
+  test("preserva a ordem original dos resultados, mesmo com latências diferentes por item", async () => {
+    const { mapBounded } = await import("../scripts/build-poll-eia-data.ts");
+    const delaysMs = [50, 10, 30, 5, 40];
+    const results = await mapBounded(delaysMs, 3, async (ms) => {
+      await new Promise((r) => setTimeout(r, ms));
+      return ms;
+    });
+    assert.deepEqual(results, delaysMs, "resultado deve bater com a ordem de entrada, não com a ordem de conclusão");
+  });
+
+  test("array vazio é no-op (nunca chama fn)", async () => {
+    const { mapBounded } = await import("../scripts/build-poll-eia-data.ts");
+    let called = 0;
+    const results = await mapBounded([] as number[], 6, async () => { called++; return 1; });
+    assert.equal(called, 0);
+    assert.deepEqual(results, []);
+  });
+
+  test("concurrency > items.length usa só items.length workers efetivos", async () => {
+    const { mapBounded } = await import("../scripts/build-poll-eia-data.ts");
+    const items = [1, 2];
+    let active = 0;
+    let peak = 0;
+    await mapBounded(items, 10, async (i) => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 3));
+      active--;
+      return i;
+    });
+    assert.ok(peak <= 2, `peak deveria ser <= 2, foi ${peak}`);
+  });
+});
+
+// ─── refreshPollEiaSummaryLocal — cache TTL curto (#3882) ────────────────────
+
+describe("refreshPollEiaSummaryLocal — cache TTL curto (#3882)", () => {
+  test("cache fresco (updated_at agora): serve do disco, cached:true, NUNCA toca fetch", async () => {
+    const { refreshPollEiaSummaryLocal } = await import("../scripts/build-poll-eia-data.ts");
+    const origFetch = globalThis.fetch;
+    let fetchCalled = false;
+    globalThis.fetch = (async () => { fetchCalled = true; throw new Error("não deveria chamar fetch — cache deveria ter servido"); }) as unknown as typeof globalThis.fetch;
+    try {
+      const rootDir = mkdtempSync(join(tmpdir(), "poll-eia-cache-fresh-"));
+      mkdirSync(join(rootDir, "data", "editions", "260418"), { recursive: true });
+      const cachedSummary = {
+        source: "push",
+        last_edition: "260418",
+        editions: [{ edition: "260418", total_votes: 10, voted_a: 6, voted_b: 4, pct_correct: 60, correct_choice: "A", correct_count: 6 }],
+        leaderboard: [],
+        updated_at: new Date().toISOString(), // agora — bem dentro do TTL de 2min
+      };
+      writeFileSync(join(rootDir, "data", "poll-eia-summary.json"), JSON.stringify(cachedSummary));
+
+      const result = await refreshPollEiaSummaryLocal({ rootDir });
+      assert.equal(result.ok, true);
+      assert.equal(result.cached, true, "deve vir do cache");
+      assert.equal(result.summary?.last_edition, "260418");
+      assert.equal(fetchCalled, false, "não deveria ter chamado fetch — dado ainda fresco");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("cache expirado (updated_at > TTL): refaz o fetch, cached ausente/false", async () => {
+    const restore = installFetchStub();
+    try {
+      const { refreshPollEiaSummaryLocal } = await import("../scripts/build-poll-eia-data.ts");
+      const rootDir = mkdtempSync(join(tmpdir(), "poll-eia-cache-stale-"));
+      mkdirSync(join(rootDir, "data", "editions", "260418"), { recursive: true });
+      const staleSummary = {
+        source: "push",
+        last_edition: "999999", // valor sentinela — se aparecer no resultado, o cache foi usado por engano
+        editions: [],
+        leaderboard: [],
+        updated_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(), // 10min atrás, TTL é 2min
+      };
+      writeFileSync(join(rootDir, "data", "poll-eia-summary.json"), JSON.stringify(staleSummary));
+
+      const result = await refreshPollEiaSummaryLocal({ rootDir });
+      assert.equal(result.ok, true);
+      assert.ok(!result.cached, "não deve vir do cache — expirado");
+      assert.equal(result.summary?.last_edition, "260418", "deve refletir o fetch NOVO (fixture da 260418), não o sentinela do cache expirado");
+    } finally {
+      restore();
+    }
+  });
+
+  test("force:true ignora o cache mesmo fresco — refaz o fetch", async () => {
+    const restore = installFetchStub();
+    try {
+      const { refreshPollEiaSummaryLocal } = await import("../scripts/build-poll-eia-data.ts");
+      const rootDir = mkdtempSync(join(tmpdir(), "poll-eia-cache-force-"));
+      mkdirSync(join(rootDir, "data", "editions", "260418"), { recursive: true });
+      const freshSentinel = {
+        source: "push",
+        last_edition: "999999", // sentinela — sem force seria servido do cache (está fresco)
+        editions: [],
+        leaderboard: [],
+        updated_at: new Date().toISOString(),
+      };
+      writeFileSync(join(rootDir, "data", "poll-eia-summary.json"), JSON.stringify(freshSentinel));
+
+      const result = await refreshPollEiaSummaryLocal({ rootDir, force: true });
+      assert.equal(result.ok, true);
+      assert.ok(!result.cached, "force deve ignorar o cache");
+      assert.equal(result.summary?.last_edition, "260418", "deve refletir o fetch NOVO, não o sentinela do cache (mesmo fresco)");
+    } finally {
+      restore();
+    }
+  });
+
+  test("arquivo de cache corrompido (JSON inválido): cai pro fetch normal, não lança", async () => {
+    const restore = installFetchStub();
+    try {
+      const { refreshPollEiaSummaryLocal } = await import("../scripts/build-poll-eia-data.ts");
+      const rootDir = mkdtempSync(join(tmpdir(), "poll-eia-cache-corrupt-"));
+      mkdirSync(join(rootDir, "data", "editions", "260418"), { recursive: true });
+      writeFileSync(join(rootDir, "data", "poll-eia-summary.json"), "{ isso não é json válido");
+
+      let result: Awaited<ReturnType<typeof refreshPollEiaSummaryLocal>> | undefined;
+      await assert.doesNotReject(async () => { result = await refreshPollEiaSummaryLocal({ rootDir }); });
+      assert.equal(result?.ok, true);
+      assert.ok(!result?.cached, "cache corrompido nunca deve reportar cached:true");
+    } finally {
+      restore();
+    }
+  });
+});

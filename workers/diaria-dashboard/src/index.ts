@@ -554,7 +554,7 @@ export interface RenderDashboardOptions {
  * (`scripts/studio-ui/server.ts`); não há rota equivalente no Worker. */
 function renderEiaRefreshButtonHtml(studioMode: boolean): string {
   if (!studioMode) return "";
-  return `<p class="section-note"><button type="button" id="eia-refresh-btn" class="eia-refresh-btn">Atualizar É IA?</button> <span id="eia-refresh-status" class="muted" role="status" aria-live="polite"></span></p>`;
+  return `<p class="section-note"><button type="button" id="eia-refresh-btn" class="eia-refresh-btn" aria-busy="false">Atualizar É IA?</button> <span id="eia-refresh-status" class="muted" role="status" aria-live="polite"></span></p>`;
 }
 
 export function renderPollEiaSection(data: DashboardData, opts: RenderDashboardOptions = {}): string {
@@ -1222,6 +1222,13 @@ ${opts.studioMode === true ? renderEiaRefreshScript() : ""}
  * load (não há um framework client-side aqui), então um reload simples já
  * reflete o `data/poll-eia-summary.json` recém-escrito, sem precisar de
  * re-render parcial da seção via JS.
+ *
+ * #3882: `?force=1` sempre — clique explícito no botão significa "quero dado
+ * fresco agora", nunca servido do cache TTL curto de `refreshPollEiaSummaryLocal`
+ * (esse cache existe pra proteger chamadas SEM force, não o clique do editor).
+ * `aria-busy` + texto "Atualizando É IA?…" comunicam progresso durante o fetch
+ * (que já foi paralelizado + tem cache no lado servidor, #3882, mas ainda pode
+ * levar alguns segundos com muitas edições).
  */
 function renderEiaRefreshScript(): string {
   return `<script>
@@ -1232,9 +1239,10 @@ function renderEiaRefreshScript(): string {
   var originalText = btn.textContent;
   btn.addEventListener('click', function () {
     btn.disabled = true;
-    btn.textContent = 'Atualizando…';
-    if (status) status.textContent = '';
-    fetch('/api/painel/eia/refresh', { method: 'POST' })
+    btn.setAttribute('aria-busy', 'true');
+    btn.textContent = 'Atualizando É IA?…';
+    if (status) status.textContent = 'isso pode levar alguns segundos…';
+    fetch('/api/painel/eia/refresh?force=1', { method: 'POST' })
       .then(function (res) {
         return res.json().then(function (body) { return { httpOk: res.ok, status: res.status, body: body }; });
       })
@@ -1243,6 +1251,7 @@ function renderEiaRefreshScript(): string {
           var msg = (r.body && r.body.error) ? r.body.error : ('HTTP ' + r.status);
           if (status) status.textContent = 'Falha: ' + msg;
           btn.disabled = false;
+          btn.setAttribute('aria-busy', 'false');
           btn.textContent = originalText;
           return;
         }
@@ -1251,6 +1260,7 @@ function renderEiaRefreshScript(): string {
       .catch(function (e) {
         if (status) status.textContent = 'Falha: ' + (e && e.message ? e.message : e);
         btn.disabled = false;
+        btn.setAttribute('aria-busy', 'false');
         btn.textContent = originalText;
       });
   });
