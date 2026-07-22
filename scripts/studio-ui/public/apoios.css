@@ -62,6 +62,7 @@
 }
 .contact-form button[type="submit"],
 #refresh-btn,
+#refresh-status-btn,
 .dialog-actions button {
   font: inherit;
   padding: 0.4rem 0.9rem;
@@ -73,10 +74,15 @@
 }
 .contact-form button[type="submit"]:hover,
 #refresh-btn:hover,
+#refresh-status-btn:hover,
 .dialog-actions button[type="submit"]:hover {
   background: var(--brand);
   color: var(--on-ink);
   border-color: var(--brand);
+}
+#refresh-status-btn:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .panel-header-row {

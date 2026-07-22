@@ -35,6 +35,18 @@
  * carrega o arquivo do mês anterior). Não há expiração dentro do mesmo mês —
  * intencional, dado o teto de 5k req/mês e a doc dizer que o status não muda
  * intra-mês.
+ *
+ * **Force-refresh (#3859 — botão "Atualizar status" do painel Apoios):** um
+ * apoiador que paga no dia 15 continuaria mostrando o `false` gravado no
+ * cache do dia 1º até a virada do mês, já que "estável dentro do mês" (acima)
+ * é uma garantia de NÃO-regressão (quem pagou não some), não de que o
+ * primeiro `false` do mês seja definitivo. `CheckBackerOptions.forceRefresh`
+ * ignora um cache HIT (mas não deixa de gravar o resultado fresco por cima)
+ * — pensado pra ser usado seletivamente (só pra emails de contatos AINDA NÃO
+ * confirmados como pagantes, nunca pros já confirmados) por quem chama,
+ * justamente pra não estourar o teto mensal reconsultando quem não tem como
+ * mudar de status dentro do mesmo mês-competência. Ver
+ * `scripts/studio-ui/studio-apoios.ts::refreshApoiosData` pro caller.
  */
 
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -223,6 +235,17 @@ function saveMonthCache(path: string, cache: MonthCache): void {
   writeFileAtomic(path, JSON.stringify(cache, null, 2));
 }
 
+/**
+ * Lê o cache de um mês-competência específico SEM rede — usado por
+ * `refreshApoiosData` (#3859) pra decidir, de graça, quais contatos já estão
+ * confirmados como pagantes ANTES de gastar qualquer request de
+ * force-refresh. Arquivo ausente ou corrompido → `{}` (mesmo fail-soft de
+ * `loadMonthCache`, nunca lança).
+ */
+export function readMonthCache(cacheDir: string, month: string): Record<string, BackerStatus> {
+  return loadMonthCache(resolve(cacheDir, `${month}.json`));
+}
+
 // ---------------------------------------------------------------------------
 // HTTP
 // ---------------------------------------------------------------------------
@@ -303,6 +326,11 @@ export interface CheckBackerOptions {
   cacheDir?: string;
   /** Ponto de referência pra calcular o mês-competência (default: `new Date()`). Injetável pra testar virada de mês. */
   now?: Date;
+  /** (#3859) Ignora um cache HIT do mês corrente e força nova consulta à API
+   *  — usado pelo botão "Atualizar status" do painel Apoios, só pra emails de
+   *  contatos ainda não confirmados como pagantes (ver doc do módulo acima).
+   *  Default `false` (comportamento normal: cache HIT nunca bate na API). */
+  forceRefresh?: boolean;
 }
 
 /**
@@ -327,7 +355,7 @@ export async function checkBacker(
 
   const cache = loadMonthCache(cachePath);
   const cached = cache[normalized];
-  if (cached) return cached;
+  if (cached && !opts.forceRefresh) return cached;
 
   const fetchImpl = opts.fetchImpl ?? fetch;
   const limiter = opts.limiter ?? getDefaultLimiter();

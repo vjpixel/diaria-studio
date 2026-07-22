@@ -18,6 +18,7 @@ import {
   readApoiaSeEnv,
   competenceMonth,
   defaultCacheDir,
+  readMonthCache,
   RateLimiter,
   ApoiaSeAuthError,
   ApoiaSeApiError,
@@ -426,6 +427,109 @@ describe("checkBacker", () => {
 
     assert.equal(calls, 3);
     assert.deepEqual(waits, [200, 400]); // 1ª sem espera, 2ª e 3ª espaçadas
+  });
+
+  // ── forceRefresh (#3859 — botão "Atualizar status") ────────────────────
+
+  it("forceRefresh:true ignora um cache HIT e bate na API de novo (cenário da issue: apoiador paga dia 15, cache tinha false do dia 1º)", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      // 1ª chamada (dia 1º): ainda não pagou. 2ª chamada (dia 15, force):
+      // já pagou.
+      return jsonResponse(200, {
+        isBacker: true,
+        isPaidThisMonth: calls > 1,
+        ...(calls > 1 ? { thisMonthPaidValue: 30 } : {}),
+      });
+    }) as unknown as typeof fetch;
+    const now = new Date("2026-07-16T12:00:00Z");
+
+    const day1 = await checkBacker("late-payer@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      now,
+      limiter: fastLimiter,
+    });
+    assert.equal(day1.isPaidThisMonth, false, "dia 1º: ainda não pagou, grava false no cache");
+
+    // Sem forceRefresh, o cache HIT esconderia o pagamento do dia 15 até a
+    // virada do mês — a regressão que a issue #3859 descreve.
+    const withoutForce = await checkBacker("late-payer@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      now,
+      limiter: fastLimiter,
+    });
+    assert.equal(withoutForce.isPaidThisMonth, false, "sem forceRefresh, cache HIT nunca bate na API de novo");
+    assert.equal(calls, 1, "2ª chamada sem force não gerou request nova");
+
+    const day15 = await checkBacker("late-payer@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      now,
+      limiter: fastLimiter,
+      forceRefresh: true,
+    });
+    assert.equal(calls, 2, "forceRefresh:true ignora o cache HIT e gera uma request nova");
+    assert.equal(day15.isPaidThisMonth, true, "force-refresh corrige o status pro pagamento do dia 15");
+    assert.equal(day15.thisMonthPaidValue, 30);
+
+    // O cache em disco foi sobrescrito com o valor fresco (força não é só
+    // "ignora a leitura", também precisa persistir o resultado atualizado).
+    const cachePath = resolve(tmpDir, "2026-07.json");
+    const cache = JSON.parse(readFileSync(cachePath, "utf-8"));
+    assert.deepEqual(cache["late-payer@example.com"], { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 30 });
+
+    // Uma chamada seguinte SEM force volta a usar o cache (agora já correto).
+    const day16 = await checkBacker("late-payer@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      now,
+      limiter: fastLimiter,
+    });
+    assert.equal(calls, 2, "sem force, reusa o cache já atualizado — não gera 3ª request");
+    assert.equal(day16.isPaidThisMonth, true);
+  });
+
+  it("forceRefresh:true em cache MISS não muda nada (já ia bater na API de qualquer forma) — não duplica request", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls++;
+      return jsonResponse(200, { isBacker: false, isPaidThisMonth: false });
+    }) as unknown as typeof fetch;
+
+    await checkBacker("nunca-visto@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      limiter: fastLimiter,
+      now: new Date("2026-07-16T12:00:00Z"),
+      forceRefresh: true,
+    });
+    assert.equal(calls, 1);
+  });
+
+  it("readMonthCache lê o arquivo do mês sem rede — arquivo ausente -> {} (fail-soft)", () => {
+    assert.deepEqual(readMonthCache(tmpDir, "2026-07"), {});
+  });
+
+  it("readMonthCache reflete o que checkBacker gravou, sem gerar nova request", async () => {
+    const fetchImpl = (async () =>
+      jsonResponse(200, { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 12 })) as unknown as typeof fetch;
+    await checkBacker("lido@example.com", {
+      env: ENV,
+      fetchImpl,
+      cacheDir: tmpDir,
+      limiter: fastLimiter,
+      now: new Date("2026-07-16T12:00:00Z"),
+    });
+    const cache = readMonthCache(tmpDir, "2026-07");
+    assert.deepEqual(cache["lido@example.com"], { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 12 });
   });
 
   it("envia os headers corretos (x-api-key + authorization Bearer)", async () => {

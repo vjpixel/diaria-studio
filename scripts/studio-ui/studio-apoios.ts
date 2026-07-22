@@ -59,6 +59,20 @@
  * aqui, em vez de "qualquer email que bate", usa o email com MAIS
  * `totalDelivered` quando mais de 1 bate. Cache ausente/corrompido/vazio →
  * `openRate: null` em todos os contatos, nunca quebra o painel.
+ *
+ * **Botão "Atualizar status" — force-refresh (#3859, metade 2):**
+ * `refreshApoiosData` é a contraparte de `buildApoiosData` usada pelo botão
+ * "Atualizar status" do painel — re-consulta o mês corrente na apoia.se com
+ * `forceRefresh` (`apoia-se.ts`), mas SÓ para contatos que uma leitura
+ * network-free do cache (`readMonthCache`) já mostra como NÃO confirmados
+ * ("apoiando") — contatos já confirmados nunca são re-tocados, protegendo o
+ * teto de 5.000 req/mês da apoia.se. Cobre o cenário da issue: apoiador que
+ * paga dia 15 continuaria com o `false` gravado no dia 1º até a virada do
+ * mês sem esse force-refresh seletivo. A metade 1 da issue (importar apoios
+ * novos varrendo o Gmail pessoal) segue FORA de escopo aqui — bloqueada em
+ * arquitetura (o `studio-server` é headless/loopback-only e não tem acesso
+ * ao MCP Gmail, que só existe na sessão top-level interativa; mesma lacuna
+ * de `beehiiv-open-rate.json` #3612) — ver corpo da issue #3859.
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
@@ -70,6 +84,7 @@ import {
   readApoiaSeEnv,
   defaultCacheDir,
   competenceMonth,
+  readMonthCache,
   ApoiaSeAuthError,
   type ApoiaSeEnv,
   type BackerStatus,
@@ -630,6 +645,128 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
     contacts: withStatus,
     campaign: computeCampaignSummary(withStatus),
     error: fetchError,
+    generatedAt,
+  };
+}
+
+// ── orquestração: force-refresh seletivo (#3859 — botão "Atualizar status") ─
+
+export type RefreshApoiosDataOptions = BuildApoiosDataOptions;
+
+/**
+ * Contraparte de `buildApoiosData` usada pelo botão "Atualizar status"
+ * (#3859 metade 2): força re-consulta do mês corrente na apoia.se, mas SÓ
+ * para contatos AINDA NÃO confirmados como "apoiando" — contatos já
+ * confirmados reusam o valor já em cache, sem gastar request. Ver o
+ * cabeçalho do módulo pro rationale completo.
+ *
+ * Fail-soft nas mesmas 3 camadas de `buildApoiosData` (data/ ausente,
+ * credenciais ausentes, 401 da API) — nunca lança.
+ */
+export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosDataOptions = {}): Promise<ApoiosData> {
+  const now = opts.now ?? new Date();
+  const generatedAt = now.toISOString();
+
+  if (!opts.contacts) {
+    const dataDirError = checkDataDirAvailable(rootDir);
+    if (dataDirError) {
+      return { contacts: [], campaign: emptyCampaignSummary(), error: dataDirError, generatedAt };
+    }
+  }
+
+  let contacts: ApoioContact[];
+  try {
+    contacts = opts.contacts ?? loadContacts(rootDir);
+  } catch (e) {
+    return { contacts: [], campaign: emptyCampaignSummary(), error: (e as Error).message, generatedAt };
+  }
+
+  const openRateCache = opts.openRateCache ?? loadOpenRateCache(rootDir);
+
+  let env: ApoiaSeEnv;
+  try {
+    env = opts.env ?? readApoiaSeEnv();
+  } catch (e) {
+    const withStatus = toSemDados(contacts, openRateCache);
+    return {
+      contacts: withStatus,
+      campaign: computeCampaignSummary(withStatus),
+      error: (e as Error).message,
+      generatedAt,
+    };
+  }
+
+  const cacheDir = opts.cacheDir ?? defaultCacheDir(env.campaign);
+  const currentMonth = competenceMonth(now);
+  const pastSnapshots = readPastMonthSnapshots(cacheDir, currentMonth);
+
+  // Fase 1 — SEM rede: lê o cache do mês corrente tal como está (nunca gasta
+  // request só pra descobrir quem já está confirmado). `pastSnapshotsDesc: []`
+  // é deliberado aqui — só nos interessa o label "apoiando" pra decidir quem
+  // pular, e esse label só vem de `currentMonthStatuses` (ver
+  // `deriveContactStatus`); passar os snapshots de meses passados não mudaria
+  // essa decisão, só adicionaria trabalho.
+  const existingStatuses = readMonthCache(cacheDir, currentMonth);
+
+  const confirmedEmails = new Set<string>();
+  const unconfirmedEmails = new Set<string>();
+  for (const contact of contacts) {
+    const preliminary = deriveContactStatus(contact.emails, existingStatuses, []);
+    const emails = normalizeEmailList(contact.emails);
+    const bucket = preliminary.label === "apoiando" ? confirmedEmails : unconfirmedEmails;
+    for (const email of emails) bucket.add(email);
+  }
+  // Um email nunca deveria pertencer a 2 contatos (a apoia.se casa por email
+  // exato), mas por segurança: um email já confirmado nunca entra na lista de
+  // force-refresh, mesmo que outro contato o traga como não-confirmado.
+  for (const email of confirmedEmails) unconfirmedEmails.delete(email);
+
+  // Fase 2 — rede, só pros não-confirmados. Sequencial (mesmo motivo de
+  // `fetchCurrentStatuses`: `checkBacker` faz load→fetch→save do MESMO
+  // arquivo de cache sem lock — concorrência arriscaria uma escrita
+  // sobrescrever a outra). Fail-fast em erro de auth (pararia igual pra todo
+  // email restante); erro pontual (rede/API) é fail-soft, pula o email.
+  const refreshed: Record<string, BackerStatus> = {};
+  let refreshError: string | null = null;
+  for (const email of unconfirmedEmails) {
+    try {
+      refreshed[email] = await checkBacker(email, {
+        env,
+        cacheDir,
+        now,
+        fetchImpl: opts.fetchImpl,
+        limiter: opts.limiter,
+        forceRefresh: true,
+      });
+    } catch (e) {
+      if (e instanceof ApoiaSeAuthError) {
+        refreshError = e.message;
+        break;
+      }
+      // erro pontual — pula este email, segue os demais.
+    }
+  }
+
+  // Statuses finais: confirmados reusam o valor já em cache (nunca tocado
+  // nesta chamada); não-confirmados usam o resultado fresco quando resolvido.
+  const currentStatuses: Record<string, BackerStatus> = { ...existingStatuses, ...refreshed };
+  const resolvedEmails = new Set(Object.keys(currentStatuses));
+
+  const withStatus: ContactWithStatus[] = contacts.map((c) => {
+    const status = deriveContactStatus(c.emails, currentStatuses, pastSnapshots);
+    if (status.label === "nao_apoia") {
+      const hasUnresolvedEmail = normalizeEmailList(c.emails).some((e) => !resolvedEmails.has(e));
+      if (hasUnresolvedEmail) {
+        return { ...c, status: { label: "sem_dados" }, openRate: deriveOpenRate(c, openRateCache) };
+      }
+    }
+    return { ...c, status, openRate: deriveOpenRate(c, openRateCache) };
+  });
+
+  return {
+    contacts: withStatus,
+    campaign: computeCampaignSummary(withStatus),
+    error: refreshError,
     generatedAt,
   };
 }

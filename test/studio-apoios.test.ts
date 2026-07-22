@@ -38,6 +38,7 @@ import {
   readPastMonthSnapshots,
   fetchCurrentStatuses,
   buildApoiosData,
+  refreshApoiosData,
   addContact,
   updateContactById,
   parseCreateContactBody,
@@ -657,6 +658,215 @@ describe("buildApoiosData (#3602)", () => {
       assert.equal(byId.c2, null);
     } finally {
       rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── refreshApoiosData — force-refresh seletivo (#3859 metade 2) ───────
+
+describe("refreshApoiosData (#3859)", () => {
+  it("cenário exato da issue: apoiador paga dia 15, cache tinha false do dia 1º — force-refresh corrige e mostra 'apoiando'", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-day15-"));
+    try {
+      // Simula o que o cache já tinha gravado no dia 1º (checkBacker normal,
+      // sem force): apoiador registrado, mas ainda não tinha pago.
+      writeFileSync(
+        join(cacheDir, "2026-07.json"),
+        JSON.stringify({ "late@x.com": { isBacker: true, isPaidThisMonth: false } }),
+      );
+      const contacts = [makeContact({ id: "c1", name: "Pagou dia 15", emails: ["late@x.com"] })];
+      let calls = 0;
+      const fetchImpl = (async () => {
+        calls++;
+        return new Response(
+          JSON.stringify({ isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 30 }),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+      });
+
+      assert.equal(result.error, null);
+      assert.equal(calls, 1, "1 request pro único email não-confirmado");
+      assert.equal(result.contacts[0].status.label, "apoiando");
+      assert.equal(result.contacts[0].status.monthlyValue, 30);
+      assert.equal(result.campaign.totalConverted, 1);
+
+      // O cache em disco reflete o valor fresco (persistido por checkBacker).
+      const onDisk = JSON.parse(readFileSync(join(cacheDir, "2026-07.json"), "utf-8"));
+      assert.equal(onDisk["late@x.com"].isPaidThisMonth, true);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("teto de 5.000 req/mês: NUNCA re-checa contato já confirmado 'apoiando' — zero requests pros já pagantes", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-cap-"));
+    try {
+      writeFileSync(
+        join(cacheDir, "2026-07.json"),
+        JSON.stringify({
+          "pagante1@x.com": { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 10 },
+          "pagante2@x.com": { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 20 },
+        }),
+      );
+      const contacts = [
+        makeContact({ id: "confirmado1", name: "Confirmado 1", emails: ["pagante1@x.com"] }),
+        makeContact({ id: "confirmado2", name: "Confirmado 2", emails: ["pagante2@x.com"] }),
+        makeContact({ id: "novo", name: "Não confirmado", emails: ["novo@x.com"] }),
+      ];
+      const calledUrls: string[] = [];
+      const fetchImpl = (async (url: string | URL) => {
+        calledUrls.push(String(url));
+        return new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 });
+      }) as typeof fetch;
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+      });
+
+      assert.equal(result.error, null);
+      // Só o contato não-confirmado gera request — os 2 já pagantes nunca
+      // são tocados (nem no path da fetch, nem no resultado final).
+      assert.equal(calledUrls.length, 1);
+      assert.ok(calledUrls[0].includes("novo") || calledUrls[0].toLowerCase().includes("novo%40x.com"));
+      const byId = Object.fromEntries(result.contacts.map((c) => [c.id, c.status]));
+      assert.equal(byId.confirmado1.label, "apoiando");
+      assert.equal(byId.confirmado1.monthlyValue, 10);
+      assert.equal(byId.confirmado2.label, "apoiando");
+      assert.equal(byId.confirmado2.monthlyValue, 20);
+      assert.equal(byId.novo.label, "nao_apoia");
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("contato com múltiplos emails já confirmado por UM email pula TODOS os emails do contato (mesmo os nunca vistos no cache)", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-multiemail-"));
+    try {
+      writeFileSync(
+        join(cacheDir, "2026-07.json"),
+        JSON.stringify({ "principal@x.com": { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 15 } }),
+      );
+      const contacts = [
+        makeContact({ id: "c1", name: "Multi-email", emails: ["principal@x.com", "secundario@x.com"] }),
+      ];
+      let calls = 0;
+      const fetchImpl = (async () => {
+        calls++;
+        return new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 });
+      }) as typeof fetch;
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+      });
+
+      assert.equal(calls, 0, "contato já confirmado (por qualquer email) não gera NENHUMA request nova");
+      assert.equal(result.contacts[0].status.label, "apoiando");
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("contato nunca visto (cache vazio) é tratado como não-confirmado e resolvido normalmente", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-brandnew-"));
+    try {
+      const contacts = [makeContact({ id: "c1", name: "Novato", emails: ["brand-new@x.com"] })];
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 5 }), { status: 200 })) as typeof fetch;
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+      });
+
+      assert.equal(result.contacts[0].status.label, "apoiando");
+      assert.equal(result.contacts[0].status.monthlyValue, 5);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falha de auth NO MEIO do force-refresh marca contato não-checado como sem_dados (mesmo guard de buildApoiosData)", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-authfail-"));
+    try {
+      const contacts = [
+        makeContact({ id: "resolvido", name: "Resolvido", emails: ["a@x.com"] }),
+        makeContact({ id: "nao-resolvido", name: "Não resolvido", emails: ["b@x.com"] }),
+      ];
+      const fetchImpl = (async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("a%40x.com") || u.includes("a@x.com")) {
+          return new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ message: "unauthorized" }), { status: 401 });
+      }) as typeof fetch;
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+      });
+
+      const byId = Object.fromEntries(result.contacts.map((c) => [c.id, c.status]));
+      assert.match(result.error ?? "", /401|unauthorized|não autorizado/i);
+      // "a" foi de fato resolvido (respondeu, ainda que negativo) -> nao_apoia.
+      assert.equal(byId.resolvido.label, "nao_apoia");
+      // "b" nunca foi resolvido (abortado por auth) -> sem_dados, nunca nao_apoia.
+      assert.equal(byId["nao-resolvido"].label, "sem_dados");
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("data/ ausente -> error preenchido, contacts vazio (mesmo fail-soft de buildApoiosData)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-nodatadir-"));
+    try {
+      const result = await refreshApoiosData(root, { now: FIXED_NOW });
+      assert.match(result.error ?? "", /junction OneDrive/);
+      assert.deepEqual(result.contacts, []);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("credenciais ausentes -> status sem_dados pra todos, sem nenhuma tentativa de rede", async () => {
+    const saved = {
+      key: process.env.APOIA_SE_API_KEY,
+      secret: process.env.APOIA_SE_API_SECRET,
+      campaign: process.env.APOIA_SE_CAMPAIGN,
+    };
+    delete process.env.APOIA_SE_API_KEY;
+    delete process.env.APOIA_SE_API_SECRET;
+    delete process.env.APOIA_SE_CAMPAIGN;
+    try {
+      const contacts = [makeContact()];
+      const result = await refreshApoiosData("irrelevant-root", { now: FIXED_NOW, contacts });
+      assert.match(result.error ?? "", /APOIA_SE_API_KEY/);
+      assert.equal(result.contacts[0].status.label, "sem_dados");
+    } finally {
+      if (saved.key !== undefined) process.env.APOIA_SE_API_KEY = saved.key;
+      if (saved.secret !== undefined) process.env.APOIA_SE_API_SECRET = saved.secret;
+      if (saved.campaign !== undefined) process.env.APOIA_SE_CAMPAIGN = saved.campaign;
     }
   });
 });
