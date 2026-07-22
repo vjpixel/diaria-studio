@@ -736,4 +736,77 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.match(fnBody, /\/review\/reviewed\/destaque-title/);
     assert.match(fnBody, /method: "PUT"/);
   });
+
+  // #3872 (achado #3866 dimensão 2) — depois de um save bem-sucedido, o
+  // painel lateral aberto (Diff/Lints/Preview) ficava mostrando o resultado
+  // do estado ANTERIOR ao save até o editor re-clicar manualmente. Mesmo
+  // padrão "contrato estático" dos casos acima (sem harness de DOM pra
+  // revisao.js nesta suíte): a lógica PURA de decisão (qual painel
+  // re-rodar) tem cobertura direta em test/revisao-guards.test.ts; aqui
+  // confirmamos o WIRING — saveCurrent() de fato dispara o re-run
+  // automático só quando a aba não mudou durante o save, e a função de
+  // dispatch chama a MESMA ação que os botões (runDiff/runLints/
+  // refreshPreview).
+  it("GET /revisao.js importa activeSidePaneAfterSave de revisao-guards.js", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /from ["']\.\/revisao-guards\.js["']/);
+    assert.match(body, /activeSidePaneAfterSave/);
+  });
+
+  it("refreshActiveSidePaneAfterSave() dispatcha runDiff()/runLints()/refreshPreview() conforme o painel lateral ativo", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function refreshActiveSidePaneAfterSave()");
+    assert.ok(fnStart >= 0, "refreshActiveSidePaneAfterSave deveria existir em revisao.js");
+    const fnEnd = body.indexOf("\nasync function saveCurrent", fnStart);
+    assert.ok(fnEnd > fnStart, "refreshActiveSidePaneAfterSave deveria vir antes de saveCurrent, definindo-o antes do uso");
+    const fnBody = body.slice(fnStart, fnEnd);
+    assert.match(fnBody, /diffHidden:\s*el\.paneDiff\.hidden/);
+    assert.match(fnBody, /lintHidden:\s*el\.paneLint\.hidden/);
+    assert.match(fnBody, /previewHidden:\s*el\.panePreview\.hidden/);
+    assert.match(fnBody, /pane === "diff"[\s\S]*?await runDiff\(\)/);
+    assert.match(fnBody, /pane === "lint"[\s\S]*?await runLints\(\)/);
+    assert.match(fnBody, /pane === "preview"[\s\S]*?await refreshPreview\(\)\.catch\(showPreviewError\)/);
+  });
+
+  it("saveCurrent() re-roda o painel lateral ativo (#3872) só quando a aba salva ainda é a ativa, isolado em try/catch próprio", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function saveCurrent()");
+    assert.ok(fnStart >= 0, "saveCurrent deveria existir em revisao.js");
+    const fnEnd = body.indexOf("\nfunction renderDiff", fnStart);
+    const fnBody = body.slice(fnStart, fnEnd >= 0 ? fnEnd : undefined);
+
+    // Ancora no branch de SUCESSO do save (não no branch de 409 recusado,
+    // que também contém um guard `currentSlug === slugAtSaveStart` idêntico
+    // em texto) — do início de `if (ok && body && body.ok) {` até o início
+    // do bloco `html-final` que vem logo depois, ambos únicos na função.
+    const okBlockIdx = fnBody.indexOf("if (ok && body && body.ok) {");
+    assert.ok(okBlockIdx >= 0, "esperava o branch de sucesso do save em saveCurrent()");
+    const okBlockEnd = fnBody.indexOf('if (slugAtSaveStart === "html-final") {', okBlockIdx);
+    assert.ok(okBlockEnd > okBlockIdx, "esperava o branch html-final logo após o branch de sucesso");
+    const okBlockBody = fnBody.slice(okBlockIdx, okBlockEnd);
+
+    const guardIdx = okBlockBody.indexOf("if (currentSlug === slugAtSaveStart) {");
+    const refreshCallIdx = okBlockBody.indexOf("await refreshActiveSidePaneAfterSave();");
+    assert.ok(guardIdx >= 0, "esperava o guard de aba ativa dentro do branch de sucesso");
+    assert.ok(
+      refreshCallIdx > guardIdx,
+      "refreshActiveSidePaneAfterSave() deveria ser chamado DENTRO do guard currentSlug === slugAtSaveStart, no branch de sucesso",
+    );
+
+    // isolado em try/catch próprio — falha aqui não pode sobrescrever o
+    // status "Salvo" já mostrado (mesmo padrão já usado pro refresh de
+    // html-final logo abaixo).
+    const tryIdx = okBlockBody.lastIndexOf("try {", refreshCallIdx);
+    assert.ok(tryIdx > guardIdx, "esperava um try{} dedicado envolvendo refreshActiveSidePaneAfterSave()");
+    const catchIdx = okBlockBody.indexOf("} catch (err) {", refreshCallIdx);
+    assert.ok(catchIdx > refreshCallIdx, "esperava um catch logo após a chamada");
+    assert.match(
+      okBlockBody.slice(catchIdx),
+      /refreshActiveSidePaneAfterSave\(\) pós-save falhou/,
+    );
+  });
 });

@@ -17,6 +17,7 @@ import {
   shouldConfirmDivergenceGuard,
   DIVERGENCE_CONFIRM_MESSAGE,
   SAVE_CONFLICT_CONFIRM_MESSAGE,
+  activeSidePaneAfterSave,
 } from "./revisao-guards.js";
 import {
   DESTAQUE_HEADLINE_SELECTOR,
@@ -238,6 +239,26 @@ function refreshPreviewIfOpen() {
   if (!el.panePreview.hidden) refreshPreview().catch(showPreviewError);
 }
 
+// #3872: re-roda a MESMA ação que o painel lateral atualmente aberto (se
+// houver) dispararia se o editor clicasse o botão de novo — reusa
+// runDiff()/runLints()/refreshPreview(), que já leem sempre o conteúdo
+// SALVO em disco (nunca o textarea), então chamar de novo logo após um save
+// bem-sucedido já reflete o que acabou de ser gravado. Chamado só quando a
+// aba ainda é a mesma que foi salva (ver call site em saveCurrent() — mesmo
+// guard `currentSlug === slugAtSaveStart` já usado pro reset de `dirty`);
+// nenhum painel lateral aberto → activeSidePaneAfterSave() retorna `null`,
+// no-op.
+async function refreshActiveSidePaneAfterSave() {
+  const pane = activeSidePaneAfterSave({
+    diffHidden: el.paneDiff.hidden,
+    lintHidden: el.paneLint.hidden,
+    previewHidden: el.panePreview.hidden,
+  });
+  if (pane === "diff") await runDiff();
+  else if (pane === "lint") await runLints();
+  else if (pane === "preview") await refreshPreview().catch(showPreviewError);
+}
+
 async function saveCurrent() {
   // #3672: SNAPSHOT de slug/conteúdo capturado ANTES de qualquer espera
   // assíncrona — fecha a condição de corrida introduzida pela nova chamada a
@@ -331,6 +352,17 @@ async function saveCurrent() {
         // pré-save (sempre divergente) e disparia um falso-positivo de
         // conflito a cada save consecutivo.
         loadedModifiedAt = body.modifiedAt;
+        // #3872: painel lateral (diff/lints/preview) aberto agora reflete o
+        // conteúdo recém-salvo, não o estado anterior ao save. Isolado num
+        // try/catch próprio (mesmo padrão do refresh de html-final logo
+        // abaixo): o save já teve sucesso ("Salvo" acima) — uma falha só
+        // deste refresh não pode sobrescrever esse status com "Erro ao
+        // salvar".
+        try {
+          await refreshActiveSidePaneAfterSave();
+        } catch (err) {
+          console.error("refreshActiveSidePaneAfterSave() pós-save falhou (não afeta o resultado do save):", err);
+        }
       }
       if (slugAtSaveStart === "html-final") {
         // #3672 (self-review): refresh PÓS-save isolado num try/catch
