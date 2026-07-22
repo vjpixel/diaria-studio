@@ -135,6 +135,9 @@ describe("orchestrator-prompt (#634)", () => {
       // em §0l + resolução da edição referenciada em §0-replies). Teto bumped
       // de 520→535 com headroom (era 521 medido pós-#3530).
       "orchestrator-stage-0-preflight.md": 535,
+      // #3842: +23 linhas (log de decisão de path A/B em §1f — antes desse
+      // arquivo tinha 754 linhas, headroom original do teto 795 continua
+      // suficiente, sem bump necessário).
       "orchestrator-stage-1-research.md": 795,
       "orchestrator-stage-2.md": 548,
       "orchestrator-stage-3.md": 135,
@@ -418,4 +421,75 @@ describe("#3727: teardown do fallback 127.0.0.1 exclui explicitamente a porta fi
       );
     });
   }
+});
+
+describe("#3842: Stage 1 loga qual websearch path (A/B) foi escolhido e por quê", () => {
+  // Antes do #3842 o fallback Path A→Path B (BRAVE_API_KEY ausente, ou
+  // WEBSEARCH_BACKEND=agents forçando o override) era completamente silencioso
+  // — nenhuma entrada em run-log.jsonl. Guard: a seção §1f precisa instruir
+  // explicitamente um log-event.ts para os 3 desfechos possíveis, com o nível
+  // de severidade correto (info só quando Path A de fato rodou; warn nos dois
+  // motivos de cair pro Path B).
+  const content = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-1-research.md"), "utf8");
+  const section1f = content.slice(
+    content.indexOf("### 1f. Dispatch de researchers e discovery"),
+    content.indexOf("### 1g. Registrar saúde"),
+  );
+
+  it("§1f existe e foi isolada corretamente para o slice do teste", () => {
+    assert.ok(section1f.length > 0, "slice de §1f vazio — âncoras de indexOf não bateram");
+  });
+
+  it("cobre os dois motivos de cair pro Path B: key ausente e override explícito", () => {
+    assert.ok(
+      section1f.includes("brave_key_missing"),
+      "§1f não loga o motivo 'brave_key_missing' (BRAVE_API_KEY ausente)",
+    );
+    assert.ok(
+      section1f.includes("WEBSEARCH_BACKEND_agents"),
+      "§1f não loga o motivo 'WEBSEARCH_BACKEND_agents' (override explícito que força Path B mesmo com key presente)",
+    );
+  });
+
+  it("chama scripts/log-event.ts para os 3 desfechos (Path A ok, Path B por key ausente, Path B por override)", () => {
+    const logCallCount = (section1f.match(/npx tsx scripts\/log-event\.ts/g) ?? []).length;
+    assert.ok(
+      logCallCount >= 3,
+      `§1f deve conter ≥3 chamadas a log-event.ts (1 por desfecho de path) — encontrado: ${logCallCount}`,
+    );
+  });
+
+  it("nível de severidade correto: info só para Path A (brave_key_present), warn para os 2 motivos de Path B", () => {
+    const reasons: Array<{ reason: string; expectedLevel: "info" | "warn" }> = [
+      { reason: "brave_key_present", expectedLevel: "info" },
+      { reason: "brave_key_missing", expectedLevel: "warn" },
+      { reason: "WEBSEARCH_BACKEND_agents", expectedLevel: "warn" },
+    ];
+    for (const { reason, expectedLevel } of reasons) {
+      const reasonIdx = section1f.indexOf(`"reason":"${reason}"`);
+      assert.ok(reasonIdx !== -1, `reason "${reason}" não encontrado em §1f`);
+      // A chamada log-event.ts correspondente está a poucas linhas ANTES do
+      // --details que carrega esse reason (mesmo bloco bash). Procurar a
+      // ocorrência de --level mais próxima antes do --details.
+      const beforeDetails = section1f.slice(Math.max(0, reasonIdx - 300), reasonIdx);
+      const levelMatch = beforeDetails.match(/--level\s+(\w+)/g);
+      assert.ok(levelMatch && levelMatch.length > 0, `nenhum --level encontrado perto do reason "${reason}"`);
+      const lastLevel = levelMatch[levelMatch.length - 1];
+      assert.ok(
+        lastLevel.includes(expectedLevel),
+        `reason "${reason}" deveria logar --level ${expectedLevel}, encontrado: "${lastLevel}"`,
+      );
+    }
+  });
+
+  it("checagem de WEBSEARCH_BACKEND=agents acontece ANTES de rodar fetch-websearch-batch.ts (evita gastar Path A quando já sabe que vai descartar)", () => {
+    const overrideLogIdx = section1f.indexOf('"WEBSEARCH_BACKEND_agents"');
+    const scriptRunIdx = section1f.indexOf("npx tsx scripts/fetch-websearch-batch.ts");
+    assert.ok(overrideLogIdx !== -1, "log de WEBSEARCH_BACKEND_agents não encontrado");
+    assert.ok(scriptRunIdx !== -1, "chamada a fetch-websearch-batch.ts não encontrada");
+    assert.ok(
+      overrideLogIdx < scriptRunIdx,
+      "checagem/log de WEBSEARCH_BACKEND=agents deve vir ANTES da chamada a fetch-websearch-batch.ts — senão Path A roda à toa mesmo com o override setado",
+    );
+  });
 });

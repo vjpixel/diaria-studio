@@ -119,6 +119,15 @@ Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics e
 
 **Default desde 260529 (#1560).** Quando `BRAVE_API_KEY` está setada (default), usar script TS em vez dos agents Haiku. Economiza ~8-12min/edição. Validação side-by-side em 260529 confirmou cobertura comparável + 10× speed. Setar `WEBSEARCH_BACKEND=agents` força fallback pro Path B.
 
+**Logar a decisão de path ANTES de rodar o script (#3842).** Esse fallback era completamente silencioso — nenhuma entrada em `run-log.jsonl`, só descoberto via garimpo manual de `data/brave-credits.jsonl`. Primeiro checar se `WEBSEARCH_BACKEND=agents` está setada no ambiente (override manual, força Path B mesmo com a key presente). Se sim, logar e ir direto pro Path B — **não rodar** `fetch-websearch-batch.ts`:
+```bash
+npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator \
+  --level warn --message "websearch_path: B (WEBSEARCH_BACKEND=agents)" \
+  --details '{"path":"B","reason":"WEBSEARCH_BACKEND_agents"}'
+```
+
+Senão (override ausente), rodar o script abaixo normalmente:
+
 ```bash
 # Gerar sources list
 npx tsx scripts/list-active-sources.ts --format json --websearch-only \
@@ -142,6 +151,20 @@ Flag `--edition` (#1558): tagga cada Brave query no `data/brave-credits.jsonl` p
 Output em `websearch-results.json` é RunRecord[] compatível com researcher-results.json — mergear no aggregate.
 
 Exit code 3 do script = "BRAVE_API_KEY ausente" → fallback automático pro Path B (não falha o pipeline).
+
+**Logar o desfecho (#3842)** assim que o script retornar:
+- Exit 0 (Path A rodou com a key presente):
+  ```bash
+  npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator \
+    --level info --message "websearch_path: A (brave_key_present)" \
+    --details '{"path":"A","reason":"brave_key_present"}'
+  ```
+- Exit 3 (`BRAVE_API_KEY` ausente → fallback pro Path B abaixo):
+  ```bash
+  npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 1 --agent orchestrator \
+    --level warn --message "websearch_path: B (brave_key_missing)" \
+    --details '{"path":"B","reason":"brave_key_missing"}'
+  ```
 
 Melhorias trackeadas em #1559 (filtro de path FAQ/help + WebFetch OG tags).
 
