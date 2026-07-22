@@ -225,6 +225,17 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadProjectEnv } from "../lib/env-loader.ts";
+// #3867: chamada explícita — hoje `.env`/`.env.local` já carregam de forma
+// TRANSITIVA porque `dashboard-clarice.ts` (importado abaixo) chama
+// `loadProjectEnv()` no próprio topo (#3563); um lazy-import ou split futuro
+// desse módulo quebraria isso em silêncio (`GET/POST /api/apoios*` voltam a
+// "sem dados" sem erro óbvio — dependem de `APOIA_SE_*` via
+// `readApoiaSeEnv`, scripts/lib/apoia-se.ts). Idempotente (env-loader.ts
+// nunca sobrescreve vars já setadas) — chamar de novo não tem custo mesmo
+// com o import transitivo ainda existindo. Guard de regressão:
+// test/studio-server-env-loading.test.ts.
+loadProjectEnv();
 import { parseArgs as parseCliArgs, isMainModule } from "../lib/cli-args.ts";
 import { resolveRunLogPath } from "../lib/run-log.ts";
 import { buildStudioState } from "./studio-state.ts";
