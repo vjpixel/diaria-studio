@@ -109,6 +109,13 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 
 **Aguardar os N writer-destaques + 3 social retornarem.** Cada `writer-destaque` retorna JSON `{ out_path, image_prompt_path, destaque_n, char_count, warnings }`. **Se `warnings[]` de qualquer um não estiver vazio, pare e reporte ao usuário antes de prosseguir** — mesma regra do writer único legacy.
 
+**Capturar custo de tokens (#3748):** monte um array `[{agent_type, usage_raw}]` com o bloco `<usage>` de cada dispatch acima (writer-destaque ×N + 3 social) e rode:
+```bash
+npx tsx scripts/record-agent-costs.ts --edition-dir {EDITION_DIR}/ --edition {AAMMDD} \
+  --stage 2 --costs {EDITION_DIR}/_internal/tmp-agent-costs-stage2.json
+```
+Persiste breakdown por agent_type em `_internal/cost.json` (complementa o total do stage em `stage-status.json`, #3441). Falha não-bloqueante.
+
 **Pós:** rodar `scripts/stitch-newsletter.ts` (#1463) que produz `02-draft.md` determinístico unificando os 3 destaque drafts + seções secundárias + blocos fixos:
 
 ```bash
