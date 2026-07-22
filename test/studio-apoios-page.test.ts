@@ -59,7 +59,6 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.match(res.headers.get("content-type") ?? "", /text\/html/);
     const body = await res.text();
     assert.ok(body.includes("apoios.js"));
-    assert.ok(body.includes("add-contact-form"));
     assert.ok(body.includes("contacts-list"));
   });
 
@@ -68,6 +67,18 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     const body = await res.text();
     assert.ok(!body.includes("outreach"), "nenhuma referência a outreach deve sobrar no HTML");
     assert.ok(!body.includes("follow-up"), "nenhuma referência a follow-up deve sobrar no HTML");
+  });
+
+  it("regressão (#3862): o form manual 'Adicionar contato' foi removido do shell", async () => {
+    const res = await fetch(new URL("/apoios", server.url));
+    const body = await res.text();
+    // Cadastro manual saiu — contatos passam a vir do e-mail/apoia.se (#3859).
+    assert.ok(!body.includes("add-contact-form"), "o form de adicionar contato não deve existir");
+    assert.ok(!body.includes('id="new-name"'), "campo new-name não deve existir");
+    assert.ok(!body.includes('id="new-emails"'), "campo new-emails não deve existir");
+    assert.ok(!body.includes("Adicionar contato"), "o texto 'Adicionar contato' não deve sobrar");
+    // O form de EDIÇÃO permanece (mutação diferente do cadastro manual).
+    assert.ok(body.includes("edit-contact-form"), "o form de editar contato deve permanecer");
   });
 
   it("aceita /apoios/ com trailing slash", async () => {
