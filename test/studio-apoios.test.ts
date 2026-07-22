@@ -48,9 +48,7 @@ import {
   buildApoiosData,
   refreshApoiosData,
   importNewApoiadoresFromGmail,
-  addContact,
   updateContactById,
-  parseCreateContactBody,
   parseUpdateContactBody,
   type ApoioContact,
   type ContactWithStatus,
@@ -1218,7 +1216,12 @@ describe("importNewApoiadoresFromGmail (#3859 metade 1)", () => {
 
 // ─── mutações de I/O (read-modify-write do jsonl) ───────────────────────
 
-describe("addContact / updateContactById (#3602)", () => {
+// #3862: `addContact` (o I/O wrapper de POST /api/apoios/contacts) foi
+// removido junto com a rota — a criação de contato agora só acontece via
+// `createContact` (puro) + `saveContacts` chamados direto pelo drain de
+// e-mail (#3859), cobertos no describe de `importNewApoiadoresFromGmail`
+// acima. `updateContactById` segue como a única mutação de I/O com HTTP.
+describe("updateContactById (#3602)", () => {
   let root: string;
 
   before(() => {
@@ -1227,29 +1230,10 @@ describe("addContact / updateContactById (#3602)", () => {
   });
   after(() => rmSync(root, { recursive: true, force: true }));
 
-  it("addContact grava no jsonl e retorna o contato criado", () => {
-    const result = addContact(root, { name: "Fulano", emails: ["fulano@x.com"] });
-    assert.equal(result.ok, true);
-    if (result.ok) {
-      assert.equal(result.contact.name, "Fulano");
-      const loaded = loadContacts(root);
-      assert.equal(loaded.length, 1);
-      assert.equal(loaded[0].id, result.contact.id);
-    }
-  });
-
-  it("addContact com input inválido retorna ok:false sem escrever", () => {
-    const before = loadContacts(root).length;
-    const result = addContact(root, { name: "", emails: [] });
-    assert.equal(result.ok, false);
-    assert.equal(loadContacts(root).length, before);
-  });
-
   it("updateContactById atualiza contato existente", () => {
-    const created = addContact(root, { name: "Beltrana", emails: ["b@x.com"] });
-    assert.ok(created.ok);
-    const id = created.ok ? created.contact.id : "";
-    const updated = updateContactById(root, id, { notes: "nota nova" });
+    const created = createContact({ name: "Beltrana", emails: ["b@x.com"] });
+    saveContacts(root, [created]);
+    const updated = updateContactById(root, created.id, { notes: "nota nova" });
     assert.equal(updated.ok, true);
     if (updated.ok) assert.equal(updated.contact.notes, "nota nova");
   });
@@ -1264,29 +1248,10 @@ describe("addContact / updateContactById (#3602)", () => {
 
 // ─── parsing de corpo de request (puro) ─────────────────────────────────
 
-describe("parseCreateContactBody / parseUpdateContactBody (#3602)", () => {
-  it("parseCreateContactBody aceita shape válido", () => {
-    const result = parseCreateContactBody(JSON.stringify({ name: "F", emails: ["f@x.com"] }));
-    assert.equal(result.ok, true);
-  });
-  it("parseCreateContactBody rejeita sem name", () => {
-    const result = parseCreateContactBody(JSON.stringify({ emails: ["f@x.com"] }));
-    assert.equal(result.ok, false);
-  });
-  it("parseCreateContactBody rejeita emails vazio", () => {
-    const result = parseCreateContactBody(JSON.stringify({ name: "F", emails: [] }));
-    assert.equal(result.ok, false);
-  });
-  it("parseCreateContactBody rejeita JSON inválido", () => {
-    const result = parseCreateContactBody("{ not json");
-    assert.equal(result.ok, false);
-  });
-  it("regressão (#3611): 'circle' no corpo é ignorado, nunca aparece no value parseado", () => {
-    const result = parseCreateContactBody(JSON.stringify({ name: "F", emails: ["f@x.com"], circle: "lista VJs" }));
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal("circle" in result.value, false);
-  });
-
+// #3862: `parseCreateContactBody` saiu junto com a rota que o chamava
+// (POST /api/apoios/contacts, cadastro manual) — só o parse do PATCH de
+// edição segue em uso.
+describe("parseUpdateContactBody (#3602)", () => {
   it("parseUpdateContactBody aceita patch parcial", () => {
     const result = parseUpdateContactBody(JSON.stringify({ notes: "x" }));
     assert.equal(result.ok, true);
