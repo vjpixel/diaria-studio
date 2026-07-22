@@ -39,6 +39,7 @@ import {
   fetchCurrentStatuses,
   buildApoiosData,
   refreshApoiosData,
+  importNewApoiadoresFromGmail,
   addContact,
   updateContactById,
   parseCreateContactBody,
@@ -49,9 +50,19 @@ import {
   type OpenRateCache,
 } from "../scripts/studio-ui/studio-apoios.ts";
 import type { ApoiaSeEnv, BackerStatus } from "../scripts/lib/apoia-se.ts";
+import type { DrainApoiaSeResult } from "../scripts/lib/apoia-se-gmail-drain.ts";
 
 const FIXED_NOW = new Date("2026-07-16T12:00:00Z");
 const TEST_ENV: ApoiaSeEnv = { apiKey: "k", apiSecret: "s", campaign: "diaria-test" };
+
+/** Drain Gmail neutro (sem notificações novas) — injetado nos testes de
+ * `refreshApoiosData` que focam exclusivamente na metade 2 (force-refresh de
+ * pagamento, #3859), pra não depender de rede/credenciais Gmail reais. */
+const NOOP_GMAIL_DRAIN = async (): Promise<DrainApoiaSeResult> => ({
+  notifications: [],
+  most_recent_iso: null,
+  skipped: false,
+});
 
 function makeContact(overrides: Partial<ApoioContact> = {}): ApoioContact {
   return {
@@ -690,6 +701,7 @@ describe("refreshApoiosData (#3859)", () => {
         env: TEST_ENV,
         cacheDir,
         fetchImpl,
+        gmailDrain: NOOP_GMAIL_DRAIN,
       });
 
       assert.equal(result.error, null);
@@ -733,6 +745,7 @@ describe("refreshApoiosData (#3859)", () => {
         env: TEST_ENV,
         cacheDir,
         fetchImpl,
+        gmailDrain: NOOP_GMAIL_DRAIN,
       });
 
       assert.equal(result.error, null);
@@ -773,6 +786,7 @@ describe("refreshApoiosData (#3859)", () => {
         env: TEST_ENV,
         cacheDir,
         fetchImpl,
+        gmailDrain: NOOP_GMAIL_DRAIN,
       });
 
       assert.equal(calls, 0, "contato já confirmado (por qualquer email) não gera NENHUMA request nova");
@@ -795,6 +809,7 @@ describe("refreshApoiosData (#3859)", () => {
         env: TEST_ENV,
         cacheDir,
         fetchImpl,
+        gmailDrain: NOOP_GMAIL_DRAIN,
       });
 
       assert.equal(result.contacts[0].status.label, "apoiando");
@@ -825,6 +840,7 @@ describe("refreshApoiosData (#3859)", () => {
         env: TEST_ENV,
         cacheDir,
         fetchImpl,
+        gmailDrain: NOOP_GMAIL_DRAIN,
       });
 
       const byId = Object.fromEntries(result.contacts.map((c) => [c.id, c.status]));
@@ -860,7 +876,11 @@ describe("refreshApoiosData (#3859)", () => {
     delete process.env.APOIA_SE_CAMPAIGN;
     try {
       const contacts = [makeContact()];
-      const result = await refreshApoiosData("irrelevant-root", { now: FIXED_NOW, contacts });
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        gmailDrain: NOOP_GMAIL_DRAIN,
+      });
       assert.match(result.error ?? "", /APOIA_SE_API_KEY/);
       assert.equal(result.contacts[0].status.label, "sem_dados");
     } finally {
@@ -868,6 +888,221 @@ describe("refreshApoiosData (#3859)", () => {
       if (saved.secret !== undefined) process.env.APOIA_SE_API_SECRET = saved.secret;
       if (saved.campaign !== undefined) process.env.APOIA_SE_CAMPAIGN = saved.campaign;
     }
+  });
+
+  // ── #3859 metade 1: import automático via e-mail apoia.se ─────────────
+
+  it("import via e-mail: notificação de apoiador NOVO cria contato automaticamente antes do force-refresh", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-gmailimport-new-"));
+    const root = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-gmailimport-new-root-"));
+    try {
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 25 }), { status: 200 })) as typeof fetch;
+      const gmailDrain = async (): Promise<DrainApoiaSeResult> => ({
+        notifications: [{ name: "ALMIR", email: "alalmas@gmail.com", value: 25 }],
+        most_recent_iso: "2026-07-16T10:00:00Z",
+        skipped: false,
+      });
+
+      const result = await refreshApoiosData(root, {
+        now: FIXED_NOW,
+        contacts: [],
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain,
+      });
+
+      assert.equal(result.error, null);
+      assert.equal(result.contacts.length, 1);
+      assert.equal(result.contacts[0].name, "ALMIR");
+      assert.deepEqual(result.contacts[0].emails, ["alalmas@gmail.com"]);
+      assert.equal(result.contacts[0].notes, "importado automaticamente via e-mail apoia.se");
+      assert.equal(result.contacts[0].status.label, "apoiando");
+
+      // Persistido em contacts.jsonl (rootDir real, não injetado) — não só em memória.
+      const persisted = JSON.parse(
+        readFileSync(join(root, "data", "apoia-se", "contacts.jsonl"), "utf-8").trim(),
+      );
+      assert.equal(persisted.emails[0], "alalmas@gmail.com");
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("import via e-mail: notificação de apoiador JÁ EXISTENTE não duplica contato", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-gmailimport-dup-"));
+    try {
+      const existing = makeContact({ id: "c1", name: "Almir Original", emails: ["alalmas@gmail.com"] });
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 25 }), { status: 200 })) as typeof fetch;
+      const gmailDrain = async (): Promise<DrainApoiaSeResult> => ({
+        notifications: [{ name: "ALMIR", email: "alalmas@gmail.com", value: 25 }],
+        most_recent_iso: "2026-07-16T10:00:00Z",
+        skipped: false,
+      });
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts: [existing],
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain,
+      });
+
+      // Continua com 1 único contato — o existente, com o nome ORIGINAL
+      // preservado (import automático nunca sobrescreve um contato já
+      // cadastrado, só cria quando o email é genuinamente novo).
+      assert.equal(result.contacts.length, 1);
+      assert.equal(result.contacts[0].id, "c1");
+      assert.equal(result.contacts[0].name, "Almir Original");
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("import via e-mail: falha do drain (fail-soft) NÃO trava o force-refresh de pagamento", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-gmailimport-failsoft-"));
+    try {
+      const contacts = [makeContact({ id: "c1", name: "Fulano", emails: ["fulano@x.com"] })];
+      let calls = 0;
+      const fetchImpl = (async () => {
+        calls++;
+        return new Response(JSON.stringify({ isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 40 }), { status: 200 });
+      }) as typeof fetch;
+      const gmailDrain = async (): Promise<DrainApoiaSeResult> => {
+        throw new Error("token expirado (invalid_grant)");
+      };
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain,
+      });
+
+      // Force-refresh de pagamento roda normalmente mesmo com o drain falhando.
+      assert.equal(calls, 1);
+      assert.equal(result.contacts[0].status.label, "apoiando");
+      assert.equal(result.contacts[0].status.monthlyValue, 40);
+      // Falha do drain é reportada (fail-soft), não engolida silenciosamente.
+      assert.match(result.error ?? "", /import automático via e-mail apoia\.se falhou/);
+      assert.match(result.error ?? "", /invalid_grant/);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("import via e-mail: drain 'skipped' (ex: auth expirado) também NÃO trava o force-refresh, error documenta o motivo", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-gmailimport-skipped-"));
+    try {
+      const contacts = [makeContact({ id: "c1", name: "Fulano", emails: ["fulano@x.com"] })];
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 })) as typeof fetch;
+      const gmailDrain = async (): Promise<DrainApoiaSeResult> => ({
+        notifications: [],
+        most_recent_iso: null,
+        skipped: true,
+        reason: "auth_expired",
+        auth_expired: true,
+      });
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain,
+      });
+
+      assert.equal(result.contacts[0].status.label, "nao_apoia");
+      assert.match(result.error ?? "", /import automático via e-mail apoia\.se pulado/);
+      assert.match(result.error ?? "", /auth_expired/);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("import via e-mail: erro do force-refresh de pagamento (mais crítico) NUNCA é sobrescrito pelo erro do drain", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-gmailimport-priority-"));
+    try {
+      const contacts = [makeContact({ id: "c1", name: "Fulano", emails: ["fulano@x.com"] })];
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ message: "unauthorized" }), { status: 401 })) as typeof fetch;
+      const gmailDrain = async (): Promise<DrainApoiaSeResult> => {
+        throw new Error("gmail indisponível");
+      };
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain,
+      });
+
+      // O erro de auth da apoia.se (força-refresh) é mais crítico e prevalece
+      // sobre o erro (fail-soft) do drain de e-mail.
+      assert.match(result.error ?? "", /401|unauthorized|não autorizado/i);
+      assert.doesNotMatch(result.error ?? "", /gmail indisponível/);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── importNewApoiadoresFromGmail — aplicação pura das notificações ────
+
+describe("importNewApoiadoresFromGmail (#3859 metade 1)", () => {
+  it("email novo (nenhum contato existente tem ele) cria 1 contato com a nota padrão", () => {
+    const { contacts, mutated, imported } = importNewApoiadoresFromGmail(
+      [],
+      [{ name: "Monica", email: "sintetica@gmail.com", value: 5 }],
+    );
+    assert.equal(mutated, true);
+    assert.equal(imported, 1);
+    assert.equal(contacts.length, 1);
+    assert.equal(contacts[0].name, "Monica");
+    assert.deepEqual(contacts[0].emails, ["sintetica@gmail.com"]);
+    assert.equal(contacts[0].notes, "importado automaticamente via e-mail apoia.se");
+  });
+
+  it("email já cadastrado em QUALQUER contato não gera duplicata", () => {
+    const existing = makeContact({ id: "c1", name: "Já Existe", emails: ["ja@x.com", "outro@x.com"] });
+    const { contacts, mutated, imported } = importNewApoiadoresFromGmail(
+      [existing],
+      [{ name: "Nome Diferente", email: "OUTRO@X.COM", value: 10 }],
+    );
+    assert.equal(mutated, false);
+    assert.equal(imported, 0);
+    assert.equal(contacts.length, 1);
+    assert.equal(contacts[0].name, "Já Existe");
+  });
+
+  it("2 notificações pra MESMO email novo dentro do mesmo lote não duplicam entre si", () => {
+    const { contacts, imported } = importNewApoiadoresFromGmail(
+      [],
+      [
+        { name: "Luis", email: "lfangerami@usp.br", value: 5 },
+        { name: "Luis", email: "lfangerami@usp.br", value: 5 },
+      ],
+    );
+    assert.equal(imported, 1);
+    assert.equal(contacts.length, 1);
+  });
+
+  it("lista vazia de notificações -> mutated false, contatos inalterados", () => {
+    const existing = [makeContact()];
+    const { contacts, mutated, imported } = importNewApoiadoresFromGmail(existing, []);
+    assert.equal(mutated, false);
+    assert.equal(imported, 0);
+    assert.deepEqual(contacts, existing);
   });
 });
 

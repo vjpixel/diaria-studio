@@ -199,11 +199,12 @@ async function fetchApoios() {
   renderAll();
 }
 
-// #3859 (metade 2): POST /api/apoios/refresh — força re-consulta na apoia.se
-// só pra contatos ainda não confirmados como "apoiando" (o servidor decide
-// quem — ver refreshApoiosData em studio-apoios.ts). Resposta tem o MESMO
-// formato de GET /api/apoios, então só substitui `data` e renderiza de novo
-// (mesma disciplina "sem estado otimista" do resto do arquivo).
+// #3859: POST /api/apoios/refresh — (1) importa apoiadores novos via e-mail
+// apoia.se e (2) força re-consulta na apoia.se só pra contatos ainda não
+// confirmados como "apoiando" (o servidor decide quem — ver refreshApoiosData
+// em studio-apoios.ts). Resposta tem o MESMO formato de GET /api/apoios,
+// então só substitui `data` e renderiza de novo (mesma disciplina "sem
+// estado otimista" do resto do arquivo).
 async function refreshApoiosStatus() {
   el.refreshStatusBtn.disabled = true;
   const originalLabel = el.refreshStatusBtn.textContent;
