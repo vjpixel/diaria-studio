@@ -37,7 +37,7 @@ body.chat-drawer-present.chat-drawer-collapsed {
   left: 0;
   bottom: 0;
   width: var(--chat-drawer-width);
-  background: var(--paper-email);
+  background: var(--paper);
   border-right: 1px solid var(--rule);
   box-shadow: 4px 0 16px rgba(0, 0, 0, 0.15);
   z-index: 200;

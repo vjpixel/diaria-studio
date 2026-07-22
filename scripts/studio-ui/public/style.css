@@ -54,7 +54,7 @@ main {
 }
 
 .panel {
-  background: var(--paper-email);
+  background: var(--paper);
   border: 1px solid var(--rule);
   border-radius: 6px;
   padding: 1rem 1.25rem;
