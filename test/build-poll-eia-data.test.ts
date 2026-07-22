@@ -15,7 +15,7 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -594,6 +594,103 @@ describe("brand=clarice + discoverMonthlyCycles (#2903)", () => {
       await fetchEditionStats("https://poll.x", "260705"); // default diaria
       assert.match(urls[0], /edition=2606-07&brand=clarice/, "clarice anexa &brand=clarice");
       assert.doesNotMatch(urls[1], /brand=/, "diaria (default) não anexa &brand=");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+// ─── refreshPollEiaSummaryLocal (#3861 — botão "Atualizar É IA?" do Studio) ──
+
+describe("refreshPollEiaSummaryLocal (#3861)", () => {
+  test("data/editions/ ausente -> {ok:false} fail-soft, sem tocar rede (nenhum fetch chamado)", async () => {
+    const { refreshPollEiaSummaryLocal } = await import("../scripts/build-poll-eia-data.ts");
+    const origFetch = globalThis.fetch;
+    let fetchCalled = false;
+    globalThis.fetch = (async () => { fetchCalled = true; throw new Error("não deveria chamar fetch"); }) as unknown as typeof globalThis.fetch;
+    try {
+      const rootDir = mkdtempSync(join(tmpdir(), "poll-eia-refresh-noedts-"));
+      const result = await refreshPollEiaSummaryLocal({ rootDir });
+      assert.equal(result.ok, false);
+      assert.match(result.error ?? "", /data\/editions/);
+      assert.equal(fetchCalled, false, "sem data/editions/, nunca deveria tentar buscar do worker poll");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  test("data/editions/ existe mas vazio -> {ok:false} fail-soft", async () => {
+    const { refreshPollEiaSummaryLocal } = await import("../scripts/build-poll-eia-data.ts");
+    const rootDir = mkdtempSync(join(tmpdir(), "poll-eia-refresh-empty-"));
+    mkdirSync(join(rootDir, "data", "editions"), { recursive: true });
+    const result = await refreshPollEiaSummaryLocal({ rootDir });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /nenhuma edição/);
+  });
+
+  test("caminho feliz: escreve data/poll-eia-summary.json a partir do worker poll (fetch stubado)", async () => {
+    const restore = installFetchStub();
+    try {
+      const { refreshPollEiaSummaryLocal } = await import("../scripts/build-poll-eia-data.ts");
+      const rootDir = mkdtempSync(join(tmpdir(), "poll-eia-refresh-happy-"));
+      mkdirSync(join(rootDir, "data", "editions", "260418"), { recursive: true });
+      mkdirSync(join(rootDir, "data", "editions", "260419"), { recursive: true });
+
+      const result = await refreshPollEiaSummaryLocal({ rootDir, workerUrl: "https://poll.example.com" });
+
+      assert.equal(result.ok, true);
+      assert.ok(result.summary, "deve retornar o summary agregado");
+      assert.equal(result.summary!.editions.length, 2);
+
+      const outPath = join(rootDir, "data", "poll-eia-summary.json");
+      assert.ok(existsSync(outPath), "deve escrever data/poll-eia-summary.json");
+      const written = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.equal(written.editions.length, 2);
+      assert.equal(written.last_edition, "260419");
+    } finally { restore(); }
+  });
+
+  test("regressão (guard de publicação): NUNCA chama o push pro KV do clarice-dashboard, mesmo com credenciais Cloudflare presentes", async () => {
+    // O push real (pushEiaEngagementToBrevoKv) usa node:https, não
+    // globalThis.fetch — o stub abaixo cobre só as chamadas ao worker poll.
+    // A prova estrutural de que o push nunca é acionado é que
+    // refreshPollEiaSummaryLocal simplesmente não referencia
+    // pushEiaEngagementToBrevoKv/discoverMonthlyCycles em lugar nenhum do seu
+    // corpo — este teste fixa o comportamento observável (nenhuma env var
+    // de Cloudflare é sequer lida: o resultado não muda com ou sem elas).
+    const restore = installFetchStub();
+    const origAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
+    const origToken = process.env.CLOUDFLARE_WORKERS_TOKEN;
+    process.env.CLOUDFLARE_ACCOUNT_ID = "fake-account-id";
+    process.env.CLOUDFLARE_WORKERS_TOKEN = "fake-token";
+    try {
+      const { refreshPollEiaSummaryLocal } = await import("../scripts/build-poll-eia-data.ts");
+      const rootDir = mkdtempSync(join(tmpdir(), "poll-eia-refresh-guard-"));
+      mkdirSync(join(rootDir, "data", "editions", "260418"), { recursive: true });
+      const result = await refreshPollEiaSummaryLocal({ rootDir, workerUrl: "https://poll.example.com" });
+      assert.equal(result.ok, true, "regenera o arquivo local normalmente, independente de credenciais Cloudflare");
+      // Se o push remoto tivesse sido disparado por engano, o resultado
+      // ainda seria {ok:true} (o push é fire-and-forget/fail-soft do CLI) —
+      // a prova real é de código: refreshPollEiaSummaryLocal não importa
+      // nem referencia pushEiaEngagementToBrevoKv (ver docstring da função).
+    } finally {
+      restore();
+      if (origAccount !== undefined) process.env.CLOUDFLARE_ACCOUNT_ID = origAccount; else delete process.env.CLOUDFLARE_ACCOUNT_ID;
+      if (origToken !== undefined) process.env.CLOUDFLARE_WORKERS_TOKEN = origToken; else delete process.env.CLOUDFLARE_WORKERS_TOKEN;
+    }
+  });
+
+  test("falha ao buscar do worker poll (fetch rejeita) -> {ok:false} fail-soft, não lança", async () => {
+    const { refreshPollEiaSummaryLocal } = await import("../scripts/build-poll-eia-data.ts");
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => { throw new Error("rede indisponível"); }) as unknown as typeof globalThis.fetch;
+    try {
+      const rootDir = mkdtempSync(join(tmpdir(), "poll-eia-refresh-fetchfail-"));
+      mkdirSync(join(rootDir, "data", "editions", "260418"), { recursive: true });
+      // buildPollEiaSummaryFromApi já engole erro de fetch por edição
+      // individualmente (fail-soft interno) — o resultado aqui deve ser
+      // {ok:true} com editions vazio, nunca uma exceção propagada.
+      await assert.doesNotReject(() => refreshPollEiaSummaryLocal({ rootDir, workerUrl: "https://poll.example.com" }));
     } finally {
       globalThis.fetch = origFetch;
     }

@@ -42,6 +42,18 @@
  *   npx tsx scripts/build-poll-eia-data.ts [--dry-run] [--push] [--worker-url URL]
  *   npx tsx scripts/build-poll-eia-data.ts --push
  *   npx tsx scripts/build-poll-eia-data.ts --push --worker-url http://localhost:8787  # local test
+ *
+ * Botão "Atualizar É IA?" do Studio (#3861):
+ *   `refreshPollEiaSummaryLocal` é a contraparte SÓ-LOCAL do `--push` acima,
+ *   usada por `POST /api/painel/eia/refresh` (scripts/studio-ui/server.ts —
+ *   endpoint exclusivo do studio-server, nunca existe no Worker de produção).
+ *   Regenera `data/poll-eia-summary.json` a partir dos MESMOS endpoints
+ *   públicos do worker poll, mas deliberadamente NUNCA chama
+ *   `pushEiaEngagementToBrevoKv` — o push pro KV do clarice-dashboard exige
+ *   CLOUDFLARE_ACCOUNT_ID/CLOUDFLARE_WORKERS_TOKEN e escreve em
+ *   infraestrutura de PRODUÇÃO, o que não é papel de um botão do painel
+ *   local (guard de publicação do CLAUDE.md). Só o CLI `--push` faz o push
+ *   duplo; o botão do Studio faz só a metade local.
  */
 
 import { existsSync, readdirSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
@@ -354,6 +366,83 @@ export async function buildPollEiaSummaryFromApi(
     leaderboard,
     updated_at: new Date().toISOString(),
   };
+}
+
+// ─── Studio-only: refresh local (#3861) ───────────────────────────────────────
+
+export interface RefreshPollEiaLocalOptions {
+  /** Raiz do projeto (onde `data/` mora) — injetável pra testes apontarem pra
+   * um tmpdir. Default: raiz real do repo (`ROOT`). */
+  rootDir?: string;
+  /** Base URL do worker poll — injetável pra testes/local (mesmo uso do
+   * `--worker-url` do CLI). Default: `platform.config.json` ou o literal. */
+  workerUrl?: string;
+}
+
+export interface RefreshPollEiaLocalResult {
+  ok: boolean;
+  /** Presente só quando `ok === true`. */
+  summary?: PollEiaSummary;
+  /** Presente só quando `ok === false` — mensagem fail-soft (nunca lança). */
+  error?: string;
+}
+
+/**
+ * refreshPollEiaSummaryLocal (#3861)
+ *
+ * Contraparte SÓ-LOCAL do CLI `--push`, chamada por
+ * `POST /api/painel/eia/refresh` (botão "Atualizar É IA?" da dashboard
+ * diária embutida no studio-server — ver `scripts/studio-ui/server.ts` e
+ * `dashboard-diaria.ts`). Regenera SÓ `data/poll-eia-summary.json` a partir
+ * dos mesmos endpoints públicos do worker poll usados por
+ * `buildPollEiaSummaryFromApi` — e, deliberadamente, **NUNCA** chama
+ * `pushEiaEngagementToBrevoKv` (o push pro KV do clarice-dashboard, que
+ * exige credenciais Cloudflare e escreve em infraestrutura de PRODUÇÃO).
+ * Essa distinção é intencional: o botão de um painel local regenera dado
+ * local, nunca dispara publicação/push remoto (guard de publicação do
+ * CLAUDE.md) — ver corpo da issue #3861.
+ *
+ * Fail-soft total: nunca lança. `data/editions/` ausente, nenhuma edição
+ * encontrada, falha de rede ao buscar do worker poll, ou falha de escrita em
+ * disco — tudo volta como `{ok:false, error}` em vez de propagar exceção.
+ */
+export async function refreshPollEiaSummaryLocal(
+  opts: RefreshPollEiaLocalOptions = {},
+): Promise<RefreshPollEiaLocalResult> {
+  const rootDir = opts.rootDir ?? ROOT;
+  const dataDir = join(rootDir, "data");
+  const editionsDir = join(dataDir, "editions");
+
+  if (!existsSync(editionsDir)) {
+    return {
+      ok: false,
+      error: "data/editions/ não encontrado — verifique se a junction OneDrive está montada (ver CLAUDE.md, passo 2b).",
+    };
+  }
+
+  const editions = discoverEditions(editionsDir);
+  if (editions.length === 0) {
+    return { ok: false, error: "nenhuma edição encontrada em data/editions/." };
+  }
+
+  const workerUrl = opts.workerUrl ?? DEFAULT_WORKER_URL;
+
+  let summary: PollEiaSummary;
+  try {
+    summary = await buildPollEiaSummaryFromApi(editions, workerUrl);
+  } catch (e) {
+    return { ok: false, error: `falha buscando dados do worker poll: ${(e as Error).message}` };
+  }
+
+  const outLocalPath = join(dataDir, "poll-eia-summary.json");
+  try {
+    mkdirSync(dirname(outLocalPath), { recursive: true });
+    writeFileSync(outLocalPath, JSON.stringify(summary, null, 2) + "\n", "utf8");
+  } catch (e) {
+    return { ok: false, error: `falha escrevendo ${outLocalPath}: ${(e as Error).message}` };
+  }
+
+  return { ok: true, summary };
 }
 
 // ─── CLI ─────────────────────────────────────────────────────────────────────

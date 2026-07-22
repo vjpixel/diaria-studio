@@ -142,6 +142,16 @@
  *     nome de env var ausente.
  *   - `GET /integracoes` — página de status (#3848): mesma estratégia de
  *     rewrite de `/apoios`/`/relatorios`, servindo `public/integracoes.html`.
+ *   - `POST /api/painel/eia/refresh` (#3861) — botão "Atualizar É IA?" da
+ *     dashboard diária embutida (`GET /painel/diaria`, `dashboard-diaria.ts`):
+ *     regenera SÓ `data/poll-eia-summary.json` local a partir dos endpoints
+ *     públicos do worker poll (`refreshPollEiaSummaryLocal`,
+ *     `scripts/build-poll-eia-data.ts`) — nunca dispara o push paralelo pro
+ *     KV do clarice-dashboard que o CLI `--push` faz (produção, requer
+ *     credenciais Cloudflare). O botão em si (e o `<script>` que o alimenta)
+ *     só existem no HTML quando `buildDiariaDashboardHtml` passa
+ *     `studioMode: true` pra `renderDashboardHtml` — nunca no Worker de
+ *     produção, que renderiza o MESMO módulo sem esse parâmetro.
  *   - Notificação Telegram (#3564, sem rota HTTP própria): um watcher em
  *     background, subido por `startStudioServer` e fechado em `close()`,
  *     observa `gatesPending`/`chatPermissionsPending` (mesmo `buildStudioState`
@@ -188,6 +198,14 @@
  * nunca escreve `contacts.jsonl`; grava só o cache `data/apoia-se/{campanha}/
  * {YYYY-MM}.json`, já uma superfície de escrita pré-existente de
  * `checkBacker`.)
+ *
+ * **Exceção controlada (#3861 — botão "Atualizar É IA?"):**
+ * `POST /api/painel/eia/refresh` escreve SÓ `data/poll-eia-summary.json`
+ * (`refreshPollEiaSummaryLocal` em `scripts/build-poll-eia-data.ts`) — nunca
+ * chama o push pro KV do clarice-dashboard que o CLI `--push` faz (isso
+ * exigiria credenciais Cloudflare de produção e não é papel de um botão de
+ * painel local). Mesma classe de exceção que #3559/#3602/#3859: escopo
+ * estreito, 1 arquivo local, fail-soft total.
  *
  * Ver "Decisões de design" no PR body pra rationale completo (framework
  * escolhido, estrutura de diretórios, formato das APIs, pontos de extensão).
@@ -297,6 +315,11 @@ import {
 // desta fatia, import isolado (nenhuma outra rota depende dele). Ver
 // studio-integrations.ts.
 import { buildIntegrationsData } from "./studio-integrations.ts";
+// #3861: botão "Atualizar É IA?" da dashboard diária embutida — reusa a
+// função exportada de build-poll-eia-data.ts (mesmo módulo do CLI --push),
+// mas SÓ a metade local (nunca o push pro KV do clarice-dashboard). Ver
+// docstring de refreshPollEiaSummaryLocal.
+import { refreshPollEiaSummaryLocal } from "../build-poll-eia-data.ts";
 
 // #3555: SEMPRE loopback — nunca 0.0.0.0. Acesso remoto (Tunnel + Access) é
 // escopo de outra fatia (#3560) do epic #3554, com auth explícita.
@@ -1212,6 +1235,19 @@ function handleApiIntegrations(
     .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
 }
 
+/** `POST /api/painel/eia/refresh` — botão "Atualizar É IA?" (#3861): regenera
+ * SÓ `data/poll-eia-summary.json` local a partir dos endpoints públicos do
+ * worker poll (`refreshPollEiaSummaryLocal`) — NUNCA dispara o push paralelo
+ * pro KV do clarice-dashboard que o CLI `--push` faz (ver docstring do
+ * módulo). Sempre 200: `refreshPollEiaSummaryLocal` é fail-soft por
+ * construção (data/editions ausente, sem edições, falha de rede/escrita
+ * viram `{ok:false,error}`, nunca uma exceção). */
+function handleApiPainelEiaRefresh(rootDir: string, res: ServerResponse): void {
+  refreshPollEiaSummaryLocal({ rootDir })
+    .then((result) => sendJson(res, 200, result))
+    .catch((e) => sendJson(res, 500, { ok: false, error: (e as Error).message }));
+}
+
 /**
  * Sobe o studio-server. `rootDir` default é `process.cwd()` (o repo aberto
  * no Claude Code); injete um tmpdir em testes.
@@ -1367,9 +1403,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiApoiosRefresh(rootDir, res);
         return;
       }
+      // #3861: botão "Atualizar É IA?" — mesmo tratamento das rotas de
+      // escrita acima (checada antes do guard genérico de método).
+      if (urlPath === "/api/painel/eia/refresh" && req.method === "POST") {
+        handleApiPainelEiaRefresh(rootDir, res);
+        return;
+      }
 
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556), POST /api/waves/fire (#3702) e as rotas de ação do #3559/#3602/#3806/#3859" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556), POST /api/waves/fire (#3702) e as rotas de ação do #3559/#3602/#3806/#3859/#3861" });
         return;
       }
 
