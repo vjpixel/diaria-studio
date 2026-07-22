@@ -4,8 +4,8 @@
  * Camada de leitura/escrita + cruzamento de status pro painel "Apoios" do
  * Studio: base de contatos própria (a apoia.se não tem endpoint de listagem,
  * só consulta por email conhecido — `scripts/lib/apoia-se.ts::checkBacker`,
- * #3500) + status derivado (apoiando / não apoia / apoiou e parou) + tracking
- * de outreach + visão agregada de campanha.
+ * #3500) + status derivado (apoiando / não apoia / apoiou e parou) + visão
+ * agregada de campanha.
  *
  * Arquivo PRÓPRIO desta fatia (mesma convenção de `studio-review.ts` #3559 /
  * `studio-issues.ts` #3562): `server.ts` só registra rotas, toda a lógica
@@ -30,12 +30,22 @@
  * reporta o erro no campo `error` do payload (mesmo padrão de
  * `studio-issues.ts::fetchTriageData`).
  *
- * **Escopo desta entrega** (ver PR body pro incremento anotado): CRUD básico
- * de contato (criar/editar/adicionar email/notas) + registro de outreach +
- * status cruzado + visão de campanha + lista de follow-ups pendentes. Fora
- * de escopo nesta entrega: edição/remoção de eventos de outreach individuais
- * (só append), busca/filtro server-side (a UI filtra client-side sobre o
- * snapshot, mesmo padrão de `triagem.js`).
+ * **Follow-up/outreach removido (#3844, decisão do editor 260721):** a
+ * maquinaria de acompanhamento de contato (`OutreachEvent`, `PendingFollowup`,
+ * `appendOutreachEvent`, `computePendingFollowups`, o campo `outreach[]` do
+ * contato) foi retirada — a área refoca em saber quem está em cada grupo
+ * (nível de recompensa), não em lembrar de fazer follow-up. Eventos de
+ * outreach já gravados em `contacts.jsonl` são dado LEGADO, deixado quieto —
+ * mesma disciplina do campo `circle` deprecado (#3611): `parseContactsJsonl`
+ * simplesmente não lê o campo, e ele nunca é reintroduzido num roundtrip.
+ * Visão por grupo/nível de recompensa é a PARTE 2 da #3844, fora de escopo
+ * aqui (bloqueada numa decisão de produto do editor — faixas de valor R$ →
+ * nível — ainda não tomada).
+ *
+ * **Escopo atual** (ver PR body pro incremento anotado): CRUD básico de
+ * contato (criar/editar/adicionar email/notas) + status cruzado + visão de
+ * campanha. Fora de escopo: busca/filtro server-side (a UI filtra
+ * client-side sobre o snapshot, mesmo padrão de `triagem.js`).
  *
  * **Taxa de abertura Beehiiv (#3612):** sinal adicional de engajamento,
  * INDEPENDENTE do status de apoio acima — vem de um cache separado
@@ -68,23 +78,12 @@ import {
 
 // ── tipos ────────────────────────────────────────────────────────────────
 
-export interface OutreachEvent {
-  /** Data do contato, formato YYYY-MM-DD. */
-  date: string;
-  /** Canal livre (ex: "email", "whatsapp", "linkedin"). */
-  channel: string;
-  responded: boolean;
-  followupPending: boolean;
-  note?: string;
-}
-
 export interface ApoioContact {
   id: string;
   name: string;
   /** Múltiplos emails — mitiga a ressalva de match exato da apoia.se. */
   emails: string[];
   notes: string;
-  outreach: OutreachEvent[];
   createdAt: string;
   updatedAt: string;
 }
@@ -103,20 +102,10 @@ export interface ContactBackerStatus {
 
 export interface CampaignSummary {
   totalContacts: number;
-  /** Contatos com ao menos 1 evento de outreach registrado. */
-  totalContacted: number;
   /** Contatos com status "apoiando" no mês corrente. */
   totalConverted: number;
   /** Soma de `monthlyValue` de todos os contatos "apoiando". */
   monthlyValueSum: number;
-  pendingFollowupsCount: number;
-}
-
-export interface PendingFollowup {
-  contactId: string;
-  name: string;
-  lastOutreachDate: string;
-  lastOutreachChannel: string;
 }
 
 /** Taxa de abertura/clique histórica (Beehiiv) casada por email — #3612.
@@ -144,7 +133,6 @@ export interface ContactWithStatus extends ApoioContact {
 export interface ApoiosData {
   contacts: ContactWithStatus[];
   campaign: CampaignSummary;
-  pendingFollowups: PendingFollowup[];
   /** Mensagem de erro (data/ ausente, credenciais ausentes, 401, falha de
    * rede) — nunca impede a resposta, só documenta o motivo de status
    * incompletos/"sem_dados". `null` quando tudo correu bem. */
@@ -168,35 +156,18 @@ function normalizeEmailList(emails: string[] | undefined | null): string[] {
   return out;
 }
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-/** Sanitiza 1 entrada crua de outreach lida do jsonl — mesma validação de
- * forma que `appendOutreachEvent` aplica a eventos criados via API. Entradas
- * malformadas (data fora do formato, sem canal) são DESCARTADAS em vez de
- * propagadas cruas — protege `computePendingFollowups`/a UI de um
- * `contacts.jsonl` editado à mão (arquivo pensado pra edição manual, ver
- * doc-comment do módulo) com uma linha corrompida. */
-function sanitizeOutreachEntry(raw: unknown): OutreachEvent | null {
-  if (!raw || typeof raw !== "object") return null;
-  const r = raw as Partial<OutreachEvent>;
-  if (typeof r.date !== "string" || !DATE_RE.test(r.date)) return null;
-  const channel = typeof r.channel === "string" ? r.channel.trim() : "";
-  if (!channel) return null;
-  return {
-    date: r.date,
-    channel,
-    responded: r.responded === true,
-    followupPending: r.followupPending === true,
-    ...(typeof r.note === "string" && r.note.trim() ? { note: r.note.trim() } : {}),
-  };
-}
-
 /** Parseia `contacts.jsonl` (1 JSON por linha, linhas vazias ignoradas).
  *
  * Compat (#3611): linhas legadas podem trazer um campo `circle` (removido
  * do schema) — `Partial<ApoioContact>` já não o tipa, e como o objeto
  * resultante só copia os campos abaixo, `circle` simplesmente nunca é lido
- * nem propagado. Nunca quebra o parse. */
+ * nem propagado. Nunca quebra o parse.
+ *
+ * Compat (#3844): mesma disciplina pro campo `outreach` (removido do schema
+ * junto com toda a maquinaria de follow-up/outreach) — linhas legadas que
+ * ainda trazem `outreach[]` no `contacts.jsonl` real não quebram o parse, o
+ * campo simplesmente nunca é lido nem propagado num roundtrip. O dado
+ * histórico fica quieto no arquivo (nunca apagado por este código). */
 export function parseContactsJsonl(raw: string): ApoioContact[] {
   const contacts: ApoioContact[] = [];
   const lines = raw.split("\n");
@@ -209,9 +180,6 @@ export function parseContactsJsonl(raw: string): ApoioContact[] {
       name: String(parsed.name ?? ""),
       emails: normalizeEmailList(parsed.emails),
       notes: String(parsed.notes ?? ""),
-      outreach: Array.isArray(parsed.outreach)
-        ? parsed.outreach.map(sanitizeOutreachEntry).filter((e): e is OutreachEvent => e !== null)
-        : [],
       createdAt: String(parsed.createdAt ?? new Date(0).toISOString()),
       updatedAt: String(parsed.updatedAt ?? new Date(0).toISOString()),
     });
@@ -250,7 +218,6 @@ export function createContact(input: CreateContactInput, opts: CreateContactOpti
     name,
     emails,
     notes: input.notes ?? "",
-    outreach: [],
     createdAt: iso,
     updatedAt: iso,
   };
@@ -284,36 +251,6 @@ export function applyContactUpdate(
     notes: patch.notes !== undefined ? patch.notes : contact.notes,
     updatedAt: now.toISOString(),
   };
-}
-
-export interface OutreachEventInput {
-  date: string;
-  channel: string;
-  responded?: boolean;
-  followupPending?: boolean;
-  note?: string;
-}
-
-/** Adiciona um evento de outreach ao histórico do contato (append-only —
- * eventos existentes nunca são editados/removidos nesta entrega). */
-export function appendOutreachEvent(
-  contact: ApoioContact,
-  event: OutreachEventInput,
-  now: Date = new Date(),
-): ApoioContact {
-  if (!DATE_RE.test(event.date ?? "")) {
-    throw new Error("apoios: outreach.date precisa ser YYYY-MM-DD");
-  }
-  const channel = (event.channel ?? "").trim();
-  if (!channel) throw new Error("apoios: outreach.channel é obrigatório");
-  const entry: OutreachEvent = {
-    date: event.date,
-    channel,
-    responded: event.responded === true,
-    followupPending: event.followupPending === true,
-    ...(event.note?.trim() ? { note: event.note.trim() } : {}),
-  };
-  return { ...contact, outreach: [...contact.outreach, entry], updatedAt: now.toISOString() };
 }
 
 export function findContact(contacts: ApoioContact[], id: string): ApoioContact | undefined {
@@ -396,36 +333,13 @@ export function deriveOpenRate(contact: ApoioContact, cache: OpenRateCache): Ope
 // ── agregação de campanha (puro) ────────────────────────────────────────
 
 export function emptyCampaignSummary(): CampaignSummary {
-  return { totalContacts: 0, totalContacted: 0, totalConverted: 0, monthlyValueSum: 0, pendingFollowupsCount: 0 };
-}
-
-/** Follow-up pendente = ÚLTIMO evento de outreach do contato tem
- * `followupPending === true` (eventos são append-only, cronológicos). */
-export function computePendingFollowups(contacts: ApoioContact[]): PendingFollowup[] {
-  const result: PendingFollowup[] = [];
-  for (const c of contacts) {
-    if (c.outreach.length === 0) continue;
-    const last = c.outreach[c.outreach.length - 1];
-    if (last.followupPending) {
-      result.push({
-        contactId: c.id,
-        name: c.name,
-        lastOutreachDate: last.date,
-        lastOutreachChannel: last.channel,
-      });
-    }
-  }
-  // Mais antigo primeiro — mais urgente pra reabordar.
-  result.sort((a, b) => a.lastOutreachDate.localeCompare(b.lastOutreachDate));
-  return result;
+  return { totalContacts: 0, totalConverted: 0, monthlyValueSum: 0 };
 }
 
 export function computeCampaignSummary(entries: ContactWithStatus[]): CampaignSummary {
-  let totalContacted = 0;
   let totalConverted = 0;
   let monthlyValueSum = 0;
   for (const c of entries) {
-    if (c.outreach.length > 0) totalContacted++;
     if (c.status.label === "apoiando") {
       totalConverted++;
       monthlyValueSum += c.status.monthlyValue ?? 0;
@@ -433,10 +347,8 @@ export function computeCampaignSummary(entries: ContactWithStatus[]): CampaignSu
   }
   return {
     totalContacts: entries.length,
-    totalContacted,
     totalConverted,
     monthlyValueSum,
-    pendingFollowupsCount: computePendingFollowups(entries).length,
   };
 }
 
@@ -520,8 +432,8 @@ export function openRateCachePath(rootDir: string): string {
 }
 
 /** Valida o shape de 1 entrada crua do cache — descarta silenciosamente
- * entradas malformadas (mesmo espírito de `sanitizeOutreachEntry`: o
- * arquivo é populado por um processo externo/manual, nunca confiar cego). */
+ * entradas malformadas (o arquivo é populado por um processo externo/manual,
+ * nunca confiar cego). */
 function sanitizeOpenRateEntry(raw: unknown): OpenRateInfo | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -635,10 +547,10 @@ function toSemDados(contacts: ApoioContact[], openRateCache: OpenRateCache): Con
 
 /**
  * Monta o snapshot completo pro painel "Apoios": contatos + status cruzado +
- * agregação de campanha + follow-ups pendentes. Fail-soft em 3 camadas
- * (nunca lança): (1) `data/` ausente, (2) credenciais apoia.se ausentes,
- * (3) 401 da API — em qualquer uma, contatos aparecem com status "sem_dados"
- * e o campo `error` documenta o motivo.
+ * agregação de campanha. Fail-soft em 3 camadas (nunca lança): (1) `data/`
+ * ausente, (2) credenciais apoia.se ausentes, (3) 401 da API — em qualquer
+ * uma, contatos aparecem com status "sem_dados" e o campo `error` documenta o
+ * motivo.
  */
 export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOptions = {}): Promise<ApoiosData> {
   const now = opts.now ?? new Date();
@@ -647,7 +559,7 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
   if (!opts.contacts) {
     const dataDirError = checkDataDirAvailable(rootDir);
     if (dataDirError) {
-      return { contacts: [], campaign: emptyCampaignSummary(), pendingFollowups: [], error: dataDirError, generatedAt };
+      return { contacts: [], campaign: emptyCampaignSummary(), error: dataDirError, generatedAt };
     }
   }
 
@@ -655,7 +567,7 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
   try {
     contacts = opts.contacts ?? loadContacts(rootDir);
   } catch (e) {
-    return { contacts: [], campaign: emptyCampaignSummary(), pendingFollowups: [], error: (e as Error).message, generatedAt };
+    return { contacts: [], campaign: emptyCampaignSummary(), error: (e as Error).message, generatedAt };
   }
 
   // Taxa de abertura Beehiiv (#3612) é um sinal INDEPENDENTE do status de
@@ -672,7 +584,6 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
     return {
       contacts: withStatus,
       campaign: computeCampaignSummary(withStatus),
-      pendingFollowups: computePendingFollowups(contacts),
       error: (e as Error).message,
       generatedAt,
     };
@@ -718,7 +629,6 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
   return {
     contacts: withStatus,
     campaign: computeCampaignSummary(withStatus),
-    pendingFollowups: computePendingFollowups(contacts),
     error: fetchError,
     generatedAt,
   };
@@ -747,19 +657,6 @@ export function updateContactById(rootDir: string, id: string, patch: UpdateCont
     const existing = findContact(contacts, id);
     if (!existing) return { ok: false, error: `apoios: contato ${id} não encontrado` };
     const updated = applyContactUpdate(existing, patch);
-    saveContacts(rootDir, upsertContact(contacts, updated));
-    return { ok: true, contact: updated };
-  } catch (e) {
-    return { ok: false, error: (e as Error).message };
-  }
-}
-
-export function addOutreachToContact(rootDir: string, id: string, event: OutreachEventInput): ApoiosMutationResult {
-  try {
-    const contacts = loadContacts(rootDir);
-    const existing = findContact(contacts, id);
-    if (!existing) return { ok: false, error: `apoios: contato ${id} não encontrado` };
-    const updated = appendOutreachEvent(existing, event);
     saveContacts(rootDir, upsertContact(contacts, updated));
     return { ok: true, contact: updated };
   } catch (e) {
@@ -819,30 +716,4 @@ export function parseUpdateContactBody(raw: string): ParseResult<UpdateContactPa
     patch.notes = b.notes;
   }
   return { ok: true, value: patch };
-}
-
-export function parseOutreachEventBody(raw: string): ParseResult<OutreachEventInput> {
-  let body: unknown;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return { ok: false, error: "corpo da request precisa ser JSON válido" };
-  }
-  const b = body as Record<string, unknown>;
-  if (typeof b.date !== "string" || !DATE_RE.test(b.date)) {
-    return { ok: false, error: "campo 'date' (YYYY-MM-DD) é obrigatório" };
-  }
-  if (typeof b.channel !== "string" || !b.channel.trim()) {
-    return { ok: false, error: "campo 'channel' (string não-vazia) é obrigatório" };
-  }
-  return {
-    ok: true,
-    value: {
-      date: b.date,
-      channel: b.channel,
-      responded: b.responded === true,
-      followupPending: b.followupPending === true,
-      note: typeof b.note === "string" ? b.note : undefined,
-    },
-  };
 }

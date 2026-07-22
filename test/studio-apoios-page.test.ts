@@ -1,10 +1,10 @@
 /**
  * test/studio-apoios-page.test.ts (#3602) — contrato HTTP do CRM de apoios:
  * `GET /apoios` faz rewrite pro shell estático (`public/apoios.html`),
- * `GET /api/apoios` serve o snapshot fail-soft de `studio-apoios.ts`, e as 3
- * rotas de mutação (`POST /api/apoios/contacts`, `PUT .../:id`,
- * `POST .../:id/outreach`) fazem CRUD real sobre um `contacts.jsonl` de
- * teste — nunca sobre `data/` real, sempre um tmpdir isolado.
+ * `GET /api/apoios` serve o snapshot fail-soft de `studio-apoios.ts`, e as 2
+ * rotas de mutação (`POST /api/apoios/contacts`, `PUT .../:id`) fazem CRUD
+ * real sobre um `contacts.jsonl` de teste — nunca sobre `data/` real, sempre
+ * um tmpdir isolado.
  *
  * As 3 env vars da apoia.se são deliberadamente limpas em `before`/restauradas
  * em `after` — garante que `GET /api/apoios` cai no caminho fail-soft
@@ -15,6 +15,10 @@
  * A página em si (fetch + forms + `<dialog>`) roda no browser sem harness de
  * DOM neste projeto — mesmo precedente de `studio-edicao-page.test.ts` /
  * `studio-triagem-page.test.ts`.
+ *
+ * #3844 (decisão do editor 260721): a rota `POST /api/apoios/contacts/:id/outreach`
+ * e o dialog de outreach na página foram removidos — os testes
+ * correspondentes saíram junto.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -59,16 +63,11 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.ok(body.includes("contacts-list"));
   });
 
-  it("#3677: dialog de outreach usa radio buttons pro canal (Email/WhatsApp/LinkedIn/Outro), não input de texto livre", async () => {
+  it("regressão (#3844): a página não expõe mais nenhum recurso de outreach/follow-up", async () => {
     const res = await fetch(new URL("/apoios", server.url));
     const body = await res.text();
-    assert.ok(!body.includes('id="outreach-channel" '), "input de texto livre antigo não deve mais existir");
-    assert.ok(body.includes('id="outreach-channel-group"'), "grupo de radio buttons do canal deve existir");
-    assert.ok(body.includes('name="outreach-channel" value="email"'), "opção Email deve existir");
-    assert.ok(body.includes('name="outreach-channel" value="whatsapp"'), "opção WhatsApp deve existir");
-    assert.ok(body.includes('name="outreach-channel" value="linkedin"'), "opção LinkedIn deve existir");
-    assert.ok(body.includes('name="outreach-channel" value="outro"'), "opção Outro deve existir");
-    assert.ok(body.includes('id="outreach-channel-other"'), "campo de texto livre condicional 'Outro' deve existir");
+    assert.ok(!body.includes("outreach"), "nenhuma referência a outreach deve sobrar no HTML");
+    assert.ok(!body.includes("follow-up"), "nenhuma referência a follow-up deve sobrar no HTML");
   });
 
   it("aceita /apoios/ com trailing slash", async () => {
@@ -91,7 +90,7 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     const body = await res.json();
     assert.deepEqual(body.contacts, []);
     assert.equal(body.campaign.totalContacts, 0);
-    assert.deepEqual(body.pendingFollowups, []);
+    assert.equal("pendingFollowups" in body, false); // #3844: removido
     assert.match(body.error ?? "", /APOIA_SE_API_KEY/);
   });
 
@@ -173,41 +172,27 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.equal(res.status, 404);
   });
 
-  it("POST /api/apoios/contacts/:id/outreach registra outreach", async () => {
+  it("regressão (#3844): POST /api/apoios/contacts/:id/outreach não existe mais (rota removida, cai no guard de método genérico)", async () => {
     const res = await fetch(new URL(`/api/apoios/contacts/${createdId}/outreach`, server.url), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ date: "2026-07-16", channel: "email", followupPending: true }),
     });
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.contact.outreach.length, 1);
+    // Sem match específico pra essa rota, POST cai no guard genérico
+    // read-only (405) — mesmo caminho de qualquer POST não-allowlistado.
+    assert.equal(res.status, 405);
   });
 
-  it("outreach com corpo inválido (sem channel) -> 400", async () => {
-    const res = await fetch(new URL(`/api/apoios/contacts/${createdId}/outreach`, server.url), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: "2026-07-16", channel: "" }),
-    });
-    assert.equal(res.status, 400);
-  });
-
-  it("outreach em id inexistente -> 404", async () => {
-    const res = await fetch(new URL("/api/apoios/contacts/does-not-exist/outreach", server.url), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date: "2026-07-16", channel: "email" }),
-    });
+  it("regressão (#3844): GET /api/apoios/contacts/:id/outreach não existe mais (404 de API desconhecida)", async () => {
+    const res = await fetch(new URL(`/api/apoios/contacts/${createdId}/outreach`, server.url));
     assert.equal(res.status, 404);
   });
 
-  it("GET /api/apoios final reflete o outreach registrado e o follow-up pendente", async () => {
+  it("GET /api/apoios final não expõe mais 'pendingFollowups' nem 'totalContacted' (#3844)", async () => {
     const res = await fetch(new URL("/api/apoios", server.url));
     const body = await res.json();
-    assert.equal(body.pendingFollowups.length, 1);
-    assert.equal(body.pendingFollowups[0].contactId, createdId);
-    assert.equal(body.campaign.totalContacted, 1);
+    assert.equal("pendingFollowups" in body, false);
+    assert.equal("totalContacted" in body.campaign, false);
   });
 
   it("GET em rota de mutação (método errado) cai no guard de método padrão", async () => {

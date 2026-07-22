@@ -2,10 +2,16 @@
  * test/studio-apoios.test.ts (#3602) — cobertura de
  * scripts/studio-ui/studio-apoios.ts: CRUD puro de contato, derivação de
  * status (apoiando/não apoia/apoiou e parou, cruzando múltiplos emails),
- * agregação de campanha, cálculo de follow-ups pendentes, parsing/
- * serialização de `contacts.jsonl`, e a orquestração fail-soft de
- * `buildApoiosData` (data/ ausente, credenciais ausentes, 401 da apoia.se) —
- * tudo sem tocar rede real: `fetchImpl` é sempre mockado.
+ * agregação de campanha, parsing/serialização de `contacts.jsonl`, e a
+ * orquestração fail-soft de `buildApoiosData` (data/ ausente, credenciais
+ * ausentes, 401 da apoia.se) — tudo sem tocar rede real: `fetchImpl` é sempre
+ * mockado.
+ *
+ * #3844: a maquinaria de follow-up/outreach (tipos, funções, campo
+ * `outreach[]` do contato) foi removida do módulo — os testes correspondentes
+ * saíram daqui junto. O que sobra: a mesma disciplina de campo legado do
+ * #3611 (`circle`) agora também cobre `outreach` (ver describe de
+ * `parseContactsJsonl` abaixo).
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -17,7 +23,6 @@ import {
   serializeContactsJsonl,
   createContact,
   applyContactUpdate,
-  appendOutreachEvent,
   findContact,
   upsertContact,
   deriveContactStatus,
@@ -25,7 +30,6 @@ import {
   loadOpenRateCache,
   openRateCachePath,
   computeCampaignSummary,
-  computePendingFollowups,
   emptyCampaignSummary,
   contactsFilePath,
   checkDataDirAvailable,
@@ -36,10 +40,8 @@ import {
   buildApoiosData,
   addContact,
   updateContactById,
-  addOutreachToContact,
   parseCreateContactBody,
   parseUpdateContactBody,
-  parseOutreachEventBody,
   type ApoioContact,
   type ContactWithStatus,
   type OpenRateInfo,
@@ -56,7 +58,6 @@ function makeContact(overrides: Partial<ApoioContact> = {}): ApoioContact {
     name: "Fulano",
     emails: ["fulano@x.com"],
     notes: "",
-    outreach: [],
     createdAt: FIXED_NOW.toISOString(),
     updatedAt: FIXED_NOW.toISOString(),
     ...overrides,
@@ -88,19 +89,18 @@ describe("parseContactsJsonl / serializeContactsJsonl (#3602)", () => {
     assert.deepEqual(parsed[0].emails, ["fulano@x.com"]);
   });
 
-  it("regressão (self-review #3608): descarta entradas de outreach malformadas em vez de propagá-las cruas", () => {
+  it("regressão (#3844): linha legada com campo 'outreach[]' (schema removido) não quebra o parse, e o campo não é lido nem propagado", () => {
     const raw = JSON.stringify({
       ...makeContact(),
       outreach: [
-        { date: "2026-07-01", channel: "email", responded: false, followupPending: true }, // válida
-        { date: "16/07/2026", channel: "whatsapp" }, // data fora do formato — descartada
-        { date: "2026-07-05", channel: "  " }, // sem canal — descartada
-        "not-an-object", // shape totalmente errado — descartada
+        { date: "2026-07-01", channel: "email", responded: false, followupPending: true },
       ],
     });
     const parsed = parseContactsJsonl(raw);
-    assert.equal(parsed[0].outreach.length, 1);
-    assert.equal(parsed[0].outreach[0].date, "2026-07-01");
+    assert.equal(parsed.length, 1);
+    assert.equal("outreach" in parsed[0], false);
+    // roundtrip (parse -> serialize) também não reintroduz o campo.
+    assert.equal(serializeContactsJsonl(parsed).includes("outreach"), false);
   });
 
   it("regressão (#3611): linha legada com campo 'circle' não quebra o parse, e o campo não é lido", () => {
@@ -122,7 +122,7 @@ describe("createContact (#3602)", () => {
     assert.equal(c.name, "Fulano");
     assert.deepEqual(c.emails, ["fulano@x.com"]);
     assert.equal(c.createdAt, FIXED_NOW.toISOString());
-    assert.deepEqual(c.outreach, []);
+    assert.equal("outreach" in c, false);
   });
 
   it("lança sem nome", () => {
@@ -161,31 +161,6 @@ describe("applyContactUpdate (#3602)", () => {
 
   it("lança se 'name' for passado vazio", () => {
     assert.throws(() => applyContactUpdate(makeContact(), { name: "   " }));
-  });
-});
-
-describe("appendOutreachEvent (#3602)", () => {
-  it("adiciona evento preservando histórico anterior", () => {
-    const c = makeContact({ outreach: [{ date: "2026-07-01", channel: "email", responded: false, followupPending: false }] });
-    const updated = appendOutreachEvent(c, { date: "2026-07-10", channel: "whatsapp", followupPending: true }, FIXED_NOW);
-    assert.equal(updated.outreach.length, 2);
-    assert.equal(updated.outreach[1].channel, "whatsapp");
-    assert.equal(updated.outreach[1].followupPending, true);
-    assert.equal(updated.outreach[1].responded, false);
-    assert.equal(updated.updatedAt, FIXED_NOW.toISOString());
-  });
-
-  it("lança em data mal-formada", () => {
-    assert.throws(() => appendOutreachEvent(makeContact(), { date: "16/07/2026", channel: "email" }));
-  });
-
-  it("lança sem channel", () => {
-    assert.throws(() => appendOutreachEvent(makeContact(), { date: "2026-07-16", channel: "  " }));
-  });
-
-  it("nota vazia não entra no objeto (campo opcional omitido, não string vazia)", () => {
-    const updated = appendOutreachEvent(makeContact(), { date: "2026-07-16", channel: "email", note: "  " });
-    assert.equal("note" in updated.outreach[0], false);
   });
 });
 
@@ -361,63 +336,23 @@ describe("loadOpenRateCache (#3612)", () => {
   });
 });
 
-// ─── agregação de campanha + follow-ups ─────────────────────────────────
-
-describe("computePendingFollowups (#3602)", () => {
-  it("pendente quando o ÚLTIMO outreach tem followupPending true", () => {
-    const contacts = [
-      makeContact({
-        id: "c1",
-        name: "A",
-        outreach: [
-          { date: "2026-07-01", channel: "email", responded: false, followupPending: true },
-        ],
-      }),
-      makeContact({
-        id: "c2",
-        name: "B",
-        outreach: [
-          { date: "2026-07-01", channel: "email", responded: false, followupPending: true },
-          { date: "2026-07-10", channel: "whatsapp", responded: true, followupPending: false },
-        ],
-      }),
-    ];
-    const pending = computePendingFollowups(contacts);
-    assert.equal(pending.length, 1);
-    assert.equal(pending[0].contactId, "c1");
-  });
-
-  it("sem outreach nunca aparece como pendente", () => {
-    assert.deepEqual(computePendingFollowups([makeContact({ outreach: [] })]), []);
-  });
-
-  it("ordena do mais antigo pro mais recente", () => {
-    const contacts = [
-      makeContact({ id: "c1", name: "A", outreach: [{ date: "2026-07-10", channel: "e", responded: false, followupPending: true }] }),
-      makeContact({ id: "c2", name: "B", outreach: [{ date: "2026-07-01", channel: "e", responded: false, followupPending: true }] }),
-    ];
-    const pending = computePendingFollowups(contacts);
-    assert.deepEqual(pending.map((p) => p.contactId), ["c2", "c1"]);
-  });
-});
+// ─── agregação de campanha ──────────────────────────────────────────────
 
 describe("computeCampaignSummary (#3602)", () => {
-  it("agrega totalContacts/Contacted/Converted/valor/pendentes", () => {
+  it("agrega totalContacts/Converted/valor", () => {
     const entries: ContactWithStatus[] = [
-      { ...makeContact({ id: "c1", outreach: [{ date: "2026-07-01", channel: "e", responded: true, followupPending: false }] }), status: { label: "apoiando", monthlyValue: 20 } },
-      { ...makeContact({ id: "c2", outreach: [] }), status: { label: "nao_apoia" } },
-      { ...makeContact({ id: "c3", outreach: [{ date: "2026-07-01", channel: "e", responded: false, followupPending: true }] }), status: { label: "apoiando", monthlyValue: 10 } },
+      { ...makeContact({ id: "c1" }), status: { label: "apoiando", monthlyValue: 20 }, openRate: null },
+      { ...makeContact({ id: "c2" }), status: { label: "nao_apoia" }, openRate: null },
+      { ...makeContact({ id: "c3" }), status: { label: "apoiando", monthlyValue: 10 }, openRate: null },
     ];
     const summary = computeCampaignSummary(entries);
     assert.equal(summary.totalContacts, 3);
-    assert.equal(summary.totalContacted, 2);
     assert.equal(summary.totalConverted, 2);
     assert.equal(summary.monthlyValueSum, 30);
-    assert.equal(summary.pendingFollowupsCount, 1);
   });
 
   it("emptyCampaignSummary zera tudo", () => {
-    assert.deepEqual(emptyCampaignSummary(), { totalContacts: 0, totalContacted: 0, totalConverted: 0, monthlyValueSum: 0, pendingFollowupsCount: 0 });
+    assert.deepEqual(emptyCampaignSummary(), { totalContacts: 0, totalConverted: 0, monthlyValueSum: 0 });
   });
 });
 
@@ -728,7 +663,7 @@ describe("buildApoiosData (#3602)", () => {
 
 // ─── mutações de I/O (read-modify-write do jsonl) ───────────────────────
 
-describe("addContact / updateContactById / addOutreachToContact (#3602)", () => {
+describe("addContact / updateContactById (#3602)", () => {
   let root: string;
 
   before(() => {
@@ -770,28 +705,11 @@ describe("addContact / updateContactById / addOutreachToContact (#3602)", () => 
     if (!result.ok) assert.match(result.error, /não encontrado/);
   });
 
-  it("addOutreachToContact adiciona evento e persiste", () => {
-    const created = addContact(root, { name: "Ciclano", emails: ["c@x.com"] });
-    assert.ok(created.ok);
-    const id = created.ok ? created.contact.id : "";
-    const result = addOutreachToContact(root, id, { date: "2026-07-16", channel: "email", followupPending: true });
-    assert.equal(result.ok, true);
-    const loaded = loadContacts(root);
-    const reloaded = findContact(loaded, id);
-    assert.equal(reloaded?.outreach.length, 1);
-    assert.equal(reloaded?.outreach[0].followupPending, true);
-  });
-
-  it("addOutreachToContact em id inexistente retorna erro 'não encontrado'", () => {
-    const result = addOutreachToContact(root, "does-not-exist", { date: "2026-07-16", channel: "email" });
-    assert.equal(result.ok, false);
-    if (!result.ok) assert.match(result.error, /não encontrado/);
-  });
 });
 
 // ─── parsing de corpo de request (puro) ─────────────────────────────────
 
-describe("parseCreateContactBody / parseUpdateContactBody / parseOutreachEventBody (#3602)", () => {
+describe("parseCreateContactBody / parseUpdateContactBody (#3602)", () => {
   it("parseCreateContactBody aceita shape válido", () => {
     const result = parseCreateContactBody(JSON.stringify({ name: "F", emails: ["f@x.com"] }));
     assert.equal(result.ok, true);
@@ -830,13 +748,5 @@ describe("parseCreateContactBody / parseUpdateContactBody / parseOutreachEventBo
       assert.equal("circle" in result.value, false);
       assert.deepEqual(result.value, { notes: "x" });
     }
-  });
-
-  it("parseOutreachEventBody exige date YYYY-MM-DD + channel", () => {
-    assert.equal(parseOutreachEventBody(JSON.stringify({ date: "16/07/2026", channel: "email" })).ok, false);
-    assert.equal(parseOutreachEventBody(JSON.stringify({ date: "2026-07-16", channel: "" })).ok, false);
-    const ok = parseOutreachEventBody(JSON.stringify({ date: "2026-07-16", channel: "email", responded: true }));
-    assert.equal(ok.ok, true);
-    if (ok.ok) assert.equal(ok.value.responded, true);
   });
 });

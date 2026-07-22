@@ -6,12 +6,14 @@
   <title>Diar.ia Studio — Revisão de conteúdo</title>
   <link rel="stylesheet" href="/tokens.generated.css" />
   <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
   <link rel="stylesheet" href="/revisao.css" />
   <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
   <header class="statusbar">
-    <a class="statusbar-item back-link" id="back-link" href="/">&larr; Painel</a>
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
+    <a class="statusbar-item back-link" id="back-link" href="/">&larr; Cockpit da edição</a>
     <div class="statusbar-item">
       <span class="label">Edição</span>
       <span class="value" id="rv-titulo">—</span>
@@ -101,6 +103,8 @@
 
   </main>
 
+  <script>window.STUDIO_PAGE = "revisao";</script>
+  <script src="/nav.js" type="module"></script>
   <script src="/revisao.js" type="module"></script>
   <script src="/chat-drawer.js" type="module"></script>
 </body>

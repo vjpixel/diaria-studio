@@ -6,13 +6,14 @@
   <title>Diar.ia Studio — Apoios</title>
   <link rel="stylesheet" href="/tokens.generated.css" />
   <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
   <link rel="stylesheet" href="/triagem.css" />
   <link rel="stylesheet" href="/apoios.css" />
   <link rel="stylesheet" href="/chat-drawer.css" />
 </head>
 <body>
   <header class="statusbar">
-    <a class="statusbar-item back-link" href="/">&larr; Painel</a>
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
     <div class="statusbar-item">
       <span class="label">Apoios</span>
       <span class="value">CRM apoia.se</span>
@@ -45,10 +46,6 @@
           <span class="tile-label">contatos</span>
         </div>
         <div class="tile">
-          <span class="tile-value" id="tile-contacted">—</span>
-          <span class="tile-label">contactados</span>
-        </div>
-        <div class="tile">
           <span class="tile-value" id="tile-converted">—</span>
           <span class="tile-label">apoiando</span>
         </div>
@@ -56,17 +53,7 @@
           <span class="tile-value" id="tile-value">—</span>
           <span class="tile-label">R$/mês</span>
         </div>
-        <div class="tile">
-          <span class="tile-value" id="tile-followups">—</span>
-          <span class="tile-label">follow-ups pendentes</span>
-        </div>
       </div>
-    </section>
-
-    <section class="panel">
-      <h2>Follow-ups pendentes (<span id="followups-count">0</span>)</h2>
-      <p class="hint">Último contato de cada um marcou "follow-up pendente" — ordenado do mais antigo pro mais recente.</p>
-      <ul id="followups-list" class="followups-list"></ul>
     </section>
 
     <section class="panel">
@@ -134,43 +121,8 @@
     </form>
   </dialog>
 
-  <!-- Registrar outreach -->
-  <dialog id="outreach-dialog" class="contact-dialog">
-    <form id="outreach-form" class="contact-form">
-      <h3>Registrar outreach</h3>
-      <input type="hidden" id="outreach-id" />
-      <label class="form-field">
-        <span class="label">Data</span>
-        <input type="date" id="outreach-date" required />
-      </label>
-      <div class="form-field form-field-wide">
-        <span class="label">Canal</span>
-        <div class="radio-group" id="outreach-channel-group">
-          <label class="radio-option"><input type="radio" name="outreach-channel" value="email" checked /> Email</label>
-          <label class="radio-option"><input type="radio" name="outreach-channel" value="whatsapp" /> WhatsApp</label>
-          <label class="radio-option"><input type="radio" name="outreach-channel" value="linkedin" /> LinkedIn</label>
-          <label class="radio-option"><input type="radio" name="outreach-channel" value="outro" /> Outro</label>
-        </div>
-        <input type="text" id="outreach-channel-other" placeholder="qual canal?" hidden />
-      </div>
-      <label class="form-field-check">
-        <input type="checkbox" id="outreach-responded" /> Respondeu
-      </label>
-      <label class="form-field-check">
-        <input type="checkbox" id="outreach-followup" /> Follow-up pendente
-      </label>
-      <label class="form-field form-field-wide">
-        <span class="label">Nota (opcional)</span>
-        <textarea id="outreach-note" rows="2"></textarea>
-      </label>
-      <div id="outreach-error" class="alert-banner" hidden></div>
-      <div class="dialog-actions">
-        <button type="button" id="outreach-cancel-btn">Cancelar</button>
-        <button type="submit">Registrar</button>
-      </div>
-    </form>
-  </dialog>
-
+  <script>window.STUDIO_PAGE = "apoios";</script>
+  <script src="/nav.js" type="module"></script>
   <script src="/apoios.js" type="module"></script>
   <script src="/chat-drawer.js" type="module"></script>
 </body>

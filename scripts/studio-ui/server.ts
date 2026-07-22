@@ -103,11 +103,13 @@
  *   - `GET /apoios` — CRM simples de apoios apoia.se (#3602): mesma
  *     estratégia de rewrite, servindo `public/apoios.html`. Consome
  *     `GET /api/apoios` (contatos + status cruzado via `checkBacker` +
- *     agregação de campanha + follow-ups pendentes) e
- *     `POST /api/apoios/contacts` / `PUT /api/apoios/contacts/:id` /
- *     `POST /api/apoios/contacts/:id/outreach` (CRUD de contato + tracking
- *     de outreach) — ver `studio-apoios.ts` pro detalhe. Dado pessoal: só em
+ *     agregação de campanha) e `POST /api/apoios/contacts` /
+ *     `PUT /api/apoios/contacts/:id` (CRUD de contato) — ver
+ *     `studio-apoios.ts` pro detalhe. Dado pessoal: só em
  *     `data/apoia-se/contacts.jsonl` (junction OneDrive, nunca no repo).
+ *     (#3844: os recursos de follow-up/outreach — incluindo a rota
+ *     `POST /api/apoios/contacts/:id/outreach` — foram removidos; a área
+ *     refoca em visão por grupo/nível de recompensa, ainda pendente.)
  *   - `GET /api/reports` (#3714) — lista os relatórios de fim de trabalho
  *     (edição diária, overnight, develop, mensal) registrados no índice
  *     file-based `data/reports/index.jsonl` (`studio-reports.ts::listReports`),
@@ -160,12 +162,11 @@
  * `scripts/swap-destaque.ts` como subprocess, foi removida — o script segue
  * disponível via CLI direta.)
  *
- * **Exceção controlada (#3602 — CRM de apoios):** `POST /api/apoios/contacts`,
- * `PUT /api/apoios/contacts/:id` e `POST /api/apoios/contacts/:id/outreach`
- * escrevem SÓ `data/apoia-se/contacts.jsonl` (dado pessoal, junction OneDrive,
- * nunca no repo/KV) — nunca tocam credenciais nem a API apoia.se em modo de
- * escrita (o cruzamento de status é sempre leitura via `checkBacker`). Toda a
- * lógica mora em `studio-apoios.ts`.
+ * **Exceção controlada (#3602 — CRM de apoios):** `POST /api/apoios/contacts`
+ * e `PUT /api/apoios/contacts/:id` escrevem SÓ `data/apoia-se/contacts.jsonl`
+ * (dado pessoal, junction OneDrive, nunca no repo/KV) — nunca tocam
+ * credenciais nem a API apoia.se em modo de escrita (o cruzamento de status é
+ * sempre leitura via `checkBacker`). Toda a lógica mora em `studio-apoios.ts`.
  *
  * Ver "Decisões de design" no PR body pra rationale completo (framework
  * escolhido, estrutura de diretórios, formato das APIs, pontos de extensão).
@@ -258,10 +259,8 @@ import {
   buildApoiosData,
   addContact,
   updateContactById,
-  addOutreachToContact,
   parseCreateContactBody,
   parseUpdateContactBody,
-  parseOutreachEventBody,
   type ApoiosMutationResult,
 } from "./studio-apoios.ts";
 // #3564: notificação Telegram (gate 4/6 pendente + AskUserQuestion pendente
@@ -1090,10 +1089,9 @@ function handleReviewResetBaseline(rootDir: string, aammdd: string, slug: string
 // mesmo teto de proteção contra corpo absurdo dos outros handlers de escrita.
 const APOIOS_MAX_BODY_BYTES = 200_000;
 
-/** `GET /api/apoios` — contatos + status cruzado + campanha + follow-ups
- * pendentes (#3602). Sempre 200: `buildApoiosData` é fail-soft (data/
- * ausente, credenciais ausentes, 401 da apoia.se viram `error` no payload,
- * nunca uma exceção). */
+/** `GET /api/apoios` — contatos + status cruzado + campanha (#3602). Sempre
+ * 200: `buildApoiosData` é fail-soft (data/ ausente, credenciais ausentes,
+ * 401 da apoia.se viram `error` no payload, nunca uma exceção). */
 function handleApiApoiosGet(rootDir: string, res: ServerResponse): void {
   buildApoiosData(rootDir)
     .then((data) => sendJson(res, 200, data))
@@ -1117,10 +1115,11 @@ async function handleApiApoiosCreate(rootDir: string, req: IncomingMessage, res:
   sendJson(res, result.ok ? 201 : 400, result);
 }
 
-/** Único ponto de mapeamento resultado→status HTTP pras 2 mutações que
- * podem alvejar um id inexistente (update/outreach) — evita duplicar (e
- * desalinhar) o `result.error.includes("não encontrado") ? 404 : 400` em
- * cada handler. */
+/** Único ponto de mapeamento resultado→status HTTP pra mutação que pode
+ * alvejar um id inexistente (update) — evita duplicar (e desalinhar) o
+ * `result.error.includes("não encontrado") ? 404 : 400` caso outra mutação
+ * do mesmo tipo apareça no futuro. (#3844: a outra chamadora, outreach, foi
+ * removida.) */
 function sendApoiosMutationResult(res: ServerResponse, result: ApoiosMutationResult): void {
   if (result.ok) {
     sendJson(res, 200, result);
@@ -1148,28 +1147,6 @@ async function handleApiApoiosUpdate(
     return;
   }
   const result = updateContactById(rootDir, id, parsed.value);
-  sendApoiosMutationResult(res, result);
-}
-
-async function handleApiApoiosOutreach(
-  rootDir: string,
-  req: IncomingMessage,
-  res: ServerResponse,
-  id: string,
-): Promise<void> {
-  let raw: string;
-  try {
-    raw = await readRequestBody(req, APOIOS_MAX_BODY_BYTES);
-  } catch (e) {
-    sendJson(res, 413, { error: (e as Error).message });
-    return;
-  }
-  const parsed = parseOutreachEventBody(raw);
-  if (!parsed.ok) {
-    sendJson(res, 400, { error: parsed.error });
-    return;
-  }
-  const result = addOutreachToContact(rootDir, id, parsed.value);
   sendApoiosMutationResult(res, result);
 }
 
@@ -1316,13 +1293,6 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       const apoiosUpdateMatch = urlPath.match(/^\/api\/apoios\/contacts\/([^/]+)$/);
       if (req.method === "PUT" && apoiosUpdateMatch) {
         handleApiApoiosUpdate(rootDir, req, res, decodeURIComponent(apoiosUpdateMatch[1])).catch((e) =>
-          sendJson(res, 500, { error: (e as Error).message }),
-        );
-        return;
-      }
-      const apoiosOutreachMatch = urlPath.match(/^\/api\/apoios\/contacts\/([^/]+)\/outreach$/);
-      if (req.method === "POST" && apoiosOutreachMatch) {
-        handleApiApoiosOutreach(rootDir, req, res, decodeURIComponent(apoiosOutreachMatch[1])).catch((e) =>
           sendJson(res, 500, { error: (e as Error).message }),
         );
         return;
