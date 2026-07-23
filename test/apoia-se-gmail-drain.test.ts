@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   parseApoioNotificationEmail,
+  parsePromessaEmail,
   gmailDrainCursorPath,
   loadGmailDrainCursor,
   saveGmailDrainCursor,
@@ -116,6 +117,69 @@ describe("parseApoioNotificationEmail (#3859)", () => {
   it("corpo com <> mas sem a frase-gatilho retorna null", () => {
     const body = "Fulano <fulano@x.com> disse oi, mas não apoiou nada aqui.";
     assert.equal(parseApoioNotificationEmail(body), null);
+  });
+
+  it("corpo de PROMESSA (não confirmado) retorna null — parser certo é parsePromessaEmail", () => {
+    const body = "Ivan <ivan.andrade81@gmail.com> recém prometeu um apoio de R$10";
+    assert.equal(parseApoioNotificationEmail(body), null);
+  });
+});
+
+// ─── parsePromessaEmail (#3912) ──────────────────────────────────────────
+
+describe("parsePromessaEmail (#3912)", () => {
+  it("caso comprovado 260722: Ivan — promessa de R$10", () => {
+    const body = "Ivan <ivan.andrade81@gmail.com> recém prometeu um apoio de R$10";
+    const parsed = parsePromessaEmail(body);
+    assert.deepEqual(parsed, { name: "Ivan", email: "ivan.andrade81@gmail.com", value: 10 });
+  });
+
+  it("com asteriscos de markdown e pontuação final também casa", () => {
+    const body = "Ivan <ivan.andrade81@gmail.com> recém prometeu um apoio de *R$10* !";
+    const parsed = parsePromessaEmail(body);
+    assert.deepEqual(parsed, { name: "Ivan", email: "ivan.andrade81@gmail.com", value: 10 });
+  });
+
+  it("'recem' sem acento também casa (variação de encoding/template)", () => {
+    const body = "Ivan <ivan.andrade81@gmail.com> recem prometeu um apoio de R$10";
+    const parsed = parsePromessaEmail(body);
+    assert.equal(parsed?.name, "Ivan");
+  });
+
+  it("valor com vírgula decimal é normalizado pra ponto", () => {
+    const body = "Ana <ana@x.com> recém prometeu um apoio de R$25,50";
+    assert.equal(parsePromessaEmail(body)?.value, 25.5);
+  });
+
+  it("email em maiúsculas é normalizado pra minúsculas", () => {
+    const body = "Bia <BIA@X.COM> recém prometeu um apoio de R$5";
+    assert.equal(parsePromessaEmail(body)?.email, "bia@x.com");
+  });
+
+  it("linha embutida em corpo maior (saudação + assinatura) ainda é encontrada", () => {
+    const body = [
+      "Você tem uma nova promessa de apoiador! :D",
+      "",
+      "Ivan <ivan.andrade81@gmail.com> recém prometeu um apoio de R$10",
+      "",
+      "Equipe apoia.se",
+    ].join("\n");
+    const parsed = parsePromessaEmail(body);
+    assert.deepEqual(parsed, { name: "Ivan", email: "ivan.andrade81@gmail.com", value: 10 });
+  });
+
+  it("corpo de APOIO CONFIRMADO (não promessa) retorna null — parser certo é parseApoioNotificationEmail", () => {
+    const body = "ALMIR <alalmas@gmail.com> acabou de apoiar sua campanha diar.ia.br com o valor de *R$25* !";
+    assert.equal(parsePromessaEmail(body), null);
+  });
+
+  it("corpo sem match (marketing/suporte) retorna null", () => {
+    const body = "Confira as novidades da comunidade apoia.se este mês!";
+    assert.equal(parsePromessaEmail(body), null);
+  });
+
+  it("corpo vazio retorna null", () => {
+    assert.equal(parsePromessaEmail(""), null);
   });
 });
 
@@ -380,6 +444,127 @@ describe("drainApoiaSeNotifications (#3859)", () => {
       assert.equal(result.skipped, false);
       assert.deepEqual(result.notifications, []);
       assert.equal(result.most_recent_iso, null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ─── promessas (#3912) ─────────────────────────────────────────────────
+
+  it("query busca AMBOS os templates (novo apoio OR nova promessa)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apoia-gmail-drain-query-both-"));
+    try {
+      const gmailFetch = (async () => new Response(JSON.stringify({ threads: [] }), { status: 200 })) as typeof fetch;
+      await drainApoiaSeNotifications(root, { gmailFetch });
+      assert.match(APOIA_SE_GMAIL_QUERY, /novo apoio/);
+      assert.match(APOIA_SE_GMAIL_QUERY, /nova promessa/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("mensagem de PROMESSA vai pra promessas[], não pra notifications[] — nunca confunde os 2 templates", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apoia-gmail-drain-promessa-"));
+    try {
+      const gmailFetch = (async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/threads?")) {
+          return new Response(JSON.stringify({ threads: [makeThreadSummary("t1")] }), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({
+            id: "t1",
+            messages: [
+              makePlainMessage(
+                "m1",
+                "1752652800000",
+                "Ivan <ivan.andrade81@gmail.com> recém prometeu um apoio de R$10",
+              ),
+            ],
+          }),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+
+      const result = await drainApoiaSeNotifications(root, { gmailFetch });
+
+      assert.deepEqual(result.notifications, []);
+      assert.equal(result.promessas?.length, 1);
+      assert.equal(result.promessas?.[0].name, "Ivan");
+      assert.equal(result.promessas?.[0].email, "ivan.andrade81@gmail.com");
+      assert.equal(result.promessas?.[0].value, 10);
+      // Timestamp da mensagem (envelope Gmail) é anexado pra formatar a nota
+      // do contato pendente em studio-apoios.ts.
+      assert.equal(result.promessas?.[0].receivedAtIso, new Date(1752652800000).toISOString());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("mistura de apoio confirmado + promessa na mesma leva -> cada um vai pro array certo", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apoia-gmail-drain-mixed-"));
+    try {
+      const gmailFetch = (async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/threads?")) {
+          return new Response(JSON.stringify({ threads: [makeThreadSummary("t1")] }), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({
+            id: "t1",
+            messages: [
+              makePlainMessage(
+                "m1",
+                "1752652800000",
+                "ALMIR <alalmas@gmail.com> acabou de apoiar sua campanha diar.ia.br com o valor de *R$25* !",
+              ),
+              makePlainMessage(
+                "m2",
+                "1752739200000",
+                "Ivan <ivan.andrade81@gmail.com> recém prometeu um apoio de R$10",
+              ),
+            ],
+          }),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+
+      const result = await drainApoiaSeNotifications(root, { gmailFetch });
+
+      assert.equal(result.notifications.length, 1);
+      assert.equal(result.notifications[0].email, "alalmas@gmail.com");
+      assert.equal(result.promessas?.length, 1);
+      assert.equal(result.promessas?.[0].email, "ivan.andrade81@gmail.com");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("nenhuma promessa na leva -> campo 'promessas' fica ausente (não [] vazio) — mesma convenção de 'errors'", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apoia-gmail-drain-nopromessa-"));
+    try {
+      const gmailFetch = (async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/threads?")) {
+          return new Response(JSON.stringify({ threads: [makeThreadSummary("t1")] }), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({
+            id: "t1",
+            messages: [
+              makePlainMessage(
+                "m1",
+                "1752652800000",
+                "ALMIR <alalmas@gmail.com> acabou de apoiar sua campanha diar.ia.br com o valor de *R$25* !",
+              ),
+            ],
+          }),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+
+      const result = await drainApoiaSeNotifications(root, { gmailFetch });
+      assert.equal("promessas" in result, false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -48,6 +48,7 @@ import {
   buildApoiosData,
   refreshApoiosData,
   importNewApoiadoresFromGmail,
+  importPendingApoiadoresFromGmail,
   updateContactById,
   parseUpdateContactBody,
   type ApoioContact,
@@ -56,7 +57,7 @@ import {
   type OpenRateCache,
 } from "../scripts/studio-ui/studio-apoios.ts";
 import type { ApoiaSeEnv, BackerStatus } from "../scripts/lib/apoia-se.ts";
-import type { DrainApoiaSeResult } from "../scripts/lib/apoia-se-gmail-drain.ts";
+import type { DrainApoiaSeResult, DrainedPromessa } from "../scripts/lib/apoia-se-gmail-drain.ts";
 
 const FIXED_NOW = new Date("2026-07-16T12:00:00Z");
 const TEST_ENV: ApoiaSeEnv = { apiKey: "k", apiSecret: "s", campaign: "diaria-test" };
@@ -1071,6 +1072,132 @@ describe("refreshApoiosData (#3859)", () => {
     }
   });
 
+  // ── #3912: promessa vira contato pendente e o MESMO refresh já tenta confirmar ──
+
+  it("caso exato da issue (Ivan, 260722): promessa importada como pendente E confirmada 'apoiando' no MESMO refresh", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-promessa-ivan-"));
+    const root = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-promessa-ivan-root-"));
+    try {
+      // checkBacker(forceRefresh) confirma que a promessa converteu em pagamento.
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 10 }), { status: 200 })) as typeof fetch;
+      const gmailDrain = async (): Promise<DrainApoiaSeResult> => ({
+        notifications: [],
+        promessas: [
+          { name: "Ivan", email: "ivan.andrade81@gmail.com", value: 10, receivedAtIso: "2026-07-17T14:00:00.000Z" },
+        ],
+        most_recent_iso: "2026-07-17T14:00:00Z",
+        skipped: false,
+      });
+
+      const result = await refreshApoiosData(root, {
+        now: FIXED_NOW,
+        contacts: [],
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain,
+      });
+
+      assert.equal(result.error, null);
+      assert.equal(result.contacts.length, 1);
+      assert.equal(result.contacts[0].name, "Ivan");
+      assert.deepEqual(result.contacts[0].emails, ["ivan.andrade81@gmail.com"]);
+      // O contato foi importado como PENDENTE (nota de promessa)...
+      assert.match(result.contacts[0].notes, /promessa/i);
+      // ...mas o refresh no MESMO ciclo já resolveu via checkBacker: "apoiando".
+      assert.equal(result.contacts[0].status.label, "apoiando");
+      assert.equal(result.contacts[0].status.monthlyValue, 10);
+      assert.equal(result.campaign.totalConverted, 1);
+
+      // Persistido de verdade (rootDir real) — não só em memória.
+      const persisted = JSON.parse(
+        readFileSync(join(root, "data", "apoia-se", "contacts.jsonl"), "utf-8").trim(),
+      );
+      assert.equal(persisted.emails[0], "ivan.andrade81@gmail.com");
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("promessa cujo e-mail JÁ é apoiador confirmado (Marinobre — curadoria manual #3602) não duplica e mantém o status confirmado", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-promessa-marinobre-"));
+    try {
+      writeFileSync(
+        join(cacheDir, "2026-07.json"),
+        JSON.stringify({ "marinobre@x.com": { isBacker: true, isPaidThisMonth: true, thisMonthPaidValue: 25 } }),
+      );
+      const existing = makeContact({ id: "c1", name: "Marinobre", emails: ["marinobre@x.com"] });
+      let calls = 0;
+      const fetchImpl = (async () => {
+        calls++;
+        return new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 });
+      }) as typeof fetch;
+      const gmailDrain = async (): Promise<DrainApoiaSeResult> => ({
+        notifications: [],
+        promessas: [
+          { name: "Marinobre", email: "MARINOBRE@X.COM", value: 25, receivedAtIso: "2026-07-10T00:00:00.000Z" },
+        ],
+        most_recent_iso: "2026-07-10T00:00:00Z",
+        skipped: false,
+      });
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts: [existing],
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain,
+      });
+
+      assert.equal(result.error, null);
+      // Já confirmado (por cache, sem rede nova) -> nenhuma request de força.
+      assert.equal(calls, 0);
+      assert.equal(result.contacts.length, 1);
+      assert.equal(result.contacts[0].id, "c1");
+      assert.equal(result.contacts[0].name, "Marinobre"); // nome original, não sobrescrito
+      assert.equal(result.contacts[0].status.label, "apoiando");
+      assert.equal(result.contacts[0].status.monthlyValue, 25);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("promessa que NÃO converteu fica visível como pendente com status 'nao_apoia' (não desaparece)", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-promessa-naoconverteu-"));
+    const root = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-promessa-naoconverteu-root-"));
+    try {
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 })) as typeof fetch;
+      const gmailDrain = async (): Promise<DrainApoiaSeResult> => ({
+        notifications: [],
+        promessas: [
+          { name: "Nunca Pagou", email: "nunca-pagou@x.com", value: 5, receivedAtIso: "2026-07-05T00:00:00.000Z" },
+        ],
+        most_recent_iso: "2026-07-05T00:00:00Z",
+        skipped: false,
+      });
+
+      const result = await refreshApoiosData(root, {
+        now: FIXED_NOW,
+        contacts: [],
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain,
+      });
+
+      assert.equal(result.contacts.length, 1);
+      assert.equal(result.contacts[0].status.label, "nao_apoia");
+      assert.match(result.contacts[0].notes, /promessa/i);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("import via e-mail: falha do drain (fail-soft) NÃO trava o force-refresh de pagamento", async () => {
     const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-gmailimport-failsoft-"));
     try {
@@ -1211,6 +1338,82 @@ describe("importNewApoiadoresFromGmail (#3859 metade 1)", () => {
     assert.equal(mutated, false);
     assert.equal(imported, 0);
     assert.deepEqual(contacts, existing);
+  });
+});
+
+// ─── importPendingApoiadoresFromGmail — promessas viram contato PENDENTE (#3912) ─
+
+function makePromessa(overrides: Partial<DrainedPromessa> = {}): DrainedPromessa {
+  return {
+    name: "Ivan",
+    email: "ivan.andrade81@gmail.com",
+    value: 10,
+    receivedAtIso: "2026-07-17T14:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("importPendingApoiadoresFromGmail (#3912)", () => {
+  it("caso comprovado 260722: promessa de e-mail novo (Ivan) cria contato pendente com nota de promessa (nunca 'apoiando')", () => {
+    const { contacts, mutated, imported } = importPendingApoiadoresFromGmail([], [makePromessa()]);
+    assert.equal(mutated, true);
+    assert.equal(imported, 1);
+    assert.equal(contacts.length, 1);
+    assert.equal(contacts[0].name, "Ivan");
+    assert.deepEqual(contacts[0].emails, ["ivan.andrade81@gmail.com"]);
+    assert.match(contacts[0].notes, /promessa/i);
+    assert.match(contacts[0].notes, /R\$10/);
+    assert.match(contacts[0].notes, /17\/07/);
+  });
+
+  it("caso comprovado 260722: promessa de e-mail JÁ cadastrado (Marinobre — curadoria manual #3602) NÃO duplica", () => {
+    const existing = makeContact({ id: "c1", name: "Marinobre", emails: ["marinobre@x.com"] });
+    const promessa = makePromessa({ name: "Marinobre (nome no e-mail)", email: "MARINOBRE@X.COM", value: 25 });
+    const { contacts, mutated, imported } = importPendingApoiadoresFromGmail([existing], [promessa]);
+    assert.equal(mutated, false);
+    assert.equal(imported, 0);
+    assert.equal(contacts.length, 1);
+    assert.equal(contacts[0].name, "Marinobre");
+    assert.equal(contacts[0].notes, ""); // nota original preservada, não sobrescrita
+  });
+
+  it("email já importado como CONFIRMADO (mesma leva, ordem: confirmado antes de promessa) não duplica", () => {
+    // Reproduz a ordem real de refreshApoiosData: importNewApoiadoresFromGmail
+    // roda primeiro; se o mesmo email também vier como promessa na mesma
+    // leva, importPendingApoiadoresFromGmail (rodando sobre os contatos JÁ
+    // atualizados) precisa pular, não duplicar.
+    const afterConfirmedImport = [
+      makeContact({ id: "c1", name: "ALMIR", emails: ["alalmas@gmail.com"], notes: "importado automaticamente via e-mail apoia.se" }),
+    ];
+    const promessa = makePromessa({ name: "Almir", email: "alalmas@gmail.com", value: 25 });
+    const { contacts, mutated, imported } = importPendingApoiadoresFromGmail(afterConfirmedImport, [promessa]);
+    assert.equal(mutated, false);
+    assert.equal(imported, 0);
+    assert.equal(contacts.length, 1);
+    assert.equal(contacts[0].notes, "importado automaticamente via e-mail apoia.se");
+  });
+
+  it("2 promessas pro MESMO email novo dentro da mesma leva não duplicam entre si", () => {
+    const { contacts, imported } = importPendingApoiadoresFromGmail(
+      [],
+      [makePromessa(), makePromessa({ value: 10 })],
+    );
+    assert.equal(imported, 1);
+    assert.equal(contacts.length, 1);
+  });
+
+  it("lista vazia de promessas -> mutated false, contatos inalterados", () => {
+    const existing = [makeContact()];
+    const { contacts, mutated, imported } = importPendingApoiadoresFromGmail(existing, []);
+    assert.equal(mutated, false);
+    assert.equal(imported, 0);
+    assert.deepEqual(contacts, existing);
+  });
+
+  it("ISO de recebimento em formato inesperado não lança — nota cai pro fallback (ISO cru)", () => {
+    const promessa = makePromessa({ receivedAtIso: "not-an-iso-date" });
+    const { contacts } = importPendingApoiadoresFromGmail([], [promessa]);
+    assert.match(contacts[0].notes, /not-an-iso-date/);
   });
 });
 

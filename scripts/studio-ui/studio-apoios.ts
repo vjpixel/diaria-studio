@@ -89,6 +89,22 @@
  * duplica. Fail-soft: falha do drain (token expirado, rede) não trava o
  * force-refresh de pagamento — só registra em `error` (sem sobrescrever um
  * erro mais crítico de credenciais/auth apoia.se, se houver).
+ *
+ * **Promessas viram contato PENDENTE (#3912):** a apoia.se manda um e-mail
+ * separado quando alguém PROMETE um apoio (ainda sem pagar) e, se essa
+ * promessa depois converter em pagamento, **não reenvia** um e-mail de "novo
+ * apoio" — o drain acima nunca criaria o contato, e o apoiador ficaria
+ * invisível no CRM mesmo pagando (caso comprovado: Ivan, 260722). Fix:
+ * `refreshApoiosData` também importa `drainResult.promessas` (mesma busca
+ * Gmail do drain acima, template de corpo diferente — ver
+ * `parsePromessaEmail`) via `importPendingApoiadoresFromGmail`, criando um
+ * contato com `notes` indicando "promessa" + valor + data, SEM assumir
+ * pagamento — quem decide se de fato converteu continua sendo `checkBacker`
+ * (fase 2 do force-refresh abaixo, que roda logo em seguida e trata esse
+ * contato novo como não-confirmado, então já tenta resolvê-lo no mesmo
+ * refresh). Dedup idêntico ao de apoio confirmado: contato cujo email já
+ * existe (de qualquer origem — cadastro manual, import anterior, ou o import
+ * de confirmado que acabou de rodar acima) nunca gera duplicata.
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
@@ -109,6 +125,7 @@ import {
 import {
   drainApoiaSeNotifications,
   type ApoioNotification,
+  type DrainedPromessa,
   type DrainApoiaSeResult,
 } from "../lib/apoia-se-gmail-drain.ts";
 
@@ -327,6 +344,49 @@ export function importNewApoiadoresFromGmail(
       name: notif.name,
       emails: [email],
       notes: "importado automaticamente via e-mail apoia.se",
+    });
+    result = upsertContact(result, created);
+    imported++;
+  }
+  return { contacts: result, mutated: imported > 0, imported };
+}
+
+/** `YYYY-MM-DD...` (ISO 8601 UTC) -> `DD/MM`. Extração direta da string (sem
+ * `Date`/timezone) — determinístico e suficiente pro propósito informativo
+ * da nota (#3912). Fallback: devolve o ISO cru se o formato for inesperado
+ * (nunca lança). */
+function formatDDMM(iso: string): string {
+  const m = /^\d{4}-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return iso;
+  return `${m[2]}/${m[1]}`;
+}
+
+/**
+ * Aplica notificações de PROMESSA (ainda não pagas, #3912) sobre a lista de
+ * contatos: cria 1 contato PENDENTE por promessa cujo email NÃO bate com
+ * nenhum email já cadastrado em NENHUM contato — mesma disciplina de dedup
+ * de `importNewApoiadoresFromGmail` (nunca duplica, inclusive entre 2
+ * promessas do mesmo email na mesma leva). O contato criado NUNCA é marcado
+ * como "apoiando" aqui — só `deriveContactStatus` (via `checkBacker`) decide
+ * isso, a cada refresh; esta função só garante que o contato EXISTE pra
+ * `checkBacker` ter a chance de encontrá-lo. Pure — sem I/O; o caller decide
+ * se/quando persistir com `saveContacts`.
+ */
+export function importPendingApoiadoresFromGmail(
+  contacts: ApoioContact[],
+  promessas: DrainedPromessa[],
+): { contacts: ApoioContact[]; mutated: boolean; imported: number } {
+  let result = contacts;
+  let imported = 0;
+  for (const promessa of promessas) {
+    const email = promessa.email.trim().toLowerCase();
+    if (!email) continue;
+    const alreadyExists = result.some((c) => normalizeEmailList(c.emails).includes(email));
+    if (alreadyExists) continue;
+    const created = createContact({
+      name: promessa.name,
+      emails: [email],
+      notes: `promessa de R$${promessa.value.toFixed(2).replace(".", ",")} em ${formatDDMM(promessa.receivedAtIso)} — aguardando confirmação de pagamento`,
     });
     result = upsertContact(result, created);
     imported++;
@@ -812,13 +872,28 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
     const drainResult = await runGmailDrain();
     if (drainResult.skipped) {
       gmailDrainError = `import automático via e-mail apoia.se pulado (${drainResult.reason ?? "erro desconhecido"}) — status de pagamento seguiu normalmente.`;
-    } else if (drainResult.notifications.length > 0) {
-      const { contacts: updatedContacts, mutated } = importNewApoiadoresFromGmail(
-        contacts,
-        drainResult.notifications,
-      );
-      contacts = updatedContacts;
-      if (mutated) saveContacts(rootDir, contacts);
+    } else {
+      if (drainResult.notifications.length > 0) {
+        const { contacts: updatedContacts, mutated } = importNewApoiadoresFromGmail(
+          contacts,
+          drainResult.notifications,
+        );
+        contacts = updatedContacts;
+        if (mutated) saveContacts(rootDir, contacts);
+      }
+      // #3912: promessas viram contato PENDENTE — roda DEPOIS do import de
+      // confirmados acima, pra que uma promessa cujo email JÁ foi importado
+      // como confirmado nesta mesma leva (evento raro, mas possível se os 2
+      // e-mails chegarem juntos) seja corretamente deduplicada contra ele.
+      const promessas = drainResult.promessas ?? [];
+      if (promessas.length > 0) {
+        const { contacts: updatedContacts, mutated } = importPendingApoiadoresFromGmail(
+          contacts,
+          promessas,
+        );
+        contacts = updatedContacts;
+        if (mutated) saveContacts(rootDir, contacts);
+      }
     }
   } catch (e) {
     gmailDrainError = `import automático via e-mail apoia.se falhou (${(e as Error).message}) — status de pagamento seguiu normalmente.`;
