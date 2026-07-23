@@ -8,6 +8,9 @@
  * Top 4 sinais capturados (ordem de prioridade editorial):
  *   1. Source com streak ≥ 3 falhas consecutivas (da `data/source-health.json`).
  *   2. Unfixed issues no publish-newsletter (do `{edition_dir}/05-published.json`).
+ *   2b. Test email não confirmado (#3839) — `review_status` terminal
+ *       (`inconclusive`/`issues_unfixable`) do loop verify→fix do Stage 5, que
+ *       deixou de ser gate duro (do `{edition_dir}/05-published.json`).
  *   3. Chrome disconnections no log da edição (do `data/run-log.jsonl`).
  *   4. Claude in Chrome MCP indisponível desde o início (do `data/run-log.jsonl`).
  *
@@ -70,7 +73,8 @@ export interface Signal {
     | "test_warning"
     | "runtime_fix"
     | "clarice_skip"
-    | "placeholder_guard_warning";
+    | "placeholder_guard_warning"
+    | "test_email_unconfirmed";
   severity: Severity;
   title: string;
   details: Record<string, unknown>;
@@ -273,6 +277,10 @@ interface PublishedJson {
     section?: string;
     details?: string;
   }>;
+  review_completed?: boolean;
+  review_status?: string;
+  review_attempts?: number;
+  review_final_issues?: string[];
 }
 
 export function signalsFromPublished(
@@ -303,6 +311,49 @@ export function signalsFromPublished(
     });
   }
   return out;
+}
+
+// ===========================================================================
+// Signal 2b (#3839): test email não confirmado — loop verify→fix do Stage 5
+// deixou de ser gate duro (no máximo 1 verificação + 1 fix, nunca 10
+// iterações bloqueando). Quando o resultado é um status terminal não-ok
+// (`inconclusive` = Beehiiv não disparou o test email / Gmail não achou;
+// `issues_unfixable` = 1 fix-mode não resolveu tudo), o Stage 5 segue em
+// frente sem travar — mas o sinal precisa ficar visível pro auto-reporter,
+// senão a mudança "não bloqueia" vira "não avisa" silenciosamente.
+// ===========================================================================
+
+const TEST_EMAIL_NON_BLOCKING_STATUSES = new Set(["inconclusive", "issues_unfixable"]);
+
+export function signalsFromTestEmailReview(
+  published: PublishedJson | null,
+): Signal[] {
+  if (!published) return [];
+  const status = published.review_status;
+  if (!status || !TEST_EMAIL_NON_BLOCKING_STATUSES.has(status)) return [];
+  // review_completed=true nunca deveria coexistir com um status terminal de
+  // não-confirmação, mas defensivo: se coexistir, não há nada a sinalizar.
+  if (published.review_completed) return [];
+
+  const isInconclusive = status === "inconclusive";
+  return [
+    {
+      kind: "test_email_unconfirmed",
+      severity: isInconclusive ? "medium" : "low",
+      title: isInconclusive
+        ? "Test email não confirmado (Beehiiv não disparou / Gmail não encontrou o envio)"
+        : `Test email com issues não resolvidos após fix (${published.review_attempts ?? 0} tentativa(s))`,
+      details: {
+        review_status: status,
+        review_attempts: published.review_attempts ?? null,
+        review_final_issues: published.review_final_issues ?? [],
+        draft_url: published.draft_url ?? null,
+      },
+      suggested_action:
+        "Loop de test email não é mais gate duro do Stage 5 (#3839) — a edição prosseguiu pro Schedule sem confirmação. Editor deve verificar visualmente antes do Stage 6, ou usar o workaround conhecido (agendar direto sem test email confirmado).",
+      related_issue: "#3839",
+    },
+  ];
 }
 
 // ===========================================================================
@@ -985,6 +1036,8 @@ export function collectSignals(opts: CollectOptions): IssuesDraft {
         readFileSync(publishedPath, "utf8"),
       );
       signals.push(...signalsFromPublished(published));
+      // Signal 2b (#3839): test email não confirmado, não-bloqueante.
+      signals.push(...signalsFromTestEmailReview(published));
     } catch {
       // ignore malformed published file
     }
@@ -1093,6 +1146,7 @@ function main(): void {
           placeholder_guard_warning: draft.signals.filter((s) => s.kind === "placeholder_guard_warning").length,
           test_warning: draft.signals.filter((s) => s.kind === "test_warning").length,
           runtime_fix: draft.signals.filter((s) => s.kind === "runtime_fix").length,
+          test_email_unconfirmed: draft.signals.filter((s) => s.kind === "test_email_unconfirmed").length,
         },
       },
       null,

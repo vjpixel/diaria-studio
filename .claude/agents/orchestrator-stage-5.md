@@ -254,20 +254,20 @@ Se uma chamada `mcp__claude-in-chrome__*` retornar `chrome_disconnected`:
 
 > NOTA: este loop **nao bloqueia social** — `publish-facebook.ts` e `publish-linkedin.ts` ja completaram em 5c. O loop so toca o draft do Beehiiv (newsletter).
 
-- **Loop de verificacao e correcao (OBRIGATORIO — ate 10 iteracoes):**
-  > **REGRA CRITICA:** Este loop NUNCA deve ser pulado. A Etapa 5 so esta completa quando `review_completed: true` estiver gravado em `05-published.json`.
+- **Verificacao e correcao — NAO-BLOQUEANTE (#3839, decisao do editor 260721):**
+  > **O botao "Send test email" do Beehiiv e um controle de UI que pode falhar em disparar (nao envia nenhuma chamada de rede) independente do conteudo — nao e um problema corrigivel via retry.** Por isso este loop tenta **no maximo 1 tentativa de verificacao + 1 tentativa de fix** (nunca 10). Se o test email nao confirmar, **loga warning e segue pro Schedule** (Stage 6) em vez de travar a Etapa 5. O caminho feliz (Gmail confirma recebimento de primeira) continua identico a antes.
 
   ```typescript
   // #2047 / #2061: declarar UMA vez ANTES do loop — evita re-fetch do mesmo URL
   const linkCheckCache = new Map<string, boolean>();
   ```
 
-  Para `attempt` de 1 a 10:
+  Para `attempt` de 1 a 2 (attempt 1 = verificacao inicial; attempt 2 so ocorre se attempt 1 achou issues corrigiveis e o fix-mode rodou):
 
   1. **Verificar email de teste.** Disparar `review-test-email` passando `test_email`, `edition_title`, `edition_dir`, `attempt`.
-  2. Se retornar `error: "chrome_disconnected"`, aplicar o mesmo backoff exponencial descrito acima.
-  3. **Se retornar `status: "inconclusive"` (#1212 — fail-closed)**: logar warn e **sair do loop**. Gravar `review_status: "inconclusive"`. NAO marcar `review_completed: true`.
-  4. Se `issues` estiver vazio E `status: "ok"`: **sair do loop**.
+  2. Se retornar `error: "chrome_disconnected"`, aplicar o mesmo backoff exponencial descrito acima (isso e reconexao de Chrome, nao conta como nova tentativa do loop — re-executar o mesmo `attempt` apos reconectar).
+  3. **Se retornar `status: "inconclusive"` (#1212 — fail-closed, ou seja: Beehiiv nao disparou o test email / Gmail nao encontrou em 30s)**: logar warn `"test email nao confirmado na tentativa {attempt} — nao bloqueando Stage 5 (#3839). Editor deve verificar visualmente ou usar Schedule direto (workaround conhecido)."` e **sair do loop imediatamente** (nunca retry). Gravar `review_status: "inconclusive"`. NAO marcar `review_completed: true`.
+  4. Se `issues` estiver vazio E `status: "ok"`: **sair do loop** (caminho feliz — sem mudanca).
   4.5. **Filtrar falso-positivos (#1421, #2013, #2047)**:
      ```typescript
      import { filterAgentIssues } from "scripts/lib/agent-issue-validator.ts";
@@ -276,15 +276,18 @@ Se uma chamada `mcp__claude-in-chrome__*` retornar `chrome_disconnected`:
      for (const d of dropped) logar info `"dropped FP: ${d.issue} — ${d.reason}"`;
      ```
      Se `kept.length === 0` E `dropped.length > 0`: todos eram FPs — **sair do loop** sem fix-mode.
-  5. Se `kept` nao estiver vazio:
-     - Logar: `"review-test-email encontrou {N} problemas na tentativa {attempt}/10"`.
+  5. Se `kept` nao estiver vazio E `attempt === 1`:
+     - Logar: `"review-test-email encontrou {N} problemas na tentativa 1/2"`.
      - Disparar `publish-newsletter` em **modo fix** com `edition_dir`, `mode: "fix"`, `draft_url`, `issues: kept`.
-     - Se `unfixable_issues[]` nao vazio, logar warn e sair do loop.
+     - Se `unfixable_issues[]` nao vazio, logar warn `"publish-newsletter reportou unfixable_issues — nao bloqueando (#3839)"` e sair do loop com `review_status: "issues_unfixable"`.
+     - Caso contrario, prosseguir pra `attempt` 2 (re-verificacao unica pos-fix).
+  6. Se `kept` nao estiver vazio E `attempt === 2` (ou seja, o fix de tentativa 1 nao resolveu tudo): logar warn `"review-test-email ainda reporta {N} problemas apos 1 fix — nao bloqueando Stage 5 (#3839, decisao editor 260721: loop deixou de ser gate duro). Seguindo pro Schedule."` Gravar `review_status: "issues_unfixable"`. **Sair do loop** (nunca uma 3a tentativa).
 
-  Apos 10 iteracoes sem sucesso, logar warn: `"Loop atingiu 10 tentativas sem resolver todos os issues"`.
+  **Nunca mais de 2 tentativas.** O loop pre-#3839 permitia ate 10 iteracoes bloqueando a Etapa 5; essa contagem foi reduzida porque o unico cenario onde repetir ajudava (issue de conteudo corrigivel) se resolve em no maximo 1 fix-mode dispatch — repetir alem disso so reflete o botao Send test email quebrado (nao corrigivel por retry) e travava a publicacao sem necessidade.
 
 - **Gravar resultado da revisao em `05-published.json` (obrigatorio).** Campos: `review_completed`, `review_status`, `review_attempts`, `review_final_issues`.
   O resumo para o Stage 6 deve incluir AMBOS `review_final_issues` e `unfixed_issues` (#1212): se `review_final_issues` nao vazio OU `unfixed_issues` nao vazio, listar ambos no bloco de status passado para o gate do Stage 6.
+  **`review_completed: false` NUNCA bloqueia o Stage 5** (#3839) — `review_status` terminal (`"inconclusive"` ou `"issues_unfixable"`) e um resultado valido e esperado, nao um erro do orchestrator. O gate humano do Stage 6 (`orchestrator-stage-6.md`) ja trata ambos os status como warning nao-bloqueante (`⚠ review inconclusivo` / issues listados) — nao precisa de mudanca adicional la.
 
 ### 5f-bis. Verify dispatch — confirma destinos reais (#917)
 
