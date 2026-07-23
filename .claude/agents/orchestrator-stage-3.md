@@ -72,6 +72,15 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
   Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
 
   **#1325: nunca regerar imagens existentes sem `--force` explícito.** Tanto `eia-compose.ts` quanto `image-generate.ts` já tem skip-if-exists (`exit 0` com `skipped: outputs exist`). `eia-compose` ganhou partial-state guard (#1325): se A existe e B falhou, **HALT** com exit 2 — não regenera silenciosamente. Editor responde `--force` se quiser regen do zero (vai picar nova POTD). Orchestrator NÃO deve passar `--force` automaticamente em retry — só se o editor pedir explicitamente.
+- **Revisor de crop de imagem (#3951).** Depois de gerar as imagens acima, verificar se o corte 2:1→1:1 (o que vai pro social) preservou o sentido da composição:
+  ```bash
+  npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/
+  ```
+  Exit 1 (nenhum par encontrado) → logar warn e pular o revisor, sem bloquear o Stage 3. Exit 0 → stdout lista os pares (hero 2:1 + crop 1:1; ou só o 1:1 nativo quando não houve crop) — dispatchar `Agent("image-crop-reviewer", { edition: "{AAMMDD}", pairs, out_path: "{EDITION_DIR}/_internal/04-crop-review.json" })` com esses pares. Depois do subagente gravar o veredito, persistir + formatar:
+  ```bash
+  npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/ --input-json {EDITION_DIR}/_internal/04-crop-review.json
+  ```
+  Sempre exit 0 (warning-only). O resultado reaparece no gate consolidado da Etapa 4 via `check-invariants.ts --stage 4` (regra `image-crop-warn`) — nunca gate-blocking, nem aqui nem lá.
 - **Fetch leaderboard top1 (#1160 — rodapé do È IA?).** Antes do render no Stage 4, popular `_internal/04-leaderboard-top1.json`. **#1753:** o bloco só aparece na **1ª edição do mês** e anuncia o mês que acabou de fechar (período ANTERIOR ao da edição); em qualquer outra edição o script grava `top1: []` e o renderer omite. O gate é interno ao script (cruza com `data/past-editions-raw.json`) — o orchestrator só invoca normalmente. Renderer lê automaticamente:
   ```bash
   npx tsx scripts/fetch-leaderboard-top1.ts \

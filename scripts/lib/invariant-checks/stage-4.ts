@@ -1024,6 +1024,37 @@ function checkCaptureFailedSubmissionCount(editionDir: string): InvariantViolati
   ];
 }
 
+/**
+ * #3951: revisor de crop de imagem (`image-crop-reviewer`, Stage 3) sinaliza
+ * quando o corte 2:1→1:1 (o que vai pro social) perdeu o sentido da imagem
+ * original. Warning-only — mesmo padrão do has-negative-impact-highlight
+ * (#3916/#3918): nunca bloqueia o gate, só avisa. Se o arquivo não existe
+ * (revisor não rodou nesta edição — ex: retomada de checkpoint pré-#3951),
+ * não é violação — o revisor é assistido, não obrigatório.
+ */
+function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "04-crop-review.json");
+  if (!existsSync(path)) return [];
+  let data: { results?: Array<{ destaque?: string; status?: string; motivo?: string; sugestao?: string }> };
+  try {
+    data = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return [];
+  }
+  const results = Array.isArray(data.results) ? data.results : [];
+  return results
+    .filter((r) => r && r.status === "warn")
+    .map((r) => ({
+      rule: "image-crop-warn",
+      message:
+        `Destaque ${(r.destaque ?? "?").toUpperCase()}: ${r.motivo ?? "crop 1:1 pode ter perdido o sentido da imagem original"}` +
+        (r.sugestao ? ` — sugestão: ${r.sugestao}` : ""),
+      source_issue: "#3951",
+      severity: "warning" as const,
+      file: path,
+    }));
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -1123,6 +1154,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkHasNegativeImpactHighlight,
   },
+  {
+    id: "image-crop-warn",
+    description: "revisor de crop 2:1→1:1 (Stage 3) sinaliza sujeito cortado/composição sem sentido (#3951, warning-only)",
+    source_issue: "#3951",
+    stage: 4,
+    run: checkCropReviewWarnings,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -1147,4 +1185,5 @@ export {
   checkTitleTrailingPeriodInvariant,
   checkNoTrailingEllipsisInvariant,
   checkCaptureFailedSubmissionCount,
+  checkCropReviewWarnings,
 };

@@ -39,6 +39,7 @@ import {
   checkImageContentFresh,
   findImageContentMismatches,
   checkNarrativeNotGenericPlaceholder,
+  checkCropReviewWarnings,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
 import { hashHighlights } from "../scripts/lib/social-source-hash.ts";
 import {
@@ -112,6 +113,13 @@ describe("invariant-checks registry (#1007)", () => {
     assert.ok(inStage4 !== undefined, "esperava entry em STAGE_4_RULES");
     assert.equal(inStage1!.stage, 1);
     assert.equal(inStage4!.stage, 4);
+  });
+
+  it("#3951 registry contém entry image-crop-warn no stage 4 (severity warning)", () => {
+    const entry = getRulesForStage(4).find((r) => r.id === "image-crop-warn");
+    assert.ok(entry !== undefined, "ALL_INVARIANT_RULES deve conter 'image-crop-warn'");
+    assert.equal(entry!.stage, 4);
+    assert.equal(entry!.source_issue, "#3951");
   });
 });
 
@@ -1860,6 +1868,105 @@ describe("Stage 4 invariants", () => {
       assert.equal(v.length, 1);
       assert.equal(v[0].severity, "warning", "narrative-not-generic-placeholder deve ser warning → não causa exit 1");
       rmSync(fixture2, { recursive: true, force: true });
+    });
+  });
+
+  // --- #3951: revisor de crop de imagem (warning-only, mesmo padrão do #3916/#3918) ---
+  describe("image-crop-warn (#3951)", () => {
+    it("sem violation quando 04-crop-review.json ausente (revisor não rodou nesta edição)", () => {
+      const v = checkCropReviewWarnings(fixture);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("sem violation quando JSON malformado", () => {
+      writeFileSync(join(fixture, "_internal", "04-crop-review.json"), "{ not valid json");
+      const v = checkCropReviewWarnings(fixture);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("sem violation quando todos os destaques estão ok", () => {
+      writeFileSync(
+        join(fixture, "_internal", "04-crop-review.json"),
+        JSON.stringify({
+          edition: "260722",
+          results: [
+            { destaque: "d1", status: "ok" },
+            { destaque: "d2", status: "ok" },
+          ],
+        }),
+      );
+      const v = checkCropReviewWarnings(fixture);
+      assert.equal(v.length, 0);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("1 violation WARNING por destaque com status warn, nunca error", () => {
+      writeFileSync(
+        join(fixture, "_internal", "04-crop-review.json"),
+        JSON.stringify({
+          edition: "260722",
+          results: [
+            { destaque: "d1", status: "ok" },
+            {
+              destaque: "d2",
+              status: "warn",
+              motivo: "crop corta a cabeça do personagem central",
+              sugestao: "regenerar D2 com sujeito mais centralizado",
+            },
+          ],
+        }),
+      );
+      const v = checkCropReviewWarnings(fixture);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "image-crop-warn");
+      assert.equal(v[0].severity, "warning", "nunca hard-block — mesma decisão de design do #3918");
+      assert.equal(v[0].source_issue, "#3951");
+      assert.match(v[0].message, /D2/);
+      assert.match(v[0].message, /crop corta a cabeça/);
+      assert.match(v[0].message, /regenerar D2 com sujeito mais centralizado/);
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("múltiplos destaques com warn → 1 violation cada", () => {
+      writeFileSync(
+        join(fixture, "_internal", "04-crop-review.json"),
+        JSON.stringify({
+          results: [
+            { destaque: "d1", status: "warn", motivo: "x" },
+            { destaque: "d2", status: "warn", motivo: "y" },
+            { destaque: "d3", status: "ok" },
+          ],
+        }),
+      );
+      const v = checkCropReviewWarnings(fixture);
+      assert.equal(v.length, 2);
+      assert.ok(v.every((x) => x.severity === "warning"));
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("motivo ausente → mensagem com fallback genérico (nunca undefined literal)", () => {
+      writeFileSync(
+        join(fixture, "_internal", "04-crop-review.json"),
+        JSON.stringify({ results: [{ destaque: "d3", status: "warn" }] }),
+      );
+      const v = checkCropReviewWarnings(fixture);
+      assert.equal(v.length, 1);
+      assert.ok(!v[0].message.includes("undefined"));
+      rmSync(fixture, { recursive: true, force: true });
+    });
+
+    it("e2e: check-invariants --stage 4 nunca sai exit 1 só por causa de image-crop-warn", () => {
+      writeFileSync(
+        join(fixture, "_internal", "04-crop-review.json"),
+        JSON.stringify({ results: [{ destaque: "d1", status: "warn", motivo: "sujeito cortado" }] }),
+      );
+      const rule = getRulesForStage(4).find((r) => r.id === "image-crop-warn")!;
+      const v = rule.run(fixture);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "warning", "warning-only → check-invariants --stage 4 continua exit 0 (só severity=error causa exit 1)");
+      rmSync(fixture, { recursive: true, force: true });
     });
   });
 
