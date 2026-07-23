@@ -307,12 +307,13 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
        cp {EDITION_DIR}/_internal/02-clarice-corrected.md {EDITION_DIR}/02-reviewed.md
        ```
      Em ambos os casos, gravar o texto corrigido (não a lista de sugestões) em `{EDITION_DIR}/02-reviewed.md`.
-  4. Gerar diff legível usando o snapshot pré-Clarice:
+  4. Gerar diff legível usando o snapshot pré-Clarice, passando `02-normalized.md` (pré-Humanizador) como 4º argumento opcional — **#3929: a Clarice tem precedência sobre o Humanizador** (correções que revertem uma edição de estilo do Humanizador são esperadas e não devem ser bloqueadas por passo posterior; o 4º arg permite ao `clarice-diff.ts` sinalizar explicitamente `⚠️ REVERTE HUMANIZADOR` em cada alteração que reverte, dando contexto ao editor no gate em vez de uma correção gramatical indistinguível):
      ```bash
      npx tsx scripts/clarice-diff.ts \
        {EDITION_DIR}/_internal/02-pre-clarice.md \
        {EDITION_DIR}/02-reviewed.md \
-       {EDITION_DIR}/_internal/02-clarice-diff.md
+       {EDITION_DIR}/_internal/02-clarice-diff.md \
+       {EDITION_DIR}/_internal/02-normalized.md
      ```
   Se a Clarice falhar (MCP + REST), propagar o erro — **não** usar o rascunho sem revisão.
 
@@ -410,7 +411,22 @@ Seções verificadas: `main_d1/d2/d3` (posts principais) e `post_pixel`. **#3627
 
 **Retry 3x + fallback inline se `clarice-plugin:humanizador` Unknown skill (#2285):** se a invocação da skill retornar `Unknown skill: clarice-plugin:humanizador` (o marketplace pode ter re-sincronizado durante a sessão — causa-raiz identificada na edição 260615), **retry imediato até 3 vezes** antes de desistir. Entre tentativas, aguardar ~5s para o registro recarregar. Se após 3 retries a skill ainda não resolver, **não abortar silenciosamente** — aplicar o rubric inline via prompt direto (referência obrigatória: `context/publishers/humanizador-rubric.md` — leia o arquivo antes de formular o prompt para o LLM; contém as etapas 0-3 + regras de preservação). Logar: `npx tsx scripts/log-event.ts --edition {AAMMDD} --stage 2 --agent orchestrator --level warn --message "humanizador-skill-fallback-inline: clarice-plugin:humanizador Unknown skill após 3 retries — aplicando rubric inline"`. Somente após humanização concluída (skill OU inline), prosseguir para Clarice e sentinel.
 
+**Snapshot pós-humanizador / pré-Clarice (#3929).** Antes de aplicar Clarice, copiar o `03-social.md` (já humanizado) para `_internal/03-social-post-humanizador.md`:
+```bash
+cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/03-social-post-humanizador.md
+```
+Esse snapshot vira o baseline do check `humanizer-section-coverage` no pre-gate (`check-invariants.ts --stage 2`, §2d) — decorrelaciona a detecção de "humanizador pulou uma seção" das mudanças que a Clarice fizer a seguir. **Motivação (#3929):** a Clarice tem precedência sobre o Humanizador (correção > estilo) — sem este snapshot, uma reversão legítima da Clarice (ela corrige o texto de volta pra perto do pré-humanizador porque o Humanizador introduziu um erro) faria a seção parecer "idêntica ao pré-humanizador" no check, sendo lida como "humanizador não cobriu a seção" e disparando re-humanização/bloqueio indevido do gate — blindando efetivamente o Humanizador contra a correção da Clarice.
+
 **Revisar social com Clarice (inline, ordem #1072: Humanizador → Clarice):** ler `03-social.md` (já humanizado), chamar `mcp__clarice__correct_text`, aplicar sugestões, sobrescrever. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem. Se algum cabeçalho estiver ausente, restaurar com `Edit` antes de prosseguir. Se Clarice falhar (retornar erro OU output byte-idêntico ao input), **retry 3x + abort** — mesma regra do reviewed.
+
+**Diff legível da revisão Clarice social (#3929).** Gerar diff comparando o snapshot pós-humanizador/pré-Clarice contra o `03-social.md` final, passando `03-social-pre-humanizador.md` (pré-Humanizador) como 4º argumento — sinaliza explicitamente `⚠️ REVERTE HUMANIZADOR` em cada alteração da Clarice que desfaz uma edição do Humanizador, pra o editor decidir com contexto no gate:
+```bash
+npx tsx scripts/clarice-diff.ts \
+  {EDITION_DIR}/_internal/03-social-post-humanizador.md \
+  {EDITION_DIR}/03-social.md \
+  {EDITION_DIR}/_internal/03-social-clarice-diff.md \
+  {EDITION_DIR}/_internal/03-social-pre-humanizador.md
+```
 
 **Gravar sentinel de humanizador social (#2279):** após humanizar+Clarice (ambos concluídos), gravar o hash do `03-social.md` final:
 ```bash
@@ -466,7 +482,7 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`) termina em "
   ```
   Stderr exibe `d1: N chars (M palavras)` por destaque + total + warnings quando algum destaque está fora da faixa saudável (600-1500 chars). Incluir o output stderr no prompt do gate pra editor avaliar balanceamento (d1 muito longo vs d3 raso = desbalanceio editorial; >1500 = newsletter densa, CTR cai). Não bloquear — informativo only.
 
-- **GATE HUMANO unificado (newsletter + social):** mostrar `_internal/02-clarice-diff.md` e o conteúdo de `03-social.md`. Instruir:
+- **GATE HUMANO unificado (newsletter + social):** mostrar `_internal/02-clarice-diff.md`, `_internal/03-social-clarice-diff.md` (#3929 — se existir e tiver `Reversões do Humanizador` > 0, destacar essas entries explicitamente no resumo, pois são alterações da Clarice que desfizeram uma edição do Humanizador) e o conteúdo de `03-social.md`. Instruir:
   ```
   ✏️  Etapa 2 — Escrita pronta.
 

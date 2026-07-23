@@ -783,6 +783,125 @@ describe("Stage 2 invariants", () => {
     rmSync(fixture, { recursive: true, force: true });
   });
 
+  // --- #3929: reversão legítima da Clarice não deve disparar falso-positivo ---
+
+  it("#3929: humanizer-section-coverage usa snapshot pós-humanizador quando disponível — reversão legítima da Clarice não dispara falso-positivo", () => {
+    // Cenário: Humanizador reescreveu ## d1 (pre → post-humanizador diferem).
+    // Depois a Clarice rodou e corrigiu ## d1 de volta pra (perto de) o texto
+    // pré-humanizador — ex: o Humanizador introduziu um erro de concordância
+    // que a Clarice consertou revertendo a frase. `03-social.md` FINAL (pós-
+    // Clarice) acaba ficando idêntico ao pré-humanizador nessa seção.
+    //
+    // Antes de #3929, o check comparava --pre contra o `03-social.md` FINAL
+    // (pós-Clarice) e via d1 "idêntico ao pre" → falso "humanizador não
+    // cobriu d1". Com o snapshot pós-humanizador disponível, o check compara
+    // --pre contra ESSE snapshot (que prova que o Humanizador tocou d1) — sem
+    // falso-positivo, mesmo que o `03-social.md` final tenha revertido.
+    const pre = [
+      "# LinkedIn",
+      "## d1",
+      "Texto ORIGINAL d1 com um erro que o humanizador vai reescrever mal.",
+      "### comment_pixel",
+      "Comentário ORIGINAL.",
+      "## post_pixel",
+      "Post pixel ORIGINAL, também reescrito pelo humanizador.",
+      "# Facebook",
+      "## d1",
+      "Foo",
+    ].join("\n");
+    const postHumanizador = [
+      "# LinkedIn",
+      "## d1",
+      "Texto reescrito d1 pelo humanizador, com erro de concordância novo.",
+      "### comment_pixel",
+      "Comentário reescrito.",
+      "## post_pixel",
+      "Post pixel reescrito pelo humanizador.",
+      "# Facebook",
+      "## d1",
+      "Foo",
+    ].join("\n");
+    // Clarice reverte d1 de volta pro texto pré-humanizador (correção legítima).
+    // post_pixel permanece como o humanizador deixou — a Clarice não mexeu nele.
+    const finalPosClarice = [
+      "# LinkedIn",
+      "## d1",
+      "Texto ORIGINAL d1 com um erro que o humanizador vai reescrever mal.",
+      "### comment_pixel",
+      "Comentário reescrito.",
+      "## post_pixel",
+      "Post pixel reescrito pelo humanizador.",
+      "# Facebook",
+      "## d1",
+      "Foo",
+    ].join("\n");
+    writeFileSync(join(fixture, "_internal", "03-social-pre-humanizador.md"), pre);
+    writeFileSync(join(fixture, "_internal", "03-social-post-humanizador.md"), postHumanizador);
+    writeFileSync(join(fixture, "03-social.md"), finalPosClarice);
+    const v = checkSocialPassesLints(fixture);
+    const ruleIds = v.map((x) => x.rule);
+    assert.ok(
+      !ruleIds.includes("social-humanizer-section-coverage"),
+      `#3929 regressão: reversão legítima da Clarice disparou falso-positivo. violations: ${JSON.stringify(ruleIds)}`,
+    );
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("#3929: humanizer-section-coverage AINDA detecta seção realmente não coberta quando snapshot pós-humanizador existe", () => {
+    // Negativo do teste acima: garante que usar o snapshot pós-humanizador não
+    // desliga a detecção real — se o Humanizador de fato pulou uma seção
+    // (post-humanizador idêntico ao pre), o check deve continuar acusando,
+    // independente do que a Clarice fizer depois no `03-social.md` final.
+    const pre = [
+      "# LinkedIn",
+      "## d1",
+      "Texto ORIGINAL d1.",
+      "### comment_pixel",
+      "Comentário ORIGINAL — humanizador vai pular esta seção.",
+      "## post_pixel",
+      "Post pixel ORIGINAL.",
+      "# Facebook",
+      "## d1",
+      "Foo",
+    ].join("\n");
+    // Humanizador só tocou d1 — comment_pixel ficou idêntico ao pre (pulado).
+    const postHumanizador = [
+      "# LinkedIn",
+      "## d1",
+      "Texto reescrito d1.",
+      "### comment_pixel",
+      "Comentário ORIGINAL — humanizador vai pular esta seção.",
+      "## post_pixel",
+      "Post pixel ORIGINAL.",
+      "# Facebook",
+      "## d1",
+      "Foo",
+    ].join("\n");
+    // Clarice mexe só em d1 (correção pontual) — comment_pixel permanece intocado.
+    const finalPosClarice = [
+      "# LinkedIn",
+      "## d1",
+      "Texto reescrito d1, corrigido pela Clarice.",
+      "### comment_pixel",
+      "Comentário ORIGINAL — humanizador vai pular esta seção.",
+      "## post_pixel",
+      "Post pixel ORIGINAL.",
+      "# Facebook",
+      "## d1",
+      "Foo",
+    ].join("\n");
+    writeFileSync(join(fixture, "_internal", "03-social-pre-humanizador.md"), pre);
+    writeFileSync(join(fixture, "_internal", "03-social-post-humanizador.md"), postHumanizador);
+    writeFileSync(join(fixture, "03-social.md"), finalPosClarice);
+    const v = checkSocialPassesLints(fixture);
+    const ruleIds = v.map((x) => x.rule);
+    assert.ok(
+      ruleIds.includes("social-humanizer-section-coverage"),
+      `#3929: detecção real de seção pulada não deve quebrar. violations: ${JSON.stringify(ruleIds)}`,
+    );
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
   it("#2458: gate social detecta CTA de e-mail em post LinkedIn (social-no-email-cta-linkedin é gate-blocking)", () => {
     const withEmailCta = [
       "# LinkedIn",

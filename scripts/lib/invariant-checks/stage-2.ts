@@ -228,15 +228,31 @@ function checkSocialPassesLints(editionDir: string): InvariantViolation[] {
   // comment_pixel, post_pixel). Snapshot pré-humanizador pode não existir em
   // edições antigas ou quando o humanizador foi pulado — nesse caso o guard
   // humanizer-ran (checkHumanizerRan) já captura. Aqui: só roda se o snapshot existe.
+  //
+  // #3929: comparar contra o snapshot PÓS-humanizador/PRÉ-Clarice
+  // (`_internal/03-social-post-humanizador.md`, escrito pelo orchestrator logo
+  // antes de invocar a Clarice — orchestrator-stage-2.md §2c) quando ele
+  // existir, em vez do `03-social.md` final (que já passou pela Clarice). Esse
+  // check roda em `check-invariants.ts --stage 2`, que é disparado DEPOIS da
+  // Clarice (§2d) — comparar contra o arquivo final tratava uma reversão
+  // legítima da Clarice (ela desfaz uma edição do Humanizador, produzindo texto
+  // igual ao pré-humanizador) como se o Humanizador tivesse pulado a seção,
+  // disparando re-humanização/bloqueio indevido do gate (#3929). O snapshot
+  // pós-humanizador é imune a isso porque é gravado ANTES da Clarice tocar o
+  // arquivo. Fallback pro `03-social.md` final quando o snapshot não existir
+  // (edições antigas sem o passo, ou resume no meio de uma sessão anterior a
+  // #3929) — preserva o comportamento legado nesse caso degradado.
   const preSnapshot = resolve(editionDir, "_internal", "03-social-pre-humanizador.md");
+  const postHumanizerSnapshot = resolve(editionDir, "_internal", "03-social-post-humanizador.md");
   if (existsSync(preSnapshot)) {
+    const coverageCheckFile = existsSync(postHumanizerSnapshot) ? postHumanizerSnapshot : file;
     violations.push(
       ...runCheck(
         "lint-social-md.ts",
-        ["--check", "humanizer-section-coverage", "--pre", preSnapshot, "--md", file],
+        ["--check", "humanizer-section-coverage", "--pre", preSnapshot, "--md", coverageCheckFile],
         "social-humanizer-section-coverage",
         "#2148",
-        file,
+        coverageCheckFile,
       ),
     );
   }

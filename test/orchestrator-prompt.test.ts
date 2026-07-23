@@ -139,7 +139,12 @@ describe("orchestrator-prompt (#634)", () => {
       // arquivo tinha 754 linhas, headroom original do teto 795 continua
       // suficiente, sem bump necessário).
       "orchestrator-stage-1-research.md": 795,
-      "orchestrator-stage-2.md": 548,
+      // #3929: +11 linhas (snapshot pós-humanizador/pré-Clarice + diff legível
+      // do social em §2c, 4º arg opcional de pré-Humanizador no clarice-diff.ts
+      // da newsletter em §2b, e menção ao novo diff no gate §2d — decorrelaciona
+      // o check humanizer-section-coverage de reversões legítimas da Clarice).
+      // Teto bumped de 548→575 com headroom (era 559 medido pós-#3929).
+      "orchestrator-stage-2.md": 575,
       "orchestrator-stage-3.md": 135,
       "orchestrator-stage-4.md": 648,
       "orchestrator-stage-5.md": 455,
