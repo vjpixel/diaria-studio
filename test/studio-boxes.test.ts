@@ -15,7 +15,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
@@ -33,6 +33,10 @@ import {
   unarchiveBox,
   listArchivedBoxes,
   archivedBoxFilePath,
+  parseBoxNome,
+  stripNomeLine,
+  buildBoxContentWithNome,
+  resolveBoxDisplayName,
 } from "../scripts/studio-ui/studio-boxes.ts";
 
 // ─── lógica pura ──────────────────────────────────────────────────────────
@@ -262,8 +266,14 @@ describe("readBox / saveBox (#3924, pure)", () => {
   it("saveBox: expectedModifiedAt divergente -> conflict:true, NÃO sobrescreve", () => {
     const filePath = boxFilePath(root, "box-a.md");
     const staleModifiedAt = statSync(filePath).mtime.toISOString();
-    // Simula outra sessão escrevendo por baixo.
+    // Simula outra sessão escrevendo por baixo. `utimesSync` força o mtime 2s
+    // pra frente pra o teste ser DETERMINÍSTICO — sem isso, num FS com
+    // granularidade grossa de mtime (runner CI), a escrita cairia no mesmo tick
+    // do `statSync` acima, o mtime não mudaria, e o conflito não dispararia
+    // (flake histórica, quebrou o CI da PR #3935).
     writeFileSync(filePath, "# Box A\n\nEscrita concorrente.", "utf8");
+    const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
+    utimesSync(filePath, bumped, bumped);
 
     const result = saveBox(root, "box-a.md", "minha versão local", { expectedModifiedAt: staleModifiedAt });
     assert.equal(result.ok, false);
@@ -276,6 +286,8 @@ describe("readBox / saveBox (#3924, pure)", () => {
     const filePath = boxFilePath(root, "box-a.md");
     const staleModifiedAt = statSync(filePath).mtime.toISOString();
     writeFileSync(filePath, "# Box A\n\noutra escrita concorrente 2", "utf8");
+    const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
+    utimesSync(filePath, bumped, bumped); // determinismo de mtime (ver teste acima)
 
     const result = saveBox(root, "box-a.md", "sobrescrita forçada", {
       expectedModifiedAt: staleModifiedAt,
@@ -427,6 +439,98 @@ describe("archiveBox / unarchiveBox / listArchivedBoxes (#3928, pure)", () => {
   });
 });
 
+// ─── nome interno vs. título de conteúdo (pura, #3933) ─────────────────────
+
+describe("parseBoxNome (#3933)", () => {
+  it("extrai `nome:` do header de comentário", () => {
+    assert.equal(parseBoxNome("<!--\nnome: Apoio (slot 3)\ndoc\n-->\n\n# Título"), "Apoio (slot 3)");
+  });
+  it("é case-insensitive na chave e trima o valor", () => {
+    assert.equal(parseBoxNome("<!--\nNome:   Recomendação de leitura   \n-->\ntexto"), "Recomendação de leitura");
+  });
+  it("null quando o header não tem nome:", () => {
+    assert.equal(parseBoxNome("<!--\nsó doc, sem nome\n-->\ntexto"), null);
+  });
+  it("null quando não há header de comentário", () => {
+    assert.equal(parseBoxNome("# Título direto\n\ntexto"), null);
+  });
+  it("ignora `nome:` que esteja no CORPO, não no header", () => {
+    assert.equal(parseBoxNome("# Título\n\nnome: isso não conta"), null);
+  });
+});
+
+describe("stripNomeLine (#3933)", () => {
+  it("remove a linha nome: mantendo o resto do header", () => {
+    const out = stripNomeLine("<!--\nnome: X\ndoc que fica\n-->\n\n# T");
+    assert.ok(!/nome:/.test(out));
+    assert.match(out, /doc que fica/);
+    assert.match(out, /# T/);
+  });
+  it("remove o comentário inteiro se ele ficar vazio (só tinha nome:)", () => {
+    const out = stripNomeLine("<!--\nnome: X\n-->\n\n# Conteúdo");
+    assert.equal(out, "# Conteúdo");
+  });
+  it("no-op quando não há nome: no header", () => {
+    const src = "<!--\ndoc\n-->\ntexto";
+    assert.equal(stripNomeLine(src), src);
+  });
+  it("é idempotente", () => {
+    const src = "<!--\nnome: X\ndoc\n-->\ntexto";
+    assert.equal(stripNomeLine(stripNomeLine(src)), stripNomeLine(src));
+  });
+});
+
+describe("buildBoxContentWithNome (#3933)", () => {
+  it("prepend header novo quando o body não tem comentário", () => {
+    const out = buildBoxContentWithNome("Meu Nome", "# Conteúdo\n\ntexto");
+    assert.equal(parseBoxNome(out), "Meu Nome");
+    assert.match(out, /# Conteúdo/);
+  });
+  it("insere nome: dentro do header existente sem apagar o doc", () => {
+    const out = buildBoxContentWithNome("Meu Nome", "<!--\ndoc existente\n-->\n\n# C");
+    assert.equal(parseBoxNome(out), "Meu Nome");
+    assert.match(out, /doc existente/);
+  });
+  it("nome vazio remove qualquer nome: e não deixa header órfão", () => {
+    assert.equal(buildBoxContentWithNome("", "<!--\nnome: X\n-->\n\n# C"), "# C");
+    assert.equal(buildBoxContentWithNome("   ", "# C"), "# C");
+  });
+  it("nunca duplica nome: (body que ainda tinha um)", () => {
+    const out = buildBoxContentWithNome("Novo", "<!--\nnome: Velho\ndoc\n-->\ntexto");
+    assert.equal(parseBoxNome(out), "Novo");
+    assert.equal((out.match(/nome:/gi) ?? []).length, 1);
+  });
+  it("round-trip: build(parse(x), strip(x)) preserva o nome e o conteúdo", () => {
+    const x = "<!--\nnome: Rótulo Interno\ndoc do snippet\n-->\n\n**Título na edição**\n\ncorpo";
+    const rebuilt = buildBoxContentWithNome(parseBoxNome(x) ?? "", stripNomeLine(x));
+    assert.equal(parseBoxNome(rebuilt), "Rótulo Interno");
+    assert.match(rebuilt, /Título na edição/);
+    assert.match(rebuilt, /doc do snippet/);
+  });
+  it("INVARIANTE: o nome: nunca sobrevive ao strip de comentário do render (snippet-loader.ts)", () => {
+    // Mesma regex que readSnippetFile usa pra tirar o header antes do conteúdo
+    // ir pra newsletter — o nome interno JAMAIS pode vazar pro leitor.
+    const built = buildBoxContentWithNome("SEGREDO INTERNO", "# Título público\n\ncorpo visível");
+    const rendered = built.replace(/<!--[\s\S]*?-->/g, "").trim();
+    assert.ok(!rendered.includes("SEGREDO INTERNO"), "nome interno vazou no conteúdo renderizado");
+    assert.ok(!/nome:/i.test(rendered));
+    assert.match(rendered, /Título público/);
+  });
+});
+
+describe("resolveBoxDisplayName (#3933)", () => {
+  it("nome: explícito vence o título derivado do conteúdo", () => {
+    assert.equal(resolveBoxDisplayName("<!--\nnome: Rótulo\n-->\n# Outro título", "x.md"), "Rótulo");
+  });
+  it("sem nome:, cai no título derivado do conteúdo", () => {
+    assert.equal(resolveBoxDisplayName("<!--\ndoc\n-->\n# Título de conteúdo", "x.md"), "Título de conteúdo");
+  });
+  it("só-comentário/vazio cai no slug", () => {
+    assert.equal(resolveBoxDisplayName("<!--\ndoc\n-->", "minha-caixa.md"), "minha-caixa.md");
+    assert.equal(resolveBoxDisplayName("", "vazia.md"), "vazia.md");
+  });
+});
+
 // ─── contrato HTTP ─────────────────────────────────────────────────────────
 
 describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
@@ -541,6 +645,10 @@ describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
       "utf8",
     );
     const staleModifiedAt = loadedModifiedAt;
+    // Determinismo de mtime (mesma flake do teste puro): força o mtime pra
+    // frente pra garantir divergência mesmo em FS de granularidade grossa.
+    const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
+    utimesSync(join(root, "context", "snippets", "recomendacao-leitura.md"), bumped, bumped);
 
     const put = await fetch(new URL("/api/boxes/recomendacao-leitura.md", server.url), {
       method: "PUT",
@@ -712,5 +820,105 @@ describe("POST /api/boxes (create) + archive/unarchive + GET /api/boxes/archived
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.ok(Array.isArray(body.boxes));
+  });
+});
+
+// ─── contrato HTTP: nome interno separado do conteúdo (#3933) ──────────────
+
+describe("nome interno via HTTP: GET body/nome, PUT {nome,body}, POST com nome (#3933)", () => {
+  let root: string;
+  let server: StudioServer;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-3933-http-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "README.md"), "# Formato\n\nDoc.");
+    writeFileSync(
+      join(root, "context", "snippets", "com-nome.md"),
+      "<!--\nnome: Rótulo Interno\ndoc do snippet\n-->\n\n**Título na edição**\n\ncorpo",
+    );
+    writeFileSync(join(root, "context", "snippets", "sem-nome.md"), "# Título derivado\n\ncorpo");
+    writeFileSync(join(root, "platform.config.json"), JSON.stringify({ boxes_divulgacao: {} }));
+    server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("GET /api/boxes lista com title=nome quando há nome:, e contentTitle separado", async () => {
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    const comNome = list.boxes.find((b: { slug: string }) => b.slug === "com-nome.md");
+    assert.equal(comNome.title, "Rótulo Interno");
+    assert.equal(comNome.nome, "Rótulo Interno");
+    assert.equal(comNome.contentTitle, "**Título na edição**");
+    const semNome = list.boxes.find((b: { slug: string }) => b.slug === "sem-nome.md");
+    assert.equal(semNome.title, "Título derivado");
+    assert.equal(semNome.nome, null);
+  });
+
+  it("GET /api/boxes/:slug devolve nome + body (sem a linha nome:)", async () => {
+    const res = await fetch(new URL("/api/boxes/com-nome.md", server.url));
+    const body = await res.json();
+    assert.equal(body.nome, "Rótulo Interno");
+    assert.ok(!/nome:/.test(body.body), "body não deve conter a linha nome:");
+    assert.match(body.body, /doc do snippet/);
+    assert.match(body.body, /Título na edição/);
+  });
+
+  it("PUT {nome, body} reconstrói o arquivo com o header e persiste", async () => {
+    const get = await (await fetch(new URL("/api/boxes/sem-nome.md", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/sem-nome.md", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nome: "Nome Novo", body: get.body, expectedModifiedAt: get.modifiedAt }),
+    });
+    assert.equal(put.status, 200);
+    const onDisk = readFileSync(join(root, "context", "snippets", "sem-nome.md"), "utf8");
+    assert.match(onDisk, /<!--[\s\S]*nome: Nome Novo[\s\S]*-->/);
+    assert.match(onDisk, /Título derivado/);
+    // e a lista agora mostra o nome novo
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    assert.equal(list.boxes.find((b: { slug: string }) => b.slug === "sem-nome.md").nome, "Nome Novo");
+  });
+
+  it("PUT {content} legado continua funcionando (compat)", async () => {
+    const get = await (await fetch(new URL("/api/boxes/com-nome.md", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/com-nome.md", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "# Reescrito por caller legado", expectedModifiedAt: get.modifiedAt }),
+    });
+    assert.equal(put.status, 200);
+    assert.equal(
+      readFileSync(join(root, "context", "snippets", "com-nome.md"), "utf8"),
+      "# Reescrito por caller legado",
+    );
+  });
+
+  it("PUT sem 'body' nem 'content' -> 400", async () => {
+    const put = await fetch(new URL("/api/boxes/sem-nome.md", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nome: "só nome" }),
+    });
+    assert.equal(put.status, 400);
+  });
+
+  it("POST {slug, nome, content} cria caixa com header nome:", async () => {
+    const res = await fetch(new URL("/api/boxes", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug: "nova-com-nome.md", nome: "Caixa Nomeada", content: "# Público\n\ncorpo" }),
+    });
+    assert.equal(res.status, 201);
+    const onDisk = readFileSync(join(root, "context", "snippets", "nova-com-nome.md"), "utf8");
+    assert.match(onDisk, /nome: Caixa Nomeada/);
+    // invariante: nome não vaza no render
+    assert.ok(!onDisk.replace(/<!--[\s\S]*?-->/g, "").includes("Caixa Nomeada"));
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    assert.equal(list.boxes.find((b: { slug: string }) => b.slug === "nova-com-nome.md").nome, "Caixa Nomeada");
   });
 });

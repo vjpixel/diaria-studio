@@ -364,6 +364,7 @@ import {
   archiveBox,
   unarchiveBox,
   listArchivedBoxes,
+  buildBoxContentWithNome,
 } from "./studio-boxes.ts";
 // #3564: notificação Telegram (gate 4/6 pendente + AskUserQuestion pendente
 // no chat) com dedup — arquivo próprio desta fatia, import isolado (nenhuma
@@ -1400,10 +1401,24 @@ async function handleApiBoxSave(
     sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
     return;
   }
-  const parsed = body as { content?: unknown; expectedModifiedAt?: unknown; force?: unknown } | null;
-  const content = parsed?.content;
-  if (typeof content !== "string") {
-    sendJson(res, 400, { error: "campo 'content' (string) é obrigatório no corpo" });
+  const parsed = body as {
+    content?: unknown;
+    body?: unknown;
+    nome?: unknown;
+    expectedModifiedAt?: unknown;
+    force?: unknown;
+  } | null;
+  // #3933: dois modos aceitos. NOVO — `{nome, body}`: o server reconstrói o
+  // conteúdo (upsert do `nome:` no header). LEGADO — `{content}`: usa o
+  // conteúdo bruto como veio (mantém compat com callers que não separam nome).
+  let content: string;
+  if (typeof parsed?.body === "string") {
+    const nome = typeof parsed.nome === "string" ? parsed.nome : "";
+    content = buildBoxContentWithNome(nome, parsed.body);
+  } else if (typeof parsed?.content === "string") {
+    content = parsed.content;
+  } else {
+    sendJson(res, 400, { error: "corpo precisa de 'body' (string, com 'nome' opcional) ou 'content' (string, legado)" });
     return;
   }
   let expectedModifiedAt: string | null | undefined;
@@ -1421,9 +1436,11 @@ async function handleApiBoxSave(
   sendJson(res, status, result);
 }
 
-/** `POST /api/boxes` — cria uma caixa NOVA (#3928). Body `{slug, content}`.
- * 201 criada, 409 já existe (viva ou arquivada), 400 slug/corpo inválido.
- * `createBox` é fail-soft; só o parse de corpo é tratado aqui. */
+/** `POST /api/boxes` — cria uma caixa NOVA (#3928). Body `{slug, content}` +
+ * `nome` opcional (#3933 — se presente, o server injeta um header `<!-- nome:
+ * X -->` no conteúdo). 201 criada, 409 já existe (viva ou arquivada), 400
+ * slug/corpo inválido. `createBox` é fail-soft; só o parse de corpo é tratado
+ * aqui. */
 async function handleApiBoxCreate(
   rootDir: string,
   req: IncomingMessage,
@@ -1436,7 +1453,7 @@ async function handleApiBoxCreate(
     sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
     return;
   }
-  const parsed = body as { slug?: unknown; content?: unknown } | null;
+  const parsed = body as { slug?: unknown; content?: unknown; nome?: unknown } | null;
   const slug = parsed?.slug;
   const content = parsed?.content;
   if (typeof slug !== "string" || !slug) {
@@ -1447,7 +1464,9 @@ async function handleApiBoxCreate(
     sendJson(res, 400, { error: "campo 'content' (string) é obrigatório no corpo" });
     return;
   }
-  const result = createBox(rootDir, slug, content);
+  const nome = typeof parsed?.nome === "string" ? parsed.nome : "";
+  const finalContent = nome.trim() ? buildBoxContentWithNome(nome, content) : content;
+  const result = createBox(rootDir, slug, finalContent);
   const status = result.ok ? 201 : result.exists ? 409 : 400;
   sendJson(res, status, result);
 }

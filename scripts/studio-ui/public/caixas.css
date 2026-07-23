@@ -22,6 +22,13 @@
   gap: 0.5rem;
 }
 .box-title { font-weight: 600; }
+/* #3933: título de conteúdo (o que vai na edição) quando difere do nome interno. */
+.box-content-title {
+  font-size: 0.8rem;
+  opacity: 0.7;
+  margin-top: 0.15rem;
+}
+.box-content-title::before { content: ""; }
 .box-meta {
   font-size: 0.78rem;
   font-family: var(--font-mono);
@@ -71,6 +78,11 @@
 .cx-field > span {
   font-size: 0.8rem;
   opacity: 0.85;
+}
+.cx-field > span em {
+  font-style: normal;
+  opacity: 0.7;
+  font-size: 0.92em;
 }
 .cx-field input {
   font-family: var(--font-mono);
