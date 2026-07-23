@@ -49,6 +49,9 @@ const ROOT = resolve(import.meta.dirname, "..");
 export interface ScorePair {
   url: string;
   score: number;
+  // #3916/#3918: artigo documenta impacto NEGATIVO real da IA (tag do
+  // scorer-chunk/scorer). Opcional — omitido/false para o resto do pool.
+  negative_impact?: boolean;
 }
 
 export interface ChunkScoreFile {
@@ -128,12 +131,18 @@ export function loadChunks(
   return { chunks, failed };
 }
 
-/** Extrai os pares {url, score} de um chunk (aceita `all_scored` ou `scored`). */
+/** Extrai os pares {url, score, negative_impact?} de um chunk (aceita `all_scored` ou `scored`). */
 export function extractScores(chunk: ChunkScoreFile): ScorePair[] {
   const arr = chunk.all_scored ?? chunk.scored ?? [];
   return arr
     .filter((p) => p && typeof p.url === "string")
-    .map((p) => ({ url: p.url, score: typeof p.score === "number" ? p.score : 0 }));
+    .map((p) => ({
+      url: p.url,
+      score: typeof p.score === "number" ? p.score : 0,
+      // #3916/#3918: só propaga quando explicitamente `true` — omitido/false
+      // não deve virar `negative_impact: false` explícito no output (ruído).
+      ...(p.negative_impact === true ? { negative_impact: true as const } : {}),
+    }));
 }
 
 /**
@@ -152,10 +161,14 @@ export function mergeChunks(
   const pool = flattenCategorized(categorized);
 
   const scoreByUrl = new Map<string, number>();
+  // #3916/#3918: tag de impacto-negativo por URL, OR-ed entre chunks (URL
+  // não deveria aparecer em >1 chunk, mas OR é o combinador seguro se acontecer).
+  const negativeImpactByUrl = new Map<string, boolean>();
   for (const chunk of chunks) {
-    for (const { url, score } of extractScores(chunk)) {
+    for (const { url, score, negative_impact } of extractScores(chunk)) {
       const prev = scoreByUrl.get(url);
       if (prev == null || score > prev) scoreByUrl.set(url, score);
+      if (negative_impact === true) negativeImpactByUrl.set(url, true);
     }
   }
 
@@ -176,13 +189,24 @@ export function mergeChunks(
       (article as { score_base?: number }).score_base = baseScore;
       (article as { score_bonus_coverage?: number }).score_bonus_coverage = bonus;
     }
-    return { article, url: article.url, score, bucket: bucketOf(article) };
+    // #3916/#3918: propaga a tag pro artigo — finalists[].article carrega pro
+    // scorer-select; all_scored carrega pro join em finalize-stage1.ts (que
+    // propaga pros artigos que NÃO viraram finalist).
+    const negativeImpact = negativeImpactByUrl.get(article.url) === true;
+    if (negativeImpact) {
+      (article as { negative_impact?: boolean }).negative_impact = true;
+    }
+    return { article, url: article.url, score, bucket: bucketOf(article), negativeImpact };
   });
 
   enriched.sort((a, b) => b.score - a.score);
 
-  const all_scored: ScorePair[] = enriched.map((e) => ({ url: e.url, score: e.score }));
-  const finalists: Finalist[] = enriched.slice(0, Math.max(0, topN));
+  const all_scored: ScorePair[] = enriched.map((e) => ({
+    url: e.url,
+    score: e.score,
+    ...(e.negativeImpact ? { negative_impact: true as const } : {}),
+  }));
+  const finalists: Finalist[] = enriched.map(({ article, url, score, bucket }) => ({ article, url, score, bucket })).slice(0, Math.max(0, topN));
 
   const missing = pool.length - scoredCount;
 

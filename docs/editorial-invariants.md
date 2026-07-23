@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 56 invariants.
+**Total**: 58 invariants.
 
 ## Static (estrutura do repo)
 
@@ -34,6 +34,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `approved-has-3-highlights` | 01-approved.json tem 2 ou 3 highlights (#2343) | #2343 |
 | `categorized-has-eia-section` | 01-categorized.md inclui seção '## É IA?' (#481) | #481 |
 | `coverage-line-present` | 01-approved.json tem coverage.line (#592) | #592 |
+| `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true (#3916, #3918, warning-only) | #3916 |
 | `no-use-melhor-highlights` | highlights[] nunca contém item do bucket USE MELHOR/tutorial (#3436) | #3436 |
 
 ## Stage 2 — Escrita
@@ -61,6 +62,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 |---|---|---|
 | `capture-failed-submission-count` | captura de newsletters (0b-bis) falhou — coverage line não pode afirmar '0 submissões' (#2878) | #2878 |
 | `eia-credit-synced` | crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825) | #3825 |
+| `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true — repetido no gate consolidado (#3916, #3918, warning-only) | #3916 |
 | `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
 | `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |

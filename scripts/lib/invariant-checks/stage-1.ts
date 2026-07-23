@@ -30,6 +30,7 @@ interface HighlightLike {
 
 interface ApprovedJson {
   highlights?: HighlightLike[];
+  runners_up?: HighlightLike[];
   lancamento?: unknown[];
   pesquisa?: unknown[];
   noticias?: unknown[];
@@ -218,6 +219,66 @@ function checkNoUseMelhorHighlights(editionDir: string): InvariantViolation[] {
   ];
 }
 
+/**
+ * #3916/#3918: toda edição deve ter, entre os destaques aprovados, ao menos 1
+ * artigo tagueado `negative_impact: true` (impacto NEGATIVO real da IA — ver
+ * critério completo em `context/editorial-rules.md` — Destaques). O
+ * `scorer-select` já tenta promover do pool de finalistas quando os top-6 por
+ * mérito não incluem nenhum tagueado (ver `scorer-select.md` §3) — este check
+ * é o backstop determinístico (#573): se mesmo assim nenhum destaque final tem
+ * a tag (pool do dia genuinamente sem candidato digno, OU falha silenciosa na
+ * promoção), o editor precisa VER isso antes de aprovar.
+ *
+ * **Severity "warning" — NUNCA hard-block** (decisão de design #3918: dia sem
+ * candidato digno no pool é caso legítimo; a convenção do repo é sempre
+ * visível + decisão humana na exceção, nunca silencioso e nunca bloqueio
+ * duro). Roda pós-gate-apply no Stage 1 (visibilidade cedo) e de novo no
+ * gate consolidado do Stage 4 (`orchestrator-stage-4.md` §4b passo 5) — mesma
+ * função, registrada nos dois stages.
+ */
+function isNegativeImpactHighlight(h: HighlightLike): boolean {
+  if (h.negative_impact === true) return true;
+  if (h.article?.negative_impact === true) return true;
+  return false;
+}
+
+function checkHasNegativeImpactHighlight(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "01-approved.json");
+  if (!existsSync(path)) return []; // coberto por approved-exists
+  let data: ApprovedJson;
+  try {
+    data = JSON.parse(readFileSync(path, "utf8")) as ApprovedJson;
+  } catch {
+    return []; // coberto por approved-parseable
+  }
+  const highlights = Array.isArray(data.highlights) ? data.highlights : [];
+  if (highlights.length === 0) return []; // coberto por approved-has-3-highlights
+  if (highlights.some(isNegativeImpactHighlight)) return [];
+
+  // Sugestão de swap: melhor candidato tagueado disponível no pool de runners_up.
+  const runnersUp = Array.isArray(data.runners_up) ? data.runners_up : [];
+  const suggestion = runnersUp.find(isNegativeImpactHighlight);
+  const suggestionTitle = suggestion
+    ? (suggestion.title ?? suggestion.article?.title ?? suggestion.url ?? suggestion.article?.url ?? "(sem título)")
+    : null;
+  const suggestionText = suggestionTitle
+    ? ` Candidato disponível no pool de runners_up: "${suggestionTitle}" — considere trocar por um dos D1-D3.`
+    : " Nenhum candidato tagueado disponível no pool de runners_up — publicar sem é aceitável neste caso específico, mas confirme antes de aprovar.";
+
+  return [
+    {
+      rule: "has-negative-impact-highlight",
+      message:
+        `Nenhum destaque desta edição está tagueado negative_impact:true — a regra editorial ` +
+        `"sempre ≥1 destaque de impacto negativo da IA" (context/editorial-rules.md — Destaques) ` +
+        `não foi cumprida.${suggestionText}`,
+      source_issue: "#3916",
+      severity: "warning",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_1_RULES: InvariantRule[] = [
   {
     id: "approved-has-3-highlights",
@@ -247,6 +308,13 @@ export const STAGE_1_RULES: InvariantRule[] = [
     stage: 1,
     run: checkNoUseMelhorHighlights,
   },
+  {
+    id: "has-negative-impact-highlight",
+    description: "≥1 destaque tagueado negative_impact:true (#3916, #3918, warning-only)",
+    source_issue: "#3916",
+    stage: 1,
+    run: checkHasNegativeImpactHighlight,
+  },
 ];
 
 export {
@@ -255,4 +323,6 @@ export {
   checkCoverageLinePresent,
   checkNoUseMelhorHighlights,
   isUseMelhorHighlight,
+  checkHasNegativeImpactHighlight,
+  isNegativeImpactHighlight,
 };

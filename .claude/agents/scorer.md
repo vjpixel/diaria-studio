@@ -36,12 +36,16 @@ Antes de pontuar, releia:
    - **Tutorial hands-on curto (`use_melhor` — #2143)** — se o artigo está no bucket `use_melhor` E `audience_affinity.matched` contém `"hands_on:true"` (pré-computado deterministicamente pelo pipeline), aplicar **+8 pontos** adicionais (cumulativo com o bônus de `affinity` acima). Critério: tutorial completável em ≤2h, com passos concretos (passo a passo / step-by-step), scope fechado (guia, quickstart, exercício) e/ou ferramenta consumer sem setup cloud/IAM/API-key obrigatório. **Exemplos aprovados pelo editor (260612):** guia PT-BR de NotebookLM, vídeo OpenAI Academy para docentes, Transformers.js (navegador, sem key), Scikit-LLM (Python básico ~1h). **Exemplos reprovados (sem bônus):** AWS Bedrock, LangSmith, Agent-EvalKit (requerem conta AWS/IAM ou agente já em produção). Se `audience_affinity` não existir ou não contiver `"hands_on:true"`, sem bônus nem penalidade.
    - **Tutorial/academy oficial (`use_melhor` — #2276)** — se `audience_affinity.matched` contém `"academy:true"` (domínio de ensino oficial: deeplearning.ai, Kaggle, Hugging Face /learn, Microsoft Learn, etc., ou título com "curso/trilha/bootcamp/formação"), aplicar **+6 pontos** adicionais (cumulativo com `affinity` e `hands_on`). Rationale: categoria Treinamento tem CTR mais alto do perfil (1.80% geral, 3.02% INT). Bônus menor que `hands_on` (+8) pois academy indica origem de qualidade, não necessariamente tutorial hands-on curto. Sem penalidade se ausente.
    - **How-to PT-BR aplicado (`use_melhor` — #2278)** — se `audience_affinity.matched` contém `"howto_br:true"` (título/slug com padrão PT-BR: "como usar IA para...", "IA para produtividade no trabalho", etc.), aplicar **+5 pontos** adicionais. Se contém `"howto_br_source:true"` (fonte BR confiável: Canaltech, Tecnoblog, TechTudo, Olhar Digital, Meiobit, Startups.com.br, Exame, InfoMoney, B9), aplicar **+3 pontos** adicionais independente do título (cumulativo com `howto_br:true` quando ambos presentes). Rationale: conteúdo how-to em PT-BR atende diretamente a missão de usar IA no dia a dia — máxima relevância editorial para a audiência BR. Cumulativo com todos os outros bônus. Sem penalidade se ausente.
-3. Ordenar por score desc.
-4. Selecionar **exatamente 6 destaques** em `highlights[]` (ranks 1–6) — mesmo se o pool tiver scores baixos ou concentração temática alta, complete até 6 com os melhores disponíveis.
+3. **Tag `negative_impact` (#3916, #3918)** — para CADA artigo (não só os 6 escolhidos), avalie também, independente do score, se ele documenta **impacto NEGATIVO real da IA**: risco, dano ou custo concreto a pessoas/sociedade — desinformação/deepfake, golpe, viés/discriminação, impacto no trabalho (demissão/substituição real), privacidade/vigilância, custo ambiental, falha com consequência real, dependência/saúde mental, litígio/regulação punitiva, falha de segurança de modelo.
+   - **Critério objetivo — conta vs não conta:** dano/risco/custo **real** a pessoas ou sociedade. **Conta:** "empresa X demite funcionários citando IA". **Não conta:** "modelo Y erra em benchmark Z" (performance técnica); ressalva dentro de um anúncio de produto; especulação sobre risco futuro sem caso concreto.
+   - `negative_impact: true` só quando satisfeito; default `false`/omitido para o resto. Não force positivo pra bater cota — a promoção do pool acontece na seleção (passo 4 abaixo), não aqui.
+4. Ordenar por score desc.
+5. Selecionar **exatamente 6 destaques** em `highlights[]` (ranks 1–6) — mesmo se o pool tiver scores baixos ou concentração temática alta, complete até 6 com os melhores disponíveis.
    - **Não subpondere Segurança/safety** (#2131) — candidatos sobre vulnerabilidade, exploit, ataque com IA, alignment/safety, privacidade, fraude ou deepfake chegam com score decente mas são historicamente preteridos em favor de novidade de produto. Quando um candidato de Segurança tiver score competitivo (dentro de ~5 pts do 6º colocado), considere-o com o mesmo peso que um lançamento. Isso é correção de viés, não cota: não force Segurança todo dia, mas não a descarte por ser "menos empolgante".
    - Em caso de empate, desempatar favorecendo **diversidade temática** (não 2 destaques sobre o mesmo assunto/empresa) e **diversidade de bucket** (evitar 6 do mesmo bucket, mas sem cota mínima).
+   - **Diversidade #3 — ≥1 destaque de impacto NEGATIVO da IA (#3916, #3918).** Depois de montar os 6 por mérito, cheque se algum tem `negative_impact: true` (tag do passo 3 acima). Se nenhum tiver, promova o artigo de MAIOR score fora dos 6 que tenha a tag, substituindo o destaque de MENOR score dentre os 6 (nunca o de maior score). Se nenhum artigo do pool tiver a tag, não force — caso legítimo, o gate da Etapa 4 avisa o editor (warning, nunca bloqueia).
    - **Exceção única:** se o pool total tiver `< 6` artigos, output = `pool.length` e adicionar `warning_pool_too_small: true` no JSON. **❌ Não produza menos de 6 quando há pool suficiente jogando os candidatos 4–6 em `runners_up`** — a divisão é por mérito relativo (top 6 vs próximos), não por threshold absoluto de score (#104).
-5. Definir **ordem editorial** dos 6: primeiro o de maior impacto/mais surpreendente, depois alternando tom e bucket.
+6. Definir **ordem editorial** dos 6: primeiro o de maior impacto/mais surpreendente, depois alternando tom e bucket.
 
 ## Output
 
@@ -55,7 +59,7 @@ JSON:
       "score": 87,
       "bucket": "radar",
       "reason": "1-2 frases explicando por que foi escolhido e posicionado aqui",
-      "article": { ...artigo completo do input... }
+      "article": { ...artigo completo do input, com negative_impact adicionado se aplicável (#3916/#3918)... }
     },
     { "rank": 2, "bucket": "lancamento", ... },
     { "rank": 3, "bucket": "radar", ... },
@@ -65,9 +69,9 @@ JSON:
   ],
   "runners_up": [ ...1-2 candidatos com score alto que ficaram de fora, para fallback humano... ],
   "all_scored": [
-    { "url": "https://...", "score": 87 },
+    { "url": "https://...", "score": 87, "negative_impact": true },
     { "url": "https://...", "score": 82 },
-    ...todos os artigos, ordenados por score desc. Só `url` e `score` — o orchestrator faz o join...
+    ...todos os artigos, ordenados por score desc. `url`, `score` e `negative_impact` (#3916/#3918, só quando true) — o orchestrator faz o join...
   ]
 }
 ```
@@ -78,6 +82,7 @@ JSON:
 - Temas repetidos já foram filtrados pelo research-reviewer (upstream). Não se preocupe com originalidade vs edições anteriores — os artigos que chegam até você já passaram por esse filtro.
 - Sempre **6 destaques**, escolhidos por mérito (sem cota mínima por bucket).
 - Incluir o campo `"bucket"` em cada entrada de `highlights[]` — facilita o orchestrator gerar o MD.
+- **`negative_impact` (#3916/#3918):** para cada artigo tagueado `true` no passo 3, incluir tanto em `article.negative_impact` (quando ele for um highlight) quanto na entrada correspondente de `all_scored` — é a partir de `all_scored` que o orchestrator propaga a tag para os artigos que NÃO viraram destaque (buckets LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS).
 - `all_scored` deve conter **todos** os artigos do input (nenhum pode ficar sem score). É a base para o orchestrator ordenar os buckets por score.
 - **URLs são opacas (#720).** Nunca corrija, complete, normalize ou reescreva URLs entre input e output. Copie EXATAMENTE como vieram no input — mesmo que pareçam truncadas, com slug errado ou com traço sobrante. O orchestrator faz join por igualdade de URL string; qualquer mutação quebra o pipeline downstream silenciosamente.
 - **OBRIGATÓRIO: gravar o output em arquivo antes de retornar.** Receber `out_path` como parâmetro (ex: `data/editions/{AAMMDD}/_internal/tmp-scored.json`) e usar `Write` para gravar o JSON completo. Verificar com `Bash("node -e \"try{JSON.parse(require('fs').readFileSync('{out_path}','utf8'));console.log('ok')}catch(e){process.stderr.write(e.message);process.exit(1)}\"")`  antes de retornar. Se a gravação falhar, reportar erro explícito — nunca retornar só como texto sem gravar o arquivo.

@@ -113,6 +113,52 @@ describe("#720 — joinScore URL opacity", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #3916/#3918 — joinScore propaga negative_impact do all_scored pro artigo
+// ---------------------------------------------------------------------------
+
+describe("#3916/#3918 — joinScore propaga negative_impact", () => {
+  it("negative_impact: true no ScoredEntry propaga pro artigo (join por URL)", () => {
+    const url = "https://exemplo.com/empresa-demite-citando-ia";
+    const article: Article = { url, title: "Empresa demite citando IA" };
+    const scored: ScoredEntry = { url, score: 72, negative_impact: true };
+    const { scoreMap, titleIndex } = buildScoreIndexes([scored]);
+
+    const result = joinScore(article, scoreMap, [scored], titleIndex);
+
+    assert.equal(result.article.score, 72);
+    assert.equal(result.article.negative_impact, true);
+  });
+
+  it("negative_impact ausente/false não aparece explícito no artigo (sem ruído)", () => {
+    const url = "https://exemplo.com/lancamento-normal";
+    const article: Article = { url, title: "Lançamento normal" };
+    const scored: ScoredEntry = { url, score: 65 };
+    const { scoreMap, titleIndex } = buildScoreIndexes([scored]);
+
+    const result = joinScore(article, scoreMap, [scored], titleIndex);
+
+    assert.equal(result.article.score, 65);
+    assert.equal(result.article.negative_impact, undefined);
+  });
+
+  it("negative_impact propaga também via recovery por título (URL mismatch)", () => {
+    const poolUrl = "https://a.com/x";
+    const scoredUrl = "https://a.com/y";
+    const title = "Vigilância com reconhecimento facial gera processo";
+
+    const article: Article = { url: poolUrl, title };
+    const scored: ScoredEntry = { url: scoredUrl, score: 60, title, negative_impact: true };
+    const { scoreMap, titleIndex } = buildScoreIndexes([scored]);
+
+    const result = joinScore(article, scoreMap, [scored], titleIndex);
+
+    assert.equal(result.url_mismatch, true);
+    assert.equal(result.article.score_recovered, true);
+    assert.equal(result.article.negative_impact, true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #721 — editor_submitted bypass
 // ---------------------------------------------------------------------------
 

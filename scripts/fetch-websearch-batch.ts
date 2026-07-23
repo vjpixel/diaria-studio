@@ -43,6 +43,7 @@ import { isNonEditorialPath } from "./lib/non-editorial-paths.ts"; // #1559 A
 import { fetchOgMetadata } from "./lib/extract-og.ts"; // #1559 B
 import { recordBraveCredit } from "./lib/brave-credits.ts"; // #1558
 import { getHowToDiscoveryQueries } from "./lib/use-melhor-curation.ts"; // #2278
+import { getNegativeImpactDiscoveryQueries } from "./lib/negative-impact-curation.ts"; // #3916, #3918
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -409,6 +410,19 @@ async function main(): Promise<void> {
     discoveryTopics.push({ query: q });
   }
   console.error(`[fetch-websearch-batch] +${howtoQueries.length} how-to PT-BR queries adicionadas (#2278)`);
+
+  // #3916/#3918: +1 query dedicada ao ângulo crítico/impacto-negativo — rotaciona
+  // por edição (mesmo esquema de safeEditionNum acima). Aditivo, não substitui
+  // nenhuma query existente.
+  const negativeImpactQueries = getNegativeImpactDiscoveryQueries(safeEditionNum);
+  for (const q of negativeImpactQueries) {
+    if (q === undefined) {
+      console.error("[fetch-websearch-batch] WARN: skipping undefined negative-impact query (edition rotation index out of range)");
+      continue;
+    }
+    discoveryTopics.push({ query: q });
+  }
+  console.error(`[fetch-websearch-batch] +${negativeImpactQueries.length} query(ies) de impacto-negativo adicionada(s) (#3916, #3918)`);
 
   const totalQueries = sources.length + discoveryTopics.length;
   console.error(

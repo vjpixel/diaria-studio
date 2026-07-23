@@ -46,6 +46,24 @@ describe("edition-state schemas (#632)", () => {
       const result = parseApprovedJson(extra);
       assert.equal((result as Record<string, unknown>).custom_field, "custom");
     });
+
+    // #3916/#3918: negative_impact é campo boolean opcional em ArticleSchema.
+    it("aceita negative_impact: true num artigo de radar", () => {
+      const withNegativeImpact = {
+        ...validApproved,
+        radar: [{ ...validApproved.radar[0], negative_impact: true }, validApproved.radar[1]],
+      };
+      const result = parseApprovedJson(withNegativeImpact);
+      assert.equal(result.radar[0].negative_impact, true);
+    });
+
+    it("rejeita negative_impact não-boolean", () => {
+      const bad = {
+        ...validApproved,
+        radar: [{ ...validApproved.radar[0], negative_impact: "yes" }, validApproved.radar[1]],
+      };
+      assert.throws(() => parseApprovedJson(bad), /invalid_type|boolean/i);
+    });
   });
 
   describe("parseCategorizedJson", () => {

@@ -1,6 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { assemble, type Selection, type AllScoredFile } from "../scripts/assemble-scored.ts";
+import {
+  assemble,
+  applyNegativeImpactBackstop,
+  type Selection,
+  type AllScoredFile,
+  type AssembledOutput,
+} from "../scripts/assemble-scored.ts";
+import type { FinalistLike } from "../scripts/lib/negative-impact-promotion.ts";
 
 const ALL: AllScoredFile = {
   all_scored: [
@@ -54,5 +61,66 @@ describe("assemble", () => {
   it("não inclui warning_pool_too_small quando ausente", () => {
     const out = assemble({ highlights: [] }, ALL);
     assert.ok(!("warning_pool_too_small" in out));
+  });
+
+  // #3916/#3918 — promoção de destaque de impacto-negativo
+  it("propaga negative_impact_promoted quando presente", () => {
+    const sel: Selection = {
+      highlights: [{ score: 90, article: { url: "a" } }],
+      negative_impact_promoted: {
+        promoted_url: "https://x.com/harm",
+        demoted_url: "https://y.com/low-score",
+        reason: "nenhum dos top-6 tinha negative_impact:true",
+      },
+    };
+    const out = assemble(sel, ALL);
+    assert.deepEqual(out.negative_impact_promoted, sel.negative_impact_promoted);
+  });
+
+  it("não inclui negative_impact_promoted quando ausente", () => {
+    const out = assemble({ highlights: [] }, ALL);
+    assert.ok(!("negative_impact_promoted" in out));
+  });
+});
+
+// #3916/#3918 — backstop determinístico invocado após a seleção do agent
+describe("applyNegativeImpactBackstop", () => {
+  const finalists: FinalistLike[] = [
+    { url: "a", score: 90, bucket: "radar", article: { url: "a" } },
+    { url: "harm", score: 60, bucket: "radar", article: { url: "harm", negative_impact: true } },
+  ];
+
+  it("no-op quando o assembled já tem ≥1 highlight tagueado", () => {
+    const assembled: AssembledOutput = {
+      highlights: [{ rank: 1, url: "a", score: 90, negative_impact: true }],
+      runners_up: [],
+      all_scored: [],
+    };
+    const out = applyNegativeImpactBackstop(assembled, finalists);
+    assert.equal(out, assembled, "deve retornar a MESMA referência quando não promove (no-op)");
+  });
+
+  it("promove e seta negative_impact_promoted quando o agent não cumpriu a regra", () => {
+    const assembled: AssembledOutput = {
+      highlights: [{ rank: 1, url: "a", score: 90 }],
+      runners_up: [],
+      all_scored: [],
+    };
+    const out = applyNegativeImpactBackstop(assembled, finalists);
+    assert.ok(out.negative_impact_promoted, "backstop deve ter promovido");
+    assert.equal(out.negative_impact_promoted!.promoted_url, "harm");
+    assert.equal(out.highlights[0].url, "harm");
+  });
+
+  it("no-op quando nenhum finalista tem a tag (pool sem candidato)", () => {
+    const assembled: AssembledOutput = {
+      highlights: [{ rank: 1, url: "a", score: 90 }],
+      runners_up: [],
+      all_scored: [],
+    };
+    const noTagFinalists: FinalistLike[] = [{ url: "a", score: 90, article: { url: "a" } }];
+    const out = applyNegativeImpactBackstop(assembled, noTagFinalists);
+    assert.equal(out, assembled);
+    assert.equal(out.negative_impact_promoted, undefined);
   });
 });
