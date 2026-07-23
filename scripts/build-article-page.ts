@@ -27,6 +27,7 @@ import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { requireMonthlyCycleArg, monthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { buildArticleHtml } from "./lib/mensal/build-article-page.ts";
 import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { DIARIA_ARTIGO_URL } from "./lib/canonical-urls.ts";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dir, "..");
@@ -73,7 +74,7 @@ async function main(): Promise<void> {
       kvNamespaceId: ARTICLE_KV_NAMESPACE_ID,
       contentType: "text/html; charset=utf-8",
     });
-    console.error(`[build-article-page] push concluído.`);
+    console.error(`[build-article-page] push concluído. URL pública: ${DIARIA_ARTIGO_URL}/${cycle}`);
   } else {
     console.error(
       `[build-article-page] dry-run (default) — HTML gerado (${page.html.length} bytes), NENHUM push ao KV. Use --push para gravar.`,
