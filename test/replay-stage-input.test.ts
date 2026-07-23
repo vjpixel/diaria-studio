@@ -12,6 +12,7 @@ import {
   slugifyLabel,
   buildReplayDirName,
   buildFixtureManifest,
+  isSafeRelPath,
   copyReferenceFile,
   createReplayFixture,
 } from "../scripts/lib/replay-stage-input.ts";
@@ -106,7 +107,46 @@ describe("planFileList", () => {
   });
 });
 
+describe("isSafeRelPath (#3922 self-review — guard de path traversal)", () => {
+  it("aceita paths relativos normais (com ou sem subdiretório)", () => {
+    assert.equal(isSafeRelPath("_internal/01-approved.json"), true);
+    assert.equal(isSafeRelPath("01-categorized.md"), true);
+  });
+
+  it("rejeita paths absolutos", () => {
+    assert.equal(isSafeRelPath("/etc/passwd"), false);
+  });
+
+  it("rejeita qualquer segmento '..' (posix e windows)", () => {
+    assert.equal(isSafeRelPath("../../../../etc/passwd"), false);
+    assert.equal(isSafeRelPath("_internal/../../escape.json"), false);
+    assert.equal(isSafeRelPath("..\\..\\escape.json"), false);
+  });
+
+  it("rejeita string vazia", () => {
+    assert.equal(isSafeRelPath(""), false);
+  });
+});
+
 describe("copyReferenceFile", () => {
+  it("path inseguro ('..') → copied:false com reason, nunca copia nem lança (#3922 path traversal guard)", () => {
+    const { editionsRoot, cleanup } = setupSandbox();
+    try {
+      const refDir = join(editionsRoot, "260715");
+      makeFlatEdition(editionsRoot, "260715", {});
+      // Arquivo que EXISTE fora da edição de referência, no editionsRoot.
+      writeFileSync(join(editionsRoot, "outside-secret.json"), "nao deveria vazar");
+      const testDir = join(editionsRoot, "replay-test-traversal");
+      const result = copyReferenceFile(refDir, testDir, "../outside-secret.json");
+      assert.equal(result.copied, false);
+      assert.match(result.reason ?? "", /inseguro/);
+      assert.equal(existsSync(join(editionsRoot, "outside-secret.json")), true, "arquivo original intacto");
+      assert.equal(existsSync(testDir), false, "nada deveria ter sido criado no destino");
+    } finally {
+      cleanup();
+    }
+  });
+
   it("copia arquivo existente e retorna copied:true com bytes", () => {
     const { editionsRoot, cleanup } = setupSandbox();
     try {

@@ -25,13 +25,13 @@
  *
  * Funções puras (sem I/O): `slugifyLabel`, `buildReplayDirName`,
  * `isKnownStagePreset`, `resolveStagePreset`, `planFileList`,
- * `buildFixtureManifest`. Wrappers de I/O (thin): `copyReferenceFile`,
- * `createReplayFixture` (orquestra tudo, escreve `_internal/replay-manifest.json`
- * no diretório de teste).
+ * `isSafeRelPath`, `buildFixtureManifest`. Wrappers de I/O (thin):
+ * `copyReferenceFile`, `createReplayFixture` (orquestra tudo, escreve
+ * `_internal/replay-manifest.json` no diretório de teste).
  */
 
 import { existsSync, mkdirSync, copyFileSync, writeFileSync, statSync, rmSync } from "node:fs";
-import { join, dirname, relative } from "node:path";
+import { join, dirname, relative, isAbsolute } from "node:path";
 import { resolveEditionDir } from "./find-current-edition.ts";
 
 /** Prefixo estrutural do diretório de teste — ver header do módulo. */
@@ -184,17 +184,35 @@ function toPosix(p: string): string {
 }
 
 /**
+ * Guard de path traversal (achado no self-review do #3833, #3922).
+ * `--files` é o escape hatch documentado pra mecanismos não cobertos pelos
+ * presets — sem este guard, um `relPath` como `../../../../algo` escaparia
+ * tanto da leitura (`referenceDir`) quanto da escrita (`testDir`), quebrando
+ * a garantia de isolamento do fixture. Rejeita paths absolutos e qualquer
+ * path cujo primeiro segmento (posix ou Windows) seja `..`. Puro — não toca
+ * disco, só string/regex.
+ */
+export function isSafeRelPath(relPath: string): boolean {
+  if (!relPath || isAbsolute(relPath)) return false;
+  const segments = relPath.split(/[\\/]+/);
+  return !segments.some((seg) => seg === "..");
+}
+
+/**
  * Copia 1 arquivo (`relPath`) da edição de referência para o diretório de
- * teste. Nunca lança — arquivo ausente na referência vira `copied: false`
- * com `reason` (comportamento esperado: nem toda edição tem todo arquivo,
- * ex: `tmp-dates-reviewed.json` não existe em edições que caíram no
- * 1q-fallback).
+ * teste. Nunca lança — arquivo ausente na referência OU path inseguro
+ * (`isSafeRelPath`) vira `copied: false` com `reason` (comportamento
+ * esperado: nem toda edição tem todo arquivo, ex: `tmp-dates-reviewed.json`
+ * não existe em edições que caíram no 1q-fallback).
  */
 export function copyReferenceFile(
   referenceDir: string,
   testDir: string,
   relPath: string,
 ): ReplayFixtureFileResult {
+  if (!isSafeRelPath(relPath)) {
+    return { relPath: toPosix(relPath), copied: false, reason: "path inseguro (absoluto ou com '..') — recusado" };
+  }
   const src = join(referenceDir, relPath);
   if (!existsSync(src)) {
     return { relPath: toPosix(relPath), copied: false, reason: "ausente na edição de referência" };
