@@ -146,7 +146,12 @@ describe("orchestrator-prompt (#634)", () => {
       // Teto bumped de 548→575 com headroom (era 559 medido pós-#3929).
       "orchestrator-stage-2.md": 575,
       "orchestrator-stage-3.md": 135,
-      "orchestrator-stage-4.md": 648,
+      // #3947: +14 linhas (snapshot pós-humanizador/pré-Clarice em §4d.1
+      // passos 6.3 e 6.2' + fallback/uso desse snapshot no check
+      // humanizer-section-coverage do passo 6.7 — mesmo padrão do #3929,
+      // adaptado pro fluxo scoped/full-file de re-humanização do Stage 4).
+      // Teto bumped de 648→665 com headroom (era 649 medido pós-#3947).
+      "orchestrator-stage-4.md": 665,
       "orchestrator-stage-5.md": 455,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
@@ -495,6 +500,63 @@ describe("#3842: Stage 1 loga qual websearch path (A/B) foi escolhido e por quê
     assert.ok(
       overrideLogIdx < scriptRunIdx,
       "checagem/log de WEBSEARCH_BACKEND=agents deve vir ANTES da chamada a fetch-websearch-batch.ts — senão Path A roda à toa mesmo com o override setado",
+    );
+  });
+});
+
+describe("#3947: fluxo scoped/full-file de re-humanização social (§4d.1) não repete o falso-positivo do #3929", () => {
+  // Follow-up do #3929 (PR #3946, Stage 2): o check humanizer-section-coverage
+  // não pode comparar contra o `03-social.md` FINAL (pós-Clarice) — uma
+  // reversão legítima da Clarice (ela desfaz uma edição de estilo do
+  // Humanizador) faria a seção parecer "não coberta pelo humanizador". O
+  // Stage 4 (§4d.1 passo 6, re-humanização scoped/full-file no loop "ajustar")
+  // roda humanizador → Clarice na MESMA sequência do Stage 2 e tinha a mesma
+  // vulnerabilidade (#3947) — o fix é gravar `03-social-post-humanizador.md`
+  // ANTES de invocar a Clarice, em ambos os fluxos, e usar esse snapshot (não
+  // o arquivo final) no passo 6.7.
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const section4d1 = stage4.slice(stage4.indexOf("### 4d.1"));
+
+  it("fluxo SCOPED (passo 6.3): snapshot pós-humanizador é gravado ANTES da chamada à Clarice", () => {
+    const snapshotIdx = section4d1.indexOf("03-social-post-humanizador.md");
+    const clariceIdx = section4d1.indexOf("mcp__clarice__correct_text");
+    assert.ok(snapshotIdx !== -1, "§4d.1 não menciona 03-social-post-humanizador.md — snapshot #3947 ausente");
+    assert.ok(clariceIdx !== -1, "§4d.1 não menciona mcp__clarice__correct_text");
+    assert.ok(
+      snapshotIdx < clariceIdx,
+      "#3947: snapshot pós-humanizador deve ser gravado ANTES da 1ª chamada à Clarice no fluxo SCOPED (6.3) — senão a Clarice já rodou quando o snapshot é tirado e ele deixa de refletir o estado pré-Clarice",
+    );
+  });
+
+  it("fluxo FULL-FILE (passo 6.2'): snapshot pós-humanizador também é gravado ANTES da chamada à Clarice", () => {
+    const fullFileIdx = section4d1.indexOf("Fluxo FULL-FILE");
+    assert.ok(fullFileIdx !== -1, "§4d.1 não tem o fluxo FULL-FILE (6.2')");
+    const afterFullFile = section4d1.slice(fullFileIdx);
+    const snapshotIdx = afterFullFile.indexOf("03-social-post-humanizador.md");
+    const clariceIdx = afterFullFile.indexOf("mcp__clarice__correct_text");
+    assert.ok(snapshotIdx !== -1, "fluxo FULL-FILE não grava o snapshot 03-social-post-humanizador.md");
+    assert.ok(clariceIdx !== -1, "fluxo FULL-FILE não menciona mcp__clarice__correct_text");
+    assert.ok(
+      snapshotIdx < clariceIdx,
+      "#3947: no fluxo FULL-FILE (6.2') o snapshot também precisa ser gravado ANTES da Clarice",
+    );
+  });
+
+  it("passo 6.7: humanizer-section-coverage usa o snapshot pós-humanizador (com fallback), não o 03-social.md final direto", () => {
+    const step67Idx = section4d1.indexOf("**6.7**");
+    assert.ok(step67Idx !== -1, "§4d.1 não tem o passo 6.7");
+    const step67 = section4d1.slice(step67Idx, section4d1.indexOf("**6.8**"));
+    assert.ok(
+      step67.includes("COVERAGE_MD={EDITION_DIR}/_internal/03-social-post-humanizador.md"),
+      "#3947: passo 6.7 deve resolver COVERAGE_MD para o snapshot pós-humanizador por default",
+    );
+    assert.ok(
+      /\[\s*-f\s*"\$COVERAGE_MD"\s*\]/.test(step67),
+      "#3947: passo 6.7 deve ter fallback condicional (existsSync equivalente) pro 03-social.md final quando o snapshot não existir (edições/checkpoints anteriores ao fix)",
+    );
+    assert.ok(
+      step67.includes('--md "$COVERAGE_MD"'),
+      "#3947: a chamada humanizer-section-coverage deve usar $COVERAGE_MD (resolvido acima), não {EDITION_DIR}/03-social.md hardcoded",
     );
   });
 });

@@ -541,7 +541,15 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
    **Fluxo SCOPED (`legacy: false`):**
 
    **6.2** — Snapshot pré-humanização: `cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/.stage4-pre-scoped-humanize.md`.
-   **6.3** — **Rodar o humanizador SCOPED** — invocar a Skill pedindo explicitamente que **só** os blocos de `changed_sections` sejam reescritos (traduzir cada nome pra prosa: `main_d{N}` = texto principal de `## d{N}`; `post_pixel` = bloco `## post_pixel`). Instruir explicitamente para copiar todo o resto verbatim, sem tocar. Rodar `mcp__clarice__correct_text` no `## post_pixel` **só se `"post_pixel"` estiver em `changed_sections`**.
+   **6.3** — **Rodar o humanizador SCOPED** — invocar a Skill pedindo explicitamente que **só** os blocos de `changed_sections` sejam reescritos (traduzir cada nome pra prosa: `main_d{N}` = texto principal de `## d{N}`; `post_pixel` = bloco `## post_pixel`). Instruir explicitamente para copiar todo o resto verbatim, sem tocar.
+
+   **Snapshot pós-humanizador / pré-Clarice (#3947 — mesmo padrão do #3929 em Stage 2):** antes de rodar a Clarice, atualizar `_internal/03-social-post-humanizador.md` com o estado atual (já scoped-humanizado) de `03-social.md`:
+      ```bash
+      cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/03-social-post-humanizador.md
+      ```
+      Mesmo arquivo consumido pelo passo 6.7 abaixo — sobrescrevê-lo aqui garante que o baseline reflita o efeito real DESTE round de re-humanização antes que a Clarice tenha chance de reverter alguma seção de volta pra perto do texto pré-humanizador original (o que produziria o mesmo falso-positivo do #3929 — "humanizador pulou a seção" — só que dentro do loop scoped do Stage 4).
+
+   Rodar `mcp__clarice__correct_text` no `## post_pixel` **só se `"post_pixel"` estiver em `changed_sections`**.
    **6.4** — **Verificar que o escopo foi respeitado:**
       ```bash
       npx tsx scripts/verify-scoped-humanization.ts \
@@ -555,7 +563,11 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
 
    **Fluxo FULL-FILE (fallback — `legacy: true`, ou escalonamento do passo 6.4 acima):**
 
-   **6.2'** — Rodar o humanizador em `03-social.md` inteiro (passagem completa via Skill humanizador) — comportamento pré-#3446, preservado como rede de segurança. Rodar `mcp__clarice__correct_text` no `## post_pixel` (revisão ortográfica).
+   **6.2'** — Rodar o humanizador em `03-social.md` inteiro (passagem completa via Skill humanizador) — comportamento pré-#3446, preservado como rede de segurança.
+
+   **Snapshot pós-humanizador / pré-Clarice (#3947):** mesmo passo do fluxo SCOPED acima, antes de rodar a Clarice: `cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/03-social-post-humanizador.md`.
+
+   Rodar `mcp__clarice__correct_text` no `## post_pixel` (revisão ortográfica).
 
    **Os dois fluxos convergem aqui:**
 
@@ -566,11 +578,13 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
         --edition-dir {EDITION_DIR}/
       ```
       O `--write` SEM `--bypass-reason` falhará com exit 3 se o hash divergir — essa é a trava que impede bypasse acidental (#2373). Nunca usar `--write` como atalho para limpar o lint sem re-humanizar.
-   **6.7** — Re-rodar lints de qualidade social (mesmo fluxo do exit-2 em §4c.2b — comparam contra o baseline ORIGINAL de Stage 2, válido em ambos os fluxos):
+   **6.7** — Re-rodar lints de qualidade social (mesmo fluxo do exit-2 em §4c.2b — comparam contra o baseline ORIGINAL de Stage 2, válido em ambos os fluxos). **#3947 — `humanizer-section-coverage` compara contra o snapshot pós-humanizador/pré-Clarice (`03-social-post-humanizador.md`, gravado no passo 6.2'/6.3 acima), nunca contra o `03-social.md` final** — senão uma reversão legítima da Clarice (ela desfaz uma edição do Humanizador, aproximando o texto do pré-humanizador original) seria lida como "seção não coberta pelo humanizador", o mesmo falso-positivo do #3929. Fallback pro `03-social.md` final só se o snapshot não existir (sessão retomada a partir de um checkpoint anterior ao #3947):
       ```bash
+      COVERAGE_MD={EDITION_DIR}/_internal/03-social-post-humanizador.md
+      [ -f "$COVERAGE_MD" ] || COVERAGE_MD={EDITION_DIR}/03-social.md
       npx tsx scripts/lint-social-md.ts --check humanizer-section-coverage \
         --pre {EDITION_DIR}/_internal/03-social-pre-humanizador.md \
-        --md {EDITION_DIR}/03-social.md
+        --md "$COVERAGE_MD"
       npx tsx scripts/lint-social-md.ts --check relative-time --md {EDITION_DIR}/03-social.md
       npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
       npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md

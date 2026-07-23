@@ -1503,6 +1503,97 @@ describe("checkHumanizerSectionCoverage (#2148 Fix B)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// #3947: mesma vulnerabilidade do #3929 (Stage 2), no fluxo scoped/full-file
+// de re-humanização do Stage 4 (§4d.1 passo 6). Diferente do #3929 (que testa
+// via checkSocialPassesLints, específico do invariant-check de Stage 2), o
+// Stage 4 chama humanizer-section-coverage direto via bash no prompt do
+// orchestrator — não há wrapper de invariant-check pra testar. Estes testes
+// exercitam a MESMA função (checkHumanizerSectionCoverage) com o cenário do
+// Stage 4: post_pixel é a única seção tocada pela Clarice (§4d.1 6.3/6.2'
+// só chamam Clarice no post_pixel), então é onde a reversão pode acontecer.
+// ---------------------------------------------------------------------------
+
+describe("checkHumanizerSectionCoverage — cenário Stage 4 scoped re-humanização (#3947)", () => {
+  it("#3947: comparar contra o snapshot pós-humanizador/pré-Clarice NÃO dispara falso-positivo quando a Clarice reverte post_pixel", () => {
+    // Round de "ajustar" no Stage 4: post_pixel está em changed_sections, o
+    // humanizador scoped reescreve só post_pixel, e a Clarice em seguida
+    // corrige post_pixel de volta pra (perto de) o texto pré-humanizador
+    // ORIGINAL (ex: o humanizador introduziu um erro que a Clarice consertou
+    // revertendo a frase). O snapshot pós-humanizador/pré-Clarice prova que o
+    // humanizador de fato tocou a seção — a comparação correta (fix #3947) é
+    // contra ESSE snapshot, não contra o 03-social.md final (pós-Clarice).
+    // Todas as demais seções diferem normalmente entre pre/post (humanização
+    // completa das outras seções, irrelevante ao ponto do teste) — só
+    // post_pixel é a variável de interesse (única seção que a Clarice toca,
+    // §4d.1 6.3/6.2').
+    const commonTouched = {
+      mainD1: "Texto reescrito d1.",
+      mainD2: "Texto reescrito d2.",
+      mainD3: "Texto reescrito d3.",
+      commentPixelD1: "Comentário reescrito d1.",
+      commentPixelD2: "Comentário reescrito d2.",
+      commentPixelD3: "Comentário reescrito d3.",
+    };
+    const preHumanizadorOriginal = mkSocialForCoverage({
+      mainD1: "Texto ORIGINAL d1.",
+      mainD2: "Texto ORIGINAL d2.",
+      mainD3: "Texto ORIGINAL d3.",
+      commentPixelD1: "Comentário ORIGINAL d1.",
+      commentPixelD2: "Comentário ORIGINAL d2.",
+      commentPixelD3: "Comentário ORIGINAL d3.",
+      postPixel: "Post pixel ORIGINAL com um erro que o humanizador vai reescrever mal.",
+    });
+    const postHumanizadorSnapshot = mkSocialForCoverage({
+      ...commonTouched,
+      postPixel: "Post pixel reescrito pelo humanizador, com erro de concordância novo.",
+    });
+    // 03-social.md final: Clarice reverteu SÓ post_pixel de volta pro texto
+    // ORIGINAL — as demais seções permanecem como o humanizador deixou (a
+    // Clarice, em ambos os fluxos de §4d.1, só corrige o post_pixel).
+    const finalPosClarice = mkSocialForCoverage({
+      ...commonTouched,
+      postPixel: "Post pixel ORIGINAL com um erro que o humanizador vai reescrever mal.",
+    });
+
+    // Fix #3947: comparar --pre contra o snapshot pós-humanizador (não o final).
+    const fixed = checkHumanizerSectionCoverage(preHumanizadorOriginal, postHumanizadorSnapshot);
+    assert.equal(fixed.ok, true, "#3947: usando o snapshot pós-humanizador, todas as seções (incl. post_pixel) devem aparecer como cobertas");
+    assert.ok(
+      !fixed.untouched.includes("post_pixel"),
+      "#3947 regressão: post_pixel não deveria aparecer como untouched ao comparar contra o snapshot correto",
+    );
+
+    // Prova do bug (comportamento PRÉ-#3947): comparar --pre contra o arquivo
+    // FINAL (pós-Clarice) produz o falso-positivo — post_pixel parece intacto
+    // porque a Clarice reverteu exatamente pro texto pré-humanizador.
+    const buggy = checkHumanizerSectionCoverage(preHumanizadorOriginal, finalPosClarice);
+    assert.equal(buggy.ok, false, "comparar contra o arquivo final reproduz o falso-positivo pré-#3947 (prova do bug)");
+    assert.ok(
+      buggy.untouched.includes("post_pixel"),
+      "comparar contra o arquivo final deveria marcar post_pixel como untouched (falso-positivo que o fix evita)",
+    );
+  });
+
+  it("#3947: detecção real de seção pulada continua funcionando ao usar o snapshot pós-humanizador", () => {
+    // Negativo: se o humanizador de fato NÃO tocou post_pixel (bug real, não
+    // reversão da Clarice), o check deve continuar acusando — usar o snapshot
+    // pós-humanizador em vez do arquivo final não pode mascarar isso.
+    const pre = mkSocialForCoverage({
+      mainD1: "Texto ORIGINAL d1.",
+      postPixel: "Post pixel ORIGINAL — humanizador vai pular esta seção.",
+    });
+    // Humanizador só tocou d1 — post_pixel ficou idêntico ao pre (pulado).
+    const postHumanizadorSnapshot = mkSocialForCoverage({
+      mainD1: "Texto reescrito d1.",
+      postPixel: "Post pixel ORIGINAL — humanizador vai pular esta seção.",
+    });
+    const r = checkHumanizerSectionCoverage(pre, postHumanizadorSnapshot);
+    assert.equal(r.ok, false, "#3947: seção realmente pulada pelo humanizador deve continuar sendo detectada");
+    assert.ok(r.untouched.includes("post_pixel"), "post_pixel deve estar em untouched — humanizador de fato a pulou");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #3446: computeSectionHashes + checkScopedHumanizerCoverage
 // ---------------------------------------------------------------------------
 
