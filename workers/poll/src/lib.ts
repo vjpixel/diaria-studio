@@ -834,8 +834,8 @@ export const EMAIL_ARCHIVE_UTM_CAMPAIGN = "eia-arquivo";
 
 /**
  * Href relativo do arquivo jogável (`/jogar/arquivo`, #3519) com o UTM do
- * funil "página pós-voto → site". Path relativo (não `POLL_BASE_URL` absoluto)
- * — mesmo padrão de `leaderboardHref`/`archiveHref` acima: o link vive na
+ * funil "página pós-voto → site". Path relativo (não uma URL absoluta) —
+ * mesmo padrão de `leaderboardHref`/`archiveHref` acima: o link vive na
  * MESMA origem do Worker (`/vote` e `/jogar/arquivo` são handlers do mesmo
  * worker `poll`), sem necessidade de URL absoluta.
  */
@@ -1002,16 +1002,14 @@ export function validateNickname(cleanName: string): string | null {
 // só `renderSharePageHtml` (share.ts) passa `imageUrl`.
 
 /**
- * #3701: hostname genérico `workers.dev` original do worker `poll`. Preservado
- * como constante documentada (não referenciada em código — só em comentários)
- * porque `workers_dev = true` segue ativo em `workers/poll/wrangler.toml`: os
- * links de VOTO/imagem já embutidos em edições enviadas ANTES do #3904
- * apontam pra este hostname e precisam continuar vivos (não reescrever,
- * ~300 referências históricas). Nenhum HTML renderizado por este worker
- * constrói mais URLs a partir desta constante (ver `PUBLIC_GAME_BASE_URL`
- * abaixo e #3904).
+ * #3701: hostname genérico `workers.dev` original do worker `poll`. Ainda
+ * ativo via `workers_dev = true` em `workers/poll/wrangler.toml` — os links de
+ * VOTO/imagem já embutidos em edições enviadas ANTES do #3904 apontam pra
+ * este hostname e continuam vivos (~300 referências históricas, não
+ * reescritas). #3904: nenhum código deste worker constrói mais URLs a partir
+ * deste hostname (ver `PUBLIC_GAME_BASE_URL` abaixo) — não há constante
+ * correspondente porque nada aqui precisa gerá-lo em runtime.
  */
-export const POLL_BASE_URL = "https://poll.diaria.workers.dev";
 
 /**
  * #3701: domínio de marca do jogo público "É IA?" — `eia.diar.ia.br`, um
@@ -1019,14 +1017,12 @@ export const POLL_BASE_URL = "https://poll.diaria.workers.dev";
  * `workers/poll/wrangler.toml`).
  *
  * #3701 introduziu isto só pro brand `web` (canonical/og:url/share/embed do
- * jogo público standalone), mantendo `POLL_BASE_URL` pros brands
- * `diaria`/`clarice`. #3904 estendeu o uso: `renderSeoMeta` (abaixo) agora usa
- * este domínio para TODO brand — o worker é o mesmo por trás de ambos os
- * hostnames, então canonical/og:url ganham consistência sem quebrar nada
- * (SEO/compartilhamento não é um link já "embutido" em e-mail enviado, ao
- * contrário do link de voto). `POLL_BASE_URL` segue existindo só pela razão
- * documentada no seu próprio comentário acima — links de AÇÃO de edições já
- * enviadas antes deste PR.
+ * jogo público standalone). #3904 estendeu o uso: `renderSeoMeta` (abaixo)
+ * agora usa este domínio para TODO brand — o worker é o mesmo por trás de
+ * ambos os hostnames, então canonical/og:url ganham consistência sem quebrar
+ * nada (SEO/compartilhamento não é um link já "embutido" em e-mail enviado,
+ * ao contrário do link de voto, que continua no hostname antigo — ver
+ * comentário acima).
  */
 export const PUBLIC_GAME_BASE_URL = "https://eia.diar.ia.br";
 
@@ -1067,12 +1063,12 @@ export interface SeoMetaOptions {
    * imagem entram e twitter:card vira summary_large_image (preview rico). */
   imageUrl?: string;
   /** #3701: introduziu `PUBLIC_GAME_BASE_URL` (`eia.diar.ia.br`) só pro brand
-   * `"web"`, mantendo `POLL_BASE_URL` (`poll.diaria.workers.dev`) pros demais.
-   * #3904: canonical/og:url do worker inteiro migram pro domínio de marca,
-   * independente do brand — mesmo worker por trás de ambos os hostnames, e
-   * `POLL_BASE_URL` segue existindo só pros endpoints de AÇÃO (voto/img/stats)
-   * de edições já enviadas, nunca pra SEO. Campo mantido (não usado mais
-   * dentro desta função) por back-compat de assinatura dos callers. */
+   * `"web"`, mantendo `poll.diaria.workers.dev` pros demais. #3904:
+   * canonical/og:url do worker inteiro migram pro domínio de marca,
+   * independente do brand — mesmo worker por trás de ambos os hostnames; o
+   * hostname antigo segue vivo só pros links de AÇÃO (voto/img/stats) já
+   * embutidos em edições enviadas, nunca pra SEO. Campo mantido (não usado
+   * mais dentro desta função) por back-compat de assinatura dos callers. */
   brand?: Brand;
 }
 
