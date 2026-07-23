@@ -15,7 +15,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
@@ -266,8 +266,14 @@ describe("readBox / saveBox (#3924, pure)", () => {
   it("saveBox: expectedModifiedAt divergente -> conflict:true, NÃO sobrescreve", () => {
     const filePath = boxFilePath(root, "box-a.md");
     const staleModifiedAt = statSync(filePath).mtime.toISOString();
-    // Simula outra sessão escrevendo por baixo.
+    // Simula outra sessão escrevendo por baixo. `utimesSync` força o mtime 2s
+    // pra frente pra o teste ser DETERMINÍSTICO — sem isso, num FS com
+    // granularidade grossa de mtime (runner CI), a escrita cairia no mesmo tick
+    // do `statSync` acima, o mtime não mudaria, e o conflito não dispararia
+    // (flake histórica, quebrou o CI da PR #3935).
     writeFileSync(filePath, "# Box A\n\nEscrita concorrente.", "utf8");
+    const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
+    utimesSync(filePath, bumped, bumped);
 
     const result = saveBox(root, "box-a.md", "minha versão local", { expectedModifiedAt: staleModifiedAt });
     assert.equal(result.ok, false);
@@ -280,6 +286,8 @@ describe("readBox / saveBox (#3924, pure)", () => {
     const filePath = boxFilePath(root, "box-a.md");
     const staleModifiedAt = statSync(filePath).mtime.toISOString();
     writeFileSync(filePath, "# Box A\n\noutra escrita concorrente 2", "utf8");
+    const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
+    utimesSync(filePath, bumped, bumped); // determinismo de mtime (ver teste acima)
 
     const result = saveBox(root, "box-a.md", "sobrescrita forçada", {
       expectedModifiedAt: staleModifiedAt,
@@ -637,6 +645,10 @@ describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
       "utf8",
     );
     const staleModifiedAt = loadedModifiedAt;
+    // Determinismo de mtime (mesma flake do teste puro): força o mtime pra
+    // frente pra garantir divergência mesmo em FS de granularidade grossa.
+    const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
+    utimesSync(join(root, "context", "snippets", "recomendacao-leitura.md"), bumped, bumped);
 
     const put = await fetch(new URL("/api/boxes/recomendacao-leitura.md", server.url), {
       method: "PUT",
