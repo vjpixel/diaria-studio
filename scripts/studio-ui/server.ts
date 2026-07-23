@@ -356,7 +356,15 @@ import type { DrainApoiaSeResult } from "../lib/apoia-se-gmail-drain.ts";
 // #3924: seção "Caixas" — listar e editar os snippets de caixa de
 // divulgação (`context/snippets/*.md`) — arquivo próprio desta fatia, import
 // isolado (nenhuma outra rota depende dele). Ver studio-boxes.ts.
-import { listBoxes, readBox, saveBox } from "./studio-boxes.ts";
+import {
+  listBoxes,
+  readBox,
+  saveBox,
+  createBox,
+  archiveBox,
+  unarchiveBox,
+  listArchivedBoxes,
+} from "./studio-boxes.ts";
 // #3564: notificação Telegram (gate 4/6 pendente + AskUserQuestion pendente
 // no chat) com dedup — arquivo próprio desta fatia, import isolado (nenhuma
 // outra rota depende dele). Ver studio-telegram-notify.ts.
@@ -1388,6 +1396,62 @@ async function handleApiBoxSave(
   sendJson(res, status, result);
 }
 
+/** `POST /api/boxes` — cria uma caixa NOVA (#3928). Body `{slug, content}`.
+ * 201 criada, 409 já existe (viva ou arquivada), 400 slug/corpo inválido.
+ * `createBox` é fail-soft; só o parse de corpo é tratado aqui. */
+async function handleApiBoxCreate(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, BOXES_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const parsed = body as { slug?: unknown; content?: unknown } | null;
+  const slug = parsed?.slug;
+  const content = parsed?.content;
+  if (typeof slug !== "string" || !slug) {
+    sendJson(res, 400, { error: "campo 'slug' (string) é obrigatório no corpo" });
+    return;
+  }
+  if (typeof content !== "string") {
+    sendJson(res, 400, { error: "campo 'content' (string) é obrigatório no corpo" });
+    return;
+  }
+  const result = createBox(rootDir, slug, content);
+  const status = result.ok ? 201 : result.exists ? 409 : 400;
+  sendJson(res, status, result);
+}
+
+/** `POST /api/boxes/:slug/archive` — arquiva (move pra `_arquivo/`) uma caixa
+ * (#3928). 200 arquivada, 404 slug inválido/inexistente, 409 bloqueada por
+ * slot ativo (auto-injetada em toda newsletter — arquivar quebraria o
+ * pipeline). Conteúdo NUNCA é deletado. */
+function handleApiBoxArchive(rootDir: string, slug: string, res: ServerResponse): void {
+  const result = archiveBox(rootDir, slug);
+  const status = result.ok ? 200 : result.notFound ? 404 : result.blockedBySlot ? 409 : 400;
+  sendJson(res, status, result);
+}
+
+/** `POST /api/boxes/:slug/unarchive` — restaura uma caixa arquivada (#3928).
+ * 200 restaurada, 404 slug inválido/sem arquivada, 409 já existe caixa viva
+ * de mesmo slug (não sobrescreve). */
+function handleApiBoxUnarchive(rootDir: string, slug: string, res: ServerResponse): void {
+  const result = unarchiveBox(rootDir, slug);
+  const status = result.ok ? 200 : result.notFound ? 404 : result.conflict ? 409 : 400;
+  sendJson(res, status, result);
+}
+
+/** `GET /api/boxes/archived` — lista as caixas arquivadas (#3928). Sempre 200:
+ * `listArchivedBoxes` é fail-soft (pasta ausente -> `[]`). */
+function handleApiArchivedBoxesList(rootDir: string, res: ServerResponse): void {
+  sendJson(res, 200, { boxes: listArchivedBoxes(rootDir) });
+}
+
 // ── #3848: status de todas as integrações (APIs + MCPs) ────────────────
 
 /** `GET /api/integrations` — status de todas as integrações (#3848). Sempre
@@ -1594,9 +1658,29 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         );
         return;
       }
+      // #3928: criar caixa nova — POST /api/boxes (bare). Antes do guard de
+      // método (mesma disciplina das rotas de escrita acima).
+      if (urlPath === "/api/boxes" && req.method === "POST") {
+        handleApiBoxCreate(rootDir, req, res).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
+      // #3928: arquivar / restaurar caixa — POST /api/boxes/:slug/(archive|
+      // unarchive). Regex com sufixo não colide com o save (`.../:slug$`).
+      const boxArchiveMatch = urlPath.match(/^\/api\/boxes\/([^/]+)\/archive$/);
+      if (req.method === "POST" && boxArchiveMatch) {
+        handleApiBoxArchive(rootDir, decodeURIComponent(boxArchiveMatch[1]), res);
+        return;
+      }
+      const boxUnarchiveMatch = urlPath.match(/^\/api\/boxes\/([^/]+)\/unarchive$/);
+      if (req.method === "POST" && boxUnarchiveMatch) {
+        handleApiBoxUnarchive(rootDir, decodeURIComponent(boxUnarchiveMatch[1]), res);
+        return;
+      }
 
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556), POST /api/waves/fire (#3702) e as rotas de ação do #3559/#3602/#3806/#3859/#3861/#3924" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556), POST /api/waves/fire (#3702) e as rotas de ação do #3559/#3602/#3806/#3859/#3861/#3924/#3928" });
         return;
       }
 
@@ -1676,6 +1760,13 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // ordem aqui é só disciplina de leitura, mesmo padrão do resto do arquivo).
       if (urlPath === "/api/boxes") {
         handleApiBoxesList(rootDir, res);
+        return;
+      }
+      // #3928: lista de caixas ARQUIVADas — checada ANTES do get-por-slug
+      // abaixo (o regex `/api/boxes/([^/]+)` casaria "archived" como slug e
+      // devolveria 404).
+      if (urlPath === "/api/boxes/archived") {
+        handleApiArchivedBoxesList(rootDir, res);
         return;
       }
       const boxGetMatch = urlPath.match(/^\/api\/boxes\/([^/]+)$/);
