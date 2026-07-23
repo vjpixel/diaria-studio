@@ -7,10 +7,11 @@
  * `test/studio-chat.test.ts` (#3556): sem spawnar o CLI real, sem depender
  * de rede/auth.
  */
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
@@ -25,10 +26,16 @@ import {
   spawnGhSync,
   GH_SPAWN_TIMEOUT_MS,
   WAVE_DIAGNOSTIC_COMMENT_PREFIX,
+  WAVE_FIRE_DEBUG_LOG_RELATIVE_PATH,
+  resolveWaveFireDebugLogPath,
+  buildWaveFireDebugLogEntry,
+  appendWaveFireDebugLog,
+  summarizeSdkMessageForLog,
   type QueryFn,
   type IssueTerminalCheck,
   type GhIssueRunFn,
   type WaveIssueSummary,
+  type WaveFireDebugLogEntry,
 } from "../scripts/studio-ui/studio-wave-fire.ts";
 import type { ChatWireEvent } from "../scripts/studio-ui/studio-chat.ts";
 
@@ -1617,5 +1624,303 @@ describe("runWaveFire (#3914) — fetch de issue summaries antes do prompt, inje
     assert.doesNotMatch(capturedPrompt, /## Detalhes das issues/);
     assert.equal(received.length, 1);
     assert.equal(received[0].event, "chat-done"); // nunca chat-error por causa do fetch de summaries
+  });
+});
+
+// ─── #3967 — achado ao vivo 260723: turno da coordenadora pode terminar antes
+// do trabalho real esgotar. Ver doc-comment do módulo, seção "#3967", pro
+// racional completo. Dois testes de regressão: (1) run_in_background forçado
+// a false via updatedInput; (2) logging server-side sobrevive independente
+// do estado da conexão HTTP (onEvent).
+
+describe("evaluateWaveTool (#3967) — Agent isolation:worktree força run_in_background: false via updatedInput", () => {
+  it("adiciona updatedInput.run_in_background: false quando o input não especifica o campo", () => {
+    const decision = evaluateWaveTool("Agent", {
+      subagent_type: "general-purpose",
+      isolation: "worktree",
+      model: "sonnet",
+    });
+    assert.equal(decision.allow, true);
+    assert.equal(decision.updatedInput?.run_in_background, false);
+    // preserva os demais campos do input original — não é uma reescrita total.
+    assert.equal(decision.updatedInput?.subagent_type, "general-purpose");
+    assert.equal(decision.updatedInput?.isolation, "worktree");
+    assert.equal(decision.updatedInput?.model, "sonnet");
+  });
+
+  it("sobrescreve run_in_background: true -> false, mesmo se o modelo já setou o oposto explicitamente", () => {
+    const decision = evaluateWaveTool("Agent", { isolation: "worktree", run_in_background: true });
+    assert.equal(decision.updatedInput?.run_in_background, false);
+  });
+
+  it("idempotente quando run_in_background já vem false", () => {
+    const decision = evaluateWaveTool("Agent", { isolation: "worktree", run_in_background: false });
+    assert.equal(decision.updatedInput?.run_in_background, false);
+  });
+
+  it("NÃO retorna updatedInput no ramo deny (isolation !== 'worktree') — nada pra corrigir num input negado", () => {
+    const decision = evaluateWaveTool("Agent", { isolation: "none" });
+    assert.equal(decision.allow, false);
+    assert.equal(decision.updatedInput, undefined);
+  });
+
+  it("não afeta outras tools — Bash allow-listado continua sem updatedInput", () => {
+    const decision = evaluateWaveTool("Bash", { command: "gh issue comment 123 --body \"ok\"" });
+    assert.equal(decision.allow, true);
+    assert.equal(decision.updatedInput, undefined);
+  });
+});
+
+describe("runWaveFire (#3967) — makeWaveSafeCanUseTool aplica updatedInput retornado por evaluateWaveTool", () => {
+  it("o canUseTool passado ao SDK devolve run_in_background: false pra um dispatch Agent/isolation:worktree", async () => {
+    let capturedOptions: Record<string, unknown> = {};
+    const fakeQuery: QueryFn = (params) => {
+      capturedOptions = (params.options ?? {}) as Record<string, unknown>;
+      async function* gen() {
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    await runWaveFire({
+      issueNumbers: [101],
+      cwd: "/repo",
+      queryFn: fakeQuery,
+      checkTerminalStateFn: allTerminal,
+      fetchIssueSummariesFn: () => [],
+      onEvent: () => {},
+    });
+
+    const canUseTool = capturedOptions.canUseTool as (
+      toolName: string,
+      input: Record<string, unknown>,
+      options: { signal: AbortSignal; toolUseID: string; requestId: string; agentID?: string },
+    ) => Promise<{ behavior: string; updatedInput?: Record<string, unknown> } | null>;
+    assert.equal(typeof canUseTool, "function");
+
+    const result = await canUseTool(
+      "Agent",
+      { subagent_type: "general-purpose", isolation: "worktree", model: "sonnet" },
+      { signal: new AbortController().signal, toolUseID: "tu-1", requestId: "req-1" },
+    );
+    assert.equal(result?.behavior, "allow");
+    assert.equal(result?.updatedInput?.run_in_background, false);
+  });
+});
+
+describe("summarizeSdkMessageForLog (#3967) — resumo compacto de 1 SDKMessage pro log de diagnóstico", () => {
+  it("mensagem system/init -> só type/subtype (sem campos extras que essa mensagem não tem)", () => {
+    const summary = summarizeSdkMessageForLog({
+      type: "system",
+      subtype: "init",
+      session_id: "s1",
+      model: "claude-sonnet-5",
+    } as unknown as SDKMessage);
+    assert.equal(summary.type, "system");
+    assert.equal(summary.subtype, "init");
+  });
+
+  it("mensagem assistant com tool_use Agent -> contentBlockTypes lista nome da tool, sem o input completo", () => {
+    const summary = summarizeSdkMessageForLog({
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "tu-1", name: "Agent", input: { prompt: "segredo grande demais pro log" } }],
+      },
+    } as unknown as SDKMessage);
+    assert.equal(summary.type, "assistant");
+    assert.deepEqual(summary.contentBlockTypes, [{ type: "tool_use", name: "Agent" }]);
+    // nunca serializa o `input` da tool call (pode ser grande/sensível) — só o nome.
+    assert.equal(JSON.stringify(summary).includes("segredo"), false);
+  });
+
+  it("mensagem user com tool_result -> contentBlockTypes lista o tool_use_id correspondente", () => {
+    const summary = summarizeSdkMessageForLog({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "tu-1", content: "resultado gigante" }] },
+    } as unknown as SDKMessage);
+    assert.deepEqual(summary.contentBlockTypes, [{ type: "tool_result", tool_use_id: "tu-1" }]);
+  });
+
+  it("mensagem result -> inclui is_error/session_id (o par usado pra decidir chat-done isError)", () => {
+    const summary = summarizeSdkMessageForLog({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "ok",
+      session_id: "s1",
+    } as unknown as SDKMessage);
+    assert.equal(summary.is_error, false);
+    assert.equal(summary.session_id, "s1");
+  });
+});
+
+describe("resolveWaveFireDebugLogPath / buildWaveFireDebugLogEntry (#3967) — puras", () => {
+  it("resolve pra <rootDir>/data/overnight/wave-fire-debug.log", () => {
+    assert.equal(resolveWaveFireDebugLogPath("/repo"), resolve("/repo", WAVE_FIRE_DEBUG_LOG_RELATIVE_PATH));
+    assert.match(WAVE_FIRE_DEBUG_LOG_RELATIVE_PATH, /^data[\\/]overnight[\\/]wave-fire-debug\.log$/);
+  });
+
+  it("buildWaveFireDebugLogEntry adiciona timestamp ISO preservando kind/detail", () => {
+    const now = new Date("2026-07-23T12:00:00.000Z");
+    const persisted = buildWaveFireDebugLogEntry({ kind: "session-start", detail: { issueNumbers: [101] } }, now);
+    assert.equal(persisted.ts, "2026-07-23T12:00:00.000Z");
+    assert.equal(persisted.kind, "session-start");
+    assert.deepEqual(persisted.detail, { issueNumbers: [101] });
+  });
+});
+
+describe("appendWaveFireDebugLog (#3967) — append fail-soft ao JSONL, independente do estado da conexão HTTP", () => {
+  let tmpRoot: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), "wave-fire-debug-log-"));
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  });
+
+  it("cria data/overnight/ e escreve 1 linha JSON válida na primeira chamada", () => {
+    appendWaveFireDebugLog({ kind: "session-start", detail: { issueNumbers: [101, 202] } }, tmpRoot);
+
+    const content = readFileSync(join(tmpRoot, "data", "overnight", "wave-fire-debug.log"), "utf8");
+    const lines = content.trim().split("\n");
+    assert.equal(lines.length, 1);
+    const parsed = JSON.parse(lines[0]);
+    assert.equal(parsed.kind, "session-start");
+    assert.deepEqual(parsed.detail.issueNumbers, [101, 202]);
+    assert.ok(parsed.ts);
+  });
+
+  it("append múltiplos eventos preservando ordem (mesmo padrão de scripts/lib/run-log.ts)", () => {
+    appendWaveFireDebugLog({ kind: "session-start", detail: { issueNumbers: [101] } }, tmpRoot);
+    appendWaveFireDebugLog({ kind: "sdk-message", detail: { type: "assistant" } }, tmpRoot);
+    appendWaveFireDebugLog({ kind: "session-end", detail: { outcome: "ok" } }, tmpRoot);
+
+    const content = readFileSync(join(tmpRoot, "data", "overnight", "wave-fire-debug.log"), "utf8");
+    const lines = content.trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(
+      lines.map((l: WaveFireDebugLogEntry) => l.kind),
+      ["session-start", "sdk-message", "session-end"],
+    );
+  });
+
+  it("falha de I/O é silenciosa — não lança (mesmo espírito de scripts/lib/run-log.ts logEvent)", () => {
+    assert.doesNotThrow(() => {
+      // rootDir com um NUL byte é inválido em qualquer SO — força a falha do
+      // mkdirSync/appendFileSync internos sem depender de permissões de disco
+      // específicas da máquina que roda o teste.
+      appendWaveFireDebugLog({ kind: "error", detail: {} }, "/rootdir/com/\0/nul/byte/invalido");
+    });
+  });
+});
+
+describe("runWaveFire (#3967) — logFn recebe TODO evento independente do estado da conexão HTTP (onEvent)", () => {
+  it("grava session-start, sdk-message (x2), wire-event (x2), post-turn-check e session-end, mesmo com onEvent mudo (conexão já fechada)", async () => {
+    const fakeMessages: SDKMessage[] = [
+      {
+        type: "assistant",
+        message: { content: [{ type: "tool_use", id: "tu-1", name: "Agent", input: { issue: 101 } }] },
+      } as unknown as SDKMessage,
+      { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage,
+    ];
+    const fakeQuery: QueryFn = () => {
+      async function* gen() {
+        for (const m of fakeMessages) yield m;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    const loggedEntries: WaveFireDebugLogEntry[] = [];
+    // Simula o achado ao vivo 260723: a conexão HTTP já morreu, então `onEvent`
+    // (que em produção escreve em `res` dentro de um try/catch que engole
+    // falhas) não tem mais pra onde emitir nada de visível — aqui simplesmente
+    // não faz nada, como se cada `res.write` estivesse silenciosamente
+    // falhando. O log precisa continuar capturando tudo mesmo assim.
+    await runWaveFire({
+      issueNumbers: [101],
+      cwd: "/repo",
+      queryFn: fakeQuery,
+      checkTerminalStateFn: allTerminal,
+      fetchIssueSummariesFn: () => [],
+      onEvent: () => {
+        /* conexão já fechada — nada acontece do lado HTTP */
+      },
+      logFn: (entry) => loggedEntries.push(entry),
+    });
+
+    const kinds = loggedEntries.map((e) => e.kind);
+    assert.deepEqual(kinds, [
+      "session-start",
+      "sdk-message",
+      "wire-event",
+      "sdk-message",
+      "wire-event",
+      "post-turn-check",
+      "session-end",
+    ]);
+    // a mensagem assistant com tool_use Agent está de fato no log, apesar de
+    // `onEvent` não ter feito nada visível com ela.
+    const sdkMessageEntries = loggedEntries.filter((e) => e.kind === "sdk-message");
+    assert.deepEqual(sdkMessageEntries[0].detail.contentBlockTypes, [{ type: "tool_use", name: "Agent" }]);
+    const wireEventEntries = loggedEntries.filter((e) => e.kind === "wire-event");
+    assert.equal(wireEventEntries[0].detail.event, "chat-tool");
+    assert.equal(wireEventEntries[1].detail.event, "chat-done");
+  });
+
+  it("usa appendWaveFireDebugLog (o writer real) como default quando logFn não é injetado", async () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), "wave-fire-runwavefire-log-"));
+    try {
+      const fakeQuery: QueryFn = () => {
+        async function* gen() {
+          yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+        }
+        return gen() as unknown as ReturnType<QueryFn>;
+      };
+
+      await runWaveFire({
+        issueNumbers: [101],
+        cwd: tmpRoot,
+        queryFn: fakeQuery,
+        checkTerminalStateFn: allTerminal,
+        fetchIssueSummariesFn: () => [],
+        onEvent: () => {},
+      });
+
+      const content = readFileSync(join(tmpRoot, "data", "overnight", "wave-fire-debug.log"), "utf8");
+      const lines = content.trim().split("\n").map((l) => JSON.parse(l));
+      assert.ok(lines.length >= 2);
+      assert.equal(lines[0].kind, "session-start");
+      assert.equal(lines[lines.length - 1].kind, "session-end");
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("grava um evento 'error' quando o queryFn lança — visível no arquivo mesmo quando onEvent só recebe o chat-error final", async () => {
+    const throwingQuery: QueryFn = () => {
+      throw new Error("spawn claude ENOENT");
+    };
+    const loggedEntries: WaveFireDebugLogEntry[] = [];
+    await runWaveFire({
+      issueNumbers: [101],
+      cwd: "/repo",
+      queryFn: throwingQuery,
+      fetchIssueSummariesFn: () => [],
+      onEvent: () => {},
+      logFn: (entry) => loggedEntries.push(entry),
+    });
+
+    const kinds = loggedEntries.map((e) => e.kind);
+    assert.deepEqual(kinds, ["session-start", "error"]);
+    assert.equal(loggedEntries[1].detail.phase, "stream");
+    // `describeChatError` traduz a exceção crua num texto legível pro editor
+    // (ver studio-chat.ts) — o log grava esse texto já traduzido, não a
+    // stack/mensagem crua do Node.
+    assert.match(String(loggedEntries[1].detail.message), /CLI do Claude Code não encontrado/);
   });
 });

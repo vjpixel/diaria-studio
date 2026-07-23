@@ -325,10 +325,71 @@
  *   `server.ts`) — mesmo com o código pronto, a rota responde 501 a menos
  *   que essa variável esteja setada, pra nenhuma instância existente do
  *   Studio passar a aceitar disparos reais só por atualizar o código.
+ *
+ * ## #3967 — Agent roda em background por padrão: turno da coordenadora pode
+ * ## terminar antes do trabalho real esgotar (achado ao vivo 260723)
+ *
+ * Validação ao vivo (sessão anterior, 260723, DEPOIS do fix do #3914 acima já
+ * mergeado) contra 2 issues triviais reais via `curl -N` (streaming):
+ * observado (1) a coordenadora anunciou via texto que ia dispatchar os 2
+ * agentes; (2) a conexão HTTP/SSE fechou normalmente (`curl` saiu com exit
+ * code 0 — nem timeout, nem erro) logo em seguida, SEM nenhum evento de tool
+ * call visível pra `Agent` e sem `chat-done`; (3) ~4min depois, 2 worktrees
+ * apareceram em disco — confirmando que `Agent` FOI de fato chamada, DEPOIS
+ * da resposta HTTP já ter terminado; (4) o processo `claude.exe` da
+ * coordenadora seguiu vivo, CPU crescente, por mais ~15-20min; (5) os 2
+ * worktrees desapareceram sem gerar PR (auto-limpeza por "nenhuma mudança
+ * feita"); (6) o processo nunca sinalizou conclusão, precisou ser morto
+ * manualmente.
+ *
+ * Confirmado por leitura de código (server.ts + este módulo) que
+ * `handleApiWavesFire` JÁ faz `await runWaveFire(...)` antes de `res.end()`,
+ * e que o `for await` abaixo JÁ consome o stream inteiro (mais a validação
+ * pós-turno do #3765) antes de retornar — não existe um caminho óbvio de
+ * `res.end()` prematuro NESTE código.
+ *
+ * **Candidato forte de causa raiz** (confirmado por leitura de
+ * `node_modules/@anthropic-ai/claude-agent-sdk/sdk-tools.d.ts`,
+ * `AgentInput.run_in_background`): "Agents run in the background by default;
+ * you will be notified when one completes. Set to false to run this agent
+ * synchronously when you need its result before continuing." — ou seja, o
+ * DEFAULT do SDK pra `Agent` é rodar em background e devolver um
+ * `tool_result` de placeholder quase na hora, deixando o TURNO da
+ * coordenadora (e portanto o `for await` abaixo) terminar muito antes do
+ * trabalho real (worktree/`npm ci`/PR) esgotar. Nem a prosa do passo 1 de
+ * `buildWaveFireCoordinatorPrompt` nem `evaluateWaveTool` forçavam
+ * `run_in_background: false` — apesar do passo 2 do prompt já dizer "espere
+ * cada Agent retornar" (a intenção sempre foi bloquear até o resultado
+ * real). Isso bate com os itens 1/3/4/5 observados: turno termina cedo, mas
+ * o processo `claude.exe` segue rodando as tasks em background por minutos,
+ * até a sessão inteira encerrar e os worktrees serem limpos sem PR. **Não
+ * totalmente explicado por essa hipótese:** a ausência TOTAL de qualquer
+ * evento de tool call (item 2) — pela tradução em `sdkMessageToChatEvents`,
+ * a mensagem `assistant` completa com o bloco `tool_use` deveria gerar esse
+ * evento independente de `run_in_background`. Não foi possível confirmar com
+ * certeza sem rodar o SDK real (#207 bloqueia isso de dentro do worktree do
+ * subagente que investigou).
+ *
+ * **Fix aplicado (#3967):** `evaluateWaveTool` agora força
+ * `run_in_background: false` via `updatedInput` sempre que permite `Agent`
+ * com `isolation: "worktree"` (guard como CÓDIGO, mesmo padrão do resto do
+ * módulo — mesmo que o modelo esqueça de setar o campo, o comportamento
+ * correto é garantido deterministicamente); reforço em prosa no passo 1 do
+ * prompt; e logging server-side novo (`appendWaveFireDebugLog`,
+ * `data/overnight/wave-fire-debug.log`, gitignored) que grava CADA mensagem
+ * crua do SDK + evento de wire derivado + validação pós-turno, com
+ * timestamp, INDEPENDENTE do estado da conexão HTTP/SSE — dá visibilidade
+ * completa num próximo teste ao vivo pra confirmar (ou refutar) a hipótese
+ * acima com certeza. **Validação ao vivo do fix em si continua pendente**
+ * (mesma razão de sempre: #207 bloqueia rodar o SDK real de dentro de uma
+ * sessão overnight/develop) — só o editor numa sessão `/diaria-develop`
+ * pode confirmar.
  */
 
-import type { CanUseTool, Options, PermissionResult, Query } from "@anthropic-ai/claude-agent-sdk";
+import type { CanUseTool, Options, PermissionResult, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { sdkMessageToChatEvents, describeChatError, type ChatWireEvent } from "./studio-chat.ts";
 import { spawnGhSync, GH_SPAWN_TIMEOUT_MS, type GhSpawnResult } from "./gh-run.ts";
 
@@ -503,6 +564,9 @@ export function buildWaveFireCoordinatorPrompt(issueNumbers: number[], opts: Wav
     `   - subagent_type: "general-purpose"`,
     `   - isolation: "worktree"`,
     `   - model: "sonnet" (explícito — nunca herdado)`,
+    `   - run_in_background: false (OBRIGATÓRIO — por padrão o Agent roda em background e você só recebe um`,
+    `     aviso de "tarefa iniciada"; com run_in_background: false você espera o RESULTADO REAL antes de continuar,`,
+    `     que é exatamente o que o passo 2 abaixo pressupõe; #3967)`,
     `   - prompt citando \`${dispatchRulesPath}\` (leia esse arquivo no início da própria sessão) + o número da`,
     `     issue + branch \`develop/fix-{numero}\` + "abra PR com \`Closes #{numero}\` (closing keyword real do GitHub —`,
     `     NUNCA \`Refs #{numero}\`, que não fecha a issue nem popula closedByPullRequestsReferences, #3781), self-review`,
@@ -984,6 +1048,13 @@ function isAllowedWaveSubagentDevCommand(command: string): boolean {
 export interface WaveToolDecision {
   allow: boolean;
   reason?: string;
+  /** #3967 — quando presente, substitui o `input` original da tool call no
+   * `PermissionResult` devolvido ao SDK (`{behavior: "allow", updatedInput}`).
+   * Único uso hoje: forçar `run_in_background: false` na chamada `Agent`
+   * (ver doc-comment do ramo `toolName === "Agent"` abaixo) — mas o campo é
+   * genérico o bastante pra outra correção futura do mesmo tipo (guard como
+   * código sobre o INPUT da tool, não só allow/deny sobre a tool inteira). */
+  updatedInput?: Record<string, unknown>;
 }
 
 /**
@@ -1001,7 +1072,14 @@ export interface WaveToolDecision {
  * incondicionalmente, então um dispatch SEM isolamento também passava
  * batido). Checado ANTES do bloco `Bash` porque `Agent` não é `Bash` — sem
  * este ramo, a coordenadora não conseguiria dispatchar unidade NENHUMA da
- * onda, quebrando a função central do módulo.
+ * onda, quebrando a função central do módulo. **#3967:** este ALLOW também
+ * devolve `updatedInput` forçando `run_in_background: false` — o SDK roda
+ * `Agent` em background por padrão ("you will be notified when one
+ * completes"), o que deixaria o TURNO da coordenadora terminar antes do
+ * trabalho real esgotar (achado ao vivo 260723, ver doc-comment do módulo);
+ * forçar aqui garante o comportamento SÍNCRONO que o prompt já presume
+ * ("espere cada Agent retornar") independente do modelo lembrar de setar o
+ * campo.
  *
  * (0) `isAllowedWaveCoordinatorGhCommand` — calculado logo no início do
  * ramo `Bash`, ANTES de qualquer outra checagem: as 6 formas exatas de `gh
@@ -1083,10 +1161,27 @@ export function evaluateWaveTool(
     if (input.isolation === "worktree") {
       return {
         allow: true,
+        // #3967 — força run_in_background: false independente do que o
+        // modelo passou (mesmo se ele já tiver setado `true` explicitamente,
+        // ou qualquer outro valor). O SDK roda `Agent` em background por
+        // padrão ("you will be notified when one completes") — sem forçar
+        // isto, o tool_result pode voltar como um placeholder de "tarefa
+        // iniciada" quase na hora, terminando o TURNO da coordenadora (e
+        // portanto o `for await` de `runWaveFire`) muito antes do trabalho
+        // real (worktree/npm ci/PR) esgotar. Achado ao vivo 260723 (ver
+        // doc-comment do módulo, seção "#3967") — turno terminou logo após
+        // o anúncio de dispatch, mas o processo `claude.exe` subjacente
+        // seguiu rodando por 15-20min. O protocolo (`buildWaveFireCoordinatorPrompt`
+        // passo 2, "Espere cada Agent retornar") sempre presumiu execução
+        // síncrona — este `updatedInput` torna essa presunção estruturalmente
+        // verdadeira, não só uma instrução em prosa que o modelo pode ignorar
+        // (mesmo padrão de defesa em profundidade do resto do módulo).
+        updatedInput: { ...input, run_in_background: false },
         reason:
           "Agent com isolation: worktree (#3720): dispatch de unidade da onda em worktree isolado, o mecanismo " +
           "central do módulo — allow explícito passou a ser necessário porque settingSources: [] remove a " +
-          "pré-aprovação incondicional que .claude/settings.json dava a 'Agent' (ver LIMITAÇÃO CONHECIDA, gap c).",
+          "pré-aprovação incondicional que .claude/settings.json dava a 'Agent' (ver LIMITAÇÃO CONHECIDA, gap c). " +
+          "run_in_background forçado a false (#3967) — ver doc-comment do campo updatedInput acima.",
       };
     }
     return {
@@ -1240,7 +1335,10 @@ function makeWaveSafeCanUseTool(): CanUseTool {
     // de chamada de um subagente dispatchado (presente) — ver doc-comment de
     // `evaluateWaveTool` pro allow-list separado que isso habilita.
     const decision = evaluateWaveTool(toolName, input, options.agentID);
-    if (decision.allow) return { behavior: "allow", updatedInput: input };
+    // #3967 — `decision.updatedInput` (quando presente) substitui o input
+    // original — ver doc-comment de `WaveToolDecision.updatedInput` e do
+    // ramo `Agent`/`isolation: worktree` de `evaluateWaveTool`.
+    if (decision.allow) return { behavior: "allow", updatedInput: decision.updatedInput ?? input };
     return { behavior: "deny", message: decision.reason ?? "negado" } as PermissionResult;
   };
 }
@@ -1479,6 +1577,102 @@ export function checkAllIssuesTerminalState(
   return issueNumbers.map((n) => checkIssueTerminalState(n, cwd, sinceIso, run));
 }
 
+// ─── logging server-side de diagnóstico (#3967, defesa em profundidade) ────
+//
+// Achado ao vivo 260723 (ver doc-comment do módulo, seção "#3967"): quando a
+// conexão HTTP/SSE de `POST /api/waves/fire` fecha (por qualquer motivo —
+// premature ou não), TODA visibilidade que dependia de `onEvent` -> `res.write`
+// desaparece pro operador, mesmo que a sessão coordenadora (e os subagentes
+// que ela dispatcha) sigam rodando de verdade por minutos depois. Este log
+// grava CADA mensagem crua do SDK + evento de wire derivado + resultado da
+// validação pós-turno num arquivo, com timestamp, independente do estado da
+// conexão HTTP — a próxima tentativa de validação ao vivo tem visibilidade
+// completa de quando (e se) cada mensagem do SDK de fato chegou, sem depender
+// só do que `curl -N` conseguiu capturar antes do socket fechar.
+
+/** Caminho relativo (a partir de `rootDir`) do log de diagnóstico —
+ * `data/` inteira já é `.gitignore` blanket (ver CLAUDE.md), então nenhuma
+ * entrada extra de `.gitignore` é necessária. */
+export const WAVE_FIRE_DEBUG_LOG_RELATIVE_PATH = "data/overnight/wave-fire-debug.log";
+
+export function resolveWaveFireDebugLogPath(rootDir: string): string {
+  return resolve(rootDir, WAVE_FIRE_DEBUG_LOG_RELATIVE_PATH);
+}
+
+/** Um evento de diagnóstico — 1 linha de JSONL por entrada (mesmo formato de
+ * `data/run-log.jsonl`, `scripts/lib/run-log.ts`). `kind` distingue a ORIGEM
+ * do evento (mensagem crua do SDK vs. evento de wire já traduzido vs.
+ * validação pós-turno vs. erro) — um futuro teste ao vivo consegue grepar só
+ * o que interessa (ex: `kind":"sdk-message"` pra ver a sequência exata de
+ * `type`/`subtype` que o SDK realmente emitiu antes do socket fechar). */
+export interface WaveFireDebugLogEntry {
+  kind: "session-start" | "sdk-message" | "wire-event" | "post-turn-check" | "error" | "session-end";
+  detail: Record<string, unknown>;
+}
+
+interface PersistedWaveFireDebugLogEntry extends WaveFireDebugLogEntry {
+  ts: string;
+}
+
+/** Pura: monta a entrada persistida (timestamp + resto) — exposta pra teste
+ * sem precisar mockar `Date`. */
+export function buildWaveFireDebugLogEntry(
+  entry: WaveFireDebugLogEntry,
+  now: Date = new Date(),
+): PersistedWaveFireDebugLogEntry {
+  return { ts: now.toISOString(), kind: entry.kind, detail: entry.detail };
+}
+
+export type WaveFireLogFn = (entry: WaveFireDebugLogEntry, rootDir: string) => void;
+
+/**
+ * Append fail-soft (mesmo espírito de `scripts/lib/run-log.ts` `logEvent`):
+ * logging NUNCA pode mascarar/travar o fluxo real de `runWaveFire` — uma
+ * falha de disco (permissão, disco cheio) é engolida silenciosamente, nunca
+ * propaga. Chamado DIRETO no loop principal (não dentro do `try/catch` que
+ * envolve `res.write` em `onEvent` do caller) — precisa sobreviver mesmo
+ * quando a conexão HTTP já está morta, que é justamente o cenário que este
+ * log existe pra cobrir.
+ */
+export function appendWaveFireDebugLog(entry: WaveFireDebugLogEntry, rootDir: string): void {
+  try {
+    const persisted = buildWaveFireDebugLogEntry(entry);
+    const logPath = resolveWaveFireDebugLogPath(rootDir);
+    mkdirSync(dirname(logPath), { recursive: true });
+    appendFileSync(logPath, JSON.stringify(persisted) + "\n", "utf8");
+  } catch {
+    // swallow — ver doc-comment acima.
+  }
+}
+
+/** Resumo compacto de 1 `SDKMessage` pro log — evita gravar o payload inteiro
+ * (pode conter o prompt completo, corpos de issue embutidos, etc. — grande e
+ * majoritariamente redundante com o que já é reconstituível a partir do
+ * `wire-event` correspondente). Mantém `type`/`subtype` sempre (o dado mais
+ * diagnóstico: a sequência exata de tipos que o SDK emitiu) e, quando
+ * presentes, os poucos campos adicionais relevantes pro achado do #3967 —
+ * nomes de tool_use/tool_result (sem o `input`/resultado completo) e
+ * `session_id`/`is_error` de mensagens `result`. */
+export function summarizeSdkMessageForLog(msg: SDKMessage): Record<string, unknown> {
+  const anyMsg = msg as unknown as Record<string, unknown>;
+  const summary: Record<string, unknown> = { type: anyMsg.type };
+  if (typeof anyMsg.subtype === "string") summary.subtype = anyMsg.subtype;
+  if (anyMsg.type === "result") {
+    summary.is_error = anyMsg.is_error;
+    summary.session_id = anyMsg.session_id;
+  }
+  const content = (anyMsg.message as { content?: unknown } | undefined)?.content;
+  if (Array.isArray(content)) {
+    summary.contentBlockTypes = content.map((b: unknown) => {
+      const block = b as { type?: string; name?: string; tool_use_id?: string };
+      if (block?.type === "tool_use") return { type: "tool_use", name: block.name };
+      if (block?.type === "tool_result") return { type: "tool_result", tool_use_id: block.tool_use_id };
+      return { type: block?.type };
+    });
+  }
+  return summary;
+}
+
 // ─── invocação real do SDK (I/O, injetável — mesmo padrão de studio-chat.ts) ──
 
 export type QueryFn = (params: { prompt: string; options?: Options }) => Query;
@@ -1506,6 +1700,14 @@ export interface RunWaveFireOptions {
    * da onda ANTES do prompt ser montado, sem spawnar `gh` de verdade.
    * Produção usa o default real (`fetchWaveIssueSummaries`). */
   fetchIssueSummariesFn?: (issueNumbers: number[], cwd: string) => WaveIssueSummary[];
+  /** #3967 — injetável pra testes: grava eventos de diagnóstico em
+   * `data/overnight/wave-fire-debug.log` (`rootDir` = `cwd` acima). Produção
+   * usa o default real (`appendWaveFireDebugLog`). Ver doc-comment da seção
+   * "logging server-side de diagnóstico" acima pro racional completo — este
+   * log é INDEPENDENTE do estado da conexão HTTP/SSE, cobre o achado ao vivo
+   * 260723 em que toda visibilidade via `onEvent` desaparecia assim que o
+   * socket fechava, mesmo com a sessão coordenadora ainda rodando de verdade. */
+  logFn?: WaveFireLogFn;
 }
 
 /**
@@ -1521,6 +1723,7 @@ export interface RunWaveFireOptions {
  */
 export async function runWaveFire(opts: RunWaveFireOptions): Promise<void> {
   const runQuery = opts.queryFn ?? defaultQueryFn;
+  const log = opts.logFn ?? appendWaveFireDebugLog;
   // #3914 — fetch fail-soft: se `gh` falhar (rede, rate limit) o fetch INTEIRO
   // não deve abortar a onda — só significa que o prompt sai sem os corpos
   // embutidos, e os subagentes dispatchados caem de volta pro `gh issue view`
@@ -1531,14 +1734,28 @@ export async function runWaveFire(opts: RunWaveFireOptions): Promise<void> {
   try {
     const fetchIssueSummaries = opts.fetchIssueSummariesFn ?? fetchWaveIssueSummaries;
     issues = fetchIssueSummaries(opts.issueNumbers, opts.cwd);
-  } catch {
+  } catch (e) {
     issues = undefined;
+    log(
+      { kind: "error", detail: { phase: "fetch-issue-summaries", message: e instanceof Error ? e.message : String(e) } },
+      opts.cwd,
+    );
   }
   const prompt = buildWaveFireCoordinatorPrompt(opts.issueNumbers, { maxConcurrency: opts.maxConcurrency, issues });
   // #3765 — cutoff pra "comentário pós-dispatch": capturado ANTES do turno
   // começar, pra um comentário já existente na issue (de uma rodada
   // anterior) nunca ser mal-interpretado como diagnóstico DESTE turno.
   const startedAt = new Date().toISOString();
+  // #3967 — gravado ANTES de qualquer coisa que possa lançar/travar, e
+  // independente do estado da conexão HTTP (este `log` nunca escreve na
+  // response, só no arquivo — ver doc-comment de `appendWaveFireDebugLog`).
+  log(
+    {
+      kind: "session-start",
+      detail: { issueNumbers: opts.issueNumbers, maxConcurrency: opts.maxConcurrency ?? 6, startedAt },
+    },
+    opts.cwd,
+  );
 
   try {
     const stream = runQuery({
@@ -1573,7 +1790,16 @@ export async function runWaveFire(opts: RunWaveFireOptions): Promise<void> {
     });
 
     for await (const msg of stream) {
+      // #3967 — gravado ANTES de `onEvent` (que escreve na response HTTP e
+      // pode estar mudo se o socket já morreu, ver `handleApiWavesFire` —
+      // `res.write` falha silenciosamente dentro de um try/catch próprio).
+      // Este log sobrevive independente disso: é a única forma de reconstruir
+      // DEPOIS, num teste ao vivo, a sequência exata de mensagens que o SDK
+      // de fato emitiu (tipo/subtipo/tool names) versus o que a conexão HTTP
+      // conseguiu mostrar em tempo real.
+      log({ kind: "sdk-message", detail: summarizeSdkMessageForLog(msg) }, opts.cwd);
       for (const wireEvent of sdkMessageToChatEvents(msg)) {
+        log({ kind: "wire-event", detail: { event: wireEvent.event, data: wireEvent.data } }, opts.cwd);
         opts.onEvent(wireEvent);
       }
     }
@@ -1588,7 +1814,12 @@ export async function runWaveFire(opts: RunWaveFireOptions): Promise<void> {
     try {
       const checkFn = opts.checkTerminalStateFn ?? checkAllIssuesTerminalState;
       terminalResults = checkFn(opts.issueNumbers, opts.cwd, startedAt);
+      log({ kind: "post-turn-check", detail: { results: terminalResults } }, opts.cwd);
     } catch (e) {
+      log(
+        { kind: "error", detail: { phase: "post-turn-check", message: e instanceof Error ? e.message : String(e) } },
+        opts.cwd,
+      );
       opts.onEvent({
         event: "chat-error",
         data: {
@@ -1612,7 +1843,12 @@ export async function runWaveFire(opts: RunWaveFireOptions): Promise<void> {
         },
       });
     }
+    log(
+      { kind: "session-end", detail: { outcome: nonTerminal.length > 0 ? "non-terminal-issues" : "ok" } },
+      opts.cwd,
+    );
   } catch (e) {
+    log({ kind: "error", detail: { phase: "stream", message: describeChatError(e) } }, opts.cwd);
     opts.onEvent({ event: "chat-error", data: { message: describeChatError(e) } });
   }
 }
