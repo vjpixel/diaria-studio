@@ -145,6 +145,82 @@ export function extractBoxTitle(content: string): string {
   return "(vazio)";
 }
 
+// ── nome interno vs. título de conteúdo (#3933) ────────────────────────────
+//
+// Uma caixa tem DOIS rótulos distintos:
+//   1. **nome interno** — rótulo pra o EDITOR identificar a caixa na lista do
+//      Studio. Mora num campo `nome:` DENTRO do header de comentário HTML —
+//      `readSnippetFile` (scripts/lib/shared/snippet-loader.ts) já remove todo
+//      comentário antes do conteúdo ir pra newsletter, então `nome:` NUNCA
+//      vaza pro leitor.
+//   2. **título de conteúdo** — o que renderiza dentro da caixa na edição
+//      (derivado por `extractBoxTitle`).
+// Iguais em muitos casos, diferentes em outros. `resolveBoxDisplayName` decide
+// o rótulo da lista: `nome:` explícito > título derivado > slug.
+
+/** Corpo do PRIMEIRO comentário HTML se o conteúdo começa (após espaço) com um
+ * — o "header" convencional dos snippets. `null` se não houver. */
+function leadingCommentInner(content: string): string | null {
+  const m = /^\s*<!--([\s\S]*?)-->/.exec(content);
+  return m ? m[1] : null;
+}
+
+/** Extrai o `nome:` do header de comentário (#3933), ou `null` se ausente.
+ * Chave case-insensitive; valor = resto da linha, trimado. Só olha o header
+ * (1º comentário) — um `nome:` solto no corpo não conta. Nunca lança. */
+export function parseBoxNome(content: string): string | null {
+  const inner = leadingCommentInner(content);
+  if (inner === null) return null;
+  const line = /^[ \t]*nome[ \t]*:[ \t]*(.+?)[ \t]*$/im.exec(inner);
+  return line ? line[1].trim() : null;
+}
+
+/** Remove a linha `nome:` do header de comentário (#3933), devolvendo o "body"
+ * que o editor vê no textarea (o resto do header + o conteúdo). Se o header
+ * ficar só com espaço em branco depois, remove o bloco de comentário inteiro
+ * (+ as quebras de linha subsequentes) pra não deixar um `<!-- -->` vazio no
+ * topo. Idempotente (rodar 2× = rodar 1×). Nunca lança. */
+export function stripNomeLine(content: string): string {
+  const m = /^(\s*<!--)([\s\S]*?)(-->)/.exec(content);
+  if (!m) return content;
+  const [full, open, inner, close] = m;
+  const cleanedInner = inner.replace(/^[ \t]*nome[ \t]*:.*(?:\r?\n)?/im, "");
+  if (cleanedInner === inner) return content; // não tinha nome: — no-op
+  if (cleanedInner.trim() === "") {
+    // Header ficou vazio: descarta o comentário e as linhas em branco após ele.
+    return content.slice(full.length).replace(/^\r?\n+/, "");
+  }
+  return open + cleanedInner + close + content.slice(full.length);
+}
+
+/** Reconstrói o conteúdo inserindo/atualizando o `nome:` no header (#3933).
+ * `body` é o conteúdo SEM a linha `nome:` (como `stripNomeLine` devolve); mas é
+ * robusto a um `body` que ainda tenha `nome:` (remove antes de reinserir, nunca
+ * duplica). `nome` vazio/whitespace = sem campo (remove qualquer `nome:`
+ * remanescente). Nunca lança. */
+export function buildBoxContentWithNome(nome: string, body: string): string {
+  const clean = (nome ?? "").trim();
+  const withoutNome = stripNomeLine(body ?? "");
+  if (!clean) return withoutNome;
+  const m = /^(\s*<!--)([\s\S]*?)(-->)/.exec(withoutNome);
+  if (m) {
+    const inner = m[2].replace(/^\r?\n/, "");
+    return `${m[1]}\nnome: ${clean}\n${inner}${m[3]}${withoutNome.slice(m[0].length)}`;
+  }
+  return `<!--\nnome: ${clean}\n-->\n\n${withoutNome}`;
+}
+
+/** Rótulo de exibição de uma caixa na lista do Studio (#3933): `nome:`
+ * explícito do header, senão o título derivado do conteúdo (`extractBoxTitle`),
+ * senão — se o arquivo é só comentário/vazio — o próprio slug (uma caixa que
+ * existe sempre mostra algo identificável). Truncado a ~80. Nunca lança. */
+export function resolveBoxDisplayName(content: string, slug: string): string {
+  const nome = parseBoxNome(content);
+  if (nome) return truncateTitle(nome);
+  const derived = extractBoxTitle(content);
+  return derived === "(vazio)" ? slug : derived;
+}
+
 // ── slots (platform.config.json → boxes_divulgacao, somente leitura) ────
 
 export type BoxSlot = 1 | 2 | 3;
@@ -206,7 +282,15 @@ export function checkDirtyVsGit(rootDir: string, filename: string): boolean {
 
 export interface BoxListEntry {
   slug: string;
+  /** Rótulo de exibição na lista (#3933): `nome:` do header se houver, senão o
+   * título derivado do conteúdo, senão o slug (`resolveBoxDisplayName`). */
   title: string;
+  /** `nome:` interno explícito do header, ou `null` se a caixa não tem um
+   * (título derivado do conteúdo). #3933. */
+  nome: string | null;
+  /** Título derivado do CONTEÚDO (`extractBoxTitle`) — o que renderiza na
+   * edição. A UI mostra "na edição: …" quando difere de `title`. #3933. */
+  contentTitle: string;
   mtimeIso: string;
   slot: BoxSlot | null;
   dirtyVsGit: boolean;
@@ -231,7 +315,9 @@ export function listBoxes(rootDir: string): BoxListEntry[] {
     const mtimeIso = statSync(filePath).mtime.toISOString();
     return {
       slug: filename,
-      title: extractBoxTitle(content),
+      title: resolveBoxDisplayName(content, filename),
+      nome: parseBoxNome(content),
+      contentTitle: extractBoxTitle(content),
       mtimeIso,
       slot: slots[filename] ?? null,
       dirtyVsGit: checkDirtyVsGit(rootDir, filename),
@@ -245,7 +331,14 @@ export interface BoxContentState {
   ok: boolean;
   error?: string;
   slug: string;
+  /** Conteúdo BRUTO completo do arquivo (inclui o header com `nome:`). Mantido
+   * pra compat; o editor do Studio usa `body`+`nome` (#3933). */
   content: string;
+  /** `nome:` interno parseado do header (#3933), ou `null`. */
+  nome?: string | null;
+  /** Conteúdo SEM a linha `nome:` — o que o textarea do editor mostra (#3933).
+   * O campo "Nome interno" separado edita o `nome`. */
+  body?: string;
   modifiedAt: string | null;
 }
 
@@ -263,7 +356,7 @@ export function readBox(rootDir: string, slug: string): BoxContentState {
   }
   const content = readFileSync(filePath, "utf8");
   const modifiedAt = statSync(filePath).mtime.toISOString();
-  return { ok: true, slug, content, modifiedAt };
+  return { ok: true, slug, content, nome: parseBoxNome(content), body: stripNomeLine(content), modifiedAt };
 }
 
 // ── escrita de 1 caixa (guard de mtime #3729, reusado de studio-review.ts) ─
@@ -485,6 +578,8 @@ export function unarchiveBox(rootDir: string, slug: string): UnarchiveBoxResult 
 export interface ArchivedBoxEntry {
   slug: string;
   title: string;
+  nome: string | null;
+  contentTitle: string;
   mtimeIso: string;
 }
 
@@ -501,9 +596,12 @@ export function listArchivedBoxes(rootDir: string): ArchivedBoxEntry[] {
     .sort();
   return filenames.map((filename) => {
     const filePath = resolve(dir, filename);
+    const content = readFileSync(filePath, "utf8");
     return {
       slug: filename,
-      title: extractBoxTitle(readFileSync(filePath, "utf8")),
+      title: resolveBoxDisplayName(content, filename),
+      nome: parseBoxNome(content),
+      contentTitle: extractBoxTitle(content),
       mtimeIso: statSync(filePath).mtime.toISOString(),
     };
   });

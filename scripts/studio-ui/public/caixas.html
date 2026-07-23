@@ -55,6 +55,10 @@
         <span>Nome do arquivo (slug)</span>
         <input id="create-slug" type="text" placeholder="minha-caixa" autocomplete="off" spellcheck="false" />
       </label>
+      <label class="cx-field">
+        <span>Nome interno <em>(opcional — identifica a caixa nesta lista, não aparece na edição)</em></span>
+        <input id="create-nome" type="text" placeholder="(usa o título do conteúdo se vazio)" autocomplete="off" spellcheck="false" />
+      </label>
       <textarea id="create-content" class="cx-editor" spellcheck="false" placeholder="<!-- doc opcional do formato -->&#10;&#10;Conteúdo da caixa…"></textarea>
       <div class="cx-editor-toolbar">
         <button id="create-submit-btn" type="button">Criar caixa</button>
@@ -86,6 +90,10 @@
     <section class="panel" id="editor-panel" hidden>
       <h2 id="editor-title">Editando</h2>
       <p class="hint" id="editor-file"></p>
+      <label class="cx-field">
+        <span>Nome interno <em>(identifica a caixa nesta lista, não aparece na edição)</em></span>
+        <input id="editor-nome" type="text" placeholder="(usa o título do conteúdo se vazio)" autocomplete="off" spellcheck="false" />
+      </label>
       <div class="cx-editor-toolbar">
         <button id="save-btn" type="button">Salvar</button>
         <button id="close-editor-btn" type="button">Fechar</button>
