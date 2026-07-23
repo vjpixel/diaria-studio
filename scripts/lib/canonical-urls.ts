@@ -126,6 +126,16 @@ export const DIARIA_LIVROS_URL = "https://livros.diar.ia.br";
  */
 export const DIARIA_EIA_URL = "https://eia.diar.ia.br";
 
+/**
+ * URL canônica do artigo mensal público com paywall de apoiador (#3940) —
+ * domínio de marca dedicado (Workers Custom Domain,
+ * `workers/artigo-mensal/wrangler.toml`, `artigo.diar.ia.br`). Mesmo padrão
+ * de `DIARIA_CURSOS_URL`/`DIARIA_LIVROS_URL`/`DIARIA_EIA_URL` acima. Path
+ * completo é `${DIARIA_ARTIGO_URL}/{ciclo}` (ex: `.../2607-08`), ciclo no
+ * formato `{conteúdo}-{envio}` de `scripts/lib/mensal/monthly-paths.ts`.
+ */
+export const DIARIA_ARTIGO_URL = "https://artigo.diar.ia.br";
+
 interface ArticleLike {
   url?: string;
   title?: string;
