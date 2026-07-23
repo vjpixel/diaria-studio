@@ -138,6 +138,24 @@ describe("GET /apoios + /api/apoios + CRUD (#3602)", () => {
     assert.ok(body.includes('id="reward-groups"'), "a seção reward-groups deve existir no shell");
   });
 
+  it("regressão (botões unificados 260723): um só 'Atualizar', que dispara o fluxo completo com estado de carregando", async () => {
+    const html = await (await fetch(new URL("/apoios", server.url))).text();
+    // O botão antigo "Atualizar status" saiu — o refresh-btn assumiu o POST.
+    assert.ok(!html.includes("refresh-status-btn"), "o botão 'Atualizar status' não deve existir no shell");
+    assert.ok(html.includes('id="refresh-btn"'), "o botão 'Atualizar' deve permanecer");
+
+    const js = await (await fetch(new URL("/apoios.js", server.url))).text();
+    // O clique do refresh-btn deve acionar o fluxo completo (POST /api/apoios/refresh),
+    // nunca só o GET — era a confusão original: "Atualizar" parecia buscar
+    // e-mails novos mas só relia o snapshot.
+    assert.match(js, /refreshBtn\.addEventListener\("click", \(\) => refreshApoios\(\)\)/);
+    assert.ok(js.includes('fetch("/api/apoios/refresh", { method: "POST" })'), "refreshApoios deve chamar o POST");
+    assert.ok(!js.includes("refreshStatusBtn"), "nenhuma referência ao botão antigo deve sobrar no JS");
+    // Feedback de progresso: botão desabilitado + rótulo trocado enquanto roda.
+    assert.ok(js.includes('el.refreshBtn.textContent = "Atualizando…"'), "o botão deve indicar progresso");
+    assert.ok(js.includes("el.refreshBtn.disabled = true"), "o botão deve desabilitar durante a operação");
+  });
+
   it("regressão (#3862): POST /api/apoios/contacts não existe mais (rota removida, cai no guard de método genérico)", async () => {
     const res = await fetch(new URL("/api/apoios/contacts", server.url), {
       method: "POST",

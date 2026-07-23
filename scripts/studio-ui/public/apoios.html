@@ -80,14 +80,13 @@
             <option value="sem_dados">sem dados</option>
           </select>
         </label>
-        <button id="refresh-btn" type="button">Atualizar</button>
-        <button id="refresh-status-btn" type="button" title="Re-checa na apoia.se quem ainda não está confirmado como apoiando este mês (#3859) — consome cota apoia.se (5.000 req/mês)">Atualizar status</button>
+        <button id="refresh-btn" type="button" title="Busca e-mails novos da apoia.se no Gmail e re-checa status de quem ainda não está confirmado como apoiando este mês (#3859)">Atualizar</button>
         <span id="last-updated" class="hint"></span>
-        <!-- #3891: nota visível (não só title=, invisível em touch) — o botão
-             acima tem peso visual distinto (outline) porque, ao contrário de
-             "Atualizar" (GET, sem custo), ele consome a cota mensal apertada
-             da apoia.se. -->
-        <span class="quota-note">"Atualizar status" bate na API apoia.se (cota 5.000 req/mês) — use com moderação.</span>
+        <!-- #3891: nota visível (não só title=, invisível em touch). Desde a
+             unificação dos botões (decisão do editor 260723), "Atualizar" faz
+             o fluxo completo: drain do Gmail + re-checagem apoia.se (seletiva,
+             só contatos não confirmados no mês — protege a cota). -->
+        <span class="quota-note">"Atualizar" busca e-mails novos e re-checa a apoia.se (cota 5.000 req/mês; só contatos ainda não confirmados no mês).</span>
       </div>
       <div id="contacts-empty" class="hint" hidden>Nenhum contato ainda.</div>
       <div id="contacts-list" class="contacts-list"></div>
