@@ -1,0 +1,30 @@
+# workers/artigos — hosting de artigos especiais avulsos da diar.ia.br.
+#
+# Worker de static assets (sem script). Serve em especial.diar.ia.br (domínio
+# de marca dedicado, custom_domain = true — mesmo mecanismo comprovado de
+# livros.diar.ia.br e cursos.diar.ia.br). A raiz diar.ia.br continua 100%
+# hospedada pelo Beehiiv Website Builder v2, sem interferência.
+#
+# Histórico (#deploy 260723): a 1ª tentativa usou uma Workers Route clássica
+# (pattern + zone_name) escopada a um path da RAIZ diar.ia.br, pra evitar
+# tocar o Beehiiv. O worker/asset funcionou perfeitamente via workers.dev,
+# mas a rota nunca interceptou tráfego na zona de produção (raiz segue
+# proxied pela Cloudflare — mesmos IPs de livros.diar.ia.br — mas algo na
+# configuração da zona, fora deste repo, não deixou a Route clássica
+# assumir precedência; não deu pra diagnosticar via API nesta sessão).
+# custom_domain em subdomínio dedicado é o caminho comprovado (2x em
+# produção) — usar esse padrão pra qualquer artigo novo.
+#
+# Cada artigo é um path dentro do subdomínio: adicionar
+# public/{ano}/{slug}/index.html por artigo novo — não precisa de rota nova,
+# o roteador de assets já resolve sub-paths dentro do mesmo custom_domain.
+name = "diaria-artigos"
+compatibility_date = "2024-09-23"
+workers_dev = true
+
+[[routes]]
+pattern = "especial.diar.ia.br"
+custom_domain = true
+
+[assets]
+directory = "./public"
