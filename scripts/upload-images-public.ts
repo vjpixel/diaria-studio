@@ -14,7 +14,7 @@
  *   {
  *     "out_path": "data/editions/260424/06-public-images.json",
  *     "images": {
- *       "d1": { "file_id": "img-260424-04-d1-1x1-HASH.jpg", "url": "https://poll.diaria.workers.dev/img/..." },
+ *       "d1": { "file_id": "img-260424-04-d1-1x1-HASH.jpg", "url": "https://eia.diar.ia.br/img/..." },
  *       "d2": { ... },
  *       "d3": { ... }
  *     }
@@ -37,6 +37,7 @@ import { gFetch } from "./google-auth.ts";
 import { uploadImageToWorkerKV } from "./lib/cloudflare-kv-upload.ts"; // #1119
 import { readDestaqueCount } from "./lib/invariant-checks/stage-3.ts"; // #2352
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts"; // #2834
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3";
 const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -464,7 +465,7 @@ export async function uploadPublicImages(
     const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
     const cfg = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
     const kvNamespaceId = cfg?.poll?.kv_namespace_id;
-    const workerUrl = cfg?.poll?.worker_url ?? "https://poll.diaria.workers.dev";
+    const workerUrl = cfg?.poll?.worker_url ?? DIARIA_EIA_URL; // #3904
     if (!kvNamespaceId) {
       throw new Error("platform.config.json → poll.kv_namespace_id não configurado (target=cloudflare)");
     }

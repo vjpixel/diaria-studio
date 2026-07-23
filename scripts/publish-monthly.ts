@@ -67,6 +67,7 @@ import {
   uploadLivrosImage as uploadLivrosImageDefault,
 } from "./lib/mensal/monthly-image-upload.ts"; // #1914 #1916 #2802
 import { fetchMonthlyEiaPrevResultLine as fetchMonthlyEiaPrevResultLineDefault } from "./lib/mensal/monthly-eia-prev-result.ts"; // #2948
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 // #1844: camada de render (md → HTML do email) extraída pra módulo dedicado.
 // main() usa só eiaEditionFromYymm + draftToEmail + parseEiaLegend; o resto vai no re-export.
 import {
@@ -276,7 +277,7 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): ParsedArgs {
  *   3. data/monthly/{YYMM}/01-eia.md — frontmatter eia_answer
  */
 async function registerEiaAnswer(monthlyDir: string, edition: string): Promise<void> {
-  const workerUrl = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
+  const workerUrl = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL; // #3904
   // #3226: Worker /admin/correct valida sig contra ADMIN_SECRET (workers/poll
   // src/index.ts:325), não POLL_SECRET — mesmo fix aplicado em close-poll.ts
   // (#1176). Aceitar tanto ADMIN_SECRET (canonical) quanto POLL_ADMIN_SECRET

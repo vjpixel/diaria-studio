@@ -16,7 +16,9 @@
  * Env:
  *   BEEHIIV_API_KEY        - acesso à API Beehiiv (required)
  *   BEEHIIV_PUBLICATION_ID - ID da publicação (required)
- *   POLL_WORKER_URL        - default https://poll.diaria.workers.dev
+ *   POLL_WORKER_URL        - default https://eia.diar.ia.br (domínio de marca,
+ *                            #3904; poll.diaria.workers.dev segue ativo só
+ *                            por compat de links já enviados)
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -28,12 +30,13 @@ import { loadBeehiivConfig, beehiivApiBase } from "./lib/beehiiv-config.ts";
 import { isWorkerReachable } from "./lib/worker-reachability.ts"; // #2551
 import { dohFetch } from "./lib/doh-fetch.ts"; // #2551: stats fetch via DoH quando DNS local filtra
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3491: layout flat+nested
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
 loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const POLL_WORKER_URL =
-  process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
+  process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
 
 interface Check {
   name: string;
