@@ -29,6 +29,10 @@ export const ArticleSchema = z.object({
   discovered_source: z.boolean().optional(),
   launch_candidate: z.boolean().optional(),
   suggested_primary_domain: z.string().optional(),
+  // #3916/#3918: artigo documenta dano/risco/custo REAL da IA (não ressalva de
+  // anúncio nem falha técnica sem consequência) — atribuído no scoring
+  // (scorer-chunk/scorer), consumido por scorer-select + invariant-check.
+  negative_impact: z.boolean().optional(),
 }).passthrough();
 
 export type Article = z.infer<typeof ArticleSchema>;

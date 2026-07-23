@@ -43,6 +43,7 @@ import {
   SECTION_HEADER,
 } from "../../render-erro-intencional.ts";
 import { loadIntentionalErrorJson, intentionalErrorJsonPath } from "../intentional-errors.ts";
+import { checkHasNegativeImpactHighlight } from "./stage-1.ts"; // #3916, #3918
 
 interface PublicImageEntry {
   url?: string;
@@ -1114,6 +1115,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     source_issue: "#2878",
     stage: 4,
     run: checkCaptureFailedSubmissionCount,
+  },
+  {
+    id: "has-negative-impact-highlight",
+    description: "≥1 destaque tagueado negative_impact:true — repetido no gate consolidado (#3916, #3918, warning-only)",
+    source_issue: "#3916",
+    stage: 4,
+    run: checkHasNegativeImpactHighlight,
   },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem

@@ -118,7 +118,15 @@ export function joinScore(
   const byUrl = scoreMap.get(article.url);
   if (byUrl !== undefined) {
     return {
-      article: { ...article, score: byUrl.score },
+      article: {
+        ...article,
+        score: byUrl.score,
+        // #3916/#3918: propaga a tag do scorer pro artigo final — é assim que
+        // artigos que NÃO viraram highlight/finalist (mas passaram pelo
+        // scorer-chunk normalmente) também carregam negative_impact até
+        // 01-categorized.json/01-approved.json.
+        ...(byUrl.negative_impact === true ? { negative_impact: true } : {}),
+      },
       url_mismatch: false,
     };
   }
@@ -133,6 +141,7 @@ export function joinScore(
           ...article,
           score: byTitle.score,
           score_recovered: true,
+          ...(byTitle.negative_impact === true ? { negative_impact: true } : {}),
         },
         url_mismatch: true,
       };

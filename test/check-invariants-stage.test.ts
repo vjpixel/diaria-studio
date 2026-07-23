@@ -21,6 +21,7 @@ import {
   checkApprovedHas3Highlights,
   checkCategorizedHasEiaSection,
   checkNoUseMelhorHighlights,
+  checkHasNegativeImpactHighlight,
 } from "../scripts/lib/invariant-checks/stage-1.ts";
 import {
   checkReviewedPassesAllLints,
@@ -100,6 +101,17 @@ describe("invariant-checks registry (#1007)", () => {
     const entry = ALL_INVARIANT_RULES.find((r) => r.id === "use-melhor-beginner-minimum");
     assert.ok(entry !== undefined, "ALL_INVARIANT_RULES deve conter 'use-melhor-beginner-minimum'");
     assert.equal(entry!.stage, 2);
+  });
+
+  // #3916/#3918: mesma regra registrada nos stages 1 (pós-gate-apply, visibilidade
+  // cedo) E 4 (gate consolidado) — mesma função `run`, 2 entries distintas.
+  it("#3916 registry contém entry has-negative-impact-highlight nos stages 1 e 4", () => {
+    const inStage1 = getRulesForStage(1).find((r) => r.id === "has-negative-impact-highlight");
+    const inStage4 = getRulesForStage(4).find((r) => r.id === "has-negative-impact-highlight");
+    assert.ok(inStage1 !== undefined, "esperava entry em STAGE_1_RULES");
+    assert.ok(inStage4 !== undefined, "esperava entry em STAGE_4_RULES");
+    assert.equal(inStage1!.stage, 1);
+    assert.equal(inStage4!.stage, 4);
   });
 });
 
@@ -381,6 +393,97 @@ describe("Stage 1 invariants", () => {
   it("no-use-melhor-highlights sem violation quando JSON malformado (coberto por approved-parseable)", () => {
     writeFileSync(join(fixture, "_internal", "01-approved.json"), "{ not valid json");
     const v = checkNoUseMelhorHighlights(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // --- #3916/#3918: sempre ≥1 destaque de impacto negativo (warning-only) ---
+
+  it("has-negative-impact-highlight sem violation quando 01-approved.json ausente", () => {
+    const v = checkHasNegativeImpactHighlight(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("has-negative-impact-highlight PASSA (silêncio) quando ≥1 highlight tem negative_impact:true (top-level)", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "radar", url: "https://a.com", negative_impact: true },
+          { bucket: "lancamento", url: "https://b.com" },
+        ],
+      }),
+    );
+    const v = checkHasNegativeImpactHighlight(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("has-negative-impact-highlight PASSA quando a tag está só em article.negative_impact (nested)", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "radar", article: { url: "https://a.com", negative_impact: true } },
+          { bucket: "lancamento", url: "https://b.com" },
+        ],
+      }),
+    );
+    const v = checkHasNegativeImpactHighlight(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("has-negative-impact-highlight WARNING quando nenhum highlight tem a tag, SEM sugestão (runners_up vazio)", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "radar", url: "https://a.com", title: "Novo modelo lançado" },
+          { bucket: "lancamento", url: "https://b.com", title: "App novo" },
+        ],
+        runners_up: [],
+      }),
+    );
+    const v = checkHasNegativeImpactHighlight(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "has-negative-impact-highlight");
+    assert.equal(v[0].severity, "warning", "nunca hard-block — decisão de design #3918");
+    assert.equal(v[0].source_issue, "#3916");
+    assert.match(v[0].message, /Nenhum candidato tagueado disponível/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("has-negative-impact-highlight WARNING com sugestão de swap quando runners_up tem candidato tagueado", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "radar", url: "https://a.com", title: "Novo modelo lançado" },
+        ],
+        runners_up: [
+          { bucket: "radar", url: "https://c.com", title: "Empresa demite citando IA", negative_impact: true },
+        ],
+      }),
+    );
+    const v = checkHasNegativeImpactHighlight(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].severity, "warning");
+    assert.match(v[0].message, /Empresa demite citando IA/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("has-negative-impact-highlight sem violation quando highlights vazio (coberto por approved-has-3-highlights)", () => {
+    writeFileSync(join(fixture, "_internal", "01-approved.json"), JSON.stringify({ highlights: [] }));
+    const v = checkHasNegativeImpactHighlight(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("has-negative-impact-highlight sem violation quando JSON malformado (coberto por approved-parseable)", () => {
+    writeFileSync(join(fixture, "_internal", "01-approved.json"), "{ not valid json");
+    const v = checkHasNegativeImpactHighlight(fixture);
     assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });

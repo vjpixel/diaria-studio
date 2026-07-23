@@ -444,3 +444,56 @@ describe("mergeChunks — bônus de cobertura (#3920)", () => {
     assert.equal((f.article as { score_bonus_coverage?: number }).score_bonus_coverage, undefined);
   });
 });
+
+// #3916/#3918 — propagação da tag negative_impact do scorer-chunk até
+// all_scored + article do finalist (join final acontece em finalize-stage1.ts).
+describe("mergeChunks — propagação de negative_impact (#3916, #3918)", () => {
+  it("negative_impact: true no chunk propaga pro article do finalist e pro all_scored", () => {
+    const cat: Categorized = {
+      lancamento: [],
+      radar: [
+        { url: "harm", title: "empresa demite citando IA", category: "radar" },
+        { url: "benign", title: "novo modelo lançado", category: "radar" },
+      ],
+      use_melhor: [],
+    };
+    const chunks: ChunkScoreFile[] = [
+      { scored: [{ url: "harm", score: 70, negative_impact: true }, { url: "benign", score: 80 }] },
+    ];
+    const r = mergeChunks(cat, chunks, 15);
+    const harmEntry = r.all_scored.find((s) => s.url === "harm");
+    const benignEntry = r.all_scored.find((s) => s.url === "benign");
+    assert.equal(harmEntry?.negative_impact, true);
+    assert.equal(benignEntry?.negative_impact, undefined, "artigo sem a tag não deve ganhar negative_impact");
+
+    const harmFinalist = r.finalists.find((f) => f.url === "harm")!;
+    assert.equal((harmFinalist.article as { negative_impact?: boolean }).negative_impact, true);
+    const benignFinalist = r.finalists.find((f) => f.url === "benign")!;
+    assert.equal((benignFinalist.article as { negative_impact?: boolean }).negative_impact, undefined);
+  });
+
+  it("negative_impact ausente/false no chunk não aparece no all_scored (sem ruído false explícito)", () => {
+    const cat: Categorized = {
+      lancamento: [],
+      radar: [{ url: "a", title: "a", category: "radar" }],
+      use_melhor: [],
+    };
+    const chunks: ChunkScoreFile[] = [{ scored: [{ url: "a", score: 50, negative_impact: false }] }];
+    const r = mergeChunks(cat, chunks, 15);
+    assert.equal(r.all_scored[0].negative_impact, undefined);
+  });
+
+  it("URL duplicada entre chunks: negative_impact é OR-ado (qualquer chunk marcando true basta)", () => {
+    const cat: Categorized = {
+      lancamento: [],
+      radar: [{ url: "dup", title: "dup", category: "radar" }],
+      use_melhor: [],
+    };
+    const chunks: ChunkScoreFile[] = [
+      { scored: [{ url: "dup", score: 40 }] },
+      { scored: [{ url: "dup", score: 95, negative_impact: true }] },
+    ];
+    const r = mergeChunks(cat, chunks, 15);
+    assert.equal(r.all_scored.find((s) => s.url === "dup")?.negative_impact, true);
+  });
+});

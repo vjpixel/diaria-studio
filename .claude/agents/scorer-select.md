@@ -31,8 +31,14 @@ Releia antes de selecionar:
      - **diversidade temática** (não 2 destaques sobre o mesmo assunto/empresa);
      - **diversidade de bucket** (evitar 6 do mesmo bucket, sem cota mínima).
    - Se os finalistas tiverem `< 6` artigos, output = `finalists.length` e adicionar `warning_pool_too_small: true`.
-3. Definir a **ordem editorial** dos 6: primeiro o de maior impacto/mais surpreendente, depois alternando tom e bucket. **A ordem do array `highlights` É a ordem editorial** (o `rank` é re-numerado em TS depois).
-4. Os 1-2 melhores finalistas que ficaram de fora dos 6 vão pra `runners_up[]` (fallback humano).
+3. **Critério de diversidade #3 — ≥1 destaque de impacto NEGATIVO da IA (#3916, #3918)**, ao lado dos 2 critérios de diversidade acima (temática e de bucket). Cada finalista já vem com `article.negative_impact: true` quando o `scorer-chunk`/`scorer` tagueou o artigo como documentando dano/risco/custo real (ver `context/editorial-rules.md` — Destaques — pro critério completo do que conta).
+   - Depois de montar os 6 por mérito (passo 2), checar: **algum dos 6 tem `article.negative_impact: true`?**
+   - **Se sim:** nada a fazer, seguir para o passo 4.
+   - **Se não:** procurar nos `finalists` restantes (fora dos 6 já escolhidos) o de MAIOR score com `article.negative_impact: true`. Se existir, **promovê-lo**, substituindo o destaque de MENOR score dentre os 6 atuais (nunca o D1/maior score — a promoção nunca derruba o melhor candidato do dia). Registrar a troca em `negative_impact_promoted` no output (ver Output abaixo).
+   - **Se nenhum finalista tiver a tag:** não force — isso é o caso legítimo "pool sem candidato digno". Não promova nada; o gate da Etapa 4 avisa o editor (warning, nunca bloqueia).
+   - **Backstop determinístico existe (`assemble-scored.ts` → `ensureNegativeImpactHighlight`, #3916/#3918):** se você não fizer essa promoção (ou fizer errado), o TS que roda logo depois de você tenta de novo deterministicamente sobre os mesmos `finalists`. Faça a promoção aqui mesmo assim — sua versão tem julgamento editorial (qual `reason` faz mais sentido, diversidade de tom); a determinística é só rede de segurança, igual ao guard de `no-use-melhor-highlights` (#3436).
+4. Definir a **ordem editorial** dos 6: primeiro o de maior impacto/mais surpreendente, depois alternando tom e bucket. **A ordem do array `highlights` É a ordem editorial** (o `rank` é re-numerado em TS depois).
+5. Os 1-2 melhores finalistas que ficaram de fora dos 6 vão pra `runners_up[]` (fallback humano).
 
 ## Output
 
@@ -48,16 +54,23 @@ JSON gravado em `out_path`:
       "article": { ...artigo completo do finalista... }
     }
   ],
-  "runners_up": [ { "score": 80, "bucket": "lancamento", "article": { ... } } ]
+  "runners_up": [ { "score": 80, "bucket": "lancamento", "article": { ... } } ],
+  "negative_impact_promoted": {
+    "promoted_url": "https://...",
+    "demoted_url": "https://...",
+    "reason": "nenhum dos top-6 por mérito tinha negative_impact:true; promovido o melhor finalista tagueado"
+  }
 }
 ```
+
+`negative_impact_promoted` só aparece quando o passo 3 de fato promoveu um candidato — **omitir o campo inteiramente** (não `null`) quando os 6 por mérito já incluíam ≥1 `negative_impact:true`, ou quando nenhum finalista tinha a tag (nada pra promover).
 
 ## Regras
 
 - Não invente métricas — a `reason` deve referenciar sinais concretos.
 - Sempre **6 destaques** (exceto pool < 6), escolhidos por mérito (sem cota mínima por bucket).
 - Incluir `bucket` em cada highlight (facilita o orchestrator gerar o MD).
-- **NÃO** inclua `all_scored` — isso é assemblado em TS (`assemble-scored.ts`) a partir do merge. Você só produz `highlights` + `runners_up`.
+- **NÃO** inclua `all_scored` — isso é assemblado em TS (`assemble-scored.ts`) a partir do merge. Você só produz `highlights` + `runners_up` (+ `negative_impact_promoted` quando aplicável).
 - **URLs são opacas (#720).** Copie o `article` (incl. url) EXATAMENTE como veio no finalista — nunca corrija, normalize ou reescreva.
 - **OBRIGATÓRIO: gravar o output em arquivo antes de retornar.** Usar `Write` em `out_path` e validar com `Bash("node -e \"JSON.parse(require('fs').readFileSync('{out_path}','utf8')); console.log('ok')\"")` antes de retornar.
-- Retorne só: os títulos + scores dos 6 highlights escolhidos.
+- Retorne só: os títulos + scores dos 6 highlights escolhidos (+ menção à promoção de impacto-negativo, se houve).

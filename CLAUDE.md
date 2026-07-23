@@ -92,6 +92,7 @@ Outputs ficam em `data/editions/{AAMMDD}/` (ex: edição `260418/`) com sufixos 
 - Sem links repetidos das últimas 3 edições (verificado contra `data/past-editions.md`).
 - Destaques com título ≤52 caracteres, 3 opções por destaque.
 - **Edição tem sempre 2 ou 3 destaques, nunca 4 (#3369).** 3 é o padrão; 2 é o único edge case legítimo (editor demove D3 para o Radar, #2316/#2343). Promover um item do pool (RADAR/USE MELHOR/etc.) a destaque **substitui** um D1/D2/D3 existente — nunca adiciona um D4 (perguntar ao editor qual substituir quando não for óbvio). Enforcement: `scripts/extract-destaques.ts` rejeita qualquer contagem fora do intervalo 2–3.
+- **Edição tem sempre ≥1 destaque de impacto NEGATIVO da IA (#3916, #3918).** Definição operacional, mecanismo (scoring + seleção + guard warning-only no gate 4) e critério do que conta como dano real: ver `context/editorial-rules.md` seção "Destaques".
 - "Por que isso importa:" em linha separada.
 - Prompt de imagem: Van Gogh impasto, 2:1, SEM resolução em pixels, SEM Noite Estrelada.
 - Output final sem markdown (nada de `**`, `#`, `- `).
