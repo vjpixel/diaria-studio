@@ -74,8 +74,13 @@ export interface ValidationResult {
 // #1799: casa os 3 formatos de header: `LANÇAMENTOS` solo (Stage 2 antigo),
 // `## Lançamentos` (Stage 1 categorized), e `**🚀 LANÇAMENTOS**` (Stage 2
 // reviewed.md — antes não casava, então o validador era no-op ali).
+// #3942: `s?` no final torna o header agnóstico a singular/plural —
+// `singularize-md-sections.ts` reescreve pra `LANÇAMENTO` (singular) quando a
+// seção tem N=1 item, e sem o `?` esse header nunca entrava em `inSection`,
+// fazendo o validador reportar `lancamento_count: 0, status: ok` (falso-negativo)
+// com 1 lançamento de fato presente.
 const SECTION_LANCAMENTOS_RE =
-  /^(?:\*\*)?\s*(?:##\s+)?(?:🚀\s*)?lan[çc]amentos\s*(?:\*\*)?\s*$/im;
+  /^(?:\*\*)?\s*(?:##\s+)?(?:🚀\s*)?lan[çc]amentos?\s*(?:\*\*)?\s*$/im;
 const SECTION_BREAK_RE = /^---\s*$/m;
 const URL_RE = /https?:\/\/\S+/g;
 
