@@ -46,7 +46,7 @@ npx tsx scripts/purge-leaderboard.ts --email vjpixel@gmail.com --execute
 
 Por que é seguro pular o gate **nesta** skill: a ação é determinística e **hardcoded** (só os 2 emails do editor → blast radius baixo), **idempotente** (re-rodar é no-op), e o dry-run acima já deixou o plano visível. Exceção: se a chamada vier de contexto NÃO-interativo (outra automação, não o editor digitando `/`), aí confirme antes — mas o uso normal desta skill é manual.
 
-Ao final, confirme ao editor que as 2 contas saíram do leaderboard. Se quiser conferir, o `/leaderboard` do Worker (`poll.diaria.workers.dev/leaderboard`) reflete a remoção (snapshots foram invalidados).
+Ao final, confirme ao editor que as 2 contas saíram do leaderboard. Se quiser conferir, o `/leaderboard` do Worker (`eia.diar.ia.br/leaderboard` — domínio de marca, #3904) reflete a remoção (snapshots foram invalidados).
 
 ## Notas
 

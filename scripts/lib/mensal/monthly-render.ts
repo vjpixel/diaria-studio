@@ -26,6 +26,7 @@ import {
   DIARIA_LINKEDIN_PAGE_URL,
   DIARIA_INSTAGRAM_URL,
   DIARIA_THREADS_URL,
+  DIARIA_EIA_URL, // #3904
 } from "../canonical-urls.ts"; // #2645/#2790 — reusa as URLs canônicas (mesmas que a diária)
 
 const INK = COLORS.ink; // --ink #171411 (todo o texto)
@@ -863,7 +864,9 @@ export function renderEia(
   const fallbackBody = lines.slice(1).join("\n").trim();
   const cleanFallback = /^\[[\s\S]*\]$/.test(fallbackBody) ? "" : fallbackBody;
   const content = creditOverride?.trim() || cleanFallback;
-  const workerUrl = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
+  // #3904: default do domínio de marca — poll.diaria.workers.dev segue ativo
+  // só por compat de links de VOTO já enviados em ciclos passados.
+  const workerUrl = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
   const edition = eiaEditionFromYymm(yymm);
   // #1905: brand=clarice — votos do É IA? mensal vão pro leaderboard da Clarice
   // News, isolado do diário (Diar.ia).

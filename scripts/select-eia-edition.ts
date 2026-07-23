@@ -18,7 +18,7 @@
  *
  * Uso:
  *   npx tsx scripts/select-eia-edition.ts --month 2605 [--threshold 5] \
- *     [--base https://poll.diaria.workers.dev] [--cycle 2605-06] \
+ *     [--base https://eia.diar.ia.br] [--cycle 2605-06] \
  *     [--out-json data/monthly/2605-06/_internal/03-eia-selection.json]
  *
  * stdout = a edição AAMMDD escolhida (uma linha, pra capturar na skill) —
@@ -40,8 +40,9 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { logEvent } from "./lib/run-log.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
-const DEFAULT_BASE = "https://poll.diaria.workers.dev";
+const DEFAULT_BASE = DIARIA_EIA_URL;
 // Mínimo de votos pra um poll ser sinal e não ruído. Alinhado ao threshold de
 // `compute-eia-poll-stats.ts` (#107). O volume diário do É IA? é baixo (~3-11
 // votos/edição), então um piso de 5 mantém elegíveis os polls realmente

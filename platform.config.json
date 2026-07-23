@@ -27,7 +27,7 @@
     "editor_personal_email": "vjpixel@gmail.com"
   },
   "poll": {
-    "worker_url": "https://poll.diaria.workers.dev",
+    "worker_url": "https://eia.diar.ia.br",
     "kv_namespace_id": "72784da4ae39444481eb422ebac357c6",
     "enabled": true
   },

@@ -42,7 +42,7 @@ Crítico: este é o stage **publicador** (Beehiiv + LinkedIn + Facebook); rodar 
 ## Passo -2 — Pre-flight CORS check (#1132 P2.4)
 
 ```bash
-npx tsx scripts/check-worker-cors.ts --worker-url https://poll.diaria.workers.dev
+npx tsx scripts/check-worker-cors.ts --worker-url https://eia.diar.ia.br
 ```
 
 - Se `ok: true` → prosseguir normalmente.

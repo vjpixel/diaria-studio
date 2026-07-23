@@ -134,9 +134,10 @@ export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 
 // #2738: engajamento do poll "É IA?" por edição, gravado por
 // scripts/build-poll-eia-data.ts --push (reusa buildPollEiaSummaryFromApi,
-// que já busca os endpoints públicos de poll.diaria.workers.dev pro OUTRO
-// dashboard — workers/diaria-dashboard). Payload SLIM (só o necessário pra
-// esta tabela) — sem PII (nicknames/leaderboard ficam só no diaria-dashboard).
+// que já busca os endpoints públicos de eia.diar.ia.br — domínio de marca,
+// #3904 — pro OUTRO dashboard — workers/diaria-dashboard). Payload SLIM (só o
+// necessário pra esta tabela) — sem PII (nicknames/leaderboard ficam só no
+// diaria-dashboard).
 export const EIA_ENGAGEMENT_KV_KEY = "eia:engagement";
 
 export interface EiaEngagementEdition {

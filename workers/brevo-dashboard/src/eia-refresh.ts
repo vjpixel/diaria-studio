@@ -29,8 +29,10 @@
 import type { Env, EiaEngagementEdition, EiaEngagementSummary } from "./types.ts";
 import { EIA_ENGAGEMENT_KV_KEY } from "./types.ts";
 
-/** Mesmo default de `scripts/build-poll-eia-data.ts` (readDefaultWorkerUrl). */
-export const DEFAULT_POLL_WORKER_URL = "https://poll.diaria.workers.dev";
+/** Mesmo default de `scripts/build-poll-eia-data.ts` (readDefaultWorkerUrl).
+ * #3904: domínio de marca — poll.diaria.workers.dev segue ativo só por
+ * compat de links já enviados (não usado por este fetch interno). */
+export const DEFAULT_POLL_WORKER_URL = "https://eia.diar.ia.br";
 
 /** Máximo de ciclos mantidos no payload — mesmo teto do script (`buildPollEiaSummaryFromApi`). */
 const MAX_EDITIONS = 20;

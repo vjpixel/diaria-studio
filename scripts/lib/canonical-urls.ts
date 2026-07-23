@@ -113,6 +113,19 @@ export const DIARIA_CURSOS_URL = "https://cursos.diar.ia.br";
  */
 export const DIARIA_LIVROS_URL = "https://livros.diar.ia.br";
 
+/**
+ * URL canônica do jogo público "É IA?" (#3904) — domínio de marca (Workers
+ * Custom Domain, `workers/poll/wrangler.toml`, `eia.diar.ia.br` → worker
+ * `poll`) em vez do subdomínio genérico `poll.diaria.workers.dev`. Mesmo
+ * padrão de `DIARIA_CURSOS_URL`/`DIARIA_LIVROS_URL` acima — `workers.dev`
+ * continua ativo só por compat de links já enviados em edições passadas (ver
+ * `FOOTER_DOMAINS` abaixo e `workers/poll/wrangler.toml`), mas todo link NOVO
+ * pro leitor (voto/imagens/leaderboard/canonical do worker, #3701/#3904)
+ * passa a emitir este domínio. Fonte única — importar em vez de hardcodear
+ * `"https://eia.diar.ia.br"` nos consumidores.
+ */
+export const DIARIA_EIA_URL = "https://eia.diar.ia.br";
+
 interface ArticleLike {
   url?: string;
   title?: string;

@@ -30,7 +30,9 @@
  *   ADMIN_SECRET       HMAC key pro endpoint /admin/correct (ver .env). Worker
  *                      valida sig contra ADMIN_SECRET (workers/poll/src/index.ts:325).
  *                      Pode estar como `ADMIN_SECRET` ou `POLL_ADMIN_SECRET`.
- *   POLL_WORKER_URL    URL base do Worker (default: https://poll.diaria.workers.dev)
+ *   POLL_WORKER_URL    URL base do Worker (default: https://eia.diar.ia.br —
+ *                      domínio de marca, #3904; poll.diaria.workers.dev segue
+ *                      ativo só por compat de links já enviados)
  */
 
 import "dotenv/config"; // #1204 — sem isso, ADMIN_SECRET do .env nao chega no processo
@@ -45,9 +47,10 @@ import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra ISP
 import { monthlyDir as resolveMonthlyDir, isValidMonthlyCycle } from "./lib/mensal/monthly-paths.ts"; // #2009 — marker mensal
 import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #3024/#3031: layout flat+nested
 import { runSyncIntentionalError } from "./sync-intentional-error.ts"; // #3210
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
+const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
 
 // #3118 (item 8): mensagem assinada agora inclui o brand — antes era só
 // `${edition}:${answer}`, o que tornava o sig replayable pra sempre E válido

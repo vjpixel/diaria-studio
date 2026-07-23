@@ -58,12 +58,15 @@ const FONT_LABEL = FONTS.sans;
 // (reserved field). Modo merge-tag — sem sig HMAC por subscriber.
 // inject-poll-sig.ts foi removido. Sintaxe Beehiiv: SEM espaços, SEM prefix.
 // (validado contra docs oficiais 2026-05-11).
-const POLL_WORKER_URL = "https://poll.diaria.workers.dev";
-// #3701: domínio de marca do jogo público "É IA?" — usado SÓ pros links
-// reader-facing de promoção do jogo (arquivo/leaderboard). O link de VOTO
-// (`buildVoteUrl` abaixo, embutido por subscriber via merge tag `{{email}}`)
-// continua em `POLL_WORKER_URL` por compat — não é promoção, é o endpoint
-// interno de ação que já está embutido em edições enviadas.
+// #3701: domínio de marca do jogo público "É IA?" — inicialmente usado só
+// pros links de promoção (arquivo/leaderboard); o link de VOTO
+// (`buildVoteUrl` abaixo) ficou temporariamente em `poll.diaria.workers.dev`
+// "por compat", com o endpoint de ação embutido em edições já enviadas.
+// #3904: essa decisão foi revista — o link de voto de edições NOVAS também
+// passa a emitir o domínio de marca (mesmo worker por trás de ambos os
+// hostnames, #3701 wrangler.toml `workers_dev = true` preservado só pra
+// manter vivos os links de VOTO das edições JÁ enviadas antes deste PR — ver
+// FOOTER_DOMAINS em scripts/lib/canonical-urls.ts).
 const PUBLIC_GAME_BASE_URL = "https://eia.diar.ia.br";
 
 // #3524: ponte cross-canal email → arquivo do site (última sub-issue do EPIC
@@ -954,7 +957,7 @@ export function renderEIA(eia: EIA): string {
     : "";
 
   const buildVoteUrl = (choice: "A" | "B") =>
-    `${POLL_WORKER_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
+    `${PUBLIC_GAME_BASE_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
     // #3101: width="480" em pixels (600px container − 32px×2 padding da seção

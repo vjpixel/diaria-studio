@@ -56,6 +56,15 @@ describe("isEditorial — filtra infra própria / utilitários (#1567 finding G)
     assert.equal(isEditorial("https://creativecommons.org/licenses/by-sa/4.0"), false);
   });
 
+  it("#3904: rejeita eia.diar.ia.br (domínio de marca do worker poll) — mesma classe do finding G acima", () => {
+    // Regressão: a migração do link de voto pro domínio de marca (#3904) não
+    // pode fazer o clique vazar como "editorial" no Top-15 de domínios —
+    // mesmo bug que .workers.dev já é allowlistado pra prevenir, só que pro
+    // hostname novo.
+    assert.equal(isEditorial("https://eia.diar.ia.br/vote?email=x@x.com&edition=260722&choice=A"), false);
+    assert.equal(isEditorial("https://eia.diar.ia.br/leaderboard"), false);
+  });
+
   it("mantém links editoriais reais (não over-filtra)", () => {
     assert.equal(
       isEditorial("https://techcrunch.com/2026/05/19/openai-co-founder-joins-anthropic"),

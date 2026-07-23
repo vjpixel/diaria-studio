@@ -230,7 +230,7 @@ Faz upload de 5 imagens pro Worker KV (default `--target cloudflare` quando `--m
 - `04-d2-1x1.jpg` (inline D2); `04-d3-1x1.jpg` (inline D3, somente em edições 3-destaque — #2352)
 - `01-eia-A.jpg`, `01-eia-B.jpg` (É IA? — random A/B; mapping em `01-eia.md` frontmatter; edições antigas usam `01-eia-real.jpg`/`01-eia-ia.jpg`, detectadas em runtime)
 
-KV keys: `img-{AAMMDD}-{filename}` (ex: `img-260512-04-d1-2x1.jpg`). URLs servidas por `https://poll.diaria.workers.dev/img/{key}` com `Content-Type: image/jpeg` + `Cache-Control: public, max-age=31536000, immutable`.
+KV keys: `img-{AAMMDD}-{filename}` (ex: `img-260512-04-d1-2x1.jpg`). URLs servidas por `https://eia.diar.ia.br/img/{key}` (#3904 — domínio de marca; `poll.diaria.workers.dev` segue ativo só por compat de links já enviados) com `Content-Type: image/jpeg` + `Cache-Control: public, max-age=31536000, immutable`.
 
 Output: `{edition_dir}/06-public-images.json` com mapping `{ cover, d2, d3, eia_a, eia_b: { url, file_id, filename, target: "cloudflare" } }` (edições antigas: `eia_real`/`eia_ia` no lugar de `eia_a`/`eia_b`).
 
@@ -344,7 +344,7 @@ Beehiiv `file_upload` MCP retorna "Not allowed" no input hidden do editor. **Mé
 ```typescript
 import { readCoverImageUrl } from "scripts/lib/beehiiv-cover-upload.ts";
 const coverUrl = readCoverImageUrl(`{edition_dir}/06-public-images.json`);
-// Exemplo: "https://poll.diaria.workers.dev/img/img-260630-04-d1-2x1-3692a95a.jpg"
+// Exemplo: "https://eia.diar.ia.br/img/img-260630-04-d1-2x1-3692a95a.jpg" (#3904)
 ```
 
 Ou via Bash:

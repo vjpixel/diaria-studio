@@ -16,7 +16,8 @@
  *   npx tsx scripts/smoke-test-vote.ts --edition 260519
  *
  * Env:
- *   POLL_WORKER_URL - default https://poll.diaria.workers.dev
+ *   POLL_WORKER_URL - default https://eia.diar.ia.br (domínio de marca, #3904;
+ *   poll.diaria.workers.dev segue ativo só por compat de links já enviados)
  *   (POLL_SECRET não é mais necessário — modo merge-tag, sem sig HMAC)
  *
  * Exit codes:
@@ -30,8 +31,9 @@ import "dotenv/config";
 
 import { parseArgs as parseCliArgs } from "./lib/cli-args.ts";
 import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra UDP/53 broken
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
-const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
+const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
 
 async function main(): Promise<void> {
   const { values } = parseCliArgs(process.argv.slice(2));

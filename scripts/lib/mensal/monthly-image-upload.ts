@@ -12,6 +12,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { uploadImageToWorkerKV } from "../cloudflare-kv-upload.ts";
+import { DIARIA_EIA_URL } from "../canonical-urls.ts"; // #3904
 
 // scripts/lib/mensal/ → raiz são 3 níveis (mensal → lib → scripts). #2747 desceu
 // este arquivo um nível e o `.., ..` original passou a apontar pra scripts/.
@@ -47,7 +48,7 @@ export async function uploadMonthlyImage(
   const kvNamespaceId: string = cfg?.poll?.kv_namespace_id;
   if (!kvNamespaceId) throw new Error("platform.config.json → poll.kv_namespace_id não configurado");
 
-  const workerUrl = process.env.POLL_WORKER_URL ?? cfg?.poll?.worker_url ?? "https://poll.diaria.workers.dev";
+  const workerUrl = process.env.POLL_WORKER_URL ?? cfg?.poll?.worker_url ?? DIARIA_EIA_URL; // #3904
   const key = monthlyEiaImageKey(edition, filePath);
 
   return uploadImageToWorkerKV(filePath, key, {

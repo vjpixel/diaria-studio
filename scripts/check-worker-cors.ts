@@ -13,7 +13,7 @@
  * em qualquer response do `/img/` endpoint.
  *
  * Uso:
- *   npx tsx scripts/check-worker-cors.ts --worker-url https://poll.diaria.workers.dev
+ *   npx tsx scripts/check-worker-cors.ts --worker-url https://eia.diar.ia.br
  *   npx tsx scripts/check-worker-cors.ts (lê de platform.config.json → poll.worker_url)
  *
  * Exit codes:

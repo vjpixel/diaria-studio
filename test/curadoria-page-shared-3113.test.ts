@@ -88,7 +88,8 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     // #3698: domínio de marca (era cursos/livros.diaria.workers.dev).
     assert.match(html, /<a href="https:\/\/cursos\.diar\.ia\.br\/">Cursos<\/a>/);
     assert.match(html, /<a href="https:\/\/livros\.diar\.ia\.br\/">Livros<\/a>/);
-    assert.match(html, /<a href="https:\/\/poll\.diaria\.workers\.dev\/leaderboard">É IA\?<\/a>/);
+    // #3904: domínio de marca (era poll.diaria.workers.dev).
+    assert.match(html, /<a href="https:\/\/eia\.diar\.ia\.br\/leaderboard">É IA\?<\/a>/);
     assert.doesNotMatch(html, /<script>/, "texto de crédito deve ser escapado");
     assert.match(html, /&lt;script&gt;/);
   });

@@ -1,7 +1,7 @@
 /**
  * embed-images-base64.ts
  *
- * Substitui URLs remotas de imagem (poll.diaria.workers.dev) por data: URIs
+ * Substitui URLs remotas de imagem (eia.diar.ia.br, #3904) por data: URIs
  * base64 num HTML já renderizado. Usado exclusivamente para o preview de
  * revisão do Stage 4 publicado via Claude Artifacts (#3214): Artifacts rodam
  * sob CSP estrita que bloqueia carregamento de imagem remota, então

@@ -73,8 +73,10 @@ function assertCommonSeoTags(html: string, canonicalPath: string) {
   assert.doesNotMatch(html, /name="twitter:image"/, "twitter:image não deveria existir (decisão #3106)");
 
   const escapedPath = canonicalPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const ogUrlRe = new RegExp(`<meta property="og:url" content="https://poll\\.diaria\\.workers\\.dev${escapedPath}">`);
-  const canonicalRe = new RegExp(`<link rel="canonical" href="https://poll\\.diaria\\.workers\\.dev${escapedPath}">`);
+  // #3904: canonical/og:url do worker inteiro migraram pro domínio de marca
+  // (era poll.diaria.workers.dev, só pro brand "web" desde #3701).
+  const ogUrlRe = new RegExp(`<meta property="og:url" content="https://eia\\.diar\\.ia\\.br${escapedPath}">`);
+  const canonicalRe = new RegExp(`<link rel="canonical" href="https://eia\\.diar\\.ia\\.br${escapedPath}">`);
   assert.match(html, ogUrlRe, `og:url deveria apontar pra ${canonicalPath}`);
   assert.match(html, canonicalRe, `canonical deveria apontar pra ${canonicalPath}`);
 }

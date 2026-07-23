@@ -20,6 +20,7 @@
 
 import { readFileSync } from "node:fs";
 import https from "node:https";
+import { DIARIA_EIA_URL } from "./canonical-urls.ts"; // #3904
 
 export interface CloudflareKVConfig {
   /** Account ID Cloudflare. Lê de process.env.CLOUDFLARE_ACCOUNT_ID por default. */
@@ -28,7 +29,9 @@ export interface CloudflareKVConfig {
   token?: string;
   /** Namespace ID do KV (do wrangler.toml `[[kv_namespaces]] id`). */
   kvNamespaceId: string;
-  /** URL pública do Worker (sem trailing slash). Default: https://poll.diaria.workers.dev */
+  /** URL pública do Worker (sem trailing slash). Default: https://eia.diar.ia.br
+   * (domínio de marca, #3904; poll.diaria.workers.dev segue ativo só por
+   * compat de links já enviados). */
   workerUrl?: string;
 }
 
@@ -51,7 +54,7 @@ export async function uploadImageToWorkerKV(
 ): Promise<string> {
   const accountId = cfg.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
   const token = cfg.token ?? process.env.CLOUDFLARE_WORKERS_TOKEN;
-  const workerUrl = cfg.workerUrl ?? "https://poll.diaria.workers.dev";
+  const workerUrl = cfg.workerUrl ?? DIARIA_EIA_URL; // #3904
 
   if (!accountId || !token) {
     throw new Error(
