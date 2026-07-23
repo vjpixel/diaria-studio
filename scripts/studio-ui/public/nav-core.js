@@ -36,6 +36,9 @@ export const NAV_ITEMS = [
   { id: "rodada", label: "Rodada", href: "/rodada", pageIds: ["rodada"] },
   { id: "triagem", label: "Triagem", href: "/triagem", pageIds: ["triagem"] },
   { id: "revisao", label: "Revisão", href: null, pageIds: ["revisao"] },
+  // #3924: "Caixas" — listar/editar os snippets de caixa de divulgação
+  // (context/snippets/*.md).
+  { id: "caixas", label: "Caixas", href: "/caixas", pageIds: ["caixas"] },
   { id: "apoios", label: "Apoios", href: "/apoios", pageIds: ["apoios"] },
   { id: "relatorios", label: "Relatórios", href: "/relatorios", pageIds: ["relatorios"] },
   { id: "integracoes", label: "Integrações", href: "/integracoes", pageIds: ["integracoes"] },

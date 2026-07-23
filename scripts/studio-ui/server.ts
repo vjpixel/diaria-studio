@@ -170,6 +170,14 @@
  *     `refreshPollEiaSummaryLocal` — sem a flag, um refresh repetido dentro do
  *     TTL serve o `poll-eia-summary.json` já em disco sem novo fetch (o fetch
  *     completo percorre N edições × M meses de leaderboard, historicamente >25s).
+ *   - `GET /caixas` — seção "Caixas" (#3924): mesma estratégia de rewrite de
+ *     `/apoios`/`/relatorios`, servindo `public/caixas.html`. Consome
+ *     `GET /api/boxes` (lista dinâmica de `context/snippets/*.md`, exceto
+ *     `README.md`, com badge de slot cruzado de `platform.config.json` →
+ *     `boxes_divulgacao`, somente leitura) + `GET/PUT /api/boxes/:slug`
+ *     (conteúdo + save com o MESMO guard de mtime de `#3729`, ver
+ *     `studio-boxes.ts`). Criação de caixa nova está fora de escopo — só
+ *     edita conteúdo já existente.
  *   - Notificação Telegram (#3564, sem rota HTTP própria): um watcher em
  *     background, subido por `startStudioServer` e fechado em `close()`,
  *     observa `gatesPending`/`chatPermissionsPending` (mesmo `buildStudioState`
@@ -229,6 +237,13 @@
  * exigiria credenciais Cloudflare de produção e não é papel de um botão de
  * painel local). Mesma classe de exceção que #3559/#3602/#3859: escopo
  * estreito, 1 arquivo local, fail-soft total.
+ *
+ * **Exceção controlada (#3924 — seção "Caixas"):** `PUT /api/boxes/:slug`
+ * escreve SÓ o conteúdo de um snippet já existente em `context/snippets/`
+ * (repo git, não `data/` — snippets de caixa são versionados). Mesma classe
+ * de exceção que #3559/#3602: escopo estreito (1 arquivo por vez, slug
+ * validado contra traversal/`README.md`), guard de mtime idêntico ao #3729.
+ * Toda a lógica mora em `studio-boxes.ts`.
  *
  * Ver "Decisões de design" no PR body pra rationale completo (framework
  * escolhido, estrutura de diretórios, formato das APIs, pontos de extensão).
@@ -338,6 +353,10 @@ import {
   type ApoiosMutationResult,
 } from "./studio-apoios.ts";
 import type { DrainApoiaSeResult } from "../lib/apoia-se-gmail-drain.ts";
+// #3924: seção "Caixas" — listar e editar os snippets de caixa de
+// divulgação (`context/snippets/*.md`) — arquivo próprio desta fatia, import
+// isolado (nenhuma outra rota depende dele). Ver studio-boxes.ts.
+import { listBoxes, readBox, saveBox } from "./studio-boxes.ts";
 // #3564: notificação Telegram (gate 4/6 pendente + AskUserQuestion pendente
 // no chat) com dedup — arquivo próprio desta fatia, import isolado (nenhuma
 // outra rota depende dele). Ver studio-telegram-notify.ts.
@@ -1306,6 +1325,69 @@ async function handleApiApoiosUpdate(
   sendApoiosMutationResult(res, result);
 }
 
+// ── #3924: seção "Caixas" — snippets de caixa de divulgação ─────────────
+
+// Snippets são pequenos (recomendação de leitura, apoio, etc.) — mesmo teto
+// generoso de `REVIEW_MAX_BODY_BYTES` seria exagero aqui; 500KB já é folga
+// grande sobre o que um snippet de verdade pesa, protege contra corpo absurdo.
+const BOXES_MAX_BODY_BYTES = 500_000;
+
+/** `GET /api/boxes` — lista dinâmica de `context/snippets/*.md` (#3924).
+ * Sempre 200: `listBoxes` é fail-soft (diretório ausente -> `[]`, nunca
+ * lança). */
+function handleApiBoxesList(rootDir: string, res: ServerResponse): void {
+  sendJson(res, 200, { boxes: listBoxes(rootDir) });
+}
+
+/** `GET /api/boxes/:slug` — conteúdo + mtime de UMA caixa (#3924). Qualquer
+ * falha de `readBox` (slug inválido — traversal, `README.md`, extensão
+ * errada — OU caixa inexistente em disco) responde 404, nunca 400: do ponto
+ * de vista do client não há diferença acionável entre "esse slug nunca foi
+ * válido" e "essa caixa não existe mais". */
+function handleApiBoxGet(rootDir: string, slug: string, res: ServerResponse): void {
+  const state = readBox(rootDir, slug);
+  sendJson(res, state.ok ? 200 : 404, state);
+}
+
+/** `PUT /api/boxes/:slug` — salva o conteúdo de UMA caixa (#3924). Mesmo
+ * contrato de `expectedModifiedAt`/`force` de `handleReviewSave`
+ * (studio-review.ts, #3729) — não duplicado aqui além da validação de shape
+ * do corpo. Status: 200 sucesso, 409 conflito de mtime, 404 slug
+ * inválido/caixa inexistente, 400 corpo malformado. */
+async function handleApiBoxSave(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  slug: string,
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, BOXES_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const parsed = body as { content?: unknown; expectedModifiedAt?: unknown; force?: unknown } | null;
+  const content = parsed?.content;
+  if (typeof content !== "string") {
+    sendJson(res, 400, { error: "campo 'content' (string) é obrigatório no corpo" });
+    return;
+  }
+  let expectedModifiedAt: string | null | undefined;
+  if (parsed && "expectedModifiedAt" in parsed) {
+    const raw = parsed.expectedModifiedAt ?? null;
+    if (raw !== null && typeof raw !== "string") {
+      sendJson(res, 400, { error: "campo 'expectedModifiedAt' precisa ser string ISO ou null" });
+      return;
+    }
+    expectedModifiedAt = raw;
+  }
+  const force = parsed?.force === true;
+  const result = saveBox(rootDir, slug, content, { expectedModifiedAt, force });
+  const status = result.ok ? 200 : result.conflict ? 409 : result.notFound ? 404 : 400;
+  sendJson(res, status, result);
+}
+
 // ── #3848: status de todas as integrações (APIs + MCPs) ────────────────
 
 /** `GET /api/integrations` — status de todas as integrações (#3848). Sempre
@@ -1503,9 +1585,18 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiPainelEiaRefresh(rootDir, req, res);
         return;
       }
+      // #3924: seção "Caixas" — salvar 1 snippet. Mesmo tratamento das rotas
+      // de escrita acima (checada antes do guard genérico de método).
+      const boxSaveMatch = urlPath.match(/^\/api\/boxes\/([^/]+)$/);
+      if (req.method === "PUT" && boxSaveMatch) {
+        handleApiBoxSave(rootDir, req, res, decodeURIComponent(boxSaveMatch[1])).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
 
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556), POST /api/waves/fire (#3702) e as rotas de ação do #3559/#3602/#3806/#3859/#3861" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556), POST /api/waves/fire (#3702) e as rotas de ação do #3559/#3602/#3806/#3859/#3861/#3924" });
         return;
       }
 
@@ -1576,6 +1667,20 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #3848: status de todas as integrações (APIs + MCPs).
       if (urlPath === "/api/integrations") {
         handleApiIntegrations(rootDir, req, res, integrationsFetchImpl);
+        return;
+      }
+      // #3924: seção "Caixas" — GET (PUT de save já tratado acima, antes do
+      // guard de método). Lista checada antes do get-por-slug pra não colidir
+      // (regex de slug `[^/]+` casaria "boxes" também se checado depois, mas
+      // "/api/boxes" bare não tem barra final pro regex de slug casar — a
+      // ordem aqui é só disciplina de leitura, mesmo padrão do resto do arquivo).
+      if (urlPath === "/api/boxes") {
+        handleApiBoxesList(rootDir, res);
+        return;
+      }
+      const boxGetMatch = urlPath.match(/^\/api\/boxes\/([^/]+)$/);
+      if (boxGetMatch) {
+        handleApiBoxGet(rootDir, decodeURIComponent(boxGetMatch[1]), res);
         return;
       }
       // #3559: painel de revisão de conteúdo rica — leitura (GET) do arquivo,
@@ -1676,6 +1781,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #3602: mesma estratégia de rewrite — a página busca /api/apoios.
       if (urlPath === "/apoios" || urlPath === "/apoios/") {
         const served = serveStaticFile(PUBLIC_DIR, "/apoios.html", res, req);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #3924: mesma estratégia de rewrite — a página busca /api/boxes.
+      if (urlPath === "/caixas" || urlPath === "/caixas/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/caixas.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");

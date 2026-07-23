@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diar.ia Studio — Caixas</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+  <link rel="stylesheet" href="/caixas.css" />
+  <link rel="stylesheet" href="/chat-drawer.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
+    <div class="statusbar-item">
+      <span class="label">Caixas</span>
+      <span class="value">context/snippets</span>
+    </div>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Caixas de divulgação</h1>
+      <p class="hint">
+        Lista dinâmica de <code>context/snippets/*.md</code> (exceto <code>README.md</code>).
+        O badge "slot N" mostra a atribuição atual em <code>platform.config.json</code> →
+        <code>boxes_divulgacao</code> — <strong>somente leitura aqui</strong>, atribuir slot
+        não é uma ação desta tela.
+      </p>
+      <div class="panel-header-row">
+        <span id="last-updated" class="hint" aria-live="polite"></span>
+        <button id="refresh-btn" type="button">Atualizar</button>
+      </div>
+      <div id="boxes-error" class="panel alert-banner" role="alert" hidden>
+        <span id="boxes-error-text"></span>
+        <button type="button" class="retry-btn" id="boxes-retry-btn">Tentar de novo</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Caixas (<span id="boxes-count">0</span>)</h2>
+      <div id="boxes-loading" class="hint">Carregando…</div>
+      <div id="boxes-empty" class="hint" hidden>Nenhuma caixa em context/snippets/.</div>
+      <div id="boxes-list" class="boxes-list"></div>
+    </section>
+
+    <section class="panel" id="editor-panel" hidden>
+      <h2 id="editor-title">Editando</h2>
+      <p class="hint" id="editor-file"></p>
+      <div class="cx-editor-toolbar">
+        <button id="save-btn" type="button">Salvar</button>
+        <button id="close-editor-btn" type="button">Fechar</button>
+        <span id="save-status" class="cx-save-status" role="status" aria-live="polite"></span>
+      </div>
+      <div id="editor-load-error" class="alert-banner" role="alert" hidden></div>
+      <textarea id="editor" class="cx-editor" spellcheck="false"></textarea>
+    </section>
+  </main>
+
+  <script>window.STUDIO_PAGE = "caixas";</script>
+  <script src="/nav.js" type="module"></script>
+  <script src="/caixas.js" type="module"></script>
+  <script src="/chat-drawer.js" type="module"></script>
+</body>
+</html>

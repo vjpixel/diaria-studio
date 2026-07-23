@@ -41,9 +41,9 @@ const SERVER_TS = readFileSync(resolve(REPO_ROOT, "scripts", "studio-ui", "serve
 // ─── lógica pura (nav-core.js) ──────────────────────────────────────────
 
 describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra server.ts", () => {
-  it("cobre os 8 destinos de página (home/rodada/triagem/revisao/apoios/relatorios/integracoes/painel-diaria)", () => {
+  it("cobre os 9 destinos de página (home/rodada/triagem/revisao/caixas/apoios/relatorios/integracoes/painel-diaria)", () => {
     const ids = NAV_ITEMS.map((i) => i.id);
-    assert.deepEqual(ids, ["home", "rodada", "triagem", "revisao", "apoios", "relatorios", "integracoes", "painel-diaria"]);
+    assert.deepEqual(ids, ["home", "rodada", "triagem", "revisao", "caixas", "apoios", "relatorios", "integracoes", "painel-diaria"]);
   });
 
   it("todo item (exceto revisao, que resolve em runtime) tem href estático não-vazio", () => {
@@ -88,6 +88,13 @@ describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra ser
     }
   });
 
+  it("(#3924): /caixas agora É um destino de menu — rota real existe em server.ts", () => {
+    const item = NAV_ITEMS.find((i) => i.id === "caixas");
+    assert.ok(item, "NAV_ITEMS precisa ter o item 'caixas'");
+    assert.equal(item.href, "/caixas");
+    assert.match(SERVER_TS, /urlPath === "\/caixas"/, "server.ts precisa reconhecer a rota /caixas");
+  });
+
   it("(#3848): /integracoes agora É um destino de menu — rota real existe em server.ts", () => {
     const item = NAV_ITEMS.find((i) => i.id === "integracoes");
     assert.ok(item, "NAV_ITEMS precisa ter o item 'integracoes'");
@@ -120,6 +127,7 @@ describe("resolveActiveNavId (#3849)", () => {
     assert.equal(resolveActiveNavId("rodada"), "rodada");
     assert.equal(resolveActiveNavId("triagem"), "triagem");
     assert.equal(resolveActiveNavId("revisao"), "revisao");
+    assert.equal(resolveActiveNavId("caixas"), "caixas");
     assert.equal(resolveActiveNavId("apoios"), "apoios");
     assert.equal(resolveActiveNavId("relatorios"), "relatorios");
     assert.equal(resolveActiveNavId("integracoes"), "integracoes");
@@ -146,13 +154,14 @@ describe("resolveRevisaoHref (#3849)", () => {
 });
 
 describe("buildNavHtml (#3849)", () => {
-  it("renderiza os 8 itens de página + o grupo de Dashboards", () => {
+  it("renderiza os 9 itens de página + o grupo de Dashboards", () => {
     const html = buildNavHtml("rodada", "/revisao/260722");
     assert.match(html, /id="app-nav-list"/);
     assert.match(html, /href="\/">Home<\/a>/);
     assert.match(html, /href="\/rodada"/);
     assert.match(html, /href="\/triagem"/);
     assert.match(html, /href="\/revisao\/260722"/);
+    assert.match(html, /href="\/caixas"/);
     assert.match(html, /href="\/apoios"/);
     assert.match(html, /href="\/relatorios"/);
     assert.match(html, /href="\/integracoes"/);
@@ -233,6 +242,7 @@ describe("GET de cada página real inclui #app-nav + nav.js + STUDIO_PAGE corret
     { path: "/", page: "index" },
     { path: "/rodada", page: "rodada" },
     { path: "/triagem", page: "triagem" },
+    { path: "/caixas", page: "caixas" },
     { path: "/apoios", page: "apoios" },
     { path: "/relatorios", page: "relatorios" },
     { path: "/integracoes", page: "integracoes" },

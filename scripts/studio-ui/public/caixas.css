@@ -1,0 +1,126 @@
+/* caixas.css (#3924) — seção "Caixas": listar e editar os snippets de caixa
+   de divulgação. Estende style.css (#3555) + triagem.css (`.panel-header-row`,
+   `.alert-banner`/`.retry-btn` já vêm de style.css), mesma fonte de tokens
+   (/tokens.generated.css). */
+
+.boxes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.box-card {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.6rem 0.85rem;
+  background: var(--paper-alt);
+}
+.box-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.box-title { font-weight: 600; }
+.box-meta {
+  font-size: 0.78rem;
+  font-family: var(--font-mono);
+  opacity: 0.75;
+  margin: 0.3rem 0;
+}
+.box-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+.box-actions button {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--paper-alt);
+  color: var(--ink);
+  cursor: pointer;
+}
+.box-actions button:hover { background: var(--brand); color: var(--on-ink); border-color: var(--brand); }
+
+/* Badges — mesma família visual de .status-badge (apoios.css): fonte mono,
+   pill, border 1px. slot = tokens de status "ok" (é uma caixa ATIVA na
+   newsletter agora); dirty vs git usa --status-warn (mudança local ainda não
+   commitada — nem certo nem errado, só um fato que o editor deve saber). */
+.box-slot-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--status-ok);
+  color: var(--status-ok);
+  white-space: nowrap;
+}
+.box-dirty-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px dashed var(--status-warn);
+  color: var(--status-warn);
+  white-space: nowrap;
+}
+
+/* Editor — mesma família visual de .rv-editor/.rv-editor-toolbar/.rv-save-status
+   (revisao.css), simplificada (sem tabs/diff/lint/preview: só 1 caixa por
+   vez, textarea simples). */
+.cx-editor-toolbar {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.cx-editor-toolbar button {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.85rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper-alt);
+  color: inherit;
+  cursor: pointer;
+}
+.cx-editor-toolbar button:hover { border-color: var(--ink); }
+.cx-editor-toolbar button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.cx-save-status { font-family: var(--font-mono); font-size: 0.8rem; opacity: 0.8; }
+.cx-save-status.ok { color: var(--brand); }
+.cx-save-status.err { color: var(--status-danger); }
+
+.cx-editor {
+  width: 100%;
+  min-height: 320px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  padding: 0.75rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  tab-size: 2;
+}
+
+@media (max-width: 640px) {
+  .statusbar { gap: 0.75rem; }
+  main { padding: 1rem 0.75rem 3rem; }
+  .cx-editor { min-height: 240px; }
+
+  /* #3874: alvos de toque ≥44px (WCAG 2.5.5/HIG), mesmo padrão de
+     apoios.css/revisao.css. */
+  .box-actions button,
+  .cx-editor-toolbar button {
+    min-height: 44px;
+  }
+}
