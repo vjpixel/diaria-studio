@@ -3,18 +3,20 @@
  * build-poll-eia-data.ts (#2475)
  *
  * Agrega dados do poll "É IA?" via endpoints públicos do worker `poll`
- * (https://poll.diaria.workers.dev) e grava data/poll-eia-summary.json —
- * arquivo consumido por `build-diaria-dashboard-data.ts` via `buildPollEiaSummary`.
+ * (https://eia.diar.ia.br — domínio de marca, #3904; poll.diaria.workers.dev
+ * segue ativo só por compat de links já enviados) e grava
+ * data/poll-eia-summary.json — arquivo consumido por
+ * `build-diaria-dashboard-data.ts` via `buildPollEiaSummary`.
  *
  * Abordagem (b) — push/agregador:
  *   Consome endpoints públicos do worker poll; NÃO lê KV cross-worker diretamente
  *   (requereria namespace+token que o editor não configurou neste script).
  *
  * Endpoints consumidos:
- *   GET https://poll.diaria.workers.dev/stats?edition=AAMMDD
+ *   GET https://eia.diar.ia.br/stats?edition=AAMMDD
  *     → { total, voted_a, voted_b, correct_answer, correct_count, correct_pct }
  *       (brand=diaria implícito — não precisa de ?brand=)
- *   GET https://poll.diaria.workers.dev/leaderboard/{YYYY-MM}.json
+ *   GET https://eia.diar.ia.br/leaderboard/{YYYY-MM}.json
  *     → { entries: [{rank, medal, nickname, correct, total, pct}], period_slug }
  *       (novo endpoint #2475 — expõe métricas para TODOS os ranks, não só rank 1)
  *
@@ -65,6 +67,7 @@ import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
 // #2738: chave KV do clarice-dashboard pro engajamento do "É IA?" (aba Engajamento).
 const EIA_ENGAGEMENT_KV_KEY = "eia:engagement";
@@ -88,7 +91,7 @@ function readDefaultWorkerUrl(): string {
   } catch {
     // arquivo ausente/inválido → cai no literal default
   }
-  return "https://poll.diaria.workers.dev";
+  return DIARIA_EIA_URL; // #3904 — domínio de marca
 }
 
 const DEFAULT_WORKER_URL = readDefaultWorkerUrl();
@@ -310,7 +313,7 @@ export async function fetchMonthLeaderboardJson(
  *   de filtrar por email. Votos de teste purificados pelo /diaria-remover-votos-pixel não aparecem.
  *
  * @param editions  Lista de edições AAMMDD (vem de discoverEditions)
- * @param workerUrl Base URL do worker poll (default: https://poll.diaria.workers.dev)
+ * @param workerUrl Base URL do worker poll (default: https://eia.diar.ia.br)
  */
 export async function buildPollEiaSummaryFromApi(
   editions: string[],

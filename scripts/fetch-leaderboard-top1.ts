@@ -36,9 +36,10 @@ import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra UDP/53 broken
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
 const WORKER_URL =
-  process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
+  process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
 const FETCH_TIMEOUT_MS = 15_000; // #1365 — bumped 5s→15s pra acomodar DoH fallback path
 
 interface Top1Entry {

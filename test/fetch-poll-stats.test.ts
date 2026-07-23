@@ -33,7 +33,7 @@ after(async () => {
 
 describe("fetchPollStats (#2948)", () => {
   it("brand omitido (default diaria) — sem &brand= na query", async () => {
-    const pool = mockAgent.get("https://poll.diaria.workers.dev");
+    const pool = mockAgent.get("https://eia.diar.ia.br");
     pool.intercept({ path: "/stats?edition=260601", method: "GET" }).reply(
       200,
       { total: 10, correct_pct: 70, correct_answer: "A", correct_count: 7 },
@@ -52,7 +52,7 @@ describe("fetchPollStats (#2948)", () => {
   });
 
   it('brand="clarice" — anexa &brand=clarice na query (#1905 namespacing)', async () => {
-    const pool = mockAgent.get("https://poll.diaria.workers.dev");
+    const pool = mockAgent.get("https://eia.diar.ia.br");
     pool.intercept({ path: "/stats?edition=2605-06&brand=clarice", method: "GET" }).reply(
       200,
       { total: 8, correct_pct: 62, correct_answer: "B", correct_count: 5 },
@@ -66,7 +66,7 @@ describe("fetchPollStats (#2948)", () => {
   });
 
   it('brand="diaria" explícito não anexa &brand= (mesmo comportamento do omitido)', async () => {
-    const pool = mockAgent.get("https://poll.diaria.workers.dev");
+    const pool = mockAgent.get("https://eia.diar.ia.br");
     pool.intercept({ path: "/stats?edition=260603", method: "GET" }).reply(
       200,
       { total: 6, correct_pct: 50, correct_answer: "A", correct_count: 3 },
@@ -78,7 +78,7 @@ describe("fetchPollStats (#2948)", () => {
   });
 
   it("abaixo do piso de confiança (MIN_RESPONSES=5) → below_threshold + pct_correct null", async () => {
-    const pool = mockAgent.get("https://poll.diaria.workers.dev");
+    const pool = mockAgent.get("https://eia.diar.ia.br");
     pool.intercept({ path: "/stats?edition=260602&brand=clarice", method: "GET" }).reply(
       200,
       { total: 3, correct_pct: 100, correct_answer: "A", correct_count: 3 },
@@ -92,7 +92,7 @@ describe("fetchPollStats (#2948)", () => {
   });
 
   it("0 votos → below_threshold true, pct_correct null", async () => {
-    const pool = mockAgent.get("https://poll.diaria.workers.dev");
+    const pool = mockAgent.get("https://eia.diar.ia.br");
     pool.intercept({ path: "/stats?edition=260604", method: "GET" }).reply(
       200,
       { total: 0, correct_pct: null, correct_answer: null, correct_count: 0 },

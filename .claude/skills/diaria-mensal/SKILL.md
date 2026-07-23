@@ -314,7 +314,7 @@ HTML), mas Artifacts rodam sob CSP estrita que bloqueia imagem remota (só
 (#3214/#3370), reproduzida e corrigida aqui em #3392. #3546 elimina o Artifact
 também (servidor local não tem CSP nenhuma, e nem depende de rede pra imagem),
 mas a variante embedded continua necessária — `cloudflare-preview.html`
-referencia imagens em `poll.diaria.workers.dev`, e servir standalone (sem
+referencia imagens em `eia.diar.ia.br` (#3904 — domínio de marca), e servir standalone (sem
 depender do Worker estar no ar) é o ponto do preview local. Reusa
 `scripts/embed-images-base64.ts` (mesmo script do diário, já testado — ver
 `.claude/agents/orchestrator-stage-4.md` §4b step 2b):

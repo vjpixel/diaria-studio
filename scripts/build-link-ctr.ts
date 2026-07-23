@@ -78,6 +78,12 @@ export function isEditorial(url: string): boolean {
   // não são links editoriais — vazavam como rows "Outro" e deslocavam fontes
   // reais do Top-15 de domínios que o scorer lê.
   if (host.endsWith('.workers.dev')) return false; // poll.diaria.workers.dev etc.
+  // #3904: domínio de marca do worker poll (mesmo endpoint de voto/imagem de
+  // .workers.dev acima, só que servido via Custom Domain) — sem este check,
+  // a migração do link de voto pro domínio de marca faria o clique vazar como
+  // "editorial" no Top-15 de domínios (mesmo bug que o check acima existe pra
+  // prevenir, só que pro hostname novo).
+  if (host === 'eia.diar.ia.br') return false;
   if (host === 'meet.google.com') return false;
   if (host === 'creativecommons.org') return false;
 

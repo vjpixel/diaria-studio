@@ -31,6 +31,7 @@
  */
 import { COLORS, FONTS } from "./design-tokens.ts";
 import { escHtml } from "../html-escape.ts"; // reusa o escaper canônico (também cobre apóstrofo)
+import { DIARIA_EIA_URL } from "../canonical-urls.ts"; // #3904 — fonte única do domínio de marca do "É IA?"
 
 const TEAL = COLORS.brand;
 const INK = COLORS.ink;
@@ -144,7 +145,7 @@ export const CURADORIA_NAV_LINKS: readonly CuradoriaNavLink[] = [
   { label: "Diar.ia", url: "https://diar.ia.br" },
   { label: "Cursos", url: "https://cursos.diar.ia.br/" }, // #3698: domínio de marca
   { label: "Livros", url: "https://livros.diar.ia.br/" }, // #3698: domínio de marca
-  { label: "É IA?", url: "https://poll.diaria.workers.dev/leaderboard" },
+  { label: "É IA?", url: `${DIARIA_EIA_URL}/leaderboard` }, // #3904: domínio de marca (era poll.diaria.workers.dev)
 ];
 
 /**

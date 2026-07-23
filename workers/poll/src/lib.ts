@@ -1001,21 +1001,32 @@ export function validateNickname(cleanName: string): string | null {
 // preserva o comportamento antigo (sem tag de imagem, twitter:card=summary);
 // só `renderSharePageHtml` (share.ts) passa `imageUrl`.
 
+/**
+ * #3701: hostname genérico `workers.dev` original do worker `poll`. Preservado
+ * como constante documentada (não referenciada em código — só em comentários)
+ * porque `workers_dev = true` segue ativo em `workers/poll/wrangler.toml`: os
+ * links de VOTO/imagem já embutidos em edições enviadas ANTES do #3904
+ * apontam pra este hostname e precisam continuar vivos (não reescrever,
+ * ~300 referências históricas). Nenhum HTML renderizado por este worker
+ * constrói mais URLs a partir desta constante (ver `PUBLIC_GAME_BASE_URL`
+ * abaixo e #3904).
+ */
 export const POLL_BASE_URL = "https://poll.diaria.workers.dev";
 
 /**
  * #3701: domínio de marca do jogo público "É IA?" — `eia.diar.ia.br`, um
  * Workers Custom Domain apontando pro mesmo worker `poll` (ver
- * `workers/poll/wrangler.toml`). Usado SÓ para canonical/og:url/share/embed
- * do brand `web` (`renderSeoMeta` abaixo, `buildEmbedJogarUrl` em embed.ts) —
- * pra que SEO e compartilhamento social do jogo público carreguem a URL de
- * marca em vez do subdomínio genérico `workers.dev`.
+ * `workers/poll/wrangler.toml`).
  *
- * `POLL_BASE_URL` continua valendo para: (a) TODOS os endpoints internos
- * (voto/img/stats/leaderboard-brand-diaria) — links já embutidos em edições
- * enviadas apontam pra `poll.diaria.workers.dev` e precisam continuar vivos
- * (não reescrever, ~300 referências); (b) os brands `diaria`/`clarice`, que
- * não têm domínio de marca próprio neste worker.
+ * #3701 introduziu isto só pro brand `web` (canonical/og:url/share/embed do
+ * jogo público standalone), mantendo `POLL_BASE_URL` pros brands
+ * `diaria`/`clarice`. #3904 estendeu o uso: `renderSeoMeta` (abaixo) agora usa
+ * este domínio para TODO brand — o worker é o mesmo por trás de ambos os
+ * hostnames, então canonical/og:url ganham consistência sem quebrar nada
+ * (SEO/compartilhamento não é um link já "embutido" em e-mail enviado, ao
+ * contrário do link de voto). `POLL_BASE_URL` segue existindo só pela razão
+ * documentada no seu próprio comentário acima — links de AÇÃO de edições já
+ * enviadas antes deste PR.
  */
 export const PUBLIC_GAME_BASE_URL = "https://eia.diar.ia.br";
 
@@ -1047,23 +1058,27 @@ export interface SeoMetaOptions {
   title: string;
   /** Descrição curta — <meta name="description">, og:description, twitter:description. */
   description: string;
-  /** Path relativo (começando com "/"), combinado com POLL_BASE_URL (ou
-   * PUBLIC_GAME_BASE_URL quando `brand === "web"`) para canonical/og:url. */
+  /** Path relativo (começando com "/"), combinado com `PUBLIC_GAME_BASE_URL`
+   * para canonical/og:url (#3904 — todo brand, não só `"web"`). */
   path: string;
   /** #3517: URL absoluta (http/https, buscável via GET) pra og:image/twitter:image.
    * Omitido → comportamento pré-#3517 inalterado (sem tag de imagem,
    * twitter:card=summary — ver rationale #3106 acima). Presente → tags de
    * imagem entram e twitter:card vira summary_large_image (preview rico). */
   imageUrl?: string;
-  /** #3701: quando `"web"`, canonical/og:url usam `PUBLIC_GAME_BASE_URL`
-   * (`eia.diar.ia.br`) em vez de `POLL_BASE_URL`. Omitido/outros brands →
-   * comportamento pré-#3701 inalterado (`POLL_BASE_URL`). */
+  /** #3701: introduziu `PUBLIC_GAME_BASE_URL` (`eia.diar.ia.br`) só pro brand
+   * `"web"`, mantendo `POLL_BASE_URL` (`poll.diaria.workers.dev`) pros demais.
+   * #3904: canonical/og:url do worker inteiro migram pro domínio de marca,
+   * independente do brand — mesmo worker por trás de ambos os hostnames, e
+   * `POLL_BASE_URL` segue existindo só pros endpoints de AÇÃO (voto/img/stats)
+   * de edições já enviadas, nunca pra SEO. Campo mantido (não usado mais
+   * dentro desta função) por back-compat de assinatura dos callers. */
   brand?: Brand;
 }
 
 /** Monta o bloco de tags <head> de SEO/compartilhamento. Pure. */
 export function renderSeoMeta(opts: SeoMetaOptions): string {
-  const base = opts.brand === "web" ? PUBLIC_GAME_BASE_URL : POLL_BASE_URL;
+  const base = PUBLIC_GAME_BASE_URL; // #3904: canonical/og:url sempre no domínio de marca
   const url = `${base}${opts.path}`;
   const t = htmlEscape(opts.title);
   const d = htmlEscape(opts.description);

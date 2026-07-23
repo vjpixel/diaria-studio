@@ -3,8 +3,9 @@
  *
  * Widget EMBEDÁVEL (iframe) do "É IA?" standalone — sub-issue [S] do EPIC
  * #3514 ("motor de divulgação"). Sites parceiros (1º natural: Clarice.ai)
- * colam um `<iframe src="https://poll.diaria.workers.dev/embed">` na própria
- * página e alcançam audiência que ainda não conhece diar.ia.br. Construído
+ * colam um `<iframe src="https://eia.diar.ia.br/embed">` (#3904 — domínio de
+ * marca; era poll.diaria.workers.dev) na própria página e alcançam audiência
+ * que ainda não conhece diar.ia.br. Construído
  * sobre a fundação #3516 (`/jogar`, identidade anônima, brand `web`), #3517
  * (share card pós-voto) e #3518 (CTA de assinatura pós-voto).
  *

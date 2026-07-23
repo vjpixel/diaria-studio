@@ -22,15 +22,18 @@
  * default-a pra "diaria" via `parseBrandParam`).
  *
  * Variáveis de ambiente:
- *   POLL_WORKER_URL    URL base do Worker (default: https://poll.diaria.workers.dev)
+ *   POLL_WORKER_URL    URL base do Worker (default: https://eia.diar.ia.br —
+ *                      domínio de marca, #3904; poll.diaria.workers.dev segue
+ *                      ativo só por compat de links já enviados)
  */
 
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { isMainModule } from "./lib/cli-args.ts";
 import { dohFetch } from "./lib/doh-fetch.ts"; // #1365 — DoH fallback pra UDP/53 broken
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
-const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
+const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
 const MIN_RESPONSES = 5;
 
 export type PollBrand = "diaria" | "clarice";

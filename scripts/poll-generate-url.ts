@@ -13,16 +13,19 @@
  *
  * Variáveis de ambiente:
  *   POLL_SECRET        HMAC key (ver .env)
- *   POLL_WORKER_URL    URL base do Worker (default: https://poll.diaria.workers.dev)
+ *   POLL_WORKER_URL    URL base do Worker (default: https://eia.diar.ia.br —
+ *                      domínio de marca, #3904; poll.diaria.workers.dev segue
+ *                      ativo só por compat de links já enviados)
  */
 
 import { createHmac } from "node:crypto";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #3904
 
 loadProjectEnv(); // #1219 — carrega .env/.env.local antes de ler process.env.
 
-const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
+const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
 
 export function generatePollUrl(email: string, edition: string, choice: "A" | "B", secret: string): string {
   const message = `${email.toLowerCase().trim()}:${edition}`;
