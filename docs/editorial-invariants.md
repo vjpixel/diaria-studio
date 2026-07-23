@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 58 invariants.
+**Total**: 59 invariants.
 
 ## Static (estrutura do repo)
 
@@ -64,6 +64,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `eia-credit-synced` | crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825) | #3825 |
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true — repetido no gate consolidado (#3916, #3918, warning-only) | #3916 |
 | `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
+| `image-crop-warn` | revisor de crop 2:1→1:1 (Stage 3) sinaliza sujeito cortado/composição sem sentido (#3951, warning-only) | #3951 |
 | `intro-count-consistent` | intro line Z = contagem real de items visíveis (#1578) | #1578 |
 | `narrative-not-generic-placeholder` | narrative ERRO INTENCIONAL é declaração real de primeira pessoa (#2377) | #2377 |
 | `no-trailing-ellipsis` | descrição de item secundário não termina em reticências herdadas da fonte (#2881) | #2881 |
