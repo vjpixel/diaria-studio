@@ -20,6 +20,8 @@
  * sendo testados). Eliminar quando todos os usos forem migrados pra Zod
  * schemas estritos.
  */
+import type { ClusterSource } from "../cluster-sources.ts";
+
 export interface Article {
   /** URL canônico (já dedupado, normalizado) */
   url: string;
@@ -42,6 +44,10 @@ export interface Article {
   // ---- Scoring (set pelo scorer) -------------------------------------------
   /** Score 0-100 atribuído pelo scorer. */
   score?: number;
+  /** #3920: score antes do bônus de cobertura (auditoria). */
+  score_base?: number;
+  /** #3920: bônus de cobertura aplicado (= +5 × cluster_sources.length, sem teto). */
+  score_bonus_coverage?: number;
   /** Marcador inline de destaque (formato legado pré-#229). */
   highlight?: boolean;
   /** Rank 1..6 do scorer (formato inline). */
@@ -52,6 +58,15 @@ export interface Article {
   editor_submitted?: boolean;
   /** True para artigos vindos de discovery-searcher (queries abertas). */
   discovered_source?: boolean;
+  /** Veículo/fonte do artigo (nome legível, ex: "TechCrunch"). Usado no bloco
+   *  "Aprofunde:" (#3920) e por vários pontos do pipeline. */
+  source?: string;
+
+  // ---- Cluster same-story (#3920) ------------------------------------------
+  /** Fontes extras que cobrem a MESMA história (perdedores do cluster no
+   *  dedup), preservadas no vencedor. Alimenta o bloco "Aprofunde:", o bônus
+   *  de cobertura (`coverage-bonus.ts`) e o dedup de edições futuras. */
+  cluster_sources?: ClusterSource[];
 
   // ---- Enrichment (#487 — fonte primária) ----------------------------------
   /** Notícia que provavelmente cobre um lançamento e merece busca por fonte

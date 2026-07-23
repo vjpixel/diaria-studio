@@ -31,13 +31,50 @@ import { isMainModule } from "./lib/cli-args.ts";
 
 // ── Shared types & parsing (also used by render-newsletter-html.ts) ───
 
+export interface AprofundeItem {
+  title: string;
+  url: string;
+  source: string;
+}
+
 export interface Destaque {
   n: 1 | 2 | 3;
   category: string;
   title: string;
   body: string;          // paragraphs before "Por que isso importa:"
-  why: string;           // paragraphs after "Por que isso importa:"
+  why: string;           // paragraphs after "Por que isso importa:" (exclui Aprofunde)
   url: string;
+  // #3920: bloco "Aprofunde:" — fontes do cluster same-story. Presente só
+  // quando o destaque tem cluster_sources. NÃO conta no char-limit do destaque.
+  aprofunde?: AprofundeItem[];
+}
+
+// #3920: header + item do bloco "Aprofunde:".
+//   Aprofunde:
+//
+//   * [Título do artigo](URL) - Fonte
+export const APROFUNDE_HEADER_RE = /^Aprofunde:\s*$/i;
+// bullet (* ou -) + inline-link (bold opcional, parênteses balanceados no path)
+// + separador (- – —) + fonte. A fonte é opcional (defensivo).
+export const APROFUNDE_ITEM_RE =
+  /^[*-]\s+\*{0,2}\[([^\]]+)\]\((https?:\/\/[^\s)]+(?:\([^\s)]*\)[^\s)]*)*)\)\*{0,2}\s*(?:[-–—]\s*(.+?))?\s*$/;
+
+/** Parse dos itens do bloco Aprofunde entre [startIdx, endIdx). */
+export function parseAprofundeItems(
+  lines: string[],
+  startIdx: number,
+  endIdx: number,
+): AprofundeItem[] {
+  const items: AprofundeItem[] = [];
+  for (let i = startIdx; i < endIdx; i++) {
+    const t = lines[i].trim();
+    if (!t) continue;
+    const m = t.match(APROFUNDE_ITEM_RE);
+    if (m) {
+      items.push({ title: m[1].trim(), url: m[2].trim(), source: (m[3] ?? "").trim() });
+    }
+  }
+  return items;
 }
 
 /**
@@ -73,6 +110,10 @@ export function parseDestaques(raw: string): Destaque[] {
 
     // Find "Por que isso importa:" marker.
     const whyIdx = lines.findIndex(l => /^Por que isso importa:/i.test(l.trim()));
+
+    // #3920: "Aprofunde:" marker (bloco de fontes do cluster). Fica DEPOIS do
+    // why; delimita o fim do why e o início dos itens Aprofunde.
+    const aprofundeIdx = lines.findIndex(l => APROFUNDE_HEADER_RE.test(l.trim()));
 
     // Coletar todas as http-lines (linhas iniciando com http://) com seus índices.
     // A URL canônica é uma das duas posições válidas:
@@ -170,14 +211,28 @@ export function parseDestaques(raw: string): Destaque[] {
     const body = lines.slice(bodyStart, bodyEnd).join('\n').trim();
 
     // Why end: até URL legacy (se existe e está depois do whyIdx) OU fim.
-    const whyEnd = (urlIdx !== -1 && !isNewFormat && urlIdx > whyIdx) ? urlIdx : lines.length;
+    let whyEnd = (urlIdx !== -1 && !isNewFormat && urlIdx > whyIdx) ? urlIdx : lines.length;
+    // #3920: o bloco Aprofunde (se presente e após o why) fecha o why antes dele
+    // — assim os itens Aprofunde NÃO poluem o why (e não contam no char-limit).
+    if (aprofundeIdx !== -1 && aprofundeIdx > whyIdx && aprofundeIdx < whyEnd) {
+      whyEnd = aprofundeIdx;
+    }
     const why = whyIdx !== -1 ? lines.slice(whyIdx + 1, whyEnd).join('\n').trim() : '';
 
     const url = isInlineFormat
       ? inlineUrl!
       : (urlIdx !== -1 ? lines[urlIdx].trim() : '');
 
-    destaques.push({ n, category, title, body, why, url });
+    // #3920: itens do bloco Aprofunde (do header até a URL legacy final ou fim).
+    let aprofunde: AprofundeItem[] | undefined;
+    if (aprofundeIdx !== -1) {
+      const aprofundeEnd =
+        (urlIdx !== -1 && !isNewFormat && urlIdx > aprofundeIdx) ? urlIdx : lines.length;
+      const items = parseAprofundeItems(lines, aprofundeIdx + 1, aprofundeEnd);
+      if (items.length > 0) aprofunde = items;
+    }
+
+    destaques.push({ n, category, title, body, why, url, ...(aprofunde ? { aprofunde } : {}) });
   }
 
   // Sort by n to guarantee d1, d2, d3 order.

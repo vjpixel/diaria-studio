@@ -12,7 +12,10 @@
 
 export interface ApprovedUrlEntry {
   url?: string;
-  article?: { url?: string };
+  // #3920: fontes extras do cluster same-story (bloco "Aprofunde:"). Presentes
+  // no próprio entry (buckets simples) ou em .article (highlights/runners_up).
+  cluster_sources?: Array<{ url?: string }>;
+  article?: { url?: string; cluster_sources?: Array<{ url?: string }> };
 }
 
 export interface ApprovedBuckets {
@@ -51,16 +54,29 @@ export function extractUrlsFromBuckets(
 ): string[] {
   if (!parsed || typeof parsed !== "object") return [];
   const urls = new Set<string>();
+  // #3920: também coletar URLs das fontes extras do cluster ("Aprofunde:"), pra
+  // que contem como "já publicadas" no dedup de edições futuras — senão viram
+  // destaque repetido amanhã.
+  const addClusterSources = (
+    cs: Array<{ url?: string }> | undefined,
+  ): void => {
+    if (!Array.isArray(cs)) return;
+    for (const c of cs) if (c?.url) urls.add(c.url);
+  };
   for (const name of SIMPLE_BUCKETS) {
     const bucket = parsed[name];
     if (!Array.isArray(bucket)) continue;
-    for (const a of bucket) if (a?.url) urls.add(a.url);
+    for (const a of bucket) {
+      if (a?.url) urls.add(a.url);
+      addClusterSources(a?.cluster_sources);
+    }
   }
   for (const list of [parsed.highlights, parsed.runners_up]) {
     if (!Array.isArray(list)) continue;
     for (const h of list) {
       const url = h?.url ?? h?.article?.url;
       if (url) urls.add(url);
+      addClusterSources(h?.cluster_sources ?? h?.article?.cluster_sources);
     }
   }
   return [...urls];

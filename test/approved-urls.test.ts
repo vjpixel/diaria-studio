@@ -51,4 +51,33 @@ describe("extractUrlsFromBuckets (#1678)", () => {
     });
     assert.deepEqual(urls, ["l"]);
   });
+
+  it("#3920: coleta URLs de cluster_sources em highlights (.article) e buckets", () => {
+    const urls = extractUrlsFromBuckets({
+      highlights: [
+        {
+          url: "destaque-canonico",
+          article: {
+            url: "destaque-canonico",
+            cluster_sources: [{ url: "aprofunde-1" }, { url: "aprofunde-2" }],
+          },
+        },
+      ],
+      radar: [
+        { url: "radar-canonico", cluster_sources: [{ url: "radar-src" }] },
+      ],
+    });
+    assert.ok(urls.includes("aprofunde-1"));
+    assert.ok(urls.includes("aprofunde-2"));
+    assert.ok(urls.includes("radar-src"));
+    assert.ok(urls.includes("destaque-canonico"));
+    assert.ok(urls.includes("radar-canonico"));
+  });
+
+  it("#3920: cluster_sources sem url são ignorados", () => {
+    const urls = extractUrlsFromBuckets({
+      radar: [{ url: "r", cluster_sources: [{} as any, { url: "" }, { url: "ok" }] }],
+    });
+    assert.deepEqual(urls.sort(), ["ok", "r"]);
+  });
 });

@@ -93,6 +93,7 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 
 1. `Agent` → `writer-destaque` × N — uma instância por destaque (n=1..N). Cada uma recebe:
    - `destaque_n`, `destaque` (= `highlights[N-1].article`), `category_label`
+     - **#3920: passe o `article` INTEIRO** (não enumere campos) — ele carrega `cluster_sources[]` quando a história teve cobertura múltipla (dedup). O writer usa isso pra emitir o bloco "Aprofunde:" e citar fatos das fontes extras. O `article.url` já é o link canônico (artigo mais completo do cluster).
    - `peer_titles` (titles dos outros 2 — preserva voice diversity)
    - `edition_date`
    - `out_path = {EDITION_DIR}/_internal/02-d{N}-draft.md`
@@ -212,6 +213,14 @@ O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e 
   Exit 1 do min = destaque anêmico — re-disparar writer com instruction explícita:
   > "Destaque D{N} tem {chars} chars (mínimo {min}). Expanda: (a) adicione 1 frase em 'Por que isso importa' contextualizando impacto pro leitor BR — ex: timing eleitoral, custo de infra, mudança de processo; OU (b) adicione mais 1 parágrafo curto de body com detalhe técnico/empresarial. NÃO repetir conteúdo já presente." (#1208 — anti-pattern observado em 260517: D2/D3 saiam ~860 chars com why em 1 frase só).
   Exit 1 do max = destaque inflado — re-disparar writer com instruction de trimar parágrafo menos relevante OU encurtar 'Por que isso importa'.
+
+- **Lint aprofunde-format (#3920).** Valida o bloco "Aprofunde:" dos destaques com cluster (item bem-formado, após "Por que importa", não vazio). Bloco AUSENTE nunca falha (é opcional):
+  ```bash
+  npx tsx scripts/lint-newsletter-md.ts \
+    --check aprofunde-format \
+    --md {EDITION_DIR}/_internal/02-draft.md
+  ```
+  Exit 1 = item malformado/lixo no bloco — re-disparar o writer do destaque com instruction pra corrigir o formato `* [Título](URL) - Fonte`.
 
 - **Normalizar layout (inline — sem Agent, #157):**
   ```bash

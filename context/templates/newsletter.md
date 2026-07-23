@@ -35,6 +35,11 @@ Por que isso importa:
 
 [1 parágrafo — impacto prático para o público diar.ia.br]
 
+Aprofunde:
+
+* [Título do artigo](URL) - Fonte
+* [Título do artigo](URL) - Fonte
+
 ---
 
 **DESTAQUE 2 | [CATEGORIA]**
@@ -125,6 +130,8 @@ O autor escreve `{curr_narrative}` manualmente no `02-reviewed.md` da edição c
 URL embedada no título (#599): editor poda 2 das 3 opções no gate de Etapa 2, sobrando 1 título-com-URL. Todas as 3 opções pré-gate apontam pra **mesma URL canônica** (são variantes do mesmo título do mesmo artigo).
 
 **Formato de item da seção VÍDEOS (#3821 — corrigido):** o parser real (`parseListItems`/`parseSections` em `scripts/lib/newsletter-parse.ts`, usado pelo render HTML) só reconhece um item quando a PRIMEIRA linha do bloco é um único link markdown `[Título](URL)` — nunca 2 pares `[texto](...)` na mesma linha. O formato anterior do template (`**[Título]** — [Canal](URL)`, com o título sem URL própria) não batia em nenhum branch do parser e degradava pro fallback legado (cada linha virava um item quebrado, `url: ""`, sem link nenhum no HTML final). Formato correto: **link único pro vídeo no título**, canal entra como PREFIXO em texto plano dentro da descrição (sem link próprio), e título + descrição ficam em linhas **ADJACENTES** — sem blank line entre elas (blank line separa ITEMS entre si, não título de descrição dentro do mesmo item). Mesma convenção de LANÇAMENTOS/RADAR/USE MELHOR (ver `writer.md` passo 4) — o parser depende disso pra não confundir a linha de descrição com um novo item.
+
+**Bloco "Aprofunde:" (#3920) — OPCIONAL, só quando há cluster same-story.** Quando várias fontes cobrem a MESMA história, o dedup preserva as fontes extras em `cluster_sources[]` do destaque (o link-título aponta pro artigo MAIS COMPLETO; ver `scripts/lib/cluster-sources.ts`). O writer então emite, logo APÓS o parágrafo "Por que isso importa:", um bloco `Aprofunde:` listando TODAS as fontes do cluster (o primário também aparece — decisão do editor). Cada item é `* [Título do artigo](URL) - Fonte`. Regras: só existe quando o destaque tem `cluster_sources` (destaque de fonte única = sem bloco, idêntico ao de hoje); vem sempre depois do "Por que isso importa"; NÃO conta no char-limit do destaque (o parser separa o bloco do `why`). Render: `renderAprofundeInner` (kicker "APROFUNDE" + lista de links, `scripts/lib/newsletter-render-html.ts`). Lint: `--check aprofunde-format`.
 
 ## Regras de preenchimento
 

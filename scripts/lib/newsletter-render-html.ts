@@ -27,6 +27,7 @@ import {
   unescapeMd,
   pickErroIntencionalReveal,
 } from "./newsletter-parse.ts";
+import type { AprofundeItem } from "../extract-destaques.ts"; // #3920
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -870,6 +871,31 @@ export function renderMidCallout(text: string, imageUrl: string | null, bold = t
 </td></tr>`;
 }
 
+/**
+ * #3920: bloco "Aprofunde:" de um destaque — lista das fontes do cluster
+ * same-story (o primário TAMBÉM aparece, por decisão do editor). Renderizado
+ * abaixo do box "Por que isso importa". O label usa `renderKicker("Aprofunde")`
+ * de propósito: o `<td>` do kicker carrega a assinatura de estilo que
+ * `build-link-ctr.ts` reconhece como fronteira de seção — assim os links do
+ * cluster são distinguíveis do link-título do destaque na leitura de CTR
+ * (`resolveNewsletterSection` mapeia "APROFUNDE" → 'Aprofunde'). Retorna ""
+ * quando não há itens (destaque sem cluster = idêntico ao de hoje).
+ */
+export function renderAprofundeInner(items?: AprofundeItem[]): string {
+  if (!items || items.length === 0) return "";
+  const rows = items
+    .map((it) => {
+      const link = `<a href="${esc(it.url)}" style="color:${TEXT_COLOR};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:1px;text-underline-offset:2px;" target="_blank" rel="noopener noreferrer nofollow">${esc(it.title)}</a>`;
+      const src = it.source ? ` — ${esc(it.source)}` : "";
+      return `<p style="margin:8px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${link}${src}</p>`;
+    })
+    .join("\n  ");
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-collapse:separate;border-spacing:0"><tr><td>
+    ${renderKicker("Aprofunde")}
+    ${rows}
+  </td></tr></table>`;
+}
+
 export function renderDestaque(d: RenderDestaque): string {
   // #1936 (DS email template): seção = uma linha padded (32px lateral). Estrutura:
   // kicker (●+régua) → manchete Georgia 26px (underline teal) → imagem hero
@@ -885,6 +911,7 @@ export function renderDestaque(d: RenderDestaque): string {
     renderHeroImageInner(heroFile, d.title),
     renderBodyParasInner(d.body),
     renderWhyBoxInner(d.why),
+    renderAprofundeInner(d.aprofunde), // #3920
   ].filter(Boolean).join("\n  ");
   return `<!-- Destaque ${d.n} -->
 <tr><td class="pad" style="padding:${pad};">
