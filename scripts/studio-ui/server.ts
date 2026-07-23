@@ -327,6 +327,7 @@ import {
   runWaveFire,
   type QueryFn as WaveFireQueryFn,
   type IssueTerminalCheck,
+  type WaveIssueSummary,
 } from "./studio-wave-fire.ts";
 // #3559: painel de revisão de conteúdo rica — arquivos próprios desta fatia,
 // import isolado (nenhuma outra rota depende deles). Ver studio-review.ts.
@@ -488,6 +489,11 @@ export interface StudioServerOptions {
    * estado terminal (`gh issue view` real) por um fake. Produção usa o
    * default de `studio-wave-fire.ts` (`checkAllIssuesTerminalState`). */
   waveFireCheckTerminalStateFn?: (issueNumbers: number[], cwd: string, sinceIso: string) => IssueTerminalCheck[];
+  /** #3914 — injetável pra testes: substitui o fetch de título/corpo/labels
+   * de cada issue da onda (`gh issue view` real) por um fake, evitando
+   * spawnar o binário `gh` de verdade em testes HTTP-level. Produção usa o
+   * default de `studio-wave-fire.ts` (`fetchWaveIssueSummaries`). */
+  waveFireFetchIssueSummariesFn?: (issueNumbers: number[], cwd: string) => WaveIssueSummary[];
   /** Debounce (ms) entre o `close` da request de `/api/waves/fire` e o abort
    * de fato da sessão coordenadora (#3901 — mesmo bug do #3887 em
    * `/api/chat`, mesmo fix: `createCloseAbortGuard`, `studio-chat.ts`) —
@@ -981,6 +987,7 @@ async function handleApiWavesFire(
     maxBodyBytes: number;
     maxConcurrency?: number;
     checkTerminalStateFn?: (issueNumbers: number[], cwd: string, sinceIso: string) => IssueTerminalCheck[];
+    fetchIssueSummariesFn?: (issueNumbers: number[], cwd: string) => WaveIssueSummary[];
     closeAbortDebounceMs?: number;
   },
 ): Promise<void> {
@@ -1034,6 +1041,7 @@ async function handleApiWavesFire(
     queryFn: opts.queryFn,
     maxConcurrency: opts.maxConcurrency,
     checkTerminalStateFn: opts.checkTerminalStateFn,
+    fetchIssueSummariesFn: opts.fetchIssueSummariesFn,
     abortController,
     onEvent: (wireEvent) => {
       try {
@@ -1548,6 +1556,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const waveFireEnabled = opts.waveFireEnabled ?? false;
   const waveFireMaxConcurrency = opts.waveFireMaxConcurrency ?? 6;
   const waveFireCheckTerminalStateFn = opts.waveFireCheckTerminalStateFn;
+  const waveFireFetchIssueSummariesFn = opts.waveFireFetchIssueSummariesFn;
   const waveFireCloseAbortDebounceMs = opts.waveFireCloseAbortDebounceMs;
   const apoiosGmailDrain = opts.apoiosGmailDrain;
   const integrationsFetchImpl = opts.integrationsFetchImpl;
@@ -1631,6 +1640,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
           maxBodyBytes: chatMaxBodyBytes,
           maxConcurrency: waveFireMaxConcurrency,
           checkTerminalStateFn: waveFireCheckTerminalStateFn,
+          fetchIssueSummariesFn: waveFireFetchIssueSummariesFn,
           closeAbortDebounceMs: waveFireCloseAbortDebounceMs,
         }).catch((e) => {
           if (!res.headersSent) {

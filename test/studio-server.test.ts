@@ -877,6 +877,12 @@ describe("POST /api/waves/fire (#3702) — habilitado, com waveFireQueryFn mocka
       // abaixo. Mock reporta terminal=true por padrão; testes específicos
       // do #3765 sobrescrevem via `setCheckTerminalStateFn`.
       waveFireCheckTerminalStateFn: (issueNumbers) => checkTerminalStateFn(issueNumbers),
+      // #3914: sem isto, o studio-server rodaria `gh issue view` de verdade
+      // (não existe repo/gh nesse tmpdir) pra buscar título/corpo de cada
+      // issue ANTES do turno começar — mesmo racional do
+      // waveFireCheckTerminalStateFn acima, só que pro fetch que agora
+      // acontece antes do prompt ser montado.
+      waveFireFetchIssueSummariesFn: () => [],
     });
   });
 
@@ -1037,6 +1043,9 @@ describe("POST /api/waves/fire (#3901) — debounce do abort no close, fim-a-fim
       pollIntervalMs: 30,
       waveFireEnabled: true,
       waveFireQueryFn: queryFn,
+      // #3914 — evita spawnar `gh` de verdade (tmpdir sem repo/gh) antes do
+      // turno mockado começar.
+      waveFireFetchIssueSummariesFn: () => [],
       waveFireCloseAbortDebounceMs: 80,
     });
 
@@ -1089,6 +1098,9 @@ describe("POST /api/waves/fire (#3901) — debounce do abort no close, fim-a-fim
       pollIntervalMs: 30,
       waveFireEnabled: true,
       waveFireQueryFn: queryFn,
+      // #3914 — evita spawnar `gh` de verdade (tmpdir sem repo/gh) antes do
+      // turno mockado começar.
+      waveFireFetchIssueSummariesFn: () => [],
       waveFireCloseAbortDebounceMs: 150,
     });
 
