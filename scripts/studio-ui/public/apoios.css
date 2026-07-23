@@ -146,28 +146,12 @@
   border-color: var(--brand);
 }
 
-/* #3891: "Atualizar status" (POST, consome cota apoia.se 5k/mês) tinha o
-   MESMO peso visual do "Atualizar" (GET, sem custo) lado a lado — a única
-   distinção era o `title=` (invisível em touch, mesma lacuna do R7 de
-   docs/studio-ui-ux-guidelines.md). Estilo outline (fricção proporcional,
-   R6): nunca preenchido por padrão, só no hover — e a nota inline ao lado
-   (`.quota-note` em apoios.html) reforça por que os 2 botões não são
-   equivalentes. */
-#refresh-status-btn {
-  font: inherit;
-  padding: 0.4rem 0.9rem;
-  border: 1px dashed var(--status-warn);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--status-warn);
-  cursor: pointer;
-}
-#refresh-status-btn:hover {
-  background: var(--status-warn);
-  color: var(--status-warn-ink);
-  border-style: solid;
-}
-#refresh-status-btn:disabled {
+/* Botões unificados (decisão do editor 260723): "Atualizar" agora faz o
+   fluxo completo (drain Gmail + re-checagem apoia.se seletiva) — o antigo
+   "Atualizar status" (outline #3891) saiu junto com a distinção de peso
+   visual. `cursor: wait` + opacity dão o feedback de progresso enquanto o
+   servidor trabalha (o botão também troca o rótulo pra "Atualizando…"). */
+#refresh-btn:disabled {
   cursor: wait;
   opacity: 0.6;
 }
@@ -281,7 +265,6 @@
      mesmo padrão do chat-drawer.css/triagem.css. */
   .contact-form button[type="submit"],
   #refresh-btn,
-  #refresh-status-btn,
   .dialog-actions button,
   .contact-actions button {
     min-height: 44px;

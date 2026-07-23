@@ -24,13 +24,15 @@
 // já vem PRONTO no payload de /api/apoios (studio-apoios.ts::computeRewardGroups),
 // client só renderiza; nenhuma agregação acontece aqui.
 //
-// #3859 (metade 2): botão "Atualizar status" — POST /api/apoios/refresh
-// força re-consulta do mês corrente na apoia.se pra contatos ainda não
-// confirmados como "apoiando" (o refresh comum, botão "Atualizar" acima,
-// só refaz o GET — nunca bate na API de novo dentro do mesmo mês, porque
-// checkBacker cacheia por mês-competência). A metade 1 da issue (importar
-// apoios novos varrendo o Gmail pessoal) NÃO está implementada aqui — seguirá
-// bloqueada em arquitetura até existir uma ponte Studio↔sessão-com-MCP.
+// Botão "Atualizar" (unificado — decisão do editor 260723): faz o fluxo
+// COMPLETO via POST /api/apoios/refresh — drain de e-mails novos da apoia.se
+// no Gmail (#3859 metade 1, inclui promessas #3912) + re-consulta do mês
+// corrente na apoia.se pra contatos ainda não confirmados como "apoiando"
+// (#3859 metade 2; seletiva, protege a cota de 5.000 req/mês). O botão fica
+// desabilitado com rótulo "Atualizando…" enquanto o servidor trabalha.
+// O GET /api/apoios puro continua usado só no load inicial e pós-edição de
+// contato — não tem mais botão próprio (era o "Atualizar" antigo, que
+// confundia: parecia buscar e-mails novos mas só relia o snapshot).
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -43,7 +45,6 @@ const el = {
   contactsCount: document.getElementById("contacts-count"),
   filterStatus: document.getElementById("filter-status"),
   refreshBtn: document.getElementById("refresh-btn"),
-  refreshStatusBtn: document.getElementById("refresh-status-btn"),
   lastUpdated: document.getElementById("last-updated"),
   contactsList: document.getElementById("contacts-list"),
   contactsEmpty: document.getElementById("contacts-empty"),
@@ -254,28 +255,32 @@ async function fetchApoios() {
 }
 
 // #3859: POST /api/apoios/refresh — (1) importa apoiadores novos via e-mail
-// apoia.se e (2) força re-consulta na apoia.se só pra contatos ainda não
-// confirmados como "apoiando" (o servidor decide quem — ver refreshApoiosData
-// em studio-apoios.ts). Resposta tem o MESMO formato de GET /api/apoios,
-// então só substitui `data` e renderiza de novo (mesma disciplina "sem
-// estado otimista" do resto do arquivo).
-async function refreshApoiosStatus() {
-  el.refreshStatusBtn.disabled = true;
-  const originalLabel = el.refreshStatusBtn.textContent;
-  el.refreshStatusBtn.textContent = "Atualizando status…";
-  setFetchStatus("", "atualizando status…");
+// apoia.se (inclui promessas, #3912) e (2) força re-consulta na apoia.se só
+// pra contatos ainda não confirmados como "apoiando" (o servidor decide quem
+// — ver refreshApoiosData em studio-apoios.ts). Resposta tem o MESMO formato
+// de GET /api/apoios, então só substitui `data` e renderiza de novo (mesma
+// disciplina "sem estado otimista" do resto do arquivo). Enquanto roda, o
+// botão fica desabilitado com rótulo de progresso — a operação leva alguns
+// segundos (Gmail + apoia.se) e sem esse estado o clique parece não fazer nada.
+async function refreshApoios() {
+  el.refreshBtn.disabled = true;
+  const originalLabel = el.refreshBtn.textContent;
+  el.refreshBtn.textContent = "Atualizando…";
+  el.refreshBtn.setAttribute("aria-busy", "true");
+  setFetchStatus("", "buscando e-mails novos e status na apoia.se…");
   try {
     const res = await fetch("/api/apoios/refresh", { method: "POST" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     data = await res.json();
     setFetchStatus(data.error ? "down" : "ok", data.error ? "erro apoia.se" : "ok");
   } catch (e) {
-    setFetchStatus("down", "falha ao atualizar status");
+    setFetchStatus("down", "falha ao atualizar");
     data = { ...data, error: String(e) };
   }
   renderAll();
-  el.refreshStatusBtn.disabled = false;
-  el.refreshStatusBtn.textContent = originalLabel;
+  el.refreshBtn.disabled = false;
+  el.refreshBtn.textContent = originalLabel;
+  el.refreshBtn.removeAttribute("aria-busy");
 }
 
 function parseEmailsInput(raw) {
@@ -285,8 +290,7 @@ function parseEmailsInput(raw) {
     .filter(Boolean);
 }
 
-el.refreshBtn.addEventListener("click", () => fetchApoios());
-el.refreshStatusBtn.addEventListener("click", () => refreshApoiosStatus());
+el.refreshBtn.addEventListener("click", () => refreshApoios());
 el.filterStatus.addEventListener("change", () => {
   filters.status = el.filterStatus.value;
   renderContacts();
