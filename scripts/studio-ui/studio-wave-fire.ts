@@ -228,6 +228,83 @@
  * o mecanismo observado no incidente — é o mesmo bug de arquitetura, não um
  * segundo bug.
  *
+ * ## #3914 — subagentes dispatchados ficavam presos no MESMO allow-list ultra-estreito da coordenadora
+ *
+ * Validação ao vivo do #3720 (sessão 260722) confirmou que os 3 bypasses de
+ * `.claude/settings.json` estavam de fato fechados — a coordenadora tentou
+ * `Bash` genérico, foi negada, se autodiagnosticou corretamente e
+ * dispatchou `Agent` (isolation: worktree, model: sonnet) normalmente. O
+ * GAP NOVO: o(s) subagente(s) dispatchado(s) tentaram `gh issue view
+ * {numero} --json number,title,body,labels,comments` (passo normal de
+ * qualquer implementador pra entender a própria issue) e foram NEGADOS
+ * também — resultado observado: 3 worktrees criados em ~8min, ZERO rodou
+ * `npm ci`, a onda travou sem produzir PR nenhum e sem sinalização de erro.
+ *
+ * **Causa raiz confirmada** (leitura de `node_modules/@anthropic-ai/claude-agent-sdk`,
+ * sem rodar o SDK real — #207 bloqueia recursão de `Agent` de dentro deste
+ * worktree):
+ *
+ * 1. `settingSources: []` (a correção do #3720, ver seção acima) é traduzido
+ *    pelo SDK num flag `--setting-sources=` do PROCESSO INTEIRO spawnado
+ *    (`sdk.mjs`: `if(U!==void 0)W.push(\`--setting-sources=${U.join(",")}\`)`
+ *    — `W` é o array de argv do `claude` CLI, não algo reconfigurável por
+ *    dispatch individual de `Agent`). Nem `AgentDefinition` nem `AgentInput`
+ *    (`sdk-tools.d.ts`) têm campo `settingSources`/`canUseTool` próprio — não
+ *    existe como um dispatch de `Agent` pedir uma resolução de settings
+ *    diferente da sessão pai.
+ * 2. `CanUseTool` (`sdk.d.ts`) recebe, como 3º parâmetro, `options.agentID?:
+ *    string` — "If running within the context of a sub-agent, the
+ *    sub-agent's ID." Ou seja: o MESMO `canUseTool` registrado em
+ *    `runWaveFire` (`makeWaveSafeCanUseTool`) governa TAMBÉM as tool calls
+ *    de qualquer subagente dispatchado, não só as da coordenadora —
+ *    confirma o mecanismo observado ao vivo.
+ *
+ * Consequência: `evaluateWaveTool`, desenhado deliberadamente ultra-estreito
+ * só pros ~10 comandos exatos que a COORDENADORA precisa (dispatch + Gate 2
+ * + merge serial), também decidia allow/deny pra TUDO que um subagente
+ * implementador tentasse — sem allow nenhum pra `Read`/`Write`/`Edit` (nem
+ * pra ler `context/overnight-dispatch-rules.md`, passo 1 do próprio prompt
+ * de dispatch), `npm ci`, `git add`/`commit`/`push`, ou `gh pr create`.
+ *
+ * **Fix (#3914):** `evaluateWaveTool` ganhou um 3º parâmetro opcional
+ * (`agentID`) e, quando presente, consulta um allow-list SEPARADO — mais
+ * permissivo que o da coordenadora mas ainda sujeito aos MESMOS guards
+ * INVARIANTES de publicação (nunca lifted, dispatch-rules.md §1 é explícito:
+ * "todo subagente implementador") — ver doc-comment das constantes
+ * `WAVE_SUBAGENT_*` (logo antes de `WaveToolDecision`) pro allow-list
+ * completo e o raciocínio de cada peça (por que `Read`/`Write`/`Edit` são
+ * seguros de liberar incondicionalmente, por que o guard de working-tree não
+ * se aplica a um cwd que já é um worktree isolado, por que `gh pr merge`/
+ * `gh api graphql` continuam EXCLUSIVOS da coordenadora). Mitigação
+ * complementar: `fetchWaveIssueSummaries` busca título/corpo/labels de cada
+ * issue ANTES da sessão coordenadora iniciar (fora da sessão SDK) e
+ * `buildWaveFireCoordinatorPrompt` embute esse conteúdo no prompt de
+ * dispatch — reduz (não elimina) a dependência de cada subagente em rodar
+ * `gh issue view` ele mesmo.
+ *
+ * **O que ISTO NÃO resolve, fica pra validação ao vivo (Parte B, fora do
+ * escopo desta PR):** (a) confirmação empírica de que `agentID` de fato
+ * chega no shape esperado pra um dispatch `general-purpose` sem `agents:`
+ * customizado (a doc do SDK descreve o campo, mas nenhuma chamada real foi
+ * feita); (b) o incidente original menciona a coordenadora/subagente
+ * tentando o comando "via `Bash` E via `PowerShell`" — este módulo só
+ * inspeciona `input.command` como string via regex ancorado em `gh`/`git`/
+ * `npm`/`npx`; um comando envolto em `powershell -Command "..."` NÃO bate
+ * em nenhum desses padrões (ficaria no default-deny). Não implementado de
+ * propósito: desembrulhar `powershell -Command "..."`/`cmd /c "..."` de
+ * forma segura exigiria parsing de aspas/escaping arbitrário — superfície de
+ * risco nova (um allow indevido aqui seria pior que o status quo). A leitura
+ * mais provável do incidente é que isso foi uma tentativa de WORKAROUND da
+ * negação original (CLAUDE.md deste repo já instrui a tool `Bash` normal
+ * deste projeto a rodar via Git Bash, não PowerShell) — uma vez que `gh
+ * issue view` com campos amplos passa a ser permitido diretamente, não
+ * deveria haver motivo pro subagente tentar o wrapper; se a validação ao
+ * vivo mostrar o contrário, é um padrão novo pra adicionar aqui depois,
+ * nunca pra assumir resolvido sem reconfirmar; (c) se o protocolo completo
+ * (`npm ci` → `tsc` → teste → commit → push → `gh pr create`) realmente
+ * completa fim-a-fim dentro do worktree isolado do subagente — só um
+ * disparo real contra 1 issue trivial confirma isso.
+ *
  * ## O que NÃO está nesta fatia (documentado explicitamente, #3702)
  *
  * - **Validação ao vivo**: nunca foi disparado contra o SDK real — o
@@ -313,11 +390,41 @@ export function parseWaveFireRequestBody(raw: string, opts: { maxConcurrency?: n
 
 // ─── prompt da sessão coordenadora (puro) ──────────────────────────────────
 
+/**
+ * #3914 — resumo de 1 issue da onda, buscado por `fetchWaveIssueSummaries`
+ * ANTES da sessão coordenadora iniciar (fora da sessão SDK, via `gh issue
+ * view` direto — nunca sujeito a `evaluateWaveTool`). Campos opcionais: um
+ * `gh` que falhe pra uma issue específica (rate limit, issue deletada) não
+ * deve derrubar a onda inteira — `fetchWaveIssueSummaries` é fail-soft por
+ * issue, ver doc-comment da função.
+ */
+export interface WaveIssueSummary {
+  number: number;
+  title?: string;
+  body?: string;
+  labels?: string[];
+  url?: string;
+}
+
 export interface WaveFirePromptOptions {
   maxConcurrency?: number;
   /** Nome do arquivo de checklist canônico — parametrizado só pra teste;
    * produção sempre usa o default real. */
   dispatchRulesPath?: string;
+  /**
+   * #3914 — resumos (título/corpo/labels) já buscados pra cada issue da onda.
+   * Quando presente, o prompt embute o corpo completo de cada issue
+   * diretamente no dispatch, em vez de instruir cada subagente a descobrir
+   * sozinho via `gh issue view` (mitigação complementar ao fix de permissão
+   * em `evaluateWaveTool`: reduz a dependência do subagente na chamada `gh`
+   * que motivou o achado original do #3914, mesmo padrão já usado pelos
+   * outros dispatches overnight/develop desta mesma rodada — citar o corpo
+   * da issue no prompt em vez de pedir pro subagente buscar sozinho). Uma
+   * issue sem summary correspondente (fetch falhou) cai de volta pra
+   * instrução antiga (buscar via `gh issue view`, agora permitido pro
+   * subagente desde #3914).
+   */
+  issues?: WaveIssueSummary[];
 }
 
 /**
@@ -348,6 +455,39 @@ export function buildWaveFireCoordinatorPrompt(issueNumbers: number[], opts: Wav
   const dispatchRulesPath = opts.dispatchRulesPath ?? "context/overnight-dispatch-rules.md";
   const issueList = issueNumbers.map((n) => `#${n}`).join(", ");
   const marker = WAVE_DIAGNOSTIC_COMMENT_PREFIX;
+  // #3914 — quando o caller já buscou os detalhes de cada issue (fora da
+  // sessão SDK, via `gh issue view` direto em `fetchWaveIssueSummaries`),
+  // embute o corpo completo aqui — reduz a dependência do subagente
+  // dispatchado em rodar `gh issue view` ele mesmo pra descobrir do que se
+  // trata a própria issue (mitigação complementar ao fix de permissão em
+  // `evaluateWaveTool` abaixo). Uma issue sem summary (fetch falhou pra ela
+  // especificamente, fail-soft por issue) simplesmente não aparece aqui — o
+  // subagente cai de volta pra buscar via `gh issue view`, agora permitido
+  // (ver `isAllowedWaveSubagentGhIssueView`).
+  const issuesByNumber = new Map((opts.issues ?? []).map((i) => [i.number, i]));
+  const issueDetailsBlock = issueNumbers
+    .map((n) => issuesByNumber.get(n))
+    .filter((i): i is WaveIssueSummary => i !== undefined && (i.title !== undefined || i.body !== undefined))
+    .map((i) => {
+      const labels = i.labels && i.labels.length > 0 ? i.labels.join(", ") : "(nenhuma)";
+      return [
+        `### Issue #${i.number}${i.title ? `: ${i.title}` : ""}`,
+        `Labels: ${labels}`,
+        i.url ? `URL: ${i.url}` : undefined,
+        ``,
+        i.body && i.body.trim() !== "" ? i.body : "(corpo vazio)",
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n");
+    });
+  const step1IssueBodyNote =
+    issueDetailsBlock.length > 0
+      ? 'O TÍTULO E CORPO COMPLETO de cada issue já estão anexados na seção "Detalhes das issues" no final deste ' +
+        "prompt — cole esse conteúdo DIRETO no prompt de dispatch de cada subagente (não instrua o subagente a rodar " +
+        "`gh issue view` pra descobrir do que se trata; #3914)."
+      : "Inclua no prompt de dispatch o número da issue — o subagente pode rodar `gh issue view {numero} --json " +
+        "number,title,body,labels,comments,assignees,state,url` pra ler os detalhes (permitido a subagentes " +
+        "dispatchados desde #3914).";
 
   return [
     `Você é a sessão COORDENADORA de uma onda disparada pelo Studio ("disparar onda", #3702).`,
@@ -366,7 +506,7 @@ export function buildWaveFireCoordinatorPrompt(issueNumbers: number[], opts: Wav
     `   - prompt citando \`${dispatchRulesPath}\` (leia esse arquivo no início da própria sessão) + o número da`,
     `     issue + branch \`develop/fix-{numero}\` + "abra PR com \`Closes #{numero}\` (closing keyword real do GitHub —`,
     `     NUNCA \`Refs #{numero}\`, que não fecha a issue nem popula closedByPullRequestsReferences, #3781), self-review`,
-    `     obrigatório (#2038), nunca faça merge você mesma — a coordenadora cuida do merge".`,
+    `     obrigatório (#2038), nunca faça merge você mesma — a coordenadora cuida do merge". ${step1IssueBodyNote}`,
     `   Envie até ${maxConcurrency} dessas tool calls NA MESMA mensagem (concorrência real) — nunca mais que`,
     `   ${maxConcurrency} worktrees abertos ao mesmo tempo.`,
     `2. Espere cada Agent retornar. Cada retorno traz (idealmente) um número de PR. Se um agente falhar/não abrir`,
@@ -408,6 +548,9 @@ export function buildWaveFireCoordinatorPrompt(issueNumbers: number[], opts: Wav
     ``,
     `Ao final (todas as issues processadas — mergeadas, com PR pendente de CI, ou com falha documentada), produza`,
     `um resumo em texto: por issue, o resultado (mergeada / PR aberto aguardando CI / falhou — motivo).`,
+    ...(issueDetailsBlock.length > 0
+      ? [``, `## Detalhes das issues (#3914 — cole no prompt de dispatch de cada subagente)`, ``, ...issueDetailsBlock]
+      : []),
   ].join("\n");
 }
 
@@ -696,6 +839,148 @@ function isAllowedWaveCoordinatorGhCommand(command: string): boolean {
 const WAVE_WORKTREE_GUARD_RE =
   /\bgit(?:\.exe)?\s+(?:(?!(?:checkout|pull|stash|reset)(?:\s|$))\S+\s+)*(?:checkout|pull|stash|reset)(?:\s|$)/i;
 
+// ─── #3914 — allow-list pra chamadas de tool NESTED (originadas de um sub-
+// agente dispatchado via Agent isolation:worktree, não da coordenadora) ────
+//
+// Achado do #3914: `CanUseTool` do SDK recebe `options.agentID` — "If running
+// within the context of a sub-agent, the sub-agent's ID" (`sdk.d.ts`) — ou
+// seja, o MESMO `canUseTool` (`makeWaveSafeCanUseTool`) registrado em
+// `runWaveFire` governa TAMBÉM as tool calls de qualquer subagente
+// dispatchado, não só as da coordenadora. Como `settingSources: []` (#3720)
+// já era um flag `--setting-sources=` de PROCESSO INTEIRO (confirmado lendo
+// `node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs`, não algo que se possa
+// reconfigurar por chamada `Agent` individual — `AgentDefinition`/`AgentInput`
+// não têm campo `settingSources`/`canUseTool` próprios), os subagentes
+// dispatchados ficavam presos no MESMO allow-list ultra-estreito desenhado só
+// pros 6 comandos `gh` de Gate 2/merge da coordenadora — sem `Read` (nem pra
+// ler `context/overnight-dispatch-rules.md`, passo 1 do prompt), sem
+// `Write`/`Edit` (o trabalho de implementação em si), sem `npm ci`/`npx tsc`/
+// testes, sem `git add`/`commit`/`push`, sem `gh pr create`. Resultado: onda
+// travava sem produzir PR nenhum (achado ao vivo do #3914 — 3 worktrees, zero
+// `npm ci` rodado).
+//
+// Fix: quando `agentID` está presente (chamada de um subagente, não da
+// coordenadora), `evaluateWaveTool` consulta este allow-list SEPARADO,
+// deliberadamente mais permissivo que o da coordenadora mas AINDA sujeito aos
+// MESMOS guards INVARIANTES (publicação, palavra de plataforma) — essas duas
+// checagens continuam rodando incondicionalmente pra QUALQUER `agentID`,
+// coordenadora ou subagente (dispatch-rules.md §1 é explícito: "todo
+// subagente implementador", não só a coordenadora). Duas diferenças
+// deliberadas do lado subagente:
+//
+// 1. `Read`/`Write`/`Edit`/`Glob`/`Grep`/`WebFetch`/`WebSearch` — allow
+//    incondicional. Edit/Write já são contidos pelo PRÓPRIO harness
+//    (`isolation: "worktree"` restringe onde o subagente pode escrever, ver
+//    doc-comment do módulo) — permitir aqui não abre blast radius NOVO além
+//    do que a isolação de worktree já garante estruturalmente; sem isso o
+//    subagente não tem como fazer NADA (nem ler um arquivo).
+// 2. O guard de working-tree (`WAVE_WORKTREE_GUARD_RE`, checkout/pull/stash/
+//    reset) NÃO se aplica a chamadas de subagente — a razão de existir desse
+//    guard é proteger o cwd COMPARTILHADO da coordenadora (`rootDir`, onde
+//    `npm run studio` roda), que pode estar em uso ativo numa sessão manual
+//    do editor. O cwd de um subagente dispatchado com `isolation: "worktree"`
+//    é o SEU PRÓPRIO worktree isolado — `git checkout -b <branch>`/`git
+//    reset`/etc dentro dele é trabalho normal de implementação, não risco de
+//    colisão com o editor.
+//
+// O que este fix NÃO tenta resolver: dar ao subagente o MESMO nível de
+// confiança que uma sessão overnight/develop normal (terminal interativo,
+// `.claude/settings.json` completo) teria — deliberadamente mais estreito
+// (sem `gh pr merge`, sem `gh api graphql`, sem MCP tools) porque (a) merge é
+// EXPLICITAMENTE responsabilidade só da coordenadora (prompt: "nunca faça
+// merge você mesma"), permitir merge aqui reabriria esse invariante por outro
+// caminho; (b) o restante não é citado como necessário por
+// `context/overnight-dispatch-rules.md`/`buildWaveFireCoordinatorPrompt`. Se
+// a validação ao vivo (Parte B, fora do escopo desta PR — #207 bloqueia
+// recursão de Agent, não dá pra testar isto por dentro deste worktree)
+// encontrar mais um comando bloqueado que um subagente implementador precisa
+// de verdade, adicionar aqui é a mesma receita: um padrão explícito, nunca
+// reabrir settingSources.
+
+/** Bootstrap (`npm ci`) + typecheck (`npx tsc --noEmit`) + testes escopados
+ * (`npx tsx --test ...`) — os 3 passos que `context/overnight-dispatch-rules.md`
+ * §3/§4 exigem de todo subagente implementador antes de abrir PR. */
+const WAVE_SUBAGENT_NPM_RE = /^\s*npm(?:\.cmd)?\s+(?:ci|install|run\s+\S+)\b/i;
+const WAVE_SUBAGENT_TSC_RE = /^\s*npx(?:\.cmd)?\s+tsc\b/i;
+const WAVE_SUBAGENT_TEST_RE = /^\s*npx(?:\.cmd)?\s+tsx\s+--test\b/i;
+
+/** Mesmo padrão que `.claude/settings.json` já concede a QUALQUER sessão
+ * interativa normal (`Bash(npx tsx scripts/*.ts)`) — ainda sujeito aos guards
+ * INVARIANTES de publicação checados ANTES deste allow-list (`scripts/publish-*`,
+ * `clarice-schedule-*`, `clarice-import-*`, `close-poll.ts` continuam negados
+ * mesmo batendo este regex, porque são checados primeiro na função). */
+const WAVE_SUBAGENT_SCRIPT_RE = /^\s*npx(?:\.cmd)?\s+tsx\s+scripts[\\/]/i;
+
+/** Workflow git normal de implementação dentro do PRÓPRIO worktree isolado —
+ * substitui o guard de working-tree (que só faz sentido pro cwd COMPARTILHADO
+ * da coordenadora, ver doc-comment da seção acima). Inclui `checkout`/`pull`/
+ * `stash`/`reset` (criar branch / sincronizar / desfazer commit local)
+ * porque, ao contrário da coordenadora, o subagente MEXE no próprio checkout
+ * o tempo todo — é o trabalho. Não inclui `clean`/`gc`/`filter-branch` (não
+ * citados como necessários pelo protocolo, escopo deliberadamente contido ao que
+ * `git status`/`add`/`commit`/`push`/`checkout -b` cobrem). */
+const WAVE_SUBAGENT_GIT_RE =
+  /^\s*git(?:\.exe)?\s+(?:status|diff|log|show|add|commit|push|pull|checkout|fetch|branch|rev-parse|remote|stash|reset)\b/i;
+
+/** `gh pr create`/`view`/`diff`/`list` — deliberadamente SEM `merge` (só a
+ * coordenadora mergeia, ver doc-comment da seção acima) e SEM `checks` (Gate 2
+ * é responsabilidade da coordenadora, não do subagente individual). */
+const WAVE_SUBAGENT_GH_PR_RE = /^\s*gh(?:\.exe)?\s+pr\s+(?:create|view|diff|list)\b/i;
+
+/** Campos seguros pra `gh issue view --json` de um subagente — mais amplo que
+ * o allow-list estreito da coordenadora (`GH_ISSUE_VIEW_JSON_RE`, só
+ * `state`/`comments`/`closedByPullRequestsReferences`) porque um subagente
+ * implementador PRECISA do título/corpo/labels da própria issue pra entender
+ * a tarefa (o gap literal reportado no #3914: `gh issue view 3901 --json
+ * number,title,body,labels,comments` foi negado). `--jq`/campos fora deste
+ * set continuam negados (função abaixo exige TODOS os campos pedidos
+ * estarem no set, e a forma inteira do comando bater no template fixo). */
+const WAVE_SUBAGENT_GH_ISSUE_VIEW_FIELDS = new Set([
+  "number",
+  "title",
+  "body",
+  "labels",
+  "comments",
+  "assignees",
+  "state",
+  "url",
+  "milestone",
+  "createdAt",
+  "updatedAt",
+  "closedByPullRequestsReferences",
+]);
+const WAVE_SUBAGENT_GH_ISSUE_VIEW_RE = /^\s*gh(?:\.exe)?\s+issue\s+view\s+\d+\s+--json\s+([\w,]+)\s*$/i;
+
+function isAllowedWaveSubagentGhIssueView(command: string): boolean {
+  const match = WAVE_SUBAGENT_GH_ISSUE_VIEW_RE.exec(command);
+  if (!match) return false;
+  const fields = match[1].split(",");
+  return fields.length > 0 && fields.every((f) => WAVE_SUBAGENT_GH_ISSUE_VIEW_FIELDS.has(f));
+}
+
+/**
+ * Denylist EXTRA, só pro lado subagente (defesa em profundidade além dos
+ * guards invariantes de publicação): `rm -rf`/variações de flag (`-fr`, etc)
+ * e `git push --force`/`-f` — mesmo espírito do `"deny": ["Bash(rm -rf *)"]`
+ * já presente em `.claude/settings.json` pra qualquer sessão normal. Nenhum
+ * passo do protocolo de dispatch pede isso; um subagente que tentar é sinal
+ * de comportamento fora do esperado, não um caso de uso legítimo a acomodar.
+ */
+const WAVE_SUBAGENT_DANGEROUS_RE =
+  /\brm\b[^\n]*\s-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)[a-zA-Z]*\b|\bgit\s+push\b[^\n]*(?:--force\b|(?<!\S)-f\b)/i;
+
+function isAllowedWaveSubagentDevCommand(command: string): boolean {
+  return (
+    WAVE_SUBAGENT_NPM_RE.test(command) ||
+    WAVE_SUBAGENT_TSC_RE.test(command) ||
+    WAVE_SUBAGENT_TEST_RE.test(command) ||
+    WAVE_SUBAGENT_SCRIPT_RE.test(command) ||
+    WAVE_SUBAGENT_GIT_RE.test(command) ||
+    WAVE_SUBAGENT_GH_PR_RE.test(command) ||
+    isAllowedWaveSubagentGhIssueView(command)
+  );
+}
+
 export interface WaveToolDecision {
   allow: boolean;
   reason?: string;
@@ -753,8 +1038,47 @@ export interface WaveToolDecision {
  * do chat drawer, `studio-chat.ts` `denyToolResult`) — esta sessão roda sem
  * supervisão humana, então "permitir por padrão" é o erro mais caro
  * possível aqui.
+ *
+ * #3914 — `agentID` (3º parâmetro, opcional): quando presente, a chamada
+ * originou de um SUBAGENTE dispatchado (não da coordenadora — ver
+ * `options.agentID` do `CanUseTool` do SDK, "If running within the context
+ * of a sub-agent, the sub-agent's ID"). Nesse caso, ANTES do fallback
+ * conservador (6) acima, um segundo allow-list mais permissivo é consultado
+ * (`Read`/`Write`/`Edit`/`Glob`/`Grep`/`WebFetch`/`WebSearch` sempre allow;
+ * `isAllowedWaveSubagentDevCommand` pro workflow normal de implementação —
+ * bootstrap/typecheck/teste/git/gh pr/gh issue view de campos amplos) — e o
+ * guard de working-tree (2) NÃO se aplica (cwd do subagente é o PRÓPRIO
+ * worktree isolado, não o cwd compartilhado da coordenadora). Os guards
+ * INVARIANTES de publicação (3) e o denylist extra de comandos destrutivos
+ * (`WAVE_SUBAGENT_DANGEROUS_RE`) continuam valendo incondicionalmente pra
+ * `agentID` também — ver doc-comment da seção "#3914" acima das constantes
+ * `WAVE_SUBAGENT_*` pro raciocínio completo.
  */
-export function evaluateWaveTool(toolName: string, input: Record<string, unknown>): WaveToolDecision {
+export function evaluateWaveTool(
+  toolName: string,
+  input: Record<string, unknown>,
+  agentID?: string,
+): WaveToolDecision {
+  const isSubagentCall = agentID !== undefined;
+  if (
+    isSubagentCall &&
+    (toolName === "Read" ||
+      toolName === "Write" ||
+      toolName === "Edit" ||
+      toolName === "Glob" ||
+      toolName === "Grep" ||
+      toolName === "WebFetch" ||
+      toolName === "WebSearch")
+  ) {
+    return {
+      allow: true,
+      reason:
+        `#3914: "${toolName}" chamado por um subagente dispatchado (agentID presente) — allow incondicional. ` +
+        "Edit/Write já são contidos pelo próprio harness (isolation: worktree restringe onde o subagente escreve), " +
+        "então permitir aqui não abre blast radius novo; sem isso o subagente não tem como fazer nada (nem ler " +
+        "context/overnight-dispatch-rules.md, passo 1 do prompt de dispatch).",
+    };
+  }
   if (toolName === "Agent") {
     if (input.isolation === "worktree") {
       return {
@@ -780,8 +1104,12 @@ export function evaluateWaveTool(toolName: string, input: Record<string, unknown
     // ver doc-comment de `isAllowedWaveCoordinatorGhCommand` e das
     // constantes que ela combina. Checado antes de qualquer blocklist
     // (nenhuma dessas 6 formas pode colidir com eles, ver doc-comment da
-    // função acima).
-    if (isAllowedWaveCoordinatorGhCommand(command)) {
+    // função acima). #3914: gated por `!isSubagentCall` — `gh pr merge`/`gh
+    // api graphql` (resolveReviewThread) fazem parte deste combo, e o
+    // protocolo exige que SÓ a coordenadora mergeie ("nunca faça merge você
+    // mesma"); permitir isso pra um subagente reabriria esse invariante por
+    // outro caminho.
+    if (!isSubagentCall && isAllowedWaveCoordinatorGhCommand(command)) {
       return {
         allow: true,
         reason:
@@ -816,7 +1144,12 @@ export function evaluateWaveTool(toolName: string, input: Record<string, unknown
       GH_ISSUE_TEXT_ONLY_RE.test(command) &&
       !GH_ISSUE_SHELL_CHAIN_RE.test(command) &&
       GH_ISSUE_ALLOWED_SHAPE_RE.test(command);
-    if (!isGhIssueTextOnly && WAVE_WORKTREE_GUARD_RE.test(command)) {
+    // #3914: guard de working-tree só se aplica à COORDENADORA — o cwd de um
+    // subagente dispatchado é o seu PRÓPRIO worktree isolado (não o cwd
+    // compartilhado da coordenadora que este guard protege), então
+    // checkout/pull/stash/reset dentro dele é workflow normal de
+    // implementação, não risco de colisão com o editor.
+    if (!isSubagentCall && !isGhIssueTextOnly && WAVE_WORKTREE_GUARD_RE.test(command)) {
       return {
         allow: false,
         reason:
@@ -842,6 +1175,20 @@ export function evaluateWaveTool(toolName: string, input: Record<string, unknown
           "clarice-import-*, close-poll ou qualquer script Beehiiv/LinkedIn/Facebook/Brevo, mesmo em onda automática.",
       };
     }
+    // #3914: denylist EXTRA só pro lado subagente — INVARIANTE, checado
+    // depois dos guards de publicação (que já cobrem qualquer agentID) mas
+    // antes de qualquer allow de subagente, incluindo o de gh issue
+    // comment/close (um `rm -rf`/`git push --force` encadeado a um `gh issue
+    // comment` válido ainda deve cair aqui, não no allow de texto).
+    if (isSubagentCall && WAVE_SUBAGENT_DANGEROUS_RE.test(command)) {
+      return {
+        allow: false,
+        reason:
+          "denylist extra de subagente (#3914, defesa em profundidade): rm -rf/variações de flag e git push " +
+          "--force/-f nunca são necessários pelo protocolo de dispatch — mesmo espírito do " +
+          "\"deny\": [\"Bash(rm -rf *)\"] já presente em .claude/settings.json pra qualquer sessão normal.",
+      };
+    }
     if (isGhIssueTextOnly) {
       return {
         allow: true,
@@ -853,21 +1200,46 @@ export function evaluateWaveTool(toolName: string, input: Record<string, unknown
           "legítimo não é execução de nada.",
       };
     }
+    // #3914 — workflow normal de implementação de um subagente dispatchado:
+    // bootstrap/typecheck/teste, npx tsx scripts/*.ts (ainda sujeito aos
+    // guards de publicação acima), git add/commit/push/checkout/etc no
+    // PRÓPRIO worktree, gh pr create/view/diff/list (nunca merge — ver
+    // doc-comment da seção "#3914" acima das constantes WAVE_SUBAGENT_*), gh
+    // issue view com campos amplos (title/body/labels — o gap literal
+    // reportado no #3914).
+    if (isSubagentCall && isAllowedWaveSubagentDevCommand(command)) {
+      return {
+        allow: true,
+        reason:
+          "#3914: comando de workflow normal de implementação reconhecido pro allow-list de subagente (npm/npx " +
+          "tsc/tsx --test/tsx scripts, git status/diff/log/add/commit/push/checkout/fetch/branch/rev-parse/remote/" +
+          "stash/reset, gh pr create/view/diff/list, gh issue view com campos amplos) — necessário pro subagente " +
+          "conseguir de fato implementar e abrir PR dentro do seu worktree isolado.",
+      };
+    }
   }
   return {
     allow: false,
-    reason:
-      `"${toolName}" exigiria confirmação interativa que esta sessão headless não tem como dar — ` +
-      `com settingSources: [] (#3720), .claude/settings.json não é consultado nesta sessão, então só as formas ` +
-      `explicitamente resolvidas aqui (Agent com isolation:worktree, gh issue comment/close, e o punhado de ` +
-      `comandos gh de Gate 2/espera de CI/merge listados acima) rodam automaticamente (#3702/#3720, escopo ` +
-      `deliberadamente conservador).`,
+    reason: isSubagentCall
+      ? `"${toolName}" exigiria confirmação interativa que este subagente headless não tem como dar — ` +
+        `com settingSources: [] (#3720/#3914), .claude/settings.json não é consultado nesta sessão (nem pros ` +
+        `subagentes dispatchados), então só as formas explicitamente resolvidas aqui (Read/Write/Edit/Glob/Grep/` +
+        `WebFetch/WebSearch, o workflow de dev listado em isAllowedWaveSubagentDevCommand, e gh issue comment/close) ` +
+        `rodam automaticamente (#3914, escopo deliberadamente conservador — sem merge, sem gh api graphql).`
+      : `"${toolName}" exigiria confirmação interativa que esta sessão headless não tem como dar — ` +
+        `com settingSources: [] (#3720), .claude/settings.json não é consultado nesta sessão, então só as formas ` +
+        `explicitamente resolvidas aqui (Agent com isolation:worktree, gh issue comment/close, e o punhado de ` +
+        `comandos gh de Gate 2/espera de CI/merge listados acima) rodam automaticamente (#3702/#3720, escopo ` +
+        `deliberadamente conservador).`,
   };
 }
 
 function makeWaveSafeCanUseTool(): CanUseTool {
-  return async (toolName, input) => {
-    const decision = evaluateWaveTool(toolName, input);
+  return async (toolName, input, options) => {
+    // #3914 — `options.agentID` distingue chamada da coordenadora (undefined)
+    // de chamada de um subagente dispatchado (presente) — ver doc-comment de
+    // `evaluateWaveTool` pro allow-list separado que isso habilita.
+    const decision = evaluateWaveTool(toolName, input, options.agentID);
     if (decision.allow) return { behavior: "allow", updatedInput: input };
     return { behavior: "deny", message: decision.reason ?? "negado" } as PermissionResult;
   };
@@ -934,6 +1306,55 @@ export type GhIssueRunFn = (args: string[], cwd: string) => GhIssueRunResult;
 
 function defaultGhIssueRun(args: string[], cwd: string): GhIssueRunResult {
   return spawnGhSync(args, cwd);
+}
+
+interface GhIssueSummaryRaw {
+  number?: number;
+  title?: string;
+  body?: string;
+  labels?: Array<{ name?: string }>;
+  url?: string;
+}
+
+/**
+ * #3914 — busca título/corpo/labels/url de cada issue da onda ANTES da
+ * sessão coordenadora iniciar (fora da sessão SDK, `gh issue view` direto —
+ * nunca sujeito a `evaluateWaveTool`). Alimenta `buildWaveFireCoordinatorPrompt`
+ * (`opts.issues`), que embute esse conteúdo no prompt de dispatch em vez de
+ * instruir cada subagente a descobrir sozinho via `gh issue view` — mitigação
+ * complementar ao fix de permissão em `evaluateWaveTool` (reduz a
+ * DEPENDÊNCIA no allow-list novo, não substitui: se o fetch falhar pra uma
+ * issue específica, o subagente ainda cai de volta pro `gh issue view`
+ * permitido desde #3914).
+ *
+ * Fail-soft POR ISSUE (mesmo espírito de `checkIssueTerminalState`): uma
+ * falha de `gh` (rate limit, issue deletada, rede) pra UMA issue não deve
+ * derrubar o fetch das outras nem a onda inteira — a issue que falhou
+ * simplesmente não aparece no bloco "Detalhes das issues" do prompt.
+ */
+export function fetchWaveIssueSummaries(
+  issueNumbers: number[],
+  cwd: string,
+  run: GhIssueRunFn = defaultGhIssueRun,
+): WaveIssueSummary[] {
+  return issueNumbers.map((n): WaveIssueSummary => {
+    const result = run(["issue", "view", String(n), "--json", "number,title,body,labels,url"], cwd);
+    if (result.status !== 0) return { number: n };
+    try {
+      const parsed = JSON.parse(result.stdout) as GhIssueSummaryRaw;
+      return {
+        number: n,
+        title: typeof parsed.title === "string" ? parsed.title : undefined,
+        body: typeof parsed.body === "string" ? parsed.body : undefined,
+        labels: Array.isArray(parsed.labels)
+          ? parsed.labels.map((l) => l?.name).filter((x): x is string => typeof x === "string")
+          : undefined,
+        url: typeof parsed.url === "string" ? parsed.url : undefined,
+      };
+    } catch {
+      return { number: n };
+    }
+  });
 }
 
 interface GhIssueViewRaw {
@@ -1081,6 +1502,10 @@ export interface RunWaveFireOptions {
    * onda sem spawnar `gh` de verdade. Produção usa o default real
    * (`checkAllIssuesTerminalState`, que roda `gh issue view` de fato). */
   checkTerminalStateFn?: (issueNumbers: number[], cwd: string, sinceIso: string) => IssueTerminalCheck[];
+  /** #3914 — injetável pra testes: busca título/corpo/labels de cada issue
+   * da onda ANTES do prompt ser montado, sem spawnar `gh` de verdade.
+   * Produção usa o default real (`fetchWaveIssueSummaries`). */
+  fetchIssueSummariesFn?: (issueNumbers: number[], cwd: string) => WaveIssueSummary[];
 }
 
 /**
@@ -1096,7 +1521,20 @@ export interface RunWaveFireOptions {
  */
 export async function runWaveFire(opts: RunWaveFireOptions): Promise<void> {
   const runQuery = opts.queryFn ?? defaultQueryFn;
-  const prompt = buildWaveFireCoordinatorPrompt(opts.issueNumbers, { maxConcurrency: opts.maxConcurrency });
+  // #3914 — fetch fail-soft: se `gh` falhar (rede, rate limit) o fetch INTEIRO
+  // não deve abortar a onda — só significa que o prompt sai sem os corpos
+  // embutidos, e os subagentes dispatchados caem de volta pro `gh issue view`
+  // (permitido desde #3914, ver `evaluateWaveTool`). `fetchWaveIssueSummaries`
+  // já é fail-soft POR ISSUE; este try/catch cobre uma falha mais ampla (ex:
+  // `gh` não instalado — spawnSync lançando em vez de retornar status != 0).
+  let issues: WaveIssueSummary[] | undefined;
+  try {
+    const fetchIssueSummaries = opts.fetchIssueSummariesFn ?? fetchWaveIssueSummaries;
+    issues = fetchIssueSummaries(opts.issueNumbers, opts.cwd);
+  } catch {
+    issues = undefined;
+  }
+  const prompt = buildWaveFireCoordinatorPrompt(opts.issueNumbers, { maxConcurrency: opts.maxConcurrency, issues });
   // #3765 — cutoff pra "comentário pós-dispatch": capturado ANTES do turno
   // começar, pra um comentário já existente na issue (de uma rodada
   // anterior) nunca ser mal-interpretado como diagnóstico DESTE turno.

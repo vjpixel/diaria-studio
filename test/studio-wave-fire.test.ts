@@ -20,6 +20,7 @@ import {
   evaluateIssueTerminalState,
   checkIssueTerminalState,
   checkAllIssuesTerminalState,
+  fetchWaveIssueSummaries,
   runWaveFire,
   spawnGhSync,
   GH_SPAWN_TIMEOUT_MS,
@@ -27,6 +28,7 @@ import {
   type QueryFn,
   type IssueTerminalCheck,
   type GhIssueRunFn,
+  type WaveIssueSummary,
 } from "../scripts/studio-ui/studio-wave-fire.ts";
 import type { ChatWireEvent } from "../scripts/studio-ui/studio-chat.ts";
 
@@ -777,6 +779,7 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
       cwd: "/repo",
       queryFn: fakeQuery,
       checkTerminalStateFn: allTerminal,
+      fetchIssueSummariesFn: () => [],
       onEvent: (e) => received.push(e),
     });
 
@@ -804,6 +807,7 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
       cwd: "/repo",
       queryFn: fakeQuery,
       checkTerminalStateFn: allTerminal,
+      fetchIssueSummariesFn: () => [],
       onEvent: () => {},
     });
 
@@ -829,6 +833,7 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
       cwd: "/repo",
       queryFn: fakeQuery,
       checkTerminalStateFn: allTerminal,
+      fetchIssueSummariesFn: () => [],
       onEvent: () => {},
     });
 
@@ -860,6 +865,7 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
       cwd: "/repo",
       queryFn: fakeQuery,
       checkTerminalStateFn: allTerminal,
+      fetchIssueSummariesFn: () => [],
       onEvent: (e) => received.push(e),
     });
 
@@ -877,7 +883,13 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
     };
     const received: ChatWireEvent[] = [];
     await assert.doesNotReject(
-      runWaveFire({ issueNumbers: [101], cwd: "/repo", queryFn: throwingQuery, onEvent: (e) => received.push(e) }),
+      runWaveFire({
+        issueNumbers: [101],
+        cwd: "/repo",
+        queryFn: throwingQuery,
+        fetchIssueSummariesFn: () => [],
+        onEvent: (e) => received.push(e),
+      }),
     );
     assert.equal(received.length, 1);
     assert.equal(received[0].event, "chat-error");
@@ -898,6 +910,7 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
       maxConcurrency: 2,
       queryFn: fakeQuery,
       checkTerminalStateFn: allTerminal,
+      fetchIssueSummariesFn: () => [],
       onEvent: () => {},
     });
     assert.match(capturedPrompt, /teto de concorrência 2/);
@@ -940,6 +953,7 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
           { issueNumber: 202, terminal: false, reason: "issue segue aberta, sem comentário pós-dispatch" },
         ];
       },
+      fetchIssueSummariesFn: () => [],
       onEvent: (e) => received.push(e),
     });
 
@@ -969,6 +983,7 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
       cwd: "/repo",
       queryFn: fakeQuery,
       checkTerminalStateFn: allTerminal,
+      fetchIssueSummariesFn: () => [],
       onEvent: (e) => received.push(e),
     });
 
@@ -992,6 +1007,7 @@ describe("runWaveFire (#3702) — com queryFn mockado (sem SDK real)", () => {
       checkTerminalStateFn: () => {
         throw new Error("gh: command not found");
       },
+      fetchIssueSummariesFn: () => [],
       onEvent: (e) => received.push(e),
     });
 
@@ -1237,5 +1253,369 @@ describe("spawnGhSync timeout (#3773 — regressão)", () => {
     // Generoso o bastante pra latência normal do `gh` mas bounded — nunca
     // `undefined`/`0` (que desligariam o timeout do spawnSync).
     assert.ok(GH_SPAWN_TIMEOUT_MS > 0 && Number.isFinite(GH_SPAWN_TIMEOUT_MS));
+  });
+});
+
+describe("evaluateWaveTool (#3914) — allow-list separado pra chamadas de SUBAGENTE (agentID presente)", () => {
+  describe("Read/Write/Edit/Glob/Grep/WebFetch/WebSearch — allow só quando agentID presente", () => {
+    for (const toolName of ["Read", "Write", "Edit", "Glob", "Grep", "WebFetch", "WebSearch"]) {
+      it(`${toolName}: allow=true com agentID (chamada de subagente), allow=false sem (chamada da coordenadora, comportamento pré-existente inalterado)`, () => {
+        const asCoordinator = evaluateWaveTool(toolName, {});
+        assert.equal(asCoordinator.allow, false, `${toolName} sem agentID deve continuar negado (coordenadora)`);
+
+        const asSubagent = evaluateWaveTool(toolName, {}, "agent-abc123");
+        assert.equal(asSubagent.allow, true, `${toolName} com agentID deve ser permitido (subagente)`);
+        assert.match(asSubagent.reason ?? "", /#3914/);
+      });
+    }
+  });
+
+  describe("guard de working-tree NÃO se aplica a chamadas de subagente (cwd é o próprio worktree isolado)", () => {
+    it("git checkout/pull/stash/reset: negado pra coordenadora, permitido pra subagente", () => {
+      for (const command of ["git checkout master", "git pull --ff-only", "git stash pop", "git reset --hard HEAD~1"]) {
+        const asCoordinator = evaluateWaveTool("Bash", { command });
+        assert.equal(asCoordinator.allow, false, `"${command}" deveria continuar negado pra coordenadora`);
+
+        const asSubagent = evaluateWaveTool("Bash", { command }, "agent-abc123");
+        assert.equal(asSubagent.allow, true, `"${command}" deveria ser permitido pra subagente`);
+      }
+    });
+  });
+
+  describe("guards INVARIANTES de publicação continuam valendo pra subagente (não é um bypass geral)", () => {
+    it("nega scripts/publish-*/clarice-schedule-*/clarice-import-*/close-poll mesmo com agentID presente", () => {
+      const commands = [
+        "npx tsx scripts/publish-newsletter.ts --edition 260420",
+        "npx tsx scripts/clarice-schedule-sends.ts",
+        "npx tsx scripts/clarice-schedule-group.ts --group T1-W3",
+        "npx tsx scripts/clarice-import-waves.ts --cycle 2605-06",
+        "npx tsx scripts/close-poll.ts --edition 260420",
+      ];
+      for (const command of commands) {
+        const decision = evaluateWaveTool("Bash", { command }, "agent-abc123");
+        assert.equal(decision.allow, false, `"${command}" deveria continuar negado pra subagente`);
+        assert.match(decision.reason ?? "", /guard de publicação/);
+      }
+    });
+
+    it("nega menção a Beehiiv/LinkedIn/Facebook/Brevo fora do padrão scripts/publish-*, mesmo com agentID", () => {
+      assert.equal(
+        evaluateWaveTool("Bash", { command: "curl https://api.brevo.com/v3/whatever" }, "agent-abc123").allow,
+        false,
+      );
+      assert.equal(
+        evaluateWaveTool("Bash", { command: "echo testing linkedin webhook" }, "agent-abc123").allow,
+        false,
+      );
+    });
+  });
+
+  describe("nunca deixa o subagente mergear/rodar o Gate 2 sozinho (isso é EXCLUSIVO da coordenadora)", () => {
+    it("nega 'gh pr merge {N} --squash' pra subagente (forma que a coordenadora usa pra mergear)", () => {
+      const decision = evaluateWaveTool("Bash", { command: "gh pr merge 456 --squash" }, "agent-abc123");
+      assert.equal(decision.allow, false);
+    });
+
+    it("nega 'gh pr checks {N} --watch'/'--json bucket,name' pra subagente (Gate 2 é responsabilidade só da coordenadora)", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "gh pr checks 456 --watch" }, "agent-abc123").allow, false);
+      assert.equal(
+        evaluateWaveTool("Bash", { command: "gh pr checks 456 --json bucket,name" }, "agent-abc123").allow,
+        false,
+      );
+    });
+
+    it("nega 'gh api graphql' (review threads / resolveReviewThread) pra subagente", () => {
+      const reviewThreads =
+        'gh api graphql -f query="{ repository(owner:\\"vjpixel\\",name:\\"diaria-studio\\"){ pullRequest(number:456){ reviewThreads(first:100){ nodes{ id isResolved } pageInfo{ hasNextPage endCursor } } } } }"';
+      assert.equal(evaluateWaveTool("Bash", { command: reviewThreads }, "agent-abc123").allow, false);
+    });
+  });
+
+  describe("workflow normal de implementação — allow só pra subagente", () => {
+    it("npm ci / npm install / npm run: allow pra subagente, deny pra coordenadora", () => {
+      for (const command of ["npm ci", "npm install", "npm run build"]) {
+        assert.equal(evaluateWaveTool("Bash", { command }).allow, false, `"${command}" negado pra coordenadora`);
+        assert.equal(
+          evaluateWaveTool("Bash", { command }, "agent-abc123").allow,
+          true,
+          `"${command}" permitido pra subagente`,
+        );
+      }
+    });
+
+    it("npx tsc --noEmit: allow pra subagente", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "npx tsc --noEmit" }, "agent-abc123").allow, true);
+    });
+
+    it("npx tsx --test ...: allow pra subagente", () => {
+      const command = "npx tsx --test test/studio-wave-fire.test.ts test/lib-boundary.test.ts";
+      assert.equal(evaluateWaveTool("Bash", { command }, "agent-abc123").allow, true);
+    });
+
+    it("npx tsx scripts/*.ts (não-publish): allow pra subagente, mesmo padrão já concedido a sessões normais via .claude/settings.json", () => {
+      assert.equal(
+        evaluateWaveTool("Bash", { command: "npx tsx scripts/verify-accessibility.ts" }, "agent-abc123").allow,
+        true,
+      );
+    });
+
+    it("git status/diff/log/add/commit/push: allow pra subagente dentro do próprio worktree", () => {
+      const commands = [
+        "git status",
+        "git diff",
+        "git log --oneline -5",
+        "git add scripts/foo.ts",
+        'git commit -m "fix: something (#101)"',
+        "git push -u origin overnight/fix-101-foo",
+      ];
+      for (const command of commands) {
+        assert.equal(
+          evaluateWaveTool("Bash", { command }, "agent-abc123").allow,
+          true,
+          `"${command}" deveria ser permitido pra subagente`,
+        );
+      }
+    });
+
+    it("git commit com heredoc multi-linha (convenção do próprio harness pra mensagens de commit) — allow pra subagente", () => {
+      const command = 'git commit -m "$(cat <<\'EOF\'\nfix: corrige bug X\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\nEOF\n)"';
+      assert.equal(evaluateWaveTool("Bash", { command }, "agent-abc123").allow, true);
+    });
+
+    it("gh pr create/view/diff/list: allow pra subagente", () => {
+      const commands = [
+        'gh pr create --title "fix: x (#101)" --body "Closes #101"',
+        "gh pr view 456",
+        "gh pr diff 456",
+        "gh pr list --search 101",
+      ];
+      for (const command of commands) {
+        assert.equal(
+          evaluateWaveTool("Bash", { command }, "agent-abc123").allow,
+          true,
+          `"${command}" deveria ser permitido pra subagente`,
+        );
+      }
+    });
+
+    it("gh issue view com campos amplos (number,title,body,labels,comments — o gap literal do #3914): allow pra subagente, deny pra coordenadora", () => {
+      const command = "gh issue view 3901 --json number,title,body,labels,comments";
+      assert.equal(evaluateWaveTool("Bash", { command }).allow, false, "coordenadora não deveria ter esse allow-list amplo");
+      const decision = evaluateWaveTool("Bash", { command }, "agent-abc123");
+      assert.equal(decision.allow, true);
+      assert.match(decision.reason ?? "", /#3914/);
+    });
+
+    it("gh issue view com campo fora do set seguro: nega mesmo pra subagente", () => {
+      const command = "gh issue view 3901 --json number,title,reactions";
+      assert.equal(evaluateWaveTool("Bash", { command }, "agent-abc123").allow, false);
+    });
+
+    it("gh issue view com --jq arbitrário: nega mesmo pra subagente", () => {
+      const command = "gh issue view 3901 --json body --jq '.body'";
+      assert.equal(evaluateWaveTool("Bash", { command }, "agent-abc123").allow, false);
+    });
+
+    it("gh issue comment/close continuam permitidos pra subagente (isenção #3791, independente de agentID)", () => {
+      assert.equal(
+        evaluateWaveTool("Bash", { command: 'gh issue comment 101 --body "feito"' }, "agent-abc123").allow,
+        true,
+      );
+      assert.equal(evaluateWaveTool("Bash", { command: "gh issue close 101" }, "agent-abc123").allow, true);
+    });
+  });
+
+  describe("denylist extra de subagente (#3914, defesa em profundidade)", () => {
+    it("nega rm -rf (e variações de flag) mesmo dentro do allow-list de dev commands", () => {
+      for (const command of ["rm -rf data", "rm -fr data", "rm -Rf /tmp/x"]) {
+        const decision = evaluateWaveTool("Bash", { command }, "agent-abc123");
+        assert.equal(decision.allow, false, `"${command}" deveria ser negado pra subagente`);
+        assert.match(decision.reason ?? "", /denylist extra de subagente/);
+      }
+    });
+
+    it("nega git push --force/-f mesmo sendo 'git push', que por si só é permitido", () => {
+      assert.equal(evaluateWaveTool("Bash", { command: "git push --force" }, "agent-abc123").allow, false);
+      assert.equal(
+        evaluateWaveTool("Bash", { command: "git push origin overnight/fix-101 -f" }, "agent-abc123").allow,
+        false,
+      );
+      // controle: git push normal (sem force) continua permitido.
+      assert.equal(
+        evaluateWaveTool("Bash", { command: "git push -u origin overnight/fix-101-foo" }, "agent-abc123").allow,
+        true,
+      );
+    });
+  });
+
+  it("Agent tool continua exigindo isolation: worktree independente de agentID (subagentes não podem redispatchar Agent, #207 bloqueia recursão de qualquer forma)", () => {
+    const decision = evaluateWaveTool("Agent", { isolation: "worktree", subagent_type: "general-purpose" }, "agent-abc123");
+    assert.equal(decision.allow, true);
+    const denied = evaluateWaveTool("Agent", {}, "agent-abc123");
+    assert.equal(denied.allow, false);
+  });
+
+  it("nega por padrão qualquer comando fora dos dois allow-lists, mesmo com agentID", () => {
+    const decision = evaluateWaveTool("Bash", { command: "curl https://example.com/whatever" }, "agent-abc123");
+    assert.equal(decision.allow, false);
+    assert.match(decision.reason ?? "", /#3914/);
+  });
+});
+
+describe("fetchWaveIssueSummaries (#3914)", () => {
+  it("busca title/body/labels/url via gh issue view --json number,title,body,labels,url", () => {
+    const run: GhIssueRunFn = (args, cwd) => {
+      assert.deepEqual(args, ["issue", "view", "3901", "--json", "number,title,body,labels,url"]);
+      assert.equal(cwd, "/repo");
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          number: 3901,
+          title: "fix: algo trivial",
+          body: "corpo completo da issue",
+          labels: [{ name: "bug" }, { name: "P2" }],
+          url: "https://github.com/vjpixel/diaria-studio/issues/3901",
+        }),
+        stderr: "",
+      };
+    };
+    const [summary] = fetchWaveIssueSummaries([3901], "/repo", run);
+    assert.deepEqual(summary, {
+      number: 3901,
+      title: "fix: algo trivial",
+      body: "corpo completo da issue",
+      labels: ["bug", "P2"],
+      url: "https://github.com/vjpixel/diaria-studio/issues/3901",
+    });
+  });
+
+  it("fail-soft por issue: gh falha (status != 0) -> só { number }, sem derrubar as outras", () => {
+    const run: GhIssueRunFn = (args) => {
+      const n = args[2];
+      if (n === "101") return { status: 1, stdout: "", stderr: "gh: rate limited" };
+      return {
+        status: 0,
+        stdout: JSON.stringify({ number: 202, title: "outra issue", body: "b", labels: [], url: "u" }),
+        stderr: "",
+      };
+    };
+    const results = fetchWaveIssueSummaries([101, 202], "/repo", run);
+    assert.deepEqual(results[0], { number: 101 });
+    assert.equal(results[1].title, "outra issue");
+  });
+
+  it("fail-soft: gh retorna JSON inválido -> só { number }, nunca lança", () => {
+    const run: GhIssueRunFn = () => ({ status: 0, stdout: "{not json", stderr: "" });
+    const [summary] = fetchWaveIssueSummaries([101], "/repo", run);
+    assert.deepEqual(summary, { number: 101 });
+  });
+
+  it("labels ausente/malformado -> undefined, nunca lança", () => {
+    const run: GhIssueRunFn = () => ({
+      status: 0,
+      stdout: JSON.stringify({ number: 101, title: "t", body: "b" }),
+      stderr: "",
+    });
+    const [summary] = fetchWaveIssueSummaries([101], "/repo", run);
+    assert.equal(summary.labels, undefined);
+  });
+});
+
+describe("buildWaveFireCoordinatorPrompt (#3914) — issues embutidas no prompt de dispatch", () => {
+  const issues: WaveIssueSummary[] = [
+    { number: 101, title: "fix: bug trivial", body: "corpo completo da issue 101", labels: ["bug", "P2"] },
+  ];
+
+  it("sem 'issues': step 1 instrui o subagente a buscar via gh issue view (fallback antigo)", () => {
+    const prompt = buildWaveFireCoordinatorPrompt([101]);
+    assert.match(prompt, /gh issue view \{numero\}/);
+    assert.doesNotMatch(prompt, /Detalhes das issues/);
+  });
+
+  it("com 'issues': embute título+corpo+labels no final do prompt, sob '## Detalhes das issues'", () => {
+    const prompt = buildWaveFireCoordinatorPrompt([101], { issues });
+    assert.match(prompt, /## Detalhes das issues/);
+    assert.match(prompt, /### Issue #101: fix: bug trivial/);
+    assert.match(prompt, /corpo completo da issue 101/);
+    assert.match(prompt, /Labels: bug, P2/);
+  });
+
+  it("com 'issues': step 1 instrui a NÃO rodar gh issue view (corpo já anexado)", () => {
+    const prompt = buildWaveFireCoordinatorPrompt([101], { issues });
+    assert.match(prompt, /já estão anexados/);
+    assert.match(prompt, /não instrua o subagente a rodar `gh issue view`/);
+  });
+
+  it("issue sem summary correspondente (fetch falhou pra ela) não aparece no bloco de detalhes", () => {
+    const prompt = buildWaveFireCoordinatorPrompt([101, 202], { issues }); // só 101 tem summary
+    assert.match(prompt, /### Issue #101/);
+    assert.doesNotMatch(prompt, /### Issue #202/);
+  });
+
+  it("issue com summary só de number (sem title/body — fetch retornou fail-soft) não aparece no bloco de detalhes", () => {
+    const prompt = buildWaveFireCoordinatorPrompt([101], { issues: [{ number: 101 }] });
+    assert.doesNotMatch(prompt, /Detalhes das issues/);
+  });
+
+  it("body vazio/ausente vira '(corpo vazio)', nunca quebra o prompt", () => {
+    const prompt = buildWaveFireCoordinatorPrompt([101], { issues: [{ number: 101, title: "sem corpo", body: "" }] });
+    assert.match(prompt, /\(corpo vazio\)/);
+  });
+});
+
+describe("runWaveFire (#3914) — fetch de issue summaries antes do prompt, injetável via fetchIssueSummariesFn", () => {
+  it("chama fetchIssueSummariesFn com issueNumbers/cwd e embute o resultado no prompt enviado ao SDK", async () => {
+    let capturedPrompt = "";
+    let capturedArgs: { issueNumbers: number[]; cwd: string } | undefined;
+    const fakeQuery: QueryFn = (params) => {
+      capturedPrompt = params.prompt;
+      async function* gen() {
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    await runWaveFire({
+      issueNumbers: [101],
+      cwd: "/repo",
+      queryFn: fakeQuery,
+      checkTerminalStateFn: allTerminal,
+      fetchIssueSummariesFn: (issueNumbers, cwd) => {
+        capturedArgs = { issueNumbers, cwd };
+        return [{ number: 101, title: "fix: bug trivial", body: "corpo completo via fetch" }];
+      },
+      onEvent: () => {},
+    });
+
+    assert.deepEqual(capturedArgs, { issueNumbers: [101], cwd: "/repo" });
+    assert.match(capturedPrompt, /corpo completo via fetch/);
+    assert.match(capturedPrompt, /## Detalhes das issues/);
+  });
+
+  it("fail-soft: fetchIssueSummariesFn lança -> runWaveFire continua (prompt sem issues embutidas, nunca chat-error)", async () => {
+    let capturedPrompt = "";
+    const fakeQuery: QueryFn = (params) => {
+      capturedPrompt = params.prompt;
+      async function* gen() {
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    const received: ChatWireEvent[] = [];
+    await runWaveFire({
+      issueNumbers: [101],
+      cwd: "/repo",
+      queryFn: fakeQuery,
+      checkTerminalStateFn: allTerminal,
+      fetchIssueSummariesFn: () => {
+        throw new Error("gh: rate limited");
+      },
+      onEvent: (e) => received.push(e),
+    });
+
+    assert.doesNotMatch(capturedPrompt, /## Detalhes das issues/);
+    assert.equal(received.length, 1);
+    assert.equal(received[0].event, "chat-done"); // nunca chat-error por causa do fetch de summaries
   });
 });
