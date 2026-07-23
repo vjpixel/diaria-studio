@@ -75,6 +75,50 @@ describe("extractLancamentoUrls", () => {
     const urls = extractLancamentoUrls(md);
     assert.equal(urls.length, 1);
   });
+
+  // #3942: singularize-md-sections.ts reescreve o header pra singular
+  // ("LANÇAMENTO") quando a seção tem N=1 item. Sem o `s?` no regex de seção,
+  // esse header nunca entrava em `inSection` — extractLancamentoUrls (e por
+  // extensão validateLancamentos) retornava 0 URLs mesmo com 1 lançamento
+  // presente (falso-negativo, status "ok" indevido).
+  it("#3942: seção LANÇAMENTO singular (header gerado por singularize-md-sections.ts) também é reconhecida", () => {
+    const md = ["LANÇAMENTO", "Item", "https://openai.com/x"].join("\n");
+    const urls = extractLancamentoUrls(md);
+    assert.equal(urls.length, 1);
+    assert.equal(urls[0].url, "https://openai.com/x");
+  });
+
+  it("#3942: header bold+emoji singular '**🚀 LANÇAMENTO**' (formato real do Stage 2) é reconhecido", () => {
+    const md = [
+      "**🚀 LANÇAMENTO**",
+      "",
+      "[GPT-5](https://openai.com/index/gpt-5) — modelo novo.",
+      "",
+      "**📡 RADAR**",
+    ].join("\n");
+    const urls = extractLancamentoUrls(md);
+    assert.equal(urls.length, 1);
+    assert.match(urls[0].url, /openai\.com\/index\/gpt-5/);
+  });
+
+  it("#3942: plural continua funcionando (não regrediu)", () => {
+    const md = ["LANÇAMENTOS", "Item", "https://openai.com/x"].join("\n");
+    const urls = extractLancamentoUrls(md);
+    assert.equal(urls.length, 1);
+  });
+});
+
+describe("#3942 — validateLancamentos com header singular não gera falso-negativo", () => {
+  it("status ok + lancamento_count correto (não 0) com header LANÇAMENTO singular", () => {
+    const md = [
+      "LANÇAMENTO",
+      "Item",
+      "https://openai.com/index/introducing-gpt-5",
+    ].join("\n");
+    const r = validateLancamentos(md);
+    assert.equal(r.lancamento_count, 1, "não deve ser 0 (falso-negativo do bug original)");
+    assert.equal(r.status, "ok");
+  });
 });
 
 describe("validateLancamentos", () => {
