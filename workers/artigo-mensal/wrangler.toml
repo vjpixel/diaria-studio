@@ -1,0 +1,46 @@
+name = "artigo-mensal"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# #3940: hosting do artigo mensal com paywall dinâmico de apoiador (R$10+/mês).
+# Rota escopada em domínio de marca dedicado — mesmo mecanismo comprovado de
+# cursos.diar.ia.br / livros.diar.ia.br / eia.diar.ia.br (custom_domain, NÃO
+# a rota clássica na raiz — ver nota em workers/artigos/README.md sobre a 1ª
+# tentativa que nunca interceptou tráfego na zona de produção).
+#
+# Diferente de workers/artigos (#3961, static-only, sem script): este worker
+# TEM script, porque o gate de apoiador é DINÂMICO — decide em request-time
+# via KV (allowlist pode mudar dia a dia conforme apoios entram/saem), não
+# em build-time como os assets estáticos de artigos/cursos/livros.
+[[routes]]
+pattern = "artigo.diar.ia.br"
+custom_domain = true
+
+# KV namespace com o HTML JÁ RENDERIZADO do artigo mensal, por ciclo
+# (key `article:{cycle}`, ex: `article:2607-08`). Escrito por
+# `scripts/build-article-page.ts --push` (Node-side; o Worker NUNCA
+# renderiza markdown — só serve o HTML pronto, mesmo padrão de
+# workers/draft/src/index.ts).
+#
+# PRÓXIMO PASSO MANUAL (fora do escopo deste PR, #3940): criar o namespace
+# antes do 1º deploy e substituir o id abaixo pelo retornado:
+#   cd workers/artigo-mensal && npx wrangler kv namespace create ARTICLES --remote
+[[kv_namespaces]]
+binding = "ARTICLES"
+id = "REPLACE_ME_APOS_CRIAR_NAMESPACE_ARTICLES"
+
+# KV namespace com a allowlist de e-mails de apoiadores R$10+/mês (mês
+# vigente) — chave única `emails` (JSON array de e-mails normalizados,
+# lowercase/trim). Escrito por `scripts/build-apoiador-allowlist.ts --push`
+# (#3940). Fail-closed (ver workers/artigo-mensal/src/gate.ts): namespace
+# vazio/ausente/corrompido = NINGUÉM tem acesso — nunca abre o artigo por
+# erro.
+#
+# PRÓXIMO PASSO MANUAL (fora do escopo deste PR, #3940): criar o namespace
+# antes do 1º deploy e substituir o id abaixo pelo retornado:
+#   cd workers/artigo-mensal && npx wrangler kv namespace create ALLOWLIST --remote
+[[kv_namespaces]]
+binding = "ALLOWLIST"
+id = "REPLACE_ME_APOS_CRIAR_NAMESPACE_ALLOWLIST"
