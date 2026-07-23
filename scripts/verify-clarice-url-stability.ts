@@ -49,8 +49,17 @@ const URL_RE = /https?:\/\/\S+/g;
 const LIST_ITEM_RE = /^\s*(?:[-*+]|\d+\.)\s+/;
 
 // Headers — accept "## Header" (Stage 1) or plain caps (Stage 2).
+// #3950: `s?` opcional no fim de LANÇAMENTOS — singularize-md-sections.ts
+// reescreve pra singular (LANÇAMENTO) quando a seção tem N=1 item. Sem o `?`,
+// o header singular não é reconhecido como boundary de seção, e as URLs que
+// deveriam cair em LANCAMENTOS ficam presas no bucket anterior (ex: OUTRAS) —
+// gerando falso-positivo fatal "Clarice mudou URL em LANÇAMENTOS" mesmo quando
+// nada mudou de fato (só o header foi singularizado). Mesmo padrão do #3942.
+// PESQUISAS não recebe o mesmo tratamento aqui: é seção legacy (removida em
+// #1569, papers mergeiam em RADAR via stitch) e não é mais gerada por edições
+// atuais — sem exposição real ao bug, então fora do escopo confirmado do #3950.
 const SECTION_PATTERNS: Array<{ section: Section; re: RegExp }> = [
-  { section: "LANCAMENTOS", re: /^(?:##\s+)?lan[çc]amentos\s*$/i },
+  { section: "LANCAMENTOS", re: /^(?:##\s+)?lan[çc]amentos?\s*$/i },
   { section: "PESQUISAS", re: /^(?:##\s+)?pesquisas\s*$/i },
   { section: "NOTICIAS", re: /^(?:##\s+)?(?:outras\s+)?not[íi]cias\s*$/i },
 ];

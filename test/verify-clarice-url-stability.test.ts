@@ -229,6 +229,26 @@ describe("compareUrls", () => {
     assert.equal(result.lancamento_changes.length, 0);
   });
 
+  it("#3950: header LANÇAMENTO singular (pós singularize-md-sections.ts) não gera falso-positivo fatal", () => {
+    // singularize-md-sections.ts reescreve o header pra singular quando a seção
+    // LANÇAMENTOS tem N=1 item. Pré-fix, a regex só casava plural — o header
+    // singular no `post` não era reconhecido como boundary de LANCAMENTOS, e a
+    // URL (que na verdade não mudou) caía no bucket errado (OUTRAS), gerando um
+    // "Clarice mudou URL em LANÇAMENTOS" fatal falso-positivo. Mesmo padrão do
+    // bug corrigido em #3942.
+    const pre = `LANÇAMENTOS
+
+- Item A — https://anthropic.com/news/x
+`;
+    const post = `LANÇAMENTO
+
+- Item A — https://anthropic.com/news/x
+`;
+    const result = verifyStability(pre, post);
+    assert.equal(result.status, "ok", `esperado ok, got: ${JSON.stringify(result)}`);
+    assert.equal(result.lancamento_changes.length, 0);
+  });
+
   it("Clarice adiciona trailing slash em URL oficial → fatal", () => {
     const pre = `LANÇAMENTOS
 

@@ -796,5 +796,38 @@ describe("insertOrUpdateSection (#911)", () => {
     assert.match(result.md, /\*\*🎁 SORTEIO\*\*/);
     assert.match(result.md, /Texto sorteio/);
   });
+
+  it("#3950: strip não engole **🚀 LANÇAMENTO** singular (pós singularize-md-sections.ts)", () => {
+    // singularize-md-sections.ts reescreve LANÇAMENTOS pra LANÇAMENTO (singular)
+    // quando a seção tem N=1 item. Pré-fix, a sentinela de strip só casava
+    // plural (LAN[ÇC]AMENTOS sem `?`) — um LANÇAMENTO singular logo após ERRO
+    // INTENCIONAL (ordem fora do padrão, ex: reordenação/corrupção como #1205)
+    // não era reconhecido como boundary, e o strip continuava consumindo até o
+    // PRÓXIMO sentinela real (RADAR) ou EOF, engolindo a seção inteira. Mesmo
+    // padrão do bug corrigido em #3942.
+    const md = [
+      "**OUTRAS NOTÍCIAS**",
+      "",
+      "**ERRO INTENCIONAL**",
+      "",
+      "Na última edição, X.",
+      "",
+      "Nessa edição, Y.",
+      "**🚀 LANÇAMENTO**",
+      "",
+      "**[Item A](https://example.com/a)**",
+      "Descrição do item A que deve sobreviver ao strip.",
+      "",
+      "---",
+      "",
+      "**📡 RADAR**",
+      "",
+      "**[Item radar](https://r.com)**",
+    ].join("\n");
+    const result = insertOrUpdateSection(md, "Na última edição, Z.");
+    assert.match(result.md, /\*\*🚀 LANÇAMENTO\*\*/, "LANÇAMENTO singular preservado após strip");
+    assert.match(result.md, /Item A/, "conteúdo do LANÇAMENTO preservado");
+    assert.match(result.md, /\*\*📡 RADAR\*\*/, "RADAR (sentinela seguinte) preservada");
+  });
 });
 
