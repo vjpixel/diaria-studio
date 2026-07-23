@@ -33,6 +33,14 @@ describe("toClusterSource (#3920)", () => {
     assert.equal(cs.published_at, "2026-07-19");
   });
 
+  it("source é trimado (não vaza espaços do snippet da fonte)", () => {
+    assert.equal(toClusterSource({ url: "https://a.com/x", source: "  Reuters  " }).source, "Reuters");
+    assert.equal(
+      toClusterSource({ url: "https://a.com/x", source_name: "  The Verge  " }).source,
+      "The Verge",
+    );
+  });
+
   it("source cai em source_name (discovery) quando source ausente", () => {
     const cs = toClusterSource({ url: "https://a.com/x", source_name: "The Verge" });
     assert.equal(cs.source, "The Verge");

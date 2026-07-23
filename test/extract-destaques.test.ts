@@ -635,6 +635,35 @@ describe("parseDestaques — bloco Aprofunde (#3920)", () => {
     assert.equal(Object.prototype.hasOwnProperty.call(d[0], "aprofunde"), false);
   });
 
+  it("Aprofunde sem 'Por que importa' não vaza pro body (bodyEnd capado)", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título d1",
+      "https://example.com/d1",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Aprofunde:",
+      "",
+      "* [Cobertura X](https://x.com/a) - X",
+      "",
+      "---",
+      "DESTAQUE 2 | PESQUISA",
+      "Título d2",
+      "https://example.com/d2",
+      "",
+      "Corpo d2.",
+      "",
+      "Por que isso importa:",
+      "Impacto d2.",
+    ].join("\n");
+    const d = parseDestaques(md);
+    assert.equal(d[0].body, "Corpo do destaque.");
+    assert.ok(!d[0].body.includes("Aprofunde"));
+    assert.ok(!d[0].body.includes("Cobertura X"));
+    assert.equal(d[0].aprofunde?.length, 1);
+  });
+
   it("item Aprofunde sem fonte (sem separador) ainda parseia", () => {
     const md = [
       "DESTAQUE 1 | PRODUTO",

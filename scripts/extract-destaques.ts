@@ -207,6 +207,12 @@ export function parseDestaques(raw: string): Destaque[] {
     } else {
       bodyEnd = lines.length;
     }
+    // #3920: se não há "Por que isso importa" mas há bloco Aprofunde, o body não
+    // deve absorver os itens do Aprofunde (mesma proteção do whyEnd abaixo).
+    // No caso normal (whyIdx existe) bodyEnd=whyIdx < aprofundeIdx → no-op.
+    if (aprofundeIdx !== -1 && aprofundeIdx >= bodyStart && aprofundeIdx < bodyEnd) {
+      bodyEnd = aprofundeIdx;
+    }
 
     const body = lines.slice(bodyStart, bodyEnd).join('\n').trim();
 

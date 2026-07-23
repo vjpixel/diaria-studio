@@ -72,8 +72,8 @@ export function toClusterSource(a: ClusterArticle): ClusterSource {
   // hostname da URL (fallback). Garante que o "- Fonte" do Aprofunde raramente
   // fique vazio; o writer (LLM) ainda pode refinar "theverge.com" → "The Verge".
   const source =
-    (typeof a.source === "string" && a.source.trim() && a.source) ||
-    (typeof a.source_name === "string" && a.source_name.trim() && a.source_name) ||
+    (typeof a.source === "string" && a.source.trim()) ||
+    (typeof a.source_name === "string" && a.source_name.trim()) ||
     veiculoFromUrl(a.url);
   if (source) cs.source = source;
   const pub = a.published_at ?? a.date;
