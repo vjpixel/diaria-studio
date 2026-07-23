@@ -386,7 +386,7 @@ export function importPendingApoiadoresFromGmail(
     const created = createContact({
       name: promessa.name,
       emails: [email],
-      notes: `promessa de R$${promessa.value} em ${formatDDMM(promessa.receivedAtIso)} — aguardando confirmação de pagamento`,
+      notes: `promessa de R$${promessa.value.toFixed(2).replace(".", ",")} em ${formatDDMM(promessa.receivedAtIso)} — aguardando confirmação de pagamento`,
     });
     result = upsertContact(result, created);
     imported++;
