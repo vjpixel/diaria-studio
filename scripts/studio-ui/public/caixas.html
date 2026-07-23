@@ -30,8 +30,7 @@
       <p class="hint">
         Lista dinâmica de <code>context/snippets/*.md</code> (exceto <code>README.md</code>).
         O badge "slot N" mostra a atribuição atual em <code>platform.config.json</code> →
-        <code>boxes_divulgacao</code> — <strong>somente leitura aqui</strong>, atribuir slot
-        não é uma ação desta tela.
+        <code>boxes_divulgacao</code> — gerencie a atribuição na seção "Slots de divulgação" abaixo.
       </p>
       <div class="panel-header-row">
         <span id="last-updated" class="hint" aria-live="polite"></span>
@@ -41,6 +40,38 @@
       <div id="boxes-error" class="panel alert-banner" role="alert" hidden>
         <span id="boxes-error-text"></span>
         <button type="button" class="retry-btn" id="boxes-retry-btn">Tentar de novo</button>
+      </div>
+    </section>
+
+    <section class="panel" id="slots-panel">
+      <h2>Slots de divulgação</h2>
+      <p class="hint">
+        Define quais caixas o <code>stitch-newsletter.ts</code> injeta automaticamente em cada
+        edição diária (#3937). Salvar reescreve só a chave <code>boxes_divulgacao</code> em
+        <code>platform.config.json</code>, preservando o resto do arquivo. Vale a partir da
+        <strong>próxima edição</strong> — nenhum restart necessário.
+      </p>
+      <div class="cx-slots-row" data-slot="slot1">
+        <label class="cx-slots-label" for="slot1-select">
+          Slot 1 <span class="cx-slots-position">— entre D1 e D2</span>
+        </label>
+        <select id="slot1-select" class="cx-slots-select"></select>
+      </div>
+      <div class="cx-slots-row" data-slot="slot2">
+        <label class="cx-slots-label" for="slot2-select">
+          Slot 2 <span class="cx-slots-position">— entre D2 e D3 (só em edição de 3 destaques)</span>
+        </label>
+        <select id="slot2-select" class="cx-slots-select"></select>
+      </div>
+      <div class="cx-slots-row" data-slot="slot3">
+        <label class="cx-slots-label" for="slot3-select">
+          Slot 3 <span class="cx-slots-position">— depois do último destaque (D3, ou D2 se só houver 2)</span>
+        </label>
+        <select id="slot3-select" class="cx-slots-select"></select>
+      </div>
+      <div class="cx-editor-toolbar">
+        <button id="slots-save-btn" type="button">Salvar atribuição de slots</button>
+        <span id="slots-status" class="cx-save-status" role="status" aria-live="polite"></span>
       </div>
     </section>
 

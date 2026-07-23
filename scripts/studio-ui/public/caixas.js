@@ -9,12 +9,19 @@
 // (`expectedModifiedAt`, #3729); 409 = outra aba/sessão salvou a mesma caixa
 // nesse meio tempo — confirm() com o risco real (`BOX_SAVE_CONFLICT_CONFIRM_MESSAGE`),
 // nunca sobrescrita silenciosa (R5 de docs/studio-ui-ux-guidelines.md).
-// Criação de caixa nova está fora de escopo desta issue.
+//
+// #3937: a seção "Slots de divulgação" (topo da página) gerencia a
+// atribuição dos 3 slots pela própria UI — GET/PUT /api/boxes/slots, MESMO
+// mecanismo de guard de mtime (`SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE`) e ZERO
+// UI otimista (refetcha slots + lista após salvar, pra o badge "slot N" dos
+// cards refletir o disco).
 
 import {
   BOX_SAVE_CONFLICT_CONFIRM_MESSAGE,
   boxArchiveConfirmMessage,
   validateNewBoxSlug,
+  findDuplicateSlotAssignment,
+  SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE,
 } from "./caixas-guards.js";
 
 const el = {
@@ -53,7 +60,18 @@ const el = {
   archivedHint: document.getElementById("archived-hint"),
   archivedEmpty: document.getElementById("archived-empty"),
   archivedList: document.getElementById("archived-list"),
+  // #3937: gestão de slots de divulgação
+  slot1Select: document.getElementById("slot1-select"),
+  slot2Select: document.getElementById("slot2-select"),
+  slot3Select: document.getElementById("slot3-select"),
+  slotsSaveBtn: document.getElementById("slots-save-btn"),
+  slotsStatus: document.getElementById("slots-status"),
 };
+
+/** Chaves de slot na ordem canônica — usado pra iterar os 3 `<select>` juntos
+ * (#3937). Espelha `SLOT_KEYS` de `studio-boxes.ts` (server, autoridade). */
+const SLOT_KEYS = ["slot1", "slot2", "slot3"];
+const SLOT_SELECTS = { slot1: el.slot1Select, slot2: el.slot2Select, slot3: el.slot3Select };
 
 /** Snapshot da última lista bem-sucedida — `null` até o 1º fetch resolver. */
 let boxes = null;
@@ -69,6 +87,12 @@ let lastFetchedAt = null;
 let currentSlug = null;
 let loadedModifiedAt = null;
 let dirty = false;
+
+/** Snapshot da atribuição de slots (#3937) — `{slot1, slot2, slot3, modifiedAt}`,
+ * `null` até o 1º GET /api/boxes/slots resolver. `modifiedAt` é reenviado como
+ * `expectedModifiedAt` no PUT (guard de mtime #3729, mesmo mecanismo do editor
+ * de 1 caixa acima). */
+let slotsState = null;
 
 function escapeHtml(s) {
   return String(s)
@@ -136,7 +160,7 @@ function renderList() {
     // toda newsletter — arquivá-la quebraria o pipeline, então o botão fica
     // desabilitado (o server também bloqueia, defense-in-depth).
     const archiveBtn = box.slot
-      ? `<button type="button" class="cx-archive-btn" disabled title="Em uso no slot ${escapeHtml(String(box.slot))} — remova a atribuição em platform.config.json antes de arquivar">Arquivar</button>`
+      ? `<button type="button" class="cx-archive-btn" disabled title="Em uso no slot ${escapeHtml(String(box.slot))} — libere o slot na seção &quot;Slots de divulgação&quot; acima antes de arquivar">Arquivar</button>`
       : `<button type="button" class="cx-archive-btn" data-action="archive" data-slug="${escapeHtml(box.slug)}">Arquivar</button>`;
     // #3933: quando a caixa tem um nome interno explícito que difere do título
     // que renderiza na edição, mostra os dois — o nome (título do card) pra
@@ -179,6 +203,7 @@ function renderError(message) {
 function renderAll() {
   renderError(null);
   renderList();
+  renderSlotsSection(); // #3937: opções dos <select> dependem da lista de caixas
   el.lastUpdated.textContent = lastFetchedAt ? `atualizado ${fmtTime(lastFetchedAt)}` : "";
 }
 
@@ -203,6 +228,127 @@ async function fetchBoxes() {
     return;
   }
   renderAll();
+}
+
+// ── #3937: gestão de slots de divulgação ──────────────────────────────────
+
+/** Monta as `<option>` de um `<select>` de slot: "(vazio)" + 1 opção por
+ * caixa VIVA (de `boxes`, já carregado por fetchBoxes()). Se a caixa
+ * atualmente atribuída não estiver mais na lista viva (arquivada/removida
+ * fora desta tela), ela ainda aparece como opção rotulada — pra o `<select>`
+ * nunca silenciosamente cair pra "(vazio)" e mascarar um estado real do
+ * disco que a UI ainda não resolveu. */
+function buildSlotOptionsHtml(assignedSlug) {
+  const list = boxes ?? [];
+  const opts = ['<option value="">(vazio)</option>'];
+  const seen = new Set();
+  for (const box of list) {
+    seen.add(box.slug);
+    opts.push(`<option value="${escapeHtml(box.slug)}">${escapeHtml(box.title)}</option>`);
+  }
+  if (assignedSlug && !seen.has(assignedSlug)) {
+    opts.push(`<option value="${escapeHtml(assignedSlug)}">${escapeHtml(assignedSlug)} (não encontrada em context/snippets/)</option>`);
+  }
+  return opts.join("");
+}
+
+/** Repopula os 3 `<select>` a partir de `slotsState` (atribuição atual) +
+ * `boxes` (opções disponíveis). No-op antes do 1º GET /api/boxes/slots
+ * resolver (`slotsState` ainda `null`) — chamado tanto por `renderAll()`
+ * (toda vez que a lista de caixas atualiza) quanto por `fetchSlots()`
+ * (quando a atribuição em si é recarregada), então os dois lados
+ * (opções disponíveis e valor selecionado) ficam sempre em sincronia. */
+function renderSlotsSection() {
+  if (!slotsState) return;
+  for (const key of SLOT_KEYS) {
+    const select = SLOT_SELECTS[key];
+    const assigned = slotsState[key] ?? "";
+    select.innerHTML = buildSlotOptionsHtml(assigned);
+    select.value = assigned;
+  }
+}
+
+async function fetchSlots() {
+  try {
+    const { ok, status, body } = await fetchJson("/api/boxes/slots");
+    if (!ok) throw new Error(`HTTP ${status}`);
+    slotsState = body;
+  } catch (e) {
+    // Mesmo padrão de fetchArchived(): falha só dos slots não deve poluir o
+    // painel inteiro — mantém o último snapshot bom (se houver) e segue.
+    if (!slotsState) {
+      el.slotsStatus.textContent = `Falha ao buscar atribuição de slots: ${e.message ?? e}`;
+      el.slotsStatus.className = "cx-save-status err";
+    }
+    return;
+  }
+  renderSlotsSection();
+}
+
+async function saveSlots() {
+  if (!slotsState) return;
+  const input = {
+    slot1: el.slot1Select.value,
+    slot2: el.slot2Select.value,
+    slot3: el.slot3Select.value,
+  };
+  // Feedback client imediato (guard 2 espelhado — server é a autoridade final
+  // e revalida de qualquer forma).
+  const dupe = findDuplicateSlotAssignment(input);
+  if (dupe) {
+    el.slotsStatus.textContent = `A caixa "${dupe}" está atribuída a mais de um slot — cada caixa só pode ocupar 1 slot por vez.`;
+    el.slotsStatus.className = "cx-save-status err";
+    return;
+  }
+
+  const expectedModifiedAtAtSaveStart = slotsState.modifiedAt;
+  el.slotsSaveBtn.disabled = true;
+  el.slotsStatus.textContent = "Salvando…";
+  el.slotsStatus.className = "cx-save-status";
+  try {
+    let { ok, status, body } = await fetchJson("/api/boxes/slots", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...input, expectedModifiedAt: expectedModifiedAtAtSaveStart }),
+    });
+
+    // #3729/#3937: 409 = platform.config.json mudou em disco desde o load —
+    // outra aba/sessão salvou, ou edição manual do arquivo. OK sobrescreve
+    // (retry com force:true); Cancelar recarrega o estado do disco.
+    if (!ok && status === 409) {
+      const overwrite = window.confirm(SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE);
+      if (overwrite) {
+        ({ ok, status, body } = await fetchJson("/api/boxes/slots", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...input, force: true }),
+        }));
+      } else {
+        el.slotsStatus.textContent = "Não salvo — recarregando o estado mais recente do disco…";
+        await fetchSlots();
+        el.slotsStatus.textContent = "Recarregado — suas mudanças não salvas foram descartadas.";
+        el.slotsSaveBtn.disabled = false;
+        return;
+      }
+    }
+
+    if (ok && body && body.ok) {
+      el.slotsStatus.textContent = "Slots atualizados.";
+      el.slotsStatus.className = "cx-save-status ok";
+      // #3874/R5: zero UI otimista — refetcha slots + lista do servidor (o
+      // badge "slot N" nos cards e as opções dos <select> vêm sempre do
+      // disco, nunca de um cálculo local otimista).
+      await Promise.all([fetchSlots(), fetchBoxes()]);
+    } else {
+      el.slotsStatus.textContent = `Erro ao salvar: ${(body && body.error) || "falha desconhecida"}`;
+      el.slotsStatus.className = "cx-save-status err";
+    }
+  } catch (e) {
+    el.slotsStatus.textContent = `Erro ao salvar: ${e.message ?? e}`;
+    el.slotsStatus.className = "cx-save-status err";
+  } finally {
+    el.slotsSaveBtn.disabled = false;
+  }
 }
 
 function closeEditor() {
@@ -458,7 +604,9 @@ async function submitNewBox() {
 el.refreshBtn.addEventListener("click", () => {
   fetchBoxes();
   fetchArchived();
+  fetchSlots();
 });
+el.slotsSaveBtn.addEventListener("click", () => saveSlots());
 el.retryBtn.addEventListener("click", () => fetchBoxes());
 el.closeEditorBtn.addEventListener("click", () => closeEditor());
 el.saveBtn.addEventListener("click", () => saveCurrentBox());
@@ -493,3 +641,4 @@ el.archivedList.addEventListener("click", (ev) => {
 
 fetchBoxes();
 fetchArchived();
+fetchSlots();

@@ -68,6 +68,41 @@
   border-color: var(--status-warn);
 }
 
+/* #3937: seção "Slots de divulgação" — 3 linhas label+seletor, mesma família
+   visual de .cx-field (borda/raio/paper), layout em linha em vez de coluna. */
+.cx-slots-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.cx-slots-row:last-of-type { border-bottom: none; }
+.cx-slots-label {
+  flex: 1 1 auto;
+  min-width: 12rem;
+  font-weight: 600;
+}
+.cx-slots-position {
+  font-weight: 400;
+  opacity: 0.75;
+  font-size: 0.85em;
+}
+.cx-slots-select {
+  flex: 0 0 auto;
+  min-width: 14rem;
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.cx-slots-select:focus { outline: 2px solid var(--brand); outline-offset: 1px; }
+
 /* #3928: formulário "Nova caixa". */
 .cx-field {
   display: flex;
@@ -203,7 +238,13 @@
   /* #3874: alvos de toque ≥44px (WCAG 2.5.5/HIG), mesmo padrão de
      apoios.css/revisao.css. */
   .box-actions button,
-  .cx-editor-toolbar button {
+  .cx-editor-toolbar button,
+  .cx-slots-select {
     min-height: 44px;
   }
+  .cx-slots-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .cx-slots-select { width: 100%; }
 }

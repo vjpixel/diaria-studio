@@ -174,10 +174,12 @@
  *     `/apoios`/`/relatorios`, servindo `public/caixas.html`. Consome
  *     `GET /api/boxes` (lista dinâmica de `context/snippets/*.md`, exceto
  *     `README.md`, com badge de slot cruzado de `platform.config.json` →
- *     `boxes_divulgacao`, somente leitura) + `GET/PUT /api/boxes/:slug`
- *     (conteúdo + save com o MESMO guard de mtime de `#3729`, ver
- *     `studio-boxes.ts`). Criação de caixa nova está fora de escopo — só
- *     edita conteúdo já existente.
+ *     `boxes_divulgacao`) + `GET/PUT /api/boxes/:slug` (conteúdo + save com o
+ *     MESMO guard de mtime de `#3729`, ver `studio-boxes.ts`) +
+ *     `GET/PUT /api/boxes/slots` (#3937 — atribuição dos 3 slots de
+ *     divulgação pela própria UI, escrita cirúrgica de `boxes_divulgacao` em
+ *     `platform.config.json`, mesmo guard de mtime). Criação de caixa nova
+ *     está fora de escopo — só edita conteúdo já existente.
  *   - Notificação Telegram (#3564, sem rota HTTP própria): um watcher em
  *     background, subido por `startStudioServer` e fechado em `close()`,
  *     observa `gatesPending`/`chatPermissionsPending` (mesmo `buildStudioState`
@@ -244,6 +246,16 @@
  * de exceção que #3559/#3602: escopo estreito (1 arquivo por vez, slug
  * validado contra traversal/`README.md`), guard de mtime idêntico ao #3729.
  * Toda a lógica mora em `studio-boxes.ts`.
+ *
+ * **Exceção controlada (#3937 — gestão de slots de divulgação):**
+ * `PUT /api/boxes/slots` escreve SÓ a chave `boxes_divulgacao` de
+ * `platform.config.json` (regra #495 — nunca o objeto inteiro, ver
+ * `replaceBoxesDivulgacaoBlock` em `studio-boxes.ts`) — o arquivo mais
+ * sensível desta tela, já que afeta a montagem de TODA edição diária
+ * (`stitch-newsletter.ts`). Guards: caixa apontada precisa existir (viva, não
+ * arquivada); nenhuma caixa em 2 slots ao mesmo tempo; mesmo guard de mtime
+ * do #3729. Fecha o loop com o Arquivar (#3928): uma vez livre o slot aqui, a
+ * caixa deixa de estar `blockedBySlot` e pode ser arquivada normalmente.
  *
  * Ver "Decisões de design" no PR body pra rationale completo (framework
  * escolhido, estrutura de diretórios, formato das APIs, pontos de extensão).
@@ -366,6 +378,8 @@ import {
   unarchiveBox,
   listArchivedBoxes,
   buildBoxContentWithNome,
+  readBoxSlotsState,
+  saveBoxSlots,
 } from "./studio-boxes.ts";
 // #3564: notificação Telegram (gate 4/6 pendente + AskUserQuestion pendente
 // no chat) com dedup — arquivo próprio desta fatia, import isolado (nenhuma
@@ -1504,6 +1518,64 @@ function handleApiArchivedBoxesList(rootDir: string, res: ServerResponse): void 
   sendJson(res, 200, { boxes: listArchivedBoxes(rootDir) });
 }
 
+/** `GET /api/boxes/slots` — atribuição atual dos 3 slots de divulgação +
+ * mtime de `platform.config.json` (#3937). Sempre 200: `readBoxSlotsState` é
+ * fail-soft (config ausente/corrompido -> slots vazios). */
+function handleApiBoxSlotsGet(rootDir: string, res: ServerResponse): void {
+  sendJson(res, 200, readBoxSlotsState(rootDir));
+}
+
+/** `PUT /api/boxes/slots` — salva a atribuição dos 3 slots de divulgação
+ * (#3937). Mesmo contrato de `expectedModifiedAt`/`force` de
+ * `handleApiBoxSave` — não duplicado aqui além da validação de shape do
+ * corpo. Status: 200 sucesso, 409 conflito de mtime, 400 corpo malformado OU
+ * atribuição inválida (guard 1: caixa inexistente/arquivada; guard 2:
+ * duplicata entre slots). */
+async function handleApiBoxSlotsSave(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, BOXES_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const parsed = body as {
+    slot1?: unknown;
+    slot2?: unknown;
+    slot3?: unknown;
+    expectedModifiedAt?: unknown;
+    force?: unknown;
+  } | null;
+  const slotField = (v: unknown): string | null => (v === undefined || v === null ? "" : typeof v === "string" ? v : null);
+  const slot1 = slotField(parsed?.slot1);
+  const slot2 = slotField(parsed?.slot2);
+  const slot3 = slotField(parsed?.slot3);
+  if (slot1 === null || slot2 === null || slot3 === null) {
+    sendJson(res, 400, { error: "campos 'slot1'/'slot2'/'slot3' precisam ser string (slug da caixa) ou vazio" });
+    return;
+  }
+  let expectedModifiedAt: string | null | undefined;
+  if (parsed && "expectedModifiedAt" in parsed) {
+    const raw = parsed.expectedModifiedAt ?? null;
+    if (raw !== null && typeof raw !== "string") {
+      sendJson(res, 400, { error: "campo 'expectedModifiedAt' precisa ser string ISO ou null" });
+      return;
+    }
+    expectedModifiedAt = raw;
+  }
+  const force = parsed?.force === true;
+  const result = saveBoxSlots(rootDir, { slot1, slot2, slot3 }, { expectedModifiedAt, force });
+  // `invalid` (guards 1/2) e qualquer outra falha genérica (config ausente,
+  // erro de escrita) caem no mesmo 400 — só `conflict` (guard 4, #3729) tem
+  // status próprio (409).
+  const status = result.ok ? 200 : result.conflict ? 409 : 400;
+  sendJson(res, status, result);
+}
+
 // ── #3848: status de todas as integrações (APIs + MCPs) ────────────────
 
 /** `GET /api/integrations` — status de todas as integrações (#3848). Sempre
@@ -1705,6 +1777,16 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiPainelEiaRefresh(rootDir, req, res);
         return;
       }
+      // #3937: salvar a atribuição dos 3 slots de divulgação — checado ANTES
+      // do save genérico de caixa logo abaixo (mesmo motivo do #3928 pra
+      // "archived": o regex `/api/boxes/:slug` casaria "slots" também, já
+      // que não tem barra adicional pra diferenciar).
+      if (urlPath === "/api/boxes/slots" && req.method === "PUT") {
+        handleApiBoxSlotsSave(rootDir, req, res).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
       // #3924: seção "Caixas" — salvar 1 snippet. Mesmo tratamento das rotas
       // de escrita acima (checada antes do guard genérico de método).
       const boxSaveMatch = urlPath.match(/^\/api\/boxes\/([^/]+)$/);
@@ -1823,6 +1905,13 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // devolveria 404).
       if (urlPath === "/api/boxes/archived") {
         handleApiArchivedBoxesList(rootDir, res);
+        return;
+      }
+      // #3937: atribuição atual dos 3 slots de divulgação — mesmo motivo de
+      // checagem antecipada do bloco acima ("archived"): o regex de
+      // get-por-slug casaria "slots" também.
+      if (urlPath === "/api/boxes/slots") {
+        handleApiBoxSlotsGet(rootDir, res);
         return;
       }
       const boxGetMatch = urlPath.match(/^\/api\/boxes\/([^/]+)$/);
