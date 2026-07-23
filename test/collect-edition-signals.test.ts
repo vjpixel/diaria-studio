@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import {
   signalsFromSourceHealth,
   signalsFromPublished,
+  signalsFromTestEmailReview,
   signalsFromRunLog,
   signalsFromMcpUnavailable,
   signalsFromTestWarnings,
@@ -302,6 +303,62 @@ describe("signalsFromPublished", () => {
       ],
     });
     assert.equal(signals.length, 3);
+  });
+});
+
+describe("signalsFromTestEmailReview (#3839 — loop de test email não-bloqueante)", () => {
+  it("review_status=inconclusive vira signal medium, não-bloqueante", () => {
+    const signals = signalsFromTestEmailReview({
+      draft_url: "https://app.beehiiv.com/posts/x/edit",
+      review_completed: false,
+      review_status: "inconclusive",
+      review_attempts: 1,
+    });
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].kind, "test_email_unconfirmed");
+    assert.equal(signals[0].severity, "medium");
+    assert.equal(signals[0].related_issue, "#3839");
+    assert.match(signals[0].title, /não confirmado/);
+  });
+
+  it("review_status=issues_unfixable vira signal low", () => {
+    const signals = signalsFromTestEmailReview({
+      review_completed: false,
+      review_status: "issues_unfixable",
+      review_attempts: 2,
+      review_final_issues: ["email:label_color_wrong: D1"],
+    });
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0].severity, "low");
+    assert.deepEqual(
+      (signals[0].details as { review_final_issues: string[] }).review_final_issues,
+      ["email:label_color_wrong: D1"],
+    );
+  });
+
+  it("review_status=ok (caminho feliz) não gera signal", () => {
+    const signals = signalsFromTestEmailReview({
+      review_completed: true,
+      review_status: "ok",
+    });
+    assert.equal(signals.length, 0);
+  });
+
+  it("review_status ausente não gera signal", () => {
+    const signals = signalsFromTestEmailReview({ review_completed: true });
+    assert.equal(signals.length, 0);
+  });
+
+  it("published null retorna vazio", () => {
+    assert.equal(signalsFromTestEmailReview(null).length, 0);
+  });
+
+  it("defensivo: review_completed=true + status terminal (não deveria coexistir) não gera signal", () => {
+    const signals = signalsFromTestEmailReview({
+      review_completed: true,
+      review_status: "inconclusive",
+    });
+    assert.equal(signals.length, 0);
   });
 });
 
@@ -1155,6 +1212,27 @@ describe("collectSignals + writeDraft — integração", () => {
       assert.ok(kinds.has("source_streak"));
       assert.ok(kinds.has("unfixed_issue"));
       assert.ok(kinds.has("chrome_disconnects"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#3839: review_status=inconclusive no 05-published.json vira signal test_email_unconfirmed", () => {
+    const { root, editionDir } = setup();
+    try {
+      writeFileSync(
+        join(editionDir, "05-published.json"),
+        JSON.stringify({
+          draft_url: "https://app.beehiiv.com/posts/x/edit",
+          review_completed: false,
+          review_status: "inconclusive",
+          review_attempts: 1,
+        }),
+      );
+
+      const draft = collectSignals({ rootDir: root, editionDir });
+      const kinds = new Set(draft.signals.map((s) => s.kind));
+      assert.ok(kinds.has("test_email_unconfirmed"));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
