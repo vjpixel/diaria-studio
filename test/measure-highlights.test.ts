@@ -277,6 +277,43 @@ Corpo do destaque com algum texto pra medir o tamanho real.
     assert.equal(c3, c0, `com 3 títulos (${c3}) deve igualar sem títulos (${c0}) — corpo sozinho`);
     assert.ok(c3 > 0, "corpo não-vazio");
   });
+
+  it("bloco Aprofunde (#3920) não conta no char-limit — mede igual sem ele", () => {
+    const semAprofunde = `DESTAQUE 1 | SEGURANÇA
+Título do destaque.
+
+Corpo do destaque com algum texto pra medir o tamanho real.
+
+Por que isso importa:
+
+Parágrafo de impacto.
+
+---
+`;
+    const comAprofunde = `DESTAQUE 1 | SEGURANÇA
+Título do destaque.
+
+Corpo do destaque com algum texto pra medir o tamanho real.
+
+Por que isso importa:
+
+Parágrafo de impacto.
+
+Aprofunde:
+
+* [Título do artigo A](https://a.com/1) - Fonte A
+* [Título do artigo B](https://b.com/1) - Fonte B
+
+---
+`;
+    const cSem = parseHighlights(semAprofunde).highlights[0].chars;
+    const cCom = parseHighlights(comAprofunde).highlights[0].chars;
+    assert.equal(
+      cCom,
+      cSem,
+      `com Aprofunde (${cCom}) deve igualar sem Aprofunde (${cSem}) — bloco excluído do char-count`,
+    );
+  });
 });
 
 describe("flagOutOfRange — warnings out-of-range (#739)", () => {
