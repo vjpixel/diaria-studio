@@ -53,7 +53,12 @@ const EMOJI_OPT = SECTION_EMOJI_PREFIX;
 const HEADER_PATTERNS: Array<{ re: RegExp; canonical: string }> = [
   { re: /^\*{0,2}DESTAQUE\s+(\d+)\s*\|/i, canonical: "destaque-$1" },
   { re: /^\*{0,2}(?:## )?É IA\?\*{0,2}\s*$/i, canonical: "é-ia" },
-  { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}LAN[ÇC]AMENTOS\\*{0,2}\\s*$`, "iu"), canonical: "lancamentos" },
+  // #3950: `S?` opcional — singularize-md-sections.ts reescreve pra
+  // `LANÇAMENTO` (singular) quando a seção tem N=1 item; sem o `?` esse header
+  // vira invisível ao fingerprint (some da sequência de tokens), abrindo um
+  // gap de cobertura pra corrupção estrutural (#1205) especificamente nessa
+  // seção quando N=1 — mesmo padrão do bug corrigido em #3942.
+  { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}LAN[ÇC]AMENTOS?\\*{0,2}\\s*$`, "iu"), canonical: "lancamentos" },
   // #1569: RADAR substitui PESQUISAS + OUTRAS NOTÍCIAS.
   { re: new RegExp(`^\\*{0,2}${EMOJI_OPT}RADAR\\*{0,2}\\s*$`, "iu"), canonical: "radar" },
   // #1660: USE MELHOR (🛠️, #1568 — antes de LANÇAMENTOS) e VÍDEOS (📺, após

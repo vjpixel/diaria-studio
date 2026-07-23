@@ -773,9 +773,18 @@ export function insertOrUpdateSection(
     // 🎁 SORTEIO, 🙋🏼‍♀️ PARA ENCERRAR) — sem isso, strip cai pra EOF e
     // engole tudo até o fim do MD em edições sem `---` separator entre
     // ERRO INTENCIONAL e a próxima seção.
+    // #3950: LANÇAMENTOS ganha `S?` opcional — singularize-md-sections.ts
+    // reescreve pra LANÇAMENTO (singular) quando a seção tem N=1 item. Sem o
+    // `?`, um LANÇAMENTO singular logo após ERRO INTENCIONAL (ordem fora do
+    // padrão, ex: reordenação/corrupção como #1205) não é reconhecido como
+    // sentinela e o strip continua consumindo `[\s\S]*?` até o PRÓXIMO
+    // sentinela real (ex: RADAR) ou EOF — engolindo a seção inteira
+    // (reproduzido: título+URL+descrição do item somem do MD). Mesmo padrão
+    // do #3942. PESQUISAS/OUTRAS permanecem sem `?` — legacy (#1569), não
+    // gerados por edições atuais, sem exposição real confirmada.
     const emojiOpt = SECTION_EMOJI_PREFIX; // #1836: cópia local idêntica → registry
     const stripRe = new RegExp(
-      `(?:^---\\s*\\n[\\s\\n]*)?^${headerEsc}\\s*\\n[\\s\\S]*?(?=^---\\s*$|^\\*?\\*?${emojiOpt}(?:ASSINE|DESTAQUE|LAN[ÇC]AMENTOS|PESQUISAS|OUTRAS|RADAR|SORTEIO|PARA ENCERRAR|É IA\\?|Encerrando|Até)|$(?![\\s\\S]))(?:^---\\s*\\n[\\s\\n]*)?`,
+      `(?:^---\\s*\\n[\\s\\n]*)?^${headerEsc}\\s*\\n[\\s\\S]*?(?=^---\\s*$|^\\*?\\*?${emojiOpt}(?:ASSINE|DESTAQUE|LAN[ÇC]AMENTOS?|PESQUISAS|OUTRAS|RADAR|SORTEIO|PARA ENCERRAR|É IA\\?|Encerrando|Até)|$(?![\\s\\S]))(?:^---\\s*\\n[\\s\\n]*)?`,
       "mu",
     );
     mdClean = md.replace(stripRe, "").replace(/\n{3,}/g, "\n\n");

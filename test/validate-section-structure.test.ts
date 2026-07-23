@@ -217,6 +217,28 @@ describe("diffStructure (#1205)", () => {
     );
   });
 
+  it("#3950: fingerprint detecta LANÇAMENTO singular (N=1, pós singularize-md-sections.ts)", () => {
+    // singularize-md-sections.ts reescreve o header pra singular quando a seção
+    // tem N=1 item. Pré-fix, a regex só casava plural (`LANÇAMENTOS`) — o header
+    // singular ficava invisível ao fingerprint, abrindo um gap de cobertura
+    // estrutural (#1205) especificamente pra essa seção quando N=1 (mesmo
+    // padrão do bug corrigido em #3942).
+    const mdWithSingularLanc = [
+      "**DESTAQUE 1 | BRASIL**",
+      "x",
+      "",
+      "---",
+      "",
+      "**🚀 LANÇAMENTO**",
+      "**[L1](https://l.com)**",
+    ].join("\n");
+    const tokens = extractStructure(mdWithSingularLanc);
+    assert.ok(
+      tokens.some((t) => t.label === "lancamentos"),
+      `lancamentos (singular) deveria estar no fingerprint, got: ${tokens.map((t) => t.label).join(", ")}`,
+    );
+  });
+
   it("#1660: detecta USE MELHOR removido pelo title-picker", () => {
     const before = [
       "**DESTAQUE 1 | BRASIL**", "x", "", "---", "",
