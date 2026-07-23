@@ -3605,8 +3605,8 @@ describe("renderEiaEngagementSection — link de leaderboard por ciclo (#3676)",
     // "ano" 2606 → "Ano inválido"). Ver test/eia-engagement-leaderboard-link-3684.
     assert.match(
       html,
-      /<a href="https:\/\/poll\.diaria\.workers\.dev\/leaderboard\/2026\?brand=clarice"/,
-      "deve linkar pro leaderboard ANUAL (ano-calendário), brand=clarice",
+      /<a href="https:\/\/eia\.diar\.ia\.br\/leaderboard\/2026\?brand=clarice"/,
+      "deve linkar pro leaderboard ANUAL (ano-calendário), brand=clarice, domínio de marca (#3904)",
     );
   });
 
