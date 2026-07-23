@@ -550,11 +550,13 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
       Mesmo arquivo consumido pelo passo 6.7 abaixo — sobrescrevê-lo aqui garante que o baseline reflita o efeito real DESTE round de re-humanização antes que a Clarice tenha chance de reverter alguma seção de volta pra perto do texto pré-humanizador original (o que produziria o mesmo falso-positivo do #3929 — "humanizador pulou a seção" — só que dentro do loop scoped do Stage 4).
 
    Rodar `mcp__clarice__correct_text` no `## post_pixel` **só se `"post_pixel"` estiver em `changed_sections`**.
-   **6.4** — **Verificar que o escopo foi respeitado:**
+   **6.4** — **Verificar que o escopo foi respeitado** (#3953 — comparar contra o snapshot pós-humanizador/pré-Clarice gravado no passo 6.3 acima, nunca contra o `03-social.md` FINAL: a Clarice já rodou entre o passo 6.3 e este passo, então `03-social.md` está pós-Clarice aqui — se ela reverter `post_pixel` de volta pro estado do INÍCIO desta rodada scoped, comparar contra o arquivo final produziria o mesmo falso-positivo `untouchedTargets` do #3947/#3929, só que neste check em vez do de 6.7. Fallback pro `03-social.md` final só se o snapshot não existir — sessão retomada a partir de checkpoint anterior ao #3947):
       ```bash
+      VERIFY_POST_MD={EDITION_DIR}/_internal/03-social-post-humanizador.md
+      [ -f "$VERIFY_POST_MD" ] || VERIFY_POST_MD={EDITION_DIR}/03-social.md
       npx tsx scripts/verify-scoped-humanization.ts \
         --pre {EDITION_DIR}/_internal/.stage4-pre-scoped-humanize.md \
-        --post {EDITION_DIR}/03-social.md \
+        --post "$VERIFY_POST_MD" \
         --sections {changed_sections join vírgula}
       ```
       - Exit 0 → seguir pro passo 6.6.

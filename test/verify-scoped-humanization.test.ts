@@ -146,3 +146,94 @@ Foo.
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3953: follow-up do #3929 (Stage 2, PR #3946) e #3947 (Stage 4 §4d.1 passo
+// 6.7, PR #3952) — mesma classe de falso-positivo, agora no passo 6.4
+// (verify-scoped-humanization.ts em si, não o humanizer-section-coverage do
+// lint-social-md). §4d.1 roda: 6.2 snapshot pré-humanização → 6.3 humanizador
+// SCOPED → snapshot pós-humanizador/pré-Clarice → Clarice corrige
+// `## post_pixel` → 6.4 verifica escopo. Se o --post do passo 6.4 apontar pro
+// `03-social.md` FINAL (pós-Clarice) em vez do snapshot pós-humanizador, uma
+// reversão legítima da Clarice (ela desfaz a reescrita do humanizador em
+// `post_pixel`, aproximando-o do estado do INÍCIO desta rodada scoped) faz o
+// script concluir "humanizador não tocou post_pixel" — falso, ele tocou; foi
+// a Clarice que reverteu DEPOIS.
+// ---------------------------------------------------------------------------
+
+const SOCIAL_PRE_RODADA = `# LinkedIn
+## d1
+D1 aprovado, não deve mudar nesta rodada.
+
+## d2
+D2 aprovado, não deve mudar nesta rodada.
+
+## post_pixel
+Post pixel do início desta rodada — tem um erro que o humanizador vai reescrever mal.
+
+# Facebook
+## d1
+Post Facebook d1.
+`;
+
+// Snapshot pós-humanizador/pré-Clarice (gravado no passo 6.3, ANTES da
+// Clarice rodar): o humanizador scoped reescreveu SÓ post_pixel, como pedido.
+const SOCIAL_POST_HUMANIZADOR_SNAPSHOT = SOCIAL_PRE_RODADA.replace(
+  "Post pixel do início desta rodada — tem um erro que o humanizador vai reescrever mal.",
+  "Post pixel reescrito pelo humanizador, só que com um erro de concordância novo.",
+);
+
+// 03-social.md FINAL (pós-Clarice): a Clarice corrigiu `## post_pixel` e, ao
+// corrigir, reverteu o texto de volta pro (perto do) estado do INÍCIO desta
+// rodada — não necessariamente o texto original do Stage 2 (#3929), só o
+// baseline de 6.2/6.3 desta rodada específica (#3953, escopo mais estreito).
+const SOCIAL_FINAL_POS_CLARICE = SOCIAL_PRE_RODADA; // idêntico ao pre desta rodada
+
+describe("verify-scoped-humanization.ts (#3953) — --post deve ser o snapshot pós-humanizador/pré-Clarice, não o 03-social.md final", () => {
+  it("--post = snapshot pós-humanizador (correto): post_pixel aparece como tocado", () => {
+    const { prePath, postPath, cleanup } = mkFiles(SOCIAL_PRE_RODADA, SOCIAL_POST_HUMANIZADOR_SNAPSHOT);
+    try {
+      const result = runScript(["--pre", prePath, "--post", postPath, "--sections", "post_pixel"]);
+      assert.equal(result.status, 0, `#3953: esperado exit 0 usando o snapshot correto, got ${result.status}\nstderr: ${result.stderr}`);
+      const parsed = JSON.parse(result.stdout.trim().split("\n")[0]);
+      assert.equal(parsed.ok, true);
+      assert.deepEqual(parsed.touchedTargets, ["post_pixel"]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("--post = 03-social.md FINAL pós-Clarice (bug pré-#3953): falso-positivo untouchedTargets", () => {
+    const { prePath, postPath, cleanup } = mkFiles(SOCIAL_PRE_RODADA, SOCIAL_FINAL_POS_CLARICE);
+    try {
+      const result = runScript(["--pre", prePath, "--post", postPath, "--sections", "post_pixel"]);
+      assert.equal(
+        result.status,
+        1,
+        "prova do bug: comparar --post contra o arquivo final reproduz o falso-positivo pré-#3953",
+      );
+      const parsed = JSON.parse(result.stdout.trim().split("\n")[0]);
+      assert.ok(
+        parsed.untouchedTargets.includes("post_pixel"),
+        "#3953: usar o 03-social.md final como --post marca post_pixel como untouched mesmo o humanizador tendo tocado — a Clarice reverteu DEPOIS",
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("detecção real de seção pulada continua funcionando ao usar o snapshot pós-humanizador correto", () => {
+    // Negativo: se o humanizador de fato NÃO tocou post_pixel (bug real, não
+    // reversão da Clarice), o check deve continuar acusando mesmo usando o
+    // snapshot correto como --post — o fix do #3953 não pode mascarar isso.
+    const { prePath, postPath, cleanup } = mkFiles(SOCIAL_PRE_RODADA, SOCIAL_PRE_RODADA); // humanizador pulou o alvo
+    try {
+      const result = runScript(["--pre", prePath, "--post", postPath, "--sections", "post_pixel"]);
+      assert.equal(result.status, 1);
+      const parsed = JSON.parse(result.stdout.trim().split("\n")[0]);
+      assert.ok(parsed.untouchedTargets.includes("post_pixel"), "seção realmente pulada pelo humanizador deve continuar sendo detectada");
+    } finally {
+      cleanup();
+    }
+  });
+});

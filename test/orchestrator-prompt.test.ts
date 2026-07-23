@@ -560,3 +560,52 @@ describe("#3947: fluxo scoped/full-file de re-humanização social (§4d.1) não
     );
   });
 });
+
+describe("#3953: passo 6.4 (verify-scoped-humanization.ts --post) usa o snapshot pós-humanizador, não o 03-social.md final", () => {
+  // Follow-up do #3947 (PR #3952) — aquela PR corrigiu o passo 6.7
+  // (humanizer-section-coverage) mas deixou o passo 6.4, ANTERIOR na mesma
+  // seção, com o mesmo bug: --post apontava pro `03-social.md` FINAL
+  // (pós-Clarice), quando o próprio docstring de verify-scoped-humanization.ts
+  // documenta que --post deve ser o estado logo após o humanizador rodar
+  // NESTA rodada scoped, antes da Clarice tocar `## post_pixel`. Fix #3953:
+  // reusar o snapshot `03-social-post-humanizador.md` (já gravado no passo
+  // 6.3/6.2' pelo #3947) como --post do passo 6.4, com o mesmo fallback
+  // condicional usado no passo 6.7.
+  const stage4 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-4.md"), "utf8");
+  const section4d1 = stage4.slice(stage4.indexOf("### 4d.1"));
+
+  it("passo 6.4: verify-scoped-humanization.ts --post usa o snapshot pós-humanizador (com fallback), não {EDITION_DIR}/03-social.md hardcoded", () => {
+    const step64Idx = section4d1.indexOf("**6.4**");
+    assert.ok(step64Idx !== -1, "§4d.1 não tem o passo 6.4");
+    const nextStepIdx = section4d1.indexOf("**Fluxo FULL-FILE", step64Idx);
+    assert.ok(nextStepIdx !== -1, "§4d.1 não tem a seção 'Fluxo FULL-FILE' logo após o passo 6.4");
+    const step64 = section4d1.slice(step64Idx, nextStepIdx);
+
+    assert.ok(
+      step64.includes("VERIFY_POST_MD={EDITION_DIR}/_internal/03-social-post-humanizador.md"),
+      "#3953: passo 6.4 deve resolver VERIFY_POST_MD para o snapshot pós-humanizador por default",
+    );
+    assert.ok(
+      /\[\s*-f\s*"\$VERIFY_POST_MD"\s*\]/.test(step64),
+      "#3953: passo 6.4 deve ter fallback condicional pro 03-social.md final quando o snapshot não existir (edições/checkpoints anteriores ao #3947)",
+    );
+    assert.ok(
+      step64.includes('--post "$VERIFY_POST_MD"'),
+      "#3953: a chamada verify-scoped-humanization.ts deve usar $VERIFY_POST_MD (resolvido acima), não {EDITION_DIR}/03-social.md hardcoded",
+    );
+    assert.ok(
+      !/--post\s+\{EDITION_DIR\}\/03-social\.md/.test(step64),
+      "#3953 regressão: passo 6.4 não pode voltar a apontar --post direto pro {EDITION_DIR}/03-social.md (arquivo final, pós-Clarice)",
+    );
+  });
+
+  it("passo 6.4 vem DEPOIS do snapshot pós-humanizador/pré-Clarice gravado no passo 6.3 (ordem já garantida pelo #3947)", () => {
+    const snapshotIdx = section4d1.indexOf("03-social-post-humanizador.md");
+    const step64Idx = section4d1.indexOf("**6.4**");
+    assert.ok(snapshotIdx !== -1 && step64Idx !== -1);
+    assert.ok(
+      snapshotIdx < step64Idx,
+      "#3953: o snapshot pós-humanizador (6.3) precisa existir ANTES do passo 6.4 tentar usá-lo como --post",
+    );
+  });
+});

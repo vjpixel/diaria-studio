@@ -26,8 +26,15 @@
  *      `03-social.md` pra um snapshot (`cp 03-social.md _internal/.stage4-pre-scoped-humanize.md`).
  *   2. Invocar a skill humanizador pedindo EXPLICITAMENTE que só as seções-alvo
  *      sejam tocadas.
- *   3. Rodar este script comparando o snapshot (--pre) contra o 03-social.md
- *      pós-humanização (--post), com --sections = a mesma lista pedida.
+ *   3. Rodar este script comparando o snapshot (--pre) contra o snapshot
+ *      pós-humanizador/pré-Clarice (--post = `_internal/03-social-post-humanizador.md`,
+ *      #3947), com --sections = a mesma lista pedida. **NUNCA usar o
+ *      `03-social.md` FINAL como --post** (#3953) — a Clarice roda ENTRE a
+ *      humanização e este check (corrigindo `## post_pixel`); se ela reverter
+ *      a seção de volta pra perto do estado pré-humanizador desta rodada, o
+ *      `03-social.md` final deixa de refletir o que o humanizador de fato fez,
+ *      e comparar contra ele produz o mesmo falso-positivo `untouchedTargets`
+ *      do #3929/#3947 — só que neste check em vez do `humanizer-section-coverage`.
  *   4. Exit 1 → não confiar no resultado: se `unexpectedChanges` não-vazio,
  *      considerar re-humanização completa (a skill não respeitou o escopo);
  *      se `untouchedTargets` não-vazio, re-invocar a skill apenas para essas
