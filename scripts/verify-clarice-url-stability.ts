@@ -37,37 +37,84 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
+import { SECTION_EMOJI_PREFIX } from "./lib/section-naming.ts"; // #3955 fonte única do prefixo de emoji
 
 export type Section = "LANCAMENTOS" | "PESQUISAS" | "NOTICIAS" | "OUTRAS";
 
 const URL_RE = /https?:\/\/\S+/g;
 
-// List item line — bullet marker (`-`, `*`, `+`) or numbered (`1.`, `2.`).
-// URLs only count when they appear in a list item; URLs in narrative
-// paragraphs are intentionally ignored to avoid false positives when
-// the humanizer reorders prose around URLs.
-const LIST_ITEM_RE = /^\s*(?:[-*+]|\d+\.)\s+/;
+// List item line. Aceita 2 formatos:
+//   - bullet marker legacy (`-`, `*`, `+`) ou numerado (`1.`, `2.`).
+//   - #3955: `**[Título](URL)**` SEM bullet — o formato REAL de
+//     `02-pre-clarice.md`/`02-reviewed.md` (confirmado em
+//     `context/templates/newsletter.md` + `singularize-md-sections.ts`
+//     `countItemsAfter`, que já usa `/^\*\*\[/` pra contar items). O regex
+//     antigo (só bullet) nunca casava esse formato — todo item real ficava
+//     invisível à extração, mesmo quando o header da seção era reconhecido.
+// URLs só contam quando aparecem numa linha de item; URLs em parágrafos
+// narrativos são intencionalmente ignoradas pra evitar falsos-positivos
+// quando o humanizer reordena prosa ao redor de URLs.
+const LIST_ITEM_RE = /^\s*(?:(?:[-*+]|\d+\.)\s+|\*\*\[)/;
 
-// Headers — accept "## Header" (Stage 1) or plain caps (Stage 2).
-// #3950: `s?` opcional no fim de LANÇAMENTOS — singularize-md-sections.ts
-// reescreve pra singular (LANÇAMENTO) quando a seção tem N=1 item. Sem o `?`,
-// o header singular não é reconhecido como boundary de seção, e as URLs que
-// deveriam cair em LANCAMENTOS ficam presas no bucket anterior (ex: OUTRAS) —
-// gerando falso-positivo fatal "Clarice mudou URL em LANÇAMENTOS" mesmo quando
-// nada mudou de fato (só o header foi singularizado). Mesmo padrão do #3942.
-// PESQUISAS não recebe o mesmo tratamento aqui: é seção legacy (removida em
-// #1569, papers mergeiam em RADAR via stitch) e não é mais gerada por edições
-// atuais — sem exposição real ao bug, então fora do escopo confirmado do #3950.
+// Headers — accept "## Header" (Stage 1), plain caps (Stage 2 legado) ou
+// bold+emoji (Stage 2 REAL, #3955).
+//
+// #3955: antes deste fix, `SECTION_PATTERNS` só casava o header cru
+// ("LANÇAMENTOS", sem `**` nem emoji) — mas o header real emitido por
+// `singularize-md-sections.ts` (que roda logo após o normalize, ANTES do
+// humanizer/Clarice — ou seja, ANTES deste script comparar pré/pós) é
+// `**🚀 LANÇAMENTOS**` (bold + emoji + singular/plural via `S?`). A regex
+// nunca casava esse formato, então `detectSection` nunca reconhecia o
+// header real — TODAS as URLs de uma edição real caíam no bucket OUTRAS, e
+// o guard ficava estruturalmente incapaz de detectar mudança de URL em
+// LANÇAMENTOS (sempre `status: "ok"` incondicional). Reusa
+// `SECTION_EMOJI_PREFIX` de `section-naming.ts` (mesma fonte única já usada
+// por `validate-section-structure.ts` e `render-erro-intencional.ts`) em vez
+// de reinventar o range Unicode do emoji localmente.
+const MD_HEADER_PREFIX = String.raw`(?:##\s+)?`;
+const BOLD_OPT = String.raw`(?:\*\*)?`;
+
+function sectionHeaderRe(namePattern: string): RegExp {
+  return new RegExp(
+    String.raw`^${MD_HEADER_PREFIX}${BOLD_OPT}${SECTION_EMOJI_PREFIX}(?:${namePattern})${BOLD_OPT}\s*$`,
+    "iu",
+  );
+}
+
+// PESQUISAS/NOTÍCIAS não recebem o mesmo grau de confirmação real que
+// LANÇAMENTOS aqui: são buckets informativos (nunca fatais — só LANÇAMENTOS
+// é fatal), e PESQUISAS é seção legacy (removida em #1569, papers mergeiam em
+// RADAR via stitch). Os patterns ainda ganham bold+emoji opcional pra
+// consistência e pra não regredir se alguma edição antiga precisar re-passar
+// por este script.
 const SECTION_PATTERNS: Array<{ section: Section; re: RegExp }> = [
-  { section: "LANCAMENTOS", re: /^(?:##\s+)?lan[çc]amentos?\s*$/i },
-  { section: "PESQUISAS", re: /^(?:##\s+)?pesquisas\s*$/i },
-  { section: "NOTICIAS", re: /^(?:##\s+)?(?:outras\s+)?not[íi]cias\s*$/i },
+  { section: "LANCAMENTOS", re: sectionHeaderRe(String.raw`LAN[ÇC]AMENTOS?`) },
+  { section: "PESQUISAS", re: sectionHeaderRe(String.raw`PESQUISAS?`) },
+  { section: "NOTICIAS", re: sectionHeaderRe(String.raw`(?:OUTRAS?\s+)?NOT[ÍI]CIAS?`) },
 ];
 
 const SECTION_BREAK_RE = /^---\s*$/;
 
+// #3955: boundary genérico pra headers top-level do formato Stage 2 real que
+// NÃO são um dos `SECTION_PATTERNS` acima (RADAR, USE MELHOR, VÍDEOS, É IA?,
+// SORTEIO, PARA ENCERRAR, ERRO INTENCIONAL) — mesma lista de sentinelas usada
+// em `render-erro-intencional.ts`. Sem isso, se um desses headers aparecer
+// sem um `---` explícito antes (o template sempre tem um, mas é defesa em
+// profundidade — reordenação/corrupção estrutural é justamente o cenário que
+// #1205/#3950 documentam), o `current` bucket anterior (ex: LANCAMENTOS)
+// vazaria pros itens da seção seguinte.
+const DESTAQUE_HEADER_RE = /^\*{0,2}DESTAQUE\s+\d+\s*\|/i;
+const OTHER_TOPLEVEL_HEADER_RE = new RegExp(
+  String.raw`^\*{0,2}${SECTION_EMOJI_PREFIX}(?:É\s+IA\?|USE\s+MELHOR|V[ÍI]DEOS?|RADAR|SORTEIO|PARA\s+ENCERRAR|ERRO\s+INTENCIONAL)\*{0,2}\s*$`,
+  "iu",
+);
+
 function trimUrl(url: string): string {
-  return url.replace(/[).,;]+$/, "");
+  // #3955: `*` incluído no char class — items sem bullet vêm como
+  // `**[Título](URL)**`, e `\S+` do URL_RE captura os `)**` de fechamento
+  // junto com a URL (ex: "https://x.com/y)**"). Sem o `*` aqui, o trim
+  // deixava o `**` de bold grudado na URL extraída.
+  return url.replace(/[).,;*]+$/, "");
 }
 
 function detectSection(line: string): Section | null {
@@ -84,7 +131,13 @@ function isSectionBoundary(line: string): boolean {
   // Plain-caps header (>5 chars, e.g. "DESTAQUE 1") signals section change too.
   const isPlainCaps = /^[A-ZÇÃÕÁÉÍÓÚÊÔ ]+$/.test(trimmed) && trimmed.length > 5;
   const isMdHeader = /^##\s+\S/.test(trimmed);
-  return isPlainCaps || isMdHeader;
+  // #3955: outros headers top-level do formato bold real (DESTAQUE N, É IA?,
+  // USE MELHOR, VÍDEOS, RADAR, SORTEIO, PARA ENCERRAR, ERRO INTENCIONAL)
+  // também fecham a seção atual — sem isso, `current` vazaria pro conteúdo
+  // dessas seções quando não há `---` explícito antes delas.
+  const isOtherKnownHeader =
+    DESTAQUE_HEADER_RE.test(trimmed) || OTHER_TOPLEVEL_HEADER_RE.test(trimmed);
+  return isPlainCaps || isMdHeader || isOtherKnownHeader;
 }
 
 /**

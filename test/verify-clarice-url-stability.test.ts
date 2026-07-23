@@ -141,6 +141,69 @@ LANÇAMENTOS
     assert.deepEqual(urls.LANCAMENTOS, ["https://anthropic.com/news/x"]);
     assert.deepEqual(urls.OUTRAS, ["https://example.com"]);
   });
+
+  it("#3955: formato REAL bold+emoji+sem-bullet — reprodução exata da issue", () => {
+    // Reprodução literal do corpo da issue #3955: header **🚀 LANÇAMENTOS**
+    // (bold+emoji, emitido por singularize-md-sections.ts) + item
+    // **[Título](URL)** sem bullet marker (formato real de
+    // context/templates/newsletter.md). Pré-fix, `SECTION_PATTERNS` nunca
+    // casava o header bold+emoji e `LIST_ITEM_RE` nunca casava o item
+    // sem-bullet — resultado: LANCAMENTOS sempre `[]`, guard estruturalmente
+    // no-op contra conteúdo real.
+    const md =
+      "**DESTAQUE 1 | Categoria**\n\n---\n\n**🚀 LANÇAMENTOS**\n\n**[Item A](https://anthropic.com/news/x)**\nDescrição\n";
+    const urls = extractUrlsBySection(md);
+    assert.deepEqual(urls.LANCAMENTOS, ["https://anthropic.com/news/x"]);
+  });
+
+  it("#3955: header bold+emoji plural real (**🚀 LANÇAMENTOS**) reconhecido", () => {
+    const md = `**🚀 LANÇAMENTOS**
+
+**[Item A](https://anthropic.com/news/x)**
+Descrição do item A
+
+**[Item B](https://openai.com/index/y)**
+Descrição do item B
+`;
+    const urls = extractUrlsBySection(md);
+    assert.deepEqual(urls.LANCAMENTOS, [
+      "https://anthropic.com/news/x",
+      "https://openai.com/index/y",
+    ]);
+  });
+
+  it("#3955: header bold+emoji singular real (**🚀 LANÇAMENTO**, N=1) reconhecido", () => {
+    const md = `**🚀 LANÇAMENTO**
+
+**[Item único](https://anthropic.com/news/x)**
+Descrição
+`;
+    const urls = extractUrlsBySection(md);
+    assert.deepEqual(urls.LANCAMENTOS, ["https://anthropic.com/news/x"]);
+  });
+
+  it("#3955: item sem-bullet seguido de seção RADAR (sem ---) não vaza pra LANCAMENTOS", () => {
+    // Defesa em profundidade: mesmo sem `---` explícito entre LANÇAMENTOS e
+    // a próxima seção (o template sempre tem um, mas reordenação/corrupção
+    // estrutural é o cenário real que #1205/#3950 documentam), o header da
+    // seção seguinte (RADAR, bold+emoji) deve fechar o bucket LANCAMENTOS.
+    const md = `**🚀 LANÇAMENTOS**
+
+**[Item A](https://anthropic.com/news/x)**
+Descrição A
+
+**📡 RADAR**
+
+**[Item R](https://example.com/r)**
+Descrição R
+`;
+    const urls = extractUrlsBySection(md);
+    assert.deepEqual(urls.LANCAMENTOS, ["https://anthropic.com/news/x"]);
+    assert.ok(
+      !urls.LANCAMENTOS.includes("https://example.com/r"),
+      "URL da seção RADAR não deveria vazar pro bucket LANCAMENTOS",
+    );
+  });
 });
 
 describe("compareUrls", () => {
@@ -263,6 +326,63 @@ describe("compareUrls", () => {
     assert.equal(result.lancamento_changes.length, 1);
     assert.equal(result.lancamento_changes[0].before, "https://anthropic.com/news/x");
     assert.equal(result.lancamento_changes[0].after, "https://anthropic.com/news/x/");
+  });
+
+  it("#3955: formato REAL — Clarice normaliza URL em LANÇAMENTOS → guard detecta (teste de DETECÇÃO, não só extração)", () => {
+    // Mesmo cenário de corrupção do teste acima ("trailing slash"), mas no
+    // formato bold+emoji+sem-bullet REAL — confirma que o guard não é mais
+    // no-op contra conteúdo de produção: a mudança de URL é de fato
+    // capturada como `lancamento_changes`, não silenciosamente ignorada.
+    const pre = `**🚀 LANÇAMENTOS**
+
+**[Item A](https://anthropic.com/news/x)**
+Descrição
+`;
+    const post = `**🚀 LANÇAMENTOS**
+
+**[Item A](https://anthropic.com/news/x/)**
+Descrição
+`;
+    const result = verifyStability(pre, post);
+    assert.equal(result.status, "error", `esperado error, got: ${JSON.stringify(result)}`);
+    assert.equal(result.lancamento_changes.length, 1);
+    assert.equal(result.lancamento_changes[0].before, "https://anthropic.com/news/x");
+    assert.equal(result.lancamento_changes[0].after, "https://anthropic.com/news/x/");
+  });
+
+  it("#3955: formato REAL — URL adicionada em LANÇAMENTOS (novo item) → fatal", () => {
+    const pre = `**🚀 LANÇAMENTOS**
+
+**[Item A](https://anthropic.com/news/x)**
+Descrição A
+`;
+    const post = `**🚀 LANÇAMENTOS**
+
+**[Item A](https://anthropic.com/news/x)**
+Descrição A
+
+**[Item B](https://openai.com/index/y)**
+Descrição B
+`;
+    const result = verifyStability(pre, post);
+    assert.equal(result.status, "error");
+    assert.equal(result.lancamento_changes.length, 1);
+    assert.equal(result.lancamento_changes[0].before, "");
+    assert.equal(result.lancamento_changes[0].after, "https://openai.com/index/y");
+  });
+
+  it("#3955: formato REAL — nada muda em LANÇAMENTOS → status ok (sem falso-positivo)", () => {
+    const md = `**🚀 LANÇAMENTOS**
+
+**[Item A](https://anthropic.com/news/x)**
+Descrição A
+
+**[Item B](https://openai.com/index/y)**
+Descrição B
+`;
+    const result = verifyStability(md, md);
+    assert.equal(result.status, "ok");
+    assert.equal(result.lancamento_changes.length, 0);
   });
 });
 
