@@ -297,9 +297,9 @@ export function formatCoverageLine(args: {
   const enviadosWord = args.editorSubmissions === 1 ? "enviado" : "enviados";
   const encontradosWord = args.diariaDiscovered === 1 ? "encontrado" : "encontrados";
   return [
-    "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor dessa newsletter.",
+    "Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor desta newsletter.",
     "Todos os dias, junto com a IA da diar.ia.br, seleciono e resumo as notícias mais importantes para economizar o seu tempo.",
     `Nesta edição, a IA analisou ${total} ${totalWord} (${args.editorSubmissions} ${enviadosWord} por mim e ${args.diariaDiscovered} ${encontradosWord} automaticamente) e ${selPhrase}.`,
-    "Se esse trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
+    "Se este trabalho faz diferença para você, [considere apoiar o projeto](https://apoia.se/diaria).",
   ].join("\n\n");
 }

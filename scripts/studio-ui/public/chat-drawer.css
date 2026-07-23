@@ -92,6 +92,19 @@ body.chat-drawer-present.chat-drawer-collapsed {
 }
 .chat-toggle-dot.ok { background: var(--brand); }
 .chat-toggle-dot.down { background: var(--status-danger); }
+/* #3891 (item 7): pulso discreto enquanto um turno está em curso (texto
+   chegando via chat-delta ou uma tool rodando) — sinal independente da cor
+   ok/down acima, visível mesmo com o painel COLAPSADO (o dot nunca é
+   escondido pelo collapse, só título/mensagens/rodapé — ver regras
+   `.chat-drawer.collapsed` neste arquivo). Ligado/desligado por
+   `setToggleActive()` em chat-drawer.js. */
+.chat-toggle-dot.active {
+  animation: chat-toggle-pulse 1.1s ease-in-out infinite;
+}
+@keyframes chat-toggle-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
 .chat-toggle-badge {
   display: inline-flex;
   align-items: center;

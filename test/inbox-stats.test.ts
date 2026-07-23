@@ -385,10 +385,10 @@ describe("formatCoverageLine (#3461 — bloco de boas-vindas, padrão desde 2607
       diariaDiscovered: 186,
       selected: 12,
     });
-    assert.match(line, /^Olá! Eu sou o \[Pixel\]\(https:\/\/www\.linkedin\.com\/in\/vjpixel\/\), editor dessa newsletter\./);
+    assert.match(line, /^Olá! Eu sou o \[Pixel\]\(https:\/\/www\.linkedin\.com\/in\/vjpixel\/\), editor desta newsletter\./);
     assert.match(line, /Todos os dias, junto com a IA da diar\.ia\.br, seleciono e resumo as notícias mais importantes/);
     assert.match(line, /Nesta edição, a IA analisou 212 artigos \(26 enviados por mim e 186 encontrados automaticamente\) e selecionei os 12 mais relevantes\./);
-    assert.match(line, /Se esse trabalho faz diferença para você, \[considere apoiar o projeto\]\(https:\/\/apoia\.se\/diaria\)\.$/);
+    assert.match(line, /Se este trabalho faz diferença para você, \[considere apoiar o projeto\]\(https:\/\/apoia\.se\/diaria\)\.$/);
     // 4 parágrafos separados por linha em branco
     assert.equal(line.split("\n\n").length, 4);
   });
