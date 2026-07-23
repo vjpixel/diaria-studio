@@ -8,12 +8,21 @@
  * Parágrafos idênticos são omitidos; os alterados aparecem como Antes/Depois.
  *
  * Uso:
- *   npx tsx scripts/clarice-diff.ts <original.md> <reviewed.md> <diff.md>
+ *   npx tsx scripts/clarice-diff.ts <original.md> <reviewed.md> <diff.md> [pre-humanizer.md]
+ *
+ * `[pre-humanizer.md]` é opcional (#3929) — quando fornecido (o texto ANTES do
+ * Humanizador, ex: `02-normalized.md` / `03-social-pre-humanizador.md`), cada
+ * alteração é checada contra esse baseline para detectar REVERSÕES: a Clarice
+ * (`original` aqui já é pós-Humanizador) tem precedência sobre o Humanizador
+ * por decisão editorial (#3929) — quando a correção da Clarice move o texto de
+ * volta pra perto da versão pré-Humanizador, isso é sinalizado explicitamente
+ * no diff (`⚠️ REVERTE HUMANIZADOR`) pra o editor decidir com contexto, em vez
+ * de ficar indistinguível de uma correção gramatical comum.
  *
  * Saída: arquivo markdown com as alterações e um resumo de contagem.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { isMainModule } from "./lib/cli-args.ts";
 
 export function splitParagraphs(text: string): string[] {
@@ -58,6 +67,13 @@ export interface DiffEntry {
   before: string;
   after: string;
   index: number;
+  /**
+   * #3929: true quando `after` (correção da Clarice) reverte uma edição do
+   * Humanizador de volta pra (perto de) o texto pré-Humanizador. Calculado só
+   * quando um texto pré-Humanizador é fornecido — ver `annotateReversions`.
+   * Ausente (undefined) quando não computado (comportamento pré-#3929).
+   */
+  reversion?: boolean;
 }
 
 export function alignParagraphs(origParas: string[], revParas: string[]): DiffEntry[] {
@@ -114,21 +130,71 @@ export function alignParagraphs(origParas: string[], revParas: string[]): DiffEn
   return changes;
 }
 
+/**
+ * #3929: marca quais `changes` (edits — before E after não-vazios) são
+ * reversões de edições do Humanizador pela Clarice — quando `after` (o texto
+ * que a Clarice produziu) fica MAIS parecido com o parágrafo PRÉ-Humanizador
+ * do que `before` (o texto que o Humanizador tinha produzido, e que a Clarice
+ * recebeu como input) estava. Isso indica que a Clarice desfez, total ou
+ * parcialmente, uma mudança estilística do Humanizador.
+ *
+ * `preHumanizerParas` deve estar alinhado por ÍNDICE com o array de parágrafos
+ * "antes" usado para gerar `changes` (`c.index`) — ambos originam do mesmo
+ * ponto do pipeline (texto pré-Humanizador vs pós-Humanizador/pré-Clarice),
+ * então a contagem de parágrafos tende a ser estável (Humanizador tipicamente
+ * não adiciona/remove parágrafos, só reescreve). Quando o índice não existe no
+ * array pré-Humanizador (estrutura divergiu), a entry fica sem marcação —
+ * best-effort, não trava o diff.
+ *
+ * Margem de 0.05 na comparação de similaridade evita ruído: só marca reversão
+ * quando o texto da Clarice se aproxima SENSIVELMENTE mais do pré-Humanizador
+ * do que o texto do Humanizador já estava — uma correção pontual que por acaso
+ * também aparece no pré-Humanizador (ex: mesma pontuação comum) não deve gerar
+ * falso positivo.
+ */
+export function annotateReversions(
+  changes: DiffEntry[],
+  preHumanizerParas: string[],
+): DiffEntry[] {
+  return changes.map((c) => {
+    if (!c.before || !c.after) return c; // add/remove puro — não há "reversão" de estilo
+    const pre = preHumanizerParas[c.index];
+    if (pre === undefined) return c;
+    if (c.before === pre) return c; // Humanizador não tocou este parágrafo — nada a reverter
+    const simBeforeToPre = similarity(c.before, pre);
+    const simAfterToPre = similarity(c.after, pre);
+    if (simAfterToPre > simBeforeToPre + 0.05) {
+      return { ...c, reversion: true };
+    }
+    return c;
+  });
+}
+
 function formatDiff(changes: DiffEntry[], origPath: string, reviewedPath: string): string {
+  const reversionCount = changes.filter((c) => c.reversion).length;
   const lines: string[] = [
     `# Revisão Clarice`,
     ``,
     `**Original:** \`${origPath}\`  `,
     `**Revisado:** \`${reviewedPath}\`  `,
     `**Alterações:** ${changes.length}`,
+    ...(reversionCount > 0
+      ? [`**Reversões do Humanizador:** ${reversionCount} ⚠️ (#3929 — Clarice desfez uma edição de estilo do Humanizador; confira antes de aprovar)`]
+      : []),
     ``,
     `---`,
     ``,
   ];
 
   changes.forEach((c, i) => {
-    lines.push(`### Alteração ${i + 1}`);
+    lines.push(`### Alteração ${i + 1}${c.reversion ? " ⚠️ REVERTE HUMANIZADOR" : ""}`);
     lines.push(``);
+    if (c.reversion) {
+      lines.push(
+        `> ⚠️ Esta correção da Clarice reverte (total ou parcialmente) uma edição do Humanizador — o texto volta a ficar parecido com a versão pré-Humanizador (#3929).`,
+      );
+      lines.push(``);
+    }
 
     if (c.before && c.after) {
       lines.push(`**Antes:**`);
@@ -157,10 +223,10 @@ function formatDiff(changes: DiffEntry[], origPath: string, reviewedPath: string
 }
 
 function main() {
-  const [origPath, reviewedPath, outPath] = process.argv.slice(2);
+  const [origPath, reviewedPath, outPath, preHumanizerPath] = process.argv.slice(2);
 
   if (!origPath || !reviewedPath || !outPath) {
-    console.error("Uso: clarice-diff.ts <original.md> <reviewed.md> <diff.md>");
+    console.error("Uso: clarice-diff.ts <original.md> <reviewed.md> <diff.md> [pre-humanizer.md]");
     process.exit(1);
   }
 
@@ -176,11 +242,22 @@ function main() {
 
   const origParas = splitParagraphs(orig);
   const revParas = splitParagraphs(reviewed);
-  const changes = alignParagraphs(origParas, revParas);
+  let changes = alignParagraphs(origParas, revParas);
+
+  // #3929: com o pré-Humanizador disponível, marcar quais alterações da
+  // Clarice revertem uma edição do Humanizador — visibilidade explícita pro
+  // editor no gate (em vez de indistinguível de uma correção gramatical comum).
+  if (preHumanizerPath && existsSync(preHumanizerPath)) {
+    const preHumanizerParas = splitParagraphs(readFileSync(preHumanizerPath, "utf8"));
+    changes = annotateReversions(changes, preHumanizerParas);
+  }
 
   const diffMd = formatDiff(changes, origPath, reviewedPath);
   writeFileSync(outPath, diffMd, "utf8");
-  console.error(`clarice-diff: ${changes.length} alteração(ões) → ${outPath}`);
+  const reversionCount = changes.filter((c) => c.reversion).length;
+  console.error(
+    `clarice-diff: ${changes.length} alteração(ões)${reversionCount > 0 ? ` (${reversionCount} reversão(ões) do Humanizador)` : ""} → ${outPath}`,
+  );
 }
 
 if (isMainModule(import.meta.url)) {
