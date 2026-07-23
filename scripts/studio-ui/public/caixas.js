@@ -11,7 +11,11 @@
 // nunca sobrescrita silenciosa (R5 de docs/studio-ui-ux-guidelines.md).
 // Criação de caixa nova está fora de escopo desta issue.
 
-import { BOX_SAVE_CONFLICT_CONFIRM_MESSAGE } from "./caixas-guards.js";
+import {
+  BOX_SAVE_CONFLICT_CONFIRM_MESSAGE,
+  boxArchiveConfirmMessage,
+  validateNewBoxSlug,
+} from "./caixas-guards.js";
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -33,10 +37,28 @@ const el = {
   saveBtn: document.getElementById("save-btn"),
   closeEditorBtn: document.getElementById("close-editor-btn"),
   saveStatus: document.getElementById("save-status"),
+  // #3928: criar caixa nova
+  newBoxBtn: document.getElementById("new-box-btn"),
+  createPanel: document.getElementById("create-panel"),
+  createSlug: document.getElementById("create-slug"),
+  createContent: document.getElementById("create-content"),
+  createSubmitBtn: document.getElementById("create-submit-btn"),
+  createCancelBtn: document.getElementById("create-cancel-btn"),
+  createStatus: document.getElementById("create-status"),
+  // #3928: caixas arquivadas
+  archivedToggle: document.getElementById("archived-toggle"),
+  archivedCount: document.getElementById("archived-count"),
+  archivedHint: document.getElementById("archived-hint"),
+  archivedEmpty: document.getElementById("archived-empty"),
+  archivedList: document.getElementById("archived-list"),
 };
 
 /** Snapshot da última lista bem-sucedida — `null` até o 1º fetch resolver. */
 let boxes = null;
+/** Snapshot da última lista de ARQUIVADas (#3928) — `null` até o 1º fetch. */
+let archived = null;
+/** A seção "Arquivadas" começa colapsada; o toggle controla isto. */
+let archivedExpanded = false;
 /** Timestamp (ISO, client-side) do último fetch de lista BEM-SUCEDIDO — R1 de
  * docs/studio-ui-ux-guidelines.md: nunca avança em falha (o server não emite
  * `generatedAt` pra esta lista, então o relógio é local ao painel). */
@@ -108,6 +130,12 @@ function renderList() {
     const dirtyBadge = box.dirtyVsGit
       ? `<span class="box-dirty-badge" title="alteração local — entra no repo no próximo commit">modificado vs git</span>`
       : "";
+    // #3928: arquivar (não deletar). Caixa em slot ativo é auto-injetada em
+    // toda newsletter — arquivá-la quebraria o pipeline, então o botão fica
+    // desabilitado (o server também bloqueia, defense-in-depth).
+    const archiveBtn = box.slot
+      ? `<button type="button" class="cx-archive-btn" disabled title="Em uso no slot ${escapeHtml(String(box.slot))} — remova a atribuição em platform.config.json antes de arquivar">Arquivar</button>`
+      : `<button type="button" class="cx-archive-btn" data-action="archive" data-slug="${escapeHtml(box.slug)}">Arquivar</button>`;
     card.innerHTML = `
       <div class="box-card-head">
         <span class="box-title">${escapeHtml(box.title)}</span>
@@ -119,6 +147,7 @@ function renderList() {
       </div>
       <div class="box-actions">
         <button type="button" data-action="edit" data-slug="${escapeHtml(box.slug)}">Editar</button>
+        ${archiveBtn}
       </div>
     `;
     el.list.appendChild(card);
@@ -272,7 +301,146 @@ async function saveCurrentBox() {
   }
 }
 
-el.refreshBtn.addEventListener("click", () => fetchBoxes());
+// ── #3928: arquivar (não deletar) ─────────────────────────────────────────
+
+/** Arquiva uma caixa (move pra `_arquivo/`, some da lista, conteúdo
+ * preservado). Confirma antes; 409 = bloqueada por slot (defense-in-depth do
+ * server — não deveria acontecer porque o botão já vem desabilitado, mas se
+ * acontecer mostramos o motivo). Refetcha as duas listas ao final. */
+async function archiveBoxAction(slug) {
+  if (!window.confirm(boxArchiveConfirmMessage(slug))) return;
+  const { ok, status, body } = await fetchJson(`/api/boxes/${encodeURIComponent(slug)}/archive`, { method: "POST" });
+  if (!ok) {
+    const reason = (body && body.error) || `HTTP ${status}`;
+    renderError(`Não foi possível arquivar "${slug}": ${reason}`);
+    return;
+  }
+  renderError(null);
+  archivedExpanded = true; // mostra a arquivada recém-criada
+  await Promise.all([fetchBoxes(), fetchArchived()]);
+}
+
+/** Restaura uma caixa arquivada (move de volta pra `context/snippets/`). 409 =
+ * já existe caixa viva com o mesmo slug. */
+async function restoreBoxAction(slug) {
+  const { ok, status, body } = await fetchJson(`/api/boxes/${encodeURIComponent(slug)}/unarchive`, { method: "POST" });
+  if (!ok) {
+    const reason = (body && body.error) || `HTTP ${status}`;
+    renderError(`Não foi possível restaurar "${slug}": ${reason}`);
+    return;
+  }
+  renderError(null);
+  await Promise.all([fetchBoxes(), fetchArchived()]);
+}
+
+function renderArchivedList() {
+  const list = archived ?? [];
+  el.archivedCount.textContent = String(list.length);
+  el.archivedToggle.setAttribute("aria-expanded", String(archivedExpanded));
+  el.archivedToggle.classList.toggle("expanded", archivedExpanded);
+  el.archivedHint.hidden = !archivedExpanded;
+
+  if (!archivedExpanded) {
+    el.archivedList.hidden = true;
+    el.archivedEmpty.hidden = true;
+    return;
+  }
+  if (list.length === 0) {
+    el.archivedList.hidden = true;
+    el.archivedEmpty.hidden = false;
+    return;
+  }
+  el.archivedEmpty.hidden = true;
+  el.archivedList.hidden = false;
+  el.archivedList.innerHTML = "";
+  for (const box of list) {
+    const card = document.createElement("div");
+    card.className = "box-card box-card-archived";
+    card.innerHTML = `
+      <div class="box-card-head">
+        <span class="box-title">${escapeHtml(box.title)}</span>
+        <span class="box-archived-badge">arquivada</span>
+      </div>
+      <div class="box-meta">
+        <code>${escapeHtml(box.slug)}</code> · arquivada ${fmtTime(box.mtimeIso)}
+      </div>
+      <div class="box-actions">
+        <button type="button" data-action="restore" data-slug="${escapeHtml(box.slug)}">Restaurar</button>
+      </div>
+    `;
+    el.archivedList.appendChild(card);
+  }
+}
+
+async function fetchArchived() {
+  try {
+    const { ok, status, body } = await fetchJson("/api/boxes/archived");
+    if (!ok) throw new Error(`HTTP ${status}`);
+    archived = body.boxes ?? [];
+  } catch {
+    // Falha só da lista de arquivadas não deve poluir o painel inteiro —
+    // mantém o último snapshot bom (ou vazio) e segue.
+    if (archived === null) archived = [];
+  }
+  renderArchivedList();
+}
+
+// ── #3928: criar caixa nova ───────────────────────────────────────────────
+
+function openCreatePanel() {
+  el.createSlug.value = "";
+  el.createContent.value = "";
+  el.createStatus.textContent = "";
+  el.createStatus.className = "cx-save-status";
+  el.createPanel.hidden = false;
+  el.createPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+  el.createSlug.focus();
+}
+
+function closeCreatePanel() {
+  el.createPanel.hidden = true;
+}
+
+async function submitNewBox() {
+  const check = validateNewBoxSlug(el.createSlug.value);
+  if (!check.ok) {
+    el.createStatus.textContent = check.error;
+    el.createStatus.className = "cx-save-status err";
+    el.createSlug.focus();
+    return;
+  }
+  el.createSubmitBtn.disabled = true;
+  el.createStatus.textContent = "Criando…";
+  el.createStatus.className = "cx-save-status";
+  try {
+    const { ok, status, body } = await fetchJson("/api/boxes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug: check.slug, content: el.createContent.value }),
+    });
+    if (ok && body && body.ok) {
+      el.createStatus.textContent = `Criada ${fmtTime(body.modifiedAt)}`;
+      el.createStatus.className = "cx-save-status ok";
+      await fetchBoxes();
+      closeCreatePanel();
+      // Abre direto no editor pra continuar preenchendo.
+      openEditor(check.slug);
+    } else {
+      el.createStatus.textContent = `Erro ao criar: ${(body && body.error) || `HTTP ${status}`}`;
+      el.createStatus.className = "cx-save-status err";
+    }
+  } catch (e) {
+    el.createStatus.textContent = `Erro ao criar: ${e.message ?? e}`;
+    el.createStatus.className = "cx-save-status err";
+  } finally {
+    el.createSubmitBtn.disabled = false;
+  }
+}
+
+el.refreshBtn.addEventListener("click", () => {
+  fetchBoxes();
+  fetchArchived();
+});
 el.retryBtn.addEventListener("click", () => fetchBoxes());
 el.closeEditorBtn.addEventListener("click", () => closeEditor());
 el.saveBtn.addEventListener("click", () => saveCurrentBox());
@@ -280,10 +448,27 @@ el.editor.addEventListener("input", () => {
   dirty = true;
 });
 
+el.newBoxBtn.addEventListener("click", () => openCreatePanel());
+el.createCancelBtn.addEventListener("click", () => closeCreatePanel());
+el.createSubmitBtn.addEventListener("click", () => submitNewBox());
+
+el.archivedToggle.addEventListener("click", () => {
+  archivedExpanded = !archivedExpanded;
+  renderArchivedList();
+});
+
 el.list.addEventListener("click", (ev) => {
   const btn = ev.target.closest("button[data-action]");
   if (!btn) return;
   if (btn.dataset.action === "edit") openEditor(btn.dataset.slug);
+  else if (btn.dataset.action === "archive") archiveBoxAction(btn.dataset.slug);
+});
+
+el.archivedList.addEventListener("click", (ev) => {
+  const btn = ev.target.closest("button[data-action]");
+  if (!btn) return;
+  if (btn.dataset.action === "restore") restoreBoxAction(btn.dataset.slug);
 });
 
 fetchBoxes();
+fetchArchived();

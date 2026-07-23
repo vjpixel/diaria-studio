@@ -35,6 +35,7 @@
       </p>
       <div class="panel-header-row">
         <span id="last-updated" class="hint" aria-live="polite"></span>
+        <button id="new-box-btn" type="button">Nova caixa</button>
         <button id="refresh-btn" type="button">Atualizar</button>
       </div>
       <div id="boxes-error" class="panel alert-banner" role="alert" hidden>
@@ -43,11 +44,43 @@
       </div>
     </section>
 
+    <section class="panel" id="create-panel" hidden>
+      <h2>Nova caixa</h2>
+      <p class="hint">
+        Cria um arquivo novo em <code>context/snippets/</code>. O nome vira o
+        <strong>slug</strong> — minúsculas, dígitos e hífen (o <code>.md</code> é
+        anexado automaticamente). O slot <strong>não</strong> é atribuído aqui.
+      </p>
+      <label class="cx-field">
+        <span>Nome do arquivo (slug)</span>
+        <input id="create-slug" type="text" placeholder="minha-caixa" autocomplete="off" spellcheck="false" />
+      </label>
+      <textarea id="create-content" class="cx-editor" spellcheck="false" placeholder="<!-- doc opcional do formato -->&#10;&#10;Conteúdo da caixa…"></textarea>
+      <div class="cx-editor-toolbar">
+        <button id="create-submit-btn" type="button">Criar caixa</button>
+        <button id="create-cancel-btn" type="button">Cancelar</button>
+        <span id="create-status" class="cx-save-status" role="status" aria-live="polite"></span>
+      </div>
+    </section>
+
     <section class="panel">
       <h2>Caixas (<span id="boxes-count">0</span>)</h2>
       <div id="boxes-loading" class="hint">Carregando…</div>
       <div id="boxes-empty" class="hint" hidden>Nenhuma caixa em context/snippets/.</div>
       <div id="boxes-list" class="boxes-list"></div>
+    </section>
+
+    <section class="panel" id="archived-panel">
+      <button id="archived-toggle" type="button" class="cx-archived-toggle" aria-expanded="false">
+        <span class="cx-archived-caret" aria-hidden="true">▸</span>
+        Arquivadas (<span id="archived-count">0</span>)
+      </button>
+      <p class="hint" id="archived-hint" hidden>
+        Caixas arquivadas ficam em <code>context/snippets/_arquivo/</code> — fora da
+        lista, mas não deletadas. "Restaurar" traz de volta.
+      </p>
+      <div id="archived-empty" class="hint" hidden>Nenhuma caixa arquivada.</div>
+      <div id="archived-list" class="boxes-list" hidden></div>
     </section>
 
     <section class="panel" id="editor-panel" hidden>

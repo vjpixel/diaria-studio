@@ -52,7 +52,7 @@
  * "slot N"; nenhuma rota desta fatia escreve nesse arquivo.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -75,11 +75,29 @@ export function snippetsDir(rootDir: string): string {
   return resolve(rootDir, "context", "snippets");
 }
 
+/** Subpasta de caixas ARQUIVADAS (#3928): `context/snippets/_arquivo/`. Mesma
+ * convenção `_arquivo/` já usada no repo pra edições arquivadas. Arquivar =
+ * mover o `.md` pra cá; a caixa some de `listBoxes` (que só enumera `.md` no
+ * nível de `snippetsDir` — `readdirSync` não-recursivo + `entry.isFile()`
+ * exclui subpastas) sem que o conteúdo seja deletado. `_arquivo` nunca é um
+ * slug válido (`isValidBoxSlug` rejeita `_`), então não há colisão. */
+const ARCHIVE_DIRNAME = "_arquivo";
+
+export function archiveDir(rootDir: string): string {
+  return resolve(snippetsDir(rootDir), ARCHIVE_DIRNAME);
+}
+
 /** Path absoluto do arquivo de uma caixa — só chamar depois de confirmar
  * `isValidBoxSlug(slug)` (o regex já garante que o resultado nunca escapa de
  * `snippetsDir`, mas o caller sempre valida antes de qualquer I/O). */
 export function boxFilePath(rootDir: string, slug: string): string {
   return resolve(snippetsDir(rootDir), slug);
+}
+
+/** Path absoluto de uma caixa ARQUIVADA (dentro de `_arquivo/`). Mesma pré-
+ * condição de `boxFilePath`: só chamar com slug já validado. */
+export function archivedBoxFilePath(rootDir: string, slug: string): string {
+  return resolve(archiveDir(rootDir), slug);
 }
 
 // ── título ───────────────────────────────────────────────────────────────
@@ -91,14 +109,31 @@ function truncateTitle(s: string): string {
   return s.slice(0, TITLE_MAX_LEN - 1).trimEnd() + "…";
 }
 
+/** Remove blocos de comentário HTML (`<!-- ... -->`) do conteúdo, pra fins de
+ * título (#3928). TODOS os snippets de divulgação abrem, por convenção, com um
+ * bloco de doc `<!-- ... -->` (ver `scripts/lib/shared/snippet-loader.ts`, que
+ * remove esse header em runtime) — sem este strip, `extractBoxTitle` devolvia
+ * literalmente `<!--` como título. Trata comentário multi-linha, mesma-linha e
+ * múltiplos (regex não-guloso). Caso degenerado de comentário NÃO-fechado (sem
+ * `-->`): descarta tudo do `<!--` em diante, pra nunca vazar `<!--` como
+ * título. Nunca lança. */
+function stripHtmlComments(content: string): string {
+  let out = content.replace(/<!--[\s\S]*?-->/g, "");
+  const unclosed = out.indexOf("<!--");
+  if (unclosed !== -1) out = out.slice(0, unclosed);
+  return out;
+}
+
 /** Título de exibição de uma caixa: o primeiro heading Markdown (`# ...` a
  * `###### ...`, com os `#` removidos) SE a primeira linha não-vazia for um
- * heading; senão a própria primeira linha não-vazia, como está. Truncado a
- * ~80 chars. Arquivo vazio (ou só linhas em branco) vira `"(vazio)"` — nunca
- * lança, nunca retorna string vazia (uma caixa sem título visível na lista
- * seria indistinguível de um bug de render). */
+ * heading; senão a própria primeira linha não-vazia, como está. Blocos de
+ * comentário HTML no topo (convenção de todos os snippets) são ignorados
+ * primeiro (#3928 — ver `stripHtmlComments`). Truncado a ~80 chars. Arquivo
+ * vazio, só linhas em branco, ou só comentário vira `"(vazio)"` — nunca lança,
+ * nunca retorna string vazia (uma caixa sem título visível na lista seria
+ * indistinguível de um bug de render). */
 export function extractBoxTitle(content: string): string {
-  const lines = content.split(/\r?\n/);
+  const lines = stripHtmlComments(content).split(/\r?\n/);
   for (const raw of lines) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
@@ -303,4 +338,173 @@ export function saveBox(
   } catch (e) {
     return { ok: false, error: (e as Error).message, slug, modifiedAt: null };
   }
+}
+
+// ── criação de caixa nova (#3928) ──────────────────────────────────────────
+
+export interface CreateBoxResult {
+  ok: boolean;
+  error?: string;
+  slug: string;
+  modifiedAt: string | null;
+  /** `true` quando o slug é inválido (traversal, `README.md`, maiúscula,
+   * extensão errada) — o caller HTTP responde 400. */
+  invalidSlug?: boolean;
+  /** `true` quando já existe uma caixa (viva) com esse slug — o caller HTTP
+   * responde 409 (edite em vez de criar). */
+  exists?: boolean;
+}
+
+/** Cria uma caixa NOVA em `context/snippets/{slug}` (#3928). Ao contrário de
+ * `saveBox` (que rejeita slug inexistente de propósito — a #3924 não cobria
+ * criação), esta função exige que o arquivo NÃO exista ainda. Slot NÃO é
+ * atribuído aqui (atribuição de slot segue fora de escopo, como na #3924).
+ * Fail-soft: nunca lança, sempre retorna resultado tipado. */
+export function createBox(rootDir: string, slug: string, content: string): CreateBoxResult {
+  if (!isValidBoxSlug(slug)) {
+    return {
+      ok: false,
+      error: `slug inválido: ${slug} — use só minúsculas, dígitos e hífen, terminando em .md`,
+      slug,
+      modifiedAt: null,
+      invalidSlug: true,
+    };
+  }
+  const filePath = boxFilePath(rootDir, slug);
+  // Colide tanto com uma caixa viva quanto com uma arquivada de mesmo slug:
+  // criar por cima de uma arquivada perderia a referência à arquivada.
+  if (existsSync(filePath) || existsSync(archivedBoxFilePath(rootDir, slug))) {
+    return {
+      ok: false,
+      error: `já existe uma caixa com o slug "${slug}" (viva ou arquivada) — edite ou restaure em vez de criar`,
+      slug,
+      modifiedAt: null,
+      exists: true,
+    };
+  }
+  try {
+    mkdirSync(snippetsDir(rootDir), { recursive: true });
+    writeFileSync(filePath, content, "utf8");
+    const modifiedAt = statSync(filePath).mtime.toISOString();
+    return { ok: true, slug, modifiedAt };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message, slug, modifiedAt: null };
+  }
+}
+
+// ── arquivar / restaurar / listar arquivadas (#3928) ───────────────────────
+
+export interface ArchiveBoxResult {
+  ok: boolean;
+  error?: string;
+  slug: string;
+  /** `true` quando o slug é inválido OU a caixa não existe (viva) — 404. */
+  notFound?: boolean;
+  /** `true` quando a caixa está atribuída a um slot ativo em
+   * `platform.config.json` (auto-injetada em toda newsletter) — arquivar
+   * quebraria o pipeline, então é BLOQUEADO. Caller HTTP responde 409. */
+  blockedBySlot?: boolean;
+  slot?: BoxSlot;
+}
+
+/** Arquiva uma caixa: MOVE `context/snippets/{slug}` -> `context/snippets/
+ * _arquivo/{slug}` (#3928). A caixa some de `listBoxes` (que não enumera
+ * subpastas) mas o conteúdo NÃO é deletado — reversível via `unarchiveBox`.
+ *
+ * **Guard de slot (defense-in-depth):** uma caixa atribuída a
+ * `boxes_divulgacao.slot{1,2,3}` é auto-injetada em toda newsletter pelo
+ * `stitchNewsletter` (que procura o arquivo por nome em `context/snippets/`).
+ * Arquivá-la quebraria o pipeline, então é bloqueado no server mesmo que o
+ * client tente — não só desabilitado na UI. Fail-soft: nunca lança. */
+export function archiveBox(rootDir: string, slug: string): ArchiveBoxResult {
+  if (!isValidBoxSlug(slug)) {
+    return { ok: false, error: `slug inválido: ${slug}`, slug, notFound: true };
+  }
+  const filePath = boxFilePath(rootDir, slug);
+  if (!existsSync(filePath)) {
+    return { ok: false, error: `caixa não encontrada: ${slug}`, slug, notFound: true };
+  }
+  const slot = readBoxSlotAssignments(rootDir)[slug];
+  if (slot) {
+    return {
+      ok: false,
+      error: `a caixa "${slug}" está no slot ${slot} (platform.config.json → boxes_divulgacao) e é injetada em toda newsletter — remova a atribuição de slot antes de arquivar`,
+      slug,
+      blockedBySlot: true,
+      slot,
+    };
+  }
+  try {
+    mkdirSync(archiveDir(rootDir), { recursive: true });
+    renameSync(filePath, archivedBoxFilePath(rootDir, slug));
+    return { ok: true, slug };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message, slug };
+  }
+}
+
+export interface UnarchiveBoxResult {
+  ok: boolean;
+  error?: string;
+  slug: string;
+  /** `true` quando o slug é inválido OU não há caixa arquivada com esse slug. */
+  notFound?: boolean;
+  /** `true` quando já existe uma caixa VIVA com o mesmo slug — restaurar
+   * sobrescreveria; bloqueado. Caller HTTP responde 409. */
+  conflict?: boolean;
+}
+
+/** Restaura uma caixa arquivada: MOVE `context/snippets/_arquivo/{slug}` de
+ * volta pra `context/snippets/{slug}` (#3928). Bloqueia se já existe uma caixa
+ * viva com o mesmo slug (não sobrescreve). Fail-soft: nunca lança. */
+export function unarchiveBox(rootDir: string, slug: string): UnarchiveBoxResult {
+  if (!isValidBoxSlug(slug)) {
+    return { ok: false, error: `slug inválido: ${slug}`, slug, notFound: true };
+  }
+  const archivedPath = archivedBoxFilePath(rootDir, slug);
+  if (!existsSync(archivedPath)) {
+    return { ok: false, error: `caixa arquivada não encontrada: ${slug}`, slug, notFound: true };
+  }
+  const livePath = boxFilePath(rootDir, slug);
+  if (existsSync(livePath)) {
+    return {
+      ok: false,
+      error: `já existe uma caixa viva com o slug "${slug}" — renomeie ou remova antes de restaurar`,
+      slug,
+      conflict: true,
+    };
+  }
+  try {
+    renameSync(archivedPath, livePath);
+    return { ok: true, slug };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message, slug };
+  }
+}
+
+export interface ArchivedBoxEntry {
+  slug: string;
+  title: string;
+  mtimeIso: string;
+}
+
+/** Lista as caixas arquivadas em `context/snippets/_arquivo/*.md` (#3928),
+ * ordenada por slug. Sem badge de slot (uma arquivada nunca está num slot) e
+ * sem dirty-vs-git (irrelevante pra restaurar). Pasta ausente (nada foi
+ * arquivado ainda) -> `[]`, nunca lança. */
+export function listArchivedBoxes(rootDir: string): ArchivedBoxEntry[] {
+  const dir = archiveDir(rootDir);
+  if (!existsSync(dir)) return [];
+  const filenames = readdirSync(dir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && isValidBoxSlug(entry.name))
+    .map((entry) => entry.name)
+    .sort();
+  return filenames.map((filename) => {
+    const filePath = resolve(dir, filename);
+    return {
+      slug: filename,
+      title: extractBoxTitle(readFileSync(filePath, "utf8")),
+      mtimeIso: statSync(filePath).mtime.toISOString(),
+    };
+  });
 }

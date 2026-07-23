@@ -15,7 +15,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
@@ -28,6 +28,11 @@ import {
   readBox,
   saveBox,
   boxFilePath,
+  createBox,
+  archiveBox,
+  unarchiveBox,
+  listArchivedBoxes,
+  archivedBoxFilePath,
 } from "../scripts/studio-ui/studio-boxes.ts";
 
 // ─── lógica pura ──────────────────────────────────────────────────────────
@@ -80,6 +85,37 @@ describe("extractBoxTitle (#3924)", () => {
   it("arquivo vazio (ou só linhas em branco) vira '(vazio)'", () => {
     assert.equal(extractBoxTitle(""), "(vazio)");
     assert.equal(extractBoxTitle("\n\n   \n"), "(vazio)");
+  });
+
+  // #3928: TODOS os snippets abrem com um bloco de comentário HTML de doc —
+  // sem pular o comentário, o título vazava como literalmente "<!--".
+  it("pula bloco de comentário HTML multi-linha e usa o 1º conteúdo real (heading)", () => {
+    const content = "<!--\nBloco canônico de DIVULGAÇÃO ...\nvárias linhas de doc\n-->\n\n# Recomendação de leitura\n\nTexto.";
+    assert.equal(extractBoxTitle(content), "Recomendação de leitura");
+  });
+
+  it("pula comentário HTML multi-linha e usa a 1ª linha de texto puro quando não há heading", () => {
+    const content = "<!--\ndoc interna\n-->\nEquipe sua casa com a Alexa+\n\nMais texto.";
+    assert.equal(extractBoxTitle(content), "Equipe sua casa com a Alexa+");
+  });
+
+  it("pula comentário HTML na mesma linha", () => {
+    assert.equal(extractBoxTitle("<!-- nota -->Título inline"), "Título inline");
+    assert.equal(extractBoxTitle("<!-- a --> <!-- b -->\n# Depois de dois comentários"), "Depois de dois comentários");
+  });
+
+  it("comentário HTML NÃO-fechado (sem -->) nunca vaza '<!--' como título", () => {
+    // Degenerado: descarta do <!-- em diante -> nada real sobra -> "(vazio)",
+    // NUNCA o literal "<!--".
+    const title = extractBoxTitle("<!--\ncomentário que nunca fecha\nmais linhas");
+    assert.notEqual(title, "<!--");
+    assert.equal(title, "(vazio)");
+  });
+
+  it("nenhum dos snippets afetados devolve '<!--' (regressão do sintoma exato)", () => {
+    const withHeader = "<!--\nheader de doc\n-->\nConteúdo visível da caixa";
+    assert.notEqual(extractBoxTitle(withHeader), "<!--");
+    assert.equal(extractBoxTitle(withHeader), "Conteúdo visível da caixa");
   });
 });
 
@@ -275,6 +311,122 @@ describe("readBox / saveBox (#3924, pure)", () => {
   });
 });
 
+// ─── criar / arquivar / restaurar (pura, #3928) ───────────────────────────
+
+describe("createBox (#3928, pure)", () => {
+  let root: string;
+
+  before(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-create-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "existente.md"), "# Já existe");
+  });
+
+  after(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("cria arquivo novo com slug válido e devolve modifiedAt", () => {
+    const result = createBox(root, "nova-caixa.md", "# Nova\n\nConteúdo.");
+    assert.equal(result.ok, true);
+    assert.ok(result.modifiedAt);
+    assert.equal(readFileSync(boxFilePath(root, "nova-caixa.md"), "utf8"), "# Nova\n\nConteúdo.");
+  });
+
+  it("slug já existente (viva) -> exists:true, NÃO sobrescreve", () => {
+    const result = createBox(root, "existente.md", "sobrescrita indevida");
+    assert.equal(result.ok, false);
+    assert.equal(result.exists, true);
+    assert.match(readFileSync(boxFilePath(root, "existente.md"), "utf8"), /Já existe/);
+  });
+
+  it("slug já existente (arquivada) -> exists:true (não recria por cima da arquivada)", () => {
+    mkdirSync(join(root, "context", "snippets", "_arquivo"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "_arquivo", "arquivada.md"), "# Arquivada");
+    const result = createBox(root, "arquivada.md", "nova");
+    assert.equal(result.ok, false);
+    assert.equal(result.exists, true);
+  });
+
+  it("README.md / maiúscula / traversal -> invalidSlug:true, nunca escreve", () => {
+    assert.equal(createBox(root, "README.md", "x").invalidSlug, true);
+    assert.equal(createBox(root, "Foo.md", "x").invalidSlug, true);
+    assert.equal(createBox(root, "../fora.md", "x").invalidSlug, true);
+  });
+});
+
+describe("archiveBox / unarchiveBox / listArchivedBoxes (#3928, pure)", () => {
+  let root: string;
+
+  before(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-archive-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "livre.md"), "# Livre\n\nConteúdo preservável.");
+    writeFileSync(join(root, "context", "snippets", "no-slot.md"), "# No slot\n\nAtribuída a um slot.");
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "no-slot.md" } }),
+    );
+  });
+
+  after(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("archiveBox: move pra _arquivo/, some de listBoxes, conteúdo preservado byte-a-byte", () => {
+    const before = readFileSync(boxFilePath(root, "livre.md"), "utf8");
+    const result = archiveBox(root, "livre.md");
+    assert.equal(result.ok, true);
+    // Sumiu da lista viva…
+    assert.ok(!listBoxes(root).some((b) => b.slug === "livre.md"));
+    // …mas o arquivo original não existe mais no nível de snippets…
+    assert.equal(existsSync(boxFilePath(root, "livre.md")), false);
+    // …e o conteúdo está intacto em _arquivo/.
+    assert.equal(readFileSync(archivedBoxFilePath(root, "livre.md"), "utf8"), before);
+  });
+
+  it("archiveBox: BLOQUEIA caixa em slot ativo (blockedBySlot), não move", () => {
+    const result = archiveBox(root, "no-slot.md");
+    assert.equal(result.ok, false);
+    assert.equal(result.blockedBySlot, true);
+    assert.equal(result.slot, 1);
+    assert.equal(existsSync(boxFilePath(root, "no-slot.md")), true, "não deve ter movido a caixa com slot");
+  });
+
+  it("archiveBox: slug inexistente/ inválido -> notFound", () => {
+    assert.equal(archiveBox(root, "nao-existe.md").notFound, true);
+    assert.equal(archiveBox(root, "README.md").notFound, true);
+  });
+
+  it("listArchivedBoxes: lista só o conteúdo de _arquivo/", () => {
+    const archived = listArchivedBoxes(root);
+    assert.deepEqual(archived.map((b) => b.slug), ["livre.md"]);
+    assert.equal(archived[0].title, "Livre");
+  });
+
+  it("unarchiveBox: restaura de volta pra snippets/ e some de _arquivo/", () => {
+    const result = unarchiveBox(root, "livre.md");
+    assert.equal(result.ok, true);
+    assert.equal(existsSync(boxFilePath(root, "livre.md")), true);
+    assert.equal(existsSync(archivedBoxFilePath(root, "livre.md")), false);
+    assert.ok(listBoxes(root).some((b) => b.slug === "livre.md"));
+  });
+
+  it("unarchiveBox: conflito se já existe caixa viva de mesmo slug", () => {
+    // Arquiva de novo, depois recria uma viva com o mesmo slug → restaurar deve bloquear.
+    archiveBox(root, "livre.md");
+    writeFileSync(boxFilePath(root, "livre.md"), "# Livre recriada");
+    const result = unarchiveBox(root, "livre.md");
+    assert.equal(result.ok, false);
+    assert.equal(result.conflict, true);
+    assert.match(readFileSync(boxFilePath(root, "livre.md"), "utf8"), /recriada/, "não deve sobrescrever a viva");
+  });
+
+  it("unarchiveBox: sem arquivada correspondente -> notFound", () => {
+    assert.equal(unarchiveBox(root, "nunca-arquivada.md").notFound, true);
+  });
+});
+
 // ─── contrato HTTP ─────────────────────────────────────────────────────────
 
 describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
@@ -466,5 +618,99 @@ describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
   it("POST /api/boxes/recomendacao-leitura.md (método não-allowlistado) -> 405 (guard read-only)", async () => {
     const res = await fetch(new URL("/api/boxes/recomendacao-leitura.md", server.url), { method: "POST" });
     assert.equal(res.status, 405);
+  });
+});
+
+// ─── contrato HTTP: criar / arquivar / restaurar (#3928) ───────────────────
+
+describe("POST /api/boxes (create) + archive/unarchive + GET /api/boxes/archived (#3928)", () => {
+  let root: string;
+  let server: StudioServer;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-3928-http-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "README.md"), "# Formato\n\nDoc.");
+    writeFileSync(join(root, "context", "snippets", "com-slot.md"), "# Com slot\n\nInjetada.");
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "com-slot.md" } }),
+    );
+    server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  async function post(path: string, body?: unknown) {
+    return fetch(new URL(path, server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  }
+
+  it("POST /api/boxes cria caixa nova -> 201, aparece em /api/boxes", async () => {
+    const res = await post("/api/boxes", { slug: "criada-via-http.md", content: "# Criada\n\nOi." });
+    assert.equal(res.status, 201);
+    assert.equal(
+      readFileSync(join(root, "context", "snippets", "criada-via-http.md"), "utf8"),
+      "# Criada\n\nOi.",
+    );
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    assert.ok(list.boxes.some((b: { slug: string }) => b.slug === "criada-via-http.md"));
+  });
+
+  it("POST /api/boxes com slug já existente -> 409", async () => {
+    const res = await post("/api/boxes", { slug: "criada-via-http.md", content: "outra" });
+    assert.equal(res.status, 409);
+  });
+
+  it("POST /api/boxes com slug inválido (README.md) -> 400, nunca escreve", async () => {
+    const res = await post("/api/boxes", { slug: "README.md", content: "x" });
+    assert.equal(res.status, 400);
+    assert.equal(readFileSync(join(root, "context", "snippets", "README.md"), "utf8"), "# Formato\n\nDoc.");
+  });
+
+  it("POST /api/boxes sem 'content' -> 400", async () => {
+    assert.equal((await post("/api/boxes", { slug: "so-slug.md" })).status, 400);
+  });
+
+  it("POST /api/boxes/:slug/archive arquiva -> 200, some de /api/boxes e entra em /archived", async () => {
+    const res = await post("/api/boxes/criada-via-http.md/archive");
+    assert.equal(res.status, 200);
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    assert.ok(!list.boxes.some((b: { slug: string }) => b.slug === "criada-via-http.md"));
+    const archived = await (await fetch(new URL("/api/boxes/archived", server.url))).json();
+    assert.ok(archived.boxes.some((b: { slug: string }) => b.slug === "criada-via-http.md"));
+  });
+
+  it("POST /api/boxes/:slug/archive BLOQUEIA caixa em slot ativo -> 409, não move", async () => {
+    const res = await post("/api/boxes/com-slot.md/archive");
+    assert.equal(res.status, 409);
+    const body = await res.json();
+    assert.equal(body.blockedBySlot, true);
+    assert.equal(existsSync(join(root, "context", "snippets", "com-slot.md")), true);
+  });
+
+  it("POST /api/boxes/:slug/archive em inexistente -> 404", async () => {
+    assert.equal((await post("/api/boxes/nao-existe.md/archive")).status, 404);
+  });
+
+  it("POST /api/boxes/:slug/unarchive restaura -> 200, volta pra /api/boxes", async () => {
+    const res = await post("/api/boxes/criada-via-http.md/unarchive");
+    assert.equal(res.status, 200);
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    assert.ok(list.boxes.some((b: { slug: string }) => b.slug === "criada-via-http.md"));
+  });
+
+  it("GET /api/boxes/archived nunca é confundido com get-por-slug (200, lista)", async () => {
+    const res = await fetch(new URL("/api/boxes/archived", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(Array.isArray(body.boxes));
   });
 });
