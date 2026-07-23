@@ -1,5 +1,5 @@
 /**
- * apoia-se-gmail-drain.ts (#3859 metade 1)
+ * apoia-se-gmail-drain.ts (#3859 metade 1; promessas #3912)
  *
  * Drena notificações de "novo apoio" da apoia.se direto do Gmail pessoal
  * (mesmo mecanismo REST não-MCP de `scripts/inbox-drain.ts` — `gFetch` +
@@ -18,10 +18,24 @@
  * (os asteriscos são markdown do template da apoia.se/Brevo — `*R$25*` — não
  * fazem parte do valor).
  *
+ * **Promessas (#3912):** a apoia.se também manda um e-mail distinto quando um
+ * apoiador PROMETE (mas ainda não pagou) — subject "Você tem uma nova
+ * promessa de apoiador! :D", corpo com a linha:
+ *   {NOME} <{email}> recém prometeu um apoio de R${valor}
+ * A query abaixo casa AMBOS os templates (`OR` de subject) numa única busca —
+ * cada mensagem é tentada primeiro contra `parseApoioNotificationEmail`
+ * (confirmado) e, se não bater, contra `parsePromessaEmail` (promessa).
+ * Promessa vira contato PENDENTE (não "apoiando" — quem decide isso é sempre
+ * `checkBacker`, ver `scripts/studio-ui/studio-apoios.ts::importPendingApoiadoresFromGmail`)
+ * pra que o próximo force-refresh tenha a chance de confirmar a conversão
+ * mesmo quando a apoia.se NÃO reenvia um e-mail de "novo apoio" (caso
+ * comprovado: Ivan, 260722 — promessa converteu em pagamento sem 2º e-mail).
+ *
  * Cursor: `data/apoia-se/gmail-drain-cursor.json` — MESMO formato de
  * `data/inbox-cursor.json`: `{ last_drain_iso: string | null }`. Cursor
  * separado do inbox editorial — são drains independentes, de queries e
- * propósitos diferentes.
+ * propósitos diferentes. Único cursor pras 2 famílias de notificação (mesma
+ * busca cobre ambas).
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -32,8 +46,10 @@ import { isAuthExpiredError } from "../inbox-drain.ts";
 
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
 
-/** Query Gmail default — ver rationale no cabeçalho do módulo. */
-export const APOIA_SE_GMAIL_QUERY = 'from:noreply@apoia.se subject:"novo apoio"';
+/** Query Gmail default — ver rationale no cabeçalho do módulo. Casa AMBOS os
+ * templates (confirmado + promessa, #3912) numa única busca. */
+export const APOIA_SE_GMAIL_QUERY =
+  'from:noreply@apoia.se (subject:"novo apoio" OR subject:"nova promessa")';
 
 // ---------------------------------------------------------------------------
 // Parse (pure) — testável sem I/O
@@ -63,6 +79,35 @@ const APOIO_LINE_RE =
 export function parseApoioNotificationEmail(bodyText: string): ApoioNotification | null {
   if (!bodyText) return null;
   const m = APOIO_LINE_RE.exec(bodyText);
+  if (!m) return null;
+  const name = m[1].trim();
+  const email = m[2].trim().toLowerCase();
+  const value = Number(m[3].replace(",", "."));
+  if (!name || !email || !Number.isFinite(value)) return null;
+  return { name, email, value };
+}
+
+/** Mesmo shape de `ApoioNotification` (name/email/value) — promessa NUNCA
+ * afirma pagamento, só quem prometeu e quanto (#3912). */
+export type PromessaNotification = ApoioNotification;
+
+/**
+ * `{NOME} <{email}> recém prometeu um apoio de R${valor}` — mesma tolerância
+ * de template do parser de apoio confirmado (asteriscos/pontuação opcionais,
+ * vírgula decimal normalizada). "recém"/"recem" (sem acento) ambos casam.
+ */
+const PROMESSA_LINE_RE =
+  /([^\n<>]+?)\s*<\s*([^\s<>]+@[^\s<>]+)\s*>\s*rec[eé]m prometeu um apoio de\s*\*?\s*R\$\s*(\d+(?:[.,]\d+)?)\s*\*?\s*!?/i;
+
+/**
+ * Parseia o corpo text/plain de uma notificação "nova promessa" da apoia.se
+ * (#3912). Retorna `null` se o corpo não bate com o padrão esperado — nunca
+ * lança. Promessa é intencionalmente NÃO tratada como pagamento confirmado:
+ * ver `importPendingApoiadoresFromGmail` em `studio-apoios.ts`.
+ */
+export function parsePromessaEmail(bodyText: string): PromessaNotification | null {
+  if (!bodyText) return null;
+  const m = PROMESSA_LINE_RE.exec(bodyText);
   if (!m) return null;
   const name = m[1].trim();
   const email = m[2].trim().toLowerCase();
@@ -153,8 +198,20 @@ export interface DrainApoiaSeOptions {
   query?: string;
 }
 
+/** Promessa drenada + o timestamp (ISO) da mensagem — o timestamp vem do
+ * envelope Gmail (`internalDate`), não do corpo, por isso é anexado aqui e
+ * não faz parte de `PromessaNotification` (que só cobre o parse puro do
+ * corpo). #3912. */
+export interface DrainedPromessa extends PromessaNotification {
+  receivedAtIso: string;
+}
+
 export interface DrainApoiaSeResult {
   notifications: ApoioNotification[];
+  /** Promessas de apoio (ainda não pagas) drenadas na mesma busca (#3912) —
+   * opcional pra manter compat com mocks/fixtures existentes que só conhecem
+   * `notifications`; ausente é tratado como `[]` pelo caller. */
+  promessas?: DrainedPromessa[];
   most_recent_iso: string | null;
   /** `true` quando a busca de threads falhou — cursor NÃO avança (mesma
    * disciplina de inbox-drain.ts #668, reprocessa na próxima tentativa). */
@@ -201,6 +258,7 @@ export async function drainApoiaSeNotifications(
   }
 
   const notifications: ApoioNotification[] = [];
+  const promessas: DrainedPromessa[] = [];
   let mostRecentIso: string | null = null;
   let errors = 0;
 
@@ -222,7 +280,14 @@ export async function drainApoiaSeNotifications(
 
       const body = extractTextBody(msg.payload);
       const parsed = parseApoioNotificationEmail(body);
-      if (parsed) notifications.push(parsed);
+      if (parsed) {
+        notifications.push(parsed);
+        continue;
+      }
+      // Não bateu com "novo apoio" confirmado — tenta promessa (#3912) antes
+      // de descartar a mensagem.
+      const promessa = parsePromessaEmail(body);
+      if (promessa) promessas.push({ ...promessa, receivedAtIso: iso });
     }
   }
 
@@ -230,6 +295,7 @@ export async function drainApoiaSeNotifications(
 
   return {
     notifications,
+    ...(promessas.length > 0 ? { promessas } : {}),
     most_recent_iso: mostRecentIso,
     skipped: false,
     ...(errors > 0 ? { errors } : {}),
