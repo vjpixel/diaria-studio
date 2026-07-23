@@ -25,6 +25,16 @@ import {
   deriveEditionName,
 } from "./weekly-plan.ts";
 import { isBounceBreach } from "./thresholds.ts";
+// #3884: painel de avaliação de experimentos A/B (CTA-01) + registro
+// "Experimento vigente" — import circular com este módulo (pickStats/escHtml
+// usados lá, funções de render importadas aqui), mesmo padrão já documentado
+// acima para render-links.ts/weekly-plan.ts (uso só em corpo de função,
+// request-time, nunca em top-level do módulo).
+import {
+  EXPERIMENTS,
+  renderExperimentRegistrySection,
+  renderExperimentsEvaluationSections,
+} from "./experiment-cta.ts";
 
 /**
  * #3082: rótulo pra 2ª linha (<small>) da célula "Lista" na tabela Envios —
@@ -389,6 +399,13 @@ ${monthlyAbcSectionsByDate}
   // agregado → semáforo → 3 volumes) + #3010: campanhas agendadas (`scheduled`)
   // logo abaixo da recomendação dos próximos 3 envios.
   const weeklyPlanSection = renderWeeklyPlanTabPanel(campaigns, nowDate, scheduled);
+  // #3884: registro "Experimento vigente" (regras do protocolo, sempre visível
+  // — pedido do editor) + painel de avaliação por experimento (pareamento A/B,
+  // acumulado por braço, z-test, guardrails, conversões manuais). Seção nova
+  // na aba Agendamento/Rampa (issue deixou a critério da implementação "aba
+  // nova ou seção na aba Rampa" — seção escolhida por menor blast radius).
+  const experimentRegistrySection = renderExperimentRegistrySection(EXPERIMENTS);
+  const experimentEvalSections = renderExperimentsEvaluationSections(campaigns, EXPERIMENTS);
   // #3415: peças fatiadas do mesmo cálculo (computeWeeklySendState
   // compartilhado em weekly-plan.ts) pro reorg Passado/Presente/Futuro da
   // Visão Geral — "Saúde" (Passado), "Recomendação" + agendados (Futuro),
@@ -778,6 +795,8 @@ ${rows || `<tr><td colspan="10" style="text-align:center;color:${DS.ink};opacity
   <!-- Aba Agendamento: plano de envio semanal cold (#2974) -->
   <div class="tab-panel" id="panel-rampa" role="tabpanel" aria-labelledby="tablabel-rampa">
 ${weeklyPlanSection}
+${experimentRegistrySection}
+${experimentEvalSections}
   </div><!-- /panel-rampa -->
 
   <!-- Aba 2: Engajamento — weekday + resumo A/B/C + coortes + É IA? (#2773) -->
