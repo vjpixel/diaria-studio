@@ -56,3 +56,37 @@ export function validateNewBoxSlug(raw) {
   }
   return { ok: true, slug, error: null };
 }
+
+// ── #3937: gestão de slots de divulgação ──────────────────────────────────
+
+/** Posição de cada slot no layout (`stitch-newsletter.ts`) — texto fixo,
+ * mostrado ao lado do seletor de cada slot na UI. */
+export const SLOT_POSITION_LABEL = {
+  slot1: "entre D1 e D2",
+  slot2: "entre D2 e D3 (só materializa em edição de 3 destaques)",
+  slot3: "depois do último destaque (D3, ou D2 se só houver 2)",
+};
+
+/** Mensagem do `confirm()` disparado por `saveSlots()` quando o server
+ * responde 409 — mesmo texto/motivo do guard de conflito de save de 1 caixa
+ * (`BOX_SAVE_CONFLICT_CONFIRM_MESSAGE`), mas nomeando o arquivo real que está
+ * em jogo aqui: `platform.config.json` é o mais sensível desta tela (afeta
+ * TODA edição), então o aviso é explícito sobre isso (R6 de
+ * docs/studio-ui-ux-guidelines.md). */
+export const SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE =
+  "platform.config.json foi modificado desde que você abriu esta tela — provavelmente por outra aba/sessão do " +
+  "Studio, ou uma edição manual do arquivo. Clique OK para SOBRESCREVER com a sua atribuição de slots mesmo " +
+  "assim, ou Cancelar para RECARREGAR o estado mais recente do disco (suas mudanças não salvas aqui serão perdidas).";
+
+/** Acha a primeira caixa atribuída a mais de um slot ao mesmo tempo (guard 2
+ * do #3937), PURO — sem `document`/`fetch`, testável (#633). Ignora slots
+ * vazios (`""`) — só compara slugs preenchidos entre si. Espelha
+ * (client-side, feedback imediato) o mesmo guard que `saveBoxSlots`
+ * (server, autoridade final) aplica antes de escrever. Retorna o slug
+ * duplicado, ou `null` se não há conflito. */
+export function findDuplicateSlotAssignment(slots) {
+  const filled = [slots.slot1, slots.slot2, slots.slot3]
+    .map((v) => String(v ?? "").trim())
+    .filter((v) => v !== "");
+  return filled.find((v, i) => filled.indexOf(v) !== i) ?? null;
+}

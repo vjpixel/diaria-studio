@@ -15,6 +15,9 @@ import {
   validateNewBoxSlug,
   boxArchiveConfirmMessage,
   BOX_SLUG_RE,
+  findDuplicateSlotAssignment,
+  SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE,
+  SLOT_POSITION_LABEL,
 } from "../scripts/studio-ui/public/caixas-guards.js";
 
 describe("validateNewBoxSlug (#3928)", () => {
@@ -70,5 +73,62 @@ describe("boxArchiveConfirmMessage (#3928)", () => {
     assert.match(msg, /apoio-divulgacao\.md/);
     assert.match(msg, /não é deletado/i);
     assert.match(msg, /restaurada/i);
+  });
+});
+
+describe("findDuplicateSlotAssignment (#3937)", () => {
+  it("null quando todos os slots são distintos", () => {
+    assert.equal(
+      findDuplicateSlotAssignment({ slot1: "a.md", slot2: "b.md", slot3: "c.md" }),
+      null,
+    );
+  });
+
+  it("null quando slots estão vazios (não conta como duplicata)", () => {
+    assert.equal(findDuplicateSlotAssignment({ slot1: "", slot2: "", slot3: "" }), null);
+    assert.equal(findDuplicateSlotAssignment({ slot1: "a.md", slot2: "", slot3: "" }), null);
+  });
+
+  it("detecta a mesma caixa em 2 slots", () => {
+    assert.equal(
+      findDuplicateSlotAssignment({ slot1: "a.md", slot2: "a.md", slot3: "" }),
+      "a.md",
+    );
+  });
+
+  it("detecta a mesma caixa em 3 slots", () => {
+    assert.equal(
+      findDuplicateSlotAssignment({ slot1: "a.md", slot2: "a.md", slot3: "a.md" }),
+      "a.md",
+    );
+  });
+
+  it("ignora espaço nas pontas antes de comparar", () => {
+    assert.equal(
+      findDuplicateSlotAssignment({ slot1: "  a.md  ", slot2: "a.md", slot3: "" }),
+      "a.md",
+    );
+  });
+
+  it("tolera undefined/null nos valores dos slots", () => {
+    assert.equal(findDuplicateSlotAssignment({ slot1: undefined, slot2: null, slot3: "" }), null);
+  });
+});
+
+describe("SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE (#3937)", () => {
+  it("nomeia platform.config.json e descreve as duas saídas (sobrescrever/recarregar)", () => {
+    assert.match(SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE, /platform\.config\.json/);
+    assert.match(SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE, /sobrescrever/i);
+    assert.match(SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE, /recarregar/i);
+  });
+});
+
+describe("SLOT_POSITION_LABEL (#3937)", () => {
+  it("tem uma entrada por slot com a posição descrita na issue", () => {
+    assert.match(SLOT_POSITION_LABEL.slot1, /D1/);
+    assert.match(SLOT_POSITION_LABEL.slot1, /D2/);
+    assert.match(SLOT_POSITION_LABEL.slot2, /D2/);
+    assert.match(SLOT_POSITION_LABEL.slot2, /D3/);
+    assert.match(SLOT_POSITION_LABEL.slot3, /último destaque/i);
   });
 });

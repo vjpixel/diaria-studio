@@ -11,14 +11,19 @@
  *   2. Contrato HTTP via `startStudioServer` (mesmo padrão de
  *      `test/studio-apoios-page.test.ts`/`test/studio-review-server.test.ts`):
  *      `GET /caixas` (shell), `GET /api/boxes` (lista), `GET/PUT /api/boxes/:slug`
- *      (conteúdo + save, incluindo o conflito 409 e o retry com `force`).
+ *      (conteúdo + save, incluindo o conflito 409 e o retry com `force`),
+ *      `GET/PUT /api/boxes/slots` (#3937 — gestão de slots pela UI).
  */
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const resolvePlatformConfigPath = () => join(REPO_ROOT, "platform.config.json");
 import {
   isValidBoxSlug,
   extractBoxTitle,
@@ -37,6 +42,9 @@ import {
   stripNomeLine,
   buildBoxContentWithNome,
   resolveBoxDisplayName,
+  readBoxSlotsState,
+  replaceBoxesDivulgacaoBlock,
+  saveBoxSlots,
 } from "../scripts/studio-ui/studio-boxes.ts";
 
 // ─── lógica pura ──────────────────────────────────────────────────────────
@@ -531,6 +539,247 @@ describe("resolveBoxDisplayName (#3933)", () => {
   });
 });
 
+// ─── gestão de slots pela UI (pura, #3937) ─────────────────────────────────
+
+describe("replaceBoxesDivulgacaoBlock (#3937, pure)", () => {
+  it("reescreve só o bloco boxes_divulgacao, preservando o resto byte-a-byte", () => {
+    const raw = [
+      "{",
+      '  "newsletter": "beehiiv",',
+      '  "socials": [',
+      '    "linkedin",',
+      '    "facebook"',
+      "  ],",
+      '  "boxes_divulgacao": {',
+      '    "slot1": "recomendacao-leitura.md",',
+      '    "slot2": "livros-divulgacao.md",',
+      '    "slot3": "apoio-divulgacao.md"',
+      "  },",
+      '  "drive_sync": false',
+      "}",
+    ].join("\n");
+
+    const out = replaceBoxesDivulgacaoBlock(raw, { slot1: "outra.md", slot2: "", slot3: "apoio-divulgacao.md" });
+
+    // As chaves ANTES e DEPOIS do bloco reescrito ficam byte-a-byte intactas.
+    assert.ok(out.startsWith('{\n  "newsletter": "beehiiv",\n  "socials": [\n    "linkedin",\n    "facebook"\n  ],\n'));
+    assert.ok(out.endsWith('\n  "drive_sync": false\n}'));
+    // O bloco em si reflete os novos valores.
+    assert.match(out, /"slot1": "outra\.md"/);
+    assert.match(out, /"slot2": ""/);
+    assert.match(out, /"slot3": "apoio-divulgacao\.md"/);
+    // JSON continua válido e as outras chaves sobrevivem semanticamente.
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.newsletter, "beehiiv");
+    assert.deepEqual(parsed.socials, ["linkedin", "facebook"]);
+    assert.equal(parsed.drive_sync, false);
+    assert.deepEqual(parsed.boxes_divulgacao, { slot1: "outra.md", slot2: "", slot3: "apoio-divulgacao.md" });
+  });
+
+  it("byte-a-byte contra o platform.config.json REAL do repo (regressão do formato canônico)", () => {
+    const raw = readFileSync(resolvePlatformConfigPath(), "utf8");
+    const out = replaceBoxesDivulgacaoBlock(raw, { slot1: "x.md", slot2: "y.md", slot3: "" });
+    // Só a região do bloco boxes_divulgacao muda — tudo antes e depois idêntico.
+    const blockStart = raw.indexOf('"boxes_divulgacao"');
+    assert.ok(blockStart > 0, "fixture do repo precisa ter boxes_divulgacao");
+    assert.equal(out.slice(0, blockStart), raw.slice(0, blockStart));
+    const parsed = JSON.parse(out);
+    assert.deepEqual(parsed.boxes_divulgacao, { slot1: "x.md", slot2: "y.md", slot3: "" });
+  });
+
+  it("insere o bloco (defensivo) quando boxes_divulgacao ainda não existe no arquivo", () => {
+    const raw = '{\n  "newsletter": "beehiiv"\n}';
+    const out = replaceBoxesDivulgacaoBlock(raw, { slot1: "a.md", slot2: "", slot3: "" });
+    const parsed = JSON.parse(out);
+    assert.deepEqual(parsed.boxes_divulgacao, { slot1: "a.md", slot2: "", slot3: "" });
+    assert.equal(parsed.newsletter, "beehiiv");
+  });
+
+  it("lança em vez de escrever algo potencialmente corrompido quando não há ponto de inserção seguro", () => {
+    assert.throws(() => replaceBoxesDivulgacaoBlock("não é json de jeito nenhum", { slot1: "", slot2: "", slot3: "" }));
+  });
+});
+
+describe("readBoxSlotsState (#3937, pure)", () => {
+  it("sem platform.config.json -> slots vazios, modifiedAt:null", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-boxes-slotsstate-none-"));
+    assert.deepEqual(readBoxSlotsState(root), { slot1: "", slot2: "", slot3: "", modifiedAt: null });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("com boxes_divulgacao -> forma direta slot->filename + modifiedAt", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-boxes-slotsstate-"));
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "a.md", slot2: "b.md", slot3: "c.md" } }),
+    );
+    const state = readBoxSlotsState(root);
+    assert.equal(state.slot1, "a.md");
+    assert.equal(state.slot2, "b.md");
+    assert.equal(state.slot3, "c.md");
+    assert.ok(state.modifiedAt);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("JSON corrompido -> slots vazios mas modifiedAt real (fail-soft, nunca lança)", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-boxes-slotsstate-corrupt-"));
+    writeFileSync(join(root, "platform.config.json"), "{ not json");
+    const state = readBoxSlotsState(root);
+    assert.deepEqual({ slot1: state.slot1, slot2: state.slot2, slot3: state.slot3 }, { slot1: "", slot2: "", slot3: "" });
+    assert.ok(state.modifiedAt);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("saveBoxSlots (#3937, pure)", () => {
+  let root: string;
+
+  before(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-saveslots-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "a.md"), "# A");
+    writeFileSync(join(root, "context", "snippets", "b.md"), "# B");
+    writeFileSync(join(root, "context", "snippets", "c.md"), "# C");
+    mkdirSync(join(root, "context", "snippets", "_arquivo"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "_arquivo", "arquivada.md"), "# Arquivada");
+  });
+
+  beforeEach(() => {
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify(
+        {
+          newsletter: "beehiiv",
+          boxes_divulgacao: { slot1: "a.md", slot2: "b.md", slot3: "c.md" },
+          drive_sync: false,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+  });
+
+  after(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("happy path: reatribui e devolve o novo estado + modifiedAt", () => {
+    const result = saveBoxSlots(root, { slot1: "b.md", slot2: "a.md", slot3: "" });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.slots, { slot1: "b.md", slot2: "a.md", slot3: "", modifiedAt: result.modifiedAt });
+  });
+
+  it("preserva as outras chaves do platform.config.json byte-a-byte, só boxes_divulgacao muda", () => {
+    const before = readFileSync(join(root, "platform.config.json"), "utf8");
+    const result = saveBoxSlots(root, { slot1: "c.md", slot2: "", slot3: "a.md" });
+    assert.equal(result.ok, true);
+    const after = readFileSync(join(root, "platform.config.json"), "utf8");
+    const blockStart = before.indexOf('"boxes_divulgacao"');
+    assert.equal(after.slice(0, blockStart), before.slice(0, blockStart), "conteúdo ANTES do bloco deve ser idêntico");
+    const parsedBefore = JSON.parse(before);
+    const parsedAfter = JSON.parse(after);
+    assert.equal(parsedAfter.newsletter, parsedBefore.newsletter);
+    assert.equal(parsedAfter.drive_sync, parsedBefore.drive_sync);
+    assert.deepEqual(parsedAfter.boxes_divulgacao, { slot1: "c.md", slot2: "", slot3: "a.md" });
+  });
+
+  it("aceita '(vazio)' — string vazia em qualquer slot", () => {
+    const result = saveBoxSlots(root, { slot1: "", slot2: "", slot3: "" });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.slots, { slot1: "", slot2: "", slot3: "", modifiedAt: result.modifiedAt });
+  });
+
+  it("guard 1: rejeita caixa INEXISTENTE, não escreve", () => {
+    const before = readFileSync(join(root, "platform.config.json"), "utf8");
+    const result = saveBoxSlots(root, { slot1: "nao-existe.md", slot2: "", slot3: "" });
+    assert.equal(result.ok, false);
+    assert.equal(result.invalid, true);
+    assert.equal(readFileSync(join(root, "platform.config.json"), "utf8"), before, "não deve escrever em atribuição inválida");
+  });
+
+  it("guard 1: rejeita caixa ARQUIVADA, não escreve", () => {
+    const before = readFileSync(join(root, "platform.config.json"), "utf8");
+    const result = saveBoxSlots(root, { slot1: "arquivada.md", slot2: "", slot3: "" });
+    assert.equal(result.ok, false);
+    assert.equal(result.invalid, true);
+    assert.equal(readFileSync(join(root, "platform.config.json"), "utf8"), before);
+  });
+
+  it("guard 2: rejeita a MESMA caixa em 2 slots, não escreve", () => {
+    const before = readFileSync(join(root, "platform.config.json"), "utf8");
+    const result = saveBoxSlots(root, { slot1: "a.md", slot2: "a.md", slot3: "" });
+    assert.equal(result.ok, false);
+    assert.equal(result.invalid, true);
+    assert.match(result.error ?? "", /a\.md/);
+    assert.equal(readFileSync(join(root, "platform.config.json"), "utf8"), before);
+  });
+
+  it("guard 4 (mtime): expectedModifiedAt divergente -> conflict:true, NÃO sobrescreve", () => {
+    const configPath = join(root, "platform.config.json");
+    const staleModifiedAt = statSync(configPath).mtime.toISOString();
+    writeFileSync(configPath, JSON.stringify({ boxes_divulgacao: { slot1: "a.md", slot2: "b.md", slot3: "c.md" } }), "utf8");
+    const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
+    utimesSync(configPath, bumped, bumped);
+
+    const result = saveBoxSlots(root, { slot1: "b.md", slot2: "", slot3: "" }, { expectedModifiedAt: staleModifiedAt });
+    assert.equal(result.ok, false);
+    assert.equal(result.conflict, true);
+    assert.ok(result.currentModifiedAt);
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.deepEqual(onDisk.boxes_divulgacao, { slot1: "a.md", slot2: "b.md", slot3: "c.md" }, "não deve sobrescrever em conflito");
+  });
+
+  it("guard 4: force:true sobrescreve mesmo com expectedModifiedAt divergente", () => {
+    const configPath = join(root, "platform.config.json");
+    const staleModifiedAt = statSync(configPath).mtime.toISOString();
+    const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
+    utimesSync(configPath, bumped, bumped);
+
+    const result = saveBoxSlots(
+      root,
+      { slot1: "c.md", slot2: "", slot3: "" },
+      { expectedModifiedAt: staleModifiedAt, force: true },
+    );
+    assert.equal(result.ok, true);
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.deepEqual(onDisk.boxes_divulgacao, { slot1: "c.md", slot2: "", slot3: "" });
+  });
+
+  it("sem expectedModifiedAt no corpo pula a checagem de conflito", () => {
+    const result = saveBoxSlots(root, { slot1: "a.md", slot2: "b.md", slot3: "c.md" });
+    assert.equal(result.ok, true);
+    assert.equal(result.conflict, undefined);
+  });
+
+  it("platform.config.json ausente -> ok:false, sem lançar", () => {
+    const emptyRoot = mkdtempSync(join(tmpdir(), "studio-boxes-saveslots-noconfig-"));
+    const result = saveBoxSlots(emptyRoot, { slot1: "", slot2: "", slot3: "" });
+    assert.equal(result.ok, false);
+    rmSync(emptyRoot, { recursive: true, force: true });
+  });
+
+  // #3937 nota "Fecha o loop com o Arquivar (#3928)": uma vez que o slot é
+  // liberado por saveBoxSlots, archiveBox deixa de bloquear a mesma caixa.
+  it("fecha o loop com archiveBox: liberar o slot aqui desbloqueia o arquivamento (#3928)", () => {
+    // No estado do beforeEach, "b.md" está no slot2 -> archiveBox bloqueia.
+    const blocked = archiveBox(root, "b.md");
+    assert.equal(blocked.ok, false);
+    assert.equal(blocked.blockedBySlot, true);
+
+    // Libera o slot2 (vazio) via saveBoxSlots...
+    const freed = saveBoxSlots(root, { slot1: "a.md", slot2: "", slot3: "c.md" });
+    assert.equal(freed.ok, true);
+
+    // ...agora archiveBox segue normalmente.
+    const archived = archiveBox(root, "b.md");
+    assert.equal(archived.ok, true);
+    assert.equal(existsSync(archivedBoxFilePath(root, "b.md")), true);
+
+    // Restaura pro estado original do fixture, pra não vazar pros próximos testes.
+    unarchiveBox(root, "b.md");
+  });
+});
+
 // ─── contrato HTTP ─────────────────────────────────────────────────────────
 
 describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
@@ -920,5 +1169,242 @@ describe("nome interno via HTTP: GET body/nome, PUT {nome,body}, POST com nome (
     assert.ok(!onDisk.replace(/<!--[\s\S]*?-->/g, "").includes("Caixa Nomeada"));
     const list = await (await fetch(new URL("/api/boxes", server.url))).json();
     assert.equal(list.boxes.find((b: { slug: string }) => b.slug === "nova-com-nome.md").nome, "Caixa Nomeada");
+  });
+});
+
+// ─── contrato HTTP: gestão de slots de divulgação (#3937) ──────────────────
+
+describe("GET/PUT /api/boxes/slots (#3937)", () => {
+  let root: string;
+  let server: StudioServer;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-3937-http-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "recomendacao-leitura.md"), "# Recomendação");
+    writeFileSync(join(root, "context", "snippets", "livros-divulgacao.md"), "# Livros");
+    writeFileSync(join(root, "context", "snippets", "apoio-divulgacao.md"), "# Apoio");
+    mkdirSync(join(root, "context", "snippets", "_arquivo"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "_arquivo", "velha.md"), "# Velha");
+    server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify(
+        {
+          newsletter: "beehiiv",
+          boxes_divulgacao: {
+            slot1: "recomendacao-leitura.md",
+            slot2: "livros-divulgacao.md",
+            slot3: "apoio-divulgacao.md",
+          },
+          drive_sync: false,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+  });
+
+  it("GET /api/boxes/slots devolve a atribuição atual + modifiedAt", async () => {
+    const res = await fetch(new URL("/api/boxes/slots", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.slot1, "recomendacao-leitura.md");
+    assert.equal(body.slot2, "livros-divulgacao.md");
+    assert.equal(body.slot3, "apoio-divulgacao.md");
+    assert.ok(body.modifiedAt);
+  });
+
+  it("GET /api/boxes/slots nunca é confundido com get-por-slug (/api/boxes/:slug)", async () => {
+    // Sem a checagem explícita antes do regex de slug, isto cairia em
+    // readBox(root, "slots") -> 404. Regressão do #3928 pra "archived".
+    const res = await fetch(new URL("/api/boxes/slots", server.url));
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).slot1, "recomendacao-leitura.md");
+  });
+
+  it("PUT /api/boxes/slots feliz — reatribui e devolve o novo estado", async () => {
+    const get = await (await fetch(new URL("/api/boxes/slots", server.url))).json();
+    const loadedModifiedAt = get.modifiedAt;
+
+    const put = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slot1: "livros-divulgacao.md",
+        slot2: "",
+        slot3: "apoio-divulgacao.md",
+        expectedModifiedAt: loadedModifiedAt,
+      }),
+    });
+    assert.equal(put.status, 200);
+    const body = await put.json();
+    assert.equal(body.ok, true);
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8")).boxes_divulgacao,
+      { slot1: "livros-divulgacao.md", slot2: "", slot3: "apoio-divulgacao.md" },
+    );
+    // Badge da lista reflete a nova atribuição (refetch, R5) sem restart.
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    const livros = list.boxes.find((b: { slug: string }) => b.slug === "livros-divulgacao.md");
+    assert.equal(livros.slot, 1);
+    const recomendacao = list.boxes.find((b: { slug: string }) => b.slug === "recomendacao-leitura.md");
+    assert.equal(recomendacao.slot, null);
+  });
+
+  it("preserva as outras chaves do platform.config.json (newsletter, drive_sync)", async () => {
+    const res = await fetch(new URL("/api/boxes/slots", server.url));
+    const get = await res.json();
+    await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot1: "apoio-divulgacao.md", slot2: "", slot3: "", expectedModifiedAt: get.modifiedAt }),
+    });
+    const onDisk = JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8"));
+    assert.equal(onDisk.newsletter, "beehiiv");
+    assert.equal(onDisk.drive_sync, false);
+  });
+
+  it("guard 1: rejeita caixa inexistente num slot -> 400, não escreve", async () => {
+    const before = readFileSync(join(root, "platform.config.json"), "utf8");
+    const put = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot1: "nao-existe.md", slot2: "", slot3: "" }),
+    });
+    assert.equal(put.status, 400);
+    const body = await put.json();
+    assert.equal(body.invalid, true);
+    assert.equal(readFileSync(join(root, "platform.config.json"), "utf8"), before);
+  });
+
+  it("guard 1: rejeita caixa ARQUIVADA num slot -> 400, não escreve", async () => {
+    const put = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot1: "velha.md", slot2: "", slot3: "" }),
+    });
+    assert.equal(put.status, 400);
+    const body = await put.json();
+    assert.equal(body.invalid, true);
+  });
+
+  it("guard 2: rejeita a mesma caixa em 2 slots -> 400, não escreve", async () => {
+    const put = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot1: "apoio-divulgacao.md", slot2: "apoio-divulgacao.md", slot3: "" }),
+    });
+    assert.equal(put.status, 400);
+    const body = await put.json();
+    assert.equal(body.invalid, true);
+  });
+
+  it("aceita '(vazio)' — todos os slots como string vazia", async () => {
+    const get = await (await fetch(new URL("/api/boxes/slots", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot1: "", slot2: "", slot3: "", expectedModifiedAt: get.modifiedAt }),
+    });
+    assert.equal(put.status, 200);
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8")).boxes_divulgacao,
+      { slot1: "", slot2: "", slot3: "" },
+    );
+  });
+
+  it("guard de mtime: expectedModifiedAt obsoleto -> 409, não sobrescreve", async () => {
+    const get = await (await fetch(new URL("/api/boxes/slots", server.url))).json();
+    const staleModifiedAt = get.modifiedAt;
+    // Simula outra sessão/aba escrevendo por baixo antes deste PUT.
+    const configPath = join(root, "platform.config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({ boxes_divulgacao: { slot1: "recomendacao-leitura.md", slot2: "", slot3: "" } }),
+      "utf8",
+    );
+    const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
+    utimesSync(configPath, bumped, bumped);
+
+    const put = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot1: "livros-divulgacao.md", slot2: "", slot3: "", expectedModifiedAt: staleModifiedAt }),
+    });
+    assert.equal(put.status, 409);
+    const body = await put.json();
+    assert.equal(body.conflict, true);
+    assert.deepEqual(
+      JSON.parse(readFileSync(configPath, "utf8")).boxes_divulgacao,
+      { slot1: "recomendacao-leitura.md", slot2: "", slot3: "" },
+      "não deve sobrescrever em conflito",
+    );
+  });
+
+  it("guard de mtime: force:true sobrescreve mesmo com expectedModifiedAt divergente", async () => {
+    const put = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slot1: "apoio-divulgacao.md",
+        slot2: "",
+        slot3: "",
+        expectedModifiedAt: "2000-01-01T00:00:00.000Z", // deliberadamente obsoleto
+        force: true,
+      }),
+    });
+    assert.equal(put.status, 200);
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8")).boxes_divulgacao,
+      { slot1: "apoio-divulgacao.md", slot2: "", slot3: "" },
+    );
+  });
+
+  it("PUT com corpo não-JSON -> 400", async () => {
+    const put = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "não é json",
+    });
+    assert.equal(put.status, 400);
+  });
+
+  it("PUT com slot não-string (ex: número) -> 400", async () => {
+    const put = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot1: 123, slot2: "", slot3: "" }),
+    });
+    assert.equal(put.status, 400);
+  });
+
+  it("fecha o loop com o Arquivar (#3928): liberar o slot aqui desbloqueia POST /archive", async () => {
+    // Estado do beforeEach: apoio-divulgacao.md está no slot3 -> archive bloqueia.
+    const blocked = await fetch(new URL("/api/boxes/apoio-divulgacao.md/archive", server.url), { method: "POST" });
+    assert.equal(blocked.status, 409);
+
+    const get = await (await fetch(new URL("/api/boxes/slots", server.url))).json();
+    const freed = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot1: get.slot1, slot2: get.slot2, slot3: "", expectedModifiedAt: get.modifiedAt }),
+    });
+    assert.equal(freed.status, 200);
+
+    const archived = await fetch(new URL("/api/boxes/apoio-divulgacao.md/archive", server.url), { method: "POST" });
+    assert.equal(archived.status, 200);
+
+    // restaura pro fixture não vazar estado pros próximos testes
+    await fetch(new URL("/api/boxes/apoio-divulgacao.md/unarchive", server.url), { method: "POST" });
   });
 });

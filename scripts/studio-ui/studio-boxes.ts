@@ -6,8 +6,10 @@
  * reusáveis injetados na newsletter (recomendação de leitura, apoio, etc.)
  * vivem em `context/snippets/*.md` — este módulo lista esse diretório
  * dinamicamente, cruza com os slots ativos em `platform.config.json` →
- * `boxes_divulgacao` (somente LEITURA aqui — atribuição de slot é fora de
- * escopo desta issue), e edita o conteúdo de uma caixa existente.
+ * `boxes_divulgacao`, edita o conteúdo de uma caixa existente, e (#3937)
+ * gerencia a PRÓPRIA atribuição dos 3 slots (`readBoxSlotsState` +
+ * `saveBoxSlots`) — reescrita cirúrgica de `boxes_divulgacao`, nunca do
+ * arquivo inteiro (ver docstring de `replaceBoxesDivulgacaoBlock`).
  *
  * Arquivo PRÓPRIO desta fatia (mesma convenção de `studio-review.ts` #3559 /
  * `studio-apoios.ts` #3602): `server.ts` só registra rotas, toda a lógica
@@ -47,9 +49,11 @@
  * disco é tratado como "não encontrada" (404), igual a qualquer slug
  * inválido.
  *
- * **Atribuição de slot é somente LEITURA** — `listBoxes` só cruza contra
- * `platform.config.json` → `boxes_divulgacao.slot{1,2,3}` pra exibir o badge
- * "slot N"; nenhuma rota desta fatia escreve nesse arquivo.
+ * **Atribuição de slot (#3924 leitura + #3937 escrita)** — `listBoxes` cruza
+ * contra `platform.config.json` → `boxes_divulgacao.slot{1,2,3}` pra exibir o
+ * badge "slot N"; `saveBoxSlots` é o único ponto desta fatia que ESCREVE
+ * nesse arquivo, e faz isso cirurgicamente (só a chave `boxes_divulgacao`,
+ * ver `replaceBoxesDivulgacaoBlock`).
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -253,6 +257,230 @@ export function readBoxSlotAssignments(rootDir: string): Partial<Record<string, 
     if (typeof filename === "string" && filename) out[filename] = slot;
   }
   return out;
+}
+
+// ── slots: gestão pela UI (#3937 — leitura direta + ESCRITA) ─────────────
+
+const SLOT_KEYS = ["slot1", "slot2", "slot3"] as const;
+type SlotKey = (typeof SLOT_KEYS)[number];
+
+export interface BoxSlotsState {
+  slot1: string;
+  slot2: string;
+  slot3: string;
+  /** mtime ISO de `platform.config.json` no momento da leitura, ou `null` se
+   * o arquivo não existe. O client reenvia isto como `expectedModifiedAt` no
+   * PUT (guard de mtime #3729, mesmo contrato de `saveBox`/`saveReviewFile`). */
+  modifiedAt: string | null;
+}
+
+function readRawBoxesDivulgacao(cfg: unknown): Record<string, unknown> {
+  if (!cfg || typeof cfg !== "object") return {};
+  const boxes = (cfg as Record<string, unknown>).boxes_divulgacao;
+  return boxes && typeof boxes === "object" ? (boxes as Record<string, unknown>) : {};
+}
+
+/** Lê `platform.config.json` → `boxes_divulgacao.slot{1,2,3}` na forma DIRETA
+ * (slot -> filename, "" se vazio/ausente) — o inverso de
+ * `readBoxSlotAssignments` (que inverte pra filename -> slot, só pro badge da
+ * lista). Usado pela tela de gestão de slots (#3937): mostra a atribuição
+ * ATUAL de cada slot + o mtime que o client reenvia como guard de conflito no
+ * save. Fail-soft total: config ausente -> todos os slots "" e
+ * `modifiedAt: null`; JSON corrompido -> todos os slots "" mas `modifiedAt`
+ * real (o arquivo existe, só não parseia); nunca lança. */
+export function readBoxSlotsState(rootDir: string): BoxSlotsState {
+  const configPath = resolve(rootDir, "platform.config.json");
+  if (!existsSync(configPath)) return { slot1: "", slot2: "", slot3: "", modifiedAt: null };
+  const modifiedAt = statSync(configPath).mtime.toISOString();
+  let cfg: unknown;
+  try {
+    cfg = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch {
+    return { slot1: "", slot2: "", slot3: "", modifiedAt };
+  }
+  const b = readRawBoxesDivulgacao(cfg);
+  const get = (key: SlotKey) => (typeof b[key] === "string" ? (b[key] as string) : "");
+  return { slot1: get("slot1"), slot2: get("slot2"), slot3: get("slot3"), modifiedAt };
+}
+
+/** Reescreve SÓ o bloco `"boxes_divulgacao": { ... }` dentro do texto BRUTO de
+ * `platform.config.json` (#3937, regra #495) — preserva todas as outras
+ * chaves (`newsletter`, `socials`, `beehiiv`, etc.) e a formatação do resto
+ * do arquivo byte-a-byte. NUNCA faz `JSON.parse` + `JSON.stringify` do objeto
+ * inteiro por cima — mesmo que hoje o arquivo happen to reserializar
+ * idêntico (checado manualmente), isso é um acidente do formato atual, não
+ * uma garantia; um `note:` com caractere especial, uma futura chave com
+ * formatação não-canônica, ou qualquer edição manual do editor que fuja do
+ * `JSON.stringify(_, null, 2)` puro quebraria silenciosamente sob essa
+ * estratégia. Regex + substituição textual é a única forma de garantir
+ * "só essa chave mudou".
+ *
+ * Localiza o bloco via regex ancorada na indentação da linha
+ * `"boxes_divulgacao": {` e no `}` de fechamento na MESMA indentação — só
+ * funciona porque o valor de `boxes_divulgacao` é sempre um objeto raso
+ * (slot1/2/3 -> string), sem chaves aninhadas por dentro (se algum dia
+ * ganhar aninhamento, este regex precisa ser revisitado). Se a chave não
+ * existir ainda no arquivo (defensivo — não deveria acontecer no repo, onde
+ * ela sempre está presente), insere um bloco novo (2 espaços de indentação,
+ * convenção do repo) logo antes do fechamento do objeto top-level.
+ *
+ * Lança se não conseguir localizar nem o bloco nem um ponto de inserção
+ * seguro (arquivo não é um objeto JSON bem-formado no nível esperado) — o
+ * caller (`saveBoxSlots`) decide como reportar; nunca escreve um arquivo
+ * potencialmente corrompido. */
+export function replaceBoxesDivulgacaoBlock(
+  raw: string,
+  values: { slot1: string; slot2: string; slot3: string },
+): string {
+  const outerIndent = "  ";
+  const innerIndent = "    ";
+  const block = [
+    `${outerIndent}"boxes_divulgacao": {`,
+    `${innerIndent}"slot1": ${JSON.stringify(values.slot1)},`,
+    `${innerIndent}"slot2": ${JSON.stringify(values.slot2)},`,
+    `${innerIndent}"slot3": ${JSON.stringify(values.slot3)}`,
+    `${outerIndent}}`,
+  ].join("\n");
+
+  const blockRe = /([ \t]*)"boxes_divulgacao"\s*:\s*\{[\s\S]*?\n\1\}/;
+  if (blockRe.test(raw)) {
+    return raw.replace(blockRe, () => block);
+  }
+
+  const topCloseRe = /\n\}(\s*)$/;
+  const m = topCloseRe.exec(raw);
+  if (!m) {
+    throw new Error(
+      "platform.config.json: não foi possível localizar boxes_divulgacao nem um ponto seguro de inserção",
+    );
+  }
+  return raw.slice(0, m.index) + `,\n${block}\n}` + m[1];
+}
+
+export interface SaveBoxSlotsInput {
+  slot1: string;
+  slot2: string;
+  slot3: string;
+}
+
+export interface SaveBoxSlotsOptions {
+  /** mtime (ISO) visto pelo client no último GET — `undefined` pula a
+   * checagem de divergência inteiramente (mesma semântica de
+   * `SaveBoxOptions.expectedModifiedAt`). */
+  expectedModifiedAt?: string | null;
+  /** `true` = ignora divergência detectada e sobrescreve mesmo assim (o
+   * editor já confirmou no dialog de conflito do client). */
+  force?: boolean;
+}
+
+export interface SaveBoxSlotsResult {
+  ok: boolean;
+  error?: string;
+  modifiedAt: string | null;
+  /** `true` quando o save foi recusado por divergência de mtime (#3729) — o
+   * caller HTTP responde 409. */
+  conflict?: boolean;
+  /** mtime atual em disco no momento da tentativa — só presente quando
+   * `conflict` é `true`. */
+  currentModifiedAt?: string | null;
+  /** `true` quando algum slot aponta pra uma caixa inexistente/arquivada
+   * (guard 1) OU a mesma caixa foi atribuída a mais de um slot (guard 2) — o
+   * caller HTTP responde 400 nesse caso. */
+  invalid?: boolean;
+  /** Estado novo dos slots (eco pós-write), só presente em sucesso. */
+  slots?: BoxSlotsState;
+}
+
+function normalizeSlotValue(v: string | undefined | null): string {
+  return (v ?? "").trim();
+}
+
+/** Escreve a atribuição dos 3 slots de divulgação em `platform.config.json`
+ * (#3937). Guards, na ordem em que são checados:
+ *   1. cada slot não-vazio precisa ser uma caixa VIVA existente em
+ *      `context/snippets/` (não arquivada, não inexistente) — senão o
+ *      `stitch-newsletter` quebraria a montagem da edição;
+ *   2. a mesma caixa não pode ocupar 2 slots ao mesmo tempo (injetaria a
+ *      mesma divulgação 2× na mesma edição);
+ *   3. escrita CIRÚRGICA — só a chave `boxes_divulgacao` é reescrita
+ *      (`replaceBoxesDivulgacaoBlock`), nunca o objeto inteiro (#495);
+ *   4. guard de mtime (#3729) — mesmo contrato de `saveBox`/`saveReviewFile`,
+ *      checado ANTES da escrita, depois dos guards 1/2 (não faz sentido
+ *      recusar por conflito uma escrita que já seria inválida por outro
+ *      motivo).
+ * Fail-soft: nunca lança, sempre retorna resultado tipado. */
+export function saveBoxSlots(
+  rootDir: string,
+  input: SaveBoxSlotsInput,
+  opts: SaveBoxSlotsOptions = {},
+): SaveBoxSlotsResult {
+  const configPath = resolve(rootDir, "platform.config.json");
+  if (!existsSync(configPath)) {
+    return { ok: false, error: "platform.config.json não encontrado", modifiedAt: null };
+  }
+
+  const values: Record<SlotKey, string> = {
+    slot1: normalizeSlotValue(input.slot1),
+    slot2: normalizeSlotValue(input.slot2),
+    slot3: normalizeSlotValue(input.slot3),
+  };
+
+  // Guard 1: cada slot não-vazio precisa ser uma caixa VIVA existente.
+  for (const key of SLOT_KEYS) {
+    const slug = values[key];
+    if (slug && (!isValidBoxSlug(slug) || !existsSync(boxFilePath(rootDir, slug)))) {
+      return {
+        ok: false,
+        error: `a caixa "${slug}" (${key}) não existe em context/snippets/ (ou está arquivada) — atribuição rejeitada`,
+        modifiedAt: null,
+        invalid: true,
+      };
+    }
+  }
+
+  // Guard 2: nenhuma caixa em 2 slots ao mesmo tempo.
+  const filled = SLOT_KEYS.map((k) => values[k]).filter((v) => v !== "");
+  const dupe = filled.find((v, i) => filled.indexOf(v) !== i);
+  if (dupe) {
+    return {
+      ok: false,
+      error: `a caixa "${dupe}" foi atribuída a mais de um slot — cada caixa só pode ocupar 1 slot por vez`,
+      modifiedAt: null,
+      invalid: true,
+    };
+  }
+
+  // Guard 4: mtime — checado antes de tocar o disco, depois dos guards 1/2.
+  const currentModifiedAt = statSync(configPath).mtime.toISOString();
+  if (!opts.force && opts.expectedModifiedAt !== undefined) {
+    if (currentModifiedAt !== opts.expectedModifiedAt) {
+      return {
+        ok: false,
+        error: "platform.config.json foi modificado desde que você abriu a tela — recarregue ou sobrescreva explicitamente",
+        modifiedAt: currentModifiedAt,
+        conflict: true,
+        currentModifiedAt,
+      };
+    }
+  }
+
+  // Guard 3: escrita cirúrgica — só boxes_divulgacao é tocado.
+  let rewritten: string;
+  try {
+    const raw = readFileSync(configPath, "utf8");
+    rewritten = replaceBoxesDivulgacaoBlock(raw, values);
+  } catch (e) {
+    return { ok: false, error: (e as Error).message, modifiedAt: null };
+  }
+
+  try {
+    writeFileSync(configPath, rewritten, "utf8");
+  } catch (e) {
+    return { ok: false, error: (e as Error).message, modifiedAt: null };
+  }
+
+  const modifiedAt = statSync(configPath).mtime.toISOString();
+  return { ok: true, modifiedAt, slots: readBoxSlotsState(rootDir) };
 }
 
 // ── dirty vs. git (defesa fail-soft — sem repo git no fixture de teste) ──
