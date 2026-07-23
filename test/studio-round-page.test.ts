@@ -90,6 +90,19 @@ describe("GET /rodada + GET /api/round/:kind (#3561)", () => {
     assert.match(css.headers.get("content-type") ?? "", /text\/css/);
   });
 
+  it("regression #3915 (item 10): .round-meta tem breakpoint próprio (1 coluna) + overflow-wrap na dd — não estoura em telas estreitas", async () => {
+    const css = await fetch(new URL("/rodada.css", server.url));
+    const body = await css.text();
+    // causa-raiz (conteúdo sem ponto de quebra, ex: planPath) — corrigida
+    // independente de breakpoint.
+    assert.match(body, /\.round-meta dd\s*\{\s*margin:\s*0;\s*overflow-wrap:\s*anywhere;\s*\}/);
+    // squeeze de 2 colunas em telas estreitas — mesmo breakpoint (640px) já
+    // usado pelo resto do arquivo (.round-list-row/.round-kind-tab).
+    const mediaMatch = body.match(/@media \(max-width: 640px\) \{([\s\S]*)\}\s*$/);
+    assert.ok(mediaMatch, "deveria existir um @media (max-width: 640px) no fim do arquivo");
+    assert.match(mediaMatch![1], /\.round-meta\s*\{\s*grid-template-columns:\s*1fr;\s*\}/);
+  });
+
   it("(#3874) GET /tablist-core.js — helper de navegação de tabs (WAI-ARIA APG) importado por rodada.js/revisao.js — é servido com content-type JS", async () => {
     const res = await fetch(new URL("/tablist-core.js", server.url));
     assert.equal(res.status, 200);

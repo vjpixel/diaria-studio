@@ -7,7 +7,7 @@
  * legado ficam mantidos pra edições antigas que nunca serão re-renderizadas
  * mas cujo lint não deve quebrar retroativamente):
  *   - padrão atual (#3461): bloco de boas-vindas multi-parágrafo, sem
- *     negrito — "Olá! Eu sou o [Pixel](...), editor dessa newsletter. (...)
+ *     negrito — "Olá! Eu sou o [Pixel](...), editor desta newsletter. (...)
  *     Nesta edição, a IA analisou N artigos (X enviados por mim e Y
  *     encontrados automaticamente) e selecionei os Z mais relevantes. (...)"
  *     — detectado pela linha "Nesta edição, a IA analisou...".

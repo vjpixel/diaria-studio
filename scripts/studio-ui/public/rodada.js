@@ -393,6 +393,10 @@ el.refreshBtn.addEventListener("click", () => {
 function connect() {
   try {
     const events = new EventSource("/api/events");
+    // #3891 (item 4): publica a conexão pra chat-drawer.js (injetado logo
+    // abaixo no HTML, sempre o ÚLTIMO <script> — ver shared-event-source.js)
+    // reusar em vez de abrir uma segunda conexão só pro badge global.
+    window.__studioEvents = events;
     events.addEventListener("open", () => setConn("ok"));
     events.addEventListener("error", () => setConn("down"));
     events.addEventListener("plan", (ev) => {

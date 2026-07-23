@@ -1000,6 +1000,122 @@ describe("POST /api/waves/fire (#3702) — habilitado, com waveFireQueryFn mocka
   });
 });
 
+/**
+ * #3901 — mesmo padrão fim-a-fim de "POST /api/chat (#3887) — debounce do
+ * abort no close" acima: `handleApiWavesFire` tinha o MESMO bug (`req.on
+ * ("close", () => abortController.abort())` sem debounce e sem registro em
+ * `res`) que `handleApiChat` já corrigiu via `createCloseAbortGuard`. Cada
+ * teste cria seu PRÓPRIO server (`waveFireQueryFn` observa o
+ * `abortController.signal` do turno) em vez de reusar o server do describe
+ * "habilitado" acima, porque o queryFn aqui precisa reagir ao abort de
+ * verdade — mesmo motivo do describe irmão de /api/chat.
+ */
+describe("POST /api/waves/fire (#3901) — debounce do abort no close, fim-a-fim", () => {
+  it("close PERSISTENTE (cliente abortou e nunca mais volta) aborta a sessão coordenadora após o debounce", async () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-server-wavefire-close-persist-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+
+    let sdkAborted = false;
+    const queryFn: QueryFn = (params) => {
+      async function* gen() {
+        params.options?.abortController?.signal.addEventListener("abort", () => {
+          sdkAborted = true;
+        });
+        yield { type: "system", subtype: "init", session_id: "s1", model: "m", cwd: root } as unknown as SDKMessage;
+        // nunca resolve por conta própria — só o abort do controller destrava
+        // (mesmo padrão de "turno pendurado" do describe irmão de /api/chat).
+        await new Promise<void>((resolve) => {
+          params.options?.abortController?.signal.addEventListener("abort", () => resolve());
+        });
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    const server = await startStudioServer({
+      port: 0,
+      rootDir: root,
+      pollIntervalMs: 30,
+      waveFireEnabled: true,
+      waveFireQueryFn: queryFn,
+      waveFireCloseAbortDebounceMs: 80,
+    });
+
+    try {
+      const controller = new AbortController();
+      const resPromise = fetch(new URL("/api/waves/fire", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issueNumbers: [101] }),
+        signal: controller.signal,
+      });
+
+      await new Promise((r) => setTimeout(r, 40)); // deixa a onda conectar e emitir o init
+      controller.abort(); // simula a queda de rede a meio-turno (o `close` chega no server)
+      await resPromise.catch(() => {}); // o fetch em si rejeita/resolve no cliente — não importa aqui
+
+      assert.equal(sdkAborted, false, "não deveria abortar ainda — está dentro da janela de debounce (80ms)");
+
+      await new Promise((r) => setTimeout(r, 200)); // folga generosa acima dos 80ms
+      assert.equal(sdkAborted, true, "close persistente deveria abortar a sessão coordenadora depois do debounce");
+    } finally {
+      await server.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("close TRANSITÓRIO (turno termina sozinho dentro da janela) NÃO aborta a sessão coordenadora", async () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-server-wavefire-close-transient-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+
+    let sdkAborted = false;
+    const queryFn: QueryFn = (params) => {
+      async function* gen() {
+        params.options?.abortController?.signal.addEventListener("abort", () => {
+          sdkAborted = true;
+        });
+        yield { type: "system", subtype: "init", session_id: "s1", model: "m", cwd: root } as unknown as SDKMessage;
+        // turno "rápido": termina por conta própria em 20ms, INDEPENDENTE da
+        // conexão HTTP do cliente (mesmo racional de runChatTurn — runWaveFire
+        // não depende de req/res pra seguir rodando, só usa pra emitir eventos).
+        await new Promise((r) => setTimeout(r, 20));
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+
+    const server = await startStudioServer({
+      port: 0,
+      rootDir: root,
+      pollIntervalMs: 30,
+      waveFireEnabled: true,
+      waveFireQueryFn: queryFn,
+      waveFireCloseAbortDebounceMs: 150,
+    });
+
+    try {
+      const controller = new AbortController();
+      const resPromise = fetch(new URL("/api/waves/fire", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issueNumbers: [101] }),
+        signal: controller.signal,
+      });
+
+      await new Promise((r) => setTimeout(r, 5)); // deixa a request conectar
+      controller.abort(); // close no meio do turno — mas a onda SEGUE rodando no server
+      await resPromise.catch(() => {});
+
+      // espera bem além dos 20ms do turno E dos 150ms do debounce — se o
+      // cancel() não tivesse cortado o timer, o abort teria disparado aqui.
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(sdkAborted, false, "onda terminou sozinha dentro da janela — debounce deveria ter sido cancelado");
+    } finally {
+      await server.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 /** Lê incrementalmente um `Response` SSE (via `getReader()`, igual ao
  * `chat-drawer.js` real — `EventSource` não suporta POST), chamando
  * `onEvent` pra cada `{event, data}` assim que chega. Usado pro round-trip

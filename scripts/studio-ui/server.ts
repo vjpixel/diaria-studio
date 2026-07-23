@@ -479,6 +479,12 @@ export interface StudioServerOptions {
    * estado terminal (`gh issue view` real) por um fake. Produção usa o
    * default de `studio-wave-fire.ts` (`checkAllIssuesTerminalState`). */
   waveFireCheckTerminalStateFn?: (issueNumbers: number[], cwd: string, sinceIso: string) => IssueTerminalCheck[];
+  /** Debounce (ms) entre o `close` da request de `/api/waves/fire` e o abort
+   * de fato da sessão coordenadora (#3901 — mesmo bug do #3887 em
+   * `/api/chat`, mesmo fix: `createCloseAbortGuard`, `studio-chat.ts`) —
+   * default `DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS` (2.5s). Testes injetam um
+   * valor pequeno pra não esperar segundos de verdade num close persistente. */
+  waveFireCloseAbortDebounceMs?: number;
   /** `fetch` injetável pra `GET /api/integrations` (#3848) — testes SEMPRE
    * passam um mock que nunca bate em rede real (proibido testar os probes
    * ao vivo, ver doc-comment de `studio-integrations.ts`). Produção usa o
@@ -966,6 +972,7 @@ async function handleApiWavesFire(
     maxBodyBytes: number;
     maxConcurrency?: number;
     checkTerminalStateFn?: (issueNumbers: number[], cwd: string, sinceIso: string) => IssueTerminalCheck[];
+    closeAbortDebounceMs?: number;
   },
 ): Promise<void> {
   if (!opts.enabled) {
@@ -998,8 +1005,19 @@ async function handleApiWavesFire(
   res.write(formatSseComment("connected"));
 
   const abortController = new AbortController();
-  const onClose = () => abortController.abort();
-  req.on("close", onClose);
+  // #3901: mesmo bug do #3887 em `/api/chat` — `req.on("close", () =>
+  // abortController.abort())` sem debounce e sem registro em `res` abortava
+  // a sessão coordenadora real no PRIMEIRO evento de `close`, matando uma
+  // onda inteira numa queda de rede transitória. Reusa `createCloseAbortGuard`
+  // (`studio-chat.ts`) — mesmo racional (debounce + registrado em `req` E
+  // `res`, ver doc-comment de `handleApiChat`/`createCloseAbortGuard` pro
+  // porquê dos dois).
+  const closeAbortGuard = createCloseAbortGuard(
+    () => abortController.abort(),
+    opts.closeAbortDebounceMs ?? DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS,
+  );
+  req.on("close", closeAbortGuard.onClose);
+  res.on("close", closeAbortGuard.onClose);
 
   await runWaveFire({
     issueNumbers: parsed.value.issueNumbers,
@@ -1018,7 +1036,14 @@ async function handleApiWavesFire(
     },
   });
 
-  req.off("close", onClose);
+  req.off("close", closeAbortGuard.onClose);
+  res.off("close", closeAbortGuard.onClose);
+  // #3901: limpa o timer de debounce pendente — sem isto, um `close`
+  // transitório que se resolveu sozinho (onda terminou dentro da janela)
+  // ainda dispararia o abort atrasado sobre um `abortController` de uma onda
+  // que já terminou (inerte, mas ruído/risco desnecessário — mesmo cuidado
+  // de `handleApiChat`).
+  closeAbortGuard.cancel();
   res.end();
 }
 
@@ -1440,6 +1465,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
   const waveFireEnabled = opts.waveFireEnabled ?? false;
   const waveFireMaxConcurrency = opts.waveFireMaxConcurrency ?? 6;
   const waveFireCheckTerminalStateFn = opts.waveFireCheckTerminalStateFn;
+  const waveFireCloseAbortDebounceMs = opts.waveFireCloseAbortDebounceMs;
   const apoiosGmailDrain = opts.apoiosGmailDrain;
   const integrationsFetchImpl = opts.integrationsFetchImpl;
 
@@ -1522,6 +1548,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
           maxBodyBytes: chatMaxBodyBytes,
           maxConcurrency: waveFireMaxConcurrency,
           checkTerminalStateFn: waveFireCheckTerminalStateFn,
+          closeAbortDebounceMs: waveFireCloseAbortDebounceMs,
         }).catch((e) => {
           if (!res.headersSent) {
             sendJson(res, 500, { error: (e as Error).message });

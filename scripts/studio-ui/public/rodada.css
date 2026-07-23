@@ -79,7 +79,14 @@
   letter-spacing: 0.03em;
   opacity: 0.65;
 }
-.round-meta dd { margin: 0; }
+/* #3915 (item 10): `data.planPath` (ex: um path completo de plan.json) é
+   texto sem espaço/ponto de quebra natural — o `min-width: auto` default de
+   item de grid deixava esse conteúdo forçar a TRACK a crescer além do
+   `minmax(180px, 1fr)` (grid blowout clássico), estourando o viewport em
+   telas estreitas mesmo com `auto-fit` calculando o nº de colunas
+   corretamente. `overflow-wrap` corrige a causa-raiz, independente de
+   breakpoint. */
+.round-meta dd { margin: 0; overflow-wrap: anywhere; }
 
 .round-queue-table td, .round-timeline-table td { vertical-align: top; }
 
@@ -120,5 +127,17 @@
 @media (max-width: 640px) {
   .round-kind-tab {
     min-height: 44px;
+  }
+
+  /* #3915 (item 10, auditoria #3866): `.round-meta` não tinha breakpoint
+     próprio — `repeat(auto-fit, minmax(180px, 1fr))` ainda deixa 2 colunas
+     de 180px (+ gap de 1.5rem) espremerem em telas bem estreitas (<360px,
+     ex: iPhone SE), texto cortado/grudado. Mesmo padrão de empilhamento
+     mobile já usado por `.filters-bar`/`.wave-summary`/`.panel-header-row`
+     acima (e neste mesmo breakpoint de 640px, reusado do resto do arquivo)
+     — 1 coluna sempre abaixo do breakpoint, sem depender do cálculo de
+     auto-fit pra decidir. */
+  .round-meta {
+    grid-template-columns: 1fr;
   }
 }

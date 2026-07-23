@@ -196,6 +196,10 @@ let eventSource = null;
 function connect() {
   if (eventSource) eventSource.close();
   eventSource = new EventSource("/api/events");
+  // #3891 (item 4): publica a conexão pra chat-drawer.js (injetado logo
+  // abaixo no HTML, sempre o ÚLTIMO <script> — ver shared-event-source.js)
+  // reusar em vez de abrir uma segunda conexão só pro badge global.
+  window.__studioEvents = eventSource;
 
   eventSource.addEventListener("open", () => {
     setConn("ok");

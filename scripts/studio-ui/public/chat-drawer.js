@@ -92,6 +92,7 @@ import {
   planHistoryReplay,
 } from "./chat-hydration.js";
 import { computeGlobalBadgeCount, resolveBadgeClickAction } from "./chat-badge.js";
+import { resolveSharedEventSource } from "./shared-event-source.js";
 
 const STORAGE_KEY = "diaria-studio-chat-session-id";
 const COLLAPSE_STORAGE_KEY = "diaria-studio-chat-collapsed";
@@ -211,6 +212,20 @@ function setToggleStatus(status) {
   el.toggleDot.className = "chat-toggle-dot " + status;
 }
 
+// #3891 (item 7): o dot só refletia ok/down/idle (via setToggleStatus acima)
+// — com o painel COLAPSADO (rail fino, título/mensagens escondidos, ver
+// chat-drawer.css), texto chegando via chat-delta ou uma tool rodando não
+// tinham NENHUM sinal visível além do badge (que só cobre gate/pergunta
+// pendente, não "a sessão está trabalhando agora"). `setToggleActive` liga um
+// pulso discreto (CSS puro, ver .chat-toggle-dot.active) independente da cor
+// ok/down — é chamado com `true` no início de `sendMessage` e `false` no
+// `finally` dela (roda em toda saída: sucesso, chat-error, ou exceção de
+// rede no catch), então nunca fica "pulsando pra sempre" mesmo se o turno
+// terminar num caminho inesperado.
+function setToggleActive(active) {
+  el.toggleDot.classList.toggle("active", active);
+}
+
 // #3557/#3617/#3888: badge GLOBAL de "algo pendente", visível mesmo com o
 // painel colapsado (rail fino) — soma gates de pipeline pendentes (Stage
 // 4/6, `state.gatesPending`) + perguntas do chat aguardando resposta
@@ -240,7 +255,12 @@ let latestChatPermissionsPending = [];
 let latestCurrentEdition = null;
 
 try {
-  const statusEvents = new EventSource("/api/events");
+  // #3891 (item 4): reusa `window.__studioEvents` se a página host
+  // (app.js/edicao.js/rodada.js) já abriu a conexão — só cria uma nova (e a
+  // publica pro global, pras 5 páginas SEM EventSource próprio) quando não
+  // acha nenhuma. Ver shared-event-source.js pro raciocínio completo/trade-off.
+  const statusEvents = resolveSharedEventSource(window.__studioEvents, () => new EventSource("/api/events"));
+  window.__studioEvents = statusEvents;
   statusEvents.addEventListener("state", (ev) => {
     try {
       const state = JSON.parse(ev.data);
@@ -857,6 +877,7 @@ async function sendMessage(text) {
   sending = true;
   el.send.disabled = true;
   setToggleStatus("ok");
+  setToggleActive(true);
 
   appendUserMessage(text);
 
@@ -936,6 +957,7 @@ async function sendMessage(text) {
   } finally {
     sending = false;
     el.send.disabled = false;
+    setToggleActive(false);
   }
 }
 
