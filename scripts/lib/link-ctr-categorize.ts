@@ -978,6 +978,10 @@ export function resolveNewsletterSection(sectionTitle: string): string {
   if (!bare) return '';
   const upper = bare.toUpperCase();
   if (NON_SECTION_KICKERS.has(upper)) return 'Outro';
+  // #3920: bloco "Aprofunde:" dentro de um destaque (fontes extras do cluster).
+  // Renderizado com kicker próprio (renderAprofundeInner) — distingue os links
+  // do cluster do link-título do destaque na leitura de CTR por destaque.
+  if (upper === 'APROFUNDE') return 'Aprofunde';
   for (const { re, label } of SECONDARY_SECTION_LABELS) {
     if (re.test(upper)) return label;
   }

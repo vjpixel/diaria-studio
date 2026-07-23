@@ -387,3 +387,60 @@ describe("#2496 — use_melhor capado não vira catastrophic", () => {
     assert.equal(r.catastrophic, true, "chunk ilegível com pool capado → catastrophic REAL, guard #1669 intacto");
   });
 });
+
+describe("mergeChunks — bônus de cobertura (#3920)", () => {
+  const withCluster = (url: string, category: string, extraSources: number) => ({
+    url,
+    title: url,
+    category,
+    cluster_sources: Array.from({ length: extraSources }, (_, i) => ({ url: `${url}-src${i}` })),
+  });
+
+  it("+5 por fonte extra é somado ao score base (empurra pra seleção)", () => {
+    const cat: Categorized = {
+      lancamento: [],
+      radar: [
+        { url: "solo", title: "solo", category: "radar" },
+        withCluster("cov", "radar", 3), // 3 fontes extras → +15
+      ],
+      use_melhor: [],
+    };
+    const chunks: ChunkScoreFile[] = [
+      { all_scored: [{ url: "solo", score: 70 }, { url: "cov", score: 60 }] },
+    ];
+    const r = mergeChunks(cat, chunks, 15);
+    // cov: 60 base + 15 bônus = 75 → passa solo (70) no all_scored ordenado
+    assert.deepEqual(r.all_scored.map((s) => s.url), ["cov", "solo"]);
+    assert.equal(r.all_scored.find((s) => s.url === "cov")?.score, 75);
+    assert.equal(r.all_scored.find((s) => s.url === "solo")?.score, 70);
+    // finalists refletem a ordem boostada
+    assert.equal(r.finalists[0].url, "cov");
+  });
+
+  it("stampa score_base + score_bonus_coverage no artigo do finalist (auditoria)", () => {
+    const cat: Categorized = {
+      lancamento: [],
+      radar: [withCluster("cov", "radar", 2)], // +10
+      use_melhor: [],
+    };
+    const chunks: ChunkScoreFile[] = [{ all_scored: [{ url: "cov", score: 50 }] }];
+    const r = mergeChunks(cat, chunks, 15);
+    const f = r.finalists.find((f) => f.url === "cov")!;
+    assert.equal(f.score, 60);
+    assert.equal((f.article as { score_base?: number }).score_base, 50);
+    assert.equal((f.article as { score_bonus_coverage?: number }).score_bonus_coverage, 10);
+  });
+
+  it("artigo sem cluster_sources fica inalterado (sem stamp)", () => {
+    const cat: Categorized = {
+      lancamento: [],
+      radar: [{ url: "plain", title: "plain", category: "radar" }],
+      use_melhor: [],
+    };
+    const chunks: ChunkScoreFile[] = [{ all_scored: [{ url: "plain", score: 42 }] }];
+    const r = mergeChunks(cat, chunks, 15);
+    assert.equal(r.all_scored[0].score, 42);
+    const f = r.finalists[0];
+    assert.equal((f.article as { score_bonus_coverage?: number }).score_bonus_coverage, undefined);
+  });
+});

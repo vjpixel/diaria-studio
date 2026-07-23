@@ -42,6 +42,7 @@ import {
   type Categorized,
 } from "./split-articles-for-scoring.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { coverageBonus } from "./lib/coverage-bonus.ts"; // #3920
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -162,7 +163,19 @@ export function mergeChunks(
   const enriched = pool.map((article) => {
     const has = scoreByUrl.has(article.url);
     if (has) scoredCount++;
-    const score = scoreByUrl.get(article.url) ?? 0;
+    const baseScore = scoreByUrl.get(article.url) ?? 0;
+    // #3920: bônus de cobertura determinístico — +5 por fonte extra do cluster
+    // same-story (cluster_sources[] anexado pelo dedup). Aplicado ANTES da
+    // seleção (finalists → scorer-select) pra empurrar histórias muito cobertas
+    // pra destaque. Registrado em score_base/score_bonus_coverage pra auditoria.
+    const clusterSources = (article as { cluster_sources?: unknown[] }).cluster_sources;
+    const extraSources = Array.isArray(clusterSources) ? clusterSources.length : 0;
+    const bonus = coverageBonus(extraSources);
+    const score = baseScore + bonus;
+    if (bonus > 0) {
+      (article as { score_base?: number }).score_base = baseScore;
+      (article as { score_bonus_coverage?: number }).score_bonus_coverage = bonus;
+    }
     return { article, url: article.url, score, bucket: bucketOf(article) };
   });
 

@@ -61,6 +61,9 @@ import {
   fetchTitle,
   resolveInboxTitles,
 } from "./lib/inbox-title-resolve.ts";
+// #3920: preserva perdedores de clusters same-story como cluster_sources[] no
+// vencedor mais completo, em vez de descartá-los.
+import { foldCluster, type ClusterArticle } from "./lib/cluster-sources.ts";
 
 export { canonicalize };
 export {
@@ -380,54 +383,65 @@ export function dedup(
     }
   }
 
-  // Sub-pass 2b: title similarity dedup
-  for (let i = 0; i < afterUrlDedup.length; i++) {
-    const artI = afterUrlDedup[i];
-    if (!artI.title) {
-      kept.push(artI);
+  // Sub-pass 2b (#3920): cluster same-story articles por similaridade de título.
+  // Antes: os "perdedores" title-similares eram DESCARTADOS (removed[]) e só o
+  // vencedor sobrevivia. Agora: cada cluster de ≥2 vira UM artigo canônico (o
+  // MAIS COMPLETO — ver pickCanonical/compareCompleteness) com os demais
+  // preservados em `cluster_sources[]`. Isso alimenta o bloco "Aprofunde:", o
+  // bônus de cobertura e o dedup de edições futuras.
+  //
+  // Clustering greedy single-linkage: um artigo entra num cluster existente se
+  // for title-similar (>= titleThreshold) a QUALQUER membro. Cobre o mesmo
+  // universo de pares que o dedup pairwise antigo, sem perda de artigos (só
+  // dobra em vez de deletar). Títulos placeholder "(inbox)" nunca clusterizam
+  // por título (#482) — dedup real deles já foi por URL na sub-pass 2a.
+  const clusters: Article[][] = [];
+  for (const art of afterUrlDedup) {
+    const artTitle = art.title;
+    if (!artTitle || artTitle.toLowerCase() === "(inbox)") {
+      clusters.push([art]);
       continue;
     }
-    let isDup = false;
-    for (let j = 0; j < i; j++) {
-      const artJ = afterUrlDedup[j];
-      if (!artJ.title) continue;
-      // #482: artigos inbox têm título "(inbox)" — não comparar por título;
-      // deduplicação real já foi feita por URL na sub-pass 2a.
-      if (
-        artI.title.toLowerCase() === "(inbox)" ||
-        artJ.title.toLowerCase() === "(inbox)"
-      ) continue;
-      const sim = titleSimilarity(artI.title, artJ.title);
-      if (sim >= titleThreshold) {
-        // Keep the one from a registered source; in a tie, keep artJ (already in kept)
-        const iIsDisc = artI.discovered_source ? 1 : 0;
-        const jIsDisc = artJ.discovered_source ? 1 : 0;
-        if (iIsDisc >= jIsDisc) {
-          // artI is worse or equal — remove it
-          removed.push({
-            url: artI.url,
-            title: artI.title,
-            dedup_note: `título similar (${(sim * 100).toFixed(0)}%) ao de "${artJ.title}" (${artJ.url})`,
-          });
-          isDup = true;
+    let placed = false;
+    for (const cluster of clusters) {
+      for (const member of cluster) {
+        const memberTitle = member.title;
+        if (!memberTitle || memberTitle.toLowerCase() === "(inbox)") continue;
+        if (titleSimilarity(artTitle, memberTitle) >= titleThreshold) {
+          cluster.push(art);
+          placed = true;
           break;
-        } else {
-          // artI is from a registered source, artJ is discovered — swap: remove artJ
-          // But artJ is already in kept... flag it for removal retroactively
-          const jIdx = kept.findIndex((a) => a.url === artJ.url);
-          if (jIdx !== -1) {
-            removed.push({
-              url: artJ.url,
-              title: artJ.title,
-              dedup_note: `título similar (${(sim * 100).toFixed(0)}%) ao de "${artI.title}" (${artI.url}) — fonte cadastrada preferida`,
-            });
-            kept.splice(jIdx, 1);
-          }
-          // artI will be added below
         }
       }
+      if (placed) break;
     }
-    if (!isDup) kept.push(artI);
+    if (!placed) clusters.push([art]);
+  }
+
+  let foldedClusters = 0;
+  for (const cluster of clusters) {
+    if (cluster.length === 1) {
+      kept.push(cluster[0]);
+      continue;
+    }
+    const { canonical, others } = foldCluster(cluster as ClusterArticle[]);
+    kept.push(canonical as Article);
+    foldedClusters++;
+    for (const loser of others) {
+      removed.push({
+        url: (loser as Article).url,
+        title: (loser as Article).title,
+        dedup_note:
+          `cluster same-story (#3920): dobrado em "${canonical.title ?? ""}" ` +
+          `(${canonical.url}) como cluster_source`,
+      });
+    }
+  }
+  if (foldedClusters > 0) {
+    console.error(
+      `dedup Pass-2b (#3920): ${foldedClusters} cluster(s) same-story dobrado(s) — ` +
+        `perdedores preservados como cluster_sources[] no vencedor mais completo`,
+    );
   }
 
   return { kept, removed };

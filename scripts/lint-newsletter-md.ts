@@ -102,6 +102,11 @@ import {
   type SectionLinkUnresolvedError,
   type SectionLinksResolveReport,
 } from "./lib/lint-checks/section-links-resolve.ts"; // #3821
+import {
+  checkAprofundeFormat,
+  type AprofundeFormatError,
+  type AprofundeFormatReport,
+} from "./lib/lint-checks/aprofunde-format.ts"; // #3920
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -210,6 +215,11 @@ export {
   type SectionLinkUnresolvedError,
   type SectionLinksResolveReport,
 } from "./lib/lint-checks/section-links-resolve.ts"; // #3821
+export {
+  checkAprofundeFormat,
+  type AprofundeFormatError,
+  type AprofundeFormatReport,
+} from "./lib/lint-checks/aprofunde-format.ts"; // #3920
 export {
   lintNewsletter,
   extractUrlsBySection,
@@ -1119,6 +1129,38 @@ function main(): void {
     return;
   }
 
+  // Modo --check aprofunde-format (#3920) — valida o bloco "Aprofunde:" dos
+  // destaques (fontes do cluster same-story). GATE-BLOCKING: bloco malformado
+  // (item sem link, lixo entre itens, header antes do "Por que importa", bloco
+  // vazio) não é publicável. Bloco AUSENTE nunca dispara (é opcional).
+  if (args.check === "aprofunde-format") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check aprofunde-format --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkAprofundeFormat(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ aprofunde-format: ${result.errors.length} problema(s) no bloco "Aprofunde:":`);
+      for (const e of result.errors) {
+        const where = e.destaque ? `D${e.destaque} ` : "";
+        console.error(`  ${where}linha ${e.line} [${e.type}]: "${e.excerpt}"`);
+      }
+      console.error(
+        `\nFormato esperado (só quando há cluster): "Aprofunde:" (após "Por que isso importa"), ` +
+          `depois 1+ itens "* [Título](URL) - Fonte".`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   // Modo --check callout-placement (#1972) — callout (📣/📚/🎉) colado DENTRO de
   // uma seção de DESTAQUE (antes do `---`) em vez de isolado entre dois `---`.
   if (args.check === "callout-placement") {
@@ -1247,7 +1289,8 @@ function main(): void {
         "  ou: lint-newsletter-md.ts --check video-links-are-youtube --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check callout-placement --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check stacked-intro-callouts --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check orphan-box-in-gap --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check orphan-box-in-gap --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check aprofunde-format --md <md-path>",
     );
     process.exit(2);
   }

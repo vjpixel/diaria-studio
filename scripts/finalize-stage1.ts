@@ -33,6 +33,7 @@ import { canonicalize, extractPastUrls, extractPastDestaqueUrls, DEFAULT_PAST_WI
 import { sanitizeUrlsDeep } from "./lib/url-utils.ts"; // #1863
 import { normalizeCategorizedBuckets } from "./lib/categorized-buckets.ts"; // #1670
 import { rootDomain, promoteHowTosFromRadar } from "./lib/use-melhor-curation.ts"; // #2336: domain-cap; #2448: radar→use_melhor
+import { coverageBonus } from "./lib/coverage-bonus.ts"; // #3920
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -517,6 +518,19 @@ export function finalizeStage1(
         scoredOutput.all_scored,
         titleIndex,
       );
+      // #3920: audit do bônus de cobertura no artigo final do bucket. O score
+      // já vem BOOSTADO do all_scored (bônus somado em merge-scored-chunks);
+      // aqui só registramos os campos separados (score_base = score − bônus)
+      // pra auditoria no 01-approved.json / gate. Recompute determinístico a
+      // partir do cluster_sources (mesmo helper), sem re-somar.
+      const clusterSources = (enrichedArticle as { cluster_sources?: unknown[] }).cluster_sources;
+      const extraSources = Array.isArray(clusterSources) ? clusterSources.length : 0;
+      const score = enrichedArticle.score as number | null | undefined;
+      if (extraSources > 0 && typeof score === "number") {
+        const bonus = coverageBonus(extraSources);
+        (enrichedArticle as { score_bonus_coverage?: number }).score_bonus_coverage = bonus;
+        (enrichedArticle as { score_base?: number }).score_base = score - bonus;
+      }
       joined.push(enrichedArticle);
       if (url_mismatch) {
         urlMismatches.push({ article_url: article.url, article_title: article.title });

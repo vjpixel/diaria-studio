@@ -557,3 +557,141 @@ describe("replaceDestaqueTitleInMd (#3806 — Opção B spike: edição visual d
     assert.match(result.md!, /^\[Novo título\]\(https:\/\/example\.com\/GPT_\(modelo\)\)$/m);
   });
 });
+
+describe("parseDestaques — bloco Aprofunde (#3920)", () => {
+  it("extrai itens Aprofunde e mantém why limpo", () => {
+    const md = [
+      "**DESTAQUE 1 | 🚀 LANÇAMENTO**",
+      "",
+      "**[Título canônico](https://canonico.com/x)**",
+      "",
+      "Parágrafo do corpo.",
+      "",
+      "Por que isso importa:",
+      "",
+      "Impacto prático em 2 frases.",
+      "",
+      "Aprofunde:",
+      "",
+      "* [Cobertura da TechCrunch](https://techcrunch.com/x) - TechCrunch",
+      "* [Análise do The Verge](https://theverge.com/x) - The Verge",
+      "",
+      "---",
+      "DESTAQUE 2 | PESQUISA",
+      "Título d2",
+      "https://example.com/d2",
+      "",
+      "Corpo d2.",
+      "",
+      "Por que isso importa:",
+      "Impacto d2.",
+    ].join("\n");
+
+    const d = parseDestaques(md);
+    assert.equal(d.length, 2);
+    assert.equal(d[0].url, "https://canonico.com/x");
+    // why NÃO inclui o bloco Aprofunde
+    assert.equal(d[0].why, "Impacto prático em 2 frases.");
+    assert.ok(!d[0].why.includes("Aprofunde"));
+    // aprofunde parseado
+    assert.equal(d[0].aprofunde?.length, 2);
+    assert.deepEqual(d[0].aprofunde?.[0], {
+      title: "Cobertura da TechCrunch",
+      url: "https://techcrunch.com/x",
+      source: "TechCrunch",
+    });
+    assert.deepEqual(d[0].aprofunde?.[1], {
+      title: "Análise do The Verge",
+      url: "https://theverge.com/x",
+      source: "The Verge",
+    });
+    // d2 sem Aprofunde
+    assert.equal(d[1].aprofunde, undefined);
+  });
+
+  it("destaque sem Aprofunde não ganha o campo", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título d1",
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+      "",
+      "---",
+      "DESTAQUE 2 | PESQUISA",
+      "Título d2",
+      "https://example.com/d2",
+      "",
+      "Corpo d2.",
+      "",
+      "Por que isso importa:",
+      "Impacto d2.",
+    ].join("\n");
+    const d = parseDestaques(md);
+    assert.equal(d[0].aprofunde, undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(d[0], "aprofunde"), false);
+  });
+
+  it("Aprofunde sem 'Por que importa' não vaza pro body (bodyEnd capado)", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título d1",
+      "https://example.com/d1",
+      "",
+      "Corpo do destaque.",
+      "",
+      "Aprofunde:",
+      "",
+      "* [Cobertura X](https://x.com/a) - X",
+      "",
+      "---",
+      "DESTAQUE 2 | PESQUISA",
+      "Título d2",
+      "https://example.com/d2",
+      "",
+      "Corpo d2.",
+      "",
+      "Por que isso importa:",
+      "Impacto d2.",
+    ].join("\n");
+    const d = parseDestaques(md);
+    assert.equal(d[0].body, "Corpo do destaque.");
+    assert.ok(!d[0].body.includes("Aprofunde"));
+    assert.ok(!d[0].body.includes("Cobertura X"));
+    assert.equal(d[0].aprofunde?.length, 1);
+  });
+
+  it("item Aprofunde sem fonte (sem separador) ainda parseia", () => {
+    const md = [
+      "DESTAQUE 1 | PRODUTO",
+      "Título d1",
+      "https://example.com/d1",
+      "",
+      "Corpo.",
+      "",
+      "Por que isso importa:",
+      "Impacto.",
+      "",
+      "Aprofunde:",
+      "",
+      "* [Só título e link](https://a.com/x)",
+      "",
+      "---",
+      "DESTAQUE 2 | PESQUISA",
+      "Título d2",
+      "https://example.com/d2",
+      "",
+      "Corpo d2.",
+      "",
+      "Por que isso importa:",
+      "Impacto d2.",
+    ].join("\n");
+    const d = parseDestaques(md);
+    assert.equal(d[0].aprofunde?.length, 1);
+    assert.equal(d[0].aprofunde?.[0].url, "https://a.com/x");
+    assert.equal(d[0].aprofunde?.[0].source, "");
+  });
+});

@@ -30,7 +30,8 @@ Mesmas do `writer` agent (parent). Resumo das que se aplicam aqui:
 Recebido pelo coordenador (não vem como arquivo):
 
 - `destaque_n`: 1 | 2 | 3
-- `destaque`: objeto único com `{ url, title, category, summary, score, ... }` — extraído de `_internal/01-approved-capped.json > highlights[N-1].article`.
+- `destaque`: objeto único com `{ url, title, category, summary, score, cluster_sources?, ... }` — extraído de `_internal/01-approved-capped.json > highlights[N-1].article`. O `url` já é o link canônico (artigo MAIS COMPLETO do cluster; #3920).
+- `cluster_sources` (opcional, dentro de `destaque`): array `[{ url, title, source }]` de fontes EXTRAS que cobrem a mesma história (#3920). Presente só quando o dedup detectou cobertura múltipla. Quando presente, você emite o bloco "Aprofunde:" (ver Processo passo 2) e PODE citar fatos de qualquer uma dessas fontes no corpo. Ausente = destaque de fonte única, sem bloco Aprofunde.
 - `category_label`: label editorial específico (ex: `MERCADO`, `LANÇAMENTO`, `PESQUISA`, `BRASIL`). Coordenador escolhe baseado no bucket + tema do destaque.
 - `peer_titles`: array de 2 strings — títulos primários dos OUTROS 2 destaques (pra evitar repetir hook/voz). Você vê só os títulos, não o body.
 - `edition_date`: ISO.
@@ -71,6 +72,15 @@ Recebido pelo coordenador (não vem como arquivo):
      - Frase 2: implicação concreta (timing, custo, processo, decisão pra quem usa).
      - **#1755: NÃO forçar ângulo Brasil.** Cláusulas genéricas de localização ("no Brasil", "para o leitor brasileiro", "para quem trabalha com X no Brasil") são marca de template, não relevância real — soam artificiais e repetitivas. Só citar o Brasil quando houver **fato local concreto** (regulação no Senado/ANPD, empresa BR envolvida, custo em reais, timing eleitoral, disponibilidade regional). Sem âncora factual local → escreva a implicação sem geografia.
      - Não começar com "Para [audiência],".
+
+   - **Bloco "Aprofunde:" (#3920) — SÓ quando `cluster_sources` está presente.** Logo APÓS o parágrafo "Por que isso importa:", emita:
+     ```
+     Aprofunde:
+
+     * [Título do artigo](URL) - Fonte
+     * [Título do artigo](URL) - Fonte
+     ```
+     Regras: (a) **inclua TODAS as fontes** — o artigo canônico do destaque (o próprio `destaque.url`/`destaque.title`/`destaque.source`) como PRIMEIRO item, seguido de cada entrada de `cluster_sources` (por decisão do editor o primário também aparece na lista); (b) cada item é `* [título do artigo](url) - fonte`, com o título linkando a respectiva URL e a fonte = campo `source` (se ausente, infira o veículo pela URL — ex: `theverge.com` → `The Verge`); (c) traduza o título pra PT-BR se vier em inglês (nomes próprios podem ficar); (d) **NÃO** emita o bloco quando `cluster_sources` está ausente/vazio. O bloco NÃO conta no char-limit (é separado do "Por que importa"). Validado por `lint-newsletter-md --check aprofunde-format`.
    - **Precisão de nomes de produto/modelo (#2685).** NÃO fundir produtos distintos de nome parecido nem inventar apelido/mecanismo. Erro real (260630): "Gemini Nano" (modelo pequeno **on-device** do Google) foi fundido com "Nano Banana" (geração de **imagem na nuvem**), inventando "processamento local/offline". Nomes próximos ≠ mesmo produto — trate como distintos salvo a fonte dizer o contrário, e **nunca** afirme que algo roda "no aparelho"/"offline" sem a fonte afirmar.
 
 3. **Validação interna pré-write**:
