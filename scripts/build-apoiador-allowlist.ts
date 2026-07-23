@@ -15,7 +15,7 @@
  * resolvido pra a lista de e-mails que qualificam.
  *
  * Uso:
- *   npx tsx scripts/build-apoiador-allowlist.ts [--out <path>] [--push]
+ *   npx tsx scripts/build-apoiador-allowlist.ts [--out <path>] [--push] [--allow-partial]
  *
  * Sem `--out`: imprime o JSON (array de e-mails) em stdout.
  * `--push` (+ credenciais Cloudflare no env): grava no KV `ALLOWLIST` via
@@ -23,6 +23,21 @@
  * Recusa o push (fail-closed) se `buildApoiosData` reportou erro (data/
  * ausente, credenciais apoia.se ausentes, 401) — uma allowlist parcial
  * nunca é gravada por cima da anterior.
+ *
+ * **Falha transiente POR CONTATO (#3965, follow-up do #3940/PR #3964):**
+ * `data.error` (acima) só cobre falha TOTAL — `buildApoiosData` é fail-soft
+ * em 3 camadas e uma falha pontual de `checkBacker` pra 1 e-mail específico
+ * (hiccup de rede, não-auth) nunca vira esse `data.error` de nível superior:
+ * o contato afetado só cai com `status.label === "sem_dados"` internamente
+ * (distinto de `"nao_apoia"`, que é resultado válido — consultado com
+ * sucesso, não paga este mês) e o restante segue normal. Sem o guard
+ * abaixo, `--push` prosseguiria e aquele apoiador real ficaria
+ * silenciosamente FORA da allowlist gravada. `findTransientFailureContacts`
+ * detecta esses contatos; por padrão o `--push` é recusado (fail-closed,
+ * mesmo padrão do `data.error`) — `--allow-partial` é o escape hatch
+ * explícito pra prosseguir mesmo assim (ex: 1-2 falhas pontuais em centenas
+ * de contatos, cenário onde recusar sempre tornaria o push impraticável),
+ * sempre logando os e-mails afetados.
  *
  * IMPORTANTE (#3940 — escopo desta unidade): `--push` NUNCA foi executado
  * nesta sessão, nem contra `data/apoia-se/contacts.jsonl` real nem contra um
@@ -73,6 +88,22 @@ export function computeApoiadorAllowlist(contacts: ContactWithStatus[]): string[
   return [...emails].sort();
 }
 
+/**
+ * Pure: filtra contatos com falha TRANSIENTE de `checkBacker` — status
+ * `"sem_dados"`, atribuído por `buildApoiosData`/`deriveContactStatus` quando
+ * pelo menos 1 e-mail do contato nunca recebeu resposta definitiva do mês
+ * corrente nesta rodada (rede, timeout, erro pontual não-auth). Distinto de
+ * `"nao_apoia"` (resultado válido: consultado com sucesso, não paga este
+ * mês) — nunca confundir os dois (#3965).
+ *
+ * Usado como guard PRÉ-`--push`: se não-vazio, o caller decide entre
+ * recusar (default) ou prosseguir explicitamente via `--allow-partial`,
+ * sempre logando os e-mails retornados.
+ */
+export function findTransientFailureContacts(contacts: ContactWithStatus[]): ContactWithStatus[] {
+  return contacts.filter((c) => c.status.label === "sem_dados");
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   loadProjectEnv(REPO_ROOT);
@@ -103,6 +134,26 @@ async function main(): Promise<void> {
       );
       process.exit(1);
     }
+
+    const transientFailures = findTransientFailureContacts(data.contacts);
+    if (transientFailures.length > 0) {
+      const affectedEmails = transientFailures.flatMap((c) => c.emails).sort();
+      if (!hasFlag(argv, "allow-partial")) {
+        console.error(
+          `[build-apoiador-allowlist] RECUSANDO --push: ${transientFailures.length} contato(s) com falha ` +
+            'TRANSIENTE de checkBacker (status "sem_dados" — distinto de "não apoia", que é resultado ' +
+            "válido) — allowlist parcial nunca sobrescreve a anterior silenciosamente. E-mail(s) afetado(s): " +
+            `${affectedEmails.join(", ")}. Re-tente, ou use --allow-partial pra prosseguir mesmo assim ` +
+            "(decisão consciente do editor, sempre logada).",
+        );
+        process.exit(1);
+      }
+      console.error(
+        `[build-apoiador-allowlist] aviso: prosseguindo com --allow-partial apesar de ${transientFailures.length} ` +
+          `contato(s) com falha transiente de checkBacker. E-mail(s) afetado(s): ${affectedEmails.join(", ")}.`,
+      );
+    }
+
     console.error(
       `[build-apoiador-allowlist] --push: enviando ${allowlist.length} e-mail(s) pro KV ALLOWLIST...`,
     );
