@@ -20,6 +20,9 @@ import {
   envioMonthYear, // #3464: heading do arquivo mensal Clarice mostra mês de ENVIO, não de conteúdo
   buildBrandSiteUrl, // #3978: href com UTM da sub-copy do leaderboard
   isAnonymousWebIdentity, // #3975: filtra identidade anônima do brand web fora do ranking público
+  lightboxScript, // #4007: script do lightbox de zoom — reusado nas 4 superfícies do par de imagens
+  renderLightboxMarkup, // #4007: markup do <dialog> de zoom
+  renderLightboxStyles, // #4007: CSS do lightbox + badge de lupa
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
@@ -1069,6 +1072,7 @@ ${seoMeta}
     .choice { flex-basis: 100%; max-width: 100%; }
     .scroll-hint { display: block; width: 100%; margin: 2px 0 10px; font-size: 0.85rem; font-weight: 600; color: ${DS_COLORS.brand}; }
   }
+${renderLightboxStyles()}
 ${renderBrandShellStyles()}
 </style>
 </head>
@@ -1091,6 +1095,8 @@ ${renderBrandShellStyles()}
 </form>
 <p><a href="${archiveHref(brand, year)}">← voltar ao arquivo de ${htmlEscape(year)}</a></p>
 ${renderBrandFooter(brand)}
+${renderLightboxMarkup()}
+${lightboxScript()}
 </body>
 </html>`;
   return new Response(html, {

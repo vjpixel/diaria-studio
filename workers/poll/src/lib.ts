@@ -1016,6 +1016,151 @@ export function renderBrandFooter(brand: Brand): string {
   return `<footer class="brand-footer"><a href="${htmlEscape(href)}">${htmlEscape(label)}</a> — jogo "É IA?"</footer>`;
 }
 
+// ── #4007: lightbox de zoom reusável (par de imagens do "É IA?") ───────────
+//
+// Requisito do editor (teste com usuários reais, 260724): o layout mobile
+// empilhado (uma imagem em cima, outra embaixo) FICA como está — decisão já
+// fechada, não mexer aqui. O que falta é dar zoom: hoje a imagem só existe no
+// tamanho fixo do card, sem jeito de examinar detalhe (mãos, texto, textura,
+// fundo — exatamente o que decide um "É IA?" difícil).
+//
+// Mecanismo (tap-to-expand, SEM lib externa — CSP do worker é restritiva e a
+// página é HTML inline):
+//   1. Um único `<dialog>` fullscreen por página (renderLightboxMarkup),
+//      aberto via `.showModal()` — dá foco/backdrop/Esc NATIVOS de graça
+//      (Esc fecha sozinho, não precisamos de keydown handler).
+//   2. Pinch-zoom/pan são o gesto NATIVO do navegador sobre a página — não
+//      há reimplementação de matemática de pinch em JS (frágil, e esta sessão
+//      não tem device real pra validar o "feel"). Pra isso funcionar, DUAS
+//      condições tem que se manter verdadeiras em toda página que usa este
+//      componente: (a) a meta viewport NUNCA seta `user-scalable=no` nem
+//      `maximum-scale` — travaria o pinch nativo, o oposto do que a issue
+//      pede; (b) o `<dialog>` (e o `<img>` dentro dele) nunca usa
+//      `overflow: hidden`/`touch-action: none|manipulation` — deixaria sem
+//      superfície pro browser aplicar o zoom.
+//   3. Fechar: botão X, tap fora da imagem (clique no próprio `<dialog>`,
+//      fora do `<img>`) ou Esc (nativo do `<dialog>`, item 1).
+//   4. Delegação de clique em `document` (não por-imagem) — cobre tanto as
+//      imagens já presentes no HTML inicial quanto as injetadas depois via
+//      `innerHTML`/`DOMParser` (revelação pós-voto, sequência trocando de
+//      par) sem precisar re-wire nada a cada render.
+//   5. Affordance: badge de lupa (🔍) via CSS `::after` sobre `.choice`/
+//      `.result-image` — só visual (`pointer-events: none`), o alvo de
+//      clique real é a própria imagem, mantendo "examinar" (imagem) 100%
+//      separado de "votar" (os botões, sempre um elemento irmão, nunca
+//      dentro da imagem).
+//
+// Resolução servida: `/img/{key}` (handleImage, index.ts) devolve o JPEG cru
+// gravado no KV, sem nenhum resize/downscale no Worker. A imagem JÁ É a
+// resolução mais alta disponível — `scripts/crop-resize.ts` grava 800×450
+// (quality 90) ANTES do upload (tanto pro lado IA quanto pro lado foto real);
+// não existe uma variante "original" maior guardada em nenhum lugar do
+// pipeline. Portanto o lightbox mostra o MESMO asset, só ampliado ao viewport
+// inteiro (+ pinch nativo) — não há endpoint de resolução maior pra expor.
+// Se o editor quiser mais nitidez no zoom, é preciso mudar o pipeline de
+// imagem (`scripts/eia-compose.ts`/`crop-resize.ts`) pra guardar um segundo
+// asset em resolução maior — fora do escopo desta issue, follow-up isolado.
+//
+// Anti-spoiler: a chave `/img/img-{edition}-01-eia-{A|B}.jpg` já é opaca por
+// design — `A`/`B` são sorteados por `chooseSides(Math.random())` em
+// `eia-compose.ts` (#3516 rationale), não correlacionados com IA/real. O
+// lightbox só troca o `src`/`alt` do `<img>` clicado — não introduz nenhum
+// atributo novo, nome de arquivo ou metadado que denuncie o gabarito.
+//
+// Limitação desta sessão (documentada no PR #4007): sem device iOS/Android
+// real disponível, só a estrutura foi verificada (viewport sem lock, dialog
+// sem overflow:hidden, nenhum listener de touch interceptando o gesto) — o
+// "feel" real do pinch em produção precisa de teste humano num device antes
+// de considerar o requisito 100% validado. Mecanismo reversível/baixo risco:
+// pior caso, o lightbox não abre perfeitamente e vira follow-up.
+
+/**
+ * CSS do lightbox + badge de lupa. Chamado dentro do `<style>` de cada uma
+ * das 4 superfícies que mostram o par (par único, sequência, arquivo por
+ * e-mail, página de voto por e-mail).
+ */
+export function renderLightboxStyles(): string {
+  return `  /* #4007: badge de lupa — affordance de "toque pra ampliar" sobre o card
+     da imagem (pré-voto: .choice; pós-voto: .result-image). pointer-events:
+     none — decorativo, não intercepta o clique (o alvo real é o <img>). */
+  .choice, .result-image { position: relative; }
+  .choice::after, .result-image::after {
+    content: "\\1F50D";
+    position: absolute; top: 8px; right: 8px;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: rgba(23,20,17,0.55); color: ${DS_COLORS.paper};
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; line-height: 1; pointer-events: none;
+  }
+  .choice img, .result-image img { cursor: zoom-in; }
+  /* #4007: overlay fullscreen — SEM overflow:hidden nem touch-action que
+     bloqueie o pinch nativo (ver rationale acima). */
+  .jogar-lightbox { position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: 100vw; max-height: 100vh; margin: 0; padding: 0; border: none; background: rgba(23,20,17,0.94); overflow: auto; }
+  .jogar-lightbox::backdrop { background: rgba(23,20,17,0.94); }
+  .jogar-lightbox[open] { display: flex; align-items: center; justify-content: center; }
+  .jogar-lightbox img { display: block; max-width: 100%; height: auto; margin: auto; }
+  .jogar-lightbox-close { position: fixed; top: 12px; right: 12px; width: 40px; height: 40px; border-radius: 50%; border: none; background: ${DS_COLORS.paper}; color: ${DS_COLORS.ink}; font-size: 20px; font-weight: 700; cursor: pointer; z-index: 1; }
+  @media (max-width: 600px) {
+    .choice::after, .result-image::after { width: 32px; height: 32px; font-size: 16px; }
+  }`;
+}
+
+/** Markup do `<dialog>` do lightbox — 1 instância por página, reusada por
+ * todas as imagens via delegação de clique (`lightboxScript`). */
+export function renderLightboxMarkup(): string {
+  return `<dialog id="jogar-lightbox" class="jogar-lightbox">
+  <button type="button" class="jogar-lightbox-close" aria-label="Fechar">✕</button>
+  <img id="jogar-lightbox-img" src="" alt="">
+</dialog>`;
+}
+
+/**
+ * Script (IIFE) do lightbox — delegação de clique em `document` pra abrir
+ * `<dialog>` com a imagem clicada (`.choice img` pré-voto, `.result-image
+ * img` pós-voto, inclusive as injetadas via innerHTML/DOMParser depois do
+ * load inicial). Fecha via X, tap fora (clique no próprio `<dialog>`) ou Esc
+ * (nativo de `.showModal()`). No-op se `<dialog>.showModal` não existir
+ * (browser muito antigo) — degrada pra "zoom não abre", nunca quebra o jogo.
+ */
+export function lightboxScript(): string {
+  return `<script>
+(function () {
+  var dialog = document.getElementById("jogar-lightbox");
+  var img = document.getElementById("jogar-lightbox-img");
+  var closeBtn = dialog ? dialog.querySelector(".jogar-lightbox-close") : null;
+  if (!dialog || !img || typeof dialog.showModal !== "function") return;
+
+  function openWith(src, alt) {
+    if (!src) return;
+    img.src = src;
+    img.alt = alt || "";
+    try { dialog.showModal(); } catch (e) {}
+  }
+  function closeDialog() {
+    try { dialog.close(); } catch (e) {}
+  }
+  if (closeBtn) closeBtn.addEventListener("click", closeDialog);
+  // Tap fora da imagem — o alvo do clique é o próprio <dialog> (backdrop
+  // interno), nunca um filho dele.
+  dialog.addEventListener("click", function (ev) {
+    if (ev.target === dialog) closeDialog();
+  });
+  dialog.addEventListener("close", function () {
+    img.src = "";
+  });
+  // Esc já fecha nativamente via showModal() — sem keydown próprio.
+
+  document.addEventListener("click", function (ev) {
+    var target = ev.target;
+    if (!target || target.tagName !== "IMG") return;
+    var container = target.closest(".choice, .result-image");
+    if (!container) return;
+    openWith(target.currentSrc || target.src, target.alt);
+  });
+})();
+</script>`;
+}
+
 // ── Validação de apelidos do leaderboard (#1758) ────────────────────────────
 
 /**
