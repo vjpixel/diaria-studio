@@ -38,6 +38,7 @@ import {
   brandHiddenInput, // #3118 item 12
   maskEmail, // #3118 item 11
   jogarArchiveHref, // #3524
+  buildBrandSiteUrl, // #3978: href com UTM do rodapé de /vote
 } from "./lib";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
@@ -732,7 +733,7 @@ export function votePageHtml(
 ${imagesHtml}
 ${shareCardHtml}
 ${formHtml}
-<p class="footer-links"><a href="${BRAND_INFO[brand].siteUrl}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-footer", "eia-vote-footer"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
 </body>
 </html>`;
 }

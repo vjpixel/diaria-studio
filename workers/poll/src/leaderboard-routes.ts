@@ -18,6 +18,7 @@ import {
   closedPeriodCacheControl, // #3118 item 2: cache de período fechado — 1h, não mais 30d immutable
   AAMMDD_RE, // #3297: substitui as 2 cópias inline de /^\d{6}$/ deste arquivo
   envioMonthYear, // #3464: heading do arquivo mensal Clarice mostra mês de ENVIO, não de conteúdo
+  buildBrandSiteUrl, // #3978: href com UTM da sub-copy do leaderboard
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
@@ -685,9 +686,16 @@ function renderLeaderboardHtml(
   // #3108: sub-copy com 2 links (diar.ia.br + Clarice) é EXCLUSIVA do brand
   // clarice — cross-promoção só faz sentido pra quem está na newsletter mensal.
   // Brand diaria mantém o texto original inalterado.
+  // #3978: hrefs com UTM (era "https://diaria.beehiiv.com" SEM parâmetro
+  // nenhum no ramo clarice, e `info.siteUrl` cru no ramo diaria — nenhum dos
+  // dois media o funil). `diariaHref` sempre aponta pro brand "diaria" (a
+  // diária cross-promovida na cópia da clarice), não pro `brand` local desta
+  // função (que é "clarice" nesse ramo).
+  const diariaHref = buildBrandSiteUrl("diaria", "leaderboard-copy", "eia-leaderboard-copy");
+  const brandHref = buildBrandSiteUrl(brand, "leaderboard-copy", "eia-leaderboard-copy");
   const subCopy = brand === "clarice"
-    ? `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada pela <a href="https://diaria.beehiiv.com">diar.ia.br</a> na newsletter da <a href="${info.siteUrl}">${info.shortName ?? info.name}</a>.</p>`
-    : `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada por IA na <a href="${info.siteUrl}">${info.name}</a>.</p>`;
+    ? `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada pela <a href="${htmlEscape(diariaHref)}">diar.ia.br</a> na newsletter da <a href="${htmlEscape(brandHref)}">${info.shortName ?? info.name}</a>.</p>`
+    : `<p class="sub">Quem mais acertou ${periodNoun} qual imagem foi gerada por IA na <a href="${htmlEscape(brandHref)}">${info.name}</a>.</p>`;
   // #3615: link do arquivo só pra clarice — mesmo gate já aplicado à página
   // de voto (votePageHtml, index.ts) pelo #3578. Diária não tem mais acesso
   // ao arquivo em NENHUMA superfície; web também não (#3589 — web é a

@@ -13,7 +13,9 @@
  *     de assinatura ("empurra Beehiiv") e virou a caixa de DESCOBERTA
  *     (convida a conhecer o projeto, link pro site diar.ia.br) — decisão do
  *     editor (review 260716, #3589 item 4): assinatura real já é o form
- *     inline (#3580).
+ *     inline (#3580). #3978: o href passou a levar UTM próprio
+ *     (`utm_medium=posvoto-cta`) — entre #3589 e #3978 esse link saía sem
+ *     NENHUM parâmetro de medição.
  *   - `renderJogarPageHtml` — o bloco aparece na página (hidden), o script
  *     revela o CTA tanto no caminho de voto novo quanto no de "já votou",
  *     nunca antes do voto
@@ -24,6 +26,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   BRAND_INFO,
+  buildBrandSiteUrl,
 } from "../workers/poll/src/lib.ts";
 import {
   buildSubscribeUrl,
@@ -33,6 +36,12 @@ import {
   SUBSCRIBE_UTM_MEDIUM,
   SUBSCRIBE_UTM_SOURCE,
 } from "../workers/poll/src/jogar.ts";
+
+// #3978: renderSubscribeCtaBlock passou a levar UTM (medium "posvoto-cta") —
+// antes ia pro site SEM parâmetro nenhum (achado #3978). Construído via
+// `buildBrandSiteUrl` (mesma função de produção) + escape de "&" → "&amp;"
+// (mesmo padrão de htmlEscape em atributo HTML).
+const CTA_HREF_ESCAPED = buildBrandSiteUrl("web", "posvoto-cta", "eia-jogar-conhecer").replace(/&/g, "&amp;");
 
 describe("buildSubscribeUrl (#3518) — URL de assinatura com UTM do funil (segue viva pós-#3589, ver header)", () => {
   it("usa diaria.beehiiv.com DIRETO — não diar.ia.br (redirect do Registro.br dropa query string, #2613)", () => {
@@ -66,9 +75,14 @@ describe("renderSubscribeCtaBlock (rework #3589 do #3518) — caixa de DESCOBERT
 
   it("link aponta pro SITE (BRAND_INFO.web.siteUrl), NÃO pro subscribe do Beehiiv (#3589 item 4)", () => {
     const html = renderSubscribeCtaBlock();
-    assert.match(html, new RegExp(`href="${BRAND_INFO.web.siteUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+    assert.match(html, new RegExp(`href="${BRAND_INFO.web.siteUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
     assert.doesNotMatch(html, /diaria\.beehiiv\.com/, "não deve mais linkar direto pro Beehiiv — essa é a caixa de descoberta");
-    assert.doesNotMatch(html, /utm_source=eia-standalone/, "sem UTM do funil de assinatura — não é mais um CTA de conversão Beehiiv");
+  });
+
+  it("#3978: link carrega UTM do funil 'É IA?' → site (medium posvoto-cta) — antes ia sem parâmetro nenhum", () => {
+    const html = renderSubscribeCtaBlock();
+    assert.match(html, /utm_source=eia-standalone/, "utm_source do funil deve estar presente (achado #3978)");
+    assert.ok(html.includes(`href="${CTA_HREF_ESCAPED}"`), html);
   });
 
   it("abre em nova aba (target=_blank) — não perde o estado do jogo ao navegar pro site", () => {

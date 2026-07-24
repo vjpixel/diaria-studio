@@ -49,6 +49,7 @@ import { corsHeaders, json } from "./index";
 import {
   AAMMDD_RE,
   BRAND_INFO,
+  buildBrandSiteUrl, // #3978: href com UTM do funil "É IA?" → site (CTA + footers "Voltar")
   formatEditionDate,
   htmlEscape,
   isValidVoteEmailFormat, // #3595: valida o pseudo-email recebido por /jogar/seq-state
@@ -56,6 +57,7 @@ import {
   renderBrandFooter,
   renderBrandShellStyles,
   renderSeoMeta,
+  SUBSCRIBE_UTM_SOURCE, // #3978: fonte única de verdade movida pra lib.ts — reexportada abaixo por back-compat
   todayAammddBrt,
 } from "./lib";
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
@@ -96,8 +98,13 @@ const JOGAR_BRAND = "web" as const;
  * `count-subscriptions-by-utm.ts --source eia-standalone` mede quantos
  * assinantes vieram por este funil sem nenhum código novo (o script já
  * agrega por qualquer utm_source presente na subscription do Beehiiv).
+ *
+ * #3978: `SUBSCRIBE_UTM_SOURCE` mudou de declaração LOCAL pra reexport de
+ * `lib.ts` (fonte única de verdade — `buildBrandSiteUrl`/`share.ts` também
+ * precisam do mesmo valor). Reexportado aqui por back-compat: `subscribe.ts`
+ * historicamente importa este binding de `./jogar`.
  */
-export const SUBSCRIBE_UTM_SOURCE = "eia-standalone";
+export { SUBSCRIBE_UTM_SOURCE };
 export const SUBSCRIBE_UTM_MEDIUM = "jogar";
 export const SUBSCRIBE_UTM_CAMPAIGN = "eia-jogar-posvoto";
 
@@ -138,9 +145,13 @@ export function buildSubscribeUrl(): string {
  * voto/rodada (nunca antes — mesma disciplina anti-spoiler do resto da
  * página). `target="_blank"` — não perder o estado do jogo ao navegar pro
  * site.
+ *
+ * #3978: href passa a carregar UTM (`buildBrandSiteUrl`, medium
+ * "posvoto-cta") — antes ia pro site SEM parâmetro nenhum (achado #3978,
+ * único CTA de saída do funil sem nenhuma medição).
  */
 export function renderSubscribeCtaBlock(): string {
-  const url = BRAND_INFO[JOGAR_BRAND].siteUrl;
+  const url = buildBrandSiteUrl(JOGAR_BRAND, "posvoto-cta", "eia-jogar-conhecer");
   return `<div id="jogar-subscribe-cta" class="subscribe-cta" hidden>
   <p class="subscribe-text">Quer entender o que a Diar.ia faz? Conheça o projeto.</p>
   <a class="subscribe-btn" href="${htmlEscape(url)}" target="_blank" rel="noopener">Conhecer a Diar.ia</a>
@@ -483,7 +494,7 @@ ${renderSubscribeCtaBlock()}
      clarice/#3524, ver handleJogarPage). A rota /jogar/arquivo continua
      viva (destino dessa ponte), só não é mais auto-promovida em NENHUMA
      view web (issue #3589 item 3). -->
-<p class="footer-links"><a href="${htmlEscape(info.siteUrl)}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-footer", "eia-jogar-footer"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 
 <script>
@@ -1249,7 +1260,7 @@ ${renderBrandShellStyles()}
 <h1>Sequência do mês — jogue e entre no leaderboard</h1>
 ${bodyHtml}
 
-<p class="footer-links"><a href="${htmlEscape(info.siteUrl)}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${quizFallbackLink}</p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-footer", "eia-jogar-footer"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${quizFallbackLink}</p>
 ${renderBrandFooter(JOGAR_BRAND)}
 ${scriptHtml}
 </body>
@@ -1845,7 +1856,7 @@ ${renderBrandShellStyles()}
 <h1>Quiz relâmpago</h1>
 ${quizBodyHtml}
 
-<p class="footer-links"><a href="${htmlEscape(info.siteUrl)}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="/jogar">Jogar o par de hoje</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Ver arquivo</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-footer", "eia-jogar-footer"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="/jogar">Jogar o par de hoje</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Ver arquivo</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver leaderboard</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 ${scriptHtml}
 </body>

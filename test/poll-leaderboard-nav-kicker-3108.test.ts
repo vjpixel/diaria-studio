@@ -33,6 +33,16 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import workerDefault from "../workers/poll/src/index.ts";
 import type { Env } from "../workers/poll/src/index.ts";
+import { buildBrandSiteUrl } from "../workers/poll/src/lib.ts";
+
+// #3978: sub-copy do leaderboard passou a levar UTM (medium
+// "leaderboard-copy") nos 2 links — antes o link diar.ia.br→beehiiv não
+// tinha PARÂMETRO NENHUM e o link pro site do brand era cru. Construído via
+// `buildBrandSiteUrl` (mesma função de produção) + escape manual de "&" →
+// "&amp;" (mesmo padrão de htmlEscape em atributo HTML).
+function leaderboardCopyHrefEscaped(brand: "diaria" | "clarice"): string {
+  return buildBrandSiteUrl(brand, "leaderboard-copy", "eia-leaderboard-copy").replace(/&/g, "&amp;");
+}
 
 function makeKv(seed: Record<string, string> = {}): KVNamespace {
   const data: Record<string, string> = { ...seed };
@@ -120,21 +130,21 @@ describe("#3108 — navegação (arquivo + anual) ANTES da tabela; #3615 restrin
 });
 
 describe("#3108 — sub-copy: 2 links SÓ no brand clarice; brand diaria INALTERADO", () => {
-  it("brand clarice: sub-copy com 2 links (diar.ia.br → beehiiv, Clarice → clarice.ai)", async () => {
+  it("brand clarice: sub-copy com 2 links (diar.ia.br com UTM, Clarice → clarice.ai com UTM, #3978)", async () => {
     const html = await fetchHtml("/leaderboard/2026?brand=clarice");
-    assert.match(
-      html,
-      /<p class="sub">Quem mais acertou este ano qual imagem foi gerada pela <a href="https:\/\/diaria\.beehiiv\.com">diar\.ia\.br<\/a> na newsletter da <a href="https:\/\/clarice\.ai\/\?via=diaria">Clarice<\/a>\.<\/p>/,
-      "sub-copy da clarice deve ter os 2 links exatos: diar.ia.br→beehiiv e Clarice→clarice.ai (shortName, não 'Clarice News' inteiro)",
+    const expected = `<p class="sub">Quem mais acertou este ano qual imagem foi gerada pela <a href="${leaderboardCopyHrefEscaped("diaria")}">diar.ia.br</a> na newsletter da <a href="${leaderboardCopyHrefEscaped("clarice")}">Clarice</a>.</p>`;
+    assert.ok(
+      html.includes(expected),
+      `sub-copy da clarice deve ter os 2 links exatos (com UTM): diar.ia.br e Clarice→clarice.ai (shortName, não 'Clarice News' inteiro). Esperado:\n${expected}\nRecebido (trecho):\n${html.match(/<p class="sub">.*?<\/p>/s)?.[0]}`,
     );
   });
 
-  it("brand diaria: sub-copy é o texto ORIGINAL, sem os 2 links da clarice (regressão contra generalização acidental)", async () => {
+  it("brand diaria: sub-copy é o texto original + UTM (#3978), sem os 2 links da clarice (regressão contra generalização acidental)", async () => {
     const html = await fetchHtml("/leaderboard");
-    assert.match(
-      html,
-      /<p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="https:\/\/diar\.ia\.br">Diar\.ia<\/a>\.<\/p>/,
-      "sub-copy do brand diaria deve permanecer EXATAMENTE como antes",
+    const expected = `<p class="sub">Quem mais acertou esse mês qual imagem foi gerada por IA na <a href="${leaderboardCopyHrefEscaped("diaria")}">Diar.ia</a>.</p>`;
+    assert.ok(
+      html.includes(expected),
+      `sub-copy do brand diaria deve permanecer com o texto original (só ganhando UTM no href, #3978). Esperado:\n${expected}\nRecebido (trecho):\n${html.match(/<p class="sub">.*?<\/p>/s)?.[0]}`,
     );
     assert.doesNotMatch(html, /diaria\.beehiiv\.com/, "brand diaria não deve ganhar o link cross-promo da clarice");
     assert.doesNotMatch(html, /newsletter da/, "brand diaria não deve ganhar a frase 'newsletter da X' da clarice");
