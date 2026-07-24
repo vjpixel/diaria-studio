@@ -65,7 +65,8 @@ describe("leaderboard HTML — coluna % (#3977)", () => {
     });
     const res = await handleLeaderboardByMonth("2020-01", env, "diaria");
     const html = await res.text();
-    assert.match(html, /<th>#<\/th><th>Leitor\(a\)<\/th><th>Acertos<\/th><th>%<\/th>/);
+    // #4008 item 4: cabeçalho "Leitor(a)" → "Jogador(a)" — inclui o jogador web.
+    assert.match(html, /<th>#<\/th><th>Jogador\(a\)<\/th><th>Acertos<\/th><th>%<\/th>/);
     assert.match(html, /<td>3\/4<\/td>\s*<td>75%<\/td>/);
   });
 

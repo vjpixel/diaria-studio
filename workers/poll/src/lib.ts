@@ -300,22 +300,33 @@ export function isValidVoteEditionFormat(edition: string): boolean {
 // ── Máscara de email pra exibição pública (#3118 item 11) ──────────────────
 
 /**
- * Mascara email pra exibição pública (`usuario@***`) — nunca revela o
- * domínio. Consolida 3 implementações quase-idênticas que existiam
- * espalhadas em leaderboard-routes.ts (×2) e index.ts (×1) — risco real de
- * divergirem entre si (uma delas já tinha um fallback pra email sem "@" que
- * as outras duas não tinham).
+ * Mascara email pra exibição pública — trunca o local-part pros 3 primeiros
+ * caracteres (+ "…" se houver mais) e nunca revela o domínio.
+ *
+ * #4008 item 1: antes exibia o local-part INTEIRO (ex: `wutrecht@***`) — pra
+ * quem já conhece a pessoa, isso é o e-mail quase completo, não uma máscara
+ * de verdade. Truncar pros 3 primeiros chars reduz bastante a superfície de
+ * identificação, mantendo só o suficiente pra reconhecimento por quem já
+ * sabia de antemão (a máscara nunca teve como objetivo anonimizar de
+ * quem-não-conhece — o domínio já mascarado cobre esse caso).
+ *
+ * Consolida 3 implementações quase-idênticas que existiam espalhadas em
+ * leaderboard-routes.ts (×2) e index.ts (×1) — risco real de divergirem
+ * entre si (uma delas já tinha um fallback pra email sem "@" que as outras
+ * duas não tinham).
  *
  * Fallback pra string sem "@" (não deveria ocorrer em produção — email
  * sempre vem de `score:{email}`/voto validado, e desde #3118 item 3 todo
  * novo voto passa por `isValidVoteEmailFormat` — mas defensivo pra dados
- * históricos pré-validação): mascara os 4 primeiros chars + "***" em vez de
- * devolver a string crua sem máscara nenhuma.
+ * históricos pré-validação): mesma truncagem de 3 chars, só sem o "@"
+ * (`"***"` no lugar do domínio) em vez de devolver a string crua sem máscara
+ * nenhuma.
  */
 export function maskEmail(email: string): string {
   const at = email.indexOf("@");
-  if (at > 0) return `${email.slice(0, at)}@***`;
-  return `${email.slice(0, 4)}***`;
+  const local = at > 0 ? email.slice(0, at) : email;
+  const truncated = local.length > 3 ? `${local.slice(0, 3)}…` : local;
+  return at > 0 ? `${truncated}@***` : `${truncated}***`;
 }
 
 // ── Per-publication-month leaderboard (#1345) ───────────────────────────────

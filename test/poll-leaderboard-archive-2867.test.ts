@@ -293,8 +293,12 @@ describe("Voto retroativo via /vote pontua no ranking anual mesmo fora da janela
     );
     assert.equal(res.status, 200);
     const html = await res.text();
-    // Sem nickname, aparece como email mascarado "retro2@***"
-    assert.match(html, /retro2@\*\*\*/, "voto retroativo de janeiro deve aparecer agregado no leaderboard anual de 2026");
+    // Sem nickname, aparece como email mascarado — local-part truncado pros 3
+    // primeiros chars desde #4008 item 1 ("ret…@***", não mais "retro2@***").
+    // Único voto do mês (total=1, abaixo de MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING)
+    // — mas o fallback anti-leaderboard-vazio de partitionLeaderboardForDisplay
+    // (#4008 item 2) mantém a linha visível quando NINGUÉM atinge o mínimo.
+    assert.match(html, /ret…@\*\*\*/, "voto retroativo de janeiro deve aparecer agregado no leaderboard anual de 2026");
   });
 });
 

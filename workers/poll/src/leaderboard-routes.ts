@@ -1,5 +1,5 @@
 import type { Env } from "./index";
-import { rankEntries, type LeaderboardEntry } from "./leaderboard";
+import { rankEntries, partitionLeaderboardForDisplay, type LeaderboardEntry } from "./leaderboard";
 import {
   type Brand,
   currentMonthSlugBrt,
@@ -677,7 +677,12 @@ function renderLeaderboardHtml(
   const periodNoun = periodKind === "year" ? "este ano" : "esse mês";
   // #1092 + #1256: dense ranking — leitores empatados em (correct, total)
   // ocupam o mesmo número e o próximo grupo é +1 (1, 1, 2 — não 1, 1, 3).
-  const ranked = rankEntries(scores).slice(0, 50);
+  // #4008 item 2: cauda de baixo-engajamento (< MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING
+  // tentativas) sai da listagem linha-a-linha antes do corte top-50 — vira o
+  // agregado "+ N jogadores {período}" abaixo da tabela (ver tailNoteHtml).
+  const rankedAll = rankEntries(scores);
+  const { visible, hiddenCount } = partitionLeaderboardForDisplay(rankedAll);
+  const ranked = visible.slice(0, 50);
 
   const rows = ranked.map((s) => {
     // #3118 (item 11): maskEmail (lib.ts) — consolida com as outras 2 implementações.
@@ -735,6 +740,13 @@ function renderLeaderboardHtml(
     ? `<a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a>`
     : "";
   const navHtml = annualLinkHtml || archiveLinkHtml ? `<p class="nav">${annualLinkHtml}${archiveLinkHtml}</p>` : "";
+  // #4008 item 2: linha agregada de prova social pra quem ficou de fora da
+  // listagem por baixo engajamento (< MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING
+  // tentativas) — nunca aparece se `partitionLeaderboardForDisplay` não
+  // cortou ninguém (fallback anti-leaderboard-vazio, hiddenCount === 0).
+  const tailNoteHtml = hiddenCount > 0
+    ? `<p style="margin-top:8px;font-size:0.85rem;color:${DS_COLORS.ink}">+ ${hiddenCount} jogador${hiddenCount === 1 ? "" : "es"} ${periodNoun} (poucas tentativas pra entrar na lista)</p>`
+    : "";
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -770,9 +782,10 @@ ${renderBrandShellStyles()}
 ${subCopy}
 ${navHtml}
 <table>
-<thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th><th>%</th></tr></thead>
+<thead><tr><th>#</th><th>Jogador(a)</th><th>Acertos</th><th>%</th></tr></thead>
 <tbody>${rows || `<tr><td colspan=4 style='color:${DS_COLORS.ink};text-align:center;padding:20px'>Ainda sem votos.</td></tr>`}</tbody>
 </table>
+${tailNoteHtml}
 <p style="margin-top:30px;font-size:0.8rem;color:${DS_COLORS.ink}">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
 <p style="margin-top:8px;font-size:0.8rem;color:${DS_COLORS.ink}">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
 ${renderBrandFooter(brand)}
