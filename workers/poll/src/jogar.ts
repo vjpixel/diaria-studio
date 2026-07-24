@@ -393,7 +393,14 @@ export function identityFormScript(): string {
   if (identified) {
     form.hidden = true;
     if (note) { note.hidden = false; note.textContent = "Você está no ranking como " + identified + "."; }
-    return;
+    // NAO retorna aqui (#4031): o handler de submit (com preventDefault)
+    // PRECISA ser atachado mesmo quando ja identificado. O early-return antigo
+    // deixava o form (sem atributo action) sem handler — se qualquer caminho de
+    // revelacao exibisse o form estando identificado (ex: showFinal rodando
+    // antes de window.__jogarIdentify existir, ou o reveal do par unico), um
+    // submit virava navegacao NATIVA (GET pra /jogar, sequencia volta ao par
+    // 1 — bug reportado 260724). Com o handler sempre atachado, submeter um
+    // e-mail novo re-identifica em vez de resetar o jogo.
   }
 
   var status = form.querySelector(".signup-status");
