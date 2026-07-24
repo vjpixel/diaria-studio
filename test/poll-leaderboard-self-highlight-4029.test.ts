@@ -93,6 +93,25 @@ describe("self-highlight (#4029 item 2) — data-uid por linha + script client-s
     assert.match(html, /tr\[data-uid="/, "script deve buscar a <tr> pelo data-uid calculado");
   });
 
+  it("gêmeo JS embutido produz EXATAMENTE o mesmo hash que hashEmailForMatch (lib.ts) — extrai a função do script e roda de verdade, não só compara texto", async () => {
+    const env = makeEnv({
+      "score-by-month:2020-01:ana@example.com": JSON.stringify({ total: 5, correct: 4, nickname: "Ana" }),
+    });
+    const res = await handleLeaderboardByMonth("2020-01", env, "web");
+    const html = await res.text();
+    const match = html.match(/function hashEmailForMatch\(email\) \{[\s\S]*?\n  \}/);
+    assert.ok(match, "função hashEmailForMatch deve estar presente no <script>");
+    // eslint-disable-next-line no-new-func -- extrai o gêmeo JS de verdade do
+    // HTML servido (não uma cópia mantida à mão no teste) e roda com
+    // Math.imul real do runtime — garante que o server e o client nunca
+    // divergem silenciosamente (mesma disciplina que o resto do worker já
+    // documenta pra formatSeqFinalScore/computeSeqSkipAndCredit em jogar.ts).
+    const clientHashEmailForMatch = new Function(`${match[0]}; return hashEmailForMatch;`)();
+    for (const email of ["ana@example.com", "Ana@Example.com", "  bob@x.com  ", "não-ascii@exemplo.com.br"]) {
+      assert.equal(clientHashEmailForMatch(email), hashEmailForMatch(email), `hash diverge pra "${email}"`);
+    }
+  });
+
   it("brand web: CTA 'jogue e apareça' presente (hidden por padrão) pra quando a identidade não é encontrada na tabela", async () => {
     const env = makeEnv({
       "score-by-month:2020-01:ana@example.com": JSON.stringify({ total: 5, correct: 4, nickname: "Ana" }),
