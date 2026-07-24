@@ -1155,7 +1155,11 @@ ${renderInlineSignupFormBlock()}`;
       advanced = true;
       resultEl.hidden = true;
       resultEl.innerHTML = "";
-      setChoicesDisabled(false);
+      // Não precisa reabilitar os botões aqui — advance()/renderRound()
+      // substitui choicesEl.innerHTML por um novo par de botões (já
+      // habilitados) ou, na última rodada, esconde o play inteiro
+      // (showFinal()). Uma chamada explícita reabilitando os botões aqui
+      // seria sempre um no-op (self-review #3990).
       advance();
     }
     var nextBtn = resultEl.querySelector(".seq-next-btn");

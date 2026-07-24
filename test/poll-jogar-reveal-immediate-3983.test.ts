@@ -40,7 +40,7 @@ import { handleVote } from "../workers/poll/src/vote.ts";
 import { VoteDedup } from "../workers/poll/src/vote-dedup.ts";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 import { renderJogarPageHtml, renderJogarSequencePageHtml } from "../workers/poll/src/jogar.ts";
-import type { Env } from "../workers/poll/src/index.ts";
+import worker, { type Env } from "../workers/poll/src/index.ts";
 
 // ── fixtures ─────────────────────────────────────────────────────────────
 
@@ -285,6 +285,34 @@ describe("handleVote fast-path (#3983) — veredito imediato, contabilidade em b
     const score = JSON.parse((await env.POLL.get("score:race@x.com"))!);
     assert.equal(score.total, 1, "só 1 dos 2 votos otimistas deve contar pro score (dedup em background evita double-count)");
   });
+
+  // Self-review #3990: os testes acima chamam `handleVote` diretamente com um
+  // ctx — cobrem a LÓGICA do fast-path, mas não a FIAÇÃO real de produção
+  // (index.ts `fetch(request, env, ctx)` → `routeRequest(..., ctx)` →
+  // `handleVote(url, bEnv, brand, env, ctx)`). Este teste fecha esse gap:
+  // passa pelo `worker.fetch` exportado de verdade (o mesmo entry point que o
+  // Workers runtime chama em produção) com um ExecutionContext real.
+  it("fiação de produção: worker.fetch(request, env, ctx) com ctx real também aciona o fast-path (não só handleVote chamado direto)", async () => {
+    const env = makeEnv({ "correct:260601": "A" }) as unknown as Env;
+    const { ctx, scheduled } = makeRealCtx();
+    const res = await worker.fetch(
+      new Request(voteUrl("wiring@x.com", "260601", "A").toString()),
+      env,
+      ctx,
+    );
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /✅ Acertou! Era a imagem gerada por IA\./);
+    assert.ok(scheduled.length > 0, "fetch() -> routeRequest() -> handleVote() deve ter agendado a contabilidade via ctx.waitUntil()");
+    assert.equal(
+      await (env as unknown as { POLL: ReturnType<typeof makeTrackedKv> }).POLL.get("vote:260601:wiring@x.com"),
+      null,
+      "a escrita ainda não deve ter acontecido antes do waitUntil resolver, mesmo passando pelo fetch() real",
+    );
+    await flush(scheduled);
+    const voteRaw = await (env as unknown as { POLL: ReturnType<typeof makeTrackedKv> }).POLL.get("vote:260601:wiring@x.com");
+    assert.ok(voteRaw, "voteKey deve estar gravado depois do waitUntil resolver, via o caminho real de produção");
+  });
 });
 
 // ── 2. Frontend — par único (renderJogarPageHtml) ───────────────────────────
@@ -346,9 +374,16 @@ describe("renderJogarSequencePageHtml (#3983) — reveal por rodada, reverte o S
     assert.match(html, /setTimeout\(goNext, 2500\);/);
   });
 
-  it("botões são reabilitados ao avançar pra próxima rodada (goNext)", () => {
+  // Self-review #3990: a 1ª versão desta PR tinha um `setChoicesDisabled(false)`
+  // logo antes de `advance()` em goNext() — código morto, porque advance()/
+  // renderRound() sempre substitui choicesEl.innerHTML por um par de botões
+  // NOVO (já habilitado) ou esconde o play inteiro (showFinal(), última
+  // rodada). Removido; este teste agora trava a ausência do no-op em vez de
+  // exigi-lo.
+  it("goNext esconde o resultado e chama advance() — sem reabilitar botões que a troca de rodada já substitui (no-op removido, self-review #3990)", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.match(html, /setChoicesDisabled\(false\);\s*\n\s*advance\(\);/);
+    assert.match(html, /resultEl\.hidden = true;\s*\n\s*resultEl\.innerHTML = "";/);
+    assert.doesNotMatch(html, /setChoicesDisabled\(false\)/, "advance()/renderRound() já substitui os botões — reabilitar aqui seria sempre um no-op");
   });
 
   it("fallback de rede: 2ª falha do /vote cai pra navegação nativa (nunca perde o voto silenciosamente)", () => {
