@@ -64,6 +64,21 @@ function adminSig(secret: string, brand: string, edition: string, answer: string
 }
 
 /**
+ * #3984: assina o payload de `POST /admin/eiameta` (descrição+crédito da
+ * imagem, gravados em `eiameta:{edition}` — chave COMPARTILHADA, sem prefixo
+ * de brand, ver rationale em jogar.ts). O conteúdo inteiro (description +
+ * credit) entra no material assinado — não só `edition` — pra que o sig não
+ * seja replayable com um conteúdo DIFERENTE do que foi de fato autorizado
+ * (mesma disciplina de integridade que `/admin/correct` já aplica ao incluir
+ * `answer` no material assinado, #3118 item 8). Espelhado em
+ * `workers/poll/src/index.ts` (`handleAdminEiaMeta`) — mudar um lado sem o
+ * outro quebra a verificação.
+ */
+export function adminEiaMetaSig(secret: string, edition: string, description: string, credit: string): string {
+  return createHmac("sha256", secret).update(`eiameta:${edition}:${description}:${credit}`).digest("hex");
+}
+
+/**
  * Pure (#3516): decide se o close-poll da diária deve TAMBÉM espelhar o
  * gabarito pro brand `web` (jogo standalone, EPIC #3514). Só o branch
  * DEFAULT (fecha a diária, `--brand` omitido) dispara o mirror — `clarice`
@@ -124,17 +139,21 @@ async function main(): Promise<void> {
   // (o caminho normal é o mirror automático logo abaixo, no branch default).
   const brand = values["brand"] && values["brand"] !== "diaria" ? values["brand"] : null;
 
+  // #3031: resolveEditionDir resolve o path REAL da edição (flat ou nested,
+  // #3024) em vez de montar data/editions/{edition} à força — que só existe
+  // no layout flat legado e some pós-migração pro layout nested. Hoisted pra
+  // escopo de função (#3984): antes era recalculado localmente 2x (aqui e no
+  // marker da diária mais abaixo) — o push de eiameta precisa do MESMO path
+  // num 3º ponto, então centraliza o cálculo em vez de uma 3ª cópia.
+  const editionDirPath = resolveEditionDir(editionsRootDir, edition);
+  const metaPath = resolve(editionDirPath, "_internal", "01-eia-meta.json");
+
   // Ler ai_side de 01-eia-meta.json se não foi passado manualmente
   if (!answer) {
     if (brand === "clarice") {
       console.error("[close-poll] --brand clarice requer --answer A|B explícito (fluxo mensal não usa 01-eia-meta.json da edição diária). Use --answer A ou --answer B.");
       process.exit(1);
     }
-    // #3031: resolveEditionDir resolve o path REAL da edição (flat ou nested,
-    // #3024) em vez de montar data/editions/{edition} à força — que só existe
-    // no layout flat legado e some pós-migração pro layout nested.
-    const editionDirPath = resolveEditionDir(editionsRootDir, edition);
-    const metaPath = resolve(editionDirPath, "_internal", "01-eia-meta.json");
     if (!existsSync(metaPath)) {
       console.error(`[close-poll] 01-eia-meta.json não encontrado em ${metaPath}. Use --answer A|B.`);
       process.exit(1);
@@ -267,11 +286,49 @@ async function main(): Promise<void> {
     }
   }
 
-  // #3031: mesmo fix do metaPath acima — resolve o path REAL da edição (flat
-  // ou nested) em vez de montar data/editions/{edition} à força. Sem isso, o
-  // marker era gravado num diretório flat órfão que o resume-check e o
-  // Stage 5 §5g (que buscam o marker via resolveEditionDir) nunca encontram.
-  const editionDirPath = resolveEditionDir(editionsRootDir, edition);
+  // #3984: push best-effort de descrição+crédito pro Worker (`eiameta:{edition}`,
+  // chave COMPARTILHADA/sem prefixo de brand — mesmo racional de `correct:{edition}`,
+  // ver rationale em workers/poll/src/jogar.ts). Roda no MESMO branch default
+  // do mirror --brand web acima (só quando `brand` é null — fechar a diária),
+  // porque é a fonte que TEM `01-eia-meta.json` (a mensal usa --answer
+  // explícito, sem esse arquivo, ver guard mais acima). Fail-soft: qualquer
+  // falha (meta ausente, schema inválido, Worker fora do ar) vira warning em
+  // stderr — nunca bloqueia o close-poll principal, mesma filosofia do mirror
+  // web. Sem descrição/crédito disponíveis (edição composta ANTES do #3984,
+  // ou wikimedia.credit ausente), o push é pulado silenciosamente — nada útil
+  // a compartilhar, e o Worker já trata `eiameta:{edition}` ausente como
+  // fallback gracioso (revelação sem descrição, igual hoje).
+  if (shouldMirrorToWeb(brand)) {
+    try {
+      if (existsSync(metaPath)) {
+        const meta = parseEiaMeta(JSON.parse(readFileSync(metaPath, "utf8")));
+        const description = meta.wikimedia?.description ?? "";
+        const credit = meta.wikimedia?.credit ?? "";
+        if (description || credit) {
+          const eiaMetaSig = adminEiaMetaSig(secret, edition, description, credit);
+          const eiaMetaUrl = `${POLL_WORKER_URL}/admin/eiameta`;
+          const eiaMetaRes = await dohFetch(eiaMetaUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ edition, description, credit, sig: eiaMetaSig }),
+          });
+          const eiaMetaData = await eiaMetaRes.json().catch(() => ({})) as { ok?: boolean };
+          if (!eiaMetaRes.ok || !eiaMetaData.ok) {
+            console.error(`[close-poll] aviso (#3984): push de eiameta falhou (status ${eiaMetaRes.status}) para edition=${edition} — não bloqueia close-poll.`);
+          } else {
+            console.error(`[close-poll] eiameta (descrição+crédito) gravado pra edition=${edition} — #3984.`);
+          }
+        } else {
+          console.error(`[close-poll] eiameta pulado (#3984): sem descrição/crédito em ${metaPath}.`);
+        }
+      } else {
+        console.error(`[close-poll] eiameta pulado (#3984): ${metaPath} não encontrado.`);
+      }
+    } catch (e) {
+      console.error(`[close-poll] aviso (#3984): push de eiameta lançou exceção para edition=${edition}: ${(e as Error).message} — não bloqueia close-poll.`);
+    }
+  }
+
   const markerDir = resolve(editionDirPath, "_internal");
   mkdirSync(markerDir, { recursive: true });
   const markerPath = resolve(markerDir, ".close-poll-done.json");

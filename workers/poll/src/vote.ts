@@ -307,7 +307,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
       correctRaw,
       existingFromKv,
       testMode,
-    });
+    }, rawEnv);
   }
 
   // ── Caminho síncrono legado (sem ExecutionContext real) ───────────────────
@@ -667,6 +667,26 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
     }
   }
 
+  // #3984: descrição + crédito da foto real, lidos de `eiameta:{edition}`
+  // (KV COMPARTILHADO via `rawEnv`, brand-independente — mesmo racional de
+  // `correctRaw` acima, #3600). Anti-spoiler: só lido quando `correct !== null`
+  // (gabarito já fechado) — mesmo gate de `showImages`/`statsSuffix` logo
+  // abaixo/acima. Fail-soft: qualquer falha vira `eiaMeta = null` (o bloco
+  // simplesmente não renderiza, ver renderEiaMetaHtml em index.ts).
+  let eiaMeta: { description: string; credit: string } | null = null;
+  if (correct !== null) {
+    try {
+      const eiaMetaRaw = await rawEnv.POLL.get(`eiameta:${edition}`);
+      const parsed = safeParseKv<{ description?: string; credit?: string }>(eiaMetaRaw, "vote_eiameta_parse_error", edition);
+      if (parsed && (parsed.description || parsed.credit)) {
+        eiaMeta = { description: parsed.description ?? "", credit: parsed.credit ?? "" };
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "vote_eiameta_fetch_failed", edition, error: String(e) }));
+      // eiaMeta permanece null — fallback silencioso (bloco não renderiza).
+    }
+  }
+
   const msg = correct === true
     ? `✅ Acertou! Era a imagem gerada por IA.${renderStreakSuffix(streakForDisplay, brand)}${statsSuffix}`
     : correct === false
@@ -713,7 +733,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // #2113(a): passa voteTs como cache-buster pra quebrar cache do navegador no link
   // "Ver leaderboard" — leitor que viu a página de leaderboard antes de votar não
   // fica com a versão vazia em cache. SÓ neste link (tráfego orgânico inalterado).
-  return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs, shareCard), 200);
+  return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs, shareCard, eiaMeta), 200);
 }
 
 // ── #3983: fast-path (reverte o Suspense #3595 + reavaliação do cômputo do
@@ -767,6 +787,12 @@ async function handleVoteFastPath(
     existingFromKv: string | null;
     testMode: boolean;
   },
+  /** #3984: env CRU (não branded) — lê `eiameta:{edition}` compartilhado,
+   * mesmo racional de `correctRaw` (já lido via rawEnv em handleVote antes
+   * do fast-path ser despachado, #3600). Default `= env` preserva chamadas
+   * de teste/legadas que não passam este argumento (equivalente a
+   * brand="diaria", onde `bEnv === env` de qualquer forma). */
+  rawEnv: Env = env,
 ): Promise<Response> {
   const { email, edition, choice, correctRaw, existingFromKv, testMode } = params;
 
@@ -827,6 +853,23 @@ async function handleVoteFastPath(
     shareCard = { token: await encodeShareToken(env.POLL_SECRET, sharePayload), payload: sharePayload };
   }
 
+  // #3984: mesmo fetch condicional do caminho legado (rawEnv, CRU) — o
+  // gabarito já é conhecido síncrona/imediatamente aqui (`correctRaw` veio do
+  // Promise.all original em handleVote), então o custo é só 1 GET extra no
+  // fast-path, sem esperar a contabilidade em background.
+  let eiaMeta: { description: string; credit: string } | null = null;
+  if (correct !== null) {
+    try {
+      const eiaMetaRaw = await rawEnv.POLL.get(`eiameta:${edition}`);
+      const parsed = safeParseKv<{ description?: string; credit?: string }>(eiaMetaRaw, "vote_fastpath_eiameta_parse_error", edition);
+      if (parsed && (parsed.description || parsed.credit)) {
+        eiaMeta = { description: parsed.description ?? "", credit: parsed.credit ?? "" };
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "vote_fastpath_eiameta_fetch_failed", edition, error: String(e) }));
+    }
+  }
+
   const msg = correct === true
     ? "✅ Acertou! Era a imagem gerada por IA."
     : correct === false
@@ -834,7 +877,7 @@ async function handleVoteFastPath(
     : "Voto registrado! O resultado sai na próxima edição.";
 
   const response = voteHtmlResponse(
-    votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs, shareCard),
+    votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs, shareCard, eiaMeta),
     200,
   );
 

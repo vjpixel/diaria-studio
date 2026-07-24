@@ -19,6 +19,12 @@ export const WikimediaInfoSchema = z.object({
   title: z.string(),
   image_url: z.string(),
   credit: z.string().optional(),
+  // #3984: frase de descrição da imagem (traduzida pt-BR quando disponível,
+  // mesmo texto plano usado em buildCreditLine antes de virar markdown com
+  // links) — ausente em edições compostas ANTES do #3984 (schema tolerante,
+  // não quebra 01-eia-meta.json legado). Consumido por close-poll.ts pra
+  // popular `eiameta:{edition}` no Worker (revelação com descrição+crédito).
+  description: z.string().optional(),
   // #1176: eia-compose.ts escreve `null` literal nestes 3 fields quando a API
   // Wikimedia não fornece o dado (ex: imagem POTD sem subject_wikipedia_url
   // ou artist_url resolvível). `.optional()` rejeita null — usar `.nullish()`
