@@ -7,7 +7,7 @@
  *
  * `post_pixel` NUNCA passa por `publish-linkedin.ts` — é publicado 100%
  * manualmente (Make.com não tem endpoint pra post pessoal, ver §3b de
- * social-linkedin.md e context/publishers/linkedin.md). Por isso os
+ * social-writer.md, #3991 — antes social-linkedin.md — e context/publishers/linkedin.md). Por isso os
  * placeholders não são resolvidos no dispatch de Stage 5 (como eram no
  * `### comment_diaria`, aposentado em #3627) — este script é o ponto de
  * resolução equivalente pro fluxo manual, chamado no pré-gate do Stage 6

@@ -2,11 +2,11 @@
  * lint-social-numbers.ts (#1711)
  *
  * Guard heurístico anti-alucinação de CIFRAS FINANCEIRAS nos posts de social.
- * O `social-linkedin`/`social-facebook` (LLM) pode inventar um número específico
- * ausente da fonte — caso 260602: post d1 escreveu "US$ 965 bilhões em valuation"
- * (valor implausível, não estava no The Guardian nem no approved.json). Humanizer
- * e Clarice NÃO fazem fact-check; sem catch manual no gate, sai número falso no
- * LinkedIn/Facebook da marca.
+ * O `social-writer` (#3991, antes `social-linkedin`/`social-facebook`, LLM) pode
+ * inventar um número específico ausente da fonte — caso 260602: post d1 escreveu
+ * "US$ 965 bilhões em valuation" (valor implausível, não estava no The Guardian
+ * nem no approved.json). Humanizer e Clarice NÃO fazem fact-check; sem catch
+ * manual no gate, sai número falso no post da marca.
  *
  * Estratégia conservadora (baixo ruído): extrai só cifras de DINHEIRO COM
  * MAGNITUDE (US$/R$/$/€ + número + bi/mi/tri/bilhões/...) — o tipo que foi
@@ -165,10 +165,10 @@ interface ApprovedShape {
 
 /**
  * Texto-fonte do destaque N (1-based) = title + summary do highlights[N-1].
- * É a fonte que o social-linkedin/facebook recebe pra escrever o post de dN
- * (social-linkedin.md). Comparar o post de dN contra a fonte de dN (não contra
- * o pool inteiro) é o que pega o caso 260602: "965B" estava num item use_melhor,
- * mas NÃO na fonte do destaque d1 (Anthropic IPO) — então o post de d1 que cita
+ * É a fonte que o social-writer (#3991) recebe pra escrever o texto de dN
+ * (`.claude/agents/social-writer.md`). Comparar o post de dN contra a fonte de
+ * dN (não contra o pool inteiro) é o que pega o caso 260602: "965B" estava num
+ * item use_melhor, mas NÃO na fonte do destaque d1 (Anthropic IPO) — então o post de d1 que cita
  * "965B" É unsourced relativo ao d1. Vazio quando N fora de range.
  */
 export function highlightSourceText(approved: ApprovedShape, destaque: number): string {
