@@ -204,7 +204,12 @@ describe("handleVote fast-path (#3983) — veredito imediato, contabilidade em b
   it("nickname form / result images / share card (brand=web) continuam presentes na resposta rápida (não dependem da escrita desta rodada)", async () => {
     const env = makeEnv({ "correct:260601": "A" });
     const { ctx } = makeRealCtx();
-    const res = await handleVote(voteUrl("web-user@x.com", "260601", "A", "web"), env, "web", env, ctx);
+    // #3976: brand "web" exige token UUID v4 válido em @web.eia.diaria.local
+    // (isValidWebToken) — um email arbitrário como "web-user@x.com" agora
+    // cai no guard de token forjado e retorna "Link inválido" antes de
+    // chegar na lógica de nickname form testada aqui.
+    const webToken = "a1b2c3d4-e5f6-4789-8abc-def012345678@web.eia.diaria.local";
+    const res = await handleVote(voteUrl(webToken, "260601", "A", "web"), env, "web", env, ctx);
     const html = await res.text();
     assert.match(html, /class="nick-form"/, "nicknameForm deve aparecer (jogador ainda sem nickname)");
     assert.match(html, /class="result-images"/, "destaque de imagens deve aparecer (gabarito já conhecido)");
