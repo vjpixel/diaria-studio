@@ -39,6 +39,9 @@ import {
   maskEmail, // #3118 item 11
   jogarArchiveHref, // #3524
   buildBrandSiteUrl, // #3978: href com UTM do rodapé de /vote
+  lightboxScript, // #4007: script do lightbox de zoom — reusado nas 4 superfícies do par de imagens
+  renderLightboxMarkup, // #4007: markup do <dialog> de zoom
+  renderLightboxStyles, // #4007: CSS do lightbox + badge de lupa
 } from "./lib";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
@@ -824,6 +827,7 @@ export function votePageHtml(
     .share-actions { flex-direction: column; }
     .share-actions button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
   }
+${renderLightboxStyles()}
 </style>
 </head>
 <body>
@@ -833,6 +837,8 @@ ${eiaMetaHtml}
 ${shareCardHtml}
 ${formHtml}
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-voltar", "eia-vote-voltar"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
+${renderLightboxMarkup()}
+${lightboxScript()}
 </body>
 </html>`;
 }

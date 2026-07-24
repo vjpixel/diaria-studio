@@ -55,9 +55,12 @@ import {
   isValidVoteEmailFormat, // #3595: valida o pseudo-email recebido por /jogar/seq-state
   isValidWebToken, // #3976: /jogar/seq-state é exclusivo do brand `web` — token deve ser UUID v4
   leaderboardHref,
+  lightboxScript, // #4007: script do lightbox de zoom — delegação de clique, reusado nas 4 superfícies
   MIN_VOTES_FOR_STATS_DISPLAY, // #4005: mesmo limiar de amostra do sufixo "X% acertaram" — reusado na ordem "por surpresa"
   renderBrandFooter,
   renderBrandShellStyles,
+  renderLightboxMarkup, // #4007: markup do <dialog> de zoom
+  renderLightboxStyles, // #4007: CSS do lightbox + badge de lupa
   renderSeoMeta,
   SUBSCRIBE_UTM_SOURCE, // #3978: fonte única de verdade movida pra lib.ts — reexportada abaixo por back-compat
   todayAammddBrt,
@@ -638,6 +641,7 @@ ${renderInlineSignupFormStyles()}
     .result-image { flex-basis: 100%; max-width: 100%; }
     .result-image .label { font-size: 1.05rem; }
   }
+${renderLightboxStyles()}
 ${renderBrandShellStyles()}
 </style>
 </head>
@@ -895,6 +899,8 @@ ${renderBrandFooter(JOGAR_BRAND)}
 </script>
 ${shareButtonScript("#jogar-result-slot")}
 ${identityFormScript()}
+${renderLightboxMarkup()}
+${lightboxScript()}
 </body>
 </html>`;
 }
@@ -1879,6 +1885,7 @@ ${renderInlineSignupFormStyles()}
     .seq-round-result button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
     #seq-batch-break button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
   }
+${renderLightboxStyles()}
 ${renderBrandShellStyles()}
 </style>
 </head>
@@ -1889,8 +1896,10 @@ ${renderBrandShellStyles()}
 ${bodyHtml}
 
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a>${quizFallbackLink}</p>
-${renderBrandFooter(JOGAR_BRAND)}
 ${scriptHtml}
+${renderLightboxMarkup()}
+${lightboxScript()}
+${renderBrandFooter(JOGAR_BRAND)}
 </body>
 </html>`;
 }
