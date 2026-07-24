@@ -210,8 +210,16 @@ O script verifica que `_internal/02-draft.md` e `_internal/03-social.tmp.md` exi
     --md {EDITION_DIR}/_internal/02-draft.md
   ```
   Exit 1 do min = destaque anêmico — re-disparar writer com instruction explícita:
-  > "Destaque D{N} tem {chars} chars (mínimo {min}). Expanda: (a) adicione 1 frase em 'Por que isso importa' contextualizando impacto pro leitor BR — ex: timing eleitoral, custo de infra, mudança de processo; OU (b) adicione mais 1 parágrafo curto de body com detalhe técnico/empresarial. NÃO repetir conteúdo já presente." (#1208 — anti-pattern observado em 260517: D2/D3 saiam ~860 chars com why em 1 frase só).
-  Exit 1 do max = destaque inflado — re-disparar writer com instruction de trimar parágrafo menos relevante OU encurtar 'Por que isso importa'.
+  > "Destaque D{N} tem {chars} chars (mínimo {min}). Expanda: (a) adicione 1 frase em 'Por que isso importa' contextualizando impacto pro leitor BR — ex: timing eleitoral, custo de infra, mudança de processo (respeitando o teto de 300 chars do why, #3993); OU (b) adicione mais 1 parágrafo curto de body com detalhe técnico/empresarial. NÃO repetir conteúdo já presente." (#1208 — anti-pattern observado em 260517: D2/D3 saiam ~860 chars com why em 1 frase só).
+  Exit 1 do max = destaque inflado — re-disparar writer com instruction de trimar parágrafo menos relevante OU encurtar 'Por que isso importa' (respeitando o piso de 180 chars do why, #3993).
+
+- **Lint why-matters-length (#3993).** Validar que o parágrafo "Por que isso importa" de cada destaque tem entre 180 e 300 chars (excluindo a label e o bloco "Aprofunde:") — janela mais curta que a spec anterior (~400 chars):
+  ```bash
+  npx tsx scripts/lint-newsletter-md.ts \
+    --check why-matters-length \
+    --md {EDITION_DIR}/_internal/02-draft.md
+  ```
+  Exit 1 = re-disparar o `writer-destaque` do destaque afetado com o char count medido + a instrução: "reescreva 'Por que isso importa' com {180-300} chars, 2 frases curtas (frase 1: impacto direto; frase 2: implicação concreta), sem tocar no resto do destaque." Se o ajuste do why empurrar o total pra fora de 1000-1200 (D1)/900-1000 (D2/D3), o body precisa compensar na mesma passada (ver orçamento de chars em `writer-destaque.md` passo 2) — não re-disparar 2 vezes em sequência sem incluir as duas instruções juntas.
 
 - **Lint aprofunde-format (#3920).** Valida o bloco "Aprofunde:" dos destaques com cluster (item bem-formado, após "Por que importa", não vazio). Bloco AUSENTE nunca falha (é opcional):
   ```bash

@@ -35,6 +35,7 @@ Estas regras se aplicam a toda edição. Nunca quebrar, em nenhuma circunstânci
 - Sempre propor **3 opções de título** por destaque (todas ≤52 chars).
 - **"Por que isso importa:"** sempre em **linha separada**, nunca continuando o parágrafo.
 - O parágrafo de "Por que isso importa" vai **direto ao impacto** — nunca começa com "Para [audiência]," ou endereça o leitor explicitamente. Errado: "Para profissionais de tecnologia, o dado muda...". Certo: "O dado muda...". Validação: `npx tsx scripts/lint-newsletter-md.ts --check why-matters-format --md <md>`.
+- **O parágrafo de "Por que isso importa" tem SEMPRE entre 180 e 300 caracteres (#3993).** Contagem: caracteres totais do texto do parágrafo (após a label "Por que isso importa:"), incluindo espaços — EXCLUI a própria label e o bloco "Aprofunde:" (#3920), que vem depois e tem regra própria. Regra dura (bloqueante), não aviso. Validação: `npx tsx scripts/lint-newsletter-md.ts --check why-matters-length --md <md>`.
 - Conteúdo: 4 parágrafos + 1 parágrafo de "Por que isso importa".
 
 ## 4. Categorias válidas (#1569)
@@ -90,7 +91,7 @@ Antes de aprovar o texto final da edição, validar:
 - [ ] Todos os links verificados contra paywall (status `accessible` do verifier).
 - [ ] Todos os links ausentes em `data/past-editions.md`.
 - [ ] Todos os links dentro da janela de datas da edição.
-- [ ] "Por que isso importa:" em linha separada em cada destaque, sem "Para [audiência]," no início.
+- [ ] "Por que isso importa:" em linha separada em cada destaque, sem "Para [audiência]," no início, com 180-300 caracteres (#3993).
 - [ ] Títulos dos destaques com ≤52 caracteres.
 - [ ] 3 opções de título propostas por destaque.
 - [ ] URLs de LANÇAMENTOS/PESQUISAS/OUTRAS: apenas URL, sem texto adicional.

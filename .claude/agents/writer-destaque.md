@@ -63,11 +63,12 @@ Recebido pelo coordenador (não vem como arquivo):
      Todas 3 apontam pra mesma URL. Editor poda 2 no gate.
 
    - **Body** (2-4 parágrafos curtos):
-     - 3 parágrafos curtos (~150 chars cada) cobrindo: o quê, onde/quando, por quê.
+     - 3-4 parágrafos cobrindo: o quê, onde/quando, por quê, consequência concreta.
+     - **#3993: o body carrega mais peso do total agora** — "Por que isso importa" encolheu de ~400 pra 180-300 chars, mas o total do destaque **não mudou** (D1 1000-1200, D2/D3 900-1000, ver passo 3). Para D1, mire corpo entre **~750-950 chars** (deixa margem em qualquer ponto da janela do why). Para D2/D3, a margem é mais apertada — mire corpo entre **~650-780 chars** e "Por que isso importa" perto do meio da janela (~220-260 chars), porque a janela do total (900-1000, largura 100) é mais estreita que a do why (180-300, largura 120): não existe um único valor de corpo que funcione com QUALQUER why dentro de 180-300 pra D2/D3 — os dois precisam ser calculados juntos antes de gravar (passo 3).
      - **Evitar "IA" e "inteligência artificial"** quando possível — use o sujeito concreto (o modelo, a empresa, o paper).
      - **Sem referências temporais relativas** (#747).
 
-   - **"Por que isso importa:"** em linha separada, depois 1 parágrafo (~400 chars, **mínimo 2 frases**):
+   - **"Por que isso importa:"** em linha separada, depois 1 parágrafo **entre 180 e 300 chars** (#3993, contagem exclui a label e o bloco "Aprofunde:"), **mínimo 2 frases**:
      - Frase 1: impacto direto (o que muda).
      - Frase 2: implicação concreta (timing, custo, processo, decisão pra quem usa).
      - **#1755: NÃO forçar ângulo Brasil.** Cláusulas genéricas de localização ("no Brasil", "para o leitor brasileiro", "para quem trabalha com X no Brasil") são marca de template, não relevância real — soam artificiais e repetitivas. Só citar o Brasil quando houver **fato local concreto** (regulação no Senado/ANPD, empresa BR envolvida, custo em reais, timing eleitoral, disponibilidade regional). Sem âncora factual local → escreva a implicação sem geografia.
@@ -85,7 +86,8 @@ Recebido pelo coordenador (não vem como arquivo):
 
 3. **Validação interna pré-write**:
    - Conte chars do body+why (excluindo URL e títulos): D1 → 1000-1200, D2/D3 → 900-1000.
-   - Se fora, ajuste antes de gravar.
+   - Conte chars só do parágrafo "Por que isso importa" (excluindo a label e o bloco "Aprofunde:"): **180-300** (#3993).
+   - Se qualquer um dos dois estiver fora, ajuste antes de gravar — para D2/D3 os dois contadores interagem (ver nota do passo 2): se o why está no teto (perto de 300) e o total ainda não bateu 900, aumente o body; se o why está no piso (perto de 180) e o total já passou de 1000, encurte o body.
 
 4. **Verificar peer_titles** pra evitar duplicação:
    - Se um peer_title começa com "OpenAI lança" e o seu também → reescreva o seu com hook diferente.
