@@ -384,8 +384,8 @@ function findThemeMatch(
   // #3972: melhor match do gatilho entity-only independente (fallback).
   let bestEntityOnlyMatch: HighlightThemeWarning | null = null;
 
-  pastIndex.forEach((idx, position) => {
-    const { entry: past, tokens: pastTokens, entities: pastEntities, entityOnlyEntities: pastEntityOnly } = idx;
+  pastIndex.forEach((pastEntry, position) => {
+    const { entry: past, tokens: pastTokens, entities: pastEntities, entityOnlyEntities: pastEntityOnly } = pastEntry;
 
     // Compute shared entities
     const sharedEntities: string[] = [];
