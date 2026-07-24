@@ -1094,9 +1094,9 @@ ${renderBrandShellStyles()}
   </div>
 </form>
 <p><a href="${archiveHref(brand, year)}">← voltar ao arquivo de ${htmlEscape(year)}</a></p>
-${renderBrandFooter(brand)}
 ${renderLightboxMarkup()}
 ${lightboxScript()}
+${renderBrandFooter(brand)}
 </body>
 </html>`;
   return new Response(html, {
