@@ -767,13 +767,32 @@ ${renderBrandFooter(JOGAR_BRAND)}
   // {email}" no load da página SE o jogador já está identificado — não
   // reabrir o form nesse caso, só disparar o re-sync silencioso (sync() é
   // no-op se não houver e-mail identificado, ver identityFormScript).
-  var alreadyIdentified = window.__jogarIdentify && window.__jogarIdentify.getIdentifiedEmail();
+  //
+  // Achado do editor (260724): esta checagem NÃO pode ler
+  // window.__jogarIdentify.getIdentifiedEmail() — a tag <script> de
+  // identityFormScript() vem DEPOIS desta (ver final do arquivo HTML),
+  // então window.__jogarIdentify ainda não existe no momento em que este
+  // script corre sua parte síncrona (aqui e na branch "já votou" logo
+  // abaixo). Resultado real: alreadyIdentified ficava SEMPRE undefined
+  // nesses 2 pontos, e o form de identidade era reaberto (hidden=false)
+  // mesmo pra quem já tinha se identificado — MAS o listener de submit
+  // dele nunca foi anexado (identityFormScript, rodando depois, viu
+  // corretamente "já identificado" e retornou cedo sem attachar o
+  // listener) — resultado: form visível e clicável, porém sem JS
+  // interceptando o submit, caindo no submit NATIVO do form (sem
+  // action/method — navega pra ?name=...&email=...&website= na própria
+  // URL, sem chamar /jogar/identify, sem nenhuma mensagem de erro/sucesso).
+  // Fix: ler localStorage diretamente aqui — não depende de qual <script>
+  // rodou primeiro.
+  function isIdentifiedLocally() {
+    try { return window.localStorage.getItem("eia_web_identified_email"); } catch (e) { return null; }
+  }
   if (already && form && alreadyBox) {
     form.hidden = true;
     alreadyBox.hidden = false;
     alreadyBox.textContent = "Você já votou na edição de hoje (escolha: " + already + "). Resultado na página do seu voto ou no leaderboard.";
     if (subscribeCta) subscribeCta.hidden = false;
-    if (identityForm && !alreadyIdentified) identityForm.hidden = false;
+    if (identityForm && !isIdentifiedLocally()) identityForm.hidden = false;
     if (window.__jogarIdentify) window.__jogarIdentify.sync(email, edition);
   } else if (form) {
     // #3517/#3983: intercepta o submit — em vez de deixar o browser navegar
@@ -843,7 +862,7 @@ ${renderBrandFooter(JOGAR_BRAND)}
         if (subscribeCta) subscribeCta.hidden = false;
         // #3975: form de identidade — mesmo timing/guard do caminho "já
         // votou" acima (não reabre se já identificado; sync sempre tentado).
-        if (identityForm && !alreadyIdentified) identityForm.hidden = false;
+        if (identityForm && !isIdentifiedLocally()) identityForm.hidden = false;
         if (window.__jogarIdentify) window.__jogarIdentify.sync(email, edition);
       }).catch(fallbackNativeNav);
     });
@@ -1147,9 +1166,11 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
   // header da seção acima): cada clique agora AGUARDA a resposta do /vote e
   // revela ✅/❌ + destaque visual da imagem correta NA HORA, num bloco
   // dedicado (`#seq-round-result` — o mesmo id que existia ANTES do #3595,
-  // reintroduzido aqui). O avanço pra próxima rodada é por botão OU
-  // auto-avanço (`renderRoundResult`/`onChoice` no script abaixo) — nunca
-  // mais "avança primeiro, revela depois" (isso era o Suspense, revertido).
+  // reintroduzido aqui). O avanço pra próxima rodada é SÓ por botão
+  // (`renderRoundResult`/`onChoice` no script abaixo — auto-avanço por
+  // timeout removido a pedido do editor 260724, dava pouco tempo pra ler o
+  // resultado) — nunca mais "avança primeiro, revela depois" (isso era o
+  // Suspense, revertido).
   // A barra de progresso continua mostrando só "Par X de N" — um contador de
   // acertos incremental POR RODADA (não a tela final) segue fora de escopo
   // (não vazaria spoiler, mas não foi pedido) — o percentual de fim-de-jogo
@@ -1356,10 +1377,11 @@ ${renderIdentityFormBlock()}`;
     for (var i = 0; i < btns.length; i++) btns[i].disabled = disabled;
   }
 
-  // #3983: reveal por rodada — mostra o veredito + destaque das imagens no
-  // bloco #seq-round-result, com um botão "Próxima" e auto-avanço (o que
-  // vier primeiro). A flag "advanced" evita avançar 2x se o leitor clicar
-  // bem na hora do timeout.
+  // #3983/pedido do editor (260724): reveal por rodada — mostra o veredito +
+  // destaque das imagens no bloco #seq-round-result, com um botão "Próxima
+  // rodada". SEM auto-avanço — o jogador só passa pra próxima rodada
+  // clicando; o editor quer tempo pra de fato ler o resultado (descrição +
+  // crédito, #3984) antes de avançar, não ser empurrado em 2.5s.
   function renderRoundResult(result) {
     var resultEl = document.getElementById("seq-round-result");
     if (!resultEl) { advance(); return; }
@@ -1369,10 +1391,7 @@ ${renderIdentityFormBlock()}`;
       (result.eiaMetaHtml || "") +
       '<button type="button" class="seq-next-btn">Próxima rodada →</button>';
     resultEl.hidden = false;
-    var advanced = false;
     function goNext() {
-      if (advanced) return;
-      advanced = true;
       resultEl.hidden = true;
       resultEl.innerHTML = "";
       // Não precisa reabilitar os botões aqui — advance()/renderRound()
@@ -1384,9 +1403,6 @@ ${renderIdentityFormBlock()}`;
     }
     var nextBtn = resultEl.querySelector(".seq-next-btn");
     if (nextBtn) nextBtn.addEventListener("click", goNext);
-    // Auto-avanço — não obriga o jogador a clicar; o botão é só pra quem
-    // quiser ir mais rápido.
-    setTimeout(goNext, 2500);
   }
 
   // #3983: clicar DESABILITA os botões e mostra "conferindo…" (sinaliza que
@@ -1413,6 +1429,22 @@ ${renderIdentityFormBlock()}`;
         // (sai da sequência, mas o dedup no servidor cobre a re-tentativa;
         // o voto nunca se perde silenciosamente).
         window.location.href = voteUrl;
+        return;
+      }
+      if (result.correct === null) {
+        // /vote respondeu, mas não foi uma revelação ✅/❌ normal — o caso
+        // real é "já votou" (server rejeita: este token/e-mail já tem voto
+        // pra esta edição, /vote devolve a frase "Você já votou..." em vez
+        // do resultado). Isso NÃO deveria acontecer no fluxo normal (seq-state
+        // já filtra edições respondidas antes de montar playIndices), mas
+        // pode surgir por corrida (voto pelo mesmo token noutra aba/rodada
+        // concorrente entre o fetch do seq-state e este clique). Mostrar a
+        // frase crua de "já votou" no meio da sequência é confuso — o
+        // jogador não pediu revotar, só está seguindo o fluxo normal do
+        // jogo. Tratamento: pula a rodada silenciosamente, sem contar nem
+        // pro placar nem pra lista de erradas (o resultado real já existe
+        // no servidor de uma rodada anterior, fora desta sessão).
+        advance();
         return;
       }
       results[String(originalIndex)] = result.correct;

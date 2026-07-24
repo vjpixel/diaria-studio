@@ -378,10 +378,10 @@ describe("renderJogarSequencePageHtml (#3983) — reveal por rodada, reverte o S
     assert.match(html, /" — conferindo…";/);
   });
 
-  it("renderRoundResult tem botão 'Próxima rodada' E auto-avanço (setTimeout)", () => {
+  it("renderRoundResult tem botão 'Próxima rodada' — SEM auto-avanço (pedido do editor 260724: só passa clicando)", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
     assert.match(html, /class="seq-next-btn">Próxima rodada →<\/button>/);
-    assert.match(html, /setTimeout\(goNext, 2500\);/);
+    assert.doesNotMatch(html, /setTimeout\(goNext/);
   });
 
   // Self-review #3990: a 1ª versão desta PR tinha um `setChoicesDisabled(false)`
@@ -400,6 +400,20 @@ describe("renderJogarSequencePageHtml (#3983) — reveal por rodada, reverte o S
     const html = renderJogarSequencePageHtml(["260601"]);
     assert.match(html, /if \(result === null\) \{/);
     assert.match(html, /window\.location\.href = voteUrl;/);
+  });
+
+  it("já votado por corrida (seq-state desatualizado): pula a rodada silenciosamente em vez de mostrar a frase crua 'já votou'", () => {
+    // Achado do editor (260724): seq-state pode divergir do estado real do
+    // servidor entre o load da sequência e o clique (voto pelo mesmo
+    // token/e-mail por outro caminho no intervalo) — /vote responde com a
+    // frase "Você já votou..." (sem ✅/❌, `correct` fica null em
+    // voteAndReveal) em vez de um resultado revelado. Mostrar essa frase
+    // crua no meio do jogo é confuso pro jogador, que não pediu revotar.
+    const html = renderJogarSequencePageHtml(["260601"]);
+    assert.match(html, /if \(result\.correct === null\) \{/);
+    // O bloco de skip precisa chamar advance() e NUNCA renderRoundResult()
+    // pra esse ramo — senão a frase "já votou" apareceria no card de resultado.
+    assert.match(html, /if \(result\.correct === null\) \{[\s\S]{0,1200}?advance\(\);\s*\n\s*return;\s*\n\s*\}/);
   });
 
   it("anti-cheat: edições embutidas no script são só AAMMDD (nunca o gabarito A/B) — mesma garantia do #3589, preservada pelo #3983", () => {
