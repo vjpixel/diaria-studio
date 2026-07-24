@@ -22,6 +22,22 @@
  *      nomeada (capitalized token ≥4 chars, exceto stopwords), abaixar threshold
  *      pra 0.25 (mesmo evento com vocabulário divergente).
  *
+ * #3972: gatilho INDEPENDENTE entity-only (janela curta). Casos reais da
+ * edição 260724 (mesmo evento coberto por fonte diferente, poucas horas de
+ * distância) escaparam dos dois passes acima porque o Jaccard textual ficava
+ * abaixo até do threshold rebaixado (0.25) — o entity overlap só abaixava o
+ * threshold, nunca disparava por si só. Agora, quando o candidato compartilha
+ * ≥2 entidades específicas (`extractEntityOnlyEntities` — inclui a 1ª palavra
+ * do título e acrônimos all-caps como "AMD", ao contrário da extração usada
+ * no passe 2 acima) com uma edição DENTRO da janela curta
+ * (`ENTITY_ONLY_RECENT_WINDOW`, últimas 1-2 edições), o warning dispara
+ * mesmo com Jaccard baixo. Guard de falso-positivo: exige 2+ entidades (uma
+ * entidade genérica sozinha — "IA", "OpenAI" — nunca basta) e só roda contra
+ * o histórico MUITO recente (o risco de coincidência cresce com a distância).
+ * Esse gatilho só é usado como FALLBACK — se o algoritmo padrão (passes 1-2)
+ * já encontrou um match, ele prevalece (nenhuma mudança de comportamento nos
+ * casos que já funcionavam).
+ *
  * Algoritmo para SECUNDÁRIOS (#2652, dois sinais obrigatórios):
  *   1. Entity overlap (incluindo 1ª palavra — empresas costumam estar no início):
  *      ≥1 entidade em comum (stopwords mais permissivos que o check de destaques).
@@ -103,6 +119,78 @@ const ENTITY_STOPWORDS_HIGHLIGHT = new Set([
   // EN muito comuns
   "launch", "new", "update", "next", "first", "best",
 ]);
+
+/**
+ * #3972: stopwords do gatilho entity-only independente.
+ *
+ * Deliberadamente MENOR que ENTITY_STOPWORDS_HIGHLIGHT — mantém nomes de
+ * empresa (google, openai, anthropic, amd, meta...) como entidades válidas.
+ * A defesa contra falso-positivo aqui não é filtrar cada entidade genérica
+ * individualmente (uma empresa grande sozinha nunca teria bastado de qualquer
+ * forma — exigimos 2+ compartilhadas), e sim continuar filtrando os termos
+ * que são tão ubíquos que aparecem em quase toda headline de IA e NÃO
+ * discriminam evento mesmo em combinação com outro termo: assistentes/
+ * produtos genéricos (chatgpt, gemini) e vocabulário de domínio (modelo, ia).
+ * Caso real #3972: "AMD" + "Anthropic" juntos identificam o evento (parceria
+ * ~2GW de GPUs) mesmo que nenhum dos dois sozinho discrimine — por isso não
+ * podem ser stopword aqui, ao contrário do passe 2 (ENTITY_STOPWORDS_HIGHLIGHT).
+ */
+const ENTITY_ONLY_STOPWORDS = new Set([
+  "gemini", "chatgpt", "claude", "copilot", "grok", "perplexity",
+  "codex", "cursor", "alexa", "siri",
+  "modelo", "model", "agent", "agente", "plugin", "api", "sdk",
+  "ia", "ai", "ml", "llm", "gpt",
+  "regulacao", "mercado", "brasil", "lanca", "novo", "nova", "vers",
+  "launch", "new", "update", "next", "first", "best",
+  // Acrônimos/termos curtos ubíquos em manchetes PT-BR que o guard all-caps
+  // (ver extractEntityOnlyEntities) passaria a capturar por serem all-caps
+  // de 2-3 letras — nenhum discrimina evento.
+  "ti", "eua", "ceo", "cfo", "ipo", "pib", "ong", "tv",
+]);
+
+/** Janela de edições recentes para o gatilho entity-only independente (#3972). */
+export const ENTITY_ONLY_RECENT_WINDOW = 2;
+
+/** Mínimo de entidades específicas compartilhadas para o gatilho entity-only disparar (#3972). */
+export const ENTITY_ONLY_MIN_SHARED = 2;
+
+/**
+ * Extrai entidades para o gatilho entity-only independente (#3972).
+ *
+ * Diferenças de `extractHighlightEntities` (usada só para abaixar o threshold
+ * de Jaccard no passe 2):
+ *   - INCLUI a 1ª palavra do título — empresas frequentemente abrem a
+ *     headline ("AMD fecha...", "AMD e Anthropic..."); o skip de
+ *     sentence-start do passe 2 perderia esse match.
+ *   - Aceita acrônimos all-caps de 2+ letras (ex: "AMD", "GPU") além do
+ *     padrão title-case ≥4 chars — sem isso "AMD" (3 chars) nunca vira
+ *     entidade. Restrito a `/^[A-Z]+$/` (só letras) para não capturar
+ *     tokens alfanuméricos tipo "12B"/"4o" (versões/tamanhos de modelo) que
+ *     tecnicamente "diferem" em maiúsc./minúsc. mas não são acrônimos.
+ *   - Usa `ENTITY_ONLY_STOPWORDS` (mais permissivo — mantém nomes de empresa).
+ */
+export function extractEntityOnlyEntities(title: string): Set<string> {
+  const entities = new Set<string>();
+  const words = title.split(/\s+/);
+  for (const word of words) {
+    const clean = word.replace(/[^\p{L}\p{N}]/gu, "");
+    if (clean.length < 2) continue;
+    const isAllCapsAcronym = clean.length >= 2 && /^[A-Z]+$/.test(clean);
+    const firstChar = clean.charAt(0);
+    const isTitleCaseWord =
+      clean.length >= 4 &&
+      firstChar === firstChar.toUpperCase() &&
+      firstChar !== firstChar.toLowerCase();
+    if (!isAllCapsAcronym && !isTitleCaseWord) continue;
+    const normalized = clean
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "");
+    if (ENTITY_ONLY_STOPWORDS.has(normalized)) continue;
+    entities.add(normalized);
+  }
+  return entities;
+}
 
 // ---------------------------------------------------------------------------
 // Past-editions parser (local, leve — não importar dedup inteiro)
@@ -211,6 +299,14 @@ export interface HighlightThemeWarning {
   jaccard: number;
   shared_entities: string[];
   effective_threshold: number;
+  /**
+   * #3972: true quando o warning foi disparado pelo gatilho entity-only
+   * independente (janela curta, ≥2 entidades específicas compartilhadas)
+   * em vez do passe padrão Jaccard/entity-threshold — `jaccard` pode estar
+   * abaixo de `effective_threshold` nesse caso (o Jaccard textual não é o
+   * critério; ele só é reportado para contexto).
+   */
+  entity_only_match?: boolean;
 }
 
 export interface CheckHighlightThemesResult {
@@ -243,6 +339,8 @@ interface PastEditionIndex {
   entry: PastEditionEntry;
   tokens: Set<string>;
   entities: Set<string>;
+  /** #3972: entidades pré-computadas para o gatilho entity-only independente. */
+  entityOnlyEntities: Set<string>;
 }
 
 /**
@@ -255,6 +353,7 @@ function buildPastIndex(pastEditions: PastEditionEntry[]): PastEditionIndex[] {
       entry,
       tokens: tokenizeForJaccard(entry.title),
       entities: extractHighlightEntities(entry.title),
+      entityOnlyEntities: extractEntityOnlyEntities(entry.title),
     }))
     .filter((idx) => idx.tokens.size > 0);
 }
@@ -262,6 +361,14 @@ function buildPastIndex(pastEditions: PastEditionEntry[]): PastEditionIndex[] {
 /**
  * Compara um candidato a destaque contra o índice pré-computado de edições passadas.
  * Retorna o melhor match (se acima do threshold) ou null.
+ *
+ * #3972: além do passe padrão (Jaccard + threshold rebaixado por entity
+ * overlap), roda um gatilho INDEPENDENTE contra as `ENTITY_ONLY_RECENT_WINDOW`
+ * edições mais recentes (índice 0 = mais recente, já que `pastIndex` preserva
+ * a ordem de `pastEditions`) — se ≥`ENTITY_ONLY_MIN_SHARED` entidades
+ * específicas forem compartilhadas, emite warning mesmo com Jaccard baixo.
+ * O gatilho padrão tem PRIORIDADE quando encontra algo (nenhuma mudança de
+ * comportamento nos casos que já funcionavam) — o entity-only é fallback.
  */
 function findThemeMatch(
   candidate: HighlightCandidate,
@@ -271,10 +378,15 @@ function findThemeMatch(
   if (candidateTokens.size === 0) return null;
 
   const candidateEntities = extractHighlightEntities(candidate.title);
+  const candidateEntityOnly = extractEntityOnlyEntities(candidate.title);
 
   let bestMatch: HighlightThemeWarning | null = null;
+  // #3972: melhor match do gatilho entity-only independente (fallback).
+  let bestEntityOnlyMatch: HighlightThemeWarning | null = null;
 
-  for (const { entry: past, tokens: pastTokens, entities: pastEntities } of pastIndex) {
+  pastIndex.forEach((idx, position) => {
+    const { entry: past, tokens: pastTokens, entities: pastEntities, entityOnlyEntities: pastEntityOnly } = idx;
+
     // Compute shared entities
     const sharedEntities: string[] = [];
     for (const e of candidateEntities) {
@@ -302,9 +414,39 @@ function findThemeMatch(
         };
       }
     }
-  }
 
-  return bestMatch;
+    // #3972: gatilho entity-only independente — só contra a janela curta
+    // (edições mais recentes), independente do Jaccard textual.
+    if (position < ENTITY_ONLY_RECENT_WINDOW) {
+      const sharedEntityOnly: string[] = [];
+      for (const e of candidateEntityOnly) {
+        if (pastEntityOnly.has(e)) sharedEntityOnly.push(e);
+      }
+      if (sharedEntityOnly.length >= ENTITY_ONLY_MIN_SHARED) {
+        const isBetter =
+          bestEntityOnlyMatch === null ||
+          sharedEntityOnly.length > bestEntityOnlyMatch.shared_entities.length ||
+          (sharedEntityOnly.length === bestEntityOnlyMatch.shared_entities.length && jaccard > bestEntityOnlyMatch.jaccard);
+        if (isBetter) {
+          bestEntityOnlyMatch = {
+            candidate_rank: candidate.rank,
+            candidate_title: candidate.title,
+            candidate_url: candidate.url,
+            matched_edition: isoDateToAammdd(past.date),
+            matched_title: past.title,
+            jaccard: Math.round(jaccard * 100) / 100,
+            shared_entities: sharedEntityOnly,
+            effective_threshold: JACCARD_THRESHOLD_WITH_ENTITY,
+            entity_only_match: true,
+          };
+        }
+      }
+    }
+  });
+
+  // #3972: algoritmo padrão (Jaccard/threshold) tem prioridade quando encontra
+  // algo — o entity-only é fallback só para os casos que ele não cobre.
+  return bestMatch ?? bestEntityOnlyMatch;
 }
 
 /**
@@ -791,8 +933,14 @@ async function main(): Promise<void> {
 
   if (highlightResult.warnings.length > 0) {
     for (const w of highlightResult.warnings) {
+      // #3972: entity_only_match sinaliza que o gatilho foi o entity-overlap
+      // independente (janela curta) — o Jaccard reportado pode estar abaixo
+      // do threshold normal, então isso é anotado explicitamente no log.
+      const note = w.entity_only_match
+        ? " [entity-only: match independente do Jaccard, janela curta]"
+        : "";
       console.error(
-        `[check-highlight-themes] ⚠️  Candidato #${w.candidate_rank} "${w.candidate_title}" repete tema de ${w.matched_edition} "${w.matched_title}" (Jaccard=${w.jaccard}, entities=[${w.shared_entities.join(",")}])`,
+        `[check-highlight-themes] ⚠️  Candidato #${w.candidate_rank} "${w.candidate_title}" repete tema de ${w.matched_edition} "${w.matched_title}" (Jaccard=${w.jaccard}, entities=[${w.shared_entities.join(",")}])${note}`,
       );
     }
   } else {
