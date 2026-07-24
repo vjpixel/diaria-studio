@@ -55,6 +55,7 @@ import {
   isValidVoteEmailFormat, // #3595: valida o pseudo-email recebido por /jogar/seq-state
   isValidWebToken, // #3976: /jogar/seq-state é exclusivo do brand `web` — token deve ser UUID v4
   leaderboardHref,
+  MIN_VOTES_FOR_STATS_DISPLAY, // #4005: mesmo limiar de amostra do sufixo "X% acertaram" — reusado na ordem "por surpresa"
   renderBrandFooter,
   renderBrandShellStyles,
   renderSeoMeta,
@@ -84,6 +85,16 @@ import { encodeQuizShareToken, renderQuizShareCardBlock, shareButtonScript, type
 // dentro de corpos de função executados em request-time (bindings vivos do
 // ESM resolvem o ciclo sem problema).
 import { extractEditionsForYear, groupEditionsByMonth, listAllKeys } from "./leaderboard-routes";
+// #4005: ordem "por surpresa" da sequência consulta a MESMA agregação que
+// `/stats?edition=` já expõe publicamente (DO StatsCounter + espelho KV,
+// #2223/#3115/#3261) — reusa `getSummedEditionStats` em vez de duplicar a
+// leitura DO/KV aqui. Brand `diaria` (não `web`) deliberado: é a audiência
+// que de fato vota todo dia (milhares de votos/edição) — o brand `web`
+// isolado teria zero histórico pra qualquer edição jogada pela 1ª vez nesta
+// sequência (problema do ovo-e-galinha: a própria feature que precisa da
+// taxa é quem geraria os votos web, então nunca teria amostra suficiente no
+// dia 1). Ver rationale completo em `reorderJogarSequenceBySurprise` abaixo.
+import { getSummedEditionStats } from "./vote";
 
 /** Brand fixo desta página — `/jogar` É o standalone, não um parâmetro. */
 const JOGAR_BRAND = "web" as const;
@@ -678,7 +689,7 @@ ${renderSubscribeCtaBlock()}
      clarice/#3524, ver handleJogarPage). A rota /jogar/arquivo continua
      viva (destino dessa ponte), só não é mais auto-promovida em NENHUMA
      view web (issue #3589 item 3). -->
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 
 <script>
@@ -799,7 +810,7 @@ ${renderBrandFooter(JOGAR_BRAND)}
   if (already && form && alreadyBox) {
     form.hidden = true;
     alreadyBox.hidden = false;
-    alreadyBox.textContent = "Você já votou na edição de hoje (escolha: " + already + "). Resultado na página do seu voto ou no leaderboard.";
+    alreadyBox.textContent = "Você já votou na edição de hoje (escolha: " + already + "). Resultado na página do seu voto ou no ranking.";
     if (subscribeCta) subscribeCta.hidden = false;
     if (identityForm && !isIdentifiedLocally()) identityForm.hidden = false;
     if (window.__jogarIdentify) window.__jogarIdentify.sync(email, edition);
@@ -1010,6 +1021,100 @@ export function resolveJogarSequenceEditions(correctKeyNames: string[], now: Dat
   return yearEditions.filter((ed) => ed.slice(2, 4) === mm).sort(); // ASC — ordem de jogo
 }
 
+// ── #4005: ordem "por surpresa" ──────────────────────────────────────────────
+//
+// Achado da revisão de UX 260724: o visitante frio dá 3-5 rodadas de atenção
+// antes de decidir se fica — abrir a sequência com o par mais FÁCIL (maior
+// taxa de acerto) esfria esse investimento inicial. Abrir com os pares de
+// MENOR taxa de acerto ("uau, errei!") fisga. `reorderJogarSequenceBySurprise`
+// é o gêmeo puro/testável desta reordenação — `handleJogarPage` busca a
+// amostra real (`fetchSequenceAccuracy`, I/O) e delega a decisão pra cá.
+
+/** Amostra de acerto de UMA edição, já resolvida (total + correct_count). */
+export interface EditionAccuracy {
+  total: number;
+  correct_count: number;
+}
+
+/**
+ * #4005: mesmo limiar de `MIN_VOTES_FOR_STATS_DISPLAY` (lib.ts, #3523) —
+ * amostra pequena demais pra confiar na taxa de acerto pra decidir ordem
+ * (edição recém-fechada, poucos votantes) tem exatamente o mesmo problema
+ * estatístico que motivou aquele limiar. Reusado, não reexpressado.
+ */
+export const MIN_VOTES_FOR_SURPRISE_ORDER = MIN_VOTES_FOR_STATS_DISPLAY;
+
+/** nº de pares "surpresa" (menor taxa de acerto) promovidos pro início da sequência. */
+export const SURPRISE_OPENER_COUNT = 3;
+
+/**
+ * Pure (#4005): reordena `editions` (já ASC cronológico, saída de
+ * `resolveJogarSequenceEditions`) pra abrir com os `openerCount` pares de
+ * MENOR taxa de acerto — o resto da sequência mantém a ordem cronológica
+ * original (promove só o "topo da surpresa", não embaralha tudo).
+ *
+ * Fallback defensivo (cuidado pedido pela issue): edições muito novas ou com
+ * poucos votos não têm amostra confiável — se MENOS de `openerCount` edições
+ * têm `total >= minVotes`, a função devolve `editions` intacto (ordem
+ * cronológica original), nunca promove um par com dado insuficiente só pra
+ * preencher o "top 3" (isso produziria uma ordem tão arbitrária quanto a
+ * cronológica, mas disfarçada de intencional). `accuracyByEdition.get(ed)`
+ * ausente/`null` é tratado como "sem amostra" (mesma disciplina defensiva do
+ * resto do arquivo — nunca lança).
+ */
+export function reorderJogarSequenceBySurprise(
+  editions: string[],
+  accuracyByEdition: Map<string, EditionAccuracy | null | undefined>,
+  minVotes: number = MIN_VOTES_FOR_SURPRISE_ORDER,
+  openerCount: number = SURPRISE_OPENER_COUNT,
+): string[] {
+  if (editions.length === 0) return [];
+  const effectiveOpenerCount = Math.min(openerCount, editions.length);
+
+  const eligible: Array<{ edition: string; index: number; accuracy: number }> = [];
+  editions.forEach((edition, index) => {
+    const stats = accuracyByEdition.get(edition);
+    if (!stats || stats.total < minVotes) return;
+    eligible.push({ edition, index, accuracy: stats.correct_count / stats.total });
+  });
+
+  if (eligible.length < effectiveOpenerCount) return editions.slice();
+
+  eligible.sort((a, b) => a.accuracy - b.accuracy || a.index - b.index);
+  const openerEditions = eligible.slice(0, effectiveOpenerCount).map((e) => e.edition);
+  const openerSet = new Set(openerEditions);
+  const rest = editions.filter((ed) => !openerSet.has(ed));
+  return [...openerEditions, ...rest];
+}
+
+/**
+ * I/O (#4005): busca a taxa de acerto de cada edição da sequência via o mesmo
+ * agregador que `/stats?edition=` já expõe publicamente (`getSummedEditionStats`,
+ * vote.ts — DO StatsCounter + espelho KV, #2223/#3115/#3261). Brand `diaria`
+ * fixo (ver rationale no import acima). Fail-soft POR EDIÇÃO: qualquer erro
+ * individual (DO indisponível, KV malformado) vira `null` nessa entrada — a
+ * página inteira nunca quebra por causa de 1 fetch de stats que falhou (a
+ * edição simplesmente não entra na amostra elegível de `reorderJogarSequenceBySurprise`,
+ * que já trata `null` como "sem dado").
+ */
+export async function fetchSequenceAccuracy(
+  env: Env,
+  editions: string[],
+): Promise<Map<string, EditionAccuracy | null>> {
+  const entries = await Promise.all(
+    editions.map(async (edition): Promise<[string, EditionAccuracy | null]> => {
+      try {
+        const { stats } = await getSummedEditionStats(env, "diaria", edition);
+        return [edition, { total: stats.total, correct_count: stats.correct_count }];
+      } catch (e) {
+        console.error(JSON.stringify({ event: "jogar_seq_accuracy_fetch_error", edition, error: String(e) }));
+        return [edition, null];
+      }
+    }),
+  );
+  return new Map(entries);
+}
+
 // ── #3595: rework "Suspense" + skip-and-credit (feedback do editor 260716) ──
 // ── #3983 SUPERSEDE o item 2 (modelo "Suspense") — ver seção logo abaixo ────
 //
@@ -1128,6 +1233,28 @@ export function formatSeqFinalScore(score: number, total: number): string {
   return `Você acertou ${score} de ${total} (${pct}%)!`;
 }
 
+/**
+ * #4005 (item 3): tamanho da PRIMEIRA rodada da sequência pro visitante frio
+ * — em vez de expor as ~22 rodadas de uma vez (assusta quem chegou de
+ * compartilhamento social sem contexto do produto), a sessão para num placar
+ * PARCIAL após este nº de pares e oferece "Continuar jogando" pro resto. Os
+ * 22 pares continuam TODOS disponíveis (mesmos `playIndices`/skip-and-credit
+ * de sempre) — só o PONTO DE PAUSA muda.
+ */
+export const SEQ_INITIAL_BATCH_SIZE = 5;
+
+/**
+ * Pure (#4005): texto do placar PARCIAL ao fim do 1º lote de
+ * `SEQ_INITIAL_BATCH_SIZE` pares — "Você acertou X de Y! Continuar jogando —
+ * faltam Z." Gêmeo TS testável da MESMA fórmula reimplementada literalmente
+ * em JS no `<script>` de `renderJogarSequencePageHtml` (`showBatchBreak`) —
+ * mesma disciplina de `formatSeqFinalScore`/`computeSeqSkipAndCredit` (ver
+ * headers acima): mudar um lado sem espelhar o outro diverge silenciosamente.
+ */
+export function formatSeqBatchBreakMessage(correct: number, batchSize: number, remaining: number): string {
+  return `Você acertou ${correct} de ${batchSize}! Continuar jogando — faltam ${remaining}.`;
+}
+
 export function parseSeqStateEditionsParam(raw: string | null): string[] {
   if (!raw) return [];
   return raw
@@ -1152,16 +1279,22 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
   const info = BRAND_INFO[JOGAR_BRAND];
   const total = editions.length;
   const leaderboardLink = leaderboardHref(JOGAR_BRAND);
-  const pageTitle = `É IA? — sequência do mês | ${info.name}`;
+  // #4005 (revisão de UX 260724, item 1): o título anterior ("Sequência do
+  // mês — jogue e entre no leaderboard") pressupunha que o visitante já
+  // conhece o produto (as "edições diárias") e a mecânica de leaderboard —
+  // premissa errada pro visitante FRIO vindo de compartilhamento social, que
+  // é a audiência real desta página. Novo título abre com a pergunta que o
+  // jogo de fato responde — nenhum conhecimento prévio necessário.
+  const pageTitle = `É IA? — qual imagem foi feita por IA? | ${info.name}`;
   const seoMeta = renderSeoMeta({
     title: pageTitle,
-    description: `Jogue a sequência de pares do "É IA?" do mês anterior — acerte o máximo possível e entre no leaderboard mensal.`,
+    description: `Duas imagens, uma delas foi gerada por IA. Toque na que você acha que é — o resultado aparece na hora. Jogue a sequência e entre no ranking.`,
     path: "/jogar",
     brand: JOGAR_BRAND,
   });
 
   // Self-review #2038 (achado corrigido, não só comentado): esta função
-  // originalmente duplicava "Ver leaderboard" (um par nesta mensagem +
+  // originalmente duplicava "Ver ranking" (um par nesta mensagem +
   // outro no footer-links comum logo abaixo, fora do ternário) — mesmo
   // padrão de duplicação já presente em `renderJogarQuizPageHtml`'s próprio
   // `emptyStateHtml` (pré-existente, fora do escopo desta issue — não
@@ -1187,11 +1320,28 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
   // no script abaixo).
   const bodyHtml = total === 0 ? emptyStateHtml : `<p class="sub" id="seq-progress">Carregando sequência…</p>
 
-<noscript><p class="sub">A sequência precisa de JavaScript pra jogar. <a href="${leaderboardLink}">Ver leaderboard</a>.</p></noscript>
+<noscript><p class="sub">A sequência precisa de JavaScript pra jogar. <a href="${leaderboardLink}">Ver ranking</a>.</p></noscript>
 
 <div id="seq-play">
+  <!-- #4005 (item 2): onboarding de 1 linha — o 1º par É o tutorial. Some
+       via JS depois da 1ª rodada (round !== 0, ver renderRound abaixo);
+       server-rendered SEM 'hidden' — se JS falhar (noscript já cobre o caso
+       "sem JS" acima), a frase permanece visível, o que é inofensivo (nunca
+       spoiler, só instrução). -->
+  <p class="sub" id="seq-onboarding">Uma destas imagens foi gerada por IA. Toque na que você acha que é.</p>
   <div class="choices" id="seq-choices"></div>
   <div id="seq-round-result" class="seq-round-result" hidden></div>
+</div>
+
+<!-- #4005 (item 3): placar parcial ao fim do 1º lote de SEQ_INITIAL_BATCH_SIZE
+     pares — visitante frio não vê de cara que a sequência tem ~22 rodadas.
+     "Continuar jogando" retoma exatamente de onde parou (mesmos
+     playIndices/skip-and-credit de sempre — os 22 pares continuam TODOS
+     disponíveis, só o ponto de pausa muda). -->
+<div id="seq-batch-break" class="quiz-final" hidden>
+  <p class="result-msg seq-batch-score"></p>
+  <p class="sub seq-batch-note">Seu placar fica salvo neste navegador.</p>
+  <button type="button" id="seq-continue-btn" class="seq-continue-btn">Continuar jogando</button>
 </div>
 
 <div id="seq-final" class="quiz-final" hidden>
@@ -1210,7 +1360,9 @@ ${renderIdentityFormBlock()}`;
 
   var choicesEl = document.getElementById("seq-choices");
   var progressEl = document.getElementById("seq-progress");
+  var onboardingEl = document.getElementById("seq-onboarding"); // #4005 item 2
   var playEl = document.getElementById("seq-play");
+  var batchBreakEl = document.getElementById("seq-batch-break"); // #4005 item 3
   var finalEl = document.getElementById("seq-final");
   var subscribeCta = document.getElementById("jogar-subscribe-cta");
   var identityForm = document.getElementById("jogar-identity-form"); // #3975
@@ -1301,6 +1453,14 @@ ${renderIdentityFormBlock()}`;
   var round = 0; // índice dentro de playIndices, NÃO de editions
   var results = {}; // originalIndex (string) -> true | false | null
 
+  // #4005 (item 3): tamanho do 1º lote antes do placar parcial —
+  // BATCH_SIZE é o gêmeo JS de SEQ_INITIAL_BATCH_SIZE (jogar.ts, TS).
+  // batchContinued vira true assim que o jogador clica "Continuar jogando" —
+  // sem isso, renderRound() mostraria o placar parcial de novo ao alcançar o
+  // MESMO round (5) depois de retomar (round não muda no clique, só o guard).
+  var BATCH_SIZE = ${JSON.stringify(SEQ_INITIAL_BATCH_SIZE)};
+  var batchContinued = false;
+
   function updateProgress(originalIndex) {
     progressEl.textContent = "Par " + (originalIndex + 1) + " de " + total;
   }
@@ -1323,6 +1483,17 @@ ${renderIdentityFormBlock()}`;
 
   function renderRound() {
     if (round >= playIndices.length) { showFinal(); return; }
+    // #4005 (item 3): ao alcançar o fim do 1º lote (e SÓ se sobrar mais
+    // sequência pra jogar), pausa num placar parcial em vez de emendar direto
+    // pro par seguinte — batchContinued (setado no clique de "Continuar
+    // jogando") garante que este guard só dispara UMA vez por sessão.
+    if (round === BATCH_SIZE && !batchContinued && playIndices.length > BATCH_SIZE) {
+      showBatchBreak();
+      return;
+    }
+    // #4005 (item 2): onboarding de 1 linha só na 1ª rodada jogada nesta
+    // sessão (round === 0) — o 1º par É o tutorial, some a partir do 2º.
+    if (onboardingEl) onboardingEl.hidden = round !== 0;
     var originalIndex = playIndices[round];
     var edition = editions[originalIndex];
     updateProgress(originalIndex);
@@ -1339,6 +1510,28 @@ ${renderIdentityFormBlock()}`;
     // (cache-hit) no próximo clique em vez de aguardar o fetch das novas
     // imagens.
     preloadRound(playIndices[round + 1]);
+  }
+
+  // #4005 (item 3): placar parcial ao fim do 1º lote — mesma fórmula de
+  // formatSeqBatchBreakMessage (jogar.ts, TS), reimplementada literalmente
+  // aqui (sem bundler no worker pra reusar o TS em runtime de browser, mesma
+  // disciplina de formatSeqFinalScore/computeSeqSkipAndCredit).
+  function showBatchBreak() {
+    // Defensivo (nunca deveria faltar — batchBreakEl vem do mesmo bodyHtml
+    // que renderiza sempre que total > 0): se o elemento não existir,
+    // continua a rodada normalmente (batchContinued=true pula o guard) em
+    // vez de chamar advance() — advance() faria round++ e PULARIA o par
+    // atual (playIndices[round]) sem nunca jogá-lo.
+    if (!batchBreakEl) { batchContinued = true; renderRound(); return; }
+    if (playEl) playEl.hidden = true;
+    var batchCorrect = 0;
+    for (var i = 0; i < BATCH_SIZE; i++) {
+      if (results[String(playIndices[i])] === true) batchCorrect++;
+    }
+    var remaining = playIndices.length - BATCH_SIZE;
+    var scoreEl = batchBreakEl.querySelector(".seq-batch-score");
+    if (scoreEl) scoreEl.textContent = "Você acertou " + batchCorrect + " de " + BATCH_SIZE + "! Continuar jogando — faltam " + remaining + ".";
+    batchBreakEl.hidden = false;
   }
 
   // #3983 (reverte o modelo "Suspense" do #3595 — ver rationale no header da
@@ -1528,6 +1721,19 @@ ${renderIdentityFormBlock()}`;
     onChoice(btn.getAttribute("data-choice"));
   });
 
+  // #4005 (item 3): "Continuar jogando" — retoma exatamente de onde parou
+  // (round permanece BATCH_SIZE; batchContinued=true faz o guard de
+  // showBatchBreak em renderRound nunca disparar de novo nesta sessão).
+  var continueBtn = document.getElementById("seq-continue-btn");
+  if (continueBtn) {
+    continueBtn.addEventListener("click", function () {
+      batchContinued = true;
+      if (batchBreakEl) batchBreakEl.hidden = true;
+      if (playEl) playEl.hidden = false;
+      renderRound();
+    });
+  }
+
   // #3595 (skip-and-credit, MUDANÇA 3): consulta /jogar/seq-state pra saber
   // quais edições este token JÁ votou (e se acertou) ANTES de montar a play
   // list — pares já respondidos nunca são rejogados (o bug visto pelo
@@ -1592,12 +1798,15 @@ ${seoMeta}
   .choice button:disabled { opacity: 0.5; cursor: not-allowed; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .scroll-hint { display: none; }
-  #seq-round-result[hidden], #seq-final[hidden], #jogar-subscribe-cta[hidden], #jogar-identity-form[hidden], #jogar-identified-note[hidden] { display: none; }
+  #seq-round-result[hidden], #seq-final[hidden], #seq-batch-break[hidden], #jogar-subscribe-cta[hidden], #jogar-identity-form[hidden], #jogar-identified-note[hidden] { display: none; }
   .result-msg { font-family: ${DS_FONTS.serif}; font-size: 1.3rem; line-height: 1.4; margin: 20px 0; }
   /* #3983: reveal por rodada (destaque da imagem correta + botão "Próxima") —
      mesmo padrão visual do quiz relâmpago (.quiz-round-result). */
   .seq-round-result { margin: 12px 0; }
   .seq-round-result button { margin-top: 4px; padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  /* #4005: botão "Continuar jogando" do placar parcial — mesmo visual de
+     .seq-round-result button (botão primário sólido em ink). */
+  #seq-batch-break button { margin-top: 12px; padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
   /* #3983: destaque visual da imagem correta — mesmas classes que
      votePageHtml (index.ts) já usa no /vote renderizado direto. */
   .result-images { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
@@ -1631,6 +1840,7 @@ ${renderInlineSignupFormStyles()}
     .result-image { flex-basis: 100%; max-width: 100%; }
     .result-image .label { font-size: 1.05rem; }
     .seq-round-result button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
+    #seq-batch-break button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
   }
 ${renderBrandShellStyles()}
 </style>
@@ -1638,10 +1848,10 @@ ${renderBrandShellStyles()}
 <body>
 <p class="kicker">É IA?</p>
 <hr class="rule">
-<h1>Sequência do mês — jogue e entre no leaderboard</h1>
+<h1>Você consegue dizer qual imagem foi feita por IA?</h1>
 ${bodyHtml}
 
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${quizFallbackLink}</p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a>${quizFallbackLink}</p>
 ${renderBrandFooter(JOGAR_BRAND)}
 ${scriptHtml}
 </body>
@@ -1677,7 +1887,12 @@ export async function handleJogarPage(url: URL, env: Env): Promise<Response> {
   const keys: string[] = [];
   for await (const k of listAllKeys(env, `correct:${yy}${mm}`)) keys.push(k);
   const editions = resolveJogarSequenceEditions(keys, now);
-  return new Response(renderJogarSequencePageHtml(editions), {
+  // #4005: ordem "por surpresa" — abre com os pares de menor taxa de acerto
+  // (fisga o visitante frio); fallback pra ordem cronológica se a amostra
+  // for insuficiente (ver reorderJogarSequenceBySurprise acima).
+  const accuracyByEdition = await fetchSequenceAccuracy(env, editions);
+  const orderedEditions = reorderJogarSequenceBySurprise(editions, accuracyByEdition);
+  return new Response(renderJogarSequencePageHtml(orderedEditions), {
     headers: {
       "Content-Type": "text/html;charset=utf-8",
       // #3589: cada rodada grava um voto real — nunca cachear (mesmo
@@ -1900,7 +2115,7 @@ ${renderBrandShellStyles()}
 <p class="sub">Pares de dias anteriores — vote e veja na hora se acertou. Só edições já reveladas entram aqui, o par de hoje fica em <a href="/jogar">/jogar</a>.</p>
 ${rows}
 ${renderArchiveSubscribeReinforcement()}
-<p class="footer-links"><a href="/jogar">← Voltar pro par de hoje</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="/jogar">← Voltar pro par de hoje</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver ranking</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 </body>
 </html>`;
@@ -2246,7 +2461,7 @@ ${renderBrandShellStyles()}
 <h1>Quiz relâmpago</h1>
 ${quizBodyHtml}
 
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="/jogar">Jogar o par de hoje</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Ver arquivo</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="/jogar">Jogar o par de hoje</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Ver arquivo</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver ranking</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 ${scriptHtml}
 </body>
