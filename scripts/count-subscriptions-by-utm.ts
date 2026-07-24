@@ -14,10 +14,11 @@
  * O link de inscrição da diária que aparece no ENCERRAMENTO da mensal
  * (escrito pelo `writer-monthly`) deve usar:
  *
- *   https://diaria.beehiiv.com/?utm_source=clarice
+ *   https://diar.ia.br/?utm_source=clarice
  *
- * Usar diaria.beehiiv.com diretamente (não diar.ia.br) porque o redirect
- * Registro.br dropa a query string — causa raiz do #2613 resolvida em 260626.
+ * Desde 260723 o diar.ia.br está no Cloudflare e o redirect preserva a query
+ * string (#2613 — o drop antigo era do redirect Registro.br). diar.ia.br é o
+ * href canônico; links antigos com diaria.beehiiv.com continuam válidos.
  * Esse link não está hardcoded no código — o `writer-monthly` o gera via
  * `context/templates/newsletter-monthly.md` (seção ENCERRAMENTO). O editor
  * deve garantir que o rascunho e o template contenham essa URL com o parâmetro.

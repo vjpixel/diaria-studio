@@ -258,14 +258,14 @@ describe("aggregateByUtmSource — clarice (#2613)", () => {
 // ---------------------------------------------------------------------------
 
 describe("newsletter-monthly.md template (#2613)", () => {
-  it("template usa diaria.beehiiv.com com utm_source=clarice (não diar.ia.br antigo)", () => {
+  it("template usa diar.ia.br com utm_source=clarice (redirect preserva query string desde 260723, #3970)", () => {
     const template = readFileSync(
       resolve(import.meta.dirname ?? "", "../context/templates/newsletter-monthly.md"),
       "utf8",
     );
     assert.ok(
-      template.includes("https://diaria.beehiiv.com/?utm_source=clarice"),
-      "template deve conter o novo link com utm_source=clarice",
+      template.includes("https://diar.ia.br/?utm_source=clarice"),
+      "template deve conter o link canônico com utm_source=clarice",
     );
     assert.ok(
       !template.includes("diar.ia.br/?utm_source=mensal-brevo"),
