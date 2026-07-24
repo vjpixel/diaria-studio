@@ -1088,15 +1088,15 @@ export function renderLightboxStyles(): string {
     content: "\\1F50D";
     position: absolute; top: 8px; right: 8px;
     width: 28px; height: 28px; border-radius: 50%;
-    background: rgba(23,20,17,0.55); color: ${DS_COLORS.paper};
+    background: rgba(0,0,0,0.55); color: ${DS_COLORS.paper};
     display: flex; align-items: center; justify-content: center;
     font-size: 14px; line-height: 1; pointer-events: none;
   }
   .choice img, .result-image img { cursor: zoom-in; }
   /* #4007: overlay fullscreen — SEM overflow:hidden nem touch-action que
      bloqueie o pinch nativo (ver rationale acima). */
-  .jogar-lightbox { position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: 100vw; max-height: 100vh; margin: 0; padding: 0; border: none; background: rgba(23,20,17,0.94); overflow: auto; }
-  .jogar-lightbox::backdrop { background: rgba(23,20,17,0.94); }
+  .jogar-lightbox { position: fixed; inset: 0; width: 100vw; height: 100vh; max-width: 100vw; max-height: 100vh; margin: 0; padding: 0; border: none; background: ${DS_COLORS.ink}; overflow: auto; }
+  .jogar-lightbox::backdrop { background: ${DS_COLORS.ink}; }
   .jogar-lightbox[open] { display: flex; align-items: center; justify-content: center; }
   .jogar-lightbox img { display: block; max-width: 100%; height: auto; margin: auto; }
   .jogar-lightbox-close { position: fixed; top: 12px; right: 12px; width: 40px; height: 40px; border-radius: 50%; border: none; background: ${DS_COLORS.paper}; color: ${DS_COLORS.ink}; font-size: 20px; font-weight: 700; cursor: pointer; z-index: 1; }
