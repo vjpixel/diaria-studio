@@ -18,6 +18,19 @@
  *    do esperado. Geralmente significa cache stale ou regeneração
  *    sem cache-bust.
  *
+ * #3941 (post-mortem 260723): `image_unreachable` isolado (GET falhou) é
+ * ruído de rede transiente na maioria dos casos observados — curl/fetch/
+ * WebFetch deram erros inconsistentes entre si enquanto scripts
+ * determinísticos (`close-poll.ts`, `upload-images-public.ts`) confirmavam
+ * o Worker acessível minutos antes. Duas mitigações:
+ * 1. Retry (2 tentativas extras, backoff curto) antes de declarar unreachable
+ *    — corta falso-positivo de glitch pontual de rede.
+ * 2. `severity: "warning"` pra `image_unreachable` (nunca bloqueia o exit
+ *    code sozinho) — só `image_stale` (mismatch de bytes CONFIRMADO, sinal
+ *    real de cache stale) é `severity: "blocker"`. Um erro de rede que não
+ *    confirma nem mismatch nem sucesso é inconclusivo, não um problema
+ *    definitivo.
+ *
  * Uso:
  *   npx tsx scripts/lint-test-email-image-freshness.ts \
  *     --email-file /tmp/email-260514.txt \
@@ -25,9 +38,10 @@
  *     --out /tmp/lint-image-freshness.json
  *
  * Exit codes:
- *   0 = sem mismatch detectado (incluindo casos onde nenhuma imagem
- *       referenciada bate com arquivo local — agent ignora as outras).
- *   1 = pelo menos 1 mismatch detectado (cache stale provavel).
+ *   0 = sem mismatch BLOCKER detectado (image_unreachable sozinho não conta,
+ *       #3941 — incluindo casos onde nenhuma imagem referenciada bate com
+ *       arquivo local — agent ignora as outras).
+ *   1 = pelo menos 1 `image_stale` (blocker — mismatch de bytes confirmado).
  *   2 = erro de uso (arquivos faltando, args malformados).
  */
 
@@ -38,6 +52,9 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 export interface ImageFreshnessIssue {
   type: "image_stale" | "image_unreachable";
+  /** #3941: `image_stale` = blocker (mismatch de bytes confirmado). `image_unreachable`
+   * = warning (erro de rede após retries — inconclusivo, não bloqueia o exit sozinho). */
+  severity: "blocker" | "warning";
   url: string;
   /** Nome do arquivo local que se esperava bater (ex: "04-d1-2x1.jpg"). */
   expected_local_file: string;
@@ -124,7 +141,7 @@ function sha256(buf: Buffer): string {
 /**
  * Fetch URL via global fetch. Retorna Buffer ou null em erro.
  */
-async function fetchImage(url: string, timeoutMs = 15000): Promise<Buffer | null> {
+async function fetchImageOnce(url: string, timeoutMs = 15000): Promise<Buffer | null> {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -137,6 +154,31 @@ async function fetchImage(url: string, timeoutMs = 15000): Promise<Buffer | null
   } finally {
     clearTimeout(t);
   }
+}
+
+/**
+ * #3941 (post-mortem 260723): erro de rede isolado num único GET é
+ * frequentemente ruído transiente, não um problema real — o post-mortem
+ * observou curl/node fetch/WebFetch dando erros inconsistentes entre si
+ * enquanto o Worker estava confirmadamente acessível (via close-poll.ts/
+ * upload-images-public.ts, minutos antes). Retry com backoff curto antes
+ * de declarar `image_unreachable` reduz esse falso-positivo sem mascarar
+ * um Worker de fato fora do ar (que falharia nas 3 tentativas).
+ */
+async function fetchImage(
+  url: string,
+  timeoutMs = 15000,
+  retries = 2,
+  backoffMs = 1000,
+): Promise<Buffer | null> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const buf = await fetchImageOnce(url, timeoutMs);
+    if (buf) return buf;
+    if (attempt < retries) {
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
+  return null;
 }
 
 export async function checkImageFreshness(
@@ -165,11 +207,16 @@ export async function checkImageFreshness(
     if (!remoteBuf) {
       issues.push({
         type: "image_unreachable",
+        // #3941: warning, não blocker — após retries, erro de rede isolado
+        // ainda é inconclusivo (pode ser glitch transiente), nunca "problema
+        // definitivo" sem cross-check contra fonte determinística separada
+        // (close-poll.ts/upload-images-public.ts).
+        severity: "warning",
         url,
         expected_local_file: expectedFile,
         remote_hash: null,
         expected_hash: expectedHash,
-        details: `GET ${url} falhou (timeout ou non-2xx).`,
+        details: `GET ${url} falhou (timeout ou non-2xx) após retries.`,
       });
       continue;
     }
@@ -177,6 +224,7 @@ export async function checkImageFreshness(
     if (remoteHash !== expectedHash) {
       issues.push({
         type: "image_stale",
+        severity: "blocker",
         url,
         expected_local_file: expectedFile,
         remote_hash: remoteHash,
@@ -235,11 +283,14 @@ async function mainCli(): Promise<number> {
       `[lint-test-email-image-freshness] ${result.issues.length} issue(s) detectada(s):`,
     );
     for (const issue of result.issues) {
-      console.error(`  - [${issue.type}] ${basename(issue.expected_local_file)}: ${issue.details}`);
+      console.error(`  - [${issue.severity}:${issue.type}] ${basename(issue.expected_local_file)}: ${issue.details}`);
     }
-    return 1;
   }
-  return 0;
+  // #3941: só `image_stale` (blocker — mismatch de bytes confirmado) derruba
+  // o exit code. `image_unreachable` (warning — erro de rede pós-retries,
+  // inconclusivo) fica no JSON pro agent mas não bloqueia sozinho.
+  const blockers = result.issues.filter((i) => i.severity === "blocker");
+  return blockers.length > 0 ? 1 : 0;
 }
 
 if (isMainModule(import.meta.url)) {
