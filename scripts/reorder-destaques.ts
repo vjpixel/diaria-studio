@@ -500,7 +500,15 @@ function main(): void {
   // ou 2ª invocação acidental).
   if (reorderedReviewedMd !== null) {
     const derived = deriveTituloSubtitulo(reorderedReviewedMd);
-    if (derived && derived.action !== "no_change") {
+    if (derived === null) {
+      // Self-review finding (#3980): sem DESTAQUE 1 reconhecível, o bloco
+      // TÍTULO/SUBTÍTULO não é re-derivado — avisar em vez de pular em
+      // silêncio, mesmo padrão do WARN de destaque-max-chars logo abaixo.
+      console.warn(
+        "WARN: reorder-destaques — TÍTULO/SUBTÍTULO não re-derivado (DESTAQUE 1 não reconhecível em " +
+          `${mdPath}). O bloco pode ficar desatualizado em relação à nova ordem D1/D2/D3.`,
+      );
+    } else if (derived.action !== "no_change") {
       if (!args.dryRun) writeFileSync(mdPath, derived.md, "utf8");
       if (!modified.rewritten.includes(mdPath)) modified.rewritten.push(mdPath);
       reorderedReviewedMd = derived.md;
