@@ -126,35 +126,6 @@
         </table>
       </div>
     </section>
-
-    <section class="panel">
-      <h2>Composição de wave — preview</h2>
-      <p class="hint">
-        Onda paralela máxima segura = 1 unidade por cluster de conflito
-        (issues cujos arquivos citados se intersectam) + todos os singletons,
-        até o teto de <span id="wave-max-concurrency">6</span> concorrentes —
-        mesma regra do "Paralelização segura" em
-        <code>.claude/skills/diaria-develop/SKILL.md</code>. Considera só
-        issues elegíveis. <strong>Preview read-only</strong>: para disparar a
-        onda de fato, use o chat drawer (sessão real do Agent SDK) digitando
-        <code>/diaria-develop --issues N,M</code> — mesmo mecanismo do
-        terminal, já em produção.
-      </p>
-      <div id="waves-error" class="panel alert-banner" role="alert" hidden></div>
-      <div class="wave-summary">
-        <div class="wave-block">
-          <h3>Onda proposta (<span id="wave-count">0</span>)</h3>
-          <div id="wave-chips" class="chip-row"></div>
-        </div>
-        <div class="wave-block">
-          <h3>Adiadas (<span id="wave-deferred-count">0</span>)</h3>
-          <div id="wave-deferred-chips" class="chip-row"></div>
-        </div>
-      </div>
-      <div id="wave-capacity-warning" class="alert-banner" role="alert" hidden></div>
-      <h3>Clusters de conflito</h3>
-      <div id="wave-clusters" class="cluster-list"></div>
-    </section>
   </main>
 
   <script>window.STUDIO_PAGE = "triagem";</script>

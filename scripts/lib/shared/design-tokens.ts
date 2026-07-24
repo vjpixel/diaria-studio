@@ -39,34 +39,6 @@ export const COLORS = {
   onInk: "#FBFAF6",
 } as const;
 
-/**
- * DARK_COLORS (#3876) — variação `prefers-color-scheme: dark` pra superfície
- * administrativa do Studio (`scripts/studio-ui/*`), consumida por
- * `scripts/studio-ui/tokens-css.ts`. NUNCA usada pelos renderers de e-mail/site
- * (`render-newsletter-html.ts`/`monthly-render.ts`) — aqueles seguem 100%
- * `COLORS` (paleta editorial fixa) e o próprio escurecimento de e-mail já tem
- * mecanismo dedicado e deliberadamente mais contido (`darkCanvasMediaRule` em
- * `newsletter-styles.ts`, #2645/#3104 — escurece só o canvas externo, nunca o
- * conteúdo do card).
- *
- * Só 2 tokens NOVOS — o resto do bloco dark de `tokens-css.ts` é montado
- * reaproveitando `COLORS` na ordem invertida (ver rationale lá): `--paper`
- * (dark) reusa o valor de `COLORS.ink` e `--on-ink` (dark) reusa `COLORS.ink`
- * de novo (o fill "ink" vira claro em modo escuro, então o texto por cima
- * precisa voltar a ser escuro); `--paper-alt` (dark) é `color-mix()` entre
- * `paperDark` e `inkOnDark` (não precisa de um 3º hex fixo).
- */
-export const DARK_COLORS = {
-  /** --paper (dark) · fundo principal do Studio em modo escuro — mesmo tom de
-   *  `COLORS.ink` (#171411), reaproveitado como pigmento de fundo em vez de tinta
-   *  de texto/fill. Contraste com `inkOnDark` = o MESMO par ink↔paper do modo
-   *  claro (só invertido), então já sai calibrado (~17.6:1, testado). */
-  paperDark: "#171411",
-  /** --ink (dark) · texto padrão sobre `paperDark` — mesmo tom de `COLORS.paper`
-   *  (#FBFAF6), reaproveitado como pigmento de texto em vez de fundo. */
-  inkOnDark: "#FBFAF6",
-} as const;
-
 export const FONTS = {
   /** --font-serif · MANCHETES/títulos (só). Georgia = system/email-safe. */
   serif: "Georgia, 'Times New Roman', serif",

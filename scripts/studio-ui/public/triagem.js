@@ -5,12 +5,15 @@
 //
 // Escopo desta fatia (#3562): READ-ONLY. Nenhum botão aqui fecha, comenta ou
 // mergeia — só lista + linka pro GitHub. Este módulo lê GET /api/issues
-// (studio-issues.ts, server-side cache+throttle de `gh`) e GET /api/waves
-// (studio-waves.ts, mesmo snapshot cacheado — composição de wave PREVIEW);
-// todo filtro de issues/PRs é 100% client-side sobre o snapshot já buscado —
-// trocar filtro NUNCA dispara um novo fetch. O botão "Disparar esta onda"
-// fica sempre desabilitado nesta fatia: a execução de verdade depende da
-// sessão de chat/ações (#3556/#3557), ainda não construída.
+// (studio-issues.ts, server-side cache+throttle de `gh`); todo filtro de
+// issues/PRs é 100% client-side sobre o snapshot já buscado — trocar filtro
+// NUNCA dispara um novo fetch.
+//
+// #4004: a seção de composição de onda em preview foi removida — o
+// mecanismo real de disparo já tinha sido descontinuado no #3985/#3720 (2
+// tentativas de validação ao vivo sem sucesso; job-to-be-done coberto pelo
+// chat drawer + `/diaria-develop` digitado direto), e o preview ficou órfão
+// sem a execução real por trás.
 
 const el = {
   fetchDot: document.getElementById("fetch-dot"),
@@ -29,21 +32,10 @@ const el = {
   prsBody: document.getElementById("prs-tbody"),
   prsEmpty: document.getElementById("prs-empty"),
   dispatchTrackLegend: document.getElementById("dispatch-track-legend"),
-  wavesError: document.getElementById("waves-error"),
-  waveCount: document.getElementById("wave-count"),
-  waveChips: document.getElementById("wave-chips"),
-  waveDeferredCount: document.getElementById("wave-deferred-count"),
-  waveDeferredChips: document.getElementById("wave-deferred-chips"),
-  waveCapacityWarning: document.getElementById("wave-capacity-warning"),
-  waveClusters: document.getElementById("wave-clusters"),
-  waveMaxConcurrency: document.getElementById("wave-max-concurrency"),
 };
 
 /** Snapshot bruto da última resposta de /api/issues — filtros nunca refetcham. */
 let data = { issues: [], prs: [], error: null, cached: false, generatedAt: null };
-
-/** Snapshot bruto da última resposta de /api/waves. */
-let waveData = { wave: [], deferred: [], clusters: [], overCapacity: false, maxConcurrency: 6, consideredIds: [], error: null };
 
 /** Estado dos filtros — 100% client-side. */
 const filters = {
@@ -96,7 +88,7 @@ function trackBadge(track) {
 }
 
 // #3715 — significado de cada valor de Classificação (dispatchTrack), espelhando
-// studio-waves.ts::classifyDispatchTrack. Exposto como tooltip (title=) em cada
+// studio-issues.ts::classifyDispatchTrack. Exposto como tooltip (title=) em cada
 // badge — a tabela não tinha nenhuma explicação por-valor, só a nota genérica
 // acima do cabeçalho.
 const DISPATCH_TRACK_EXPLAIN = {
@@ -256,81 +248,6 @@ function renderPrsTable() {
   }
 }
 
-function issueLink(number) {
-  const issue = data.issues.find((i) => i.number === number);
-  return issue ? issue.url : `#${number}`;
-}
-
-function chipRow(container, ids, extraClass = "") {
-  container.innerHTML = "";
-  for (const id of ids) {
-    const a = document.createElement("a");
-    a.href = issueLink(id);
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.className = `wave-chip ${extraClass}`.trim();
-    a.textContent = `#${id}`;
-    container.appendChild(a);
-  }
-}
-
-function renderWaves() {
-  if (waveData.error) {
-    el.wavesError.hidden = false;
-    el.wavesError.textContent = `falha ao montar a proposta de wave: ${waveData.error}`;
-  } else {
-    el.wavesError.hidden = true;
-  }
-
-  el.waveMaxConcurrency.textContent = String(waveData.maxConcurrency ?? 6);
-  el.waveCount.textContent = String(waveData.wave.length);
-  el.waveDeferredCount.textContent = String(waveData.deferred.length);
-  chipRow(el.waveChips, waveData.wave, "wave-chip-active");
-  chipRow(el.waveDeferredChips, waveData.deferred, "wave-chip-deferred");
-
-  if (waveData.overCapacity) {
-    el.waveCapacityWarning.hidden = false;
-    el.waveCapacityWarning.textContent =
-      `A onda candidata excedeu o teto de ${waveData.maxConcurrency} concorrentes — ` +
-      `só as primeiras ${waveData.maxConcurrency} (por prioridade) entram nesta onda; o resto fica pra próxima.`;
-  } else {
-    el.waveCapacityWarning.hidden = true;
-  }
-
-  el.waveClusters.innerHTML = "";
-  const multi = waveData.clusters.filter((c) => c.ids.length > 1);
-  if (multi.length === 0) {
-    el.waveClusters.innerHTML = '<p class="hint">Nenhum cluster de conflito — todas as issues elegíveis são singletons.</p>';
-  }
-  for (const c of multi) {
-    const card = document.createElement("div");
-    card.className = "cluster-card";
-    const repr = c.ids[0];
-    card.innerHTML = `
-      <div class="cluster-ids">
-        <span class="wave-chip wave-chip-active">#${repr} (representante)</span>
-        ${c.ids
-          .slice(1)
-          .map((id) => `<span class="wave-chip wave-chip-deferred">#${id}</span>`)
-          .join(" ")}
-      </div>
-      <div class="cluster-files">${c.files.map((f) => `<code>${escapeHtml(f)}</code>`).join(" ")}</div>
-    `;
-    el.waveClusters.appendChild(card);
-  }
-}
-
-async function fetchWaves() {
-  try {
-    const res = await fetch("/api/waves");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    waveData = await res.json();
-  } catch (e) {
-    waveData = { ...waveData, error: String(e) };
-  }
-  renderWaves();
-}
-
 function renderTables() {
   renderIssuesTable();
   renderPrsTable();
@@ -368,7 +285,6 @@ async function fetchIssues() {
     data = { issues: data.issues, prs: data.prs, error: String(e), cached: true, generatedAt: data.generatedAt };
   }
   renderAll();
-  await fetchWaves();
 }
 
 el.filterPriority.addEventListener("change", () => {

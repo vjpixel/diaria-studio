@@ -23,11 +23,13 @@
  * `overnight-statusline.ts`) — testes mockam `gh` sem precisar do binário
  * real nem de rede.
  *
- * Extensão (#3562, entrega 2 — triagem rica + composição de waves): além do
- * shape original (#3574), `TriageIssue` ganhou `files` (paths citados no
- * corpo, ver `studio-waves.ts::extractFilePaths` — insumo da análise de
- * cluster de conflito) e `dispatchTrack` (classificação best-effort
- * elegível/bloqueada/ambígua, `studio-waves.ts::classifyDispatchTrack`).
+ * Extensão (#3562, entrega 2 — triagem rica): além do shape original
+ * (#3574), `TriageIssue` ganhou `files` (paths citados no corpo, ver
+ * `extractFilePaths` abaixo — originalmente insumo da análise de cluster de
+ * conflito de `studio-waves.ts`, removida no #4004; a extração em si
+ * continua, é o dado bruto que a coluna de Classificação da Triagem usa) e
+ * `dispatchTrack` (classificação best-effort elegível/bloqueada/ambígua, ver
+ * `classifyDispatchTrack` abaixo — mesma relocação do #4004).
  * `TriagePr` ganhou `ciState` (resumo de `statusCheckRollup`) e
  * `reviewDecision` (repasse cru da API) — visão de "PRs em voo" pedida pelo
  * #3562. Isso exige incluir `body` no `gh issue list` e
@@ -35,13 +37,12 @@
  * existentes, sem nenhuma chamada extra por item (crítico pra não estourar
  * rate limit, mesma preocupação do design original).
  *
- * `defaultGhRun` roda via `spawnGhSync` (`gh-run.ts`, compartilhado com
- * `studio-wave-fire.ts`), sempre com `timeout` (#3783 — antes chamava
- * `spawnSync` direto sem teto, o mesmo gap que o #3773 já tinha corrigido no
- * módulo irmão; ver doc-comment de `defaultGhRun` abaixo).
+ * `defaultGhRun` roda via `spawnGhSync` (`gh-run.ts`), sempre com `timeout`
+ * (#3783 — antes chamava `spawnSync` direto sem teto, o mesmo gap que o
+ * #3773 já tinha corrigido num módulo irmão, removido desde #4004; ver
+ * doc-comment de `defaultGhRun` abaixo).
  */
 
-import { extractFilePaths, classifyDispatchTrack, type DispatchTrack } from "./studio-waves.ts";
 import { spawnGhSync, GH_SPAWN_TIMEOUT_MS } from "./gh-run.ts";
 
 // ─── tipos ──────────────────────────────────────────────────────────────
@@ -88,13 +89,13 @@ export interface TriageIssue {
   priority: string | null; // "P0".."P3" | null quando nenhuma label P0-P3
   createdAt: string | null;
   updatedAt: string | null;
-  /** Paths de arquivo citados no título+corpo (#3562, insumo da composição
-   * de waves) — ver `studio-waves.ts::extractFilePaths`. Nunca inclui o
-   * corpo cru da issue, só os paths extraídos. */
+  /** Paths de arquivo citados no título+corpo (#3562) — ver
+   * `extractFilePaths` abaixo. Nunca inclui o corpo cru da issue, só os
+   * paths extraídos. */
   files: string[];
   /** Classificação best-effort elegível/bloqueada/ambígua (#3562) — ver
-   * `studio-waves.ts::classifyDispatchTrack`. Aproximação determinística,
-   * não substitui a Fase 0 do `/diaria-develop`/`/diaria-overnight`. */
+   * `classifyDispatchTrack` abaixo. Aproximação determinística, não
+   * substitui a Fase 0 do `/diaria-develop`/`/diaria-overnight`. */
   dispatchTrack: DispatchTrack;
 }
 
@@ -142,6 +143,82 @@ export interface GhRunResult {
 }
 
 export type GhRunFn = (args: string[], cwd: string) => GhRunResult;
+
+// ─── extração de arquivos citados + classificação de dispatch (pura) ───
+//
+// Relocadas de `studio-waves.ts` no #4004 (limpeza da seção "Composição de
+// wave — preview" e do mecanismo wave-fire, descontinuado no #3720/#3985) —
+// `studio-issues.ts` é o único consumidor real: `parseIssues` abaixo usa as
+// duas pra popular `TriageIssue.files`/`TriageIssue.dispatchTrack`, que
+// alimentam a coluna de Classificação da Triagem. A análise de cluster de
+// conflito/composição de onda que também vivia em `studio-waves.ts` (agora
+// removida) usava esses dois como insumo, mas eram funções genéricas de
+// extração/classificação, não específicas da wave — sobrevivem aqui.
+
+/** Heurística de extração de arquivo (não é o mesmo grep-com-julgamento que
+ * o coordenador de `/diaria-develop`/`/diaria-overnight` faz lendo a issue
+ * inteira — aqui é regex puro sobre título+corpo): caminhos em code-span
+ * (`` `scripts/foo.ts` ``) e caminhos "nus" prefixados por um diretório-raiz
+ * conhecido do repo (`scripts/`, `context/`, `test/`, `seed/`, `docs/`,
+ * `workers/`, `.claude/`). Sub-conta (falso-negativo) é mais seguro que
+ * sobre-conta aqui: uma issue sem arquivo detectado nunca gera falso-positivo
+ * de conflito/classificação. */
+const CODE_SPAN_PATH_RE = /`([a-zA-Z0-9_.\-]+(?:\/[a-zA-Z0-9_.\-]+)+)`/g;
+const BARE_PATH_RE =
+  /\b((?:scripts|context|test|seed|docs|workers|\.claude)\/[a-zA-Z0-9_.\-]+(?:\/[a-zA-Z0-9_.\-]+)*)\b/g;
+
+function stripTrailingPunctuation(path: string): string {
+  return path.replace(/[.,;:)\]]+$/, "");
+}
+
+/** Extrai caminhos de arquivo citados em texto livre (título+corpo de issue).
+ * Pura — nenhum I/O, nenhuma chamada a `gh`/git. Dedup via Set; ordem final
+ * alfabética (determinístico pra teste e pra render estável). */
+export function extractFilePaths(text: string | null | undefined): string[] {
+  if (!text) return [];
+  const found = new Set<string>();
+  for (const re of [CODE_SPAN_PATH_RE, BARE_PATH_RE]) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      const path = stripTrailingPunctuation(m[1]);
+      if (path.includes("/")) found.add(path);
+    }
+  }
+  return [...found].sort();
+}
+
+export type DispatchTrack = "elegivel" | "bloqueada" | "ambigua";
+
+/** Labels reais que a fila de `/diaria-develop` trata como bloqueio externo
+ * (ver `context/overnight-dispatch-rules.md`): `external-blocker` (A/B/E
+ * conforme corpo), `on-hold`/`kit-migration` (B), `not-this-week` (D),
+ * `beehiiv` (E — plataforma plan-gated). */
+const BLOCKING_LABELS = new Set([
+  "external-blocker",
+  "on-hold",
+  "kit-migration",
+  "not-this-week",
+  "beehiiv",
+]);
+
+/** Marcadores textuais de decisão-produto/editorial em aberto (cat. C do
+ * develop) quando NENHUMA label de bloqueio está presente — sinal mais fraco
+ * que uma label real, por isso vira "ambígua" e não "bloqueada". */
+const AMBIGUITY_RE = /decidir entre|trade-?off|escolher entre|qual (?:abordagem|opç[aã]o)/i;
+
+/**
+ * Classificação best-effort — NÃO é o mesmo julgamento que o coordenador do
+ * `/diaria-develop` faz lendo a issue inteira (Fase 0, "Categoria inferida
+ * por labels reais + corpo"). É uma aproximação determinística boa o
+ * suficiente pra triagem visual; a fonte de verdade continua sendo a sessão
+ * `/diaria-develop`/`/diaria-overnight` em si.
+ */
+export function classifyDispatchTrack(labels: string[], text: string | null | undefined): DispatchTrack {
+  if (labels.some((l) => BLOCKING_LABELS.has(l))) return "bloqueada";
+  if (AMBIGUITY_RE.test(text ?? "")) return "ambigua";
+  return "elegivel";
+}
 
 // ─── funções puras (testáveis sem invocar `gh`) ────────────────────────
 
@@ -275,19 +352,19 @@ const PR_FIELDS =
 
 /**
  * #3783 — antes, este `spawnSync` chamava `gh` direto SEM `timeout`, exatamente
- * o mesmo gap que o #3773 já tinha corrigido no módulo irmão
- * (`studio-wave-fire.ts::defaultGhIssueRun`) extraindo `spawnGhSync` — só que
- * nunca reusado aqui. Mais severo aqui que lá: `defaultGhRun` alimenta
- * `fetchTriageData`, chamada por `GET /api/issues`/`GET /api/waves` — rotas
- * de USO NORMAL do Studio (Triagem), não gateadas por env var. Se `gh auth`
- * expirar ou a API do GitHub degradar enquanto o editor navega o Studio,
- * `spawnSync` sem timeout travava o event loop indefinidamente (CLAUDE.md
- * #738). Corrigido reusando `spawnGhSync`/`GH_SPAWN_TIMEOUT_MS` do módulo
- * compartilhado `gh-run.ts` (extraído nesta mesma leva, #3783). `timeoutMs`/
- * `bin` são parametrizados só pra teste (produção sempre usa
- * `GH_SPAWN_TIMEOUT_MS` + `"gh"`, mesmo padrão de `spawnGhSync`) — permite
- * provar com um processo genuinamente travado que `defaultGhRun` retorna
- * rápido em vez de bloquear indefinidamente, sem precisar de `gh` instalado.
+ * o mesmo gap que o #3773 já tinha corrigido num módulo irmão (removido
+ * desde, #4004) extraindo `spawnGhSync` — só que nunca reusado aqui. Mais
+ * severo aqui: `defaultGhRun` alimenta `fetchTriageData`, chamada por
+ * `GET /api/issues` — rota de USO NORMAL do Studio (Triagem), não gateada
+ * por env var. Se `gh auth` expirar ou a API do GitHub degradar enquanto o
+ * editor navega o Studio, `spawnSync` sem timeout travava o event loop
+ * indefinidamente (CLAUDE.md #738). Corrigido reusando
+ * `spawnGhSync`/`GH_SPAWN_TIMEOUT_MS` do módulo compartilhado `gh-run.ts`
+ * (extraído nesta mesma leva, #3783). `timeoutMs`/`bin` são parametrizados só
+ * pra teste (produção sempre usa `GH_SPAWN_TIMEOUT_MS` + `"gh"`, mesmo padrão
+ * de `spawnGhSync`) — permite provar com um processo genuinamente travado que
+ * `defaultGhRun` retorna rápido em vez de bloquear indefinidamente, sem
+ * precisar de `gh` instalado.
  */
 export function defaultGhRun(
   args: string[],

@@ -20,12 +20,10 @@
  *   - `GET /api/issues` — issues abertas + PRs abertos do GitHub (via `gh
  *     issue list` / `gh pr list`, cache+throttle em `studio-issues.ts`) pra a
  *     view de triagem (#3562), agora com classificação
- *     elegível/bloqueada/ambígua por issue + resumo de CI por PR.
- *   - `GET /api/waves` (#3562, entrega 2) — composição de wave PREVIEW:
- *     clusters de conflito (arquivos citados por issue) + a onda paralela
- *     segura proposta, sobre o MESMO snapshot cacheado de `/api/issues`
- *     (`studio-waves.ts`, zero chamada `gh` extra). Read-only — só propõe,
- *     nunca dispara worktree/implementador (isso é #3556/#3557).
+ *     elegível/bloqueada/ambígua por issue + resumo de CI por PR. (#4004:
+ *     a composição de onda em preview que rodava sobre este mesmo
+ *     snapshot foi removida; o mecanismo de disparo real já tinha sido
+ *     descontinuado no #3720/#3985.)
  *   - `GET /triagem` — cockpit de triagem de issues/PRs (#3562): mesma
  *     estratégia de rewrite client-side de `/edicao/:aammdd`, servindo
  *     `public/triagem.html`.
@@ -287,7 +285,6 @@ import { formatSseEvent, formatSseComment } from "./sse.ts";
 import { serveStaticFile, mimeFor, SECURITY_HEADERS } from "./static-serve.ts";
 import { buildTokensCss } from "./tokens-css.ts";
 import { fetchTriageData, type GhRunFn } from "./studio-issues.ts";
-import { buildWaveProposal } from "./studio-waves.ts";
 // #3561: visualização da fila classificada + timeline ao vivo de uma rodada
 // overnight/develop já em andamento/resumível — arquivo próprio desta
 // fatia, import isolado (nenhuma outra rota depende dele). Ver studio-round.ts.
@@ -600,29 +597,6 @@ function handleApiEvents(
  * embutidos no campo `error` do payload. */
 function handleApiIssues(rootDir: string, res: ServerResponse, ghRun?: GhRunFn): void {
   sendJson(res, 200, fetchTriageData(rootDir, { run: ghRun }));
-}
-
-/** `GET /api/waves` (#3562, entrega 2) — composição de wave PREVIEW: reusa o
- * mesmo snapshot cacheado de `fetchTriageData` (zero chamada `gh` extra) e
- * roda a análise pura de cluster de conflito (`studio-waves.ts`) sobre as
- * issues classificadas `elegivel`. Read-only por construção: só propõe, não
- * dispara nada — ver disclaimer em `studio-waves.ts`. */
-function handleApiWaves(rootDir: string, res: ServerResponse, ghRun?: GhRunFn): void {
-  const triage = fetchTriageData(rootDir, { run: ghRun });
-  const proposal = buildWaveProposal(
-    triage.issues.map((i) => ({
-      number: i.number,
-      files: i.files,
-      priority: i.priority,
-      dispatchTrack: i.dispatchTrack,
-    })),
-  );
-  sendJson(res, 200, {
-    generatedAt: triage.generatedAt,
-    error: triage.error,
-    cached: triage.cached,
-    ...proposal,
-  });
 }
 
 /** `GET /api/round/:kind[?session=AAMMDD[sufixo]]` (#3561, `?session=` #3841
@@ -1689,10 +1663,6 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
       if (urlPath === "/api/issues") {
         handleApiIssues(rootDir, res, ghRun);
-        return;
-      }
-      if (urlPath === "/api/waves") {
-        handleApiWaves(rootDir, res, ghRun);
         return;
       }
       // #3841 item 2/3: sequência cronológica de TODAS as rodadas — checada

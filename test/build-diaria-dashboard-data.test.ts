@@ -749,12 +749,12 @@ describe("renderDashboardHtml — assets do menu unificado do Studio (#3853)", (
     assert.match(html, /<script src="\/chat-drawer\.js" type="module">/);
   });
 
-  test("COM studioMode:true: NÃO redeclara :root local — tokens.generated.css (com dark mode) fica no controle", async () => {
+  test("COM studioMode:true: NÃO redeclara :root local — tokens.generated.css fica no controle", async () => {
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeMinimalData(), { studioMode: true });
     assert.ok(
       !/--brand:\s*#00A0A0;/.test(html),
-      "studioMode não deve hardcodar --brand — deixa tokens.generated.css (dark-aware) definir",
+      "studioMode não deve hardcodar --brand — deixa tokens.generated.css definir",
     );
   });
 
@@ -765,10 +765,11 @@ describe("renderDashboardHtml — assets do menu unificado do Studio (#3853)", (
     assert.ok(!html.includes("--status-danger"), "produção não deve referenciar --status-danger (não existe lá)");
   });
 
-  test("COM studioMode:true: .alert-text ganha override de dark mode via --status-danger (calibrado em tokens-css.ts pro fundo escuro — #C00000 fixo mede só ~2.83:1)", async () => {
+  test("#4001: COM studioMode:true, .alert-text NÃO tem mais override de dark mode (Studio sempre claro — reverte #3876)", async () => {
     const { renderDashboardHtml } = await import("../workers/diaria-dashboard/src/index.ts");
     const html = renderDashboardHtml(makeMinimalData(), { studioMode: true });
-    assert.match(html, /@media \(prefers-color-scheme: dark\)\s*\{\s*\.alert-text\s*\{\s*color:\s*var\(--status-danger\);/);
+    assert.match(html, /\.alert-text\s*\{\s*color:\s*#C00000;/, "studioMode continua com #C00000 fixo, igual produção");
+    assert.ok(!html.includes("prefers-color-scheme"), "studioMode não deve mais emitir @media (prefers-color-scheme: dark)");
   });
 });
 

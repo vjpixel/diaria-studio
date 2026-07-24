@@ -201,85 +201,10 @@
 .ci-pending { background: var(--status-warn); color: var(--status-warn-ink); border-color: var(--status-warn); }
 .ci-none { opacity: 0.5; }
 
-/* ─── composição de wave (#3562, entrega 2) ─────────────────────────── */
-
-.wave-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1.5rem;
-  margin: 0.75rem 0;
-}
-.wave-block { flex: 1 1 260px; min-width: 220px; }
-.wave-block h3 { margin: 0 0 0.35rem; font-size: 0.9rem; }
-
-.chip-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  min-height: 1.6rem;
-}
-
-.wave-chip {
-  display: inline-block;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  border: 1px solid var(--rule);
-  text-decoration: none;
-  color: var(--ink);
-  white-space: nowrap;
-}
-.wave-chip-active { border-color: var(--status-ok); color: var(--status-ok); font-weight: 700; }
-.wave-chip-deferred { opacity: 0.65; }
-
-#wave-capacity-warning {
-  border-color: var(--status-warn);
-  background: color-mix(in srgb, var(--status-warn) 8%, transparent);
-  font-size: 0.85rem;
-  padding: 0.5rem 0.75rem;
-  margin: 0.5rem 0;
-}
-
-.cluster-list { display: flex; flex-direction: column; gap: 0.5rem; margin: 0.5rem 0 1rem; }
-.cluster-card {
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  padding: 0.5rem 0.75rem;
-  background: var(--paper-alt);
-}
-.cluster-ids { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.35rem; }
-.cluster-files {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  font-size: 0.78rem;
-  opacity: 0.85;
-}
-.cluster-files code {
-  background: var(--paper);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  padding: 0.05rem 0.3rem;
-}
-
-#fire-wave-btn {
-  font: inherit;
-  padding: 0.4rem 0.9rem;
-  border: 1px dashed var(--rule);
-  border-radius: 4px;
-  background: var(--paper-alt);
-  color: var(--ink);
-  opacity: 0.55;
-  cursor: not-allowed;
-  margin-top: 0.5rem;
-}
-
 @media (max-width: 640px) {
   .statusbar { gap: 0.75rem; }
   main { padding: 1rem 0.75rem 3rem; }
   .filters-bar { flex-direction: column; align-items: stretch; }
-  .wave-summary { flex-direction: column; gap: 0.75rem; }
   /* #3891: empilhamento mobile de .panel-header-row (título+filtro+botão) —
      compartilhado por apoios.html/integracoes.html, ambas linkam este CSS. */
   .panel-header-row { flex-direction: column; align-items: stretch; }
@@ -287,15 +212,7 @@
   /* #3874: alvos de toque ≥44px (WCAG 2.5.5/HIG) — mesmo padrão já aplicado
      só no chat-drawer (chat-drawer.css); estende pro resto do Studio, só no
      breakpoint mobile (desktop com mouse não precisa do alvo grande). */
-  #refresh-btn,
-  #fire-wave-btn {
+  #refresh-btn {
     min-height: 44px;
-  }
-  .wave-chip {
-    display: inline-flex;
-    align-items: center;
-    min-height: 44px;
-    padding-left: 0.75rem;
-    padding-right: 0.75rem;
   }
 }

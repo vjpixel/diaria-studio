@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { startStudioServer, type StudioServer } from "../scripts/studio-ui/server.ts";
 import {
   NAV_ITEMS,
+  NAV_GROUPS,
   DASHBOARD_LINKS,
   resolveActiveNavId,
   resolveRevisaoHref,
@@ -41,9 +42,9 @@ const SERVER_TS = readFileSync(resolve(REPO_ROOT, "scripts", "studio-ui", "serve
 // ─── lógica pura (nav-core.js) ──────────────────────────────────────────
 
 describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra server.ts", () => {
-  it("cobre os 9 destinos de página (home/rodada/triagem/revisao/caixas/apoios/relatorios/integracoes/painel-diaria)", () => {
+  it("cobre os 9 destinos de página, agora agrupados por fluxo de trabalho (#4002: home/revisao/caixas · rodada/triagem/relatorios · apoios/painel-diaria · integracoes)", () => {
     const ids = NAV_ITEMS.map((i) => i.id);
-    assert.deepEqual(ids, ["home", "rodada", "triagem", "revisao", "caixas", "apoios", "relatorios", "integracoes", "painel-diaria"]);
+    assert.deepEqual(ids, ["home", "revisao", "caixas", "rodada", "triagem", "relatorios", "apoios", "painel-diaria", "integracoes"]);
   });
 
   it("todo item (exceto revisao, que resolve em runtime) tem href estático não-vazio", () => {
@@ -118,6 +119,25 @@ describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra ser
       assert.ok(Array.isArray(item.pageIds) && item.pageIds.length > 0, `${item.id} sem pageIds`);
     }
   });
+
+  it("(#4002): todo item de NAV_ITEMS/DASHBOARD_LINKS tem um `group` que existe em NAV_GROUPS", () => {
+    const groupIds = new Set(NAV_GROUPS.map((g) => g.id));
+    for (const item of NAV_ITEMS) {
+      assert.ok(groupIds.has(item.group), `${item.id} aponta pro grupo desconhecido "${item.group}"`);
+    }
+    for (const d of DASHBOARD_LINKS) {
+      assert.ok(groupIds.has(d.group), `${d.label} aponta pro grupo desconhecido "${d.group}"`);
+    }
+  });
+
+  it("(#4002): agrupamento por fluxo de trabalho — Edição (home/revisao/caixas), Operação (rodada/triagem/relatorios), Negócio (apoios/painel-diaria/dashboard clarice), Sistema (integracoes)", () => {
+    const byGroup = (g) => NAV_ITEMS.filter((i) => i.group === g).map((i) => i.id);
+    assert.deepEqual(byGroup("edicao"), ["home", "revisao", "caixas"]);
+    assert.deepEqual(byGroup("operacao"), ["rodada", "triagem", "relatorios"]);
+    assert.deepEqual(byGroup("negocio"), ["apoios", "painel-diaria"]);
+    assert.deepEqual(byGroup("sistema"), ["integracoes"]);
+    assert.deepEqual(DASHBOARD_LINKS.map((d) => d.group), ["negocio"], "Dashboard Clarice cai no mesmo grupo Negócio, junto de Apoios/Dashboard diária");
+  });
 });
 
 describe("resolveActiveNavId (#3849)", () => {
@@ -154,7 +174,7 @@ describe("resolveRevisaoHref (#3849)", () => {
 });
 
 describe("buildNavHtml (#3849)", () => {
-  it("renderiza os 9 itens de página + o grupo de Dashboards", () => {
+  it("renderiza os 9 itens de página + Dashboard Clarice, agrupados (#4002)", () => {
     const html = buildNavHtml("rodada", "/revisao/260722");
     assert.match(html, /id="app-nav-list"/);
     assert.match(html, /href="\/">Home<\/a>/);
@@ -165,11 +185,27 @@ describe("buildNavHtml (#3849)", () => {
     assert.match(html, /href="\/apoios"/);
     assert.match(html, /href="\/relatorios"/);
     assert.match(html, /href="\/integracoes"/);
-    assert.match(html, /app-nav-group-label">Dashboards</);
     assert.match(html, /href="\/painel\/clarice"[^>]*target="_blank"/);
   });
 
-  it("(#3853): /painel/diaria agora é item de PÁGINA — <a> normal, sem target=_blank, fora do grupo Dashboards", () => {
+  it("(#4002): emite os 4 headers de grupo, na ordem 📰 Edição · ⚙️ Operação · 📊 Negócio · 🔌 Sistema", () => {
+    const html = buildNavHtml("rodada", "/revisao/260722");
+    const labels = [...html.matchAll(/app-nav-group-label">([^<]+)</g)].map((m) => m[1]);
+    assert.deepEqual(labels, ["📰 Edição", "⚙️ Operação", "📊 Negócio", "🔌 Sistema"]);
+  });
+
+  it("(#4002): dentro do grupo 📊 Negócio, Apoios → Dashboard diária → Dashboard Clarice aparecem nessa ordem", () => {
+    const html = buildNavHtml("rodada", "/revisao/260722");
+    const negocioStart = html.indexOf("📊 Negócio");
+    const sistemaStart = html.indexOf("🔌 Sistema");
+    const negocioBlock = html.slice(negocioStart, sistemaStart);
+    const apoiosIdx = negocioBlock.indexOf("/apoios");
+    const painelIdx = negocioBlock.indexOf("/painel/diaria");
+    const clariceIdx = negocioBlock.indexOf("/painel/clarice");
+    assert.ok(apoiosIdx > -1 && painelIdx > apoiosIdx && clariceIdx > painelIdx, "ordem esperada: Apoios, Dashboard diária, Dashboard Clarice");
+  });
+
+  it("(#3853): /painel/diaria agora é item de PÁGINA — <a> normal, sem target=_blank (mesmo agrupado junto de Dashboard Clarice em 📊 Negócio)", () => {
     const html = buildNavHtml("rodada", "/revisao/260722");
     assert.match(html, /<a class="app-nav-item" href="\/painel\/diaria">Dashboard diária<\/a>/);
     assert.doesNotMatch(
