@@ -359,28 +359,38 @@ describe("renderInlineSignupFormBlock (#3580)", () => {
   });
 });
 
-describe("GET /jogar embute o form inline (#3580)", () => {
-  it("form presente, hidden, e o script POSTa pra /jogar/subscribe", () => {
+// #3975: renderJogarPageHtml (par único) passou a embutir o form de
+// IDENTIDADE (`#jogar-identity-form`, POST /jogar/identify) em vez do form
+// de assinatura inline standalone testado aqui — ver identify.ts pro
+// rationale completo da substituição ("uma superfície de conversão só:
+// ranking primeiro, assinatura como opção no mesmo gesto"). O bloco original
+// (`renderInlineSignupFormBlock`/`inlineSignupScript`, testado nos describes
+// acima) continua vivo e é reusado LITERALMENTE por `/jogar/quiz`, que não
+// credita voto real ao leaderboard (ver describe seguinte) — só o par único
+// e a sequência (`renderJogarSequencePageHtml`, poll-jogar-sequence-3589.test.ts)
+// migraram pro form de identidade.
+describe("GET /jogar embute o form de IDENTIDADE, não mais o de assinatura (#3975, supersede #3580 nesta tela)", () => {
+  it("form de identidade presente, hidden, e o script POSTa pra /jogar/identify", () => {
     const html = renderJogarPageHtml({ edition: "260101", revealed: false });
-    assert.match(html, /id="jogar-signup-form"/);
-    assert.match(html, /<form id="jogar-signup-form" class="signup-form" hidden/);
-    assert.match(html, /fetch\("\/jogar\/subscribe"/);
+    assert.match(html, /id="jogar-identity-form"/);
+    assert.match(html, /<form id="jogar-identity-form" class="signup-form" hidden/);
+    assert.match(html, /fetch\("\/jogar\/identify\?brand=web"/);
+    assert.doesNotMatch(html, /id="jogar-signup-form"/, "o form de assinatura standalone do #3580 NÃO aparece mais nesta tela");
   });
 
-  it("revela o form no caminho de voto NOVO e no de 'já votou' (mesma disciplina anti-spoiler)", () => {
+  it("revela o form no caminho de voto NOVO e no de 'já votou' (mesma disciplina anti-spoiler), guardado por 'já identificado'", () => {
     const html = renderJogarPageHtml({ edition: "260101", revealed: false });
     // já-votou
-    assert.match(html, /if \(subscribeCta\) subscribeCta\.hidden = false;\s*\n\s*if \(signupForm\) signupForm\.hidden = false;/);
-    // var signupForm declarado uma única vez no script de reveal (reusado nos
-    // 2 caminhos). O inlineSignupScript faz sua PRÓPRIA query separada — por
-    // isso conta o `var ... =`, não todas as ocorrências de getElementById.
-    const occ = html.match(/var signupForm = document\.getElementById\("jogar-signup-form"\)/g) ?? [];
+    assert.match(html, /if \(identityForm && !alreadyIdentified\) identityForm\.hidden = false;\s*\n\s*if \(window\.__jogarIdentify\) window\.__jogarIdentify\.sync\(email, edition\);/);
+    // var identityForm declarado uma única vez no script de reveal (reusado
+    // nos 2 caminhos: já-votou e voto novo).
+    const occ = html.match(/var identityForm = document\.getElementById\("jogar-identity-form"\)/g) ?? [];
     assert.equal(occ.length, 1);
   });
 
   it("form vem no HTML mas hidden — nunca visível antes do voto (anti-spoiler)", () => {
     const html = renderJogarPageHtml({ edition: "260101", revealed: true });
-    assert.match(html, /<form id="jogar-signup-form" class="signup-form" hidden/);
+    assert.match(html, /<form id="jogar-identity-form" class="signup-form" hidden/);
   });
 });
 

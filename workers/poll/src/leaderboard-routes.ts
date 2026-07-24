@@ -19,6 +19,7 @@ import {
   AAMMDD_RE, // #3297: substitui as 2 cópias inline de /^\d{6}$/ deste arquivo
   envioMonthYear, // #3464: heading do arquivo mensal Clarice mostra mês de ENVIO, não de conteúdo
   buildBrandSiteUrl, // #3978: href com UTM da sub-copy do leaderboard
+  isAnonymousWebIdentity, // #3975: filtra identidade anônima do brand web fora do ranking público
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, json, votePageHtml } from "./index";
@@ -38,6 +39,11 @@ export function computeTop1(
   scores: Array<{ email: string; nickname: string | null; correct: number; total: number }>,
 ): LeaderTop1Entry[] {
   const withNickname = scores
+    // #3975: entradas sob a identidade anônima do brand web (token client-side
+    // ainda não associado a um e-mail via /jogar/identify) nunca aparecem no
+    // ranking público — continuam existindo no KV (upsertOwnEntryInSnapshot
+    // nunca as apaga), só ficam fora da exibição até o jogador se identificar.
+    .filter((s) => !isAnonymousWebIdentity(s.email))
     .filter((s) => s.nickname && s.nickname.trim().length > 0)
     .filter((s) => s.total > 0)
     .map((s) => ({
@@ -90,6 +96,9 @@ export function computePodium(
   // Filtra ANTES do rankEntries (não depois) pra que o próximo candidato
   // elegível suba pro rank 1/2/3 — não deixa o pódio com "buracos".
   const eligible = scores
+    // #3975: mesmo filtro de computeTop1 acima — identidade anônima web nunca
+    // aparece no pódio público.
+    .filter((s) => !isAnonymousWebIdentity(s.email))
     .filter((s) => s.total > 0 && s.correct >= 1)
     .map((s) => {
       const hasNickname = s.nickname && s.nickname.trim().length > 0;
@@ -396,19 +405,24 @@ export function scoreByMonthEntriesToLeaderboard(
     last_vote_ts?: string;
   }>,
 ): LeaderboardEntry[] {
-  return entries.map((e) => {
-    const pct = e.total > 0 ? Math.round((e.correct / e.total) * 100) : 0;
-    return {
-      email: e.email,
-      nickname: e.nickname,
-      correct: e.correct,
-      total: e.total,
-      pct,
-      streak: 0, // streak é per-edition; não tracked no índice mensal (out of scope)
-      // #1383: propaga last_vote_ts pro rankEntries usar como tiebreaker
-      last_vote_ts: e.last_vote_ts,
-    };
-  });
+  return entries
+    // #3975: mesmo filtro de computeTop1/computePodium — cobre os 3 pontos de
+    // renderização que consomem esta função (handleLeaderboardByMonth,
+    // handleLeaderboardByMonthJson, handleLeaderboardByYear via mergeYearEntries).
+    .filter((e) => !isAnonymousWebIdentity(e.email))
+    .map((e) => {
+      const pct = e.total > 0 ? Math.round((e.correct / e.total) * 100) : 0;
+      return {
+        email: e.email,
+        nickname: e.nickname,
+        correct: e.correct,
+        total: e.total,
+        pct,
+        streak: 0, // streak é per-edition; não tracked no índice mensal (out of scope)
+        // #1383: propaga last_vote_ts pro rankEntries usar como tiebreaker
+        last_vote_ts: e.last_vote_ts,
+      };
+    });
 }
 
 /**
@@ -668,10 +682,14 @@ function renderLeaderboardHtml(
     // #2191: usa htmlEscape (de lib.ts) em vez de replace inline que omitia "'".
     const escaped = htmlEscape(display);
     const trClass = s.rank === 1 ? ' class="leader"' : '';
+    // #3977: coluna de percentual — `s.pct` já vem calculado por rankEntries
+    // (leaderboard.ts, a partir de scoreByMonthEntriesToLeaderboard acima),
+    // só não chegava no template HTML.
     return `<tr${trClass}>
       <td>${s.medal}</td>
       <td>${escaped}</td>
       <td>${s.correct}/${s.total}</td>
+      <td>${s.pct}%</td>
     </tr>`;
   }).join("\n");
 
@@ -749,8 +767,8 @@ ${renderBrandShellStyles()}
 ${subCopy}
 ${navHtml}
 <table>
-<thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th></tr></thead>
-<tbody>${rows || `<tr><td colspan=3 style='color:${DS_COLORS.ink};text-align:center;padding:20px'>Ainda sem votos.</td></tr>`}</tbody>
+<thead><tr><th>#</th><th>Leitor(a)</th><th>Acertos</th><th>%</th></tr></thead>
+<tbody>${rows || `<tr><td colspan=4 style='color:${DS_COLORS.ink};text-align:center;padding:20px'>Ainda sem votos.</td></tr>`}</tbody>
 </table>
 <p style="margin-top:30px;font-size:0.8rem;color:${DS_COLORS.ink}">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
 <p style="margin-top:8px;font-size:0.8rem;color:${DS_COLORS.ink}">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
