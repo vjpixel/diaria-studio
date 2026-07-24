@@ -973,13 +973,25 @@ ${lightboxScript()}
 //      pelo editor no MESMO dia 260716 desta issue, ver
 //      test/eia-cross-canal-3524.test.ts). Deletar a rota quebraria essa
 //      ponte silenciosamente — regressão não-documentada de uma feature
-//      fora do escopo desta issue. Resolução: a rota continua servindo
-//      (compat com a ponte clarice), mas deixa de ser um "feature web"
-//      auto-promovido — nenhuma view web (`/jogar` default OU `?edition=`)
-//      linka mais pra ela (ver remoção do link "Jogar edições passadas" no
-//      footer de `renderJogarPageHtml` acima). Se o editor quiser a
-//      remoção literal (inclusive pra clarice), é uma decisão de #3524 a
-//      parte — flagged aqui pro editor decidir.
+//      fora do escopo desta issue. Resolução original (#3589): a rota
+//      continua servindo (compat com a ponte clarice), mas deixa de ser um
+//      "feature web" auto-promovido — nenhuma view web linkaria mais pra
+//      ela.
+//
+//      #4008 item 7 (260724, MESMO dia da rodada de UX #4005/#4006/#4007
+//      que motivou esta issue): decisão revertida — o rodapé da SEQUÊNCIA
+//      (`renderJogarSequencePageHtml`, a experiência DEFAULT de `/jogar`
+//      desde #3589) volta a linkar "Jogar edições passadas" pra
+//      `/jogar/arquivo`. Motivação do editor: quem termina a sequência (ou
+//      chega pelo #seq-final, tela de placar) quer mais conteúdo — sem
+//      caminho nenhum de volta pro arquivo, esse desejo não tinha saída.
+//      Escopo da reversão: SÓ o rodapé de `renderJogarSequencePageHtml`
+//      (linha do footer-links logo abaixo do bodyHtml). `renderJogarPageHtml`
+//      (o par ÚNICO via `?edition=` explícito, ponte clarice) NÃO ganhou o
+//      link de volta — aquela página é estritamente a ponte de e-mail, sem
+//      conceito de "tela final"/progressão, e #3589 item 5 documenta que ela
+//      já tem seu próprio caminho de entrada (não precisa de saída pro
+//      arquivo, só de volta pro site via "Voltar").
 //
 //   7. **`/jogar/quiz` intocado**: mecanismo distinto e complementar (casual,
 //      random, sem crédito de leaderboard) — a sequência oficial da issue
@@ -1895,7 +1907,7 @@ ${renderBrandShellStyles()}
 <h1>Você consegue dizer qual imagem foi feita por IA?</h1>
 ${bodyHtml}
 
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a>${quizFallbackLink}</p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Jogar edições passadas</a>${quizFallbackLink}</p>
 ${scriptHtml}
 ${renderLightboxMarkup()}
 ${lightboxScript()}
@@ -2114,13 +2126,21 @@ export function renderArchiveSubscribeReinforcement(): string {
  * (identidade anônima) — NÃO pra `/leaderboard/{year}/arquivo/{edition}`
  * (fluxo de e-mail digitado do arquivo "assinante", #2867), que exigiria o
  * visitante sair do modo anônimo do `/jogar`.
+ *
+ * #4008 item 6: cada `<li>` carrega um placeholder de badge
+ * (`data-badge="{edition}"`, texto inicial "—") que o script client-side
+ * abaixo preenche via `GET /jogar/seq-state` (mesmo endpoint que a sequência
+ * já usa pro skip-and-credit, #3595) — ✓ acertou, ✗ errou, — nunca jogou.
+ * Server-side não sabe o token anônimo (vive só em localStorage/cookie do
+ * navegador, #3516) — por isso o preenchimento É client-side, com fallback
+ * "—" (nunca joguei) se o fetch falhar ou não houver token ainda.
  */
 export function renderJogarArchiveHtml(editions: string[], year: string): string {
   const info = BRAND_INFO[JOGAR_BRAND];
   const sections = groupEditionsByMonth(editions, JOGAR_BRAND, year)
     .map((g) => {
       const items = g.editions
-        .map((ed) => `<li><a href="/jogar?edition=${htmlEscape(ed)}">${htmlEscape(formatEditionDate(ed))}</a></li>`)
+        .map((ed) => `<li data-edition="${htmlEscape(ed)}"><span class="archive-badge" data-badge="${htmlEscape(ed)}">—</span> <a href="/jogar?edition=${htmlEscape(ed)}">${htmlEscape(formatEditionDate(ed))}</a></li>`)
         .join("\n");
       return `<h2 class="month-heading">${htmlEscape(g.monthLabel)}</h2>\n<ul>${items}</ul>`;
     })
@@ -2151,6 +2171,11 @@ ${seoMeta}
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   .month-heading { font-family: ${DS_FONTS.sans}; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: ${DS_COLORS.brand}; margin: 28px 0 0; }
   .month-heading + ul { margin-top: 8px; }
+  /* #4008 item 6: badge de memória (✓/✗/—) — largura fixa pra não deslocar
+     o texto do link quando o script troca "—" por "✓"/"✗" (glifos de
+     largura variável). Ink sólido (sem cor por estado) — mesma disciplina
+     de #3113 item 6 ("hierarquia vem de tamanho/peso, não de cor"). */
+  .archive-badge { display: inline-block; width: 1.1em; text-align: center; font-weight: 700; }
 ${renderBrandShellStyles()}
 </style>
 </head>
@@ -2163,6 +2188,40 @@ ${rows}
 ${renderArchiveSubscribeReinforcement()}
 <p class="footer-links"><a href="/jogar">← Voltar pro par de hoje</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver ranking</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
+<script>
+(function () {
+  // #4008 item 6: preenche os badges de memória (✓ acertou / ✗ errou / —
+  // nunca jogou) via GET /jogar/seq-state — mesmo endpoint read-only que a
+  // sequência (#3595) já usa. Token é read-ONLY aqui (nunca cria um novo) —
+  // visitante sem token ainda não jogou NADA, então "—" (default
+  // server-rendered) já é a resposta correta sem precisar de fetch.
+  var editions = ${JSON.stringify(editions)};
+  if (!editions.length) return;
+  function readCookie(name) {
+    var m = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+  var token = null;
+  try { token = window.localStorage.getItem("eia_web_token"); } catch (e) {}
+  if (!token) token = readCookie("eia_web_token");
+  if (!token) return; // sem histórico — badges seguem "—" (server-rendered default)
+  var email = token + "@web.eia.diaria.local";
+  var url = "/jogar/seq-state?email=" + encodeURIComponent(email) + "&editions=" + encodeURIComponent(editions.join(","));
+  fetch(url).then(function (res) {
+    if (!res.ok) throw new Error("seq-state fetch failed");
+    return res.json();
+  }).then(function (results) {
+    results.forEach(function (r) {
+      var el = document.querySelector('[data-badge="' + r.edition + '"]');
+      if (!el) return;
+      el.textContent = r.voted ? (r.correct === true ? "✓" : "✗") : "—";
+    });
+  }).catch(function () {
+    // Fail-soft — badges seguem "—" default, o arquivo continua 100% jogável
+    // mesmo se /jogar/seq-state estiver fora do ar.
+  });
+})();
+</script>
 </body>
 </html>`;
 }

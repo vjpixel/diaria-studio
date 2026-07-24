@@ -13,6 +13,8 @@ import assert from "node:assert/strict";
 import {
   rankEntries,
   medalFor,
+  partitionLeaderboardForDisplay,
+  MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING,
   type LeaderboardEntry,
 } from "../workers/poll/src/leaderboard.ts";
 
@@ -265,4 +267,67 @@ describe("medalFor (#1092)", () => {
   it("rank 3 → 🥉", () => assert.equal(medalFor(3), "🥉"));
   it("rank 4 → '4.'", () => assert.equal(medalFor(4), "4."));
   it("rank 10 → '10.'", () => assert.equal(medalFor(10), "10."));
+});
+
+// ── partitionLeaderboardForDisplay (#4008 item 2) ───────────────────────────
+
+describe("partitionLeaderboardForDisplay (#4008 item 2 — cauda de 0/N)", () => {
+  it("esconde entries abaixo do mínimo de tentativas, conta no hiddenCount", () => {
+    const ranked = rankEntries([
+      entry("a@x.com", 5, 5, "a"),
+      entry("b@x.com", 3, 4, "b"),
+      entry("c@x.com", 0, 1, "c"), // 1 tentativa — abaixo do mínimo (3)
+      entry("d@x.com", 0, 2, "d"), // 2 tentativas — abaixo do mínimo (3)
+    ]);
+    const { visible, hiddenCount } = partitionLeaderboardForDisplay(ranked);
+    assert.deepEqual(visible.map((e) => e.email), ["a@x.com", "b@x.com"]);
+    assert.equal(hiddenCount, 2);
+  });
+
+  it("respeita o limiar customizado via 2º parâmetro", () => {
+    const ranked = rankEntries([
+      entry("a@x.com", 2, 2, "a"),
+      entry("b@x.com", 1, 1, "b"),
+    ]);
+    const { visible, hiddenCount } = partitionLeaderboardForDisplay(ranked, 2);
+    assert.deepEqual(visible.map((e) => e.email), ["a@x.com"]);
+    assert.equal(hiddenCount, 1);
+  });
+
+  it("mantém o RANK original das entries visíveis (não renumera após o corte)", () => {
+    const ranked = rankEntries([
+      entry("a@x.com", 5, 5, "a"),
+      entry("b@x.com", 0, 1, "b"), // cai fora — abre um "buraco" no rank visível
+      entry("c@x.com", 3, 4, "c"),
+    ]);
+    const { visible } = partitionLeaderboardForDisplay(ranked);
+    assert.deepEqual(visible.map((e) => e.email), ["a@x.com", "c@x.com"]);
+    assert.deepEqual(visible.map((e) => e.rank), [1, 2]); // ranks intactos, sem renumerar
+  });
+
+  it("fallback anti-leaderboard-vazio: se NINGUÉM atinge o mínimo, mostra todo mundo (hiddenCount=0)", () => {
+    const ranked = rankEntries([
+      entry("a@x.com", 1, 1, "a"),
+      entry("b@x.com", 0, 2, "b"),
+    ]);
+    const { visible, hiddenCount } = partitionLeaderboardForDisplay(ranked);
+    assert.equal(visible.length, 2, "nenhum corte aplicado — leaderboard vazio seria pior UX");
+    assert.equal(hiddenCount, 0);
+  });
+
+  it("lista vazia → visible vazio, hiddenCount 0 (sem lançar)", () => {
+    const { visible, hiddenCount } = partitionLeaderboardForDisplay([]);
+    assert.deepEqual(visible, []);
+    assert.equal(hiddenCount, 0);
+  });
+
+  it("MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING é o default usado quando minAttempts é omitido", () => {
+    const ranked = rankEntries([
+      entry("a@x.com", 1, MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING, "a"),
+      entry("b@x.com", 0, MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING - 1, "b"),
+    ]);
+    const { visible, hiddenCount } = partitionLeaderboardForDisplay(ranked);
+    assert.deepEqual(visible.map((e) => e.email), ["a@x.com"]);
+    assert.equal(hiddenCount, 1);
+  });
 });

@@ -192,10 +192,16 @@ describe("renderJogarSequencePageHtml (#3589)", () => {
     assert.doesNotMatch(html, /id="jogar-signup-form"/, "o form de assinatura standalone do #3580 NÃO aparece mais na tela final da sequência");
   });
 
-  it("NÃO linka pro arquivo (#3589 item 3 — nenhuma view web auto-promove /jogar/arquivo)", () => {
+  it("linka pro arquivo (#4008 item 7 — reverte #3589 item 3: quem termina a sequência quer mais)", () => {
+    // #3589 item 3 originalmente removeu este link ("nenhuma view web
+    // auto-promove /jogar/arquivo"). #4008 item 7 (260724, mesmo dia da
+    // rodada de UX #4005/#4006/#4007) reverteu especificamente pro rodapé da
+    // SEQUÊNCIA (a experiência DEFAULT de /jogar) — ver rationale completo no
+    // header deste arquivo, item 6. `renderJogarPageHtml` (par único via
+    // ?edition=, ponte clarice) segue SEM o link — não mudou.
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.doesNotMatch(html, /Jogar edições passadas/);
-    assert.doesNotMatch(html, /href="\/jogar\/arquivo"/);
+    assert.match(html, /Jogar edições passadas/);
+    assert.match(html, /href="\/jogar\/arquivo"/);
   });
 
   // #3983 (reverte #3595 item 2, 260723): a asserção original desta suíte

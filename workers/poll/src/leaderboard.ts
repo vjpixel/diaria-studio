@@ -113,3 +113,36 @@ export function medalFor(rank: number): string {
   if (rank === 3) return "🥉";
   return `${rank}.`;
 }
+
+// ── Cauda de baixo-engajamento (#4008 item 2) ───────────────────────────────
+
+/**
+ * #4008 item 2: nº mínimo de tentativas (`total`) pra um leitor aparecer
+ * LISTADO linha-a-linha no leaderboard público. Uma cauda grande de entries
+ * 0/N (quem votou 1-2× e nunca acertou) desmotiva quem olha o ranking — sem
+ * nenhum sinal de progresso, só "perdedor" exposto publicamente. Abaixo do
+ * mínimo, o leitor continua PONTUANDO normalmente (nunca perde o voto nem o
+ * rank interno) — só não aparece como linha própria, vira parte do agregado
+ * "+ N jogadores {período}" (ver `partitionLeaderboardForDisplay`).
+ */
+export const MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING = 3;
+
+/**
+ * #4008 item 2: separa `ranked` (já ordenado por `rankEntries`) em entries
+ * "visíveis" (>= `minAttempts` tentativas) e a CONTAGEM do resto (cauda de
+ * baixo-engajamento — nunca exibida linha-a-linha, só como agregado).
+ *
+ * Fallback anti-leaderboard-vazio: se NINGUÉM atinge o mínimo (baixa
+ * participação — início de mês/ano, brand novo, amostra pequena), não
+ * esconde ninguém — mostrar a cauda inteira é preferível a um leaderboard
+ * vazio. Nesse caso `hiddenCount` retorna 0 (sinaliza "nenhum corte
+ * aplicado", não "ninguém escondido apesar de existir cauda").
+ */
+export function partitionLeaderboardForDisplay(
+  ranked: RankedEntry[],
+  minAttempts: number = MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING,
+): { visible: RankedEntry[]; hiddenCount: number } {
+  const qualifying = ranked.filter((e) => e.total >= minAttempts);
+  if (qualifying.length === 0) return { visible: ranked, hiddenCount: 0 };
+  return { visible: qualifying, hiddenCount: ranked.length - qualifying.length };
+}
