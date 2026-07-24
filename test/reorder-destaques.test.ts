@@ -17,6 +17,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import {
   reorderHighlightsInJson,
   reorderDestaquesInMd,
@@ -24,6 +25,7 @@ import {
   reorderSocialMd,
   renameDestaqueImages,
   renameDestaquePrompts,
+  deriveTituloSubtitulo,
   parseArgs,
 } from "../scripts/reorder-destaques.ts";
 import { checkIntentionalError } from "../scripts/lib/lint-checks/intentional-error.ts";
@@ -481,6 +483,263 @@ describe("parseArgs — default editionDir via #3491 (mesma classe de #3483/#348
         "--edition-dir", "/custom/override",
       ]);
       assert.equal(args.editionDir, "/custom/override");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("deriveTituloSubtitulo (#3980 — helper puro)", () => {
+  it("deriva TÍTULO/SUBTÍTULO a partir dos D1/D2/D3 já reordenados no md", () => {
+    const md = `**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Título Novo D1](https://x.com)**
+
+Corpo D1.
+
+---
+
+**DESTAQUE 2 | 💼 MERCADO**
+
+**[Título Novo D2](https://y.com)**
+
+Corpo D2.
+
+---
+
+**DESTAQUE 3 | 🇧🇷 BRASIL**
+
+**[Título Novo D3](https://z.com)**
+
+Corpo D3.
+`;
+    const result = deriveTituloSubtitulo(md);
+    assert.ok(result, "deveria derivar com sucesso (DESTAQUE 1 reconhecível)");
+    assert.equal(result!.action, "inserted");
+    assert.match(result!.md, /^TÍTULO\n\nTítulo Novo D1\n\nSUBTÍTULO\n\nTítulo Novo D2 \| Título Novo D3/);
+  });
+
+  it("retorna null quando não há DESTAQUE 1 reconhecível", () => {
+    const md = "Corpo qualquer sem blocos DESTAQUE.";
+    assert.equal(deriveTituloSubtitulo(md), null);
+  });
+});
+
+// ─── Testes de integração via CLI (subprocess) — #3980 e #3982 ───────────
+//
+// Rodam o script de ponta a ponta (mesmo padrão de test/sync-intro-count.test.ts)
+// porque o bug original em ambas as issues era de FIAÇÃO em main() (a função
+// pura existia/foi criada, mas main() não a chamava) — um teste só das funções
+// puras não pegaria uma regressão onde alguém remove a chamada em main().
+
+function runReorderCli(args: string[]): {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+} {
+  const projectRoot = join(import.meta.dirname, "..");
+  const scriptPath = join(projectRoot, "scripts", "reorder-destaques.ts");
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", scriptPath, ...args],
+    { cwd: projectRoot, encoding: "utf8" },
+  );
+  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+}
+
+function makeEditionDirFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), "reorder-cli-"));
+  const internalDir = join(dir, "_internal");
+  mkdirSync(internalDir, { recursive: true });
+  // readDestaqueCount lê isso pra validar --new-order de 3 posições.
+  writeFileSync(
+    join(internalDir, "01-approved-capped.json"),
+    JSON.stringify({ highlights: [{}, {}, {}] }, null, 2),
+    "utf8",
+  );
+  return dir;
+}
+
+function buildReviewedMdFixture(opts: {
+  d1Title: string;
+  d1Body: string;
+  d2Title: string;
+  d2Body: string;
+  d3Title: string;
+  d3Body: string;
+}): string {
+  return `Intro qualquer da edição...
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[${opts.d1Title}](https://x.com)**
+
+${opts.d1Body}
+
+---
+
+**DESTAQUE 2 | 💼 MERCADO**
+
+**[${opts.d2Title}](https://y.com)**
+
+${opts.d2Body}
+
+---
+
+**DESTAQUE 3 | 🇧🇷 BRASIL**
+
+**[${opts.d3Title}](https://z.com)**
+
+${opts.d3Body}
+
+---
+
+**📰 OUTRAS NOTÍCIAS**
+
+[N1](https://n.com)
+`;
+}
+
+describe("reorder-destaques CLI (#3980): TÍTULO/SUBTÍTULO pós-reorder", () => {
+  it("swap D1<->D2 atualiza TÍTULO/SUBTÍTULO pros títulos NOVOS (não deixa stale)", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const md = buildReviewedMdFixture({
+        d1Title: "Título Original Um",
+        d1Body: "A".repeat(300),
+        d2Title: "Título Original Dois",
+        d2Body: "A".repeat(300),
+        d3Title: "Título Original Três",
+        d3Body: "A".repeat(300),
+      });
+      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "2,1,3",
+      ]);
+      assert.equal(result.status, 0, `CLI deveria sair 0. stderr: ${result.stderr}`);
+
+      const updated = readFileSync(join(dir, "02-reviewed.md"), "utf8");
+      assert.match(updated, /^TÍTULO/);
+
+      const tituloIdx = updated.indexOf("TÍTULO");
+      const subtituloIdx = updated.indexOf("SUBTÍTULO");
+      assert.ok(tituloIdx >= 0 && subtituloIdx > tituloIdx);
+
+      const tituloBlock = updated.slice(tituloIdx, subtituloIdx);
+      assert.match(
+        tituloBlock,
+        /Título Original Dois/,
+        "TÍTULO deveria conter o título do NOVO D1 (era D2 antes do reorder)",
+      );
+      assert.ok(
+        !tituloBlock.includes("Título Original Um"),
+        "TÍTULO NÃO deveria conter o título ANTIGO do D1 pós-reorder (bug #3980)",
+      );
+
+      const subtituloBlock = updated.slice(subtituloIdx);
+      assert.match(subtituloBlock, /Título Original Um/);
+      assert.match(subtituloBlock, /Título Original Três/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reorder idempotente: rodar 2× em sequência não duplica o bloco TÍTULO/SUBTÍTULO", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const md = buildReviewedMdFixture({
+        d1Title: "Título A",
+        d1Body: "A".repeat(300),
+        d2Title: "Título B",
+        d2Body: "A".repeat(300),
+        d3Title: "Título C",
+        d3Body: "A".repeat(300),
+      });
+      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
+
+      runReorderCli(["--edition", "999999", "--edition-dir", dir, "--new-order", "2,1,3"]);
+      const afterFirst = readFileSync(join(dir, "02-reviewed.md"), "utf8");
+
+      // Reorder de volta (inverso do swap 2,1,3 é o próprio 2,1,3 — 2-cycle).
+      runReorderCli(["--edition", "999999", "--edition-dir", dir, "--new-order", "2,1,3"]);
+      const afterSecond = readFileSync(join(dir, "02-reviewed.md"), "utf8");
+
+      // Header standalone (linha exata "TÍTULO") — não confundir com a
+      // substring "TÍTULO" dentro de "SUBTÍTULO" logo abaixo no mesmo bloco.
+      const countHeaderLines = (haystack: string) =>
+        (haystack.match(/^TÍTULO$/gm) ?? []).length;
+      assert.equal(countHeaderLines(afterFirst), 1);
+      assert.equal(countHeaderLines(afterSecond), 1);
+      // Volta ao estado original (D1=A, D2=B) pois 2,1,3 é involução.
+      assert.match(afterSecond, /^TÍTULO\n\nTítulo A/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("reorder-destaques CLI (#3982): validação destaque-max-chars pós-reorder", () => {
+  it("move D1 (limite 1200) pra D2 (limite 1000) com corpo excedente → WARN, sem hard-fail", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const md = buildReviewedMdFixture({
+        d1Title: "D1 grande",
+        d1Body: "A".repeat(1100), // cabia em D1 (≤1200) mas excede o novo teto de D2 (1000)
+        d2Title: "D2 pequeno",
+        d2Body: "A".repeat(600),
+        d3Title: "D3 pequeno",
+        d3Body: "A".repeat(600),
+      });
+      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "2,1,3",
+      ]);
+      // WARN, nunca hard-fail — exit code continua 0.
+      assert.equal(result.status, 0, `CLI não deveria falhar por max-chars. stderr: ${result.stderr}`);
+      assert.match(result.stderr, /destaque-max-chars pós-reorder/);
+      assert.match(result.stderr, /D2/);
+
+      const parsed = JSON.parse(result.stdout);
+      assert.equal(parsed.max_chars_warnings.length, 1);
+      assert.match(parsed.max_chars_warnings[0], /D2/);
+      assert.match(parsed.max_chars_warnings[0], /1100 chars/);
+      assert.match(parsed.max_chars_warnings[0], /máximo de 1000/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("move D1 pra D2 dentro do limite novo → SEM warning", () => {
+    const dir = makeEditionDirFixture();
+    try {
+      const md = buildReviewedMdFixture({
+        d1Title: "D1 ok",
+        d1Body: "A".repeat(900), // dentro do teto de D2 (1000) após mover
+        d2Title: "D2 pequeno",
+        d2Body: "A".repeat(600),
+        d3Title: "D3 pequeno",
+        d3Body: "A".repeat(600),
+      });
+      writeFileSync(join(dir, "02-reviewed.md"), md, "utf8");
+
+      const result = runReorderCli([
+        "--edition", "999999",
+        "--edition-dir", dir,
+        "--new-order", "2,1,3",
+      ]);
+      assert.equal(result.status, 0);
+      assert.doesNotMatch(result.stderr, /destaque-max-chars/);
+
+      const parsed = JSON.parse(result.stdout);
+      assert.equal(parsed.max_chars_warnings.length, 0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
