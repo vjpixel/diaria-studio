@@ -413,12 +413,25 @@ ${seoMeta}
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .already { margin: 24px auto; padding: 16px 18px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; font-size: 0.95rem; }
   .scroll-hint { display: none; }
-  #jogar-form[hidden], #jogar-already[hidden], #jogar-result-slot[hidden], #jogar-subscribe-cta[hidden], #jogar-signup-form[hidden] { display: none; }
+  #jogar-form[hidden], #jogar-already[hidden], #jogar-result-slot[hidden], #jogar-subscribe-cta[hidden], #jogar-signup-form[hidden], #jogar-checking[hidden] { display: none; }
+  /* #3983: "Conferindo…" — feedback imediato entre o clique e a resposta do
+     /vote (fast-path do backend responde em dezenas de ms, mas a indicação
+     visual evita a sensação de travamento em conexões mais lentas). */
+  .checking-msg { font-family: ${DS_FONTS.sans}; font-size: 0.95rem; margin: 12px 0; color: ${DS_COLORS.ink}; }
   /* #3517: estilo do resultado + card de compartilhamento injetados no slot
      via JS (mesmas classes de renderShareCardBlock/votePageHtml, index.ts —
      duplicado aqui pois é um <style> inline separado, mesmo padrão do resto
      do worker: cada página inline o próprio CSS). */
   .result-msg { font-family: ${DS_FONTS.serif}; font-size: 1.3rem; line-height: 1.4; margin: 20px 0; }
+  /* #3983: destaque visual da imagem correta no reveal — mesmas classes que
+     votePageHtml (index.ts) já usa no /vote renderizado direto; duplicado
+     aqui pelo mesmo padrão de CSS inline por página. */
+  .result-images { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
+  .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: ${DS_COLORS.paper}; }
+  .result-image.clicked { border-color: ${DS_COLORS.brand}; box-shadow: 0 0 0 2px rgba(0,160,160,.28); }
+  .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
+  .result-image .label { font-family: ${DS_FONTS.sans}; font-size: 0.95rem; margin-top: 8px; color: ${DS_COLORS.ink}; font-weight: 600; }
+  .result-image .you { display: inline-block; padding: 2px 8px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
   .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
   .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
   .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
@@ -440,6 +453,8 @@ ${renderInlineSignupFormStyles()}
     .subscribe-cta { max-width: 100%; padding: 20px 18px; }
     .subscribe-btn { display: block; width: 100%; box-sizing: border-box; padding: 14px 16px; font-size: 1.05rem; }
     .signup-form { max-width: 100%; padding: 20px 18px; }
+    .result-image { flex-basis: 100%; max-width: 100%; }
+    .result-image .label { font-size: 1.05rem; }
   }
 ${renderBrandShellStyles()}
 </style>
@@ -460,10 +475,16 @@ ${renderBrandShellStyles()}
     <div class="choice"><img id="jogar-img-b" src="${imgB}" width="800" height="450" alt="Imagem B" loading="lazy"><button type="submit" name="choice" value="B">Essa é a IA</button></div>
   </div>
 </form>
+<!-- #3983: "Conferindo…" — revelado no clique, escondido de volta assim que
+     o resultado chega (ou no fallback de navegação nativa, que descarta a
+     página inteira). -->
+<p class="checking-msg" id="jogar-checking" hidden>Conferindo…</p>
 <!-- #3517: preenchido via JS (fetch a /vote + DOMParser) com o '.msg' de
      resultado + o bloco '#jogar-share-card' (mesma estrutura de
      renderShareCardBlock, share.ts) — sem sair da página. Fallback pra
-     navegação nativa (window.location.href) em qualquer falha de rede. -->
+     navegação nativa (window.location.href) em qualquer falha de rede.
+     #3983: agora também injeta '.result-images' (destaque visual da imagem
+     correta), reusando a mesma estrutura de votePageHtml (index.ts). -->
 <div id="jogar-result-slot" hidden></div>
 <div id="jogar-already" class="already" hidden></div>
 <!-- #3580: cadastro INLINE (nome + e-mail + opt-in) — conversão primária,
@@ -577,12 +598,18 @@ ${renderBrandFooter(JOGAR_BRAND)}
     if (subscribeCta) subscribeCta.hidden = false;
     if (signupForm) signupForm.hidden = false;
   } else if (form) {
-    // #3517: intercepta o submit — em vez de deixar o browser navegar pro
-    // /vote (comportamento nativo do form GET), busca a mesma URL via fetch
-    // e injeta o resultado (mensagem + card de compartilhamento) no slot
-    // reservado, sem sair de /jogar. QUALQUER falha de rede cai pra
-    // navegação nativa (window.location.href) — o voto NUNCA se perde por
-    // causa de um fetch que falhou (dedup no servidor cobre o retry).
+    // #3517/#3983: intercepta o submit — em vez de deixar o browser navegar
+    // pro /vote (comportamento nativo do form GET), busca a mesma URL via
+    // fetch e injeta o resultado (mensagem + destaque visual da imagem
+    // correta + card de compartilhamento) no slot reservado, sem sair de
+    // /jogar. QUALQUER falha de rede cai pra navegação nativa
+    // (window.location.href) — o voto NUNCA se perde por causa de um fetch
+    // que falhou (dedup no servidor cobre o retry).
+    // #3983: os botões são desabilitados e um indicador "Conferindo…" aparece
+    // no clique — o /vote responde em dezenas de ms agora (fast-path do
+    // backend, ver vote.ts), mas o indicador evita a sensação de travamento
+    // em conexões mais lentas.
+    var checkingEl = document.getElementById("jogar-checking");
     form.addEventListener("submit", function (ev) {
       ev.preventDefault();
       var choice = ev.submitter && ev.submitter.value;
@@ -591,6 +618,10 @@ ${renderBrandFooter(JOGAR_BRAND)}
       // preferimos a navegação nativa garantida a silenciosamente não votar.
       if (!choice) { form.submit(); return; }
       try { window.localStorage.setItem(votedKey, choice); } catch (e) {}
+
+      var choiceButtons = form.querySelectorAll('button[type="submit"]');
+      for (var bi = 0; bi < choiceButtons.length; bi++) choiceButtons[bi].disabled = true;
+      if (checkingEl) checkingEl.hidden = false;
 
       var params = new URLSearchParams();
       params.set("edition", edition);
@@ -612,11 +643,14 @@ ${renderBrandFooter(JOGAR_BRAND)}
       }).then(function (html) {
         var parsed = new DOMParser().parseFromString(html, "text/html");
         var msgEl = parsed.querySelector(".msg");
+        var imagesEl = parsed.querySelector(".result-images");
         var shareCardEl = parsed.querySelector("#jogar-share-card");
         if (!msgEl && !shareCardEl) { fallbackNativeNav(); return; }
         var out = "";
         if (msgEl) out += '<p class="result-msg">' + msgEl.innerHTML + "</p>";
+        if (imagesEl) out += imagesEl.outerHTML;
         if (shareCardEl) out += shareCardEl.outerHTML;
+        if (checkingEl) checkingEl.hidden = true;
         resultSlot.innerHTML = out;
         resultSlot.hidden = false;
         form.hidden = true;
@@ -763,20 +797,34 @@ export function resolveJogarSequenceEditions(correctKeyNames: string[], now: Dat
 }
 
 // ── #3595: rework "Suspense" + skip-and-credit (feedback do editor 260716) ──
+// ── #3983 SUPERSEDE o item 2 (modelo "Suspense") — ver seção logo abaixo ────
 //
 // Segundo review do editor sobre a sequência web (#3589), no mesmo dia do
 // deploy. TRÊS mudanças:
 //
 //   1. Rótulo dos botões some o sufixo "(A)"/"(B)" — a posição embaixo de
 //      cada imagem já identifica a escolha; `data-choice`/`value` internos
-//      (o que de fato vai pro /vote) são intocados.
+//      (o que de fato vai pro /vote) são intocados. AINDA VÁLIDO — #3983 não
+//      toca nisso.
 //
-//   2. Modelo "Suspense": cada clique avança IMEDIATAMENTE pro próximo par
-//      (sem esperar a resposta do /vote) — o /vote roda em BACKGROUND
-//      (`voteInBackground` no script de `renderJogarSequencePageHtml`) e o
-//      resultado por rodada NUNCA é revelado (sem "Acertou!/Errou" no meio —
-//      só a tela final, depois de `Promise.all(pending)`, mostra o placar +
-//      quais pares foram errados).
+//   2. Modelo "Suspense": cada clique avançava IMEDIATAMENTE pro próximo par
+//      (sem esperar a resposta do /vote) — o /vote rodava em BACKGROUND
+//      (`voteInBackground`) e o resultado por rodada NUNCA era revelado (sem
+//      "Acertou!/Errou" no meio — só a tela final, depois de
+//      `Promise.all(pending)`, mostrava o placar + quais pares foram errados).
+//      **REVERTIDO por #3983 (260723)**: o editor identificou que a
+//      supressão por rodada + voto em background PARECIA lentidão/
+//      travamento ("acredito que esse tempo é o tempo de computar o voto"),
+//      quando na verdade era design deliberado. A decisão de #3983 SUPERSEDE
+//      esta — cada clique agora AGUARDA o /vote e revela ✅/❌ + destaque
+//      visual da imagem correta NA HORA (ver `onChoice`/`voteAndReveal`/
+//      `renderRoundResult` no script de `renderJogarSequencePageHtml`
+//      abaixo). A latência do /vote, que passa a ser user-facing de novo, é
+//      atacada no BACKEND (fast-path de `handleVote`, vote.ts — responde o
+//      veredito em dezenas de ms, contabilidade pesada vai pra
+//      `ctx.waitUntil()`), não escondida atrás de um avanço instantâneo.
+//      Histórico preservado aqui pra ninguém reverter #3983 de volta a esta
+//      decisão sem reler o rationale — ver PR #3983.
 //
 //   3. Skip-and-credit: o bug visto pelo editor era um token que já tinha
 //      votado (por outro caminho/sessão) ver "já votou" em TODOS os pares —
@@ -791,6 +839,7 @@ export function resolveJogarSequenceEditions(correctKeyNames: string[], now: Dat
 //      a play list vira só as NÃO votadas. `?reset=1` em `/jogar` limpa a
 //      identidade anônima local (token+cookie) pra permitir re-testar do
 //      zero (só client-side — votos antigos no servidor não são apagados).
+//      AINDA VÁLIDO — ortogonal ao modelo de reveal, #3983 não toca nisso.
 //
 // `computeSeqSkipAndCredit`/`parseSeqStateEditionsParam` abaixo são os
 // gêmeos TS puros e testáveis da lógica de skip-and-credit — o <script>
@@ -891,22 +940,24 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
   const emptyStateHtml = `<p class="sub">Ainda não há uma sequência fechada do mês anterior — volte em breve.</p>`;
   const quizFallbackLink = total === 0 ? ` &nbsp;|&nbsp; <a href="/jogar/quiz">Jogar o quiz relâmpago</a>` : "";
 
-  // #3595 (rework "Suspense", feedback do editor 260716): cada rodada avança
-  // IMEDIATAMENTE pro próximo par ao clicar — o /vote roda em BACKGROUND
-  // (ver script abaixo) e o acerto/erro NUNCA é revelado por rodada (some o
-  // bloco de resultado intermediário que existia aqui, `#seq-round-result` —
-  // não há mais "Próximo", o avanço já É automático). Por isso a barra de
-  // progresso mostra só "Par X de N" (sem "acertos: Y" incremental — mostrar
-  // um contador que atualiza de forma assíncrona conforme os votos em
-  // background respondem vazaria parcialmente o resultado de rodadas
-  // anteriores enquanto o leitor já está jogando outras). O placar completo
-  // só aparece na tela final, após `Promise.all(pending)`.
+  // #3983 (reverte o modelo "Suspense" do #3595 — ver rationale completo no
+  // header da seção acima): cada clique agora AGUARDA a resposta do /vote e
+  // revela ✅/❌ + destaque visual da imagem correta NA HORA, num bloco
+  // dedicado (`#seq-round-result` — o mesmo id que existia ANTES do #3595,
+  // reintroduzido aqui). O avanço pra próxima rodada é por botão OU
+  // auto-avanço (`renderRoundResult`/`onChoice` no script abaixo) — nunca
+  // mais "avança primeiro, revela depois" (isso era o Suspense, revertido).
+  // A barra de progresso continua mostrando só "Par X de N" — um contador de
+  // acertos incremental fica pra uma issue futura (#3977, fora de escopo
+  // aqui), não porque vazaria spoiler (o reveal por rodada já é o ponto
+  // desta issue).
   const bodyHtml = total === 0 ? emptyStateHtml : `<p class="sub" id="seq-progress">Carregando sequência…</p>
 
 <noscript><p class="sub">A sequência precisa de JavaScript pra jogar. <a href="${leaderboardLink}">Ver leaderboard</a>.</p></noscript>
 
 <div id="seq-play">
   <div class="choices" id="seq-choices"></div>
+  <div id="seq-round-result" class="seq-round-result" hidden></div>
 </div>
 
 <div id="seq-final" class="quiz-final" hidden>
@@ -1005,7 +1056,6 @@ ${renderInlineSignupFormBlock()}`;
   var knownWrongIndices = [];
   var round = 0; // índice dentro de playIndices, NÃO de editions
   var results = {}; // originalIndex (string) -> true | false | null
-  var pending = []; // promises do /vote em background — NUNCA rejeitam (ver voteInBackground)
 
   function updateProgress(originalIndex) {
     progressEl.textContent = "Par " + (originalIndex + 1) + " de " + total;
@@ -1047,18 +1097,13 @@ ${renderInlineSignupFormBlock()}`;
     preloadRound(playIndices[round + 1]);
   }
 
-  // #3595 (modelo "Suspense"): vota em BACKGROUND — 1 retry em falha de
-  // rede, e NUNCA rejeita (resolve com null = "não pontuado") pra que
-  // Promise.all(pending) na tela final nunca trave por causa de um /vote que
-  // falhou. Parseia só o prefixo ✅/❌ de '.msg' — nunca exibe o texto bruto
-  // do servidor (pode incluir sufixo de streak/stats, deliberadamente
-  // suprimido nesta UI, mesma disciplina do #3589).
-  function voteInBackground(voteUrl, attempt) {
+  // #3983 (reverte o modelo "Suspense" do #3595 — ver rationale no header da
+  // seção acima): aguarda a resposta do /vote e extrai o veredito + o
+  // destaque visual da imagem correta. 1 retry em falha de rede; NUNCA
+  // rejeita (resolve com null = "não deu pra confirmar") — a rodada cai no
+  // fallback de navegação nativa em vez de travar a sequência.
+  function voteAndReveal(voteUrl, attempt) {
     if (typeof window.fetch !== "function" || typeof DOMParser === "undefined") {
-      // Sem fetch/DOMParser (browser muito antigo): não há como disparar o
-      // /vote em background sem navegar a página inteira embora (o que
-      // abandonaria a sequência) — trade-off aceito: esta rodada não é
-      // registrada/pontuada nesse caso raro, mas o jogo nunca trava.
       return Promise.resolve(null);
     }
     return fetch(voteUrl).then(function (res) {
@@ -1066,13 +1111,19 @@ ${renderInlineSignupFormBlock()}`;
     }).then(function (html) {
       var parsed = new DOMParser().parseFromString(html, "text/html");
       var msgEl = parsed.querySelector(".msg");
+      var imagesEl = parsed.querySelector(".result-images");
       var text = msgEl ? (msgEl.textContent || "") : "";
-      if (text.indexOf("✅") === 0) return true;
-      if (text.indexOf("❌") === 0) return false;
-      return null; // ambíguo (já votado por outro caminho, etc.) — não pontua
+      var correct = null;
+      if (text.indexOf("✅") === 0) correct = true;
+      else if (text.indexOf("❌") === 0) correct = false;
+      return {
+        correct: correct,
+        msgHtml: msgEl ? msgEl.innerHTML : "",
+        imagesHtml: imagesEl ? imagesEl.outerHTML : "",
+      };
     }).catch(function () {
-      if (attempt < 1) return voteInBackground(voteUrl, attempt + 1);
-      return null; // 2ª falha — segue sem pontuar esta rodada, nunca trava a tela final
+      if (attempt < 1) return voteAndReveal(voteUrl, attempt + 1);
+      return null; // 2ª falha — cai no fallback de navegação nativa em onChoice
     });
   }
 
@@ -1081,13 +1132,49 @@ ${renderInlineSignupFormBlock()}`;
     renderRound();
   }
 
-  // #3595: clicar avança IMEDIATAMENTE pro próximo par (advance() síncrono
-  // abaixo) — o /vote roda em background (voteInBackground) e só ajusta
-  // results quando responder. Nenhum "Acertou!/Errou" por rodada — o
-  // feedback só existe na tela final.
+  function setChoicesDisabled(disabled) {
+    var btns = choicesEl.querySelectorAll(".seq-choice-btn");
+    for (var i = 0; i < btns.length; i++) btns[i].disabled = disabled;
+  }
+
+  // #3983: reveal por rodada — mostra o veredito + destaque das imagens no
+  // bloco #seq-round-result, com um botão "Próxima" e auto-avanço (o que
+  // vier primeiro). A flag "advanced" evita avançar 2x se o leitor clicar
+  // bem na hora do timeout.
+  function renderRoundResult(result) {
+    var resultEl = document.getElementById("seq-round-result");
+    if (!resultEl) { advance(); return; }
+    resultEl.innerHTML =
+      '<p class="result-msg">' + result.msgHtml + "</p>" +
+      result.imagesHtml +
+      '<button type="button" class="seq-next-btn">Próxima rodada →</button>';
+    resultEl.hidden = false;
+    var advanced = false;
+    function goNext() {
+      if (advanced) return;
+      advanced = true;
+      resultEl.hidden = true;
+      resultEl.innerHTML = "";
+      setChoicesDisabled(false);
+      advance();
+    }
+    var nextBtn = resultEl.querySelector(".seq-next-btn");
+    if (nextBtn) nextBtn.addEventListener("click", goNext);
+    // Auto-avanço — não obriga o jogador a clicar; o botão é só pra quem
+    // quiser ir mais rápido.
+    setTimeout(goNext, 2500);
+  }
+
+  // #3983: clicar DESABILITA os botões e mostra "conferindo…" (sinaliza que
+  // o voto está sendo processado) — o /vote responde em dezenas de ms agora
+  // (fast-path do backend, ver handleVote em vote.ts), então o clique
+  // seguinte só acontece depois do reveal desta rodada, nunca antes.
   function onChoice(choice) {
     var originalIndex = playIndices[round];
     var edition = editions[originalIndex];
+
+    setChoicesDisabled(true);
+    progressEl.textContent = "Par " + (originalIndex + 1) + " de " + total + " — conferindo…";
 
     var params = new URLSearchParams();
     params.set("edition", edition);
@@ -1096,12 +1183,17 @@ ${renderInlineSignupFormBlock()}`;
     params.set("choice", choice);
     var voteUrl = "/vote?" + params.toString();
 
-    var voteDone = voteInBackground(voteUrl, 0).then(function (correct) {
-      results[String(originalIndex)] = correct;
+    voteAndReveal(voteUrl, 0).then(function (result) {
+      if (result === null) {
+        // 2 falhas de rede seguidas — fallback: navega nativo pro /vote
+        // (sai da sequência, mas o dedup no servidor cobre a re-tentativa;
+        // o voto nunca se perde silenciosamente).
+        window.location.href = voteUrl;
+        return;
+      }
+      results[String(originalIndex)] = result.correct;
+      renderRoundResult(result);
     });
-    pending.push(voteDone);
-
-    advance();
   }
 
   function showFinal() {
@@ -1109,44 +1201,42 @@ ${renderInlineSignupFormBlock()}`;
     finalEl.hidden = false;
     var scoreEl = finalEl.querySelector(".seq-final-score");
     var wrongEl = finalEl.querySelector(".seq-final-wrong");
-    if (scoreEl) scoreEl.textContent = "Calculando placar…";
-    // #3595: aguarda TODOS os votos em background terminarem (nunca
-    // rejeitam, ver voteInBackground) antes de fechar o placar final —
-    // "acertou/errou" só é revelado aqui, pós-jogo, nunca por rodada.
-    Promise.all(pending).then(function () {
-      var score = preCredited;
-      var wrongIndices = knownWrongIndices.slice();
-      for (var key in results) {
-        if (!Object.prototype.hasOwnProperty.call(results, key)) continue;
-        var idx = parseInt(key, 10);
-        if (results[key] === true) score++;
-        else if (results[key] === false) wrongIndices.push(idx);
+    // #3983: cada rodada já foi confirmada (aguardada) antes de avançar — o
+    // objeto "results" está completo assim que chegamos aqui, sem precisar
+    // esperar nenhuma promise pendente (isso era necessário só no modelo
+    // Suspense, #3595, que votava em background).
+    var score = preCredited;
+    var wrongIndices = knownWrongIndices.slice();
+    for (var key in results) {
+      if (!Object.prototype.hasOwnProperty.call(results, key)) continue;
+      var idx = parseInt(key, 10);
+      if (results[key] === true) score++;
+      else if (results[key] === false) wrongIndices.push(idx);
+    }
+    wrongIndices.sort(function (a, b) { return a - b; });
+    if (scoreEl) scoreEl.textContent = "Você acertou " + score + " de " + total + "!";
+    if (wrongEl) {
+      if (wrongIndices.length > 0) {
+        var pairLabels = wrongIndices.map(function (i) { return i + 1; }).join(", ");
+        wrongEl.textContent = "Errou nos pares " + pairLabels + ".";
+        wrongEl.hidden = false;
+      } else {
+        wrongEl.hidden = true;
       }
-      wrongIndices.sort(function (a, b) { return a - b; });
-      if (scoreEl) scoreEl.textContent = "Você acertou " + score + " de " + total + "!";
-      if (wrongEl) {
-        if (wrongIndices.length > 0) {
-          var pairLabels = wrongIndices.map(function (i) { return i + 1; }).join(", ");
-          wrongEl.textContent = "Errou nos pares " + pairLabels + ".";
-          wrongEl.hidden = false;
-        } else {
-          wrongEl.hidden = true;
-        }
-      }
-      var slot = document.getElementById("seq-share-slot");
-      // #3589: reusa LITERALMENTE /jogar/quiz/result (#3520) — mesmo endpoint,
-      // mesmo QuizSharePayload {score,total}, zero mudança em share.ts/handleQuizResult.
-      fetch("/jogar/quiz/result?score=" + encodeURIComponent(String(score)) + "&total=" + encodeURIComponent(String(total)))
-        .then(function (res) { if (!res.ok) throw new Error("result fetch failed"); return res.text(); })
-        .then(function (html) {
-          if (!slot) return;
-          slot.innerHTML = html;
-          slot.hidden = false;
-        })
-        .catch(function () {});
-      if (subscribeCta) subscribeCta.hidden = false;
-      if (signupForm) signupForm.hidden = false;
-    });
+    }
+    var slot = document.getElementById("seq-share-slot");
+    // #3589: reusa LITERALMENTE /jogar/quiz/result (#3520) — mesmo endpoint,
+    // mesmo QuizSharePayload {score,total}, zero mudança em share.ts/handleQuizResult.
+    fetch("/jogar/quiz/result?score=" + encodeURIComponent(String(score)) + "&total=" + encodeURIComponent(String(total)))
+      .then(function (res) { if (!res.ok) throw new Error("result fetch failed"); return res.text(); })
+      .then(function (html) {
+        if (!slot) return;
+        slot.innerHTML = html;
+        slot.hidden = false;
+      })
+      .catch(function () {});
+    if (subscribeCta) subscribeCta.hidden = false;
+    if (signupForm) signupForm.hidden = false;
   }
 
   choicesEl.addEventListener("click", function (ev) {
@@ -1219,9 +1309,20 @@ ${seoMeta}
   .choice button:disabled { opacity: 0.5; cursor: not-allowed; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .scroll-hint { display: none; }
-  #seq-final[hidden], #jogar-subscribe-cta[hidden], #jogar-signup-form[hidden] { display: none; }
+  #seq-round-result[hidden], #seq-final[hidden], #jogar-subscribe-cta[hidden], #jogar-signup-form[hidden] { display: none; }
   .result-msg { font-family: ${DS_FONTS.serif}; font-size: 1.3rem; line-height: 1.4; margin: 20px 0; }
-  .quiz-round-result button { margin-top: 4px; padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  /* #3983: reveal por rodada (destaque da imagem correta + botão "Próxima") —
+     mesmo padrão visual do quiz relâmpago (.quiz-round-result). */
+  .seq-round-result { margin: 12px 0; }
+  .seq-round-result button { margin-top: 4px; padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  /* #3983: destaque visual da imagem correta — mesmas classes que
+     votePageHtml (index.ts) já usa no /vote renderizado direto. */
+  .result-images { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
+  .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: ${DS_COLORS.paper}; }
+  .result-image.clicked { border-color: ${DS_COLORS.brand}; box-shadow: 0 0 0 2px rgba(0,160,160,.28); }
+  .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
+  .result-image .label { font-family: ${DS_FONTS.sans}; font-size: 0.95rem; margin-top: 8px; color: ${DS_COLORS.ink}; font-weight: 600; }
+  .result-image .you { display: inline-block; padding: 2px 8px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
   .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
   .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
   .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
@@ -1239,6 +1340,9 @@ ${renderInlineSignupFormStyles()}
     .subscribe-cta { max-width: 100%; padding: 20px 18px; }
     .subscribe-btn { display: block; width: 100%; box-sizing: border-box; padding: 14px 16px; font-size: 1.05rem; }
     .signup-form { max-width: 100%; padding: 20px 18px; }
+    .result-image { flex-basis: 100%; max-width: 100%; }
+    .result-image .label { font-size: 1.05rem; }
+    .seq-round-result button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
   }
 ${renderBrandShellStyles()}
 </style>
