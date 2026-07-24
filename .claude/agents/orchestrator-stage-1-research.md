@@ -115,6 +115,8 @@ Output: JSON array de strings (pode ser `[]`). Logar: `"inbox_topics: N topics e
 
 **⛔ NUNCA PULE ESTE PASSO EM `/diaria-edicao` (#1091).** RSS batch (1e) **NÃO substitui** WebSearch dos publishers oficiais. Pular silenciosamente porque "RSS já trouxe artigos suficientes" é bug recorrente (260512 incidente, mesma classe do #594). O passo 1w-quint (`validate-stage-1-completeness.ts`) detecta este skip e bloqueia o gate.
 
+**⛔ NUNCA pré-checar `BRAVE_API_KEY` (ou qualquer var só em `.env`) via Bash antes de decidir o path (#3969).** `.env` só é carregado pelo processo Node (`import "dotenv/config"` em `scripts/fetch-websearch-batch.ts`) — nunca exportado pro shell Bash. Rodar `if [ -n "$BRAVE_API_KEY" ]` (ou equivalente) no Bash pra "adiantar" a decisão Path A/B vê a key como ausente mesmo quando ela está presente e válida no `.env`, causando fallback desnecessário pro Path B (~10× mais lento/caro). A decisão correta é **sempre** rodar `fetch-websearch-batch.ts` direto e ramificar pelo exit code (0 = Path A rodou; 3 = key ausente → Path B) — nunca inferir a presença da key por fora do processo Node que a lê.
+
 #### Path A: Brave Search determinístico (DEFAULT desde #1560)
 
 **Default desde 260529 (#1560).** Quando `BRAVE_API_KEY` está setada (default), usar script TS em vez dos agents Haiku. Economiza ~8-12min/edição. Validação side-by-side em 260529 confirmou cobertura comparável + 10× speed. Setar `WEBSEARCH_BACKEND=agents` força fallback pro Path B.

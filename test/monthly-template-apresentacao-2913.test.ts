@@ -14,18 +14,23 @@
  * padrão já documentado em test/lint-monthly-draft.test.ts para #2794):
  *
  *   1. O template contém APRESENTAÇÃO na posição canônica (entre PREVIEW e
- *      INTRO), com os links CORRIGIDOS (#2937 já mergeou e mudou os URLs
- *      originais da issue #2913 — este teste usa os corrigidos):
- *        - "aqui" → https://diaria.beehiiv.com (NÃO diar.ia.br)
+ *      INTRO), com os links CORRIGIDOS (#3971 unificou o href pro canônico
+ *      diar.ia.br pós-fix do redirect Cloudflare, #2613 — supera a decisão
+ *      anterior do #2937/#2913 que mandava pro Beehiiv por causa do bug de
+ *      query string, já corrigido):
+ *        - "aqui" → https://diar.ia.br/?utm_source=clarice (href canônico,
+ *          com UTM de atribuição — NÃO mais diaria.beehiiv.com)
  *        - "diar.ia.br" em texto PLANO (nunca link markdown, pro wordmark
  *          automático de applyBrandWordmark funcionar)
  *        - Clarice → https://clarice.ai/?via=diaria
  *        - descadastro → merge tag {{ unsubscribe }}
  *        - "na Clarice" (não "em Clarice")
  *   2. O bloco extraído do template, passado pelo render real (`draftToEmail`),
- *      produz HTML com o wordmark da marca aplicado e o link correto pro
- *      Beehiiv — fechando o ciclo entre "o texto está certo" e "o render faz
- *      o que a gente espera com esse texto".
+ *      produz HTML com o wordmark da marca aplicado (o wordmark automático de
+ *      "diar.ia.br" continua linkando pro Beehiiv com UTM — #2937/#2975, fora
+ *      do escopo do #3971) e o link "aqui" apontando direto pro href canônico
+ *      diar.ia.br com UTM — fechando o ciclo entre "o texto está certo" e "o
+ *      render faz o que a gente espera com esse texto".
  */
 
 import { describe, it } from "node:test";
@@ -70,10 +75,10 @@ describe("template mensal — bloco APRESENTAÇÃO (#2913)", () => {
     );
   });
 
-  it("link 'aqui' aponta pro Beehiiv (https://diaria.beehiiv.com), NÃO diar.ia.br", () => {
+  it("link 'aqui' aponta pro href canônico diar.ia.br com utm_source=clarice (#3971)", () => {
     const block = extractFormatBlock(readTemplate());
-    assert.match(block, /\[aqui\]\(https:\/\/diaria\.beehiiv\.com\)/);
-    assert.doesNotMatch(block, /\[aqui\]\(https?:\/\/diar\.ia\.br[^)]*\)/);
+    assert.match(block, /\[aqui\]\(https:\/\/diar\.ia\.br\/\?utm_source=clarice\)/);
+    assert.doesNotMatch(block, /\[aqui\]\(https?:\/\/diaria\.beehiiv\.com[^)]*\)/);
   });
 
   it("'diar.ia.br' aparece em texto PLANO (nunca como link markdown)", () => {
@@ -124,9 +129,12 @@ describe("template mensal — bloco APRESENTAÇÃO (#2913)", () => {
     // carregando o UTM de atribuição Clarice→Beehiiv (#2975 — sem isso, o
     // Beehiiv taggeia esses assinantes como "sendinblue" e a migração fica
     // invisível na atribuição). Ver test/monthly-utm-clarice-2975.test.ts.
+    // Esse mecanismo é ortogonal ao #3971 (que só muda o CTA explícito "aqui").
     assert.match(html, /<a href="https:\/\/diaria\.beehiiv\.com\/\?utm_source=clarice[^"]*utm_campaign=clarice-2606-07"[^>]*>/);
-    // O CTA "aqui" segue como link normal pro mesmo destino, também com UTM.
-    assert.match(html, /<a href="https:\/\/diaria\.beehiiv\.com\/\?utm_source=clarice[^"]*utm_campaign=clarice-2606-07"[^>]*>aqui<\/a>/);
+    // O CTA "aqui" (#3971) aponta direto pro href canônico diar.ia.br, já com
+    // o próprio utm_source=clarice do template — não passa pela reescrita
+    // normalizeKnownUrl (que só se aplica a hosts diaria.beehiiv.com).
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\/\?utm_source=clarice"[^>]*>aqui<\/a>/);
     assert.doesNotMatch(html, /sendinblue/);
   });
 });

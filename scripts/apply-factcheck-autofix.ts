@@ -155,9 +155,15 @@ export function isIntentionalErrorClaim(
  * pra aceitar header não-canônico ("DESTAQUE 2: Título", "DESTAQUE 2 — X") —
  * sem isso, `nextMatch` não encontra o separador esperado, retorna null, e o
  * range do destaque anterior engloba os seguintes até EOF.
+ * `\*{0,2}` antes de "DESTAQUE" (#3973) tolera o prefixo de bold markdown
+ * (`**DESTAQUE N | ...**`) do header REAL gerado pelo template
+ * (`context/templates/newsletter.md`) — sem isso a âncora `(?:^|\n)DESTAQUE`
+ * nunca casava (o `**` vem antes de "DESTAQUE" na linha), e a auto-correção
+ * de claims DIVERGENT nunca aplicava na newsletter (caía sempre no fallback
+ * `skipped_text_not_found`).
  */
 function destaqueHeaderPattern(numPattern: string): string {
-  return String.raw`DESTAQUE\s+${numPattern}\s*(?:[|:—-]|$)`;
+  return String.raw`\*{0,2}DESTAQUE\s+${numPattern}\s*(?:[|:—-]|$)`;
 }
 
 /**

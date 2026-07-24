@@ -989,6 +989,58 @@ describe("categorize() — arXiv off-topic vai para noticias (#501)", () => {
 });
 
 
+describe("categorize() — listicle de descoberta vira USE MELHOR (#3987)", () => {
+  it("CASO REAL: '7 inteligências artificiais pouco conhecidas...' → tutorial (USE MELHOR)", () => {
+    assert.equal(
+      categorize({
+        url: "https://example.com/7-ias-pouco-conhecidas",
+        title: "7 inteligências artificiais pouco conhecidas que podem mudar sua forma de trabalhar",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("teste negativo: ranking genérico 'as 10 melhores ferramentas de IA' CONTINUA noticias (RADAR), não regride a distinção editorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://example.com/10-melhores-ferramentas-ia",
+        title: "As 10 melhores ferramentas de IA para produtividade em 2026",
+      }),
+      "noticias",
+    );
+  });
+
+  it("variante 'desconhecidas' (ordem substantivo→adjetivo) também vira tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://example.com/apps-desconhecidos-ia",
+        title: "5 apps de IA desconhecidos que merecem sua atenção",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("variante 'que você não conhece' (ordem adjetivo→substantivo) também vira tutorial", () => {
+    assert.equal(
+      categorize({
+        url: "https://example.com/ferramentas-que-voce-nao-conhece",
+        title: "Ferramentas de IA que você não conhece e deveria testar",
+      }),
+      "tutorial",
+    );
+  });
+
+  it("teste negativo: 'melhores IAs' sem vocabulário de descoberta obscura continua noticias", () => {
+    assert.equal(
+      categorize({
+        url: "https://example.com/melhores-ias-2026",
+        title: "As melhores IAs generativas de 2026, segundo especialistas",
+      }),
+      "noticias",
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Edge cases: precedencia, dominios ambiguos e casos limite (#534)
 // // #534-edge-cases-appended
