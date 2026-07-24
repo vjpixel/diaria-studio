@@ -1247,7 +1247,12 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // enumerar quais edições consultar via /stats sem depender de
     // data/editions/ local (inacessível a um Worker). Ver handleEditions.
     if (path === "/editions" && request.method === "GET") return handleEditions(bEnv, brand);
-    if (path === "/leaderboard" && request.method === "GET") {
+    // #3998: mesmo racional do #HEAD em /img/* abaixo — link-preview
+    // generators/crawlers (Beehiiv, clientes de e-mail, uptime checks) fazem
+    // HEAD antes de seguir o link do rodapé pro leaderboard e recebiam 404
+    // mesmo com o GET retornando 200 (a guarda só aceitava GET). Runtime do
+    // Workers descarta o body automaticamente em respostas a HEAD.
+    if (path === "/leaderboard" && (request.method === "GET" || request.method === "HEAD")) {
       // #2006/#2018: período canônico do leaderboard vem de BRAND_INFO.leaderboardPeriod.
       // "year" → visão anual (clarice: 1 voto/mês, faz sentido agregar ano inteiro).
       // "month" → visão mensal (diária: votos diários, ranking mês corrente).
@@ -1256,9 +1261,10 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
       }
       return handleLeaderboard(bEnv, brand);
     }
-    if (path === "/leaderboard/top1" && request.method === "GET") return handleLeaderboardTop1(url, bEnv);
+    if (path === "/leaderboard/top1" && (request.method === "GET" || request.method === "HEAD")) return handleLeaderboardTop1(url, bEnv);
     // #1345: /leaderboard/{YYYY-MM} — URL única por mês de publicação
-    if (path.startsWith("/leaderboard/") && request.method === "GET") {
+    // #3998: HEAD aceito pelo mesmo racional acima.
+    if (path.startsWith("/leaderboard/") && (request.method === "GET" || request.method === "HEAD")) {
       // #2867: /leaderboard/{YYYY}/arquivo[/{AAMMDD}] — arquivo retroativo do
       // ano. Checado ANTES do monthMatch/yearMatch abaixo (regex mais específica).
       const archiveVoteMatch = path.match(/^\/leaderboard\/(\d{4})\/arquivo\/(\d{6})$/);
