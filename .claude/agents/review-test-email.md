@@ -177,13 +177,14 @@ O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor ve
 >    uma referência concreta (edição anterior, `context/templates/`) de que
 >    aquele ponto SEMPRE teve emoji, não reportar.
 > 10. **Imagens "unreachable": erro de rede isolado NUNCA é reportado como
->    problema definitivo sem cross-check contra uma segunda fonte
->    determinística** (ex: `close-poll.ts`/`upload-images-public.ts` já
->    confirmaram o Worker acessível minutos antes). Desde #3941, o lint de
->    freshness (passo 16) já faz retry e marca `image_unreachable` como
->    `severity: warning` (nunca blocker sozinho) — só `image_stale`
->    (mismatch de bytes CONFIRMADO) é blocker. Inconclusivo = **não
->    reportar**, nunca "reportar com ressalva".
+>     problema definitivo sem cross-check contra uma segunda fonte
+>     determinística** (`{edition_dir}/06-public-images.json`, escrito por
+>     `upload-images-public.ts` — entrada preenchida ali confirma que o
+>     Worker já recebeu essa imagem). Desde #3941, o lint de freshness
+>     (passo 16) já faz retry e marca `image_unreachable` como
+>     `severity: warning` (nunca blocker sozinho) — só `image_stale`
+>     (mismatch de bytes CONFIRMADO) é blocker. Inconclusivo = **não
+>     reportar**, nunca "reportar com ressalva".
 >
 > O lint determinístico (passos 8-9, 16, 17) já trata 1/3/4/5/6/10 — **prefira
 > o CLI** a julgar à mão.
@@ -492,7 +493,7 @@ npx tsx scripts/lint-test-email-image-freshness.ts \
 
 4. Mapear cada `issues[]` pra string compatível com o output, **respeitando o severity** (#3941 — pós-mortem 260723: `image_unreachable` sozinho tinha virado falso-positivo "problema definitivo" sem cross-check; o script agora faz retry e classifica como warning):
    - `type:image_stale` (severity:blocker) → `"email:image_stale: {expected_local_file} — {details}"` (blocker — mismatch de bytes confirmado após fetch bem-sucedido).
-   - `type:image_unreachable` (severity:**warning**) → `"info:image_unreachable: {expected_local_file} — {url} retornou erro após retries"` — **NUNCA prefixo `email:`**. É ruído de rede pós-retry, inconclusivo por definição; não é um problema confirmado. Antes de sequer incluir esta linha no `issues[]` final, cross-checar contra uma fonte determinística separada da mesma edição (ex: `{edition_dir}/_internal/.step-4-done.json` ou log de `close-poll.ts`/`upload-images-public.ts` indicando Worker acessível) — se essa fonte confirma o Worker up, **omitir a linha inteiramente** em vez de reportar "com ressalva".
+   - `type:image_unreachable` (severity:**warning**) → `"info:image_unreachable: {expected_local_file} — {url} retornou erro após retries"` — **NUNCA prefixo `email:`**. É ruído de rede pós-retry, inconclusivo por definição; não é um problema confirmado. Antes de sequer incluir esta linha no `issues[]` final, cross-checar contra `{edition_dir}/06-public-images.json` (escrito por `upload-images-public.ts` — presença de entrada pra esse destaque/EIA com `url` preenchida é confirmação determinística de que o upload pro Worker teve sucesso) — se o arquivo confirma a imagem como já publicada no Worker, **omitir a linha inteiramente** em vez de reportar "com ressalva".
 
    Anexar ao `issues[]` final do agent (só a linha de `image_stale`, e a de `image_unreachable` apenas se o cross-check não confirmar o Worker acessível).
 
