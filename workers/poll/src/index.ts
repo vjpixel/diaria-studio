@@ -807,7 +807,7 @@ ${imagesHtml}
 ${eiaMetaHtml}
 ${shareCardHtml}
 ${formHtml}
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-footer", "eia-vote-footer"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-voltar", "eia-vote-voltar"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
 </body>
 </html>`;
 }

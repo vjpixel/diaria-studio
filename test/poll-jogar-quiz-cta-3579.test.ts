@@ -118,7 +118,7 @@ describe("renderJogarQuizPageHtml embute o CTA específico do quiz, não o gené
     const html = renderJogarQuizPageHtml(["260101"]);
     assert.match(html, /utm_medium=quiz/);
     // #3978: negative lookahead (?!-) evita falso-positivo com
-    // `utm_medium=jogar-footer` (rodapé "← Voltar", presente em TODA página
+    // `utm_medium=jogar-voltar` (rodapé "← Voltar", presente em TODA página
     // de /jogar, inclusive o quiz — não é o CTA de par único que este teste
     // quer excluir, só o valor EXATO `jogar` de SUBSCRIBE_UTM_MEDIUM).
     assert.doesNotMatch(html, /utm_medium=jogar(?!-)/);
