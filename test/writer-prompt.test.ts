@@ -131,6 +131,44 @@ describe("writer-destaque.md safe-area invariant (#2657)", () => {
   });
 });
 
+describe("nunca especular além do summary — sem WebFetch por design (#4000)", () => {
+  // writer/writer-destaque não têm WebFetch (design: pesquisa já aconteceu no
+  // Stage 1). O incidente 260724 mostrou que, sem uma regra explícita, o
+  // writer preenche lacunas do summary com suposição hedged em vez de omitir.
+  for (const [nome, path] of [
+    ["writer.md", WRITER_MD],
+    ["writer-destaque.md", WRITER_DESTAQUE_MD],
+  ] as const) {
+    const content = readFileSync(path, "utf8");
+
+    it(`${nome} não declara WebFetch no frontmatter tools`, () => {
+      const toolsLine = content.match(/^tools:\s*(.+)$/m)?.[1] ?? "";
+      assert.doesNotMatch(
+        toolsLine,
+        /WebFetch/,
+        `${nome} não deve ter WebFetch no frontmatter — pesquisa já aconteceu no Stage 1 (#4000)`,
+      );
+    });
+
+    it(`${nome} cita o #4000 e instrui a omitir em vez de especular`, () => {
+      assert.match(content, /#4000/, `${nome} deve citar o #4000`);
+      assert.match(
+        content,
+        /omit[ae]/i,
+        `${nome} deve instruir a omitir a afirmação quando o summary não cobrir o ângulo`,
+      );
+    });
+
+    it(`${nome} documenta o incidente real (Health in ChatGPT / rivais) como anti-exemplo`, () => {
+      assert.match(
+        content,
+        /Health in ChatGPT/,
+        `${nome} deve referenciar o incidente real da edição 260724`,
+      );
+    });
+  }
+});
+
 describe("caveat de nomes de produto/modelo — Gemini Nano ≠ Nano Banana (#2685)", () => {
   // Ambos os writers (default × destaque) devem carregar o guard, senão vira gap
   // silencioso em prod (padrão writer-agents-keep-in-sync).

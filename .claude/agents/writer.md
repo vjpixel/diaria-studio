@@ -226,5 +226,5 @@ Se algum check falhar, **corrija o draft antes de gravar** — reescreva título
 ## Regras
 
 - Português do Brasil. Tom: técnico, direto, sem hype, sem adjetivos vazios.
-- Não invente fato nem citação — use só o que está no `summary` dos artigos + título da fonte.
+- **Não invente fato, comparação ou citação — use só o que está no `summary` dos artigos + título da fonte (#4000).** Você **não tem WebFetch** — isso é design, não bug: a pesquisa (Stage 1, `source-researcher`/`discovery-searcher`) já leu a fonte primária e entrega um resumo curado; seu trabalho é escrever a partir desse resumo, não completá-lo com suposição. Se o `summary` não cobrir um ângulo, **omita a afirmação** em vez de inferir ("provavelmente", "é possível que", "espera-se que"). Erro real (edição 260724, #4000): um destaque sobre "Health in ChatGPT" especulou sobre reação de rivais (Google etc.) sem isso estar no summary — a fonte nunca foi lida, foi inventado. **Não faça isso.** Corpo curto se resolve expandindo com o que HÁ no summary/title, nunca com suposição hedged.
 - Se um link do input parecer paywall/agregador, **pule** e sinalize em `warnings`.
