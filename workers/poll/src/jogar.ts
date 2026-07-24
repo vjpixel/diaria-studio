@@ -1896,10 +1896,10 @@ ${renderBrandShellStyles()}
 ${bodyHtml}
 
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a>${quizFallbackLink}</p>
-${renderBrandFooter(JOGAR_BRAND)}
 ${scriptHtml}
 ${renderLightboxMarkup()}
 ${lightboxScript()}
+${renderBrandFooter(JOGAR_BRAND)}
 </body>
 </html>`;
 }
