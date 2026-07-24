@@ -204,7 +204,17 @@ describe("handleVote fast-path (#3983) — veredito imediato, contabilidade em b
   it("nickname form / result images / share card (brand=web) continuam presentes na resposta rápida (não dependem da escrita desta rodada)", async () => {
     const env = makeEnv({ "correct:260601": "A" });
     const { ctx } = makeRealCtx();
-    const res = await handleVote(voteUrl("web-user@x.com", "260601", "A", "web"), env, "web", env, ctx);
+    // #3976 (achado 260724, PR #3997): "web-user@x.com" NÃO é um token UUID v4
+    // válido sob o domínio reservado — o guard `isValidWebToken` (lib.ts,
+    // PR #3989/#3976, já mergeado ANTES deste teste existir com essa fixture)
+    // rejeita qualquer local-part não-UUID pra brand="web", produzindo a MESMA
+    // mensagem "Link inválido — parâmetros ausentes." de um request com
+    // parâmetro ausente — por isso o bug ficou invisível até o CI pegar (a
+    // asserção abaixo falhava silenciosamente contra a página de ERRO, não a
+    // de sucesso). Corrigido pra um pseudo-email que É a forma exata que
+    // `anonEmailForToken` (jogar.ts) produz — mesmo padrão de fixture usado
+    // em todos os outros testes brand="web" deste arquivo/repo.
+    const res = await handleVote(voteUrl("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa@web.eia.diaria.local", "260601", "A", "web"), env, "web", env, ctx);
     const html = await res.text();
     assert.match(html, /class="nick-form"/, "nicknameForm deve aparecer (jogador ainda sem nickname)");
     assert.match(html, /class="result-images"/, "destaque de imagens deve aparecer (gabarito já conhecido)");
