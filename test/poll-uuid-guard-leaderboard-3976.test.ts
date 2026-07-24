@@ -71,8 +71,10 @@ describe("isValidWebToken (pure, #3976)", () => {
   });
 
   it("nibble de variante errado (fora de 8/9/a/b) → false", () => {
-    // 4º grupo deveria começar com 8/9/a/b — aqui começa com "3".
-    assert.equal(isValidWebToken(`3fa85f64-5717-4562-3b3fc-2c963f66afa@${WEB_TOKEN_DOMAIN}`), false);
+    // 4º grupo deveria começar com 8/9/a/b — aqui começa com "3" (shape
+    // 8-4-4-4-12 preservada intacta, só o nibble de variante muda, pra
+    // isolar exatamente o que este teste diz que testa).
+    assert.equal(isValidWebToken(`3fa85f64-5717-4562-33fc-2c963f66afa6@${WEB_TOKEN_DOMAIN}`), false);
   });
 
   it("domínio errado → false MESMO com local-part UUID v4 válido (fecha o escape trivial 'trocar de domínio')", () => {
