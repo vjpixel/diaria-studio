@@ -20,8 +20,10 @@ Formato (título + corpo + CTA): (1) linha de título, sem marcador nem link;
 detecta e vira botão pill centralizado.
 
 Link com utm_source=clarice (obrigatório — rastreia quantos assinantes da
-diária vieram pela mensal; usar diaria.beehiiv.com DIRETO, pois diar.ia.br
-dropa a query string no redirect, #2613). NÃO usar diar.ia.br como href.
+diária vieram pela mensal). Desde 260723 o diar.ia.br está no Cloudflare e
+o redirect PRESERVA a query string (#2613 — o drop antigo era do redirect
+Registro.br), então diar.ia.br é o href canônico (branding). Links antigos
+com diaria.beehiiv.com continuam válidos.
 
 Uso na mensal: o editor cola este bloco numa lacuna de divulgação entre
 destaques, isolado por `---`. Não é auto-inserido pelo pipeline.
@@ -31,4 +33,4 @@ Recomendação da equipe da Clarice
 
 Você recebe esta curadoria uma vez por mês. Se quiser mais, a diar.ia.br, que produz esta newsletter conosco, publica uma edição diária e gratuita: 5 minutos para se manter atualizado e usar melhor as IAs. É só se cadastrar no site.
 
-→ [Assinar a edição diária](https://diaria.beehiiv.com/?utm_source=clarice)
+→ [Assinar a edição diária](https://diar.ia.br/?utm_source=clarice)
