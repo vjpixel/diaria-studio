@@ -45,10 +45,11 @@ import type { Env } from "./index";
 // vote.ts). Seguro porque nenhum dos dois módulos usa o valor importado no
 // top-level, só dentro de corpos de função executados em request-time
 // (bindings vivos do ESM resolvem o ciclo).
-import { corsHeaders, json } from "./index";
+import { corsHeaders, json, brandedNamespace } from "./index";
 import {
   AAMMDD_RE,
   BRAND_INFO,
+  brandKvPrefix, // #4035: handleJogarSeqState precisa ler a chave vote:* BRANDED (web:vote:*)
   buildBrandSiteUrl, // #3978: href com UTM do funil "É IA?" → site (CTA + footers "Voltar")
   formatEditionDate,
   htmlEscape,
@@ -334,6 +335,18 @@ export function renderInlineSignupFormStyles(): string {
  * test/poll-jogar-cta-3518.test.ts, que trava esse texto NÃO empurrar
  * assinatura — por isso o convite explícito entra aqui, no form que já É o
  * mecanismo de assinatura real, em vez de reabrir aquela decisão).
+ *
+ * #4036 (item 5): copy do checkbox de opt-in reescrita — "grátis, seg-sex"
+ * descrevia preço e frequência de uma coisa que quem chega por
+ * compartilhamento nunca ouviu falar (não sabe o que É a Diar.ia). Nova copy
+ * nomeia o produto (newsletter de IA) + o que entrega + a frequência, na
+ * mesma linha da tagline oficial ("5 minutos diários pra se manter
+ * atualizado e usar melhor as IAs", #3695) — fonte de verdade do
+ * posicionamento. `renderInlineSignupFormBlock` (form standalone do #3580,
+ * usado só por `/jogar/quiz`) já tinha copy equivalente ("notícias de IA +
+ * tutoriais + um par desses todo dia") e não foi tocado — página/funil
+ * diferente. `renderSubscribeCtaBlock` (caixa de descoberta) também não foi
+ * tocado — travado por test/poll-jogar-cta-3518.test.ts (#3589 item 4).
  */
 export function renderIdentityFormBlock(): string {
   return `<form id="jogar-identity-form" class="signup-form" hidden novalidate>
@@ -341,7 +354,7 @@ export function renderIdentityFormBlock(): string {
   <label class="signup-field"><span>Nome ou apelido</span><input type="text" name="name" autocomplete="name" maxlength="100" required></label>
   <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
   <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — grátis, seg-sex.</label>
+  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>
   <button type="submit" class="signup-btn">Entrar no ranking</button>
   <p class="signup-note">Seu e-mail entra no ranking público e sai do modo anônimo. Assinar a Diar.ia é opcional, só se você marcar a caixinha.</p>
   <p class="signup-status" role="status" aria-live="polite" hidden></p>
@@ -1314,8 +1327,14 @@ export function formatSeqFinalScore(score: number, total: number): string {
  * PARCIAL após este nº de pares e oferece "Continuar jogando" pro resto. Os
  * 22 pares continuam TODOS disponíveis (mesmos `playIndices`/skip-and-credit
  * de sempre) — só o PONTO DE PAUSA muda.
+ *
+ * #4036 (item 3, 260724): 5 → 10. Achado do editor jogando em produção: um
+ * placar de 5 pares é cedo demais pra já empurrar "Já dá pra desafiar
+ * alguém" (#4006) — ninguém quer desafiar amigo com uma amostra tão
+ * pequena. O checkpoint inteiro (placar parcial + share + "Continuar
+ * jogando") move pro 10º par.
  */
-export const SEQ_INITIAL_BATCH_SIZE = 5;
+export const SEQ_INITIAL_BATCH_SIZE = 10;
 
 /**
  * Pure (#4005): texto do placar PARCIAL ao fim do 1º lote de
@@ -1428,7 +1447,6 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
 
 <div id="seq-final" class="quiz-final" hidden>
   <p class="result-msg seq-final-score"></p>
-  <p class="sub seq-final-wrong" hidden></p>
   <!-- #4006 (item 1): o card de desafio (share) é o CLÍMAX desta tela, no
        mesmo nível (ou mais) do form de identidade logo abaixo — o kicker
        nasce visível junto com o placar (nunca espera o fetch que popula
@@ -1532,11 +1550,12 @@ ${renderIdentityFormBlock()}`;
   // responde (ver startGame abaixo, espelha computeSeqSkipAndCredit
   // exportado/testado em jogar.ts). playIndices = posições (0-based) em
   // editions que este token AINDA não votou — a play list real. Edições já
-  // votadas nunca são rejogadas: preCredited soma as já corretas,
-  // knownWrongIndices guarda as já erradas (ambas fora da play list).
+  // votadas nunca são rejogadas: preCredited soma as já corretas (as já
+  // erradas só saem da play list, sem bookkeeping extra desde #4036 item 4 —
+  // a tela final não lista mais os pares individuais errados, então não há
+  // mais consumidor pra rastrear QUAIS foram, só QUANTOS foram certos).
   var playIndices = [];
   var preCredited = 0;
-  var knownWrongIndices = [];
   var round = 0; // índice dentro de playIndices, NÃO de editions
   var results = {}; // originalIndex (string) -> true | false | null
 
@@ -1713,6 +1732,13 @@ ${renderIdentityFormBlock()}`;
       (result.eiaMetaHtml || "") +
       '<button type="button" class="seq-next-btn">Próxima rodada →</button>';
     resultEl.hidden = false;
+    // #4036 (item 1): o bloco de resultado já ficava DEPOIS do par no DOM —
+    // o problema real era visibilidade: no mobile, o par (imagem A + botão +
+    // imagem B + botão) já preenche a viewport, então o veredito nascia fora
+    // da tela e parecia que nada tinha acontecido. scrollIntoView traz o
+    // resultado (+ botão "Próxima rodada") pra viewport sem mover a posição
+    // do reveal no DOM nem do botão de avançar entre rodadas.
+    if (resultEl.scrollIntoView) resultEl.scrollIntoView({ block: "center", behavior: "smooth" });
     function goNext() {
       resultEl.hidden = true;
       resultEl.innerHTML = "";
@@ -1766,6 +1792,8 @@ ${renderIdentityFormBlock()}`;
         // jogo. Tratamento: pula a rodada silenciosamente, sem contar nem
         // pro placar nem pra lista de erradas (o resultado real já existe
         // no servidor de uma rodada anterior, fora desta sessão).
+        // #4035: log — este caminho nunca mais deve passar meses invisível.
+        console.error(JSON.stringify({ event: "seq_skip_already_voted_race", edition: edition }));
         advance();
         return;
       }
@@ -1783,20 +1811,15 @@ ${renderIdentityFormBlock()}`;
     if (playEl) playEl.hidden = true;
     finalEl.hidden = false;
     var scoreEl = finalEl.querySelector(".seq-final-score");
-    var wrongEl = finalEl.querySelector(".seq-final-wrong");
     // #3983: cada rodada já foi confirmada (aguardada) antes de avançar — o
     // objeto "results" está completo assim que chegamos aqui, sem precisar
     // esperar nenhuma promise pendente (isso era necessário só no modelo
     // Suspense, #3595, que votava em background).
     var score = preCredited;
-    var wrongIndices = knownWrongIndices.slice();
     for (var key in results) {
       if (!Object.prototype.hasOwnProperty.call(results, key)) continue;
-      var idx = parseInt(key, 10);
       if (results[key] === true) score++;
-      else if (results[key] === false) wrongIndices.push(idx);
     }
-    wrongIndices.sort(function (a, b) { return a - b; });
     // #3977: gêmeo JS de formatSeqFinalScore (jogar.ts, TS) — total > 0
     // sempre aqui (showFinal só roda com editions.length > 0, ver bodyHtml
     // acima que trata total===0 como emptyState antes do script existir).
@@ -1804,15 +1827,10 @@ ${renderIdentityFormBlock()}`;
       var pct = total > 0 ? Math.round((score / total) * 100) : 0;
       scoreEl.textContent = "Você acertou " + score + " de " + total + " (" + pct + "%)!";
     }
-    if (wrongEl) {
-      if (wrongIndices.length > 0) {
-        var pairLabels = wrongIndices.map(function (i) { return i + 1; }).join(", ");
-        wrongEl.textContent = "Errou nos pares " + pairLabels + ".";
-        wrongEl.hidden = false;
-      } else {
-        wrongEl.hidden = true;
-      }
-    }
+    // #4036 (item 4): linha que listava os pares individuais errados foi
+    // removida — pedido do editor jogando em produção (260724). Markup
+    // dedicado e bookkeeping client-side de pares errados removidos junto, sem
+    // consumidor restante.
     var slot = document.getElementById("seq-share-slot");
     // #3589: reusa LITERALMENTE /jogar/quiz/result (#3520) — mesmo endpoint,
     // mesmo QuizSharePayload {score,total}, zero mudança em share.ts/handleQuizResult.
@@ -1876,7 +1894,6 @@ ${renderIdentityFormBlock()}`;
         var entry = state[i];
         if (entry && entry.voted) {
           if (entry.correct === true) preCredited++;
-          else if (entry.correct === false) knownWrongIndices.push(i);
         } else {
           idx.push(i);
         }
@@ -1931,12 +1948,19 @@ ${seoMeta}
   /* #4030 (item 5): destaque visual da imagem correta IN-PLACE — direto na
      imagem já visível em #seq-choices, sem duplicar o par num card separado
      (substitui as classes .result-images/.result-image herdadas do #3983,
-     que injetavam um 2º par de imagens em #seq-round-result). box-shadow
-     inset (não border) — não altera o box model da imagem (#3607 já reserva
-     16:9 antes do load; um border mudaria a caixa +6px no exato momento do
-     reveal) e respeita border-radius (inset É clipado pelo raio, ao
-     contrário de outline). */
-  .choice.correct-ai img { box-shadow: 0 0 0 3px ${DS_COLORS.brand} inset; }
+     que injetavam um 2º par de imagens em #seq-round-result).
+     #4036 (item 2, fix de regressão do #4030): a regra original usava
+     box-shadow INSET — inset é pintado por CIMA do plano de fundo do
+     elemento mas por BAIXO do conteúdo (o próprio <img>), e um JPEG opaco
+     cobre a caixa inteira, então a borda nunca aparecia na prática (achado
+     do editor jogando em produção — o destaque "existia" no código mas
+     nunca foi visível desde que subiu). Fix: box-shadow SEM inset — desenha
+     do LADO DE FORA da caixa, nunca é coberto pelo conteúdo, e (ao
+     contrário de border) não afeta o box model nem em box-shadow inset —
+     então a preocupação original com CLS (#3607) nunca se aplicava aqui.
+     2 camadas: anel sólido de 3px + glow difuso de 20px, ambas na cor de
+     marca (tokens DS — test/poll-ds-tokens.test.ts trava hardcode). */
+  .choice.correct-ai img { box-shadow: 0 0 0 3px ${DS_COLORS.brand}, 0 0 20px 4px rgba(0,160,160,.35); }
   /* #3984: descrição + crédito da foto real (bloco injetado via DOMParser a
      partir da resposta de /vote, mesmas classes de votePageHtml/index.ts). */
   .eia-meta { margin: 16px auto; max-width: 420px; font-family: ${DS_FONTS.sans}; text-align: left; }
@@ -2074,9 +2098,23 @@ export interface SeqStateResultEntry {
  * passado nos params, sem exigir sig em merge-tag mode) — este endpoint não
  * introduz uma classe de risco nova, só um caminho read-only equivalente.
  *
- * `env` CRU (não `bEnv`) — mesmo racional do resto de `/jogar*`: a chave
- * `vote:{edition}:{email}` não é prefixada por brand (o pseudo-email já
- * isola o namespace `web` por construção, `@web.eia.diaria.local`).
+ * #4035 (fix, achado 260724): a premissa antiga aqui era que `env` chega CRU
+ * porque "a chave `vote:{edition}:{email}` não é prefixada por brand" — ISSO
+ * É FALSO. `handleVote` (vote.ts) sempre escreve através do `bEnv` do router
+ * (`index.ts`, `brandedEnv(env, brand)`), e `brandKvPrefix("web") === "web:"`
+ * — o voto real vive em `web:vote:{edition}:{email}`. Este handler CONTINUA
+ * recebendo `env` cru do router (mesmo racional do resto de `/jogar*`: o
+ * router não tem `?brand=web` nesta URL pra derivar `bEnv` corretamente —
+ * ver client script em `renderJogarSequencePageHtml`/`renderJogarArchiveHtml`,
+ * nenhum passa `&brand=web`), mas agora prefixa a chave ele mesmo via
+ * `brandedNamespace(env.POLL, brandKvPrefix(JOGAR_BRAND))` — este endpoint é
+ * EXCLUSIVO do brand `web` por construção (guard `isValidWebToken` abaixo já
+ * rejeita qualquer email que não seja um token web), então hardcodear o
+ * prefixo aqui é correto e não depende do router adivinhar o brand certo.
+ * Bug real: desde que o skip-and-credit (#3595) subiu, este endpoint SEMPRE
+ * respondia `voted: false` pra qualquer edição de qualquer token web — o
+ * mecanismo estava morto em produção (ver issue #4035 para o relato/evidência
+ * completos).
  */
 export async function handleJogarSeqState(url: URL, env: Env): Promise<Response> {
   const emailRaw = url.searchParams.get("email");
@@ -2093,10 +2131,13 @@ export async function handleJogarSeqState(url: URL, env: Env): Promise<Response>
   if (!isValidWebToken(email)) {
     return json({ error: "invalid email" }, 400, env);
   }
+  // #4035: lê através do namespace BRANDED do brand web — mesmo prefixo que
+  // handleVote (vote.ts) usa pra escrever, via bEnv/brandedEnv (index.ts).
+  const brandedPoll = brandedNamespace(env.POLL, brandKvPrefix(JOGAR_BRAND));
   const editions = parseSeqStateEditionsParam(url.searchParams.get("editions"));
   const results: SeqStateResultEntry[] = await Promise.all(
     editions.map(async (edition): Promise<SeqStateResultEntry> => {
-      const raw = await env.POLL.get(`vote:${edition}:${email}`);
+      const raw = await brandedPoll.get(`vote:${edition}:${email}`);
       if (!raw) return { edition, voted: false, correct: null };
       try {
         const parsed = JSON.parse(raw) as { correct?: boolean | null };

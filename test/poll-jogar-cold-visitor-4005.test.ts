@@ -11,9 +11,10 @@
  *      conhecimento prévio do produto) pra uma pergunta direta, sem
  *      pré-requisito nenhum.
  *   2. Onboarding de 1 linha acima do 1º par — o 1º par É o tutorial.
- *   3. Rodada curta (SEQ_INITIAL_BATCH_SIZE=5) como sessão inicial, com
- *      placar parcial + "Continuar jogando" pro resto da sequência (os 22
- *      pares continuam TODOS disponíveis — só o ponto de pausa muda).
+ *   3. Rodada curta (SEQ_INITIAL_BATCH_SIZE=10, subiu de 5 no #4036 item 3)
+ *      como sessão inicial, com placar parcial + "Continuar jogando" pro
+ *      resto da sequência (os 22 pares continuam TODOS disponíveis — só o
+ *      ponto de pausa muda).
  *   4. Ordem "por surpresa": abre com os pares de MENOR taxa de acerto
  *      (`reorderJogarSequenceBySurprise`, alimentado por `fetchSequenceAccuracy`
  *      — mesma agregação DO StatsCounter/KV que `/stats?edition=` já expõe,
@@ -91,8 +92,8 @@ describe("onboarding de 1 linha acima do 1º par — removido (#4005 item 2, rev
 // ── item 3: rodada curta + placar parcial + continuar ───────────────────────
 
 describe("rodada curta (#4005 item 3) — placar parcial + continuar pros 22", () => {
-  it("SEQ_INITIAL_BATCH_SIZE é 5 (sanity — se mudar, os testes abaixo devem ser revistos)", () => {
-    assert.equal(SEQ_INITIAL_BATCH_SIZE, 5);
+  it("SEQ_INITIAL_BATCH_SIZE é 10 (#4036 item 3 — sanity, se mudar os testes abaixo devem ser revistos)", () => {
+    assert.equal(SEQ_INITIAL_BATCH_SIZE, 10);
   });
 
   it("formatSeqBatchBreakMessage (gêmeo puro do JS embutido): placar parcial + contagem do que falta", () => {
@@ -105,7 +106,7 @@ describe("rodada curta (#4005 item 3) — placar parcial + continuar pros 22", (
 
   it("script embute BATCH_SIZE=5 e o guard que só interrompe se sobrar mais sequência", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.match(html, /var BATCH_SIZE = 5;/);
+    assert.match(html, /var BATCH_SIZE = 10;/);
     assert.match(html, /round === BATCH_SIZE && !batchContinued && playIndices\.length > BATCH_SIZE/);
   });
 

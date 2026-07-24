@@ -31,6 +31,12 @@
  *   - `handleJogarSeqState` (`GET /jogar/seq-state`) — voted/correct por
  *     edição, anti-spoiler (correct===null pra não-votadas), reusa a MESMA
  *     chave `vote:{edition}:{email}` de vote.ts (zero esquema novo).
+ *     #4035 (fix 260724): a chave é BRANDED (`web:vote:{edition}:{email}`,
+ *     mesmo prefixo que `handleVote` grava via `bEnv`/`brandedEnv`) — os
+ *     fixtures abaixo semeiam a chave já com o prefixo `web:`. Achado
+ *     original: o handler lia a chave CRUA (sem prefixo), então este
+ *     endpoint respondia `voted:false` SEMPRE, pra qualquer token web —
+ *     skip-and-credit morto em produção desde que subiu (issue #4035).
  *   - `computeSeqSkipAndCredit` (pure) — monta a play list (só não-votadas),
  *     soma pré-crédito (voted&&correct===true) e erros conhecidos
  *     (voted&&correct===false).
@@ -138,9 +144,9 @@ describe("GET /jogar/seq-state (#3595)", () => {
     assert.deepEqual(body, [{ edition: "260601", voted: false, correct: null }]);
   });
 
-  it("edição JÁ votada e CORRETA → voted:true, correct:true (lido da MESMA chave vote:{edition}:{email})", async () => {
+  it("edição JÁ votada e CORRETA → voted:true, correct:true (lido da chave BRANDED web:vote:{edition}:{email}, #4035)", async () => {
     const env = makeEnv({
-      [`vote:260601:${email}`]: JSON.stringify({ choice: "A", ts: "2026-07-01T00:00:00.000Z", correct: true }),
+      [`web:vote:260601:${email}`]: JSON.stringify({ choice: "A", ts: "2026-07-01T00:00:00.000Z", correct: true }),
     });
     const res = await worker.fetch(
       new Request(`https://poll.test/jogar/seq-state?email=${encodeURIComponent(email)}&editions=260601`),
@@ -152,7 +158,7 @@ describe("GET /jogar/seq-state (#3595)", () => {
 
   it("edição JÁ votada e ERRADA → voted:true, correct:false", async () => {
     const env = makeEnv({
-      [`vote:260601:${email}`]: JSON.stringify({ choice: "B", ts: "2026-07-01T00:00:00.000Z", correct: false }),
+      [`web:vote:260601:${email}`]: JSON.stringify({ choice: "B", ts: "2026-07-01T00:00:00.000Z", correct: false }),
     });
     const res = await worker.fetch(
       new Request(`https://poll.test/jogar/seq-state?email=${encodeURIComponent(email)}&editions=260601`),
@@ -162,10 +168,22 @@ describe("GET /jogar/seq-state (#3595)", () => {
     assert.deepEqual(body, [{ edition: "260601", voted: true, correct: false }]);
   });
 
+  it("#4035 (regressão do bug original): chave CRUA vote:{edition}:{email} (SEM prefixo web:) não é aceita como voto deste token — se aceitasse, seria o próprio bug voltando disfarçado (falso positivo por coincidência de valor gravado no lugar errado)", async () => {
+    const env = makeEnv({
+      [`vote:260601:${email}`]: JSON.stringify({ choice: "A", ts: "2026-07-01T00:00:00.000Z", correct: true }),
+    });
+    const res = await worker.fetch(
+      new Request(`https://poll.test/jogar/seq-state?email=${encodeURIComponent(email)}&editions=260601`),
+      env,
+    );
+    const body = (await res.json()) as Array<{ edition: string; voted: boolean; correct: boolean | null }>;
+    assert.deepEqual(body, [{ edition: "260601", voted: false, correct: null }], "chave crua não deve contar como votado — só web:vote:* conta");
+  });
+
   it("anti-spoiler: MÚLTIPLAS edições — correct só populado nas votadas, null nas não-votadas", async () => {
     const env = makeEnv({
-      [`vote:260601:${email}`]: JSON.stringify({ choice: "A", correct: true }),
-      [`vote:260603:${email}`]: JSON.stringify({ choice: "B", correct: false }),
+      [`web:vote:260601:${email}`]: JSON.stringify({ choice: "A", correct: true }),
+      [`web:vote:260603:${email}`]: JSON.stringify({ choice: "B", correct: false }),
       // 260602 sem voto — mesmo que correct:260602 exista no KV compartilhado
       // (fato público), o endpoint nunca revela pra edição não-votada.
       "correct:260602": "A",
@@ -183,7 +201,7 @@ describe("GET /jogar/seq-state (#3595)", () => {
   });
 
   it("registro de voto corrompido → trata como votado sem gabarito conhecido (nunca derruba o endpoint)", async () => {
-    const env = makeEnv({ [`vote:260601:${email}`]: "{not valid json" });
+    const env = makeEnv({ [`web:vote:260601:${email}`]: "{not valid json" });
     const res = await worker.fetch(
       new Request(`https://poll.test/jogar/seq-state?email=${encodeURIComponent(email)}&editions=260601`),
       env,
@@ -191,6 +209,21 @@ describe("GET /jogar/seq-state (#3595)", () => {
     assert.equal(res.status, 200);
     const body = (await res.json()) as Array<{ edition: string; voted: boolean; correct: boolean | null }>;
     assert.deepEqual(body, [{ edition: "260601", voted: true, correct: null }]);
+  });
+
+  it("#4035 coerência write/read fim-a-fim: um voto de verdade via /vote?brand=web é lido corretamente por /jogar/seq-state (mesma chave, dois handlers, zero mock de KV manual)", async () => {
+    const env = makeEnv({ "correct:260601": "A" });
+    const voteRes = await worker.fetch(
+      new Request(`https://poll.test/vote?edition=260601&brand=web&email=${encodeURIComponent(email)}&choice=A`),
+      env,
+    );
+    assert.equal(voteRes.status, 200);
+    const seqStateRes = await worker.fetch(
+      new Request(`https://poll.test/jogar/seq-state?email=${encodeURIComponent(email)}&editions=260601`),
+      env,
+    );
+    const body = (await seqStateRes.json()) as Array<{ edition: string; voted: boolean; correct: boolean | null }>;
+    assert.deepEqual(body, [{ edition: "260601", voted: true, correct: true }], "o voto real gravado por handleVote (bEnv) deve ser encontrado por handleJogarSeqState — é a MESMA divergência de chave que causou o #4035");
   });
 
   it("email ausente/inválido → 400 (nunca escaneia KV com uma chave malformada)", async () => {
@@ -327,10 +360,11 @@ describe("renderJogarSequencePageHtml — reveal imediato por rodada (#3983, rev
     assert.doesNotMatch(html, /Promise\.all\(pending\)/);
   });
 
-  it("tela final mostra a lista de pares errados quando há pelo menos 1 erro", () => {
+  it("#4036 (item 4): tela final NÃO mostra mais a lista de pares errados — removida a pedido do editor (260724); markup e bookkeeping client-side (knownWrongIndices) removidos junto", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.match(html, /Errou nos pares " \+ pairLabels \+ "\.";/);
-    assert.match(html, /class="sub seq-final-wrong"/);
+    assert.doesNotMatch(html, /Errou nos pares/);
+    assert.doesNotMatch(html, /seq-final-wrong/);
+    assert.doesNotMatch(html, /knownWrongIndices/);
   });
 
   it("voteAndReveal nunca rejeita — 1 retry, depois resolve null (onChoice cai pro fallback de navegação nativa, nunca trava a rodada)", () => {
