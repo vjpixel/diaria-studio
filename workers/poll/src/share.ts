@@ -66,7 +66,7 @@
  *     converter tráfego pro jogo, alinhado ao objetivo do EPIC #3514
  *     ("motor de divulgação").
  */
-import { AAMMDD_RE, htmlEscape, formatEditionDate, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca
+import { AAMMDD_RE, htmlEscape, formatEditionDate, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST, SUBSCRIBE_UTM_SOURCE } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca; #3978: utm_source fixo do funil
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { hmacSign } from "./index";
 
@@ -80,6 +80,20 @@ export interface SharePayload {
 
 /** Comprimento do sig truncado no token — ver rationale no header do arquivo. */
 const SIG_LENGTH = 16;
+
+/**
+ * #3978: utm_campaign fixo dos links de compartilhamento do resultado de par
+ * único — `SUBSCRIBE_UTM_SOURCE` (utm_source) + `utm_medium` dinâmico
+ * (social/whatsapp/copy, já existente) completam o funil. Antes, os 3
+ * botões de share (`renderShareCardBlock`) e o CTA "Jogar agora" de
+ * `renderSharePageHtml` carregavam só utm_medium (ou, no CTA,
+ * `utm_source=share` hardcoded — um valor PRÓPRIO desalinhado da convenção
+ * `eia-standalone` usada em todo o resto do funil) — nenhum utm_campaign.
+ */
+const SHARE_UTM_CAMPAIGN = "eia-share";
+
+/** #3978: mesmo racional de `SHARE_UTM_CAMPAIGN`, pro card/CTA do quiz relâmpago. */
+const QUIZ_SHARE_UTM_CAMPAIGN = "eia-quiz-share";
 
 /** Pure: serializa o payload pra um corpo compacto e determinístico (vira a
  * mensagem assinada por `encodeShareToken`). Formato: `{AAMMDD}.{0|1|-}`. */
@@ -207,11 +221,17 @@ export function shareButtonScript(containerSelector: string): string {
  */
 export function renderShareCardBlock(token: string, payload: SharePayload): string {
   const text = buildShareText(payload);
-  const shareUrlNative = `${PUBLIC_GAME_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=social`;
+  // #3978: utm_source/utm_campaign completam o funil (antes só utm_medium).
+  const shareParams = (medium: string) => new URLSearchParams({
+    utm_source: SUBSCRIBE_UTM_SOURCE,
+    utm_medium: medium,
+    utm_campaign: SHARE_UTM_CAMPAIGN,
+  }).toString();
+  const shareUrlNative = `${PUBLIC_GAME_BASE_URL}/share/${encodeURIComponent(token)}?${shareParams("social")}`;
   // #3679: utm_medium próprio (não reusa "social" do botão nativo) — funil
   // mensurável separa quem veio de WhatsApp de quem veio do share sheet do SO.
-  const shareUrlWhatsapp = `${PUBLIC_GAME_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=whatsapp`;
-  const shareUrlCopy = `${PUBLIC_GAME_BASE_URL}/share/${encodeURIComponent(token)}?utm_medium=copy`;
+  const shareUrlWhatsapp = `${PUBLIC_GAME_BASE_URL}/share/${encodeURIComponent(token)}?${shareParams("whatsapp")}`;
+  const shareUrlCopy = `${PUBLIC_GAME_BASE_URL}/share/${encodeURIComponent(token)}?${shareParams("copy")}`;
   return `<div id="jogar-share-card" class="share-card">
   <p class="share-text">${htmlEscape(text)}</p>
   <div class="share-actions">
@@ -251,8 +271,8 @@ export interface SharePageOptions {
   token: string;
   payload: SharePayload;
   /** `?utm_medium=` lido da própria URL de `/share/{token}` (default "link")
-   * — repassado pro CTA `/jogar?utm_source=share&utm_medium=...` (mensurável
-   * no funil, item de aceite da issue). */
+   * — repassado pro CTA `/jogar?utm_source=eia-standalone&utm_medium=...&utm_campaign=eia-share`
+   * (#3978, mensurável no funil, item de aceite da issue). */
   utmMedium: string;
 }
 
@@ -267,7 +287,15 @@ export function renderSharePageHtml(opts: SharePageOptions): string {
   const { token, payload, utmMedium } = opts;
   const text = buildShareText(payload);
   const ogImageUrl = `${PUBLIC_GAME_BASE_URL}/og/${encodeURIComponent(token)}`;
-  const jogarHref = `/jogar?utm_source=share&utm_medium=${encodeURIComponent(utmMedium || "link")}`;
+  // #3978: utm_source era "share" hardcoded (valor PRÓPRIO, desalinhado da
+  // convenção `eia-standalone` usada no resto do funil) e sem utm_campaign
+  // nenhum. utm_medium preservado dinâmico (herdado do link compartilhado).
+  const jogarParams = new URLSearchParams({
+    utm_source: SUBSCRIBE_UTM_SOURCE,
+    utm_medium: utmMedium || "link",
+    utm_campaign: SHARE_UTM_CAMPAIGN,
+  });
+  const jogarHref = `/jogar?${jogarParams.toString()}`;
   const pageTitle = "É IA? — resultado compartilhado | Diar.ia";
   const seoMeta = renderSeoMeta({
     title: pageTitle,
@@ -399,13 +427,19 @@ export function buildQuizShareText(payload: QuizSharePayload): string {
  * exatamente este bloco, não uma página inteira pra extrair de dentro). */
 export function renderQuizShareCardBlock(token: string, payload: QuizSharePayload): string {
   const text = buildQuizShareText(payload);
-  const shareUrlNative = `${PUBLIC_GAME_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=social`;
+  // #3978: utm_source/utm_campaign completam o funil (antes só utm_medium).
+  const shareParams = (medium: string) => new URLSearchParams({
+    utm_source: SUBSCRIBE_UTM_SOURCE,
+    utm_medium: medium,
+    utm_campaign: QUIZ_SHARE_UTM_CAMPAIGN,
+  }).toString();
+  const shareUrlNative = `${PUBLIC_GAME_BASE_URL}/quiz-share/${encodeURIComponent(token)}?${shareParams("social")}`;
   // #3679: mesmo racional de renderShareCardBlock — utm_medium próprio pro
   // WhatsApp, não reusa "social". Cobre tanto o resultado do quiz relâmpago
   // quanto a tela final da sequência mensal (`showFinal` em jogar.ts reusa
   // literalmente este bloco via `/jogar/quiz/result`).
-  const shareUrlWhatsapp = `${PUBLIC_GAME_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=whatsapp`;
-  const shareUrlCopy = `${PUBLIC_GAME_BASE_URL}/quiz-share/${encodeURIComponent(token)}?utm_medium=copy`;
+  const shareUrlWhatsapp = `${PUBLIC_GAME_BASE_URL}/quiz-share/${encodeURIComponent(token)}?${shareParams("whatsapp")}`;
+  const shareUrlCopy = `${PUBLIC_GAME_BASE_URL}/quiz-share/${encodeURIComponent(token)}?${shareParams("copy")}`;
   return `<div id="jogar-quiz-share-card" class="share-card">
   <p class="share-text">${htmlEscape(text)}</p>
   <div class="share-actions">
@@ -447,7 +481,14 @@ export function renderQuizSharePageHtml(opts: QuizSharePageOptions): string {
   const { token, payload, utmMedium } = opts;
   const text = buildQuizShareText(payload);
   const ogImageUrl = `${PUBLIC_GAME_BASE_URL}/quiz-og/${encodeURIComponent(token)}`;
-  const jogarHref = `/jogar/quiz?utm_source=share&utm_medium=${encodeURIComponent(utmMedium || "link")}`;
+  // #3978: mesmo fix de renderSharePageHtml — utm_source unificado +
+  // utm_campaign próprio do quiz, utm_medium preservado dinâmico.
+  const jogarParams = new URLSearchParams({
+    utm_source: SUBSCRIBE_UTM_SOURCE,
+    utm_medium: utmMedium || "link",
+    utm_campaign: QUIZ_SHARE_UTM_CAMPAIGN,
+  });
+  const jogarHref = `/jogar/quiz?${jogarParams.toString()}`;
   const pageTitle = "É IA? — quiz relâmpago | Diar.ia";
   const seoMeta = renderSeoMeta({
     title: pageTitle,

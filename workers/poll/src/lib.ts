@@ -553,6 +553,42 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
 };
 
 /**
+ * #3978: utm_source FIXO de todo link de saída do jogo "É IA?" rumo ao site
+ * (diar.ia.br/clarice.ai) — movido de jogar.ts (`SUBSCRIBE_UTM_SOURCE`,
+ * #3518, onde nasceu como UTM só do CTA de assinatura) pra cá, agora fonte
+ * única de verdade: além de `jogar.ts` (que reexporta o mesmo binding por
+ * back-compat de import), `buildBrandSiteUrl` abaixo e `share.ts` passam a
+ * depender dele. Mesmo valor mensurado por
+ * `scripts/count-subscriptions-by-utm.ts --source eia-standalone` — mover a
+ * declaração não muda o valor, só centraliza.
+ */
+export const SUBSCRIBE_UTM_SOURCE = "eia-standalone";
+
+/**
+ * #3978: URL do site principal de `brand` (`BRAND_INFO[brand].siteUrl`) com o
+ * UTM completo do funil "É IA?" → site. Usa `new URL()` + `searchParams.set`
+ * (NÃO concatenação manual de string) porque `BRAND_INFO.clarice.siteUrl` já
+ * carrega `?via=diaria` (tracking de afiliado Rewardful, #1910) — concatenar
+ * um `?utm_...` extra quebraria essa query string existente.
+ *
+ * `utm_source` é sempre `SUBSCRIBE_UTM_SOURCE` (fixo, fonte única de
+ * verdade) — todo link de saída do jogo pro site conta pro mesmo funil
+ * medido por `count-subscriptions-by-utm.ts --source eia-standalone`, seja
+ * ele o rodapé de marca, um CTA pós-voto, ou a sub-copy do leaderboard.
+ * `utm_medium`/`utm_campaign` variam por superfície — ver call sites
+ * (`renderBrandFooter` abaixo, `renderSubscribeCtaBlock`/footers de
+ * `jogar.ts`, rodapé de `/vote` em `index.ts`, sub-copy de
+ * `leaderboard-routes.ts`).
+ */
+export function buildBrandSiteUrl(brand: Brand, utmMedium: string, utmCampaign: string): string {
+  const url = new URL(BRAND_INFO[brand].siteUrl);
+  url.searchParams.set("utm_source", SUBSCRIBE_UTM_SOURCE);
+  url.searchParams.set("utm_medium", utmMedium);
+  url.searchParams.set("utm_campaign", utmCampaign);
+  return url.toString();
+}
+
+/**
  * Lê `?brand=` e normaliza. Só `clarice` é não-default; qualquer outro valor
  * (ausente, typo, "diaria") cai em `diaria` — back-compat: as chaves KV legadas
  * (sem prefixo) pertencem ao diário.
@@ -907,7 +943,12 @@ export function renderBrandShellStyles(): string {
 export function renderBrandFooter(brand: Brand): string {
   const info = BRAND_INFO[brand];
   const label = info.shortName ?? info.name;
-  return `<footer class="brand-footer"><a href="${htmlEscape(info.siteUrl)}">${htmlEscape(label)}</a> — jogo "É IA?"</footer>`;
+  // #3978: href com UTM do funil "É IA?" → site (era só `info.siteUrl` cru,
+  // sem nenhum parâmetro de medição — este rodapé aparece em toda página
+  // pública do jogo/leaderboard, então era o maior ponto cego de UTM do
+  // worker: 9 call sites de uma vez, ver issue).
+  const href = buildBrandSiteUrl(brand, "footer", "eia-footer");
+  return `<footer class="brand-footer"><a href="${htmlEscape(href)}">${htmlEscape(label)}</a> — jogo "É IA?"</footer>`;
 }
 
 // ── Validação de apelidos do leaderboard (#1758) ────────────────────────────

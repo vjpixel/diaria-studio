@@ -19,10 +19,23 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderBrandShellStyles, renderBrandFooter } from "../workers/poll/src/lib.ts";
+import { renderBrandShellStyles, renderBrandFooter, buildBrandSiteUrl } from "../workers/poll/src/lib.ts";
 import { renderArchiveListHtml, renderArchiveVoteHtml } from "../workers/poll/src/leaderboard-routes.ts";
 import workerDefault from "../workers/poll/src/index.ts";
 import type { Env } from "../workers/poll/src/index.ts";
+
+// #3978: renderBrandFooter passou a incluir UTM do funil "É IA?" → site
+// (medium "footer") — os testes abaixo constroem o href esperado via
+// `buildBrandSiteUrl` (a MESMA função de produção) em vez de hardcodear a
+// string, pra não ficar acoplado à ordem exata dos parâmetros. `htmlEscape`
+// (renderBrandFooter escapa o href como qualquer atributo) troca "&" por
+// "&amp;" no HTML final — `footerHrefEscaped` espelha isso pra comparação.
+function footerHref(brand: "diaria" | "clarice"): string {
+  return buildBrandSiteUrl(brand, "footer", "eia-footer");
+}
+function footerHrefEscaped(brand: "diaria" | "clarice"): string {
+  return footerHref(brand).replace(/&/g, "&amp;");
+}
 
 function makeKv(seed: Record<string, string> = {}): KVNamespace {
   const data: Record<string, string> = { ...seed };
@@ -62,15 +75,17 @@ describe("#3113 item 5 — renderBrandShellStyles / renderBrandFooter (pure)", (
     assert.match(css, /footer\.brand-footer\s*\{[^}]*border-top:\s*1px solid #EBE5D0/);
   });
 
-  it("renderBrandFooter(diaria) linka pro diar.ia.br com o label 'Diar.ia'", () => {
+  it("renderBrandFooter(diaria) linka pro diar.ia.br (com UTM do funil, #3978) com o label 'Diar.ia'", () => {
     const html = renderBrandFooter("diaria");
     assert.match(html, /<footer class="brand-footer">/);
-    assert.match(html, /<a href="https:\/\/diar\.ia\.br">Diar\.ia<\/a>/);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">Diar.ia</a>`), html);
   });
 
-  it("renderBrandFooter(clarice) linka pro clarice.ai com o shortName 'Clarice' (não 'Clarice News')", () => {
+  it("renderBrandFooter(clarice) linka pro clarice.ai (com UTM do funil, #3978, preservando ?via=diaria) com o shortName 'Clarice' (não 'Clarice News')", () => {
     const html = renderBrandFooter("clarice");
-    assert.match(html, /<a href="https:\/\/clarice\.ai\/\?via=diaria">Clarice<\/a>/);
+    const href = footerHref("clarice");
+    assert.ok(href.startsWith("https://clarice.ai/?via=diaria&"), `via=diaria deve ser preservado: ${href}`);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("clarice")}">Clarice</a>`), html);
     assert.doesNotMatch(html, />Clarice News</);
   });
 });
@@ -86,7 +101,7 @@ describe("#3113 item 5 — /leaderboard e /leaderboard/{YYYY}/arquivo ganham ré
     assert.ok(kickerIdx >= 0 && ruleIdx >= 0 && h1Idx >= 0, "kicker, régua e h1 devem existir");
     assert.ok(kickerIdx < ruleIdx && ruleIdx < h1Idx, "ordem deve ser kicker → régua → h1");
     assert.ok(footerIdx >= 0 && footerIdx < bodyCloseIdx, "rodapé de marca deve existir antes de </body>");
-    assert.match(html, /<a href="https:\/\/diar\.ia\.br">Diar\.ia<\/a>/);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">Diar.ia</a>`), html);
   });
 
   it("GET /leaderboard/{YYYY}/arquivo: mesma régua + rodapé de marca", async () => {
@@ -97,7 +112,7 @@ describe("#3113 item 5 — /leaderboard e /leaderboard/{YYYY}/arquivo ganham ré
 
   it("brand clarice: rodapé de marca usa clarice.ai (shortName), não diar.ia.br", async () => {
     const html = await fetchHtml("/leaderboard/2026?brand=clarice");
-    assert.match(html, /<a href="https:\/\/clarice\.ai\/\?via=diaria">Clarice<\/a>/);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("clarice")}">Clarice</a>`), html);
   });
 });
 
@@ -116,7 +131,7 @@ describe("#3113 item 11 — renderArchiveVoteHtml ganha kicker + régua + rodap�
   it("brand clarice: rodapé da página de voto do arquivo usa clarice.ai", async () => {
     const res = renderArchiveVoteHtml("260701", "2026", "clarice");
     const html = await res.text();
-    assert.match(html, /<a href="https:\/\/clarice\.ai\/\?via=diaria">Clarice<\/a>/);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("clarice")}">Clarice</a>`), html);
   });
 
   it("anti-gaming preservado: kicker/régua/rodapé novos não revelam qual imagem é IA (guarda de regressão do #2867)", async () => {

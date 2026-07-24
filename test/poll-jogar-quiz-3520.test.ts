@@ -378,7 +378,8 @@ describe("GET /jogar/quiz/result (#3520)", () => {
     assert.match(html, /id="jogar-quiz-share-card"/);
     assert.match(html, /Acertei 4 de 5/);
     // #3701: share URL agora no domínio de marca do jogo (era poll.diaria.workers.dev).
-    const match = /data-share-url="https:\/\/eia\.diar\.ia\.br\/quiz-share\/([^"?]+)\?utm_medium=social"/.exec(html);
+    // #3978: utm_source/utm_campaign também presentes (htmlEscape → "&amp;").
+    const match = /data-share-url="https:\/\/eia\.diar\.ia\.br\/quiz-share\/([^"?]+)\?utm_source=eia-standalone&amp;utm_medium=social&amp;utm_campaign=eia-quiz-share"/.exec(html);
     assert.ok(match, "share URL com token não encontrada");
     const token = decodeURIComponent(match![1]);
     const decoded = await decodeQuizShareToken(env.POLL_SECRET, token);
@@ -390,7 +391,7 @@ describe("GET /jogar/quiz/result (#3520)", () => {
     const res = await handleQuizResult(new URL("https://poll.test/jogar/quiz/result?score=4&total=5"), env);
     const html = await res.text();
     assert.match(html, /data-share-action="whatsapp"/);
-    assert.match(html, /\/quiz-share\/[^"?]+\?utm_medium=whatsapp/);
+    assert.match(html, /\/quiz-share\/[^"?]+\?utm_source=eia-standalone&amp;utm_medium=whatsapp&amp;utm_campaign=eia-quiz-share/);
   });
 
   it("score/total inválidos → 400", async () => {

@@ -174,14 +174,16 @@ describe("renderShareCardBlock (#3517) — bloco reusado por votePageHtml e /jog
     assert.match(html, /id="jogar-share-card"/);
     assert.match(html, /data-share-action="native"/);
     assert.match(html, /data-share-action="copy"/);
-    assert.match(html, /\/share\/260716\.1\.abc123\?utm_medium=social/);
-    assert.match(html, /\/share\/260716\.1\.abc123\?utm_medium=copy/);
+    // #3978: utm_source/utm_campaign completam o funil — antes só utm_medium.
+    // htmlEscape (o atributo data-share-url é escapado) troca "&" por "&amp;".
+    assert.match(html, /\/share\/260716\.1\.abc123\?utm_source=eia-standalone&amp;utm_medium=social&amp;utm_campaign=eia-share/);
+    assert.match(html, /\/share\/260716\.1\.abc123\?utm_source=eia-standalone&amp;utm_medium=copy&amp;utm_campaign=eia-share/);
   });
 
   it("#3679: botão WhatsApp com utm_medium próprio (não reusa 'social')", () => {
     const html = renderShareCardBlock("260716.1.abc123", { edition: "260716", correct: true });
     assert.match(html, /data-share-action="whatsapp"/);
-    assert.match(html, /\/share\/260716\.1\.abc123\?utm_medium=whatsapp/);
+    assert.match(html, /\/share\/260716\.1\.abc123\?utm_source=eia-standalone&amp;utm_medium=whatsapp&amp;utm_campaign=eia-share/);
   });
 
   it("htmlEscape no texto/token — sem XSS via payload adulterado hipotético", () => {
@@ -240,7 +242,7 @@ describe("renderSharePageHtml (#3517) — página /share/{token}, destino dos un
     assert.match(html, /<meta name="twitter:card" content="summary_large_image">/);
   });
 
-  it("CTA 'Jogar agora' propaga utm_source=share e o utm_medium recebido", () => {
+  it("CTA 'Jogar agora' propaga utm_source=eia-standalone (#3978 — era 'share' hardcoded, valor PRÓPRIO desalinhado da convenção do resto do funil), utm_medium recebido e utm_campaign=eia-share", () => {
     const html = renderSharePageHtml({
       token: "260716.1.abc123",
       payload: { edition: "260716", correct: true },
@@ -248,7 +250,7 @@ describe("renderSharePageHtml (#3517) — página /share/{token}, destino dos un
     });
     // htmlEscape escapa "&" pra "&amp;" no atributo href (comportamento HTML
     // correto — a página escapa TUDO que interpola em atributo, ver htmlEscape em lib.ts).
-    assert.match(html, /href="\/jogar\?utm_source=share&amp;utm_medium=copy"/);
+    assert.match(html, /href="\/jogar\?utm_source=eia-standalone&amp;utm_medium=copy&amp;utm_campaign=eia-share"/);
   });
 
   it("og:title/description presentes (mesmo helper renderSeoMeta do resto do worker)", () => {
@@ -329,7 +331,8 @@ describe("integração /vote?brand=web (#3517, self-review #2038) — card embut
     const html = await res.text();
     assert.match(html, /id="jogar-share-card"/);
     // #3701: share URL agora no domínio de marca do jogo (era poll.diaria.workers.dev).
-    const match = /data-share-url="https:\/\/eia\.diar\.ia\.br\/share\/([^"?]+)\?utm_medium=social"/.exec(html);
+    // #3978: utm_source/utm_campaign também presentes (htmlEscape → "&amp;").
+    const match = /data-share-url="https:\/\/eia\.diar\.ia\.br\/share\/([^"?]+)\?utm_source=eia-standalone&amp;utm_medium=social&amp;utm_campaign=eia-share"/.exec(html);
     assert.ok(match, "share URL com token não encontrada no HTML de resultado");
     const token = decodeURIComponent(match![1]);
     const decoded = await decodeShareToken(env.POLL_SECRET, token);

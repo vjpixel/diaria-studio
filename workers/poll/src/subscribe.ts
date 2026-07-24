@@ -30,11 +30,11 @@
  */
 import type { Env } from "./index";
 import { json } from "./index";
-import { isValidVoteEmailFormat } from "./lib";
-// Fonte única do utm_source do funil (`eia-standalone`, #3518) — mesma
-// convenção de `count-subscriptions-by-utm.ts`. medium/campaign PRÓPRIOS
-// abaixo distinguem o cadastro inline do CTA-link e do quiz.
-import { SUBSCRIBE_UTM_SOURCE } from "./jogar";
+// Fonte única do utm_source do funil (`eia-standalone`, #3518, movido pra
+// lib.ts no #3978) — mesma convenção de `count-subscriptions-by-utm.ts`.
+// medium/campaign PRÓPRIOS abaixo distinguem o cadastro inline do CTA-link e
+// do quiz.
+import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
