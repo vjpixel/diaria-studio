@@ -19,6 +19,13 @@
  *   - `score:{email}`              (global score + nickname)
  *   - `score-by-month:*:{email}`   (todos os meses)
  *   - `vote:{edition}:{email}`     (todos os votos individuais)
+ *   - `counted:{edition}:{email}:{stats,score,month}` (#3976 — guard-keys
+ *                                   idempotentes de incremento por voto; nunca
+ *                                   eram purgados antes, ficavam órfãos no KV
+ *                                   com TTL de 90 dias mesmo após o resto da
+ *                                   conta ser apagado. Derivado deterministicamente
+ *                                   da edition de cada `vote:*` encontrado —
+ *                                   sem scan adicional)
  *   - `stats:{edition}`            (decrementa total/voted_a/voted_b/correct_count
  *                                   pra refletir os votes apagados)
  *   - `leaderboard-snapshot:{slug}` (invalida snapshots dos meses afetados)
@@ -30,6 +37,9 @@
  * Uso:
  *   npx tsx scripts/purge-leaderboard.ts --nickname Teste --brand clarice
  *   npx tsx scripts/purge-leaderboard.ts --email test@example.com --brand clarice
+ *   # --brand web (#3976): jogo público standalone (/jogar) — mesma mecânica,
+ *   # útil pra purgar tokens forjados/entradas fantasma do leaderboard do jogo:
+ *   npx tsx scripts/purge-leaderboard.ts --email verify1840428@web.eia.diaria.local --brand web
  *
  *   # Dry-run é o default — só mostra o que seria apagado.
  *   # Pra executar de fato, passar --execute:
@@ -90,14 +100,17 @@ const targetNickname = flagValue("--nickname")?.toLowerCase() ?? null;
 const targetEmail = flagValue("--email")?.toLowerCase() ?? null;
 
 if ((targetNickname === null) === (targetEmail === null)) {
-  console.error("Uso: purge-leaderboard.ts (--nickname <name> | --email <email>) [--brand diaria|clarice] [--execute]");
+  console.error("Uso: purge-leaderboard.ts (--nickname <name> | --email <email>) [--brand diaria|clarice|web] [--execute]");
   console.error("     passe exatamente UM de --nickname ou --email");
   process.exit(2);
 }
 
 // #1905: namespace por marca. Vazio p/ diaria (chaves legadas), "clarice:" p/
-// Clarice News. Todas as chaves de KV (score/vote/stats/snapshot) usam o prefixo.
-const BRAND = flagValue("--brand") === "clarice" ? "clarice" : "diaria";
+// Clarice News, "web:" p/ o jogo público standalone (#3976 — leaderboard do
+// jogo em /jogar também precisa de purge, ex: token forjado/entrada fantasma).
+// Todas as chaves de KV (score/vote/stats/snapshot/counted) usam o prefixo.
+const BRAND_ARG = flagValue("--brand");
+const BRAND = BRAND_ARG === "clarice" ? "clarice" : BRAND_ARG === "web" ? "web" : "diaria";
 const BP = BRAND === "diaria" ? "" : `${BRAND}:`;
 
 // #2265: helpers via wrangler. `kv key list` já pagina internamente (retorna
@@ -211,7 +224,7 @@ async function main(): Promise<void> {
   for (const e of matchedEmails) console.log(`  - ${e}`);
 
   // Pra cada email, listar todas as keys relacionadas
-  type Plan = { email: string; scoreKey: string; sbmKeys: string[]; voteKeys: string[]; scoreExists: boolean };
+  type Plan = { email: string; scoreKey: string; sbmKeys: string[]; voteKeys: string[]; countedKeys: string[]; scoreExists: boolean };
   const plans: Plan[] = [];
   const slugsTouched = new Set<string>();
 
@@ -221,6 +234,7 @@ async function main(): Promise<void> {
       scoreKey: `${BP}score:${email}`,
       sbmKeys: sbmKeys.filter((k) => k.endsWith(`:${email}`)),
       voteKeys: [],
+      countedKeys: [],
       scoreExists: (await kvGet(`${BP}score:${email}`)) !== null,
     };
     plans.push(plan);
@@ -236,6 +250,23 @@ async function main(): Promise<void> {
     plan.voteKeys = voteKeys.filter((k) => k.endsWith(`:${plan.email}`));
   }
 
+  // #3976: guard-keys idempotentes de incremento (counted:{edition}:{email}:
+  // {stats,score,month}, ver handleVote em vote.ts) — nunca eram purgados
+  // antes desta issue, mesmo já sabendo a EDITION de cada vote:* encontrado.
+  // Derivado por slice de string (não regex) — email já validado sem ":" no
+  // charset (#3279), então prefix/suffix bastam pra isolar a edition no meio.
+  const votePrefix = `${BP}vote:`;
+  for (const plan of plans) {
+    const suffix = `:${plan.email}`;
+    for (const vk of plan.voteKeys) {
+      if (!vk.startsWith(votePrefix) || !vk.endsWith(suffix)) continue;
+      const edition = vk.slice(votePrefix.length, vk.length - suffix.length);
+      for (const kind of ["stats", "score", "month"] as const) {
+        plan.countedKeys.push(`${BP}counted:${edition}:${plan.email}:${kind}`);
+      }
+    }
+  }
+
   // Print plano
   let totalKeys = 0;
   for (const p of plans) {
@@ -245,7 +276,9 @@ async function main(): Promise<void> {
     for (const k of p.sbmKeys) console.log(`    - ${k}`);
     console.log(`  vote (${p.voteKeys.length}):`);
     for (const k of p.voteKeys) console.log(`    - ${k}`);
-    totalKeys += (p.scoreExists ? 1 : 0) + p.sbmKeys.length + p.voteKeys.length;
+    console.log(`  counted (${p.countedKeys.length}):`);
+    for (const k of p.countedKeys) console.log(`    - ${k}`);
+    totalKeys += (p.scoreExists ? 1 : 0) + p.sbmKeys.length + p.voteKeys.length + p.countedKeys.length;
   }
   console.log(`\n[purge] snapshots a invalidar: ${[...slugsTouched].join(", ") || "(nenhum)"}`);
   console.log(`[purge] total de keys a deletar: ${totalKeys}`);
@@ -300,6 +333,10 @@ async function main(): Promise<void> {
     if (p.scoreExists) { await kvDelete(p.scoreKey); console.log(`  [del] ${p.scoreKey}`); }
     for (const k of p.sbmKeys) { await kvDelete(k); console.log(`  [del] ${k}`); }
     for (const k of p.voteKeys) { await kvDelete(k); console.log(`  [del] ${k}`); }
+    // #3976: counted:* são guard-keys idempotentes (podem já ter expirado via
+    // TTL de 90 dias) — kvDelete já é 404-safe/idempotente, mesmo tratamento
+    // dos demais deletes acima.
+    for (const k of p.countedKeys) { await kvDelete(k); console.log(`  [del] ${k}`); }
   }
 
   console.log("\n[purge] invalidando snapshots...");

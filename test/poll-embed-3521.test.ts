@@ -292,7 +292,10 @@ describe("applyFrameDenyHeaders (#3521) — pure", () => {
 describe("hardening: toda rota EXCETO /embed recebe framing negado (#3521, gap pré-existente fechado)", () => {
   it("GET /vote (rota mais sensível — escreve a partir de 1 clique) recebe X-Frame-Options: DENY + CSP frame-ancestors 'none'", async () => {
     const env = makeEnv();
-    const res = await worker.fetch(new Request("https://poll.test/vote?edition=260101&brand=web&email=a@web.eia.diaria.local&choice=A"), env);
+    // #3976: local-part precisa ser UUID v4 (guard novo em handleVote pra
+    // brand="web") — "a@..." não passaria mais, então usamos um token válido
+    // aqui (o teste é sobre os headers de frame-deny, não sobre o guard de token).
+    const res = await worker.fetch(new Request("https://poll.test/vote?edition=260101&brand=web&email=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa@web.eia.diaria.local&choice=A"), env);
     assert.equal(res.headers.get("X-Frame-Options"), "DENY");
     assert.equal(res.headers.get("Content-Security-Policy"), "frame-ancestors 'none'");
   });
@@ -329,13 +332,17 @@ describe("hardening: toda rota EXCETO /embed recebe framing negado (#3521, gap p
 
 describe("regressão: /vote, /jogar e /leaderboard continuam funcionando sem alteração de comportamento (#3521)", () => {
   it("voto pelo brand=web (mesmo mecanismo que /jogar/embed reusam) grava normalmente e responde 200", async () => {
+    // #3976: token precisa ser UUID v4 sob o domínio reservado (guard novo em
+    // handleVote pra brand="web") — usa um token válido em vez de "t1".
+    const token = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const email = `${token}@web.eia.diaria.local`;
     const env = makeEnv();
     const res = await worker.fetch(
-      new Request("https://poll.test/vote?edition=260101&brand=web&email=t1@web.eia.diaria.local&choice=A"),
+      new Request(`https://poll.test/vote?edition=260101&brand=web&email=${encodeURIComponent(email)}&choice=A`),
       env,
     );
     assert.equal(res.status, 200);
-    assert.ok(await env.POLL._map.get("web:vote:260101:t1@web.eia.diaria.local"));
+    assert.ok(await env.POLL._map.get(`web:vote:260101:${email}`));
   });
 
   it("/jogar continua respondendo 200 normalmente", async () => {

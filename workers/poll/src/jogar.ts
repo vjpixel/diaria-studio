@@ -52,6 +52,7 @@ import {
   formatEditionDate,
   htmlEscape,
   isValidVoteEmailFormat, // #3595: valida o pseudo-email recebido por /jogar/seq-state
+  isValidWebToken, // #3976: /jogar/seq-state é exclusivo do brand `web` — token deve ser UUID v4
   leaderboardHref,
   renderBrandFooter,
   renderBrandShellStyles,
@@ -1331,6 +1332,15 @@ export async function handleJogarSeqState(url: URL, env: Env): Promise<Response>
   const emailRaw = url.searchParams.get("email");
   const email = emailRaw ? emailRaw.toLowerCase().trim() : emailRaw;
   if (!email || !isValidVoteEmailFormat(email)) {
+    return json({ error: "invalid email" }, 400, env);
+  }
+  // #3976: este endpoint é EXCLUSIVO do brand `web` — o token client-side
+  // (`anonEmailForToken`) deve ser UUID v4 sob o domínio reservado, mesmo
+  // guard aplicado em `handleVote` quando brand==="web" (vote.ts). Fecha o
+  // mesmo vetor de forja aqui: sem isso, um HTTP client externo podia chamar
+  // `/jogar/seq-state?email=verify1840428@web.eia.diaria.local&...` e sondar
+  // estado de voto pra um token forjado (mesma classe do achado #3976).
+  if (!isValidWebToken(email)) {
     return json({ error: "invalid email" }, 400, env);
   }
   const editions = parseSeqStateEditionsParam(url.searchParams.get("editions"));

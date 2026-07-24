@@ -206,6 +206,52 @@ export function isValidVoteEmailFormat(email: string): boolean {
   return /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/.test(email);
 }
 
+// ── Guard: token do jogo `web` precisa ser UUID v4 (#3976) ──────────────────
+//
+// #3516 gera o pseudo-email `{token}@web.eia.diaria.local` (jogar.ts,
+// `anonEmailForToken`) a partir de um token opaco criado CLIENT-SIDE
+// (`crypto.randomUUID()`, com fallback pra UUID v4 sintético quando a API não
+// existe no browser — ambos os caminhos produzem forma UUID v4 canônica:
+// nibble de versão "4", nibble de variante em {8,9,a,b}). `isValidVoteEmailFormat`
+// (acima) aceita QUALQUER local-part no formato `local@domínio.tld` — não
+// distingue um token gerado pelo cliente legítimo (`/jogar`) de um local-part
+// arbitrário forjado por um HTTP client externo (bot/scanner exercitando os
+// endpoints diretamente) apontando pro MESMO domínio reservado.
+//
+// Achado #3976: entrada fantasma `verify1840428@web.eia.diaria.local` no
+// leaderboard público — local-part "verify1840428" não é forma UUID, prova
+// que não veio do client oficial. `isValidWebToken` fecha a classe inteira
+// (não só o padrão "verify*"): qualquer local-part não-UUID sob o domínio
+// reservado é rejeitado, em TODOS os pontos de entrada que aceitam a
+// identidade anônima do brand `web` (`handleVote` quando brand==="web",
+// `handleJogarSeqState` — ver vote.ts/jogar.ts).
+//
+// Deliberadamente exige TAMBÉM o domínio exato (não só "local-part parece
+// UUID") — sem isso, um forjador poderia trivialmente escapar do guard
+// escolhendo QUALQUER outro domínio (`verify1840428@evil.com` continuaria
+// passando `isValidVoteEmailFormat` sem cair neste guard), reabrindo a mesma
+// classe de poluição do leaderboard só com 1 caractere a mais de esforço.
+export const WEB_TOKEN_DOMAIN = "web.eia.diaria.local";
+
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** #3976: valida que `email` é `{uuid-v4}@web.eia.diaria.local` — a forma exata
+ * produzida por `anonEmailForToken` (jogar.ts) a partir de um token client-side
+ * genuíno. Chamar SÓ quando o contexto é o brand `web` (caller decide — este
+ * helper não recebe `Brand` pra ficar testável isoladamente e não acoplar
+ * lib.ts, que é #1083 "sem dependência de Cloudflare runtime", a um import
+ * circular de `Brand` só pra este 1 guard). `email` já deve ter passado por
+ * `isValidVoteEmailFormat` antes (forma geral); este guard é adicional, não
+ * substitui aquele. */
+export function isValidWebToken(email: string): boolean {
+  const at = email.indexOf("@");
+  if (at < 0) return false;
+  const domain = email.slice(at + 1).toLowerCase();
+  if (domain !== WEB_TOKEN_DOMAIN) return false;
+  const localPart = email.slice(0, at);
+  return UUID_V4_RE.test(localPart);
+}
+
 /**
  * #3118 (item 3) / #3279 (charset hardening): valida a FORMA do componente
  * `edition` da chave KV — não só o comprimento. Aceita só os 2 formatos
