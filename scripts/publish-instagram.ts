@@ -56,8 +56,10 @@ import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.t
 import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts)
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
-import { CONFIG } from "./lib/config.ts";
-import { parseWorkerQueueResponse } from "./lib/schemas/linkedin-payload.ts"; // shape genérico { queued, key, scheduled_at, destaque } — reusado pro Instagram (#3817)
+import {
+  postToWorkerQueue as sharedPostToWorkerQueue,
+  type WorkerQueuePayload,
+} from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Threads
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -222,22 +224,18 @@ async function fetchPermalink(
 
 /**
  * Enfileira um post Instagram no Worker `diaria-linkedin-cron` (#3817 — Worker
- * generalizado pra suportar `channel: "instagram"` além de LinkedIn). Espelha
- * `postToWorkerQueue` de `publish-linkedin.ts` — mesmo endpoint `/queue`,
- * mesmo header de auth, mesmo formato de resposta (`parseWorkerQueueResponse`).
+ * generalizado pra suportar `channel: "instagram"` além de LinkedIn). O
+ * cliente HTTP em si mora em `scripts/lib/worker-queue-client.ts` (#3944
+ * Parte B — extraído daqui quando o Threads passou a precisar do mesmo
+ * endpoint/schema de resposta); reexportado aqui por compatibilidade com
+ * callers/testes existentes.
  *
  * O Worker guarda a entry completa (caption + image_url) e roda os 2 passos
  * da Graph API (criar container + publicar) no MOMENTO do disparo — nunca
  * agora, pra não esbarrar na expiração de 24h do container (ver header deste
  * arquivo).
  */
-export interface InstagramQueuePayload {
-  text: string;
-  image_url: string;
-  scheduled_at: string;
-  destaque: string;
-  channel: "instagram";
-}
+export type InstagramQueuePayload = WorkerQueuePayload;
 
 export async function postToWorkerQueue(
   workerUrl: string,
@@ -245,40 +243,7 @@ export async function postToWorkerQueue(
   payload: InstagramQueuePayload,
   maxAttempts = 2,
 ): Promise<{ queued: true; key: string; scheduled_at: string; destaque: string }> {
-  const queueUrl = workerUrl.replace(/\/+$/, "") + "/queue";
-  let lastError: Error | null = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const res = await fetch(queueUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Diaria-Token": token,
-        },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(CONFIG.timeouts.makeWebhook),
-      });
-      if (!res.ok) {
-        const body = await res.text();
-        throw new Error(`Worker queue HTTP ${res.status}: ${body.slice(0, 300)}`);
-      }
-      const text = await res.text();
-      try {
-        return parseWorkerQueueResponse(JSON.parse(text));
-      } catch (parseErr) {
-        throw new Error(
-          `Worker response inválido (schema ou JSON): ${text.slice(0, 200)} — ${(parseErr as Error).message}`,
-        );
-      }
-    } catch (e) {
-      lastError = e instanceof Error ? e : new Error(String(e));
-      console.error(`[publish-instagram] worker attempt ${attempt} failed: ${lastError.message}`);
-      if (attempt < maxAttempts) {
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
-  }
-  throw lastError ?? new Error("worker_queue_failed");
+  return sharedPostToWorkerQueue(workerUrl, token, payload, maxAttempts, "publish-instagram");
 }
 
 async function main() {

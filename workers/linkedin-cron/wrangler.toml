@@ -44,8 +44,14 @@ new_sqlite_classes = ["LinkedInScheduler"]
 # (conta @diar.ia.br, token de página com escopo instagram_content_publish).
 # Ausentes = itens channel="instagram" vão pra DLQ com motivo claro no disparo
 # (mesmo padrão do MAKE_PIXEL_WEBHOOK_URL ausente — ver dispatch.ts).
+#
+# #3944 Parte B — canal Threads (Threads API oficial, sem Make). Secrets via
+# `wrangler secret put THREADS_ACCESS_TOKEN` / `THREADS_USER_ID` (conta
+# @diar.ia.br). Ausentes = itens channel="threads" vão pra DLQ com motivo
+# claro no disparo — mesmo padrão do Instagram acima.
 [vars]
 INSTAGRAM_API_VERSION = "v25.0"
+THREADS_API_VERSION = "v1.0"
 
 # Cron trigger — a cada 5 minutos (FALLBACK após #1168).
 # Histórico: PR #1167 mudou pra */3 como mitigação de lag observado no #1146

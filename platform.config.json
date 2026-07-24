@@ -106,6 +106,9 @@
       "instagram": {
         "enabled": true
       },
+      "threads": {
+        "enabled": true
+      },
       "linkedin": {
         "make_webhook_url": "",
         "make_webhook_pixel_url": "",

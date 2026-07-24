@@ -55,7 +55,7 @@ export interface ComputeScheduleInput {
    *  plataformas (#345). Pode ser usado no futuro para overrides por plataforma.
    *  #3817: "instagram" adicionado — mesmo fallback_schedule unificado, só muda
    *  o rótulo usado nos logs de non-zero dayOffset / past-slot shift abaixo. */
-  platform: "linkedin" | "facebook" | "instagram";
+  platform: "linkedin" | "facebook" | "instagram" | "threads";
   dayOffsetOverride?: number;
   /**
    * Injetável para testes (#2552). Defaults para `Date.now()`.
@@ -328,7 +328,7 @@ export function computeScheduledAt(input: ComputeScheduleInput): string {
 interface CliFlags {
   edition: string;
   destaque: "d1" | "d2" | "d3";
-  platform: "linkedin" | "facebook" | "instagram";
+  platform: "linkedin" | "facebook" | "instagram" | "threads";
   dayOffset?: number;
   configPath?: string;
 }
@@ -367,7 +367,7 @@ export function parseCliArgs(argv: string[]): CliFlags | { error: string } {
   return {
     edition,
     destaque: destaque as "d1" | "d2" | "d3",
-    platform: platform as "linkedin" | "facebook" | "instagram",
+    platform: platform as "linkedin" | "facebook" | "instagram" | "threads",
     dayOffset,
     configPath,
   };

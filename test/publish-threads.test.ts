@@ -9,7 +9,7 @@
  *   - Verificação estática do script (creds, CLI guard, severity, etc.)
  */
 
-import { describe, it } from "node:test";
+import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
@@ -22,6 +22,7 @@ import {
   splitIntoThreadChunks,
   THREADS_CHAR_LIMIT,
 } from "../scripts/publish-threads.ts";
+import { postToWorkerQueue } from "../scripts/lib/worker-queue-client.ts"; // #3944 Parte B
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -576,6 +577,168 @@ describe("--dry-run subprocess guard (#2540 P2)", () => {
         r.stdout.includes("DRY-RUN") || r.stderr.includes("DRY-RUN"),
         `stdout/stderr deve mencionar DRY-RUN; stdout: ${r.stdout.slice(0, 300)}`,
       );
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── #3944 Parte B: --schedule (verificação estática do script) ─────────────
+
+describe("#3944 Parte B --schedule: modo agendamento (verificação estática do script)", () => {
+  it("flag --schedule é opt-in — default preserva publicação imediata", () => {
+    assert.match(SRC, /doSchedule = flags\.has\("schedule"\)/, "deve ler --schedule via flags.has");
+  });
+
+  it("resolve scheduled_at via computeScheduledAt com platform threads (mesma fonte de FB/LinkedIn/Instagram)", () => {
+    assert.match(SRC, /computeScheduledAt/, "deve importar/usar computeScheduledAt");
+    assert.match(SRC, /platform: "threads"/, "deve passar platform: 'threads'");
+  });
+
+  it("payload de enfileiramento inclui channel: threads", () => {
+    assert.match(SRC, /channel: "threads"/, "payload do Worker deve marcar channel threads");
+  });
+
+  it("grava status 'scheduled' com scheduled_at real (não null) no modo --schedule", () => {
+    assert.match(SRC, /status: "scheduled"/, "modo --schedule deve gravar status scheduled");
+  });
+
+  it("sem Worker configurado + --schedule → exit 2 (fail-fast, sem fallback de fire-now)", () => {
+    assert.match(SRC, /process\.exit\(2\)/, "deve sair com exit 2 quando Worker não configurado");
+    assert.match(SRC, /DIARIA_LINKEDIN_CRON_URL/, "deve checar DIARIA_LINKEDIN_CRON_URL");
+    assert.match(SRC, /DIARIA_LINKEDIN_CRON_TOKEN/, "deve checar DIARIA_LINKEDIN_CRON_TOKEN");
+  });
+
+  it("guard de chunk único: multi-chunk com --schedule falha com motivo claro, não enfileira", () => {
+    assert.match(SRC, /chunking agendado não suportado/i, "deve explicar por que multi-chunk falha com --schedule");
+    assert.match(SRC, /chunks\.length > 1/, "deve checar chunks.length antes de enfileirar");
+  });
+
+  it("usa postToWorkerQueue do cliente compartilhado (worker-queue-client), não uma cópia local", () => {
+    assert.match(SRC, /from "\.\/lib\/worker-queue-client\.ts"/, "deve importar do módulo compartilhado com Instagram");
+  });
+});
+
+// ─── #3944 Parte B: postToWorkerQueue (cliente compartilhado, exercitado via Threads) ─
+
+describe("#3944 Parte B postToWorkerQueue (cliente compartilhado com Instagram)", () => {
+  let originalFetch: typeof globalThis.fetch;
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  it("POSTa pro endpoint /queue com channel:threads e image_url:null, retorna a resposta parseada", async () => {
+    let capturedUrl = "";
+    let capturedBody: Record<string, unknown> | null = null;
+    let capturedToken = "";
+    globalThis.fetch = (async (url: string | Request, init?: RequestInit) => {
+      capturedUrl = typeof url === "string" ? url : (url as Request).url;
+      capturedBody = init?.body ? JSON.parse(init.body as string) : null;
+      capturedToken = new Headers(init?.headers).get("X-Diaria-Token") ?? "";
+      return new Response(
+        JSON.stringify({
+          queued: true,
+          key: "queue:2026-07-23T10:00:00.000Z:uuid-threads-1",
+          scheduled_at: "2026-07-23T10:00:00.000Z",
+          destaque: "d1",
+        }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    try {
+      const res = await postToWorkerQueue("https://worker.test/", "tok123", {
+        text: "Post curto #ia",
+        image_url: null,
+        scheduled_at: "2026-07-23T10:00:00.000Z",
+        destaque: "d1",
+        channel: "threads",
+      });
+      assert.equal(capturedUrl, "https://worker.test/queue", "deve normalizar trailing slash e ir pro /queue");
+      assert.equal(capturedToken, "tok123", "deve mandar o token no header X-Diaria-Token");
+      assert.equal(capturedBody?.channel, "threads");
+      assert.equal(capturedBody?.image_url, null);
+      assert.equal(res.queued, true);
+      assert.equal(res.key, "queue:2026-07-23T10:00:00.000Z:uuid-threads-1");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ─── #3944 Parte B: --schedule end-to-end via subprocess (sem tocar API real) ─
+
+describe("#3944 Parte B --schedule subprocess: fail-fast e guard de multi-chunk", () => {
+  const SCRIPT = resolve(__ROOT, "scripts/publish-threads.ts");
+  const SOCIAL_MD_SHORT = `# Threads\n\n## d1\nPost curto de teste.\n`;
+  // Texto >500 chars via repetição — força multi-chunk.
+  const LONG_TEXT = "Parágrafo longo de teste para forçar multi-chunk. ".repeat(15);
+  const SOCIAL_MD_LONG = `# Threads\n\n## d1\n${LONG_TEXT}\n`;
+
+  it("--schedule sem DIARIA_LINKEDIN_CRON_URL/TOKEN → exit 2, sem publicar nada", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-schedule-nowoker-"));
+    try {
+      mkdirSync(join(tmpDir, "_internal"), { recursive: true });
+      writeFileSync(join(tmpDir, "03-social.md"), SOCIAL_MD_SHORT, "utf8");
+
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", SCRIPT, "--edition-dir", tmpDir, "--schedule"],
+        {
+          encoding: "utf8",
+          cwd: __ROOT,
+          env: {
+            ...process.env,
+            THREADS_USER_ID: "fake_user_id",
+            THREADS_ACCESS_TOKEN: "fake_token",
+            DIARIA_LINKEDIN_CRON_URL: "",
+            DIARIA_LINKEDIN_CRON_TOKEN: "",
+          },
+        },
+      );
+      assert.equal(r.status, 2, `deve sair com exit 2; stdout: ${r.stdout}; stderr: ${r.stderr}`);
+      assert.match(r.stderr, /Worker não está configurado/);
+      assert.ok(
+        !existsSync(join(tmpDir, "_internal", "06-social-published.json")),
+        "não deve gravar nada quando aborta por falta de Worker",
+      );
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("--schedule com texto >500 chars: grava 'failed' com motivo claro, sem travar esperando rede", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-schedule-multichunk-"));
+    try {
+      mkdirSync(join(tmpDir, "_internal"), { recursive: true });
+      writeFileSync(join(tmpDir, "03-social.md"), SOCIAL_MD_LONG, "utf8");
+
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", SCRIPT, "--edition-dir", tmpDir, "--schedule"],
+        {
+          encoding: "utf8",
+          cwd: __ROOT,
+          timeout: 15_000, // guard contra travar esperando fetch real — não deve nem tentar
+          env: {
+            ...process.env,
+            THREADS_USER_ID: "fake_user_id",
+            THREADS_ACCESS_TOKEN: "fake_token",
+            // URL fake — nunca deve ser chamada, já que o guard de multi-chunk
+            // barra o item ANTES de qualquer fetch.
+            DIARIA_LINKEDIN_CRON_URL: "https://worker.invalid.test/",
+            DIARIA_LINKEDIN_CRON_TOKEN: "fake_worker_token",
+          },
+        },
+      );
+      assert.equal(r.status, 0, `script deve terminar 0 mesmo com destaque falho; stderr: ${r.stderr}`);
+      const publishedPath = join(tmpDir, "_internal", "06-social-published.json");
+      assert.ok(existsSync(publishedPath), "deve gravar 06-social-published.json com a entry failed");
+      const published = JSON.parse(readFileSync(publishedPath, "utf8"));
+      const entry = published.posts.find((p: any) => p.destaque === "d1");
+      assert.ok(entry, "deve haver uma entry pro d1");
+      assert.equal(entry.status, "failed");
+      assert.match(entry.reason, /500/, "motivo deve citar o limite de 500 chars");
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }

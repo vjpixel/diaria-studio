@@ -1,6 +1,6 @@
 import type { Env, QueueEntry } from "./index";
 import { buildDlqKey, MAX_RETRIES, DLQ_TTL_SECONDS } from "./index";
-import { fireQueueEntry, resolveInstagramCreds } from "./dispatch";
+import { fireQueueEntry, resolveInstagramCreds, resolveThreadsCreds } from "./dispatch";
 
 // ── Cron handler — fira items maduros ──────────────────────────────────────
 
@@ -136,19 +136,21 @@ export async function fireDueItems(env: Env): Promise<{ fired: number; errors: n
       } catch { /* non-fatal — eviction limpará o DO */ }
     };
 
-    // (#3817) fireQueueEntry() é o ponto único de dispatch, compartilhado com
-    // alarm() (durable-object.ts) — decide o branch linkedin/instagram a
-    // partir de `entry.channel` (default "linkedin") e devolve um outcome
-    // puro (fired | failed | dlq). Os guards que antes eram checados inline
-    // aqui (pixel sem MAKE_PIXEL_WEBHOOK_URL, #3662/#3667
-    // isUnsupportedCommentTarget) agora moram em dispatch.ts — esta função só
-    // decide O QUE FAZER com o outcome (DLQ direto vs incrementar retry vs
-    // marcar fired), que é mecânica específica do cron (acesso a KV).
+    // (#3817/#3944 Parte B) fireQueueEntry() é o ponto único de dispatch,
+    // compartilhado com alarm() (durable-object.ts) — decide o branch
+    // linkedin/instagram/threads a partir de `entry.channel` (default
+    // "linkedin") e devolve um outcome puro (fired | failed | dlq). Os
+    // guards que antes eram checados inline aqui (pixel sem
+    // MAKE_PIXEL_WEBHOOK_URL, #3662/#3667 isUnsupportedCommentTarget) agora
+    // moram em dispatch.ts — esta função só decide O QUE FAZER com o
+    // outcome (DLQ direto vs incrementar retry vs marcar fired), que é
+    // mecânica específica do cron (acesso a KV).
     const config = {
       webhookUrl: env.MAKE_WEBHOOK_URL,
       pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL,
       apiKey: env.MAKE_WEBHOOK_API_KEY, // #3903
       instagram: resolveInstagramCreds(env),
+      threads: resolveThreadsCreds(env),
     };
     const outcome = await fireQueueEntry(entry, config);
 
