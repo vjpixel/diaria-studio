@@ -61,24 +61,28 @@ describe("título pra visitante frio (#4005 item 1)", () => {
   });
 });
 
-// ── item 2: onboarding de 1 linha ────────────────────────────────────────────
+// ── item 2: onboarding de 1 linha — REMOVIDO por #4030 item 4 ──────────────
+//
+// O editor jogou a versão deployada (260724) e pediu pra tirar a frase de
+// onboarding ("Uma destas imagens foi gerada por IA. Toque na que você acha
+// que é.") — o h1 já pergunta a mesma coisa, a linha era redundante na
+// prática. Este describe cobria a ADIÇÃO original; atualizado (não duplicado
+// em outro arquivo) pra travar a REMOÇÃO — ver rationale completo no header
+// de jogar.ts (seção #4005 item 2).
 
-describe("onboarding de 1 linha acima do 1º par (#4005 item 2)", () => {
-  it("renderiza a frase de onboarding, visível por padrão (sem 'hidden' — nunca é spoiler)", () => {
+describe("onboarding de 1 linha acima do 1º par — removido (#4005 item 2, revertido por #4030 item 4)", () => {
+  it("frase de onboarding não é mais renderizada", () => {
     const html = renderJogarSequencePageHtml(["260601", "260602"]);
-    assert.match(
-      html,
-      /<p class="sub" id="seq-onboarding">Uma destas imagens foi gerada por IA\. Toque na que você acha que é\.<\/p>/,
-    );
-    assert.doesNotMatch(html, /id="seq-onboarding"[^>]*hidden/, "onboarding não deve nascer hidden — é instrução, não spoiler");
+    assert.doesNotMatch(html, /seq-onboarding/);
+    assert.doesNotMatch(html, /Uma destas imagens foi gerada por IA\. Toque na que você acha que é\./);
   });
 
-  it("script esconde o onboarding a partir da 2ª rodada (round !== 0)", () => {
+  it("script não referencia mais onboardingEl (variável morta removida junto com o elemento)", () => {
     const html = renderJogarSequencePageHtml(["260601", "260602"]);
-    assert.match(html, /onboardingEl\.hidden = round !== 0;/);
+    assert.doesNotMatch(html, /onboardingEl/);
   });
 
-  it("estado vazio (sem edições) não renderiza onboarding (não há par nenhum pra tutorial)", () => {
+  it("estado vazio (sem edições) também não renderiza onboarding", () => {
     const html = renderJogarSequencePageHtml([]);
     assert.doesNotMatch(html, /seq-onboarding/);
   });

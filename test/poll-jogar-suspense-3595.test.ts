@@ -314,7 +314,12 @@ describe("renderJogarSequencePageHtml — reveal imediato por rodada (#3983, rev
     const html = renderJogarSequencePageHtml(["260601"]);
     assert.match(html, /<div id="seq-round-result" class="seq-round-result" hidden><\/div>/);
     assert.match(html, /function renderRoundResult\(result\)/);
-    assert.match(html, /result\.imagesHtml/, "injeta o bloco .result-images (destaque da imagem correta)");
+    // #4030 (item 5): destaque da imagem correta deixou de duplicar o bloco
+    // .result-images inteiro (result.imagesHtml) — agora aplica borda verde
+    // IN-PLACE na imagem já visível via result.aiSide (ver
+    // test/poll-jogar-sequence-3589.test.ts pra cobertura completa da mudança).
+    assert.match(html, /result\.aiSide/, "aplica o destaque via aiSide, não mais duplicando as imagens");
+    assert.doesNotMatch(html, /result\.imagesHtml/, "não injeta mais o bloco .result-images duplicado");
   });
 
   it("tela final NÃO depende de Promise.all(pending) — resultado de cada rodada já foi aguardado antes de avançar", () => {

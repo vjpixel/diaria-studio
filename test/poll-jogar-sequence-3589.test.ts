@@ -192,16 +192,18 @@ describe("renderJogarSequencePageHtml (#3589)", () => {
     assert.doesNotMatch(html, /id="jogar-signup-form"/, "o form de assinatura standalone do #3580 NÃO aparece mais na tela final da sequência");
   });
 
-  it("linka pro arquivo (#4008 item 7 — reverte #3589 item 3: quem termina a sequência quer mais)", () => {
+  it("NÃO linka mais pro arquivo (#4030 item 1 — reverte #4008 item 7, MESMO dia)", () => {
     // #3589 item 3 originalmente removeu este link ("nenhuma view web
     // auto-promove /jogar/arquivo"). #4008 item 7 (260724, mesmo dia da
     // rodada de UX #4005/#4006/#4007) reverteu especificamente pro rodapé da
-    // SEQUÊNCIA (a experiência DEFAULT de /jogar) — ver rationale completo no
-    // header deste arquivo, item 6. `renderJogarPageHtml` (par único via
-    // ?edition=, ponte clarice) segue SEM o link — não mudou.
+    // SEQUÊNCIA (a experiência DEFAULT de /jogar). #4030 item 1 (260724,
+    // MESMO dia — 3ª volta): o editor jogou a versão deployada de #4008
+    // item 7 e pediu pra tirar o link de novo — ver rationale completo no
+    // header de jogar.ts, item 6. `renderJogarPageHtml` (par único via
+    // ?edition=, ponte clarice) nunca teve o link — não mudou.
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.match(html, /Jogar edições passadas/);
-    assert.match(html, /href="\/jogar\/arquivo"/);
+    assert.doesNotMatch(html, /Jogar edições passadas/);
+    assert.doesNotMatch(html, /href="\/jogar\/arquivo"/);
   });
 
   // #3983 (reverte #3595 item 2, 260723): a asserção original desta suíte
@@ -211,12 +213,16 @@ describe("renderJogarSequencePageHtml (#3589)", () => {
   // mensagem do servidor (`.msg`) e o destaque de imagem (`.result-images`)
   // AGORA são injetados por rodada — ver test/poll-jogar-reveal-immediate-
   // 3983.test.ts pra cobertura completa.
-  it("cada rodada revela o veredito do servidor (.msg + .result-images) — #983 reverte a supressão por rodada do #3595", () => {
+  it("cada rodada revela o veredito do servidor (.msg + borda na imagem correta) — #983 reverte a supressão por rodada do #3595", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
     assert.match(html, /text\.indexOf\("✅"\) === 0/, "ainda deriva o booleano correct do prefixo ✅/❌ (uso interno pro placar)");
     assert.match(html, /msgEl \? msgEl\.innerHTML : ""/, "o HTML da mensagem do servidor é extraído e...");
     assert.match(html, /result\.msgHtml/, "...injetado no bloco de reveal por rodada (result.msgHtml)");
-    assert.match(html, /imagesEl \? imagesEl\.outerHTML : ""/, "destaque visual da imagem correta também é extraído");
+    // #4030 (item 5): destaque visual deixou de duplicar as imagens
+    // (imagesEl.outerHTML) — agora extrai só QUAL lado é a IA (aiSide) e
+    // aplica borda verde in-place na imagem já visível.
+    assert.match(html, /var resultImageDivs = parsed\.querySelectorAll\("\.result-image"\);/, "extrai os divs .result-image pra achar o lado da IA");
+    assert.match(html, /aiSide: aiSide/, "aiSide (não mais o HTML das imagens) é o que result carrega");
   });
 
   it("progress bar mostra só 'Par X de N' — sem contador de acertos incremental (percentual fica pra #3977, fora de escopo aqui)", () => {

@@ -329,6 +329,36 @@ export function maskEmail(email: string): string {
   return at > 0 ? `${truncated}@***` : `${truncated}***`;
 }
 
+// ── Hash opaco de e-mail pro self-highlight do leaderboard (#4029 item 2) ──
+
+/**
+ * FNV-1a 32-bit do e-mail normalizado (trim + lowercase), em hex. Usado como
+ * `data-uid` opaco por linha do leaderboard — o browser conhece o PRÓPRIO
+ * e-mail (via `localStorage["eia_web_identified_email"]`, brand `web`,
+ * ver identify.ts/jogar.ts), hasheia com o MESMO algoritmo (gêmeo JS embutido
+ * em `renderLeaderboardHtml`, leaderboard-routes.ts) e compara contra os
+ * `data-uid` já renderizados — sem o servidor precisar saber "quem está
+ * olhando" (sem sessão/cookie de identidade) e sem expor o e-mail de NINGUÉM
+ * em claro no HTML servido (mesma disciplina de `maskEmail` acima).
+ *
+ * Não é criptográfico (FNV não é resistente a pré-imagem/colisão) — aceitável
+ * aqui: o pior caso de abuso é confirmar se um e-mail JÁ CONHECIDO está no
+ * ranking testando o hash — exposição equivalente à que `maskEmail` já aceita
+ * publicamente (o e-mail mascarado já entrega parte do local-part). Não é um
+ * mecanismo de autenticação nem protege dado sensível — só evita o caminho
+ * MAIS ÓBVIO (e-mail cru no HTML) de qualquer visitante ler a lista completa
+ * de e-mails do ranking direto da fonte.
+ */
+export function hashEmailForMatch(email: string): string {
+  const normalized = email.trim().toLowerCase();
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 // ── Per-publication-month leaderboard (#1345) ───────────────────────────────
 
 /**

@@ -15,6 +15,7 @@ import {
   withBrandQuery, // #3118 item 12: archiveHref
   brandHiddenInput, // #3118 item 12: renderArchiveVoteHtml
   maskEmail, // #3118 item 11: consolida as 3 implementações de mascaramento de email
+  hashEmailForMatch, // #4029 item 2: uid opaco por linha pro self-highlight client-side
   closedPeriodCacheControl, // #3118 item 2: cache de período fechado — 1h, não mais 30d immutable
   AAMMDD_RE, // #3297: substitui as 2 cópias inline de /^\d{6}$/ deste arquivo
   envioMonthYear, // #3464: heading do arquivo mensal Clarice mostra mês de ENVIO, não de conteúdo
@@ -30,6 +31,15 @@ import { corsHeaders, json, votePageHtml } from "./index";
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
 // cor/fonte inline aqui (ver test/poll-ds-tokens.test.ts para a trava).
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
+
+/**
+ * #4029 (item 1, decisão do editor 260724): quantas linhas o leaderboard
+ * renderiza no máximo — antes um valor fixo de 50 direto em
+ * `renderLeaderboardHtml`. Içado pra constante nomeada porque agora tem um
+ * segundo consumidor implícito de intenção (o comentário de
+ * `upsertOwnEntryInSnapshot` abaixo referencia o mesmo número).
+ */
+export const LEADERBOARD_DISPLAY_CAP = 500;
 
 export interface LeaderTop1Entry {
   nickname: string;
@@ -251,10 +261,10 @@ export async function invalidateSnapshot(env: Env, slug: string): Promise<void> 
  * Cap de entradas no snapshot (#2125 — documentado):
  *   O upsert NÃO capa o número de entries no snapshot intencionalmente. O snapshot
  *   persiste TODOS os votantes para que o compute-path (getOrComputeSnapshot) possa
- *   fazer ranking correto sobre o conjunto completo. O cap visual de 50 é aplicado
- *   APENAS no render (handleLeaderboardByMonth: `rankEntries(scores).slice(0, 50)`)
- *   — não aqui. Capar no write esconderia votantes #51+ do ranking e quebraria o
- *   dense-rank para quem está perto do corte.
+ *   fazer ranking correto sobre o conjunto completo. O cap visual (LEADERBOARD_DISPLAY_CAP,
+ *   #4029: 500, antes 50) é aplicado APENAS no render (renderLeaderboardHtml:
+ *   `visible.slice(0, LEADERBOARD_DISPLAY_CAP)`) — não aqui. Capar no write esconderia
+ *   votantes além do cap do ranking e quebraria o dense-rank para quem está perto do corte.
  *
  *   Volume esperado: ~50–200 votantes/mês em produção (Diar.ia). O snapshot por
  *   mês (JSON em KV) cresce ~200 bytes/votante → <40KB para 200 votantes, bem
@@ -678,11 +688,17 @@ function renderLeaderboardHtml(
   // #1092 + #1256: dense ranking — leitores empatados em (correct, total)
   // ocupam o mesmo número e o próximo grupo é +1 (1, 1, 2 — não 1, 1, 3).
   // #4008 item 2: cauda de baixo-engajamento (< MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING
-  // tentativas) sai da listagem linha-a-linha antes do corte top-50 — vira o
+  // tentativas) sai da listagem linha-a-linha antes do corte top-N — vira o
   // agregado "+ N jogadores {período}" abaixo da tabela (ver tailNoteHtml).
+  // #4029 (item 1, decisão do editor 260724): corte visual subiu de 50 pra
+  // LEADERBOARD_DISPLAY_CAP (500) — cobre qualquer volume realista hoje
+  // (diária: ~50-200 votantes/mês, ver comentário em
+  // upsertOwnEntryInSnapshot acima; web é bem menor ainda) sem risco de
+  // estourar o HTML/render no mobile. A cauda 0/N (#4008 item 2) continua
+  // agregada — "todos" aqui não reabre aquela decisão.
   const rankedAll = rankEntries(scores);
   const { visible, hiddenCount } = partitionLeaderboardForDisplay(rankedAll);
-  const ranked = visible.slice(0, 50);
+  const ranked = visible.slice(0, LEADERBOARD_DISPLAY_CAP);
 
   const rows = ranked.map((s) => {
     // #3118 (item 11): maskEmail (lib.ts) — consolida com as outras 2 implementações.
@@ -693,7 +709,11 @@ function renderLeaderboardHtml(
     // #3977: coluna de percentual — `s.pct` já vem calculado por rankEntries
     // (leaderboard.ts, a partir de scoreByMonthEntriesToLeaderboard acima),
     // só não chegava no template HTML.
-    return `<tr${trClass}>
+    // #4029 (item 2): data-uid opaco (hashEmailForMatch, lib.ts) — o script
+    // de self-highlight (brand web, ver selfHighlightHtml abaixo) casa a
+    // PRÓPRIA identidade local contra este atributo sem o servidor nunca
+    // expor e-mail de ninguém em claro no HTML.
+    return `<tr${trClass} data-uid="${hashEmailForMatch(s.email)}">
       <td>${s.medal}</td>
       <td>${escaped}</td>
       <td>${s.correct}/${s.total}</td>
@@ -747,6 +767,46 @@ function renderLeaderboardHtml(
   const tailNoteHtml = hiddenCount > 0
     ? `<p style="margin-top:8px;font-size:0.85rem;color:${DS_COLORS.ink}">+ ${hiddenCount} jogador${hiddenCount === 1 ? "" : "es"} ${periodNoun} (poucas tentativas pra entrar na lista)</p>`
     : "";
+  // #4029 (item 2): self-highlight — destaca a linha do PRÓPRIO jogador
+  // quando ele visita o ranking. Só faz sentido pro brand `web` (único com
+  // identidade local persistida — `localStorage["eia_web_identified_email"]`,
+  // #3975/jogar.ts); diaria/clarice votam por e-mail com link assinado, sem
+  // nenhuma identidade client-side pra casar contra `data-uid` — o bloco
+  // inteiro fica de fora nesses brands (script seria sempre no-op).
+  // Match acontece 100% no BROWSER: o servidor nunca sabe quem está olhando
+  // (sem sessão/cookie novo) e o HTML nunca carrega e-mail de ninguém em
+  // claro — só o `data-uid` opaco (hashEmailForMatch, gêmeo JS abaixo) já
+  // presente em cada `<tr>` desde o `.map()` de `rows` acima.
+  const selfHighlightHtml = brand === "web" ? `<p id="self-cta" class="self-cta" hidden>Você ainda não aparece no ranking desta identidade. <a href="/jogar">Jogue e entre no ranking</a>.</p>
+<script>
+(function () {
+  function hashEmailForMatch(email) {
+    var normalized = (email || "").trim().toLowerCase();
+    var hash = 0x811c9dc5;
+    for (var i = 0; i < normalized.length; i++) {
+      hash = hash ^ normalized.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    var hex = (hash >>> 0).toString(16);
+    while (hex.length < 8) hex = "0" + hex;
+    return hex;
+  }
+  var email = null;
+  try { email = window.localStorage.getItem("eia_web_identified_email"); } catch (e) {}
+  if (!email) return;
+  var uid = hashEmailForMatch(email);
+  var row = document.querySelector('tr[data-uid="' + uid + '"]');
+  if (row) {
+    row.classList.add("self-row");
+    var nameCell = row.children[1];
+    if (nameCell) nameCell.innerHTML += ' <span class="self-badge">você</span>';
+    if (row.scrollIntoView) row.scrollIntoView({ block: "center", behavior: "smooth" });
+  } else {
+    var cta = document.getElementById("self-cta");
+    if (cta) cta.hidden = false;
+  }
+})();
+</script>` : "";
   const html = `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -772,6 +832,11 @@ ${seoMeta}
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   p.nav { margin: 14px 0 0 0; font-size: 0.85rem; }
   p.nav a { font-weight: 600; }
+  /* #4029 (item 2): self-highlight — linha do próprio jogador. */
+  tr.self-row td { background: ${DS_COLORS.paperAlt}; font-weight: 600; }
+  tr.self-row td:first-child { border-left: 3px solid ${DS_COLORS.brand}; }
+  .self-badge { display: inline-block; padding: 2px 8px; background: ${DS_COLORS.brand}; color: ${DS_COLORS.paper}; border-radius: 4px; font-size: 0.7rem; font-weight: 700; margin-left: 6px; }
+  .self-cta { margin-top: 14px; padding: 12px 16px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; font-size: 0.85rem; }
 ${renderBrandShellStyles()}
 </style>
 </head>
@@ -786,6 +851,7 @@ ${navHtml}
 <tbody>${rows || `<tr><td colspan=4 style='color:${DS_COLORS.ink};text-align:center;padding:20px'>Ainda sem votos.</td></tr>`}</tbody>
 </table>
 ${tailNoteHtml}
+${selfHighlightHtml}
 <p style="margin-top:30px;font-size:0.8rem;color:${DS_COLORS.ink}">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
 <p style="margin-top:8px;font-size:0.8rem;color:${DS_COLORS.ink}">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>
 ${renderBrandFooter(brand)}
