@@ -259,7 +259,152 @@ export function renderInlineSignupFormStyles(): string {
   .signup-status { margin: 10px 0 0 0; font-size: 0.9rem; font-family: ${DS_FONTS.sans}; }
   .signup-status.ok { color: ${DS_COLORS.brand}; }
   .signup-status.err { color: ${DS_COLORS.ink}; font-weight: 600; }
-  .signup-hp { position: absolute !important; left: -9999px !important; width: 1px; height: 1px; overflow: hidden; }`;
+  .signup-hp { position: absolute !important; left: -9999px !important; width: 1px; height: 1px; overflow: hidden; }
+  /* #3975: nota "jogando como {email}" pós-identificação — mesma disciplina
+     visual de .signup-status.ok (reusada aqui como classe base). */
+  .identified-note { font-family: ${DS_FONTS.sans}; font-size: 0.9rem; margin: 12px auto; max-width: 420px; color: ${DS_COLORS.ink}; }
+  .signup-note { font-size: 0.8rem; margin: 8px 0 0 0; color: ${DS_COLORS.ink}; font-family: ${DS_FONTS.sans}; }`;
+}
+
+// ── #3975: identidade por e-mail no leaderboard (form na tela final) ───────
+//
+// SUBSTITUI (nas telas de resultado do par único e da sequência — ver
+// rationale completo em identify.ts) o form de assinatura inline standalone
+// do #3580 (`renderInlineSignupFormBlock`/`inlineSignupScript`, ainda usados
+// intocados por `/jogar/quiz`, que não credita voto real ao leaderboard —
+// item 7 do rationale #3589 acima, "quiz relâmpago intocado"). Reusa as
+// MESMAS classes CSS `.signup-*` (renderInlineSignupFormStyles) — só o
+// conteúdo/campos e o endpoint (`/jogar/identify` em vez de
+// `/jogar/subscribe`) mudam.
+
+/**
+ * Pure (#3975): bloco do form de identidade — nome/apelido + e-mail
+ * (ambos `required`, ao contrário do form de assinatura #3580 onde só
+ * e-mail é obrigatório) + checkbox de opt-in de newsletter (reusa o backend
+ * do #3580 via identify.ts → subscribeToBeehiiv) + honeypot. `hidden` por
+ * padrão — mesma disciplina anti-spoiler do resto de `/jogar` (revelado via
+ * JS junto com o resultado, nunca antes do voto).
+ */
+export function renderIdentityFormBlock(): string {
+  return `<form id="jogar-identity-form" class="signup-form" hidden novalidate>
+  <p class="signup-text">Entre no ranking — deixe seu nome e e-mail.</p>
+  <label class="signup-field"><span>Nome ou apelido</span><input type="text" name="name" autocomplete="name" maxlength="100" required></label>
+  <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
+  <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
+  <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — grátis, seg-sex.</label>
+  <button type="submit" class="signup-btn">Entrar no ranking</button>
+  <p class="signup-note">Seu e-mail entra no ranking público e sai do modo anônimo. Assinar a Diar.ia é opcional, só se você marcar a caixinha.</p>
+  <p class="signup-status" role="status" aria-live="polite" hidden></p>
+</form>
+<p id="jogar-identified-note" class="identified-note" hidden></p>`;
+}
+
+/**
+ * Pure (#3975): script (IIFE) do form de identidade. Reusado LITERALMENTE
+ * pelas duas páginas (par único e sequência) — mesma disciplina de
+ * `inlineSignupScript`. Além do wiring de submit, expõe `window.__jogarIdentify`
+ * com um método `sync(anonEmail, edition)` — chamado pelo script PRINCIPAL de
+ * cada página (`onChoice`/resultado do par único) depois de CADA revelação,
+ * quando o jogador JÁ está identificado (localStorage tem
+ * `eia_web_identified_email`): re-sincroniza o score da rodada que acabou de
+ * jogar pra identidade já estabelecida, SEM reabrir o form nem pedir
+ * confirmação de novo (`name` vazio → `mergeWebScores`/identify.ts preserva
+ * o nickname já salvo). Fire-and-forget (`.catch(function(){})`) — nunca
+ * bloqueia nem interfere no fluxo do jogo se falhar.
+ */
+export function identityFormScript(): string {
+  return `<script>
+(function () {
+  var IDENTITY_KEY = "eia_web_identified_email";
+  function getIdentifiedEmail() {
+    try { return window.localStorage.getItem(IDENTITY_KEY); } catch (e) { return null; }
+  }
+  function setIdentifiedEmail(email) {
+    try { window.localStorage.setItem(IDENTITY_KEY, email); } catch (e) {}
+  }
+  window.__jogarIdentify = {
+    getIdentifiedEmail: getIdentifiedEmail,
+    sync: function (anonEmail, edition) {
+      var email = getIdentifiedEmail();
+      if (!email || !anonEmail || typeof window.fetch !== "function") return;
+      window.fetch("/jogar/identify?brand=web", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "", email: email, anonEmail: anonEmail, optin: false, edition: edition || "" })
+      }).catch(function () {});
+    }
+  };
+
+  var form = document.getElementById("jogar-identity-form");
+  var note = document.getElementById("jogar-identified-note");
+  if (!form) return;
+
+  var identified = getIdentifiedEmail();
+  if (identified) {
+    form.hidden = true;
+    if (note) { note.hidden = false; note.textContent = "Você está no ranking como " + identified + "."; }
+    return;
+  }
+
+  var status = form.querySelector(".signup-status");
+  function setStatus(msg, ok) {
+    if (!status) return;
+    status.hidden = false;
+    status.textContent = msg;
+    status.className = "signup-status" + (ok ? " ok" : " err");
+  }
+  function val(sel) { var el = form.querySelector(sel); return el ? el.value : ""; }
+  form.addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var name = (val('input[name="name"]') || "").trim();
+    if (!name) { setStatus("Digite seu nome ou apelido.", false); return; }
+    var email = (val('input[name="email"]') || "").trim();
+    if (!email || email.indexOf("@") < 0) { setStatus("Digite um e-mail válido.", false); return; }
+    var optinEl = form.querySelector('input[name="optin"]');
+    var optin = !!(optinEl && optinEl.checked);
+    var btn = form.querySelector('button[type="submit"]');
+    if (btn) btn.disabled = true;
+    setStatus("Enviando…", true);
+    var anonEmail = window.__jogarSessionEmail || "";
+    var edition = window.__jogarRepresentativeEdition || "";
+    var payload = {
+      name: name,
+      email: email,
+      optin: optin,
+      anonEmail: anonEmail,
+      edition: edition,
+      website: val('input[name="website"]') || ""
+    };
+    if (typeof window.fetch !== "function") {
+      setStatus("Seu navegador não suporta esse cadastro — tente noutro navegador.", false);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    window.fetch("/jogar/identify?brand=web", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
+    }).then(function (r) {
+      if (r.status === 200 && r.body && r.body.ok) {
+        setIdentifiedEmail(email);
+        form.hidden = true;
+        if (note) { note.hidden = false; note.textContent = "Pronto! Você está no ranking como " + email + "."; }
+      } else if (r.status === 429) {
+        setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
+        if (btn) btn.disabled = false;
+      } else {
+        setStatus("Não deu pra entrar no ranking agora. Tente de novo.", false);
+        if (btn) btn.disabled = false;
+      }
+    }).catch(function () {
+      setStatus("Erro de conexão. Tente de novo.", false);
+      if (btn) btn.disabled = false;
+    });
+  });
+})();
+</script>`;
 }
 
 /**
@@ -425,7 +570,7 @@ ${seoMeta}
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .already { margin: 24px auto; padding: 16px 18px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; font-size: 0.95rem; }
   .scroll-hint { display: none; }
-  #jogar-form[hidden], #jogar-already[hidden], #jogar-result-slot[hidden], #jogar-subscribe-cta[hidden], #jogar-signup-form[hidden], #jogar-checking[hidden] { display: none; }
+  #jogar-form[hidden], #jogar-already[hidden], #jogar-result-slot[hidden], #jogar-subscribe-cta[hidden], #jogar-identity-form[hidden], #jogar-identified-note[hidden], #jogar-checking[hidden] { display: none; }
   /* #3983: "Conferindo…" — feedback imediato entre o clique e a resposta do
      /vote (fast-path do backend responde em dezenas de ms, mas a indicação
      visual evita a sensação de travamento em conexões mais lentas). */
@@ -444,6 +589,11 @@ ${seoMeta}
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
   .result-image .label { font-family: ${DS_FONTS.sans}; font-size: 0.95rem; margin-top: 8px; color: ${DS_COLORS.ink}; font-weight: 600; }
   .result-image .you { display: inline-block; padding: 2px 8px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  /* #3984: descrição + crédito da foto real (bloco injetado via DOMParser a
+     partir da resposta de /vote, mesmas classes de votePageHtml/index.ts). */
+  .eia-meta { margin: 16px auto; max-width: 420px; font-family: ${DS_FONTS.sans}; text-align: left; }
+  .eia-meta-description { font-size: 0.95rem; margin: 0 0 6px 0; line-height: 1.5; }
+  .eia-meta-credit { font-size: 0.82rem; margin: 0; color: ${DS_COLORS.ink}; }
   .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
   .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
   .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
@@ -499,10 +649,13 @@ ${renderBrandShellStyles()}
      correta), reusando a mesma estrutura de votePageHtml (index.ts). -->
 <div id="jogar-result-slot" hidden></div>
 <div id="jogar-already" class="already" hidden></div>
-<!-- #3580: cadastro INLINE (nome + e-mail + opt-in) — conversão primária,
-     assina direto sem sair da página. Revelado via JS junto com o resultado
-     (mesma disciplina anti-spoiler). Vem ANTES do CTA-link (fallback #3518). -->
-${renderInlineSignupFormBlock()}
+<!-- #3975: form de identidade (nome/apelido + e-mail + opt-in de newsletter)
+     — SUBSTITUI o form de assinatura inline standalone do #3580 nessa tela
+     (uma superfície de conversão só: ranking primeiro, assinatura como
+     opção no mesmo gesto — ver rationale em identify.ts). Revelado via JS
+     junto com o resultado (mesma disciplina anti-spoiler). Vem ANTES do
+     CTA-link (fallback #3518). -->
+${renderIdentityFormBlock()}
 <!-- #3518: CTA de assinatura — estático (SEM dado de servidor, ao contrário
      do result-slot/share-card), revelado via JS junto com o resultado (voto
      novo OU repetido, ver script abaixo). Nunca antes do voto (mesma
@@ -584,6 +737,11 @@ ${renderBrandFooter(JOGAR_BRAND)}
   var email = token + "@web.eia.diaria.local";
   var emailInput = document.getElementById("jogar-email");
   if (emailInput) emailInput.value = email;
+  // #3975: expostos pro identityFormScript ler no submit do form de
+  // identidade (window.__jogarSessionEmail = pseudo-email desta sessão
+  // anônima; window.__jogarRepresentativeEdition = edição votada, usada
+  // pelo servidor pra derivar o monthSlug do índice mensal a migrar).
+  try { window.__jogarSessionEmail = email; window.__jogarRepresentativeEdition = edition; } catch (e) {}
 
   // #3516: "já votou" é só UX local (evita re-clique confuso) — a
   // deduplicação REAL/autoritativa continua no Durable Object VoteDedup do
@@ -599,16 +757,24 @@ ${renderBrandFooter(JOGAR_BRAND)}
   // novo abaixo, ou já-votou aqui). Bloco é estático (sem dado de servidor),
   // então só precisa desescondê-lo — nenhum fetch/injeção extra.
   var subscribeCta = document.getElementById("jogar-subscribe-cta");
-  // #3580: form de cadastro inline — revelado junto com o CTA-link, mesma
+  // #3975: form de identidade — revelado junto com o CTA-link, mesma
   // disciplina anti-spoiler (nunca antes do voto). Lido 1x, reusado nos 2
-  // caminhos (voto novo e já-votou).
-  var signupForm = document.getElementById("jogar-signup-form");
+  // caminhos (voto novo e já-votou). Se o jogador já está identificado
+  // (identityFormScript já escondeu o form e mostrou a nota "jogando como"),
+  // o re-sync silencioso mantém o score em dia sem reabrir nada.
+  var identityForm = document.getElementById("jogar-identity-form");
+  // #3975: identityFormScript já escondeu o form + mostrou "jogando como
+  // {email}" no load da página SE o jogador já está identificado — não
+  // reabrir o form nesse caso, só disparar o re-sync silencioso (sync() é
+  // no-op se não houver e-mail identificado, ver identityFormScript).
+  var alreadyIdentified = window.__jogarIdentify && window.__jogarIdentify.getIdentifiedEmail();
   if (already && form && alreadyBox) {
     form.hidden = true;
     alreadyBox.hidden = false;
     alreadyBox.textContent = "Você já votou na edição de hoje (escolha: " + already + "). Resultado na página do seu voto ou no leaderboard.";
     if (subscribeCta) subscribeCta.hidden = false;
-    if (signupForm) signupForm.hidden = false;
+    if (identityForm && !alreadyIdentified) identityForm.hidden = false;
+    if (window.__jogarIdentify) window.__jogarIdentify.sync(email, edition);
   } else if (form) {
     // #3517/#3983: intercepta o submit — em vez de deixar o browser navegar
     // pro /vote (comportamento nativo do form GET), busca a mesma URL via
@@ -656,11 +822,17 @@ ${renderBrandFooter(JOGAR_BRAND)}
         var parsed = new DOMParser().parseFromString(html, "text/html");
         var msgEl = parsed.querySelector(".msg");
         var imagesEl = parsed.querySelector(".result-images");
+        // #3984: descrição + crédito da foto real — mesma técnica de extração
+        // de imagesEl/shareCardEl (DOMParser sobre o HTML retornado por
+        // /vote), bloco ausente quando a edição não tem eiameta gravado
+        // (fallback silencioso, nada quebra).
+        var eiaMetaEl = parsed.querySelector("#jogar-eia-meta");
         var shareCardEl = parsed.querySelector("#jogar-share-card");
         if (!msgEl && !shareCardEl) { fallbackNativeNav(); return; }
         var out = "";
         if (msgEl) out += '<p class="result-msg">' + msgEl.innerHTML + "</p>";
         if (imagesEl) out += imagesEl.outerHTML;
+        if (eiaMetaEl) out += eiaMetaEl.outerHTML;
         if (shareCardEl) out += shareCardEl.outerHTML;
         if (checkingEl) checkingEl.hidden = true;
         resultSlot.innerHTML = out;
@@ -669,8 +841,10 @@ ${renderBrandFooter(JOGAR_BRAND)}
         // #3518: CTA de assinatura — revelado junto com o resultado do voto
         // NOVO (mesmo timing do share card acima).
         if (subscribeCta) subscribeCta.hidden = false;
-        // #3580: form de cadastro inline — mesmo timing.
-        if (signupForm) signupForm.hidden = false;
+        // #3975: form de identidade — mesmo timing/guard do caminho "já
+        // votou" acima (não reabre se já identificado; sync sempre tentado).
+        if (identityForm && !alreadyIdentified) identityForm.hidden = false;
+        if (window.__jogarIdentify) window.__jogarIdentify.sync(email, edition);
       }).catch(fallbackNativeNav);
     });
 
@@ -681,7 +855,7 @@ ${renderBrandFooter(JOGAR_BRAND)}
 })();
 </script>
 ${shareButtonScript("#jogar-result-slot")}
-${inlineSignupScript()}
+${identityFormScript()}
 </body>
 </html>`;
 }
@@ -909,6 +1083,23 @@ export function computeSeqSkipAndCredit(
  * página pública — nunca 500 por um param malformado do próprio cliente,
  * mesma disciplina do resto de jogar.ts).
  */
+/**
+ * Pure (#3977): texto do placar final da sequência com percentual —
+ * "Você acertou X de Y (Z%)!". `total === 0` evita divisão por zero (edge
+ * case defensivo, não deveria ocorrer em produção — `showFinal()` só roda
+ * com `total = editions.length > 0`, ver `renderJogarSequencePageHtml`
+ * abaixo, que já trata `total === 0` como emptyState ANTES de montar o
+ * script). Gêmeo TS testável da MESMA fórmula reimplementada literalmente em
+ * JS no `<script>` de `renderJogarSequencePageHtml` (`showFinal`) — mesma
+ * disciplina de `computeSeqSkipAndCredit` (ver header da seção acima):
+ * mudar um lado sem espelhar o outro diverge silenciosamente.
+ */
+export function formatSeqFinalScore(score: number, total: number): string {
+  if (total <= 0) return `Você acertou ${score} de ${total}!`;
+  const pct = Math.round((score / total) * 100);
+  return `Você acertou ${score} de ${total} (${pct}%)!`;
+}
+
 export function parseSeqStateEditionsParam(raw: string | null): string[] {
   if (!raw) return [];
   return raw
@@ -960,9 +1151,10 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
   // auto-avanço (`renderRoundResult`/`onChoice` no script abaixo) — nunca
   // mais "avança primeiro, revela depois" (isso era o Suspense, revertido).
   // A barra de progresso continua mostrando só "Par X de N" — um contador de
-  // acertos incremental fica pra uma issue futura (#3977, fora de escopo
-  // aqui), não porque vazaria spoiler (o reveal por rodada já é o ponto
-  // desta issue).
+  // acertos incremental POR RODADA (não a tela final) segue fora de escopo
+  // (não vazaria spoiler, mas não foi pedido) — o percentual de fim-de-jogo
+  // (#3977) é mostrado só na tela final (`.seq-final-score`, ver showFinal
+  // no script abaixo).
   const bodyHtml = total === 0 ? emptyStateHtml : `<p class="sub" id="seq-progress">Carregando sequência…</p>
 
 <noscript><p class="sub">A sequência precisa de JavaScript pra jogar. <a href="${leaderboardLink}">Ver leaderboard</a>.</p></noscript>
@@ -979,7 +1171,7 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
 </div>
 
 ${renderSubscribeCtaBlock()}
-${renderInlineSignupFormBlock()}`;
+${renderIdentityFormBlock()}`;
 
   const scriptHtml = total === 0 ? "" : `<script>
 (function () {
@@ -991,7 +1183,7 @@ ${renderInlineSignupFormBlock()}`;
   var playEl = document.getElementById("seq-play");
   var finalEl = document.getElementById("seq-final");
   var subscribeCta = document.getElementById("jogar-subscribe-cta");
-  var signupForm = document.getElementById("jogar-signup-form"); // #3580
+  var identityForm = document.getElementById("jogar-identity-form"); // #3975
 
   // #3595: ?reset=1 (ou ?reset) — limpa a identidade anônima local (token +
   // cookie) + qualquer cache legado por edição (eia_web_seq_result_*, o
@@ -999,12 +1191,16 @@ ${renderInlineSignupFormBlock()}`;
   // pelo /jogar/seq-state servidor-autoritativo abaixo) ANTES de resolver o
   // token. Só client-side — votos antigos sob o token velho permanecem no
   // servidor; o objetivo é só permitir re-testar do zero (editor/QA).
+  // #3975: também limpa 'eia_web_identified_email' — sem isso, ?reset=1
+  // trocava o token anônimo mas o identityFormScript continuava escondendo
+  // o form (achava que o browser já estava identificado com o e-mail antigo).
   (function maybeReset() {
     var params;
     try { params = new URLSearchParams(window.location.search); } catch (e) { return; }
     if (!params.has("reset")) return;
     try {
       window.localStorage.removeItem("eia_web_token");
+      window.localStorage.removeItem("eia_web_identified_email");
       var toRemove = [];
       for (var i = 0; i < window.localStorage.length; i++) {
         var k = window.localStorage.key(i);
@@ -1052,6 +1248,12 @@ ${renderInlineSignupFormBlock()}`;
   }
   var token = getOrCreateToken();
   var email = token + "@web.eia.diaria.local";
+  // #3975: expostos pro identityFormScript ler no submit do form de
+  // identidade. editions[0] é sempre válido aqui (scriptHtml só existe
+  // quando total > 0) e representa TODA a sequência — todas as edições
+  // compartilham o mesmo mês de conteúdo por construção
+  // (resolveJogarSequenceEditions filtra por 1 único mês).
+  try { window.__jogarSessionEmail = email; window.__jogarRepresentativeEdition = editions[0]; } catch (e) {}
 
   function imgUrl(edition, side) {
     return "/img/img-" + edition + "-01-eia-" + side + ".jpg";
@@ -1124,6 +1326,10 @@ ${renderInlineSignupFormBlock()}`;
       var parsed = new DOMParser().parseFromString(html, "text/html");
       var msgEl = parsed.querySelector(".msg");
       var imagesEl = parsed.querySelector(".result-images");
+      // #3984: descrição + crédito da foto real — mesma técnica de extração
+      // de imagesEl acima; ausente quando a edição não tem eiameta gravado
+      // (fallback silencioso).
+      var eiaMetaEl = parsed.querySelector("#jogar-eia-meta");
       var text = msgEl ? (msgEl.textContent || "") : "";
       var correct = null;
       if (text.indexOf("✅") === 0) correct = true;
@@ -1132,6 +1338,7 @@ ${renderInlineSignupFormBlock()}`;
         correct: correct,
         msgHtml: msgEl ? msgEl.innerHTML : "",
         imagesHtml: imagesEl ? imagesEl.outerHTML : "",
+        eiaMetaHtml: eiaMetaEl ? eiaMetaEl.outerHTML : "",
       };
     }).catch(function () {
       if (attempt < 1) return voteAndReveal(voteUrl, attempt + 1);
@@ -1159,6 +1366,7 @@ ${renderInlineSignupFormBlock()}`;
     resultEl.innerHTML =
       '<p class="result-msg">' + result.msgHtml + "</p>" +
       result.imagesHtml +
+      (result.eiaMetaHtml || "") +
       '<button type="button" class="seq-next-btn">Próxima rodada →</button>';
     resultEl.hidden = false;
     var advanced = false;
@@ -1209,6 +1417,11 @@ ${renderInlineSignupFormBlock()}`;
       }
       results[String(originalIndex)] = result.correct;
       renderRoundResult(result);
+      // #3975: re-sync silencioso pós-rodada — no-op se o jogador ainda não
+      // se identificou (sync() checa localStorage internamente e retorna
+      // cedo sem e-mail salvo). Se já identificado, mantém o score em dia
+      // rodada a rodada, sem esperar a tela final.
+      if (window.__jogarIdentify) window.__jogarIdentify.sync(email, edition);
     });
   }
 
@@ -1230,7 +1443,13 @@ ${renderInlineSignupFormBlock()}`;
       else if (results[key] === false) wrongIndices.push(idx);
     }
     wrongIndices.sort(function (a, b) { return a - b; });
-    if (scoreEl) scoreEl.textContent = "Você acertou " + score + " de " + total + "!";
+    // #3977: gêmeo JS de formatSeqFinalScore (jogar.ts, TS) — total > 0
+    // sempre aqui (showFinal só roda com editions.length > 0, ver bodyHtml
+    // acima que trata total===0 como emptyState antes do script existir).
+    if (scoreEl) {
+      var pct = total > 0 ? Math.round((score / total) * 100) : 0;
+      scoreEl.textContent = "Você acertou " + score + " de " + total + " (" + pct + "%)!";
+    }
     if (wrongEl) {
       if (wrongIndices.length > 0) {
         var pairLabels = wrongIndices.map(function (i) { return i + 1; }).join(", ");
@@ -1252,7 +1471,14 @@ ${renderInlineSignupFormBlock()}`;
       })
       .catch(function () {});
     if (subscribeCta) subscribeCta.hidden = false;
-    if (signupForm) signupForm.hidden = false;
+    // #3975: form de identidade — mesmo guard das rodadas (não reabre se já
+    // identificado; identityFormScript já mostrou "jogando como" no load).
+    var alreadyIdentified = window.__jogarIdentify && window.__jogarIdentify.getIdentifiedEmail();
+    if (identityForm && !alreadyIdentified) identityForm.hidden = false;
+    // Redundante com o sync() já disparado a cada rodada em onChoice (rede
+    // de segurança, idempotente) — editions[0] é representativo de TODA a
+    // sequência (mesmo mês de conteúdo, ver comentário em window.__jogarRepresentativeEdition acima).
+    if (window.__jogarIdentify) window.__jogarIdentify.sync(email, editions[0]);
   }
 
   choicesEl.addEventListener("click", function (ev) {
@@ -1300,7 +1526,7 @@ ${renderInlineSignupFormBlock()}`;
 })();
 </script>
 ${shareButtonScript("#seq-share-slot")}
-${inlineSignupScript()}`;
+${identityFormScript()}`;
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -1325,7 +1551,7 @@ ${seoMeta}
   .choice button:disabled { opacity: 0.5; cursor: not-allowed; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .scroll-hint { display: none; }
-  #seq-round-result[hidden], #seq-final[hidden], #jogar-subscribe-cta[hidden], #jogar-signup-form[hidden] { display: none; }
+  #seq-round-result[hidden], #seq-final[hidden], #jogar-subscribe-cta[hidden], #jogar-identity-form[hidden], #jogar-identified-note[hidden] { display: none; }
   .result-msg { font-family: ${DS_FONTS.serif}; font-size: 1.3rem; line-height: 1.4; margin: 20px 0; }
   /* #3983: reveal por rodada (destaque da imagem correta + botão "Próxima") —
      mesmo padrão visual do quiz relâmpago (.quiz-round-result). */
@@ -1339,6 +1565,11 @@ ${seoMeta}
   .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
   .result-image .label { font-family: ${DS_FONTS.sans}; font-size: 0.95rem; margin-top: 8px; color: ${DS_COLORS.ink}; font-weight: 600; }
   .result-image .you { display: inline-block; padding: 2px 8px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  /* #3984: descrição + crédito da foto real (bloco injetado via DOMParser a
+     partir da resposta de /vote, mesmas classes de votePageHtml/index.ts). */
+  .eia-meta { margin: 16px auto; max-width: 420px; font-family: ${DS_FONTS.sans}; text-align: left; }
+  .eia-meta-description { font-size: 0.95rem; margin: 0 0 6px 0; line-height: 1.5; }
+  .eia-meta-credit { font-size: 0.82rem; margin: 0; color: ${DS_COLORS.ink}; }
   .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
   .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
   .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }

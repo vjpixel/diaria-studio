@@ -185,10 +185,11 @@ describe("renderJogarSequencePageHtml (#3589)", () => {
     assert.deepEqual(resolveQuizResultParams("31", "31"), { score: 31, total: 31 });
   });
 
-  it("caixa de descoberta (rework #3518) e form inline (#3580) presentes, hidden por padrão", () => {
+  it("caixa de descoberta (rework #3518) e form de IDENTIDADE (#3975, supersede o form de assinatura #3580 nesta tela) presentes, hidden por padrão", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
     assert.match(html, /<div id="jogar-subscribe-cta" class="subscribe-cta" hidden>/);
-    assert.match(html, /<form id="jogar-signup-form" class="signup-form" hidden novalidate>/);
+    assert.match(html, /<form id="jogar-identity-form" class="signup-form" hidden novalidate>/);
+    assert.doesNotMatch(html, /id="jogar-signup-form"/, "o form de assinatura standalone do #3580 NÃO aparece mais na tela final da sequência");
   });
 
   it("NÃO linka pro arquivo (#3589 item 3 — nenhuma view web auto-promove /jogar/arquivo)", () => {

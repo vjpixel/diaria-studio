@@ -252,6 +252,7 @@ export function requiredSecretsForRoute(
   if (path === "/vote" && method === "GET") return ["POLL_SECRET"];
   if (path === "/set-name" && method === "GET") return ["POLL_SECRET"];
   if (path === "/admin/correct" && method === "POST") return ["ADMIN_SECRET"];
+  if (path === "/admin/eiameta" && method === "POST") return ["ADMIN_SECRET"]; // #3984
   return [];
 }
 
@@ -338,6 +339,11 @@ import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleJog
 // de index; index importa o handler de volta) é o mesmo padrão seguro já usado
 // por vote.ts/jogar.ts — valores só usados em request-time.
 import { handleJogarSubscribe } from "./subscribe";
+// #3975: identidade por e-mail no leaderboard do brand web (POST
+// /jogar/identify) — mesmo padrão de ciclo de import seguro de subscribe.ts
+// acima (identify.ts importa `json`/`corsHeaders` de index; index importa o
+// handler de volta), valores só usados em request-time.
+import { handleJogarIdentify } from "./identify";
 // #3521: widget embutível (iframe) pro EPIC #3514 — sites parceiros. Ver
 // rationale completo no header de embed.ts.
 import { handleEmbedPage } from "./embed";
@@ -563,6 +569,56 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria"): 
   return json({ ok: true, edition, answer, updated_votes: updated }, 200, env);
 }
 
+// ── /admin/eiameta ───────────────────────────────────────────────────────────
+
+/**
+ * #3984: descrição + crédito da imagem real do par "É IA?" — gravados em
+ * `eiameta:{edition}`, chave COMPARTILHADA sem prefixo de brand (mesmo
+ * racional de `correct:{edition}`: é um fato público sobre a edição, não
+ * dado de brand). Chamado por `scripts/close-poll.ts` (best-effort,
+ * fail-soft) logo depois de `/admin/correct` fechar o gabarito da diária, e
+ * por `scripts/backfill-eia-meta.ts` (one-time, edições retroativas).
+ *
+ * JSON body (não query params como `/admin/correct`) — descrição é texto
+ * livre potencialmente longo, mais robusto como body do que serializado em
+ * querystring. `sig` viaja no MESMO body, HMAC sobre `eiameta:{edition}:
+ * {description}:{credit}` (conteúdo INTEIRO assinado, não só edition — mesma
+ * disciplina de integridade de `handleAdminCorrect`, #3118 item 8; espelhado
+ * em `scripts/close-poll.ts` → `adminEiaMetaSig`).
+ *
+ * Anti-spoiler (item 3 da issue): NÃO escreve `correct:{edition}` nem
+ * verifica sua existência aqui — a defesa em profundidade fica no lado da
+ * LEITURA (`handleVote`/`handleVoteFastPath`, vote.ts, só repassam eiameta
+ * pro cliente quando `correct:{edition}` já existe). Escrever eiameta ANTES
+ * do gabarito fechar é inofensivo (nada lê essa chave até o gabarito abrir).
+ */
+async function handleAdminEiaMeta(request: Request, env: Env): Promise<Response> {
+  let body: { edition?: unknown; description?: unknown; credit?: unknown; sig?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return json({ error: "invalid json body" }, 400, env);
+  }
+  const edition = typeof body.edition === "string" ? body.edition : "";
+  const description = typeof body.description === "string" ? body.description : "";
+  const credit = typeof body.credit === "string" ? body.credit : "";
+  const sig = typeof body.sig === "string" ? body.sig : "";
+
+  if (!edition || !sig || (!description && !credit)) {
+    return json({ error: "missing params" }, 400, env);
+  }
+  if (!isValidVoteEditionFormat(edition)) {
+    return json({ error: "invalid edition format" }, 400, env);
+  }
+
+  const valid = await hmacVerify(env.ADMIN_SECRET, `eiameta:${edition}:${description}:${credit}`, sig);
+  if (!valid) return json({ error: "invalid signature" }, 403, env);
+
+  await env.POLL.put(`eiameta:${edition}`, JSON.stringify({ description, credit }));
+
+  return json({ ok: true, edition }, 200, env);
+}
+
 // ── Vote page HTML ────────────────────────────────────────────────────────────
 
 /**
@@ -596,6 +652,13 @@ export function votePageHtml(
    * /jogar (jogar.ts) extrai o MESMO bloco via DOMParser quando intercepta o
    * voto via fetch, sem sair da página. */
   shareCard?: { token: string; payload: SharePayload } | null,
+  /** #3984: descrição + crédito da imagem real do par, lidos de
+   * `eiameta:{edition}` (KV compartilhado, brand-independente) — só passado
+   * por handleVote/handleVoteFastPath quando `correct !== null` E o Worker
+   * tem `eiameta:{edition}` gravado (close-poll.ts, best-effort). Ausência é
+   * o caso comum pra edições antigas sem backfill — o bloco simplesmente não
+   * renderiza, nada quebra (fallback silencioso, ver rationale em vote.ts). */
+  eiaMeta?: { description: string; credit: string } | null,
 ): string {
   // #1083: htmlEscape no email (user-controlled) previne XSS via attribute
   // break. Sig é hex HMAC controlado pelo Worker — escape por consistência.
@@ -625,6 +688,12 @@ export function votePageHtml(
 
   // #1351: HTML pra mostrar imagens A e B com labels + highlight da clicada
   const imagesHtml = renderResultImagesHtml(resultImages);
+
+  // #3984: descrição + crédito da imagem real, quando disponíveis. Bloco tem
+  // `id="jogar-eia-meta"` — jogar.ts (voteAndReveal/onChoice, sequência e par
+  // único) extrai esse MESMO bloco via DOMParser quando intercepta o voto via
+  // fetch, mesma técnica já usada pra `.result-images`/`#jogar-share-card`.
+  const eiaMetaHtml = renderEiaMetaHtml(eiaMeta);
 
   // #3517: card de compartilhamento (só quando shareCard foi passado — hoje
   // só brand="web"). O script de wiring dos botões (Web Share API + fallback
@@ -680,6 +749,10 @@ export function votePageHtml(
      ~3:1 de contraste (abaixo de AA 4.5:1); ink+onInk dá ~15:1. Teal é SÓ
      texto no design system (design-tokens.ts) — botões/badges cheios usam ink. */
   .result-image .you { display: inline-block; padding: 2px 8px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  /* #3984: descrição + crédito da foto real, exibidos na revelação. */
+  .eia-meta { margin: 16px auto; max-width: 420px; font-family: ${DS_FONTS.sans}; }
+  .eia-meta-description { font-size: 0.95rem; margin: 0 0 6px 0; line-height: 1.5; }
+  .eia-meta-credit { font-size: 0.82rem; margin: 0; color: ${DS_COLORS.ink}; }
   /* #3517: card de compartilhamento pós-jogo — mesmo padrão visual de
      .nick-box (fundo paperAlt, cantos arredondados). */
   .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
@@ -731,6 +804,7 @@ export function votePageHtml(
 <body>
 <p class="msg">${htmlEscape(message)}</p>
 ${imagesHtml}
+${eiaMetaHtml}
 ${shareCardHtml}
 ${formHtml}
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-footer", "eia-vote-footer"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
@@ -777,6 +851,25 @@ export function renderResultImagesHtml(resultImages: VoteResultImages | null | u
   return `<div class="result-images">
 ${renderSide("A")}
 ${renderSide("B")}
+</div>`;
+}
+
+/**
+ * Pure (#3984): HTML da descrição + crédito da imagem REAL do par, exibido
+ * na revelação (junto com `.result-images`). Crédito é sempre da foto real —
+ * a imagem gerada por IA não tem fotógrafo (nota do editor na issue).
+ * `null`/campos ambos vazios → "" (fallback silencioso — edições sem
+ * backfill de #3984 continuam revelando normalmente, só sem este bloco).
+ */
+export function renderEiaMetaHtml(eiaMeta: { description: string; credit: string } | null | undefined): string {
+  if (!eiaMeta) return "";
+  const { description, credit } = eiaMeta;
+  if (!description && !credit) return "";
+  const descriptionHtml = description ? `<p class="eia-meta-description">${htmlEscape(description)}</p>` : "";
+  const creditHtml = credit ? `<p class="eia-meta-credit">${htmlEscape(credit)}</p>` : "";
+  return `<div class="eia-meta" id="jogar-eia-meta">
+${descriptionHtml}
+${creditHtml}
 </div>`;
 }
 
@@ -1180,6 +1273,15 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     }
     if (path === "/set-name" && request.method === "GET") return handleSetName(url, bEnv, brand);
     if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, bEnv, brand);
+    // #3984: `env` CRU (não `bEnv`) — eiameta é brand-independente, mesmo
+    // racional de `correct:{edition}` (ver handleAdminEiaMeta acima).
+    if (path === "/admin/eiameta" && request.method === "POST") return handleAdminEiaMeta(request, env);
+    // #3975: identidade por e-mail no leaderboard do brand web. `bEnv` (não
+    // `env` cru) — precisa dos scores BRANDED (`web:score:*`), mesmo padrão
+    // de `/vote`/`/set-name`. Client sempre chama com `?brand=web` (ver
+    // identityFormScript em jogar.ts) — `bEnv` já reflete isso via
+    // `parseBrandParam` no topo de `fetch()`.
+    if (path === "/jogar/identify" && request.method === "POST") return handleJogarIdentify(request, bEnv);
     // #HEAD: clientes que fazem preflight HEAD antes de baixar a imagem (ex: Make.com/LinkedIn
     // ao validar a URL antes do upload) recebiam 404 aqui mesmo com o GET retornando 200 —
     // a rota só aceitava GET. O runtime do Workers descarta o body automaticamente em respostas
@@ -1187,5 +1289,5 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/identify", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/img/{key}"] }, 404, env);
 }

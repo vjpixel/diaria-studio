@@ -253,6 +253,25 @@ export function isValidWebToken(email: string): boolean {
 }
 
 /**
+ * #3975: true quando `email` está sob o domínio reservado da identidade
+ * anônima do brand `web` (`@web.eia.diaria.local`) — DELIBERADAMENTE mais
+ * amplo que `isValidWebToken` (que só aceita a forma UUID v4 exata): aqui
+ * qualquer local-part sob o domínio conta, inclusive lixo histórico que já
+ * escapou do guard de escrita #3976 antes dele existir (ex: a entrada
+ * fantasma "verify1840428@web.eia.diaria.local" do achado #3976). Usado só
+ * como filtro de EXIBIÇÃO pública do leaderboard (#3975 item 4) — nunca pra
+ * autorizar/rejeitar escrita (isso continua sendo `isValidWebToken`, em
+ * `handleVote`/`handleJogarSeqState`). Entradas não-identificadas continuam
+ * existindo no KV (nunca apagadas) — só ficam fora do ranking PÚBLICO até o
+ * jogador se identificar via `POST /jogar/identify` (identify.ts).
+ */
+export function isAnonymousWebIdentity(email: string): boolean {
+  const at = email.indexOf("@");
+  if (at < 0) return false;
+  return email.slice(at + 1).toLowerCase() === WEB_TOKEN_DOMAIN;
+}
+
+/**
  * #3118 (item 3) / #3279 (charset hardening): valida a FORMA do componente
  * `edition` da chave KV — não só o comprimento. Aceita só os 2 formatos
  * legítimos usados pelo pipeline: AAMMDD legado (`AAMMDD_RE`, diária) ou ciclo

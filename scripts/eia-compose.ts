@@ -102,6 +102,9 @@ interface EiaMeta {
     subject_wikipedia_url: string | null;
     license_url: string | null;
     image_date_used: string;
+    // #3984: frase de descrição em texto plano (pt-BR traduzida quando
+    // disponível) — ver `description` em EiaMetaSchema.
+    description?: string;
   };
   // #2869: rastreabilidade de COMO `edition` foi escolhida — só presente
   // quando o caller (mensal) passa `--selection`/`--pct-correct`. Ausente na
@@ -1095,6 +1098,13 @@ async function main(): Promise<void> {
     process.stderr.write('[eia-compose] warn: tradução pt-BR indisponível — usando firstSentence EN\n');
   }
   const creditLine = buildCreditLine(image, { ptLabel, ptWikipediaUrl, translatedSentence });
+  // #3984: frase de descrição em texto plano (sem markdown/links) — mesma
+  // fonte que buildCreditLine usa internamente pra montar `sentence`
+  // (traduzida pt-BR quando disponível, fallback EN), mas separada aqui pra
+  // gravar em 01-eia-meta.json e viajar pipeline→KV→revelação do jogo (o
+  // creditLine acima é só pro corpo de 01-eia.md, nunca chega no Worker).
+  const descriptionSentence =
+    translatedSentence ?? firstSentence(stripHtml(image.description?.text ?? ""));
   const prevStats = readPrevPollStats(outDir);
   const prevResultLine = buildPrevResultLine(prevStats);
   const mdPath = resolve(outDir, "01-eia.md");
@@ -1122,6 +1132,11 @@ async function main(): Promise<void> {
       subject_wikipedia_url: subjectWikipediaUrl,
       license_url: image.license?.url ?? null,
       image_date_used: imageDate,
+      // #3984: omite o campo por completo quando vazio, em vez de gravar ""
+      // ruidoso — mesma disciplina do `selection`/`pct_correct` (#2869) logo
+      // abaixo (spread condicional preserva 01-eia-meta.json idêntico ao
+      // formato pré-#3984 quando não há descrição).
+      ...(descriptionSentence ? { description: descriptionSentence } : {}),
     },
     // #2869: só grava quando o caller informou (mensal) — omitir os campos
     // por completo na composição diária, em vez de escrever undefined/null
