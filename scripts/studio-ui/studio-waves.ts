@@ -10,13 +10,15 @@
  *
  * **Isto continua sendo só visualização.** Nada NESTE arquivo dispara
  * worktree, subagente implementador, PR ou merge — só compõe a proposta de
- * onda (clusters + teto de concorrência). A execução de fato (#3702) mora em
- * `studio-wave-fire.ts`/`POST /api/waves/fire`, gateada por
- * `STUDIO_WAVE_FIRE_ENABLED` e nunca validada ao vivo — o botão "disparar
- * onda" da UI (`public/triagem.js`) segue deliberadamente desabilitado até
- * essa validação acontecer (ver doc-comment de `studio-wave-fire.ts`). O
- * objetivo desta fatia continua sendo dar ao editor a MESMA visão que o
- * coordenador do `/diaria-develop` monta manualmente no Gate de Onda.
+ * onda (clusters + teto de concorrência). A execução de fato ficava em
+ * `studio-wave-fire.ts`/`POST /api/waves/fire` (#3702) — removido em #3720
+ * (decisão do editor, 260724): 2 tentativas de validação ao vivo sem sucesso
+ * (#3914) e o job-to-be-done já é alcançável via chat drawer (#3556) +
+ * `/diaria-develop` digitado diretamente, sem precisar de coordenadora
+ * dedicada. O objetivo desta fatia continua sendo dar ao editor a MESMA
+ * visão que o coordenador do `/diaria-develop` monta manualmente no Gate de
+ * Onda — disparar a onda de fato acontece pelo chat drawer, não por um botão
+ * dedicado nesta página.
  *
  * Heurística de extração de arquivo (não é o mesmo grep-com-julgamento que o
  * coordenador faz lendo a issue inteira — aqui é regex puro sobre

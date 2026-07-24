@@ -135,9 +135,10 @@
         até o teto de <span id="wave-max-concurrency">6</span> concorrentes —
         mesma regra do "Paralelização segura" em
         <code>.claude/skills/diaria-develop/SKILL.md</code>. Considera só
-        issues elegíveis. <strong>Preview read-only</strong>: disparar a onda
-        (worktrees + implementadores) depende da sessão de chat/ações
-        (#3556/#3557), ainda não construída.
+        issues elegíveis. <strong>Preview read-only</strong>: para disparar a
+        onda de fato, use o chat drawer (sessão real do Agent SDK) digitando
+        <code>/diaria-develop --issues N,M</code> — mesmo mecanismo do
+        terminal, já em produção.
       </p>
       <div id="waves-error" class="panel alert-banner" role="alert" hidden></div>
       <div class="wave-summary">
@@ -153,14 +154,6 @@
       <div id="wave-capacity-warning" class="alert-banner" role="alert" hidden></div>
       <h3>Clusters de conflito</h3>
       <div id="wave-clusters" class="cluster-list"></div>
-      <button id="fire-wave-btn" type="button" disabled title="backend pronto (POST /api/waves/fire, #3702) mas requer validação ao vivo contra o SDK real + habilitação explícita antes de ligar este botão — ver #3702">
-        Disparar esta onda
-      </button>
-      <p class="hint" id="fire-wave-reason">
-        Desabilitado: backend pronto (<code>POST /api/waves/fire</code>, #3702) mas
-        requer validação ao vivo contra o SDK real + habilitação explícita antes de
-        ligar este botão — ver #3702.
-      </p>
     </section>
   </main>
 

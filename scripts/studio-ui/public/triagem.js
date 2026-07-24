@@ -37,7 +37,6 @@ const el = {
   waveCapacityWarning: document.getElementById("wave-capacity-warning"),
   waveClusters: document.getElementById("wave-clusters"),
   waveMaxConcurrency: document.getElementById("wave-max-concurrency"),
-  fireWaveBtn: document.getElementById("fire-wave-btn"),
 };
 
 /** Snapshot bruto da última resposta de /api/issues — filtros nunca refetcham. */
