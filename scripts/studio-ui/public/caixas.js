@@ -40,7 +40,9 @@ const el = {
   editorTitle: document.getElementById("editor-title"),
   editorFile: document.getElementById("editor-file"),
   editorNome: document.getElementById("editor-nome"),
-  editor: document.getElementById("editor"),
+  editorCategoria: document.getElementById("editor-categoria"), // #3981
+  editorConteudo: document.getElementById("editor-conteudo"), // #3979 (era "editor")
+  editorNotas: document.getElementById("editor-notas"), // #3979
   editorLoadError: document.getElementById("editor-load-error"),
   saveBtn: document.getElementById("save-btn"),
   closeEditorBtn: document.getElementById("close-editor-btn"),
@@ -50,6 +52,7 @@ const el = {
   createPanel: document.getElementById("create-panel"),
   createSlug: document.getElementById("create-slug"),
   createNome: document.getElementById("create-nome"),
+  createCategoria: document.getElementById("create-categoria"), // #3981
   createContent: document.getElementById("create-content"),
   createSubmitBtn: document.getElementById("create-submit-btn"),
   createCancelBtn: document.getElementById("create-cancel-btn"),
@@ -153,6 +156,8 @@ function renderList() {
     const card = document.createElement("div");
     card.className = "box-card";
     const slotBadge = box.slot ? `<span class="box-slot-badge">slot ${escapeHtml(String(box.slot))}</span>` : "";
+    // #3981: rótulo exibido acima da caixa na newsletter (quando ocupa um slot ativo).
+    const categoriaBadge = box.categoria ? `<span class="box-categoria-badge">${escapeHtml(box.categoria)}</span>` : "";
     const dirtyBadge = box.dirtyVsGit
       ? `<span class="box-dirty-badge" title="alteração local — entra no repo no próximo commit">modificado vs git</span>`
       : "";
@@ -173,6 +178,7 @@ function renderList() {
       <div class="box-card-head">
         <span class="box-title">${escapeHtml(box.title)}</span>
         ${slotBadge}
+        ${categoriaBadge}
         ${dirtyBadge}
       </div>
       ${contentTitleLine}
@@ -360,8 +366,10 @@ function closeEditor() {
   loadedModifiedAt = null;
   dirty = false;
   el.editorPanel.hidden = true;
-  el.editor.value = "";
+  el.editorConteudo.value = "";
+  el.editorNotas.value = "";
   el.editorNome.value = "";
+  el.editorCategoria.value = "";
 }
 
 async function openEditor(slug) {
@@ -375,15 +383,18 @@ async function openEditor(slug) {
   el.editorPanel.hidden = false;
   el.editorTitle.textContent = "Editando…";
   el.editorFile.textContent = `context/snippets/${slug}`;
-  el.editor.value = "";
-  el.editor.disabled = true;
+  el.editorConteudo.value = "";
+  el.editorNotas.value = "";
+  el.editorConteudo.disabled = true;
+  el.editorNotas.disabled = true;
   el.editorLoadError.hidden = true;
   el.saveStatus.textContent = "";
   el.saveStatus.className = "cx-save-status";
   el.editorPanel.scrollIntoView({ behavior: "smooth", block: "start" });
 
   const { ok, body } = await fetchJson(`/api/boxes/${encodeURIComponent(slug)}`);
-  el.editor.disabled = false;
+  el.editorConteudo.disabled = false;
+  el.editorNotas.disabled = false;
   if (!ok || !body || !body.ok) {
     el.editorTitle.textContent = `context/snippets/${slug}`;
     el.editorLoadError.hidden = false;
@@ -391,31 +402,44 @@ async function openEditor(slug) {
     return;
   }
   el.editorTitle.textContent = `context/snippets/${slug}`;
-  // #3933: o textarea mostra o BODY (sem a linha `nome:`); o nome interno vai
-  // no campo dedicado. Fallback pra `content` bruto se o server for antigo.
-  el.editor.value = body.body ?? body.content;
+  // #3979: 2 painéis — "Conteúdo" (o que renderiza) e "Notas" (resto do
+  // header de comentário, sem nome:/categoria:). Fallback pro `body` legado
+  // (#3933, header inteiro menos nome:) se o server for antigo demais pra
+  // devolver `conteudo`/`notas` separados.
+  el.editorConteudo.value = body.conteudo ?? body.body ?? body.content;
+  el.editorNotas.value = body.notas ?? "";
   el.editorNome.value = body.nome ?? "";
+  el.editorCategoria.value = body.categoria ?? ""; // #3981
   loadedModifiedAt = body.modifiedAt ?? null;
 }
 
 async function saveCurrentBox() {
   if (!currentSlug) return;
   const slugAtSaveStart = currentSlug;
-  // #3933: envia `nome` (campo dedicado) + `body` (textarea) — o server
-  // reconstrói o conteúdo (upsert do `nome:` no header).
-  const bodyAtSaveStart = el.editor.value;
+  // #3979/#3981: envia os 2 campos dedicados (nome, categoria) + os 2
+  // painéis (conteudo, notas) — o server reconstrói o header inteiro.
+  const conteudoAtSaveStart = el.editorConteudo.value;
+  const notasAtSaveStart = el.editorNotas.value;
   const nomeAtSaveStart = el.editorNome.value;
+  const categoriaAtSaveStart = el.editorCategoria.value;
   const expectedModifiedAtAtSaveStart = loadedModifiedAt;
 
   el.saveBtn.disabled = true;
   el.saveStatus.textContent = "Salvando…";
   el.saveStatus.className = "cx-save-status";
   const putUrl = `/api/boxes/${encodeURIComponent(slugAtSaveStart)}`;
+  const putBody = () => ({
+    nome: nomeAtSaveStart,
+    categoria: categoriaAtSaveStart,
+    notas: notasAtSaveStart,
+    conteudo: conteudoAtSaveStart,
+    expectedModifiedAt: expectedModifiedAtAtSaveStart,
+  });
   try {
     let { ok, status, body } = await fetchJson(putUrl, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ nome: nomeAtSaveStart, body: bodyAtSaveStart, expectedModifiedAt: expectedModifiedAtAtSaveStart }),
+      body: JSON.stringify(putBody()),
     });
 
     // #3729 (reusado, ver caixas-guards.js): 409 = o mtime em disco mudou
@@ -428,7 +452,13 @@ async function saveCurrentBox() {
         ({ ok, status, body } = await fetchJson(putUrl, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ nome: nomeAtSaveStart, body: bodyAtSaveStart, force: true }),
+          body: JSON.stringify({
+            nome: nomeAtSaveStart,
+            categoria: categoriaAtSaveStart,
+            notas: notasAtSaveStart,
+            conteudo: conteudoAtSaveStart,
+            force: true,
+          }),
         }));
       } else {
         el.saveStatus.textContent = "Não salvo — recarregando a versão mais recente do disco…";
@@ -553,6 +583,7 @@ async function fetchArchived() {
 function openCreatePanel() {
   el.createSlug.value = "";
   el.createNome.value = "";
+  el.createCategoria.value = "";
   el.createContent.value = "";
   el.createStatus.textContent = "";
   el.createStatus.className = "cx-save-status";
@@ -580,7 +611,12 @@ async function submitNewBox() {
     const { ok, status, body } = await fetchJson("/api/boxes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slug: check.slug, nome: el.createNome.value, content: el.createContent.value }),
+      body: JSON.stringify({
+        slug: check.slug,
+        nome: el.createNome.value,
+        categoria: el.createCategoria.value, // #3981
+        content: el.createContent.value,
+      }),
     });
     if (ok && body && body.ok) {
       el.createStatus.textContent = `Criada ${fmtTime(body.modifiedAt)}`;
@@ -610,10 +646,16 @@ el.slotsSaveBtn.addEventListener("click", () => saveSlots());
 el.retryBtn.addEventListener("click", () => fetchBoxes());
 el.closeEditorBtn.addEventListener("click", () => closeEditor());
 el.saveBtn.addEventListener("click", () => saveCurrentBox());
-el.editor.addEventListener("input", () => {
+el.editorConteudo.addEventListener("input", () => {
+  dirty = true;
+});
+el.editorNotas.addEventListener("input", () => {
   dirty = true;
 });
 el.editorNome.addEventListener("input", () => {
+  dirty = true;
+});
+el.editorCategoria.addEventListener("input", () => {
   dirty = true;
 });
 

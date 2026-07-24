@@ -59,6 +59,11 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import {
+  extractHeaderRemainder,
+  stripHeaderBlock,
+  buildContentWithHeader,
+} from "../lib/shared/snippet-header.ts"; // #3979/#3981 — helpers genéricos de header compartilhados com o render (newsletter-parse.ts)
 
 // ── slug / path ──────────────────────────────────────────────────────────
 
@@ -179,6 +184,19 @@ export function parseBoxNome(content: string): string | null {
   return line ? line[1].trim() : null;
 }
 
+/** Extrai o `categoria:` do header de comentário (#3981) — mesmo contrato de
+ * `parseBoxNome` (#3933): case-insensitive, só o 1º comentário, `null` se
+ * ausente. Valor é o rótulo exibido como kicker acima do box na newsletter
+ * (ver `readBoxDivulgacaoCategoriaForSlot` em `scripts/lib/newsletter-parse.ts`,
+ * que lê este MESMO campo direto do disco no momento do render). Nunca
+ * lança. */
+export function parseBoxCategoria(content: string): string | null {
+  const inner = leadingCommentInner(content);
+  if (inner === null) return null;
+  const line = /^[ \t]*categoria[ \t]*:[ \t]*(.+?)[ \t]*$/im.exec(inner);
+  return line ? line[1].trim() : null;
+}
+
 /** Remove a linha `nome:` do header de comentário (#3933), devolvendo o "body"
  * que o editor vê no textarea (o resto do header + o conteúdo). Se o header
  * ficar só com espaço em branco depois, remove o bloco de comentário inteiro
@@ -223,6 +241,53 @@ export function resolveBoxDisplayName(content: string, slug: string): string {
   if (nome) return truncateTitle(nome);
   const derived = extractBoxTitle(content);
   return derived === "(vazio)" ? slug : derived;
+}
+
+// ── notas vs. conteúdo — 2 painéis separados no editor (#3979) ────────────
+//
+// Antes (#3933): o textarea único do editor mostrava `body` = header (menos
+// `nome:`) + conteúdo, tudo misturado. #3979 separa em 2 painéis: "Conteúdo"
+// (o que renderiza na edição — `extractBoxConteudo`) e "Notas" (o resto do
+// header de comentário, MENOS `nome:`/`categoria:` — que têm campo dedicado
+// — `extractBoxNotas`). `buildBoxContent` recompõe os 2 painéis + os 2
+// campos dedicados de volta no arquivo.
+
+/** Texto do painel "Notas" (#3979): o header de comentário MENOS as linhas
+ * `nome:`/`categoria:` (que têm campo dedicado próprio), trimado. `""` se
+ * não há header, ou se o header só tinha `nome:`/`categoria:`. Nunca lança. */
+export function extractBoxNotas(content: string): string {
+  return extractHeaderRemainder(content, ["nome", "categoria"]);
+}
+
+/** Texto do painel "Conteúdo" (#3979): o arquivo com o bloco de
+ * comentário-header INTEIRO removido — exatamente o que
+ * `readSnippetFile`/`stitch-newsletter.ts` injeta na newsletter. Sem header
+ * -> devolve o conteúdo como está. Nunca lança. */
+export function extractBoxConteudo(content: string): string {
+  return stripHeaderBlock(content);
+}
+
+/** Recompõe o arquivo da caixa a partir dos 4 campos que o editor de 2
+ * painéis (#3979/#3981) edita: `nome`/`categoria` (campos dedicados, viram
+ * linhas `key: value` no header, nessa ordem, omitidas se vazias) + `notas`
+ * (texto livre, resto do header) + `conteudo` (o que renderiza). Sem
+ * nome/categoria/notas -> sem comentário no topo (conteúdo puro). Byte-
+ * estável em round-trip: `buildBoxContent(readBox-fields, conteudo) ===`
+ * conteúdo original, desde que o arquivo siga a convenção canônica (header
+ * `<!--\n...\n-->` seguido de 1 linha em branco + conteúdo — ver
+ * test/studio-boxes.test.ts). Nunca lança. */
+export function buildBoxContent(
+  fields: { nome?: string | null; categoria?: string | null; notas?: string | null },
+  conteudo: string | null | undefined,
+): string {
+  return buildContentWithHeader(
+    [
+      { key: "nome", value: fields.nome },
+      { key: "categoria", value: fields.categoria },
+    ],
+    fields.notas,
+    conteudo,
+  );
 }
 
 // ── slots (platform.config.json → boxes_divulgacao, somente leitura) ────
@@ -516,6 +581,9 @@ export interface BoxListEntry {
   /** `nome:` interno explícito do header, ou `null` se a caixa não tem um
    * (título derivado do conteúdo). #3933. */
   nome: string | null;
+  /** `categoria:` do header (#3981) — rótulo exibido como kicker acima do
+   * box na newsletter quando o slug ocupa um slot ativo. `null` se ausente. */
+  categoria: string | null;
   /** Título derivado do CONTEÚDO (`extractBoxTitle`) — o que renderiza na
    * edição. A UI mostra "na edição: …" quando difere de `title`. #3933. */
   contentTitle: string;
@@ -545,6 +613,7 @@ export function listBoxes(rootDir: string): BoxListEntry[] {
       slug: filename,
       title: resolveBoxDisplayName(content, filename),
       nome: parseBoxNome(content),
+      categoria: parseBoxCategoria(content),
       contentTitle: extractBoxTitle(content),
       mtimeIso,
       slot: slots[filename] ?? null,
@@ -564,9 +633,17 @@ export interface BoxContentState {
   content: string;
   /** `nome:` interno parseado do header (#3933), ou `null`. */
   nome?: string | null;
+  /** `categoria:` parseado do header (#3981), ou `null`. */
+  categoria?: string | null;
   /** Conteúdo SEM a linha `nome:` — o que o textarea do editor mostra (#3933).
-   * O campo "Nome interno" separado edita o `nome`. */
+   * O campo "Nome interno" separado edita o `nome`. Mantido pra compat; a UI
+   * atual (#3979) usa `notas`/`conteudo` (painéis separados). */
   body?: string;
+  /** Painel "Notas" (#3979): header MENOS `nome:`/`categoria:`, trimado. */
+  notas?: string;
+  /** Painel "Conteúdo" (#3979): o arquivo com o header inteiro removido — o
+   * que renderiza na newsletter. */
+  conteudo?: string;
   modifiedAt: string | null;
 }
 
@@ -584,7 +661,17 @@ export function readBox(rootDir: string, slug: string): BoxContentState {
   }
   const content = readFileSync(filePath, "utf8");
   const modifiedAt = statSync(filePath).mtime.toISOString();
-  return { ok: true, slug, content, nome: parseBoxNome(content), body: stripNomeLine(content), modifiedAt };
+  return {
+    ok: true,
+    slug,
+    content,
+    nome: parseBoxNome(content),
+    categoria: parseBoxCategoria(content),
+    body: stripNomeLine(content),
+    notas: extractBoxNotas(content),
+    conteudo: extractBoxConteudo(content),
+    modifiedAt,
+  };
 }
 
 // ── escrita de 1 caixa (guard de mtime #3729, reusado de studio-review.ts) ─
@@ -807,6 +894,8 @@ export interface ArchivedBoxEntry {
   slug: string;
   title: string;
   nome: string | null;
+  /** `categoria:` do header (#3981) — ver `BoxListEntry.categoria`. */
+  categoria: string | null;
   contentTitle: string;
   mtimeIso: string;
 }
@@ -829,6 +918,7 @@ export function listArchivedBoxes(rootDir: string): ArchivedBoxEntry[] {
       slug: filename,
       title: resolveBoxDisplayName(content, filename),
       nome: parseBoxNome(content),
+      categoria: parseBoxCategoria(content),
       contentTitle: extractBoxTitle(content),
       mtimeIso: statSync(filePath).mtime.toISOString(),
     };

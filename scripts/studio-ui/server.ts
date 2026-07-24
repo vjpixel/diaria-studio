@@ -356,6 +356,7 @@ import {
   unarchiveBox,
   listArchivedBoxes,
   buildBoxContentWithNome,
+  buildBoxContent, // #3979/#3981 — modo {nome, categoria, notas, conteudo}
   readBoxSlotsState,
   saveBoxSlots,
 } from "./studio-boxes.ts";
@@ -1277,21 +1278,38 @@ async function handleApiBoxSave(
   const parsed = body as {
     content?: unknown;
     body?: unknown;
+    conteudo?: unknown;
     nome?: unknown;
+    categoria?: unknown;
+    notas?: unknown;
     expectedModifiedAt?: unknown;
     force?: unknown;
   } | null;
-  // #3933: dois modos aceitos. NOVO — `{nome, body}`: o server reconstrói o
-  // conteúdo (upsert do `nome:` no header). LEGADO — `{content}`: usa o
-  // conteúdo bruto como veio (mantém compat com callers que não separam nome).
+  // 3 modos aceitos, checados nessa ordem (mais novo primeiro):
+  //   1. #3979/#3981 — `{nome, categoria, notas, conteudo}`: os 2 painéis do
+  //      editor (Conteúdo | Notas) + os 2 campos dedicados (Nome interno |
+  //      Categoria). O server RECONSTRÓI o header inteiro a partir desses 4
+  //      valores (`buildBoxContent` — reconstrução completa, não upsert
+  //      cirúrgico, porque a UI de 2 painéis edita o header inteiro).
+  //   2. #3933 (legado) — `{nome, body}`: upsert cirúrgico só do `nome:`
+  //      dentro de um header pré-existente (`buildBoxContentWithNome`).
+  //   3. Legado original (#3924) — `{content}`: conteúdo bruto como veio.
   let content: string;
-  if (typeof parsed?.body === "string") {
+  if (typeof parsed?.conteudo === "string") {
+    const nome = typeof parsed.nome === "string" ? parsed.nome : "";
+    const categoria = typeof parsed.categoria === "string" ? parsed.categoria : "";
+    const notas = typeof parsed.notas === "string" ? parsed.notas : "";
+    content = buildBoxContent({ nome, categoria, notas }, parsed.conteudo);
+  } else if (typeof parsed?.body === "string") {
     const nome = typeof parsed.nome === "string" ? parsed.nome : "";
     content = buildBoxContentWithNome(nome, parsed.body);
   } else if (typeof parsed?.content === "string") {
     content = parsed.content;
   } else {
-    sendJson(res, 400, { error: "corpo precisa de 'body' (string, com 'nome' opcional) ou 'content' (string, legado)" });
+    sendJson(res, 400, {
+      error:
+        "corpo precisa de 'conteudo' (string, com 'nome'/'categoria'/'notas' opcionais), 'body' (string, com 'nome' opcional, legado) ou 'content' (string, legado)",
+    });
     return;
   }
   let expectedModifiedAt: string | null | undefined;
@@ -1310,10 +1328,10 @@ async function handleApiBoxSave(
 }
 
 /** `POST /api/boxes` — cria uma caixa NOVA (#3928). Body `{slug, content}` +
- * `nome` opcional (#3933 — se presente, o server injeta um header `<!-- nome:
- * X -->` no conteúdo). 201 criada, 409 já existe (viva ou arquivada), 400
- * slug/corpo inválido. `createBox` é fail-soft; só o parse de corpo é tratado
- * aqui. */
+ * `nome`/`categoria` opcionais (#3933/#3981 — se presentes, o server monta um
+ * header `<!--\nnome: X\ncategoria: Y\n-->` no conteúdo). 201 criada, 409 já
+ * existe (viva ou arquivada), 400 slug/corpo inválido. `createBox` é
+ * fail-soft; só o parse de corpo é tratado aqui. */
 async function handleApiBoxCreate(
   rootDir: string,
   req: IncomingMessage,
@@ -1326,7 +1344,7 @@ async function handleApiBoxCreate(
     sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
     return;
   }
-  const parsed = body as { slug?: unknown; content?: unknown; nome?: unknown } | null;
+  const parsed = body as { slug?: unknown; content?: unknown; nome?: unknown; categoria?: unknown } | null;
   const slug = parsed?.slug;
   const content = parsed?.content;
   if (typeof slug !== "string" || !slug) {
@@ -1338,7 +1356,9 @@ async function handleApiBoxCreate(
     return;
   }
   const nome = typeof parsed?.nome === "string" ? parsed.nome : "";
-  const finalContent = nome.trim() ? buildBoxContentWithNome(nome, content) : content;
+  const categoria = typeof parsed?.categoria === "string" ? parsed.categoria : "";
+  const finalContent =
+    nome.trim() || categoria.trim() ? buildBoxContent({ nome, categoria, notas: "" }, content) : content;
   const result = createBox(rootDir, slug, finalContent);
   const status = result.ok ? 201 : result.exists ? 409 : 400;
   sendJson(res, status, result);

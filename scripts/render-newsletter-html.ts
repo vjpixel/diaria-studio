@@ -53,6 +53,8 @@ export {
   readBoxDivulgacao1Image,
   readBoxDivulgacao2Image,
   readBoxDivulgacao3Image,
+  readBoxDivulgacaoCategoriaForSlot, // #3981
+
   isBoxDivulgacaoLivros,
   extractContent,
   unescapeMd,

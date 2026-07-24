@@ -39,8 +39,12 @@ import {
   listArchivedBoxes,
   archivedBoxFilePath,
   parseBoxNome,
+  parseBoxCategoria,
   stripNomeLine,
   buildBoxContentWithNome,
+  extractBoxNotas,
+  extractBoxConteudo,
+  buildBoxContent,
   resolveBoxDisplayName,
   readBoxSlotsState,
   replaceBoxesDivulgacaoBlock,
@@ -536,6 +540,125 @@ describe("resolveBoxDisplayName (#3933)", () => {
   it("só-comentário/vazio cai no slug", () => {
     assert.equal(resolveBoxDisplayName("<!--\ndoc\n-->", "minha-caixa.md"), "minha-caixa.md");
     assert.equal(resolveBoxDisplayName("", "vazia.md"), "vazia.md");
+  });
+});
+
+// ─── categoria: rótulo pra newsletter, notas/conteúdo separados (pura, #3979/#3981) ─
+
+describe("parseBoxCategoria (#3981)", () => {
+  it("extrai `categoria:` do header de comentário", () => {
+    assert.equal(parseBoxCategoria("<!--\ncategoria: Recomendado\ndoc\n-->\n\n# Título"), "Recomendado");
+  });
+  it("é case-insensitive na chave e trima o valor", () => {
+    assert.equal(parseBoxCategoria("<!--\nCategoria:   Achado da semana   \n-->\ntexto"), "Achado da semana");
+  });
+  it("null quando o header não tem categoria:", () => {
+    assert.equal(parseBoxCategoria("<!--\nsó doc, sem categoria\n-->\ntexto"), null);
+  });
+  it("null quando não há header de comentário", () => {
+    assert.equal(parseBoxCategoria("# Título direto\n\ntexto"), null);
+  });
+  it("ignora `categoria:` que esteja no CORPO, não no header", () => {
+    assert.equal(parseBoxCategoria("# Título\n\ncategoria: isso não conta"), null);
+  });
+  it("nome: e categoria: convivem no mesmo header, sem interferência mútua", () => {
+    const content = "<!--\nnome: Rótulo Interno\ncategoria: Recomendado\ndoc\n-->\n\n# T";
+    assert.equal(parseBoxNome(content), "Rótulo Interno");
+    assert.equal(parseBoxCategoria(content), "Recomendado");
+  });
+});
+
+describe("extractBoxNotas / extractBoxConteudo (#3979)", () => {
+  it("extractBoxNotas: header menos nome:/categoria:, trimado", () => {
+    const content = "<!--\nnome: X\ncategoria: Y\nInstruções de uso do snippet.\n-->\n\nConteúdo.";
+    assert.equal(extractBoxNotas(content), "Instruções de uso do snippet.");
+  });
+  it("extractBoxNotas: '' quando o header só tinha nome:/categoria:", () => {
+    assert.equal(extractBoxNotas("<!--\nnome: X\ncategoria: Y\n-->\n\nConteúdo."), "");
+  });
+  it("extractBoxNotas: '' quando não há header", () => {
+    assert.equal(extractBoxNotas("Conteúdo sem header."), "");
+  });
+  it("extractBoxNotas: preserva blocos multi-parágrafo internos do doc", () => {
+    const content = "<!--\nnome: X\nParágrafo 1 do doc.\n\nParágrafo 2 do doc.\n-->\n\nConteúdo.";
+    assert.equal(extractBoxNotas(content), "Parágrafo 1 do doc.\n\nParágrafo 2 do doc.");
+  });
+  it("extractBoxConteudo: remove o bloco de comentário INTEIRO (não só uma linha)", () => {
+    const content = "<!--\nnome: X\ndoc\n-->\n\n# Título público\n\ncorpo";
+    assert.equal(extractBoxConteudo(content), "# Título público\n\ncorpo");
+  });
+  it("extractBoxConteudo: sem header -> devolve o conteúdo como está", () => {
+    assert.equal(extractBoxConteudo("# Só conteúdo"), "# Só conteúdo");
+  });
+});
+
+describe("buildBoxContent (#3979/#3981)", () => {
+  it("monta header com nome + categoria + notas, nessa ordem, + conteúdo", () => {
+    const out = buildBoxContent(
+      { nome: "Rótulo", categoria: "Recomendado", notas: "Doc interno." },
+      "# Título\n\ncorpo",
+    );
+    assert.equal(out, "<!--\nnome: Rótulo\ncategoria: Recomendado\nDoc interno.\n-->\n\n# Título\n\ncorpo");
+  });
+  it("campos vazios/whitespace são omitidos (sem linha órfã 'nome: ' ou 'categoria: ')", () => {
+    const out = buildBoxContent({ nome: "", categoria: "   ", notas: "Só notas." }, "corpo");
+    assert.ok(!/nome:/i.test(out));
+    assert.ok(!/categoria:/i.test(out));
+    assert.equal(out, "<!--\nSó notas.\n-->\n\ncorpo");
+  });
+  it("nome/categoria/notas todos vazios -> sem comentário no topo (conteúdo puro)", () => {
+    assert.equal(buildBoxContent({ nome: "", categoria: "", notas: "" }, "# Só conteúdo"), "# Só conteúdo");
+    assert.equal(buildBoxContent({}, "# Só conteúdo"), "# Só conteúdo");
+  });
+  it("só categoria (sem nome/notas): header com 1 linha só", () => {
+    const out = buildBoxContent({ categoria: "Achado da semana" }, "corpo");
+    assert.equal(out, "<!--\ncategoria: Achado da semana\n-->\n\ncorpo");
+  });
+  it("categoria com espaço nas pontas é trimada na reconstrução", () => {
+    const out = buildBoxContent({ categoria: "  Recomendado  " }, "corpo");
+    assert.match(out, /categoria: Recomendado\n/);
+  });
+  it("round-trip: build(parse(x)) === x quando o arquivo segue a convenção canônica (header + 1 linha em branco + conteúdo)", () => {
+    // #3979: risco explícito do PR — recompor precisa ser BYTE-ESTÁVEL quando
+    // nada muda (context/snippets/*.md entra no prompt cache, CLAUDE.md
+    // "Otimização de tokens" — diff fantasma invalida o cache à toa).
+    const x =
+      "<!--\nnome: Rótulo Interno\ncategoria: Recomendado\nInstruções de uso.\nMais uma linha de doc.\n-->\n\n" +
+      "**Título na edição**\n\ncorpo\nmais corpo\n";
+    const rebuilt = buildBoxContent(
+      { nome: parseBoxNome(x), categoria: parseBoxCategoria(x), notas: extractBoxNotas(x) },
+      extractBoxConteudo(x),
+    );
+    assert.equal(rebuilt, x);
+  });
+  it("round-trip byte-estável contra o formato REAL de context/snippets/apoio-divulgacao.md (regressão do formato canônico)", () => {
+    // Fixture inline reproduzindo a FORMA real (header multi-parágrafo, 1
+    // linha em branco antes do conteúdo) sem depender do conteúdo editorial
+    // de verdade do repo (que pode mudar) nem escrever no arquivo real.
+    const x =
+      "<!--\nBloco canônico de DIVULGAÇÃO do programa de apoio (apoia.se/diaria).\n\n" +
+      "Parágrafo 2 do doc, com **markdown** dentro do comentário (nunca renderiza).\n-->\n\n" +
+      "Apoie a diar.ia.br\n\nTexto do corpo.\n\n[Quero apoiar](https://apoia.se/diaria)\n";
+    const rebuilt = buildBoxContent(
+      { nome: parseBoxNome(x), categoria: parseBoxCategoria(x), notas: extractBoxNotas(x) },
+      extractBoxConteudo(x),
+    );
+    assert.equal(rebuilt, x);
+  });
+  it("round-trip: sem header nenhum no original", () => {
+    const x = "# Título direto\n\ncorpo, sem comentário no topo.\n";
+    const rebuilt = buildBoxContent(
+      { nome: parseBoxNome(x), categoria: parseBoxCategoria(x), notas: extractBoxNotas(x) },
+      extractBoxConteudo(x),
+    );
+    assert.equal(rebuilt, x);
+  });
+  it("INVARIANTE: nome/categoria nunca sobrevivem ao strip de comentário do render (snippet-loader.ts)", () => {
+    const built = buildBoxContent({ nome: "SEGREDO", categoria: "Rótulo Interno de Teste" }, "# Público\n\ncorpo visível");
+    const rendered = built.replace(/<!--[\s\S]*?-->/g, "").trim();
+    assert.ok(!rendered.includes("SEGREDO"));
+    assert.ok(!rendered.includes("Rótulo Interno de Teste"));
+    assert.match(rendered, /# Público/);
   });
 });
 
@@ -1169,6 +1292,149 @@ describe("nome interno via HTTP: GET body/nome, PUT {nome,body}, POST com nome (
     assert.ok(!onDisk.replace(/<!--[\s\S]*?-->/g, "").includes("Caixa Nomeada"));
     const list = await (await fetch(new URL("/api/boxes", server.url))).json();
     assert.equal(list.boxes.find((b: { slug: string }) => b.slug === "nova-com-nome.md").nome, "Caixa Nomeada");
+  });
+});
+
+// ─── contrato HTTP: notas/conteúdo separados + categoria (#3979/#3981) ────
+
+describe("categoria + notas/conteúdo via HTTP: GET conteudo/notas/categoria, PUT {nome,categoria,notas,conteudo}, POST com categoria (#3979/#3981)", () => {
+  let root: string;
+  let server: StudioServer;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-3979-http-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "README.md"), "# Formato\n\nDoc.");
+    writeFileSync(
+      join(root, "context", "snippets", "com-header.md"),
+      "<!--\nnome: Rótulo Interno\ncategoria: Recomendado\nInstruções de uso do snippet.\n-->\n\n**Título na edição**\n\ncorpo",
+    );
+    writeFileSync(join(root, "context", "snippets", "sem-header.md"), "# Título derivado\n\ncorpo");
+    writeFileSync(join(root, "platform.config.json"), JSON.stringify({ boxes_divulgacao: {} }));
+    server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("GET /api/boxes lista com categoria (#3981)", async () => {
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    const comHeader = list.boxes.find((b: { slug: string }) => b.slug === "com-header.md");
+    assert.equal(comHeader.categoria, "Recomendado");
+    const semHeader = list.boxes.find((b: { slug: string }) => b.slug === "sem-header.md");
+    assert.equal(semHeader.categoria, null);
+  });
+
+  it("GET /api/boxes/:slug devolve categoria + notas (sem nome:/categoria:) + conteudo (sem header nenhum)", async () => {
+    const res = await fetch(new URL("/api/boxes/com-header.md", server.url));
+    const body = await res.json();
+    assert.equal(body.nome, "Rótulo Interno");
+    assert.equal(body.categoria, "Recomendado");
+    assert.equal(body.notas, "Instruções de uso do snippet.");
+    assert.ok(!/nome:|categoria:/i.test(body.notas), "notas não deve conter as linhas nome:/categoria:");
+    assert.equal(body.conteudo, "**Título na edição**\n\ncorpo");
+    assert.ok(!body.conteudo.includes("<!--"), "conteudo não deve incluir o comentário-header");
+  });
+
+  it("PUT {nome, categoria, notas, conteudo} reconstrói o arquivo inteiro e persiste", async () => {
+    const get = await (await fetch(new URL("/api/boxes/sem-header.md", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/sem-header.md", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nome: "Nome Novo",
+        categoria: "Achado da semana",
+        notas: "Nota interna sobre o uso.",
+        conteudo: get.conteudo,
+        expectedModifiedAt: get.modifiedAt,
+      }),
+    });
+    assert.equal(put.status, 200);
+    const onDisk = readFileSync(join(root, "context", "snippets", "sem-header.md"), "utf8");
+    assert.equal(
+      onDisk,
+      "<!--\nnome: Nome Novo\ncategoria: Achado da semana\nNota interna sobre o uso.\n-->\n\n# Título derivado\n\ncorpo",
+    );
+    // e a lista agora mostra nome + categoria novos
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    const updated = list.boxes.find((b: { slug: string }) => b.slug === "sem-header.md");
+    assert.equal(updated.nome, "Nome Novo");
+    assert.equal(updated.categoria, "Achado da semana");
+  });
+
+  it("PUT {conteudo} sem nome/categoria/notas -> sem comentário no topo (conteúdo puro)", async () => {
+    const get = await (await fetch(new URL("/api/boxes/sem-header.md", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/sem-header.md", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conteudo: "# Só conteúdo, sem header", expectedModifiedAt: get.modifiedAt }),
+    });
+    assert.equal(put.status, 200);
+    assert.equal(
+      readFileSync(join(root, "context", "snippets", "sem-header.md"), "utf8"),
+      "# Só conteúdo, sem header",
+    );
+  });
+
+  it("PUT {conteudo} salvando SEM alterar nada é byte-estável (round-trip GET -> PUT idêntico ao original)", async () => {
+    // #3979 risco explícito: recompor precisa ser byte-estável quando nada
+    // muda (context/snippets/*.md no prompt cache).
+    const before = readFileSync(join(root, "context", "snippets", "com-header.md"), "utf8");
+    const get = await (await fetch(new URL("/api/boxes/com-header.md", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/com-header.md", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nome: get.nome,
+        categoria: get.categoria,
+        notas: get.notas,
+        conteudo: get.conteudo,
+        expectedModifiedAt: get.modifiedAt,
+      }),
+    });
+    assert.equal(put.status, 200);
+    assert.equal(readFileSync(join(root, "context", "snippets", "com-header.md"), "utf8"), before);
+  });
+
+  it("POST {slug, nome, categoria, content} cria caixa com header nome:+categoria:", async () => {
+    const res = await fetch(new URL("/api/boxes", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slug: "nova-com-categoria.md",
+        nome: "Caixa Nomeada",
+        categoria: "Recomendado",
+        content: "# Público\n\ncorpo",
+      }),
+    });
+    assert.equal(res.status, 201);
+    const onDisk = readFileSync(join(root, "context", "snippets", "nova-com-categoria.md"), "utf8");
+    assert.match(onDisk, /nome: Caixa Nomeada/);
+    assert.match(onDisk, /categoria: Recomendado/);
+    // invariante: nem nome nem categoria vazam no render
+    const rendered = onDisk.replace(/<!--[\s\S]*?-->/g, "");
+    assert.ok(!rendered.includes("Caixa Nomeada"));
+    assert.ok(!rendered.includes("Recomendado"));
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    const created = list.boxes.find((b: { slug: string }) => b.slug === "nova-com-categoria.md");
+    assert.equal(created.nome, "Caixa Nomeada");
+    assert.equal(created.categoria, "Recomendado");
+  });
+
+  it("POST só com categoria (sem nome) monta header com só categoria:", async () => {
+    const res = await fetch(new URL("/api/boxes", server.url), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug: "so-categoria.md", categoria: "Achado da semana", content: "# X\n\ncorpo" }),
+    });
+    assert.equal(res.status, 201);
+    assert.equal(
+      readFileSync(join(root, "context", "snippets", "so-categoria.md"), "utf8"),
+      "<!--\ncategoria: Achado da semana\n-->\n\n# X\n\ncorpo",
+    );
   });
 });
 

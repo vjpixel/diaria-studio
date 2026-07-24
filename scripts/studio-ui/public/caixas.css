@@ -187,6 +187,19 @@
   color: var(--status-warn);
   white-space: nowrap;
 }
+/* #3981: categoria — rótulo que vai renderizar acima da caixa na newsletter
+   (kicker "● {categoria}"), distinto de slot/dirty (que são fatos do Studio,
+   não conteúdo editorial). Tom neutro (brand), não status. */
+.box-categoria-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--brand);
+  color: var(--brand);
+  white-space: nowrap;
+}
 
 /* Editor — mesma família visual de .rv-editor/.rv-editor-toolbar/.rv-save-status
    (revisao.css), simplificada (sem tabs/diff/lint/preview: só 1 caixa por
@@ -230,10 +243,38 @@
   tab-size: 2;
 }
 
+/* #3979: Nome interno + Categoria lado a lado, acima dos 2 painéis. */
+.cx-editor-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.cx-editor-meta-row .cx-field { flex: 1 1 220px; }
+
+/* #3979: Conteúdo (o que renderiza) | Notas (comentário do snippet) lado a
+   lado — empilha em telas estreitas (a página é usada via Tunnel no celular). */
+.cx-editor-columns {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+}
+.cx-editor-column { flex: 1 1 0; min-width: 0; }
+.cx-editor-column h3 {
+  font-size: 0.9rem;
+  margin: 0 0 0.3rem;
+}
+.cx-editor-column h3 .hint {
+  font-weight: 400;
+  font-size: 0.8em;
+  opacity: 0.7;
+  margin-left: 0.3rem;
+}
+
 @media (max-width: 640px) {
   .statusbar { gap: 0.75rem; }
   main { padding: 1rem 0.75rem 3rem; }
   .cx-editor { min-height: 240px; }
+  .cx-editor-columns { flex-direction: column; }
 
   /* #3874: alvos de toque ≥44px (WCAG 2.5.5/HIG), mesmo padrão de
      apoios.css/revisao.css. */

@@ -1385,7 +1385,13 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // marcador emoji. TODO box de divulgação recebe o kicker "● DIVULGAÇÃO"
     // antes (260611, supersede #1940/#2069).
     if (content.boxDivulgacao1 && i === 0) {
-      parts.push(renderDivulgacaoSeparator(isAgradecimentoBox(content.boxDivulgacao1) ? "Agradecimento" : "Divulgação"));
+      // #3981: `categoria:` do snippet (Studio, seção "Caixas") SUBRESCREVE o
+      // rótulo default "Divulgação"/"Agradecimento" quando presente — mesmo
+      // kicker (`renderDivulgacaoSeparator`/`renderKicker`), texto diferente.
+      // Ausente -> renderiza exatamente como hoje.
+      const label1 = content.boxDivulgacao1Categoria
+        || (isAgradecimentoBox(content.boxDivulgacao1) ? "Agradecimento" : "Divulgação");
+      parts.push(renderDivulgacaoSeparator(label1));
       parts.push(
         renderBoxDivulgacao(
           content.boxDivulgacao1,
@@ -1397,7 +1403,9 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // #2978: box de divulgação slot 2 — SEMPRE na lacuna D2/D3 (após D2, i===1).
     // Só existe em edições de 3 destaques (sem gap D2/D3 em edições de 2).
     if (content.boxDivulgacao2 && i === 1) {
-      parts.push(renderDivulgacaoSeparator(isAgradecimentoBox(content.boxDivulgacao2) ? "Agradecimento" : "Divulgação"));
+      const label2 = content.boxDivulgacao2Categoria // #3981
+        || (isAgradecimentoBox(content.boxDivulgacao2) ? "Agradecimento" : "Divulgação");
+      parts.push(renderDivulgacaoSeparator(label2));
       // #2978-slot2-parity: passa a imagem (quando presente) igual ao slot 1 —
       // antes caía sempre em renderMidCallout(text, null) → degradava pro box
       // só-texto (sem imagem/CTA-pill) mesmo quando o box de livros caía aqui.
@@ -1414,7 +1422,9 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     // Diferente do slot 2 (só existe com D3), o slot 3 existe em QUALQUER
     // contagem de destaques — não é uma lacuna ENTRE destaques.
     if (content.boxDivulgacao3 && i === content.destaques.length - 1) {
-      parts.push(renderDivulgacaoSeparator(isAgradecimentoBox(content.boxDivulgacao3) ? "Agradecimento" : "Divulgação"));
+      const label3 = content.boxDivulgacao3Categoria // #3981
+        || (isAgradecimentoBox(content.boxDivulgacao3) ? "Agradecimento" : "Divulgação");
+      parts.push(renderDivulgacaoSeparator(label3));
       parts.push(
         renderBoxDivulgacao(
           content.boxDivulgacao3,
