@@ -554,6 +554,122 @@ describe("merge-social-md CLI", () => {
       }
     });
   });
+
+  // ── #3992: seção Curto dedicada (tmp opcional, texto único Twitter/Threads) ──
+  describe("#3992 — merge da seção Curto (tmp opcional)", () => {
+    it("Curto tmp presente → 03-social.md ganha seção '# Curto' própria", () => {
+      const dir = makeEditionDir();
+      try {
+        writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "## d1\n\nLinkedIn d1 content\n");
+        writeFileSync(join(dir, "_internal", "03-facebook.tmp.md"), "## d1\n\nFacebook d1 content\n");
+        writeFileSync(
+          join(dir, "_internal", "03-curto.tmp.md"),
+          "## d1\n\nTexto curto d1. Mais em diar.ia.br #ia\n",
+        );
+
+        const r = runScript(dir);
+        assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+
+        const out = readFileSync(join(dir, "03-social.md"), "utf8");
+        const curtoSection = extractSection(out, "Curto");
+        assert.ok(curtoSection !== null, "seção '# Curto' deve existir no merge");
+        assert.ok(curtoSection!.includes("Texto curto d1"));
+
+        // Tmp de Curto deletado após sucesso, igual LinkedIn/Facebook/Instagram.
+        assert.equal(existsSync(join(dir, "_internal", "03-curto.tmp.md")), false);
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    });
+
+    it("Curto tmp AUSENTE → merge sucede sem seção '# Curto' (comportamento legado preservado)", () => {
+      const dir = makeEditionDir();
+      try {
+        writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "## d1\n\nLinkedIn content\n");
+        writeFileSync(join(dir, "_internal", "03-facebook.tmp.md"), "## d1\n\nFacebook content\n");
+        // Nenhum 03-curto.tmp.md gravado — simula edição/worktree onde
+        // social-curto não rodou (ou ainda não existe).
+
+        const r = runScript(dir);
+        assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+
+        const out = readFileSync(join(dir, "03-social.md"), "utf8");
+        assert.equal(
+          extractSection(out, "Curto"),
+          null,
+          "sem tmp de Curto, '# Curto' não deve aparecer no merge",
+        );
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    });
+
+    it("Curto tmp vazio (0 bytes) → warn no stderr, merge sucede sem seção Curto (não é FATAL)", () => {
+      const dir = makeEditionDir();
+      try {
+        writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "## d1\n\nLinkedIn content\n");
+        writeFileSync(join(dir, "_internal", "03-facebook.tmp.md"), "## d1\n\nFacebook content\n");
+        writeFileSync(join(dir, "_internal", "03-curto.tmp.md"), "");
+
+        const r = runScript(dir);
+        assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+        assert.ok(r.stderr.includes("social-curto"));
+
+        const out = readFileSync(join(dir, "03-social.md"), "utf8");
+        assert.equal(extractSection(out, "Curto"), null);
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    });
+
+    it("Curto tmp com header '# Curto' embutido → merge NÃO duplica (mesma proteção #3424)", () => {
+      const dir = makeEditionDir();
+      try {
+        writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "## d1\n\nLinkedIn content\n");
+        writeFileSync(join(dir, "_internal", "03-facebook.tmp.md"), "## d1\n\nFacebook content\n");
+        writeFileSync(
+          join(dir, "_internal", "03-curto.tmp.md"),
+          "# Curto\n\n## d1\n\nCurto content\n",
+        );
+
+        const r = runScript(dir);
+        assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+        assert.ok(r.stderr.includes("já continha o header"));
+
+        const out = readFileSync(join(dir, "03-social.md"), "utf8");
+        const curtoHeaderCount = out
+          .split("\n")
+          .filter((l) => /^# Curto\s*$/i.test(l)).length;
+        assert.equal(curtoHeaderCount, 1, "header '# Curto' não deve duplicar");
+        assert.ok(out.includes("Curto content"));
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    });
+
+    it("Instagram E Curto presentes simultaneamente → ambas as seções aparecem, na ordem Instagram depois Curto", () => {
+      const dir = makeEditionDir();
+      try {
+        writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "## d1\n\nLinkedIn content\n");
+        writeFileSync(join(dir, "_internal", "03-facebook.tmp.md"), "## d1\n\nFacebook content\n");
+        writeFileSync(join(dir, "_internal", "03-instagram.tmp.md"), "## d1\n\nInstagram content\n");
+        writeFileSync(join(dir, "_internal", "03-curto.tmp.md"), "## d1\n\nCurto content\n");
+
+        const r = runScript(dir);
+        assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+
+        const out = readFileSync(join(dir, "03-social.md"), "utf8");
+        assert.ok(extractSection(out, "Instagram")?.includes("Instagram content"));
+        assert.ok(extractSection(out, "Curto")?.includes("Curto content"));
+        assert.ok(
+          out.indexOf("# Instagram") < out.indexOf("# Curto"),
+          "Instagram deve vir antes de Curto na ordem de seções",
+        );
+      } finally {
+        rmSync(dir, { recursive: true });
+      }
+    });
+  });
 });
 
 // ── #3471: seção "## eia" (posto social do "É IA?" pra publicação manual) ──

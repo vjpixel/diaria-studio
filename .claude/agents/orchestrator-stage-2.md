@@ -89,7 +89,7 @@ fonte correta. (O mapping bucket→seção da newsletter acontece no render laye
 
 Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (pós-writer), não JSON pré-writer. Confusão de paths levou ao bug do #1451 review (PR #1462).
 
-**Dispatch paralelo (uma única mensagem com N+3 chamadas Agent — N writer + 3 social, onde N = highlights.length ∈ {2,3}):**
+**Dispatch paralelo (uma única mensagem com N+4 chamadas Agent — N writer + 4 social, onde N = highlights.length ∈ {2,3}):**
 
 1. `Agent` → `writer-destaque` × N — uma instância por destaque (n=1..N). Cada uma recebe:
    - `destaque_n`, `destaque` (= `highlights[N-1].article`), `category_label`
@@ -108,9 +108,11 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 
 4. `Agent` → `social-instagram` (#3486, mesmo input que social-facebook — `approved_json_path` + `out_dir`; `outros_count` não se aplica). Gera `_internal/03-instagram.tmp.md` com caption própria por destaque, CTA nativo de social ("link na bio" + follow), **sem CTA de e-mail** — elimina o fallback estrutural em que o Instagram herdava a copy do Facebook (que mantém o CTA de e-mail).
 
-**Aguardar os N writer-destaques + 3 social retornarem.** Cada `writer-destaque` retorna JSON `{ out_path, image_prompt_path, destaque_n, char_count, warnings }`. **Se `warnings[]` de qualquer um não estiver vazio, pare e reporte ao usuário antes de prosseguir** — mesma regra do writer único legacy.
+5. `Agent` → `social-curto` (#3992, mesmo input que social-facebook — `approved_json_path` + `out_dir`; `outros_count` não se aplica). Gera `_internal/03-curto.tmp.md` com 1 texto ≤280 chars por destaque, compartilhado por Twitter/X (`publish-twitter.ts`, #3994) e Threads (`publish-threads.ts`, que passa a preferir esta seção ao fallback Facebook).
 
-**Capturar custo de tokens (#3748):** monte um array `[{agent_type, usage_raw}]` com o bloco `<usage>` de cada dispatch acima (writer-destaque ×N + 3 social) e rode:
+**Aguardar os N writer-destaques + 4 social retornarem.** Cada `writer-destaque` retorna JSON `{ out_path, image_prompt_path, destaque_n, char_count, warnings }`. **Se `warnings[]` de qualquer um não estiver vazio, pare e reporte ao usuário antes de prosseguir** — mesma regra do writer único legacy.
+
+**Capturar custo de tokens (#3748):** monte um array `[{agent_type, usage_raw}]` com o bloco `<usage>` de cada dispatch acima (writer-destaque ×N + 4 social) e rode:
 ```bash
 npx tsx scripts/record-agent-costs.ts --edition-dir {EDITION_DIR}/ --edition {AAMMDD} \
   --stage 2 --costs {EDITION_DIR}/_internal/tmp-agent-costs-stage2.json
@@ -171,16 +173,17 @@ Fallback dispatch:
 2. `Agent` → `social-linkedin` (mesmo input do writer; `{outros_count}` é placeholder literal no output — não injetar #2319).
 3. `Agent` → `social-facebook` (mesmo input do writer).
 4. `Agent` → `social-instagram` (#3486, mesmo input do writer).
+5. `Agent` → `social-curto` (#3992, mesmo input do writer).
 
-Aguardar os 4 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
+Aguardar os 5 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
 
-**Validar outputs dos 4 agents antes de qualquer processamento (#872, #3486):** se um deles falhou silenciosamente (timeout, retorno mal-formado), o merge em 2c crasharia lendo arquivo ausente (LinkedIn/Facebook) ou perderia a seção Instagram dedicada silenciosamente. Antes de prosseguir, rodar:
+**Validar outputs dos 5 agents antes de qualquer processamento (#872, #3486, #3992):** se um deles falhou silenciosamente (timeout, retorno mal-formado), o merge em 2c crasharia lendo arquivo ausente (LinkedIn/Facebook) ou perderia a seção Instagram/Curto dedicada silenciosamente. Antes de prosseguir, rodar:
 
 ```bash
 npx tsx scripts/validate-stage-2-outputs.ts --edition-dir {EDITION_DIR}/
 ```
 
-O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e `_internal/03-facebook.tmp.md` existem e não estão vazios (FATAL — exit 1) e que `_internal/03-instagram.tmp.md` existe e não está vazio (WARN — não bloqueia, mas sinaliza que o merge vai cair no fallback `# Instagram` → `# Facebook`). Exit 1 = algum agent obrigatório falhou — relatar ao editor com sugestão de re-rodar isolado (`/diaria-2-escrita {AAMMDD} newsletter` ou `social`). Não prosseguir.
+O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e `_internal/03-facebook.tmp.md` existem e não estão vazios (FATAL — exit 1) e que `_internal/03-instagram.tmp.md`/`_internal/03-curto.tmp.md` existem e não estão vazios (WARN — não bloqueia, mas sinaliza que o merge vai cair nos fallbacks `# Instagram` → `# Facebook` e `# Curto` ausente respectivamente). Exit 1 = algum agent obrigatório falhou — relatar ao editor com sugestão de re-rodar isolado (`/diaria-2-escrita {AAMMDD} newsletter` ou `social`). Não prosseguir.
 
 ### 2b. Processar newsletter
 
@@ -385,6 +388,7 @@ O script:
 - Faz strip de comentários HTML (`<!-- ... -->`) com fallback safe pra comments mal-formados (#875)
 - Concatena em `# LinkedIn` + `# Facebook` e grava em `03-social.md`
 - **#3486:** se `_internal/03-instagram.tmp.md` existir (o caso normal — `social-instagram` roda em todo dispatch), mescla também `# Instagram` no output. Tmp OPCIONAL — ausência não falha o merge (edição sai igual ao formato pré-#3486 e o fallback `# Instagram` → `# Facebook` continua valendo pra ela nos lints/publish downstream).
+- **#3992:** se `_internal/03-curto.tmp.md` existir (o caso normal — `social-curto` roda em todo dispatch), mescla também `# Curto` no output. Tmp OPCIONAL — ausência não falha o merge; `publish-threads.ts` cai no fallback `# Facebook` (truncado) e `publish-twitter.ts` simplesmente não publica nesta edição (sem fallback, #3994).
 - Deleta os tmp files após sucesso
 
 Falha = abortar e reportar ao editor com sugestão de re-rodar isolado.

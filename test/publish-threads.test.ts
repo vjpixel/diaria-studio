@@ -65,6 +65,34 @@ const MD_CRLF = MD_THREADS.replace(/\n/g, "\r\n");
 
 // ─── extractDestaquesFromSocialMd ────────────────────────────────────────────
 
+// #3992: seção Curto (texto único Twitter/Threads) tem prioridade máxima.
+const MD_CURTO_E_FACEBOOK = `# Curto
+
+## d1
+Texto curto d1, o preferido.
+
+## d2
+Texto curto d2, o preferido.
+
+# Facebook
+
+## d1
+Post d1 Facebook, não deveria ser usado quando Curto existe.
+`;
+
+describe("extractDestaquesFromSocialMd (threads) — preferência #3992", () => {
+  it("prefere seção Curto sobre Facebook quando ambas existem", () => {
+    const destaques = extractDestaquesFromSocialMd(MD_CURTO_E_FACEBOOK);
+    assert.deepEqual(destaques, ["d1", "d2"]);
+  });
+
+  it("extractPostText usa o texto de Curto, não o de Facebook, quando Curto existe", () => {
+    const t = extractPostText(MD_CURTO_E_FACEBOOK, "d1");
+    assert.ok(t.includes("Texto curto d1, o preferido."));
+    assert.ok(!t.includes("não deveria ser usado"));
+  });
+});
+
 describe("extractDestaquesFromSocialMd (threads)", () => {
   it("retorna d1/d2/d3 quando seção Threads existe com 3 destaques", () => {
     const destaques = extractDestaquesFromSocialMd(MD_THREADS);

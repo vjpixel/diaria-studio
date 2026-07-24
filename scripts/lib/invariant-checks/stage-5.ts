@@ -24,10 +24,11 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
  * #2479: 'threads' incluído no fallback — sem isso, config ausente/malformado
  * faria checkConsentBinding pular Threads silenciosamente (canal dispatchado
  * mas não validado).
+ * #3994: 'twitter' incluído no fallback pelo mesmo motivo.
  */
 function loadSocialsFromConfig(): string[] {
   const configPath = resolve(ROOT, "platform.config.json");
-  if (!existsSync(configPath)) return ["linkedin", "facebook", "instagram", "threads"];
+  if (!existsSync(configPath)) return ["linkedin", "facebook", "instagram", "threads", "twitter"];
   try {
     const cfg = JSON.parse(readFileSync(configPath, "utf8")) as { socials?: string[] };
     // #2486: array vazio = opt-out intencional (0 canais sociais) — respeitado como tal.
@@ -36,7 +37,7 @@ function loadSocialsFromConfig(): string[] {
   } catch {
     // ignorar erro de parse — retornar fallback
   }
-  return ["linkedin", "facebook", "instagram", "threads"];
+  return ["linkedin", "facebook", "instagram", "threads", "twitter"];
 }
 
 /**
@@ -46,7 +47,7 @@ function loadSocialsFromConfig(): string[] {
  * assimetria de severidade documentada em checkInstagramCredsSet. Canais com creds
  * obrigatórias (LinkedIn/Facebook) continuam ERROR.
  */
-const BEST_EFFORT_SOCIALS = new Set(["instagram", "threads"]);
+const BEST_EFFORT_SOCIALS = new Set(["instagram", "threads", "twitter"]);
 
 // #1694 finding 9: checkConsentBinding movida para cá — elimina acoplamento
 // cruzado com stage-4.ts. A função verifica dados pós-dispatch (05-published.json,
@@ -173,6 +174,40 @@ function checkThreadsCredsSet(): InvariantViolation[] {
       source_issue: "#2479",
       severity: "warning",
     });
+  }
+  return violations;
+}
+
+/**
+ * `TWITTER_API_KEY` + `TWITTER_API_SECRET` + `TWITTER_ACCESS_TOKEN` +
+ * `TWITTER_ACCESS_TOKEN_SECRET` env vars (#3994). publish-twitter usa pra
+ * assinar requests OAuth 1.0a User Context na API v2 do X.
+ *
+ * ASSIMETRIA DE SEVERIDADE: severity="warning" (mesmo padrão de Threads/
+ * Instagram). Twitter/X é dispatch best-effort — env vars ausentes fazem
+ * publish-twitter encerrar com exit 0 (skip gracioso), sem bloquear os
+ * outros canais. Credenciais nem existem ainda (#3994, status confirmado
+ * 260724: conta X da Diar.ia + app no Developer Portal são ação do editor).
+ */
+function checkTwitterCredsSet(): InvariantViolation[] {
+  const violations: InvariantViolation[] = [];
+  const required: Array<[string, string]> = [
+    ["TWITTER_API_KEY", "twitter-api-key-set"],
+    ["TWITTER_API_SECRET", "twitter-api-secret-set"],
+    ["TWITTER_ACCESS_TOKEN", "twitter-access-token-set"],
+    ["TWITTER_ACCESS_TOKEN_SECRET", "twitter-access-token-secret-set"],
+  ];
+  for (const [envVar, rule] of required) {
+    if (!process.env[envVar] || process.env[envVar]!.trim().length === 0) {
+      violations.push({
+        rule,
+        message:
+          `${envVar} ausente — publish-twitter vai pular ` +
+          "(Twitter/X não será publicado). Configure em .env.local pra habilitar (#3994).",
+        source_issue: "#3994",
+        severity: "warning",
+      });
+    }
   }
   return violations;
 }
@@ -873,6 +908,14 @@ export const STAGE_5_RULES: InvariantRule[] = [
     run: () => checkThreadsCredsSet(),
   },
   {
+    id: "twitter-creds-set",
+    description:
+      "TWITTER_API_KEY/_SECRET/_ACCESS_TOKEN/_ACCESS_TOKEN_SECRET presentes — ausente pula Twitter/X (#3994)",
+    source_issue: "#3994",
+    stage: 5,
+    run: () => checkTwitterCredsSet(),
+  },
+  {
     // #2172: checkLinkedinWorkerUrlSet agora checa APENAS PRESENÇA (split de
     // responsabilidade). A verificação de esquema HTTP/HTTPS foi extraída para
     // checkLinkedinWorkerUrlHttps + entry separada abaixo. Antes do fix, ambas
@@ -943,4 +986,5 @@ export {
   loadSocialsFromConfig,
   checkInstagramCredsSet,
   checkThreadsCredsSet,
+  checkTwitterCredsSet,
 };

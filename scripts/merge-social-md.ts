@@ -20,6 +20,12 @@
  * `# Facebook` que `lintInstagramEmailCTA`/`publish-instagram.ts` já usavam
  * (#2486) pra edições/testes que não disparam o novo agent.
  *
+ * #3992: também mescla `_internal/03-curto.tmp.md` (agent `social-curto`) em
+ * `# Curto`, quando presente. Mesmo tratamento OPCIONAL do Instagram — ausência
+ * não falha o merge, só omite a seção (edições antigas continuam com o fallback
+ * de `publish-threads.ts` pra `# Facebook`; `publish-twitter.ts`, #3994, não tem
+ * fallback — sem `# Curto` ele pula com log, por decisão do editor).
+ *
  * #3471: também injeta uma seção `## eia` dentro do LinkedIn (entre os
  * destaques `## d1/d2/d3` e `## post_pixel`, posição pedida pelo editor) com
  * o post social do "É IA?" do dia, pronto pra publicação MANUAL. Lida
@@ -169,7 +175,7 @@ export function stripHtmlComments(input: string): StripResult {
  */
 export function stripLeadingPlatformHeader(
   content: string,
-  platform: "linkedin" | "facebook" | "instagram",
+  platform: "linkedin" | "facebook" | "instagram" | "curto",
 ): string {
   const platTitle = platform.charAt(0).toUpperCase() + platform.slice(1);
   const headerRe = new RegExp(`^# ${platTitle}\\s*$`, "i");
@@ -377,14 +383,22 @@ function main(): void {
     agent: "social-instagram",
     path: resolve(editionDir, "_internal/03-instagram.tmp.md"),
   };
+  // #3992: tmp OPCIONAL — social-curto é um agent novo (texto único Twitter/Threads);
+  // mesmo tratamento do Instagram (#3486) — ausência não falha o merge.
+  const curtoTmp: TmpCheck = {
+    agent: "social-curto",
+    path: resolve(editionDir, "_internal/03-curto.tmp.md"),
+  };
 
   const liRaw = readTmpOrFail(linkedinTmp);
   const fbRaw = readTmpOrFail(facebookTmp);
   const igRaw = readOptionalTmp(instagramTmp);
+  const curtoRaw = readOptionalTmp(curtoTmp);
 
   let liStripped: string;
   let fbStripped: string;
   let igStripped: string | null = null;
+  let curtoStripped: string | null = null;
   try {
     const li = stripHtmlComments(liRaw);
     const fb = stripHtmlComments(fbRaw);
@@ -395,6 +409,11 @@ function main(): void {
       const ig = stripHtmlComments(igRaw);
       igStripped = ig.stripped.trim();
       warnings.push(...ig.warnings);
+    }
+    if (curtoRaw !== null) {
+      const curto = stripHtmlComments(curtoRaw);
+      curtoStripped = curto.stripped.trim();
+      warnings.push(...curto.warnings);
     }
     for (const w of warnings) {
       console.error(`merge-social-md: warn — ${w}`);
@@ -469,6 +488,18 @@ function main(): void {
     igStripped = igAfterHeaderStrip.trim();
   }
 
+  // #3992: mesmo strip de header pré-existente, aplicado ao Curto quando o
+  // tmp opcional estiver presente.
+  if (curtoStripped !== null) {
+    const curtoAfterHeaderStrip = stripLeadingPlatformHeader(curtoStripped, "curto");
+    if (curtoAfterHeaderStrip !== curtoStripped) {
+      console.error(
+        `merge-social-md: warn — tmp file de Curto já continha o header "# Curto" — removido antes do merge (#3424).`,
+      );
+    }
+    curtoStripped = curtoAfterHeaderStrip.trim();
+  }
+
   // #3627: comment_diaria e comment_pixel deixaram de ser gerados (decisão do
   // editor, 260716 — postagem manual de comentários auxiliares não compensava
   // mais o atrito, ver #1310/#1075 pro histórico de por que eram manuais).
@@ -478,7 +509,11 @@ function main(): void {
   // preserva 03-social.md byte-idêntico ao formato pré-#3486 quando o agent
   // social-instagram não rodou (edições antigas, testes, resume parcial).
   const instagramSection = igStripped !== null ? `\n\n# Instagram\n\n${igStripped}` : "";
-  const merged = `${linkedinHeader}\n${liStripped}\n\n# Facebook\n\n${fbStripped}${instagramSection}\n`;
+  // #3992: seção `# Curto` só entra quando o tmp opcional existe — texto único
+  // compartilhado por Twitter/X (publish-twitter.ts, #3994) e Threads
+  // (publish-threads.ts, que passa a preferir esta seção ao fallback Facebook).
+  const curtoSection = curtoStripped !== null ? `\n\n# Curto\n\n${curtoStripped}` : "";
+  const merged = `${linkedinHeader}\n${liStripped}\n\n# Facebook\n\n${fbStripped}${instagramSection}${curtoSection}\n`;
   const outPath = resolve(editionDir, "03-social.md");
 
   try {
@@ -495,6 +530,7 @@ function main(): void {
   // de um arquivo que nunca existiu.
   const tmpsToDelete = [linkedinTmp, facebookTmp];
   if (igRaw !== null) tmpsToDelete.push(instagramTmp);
+  if (curtoRaw !== null) tmpsToDelete.push(curtoTmp);
   for (const tmp of tmpsToDelete) {
     try {
       unlinkSync(tmp.path);

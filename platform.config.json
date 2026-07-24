@@ -4,7 +4,8 @@
     "linkedin",
     "facebook",
     "instagram",
-    "threads"
+    "threads",
+    "twitter"
   ],
   "beehiiv": {
     "publicationName": "Diar.ia",
@@ -108,6 +109,10 @@
       },
       "threads": {
         "enabled": true
+      },
+      "twitter": {
+        "enabled": true,
+        "note": "#3994 (260724): conta X da Diar.ia + app no Developer Portal ainda não existem — publish-twitter.ts fica best-effort skip (env vars TWITTER_API_KEY/_SECRET/_ACCESS_TOKEN/_ACCESS_TOKEN_SECRET ausentes) até o editor criar a conta/app."
       },
       "linkedin": {
         "make_webhook_url": "",

@@ -194,8 +194,8 @@ describe("parseEditorResponse (#1238)", () => {
     assert.equal(parseEditorResponse("   "), null);
   });
 
-  it("número fora do range 1-10 → null (#2479: range estendido pra Threads)", () => {
-    assert.equal(parseEditorResponse("11"), null);
+  it("número fora do range 1-12 → null (#3994: range estendido pra Twitter/X)", () => {
+    assert.equal(parseEditorResponse("13"), null);
     assert.equal(parseEditorResponse("0,1"), null);
   });
 

@@ -85,9 +85,9 @@ function usage(): string {
     "  --default-auto              tudo auto, default de Stage 5 (#1326) — source: default_auto",
     "  --default-manual            manual em todos os canais (LEGACY — source: default_manual)",
     "  --skip <channels>           tudo auto exceto canais listados (--skip newsletter,linkedin)",
-    "                              canais válidos: newsletter, linkedin, facebook, instagram, threads",
-    "  --editor-response <input>   parse resposta do gate ('all', 'none', '1,3,5,7,9')",
-    "                              9=Threads auto, 10=Threads manual",
+    "                              canais válidos: newsletter, linkedin, facebook, instagram, threads, twitter",
+    "  --editor-response <input>   parse resposta do gate ('all', 'none', '1,3,5,7,9,11')",
+    "                              9=Threads auto, 10=Threads manual, 11=Twitter/X auto, 12=Twitter/X manual",
     "",
     "Opcional:",
     "  --out <path>                override do default data/editions/{AAMMDD}/_internal/05-publish-consent.json",
@@ -131,7 +131,7 @@ export function mainCli(argv: string[]): number {
     const parsed = parseSkipFlag(args.skip);
     if (!parsed) {
       console.error(
-        `Erro: --skip inválido: ${JSON.stringify(args.skip)}. Use lista CSV de canais: newsletter, linkedin, facebook, instagram.`,
+        `Erro: --skip inválido: ${JSON.stringify(args.skip)}. Use lista CSV de canais: newsletter, linkedin, facebook, instagram, threads, twitter.`,
       );
       return 1;
     }

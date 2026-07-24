@@ -20,6 +20,8 @@ export interface PublishConsent {
   instagram: Mode;
   /** #2479 — Threads. Best-effort, como Instagram. Default "auto". */
   threads: Mode;
+  /** #3994 — Twitter/X. Best-effort, como Threads/Instagram. Default "auto". */
+  twitter: Mode;
   /** Origem da decisão pra rastreabilidade no run-log. */
   source: string;
 }
@@ -35,6 +37,7 @@ export function autoApproveConsent(): PublishConsent {
     facebook: "auto",
     instagram: "auto",
     threads: "auto",
+    twitter: "auto",
     source: "auto_approve_default",
   };
 }
@@ -51,6 +54,7 @@ export function defaultAutoConsent(): PublishConsent {
     facebook: "auto",
     instagram: "auto",
     threads: "auto",
+    twitter: "auto",
     source: "default_auto",
   };
 }
@@ -67,6 +71,7 @@ export function defaultManualConsent(): PublishConsent {
     facebook: "manual",
     instagram: "manual",
     threads: "manual",
+    twitter: "manual",
     source: "default_manual",
   };
 }
@@ -88,7 +93,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
   if (!trimmed) {
     return { ...defaultAutoConsent(), source: "skip_flag_empty" };
   }
-  const VALID = new Set(["newsletter", "linkedin", "facebook", "instagram", "threads"]);
+  const VALID = new Set(["newsletter", "linkedin", "facebook", "instagram", "threads", "twitter"]);
   const tokens = trimmed
     .split(/[,\s]+/)
     .filter(Boolean);
@@ -100,6 +105,7 @@ export function parseSkipFlag(input: string): PublishConsent | null {
     facebook: skipped.has("facebook") ? "manual" : "auto",
     instagram: skipped.has("instagram") ? "manual" : "auto",
     threads: skipped.has("threads") ? "manual" : "auto",
+    twitter: skipped.has("twitter") ? "manual" : "auto",
     source: `skip_flag_${[...skipped].sort().join("_")}`,
   };
 }
@@ -108,12 +114,13 @@ export function parseSkipFlag(input: string): PublishConsent | null {
  * Parseia a resposta do editor no gate 4b. Aceita:
  *   - "all" → tudo auto
  *   - "none" → tudo skipped
- *   - Lista CSV de números 1-10:
+ *   - Lista CSV de números 1-12:
  *     1=Beehiiv auto, 2=Beehiiv manual
  *     3=LinkedIn auto, 4=LinkedIn manual
  *     5=Facebook auto, 6=Facebook manual
  *     7=Instagram auto, 8=Instagram manual
  *     9=Threads auto, 10=Threads manual
+ *     11=Twitter/X auto, 12=Twitter/X manual
  *
  * Números conflitantes (1 e 2 ambos, etc) usam o último que aparece.
  * Canais não-mencionados na resposta ficam manual (default conservador).
@@ -130,6 +137,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       facebook: "auto",
       instagram: "auto",
       threads: "auto",
+      twitter: "auto",
       source: "editor_response_all",
     };
   }
@@ -140,6 +148,7 @@ export function parseEditorResponse(input: string): PublishConsent | null {
       facebook: "skipped",
       instagram: "skipped",
       threads: "skipped",
+      twitter: "skipped",
       source: "editor_response_none",
     };
   }
@@ -149,19 +158,21 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     .split(/[,\s]+/)
     .filter(Boolean)
     .map((s) => parseInt(s, 10));
-  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 10)) {
+  if (nums.length === 0 || nums.some((n) => isNaN(n) || n < 1 || n > 12)) {
     return null;
   }
 
   // Start com manual default; aplicar overrides na ordem.
   // #49: Instagram = 7 (auto) / 8 (manual).
   // #2479: Threads = 9 (auto) / 10 (manual).
+  // #3994: Twitter/X = 11 (auto) / 12 (manual).
   const out: PublishConsent = {
     newsletter: "manual",
     linkedin: "manual",
     facebook: "manual",
     instagram: "manual",
     threads: "manual",
+    twitter: "manual",
     source: `editor_response_${nums.join("_")}`,
   };
   for (const n of nums) {
@@ -175,6 +186,8 @@ export function parseEditorResponse(input: string): PublishConsent | null {
     else if (n === 8) out.instagram = "manual";
     else if (n === 9) out.threads = "auto";
     else if (n === 10) out.threads = "manual";
+    else if (n === 11) out.twitter = "auto";
+    else if (n === 12) out.twitter = "manual";
   }
   return out;
 }
@@ -189,7 +202,8 @@ export function hasAnyAutoChannel(consent: PublishConsent): boolean {
     consent.linkedin === "auto" ||
     consent.facebook === "auto" ||
     consent.instagram === "auto" ||
-    consent.threads === "auto"
+    consent.threads === "auto" ||
+    consent.twitter === "auto"
   );
 }
 
@@ -203,6 +217,7 @@ export function allChannelsSkipped(consent: PublishConsent): boolean {
     consent.linkedin === "skipped" &&
     consent.facebook === "skipped" &&
     consent.instagram === "skipped" &&
-    consent.threads === "skipped"
+    consent.threads === "skipped" &&
+    consent.twitter === "skipped"
   );
 }
