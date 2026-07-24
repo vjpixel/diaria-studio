@@ -18,6 +18,12 @@
  *    - `auth_required`: linkedin/facebook/x — exigem login
  *    - `bot_blocked`: 401/403 — página existe pra humanos, bloqueia HEAD de bot
  *      (diaria.beehiiv.com/cursos|livros, tecnoblog)
+ *    - `rate_limited`: 429, QUALQUER domínio (#3941, mesmo princípio de #696 em
+ *      verify-accessibility.ts) — rate limiting de crawler/anti-bot, não link
+ *      morto. Caso confirmado: VentureBeat retorna 429 pra HEAD de bot desde
+ *      sempre; página existe normalmente pra humanos. Post-mortem 260723
+ *      (#3941): reportado como "link quebrado" quando na verdade era esse
+ *      429 conhecido — falso-positivo confirmado.
  *    - `merge_tag`: URL com `{{email}}`/`{{poll_sig}}` — Beehiiv expande no envio
  *    - `non_http`/`tel_mailto`: protocolos não-http
  *    - Artefatos conhecidos de test-send (#3480/#3481/#3482, post-mortem 260716)
@@ -79,6 +85,7 @@ export interface LinkSkip {
     | "tel_mailto"
     | "merge_tag"
     | "bot_blocked"
+    | "rate_limited"
     | "amazon_bot_block"
     | "font_degradation"
     | "beehiiv_footer_artifact";
@@ -385,6 +392,13 @@ export async function checkLinkTracking(
         // #1949: bot-block (página existe pra humanos, bloqueia HEAD de bot —
         // diaria.beehiiv.com/cursos|livros, tecnoblog). NÃO é link morto.
         skipped.push({ url, reason: "bot_blocked", status: r.status });
+      } else if (r.status === 429) {
+        // #3941 (post-mortem 260723): 429 = rate limiting de crawler/anti-bot,
+        // QUALQUER domínio (mesmo princípio de #696 em verify-accessibility.ts).
+        // Caso confirmado: VentureBeat retorna 429 pra HEAD de bot; página
+        // existe normalmente pra humanos. Antes desta correção, 429 caía no
+        // ramo genérico >=400 abaixo e virava `link_dead` — falso-positivo.
+        skipped.push({ url, reason: "rate_limited", status: r.status });
       } else if (r.status !== null && r.status >= 400) {
         issues.push({
           type: "link_dead",

@@ -152,8 +152,42 @@ O conteudo do email (via MCP ou Chrome) contem o resultado final que o leitor ve
 >    rodapé Beehiiv malformado (token de assinante não resolve sem
 >    subscription real). NENHUM dos três é problema real — não reportar.
 >
-> O lint determinístico (passos 8-9, 17) já trata 1/3/4/5 — **prefira o CLI** a
-> julgar à mão.
+> **#3941 — post-mortem 260723: 4/5 categorias reportadas na tentativa 1 eram
+> falso-positivo confirmado.** Regras explícitas pra não repetir:
+>
+> 6. **429 (rate limit) de QUALQUER domínio = anti-bot, nunca link quebrado**
+>    (mesmo princípio de #696/verify-accessibility.ts). Caso confirmado:
+>    VentureBeat retorna 429 pra HEAD de bot — página existe normalmente pra
+>    humanos. O lint determinístico (passo 17) já trata isso como skip
+>    `rate_limited` desde #3941 — **nunca** classificar 429 como `link_dead`.
+> 7. **"Seções ausentes" só é reportável após grep/lint estruturado confirmar
+>    ausência — nunca por impressão de leitura superficial.** Seguir sempre
+>    o protocolo em 2 etapas do item 6 (checar `newsletter-final.html` local
+>    primeiro) ou o structural diff (passo 3d) antes de declarar
+>    `section_missing`. Se você não rodou o grep/script, não reporte.
+> 8. **"Maiúsculas/acentuação inconsistente" só é reportável com o trecho
+>    EXATO citado do email — nunca por impressão geral.** Ordinais em
+>    português (`8ª`, `1º`, `2ª`) são formas CORRETAS, não erro de
+>    acentuação. O lint determinístico (passo 3e) já distingue
+>    `char_dropped` (blocker real) de `char_substituted` (ASCII fallback
+>    aceitável, ex: `8ª`→`8a` é substituição válida) — confiar no script,
+>    nunca em leitura visual do HTML cru.
+> 9. **"Emoji ausente" só é regressão se comparado explicitamente contra a
+>    edição anterior ou o template — nunca "eu esperava um emoji aqui".** Sem
+>    uma referência concreta (edição anterior, `context/templates/`) de que
+>    aquele ponto SEMPRE teve emoji, não reportar.
+> 10. **Imagens "unreachable": erro de rede isolado NUNCA é reportado como
+>     problema definitivo sem cross-check contra uma segunda fonte
+>     determinística** (`{edition_dir}/06-public-images.json`, escrito por
+>     `upload-images-public.ts` — entrada preenchida ali confirma que o
+>     Worker já recebeu essa imagem). Desde #3941, o lint de freshness
+>     (passo 16) já faz retry e marca `image_unreachable` como
+>     `severity: warning` (nunca blocker sozinho) — só `image_stale`
+>     (mismatch de bytes CONFIRMADO) é blocker. Inconclusivo = **não
+>     reportar**, nunca "reportar com ressalva".
+>
+> O lint determinístico (passos 8-9, 16, 17) já trata 1/3/4/5/6/10 — **prefira
+> o CLI** a julgar à mão.
 
 ### 3. Checklist de verificacao
 
@@ -182,7 +216,7 @@ Verificar cada item e registrar como `ok` ou `issue`:
 
    **MAS** quando o email JA tem URLs de imagem reais (Worker `/img/` ou Drive `uc?id=`), verificar freshness via lint determinístico — captura cache stale do Gmail Image Proxy / Beehiiv preview (caso real edição 260514: editor regenerou D1 sem texto, URL servia versão antiga por 1 ano). Ver passo 16.
 
-6. **Estrutura geral.** O email deve ter os 3 destaques, secao E IA?, e pelo menos 1 secao extra (Lancamentos/Pesquisas/Outras). Se alguma secao principal parece estar faltando, seguir este protocolo em 2 etapas (#2317):
+6. **Estrutura geral.** O email deve ter os 3 destaques, secao E IA?, e pelo menos 1 secao extra (Lancamentos/Pesquisas/Outras). Se alguma secao principal **parece** estar faltando, **isso NUNCA é motivo suficiente pra registrar issue por si só** (#3941 — post-mortem 260723: "seções ausentes" reportado por impressão de leitura, sem confirmação estruturada, e todas as seções estavam de fato presentes). Seguir SEMPRE este protocolo em 2 etapas (#2317) — grep/leitura estruturada obrigatória antes de qualquer `section_missing`:
 
    **Etapa 6a — verificar no HTML local primeiro (fonte de verdade):**
    Ler `{edition_dir}/_internal/newsletter-final.html` e verificar se a seção aparece lá.
@@ -345,12 +379,18 @@ Mapear `issues[]` pra strings do output do agent **respeitando o severity**:
 - `type:link_redirect_chain_long` (blocker) → `"email:link_redirect_chain_long: {url} → {hops} hops"` (blocker)
 - `type:link_timeout` (severity:**warning**, #1949) → `"info:link_timeout: {url} (>5s, transiente)"` — **WARNING, nunca blocker**. Timeout é transiente (host lento pontual, ex: anthropic.com); não derruba o fix loop.
 
-`skipped[]` (auth_required + non_http + **bot_blocked** + **merge_tag** +
-artefatos conhecidos de test-send, #1949/#3480/#3481/#3482) ficam no JSON pra
-debug mas **NÃO viram issue**:
+`skipped[]` (auth_required + non_http + **bot_blocked** + **rate_limited** +
+**merge_tag** + artefatos conhecidos de test-send, #1949/#3480/#3481/#3482/#3941)
+ficam no JSON pra debug mas **NÃO viram issue**:
 - **`bot_blocked` (401/403)**: a página existe pra humanos, só bloqueia HEAD de
   bot (diaria.beehiiv.com/cursos|livros, tecnoblog). **NÃO é link morto** — não
   reportar.
+- **`rate_limited` (429, #3941 — post-mortem 260723)**: rate limiting de
+  crawler/anti-bot, QUALQUER domínio (mesmo princípio de #696 em
+  verify-accessibility.ts). Caso confirmado: VentureBeat retorna 429 pra HEAD
+  de bot — página existe normalmente pra humanos. **NÃO é link quebrado** —
+  não reportar. (Antes de #3941 este status caía no ramo genérico `>=400` e
+  virava `link_dead` — era exatamente o falso-positivo do post-mortem.)
 - **`merge_tag`**: URL com `{{email}}` (vote URL do É IA?, #1186 modo merge-tag) —
   o Beehiiv expande no ENVIO. **NÃO é link quebrado** — não reportar.
 - **`amazon_bot_block` (#3480)**: domínios Amazon (amazon.com, amazon.com.br,
@@ -427,7 +467,8 @@ npx tsx scripts/lint-test-email-image-freshness.ts \
   --email-file {edition_dir}/_internal/test-email-{AAMMDD}.txt \
   --edition-dir {edition_dir} \
   --out {edition_dir}/_internal/lint-image-freshness-{AAMMDD}.json
-# Exit 0 = todas as imagens batem com arquivo local. Exit 1 = ao menos 1 stale.
+# Exit 0 = nenhum blocker (image_unreachable sozinho não conta, #3941).
+# Exit 1 = ao menos 1 image_stale (mismatch de bytes CONFIRMADO).
 ```
 
 3. Ler `{edition_dir}/_internal/lint-image-freshness-{AAMMDD}.json` — formato:
@@ -438,6 +479,7 @@ npx tsx scripts/lint-test-email-image-freshness.ts \
      "total_urls_checked": M,
      "issues": [
        { "type": "image_stale"|"image_unreachable",
+         "severity": "blocker"|"warning",
          "url": "...",
          "expected_local_file": "04-d1-2x1.jpg",
          "remote_hash": "...",
@@ -449,11 +491,11 @@ npx tsx scripts/lint-test-email-image-freshness.ts \
    }
    ```
 
-4. Mapear cada `issues[]` pra string compatível com o output:
-   - `type:image_stale` → `"email:image_stale: {expected_local_file} — {details}"`
-   - `type:image_unreachable` → `"email:image_unreachable: {expected_local_file} — {url} retornou erro"`
+4. Mapear cada `issues[]` pra string compatível com o output, **respeitando o severity** (#3941 — pós-mortem 260723: `image_unreachable` sozinho tinha virado falso-positivo "problema definitivo" sem cross-check; o script agora faz retry e classifica como warning):
+   - `type:image_stale` (severity:blocker) → `"email:image_stale: {expected_local_file} — {details}"` (blocker — mismatch de bytes confirmado após fetch bem-sucedido).
+   - `type:image_unreachable` (severity:**warning**) → `"info:image_unreachable: {expected_local_file} — {url} retornou erro após retries"` — **NUNCA prefixo `email:`**. É ruído de rede pós-retry, inconclusivo por definição; não é um problema confirmado. Antes de sequer incluir esta linha no `issues[]` final, cross-checar contra `{edition_dir}/06-public-images.json` (escrito por `upload-images-public.ts` — presença de entrada pra esse destaque/EIA com `url` preenchida é confirmação determinística de que o upload pro Worker teve sucesso) — se o arquivo confirma a imagem como já publicada no Worker, **omitir a linha inteiramente** em vez de reportar "com ressalva".
 
-   Anexar ao `issues[]` final do agent.
+   Anexar ao `issues[]` final do agent (só a linha de `image_stale`, e a de `image_unreachable` apenas se o cross-check não confirmar o Worker acessível).
 
 **Casos comuns que dispara:**
 - Editor regenerou imagem (image-generate.ts --force) mas Worker KV serve versão antiga por TTL longo (#1242 fix: TTL agora 1h, então cache stale só persiste por 1h max).

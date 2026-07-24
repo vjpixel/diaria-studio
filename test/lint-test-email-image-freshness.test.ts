@@ -1,16 +1,20 @@
 /**
  * test/lint-test-email-image-freshness.test.ts (#1212)
  *
- * Cobre as funções puras de extração de URL e resolução pra arquivo local.
- * A função checkImageFreshness (que faz fetch) requer rede e arquivos —
- * coberta por smoke test separado.
+ * Cobre as funções puras de extração de URL e resolução pra arquivo local,
+ * além de checkImageFreshness com `fetch` global mockado (#3941 — retry +
+ * severity de image_unreachable vs image_stale).
  */
 
-import { describe, it } from "node:test";
+import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   extractImageUrls,
   resolveExpectedLocalFile,
+  checkImageFreshness,
 } from "../scripts/lint-test-email-image-freshness.ts";
 
 describe("extractImageUrls (#1212)", () => {
@@ -125,5 +129,69 @@ describe("resolveExpectedLocalFile (#1212)", () => {
       resolveExpectedLocalFile("https://poll.diaria.workers.dev/img/img-260514-04-d2-1x1.jpeg"),
       "04-d2-1x1.jpeg",
     );
+  });
+});
+
+describe("checkImageFreshness — retry + severity (#3941, post-mortem 260723)", () => {
+  let editionDir: string;
+  let originalFetch: typeof fetch;
+
+  before(() => {
+    editionDir = mkdtempSync(join(tmpdir(), "diaria-image-freshness-"));
+    writeFileSync(join(editionDir, "04-d1-2x1.jpg"), Buffer.from("conteudo-local-esperado"));
+    originalFetch = globalThis.fetch;
+  });
+
+  after(() => {
+    globalThis.fetch = originalFetch;
+    rmSync(editionDir, { recursive: true, force: true });
+  });
+
+  it("image_unreachable: erro de rede em TODAS as tentativas → severity warning, não bloqueia sozinho", async () => {
+    let callCount = 0;
+    globalThis.fetch = (async () => {
+      callCount++;
+      throw new Error("network glitch");
+    }) as typeof fetch;
+
+    const html = '<img src="https://poll.diaria.workers.dev/img/img-260514-04-d1-2x1.jpg">';
+    const result = await checkImageFreshness(html, editionDir);
+
+    assert.ok(callCount >= 3, `esperava >=3 tentativas (1 + 2 retries), teve ${callCount}`);
+    assert.equal(result.issues.length, 1);
+    assert.equal(result.issues[0].type, "image_unreachable");
+    assert.equal(result.issues[0].severity, "warning");
+    const blockers = result.issues.filter((i) => i.severity === "blocker");
+    assert.equal(blockers.length, 0, "image_unreachable sozinho não deve contar como blocker");
+  });
+
+  it("image_unreachable: sucede no retry (glitch transiente) → sem issue nenhuma", async () => {
+    let callCount = 0;
+    globalThis.fetch = (async () => {
+      callCount++;
+      if (callCount === 1) throw new Error("transient glitch");
+      return new Response(Buffer.from("conteudo-local-esperado"), { status: 200 });
+    }) as typeof fetch;
+
+    const html = '<img src="https://poll.diaria.workers.dev/img/img-260514-04-d1-2x1.jpg">';
+    const result = await checkImageFreshness(html, editionDir);
+
+    assert.equal(callCount, 2, "1ª falhou, 2ª (retry) deve suceder");
+    assert.equal(result.issues.length, 0);
+    assert.equal(result.passed, 1);
+  });
+
+  it("image_stale: bytes divergem de forma consistente → severity blocker", async () => {
+    globalThis.fetch = (async () =>
+      new Response(Buffer.from("conteudo-DIFERENTE-do-esperado"), { status: 200 })) as typeof fetch;
+
+    const html = '<img src="https://poll.diaria.workers.dev/img/img-260514-04-d1-2x1.jpg">';
+    const result = await checkImageFreshness(html, editionDir);
+
+    assert.equal(result.issues.length, 1);
+    assert.equal(result.issues[0].type, "image_stale");
+    assert.equal(result.issues[0].severity, "blocker");
+    const blockers = result.issues.filter((i) => i.severity === "blocker");
+    assert.equal(blockers.length, 1, "image_stale confirmado DEVE contar como blocker");
   });
 });

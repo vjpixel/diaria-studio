@@ -165,6 +165,16 @@ describe("#1949 — cortar falso-positivos (merge tags, 403 bot-block, timeout w
     assert.equal(bot[0].status, 403);
   });
 
+  it("#3941: 429 (rate limit) → skip rate_limited (não link_dead) — caso VentureBeat post-mortem 260723", async () => {
+    const html = '<a href="https://venturebeat.com/ai/some-article">artigo</a>';
+    const fetchStub = (): Promise<Response> => Promise.resolve(new Response(null, { status: 429 }));
+    const r = await checkLinkTracking(html, fetchStub as never);
+    assert.equal(r.issues.length, 0, "429 não é issue — é anti-bot, não link morto");
+    const rl = r.skipped.filter((s) => s.reason === "rate_limited");
+    assert.equal(rl.length, 1);
+    assert.equal(rl[0].status, 429);
+  });
+
   it("404 (real) ainda é link_dead blocker (não confundir com 403)", async () => {
     const html = '<a href="https://dead.example.com">x</a>';
     const fetchStub = (): Promise<Response> => Promise.resolve(new Response(null, { status: 404 }));
