@@ -37,8 +37,25 @@ export function extractPlatformSection(md: string, platform: "linkedin" | "faceb
   return match ? match[1] : null;
 }
 
+/**
+ * resolveUnifiedSocialSection (#3991)
+ *
+ * Resolve a seção que hospeda `## d1/d2/d3` + `## post_pixel` — a seção nova
+ * `# Social` (formato pós-#3991, agent único `social-writer`) OU, como
+ * fallback de compat, a antiga `# LinkedIn` (edições publicadas ANTES deste
+ * merge, que nunca serão re-geradas no formato novo). Usado por toda
+ * validação relacionada a `post_pixel` (schema, CTA de e-mail, link da
+ * página, credential-bio, deixis pessoal, cobertura do humanizador) — o
+ * conteúdo/regras de `post_pixel` não mudam com o #3991, só a seção-mãe onde
+ * ele vive. Para edições no formato legado (sem `# Social`), o comportamento
+ * é BYTE-A-BYTE idêntico ao pré-#3991 (fallback pra `extractPlatformSection`).
+ */
+function resolveUnifiedSocialSection(md: string): string | null {
+  return extractSection(md, "Social") ?? extractPlatformSection(md, "linkedin");
+}
+
 export interface PlatformHeaderDuplicateError {
-  platform: "linkedin" | "facebook";
+  platform: "linkedin" | "facebook" | "social";
   header: string;
   count: number;
   lines: number[];
@@ -64,16 +81,22 @@ export interface PlatformHeaderUniqueResult {
  * o dispatch inteiro. Root cause do bug: nada validava que `03-social.md` tem
  * exatamente 1 seção por plataforma antes do parse.
  *
- * Este lint conta LINHAS que batem EXATAMENTE com `# LinkedIn` ou `# Facebook`
- * (linha inteira, não substring solta — "Siga a Diar.ia no LinkedIn em..." não
- * conta) e falha se qualquer uma das duas plataformas aparecer mais de 1 vez.
+ * Este lint conta LINHAS que batem EXATAMENTE com `# LinkedIn`, `# Facebook`
+ * ou `# Social` (linha inteira, não substring solta — "Siga a Diar.ia no
+ * LinkedIn em..." não conta) e falha se qualquer uma delas aparecer mais de
+ * 1 vez. `# Social` (#3991) é o header único que substitui `# LinkedIn`/
+ * `# Facebook`/`# Instagram` no formato novo — checado pelo mesmo motivo:
+ * `merge-social-md.ts` prepende o header, e se o tmp do `social-writer` já
+ * contiver `# Social` embutido, o parser pararia no 2º header como fim de
+ * seção.
  */
 export function lintPlatformHeadersUnique(md: string): PlatformHeaderUniqueResult {
   const lines = md.replace(/\r\n/g, "\n").split("\n");
   const errors: PlatformHeaderDuplicateError[] = [];
-  const platforms: Array<{ platform: "linkedin" | "facebook"; header: string; re: RegExp }> = [
+  const platforms: Array<{ platform: "linkedin" | "facebook" | "social"; header: string; re: RegExp }> = [
     { platform: "linkedin", header: "# LinkedIn", re: /^# LinkedIn\s*$/i },
     { platform: "facebook", header: "# Facebook", re: /^# Facebook\s*$/i },
+    { platform: "social", header: "# Social", re: /^# Social\s*$/i },
   ];
   for (const { platform, header, re } of platforms) {
     const matchLines: number[] = [];
@@ -327,10 +350,16 @@ function isInQuotedRange(
  * substrings intermediárias.
  */
 function findPostPixelLineRange(lines: string[]): { start: number; end: number } | null {
-  const linkedinIdx = lines.findIndex((l) => /^# LinkedIn\s*$/i.test(l));
-  if (linkedinIdx === -1) return null;
+  // #3991: post_pixel agora vive sob `# Social`; fallback pro `# LinkedIn`
+  // legado preserva o comportamento pré-#3991 pra edições no formato antigo.
+  let sectionHeaderIdx = lines.findIndex((l) => /^# Social\s*$/i.test(l));
+  if (sectionHeaderIdx === -1) {
+    sectionHeaderIdx = lines.findIndex((l) => /^# LinkedIn\s*$/i.test(l));
+  }
+  if (sectionHeaderIdx === -1) return null;
+  const linkedinIdx = sectionHeaderIdx;
 
-  // Fim da seção LinkedIn: próxima linha "# " top-level, ou fim do doc.
+  // Fim da seção: próxima linha "# " top-level, ou fim do doc.
   let sectionEnd = lines.length;
   for (let i = linkedinIdx + 1; i < lines.length; i++) {
     if (/^# /.test(lines[i])) {
@@ -425,15 +454,25 @@ export interface LinkedinSchemaResult {
  * extração/contagem de chars permanece só para compat com `03-social.md` de
  * edições antigas que ainda tenham essas subseções (nunca bloqueia).
  *
- * Char count limits:
- *   main: 1200-1500 (sweet spot LinkedIn)
+ * Char count limits (#3991: adaptativo conforme o formato):
+ *   legado (`# LinkedIn`): main 1200-1500 (sweet spot LinkedIn antigo, tolerância 800-1800)
+ *   novo (`# Social`, texto único estilo Instagram): 600-900 (tolerância 400-1100,
+ *     folga extra pro bloco de hashtags que faz parte do mesmo corpo)
  */
 export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
-  const linkedinSection = extractPlatformSection(md, "linkedin");
+  // #3991: seção nova `# Social` tem precedência; fallback pro `# LinkedIn`
+  // legado preserva comportamento byte-a-byte pra edições publicadas antes
+  // deste merge (nunca serão re-geradas no formato novo).
+  const socialHeaderSection = extractSection(md, "Social");
+  const linkedinSection = socialHeaderSection ?? extractPlatformSection(md, "linkedin");
+  const isNewFormat = socialHeaderSection !== null;
+  const [targetMin, targetMax, tolMin, tolMax] = isNewFormat
+    ? [600, 900, 400, 1100]
+    : [1200, 1500, 800, 1800];
   const errors: LinkedinSchemaError[] = [];
   const destaques: LinkedinSchemaResult["destaques"] = [];
   if (!linkedinSection) {
-    return { ok: true, errors, destaques }; // sem seção LinkedIn = no-op
+    return { ok: true, errors, destaques }; // sem seção Social/LinkedIn = no-op
   }
 
   // Splitar por `## d{N}`. Cada chunk começa após o header.
@@ -507,11 +546,11 @@ export function lintLinkedinSchema(md: string): LinkedinSchemaResult {
     // de presença aqui (ver nota na JSDoc da função).
     // Char count ranges (warning only — não bloqueia gate; lints estritos
     // apenas missing-section)
-    if (has_main && (mainText.length < 800 || mainText.length > 1800)) {
+    if (has_main && (mainText.length < tolMin || mainText.length > tolMax)) {
       errors.push({
         destaque,
         rule: "main_chars_out_of_range",
-        detail: `${destaque}: main post ${mainText.length} chars (esperado 1200-1500, tolerância 800-1800)`,
+        detail: `${destaque}: main post ${mainText.length} chars (esperado ${targetMin}-${targetMax}, tolerância ${tolMin}-${tolMax})`,
       });
     }
 
@@ -658,7 +697,10 @@ export interface LinkedinEmailCtaResult {
  */
 export function lintLinkedinEmailCTA(md: string): LinkedinEmailCtaResult {
   const errors: LinkedinEmailCtaError[] = [];
-  const linkedinSection = extractPlatformSection(md, "linkedin");
+  // #3991: `post_pixel` (o alvo real deste check, junto com o corpo genérico)
+  // agora vive em `# Social` — resolveUnifiedSocialSection cai pro `# LinkedIn`
+  // legado quando `# Social` não existir.
+  const linkedinSection = resolveUnifiedSocialSection(md);
   if (!linkedinSection) return { ok: true, errors };
 
   const lines = linkedinSection.split("\n");
@@ -686,19 +728,80 @@ export function lintLinkedinEmailCTA(md: string): LinkedinEmailCtaResult {
 }
 
 /**
- * #2486: Detecta CTA de assinatura por e-mail na seção que o Instagram vai
- * consumir de 03-social.md. Usa a mesma lógica de fallback de publish-instagram.ts:
- *   1. Seção `# Instagram` (quando social-instagram escrever a seção própria).
- *   2. Fallback: seção `# Facebook` (situação atual — IG herda o copy do FB).
+ * #3991: padrões de linguagem de CANAL banidos do corpo genérico `## d{N}`
+ * da seção `# Social`. Superset do `EMAIL_CTA_RE` (e-mail) — cobre também os
+ * dois vocabulários de canal introduzidos pela diferenciação do #3486:
+ * "link na/da bio" + "segue @handle" (Instagram) e "não perder a próxima"
+ * (fechamento fixo do Instagram). Também banimos qualquer menção a
+ * `diar.ia.br` no corpo genérico — a URL só entra via injeção determinística
+ * no publish (`scripts/lib/social-cta-lines.ts`), nunca em `03-social.md`.
+ */
+const CHANNEL_SPECIFIC_LANGUAGE_RE =
+  /(link\s+(?:da|na)\s+bio|segue\s+@[\w.]+|n[aã]o\s+perder\s+a\s+pr[oó]xima|\bdiar\.ia\.br\b)/gi;
+
+/**
+ * extractGenericDestaqueBodies (#3991)
  *
- * Importante: `lintLinkedinEmailCTA` só checa `# LinkedIn`, então o CTA banido
- * em FB/IG passava sem flag. Este lint fecha o gap para o canal Instagram.
+ * Extrai o corpo de cada `## d{N}` de dentro da seção `# Social` — o TEXTO
+ * GENÉRICO compartilhado por LinkedIn/Facebook/Instagram, nunca `## post_pixel`
+ * (post_pixel é conteúdo diferente — #1690 — e legitimamente contém link/CTA
+ * próprios, então não deve ser validado como "canal-neutro"). Cada corpo
+ * termina no próximo `## ` sibling (inclui `## post_pixel`, se for o último
+ * destaque) — não há mais `### comment_*` subseções nesse formato.
+ */
+function extractGenericDestaqueBodies(section: string): Array<{ destaque: string; text: string }> {
+  const chunks = ("\n" + section.replace(/\r\n/g, "\n")).split(/\n## (d\d+)\n/);
+  const out: Array<{ destaque: string; text: string }> = [];
+  for (let i = 1; i < chunks.length; i += 2) {
+    const destaque = chunks[i];
+    const raw = chunks[i + 1] ?? "";
+    const nextSibling = raw.search(/\n## /);
+    const body = nextSibling !== -1 ? raw.slice(0, nextSibling) : raw;
+    out.push({ destaque, text: body.replace(/<!--[\s\S]*?-->/g, "") });
+  }
+  return out;
+}
+
+/**
+ * #2486, alvo mudou no #3991: valida que o TEXTO GENÉRICO da seção `# Social`
+ * (o único texto revisado pelo editor, compartilhado por LinkedIn/Facebook/
+ * Instagram) é channel-neutral — sem CTA de e-mail, sem "link na bio", sem
+ * qualquer menção a `diar.ia.br`. Essas linhas são injetadas SÓ no publish
+ * (`scripts/lib/social-cta-lines.ts`), nunca em `03-social.md`. Este é o
+ * guard do contrato novo (decisão do editor, issue #3991, comentário 260724).
+ *
+ * Formato LEGADO (edições publicadas antes do #3991, sem `# Social`): mantém
+ * o comportamento ORIGINAL (#2486) inalterado — checa a seção `# Instagram`
+ * própria quando existir, senão cai no fallback `# Facebook` (que MANTINHA o
+ * CTA de e-mail, legítimo lá antes da unificação).
  *
  * Interface reutiliza LinkedinEmailCtaResult para consistência com a função irmã.
  */
 export function lintInstagramEmailCTA(md: string): LinkedinEmailCtaResult {
   const errors: LinkedinEmailCtaError[] = [];
-  // Tentar seção Instagram primeiro; fallback para Facebook (igual a publish-instagram.ts).
+
+  const socialSection = extractSection(md, "Social");
+  if (socialSection !== null) {
+    for (const { destaque, text } of extractGenericDestaqueBodies(socialSection)) {
+      const lines = text.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        EMAIL_CTA_RE.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = EMAIL_CTA_RE.exec(line)) !== null) {
+          errors.push({ section: destaque, line: i + 1, phrase: m[0] });
+        }
+        CHANNEL_SPECIFIC_LANGUAGE_RE.lastIndex = 0;
+        while ((m = CHANNEL_SPECIFIC_LANGUAGE_RE.exec(line)) !== null) {
+          errors.push({ section: destaque, line: i + 1, phrase: m[0] });
+        }
+      }
+    }
+    return { ok: errors.length === 0, errors };
+  }
+
+  // Legado (pré-#3991): Tentar seção Instagram própria; fallback para Facebook
+  // (igual a publish-instagram.ts) — comportamento ORIGINAL do #2486, intocado.
   let section = extractSection(md, "Instagram") ?? extractPlatformSection(md, "facebook");
   if (!section) return { ok: true, errors };
 
@@ -767,7 +870,8 @@ export interface LinkedinPageLinkResult {
  */
 export function lintLinkedinPageLink(md: string): LinkedinPageLinkResult {
   const errors: LinkedinPageLinkError[] = [];
-  const linkedinSection = extractPlatformSection(md, "linkedin");
+  // #3991: post_pixel agora vive em `# Social` (fallback pro `# LinkedIn` legado).
+  const linkedinSection = resolveUnifiedSocialSection(md);
   if (!linkedinSection) return { ok: true, errors };
 
   // #2675: derivar o regex do slug canônico (não duplicar a string) — evita drift
@@ -839,7 +943,8 @@ export interface CredentialBioResult {
 export function lintCredentialBio(md: string): CredentialBioResult {
   const matches: CredentialBioMatch[] = [];
 
-  const linkedinSection = extractPlatformSection(md, "linkedin");
+  // #3991: post_pixel agora vive em `# Social` (fallback pro `# LinkedIn` legado).
+  const linkedinSection = resolveUnifiedSocialSection(md);
   if (!linkedinSection) return { ok: true, matches };
 
   // Checar ## post_pixel
@@ -1123,7 +1228,7 @@ export { EDITORIAL_HOOK_TRIGGER_RE };
 // ── #1762: posts social NÃO devem encerrar com pergunta (CTA-pergunta) ──────
 
 export interface TrailingQuestionMatch {
-  platform: "linkedin" | "facebook";
+  platform: "linkedin" | "facebook" | "social";
   destaque: string;
   sentence: string;
 }
@@ -1213,7 +1318,9 @@ function socialProseTokens(s: string): Set<string> {
 }
 
 export function lintPostPixelMatchesD1(md: string): PostPixelMatchResult {
-  const section = extractPlatformSection(md, "linkedin");
+  // #3991: post_pixel + os d1/d2/d3 genéricos agora vivem em `# Social`
+  // (fallback pro `# LinkedIn` legado).
+  const section = resolveUnifiedSocialSection(md);
   if (!section) return { ok: true, checked: false };
 
   // Mapa de blocos `## <name>` → conteúdo até o próximo `## <name>` (mesmo nível).
@@ -1335,6 +1442,25 @@ export function lintTrailingQuestion(md: string): TrailingQuestionResult {
       }
     }
   }
+
+  // #3991: seção única `# Social` (texto genérico compartilhado por
+  // LinkedIn/Facebook/Instagram). Sem `### comment_*` subseções — o corpo do
+  // destaque termina no próximo `## ` sibling (inclui `## post_pixel`).
+  const socialSection = extractSection(md, "Social");
+  if (socialSection) {
+    const chunks = ("\n" + socialSection).split(/\n## (d\d+)\n/);
+    for (let i = 1; i < chunks.length; i += 2) {
+      const destaque = chunks[i];
+      let body = chunks[i + 1] ?? "";
+      const nextSibling = body.search(/\n## /);
+      if (nextSibling !== -1) body = body.slice(0, nextSibling);
+      const last = lastMeaningfulSentence(body);
+      if (last && endsWithTrailingQuestion(last)) {
+        matches.push({ platform: "social", destaque, sentence: last.slice(-100) });
+      }
+    }
+  }
+
   return { ok: matches.length === 0, matches };
 }
 
@@ -1416,7 +1542,8 @@ function extractCommentPixelBlocks(linkedinSection: string): Array<{ destaque: s
 export function lintPersonalPostNewsletterDeixis(md: string): PersonalPostDeixisResult {
   const matches: PersonalPostDeixisMatch[] = [];
 
-  const linkedinSection = extractPlatformSection(md, "linkedin");
+  // #3991: post_pixel agora vive em `# Social` (fallback pro `# LinkedIn` legado).
+  const linkedinSection = resolveUnifiedSocialSection(md);
   if (!linkedinSection) return { ok: true, matches };
 
   // Checar ## post_pixel
@@ -1496,7 +1623,9 @@ export interface SectionCoverageResult {
  * em vez de re-humanizar o arquivo inteiro a cada ajuste.
  */
 export function extractSocialSections(md: string): Record<string, string> {
-  const section = extractPlatformSection(md, "linkedin");
+  // #3991: `## d1/d2/d3` + `## post_pixel` agora vivem em `# Social`
+  // (fallback pro `# LinkedIn` legado, mesmo comportamento pré-#3991).
+  const section = resolveUnifiedSocialSection(md);
   if (!section) return {};
 
   const result: Record<string, string> = {};

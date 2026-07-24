@@ -34,6 +34,33 @@ describe("extractPostText (publish-linkedin) (#528)", () => {
   it("d1 nao contamina d2", () => { assert.ok(!extractPostText(LF,"d1").includes("LinkedIn d2.")); });
 });
 
+describe("extractPostText (publish-linkedin) — formato novo # Social (#3991)", () => {
+  const SOCIAL_MD = "# Social\n\n## d1\n\nTexto genérico d1.\n\n#IA\n\n## d2\n\nTexto genérico d2.\n\n## post_pixel\n\nPost pessoal do Pixel.\n";
+
+  it("extrai d1 de # Social", () => {
+    const t = extractPostText(SOCIAL_MD, "d1");
+    assert.ok(t.includes("Texto genérico d1."));
+  });
+
+  it("NÃO injeta nenhuma linha de CTA (LinkedIn preserva #595 — sem URL/menção no corpo)", () => {
+    const t = extractPostText(SOCIAL_MD, "d1");
+    assert.ok(!t.includes("diar.ia.br"));
+    assert.ok(!t.includes("Diar.ia"));
+  });
+
+  it("preserva o bloco de hashtags intacto (sem CTA injetada entre corpo e tags)", () => {
+    const t = extractPostText(SOCIAL_MD, "d1");
+    assert.equal(t, "Texto genérico d1.\n\n#IA");
+  });
+
+  it("# Social tem precedência sobre # LinkedIn legado quando ambos presentes", () => {
+    const mixed = "# Social\n\n## d1\n\nTexto novo d1.\n\n# LinkedIn\n\n## d1\n\nTexto legado d1.\n";
+    const t = extractPostText(mixed, "d1");
+    assert.ok(t.includes("Texto novo d1."));
+    assert.ok(!t.includes("Texto legado d1."));
+  });
+});
+
 describe("postToMakeWebhook (#528)", () => {
   const webhookUrl="https://hook.eu2.make.com/test";
   const payload={text:"T",image_url:null as string|null,scheduled_at:null as string|null,destaque:"d1"};

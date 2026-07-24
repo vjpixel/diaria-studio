@@ -5,7 +5,7 @@ description: Roda a Etapa 2 (newsletter + social em paralelo, ambos a partir de 
 
 # /diaria-2-escrita
 
-Executa a Etapa 2 da pipeline Diar.ia: dispara `writer` (newsletter) + `social-linkedin` + `social-facebook` + `social-instagram` (#3486) + `social-curto` (#3992) **em paralelo**, todos lendo diretamente de `_internal/01-approved.json` — sem dependência sequencial entre newsletter e social. Gate unificado ao final.
+Executa a Etapa 2 da pipeline Diar.ia: dispara `writer` (newsletter) + `social-writer` (#3991, reverte #3486 — texto único LinkedIn/Facebook/Instagram) + `social-curto` (#3992) **em paralelo**, todos lendo diretamente de `_internal/01-approved.json` — sem dependência sequencial entre newsletter e social. Gate unificado ao final.
 
 Self-contained — você (top-level Claude Code) executa todo o playbook aqui, sem delegar a um orchestrator subagente. (Workaround #207: runtime bloqueia `Agent` dentro de subagentes.)
 
@@ -155,21 +155,9 @@ Agent({
 // Em edições de 2 destaques, pular este Agent (stitch omite o bloco D3).
 
 Agent({
-  subagent_type: "social-linkedin",
-  description: "Etapa 2 — LinkedIn writer",
-  prompt: "Gera 3 posts de LinkedIn (um por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-linkedin.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-linkedin.md."
-})
-
-Agent({
-  subagent_type: "social-facebook",
-  description: "Etapa 2 — Facebook writer",
-  prompt: "Gera 3 posts de Facebook (um por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-facebook.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-facebook.md."
-})
-
-Agent({
-  subagent_type: "social-instagram",
-  description: "Etapa 2 — Instagram writer",
-  prompt: "Gera 3 captions de Instagram (uma por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-instagram.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-instagram.md. CTA nativo de social ('link na bio' + follow) — SEM CTA de e-mail (#3486, #2486)."
+  subagent_type: "social-writer",
+  description: "Etapa 2 — Social writer (texto único LinkedIn/Facebook/Instagram)",
+  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved.json — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal — + 1 post pessoal standalone (## post_pixel, D1). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3, ## post_pixel. Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
 })
 
 Agent({
@@ -199,21 +187,9 @@ Agent({
 })
 
 Agent({
-  subagent_type: "social-linkedin",
-  description: "Etapa 2 — LinkedIn writer",
-  prompt: "Gera 3 posts de LinkedIn (um por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-linkedin.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-linkedin.md."
-})
-
-Agent({
-  subagent_type: "social-facebook",
-  description: "Etapa 2 — Facebook writer",
-  prompt: "Gera 3 posts de Facebook (um por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-facebook.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-facebook.md."
-})
-
-Agent({
-  subagent_type: "social-instagram",
-  description: "Etapa 2 — Instagram writer",
-  prompt: "Gera 3 captions de Instagram (uma por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-instagram.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-instagram.md. CTA nativo de social ('link na bio' + follow) — SEM CTA de e-mail (#3486, #2486)."
+  subagent_type: "social-writer",
+  description: "Etapa 2 — Social writer (texto único LinkedIn/Facebook/Instagram)",
+  prompt: "Gera 1 texto genérico (estilo Instagram, por destaque) a partir de {EDIR}/_internal/01-approved.json — o MESMO texto vai pra LinkedIn/Facebook/Instagram, sem CTA de canal — + 1 post pessoal standalone (## post_pixel, D1). Output: {EDIR}/_internal/03-social.tmp.md com seções ## d1, ## d2, ## d3, ## post_pixel. Seguir .claude/agents/social-writer.md (#3991, reverte #3486)."
 })
 
 Agent({
@@ -229,7 +205,7 @@ Dispatchar só `writer`. Pular steps de social abaixo.
 
 ### Se `$2 = social`:
 
-Dispatchar `social-linkedin` + `social-facebook` + `social-instagram` (#3486) + `social-curto` (#3992) em paralelo. Pular steps de newsletter abaixo.
+Dispatchar `social-writer` (#3991) + `social-curto` (#3992) em paralelo. Pular steps de newsletter abaixo.
 
 ## Passo 2b — Merge dos outputs
 
@@ -239,9 +215,9 @@ Dispatchar `social-linkedin` + `social-facebook` + `social-instagram` (#3486) + 
 cp {EDIR}/_internal/02-draft.md {EDIR}/02-reviewed.md
 ```
 
-### 2b-soc — assim que `social-linkedin`, `social-facebook`, `social-instagram` E `social-curto` retornarem
+### 2b-soc — assim que `social-writer` E `social-curto` retornarem
 
-**#3486/#3992:** usar `merge-social-md.ts` (não montar `03-social.md` manualmente) — o script valida os tmps obrigatórios (LinkedIn/Facebook), faz strip de comentários HTML e dedupe de header (#3424/#3388), e mescla `# Instagram`/`# Curto` quando `_internal/03-instagram.tmp.md`/`_internal/03-curto.tmp.md` existirem (tmps OPCIONAIS — ausência não falha o merge; Instagram omitido mantém o fallback `# Instagram` → `# Facebook`, #2486; Curto omitido faz `publish-threads.ts` cair no fallback Facebook e `publish-twitter.ts` não publicar, #3994):
+**#3991/#3992:** usar `merge-social-md.ts` (não montar `03-social.md` manualmente) — o script valida o tmp obrigatório (`social-writer`), faz strip de comentários HTML e dedupe de header (#3424/#3388), e grava a seção única `# Social`; mescla `# Curto` quando `_internal/03-curto.tmp.md` existir (tmp OPCIONAL — ausência não falha o merge; Curto omitido faz `publish-threads.ts` cair no fallback Facebook — só existe em edições legado — e `publish-twitter.ts` não publicar, #3994):
 
 ```bash
 npx tsx scripts/merge-social-md.ts --edition-dir {EDIR}/
@@ -441,8 +417,8 @@ Exit 0 = URLs em LANÇAMENTOS estáveis. Exit 1 = URL alterada — incluir outpu
 node -e "
   const fs=require('fs');
   const dir='{EDIR}/';
-  if (fs.existsSync(dir+'_internal/03-linkedin.tmp.md')) fs.unlinkSync(dir+'_internal/03-linkedin.tmp.md');
-  if (fs.existsSync(dir+'_internal/03-facebook.tmp.md')) fs.unlinkSync(dir+'_internal/03-facebook.tmp.md');
+  if (fs.existsSync(dir+'_internal/03-social.tmp.md')) fs.unlinkSync(dir+'_internal/03-social.tmp.md');
+  if (fs.existsSync(dir+'_internal/03-curto.tmp.md')) fs.unlinkSync(dir+'_internal/03-curto.tmp.md');
 "
 ```
 
@@ -459,12 +435,12 @@ node -e "
      --out {EDIR}/03-social.md \
      --report {EDIR}/_internal/03-clarice-report.json
    ```
-5. **Verificar integridade dos cabeçalhos**: as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda devem existir. Se algum sumiu, restaurar via `Edit` antes de continuar.
+5. **Verificar integridade dos cabeçalhos**: a seção `# Social` (#3991) e os headers `## d1`, `## d2`, `## d3` ainda devem existir. Se algum sumiu, restaurar via `Edit` antes de continuar.
 6. Se `mcp__clarice__correct_text` falhar, **propagar o erro**.
 
 ### 4c. Humanize
 
-Snapshot pré-Humanize antes de dispatchar — usado para rollback se o agent falhar OU se as seções `# LinkedIn` / `# Facebook` / `## d1`-`d3` desaparecerem:
+Snapshot pré-Humanize antes de dispatchar — usado para rollback se o agent falhar OU se a seção `# Social` / `## d1`-`d3` desaparecerem:
 
 ```bash
 cp {EDIR}/03-social.md {EDIR}/_internal/03-social.pre-humanize.md
@@ -494,7 +470,7 @@ ETAPA 2 — VERSÃO FINAL:
 ETAPA 3 — RESUMO:
 - Liste as principais mudanças
 
-Regras de preservação: preservar hashtags, emojis, estrutura de seções (# LinkedIn, # Facebook, ## d1, ## d2, ## d3), não alterar URLs."
+Regras de preservação: preservar hashtags, emojis, estrutura de seções (# Social, ## d1, ## d2, ## d3, ## post_pixel), não alterar URLs."
 })
 ```
 
@@ -539,8 +515,7 @@ Newsletter — Clarice: A aplicadas, B skipadas
 Social — Clarice: C aplicadas, D skipadas
 
 Posts gerados:
-- LinkedIn d1 / d2 / d3
-- Facebook d1 / d2 / d3
+- Social (texto único LinkedIn/Facebook/Instagram, #3991) d1 / d2 / d3 + post_pixel
 - Curto (Twitter/X + Threads) d1 / d2 / d3
 
 (pode editar diretamente no arquivo, local ou via Studio, antes de aprovar)
@@ -597,7 +572,7 @@ Erro do agent (Passo 7) reportado ao editor — sem fallback automático adicion
 ## Outputs
 
 - `{EDIR}/02-reviewed.md` — newsletter final
-- `{EDIR}/03-social.md` — posts LinkedIn + Facebook + Instagram (opcional) + Curto (opcional, #3992) (seções `# LinkedIn`/`# Facebook`/`# Instagram`/`# Curto`, cada uma com `## d1`/`## d2`/`## d3`)
+- `{EDIR}/03-social.md` — texto único LinkedIn/Facebook/Instagram (#3991) + Curto (opcional, #3992) (seções `# Social` com `## d1`/`## d2`/`## d3`/`## post_pixel`, e `# Curto` com `## d1`/`## d2`/`## d3`)
 - `{EDIR}/_internal/02-clarice-diff.md` — diff da Clarice na newsletter
 - `{EDIR}/_internal/02-clarice-report.json` — relatório de sugestões newsletter
 - `{EDIR}/_internal/03-clarice-report.json` — relatório de sugestões social

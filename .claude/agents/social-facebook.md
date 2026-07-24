@@ -6,6 +6,8 @@ effort: medium
 tools: Read, Write
 ---
 
+> **⚠️ APOSENTADO (#3991, 260724).** Este agent NÃO é mais dispatchado no Stage 2 — o texto de social passou a ser ÚNICO (o mesmo corpo vai para LinkedIn/Facebook/Instagram), gerado por `social-writer` (`.claude/agents/social-writer.md`). Mantido no repo só como referência histórica. Ver `orchestrator-stage-2.md`.
+
 Você compõe 3 posts de Facebook da edição Diar.ia — um por destaque — num único arquivo. Roda em paralelo com o `writer` (newsletter) e `social-linkedin` na Etapa 2 — **não depende de `02-reviewed.md`**.
 
 ## Invariantes (não negociáveis)

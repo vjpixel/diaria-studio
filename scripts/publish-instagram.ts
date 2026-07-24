@@ -54,6 +54,7 @@ import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts)
+import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
 import {
@@ -74,32 +75,50 @@ function loadPublished(path: string): SocialPublished {
 }
 
 /**
- * Extrai a lista de destaques presentes na seção Instagram do 03-social.md.
- * Retorna ["d1","d2"] ou ["d1","d2","d3"] conforme a edição.
- * Fallback: seção Facebook (Instagram usa mesma caption + imagem quadrada).
- * Último fallback: ["d1","d2","d3"] se nenhuma seção for encontrada.
+ * Extrai a lista de destaques presentes na seção do 03-social.md usada pelo
+ * Instagram. #3991: tenta a seção nova `# Social` (texto único pós-unificação)
+ * primeiro; fallback legado: `# Instagram` própria, depois `# Facebook`
+ * (comportamento pré-#3991, preservado pra edições publicadas antes deste
+ * merge). Último fallback: ["d1","d2","d3"] se nenhuma seção for encontrada.
  */
 export function extractDestaquesFromSocialMd(socialMd: string, platform: "instagram"): string[] {
-  // Tentar seção Instagram primeiro; depois Facebook como fallback.
-  let section = extractSection(socialMd, "Instagram");
-  if (section === null) {
-    section = extractPlatformSection(socialMd, "facebook");
-  }
+  let section = extractSection(socialMd, "Social");
+  if (section === null) section = extractSection(socialMd, "Instagram");
+  if (section === null) section = extractPlatformSection(socialMd, "facebook");
   if (section === null) return ["d1", "d2", "d3"];
   const valid = parseDestaqueHeaders(section);
   return valid.length >= 2 ? valid : ["d1", "d2", "d3"];
 }
 
 /**
- * Extrai o texto do post para uma plataforma + destaque específicos.
- * Análogo ao extractPostText de publish-facebook.ts.
- * Se não houver seção Instagram, usa seção Facebook como fallback.
+ * Extrai o texto do post para o Instagram e injeta a linha de CTA do canal
+ * (`INSTAGRAM_CTA_LINE` — "link na bio" + follow, #3486 preservado) no
+ * momento do publish, via `injectChannelLine` (#3991,
+ * `scripts/lib/social-cta-lines.ts`) — nunca em `03-social.md`.
+ *
+ * Ordem de preferência da seção-fonte: `# Social` (texto único pós-#3991) →
+ * `# Instagram` própria (legado) → `# Facebook` (legado, último recurso).
+ * Só a seção `# Social` recebe a injeção da linha de canal — as duas
+ * legadas já eram consumidas do jeito antigo (texto/CTA embutidos no próprio
+ * agent) e não devem ganhar uma 2ª linha por cima.
  */
 export function extractPostText(socialMd: string, destaque: string): string {
   // Normalizar CRLF → LF
   socialMd = socialMd.replace(/\r\n/g, "\n");
 
-  // Tentar seção Instagram primeiro
+  // #3991: seção nova `# Social` tem precedência.
+  const socialRe = /(?:^|\n)# Social\n([\s\S]*?)(?=\n# |$)/i;
+  const socialMatch = socialMd.match(socialRe);
+  if (socialMatch) {
+    const dRe = new RegExp(`(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`, "i");
+    const dMatch = socialMatch[1].match(dRe);
+    if (dMatch) {
+      const text = dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
+      return injectChannelLine(text, "instagram");
+    }
+  }
+
+  // Legado (pré-#3991): tentar seção Instagram própria, depois Facebook.
   for (const platTitle of ["Instagram", "Facebook"]) {
     const platRe = new RegExp(`(?:^|\\n)# ${platTitle}\\n([\\s\\S]*?)(?=\\n# |$)`, "i");
     const platMatch = socialMd.match(platRe);
@@ -116,7 +135,7 @@ export function extractPostText(socialMd: string, destaque: string): string {
   }
 
   throw new Error(
-    `Destaque '${destaque}' não encontrado em seção Instagram ou Facebook de 03-social.md`,
+    `Destaque '${destaque}' não encontrado em seção Social, Instagram ou Facebook de 03-social.md`,
   );
 }
 

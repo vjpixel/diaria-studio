@@ -1,34 +1,32 @@
 /**
  * validate-stage-2-outputs.ts (#872)
  *
- * Verifica que os agents paralelos do Stage 2 (writer, social-linkedin,
- * social-facebook) escreveram seus outputs com sucesso antes de prosseguir
- * pra etapas que assumem isso (merge social, processamento newsletter).
+ * Verifica que os agents paralelos do Stage 2 (writer + social-writer)
+ * escreveram seus outputs com sucesso antes de prosseguir pra etapas que
+ * assumem isso (merge social, processamento newsletter).
  *
- * Bug que motivou (#872): se algum dos 3 agents falhasse silenciosamente
- * (timeout, retorno mal-formado), o merge em `03-social.md` crashava
- * lendo arquivo ausente, deixando a edição em estado quebrado sem rollback.
+ * Bug que motivou (#872): se algum agent falhasse silenciosamente (timeout,
+ * retorno mal-formado), o merge em `03-social.md` crashava lendo arquivo
+ * ausente, deixando a edição em estado quebrado sem rollback.
  *
- * #3486: `social-instagram` é um 4º agent do dispatch (gera seção `# Instagram`
- * dedicada, sem CTA de e-mail, ver `.claude/agents/social-instagram.md`), mas
- * seu tmp entra como check WARN-ONLY (não FATAL) — diferente de LinkedIn/
- * Facebook. Ausência não deixa `03-social.md` num estado quebrado (o merge
- * é tolerante, ver `merge-social-md.ts`); ela só faz o Instagram cair no
- * fallback estrutural `# Instagram` → `# Facebook` que já existia antes
- * deste agent (#2486). Um warning aqui dá visibilidade sem bloquear o
- * pipeline por um canal que tem fallback seguro.
+ * #3991 (reverte #3486): `social-linkedin`, `social-facebook` e
+ * `social-instagram` foram colapsados em 1 único agent `social-writer` —
+ * texto genérico único (estilo Instagram) por destaque + `## post_pixel`,
+ * sem CTA de canal (injetada depois, no publish). O check FATAL agora é só
+ * `_internal/03-social.tmp.md`.
  *
- * #3992: `social-curto` é um 5º agent do dispatch (texto único ≤280 chars
+ * #3992: `social-curto` é um 2º agent do dispatch (texto único ≤280 chars
  * compartilhado por Twitter/X e Threads, ver `.claude/agents/social-curto.md`),
- * mesmo tratamento WARN-ONLY do Instagram — ausência faz `publish-threads.ts`
- * cair no fallback `# Facebook` (truncado 500 chars) e `publish-twitter.ts`
- * pular sem publicar (sem fallback, #3994).
+ * checado WARN-ONLY — ausência faz `publish-threads.ts` cair no fallback
+ * `# Facebook` (formato legado; ausente no formato novo — ver nota em
+ * `publish-threads.ts`) e `publish-twitter.ts` pular sem publicar (sem
+ * fallback, #3994).
  *
  * Uso:
  *   npx tsx scripts/validate-stage-2-outputs.ts --edition-dir data/editions/260507/
  *
  * Exit codes:
- *   0 — todos os outputs FATAL OK (Instagram ausente só gera warning em stderr)
+ *   0 — todos os outputs FATAL OK (social-curto ausente só gera warning em stderr)
  *   1 — algum output FATAL ausente/vazio; stderr indica qual + sugestão de fix
  */
 
@@ -63,33 +61,21 @@ function main(): void {
       resumeCmd: `/diaria-2-escrita ${editionDate} newsletter`,
     },
     {
-      agent: "social-linkedin",
-      path: resolve(editionDir, "_internal/03-linkedin.tmp.md"),
-      resumeCmd: `/diaria-2-escrita ${editionDate} social`,
-    },
-    {
-      agent: "social-facebook",
-      path: resolve(editionDir, "_internal/03-facebook.tmp.md"),
+      agent: "social-writer",
+      path: resolve(editionDir, "_internal/03-social.tmp.md"),
       resumeCmd: `/diaria-2-escrita ${editionDate} social`,
     },
   ];
 
-  // #3486/#3992: WARN-ONLY — social-instagram e social-curto têm fallback
-  // seguro/degradação tolerável, então ausência não é FATAL como os checks acima.
+  // #3992: WARN-ONLY — social-curto tem fallback tolerável (não FATAL como
+  // social-writer acima).
   const warnOnlyChecks: (OutputCheck & { fallbackNote: string })[] = [
-    {
-      agent: "social-instagram",
-      path: resolve(editionDir, "_internal/03-instagram.tmp.md"),
-      resumeCmd: `/diaria-2-escrita ${editionDate} social`,
-      fallbackNote:
-        "Merge vai cair no fallback '# Instagram' -> '# Facebook' (#2486) — a copy do Instagram herdará o CTA de e-mail do Facebook.",
-    },
     {
       agent: "social-curto",
       path: resolve(editionDir, "_internal/03-curto.tmp.md"),
       resumeCmd: `/diaria-2-escrita ${editionDate} social`,
       fallbackNote:
-        "publish-threads.ts vai cair no fallback '# Facebook' truncado (500 chars); publish-twitter.ts não publica nesta edição (sem fallback, #3994).",
+        "publish-threads.ts vai cair no fallback '# Facebook' truncado (500 chars, só existe em edições no formato legado pré-#3991); publish-twitter.ts não publica nesta edição (sem fallback, #3994).",
     },
   ];
 

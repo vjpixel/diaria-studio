@@ -52,7 +52,7 @@ Etapa 1  Pesquisa  →  source-researcher ×N || discovery-searcher ×M || eai-c
                       verify / dedup / categorize / score
                       → 01-categorized.md [gate]
 
-Etapa 2  Escrita   →  writer (newsletter) || social-linkedin || social-facebook
+Etapa 2  Escrita   →  writer (newsletter) || social-writer || social-curto
                       → merge → humanizador × 2 → Clarice × 2
                       → 02-reviewed.md + 03-social.md [gate]
 

@@ -18,8 +18,6 @@ import {
 import {
   lintPlatformHeadersUnique,
   lintInstagramEmailCTA,
-  lintFacebookCTAs,
-  extractPlatformSection,
 } from "../scripts/lib/social-lint-rules.ts";
 import { extractSection } from "../scripts/lib/extract-section.ts";
 import { makeEditionDir as makeEditionDirWithPrefix } from "./_helpers/make-edition-dir.ts";
@@ -145,94 +143,55 @@ describe("stripLeadingPlatformHeader (#3424)", () => {
   });
 });
 
-describe("merge-social-md CLI", () => {
-  it("happy path — ambos tmps válidos → merge OK + tmps deletados", () => {
+describe("merge-social-md CLI (#3991 — formato unificado # Social)", () => {
+  it("happy path — tmp de social válido → merge OK + tmp deletado", () => {
     const dir = makeEditionDir();
     try {
       writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
-        "## d1\n\nLinkedIn d1 content\n\n## d2\n\nLinkedIn d2 content\n",
-      );
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "## d1\n\nFacebook d1 content\n",
+        join(dir, "_internal", "03-social.tmp.md"),
+        "## d1\n\nTexto genérico d1\n\n#ia\n\n## d2\n\nTexto genérico d2\n\n## post_pixel\n\nPost pessoal do Pixel\n",
       );
 
       const r = runScript(dir);
       assert.equal(r.status, 0, `stderr: ${r.stderr}`);
 
       const out = readFileSync(join(dir, "03-social.md"), "utf8");
-      assert.ok(out.startsWith("# LinkedIn\n\n"));
-      assert.ok(out.includes("LinkedIn d1 content"));
-      assert.ok(out.includes("# Facebook\n\n"));
-      assert.ok(out.includes("Facebook d1 content"));
-      // #3627: banner explica postagem manual de post_pixel (comment_diaria/
-      // comment_pixel foram aposentados)
-      assert.ok(out.includes("Postagem semi-automática"));
+      assert.ok(out.startsWith("# Social\n\n"));
+      assert.ok(out.includes("Texto genérico d1"));
+      assert.ok(out.includes("Texto genérico d2"));
       assert.ok(out.includes("post_pixel"));
+      assert.ok(out.includes("Post pessoal do Pixel"));
+      // Banner explica o contrato novo (texto único + CTA injetada no publish).
+      assert.ok(out.includes("Texto único"));
 
-      // Tmps deletados após sucesso
-      assert.equal(
-        existsSync(join(dir, "_internal", "03-linkedin.tmp.md")),
-        false,
-      );
-      assert.equal(
-        existsSync(join(dir, "_internal", "03-facebook.tmp.md")),
-        false,
-      );
+      // Tmp deletado após sucesso
+      assert.equal(existsSync(join(dir, "_internal", "03-social.tmp.md")), false);
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it("LinkedIn tmp ausente → exit 1 com nome do agent", () => {
+  it("tmp de social ausente → exit 1 com nome do agent", () => {
     const dir = makeEditionDir();
     try {
-      // Só Facebook tmp
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "## d1\n\nFacebook content\n",
-      );
-
       const r = runScript(dir);
       assert.equal(r.status, 1);
-      assert.ok(r.stderr.includes("social-linkedin"));
+      assert.ok(r.stderr.includes("social-writer"));
       assert.ok(r.stderr.includes("ausente") || r.stderr.includes("FALHOU"));
-      // Output principal não foi gravado
       assert.equal(existsSync(join(dir, "03-social.md")), false);
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it("Facebook tmp ausente → exit 1 com nome do agent", () => {
+  it("tmp de social vazio (0 bytes) → exit 1", () => {
     const dir = makeEditionDir();
     try {
-      writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
-        "## d1\n\nLinkedIn content\n",
-      );
+      writeFileSync(join(dir, "_internal", "03-social.tmp.md"), "");
 
       const r = runScript(dir);
       assert.equal(r.status, 1);
-      assert.ok(r.stderr.includes("social-facebook"));
-    } finally {
-      rmSync(dir, { recursive: true });
-    }
-  });
-
-  it("tmp vazio (0 bytes) → exit 1", () => {
-    const dir = makeEditionDir();
-    try {
-      writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "");
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "## d1\n\nFB\n",
-      );
-
-      const r = runScript(dir);
-      assert.equal(r.status, 1);
-      assert.ok(r.stderr.includes("social-linkedin"));
+      assert.ok(r.stderr.includes("social-writer"));
       assert.ok(r.stderr.includes("vazio"));
     } finally {
       rmSync(dir, { recursive: true });
@@ -243,12 +202,8 @@ describe("merge-social-md CLI", () => {
     const dir = makeEditionDir();
     try {
       writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
-        "## d1\n\n<!-- debug: source-id 42 -->\nLinkedIn content\n",
-      );
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "<!-- agent meta -->\n## d1\n\nFacebook content\n",
+        join(dir, "_internal", "03-social.tmp.md"),
+        "## d1\n\n<!-- debug: source-id 42 -->\nTexto d1\n",
       );
 
       const r = runScript(dir);
@@ -257,23 +212,18 @@ describe("merge-social-md CLI", () => {
       const out = readFileSync(join(dir, "03-social.md"), "utf8");
       assert.ok(!out.includes("<!--"), "no opening comment marker should remain");
       assert.ok(!out.includes("-->"), "no closing comment marker should remain");
-      assert.ok(out.includes("LinkedIn content"));
-      assert.ok(out.includes("Facebook content"));
+      assert.ok(out.includes("Texto d1"));
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it("HTML comment não-balanceado em LinkedIn → exit 1", () => {
+  it("HTML comment não-balanceado → exit 1", () => {
     const dir = makeEditionDir();
     try {
       writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
-        "## d1\n\n<!-- abc sem fechamento\nLinkedIn content\n",
-      );
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "## d1\n\nFB content\n",
+        join(dir, "_internal", "03-social.tmp.md"),
+        "## d1\n\n<!-- abc sem fechamento\nTexto d1\n",
       );
 
       const r = runScript(dir);
@@ -281,15 +231,8 @@ describe("merge-social-md CLI", () => {
       assert.ok(r.stderr.includes("mal-formados") || r.stderr.includes("FALHOU"));
       // Output principal não foi gravado (FS state preservado)
       assert.equal(existsSync(join(dir, "03-social.md")), false);
-      // Tmps NÃO deletados em caso de erro (rollback-safe)
-      assert.equal(
-        existsSync(join(dir, "_internal", "03-linkedin.tmp.md")),
-        true,
-      );
-      assert.equal(
-        existsSync(join(dir, "_internal", "03-facebook.tmp.md")),
-        true,
-      );
+      // Tmp NÃO deletado em caso de erro (rollback-safe)
+      assert.equal(existsSync(join(dir, "_internal", "03-social.tmp.md")), true);
     } finally {
       rmSync(dir, { recursive: true });
     }
@@ -299,12 +242,8 @@ describe("merge-social-md CLI", () => {
     const dir = makeEditionDir();
     try {
       writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
-        "## d1\n\n<!-- outer <!-- inner --> trailing -->\nVisible LinkedIn\n",
-      );
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "## d1\n\nVisible Facebook\n",
+        join(dir, "_internal", "03-social.tmp.md"),
+        "## d1\n\n<!-- outer <!-- inner --> trailing -->\nVisible text\n",
       );
 
       const r = runScript(dir);
@@ -315,25 +254,21 @@ describe("merge-social-md CLI", () => {
       assert.ok(!out.includes("-->"));
       assert.ok(!out.includes("inner"));
       assert.ok(!out.includes("trailing"));
-      assert.ok(out.includes("Visible LinkedIn"));
-      assert.ok(out.includes("Visible Facebook"));
+      assert.ok(out.includes("Visible text"));
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it("#3424 — tmp de LinkedIn já com header embutido → merge NÃO duplica (root cause do #3388)", () => {
+  it("#3424 — tmp de Social já com header embutido → merge NÃO duplica", () => {
     const dir = makeEditionDir();
     try {
-      // Reproduz o caso real da edição 260713: o agent social-linkedin já
-      // escreveu "# LinkedIn" no início do próprio tmp file.
+      // Reproduz a mesma classe de bug do incidente real da edição 260713
+      // (antes com '# LinkedIn'): o agent social-writer já escreveu
+      // "# Social" no início do próprio tmp file.
       writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
-        "# LinkedIn\n\n## d1\n\nLinkedIn d1 content\n",
-      );
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "## d1\n\nFacebook d1 content\n",
+        join(dir, "_internal", "03-social.tmp.md"),
+        "# Social\n\n## d1\n\nTexto d1\n",
       );
 
       const r = runScript(dir);
@@ -341,227 +276,103 @@ describe("merge-social-md CLI", () => {
       assert.ok(r.stderr.includes("já continha o header"), "deve avisar sobre o strip no stderr");
 
       const out = readFileSync(join(dir, "03-social.md"), "utf8");
-      // Exatamente 1 ocorrência de "# LinkedIn" como linha inteira — não 2.
+      // Exatamente 1 ocorrência de "# Social" como linha inteira — não 2.
       const lintResult = lintPlatformHeadersUnique(out);
       assert.equal(lintResult.ok, true, JSON.stringify(lintResult.errors));
-      assert.ok(out.includes("LinkedIn d1 content"));
-      assert.ok(out.includes("Postagem semi-automática"));
+      assert.ok(out.includes("Texto d1"));
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it("#3424 — tmp de Facebook já com header embutido → merge NÃO duplica", () => {
-    const dir = makeEditionDir();
-    try {
-      writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
-        "## d1\n\nLinkedIn d1 content\n",
-      );
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "# Facebook\n\n## d1\n\nFacebook d1 content\n",
-      );
-
-      const r = runScript(dir);
-      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
-      assert.ok(r.stderr.includes("já continha o header"), "deve avisar sobre o strip no stderr");
-
-      const out = readFileSync(join(dir, "03-social.md"), "utf8");
-      const lintResult = lintPlatformHeadersUnique(out);
-      assert.equal(lintResult.ok, true, JSON.stringify(lintResult.errors));
-      assert.ok(out.includes("Facebook d1 content"));
-    } finally {
-      rmSync(dir, { recursive: true });
-    }
-  });
-
-  it("#3424 — ambos tmps já com header embutido → merge NÃO duplica em nenhuma plataforma", () => {
-    const dir = makeEditionDir();
-    try {
-      writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
-        "# LinkedIn\n\n## d1\n\nLinkedIn content\n",
-      );
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "# Facebook\n\n## d1\n\nFacebook content\n",
-      );
-
-      const r = runScript(dir);
-      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
-
-      const out = readFileSync(join(dir, "03-social.md"), "utf8");
-      const lintResult = lintPlatformHeadersUnique(out);
-      assert.equal(lintResult.ok, true, JSON.stringify(lintResult.errors));
-    } finally {
-      rmSync(dir, { recursive: true });
-    }
-  });
-
-  // ── #3486: seção Instagram dedicada (tmp opcional) ────────────────────────
-  // Regressão do incidente que motivou #3486: antes deste fix, nenhum
-  // agent/template emitia `# Instagram` em 03-social.md, então
-  // `lintInstagramEmailCTA` sempre caía no fallback `# Facebook` — que
-  // MANTÉM o CTA de e-mail (legítimo lá) — e a lint disparava incorretamente
-  // sobre a copy do Instagram (que na real nunca existia). Com
-  // `social-instagram` gerando um tmp próprio, o merge deve produzir uma
-  // seção `# Instagram` real, sem CTA de e-mail, e a seção `# Facebook`
-  // deve continuar intocada (CTA de e-mail preservado, sem violar lint).
-  describe("#3486 — merge da seção Instagram (tmp opcional)", () => {
-    it("Instagram tmp presente → 03-social.md ganha seção '# Instagram' própria, sem CTA de e-mail; Facebook mantém CTA de e-mail sem violar lint", () => {
+  // ── #3991 — texto único channel-neutral (substitui o teste #3486 de Instagram) ──
+  describe("#3991 — texto único channel-neutral (reverte diferenciação por canal do #3486)", () => {
+    it("texto genérico sem CTA de canal → passa limpo em lintInstagramEmailCTA (guard channel-neutral)", () => {
       const dir = makeEditionDir();
       try {
         writeFileSync(
-          join(dir, "_internal", "03-linkedin.tmp.md"),
-          "## d1\n\nLinkedIn d1 content\n",
-        );
-        writeFileSync(
-          join(dir, "_internal", "03-facebook.tmp.md"),
-          "## d1\n\nFato concreto sobre IA. Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.\n",
-        );
-        writeFileSync(
-          join(dir, "_internal", "03-instagram.tmp.md"),
-          "## d1\n\nFato concreto sobre IA. Edição completa no link da bio. Segue @diar.ia pra não perder a próxima.\n",
+          join(dir, "_internal", "03-social.tmp.md"),
+          "## d1\n\nFato concreto sobre IA, sem CTA de canal nenhum.\n\n#ia\n",
         );
 
         const r = runScript(dir);
         assert.equal(r.status, 0, `stderr: ${r.stderr}`);
 
         const out = readFileSync(join(dir, "03-social.md"), "utf8");
-
-        // Seção Instagram existe e é extraível isoladamente.
-        const igSection = extractSection(out, "Instagram");
-        assert.ok(igSection !== null, "seção '# Instagram' deve existir no merge");
-        assert.ok(igSection!.includes("link da bio"));
-
-        // (a) Seção Instagram passa limpa na lint no-email-cta-instagram —
-        // e por ler a seção IG DIRETA (não o fallback FB), o CTA de e-mail do
-        // Facebook não vaza pra validação do Instagram.
-        const igLint = lintInstagramEmailCTA(out);
-        assert.equal(igLint.ok, true, JSON.stringify(igLint.errors));
-
-        // (b) Seção Facebook mantém o CTA de e-mail intacto — não removido
-        // pelo merge, e a lint de CTA do Facebook (formato https://.../.) não
-        // reclama (regra é sobre formato, não sobre proibir CTA de e-mail).
-        const fbSection = extractPlatformSection(out, "facebook");
-        assert.ok(fbSection !== null);
-        assert.ok(
-          fbSection!.includes("Receba notícias de IA todo dia por e-mail"),
-          "CTA de e-mail do Facebook deve permanecer intacto (#3486 não altera Facebook)",
-        );
-        const fbCtaLint = lintFacebookCTAs(fbSection!);
-        assert.equal(fbCtaLint.length, 0, JSON.stringify(fbCtaLint));
-
-        // Tmp de Instagram deletado após sucesso, igual LinkedIn/Facebook.
-        assert.equal(
-          existsSync(join(dir, "_internal", "03-instagram.tmp.md")),
-          false,
-        );
+        const lint = lintInstagramEmailCTA(out);
+        assert.equal(lint.ok, true, JSON.stringify(lint.errors));
       } finally {
         rmSync(dir, { recursive: true });
       }
     });
 
-    it("Instagram tmp AUSENTE → merge sucede sem seção '# Instagram' (comportamento legado preservado, fallback FB continua valendo)", () => {
+    it("texto genérico com CTA de e-mail vazado → lintInstagramEmailCTA detecta (contrato novo, #3991)", () => {
       const dir = makeEditionDir();
       try {
         writeFileSync(
-          join(dir, "_internal", "03-linkedin.tmp.md"),
-          "## d1\n\nLinkedIn d1 content\n",
+          join(dir, "_internal", "03-social.tmp.md"),
+          "## d1\n\nFato concreto. Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.\n",
         );
-        writeFileSync(
-          join(dir, "_internal", "03-facebook.tmp.md"),
-          "## d1\n\nAssine grátis em diar.ia.br!\n",
-        );
-        // Nenhum 03-instagram.tmp.md gravado — simula edição/worktree onde
-        // social-instagram não rodou (ou ainda não existe).
 
         const r = runScript(dir);
         assert.equal(r.status, 0, `stderr: ${r.stderr}`);
 
         const out = readFileSync(join(dir, "03-social.md"), "utf8");
-        assert.equal(
-          extractSection(out, "Instagram"),
-          null,
-          "sem tmp de Instagram, '# Instagram' não deve aparecer no merge",
-        );
-
-        // Comportamento legado preservado: sem seção IG própria, a lint
-        // no-email-cta-instagram cai no fallback '# Facebook' e DETECTA o
-        // CTA de e-mail (mesmo comportamento de antes do #3486 existir).
-        const igLint = lintInstagramEmailCTA(out);
-        assert.equal(igLint.ok, false, "sem seção IG, fallback FB deve disparar a lint (comportamento legado)");
-        assert.ok(igLint.errors.length > 0);
+        const lint = lintInstagramEmailCTA(out);
+        assert.equal(lint.ok, false);
+        assert.ok(lint.errors.length > 0);
       } finally {
         rmSync(dir, { recursive: true });
       }
     });
 
-    it("Instagram tmp vazio (0 bytes) → warn no stderr, merge sucede sem seção Instagram (não é FATAL como LinkedIn/Facebook)", () => {
+    it("texto genérico com 'link na bio' vazado → lintInstagramEmailCTA detecta (linguagem de canal banida)", () => {
       const dir = makeEditionDir();
       try {
         writeFileSync(
-          join(dir, "_internal", "03-linkedin.tmp.md"),
-          "## d1\n\nLinkedIn content\n",
+          join(dir, "_internal", "03-social.tmp.md"),
+          "## d1\n\nFato concreto. Edição completa no link da bio. Segue @diar.ia pra não perder a próxima.\n",
         );
-        writeFileSync(
-          join(dir, "_internal", "03-facebook.tmp.md"),
-          "## d1\n\nFacebook content\n",
-        );
-        writeFileSync(join(dir, "_internal", "03-instagram.tmp.md"), "");
 
         const r = runScript(dir);
         assert.equal(r.status, 0, `stderr: ${r.stderr}`);
-        assert.ok(r.stderr.includes("social-instagram"));
 
         const out = readFileSync(join(dir, "03-social.md"), "utf8");
-        assert.equal(extractSection(out, "Instagram"), null);
+        const lint = lintInstagramEmailCTA(out);
+        assert.equal(lint.ok, false);
+        assert.ok(lint.errors.length > 0);
       } finally {
         rmSync(dir, { recursive: true });
       }
     });
 
-    it("Instagram tmp com header '# Instagram' embutido → merge NÃO duplica (mesma proteção #3424 aplicada ao 3º canal)", () => {
+    it("post_pixel pode conter link da página do LinkedIn sem violar o guard channel-neutral (post_pixel é conteúdo diferente)", () => {
       const dir = makeEditionDir();
       try {
         writeFileSync(
-          join(dir, "_internal", "03-linkedin.tmp.md"),
-          "## d1\n\nLinkedIn content\n",
-        );
-        writeFileSync(
-          join(dir, "_internal", "03-facebook.tmp.md"),
-          "## d1\n\nFacebook content\n",
-        );
-        writeFileSync(
-          join(dir, "_internal", "03-instagram.tmp.md"),
-          "# Instagram\n\n## d1\n\nInstagram content\n",
+          join(dir, "_internal", "03-social.tmp.md"),
+          "## d1\n\nTexto genérico sem CTA.\n\n#ia\n\n## post_pixel\n\n{outros_count} novidades em {edition_url}. Post pessoal.\n\nSiga a diar.ia.br em linkedin.com/company/diar.ia.br\n",
         );
 
         const r = runScript(dir);
         assert.equal(r.status, 0, `stderr: ${r.stderr}`);
-        assert.ok(r.stderr.includes("já continha o header"));
 
         const out = readFileSync(join(dir, "03-social.md"), "utf8");
-        // Exatamente 1 ocorrência de "# Instagram" como linha inteira.
-        const igHeaderCount = out
-          .split("\n")
-          .filter((l) => /^# Instagram\s*$/i.test(l)).length;
-        assert.equal(igHeaderCount, 1, "header '# Instagram' não deve duplicar");
-        assert.ok(out.includes("Instagram content"));
+        const lint = lintInstagramEmailCTA(out);
+        assert.equal(lint.ok, true, JSON.stringify(lint.errors));
       } finally {
         rmSync(dir, { recursive: true });
       }
     });
   });
 
-  // ── #3992: seção Curto dedicada (tmp opcional, texto único Twitter/Threads) ──
+  // ── #3992: seção Curto dedicada (tmp opcional, texto único Twitter/Threads) —
+  // independente do #3991, comportamento preservado.
   describe("#3992 — merge da seção Curto (tmp opcional)", () => {
     it("Curto tmp presente → 03-social.md ganha seção '# Curto' própria", () => {
       const dir = makeEditionDir();
       try {
-        writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "## d1\n\nLinkedIn d1 content\n");
-        writeFileSync(join(dir, "_internal", "03-facebook.tmp.md"), "## d1\n\nFacebook d1 content\n");
+        writeFileSync(join(dir, "_internal", "03-social.tmp.md"), "## d1\n\nTexto genérico d1\n");
         writeFileSync(
           join(dir, "_internal", "03-curto.tmp.md"),
           "## d1\n\nTexto curto d1. Mais em diar.ia.br #ia\n",
@@ -575,18 +386,17 @@ describe("merge-social-md CLI", () => {
         assert.ok(curtoSection !== null, "seção '# Curto' deve existir no merge");
         assert.ok(curtoSection!.includes("Texto curto d1"));
 
-        // Tmp de Curto deletado após sucesso, igual LinkedIn/Facebook/Instagram.
+        // Tmp de Curto deletado após sucesso, igual Social.
         assert.equal(existsSync(join(dir, "_internal", "03-curto.tmp.md")), false);
       } finally {
         rmSync(dir, { recursive: true });
       }
     });
 
-    it("Curto tmp AUSENTE → merge sucede sem seção '# Curto' (comportamento legado preservado)", () => {
+    it("Curto tmp AUSENTE → merge sucede sem seção '# Curto'", () => {
       const dir = makeEditionDir();
       try {
-        writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "## d1\n\nLinkedIn content\n");
-        writeFileSync(join(dir, "_internal", "03-facebook.tmp.md"), "## d1\n\nFacebook content\n");
+        writeFileSync(join(dir, "_internal", "03-social.tmp.md"), "## d1\n\nTexto genérico d1\n");
         // Nenhum 03-curto.tmp.md gravado — simula edição/worktree onde
         // social-curto não rodou (ou ainda não existe).
 
@@ -607,8 +417,7 @@ describe("merge-social-md CLI", () => {
     it("Curto tmp vazio (0 bytes) → warn no stderr, merge sucede sem seção Curto (não é FATAL)", () => {
       const dir = makeEditionDir();
       try {
-        writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "## d1\n\nLinkedIn content\n");
-        writeFileSync(join(dir, "_internal", "03-facebook.tmp.md"), "## d1\n\nFacebook content\n");
+        writeFileSync(join(dir, "_internal", "03-social.tmp.md"), "## d1\n\nTexto genérico d1\n");
         writeFileSync(join(dir, "_internal", "03-curto.tmp.md"), "");
 
         const r = runScript(dir);
@@ -625,8 +434,7 @@ describe("merge-social-md CLI", () => {
     it("Curto tmp com header '# Curto' embutido → merge NÃO duplica (mesma proteção #3424)", () => {
       const dir = makeEditionDir();
       try {
-        writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "## d1\n\nLinkedIn content\n");
-        writeFileSync(join(dir, "_internal", "03-facebook.tmp.md"), "## d1\n\nFacebook content\n");
+        writeFileSync(join(dir, "_internal", "03-social.tmp.md"), "## d1\n\nTexto genérico d1\n");
         writeFileSync(
           join(dir, "_internal", "03-curto.tmp.md"),
           "# Curto\n\n## d1\n\nCurto content\n",
@@ -647,23 +455,21 @@ describe("merge-social-md CLI", () => {
       }
     });
 
-    it("Instagram E Curto presentes simultaneamente → ambas as seções aparecem, na ordem Instagram depois Curto", () => {
+    it("Social E Curto presentes simultaneamente → ambas as seções aparecem, na ordem Social depois Curto", () => {
       const dir = makeEditionDir();
       try {
-        writeFileSync(join(dir, "_internal", "03-linkedin.tmp.md"), "## d1\n\nLinkedIn content\n");
-        writeFileSync(join(dir, "_internal", "03-facebook.tmp.md"), "## d1\n\nFacebook content\n");
-        writeFileSync(join(dir, "_internal", "03-instagram.tmp.md"), "## d1\n\nInstagram content\n");
+        writeFileSync(join(dir, "_internal", "03-social.tmp.md"), "## d1\n\nSocial content\n");
         writeFileSync(join(dir, "_internal", "03-curto.tmp.md"), "## d1\n\nCurto content\n");
 
         const r = runScript(dir);
         assert.equal(r.status, 0, `stderr: ${r.stderr}`);
 
         const out = readFileSync(join(dir, "03-social.md"), "utf8");
-        assert.ok(extractSection(out, "Instagram")?.includes("Instagram content"));
+        assert.ok(extractSection(out, "Social")?.includes("Social content"));
         assert.ok(extractSection(out, "Curto")?.includes("Curto content"));
         assert.ok(
-          out.indexOf("# Instagram") < out.indexOf("# Curto"),
-          "Instagram deve vir antes de Curto na ordem de seções",
+          out.indexOf("# Social") < out.indexOf("# Curto"),
+          "Social deve vir antes de Curto na ordem de seções",
         );
       } finally {
         rmSync(dir, { recursive: true });
@@ -784,17 +590,13 @@ describe("insertEiaSection (#3471)", () => {
   });
 });
 
-describe("merge-social-md CLI — seção '## eia' (#3471)", () => {
-  it("01-eia.md presente na raiz da edição → '## eia' aparece no LinkedIn, entre destaques e post_pixel", () => {
+describe("merge-social-md CLI — seção '## eia' (#3471, adaptado ao formato # Social do #3991)", () => {
+  it("01-eia.md presente na raiz da edição → '## eia' aparece em # Social, entre destaques e post_pixel", () => {
     const dir = makeEditionDir();
     try {
       writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
+        join(dir, "_internal", "03-social.tmp.md"),
         "## d1\n\nMain d1\n\n## d2\n\nMain d2\n\n## d3\n\nMain d3\n\n## post_pixel\n\n<!-- destaque: d1 -->\n\nPost pessoal do Pixel\n",
-      );
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "## d1\n\nFacebook d1 content\n",
       );
       writeFileSync(join(dir, "01-eia.md"), REAL_EIA_MD);
 
@@ -803,12 +605,12 @@ describe("merge-social-md CLI — seção '## eia' (#3471)", () => {
       assert.ok(r.stderr.includes("seção '## eia' incluída"));
 
       const out = readFileSync(join(dir, "03-social.md"), "utf8");
-      const liSection = extractPlatformSection(out, "linkedin");
-      assert.ok(liSection);
+      const socialSection = extractSection(out, "Social");
+      assert.ok(socialSection);
 
-      const idxD3 = liSection!.indexOf("## d3");
-      const idxEia = liSection!.indexOf("## eia");
-      const idxPostPixel = liSection!.indexOf("## post_pixel");
+      const idxD3 = socialSection!.indexOf("## d3");
+      const idxEia = socialSection!.indexOf("## eia");
+      const idxPostPixel = socialSection!.indexOf("## post_pixel");
       assert.ok(idxD3 >= 0 && idxEia > idxD3, "## eia deve vir depois de ## d3");
       assert.ok(idxPostPixel > idxEia, "## eia deve vir antes de ## post_pixel");
 
@@ -827,12 +629,8 @@ describe("merge-social-md CLI — seção '## eia' (#3471)", () => {
     const dir = makeEditionDir();
     try {
       writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
+        join(dir, "_internal", "03-social.tmp.md"),
         "## d1\n\nMain d1\n\n## post_pixel\n\nPost pessoal do Pixel\n",
-      );
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "## d1\n\nFacebook d1 content\n",
       );
       // Nenhum 01-eia.md gravado — simula edição sem É IA? (skip, ou ainda processando).
 
@@ -853,12 +651,8 @@ describe("merge-social-md CLI — seção '## eia' (#3471)", () => {
     const dir = makeEditionDir();
     try {
       writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
+        join(dir, "_internal", "03-social.tmp.md"),
         "## d1\n\nMain d1\n\n## post_pixel\n\nPost pessoal\n",
-      );
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "## d1\n\nFacebook d1 content\n",
       );
       writeFileSync(join(dir, "01-eia.md"), "---\neia_answer:\n  A: real\n  B: ia\n---\n\nformato inesperado sem header\n");
 
@@ -874,16 +668,12 @@ describe("merge-social-md CLI — seção '## eia' (#3471)", () => {
     }
   });
 
-  it("01-eia.md presente → lintPlatformHeadersUnique + lintInstagramEmailCTA/Facebook continuam OK (sem regressão nos outros lints)", () => {
+  it("01-eia.md presente → lintPlatformHeadersUnique + lintInstagramEmailCTA continuam OK (sem regressão nos outros lints)", () => {
     const dir = makeEditionDir();
     try {
       writeFileSync(
-        join(dir, "_internal", "03-linkedin.tmp.md"),
-        "## d1\n\nMain d1\n\n### comment_diaria\n\nEdição completa com mais {outros_count} destaques em {edition_url}\n\nSiga a diar.ia.br no LinkedIn em linkedin.com/company/diar.ia.br\n\n### comment_pixel\n\nOpinião do Pixel sobre d1.\n\n## post_pixel\n\n{outros_count} novidades em {edition_url}. Post pessoal do Pixel sobre d1.\n\nSiga a diar.ia.br em linkedin.com/company/diar.ia.br\n",
-      );
-      writeFileSync(
-        join(dir, "_internal", "03-facebook.tmp.md"),
-        "## d1\n\nAssine grátis em https://diar.ia.br.\n",
+        join(dir, "_internal", "03-social.tmp.md"),
+        "## d1\n\nMain d1, sem CTA de canal.\n\n#ia\n\n## post_pixel\n\n{outros_count} novidades em {edition_url}. Post pessoal do Pixel sobre d1.\n\nSiga a diar.ia.br em linkedin.com/company/diar.ia.br\n",
       );
       writeFileSync(join(dir, "01-eia.md"), REAL_EIA_MD);
 
@@ -892,9 +682,9 @@ describe("merge-social-md CLI — seção '## eia' (#3471)", () => {
 
       const out = readFileSync(join(dir, "03-social.md"), "utf8");
       assert.equal(lintPlatformHeadersUnique(out).ok, true);
-
-      const fbSection = extractPlatformSection(out, "facebook");
-      assert.equal(lintFacebookCTAs(fbSection!).length, 0);
+      // post_pixel legitimamente contém o link da página — não deve disparar
+      // o guard channel-neutral (que só olha o corpo genérico ## d1/d2/d3).
+      assert.equal(lintInstagramEmailCTA(out).ok, true, JSON.stringify(lintInstagramEmailCTA(out).errors));
     } finally {
       rmSync(dir, { recursive: true });
     }

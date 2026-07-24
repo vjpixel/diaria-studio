@@ -35,6 +35,8 @@ import { fileURLToPath } from "node:url";
 import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
+import { extractSection } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`
+import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 
@@ -89,36 +91,57 @@ function loadPublished(path: string): SocialPublished {
  * Retorna ["d1","d2"] ou ["d1","d2","d3"] conforme a edição. Fallback para ["d1","d2","d3"]
  * se a plataforma não for encontrada ou estiver vazia (mantém comportamento legado).
  * Reusa `extractPlatformSection` de lint-social-md.ts (#2343 review — evita drift de regex).
+ *
+ * #3991: pra `facebook`/`linkedin`, tenta a seção nova `# Social` (texto único
+ * pós-unificação) ANTES do header legado da própria plataforma — fallback de
+ * compat com edições publicadas antes deste merge.
  */
 export function extractDestaquesFromSocialMd(socialMd: string, platform: string): string[] {
-  const section =
-    platform === "facebook" || platform === "linkedin"
-      ? extractPlatformSection(socialMd, platform)
-      : null;
+  let section: string | null = null;
+  if (platform === "facebook" || platform === "linkedin") {
+    section = extractSection(socialMd, "Social") ?? extractPlatformSection(socialMd, platform);
+  }
   if (section === null) return ["d1", "d2", "d3"]; // fallback (plataforma ausente)
   const valid = parseDestaqueHeaders(section);
   // Fallback para legado se a seção não tem ao menos 2 destaques bem-formados.
   return valid.length >= 2 ? valid : ["d1", "d2", "d3"];
 }
 
+/**
+ * #3991: pra `facebook`, tenta a seção nova `# Social` (texto genérico único)
+ * ANTES do header legado `# Facebook` — fallback de compat com edições
+ * publicadas antes deste merge. Em seguida injeta a linha de CTA do Facebook
+ * (`FACEBOOK_CTA_LINE`, e-mail + link, preservado do #602/#3486) no momento
+ * do publish, via `injectChannelLine` (`scripts/lib/social-cta-lines.ts`) —
+ * nunca em `03-social.md`. Outras plataformas (ex: chamadas de teste com
+ * "twitter") seguem o comportamento legado inalterado.
+ */
 export function extractPostText(socialMd: string, platform: string, destaque: string): string {
   // Normalizar CRLF → LF (arquivo pode vir do Drive com Windows line endings)
   socialMd = socialMd.replace(/\r\n/g, '\n');
 
-  // First isolate the platform section (# Facebook or # LinkedIn)
-  const platTitle = platform.charAt(0).toUpperCase() + platform.slice(1);
-  const platRe = new RegExp(`(?:^|\\n)# ${platTitle}\\n([\\s\\S]*?)(?=\\n# |$)`, "i");
-  const platMatch = socialMd.match(platRe);
-  if (!platMatch) throw new Error(`Platform section '${platTitle}' not found in 03-social.md`);
+  let platMatch: RegExpMatchArray | null = null;
+  if (platform === "facebook") {
+    const socialRe = /(?:^|\n)# Social\n([\s\S]*?)(?=\n# |$)/i;
+    platMatch = socialMd.match(socialRe);
+  }
+  if (!platMatch) {
+    // First isolate the platform section (# Facebook or # LinkedIn — legado)
+    const platTitle = platform.charAt(0).toUpperCase() + platform.slice(1);
+    const platRe = new RegExp(`(?:^|\\n)# ${platTitle}\\n([\\s\\S]*?)(?=\\n# |$)`, "i");
+    platMatch = socialMd.match(platRe);
+    if (!platMatch) throw new Error(`Platform section '${platTitle}' not found in 03-social.md`);
+  }
 
   // Then extract the destaque subsection
   // #725 bug #3: `## d\d` aceitava `## d10` como `## d1` + `0` no lookahead.
   // `\d+\b` garante match completo de número (2+ dígitos não batem em `d1`).
   const dRe = new RegExp(`(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`, "i");
   const dMatch = platMatch[1].match(dRe);
-  if (!dMatch) throw new Error(`Destaque '${destaque}' not found under '${platTitle}'`);
+  if (!dMatch) throw new Error(`Destaque '${destaque}' not found under '${platform}'`);
 
-  return dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
+  const text = dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
+  return platform === "facebook" ? injectChannelLine(text, "facebook") : text;
 }
 
 // computeScheduledAt foi movido pra `scripts/compute-social-schedule.ts` (#270)

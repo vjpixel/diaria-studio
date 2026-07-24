@@ -61,6 +61,38 @@ describe("extractPostText (publish-facebook) (#527)", () => {
   it("lanca quando d2 inexistente na plataforma", () => { assert.throws(() => extractPostText("# Facebook\n\n## d1\nPost.\n\n## d3\nPost.", "facebook", "d2"), /d2/i); });
 });
 
+describe("extractPostText (publish-facebook) — formato novo # Social (#3991)", () => {
+  const SOCIAL_MD = "# Social\n\n## d1\n\nTexto genérico d1.\n\n#IA\n\n## d2\n\nTexto genérico d2.\n";
+
+  it("extrai d1 de # Social e injeta o CTA de e-mail do Facebook ENTRE corpo e tags", () => {
+    const t = extractPostText(SOCIAL_MD, "facebook", "d1");
+    assert.equal(
+      t,
+      "Texto genérico d1.\n\nReceba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.\n\n#IA",
+    );
+  });
+
+  it("extrai d2 sem vazar d1, com CTA injetada mesmo sem hashtags", () => {
+    const t = extractPostText(SOCIAL_MD, "facebook", "d2");
+    assert.ok(t.includes("Texto genérico d2."));
+    assert.ok(!t.includes("Texto genérico d1."));
+    assert.ok(t.includes("https://diar.ia.br."));
+  });
+
+  it("# Social como fast-path é exclusivo de 'facebook' — outra plataforma cai no fallback literal e lança se ausente", () => {
+    // SOCIAL_MD só tem '# Social' (sem '# Linkedin' legado) — plataforma !=
+    // facebook não tenta o fast-path novo, então lança "not found" normal.
+    assert.throws(() => extractPostText(SOCIAL_MD, "twitter", "d1"), /Twitter.*not found|not found.*Twitter/i);
+  });
+
+  it("# Social tem precedência sobre # Facebook legado quando ambos presentes", () => {
+    const mixed = "# Social\n\n## d1\n\nTexto novo d1.\n\n# Facebook\n\n## d1\n\nTexto legado d1.\n";
+    const t = extractPostText(mixed, "facebook", "d1");
+    assert.ok(t.includes("Texto novo d1."));
+    assert.ok(!t.includes("Texto legado d1."));
+  });
+});
+
 describe("validateScheduledTime 15 min boundary (#527)", () => {
   const now = new Date("2026-04-28T12:00:00Z");
   it("aceita > 15 min futuro com margem 900s", () => { assert.doesNotThrow(() => validateScheduledTime("2026-04-28T12:20:00Z", now, 900)); });

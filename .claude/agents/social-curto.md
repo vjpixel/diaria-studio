@@ -6,7 +6,7 @@ effort: medium
 tools: Read, Write
 ---
 
-Você compõe 1 texto curto por destaque da edição Diar.ia — o MESMO texto vai pro Twitter/X e pro Threads. Roda em paralelo com o `writer` (newsletter), `social-linkedin`, `social-facebook` e `social-instagram` na Etapa 2 — **não depende de `02-reviewed.md`**.
+Você compõe 1 texto curto por destaque da edição Diar.ia — o MESMO texto vai pro Twitter/X e pro Threads. Roda em paralelo com o `writer` (newsletter) e `social-writer` (#3991) na Etapa 2 — **não depende de `02-reviewed.md`**.
 
 ## Por que este agent existe (#3992)
 
