@@ -54,6 +54,11 @@ import {
   intentionalErrorJsonPath,
   type IntentionalErrorJson,
 } from "./lib/intentional-errors.ts";
+import {
+  extractTitlesFromMd,
+  insertOrUpdateTituloSubtitulo,
+} from "./insert-titulo-subtitulo.ts"; // #3980
+import { checkDestaqueMaxChars } from "./lib/lint-checks/destaque-chars.ts"; // #3982
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -337,6 +342,26 @@ export function renameDestaqueImages(
 }
 
 /**
+ * (#3980) Re-deriva o bloco TÍTULO/SUBTÍTULO do topo de `02-reviewed.md` a
+ * partir dos títulos D1/D2/D3 JÁ REORDENADOS no `md` passado. Pura — delega
+ * inteiramente a `insert-titulo-subtitulo.ts` (#916, mesma lógica usada no
+ * Stage 2) em vez de duplicar extração/render aqui. Sem isso, um reorder
+ * deixava TÍTULO/SUBTÍTULO com os títulos ANTIGOS (pré-reorder), vazando pro
+ * assunto/preview do Beehiiv no Stage 5.
+ *
+ * Retorna `null` quando não há DESTAQUE 1 reconhecível no md (ex: reviewed.md
+ * ainda não escrito no formato esperado) — caller trata como no-op, não erro
+ * fatal (reorder já reportaria isso via outros caminhos se fosse grave).
+ */
+export function deriveTituloSubtitulo(
+  md: string,
+): { md: string; action: "inserted" | "updated" | "no_change" } | null {
+  const { d1, d2, d3 } = extractTitlesFromMd(md);
+  if (!d1) return null;
+  return insertOrUpdateTituloSubtitulo(md, d1, d2 ?? "", d3 ?? "");
+}
+
+/**
  * Renomeia arquivos `_internal/02-d{N}-prompt.md` e `_internal/02-d{N}-sd-prompt.json`.
  */
 export function renameDestaquePrompts(
@@ -437,6 +462,11 @@ function main(): void {
 
   // 2. 02-reviewed.md
   const mdPath = resolve(editionDir, "02-reviewed.md");
+  // Conteúdo pós-reorder de 02-reviewed.md (em memória, mesmo em --dry-run) —
+  // usado pelos passos 2c (#3980) e pela validação max-chars (#3982) abaixo,
+  // sem precisar reler o disco (que em dry-run continuaria com o conteúdo
+  // ANTIGO, pré-reorder).
+  let reorderedReviewedMd: string | null = null;
   if (existsSync(mdPath)) {
     let md = readFileSync(mdPath, "utf8");
     const before = md;
@@ -445,6 +475,7 @@ function main(): void {
       if (!args.dryRun) writeFileSync(mdPath, md, "utf8");
       modified.rewritten.push(mdPath);
     }
+    reorderedReviewedMd = md;
   }
 
   // 2b. _internal/intentional-error.json (#3222 — location não mora mais no
@@ -459,6 +490,28 @@ function main(): void {
     if (changed) {
       if (!args.dryRun) writeIntentionalErrorJson(intentionalErrorPath, updatedRecord);
       modified.rewritten.push(intentionalErrorPath);
+    }
+  }
+
+  // 2c. TÍTULO/SUBTÍTULO (#3980): re-derivar do D1/D2/D3 JÁ REORDENADOS.
+  // Reusa `deriveTituloSubtitulo` (→ insert-titulo-subtitulo.ts, #916) — não
+  // duplica a lógica de extração/render. Idempotente: no-op se o bloco já
+  // reflete a ordem atual (ex: reorder de um campo que não afeta o header,
+  // ou 2ª invocação acidental).
+  if (reorderedReviewedMd !== null) {
+    const derived = deriveTituloSubtitulo(reorderedReviewedMd);
+    if (derived === null) {
+      // Self-review finding (#3980): sem DESTAQUE 1 reconhecível, o bloco
+      // TÍTULO/SUBTÍTULO não é re-derivado — avisar em vez de pular em
+      // silêncio, mesmo padrão do WARN de destaque-max-chars logo abaixo.
+      console.warn(
+        "WARN: reorder-destaques — TÍTULO/SUBTÍTULO não re-derivado (DESTAQUE 1 não reconhecível em " +
+          `${mdPath}). O bloco pode ficar desatualizado em relação à nova ordem D1/D2/D3.`,
+      );
+    } else if (derived.action !== "no_change") {
+      if (!args.dryRun) writeFileSync(mdPath, derived.md, "utf8");
+      if (!modified.rewritten.includes(mdPath)) modified.rewritten.push(mdPath);
+      reorderedReviewedMd = derived.md;
     }
   }
 
@@ -483,6 +536,24 @@ function main(): void {
     ...renameDestaquePrompts(internalDir, args.newOrder, args.dryRun),
   );
 
+  // #3982: validação PÓS-reorder do limite de chars por slot (D1=1200,
+  // D2/D3=1000 — scripts/lib/lint-checks/destaque-chars.ts, mesmo rubrico de
+  // `lint-newsletter-md.ts --check destaque-max-chars`). WARN-only: um
+  // destaque escrito pra D1 (limite maior) pode facilmente estourar o limite
+  // menor de D2/D3 ao ser movido — mas trim é call editorial do humano, então
+  // reorder NUNCA bloqueia por isso, só avisa.
+  const maxCharsWarnings: string[] = [];
+  if (reorderedReviewedMd !== null) {
+    const maxCharsResult = checkDestaqueMaxChars(reorderedReviewedMd);
+    for (const e of maxCharsResult.errors) {
+      const msg =
+        `D${e.destaque} (${e.category}): ${e.chars} chars — acima do máximo de ${e.max} ` +
+        `chars pro slot novo (excesso: ${e.chars - e.max}). Trim manual recomendado.`;
+      maxCharsWarnings.push(msg);
+      console.error(`⚠️  destaque-max-chars pós-reorder: ${msg}`);
+    }
+  }
+
   console.log(
     JSON.stringify(
       {
@@ -490,6 +561,7 @@ function main(): void {
         new_order: args.newOrder,
         dry_run: args.dryRun,
         modified,
+        max_chars_warnings: maxCharsWarnings,
       },
       null,
       2,
