@@ -87,9 +87,15 @@ describe("revelação sem duplicar imagens (#4030 item 5) — sanidade adicional
     assert.match(html, /class="choice" data-side="B"/);
   });
 
-  it("CSS .choice.correct-ai usa box-shadow inset (não border) — não altera o box model no momento do reveal", () => {
+  it("CSS .choice.correct-ai usa box-shadow SEM inset (não border) — não altera o box model no momento do reveal", () => {
+    // #4036 (item 2): a versão original (#4030) usava `inset`, que fica por
+    // baixo do <img> opaco e nunca aparece — ver test/poll-jogar-ux-4036.test.ts
+    // pra cobertura completa do fix (glow visível, sem inset). Aqui só trava
+    // que a regra continua usando box-shadow (não border, que mudaria o box
+    // model).
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.match(html, /\.choice\.correct-ai img \{ box-shadow: 0 0 0 3px #00A0A0 inset; \}/);
+    assert.match(html, /\.choice\.correct-ai img \{ box-shadow: /);
+    assert.doesNotMatch(html, /\.choice\.correct-ai img \{[^}]*inset/, "inset é invisível sobre um <img> opaco — exatamente o bug do #4036 item 2");
   });
 
   it("renderJogarPageHtml (par único) NÃO foi tocado pelo item 5 — continua substituindo o form pelo resultado (form.hidden=true), nunca duplicava imagem", () => {

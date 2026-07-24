@@ -14,7 +14,7 @@
  *      acertar mais") — antes era neutra.
  *   3. UTM continua intacto na cadeia de share após as mudanças de layout/copy
  *      (#3978 não regride).
- *   4. O checkpoint parcial de 5 pares (#4005, `showBatchBreak`) também ganha
+ *   4. O checkpoint parcial (#4005, `showBatchBreak`, tamanho SEQ_INITIAL_BATCH_SIZE) também ganha
  *      botão de compartilhar — antes só a tela final (22 pares) tinha.
  */
 
@@ -86,11 +86,11 @@ describe("hierarquia da tela final: share é clímax, não acessório (#4006 ite
   });
 });
 
-// ── item 4: checkpoint parcial (#4005, 5 pares) também ganha share ──────────
+// ── item 4: checkpoint parcial (#4005, tamanho SEQ_INITIAL_BATCH_SIZE) também ganha share ──
 
-describe("checkpoint parcial de 5 pares ganha botão de compartilhar (#4006 item 4)", () => {
-  it("SEQ_INITIAL_BATCH_SIZE ainda é 5 (sanity — #4005 não regrediu)", () => {
-    assert.equal(SEQ_INITIAL_BATCH_SIZE, 5);
+describe("checkpoint parcial ganha botão de compartilhar (#4006 item 4)", () => {
+  it("SEQ_INITIAL_BATCH_SIZE ainda é 10 (#4036 item 3 — sanity, #4005 não regrediu além da mudança do editor)", () => {
+    assert.equal(SEQ_INITIAL_BATCH_SIZE, 10);
   });
 
   it("#seq-batch-break embute um slot de share dedicado (#seq-batch-share-slot), distinto do da tela final", () => {
