@@ -387,7 +387,16 @@ export function identityFormScript(): string {
     }).then(function (res) {
       return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
     }).then(function (r) {
-      if (r.status === 200 && r.body && r.body.ok) {
+      if (r.status === 200 && r.body && r.body.ok && r.body.pending) {
+        // #3996: histórico órfão detectado (e-mail já tem ranking sob outro
+        // device/token) — merge fica pendente até o clique no link mágico
+        // enviado por e-mail. NÃO chama setIdentifiedEmail/hidden aqui: o
+        // merge ainda não aconteceu, então "jogando como {email}" seria
+        // enganoso — o form continua visível pra permitir nova tentativa
+        // (ex: digitar outro e-mail) enquanto a confirmação não chega.
+        if (btn) btn.disabled = false;
+        setStatus("Enviamos um e-mail de confirmação — clique no link pra migrar seu histórico e entrar no ranking.", true);
+      } else if (r.status === 200 && r.body && r.body.ok) {
         setIdentifiedEmail(email);
         form.hidden = true;
         if (note) { note.hidden = false; note.textContent = "Pronto! Você está no ranking como " + email + "."; }

@@ -31,25 +31,30 @@
  *      seguinte — "próximos votos desse browser já saem direto na
  *      identidade do e-mail" sem reabrir o form.
  *
- * Fase B (documentada como follow-up, NÃO implementada aqui — ver issue de
- * follow-up referenciada no PR): merge de score anônimo→e-mail preexistente
- * vindo de OUTRO device/sessão sem re-jogar. O merge determinístico abaixo já
- * cobre "mesmo e-mail identificado 2x" (idempotente, soma incremental) — o
- * que falta é uma superfície pra reconciliar retroativamente contas
- * anônimas de sessões passadas SEM o token original em mãos, o que exigiria
- * ou (a) um índice reverso email→tokens históricos (não existe hoje) ou
- * (b) confirmação de posse do e-mail (link mágico) antes de aceitar
- * qualquer merge não-determinístico — ambos fora do escopo desta entrega.
+ * Fase B (#3996 — IMPLEMENTADA neste módulo em conjunto com magic-link.ts):
+ * migração de score anônimo→e-mail preexistente vindo de OUTRO device/sessão
+ * sem re-jogar. `score:{email}` já é uma chave GLOBAL (não por device) — se
+ * `email` JÁ tem histórico identificado (de qualquer origem) sob um token
+ * DIFERENTE do da sessão atual, mergear direto sem verificação seria
+ * exatamente "reivindicar pontos de qualquer sessão passada sob qualquer
+ * e-mail" (o risco descrito no parágrafo de Segurança abaixo, sem limite).
+ * `hasOrphanHistory` (magic-link.ts) detecta esse caso; quando true,
+ * `handleJogarIdentify` desvia pro fluxo de confirmação por link mágico
+ * (`handleOrphanIdentify` abaixo) em vez de mergear na hora — ver rationale
+ * completo no header de magic-link.ts.
  *
- * Segurança: a "identificação" NÃO verifica posse do e-mail (mesmo nível de
- * confiança que o nickname já tem hoje — zero verificação, ver
- * `handleSetName` em index.ts). Isto não é uma regressão: `/vote` continua
- * SÓ aceitando o token anônimo UUID como identidade de escrita (#3976) — o
- * e-mail aqui é só um RÓTULO de exibição atribuído pelo dono do token atual
- * (quem controla o localStorage deste browser), nunca uma credencial de
- * autorização de voto. Alguém pode identificar o PRÓPRIO score anônimo sob
- * qualquer e-mail (mesmo de terceiro) sem confirmação — mesma classe de
- * risco que digitar qualquer nickname hoje, não uma classe nova.
+ * Segurança: a "identificação" imediata (caminho SEM histórico órfão, ver
+ * acima) continua NÃO verificando posse do e-mail (mesmo nível de confiança
+ * que o nickname já tem hoje — zero verificação, ver `handleSetName` em
+ * index.ts) — isto não é uma regressão: `/vote` continua SÓ aceitando o
+ * token anônimo UUID como identidade de escrita (#3976) — o e-mail aqui é só
+ * um RÓTULO de exibição atribuído pelo dono do token atual (quem controla o
+ * localStorage deste browser), nunca uma credencial de autorização de voto.
+ * Alguém pode identificar o PRÓPRIO score anônimo (sem histórico prévio sob
+ * outro token) sob qualquer e-mail (mesmo de terceiro) sem confirmação —
+ * mesma classe de risco que digitar qualquer nickname hoje, não uma classe
+ * nova. O que #3996 fecha é especificamente o caso onde JÁ HÁ histórico
+ * identificado em jogo — esse caminho agora exige confirmação de posse.
  */
 import type { Env } from "./index";
 import { json } from "./index";
@@ -63,6 +68,18 @@ import {
 } from "./lib";
 import { invalidateSnapshot } from "./leaderboard-routes";
 import { subscribeToBeehiiv } from "./subscribe";
+// #3996 (Fase B): ciclo de import seguro com magic-link.ts (mesmo padrão já
+// documentado no header deste arquivo e no de magic-link.ts) — valores só
+// usados em request-time, nunca no top-level de nenhum dos dois módulos.
+import {
+  hasOrphanHistory,
+  hasPendingMerge,
+  createPendingMerge,
+  checkMagicLinkSendRateLimit,
+  sendMagicLinkEmail,
+  buildConfirmMergeUrl,
+  markIdentifyLinked,
+} from "./magic-link";
 
 /** Shape de `score:{email}` (brand web) — ver `updateScore` em vote.ts. */
 export interface WebScore {
@@ -306,49 +323,28 @@ export interface IdentifyDeps {
   fetchImpl?: typeof fetch;
 }
 
+export interface IdentifyMergeInput {
+  email: string;
+  anonEmail: string;
+  name: string;
+  edition: string | null;
+}
+
 /**
- * Handler `POST /jogar/identify` (#3975). `bEnv` já deve vir branded pro
- * brand `web` (client sempre chama com `?brand=web`, ver rota em index.ts) —
- * todo acesso a `score:*`/`score-by-month:*` aqui usa `bEnv.POLL`
- * diretamente (sem prefixo manual), igual ao resto do brand namespacing
- * (#1905).
+ * #3996: merge de fato — score GLOBAL (`score:{email}`, merge com
+ * `score:{anonEmail}`) + índice MENSAL quando `edition` foi informada +
+ * invalidate do snapshot do mês + marca o par (email, anonEmail) como
+ * LINKED (`markIdentifyLinked`, magic-link.ts) pra próximas
+ * re-sincronizações silenciosas do MESMO device caírem no caminho rápido.
  *
- * Fluxo: parse → valida → rate-limit → migra `score:{email}` (merge com
- * `score:{anonEmail}`) → migra `score-by-month:{slug}:{email}` quando
- * `edition` foi informada (invalida o snapshot do mês pra refletir na
- * próxima leitura) → assina a Diar.ia se `optin` (best-effort, nunca
- * bloqueia a identificação — mesmo fail-soft de `subscribeToBeehiiv`).
- *
- * Respostas:
- *   - 200 `{ ok: true, subscribed }` — identificado (subscribed reflete só o
- *     opt-in; sempre `false` quando `optin` não foi marcado)
- *   - 400 `{ ok: false, error }` — e-mail/anonEmail inválidos
- *   - 429 `{ ok: false, error: "rate_limited" }` — abuso por IP
+ * Extraído do corpo de `handleJogarIdentify` (era inline até #3996) pra ser
+ * reusado IDENTICAMENTE pelos 2 caminhos que podem completar uma
+ * identificação: o caminho SEM histórico órfão (direto, abaixo) e o
+ * caminho CONFIRMADO via link mágico (`handleConfirmMerge`, magic-link.ts,
+ * após o clique) — a lógica de merge nunca é duplicada entre os dois.
  */
-export async function handleJogarIdentify(
-  request: Request,
-  bEnv: Env,
-  deps: IdentifyDeps = {},
-): Promise<Response> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
-  const raw = await request.text();
-  const parsed = parseIdentifyBody(raw, request.headers.get("Content-Type") ?? "");
-  const v = validateIdentifyInput(parsed);
-  if (!v.ok) {
-    // Honeypot: 200 fake-success — não revela ao bot que foi pego (mesmo
-    // padrão de handleJogarSubscribe).
-    if (v.error === "honeypot") return json({ ok: true }, 200, bEnv);
-    return json({ ok: false, error: v.error }, v.status, bEnv);
-  }
-
-  const ip =
-    request.headers.get("CF-Connecting-IP") ||
-    request.headers.get("X-Forwarded-For") ||
-    "";
-  const rl = await checkIdentifyRateLimit(bEnv.POLL, ip);
-  if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, bEnv);
-
-  const { email, anonEmail, name, edition } = v;
+export async function performIdentifyMerge(bEnv: Env, input: IdentifyMergeInput): Promise<void> {
+  const { email, anonEmail, name, edition } = input;
 
   // Migra o score GLOBAL (score:{email}) — merge com a sessão anônima atual.
   const [existingRaw, incomingRaw] = await Promise.all([
@@ -387,6 +383,138 @@ export async function handleJogarIdentify(
       }
     }
   }
+
+  // #3996: marca o par como confiável — próximas chamadas (re-sync
+  // silencioso do MESMO device, ou re-identificação explícita) não caem
+  // mais em `hasOrphanHistory` pra este par específico.
+  await markIdentifyLinked(bEnv, email, anonEmail);
+}
+
+/**
+ * #3996: caminho de histórico órfão — `email` já tem `score:{email}`
+ * existente sob um token diferente, nunca confirmado. Em vez de mergear na
+ * hora, cria (ou reusa, se já houver um link vivo) um token de confirmação
+ * e manda e-mail transacional via Brevo com o link `/confirm-merge`.
+ *
+ * Resposta sempre `{ ok: true, pending: true }` — tanto quando o e-mail
+ * acabou de ser enviado quanto quando um link anterior ainda está vivo
+ * (`hasPendingMerge`) ou o rate-limit de envio foi atingido
+ * (`checkMagicLinkSendRateLimit`): nenhum desses 3 motivos é diferenciado
+ * na resposta (ver rationale de enumeração de e-mail no header de
+ * magic-link.ts).
+ */
+async function handleOrphanIdentify(
+  request: Request,
+  bEnv: Env,
+  input: { email: string; anonEmail: string; name: string; edition: string },
+  fetchImpl: typeof fetch,
+): Promise<Response> {
+  const { email, anonEmail, name } = input;
+
+  const alreadyPending = await hasPendingMerge(bEnv, email, anonEmail);
+  if (alreadyPending) return json({ ok: true, pending: true }, 200, bEnv);
+
+  const rl = await checkMagicLinkSendRateLimit(bEnv.POLL, anonEmail, email);
+  if (!rl.allowed) return json({ ok: true, pending: true }, 200, bEnv);
+
+  const token = await createPendingMerge(bEnv, input);
+  const confirmUrl = buildConfirmMergeUrl(request.url, token);
+  const result = await sendMagicLinkEmail(bEnv, { name, email, confirmUrl }, fetchImpl);
+  if (!result.ok) {
+    // #3996 (item 6): nunca logar token/e-mail/confirmUrl — só o motivo
+    // estruturado do lado Brevo (reason/status), igual ao fail-soft de
+    // handleJogarSubscribe/subscribeToBeehiiv (identify_subscribe_failed).
+    console.error(JSON.stringify({ event: "magiclink_send_failed", reason: result.reason, status: result.status }));
+  }
+
+  return json({ ok: true, pending: true }, 200, bEnv);
+}
+
+/**
+ * Handler `POST /jogar/identify` (#3975, Fase B #3996). `bEnv` já deve vir
+ * branded pro brand `web` (client sempre chama com `?brand=web`, ver rota em
+ * index.ts) — todo acesso a `score:*`/`score-by-month:*` aqui usa `bEnv.POLL`
+ * diretamente (sem prefixo manual), igual ao resto do brand namespacing
+ * (#1905).
+ *
+ * Fluxo: parse → valida → rate-limit → `hasOrphanHistory` decide entre:
+ *   (a) SEM histórico órfão → `performIdentifyMerge` direto (comportamento
+ *       original da Fase A, sem fricção) → assina a Diar.ia se `optin`
+ *       (best-effort, nunca bloqueia a identificação).
+ *   (b) COM histórico órfão (#3996) → `handleOrphanIdentify` — NÃO mergeia
+ *       na hora, dispara e-mail de confirmação (link mágico).
+ *
+ * Respostas:
+ *   - 200 `{ ok: true, subscribed }` — identificado na hora (caminho a;
+ *     subscribed reflete só o opt-in, sempre `false` quando `optin` não foi
+ *     marcado)
+ *   - 200 `{ ok: true, pending: true }` — merge diferido, aguardando
+ *     confirmação por e-mail (caminho b, #3996)
+ *   - 400 `{ ok: false, error }` — e-mail/anonEmail inválidos
+ *   - 429 `{ ok: false, error: "rate_limited" }` — abuso por IP
+ */
+export async function handleJogarIdentify(
+  request: Request,
+  bEnv: Env,
+  deps: IdentifyDeps = {},
+): Promise<Response> {
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const raw = await request.text();
+  const parsed = parseIdentifyBody(raw, request.headers.get("Content-Type") ?? "");
+  const v = validateIdentifyInput(parsed);
+  if (!v.ok) {
+    // Honeypot: 200 fake-success — não revela ao bot que foi pego (mesmo
+    // padrão de handleJogarSubscribe).
+    if (v.error === "honeypot") return json({ ok: true }, 200, bEnv);
+    return json({ ok: false, error: v.error }, v.status, bEnv);
+  }
+
+  const ip =
+    request.headers.get("CF-Connecting-IP") ||
+    request.headers.get("X-Forwarded-For") ||
+    "";
+  const rl = await checkIdentifyRateLimit(bEnv.POLL, ip);
+  if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, bEnv);
+
+  const { email, anonEmail, name, edition } = v;
+
+  // #3996: histórico identificado pré-existente sob um token DIFERENTE do
+  // atual, nunca confirmado — desvia pro fluxo de link mágico em vez de
+  // mergear sem verificação.
+  //
+  // GATE CRÍTICO (achado de self-review — regressão descoberta rodando a
+  // suíte existente de #3975): só checa `hasOrphanHistory` quando `name` é
+  // NÃO-vazio, ou seja, uma submissão EXPLÍCITA do form de identidade (o
+  // form client-side exige `name` via `required`, ver renderIdentityFormBlock/
+  // jogar.ts). `name === ""` é EXCLUSIVAMENTE o re-sync SILENCIOSO
+  // (`window.__jogarIdentify.sync`, identityFormScript/jogar.ts) — disparado
+  // automaticamente a cada rodada jogada por um browser que JÁ tem
+  // `eia_web_identified_email` no localStorage (ou seja, JÁ passou por uma
+  // identificação bem-sucedida NESTE MESMO device/token antes, seja antes
+  // ou depois do deploy do #3996).
+  //
+  // Sem este gate, TODO usuário já identificado ANTES do #3996 ir ao ar
+  // (cujo par email/anonEmail nunca foi gravado em `identify-linked` — essa
+  // chave não existia antes desta issue) teria o PRÓXIMO re-sync silencioso
+  // classificado como "órfão" na primeira chamada pós-deploy — e como
+  // `sync()` é fire-and-forget (ignora a resposta, nunca mostra nada ao
+  // jogador), o resultado seria uma quebra SILENCIOSA e permanente: o score
+  // desse jogador parava de ser creditado à identidade (ninguém percebe que
+  // precisa clicar num link de confirmação que nunca pediu). Regressão pior
+  // que a que #3996 resolve. `name` vazio continua confiando no MESMO nível
+  // de verificação zero que a Fase A já tinha (ver header do arquivo) — não
+  // é uma superfície de ataque NOVA (um script malicioso já podia chamar
+  // este endpoint com `name: ""` e qualquer par email/anonEmail mesmo antes
+  // do #3996). O que #3996 fecha é o caminho REALISTA descrito na issue: um
+  // HUMANO preenchendo o form de identidade (name obrigatório) em um device
+  // diferente pra reivindicar histórico de um e-mail que já tem ranking
+  // estabelecido alhures.
+  const orphan = name.trim() !== "" && (await hasOrphanHistory(bEnv, email, anonEmail));
+  if (orphan) {
+    return handleOrphanIdentify(request, bEnv, { email, anonEmail, name, edition: edition ?? "" }, fetchImpl);
+  }
+
+  await performIdentifyMerge(bEnv, { email, anonEmail, name, edition });
 
   let subscribed = false;
   if (v.optin) {
