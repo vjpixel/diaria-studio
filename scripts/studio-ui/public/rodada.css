@@ -133,7 +133,7 @@
      próprio — `repeat(auto-fit, minmax(180px, 1fr))` ainda deixa 2 colunas
      de 180px (+ gap de 1.5rem) espremerem em telas bem estreitas (<360px,
      ex: iPhone SE), texto cortado/grudado. Mesmo padrão de empilhamento
-     mobile já usado por `.filters-bar`/`.wave-summary`/`.panel-header-row`
+     mobile já usado por `.filters-bar`/`.panel-header-row`
      acima (e neste mesmo breakpoint de 640px, reusado do resto do arquivo)
      — 1 coluna sempre abaixo do breakpoint, sem depender do cálculo de
      auto-fit pra decidir. */

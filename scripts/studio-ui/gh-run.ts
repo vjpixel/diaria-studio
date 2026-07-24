@@ -1,21 +1,23 @@
 /**
  * scripts/studio-ui/gh-run.ts (#3783)
  *
- * Wrapper único sobre `spawnSync("gh", ...)` compartilhado por
- * `studio-wave-fire.ts` e `studio-issues.ts`. Extraído do primeiro (#3773
- * introduziu `spawnGhSync` com `timeout` ali, corrigindo um `spawnSync` sem
- * teto que pendurava o event loop indefinidamente se `gh` travasse — token
- * expirado, API do GitHub lenta/rate-limited) porque `studio-issues.ts` tinha
- * exatamente o mesmo gap em `defaultGhRun`, nunca migrado pro fix (#3783).
+ * Wrapper único sobre `spawnSync("gh", ...)` usado por `studio-issues.ts`.
+ * Extraído originalmente do módulo que disparava a onda paralela do Studio
+ * (#3773 introduziu `spawnGhSync` com `timeout` ali, corrigindo um
+ * `spawnSync` sem teto que pendurava o event loop indefinidamente se `gh`
+ * travasse — token expirado, API do GitHub lenta/rate-limited) porque
+ * `studio-issues.ts` tinha exatamente o mesmo gap em `defaultGhRun`, nunca
+ * migrado pro fix (#3783). O módulo de origem foi removido no #3985/#3720
+ * (mecanismo de disparo de onda descontinuado) — este wrapper sobreviveu
+ * porque `studio-issues.ts` continua consumindo ele.
  *
  * A duplicação era pior no lado de `studio-issues.ts`: `defaultGhRun`
- * alimenta `fetchTriageData`, chamada por `GET /api/issues`/`GET /api/waves`
- * — rotas de USO NORMAL do Studio (Triagem), não gateadas por env var como o
- * wave-fire. Um `gh auth` expirado ou GitHub degradado enquanto o editor
- * navega o Studio travava `spawnSync` (bloqueante) sem teto, e como o
- * studio-server é um único processo Node, qualquer outra rota HTTP
- * concorrente (chat drawer, autosave do painel de revisão) travava junto —
- * viola CLAUDE.md #738 ("Stall silencioso > 60s é inaceitável").
+ * alimenta `fetchTriageData`, chamada por `GET /api/issues` — rota de USO
+ * NORMAL do Studio (Triagem). Um `gh auth` expirado ou GitHub degradado
+ * enquanto o editor navega o Studio travava `spawnSync` (bloqueante) sem
+ * teto, e como o studio-server é um único processo Node, qualquer outra rota
+ * HTTP concorrente (chat drawer, autosave do painel de revisão) travava junto
+ * — viola CLAUDE.md #738 ("Stall silencioso > 60s é inaceitável").
  *
  * `bin`/`timeoutMs` são parametrizados (produção sempre usa `"gh"` +
  * `GH_SPAWN_TIMEOUT_MS`) só pra permitir testar com um binário genuinamente

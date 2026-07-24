@@ -1064,15 +1064,7 @@ ${opts.studioMode === true ? "" : `  :root {
   /* #3097: opacity explícita (não herdada de small, que é 0.6, ~3.40:1) —
      alerta de ação (streak de falhas, "sem match") precisa ser MAIS legível
      que dados neutros, não menos. Sem cor nova: só reforça a mesma --alert. */
-  .alert-text { color: #C00000; opacity: 1; font-weight: 600; }${opts.studioMode === true ? `
-  /* #3853: #C00000 fixo mede só ~2.83:1 contra o novo --paper escuro (tokens
-     de studioMode, dark mode) — abaixo até de AA large text (3:1). Só neste
-     bloco (studioMode) porque produção não carrega tokens.generated.css (sem
-     --status-danger disponível ali) — ver STATUS_COLORS_DARK em tokens-css.ts,
-     que já calibra --status-danger pro fundo escuro. */
-  @media (prefers-color-scheme: dark) {
-    .alert-text { color: var(--status-danger); }
-  }` : ""}
+  .alert-text { color: #C00000; opacity: 1; font-weight: 600; }
   /* #3861: botão "Atualizar É IA?" — só renderizado quando studioMode=true
      (ver renderEiaRefreshButtonHtml), mas a regra em si é inofensiva mesmo
      no HTML de produção (nenhum elemento .eia-refresh-btn existe lá). */

@@ -5,19 +5,23 @@
  * `fetchTriageData` com um runner de `gh` mockado (sem invocar o binário
  * real nem rede).
  *
- * Extensão (#3562, entrega 2): `files`/`dispatchTrack` em `parseIssues`
- * (derivados via `studio-waves.ts`) e `ciState`/`reviewDecision` em
- * `parsePrs` (via `summarizeChecks`). A cobertura das funções puras de
- * classificação/extração em si (regex de path, heurística
- * elegível/bloqueada/ambígua) mora em `test/studio-waves.test.ts` — aqui só
- * cobrimos a INTEGRAÇÃO (parseIssues/parsePrs chamando essas funções
- * corretamente) + `summarizeChecks`, que é local deste arquivo.
+ * Extensão (#3562, entrega 2): `files`/`dispatchTrack` em `parseIssues` e
+ * `ciState`/`reviewDecision` em `parsePrs` (via `summarizeChecks`).
+ *
+ * #4004: `extractFilePaths`/`classifyDispatchTrack` (e a cobertura de
+ * `test/studio-waves.test.ts`, que testava as duas) foram relocadas de
+ * `studio-waves.ts` pra cá na limpeza da seção "Composição de wave —
+ * preview" — `studio-issues.ts` é o único consumidor real (a análise de
+ * cluster/composição de onda que também vivia lá foi removida, não
+ * relocada). `test/studio-waves.test.ts` foi deletado.
  */
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   derivePriority,
   deriveTrackFromBranch,
+  extractFilePaths,
+  classifyDispatchTrack,
   parseIssues,
   parsePrs,
   summarizeChecks,
@@ -61,6 +65,64 @@ describe("deriveTrackFromBranch (#3562)", () => {
     assert.equal(deriveTrackFromBranch(undefined), "other");
     assert.equal(deriveTrackFromBranch(null), "other");
     assert.equal(deriveTrackFromBranch(""), "other");
+  });
+});
+
+// ─── relocadas de test/studio-waves.test.ts no #4004 ───────────────────
+
+describe("extractFilePaths (#3562, relocado no #4004)", () => {
+  it("extrai paths em code-span", () => {
+    const text = "Estender `scripts/studio-ui/studio-issues.ts` (é seu) e `context/overnight-dispatch-rules.md`.";
+    assert.deepEqual(extractFilePaths(text), ["context/overnight-dispatch-rules.md", "scripts/studio-ui/studio-issues.ts"]);
+  });
+
+  it("extrai paths nus com prefixo de diretório-raiz conhecido", () => {
+    const text = "Mexe em scripts/lib/publish-state.ts e também test/studio-issues.test.ts.";
+    assert.deepEqual(extractFilePaths(text), ["scripts/lib/publish-state.ts", "test/studio-issues.test.ts"]);
+  });
+
+  it("remove pontuação de trailing (vírgula, ponto, parêntese)", () => {
+    const text = "Ver `scripts/studio-ui/server.ts`, e (`context/editorial-rules.md`).";
+    assert.deepEqual(extractFilePaths(text), ["context/editorial-rules.md", "scripts/studio-ui/server.ts"]);
+  });
+
+  it("dedup entre code-span e path nu do mesmo arquivo", () => {
+    const text = "`scripts/foo.ts` é o mesmo arquivo que scripts/foo.ts mencionado sem backtick.";
+    assert.deepEqual(extractFilePaths(text), ["scripts/foo.ts"]);
+  });
+
+  it("ignora tokens sem prefixo de diretório-raiz conhecido (falso-negativo é seguro)", () => {
+    const text = "Isso não é path: 10/20 nem foo/bar.ts (sem prefixo reconhecido).";
+    assert.deepEqual(extractFilePaths(text), []);
+  });
+
+  it("null/undefined/vazio -> array vazio, sem lançar", () => {
+    assert.deepEqual(extractFilePaths(null), []);
+    assert.deepEqual(extractFilePaths(undefined), []);
+    assert.deepEqual(extractFilePaths(""), []);
+  });
+});
+
+describe("classifyDispatchTrack (#3562, relocado no #4004)", () => {
+  it("label de bloqueio real -> bloqueada", () => {
+    assert.equal(classifyDispatchTrack(["external-blocker", "enhancement"], "qualquer corpo"), "bloqueada");
+    assert.equal(classifyDispatchTrack(["on-hold"], ""), "bloqueada");
+    assert.equal(classifyDispatchTrack(["kit-migration"], ""), "bloqueada");
+    assert.equal(classifyDispatchTrack(["not-this-week"], ""), "bloqueada");
+    assert.equal(classifyDispatchTrack(["beehiiv"], ""), "bloqueada");
+  });
+
+  it("marcador textual de decisão em aberto sem label de bloqueio -> ambigua", () => {
+    assert.equal(classifyDispatchTrack(["enhancement"], "Precisamos decidir entre A e B"), "ambigua");
+    assert.equal(classifyDispatchTrack([], "existe um trade-off real aqui"), "ambigua");
+  });
+
+  it("sem sinal nenhum -> elegivel", () => {
+    assert.equal(classifyDispatchTrack(["bug", "P2"], "corpo qualquer sem ambiguidade"), "elegivel");
+  });
+
+  it("label de bloqueio vence marcador de ambiguidade quando ambos presentes", () => {
+    assert.equal(classifyDispatchTrack(["on-hold"], "precisamos decidir entre A e B"), "bloqueada");
   });
 });
 
@@ -346,11 +408,11 @@ describe("fetchTriageData (#3562)", () => {
 describe("defaultGhRun timeout (#3783 — regressão)", () => {
   it("mata um processo pendurado dentro do timeout dado, em vez de bloquear indefinidamente (mesmo padrão do #3773 pra spawnGhSync)", () => {
     // Regressão do bug real: `defaultGhRun` chamava `spawnSync("gh", ...)` sem
-    // `timeout` — exatamente o gap que o #3773 já tinha corrigido no módulo
-    // irmão (`studio-wave-fire.ts`), nunca reusado aqui até o #3783. Mais
+    // `timeout` — exatamente o gap que o #3773 já tinha corrigido num módulo
+    // irmão (removido desde, #4004), nunca reusado aqui até o #3783. Mais
     // severo aqui: `defaultGhRun` alimenta `fetchTriageData`, chamada por
-    // `GET /api/issues`/`GET /api/waves` — rotas de uso normal do Studio, não
-    // gateadas por env var. Simulamos com um processo Node genuíno que dorme
+    // `GET /api/issues` — rota de uso normal do Studio, não gateada por env
+    // var. Simulamos com um processo Node genuíno que dorme
     // 60s — MUITO mais que o `timeoutMs` de 300ms dado — e provamos que
     // `defaultGhRun` retorna rápido em vez de esperar os 60s completos.
     // `timeoutMs`/`bin` paramétricos existem SÓ pra este teste (produção

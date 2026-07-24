@@ -6,8 +6,8 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildTokensCss, STATUS_COLORS, STATUS_COLORS_DARK } from "../scripts/studio-ui/tokens-css.ts";
-import { COLORS, DARK_COLORS, FONTS } from "../scripts/lib/shared/design-tokens.ts";
+import { buildTokensCss, STATUS_COLORS } from "../scripts/studio-ui/tokens-css.ts";
+import { COLORS, FONTS } from "../scripts/lib/shared/design-tokens.ts";
 
 describe("buildTokensCss (#3555)", () => {
   it("inclui os valores canônicos de COLORS/FONTS como custom properties", () => {
@@ -18,16 +18,15 @@ describe("buildTokensCss (#3555)", () => {
     assert.ok(css.includes(`--font-sans: ${FONTS.sans};`));
   });
 
-  it("tem exatamente 2 blocos :root — o base e o override dentro do @media dark (#3876)", () => {
+  it("tem exatamente 1 bloco :root (#4001: sem override de dark mode)", () => {
     const css = buildTokensCss();
-    assert.equal((css.match(/:root/g) ?? []).length, 2);
+    assert.equal((css.match(/:root/g) ?? []).length, 1);
   });
 
-  it("o bloco :root BASE (fora do @media) contém os valores claros de --paper/--ink", () => {
+  it("o bloco :root contém os valores claros de --paper/--ink", () => {
     const css = buildTokensCss();
-    const base = css.slice(0, css.indexOf("@media"));
-    assert.ok(base.includes(`--paper: ${COLORS.paper};`));
-    assert.ok(base.includes(`--ink: ${COLORS.ink};`));
+    assert.ok(css.includes(`--paper: ${COLORS.paper};`));
+    assert.ok(css.includes(`--ink: ${COLORS.ink};`));
   });
 
   it("aceita overrides injetados (testabilidade sem depender do módulo canônico)", () => {
@@ -61,49 +60,15 @@ describe("STATUS_COLORS / tokens semânticos de status (#3874)", () => {
   });
 });
 
-describe("dark mode — @media (prefers-color-scheme: dark) (#3876)", () => {
-  it("emite exatamente 1 bloco @media (prefers-color-scheme: dark)", () => {
+describe("#4001 — Studio sempre em tema claro (reverte dark mode do #3876)", () => {
+  it("NÃO emite nenhum bloco @media (prefers-color-scheme: dark)", () => {
     const css = buildTokensCss();
-    assert.equal((css.match(/@media \(prefers-color-scheme: dark\)/g) ?? []).length, 1);
+    assert.ok(!css.includes("prefers-color-scheme"), "tokens.generated.css não deve mais ter regra de dark mode");
   });
 
-  it("sobrescreve --paper/--ink com o par invertido (DARK_COLORS), --on-ink com COLORS.ink", () => {
+  it("declara color-scheme: light no :root (controles nativos — inputs/scrollbars/selects — ficam claros mesmo com preferência dark do SO)", () => {
     const css = buildTokensCss();
-    const darkBlock = css.slice(css.indexOf("@media"));
-    assert.ok(darkBlock.includes(`--paper: ${DARK_COLORS.paperDark};`));
-    assert.ok(darkBlock.includes(`--ink: ${DARK_COLORS.inkOnDark};`));
-    assert.ok(darkBlock.includes(`--on-ink: ${COLORS.ink};`));
+    assert.match(css, /:root\s*\{[^}]*color-scheme:\s*light;/);
   });
 
-  it("--paper-alt (dark) é um color-mix() derivado, não um hex hardcoded", () => {
-    const css = buildTokensCss();
-    const darkBlock = css.slice(css.indexOf("@media"));
-    assert.match(darkBlock, /--paper-alt: color-mix\(in srgb, .*\);/);
-  });
-
-  it("sobrescreve --status-ok/--status-danger/--status-info com STATUS_COLORS_DARK (calibrados pro fundo escuro)", () => {
-    const css = buildTokensCss();
-    const darkBlock = css.slice(css.indexOf("@media"));
-    assert.ok(darkBlock.includes(`--status-ok: ${STATUS_COLORS_DARK.ok};`));
-    assert.ok(darkBlock.includes(`--status-danger: ${STATUS_COLORS_DARK.danger};`));
-    assert.ok(darkBlock.includes(`--status-info: ${STATUS_COLORS_DARK.info};`));
-  });
-
-  it("NÃO sobrescreve --status-warn/--status-warn-ink no bloco dark (já calibrado o bastante pro fundo escuro, ver docstring)", () => {
-    const css = buildTokensCss();
-    const darkBlock = css.slice(css.indexOf("@media"));
-    assert.ok(!darkBlock.includes("--status-warn:"));
-    assert.ok(!darkBlock.includes("--status-warn-ink:"));
-  });
-
-  it("aceita overrides injetados de dark/statusDark (mesma testabilidade dos demais parâmetros)", () => {
-    const css = buildTokensCss(COLORS, FONTS, STATUS_COLORS, { ...DARK_COLORS, paperDark: "#000001" }, { ...STATUS_COLORS_DARK, ok: "#00ff00" });
-    const darkBlock = css.slice(css.indexOf("@media"));
-    assert.ok(darkBlock.includes("--paper: #000001;"));
-    assert.ok(darkBlock.includes("--status-ok: #00ff00;"));
-  });
-
-  it("STATUS_COLORS_DARK cobre só ok/danger/info (warn fica de fora deliberadamente)", () => {
-    assert.deepEqual(Object.keys(STATUS_COLORS_DARK).sort(), ["danger", "info", "ok"]);
-  });
 });
