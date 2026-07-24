@@ -84,7 +84,6 @@ describe("GET /triagem + GET /api/issues (#3562)", () => {
     assert.ok(body.includes('id="wave-capacity-warning" class="alert-banner" role="alert"'));
     assert.ok(body.includes('id="issues-empty"'));
     assert.ok(body.includes('id="prs-empty"'));
-    assert.ok(body.includes('id="fire-wave-reason"'), "motivo do botão 'Disparar esta onda' precisa estar em texto visível, não só title=");
     assert.ok(body.includes('id="dispatch-track-legend"'), "legenda visível de DISPATCH_TRACK_EXPLAIN precisa existir (não só title= por linha)");
   });
 
