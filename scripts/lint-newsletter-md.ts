@@ -107,6 +107,13 @@ import {
   type AprofundeFormatError,
   type AprofundeFormatReport,
 } from "./lib/lint-checks/aprofunde-format.ts"; // #3920
+import {
+  checkWhyMattersLength,
+  WHY_MATTERS_MIN_CHARS,
+  WHY_MATTERS_MAX_CHARS,
+  type WhyMattersLengthError,
+  type WhyMattersLengthReport,
+} from "./lib/lint-checks/why-matters-length.ts"; // #3993
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -220,6 +227,13 @@ export {
   type AprofundeFormatError,
   type AprofundeFormatReport,
 } from "./lib/lint-checks/aprofunde-format.ts"; // #3920
+export {
+  checkWhyMattersLength,
+  WHY_MATTERS_MIN_CHARS,
+  WHY_MATTERS_MAX_CHARS,
+  type WhyMattersLengthError,
+  type WhyMattersLengthReport,
+} from "./lib/lint-checks/why-matters-length.ts"; // #3993
 export {
   lintNewsletter,
   extractUrlsBySection,
@@ -637,6 +651,41 @@ function main(): void {
       }
       console.error(
         `\nFix: re-disparar writer pra trimar o body do destaque (corte parágrafo redundante OU encurte "Por que isso importa").`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check why-matters-length (#3993) — valida janela 180-300 chars
+  // do parágrafo "Por que isso importa" de cada destaque.
+  if (args.check === "why-matters-length") {
+    if (!args.md) {
+      console.error(
+        "Uso: lint-newsletter-md.ts --check why-matters-length --md <md-path>",
+      );
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkWhyMattersLength(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n❌ why-matters-length: ${result.errors.length} destaque(s) fora da janela ${WHY_MATTERS_MIN_CHARS}-${WHY_MATTERS_MAX_CHARS} chars:`,
+      );
+      for (const e of result.errors) {
+        const dir = e.chars < e.min ? "abaixo do mínimo" : "acima do máximo";
+        console.error(
+          `  D${e.destaque} (${e.category}): ${e.chars} chars — ${dir} (janela ${e.min}-${e.max}): "${e.excerpt}"`,
+        );
+      }
+      console.error(
+        `\nFix: re-disparar writer-destaque do(s) destaque(s) afetado(s) pra reescrever "Por que isso importa" dentro de 180-300 chars (2 frases curtas cabem nessa janela — frase 1: impacto direto; frase 2: implicação concreta).`,
       );
       process.exit(1);
     }
@@ -1277,6 +1326,7 @@ function main(): void {
         "  ou: lint-newsletter-md.ts --check section-counts --md <md-path> --approved <01-approved.json>\n" +
         "  ou: lint-newsletter-md.ts --check destaque-min-chars --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check destaque-max-chars --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check why-matters-length --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check erro-intencional-placeholder --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check erro-intencional-narrative-generico --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check use-melhor-tempo --md <md-path>\n" +

@@ -62,7 +62,8 @@ function runCheck(
 /**
  * `02-reviewed.md` deve passar todos os checks granulares de
  * lint-newsletter-md (titles-per-highlight, why-matters-format,
- * destaque-min-chars, destaque-max-chars, intro-count, coverage-line-format (#1207), eai-section).
+ * destaque-min-chars, destaque-max-chars, why-matters-length (#3993),
+ * intro-count, coverage-line-format (#1207), eai-section).
  *
  * Cada check é invocado individualmente pra produzir mensagens específicas.
  * Não chamamos o modo "default" (que exige `--approved` JSON) porque o
@@ -82,6 +83,7 @@ function checkReviewedPassesAllLints(editionDir: string): InvariantViolation[] {
     { name: "why-matters-format", issue: "#editorial-rules" },
     { name: "destaque-min-chars", issue: "#914" },
     { name: "destaque-max-chars", issue: "#964" },
+    { name: "why-matters-length", issue: "#3993" },
     { name: "intro-count", issue: "#743" },
     { name: "coverage-line-format", issue: "#1207" },
     { name: "multiline-links", issue: "#1213" },

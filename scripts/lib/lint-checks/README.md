@@ -15,6 +15,7 @@ deliberada de escopo descrita abaixo.
 | `eai-section.ts` | `eai-section` | #588 |
 | `coverage-line-format.ts` | `coverage-line-format` | #592/#609/#1207 |
 | `destaque-chars.ts` | `destaque-min-chars` + `destaque-max-chars` | #914/#964 |
+| `why-matters-length.ts` | `why-matters-length` | #3993 |
 | `titles-per-highlight.ts` | `titles-per-highlight` | #178/#245 |
 | `title-length.ts` | `title-length` | #701/#801 |
 | `highlight-parsing.ts` | _(helper compartilhado — regexes de header de destaque)_ | #1737 |
