@@ -380,8 +380,13 @@ describe("GET /jogar embute o form de IDENTIDADE, não mais o de assinatura (#39
 
   it("revela o form no caminho de voto NOVO e no de 'já votou' (mesma disciplina anti-spoiler), guardado por 'já identificado'", () => {
     const html = renderJogarPageHtml({ edition: "260101", revealed: false });
-    // já-votou
-    assert.match(html, /if \(identityForm && !alreadyIdentified\) identityForm\.hidden = false;\s*\n\s*if \(window\.__jogarIdentify\) window\.__jogarIdentify\.sync\(email, edition\);/);
+    // já-votou. Achado 260724: o guard NÃO pode ler
+    // window.__jogarIdentify.getIdentifiedEmail() de forma síncrona aqui —
+    // a tag <script> que define window.__jogarIdentify (identityFormScript)
+    // vem DEPOIS no HTML, então o valor ficava sempre undefined nesse ponto
+    // (bug real, ver test/poll-jogar-identify-3975.test.ts pro caso
+    // completo). Fix: isIdentifiedLocally() lê localStorage direto.
+    assert.match(html, /if \(identityForm && !isIdentifiedLocally\(\)\) identityForm\.hidden = false;\s*\n\s*if \(window\.__jogarIdentify\) window\.__jogarIdentify\.sync\(email, edition\);/);
     // var identityForm declarado uma única vez no script de reveal (reusado
     // nos 2 caminhos: já-votou e voto novo).
     const occ = html.match(/var identityForm = document\.getElementById\("jogar-identity-form"\)/g) ?? [];

@@ -28,6 +28,7 @@ import {
   type WebScore,
   type WebScoreByMonth,
 } from "../workers/poll/src/identify.ts";
+import { renderJogarPageHtml } from "../workers/poll/src/jogar.ts";
 import { isAnonymousWebIdentity, isValidWebToken } from "../workers/poll/src/lib.ts";
 import { computeTop1, computePodium, scoreByMonthEntriesToLeaderboard } from "../workers/poll/src/leaderboard-routes.ts";
 import worker, { type Env } from "../workers/poll/src/index.ts";
@@ -333,5 +334,41 @@ describe("POST /jogar/identify via worker.fetch (#3975) — fiação real de bra
     const raw = await (env as unknown as { POLL: ReturnType<typeof makeTrackedKv> }).POLL.get("web:score:prod@x.com");
     assert.ok(raw, "escrita deve ir pro namespace branded do brand web");
     assert.equal(JSON.parse(raw!).total, 2);
+  });
+});
+
+// ── Regressão: ordem de <script> quebrava o submit do form (par único) ──────
+//
+// Achado do editor (260724): em renderJogarPageHtml (par único, /jogar?edition=),
+// clicar "Entrar no ranking" fazia um SUBMIT NATIVO do form (navegação real
+// pra "?name=...&email=...&website=", sem chamar /jogar/identify, sem
+// nenhuma mensagem de erro/sucesso). Causa raiz: `alreadyIdentified` era lido
+// de `window.__jogarIdentify.getIdentifiedEmail()` de forma SÍNCRONA, no
+// script PRINCIPAL — mas a tag <script> que define `window.__jogarIdentify`
+// (identityFormScript()) vem DEPOIS no HTML. Pra quem já tinha se
+// identificado antes (localStorage com eia_web_identified_email setado), o
+// resultado combinado era: o script principal reabria o form (hidden=false)
+// porque via `alreadyIdentified` como undefined (script errado, timing
+// errado) — mas identityFormScript(), rodando DEPOIS e lendo localStorage
+// diretamente (esse sim correto), via "já identificado" e retornava cedo SEM
+// attachar o listener de submit. Form visível, sem JS interceptando →
+// submit nativo do browser (form não tem action/method).
+describe("renderJogarPageHtml (#3975/#3983) — regressão: alreadyIdentified não pode depender de window.__jogarIdentify (ordem de <script>)", () => {
+  it("NÃO lê window.__jogarIdentify.getIdentifiedEmail() de forma síncrona no script principal — só via helper local (localStorage direto)", () => {
+    const html = renderJogarPageHtml({ edition: "260101", revealed: false });
+    // A única leitura de window.__jogarIdentify no script principal deve ser
+    // a chamada de sync() (fire-and-forget, guardada por `if (window.__jogarIdentify)`)
+    // — nunca um `var alreadyIdentified = window.__jogarIdentify && ...`.
+    assert.doesNotMatch(html, /var alreadyIdentified\s*=\s*window\.__jogarIdentify/);
+    assert.match(html, /function isIdentifiedLocally\(\)/);
+    assert.match(html, /window\.localStorage\.getItem\("eia_web_identified_email"\)/);
+  });
+
+  it("os 2 pontos que decidem reabrir o form de identidade usam isIdentifiedLocally(), não uma variável cacheada", () => {
+    const html = renderJogarPageHtml({ edition: "260101", revealed: false });
+    const matches = html.match(/if \(identityForm && !isIdentifiedLocally\(\)\) identityForm\.hidden = false;/g) ?? [];
+    // 1x no caminho "já votou" (branch síncrona, no load) + 1x no caminho de
+    // voto novo (callback assíncrono do /vote) — os 2 lugares que o bug afetava.
+    assert.equal(matches.length, 2, "esperado exatamente 2 usos: branch 'já votou' + callback de voto novo");
   });
 });
