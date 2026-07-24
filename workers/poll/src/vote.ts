@@ -136,8 +136,24 @@ export async function buildAlreadyVotedResponse(
  * brandKvPrefix("diaria") === "").
  * Todo o resto (voto, score, dedup, stats, valid_editions) CONTINUA lido/
  * escrito via `env` (branded) — só o READ do gabarito muda.
+ *
+ * #3983 (reverte o Suspense #3595 + reavaliação do cômputo do voto pedida
+ * pelo editor 260723): `ctx` — `ExecutionContext` real do Workers runtime
+ * (`fetch(request, env, ctx)`, threadeado por index.ts). Quando presente
+ * (produção real), `handleVote` responde o VEREDITO (acertou/errou) assim
+ * que `correct:{edition}` é lido — dezenas de ms — e adia toda a
+ * contabilidade pesada (dedup DO, guard-keys de stats/score/month, commit do
+ * voteKey, vote-log) pra `ctx.waitUntil()`. Ver `handleVoteFastPath`/
+ * `runVoteBookkeeping` abaixo pro código novo e o rationale completo.
+ * Guard é `typeof ctx?.waitUntil === "function"`, não só truthy: TODA a
+ * suíte de testes hoje chama `handleVote`/`worker.fetch` sem `ctx` ou com
+ * `{} as ExecutionContext` (cast de tipo sem método real) — ambos caem no
+ * caminho síncrono legado abaixo, INTOCADO, byte-a-byte igual ao
+ * comportamento pré-#3983. Só o Workers runtime real (que sempre injeta um
+ * ExecutionContext de verdade) exercita o fast-path — zero regressão na
+ * suíte existente, ganho de latência 100% em produção.
  */
-export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", rawEnv: Env = env): Promise<Response> {
+export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", rawEnv: Env = env, ctx?: ExecutionContext): Promise<Response> {
   // #1083: Beehiiv não URL-encoda `{{ subscriber.email }}`; URLSearchParams
   // converte `+` em ` `. Restaurar antes de qualquer uso (HMAC, KV key).
   const emailRaw = url.searchParams.get("email")?.toLowerCase().trim();
@@ -278,6 +294,27 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
       return voteHtmlResponse(votePageHtml("Link inválido ou expirado.", false, null, null, null, brand), 403);
     }
   }
+
+  // #3983: fast-path — ver doc de handleVote acima pro rationale completo do
+  // guard. Todos os gates acima (formato, merge-tag, edição válida, edição
+  // futura, sig) já rodaram — a partir daqui o resto é só "gravar o voto",
+  // que é exatamente a parte que o fast-path adia pra background.
+  if (ctx && typeof ctx.waitUntil === "function") {
+    return handleVoteFastPath(env, brand, ctx, {
+      email,
+      edition,
+      choice: choice as "A" | "B",
+      correctRaw,
+      existingFromKv,
+      testMode,
+    });
+  }
+
+  // ── Caminho síncrono legado (sem ExecutionContext real) ───────────────────
+  // #3983: código INTOCADO a partir daqui — preserva 100% do comportamento e
+  // da suíte de testes pré-existente (nenhum teste hoje passa um `ctx` com
+  // `waitUntil` de verdade). Só roda em produção se o Workers runtime, por
+  // algum motivo, não injetar um ExecutionContext (não deveria acontecer).
 
   // #2187: Serializar o dedup via Durable Object (fortemente consistente).
   // O DO elimina a race read-modify-write que o KV eventual-consistent expunha:
@@ -677,6 +714,300 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // "Ver leaderboard" — leitor que viu a página de leaderboard antes de votar não
   // fica com a versão vazia em cache. SÓ neste link (tráfego orgânico inalterado).
   return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs, shareCard), 200);
+}
+
+// ── #3983: fast-path (reverte o Suspense #3595 + reavaliação do cômputo do
+// voto pedida pelo editor 260723) ───────────────────────────────────────────
+//
+// Contexto completo: até aqui (#3595), a sequência web escondia a latência
+// do /vote avançando pro próximo par IMEDIATAMENTE e votando em BACKGROUND —
+// o resultado por rodada nunca era revelado, só o placar final. O editor
+// (260723) pediu o oposto: revelar acerto/erro NA HORA do clique. Isso torna
+// a latência do /vote user-facing de novo — então esta seção move a
+// CONTABILIDADE (dedup DO, guard-keys de stats/score/month, commit do
+// voteKey, log) pra `ctx.waitUntil()`, respondendo o veredito assim que
+// `correct:{edition}` é conhecido (já lido antes de chegar aqui).
+//
+// Sub-issue #3983 é anti-cheat-first: o gabarito NUNCA é embutido no
+// HTML/JS antes do clique (isso continua vindo só da resposta do /vote,
+// como sempre) — só a CONTABILIDADE do voto que muda de timing, não o que é
+// exposto ao cliente nem quando.
+
+/**
+ * #3983: resposta RÁPIDA do `/vote` — usada quando `ctx` (ExecutionContext
+ * real) está disponível. Responde o veredito (acertou/errou/"sem gabarito
+ * ainda") sem esperar nenhuma escrita KV/DO: `correct` já é derivável de
+ * `correctRaw` (lido antes desta chamada, no `Promise.all` de `handleVote`).
+ *
+ * Trade-off deliberado (documentado pro PR/coordenador): o sufixo de streak
+ * (#3522, "🔥 N dias seguidos") e o sufixo de stats (#3523, "X% acertaram")
+ * NÃO aparecem nesta resposta — ambos só fazem sentido calculados DEPOIS do
+ * incremento desta rodada, que só acontece em `runVoteBookkeeping` (background).
+ * Computá-los de forma otimista aqui exigiria ou (a) pagar de volta um
+ * round-trip de rede antes de responder — anulando o ganho de latência que
+ * esta issue existe pra entregar — ou (b) duplicar a lógica de streak de
+ * `updateScore` numa 2ª implementação "preview", só pra um sufixo cosmético
+ * secundário. Nenhuma das duas se paga: o dado ESSENCIAL da issue #3983
+ * (acertou/errou, correto e imediato) sai perfeito; os sufixos voltam a
+ * aparecer no PRÓXIMO voto do jogador (quando o score já estiver persistido).
+ *
+ * nicknameForm/resultImages/shareCard SEGUEM presentes (não dependem de
+ * nenhuma escrita desta rodada, só de estado JÁ existente/dos parâmetros do
+ * próprio request) — nenhuma perda de funcionalidade ali.
+ */
+async function handleVoteFastPath(
+  env: Env,
+  brand: Brand,
+  ctx: ExecutionContext,
+  params: {
+    email: string;
+    edition: string;
+    choice: "A" | "B";
+    correctRaw: string | null;
+    existingFromKv: string | null;
+    testMode: boolean;
+  },
+): Promise<Response> {
+  const { email, edition, choice, correctRaw, existingFromKv, testMode } = params;
+
+  // #3983 cuidado (a) — resposta otimista vs. dedup: um voto que o KV JÁ
+  // conhece (re-clique no mesmo link/re-tentativa) segue mostrando "já
+  // votou" de forma síncrona — isso é uma leitura KV já feita (barata, sem
+  // round-trip de DO), não a contabilidade pesada que o fast-path adia. A
+  // corrida de DOIS requests CONCORRENTES do mesmo email (nenhum viu o KV do
+  // outro ainda) é o caso que realmente cai no fast-path otimista: ambos
+  // respondem o veredito, e o dedup real (DO) em background descarta
+  // silenciosamente o 2º (`runVoteBookkeeping`, ver `!firstVote` abaixo) —
+  // o veredito já mostrado ao 2º jogador continua correto (ele realmente
+  // acertou/errou aquela rodada), só não soma no score. Comportamento
+  // intencional, pedido explicitamente pelo editor na issue #3983.
+  if (existingFromKv) {
+    return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv);
+  }
+
+  const correct = correctRaw ? choice === correctRaw : null;
+
+  // #1236: test mode — short-circuit antes de qualquer KV write/schedule,
+  // mesmo comportamento/mensagem do caminho legado.
+  if (testMode) {
+    const testMsg = correct === true
+      ? "✅ [TEST] Acertou! Era a imagem gerada por IA. (não gravado em KV)"
+      : correct === false
+      ? "❌ [TEST] Não foi dessa vez — era a foto real. (não gravado em KV)"
+      : "[TEST] Voto recebido. (não gravado em KV — gabarito ainda não definido)";
+    return voteHtmlResponse(votePageHtml(testMsg, true, null, null, null, brand), 200);
+  }
+
+  const voteTs = new Date().toISOString();
+  const scoreRaw = await env.POLL.get(`score:${email}`);
+  const scoreObj = safeParseKv<{ nickname?: string | null }>(scoreRaw, "vote_fastpath_score_parse_error", edition);
+
+  // #1078: mesmo critério do caminho legado — oferecer nickname enquanto o
+  // jogador não tiver um. Não depende de nenhuma escrita desta rodada.
+  const needsNickname = !scoreObj?.nickname;
+  let nicknameForm: { email: string; sig: string } | null = null;
+  if (needsNickname) {
+    const sig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
+    nicknameForm = { email, sig };
+  }
+
+  // #1351: mesmo critério do caminho legado — mostrar as 2 imagens com
+  // highlight só quando o gabarito existe.
+  const showImages = correct !== null;
+  const aiSide: "A" | "B" | null = showImages && correctRaw ? (correctRaw as "A" | "B") : null;
+  const resultImages = showImages && aiSide
+    ? { edition, aiSide, clickedSide: choice }
+    : null;
+
+  // #3517: card de compartilhamento — só brand="web", mesmo critério do
+  // caminho legado (payload é puro HMAC sobre {edition, correct}, zero KV extra).
+  let shareCard: { token: string; payload: SharePayload } | null = null;
+  if (brand === "web") {
+    const sharePayload: SharePayload = { edition, correct };
+    shareCard = { token: await encodeShareToken(env.POLL_SECRET, sharePayload), payload: sharePayload };
+  }
+
+  const msg = correct === true
+    ? "✅ Acertou! Era a imagem gerada por IA."
+    : correct === false
+    ? "❌ Não foi dessa vez — era a foto real."
+    : "Voto registrado! O resultado sai na próxima edição.";
+
+  const response = voteHtmlResponse(
+    votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs, shareCard),
+    200,
+  );
+
+  // #3983 cuidado (b): falha do waitUntil = voto perdido silenciosamente (do
+  // ponto de vista da contabilidade — o veredito já mostrado ao jogador
+  // continua correto). Isso NÃO é uma regressão: uma falha síncrona no
+  // caminho legado também perdia o voto (500 pro jogador, retry manual). A
+  // diferença aqui é só que a falha acontece depois da resposta já ter sido
+  // enviada — por isso o log é essencial (única forma de visibilidade).
+  ctx.waitUntil(
+    runVoteBookkeeping(env, brand, edition, email, choice, correct, scoreRaw, voteTs).catch((e) => {
+      console.error(JSON.stringify({
+        event: "vote_bookkeeping_failed",
+        edition,
+        email_domain: email.split("@")[1] ?? "unknown",
+        error: String(e),
+      }));
+    }),
+  );
+
+  return response;
+}
+
+/**
+ * #3983: contabilidade completa do voto — dedup via DO (autoriza + confirma),
+ * guard-keys de stats/score/score-by-month, commit definitivo do `voteKey`,
+ * vote-log. Roda em `ctx.waitUntil()` (nunca bloqueia a resposta ao jogador,
+ * ver `handleVoteFastPath` acima).
+ *
+ * Espelha ponto-a-ponto a lógica que o caminho síncrono legado (abaixo, em
+ * `handleVote`) já fazia — a ÚNICA diferença é que aqui não há resposta HTML
+ * a montar: o resultado de `firstVote` só decide se a contabilidade
+ * prossegue ou é descartada (nunca "monta uma página diferente", porque a
+ * página já foi enviada).
+ *
+ * `existingFromKv` já foi checado (e curto-circuitado) por
+ * `handleVoteFastPath` ANTES de agendar esta função — por isso não há aqui
+ * os headers de migração legada `X-KV-Vote-Exists`/`X-KV-VoteKey-Committed`
+ * (só fazem sentido quando o caller ainda não sabe se o KV já tem o voto;
+ * aqui já sabemos que não tinha, no momento do request).
+ */
+async function runVoteBookkeeping(
+  env: Env,
+  brand: Brand,
+  edition: string,
+  email: string,
+  choice: "A" | "B",
+  correct: boolean | null,
+  scoreRaw: string | null,
+  voteTs: string,
+): Promise<void> {
+  const voteKey = `vote:${edition}:${email}`;
+  let doStub: DurableObjectStub | null = null;
+
+  if (env.VOTE_DEDUP) {
+    const doId = env.VOTE_DEDUP.idFromName(`${brand}:${edition}:${email}`);
+    doStub = env.VOTE_DEDUP.get(doId);
+
+    // Mesma disciplina de retry único + fail-open do caminho legado (#2220/
+    // #2231): erro do DO NÃO bloqueia a contabilidade (ela já não bloqueia o
+    // jogador de qualquer forma, mas ainda queremos os incrementos).
+    let doResp: Response | null = null;
+    let doError: unknown = null;
+    try {
+      doResp = await doStub.fetch("https://internal/vote-dedup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (doResp.status >= 500) {
+        try {
+          doResp = await doStub.fetch("https://internal/vote-dedup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (retryErr) {
+          doError = retryErr;
+          doResp = null;
+        }
+      }
+    } catch (e) {
+      doError = e;
+      doResp = null;
+    }
+
+    if (doResp === null || doResp.status >= 500) {
+      console.error(JSON.stringify({
+        event: "vote_dedup_do_error",
+        status: doResp?.status ?? "exception",
+        error: doError !== null ? String(doError) : undefined,
+        edition,
+        email_domain: email.split("@")[1] ?? "unknown",
+      }));
+      doStub = null; // fail-open (#2231): segue gravando mesmo com o DO indisponível.
+    } else {
+      let firstVote: boolean;
+      try {
+        const parsed = await doResp.json() as { firstVote: boolean };
+        firstVote = parsed.firstVote;
+      } catch (parseErr) {
+        console.error(JSON.stringify({
+          event: "vote_dedup_do_parse_error",
+          error: String(parseErr),
+          edition,
+          email_domain: email.split("@")[1] ?? "unknown",
+        }));
+        doStub = null;
+        firstVote = true; // fail-open
+      }
+
+      if (!firstVote) {
+        // #3983 cuidado (a): dedup rejeitou — a resposta otimista já foi
+        // mostrada ao jogador (correta, ele realmente acertou/errou aquela
+        // rodada); aqui só descartamos silenciosamente pra não dobrar a
+        // contagem no score/stats/leaderboard. Log em nível info (não é uma
+        // falha) — útil pra medir a frequência real da corrida otimista.
+        console.log(JSON.stringify({
+          event: "vote_bg_duplicate_discarded",
+          edition,
+          email_domain: email.split("@")[1] ?? "unknown",
+        }));
+        return;
+      }
+    }
+  }
+
+  const statsGuardKey = `counted:${edition}:${email}:stats`;
+  const scoreGuardKey = `counted:${edition}:${email}:score`;
+  const monthGuardKey = `counted:${edition}:${email}:month`;
+
+  if (!(await env.POLL.get(statsGuardKey))) {
+    await updateStatsCounter(env, edition, choice, correct, brand);
+    await env.POLL.put(statsGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
+  }
+
+  await Promise.all([
+    (async () => {
+      if (!(await env.POLL.get(scoreGuardKey))) {
+        await updateScore(env, email, edition, correct, scoreRaw, brand);
+        await env.POLL.put(scoreGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
+      }
+    })(),
+    (async () => {
+      if (!(await env.POLL.get(monthGuardKey))) {
+        await updateScoreByMonth(env, email, edition, correct, scoreRaw);
+        await env.POLL.put(monthGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
+      }
+    })(),
+  ]);
+
+  // Commit definitivo — gravado por ÚLTIMO (mesma disciplina do caminho
+  // legado): retries intermediários completam via guard-keys.
+  await env.POLL.put(voteKey, JSON.stringify({ choice, ts: voteTs, correct }));
+
+  if (doStub !== null) {
+    try {
+      let confirmResp = await doStub.fetch("https://internal/confirm", { method: "POST" });
+      if (confirmResp.status >= 500) {
+        try {
+          confirmResp = await doStub.fetch("https://internal/confirm", { method: "POST" });
+        } catch (retryErr) {
+          console.error(JSON.stringify({ event: "vote_dedup_confirm_retry_failed", edition, error: String(retryErr) }));
+        }
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "vote_dedup_confirm_failed", edition, error: String(e) }));
+    }
+  }
+
+  try {
+    await recordVoteLog(env, email, edition, choice, correct, voteTs);
+  } catch (e) {
+    console.error(JSON.stringify({ event: "vote_log_failed", edition, error: String(e) }));
+  }
 }
 
 /**

@@ -6,16 +6,23 @@
  *
  *   1. Rótulo dos botões sem sufixo "(A)"/"(B)" — a posição embaixo de cada
  *      imagem já identifica a escolha; `data-choice`/`value` internos
- *      (o que de fato vai pro /vote) são intocados.
- *   2. Modelo "Suspense": clique avança IMEDIATAMENTE (sem esperar o /vote),
- *      que roda em BACKGROUND — sem reveal "Acertou!/Errou" por rodada; o
- *      placar + lista de erros só aparecem na tela final, depois de
- *      `Promise.all(pending)`.
+ *      (o que de fato vai pro /vote) são intocados. AINDA VÁLIDO.
+ *   2. Modelo "Suspense": clique avançava IMEDIATAMENTE (sem esperar o
+ *      /vote), que rodava em BACKGROUND — sem reveal "Acertou!/Errou" por
+ *      rodada; o placar + lista de erros só apareciam na tela final, depois
+ *      de `Promise.all(pending)`.
+ *      **REVERTIDO por #3983 (260723, ver test/poll-jogar-reveal-immediate-
+ *      3983.test.ts pra cobertura completa da reversão)** — o editor pediu
+ *      reveal imediato por rodada; a suíte "modelo Suspense" abaixo foi
+ *      atualizada (não só adicionada de novo) pra refletir o comportamento
+ *      atual, na mesma disciplina do #573/#633 (teste de regressão cobre o
+ *      estado ATUAL do código, nunca um comportamento já revertido).
  *   3. Skip-and-credit: `GET /jogar/seq-state` reporta voted/correct por
  *      edição pro token consultante (anti-spoiler: correct só quando
  *      voted===true) — a play list vira só as NÃO votadas; edições já
  *      votadas são pré-creditadas/marcadas como erro conhecido sem
- *      re-votar.
+ *      re-votar. AINDA VÁLIDO — #3983 é ortogonal a isso (não mexe em
+ *      skip-and-credit).
  *
  * Cobre:
  *   - Botões "Essa é a IA" (sem "(A)"/(B)") no par único E na sequência,
@@ -27,10 +34,10 @@
  *   - `computeSeqSkipAndCredit` (pure) — monta a play list (só não-votadas),
  *     soma pré-crédito (voted&&correct===true) e erros conhecidos
  *     (voted&&correct===false).
- *   - `renderJogarSequencePageHtml` — modelo Suspense embutido no script
- *     (avanço síncrono, voto em background, sem reveal por rodada, consulta
+ *   - `renderJogarSequencePageHtml` — reveal por rodada pós-#3983 (aguarda o
+ *     /vote, mostra ✅/❌ + destaque de imagem, botão/auto-avanço), consulta
  *     seq-state antes de montar a play list, `?reset=1` limpa identidade
- *     local).
+ *     local.
  */
 
 import { describe, it } from "node:test";
@@ -286,25 +293,33 @@ describe("computeSeqSkipAndCredit (pure, #3595)", () => {
   });
 });
 
-// ── Modelo "Suspense" embutido no script da sequência ───────────────────
+// ── Modelo "Suspense" — REVERTIDO por #3983 (260723) ────────────────────
+//
+// Esta suíte testava o modelo "avança primeiro, revela só no final" (#3595
+// item 2). O editor pediu o oposto (#3983): revelar acerto/erro NA HORA do
+// clique. As asserções abaixo foram ATUALIZADAS (não só adicionadas de novo
+// em outro arquivo) pra refletir o comportamento atual — cobertura completa
+// da reversão (incluindo o backend fast-path) está em
+// test/poll-jogar-reveal-immediate-3983.test.ts.
 
-describe("renderJogarSequencePageHtml — modelo Suspense (#3595 item 2)", () => {
-  it("clique avança IMEDIATAMENTE (advance síncrono) — o /vote roda em função separada não-bloqueante", () => {
+describe("renderJogarSequencePageHtml — reveal imediato por rodada (#3983, reverte #3595 item 2)", () => {
+  it("onChoice AGUARDA o /vote (voteAndReveal) antes de decidir o que fazer — não avança síncrono", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
     assert.match(html, /function onChoice\(choice\) \{/);
-    assert.match(html, /pending\.push\(voteDone\);/);
-    assert.match(html, /\n\s*advance\(\);\n\s*\}/, "onChoice deve chamar advance() diretamente, sem esperar o fetch");
+    assert.match(html, /voteAndReveal\(voteUrl, 0\)\.then\(function \(result\) \{/);
+    assert.doesNotMatch(html, /pending\.push/, "não deve existir mais o array de promises em background do Suspense");
   });
 
-  it("nenhum reveal de 'Acertou!'/'Errou' por rodada — bloco #seq-round-result removido", () => {
+  it("reveal por rodada: bloco #seq-round-result presente, mostra o veredito + destaque de imagem", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.doesNotMatch(html, /seq-round-result/);
-    assert.doesNotMatch(html, /Essa não — errou dessa vez/);
+    assert.match(html, /<div id="seq-round-result" class="seq-round-result" hidden><\/div>/);
+    assert.match(html, /function renderRoundResult\(result\)/);
+    assert.match(html, /result\.imagesHtml/, "injeta o bloco .result-images (destaque da imagem correta)");
   });
 
-  it("tela final aguarda Promise.all(pending) antes de calcular o placar", () => {
+  it("tela final NÃO depende de Promise.all(pending) — resultado de cada rodada já foi aguardado antes de avançar", () => {
     const html = renderJogarSequencePageHtml(["260601", "260602"]);
-    assert.match(html, /Promise\.all\(pending\)\.then/);
+    assert.doesNotMatch(html, /Promise\.all\(pending\)/);
   });
 
   it("tela final mostra a lista de pares errados quando há pelo menos 1 erro", () => {
@@ -313,13 +328,14 @@ describe("renderJogarSequencePageHtml — modelo Suspense (#3595 item 2)", () =>
     assert.match(html, /class="sub seq-final-wrong"/);
   });
 
-  it("voto em background nunca rejeita — 1 retry, depois resolve null (nunca trava a tela final)", () => {
+  it("voteAndReveal nunca rejeita — 1 retry, depois resolve null (onChoice cai pro fallback de navegação nativa, nunca trava a rodada)", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.match(html, /function voteInBackground\(voteUrl, attempt\)/);
-    assert.match(html, /if \(attempt < 1\) return voteInBackground\(voteUrl, attempt \+ 1\);/);
+    assert.match(html, /function voteAndReveal\(voteUrl, attempt\)/);
+    assert.match(html, /if \(attempt < 1\) return voteAndReveal\(voteUrl, attempt \+ 1\);/);
+    assert.match(html, /if \(result === null\) \{/);
   });
 
-  it("consulta /jogar/seq-state ANTES de montar a play list (skip-and-credit)", () => {
+  it("consulta /jogar/seq-state ANTES de montar a play list (skip-and-credit, AINDA VÁLIDO — #3983 não mexe nisso)", () => {
     const html = renderJogarSequencePageHtml(["260601", "260602"]);
     assert.match(html, /\/jogar\/seq-state\?email="/);
     assert.match(html, /function startGame\(\)/);

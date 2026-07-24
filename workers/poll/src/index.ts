@@ -982,7 +982,17 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
 // existem mas inacessíveis via Worker (KV TTL eventually expira sozinho).
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  // #3983: 3º parâmetro `ctx` (ExecutionContext), OPCIONAL — o Workers
+  // runtime sempre injeta um real em produção; testes (Node, sem runtime CF)
+  // já chamam `worker.fetch(request, env)` sem ele (dezenas de call sites
+  // preexistentes na suíte), ou `worker.fetch(request, env, {} as
+  // ExecutionContext)` (cast de tipo sem método real) — `?` aqui é o que
+  // preserva os DOIS padrões sem tocar nenhum teste existente (`ctx`
+  // obrigatório quebraria "Expected 3 arguments" em toda chamada de 2
+  // argumentos). `ctx` só é de fato usado (threadeado até handleVote) quando
+  // tem `waitUntil` de verdade (ver guard em vote.ts) — nenhum comportamento
+  // muda pra rotas que não `/vote`.
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -1040,7 +1050,7 @@ export default {
     const brand = parseBrandParam(url.searchParams.get("brand"));
     const bEnv = brandedEnv(env, brand);
 
-    const response = await routeRequest(request, url, path, env, bEnv, brand);
+    const response = await routeRequest(request, url, path, env, bEnv, brand, ctx);
     // #3521: `/embed` declara sua PRÓPRIA política de embutimento (allowlist
     // de parceiros via CSP `frame-ancestors`, ver embed.ts); toda outra rota
     // recebe "nunca embutível" por padrão — ver rationale completo em
@@ -1058,8 +1068,13 @@ export default {
  * duplicar a lógica em cada `return` do router (que já tinha ~35 pontos de
  * saída). Comportamento idêntico ao `fetch()` anterior — puramente uma
  * extração mecânica de função, nenhuma rota mudou de lugar/ordem/guarda.
+ *
+ * #3983: `ctx` (ExecutionContext, opcional — mesmo racional de `fetch()`
+ * acima) threadeado desde `fetch()` — hoje só consumido por `/vote`
+ * (fast-path, ver handleVote em vote.ts), mas fica no nível do router pra
+ * qualquer rota futura que precise de `waitUntil()`.
  */
-async function routeRequest(request: Request, url: URL, path: string, env: Env, bEnv: Env, brand: Brand): Promise<Response> {
+async function routeRequest(request: Request, url: URL, path: string, env: Env, bEnv: Env, brand: Brand, ctx?: ExecutionContext): Promise<Response> {
     // #3516: /jogar é standalone e sempre brand="web" (ignora `?brand=` da
     // request — a rota já implica a marca). Usa `env` CRU (não `bEnv`) — a
     // página só lê o gabarito PÚBLICO compartilhado (`correct:{edition}`,
@@ -1103,7 +1118,11 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
 
     // #3600: 4º arg `env` (CRU) — handleVote lê o gabarito `correct:{edition}`
     // dele (brand-independente), mantendo voto/score/dedup/stats via `bEnv`.
-    if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand, env);
+    // #3983: 5º arg `ctx` (ExecutionContext real do Workers runtime) — habilita
+    // o fast-path (responde o veredito na hora, adia contabilidade pesada pra
+    // ctx.waitUntil()). Ver rationale completo em vote.ts (handleVote/
+    // handleVoteFastPath).
+    if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand, env, ctx);
     if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv, brand);
     // #3257: lista as edições/ciclos com stats registrados neste brand — usado
     // pelo botão "Atualizar" da aba Engajamento do clarice-dashboard pra

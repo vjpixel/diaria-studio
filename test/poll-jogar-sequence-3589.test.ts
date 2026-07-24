@@ -197,17 +197,22 @@ describe("renderJogarSequencePageHtml (#3589)", () => {
     assert.doesNotMatch(html, /href="\/jogar\/arquivo"/);
   });
 
-  it("streak/stats do servidor NUNCA exibidos por rodada — só ✅/❌ decidem certo/errado no cliente (#3589 item 3, #3595: sempre em background)", () => {
+  // #3983 (reverte #3595 item 2, 260723): a asserção original desta suíte
+  // travava "o texto bruto do servidor NUNCA é injetado no DOM" — exatamente
+  // o comportamento que o editor pediu pra reverter. Atualizada (não
+  // duplicada em outro arquivo) pra refletir o reveal por rodada atual: a
+  // mensagem do servidor (`.msg`) e o destaque de imagem (`.result-images`)
+  // AGORA são injetados por rodada — ver test/poll-jogar-reveal-immediate-
+  // 3983.test.ts pra cobertura completa.
+  it("cada rodada revela o veredito do servidor (.msg + .result-images) — #983 reverte a supressão por rodada do #3595", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.match(html, /text\.indexOf\("✅"\) === 0/);
-    // O texto bruto do servidor (que pode incluir "🔥 N dias seguidos") nunca
-    // é injetado no DOM — nem por rodada (não existe mais reveal por rodada,
-    // #3595) nem na tela final (que só mostra as strings fixas montadas por
-    // este próprio script — placar numérico + "Errou nos pares ...").
-    assert.doesNotMatch(html, /innerHTML[^;]*msgEl/);
+    assert.match(html, /text\.indexOf\("✅"\) === 0/, "ainda deriva o booleano correct do prefixo ✅/❌ (uso interno pro placar)");
+    assert.match(html, /msgEl \? msgEl\.innerHTML : ""/, "o HTML da mensagem do servidor é extraído e...");
+    assert.match(html, /result\.msgHtml/, "...injetado no bloco de reveal por rodada (result.msgHtml)");
+    assert.match(html, /imagesEl \? imagesEl\.outerHTML : ""/, "destaque visual da imagem correta também é extraído");
   });
 
-  it("progress bar mostra só 'Par X de N' — sem contador de acertos incremental (#3595: revelaria parcialmente resultado de rodadas já jogadas)", () => {
+  it("progress bar mostra só 'Par X de N' — sem contador de acertos incremental (percentual fica pra #3977, fora de escopo aqui)", () => {
     const html = renderJogarSequencePageHtml(["260601", "260602", "260603"]);
     assert.doesNotMatch(html, /acertos: \d/);
     assert.match(html, /"Par " \+ \(originalIndex \+ 1\) \+ " de " \+ total/);
