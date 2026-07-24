@@ -1453,7 +1453,14 @@ export function readBoxDivulgacaoCategoriaForSlot(
     const snippetPath = resolve(rootDir, "context", "snippets", filename);
     if (!existsSync(snippetPath)) return null;
     const raw = readFileSync(snippetPath, "utf8");
-    return parseBoxHeaderField(raw, "categoria");
+    const categoria = parseBoxHeaderField(raw, "categoria");
+    if (!categoria) return categoria;
+    // Self-review finding (#3981): categoria é texto livre digitado no Studio
+    // e vira label renderizado — sanitizar markdown (**, #, - ) na fonte única
+    // de leitura, mesmo invariante de "output final sem markdown" que vale pro
+    // resto da newsletter. `renderKicker` já faz `esc()` (HTML), não markdown.
+    const sanitized = categoria.replace(/[*#]/g, "").replace(/^-+\s*/, "").trim();
+    return sanitized || null;
   } catch {
     return null;
   }

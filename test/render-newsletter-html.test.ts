@@ -3357,4 +3357,43 @@ describe("readBoxDivulgacaoCategoriaForSlot (#3981, pure)", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("self-review finding: categoria com markdown (**, #, -) é sanitizada — invariante 'output final sem markdown' vale pro label", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-markdown-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "context", "snippets", "com-markdown.md"),
+      "<!--\ncategoria: **Recomendado** #top\n-->\n\nConteúdo.",
+    );
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "com-markdown.md" } }),
+    );
+    try {
+      const categoria = readBoxDivulgacaoCategoriaForSlot(1, root);
+      assert.equal(categoria, "Recomendado top");
+      assert.ok(!categoria?.includes("*"));
+      assert.ok(!categoria?.includes("#"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("categoria só com markdown (sobra vazio após sanitizar): null, não string vazia", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-onlymarkdown-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "context", "snippets", "so-markdown.md"),
+      "<!--\ncategoria: - **#**\n-->\n\nConteúdo.",
+    );
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "so-markdown.md" } }),
+    );
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
