@@ -681,6 +681,50 @@ describe("findDestaqueBodyRange (#2617)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// regressão #3973: findDestaqueBodyRange com o header REAL (bold markdown)
+// ---------------------------------------------------------------------------
+
+describe("regressão #3973: findDestaqueBodyRange — header real com bold (**DESTAQUE N | ...**)", () => {
+  it("encontra o DESTAQUE 1 quando o header vem no formato real do template (**DESTAQUE 1 | [CATEGORIA]**)", () => {
+    const content = [
+      "**DESTAQUE 1 | [CATEGORIA]**",
+      "",
+      "Título do destaque um",
+      "",
+      "O modelo GPT-4o foi comparado com o novo lançamento.",
+      "",
+      "**DESTAQUE 2 | [CATEGORIA]**",
+      "",
+      "Título do destaque dois",
+      "",
+      "Outro texto do destaque dois.",
+    ].join("\n");
+    const range = findDestaqueBodyRange(content, 1);
+    assert.ok(range !== null, "deve encontrar DESTAQUE 1 mesmo com prefixo bold **");
+    const block = content.slice(range.start, range.end);
+    assert.ok(block.includes("GPT-4o foi comparado"), "bloco deve conter o texto do D1");
+    assert.ok(!block.includes("Outro texto do destaque dois"), "bloco NÃO deve conter texto do D2");
+  });
+
+  it("encontra o DESTAQUE 2 corretamente (não engole o bloco anterior) no formato real com bold", () => {
+    const content = [
+      "**DESTAQUE 1 | [CATEGORIA]**",
+      "",
+      "Valor errado GPT-4o aqui.",
+      "",
+      "**DESTAQUE 2 | [CATEGORIA]**",
+      "",
+      "Outro GPT-4o aqui.",
+    ].join("\n");
+    const range = findDestaqueBodyRange(content, 2);
+    assert.ok(range !== null);
+    const block = content.slice(range.start, range.end);
+    assert.ok(block.includes("Outro GPT-4o aqui"), "deve conter o texto do D2");
+    assert.ok(!block.includes("Valor errado GPT-4o aqui"), "NÃO deve conter texto do D1");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Cenário 13 (#3224): findSocialDestaqueRanges / applySocialTextSubstitution
 // ---------------------------------------------------------------------------
 
