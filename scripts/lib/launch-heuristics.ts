@@ -1228,12 +1228,34 @@ const TUTORIAL_PATTERNS: RegExp[] = [
 //      nem em títulos de negócio tipo "Company chooses new CEO" (forma
 //      "chooses", não "choosing", fica de fora). PT-BR: "escolhendo"/
 //      "decidindo" com o mesmo shape ("escolhendo entre X e Y").
+// #3987: listicle de DESCOBERTA ("N ferramentas/IAs pouco conhecidas/que você
+// não conhece") — o editor quer esse gênero em USE MELHOR, não RADAR. Título
+// real que caía no fallback RADAR: "7 inteligências artificiais pouco
+// conhecidas que podem mudar sua forma de trabalhar" (não ensina procedimento,
+// então isTutorialByKeyword/TUTORIAL_KEYWORDS_RE original não capturava —
+// nenhum verbo de "como fazer").
+// Casa em QUALQUER ordem substantivo/adjetivo (o PT-BR real costuma vir
+// substantivo → adjetivo: "ferramentas pouco conhecidas" ou "IAs
+// desconhecidas", mas o editor pediu robustez a ambas as ordens).
+// Deliberadamente restrito ao vocabulário de "descoberta de algo obscuro"
+// (pouco conhecido/desconhecido/que você não conhece/escondido) — NÃO captura
+// rankings genéricos tipo "as 10 melhores ferramentas de IA", que devem
+// continuar em RADAR/NOTÍCIAS (distinção editorial deliberada, ver teste
+// negativo em test/categorize-tutorial-video.test.ts).
+const DISCOVERY_LISTICLE_NOUN = "(?:ferramentas?|apps?|ias?|intelig[êe]ncias?\\s+artificiais?|plataformas?)";
+const DISCOVERY_LISTICLE_ADJ =
+  "(?:pouco\\s+conhecid[ao]s?|menos\\s+conhecid[ao]s?|desconhecid[ao]s?|que\\s+voc[êe]\\s+n[ãa]o\\s+conhece|escondid[ao]s?)";
+const DISCOVERY_LISTICLE_RE = new RegExp(
+  `\\b${DISCOVERY_LISTICLE_NOUN}\\b.{0,40}\\b${DISCOVERY_LISTICLE_ADJ}\\b|\\b${DISCOVERY_LISTICLE_ADJ}\\b.{0,40}\\b${DISCOVERY_LISTICLE_NOUN}\\b`,
+  "i",
+);
+
 const TUTORIAL_KEYWORDS_RE =
   /\b(cookbook|crash course|passo a passo|walkthrough|hands[- ]on|guia (passo a passo|pr[aá]tico|completo))\b|\btutorial:?\s|\bhow[- ]to\s+(build|create|deploy|train|fine[- ]?tune|implement|use|choose|pick|select|decide)\b|\bbuild (your )?(first|own)\s|\bguide\s+(to|for)\b|\btechniques?\s+for\b|\bpatterns?\s+for\b|\b(run|deploy|install)\s+\S[^.\n]{0,60}\b(in one|with one|in a single|with a single)\s+(command|step|line)\b|\b(?:veja|saiba|descubra)\s+como\b(?=\s*(?:$|\n|[.!?]))|\bveja\s+o\s+prompt\b|\baprenda\s+a\s+(?:usar|criar|fazer|configurar|implementar|construir|desenvolver|instalar|montar|rodar)\b|\bo\s+que\s+[ée]\s+.{0,60}?\be\s+\d+\s+(maneiras|formas|jeitos)\s+de\s+(usar|utilizar)\b|\bentenda\s+as\s+diferen[çc]as\s+entre\b|\bquando\s+usar\s+cada\s+um\b|\b(choosing|picking|selecting|deciding)\s+(a|an|the|between|which|what)\b|\b(escolhendo|decidindo)\s+(a|o|um|uma|entre|qual)\b/i;
 
 function isTutorialByKeyword(article: Article): boolean {
   const hay = `${article.title ?? ""}\n${article.summary ?? ""}`;
-  return TUTORIAL_KEYWORDS_RE.test(hay);
+  return TUTORIAL_KEYWORDS_RE.test(hay) || DISCOVERY_LISTICLE_RE.test(hay);
 }
 
 /**
