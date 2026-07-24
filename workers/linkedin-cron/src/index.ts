@@ -69,8 +69,11 @@
  *                                    authenticationMethod que o scenario ANTERIOR (2270381) já tinha.
  *   INSTAGRAM_BUSINESS_ACCOUNT_ID  → (#3817) conta @diar.ia.br pra channel="instagram"
  *   INSTAGRAM_ACCESS_TOKEN         → (#3817) token de página com escopo instagram_content_publish
+ *   THREADS_ACCESS_TOKEN           → (#3944 Parte B) token de longa duração do app Threads da Meta
+ *   THREADS_USER_ID                → (#3944 Parte B) Threads user ID da conta @diar.ia.br
  * Vars (via [vars] no wrangler.toml, não-secretas):
  *   INSTAGRAM_API_VERSION          → (#3817) default "v25.0" se ausente (aplicado em dispatch.ts)
+ *   THREADS_API_VERSION            → (#3944 Parte B) default "v1.0" se ausente (aplicado em dispatch.ts)
  */
 
 export interface Env {
@@ -94,13 +97,20 @@ export interface Env {
   INSTAGRAM_BUSINESS_ACCOUNT_ID?: string;
   INSTAGRAM_ACCESS_TOKEN?: string;
   INSTAGRAM_API_VERSION?: string; // default "v25.0" aplicado em dispatch.ts
+  // #3944 Parte B — credenciais Threads API pro canal "threads". Opcionais pra
+  // backward-compat: se ausentes quando um item channel="threads" for
+  // disparado, vai pra DLQ com motivo claro (mesmo padrão do Instagram, ver
+  // dispatch.ts::resolveThreadsCreds).
+  THREADS_ACCESS_TOKEN?: string;
+  THREADS_USER_ID?: string;
+  THREADS_API_VERSION?: string; // default "v1.0" aplicado em dispatch.ts
 }
 
 export type WebhookTarget = "diaria" | "pixel";
 export type QueueAction = "post" | "comment";
-// #3817 — canal de disparo. Ausente/undefined = "linkedin" SEMPRE (backward-compat
-// obrigatória: entries já em produção no KV nunca tiveram este campo).
-export type QueueChannel = "linkedin" | "instagram";
+// #3817/#3944 Parte B — canal de disparo. Ausente/undefined = "linkedin" SEMPRE
+// (backward-compat obrigatória: entries já em produção no KV nunca tiveram este campo).
+export type QueueChannel = "linkedin" | "instagram" | "threads";
 
 export interface QueueEntry {
   text: string;
@@ -235,7 +245,7 @@ export function isLegacyKey(key: string): boolean {
 export * from "./durable-object";
 import { LinkedInScheduler, type DoStoredPayload } from "./durable-object";
 export * from "./dispatch";
-import { resolveInstagramCreds } from "./dispatch";
+import { resolveInstagramCreds, resolveThreadsCreds } from "./dispatch";
 
 async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   if (!isAuthorized(request, env)) {
@@ -289,16 +299,33 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // #3817 — Validar channel (opcional; ausente = "linkedin" default aplicado
-  // em dispatch.ts::fireQueueEntry — backward-compat com entries já no KV).
-  if (body.channel !== undefined && body.channel !== "linkedin" && body.channel !== "instagram") {
-    return json({ error: "channel must be 'linkedin' or 'instagram'" }, 400);
+  // #3817/#3944 Parte B — Validar channel (opcional; ausente = "linkedin"
+  // default aplicado em dispatch.ts::fireQueueEntry — backward-compat com
+  // entries já no KV).
+  if (
+    body.channel !== undefined &&
+    body.channel !== "linkedin" &&
+    body.channel !== "instagram" &&
+    body.channel !== "threads"
+  ) {
+    return json({ error: "channel must be 'linkedin', 'instagram', or 'threads'" }, 400);
   }
   // Instagram Graph API (Content Publishing) exige imagem — sem ela o
   // container nem chega a ser criado. Falhar aqui (enqueue) é melhor que
   // falhar só no disparo, horas/dias depois.
   if (body.channel === "instagram" && !body.image_url) {
     return json({ error: "image_url is required when channel='instagram'" }, 400);
+  }
+  // #3944 Parte B — chunking agendado (thread multi-post via reply_to_id)
+  // não é suportado no Worker: risco de duplicar posts em retry automático.
+  // Falhar aqui (enqueue) é melhor que a Threads API truncar silenciosamente
+  // ou o disparo falhar horas depois — mesmo racional do guard de image_url
+  // acima.
+  if (body.channel === "threads" && typeof body.text === "string" && body.text.length > 500) {
+    return json(
+      { error: "text must be ≤500 chars when channel='threads' (chunking agendado não suportado, ver #3944 Parte B)" },
+      400,
+    );
   }
 
   // #882 — Validar tamanho de payload pra evitar abuso de KV (cap por valor é
@@ -377,11 +404,12 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   try {
     const doId = env.LINKEDIN_SCHEDULER.idFromName(key);
     const doStub = env.LINKEDIN_SCHEDULER.get(doId);
-    // #3817 — capturar credenciais Instagram no momento do enqueue, igual já
-    // é feito com webhookUrl/pixelWebhookUrl: o DO não tem acesso a `env` no
-    // alarm() (só ao payload persistido), então tudo que o disparo precisar
-    // tem que estar aqui.
+    // #3817/#3944 Parte B — capturar credenciais Instagram/Threads no momento
+    // do enqueue, igual já é feito com webhookUrl/pixelWebhookUrl: o DO não
+    // tem acesso a `env` no alarm() (só ao payload persistido), então tudo
+    // que o disparo precisar tem que estar aqui.
     const igCreds = resolveInstagramCreds(env);
+    const threadsCreds = resolveThreadsCreds(env);
     const armPayload: DoStoredPayload & { scheduledAtMs: number } = {
       scheduledAtMs: scheduledMs,
       key,
@@ -390,6 +418,7 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
       ...(env.MAKE_PIXEL_WEBHOOK_URL !== undefined && { pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL }),
       ...(env.MAKE_WEBHOOK_API_KEY !== undefined && { webhookApiKey: env.MAKE_WEBHOOK_API_KEY }),
       ...(igCreds !== undefined && { instagram: igCreds }),
+      ...(threadsCreds !== undefined && { threads: threadsCreds }),
     };
     const armRes = await doStub.fetch("https://do/arm", {
       method: "POST",
@@ -722,10 +751,12 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
     try {
       const doId = env.LINKEDIN_SCHEDULER.idFromName(k.name);
       const doStub = env.LINKEDIN_SCHEDULER.get(doId);
-      // #3817 — mesma captura de credenciais Instagram do enqueue (handleEnqueue),
-      // necessária pra items legacy re-armados após um deploy que introduziu
-      // channel="instagram" ou rotacionou o secret.
+      // #3817/#3944 Parte B — mesma captura de credenciais Instagram/Threads
+      // do enqueue (handleEnqueue), necessária pra items legacy re-armados
+      // após um deploy que introduziu channel="instagram"/"threads" ou
+      // rotacionou o secret.
       const igCreds = resolveInstagramCreds(env);
+      const threadsCreds = resolveThreadsCreds(env);
       const armPayload: DoStoredPayload & { scheduledAtMs: number } = {
         scheduledAtMs: scheduledMs,
         key: k.name,
@@ -734,6 +765,7 @@ async function handleRearm(request: Request, env: Env): Promise<Response> {
         ...(env.MAKE_PIXEL_WEBHOOK_URL !== undefined && { pixelWebhookUrl: env.MAKE_PIXEL_WEBHOOK_URL }),
         ...(env.MAKE_WEBHOOK_API_KEY !== undefined && { webhookApiKey: env.MAKE_WEBHOOK_API_KEY }),
         ...(igCreds !== undefined && { instagram: igCreds }),
+        ...(threadsCreds !== undefined && { threads: threadsCreds }),
       };
       const armRes = await doStub.fetch("https://do/arm", {
         method: "POST",

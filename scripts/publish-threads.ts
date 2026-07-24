@@ -9,12 +9,26 @@
  *   (1) POST /{threads-user-id}/threads      → cria media container (text + image_url)
  *   (2) POST /{threads-user-id}/threads_publish → publica o container
  *
- * Limite do Threads: 500 chars por post. Se o texto exceder 500 chars, o post é
- * publicado como cadeia (thread): o primeiro post contém os primeiros 500 chars, e
- * os subsequentes encadeiam via reply_to_id — análogo a um thread no Twitter/X.
+ * Limite do Threads: 500 chars por post. Sem `--schedule`, se o texto exceder
+ * 500 chars, o post é publicado como cadeia (thread): o primeiro post contém
+ * os primeiros 500 chars, e os subsequentes encadeiam via reply_to_id —
+ * análogo a um thread no Twitter/X.
  *
  * Fallback de conteúdo: se 03-social.md não tiver seção `# Threads`, usa Facebook
  * como fallback (mesmo conteúdo de caption), truncando para 500 chars.
+ *
+ * AGENDAMENTO (#3944 Parte B): a Threads API NÃO tem agendamento nativo —
+ * `threads_publish` sempre publica no instante da chamada. `--schedule`
+ * enfileira o post no Worker `diaria-linkedin-cron` (mesmo Worker do
+ * LinkedIn/Instagram, estendido pra `channel: "threads"`), que dispara no
+ * horário exato via Durable Object alarm. **Suporta só posts de 1 chunk
+ * (≤500 chars)** — chunking agendado (thread multi-post) não é implementado
+ * no Worker: um retry automático no meio do encadeamento duplicaria posts já
+ * publicados. Textos maiores falham no enqueue com motivo claro; publique
+ * manualmente sem `--schedule` ou encurte o texto.
+ *
+ * Sem `--schedule` (default): publica imediato, sem passar pelo Worker —
+ * comportamento inalterado, com chunking normal pra textos longos.
  *
  * Credenciais (runtime-only):
  *   THREADS_ACCESS_TOKEN — token de longa duração do app Threads da Meta
@@ -26,8 +40,14 @@
  * Uso:
  *   npx tsx scripts/publish-threads.ts \
  *     --edition-dir data/editions/260624/ \
+ *     [--schedule]          # enfileira no Worker em vez de publicar imediato (#3944 Parte B)
  *     [--skip-existing]     # pula posts já em 06-social-published.json (default: true)
  *     [--no-skip-existing]  # força re-publicação
+ *
+ * `--schedule` requer o MESMO Worker já usado pelo LinkedIn/Instagram:
+ *   DIARIA_LINKEDIN_CRON_URL / DIARIA_LINKEDIN_CRON_TOKEN no env, OU
+ *   publishing.social.linkedin.cloudflare_worker_url em platform.config.json
+ *   (mesma instância de Worker — não é um Worker separado pro Threads).
  *
  * Resume-aware: lê 06-social-published.json e pula posts threads já publicados.
  * Append imediato após cada post para proteger contra crash.
@@ -45,6 +65,8 @@ import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-publ
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts)
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
+import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3944 Parte B — mesmo fallback_schedule usado por LinkedIn/Facebook/Instagram
+import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Instagram
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -284,6 +306,59 @@ async function main() {
   const skipExisting = !flags.has("no-skip-existing");
   const isTest = flags.has("test-mode");
   const isDryRun = flags.has("dry-run");
+  const doSchedule = flags.has("schedule"); // #3944 Parte B
+
+  // #3944 Parte B — mesmo guard de platform.config.json que publish-instagram.ts
+  // já tinha: permite ao editor desligar o canal via config (decisão editorial),
+  // sem mexer em credenciais. Checar ANTES delas — o canal fica bloqueado até
+  // o editor reativar, mesmo com env vars válidas.
+  const gateConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
+  const threadsGateConfig = gateConfig?.publishing?.social?.threads;
+  if (threadsGateConfig?.enabled === false) {
+    console.warn(
+      `SKIP: Threads bloqueado via platform.config.json (publishing.social.threads.enabled=false).\n` +
+        `Motivo: ${threadsGateConfig.disabled_reason || "não especificado"}\n` +
+        "Reative setando publishing.social.threads.enabled:true quando pronto.",
+    );
+    process.exit(0);
+  }
+
+  // #3944 Parte B — Resolver Worker URL/token quando --schedule é passado.
+  // Reusa o MESMO Worker do LinkedIn/Instagram (`diaria-linkedin-cron`,
+  // generalizado em #3817 e estendido pra `channel: "threads"` aqui) — mesma
+  // fila KV, mesmo endpoint /queue, mesmos env vars.
+  let workerUrl = "";
+  let workerToken = "";
+  const platformConfig = gateConfig; // já lido acima pro gate de enabled:false
+  if (doSchedule) {
+    workerUrl =
+      process.env.DIARIA_LINKEDIN_CRON_URL ??
+      platformConfig?.publishing?.social?.threads?.cloudflare_worker_url ??
+      platformConfig?.publishing?.social?.linkedin?.cloudflare_worker_url ??
+      "";
+    workerToken = process.env.DIARIA_LINKEDIN_CRON_TOKEN ?? "";
+    // Mesmo fail-fast de publish-instagram.ts (#3817): sem Worker configurado,
+    // --schedule não tem pra onde ir — a Threads API não agenda nativo, então
+    // não existe fallback de fire-now "que ao menos publica"; abortar é mais
+    // seguro que publicar às cegas.
+    if (!workerUrl || !workerToken) {
+      console.error(
+        [
+          "ERRO: --schedule passado mas o Cloudflare Worker não está configurado.",
+          "  DIARIA_LINKEDIN_CRON_URL: " + (workerUrl ? "set" : "MISSING"),
+          "  DIARIA_LINKEDIN_CRON_TOKEN: " + (workerToken ? "set (length=" + workerToken.length + ")" : "MISSING"),
+          "",
+          "A Threads API não agenda nativamente (#3944 Parte B) — sem o Worker",
+          "não há como agendar. Resolução:",
+          "  1. Confirmar .env com DIARIA_LINKEDIN_CRON_TOKEN",
+          "  2. Confirmar platform.config.json (ou env DIARIA_LINKEDIN_CRON_URL)",
+          "     com cloudflare_worker_url em publishing.social.linkedin (ou .threads)",
+          "  3. OU rodar SEM --schedule pra publicar imediatamente conscientemente",
+        ].join("\n"),
+      );
+      process.exit(2);
+    }
+  }
 
   // Carregar credenciais — env vars obrigatórias em runtime
   const threadsUserId = process.env.THREADS_USER_ID || "";
@@ -316,6 +391,10 @@ async function main() {
     process.exit(1);
   }
   const socialMd = readFileSync(socialMdPath, "utf8");
+
+  // Extrair data da edição do nome do diretório (#3944 Parte B — mesmo
+  // padrão de publish-instagram.ts, usado por computeScheduledAt no modo --schedule).
+  const editionDate = editionDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop()!;
 
   // Resolver path do arquivo de publicações
   const internalPath = resolve(editionDir, "_internal", "06-social-published.json");
@@ -420,6 +499,91 @@ async function main() {
         reason: "dry-run — não publicado",
       };
       results.push(entry);
+      continue;
+    }
+
+    // #3944 Parte B — modo --schedule: enfileira no Worker em vez de publicar
+    // agora. Só suporta post de 1 chunk (≤500 chars) — chunking agendado
+    // (thread multi-post via reply_to_id) não é implementado no Worker: um
+    // retry automático de falha no meio do encadeamento duplicaria posts já
+    // publicados. Textos maiores falham aqui com motivo claro (publique
+    // manualmente sem --schedule ou encurte o texto) em vez de publicar só o
+    // primeiro chunk silenciosamente. scheduled_at vem da MESMA fonte usada
+    // por LinkedIn/Facebook/Instagram (fallback_schedule — compute-social-schedule.ts).
+    if (doSchedule) {
+      if (chunks.length > 1) {
+        console.error(
+          `SKIP threads/${d}: texto de ${text.length} chars excede o limite de 1 chunk (500) suportado ` +
+          `por --schedule (#3944 Parte B). Publique manualmente sem --schedule ou encurte o texto.`,
+        );
+        const entry: PostEntry = {
+          platform: "threads",
+          destaque: d,
+          url: null,
+          status: "failed",
+          scheduled_at: null,
+          reason: `texto de ${text.length} chars excede 500 — chunking agendado não suportado`,
+        };
+        tagAndAppend(entry);
+        results.push(entry);
+        continue;
+      }
+
+      let scheduledIso: string;
+      try {
+        scheduledIso = computeScheduledAt({
+          config: platformConfig,
+          editionDate,
+          destaque: d as "d1" | "d2" | "d3",
+          platform: "threads",
+        });
+      } catch (e: any) {
+        console.error(`SKIP threads/${d}: schedule_error: ${e.message}`);
+        const entry: PostEntry = {
+          platform: "threads",
+          destaque: d,
+          url: null,
+          status: "failed",
+          scheduled_at: null,
+          reason: `schedule_error: ${e.message}`,
+        };
+        tagAndAppend(entry);
+        results.push(entry);
+        continue;
+      }
+
+      try {
+        const response = await postToWorkerQueue(workerUrl, workerToken, {
+          text: chunks[0],
+          image_url: null,
+          scheduled_at: scheduledIso,
+          destaque: d,
+          channel: "threads",
+        });
+        const entry: PostEntry = {
+          platform: "threads",
+          destaque: d,
+          url: null,
+          status: "scheduled",
+          scheduled_at: scheduledIso,
+          worker_queue_key: response.key,
+        };
+        tagAndAppend(entry);
+        results.push(entry);
+        console.log(`OK threads/${d} — scheduled at ${scheduledIso} (worker_queue_key=${response.key})`);
+      } catch (e: any) {
+        console.error(`FAILED threads/${d}: ${e.message}`);
+        const entry: PostEntry = {
+          platform: "threads",
+          destaque: d,
+          url: null,
+          status: "failed",
+          scheduled_at: null,
+          reason: e.message,
+        };
+        tagAndAppend(entry);
+        results.push(entry);
+      }
       continue;
     }
 

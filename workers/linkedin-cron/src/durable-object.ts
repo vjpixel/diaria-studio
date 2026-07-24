@@ -1,6 +1,6 @@
 import type { QueueEntry } from "./index";
 import { CLAIM_TTL_MS } from "./index";
-import { fireQueueEntry, type InstagramCreds } from "./dispatch";
+import { fireQueueEntry, type InstagramCreds, type ThreadsCreds } from "./dispatch";
 
 // ── LinkedInScheduler — Durable Object (#1168) ────────────────────────────
 
@@ -17,6 +17,8 @@ export interface DoStoredPayload {
   // #3817 — credenciais Graph API do Instagram, capturadas no enqueue (o DO
   // não tem acesso a `env` no alarm() — só ao que foi persistido aqui).
   instagram?: InstagramCreds;
+  // #3944 Parte B — mesmo racional acima, pra credenciais Threads.
+  threads?: ThreadsCreds;
 }
 
 /**
@@ -228,21 +230,22 @@ export class LinkedInScheduler {
       return;
     }
 
-    const { key, entry, webhookUrl, pixelWebhookUrl, webhookApiKey, instagram } = payload;
+    const { key, entry, webhookUrl, pixelWebhookUrl, webhookApiKey, instagram, threads } = payload;
     const channel = entry.channel ?? "linkedin";
 
-    // (#3817) fireQueueEntry() é o ponto único de dispatch, compartilhado com
-    // fireDueItems (cron path, fire.ts) — decide o branch linkedin/instagram
-    // e devolve um outcome puro (fired | failed | dlq). Guards que antes
-    // viviam inline aqui (#3662/#3667 isUnsupportedCommentTarget, pixel sem
-    // URL configurada) agora moram em dispatch.ts::fireQueueEntry.
+    // (#3817/#3944 Parte B) fireQueueEntry() é o ponto único de dispatch,
+    // compartilhado com fireDueItems (cron path, fire.ts) — decide o branch
+    // linkedin/instagram/threads e devolve um outcome puro (fired | failed |
+    // dlq). Guards que antes viviam inline aqui (#3662/#3667
+    // isUnsupportedCommentTarget, pixel sem URL configurada) agora moram em
+    // dispatch.ts::fireQueueEntry.
     //
     // Diferente de fire.ts, alarm() não tem acesso a env.LINKEDIN_QUEUE (só
     // ao DO storage) — outcome "dlq" aqui só libera o claim sem postar,
     // deixando a KV entry intocada: o próximo ciclo do cron (fireDueItems)
     // processa essa mesma entry, aplica o MESMO guard puro, e aí sim escreve
     // em dlq: via KV.
-    const outcome = await fireQueueEntry(entry, { webhookUrl, pixelWebhookUrl, apiKey: webhookApiKey, instagram });
+    const outcome = await fireQueueEntry(entry, { webhookUrl, pixelWebhookUrl, apiKey: webhookApiKey, instagram, threads });
 
     if (outcome.status === "dlq") {
       await this.state.storage.delete("claiming");

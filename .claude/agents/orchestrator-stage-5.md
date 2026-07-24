@@ -221,7 +221,7 @@ npx tsx scripts/render-halt-banner.ts \
 1. `Bash("npx tsx scripts/publish-facebook.ts --edition-dir {EDITION_DIR}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato). Usa mesmos horarios do LinkedIn via `compute-social-schedule.ts`.
 2. `Bash("npx tsx scripts/publish-linkedin.ts --edition-dir {EDITION_DIR}/ --schedule")` — Worker queue + Make webhook x 3. Le `_internal/05-edition-url.txt` para substituir `{edition_url}` (ja existe do passo 5c-1).
 3. `Bash("npx tsx scripts/publish-instagram.ts --edition-dir {EDITION_DIR}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato, #3944 Parte A — antes deste fix o Instagram publicava tudo junto no instante do dispatch). Enfileira no MESMO Worker `diaria-linkedin-cron` do LinkedIn (`channel: "instagram"`, #3817/#3818), que dispara nos mesmos horarios (d1 10:00/d2 12:30/d3 17:30 BRT via `compute-social-schedule.ts`) rodando os 2 passos da Graph API (container → media_publish) no MOMENTO do disparo. **Requer `INSTAGRAM_ACCESS_TOKEN` + `INSTAGRAM_BUSINESS_ACCOUNT_ID` como secrets do Worker** (nao mais consumidos localmente pelo script pra publicar — a Graph API roda dentro do Worker no momento do disparo) e `_internal/06-public-images.json` populado (gerado no 5c-pre). Dois modos de falha distintos: (a) se `DIARIA_LINKEDIN_CRON_URL`/`DIARIA_LINKEDIN_CRON_TOKEN` (Worker) nao estiverem setados no env local, o script **aborta com exit 2** (`--schedule` nao tem fallback de fire-now — sem Worker nao ha como agendar); (b) se as env vars locais `INSTAGRAM_BUSINESS_ACCOUNT_ID`/`INSTAGRAM_ACCESS_TOKEN` nao estiverem setadas (checadas incondicionalmente pelo script, mesmo em modo `--schedule`), o script **encerra com exit 0** (skip gracioso) — nao bloqueia os outros canais nem mascara violations de consent de LinkedIn/Facebook (#2486).
-4. `Bash("npx tsx scripts/publish-threads.ts --edition-dir {EDITION_DIR}/")` — publica imediato no Threads via Threads API oficial da Meta (2 passos: container → threads_publish). **Requer `THREADS_ACCESS_TOKEN` + `THREADS_USER_ID` no env.** Textos >500 chars sao automaticamente encadeados (thread). Se as env vars nao estiverem setadas, o script **encerra com exit 0** (skip gracioso, nao exit 1) — nao bloqueia os outros canais (#2479).
+4. `Bash("npx tsx scripts/publish-threads.ts --edition-dir {EDITION_DIR}/ --schedule")` — passa `--schedule` para **agendar** (NAO imediato, #3944 Parte B — antes deste fix o Threads publicava na hora do dispatch). Enfileira no MESMO Worker `diaria-linkedin-cron` do LinkedIn/Instagram (`channel: "threads"`, #3944 Parte B), que dispara nos mesmos horarios (d1 10:00/d2 12:30/d3 17:30 BRT via `compute-social-schedule.ts`) rodando os 2 passos da Threads API (container → threads_publish) no MOMENTO do disparo. **Suporta so posts de 1 chunk (≤500 chars)** — chunking agendado (thread multi-post via reply_to_id) nao e implementado no Worker (risco de duplicar posts em retry automatico); textos maiores falham no enqueue com `status: "failed"` e motivo claro, sem abortar os demais destaques — publique esse destaque manualmente sem `--schedule` ou encurte o texto. **Requer `THREADS_ACCESS_TOKEN` + `THREADS_USER_ID` como secrets do Worker** (nao mais consumidos localmente pelo script pra publicar — a Threads API roda dentro do Worker no momento do disparo). Dois modos de falha distintos: (a) se `DIARIA_LINKEDIN_CRON_URL`/`DIARIA_LINKEDIN_CRON_TOKEN` (Worker) nao estiverem setados no env local, o script **aborta com exit 2** (`--schedule` nao tem fallback de fire-now — sem Worker nao ha como agendar); (b) se as env vars locais `THREADS_ACCESS_TOKEN`/`THREADS_USER_ID` nao estiverem setadas (checadas incondicionalmente pelo script, mesmo em modo `--schedule`), o script **encerra com exit 0** (skip gracioso) — nao bloqueia os outros canais nem mascara violations de consent de LinkedIn/Facebook (#2486, mesmo padrao do Instagram).
 
 Aguardar todos retornarem antes de prosseguir.
 
@@ -394,6 +394,7 @@ Publicacao dispatchada — edicao {AAMMDD}
   LinkedIn: agendado x 3
   Facebook: agendado x 3
   Instagram: agendado x 3 (ou "env vars ausentes — pular" se nao configurado)
+  Threads: agendado x N (ou "env vars ausentes — pular" se nao configurado; destaques >500 chars ficam de fora, ver failed em 06-social-published.json)
 
 Proximo passo → /diaria-6-agendamento {AAMMDD}
 (agendamento Beehiiv + auto-reporter)
@@ -408,6 +409,7 @@ Etapa 5 (newsletter no Beehiiv): pulado (claude-in-chrome MCP indisponivel)
 LinkedIn x 3: agendado normal via Worker ✓
 Facebook x 3: agendado normal via Graph API ✓
 Instagram x 3: agendado normal via Worker ✓
+Threads: agendado normal via Worker ✓
 
 Quando o MCP estiver ativo, rodar:
   /diaria-5-publicacao newsletter {AAMMDD}   # cria rascunho Beehiiv + email teste

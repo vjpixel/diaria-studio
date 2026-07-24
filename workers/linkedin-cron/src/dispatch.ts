@@ -24,6 +24,13 @@ export interface InstagramCreds {
   apiVersion: string;
 }
 
+// #3944 Parte B
+export interface ThreadsCreds {
+  userId: string;
+  accessToken: string;
+  apiVersion: string;
+}
+
 /** Credenciais/URLs resolvidas pelo caller (fire.ts via env; durable-object.ts via DO payload). */
 export interface FireConfig {
   webhookUrl: string;
@@ -33,6 +40,7 @@ export interface FireConfig {
    * (migração incremental, scenario Make ainda sem auth configurada). */
   apiKey?: string;
   instagram?: InstagramCreds;
+  threads?: ThreadsCreds;
 }
 
 export type FireOutcome =
@@ -58,6 +66,20 @@ export function resolveInstagramCreds(env: Env): InstagramCreds | undefined {
     igUserId: env.INSTAGRAM_BUSINESS_ACCOUNT_ID,
     accessToken: env.INSTAGRAM_ACCESS_TOKEN,
     apiVersion: env.INSTAGRAM_API_VERSION || "v25.0",
+  };
+}
+
+/**
+ * Resolve o `Env` do Worker pras credenciais Threads, com default de
+ * apiVersion (#3944 Parte B). Retorna `undefined` se qualquer credencial
+ * obrigatória estiver ausente — mesmo padrão de resolveInstagramCreds acima.
+ */
+export function resolveThreadsCreds(env: Env): ThreadsCreds | undefined {
+  if (!env.THREADS_ACCESS_TOKEN || !env.THREADS_USER_ID) return undefined;
+  return {
+    userId: env.THREADS_USER_ID,
+    accessToken: env.THREADS_ACCESS_TOKEN,
+    apiVersion: env.THREADS_API_VERSION || "v1.0",
   };
 }
 
@@ -222,6 +244,109 @@ async function fireInstagram(entry: QueueEntry, creds: InstagramCreds): Promise<
 }
 
 /**
+ * Dispara um post no Threads via Threads API oficial da Meta (#3944 Parte B).
+ *
+ * Sequência de 2 passos (idêntica a scripts/publish-threads.ts, modo imediato):
+ *   (1) POST /{threads-user-id}/threads         → cria media container (media_type=TEXT)
+ *   (2) POST /{threads-user-id}/threads_publish  → publica o container
+ *
+ * Diferenças deliberadas vs fireInstagram: (a) sem exigência de imagem —
+ * Threads aceita posts só-texto; (b) sem poll de status_code — a Threads API
+ * não documenta/precisa desse passo (publish-threads.ts local também não
+ * faz); (c) guard de tamanho ANTES do passo 1 — chunking agendado (thread
+ * multi-post via reply_to_id) não é suportado aqui: encadear chunks com
+ * retry automático arriscaria duplicar posts já publicados. Textos >500
+ * chars são rejeitados já no enqueue (index.ts::handleEnqueue); este guard
+ * aqui é defesa em profundidade pra items legacy/inseridos fora do enqueue
+ * normal.
+ */
+async function fireThreads(entry: QueueEntry, creds: ThreadsCreds): Promise<FireOutcome> {
+  if (entry.text.length > 500) {
+    return {
+      status: "dlq",
+      reason: "texto excede 500 chars — chunking agendado não suportado, ver #3944 Parte B",
+    };
+  }
+  const base = `https://graph.threads.net/${creds.apiVersion}`;
+
+  // Passo 1: criar media container
+  let containerId: string;
+  try {
+    const params = new URLSearchParams({
+      media_type: "TEXT",
+      text: entry.text,
+      access_token: creds.accessToken,
+    });
+    const res = await fetch(`${base}/${creds.userId}/threads`, {
+      method: "POST",
+      body: params,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: { id?: string; error?: { message?: string } };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { status: "failed", reason: `Threads /threads resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)}` };
+    }
+    if (!res.ok || data.error) {
+      return {
+        status: "failed",
+        reason: `Threads /threads HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)}`,
+      };
+    }
+    if (!data.id) {
+      return { status: "failed", reason: `Threads /threads sem id: ${text.slice(0, 200)}` };
+    }
+    containerId = data.id;
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return { status: "failed", reason: `Threads /threads fetch ${timeout ? "timeout" : "failed"}: ${err.message}` };
+  }
+
+  // Passo 2: publicar o container
+  try {
+    const params = new URLSearchParams({
+      creation_id: containerId,
+      access_token: creds.accessToken,
+    });
+    const res = await fetch(`${base}/${creds.userId}/threads_publish`, {
+      method: "POST",
+      body: params,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: { id?: string; error?: { message?: string } };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return {
+        status: "failed",
+        reason: `Threads /threads_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (container_id=${containerId})`,
+      };
+    }
+    if (!res.ok || data.error) {
+      return {
+        status: "failed",
+        reason: `Threads /threads_publish HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (container_id=${containerId})`,
+      };
+    }
+    if (!data.id) {
+      return { status: "failed", reason: `Threads /threads_publish sem id: ${text.slice(0, 200)} (container_id=${containerId})` };
+    }
+    return { status: "fired" };
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return {
+      status: "failed",
+      reason: `Threads /threads_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (container_id=${containerId})`,
+    };
+  }
+}
+
+/**
  * Ponto único de dispatch — branch por `entry.channel` (default "linkedin"
  * pra backward-compat com entries no KV de produção anteriores a #3817, que
  * nunca tinham esse campo).
@@ -238,6 +363,16 @@ export async function fireQueueEntry(entry: QueueEntry, config: FireConfig): Pro
       };
     }
     return fireInstagram(entry, config.instagram);
+  }
+
+  if (channel === "threads") {
+    if (!config.threads) {
+      return {
+        status: "dlq",
+        reason: "channel=threads mas credenciais Threads (THREADS_ACCESS_TOKEN/THREADS_USER_ID) não configuradas",
+      };
+    }
+    return fireThreads(entry, config.threads);
   }
 
   // channel === "linkedin" (ou ausente — default de backward-compat)
