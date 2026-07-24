@@ -31,9 +31,12 @@ import {
   extractSecondaryItems,
   readPastApprovedSecondary,
   isoDateToAammdd,
+  extractEntityOnlyEntities,
   DEFAULT_HIGHLIGHT_WINDOW,
   DEFAULT_SECONDARY_WINDOW,
   DEFAULT_SECONDARY_BUCKETS,
+  ENTITY_ONLY_RECENT_WINDOW,
+  ENTITY_ONLY_MIN_SHARED,
   type PastEditionEntry,
   type HighlightThemeWarning,
   type SecondaryItem,
@@ -339,6 +342,162 @@ describe("checkHighlightThemes — edge cases", () => {
     assert.equal(result.warnings.length, 1, "janela de 12 deve detectar o repeat da 260604");
     // #2684 item 3: matched_edition padronizado em AAMMDD (antes YYYY-MM-DD).
     assert.equal(result.warnings[0].matched_edition, "260604");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// checkHighlightThemes — gatilho entity-only independente (#3972)
+//
+// Casos reais da edição 260724 (títulos sintéticos equivalentes — mesma
+// estrutura: mesmo evento, fonte diferente, entidades compartilhadas fortes,
+// Jaccard textual abaixo até do threshold rebaixado por entity overlap):
+//
+//   Caso 1 (Hugging Face / OpenAI): "Skynet, é você? Ataque à Hugging Face
+//   foi 100% feito por IA 'irmã' do ChatGPT" (D1 260724, canaltech) ↔ mesmo
+//   incidente coberto pela fonte da 260723 com vocabulário divergente.
+//
+//   Caso 2 (AMD + Anthropic): "AMD e Anthropic anunciam megaprojeto de IA em
+//   escala de gigawatt" (D4 260724, canaltech) ↔ "AMD fecha acordo bilionário
+//   com a Anthropic para fornecer GPUs de IA" (D3 260723, tecnoblog) — mesmo
+//   anúncio, ~2GW de GPUs. Nem "AMD" (3 chars, 1ª palavra) nem "Anthropic"
+//   (stopword do passe 2) contam no algoritmo padrão — só o gatilho
+//   entity-only (que inclui a 1ª palavra e aceita acrônimos all-caps, e não
+//   filtra nomes de empresa) pega esse caso.
+// ---------------------------------------------------------------------------
+
+describe("checkHighlightThemes — gatilho entity-only independente (#3972)", () => {
+  it("caso real 1 (Hugging Face / OpenAI): detecta repeat mesmo com Jaccard abaixo do threshold rebaixado", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "Skynet, é você? Ataque à Hugging Face foi 100% feito por IA \"irmã\" do ChatGPT",
+        url: "https://canaltech.com.br/ia/ataque-hugging-face",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      {
+        date: "2026-07-23",
+        title: "Agente da OpenAI invade sistemas da Hugging Face em incidente de segurança",
+      },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      1,
+      `deve detectar o repeat via entity-only (hugging+face): ${JSON.stringify(result.warnings)}`,
+    );
+    const w = result.warnings[0];
+    assert.equal(w.matched_edition, "260723");
+    assert.ok(
+      w.jaccard < 0.25,
+      `caso real: Jaccard textual deve ficar abaixo do threshold rebaixado (0.25) — o ponto do bug era esse: got ${w.jaccard}`,
+    );
+    assert.ok(
+      w.shared_entities.includes("hugging") && w.shared_entities.includes("face"),
+      `shared_entities deve conter hugging e face: ${JSON.stringify(w.shared_entities)}`,
+    );
+    assert.equal(w.entity_only_match, true, "deve estar marcado como match via gatilho entity-only");
+  });
+
+  it("caso real 2 (AMD + Anthropic): detecta repeat via entidades de 1ª palavra + acrônimo all-caps", () => {
+    const candidates = [
+      {
+        rank: 4,
+        title: "AMD e Anthropic anunciam megaprojeto de IA em escala de gigawatt",
+        url: "https://canaltech.com.br/ia/amd-anthropic-megaprojeto",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      {
+        date: "2026-07-23",
+        title: "AMD fecha acordo bilionário com a Anthropic para fornecer GPUs de IA",
+      },
+    ];
+
+    // Confirma a premissa do bug: o algoritmo padrão sozinho (sem o gatilho
+    // entity-only) não capturaria isso — nem "AMD" (1ª palavra, seria
+    // filtrado pelo passe 2 mesmo sem esse guard) nem "Anthropic" (stopword
+    // do passe 2) contam como entidade compartilhada ali.
+    const candidateEntitiesForOverlap = extractEntityOnlyEntities(candidates[0].title);
+    const pastEntitiesForOverlap = extractEntityOnlyEntities(past[0].title);
+    const sharedForOverlap = [...candidateEntitiesForOverlap].filter((e) => pastEntitiesForOverlap.has(e));
+    assert.ok(
+      sharedForOverlap.length >= ENTITY_ONLY_MIN_SHARED,
+      `pré-condição do teste: extractEntityOnlyEntities deve achar >= ${ENTITY_ONLY_MIN_SHARED} entidades (amd, anthropic): ${JSON.stringify(sharedForOverlap)}`,
+    );
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      1,
+      `deve detectar o repeat via entity-only (amd+anthropic): ${JSON.stringify(result.warnings)}`,
+    );
+    const w = result.warnings[0];
+    assert.equal(w.matched_edition, "260723");
+    assert.ok(
+      w.shared_entities.includes("amd") && w.shared_entities.includes("anthropic"),
+      `shared_entities deve conter amd e anthropic: ${JSON.stringify(w.shared_entities)}`,
+    );
+    assert.equal(w.entity_only_match, true, "deve estar marcado como match via gatilho entity-only");
+  });
+
+  it("guard de falso positivo: 1 única entidade genérica compartilhada (OpenAI sozinho) NÃO dispara", () => {
+    const candidates = [
+      {
+        rank: 1,
+        title: "OpenAI anuncia parceria inédita com universidades europeias",
+        url: "https://example.com/openai-universidades",
+      },
+    ];
+    const past: PastEditionEntry[] = [
+      {
+        date: "2026-07-23",
+        title: "OpenAI reforça segurança após vazamento de dados internos",
+      },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      0,
+      `entidade genérica sozinha (OpenAI) não deve bastar: ${JSON.stringify(result.warnings)}`,
+    );
+  });
+
+  it("guard de janela: entity-match forte fora da janela curta (ENTITY_ONLY_RECENT_WINDOW) não dispara via entity-only", () => {
+    // Mesmas entidades do caso real 2 (AMD+Anthropic), mas a edição-match está
+    // fora da janela curta (posições 0..ENTITY_ONLY_RECENT_WINDOW-1 no array
+    // ordenado mais-recente-primeiro) — precedida por edições de tema
+    // totalmente distinto para empurrá-la pra fora da janela.
+    const candidates = [
+      {
+        rank: 4,
+        title: "AMD e Anthropic anunciam megaprojeto de IA em escala de gigawatt",
+        url: "https://canaltech.com.br/ia/amd-anthropic-megaprojeto",
+      },
+    ];
+    const filler: PastEditionEntry[] = [];
+    for (let i = 0; i < ENTITY_ONLY_RECENT_WINDOW; i++) {
+      filler.push({
+        date: `2026-07-${(20 - i).toString().padStart(2, "0")}`,
+        title: `Pesquisa mapeia impacto econômico da automação em país número ${i}`,
+      });
+    }
+    const past: PastEditionEntry[] = [
+      ...filler,
+      {
+        date: "2026-07-10",
+        title: "AMD fecha acordo bilionário com a Anthropic para fornecer GPUs de IA",
+      },
+    ];
+
+    const result = checkHighlightThemes(candidates, past);
+    assert.equal(
+      result.warnings.length,
+      0,
+      `match fora da janela curta não deve disparar via entity-only: ${JSON.stringify(result.warnings)}`,
+    );
   });
 });
 
