@@ -413,10 +413,27 @@ export async function decodeQuizShareToken(secret: string, token: string): Promi
   return deserializeQuizSharePayload(body);
 }
 
-/** Pure: texto de compartilhamento do resultado do quiz. */
+/**
+ * Pure: texto de compartilhamento do resultado do quiz — reusado LITERALMENTE
+ * pelo quiz relâmpago, pela tela final da sequência mensal e (#4006 item 4)
+ * pelo checkpoint parcial de 5 pares (todos via `/jogar/quiz/result`, mesmo
+ * `QuizSharePayload {score,total}`, ver rationale no header do arquivo).
+ *
+ * #4006 (item 2, revisão de UX 260724): copy anterior era neutra ("Acertei X
+ * de Y no quiz relâmpago... Você consegue diferenciar...?") — não carregava
+ * nenhum convite de DESAFIO, o que a issue identificou como o principal
+ * motivo do share não funcionar como loop viral (quem recebe não sente que
+ * está sendo provocado a competir). Nova copy mantém "Acertei X de Y"
+ * (contrato de `test/poll-jogar-quiz-3520.test.ts`/`poll-share-3517.test.ts`,
+ * que casam esse trecho literal) e adiciona o desafio direto pedido pelo
+ * editor. Removida a menção a "quiz relâmpago" — o mesmo texto também é
+ * compartilhado a partir da sequência mensal (`showFinal`/`showBatchBreak`
+ * em jogar.ts), onde "quiz relâmpago" seria uma referência incorreta ao
+ * modo jogado.
+ */
 export function buildQuizShareText(payload: QuizSharePayload): string {
   const { score, total } = payload;
-  return `Acertei ${score} de ${total} no quiz relâmpago do "É IA?"! Você consegue diferenciar uma foto real de uma gerada por IA? ${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz`;
+  return `Acertei ${score} de ${total} no "É IA?". Duvido você acertar mais: ${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz`;
 }
 
 /** Pure: bloco HTML do card de compartilhamento do quiz — reusa literalmente

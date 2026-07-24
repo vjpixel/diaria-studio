@@ -1340,6 +1340,12 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
      disponíveis, só o ponto de pausa muda). -->
 <div id="seq-batch-break" class="quiz-final" hidden>
   <p class="result-msg seq-batch-score"></p>
+  <!-- #4006 (item 4): share do placar PARCIAL já no 1º checkpoint — não
+       espera os 22 pares completos pra oferecer o loop viral (showBatchBreak
+       no script abaixo preenche este slot via /jogar/quiz/result, mesmo
+       endpoint/QuizSharePayload de showFinal). -->
+  <p class="share-kicker">Já dá pra desafiar alguém:</p>
+  <div id="seq-batch-share-slot" hidden></div>
   <p class="sub seq-batch-note">Seu placar fica salvo neste navegador.</p>
   <button type="button" id="seq-continue-btn" class="seq-continue-btn">Continuar jogando</button>
 </div>
@@ -1347,6 +1353,12 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
 <div id="seq-final" class="quiz-final" hidden>
   <p class="result-msg seq-final-score"></p>
   <p class="sub seq-final-wrong" hidden></p>
+  <!-- #4006 (item 1): o card de desafio (share) é o CLÍMAX desta tela, no
+       mesmo nível (ou mais) do form de identidade logo abaixo — o kicker
+       nasce visível junto com o placar (nunca espera o fetch que popula
+       #seq-share-slot), então a intenção de compartilhar nunca fica em
+       segundo plano atrás do form. -->
+  <p class="share-kicker">Desafie seus amigos a bater seu placar:</p>
   <div id="seq-share-slot" hidden></div>
 </div>
 
@@ -1531,6 +1543,21 @@ ${renderIdentityFormBlock()}`;
     var remaining = playIndices.length - BATCH_SIZE;
     var scoreEl = batchBreakEl.querySelector(".seq-batch-score");
     if (scoreEl) scoreEl.textContent = "Você acertou " + batchCorrect + " de " + BATCH_SIZE + "! Continuar jogando — faltam " + remaining + ".";
+    // #4006 (item 4): share do placar PARCIAL — mesmo endpoint/QuizSharePayload
+    // de showFinal (/jogar/quiz/result), só com score/total do 1º lote em vez
+    // da sequência inteira. Fire-and-forget (.catch vazio): se a rede falhar,
+    // o checkpoint segue funcional (placar + "Continuar jogando"), só sem o
+    // card de compartilhamento.
+    var batchShareSlot = document.getElementById("seq-batch-share-slot");
+    if (batchShareSlot && typeof window.fetch === "function") {
+      fetch("/jogar/quiz/result?score=" + encodeURIComponent(String(batchCorrect)) + "&total=" + encodeURIComponent(String(BATCH_SIZE)))
+        .then(function (res) { if (!res.ok) throw new Error("result fetch failed"); return res.text(); })
+        .then(function (html) {
+          batchShareSlot.innerHTML = html;
+          batchShareSlot.hidden = false;
+        })
+        .catch(function () {});
+    }
     batchBreakEl.hidden = false;
   }
 
@@ -1773,6 +1800,7 @@ ${renderIdentityFormBlock()}`;
 })();
 </script>
 ${shareButtonScript("#seq-share-slot")}
+${shareButtonScript("#seq-batch-share-slot")}
 ${identityFormScript()}`;
 
   return `<!DOCTYPE html>
@@ -1820,8 +1848,17 @@ ${seoMeta}
   .eia-meta { margin: 16px auto; max-width: 420px; font-family: ${DS_FONTS.sans}; text-align: left; }
   .eia-meta-description { font-size: 0.95rem; margin: 0 0 6px 0; line-height: 1.5; }
   .eia-meta-credit { font-size: 0.82rem; margin: 0; color: ${DS_COLORS.ink}; }
-  .share-card { margin: 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
-  .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
+  /* #4006: "kicker" de desafio — texto ESTÁTICO (nasce junto com o
+     score/placar parcial, sem esperar o fetch de /jogar/quiz/result que
+     preenche o share-slot) — garante que o convite a compartilhar tem peso
+     visual/cronológico igual ou maior que o form de identidade logo abaixo,
+     em vez de aparecer "tardiamente" só quando o card injetado chega. */
+  .share-kicker { font-family: ${DS_FONTS.sans}; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: ${DS_COLORS.brand}; margin: 20px 0 4px 0; }
+  /* #4006: borda de destaque (cor de marca) — mesmo card usado em toda
+     página, mas aqui reforçado pra ser o CLÍMAX da tela final/checkpoint, no
+     mesmo nível (ou mais) do form de identidade (.signup-form) logo abaixo. */
+  .share-card { margin: 4px auto 24px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; border-left: 4px solid ${DS_COLORS.brand}; }
+  .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; font-weight: 700; margin: 0 0 14px 0; line-height: 1.4; }
   .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .share-actions button { padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
   .subscribe-cta { margin: 20px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
