@@ -44,6 +44,43 @@ echo "$BEEHIIV_PUBLICATION_ID" | npx wrangler secret put BEEHIIV_PUBLICATION_ID
 A `BEEHIIV_API_KEY` do worker deve ser uma key da Beehiiv com escopo de
 criação de assinatura. Padrão apoia.se — **nunca** hardcodar no código.
 
+## Optional secrets (#3996 — migração cross-device via link mágico)
+
+| Nome | Endpoint | Severidade |
+|------|----------|------------|
+| `BREVO_API_KEY` | `POST /jogar/identify` (caminho com histórico órfão) | **opcional** — sem ela, `sendMagicLinkEmail` retorna `not_configured`; o merge fica **pendente indefinidamente** até o secret ser configurado (fail-closed do lado do merge — nunca mergeia sem confirmação, mesmo sem secret) |
+| `BREVO_SENDER_EMAIL` (var) | idem | **opcional** — precisa ser um e-mail/domínio verificado na conta Brevo; ausente = mesmo `not_configured` acima |
+| `BREVO_SENDER_NAME` (var) | idem | **opcional** — default `"Diar.ia — É IA?"` quando ausente |
+
+Quando um jogador se identifica (`POST /jogar/identify`) com um e-mail que
+**já tem histórico de ranking sob outro device/token** (nunca confirmado
+como a mesma pessoa), o worker não mergeia na hora — manda um e-mail de
+confirmação via API transacional da Brevo (`POST /v3/smtp/email`) com um
+link `/confirm-merge?token=...`. Ver rationale completo em
+`src/magic-link.ts`.
+
+`BREVO_API_KEY` é um secret **PRÓPRIO** deste worker — **não** é o mesmo
+runtime que os scripts Node do repo (`BREVO_CLARICE_API_KEY`, lido de
+`process.env` num processo local/CI). O worker roda em Cloudflare Workers e
+só enxerga secrets via `wrangler secret put`. O editor **pode** configurar
+com o **mesmo valor** de `BREVO_CLARICE_API_KEY` (mesma conta Brevo) —
+**desde que essa key tenha permissão de "transactional emails" habilitada**
+na conta (não verificável a partir de um ambiente de desenvolvimento sem
+acesso à conta Brevo real; confirmar no dashboard antes de configurar).
+
+```bash
+cd workers/poll
+echo "$BREVO_API_KEY"       | npx wrangler secret put BREVO_API_KEY
+# vars (não secrets — podem ir em [vars] do wrangler.toml, ou secret também
+# funciona se preferir não deixar em texto plano no repo):
+echo "$BREVO_SENDER_EMAIL"  | npx wrangler secret put BREVO_SENDER_EMAIL
+echo "$BREVO_SENDER_NAME"   | npx wrangler secret put BREVO_SENDER_NAME
+```
+
+Sem estes 3 configurados, o mecanismo inteiro (detecção de histórico órfão +
+geração de token + rate-limit + endpoint `/confirm-merge`) já funciona —
+só o e-mail em si não sai até os secrets serem configurados.
+
 ## Re-setar pós-deploy
 
 Após qualquer `wrangler deploy` ou `delete + recreate` do worker, garantir

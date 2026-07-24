@@ -86,6 +86,24 @@ export interface Env {
    * (a API de criação não tem campo nativo de nome). Ausente → nome não é
    * enviado (assinatura segue só com e-mail + UTM, sem falhar). */
   BEEHIIV_NAME_FIELD?: string;
+  /** #3996: secret PRÓPRIO do worker `poll` pra API transacional da Brevo
+   * (`POST /v3/smtp/email`, ver magic-link.ts `sendMagicLinkEmail`) — usado
+   * pelo e-mail de confirmação de merge cross-device do jogo `web`.
+   * SEPARADO de `BREVO_CLARICE_API_KEY` (env dos scripts Node, processo
+   * diferente) — o editor pode configurar com o MESMO valor (mesma conta
+   * Brevo), desde que a key tenha permissão de "transactional emails" (não
+   * verificável a partir deste ambiente de desenvolvimento). OPCIONAL — sem
+   * ela, `sendMagicLinkEmail` retorna `not_configured` e o merge fica
+   * pendente indefinidamente até o secret ser configurado (fail-closed do
+   * lado do merge — nunca mergeia sem confirmação). Ver SECRETS.md. */
+  BREVO_API_KEY?: string;
+  /** #3996: e-mail remetente do e-mail de confirmação (precisa ser um
+   * domínio/e-mail verificado na conta Brevo). OPCIONAL — ausente também
+   * produz `not_configured` (mesmo guard de BREVO_API_KEY acima). */
+  BREVO_SENDER_EMAIL?: string;
+  /** #3996: nome de exibição do remetente. OPCIONAL — default "Diar.ia — É
+   * IA?" quando ausente (ver sendMagicLinkEmail). */
+  BREVO_SENDER_NAME?: string;
   /** #3116: origin da request atual (`request.headers.get("Origin")`),
    * extraído 1x no entrypoint `fetch()` e propagado via spread de `env` (e
    * `brandedEnv`, que também espalha `env`) por toda a árvore de handlers que
@@ -344,6 +362,13 @@ import { handleJogarSubscribe } from "./subscribe";
 // acima (identify.ts importa `json`/`corsHeaders` de index; index importa o
 // handler de volta), valores só usados em request-time.
 import { handleJogarIdentify } from "./identify";
+// #3996: confirmação de merge cross-device via link mágico (GET
+// /confirm-merge) — Fase B do #3975. Mesmo padrão de ciclo de import seguro
+// de identify.ts/subscribe.ts acima (magic-link.ts importa `identify.ts`
+// pra reusar `performIdentifyMerge`; `identify.ts` importa magic-link.ts
+// pra `hasOrphanHistory`/etc — ver rationale completo no header de
+// magic-link.ts).
+import { handleConfirmMerge } from "./magic-link";
 // #3521: widget embutível (iframe) pro EPIC #3514 — sites parceiros. Ver
 // rationale completo no header de embed.ts.
 import { handleEmbedPage } from "./embed";
@@ -1282,6 +1307,10 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // identityFormScript em jogar.ts) — `bEnv` já reflete isso via
     // `parseBrandParam` no topo de `fetch()`.
     if (path === "/jogar/identify" && request.method === "POST") return handleJogarIdentify(request, bEnv);
+    // #3996: confirmação do link mágico de merge cross-device — `bEnv` pelo
+    // mesmo racional de `/jogar/identify` acima (client sempre gera o link
+    // com `?brand=web`, ver buildConfirmMergeUrl/magic-link.ts).
+    if (path === "/confirm-merge" && request.method === "GET") return handleConfirmMerge(url, bEnv);
     // #HEAD: clientes que fazem preflight HEAD antes de baixar a imagem (ex: Make.com/LinkedIn
     // ao validar a URL antes do upload) recebiam 404 aqui mesmo com o GET retornando 200 —
     // a rota só aceitava GET. O runtime do Workers descarta o body automaticamente em respostas
@@ -1289,5 +1318,5 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/identify", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/img/{key}"] }, 404, env);
 }
