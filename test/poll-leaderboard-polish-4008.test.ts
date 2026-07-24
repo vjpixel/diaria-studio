@@ -13,7 +13,10 @@
  *      leaderboard-rank.test.ts).
  *   4. Cabeçalho "Leitor(a)" → "Jogador(a)".
  *   6. Badges de memória no arquivo (`/jogar/arquivo`) via /jogar/seq-state.
- *   7. Rodapé da sequência ganha link pro arquivo.
+ *   7. Rodapé da sequência ganha link pro arquivo — REVERTIDO por #4030
+ *      item 1 (MESMO dia, 260724): o editor jogou a versão deployada e
+ *      pediu pra tirar o link de novo. O describe abaixo foi atualizado
+ *      (não duplicado) pra travar a remoção — ver header de jogar.ts.
  */
 
 import { describe, it } from "node:test";
@@ -105,13 +108,13 @@ describe("renderJogarArchiveHtml — badges de memória (#4008 item 6)", () => {
   });
 });
 
-describe("renderJogarSequencePageHtml — rodapé linka pro arquivo (#4008 item 7)", () => {
-  it("footer da sequência (tela padrão/final) ganha 'Jogar edições passadas' → /jogar/arquivo", () => {
+describe("renderJogarSequencePageHtml — rodapé linka pro arquivo (#4008 item 7, revertido por #4030 item 1)", () => {
+  it("footer da sequência NÃO tem mais 'Jogar edições passadas' → /jogar/arquivo (editor reverteu no mesmo dia 260724, ver test/poll-jogar-sequence-3589.test.ts)", () => {
     const html = renderJogarSequencePageHtml(["260601", "260602"]);
-    assert.match(html, /<a href="\/jogar\/arquivo">Jogar edições passadas<\/a>/);
+    assert.doesNotMatch(html, /<a href="\/jogar\/arquivo">Jogar edições passadas<\/a>/);
   });
 
-  it("continua linkando 'Ver ranking' (não substituído, só complementado)", () => {
+  it("continua linkando 'Ver ranking' (nunca foi tocado por nenhuma das 3 idas-e-vindas)", () => {
     const html = renderJogarSequencePageHtml(["260601", "260602"]);
     assert.match(html, />Ver ranking<\/a>/);
   });

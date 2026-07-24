@@ -165,6 +165,32 @@ export function buildSubscribeUrl(): string {
  * "posvoto-cta") — antes ia pro site SEM parâmetro nenhum (achado #3978,
  * único CTA de saída do funil sem nenhuma medição).
  */
+// ── #4030 (item 2): logo visual da diar.ia.br no topo da página do jogo ────
+//
+// Achado do editor ao jogar a versão deployada (260724): a única identidade
+// de marca na página era textual — o kicker "É IA?" (nome do JOGO, não da
+// Diar.ia) + o rodapé mínimo `renderBrandFooter` (lib.ts, um link de texto
+// puro "Diar.ia"). Faltava a marca VISUAL — o wordmark serif ink+teal que
+// aparece em todo o resto do produto (`data/brand/logo/logo.svg`, cópia
+// local do design system canônico vjpixel/diaria-design).
+//
+// SVG inline (não `<img src>`/fetch externo — CSP do worker é restritiva e
+// toda página aqui é HTML inline, mesmo padrão de `renderLightboxMarkup`/
+// share.ts) com o wordmark oficial. A fonte real do asset é "Newsreader",
+// mas #3111 já decidiu Georgia como o serif deste worker especificamente
+// (ver ds-tokens.generated.ts) — a página nunca carregaria Newsreader mesmo,
+// então o `<text>` usa `DS_FONTS.serif` (Georgia) em vez de hardcodear um
+// font-family que nunca resolveria. Cores via DS_COLORS (ink/brand) —
+// test/poll-ds-tokens.test.ts trava hex hardcoded neste arquivo.
+//
+// Escopo: só nas duas páginas que a issue #4030 nomeia (par único e
+// sequência) — não em `/jogar/arquivo`/`/jogar/quiz` (fora do pedido do
+// editor, menor blast radius).
+export function renderJogarBrandLogoBlock(): string {
+  const href = buildBrandSiteUrl(JOGAR_BRAND, "jogar-logo", "eia-jogar-logo");
+  return `<a class="brand-logo-link" href="${htmlEscape(href)}" aria-label="${htmlEscape(BRAND_INFO[JOGAR_BRAND].name)}"><svg class="brand-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 240" preserveAspectRatio="xMidYMid meet" role="img" aria-hidden="true"><text x="590" y="120" text-anchor="middle" dominant-baseline="central" font-family="${DS_FONTS.serif}" font-weight="700" font-size="220"><tspan fill="${DS_COLORS.ink}">diar</tspan><tspan fill="${DS_COLORS.brand}">.</tspan><tspan fill="${DS_COLORS.ink}">ia</tspan><tspan fill="${DS_COLORS.brand}">.br</tspan></text></svg></a>`;
+}
+
 export function renderSubscribeCtaBlock(): string {
   const url = buildBrandSiteUrl(JOGAR_BRAND, "posvoto-cta", "eia-jogar-conhecer");
   return `<div id="jogar-subscribe-cta" class="subscribe-cta" hidden>
@@ -298,10 +324,20 @@ export function renderInlineSignupFormStyles(): string {
  * do #3580 via identify.ts → subscribeToBeehiiv) + honeypot. `hidden` por
  * padrão — mesma disciplina anti-spoiler do resto de `/jogar` (revelado via
  * JS junto com o resultado, nunca antes do voto).
+ *
+ * #4030 (item 3): copy de abertura passou a nomear o valor da newsletter
+ * explicitamente ("um par desses todo dia no seu e-mail") — antes só
+ * mencionava o ranking, deixando a assinatura implícita só no checkbox de
+ * opt-in abaixo (achado do editor 260724: nenhuma superfície da página tinha
+ * um convite EXPLÍCITO de assinatura — `renderSubscribeCtaBlock` é a caixa
+ * de "conheça o projeto", rework deliberado do #3589 item 4, ver
+ * test/poll-jogar-cta-3518.test.ts, que trava esse texto NÃO empurrar
+ * assinatura — por isso o convite explícito entra aqui, no form que já É o
+ * mecanismo de assinatura real, em vez de reabrir aquela decisão).
  */
 export function renderIdentityFormBlock(): string {
   return `<form id="jogar-identity-form" class="signup-form" hidden novalidate>
-  <p class="signup-text">Entre no ranking — deixe seu nome e e-mail.</p>
+  <p class="signup-text">Quer um par desses todo dia no seu e-mail? Deixe seu nome e e-mail — assine a Diar.ia e entre no ranking.</p>
   <label class="signup-field"><span>Nome ou apelido</span><input type="text" name="name" autocomplete="name" maxlength="100" required></label>
   <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
   <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
@@ -628,6 +664,10 @@ ${seoMeta}
   .subscribe-cta { margin: 20px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
   .subscribe-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
   .subscribe-btn { display: inline-block; padding: 10px 20px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; text-decoration: none; font-weight: 600; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  /* #4030 (item 2): logo visual — link em volta do SVG, sem sublinhado
+     (a régua .rule logo abaixo já separa a marca do conteúdo do jogo). */
+  .brand-logo-link { display: block; width: 120px; margin: 0 auto 10px; }
+  .brand-logo { display: block; width: 100%; height: auto; }
 ${renderInlineSignupFormStyles()}
   @media (max-width: 600px) {
     .choice { flex-basis: 100%; max-width: 100%; }
@@ -646,6 +686,7 @@ ${renderBrandShellStyles()}
 </style>
 </head>
 <body>
+${renderJogarBrandLogoBlock()}
 <p class="kicker">É IA?</p>
 <hr class="rule">
 <h1>Qual imagem foi gerada por IA?</h1>
@@ -992,6 +1033,14 @@ ${lightboxScript()}
 //      conceito de "tela final"/progressão, e #3589 item 5 documenta que ela
 //      já tem seu próprio caminho de entrada (não precisa de saída pro
 //      arquivo, só de volta pro site via "Voltar").
+//
+//      #4030 item 1 (260724, MESMO dia — 3ª volta): o editor jogou a versão
+//      deployada de #4008 item 7 e pediu pra tirar o link de novo. Rodapé da
+//      sequência volta a NÃO linkar "Jogar edições passadas" — ver a remoção
+//      no footer-links logo abaixo do bodyHtml. `/jogar/arquivo` continua
+//      vivo de qualquer forma (destino da ponte clarice, item 6 acima), só
+//      não é mais auto-promovido em NENHUMA view web — de volta ao estado
+//      original de #3589.
 //
 //   7. **`/jogar/quiz` intocado**: mecanismo distinto e complementar (casual,
 //      random, sem crédito de leaderboard) — a sequência oficial da issue
@@ -1341,12 +1390,14 @@ export function renderJogarSequencePageHtml(editions: string[]): string {
 <noscript><p class="sub">A sequência precisa de JavaScript pra jogar. <a href="${leaderboardLink}">Ver ranking</a>.</p></noscript>
 
 <div id="seq-play">
-  <!-- #4005 (item 2): onboarding de 1 linha — o 1º par É o tutorial. Some
-       via JS depois da 1ª rodada (round !== 0, ver renderRound abaixo);
-       server-rendered SEM 'hidden' — se JS falhar (noscript já cobre o caso
-       "sem JS" acima), a frase permanece visível, o que é inofensivo (nunca
-       spoiler, só instrução). -->
-  <p class="sub" id="seq-onboarding">Uma destas imagens foi gerada por IA. Toque na que você acha que é.</p>
+  <!-- #4030 (item 4): onboarding de 1 linha do #4005 item 2 removido — o
+       editor jogou a versão deployada (260724) e pediu pra tirar a frase
+       instrutiva que ficava aqui. O h1 acima já pergunta a mesma coisa; a
+       linha era redundante na prática. Texto antigo não repetido de
+       propósito — ver header de jogar.ts (seção #4005 item 2) pro texto
+       exato removido; esta é uma HTML comment que sobrevive no response
+       body, então citá-la aqui faria os testes de regressão (doesNotMatch)
+       falsearem positivo contra o próprio comentário. -->
   <div class="choices" id="seq-choices"></div>
   <div id="seq-round-result" class="seq-round-result" hidden></div>
 </div>
@@ -1390,7 +1441,6 @@ ${renderIdentityFormBlock()}`;
 
   var choicesEl = document.getElementById("seq-choices");
   var progressEl = document.getElementById("seq-progress");
-  var onboardingEl = document.getElementById("seq-onboarding"); // #4005 item 2
   var playEl = document.getElementById("seq-play");
   var batchBreakEl = document.getElementById("seq-batch-break"); // #4005 item 3
   var finalEl = document.getElementById("seq-final");
@@ -1521,9 +1571,6 @@ ${renderIdentityFormBlock()}`;
       showBatchBreak();
       return;
     }
-    // #4005 (item 2): onboarding de 1 linha só na 1ª rodada jogada nesta
-    // sessão (round === 0) — o 1º par É o tutorial, some a partir do 2º.
-    if (onboardingEl) onboardingEl.hidden = round !== 0;
     var originalIndex = playIndices[round];
     var edition = editions[originalIndex];
     updateProgress(originalIndex);
@@ -1532,10 +1579,13 @@ ${renderIdentityFormBlock()}`;
     // aspect-ratio: 16 / 9 no CSS '.choice img' (reforço pra browser que
     // ignorar os atributos), evita o colapso de altura que causava o layout
     // shift reportado pelo editor ao trocar de par via innerHTML.
+    // #4030 (item 5): data-side identifica cada .choice pro reveal in-place
+    // (renderRoundResult abaixo aplica a borda verde direto aqui, sem
+    // duplicar as imagens num card separado).
     choicesEl.innerHTML =
-      '<div class="choice"><img src="' + imgUrl(edition, "A") + '" width="800" height="450" alt="Imagem A" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="A">Essa é a IA</button></div>' +
+      '<div class="choice" data-side="A"><img src="' + imgUrl(edition, "A") + '" width="800" height="450" alt="Imagem A" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="A">Essa é a IA</button></div>' +
       '<p class="scroll-hint">↓ Veja também a Imagem B antes de decidir</p>' +
-      '<div class="choice"><img src="' + imgUrl(edition, "B") + '" width="800" height="450" alt="Imagem B" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="B">Essa é a IA</button></div>';
+      '<div class="choice" data-side="B"><img src="' + imgUrl(edition, "B") + '" width="800" height="450" alt="Imagem B" loading="lazy"><button type="button" class="seq-choice-btn" data-choice="B">Essa é a IA</button></div>';
     // #3607: pré-carrega o PRÓXIMO par (se existir) — troca instantânea
     // (cache-hit) no próximo clique em vez de aguardar o fetch das novas
     // imagens.
@@ -1593,10 +1643,20 @@ ${renderIdentityFormBlock()}`;
     }).then(function (html) {
       var parsed = new DOMParser().parseFromString(html, "text/html");
       var msgEl = parsed.querySelector(".msg");
-      var imagesEl = parsed.querySelector(".result-images");
+      // #4030 (item 5): antes injetava o bloco .result-images inteiro de
+      // novo em #seq-round-result — duplicava o par que já está visível em
+      // #seq-choices. Agora só extrai QUAL lado (A/B) é a IA (o .result-image
+      // com o label "🤖 Gerada por IA" — renderResultImagesHtml/index.ts
+      // sempre renderiza a side A primeiro, B depois) e aplica a borda verde
+      // in-place (renderRoundResult abaixo) na imagem já visível, sem
+      // renderizar imagem nenhuma de novo.
+      var resultImageDivs = parsed.querySelectorAll(".result-image");
+      var aiSide = null;
+      if (resultImageDivs[0] && resultImageDivs[0].textContent.indexOf("🤖") !== -1) aiSide = "A";
+      else if (resultImageDivs[1] && resultImageDivs[1].textContent.indexOf("🤖") !== -1) aiSide = "B";
       // #3984: descrição + crédito da foto real — mesma técnica de extração
-      // de imagesEl acima; ausente quando a edição não tem eiameta gravado
-      // (fallback silencioso).
+      // de resultImageDivs acima; ausente quando a edição não tem eiameta
+      // gravado (fallback silencioso).
       var eiaMetaEl = parsed.querySelector("#jogar-eia-meta");
       var text = msgEl ? (msgEl.textContent || "") : "";
       var correct = null;
@@ -1605,7 +1665,7 @@ ${renderIdentityFormBlock()}`;
       return {
         correct: correct,
         msgHtml: msgEl ? msgEl.innerHTML : "",
-        imagesHtml: imagesEl ? imagesEl.outerHTML : "",
+        aiSide: aiSide,
         eiaMetaHtml: eiaMetaEl ? eiaMetaEl.outerHTML : "",
       };
     }).catch(function () {
@@ -1630,11 +1690,19 @@ ${renderIdentityFormBlock()}`;
   // clicando; o editor quer tempo pra de fato ler o resultado (descrição +
   // crédito, #3984) antes de avançar, não ser empurrado em 2.5s.
   function renderRoundResult(result) {
+    // #4030 (item 5): borda verde IN-PLACE na imagem correta (já visível em
+    // #seq-choices) em vez de renderizar as imagens de novo no card de
+    // resultado — choicesEl ainda tem o par desta rodada (só é substituído
+    // no próximo renderRound(), que naturalmente "reseta" a borda ao trocar
+    // o innerHTML inteiro — sem cleanup manual necessário).
+    if (result.aiSide) {
+      var aiChoice = choicesEl.querySelector('.choice[data-side="' + result.aiSide + '"]');
+      if (aiChoice) aiChoice.classList.add("correct-ai");
+    }
     var resultEl = document.getElementById("seq-round-result");
     if (!resultEl) { advance(); return; }
     resultEl.innerHTML =
       '<p class="result-msg">' + result.msgHtml + "</p>" +
-      result.imagesHtml +
       (result.eiaMetaHtml || "") +
       '<button type="button" class="seq-next-btn">Próxima rodada →</button>';
     resultEl.hidden = false;
@@ -1853,14 +1921,15 @@ ${seoMeta}
   /* #4005: botão "Continuar jogando" do placar parcial — mesmo visual de
      .seq-round-result button (botão primário sólido em ink). */
   #seq-batch-break button { margin-top: 12px; padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
-  /* #3983: destaque visual da imagem correta — mesmas classes que
-     votePageHtml (index.ts) já usa no /vote renderizado direto. */
-  .result-images { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
-  .result-image { box-sizing: border-box; flex: 1 1 240px; max-width: 260px; padding: 8px; border: 2px solid transparent; border-radius: 8px; background: ${DS_COLORS.paper}; }
-  .result-image.clicked { border-color: ${DS_COLORS.brand}; box-shadow: 0 0 0 2px rgba(0,160,160,.28); }
-  .result-image img { width: 100%; height: auto; border-radius: 6px; display: block; }
-  .result-image .label { font-family: ${DS_FONTS.sans}; font-size: 0.95rem; margin-top: 8px; color: ${DS_COLORS.ink}; font-weight: 600; }
-  .result-image .you { display: inline-block; padding: 2px 8px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-left: 6px; }
+  /* #4030 (item 5): destaque visual da imagem correta IN-PLACE — direto na
+     imagem já visível em #seq-choices, sem duplicar o par num card separado
+     (substitui as classes .result-images/.result-image herdadas do #3983,
+     que injetavam um 2º par de imagens em #seq-round-result). box-shadow
+     inset (não border) — não altera o box model da imagem (#3607 já reserva
+     16:9 antes do load; um border mudaria a caixa +6px no exato momento do
+     reveal) e respeita border-radius (inset É clipado pelo raio, ao
+     contrário de outline). */
+  .choice.correct-ai img { box-shadow: 0 0 0 3px ${DS_COLORS.brand} inset; }
   /* #3984: descrição + crédito da foto real (bloco injetado via DOMParser a
      partir da resposta de /vote, mesmas classes de votePageHtml/index.ts). */
   .eia-meta { margin: 16px auto; max-width: 420px; font-family: ${DS_FONTS.sans}; text-align: left; }
@@ -1882,6 +1951,9 @@ ${seoMeta}
   .subscribe-cta { margin: 20px auto; padding: 18px 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 420px; }
   .subscribe-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
   .subscribe-btn { display: inline-block; padding: 10px 20px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; text-decoration: none; font-weight: 600; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  /* #4030 (item 2): logo visual — mesma regra de par único (renderJogarPageHtml). */
+  .brand-logo-link { display: block; width: 120px; margin: 0 auto 10px; }
+  .brand-logo { display: block; width: 100%; height: auto; }
 ${renderInlineSignupFormStyles()}
   @media (max-width: 600px) {
     .choice { flex-basis: 100%; max-width: 100%; }
@@ -1892,8 +1964,6 @@ ${renderInlineSignupFormStyles()}
     .subscribe-cta { max-width: 100%; padding: 20px 18px; }
     .subscribe-btn { display: block; width: 100%; box-sizing: border-box; padding: 14px 16px; font-size: 1.05rem; }
     .signup-form { max-width: 100%; padding: 20px 18px; }
-    .result-image { flex-basis: 100%; max-width: 100%; }
-    .result-image .label { font-size: 1.05rem; }
     .seq-round-result button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
     #seq-batch-break button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
   }
@@ -1902,12 +1972,21 @@ ${renderBrandShellStyles()}
 </style>
 </head>
 <body>
+${renderJogarBrandLogoBlock()}
 <p class="kicker">É IA?</p>
 <hr class="rule">
 <h1>Você consegue dizer qual imagem foi feita por IA?</h1>
 ${bodyHtml}
 
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Jogar edições passadas</a>${quizFallbackLink}</p>
+<!-- #4030 (item 1): link do rodapé pro arquivo removido de novo — o editor
+     pediu de volta em #4008 item 7 (260724) e, no MESMO dia, ao jogar a
+     versão deployada, pediu pra tirar (ver rationale completo no header da
+     seção #3589 acima, item 6). /jogar/arquivo continua vivo (destino da
+     ponte clarice/#3524/#3578) — só não é mais linkado daqui. Texto do
+     link antigo evitado de propósito aqui: esta é uma HTML comment que
+     SOBREVIVE no response body — repeti-la faria os testes de regex
+     regressão/(doesNotMatch) falsearem positivo contra o próprio comentário. -->
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a>${quizFallbackLink}</p>
 ${scriptHtml}
 ${renderLightboxMarkup()}
 ${lightboxScript()}
