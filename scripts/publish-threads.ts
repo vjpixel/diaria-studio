@@ -14,8 +14,12 @@
  * os primeiros 500 chars, e os subsequentes encadeiam via reply_to_id —
  * análogo a um thread no Twitter/X.
  *
- * Fallback de conteúdo: se 03-social.md não tiver seção `# Threads`, usa Facebook
- * como fallback (mesmo conteúdo de caption), truncando para 500 chars.
+ * Fallback de conteúdo (#3992): prefere a seção `# Curto` (texto único
+ * compartilhado com Twitter/X, ≤280 chars, escrito por `social-curto`) — cabe
+ * inteiro nos 500 chars do Threads sem truncar. Se `# Curto` estiver ausente
+ * (edição antiga, agent não rodou), tenta `# Threads` (nunca existiu como
+ * seção própria — mantido só por compat futura) e por fim `# Facebook` como
+ * último recurso, truncando para 500 chars.
  *
  * AGENDAMENTO (#3944 Parte B): a Threads API NÃO tem agendamento nativo —
  * `threads_publish` sempre publica no instante da chamada. `--schedule`
@@ -84,13 +88,14 @@ function loadPublished(path: string): SocialPublished {
 }
 
 /**
- * Extrai a lista de destaques da seção Threads do 03-social.md.
- * Fallback para seção Facebook se não houver seção Threads.
+ * Extrai a lista de destaques da seção do 03-social.md usada pelo Threads.
+ * Ordem de preferência (#3992): Curto → Threads (legado, nunca teve agent
+ * próprio) → Facebook (último recurso).
  * Último fallback: ["d1","d2","d3"].
  */
 export function extractDestaquesFromSocialMd(socialMd: string): string[] {
-  // Tentar seção Threads primeiro; depois Facebook como fallback
-  let section = extractSection(socialMd, "Threads");
+  let section = extractSection(socialMd, "Curto");
+  if (section === null) section = extractSection(socialMd, "Threads");
   if (section === null) {
     // Fallback para Facebook (mesma lógica do publish-instagram.ts)
     section = extractSection(socialMd, "Facebook");
@@ -102,14 +107,13 @@ export function extractDestaquesFromSocialMd(socialMd: string): string[] {
 
 /**
  * Extrai o texto do post para um destaque específico.
- * Fallback: seção Facebook se Threads ausente.
+ * Ordem de preferência (#3992): Curto → Threads (legado) → Facebook (último recurso).
  */
 export function extractPostText(socialMd: string, destaque: string): string {
   // Normalizar CRLF → LF
   socialMd = socialMd.replace(/\r\n/g, "\n");
 
-  // Tentar seção Threads primeiro; depois Facebook como fallback
-  for (const platTitle of ["Threads", "Facebook"]) {
+  for (const platTitle of ["Curto", "Threads", "Facebook"]) {
     const platRe = new RegExp(`(?:^|\\n)# ${platTitle}\\n([\\s\\S]*?)(?=\\n# |$)`, "i");
     const platMatch = socialMd.match(platRe);
     if (!platMatch) continue;
@@ -125,7 +129,7 @@ export function extractPostText(socialMd: string, destaque: string): string {
   }
 
   throw new Error(
-    `Destaque '${destaque}' não encontrado em seção Threads ou Facebook de 03-social.md`,
+    `Destaque '${destaque}' não encontrado em seção Curto, Threads ou Facebook de 03-social.md`,
   );
 }
 

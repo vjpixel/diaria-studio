@@ -5,7 +5,7 @@ description: Roda a Etapa 2 (newsletter + social em paralelo, ambos a partir de 
 
 # /diaria-2-escrita
 
-Executa a Etapa 2 da pipeline Diar.ia: dispara `writer` (newsletter) + `social-linkedin` + `social-facebook` + `social-instagram` (#3486) **em paralelo**, todos lendo diretamente de `_internal/01-approved.json` — sem dependência sequencial entre newsletter e social. Gate unificado ao final.
+Executa a Etapa 2 da pipeline Diar.ia: dispara `writer` (newsletter) + `social-linkedin` + `social-facebook` + `social-instagram` (#3486) + `social-curto` (#3992) **em paralelo**, todos lendo diretamente de `_internal/01-approved.json` — sem dependência sequencial entre newsletter e social. Gate unificado ao final.
 
 Self-contained — você (top-level Claude Code) executa todo o playbook aqui, sem delegar a um orchestrator subagente. (Workaround #207: runtime bloqueia `Agent` dentro de subagentes.)
 
@@ -171,6 +171,12 @@ Agent({
   description: "Etapa 2 — Instagram writer",
   prompt: "Gera 3 captions de Instagram (uma por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-instagram.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-instagram.md. CTA nativo de social ('link na bio' + follow) — SEM CTA de e-mail (#3486, #2486)."
 })
+
+Agent({
+  subagent_type: "social-curto",
+  description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
+  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3. Seguir .claude/agents/social-curto.md. CTA fixo curto ('Mais em diar.ia.br'), no máx 1 hashtag (#3992)."
+})
 ```
 
 **Após os 3 writer-destaques retornarem, rodar stitch:**
@@ -209,6 +215,12 @@ Agent({
   description: "Etapa 2 — Instagram writer",
   prompt: "Gera 3 captions de Instagram (uma por destaque) a partir de {EDIR}/_internal/01-approved.json. Output: {EDIR}/_internal/03-instagram.tmp.md com seções ## d1, ## d2, ## d3. Seguir context/templates/social-instagram.md. CTA nativo de social ('link na bio' + follow) — SEM CTA de e-mail (#3486, #2486)."
 })
+
+Agent({
+  subagent_type: "social-curto",
+  description: "Etapa 2 — Twitter/Threads writer (texto curto único)",
+  prompt: "Gera 1 texto curto (≤280 chars, por destaque) a partir de {EDIR}/_internal/01-approved.json — compartilhado por Twitter/X e Threads. Output: {EDIR}/_internal/03-curto.tmp.md com seções ## d1, ## d2, ## d3. Seguir .claude/agents/social-curto.md. CTA fixo curto ('Mais em diar.ia.br'), no máx 1 hashtag (#3992)."
+})
 ```
 
 ### Se `$2 = newsletter`:
@@ -217,7 +229,7 @@ Dispatchar só `writer`. Pular steps de social abaixo.
 
 ### Se `$2 = social`:
 
-Dispatchar `social-linkedin` + `social-facebook` + `social-instagram` (#3486) em paralelo. Pular steps de newsletter abaixo.
+Dispatchar `social-linkedin` + `social-facebook` + `social-instagram` (#3486) + `social-curto` (#3992) em paralelo. Pular steps de newsletter abaixo.
 
 ## Passo 2b — Merge dos outputs
 
@@ -227,9 +239,9 @@ Dispatchar `social-linkedin` + `social-facebook` + `social-instagram` (#3486) em
 cp {EDIR}/_internal/02-draft.md {EDIR}/02-reviewed.md
 ```
 
-### 2b-soc — assim que `social-linkedin`, `social-facebook` E `social-instagram` retornarem
+### 2b-soc — assim que `social-linkedin`, `social-facebook`, `social-instagram` E `social-curto` retornarem
 
-**#3486:** usar `merge-social-md.ts` (não montar `03-social.md` manualmente) — o script valida os tmps obrigatórios (LinkedIn/Facebook), faz strip de comentários HTML e dedupe de header (#3424/#3388), e mescla `# Instagram` quando `_internal/03-instagram.tmp.md` existir (tmp OPCIONAL — ausência não falha o merge, só omite a seção e mantém o fallback `# Instagram` → `# Facebook`, #2486):
+**#3486/#3992:** usar `merge-social-md.ts` (não montar `03-social.md` manualmente) — o script valida os tmps obrigatórios (LinkedIn/Facebook), faz strip de comentários HTML e dedupe de header (#3424/#3388), e mescla `# Instagram`/`# Curto` quando `_internal/03-instagram.tmp.md`/`_internal/03-curto.tmp.md` existirem (tmps OPCIONAIS — ausência não falha o merge; Instagram omitido mantém o fallback `# Instagram` → `# Facebook`, #2486; Curto omitido faz `publish-threads.ts` cair no fallback Facebook e `publish-twitter.ts` não publicar, #3994):
 
 ```bash
 npx tsx scripts/merge-social-md.ts --edition-dir {EDIR}/
@@ -529,6 +541,7 @@ Social — Clarice: C aplicadas, D skipadas
 Posts gerados:
 - LinkedIn d1 / d2 / d3
 - Facebook d1 / d2 / d3
+- Curto (Twitter/X + Threads) d1 / d2 / d3
 
 (pode editar diretamente no arquivo, local ou via Studio, antes de aprovar)
 
@@ -584,7 +597,7 @@ Erro do agent (Passo 7) reportado ao editor — sem fallback automático adicion
 ## Outputs
 
 - `{EDIR}/02-reviewed.md` — newsletter final
-- `{EDIR}/03-social.md` — posts LinkedIn + Facebook (seções `# LinkedIn`/`# Facebook`, cada uma com `## d1`/`## d2`/`## d3`)
+- `{EDIR}/03-social.md` — posts LinkedIn + Facebook + Instagram (opcional) + Curto (opcional, #3992) (seções `# LinkedIn`/`# Facebook`/`# Instagram`/`# Curto`, cada uma com `## d1`/`## d2`/`## d3`)
 - `{EDIR}/_internal/02-clarice-diff.md` — diff da Clarice na newsletter
 - `{EDIR}/_internal/02-clarice-report.json` — relatório de sugestões newsletter
 - `{EDIR}/_internal/03-clarice-report.json` — relatório de sugestões social
