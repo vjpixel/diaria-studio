@@ -90,6 +90,10 @@
         <span>Nome interno <em>(opcional — identifica a caixa nesta lista, não aparece na edição)</em></span>
         <input id="create-nome" type="text" placeholder="(usa o título do conteúdo se vazio)" autocomplete="off" spellcheck="false" />
       </label>
+      <label class="cx-field">
+        <span>Categoria <em>(opcional — rótulo exibido acima da caixa na newsletter)</em></span>
+        <input id="create-categoria" type="text" placeholder="(sem rótulo, comportamento atual)" autocomplete="off" spellcheck="false" />
+      </label>
       <textarea id="create-content" class="cx-editor" spellcheck="false" placeholder="<!-- doc opcional do formato -->&#10;&#10;Conteúdo da caixa…"></textarea>
       <div class="cx-editor-toolbar">
         <button id="create-submit-btn" type="button">Criar caixa</button>
@@ -121,17 +125,32 @@
     <section class="panel" id="editor-panel" hidden>
       <h2 id="editor-title">Editando</h2>
       <p class="hint" id="editor-file"></p>
-      <label class="cx-field">
-        <span>Nome interno <em>(identifica a caixa nesta lista, não aparece na edição)</em></span>
-        <input id="editor-nome" type="text" placeholder="(usa o título do conteúdo se vazio)" autocomplete="off" spellcheck="false" />
-      </label>
+      <div class="cx-editor-meta-row">
+        <label class="cx-field">
+          <span>Nome interno <em>(identifica a caixa nesta lista, não aparece na edição)</em></span>
+          <input id="editor-nome" type="text" placeholder="(usa o título do conteúdo se vazio)" autocomplete="off" spellcheck="false" />
+        </label>
+        <label class="cx-field">
+          <span>Categoria <em>(rótulo exibido acima da caixa na newsletter — opcional)</em></span>
+          <input id="editor-categoria" type="text" placeholder="(sem rótulo, comportamento atual)" autocomplete="off" spellcheck="false" />
+        </label>
+      </div>
       <div class="cx-editor-toolbar">
         <button id="save-btn" type="button">Salvar</button>
         <button id="close-editor-btn" type="button">Fechar</button>
         <span id="save-status" class="cx-save-status" role="status" aria-live="polite"></span>
       </div>
       <div id="editor-load-error" class="alert-banner" role="alert" hidden></div>
-      <textarea id="editor" class="cx-editor" spellcheck="false"></textarea>
+      <div class="cx-editor-columns">
+        <div class="cx-editor-column">
+          <h3>Conteúdo <span class="hint">o que renderiza na newsletter</span></h3>
+          <textarea id="editor-conteudo" class="cx-editor" spellcheck="false"></textarea>
+        </div>
+        <div class="cx-editor-column">
+          <h3>Notas <span class="hint">comentário HTML do snippet — instruções internas, nunca aparece na edição</span></h3>
+          <textarea id="editor-notas" class="cx-editor" spellcheck="false"></textarea>
+        </div>
+      </div>
     </section>
   </main>
 

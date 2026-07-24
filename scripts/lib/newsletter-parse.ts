@@ -6,8 +6,10 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseDestaques, buildSubtitle, type Destaque as BaseDestaque } from "../extract-destaques.js";
+import { parseBoxHeaderField } from "./shared/snippet-header.ts"; // #3981 — categoria: do header do snippet
 import { parseInlineLink, parseInlineLinkWithTrailing } from "./inline-link.ts"; // #599, #1581
 import { buildPrevResultLine, readPrevPollStats } from "../eia-compose.ts"; // #1707 fallback
 import {
@@ -130,6 +132,15 @@ export interface NewsletterContent {
    * `02-reviewed.md`; não afeta o box com imagem/carrinho (sempre estruturado
    * por título+corpo). Default `true` preserva o visual histórico. */
   boxDivulgacao1Bold?: boolean;
+  /** #3981: `categoria:` configurada no header do snippet atualmente
+   * atribuído ao slot 1 (`boxes_divulgacao.slot1` em `platform.config.json`)
+   * — rótulo exibido como kicker acima do box, substituindo o
+   * "Divulgação"/"Agradecimento" default (ver `renderHTML`,
+   * `readBoxDivulgacaoCategoriaForSlot`). `null`/ausente -> renderiza
+   * exatamente como hoje (sem override de rótulo). Re-derivado do DISCO no
+   * momento do render (não via `02-reviewed.md`) — ver docstring de
+   * `readBoxDivulgacaoCategoriaForSlot`. */
+  boxDivulgacao1Categoria?: string | null;
   /** Box de divulgação (#2978) posicionado ENTRE o 2º e o 3º destaque — SLOT
    * fixo por posição (gap D2/D3), mesmo contrato de formato do slot 1. Em
    * edições de 2 destaques (sem gap D2/D3) fica sempre `null`. */
@@ -142,6 +153,8 @@ export interface NewsletterContent {
   boxDivulgacao2Image?: string | null;
   /** #3373: mesmo contrato de `boxDivulgacao1Bold`, pro slot 2. */
   boxDivulgacao2Bold?: boolean;
+  /** #3981: mesmo contrato de `boxDivulgacao1Categoria`, pro slot 2. */
+  boxDivulgacao2Categoria?: string | null;
   /** #3476: box de divulgação posicionado SEMPRE após o ÚLTIMO destaque (D3 em
    * edições de 3 destaques, D2 em edições de 2), antes de USE MELHOR/É IA? —
    * diferente dos slots 1/2 (lacunas ENTRE destaques), este é a região
@@ -156,6 +169,8 @@ export interface NewsletterContent {
   boxDivulgacao3Image?: string | null;
   /** Mesmo contrato de `boxDivulgacao1Bold`, pro slot 3. */
   boxDivulgacao3Bold?: boolean;
+  /** #3981: mesmo contrato de `boxDivulgacao1Categoria`, pro slot 3. */
+  boxDivulgacao3Categoria?: string | null;
 }
 
 // ── Section parsing (destaques come from extract-destaques.ts) ────────
@@ -1389,6 +1404,68 @@ export function readBoxDivulgacao3Image(
   return readBoxDivulgacaoImage(editionDir, boxText);
 }
 
+/** Raiz do repo, resolvida a partir do próprio módulo (`scripts/lib/` ->
+ * `..` -> `scripts/` -> `..` -> raiz) — usada por
+ * `readBoxDivulgacaoCategoriaForSlot` como default de `rootDir` no call site
+ * real (`extractContent`, que só recebe `editionDir`, não a raiz do repo). */
+const REPO_ROOT_FROM_MODULE = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/**
+ * #3981: `categoria:` configurada pro box de divulgação de um SLOT (1/2/3) —
+ * rótulo exibido como kicker acima do box na newsletter (ver
+ * `renderDivulgacaoSeparator`/`renderKicker` em newsletter-render-html.ts).
+ *
+ * Lida diretamente do DISCO no momento do render, NÃO via `02-reviewed.md`:
+ * `platform.config.json` → `boxes_divulgacao.slot{N}` dá o nome do snippet
+ * atualmente atribuído a esse slot; `categoria:` vem do header de comentário
+ * HTML desse arquivo — mesmo campo editado no Studio (seção "Caixas",
+ * `scripts/studio-ui/studio-boxes.ts` → `parseBoxCategoria`, mesma convenção
+ * de `nome:` do #3933).
+ *
+ * Deliberadamente NÃO passa pelo texto de `02-reviewed.md`/pipeline de
+ * escrita — a categoria é uma propriedade do BOX (slot -> arquivo), não do
+ * conteúdo que o writer/humanizador/Clarice tocam; ler direto do disco evita
+ * qualquer risco de a categoria ser alterada por um desses passos de LLM, e
+ * evita ensinar `extractBoxDivulgacao{1,2,3}`/`stripBoxDivulgacao{1,2,3}` a
+ * preservar um marcador de metadado dentro do texto solto do box (que hoje é
+ * aceito em QUALQUER formato — bold-line, carrinho, ou genérico).
+ *
+ * `rootDir` (default: raiz do repo real) existe só pra permitir fixture de
+ * teste isolada — o call site real (`extractContent`) nunca passa override.
+ *
+ * `null` (renderiza exatamente como hoje, sem rótulo) quando: config
+ * ausente/corrompido, `boxes_divulgacao` ausente/malformado, slot vazio,
+ * arquivo do snippet não existe, ou o header não tem `categoria:`. Fail-soft
+ * total, nunca lança.
+ */
+export function readBoxDivulgacaoCategoriaForSlot(
+  slot: 1 | 2 | 3,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): string | null {
+  try {
+    const configPath = resolve(rootDir, "platform.config.json");
+    if (!existsSync(configPath)) return null;
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    const boxes = cfg?.boxes_divulgacao;
+    if (!boxes || typeof boxes !== "object") return null;
+    const filename = boxes[`slot${slot}`];
+    if (typeof filename !== "string" || !filename) return null;
+    const snippetPath = resolve(rootDir, "context", "snippets", filename);
+    if (!existsSync(snippetPath)) return null;
+    const raw = readFileSync(snippetPath, "utf8");
+    const categoria = parseBoxHeaderField(raw, "categoria");
+    if (!categoria) return categoria;
+    // Self-review finding (#3981): categoria é texto livre digitado no Studio
+    // e vira label renderizado — sanitizar markdown (**, #, - ) na fonte única
+    // de leitura, mesmo invariante de "output final sem markdown" que vale pro
+    // resto da newsletter. `renderKicker` já faz `esc()` (HTML), não markdown.
+    const sanitized = categoria.replace(/[*#]/g, "").replace(/^-+\s*/, "").trim();
+    return sanitized || null;
+  } catch {
+    return null;
+  }
+}
+
 export function extractContent(editionDir: string): NewsletterContent {
   const reviewedPath = resolve(editionDir, "02-reviewed.md");
   const eiaPath = resolve(editionDir, "01-eia.md");
@@ -1494,16 +1571,22 @@ export function extractContent(editionDir: string): NewsletterContent {
   const boxDivulgacao1Image = readBoxDivulgacao1Image(editionDir, boxDivulgacao1);
   // #3373: peso de fonte do box só-texto controlado pelo bold-wrap da fonte.
   const boxDivulgacao1Bold = isBoxDivulgacao1Bold(reviewedText);
+  // #3981: só busca categoria quando o slot de fato tem box no reviewed.md —
+  // sem isso, um slot vazio (nunca preenchido, ou suprimido por --no-sponsor)
+  // ganharia um rótulo órfão sem box embaixo.
+  const boxDivulgacao1Categoria = boxDivulgacao1 ? readBoxDivulgacaoCategoriaForSlot(1) : null;
   const boxDivulgacao2 = extractBoxDivulgacao2(reviewedText);
   // #2978-slot2-parity: mesmo tratamento do slot 1 — a imagem livros_promo só
   // vai pro box de livros, independente de em qual slot ele caiu.
   const boxDivulgacao2Image = readBoxDivulgacao2Image(editionDir, boxDivulgacao2);
   const boxDivulgacao2Bold = isBoxDivulgacao2Bold(reviewedText);
+  const boxDivulgacao2Categoria = boxDivulgacao2 ? readBoxDivulgacaoCategoriaForSlot(2) : null;
   // #3476: box de divulgação slot 3 — região pós-último-destaque (D3 em
   // edições de 3, D2 em edições de 2), antes de USE MELHOR/É IA?.
   const boxDivulgacao3 = extractBoxDivulgacao3(reviewedText);
   const boxDivulgacao3Image = readBoxDivulgacao3Image(editionDir, boxDivulgacao3);
   const boxDivulgacao3Bold = isBoxDivulgacao3Bold(reviewedText);
+  const boxDivulgacao3Categoria = boxDivulgacao3 ? readBoxDivulgacaoCategoriaForSlot(3) : null;
 
   // #2316: subtitle adapta-se ao número real de destaques.
   // Com 2 destaques: só D2 (sem o separador " | "). Com 3: D2 | D3 (padrão).
@@ -1531,12 +1614,15 @@ export function extractContent(editionDir: string): NewsletterContent {
     boxDivulgacao1,
     boxDivulgacao1Image,
     boxDivulgacao1Bold,
+    boxDivulgacao1Categoria,
     boxDivulgacao2,
     boxDivulgacao2Image,
     boxDivulgacao2Bold,
+    boxDivulgacao2Categoria,
     boxDivulgacao3,
     boxDivulgacao3Image,
     boxDivulgacao3Bold,
+    boxDivulgacao3Categoria,
   };
 }
 

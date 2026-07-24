@@ -33,6 +33,7 @@ import {
   joinMultilineLinks,
   singularizeSectionName,
   pickErroIntencionalReveal,
+  readBoxDivulgacaoCategoriaForSlot,
 } from "../scripts/render-newsletter-html.ts";
 import { DS_STYLE_BLOCK, mdInlineToHtml, renderHeroImageInner, renderErroIntencionalReveal } from "../scripts/lib/newsletter-render-html.ts";
 
@@ -3200,5 +3201,199 @@ describe("applyBrandWordmark (#2532 — Diar.ia → diar.ia.br teal)", () => {
   it("integração renderCoverage (escText): coverage com a marca renderiza wordmark", () => {
     const out = renderCoverage("Para esta edição, a Diar.ia encontrou 12 artigos.");
     assert.ok(out.includes(WM), "wordmark na coverage line");
+  });
+});
+
+describe("renderHTML — categoria do box de divulgação como rótulo do kicker (#3981)", () => {
+  const d = (n: 1 | 2 | 3, url: string) => ({
+    n,
+    category: "LANÇAMENTO",
+    title: `T${n}`,
+    body: `B${n}`,
+    why: `W${n}`,
+    url,
+    emoji: "🚀",
+    imageFile: `04-d${n}-2x1.jpg`,
+  });
+  const fixt = (extras: Partial<Record<string, unknown>> = {}) => ({
+    title: "X",
+    subtitle: "X",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [d(1, "https://example.com/d1"), d(2, "https://example.com/d2"), d(3, "https://example.com/d3")],
+    eia: { credit: "", imageA: "", imageB: "", edition: "260999" },
+    sections: [],
+    boxDivulgacao1: "Confira nossa curadoria. [Link](https://example.com/box1).",
+    boxDivulgacao2: "Confira nossos livros. [Link](https://example.com/box2).",
+    boxDivulgacao3: "Apoie a curadoria. [Link](https://example.com/box3).",
+    ...extras,
+  });
+
+  it("sem categoria: kicker continua 'Divulgação' (comportamento atual, regressão)", () => {
+    const html = renderHTML(fixt());
+    assert.match(html, /Divulgação<\/td>/);
+    assert.doesNotMatch(html, /Categoria Teste/);
+  });
+
+  it("com boxDivulgacao1Categoria: kicker do slot 1 usa a categoria, não 'Divulgação'", () => {
+    const html = renderHTML(fixt({ boxDivulgacao1Categoria: "Recomendado" }));
+    assert.match(html, /Recomendado<\/td>/);
+  });
+
+  it("com boxDivulgacao2Categoria: kicker do slot 2 (gap D2/D3) usa a categoria", () => {
+    const html = renderHTML(fixt({ boxDivulgacao2Categoria: "Achado da semana" }));
+    assert.match(html, /Achado da semana<\/td>/);
+  });
+
+  it("com boxDivulgacao3Categoria: kicker do slot 3 (pós-D3) usa a categoria", () => {
+    const html = renderHTML(fixt({ boxDivulgacao3Categoria: "Apoie a Diar.ia" }));
+    assert.match(html, /Apoie a Diar\.ia<\/td>/);
+  });
+
+  it("categoria vazia/whitespace não sobrescreve o default (fallback continua ativo)", () => {
+    const html = renderHTML(fixt({ boxDivulgacao1Categoria: "" }));
+    assert.match(html, /Divulgação<\/td>/);
+  });
+
+  it("categoria é HTML-escapada (nunca injeta tag executável no kicker)", () => {
+    const html = renderHTML(fixt({ boxDivulgacao1Categoria: 'Teste <img src=x onerror=alert(1)>' }));
+    // esc() escapa <>& do valor — nenhuma tag HTML crua deve sobreviver, mesmo
+    // que stripKickerEmoji tenha comido o 1º caractere não-alfanumérico da
+    // string ANTES do escape (ordem: strip prefix -> esc, ver stripKickerEmoji).
+    // Regex específica pro payload de teste (a fixture tem outros <img> legítimos
+    // — heroes dos destaques — que não devem colidir com esta asserção).
+    assert.doesNotMatch(html, /<img src=x/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  });
+
+  it("categoria presente mas box ausente nesse slot: sem kicker/box nenhum (não vaza rótulo órfão)", () => {
+    const html = renderHTML(fixt({ boxDivulgacao1: null, boxDivulgacao1Categoria: "Órfã" }));
+    assert.doesNotMatch(html, /Órfã/);
+  });
+});
+
+describe("readBoxDivulgacaoCategoriaForSlot (#3981, pure)", () => {
+  function setupRoot() {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "context", "snippets", "com-categoria.md"),
+      "<!--\ncategoria: Recomendado\ndoc interno\n-->\n\nConteúdo público.",
+    );
+    writeFileSync(join(root, "context", "snippets", "sem-categoria.md"), "# Sem categoria\n\ntexto");
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({
+        boxes_divulgacao: { slot1: "com-categoria.md", slot2: "sem-categoria.md", slot3: "" },
+      }),
+    );
+    return root;
+  }
+
+  it("slot com categoria: devolve o valor do header", () => {
+    const root = setupRoot();
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForSlot(1, root), "Recomendado");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("slot sem categoria: null", () => {
+    const root = setupRoot();
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForSlot(2, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("slot vazio (string vazia em boxes_divulgacao): null", () => {
+    const root = setupRoot();
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForSlot(3, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("platform.config.json ausente: null, nunca lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-noconfig-"));
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("boxes_divulgacao ausente/malformado: null, nunca lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-malformed-"));
+    writeFileSync(join(root, "platform.config.json"), JSON.stringify({ newsletter: "beehiiv" }));
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("JSON corrompido: null, nunca lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-corrupt-"));
+    writeFileSync(join(root, "platform.config.json"), "{ not json");
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("arquivo do snippet não existe (config aponta pra arquivo removido): null", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-missing-file-"));
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "nao-existe.md" } }),
+    );
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("self-review finding: categoria com markdown (**, #, -) é sanitizada — invariante 'output final sem markdown' vale pro label", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-markdown-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "context", "snippets", "com-markdown.md"),
+      "<!--\ncategoria: **Recomendado** #top\n-->\n\nConteúdo.",
+    );
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "com-markdown.md" } }),
+    );
+    try {
+      const categoria = readBoxDivulgacaoCategoriaForSlot(1, root);
+      assert.equal(categoria, "Recomendado top");
+      assert.ok(!categoria?.includes("*"));
+      assert.ok(!categoria?.includes("#"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("categoria só com markdown (sobra vazio após sanitizar): null, não string vazia", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-categoria-onlymarkdown-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "context", "snippets", "so-markdown.md"),
+      "<!--\ncategoria: - **#**\n-->\n\nConteúdo.",
+    );
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "so-markdown.md" } }),
+    );
+    try {
+      assert.equal(readBoxDivulgacaoCategoriaForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
