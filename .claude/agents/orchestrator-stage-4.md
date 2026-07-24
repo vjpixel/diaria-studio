@@ -243,7 +243,7 @@ Exit code handling:
 
 **4c.4 — Social preview:**
 - Social preview URL: `{social_url}` (de `_internal/05-social-preview.json`).
-- Ler `03-social.md` para exibir os títulos dos 6 posts (3 LinkedIn + 3 Facebook) em tabela.
+- Ler `03-social.md` para exibir os títulos dos 3 textos genéricos (d1/d2/d3, #3991 — texto único LinkedIn/Facebook/Instagram) + post_pixel em tabela.
 
 **4c.5 — Diffs vs fonte (#1694 — novo no Stage 4):**
 - Comparar os títulos finais em `02-reviewed.md` com os títulos originais em `_internal/01-approved.json` para mostrar se houve mudança editorial.
@@ -512,7 +512,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
 2. **Aplicar edição cirúrgica** em `02-reviewed.md` seguindo #495: substituições linha-a-linha mínimas via `Edit` com `old_string` mínimo. Nunca substituir blocos grandes.
 3. **Cascata de título (crítico):** se a mudança alterar um TÍTULO de destaque:
    - O orchestrator **avisa** o editor: "Essa mudança afeta a imagem e os posts sociais do D{N} — vou re-gerar os passos afetados."
-   - Re-rodar: re-render do HTML (§4b steps 1-3), regenerar imagem do destaque (`scripts/image-generate.ts --edition {AAMMDD} --highlight d{N}`), e regenerar post social do D{N} (`social-linkedin` / `social-facebook` para aquele destaque).
+   - Re-rodar: re-render do HTML (§4b steps 1-3), regenerar imagem do destaque (`scripts/image-generate.ts --edition {AAMMDD} --highlight d{N}`), e regenerar o texto social do D{N} (`social-writer`, #3991 — texto único LinkedIn/Facebook/Instagram, para aquele destaque).
    - Edição de **corpo ou link** (sem mudar título) não cascateia — só re-render do HTML basta.
    - **Em ambos os casos, re-servir o HTML localmente** (§4b step 2b / §4c.6b — stop-old → `embed-images-base64.ts` → `serve-preview.ts`, captura URL nova e atualiza `04-newsletter-url.json`) antes de re-apresentar o gate, senão o editor revisa conteúdo desatualizado.
 
@@ -520,7 +520,7 @@ O editor dita a mudança em linguagem natural (ex: "muda o título do D2 para X"
    - O `## post_pixel` foi gerado sobre o D1 **original** (Stage 2) e **não é remapeado automaticamente** junto com os blocos `## d{N}`.
    - O orchestrator **avisa** o editor imediatamente: "Reordenação detectada — o `## post_pixel` pode estar referenciando o D1 antigo. Re-verificar e re-sincronizar antes de aprovar."
    - Re-rodar lint: `npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md {EDITION_DIR}/03-social.md`.
-   - Se falhar (exit 1): o post_pixel precisa ser atualizado manualmente — reescrever o bloco `## post_pixel` em `03-social.md` para refletir o D1 atual, depois re-rodar o lint até exit 0. **Não há modo de re-dispatch parcial** — o `social-linkedin` não aceita `--only post_pixel` e um re-dispatch completo clobberia os posts de d1/d2/d3 já aprovados. Edição manual do bloco é a única via segura.
+   - Se falhar (exit 1): o post_pixel precisa ser atualizado manualmente — reescrever o bloco `## post_pixel` em `03-social.md` para refletir o D1 atual, depois re-rodar o lint até exit 0. **Não há modo de re-dispatch parcial** — o `social-writer` (#3991) não aceita `--only post_pixel` e um re-dispatch completo clobberia os textos de d1/d2/d3 já aprovados. Edição manual do bloco é a única via segura.
    - Lint verde (exit 0) = post_pixel já alinhado com o D1 atual → sem bloqueio.
 
 5. **Logar:**

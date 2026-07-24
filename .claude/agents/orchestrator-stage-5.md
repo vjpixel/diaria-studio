@@ -208,11 +208,11 @@ Exit code do guard:
 ```bash
 npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
 ```
-Exit 1 = `# LinkedIn` ou `# Facebook` aparece mais de 1 vez em `03-social.md` — **halt** Stage 5 (nao dispatchar `publish-linkedin.ts`/`publish-facebook.ts`, que vao falhar com "Destaque nao encontrado" pros 3 destaques):
+Exit 1 = `# Social` (#3991 — ou, em edicao legado, `# LinkedIn`/`# Facebook`) aparece mais de 1 vez em `03-social.md` — **halt** Stage 5 (nao dispatchar `publish-linkedin.ts`/`publish-facebook.ts`/`publish-instagram.ts`, que vao falhar com "Destaque nao encontrado" pros 3 destaques):
 ```bash
 npx tsx scripts/render-halt-banner.ts \
   --stage "5 — Publicacao" \
-  --reason "03-social.md tem header de plataforma duplicado (# LinkedIn ou # Facebook aparece >1x) — publish-linkedin.ts/publish-facebook.ts vao parsear so ate o 2o header e reportar destaque nao encontrado" \
+  --reason "03-social.md tem header de plataforma duplicado (# Social, ou # LinkedIn/# Facebook em edicao legado, aparece >1x) — os publishers vao parsear so ate o 2o header e reportar destaque nao encontrado" \
   --action "remova o header duplicado em {EDITION_DIR}/03-social.md (ver linhas no output do lint) e rode novamente"
 ```
 

@@ -146,7 +146,7 @@ O dispatch social NÃO foi bloqueado — isso pode ser um bug real (writer/stitc
 um placeholder) OU prosa legítima citando um exemplo de prompt/campo de API entre chaves (comum em
 conteúdo sobre IA). Revisão humana recomendada — ver ${logHint}.
   → {edition_url} já foi substituído por este script (gravado: ${editionUrl}).
-  → o(s) placeholder(s) acima não é {edition_url} — se for um bug, verificar origem (writer-destaque/social-linkedin/social-facebook/stitch-newsletter).`);
+  → o(s) placeholder(s) acima não é {edition_url} — se for um bug, verificar origem (writer-destaque/social-writer/stitch-newsletter).`);
   logEvent(
     {
       edition: editionId,

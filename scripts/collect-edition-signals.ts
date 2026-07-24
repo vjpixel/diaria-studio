@@ -753,7 +753,7 @@ export function signalsFromPlaceholderGuardWarnings(
         "Conferir o post social publicado (LinkedIn/Facebook/Instagram/Threads) desta edição — o(s) " +
         "placeholder(s) acima pode ter ido ao ar literal, sem substituição. Se for prosa legítima citando " +
         "um exemplo entre chaves (comum em conteúdo sobre IA), nenhuma ação necessária — fechar a issue. " +
-        "Se for bug real, verificar origem em writer-destaque/social-linkedin/social-facebook/stitch-newsletter.",
+        "Se for bug real, verificar origem em writer-destaque/social-writer/stitch-newsletter.",
       related_issue: "#3277",
     },
   ];

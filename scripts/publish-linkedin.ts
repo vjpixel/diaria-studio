@@ -64,6 +64,8 @@ import { CONFIG } from "./lib/config.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { outrosCount as _outrosCount, resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
+import { extractSection } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`
+import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts"; // #2454: constante centralizada da URL base
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 
@@ -99,18 +101,29 @@ import {
 // ── Helpers ───────────────────────────────────────────────────────────
 
 /**
- * Isola o bloco completo `## d{N}` dentro de `# LinkedIn` (incluindo eventuais
- * subseções `### comment_diaria` e `### comment_pixel` — #595).
+ * Isola o bloco completo `## d{N}` dentro de `# Social` (formato pós-#3991) —
+ * ou, como fallback de compat, dentro de `# LinkedIn` (formato legado,
+ * incluindo eventuais subseções `### comment_diaria`/`### comment_pixel`,
+ * #595, aposentadas desde #3627 mas ainda presentes em edições antigas).
  * Normaliza CRLF → LF (arquivo pode vir do Drive com Windows line endings).
  */
 function extractDestaqueBlock(socialMd: string, destaque: string): string {
   // Normalizar CRLF → LF
   socialMd = socialMd.replace(/\r\n/g, "\n");
 
-  // Isolar seção # LinkedIn
-  const platRe = /(?:^|\n)# LinkedIn\n([\s\S]*?)(?=\n# |$)/i;
-  const platMatch = socialMd.match(platRe);
-  if (!platMatch) throw new Error("Seção 'LinkedIn' não encontrada em 03-social.md");
+  // #3991: seção nova `# Social` tem precedência; fallback pra `# LinkedIn`
+  // legado (edições publicadas antes deste merge, nunca serão re-geradas).
+  const socialRe = /(?:^|\n)# Social\n([\s\S]*?)(?=\n# |$)/i;
+  const socialMatch = socialMd.match(socialRe);
+  let sectionBody: string;
+  if (socialMatch) {
+    sectionBody = socialMatch[1];
+  } else {
+    const platRe = /(?:^|\n)# LinkedIn\n([\s\S]*?)(?=\n# |$)/i;
+    const platMatch = socialMd.match(platRe);
+    if (!platMatch) throw new Error("Seção 'Social' (ou legado 'LinkedIn') não encontrada em 03-social.md");
+    sectionBody = platMatch[1];
+  }
 
   // Extrair subseção ## dN
   // #725 bug #3: `\d+\b` em vez de `\d` — evita `## d10` bater como `## d1`+`0`
@@ -120,27 +133,36 @@ function extractDestaqueBlock(socialMd: string, destaque: string): string {
     `(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## |\\n# |$)`,
     "i",
   );
-  const dMatch = platMatch[1].match(dRe);
-  if (!dMatch) throw new Error(`Destaque '${destaque}' não encontrado em LinkedIn`);
+  const dMatch = sectionBody.match(dRe);
+  if (!dMatch) throw new Error(`Destaque '${destaque}' não encontrado em Social/LinkedIn`);
 
   return dMatch[1].replace(/<!--[\s\S]*?-->/g, "");
 }
 
 /**
- * #2343: Extrai a lista de destaques presentes na seção LinkedIn do 03-social.md.
- * Retorna ["d1","d2"] ou ["d1","d2","d3"] conforme a edição.
+ * #2343: Extrai a lista de destaques presentes na seção Social/LinkedIn do
+ * 03-social.md. Retorna ["d1","d2"] ou ["d1","d2","d3"] conforme a edição.
  * Fallback para [] se a seção não for encontrada (caller usa ["d1","d2","d3"]).
- * Reusa `extractPlatformSection` + `parseDestaqueHeaders` (#2343 review — evita drift de regex).
+ * #3991: tenta `# Social` (formato novo) antes de `# LinkedIn` (legado).
  */
 export function extractDestaquesFromLinkedInMd(socialMd: string): string[] {
-  const section = extractPlatformSection(socialMd, "linkedin");
+  const section = extractSection(socialMd, "Social") ?? extractPlatformSection(socialMd, "linkedin");
   if (section === null) return [];
   return parseDestaqueHeaders(section);
 }
 
 /**
- * Extrai o texto do **post principal** (sem `### comment_*` subsections — #595).
- * Backward-compat: se o destaque não tem subseções, retorna o bloco inteiro.
+ * Extrai o texto do **post principal** (sem `### comment_*` subsections — #595,
+ * inertes desde #3627, mas ainda tratadas como boundary por compat com edições
+ * antigas). Backward-compat: se o destaque não tem subseções, retorna o bloco
+ * inteiro.
+ *
+ * #3991: injeta a linha de CTA/canal do LinkedIn no momento do publish, via
+ * `injectChannelLine` (`scripts/lib/social-cta-lines.ts`). Hoje `LINKEDIN_CTA_LINE`
+ * é `null` — preserva o invariante #595/#3627 (sem URL/menção no corpo do post
+ * principal) — então esta chamada é um no-op de conteúdo (só normaliza
+ * corpo/tags via `splitBodyAndTags`). Ver JSDoc de `social-cta-lines.ts` para a
+ * interpretação adotada e a ambiguidade a confirmar com o editor.
  */
 export function extractPostText(socialMd: string, destaque: string): string {
   const block = extractDestaqueBlock(socialMd, destaque);
@@ -148,7 +170,7 @@ export function extractPostText(socialMd: string, destaque: string): string {
   const commentRe = /\n### comment_(diaria|pixel)\b/;
   const cut = block.search(commentRe);
   const mainOnly = cut >= 0 ? block.slice(0, cut) : block;
-  return mainOnly.trim();
+  return injectChannelLine(mainOnly.trim(), "linkedin");
 }
 
 /**

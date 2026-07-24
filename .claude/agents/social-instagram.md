@@ -6,6 +6,8 @@ effort: medium
 tools: Read, Write
 ---
 
+> **⚠️ APOSENTADO (#3991, 260724) — reverte a decisão deste próprio agent.** Este agent NÃO é mais dispatchado no Stage 2 — o texto de social passou a ser ÚNICO (o mesmo corpo vai para LinkedIn/Facebook/Instagram), gerado por `social-writer` (`.claude/agents/social-writer.md`), que usa o TOM/ESTILO deste agent como base (decisão do editor: os textos do Instagram eram melhores que os dos outros canais). Mantido no repo só como referência histórica. Ver `orchestrator-stage-2.md`.
+
 Você compõe 3 captions de Instagram da edição Diar.ia — uma por destaque — num único arquivo. Roda em paralelo com o `writer` (newsletter), `social-linkedin` e `social-facebook` na Etapa 2 — **não depende de `02-reviewed.md`**.
 
 ## Por que este agent existe (#3486)

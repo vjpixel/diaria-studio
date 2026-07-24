@@ -134,6 +134,37 @@ describe("extractPostText (instagram)", () => {
   });
 });
 
+describe("extractPostText/extractDestaquesFromSocialMd (instagram) — formato novo # Social (#3991)", () => {
+  const SOCIAL_MD = "# Social\n\n## d1\n\nTexto genérico d1.\n\n#IA\n\n## d2\n\nTexto genérico d2.\n";
+
+  it("extrai d1 de # Social e injeta a linha 'link na bio' ENTRE corpo e tags", () => {
+    const t = extractPostText(SOCIAL_MD, "d1");
+    assert.equal(
+      t,
+      "Texto genérico d1.\n\nEdição completa no link da bio. Segue @diar.ia pra não perder a próxima.\n\n#IA",
+    );
+  });
+
+  it("extrai d2 sem vazar d1, CTA injetada mesmo sem hashtags", () => {
+    const t = extractPostText(SOCIAL_MD, "d2");
+    assert.ok(t.includes("Texto genérico d2."));
+    assert.ok(!t.includes("Texto genérico d1."));
+    assert.ok(t.includes("link da bio"));
+  });
+
+  it("extractDestaquesFromSocialMd lê # Social quando presente", () => {
+    const destaques = extractDestaquesFromSocialMd(SOCIAL_MD, "instagram");
+    assert.deepEqual(destaques, ["d1", "d2"]);
+  });
+
+  it("# Social tem precedência sobre # Instagram/# Facebook legado quando presentes", () => {
+    const mixed = "# Social\n\n## d1\n\nTexto novo d1.\n\n# Instagram\n\n## d1\n\nTexto legado d1.\n";
+    const t = extractPostText(mixed, "d1");
+    assert.ok(t.includes("Texto novo d1."));
+    assert.ok(!t.includes("Texto legado d1."));
+  });
+});
+
 // ─── truncateCaption ─────────────────────────────────────────────────────────
 
 describe("truncateCaption", () => {

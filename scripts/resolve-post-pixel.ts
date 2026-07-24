@@ -7,7 +7,7 @@
  *
  * `post_pixel` NUNCA passa por `publish-linkedin.ts` — é publicado 100%
  * manualmente (Make.com não tem endpoint pra post pessoal, ver §3b de
- * social-linkedin.md e context/publishers/linkedin.md). Por isso os
+ * social-writer.md, #3991 — antes social-linkedin.md — e context/publishers/linkedin.md). Por isso os
  * placeholders não são resolvidos no dispatch de Stage 5 (como eram no
  * `### comment_diaria`, aposentado em #3627) — este script é o ponto de
  * resolução equivalente pro fluxo manual, chamado no pré-gate do Stage 6
@@ -39,6 +39,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractPlatformSection, extractPostPixelBlock } from "./lib/social-lint-rules.ts";
+import { extractSection } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`
 import { resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
@@ -64,14 +65,16 @@ export function substitutePostPixelPlaceholders(
 
 /**
  * Extrai o texto bruto (não resolvido) do `## post_pixel` de um `03-social.md`
- * completo. Retorna `null` se a seção LinkedIn ou o bloco post_pixel não
- * existirem (schema pré-#1690 ou edição sem D1... não deveria acontecer, mas
- * fail-soft de qualquer forma). Exportada pra testes unitários.
+ * completo. #3991: tenta a seção nova `# Social` antes de cair no fallback
+ * legado `# LinkedIn` (edições publicadas antes deste merge). Retorna `null`
+ * se nenhuma das duas existir, ou se o bloco post_pixel não existir (schema
+ * pré-#1690 ou edição sem D1... não deveria acontecer, mas fail-soft de
+ * qualquer forma). Exportada pra testes unitários.
  */
 export function extractPostPixelText(socialMd: string): string | null {
-  const linkedinSection = extractPlatformSection(socialMd, "linkedin");
-  if (!linkedinSection) return null;
-  const block = extractPostPixelBlock(linkedinSection);
+  const section = extractSection(socialMd, "Social") ?? extractPlatformSection(socialMd, "linkedin");
+  if (!section) return null;
+  const block = extractPostPixelBlock(section);
   if (!block) return null;
   return block.text.replace(/<!--[\s\S]*?-->/g, "").trim();
 }
@@ -104,7 +107,7 @@ function main(): void {
   if (rawText === null) {
     console.error(
       `Erro: seção '## post_pixel' não encontrada em 03-social.md (${socialMdPath}). ` +
-        "Schema pré-#1690 ou seção LinkedIn ausente.",
+        "Schema pré-#1690 ou seção Social/LinkedIn ausente.",
     );
     console.log("(nao encontrado)");
     process.exit(1);

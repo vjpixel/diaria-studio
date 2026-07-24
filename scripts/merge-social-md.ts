@@ -13,35 +13,49 @@
  * - try/catch ao redor de todas as ops de FS, mensagens de erro úteis em
  *   stderr (#870 — antes era node -e inline sem nenhum tratamento).
  *
- * #3486: também mescla `_internal/03-instagram.tmp.md` (agent `social-instagram`)
- * em `# Instagram`, quando presente. Diferente de LinkedIn/Facebook, esse tmp é
- * OPCIONAL — ausência não falha o merge, só omite a seção (edição sai igual ao
- * formato pré-#3486). Isso preserva o fallback estrutural `# Instagram` →
- * `# Facebook` que `lintInstagramEmailCTA`/`publish-instagram.ts` já usavam
- * (#2486) pra edições/testes que não disparam o novo agent.
+ * #3991 (260724, reverte #3486): o texto de social passa a ser ÚNICO —
+ * `social-linkedin`, `social-facebook` e `social-instagram` (3 agents, textos
+ * DIFERENTES por canal) foram colapsados em 1 único agent `social-writer`,
+ * que escreve `_internal/03-social.tmp.md` com o texto genérico (estilo
+ * Instagram, sem qualquer CTA/linguagem de canal) + `## post_pixel`. O merge
+ * grava isso como seção única `# Social` — substitui `# LinkedIn` / `# Facebook`
+ * / `# Instagram`. Cada publisher (`publish-linkedin.ts`/`publish-facebook.ts`/
+ * `publish-instagram.ts`) injeta sua própria linha de CTA no momento do
+ * publish via `scripts/lib/social-cta-lines.ts` — NUNCA aqui. `social-linkedin.md`
+ * /`social-facebook.md`/`social-instagram.md` permanecem no repo como
+ * referência histórica, mas não são mais dispatchados no Stage 2.
+ *
+ * Compat com edições antigas: `03-social.md` no formato legado (3 headers de
+ * plataforma, já publicado ou em progresso antes deste merge) não é
+ * re-gerado — os lints/publishers mantêm fallback pro formato antigo onde
+ * fizer sentido (ver `scripts/lib/social-lint-rules.ts`), mas este script só
+ * sabe produzir o formato novo daqui em diante.
  *
  * #3992: também mescla `_internal/03-curto.tmp.md` (agent `social-curto`) em
- * `# Curto`, quando presente. Mesmo tratamento OPCIONAL do Instagram — ausência
- * não falha o merge, só omite a seção (edições antigas continuam com o fallback
- * de `publish-threads.ts` pra `# Facebook`; `publish-twitter.ts`, #3994, não tem
- * fallback — sem `# Curto` ele pula com log, por decisão do editor).
+ * `# Curto`, quando presente. Esse tmp é OPCIONAL — ausência não falha o
+ * merge, só omite a seção (edições antigas continuam com o fallback de
+ * `publish-threads.ts` pra `# Facebook`; `publish-twitter.ts`, #3994, não tem
+ * fallback — sem `# Curto` ele pula com log, por decisão do editor). `# Curto`
+ * é INDEPENDENTE desta unificação — texto curto Twitter/Threads, não afetado
+ * pelo #3991.
  *
- * #3471: também injeta uma seção `## eia` dentro do LinkedIn (entre os
+ * #3471: também injeta uma seção `## eia` dentro de `# Social` (entre os
  * destaques `## d1/d2/d3` e `## post_pixel`, posição pedida pelo editor) com
  * o post social do "É IA?" do dia, pronto pra publicação MANUAL. Lida
  * `01-eia.md` (raiz da edição — gerado por `eia-compose.ts`) e monta o bloco
  * de forma determinística (`extractEiaCreditLine` + `buildEiaSocialSection` +
  * `insertEiaSection`, todos exportados/testados). NUNCA lê o frontmatter
- * `eia_answer` (o gabarito) — só a linha de crédito, que já é pública. Também
- * OPCIONAL como o Instagram: `01-eia.md` ausente ou num formato inesperado só
- * omite a seção (warn no stderr), nunca falha o merge.
+ * `eia_answer` (o gabarito) — só a linha de crédito, que já é pública. É
+ * OPCIONAL: `01-eia.md` ausente ou num formato inesperado só omite a seção
+ * (warn no stderr), nunca falha o merge.
  *
  * Uso:
  *   npx tsx scripts/merge-social-md.ts --edition-dir data/editions/260507/
  *
  * Exit codes:
  *   0 — merge OK + tmps deletados
- *   1 — algum tmp ausente/vazio, comments mal-formados, ou falha de FS
+ *   1 — tmp obrigatório (social-writer) ausente/vazio, comments mal-formados,
+ *       ou falha de FS
  */
 
 import {
@@ -175,7 +189,7 @@ export function stripHtmlComments(input: string): StripResult {
  */
 export function stripLeadingPlatformHeader(
   content: string,
-  platform: "linkedin" | "facebook" | "instagram" | "curto",
+  platform: "linkedin" | "facebook" | "instagram" | "curto" | "social",
 ): string {
   const platTitle = platform.charAt(0).toUpperCase() + platform.slice(1);
   const headerRe = new RegExp(`^# ${platTitle}\\s*$`, "i");
@@ -328,22 +342,22 @@ function readTmpOrFail(check: TmpCheck): string {
 }
 
 /**
- * readOptionalTmp (#3486)
+ * readOptionalTmp (#3486, generalizado #3992/#3991)
  *
  * Análogo a `readTmpOrFail`, mas pra tmps OPCIONAIS: se ausente ou vazio,
- * retorna `null` (warn no stderr) em vez de `process.exit(1)`. Usado pro tmp
- * do `social-instagram` — diferente de LinkedIn/Facebook, uma edição sem
- * `03-instagram.tmp.md` (ex: worktree/teste antigo, ou o agent ainda não foi
- * disparado) não deve quebrar o merge; `03-social.md` simplesmente sai sem
- * `# Instagram`, preservando o fallback `# Instagram` → `# Facebook` já usado
- * por `lintInstagramEmailCTA`/`publish-instagram.ts` (#2486).
+ * retorna `null` (warn no stderr) em vez de `process.exit(1)`. Usado hoje só
+ * pelo tmp do `social-curto` (`# Curto`) — uma edição sem `03-curto.tmp.md`
+ * (ex: worktree/teste antigo, ou o agent ainda não foi disparado) não deve
+ * quebrar o merge; `03-social.md` simplesmente sai sem `# Curto` (os
+ * publishers de Threads/Twitter/X têm seus próprios fallbacks, ver
+ * `publish-threads.ts`/`publish-twitter.ts`).
  */
 function readOptionalTmp(check: TmpCheck): string | null {
   if (!existsSync(check.path)) return null;
   if (statSync(check.path).size === 0) {
     console.error(
       `merge-social-md: warn — tmp file vazio (0 bytes) para agent opcional '${check.agent}' — ` +
-        `pulando seção (fallback Facebook segue valendo pro Instagram): ${check.path}`,
+        `pulando seção: ${check.path}`,
     );
     return null;
   }
@@ -366,50 +380,29 @@ function main(): void {
   }
 
   const editionDir = resolve(ROOT, editionDirArg);
-  const linkedinTmp: TmpCheck = {
-    agent: "social-linkedin",
-    path: resolve(editionDir, "_internal/03-linkedin.tmp.md"),
+  // #3991: agent único `social-writer` substitui social-linkedin/facebook/
+  // instagram — 1 texto genérico por destaque + `## post_pixel`, sem CTA de
+  // canal. Único tmp FATAL do merge.
+  const socialTmp: TmpCheck = {
+    agent: "social-writer",
+    path: resolve(editionDir, "_internal/03-social.tmp.md"),
   };
-  const facebookTmp: TmpCheck = {
-    agent: "social-facebook",
-    path: resolve(editionDir, "_internal/03-facebook.tmp.md"),
-  };
-  // #3486: tmp OPCIONAL — social-instagram é um agent novo; edições antigas
-  // (ou worktrees/testes que não o disparam) não têm este arquivo. Ausência
-  // não é falha: 03-social.md sai sem `# Instagram` e o fallback estrutural
-  // `# Instagram` → `# Facebook` (lintInstagramEmailCTA/publish-instagram.ts,
-  // #2486) continua valendo pra essas edições.
-  const instagramTmp: TmpCheck = {
-    agent: "social-instagram",
-    path: resolve(editionDir, "_internal/03-instagram.tmp.md"),
-  };
-  // #3992: tmp OPCIONAL — social-curto é um agent novo (texto único Twitter/Threads);
-  // mesmo tratamento do Instagram (#3486) — ausência não falha o merge.
+  // #3992: tmp OPCIONAL — social-curto (texto único Twitter/Threads);
+  // ausência não falha o merge, independente do #3991.
   const curtoTmp: TmpCheck = {
     agent: "social-curto",
     path: resolve(editionDir, "_internal/03-curto.tmp.md"),
   };
 
-  const liRaw = readTmpOrFail(linkedinTmp);
-  const fbRaw = readTmpOrFail(facebookTmp);
-  const igRaw = readOptionalTmp(instagramTmp);
+  const socialRaw = readTmpOrFail(socialTmp);
   const curtoRaw = readOptionalTmp(curtoTmp);
 
-  let liStripped: string;
-  let fbStripped: string;
-  let igStripped: string | null = null;
+  let socialStripped: string;
   let curtoStripped: string | null = null;
   try {
-    const li = stripHtmlComments(liRaw);
-    const fb = stripHtmlComments(fbRaw);
-    liStripped = li.stripped.trim();
-    fbStripped = fb.stripped.trim();
-    const warnings = [...li.warnings, ...fb.warnings];
-    if (igRaw !== null) {
-      const ig = stripHtmlComments(igRaw);
-      igStripped = ig.stripped.trim();
-      warnings.push(...ig.warnings);
-    }
+    const soc = stripHtmlComments(socialRaw);
+    socialStripped = soc.stripped.trim();
+    const warnings = [...soc.warnings];
     if (curtoRaw !== null) {
       const curto = stripHtmlComments(curtoRaw);
       curtoStripped = curto.stripped.trim();
@@ -423,16 +416,17 @@ function main(): void {
     process.exit(1);
   }
 
-  // #3424: strip de header de plataforma pré-existente ANTES do header
-  // canônico ser prependado abaixo — impede a duplicação na fonte, em vez de
-  // só deixar `lintPlatformHeadersUnique` (#3388) detectar depois do fato.
-  const liAfterHeaderStrip = stripLeadingPlatformHeader(liStripped, "linkedin");
-  if (liAfterHeaderStrip !== liStripped) {
+  // #3424 (aplicado ao formato #3991): strip de header pré-existente ANTES
+  // do header canônico ser prependado abaixo — impede duplicação na fonte,
+  // em vez de só deixar `lintPlatformHeadersUnique` (#3388) detectar depois
+  // do fato.
+  const socialAfterHeaderStrip = stripLeadingPlatformHeader(socialStripped, "social");
+  if (socialAfterHeaderStrip !== socialStripped) {
     console.error(
-      `merge-social-md: warn — tmp file de LinkedIn já continha o header "# LinkedIn" — removido antes do merge (#3424).`,
+      `merge-social-md: warn — tmp file de Social já continha o header "# Social" — removido antes do merge (#3424).`,
     );
   }
-  liStripped = liAfterHeaderStrip.trim();
+  socialStripped = socialAfterHeaderStrip.trim();
 
   // #3471: seção "## eia" — best-effort, opcional. `01-eia.md` (ou o legacy
   // `01-eai.md` pré-#428) mora na RAIZ da edição, não em `_internal/` — lido
@@ -452,7 +446,7 @@ function main(): void {
       const creditLine = extractEiaCreditLine(eiaRaw);
       if (creditLine) {
         const eiaSection = buildEiaSocialSection(creditLine);
-        liStripped = insertEiaSection(liStripped, eiaSection).trim();
+        socialStripped = insertEiaSection(socialStripped, eiaSection).trim();
         console.error(`merge-social-md: info — seção '## eia' incluída (#3471) a partir de ${eiaMdPath}`);
       } else {
         console.error(
@@ -468,26 +462,6 @@ function main(): void {
     console.error(`merge-social-md: info — 01-eia.md ausente em ${editionDir} — seção '## eia' não incluída (#3471).`);
   }
 
-  const fbAfterHeaderStrip = stripLeadingPlatformHeader(fbStripped, "facebook");
-  if (fbAfterHeaderStrip !== fbStripped) {
-    console.error(
-      `merge-social-md: warn — tmp file de Facebook já continha o header "# Facebook" — removido antes do merge (#3424).`,
-    );
-  }
-  fbStripped = fbAfterHeaderStrip.trim();
-
-  // #3486: mesmo strip de header pré-existente, aplicado ao Instagram quando
-  // o tmp opcional estiver presente.
-  if (igStripped !== null) {
-    const igAfterHeaderStrip = stripLeadingPlatformHeader(igStripped, "instagram");
-    if (igAfterHeaderStrip !== igStripped) {
-      console.error(
-        `merge-social-md: warn — tmp file de Instagram já continha o header "# Instagram" — removido antes do merge (#3424).`,
-      );
-    }
-    igStripped = igAfterHeaderStrip.trim();
-  }
-
   // #3992: mesmo strip de header pré-existente, aplicado ao Curto quando o
   // tmp opcional estiver presente.
   if (curtoStripped !== null) {
@@ -500,20 +474,20 @@ function main(): void {
     curtoStripped = curtoAfterHeaderStrip.trim();
   }
 
-  // #3627: comment_diaria e comment_pixel deixaram de ser gerados (decisão do
-  // editor, 260716 — postagem manual de comentários auxiliares não compensava
-  // mais o atrito, ver #1310/#1075 pro histórico de por que eram manuais).
-  // Banner atualizado: só main (agendado) + post_pixel (manual via Chrome).
-  const linkedinHeader = `# LinkedIn\n\n> **Postagem semi-automática:** \`main\` (d1/d2/d3) agenda via Worker→Make. \`post_pixel\` precisa ser postado manualmente via Claude in Chrome (#1690) — copy-paste do texto abaixo.\n`;
-  // #3486: `# Instagram` só entra no output quando o tmp opcional existe —
-  // preserva 03-social.md byte-idêntico ao formato pré-#3486 quando o agent
-  // social-instagram não rodou (edições antigas, testes, resume parcial).
-  const instagramSection = igStripped !== null ? `\n\n# Instagram\n\n${igStripped}` : "";
+  // #3991: seção única `# Social` — substitui `# LinkedIn`/`# Facebook`/
+  // `# Instagram`. Banner explica que a linha de CTA por canal é injetada só
+  // no publish (nunca aparece aqui) e que `post_pixel` continua manual.
+  const socialHeader =
+    `# Social\n\n> **Texto único (#3991)** — o mesmo corpo + hashtags vai para LinkedIn, ` +
+    `Facebook e Instagram. Cada publisher injeta sua própria linha de CTA/canal no momento ` +
+    `do publish (\`scripts/lib/social-cta-lines.ts\`) — esta seção nunca contém CTA de canal. ` +
+    `\`post_pixel\` é publicado manualmente no feed pessoal via Claude in Chrome (#1690).\n`;
   // #3992: seção `# Curto` só entra quando o tmp opcional existe — texto único
   // compartilhado por Twitter/X (publish-twitter.ts, #3994) e Threads
   // (publish-threads.ts, que passa a preferir esta seção ao fallback Facebook).
+  // Independente do #3991 — não muda.
   const curtoSection = curtoStripped !== null ? `\n\n# Curto\n\n${curtoStripped}` : "";
-  const merged = `${linkedinHeader}\n${liStripped}\n\n# Facebook\n\n${fbStripped}${instagramSection}${curtoSection}\n`;
+  const merged = `${socialHeader}\n${socialStripped}${curtoSection}\n`;
   const outPath = resolve(editionDir, "03-social.md");
 
   try {
@@ -525,11 +499,10 @@ function main(): void {
     process.exit(1);
   }
 
-  // Deletar tmps só após sucesso na escrita do output final. Instagram só
-  // entra na lista se de fato foi lido (existsSync) — evita tentar unlink
-  // de um arquivo que nunca existiu.
-  const tmpsToDelete = [linkedinTmp, facebookTmp];
-  if (igRaw !== null) tmpsToDelete.push(instagramTmp);
+  // Deletar tmps só após sucesso na escrita do output final. Curto só entra
+  // na lista se de fato foi lido (existsSync) — evita tentar unlink de um
+  // arquivo que nunca existiu.
+  const tmpsToDelete = [socialTmp];
   if (curtoRaw !== null) tmpsToDelete.push(curtoTmp);
   for (const tmp of tmpsToDelete) {
     try {

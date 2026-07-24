@@ -89,7 +89,7 @@ fonte correta. (O mapping bucket→seção da newsletter acontece no render laye
 
 Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (pós-writer), não JSON pré-writer. Confusão de paths levou ao bug do #1451 review (PR #1462).
 
-**Dispatch paralelo (uma única mensagem com N+4 chamadas Agent — N writer + 4 social, onde N = highlights.length ∈ {2,3}):**
+**Dispatch paralelo (uma única mensagem com N+2 chamadas Agent — N writer + 2 social, onde N = highlights.length ∈ {2,3}):**
 
 1. `Agent` → `writer-destaque` × N — uma instância por destaque (n=1..N). Cada uma recebe:
    - `destaque_n`, `destaque` (= `highlights[N-1].article`), `category_label`
@@ -99,20 +99,18 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
    - `out_path = {EDITION_DIR}/_internal/02-d{N}-draft.md`
    - `image_prompt_out_path = {EDITION_DIR}/_internal/02-d{N}-prompt.md`
 
-2. `Agent` → `social-linkedin` passando:
+2. `Agent` → `social-writer` (#3991, reverte #3486 — colapsa `social-linkedin`+`social-facebook`+`social-instagram` num único agent) passando:
    - `approved_json_path = {EDITION_DIR}/_internal/01-approved-capped.json`
    - `out_dir = {EDITION_DIR}/`
-   - `outros_count`: **não injetar (#2319)** — `social-linkedin` mantëm `{outros_count}` como placeholder literal (igual a `{edition_url}`). Stage 5 (`publish-linkedin`) resolve do `01-approved-capped.json` FINAL antes de enfileirar. Não calcular nem passar no prompt.
+   - `outros_count`: **não injetar (#2319)** — `social-writer` mantém `{outros_count}` como placeholder literal (igual a `{edition_url}`), consumido só pelo `## post_pixel`. Stage 6 (`resolve-post-pixel.ts`) resolve do `01-approved-capped.json` FINAL. Não calcular nem passar no prompt.
 
-3. `Agent` → `social-facebook` (mesmo input que social-linkedin, exceto `outros_count` que não se aplica ao Facebook).
+   Gera `_internal/03-social.tmp.md` com 1 texto genérico (estilo Instagram, #3991) por destaque — IDÊNTICO pra LinkedIn/Facebook/Instagram, SEM CTA de canal — + `## post_pixel` (post pessoal do Pixel, inalterado desde #1690). A linha de CTA por canal (e-mail no Facebook, "link na bio" no Instagram, nenhuma no LinkedIn — ver `scripts/lib/social-cta-lines.ts`) é injetada só no Stage 5, nunca aqui.
 
-4. `Agent` → `social-instagram` (#3486, mesmo input que social-facebook — `approved_json_path` + `out_dir`; `outros_count` não se aplica). Gera `_internal/03-instagram.tmp.md` com caption própria por destaque, CTA nativo de social ("link na bio" + follow), **sem CTA de e-mail** — elimina o fallback estrutural em que o Instagram herdava a copy do Facebook (que mantém o CTA de e-mail).
+3. `Agent` → `social-curto` (#3992, mesmo input que social-writer — `approved_json_path` + `out_dir`; `outros_count` não se aplica; **independente do #3991**, não muda). Gera `_internal/03-curto.tmp.md` com 1 texto ≤280 chars por destaque, compartilhado por Twitter/X (`publish-twitter.ts`, #3994) e Threads (`publish-threads.ts`, que passa a preferir esta seção ao fallback Facebook).
 
-5. `Agent` → `social-curto` (#3992, mesmo input que social-facebook — `approved_json_path` + `out_dir`; `outros_count` não se aplica). Gera `_internal/03-curto.tmp.md` com 1 texto ≤280 chars por destaque, compartilhado por Twitter/X (`publish-twitter.ts`, #3994) e Threads (`publish-threads.ts`, que passa a preferir esta seção ao fallback Facebook).
+**Aguardar os N writer-destaques + 2 social retornarem.** Cada `writer-destaque` retorna JSON `{ out_path, image_prompt_path, destaque_n, char_count, warnings }`. **Se `warnings[]` de qualquer um não estiver vazio, pare e reporte ao usuário antes de prosseguir** — mesma regra do writer único legacy.
 
-**Aguardar os N writer-destaques + 4 social retornarem.** Cada `writer-destaque` retorna JSON `{ out_path, image_prompt_path, destaque_n, char_count, warnings }`. **Se `warnings[]` de qualquer um não estiver vazio, pare e reporte ao usuário antes de prosseguir** — mesma regra do writer único legacy.
-
-**Capturar custo de tokens (#3748):** monte um array `[{agent_type, usage_raw}]` com o bloco `<usage>` de cada dispatch acima (writer-destaque ×N + 4 social) e rode:
+**Capturar custo de tokens (#3748):** monte um array `[{agent_type, usage_raw}]` com o bloco `<usage>` de cada dispatch acima (writer-destaque ×N + 2 social) e rode:
 ```bash
 npx tsx scripts/record-agent-costs.ts --edition-dir {EDITION_DIR}/ --edition {AAMMDD} \
   --stage 2 --costs {EDITION_DIR}/_internal/tmp-agent-costs-stage2.json
@@ -170,20 +168,18 @@ Fallback dispatch:
    - `d2_prompt_path = {EDITION_DIR}/_internal/02-d2-prompt.md`
    - `d3_prompt_path = {EDITION_DIR}/_internal/02-d3-prompt.md`
 
-2. `Agent` → `social-linkedin` (mesmo input do writer; `{outros_count}` é placeholder literal no output — não injetar #2319).
-3. `Agent` → `social-facebook` (mesmo input do writer).
-4. `Agent` → `social-instagram` (#3486, mesmo input do writer).
-5. `Agent` → `social-curto` (#3992, mesmo input do writer).
+2. `Agent` → `social-writer` (#3991, reverte #3486, mesmo input do writer; `{outros_count}` é placeholder literal no output, consumido só pelo `## post_pixel` — não injetar #2319).
+3. `Agent` → `social-curto` (#3992, mesmo input do writer; independente do #3991).
 
-Aguardar os 5 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
+Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_prompt_path, d3_prompt_path, checklist, warnings }`. Se `warnings[]` não estiver vazio, **pare** e reporte ao usuário antes de prosseguir.
 
-**Validar outputs dos 5 agents antes de qualquer processamento (#872, #3486, #3992):** se um deles falhou silenciosamente (timeout, retorno mal-formado), o merge em 2c crasharia lendo arquivo ausente (LinkedIn/Facebook) ou perderia a seção Instagram/Curto dedicada silenciosamente. Antes de prosseguir, rodar:
+**Validar outputs dos 3 agents antes de qualquer processamento (#872, #3991, #3992):** se um deles falhou silenciosamente (timeout, retorno mal-formado), o merge em 2c crasharia lendo arquivo ausente (`03-social.tmp.md`) ou perderia a seção Curto silenciosamente. Antes de prosseguir, rodar:
 
 ```bash
 npx tsx scripts/validate-stage-2-outputs.ts --edition-dir {EDITION_DIR}/
 ```
 
-O script verifica que `_internal/02-draft.md`, `_internal/03-linkedin.tmp.md` e `_internal/03-facebook.tmp.md` existem e não estão vazios (FATAL — exit 1) e que `_internal/03-instagram.tmp.md`/`_internal/03-curto.tmp.md` existem e não estão vazios (WARN — não bloqueia, mas sinaliza que o merge vai cair nos fallbacks `# Instagram` → `# Facebook` e `# Curto` ausente respectivamente). Exit 1 = algum agent obrigatório falhou — relatar ao editor com sugestão de re-rodar isolado (`/diaria-2-escrita {AAMMDD} newsletter` ou `social`). Não prosseguir.
+O script verifica que `_internal/02-draft.md` e `_internal/03-social.tmp.md` existem e não estão vazios (FATAL — exit 1) e que `_internal/03-curto.tmp.md` existe e não está vazio (WARN — não bloqueia, mas sinaliza que o merge vai sair sem a seção `# Curto`, com os fallbacks descritos em `publish-threads.ts`/`publish-twitter.ts`). Exit 1 = algum agent obrigatório falhou — relatar ao editor com sugestão de re-rodar isolado (`/diaria-2-escrita {AAMMDD} newsletter` ou `social`). Não prosseguir.
 
 ### 2b. Processar newsletter
 
@@ -384,20 +380,20 @@ npx tsx scripts/merge-social-md.ts --edition-dir {EDITION_DIR}/
 ```
 
 O script:
-- Verifica que `_internal/03-linkedin.tmp.md` e `_internal/03-facebook.tmp.md` existem e não estão vazios; exit 1 com mensagem clara indicando qual agent falhou se algum estiver ausente
+- Verifica que `_internal/03-social.tmp.md` (agent `social-writer`) existe e não está vazio; exit 1 com mensagem clara se estiver ausente
 - Faz strip de comentários HTML (`<!-- ... -->`) com fallback safe pra comments mal-formados (#875)
-- Concatena em `# LinkedIn` + `# Facebook` e grava em `03-social.md`
-- **#3486:** se `_internal/03-instagram.tmp.md` existir (o caso normal — `social-instagram` roda em todo dispatch), mescla também `# Instagram` no output. Tmp OPCIONAL — ausência não falha o merge (edição sai igual ao formato pré-#3486 e o fallback `# Instagram` → `# Facebook` continua valendo pra ela nos lints/publish downstream).
-- **#3992:** se `_internal/03-curto.tmp.md` existir (o caso normal — `social-curto` roda em todo dispatch), mescla também `# Curto` no output. Tmp OPCIONAL — ausência não falha o merge; `publish-threads.ts` cai no fallback `# Facebook` (truncado) e `publish-twitter.ts` simplesmente não publica nesta edição (sem fallback, #3994).
+- Grava em `03-social.md` como seção única `# Social` (#3991 — substitui `# LinkedIn`/`# Facebook`/`# Instagram`) — texto genérico por destaque + `## post_pixel`, sem qualquer CTA de canal (injetada só no publish)
+- **#3992:** se `_internal/03-curto.tmp.md` existir (o caso normal — `social-curto` roda em todo dispatch), mescla também `# Curto` no output. Tmp OPCIONAL — ausência não falha o merge; `publish-threads.ts` cai no fallback `# Facebook` (só existe em edições no formato legado pré-#3991) e `publish-twitter.ts` simplesmente não publica nesta edição (sem fallback, #3994). Independente do #3991 — não muda.
 - Deleta os tmp files após sucesso
+- Edições publicadas ANTES deste merge (formato legado, 3 headers de plataforma) não são re-geradas — lints/publishers mantêm fallback pro formato antigo (ver `scripts/lib/social-lint-rules.ts`), mas o merge só sabe produzir `# Social` daqui em diante.
 
 Falha = abortar e reportar ao editor com sugestão de re-rodar isolado.
 
-**Lint header de plataforma único (#3388) — logo após o merge.** `merge-social-md.ts` prepende seu próprio header `# LinkedIn` na hora do merge; se o tmp file do agent `social-linkedin` já contiver um `# LinkedIn` embutido no próprio texto (esse é o root cause do bug real da edição 260713), o resultado tem 2 ocorrências — `extractPlatformSection`/`extractDestaqueBlock` param no 2º header como se fosse o fim da seção, e `publish-linkedin.ts` reporta "Destaque não encontrado" pros 3 destaques no Stage 5, quebrando o dispatch inteiro. Rodar imediatamente após o merge, antes do humanizador:
+**Lint header de plataforma único (#3388) — logo após o merge.** `merge-social-md.ts` prepende seu próprio header `# Social` na hora do merge; se o tmp file do agent `social-writer` já contiver um `# Social` embutido no próprio texto (mesma classe de bug do incidente real da edição 260713, então antes com `# LinkedIn`), o resultado tem 2 ocorrências — o parser para no 2º header como se fosse o fim da seção, e os publishers reportam "Destaque não encontrado" no Stage 5, quebrando o dispatch inteiro. Rodar imediatamente após o merge, antes do humanizador:
 ```bash
 npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
 ```
-Exit 1 = `# LinkedIn` ou `# Facebook` aparece mais de 1 vez. **Abortar Stage 2** (não silenciar, não prosseguir pro humanizador) e reportar ao editor a mensagem do lint (linhas exatas dos headers duplicados) — a correção correta é remover o header duplicado de `03-social.md` e, se a causa for o agent `social-linkedin`/`social-facebook` emitindo `# LinkedIn`/`# Facebook` no próprio tmp file, ajustar o prompt do agent pra não incluir esse header (só `merge-social-md.ts` deve escrevê-lo).
+Exit 1 = `# Social` (ou, em edição legado, `# LinkedIn`/`# Facebook`) aparece mais de 1 vez. **Abortar Stage 2** (não silenciar, não prosseguir pro humanizador) e reportar ao editor a mensagem do lint (linhas exatas dos headers duplicados) — a correção correta é remover o header duplicado de `03-social.md` e, se a causa for o agent `social-writer` emitindo `# Social` no próprio tmp file, ajustar o prompt do agent pra não incluir esse header (só `merge-social-md.ts` deve escrevê-lo).
 
 **Humanizar social (#308, #1072, refined #1546):** invocar skill `humanizador` in-place no `03-social.md` com prompt completo (mesma profundidade da newsletter — prompt fraco causava remoção de só 25% dos travessões):
 ```
@@ -421,7 +417,7 @@ cp {EDITION_DIR}/03-social.md {EDITION_DIR}/_internal/03-social-post-humanizador
 ```
 Esse snapshot vira o baseline do check `humanizer-section-coverage` no pre-gate (`check-invariants.ts --stage 2`, §2d) — decorrelaciona a detecção de "humanizador pulou uma seção" das mudanças que a Clarice fizer a seguir. **Motivação (#3929):** a Clarice tem precedência sobre o Humanizador (correção > estilo) — sem este snapshot, uma reversão legítima da Clarice (ela corrige o texto de volta pra perto do pré-humanizador porque o Humanizador introduziu um erro) faria a seção parecer "idêntica ao pré-humanizador" no check, sendo lida como "humanizador não cobriu a seção" e disparando re-humanização/bloqueio indevido do gate — blindando efetivamente o Humanizador contra a correção da Clarice.
 
-**Revisar social com Clarice (inline, ordem #1072: Humanizador → Clarice):** ler `03-social.md` (já humanizado), chamar `mcp__clarice__correct_text`, aplicar sugestões, sobrescrever. **Após sobrescrever**, verificar que as seções `# LinkedIn`, `# Facebook`, `## d1`, `## d2`, `## d3` ainda existem. Se algum cabeçalho estiver ausente, restaurar com `Edit` antes de prosseguir. Se Clarice falhar (retornar erro OU output byte-idêntico ao input), **retry 3x + abort** — mesma regra do reviewed.
+**Revisar social com Clarice (inline, ordem #1072: Humanizador → Clarice):** ler `03-social.md` (já humanizado), chamar `mcp__clarice__correct_text`, aplicar sugestões, sobrescrever. **Após sobrescrever**, verificar que a seção `# Social` (#3991) e os headers `## d1`, `## d2`, `## d3` ainda existem. Se algum cabeçalho estiver ausente, restaurar com `Edit` antes de prosseguir. Se Clarice falhar (retornar erro OU output byte-idêntico ao input), **retry 3x + abort** — mesma regra do reviewed.
 
 **Diff legível da revisão Clarice social (#3929).** Gerar diff comparando o snapshot pós-humanizador/pré-Clarice contra o `03-social.md` final, passando `03-social-pre-humanizador.md` (pré-Humanizador) como 4º argumento — sinaliza explicitamente `⚠️ REVERTE HUMANIZADOR` em cada alteração da Clarice que desfaz uma edição do Humanizador, pra o editor decidir com contexto no gate:
 ```bash
@@ -454,11 +450,17 @@ npx tsx scripts/lint-social-numbers.ts --social {EDITION_DIR}/03-social.md --app
 ```
 Flaga cifras de DINHEIRO COM MAGNITUDE (US$/R$/€ + número + bi/mi/bilhões/...) presentes no post de cada destaque mas AUSENTES da fonte DAQUELE destaque (title+summary de `highlights[N-1]`) — comparação **per-destaque** (não pool inteiro), que pega número certo no contexto errado (caso 260602: post d1 citou "US$ 965 bilhões em valuation" da Anthropic, ausente da fonte do d1). WARN-only (exit 0) para cifras alucinadas e contagem errada. `{outros_count}` no `post_pixel` é placeholder intencional resolvido em Stage 6 (#2319, #3052) — o lint não bloqueia mais por isso. **Incluir as cifras flagadas no prompt do gate** ("⚠️ cifra X não encontrada na fonte — confira") pro editor verificar contra a fonte original antes de aprovar. Cifras: heurística conservadora (pode ter falso-positivo se a fonte usa formato muito diferente).
 
-**Lint LinkedIn schema pré-gate (#595, #3627):** social-linkedin gera 1 post principal por destaque (subseções `comment_diaria`/`comment_pixel` foram aposentadas, decisão do editor 260716 — postagem manual de comentários auxiliares não compensava). Validar:
+**Lint schema do texto social pré-gate (#595, #3627, #3991):** `social-writer` gera 1 texto genérico por destaque (subseções `comment_diaria`/`comment_pixel` foram aposentadas, decisão do editor 260716 — postagem manual de comentários auxiliares não compensava) + `## post_pixel`. Validar (o check `linkedin-schema` adapta automaticamente o range de caracteres esperado conforme o formato — 600-900 no `# Social` novo, 1200-1500 no `# LinkedIn` legado):
 ```bash
 npx tsx scripts/lint-social-md.ts --check linkedin-schema --md {EDITION_DIR}/03-social.md
 ```
-Falha = post principal ausente (missing_main) ou char count fora do range. **#3052:** também valida que `## post_pixel` abre com `{outros_count}` + `{edition_url}` literais (post_pixel_missing_outros_count / post_pixel_missing_edition_url). Exit 1 = re-disparar `social-linkedin` agent.
+Falha = texto genérico ausente (missing_main) ou char count fora do range. **#3052:** também valida que `## post_pixel` abre com `{outros_count}` + `{edition_url}` literais (post_pixel_missing_outros_count / post_pixel_missing_edition_url). Exit 1 = re-disparar `social-writer` agent.
+
+**Lint channel-neutral pré-gate (#2486, alvo mudou no #3991):** o texto genérico `## d1/d2/d3` não pode conter CTA de e-mail, "link na bio", "segue @...", nem qualquer menção a `diar.ia.br` — essas linhas são injetadas SÓ no publish (`scripts/lib/social-cta-lines.ts`). Validar:
+```bash
+npx tsx scripts/lint-social-md.ts --check no-email-cta-instagram --md {EDITION_DIR}/03-social.md
+```
+Exit 1 = re-disparar `social-writer` agent com a violação explicitada no prompt.
 
 **Lint pergunta-de-encerramento pré-gate (#1762):** posts social não devem fechar com pergunta (CTA-pergunta). Rodar:
 ```bash
@@ -495,7 +497,8 @@ Flaga quando a última frase do post principal (corpo de `## d{N}`) termina em "
         URL fica na linha imediatamente abaixo do título escolhido (#172).
 
   Social — revise {EDITION_DIR}/03-social.md:
-      — 3 posts LinkedIn (d1/d2/d3) + 3 posts Facebook (d1/d2/d3)
+      — 1 texto por destaque (d1/d2/d3), compartilhado por LinkedIn/Facebook/Instagram (#3991)
+      — + 1 post pessoal standalone (post_pixel, D1, publicação manual)
   ```
   Quando o editor responder "sim", os arquivos locais são os textos finais.
 

@@ -41,7 +41,7 @@ describe("fileToStage (#1405)", () => {
     // Regression #1405: antes ia pra Stage 3 "Social", mas social roda em
     // paralelo com newsletter dentro do Stage 2 (CLAUDE.md pipeline atual).
     assert.deepEqual(fileToStage("03-social.md"), { stage: 2, label: "Writing" });
-    assert.deepEqual(fileToStage("_internal/03-linkedin.tmp.md"), { stage: 2, label: "Writing" });
+    assert.deepEqual(fileToStage("_internal/03-social.tmp.md"), { stage: 2, label: "Writing" });
   });
 
   it("04-* → Stage 3 Images", () => {

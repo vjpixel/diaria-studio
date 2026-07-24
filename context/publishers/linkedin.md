@@ -188,7 +188,7 @@ A mensagem "Post scheduled" pode aparecer mesmo quando o post foi parar no conte
 
 ## Post pessoal standalone de D1 (`## post_pixel`) — #1690
 
-Além dos 3 posts da página, o `03-social.md` traz um `## post_pixel`: um **post próprio no feed pessoal do vjpixel** sobre o D1 (gerado pelo `social-linkedin`, voz pessoal). Amplifica o destaque de topo via alcance orgânico do perfil pessoal.
+Além dos textos genéricos (LinkedIn/Facebook/Instagram, #3991), o `03-social.md` traz um `## post_pixel`: um **post próprio no feed pessoal do vjpixel** sobre o D1 (gerado pelo `social-writer`, voz pessoal). Amplifica o destaque de topo via alcance orgânico do perfil pessoal.
 
 **Publicação (manual via Claude in Chrome, sessão LinkedIn do Pixel logada):**
 
