@@ -669,7 +669,7 @@ ${renderSubscribeCtaBlock()}
      clarice/#3524, ver handleJogarPage). A rota /jogar/arquivo continua
      viva (destino dessa ponte), só não é mais auto-promovida em NENHUMA
      view web (issue #3589 item 3). -->
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-footer", "eia-jogar-footer"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 
 <script>
@@ -1600,7 +1600,7 @@ ${renderBrandShellStyles()}
 <h1>Sequência do mês — jogue e entre no leaderboard</h1>
 ${bodyHtml}
 
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-footer", "eia-jogar-footer"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${quizFallbackLink}</p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${quizFallbackLink}</p>
 ${renderBrandFooter(JOGAR_BRAND)}
 ${scriptHtml}
 </body>
@@ -2205,7 +2205,7 @@ ${renderBrandShellStyles()}
 <h1>Quiz relâmpago</h1>
 ${quizBodyHtml}
 
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-footer", "eia-jogar-footer"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="/jogar">Jogar o par de hoje</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Ver arquivo</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver leaderboard</a></p>
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="/jogar">Jogar o par de hoje</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Ver arquivo</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver leaderboard</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 ${scriptHtml}
 </body>

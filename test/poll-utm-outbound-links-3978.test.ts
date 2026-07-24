@@ -163,32 +163,32 @@ describe("Grupo 2 — CTA 'Conhecer a Diar.ia' pós-voto (jogar.ts, renderSubscr
 });
 
 describe("Grupo 2 — rodapé '← Voltar para a Diar.ia' em /jogar (par único, sequência, quiz — #3978)", () => {
-  it("renderJogarPageHtml (par único via ?edition=): link 'Voltar' carrega utm_medium=jogar-footer", () => {
+  it("renderJogarPageHtml (par único via ?edition=): link 'Voltar' carrega utm_medium=jogar-voltar", () => {
     const html = renderJogarPageHtml({ edition: "260101", revealed: false });
-    assert.match(html, /href="[^"]*utm_medium=jogar-footer[^"]*">← Voltar para a Diar\.ia<\/a>/);
-    assert.match(html, /utm_campaign=eia-jogar-footer/);
+    assert.match(html, /href="[^"]*utm_medium=jogar-voltar[^"]*">← Voltar para a Diar\.ia<\/a>/);
+    assert.match(html, /utm_campaign=eia-jogar-voltar/);
   });
 
   it("renderJogarSequencePageHtml (sequência do mês): mesmo medium/campaign do par único", () => {
     const html = renderJogarSequencePageHtml(["260101", "260102"]);
-    assert.match(html, /href="[^"]*utm_medium=jogar-footer[^"]*">← Voltar para a Diar\.ia<\/a>/);
+    assert.match(html, /href="[^"]*utm_medium=jogar-voltar[^"]*">← Voltar para a Diar\.ia<\/a>/);
   });
 
   it("renderJogarQuizPageHtml (quiz relâmpago): mesmo medium/campaign", () => {
     const html = renderJogarQuizPageHtml(["260101", "260102"]);
-    assert.match(html, /href="[^"]*utm_medium=jogar-footer[^"]*">← Voltar para a Diar\.ia<\/a>/);
+    assert.match(html, /href="[^"]*utm_medium=jogar-voltar[^"]*">← Voltar para a Diar\.ia<\/a>/);
   });
 });
 
 describe("Grupo 2 — rodapé de /vote (index.ts, votePageHtml, #3978)", () => {
-  it("link 'Voltar' carrega UTM (medium=vote-footer) — antes ia com BRAND_INFO[brand].siteUrl cru", () => {
+  it("link 'Voltar' carrega UTM (medium=vote-voltar) — antes ia com BRAND_INFO[brand].siteUrl cru", () => {
     const html = votePageHtml("Você acertou!", true, null, null, null, "diaria");
-    assert.match(html, /href="[^"]*utm_source=eia-standalone[^"]*utm_medium=vote-footer[^"]*utm_campaign=eia-vote-footer[^"]*">← Voltar para a Diar\.ia<\/a>/);
+    assert.match(html, /href="[^"]*utm_source=eia-standalone[^"]*utm_medium=vote-voltar[^"]*utm_campaign=eia-vote-voltar[^"]*">← Voltar para a Diar\.ia<\/a>/);
   });
 
   it("brand clarice: usa BRAND_INFO.clarice.siteUrl (clarice.ai) preservando via=diaria + UTM", () => {
     const html = votePageHtml("Você acertou!", true, null, null, null, "clarice");
-    assert.match(html, /href="https:\/\/clarice\.ai\/\?via=diaria&amp;utm_source=eia-standalone&amp;utm_medium=vote-footer&amp;utm_campaign=eia-vote-footer"/);
+    assert.match(html, /href="https:\/\/clarice\.ai\/\?via=diaria&amp;utm_source=eia-standalone&amp;utm_medium=vote-voltar&amp;utm_campaign=eia-vote-voltar"/);
   });
 });
 
