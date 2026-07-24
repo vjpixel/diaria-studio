@@ -19,6 +19,7 @@ import {
   legacyMonthlyEditionForCycle, // #3261: /stats por ciclo também consulta a chave AAMMDD legada
   cycleForLegacyMonthlyEdition, // #3350: /editions normaliza chave AAMMDD legada pro slug de ciclo
   safeParseKv, // #3298: parse seguro de JSON vindo do KV
+  isValidWebToken, // #3976: brand "web" exige local-part UUID v4 sob o domínio reservado
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
@@ -170,6 +171,19 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // direto pro schema de chave sem checagem nenhuma. Validação pura e
   // testável em lib.ts (isValidVoteEmailFormat/isValidVoteEditionFormat).
   if (!isValidVoteEmailFormat(email) || !isValidVoteEditionFormat(edition)) {
+    return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
+  }
+
+  // #3976: brand "web" usa identidade anônima client-side — token opaco gerado
+  // via crypto.randomUUID() (jogar.ts) virando o pseudo-email
+  // `{uuid}@web.eia.diaria.local` (anonEmailForToken). O check acima
+  // (isValidVoteEmailFormat) só valida a FORMA genérica `local@domínio.tld` —
+  // não distingue esse token legítimo de um local-part arbitrário forjado por
+  // um HTTP client externo (bot/scanner) apontando pro mesmo domínio
+  // reservado. Achado #3976: entrada fantasma "verify1840428@web.eia.diaria.local"
+  // no leaderboard público — sem este guard, qualquer client pode votar com
+  // qualquer token e poluir o ranking.
+  if (brand === "web" && !isValidWebToken(email)) {
     return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
   }
 

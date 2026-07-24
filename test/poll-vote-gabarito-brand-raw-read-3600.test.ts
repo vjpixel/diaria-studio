@@ -53,7 +53,11 @@ describe("handleVote via /vote — gabarito correct:{edition} é lido CRU (brand
     assert.match(htmlHit, /✅ Acertou! Era a imagem gerada por IA\./, "brand=web deve revelar o acerto usando o gabarito cru");
     assert.doesNotMatch(htmlHit, /resultado sai na próxima edição/);
 
-    const resMiss = await vote(kv, "outro-" + token, "260601", "B", "web"); // erra
+    // #3976: local-part precisa ser UUID v4 (guard novo em handleVote pra
+    // brand="web") — "outro-" + token quebraria a forma UUID, então usamos
+    // um 2º token válido em vez de prefixar o primeiro.
+    const otherToken = "55555555-5555-4555-8555-555555555555@web.eia.diaria.local";
+    const resMiss = await vote(kv, otherToken, "260601", "B", "web"); // erra
     const htmlMiss = await resMiss.text();
     assert.match(htmlMiss, /❌ Não foi dessa vez — era a foto real\./, "brand=web deve revelar o erro usando o gabarito cru");
 
@@ -83,8 +87,11 @@ describe("handleVote via /vote — gabarito correct:{edition} é lido CRU (brand
   it("os 3 brands compartilham o MESMO gabarito cru — 1 close-poll.ts serve diaria+web+clarice simultaneamente", async () => {
     const kv = makeTrackedKv({ "correct:260603": "A" });
 
+    // #3976: brand="web" exige local-part UUID v4 (guard novo em handleVote)
+    // — "w@x.com" não passaria mais; diaria/clarice usam e-mail real de
+    // assinante, sem essa exigência (guard é específico do brand web).
     const resDiaria = await vote(kv, "d@x.com", "260603", "A");
-    const resWeb = await vote(kv, "w@x.com", "260603", "A", "web");
+    const resWeb = await vote(kv, "66666666-6666-4666-8666-666666666666@web.eia.diaria.local", "260603", "A", "web");
     const resClarice = await vote(kv, "c@x.com", "260603", "A", "clarice");
 
     for (const [label, res] of [["diaria", resDiaria], ["web", resWeb], ["clarice", resClarice]] as const) {
