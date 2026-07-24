@@ -161,3 +161,24 @@ describe("EiaMetaSchema — selection/pct_correct (#2869)", () => {
     assert.throws(() => EiaMetaSchema.parse({ ...BASE, selection: "guess" }));
   });
 });
+
+describe("WikimediaInfoSchema — description (#3984)", () => {
+  const BASE = {
+    title: "File:Foo.jpg",
+    image_url: "https://example.com/foo.jpg",
+  };
+
+  it("aceita ausência de description (edições compostas ANTES do #3984, back-compat)", () => {
+    const r = WikimediaInfoSchema.parse(BASE);
+    assert.equal(r.description, undefined);
+  });
+
+  it("aceita description string (frase traduzida pt-BR ou fallback EN)", () => {
+    const r = WikimediaInfoSchema.parse({ ...BASE, description: "Uma ponte no Japão." });
+    assert.equal(r.description, "Uma ponte no Japão.");
+  });
+
+  it("rejeita description não-string (schema type-safe)", () => {
+    assert.throws(() => WikimediaInfoSchema.parse({ ...BASE, description: 123 }));
+  });
+});
