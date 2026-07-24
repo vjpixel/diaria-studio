@@ -20,6 +20,7 @@ import {
   cycleForLegacyMonthlyEdition, // #3350: /editions normaliza chave AAMMDD legada pro slug de ciclo
   safeParseKv, // #3298: parse seguro de JSON vindo do KV
   isValidWebToken, // #3976: brand "web" exige local-part UUID v4 sob o domínio reservado
+  isAnonymousWebIdentity, // #4011: domínio reservado do brand "web" nunca pode ser aceito fora dele
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
@@ -199,7 +200,22 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // reservado. Achado #3976: entrada fantasma "verify1840428@web.eia.diaria.local"
   // no leaderboard público — sem este guard, qualquer client pode votar com
   // qualquer token e poluir o ranking.
-  if (brand === "web" && !isValidWebToken(email)) {
+  //
+  // #4011: o #3976 original só aplicava este guard quando `brand === "web"` —
+  // um e-mail forjado sob o domínio reservado `@web.eia.diaria.local` era
+  // REJEITADO no brand web, mas ACEITO em qualquer outro brand (ex: "diaria",
+  // default sem `sig` — modo merge-tag, #1236), gravando score/vote/counted
+  // reais lá. Reproduzido ao vivo pelo editor 260724 e purgado manualmente.
+  // O domínio `.eia.diaria.local` é RESERVADO pra identidade anônima do jogo
+  // web — não tem razão de existir sob nenhum outro brand. Condição agora
+  // cobre os dois lados: (a) brand==="web" precisa SEMPRE de um token válido
+  // (comportamento pré-existente do #3976, preservado), E (b) qualquer e-mail
+  // sob o domínio reservado (`isAnonymousWebIdentity`, #3975 — checagem SÓ de
+  // domínio, mais ampla que `isValidWebToken`) exige brand==="web" E token
+  // válido, mesmo que o caller tenha passado outro brand. O fluxo legítimo de
+  // voto por e-mail arbitrário no brand diária (merge-tag, sem sig) não é
+  // afetado — só o domínio reservado do web é bloqueado fora do brand web.
+  if ((brand === "web" || isAnonymousWebIdentity(email)) && !isValidWebToken(email)) {
     return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
   }
 
