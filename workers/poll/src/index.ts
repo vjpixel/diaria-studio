@@ -469,7 +469,20 @@ export async function handleQuizSharePage(url: URL, path: string, env: Env): Pro
 
 // ── /admin/correct ────────────────────────────────────────────────────────────
 
-async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
+// #4038: `rawEnv` — env CRU (sem prefixo de brand), usado SÓ pra gravar
+// `correct:{edition}` (gabarito, fato compartilhado entre brands — mesmo
+// racional de `rawEnv` em vote.ts, #3600). `env` (branded — o `bEnv` do
+// router) continua usado pro backfill de scores (`vote:{edition}:*`,
+// `score:*`), que É brand-scoped. Achado: antes desta correção, chamar
+// `/admin/correct?brand=web` (mirror do close-poll.ts, #3516) gravava
+// `web:correct:{edition}` em vez da chave crua compartilhada — nunca lida
+// por handleVote/jogar.ts/leaderboard-routes.ts (todos leem `correct:*` via
+// env cru). Mascarado em produção porque close-poll.ts sempre chama
+// primeiro `/admin/correct` SEM `&brand=` (fecha a diária, grava a chave
+// crua correta) antes do mirror — mas era uma escrita morta com risco real
+// de virar bug ativo se esse fluxo mudasse (issue #4038, mesma classe do
+// #3600/#4035).
+async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", rawEnv: Env = env): Promise<Response> {
   const edition = url.searchParams.get("edition");
   const answer = url.searchParams.get("answer")?.toUpperCase();
   const sig = url.searchParams.get("sig");
@@ -497,7 +510,8 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria"): 
   const valid = await hmacVerify(env.ADMIN_SECRET, `${brand}:${edition}:${answer}`, sig);
   if (!valid) return json({ error: "invalid signature" }, 403, env);
 
-  await env.POLL.put(`correct:${edition}`, answer);
+  // #4038: sempre via rawEnv — ver rationale no header da função.
+  await rawEnv.POLL.put(`correct:${edition}`, answer);
 
   // Retroativamente atualizar scores dos votos já gravados.
   // #1345 followup: paginado via listAllKeys — em edição com >1000 votos,
@@ -1309,7 +1323,10 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
       if (yearMatch) return handleLeaderboardByYear(yearMatch[1], bEnv, brand);
     }
     if (path === "/set-name" && request.method === "GET") return handleSetName(url, bEnv, brand);
-    if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, bEnv, brand);
+    // #4038: 4º arg `env` (cru) — mesmo padrão de handleVote (rawEnv, #3600) —
+    // handleAdminCorrect precisa dele pra gravar correct:{edition} na chave
+    // compartilhada, não branded.
+    if (path === "/admin/correct" && request.method === "POST") return handleAdminCorrect(url, bEnv, brand, env);
     // #3984: `env` CRU (não `bEnv`) — eiameta é brand-independente, mesmo
     // racional de `correct:{edition}` (ver handleAdminEiaMeta acima).
     if (path === "/admin/eiameta" && request.method === "POST") return handleAdminEiaMeta(request, env);
