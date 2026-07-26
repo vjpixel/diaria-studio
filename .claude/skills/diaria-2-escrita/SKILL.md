@@ -217,7 +217,7 @@ cp {EDIR}/_internal/02-draft.md {EDIR}/02-reviewed.md
 
 ### 2b-soc — assim que `social-writer` E `social-curto` retornarem
 
-**#3991/#3992:** usar `merge-social-md.ts` (não montar `03-social.md` manualmente) — o script valida o tmp obrigatório (`social-writer`), faz strip de comentários HTML e dedupe de header (#3424/#3388), e grava a seção única `# Social`; mescla `# Curto` quando `_internal/03-curto.tmp.md` existir (tmp OPCIONAL — ausência não falha o merge; Curto omitido faz `publish-threads.ts` cair no fallback Facebook — só existe em edições legado — e `publish-twitter.ts` não publicar, #3994):
+**#3991/#3992:** usar `merge-social-md.ts` (não montar `03-social.md` manualmente) — o script valida o tmp obrigatório (`social-writer`), faz strip de comentários HTML e dedupe de header (#3424/#3388), e grava a seção única `# Social`; mescla `# Curto` quando `_internal/03-curto.tmp.md` existir (tmp OPCIONAL — ausência não falha o merge; Curto omitido faz `publish-threads.ts` cair no fallback Facebook — só existe em edições legado — e o dispatch do X via Buffer MCP não publicar, #3994):
 
 ```bash
 npx tsx scripts/merge-social-md.ts --edition-dir {EDIR}/

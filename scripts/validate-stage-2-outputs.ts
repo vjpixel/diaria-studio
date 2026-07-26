@@ -19,8 +19,8 @@
  * compartilhado por Twitter/X e Threads, ver `.claude/agents/social-curto.md`),
  * checado WARN-ONLY — ausência faz `publish-threads.ts` cair no fallback
  * `# Facebook` (formato legado; ausente no formato novo — ver nota em
- * `publish-threads.ts`) e `publish-twitter.ts` pular sem publicar (sem
- * fallback, #3994).
+ * `publish-threads.ts`) e o dispatch do X (`prep-twitter-posts.ts` + Buffer
+ * MCP, #3994) pular sem publicar (sem fallback).
  *
  * Uso:
  *   npx tsx scripts/validate-stage-2-outputs.ts --edition-dir data/editions/260507/
@@ -75,7 +75,7 @@ function main(): void {
       path: resolve(editionDir, "_internal/03-curto.tmp.md"),
       resumeCmd: `/diaria-2-escrita ${editionDate} social`,
       fallbackNote:
-        "publish-threads.ts vai cair no fallback '# Facebook' truncado (500 chars, só existe em edições no formato legado pré-#3991); publish-twitter.ts não publica nesta edição (sem fallback, #3994).",
+        "publish-threads.ts vai cair no fallback '# Facebook' truncado (500 chars, só existe em edições no formato legado pré-#3991); o dispatch do X (prep-twitter-posts.ts + Buffer MCP, #3994) não publica nesta edição (sem fallback).",
     },
   ];
 

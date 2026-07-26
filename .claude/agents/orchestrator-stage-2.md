@@ -106,7 +106,7 @@ Não usar `scripts/extract-destaques.ts` aqui — esse script parsea MD final (p
 
    Gera `_internal/03-social.tmp.md` com 1 texto genérico (estilo Instagram, #3991) por destaque — IDÊNTICO pra LinkedIn/Facebook/Instagram, SEM CTA de canal — + `## post_pixel` (post pessoal do Pixel, inalterado desde #1690). A linha de CTA por canal (e-mail no Facebook, "link na bio" no Instagram, nenhuma no LinkedIn — ver `scripts/lib/social-cta-lines.ts`) é injetada só no Stage 5, nunca aqui.
 
-3. `Agent` → `social-curto` (#3992, mesmo input que social-writer — `approved_json_path` + `out_dir`; `outros_count` não se aplica; **independente do #3991**, não muda). Gera `_internal/03-curto.tmp.md` com 1 texto ≤280 chars por destaque, compartilhado por Twitter/X (`publish-twitter.ts`, #3994) e Threads (`publish-threads.ts`, que passa a preferir esta seção ao fallback Facebook).
+3. `Agent` → `social-curto` (#3992, mesmo input que social-writer — `approved_json_path` + `out_dir`; `outros_count` não se aplica; **independente do #3991**, não muda). Gera `_internal/03-curto.tmp.md` com 1 texto ≤280 chars por destaque, compartilhado por Twitter/X (dispatch via Buffer MCP no Stage 5, #3994) e Threads (`publish-threads.ts`, que passa a preferir esta seção ao fallback Facebook).
 
 **Aguardar os N writer-destaques + 2 social retornarem.** Cada `writer-destaque` retorna JSON `{ out_path, image_prompt_path, destaque_n, char_count, warnings }`. **Se `warnings[]` de qualquer um não estiver vazio, pare e reporte ao usuário antes de prosseguir** — mesma regra do writer único legacy.
 
@@ -179,7 +179,7 @@ Aguardar os 3 retornarem. Writer retorna JSON `{ out_path, d1_prompt_path, d2_pr
 npx tsx scripts/validate-stage-2-outputs.ts --edition-dir {EDITION_DIR}/
 ```
 
-O script verifica que `_internal/02-draft.md` e `_internal/03-social.tmp.md` existem e não estão vazios (FATAL — exit 1) e que `_internal/03-curto.tmp.md` existe e não está vazio (WARN — não bloqueia, mas sinaliza que o merge vai sair sem a seção `# Curto`, com os fallbacks descritos em `publish-threads.ts`/`publish-twitter.ts`). Exit 1 = algum agent obrigatório falhou — relatar ao editor com sugestão de re-rodar isolado (`/diaria-2-escrita {AAMMDD} newsletter` ou `social`). Não prosseguir.
+O script verifica que `_internal/02-draft.md` e `_internal/03-social.tmp.md` existem e não estão vazios (FATAL — exit 1) e que `_internal/03-curto.tmp.md` existe e não está vazio (WARN — não bloqueia, mas sinaliza que o merge vai sair sem a seção `# Curto`, com o fallback descrito em `publish-threads.ts` e a ausência de fallback do dispatch do X via Buffer MCP, #3994). Exit 1 = algum agent obrigatório falhou — relatar ao editor com sugestão de re-rodar isolado (`/diaria-2-escrita {AAMMDD} newsletter` ou `social`). Não prosseguir.
 
 ### 2b. Processar newsletter
 
@@ -391,7 +391,7 @@ O script:
 - Verifica que `_internal/03-social.tmp.md` (agent `social-writer`) existe e não está vazio; exit 1 com mensagem clara se estiver ausente
 - Faz strip de comentários HTML (`<!-- ... -->`) com fallback safe pra comments mal-formados (#875)
 - Grava em `03-social.md` como seção única `# Social` (#3991 — substitui `# LinkedIn`/`# Facebook`/`# Instagram`) — texto genérico por destaque + `## post_pixel`, sem qualquer CTA de canal (injetada só no publish)
-- **#3992:** se `_internal/03-curto.tmp.md` existir (o caso normal — `social-curto` roda em todo dispatch), mescla também `# Curto` no output. Tmp OPCIONAL — ausência não falha o merge; `publish-threads.ts` cai no fallback `# Facebook` (só existe em edições no formato legado pré-#3991) e `publish-twitter.ts` simplesmente não publica nesta edição (sem fallback, #3994). Independente do #3991 — não muda.
+- **#3992:** se `_internal/03-curto.tmp.md` existir (o caso normal — `social-curto` roda em todo dispatch), mescla também `# Curto` no output. Tmp OPCIONAL — ausência não falha o merge; `publish-threads.ts` cai no fallback `# Facebook` (só existe em edições no formato legado pré-#3991) e o dispatch do X via Buffer MCP (#3994) simplesmente não publica nesta edição (sem fallback). Independente do #3991 — não muda.
 - Deleta os tmp files após sucesso
 - Edições publicadas ANTES deste merge (formato legado, 3 headers de plataforma) não são re-geradas — lints/publishers mantêm fallback pro formato antigo (ver `scripts/lib/social-lint-rules.ts`), mas o merge só sabe produzir `# Social` daqui em diante.
 

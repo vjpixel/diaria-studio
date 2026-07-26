@@ -34,8 +34,9 @@
  * #3992: também mescla `_internal/03-curto.tmp.md` (agent `social-curto`) em
  * `# Curto`, quando presente. Esse tmp é OPCIONAL — ausência não falha o
  * merge, só omite a seção (edições antigas continuam com o fallback de
- * `publish-threads.ts` pra `# Facebook`; `publish-twitter.ts`, #3994, não tem
- * fallback — sem `# Curto` ele pula com log, por decisão do editor). `# Curto`
+ * `publish-threads.ts` pra `# Facebook`; o dispatch do X via Buffer MCP,
+ * #3994, não tem fallback — sem `# Curto` ele pula com log, por decisão do
+ * editor). `# Curto`
  * é INDEPENDENTE desta unificação — texto curto Twitter/Threads, não afetado
  * pelo #3991.
  *
@@ -348,9 +349,9 @@ function readTmpOrFail(check: TmpCheck): string {
  * retorna `null` (warn no stderr) em vez de `process.exit(1)`. Usado hoje só
  * pelo tmp do `social-curto` (`# Curto`) — uma edição sem `03-curto.tmp.md`
  * (ex: worktree/teste antigo, ou o agent ainda não foi disparado) não deve
- * quebrar o merge; `03-social.md` simplesmente sai sem `# Curto` (os
- * publishers de Threads/Twitter/X têm seus próprios fallbacks, ver
- * `publish-threads.ts`/`publish-twitter.ts`).
+ * quebrar o merge; `03-social.md` simplesmente sai sem `# Curto` (Threads tem
+ * fallback pra `# Facebook`, ver `publish-threads.ts`; o dispatch do X via
+ * Buffer MCP, #3994, não tem fallback — pula sem publicar).
  */
 function readOptionalTmp(check: TmpCheck): string | null {
   if (!existsSync(check.path)) return null;
@@ -483,7 +484,7 @@ function main(): void {
     `do publish (\`scripts/lib/social-cta-lines.ts\`) — esta seção nunca contém CTA de canal. ` +
     `\`post_pixel\` é publicado manualmente no feed pessoal via Claude in Chrome (#1690).\n`;
   // #3992: seção `# Curto` só entra quando o tmp opcional existe — texto único
-  // compartilhado por Twitter/X (publish-twitter.ts, #3994) e Threads
+  // compartilhado por Twitter/X (dispatch via Buffer MCP, #3994) e Threads
   // (publish-threads.ts, que passa a preferir esta seção ao fallback Facebook).
   // Independente do #3991 — não muda.
   const curtoSection = curtoStripped !== null ? `\n\n# Curto\n\n${curtoStripped}` : "";
