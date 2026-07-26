@@ -112,7 +112,8 @@
       },
       "twitter": {
         "enabled": true,
-        "note": "#3994 (260724): conta X da Diar.ia + app no Developer Portal ainda não existem — publish-twitter.ts fica best-effort skip (env vars TWITTER_API_KEY/_SECRET/_ACCESS_TOKEN/_ACCESS_TOKEN_SECRET ausentes) até o editor criar a conta/app."
+        "buffer_channel_id": "6a6679674b2d03035f46a4a3",
+        "note": "#3994 (260726): publicação via Buffer (MCP claude_ai_Buffer, plano Free — X não tem mais free tier próprio, ~$0.20/post pay-per-usage direto). Canal @diariabr, mode addToQueue. orchestrator-stage-5.md chama create_post por destaque (prep-twitter-posts.ts extrai o texto, append-twitter-published.ts grava o resultado) — não é mais um script de dispatch (scripts/publish-twitter.ts + twitter-oauth1.ts foram removidos)."
       },
       "linkedin": {
         "make_webhook_url": "",
