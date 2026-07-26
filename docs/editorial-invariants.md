@@ -95,7 +95,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | `step-4-sentinel-exists` | _internal/.step-4-done.json escrito (#780) | #780 |
 | `step-5-sentinel-exists` | _internal/.step-5-done.json escrito pelo pipeline-sentinel (#1694) | #1694 |
 | `threads-creds-set` | THREADS_USER_ID + THREADS_ACCESS_TOKEN presentes — ausente pula Threads (#2479) | #2479 |
-| `twitter-creds-set` | TWITTER_API_KEY/_SECRET/_ACCESS_TOKEN/_ACCESS_TOKEN_SECRET presentes — ausente pula Twitter/X (#3994) | #3994 |
+| `twitter-creds-set` | publishing.social.twitter.buffer_channel_id presente em platform.config.json — ausente pula Twitter/X (#3994, via Buffer MCP) | #3994 |
 
 ## Stage 6 — Agendamento
 

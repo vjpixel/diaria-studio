@@ -179,35 +179,38 @@ function checkThreadsCredsSet(): InvariantViolation[] {
 }
 
 /**
- * `TWITTER_API_KEY` + `TWITTER_API_SECRET` + `TWITTER_ACCESS_TOKEN` +
- * `TWITTER_ACCESS_TOKEN_SECRET` env vars (#3994). publish-twitter usa pra
- * assinar requests OAuth 1.0a User Context na API v2 do X.
+ * `publishing.social.twitter.buffer_channel_id` em platform.config.json
+ * (#3994, revisado — publicação no X passou de API direta a virar via Buffer
+ * MCP, `mcp__claude_ai_Buffer__create_post`, chamada pelo orchestrator no
+ * Stage 5; ver `prep-twitter-posts.ts`). Sem esse ID o orchestrator não sabe
+ * pra qual canal Buffer postar.
  *
  * ASSIMETRIA DE SEVERIDADE: severity="warning" (mesmo padrão de Threads/
- * Instagram). Twitter/X é dispatch best-effort — env vars ausentes fazem
- * publish-twitter encerrar com exit 0 (skip gracioso), sem bloquear os
- * outros canais. Credenciais nem existem ainda (#3994, status confirmado
- * 260724: conta X da Diar.ia + app no Developer Portal são ação do editor).
+ * Instagram) — Twitter/X é dispatch best-effort, ausência não bloqueia os
+ * outros canais. Diferente das credenciais antigas (env var), a
+ * disponibilidade do MCP da Buffer em si não é checável estaticamente aqui
+ * (depende do conector estar ativo na sessão) — só o ID do canal é validável.
  */
 function checkTwitterCredsSet(): InvariantViolation[] {
   const violations: InvariantViolation[] = [];
-  const required: Array<[string, string]> = [
-    ["TWITTER_API_KEY", "twitter-api-key-set"],
-    ["TWITTER_API_SECRET", "twitter-api-secret-set"],
-    ["TWITTER_ACCESS_TOKEN", "twitter-access-token-set"],
-    ["TWITTER_ACCESS_TOKEN_SECRET", "twitter-access-token-secret-set"],
-  ];
-  for (const [envVar, rule] of required) {
-    if (!process.env[envVar] || process.env[envVar]!.trim().length === 0) {
-      violations.push({
-        rule,
-        message:
-          `${envVar} ausente — publish-twitter vai pular ` +
-          "(Twitter/X não será publicado). Configure em .env.local pra habilitar (#3994).",
-        source_issue: "#3994",
-        severity: "warning",
-      });
-    }
+  const configPath = resolve(ROOT, "platform.config.json");
+  let channelId: unknown;
+  try {
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    channelId = cfg?.publishing?.social?.twitter?.buffer_channel_id;
+  } catch {
+    // ignorar erro de parse — tratado como ausente abaixo
+  }
+  if (typeof channelId !== "string" || channelId.trim().length === 0) {
+    violations.push({
+      rule: "twitter-buffer-channel-id-set",
+      message:
+        "publishing.social.twitter.buffer_channel_id ausente em platform.config.json — " +
+        "Twitter/X não será publicado (orchestrator não sabe qual canal Buffer usar). " +
+        "Rodar mcp__claude_ai_Buffer__list_channels e gravar o ID (#3994).",
+      source_issue: "#3994",
+      severity: "warning",
+    });
   }
   return violations;
 }
@@ -910,7 +913,7 @@ export const STAGE_5_RULES: InvariantRule[] = [
   {
     id: "twitter-creds-set",
     description:
-      "TWITTER_API_KEY/_SECRET/_ACCESS_TOKEN/_ACCESS_TOKEN_SECRET presentes — ausente pula Twitter/X (#3994)",
+      "publishing.social.twitter.buffer_channel_id presente em platform.config.json — ausente pula Twitter/X (#3994, via Buffer MCP)",
     source_issue: "#3994",
     stage: 5,
     run: () => checkTwitterCredsSet(),
