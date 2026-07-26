@@ -17,6 +17,17 @@ describe("resolvePricing", () => {
     assert.deepEqual(resolvePricing("claude-Opus-4-8", null), OPUS_PRICING);
   });
 
+  // #4042: Opus 5 tem o MESMO preço do 4.8 ($5/$25 por MTok), então o tier
+  // resolvido tem que ser o mesmo objeto. Trava o ID sem sufixo de data
+  // (`claude-opus-5`), que é a forma canônica — não `claude-opus-5-AAAAMMDD`.
+  it("resolve opus 5 no mesmo tier do 4.8 (custo idêntico)", () => {
+    assert.deepEqual(resolvePricing("claude-opus-5", null), OPUS_PRICING);
+    assert.deepEqual(
+      resolvePricing("claude-opus-5", null),
+      resolvePricing("claude-opus-4-8", null),
+    );
+  });
+
   it("resolve haiku por substring", () => {
     assert.deepEqual(resolvePricing("claude-haiku-4-5-20251001", null), HAIKU_PRICING);
   });
@@ -120,6 +131,12 @@ describe("shortModelName", () => {
 
   it("remove só o prefixo quando não há sufixo de data", () => {
     assert.equal(shortModelName("claude-opus-4-8"), "opus-4-8");
+  });
+
+  // #4042: o "-5" final NÃO pode ser confundido com sufixo de data pela regex
+  // `-\d{8}$` — o nome curto que aparece nos relatórios de custo é "opus-5".
+  it("preserva o sufixo de versão do opus 5 (não é sufixo de data)", () => {
+    assert.equal(shortModelName("claude-opus-5"), "opus-5");
   });
 
   it("preserva string sem prefixo claude-", () => {
