@@ -105,6 +105,15 @@ describe("GET /img/{key} — allowlist de prefixo (#4111)", () => {
     assert.equal(res.status, 404);
   });
 
+  it("double-encoding (%253A) não vira ':' — só há UM decode antes do get", async () => {
+    // `new URL().pathname` não decodifica (WHATWG), e `decodeURIComponent`
+    // roda exatamente uma vez em handleImage. Então `%253A` vira o literal
+    // "%3A", nunca um `:` de verdade — não colide com chave de estado.
+    // Não é explorável; o teste trava o invariante "um decode só".
+    const res = await worker.fetch(new Request("https://poll.test/img/correct%253A260727"), env);
+    assert.equal(res.status, 404);
+  });
+
   it("REGRESSÃO P0: prefixo img- não pode ser usado como fachada pra chave com namespace", async () => {
     const store = (env as unknown as { __store: Map<string, string> }).__store;
     store.set("img-x:correct:260727", "A");
