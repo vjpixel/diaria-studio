@@ -35,7 +35,7 @@ import { json } from "./index";
 // medium/campaign PRÓPRIOS abaixo distinguem o cadastro inline do CTA-link e
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
-import { JOGAR_INLINE_UTM, LIVROS_INLINE_UTM } from "./utm-registry"; // #4041
+import { JOGAR_INLINE_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -56,8 +56,13 @@ export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = JOGAR_INLINE_UTM.campaign;
  * `source` ausente/desconhecido cai no default `jogar` (comportamento
  * pré-#4051, back-compat com o form de `/jogar`/`/jogar/quiz` que não manda
  * esse campo).
+ *
+ * #4065: `"vote-clarice"` — cadastro inline na tela de resultado do voto
+ * (`/vote?brand=clarice`, ver votePageHtml em index.ts). UTM próprio pra
+ * medir essa conversão separada do cadastro inline de `/jogar` — é o mesmo
+ * endpoint/mecanismo (`POST /jogar/subscribe`), só o call site muda.
  */
-export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer";
+export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice";
 
 export interface SubscribeUtm {
   source: string;
@@ -73,7 +78,7 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
   },
   // utm_source=livros / utm_medium distinto por posição — pedido explícito da
   // issue #4051 pra medir hero × fim-de-lista separadamente.
-  // #4041: valores do registry espelhado (\`./utm-registry\`).
+  // #4041: valores do registry espelhado (./utm-registry).
   "livros-hero": {
     source: LIVROS_INLINE_UTM.source,
     medium: LIVROS_INLINE_UTM.hero.medium,
@@ -83,6 +88,15 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     source: LIVROS_INLINE_UTM.source,
     medium: LIVROS_INLINE_UTM.footer.medium,
     campaign: LIVROS_INLINE_UTM.campaign,
+  },
+  // #4065: cadastro inline na tela de resultado do voto do brand clarice —
+  // utm_source distinto (não é o funil "eia-standalone" do jogo público, é a
+  // base de e-mail da parceria Clarice) pra não poluir a atribuição do funil
+  // web com conversões que vieram de um e-mail mensal.
+  "vote-clarice": {
+    source: VOTE_CLARICE_INLINE_UTM.source,
+    medium: VOTE_CLARICE_INLINE_UTM.medium,
+    campaign: VOTE_CLARICE_INLINE_UTM.campaign,
   },
 };
 

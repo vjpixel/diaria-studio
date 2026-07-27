@@ -134,6 +134,13 @@ export const LIVROS_INLINE_UTM = {
   footer: { medium: "inline-footer" },
 } as const;
 
+/** Cadastro inline na tela de resultado do voto do brand clarice (#4065). */
+export const VOTE_CLARICE_INLINE_UTM = {
+  source: "clarice-email",
+  medium: "vote-inline",
+  campaign: "eia-vote-clarice-signup",
+} as const;
+
 /** Uma entrada do inventário: um ponto do código que emite UTM. */
 export interface UtmEmitter {
   /** Identificador estável — chave de join com os metadados editáveis da UI. */
@@ -227,6 +234,18 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: JOGAR_INLINE_UTM.campaign,
     originFile: "workers/poll/src/subscribe.ts",
     description: "Form de cadastro embutido na própria página do jogo (#3580).",
+    status: "ativo",
+  },
+  {
+    id: "vote-clarice-inline",
+    label: "Voto (brand clarice) — cadastro inline",
+    source: VOTE_CLARICE_INLINE_UTM.source,
+    medium: VOTE_CLARICE_INLINE_UTM.medium,
+    campaignPattern: VOTE_CLARICE_INLINE_UTM.campaign,
+    originFile: "workers/poll/src/subscribe.ts",
+    description:
+      "Cadastro na tela de resultado do voto em /vote?brand=clarice (#4065) — " +
+      "utm_source próprio pra não poluir o funil web com conversões vindas do e-mail mensal.",
     status: "ativo",
   },
   {

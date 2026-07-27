@@ -70,3 +70,10 @@ export const LIVROS_INLINE_UTM = {
   hero: { medium: "inline-hero" },
   footer: { medium: "inline-footer" },
 } as const;
+
+/** Cadastro inline na tela de resultado do voto do brand clarice (#4065). @see scripts/lib/shared/utm-registry.ts */
+export const VOTE_CLARICE_INLINE_UTM = {
+  source: "clarice-email",
+  medium: "vote-inline",
+  campaign: "eia-vote-clarice-signup",
+} as const;

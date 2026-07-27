@@ -9,8 +9,11 @@
  *   - buildShareText (correct true/false/null)
  *   - renderShareCardBlock / renderShareCardSvg / renderSharePageHtml (pure)
  *   - GET /og/{token} e GET /share/{token} (rotas)
- *   - self-review #2038: /vote?brand=web embute o card; /vote sem brand=web
- *     (diaria/clarice) NÃO embute; GET /jogar (pré-voto) não vaza o gabarito.
+ *   - self-review #2038: /vote embute o card em QUALQUER brand (#4065 —
+ *     desamarrou do brand=web); GET /jogar (pré-voto) não vaza o gabarito.
+ *   - #4065: card + cadastro inline (#3580) também no brand `clarice`; link
+ *     de `/share/{token}` continua brand-agnóstico (sempre aponta pro
+ *     `/jogar` público, independente do brand de origem do voto).
  */
 
 import { describe, it } from "node:test";
@@ -315,7 +318,7 @@ describe("GET /og/{token} e GET /share/{token} (#3517, rotas)", () => {
   });
 });
 
-describe("integração /vote?brand=web (#3517, self-review #2038) — card embutido só onde faz sentido", () => {
+describe("integração /vote (#3517, #4065) — card embutido em todos os brands", () => {
   const voteReq = (brand: string | null, email: string, choice: string, edition = "260531") => {
     const b = brand ? `&brand=${brand}` : "";
     return new Request(
@@ -340,20 +343,26 @@ describe("integração /vote?brand=web (#3517, self-review #2038) — card embut
     assert.equal(decoded!.edition, "260531");
   });
 
-  it("voto em brand=diaria (e-mail assinante) NÃO embute card de compartilhamento", async () => {
+  // #4065: a premissa original ("diaria/clarice são e-mail assinantes,
+  // 'compartilhar meu resultado' não se aplica") estava errada pros dois —
+  // clarice não é assinante Diar.ia (é o público que a parceria existe pra
+  // converter) e diaria pode indicar mesmo já sendo assinante. O link
+  // compartilhado continua brand-agnóstico (sempre `/share/{token}` →
+  // `/jogar` público, ver renderSharePageHtml em share.ts, #3701).
+  it("voto em brand=diaria (assinante — pode indicar) TAMBÉM embute card de compartilhamento", async () => {
     const env = makeEnv();
     const res = await worker.fetch(voteReq(null, "leitor@example.com", "B"), env);
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.doesNotMatch(html, /id="jogar-share-card"/);
+    assert.match(html, /id="jogar-share-card"/);
   });
 
-  it("voto em brand=clarice (e-mail assinante mensal) também NÃO embute card", async () => {
+  it("voto em brand=clarice (base que a parceria existe pra converter) TAMBÉM embute card", async () => {
     const env = makeEnv();
     const res = await worker.fetch(voteReq("clarice", "leitor@example.com", "A"), env);
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.doesNotMatch(html, /id="jogar-share-card"/);
+    assert.match(html, /id="jogar-share-card"/);
   });
 
   it("self-review: GET /jogar (pré-voto) nunca vaza o gabarito nem um card de resultado", async () => {
@@ -371,5 +380,65 @@ describe("integração /vote?brand=web (#3517, self-review #2038) — card embut
     // O slot existe mas vazio/hidden — confirma que é só o ponto de extensão,
     // não conteúdo pré-preenchido.
     assert.match(html, /<div id="jogar-result-slot" hidden><\/div>/);
+  });
+
+  // #4065 — teste de regressão explícito da issue: "para brand em
+  // ['clarice', 'diaria'], handleVote devolve HTML contendo o bloco
+  // #jogar-share-card".
+  it("#4065 regressão: brand clarice E diaria ambos devolvem HTML com #jogar-share-card", async () => {
+    const env = makeEnv();
+    for (const brand of ["clarice", "diaria"]) {
+      const res = await worker.fetch(voteReq(brand === "diaria" ? null : brand, "leitor@example.com", "A"), env);
+      assert.equal(res.status, 200);
+      const html = await res.text();
+      assert.match(html, /id="jogar-share-card"/, `brand=${brand} deveria embutir o share card`);
+    }
+  });
+
+  it("#4065: link compartilhado (data-share-url) aponta sempre pro domínio de marca do JOGO — brand-agnóstico independente do brand de origem do voto", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(voteReq("clarice", "leitor@example.com", "A"), env);
+    const html = await res.text();
+    assert.match(html, /data-share-url="https:\/\/eia\.diar\.ia\.br\/share\//);
+  });
+});
+
+describe("#4065: cadastro inline (#3580) na tela de resultado do voto — só brand clarice", () => {
+  const voteReq = (brand: string | null, email: string, choice: string, edition = "260531") => {
+    const b = brand ? `&brand=${brand}` : "";
+    return new Request(
+      `https://poll.test/vote?email=${encodeURIComponent(email)}&edition=${edition}&choice=${choice}${b}`,
+    );
+  };
+
+  it("brand=clarice: form de cadastro inline aparece VISÍVEL (não hidden) no resultado do voto", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(voteReq("clarice", "leitor@example.com", "A"), env);
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.match(html, /id="jogar-signup-form"/);
+    // Diferente de /jogar e /jogar/quiz (onde o form nasce `hidden` e só é
+    // revelado via JS pós-voto), a tela de /vote JÁ É o pós-voto — o form não
+    // pode nascer hidden aqui (não existe JS de reveal nesta página estática).
+    assert.doesNotMatch(html, /<form id="jogar-signup-form" class="signup-form" hidden/);
+    assert.match(html, /<form id="jogar-signup-form" class="signup-form" novalidate>/);
+    // POSTa pro mesmo endpoint público /jogar/subscribe, com UTM próprio.
+    assert.match(html, /fetch\("\/jogar\/subscribe"/);
+    assert.match(html, /source: "vote-clarice"/);
+  });
+
+  it("brand=diaria (já assinante) NÃO embute o cadastro inline — não faz sentido reoferecer", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(voteReq(null, "leitor@example.com", "B"), env);
+    const html = await res.text();
+    assert.doesNotMatch(html, /id="jogar-signup-form"/);
+  });
+
+  it("brand=web NÃO embute este form (já tem o form de identidade equivalente do #3975 em /jogar, não em /vote)", async () => {
+    const env = makeEnv();
+    const anonEmail = anonEmailForToken("3fa85f64-5717-4562-b3fc-2c963f66afa6");
+    const res = await worker.fetch(voteReq("web", anonEmail, "A"), env);
+    const html = await res.text();
+    assert.doesNotMatch(html, /id="jogar-signup-form"/);
   });
 });

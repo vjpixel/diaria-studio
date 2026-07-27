@@ -121,7 +121,7 @@ const JOGAR_BRAND = "web" as const;
  * historicamente importa este binding de `./jogar`.
  */
 export { SUBSCRIBE_UTM_SOURCE };
-// #4041: valores vindos do registry espelhado (\`./utm-registry\`).
+// #4041: valores vindos do registry espelhado (`./utm-registry`).
 export const SUBSCRIBE_UTM_MEDIUM = JOGAR_POSVOTO_UTM.medium;
 export const SUBSCRIBE_UTM_CAMPAIGN = JOGAR_POSVOTO_UTM.campaign;
 
@@ -209,7 +209,7 @@ export function renderSubscribeCtaBlock(): string {
 // separadamente quantos assinantes vêm do quiz (várias rodadas, mais
 // engajamento) vs. do jogo de par único. `utm_source` continua
 // `eia-standalone` (mesma convenção de `count-subscriptions-by-utm.ts`).
-// #4041: valores vindos do registry espelhado (\`./utm-registry\`).
+// #4041: valores vindos do registry espelhado (`./utm-registry`).
 export const QUIZ_SUBSCRIBE_UTM_SOURCE = QUIZ_POSVOTO_UTM.source;
 export const QUIZ_SUBSCRIBE_UTM_MEDIUM = QUIZ_POSVOTO_UTM.medium;
 export const QUIZ_SUBSCRIBE_UTM_CAMPAIGN = QUIZ_POSVOTO_UTM.campaign;
@@ -269,8 +269,17 @@ export function renderQuizSubscribeCtaBlock(): string {
  * ="off"` — humano nunca vê/preenche; bot que preenche é descartado no
  * servidor.
  */
-export function renderInlineSignupFormBlock(): string {
-  return `<form id="jogar-signup-form" class="signup-form" hidden novalidate>
+/**
+ * #4065: `hidden` (default `true`, comportamento pré-existente travado por
+ * test/poll-jogar-inline-signup-3580.test.ts) — permite reusar o MESMO bloco
+ * numa página que já renderiza o resultado server-side (ex: `/vote` pro
+ * brand `clarice`, ver votePageHtml em index.ts), onde não há JS de reveal
+ * pós-voto (a página inteira já É o pós-voto) — nesse caso o form entra
+ * visível desde o primeiro render, sem a disciplina `hidden` que só faz
+ * sentido em páginas com estado pré-voto (`/jogar`, `/jogar/quiz`).
+ */
+export function renderInlineSignupFormBlock(hidden: boolean = true): string {
+  return `<form id="jogar-signup-form" class="signup-form"${hidden ? " hidden" : ""} novalidate>
   <p class="signup-text">Prefere direto? Assine aqui — sem sair da página.</p>
   <label class="signup-field"><span>Nome</span><input type="text" name="name" autocomplete="name" maxlength="100"></label>
   <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
@@ -496,8 +505,15 @@ export function identityFormScript(): string {
  * revelação é feita pelas duas páginas junto com o resultado, mesma disciplina
  * do CTA-link). No-op se o form não existir. Reusado LITERALMENTE por
  * `/jogar` e `/jogar/quiz` (por isso é uma função — 1 fonte de verdade).
+ *
+ * #4065: `source` (default `""`, comportamento pré-existente preservado —
+ * `""` cai no default `jogar` de `resolveSubscribeUtm` em subscribe.ts)
+ * — repassado como campo `source` no corpo do POST, pra call sites que
+ * precisam de UTM próprio (ex: `/vote?brand=clarice`, ver votePageHtml em
+ * index.ts, que passa `"vote-clarice"` pra medir essa conversão separada do
+ * cadastro inline de `/jogar`).
  */
-export function inlineSignupScript(): string {
+export function inlineSignupScript(source: string = ""): string {
   return `<script>
 (function () {
   var form = document.getElementById("jogar-signup-form");
@@ -523,7 +539,8 @@ export function inlineSignupScript(): string {
       name: (val('input[name="name"]') || "").trim(),
       email: email,
       optin: true,
-      website: val('input[name="website"]') || ""
+      website: val('input[name="website"]') || "",
+      source: ${JSON.stringify(source)}
     };
     if (typeof window.fetch !== "function") {
       setStatus("Seu navegador não suporta o cadastro direto — use o link de assinatura acima.", false);

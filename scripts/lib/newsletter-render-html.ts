@@ -78,7 +78,7 @@ const PUBLIC_GAME_BASE_URL = "https://eia.diar.ia.br";
 // issue (#3524 "O quê"); `count-subscriptions-by-utm.ts` (#2457) já agrega
 // por QUALQUER utm_source presente na subscription Beehiiv — nenhuma mudança
 // naquele script é necessária pra este valor aparecer no funil.
-// #4041: os VALORES vêm do registry único (\`lib/shared/utm-registry.ts\`) — os
+// #4041: os VALORES vêm do registry único (`lib/shared/utm-registry.ts`) — os
 // bindings abaixo continuam exportados por back-compat dos callers/testes.
 export const EIA_ARCHIVE_UTM_SOURCE = EIA_ARCHIVE_UTM.source;
 export const EIA_ARCHIVE_UTM_MEDIUM = EIA_ARCHIVE_UTM.medium;

@@ -59,6 +59,7 @@ const MIRRORED = [
   "SHARE_UTM_CAMPAIGN",
   "QUIZ_SHARE_UTM_CAMPAIGN",
   "LIVROS_INLINE_UTM",
+  "VOTE_CLARICE_INLINE_UTM", // #4065
 ] as const;
 
 describe("#4041 — espelho do registry dentro do Worker não pode driftar", () => {
