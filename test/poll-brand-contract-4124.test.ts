@@ -57,6 +57,12 @@
  * chars de distância). Escopar por `it()` elimina essa classe de falso-
  * positivo por construção — markers de um `it()` irmão nunca contam pro
  * `it()` sob teste — sem precisar achar o "N mágico" certo pra uma janela.
+ * Esse mesmo achado foi formalizado como issue #4175 (aberta durante o review
+ * de #4172, antes desta revisão ser aplicada) — o teste de regressão dedicado
+ * vive no describe "regressão #4175" mais abaixo, isolando
+ * `poll-leaderboard-head-3998.test.ts` do resto do corpus pra provar que o
+ * escopo por `it()` (e não a cobertura genuína adicionada em paralelo)
+ * é o que rejeita o falso-positivo.
  *
  * Limites conhecidos (aceitos — mesma classe de trade-off que
  * lib-boundary.test.ts assume pro scan estático de imports, que também não
@@ -398,6 +404,35 @@ describe("contrato de brand por rota — /vote, /stats, /leaderboard*, /admin/co
 // futura confusão crua-vs-branded neles (mesma classe de
 // #4117/#4118/#4038/#3600) passaria batido, porque brand=diaria nunca teria
 // exposto a divergência.
+
+describe("regressão #4175: escopo por it() não credita marker de brand de it() IRMÃO", () => {
+  it("hasNonDefaultBrandCoverage(handleLeaderboardTop1) é false quando o único arquivo do corpus é poll-leaderboard-head-3998.test.ts isolado", () => {
+    // #4175: numa versão anterior deste teste (janela de distância em chars,
+    // revisada no self-review do PR #4172 antes do merge — ver header do
+    // arquivo), o marker de rota do it() "/leaderboard/top1" (linha ~72 de
+    // poll-leaderboard-head-3998.test.ts) e o marker de brand do it() IRMÃO
+    // seguinte "/leaderboard?brand=clarice" (linhas ~76-78, ~144-329 chars de
+    // distância) batiam juntos — falso-positivo real que desarmava a
+    // proteção de /leaderboard/top1 SEM que nenhum it() de verdade exercesse
+    // a rota com brand não-default. Isolando esse único arquivo do resto do
+    // corpus (sem as cobertura genuínas adicionadas mais abaixo neste
+    // arquivo), o scan deve continuar reportando "sem cobertura" — provando
+    // que a garantia real vem do escopo por it(), não de um match espúrio
+    // entre it()s vizinhos.
+    const entry = ROUTE_COVERAGE.find((e) => e.handler === "handleLeaderboardTop1");
+    assert.ok(entry, "ROUTE_COVERAGE deveria ter uma entrada para handleLeaderboardTop1");
+
+    const headFile = join(TEST_DIR, "poll-leaderboard-head-3998.test.ts");
+    const fileContents = new Map<string, string>([[headFile, stripComments(readFileSync(headFile, "utf8"))]]);
+
+    assert.equal(
+      hasNonDefaultBrandCoverage(entry!, fileContents),
+      false,
+      "poll-leaderboard-head-3998.test.ts sozinho não cobre handleLeaderboardTop1 com brand não-default — " +
+        "o it() de /leaderboard/top1 e o it() de brand=clarice são IRMÃOS, não o mesmo caso de teste.",
+    );
+  });
+});
 
 describe("cobertura adicionada pelo #4124: GET /leaderboard/top1 com brand não-default", () => {
   it("brand=clarice: lê score-by-month sob o prefixo clarice: (não a chave crua)", async () => {
