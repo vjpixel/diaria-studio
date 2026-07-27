@@ -1061,7 +1061,11 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
   it("#3476: USE MELHOR renderiza ANTES de É IA? (antes do #3476 era o inverso, #2546)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
-      const out = stitchNewsletter(base(dir, internalDir));
+      // #4138 finding 2: override explícito — a ordem USE MELHOR/É IA? não tem
+      // relação com boxes_divulgacao, mas sem override este teste ainda lia
+      // platform.config.json vigente (acoplamento residual desnecessário a
+      // estado editorial vivo, mesmo risco que motivou o #4083).
+      const out = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao: STABLE_3_SLOTS }));
       const umPos = out.indexOf("USE MELHOR");
       const eiaPos = out.indexOf("É IA?");
       assert.ok(umPos > 0 && eiaPos > 0, "USE MELHOR e É IA? devem estar presentes");
@@ -1245,7 +1249,13 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
         join(internalDir, "02-d1-draft.md"),
         "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1\n\n**📣 Já colado [x](https://clarice.ai/precos-planos?via=diaria)**",
       );
-      const out = stitchNewsletter(base(dir, internalDir));
+      // #4138 finding 2: override explícito — o box já colado suprime a
+      // injeção independente do que o slot resolveria, mas sem override este
+      // teste ainda lia platform.config.json vigente (acoplamento residual
+      // desnecessário a estado editorial vivo).
+      const out = stitchNewsletter(base(dir, internalDir, undefined, {
+        boxesDivulgacao: { slot1: STABLE_SLOT1_FILE, slot2: STABLE_SLOT2_FILE },
+      }));
       const count = (out.match(/📣/g) || []).length;
       assert.equal(count, 1, "só 1 callout (não dupla-injeta)");
     } finally {
@@ -1306,6 +1316,15 @@ describe("#3232 — idempotência de boxes_divulgacao marcador-agnóstica (subst
   it("marcador NOVO (🎥, nunca esteve em nenhum allowlist) glúado ao fim de D1 suprime injeção do slot1 — mesma técnica do #3204", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
+      const boxesDivulgacao = { slot1: STABLE_SLOT1_FILE, slot2: null };
+      // Pré-condição (#4044/#4138, mesmo tratamento): prova que o slot1 injeta
+      // o fixture ANTES de colar o marcador novo — senão um fixture ausente ou
+      // mal resolvido satisfaria o assert de "não injetou" tão bem quanto a
+      // supressão de fato (passe vacuoso, achado #4138 finding 1).
+      const baseline = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao }));
+      assert.ok(extractBoxDivulgacao1(baseline), "pré-condição: slot1 injeta normalmente sem box pré-existente");
+      assert.match(extractBoxDivulgacao1(baseline)!, STABLE_SLOT1_ANCHOR);
+
       // editor colou um callout com marcador inédito no fim do próprio draft do D1
       // (sem `---` isolando — caso real 260609, mesma forma que o #3204 corrigiu
       // pro render; aqui é a MESMA forma na camada de stitch/idempotência).
@@ -1313,9 +1332,9 @@ describe("#3232 — idempotência de boxes_divulgacao marcador-agnóstica (subst
         join(internalDir, "02-d1-draft.md"),
         "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1\n\n**🎥 Já colado, marcador novo. [Assista](https://exemplo.com/v).**",
       );
-      const out = stitchNewsletter(base(dir, internalDir));
-      // Não deve injetar o snippet default do slot1 (#3212: recomendação de leitura) por cima do box já presente.
-      assert.ok(!out.includes("Recomendação de leitura"), "não injeta slot1 por cima de um box com marcador novo já colado");
+      const out = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao }));
+      // Não deve injetar o fixture do slot1 (#3212: recomendação de leitura) por cima do box já presente.
+      assert.doesNotMatch(out, STABLE_SLOT1_ANCHOR, "não injeta slot1 por cima de um box com marcador novo já colado");
       const count = (out.match(/🎥/g) || []).length;
       assert.equal(count, 1, "só 1 marcador 🎥 (não dupla-injeta)");
     } finally {
@@ -1326,12 +1345,17 @@ describe("#3232 — idempotência de boxes_divulgacao marcador-agnóstica (subst
   it("marcador NOVO (🎥) PREPENDED ao início de D2 (antes do próprio header) também suprime injeção do slot1", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
+      const boxesDivulgacao = { slot1: STABLE_SLOT1_FILE, slot2: null };
+      const baseline = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao }));
+      assert.ok(extractBoxDivulgacao1(baseline), "pré-condição: slot1 injeta normalmente sem box pré-existente");
+      assert.match(extractBoxDivulgacao1(baseline)!, STABLE_SLOT1_ANCHOR);
+
       writeFileSync(
         join(internalDir, "02-d2-draft.md"),
         "**🎥 Já colado ANTES do header de D2, marcador novo. [Assista](https://exemplo.com/v).**\n\n**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2",
       );
-      const out = stitchNewsletter(base(dir, internalDir));
-      assert.ok(!out.includes("Recomendação de leitura"), "não injeta slot1 por cima do box com marcador novo prepended a D2");
+      const out = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao }));
+      assert.doesNotMatch(out, STABLE_SLOT1_ANCHOR, "não injeta slot1 por cima do box com marcador novo prepended a D2");
       assert.equal((out.match(/🎥/g) || []).length, 1, "só 1 marcador 🎥 (não dupla-injeta)");
     } finally {
       cleanup();
@@ -1358,12 +1382,17 @@ describe("#3232 — idempotência de boxes_divulgacao marcador-agnóstica (subst
   it("🛒 (carrinho, formato preservado explicitamente — sinal de FORMATO, não de categoria de conteúdo) continua suprimindo injeção", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
+      const boxesDivulgacao = { slot1: STABLE_SLOT1_FILE, slot2: null };
+      const baseline = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao }));
+      assert.ok(extractBoxDivulgacao1(baseline), "pré-condição: slot1 injeta normalmente sem box pré-existente");
+      assert.match(extractBoxDivulgacao1(baseline)!, STABLE_SLOT1_ANCHOR);
+
       writeFileSync(
         join(internalDir, "02-d1-draft.md"),
         "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1\n\n🛒 Já colado formato carrinho. [Compre](https://exemplo.com/produto).",
       );
-      const out = stitchNewsletter(base(dir, internalDir));
-      assert.ok(!out.includes("Recomendação de leitura"), "não injeta slot1 por cima do box 🛒 já colado");
+      const out = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao }));
+      assert.doesNotMatch(out, STABLE_SLOT1_ANCHOR, "não injeta slot1 por cima do box 🛒 já colado");
       assert.equal((out.match(/🛒/g) || []).length, 1, "só 1 marcador 🛒 (não dupla-injeta)");
     } finally {
       cleanup();
@@ -1373,8 +1402,15 @@ describe("#3232 — idempotência de boxes_divulgacao marcador-agnóstica (subst
   it("SEM nenhum box pré-existente (marcador nenhum), injeção normal continua funcionando", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
-      const out = stitchNewsletter(base(dir, internalDir));
-      assert.ok(extractBoxDivulgacao1(out), "slot1 injetado normalmente quando não há box pré-existente");
+      // #4138 finding 2: fixture estável via override — antes lia
+      // platform.config.json vigente e dependia do slot1 resolver non-null
+      // pra passar (acoplamento residual a estado editorial vivo).
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: STABLE_SLOT1_FILE, slot2: null },
+      }));
+      const slot1 = extractBoxDivulgacao1(out);
+      assert.ok(slot1, "slot1 injetado normalmente quando não há box pré-existente");
+      assert.match(slot1!, STABLE_SLOT1_ANCHOR);
     } finally {
       cleanup();
     }
