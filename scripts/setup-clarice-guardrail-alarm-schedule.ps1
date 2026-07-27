@@ -83,7 +83,17 @@ $Action = New-ScheduledTaskAction `
     -WorkingDirectory $RepoRoot
 
 # A cada 4h, comecando agora, indefinidamente.
-$Trigger = New-ScheduledTaskTrigger -Once (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 4) -RepetitionDuration ([TimeSpan]::MaxValue)
+# -Once e SWITCH, nao aceita valor posicional: o instante inicial vai em -At.
+# Sem o -At explicito o PowerShell tenta casar a data como parametro posicional
+# e falha com "Nao e possivel localizar um parametro posicional que aceite o
+# argumento '<data>'" -- a task nunca chega a ser registrada e o alarme do
+# #4064 nunca dispara, em silencio (ver #4155).
+#
+# -RepetitionDuration OMITIDO de proposito: sem ele a repeticao e indefinida.
+# Passar ([TimeSpan]::MaxValue) serializa pra P99999999DT23H59M59S, que o
+# Task Scheduler recusa no XML ("valor formatado incorretamente ou fora do
+# intervalo", HRESULT 0x80041318) -- tambem impedindo o registro (#4155).
+$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Hours 4)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit   (New-TimeSpan -Hours 1) `

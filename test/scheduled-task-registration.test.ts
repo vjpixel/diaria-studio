@@ -149,3 +149,59 @@ describe("setup de scheduled task: preserva estado Disabled após Register-Sched
     });
   }
 });
+
+/**
+ * #4155 — sintaxe do trigger de repetição.
+ *
+ * `setup-clarice-guardrail-alarm-schedule.ps1` (gerado pelo #4131) tinha DOIS
+ * erros que impediam o registro da task, e portanto deixavam o alarme de
+ * guardrail do #4064 permanentemente desarmado — em silêncio, já que nada
+ * mais checava a existência da task:
+ *
+ *   1. `New-ScheduledTaskTrigger -Once (Get-Date) ...` — `-Once` é SWITCH e
+ *      não aceita valor posicional; o instante inicial vai em `-At`. Falha com
+ *      "Não é possível localizar um parâmetro posicional que aceite o
+ *      argumento '<data>'".
+ *   2. `-RepetitionDuration ([TimeSpan]::MaxValue)` — serializa para
+ *      `P99999999DT23H59M59S`, que o Task Scheduler recusa no XML
+ *      (HRESULT 0x80041318). Repetição indefinida se obtém OMITINDO o
+ *      parâmetro.
+ *
+ * Por que estático e genérico: os dois erros só aparecem ao EXECUTAR, e o
+ * guard de publicação da rodada overnight proíbe executar — corretamente.
+ * Então a rede tem que ser um teste que varre todo `.ps1` sob `scripts/`,
+ * como os demais invariantes deste arquivo.
+ */
+describe("#4155 — New-ScheduledTaskTrigger: sintaxe que impede o registro", () => {
+  const files = ps1FilesUnder(SCRIPTS_DIR);
+
+  it("há .ps1 sob scripts/ para varrer", () => {
+    assert.ok(files.length > 0, "esperava ao menos um .ps1 sob scripts/");
+  });
+
+  for (const file of files) {
+    const rel = file.slice(ROOT.length + 1).split("\\").join("/");
+    const lines = logicalLines(readFileSync(file, "utf8"));
+
+    for (const line of lines) {
+      if (!/New-ScheduledTaskTrigger\b/.test(line)) continue;
+
+      it(`${rel}: -Once não recebe valor posicional (usa -At)`, () => {
+        // Reprova `-Once <algo>` onde <algo> não é outro parâmetro (-Xxx).
+        assert.doesNotMatch(
+          line,
+          /-Once\s+(?!-)\S/,
+          `-Once é switch: o instante inicial vai em -At (ex: -Once -At (Get-Date)). Linha: ${line.trim()}`,
+        );
+      });
+
+      it(`${rel}: -RepetitionDuration não usa [TimeSpan]::MaxValue`, () => {
+        assert.doesNotMatch(
+          line,
+          /-RepetitionDuration\s+\(?\[TimeSpan\]::MaxValue\)?/i,
+          `[TimeSpan]::MaxValue vira P99999999DT23H59M59S e o Task Scheduler recusa. Para repetição indefinida, OMITA -RepetitionDuration. Linha: ${line.trim()}`,
+        );
+      });
+    }
+  }
+});
