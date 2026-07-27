@@ -149,18 +149,31 @@ function getImageUrl(destaque: string, imageUrls: ImageMap, postPixelImageNum = 
   // #1690: post_pixel reusa a imagem do D1 por padrão; #2549: override per-edição
   // (quando o post pessoal cobre outro destaque, ex: D2) via marker.
   const dNum = isPostPixel(destaque) ? postPixelImageNum : destaque.replace(/\D/g, "");
+  // Card 4:5 (1080x1350, com o título na própria imagem) tem precedência sobre
+  // o 1:1 quando a edição o gerou — é o que de fato vai pro feed. Ausente →
+  // 1:1 de sempre, comportamento inalterado pras edições que não têm card.
   // #1635: resolução delegada ao helper puro — prefere cloudflare_url, senão a
   // url real (Drive serve inline), nunca chuta uma key Cloudflare sem md5.
+  const card = imageUrls[`d${dNum}_4x5`];
+  if (card) return resolveSocialImageUrl(card, (m) => console.error(m));
   return resolveSocialImageUrl(imageUrls[`d${dNum}`], (m) => console.error(m));
 }
 
 /** #1800: quantos posts esperam uma imagem (d1/d2/d3 + post_pixel que reusa d1, #1690). */
 export function expectedImageCount(platforms: Platform[]): number {
-  return platforms.reduce(
-    (sum, p) =>
-      sum + p.posts.filter((post) => /\d/.test(post.destaque) || isPostPixel(post.destaque)).length,
-    0,
-  );
+  // O preview agrupa por destaque: cada imagem aparece 1× por GRUPO, não por
+  // post. Contar por post (comportamento anterior) inflava o esperado — com
+  // texto único + curto, o mesmo destaque contava 2×, e o guard `--require-images`
+  // acusava imagem faltando num preview completo.
+  const keys = new Set<string>();
+  for (const p of platforms) {
+    for (const post of p.posts) {
+      if (/\d/.test(post.destaque) || isPostPixel(post.destaque)) {
+        keys.add(post.destaque.toLowerCase().replace(/\s+/g, ""));
+      }
+    }
+  }
+  return keys.size;
 }
 
 /** #1800: conta `<img` no HTML renderizado (validação pós-render). */
@@ -210,6 +223,119 @@ function renderPost(post: Post, color: string, imageUrls: ImageMap, postPixelIma
       </div>
       ${comments}
     </div>`;
+}
+
+/**
+ * Canais de destino de cada seção do `03-social.md`. O preview existe pra o
+ * editor conferir o que vai pra onde — sem isso, "# Social" e "# Curto" não
+ * dizem nada sobre destino, e a mesma imagem se repetia em cada seção.
+ */
+export function channelsForSection(sectionName: string): string {
+  const n = sectionName.toLowerCase();
+  if (n.includes("curto")) return "𝕏 X (Twitter) · Threads";
+  if (n.includes("social")) return "💼 LinkedIn · 📘 Facebook · 📷 Instagram";
+  // Formato legado (pré-#3991): uma seção por rede.
+  if (n.includes("linkedin")) return "💼 LinkedIn";
+  if (n.includes("facebook")) return "📘 Facebook";
+  if (n.includes("instagram")) return "📷 Instagram";
+  return sectionName;
+}
+
+export interface GroupedBlock {
+  channels: string;
+  post: Post;
+}
+
+export interface DestaqueGroup {
+  key: string;
+  label: string;
+  imageUrl: string;
+  /** É IA? publica DUAS imagens (opção A e B), não uma. */
+  extraImages?: { label: string; url: string }[];
+  blocks: GroupedBlock[];
+}
+
+/**
+ * Reagrupa os posts POR DESTAQUE (não por seção): cada imagem aparece 1×, com
+ * todos os textos que a acompanham logo abaixo, cada um rotulado com as redes
+ * de destino. Ordem: destaques numerados, depois É IA?, depois post_pixel.
+ */
+export function groupByDestaque(
+  platforms: Platform[],
+  imageUrls: ImageMap,
+  postPixelImageNum = "1",
+): DestaqueGroup[] {
+  const groups = new Map<string, DestaqueGroup>();
+  for (const platform of platforms) {
+    const channels = channelsForSection(platform.name);
+    for (const post of platform.posts) {
+      const key = post.destaque.toLowerCase().replace(/\s+/g, "");
+      if (!groups.has(key)) {
+        const label = isPostPixel(post.destaque)
+          ? `POST PESSOAL — vjpixel (imagem do D${postPixelImageNum})`
+          : /^eia$/i.test(key)
+            ? "É IA?"
+            : post.destaque;
+        const isEia = /^eia$/i.test(key);
+        groups.set(key, {
+          key,
+          label,
+          // É IA? não tem imagem `d{N}`: são as duas opções A/B do quiz.
+          imageUrl: isEia ? "" : getImageUrl(post.destaque, imageUrls, postPixelImageNum),
+          extraImages: isEia
+            ? [
+                { label: "Opção A", url: resolveSocialImageUrl(imageUrls.eia_a, () => {}) },
+                { label: "Opção B", url: resolveSocialImageUrl(imageUrls.eia_b, () => {}) },
+              ].filter(img => img.url)
+            : undefined,
+          blocks: [],
+        });
+      }
+      groups.get(key)!.blocks.push({ channels, post });
+    }
+  }
+  const order = (k: string): number => {
+    if (/^d\d+$/.test(k)) return Number(k.slice(1));
+    if (k === "eia") return 90;
+    return 99; // post_pixel por último
+  };
+  return [...groups.values()].sort((a, b) => order(a.key) - order(b.key));
+}
+
+function renderGroupedBlock(block: GroupedBlock, color: string): string {
+  const mainParas = block.post.main
+    .split(/\n\n+/)
+    .filter(Boolean)
+    .map(p => `<p>${escHtml(p).replace(/\n/g, "<br>").replace(/\{edition_url\}/g, "<em>[link da edição]</em>")}</p>`)
+    .join("\n");
+  const hashtags = block.post.hashtags
+    ? `<div class="hashtags">${escHtml(block.post.hashtags).replace(/#(\w+)/g, `<span style="color:${color}">#$1</span>`)}</div>`
+    : "";
+  const chars = block.post.main.replace(/\s+/g, " ").trim().length;
+  return `
+      <div class="channel-block">
+        <div class="channel-label">${escHtml(block.channels)} <span class="char-count">${chars} chars</span></div>
+        <div class="post-body">
+          ${mainParas}
+          ${hashtags}
+        </div>
+      </div>`;
+}
+
+export function renderDestaqueGroup(group: DestaqueGroup, color: string): string {
+  const imgHtml = group.extraImages?.length
+    ? `<div class="post-image eia-pair">${group.extraImages
+        .map(img => `<figure><img src="${escHtml(img.url)}" alt="${escHtml(`${group.label} — ${img.label}`)}" /><figcaption>${escHtml(img.label)}</figcaption></figure>`)
+        .join("")}</div>`
+    : group.imageUrl
+      ? `<div class="post-image"><img src="${escHtml(group.imageUrl)}" alt="${escHtml(group.label)}" /></div>`
+      : "";
+  return `
+  <div class="post">
+    <div class="post-header" style="border-left: 3px solid ${color}">${escHtml(group.label)}</div>
+    ${imgHtml}
+    ${group.blocks.map(b => renderGroupedBlock(b, color)).join("\n")}
+  </div>`;
 }
 
 export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, postPixelImageNum = "1"): string {
@@ -300,6 +426,27 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
     margin-top: 10px;
     word-spacing: 4px;
   }
+  .eia-pair { display:flex; gap:10px; }
+  .eia-pair figure { flex:1; margin:0; }
+  .eia-pair figcaption { font-size:12px; color:#666; text-align:center; padding:4px 0 8px; }
+  .channel-block {
+    border-top: 1px solid #f0f0f0;
+  }
+  .channel-label {
+    padding: 10px 16px 0;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #0a66c2;
+  }
+  .char-count {
+    float: right;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    color: #999;
+  }
   .comment {
     border-top: 1px solid #f0f0f0;
     padding: 0;
@@ -323,18 +470,15 @@ export function buildSocialHtml(platforms: Platform[], imageUrls: ImageMap, post
 <body>
 <div class="container">
 <h1>Social Preview</h1>
-${platforms.map(p => {
-  const isLinkedin = p.name.toLowerCase().includes("linkedin");
-  const color = isLinkedin ? "#0a66c2" : "#1877f2";
-  const cls = isLinkedin ? "linkedin" : "facebook";
-  const icon = isLinkedin ? "💼" : "📘";
+${(() => {
+  const groups = groupByDestaque(platforms, imageUrls, postPixelImageNum);
+  const note = platforms.find(p => p.note)?.note ?? "";
   return `
   <div class="platform">
-    <div class="platform-header ${cls}">${icon} ${escHtml(p.name)}</div>
-    ${p.note ? `<div class="platform-note">${escHtml(p.note)}</div>` : ""}
-    ${p.posts.map(post => renderPost(post, color, imageUrls, postPixelImageNum)).join("\n")}
+    ${note ? `<div class="platform-note">${escHtml(note)}</div>` : ""}
+    ${groups.map(g => renderDestaqueGroup(g, "#0a66c2")).join("\n")}
   </div>`;
-}).join("\n")}
+})()}
 </div>
 </body>
 </html>`;

@@ -72,6 +72,23 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
   Se o script sair com código ≠ 0, logar erro com o stderr e reportar ao usuário — não continuar para o próximo destaque.
 
   **#1325: nunca regerar imagens existentes sem `--force` explícito.** Tanto `eia-compose.ts` quanto `image-generate.ts` já tem skip-if-exists (`exit 0` com `skipped: outputs exist`). `eia-compose` ganhou partial-state guard (#1325): se A existe e B falhou, **HALT** com exit 2 — não regenera silenciosamente. Editor responde `--force` se quiser regen do zero (vai picar nova POTD). Orchestrator NÃO deve passar `--force` automaticamente em retry — só se o editor pedir explicitamente.
+- **Card 4:5 do feed (#4114).** Depois das imagens acima, para cada destaque presente, gerar a arte 4:5 **nativa** e compor o card com o título embutido:
+  ```bash
+  # 1. arte 4:5 nativa → 04-d{N}-4x5-nativo.jpg
+  npx tsx scripts/image-generate.ts \
+    --editorial {EDITION_DIR}/_internal/02-d{N}-prompt.md \
+    --out-dir {EDITION_DIR}/ \
+    --destaque d{N} \
+    --ratio 4x5
+
+  # 2. compõe o card final (imagem + título) → 04-d{N}-4x5.jpg, todos os destaques
+  npx tsx scripts/gen-social-card-4x5.ts --edition-dir {EDITION_DIR}/
+  ```
+  **Por que a arte 4:5 é gerada de novo em vez de recortada do 2:1** (decisão editorial 260727): o card é retrato (0,8:1) e precisa da altura que o 2:1 descartou — recortar dele comeria ~60% da largura e decepava os sujeitos. Servir e-mail e feed com a mesma arte degradava o hero. O `generateCard` tem fallback (nativo → master 6:5 → 2:1) só pra não quebrar em edição antiga.
+
+  **Este passo não é opcional pra feature existir.** `publish-facebook.ts` e `publish-instagram.ts` escolhem a imagem com `existsSync(04-d{N}-4x5.jpg) ? 4x5 : 1x1` — sem os dois comandos acima o arquivo nunca existe, o fallback dispara **em silêncio** e os posts saem com a 1:1 de sempre, sem título. Foi exatamente esse o estado ao abrir a PR #4114.
+
+  Falha aqui é **não-bloqueante** (exit ≠ 0 → logar warn e seguir): o publisher cai no 1:1 e a edição sai, só sem o título na imagem. Skip-if-exists vale igual ao dos outros geradores — não passar `--force` automaticamente (#1325).
 - **Revisor de crop de imagem (#3951).** Depois de gerar as imagens acima, verificar se o corte 2:1→1:1 (o que vai pro social) preservou o sentido da composição:
   ```bash
   npx tsx scripts/run-image-crop-reviewer.ts --edition-dir {EDITION_DIR}/

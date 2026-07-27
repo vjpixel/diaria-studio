@@ -177,6 +177,30 @@ export function loadDivulgacaoSnippet(file: string | null | undefined): string |
 }
 
 /**
+ * Caixa de AGRADECIMENTO a novos apoiadores (Apoia.se), da região de intro —
+ * entra imediatamente APÓS a coverage line (que termina na frase-CTA "considere
+ * apoiar o projeto") e ANTES do `---` que abre o DESTAQUE 1. O parser aceita
+ * parágrafos extras nessa região desde #3477.
+ *
+ * Fonte: `context/snippets/agradecimento-apoiadores.md`. O nome de cada apoiador
+ * é preenchido no lugar do placeholder `{apoiadores}` a cada edição.
+ *
+ * Graceful/no-op — retorna `null` (bloco OMITIDO, sem frase sem nome) quando:
+ *   - o snippet não existe / ficou vazio após strip do comentário;
+ *   - o placeholder `{apoiadores}` ainda não foi substituído (edição sem
+ *     apoiador novo, que é o caso comum).
+ */
+export function loadAgradecimentoSnippet(
+  file: string | null | undefined = "agradecimento-apoiadores.md",
+): string | null {
+  if (!file) return null;
+  const raw = readSnippetFile(file);
+  if (!raw) return null;
+  if (raw.includes("{apoiadores}")) return null;
+  return raw;
+}
+
+/**
  * #2527: carrega o box de divulgação DIÁRIO default (slot 1, D1/D2) — bloco de
  * curadoria de LIVROS (`**📚 …**`) de `context/snippets/livros-divulgacao.md`.
  * Substituiu o bloco 📣 Clarice como padrão (decisão editorial). Graceful:
@@ -498,16 +522,28 @@ export function stitchNewsletter(input: StitchInput): string {
     ? loadDivulgacaoSnippet(boxesCfg.slot3)
     : null;
 
+  // Caixa de agradecimento a novos apoiadores: entra logo após a coverage line
+  // (que termina na frase-CTA de apoio), ainda dentro da região de intro.
+  const agradecimentoBox = loadAgradecimentoSnippet();
+
   const parts: string[] = [
     coverageLine,
     "",
+  ];
+  // A caixa precisa ficar ISOLADA por `---` (seção própria) pra `extractIntroCallout`
+  // detectá-la e renderizar com fundo. Colada logo após a coverage line, ela é
+  // absorvida pela captura da coverage (#3477) e sai como parágrafo plano.
+  if (agradecimentoBox) {
+    parts.push("---", "", agradecimentoBox, "");
+  }
+  parts.push(
     "---",
     "",
     d1,
     "",
     "---",
     "",
-  ];
+  );
   if (slot1Box) {
     parts.push(slot1Box, "", "---", "");
   }

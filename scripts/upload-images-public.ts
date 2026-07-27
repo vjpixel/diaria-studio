@@ -178,6 +178,13 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
     { key: "d2", filename: "04-d2-1x1.jpg" },
     // #2352: d3 only required when destaque_count == 3.
     ...(destaqueCount === 3 ? [{ key: "d3", filename: "04-d3-1x1.jpg" }] : []),
+    // Card 4:5 (1080x1350, título embutido) gerado por gen-social-card-4x5.ts.
+    // optional: edições sem card seguem publicando o 1:1 normalmente.
+    { key: "d1_4x5", filename: "04-d1-4x5.jpg", optional: true },
+    { key: "d2_4x5", filename: "04-d2-4x5.jpg", optional: true },
+    ...(destaqueCount === 3
+      ? [{ key: "d3_4x5", filename: "04-d3-4x5.jpg", optional: true }]
+      : []),
   ];
 
   const eaiSpecs = (() => {
@@ -238,6 +245,14 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
     // regerado. readMidCalloutImage lê a entry `livros_promo`; sem este produtor
     // o box degradava pra só-texto silenciosamente (achado #1 da review do #1807).
     { key: "livros_promo", filename: "04-livros-promo.jpg", optional: true },
+    // Imagem ARBITRÁRIA por slot de box de divulgação (capa de livro, header de
+    // artigo, etc). Diferente de `livros_promo`, que só é associada ao box de
+    // livros (`isBoxDivulgacaoLivros`, #2136), estas valem pra qualquer snippet
+    // que caia no slot — a associação é posicional, não por link de destino.
+    // optional: a maioria das edições não tem nenhuma.
+    { key: "box_slot1_image", filename: "04-box-slot1.jpg", optional: true },
+    { key: "box_slot2_image", filename: "04-box-slot2.jpg", optional: true },
+    { key: "box_slot3_image", filename: "04-box-slot3.jpg", optional: true },
     ...eaiSpecs,
   ];
   if (mode === "social") return social;

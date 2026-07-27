@@ -335,11 +335,25 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
     assert.ok(keys.includes("d3"), "d3 1x1 em newsletter mode (#1701)");
     assert.ok(keys.includes("d2_2x1"), "d2 2x1 em newsletter mode (#2133/#2141)");
     assert.ok(keys.includes("d3_2x1"), "d3 2x1 em newsletter mode (#2133/#2141)");
+    // #4114: cada slot de box de divulgação ganhou imagem arbitrária opcional
+    // (capa de livro, header de artigo). Diferente de `livros_promo`, que só
+    // vale pro box de livros: a associação aqui é POSICIONAL, serve qualquer
+    // snippet que caia no slot.
     assert.deepEqual(
       keys.sort(),
-      ["cover", "d1", "d2", "d2_2x1", "d3", "d3_2x1", "eia_a", "eia_b", "livros_promo"].sort(),
-      "newsletter = cover + d1 + d2 + d2_2x1 + d3 + d3_2x1 + eia_a + eia_b + livros_promo",
+      [
+        "cover", "d1", "d2", "d2_2x1", "d3", "d3_2x1",
+        "box_slot1_image", "box_slot2_image", "box_slot3_image",
+        "eia_a", "eia_b", "livros_promo",
+      ].sort(),
+      "newsletter = cover + d1/d2/d3 (1x1 + 2x1) + 3 box slots + eia_a/eia_b + livros_promo",
     );
+    assert.ok(
+      specs.filter((s) => s.key.startsWith("box_slot")).every((s) => s.optional),
+      "specs de box slot precisam ser opcionais — a maioria das edições não tem imagem em box nenhum",
+    );
+    // O card 4:5 é asset de FEED, não entra no e-mail (evita upload inútil).
+    assert.ok(!keys.some((k) => k.endsWith("_4x5")), "4x5 é social-only, fora do newsletter mode");
     // filenames: 1x1 (square) para social; 2x1 (wide) para hero inline.
     assert.equal(specs.find((s) => s.key === "d2")!.filename, "04-d2-1x1.jpg");
     assert.equal(specs.find((s) => s.key === "d3")!.filename, "04-d3-1x1.jpg");
@@ -466,7 +480,13 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
       const keys = specs.map((s) => s.key);
       assert.ok(!keys.includes("eia_a"));
       assert.ok(!keys.includes("eia_real"));
-      assert.deepEqual(keys, ["d1", "d2", "d3"]);
+      // #4114: os 3 cards 4:5 entram no social como specs OPCIONAIS — a edição
+      // que não os gerou sobe só as 1:1 e os publishers caem no fallback.
+      assert.deepEqual(keys, ["d1", "d2", "d3", "d1_4x5", "d2_4x5", "d3_4x5"]);
+      assert.ok(
+        specs.filter((s) => s.key.endsWith("_4x5")).every((s) => s.optional),
+        "os specs 4x5 precisam ser opcionais — obrigatórios quebrariam toda edição anterior ao card existir",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

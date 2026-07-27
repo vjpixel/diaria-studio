@@ -784,7 +784,20 @@ export function renderBoxDivulgacao(
   box: string,
   imageUrl: string | null = null,
   bold = true,
+  forceImage = false,
+  portrait = false,
+  altOverride: string | null = null,
 ): string {
+  // `forceImage`: imagem ATRIBUÍDA explicitamente ao slot pelo editor
+  // (`box_slot{N}_image`) vence o caminho pill-only, que ignora `imageUrl`.
+  // Sem o flag, um box com CTA-pill + imagem de slot perdia a imagem em
+  // silêncio. Só vale pra imagem explícita — `livros_promo` e o formato
+  // carrinho seguem exatamente como antes (o dispatcher por estrutura decide).
+  if (imageUrl && forceImage) {
+    // Imagem explícita HORIZONTAL = header visual do box (traz o título dentro
+    // da própria imagem): nenhum parágrafo do corpo deve virar título serif.
+    return renderMidCallout(box, imageUrl, bold, portrait, !portrait, altOverride);
+  }
   if (shouldForceCtaPill(box)) {
     return renderIntroCallout(box, "serif", true, bold);
   }
@@ -797,7 +810,7 @@ export function renderBoxDivulgacao(
  * só-texto (renderIntroCallout, repassando `bold` — #3373). Extrai o link
  * `[texto](url)` do próprio box pra usar na imagem clicável e no botão.
  */
-export function renderMidCallout(text: string, imageUrl: string | null, bold = true): string {
+export function renderMidCallout(text: string, imageUrl: string | null, bold = true, portrait = false, plainBody = false, altOverride: string | null = null): string {
   if (!imageUrl) return renderIntroCallout(text, "serif", false, bold);
   // #1634-safe: parênteses balanceados em vez de `\(([^)]+)\)`. Primeiro link
   // vira destino da imagem clicável + botão; TODOS os links saem do corpo.
@@ -827,14 +840,30 @@ export function renderMidCallout(text: string, imageUrl: string | null, bold = t
   const safeLink = link ? esc(link) : null;
   // #2067: alt e label do CTA derivados do anchor text do 1º link no texto do box.
   // #2136: sem seta no ctaLabel (decisão do editor 260612).
-  const ctaLabel = firstLinkLabel ? esc(firstLinkLabel) : "Acesse";
-  const imgAlt = firstLinkLabel ? esc(firstLinkLabel) : "";
+  // Strip de `**`/`*` do anchor text: um link com título em negrito
+  // (`[**Título**](url)`, formato dos boxes de livro) vazava os asteriscos
+  // literais pro alt da imagem e pro label do botão.
+  const plainLinkLabel = firstLinkLabel.replace(/\*/g, "").trim();
+  const ctaLabel = plainLinkLabel ? esc(plainLinkLabel) : "Acesse";
+  // altOverride (`alt:` do snippet) vence o anchor text: rótulo de ação
+  // ("Ler o artigo") não descreve a imagem pra quem não a vê.
+  const imgAlt = altOverride ? esc(altOverride) : (plainLinkLabel ? esc(plainLinkLabel) : "");
   // #3101: width="536" em pixels (600px container − 32px×2 padding lateral do
   // `<td class="pad" style="padding:8px 32px 0">` que envolve este box — sem
   // padding adicional na table interna antes da imagem). Outlook desktop
   // ignora width percentual em <img> e renderia no tamanho intrínseco.
-  const imgTag = `<img src="${safeImg}" width="536" alt="${imgAlt}" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
-  const imgBlock = safeLink ? `<a href="${safeLink}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
+  // Imagem RETRATO (capa de livro): 160px centralizada, com respiro em volta —
+  // na largura total (536px) viraria um bloco de ~800px de altura no e-mail.
+  // Horizontal (screenshot/header): largura total, comportamento de sempre.
+  const imgTag = portrait
+    ? `<img src="${safeImg}" width="160" alt="${imgAlt}" style="display:block;width:160px;max-width:45%;height:auto;border:0;border-radius:6px;margin:0 auto;" />`
+    : `<img src="${safeImg}" width="536" alt="${imgAlt}" style="display:block;width:100%;height:auto;border:0;border-radius:6px 6px 0 0;" />`;
+  const imgLinked = safeLink ? `<a href="${safeLink}" style="text-decoration:none;">${imgTag}</a>` : imgTag;
+  // Retrato precisa de padding próprio (não encosta nas bordas do box como a
+  // imagem full-bleed, que usa border-radius só no topo).
+  const imgBlock = portrait
+    ? `<div style="padding:20px 20px 4px;text-align:center;">${imgLinked}</div>`
+    : imgLinked;
   const cta = safeLink
     ? `<a href="${safeLink}" style="display:inline-block;background:${COLORS.paper};border:1px solid ${RULE};border-radius:999px;color:${TEXT_COLOR};font-family:${FONT_BODY};font-weight:bold;font-size:16px;text-decoration:none;padding:12px 22px;">${ctaLabel}</a>`
     : "";
@@ -848,8 +877,16 @@ export function renderMidCallout(text: string, imageUrl: string | null, bold = t
   // acima — sem o guard, sairia um <p> fantasma com 12px de margem entre a
   // imagem e o CTA.
   const singleBody = body;
+  // `plainBody`: nenhum parágrafo vira título serif — todos saem como corpo.
+  // Usado quando a IMAGEM já é o cabeçalho visual do box (header de artigo com
+  // o título embutido); sem isso o 1º parágrafo virava um 2º título, duplicando
+  // a hierarquia logo abaixo da imagem.
   const bodyHtml =
-    bodyParas.length > 1
+    bodyParas.length > 1 && plainBody
+      ? bodyParas
+          .map((p, i) => renderBoxParagraph(p, `${i === 0 ? "0" : "12px"} 0 ${i === bodyParas.length - 1 ? "12px" : "0"}`))
+          .join("\n      ")
+      : bodyParas.length > 1
       ? `<p style="margin:0 0 12px;font-family:${FONT_HEADING};font-size:26px;line-height:1.2;color:${TEXT_COLOR};">${processInlineLinks(bodyParas[0])}</p>\n      ` +
         bodyParas
           .slice(1)
@@ -1400,6 +1437,9 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
           content.boxDivulgacao1,
           content.boxDivulgacao1Image ?? null,
           content.boxDivulgacao1Bold ?? true,
+          content.boxDivulgacaoImageExplicit?.[1] ?? false,
+          content.boxDivulgacaoImagePortrait?.[1] ?? false,
+          content.boxDivulgacaoImageAlt?.[1] ?? null,
         ),
       );
     }
@@ -1417,6 +1457,9 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
           content.boxDivulgacao2,
           content.boxDivulgacao2Image ?? null,
           content.boxDivulgacao2Bold ?? true,
+          content.boxDivulgacaoImageExplicit?.[2] ?? false,
+          content.boxDivulgacaoImagePortrait?.[2] ?? false,
+          content.boxDivulgacaoImageAlt?.[2] ?? null,
         ),
       );
     }
@@ -1433,6 +1476,9 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
           content.boxDivulgacao3,
           content.boxDivulgacao3Image ?? null,
           content.boxDivulgacao3Bold ?? true,
+          content.boxDivulgacaoImageExplicit?.[3] ?? false,
+          content.boxDivulgacaoImagePortrait?.[3] ?? false,
+          content.boxDivulgacaoImageAlt?.[3] ?? null,
         ),
       );
     }

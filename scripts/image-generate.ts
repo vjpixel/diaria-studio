@@ -47,6 +47,8 @@ export const STYLE_SUFFIX =
   ", post-impressionist oil painting with thick impasto brushstrokes, swirling textures, bold complementary colors in the style of Vincent van Gogh, painterly, high contrast. " +
   "All principal subjects must be grouped together in the central half of the horizontal frame so that all of them remain fully visible when the image is cropped to a square (1:1); do not place key subjects near the left or right edges. " +
   "When the scene includes a standing or upright figure (human, robot, or humanoid character), frame it as a wide shot: the entire figure, including the head and feet, must fit comfortably within the frame with generous empty margin above the head; never crop or cut off the top of the head. " +
+  "Compose for later reframing: this single artwork is cropped into a wide format (2:1, which keeps the full width and trims top and bottom) and into portrait formats (4:5 and 9:16, which keep the full height and trim left and right). Every essential element must therefore sit inside the central 67% of the width and the central 59% of the height — the rectangle common to both crops — and never touch any edge. " +
+  "Reserve the bottom fifth of the frame as a calm, low-detail area (ground, shadow, plain surface or penumbra) with no faces, hands or key objects, because a headline will later be placed over it; keep that band darker and simpler than the rest of the scene. " +
   "Purely visual scene with absolutely no written characters, no letters, no digits, no symbols on any surface; " +
   "all signage, papers, screens, books and labels rendered as abstract shapes or solid color blocks without any text or numbers.";
 
@@ -96,13 +98,22 @@ function main() {
   // #1916: --ratio força o formato. Sem a flag, default da diária (todos os
   // destaques d1/d2/d3 usam 2x1 como hero inline no email, #2133/#2141).
   const ratio = args["ratio"];
-  if (ratio !== undefined && ratio !== "2x1" && ratio !== "1x1") {
-    console.error(`--ratio deve ser 2x1 ou 1x1. Recebido: ${ratio}`);
+  if (ratio !== undefined && ratio !== "2x1" && ratio !== "1x1" && ratio !== "4x5" && ratio !== "master") {
+    console.error(`--ratio deve ser 2x1, 1x1, 4x5 ou master. Recebido: ${ratio}`);
     process.exit(1);
   }
   // Default wide para d1/d2/d3: hero 2:1 inline. --ratio 1x1 ainda funciona
   // como override (ex: mensal que precisasse apenas do square).
   const wide = ratio === "2x1" || (ratio === undefined && /^d[123]$/.test(destaque));
+  // 4:5 NATIVO (1080×1350): card de feed gerado na proporção final, sem crop.
+  // O crop 2:1→4:5 recorta laterais E ganha altura, o que já decapitou figura
+  // (edição 260727, D2/D3). Gerar nativo elimina a classe inteira do problema.
+  const portrait45 = ratio === "4x5";
+  // MASTER (1600×1350, ~6:5): proporção-envelope que CONTÉM 2:1 e 4:5. O 2:1 sai
+  // cortando altura (mantém a largura inteira), o 4:5 sai cortando largura
+  // (mantém a altura inteira) — nenhum dos dois precisa esticar. A área segura
+  // comum aos dois é o retângulo central de 1080×800.
+  const master = ratio === "master";
 
   // Ler prompt editorial
   const editorialText = readFileSync(editorialPath, "utf8");
@@ -114,9 +125,13 @@ function main() {
   const sdPromptRaw: Record<string, unknown> = {
     positive: positivePrompt,
     negative: NEGATIVE_PROMPT,
-    ...(wide
-      ? { final_width: 1600, final_height: 800 }
-      : { final_width: 1024, final_height: 1024 }),
+    ...(master
+      ? { final_width: 1600, final_height: 1350 }
+      : portrait45
+      ? { final_width: 1080, final_height: 1350 }
+      : wide
+        ? { final_width: 1600, final_height: 800 }
+        : { final_width: 1024, final_height: 1024 }),
   };
   // #649: validar shape antes de gravar — fail-loud se positive curto, dims fora do range
   const sdPrompt = parseSdPrompt(sdPromptRaw);
@@ -124,9 +139,13 @@ function main() {
   // Gravar JSON de prompt
   const normalizedOutDir = outDir.endsWith("/") ? outDir : outDir + "/";
   const sdPromptPath = `${normalizedOutDir}04-${destaque}-sd-prompt.json`;
-  const outJpgPath = wide
-    ? `${normalizedOutDir}04-${destaque}.jpg`  // Wide usa nomes próprios (2x1, 1x1) gerados abaixo
-    : `${normalizedOutDir}04-${destaque}-1x1.jpg`;
+  const outJpgPath = master
+    ? `${normalizedOutDir}04-${destaque}-master.jpg`
+    : portrait45
+    ? `${normalizedOutDir}04-${destaque}-4x5-nativo.jpg`
+    : wide
+      ? `${normalizedOutDir}04-${destaque}.jpg`  // Wide usa nomes próprios (2x1, 1x1) gerados abaixo
+      : `${normalizedOutDir}04-${destaque}-1x1.jpg`;
   const filenamePrefix = `diaria_${destaque}_`;
 
   // Idempotence: pular se imagem final já existe (re-run sem intenção de regenerar).

@@ -167,6 +167,15 @@ export interface NewsletterContent {
    * (`isBoxDivulgacaoLivros`), e o slot 3 (Indicação de Ferramenta) nunca é
    * esse box; mantido pra paridade de contrato/futuro-proofing. */
   boxDivulgacao3Image?: string | null;
+  /** Slots cuja imagem veio de `box_slot{N}_image` (atribuição EXPLÍCITA do
+   * editor), não de `livros_promo`. O renderer usa isso pra forçar o layout com
+   * imagem mesmo em box que normalmente cairia no caminho pill-only. */
+  boxDivulgacaoImageExplicit?: { 1?: boolean; 2?: boolean; 3?: boolean };
+  /** Slots cuja imagem é RETRATO (capa de livro etc): renderizada reduzida e
+   * centralizada em vez de ocupar a largura toda do box. */
+  boxDivulgacaoImagePortrait?: { 1?: boolean; 2?: boolean; 3?: boolean };
+  /** `alt:` do snippet de cada slot — texto alternativo da imagem do box. */
+  boxDivulgacaoImageAlt?: { 1?: string | null; 2?: string | null; 3?: string | null };
   /** Mesmo contrato de `boxDivulgacao1Bold`, pro slot 3. */
   boxDivulgacao3Bold?: boolean;
   /** #3981: mesmo contrato de `boxDivulgacao1Categoria`, pro slot 3. */
@@ -1346,6 +1355,70 @@ export function isBoxDivulgacaoLivros(text: string | null | undefined): boolean 
  * tanto no slot 1 (gap D1/D2) quanto no slot 2 (gap D2/D3), a depender da
  * ordem de conteúdo da edição (ver `test/flexible-callout-position.test.ts`).
  */
+/**
+ * Imagem ARBITRÁRIA atribuída a um slot de box (entry `box_slot{N}_image` de
+ * `06-public-images.json`, produzida por `upload-images-public.ts` a partir de
+ * `04-box-slot{N}.jpg`).
+ *
+ * Diferente de `livros_promo` — que só é associada ao box de LIVROS, por link de
+ * destino (#2136) — esta associação é POSICIONAL: vale pro snippet que estiver
+ * naquele slot, seja capa de livro, header de artigo ou outro. Tem precedência
+ * sobre `livros_promo`: se o editor atribuiu uma imagem explícita ao slot, é
+ * ela que vale.
+ *
+ * Graceful: ausente/cache ilegível → null (box só-texto, comportamento atual).
+ */
+/**
+ * Dimensões de um JPEG lendo só os marcadores SOF (mini-parser, sem dependência
+ * externa — `sharp` existe no projeto mas é pesado demais pra um módulo de parse
+ * que roda em todo render). Retorna `null` se o arquivo não for JPEG legível.
+ */
+function readJpegDimensions(path: string): { width: number; height: number } | null {
+  try {
+    const buf = readFileSync(path);
+    if (buf.length < 4 || buf[0] !== 0xff || buf[1] !== 0xd8) return null; // não é JPEG
+    let off = 2;
+    while (off + 9 < buf.length) {
+      if (buf[off] !== 0xff) { off++; continue; }
+      const marker = buf[off + 1];
+      // SOF0..SOF15, exceto DHT (c4), JPGA (c8) e DAC (cc) — os únicos que
+      // carregam altura/largura no header.
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return { height: buf.readUInt16BE(off + 5), width: buf.readUInt16BE(off + 7) };
+      }
+      off += 2 + buf.readUInt16BE(off + 2);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Imagem de slot em RETRATO (altura > largura)? Capa de livro renderizada na
+ * largura total do box (536px) viraria um bloco de ~800px de altura no e-mail;
+ * o renderer usa este sinal pra exibi-la reduzida e centralizada. Imagem
+ * horizontal (screenshot, header de artigo) mantém a largura total de sempre.
+ */
+export function isBoxSlotImagePortrait(editionDir: string, slot: 1 | 2 | 3): boolean {
+  const dim = readJpegDimensions(resolve(editionDir, `04-box-slot${slot}.jpg`));
+  return dim !== null && dim.height > dim.width;
+}
+
+function readBoxSlotImage(editionDir: string, slot: 1 | 2 | 3): string | null {
+  const p = resolve(editionDir, "06-public-images.json");
+  if (!existsSync(p)) return null;
+  try {
+    const j = JSON.parse(readFileSync(p, "utf8"));
+    const e = (j.images ?? j)?.[`box_slot${slot}_image`];
+    // `||` (não `??`): string vazia deve cair pro próximo campo / null — mesma
+    // razão de readBoxDivulgacaoImage (evita `<img src="">`).
+    return e?.cloudflare_url || e?.url || null;
+  } catch {
+    return null;
+  }
+}
+
 function readBoxDivulgacaoImage(
   editionDir: string,
   boxText?: string | null,
@@ -1376,7 +1449,7 @@ export function readBoxDivulgacao1Image(
   editionDir: string,
   boxText?: string | null,
 ): string | null {
-  return readBoxDivulgacaoImage(editionDir, boxText);
+  return readBoxSlotImage(editionDir, 1) ?? readBoxDivulgacaoImage(editionDir, boxText);
 }
 
 /**
@@ -1389,7 +1462,7 @@ export function readBoxDivulgacao2Image(
   editionDir: string,
   boxText?: string | null,
 ): string | null {
-  return readBoxDivulgacaoImage(editionDir, boxText);
+  return readBoxSlotImage(editionDir, 2) ?? readBoxDivulgacaoImage(editionDir, boxText);
 }
 
 /**
@@ -1401,7 +1474,7 @@ export function readBoxDivulgacao3Image(
   editionDir: string,
   boxText?: string | null,
 ): string | null {
-  return readBoxDivulgacaoImage(editionDir, boxText);
+  return readBoxSlotImage(editionDir, 3) ?? readBoxDivulgacaoImage(editionDir, boxText);
 }
 
 /** Raiz do repo, resolvida a partir do próprio módulo (`scripts/lib/` ->
@@ -1461,6 +1534,46 @@ export function readBoxDivulgacaoCategoriaForSlot(
     // resto da newsletter. `renderKicker` já faz `esc()` (HTML), não markdown.
     const sanitized = categoria.replace(/[*#]/g, "").replace(/^-+\s*/, "").trim();
     return sanitized || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `alt:` configurado no header do snippet atribuído ao SLOT — texto alternativo
+ * da imagem do box (`box_slot{N}_image`).
+ *
+ * Existe porque o alt default vem do anchor text do 1º link do box, que muitas
+ * vezes é um rótulo de ação genérico ("Ler o artigo", "Quero apoiar"). Quando a
+ * imagem CARREGA informação (header de artigo com o título embutido, capa de
+ * livro), o alt genérico apaga essa informação pra quem usa leitor de tela ou
+ * tem imagens bloqueadas no cliente de e-mail — que é justamente o público que
+ * mais depende do alt.
+ *
+ * Mesmo mecanismo de leitura de `categoria:` (`readBoxDivulgacaoCategoriaForSlot`):
+ * disco, no momento do render, via `platform.config.json > boxes_divulgacao`.
+ * Ausente → null (renderer cai no anchor text, comportamento de sempre).
+ */
+export function readBoxDivulgacaoAltForSlot(
+  slot: 1 | 2 | 3,
+  rootDir: string = REPO_ROOT_FROM_MODULE,
+): string | null {
+  try {
+    const configPath = resolve(rootDir, "platform.config.json");
+    if (!existsSync(configPath)) return null;
+    const cfg = JSON.parse(readFileSync(configPath, "utf8"));
+    const boxes = cfg?.boxes_divulgacao;
+    if (!boxes || typeof boxes !== "object") return null;
+    const filename = boxes[`slot${slot}`];
+    if (typeof filename !== "string" || !filename) return null;
+    const snippetPath = resolve(rootDir, "context", "snippets", filename);
+    if (!existsSync(snippetPath)) return null;
+    const alt = parseBoxHeaderField(readFileSync(snippetPath, "utf8"), "alt");
+    if (!alt) return null;
+    // Mesma sanitização de markdown do `categoria:` (#3981) — o alt é atributo
+    // HTML, `**` literal ali é ruído pro leitor de tela. `esc()` do HTML fica
+    // por conta do renderer.
+    return alt.replace(/[*#]/g, "").replace(/^-+\s*/, "").trim() || null;
   } catch {
     return null;
   }
@@ -1587,6 +1700,21 @@ export function extractContent(editionDir: string): NewsletterContent {
   const boxDivulgacao3Image = readBoxDivulgacao3Image(editionDir, boxDivulgacao3);
   const boxDivulgacao3Bold = isBoxDivulgacao3Bold(reviewedText);
   const boxDivulgacao3Categoria = boxDivulgacao3 ? readBoxDivulgacaoCategoriaForSlot(3) : null;
+  const boxDivulgacaoImageExplicit = {
+    1: readBoxSlotImage(editionDir, 1) !== null,
+    2: readBoxSlotImage(editionDir, 2) !== null,
+    3: readBoxSlotImage(editionDir, 3) !== null,
+  };
+  const boxDivulgacaoImageAlt = {
+    1: readBoxDivulgacaoAltForSlot(1),
+    2: readBoxDivulgacaoAltForSlot(2),
+    3: readBoxDivulgacaoAltForSlot(3),
+  };
+  const boxDivulgacaoImagePortrait = {
+    1: boxDivulgacaoImageExplicit[1] && isBoxSlotImagePortrait(editionDir, 1),
+    2: boxDivulgacaoImageExplicit[2] && isBoxSlotImagePortrait(editionDir, 2),
+    3: boxDivulgacaoImageExplicit[3] && isBoxSlotImagePortrait(editionDir, 3),
+  };
 
   // #2316: subtitle adapta-se ao número real de destaques.
   // Com 2 destaques: só D2 (sem o separador " | "). Com 3: D2 | D3 (padrão).
@@ -1623,6 +1751,9 @@ export function extractContent(editionDir: string): NewsletterContent {
     boxDivulgacao3Image,
     boxDivulgacao3Bold,
     boxDivulgacao3Categoria,
+    boxDivulgacaoImageExplicit,
+    boxDivulgacaoImagePortrait,
+    boxDivulgacaoImageAlt,
   };
 }
 
