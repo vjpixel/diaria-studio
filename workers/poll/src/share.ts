@@ -471,10 +471,6 @@ export interface QuizSharePayload {
   origin?: "quiz" | "sequence";
 }
 
-/** #4120: alias curto pro tipo do campo `origin` acima — usado nos call sites
- * de jogar.ts/share.ts que precisam nomear o tipo (não só o literal). */
-export type QuizShareOrigin = NonNullable<QuizSharePayload["origin"]>;
-
 /** Pure: serializa `{score, total, origin?}` pra um corpo compacto e
  * determinístico — prefixo `Q.` distingue do formato `{AAMMDD}.{0|1|-}` do
  * payload de voto único (nunca colidem, mesmo token space, rotas diferentes).
