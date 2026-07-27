@@ -1,5 +1,5 @@
 /**
- * test/poll-img-key-allowlist-4111.test.ts (#4111)
+ * test/poll-img-key-allowlist-4112.test.ts (#4112)
  *
  * P0 do review do "É IA?" (260727), CONFIRMADO em produção antes do fix:
  * `GET /img/{key}` passava a chave crua da URL direto pro `env.POLL.get()`,
@@ -43,7 +43,7 @@ function makeEnv() {
   } as never;
 }
 
-describe("GET /img/{key} — allowlist de prefixo (#4111)", () => {
+describe("GET /img/{key} — allowlist de prefixo (#4112)", () => {
   let env: ReturnType<typeof makeEnv>;
 
   beforeEach(() => {

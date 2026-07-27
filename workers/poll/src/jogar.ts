@@ -1383,12 +1383,22 @@ export function formatSeqBatchBreakMessage(correct: number, batchSize: number, r
   return `Você acertou ${correct} de ${batchSize}! Continuar jogando — faltam ${remaining}.`;
 }
 
+/** #4115: teto de edições por chamada. O parser só filtrava por FORMA, sem
+ * limite de quantidade — e `handleJogarSeqState` faz um `get` de KV por
+ * edição (dois, desde o #4115, quando há sessão), então um caller arbitrário
+ * podia inflar o número de subrequests numa única invocação até estourar o
+ * teto do Worker. 40 cobre com folga o caso real (a sequência é o mês
+ * anterior inteiro, ~31 pares no pior mês); o excedente é descartado em vez
+ * de derrubar a request. */
+export const SEQ_STATE_MAX_EDITIONS = 40;
+
 export function parseSeqStateEditionsParam(raw: string | null): string[] {
   if (!raw) return [];
   return raw
     .split(",")
     .map((s) => s.trim())
-    .filter((s) => AAMMDD_RE.test(s));
+    .filter((s) => AAMMDD_RE.test(s))
+    .slice(0, SEQ_STATE_MAX_EDITIONS);
 }
 
 /**
@@ -1705,8 +1715,27 @@ ${renderIdentityFormBlock()}`;
       return Promise.resolve(null);
     }
     return fetch(voteUrl).then(function (res) {
-      return res.text();
-    }).then(function (html) {
+      // #4116: capturar o STATUS junto com o corpo. Antes só o texto era
+      // lido, e o veredito saía do prefixo da .msg (check/x) — mas NENHUMA
+      // mensagem de erro do /vote tem esse prefixo ("Link inválido",
+      // "Escolha inválida", "Essa edição não aceita mais votos", "Link
+      // inválido ou expirado"), nem uma página 5xx da borda (que sequer tem
+      // .msg). Resultado: todo erro virava correct:null, indistinguível do
+      // "já votou" legítimo — e o chamador pulava a rodada em silêncio,
+      // logando o evento ERRADO (seq_skip_already_voted_race), o que
+      // mascarava a falha real em produção.
+      return res.text().then(function (html) {
+        return { ok: res.ok, status: res.status, html: html };
+      });
+    }).then(function (resp) {
+      // #4116: 5xx é transiente (worker/KV instável) — vale a mesma 2ª
+      // tentativa já usada pra falha de rede. 4xx é determinístico
+      // (link/edição/escolha inválidos): repetir daria o mesmo erro.
+      if (!resp.ok) {
+        if (resp.status >= 500 && attempt < 1) return voteAndReveal(voteUrl, attempt + 1);
+        return { httpError: true, status: resp.status };
+      }
+      var html = resp.html;
       var parsed = new DOMParser().parseFromString(html, "text/html");
       var msgEl = parsed.querySelector(".msg");
       // #4030 (item 5): antes injetava o bloco .result-images inteiro de
@@ -1853,6 +1882,17 @@ ${renderIdentityFormBlock()}`;
         // (sai da sequência, mas o dedup no servidor cobre a re-tentativa;
         // o voto nunca se perde silenciosamente).
         window.location.href = voteUrl;
+        return;
+      }
+      // #4116: erro HTTP REAL do /vote (400/403/410, ou 5xx que já falhou o
+      // retry) — categoria distinta de "já votou". Antes os dois caíam no
+      // mesmo branch abaixo e o log dizia seq_skip_already_voted_race,
+      // escondendo falha de verdade. Aqui a rodada também é pulada (não dá
+      // pra revelar sem resposta do servidor), mas o log diz a verdade e
+      // carrega o status, que é o que permite diagnosticar em produção.
+      if (result.httpError) {
+        console.error(JSON.stringify({ event: "seq_vote_http_error", edition: edition, status: result.status }));
+        advance();
         return;
       }
       if (result.correct === null) {
@@ -2227,7 +2267,7 @@ export interface SeqStateResultEntry {
  * mecanismo estava morto em produção (ver issue #4035 para o relato/evidência
  * completos).
  */
-export async function handleJogarSeqState(url: URL, env: Env): Promise<Response> {
+export async function handleJogarSeqState(url: URL, env: Env, request?: Request): Promise<Response> {
   const emailRaw = url.searchParams.get("email");
   const email = emailRaw ? emailRaw.toLowerCase().trim() : emailRaw;
   if (!email || !isValidVoteEmailFormat(email)) {
@@ -2246,9 +2286,38 @@ export async function handleJogarSeqState(url: URL, env: Env): Promise<Response>
   // handleVote (vote.ts) usa pra escrever, via bEnv/brandedEnv (index.ts).
   const brandedPoll = brandedNamespace(env.POLL, brandKvPrefix(JOGAR_BRAND));
   const editions = parseSeqStateEditionsParam(url.searchParams.get("editions"));
+
+  // #4115: identidade pós-gate. Desde o #4054, `handleVote` REESCREVE o e-mail
+  // do voto pro e-mail real assim que a request carrega um cookie de sessão
+  // válido (vote.ts, bloco "identidade pós-gate") — mas este endpoint nem
+  // recebia `request`, então sempre lia `vote:{ed}:{token}` e reportava
+  // `voted:false` pra tudo que foi votado DEPOIS do gate.
+  //
+  // Efeito em produção: o jogador voltava, `playIndices` reincluía pares já
+  // jogados, ele re-jogava, e o clique caía no caminho "já votou" — que o
+  // client trata como corrida e pula SEM creditar (ver `onChoice`). O placar
+  // final saía sistematicamente subestimado pra toda sessão que passou pelo
+  // gate, e era esse número errado que alimentava o card de compartilhamento.
+  //
+  // O mesmo jogador legitimamente tem votos em DUAS chaves: sob o token (a
+  // rodada livre, antes do gate) e sob o e-mail real (da 2ª rodada em
+  // diante). Por isso consultamos as duas identidades e aceitamos a primeira
+  // que existir — não basta trocar uma pela outra. Ordem: sessão primeiro
+  // (cobre a maioria das rodadas de quem se identificou), token como fallback.
+  //
+  // `request` é opcional pra retrocompat com os testes que chamam sem ele —
+  // ausente ou sem cookie válido, comportamento 100% igual ao pré-#4054.
+  const sessionEmail = request
+    ? await readWebSessionEmail(env.COOKIE_HMAC_SECRET, request.headers.get("Cookie"))
+    : null;
+  const identities = sessionEmail && sessionEmail !== email ? [sessionEmail, email] : [email];
+
   const results: SeqStateResultEntry[] = await Promise.all(
     editions.map(async (edition): Promise<SeqStateResultEntry> => {
-      const raw = await brandedPoll.get(`vote:${edition}:${email}`);
+      const raws = await Promise.all(
+        identities.map((identity) => brandedPoll.get(`vote:${edition}:${identity}`)),
+      );
+      const raw = raws.find((r) => r !== null) ?? null;
       if (!raw) return { edition, voted: false, correct: null };
       try {
         const parsed = JSON.parse(raw) as { correct?: boolean | null };
