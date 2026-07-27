@@ -35,8 +35,6 @@ export const MENSAL_POSICOES = [
   "pill",     // pill link (Radar / Use Melhor / Outras notícias)
 ] as const;
 
-export type MensalPosicao = (typeof MENSAL_POSICOES)[number];
-
 /** `utm_source` fixo de toda a superfície mensal (base da Clarice). */
 export const MENSAL_UTM_SOURCE = "clarice";
 /** `utm_medium` fixo de toda a superfície mensal. */
@@ -181,7 +179,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     originFile: "scripts/lib/mensal/monthly-render.ts",
     description:
       "Todo link pro host de marca no e-mail mensal enviado pela Brevo. " +
-      "O sufixo {posicao} distingue wordmark-{secao} / inline / cta / titulo / pill (#4040).",
+      `O sufixo {posicao} vem do vocabulário fechado ${MENSAL_POSICOES.join(" / ")} ` +
+      "— `wordmark` ainda ganha a seção corrente como sufixo (#4040).",
     status: "ativo",
   },
   {

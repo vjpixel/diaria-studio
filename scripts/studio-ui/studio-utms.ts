@@ -75,7 +75,6 @@ loadProjectEnv();
 
 /** Campos que a UI PODE editar. Qualquer outro é rejeitado — ver header. */
 export const EDITABLE_METADATA_FIELDS = ["description", "status", "note"] as const;
-export type EditableMetadataField = (typeof EDITABLE_METADATA_FIELDS)[number];
 
 export interface UtmMetadataEntry {
   /** Sobrescreve a descrição da posição (texto editorial, não afeta emissão). */
