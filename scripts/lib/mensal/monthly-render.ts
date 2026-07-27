@@ -21,6 +21,7 @@ import { applyWordJoiner } from "../word-joiner.ts"; // #2018 — shared helper 
 import { applyBrandWordmark } from "../newsletter-render-html.ts"; // wordmark diar.ia.br, mesmo da diária (#3181) — candidato a mover pra shared/, ver docs/render-unification-analysis-3269.md
 import { tealDot } from "../shared/email-components.ts"; // #3269 — extraído de newsletter-render-html.ts pra shared/ (era o mesmo import cruzado ad-hoc do applyBrandWordmark acima; ponto ● teal, #3181)
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
+import { truncateAtBoundary } from "../truncate-at-boundary.ts"; // #4048 — teaser dos destaques
 import {
   DIARIA_FACEBOOK_PAGE_URL,
   DIARIA_LINKEDIN_PAGE_URL,
@@ -459,6 +460,55 @@ export function captionForGenerator(imageGenerator: string): string {
  * ComfyUI, Cloudflare, etc. Caller (draftToEmail) lê platform.config.json
  * e passa a legenda correta. Default: "Criada com IA" (genérico, seguro).
  */
+/**
+ * #4048: teto de caracteres do teaser de cada destaque (medido no texto sem
+ * sintaxe markdown de link — a citação `[texto](url)` conta pelo TEXTO
+ * visível, não pela URL). ~480 chars cobre o primeiro parágrafo inteiro de um
+ * destaque típico (a "manchete narrada") sem entrar no desenvolvimento dos
+ * parágrafos seguintes — dá o gancho, não a matéria. Escolhido bem acima do
+ * `MAX_SUMMARY_LENGTH=200` de `clean-summary.ts` (que resume UMA linha de
+ * artigo pro pool de candidatos da diária) porque aqui a unidade é uma
+ * narrativa multi-parágrafo já editada — cortar em 200 chars mutilaria a
+ * primeira frase na maioria dos casos. `truncateAtBoundary` garante que o
+ * corte final sempre cai numa fronteira de frase ou palavra, nunca no meio.
+ */
+const TEASER_MAX_CHARS = 480;
+
+/**
+ * #4048: renderiza os parágrafos narrativos de um destaque como TEASER — dá
+ * a largada da matéria, não o corpo inteiro, e fecha com um link explícito
+ * "Leia mais →" apontando pra primeira fonte citada no corpo (a mesma URL que
+ * o post-process `scripts/monthly-relink-to-diaria.ts` reescreve pra apontar
+ * pra edição diária correspondente, quando existe mapeamento — ver rationale
+ * completo no header daquele arquivo e no corpo do PR #4048).
+ *
+ * Decisão de design: o teaser mede o texto SEM a sintaxe `[texto](url)` (só o
+ * texto visível), porque o objetivo é dar ao leitor uma sensação real de
+ * "quanto texto ele está vendo" — contar a URL entulharia o orçamento de
+ * caracteres com bytes invisíveis ao leitor. Se o corpo inteiro já cabe no
+ * teto, ele é renderizado por completo (sem "leia mais" — não há nada além a
+ * ler). Sem NENHUMA fonte citada no corpo, o teaser ainda é truncado (menos
+ * clique pro veículo original é o objetivo #4048), só sem o link de saída —
+ * fallback seguro (nunca um "Leia mais" morto sem destino).
+ */
+export function renderDestaqueTeaser(paras: string[]): string {
+  if (!paras.length) return "";
+  const joined = paras.join(" ").replace(/\n/g, " ").trim();
+  const firstLinkMatch = joined.match(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/);
+  const firstUrl = firstLinkMatch?.[2];
+  // Texto puro (link markdown → só o texto visível) pra medir/truncar — o
+  // teaser é prosa corrida, não uma lista de citações inline.
+  const plain = joined.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, "$1");
+  if (plain.length <= TEASER_MAX_CHARS) {
+    return `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(plain)}</p>`;
+  }
+  const teaser = truncateAtBoundary(plain, TEASER_MAX_CHARS);
+  const leiaMais = firstUrl
+    ? ` <a href="${escHtml(firstUrl)}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};font-weight:bold;">Leia mais&nbsp;&rarr;</a>`
+    : "";
+  return `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(teaser)}${leiaMais}</p>`;
+}
+
 export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: string, imageCaption?: string): string {
   const lines = chunk.split("\n");
   // Limpar header: remover bold/brackets, separadores `\]` `|`, normalizar spaces.
@@ -518,10 +568,10 @@ export function renderDestaque(chunk: string, temaOverride?: string, imageUrl?: 
   let mainHtml = "";
   let conductorHtml = "";
   if (conductorText) {
-    mainHtml = mainParas.map((p) => `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
+    mainHtml = renderDestaqueTeaser(mainParas);
     conductorHtml = boxFor(conductorText);
   } else if (mainParas.length) {
-    mainHtml = mainParas.slice(0, -1).map((p) => `<p style="margin:0 0 16px 0;font-family:${FONT_SANS};">${renderInline(p.replace(/\n/g, " "))}</p>`).join("\n");
+    mainHtml = renderDestaqueTeaser(mainParas.slice(0, -1));
     conductorHtml = boxFor(mainParas[mainParas.length - 1]);
   }
 
@@ -760,9 +810,49 @@ function renderPillLink(
 }
 
 /**
+ * #4050: monta a URL `https://wa.me/?text=...` que abre o WhatsApp com o texto
+ * já preenchido — MESMO mecanismo de `renderShareCardBlock`/`shareButtonScript`
+ * em `workers/poll/src/share.ts` (#3679, poll-share). Adaptado pro contexto de
+ * EMAIL: o worker usa um `<button data-share-action="whatsapp">` com listener
+ * JS (`window.open("https://wa.me/?text=" + encodeURIComponent(shareUrl))`) —
+ * HTML de email não executa `<script>`, então aqui é direto um `<a href>`
+ * estático com o mesmo endpoint `wa.me` e a mesma forma de payload (`text=`
+ * only, sem `url` separado — `wa.me` não aceita 2 parâmetros).
+ */
+function whatsappShareHref(text: string): string {
+  return `https://wa.me/?text=${encodeURIComponent(text)}`;
+}
+
+/**
+ * #4050 item 1: bloco de compartilhamento via WhatsApp na área de encerramento
+ * — pill outline (mesmo idioma visual de `renderPillLink`/`renderEncerramento`).
+ * `shareUrl` já deve trazer o UTM próprio (`utm_term` distinto do CTA
+ * principal, ver `draftToEmail`/`renderEncerramento` — issue #4050 pede medição
+ * separada). Retorna "" se `shareUrl` for vazio (sem ciclo/URL resolvida —
+ * mesmo fallback gracioso dos outros blocos opcionais deste arquivo).
+ */
+function renderWhatsappShareBlock(shareUrl: string, promptText: string, shareText: string): string {
+  if (!shareUrl) return "";
+  const href = whatsappShareHref(`${shareText} ${shareUrl}`);
+  return `<table role="presentation" align="center" cellpadding="0" cellspacing="0" style="margin:16px auto 0;"><tr><td style="text-align:center;">` +
+    `<p style="margin:0 0 8px 0;font-family:${FONT_SANS};font-size:13px;color:${INK};">${escHtml(promptText)}</p>` +
+    renderPillLink("Compartilhar no WhatsApp", href, { background: BEGE }) +
+    `</td></tr></table>`;
+}
+
+/**
  * Encerramento no padrão da diária (#DS Tier 3): kicker "Para encerrar" + texto
  * de fechamento numa caixa bege; curadorias (bullets `- [texto](url)`) viram
  * pills outline. Degrada pra só kicker + caixa bege quando o conteúdo é simples.
+ *
+ * #4050 item 1: fecha com um bloco de compartilhamento WhatsApp convidando a
+ * mandar a edição pra alguém — link pro cadastro Beehiiv (mesmo destino do
+ * wordmark), com `utm_term=whatsapp-share-encerramento` (distinto do CTA
+ * principal/pills acima, pra medir esse clique separadamente — issue #4050).
+ * Sem ciclo setado (`currentMonthlyUtmCiclo` null — render fora de
+ * `draftToEmail`, ex.: teste direto de `renderEncerramento`), o bloco não
+ * renderiza (sem UTM de ciclo pra atribuir o clique, mesma disciplina de
+ * `withClariceUtm`).
  */
 export function renderEncerramento(body: string): string {
   const blocks = body.split(/\n\n+/).map((b) => b.trim()).filter(Boolean);
@@ -802,6 +892,24 @@ export function renderEncerramento(body: string): string {
     parts.push(
       `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:16px 0 0;"><tr><td style="padding:24px 28px;"><p style="margin:0;font-family:${FONT_SANS};">${renderInline(last)}</p></td></tr></table>`,
     );
+  }
+
+  // #4050 item 1: WhatsApp share — utm_term próprio, distinto do CTA/pills.
+  if (currentMonthlyUtmCiclo) {
+    let shareUrl = "";
+    try {
+      const u = new URL(MENSAL_BRAND_LINK);
+      u.searchParams.set("utm_source", "clarice");
+      u.searchParams.set("utm_medium", "email");
+      u.searchParams.set("utm_campaign", `clarice-${currentMonthlyUtmCiclo}`);
+      u.searchParams.set("utm_term", "whatsapp-share-encerramento");
+      shareUrl = u.toString();
+    } catch { /* MENSAL_BRAND_LINK é constante fixa válida — nunca deveria falhar */ }
+    parts.push(renderWhatsappShareBlock(
+      shareUrl,
+      "Gostou desta edição? Manda pra alguém:",
+      "Essa edição da Diar.ia × Clarice te ajuda a entender e usar melhor as IAs — vale assinar:",
+    ));
   }
   return parts.join("\n");
 }
@@ -899,6 +1007,30 @@ export function renderEia(
     ? `\n    <p style="margin:6px 0 0;font-family:${FONT_SANS};font-size:16px;line-height:1.5;color:${INK};">${renderInline(prevResultLine)}</p>`
     : "";
 
+  // #4050 item 2: convite pra compartilhar/desafiar um amigo no jogo — fecha o
+  // loop viral (espírito do #4006, "share do placar na tela final do jogo
+  // web"), adaptado pro email: sem sessão/score individual do leitor no
+  // broadcast (a personalização por token do #3517/#4006 exige uma página
+  // servida pelo Worker por leitor, não um email disparado em massa), então o
+  // CTA convida a JOGAR e desafiar, não a compartilhar um resultado já obtido.
+  // Mesmo mecanismo WhatsApp estático do item 1 (`renderWhatsappShareBlock`),
+  // `utm_term` próprio ("eia-share-mensal") — mensurável em separado do voto
+  // (que já usa `voteUrlA`/`voteUrlB`, sem UTM) e do CTA de encerramento.
+  let eiaShareUrl = "";
+  try {
+    const u = new URL(`${workerUrl}/jogar`);
+    u.searchParams.set("utm_source", "clarice");
+    u.searchParams.set("utm_medium", "email");
+    u.searchParams.set("utm_campaign", `clarice-${edition}`);
+    u.searchParams.set("utm_term", "eia-share-mensal");
+    eiaShareUrl = u.toString();
+  } catch { /* workerUrl é uma constante de marca válida — nunca deveria falhar */ }
+  const eiaShareHtml = renderWhatsappShareBlock(
+    eiaShareUrl,
+    "Duvido você acertar mais que eu:",
+    "Joguei o \"É IA?\" da Clarice × Diar.ia — consegue diferenciar uma foto real de uma gerada por IA?",
+  );
+
   return renderKicker("É IA?") + `
 <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background:${BEGE};border-radius:12px;margin:0;">
   <tr><td style="padding:24px 28px;">
@@ -926,6 +1058,7 @@ ${prevResultHtml}
     <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">
       <a href="${workerUrl}/leaderboard/20${yymm.slice(0, 2)}?brand=clarice" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
     </p>
+${eiaShareHtml}
 
   </td></tr>
 </table>`;
