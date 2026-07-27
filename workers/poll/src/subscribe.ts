@@ -35,7 +35,7 @@ import { json } from "./index";
 // medium/campaign PRÓPRIOS abaixo distinguem o cadastro inline do CTA-link e
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
-import { JOGAR_INLINE_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041
+import { JOGAR_GATE_INLINE_UTM, JOGAR_INLINE_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -61,8 +61,13 @@ export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = JOGAR_INLINE_UTM.campaign;
  * (`/vote?brand=clarice`, ver votePageHtml em index.ts). UTM próprio pra
  * medir essa conversão separada do cadastro inline de `/jogar` — é o mesmo
  * endpoint/mecanismo (`POST /jogar/subscribe`), só o call site muda.
+ *
+ * #4054: `"jogar-gate"` — cadastro na tela de gate do caminho de fora
+ * (`web-gate.ts`, `POST /jogar/gate/subscribe`), quando o visitante já usou a
+ * rodada livre anônima e não é assinante. UTM próprio pra medir esta
+ * conversão separada do cadastro inline de fim-de-página (#3580).
  */
-export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice";
+export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate";
 
 export interface SubscribeUtm {
   source: string;
@@ -97,6 +102,12 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     source: VOTE_CLARICE_INLINE_UTM.source,
     medium: VOTE_CLARICE_INLINE_UTM.medium,
     campaign: VOTE_CLARICE_INLINE_UTM.campaign,
+  },
+  // #4054: cadastro na tela de gate do caminho de fora (`web-gate.ts`).
+  "jogar-gate": {
+    source: JOGAR_GATE_INLINE_UTM.source,
+    medium: JOGAR_GATE_INLINE_UTM.medium,
+    campaign: JOGAR_GATE_INLINE_UTM.campaign,
   },
 };
 
