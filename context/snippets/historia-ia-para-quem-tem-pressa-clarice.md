@@ -4,18 +4,25 @@ categoria: Divulgação
 alt: Capa do livro "A História da Inteligência Artificial Para Quem Tem Pressa", de Peter J. Bentley
 Box de recomendação de leitura — variante IMPESSOAL (3ª pessoa), mesma
 estrutura de recomendacao-leitura-mensal.md (base Clarice, decisão do editor
-260716). RASCUNHO — comentário sobre autor/livro gerado automaticamente
-(página da Amazon não trouxe sinopse; mini-bio/comentário do livro escritos a
-partir de conhecimento geral sobre o autor), ainda não revisado pelo editor.
+260716).
+
+APROVADO pelo editor em 260727 (era RASCUNHO até então). O comentário sobre o
+livro foi escrito a partir de conhecimento geral sobre o autor, não de sinopse
+— a página da Amazon não tem descrição do produto (reconfirmado em 260727).
+Título, autoria (Peter J. Bentley) e link de associado (tag diaria-20, resolve
+pro produto certo na Amazon BR) foram verificados na mesma data.
 
 Livro: "A História da Inteligência Artificial Para Quem Tem Pressa", de
 Peter J. Bentley. Link de associado (Amazon): https://link.amazon/B057LAnK0
 
 Estrutura (igual recomendacao-leitura-mensal.md):
-  (1) LABEL `Recomendação de Leitura` — kicker/título do box;
+  (1) LABEL `**Recomendação de Leitura**` — kicker/título do box, em negrito
+      (decisão 260717: desde que o #3475 tirou os marcadores emoji, o `**` é o
+      único sinal visual de kicker — teste em test/stitch-newsletter.test.ts);
   (2) parágrafo com título em negrito-com-link + autor —
       `[**Título**](url), de Autor.`;
-  (3) parágrafo IMPESSOAL sobre o autor (mini-bio);
+  (3) parágrafo IMPESSOAL sobre o autor (mini-bio) — OMITIDO nesta instância,
+      por opção do editor em 260727 (o mensal do Kai-Fu Lee tem, este não);
   (4) parágrafo IMPESSOAL sobre o livro.
 Sem CTA pill — só 1 link no bloco inteiro.
 -->
