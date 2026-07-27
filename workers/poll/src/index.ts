@@ -1345,7 +1345,10 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // dependem de brand namespacing). Ver web-gate.ts.
     if (path === "/jogar/gate" && request.method === "GET") {
       return new Response(renderJogarGatePage(url.searchParams.get("edition")), {
-        headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store" },
+        // #4160: mesmo header dedicado do outro call site (handleJogarPage,
+        // jogar.ts) — o client detecta a página de gate por ISSO, nunca por
+        // busca textual no corpo (ver rationale completo no header do fix).
+        headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store", "X-Eia-Gate": "1" },
       });
     }
     if (path === "/jogar/gate/verify" && request.method === "POST") return handleJogarGateVerify(request, env);

@@ -42,7 +42,7 @@ import {
   signSessionCookie,
   verifySessionCookie,
 } from "./session-cookie";
-import { isValidVoteEmailFormat } from "./lib";
+import { isValidVoteEmailFormat, isAnonymousWebIdentity } from "./lib"; // #4121: isAnonymousWebIdentity fecha o gap do domínio reservado no gate
 import { subscribeToBeehiiv, resolveSubscribeUtm, type SubscribeDeps } from "./subscribe";
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 
@@ -56,22 +56,79 @@ export const WEB_SESSION_COOKIE = "diaria_jogar_session";
  * quem já se identificou). */
 export const WEB_SESSION_TTL_SEC = 30 * 24 * 60 * 60;
 
-export async function issueWebSessionCookie(secret: string, email: string): Promise<string> {
-  const value = await signSessionCookie(secret, email, WEB_SESSION_TTL_SEC);
+/**
+ * #4121: estado da sessão embutido no PAYLOAD assinado (não um cookie
+ * separado — decisão do editor, "pra não multiplicar superfície"). `pending`
+ * = cadastro feito, Beehiiv ainda não confirmou (double opt-in); `confirmed`
+ * = verificado de verdade (via `checkWebSubscriber` retornando "active", seja
+ * no `/verify` original, seja numa revisita pós-confirmação).
+ *
+ * Mecanismo: `pending` prefixa o e-mail com `PENDING_PREFIX` ANTES de assinar
+ * (`pending:{email}`) — `:` nunca aparece num e-mail válido
+ * (`isValidVoteEmailFormat`, lib.ts, rejeita `:` nos dois lados do `@`), então
+ * o prefixo nunca colide com um e-mail real e não precisa de campo extra no
+ * payload de `signSessionCookie` (que é genérico/compartilhado com
+ * `workers/cursos`, #4052 — não convém acoplar um conceito exclusivo do
+ * brand `web` ali). Cookies emitidos ANTES do #4121 nunca têm o prefixo —
+ * `readWebSession` trata ausência como `confirmed` (decisão do editor: a
+ * janela de exposição já passou, e tratar como `confirmed` mantém quem já
+ * cadastrou funcionando sem exigir novo login).
+ */
+export type WebSessionState = "pending" | "confirmed";
+const PENDING_PREFIX = "pending:";
+
+export async function issueWebSessionCookie(
+  secret: string,
+  email: string,
+  state: WebSessionState = "confirmed",
+): Promise<string> {
+  const payload = state === "pending" ? `${PENDING_PREFIX}${email}` : email;
+  const value = await signSessionCookie(secret, payload, WEB_SESSION_TTL_SEC);
   return buildSetCookieHeader(WEB_SESSION_COOKIE, value, WEB_SESSION_TTL_SEC);
 }
 
-/** `cookieHeader` pode ser `null`/ausente (request sem `Cookie`, ou secret
- * ausente — sem `COOKIE_HMAC_SECRET` NUNCA há sessão válida, fail-closed). */
-export async function readWebSessionEmail(
+export interface WebSession {
+  email: string;
+  /** true = cadastro feito, Beehiiv ainda não confirmou o opt-in — a
+   * identidade NÃO deve sobrepor o token anônimo em `handleVote` (vote.ts),
+   * mas AINDA libera o jogo no gate (`handleJogarPage`, jogar.ts). */
+  pending: boolean;
+}
+
+/**
+ * #4121: lê a sessão completa (e-mail + estado). `cookieHeader`
+ * pode ser `null`/ausente (request sem `Cookie`, ou secret ausente — sem
+ * `COOKIE_HMAC_SECRET` NUNCA há sessão válida, fail-closed).
+ */
+export async function readWebSession(
   secret: string | undefined,
   cookieHeader: string | null,
-): Promise<string | null> {
+): Promise<WebSession | null> {
   if (!secret) return null;
   const raw = parseCookieHeader(cookieHeader, WEB_SESSION_COOKIE);
   if (!raw) return null;
   const result = await verifySessionCookie(secret, raw);
-  return result.ok ? result.email : null;
+  if (!result.ok) return null;
+  if (result.email.startsWith(PENDING_PREFIX)) {
+    return { email: result.email.slice(PENDING_PREFIX.length), pending: true };
+  }
+  return { email: result.email, pending: false };
+}
+
+/**
+ * Retrocompat: só o e-mail, independente do estado pending/confirmed — usado
+ * pelos call sites que só precisam saber "existe sessão" (o gate por rodada
+ * em `handleJogarPage`, jogar.ts, que libera o jogo pros dois estados) ou
+ * exibir o e-mail sem aplicar override de identidade em escrita. NUNCA usar
+ * este helper onde a distinção pending/confirmed importa (ex: override de
+ * identidade em `handleVote`, vote.ts) — usar `readWebSession` ali.
+ */
+export async function readWebSessionEmail(
+  secret: string | undefined,
+  cookieHeader: string | null,
+): Promise<string | null> {
+  const session = await readWebSession(secret, cookieHeader);
+  return session ? session.email : null;
 }
 
 export function clearWebSessionCookieHeader(): string {
@@ -158,11 +215,19 @@ export async function handleJogarGateVerify(request: Request, env: Env): Promise
   }
   const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   if (!email || !isValidEmailFormat(email)) return json({ ok: false, error: "invalid_email" }, 400, env);
+  // #4121 (achado relacionado, mesma issue): domínio reservado da identidade
+  // anônima do brand `web` (`@web.eia.diaria.local`) nunca pode virar
+  // identidade "verificada" pelo gate — mesmo guard que `vote.ts`/#3976/#4011
+  // já aplicam na ESCRITA do voto. `isValidEmailFormat` só valida a FORMA
+  // genérica, não distingue esse domínio reservado de um e-mail comum.
+  if (isAnonymousWebIdentity(email)) return json({ ok: false, error: "invalid_email" }, 400, env);
 
   const result = await checkWebSubscriber(env, email);
   if (result !== "active") return json({ ok: false, error: "not_active" }, 200, env);
 
   if (!env.COOKIE_HMAC_SECRET) return json({ ok: false, error: "gate_unavailable" }, 503, env);
+  // #4121: verificação REAL confirmada pela Beehiiv/KV — estado "confirmed"
+  // (default), sobrepõe identidade em handleVote imediatamente.
   const setCookie = await issueWebSessionCookie(env.COOKIE_HMAC_SECRET, email);
   return jsonWithCookie({ ok: true }, 200, env, setCookie);
 }
@@ -212,6 +277,11 @@ export async function handleJogarGateSubscribe(
 
   const email = typeof parsed.email === "string" ? parsed.email.trim().toLowerCase() : "";
   if (!isValidEmailFormat(email)) return json({ ok: false, error: "invalid_email" }, 400, env);
+  // #4121 (achado relacionado): mesmo guard do handler de verify acima —
+  // sem ele, se a Beehiiv aceitasse criar assinatura pra este domínio
+  // reservado (validação só de sintaxe, sem checar MX), o atacante receberia
+  // um cookie "confirmado" cujo e-mail herda o domínio da identidade anônima.
+  if (isAnonymousWebIdentity(email)) return json({ ok: false, error: "invalid_email" }, 400, env);
   const name = typeof parsed.name === "string" ? parsed.name.trim().slice(0, 100) : "";
 
   const ip = clientIpFromRequest(request);
@@ -232,7 +302,15 @@ export async function handleJogarGateSubscribe(
     // configurar o secret pra ver a sessão persistir.
     return json({ ok: true, sessionUnavailable: true }, 200, env);
   }
-  const setCookie = await issueWebSessionCookie(env.COOKIE_HMAC_SECRET, email);
+  // #4121: `subscribeToBeehiiv` só confirma sucesso HTTP da CRIAÇÃO — o
+  // double opt-in (respeitado, não mandamos `double_opt_override`) continua
+  // pendente. Ninguém provou posse do e-mail ainda, então o cookie sai
+  // "pending": libera continuar jogando (o gate só quer saber "existe
+  // sessão"), mas NÃO sobrepõe a identidade em `/vote` (vote.ts) até a
+  // Beehiiv confirmar — a promoção pending→confirmed acontece na próxima
+  // visita ao gate, quando `checkWebSubscriber` já retornar "active"
+  // (handleJogarGateVerify acima), sem precisar de webhook nenhum.
+  const setCookie = await issueWebSessionCookie(env.COOKIE_HMAC_SECRET, email, "pending");
   return jsonWithCookie({ ok: true }, 200, env, setCookie);
 }
 
