@@ -30,22 +30,10 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { parseSitemap } from "./lib/fetch-sitemap.ts";
+import { GSC_DEFAULT_SITE, DEFAULT_SITEMAP_URL } from "./lib/gsc.ts";
 import { gFetch } from "./google-auth.ts";
 
-/**
- * Propriedade GSC padrão. Domain property (`sc-domain:`) cobre TODOS os hosts e
- * protocolos de diar.ia.br — inclusive o `diaria.beehiiv.com` legado, que 301a
- * pra cá e está na conta como `siteUnverifiedUser` (consultá-lo dá 403).
- *
- * Constante local de propósito: o `seo-pull.ts` tem a dele, corrigida em
- * paralelo pela PR #4099. Compartilhar exigiria que uma das duas PRs esperasse a
- * outra — e a duplicação de um literal é mais barata que o acoplamento.
- * Consolidar em `lib/` quando as duas estiverem em master.
- */
-export const DEFAULT_SITE = "sc-domain:diar.ia.br";
-
 const INSPECT_ENDPOINT = "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect";
-const DEFAULT_SITEMAP = "https://diar.ia.br/sitemap.xml";
 /** Quota diária da API é 2.000; 200/rodada deixa margem pra retry e uso manual. */
 const DEFAULT_LIMIT = 200;
 const DEFAULT_CONCURRENCY = 4;
@@ -232,8 +220,8 @@ export function renderMd(rows: IndexStatus[], sum: IndexSummary, site: string, d
 async function main(nowMs: number): Promise<number> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { values, flags } = parseCliArgs(process.argv.slice(2));
-  const site = String(values["site"] ?? DEFAULT_SITE);
-  const sitemapUrl = String(values["sitemap"] ?? DEFAULT_SITEMAP);
+  const site = String(values["site"] ?? GSC_DEFAULT_SITE);
+  const sitemapUrl = String(values["sitemap"] ?? DEFAULT_SITEMAP_URL);
   const limit = parseIntFlag(values["limit"] ?? DEFAULT_LIMIT, DEFAULT_LIMIT);
   const concurrency = parseIntFlag(values["concurrency"] ?? DEFAULT_CONCURRENCY, DEFAULT_CONCURRENCY);
   const date = new Date(nowMs).toISOString().slice(0, 10);

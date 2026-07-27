@@ -6,7 +6,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseInspection, summarize, filterPosts, mapLimit, renderMd, parseIntFlag, resolveExitCode, DEFAULT_SITE, type IndexStatus } from "../scripts/seo-index-check.ts";
+import { GSC_DEFAULT_SITE } from "../scripts/lib/gsc.ts";
+import { parseInspection, summarize, filterPosts, mapLimit, renderMd, parseIntFlag, resolveExitCode, type IndexStatus } from "../scripts/seo-index-check.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -153,16 +154,33 @@ describe("mapLimit (#4105)", () => {
 describe("renderMd (#4105)", () => {
   it("marca órfãs e mostra a taxa de cobertura", () => {
     const rows = [parseInspection("https://diar.ia.br/p/x", DISCOVERED)];
-    const md = renderMd(rows, summarize(rows), DEFAULT_SITE, "2026-07-27");
+    const md = renderMd(rows, summarize(rows), GSC_DEFAULT_SITE, "2026-07-27");
     assert.match(md, /0\/1 indexadas \(0%\)/);
     assert.match(md, /órfã \(sem link interno\)/);
     assert.match(md, /sc-domain:diar\.ia\.br/);
   });
 });
 
-describe("DEFAULT_SITE (#4105)", () => {
+describe("constante única de propriedade GSC (#4108)", () => {
+  // O literal duplicado é o modo de falha real: se a verificação no Search
+  // Console mudar de forma e só um dos dois scripts for atualizado, o outro
+  // passa a dar 403 em silêncio — e o que falha é justamente o que deveria
+  // avisar que a medição parou. Nasceu de duas PRs paralelas (#4099/#4106).
+  for (const rel of ["scripts/seo-pull.ts", "scripts/seo-index-check.ts"]) {
+    it(`${rel} não re-inlina a propriedade como default`, () => {
+      const src = readFileSync(resolve(ROOT, rel), "utf8");
+      assert.ok(
+        !/\?\?\s*"sc-domain:/.test(src),
+        `${rel} voltou a hardcodar a propriedade — importar GSC_DEFAULT_SITE de scripts/lib/gsc.ts`,
+      );
+      assert.match(src, /from "\.\/lib\/gsc\.ts"/);
+    });
+  }
+});
+
+describe("GSC_DEFAULT_SITE (#4105, consolidado no #4108)", () => {
   it("é a domain property verificada — o host beehiiv dá 403 (siteUnverifiedUser)", () => {
-    assert.equal(DEFAULT_SITE, "sc-domain:diar.ia.br");
+    assert.equal(GSC_DEFAULT_SITE, "sc-domain:diar.ia.br");
   });
 });
 

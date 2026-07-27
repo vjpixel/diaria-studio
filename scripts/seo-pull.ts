@@ -25,6 +25,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { GSC_DEFAULT_SITE } from "./lib/gsc.ts";
 import { gFetch } from "./google-auth.ts";
 
 export interface GscRow {
@@ -155,12 +156,9 @@ function renderOpportunitiesMd(opps: SeoOpportunity[], site: string, period: str
 async function main(nowMs: number): Promise<number> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { values } = parseCliArgs(process.argv.slice(2));
-  // #4089: default migrado pra propriedade Domínio `sc-domain:diar.ia.br`,
-  // verificada em 260727 via TXT no Cloudflare. NÃO somar com o host antigo:
-  // a conta do OAuth é `siteUnverifiedUser` em `https://diaria.beehiiv.com/`
-  // (403 na Search Analytics), então aquele host nunca foi consultável por
-  // aqui — o default anterior era a razão de `data/seo/` nunca ter existido.
-  const site = String(values["site"] ?? "sc-domain:diar.ia.br");
+  // #4089 (propriedade) + #4108 (constante única): o porquê do `sc-domain:` e de
+  // não somar com o host beehiiv está em `lib/gsc.ts`, junto da constante.
+  const site = String(values["site"] ?? GSC_DEFAULT_SITE);
   const days = parseInt(String(values["days"] ?? "28"), 10) || 28;
   const endDate = isoDate(nowMs);
   const startDate = isoDate(nowMs - days * 86_400_000);
