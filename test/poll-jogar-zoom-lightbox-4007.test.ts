@@ -1,16 +1,19 @@
 /**
- * test/poll-jogar-zoom-lightbox-4007.test.ts (#4007)
+ * test/poll-jogar-zoom-lightbox-4007.test.ts (#4007, #4125 item 3)
  *
  * Requisito do editor (teste com usuários reais, 260724): o layout mobile
  * empilhado do par de imagens do "É IA?" está DECIDIDO (não mexer) — o que
  * faltava era permitir ZOOM pra examinar detalhe (mãos, texto, textura,
  * fundo). Este teste cobre o lightbox reutilizável (`renderLightboxStyles`/
  * `renderLightboxMarkup`/`lightboxScript`, workers/poll/src/lib.ts) aplicado
- * às 4 superfícies que mostram o par:
+ * às 5 superfícies que mostram o par:
  *   1. par único (`renderJogarPageHtml`, jogar.ts)
  *   2. sequência (`renderJogarSequencePageHtml`, jogar.ts)
  *   3. arquivo por e-mail (`renderArchiveVoteHtml`, leaderboard-routes.ts)
  *   4. página de voto por e-mail (`votePageHtml`, index.ts)
+ *   5. quiz relâmpago (`renderJogarQuizPageHtml`, jogar.ts) — #4125 item 3,
+ *      ficou de fora do #4007 original sem racional documentado (a docstring
+ *      dizia "as 4 superfícies" como se fosse exaustivo).
  *
  * Sem device real disponível nesta sessão pra validar o "feel" do pinch —
  * este teste cobre só a ESTRUTURA (verificável estaticamente): meta viewport
@@ -23,6 +26,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   renderJogarPageHtml,
+  renderJogarQuizPageHtml,
   renderJogarSequencePageHtml,
 } from "../workers/poll/src/jogar.ts";
 import { renderArchiveVoteHtml } from "../workers/poll/src/leaderboard-routes.ts";
@@ -30,6 +34,7 @@ import { votePageHtml } from "../workers/poll/src/index.ts";
 
 const parUnico = renderJogarPageHtml({ edition: "260601", revealed: false });
 const sequencia = renderJogarSequencePageHtml(["260601", "260602"]);
+const quiz = renderJogarQuizPageHtml(["260601", "260602"]);
 const votoResultado = votePageHtml(
   "✅ Acertou!",
   true,
@@ -51,6 +56,7 @@ describe("lightbox de zoom (#4007) — meta viewport nunca trava o pinch nativo"
     ["par único", parUnico],
     ["sequência", sequencia],
     ["voto por e-mail", votoResultado],
+    ["quiz relâmpago", quiz],
   ] as const;
 
   for (const [label, html] of pages) {
@@ -73,11 +79,12 @@ describe("lightbox de zoom (#4007) — meta viewport nunca trava o pinch nativo"
   });
 });
 
-describe("lightbox de zoom (#4007) — presente nas 4 superfícies, com os 3 mecanismos de fechar", () => {
+describe("lightbox de zoom (#4007) — presente nas 5 superfícies, com os 3 mecanismos de fechar", () => {
   const pages = [
     ["par único", parUnico],
     ["sequência", sequencia],
     ["voto por e-mail", votoResultado],
+    ["quiz relâmpago", quiz],
   ] as const;
 
   for (const [label, html] of pages) {
@@ -128,6 +135,11 @@ describe("lightbox de zoom (#4007) — examinar (imagem) continua separado de vo
   it("voto por e-mail: resultado revelado tem imagens clicáveis via .result-image, sem botão de voto na tela de resultado", () => {
     assert.match(votoResultado, /class="result-image clicked"/);
   });
+
+  it("quiz relâmpago: botões de escolha (data-choice) permanecem <button type=\"button\">, fora do <img> (#4125 item 3)", () => {
+    assert.match(quiz, /class="quiz-choice-btn" data-choice="A"/);
+    assert.match(quiz, /class="quiz-choice-btn" data-choice="B"/);
+  });
 });
 
 describe("lightbox de zoom (#4007) — anti-spoiler: chave /img/{key} continua opaca", () => {
@@ -156,5 +168,11 @@ describe("lightbox de zoom (#4007) — anti-spoiler: chave /img/{key} continua o
     assert.match(votoResultado, /\/img\/img-260601-01-eia-A\.jpg/);
     assert.match(votoResultado, /\/img\/img-260601-01-eia-B\.jpg/);
     assert.doesNotMatch(votoResultado, /-ai\.jpg|-real\.jpg/i);
+  });
+
+  it("quiz relâmpago (pré-resposta): mesmo padrão de key opaca embutido no script imgUrl() (#4125 item 3)", () => {
+    assert.match(quiz, /imgUrl\(edition, "A"\)/);
+    assert.match(quiz, /imgUrl\(edition, "B"\)/);
+    assert.doesNotMatch(quiz, /-ai\.jpg|-real\.jpg/i);
   });
 });

@@ -67,7 +67,7 @@ import {
   safeParseKv,
 } from "./lib";
 import { invalidateSnapshot } from "./leaderboard-routes";
-import { subscribeToBeehiiv } from "./subscribe";
+import { resolveSubscribeUtm, subscribeToBeehiiv } from "./subscribe"; // #4125 item 4: UTM próprio ("jogar-identify"), não o default "jogar"
 // #3996 (Fase B): ciclo de import seguro com magic-link.ts (mesmo padrão já
 // documentado no header deste arquivo e no de magic-link.ts) — valores só
 // usados em request-time, nunca no top-level de nenhum dos dois módulos.
@@ -519,7 +519,12 @@ export async function handleJogarIdentify(
   let subscribed = false;
   if (v.optin) {
     try {
-      const result = await subscribeToBeehiiv(bEnv, { name, email }, fetchImpl);
+      // #4125 (item 4): UTM próprio ("jogar-identify") — antes caía no
+      // default "jogar" (form standalone do #3580, que só sobrevive em
+      // /jogar/quiz desde o #3975), colidindo com aquela conversão na
+      // atribuição.
+      const utm = resolveSubscribeUtm("jogar-identify");
+      const result = await subscribeToBeehiiv(bEnv, { name, email }, fetchImpl, utm);
       subscribed = result.ok;
     } catch (e) {
       console.error(JSON.stringify({ event: "identify_subscribe_failed", error: String(e) }));

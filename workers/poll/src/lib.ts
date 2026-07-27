@@ -1141,8 +1141,9 @@ export function renderBrandFooter(brand: Brand): string {
 
 /**
  * CSS do lightbox + badge de lupa. Chamado dentro do `<style>` de cada uma
- * das 4 superfícies que mostram o par (par único, sequência, arquivo por
- * e-mail, página de voto por e-mail).
+ * das 5 superfícies que mostram o par (par único, sequência, arquivo por
+ * e-mail, página de voto por e-mail, e — desde #4125 item 3 — o quiz
+ * relâmpago, que ficou de fora do #4007 original sem racional documentado).
  */
 export function renderLightboxStyles(): string {
   return `  /* #4007: badge de lupa — affordance de "toque pra ampliar" sobre o card

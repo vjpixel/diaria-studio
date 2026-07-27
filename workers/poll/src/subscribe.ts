@@ -35,7 +35,7 @@ import { json } from "./index";
 // medium/campaign PRÓPRIOS abaixo distinguem o cadastro inline do CTA-link e
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
-import { JOGAR_GATE_INLINE_UTM, JOGAR_INLINE_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054
+import { JOGAR_GATE_INLINE_UTM, JOGAR_IDENTIFY_INLINE_UTM, JOGAR_INLINE_UTM, LIVROS_INLINE_UTM, VOTE_CLARICE_INLINE_UTM } from "./utm-registry"; // #4041, #4054, #4125 item 4
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
@@ -66,8 +66,17 @@ export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = JOGAR_INLINE_UTM.campaign;
  * (`web-gate.ts`, `POST /jogar/gate/subscribe`), quando o visitante já usou a
  * rodada livre anônima e não é assinante. UTM próprio pra medir esta
  * conversão separada do cadastro inline de fim-de-página (#3580).
+ *
+ * #4125 (item 4): `"jogar-identify"` — opt-in de newsletter embutido no form
+ * de IDENTIDADE (#3975, `identify.ts` → `subscribeToBeehiiv`, NÃO passa por
+ * `handleJogarSubscribe`/`resolveSubscribeUtm` acima, mas registra o source
+ * aqui pelo mesmo motivo dos demais: inventário único, sem literal solto).
+ * Antes desta entrada, `identify.ts` chamava `subscribeToBeehiiv` sem o 4º
+ * argumento e caía no default `jogar` — colidindo com o form standalone do
+ * #3580 (que só sobrevive em `/jogar/quiz`), tornando as duas conversões
+ * indistinguíveis na atribuição.
  */
-export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate";
+export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice" | "jogar-gate" | "jogar-identify";
 
 export interface SubscribeUtm {
   source: string;
@@ -108,6 +117,14 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
     source: JOGAR_GATE_INLINE_UTM.source,
     medium: JOGAR_GATE_INLINE_UTM.medium,
     campaign: JOGAR_GATE_INLINE_UTM.campaign,
+  },
+  // #4125 (item 4): opt-in de newsletter do form de IDENTIDADE (#3975,
+  // `identify.ts`) — UTM próprio pra não colidir com "jogar" (form standalone
+  // do #3580, hoje só em `/jogar/quiz`).
+  "jogar-identify": {
+    source: JOGAR_IDENTIFY_INLINE_UTM.source,
+    medium: JOGAR_IDENTIFY_INLINE_UTM.medium,
+    campaign: JOGAR_IDENTIFY_INLINE_UTM.campaign,
   },
 };
 

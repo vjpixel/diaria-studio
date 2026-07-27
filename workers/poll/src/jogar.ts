@@ -56,7 +56,7 @@ import {
   isValidVoteEmailFormat, // #3595: valida o pseudo-email recebido por /jogar/seq-state
   isValidWebToken, // #3976: /jogar/seq-state é exclusivo do brand `web` — token deve ser UUID v4
   leaderboardHref,
-  lightboxScript, // #4007: script do lightbox de zoom — delegação de clique, reusado nas 4 superfícies
+  lightboxScript, // #4007: script do lightbox de zoom — delegação de clique, reusado nas 5 superfícies (#4125 item 3: quiz incluído)
   MIN_VOTES_FOR_STATS_DISPLAY, // #4005: mesmo limiar de amostra do sufixo "X% acertaram" — reusado na ordem "por surpresa"
   renderBrandFooter,
   renderBrandShellStyles,
@@ -2820,10 +2820,15 @@ ${renderInlineSignupFormBlock()}`;
     roundResultEl.innerHTML = "";
     var edition = editions[round];
     progressEl.textContent = "Par " + (round + 1) + " de " + total + " — acertos: " + score;
+    // #4125 (item 3): width/height reservam o box na proporção 16:9
+    // (800x450) ANTES do load, mesmo fix de CLS do #3607 já aplicado às
+    // outras 2 superfícies que trocam .choice img via innerHTML (par único,
+    // sequência) — o quiz é o modo que mais troca imagem por sessão (várias
+    // rodadas seguidas) e ficou de fora sem racional documentado.
     choicesEl.innerHTML =
-      '<div class="choice"><img src="' + imgUrl(edition, "A") + '" alt="Imagem A" loading="lazy"><button type="button" class="quiz-choice-btn" data-choice="A">Essa é a IA (A)</button></div>' +
+      '<div class="choice"><img src="' + imgUrl(edition, "A") + '" width="800" height="450" alt="Imagem A" loading="lazy"><button type="button" class="quiz-choice-btn" data-choice="A">Essa é a IA (A)</button></div>' +
       '<p class="scroll-hint">↓ Veja também a Imagem B antes de decidir</p>' +
-      '<div class="choice"><img src="' + imgUrl(edition, "B") + '" alt="Imagem B" loading="lazy"><button type="button" class="quiz-choice-btn" data-choice="B">Essa é a IA (B)</button></div>';
+      '<div class="choice"><img src="' + imgUrl(edition, "B") + '" width="800" height="450" alt="Imagem B" loading="lazy"><button type="button" class="quiz-choice-btn" data-choice="B">Essa é a IA (B)</button></div>';
   }
 
   function setChoiceButtonsDisabled(disabled) {
@@ -2897,7 +2902,7 @@ ${renderInlineSignupFormBlock()}`;
 })();
 </script>
 ${shareButtonScript("#quiz-share-slot")}
-${inlineSignupScript()}`;
+${inlineSignupScript("jogar")}`;
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -2913,7 +2918,10 @@ ${seoMeta}
   .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   .choices { display: flex; gap: 12px; margin: 20px 0; justify-content: center; flex-wrap: wrap; }
   .choice { flex: 1 1 240px; max-width: 260px; }
-  .choice img { width: 100%; height: auto; border-radius: 6px; display: block; background: ${DS_COLORS.paperAlt}; }
+  /* #4125 (item 3): aspect-ratio 16:9 (800x450, mesma proporção das imagens
+     do É IA?) — reforço CSS do fix de CLS (#3607) pro browser que ignorar os
+     atributos width/height do <img> (ver renderRound() no script abaixo). */
+  .choice img { width: 100%; height: auto; aspect-ratio: 16 / 9; border-radius: 6px; display: block; background: ${DS_COLORS.paperAlt}; }
   .choice button { margin-top: 8px; width: 100%; padding: 10px 12px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   .choice button:disabled { opacity: 0.5; cursor: not-allowed; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
@@ -2939,6 +2947,7 @@ ${renderInlineSignupFormStyles()}
     .subscribe-btn { display: block; width: 100%; box-sizing: border-box; padding: 14px 16px; font-size: 1.05rem; }
     .signup-form { max-width: 100%; padding: 20px 18px; }
   }
+${renderLightboxStyles()}
 ${renderBrandShellStyles()}
 </style>
 </head>
@@ -2951,6 +2960,8 @@ ${quizBodyHtml}
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="/jogar">Jogar o par de hoje</a> &nbsp;|&nbsp; <a href="/jogar/arquivo">Ver arquivo</a> &nbsp;|&nbsp; <a href="${leaderboardHref(JOGAR_BRAND)}">Ver ranking</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 ${scriptHtml}
+${renderLightboxMarkup()}
+${lightboxScript()}
 </body>
 </html>`;
 }

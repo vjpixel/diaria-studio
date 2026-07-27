@@ -2,32 +2,14 @@
  * Atomic read-modify-write for 06-social-published.json (#758).
  * Uses a .lock file to prevent race conditions when LinkedIn (agent) and
  * Facebook (script) publish in parallel.
+ *
+ * #4125 (item 7): acquireLock/releaseLock extraídos pra ./file-lock.ts —
+ * mesmo mecanismo agora reusado por scripts/eia-log-used.ts e
+ * scripts/sync-eia-used.ts (data/eia-used.json, mesma classe de race).
  */
 
-import { readFileSync, writeFileSync, openSync, closeSync, unlinkSync, renameSync, existsSync } from "node:fs";
-
-// Lock acquisition: exclusive file create (atomic on all major filesystems)
-function acquireLock(lockPath: string, timeoutMs = 10_000): void {
-  const deadline = Date.now() + timeoutMs;
-  while (true) {
-    try {
-      const fd = openSync(lockPath, "wx"); // O_WRONLY | O_CREAT | O_EXCL — fails if exists
-      closeSync(fd);
-      return; // Lock acquired
-    } catch {
-      if (Date.now() >= deadline) {
-        throw new Error(`[social-published-store] lock timeout after ${timeoutMs}ms: ${lockPath}`);
-      }
-      // Spin wait — 50ms intervals
-      const end = Date.now() + 50;
-      while (Date.now() < end) { /* busy wait */ }
-    }
-  }
-}
-
-function releaseLock(lockPath: string): void {
-  try { unlinkSync(lockPath); } catch { /* ignore */ }
-}
+import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import { acquireLock, releaseLock } from "./file-lock.ts";
 
 /**
  * Entrada canônica de post social na pipeline (#650 Tier C).

@@ -149,6 +149,20 @@ export const JOGAR_GATE_INLINE_UTM = {
   campaign: "eia-jogar-gate-signup",
 } as const;
 
+/** Opt-in de newsletter embutido no form de IDENTIDADE (#3975 — nome/e-mail
+ * pra entrar no leaderboard, `renderIdentityFormBlock`/`identityFormScript`
+ * em `workers/poll/src/jogar.ts`, `POST /jogar/identify`). #4125 (item 4):
+ * antes deste UTM, `identify.ts` chamava `subscribeToBeehiiv` sem 4º
+ * argumento e caía no default `JOGAR_INLINE_UTM` — colidindo com o form
+ * standalone do #3580 (que só sobrevive em `/jogar/quiz` desde o #3975
+ * substituir sua contraparte em `/jogar`/sequência por ESTE form de
+ * identidade), tornando as duas conversões indistinguíveis na atribuição. */
+export const JOGAR_IDENTIFY_INLINE_UTM = {
+  source: EIA_STANDALONE_SOURCE,
+  medium: "jogar-identify",
+  campaign: "eia-jogar-identify-signup",
+} as const;
+
 /** Uma entrada do inventário: um ponto do código que emite UTM. */
 export interface UtmEmitter {
   /** Identificador estável — chave de join com os metadados editáveis da UI. */
@@ -237,12 +251,29 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   },
   {
     id: "eia-jogar-inline",
-    label: "É IA? — cadastro inline",
+    label: "É IA? — cadastro inline (quiz)",
     source: JOGAR_INLINE_UTM.source,
     medium: JOGAR_INLINE_UTM.medium,
     campaignPattern: JOGAR_INLINE_UTM.campaign,
     originFile: "workers/poll/src/subscribe.ts",
-    description: "Form de cadastro embutido na própria página do jogo (#3580).",
+    description:
+      "Form de cadastro standalone do #3580 (`renderInlineSignupFormBlock`/" +
+      "`inlineSignupScript`) — hoje só em `/jogar/quiz`; `/jogar` e a sequência " +
+      "usam o form de IDENTIDADE (#3975, ver `jogar-identify-inline` abaixo) desde " +
+      "que o #4125 (item 4) parou de deixar as duas conversões colidirem no default.",
+    status: "ativo",
+  },
+  {
+    id: "jogar-identify-inline",
+    label: "É IA? — cadastro via form de identidade",
+    source: JOGAR_IDENTIFY_INLINE_UTM.source,
+    medium: JOGAR_IDENTIFY_INLINE_UTM.medium,
+    campaignPattern: JOGAR_IDENTIFY_INLINE_UTM.campaign,
+    originFile: "workers/poll/src/identify.ts",
+    description:
+      "Opt-in de newsletter embutido no form de identidade (#3975, nome+e-mail pra " +
+      "entrar no leaderboard) de `/jogar` e da sequência — UTM próprio desde o #4125 " +
+      "(item 4), antes colidia com `eia-jogar-inline` (form standalone do #3580).",
     status: "ativo",
   },
   {

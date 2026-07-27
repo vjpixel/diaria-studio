@@ -61,6 +61,7 @@ const MIRRORED = [
   "LIVROS_INLINE_UTM",
   "VOTE_CLARICE_INLINE_UTM", // #4065
   "JOGAR_GATE_INLINE_UTM", // #4054
+  "JOGAR_IDENTIFY_INLINE_UTM", // #4125 item 4
 ] as const;
 
 describe("#4041 — espelho do registry dentro do Worker não pode driftar", () => {
