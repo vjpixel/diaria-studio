@@ -1,4 +1,5 @@
 <!--
+nome: Clarice
 Bloco canônico de DIVULGAÇÃO da Clarice (patrocínio). Fonte única reaproveitável
 nas edições (diária via midCallout entre D1 e D2; mensal como seção própria).
 O separador "Divulgação" é adicionado automaticamente por ser patrocinado —

@@ -1,4 +1,5 @@
 <!--
+nome: Campeões e campeãs do É IA do mês
 Template de REFERÊNCIA do box de início de mês (campeões do É IA? + sorteio
 do erro intencional), criado manualmente na 1ª vez na edição 260701 e agora
 auto-gerado (#2725) por `scripts/lib/build-champions-callout.ts`, disparado no

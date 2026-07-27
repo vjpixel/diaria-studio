@@ -1,4 +1,5 @@
 <!--
+nome: Curadoria de Livros
 Bloco canônico de DIVULGAÇÃO da curadoria de LIVROS. Fonte única do box de
 divulgação slot 1 (D1/D2, #2978) diário entre D1 e D2 (default desde #2527 —
 substituiu o bloco Clarice como padrão; decisão editorial do editor).
