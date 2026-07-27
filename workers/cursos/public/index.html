@@ -94,6 +94,15 @@
   .platform { font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 12px; letter-spacing: 0.04em; color: var(--ink); margin: 6px 0 0; }
   .badge--cert { border-color: var(--ink); color: var(--ink); }
 
+  /* #4052: card bloqueado (teaser) + banner de gate. */
+  .card--locked { opacity: 0.72; }
+  .summary--locked { font-style: italic; }
+  .cta--locked { display: inline-block; margin-top: 14px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 13px; font-weight: 700; color: var(--ink); }
+  .gate-banner { background: var(--teal); color: #FFFFFF; padding: 14px 0; }
+  .gate-banner .wrap { max-width: 1120px; }
+  .gate-banner p { margin: 0; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 13px; }
+  .gate-banner a { color: #FFFFFF; text-decoration: underline; font-weight: 700; }
+
   footer { border-top: 1px solid var(--rule); }
   footer .wrap { padding: 24px 28px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 11px; letter-spacing: 0.1em;
     text-transform: uppercase; color: var(--ink); }
@@ -104,6 +113,11 @@
 </style>
 </head>
 <body>
+  <div class="gate-banner">
+    <div class="wrap">
+      <p>🔒 27 cursos completos estão disponíveis só para assinantes da Diar.ia. <a href="/gate">Já sou assinante — desbloquear</a></p>
+    </div>
+  </div>
   <header>
     <div class="wrap">
       <p class="eyebrow">Diar.ia · Curadoria</p>
@@ -169,131 +183,61 @@
         <p class="summary">Bases conceituais de IA pra quem está começando, com credencial digital gratuita da IBM ao concluir.</p>
         <a class="cta" href="https://skillsbuild.org/pt-br/college-students/course-catalog/getting-started-with-artificial-intelligence" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card"
-        data-lang="pt-br"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="video"
-        data-duration="curto"
-        data-platform="ibm-skillsbuild"
-        data-cert="sim"
-        data-themes="ia-generativa">
+      <article class="card card--locked" data-lang="pt-br">
         <div class="title-row">
-          <h2><a href="https://skillsbuild.org/pt-br/college-students/course-catalog/getting-started-with-generative-ai" target="_blank" rel="noopener noreferrer">Introdução à IA generativa</a></h2>
-          <span class="note">1h 30m</span>
+          <h2>Introdução à IA generativa</h2>
         </div>
         <p class="platform">IBM SkillsBuild</p>
-        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">IA Generativa</span></p>
-        <p class="summary">Panorama da IA generativa e suas aplicações — ponto de partida rápido pra entender o momento atual.</p>
-        <a class="cta" href="https://skillsbuild.org/pt-br/college-students/course-catalog/getting-started-with-generative-ai" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="pt-br"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="video"
-        data-duration="curto"
-        data-platform="ibm-skillsbuild"
-        data-cert="sim"
-        data-themes="etica">
+      <article class="card card--locked" data-lang="pt-br">
         <div class="title-row">
-          <h2><a href="https://skillsbuild.org/pt-br/college-students/course-catalog/artificial-intelligence-fundamentals" target="_blank" rel="noopener noreferrer">Ética em IA</a></h2>
-          <span class="note">1h 45m</span>
+          <h2>Ética em IA</h2>
         </div>
         <p class="platform">IBM SkillsBuild</p>
-        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Ética</span></p>
-        <p class="summary">Os cinco pilares da ética da IA — base pra governança e desenvolvimento responsável de sistemas.</p>
-        <a class="cta" href="https://skillsbuild.org/pt-br/college-students/course-catalog/artificial-intelligence-fundamentals" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="pt-br"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="video"
-        data-duration="curto"
-        data-platform="ibm-skillsbuild"
-        data-cert="sim"
-        data-themes="machine-learning deep-learning">
+      <article class="card card--locked" data-lang="pt-br">
         <div class="title-row">
-          <h2><a href="https://skillsbuild.org/pt-br/college-students/course-catalog/artificial-intelligence-fundamentals" target="_blank" rel="noopener noreferrer">Aprendizado de Máquina e Aprendizado Profundo</a></h2>
-          <span class="note">2h</span>
+          <h2>Aprendizado de Máquina e Aprendizado Profundo</h2>
         </div>
         <p class="platform">IBM SkillsBuild</p>
-        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Machine Learning</span><span class="badge">Deep Learning</span></p>
-        <p class="summary">Visão técnica introdutória dos subcampos centrais da IA: aprendizado de máquina e profundo.</p>
-        <a class="cta" href="https://skillsbuild.org/pt-br/college-students/course-catalog/artificial-intelligence-fundamentals" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="pt-br"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="video"
-        data-duration="curto"
-        data-platform="ibm-skillsbuild"
-        data-cert="sim"
-        data-themes="nlp visao-computacional">
+      <article class="card card--locked" data-lang="pt-br">
         <div class="title-row">
-          <h2><a href="https://skillsbuild.org/pt-br/college-students/course-catalog/artificial-intelligence-fundamentals" target="_blank" rel="noopener noreferrer">Processamento de Linguagem Natural e Visão Computacional</a></h2>
-          <span class="note">1h 30m</span>
+          <h2>Processamento de Linguagem Natural e Visão Computacional</h2>
         </div>
         <p class="platform">IBM SkillsBuild</p>
-        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">NLP</span><span class="badge">Visão Computacional</span></p>
-        <p class="summary">Introdução aos subcampos da IA pra interações textuais e análise de imagens.</p>
-        <a class="cta" href="https://skillsbuild.org/pt-br/college-students/course-catalog/artificial-intelligence-fundamentals" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="pt-br"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="video"
-        data-duration="curto"
-        data-platform="fundacao-bradesco-escola-virtual"
-        data-cert="sim"
-        data-themes="direito ia-aplicada">
+      <article class="card card--locked" data-lang="pt-br">
         <div class="title-row">
-          <h2><a href="https://www.ev.org.br/cursos/IA_Direito" target="_blank" rel="noopener noreferrer">IA para Profissionais do Direito</a></h2>
-          <span class="note">2h</span>
+          <h2>IA para Profissionais do Direito</h2>
         </div>
         <p class="platform">Fundação Bradesco (Escola Virtual)</p>
-        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Direito</span><span class="badge">IA Aplicada</span></p>
-        <p class="summary">Aplicação da IA no contexto jurídico, unindo inovação e responsabilidade ética. Certificado gratuito após 70% de aproveitamento.</p>
-        <a class="cta" href="https://www.ev.org.br/cursos/IA_Direito" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="pt-br"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="video"
-        data-duration="curto"
-        data-platform="fundacao-bradesco-escola-virtual"
-        data-cert="sim"
-        data-themes="setor-social ia-aplicada">
+      <article class="card card--locked" data-lang="pt-br">
         <div class="title-row">
-          <h2><a href="https://www.ev.org.br/cursos/ONGS" target="_blank" rel="noopener noreferrer">Inteligência Artificial para ONGs</a></h2>
-          <span class="note">4h</span>
+          <h2>Inteligência Artificial para ONGs</h2>
         </div>
         <p class="platform">Fundação Bradesco (Escola Virtual)</p>
-        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Setor Social</span><span class="badge">IA Aplicada</span></p>
-        <p class="summary">IA aplicada ao terceiro setor e organizações não governamentais. Certificado gratuito mediante aprovação.</p>
-        <a class="cta" href="https://www.ev.org.br/cursos/ONGS" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="pt-br"
-        data-level="intermediario"
-        data-cost="free"
-        data-format="video"
-        data-duration="longo"
-        data-platform="usp-coursera"
-        data-cert="nao"
-        data-themes="nlp deep-learning">
+      <article class="card card--locked" data-lang="pt-br">
         <div class="title-row">
-          <h2><a href="https://www.coursera.org/learn/processamento-neural-linguagem-natural-em-portugues-i" target="_blank" rel="noopener noreferrer">Processamento Neural de Linguagem Natural em Português I</a></h2>
-          <span class="note">~30h</span>
+          <h2>Processamento Neural de Linguagem Natural em Português I</h2>
         </div>
         <p class="platform">USP / Coursera</p>
-        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge">NLP</span><span class="badge">Deep Learning</span></p>
-        <p class="summary">PNL aplicada à língua portuguesa, nível acadêmico (USP). Auditoria gratuita; certificado é pago.</p>
-        <a class="cta" href="https://www.coursera.org/learn/processamento-neural-linguagem-natural-em-portugues-i" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
       <article class="card"
         data-lang="pt-br"
@@ -313,131 +257,61 @@
         <p class="summary">Módulo curto de fundamentos de GenAI no idioma local — arquiteturas de modelo generativo e GCP.</p>
         <a class="cta" href="https://www.coursera.org/learn/introduction-to-generative-ai---portugus-brasileiro" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card"
-        data-lang="pt-br"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="texto"
-        data-duration="medio"
-        data-platform="microsoft-learn"
-        data-cert="nao"
-        data-themes="cloud fundamentos">
+      <article class="card card--locked" data-lang="pt-br">
         <div class="title-row">
-          <h2><a href="https://learn.microsoft.com/pt-br/training/courses/ai-900t00" target="_blank" rel="noopener noreferrer">Fundamentos de IA no Azure (AI-900)</a></h2>
-          <span class="note">~10h</span>
+          <h2>Fundamentos de IA no Azure (AI-900)</h2>
         </div>
         <p class="platform">Microsoft Learn</p>
-        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Texto</span><span class="badge">Cloud</span><span class="badge">Fundamentos</span></p>
-        <p class="summary">Material de estudo (gratuito) pra certificação Azure AI Fundamentals. O exame de certificação é pago.</p>
-        <a class="cta" href="https://learn.microsoft.com/pt-br/training/courses/ai-900t00" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="pt-br"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="video"
-        data-duration="medio"
-        data-platform="fgv"
-        data-cert="sim"
-        data-themes="negocios estrategia">
+      <article class="card card--locked" data-lang="pt-br">
         <div class="title-row">
-          <h2><a href="https://educacao-executiva.fgv.br/cursos/online/curta-media-duracao-online/introducao-inteligencia-artificial-conceitos-basicos" target="_blank" rel="noopener noreferrer">Introdução à Inteligência Artificial: Conceitos Básicos</a></h2>
-          <span class="note">~5h</span>
+          <h2>Introdução à Inteligência Artificial: Conceitos Básicos</h2>
         </div>
         <p class="platform">FGV</p>
-        <p class="badges"><span class="badge badge--lang">Português</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Negócios</span><span class="badge">Estratégia</span></p>
-        <p class="summary">Curso gratuito da FGV sobre IA com foco em gestão e estratégia de negócios.</p>
-        <a class="cta" href="https://educacao-executiva.fgv.br/cursos/online/curta-media-duracao-online/introducao-inteligencia-artificial-conceitos-basicos" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="medio"
-        data-platform="deeplearning-ai-coursera"
-        data-cert="nao"
-        data-themes="machine-learning">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://www.coursera.org/learn/machine-learning" target="_blank" rel="noopener noreferrer">Supervised Machine Learning: Regression and Classification</a></h2>
-          <span class="note">~18h</span>
+          <h2>Supervised Machine Learning: Regression and Classification</h2>
         </div>
         <p class="platform">DeepLearning.AI / Coursera</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge">Machine Learning</span></p>
-        <p class="summary">Curso 1 da ML Specialization de Andrew Ng — regressão e classificação em Python (NumPy, scikit-learn). Auditoria gratuita.</p>
-        <a class="cta" href="https://www.coursera.org/learn/machine-learning" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="intermediario"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="medio"
-        data-platform="deeplearning-ai-coursera"
-        data-cert="nao"
-        data-themes="machine-learning redes-neurais">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://www.coursera.org/learn/advanced-learning-algorithms" target="_blank" rel="noopener noreferrer">Advanced Learning Algorithms</a></h2>
-          <span class="note">~20h</span>
+          <h2>Advanced Learning Algorithms</h2>
         </div>
         <p class="platform">DeepLearning.AI / Coursera</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge">Machine Learning</span><span class="badge">Redes Neurais</span></p>
-        <p class="summary">Curso 2 da ML Specialization — redes neurais e algoritmos de aprendizado avançados. Auditoria gratuita.</p>
-        <a class="cta" href="https://www.coursera.org/learn/advanced-learning-algorithms" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="intermediario"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="medio"
-        data-platform="deeplearning-ai-coursera"
-        data-cert="nao"
-        data-themes="machine-learning reinforcement-learning">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://www.coursera.org/learn/unsupervised-learning-recommenders-reinforcement-learning" target="_blank" rel="noopener noreferrer">Unsupervised Learning, Recommenders, Reinforcement Learning</a></h2>
-          <span class="note">~20h</span>
+          <h2>Unsupervised Learning, Recommenders, Reinforcement Learning</h2>
         </div>
         <p class="platform">DeepLearning.AI / Coursera</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge">Machine Learning</span><span class="badge">Reinforcement Learning</span></p>
-        <p class="summary">Curso 3 da ML Specialization — aprendizado não supervisionado, sistemas de recomendação e RL. Auditoria gratuita.</p>
-        <a class="cta" href="https://www.coursera.org/learn/unsupervised-learning-recommenders-reinforcement-learning" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="video"
-        data-duration="medio"
-        data-platform="deeplearning-ai-coursera"
-        data-cert="nao"
-        data-themes="estrategia negocios">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://www.coursera.org/learn/ai-for-everyone" target="_blank" rel="noopener noreferrer">AI For Everyone</a></h2>
-          <span class="note">~6h</span>
+          <h2>AI For Everyone</h2>
         </div>
         <p class="platform">DeepLearning.AI / Coursera</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge">Estratégia</span><span class="badge">Negócios</span></p>
-        <p class="summary">Não-técnico: estabelece linguagem comum sobre IA em equipes multidisciplinares (estratégia, ética, data science). Auditoria gratuita.</p>
-        <a class="cta" href="https://www.coursera.org/learn/ai-for-everyone" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="avancado"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="longo"
-        data-platform="deeplearning-ai-coursera"
-        data-cert="nao"
-        data-themes="deep-learning redes-neurais">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://www.coursera.org/specializations/deep-learning" target="_blank" rel="noopener noreferrer">Deep Learning Specialization</a></h2>
-          <span class="note">~120h</span>
+          <h2>Deep Learning Specialization</h2>
         </div>
         <p class="platform">DeepLearning.AI / Coursera</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Avançado</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge">Deep Learning</span><span class="badge">Redes Neurais</span></p>
-        <p class="summary">Série de 5 cursos: redes neurais, CNNs, RNNs. Conteúdo dos cursos individuais auditável gratuitamente.</p>
-        <a class="cta" href="https://www.coursera.org/specializations/deep-learning" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
       <article class="card"
         data-lang="en"
@@ -457,95 +331,45 @@
         <p class="summary">GenAI, prompt engineering e produtividade — como usar IA pra gerar ideias, pesquisar e acelerar tarefas diárias.</p>
         <a class="cta" href="https://www.coursera.org/learn/google-ai-essentials" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="avancado"
-        data-cost="free"
-        data-format="texto"
-        data-duration="longo"
-        data-platform="mit-opencourseware"
-        data-cert="nao"
-        data-themes="fundamentos machine-learning">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://ocw.mit.edu/courses/6-036-introduction-to-machine-learning-fall-2020/" target="_blank" rel="noopener noreferrer">Introduction to Machine Learning</a></h2>
-          <span class="note">~40h</span>
+          <h2>Introduction to Machine Learning</h2>
         </div>
         <p class="platform">MIT OpenCourseWare</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Avançado</span><span class="badge">Gratuito</span><span class="badge">Texto</span><span class="badge">Fundamentos</span><span class="badge">Machine Learning</span></p>
-        <p class="summary">Padrão ouro de acesso aberto: material de referência de alto rigor teórico do MIT. Exige autodisciplina e base em matemática/programação.</p>
-        <a class="cta" href="https://ocw.mit.edu/courses/6-036-introduction-to-machine-learning-fall-2020/" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="video"
-        data-duration="curto"
-        data-platform="anthropic-academy"
-        data-cert="sim"
-        data-themes="fundamentos prompt-engineering ia-generativa">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://anthropic.skilljar.com/ai-fluency-framework-foundations" target="_blank" rel="noopener noreferrer">AI Fluency: Framework &amp; Foundations</a></h2>
-          <span class="note">~3h</span>
+          <h2>AI Fluency: Framework &amp; Foundations</h2>
         </div>
         <p class="platform">Anthropic Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Fundamentos</span><span class="badge">Prompt Engineering</span><span class="badge">IA Generativa</span></p>
-        <p class="summary">Curso oficial da Anthropic: ensina o framework 4D (Delegation, Description, Discernment, Diligence) pra trabalhar com IA de forma eficaz, ética e segura. Certificado gratuito ao concluir.</p>
-        <a class="cta" href="https://anthropic.skilljar.com/ai-fluency-framework-foundations" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="video"
-        data-duration="curto"
-        data-platform="openai-academy"
-        data-cert="sim"
-        data-themes="fundamentos prompt-engineering produtividade">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://academy.openai.com/public/courses/ai-foundations-juzjs" target="_blank" rel="noopener noreferrer">AI Foundations</a></h2>
-          <span class="note">~1h</span>
+          <h2>AI Foundations</h2>
         </div>
         <p class="platform">OpenAI Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Fundamentos</span><span class="badge">Prompt Engineering</span><span class="badge">Produtividade</span></p>
-        <p class="summary">Curso oficial da OpenAI: fundamentos de IA, modelos de linguagem e ChatGPT — com foco em prompting prático, revisão de outputs e uso responsável no dia a dia.</p>
-        <a class="cta" href="https://academy.openai.com/public/courses/ai-foundations-juzjs" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="intermediario"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="curto"
-        data-platform="openai-academy"
-        data-cert="sim"
-        data-themes="produtividade fundamentos">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://academy.openai.com/public/courses/applied-ai-foundations-hgk7r" target="_blank" rel="noopener noreferrer">Applied AI Foundations</a></h2>
-          <span class="note">~1h 15m</span>
+          <h2>Applied AI Foundations</h2>
         </div>
         <p class="platform">OpenAI Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Produtividade</span><span class="badge">Fundamentos</span></p>
-        <p class="summary">Curso oficial da OpenAI pra transformar uma tarefa recorrente num fluxo de trabalho repetível: dividir o trabalho em etapas, identificar onde o ChatGPT ajuda e criar pontos de revisão no processo.</p>
-        <a class="cta" href="https://academy.openai.com/public/courses/applied-ai-foundations-hgk7r" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="intermediario"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="curto"
-        data-platform="openai-academy"
-        data-cert="sim"
-        data-themes="agentes produtividade">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://academy.openai.com/public/courses/agents-and-workflows-bieml" target="_blank" rel="noopener noreferrer">Agents and Workflows</a></h2>
-          <span class="note">~1h 15m</span>
+          <h2>Agents and Workflows</h2>
         </div>
         <p class="platform">OpenAI Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Agentes</span><span class="badge">Produtividade</span></p>
-        <p class="summary">Curso oficial da OpenAI sobre dirigir agentes em trabalho estruturado: fornecer contexto, definir outputs, estabelecer limites, revisar rascunhos e reaproveitar o que funciona.</p>
-        <a class="cta" href="https://academy.openai.com/public/courses/agents-and-workflows-bieml" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
       <article class="card"
         data-lang="en"
@@ -565,149 +389,69 @@
         <p class="summary">Curso oficial da Anthropic pra quem está começando com Claude: recursos essenciais, boas práticas do dia a dia e como organizar o trabalho em projetos. Certificado gratuito ao concluir.</p>
         <a class="cta" href="https://anthropic.skilljar.com/claude-101" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="curto"
-        data-platform="anthropic-academy"
-        data-cert="sim"
-        data-themes="claude-code produtividade">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://anthropic.skilljar.com/claude-code-101" target="_blank" rel="noopener noreferrer">Claude Code 101</a></h2>
-          <span class="note">~2h</span>
+          <h2>Claude Code 101</h2>
         </div>
         <p class="platform">Anthropic Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Claude Code</span><span class="badge">Produtividade</span></p>
-        <p class="summary">Instalação, o fluxo explorar → planejar → codar → commitar, gestão de contexto, CLAUDE.md, subagentes e MCP servers — curso oficial pra usar o Claude Code no dia a dia de desenvolvimento.</p>
-        <a class="cta" href="https://anthropic.skilljar.com/claude-code-101" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="intermediario"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="curto"
-        data-platform="anthropic-academy"
-        data-cert="sim"
-        data-themes="desenvolvimento api">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://anthropic.skilljar.com/claude-platform-101" target="_blank" rel="noopener noreferrer">Claude Platform 101</a></h2>
-          <span class="note">~4h</span>
+          <h2>Claude Platform 101</h2>
         </div>
         <p class="platform">Anthropic Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Desenvolvimento</span><span class="badge">API</span></p>
-        <p class="summary">Construir sobre a Claude Developer Platform do zero: fundamentos da API, loop de agentes, uso de ferramentas, extended thinking e agentes gerenciados, com demos práticas em cada lição.</p>
-        <a class="cta" href="https://anthropic.skilljar.com/claude-platform-101" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="video"
-        data-duration="curto"
-        data-platform="anthropic-academy"
-        data-cert="sim"
-        data-themes="fundamentos etica">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://anthropic.skilljar.com/ai-capabilities-and-limitations" target="_blank" rel="noopener noreferrer">AI Capabilities and Limitations</a></h2>
-          <span class="note">~1h</span>
+          <h2>AI Capabilities and Limitations</h2>
         </div>
         <p class="platform">Anthropic Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Vídeo</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Fundamentos</span><span class="badge">Ética</span></p>
-        <p class="summary">Modelo mental de como sistemas de IA generativa modernos se comportam e por quê — curso companheiro do AI Fluency, pra identificar comportamentos inesperados e calibrar confiança nos outputs.</p>
-        <a class="cta" href="https://anthropic.skilljar.com/ai-capabilities-and-limitations" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="avancado"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="medio"
-        data-platform="anthropic-academy"
-        data-cert="sim"
-        data-themes="desenvolvimento api">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://anthropic.skilljar.com/claude-with-the-anthropic-api" target="_blank" rel="noopener noreferrer">Building with the Claude API</a></h2>
-          <span class="note">~6h</span>
+          <h2>Building with the Claude API</h2>
         </div>
         <p class="platform">Anthropic Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Avançado</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Desenvolvimento</span><span class="badge">API</span></p>
-        <p class="summary">Curso completo sobre integrar Claude via API: operações fundamentais, prompting avançado, tool use, RAG e padrões de arquitetura pra sistemas com IA em produção.</p>
-        <a class="cta" href="https://anthropic.skilljar.com/claude-with-the-anthropic-api" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="intermediario"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="curto"
-        data-platform="anthropic-academy"
-        data-cert="sim"
-        data-themes="mcp desenvolvimento">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://anthropic.skilljar.com/introduction-to-model-context-protocol" target="_blank" rel="noopener noreferrer">Introduction to Model Context Protocol</a></h2>
-          <span class="note">~4h</span>
+          <h2>Introduction to Model Context Protocol</h2>
         </div>
         <p class="platform">Anthropic Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">MCP</span><span class="badge">Desenvolvimento</span></p>
-        <p class="summary">Construir servidores e clientes MCP do zero em Python, cobrindo as três primitivas centrais do protocolo (tools, resources, prompts) e a integração com o Claude.</p>
-        <a class="cta" href="https://anthropic.skilljar.com/introduction-to-model-context-protocol" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="intermediario"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="curto"
-        data-platform="anthropic-academy"
-        data-cert="sim"
-        data-themes="claude-code agentes">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://anthropic.skilljar.com/introduction-to-agent-skills" target="_blank" rel="noopener noreferrer">Introduction to Agent Skills</a></h2>
-          <span class="note">~1h 30m</span>
+          <h2>Introduction to Agent Skills</h2>
         </div>
         <p class="platform">Anthropic Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Claude Code</span><span class="badge">Agentes</span></p>
-        <p class="summary">Como criar, configurar e compartilhar Skills no Claude Code — instruções reutilizáveis em markdown que o Claude aplica automaticamente às tarefas certas.</p>
-        <a class="cta" href="https://anthropic.skilljar.com/introduction-to-agent-skills" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="intermediario"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="curto"
-        data-platform="anthropic-academy"
-        data-cert="sim"
-        data-themes="claude-code agentes">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://anthropic.skilljar.com/introduction-to-subagents" target="_blank" rel="noopener noreferrer">Introduction to Subagents</a></h2>
-          <span class="note">~1h 30m</span>
+          <h2>Introduction to Subagents</h2>
         </div>
         <p class="platform">Anthropic Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Intermediário</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Claude Code</span><span class="badge">Agentes</span></p>
-        <p class="summary">Como usar e criar subagentes no Claude Code pra gerenciar contexto, delegar tarefas e montar fluxos especializados dentro de um projeto maior.</p>
-        <a class="cta" href="https://anthropic.skilljar.com/introduction-to-subagents" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
-      <article class="card"
-        data-lang="en"
-        data-level="iniciante"
-        data-cost="free"
-        data-format="hands-on"
-        data-duration="curto"
-        data-platform="anthropic-academy"
-        data-cert="sim"
-        data-themes="produtividade agentes">
+      <article class="card card--locked" data-lang="en">
         <div class="title-row">
-          <h2><a href="https://anthropic.skilljar.com/introduction-to-claude-cowork" target="_blank" rel="noopener noreferrer">Introduction to Claude Cowork</a></h2>
-          <span class="note">~2h</span>
+          <h2>Introduction to Claude Cowork</h2>
         </div>
         <p class="platform">Anthropic Academy</p>
-        <p class="badges"><span class="badge badge--lang">Inglês</span><span class="badge">Iniciante</span><span class="badge">Gratuito</span><span class="badge">Hands-on</span><span class="badge badge--cert">Certificado grátis</span><span class="badge">Produtividade</span><span class="badge">Agentes</span></p>
-        <p class="summary">Curso prático sobre trabalhar lado a lado com o Claude em arquivos e projetos: o loop de tarefas do Cowork, plugins e skills, fluxos de pesquisa e como conduzir trabalho multi-etapas com responsabilidade.</p>
-        <a class="cta" href="https://anthropic.skilljar.com/introduction-to-claude-cowork" target="_blank" rel="noopener noreferrer">Ver curso <span aria-hidden="true">→</span></a>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
       </article>
         <p class="empty" id="empty" style="display:none">Nenhum curso com esses filtros.</p>
       </div>

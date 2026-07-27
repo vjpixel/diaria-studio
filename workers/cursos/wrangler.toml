@@ -1,19 +1,33 @@
-# workers/cursos — hosting da página "Cursos sobre IA" (#1745).
+# workers/cursos — hosting da página "Cursos sobre IA" (#1745, gate #4052).
 #
-# Worker de static assets (sem script): serve workers/cursos/public/index.html
-# em https://cursos.diar.ia.br/ (domínio de marca, #3698) — também acessível
-# via https://cursos.diaria.workers.dev/ (mantido por compat de links já
-# enviados em edições passadas). O HTML é gerado por
-# `scripts/build-cursos-page.ts` a partir de `seed/courses/cursos-ia.json`
-# (fonte de verdade, versionada). REGENERAR antes do deploy quando o seed mudar:
+# #4052: convertido de static-assets-only pra worker com SCRIPT
+# (`main = src/index.ts`) + assets. `env.ASSETS` continua servindo
+# `workers/cursos/public/index.html` (teaser — 4 cursos abertos, resto
+# bloqueado) como fallback; o script intercepta `/`, `/gate`, `/gate/verify`,
+# `/gate/subscribe` pra decidir teaser × conteúdo completo (ver src/index.ts).
+# O HTML teaser é gerado por `scripts/build-cursos-page.ts` a partir de
+# `seed/courses/cursos-ia.json` (fonte de verdade, versionada); o HTML
+# completo (servido só depois do gate passar) é gerado no MESMO comando pra
+# `src/courses-full.generated.ts` (committed, nunca fetchable como asset
+# estático). REGENERAR antes do deploy quando o seed mudar:
 #
-#   npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html
+#   npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html --gen-full workers/cursos/src/courses-full.generated.ts
 #   cd workers/cursos && npx wrangler deploy
 #
-# O teste `test/cursos-asset-drift.test.ts` garante que o HTML committed reflete
-# o seed (CI falha se alguém editar o seed sem regenerar).
+# Os testes `test/cursos-asset-drift.test.ts` e `test/cursos-full-drift.test.ts`
+# garantem que os dois HTMLs committed refletem o seed (CI falha no drift).
+#
+# SETUP MANUAL antes do 1º deploy (ver PR #4052 pro passo-a-passo completo):
+#   1. wrangler kv namespace create CURSOS_SUBSCRIBERS  → colar o id abaixo
+#   2. wrangler secret put COOKIE_HMAC_SECRET   (gerar: openssl rand -hex 32)
+#   3. wrangler secret put BEEHIIV_API_KEY          (opcional — ver gate.ts)
+#   4. wrangler secret put BEEHIIV_PUBLICATION_ID   (opcional — ver gate.ts)
+#   5. Rodar scripts/sync-cursos-subscribers-kv.ts pra popular o KV (ou
+#      agendar via Task Scheduler, mesmo padrão de run-clarice-sync-daily.ps1)
 name = "cursos"
+main = "src/index.ts"
 compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 # #3698: domínio de marca (cursos.diar.ia.br). workers_dev = true continua
@@ -25,3 +39,12 @@ custom_domain = true
 
 [assets]
 directory = "./public"
+binding = "ASSETS"
+
+# #4052: KV do sync de assinantes ativos (subscriber:{sha256(email)}), fonte
+# PRIMÁRIA de verificação (scripts/sync-cursos-subscribers-kv.ts popula).
+# PLACEHOLDER — rodar `wrangler kv namespace create CURSOS_SUBSCRIBERS` e
+# colar o id retornado aqui antes do deploy.
+[[kv_namespaces]]
+binding = "CURSOS_SUBSCRIBERS"
+id = "REPLACE_WITH_ID_FROM_WRANGLER_KV_NAMESPACE_CREATE"

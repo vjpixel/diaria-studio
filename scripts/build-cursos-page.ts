@@ -90,7 +90,19 @@ export interface Course {
   certificate: boolean;
   themes: string[];
   summary: string;
+  /** #4052: teaser aberto (não-gated) — 3-5 cursos marcados `true` ficam
+   * indexáveis/completos no HTML público (teaser); os demais aparecem como
+   * card bloqueado (só título+plataforma, sem link/resumo) até o leitor
+   * verificar assinatura ativa. Opcional — ausente/false = gated. */
+  teaser?: boolean;
 }
+
+/** #4052: modo de render — `"teaser"` é o HTML PÚBLICO/estático (asset),
+ * cursos não-teaser viram card bloqueado sem summary/url/badges. `"full"` é
+ * o HTML servido pelo Worker SÓ depois do gate passar (nunca committed como
+ * asset estático) — todos os cursos completos, igual ao comportamento
+ * pré-#4052. */
+export type CursosRenderMode = "teaser" | "full";
 
 const LEVEL_LABEL: Record<Level, string> = {
   iniciante: "Iniciante",
@@ -180,6 +192,29 @@ export function loadCourses(seedPath = SEED_PATH): Course[] {
   return loadSeedItems<Course>(seedPath, "courses", validateCourses);
 }
 
+/**
+ * #4052: card BLOQUEADO — usado no modo `"teaser"` pra cursos com
+ * `teaser !== true`. Deliberadamente NÃO inclui `c.summary`, `c.url` nem os
+ * badges de detalhe (cost/format/certificado/temas) — só título e plataforma,
+ * mais um aviso genérico de "assine para desbloquear". `data-*` de
+ * lang/level/duration/platform/cert/themes ficam DE FORA de propósito (o
+ * dropdown de filtro não pode revelar metadado do card bloqueado pra além do
+ * que já é visível — a exceção intencional é `data-lang`, mantida pra o
+ * filtro de idioma continuar útil sem vazar conteúdo).
+ * Regressão coberta por `test/cursos-teaser-leak.test.ts` (#4052): garante
+ * que o HTML público nunca contém `c.summary`/`c.url` de curso não-teaser.
+ */
+function renderLockedCard(c: Course): string {
+  return `      <article class="card card--locked" data-lang="${esc(c.language)}">
+        <div class="title-row">
+          <h2>${esc(c.title)}</h2>
+        </div>
+        <p class="platform">${esc(c.platform)}</p>
+        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
+        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
+      </article>`;
+}
+
 function renderCard(c: Course): string {
   const dur = `<span class="note">${esc(fmtDuration(c.duration_hours, c.duration_estimated))}</span>`;
   const cta = isSafeUrl(c.url)
@@ -230,8 +265,21 @@ function renderFilter(id: string, label: string, opts: Array<{ value: string; la
  * Renderiza a página completa no design editorial Diar.ia. Pure — recebe os
  * cursos, devolve HTML 100% self-contained (Georgia é system font — sem fonte externa).
  */
-export function renderCursosPage(courses: Course[]): string {
-  const cards = courses.map(renderCard).join("\n");
+export function renderCursosPage(courses: Course[], mode: CursosRenderMode = "full"): string {
+  const cards = courses.map((c) => (mode === "teaser" && !c.teaser ? renderLockedCard(c) : renderCard(c))).join("\n");
+  // #4052: banner de gate — só no modo teaser, e só quando há pelo menos 1
+  // curso bloqueado (se o editor um dia marcar todos como teaser, o banner
+  // não faz sentido e não aparece).
+  const lockedCount = mode === "teaser" ? courses.filter((c) => !c.teaser).length : 0;
+  const gateBanner =
+    lockedCount > 0
+      ? `  <div class="gate-banner">
+    <div class="wrap">
+      <p>🔒 ${lockedCount} ${lockedCount === 1 ? "curso completo está" : "cursos completos estão"} disponíveis só para assinantes da Diar.ia. <a href="/gate">Já sou assinante — desbloquear</a></p>
+    </div>
+  </div>
+`
+      : "";
 
   // Dropdowns dinâmicos: só renderiza os que têm ≥2 valores distintos.
   const distinct = <T extends string>(vals: T[]) => [...new Set(vals)];
@@ -314,11 +362,20 @@ ${renderCuradoriaGridCardStyles()}
   .platform { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.04em; color: var(--ink); margin: 6px 0 0; }
   .badge--cert { border-color: var(--ink); color: var(--ink); }
 
+  /* #4052: card bloqueado (teaser) + banner de gate. */
+  .card--locked { opacity: 0.72; }
+  .summary--locked { font-style: italic; }
+  .cta--locked { display: inline-block; margin-top: 14px; font-family: ${SANS}; font-size: 13px; font-weight: 700; color: var(--ink); }
+  .gate-banner { background: var(--teal); color: #FFFFFF; padding: 14px 0; }
+  .gate-banner .wrap { max-width: 1120px; }
+  .gate-banner p { margin: 0; font-family: ${SANS}; font-size: 13px; }
+  .gate-banner a { color: #FFFFFF; text-decoration: underline; font-weight: 700; }
+
 ${renderCuradoriaFooterStyles()}
 </style>
 </head>
 <body>
-  <header>
+${gateBanner}  <header>
     <div class="wrap">
       <p class="eyebrow">Diar.ia · Curadoria</p>
       <hr class="rule">
@@ -412,11 +469,39 @@ ${cards}
 `;
 }
 
+// #4052: módulo TS gerado (committed, mesmo padrão de
+// workers/poll/src/ds-tokens.generated.ts) com o HTML FULL pré-renderizado —
+// o Worker importa a constante em runtime, nunca re-renderiza a partir do
+// seed (que não é lido em runtime Workers — sem fs). Regenerar junto do
+// asset teaser sempre que o seed mudar; test/cursos-full-drift.test.ts
+// trava o drift no CI.
+const DEFAULT_GEN_FULL = resolve(ROOT, "workers/cursos/src/courses-full.generated.ts");
+
+function renderGenFullModule(courses: Course[]): string {
+  const html = renderCursosPage(courses, "full");
+  return `/**
+ * courses-full.generated.ts (#4052) — GERADO, NÃO EDITAR À MÃO.
+ *
+ * Fonte: seed/courses/cursos-ia.json → scripts/build-cursos-page.ts --gen-full.
+ * HTML completo (todos os cursos, sem gate) servido pelo Worker cursos SÓ
+ * depois que o gate passa (verificação de assinante ativo ou cookie de
+ * sessão válido) — nunca exposto como asset estático fetchable. Regenerar:
+ *
+ *   npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html --gen-full workers/cursos/src/courses-full.generated.ts
+ *
+ * test/cursos-full-drift.test.ts garante que este arquivo reflete o seed.
+ */
+export const CURSOS_FULL_HTML = ${JSON.stringify(html)};
+`;
+}
+
 function main(): void {
   const argv = process.argv.slice(2);
   const check = argv.includes("--check");
   const outIdx = argv.indexOf("--out");
   const outPath = outIdx >= 0 ? resolve(argv[outIdx + 1]) : DEFAULT_OUT;
+  const genFullIdx = argv.indexOf("--gen-full");
+  const genFullPath = genFullIdx >= 0 ? resolve(argv[genFullIdx + 1]) : DEFAULT_GEN_FULL;
 
   let courses: Course[];
   try {
@@ -428,15 +513,23 @@ function main(): void {
 
   const v = validateCourses(courses);
   for (const w of v.warnings) process.stderr.write(`[build-cursos] ⚠ ${w}\n`);
-  process.stderr.write(`[build-cursos] ${courses.length} cursos; ${distinctThemes(courses).length} temas; ${distinctPlatforms(courses).length} plataformas.\n`);
+  const teaserCount = courses.filter((c) => c.teaser).length;
+  process.stderr.write(
+    `[build-cursos] ${courses.length} cursos (${teaserCount} teaser/aberto); ${distinctThemes(courses).length} temas; ${distinctPlatforms(courses).length} plataformas.\n`,
+  );
 
   if (check) {
     process.stderr.write("[build-cursos] --check: não escreve.\n");
     return;
   }
   mkdirSync(dirname(outPath), { recursive: true });
-  writeFileAtomic(outPath, renderCursosPage(courses));
-  process.stderr.write(`[build-cursos] escrito: ${outPath}\n`);
+  writeFileAtomic(outPath, renderCursosPage(courses, "teaser"));
+  process.stderr.write(`[build-cursos] escrito (teaser): ${outPath}\n`);
+
+  mkdirSync(dirname(genFullPath), { recursive: true });
+  writeFileAtomic(genFullPath, renderGenFullModule(courses));
+  process.stderr.write(`[build-cursos] escrito (full, gerado): ${genFullPath}\n`);
+
   console.log(outPath);
 }
 

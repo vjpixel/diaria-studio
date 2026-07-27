@@ -26,8 +26,8 @@ describe("cursos asset drift (#1745)", () => {
     assert.ok(existsSync(ASSET), "asset ausente — rode o builder com --out");
   });
 
-  it("o HTML committed bate com um render fresco do seed", () => {
-    const fresh = renderCursosPage(loadCourses(SEED));
+  it("o HTML committed bate com um render fresco do seed (modo teaser, #4052)", () => {
+    const fresh = renderCursosPage(loadCourses(SEED), "teaser");
     const committed = readFileSync(ASSET, "utf8");
     assert.equal(
       committed,
