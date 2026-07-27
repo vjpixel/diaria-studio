@@ -142,16 +142,27 @@ describe("buildReviewInstruction (#2754)", () => {
   // manual/develop comum que resolveu low pelo novo default.
   it("effort=low menciona LOW effort e #3326 (não mais 'overnight branch')", () => {
     const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low");
-    assert.match(msg, /\/code-review low --comment/);
     assert.match(msg, /LOW effort/);
     assert.match(msg, /#3326/);
     assert.doesNotMatch(msg, /overnight branch/);
   });
 
+  // #4034: `/code-review` deixou de ser invocável via Skill tool (gate de
+  // plataforma) — a instrução passou a pedir dispatch via Agent tool, nunca
+  // mais `/code-review {effort} --comment` (que o Skill tool rejeitaria).
+  it("instrui dispatch via Agent tool, não mais via Skill /code-review (#4034)", () => {
+    const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low");
+    assert.doesNotMatch(msg, /\/code-review low --comment/);
+    assert.match(msg, /dispatch an Agent/i);
+    assert.match(msg, /general-purpose/);
+    assert.match(msg, /model:sonnet/);
+  });
+
   it("effort=max menciona ULTRACODE / maximum effort", () => {
     const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "max");
-    assert.match(msg, /\/code-review max --comment/);
+    assert.doesNotMatch(msg, /\/code-review max --comment/);
     assert.match(msg, /ULTRACODE/);
+    assert.match(msg, /MAXIMUM effort/);
   });
 
   it("nunca sugere cloud ultra, em nenhum effort", () => {
