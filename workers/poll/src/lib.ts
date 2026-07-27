@@ -55,7 +55,11 @@ export const AAMMDD_RE = /^\d{6}$/;
 export const CYCLE_EDITION_RE = /^\d{4}-\d{2}$/;
 
 /** AAMMDD → "10 de maio de 2026". Memória `feedback_no_aammdd_for_subscribers.md`.
- * Invalid input (não-AAMMDD, MM/DD fora de range) → retorna input cru (safe). */
+ * Invalid input (não-AAMMDD, MM/DD fora de range) → retorna input cru (safe).
+ * Deliberadamente NÃO reconhece o formato de ciclo Clarice (`CYCLE_EDITION_RE`)
+ * — quem precisa disso usa `formatEditionDateForBrand(edition, "clarice")`
+ * (que sabe o brand de verdade); este helper genérico devolver o slug cru pra
+ * formato desconhecido é uma escolha defensiva testada (#3113 item 13). */
 export function formatEditionDate(edition: string): string {
   if (!AAMMDD_RE.test(edition)) return edition;
   const yy = parseInt(edition.slice(0, 2), 10);

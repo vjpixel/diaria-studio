@@ -10,7 +10,12 @@ import assert from "node:assert/strict";
 
 import worker, { type Env } from "../workers/poll/src/index.ts";
 import { subscriberKvKey } from "../workers/poll/src/subscriber-verify.ts";
-import { issueWebSessionCookie, WEB_SESSION_COOKIE, FREE_ROUND_COOKIE } from "../workers/poll/src/web-gate.ts";
+import {
+  issueWebSessionCookie,
+  WEB_SESSION_COOKIE,
+  FREE_ROUND_COOKIE,
+  renderJogarGatePage,
+} from "../workers/poll/src/web-gate.ts";
 
 function makeMapKV(initial: Record<string, string> = {}) {
   const m = new Map<string, string>(Object.entries(initial));
@@ -206,6 +211,32 @@ describe("POST /jogar/gate/subscribe (#4054)", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("renderJogarGatePage — cópia e UX (#4054 follow-up)", () => {
+  const html = renderJogarGatePage(null);
+
+  it("opt-in explica o que é a Diar.ia (não pressupõe que o leitor já conhece)", () => {
+    assert.match(html, /newsletter di.ria e gratuita/);
+    assert.match(html, /not.cias e tutoriais de IA/);
+    // copy antiga (bare, sem explicar o produto) não pode sobreviver
+    assert.doesNotMatch(html, /Quero receber a newsletter di.ria da Diar\.ia<\/label>/);
+  });
+
+  it("aviso de erro (checkbox desmarcada) usa a classe .err (banner destacado, não texto de 0.9rem solto)", () => {
+    assert.match(html, /#gate-msg\.err\s*\{[^}]*font-weight:\s*700/);
+    assert.match(html, /setMsg\("Marque a caixinha pra assinar e continuar\.", "err"\)/);
+  });
+
+  it("REGRESSÃO: sessionUnavailable (cadastro OK mas sem COOKIE_HMAC_SECRET) NÃO redireciona cegamente pro jogo", () => {
+    // Bug real (260727): subscribe podia responder {ok:true, sessionUnavailable:true}
+    // (sem secret configurado no worker) e o client redirecionava mesmo assim —
+    // /jogar então rejeitava por falta de sessão de verdade e mostrava o gate
+    // de novo, vazio, parecendo que "o conteúdo sumiu". O guard abaixo trava
+    // esse caminho: só redireciona quando a sessão foi de fato emitida.
+    assert.match(html, /data2\.ok\s*&&\s*!data2\.sessionUnavailable/);
+    assert.match(html, /data2\.ok\s*&&\s*data2\.sessionUnavailable/);
   });
 });
 

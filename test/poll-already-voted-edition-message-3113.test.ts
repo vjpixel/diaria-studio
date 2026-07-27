@@ -131,6 +131,23 @@ describe("#3113 item 13 (self-review) — mensagem 'já votou' via /vote com edi
     assert.equal(res2.status, 200);
     const html2 = await res2.text();
     assert.match(html2, /Você já votou na edição de junho de 2026/, "deve citar 'junho de 2026' (mês de envio), não o slug de ciclo cru nem o mês de conteúdo");
-    assert.doesNotMatch(html2, /2605-06/, "o slug de ciclo interno NUNCA deve vazar pro texto exibido ao leitor");
+    // #4065 follow-up (achado 260727): desde #4065 a tela de "já votou" também
+    // embute o card de compartilhamento (share.ts) — cujo TOKEN (opaco por
+    // HMAC, mas com o campo `edition` serializado em CLARO na própria URL,
+    // `serializeSharePayload`, comportamento pré-existente e idêntico pra
+    // edição AAMMDD) aparece dentro de um `data-share-url` (href de máquina,
+    // não texto lido pelo leitor). A asserção original (#3113) testava só o
+    // texto de PROSE (`.msg`), então o escopo aqui restringe a checagem a essa
+    // mensagem — não ao HTML inteiro, que sempre teve o edition legível na URL
+    // do share (mesmo pra AAMMDD, nunca foi opaco).
+    const msgMatch = /<p class="msg">([\s\S]*?)<\/p>/.exec(html2);
+    assert.ok(msgMatch, "parágrafo .msg (mensagem de já votou) deve existir");
+    assert.doesNotMatch(msgMatch![1], /2605-06/, "o slug de ciclo interno NUNCA deve vazar pra prosa lida pelo leitor");
+    // #4065 follow-up: o texto DO CARD de share (share-text, também prosa)
+    // precisa da mesma garantia — é o texto que a pessoa lê/cola ao compartilhar.
+    const shareTextMatch = /<p class="share-text">([\s\S]*?)<\/p>/.exec(html2);
+    assert.ok(shareTextMatch, "texto do card de compartilhamento deve existir (share também renderiza na tela de já votou desde #4065)");
+    assert.doesNotMatch(shareTextMatch![1], /2605-06/, "o slug de ciclo interno NUNCA deve vazar pro texto de compartilhamento");
+    assert.match(shareTextMatch![1], /junho de 2026/, "texto de compartilhamento deve citar o mês de envio formatado, mesmo padrão da mensagem de já votou");
   });
 });

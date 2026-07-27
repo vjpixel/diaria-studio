@@ -771,7 +771,7 @@ export function votePageHtml(
   // reusado literalmente do mesmo helper que /jogar usa pro bloco injetado
   // dinamicamente — ver rationale em share.ts.
   const shareCardHtml = shareCard
-    ? `${renderShareCardBlock(shareCard.token, shareCard.payload)}\n${shareButtonScript("#jogar-share-card")}`
+    ? `${renderShareCardBlock(shareCard.token, shareCard.payload, brand)}\n${shareButtonScript("#jogar-share-card")}`
     : "";
 
   // #4065: cadastro inline (#3580) na tela de resultado do voto — só brand
