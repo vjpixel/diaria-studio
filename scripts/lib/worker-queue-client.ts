@@ -23,7 +23,13 @@ export interface WorkerQueuePayload {
   image_url?: string | null;
   scheduled_at: string;
   destaque: string;
-  channel: "instagram" | "threads";
+  // #4101 — "linkedin" adicionado: o Worker (workers/linkedin-cron/src/index.ts)
+  // já aceita `channel: "linkedin"` explícito desde sempre (é o default quando
+  // omitido, ver dispatch.ts `entry.channel ?? "linkedin"`) — só o tipo local
+  // deste cliente compartilhado era mais restrito que o contrato real do
+  // servidor. Usado por `publish-weekly-social.ts` pra enfileirar o post
+  // semanal de LinkedIn pelo mesmo endpoint `/queue` (Make.com scenario).
+  channel: "linkedin" | "instagram" | "threads";
 }
 
 export async function postToWorkerQueue(
