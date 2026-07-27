@@ -1,6 +1,6 @@
 # Experimento CTA-01 — copy do CTA do topo (digest mensal Clarice, ciclo 2606-07)
 
-**Status:** em preparação (aguardando aprovação da copy B pelo editor)
+**Status:** ENCERRADO em 26/07/2026, **sem vencedor** — o braço B teve entrega degradada (classificado como spam), o que confunde entrega com efeito do CTA. Não repetir o protocolo antes de resolver a causa (#4061).
 **Início:** envio 8 (qui 23/07/2026, 06:00 BRT) — campanhas Brevo 95 (A) + nova (B)
 **Continuação:** envio 9 (sex 24/07) — campanhas 96 (A) + nova (B); envios seguintes do ramp mantêm as MESMAS variantes até bater a regra de decisão.
 
@@ -59,3 +59,16 @@ Acumular envios até ~150 cliques de topo somados nos dois braços (ou fim do ci
   - **GET-verify determinístico pós-PUT, todas as 4 campanhas:** 7/7 links com `utm_source=clarice`, `utm_campaign=clarice-2606-07-cta-{a|b}` (braço correto por campanha), zero `utm_source=sendinblue`; `subject`/`scheduledAt`/`status=queued` inalterados em todas.
   - Novo test email dos 2 braços do envio 8 (campanhas 95/97) enviado ao editor (`vjpixel@gmail.com`) via `POST /emailCampaigns/{id}/sendTest`.
   - Envio 8 dispara qui 23/07 06:00 BRT — dentro do prazo.
+- 2026-07-26 — **round ENCERRADO pelo editor, sem vencedor.** Causa: uma das opções foi classificada como spam, degradando a entrega daquele braço — os braços passaram a diferir em ENTREGA, não em persuasão do CTA, e a regra de decisão pré-registrada perdeu validade.
+  - Números finais (Brevo, `globalStats`):
+
+    | Envio | Braço | Campanha | Entregues | Aberturas únicas | Taxa | Cliques únicos | Reclamações |
+    |---|---|---|---|---|---|---|---|
+    | 8 (23/07) | A | 95 | 6.105 | 1.325 | 21,7% | 10 | 0 |
+    | 8 (23/07) | B | 97 | 6.106 | 676 | 11,1% | 8 | 1 |
+    | 9 (24/07) | A | 96 | 6.697 | 1.271 | 19,0% | 59 | 1 |
+    | 9 (24/07) | B | 98 | 6.687 | 134 | 2,0% | 5 | 0 |
+
+  - Leitura: B degrada progressivamente (abertura pela metade no envio 8, colapso no envio 9), com o clique caindo junto. Reclamações formais ~0 nas 4 campanhas → **não é denúncia de leitor, é colocação de caixa de entrada** (foldering), que o contador `complaints` da Brevo não captura. Células comparáveis por construção (split 50/50 sistemático dentro do MESMO envio), então qualidade de contato não explica o gap.
+  - Guardrail furado sem parar o round: B já estava abaixo do limiar de abertura (<15%) no envio 8, e o envio 9B saiu mesmo assim — com resultado pior. Enforcement automático entre envios: ver issue irmã do #4061.
+  - `status` do experimento no registro da dashboard atualizado pra `encerrado` com `closureNote` (`workers/brevo-dashboard/src/experiment-cta.ts`).

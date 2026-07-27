@@ -57,6 +57,14 @@ export interface ExperimentDefinition {
   /** p-valor máximo (bicaudal) pra considerar significativo (ex: 0.05). */
   pValueThreshold: number;
   guardrailsNote: string;
+  /**
+   * Por que o experimento saiu do ar, quando `status !== "ativo"`. Renderizado
+   * logo abaixo do badge — um experimento marcado "encerrado" sem motivo
+   * visível é pior que inútil quando o motivo é "não repetir até resolver X"
+   * (caso do CTA-01: braço B com entrega degradada, ver #4061). Ignorado
+   * enquanto `status === "ativo"`.
+   */
+  closureNote?: string;
   docPath?: string;
   /**
    * Casa o `name` de uma campanha Brevo com este experimento. Retorna
@@ -86,7 +94,16 @@ export function matchCta01Campaign(name: string): { pairKey: string; armId: stri
 export const CTA01_EXPERIMENT: ExperimentDefinition = {
   id: "cta-01",
   name: "CTA-01 — copy do CTA do topo (Diar.ia Mensal, ciclo 2606-07)",
-  status: "ativo",
+  // Encerrado pelo editor em 260726 SEM vencedor. O braço B teve entrega
+  // degradada (classificação como spam), o que confunde qualquer comparação
+  // de clique: os braços passaram a diferir em ENTREGA, não em persuasão do
+  // CTA. Não retomar o round — nem repetir o protocolo — antes de resolver a
+  // causa da classificação (#4061).
+  status: "encerrado",
+  closureNote:
+    "Encerrado em 26/07/2026 sem vencedor: o braço B teve entrega degradada (classificado como spam), " +
+    "confundindo entrega com efeito do CTA — a comparação de cliques ficou inválida. Repetir o teste só " +
+    "depois de resolver a causa da classificação (#4061).",
   cycle: "2606-07",
   hypothesis:
     "Trocar o CTA do topo (Apresentação) por uma versão com benefício explícito e âncora de ação aumenta a " +
@@ -111,7 +128,10 @@ export const CTA01_EXPERIMENT: ExperimentDefinition = {
 };
 
 /**
- * Registro de experimentos — CTA-01 ativo hoje. Rounds futuros (posição do
+ * Registro de experimentos — CTA-01 encerrado desde 260726 (#4061), nenhum
+ * round ativo no momento. O registro guarda o histórico, não só o vigente: a
+ * seção continua renderizando experimentos encerrados de propósito ("consulta
+ * rápida na hora de avaliar e decidir"). Rounds futuros (posição do
  * bloco dedicado, CTA do encerramento) entram aqui como novas entradas; a
  * seção "Experimento vigente" e o painel de avaliação iteram esta lista, sem
  * precisar de mudança estrutural.
@@ -389,12 +409,19 @@ export function renderExperimentRegistrySection(experiments: ExperimentDefinitio
       const armsList = exp.arms
         .map((a) => `<li><strong>${escHtml(a.id.toUpperCase())}</strong> — ${escHtml(a.label)}</li>`)
         .join("\n");
+      // Só faz sentido em experimento fora do ar — num "ativo" não há
+      // encerramento pra explicar (e o campo é opcional, então também some
+      // quando um experimento encerrado não registrou motivo).
+      const closureNote = exp.status !== "ativo" && exp.closureNote
+        ? `<p class="section-note"><strong>Encerramento:</strong> ${escHtml(exp.closureNote)}</p>`
+        : "";
       const docNote = exp.docPath
         ? `<p class="section-note">Protocolo completo: <code>${escHtml(exp.docPath)}</code></p>`
         : "";
       return `<details class="links-ctr experiment-registry-item" id="experiment-${escHtml(exp.id)}" open>
   <summary class="links-summary">${statusBadge(exp.status)} · ${escHtml(exp.name)}</summary>
   <div class="links-table-wrap">
+    ${closureNote}
     <p class="section-note"><strong>Hipótese:</strong> ${escHtml(exp.hypothesis)}</p>
     <p class="section-note" style="margin-bottom:2px;"><strong>Braços:</strong></p>
     <ul class="payments-list">${armsList}</ul>
