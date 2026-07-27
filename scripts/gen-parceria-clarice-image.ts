@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 import { COLORS, FONTS } from "./lib/shared/design-tokens.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT_DIR = resolve(ROOT, "data", "parceria-clarice", "assets");
@@ -178,6 +179,9 @@ export async function buildSquareSvg(): Promise<string> {
 }
 
 async function main(): Promise<void> {
+  // #4090: aborta se Georgia nao resolve nesta maquina — sem isso a arte sai
+  // com fallback de fonte, fora da marca, EM SILENCIO.
+  await assertBrandSerifAvailable("gen-parceria-clarice-image");
   let outDir = DEFAULT_OUT_DIR;
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i++) {
