@@ -7,11 +7,13 @@
  * (quase-primeira-página). Reusa o OAuth Google existente (gFetch) + o scope
  * `webmasters.readonly` (adicionado em oauth-setup.ts).
  *
- * **Pré-req do editor (1x):** verificar `https://diaria.beehiiv.com/` como
- * propriedade URL-prefix no GSC (esse é o host canônico — diar.ia.br só 302a).
+ * **Pré-req (feito em 260727, #4089):** `diar.ia.br` verificado como propriedade
+ * **Domínio** (`sc-domain:diar.ia.br`) via TXT no Cloudflare, e a Google Search
+ * Console API habilitada no projeto GCP — ela estava DESLIGADA desde o #1989,
+ * que é por que este script nunca chegou a gerar `data/seo/`.
  *
  * Uso:
- *   npx tsx scripts/seo-pull.ts [--site https://diaria.beehiiv.com/] [--days 28] \
+ *   npx tsx scripts/seo-pull.ts [--site sc-domain:diar.ia.br] [--days 28] \
  *     [--out data/seo/gsc-{YYYY-MM-DD}.json]
  *
  * Exit: 0 ok (grava JSON + opportunities.md); 1 erro de API (ex: scope ausente
@@ -149,7 +151,12 @@ function renderOpportunitiesMd(opps: SeoOpportunity[], site: string, period: str
 async function main(nowMs: number): Promise<number> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { values } = parseCliArgs(process.argv.slice(2));
-  const site = String(values["site"] ?? "https://diaria.beehiiv.com/");
+  // #4089: default migrado pra propriedade Domínio `sc-domain:diar.ia.br`,
+  // verificada em 260727 via TXT no Cloudflare. NÃO somar com o host antigo:
+  // a conta do OAuth é `siteUnverifiedUser` em `https://diaria.beehiiv.com/`
+  // (403 na Search Analytics), então aquele host nunca foi consultável por
+  // aqui — o default anterior era a razão de `data/seo/` nunca ter existido.
+  const site = String(values["site"] ?? "sc-domain:diar.ia.br");
   const days = parseInt(String(values["days"] ?? "28"), 10) || 28;
   const endDate = isoDate(nowMs);
   const startDate = isoDate(nowMs - days * 86_400_000);
