@@ -4,12 +4,13 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 60 invariants.
+**Total**: 61 invariants.
 
 ## Static (estrutura do repo)
 
 | id | descrição | issue |
 |---|---|---|
+| `no-beehiiv-host-in-public-cta` | CTA público nunca aponta pra diaria.beehiiv.com (#4059) | #4059 |
 | `no-forensic-in-drive-sync` | drive-sync nunca inclui _internal/_forensic/ (#959) | #959 |
 | `no-html-in-monthly-drive-sync` | drive-sync mensal nunca inclui HTML render (#1022) | #1022 |
 
