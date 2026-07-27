@@ -7,6 +7,22 @@ import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCal
 import { extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3 } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 
+// ─── #4083 — fixtures ESTÁVEIS de boxes_divulgacao ─────────────────────────
+// Testes de MECANISMO de injeção não devem depender do que platform.config.json
+// aponta HOJE (rotação editorial normal, feita pelo painel do Studio) — só da
+// função stitchNewsletter injetar corretamente o que o override pedir. Os 3
+// arquivos abaixo são escolhidos por serem estáveis (arquivado, ou canônico já
+// pinado por teste dedicado de loadDailyCallout/loadClariceCallout/#3824), não
+// por serem o que está de fato configurado em produção agora — os testes que
+// precisam verificar a config REAL viram um teste próprio e específico
+// ("os slots configurados apontam pra snippets que existem", já existe acima).
+const STABLE_SLOT1_FILE = "_arquivo/recomendacao-leitura.md";
+const STABLE_SLOT1_ANCHOR = /Recomendação de leitura/i;
+const STABLE_SLOT2_FILE = "livros-divulgacao.md";
+const STABLE_SLOT2_ANCHOR = /curadoria de livros/i;
+const STABLE_SLOT3_FILE = "apoio-divulgacao.md"; // default histórico permanente do slot3, #3824
+const STABLE_SLOT3_ANCHOR = /Apoie a diar\.ia\.br/;
+
 describe("renderSection (#1463)", () => {
   it("retorna vazio quando não há items", () => {
     assert.equal(renderSection("🚀", "LANÇAMENTO", "LANÇAMENTOS", []), "");
@@ -841,16 +857,18 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
     ...extra,
   });
 
-  it("config default do platform.config.json (#3212): injeta os 2 slots", () => {
+  it("#4083: slots fixados via override (independente do platform.config.json vigente): injeta os 2 slots", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
-      const out = stitchNewsletter(base(dir, internalDir));
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: STABLE_SLOT1_FILE, slot2: STABLE_SLOT2_FILE },
+      }));
       const slot1 = extractBoxDivulgacao1(out);
-      assert.ok(slot1, "slot1 injetado por default");
-      assert.match(slot1!, /Recomendação de Leitura/);
+      assert.ok(slot1, "slot1 injetado");
+      assert.match(slot1!, STABLE_SLOT1_ANCHOR);
       const slot2 = extractBoxDivulgacao2(out);
-      assert.ok(slot2, "slot2 injetado por default");
-      assert.match(slot2!, /Artigo Especial/);
+      assert.ok(slot2, "slot2 injetado");
+      assert.match(slot2!, STABLE_SLOT2_ANCHOR);
     } finally {
       cleanup();
     }
@@ -923,10 +941,18 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
   it("sponsor=false suprime AMBOS os slots", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
-      const out = stitchNewsletter(base(dir, internalDir, {
-        sponsor: false,
-        boxesDivulgacao: { slot1: "_arquivo/alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" },
-      }));
+      // #4044 achado central: a asserção abaixo prova que o slot É injetado
+      // com sponsor on ANTES de provar que some com sponsor off — senão
+      // "null" seria satisfeito tanto pela supressão real quanto por um
+      // snippet ausente/mal resolvido (passe vacuoso, era o caso quando o
+      // fixture apontava pro arquivo arquivado sem o prefixo _arquivo/).
+      const boxesDivulgacao = { slot1: "_arquivo/alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" };
+      const withSponsor = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao }));
+      assert.ok(extractBoxDivulgacao1(withSponsor), "pré-condição: slot1 injeta com sponsor on");
+      assert.match(extractBoxDivulgacao1(withSponsor)!, /Alexa\+/);
+      assert.ok(extractBoxDivulgacao2(withSponsor), "pré-condição: slot2 injeta com sponsor on");
+      assert.match(extractBoxDivulgacao2(withSponsor)!, /curadoria de livros/i);
+      const out = stitchNewsletter(base(dir, internalDir, { sponsor: false, boxesDivulgacao }));
       assert.equal(extractBoxDivulgacao1(out), null, "slot1 suprimido");
       assert.equal(extractBoxDivulgacao2(out), null, "slot2 suprimido");
     } finally {
@@ -984,29 +1010,29 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
     ...extra,
   });
 
-  // Âncoras de conteúdo dos 3 slots DEFAULT de platform.config.json. A rotação
-  // dos boxes é decisão editorial e muda algumas vezes por ano (260727: leitura
-  // → livro do Bentley, livros → artigo especial, apoio → Clarice); quando
-  // mudar, é só trocar estas 3 linhas. Os testes de POSIÇÃO abaixo não usam
+  // #4083: âncoras de conteúdo de fixtures ESTÁVEIS (não do que platform.config.json
+  // aponta HOJE — isso é rotação editorial normal, feita pelo painel do Studio,
+  // e não deve derrubar este describe). Os testes de POSIÇÃO abaixo não usam
   // âncora de texto de propósito — derivam a posição do próprio box extraído,
-  // então sobrevivem à rotação sem edição nenhuma.
-  const SLOT1_ANCHOR = /Recomendação de Leitura/;
-  const SLOT2_ANCHOR = /Artigo Especial/;
-  const SLOT3_ANCHOR = /Escreva melhor em português com a Clarice/;
+  // então sobrevivem à rotação sem edição nenhuma; só os testes que checam
+  // CONTEÚDO usam estas 3 constantes, sempre via override explícito.
+  const SLOT1_ANCHOR = STABLE_SLOT1_ANCHOR;
+  const SLOT2_ANCHOR = STABLE_SLOT2_ANCHOR;
+  const SLOT3_ANCHOR = STABLE_SLOT3_ANCHOR;
+  const STABLE_3_SLOTS = { slot1: STABLE_SLOT1_FILE, slot2: STABLE_SLOT2_FILE, slot3: STABLE_SLOT3_FILE };
 
-  it("#3212/#3476/#3824: config default de platform.config.json injeta os 3 slots", () => {
+  it("#3212/#3476/#3824: injeta os 3 slots (fixtures fixadas via override, #4083)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
-      // Sem override — lê boxes_divulgacao direto de platform.config.json.
-      const out = stitchNewsletter(base(dir, internalDir));
+      const out = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao: STABLE_3_SLOTS }));
       const slot1 = extractBoxDivulgacao1(out);
-      assert.ok(slot1, "slot1 injetado por default");
+      assert.ok(slot1, "slot1 injetado");
       assert.match(slot1!, SLOT1_ANCHOR);
       const slot2 = extractBoxDivulgacao2(out);
-      assert.ok(slot2, "slot2 injetado por default");
+      assert.ok(slot2, "slot2 injetado");
       assert.match(slot2!, SLOT2_ANCHOR);
       const slot3 = extractBoxDivulgacao3(out);
-      assert.ok(slot3, "slot3 injetado por default (#3824)");
+      assert.ok(slot3, "slot3 injetado (#3824)");
       assert.match(slot3!, SLOT3_ANCHOR);
     } finally {
       cleanup();
@@ -1016,9 +1042,11 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
   it("#3476: box3 posicionado entre D3 e USE MELHOR (não entre D2/D3, não depois de USE MELHOR)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
-      const out = stitchNewsletter(base(dir, internalDir));
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: null, slot2: null, slot3: STABLE_SLOT3_FILE },
+      }));
       const d3Pos = out.indexOf("DESTAQUE 3");
-      const slot3Pos = out.indexOf(extractBoxDivulgacao3(out) ?? " ");
+      const slot3Pos = out.indexOf(extractBoxDivulgacao3(out) ?? " ");
       const umPos = out.indexOf("USE MELHOR");
       assert.ok(slot3Pos > 0, "box3 deveria estar presente");
       assert.ok(
@@ -1051,7 +1079,9 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
         join(internalDir, "01-approved-capped.json"),
         JSON.stringify({ coverage: { line: "cov" } }),
       );
-      const out = stitchNewsletter(base(dir, internalDir));
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: null, slot2: null, slot3: STABLE_SLOT3_FILE },
+      }));
       assert.doesNotMatch(out, /USE MELHOR/);
       const slot3Pos = out.indexOf(extractBoxDivulgacao3(out) ?? " ");
       const eiaPos = out.indexOf("É IA?");
@@ -1076,6 +1106,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
         d3Path: null,
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
+        boxesDivulgacao: { slot1: null, slot2: null, slot3: STABLE_SLOT3_FILE },
       });
       const slot3 = extractBoxDivulgacao3(out);
       assert.ok(slot3, "slot3 deve injetar mesmo sem D3 (é pós-último-destaque, não uma lacuna D2/D3)");
@@ -1092,7 +1123,9 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
         join(internalDir, "02-d3-draft.md"),
         "**DESTAQUE 3 | ⚖️ REGULAÇÃO**\n\n[**T3**](https://e.com/d3)\n\nbody3\n\n**🔧 Já colado. [Ver](https://exemplo.com/ferramenta).**",
       );
-      const out = stitchNewsletter(base(dir, internalDir));
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: null, slot2: null, slot3: STABLE_SLOT3_FILE },
+      }));
       assert.equal((out.match(/🔧/g) || []).length, 1, "só 1 marcador 🔧 (não dupla-injeta)");
       // Âncora do slot3 e não "Quero apoiar": esta última passou a existir
       // também no slot2 (artigo-especial-apoiadores) na rotação de 260727, e
@@ -1106,7 +1139,15 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
   it("sponsor=false suprime os 3 slots (não só os 2 antigos)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
-      const out = stitchNewsletter(base(dir, internalDir, { sponsor: false }));
+      // Mesmo cuidado do #4044: prova que os 3 slots injetam com sponsor on
+      // ANTES de provar que somem com sponsor off, pra "null" não ficar
+      // vago o suficiente pra ser satisfeito por um fixture ausente/mal
+      // resolvido em vez da supressão de fato.
+      const withSponsor = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao: STABLE_3_SLOTS }));
+      assert.ok(extractBoxDivulgacao1(withSponsor), "pré-condição: slot1 injeta com sponsor on");
+      assert.ok(extractBoxDivulgacao2(withSponsor), "pré-condição: slot2 injeta com sponsor on");
+      assert.ok(extractBoxDivulgacao3(withSponsor), "pré-condição: slot3 injeta com sponsor on");
+      const out = stitchNewsletter(base(dir, internalDir, { sponsor: false, boxesDivulgacao: STABLE_3_SLOTS }));
       assert.equal(extractBoxDivulgacao1(out), null, "slot1 suprimido");
       assert.equal(extractBoxDivulgacao2(out), null, "slot2 suprimido");
       assert.equal(extractBoxDivulgacao3(out), null, "slot3 suprimido");
@@ -1127,13 +1168,14 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
     writeFileSync(join(internalDir, "01-approved-capped.json"), JSON.stringify({ coverage: { line: "cov" } }));
     return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
   }
-  const base = (dir: string, internalDir: string, sponsor?: boolean) => ({
+  const base = (dir: string, internalDir: string, sponsor?: boolean, extra: Record<string, unknown> = {}) => ({
     d1Path: join(internalDir, "02-d1-draft.md"),
     d2Path: join(internalDir, "02-d2-draft.md"),
     d3Path: join(internalDir, "02-d3-draft.md"),
     approvedCappedPath: join(internalDir, "01-approved-capped.json"),
     editionDir: dir,
     sponsor,
+    ...extra,
   });
 
   it("loadClariceCallout retorna o bloco **… ** com cupons + link (#3475: sem marcador emoji)", () => {
@@ -1157,19 +1199,20 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
   it("default (sponsor on, #3212): injeta o callout de recomendação de leitura entre D1 e D2 + extractBoxDivulgacao1 o acha", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
-      const out = stitchNewsletter(base(dir, internalDir));
+      // #4083: fixture fixada via override — independe do que platform.config.json
+      // aponta hoje pro slot1 (rotação editorial normal).
+      const out = stitchNewsletter(base(dir, internalDir, undefined, {
+        boxesDivulgacao: { slot1: STABLE_SLOT1_FILE, slot2: null },
+      }));
       const d1Pos = out.indexOf("DESTAQUE 1");
       const calloutPos = out.indexOf(extractBoxDivulgacao1(out) ?? " ");
       const d2Pos = out.indexOf("DESTAQUE 2");
       assert.ok(d1Pos < calloutPos && calloutPos < d2Pos, "callout entre D1 e D2");
-      // acceptance #3212: slot1 default agora é a recomendação de leitura específica,
-      // curadoria geral de livros move pro slot2 — boxDivulgacao1 acha o box no HTML final.
       const mid = extractBoxDivulgacao1(out);
       assert.ok(mid, "extractBoxDivulgacao1 acha o box");
       // 260717: título volta a sair em negrito (bold-wrap kicker) — reverte o
-      // efeito colateral do #3475 sem detecção por emoji. O kicker segue o
-      // slot1 vigente (260727: historia-ia-para-quem-tem-pressa-clarice.md).
-      assert.match(mid!, /^\*\*Recomendação de Leitura\*\*/);
+      // efeito colateral do #3475 sem detecção por emoji.
+      assert.match(mid!, /^\*\*Recomendação de leitura\*\*/i);
     } finally {
       cleanup();
     }
@@ -1178,10 +1221,17 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
   it("sponsor=false (kill-switch): NÃO injeta nenhum dos 2 slots", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
-      const out = stitchNewsletter(base(dir, internalDir, false));
+      const boxesDivulgacao = { slot1: STABLE_SLOT1_FILE, slot2: STABLE_SLOT2_FILE };
+      // Pré-condição (#4044 achado central): prova que os 2 slots injetam com
+      // sponsor on antes de provar que somem com sponsor off.
+      const withSponsor = stitchNewsletter(base(dir, internalDir, undefined, { boxesDivulgacao }));
+      assert.ok(extractBoxDivulgacao1(withSponsor), "pré-condição: slot1 injeta com sponsor on");
+      assert.ok(extractBoxDivulgacao2(withSponsor), "pré-condição: slot2 injeta com sponsor on");
+      const out = stitchNewsletter(base(dir, internalDir, false, { boxesDivulgacao }));
       assert.ok(!out.includes("Recomendação de leitura"), "sem callout slot1 quando sponsor=false");
       assert.ok(!out.includes("curadoria de livros"), "sem callout slot2 quando sponsor=false");
       assert.equal(extractBoxDivulgacao1(out), null);
+      assert.equal(extractBoxDivulgacao2(out), null);
     } finally {
       cleanup();
     }
@@ -1212,12 +1262,20 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
         join(internalDir, "02-d2-draft.md"),
         "**Curadoria de livros [ver](https://livros.diaria.workers.dev)**\n\n**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2",
       );
-      const out = stitchNewsletter(base(dir, internalDir));
-      assert.ok(!out.includes("Recomendação de Leitura"), "não injeta slot1 quando já há box pré-existente");
-      // O box de livros colado à mão continua único: o slot2 default deixou de
-      // ser livros na rotação de 260727 (agora é o artigo especial), então não
-      // há mais um segundo box de livros auto-injetado pra somar aqui.
-      // O ponto do teste segue de pé: o box pré-existente não é duplicado.
+      // #4083: slot2 fica null aqui de propósito — se apontasse pra
+      // livros-divulgacao.md (mesmo texto do box colado à mão, mas em outra
+      // lacuna, D2/D3, não suprimida por este box) ele injetaria uma 2ª
+      // ocorrência legítima e não-relacionada de "curadoria de livros",
+      // confundindo o que este teste quer provar (slot1 não duplica o box
+      // pré-existente). O ponto do teste é só sobre slot1.
+      const out = stitchNewsletter(base(dir, internalDir, undefined, {
+        boxesDivulgacao: { slot1: STABLE_SLOT1_FILE, slot2: null },
+      }));
+      // O box pré-existente ocupa a posição do slot1 (extractBoxDivulgacao1
+      // acha ELE, não null) — a prova de "não injetou por cima" é a ausência
+      // do conteúdo do fixture default, não a ausência de qualquer box ali.
+      assert.doesNotMatch(extractBoxDivulgacao1(out) ?? "", STABLE_SLOT1_ANCHOR, "não injeta slot1 quando já há box pré-existente");
+      // O box de livros colado à mão continua único (não duplicado).
       assert.equal((out.match(/curadoria de livros/gi) || []).length, 1);
     } finally {
       cleanup();
