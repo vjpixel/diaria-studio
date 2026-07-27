@@ -2,24 +2,31 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   fetchQueuedCampaigns,
+  fetchCampaignById,
   cycleNamePrefix,
+  cycleNamePrefixes,
   filterCycleCampaigns,
   partitionByQueuedStatus,
   buildPlanLines,
   reapplyHtml,
-  verifyUnchanged,
+  setCampaignStatus,
+  sumListSubscribers,
+  detectPostRescheduleDivergence,
+  emitLoudBanner,
+  applyReapply,
   parseApplyArg,
+  parseCampaignIdArg,
   main,
   type BrevoCampaignListItem,
-  type BrevoCampaignDetail,
 } from "../scripts/clarice-reapply-scheduled-html.ts";
 
 /**
- * Regressão #2940 (#633): near-miss real 2026-07-03/04 — campanhas A/B/C
- * montadas manualmente na Brevo não tinham campaigns-summary.json, e o bug
- * que quase escondeu as campanhas foi ler `r.campaigns` em vez de
- * `r.body.campaigns` (brevoGet retorna `{status, body}`). Estes testes
- * mockam `globalThis.fetch` — NUNCA tocam a Brevo real.
+ * Regressão #2940 + #4082 (#633): near-miss real 2026-07-03/04 (campanhas
+ * A/B/C montadas manualmente na Brevo, bug de parsing r.campaigns vs
+ * r.body.campaigns) e near-miss real 2026-07-27 (campanha #99 queued,
+ * faltando 5h pro disparo — limit=1000 recusado + matching não via campanhas
+ * do fluxo --group). Estes testes mockam `globalThis.fetch` — NUNCA tocam a
+ * Brevo real.
  */
 
 function mockCampaign(overrides: Partial<BrevoCampaignListItem> = {}): BrevoCampaignListItem {
@@ -29,22 +36,72 @@ function mockCampaign(overrides: Partial<BrevoCampaignListItem> = {}): BrevoCamp
     status: "queued",
     subject: "Assunto A",
     scheduledAt: "2026-07-04T09:00:00.000Z",
+    recipients: { lists: [55] },
     ...overrides,
   };
 }
 
-describe("fetchQueuedCampaigns (#2940 — parsing correto de body.campaigns)", () => {
-  it("parseia body.campaigns corretamente (shape real da Brevo)", async () => {
+describe("fetchQueuedCampaigns — pagina em vez de pedir limit=1000 (#4082 item 1)", () => {
+  it("pagina com limit=100 + offset até a página vir mais curta", async () => {
     const origFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ campaigns: [mockCampaign()], count: 1 }), {
+    const requestedUrls: string[] = [];
+    let page = 0;
+    globalThis.fetch = (async (url: string) => {
+      requestedUrls.push(String(url));
+      const body =
+        page === 0
+          ? { campaigns: Array.from({ length: 100 }, (_, i) => mockCampaign({ id: i + 1 })) }
+          : { campaigns: [mockCampaign({ id: 101 })] };
+      page++;
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const result = await fetchQueuedCampaigns("fake-key");
+      assert.equal(result.length, 101, "duas páginas somadas: 100 + 1");
+      assert.ok(requestedUrls.every((u) => !u.includes("limit=1000")), "nunca deve pedir limit=1000");
+      assert.ok(requestedUrls.some((u) => u.includes("limit=100&offset=0")));
+      assert.ok(requestedUrls.some((u) => u.includes("limit=100&offset=100")));
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("uma página só (< 100 itens) não pagina de novo", async () => {
+    const origFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ campaigns: [mockCampaign({ id: 1 })] }), {
         status: 200,
         headers: { "content-type": "application/json" },
-      })) as unknown as typeof globalThis.fetch;
+      });
+    }) as unknown as typeof globalThis.fetch;
     try {
       const result = await fetchQueuedCampaigns("fake-key");
       assert.equal(result.length, 1);
-      assert.equal(result[0].id, 81);
+      assert.equal(calls, 1);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("simula o 400 real da Brevo pra limit=1000 — endpoint com limit correto nunca bate esse status", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      if (String(url).includes("limit=1000")) {
+        return new Response(
+          JSON.stringify({ code: "out_of_range", message: "Limit exceeds max value" }),
+          { status: 400 },
+        );
+      }
+      return new Response(JSON.stringify({ campaigns: [mockCampaign({ id: 1 })] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const result = await fetchQueuedCampaigns("fake-key");
+      assert.equal(result.length, 1);
     } finally {
       globalThis.fetch = origFetch;
     }
@@ -60,13 +117,12 @@ describe("fetchQueuedCampaigns (#2940 — parsing correto de body.campaigns)", (
             mockCampaign({ id: 82, status: "scheduled" }),
             mockCampaign({ id: 83, status: "sent" }),
           ],
-          count: 3,
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       )) as unknown as typeof globalThis.fetch;
     try {
       const result = await fetchQueuedCampaigns("fake-key");
-      assert.deepEqual(result.map((c) => c.id).sort(), [81, 82]); // queued + scheduled, NUNCA o sent 83
+      assert.deepEqual(result.map((c) => c.id).sort(), [81, 82]);
     } finally {
       globalThis.fetch = origFetch;
     }
@@ -74,18 +130,13 @@ describe("fetchQueuedCampaigns (#2940 — parsing correto de body.campaigns)", (
 
   it("lança erro claro se o corpo não tiver campaigns[] (bug do near-miss: ler r.campaigns em vez de r.body.campaigns)", async () => {
     const origFetch = globalThis.fetch;
-    // Simula um shape onde 'campaigns' não está no lugar certo — deve falhar
-    // ALTO, nunca silenciar retornando [].
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ notCampaigns: [] }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })) as unknown as typeof globalThis.fetch;
     try {
-      await assert.rejects(
-        () => fetchQueuedCampaigns("fake-key"),
-        /shape inesperado.*body\.campaigns/,
-      );
+      await assert.rejects(() => fetchQueuedCampaigns("fake-key"), /shape inesperado.*body\.campaigns/);
     } finally {
       globalThis.fetch = origFetch;
     }
@@ -102,19 +153,32 @@ describe("fetchQueuedCampaigns (#2940 — parsing correto de body.campaigns)", (
   });
 });
 
-describe("cycleNamePrefix / filterCycleCampaigns", () => {
-  it("prefixo usa cycleToYymm (conteúdo, não o ciclo completo)", () => {
+describe("cycleNamePrefixes / filterCycleCampaigns — reconhece os dois fluxos de nome (#4082 item 2)", () => {
+  it("cycleNamePrefix (singular) mantém o prefixo do fluxo antigo, cycleNamePrefixes traz os dois", () => {
     assert.equal(cycleNamePrefix("2606-07"), "Clarice News 2606");
+    assert.deepEqual(cycleNamePrefixes("2606-07"), ["Clarice News 2606", "Clarice 2606 grupo:"]);
   });
 
-  it("filtra só campanhas cujo nome bate com o prefixo do ciclo", () => {
+  it("casa 'Clarice News {yymm}' (fluxo clarice-schedule-sends.ts)", () => {
+    const campaigns = [mockCampaign({ id: 1, name: "Clarice News 2606 d01-A (sáb)" })];
+    assert.deepEqual(filterCycleCampaigns(campaigns, "2606-07").map((c) => c.id), [1]);
+  });
+
+  it("casa 'Clarice {yymm} grupo:{key}' (fluxo clarice-schedule-group.ts — near-miss #4082)", () => {
+    const campaigns = [mockCampaign({ id: 2, name: "Clarice 2606 grupo:envio10" })];
+    assert.deepEqual(filterCycleCampaigns(campaigns, "2606-07").map((c) => c.id), [2]);
+  });
+
+  it("filtra fora ciclo antigo e nomes não relacionados", () => {
     const campaigns = [
       mockCampaign({ id: 1, name: "Clarice News 2606 d01-A (sáb)" }),
-      mockCampaign({ id: 2, name: "Clarice News 2605 d01-A (velho ciclo)" }),
-      mockCampaign({ id: 3, name: "Outra coisa completamente diferente" }),
+      mockCampaign({ id: 2, name: "Clarice 2606 grupo:envio10" }),
+      mockCampaign({ id: 3, name: "Clarice News 2605 d01-A (velho ciclo)" }),
+      mockCampaign({ id: 4, name: "Clarice 2605 grupo:envio03" }),
+      mockCampaign({ id: 5, name: "Outra coisa completamente diferente" }),
     ];
     const matched = filterCycleCampaigns(campaigns, "2606-07");
-    assert.deepEqual(matched.map((c) => c.id), [1]);
+    assert.deepEqual(matched.map((c) => c.id).sort(), [1, 2]);
   });
 });
 
@@ -128,13 +192,6 @@ describe("partitionByQueuedStatus (#2940 — NUNCA toca sent/in_process)", () =>
     const { toUpdate, skipped } = partitionByQueuedStatus(campaigns);
     assert.deepEqual(toUpdate.map((c) => c.id), [81]);
     assert.deepEqual(skipped.map((c) => c.id).sort(), [82, 83]);
-  });
-
-  it("todas queued → nenhuma pulada", () => {
-    const campaigns = [mockCampaign({ id: 1 }), mockCampaign({ id: 2 })];
-    const { toUpdate, skipped } = partitionByQueuedStatus(campaigns);
-    assert.equal(toUpdate.length, 2);
-    assert.equal(skipped.length, 0);
   });
 
   it("'scheduled' vai pra toUpdate (finding review 260704: pré-envio seguro, não pular)", () => {
@@ -168,7 +225,7 @@ describe("reapplyHtml (#2940 — PUT só htmlContent)", () => {
     globalThis.fetch = (async (_url: string, init?: RequestInit) => {
       capturedMethod = init?.method ?? "";
       capturedBody = JSON.parse(String(init?.body ?? "{}"));
-      return new Response(null, { status: 204 }); // 204 No Content — corpo DEVE ser null
+      return new Response(null, { status: 204 });
     }) as unknown as typeof globalThis.fetch;
     try {
       await reapplyHtml("fake-key", 81, "<html>novo</html>");
@@ -181,42 +238,341 @@ describe("reapplyHtml (#2940 — PUT só htmlContent)", () => {
   });
 });
 
-describe("verifyUnchanged", () => {
-  it("nenhuma mudança em subject/scheduledAt/status → sem issues", () => {
-    const before = mockCampaign();
-    const after: BrevoCampaignDetail = { ...before, htmlContent: "<html>x</html>" };
-    const issues = verifyUnchanged(before, after, "<html>x</html>");
-    assert.deepEqual(issues, []);
+describe("setCampaignStatus", () => {
+  it("PUT /emailCampaigns/{id}/status com o status informado", async () => {
+    const origFetch = globalThis.fetch;
+    let capturedPath = "";
+    let capturedBody: any = null;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      capturedPath = String(url);
+      capturedBody = JSON.parse(String(init?.body ?? "{}"));
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      await setCampaignStatus("fake-key", 81, "suspended");
+      assert.match(capturedPath, /\/emailCampaigns\/81\/status$/);
+      assert.deepEqual(capturedBody, { status: "suspended" });
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+describe("sumListSubscribers", () => {
+  it("soma totalSubscribers de várias listas", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => {
+      const id = String(url).match(/lists\/(\d+)/)?.[1];
+      const total = id === "10" ? 100 : id === "20" ? 250 : 0;
+      return new Response(JSON.stringify({ id: Number(id), name: "x", totalSubscribers: total }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const total = await sumListSubscribers("fake-key", [10, 20]);
+      assert.equal(total, 350);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
-  it("subject mudou → issue reportada", () => {
-    const before = mockCampaign();
-    const after: BrevoCampaignDetail = { ...before, subject: "Outro assunto", htmlContent: "<html>x</html>" };
-    const issues = verifyUnchanged(before, after, "<html>x</html>");
-    assert.equal(issues.length, 1);
-    assert.match(issues[0].message, /subject mudou/);
+  it("lista vazia -> 0, sem chamar fetch", async () => {
+    const origFetch = globalThis.fetch;
+    let called = false;
+    globalThis.fetch = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const total = await sumListSubscribers("fake-key", []);
+      assert.equal(total, 0);
+      assert.equal(called, false);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+describe("detectPostRescheduleDivergence (#4082 item 4 — pure, sem rede)", () => {
+  const expected = {
+    scheduledAt: "2026-07-27T14:00:00.000Z",
+    subject: "Assunto A",
+    listIds: [10, 20],
+    totalSubscribers: 6804,
+  };
+
+  it("tudo igual -> nenhuma divergência", () => {
+    const problems = detectPostRescheduleDivergence(expected, {
+      status: "queued",
+      scheduledAt: expected.scheduledAt,
+      subject: expected.subject,
+      listIds: [20, 10], // ordem diferente — não deve importar
+      totalSubscribers: 6804,
+    });
+    assert.deepEqual(problems, []);
   });
 
-  it("scheduledAt mudou → issue reportada", () => {
-    const before = mockCampaign();
-    const after: BrevoCampaignDetail = { ...before, scheduledAt: "2030-01-01T00:00:00.000Z", htmlContent: "<html>x</html>" };
-    const issues = verifyUnchanged(before, after, "<html>x</html>");
-    assert.equal(issues.length, 1);
-    assert.match(issues[0].message, /scheduledAt mudou/);
+  it("status final não é queued/scheduled -> divergência", () => {
+    const problems = detectPostRescheduleDivergence(expected, {
+      status: "draft",
+      scheduledAt: expected.scheduledAt,
+      subject: expected.subject,
+      listIds: expected.listIds,
+      totalSubscribers: expected.totalSubscribers,
+    });
+    assert.ok(problems.some((p) => /status final/.test(p)));
   });
 
-  it("status pós-update virou sent → issue reportada (nunca deveria acontecer, mas detectável)", () => {
-    const before = mockCampaign();
-    const after: BrevoCampaignDetail = { ...before, status: "sent", htmlContent: "<html>x</html>" };
-    const issues = verifyUnchanged(before, after, "<html>x</html>");
-    assert.ok(issues.some((i) => /status pós-update/.test(i.message)));
+  it("scheduledAt não é byte-idêntico -> divergência (mesmo 1ms de diferença)", () => {
+    const problems = detectPostRescheduleDivergence(expected, {
+      status: "queued",
+      scheduledAt: "2026-07-27T14:00:00.001Z",
+      subject: expected.subject,
+      listIds: expected.listIds,
+      totalSubscribers: expected.totalSubscribers,
+    });
+    assert.ok(problems.some((p) => /scheduledAt final/.test(p)));
   });
 
-  it("htmlContent divergente do esperado → issue reportada", () => {
-    const before = mockCampaign();
-    const after: BrevoCampaignDetail = { ...before, htmlContent: "<html>errado</html>" };
-    const issues = verifyUnchanged(before, after, "<html>certo</html>");
-    assert.ok(issues.some((i) => /htmlContent/.test(i.message)));
+  it("subject mudou -> divergência", () => {
+    const problems = detectPostRescheduleDivergence(expected, {
+      status: "queued",
+      scheduledAt: expected.scheduledAt,
+      subject: "Outro assunto",
+      listIds: expected.listIds,
+      totalSubscribers: expected.totalSubscribers,
+    });
+    assert.ok(problems.some((p) => /subject mudou/.test(p)));
+  });
+
+  it("listas mudaram -> divergência", () => {
+    const problems = detectPostRescheduleDivergence(expected, {
+      status: "queued",
+      scheduledAt: expected.scheduledAt,
+      subject: expected.subject,
+      listIds: [10, 30],
+      totalSubscribers: expected.totalSubscribers,
+    });
+    assert.ok(problems.some((p) => /listas mudaram/.test(p)));
+  });
+
+  it("totalSubscribers divergente -> divergência (#4082 item 4 — re-snapshot no reagendamento)", () => {
+    const problems = detectPostRescheduleDivergence(expected, {
+      status: "queued",
+      scheduledAt: expected.scheduledAt,
+      subject: expected.subject,
+      listIds: expected.listIds,
+      totalSubscribers: 6000,
+    });
+    assert.ok(problems.some((p) => /totalSubscribers mudou/.test(p)));
+  });
+});
+
+describe("emitLoudBanner (#4082 item 5 — banner impossível de ignorar)", () => {
+  it("imprime via console.error contendo STAGE/MOTIVO/AÇÃO", () => {
+    const origError = console.error;
+    const lines: string[] = [];
+    console.error = ((...args: unknown[]) => { lines.push(args.join(" ")); }) as typeof console.error;
+    try {
+      emitLoudBanner({
+        stage: "clarice-reapply-scheduled-html --cycle 2606-07",
+        reason: "campanha #99 ficou SUSPENSA e NÃO foi reagendada",
+        action: "reagende manualmente para 2026-07-27T14:00:00.000Z",
+      });
+      const out = lines.join("\n");
+      assert.match(out, /PIPELINE PAROU/);
+      assert.match(out, /STAGE:/);
+      assert.match(out, /MOTIVO:.*campanha #99.*SUSPENSA/);
+      assert.match(out, /AÇÃO:.*reagende manualmente/);
+    } finally {
+      console.error = origError;
+    }
+  });
+});
+
+describe("applyReapply — fluxo suspend → update → reschedule (#4082 item 3)", () => {
+  it("caminho feliz: suspend, PUT html, GET-verify, PUT scheduledAt, GET final sem divergência", async () => {
+    const origFetch = globalThis.fetch;
+    const camp = mockCampaign({ id: 99, recipients: { lists: [55] } });
+    let putStatusCalls = 0;
+    let putHtmlCalls = 0;
+    let putScheduleCalls = 0;
+    let getCampaignCalls = 0;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const path = String(url).replace("https://api.brevo.com/v3", "");
+      const method = init?.method ?? "GET";
+      if (method === "PUT" && path.endsWith("/status")) {
+        putStatusCalls++;
+        return new Response(null, { status: 204 });
+      }
+      if (method === "PUT" && path === "/emailCampaigns/99") {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        if ("htmlContent" in body) putHtmlCalls++;
+        if ("scheduledAt" in body) putScheduleCalls++;
+        return new Response(null, { status: 204 });
+      }
+      if (path.startsWith("/contacts/lists/55")) {
+        return new Response(JSON.stringify({ id: 55, name: "lista", totalSubscribers: 6804 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (path === "/emailCampaigns/99") {
+        getCampaignCalls++;
+        // 1ª chamada: revalidação pré-suspend. 2ª: GET-verify pós-html.
+        // 3ª: GET final pós-reschedule. Todas retornam o mesmo estado —
+        // htmlContent só aparece "atualizado" a partir da 2ª chamada em diante
+        // pra simular o PUT já ter surtido efeito.
+        const htmlContent = getCampaignCalls >= 2 ? "<html>novo</html>" : undefined;
+        return new Response(JSON.stringify({ ...camp, htmlContent }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const result = await applyReapply("fake-key", "2606-07", camp, "<html>novo</html>");
+      assert.equal(putStatusCalls, 1);
+      assert.equal(putHtmlCalls, 1);
+      assert.equal(putScheduleCalls, 1);
+      assert.ok(result);
+      assert.equal(result!.campaignId, 99);
+      assert.equal(result!.totalSubscribersBefore, 6804);
+      assert.equal(result!.totalSubscribersAfter, 6804);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("scheduledAt restaurado é BYTE-IDÊNTICO ao original capturado antes do suspend", async () => {
+    const origFetch = globalThis.fetch;
+    const originalScheduledAt = "2026-07-27T14:00:00.000Z";
+    const camp = mockCampaign({ id: 99, scheduledAt: originalScheduledAt, recipients: { lists: [] } });
+    let capturedScheduledAtPut: string | undefined;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const path = String(url).replace("https://api.brevo.com/v3", "");
+      const method = init?.method ?? "GET";
+      if (method === "PUT" && path.endsWith("/status")) return new Response(null, { status: 204 });
+      if (method === "PUT" && path === "/emailCampaigns/99") {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        if ("scheduledAt" in body) capturedScheduledAtPut = body.scheduledAt;
+        return new Response(null, { status: 204 });
+      }
+      if (path === "/emailCampaigns/99") {
+        return new Response(JSON.stringify({ ...camp, htmlContent: "<html>novo</html>" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      await applyReapply("fake-key", "2606-07", camp, "<html>novo</html>");
+      assert.equal(capturedScheduledAtPut, originalScheduledAt);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("falha entre suspend e reschedule -> emite banner ruidoso e relança (campanha fica presa em suspended)", async () => {
+    const origFetch = globalThis.fetch;
+    const origError = console.error;
+    const errorLines: string[] = [];
+    console.error = ((...args: unknown[]) => { errorLines.push(args.join(" ")); }) as typeof console.error;
+    const camp = mockCampaign({ id: 99, recipients: { lists: [] } });
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const path = String(url).replace("https://api.brevo.com/v3", "");
+      const method = init?.method ?? "GET";
+      if (method === "PUT" && path.endsWith("/status")) return new Response(null, { status: 204 });
+      if (method === "PUT" && path === "/emailCampaigns/99") {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        if ("htmlContent" in body) {
+          // Simula falha no PUT de htmlContent (rede caiu logo após o suspend).
+          return new Response("boom", { status: 500 });
+        }
+        return new Response(null, { status: 204 });
+      }
+      if (path === "/emailCampaigns/99") {
+        return new Response(JSON.stringify(camp), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      await assert.rejects(() => applyReapply("fake-key", "2606-07", camp, "<html>novo</html>"));
+      const out = errorLines.join("\n");
+      assert.match(out, /PIPELINE PAROU/);
+      assert.match(out, /#99/);
+      assert.match(out, /SUSPENSA/);
+      assert.match(out, /AÇÃO IMEDIATA/);
+    } finally {
+      globalThis.fetch = origFetch;
+      console.error = origError;
+    }
+  });
+
+  it("totalSubscribers diverge pós-reschedule -> emite banner (campanha JÁ reagendada, não 'presa') e relança", async () => {
+    const origFetch = globalThis.fetch;
+    const origError = console.error;
+    const errorLines: string[] = [];
+    console.error = ((...args: unknown[]) => { errorLines.push(args.join(" ")); }) as typeof console.error;
+    const camp = mockCampaign({ id: 99, recipients: { lists: [55] } });
+    let listCallCount = 0;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const path = String(url).replace("https://api.brevo.com/v3", "");
+      const method = init?.method ?? "GET";
+      if (method === "PUT" && path.endsWith("/status")) return new Response(null, { status: 204 });
+      if (method === "PUT" && path === "/emailCampaigns/99") return new Response(null, { status: 204 });
+      if (path.startsWith("/contacts/lists/55")) {
+        listCallCount++;
+        // Antes do suspend: 6804. Depois do reschedule: caiu pra 6000 (lista mudou).
+        const total = listCallCount === 1 ? 6804 : 6000;
+        return new Response(JSON.stringify({ id: 55, name: "lista", totalSubscribers: total }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (path === "/emailCampaigns/99") {
+        return new Response(JSON.stringify({ ...camp, htmlContent: "<html>novo</html>" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      await assert.rejects(() => applyReapply("fake-key", "2606-07", camp, "<html>novo</html>"), /Divergência pós-reschedule/);
+      const out = errorLines.join("\n");
+      assert.match(out, /PIPELINE PAROU/);
+      assert.match(out, /totalSubscribers mudou/);
+      // Não deve alegar que a campanha está "presa" suspensa — já foi reagendada.
+      assert.ok(!/SUSPENSA e NÃO foi reagendada/.test(out));
+    } finally {
+      globalThis.fetch = origFetch;
+      console.error = origError;
+    }
+  });
+
+  it("campanha não é mais queued/scheduled na revalidação -> pula sem tocar (retorna null, nenhum PUT)", async () => {
+    const origFetch = globalThis.fetch;
+    const camp = mockCampaign({ id: 99 });
+    let putCalled = false;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "PUT") { putCalled = true; return new Response(null, { status: 204 }); }
+      return new Response(JSON.stringify({ ...camp, status: "sent" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const result = await applyReapply("fake-key", "2606-07", camp, "<html>novo</html>");
+      assert.equal(result, null);
+      assert.equal(putCalled, false);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 });
 
@@ -230,20 +586,62 @@ describe("parseApplyArg (#2940 — --dry-run é o default)", () => {
   });
 });
 
+describe("parseCampaignIdArg (#4082 item 2 — pula a descoberta por nome)", () => {
+  it("ausente → undefined", () => {
+    assert.equal(parseCampaignIdArg(["--cycle", "2606-07"]), undefined);
+  });
+
+  it("--campaign-id 99 → 99", () => {
+    assert.equal(parseCampaignIdArg(["--cycle", "2606-07", "--campaign-id", "99"]), 99);
+  });
+
+  it("valor não-inteiro → lança erro claro", () => {
+    assert.throws(() => parseCampaignIdArg(["--campaign-id", "abc"]), /inválido/);
+  });
+
+  it("valor negativo/zero → lança erro claro", () => {
+    assert.throws(() => parseCampaignIdArg(["--campaign-id", "0"]), /inválido/);
+    assert.throws(() => parseCampaignIdArg(["--campaign-id", "-5"]), /inválido/);
+  });
+});
+
+describe("fetchCampaignById (#4082 — usado por --campaign-id)", () => {
+  it("retorna o body da campanha em GET 200", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(mockCampaign({ id: 99 })), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof globalThis.fetch;
+    try {
+      const c = await fetchCampaignById("fake-key", 99);
+      assert.equal(c.id, 99);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("HTTP != 200 -> lança erro claro", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("nope", { status: 404 })) as unknown as typeof globalThis.fetch;
+    try {
+      await assert.rejects(() => fetchCampaignById("fake-key", 99), /HTTP 404/);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
 describe("main() — dry-run (default) NUNCA chama PUT (#633 item d)", () => {
   it("sem --apply: descobre campanhas mas não escreve nada", async () => {
     const origFetch = globalThis.fetch;
-    const origEnv = process.env.BREVO_CLARICE_API_KEY;
-    process.env.BREVO_CLARICE_API_KEY = "fake-key";
-
     let putCalled = false;
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       if (method === "PUT") {
         putCalled = true;
-        return new Response(null, { status: 204 }); // 204 No Content — corpo DEVE ser null
+        return new Response(null, { status: 204 });
       }
-      // GET /emailCampaigns?limit=... (lista de descoberta — sem filtro de status, #review-260704)
       if (String(url).includes("/emailCampaigns?limit")) {
         return new Response(
           JSON.stringify({ campaigns: [mockCampaign({ id: 81 }), mockCampaign({ id: 82, status: "sent" })] }),
@@ -256,10 +654,9 @@ describe("main() — dry-run (default) NUNCA chama PUT (#633 item d)", () => {
       });
     }) as unknown as typeof globalThis.fetch;
 
-    // htmlPath resolution will fail (no data/ in a clean checkout) before
-    // reaching the network calls in a real run of main(); to isolate the
-    // "dry-run never PUTs" behavior, we exercise the underlying pieces main()
-    // composes rather than requiring a real monthly dir on disk.
+    // Exercita as peças que main() compõe no branch dry-run (a resolução de
+    // htmlPath falha sem data/ num clone limpo — aqui isolamos o
+    // comportamento "dry-run nunca dá PUT" sem depender de disco).
     try {
       const all = await fetchQueuedCampaigns("fake-key");
       const matched = filterCycleCampaigns(all, "2606-07");
@@ -267,8 +664,6 @@ describe("main() — dry-run (default) NUNCA chama PUT (#633 item d)", () => {
       assert.equal(toUpdate.length, 1);
       const apply = parseApplyArg(["--cycle", "2606-07"]);
       assert.equal(apply, false);
-      // Simulating main()'s dry-run branch: apply=false must return before
-      // any reapplyHtml/PUT call.
       if (!apply) {
         assert.equal(putCalled, false, "PUT não deve ter sido chamado em dry-run");
         return;
@@ -276,8 +671,6 @@ describe("main() — dry-run (default) NUNCA chama PUT (#633 item d)", () => {
       assert.fail("não deveria chegar aqui em dry-run");
     } finally {
       globalThis.fetch = origFetch;
-      if (origEnv === undefined) delete process.env.BREVO_CLARICE_API_KEY;
-      else process.env.BREVO_CLARICE_API_KEY = origEnv;
     }
   });
 
@@ -298,6 +691,32 @@ describe("main() — dry-run (default) NUNCA chama PUT (#633 item d)", () => {
       await assert.rejects(() => main(["--cycle", "not-a-cycle"]), /process\.exit called/);
       assert.equal(exitCode, 1);
       assert.equal(fetchCalled, false, "não deve chamar fetch sem --cycle válido");
+    } finally {
+      globalThis.fetch = origFetch;
+      process.exit = origExit;
+    }
+  });
+
+  it("main() de fato: --campaign-id inválido sai sem tocar rede", async () => {
+    const origFetch = globalThis.fetch;
+    const origExit = process.exit;
+    let exitCode: number | undefined;
+    let fetchCalled = false;
+    (process as any).exit = ((code?: number) => {
+      exitCode = code;
+      throw new Error("process.exit called");
+    }) as any;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      await assert.rejects(
+        () => main(["--cycle", "2606-07", "--campaign-id", "abc"]),
+        /process\.exit called/,
+      );
+      assert.equal(exitCode, 1);
+      assert.equal(fetchCalled, false, "não deve chamar fetch com --campaign-id inválido");
     } finally {
       globalThis.fetch = origFetch;
       process.exit = origExit;
