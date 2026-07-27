@@ -318,6 +318,20 @@ describe("evaluateArmGuardrails", () => {
     assert.equal(g.openRatePct, 0);
     assert.equal(g.openBreach, false);
   });
+
+  test("#4131 finding 3: mesmo cenário (delivered>0, uniqueViews=0) com treatZeroAsBreach=true → AGORA afirma breach (path do alarme, #4064)", () => {
+    // Confirma que a opção nova não regride o path default (teste acima,
+    // sem options) — só o caminho que passa treatZeroAsBreach explicitamente
+    // (usado por evaluateSendGuardrails em clarice-guardrail-alarm.ts) muda.
+    const g = evaluateArmGuardrails(
+      metrics({ delivered: 6000, uniqueViews: 0, sent: 6000, hardBounces: 0, softBounces: 0, unsubscriptions: 0, complaints: 0 }),
+      undefined,
+      { treatZeroAsBreach: true },
+    );
+    assert.equal(g.openRatePct, 0);
+    assert.equal(g.openBreach, true);
+    assert.equal(g.anyBreach, true);
+  });
 });
 
 // ─── Render: seção "Experimento vigente" ─────────────────────────────────────

@@ -11,9 +11,10 @@
  * mudança breaking — endpoint mantém shape.
  *
  * Endpoints:
- *   GET  /                 → HTML dashboard (pública)
- *   GET  /api/campaigns    → JSON com campaigns + stats (pública)
- *   GET  /healthz          → liveness probe
+ *   GET  /                     → HTML dashboard (pública)
+ *   GET  /api/campaigns        → JSON com campaigns + stats (pública)
+ *   GET  /api/postmaster-spam  → JSON { entry: PostmasterSpamEntry | null } (pública, #4131 finding 4)
+ *   GET  /healthz              → liveness probe
  *
  * Secrets:
  *   BREVO_API_KEY          → xkeysib-... da conta Clarice
@@ -67,9 +68,10 @@ import {
   buildInflightCoalescedFallback,
   buildInflightCoalescedCampaignsJson,
   coalesceRefresh,
+  normalizePostmasterSpamEntry,
   type LastGoodCampaignsPayload,
 } from "./brevo-api.ts";
-import { LASTGOOD_TTL } from "./types.ts";
+import { LASTGOOD_TTL, POSTMASTER_SPAM_KV_KEY } from "./types.ts";
 import { renderDashboardHtml, escHtml } from "./sections-core.ts";
 import { refreshEiaEngagement } from "./eia-refresh.ts";
 export * from "./eia-refresh.ts";
@@ -448,6 +450,23 @@ export default {
       // próprio clone (o corpo original nunca é lido diretamente, então pode ser
       // clonado múltiplas vezes com segurança).
       return shared.clone();
+    }
+
+    // #4131 finding 4: expõe a leitura MANUAL do Postmaster (`postmaster:spam`,
+    // gravada por scripts/postmaster-spam-entry.ts) pra automação externa —
+    // sem isso, `scripts/clarice-schedule-ramp.ts` (que roda fora do Worker,
+    // sem acesso ao binding STATS_CACHE) nunca enxergava a leitura manual e o
+    // semáforo do auto-cálculo de volume ficava travado em "yellow" pra
+    // sempre (nunca escalonava, mesmo com uma leitura fresca registrada — ver
+    // `deriveRampVolumes`/`fetchPostmasterSpamEntry`). Pública como
+    // `/api/campaigns` (mesmo racional: automação interna sem cookie de
+    // sessão) — payload é só um % e um timestamp, sem PII.
+    if (path === "/api/postmaster-spam") {
+      const raw = env.STATS_CACHE ? await env.STATS_CACHE.get(POSTMASTER_SPAM_KV_KEY, "json").catch(() => null) : null;
+      const entry = normalizePostmasterSpamEntry(raw);
+      return new Response(JSON.stringify({ entry }), {
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
     }
 
     // #2718: rota de cupons — requer auth explícita (PII: emails de clientes).

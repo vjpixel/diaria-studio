@@ -26,6 +26,7 @@ import {
   buildImportFileBody,
   checkAllCampaignsCreated,
   runScheduleLoop,
+  fetchPostmasterSpamEntry,
   type CampaignEntryLike,
 } from "../scripts/clarice-schedule-ramp.ts";
 import { EDITOR_COPY_EMAIL } from "../scripts/lib/editor-copy.ts";
@@ -330,6 +331,83 @@ describe("deriveRampVolumes (#3593 item 1 — recomputa volumes via a MESMA lóg
     assert.equal(result.plan.semaphore, "red");
     assert.equal(result.plan.flagged, true);
     assert.ok(result.plan.volumes[0] < result.plan.baseVolume, "vermelho deve cortar o volume-base");
+  });
+
+  // #4131 finding 4: com uma leitura FRESCA e boa do Postmaster injetada
+  // (fetchPostmasterSpamEntry), o semáforo agora PODE escalonar a verde de
+  // novo — antes deste fix, `deriveRampVolumes` nunca recebia nenhum sinal e
+  // ficava travado em "yellow" pra sempre (teste acima, sem 3º argumento).
+  it("com leitura FRESCA e boa do Postmaster → semáforo pode escalonar a verde (#4131 finding 4)", () => {
+    const now = new Date("2026-07-17T00:00:00Z");
+    const campaigns = [campaign({ id: 1, sentDate: "2026-07-10T09:00:00Z" })]; // saúde boa, ver teste acima
+    const freshEntry = { spamRatePct: 0.02, recordedAt: "2026-07-16T12:00:00Z" }; // 12h antes de `now`, bem dentro das 48h
+    const result = deriveRampVolumes(campaigns, now, freshEntry);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("unreachable");
+    assert.equal(result.plan.semaphore, "green");
+    assert.equal(result.plan.flagged, false);
+  });
+
+  it("leitura do Postmaster STALE (>48h) → permanece indeterminate, nunca verde (regressão #4063)", () => {
+    const now = new Date("2026-07-17T00:00:00Z");
+    const campaigns = [campaign({ id: 1, sentDate: "2026-07-10T09:00:00Z" })];
+    const staleEntry = { spamRatePct: 0.02, recordedAt: "2026-07-01T00:00:00Z" }; // >48h antes de `now`
+    const result = deriveRampVolumes(campaigns, now, staleEntry);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("unreachable");
+    assert.equal(result.plan.semaphore, "yellow");
+  });
+
+  it("leitura do Postmaster AUSENTE (undefined/null) → permanece indeterminate, nunca verde (mesmo comportamento pré-#4131)", () => {
+    const now = new Date("2026-07-17T00:00:00Z");
+    const campaigns = [campaign({ id: 1, sentDate: "2026-07-10T09:00:00Z" })];
+    for (const spamEntry of [null, undefined]) {
+      const result = deriveRampVolumes(campaigns, now, spamEntry);
+      assert.equal(result.ok, true);
+      if (!result.ok) throw new Error("unreachable");
+      assert.equal(result.plan.semaphore, "yellow");
+    }
+  });
+});
+
+describe("fetchPostmasterSpamEntry (#4131 finding 4 — leitura manual do Postmaster via /api/postmaster-spam)", () => {
+  function fakeFetch(status: number, body: unknown): typeof fetch {
+    return (async () =>
+      new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })) as unknown as typeof fetch;
+  }
+
+  it("entry válida → retorna { spamRatePct, recordedAt }", async () => {
+    const entry = await fetchPostmasterSpamEntry(
+      "https://x",
+      fakeFetch(200, { entry: { date: "2026-07-27", spamRatePct: 0.9, recordedAt: "2026-07-27T10:00:00.000Z" } }),
+    );
+    assert.deepEqual(entry, { spamRatePct: 0.9, recordedAt: "2026-07-27T10:00:00.000Z" });
+  });
+
+  it("entry null (sem leitura registrada) → null", async () => {
+    const entry = await fetchPostmasterSpamEntry("https://x", fakeFetch(200, { entry: null }));
+    assert.equal(entry, null);
+  });
+
+  it("HTTP não-ok → null (fail-soft)", async () => {
+    const entry = await fetchPostmasterSpamEntry("https://x", fakeFetch(500, { error: "boom" }));
+    assert.equal(entry, null);
+  });
+
+  it("fetch lança (rede offline) → null (fail-soft, nunca propaga)", async () => {
+    const throwingFetch = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    const entry = await fetchPostmasterSpamEntry("https://x", throwingFetch);
+    assert.equal(entry, null);
+  });
+
+  it("shape inesperado (spamRatePct não-numérico) → null", async () => {
+    const entry = await fetchPostmasterSpamEntry(
+      "https://x",
+      fakeFetch(200, { entry: { spamRatePct: "não é número", recordedAt: "2026-07-27T10:00:00.000Z" } }),
+    );
+    assert.equal(entry, null);
   });
 });
 

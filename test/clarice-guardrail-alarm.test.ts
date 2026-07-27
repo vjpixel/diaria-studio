@@ -65,6 +65,14 @@ test("evaluateSendGuardrails — reproduz o caso real #4061: 11,1% de abertura (
   assert.ok(Math.abs(result.openRatePct - 11.1) < 0.1);
 });
 
+test("evaluateSendGuardrails — 0% de abertura MADURA (6h) → openBreach=true (#4131 finding 3 — falha total de entrega precisa alarmar)", () => {
+  const input = mkCampaign({ delivered: 6600, uniqueViews: 0 });
+  const result = evaluateSendGuardrails(input);
+  assert.equal(result.openRatePct, 0);
+  assert.equal(result.openBreach, true);
+  assert.equal(result.anyBreach, true);
+});
+
 test("evaluateSendGuardrails — envio saudável (tudo dentro dos limites) → anyBreach=false", () => {
   const input = mkCampaign({
     delivered: 1000,

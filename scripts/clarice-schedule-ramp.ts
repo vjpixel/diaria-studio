@@ -121,6 +121,7 @@ import {
 } from "../workers/brevo-dashboard/src/weekly-plan.ts";
 import { resolveSpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts"; // #4063
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
+import type { PostmasterSpamEntry } from "./lib/dashboard-kv-types.ts"; // #4131 finding 4
 
 loadProjectEnv();
 
@@ -149,13 +150,57 @@ export interface RampVolumePlan {
 export type RampVolumeResult = { ok: true; plan: RampVolumePlan } | { ok: false; reason: string };
 
 /**
+ * #4131 finding 4: busca a leitura MANUAL do Postmaster (`postmaster:spam`)
+ * via o endpoint público `/api/postmaster-spam` do Worker (ver
+ * `workers/brevo-dashboard/src/index.ts`) — a MESMA leitura que
+ * `scripts/postmaster-spam-entry.ts` grava. Sem isso, este script nunca
+ * enxergava a leitura manual e `decideSemaphore` ficava travado no máximo em
+ * "yellow" pra sempre (nunca escalonava volume, mesmo com uma leitura fresca
+ * e boa registrada) — mudança real de produção sem caminho de saída.
+ *
+ * Fail-soft por design: qualquer erro de rede/parse devolve `null`, que
+ * `resolveSpamSignal` já trata como "indeterminate" (comportamento seguro
+ * preservado — nunca lança, nunca resolve pra falso-verde por conta de uma
+ * falha de fetch).
+ */
+export async function fetchPostmasterSpamEntry(
+  dashboardUrl: string,
+  fetchFn: typeof fetch = fetch,
+): Promise<Pick<PostmasterSpamEntry, "spamRatePct" | "recordedAt"> | null> {
+  try {
+    const res = await fetchFn(`${dashboardUrl}/api/postmaster-spam`);
+    if (!res.ok) return null;
+    const body = (await res.json()) as { entry?: unknown };
+    const raw = body?.entry;
+    if (!raw || typeof raw !== "object") return null;
+    const e = raw as Partial<PostmasterSpamEntry>;
+    if (typeof e.spamRatePct !== "number" || !Number.isFinite(e.spamRatePct)) return null;
+    if (typeof e.recordedAt !== "string" || !e.recordedAt) return null;
+    return { spamRatePct: e.spamRatePct, recordedAt: e.recordedAt };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Recomputa a recomendação de volume a partir das campanhas Brevo — MESMA
  * lógica pura do worker (`workers/brevo-dashboard/src/weekly-plan.ts`,
  * aba "Rampa"), não duplicada aqui. Espelha `computeWeeklySendState` do
  * worker (não exportada de lá) numa forma que devolve um resultado
  * discriminado (ok/erro) em vez de renderizar HTML.
+ *
+ * `spamEntry` (#4131 finding 4): leitura manual do Postmaster, obtida via
+ * `fetchPostmasterSpamEntry` — quando ausente/omitida, o comportamento é
+ * IDÊNTICO ao anterior (#4063: `resolveSpamSignal(null, now)`, sempre
+ * "indeterminate", semáforo nunca escalona a verde às cegas). Com uma
+ * leitura fresca (< 48h, ver `POSTMASTER_STALE_MS`) e boa, o semáforo agora
+ * PODE chegar a "green" de novo.
  */
-export function deriveRampVolumes(campaigns: BrevoCampaign[], now: Date = new Date()): RampVolumeResult {
+export function deriveRampVolumes(
+  campaigns: BrevoCampaign[],
+  now: Date = new Date(),
+  spamEntry?: Pick<PostmasterSpamEntry, "spamRatePct" | "recordedAt"> | null,
+): RampVolumeResult {
   const allSent = campaigns.filter((c) => c.status === "sent" && !!c.sentDate);
   if (allSent.length === 0) {
     return { ok: false, reason: "Nenhum envio registrado nas campanhas retornadas pelo dashboard." };
@@ -169,12 +214,11 @@ export function deriveRampVolumes(campaigns: BrevoCampaign[], now: Date = new Da
     return { ok: false, reason: "Volume-base (último envio) indisponível — use --volumes A,B,C explícito." };
   }
   const health = aggregateHealth(mature);
-  // #4063: este script não lê o KV `postmaster:spam` (isso viveria só no
-  // Worker, via binding) — sinal conservador (indeterminate), que
-  // `decideSemaphore` nunca resolve pra "green" (mesmo comportamento seguro
-  // do dashboard sem leitura manual do Postmaster ainda registrada). Nunca
-  // escalona volume "às cegas" com base no `complaints` subcontado da Brevo.
-  const spamSignal = resolveSpamSignal(null, now);
+  // #4131 finding 4: `spamEntry` vem de `fetchPostmasterSpamEntry` (ou `null`/
+  // ausente quando a leitura manual não existe/falhou o fetch) — `resolveSpamSignal`
+  // já resolve pra "indeterminate" nesses casos, e pra stale (>48h) também.
+  // Nunca escalona volume "às cegas" com base no `complaints` subcontado da Brevo.
+  const spamSignal = resolveSpamSignal(spamEntry ?? null, now);
   const semaphore = decideSemaphore(health, spamSignal);
   const plan = computeWeekPlan(baseVolume, semaphore);
   return { ok: true, plan: { volumes: plan.volumes, semaphore: plan.semaphore, flagged: plan.flagged, baseVolume } };
@@ -700,7 +744,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       process.exit(1);
     }
     const campaigns = (await res.json()) as BrevoCampaign[];
-    const result = deriveRampVolumes(campaigns);
+    // #4131 finding 4: busca a leitura MANUAL do Postmaster no MESMO dashboard
+    // — sem isso, o semáforo nunca escalonava a verde (ver docstring de
+    // fetchPostmasterSpamEntry/deriveRampVolumes). Fail-soft (null em
+    // qualquer erro) — nunca bloqueia o cálculo do plano.
+    const spamEntry = await fetchPostmasterSpamEntry(dashboardUrl);
+    console.error(
+      spamEntry
+        ? `   leitura Postmaster: ${spamEntry.spamRatePct}% (registrada ${spamEntry.recordedAt})`
+        : `   leitura Postmaster: ausente/indisponível — semáforo de spam fica "indeterminate" (nunca verde às cegas).`,
+    );
+    const result = deriveRampVolumes(campaigns, undefined, spamEntry);
     if (!result.ok) {
       console.error(`❌ ${result.reason}`);
       process.exit(1);

@@ -69,12 +69,22 @@ export function armMetricsFromCampaign(input: CampaignGuardrailInput): ArmMetric
   };
 }
 
-/** Avalia os guardrails de UMA campanha — mesmos limiares do doc, via `evaluateArmGuardrails`/`thresholds.ts`. */
+/**
+ * Avalia os guardrails de UMA campanha — mesmos limiares do doc, via
+ * `evaluateArmGuardrails`/`thresholds.ts`.
+ *
+ * #4131 finding 3: `treatZeroAsBreach: true` — este alarme só avalia campanhas
+ * que já cruzaram `GUARDRAIL_EVAL_WINDOW_MS` (~6h pós-envio, ver
+ * `isReadyForEvaluation`), então o guard `openRatePct > 0` do path original
+ * de `evaluateArmGuardrails` (pensado pra dashboard, dado ainda propagando
+ * minutos após o envio) não se aplica aqui — aos 6h, 0% de abertura é falha
+ * real de entrega, o cenário mais catastrófico, e precisa disparar o alarme.
+ */
 export function evaluateSendGuardrails(
   input: CampaignGuardrailInput,
   thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
 ): ArmGuardrailResult {
-  return evaluateArmGuardrails(armMetricsFromCampaign(input), thresholds);
+  return evaluateArmGuardrails(armMetricsFromCampaign(input), thresholds, { treatZeroAsBreach: true });
 }
 
 // ─── Janela de avaliação + idempotência ─────────────────────────────────────
