@@ -66,7 +66,7 @@
  *     converter tráfego pro jogo, alinhado ao objetivo do EPIC #3514
  *     ("motor de divulgação").
  */
-import { AAMMDD_RE, htmlEscape, formatEditionDate, formatEditionDateForBrand, type Brand, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST, SUBSCRIBE_UTM_SOURCE } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca; #3978: utm_source fixo do funil
+import { CYCLE_EDITION_RE, isValidVoteEditionFormat, htmlEscape, formatEditionDateForBrand, type Brand, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST, SUBSCRIBE_UTM_SOURCE } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca; #3978: utm_source fixo do funil; #4119: isValidVoteEditionFormat/CYCLE_EDITION_RE — token de share passa a aceitar edição de ciclo Clarice (formatEditionDate direto não é mais usado aqui — ver formatShareEditionDate)
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { hmacSign } from "./index";
 import {
@@ -109,12 +109,31 @@ export function serializeSharePayload(payload: SharePayload): string {
 /** Pure: inverso de `serializeSharePayload`. Retorna `null` pra qualquer
  * forma fora do padrão — nunca lança (mesma disciplina de
  * `resolveJogarEdition` em jogar.ts: input malformado não pode derrubar uma
- * rota pública). */
+ * rota pública).
+ *
+ * #4119: antes só casava `edition` de 6 dígitos (AAMMDD) — `serializeSharePayload`
+ * nunca validou o formato no ENCODE (só grava `${edition}.${correctChar}` cru),
+ * então um voto `brand=clarice` (edição em formato de ciclo `YYMM-MM`, ex:
+ * "2606-07") gerava um token que assinava/codificava normalmente mas NUNCA
+ * decodificava de volta aqui — `/share/{token}` sempre caía no fallback
+ * "token inválido" (302 pra `/jogar`) e `/og/{token}` sempre 404, mesmo com
+ * assinatura HMAC válida. 100% dos shares vindos de voto clarice quebravam.
+ * Fix: extrai `edition` como "tudo antes do ÚLTIMO ponto" (mesmo padrão de
+ * `decodeShareToken` acima, que já separa body/sig do mesmo jeito) e valida a
+ * FORMA com `isValidVoteEditionFormat` (lib.ts) — o mesmo helper combinado
+ * `AAMMDD_RE.test(edition) || CYCLE_EDITION_RE.test(edition)` já usado em todo
+ * o resto do worker (`handleVote`/`handleStats`/`handleEditions`, ver #3297)
+ * em vez de reexpressar o par de regex inline aqui. Mantém a MESMA leniência
+ * de antes pro ramo AAMMDD (6 dígitos, sem validação semântica de mês/dia —
+ * isso é responsabilidade de `formatEditionDate` downstream) — só ESTENDE o
+ * alfabeto aceito, nunca afrouxa o que já era aceito. Tokens AAMMDD já
+ * emitidos/circulando continuam decodificando idênticos (`isValidVoteEditionFormat`
+ * é um superset estrito de `AAMMDD_RE` sozinho). */
 export function deserializeSharePayload(body: string): SharePayload | null {
-  const match = /^(\d{6})\.([01-])$/.exec(body);
+  const match = /^(.+)\.([01-])$/.exec(body);
   if (!match) return null;
   const [, edition, correctChar] = match;
-  if (!AAMMDD_RE.test(edition)) return null;
+  if (!isValidVoteEditionFormat(edition)) return null;
   const correct = correctChar === "1" ? true : correctChar === "0" ? false : null;
   return { edition, correct };
 }
@@ -264,13 +283,48 @@ export function renderShareCardBlock(token: string, payload: SharePayload, brand
 }
 
 /**
+ * #4119: `/og/{token}` e `/share/{token}` (abaixo) NUNCA conheceram o brand
+ * de origem do voto — o payload assinado do token é `{edition, correct}`,
+ * sem `brand` (ampliar o payload agora invalidaria a assinatura de TODO
+ * token já emitido e circulando, mesmo trade-off já aceito pra `SIG_LENGTH`,
+ * ver header do arquivo). Antes do #4119 isso não importava na prática: só
+ * edição AAMMDD completava o round-trip (`deserializeSharePayload` rejeitava
+ * ciclo), então `formatEditionDate` genérico (só entende AAMMDD) bastava
+ * pros dois call sites abaixo. Desde que o #4119 abriu o round-trip pra
+ * edição de ciclo Clarice (`CYCLE_EDITION_RE`, "YYMM-MM"), formatá-la como
+ * AAMMDD devolveria o slug CRU pro leitor (mesmo fallback defensivo de
+ * `formatEditionDate` pra forma desconhecida) — a mesma classe de regressão
+ * que o #4065 já tinha fechado pro texto de `buildShareText` (que recebe
+ * brand explícito de quem chama, `votePageHtml`).
+ *
+ * Resolvido sem exigir o brand de verdade: `CYCLE_EDITION_RE` é
+ * auto-identificável, e por CONSTRUÇÃO o único brand que produz edição
+ * nesse formato é `clarice` (`web`/`diaria` sempre emitem AAMMDD — ver
+ * `BRAND_INFO`/`editionToMonthSlug` em lib.ts). Basta despachar pro branch
+ * "year" de `formatEditionDateForBrand` quando a FORMA do edition bate com
+ * o ciclo, e pro formato AAMMDD padrão caso contrário — puramente uma chave
+ * de lookup de FORMATAÇÃO, não uma inferência de identidade real (pior caso
+ * de errar, que não ocorre na prática, é só afetar a string exibida).
+ */
+function inferDateFormatBrand(edition: string): Brand {
+  return CYCLE_EDITION_RE.test(edition) ? "clarice" : "web";
+}
+
+/** #4119: variante de `formatEditionDate`/`formatEditionDateForBrand` pra
+ * call sites que só têm o `edition` cru do token, sem brand — ver rationale
+ * completo em `inferDateFormatBrand` acima. Usada por `renderShareCardSvg`. */
+export function formatShareEditionDate(edition: string): string {
+  return formatEditionDateForBrand(edition, inferDateFormatBrand(edition));
+}
+
+/**
  * Pure: card visual 1200×630 (proporção OG padrão) servido por `/og/{token}`.
  * SVG puro — ver rationale de design no header do arquivo sobre por que não é
  * PNG rasterizado. Textos mantidos curtos deliberadamente (SVG `<text>` não
  * faz wrap automático) — polish de wrapping dinâmico fica de follow-up.
  */
 export function renderShareCardSvg(payload: SharePayload): string {
-  const dateLabel = htmlEscape(formatEditionDate(payload.edition));
+  const dateLabel = htmlEscape(formatShareEditionDate(payload.edition)); // #4119: self-describing, ver rationale acima
   const resultLabel = payload.correct === true ? "Acertou!" : payload.correct === false ? "Quase!" : "Já votou!";
   const sub = payload.correct === true
     ? "Diferencia IA de foto real?"
@@ -306,7 +360,10 @@ export interface SharePageOptions {
  */
 export function renderSharePageHtml(opts: SharePageOptions): string {
   const { token, payload, utmMedium } = opts;
-  const text = buildShareText(payload);
+  // #4119: brand desconhecido aqui por design (ver rationale de
+  // `inferDateFormatBrand` acima) — infere só pra escolher o FORMATO DE DATA
+  // certo dentro de `buildShareText`, nunca pra afetar o resto da mensagem.
+  const text = buildShareText(payload, inferDateFormatBrand(payload.edition));
   const ogImageUrl = `${PUBLIC_GAME_BASE_URL}/og/${encodeURIComponent(token)}`;
   // #3978: utm_source era "share" hardcoded (valor PRÓPRIO, desalinhado da
   // convenção `eia-standalone` usada no resto do funil) e sem utm_campaign
@@ -384,29 +441,73 @@ ${renderBrandFooter("web")}
 //     verdade exigiria o servidor manter estado de sessão do quiz (o que a
 //     issue explicitamente pede pra EVITAR — "sem depender de estado servidor
 //     pesado") só pra impedir uma vaidade sem custo real.
+//   - **#4120: `origin` opcional (`"quiz" | "sequence"`), NÃO um campo novo
+//     obrigatório.** Este endpoint/payload é reusado LITERALMENTE por 2 modos
+//     bem diferentes (ver rationale de #3589 em jogar.ts): o quiz relâmpago de
+//     verdade (`renderJogarQuizPageHtml`) e a SEQUÊNCIA mensal
+//     (`renderJogarSequencePageHtml`, o modo PADRÃO de `/jogar` sem
+//     `?edition=`). Antes do #4120, todo card share — de QUALQUER um dos dois
+//     modos — se anunciava como "quiz relâmpago" (headline do OG, `<title>`,
+//     kicker, CTA), incoerente pra maioria real dos compartilhamentos (a
+//     sequência é o modo mais jogado). `origin` deixa `renderQuizShareCardSvg`/
+//     `renderQuizSharePageHtml` escolherem o texto certo SEM precisar de rota
+//     nova nem duplicar ~80 linhas de novo — o mesmo `/quiz-og/{token}`/
+//     `/quiz-share/{token}` seguem servindo os dois modos. Campo OPCIONAL
+//     (não requerido na interface, omitido do corpo serializado quando
+//     ausente/"quiz") por 2 motivos: (a) tokens de quiz JÁ EMITIDOS antes desta
+//     issue não carregam o segmento — `deserializeQuizSharePayload` trata a
+//     ausência como "quiz" (idêntico ao comportamento pré-#4120, nunca
+//     "sequência" por adivinhação); (b) todo literal `QuizSharePayload`
+//     existente no código/testes (que não passa `origin`) continua type-checando
+//     sem edição.
 export interface QuizSharePayload {
   score: number;
   total: number;
+  /** #4120: modo realmente jogado. `undefined`/ausente = "quiz" (default,
+   * back-compat — ver rationale acima). Nunca inferir "sequence" sem o
+   * caller dizer explicitamente (`resolveQuizResultParams` em jogar.ts só
+   * marca "sequence" quando o próprio fetch client-side manda `&origin=sequence`,
+   * ver showFinal/showBatchBreak de `renderJogarSequencePageHtml`). */
+  origin?: "quiz" | "sequence";
 }
 
-/** Pure: serializa `{score, total}` pra um corpo compacto e determinístico —
- * prefixo `Q.` distingue do formato `{AAMMDD}.{0|1|-}` do payload de voto
- * único (nunca colidem, mesmo token space, rotas diferentes). */
+/** #4120: alias curto pro tipo do campo `origin` acima — usado nos call sites
+ * de jogar.ts/share.ts que precisam nomear o tipo (não só o literal). */
+export type QuizShareOrigin = NonNullable<QuizSharePayload["origin"]>;
+
+/** Pure: serializa `{score, total, origin?}` pra um corpo compacto e
+ * determinístico — prefixo `Q.` distingue do formato `{AAMMDD}.{0|1|-}` do
+ * payload de voto único (nunca colidem, mesmo token space, rotas diferentes).
+ *
+ * #4120: sufixo `.s` OPCIONAL pro `origin === "sequence"` — omitido pra
+ * `origin` ausente/"quiz" (default). Um token de quiz emitido hoje serializa
+ * BYTE-A-BYTE igual a um emitido antes do #4120 (mesmo corpo `Q.{score}.{total}`,
+ * mesma assinatura HMAC) — o campo novo só ESTENDE o alfabeto de corpos
+ * válidos, nunca muda o corpo do caso já existente. */
 export function serializeQuizSharePayload(payload: QuizSharePayload): string {
-  return `Q.${payload.score}.${payload.total}`;
+  const originSuffix = payload.origin === "sequence" ? ".s" : "";
+  return `Q.${payload.score}.${payload.total}${originSuffix}`;
 }
 
 /** Pure: inverso de `serializeQuizSharePayload`. `null` pra forma malformada
  * OU semanticamente inválida (`total<=0`, `score<0`, `score>total`) — nunca
  * lança (mesma disciplina de `deserializeSharePayload`: rota pública, input
- * adulterado não pode derrubar `/quiz-og`/`/quiz-share`). */
+ * adulterado não pode derrubar `/quiz-og`/`/quiz-share`).
+ *
+ * #4120: o segmento `.s` (origin "sequence") é OPCIONAL no regex — tokens de
+ * quiz emitidos ANTES deste campo existir têm corpo `Q.{score}.{total}` sem
+ * NENHUM segmento extra, e precisam continuar decodificando (link já
+ * compartilhado, circulando). Ausência do segmento → payload SEM a chave
+ * `origin` (mesmo formato de retorno de antes do #4120 — todo consumidor que
+ * checa `payload.origin === "sequence"` trata isso como "quiz", idêntico ao
+ * comportamento pré-existente). */
 export function deserializeQuizSharePayload(body: string): QuizSharePayload | null {
-  const match = /^Q\.(\d+)\.(\d+)$/.exec(body);
+  const match = /^Q\.(\d+)\.(\d+)(\.s)?$/.exec(body);
   if (!match) return null;
   const score = parseInt(match[1], 10);
   const total = parseInt(match[2], 10);
   if (total <= 0 || score < 0 || score > total) return null;
-  return { score, total };
+  return match[3] ? { score, total, origin: "sequence" } : { score, total };
 }
 
 /** Monta+assina o token do quiz. Mesmo `POLL_SECRET`/`SIG_LENGTH` do token de
@@ -489,19 +590,32 @@ export function renderQuizShareCardBlock(token: string, payload: QuizSharePayloa
 }
 
 /** Pure: card visual 1200×630 do resultado do quiz — mesma proporção/racional
- * SVG-vs-PNG do card de voto único (ver header do arquivo). */
+ * SVG-vs-PNG do card de voto único (ver header do arquivo).
+ *
+ * #4120: headline + watermark variam por `payload.origin` — a SEQUÊNCIA
+ * (`origin === "sequence"`, o modo PADRÃO de `/jogar`) NÃO é um "quiz
+ * relâmpago"; anunciar "QUIZ RELÂMPAGO" e apontar `/jogar/quiz` no card de
+ * quem jogou a sequência mistura os dois modos (ver rationale de `origin` em
+ * `QuizSharePayload` acima). `origin` ausente/"quiz" preserva o texto
+ * ORIGINAL — nenhuma mudança visual pros cards de quiz já emitidos. */
 export function renderQuizShareCardSvg(payload: QuizSharePayload): string {
-  const { score, total } = payload;
+  const { score, total, origin } = payload;
   const pct = total > 0 ? Math.round((score / total) * 100) : 0;
   const resultLabel = `${score}/${total}`;
   const sub = pct >= 80 ? "Olho treinado!" : pct >= 50 ? "Nada mal!" : "Bora treinar mais?";
+  const isSequence = origin === "sequence";
+  // #4120: "É IA?" plain pra sequência (mesmo estilo do headline de
+  // renderShareCardSvg, o card de voto único) — "QUIZ RELÂMPAGO" só quando o
+  // modo jogado de fato foi o quiz.
+  const headline = isSequence ? "É IA?" : "É IA? — QUIZ RELÂMPAGO";
+  const jogarPath = isSequence ? "/jogar" : "/jogar/quiz";
   return `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
   <rect width="1200" height="630" fill="${DS_COLORS.paper}"/>
   <rect x="0" y="0" width="1200" height="14" fill="${DS_COLORS.brand}"/>
-  <text x="80" y="150" font-family="${DS_FONTS.sans}" font-size="30" font-weight="700" letter-spacing="4" fill="${DS_COLORS.ink}">É IA? — QUIZ RELÂMPAGO</text>
+  <text x="80" y="150" font-family="${DS_FONTS.sans}" font-size="30" font-weight="700" letter-spacing="4" fill="${DS_COLORS.ink}">${headline}</text>
   <text x="80" y="300" font-family="${DS_FONTS.serif}" font-size="120" font-weight="700" fill="${DS_COLORS.ink}">${htmlEscape(resultLabel)}</text>
   <text x="80" y="365" font-family="${DS_FONTS.sans}" font-size="36" fill="${DS_COLORS.ink}">${htmlEscape(sub)}</text>
-  <text x="80" y="570" font-family="${DS_FONTS.sans}" font-size="32" font-weight="700" fill="${DS_COLORS.brand}">${PUBLIC_GAME_DISPLAY_HOST}/jogar/quiz</text>
+  <text x="80" y="570" font-family="${DS_FONTS.sans}" font-size="32" font-weight="700" fill="${DS_COLORS.brand}">${PUBLIC_GAME_DISPLAY_HOST}${jogarPath}</text>
 </svg>`;
 }
 
@@ -513,12 +627,23 @@ export interface QuizSharePageOptions {
   utmMedium: string;
 }
 
-/** Pure: página `GET /quiz-share/{token}` — destino dos unfurlers pro
- * resultado do quiz. Espelho estrutural de `renderSharePageHtml`. */
+/**
+ * Pure: página `GET /quiz-share/{token}` — destino dos unfurlers pro
+ * resultado do quiz. Espelho estrutural de `renderSharePageHtml`.
+ *
+ * #4120: `<title>`, kicker, alt da imagem e CTA (texto+destino) variam por
+ * `payload.origin` — a sequência (`origin === "sequence"`) usa copy genérica
+ * ("É IA?", sem "quiz relâmpago") e o CTA leva de volta pra `/jogar` (não
+ * `/jogar/quiz`), reconectando o destinatário no MESMO modo que o remetente
+ * jogou. `origin` ausente/"quiz" preserva TODO o texto/destino originais —
+ * nenhuma mudança pra link de quiz relâmpago já compartilhado.
+ */
 export function renderQuizSharePageHtml(opts: QuizSharePageOptions): string {
   const { token, payload, utmMedium } = opts;
+  const isSequence = payload.origin === "sequence";
   const text = buildQuizShareText(payload);
   const ogImageUrl = `${PUBLIC_GAME_BASE_URL}/quiz-og/${encodeURIComponent(token)}`;
+  const jogarPath = isSequence ? "/jogar" : "/jogar/quiz";
   // #3978: mesmo fix de renderSharePageHtml — utm_source unificado +
   // utm_campaign próprio do quiz, utm_medium preservado dinâmico.
   const jogarParams = new URLSearchParams({
@@ -526,8 +651,11 @@ export function renderQuizSharePageHtml(opts: QuizSharePageOptions): string {
     utm_medium: utmMedium || "link",
     utm_campaign: QUIZ_SHARE_UTM_CAMPAIGN,
   });
-  const jogarHref = `/jogar/quiz?${jogarParams.toString()}`;
-  const pageTitle = "É IA? — quiz relâmpago | Diar.ia";
+  const jogarHref = `${jogarPath}?${jogarParams.toString()}`;
+  const pageTitle = isSequence ? "É IA? — resultado da sequência | Diar.ia" : "É IA? — quiz relâmpago | Diar.ia";
+  const kicker = isSequence ? "É IA?" : "É IA? — quiz relâmpago";
+  const ctaLabel = isSequence ? "Jogar agora" : "Jogar o quiz";
+  const imgAlt = isSequence ? "Card de resultado da sequência do É IA?" : "Card de resultado do quiz relâmpago do É IA?";
   const seoMeta = renderSeoMeta({
     title: pageTitle,
     description: text,
@@ -553,11 +681,11 @@ ${renderBrandShellStyles()}
 </style>
 </head>
 <body>
-<p class="kicker">É IA? — quiz relâmpago</p>
+<p class="kicker">${kicker}</p>
 <hr class="rule">
-<img class="share-card-img" src="${htmlEscape(ogImageUrl)}" alt="Card de resultado do quiz relâmpago do É IA?">
+<img class="share-card-img" src="${htmlEscape(ogImageUrl)}" alt="${imgAlt}">
 <p class="share-text">${htmlEscape(text)}</p>
-<a class="cta" href="${htmlEscape(jogarHref)}">Jogar o quiz</a>
+<a class="cta" href="${htmlEscape(jogarHref)}">${ctaLabel}</a>
 ${renderBrandFooter("web")}
 </body>
 </html>`;

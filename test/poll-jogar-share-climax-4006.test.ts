@@ -112,9 +112,12 @@ describe("checkpoint parcial ganha botão de compartilhar (#4006 item 4)", () =>
       html,
       /var batchShareSlot = document\.getElementById\("seq-batch-share-slot"\);/,
     );
+    // #4120: &origin=sequence marca que este fetch vem da SEQUÊNCIA (não do
+    // quiz relâmpago) — sem isso, o card final se anunciava como "quiz
+    // relâmpago" (ver test/poll-quiz-share-origin-4120.test.ts).
     assert.match(
       html,
-      /fetch\("\/jogar\/quiz\/result\?score=" \+ encodeURIComponent\(String\(batchCorrect\)\) \+ "&total=" \+ encodeURIComponent\(String\(BATCH_SIZE\)\)\)/,
+      /fetch\("\/jogar\/quiz\/result\?score=" \+ encodeURIComponent\(String\(batchCorrect\)\) \+ "&total=" \+ encodeURIComponent\(String\(BATCH_SIZE\)\) \+ "&origin=sequence"\)/,
     );
   });
 
