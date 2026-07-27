@@ -1383,27 +1383,28 @@ export function formatSeqBatchBreakMessage(correct: number, batchSize: number, r
   return `Você acertou ${correct} de ${batchSize}! Continuar jogando — faltam ${remaining}.`;
 }
 
-/** #4115: orçamento de subrequests (gets de KV) por chamada de
- * `handleJogarSeqState`.
+/** #4115: teto de edições aceitas do param `editions`.
  *
- * Este worker roda no FREE PLAN do Cloudflare — teto de 50 subrequests por
- * request. Não é suposição: o `wrangler.toml` usa `new_sqlite_classes` nos
- * Durable Objects justamente porque a variante KV-backed é exclusiva do plano
- * pago (erro 10097 no deploy, #2236), e `leaderboard-routes.ts` já escolhe
- * batch=20 "conservador" pelo mesmo motivo.
+ * O parser só filtrava por FORMA, sem limite de quantidade — um caller
+ * arbitrário podia pedir milhares de edições sintaticamente válidas e inflar
+ * as subrequests da request inteira. Cobre o caso real com folga: a sequência
+ * é o mês anterior inteiro, no máximo 31 pares. */
+export const SEQ_STATE_MAX_EDITIONS = 50;
+
+/** #4115: orçamento TOTAL de gets de KV por chamada de `handleJogarSeqState`.
  *
- * 45 deixa margem sob o teto. O handler gasta 1 get por edição na 1ª fase e,
- * quando há sessão, reconsulta as não-encontradas na 2ª — sempre dentro deste
- * mesmo orçamento TOTAL, nunca 2× por edição (ver rationale em
- * `handleJogarSeqState`). Cobre o caso real com folga: a sequência é o mês
- * anterior inteiro, no máximo 31 pares.
+ * O worker roda no plano PAGO do Cloudflare (upgrade feito pelo editor em
+ * 260727) — teto de 1000 subrequests por request, não os 50 do free. Vários
+ * comentários espalhados pelo worker ainda citam o teto antigo (`index.ts`
+ * no dedup de nickname, o batch=20 de `leaderboard-routes.ts`, e a nota de
+ * `new_sqlite_classes` no wrangler.toml): são pré-upgrade, valem como
+ * histórico, não como limite atual.
  *
- * Serve aos dois papéis, que aqui coincidem por construção: é o teto de
- * edições aceitas do param (antes o parser só filtrava por FORMA, sem limite
- * de quantidade — um caller arbitrário podia pedir milhares e derrubar a
- * request) E o orçamento de gets do handler. Um só valor, porque a 1ª fase
- * gasta exatamente 1 get por edição aceita. */
-export const SEQ_STATE_SUBREQUEST_BUDGET = 45;
+ * 100 = 2 × `SEQ_STATE_MAX_EDITIONS`, ou seja, cobre o PIOR caso sem nunca
+ * truncar: mesmo que nenhuma das 50 edições seja encontrada na 1ª fase, a 2ª
+ * reconsulta todas. Continua sendo um limite (o param é público e não
+ * autenticado), só que agora sem trade-off de completude. */
+export const SEQ_STATE_SUBREQUEST_BUDGET = SEQ_STATE_MAX_EDITIONS * 2;
 
 export function parseSeqStateEditionsParam(raw: string | null): string[] {
   if (!raw) return [];
@@ -1411,7 +1412,7 @@ export function parseSeqStateEditionsParam(raw: string | null): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter((s) => AAMMDD_RE.test(s))
-    .slice(0, SEQ_STATE_SUBREQUEST_BUDGET);
+    .slice(0, SEQ_STATE_MAX_EDITIONS);
 }
 
 /**
@@ -2328,24 +2329,21 @@ export async function handleJogarSeqState(url: URL, env: Env, request?: Request)
   // rodadas menos a livre, então a 1ª fase abaixo já resolve quase tudo.
   const primaryIdentity = sessionEmail ?? email;
 
-  // #4115 (self-review): NÃO consultar as duas identidades em paralelo por
-  // edição. Este worker roda no free plan do Cloudflare — teto de 50
-  // subrequests por request (o `new_sqlite_classes` do wrangler.toml existe
-  // justamente porque DO KV-backed é só plano pago; ver também o rationale de
-  // batch=20 em leaderboard-routes.ts). 2 gets × mês inteiro (31 pares) = 62,
-  // estouro garantido — quebraria exatamente o caso que este fix conserta.
+  // #4115 (self-review): duas fases em vez de 2 gets paralelos por edição.
   //
-  // Em duas fases com orçamento TOTAL: a 1ª resolve todas as edições sob a
-  // identidade primária; a 2ª só reconsulta as que ficaram sem voto, sob a
-  // secundária, dentro do que sobrou do orçamento. No caso real (jogador
-  // identificado que já jogou o mês) a 2ª fase custa ~1 get — só a rodada
-  // livre fica sob o token.
+  // A 1ª fase resolve todas as edições sob a identidade primária (a sessão,
+  // quando existe — pós-gate ela cobre todas as rodadas menos a livre); a 2ª
+  // só reconsulta as que ficaram SEM voto, sob a secundária. No caso real
+  // (jogador identificado que já jogou o mês) a 2ª fase custa ~1 get: só a
+  // rodada livre fica sob o token.
   //
-  // Trade-off explícito: se o orçamento acabar antes de reconsultar tudo, as
-  // edições restantes voltam como "não votadas". Só erra se houver voto sob
-  // token justamente numa delas — improvável, porque votos sob token existem
-  // apenas para as rodadas jogadas antes do gate. E o erro seria re-jogar um
-  // par, muito menor que o bug original (TODOS os pares pós-gate invisíveis).
+  // A motivação original foi o teto de subrequests — o worker estava no free
+  // plan (50/request) e 2 × mês inteiro (31 pares) = 62 estourava. O upgrade
+  // pro plano pago (260727) elevou o teto pra 1000 e tirou a urgência, mas as
+  // duas fases FICAM: além de baratas, evitam ~30 gets inúteis por chamada no
+  // caminho mais comum. `SEQ_STATE_SUBREQUEST_BUDGET` agora é 2× o teto de
+  // edições, então a 2ª fase nunca trunca — o orçamento é só um limite
+  // superior sanativo (o param é público e não autenticado).
   const firstPass = await Promise.all(
     editions.map((edition) => brandedPoll.get(`vote:${edition}:${primaryIdentity}`)),
   );
