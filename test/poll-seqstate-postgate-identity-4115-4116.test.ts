@@ -28,7 +28,7 @@ import assert from "node:assert/strict";
 import {
   parseSeqStateEditionsParam,
   renderJogarSequencePageHtml,
-  SEQ_STATE_MAX_EDITIONS,
+  SEQ_STATE_SUBREQUEST_BUDGET,
 } from "../workers/poll/src/jogar.ts";
 import { issueWebSessionCookie } from "../workers/poll/src/web-gate.ts";
 import worker, { type Env } from "../workers/poll/src/index.ts";
@@ -148,15 +148,75 @@ describe("GET /jogar/seq-state — identidade pós-gate (#4115)", () => {
 
 describe("parseSeqStateEditionsParam — teto de edições (#4115)", () => {
   it("descarta o excedente acima do teto em vez de inflar as subrequests", () => {
-    const many = Array.from({ length: SEQ_STATE_MAX_EDITIONS + 25 }, (_, i) =>
+    const many = Array.from({ length: SEQ_STATE_SUBREQUEST_BUDGET + 25 }, (_, i) =>
       `2606${String((i % 28) + 1).padStart(2, "0")}`,
     ).join(",");
-    assert.equal(parseSeqStateEditionsParam(many).length, SEQ_STATE_MAX_EDITIONS);
+    assert.equal(parseSeqStateEditionsParam(many).length, SEQ_STATE_SUBREQUEST_BUDGET);
   });
 
   it("lista normal (mês inteiro) passa intacta", () => {
     const normal = Array.from({ length: 31 }, (_, i) => `2606${String(i + 1).padStart(2, "0")}`);
     assert.equal(parseSeqStateEditionsParam(normal.join(",")).length, 31);
+  });
+});
+
+describe("orçamento de subrequests do seq-state (#4115, achado do self-review)", () => {
+  // O worker roda no FREE PLAN do Cloudflare (teto de 50 subrequests/request —
+  // ver `new_sqlite_classes` no wrangler.toml e o batch=20 de
+  // leaderboard-routes.ts). A 1ª versão deste fix consultava as 2 identidades
+  // EM PARALELO por edição: mês inteiro (31) × 2 = 62 gets, estouro garantido
+  // — quebraria justamente o cenário que o #4115 conserta.
+  function countingEnv(seed: Record<string, string> = {}) {
+    let gets = 0;
+    const kv = makeMapKV(seed);
+    const origGet = kv.get.bind(kv);
+    kv.get = async (key: string) => {
+      gets += 1;
+      return origGet(key);
+    };
+    const env = {
+      POLL: kv,
+      POLL_SECRET: "poll-secret",
+      ADMIN_SECRET: "admin-secret",
+      ALLOWED_ORIGINS: "*",
+      COOKIE_HMAC_SECRET: COOKIE_SECRET,
+    } as unknown as Env;
+    return { env, gets: () => gets };
+  }
+
+  const monthEditions = Array.from({ length: 31 }, (_, i) => `2606${String(i + 1).padStart(2, "0")}`);
+
+  it("REGRESSÃO: mês inteiro COM sessão fica dentro do teto de 50 subrequests", async () => {
+    // Pior caso realista: jogador identificado, nada votado ainda — a 2ª fase
+    // tem o máximo de edições pra reconsultar.
+    const { env, gets } = countingEnv();
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    await seqState(env, monthEditions, cookie);
+    assert.ok(gets() <= 50, `gastou ${gets()} subrequests — teto do free plan é 50`);
+  });
+
+  it("caso real (identificado, mês já jogado sob o e-mail real) custa ~1 get a mais que sem sessão", async () => {
+    const seed: Record<string, string> = {};
+    for (const ed of monthEditions.slice(1)) {
+      seed[`web:vote:${ed}:${REAL_EMAIL}`] = JSON.stringify({ choice: "A", correct: true });
+    }
+    // A rodada livre (1ª edição) ficou sob o token, pré-gate.
+    seed[`web:vote:${monthEditions[0]}:${TOKEN}`] = JSON.stringify({ choice: "B", correct: false });
+
+    const { env, gets } = countingEnv(seed);
+    const cookie = (await issueWebSessionCookie(COOKIE_SECRET, REAL_EMAIL)).split(";")[0];
+    const state = await seqState(env, monthEditions, cookie);
+
+    // Só a rodada livre precisa da 2ª fase → 31 + 1.
+    assert.equal(gets(), monthEditions.length + 1);
+    // E o estado sai completo: nenhuma edição reportada como não-votada.
+    assert.equal(state.filter((e) => !e.voted).length, 0);
+  });
+
+  it("sem sessão não há 2ª fase — 1 get por edição", async () => {
+    const { env, gets } = countingEnv();
+    await seqState(env, monthEditions);
+    assert.equal(gets(), monthEditions.length);
   });
 });
 
