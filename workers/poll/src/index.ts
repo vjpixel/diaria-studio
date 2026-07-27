@@ -355,6 +355,10 @@ import {
 // #3595: handleJogarSeqState — skip-and-credit da sequência (rework
 // "Suspense" pós-#3589, ver header de jogar.ts).
 import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleJogarSeqState, handleQuizAnswer, handleQuizResult } from "./jogar";
+// #4065: cadastro inline (#3580) trazido pra tela de resultado do voto do
+// brand `clarice` — mesmo bloco/script já usados por `/jogar/quiz`, reusados
+// literalmente (ver rationale completo em votePageHtml abaixo).
+import { inlineSignupScript, renderInlineSignupFormBlock, renderInlineSignupFormStyles } from "./jogar";
 // #3580: cadastro inline pós-jogo (POST /jogar/subscribe) — assina direto na
 // Beehiiv sem sair da página. Ciclo index↔subscribe (subscribe importa `json`
 // de index; index importa o handler de volta) é o mesmo padrão seguro já usado
@@ -686,13 +690,13 @@ export function votePageHtml(
    * cache do navegador que cacheou a página de leaderboard antes do voto.
    * Só passado por handleVote no resultado do voto (não afeta tráfego orgânico). */
   cacheBusterTs?: string | null,
-  /** #3517: card de compartilhamento pós-jogo. Só passado por handleVote
-   * quando brand === "web" (jogo público standalone — brands diaria/clarice
-   * são e-mail assinantes, "compartilhar meu resultado" não se aplica).
-   * Renderizado como bloco visível `#jogar-share-card` (progressive
-   * enhancement: funciona mesmo sem JS, pra quem navega direto até /vote) —
-   * /jogar (jogar.ts) extrai o MESMO bloco via DOMParser quando intercepta o
-   * voto via fetch, sem sair da página. */
+  /** #3517 / #4065: card de compartilhamento pós-jogo. Passado por handleVote
+   * pra TODOS os brands (antes só brand === "web" — premissa errada, ver
+   * rationale no header de vote.ts / issue #4065). Renderizado como bloco
+   * visível `#jogar-share-card` (progressive enhancement: funciona mesmo sem
+   * JS, pra quem navega direto até /vote) — /jogar (jogar.ts) extrai o MESMO
+   * bloco via DOMParser quando intercepta o voto via fetch, sem sair da
+   * página. */
   shareCard?: { token: string; payload: SharePayload } | null,
   /** #3984: descrição + crédito da imagem real do par, lidos de
    * `eiameta:{edition}` (KV compartilhado, brand-independente) — só passado
@@ -737,12 +741,26 @@ export function votePageHtml(
   // fetch, mesma técnica já usada pra `.result-images`/`#jogar-share-card`.
   const eiaMetaHtml = renderEiaMetaHtml(eiaMeta);
 
-  // #3517: card de compartilhamento (só quando shareCard foi passado — hoje
-  // só brand="web"). O script de wiring dos botões (Web Share API + fallback
-  // copiar-link) é reusado literalmente do mesmo helper que /jogar usa pro
-  // bloco injetado dinamicamente — ver rationale em share.ts.
+  // #3517 / #4065: card de compartilhamento (todos os brands desde #4065). O
+  // script de wiring dos botões (Web Share API + fallback copiar-link) é
+  // reusado literalmente do mesmo helper que /jogar usa pro bloco injetado
+  // dinamicamente — ver rationale em share.ts.
   const shareCardHtml = shareCard
     ? `${renderShareCardBlock(shareCard.token, shareCard.payload)}\n${shareButtonScript("#jogar-share-card")}`
+    : "";
+
+  // #4065: cadastro inline (#3580) na tela de resultado do voto — só brand
+  // `clarice` (a base que a parceria existe pra converter, e que nunca
+  // chegou a ver ESSE form: `/jogar/subscribe` só era embutido em `/jogar`,
+  // que ignora `?brand=` e é sempre "web", ver #3516). `diaria` não precisa
+  // (já é assinante); `web` já tem o form de identidade equivalente em
+  // `/jogar` (#3975). Renderizado JÁ VISÍVEL (`hidden=false`) — esta página é
+  // o próprio resultado do voto (não tem estado pré-voto pra esconder o form
+  // atrás de), diferente de `/jogar`/`/jogar/quiz` onde o form fica `hidden`
+  // até o JS revelar junto com o resultado. `source: "vote-clarice"` dá UTM
+  // próprio (subscribe.ts) pra medir esta conversão separada do funil web.
+  const inlineSignupHtml = brand === "clarice"
+    ? `${renderInlineSignupFormBlock(false)}\n${inlineSignupScript("vote-clarice")}`
     : "";
 
   // #2113(a): link do leaderboard com cache-buster quando vindo do resultado do voto.
@@ -842,6 +860,7 @@ export function votePageHtml(
     .share-actions button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
   }
 ${renderLightboxStyles()}
+${renderInlineSignupFormStyles()}
 </style>
 </head>
 <body>
@@ -849,6 +868,7 @@ ${renderLightboxStyles()}
 ${imagesHtml}
 ${eiaMetaHtml}
 ${shareCardHtml}
+${inlineSignupHtml}
 ${formHtml}
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-voltar", "eia-vote-voltar"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
 ${renderLightboxMarkup()}

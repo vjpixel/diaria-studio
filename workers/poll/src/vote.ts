@@ -25,8 +25,9 @@ import {
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
 import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter";
-// #3517: share card pós-jogo — só brand="web" (ver rationale no header de
-// share.ts sobre por que o payload é {edition, correct}, sem leitura KV extra).
+// #3517 / #4065: share card pós-jogo — todos os brands (ver rationale no
+// header de share.ts sobre por que o payload é {edition, correct}, sem
+// leitura KV extra).
 import { encodeShareToken, type SharePayload } from "./share";
 
 /**
@@ -738,16 +739,25 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
       }
     : null;
 
-  // #3517: card de compartilhamento — só brand="web" (jogo público
-  // standalone; diaria/clarice são e-mail assinantes, "compartilhar meu
-  // resultado" não se aplica a quem já recebe a edição). Token é puro HMAC
-  // sobre {edition, correct} — ZERO leitura KV extra, nenhuma mudança no
-  // resto do fluxo de voto acima (dedup, guard-keys, DO).
-  let shareCard: { token: string; payload: SharePayload } | null = null;
-  if (brand === "web") {
-    const sharePayload: SharePayload = { edition, correct };
-    shareCard = { token: await encodeShareToken(env.POLL_SECRET, sharePayload), payload: sharePayload };
-  }
+  // #3517 / #4065: card de compartilhamento — TODOS os brands (antes só
+  // brand="web"). A premissa original ("diaria/clarice são e-mail
+  // assinantes, 'compartilhar meu resultado' não se aplica") estava errada
+  // pros dois: a base clarice NÃO é assinante da Diar.ia — é justamente o
+  // público que a parceria existe pra converter (a issue #4065 documenta
+  // 101.000 envios do ciclo 2606-07 gerando 13 assinantes e ZERO resgates de
+  // cupom, com o jogo terminando em beco sem saída); e diaria, mesmo já
+  // assinante, pode indicar (loop de indicação). O link compartilhado
+  // (`/share/{token}`) já é brand-agnóstico — sempre renderiza `brand="web"`
+  // e aponta pro `/jogar` público (#3701, share.ts), então nenhuma mudança é
+  // necessária ali: quem recebe o link cai direto no jogo público, onde o
+  // cadastro inline vive. Token é puro HMAC sobre {edition, correct} — ZERO
+  // leitura KV extra, nenhuma mudança no resto do fluxo de voto acima (dedup,
+  // guard-keys, DO).
+  const sharePayload: SharePayload = { edition, correct };
+  const shareCard: { token: string; payload: SharePayload } = {
+    token: await encodeShareToken(env.POLL_SECRET, sharePayload),
+    payload: sharePayload,
+  };
 
   // #2113(a): passa voteTs como cache-buster pra quebrar cache do navegador no link
   // "Ver leaderboard" — leitor que viu a página de leaderboard antes de votar não
@@ -864,13 +874,14 @@ async function handleVoteFastPath(
     ? { edition, aiSide, clickedSide: choice }
     : null;
 
-  // #3517: card de compartilhamento — só brand="web", mesmo critério do
-  // caminho legado (payload é puro HMAC sobre {edition, correct}, zero KV extra).
-  let shareCard: { token: string; payload: SharePayload } | null = null;
-  if (brand === "web") {
-    const sharePayload: SharePayload = { edition, correct };
-    shareCard = { token: await encodeShareToken(env.POLL_SECRET, sharePayload), payload: sharePayload };
-  }
+  // #3517 / #4065: card de compartilhamento — TODOS os brands, mesmo
+  // critério do caminho legado (ver rationale completo acima em handleVote:
+  // payload é puro HMAC sobre {edition, correct}, zero KV extra).
+  const sharePayloadFast: SharePayload = { edition, correct };
+  const shareCard: { token: string; payload: SharePayload } = {
+    token: await encodeShareToken(env.POLL_SECRET, sharePayloadFast),
+    payload: sharePayloadFast,
+  };
 
   // #3984: mesmo fetch condicional do caminho legado (rawEnv, CRU) — o
   // gabarito já é conhecido síncrona/imediatamente aqui (`correctRaw` veio do
