@@ -274,8 +274,15 @@ export function renderCursosPage(courses: Course[], mode: CursosRenderMode = "fu
   const gateBanner =
     lockedCount > 0
       ? `  <div class="gate-banner">
-    <div class="wrap">
-      <p>🔒 ${lockedCount} ${lockedCount === 1 ? "curso completo está" : "cursos completos estão"} disponíveis só para assinantes da Diar.ia. <a href="/gate">Já sou assinante — desbloquear</a></p>
+    <div class="wrap gate-banner-wrap">
+      <p>🔒 ${lockedCount} ${lockedCount === 1 ? "curso completo está" : "cursos completos estão"} disponíveis só para assinantes da Diar.ia.</p>
+      <form id="gate-banner-form" class="gate-banner-form" novalidate>
+        <input type="email" id="gate-banner-email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" required>
+        <input type="text" name="website" class="gate-banner-hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+        <button type="submit" id="gate-banner-submit">Desbloquear</button>
+      </form>
+      <p class="gate-banner-msg" id="gate-banner-msg" role="status"></p>
+      <p class="gate-banner-alt"><a href="/gate">Ainda não assina a Diar.ia? Cadastre-se aqui →</a></p>
     </div>
   </div>
 `
@@ -370,6 +377,15 @@ ${renderCuradoriaGridCardStyles()}
   .gate-banner .wrap { max-width: 1120px; }
   .gate-banner p { margin: 0; font-family: ${SANS}; font-size: 13px; }
   .gate-banner a { color: #FFFFFF; text-decoration: underline; font-weight: 700; }
+  .gate-banner-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+  .gate-banner-form { display: flex; gap: 8px; flex: none; }
+  .gate-banner-form input[type="email"] { padding: 7px 10px; border: 0; border-radius: 4px; font-size: 13px; font-family: ${SANS}; width: 220px; max-width: 46vw; }
+  .gate-banner-form button { padding: 7px 14px; border: 0; border-radius: 4px; background: var(--ink); color: #FFFFFF; font-weight: 700; font-size: 13px; font-family: ${SANS}; cursor: pointer; }
+  .gate-banner-form button:disabled { opacity: 0.6; cursor: default; }
+  .gate-banner-hp { position: absolute !important; left: -9999px !important; width: 1px; height: 1px; overflow: hidden; }
+  .gate-banner-msg { margin: 0; font-family: ${SANS}; font-size: 12px; min-height: 0; flex-basis: 100%; }
+  .gate-banner-alt { margin: 0; font-family: ${SANS}; font-size: 12px; opacity: 0.9; }
+  @media (max-width: 640px) { .gate-banner-wrap { flex-direction: column; align-items: flex-start; } .gate-banner-form { width: 100%; } .gate-banner-form input[type="email"] { width: auto; flex: 1; max-width: none; } }
 
 ${renderCuradoriaFooterStyles()}
 </style>
@@ -462,6 +478,36 @@ ${cards}
     });
     if (fTheme) fTheme.addEventListener('change', apply);
     apply();
+  })();
+  // #4052 (banner de gate): tenta /gate/verify (assinante já ativo →
+  // desbloqueia sem sair da página). Sem match, manda pro /gate completo
+  // (que tem o form de cadastro com opt-in) em vez de tentar caber o
+  // cadastro inteiro no banner.
+  (function () {
+    var form = document.getElementById('gate-banner-form');
+    if (!form) return;
+    var msg = document.getElementById('gate-banner-msg');
+    var btn = document.getElementById('gate-banner-submit');
+    function setMsg(text) { msg.textContent = text; }
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      btn.disabled = true;
+      var email = document.getElementById('gate-banner-email').value.trim();
+      var website = form.website.value;
+      setMsg('Verificando…');
+      fetch('/gate/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, website: website }),
+      }).then(function (res) { return res.json().then(function (data) { return { status: res.status, data: data }; }); })
+        .then(function (r) {
+          btn.disabled = false;
+          if (r.data && r.data.ok) { setMsg('Verificado! Redirecionando…'); window.location.href = '/'; return; }
+          if (r.status === 429) { setMsg('Muitas tentativas. Tente novamente em alguns minutos.'); return; }
+          setMsg('Não encontramos assinatura ativa com esse e-mail. Use o link abaixo pra assinar e desbloquear.');
+        })
+        .catch(function () { btn.disabled = false; setMsg('Erro de rede. Tente novamente.'); });
+    });
   })();
 </script>
 </body>

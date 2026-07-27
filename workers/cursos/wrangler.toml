@@ -47,4 +47,4 @@ binding = "ASSETS"
 # colar o id retornado aqui antes do deploy.
 [[kv_namespaces]]
 binding = "CURSOS_SUBSCRIBERS"
-id = "REPLACE_WITH_ID_FROM_WRANGLER_KV_NAMESPACE_CREATE"
+id = "a3415c3bf4b840d6975dbac290b99153"
