@@ -665,6 +665,51 @@ describe("replaceBoxContentTitle (#4079)", () => {
     assert.equal(replaceBoxContentTitle("Título\n\ncorpo", "  Título  "), "Título\n\ncorpo"); // sem mudança real -> byte-estável
     assert.equal(replaceBoxContentTitle("Título\n\ncorpo", "  Novo  "), "Novo\n\ncorpo");
   });
+
+  // #4141 finding 1: split(/\r?\n/) + join("\n") normalizava CRLF->LF do
+  // ARQUIVO INTEIRO quando o título mudava de fato — o resto do corpo (e até
+  // o terminador da própria linha do título) deve sobreviver byte a byte,
+  // qualquer que seja o EOL original.
+  describe("preservação de EOL (#4141 finding 1)", () => {
+    it("corpo 100% CRLF: só o TEXTO da 1ª linha muda, todo \\r\\n sobrevive", () => {
+      const body = "## Título antigo\r\n\r\ncorpo preservado\r\n- item 1\r\n- item 2";
+      const out = replaceBoxContentTitle(body, "Título novo");
+      assert.equal(out, "## Título novo\r\n\r\ncorpo preservado\r\n- item 1\r\n- item 2");
+    });
+
+    it("corpo 100% CRLF, texto puro: idem, sem introduzir LF nenhum", () => {
+      const body = "Título antigo\r\n\r\ncorpo preservado\r\n";
+      const out = replaceBoxContentTitle(body, "Título novo");
+      assert.equal(out, "Título novo\r\n\r\ncorpo preservado\r\n");
+      // toda ocorrência de "\n" no output está imediatamente precedida de "\r"
+      // (nenhum LF solto foi introduzido pela reescrita)
+      assert.ok([...out.matchAll(/\n/g)].every((m) => out[m.index! - 1] === "\r"));
+    });
+
+    it("corpo 100% LF: comportamento inalterado (regressão)", () => {
+      const body = "## Título antigo\n\ncorpo preservado\n- item 1\n- item 2";
+      const out = replaceBoxContentTitle(body, "Título novo");
+      assert.equal(out, "## Título novo\n\ncorpo preservado\n- item 1\n- item 2");
+      assert.ok(!out.includes("\r"));
+    });
+
+    it("corpo MISTO (1ª linha CRLF, resto LF): cada linha preserva o PRÓPRIO EOL", () => {
+      const body = "## Título antigo\r\n\ncorpo em LF\ndemais linhas em LF\n";
+      const out = replaceBoxContentTitle(body, "Título novo");
+      assert.equal(out, "## Título novo\r\n\ncorpo em LF\ndemais linhas em LF\n");
+    });
+
+    it("corpo MISTO (1ª linha LF, resto CRLF): a linha do título fica LF, o resto continua CRLF", () => {
+      const body = "Título antigo\n\r\ncorpo em CRLF\r\ndemais linhas em CRLF\r\n";
+      const out = replaceBoxContentTitle(body, "Novo");
+      assert.equal(out, "Novo\n\r\ncorpo em CRLF\r\ndemais linhas em CRLF\r\n");
+    });
+
+    it("byte-estável em CRLF quando o título já é o desejado — não normaliza nada", () => {
+      const body = "##   Título   \r\n\r\ncorpo\r\n";
+      assert.equal(replaceBoxContentTitle(body, "Título"), body);
+    });
+  });
 });
 
 describe("buildBoxContent (#3979/#3981)", () => {

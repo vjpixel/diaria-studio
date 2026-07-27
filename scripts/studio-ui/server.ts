@@ -562,7 +562,15 @@ function handleApiChatEnabledGet(rootDir: string, res: ServerResponse): void {
  * `scripts/lib/studio-chat-enabled.ts` pra como uma sessão de automação
  * CHECA esse estado (sem precisar do server rodando). 400 corpo malformado,
  * 500 só se a escrita em disco falhar de verdade (I/O real, não parte do
- * contrato fail-soft de leitura). */
+ * contrato fail-soft de leitura).
+ *
+ * Decisão consciente (#4141 finding 2): SEM o guard de mtime/conflito 409
+ * que `saveBox`/`saveBoxSlots`/`saveReviewFile` têm (#3729). Duas abas
+ * clicando o toggle quase ao mesmo tempo dão last-write-wins silencioso —
+ * aceito de propósito porque é um boolean de baixo blast radius (nunca perde
+ * CONTEÚDO editorial, só o estado do toggle) e "o valor mais recente vence"
+ * é a semântica certa pra um interruptor, não um conflito real a resolver.
+ * Não portar o guard de mtime aqui sem motivo novo. */
 async function handleApiChatEnabledSave(
   rootDir: string,
   req: IncomingMessage,

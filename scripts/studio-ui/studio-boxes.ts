@@ -146,6 +146,11 @@ export function extractBoxTitle(content: string): string {
   for (const raw of lines) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
+    // Conhecido e aceito (#4141 finding 4, pré-existente — não é regressão de
+    // nenhuma PR recente): `.+` guloso captura hashes de FECHAMENTO opcionais
+    // (`## Título ##`) como parte do texto, então "Título ##" vaza como
+    // título em vez de "Título". Nenhum snippet real do repo usa essa
+    // sintaxe hoje; registrado aqui pra não ser redescoberto do zero.
     const heading = /^#{1,6}\s+(.+)$/.exec(trimmed);
     const text = (heading ? heading[1] : trimmed).trim();
     if (!text) continue;
@@ -311,6 +316,34 @@ export function extractConteudoTitulo(conteudo: string): string {
   return t === "(vazio)" ? "" : t;
 }
 
+/** Quebra `src` em segmentos `{ text, eol }` — `text` é o conteúdo de uma
+ * linha SEM o terminador, `eol` é o terminador exato que a seguia no
+ * original (`"\r\n"`, `"\r"`, `"\n"`, ou `""` pro último segmento se o
+ * arquivo não termina em quebra de linha). Reconstruir com
+ * `segments.map(s => s.text + s.eol).join("")` devolve `src` byte a byte.
+ * Existe pra permitir reescrever o TEXTO de uma única linha sem normalizar o
+ * terminador de NENHUMA linha do arquivo (nem sequer o da linha reescrita —
+ * só o texto dela muda, o `eol` original é preservado) — ver
+ * `replaceBoxContentTitle` (#4141 finding 1: `split(/\r?\n/)` +
+ * `join("\n")` normalizava CRLF->LF do arquivo INTEIRO quando o título
+ * mudava de fato). Nunca lança. */
+function splitLinesKeepEol(src: string): Array<{ text: string; eol: string }> {
+  const out: Array<{ text: string; eol: string }> = [];
+  let pos = 0;
+  const eolRe = /\r\n|\r|\n/g;
+  while (pos <= src.length) {
+    eolRe.lastIndex = pos;
+    const m = eolRe.exec(src);
+    if (!m) {
+      out.push({ text: src.slice(pos), eol: "" });
+      break;
+    }
+    out.push({ text: src.slice(pos, m.index), eol: m[0] });
+    pos = m.index + m[0].length;
+  }
+  return out;
+}
+
 /** Reescreve a PRIMEIRA linha não-vazia de `conteudo` (#4079) pra refletir um
  * novo título, preservando o RESTO do corpo intacto e o FORMATO da linha
  * original — heading Markdown `#`-`######` mantém o mesmo nível (`##` continua
@@ -338,21 +371,25 @@ export function extractConteudoTitulo(conteudo: string): string {
  * original a preservar (#4079, escopo da issue: "provavelmente cria a
  * primeira linha do zero").
  *
- * Nunca lança. */
+ * CRLF/LF/misto (#4141 finding 1): opera por segmento via
+ * `splitLinesKeepEol` — SÓ o texto da linha do título é substituído; o `eol`
+ * dessa linha e o texto+eol de TODAS as outras linhas são preservados
+ * exatamente como estavam, mesmo em corpo com terminadores mistos. Nunca
+ * lança. */
 export function replaceBoxContentTitle(conteudo: string, titulo: string): string {
   const clean = (titulo ?? "").trim();
   if (!clean) return conteudo;
 
   const src = conteudo ?? "";
-  const lines = src.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
+  const segments = splitLinesKeepEol(src);
+  for (let i = 0; i < segments.length; i++) {
+    const trimmed = segments[i].text.trim();
     if (!trimmed) continue;
     const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
     const currentText = (heading ? heading[2] : trimmed).trim();
     if (currentText === clean) return src; // já é o título desejado — byte-estável, não reescreve
-    lines[i] = heading ? `${heading[1]} ${clean}` : clean;
-    return lines.join("\n");
+    segments[i] = { text: heading ? `${heading[1]} ${clean}` : clean, eol: segments[i].eol };
+    return segments.map((s) => s.text + s.eol).join("");
   }
   // Nenhuma linha não-vazia — corpo vazio/só espaço: cria a 1ª linha do zero.
   return clean;
