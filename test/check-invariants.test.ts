@@ -12,6 +12,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  BEEHIIV_CTA_ALLOWLIST,
+  checkNoBeehiivHostInPublicCta,
   checkNoForensicInDriveSync,
   checkNoHtmlInMonthlyDriveSync,
   STATIC_RULES,
@@ -121,5 +123,81 @@ describe("check-invariants CLI (#966)", () => {
   it("sem args = exit 2 (erro de input)", () => {
     const r = runCli([]);
     assert.equal(r.status, 2);
+  });
+});
+
+describe("check-invariants — checkNoBeehiivHostInPublicCta (#4059)", () => {
+  it("repo atual passa o check (a varredura do #4059 limpou tudo que não é infra)", () => {
+    const violations = checkNoBeehiivHostInPublicCta();
+    assert.equal(violations.length, 0, JSON.stringify(violations, null, 2));
+  });
+
+  it("REGRESSÃO: um CTA público novo apontando pra diaria.beehiiv.com falha o check", () => {
+    const dir = mkdtempSync(join(tmpdir(), "inv-cta-"));
+    try {
+      mkdirSync(join(dir, "scripts"), { recursive: true });
+      writeFileSync(
+        join(dir, "scripts", "novo-cta.ts"),
+        'export const CTA = "https://diaria.beehiiv.com/?utm_source=x";\n',
+        "utf8",
+      );
+      const violations = checkNoBeehiivHostInPublicCta(dir);
+      assert.equal(violations.length, 1, JSON.stringify(violations, null, 2));
+      assert.equal(violations[0].rule, "no-beehiiv-host-in-public-cta");
+      assert.equal(violations[0].severity, "error");
+      assert.equal(violations[0].source_issue, "#4059");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("o host de marca (diar.ia.br) NÃO é flagado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "inv-cta-ok-"));
+    try {
+      mkdirSync(join(dir, "scripts"), { recursive: true });
+      writeFileSync(
+        join(dir, "scripts", "novo-cta.ts"),
+        'export const CTA = "https://diar.ia.br/?utm_source=x";\n',
+        "utf8",
+      );
+      assert.deepEqual(checkNoBeehiivHostInPublicCta(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("menção em COMENTÁRIO (contexto histórico) não é flagada", () => {
+    const dir = mkdtempSync(join(tmpdir(), "inv-cta-cmt-"));
+    try {
+      mkdirSync(join(dir, "scripts"), { recursive: true });
+      writeFileSync(
+        join(dir, "scripts", "doc.ts"),
+        "// antes ia pra https://diaria.beehiiv.com (#2613)\nexport const X = 1;\n",
+        "utf8",
+      );
+      assert.deepEqual(checkNoBeehiivHostInPublicCta(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("arquivo na allowlist é pulado (infra/medição/histórico)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "inv-cta-allow-"));
+    try {
+      mkdirSync(join(dir, "scripts"), { recursive: true });
+      writeFileSync(
+        join(dir, "scripts", "seo-pull.ts"),
+        'const site = "https://diaria.beehiiv.com/";\n',
+        "utf8",
+      );
+      assert.deepEqual(checkNoBeehiivHostInPublicCta(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a allowlist é explícita e não vazia (silêncio != guard funcionando)", () => {
+    assert.ok(BEEHIIV_CTA_ALLOWLIST.length >= 5);
+    assert.ok(BEEHIIV_CTA_ALLOWLIST.includes("workers/poll/wrangler.toml"));
   });
 });

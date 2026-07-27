@@ -369,6 +369,9 @@ import {
 // desta fatia, import isolado (nenhuma outra rota depende dele). Ver
 // studio-integrations.ts.
 import { buildIntegrationsData } from "./studio-integrations.ts";
+// #4041: inventário de UTMs (registry) × conversão real (Beehiiv) × clique
+// (Brevo). Ver studio-utms.ts pra fronteira de edição (só metadados).
+import { buildUtmsData, saveUtmMetadata } from "./studio-utms.ts";
 // #3861: botão "Atualizar É IA?" da dashboard diária embutida — reusa a
 // função exportada de build-poll-eia-data.ts (mesmo módulo do CLI --push),
 // mas SÓ a metade local (nunca o push pro KV do clarice-dashboard). Ver
@@ -1439,6 +1442,46 @@ function handleApiIntegrations(
     .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
 }
 
+// ── #4041: inventário de UTMs × conversão × clique ─────────────────────
+
+/** `GET /api/utms` — inventário do registry cruzado com Beehiiv (conversão)
+ * e Brevo (clique), mais o drift nos dois sentidos. Sempre 200:
+ * `buildUtmsData` é fail-soft por design (cada fonte externa vira campo
+ * `error` próprio). `?refresh=1` bypassa o cache de 10min. */
+function handleApiUtms(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
+  const forceRefresh = new URL(req.url ?? "/", "http://localhost").searchParams.get("refresh") === "1";
+  buildUtmsData(rootDir, { forceRefresh })
+    .then((data) => sendJson(res, 200, data))
+    .catch((e) => sendJson(res, 500, { error: (e as Error).message }));
+}
+
+/** `PUT /api/utms/:id` — edita METADADOS editoriais de um emissor
+ * (description/status/note). Nunca os VALORES de UTM: `saveUtmMetadata`
+ * rejeita (400) qualquer campo fora da allowlist, porque um source/campaign
+ * editado pela UI dessincronizaria a página do que o emissor realmente
+ * produz (ver header de studio-utms.ts). */
+async function handleApiUtmsPut(
+  rootDir: string,
+  id: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  let patch: Record<string, unknown>;
+  try {
+    const raw = await readRequestBody(req, 64 * 1024);
+    patch = JSON.parse(raw || "{}");
+  } catch (e) {
+    sendJson(res, 400, { ok: false, error: `corpo inválido: ${(e as Error).message}` });
+    return;
+  }
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+    sendJson(res, 400, { ok: false, error: "corpo precisa ser um objeto JSON" });
+    return;
+  }
+  const result = saveUtmMetadata(rootDir, id, patch);
+  sendJson(res, result.ok ? 200 : 400, result);
+}
+
 /** `POST /api/painel/eia/refresh` — botão "Atualizar É IA?" (#3861): regenera
  * SÓ `data/poll-eia-summary.json` local a partir dos endpoints públicos do
  * worker poll (`refreshPollEiaSummaryLocal`) — NUNCA dispara o push paralelo
@@ -1609,6 +1652,16 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         );
         return;
       }
+      // #4041: editar METADADOS de um emissor de UTM (description/status/note).
+      // Antes do guard de método, como as demais rotas de escrita. Os VALORES
+      // de UTM continuam read-only pela UI — `saveUtmMetadata` devolve 400.
+      const utmMetaMatch = urlPath.match(/^\/api\/utms\/([^/]+)$/);
+      if (req.method === "PUT" && utmMetaMatch) {
+        handleApiUtmsPut(rootDir, decodeURIComponent(utmMetaMatch[1]), req, res).catch((e) =>
+          sendJson(res, 500, { ok: false, error: (e as Error).message }),
+        );
+        return;
+      }
       // #3928: criar caixa nova — POST /api/boxes (bare). Antes do guard de
       // método (mesma disciplina das rotas de escrita acima).
       if (urlPath === "/api/boxes" && req.method === "POST") {
@@ -1698,6 +1751,11 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #3848: status de todas as integrações (APIs + MCPs).
       if (urlPath === "/api/integrations") {
         handleApiIntegrations(rootDir, req, res, integrationsFetchImpl);
+        return;
+      }
+      // #4041: inventário de UTMs × conversão × clique.
+      if (urlPath === "/api/utms") {
+        handleApiUtms(rootDir, req, res);
         return;
       }
       // #3924: seção "Caixas" — GET (PUT de save já tratado acima, antes do
@@ -1835,6 +1893,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #3924: mesma estratégia de rewrite — a página busca /api/boxes.
       if (urlPath === "/caixas" || urlPath === "/caixas/") {
         const served = serveStaticFile(PUBLIC_DIR, "/caixas.html", res, req);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #4041: mesma estratégia de rewrite — a página busca /api/utms.
+      if (urlPath === "/utms" || urlPath === "/utms/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/utms.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");

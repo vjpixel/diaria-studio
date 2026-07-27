@@ -168,8 +168,15 @@ describe("normalizeKnownUrl — links de curadoria migrados (#2261, #3698)", () 
     assert.equal(normalizeKnownUrl("https://cursos.diar.ia.br"), "https://cursos.diar.ia.br");
   });
   it("não faz over-match em sufixo com hífen (ex: -de-ia-2024)", () => {
+    // #4059: o host `diaria.beehiiv.com` passou a ser normalizado pro host de
+    // marca (com o path preservado), mas a página continua sendo OUTRA — o que
+    // esta regressão trava é que ela NÃO vira `cursos.diar.ia.br`.
     const other = "https://diaria.beehiiv.com/cursos-gratuitos-de-ia-2024";
-    assert.equal(normalizeKnownUrl(other), other, "página diferente não deve ser reescrita");
+    assert.equal(
+      normalizeKnownUrl(other),
+      "https://diar.ia.br/cursos-gratuitos-de-ia-2024",
+      "página diferente não deve cair na regra de cursos",
+    );
   });
   it("aceita fim de segmento: trailing slash, ?query, #hash", () => {
     assert.equal(normalizeKnownUrl("https://diaria.beehiiv.com/cursos-gratuitos-de-ia/"), "https://cursos.diar.ia.br");

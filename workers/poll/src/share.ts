@@ -69,6 +69,10 @@
 import { AAMMDD_RE, htmlEscape, formatEditionDate, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST, SUBSCRIBE_UTM_SOURCE } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca; #3978: utm_source fixo do funil
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { hmacSign } from "./index";
+import {
+  SHARE_UTM_CAMPAIGN as REGISTRY_SHARE_UTM_CAMPAIGN,
+  QUIZ_SHARE_UTM_CAMPAIGN as REGISTRY_QUIZ_SHARE_UTM_CAMPAIGN,
+} from "./utm-registry"; // #4041
 
 /** Payload assinado embutido no token de compartilhamento — sem PII (ver
  * rationale no header do arquivo). */
@@ -90,10 +94,10 @@ const SIG_LENGTH = 16;
  * `utm_source=share` hardcoded — um valor PRÓPRIO desalinhado da convenção
  * `eia-standalone` usada em todo o resto do funil) — nenhum utm_campaign.
  */
-const SHARE_UTM_CAMPAIGN = "eia-share";
+const SHARE_UTM_CAMPAIGN = REGISTRY_SHARE_UTM_CAMPAIGN; // #4041: registry único
 
 /** #3978: mesmo racional de `SHARE_UTM_CAMPAIGN`, pro card/CTA do quiz relâmpago. */
-const QUIZ_SHARE_UTM_CAMPAIGN = "eia-quiz-share";
+const QUIZ_SHARE_UTM_CAMPAIGN = REGISTRY_QUIZ_SHARE_UTM_CAMPAIGN; // #4041: registry único
 
 /** Pure: serializa o payload pra um corpo compacto e determinístico (vira a
  * mensagem assinada por `encodeShareToken`). Formato: `{AAMMDD}.{0|1|-}`. */

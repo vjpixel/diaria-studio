@@ -99,17 +99,17 @@ import { extractEditionsForYear, groupEditionsByMonth, listAllKeys } from "./lea
 // taxa é quem geraria os votos web, então nunca teria amostra suficiente no
 // dia 1). Ver rationale completo em `reorderJogarSequenceBySurprise` abaixo.
 import { getSummedEditionStats } from "./vote";
+import { JOGAR_POSVOTO_UTM, QUIZ_POSVOTO_UTM } from "./utm-registry"; // #4041
 
 /** Brand fixo desta página — `/jogar` É o standalone, não um parâmetro. */
 const JOGAR_BRAND = "web" as const;
 
 /**
  * #3518: URL de assinatura da diária usada no CTA de conversão pós-voto do
- * jogo standalone (o passo de conversão do EPIC #3514). `diaria.beehiiv.com`
- * DIRETO — não `diar.ia.br` — mesma decisão já documentada em
- * `count-subscriptions-by-utm.ts` (#2457) e `monthly-render.ts` (#2975): o
- * redirect do Registro.br em `diar.ia.br` dropa a query string (#2613), o que
- * apagaria silenciosamente o UTM. `utm_source=eia-standalone` segue a MESMA
+ * jogo standalone (o passo de conversão do EPIC #3514). `diar.ia.br` — host
+ * de marca canônico desde 260723 (#4059): o domínio passou pro Cloudflare e o
+ * redirect PRESERVA a query string, então a premissa do #2613 (Registro.br
+ * dropava a query e apagava o UTM) caiu. `utm_source=eia-standalone` segue a MESMA
  * convenção de medição já usada pra Clarice (`utm_source=clarice`) —
  * `count-subscriptions-by-utm.ts --source eia-standalone` mede quantos
  * assinantes vieram por este funil sem nenhum código novo (o script já
@@ -121,8 +121,9 @@ const JOGAR_BRAND = "web" as const;
  * historicamente importa este binding de `./jogar`.
  */
 export { SUBSCRIBE_UTM_SOURCE };
-export const SUBSCRIBE_UTM_MEDIUM = "jogar";
-export const SUBSCRIBE_UTM_CAMPAIGN = "eia-jogar-posvoto";
+// #4041: valores vindos do registry espelhado (`./utm-registry`).
+export const SUBSCRIBE_UTM_MEDIUM = JOGAR_POSVOTO_UTM.medium;
+export const SUBSCRIBE_UTM_CAMPAIGN = JOGAR_POSVOTO_UTM.campaign;
 
 /**
  * Pure (#3518): URL de assinatura com UTM fixo do funil do jogo. Sem
@@ -138,7 +139,7 @@ export function buildSubscribeUrl(): string {
     utm_medium: SUBSCRIBE_UTM_MEDIUM,
     utm_campaign: SUBSCRIBE_UTM_CAMPAIGN,
   });
-  return `https://diaria.beehiiv.com/?${params.toString()}`;
+  return `https://diar.ia.br/?${params.toString()}`;
 }
 
 /**
@@ -208,13 +209,14 @@ export function renderSubscribeCtaBlock(): string {
 // separadamente quantos assinantes vêm do quiz (várias rodadas, mais
 // engajamento) vs. do jogo de par único. `utm_source` continua
 // `eia-standalone` (mesma convenção de `count-subscriptions-by-utm.ts`).
-export const QUIZ_SUBSCRIBE_UTM_SOURCE = "eia-standalone";
-export const QUIZ_SUBSCRIBE_UTM_MEDIUM = "quiz";
-export const QUIZ_SUBSCRIBE_UTM_CAMPAIGN = "eia-quiz-posvoto";
+// #4041: valores vindos do registry espelhado (`./utm-registry`).
+export const QUIZ_SUBSCRIBE_UTM_SOURCE = QUIZ_POSVOTO_UTM.source;
+export const QUIZ_SUBSCRIBE_UTM_MEDIUM = QUIZ_POSVOTO_UTM.medium;
+export const QUIZ_SUBSCRIBE_UTM_CAMPAIGN = QUIZ_POSVOTO_UTM.campaign;
 
 /**
  * Pure (#3579): URL de assinatura com UTM próprio do funil do quiz relâmpago
- * — mesmo destino (`diaria.beehiiv.com`) do `buildSubscribeUrl` (#3518), UTM
+ * — mesmo destino (`diar.ia.br`, #4059) do `buildSubscribeUrl` (#3518), UTM
  * distinto pra medir o quiz separadamente.
  */
 export function buildQuizSubscribeUrl(): string {
@@ -223,7 +225,7 @@ export function buildQuizSubscribeUrl(): string {
     utm_medium: QUIZ_SUBSCRIBE_UTM_MEDIUM,
     utm_campaign: QUIZ_SUBSCRIBE_UTM_CAMPAIGN,
   });
-  return `https://diaria.beehiiv.com/?${params.toString()}`;
+  return `https://diar.ia.br/?${params.toString()}`;
 }
 
 /**

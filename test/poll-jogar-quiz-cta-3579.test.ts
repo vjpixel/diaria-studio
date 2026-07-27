@@ -37,10 +37,11 @@ import {
 } from "../workers/poll/src/jogar.ts";
 
 describe("buildQuizSubscribeUrl (#3579) — URL de assinatura com UTM próprio do quiz", () => {
-  it("usa diaria.beehiiv.com DIRETO — mesmo destino do CTA de par único (#2613/#3518)", () => {
+  it("#4059: usa diar.ia.br — mesmo destino do CTA de par único, agora no host de marca canônico", () => {
     const url = buildQuizSubscribeUrl();
-    assert.match(url, /^https:\/\/diaria\.beehiiv\.com\/\?/);
-    assert.doesNotMatch(url, /diar\.ia\.br/);
+    assert.match(url, /^https:\/\/diar\.ia\.br\/\?/);
+    assert.doesNotMatch(url, /diaria\.beehiiv\.com/);
+    assert.equal(new URL(url).searchParams.get("utm_campaign"), "eia-quiz-posvoto");
   });
 
   it("carrega utm_source/utm_medium/utm_campaign do funil do quiz", () => {
