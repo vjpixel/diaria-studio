@@ -12,6 +12,15 @@
 // inside a `node -e` one-liner.
 
 import fs from 'fs';
+// #4125 (item 7): eia-log-used.ts e sync-eia-used.ts fazem read-JSON →
+// mutate → writeFileSync em data/eia-used.json SEM lock — 2 execuções
+// concorrentes (padrão documentado neste projeto, ex: writer-destaque ×3 em
+// paralelo no Stage 2, ou overnight/develop rodando lotes concorrentes) fazem
+// a 2ª sobrescrever a entrada da 1ª, e uma edição futura pode selecionar foto
+// já usada sem erro visível. Mesmo mecanismo de lock já usado por
+// scripts/lib/social-published-store.ts (#758/#918) — reusado, não
+// reinventado (ver scripts/lib/file-lock.ts).
+import { acquireLock, releaseLock } from './lib/file-lock.ts';
 
 interface UsedEntry {
   // Format do edition_date varia historicamente: novas entries usam YYMMDD
@@ -58,26 +67,45 @@ function loadLog(): UsedEntry[] {
   );
 }
 
-const log: UsedEntry[] = loadLog();
+// #4125 (item 7): read-modify-write inteiro sob lock — sem isso, 2 execuções
+// concorrentes (ex: pipeline rodando em paralelo com um backfill manual)
+// podiam interlear loadLog()...writeFileSync() e a 2ª escrita sobrescrever a
+// entrada da 1ª silenciosamente. `.lock` ao lado de LOG_PATH, mesmo mecanismo
+// de scripts/lib/social-published-store.ts (ver scripts/lib/file-lock.ts).
+const lockPath = LOG_PATH + '.lock';
+acquireLock(lockPath);
+let result: { logged: UsedEntry; total_entries: number; dropped_prior_same_edition: number };
+try {
+  const log: UsedEntry[] = loadLog();
 
-const entry: UsedEntry = {
-  edition_date: edition,
-  image_date: imageDate,
-  title,
-  credit: credit ?? '',
-  url,
-  used_at: new Date().toISOString(),
-};
+  const entry: UsedEntry = {
+    edition_date: edition,
+    image_date: imageDate,
+    title,
+    credit: credit ?? '',
+    url,
+    used_at: new Date().toISOString(),
+  };
 
-// #1417: re-runs (--force) da mesma edição acumulavam N entries; remove
-// prior entries da mesma edição antes de append. Mantém só o último — que
-// é o que vai pro deploy. eia-compose.ts::readUsedTitles também filtra
-// entries da própria edição no read-path, então essa cleanup é cosmético
-// (mantém o arquivo enxuto) mais do que correção funcional.
-const prior = log.length;
-const cleaned = log.filter((e) => e.edition_date !== edition);
-const dropped = prior - cleaned.length;
-cleaned.push(entry);
-fs.writeFileSync(LOG_PATH, JSON.stringify(cleaned, null, 2) + '\n');
+  // #1417: re-runs (--force) da mesma edição acumulavam N entries; remove
+  // prior entries da mesma edição antes de append. Mantém só o último — que
+  // é o que vai pro deploy. eia-compose.ts::readUsedTitles também filtra
+  // entries da própria edição no read-path, então essa cleanup é cosmético
+  // (mantém o arquivo enxuto) mais do que correção funcional.
+  const prior = log.length;
+  const cleaned = log.filter((e) => e.edition_date !== edition);
+  const dropped = prior - cleaned.length;
+  cleaned.push(entry);
+  // #4125 (item 7): escrita atômica via tmp+rename — mesmo padrão de
+  // social-published-store.ts (rename é atômico no filesystem, nunca deixa
+  // LOG_PATH pela metade se o processo for interrompido no meio do write).
+  const tmpPath = LOG_PATH + '.tmp';
+  fs.writeFileSync(tmpPath, JSON.stringify(cleaned, null, 2) + '\n');
+  fs.renameSync(tmpPath, LOG_PATH);
 
-console.log(JSON.stringify({ logged: entry, total_entries: cleaned.length, dropped_prior_same_edition: dropped }));
+  result = { logged: entry, total_entries: cleaned.length, dropped_prior_same_edition: dropped };
+} finally {
+  releaseLock(lockPath);
+}
+
+console.log(JSON.stringify(result));

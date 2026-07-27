@@ -1150,7 +1150,28 @@ async function runVoteBookkeeping(
   await Promise.all([
     (async () => {
       if (!(await env.POLL.get(scoreGuardKey))) {
-        await updateScore(env, email, edition, correct, scoreRaw, brand);
+        // #4125 (item 1): relê score:{email} FRESCO aqui — NÃO usa o `scoreRaw`
+        // recebido como parâmetro (congelado em handleVoteFastPath, ANTES do
+        // round-trip da dedup DO + HMAC + render + resposta HTTP ao jogador;
+        // o fast-path responde ANTES de qualquer escrita por desenho, ver
+        // rationale completo no header desta função). Sem isso, dois votos
+        // do MESMO leitor em edições DIFERENTES com bookkeepings sobrepostos
+        // (o modo sequência foi desenhado pra permitir votar em pares
+        // sucessivos rápido) faziam o updateScore que termina por ÚLTIMO
+        // sobrescrever score:{email} inteiro com base num snapshot já
+        // obsoleto, perdendo o incremento do voto que terminou primeiro.
+        //
+        // MITIGAÇÃO, não eliminação: ainda resta uma janela pequena entre
+        // esta leitura e o `put` dentro de updateScore (KV não tem
+        // compare-and-swap) — mesmo residual já aceito em updateScoreByMonth
+        // (que também relê fresco a própria chave, ver ali) e em
+        // updateStatsCounter antes do StatsCounter DO (#2223). Fechar de vez
+        // exigiria um Durable Object dedicado serializando por e-mail (mesmo
+        // padrão de VOTE_DEDUP/STATS_COUNTER) — fora do escopo deste lote
+        // (#4125 item 1: achado desproporcional a um P2 num conjunto de P3s,
+        // reportado como follow-up em vez de forçado aqui).
+        const freshScoreRaw = await env.POLL.get(`score:${email}`);
+        await updateScore(env, email, edition, correct, freshScoreRaw, brand);
         await env.POLL.put(scoreGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
       }
     })(),
@@ -1661,7 +1682,7 @@ async function fetchEditionStatsAndCorrect(
   // #3115: o espelho KV `stats:{edition}` é SEMPRE lido em paralelo (não só no
   // branch de erro do DO) — precisamos dele mesmo quando o DO responde ok, para
   // o merge de mergeStatsWithKvFallback abaixo (DO all-zero ambíguo).
-  const [doStatsResult, correctRaw, kvStatsRaw] = await Promise.all([
+  const [doStatsResult, correctRaw, kvStatsRaw, correctCountStaleRaw] = await Promise.all([
     // #2223: tentar ler do DO (serializado, sem inconsistência de cache KV)
     (async () => {
       if (env.STATS_COUNTER) {
@@ -1682,6 +1703,11 @@ async function fetchEditionStatsAndCorrect(
     // #4118: CRU (rawEnv), não branded — ver rationale no header desta função.
     rawEnv.POLL.get(`correct:${edition}`),
     env.POLL.get(`stats:${edition}`),
+    // #4125 (item 2): setado por handleAdminCorrect (index.ts) quando o
+    // POST /adjust-correct do DO falha — sinaliza que o correct_count do DO
+    // ficou stale (o espelho KV foi atualizado de qualquer forma, ver
+    // rationale completo em mergeStatsWithKvFallback/stats-counter.ts).
+    env.POLL.get(`stats-do-stale:${edition}`),
   ]);
 
   // Self-review #3115: JSON.parse envolto em try/catch — antes só rodava no
@@ -1702,7 +1728,11 @@ async function fetchEditionStatsAndCorrect(
   // compara o `total` do DO com o do KV e usa o de maior valor (nunca per-field),
   // preservando o caso "zero real" (ambos concordam em 0 → resultado 0) sem virar
   // falso-positivo. doStatsResult === null (DO indisponível/erro) cai no KV puro.
-  const stats: StatsCounterData = mergeStatsWithKvFallback(doStatsResult, kvStatsResult);
+  // #4125 (item 2): `correctCountStale` (3º arg) cobre o caso onde total EMPATA
+  // (uma correção de gabarito nunca muda total) mas correct_count do DO ficou
+  // stale porque o /adjust-correct falhou — sem esse sinal, o empate de total
+  // sempre preferia o DO, mascarando a correção pra sempre.
+  const stats: StatsCounterData = mergeStatsWithKvFallback(doStatsResult, kvStatsResult, correctCountStaleRaw === "1");
   return { stats, correctRaw };
 }
 
@@ -1804,6 +1834,20 @@ export async function getSummedEditionStats(
 // `fetchEditionStatsAndCorrect`. `stats:{edition}` continua via `env`
 // (branded). `index.ts` passa o `env` cru como 4º arg em `routeRequest`
 // (mesmo padrão de `handleVote`/#3600 e `handleAdminCorrect`/#4038).
+/**
+ * #4125 (item 5): assina `stats:{brand}:{edition}` com `ADMIN_SECRET` — MESMA
+ * chave usada por `handleAdminCorrect` (#3118 item 8), mensagem própria pra
+ * não ser reusável entre os dois endpoints. Verificado no `sig` opcional de
+ * `/stats` (ver `handleStats` abaixo): presença de um sig válido é a prova de
+ * que o caller é autorizado (ex: `close-poll.ts`, que precisa reler o
+ * gabarito de HOJE logo após fechá-lo — ver rationale completo lá) e
+ * bypassa a omissão anti-spoiler de `correct_answer` pra edição não-fechada.
+ */
+async function verifyStatsSig(secret: string, brand: Brand, edition: string, sig: string | null): Promise<boolean> {
+  if (!sig) return false;
+  return hmacVerify(secret, `stats:${brand}:${edition}`, sig);
+}
+
 export async function handleStats(url: URL, env: Env, brand: Brand = "diaria", rawEnv: Env = env): Promise<Response> {
   const edition = url.searchParams.get("edition");
   if (!edition) return json({ error: "missing edition" }, 400, env);
@@ -1812,12 +1856,26 @@ export async function handleStats(url: URL, env: Env, brand: Brand = "diaria", r
   const { stats, correctRaw } = await getSummedEditionStats(env, brand, edition, rawEnv);
   const total = stats.total;
 
+  // #4125 (item 5, decisão do editor 260727): omite `correct_answer`
+  // publicamente enquanto `edition >= hoje` (BRT) — mesmo racional anti-spoiler
+  // do 403 que `handleQuizAnswer` já aplica ao mesmo fato (jogar.ts). Só
+  // aplica a edições AAMMDD (diária, ou o identificador legado da mensal,
+  // #3261) — comparação lexical de string contra `todayAammddBrt` não faz
+  // sentido pro formato de ciclo `YYMM-MM` (mensal atual), que não tem um
+  // "hoje" comparável e fica FORA do escopo desta decisão. `sig` autenticado
+  // (ver `verifyStatsSig`) bypassa a omissão — usado por `close-poll.ts`, que
+  // fecha a edição no MESMO dia em que ela é publicada e precisa reler o
+  // gabarito recém-gravado no sanity check pós-close (#1367).
+  const isUnclosedToday = AAMMDD_RE.test(edition) && edition >= todayAammddBrt(new Date());
+  const authorized = isUnclosedToday ? await verifyStatsSig(env.ADMIN_SECRET, brand, edition, url.searchParams.get("sig")) : true;
+  const correctAnswer = (isUnclosedToday && !authorized) ? null : correctRaw;
+
   return json({
     edition,
     total,
     voted_a: stats.voted_a,
     voted_b: stats.voted_b,
-    correct_answer: correctRaw,
+    correct_answer: correctAnswer,
     correct_count: stats.correct_count,
     correct_pct: total > 0 ? Math.round((stats.correct_count / total) * 100) : null,
   }, 200, env);

@@ -64,6 +64,27 @@ function adminSig(secret: string, brand: string, edition: string, answer: string
 }
 
 /**
+ * #4125 (item 5): `/stats` agora omite `correct_answer` publicamente enquanto
+ * `edition >= hoje` (BRT) — mesmo racional anti-spoiler do 403 que
+ * `handleQuizAnswer` já aplicava ao mesmo fato (workers/poll/src/jogar.ts).
+ * `close-poll.ts` FECHA a edição no mesmo dia em que ela é publicada (a
+ * convenção D+1 do projeto: pesquisa em D, edição datada D+1 — o dia em que o
+ * e-mail sai É o dia da edição), então o sanity check logo abaixo (linha
+ * ~190) SEMPRE roda com `edition === hoje` — a omissão pública quebraria essa
+ * checagem sem um bypass autenticado.
+ *
+ * `statsSig` assina `stats:{brand}:{edition}` com o MESMO `ADMIN_SECRET` já
+ * usado por `adminSig` — o Worker (`handleStats`, vote.ts) aceita esse `sig`
+ * como prova de que o caller é autorizado (mesmo operador que acabou de
+ * fechar o gabarito via `/admin/correct`) e devolve `correct_answer` mesmo
+ * pra edição de hoje. Sem sig (qualquer leitor público), a omissão vale
+ * normalmente.
+ */
+function statsSig(secret: string, brand: string, edition: string): string {
+  return createHmac("sha256", secret).update(`stats:${brand}:${edition}`).digest("hex");
+}
+
+/**
  * #3984: assina o payload de `POST /admin/eiameta` (descrição+crédito da
  * imagem, gravados em `eiameta:{edition}` — chave COMPARTILHADA, sem prefixo
  * de brand, ver rationale em jogar.ts). O conteúdo inteiro (description +
@@ -187,7 +208,12 @@ async function main(): Promise<void> {
   // #1367: sanity check pós-close — confirmar que /stats retorna correct_answer
   // não-null. Sem isso, exit 0 não garante que o gabarito ficou registrado
   // (caso real 260518: close-poll falhou silencioso, total=3 mas correct_answer=null).
-  const statsRes = await dohFetch(`${POLL_WORKER_URL}/stats?edition=${edition}${brandQ}`);
+  // #4125 (item 5): `sig` autenticado — sem ele, `/stats` omitiria
+  // correct_answer publicamente pra edição de hoje (anti-spoiler), fazendo
+  // este sanity check FATAL mesmo com o gabarito corretamente gravado. Ver
+  // rationale completo no header de `statsSig` acima.
+  const statsSigQ = `&sig=${statsSig(secret, brand ?? "diaria", edition)}`;
+  const statsRes = await dohFetch(`${POLL_WORKER_URL}/stats?edition=${edition}${brandQ}${statsSigQ}`);
   const stats = await statsRes.json() as { correct_answer?: string | null };
   if (!statsRes.ok || stats.correct_answer !== answer) {
     console.error(

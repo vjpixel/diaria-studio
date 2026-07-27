@@ -25,7 +25,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { renderJogarPageHtml, renderJogarSequencePageHtml } from "../workers/poll/src/jogar.ts";
+import { renderJogarPageHtml, renderJogarQuizPageHtml, renderJogarSequencePageHtml } from "../workers/poll/src/jogar.ts";
 
 describe("CLS fix — sequência (#3607)", () => {
   it(".choice img reserva aspect-ratio 16:9 no CSS (reforço pro width/height)", () => {
@@ -58,5 +58,18 @@ describe("CLS fix — par único (#3607, consistência com a sequência)", () =>
     const html = renderJogarPageHtml({ edition: "260601", revealed: false });
     assert.match(html, /<img id="jogar-img-a" src="[^"]+" width="800" height="450" alt="Imagem A" loading="lazy">/);
     assert.match(html, /<img id="jogar-img-b" src="[^"]+" width="800" height="450" alt="Imagem B" loading="lazy">/);
+  });
+});
+
+describe("CLS fix — quiz relâmpago (#4125 item 3, mesmo fix do #3607 — ficou de fora sem racional documentado)", () => {
+  it(".choice img reserva aspect-ratio 16:9 no CSS", () => {
+    const html = renderJogarQuizPageHtml(["260601", "260602"]);
+    assert.match(html, /\.choice img \{[^}]*aspect-ratio:\s*16\s*\/\s*9[^}]*\}/);
+  });
+
+  it("renderRound() do quiz gera <img> com width=800/height=450 reservados — é o modo que MAIS troca imagem por sessão (várias rodadas)", () => {
+    const html = renderJogarQuizPageHtml(["260601", "260602"]);
+    assert.match(html, /<img src="' \+ imgUrl\(edition, "A"\) \+ '" width="800" height="450" alt="Imagem A"/);
+    assert.match(html, /<img src="' \+ imgUrl\(edition, "B"\) \+ '" width="800" height="450" alt="Imagem B"/);
   });
 });

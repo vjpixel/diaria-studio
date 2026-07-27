@@ -39,7 +39,7 @@ import {
   maskEmail, // #3118 item 11
   jogarArchiveHref, // #3524
   buildBrandSiteUrl, // #3978: href com UTM do rodapé de /vote
-  lightboxScript, // #4007: script do lightbox de zoom — reusado nas 4 superfícies do par de imagens
+  lightboxScript, // #4007: script do lightbox de zoom — reusado nas 5 superfícies do par de imagens (#4125 item 3: quiz incluído)
   renderLightboxMarkup, // #4007: markup do <dialog> de zoom
   renderLightboxStyles, // #4007: CSS do lightbox + badge de lupa
   renderBrandShellStyles, // #4110: mesma régua+rodapé de leaderboard/arquivo — /vote era a única página pública sem shell
@@ -329,6 +329,7 @@ import {
   isValidVoteEditionFormat, // #3294 item 2: handleAdminCorrect também precisa validar a forma do edition
   isValidVoteEmailFormat, // #3294 item 3: handleSetName também precisa validar a forma do email
   safeParseKv, // #3298: parse seguro de JSON vindo do KV
+  AAMMDD_RE, // #4157: handleAdminCorrect precisa distinguir AAMMDD de ciclo pro guard brand×formato
 } from "./lib";
 export { formatEditionDate, htmlEscape, parseValidEditions, isValidEdition, isUnsubstitutedMergeTag, redirectTargetForTrailingSlash, classify403Reason } from "./lib";
 
@@ -541,6 +542,31 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
   const valid = await hmacVerify(env.ADMIN_SECRET, `${brand}:${edition}:${answer}`, sig);
   if (!valid) return json({ error: "invalid signature" }, 403, env);
 
+  // #4157: guard de isolação brand×formato — o #4038 tornou a escrita de
+  // `correct:{edition}` incondicionalmente crua (linha abaixo), o que era
+  // correto pro bug QUE ele resolvia (ver rationale no header desta função),
+  // mas removeu de quebra o isolamento que impedia o gabarito da mensal
+  // (brand `clarice`, ciclo `YYMM-MM`) de sobrescrever o de uma edição
+  // diária real quando alguém chama com o identificador legado AAMMDD do
+  // ciclo mensal (ex: `--brand clarice --edition 260531`, forma que
+  // `close-poll.ts` ainda aceita e documenta) — `correct:260531` É a chave
+  // do gabarito da edição diária de 31/05, e o backfill de scores rodaria só
+  // sobre `clarice:vote:260531:*`, deixando `vote:260531:*` (diária)
+  // pontuado contra o gabarito errado sem nenhum sinal de erro.
+  //
+  // Guard vale SÓ pra ESCRITA aqui — nunca pra leitura de gabaritos legados
+  // da Clarice já gravados sob AAMMDD em produção (`clarice:correct:260531`
+  // existe e handleStats/handleVote continuam lendo essas chaves
+  // normalmente; não tocamos leitura nenhuma). `isValidVoteEditionFormat`
+  // acima já garantiu que `edition` é AAMMDD OU ciclo — aqui checamos a
+  // COMBINAÇÃO brand×formato: AAMMDD com um brand anual (`leaderboardPeriod
+  // === "year"`, hoje só `clarice`) é a combinação suspeita.
+  if (AAMMDD_RE.test(edition) && BRAND_INFO[brand].leaderboardPeriod === "year") {
+    return json({
+      error: `edition "${edition}" está no formato diário (AAMMDD) mas brand "${brand}" é anual — use o formato de ciclo (YYMM-MM) pra não sobrescrever o gabarito de uma edição diária real`,
+    }, 400, env);
+  }
+
   // #4038: sempre via rawEnv — ver rationale no header da função.
   await rawEnv.POLL.put(`correct:${edition}`, answer);
 
@@ -606,7 +632,20 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
   //
   // Consistência DO×KV: DO é atualizado primeiro; falha do DO é logada mas não
   // bloqueia o update do KV espelho (melhor ter KV correto e DO stale do que nenhum).
+  //
+  // #4125 (item 2): a falha do DO aqui, sozinha, mascarava o correct_count
+  // ERRADO pra sempre em /stats — `mergeStatsWithKvFallback` (stats-counter.ts)
+  // só preferia o KV quando `total` divergia, e uma correção de gabarito NUNCA
+  // muda `total` (empate sempre devolvia o DO stale, sem nenhum caminho de
+  // auto-correção). Fix: `stats-do-stale:{edition}` (branded — mesmo espaço de
+  // `stats:{edition}`) marca explicitamente "DO desatualizado aqui" quando a
+  // chamada falha, e é limpo quando uma correção subsequente tem sucesso
+  // (self-healing). `fetchEditionStatsAndCorrect` (vote.ts) lê essa flag e
+  // repassa pro merge, que então usa o correct_count do KV mesmo com total
+  // empatado. Ambas as operações são fail-soft (nunca bloqueiam a resposta
+  // 200 do admin nem a atualização do espelho KV logo abaixo).
   if (env.STATS_COUNTER) {
+    const staleFlagKey = `stats-do-stale:${edition}`;
     try {
       const doId = env.STATS_COUNTER.idFromName(`${brand}:${edition}`);
       const doStub = env.STATS_COUNTER.get(doId);
@@ -617,9 +656,15 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
       });
       if (!doResp.ok) {
         console.error(JSON.stringify({ event: "stats_counter_adjust_correct_error", status: doResp.status, edition }));
+        await env.POLL.put(staleFlagKey, "1").catch(() => {});
+      } else {
+        // Sucesso — limpa uma marca stale de uma correção ANTERIOR que
+        // tivesse falhado (self-healing; delete de chave ausente é no-op).
+        await env.POLL.delete(staleFlagKey).catch(() => {});
       }
     } catch (e) {
       console.error(JSON.stringify({ event: "stats_counter_adjust_correct_error", edition, error: String(e) }));
+      await env.POLL.put(staleFlagKey, "1").catch(() => {});
     }
   }
 
@@ -1258,7 +1303,12 @@ export default {
     // redirect é universal (GET, qualquer host) — mais simples de testar/
     // manter, e inofensivo em poll.diaria.workers.dev/ (nenhum link aponta
     // pra lá hoje).
-    if (path === "/" && request.method === "GET") {
+    // #4125 (item 6): HEAD aceito pelo mesmo racional já aplicado a
+    // `/leaderboard`/`/img/*` (#3998) — geradores de preview e uptime checks
+    // fazem HEAD antes de seguir o link, e a raiz é o link mais
+    // compartilhado (é o próprio domínio eia.diar.ia.br). `Response.redirect`
+    // não distingue método — funciona idêntico pra HEAD.
+    if (path === "/" && (request.method === "GET" || request.method === "HEAD")) {
       const target = new URL(request.url);
       target.pathname = "/jogar";
       return Response.redirect(target.toString(), 301);

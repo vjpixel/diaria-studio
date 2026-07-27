@@ -97,16 +97,41 @@ export function isValidStatsCounterData(data: unknown): data is StatsCounterData
  * concordam em 0, o resultado permanece 0.
  *
  * `doStats === null` (DO indisponível/erro) → usa KV puro (ou zero se ausente).
+ *
+ * #4125 (item 2): `correctCountStale` — sinaliza que o `correct_count` do DO
+ * é conhecidamente stale em relação ao KV, INDEPENDENTE de `total` empatar.
+ * Cenário: `handleAdminCorrect` (index.ts) atualiza o DO via `/adjust-correct`
+ * e, se essa chamada falhar, loga o erro mas segue gravando o espelho KV de
+ * qualquer forma (fail-soft deliberado — "melhor ter KV correto e DO stale
+ * do que nenhum"). Uma correção de gabarito NUNCA muda `total` (só decide
+ * quais votos já registrados contam como corretos) — então o `total` do DO
+ * e do KV sempre EMPATAM depois de uma correção, e o `kvStats.total >
+ * doStats.total` acima nunca dispara. Sem este sinal extra, o empate sempre
+ * preferia o DO (linha `return doStats` abaixo), servindo o `correct_count`
+ * ERRADO indefinidamente em `/stats`, no sufixo "% acertaram" e na aba
+ * Engajamento da dashboard — sem nenhum caminho de auto-correção, porque
+ * incrementos normais (`handleIncrement`) só ALTERAM `correct_count` a partir
+ * do valor já armazenado no DO, nunca resetam do zero.
+ *
+ * Quando `correctCountStale` é true E o KV existe, o resultado usa
+ * `total`/`voted_a`/`voted_b` do DO (ainda autoritativo pra essas contagens —
+ * a falha foi só no `/adjust-correct`, não nos increments normais) mas
+ * `correct_count` do KV (a única fonte que `handleAdminCorrect` garante
+ * atualizada, mesmo com o DO falhando).
  */
 export function mergeStatsWithKvFallback(
   doStats: StatsCounterData | null,
   kvStats: StatsCounterData | null,
+  correctCountStale = false,
 ): StatsCounterData {
   if (doStats === null) {
     return kvStats ?? { total: 0, voted_a: 0, voted_b: 0, correct_count: 0 };
   }
   if (kvStats && kvStats.total > doStats.total) {
     return kvStats;
+  }
+  if (correctCountStale && kvStats) {
+    return { ...doStats, correct_count: kvStats.correct_count };
   }
   return doStats;
 }

@@ -21,7 +21,7 @@ import {
   envioMonthYear, // #3464: heading do arquivo mensal Clarice mostra mês de ENVIO, não de conteúdo
   buildBrandSiteUrl, // #3978: href com UTM da sub-copy do leaderboard
   isAnonymousWebIdentity, // #3975: filtra identidade anônima do brand web fora do ranking público
-  lightboxScript, // #4007: script do lightbox de zoom — reusado nas 4 superfícies do par de imagens
+  lightboxScript, // #4007: script do lightbox de zoom — reusado nas 5 superfícies do par de imagens (#4125 item 3: quiz incluído)
   renderLightboxMarkup, // #4007: markup do <dialog> de zoom
   renderLightboxStyles, // #4007: CSS do lightbox + badge de lupa
 } from "./lib";

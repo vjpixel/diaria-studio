@@ -474,9 +474,15 @@ describe("handleAdminCorrect — HMAC inclui o brand (#3118 item 8)", () => {
   it("sig assinado com o brand correto valida normalmente", async () => {
     const kv = makeTrackedKv();
     const env = makePollEnv(kv, { adminSecret: "shared-secret" });
-    const sig = await hmacSign("shared-secret", "clarice:260701:A");
+    // #4157: edition em formato de CICLO (não AAMMDD) — brand=clarice é anual
+    // (BRAND_INFO.clarice.leaderboardPeriod === "year") e o guard novo
+    // rejeita a combinação clarice+AAMMDD independente do sig ser válido
+    // (ver poll-admin-correct-brand-format-guard-4157.test.ts). Este teste é
+    // sobre o item 8 (sig inclui o brand), não sobre o guard — usar o
+    // formato que o brand realmente usa evita colidir com os dois.
+    const sig = await hmacSign("shared-secret", "clarice:2607-01:A");
     const url = new URL("https://poll.diaria.workers.dev/admin/correct");
-    url.searchParams.set("edition", "260701");
+    url.searchParams.set("edition", "2607-01");
     url.searchParams.set("answer", "A");
     url.searchParams.set("sig", sig);
     url.searchParams.set("brand", "clarice");

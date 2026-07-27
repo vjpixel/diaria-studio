@@ -23,7 +23,7 @@
  *   npx tsx scripts/poll-worker-healthcheck.ts [--edition AAMMDD] [--worker-url URL]
  *
  * Env:
- *   POLL_WORKER_URL — override; default https://poll.diaria.workers.dev
+ *   POLL_WORKER_URL — override; default https://eia.diar.ia.br (#3904/#4125 item 8)
  *
  * Exit codes:
  *   0 — todos os checks passaram
@@ -37,8 +37,9 @@ import "dotenv/config";
 
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { dohFetch } from "./lib/doh-fetch.ts";
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4125 item 8: default alinhado ao resto do repo (#3904) — poll.diaria.workers.dev é domínio legado
 
-const DEFAULT_WORKER_URL = "https://poll.diaria.workers.dev";
+export const DEFAULT_WORKER_URL = DIARIA_EIA_URL;
 
 export interface CheckResult {
   name: string;

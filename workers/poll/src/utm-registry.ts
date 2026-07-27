@@ -84,3 +84,10 @@ export const JOGAR_GATE_INLINE_UTM = {
   medium: "jogar-gate",
   campaign: "eia-jogar-gate-signup",
 } as const;
+
+/** Opt-in de newsletter do form de identidade (#3975/#4125 item 4). @see scripts/lib/shared/utm-registry.ts */
+export const JOGAR_IDENTIFY_INLINE_UTM = {
+  source: EIA_STANDALONE_SOURCE,
+  medium: "jogar-identify",
+  campaign: "eia-jogar-identify-signup",
+} as const;

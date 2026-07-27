@@ -35,6 +35,7 @@ import { renderHaltBanner } from "./lib/gate-banner.ts";
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
 import { isValidEditionDir } from "./lib/edition-utils.ts"; // #1811: rejeita data inválida
 import { isWorkerReachable } from "./lib/worker-reachability.ts"; // #2551: DoH fallback p/ filtro DNS local
+import { DIARIA_EIA_URL } from "./lib/canonical-urls.ts"; // #4125 item 8: default alinhado ao resto do repo (#3904) — poll.diaria.workers.dev é domínio legado
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -229,6 +230,16 @@ export function runPreflight(
   return { decision: decide(edition, outcomes), outcomes };
 }
 
+/**
+ * #4125 (item 8): extraído pra função pura testável — default era
+ * "https://poll.diaria.workers.dev" (domínio legado) enquanto o resto do
+ * repo já usa DIARIA_EIA_URL (#3904). `env` injetável só pra teste (default
+ * `process.env`, comportamento de produção idêntico ao inline anterior).
+ */
+export function resolvePollWorkerUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return env.POLL_WORKER_URL ?? DIARIA_EIA_URL;
+}
+
 async function main(): Promise<void> {
   const { values } = parseCliArgs(process.argv.slice(2));
   const edition = values["edition"];
@@ -242,8 +253,8 @@ async function main(): Promise<void> {
   );
 
   // #2551: pre-check de reachability com DoH fallback — antes de correr os
-  // child scripts, detecta se DNS local está filtrando poll.diaria.workers.dev.
-  const POLL_WORKER_URL = process.env.POLL_WORKER_URL ?? "https://poll.diaria.workers.dev";
+  // child scripts, detecta se DNS local está filtrando o domínio de marca.
+  const POLL_WORKER_URL = resolvePollWorkerUrl();
   const reach = await isWorkerReachable(`${POLL_WORKER_URL}/health`);
   if (!reach.up) {
     if (reach.local_dns_filtered) {
