@@ -260,7 +260,9 @@ export function renderJogarGatePage(edition: string | null): string {
   label.optin { font-size: 0.85rem; display: flex; gap: 6px; align-items: flex-start; }
   button { padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: ${DS_FONTS.sans}; }
   .website { position: absolute; left: -9999px; }
-  #gate-msg { font-size: 0.9rem; margin-top: 10px; min-height: 1.2em; }
+  #gate-msg { margin-top: 10px; min-height: 1.2em; }
+  #gate-msg.err { padding: 12px 14px; font-size: 0.95rem; font-weight: 700; color: ${DS_COLORS.ink}; background: #FBECEC; border: 1px solid #E3B4B4; border-radius: 4px; }
+  #gate-msg.info { font-size: 0.9rem; color: ${DS_COLORS.ink}; opacity: 0.75; }
 </style>
 </head>
 <body>
@@ -270,7 +272,7 @@ export function renderJogarGatePage(edition: string | null): string {
   <input type="text" name="website" class="website" tabindex="-1" autocomplete="off">
   <input type="email" name="email" placeholder="seu@email.com" required>
   <input type="text" name="name" placeholder="Nome (opcional)">
-  <label class="optin"><input type="checkbox" name="optin" value="1"> Quero receber a newsletter diária da Diar.ia</label>
+  <label class="optin"><input type="checkbox" name="optin" value="1"> Quero receber a Diar.ia — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, direto no seu e-mail.</label>
   <button type="submit">Continuar jogando</button>
 </form>
 <p id="gate-msg"></p>
@@ -278,9 +280,13 @@ export function renderJogarGatePage(edition: string | null): string {
 (function () {
   var form = document.getElementById("gate-form");
   var msg = document.getElementById("gate-msg");
+  function setMsg(text, cls) {
+    msg.textContent = text;
+    msg.className = cls || "";
+  }
   form.addEventListener("submit", function (ev) {
     ev.preventDefault();
-    msg.textContent = "Verificando...";
+    setMsg("Verificando…", "info");
     var email = form.email.value.trim();
     var name = form.name.value.trim();
     var optin = form.optin.checked;
@@ -291,16 +297,17 @@ export function renderJogarGatePage(edition: string | null): string {
       body: JSON.stringify({ email: email, website: website }),
     }).then(function (r) { return r.json(); }).then(function (data) {
       if (data.ok) { window.location.href = "/jogar?v=" + Date.now() + "${editionParam}"; return; }
-      if (!optin) { msg.textContent = "Marque a caixinha pra assinar e continuar."; return; }
+      if (!optin) { setMsg("Marque a caixinha pra assinar e continuar.", "err"); return; }
       return fetch("/jogar/gate/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email, name: name, optin: optin, website: website }),
       }).then(function (r2) { return r2.json(); }).then(function (data2) {
-        if (data2 && data2.ok) { window.location.href = "/jogar?v=" + Date.now() + "${editionParam}"; return; }
-        msg.textContent = "Não deu — tenta de novo em instantes.";
+        if (data2 && data2.ok && !data2.sessionUnavailable) { window.location.href = "/jogar?v=" + Date.now() + "${editionParam}"; return; }
+        if (data2 && data2.ok && data2.sessionUnavailable) { setMsg("Assinatura feita! Confirme o e-mail que te enviamos — depois é só voltar aqui pra continuar jogando.", "err"); return; }
+        setMsg("Não deu — tenta de novo em instantes.", "err");
       });
-    }).catch(function () { msg.textContent = "Erro de conexão — tenta de novo."; });
+    }).catch(function () { setMsg("Erro de conexão — tenta de novo.", "err"); });
   });
 })();
 </script>
