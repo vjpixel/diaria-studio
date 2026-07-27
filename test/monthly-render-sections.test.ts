@@ -70,6 +70,38 @@ describe("renderLinkListSection", () => {
     assert.ok(html.includes("Outras Notícias do Mês"));
     assert.ok(html.includes("Claude chega a PMEs"));
   });
+
+  // CTA de rodapé do Use Melhor: parágrafo final que CONTÉM link mas não COMEÇA
+  // com um. Antes deste suporte ele era engolido pelo descBuf e saía concatenado
+  // na descrição do último item — o CTA parecia parte do tutorial.
+  const chunkComCta = [
+    chunk,
+    "",
+    "Dicas como essas saem todos os dias na edição diária. Para receber, [cadastre-se gratuitamente](https://diar.ia.br/?utm_source=clarice&utm_term=use-melhor).",
+  ].join("\n");
+
+  it("CTA de rodapé sai em parágrafo próprio, não colado na descrição do último item", () => {
+    const html = renderLinkListSection(chunkComCta, "Use Melhor do Mês");
+    assert.ok(html.includes("diar.ia.br"), "o link do CTA sobrevive ao render");
+    assert.ok(
+      !/Maior corte de uma vez só\.\s*Dicas como essas/.test(html),
+      "CTA não pode ser concatenado na descrição do último item",
+    );
+    const idxDesc = html.indexOf("Maior corte de uma vez só.");
+    const idxCta = html.indexOf("Dicas como essas");
+    assert.ok(idxDesc > -1 && idxCta > idxDesc, "CTA vem depois dos itens");
+    assert.ok(
+      html.slice(idxDesc, idxCta).includes("</p>"),
+      "há fechamento de parágrafo entre a última descrição e o CTA",
+    );
+  });
+
+  it("descrição sem link nunca é confundida com rodapé", () => {
+    const html = renderLinkListSection(chunk, "Radar do Mês");
+    assert.ok(html.includes("Maior corte de uma vez só."));
+    // 2 itens → 2 títulos ancorados; nenhum parágrafo órfão de rodapé.
+    assert.equal((html.match(/<a href="https:\/\//g) || []).length, 2);
+  });
 });
 
 describe("draftToEmail — render das seções Use Melhor + Radar", () => {

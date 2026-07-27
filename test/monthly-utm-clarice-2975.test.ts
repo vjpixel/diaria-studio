@@ -123,6 +123,24 @@ describe("#4040 — utm_campaign distinto por POSIÇÃO do link", () => {
     }
   });
 
+  it("CTA de rodapé do Use Melhor emite a posição `use-melhor`, não `inline`", () => {
+    setMonthlyUtmCiclo("2606-07");
+    try {
+      const html = renderLinkListSection(
+        "**USE MELHOR**\n\n[Tutorial](https://exemplo.com/t)\n\nO que ensina.\n\n" +
+          "Dicas como essas saem todos os dias na edição diária. Para receber, [cadastre-se gratuitamente](https://diar.ia.br/?utm_source=clarice&utm_term=use-melhor).",
+        "Use Melhor do Mês",
+      );
+      assert.match(html, /utm_campaign=clarice-2606-07-use-melhor/);
+      assert.doesNotMatch(html, /utm_campaign=clarice-2606-07-inline/);
+      // GA tracking da Brevo reescreve utm_campaign mas preserva utm_term — o
+      // link precisa sair marcado nas DUAS vias (CTA-01, 260722).
+      assert.match(html, /utm_term=use-melhor/);
+    } finally {
+      setMonthlyUtmCiclo(null);
+    }
+  });
+
   it("título de item de lista (Radar / Use Melhor) emite a posição `titulo`", () => {
     setMonthlyUtmCiclo("2606-07");
     try {

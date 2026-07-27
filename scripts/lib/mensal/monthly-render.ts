@@ -365,7 +365,7 @@ function nextLinkStartIndex(str: string, from: number): number {
  * independente que só encosta no link por acidente, nem quando um dos 2+
  * links consecutivos bold-wrapped "rouba" o `**` de fechamento do anterior).
  */
-export function renderInline(text: string): string {
+export function renderInline(text: string, posicao = "inline"): string {
   // Pre-strip backslash escapes ANTES do escHtml — assim `\&` vira `&` que então
   // vira `&amp;`, e não `\&amp;` (que aconteceria se strippássemos depois).
   const input = stripBackslashEscapes(text);
@@ -419,7 +419,7 @@ export function renderInline(text: string): string {
     }
 
     if (textBefore.length > 0) parts.push(renderTextInline(textBefore));
-    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url, "inline"))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
+    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url, posicao))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
     parts.push(boldLink ? `<strong>${linkHtml}</strong>` : linkHtml);
     lastIdx = boldLink ? j + 3 : j + 1;
     linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
@@ -753,9 +753,25 @@ export function renderClarice(chunk: string): string {
  */
 export function renderLinkListSection(chunk: string, displayTitle: string): string {
   const lines = chunk.split("\n");
-  const content = lines.slice(1).join("\n").trim();
+  let content = lines.slice(1).join("\n").trim();
 
   const header = renderKicker(displayTitle);
+
+  // Rodapé de seção (CTA) — parágrafo final que CONTÉM um link markdown mas não
+  // COMEÇA com um. Sem isto ele cairia no `descBuf` do último item e sairia
+  // concatenado no parágrafo daquele tutorial (o CTA do Use Melhor renderizava
+  // como se fosse continuação da descrição do 3º item).
+  //
+  // A regra é inequívoca porque o template proíbe link na descrição ("No Use
+  // Melhor e no Radar, o título é a âncora") — só título e rodapé têm link, e
+  // só o título COMEÇA com ele. Descrição sem link nunca é confundida.
+  const paras = content.split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p);
+  const last = paras[paras.length - 1];
+  let footer: string | null = null;
+  if (paras.length > 1 && last && !/^\[/.test(last) && /\]\(https?:\/\//.test(last)) {
+    footer = last;
+    content = paras.slice(0, -1).join("\n\n");
+  }
 
   // Items: [título](url) + blank line + descrição (separados por blank entre itens).
   // split(/\n\n+/) quebra título e descrição em chunks separados — a descrição
@@ -795,7 +811,15 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
     })
     .join("\n");
 
-  return header + itemsHtml;
+  // #4040: posição própria (`use-melhor`) em vez do `inline` genérico — senão o
+  // CTA cairia no mesmo utm_campaign do "aqui" da APRESENTAÇÃO e de qualquer
+  // link no meio da prosa dos destaques, e não daria pra medir se a seção mais
+  // clicada da peça é de fato o melhor lugar pro convite de cadastro.
+  const footerHtml = footer
+    ? `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(footer, "use-melhor")}</p>`
+    : "";
+
+  return header + itemsHtml + footerHtml;
 }
 
 /** @deprecated back-compat: use renderLinkListSection. */
