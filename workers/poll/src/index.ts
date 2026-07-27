@@ -1379,7 +1379,10 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // #4054: 6º arg `request` — habilita a identidade pós-gate do caminho de
     // fora (cookie de sessão, brand "web"), ver rationale em vote.ts.
     if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand, env, ctx, request);
-    if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv, brand);
+    // #4118: 4º arg `env` (cru) — handleStats lê o gabarito `correct:{edition}`
+    // dele (brand-independente, mesmo padrão de handleVote/#3600 e
+    // handleAdminCorrect/#4038); `stats:{edition}` continua via `bEnv` (branded).
+    if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv, brand, env);
     // #3257: lista as edições/ciclos com stats registrados neste brand — usado
     // pelo botão "Atualizar" da aba Engajamento do clarice-dashboard pra
     // enumerar quais edições consultar via /stats sem depender de

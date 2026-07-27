@@ -138,7 +138,12 @@ describe("handleStats: /stats?edition={ciclo} também acha votos sob a chave AAM
     // prefixo "clarice:" aplicado manualmente no fixture.
     const kv = makeTrackedKv({
       "clarice:stats:260531": JSON.stringify({ total: 32, voted_a: 14, voted_b: 18, correct_count: 18 }),
-      "clarice:correct:260531": "B",
+      // #4118: gabarito é CRU (sem prefixo de brand) — close-poll.ts/
+      // /admin/correct (#4038) só gravam `correct:{edition}`, nunca
+      // `clarice:correct:{edition}`. Fixture atualizada pra refletir isso
+      // (era "clarice:correct:260531" antes do #4118 — só "passava" porque
+      // handleStats lia o gabarito via env branded, o próprio bug).
+      "correct:260531": "B",
       // "clarice:stats:2605-06" propositalmente AUSENTE — é exatamente isso
       // que o bug reproduz (a chave nova nunca foi escrita para este ciclo).
     });
@@ -236,9 +241,9 @@ describe("handleStats: /stats?edition={ciclo} também acha votos sob a chave AAM
   it("correct_answer: chave primária tem prioridade sobre a legada quando ambas existem", async () => {
     const kv = makeTrackedKv({
       "clarice:stats:260430": JSON.stringify({ total: 1, voted_a: 1, voted_b: 0, correct_count: 1 }),
-      "clarice:correct:260430": "A", // gabarito legado
+      "correct:260430": "A", // gabarito legado — #4118: CRU, sem prefixo de brand
       "clarice:stats:2604-05": JSON.stringify({ total: 1, voted_a: 0, voted_b: 1, correct_count: 0 }),
-      "clarice:correct:2604-05": "B", // gabarito novo — deve vencer
+      "correct:2604-05": "B", // gabarito novo — deve vencer (também CRU)
     });
     const env: Env = {
       POLL: kv as unknown as KVNamespace,
