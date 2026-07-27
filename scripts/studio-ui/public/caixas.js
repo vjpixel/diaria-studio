@@ -41,6 +41,7 @@ const el = {
   editorFile: document.getElementById("editor-file"),
   editorNome: document.getElementById("editor-nome"),
   editorCategoria: document.getElementById("editor-categoria"), // #3981
+  editorTitulo: document.getElementById("editor-titulo"), // #4079
   editorConteudo: document.getElementById("editor-conteudo"), // #3979 (era "editor")
   editorNotas: document.getElementById("editor-notas"), // #3979
   editorLoadError: document.getElementById("editor-load-error"),
@@ -370,6 +371,7 @@ function closeEditor() {
   el.editorNotas.value = "";
   el.editorNome.value = "";
   el.editorCategoria.value = "";
+  el.editorTitulo.value = ""; // #4079
 }
 
 async function openEditor(slug) {
@@ -410,18 +412,21 @@ async function openEditor(slug) {
   el.editorNotas.value = body.notas ?? "";
   el.editorNome.value = body.nome ?? "";
   el.editorCategoria.value = body.categoria ?? ""; // #3981
+  el.editorTitulo.value = body.titulo ?? ""; // #4079
   loadedModifiedAt = body.modifiedAt ?? null;
 }
 
 async function saveCurrentBox() {
   if (!currentSlug) return;
   const slugAtSaveStart = currentSlug;
-  // #3979/#3981: envia os 2 campos dedicados (nome, categoria) + os 2
-  // painéis (conteudo, notas) — o server reconstrói o header inteiro.
+  // #3979/#3981/#4079: envia os 3 campos dedicados (nome, categoria, titulo) +
+  // os 2 painéis (conteudo, notas) — o server reconstrói o header inteiro e
+  // reescreve a 1ª linha do conteúdo a partir de `titulo` antes disso.
   const conteudoAtSaveStart = el.editorConteudo.value;
   const notasAtSaveStart = el.editorNotas.value;
   const nomeAtSaveStart = el.editorNome.value;
   const categoriaAtSaveStart = el.editorCategoria.value;
+  const tituloAtSaveStart = el.editorTitulo.value;
   const expectedModifiedAtAtSaveStart = loadedModifiedAt;
 
   el.saveBtn.disabled = true;
@@ -433,6 +438,7 @@ async function saveCurrentBox() {
     categoria: categoriaAtSaveStart,
     notas: notasAtSaveStart,
     conteudo: conteudoAtSaveStart,
+    titulo: tituloAtSaveStart,
     expectedModifiedAt: expectedModifiedAtAtSaveStart,
   });
   try {
@@ -457,6 +463,7 @@ async function saveCurrentBox() {
             categoria: categoriaAtSaveStart,
             notas: notasAtSaveStart,
             conteudo: conteudoAtSaveStart,
+            titulo: tituloAtSaveStart,
             force: true,
           }),
         }));
@@ -478,6 +485,14 @@ async function saveCurrentBox() {
       if (currentSlug === slugAtSaveStart) {
         dirty = false;
         loadedModifiedAt = body.modifiedAt;
+        // #4079: o campo Título pode ter feito o server reescrever a 1ª
+        // linha de "Conteúdo" — resincroniza os 2 painéis com o disco pra o
+        // textarea nunca ficar mostrando a 1ª linha ANTIGA até o próximo load.
+        const synced = await fetchJson(`/api/boxes/${encodeURIComponent(slugAtSaveStart)}`);
+        if (synced.ok && synced.body && synced.body.ok && currentSlug === slugAtSaveStart) {
+          el.editorConteudo.value = synced.body.conteudo ?? synced.body.body ?? synced.body.content;
+          el.editorTitulo.value = synced.body.titulo ?? "";
+        }
       }
       // #3874/R5: zero UI otimista — refetcha a lista do servidor em vez de
       // atualizar o card localmente (mtime/dirtyVsGit vêm sempre do disco).
@@ -656,6 +671,9 @@ el.editorNome.addEventListener("input", () => {
   dirty = true;
 });
 el.editorCategoria.addEventListener("input", () => {
+  dirty = true;
+});
+el.editorTitulo.addEventListener("input", () => {
   dirty = true;
 });
 
