@@ -26,6 +26,8 @@
  * #3979/#3981) usam os helpers genéricos daqui.
  */
 
+import { createHash } from "node:crypto";
+
 /** Corpo do PRIMEIRO comentário HTML se o conteúdo começa (após espaço) com
  * um — o "header" convencional dos snippets. `null` se não houver. */
 export function leadingCommentInner(content: string): string | null {
@@ -68,6 +70,21 @@ export function stripHeaderBlock(content: string): string {
   const m = /^\s*<!--[\s\S]*?-->/.exec(content);
   if (!m) return content;
   return content.slice(m[0].length).replace(/^\r?\n+/, "");
+}
+
+/** Hash determinístico (sha256, hex) do CORPO pós-cabeçalho de um snippet —
+ * usado por `lint-checks/snippet-staleness.ts` (#4150) pra distinguir edição
+ * de metadado (`nome:`/`categoria:`/`alt:`, dentro do cabeçalho de comentário
+ * removido por `stripHeaderBlock`) de edição de conteúdo (o que de fato entra
+ * na newsletter). `content` é o texto CRU do arquivo (com o comentário de
+ * header, se houver) — a função já aplica `stripHeaderBlock` + trim antes de
+ * hashear, então o caller não precisa fazer esse strip antes de chamar.
+ * Mesmo padrão de `hashHighlights` (`lib/social-source-hash.ts`, #1413):
+ * hash gravado no momento da produção, comparado depois pra detectar
+ * staleness sem reimplementar comparação de conteúdo estruturado. */
+export function snippetBodyHash(content: string): string {
+  const body = stripHeaderBlock(content).trim();
+  return createHash("sha256").update(body).digest("hex");
 }
 
 /** Reconstrói o conteúdo a partir de campos de header EXPLÍCITOS (#3979/
