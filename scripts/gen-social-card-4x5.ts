@@ -25,6 +25,7 @@ import { resolve } from "node:path";
 import sharp from "sharp";
 import { COLORS, FONTS } from "./lib/shared/design-tokens.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 import { parseDestaques } from "./extract-destaques.ts";
 
 const W = 1080;
@@ -241,6 +242,9 @@ export async function generateCard(
 }
 
 async function main(): Promise<void> {
+  // #4090: aborta se Georgia não resolve nesta máquina — sem isso o card sai
+  // com fallback de fonte, fora da marca, EM SILÊNCIO.
+  await assertBrandSerifAvailable("gen-social-card-4x5");
   const args = parseCliArgs(process.argv.slice(2));
   const editionDir = args.values["edition-dir"] ?? "";
   if (!editionDir) {

@@ -36,6 +36,7 @@ import sharp from "sharp";
 // literais de cor/fonte (há drift-test pra esse padrão; um change no DS propaga).
 import { COLORS, FONTS } from "./lib/shared/design-tokens.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { assertBrandSerifAvailable } from "./lib/shared/assert-brand-font.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_OUT = resolve(ROOT, "assets", "default-thumbnail-1200x630.png");
@@ -160,6 +161,9 @@ function buildSvg(): string {
 }
 
 async function main(): Promise<void> {
+  // #4090: aborta se Georgia nao resolve nesta maquina — sem isso a arte sai
+  // com fallback de fonte, fora da marca, EM SILENCIO.
+  await assertBrandSerifAvailable("gen-default-thumbnail");
   // Parse --out flag
   let outPath = DEFAULT_OUT;
   const args = process.argv.slice(2);
