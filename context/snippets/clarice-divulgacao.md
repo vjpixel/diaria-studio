@@ -1,5 +1,6 @@
 <!--
 nome: Clarice
+categoria: Divulgação
 Bloco canônico de DIVULGAÇÃO da Clarice (patrocínio). Fonte única reaproveitável
 nas edições (diária via midCallout entre D1 e D2; mensal como seção própria).
 O separador "Divulgação" é adicionado automaticamente por ser patrocinado —
@@ -17,6 +18,6 @@ A única IA criada por brasileiros para brasileiros. A Clarice foi treinada para
 
 Use a Clarice para revisar, refinar e humanizar seus textos. Publique com mais segurança, sem perder sua voz.
 
-Leitores desta newsletter têm 25% de desconto no plano mensal por 3 meses ou 50% de desconto no plano anual, acumulando até 67% de desconto. Quem assina o plano anual ainda recebe a skill de humanização para o Claude Code exclusiva da diar.ia.br.
+Leitores desta newsletter têm 25% de desconto no plano mensal por 3 meses ou 50% de desconto no plano anual, acumulando até 67% de desconto.
 
 → [Acesse e use os cupons NEWS25 ou NEWS50](https://clarice.ai/precos-planos?via=diaria)**

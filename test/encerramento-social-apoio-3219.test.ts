@@ -65,14 +65,16 @@ describe("context/snippets/encerramento-social-apoio.md (#3219)", () => {
   it("parágrafo de apoio menciona R$5/mês e o link apoia.se/diaria", () => {
     assert.match(
       raw,
-      /Quem quiser apoiar a curadoria pode contribuir a partir de R\$5\/mês em \[apoia\.se\/diaria\]\(https:\/\/apoia\.se\/diaria\)/,
+      /Apoie a curadoria contribuindo a partir de R\$5\/mês em \[apoia\.se\/diaria\]\(https:\/\/apoia\.se\/diaria\)/,
     );
     assert.match(raw, new RegExp(DIARIA_APOIASE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 
   it("parágrafo de apoio cita as 3 recompensas aprovadas", () => {
+    // 260727: "bastidores da produção" saiu, "sorteios" entrou (rotação de
+    // recompensas do Apoia.se aprovada pelo editor).
     assert.match(raw, /artigo especial do mês/);
-    assert.match(raw, /bastidores da produção/);
+    assert.match(raw, /sorteios/);
     assert.match(raw, /acesso antecipado a novos projetos/);
   });
 
@@ -94,7 +96,7 @@ describe("context/snippets/encerramento-social-apoio.md (#3219)", () => {
   it("convite social convida a seguir a diar.ia.br nas redes", () => {
     assert.match(
       raw,
-      /Agora que chegou ao final da edição, que tal seguir a \*\*diar\.ia\.br\*\* no/,
+      /Agora que chegou ao final da edição, siga a \*\*diar\.ia\.br\*\* no/,
     );
   });
 
@@ -111,24 +113,24 @@ describe("scripts/lib/shared/encerramento-snippet.ts (#3219)", () => {
     assert.match(template!, /\{\{OPENING\}\}/);
   });
 
-  it("variante DIÁRIA (opening vazio): abre direto em 'Quem quiser apoiar', sem a cláusula mensal", () => {
+  it("variante DIÁRIA (opening vazio): abre direto em 'Apoie a curadoria', sem a cláusula mensal", () => {
     const out = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
     assert.ok(out);
-    assert.match(out!, /^Quem quiser apoiar a curadoria/);
+    assert.match(out!, /^Apoie a curadoria contribuindo/);
     assert.doesNotMatch(out!, /Essa edição mensal nasce/);
     assert.doesNotMatch(out!, /\{\{OPENING\}\}/, "marcador não deve sobrar sem substituição");
   });
 
-  it("variante MENSAL: inclui a cláusula de contexto antes de 'Quem quiser apoiar', com 1 espaço (sem colar as duas frases)", () => {
+  it("variante MENSAL: inclui a cláusula de contexto antes de 'Apoie a curadoria', com 1 espaço (sem colar as duas frases)", () => {
     const out = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_MONTHLY);
     assert.ok(out);
     assert.match(
       out!,
-      /^Essa edição mensal nasce da \*\*diar\.ia\.br\*\*, newsletter diária gratuita sobre IA\. Quem quiser apoiar a curadoria/,
+      /^Essa edição mensal nasce da \*\*diar\.ia\.br\*\*, newsletter diária gratuita sobre IA\. Apoie a curadoria contribuindo/,
     );
     // nunca colado sem espaço nem espaço duplo
-    assert.doesNotMatch(out!, /IA\.Quem/);
-    assert.doesNotMatch(out!, /IA\.  Quem/);
+    assert.doesNotMatch(out!, /IA\.Apoie/);
+    assert.doesNotMatch(out!, /IA\.  Apoie/);
   });
 
   it("o parágrafo de convite social é IDÊNTICO nas duas variantes (só a abertura muda)", () => {
@@ -143,8 +145,8 @@ describe("scripts/lib/shared/encerramento-snippet.ts — splitEncerramentoSocial
   it("separa o template em { apoio, socialInvite } sem perder conteúdo", () => {
     const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
     assert.ok(split, "split não deveria ser null");
-    assert.match(split!.apoio, /^Quem quiser apoiar a curadoria pode contribuir a partir de R\$5\/mês em \[apoia\.se\/diaria\]/);
-    assert.match(split!.socialInvite, /^Agora que chegou ao final da edição, que tal seguir/);
+    assert.match(split!.apoio, /^Apoie a curadoria contribuindo a partir de R\$5\/mês em \[apoia\.se\/diaria\]/);
+    assert.match(split!.socialInvite, /^Agora que chegou ao final da edição, siga/);
     // nenhum dos dois vaza conteúdo do outro
     assert.doesNotMatch(split!.apoio, /Agora que chegou ao final da edição/);
     assert.doesNotMatch(split!.socialInvite, /apoia\.se\/diaria/);
@@ -176,8 +178,8 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
 
   it("buildParaEncerrar inclui o parágrafo de apoio (Apoia.se) e o convite social do snippet", () => {
     const out = buildParaEncerrar();
-    assert.match(out, /Quem quiser apoiar a curadoria pode contribuir a partir de R\$5\/mês em \[apoia\.se\/diaria\]\(https:\/\/apoia\.se\/diaria\)/);
-    assert.match(out, /Agora que chegou ao final da edição, que tal seguir a \*\*diar\.ia\.br\*\* no \[LinkedIn\]/);
+    assert.match(out, /Apoie a curadoria contribuindo a partir de R\$5\/mês em \[apoia\.se\/diaria\]\(https:\/\/apoia\.se\/diaria\)/);
+    assert.match(out, /Agora que chegou ao final da edição, siga a \*\*diar\.ia\.br\*\* no \[LinkedIn\]/);
   });
 
   it("buildParaEncerrar NÃO vaza a cláusula de abertura mensal pro diário", () => {
@@ -211,12 +213,12 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
   it("o parágrafo de apoio é o PRIMEIRO parágrafo depois do cabeçalho (#3368)", () => {
     const out = buildParaEncerrar();
     const afterHeader = out.slice(out.indexOf("**🙋🏼‍♀️ PARA ENCERRAR**") + "**🙋🏼‍♀️ PARA ENCERRAR**".length).trimStart();
-    assert.match(afterHeader, /^Quem quiser apoiar a curadoria/);
+    assert.match(afterHeader, /^Apoie a curadoria contribuindo/);
   });
 
   it("o convite social é o ÚLTIMO parágrafo da seção (#3368)", () => {
     const out = buildParaEncerrar();
-    assert.match(out.trimEnd(), /Agora que chegou ao final da edição, que tal seguir a \*\*diar\.ia\.br\*\* no \[LinkedIn\]\([^)]+\), no \[Facebook\]\([^)]+\) ou no \[Instagram\]\([^)]+\)\? Todo dia publicamos por lá um resumo das 3 principais notícias\.$/);
+    assert.match(out.trimEnd(), /Agora que chegou ao final da edição, siga a \*\*diar\.ia\.br\*\* no \[LinkedIn\]\([^)]+\), no \[Facebook\]\([^)]+\) ou no \[Instagram\]\([^)]+\)\. Todo dia publicamos por lá um resumo das 3 principais notícias\.$/);
   });
 });
 
