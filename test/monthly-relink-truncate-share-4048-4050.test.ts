@@ -1,16 +1,16 @@
 /**
  * test/monthly-relink-truncate-share-4048-4050.test.ts (#4048, #4050)
  *
- * #4048: (a) truncation do corpo dos destaques (`renderDestaqueTeaser`) —
- * teaser real (não vazio, não o texto inteiro) com link "Leia mais" quando há
- * fonte citada, fallback gracioso sem link quando não há; (b) wiring do
- * relink pra edição diária (`relinkMonthlyEditionHtml`) — link reescrito
- * quando há mapeamento, preservado (não quebra) quando não há.
+ * #4048: só o wiring do relink pra edição diária (`relinkMonthlyEditionHtml`)
+ * — link reescrito quando há mapeamento, preservado (não quebra) quando não
+ * há. O truncamento dos destaques (`renderDestaqueTeaser`) foi revertido a
+ * pedido do editor (260727, sessão pós-preview) — destaques voltam a
+ * renderizar o corpo INTEIRO, sem "Leia mais". Cobrimos isso abaixo como
+ * regressão negativa.
  *
- * #4050: bloco de compartilhamento WhatsApp em `renderEncerramento` (item 1,
- * UTM próprio) e `renderEia` (item 2, convite a jogar/desafiar) — renderiza
- * na posição certa, UTM correto, e degrada graciosamente sem os dados
- * (mock ausente / ciclo não setado).
+ * #4050: os blocos de compartilhamento WhatsApp (`renderEncerramento` item 1,
+ * `renderEia` item 2) foram removidos, mesmo pedido do editor. Cobrimos como
+ * regressão negativa — nenhuma das duas funções deve emitir `wa.me`.
  */
 
 import { describe, it } from "node:test";
@@ -19,7 +19,6 @@ import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  renderDestaqueTeaser,
   renderDestaque,
   renderEncerramento,
   renderEia,
@@ -27,59 +26,7 @@ import {
 } from "../scripts/lib/mensal/monthly-render.ts";
 import { relinkMonthlyEditionHtml } from "../scripts/monthly-relink-to-diaria.ts";
 
-// ─── #4048 (b): truncation ──────────────────────────────────────────────────
-
-describe("renderDestaqueTeaser (#4048) — truncation dos destaques", () => {
-  it("corpo curto (cabe no teto) renderiza por completo, sem 'Leia mais'", () => {
-    const html = renderDestaqueTeaser(["Um parágrafo curto, sem necessidade de corte."]);
-    assert.match(html, /Um parágrafo curto/);
-    assert.doesNotMatch(html, /Leia mais/);
-  });
-
-  it("corpo longo é truncado (teaser real: nem vazio, nem o texto inteiro) e ganha link 'Leia mais' quando há fonte citada", () => {
-    const longSentence = "Esta é uma frase bem longa que descreve em detalhe o que aconteceu na notícia, com bastante contexto adicional para garantir que o texto ultrapasse o teto de caracteres do teaser configurado no render mensal. ";
-    const paras = [
-      `${longSentence.repeat(3)}[Leia a matéria original](https://exemplo.com/noticia-completa) traz mais detalhes.`,
-    ];
-    const html = renderDestaqueTeaser(paras);
-    // Não vazio.
-    assert.ok(html.length > 0);
-    // Não é o texto inteiro (marcador de truncamento OU corte real de tamanho).
-    const plainText = html.replace(/<[^>]+>/g, "");
-    assert.ok(plainText.length < longSentence.repeat(3).length + 60, "teaser deveria ser mais curto que o corpo original");
-    // Link "Leia mais" presente e aponta pra fonte citada no corpo.
-    assert.match(html, /Leia mais/);
-    assert.match(html, /href="https:\/\/exemplo\.com\/noticia-completa"/);
-  });
-
-  it("corpo longo SEM nenhuma fonte citada ainda trunca, mas sem link morto", () => {
-    const longSentence = "Esta é uma frase longa sem nenhum link markdown embutido no corpo do parágrafo, repetida várias vezes para estourar o teto de caracteres do teaser. ";
-    const html = renderDestaqueTeaser([longSentence.repeat(4)]);
-    assert.match(html, /<p/);
-    assert.doesNotMatch(html, /Leia mais/); // sem URL — sem link morto (fallback gracioso)
-  });
-
-  it("lista vazia retorna string vazia (sem <p> vazio no email)", () => {
-    assert.equal(renderDestaqueTeaser([]), "");
-  });
-
-  it("renderDestaque com corpo longo produz teaser via mainHtml (integração)", () => {
-    const chunk = [
-      "DESTAQUE 1 | ANTHROPIC",
-      "Anthropic capta bilhões em nova rodada",
-      "",
-      "Esta é uma frase bem longa sobre a rodada de investimento, com bastante contexto sobre valuation, investidores e planos futuros da empresa, repetida propositalmente. ".repeat(3) +
-        "[Fonte original](https://anthropic.com/news/exemplo) tem mais detalhes.",
-      "",
-      "O fio condutor: essa rodada consolida a Anthropic como líder do setor.",
-    ].join("\n");
-    const html = renderDestaque(chunk);
-    assert.match(html, /Leia mais/);
-    assert.match(html, /O fio condutor/);
-  });
-});
-
-// ─── #4048 (a): relink pós-processo ─────────────────────────────────────────
+// ─── #4048: relink pós-processo (mantido) ───────────────────────────────────
 
 describe("relinkMonthlyEditionHtml (#4048) — relink dos destaques pra edição diária", () => {
   function makeMonthlyDir(): string {
@@ -134,15 +81,34 @@ describe("relinkMonthlyEditionHtml (#4048) — relink dos destaques pra edição
   });
 });
 
-// ─── #4050: WhatsApp share (encerramento) ───────────────────────────────────
+// ─── Regressão: truncamento revertido (260727) ──────────────────────────────
 
-describe("renderEncerramento (#4050 item 1) — bloco de compartilhamento WhatsApp", () => {
-  it("sem ciclo setado (fora de draftToEmail), NÃO renderiza o bloco de share (fallback gracioso)", () => {
-    const html = renderEncerramento("Obrigado por ler.\n\nAté a próxima edição!");
-    assert.doesNotMatch(html, /wa\.me/);
+describe("renderDestaque — SEM truncamento (revertido, 260727)", () => {
+  it("corpo longo renderiza por INTEIRO — sem 'Leia mais', sem corte", () => {
+    const longSentence = "Esta é uma frase bem longa sobre a rodada de investimento, com bastante contexto sobre valuation, investidores e planos futuros da empresa, repetida propositalmente. ";
+    const chunk = [
+      "DESTAQUE 1 | ANTHROPIC",
+      "Anthropic capta bilhões em nova rodada",
+      "",
+      longSentence.repeat(3) + "[Fonte original](https://anthropic.com/news/exemplo) tem mais detalhes.",
+      "",
+      "O fio condutor: essa rodada consolida a Anthropic como líder do setor.",
+    ].join("\n");
+    const html = renderDestaque(chunk);
+    assert.doesNotMatch(html, /Leia mais/);
+    // corpo completo presente, não truncado — a última frase do parágrafo original aparece inteira.
+    assert.match(html, /tem mais detalhes/);
+    assert.match(html, /O fio condutor/);
   });
+});
 
-  it("dentro de draftToEmail (com ciclo setado), renderiza o link wa.me com utm_term próprio", () => {
+// ─── Regressão: compartilhamento WhatsApp removido (260727) ────────────────
+
+describe("renderEncerramento / renderEia — SEM bloco de WhatsApp (removido, 260727)", () => {
+  it("renderEncerramento nunca emite wa.me, com ou sem ciclo setado", () => {
+    const html1 = renderEncerramento("Obrigado por ler.\n\nAté a próxima edição!");
+    assert.doesNotMatch(html1, /wa\.me/);
+
     const draft = [
       "ASSUNTO",
       "1. Assunto de teste",
@@ -158,31 +124,14 @@ describe("renderEncerramento (#4050 item 1) — bloco de compartilhamento WhatsA
       "",
       "Até a próxima edição!",
     ].join("\n");
-    const { html } = draftToEmail(draft, null, "2606");
-    assert.match(html, /https:\/\/wa\.me\/\?text=/);
-    const decoded = decodeURIComponent(html.match(/https:\/\/wa\.me\/\?text=([^"&]+)/)![1]);
-    assert.match(decoded, /utm_term=whatsapp-share-encerramento/);
-    // distinto do CTA principal (que não usa esse utm_term)
-    assert.doesNotMatch(html.replace(/wa\.me\/\?text=[^"]+/, ""), /whatsapp-share-encerramento/);
+    const { html: html2 } = draftToEmail(draft, null, "2606");
+    assert.doesNotMatch(html2, /wa\.me/);
   });
-});
 
-describe("renderEia (#4050 item 2) — convite a compartilhar/desafiar", () => {
-  it("renderiza o bloco de share após o ranking, com utm_term eia-share-mensal", () => {
+  it("renderEia nunca emite wa.me", () => {
     const chunk = "É IA?\nLegenda de teste.";
     const html = renderEia(chunk, "2606", "https://img/a.jpg", "https://img/b.jpg");
     assert.match(html, /Ver ranking/);
-    assert.match(html, /https:\/\/wa\.me\/\?text=/);
-    const decoded = decodeURIComponent(html.match(/https:\/\/wa\.me\/\?text=([^"&]+)/)![1]);
-    assert.match(decoded, /utm_term=eia-share-mensal/);
-    // share aparece DEPOIS do link de ranking na ordem do documento.
-    assert.ok(html.indexOf("Ver ranking") < html.indexOf("wa.me"));
-  });
-
-  it("não quebra sem imagens (dado ausente) — bloco de share ainda renderiza (não depende de imagem)", () => {
-    const chunk = "É IA?\nLegenda de teste.";
-    const html = renderEia(chunk, "2606");
-    assert.match(html, /Imagem A/); // placeholder, sem imagem
-    assert.match(html, /https:\/\/wa\.me\/\?text=/); // share independe de imagem
+    assert.doesNotMatch(html, /wa\.me/);
   });
 });
