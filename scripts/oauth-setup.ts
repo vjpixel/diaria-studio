@@ -26,6 +26,13 @@
  *   - https://www.googleapis.com/auth/webmasters.readonly (#1989: GSC / seo-pull)
  *   - https://www.googleapis.com/auth/postmaster.readonly (#4063: Gmail Postmaster
  *     Tools — spamRate diário que alimenta o circuit breaker de spam da Rampa)
+ *   - https://www.googleapis.com/auth/gmail.send (#4064: alarme de guardrail
+ *     furado do ramp Clarice — `scripts/clarice-guardrail-alarm.ts` envia
+ *     e-mail ao editor via `scripts/lib/gmail-send.ts`, chamada direta à Gmail
+ *     API `users.messages.send` — nenhum script roda dentro de uma sessão
+ *     Claude Code com o MCP Gmail conectado, então `create_draft`/MCP não
+ *     serve aqui. `gmail.readonly`/`gmail.modify` (já concedidos acima) NÃO
+ *     incluem enviar mensagens — precisa deste scope à parte.)
  */
 
 import { createServer } from "node:http";
@@ -53,6 +60,10 @@ const SCOPES = [
   // spamRate diário daqui. A API já está habilitada no projeto GCP — o único
   // pré-req era o scope.
   "https://www.googleapis.com/auth/postmaster.readonly",
+  // #4064: enviar o e-mail de alarme de guardrail furado do ramp Clarice
+  // (`scripts/clarice-guardrail-alarm.ts`) via Gmail API direta — rodando fora
+  // de uma sessão Claude Code (Task Scheduler), sem MCP Gmail disponível.
+  "https://www.googleapis.com/auth/gmail.send",
 ];
 
 function buildAuthUrl(clientId: string): string {

@@ -105,6 +105,7 @@ export type {
   MvStatus,
   ContactsSummary,
   CohortStatsRow,
+  PostmasterSpamEntry,
 } from "../../../scripts/lib/dashboard-kv-types.ts";
 // #2609: status MillionVerifier por grupo de contatos (tipo em dashboard-kv-types.ts).
 
@@ -139,6 +140,12 @@ export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 // necessário pra esta tabela) — sem PII (nicknames/leaderboard ficam só no
 // diaria-dashboard).
 export const EIA_ENGAGEMENT_KV_KEY = "eia:engagement";
+
+// #4063: leitura manual do spamRate diário do Postmaster Tools (clarice.ai),
+// gravada por scripts/postmaster-spam-entry.ts. Ver PostmasterSpamEntry acima
+// (re-exportada de scripts/lib/dashboard-kv-types.ts) e resolveSpamSignal em
+// thresholds.ts (precedência sobre complaints da Brevo).
+export const POSTMASTER_SPAM_KV_KEY = "postmaster:spam";
 
 export interface EiaEngagementEdition {
   /** AAMMDD */

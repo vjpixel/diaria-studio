@@ -14,6 +14,9 @@ import {
   aggregateHealth,
   decideSemaphore,
   classifyMetric,
+  classifySpamSignal,
+  resolveSpamSignal,
+  POSTMASTER_STALE_MS,
   computeWeekPlan,
   renderWeeklyPlanTabPanel,
   renderHealthSection,
@@ -24,8 +27,9 @@ import {
   DEFAULT_HEALTH_THRESHOLDS,
   MATURATION_MS,
   type HealthAggregate,
+  type SpamSignal,
 } from "../workers/brevo-dashboard/src/index.ts";
-import type { BrevoCampaign } from "../workers/brevo-dashboard/src/index.ts";
+import type { BrevoCampaign, PostmasterSpamEntry } from "../workers/brevo-dashboard/src/index.ts";
 
 const NOW = new Date("2026-07-10T12:00:00.000Z");
 
@@ -141,6 +145,10 @@ test("aggregateHealth — pula campanhas sem stats reais (sent=0)", () => {
 });
 
 // Defaults todos VERDE sob os limites do doc — cada teste isola 1 métrica.
+// #4063: `spamRate` (derivado de `complaints` da Brevo) permanece no shape
+// pra `aggregateHealth`/exibição, mas NÃO alimenta mais `decideSemaphore`
+// (que passou a receber um `SpamSignal` — leitura manual do Postmaster —
+// como 2º argumento obrigatório). Mantido aqui só por retrocompat estrutural.
 function mkHealth(overrides: Partial<HealthAggregate>): HealthAggregate {
   return {
     openRate: 20,
@@ -154,51 +162,88 @@ function mkHealth(overrides: Partial<HealthAggregate>): HealthAggregate {
   };
 }
 
+// #4063: sinal de spam "confiável e limpo" — usado nos testes que isolam
+// OUTRA métrica (abertura/bounce/unsub), pra não deixar o spam (agora
+// indeterminado por padrão, ver bloco de testes dedicado abaixo) confundir
+// o resultado.
+function mkSpamOk(): SpamSignal {
+  return { source: "postmaster", ratePct: 0.01, breach: false };
+}
+
 // Limites = circuit breakers do doc "Parceria Clarice × Diar.ia" (🔴 = breaker):
 // abertura <15 · hard ≥2 · total ≥5 · spam ≥0,1 · unsub ≥3.
 test("decideSemaphore — abertura: 🔴 <15%, 🟡 15-17, 🟢 ≥17", () => {
-  assert.equal(decideSemaphore(mkHealth({ openRate: 17 })), "green");
-  assert.equal(decideSemaphore(mkHealth({ openRate: 16.9 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ openRate: 15 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ openRate: 14.9 })), "red");
+  assert.equal(decideSemaphore(mkHealth({ openRate: 17 }), mkSpamOk()), "green");
+  assert.equal(decideSemaphore(mkHealth({ openRate: 16.9 }), mkSpamOk()), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ openRate: 15 }), mkSpamOk()), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ openRate: 14.9 }), mkSpamOk()), "red");
 });
 
 test("decideSemaphore — hard bounce: 🔴 ≥2%, 🟡 1,5-2, 🟢 <1,5", () => {
-  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 1.49 })), "green");
-  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 1.5 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 1.99 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 2 })), "red");
+  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 1.49 }), mkSpamOk()), "green");
+  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 1.5 }), mkSpamOk()), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 1.99 }), mkSpamOk()), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ hardBounceRate: 2 }), mkSpamOk()), "red");
 });
 
 test("decideSemaphore — bounce total: 🔴 ≥5%, 🟡 4-5, 🟢 <4", () => {
-  assert.equal(decideSemaphore(mkHealth({ bounceRate: 3.99 })), "green");
-  assert.equal(decideSemaphore(mkHealth({ bounceRate: 4 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ bounceRate: 4.99 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ bounceRate: 5 })), "red");
-});
-
-test("decideSemaphore — spam: 🔴 ≥0,1%, 🟡 0,05-0,1, 🟢 <0,05", () => {
-  assert.equal(decideSemaphore(mkHealth({ spamRate: 0.049 })), "green");
-  assert.equal(decideSemaphore(mkHealth({ spamRate: 0.05 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ spamRate: 0.099 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ spamRate: 0.1 })), "red");
+  assert.equal(decideSemaphore(mkHealth({ bounceRate: 3.99 }), mkSpamOk()), "green");
+  assert.equal(decideSemaphore(mkHealth({ bounceRate: 4 }), mkSpamOk()), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ bounceRate: 4.99 }), mkSpamOk()), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ bounceRate: 5 }), mkSpamOk()), "red");
 });
 
 test("decideSemaphore — unsub: 🔴 ≥3%, 🟡 2-3, 🟢 <2", () => {
-  assert.equal(decideSemaphore(mkHealth({ unsubRate: 1.99 })), "green");
-  assert.equal(decideSemaphore(mkHealth({ unsubRate: 2 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ unsubRate: 2.99 })), "yellow");
-  assert.equal(decideSemaphore(mkHealth({ unsubRate: 3 })), "red");
+  assert.equal(decideSemaphore(mkHealth({ unsubRate: 1.99 }), mkSpamOk()), "green");
+  assert.equal(decideSemaphore(mkHealth({ unsubRate: 2 }), mkSpamOk()), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ unsubRate: 2.99 }), mkSpamOk()), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ unsubRate: 3 }), mkSpamOk()), "red");
+});
+
+// #4063: o breaker de spam NÃO lê mais `health.spamRate` (Brevo/`complaints`,
+// que subconta o spam real em ~50×) — lê o `SpamSignal` resolvido a partir da
+// leitura MANUAL do Postmaster (`resolveSpamSignal`). `classifySpamSignal` é a
+// função que decide a cor desse sinal especificamente.
+test("classifySpamSignal — indeterminado (sem leitura de Postmaster) NUNCA é verde — é sempre 🟡 (#4063)", () => {
+  const indeterminate: SpamSignal = { source: "indeterminate", ratePct: null, breach: false };
+  assert.equal(classifySpamSignal(indeterminate), "yellow");
+});
+
+test("classifySpamSignal — com leitura do Postmaster, aplica as mesmas 3 faixas do doc: 🔴 ≥0,1%, 🟡 0,05-0,1, 🟢 <0,05", () => {
+  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.049, breach: false }), "green");
+  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.05, breach: false }), "yellow");
+  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.099, breach: false }), "yellow");
+  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.1, breach: true }), "red");
+});
+
+test("decideSemaphore — spam indeterminado (sem leitura Postmaster) nunca deixa o semáforo geral verde, mesmo com tudo mais saudável (#4063, regressão da issue)", () => {
+  const indeterminate: SpamSignal = { source: "indeterminate", ratePct: null, breach: false };
+  // health "tudo verde" (mkHealth default) + spam indeterminado → geral é 🟡,
+  // nunca 🟢. Isso é o próprio bug relatado: o dashboard mostrava 🟢 com
+  // ~0,02% de complaints da Brevo enquanto o Postmaster media ~1,0%.
+  assert.equal(decideSemaphore(mkHealth({}), indeterminate), "yellow");
+});
+
+test("decideSemaphore — spam via Postmaster acima do limite BLOQUEIA o semáforo (vermelho) mesmo com `health.spamRate` (Brevo/complaints) em ZERO (#633, regressão exigida pela issue #4063)", () => {
+  // Reproduz o caso real da issue: Brevo reporta ~0,02%/0 reclamações
+  // enquanto o Postmaster mede ~1,0-1,5%. O breaker precisa travar no
+  // vermelho usando o dado do Postmaster, INDEPENDENTE do que a Brevo diz.
+  const health = mkHealth({ spamRate: 0 }); // Brevo: 0 complaints
+  const postmasterBreach: SpamSignal = { source: "postmaster", ratePct: 1.02, breach: true };
+  assert.equal(decideSemaphore(health, postmasterBreach), "red");
 });
 
 test("decideSemaphore — pior métrica manda (1 vermelha entre verdes → vermelho)", () => {
-  assert.equal(decideSemaphore(mkHealth({})), "green");
-  assert.equal(decideSemaphore(mkHealth({ spamRate: 0.2 })), "red");
+  assert.equal(decideSemaphore(mkHealth({}), mkSpamOk()), "green");
+  assert.equal(
+    decideSemaphore(mkHealth({}), { source: "postmaster", ratePct: 0.2, breach: true }),
+    "red",
+  );
 });
 
 test("decideSemaphore — thresholds customizados são respeitados", () => {
   const custom = { ...DEFAULT_HEALTH_THRESHOLDS, openRate: { green: 50, yellow: 40 } };
-  assert.equal(decideSemaphore(mkHealth({ openRate: 45 }), custom), "yellow");
+  assert.equal(decideSemaphore(mkHealth({ openRate: 45 }), mkSpamOk(), custom), "yellow");
 });
 
 test("computeWeekPlan — verde escalona +10% composto ter/sex/dom", () => {
@@ -284,9 +329,9 @@ test("#3081: Hard bounce/Bounce total/Spam/Unsub mostram '—' (não '0.0%'/'0.0
   assert.doesNotMatch(html, /Nenhum envio.*maduro/, "deve ter mature.length > 0 (o próprio sentDate já garante isso)");
 
   // #3081 (achado do code-review low no PR #3166): a checagem de "sem dado"
-  // é POR MÉTRICA (todas as 4 que dividem por `sent`), não só Spam — Hard
+  // é POR MÉTRICA (todas as 3 que dividem por `sent`), não só Spam — Hard
   // bounce/Bounce total/Unsub compartilham o MESMO health.sent === 0.
-  for (const label of ["Hard bounce", "Bounce total", "Spam", "Unsub"]) {
+  for (const label of ["Hard bounce", "Bounce total", "Unsub"]) {
     const row = html.match(new RegExp(`<tr><td>${label}</td>[\\s\\S]*?</tr>`))?.[0];
     assert.ok(row, `deve haver linha '${label}' na tabela de métricas de saúde`);
     assert.match(row!, /—/, `${label} deve mostrar '—' (sem dado) quando sent=0`);
@@ -296,6 +341,22 @@ test("#3081: Hard bounce/Bounce total/Spam/Unsub mostram '—' (não '0.0%'/'0.0
     assert.doesNotMatch(row!, /color:#(0E6B39|8A6100|C00000)/i,
       `${label} com '—' não deve usar as cores de status (green/yellow/red) — contradiria o texto 'sem dado'`);
   }
+
+  // #4063: a linha "Spam" original (Brevo/complaints) ganhou rótulo explícito
+  // e NUNCA mais é colorida como verde/vermelho (subconta o spam real em
+  // ~50×) — nem mesmo quando `sent===0` (que já era neutro antes) nem quando
+  // há dado real (comportamento novo, testado no bloco `buildMetricRows`
+  // abaixo). A linha "Spam (Postmaster...)" — a que GOVERNA — mostra "sem
+  // leitura" (nenhuma foi passada a `renderWeeklyPlanTabPanel` neste teste).
+  const spamBrevoRow = html.match(/<tr><td>Spam \(Brevo[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(spamBrevoRow, "deve haver a linha 'Spam (Brevo...)' na tabela de métricas de saúde");
+  assert.match(spamBrevoRow!, /—/, "Spam (Brevo) deve mostrar '—' quando sent=0");
+  assert.doesNotMatch(spamBrevoRow!, /color:#(0E6B39|8A6100|C00000)/i, "Spam (Brevo) nunca deve usar cores de status (#4063)");
+
+  const spamPostmasterRow = html.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(spamPostmasterRow, "deve haver a linha 'Spam (Postmaster...)' na tabela de métricas de saúde");
+  assert.match(spamPostmasterRow!, /sem leitura/, "Spam (Postmaster) deve indicar 'sem leitura' quando nenhuma foi fornecida");
+  assert.doesNotMatch(spamPostmasterRow!, /color:#(0E6B39|8A6100|C00000)/i, "Spam (Postmaster) sem leitura não deve usar cores de status (#4063)");
 });
 
 test("classifyMetric — fronteiras (higher=abertura; lower=bounce/spam/unsub)", () => {
@@ -638,4 +699,96 @@ test("renderRecommendationSection — envio maduro mas sem volume-base (baseVolu
   assert.doesNotMatch(html, /Sem envio maduro/);
   assert.doesNotMatch(html, /Nenhum envio registrado/);
   assert.doesNotMatch(html, /Próximo envio/);
+});
+
+// ---------------------------------------------------------------------------
+// #4063 — resolveSpamSignal (leitura manual do Postmaster com precedência
+// sobre `complaints`/spamRate da Brevo) + wiring fim-a-fim em
+// renderWeeklyPlanTabPanel.
+// ---------------------------------------------------------------------------
+
+function mkPostmasterEntry(overrides: Partial<PostmasterSpamEntry> = {}): PostmasterSpamEntry {
+  return {
+    date: "2026-07-10",
+    spamRatePct: 1.02,
+    recordedAt: NOW.toISOString(),
+    ...overrides,
+  };
+}
+
+test("resolveSpamSignal — sem entrada (null/undefined) → indeterminate, nunca breach (#4063)", () => {
+  assert.deepEqual(resolveSpamSignal(null, NOW), { source: "indeterminate", ratePct: null, breach: false });
+  assert.deepEqual(resolveSpamSignal(undefined, NOW), { source: "indeterminate", ratePct: null, breach: false });
+});
+
+test("resolveSpamSignal — entrada com spamRatePct acima do limite resolve breach=true (#633, regressão exigida pela issue #4063)", () => {
+  // O ponto central da issue: um spamRate de Postmaster acima do limite
+  // precisa travar o breaker MESMO que `complaints` da Brevo esteja em zero
+  // — esta função nem recebe o dado da Brevo, então a garantia é estrutural.
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 1.02 }), NOW);
+  assert.equal(signal.source, "postmaster");
+  assert.equal(signal.ratePct, 1.02);
+  assert.equal(signal.breach, true);
+});
+
+test("resolveSpamSignal — entrada abaixo do limite resolve breach=false", () => {
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.03 }), NOW);
+  assert.equal(signal.source, "postmaster");
+  assert.equal(signal.breach, false);
+});
+
+test("resolveSpamSignal — fronteira exata do breaker (0,1%) já é breach (>=)", () => {
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.1 }), NOW).breach, true);
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.099 }), NOW).breach, false);
+});
+
+test("resolveSpamSignal — leitura mais velha que POSTMASTER_STALE_MS (48h) volta a ser indeterminate", () => {
+  const staleRecordedAt = new Date(NOW.getTime() - POSTMASTER_STALE_MS - 1000).toISOString();
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 5, recordedAt: staleRecordedAt }), NOW);
+  assert.deepEqual(signal, { source: "indeterminate", ratePct: null, breach: false });
+});
+
+test("resolveSpamSignal — leitura DENTRO da janela de 48h continua válida (fronteira)", () => {
+  const freshRecordedAt = new Date(NOW.getTime() - POSTMASTER_STALE_MS + 1000).toISOString();
+  const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 5, recordedAt: freshRecordedAt }), NOW);
+  assert.equal(signal.source, "postmaster");
+});
+
+test("resolveSpamSignal — spamRatePct não-finito (NaN/Infinity) ou recordedAt não-parseável → indeterminate", () => {
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ spamRatePct: NaN }), NOW).source, "indeterminate");
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ recordedAt: "não-é-data" }), NOW).source, "indeterminate");
+});
+
+test("renderWeeklyPlanTabPanel — com leitura de Postmaster acima do limite, semáforo geral é vermelho MESMO com tudo mais saudável e complaints da Brevo em zero (#4063 fim-a-fim)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 0 }),
+    }),
+  ];
+  const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({ spamRatePct: 1.02 }));
+  assert.match(html, /Vermelho/);
+  // a linha que GOVERNA mostra o número do Postmaster, colorida como alerta.
+  const spamPostmasterRow = html.match(/<tr><td>Spam \(Postmaster[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(spamPostmasterRow);
+  assert.match(spamPostmasterRow!, /1\.020%/);
+  assert.match(spamPostmasterRow!, /color:#C00000/i);
+  // a linha da Brevo mostra o número de complaints (0%), mas NUNCA colorida —
+  // não é mais autoridade nenhuma sobre o semáforo.
+  const spamBrevoRow = html.match(/<tr><td>Spam \(Brevo[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(spamBrevoRow);
+  assert.doesNotMatch(spamBrevoRow!, /color:#(0E6B39|8A6100|C00000)/i);
+});
+
+test("renderWeeklyPlanTabPanel — sem leitura de Postmaster, semáforo NUNCA é verde mesmo com tudo mais saudável (#4063 fim-a-fim, regressão do bug relatado)", () => {
+  const camps = [
+    campaignSentHoursAgo(60, {
+      statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 0 }),
+    }),
+  ];
+  // Sem passar postmasterSpam (default null) — este é EXATAMENTE o cenário do
+  // bug: abertura saudável (20%) e complaints da Brevo em 0 não bastam mais
+  // pra colorir 🟢.
+  const html = renderWeeklyPlanTabPanel(camps, NOW);
+  assert.doesNotMatch(html, /Verde/);
+  assert.match(html, /Amarelo/);
 });

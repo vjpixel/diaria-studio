@@ -354,6 +354,25 @@ export interface ArmGuardrailResult {
   anyBreach: boolean;
 }
 
+export interface ArmGuardrailOptions {
+  /**
+   * #4131 finding 3 (self-review do PR #4063/#4064): o guard `openRatePct > 0`
+   * abaixo existe pra distinguir "dado ainda propagando" (MPP leva minutos)
+   * de "0% permanente", no contexto ORIGINAL desta função — dashboard, olhos
+   * humanos revisando minutos após o envio. Reusar essa função tal como está
+   * pro alarme de envio único (#4064, `evaluateSendGuardrails` em
+   * `clarice-guardrail-alarm.ts`) herdaria o blind spot num contexto onde ele
+   * INVERTE o propósito da feature: o alarme roda ~6h após o envio
+   * (`GUARDRAIL_EVAL_WINDOW_MS`), quando o dado já maturou — nesse ponto, 0%
+   * de abertura é o cenário MAIS catastrófico (falha total de entrega), não
+   * "ainda propagando", e o guard original faria justo esse caso nunca
+   * disparar o alarme. `treatZeroAsBreach: true` remove o guard `> 0` (só
+   * compara contra o limiar) — default `false` preserva o comportamento
+   * original da dashboard sem qualquer mudança.
+   */
+  treatZeroAsBreach?: boolean;
+}
+
 /**
  * Mesmos thresholds de `thresholds.ts` (fonte única dos circuit breakers da
  * Rampa/Envios/Totais por mês) — nenhum limiar novo inventado aqui.
@@ -361,6 +380,7 @@ export interface ArmGuardrailResult {
 export function evaluateArmGuardrails(
   m: ArmMetrics,
   thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
+  options: ArmGuardrailOptions = {},
 ): ArmGuardrailResult {
   const openRatePct = m.delivered > 0 ? (m.uniqueViews / m.delivered) * 100 : 0;
   const hardBounceRatePct = m.sent > 0 ? (m.hardBounces / m.sent) * 100 : 0;
@@ -374,8 +394,12 @@ export function evaluateArmGuardrails(
   // mais estrito, esse instante transitório seria erroneamente reportado como
   // guardrail cruzado. Trade-off aceito (mesmo do original): uma campanha
   // genuinamente com 0% de abertura PERMANENTE nunca alerta — raro na prática
-  // (Brevo sempre tem MPP).
-  const openBreach = openRatePct > 0 && openRatePct < thresholds.openRate.yellow;
+  // (Brevo sempre tem MPP). #4131 finding 3: `treatZeroAsBreach` (ver
+  // ArmGuardrailOptions) permite ao caminho do ALARME (janela já madura,
+  // #4064) remover esse guard sem afetar o caminho original da dashboard.
+  const openBreach = options.treatZeroAsBreach
+    ? openRatePct < thresholds.openRate.yellow
+    : openRatePct > 0 && openRatePct < thresholds.openRate.yellow;
   const bounceBreach = isBounceBreach(hardBounceRatePct, bounceRatePct, thresholds);
   const unsubBreach = unsubRatePct >= thresholds.unsubRate.yellow;
   const spamBreach = spamRatePct >= thresholds.spamRate.yellow;

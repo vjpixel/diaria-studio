@@ -114,6 +114,25 @@ export interface CohortStatsRow {
  * campo existir simplesmente não o tem; o render degrada graciosamente
  * (nunca confundir "ausente" com "zero").
  */
+/**
+ * #4063: leitura MANUAL do spamRate diário do Google Postmaster Tools
+ * (domínio `clarice.ai`, painel — sem API, ver decisão do editor na issue).
+ * Gravada por `scripts/postmaster-spam-entry.ts` (~1min antes de cada envio)
+ * sob a chave KV `postmaster:spam`. Único registro (a leitura mais recente),
+ * não histórico — o breaker da Rampa (`workers/brevo-dashboard/src/thresholds.ts::resolveSpamSignal`)
+ * usa este valor com PRECEDÊNCIA sobre `globalStats.complaints` da Brevo, que
+ * subconta o spam em ~50× (a Brevo só enxerga feedback loops; o "marcar como
+ * spam" do Gmail não passa por FBL, e 73% da base é Gmail).
+ */
+export interface PostmasterSpamEntry {
+  /** Data (YYYY-MM-DD) a que a leitura se refere — o dia do painel Postmaster consultado. */
+  date: string;
+  /** spamRate (%) lido no painel do Google Postmaster Tools. */
+  spamRatePct: number;
+  /** ISO timestamp de quando esta entrada foi registrada (gravação, não `date`). */
+  recordedAt: string;
+}
+
 export interface ContactsSummary {
   generated_at: string;
   total: number;

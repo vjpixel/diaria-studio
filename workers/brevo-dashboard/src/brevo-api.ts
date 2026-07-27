@@ -1,5 +1,5 @@
-import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow } from "./types.ts";
-import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, RECENT_STATS_TTL } from "./types.ts";
+import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry } from "./types.ts";
+import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, RECENT_STATS_TTL } from "./types.ts";
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml } from "./sections-core.ts";
 
@@ -796,6 +796,25 @@ export function normalizeEiaEngagement(raw: unknown): EiaEngagementSummary | nul
 }
 
 /**
+ * #4063: normaliza o payload de `PostmasterSpamEntry` (chave KV `postmaster:spam`,
+ * gravada por `scripts/postmaster-spam-entry.ts`) NO BOUNDARY — mesmo padrão dos
+ * demais normalizadores desta seção. `spamRatePct` precisa ser um número finito
+ * (senão o registro é lixo/corrompido) — retorna `null` nesse caso, que
+ * `resolveSpamSignal` (thresholds.ts) já trata como "sem leitura" (indeterminado).
+ */
+export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry | null {
+  if (!raw || typeof raw !== "object") return null;
+  const s = raw as Partial<PostmasterSpamEntry> & Record<string, unknown>;
+  if (typeof s.spamRatePct !== "number" || !Number.isFinite(s.spamRatePct)) return null;
+  if (typeof s.recordedAt !== "string" || !s.recordedAt) return null;
+  return {
+    date: typeof s.date === "string" ? s.date : "",
+    spamRatePct: s.spamRatePct,
+    recordedAt: s.recordedAt,
+  };
+}
+
+/**
  * #2733: lê as seções KV-independentes do dashboard (coortes, status MV, sumário
  * de contatos, cupons). Extraída para ser usada tanto no render saudável quanto
  * no fallback de rate-limit do Brevo — assim as abas de Cupons/Contatos, que vêm
@@ -816,24 +835,27 @@ export async function readKvTabs(
   contactsSummary: ContactsSummary | null;
   couponUsage: CouponUsageReport | null;
   eiaEngagement: EiaEngagementSummary | null;
+  postmasterSpam: PostmasterSpamEntry | null; // #4063
 }> {
-  // As 5 leituras são independentes → paralelas (importa no fallback de 429,
+  // As 6 leituras são independentes → paralelas (importa no fallback de 429,
   // que está no caminho crítico do render stale).
-  // NOTA: `mode` só afeta a leitura de cupons (getCouponUsage) — as outras 4
+  // NOTA: `mode` só afeta a leitura de cupons (getCouponUsage) — as outras 5
   // seções sempre leem o KV direto, sem noção de fresh/kv-only.
   const kv = env.STATS_CACHE;
-  const [rawCohorts, rawMvStatus, rawContactsSummary, couponUsage, rawEiaEngagement] = await Promise.all([
+  const [rawCohorts, rawMvStatus, rawContactsSummary, couponUsage, rawEiaEngagement, rawPostmasterSpam] = await Promise.all([
     kv ? kv.get(COHORTS_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
     kv ? kv.get(MV_STATUS_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
     kv ? kv.get(CONTACTS_SUMMARY_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
     getCouponUsage(env, mode),
     kv ? kv.get(EIA_ENGAGEMENT_KV_KEY, "json").catch(() => null) : Promise.resolve(null),
+    kv ? kv.get(POSTMASTER_SPAM_KV_KEY, "json").catch(() => null) : Promise.resolve(null), // #4063
   ]);
   const cohorts = normalizeEngagementCohorts(rawCohorts);
   const mvStatus = normalizeMvStatus(rawMvStatus);
   const contactsSummary = normalizeContactsSummary(rawContactsSummary);
   const eiaEngagement = normalizeEiaEngagement(rawEiaEngagement);
-  return { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement };
+  const postmasterSpam = normalizePostmasterSpamEntry(rawPostmasterSpam); // #4063
+  return { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam };
 }
 
 /**
@@ -863,7 +885,7 @@ export async function buildRateLimitFallback(
   // no render de fallback de rate-limit. Ausente (KV pré-#3080) → null (sem aviso).
   const staleCampaignsLimit =
     typeof staleCampaignsRaw?.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
-  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, "kv-only");
+  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam } = await readKvTabs(env, "kv-only");
   // Créditos do plano: o render principal busca /v3/account ANTES das campanhas
   // (janela de rate-limit fresca) e passa o valor em memória aqui. Sem isso o
   // fallback lia "kv-only" e o KV nunca era populado (a linha que populava rodava
@@ -893,6 +915,7 @@ export async function buildRateLimitFallback(
       planCredits,
       null, // dataGeneratedAt: KV stale payload não tem timestamp de render fiável aqui
       staleCampaignsLimit, // #3080: limite gravado junto do payload (self-describing)
+      postmasterSpam, // #4063
     );
     // buildStaleResponse injeta o banner "Brevo em rate-limit" (só as seções de
     // campanha estão atrasadas; Cupons/Contatos estão frescos).
@@ -950,7 +973,7 @@ export async function buildInflightCoalescedFallback(
   if (!staleCampaignsRaw) return null;
   const staleCampaignsLimit =
     typeof staleCampaignsRaw.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
-  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, "kv-only");
+  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam } = await readKvTabs(env, "kv-only");
   const planCredits =
     typeof planCreditsOverride === "number"
       ? planCreditsOverride
@@ -975,6 +998,7 @@ export async function buildInflightCoalescedFallback(
       planCredits,
       null,
       staleCampaignsLimit,
+      postmasterSpam, // #4063
     );
     return new Response(injectInflightBanner(html), {
       headers: {

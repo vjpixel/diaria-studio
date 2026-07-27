@@ -1,4 +1,4 @@
-import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary } from "./types.ts";
+import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary, PostmasterSpamEntry } from "./types.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 // #3092: PT_MONTHS_ABBR — dependency-free/Workers-safe (mesmo padrão de
 // cohortSendRank em sections-kv.ts), reusado por formatCycleEnvioLabel.
@@ -79,6 +79,11 @@ export function renderDashboardHtml(
   // profundidade — o limite real pode subir de novo no futuro e cruzar de
   // novo). `null` (default) = desconhecido/não informado → nenhum aviso.
   campaignsWindowLimit: number | null = null,
+  // #4063: leitura manual do Postmaster (KV `postmaster:spam`, via readKvTabs)
+  // — governa o breaker de spam da Rampa com precedência sobre `complaints`
+  // da Brevo. `null` (default) preserva call sites/testes existentes
+  // (sinal fica "indeterminate" — nunca reporta 🟢 falso, ver thresholds.ts).
+  postmasterSpam: PostmasterSpamEntry | null = null,
 ): string {
   // #3017: ordena a tabela "Envios" por data de envio, mais recente primeiro.
   // sentDate é a fonte canônica aqui (campanha já enviada); scheduledAt só
@@ -398,7 +403,7 @@ ${monthlyAbcSectionsByDate}
   // #2974: aba "Rampa"/Agendamento — plano de envio semanal (maturação >48h →
   // agregado → semáforo → 3 volumes) + #3010: campanhas agendadas (`scheduled`)
   // logo abaixo da recomendação dos próximos 3 envios.
-  const weeklyPlanSection = renderWeeklyPlanTabPanel(campaigns, nowDate, scheduled);
+  const weeklyPlanSection = renderWeeklyPlanTabPanel(campaigns, nowDate, scheduled, postmasterSpam);
   // #3884: registro "Experimento vigente" (regras do protocolo, sempre visível
   // — pedido do editor) + painel de avaliação por experimento (pareamento A/B,
   // acumulado por braço, z-test, guardrails, conversões manuais). Seção nova
@@ -410,7 +415,7 @@ ${monthlyAbcSectionsByDate}
   // compartilhado em weekly-plan.ts) pro reorg Passado/Presente/Futuro da
   // Visão Geral — "Saúde" (Passado), "Recomendação" + agendados (Futuro),
   // "Melhores dias" (Presente). Nunca duplicam a lógica de semáforo/plano.
-  const healthVisaoGeralSection = renderHealthSection(campaigns, nowDate, { title: "Saúde" });
+  const healthVisaoGeralSection = renderHealthSection(campaigns, nowDate, { title: "Saúde" }, postmasterSpam);
   const recommendationVisaoGeralSection = renderRecommendationSection(campaigns, nowDate);
   const scheduledVisaoGeralSection = renderScheduledSection(scheduled);
   const weekdaysVisaoGeralInner = renderTopWeekdaysSection(campaigns, nowDate);
