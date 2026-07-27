@@ -1,6 +1,6 @@
 # Experimento CTA-01 — copy do CTA do topo (digest mensal Clarice, ciclo 2606-07)
 
-**Status:** ENCERRADO em 26/07/2026, **sem vencedor** — o braço B teve entrega degradada (classificado como spam), o que confunde entrega com efeito do CTA. Não repetir o protocolo antes de resolver a causa (#4061).
+**Status:** ENCERRADO em 26/07/2026 sem vencedor; **decisão final em 27/07/2026 — braço A permanece, não haverá novo round.** O braço B teve entrega degradada (classificado como spam), o que confunde entrega com efeito do CTA. O editor decidiu pelo fato central: uma variante ser classificada como spam já é a resposta, independente do que a métrica de clique diria. Ver o fim do `Log de decisões`.
 **Início:** envio 8 (qui 23/07/2026, 06:00 BRT) — campanhas Brevo 95 (A) + nova (B)
 **Continuação:** envio 9 (sex 24/07) — campanhas 96 (A) + nova (B); envios seguintes do ramp mantêm as MESMAS variantes até bater a regra de decisão.
 
@@ -74,6 +74,11 @@ Acumular envios até ~150 cliques de topo somados nos dois braços (ou fim do ci
   - `status` do experimento no registro da dashboard atualizado pra `encerrado` com `closureNote` (`workers/brevo-dashboard/src/experiment-cta.ts`).
 - 2026-07-27 — **investigação de causa (#4061), escopo autônomo = só diagnóstico offline** (decisão do editor, comentário 260727): diff dos dois HTMLs canônicos + hipótese de gatilho, sem tocar campanhas.
 - 2026-07-27 — **CTA-01 CONGELADO pelo editor**, seguindo a recomendação desta investigação. Não há novo round enquanto as duas pré-condições não forem atendidas: (a) **#4063** — circuit breaker de spam lendo o Postmaster em vez do `complaints` da Brevo, **e** reputação do domínio de volta abaixo de 0,3%; (b) **#4064** — enforcement de guardrail entre envios, pra que um braço que furou o limiar no envio N não saia no envio N+1. A decisão de repetir ou abandonar de vez o CTA-01 fica para quando as duas estiverem cumpridas — não é "abandonado", é **adiado com pré-condições explícitas**. #4061 fechada como investigada; o trabalho remanescente vive em #4063 e #4064.
+- 2026-07-27 (mesmo dia, mais tarde) — **DECISÃO FINAL: CTA-01 encerrado, braço A permanece.** O editor decidiu pelo fato central, não por métrica de conversão: *uma das variantes foi classificada como spam*, e isso basta como resposta. A régua pré-registrada media clique por entregue e pressupunha que os dois braços **chegam** na caixa — premissa que quebrou. Não dá pra dizer se a copy de B persuade menos; dá pra dizer que ela não chega, e na prática isso é pior. Repetir o round mediria a mesma coisa de novo, arriscando de novo a entrega de um domínio que é do parceiro.
+  - **Braço A é o CTA canônico**: âncora de uma palavra ("aqui"), verbo no infinitivo, sem wordmark em destaque nem seta acima da dobra.
+  - A copy de B ("Assine grátis a edição diária →" com wordmark em bold logo antes) **não volta** nesta peça — a densidade de sinais promocionais na âncora clicável, acima da dobra, é o gatilho identificado.
+  - Isso **supersede** o adiamento registrado acima: não há round futuro condicionado a #4063/#4064. As duas issues seguem valendo por si — protegem a rampa inteira, com ou sem A/B.
+  - **Aprendizado que sobrevive ao experimento:** o sinal decisivo foi reclamação formal ~0 nas 4 campanhas. Ninguém denunciou; foi colocação de caixa de entrada (foldering), que o contador `complaints` da Brevo estruturalmente não enxerga. Vale pra qualquer copy futura no topo: sinal promocional denso acima da dobra é caro em entrega, e o custo não aparece em nenhuma métrica de reclamação.
 
 ## Investigação de causa (#4061)
 
