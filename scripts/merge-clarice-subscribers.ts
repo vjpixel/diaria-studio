@@ -116,15 +116,41 @@ const DISPOSABLE_DOMAINS = new Set([
   "no-spam.ws","e4ward.com",
 ]);
 
-const ROLE_PREFIXES = [
-  // Técnicos
+// Técnicos: bounce garantido em QUALQUER domínio (corporativo ou de
+// consumo) — nenhum provedor entrega e-mail humano a essas caixas.
+const TECHNICAL_PREFIXES = [
   "noreply","no-reply","donotreply","do-not-reply","postmaster","webmaster",
   "abuse","hostmaster","mailer-daemon","mailer_daemon",
-  // Role accounts em português (caixas de empresa)
+];
+
+// Role accounts em português (caixas de empresa). Só descartam em domínios
+// CORPORATIVOS (#4075) — em provedor de consumo (gmail.com, hotmail.com...)
+// um prefixo como "contato." é, no padrão brasileiro, o Gmail pessoal de um
+// autônomo/microempresa (ex: contato.fulano@gmail.com), lido por uma pessoa.
+// Nesses domínios o MillionVerifier decide, não esse filtro heurístico.
+const COMMERCIAL_ROLE_PREFIXES = [
   "contato","info","contact","comercial","vendas","suporte","financeiro",
   "administrativo","compras","marketing","juridico","fiscal",
   "dp","sac","diretoria","secretaria","recepcao","atendimento",
 ];
+
+// Provedores de e-mail de consumo — caixa pessoal, não institucional.
+// Reusar/estender esta lista se outro filtro precisar do mesmo conceito
+// (hoje só GMAIL_DOMAINS, em canonicalize-gmail.ts, existia — mais estreito,
+// cobre só gmail/googlemail para canonicalização).
+const CONSUMER_EMAIL_DOMAINS = new Set([
+  "gmail.com","googlemail.com",
+  "hotmail.com","hotmail.com.br","outlook.com","outlook.com.br","live.com","msn.com",
+  "yahoo.com","yahoo.com.br","ymail.com",
+  "icloud.com","me.com","mac.com",
+  "bol.com.br","uol.com.br","terra.com.br","ig.com.br","globo.com","globomail.com",
+  "protonmail.com","proton.me",
+  "aol.com",
+]);
+
+function matchesPrefix(local: string, prefixes: string[]): boolean {
+  return prefixes.some(r => local === r || local.startsWith(r + ".") || local.startsWith(r + "-") || local.startsWith(r + "_"));
+}
 
 export function isLowQualityEmail(email: string): { bad: boolean; reason: string } {
   const [local, domain] = email.toLowerCase().split("@");
@@ -138,8 +164,14 @@ export function isLowQualityEmail(email: string): { bad: boolean; reason: string
   if (/^(example|test|invalid|localhost)\./.test(domain) || domain === "example.com")
     return { bad: true, reason: "test_domain" };
 
-  // 3. Role account (prefixo de função)
-  if (ROLE_PREFIXES.some(r => local === r || local.startsWith(r + ".") || local.startsWith(r + "-") || local.startsWith(r + "_")))
+  // 3a. Prefixo técnico (bounce garantido, qualquer domínio)
+  if (matchesPrefix(local, TECHNICAL_PREFIXES))
+    return { bad: true, reason: "role_account" };
+
+  // 3b. Role account comercial — só descarta em domínio CORPORATIVO (#4075).
+  // Em provedor de consumo (gmail.com etc.) o prefixo não é sinal de bounce;
+  // deixa o MillionVerifier decidir.
+  if (!CONSUMER_EMAIL_DOMAINS.has(domain) && matchesPrefix(local, COMMERCIAL_ROLE_PREFIXES))
     return { bad: true, reason: "role_account" };
 
   // 4. Parte local muito curta (1–2 chars) — siglas de departamento

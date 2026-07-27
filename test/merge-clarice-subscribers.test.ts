@@ -137,6 +137,52 @@ describe("isLowQualityEmail", () => {
     assert.equal(r.reason, "role_account");
   });
 
+  // #4075: prefixo comercial ("contato.") em domínio de CONSUMO (gmail.com)
+  // é o Gmail pessoal de um autônomo/microempresa, não bounce garantido —
+  // não deve ser descartado antes do MillionVerifier decidir.
+  it("contato.fulano@gmail.com (role prefix em domínio de consumo) → bom (#4075)", () => {
+    const r = isLowQualityEmail("contato.fulano@gmail.com");
+    assert.equal(r.bad, false);
+  });
+
+  it("contato@empresa.com.br (role prefix em domínio corporativo) → bad (#4075)", () => {
+    const r = isLowQualityEmail("contato@empresa.com.br");
+    assert.equal(r.bad, true);
+    assert.equal(r.reason, "role_account");
+  });
+
+  it("noreply@gmail.com (prefixo técnico, qualquer domínio) → bad (#4075)", () => {
+    const r = isLowQualityEmail("noreply@gmail.com");
+    assert.equal(r.bad, true);
+    assert.equal(r.reason, "role_account");
+  });
+
+  it("vendas.loja@hotmail.com (role prefix em domínio de consumo) → bom (#4075)", () => {
+    const r = isLowQualityEmail("vendas.loja@hotmail.com");
+    assert.equal(r.bad, false);
+  });
+
+  it("marketing.fulano@outlook.com (role prefix em domínio de consumo) → bom (#4075)", () => {
+    const r = isLowQualityEmail("marketing.fulano@outlook.com");
+    assert.equal(r.bad, false);
+  });
+
+  it("sac.loja@yahoo.com (role prefix em domínio de consumo) → bom (#4075)", () => {
+    const r = isLowQualityEmail("sac.loja@yahoo.com");
+    assert.equal(r.bad, false);
+  });
+
+  it("contato.fulano@icloud.com (role prefix em domínio de consumo) → bom (#4075)", () => {
+    const r = isLowQualityEmail("contato.fulano@icloud.com");
+    assert.equal(r.bad, false);
+  });
+
+  it("vendas@lojaonline.com.br (role prefix em domínio corporativo) → bad (#4075)", () => {
+    const r = isLowQualityEmail("vendas@lojaonline.com.br");
+    assert.equal(r.bad, true);
+    assert.equal(r.reason, "role_account");
+  });
+
   it("local muito curto (2 chars) → bad", () => {
     const r = isLowQualityEmail("ab@empresa.com");
     assert.equal(r.bad, true);
