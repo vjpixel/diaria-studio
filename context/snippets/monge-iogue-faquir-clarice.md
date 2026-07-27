@@ -1,6 +1,7 @@
 <!--
 nome: Monge, Iogue, Faquir - Clarice
 categoria: Divulgação
+alt: Capa do livro "O monge, o iogue e o faquir: Corpo, coração e mente no tempo das máquinas", de Ronaldo Lemos
 Box de recomendação de leitura — variante IMPESSOAL (3ª pessoa), mesma
 estrutura de recomendacao-leitura-mensal.md (base Clarice, decisão do editor
 260716). RASCUNHO — comentário sobre autor/livro gerado automaticamente a

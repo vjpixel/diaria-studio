@@ -1,0 +1,202 @@
+/**
+ * test/stage-4-box-divulgacao-alt-invariant.test.ts (#4086)
+ *
+ * Cobre o registro do guard warn-only `box-divulgacao-alt-missing` em
+ * `invariant-checks/stage-4.ts` — mesmo padrão de
+ * test/stage-4-no-trailing-ellipsis-invariant.test.ts (#2881) e
+ * test/stage-4-title-normalization-invariant.test.ts (#2693 item 3).
+ *
+ * checkBoxDivulgacaoAltMissing dispara (warning, nunca error) quando um slot
+ * de box de divulgação (1/2/3) tem imagem — `box_slot{N}_image` explícito, ou
+ * `livros_promo` no box de livros — mas o snippet atribuído àquele slot em
+ * `boxes_divulgacao.slot{N}` (platform.config.json) não declara `alt:` no
+ * header.
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import {
+  checkBoxDivulgacaoAltMissing,
+  STAGE_4_RULES,
+} from "../scripts/lib/invariant-checks/stage-4.ts";
+
+const LIVROS_MD = `Para esta edição, selecionamos 15 itens.
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Título D1](https://example.com/d1)**
+
+Corpo do destaque 1.
+
+Por que isso importa:
+
+Algo importante.
+
+---
+
+**📚 Nossa curadoria de livros sobre IA ganhou página nova. [Confira a nova página](https://livros.diar.ia.br).**
+
+---
+
+**DESTAQUE 2 | 🚀 LANÇAMENTO**
+
+**[Título D2](https://example.com/d2)**
+
+Corpo do destaque 2.
+`;
+
+/** MD sem nenhum box no slot 1 (sem a lacuna extra entre D1 e D2). */
+const NO_BOX_MD = `Para esta edição, selecionamos 15 itens.
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Título D1](https://example.com/d1)**
+
+Corpo do destaque 1.
+
+Por que isso importa:
+
+Algo importante.
+
+---
+
+**DESTAQUE 2 | 🚀 LANÇAMENTO**
+
+**[Título D2](https://example.com/d2)**
+
+Corpo do destaque 2.
+`;
+
+function makeEdition(md: string, publicImages?: Record<string, unknown>): string {
+  const dir = mkdtempSync(join(tmpdir(), "stage4-box-alt-"));
+  mkdirSync(join(dir, "_internal"), { recursive: true });
+  writeFileSync(resolve(dir, "02-reviewed.md"), md);
+  if (publicImages) {
+    writeFileSync(resolve(dir, "06-public-images.json"), JSON.stringify({ images: publicImages }));
+  }
+  return dir;
+}
+
+function makeRoot(snippetFilename: string, snippetContent: string): string {
+  const root = mkdtempSync(join(tmpdir(), "stage4-box-alt-root-"));
+  mkdirSync(join(root, "context", "snippets"), { recursive: true });
+  writeFileSync(join(root, "context", "snippets", snippetFilename), snippetContent);
+  writeFileSync(
+    join(root, "platform.config.json"),
+    JSON.stringify({ boxes_divulgacao: { slot1: snippetFilename } }),
+  );
+  return root;
+}
+
+describe("checkBoxDivulgacaoAltMissing (#4086)", () => {
+  it("retorna [] quando 02-reviewed.md não existe (stage não chegou lá)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stage4-box-alt-missing-md-"));
+    try {
+      assert.deepEqual(checkBoxDivulgacaoAltMissing(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("retorna [] quando o slot não tem box nenhum", () => {
+    const dir = makeEdition(NO_BOX_MD);
+    try {
+      assert.deepEqual(checkBoxDivulgacaoAltMissing(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("retorna [] quando o slot tem box mas SEM imagem (livros_promo ausente de 06-public-images.json)", () => {
+    const dir = makeEdition(LIVROS_MD); // sem 06-public-images.json
+    try {
+      assert.deepEqual(checkBoxDivulgacaoAltMissing(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("warning quando o slot tem imagem (livros_promo) e o snippet não declara alt:", () => {
+    const dir = makeEdition(LIVROS_MD, {
+      livros_promo: { cloudflare_url: "https://img.example/livros.jpg" },
+    });
+    const root = makeRoot("sem-alt.md", "<!--\nnome: Livros\n-->\n\nConteúdo.");
+    try {
+      const v = checkBoxDivulgacaoAltMissing(dir, root);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].severity, "warning");
+      assert.equal(v[0].rule, "box-divulgacao-alt-missing");
+      assert.equal(v[0].source_issue, "#4086");
+      assert.match(v[0].message, /slot 1/i);
+    } finally {
+      rmSync(dir, { recursive: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna [] quando o slot tem imagem E o snippet declara alt:", () => {
+    const dir = makeEdition(LIVROS_MD, {
+      livros_promo: { cloudflare_url: "https://img.example/livros.jpg" },
+    });
+    const root = makeRoot(
+      "com-alt.md",
+      "<!--\nnome: Livros\nalt: Prévia da página de livros\n-->\n\nConteúdo.",
+    );
+    try {
+      assert.deepEqual(checkBoxDivulgacaoAltMissing(dir, root), []);
+    } finally {
+      rmSync(dir, { recursive: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("warning quando a imagem vem de box_slot1_image (explícita) e o snippet não declara alt:", () => {
+    const dir = makeEdition(LIVROS_MD, {
+      box_slot1_image: { cloudflare_url: "https://img.example/explicit.jpg" },
+    });
+    const root = makeRoot("sem-alt.md", "<!--\nnome: Livros\n-->\n\nConteúdo.");
+    try {
+      const v = checkBoxDivulgacaoAltMissing(dir, root);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "box-divulgacao-alt-missing");
+    } finally {
+      rmSync(dir, { recursive: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("nunca é gate-blocking — severity é sempre 'warning', nunca 'error'", () => {
+    const dir = makeEdition(LIVROS_MD, {
+      livros_promo: { cloudflare_url: "https://img.example/livros.jpg" },
+    });
+    const root = makeRoot("sem-alt.md", "<!--\nnome: Livros\n-->\n\nConteúdo.");
+    try {
+      const v = checkBoxDivulgacaoAltMissing(dir, root);
+      assert.ok(v.every((x) => x.severity === "warning"), "nenhuma violação deve ser 'error'");
+    } finally {
+      rmSync(dir, { recursive: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("STAGE_4_RULES registry (#4086)", () => {
+  it("inclui box-divulgacao-alt-missing", () => {
+    const ids = STAGE_4_RULES.map((r) => r.id);
+    assert.ok(ids.includes("box-divulgacao-alt-missing"));
+  });
+
+  it("box-divulgacao-alt-missing está registrado no stage 4, source_issue #4086", () => {
+    const entry = STAGE_4_RULES.find((r) => r.id === "box-divulgacao-alt-missing");
+    assert.ok(entry);
+    assert.equal(entry!.stage, 4);
+    assert.equal(entry!.source_issue, "#4086");
+  });
+});

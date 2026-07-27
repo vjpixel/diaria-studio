@@ -16,6 +16,13 @@ import {
   parseEiaMirrorBlock,
   parseEIA,
   fallbackEIA,
+  extractBoxDivulgacao1,
+  extractBoxDivulgacao2,
+  extractBoxDivulgacao3,
+  readBoxDivulgacao1Image,
+  readBoxDivulgacao2Image,
+  readBoxDivulgacao3Image,
+  readBoxDivulgacaoAltForSlot,
 } from "../newsletter-parse.ts";
 import { checkUseMelhorTempo } from "../lint-checks/use-melhor-tempo.ts";
 import {
@@ -1056,6 +1063,71 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
     }));
 }
 
+/**
+ * #4086 item 2: warn-only guard — quando um slot de box de divulgação (1/2/3)
+ * tem imagem (explícita via `box_slot{N}_image`, ou `livros_promo` quando o
+ * box é de livros — mesmo contrato de `readBoxDivulgacao{N}Image`), mas o
+ * snippet atualmente atribuído àquele slot (`boxes_divulgacao.slot{N}` em
+ * `platform.config.json`) não declara `alt:` no header, o alt renderizado cai
+ * no anchor text do 1º link do box (`renderMidCallout`, #2067) — um rótulo de
+ * ação genérico ("Ler o artigo", "Quero apoiar") que não descreve a imagem.
+ * Quem usa leitor de tela, ou tem imagens bloqueadas no cliente de e-mail
+ * (Outlook desktop bloqueia por padrão), perde a informação que a imagem
+ * carrega (caso real 260727: header com o TÍTULO do artigo rasterizado saiu
+ * com alt="Ler o artigo" — o título não aparecia em lugar nenhum do e-mail).
+ *
+ * Warning, não error (decisão explícita da issue): alt fraco (anchor text)
+ * não deve bloquear a publicação — deve só ficar visível no gate.
+ *
+ * `rootDir` (default: raiz do repo real, via `readBoxDivulgacaoAltForSlot`)
+ * existe só pra permitir fixture de teste isolada — o call site real
+ * (STAGE_4_RULES) nunca passa override.
+ */
+function checkBoxDivulgacaoAltMissing(
+  editionDir: string,
+  rootDir?: string,
+): InvariantViolation[] {
+  const path = resolve(editionDir, "02-reviewed.md");
+  if (!existsSync(path)) return [];
+  const md = readFileSync(path, "utf8");
+
+  const slots: Array<{
+    n: 1 | 2 | 3;
+    extract: (text: string) => string | null;
+    readImage: (editionDir: string, boxText?: string | null) => string | null;
+  }> = [
+    { n: 1, extract: extractBoxDivulgacao1, readImage: readBoxDivulgacao1Image },
+    { n: 2, extract: extractBoxDivulgacao2, readImage: readBoxDivulgacao2Image },
+    { n: 3, extract: extractBoxDivulgacao3, readImage: readBoxDivulgacao3Image },
+  ];
+
+  const violations: InvariantViolation[] = [];
+  for (const { n, extract, readImage } of slots) {
+    const boxText = extract(md);
+    if (!boxText) continue; // slot vazio nesta edição — nada a checar
+    const imageUrl = readImage(editionDir, boxText);
+    if (!imageUrl) continue; // sem imagem — anchor text é o alt de sempre, sem gap
+    const alt = rootDir !== undefined
+      ? readBoxDivulgacaoAltForSlot(n, rootDir)
+      : readBoxDivulgacaoAltForSlot(n);
+    if (alt) continue;
+    violations.push({
+      rule: "box-divulgacao-alt-missing",
+      message:
+        `Slot ${n} de box de divulgação tem imagem, mas o snippet atribuído em ` +
+        `boxes_divulgacao.slot${n} (platform.config.json) não declara \`alt:\` no header. ` +
+        `O alt renderizado cai no anchor text do 1º link do box (rótulo de ação genérico, ` +
+        `ex: "Ler o artigo") — não descreve a imagem pra leitor de tela ou cliente com imagens ` +
+        `bloqueadas (Outlook desktop). Fix: adicionar \`alt: {descrição do CONTEÚDO da imagem}\` ` +
+        `ao header do snippet (ver context/snippets/README.md).`,
+      source_issue: "#4086",
+      severity: "warning",
+      file: path,
+    });
+  }
+  return violations;
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -1162,6 +1234,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkCropReviewWarnings,
   },
+  {
+    id: "box-divulgacao-alt-missing",
+    description: "slot de box de divulgação com imagem mas sem alt: descritivo no snippet (#4086, warning-only)",
+    source_issue: "#4086",
+    stage: 4,
+    run: checkBoxDivulgacaoAltMissing,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -1187,4 +1266,5 @@ export {
   checkNoTrailingEllipsisInvariant,
   checkCaptureFailedSubmissionCount,
   checkCropReviewWarnings,
+  checkBoxDivulgacaoAltMissing,
 };

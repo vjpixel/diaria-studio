@@ -119,6 +119,30 @@ por slot).
   (`scripts/lib/shared/snippet-loader.ts`) remove esse comentário
   automaticamente antes do conteúdo entrar no render — o comentário é só
   documentação, nunca vaza pro e-mail final.
+- **Campos de header dedicados: `nome:`, `categoria:`, `alt:`.** Além do texto
+  livre de notas, o header aceita 3 linhas `{key}: {valor}` reconhecidas por
+  `parseBoxHeaderField` (`scripts/lib/shared/snippet-header.ts`), mesmo
+  padrão editável no Studio (`scripts/studio-ui/studio-boxes.ts`):
+  - `nome:` (#3933) — nome interno do box, exibido no Studio (nunca vaza
+    pro e-mail).
+  - `categoria:` (#3981) — rótulo do kicker acima do box na newsletter
+    (ex: "Recomendação de Livro"), substitui o default "Divulgação"/
+    "Agradecimento" (ver `readBoxDivulgacaoCategoriaForSlot`).
+  - `alt:` (#4086) — texto alternativo da imagem do box, quando o slot tem
+    imagem (`box_slot{N}_image` explícito, ou `livros_promo` no box de
+    livros). Lido por `readBoxDivulgacaoAltForSlot` e passado como
+    `altOverride` pra `renderMidCallout`/`renderBoxDivulgacao`, vencendo o
+    default (anchor text do 1º link do box). **Regra editorial: descreva o
+    CONTEÚDO da imagem, nunca o rótulo do botão/CTA** — ex:
+    `alt: Capa do livro "Título", de Autor`, não `alt: Quero apoiar` (o
+    rótulo do botão já é redundante com o link, e não descreve nada pra
+    quem não vê a imagem — leitor de tela, ou cliente de e-mail com
+    imagens bloqueadas por padrão, como Outlook desktop). Ausente → o
+    render cai no anchor text do 1º link (comportamento legado,
+    retrocompatível) — `check-invariants.ts --stage 4` sinaliza (warning,
+    não bloqueia) quando um slot tem imagem sem `alt:` declarado (#4086).
+  Todos os 3 campos são opcionais e independentes — declarar um não exige
+  os outros.
 - **Sem marcador emoji (#3475).** O parse/render decide formato e posição
   100% por estrutura (posição no texto, presença de `---`, contagem de
   links, parágrafo CTA-only) e por sinal de conteúdo (link de afiliado pra

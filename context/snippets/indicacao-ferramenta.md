@@ -1,5 +1,6 @@
 <!--
 nome: Indicação de Ferramenta
+alt: Captura de tela ou logo do Raycast, a ferramenta indicada nesta edição — atualizar junto com nome/link/comentário a cada reuso
 Bloco de DIVULGAÇÃO de indicação de ferramenta pessoal do editor (🔧). Mesma
 categoria de recomendacao-leitura.md — 3º slot fixo (slot 3, #3476),
 posicionado SEMPRE após o ÚLTIMO destaque (D3 em edições de 3 destaques, D2
