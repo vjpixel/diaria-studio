@@ -153,25 +153,37 @@ export function medalFor(rank: number): string {
   return `${rank}.`;
 }
 
-// ── Cauda de baixo-engajamento (#4008 item 2) ───────────────────────────────
+// ── Cauda de baixo-engajamento (#4008 item 2, REVERTIDO no #4122) ───────────
 
 /**
- * #4008 item 2: nº mínimo de tentativas (`total`) pra um leitor aparecer
- * LISTADO linha-a-linha no leaderboard público. Uma cauda grande de entries
- * 0/N (quem votou 1-2× e nunca acertou) desmotiva quem olha o ranking — sem
- * nenhum sinal de progresso, só "perdedor" exposto publicamente. Abaixo do
- * mínimo, o leitor continua PONTUANDO normalmente (nunca perde o voto nem o
- * rank interno) — só não aparece como linha própria, vira parte do agregado
- * "+ N jogadores {período}" (ver `partitionLeaderboardForDisplay`).
+ * #4008 item 2: nº mínimo de tentativas (`total`) que ESTA função aceita como
+ * `minAttempts` default caso o caller não passe um valor explícito.
+ *
+ * #4122 (decisão do editor 260727): o caminho de produção (`renderLeaderboardHtml`,
+ * leaderboard-routes.ts) NÃO usa mais este default — chama
+ * `partitionLeaderboardForDisplay(ranked, 0)` explicitamente, revertendo o
+ * corte de cauda. Motivo: uma cauda de 0/N escondida fazia o self-highlight
+ * (#4029) mentir pra quem jogou 1-2× ("você ainda não aparece" — falso,
+ * a pessoa só não tinha tentativas suficientes pra ser LISTADA). O editor
+ * priorizou "todo mundo se vê no ranking" sobre "esconder quem não acertou
+ * nada". A constante e o parâmetro seguem existindo — a função continua uma
+ * peça reusável e testável (ver leaderboard-rank.test.ts) — só não são mais
+ * invocados com corte no HTML público.
  */
 export const MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING = 3;
 
 /**
  * #4008 item 2: separa `ranked` (já ordenado por `rankEntries`) em entries
- * "visíveis" (>= `minAttempts` tentativas) e a CONTAGEM do resto (cauda de
- * baixo-engajamento — nunca exibida linha-a-linha, só como agregado).
+ * "visíveis" (>= `minAttempts` tentativas) e a CONTAGEM do resto.
  *
- * Fallback anti-leaderboard-vazio: se NINGUÉM atinge o mínimo (baixa
+ * #4122 (decisão do editor 260727): chamado em produção com `minAttempts=0`
+ * — ninguém é filtrado (`total` nunca é negativo), `hiddenCount` é sempre 0.
+ * Nesse modo a função vira um no-op de RE-ranqueamento (ver `assignDenseRanks`
+ * abaixo) sobre o conjunto completo, preservado como peça reusável/testável
+ * em vez de inlinear `rankedAll` direto no call site.
+ *
+ * Fallback anti-leaderboard-vazio (comportamento legado, ainda válido pra
+ * quem chamar com `minAttempts > 0`): se NINGUÉM atinge o mínimo (baixa
  * participação — início de mês/ano, brand novo, amostra pequena), não
  * esconde ninguém — mostrar a cauda inteira é preferível a um leaderboard
  * vazio. Nesse caso `hiddenCount` retorna 0 (sinaliza "nenhum corte

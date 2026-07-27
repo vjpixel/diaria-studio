@@ -1229,9 +1229,58 @@ export function lightboxScript(): string {
 // ── Validação de apelidos do leaderboard (#1758) ────────────────────────────
 
 /**
+ * #4122 (achado 3, decisão do editor 260727): mapa de confusáveis usado
+ * SÓ pra derivar a CHAVE de dedup de apelido (`nickname:{normalizado}` em
+ * index.ts) — nunca pra alterar o apelido exibido. `normalizeNickname` já
+ * fazia NFD + lowercase, que fecha acentos (á→a), mas não homóglifos entre
+ * ALFABETOS: "pаixel" (com а cirílico, U+0430) e "paixel" (latino) são bytes
+ * diferentes que renderizam IDÊNTICOS na maioria das fontes — o guard de
+ * apelido duplicado (#1758/#3117) não os via como o mesmo apelido.
+ *
+ * Escopo deliberadamente ENXUTO — cobre os confusáveis minúsculos mais
+ * comuns entre Cirílico/Grego e Latino (mesma classe de ataque dos IDN
+ * homograph de domínio), sem dependência externa (o worker roda no
+ * Cloudflare, sem acesso a um pacote de confusables.txt completo do
+ * Unicode). NÃO fecha: outros alfabetos (armênio, copta, etc.), confusáveis
+ * que dependem de MAIÚSCULA (irrelevante aqui — a função já lowercase antes),
+ * nem combinações multi-caractere (ex: "rn" parecendo "m"). Ampliar esta
+ * tabela é seguro e não quebra nada — só reduz falso-negativo do dedup.
+ */
+const NICKNAME_CONFUSABLES: Record<string, string> = {
+  // Cirílico → Latino
+  "а": "a", // U+0430 CYRILLIC SMALL LETTER A
+  "е": "e", // U+0435 CYRILLIC SMALL LETTER IE
+  "о": "o", // U+043E CYRILLIC SMALL LETTER O
+  "р": "p", // U+0440 CYRILLIC SMALL LETTER ER
+  "с": "c", // U+0441 CYRILLIC SMALL LETTER ES
+  "у": "y", // U+0443 CYRILLIC SMALL LETTER U
+  "х": "x", // U+0445 CYRILLIC SMALL LETTER HA
+  "і": "i", // U+0456 CYRILLIC SMALL LETTER BYELORUSSIAN-UKRAINIAN I
+  "ј": "j", // U+0458 CYRILLIC SMALL LETTER JE
+  "ѕ": "s", // U+0455 CYRILLIC SMALL LETTER DZE
+  "һ": "h", // U+04BB CYRILLIC SMALL LETTER SHHA
+  "ԁ": "d", // U+0501 CYRILLIC SMALL LETTER KOMI DE
+  "ԛ": "q", // U+051B CYRILLIC SMALL LETTER QA
+  "ѡ": "w", // U+0461 CYRILLIC SMALL LETTER OMEGA
+  // Grego → Latino
+  "α": "a", // U+03B1 GREEK SMALL LETTER ALPHA
+  "ο": "o", // U+03BF GREEK SMALL LETTER OMICRON
+  "ρ": "p", // U+03C1 GREEK SMALL LETTER RHO
+  "υ": "u", // U+03C5 GREEK SMALL LETTER UPSILON
+  "ι": "i", // U+03B9 GREEK SMALL LETTER IOTA
+  "κ": "k", // U+03BA GREEK SMALL LETTER KAPPA
+  "ν": "v", // U+03BD GREEK SMALL LETTER NU
+  "χ": "x", // U+03C7 GREEK SMALL LETTER CHI
+};
+
+/** Regex pré-compilada a partir das chaves de `NICKNAME_CONFUSABLES` (classe de caracteres). */
+const NICKNAME_CONFUSABLES_RE = new RegExp(`[${Object.keys(NICKNAME_CONFUSABLES).join("")}]`, "g");
+
+/**
  * Normaliza apelido pra COMPARAÇÃO (dedup): lowercase, remove acentos, colapsa
- * espaços. "Ana B" e "ana  b" colidem; "Ana" e "Ana B" não. Não altera o
- * apelido salvo — só a chave de comparação.
+ * espaços, dobra homóglifos comuns (cirílico/grego → latino, #4122) pro
+ * equivalente latino. "Ana B" e "ana  b" colidem; "Ana" e "Ana B" não. Não
+ * altera o apelido salvo — só a chave de comparação.
  */
 export function normalizeNickname(name: string): string {
   return name
@@ -1239,7 +1288,8 @@ export function normalizeNickname(name: string): string {
     .toLowerCase()
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, "")
-    .replace(/\s+/g, " ");
+    .replace(/\s+/g, " ")
+    .replace(NICKNAME_CONFUSABLES_RE, (ch) => NICKNAME_CONFUSABLES[ch]);
 }
 
 /**

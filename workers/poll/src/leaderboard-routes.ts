@@ -802,17 +802,25 @@ function renderLeaderboardHtml(
   const periodNoun = periodKind === "year" ? "este ano" : "esse mês";
   // #1092 + #1256: dense ranking — leitores empatados em (correct, total)
   // ocupam o mesmo número e o próximo grupo é +1 (1, 1, 2 — não 1, 1, 3).
-  // #4008 item 2: cauda de baixo-engajamento (< MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING
-  // tentativas) sai da listagem linha-a-linha antes do corte top-N — vira o
-  // agregado "+ N jogadores {período}" abaixo da tabela (ver tailNoteHtml).
+  // #4122 (decisão do editor 260727): a cauda de baixo-engajamento
+  // (#4008 item 2 — corte de quem tinha < MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING
+  // tentativas) foi REVERTIDA de propósito — TODO MUNDO aparece listado agora,
+  // pra que ninguém fique invisível (o corte também produzia o achado
+  // "self-highlight mente pra quem está na cauda": o jogador via "você ainda
+  // não aparece" mesmo tendo jogado). `partitionLeaderboardForDisplay` é
+  // chamado com `minAttempts=0` — ninguém é filtrado (total nunca é negativo),
+  // mas o re-ranqueamento denso (`assignDenseRanks`, #4122/PR #4128) continua
+  // rodando: vira no-op no caminho normal (sem corte, a ordem/ranks batem com
+  // `rankedAll`), e segue disponível como a mesma peça reusável que protege
+  // contra buracos de rank caso o cap de 500 abaixo algum dia precise cortar
+  // no meio de um grupo empatado.
   // #4029 (item 1, decisão do editor 260724): corte visual subiu de 50 pra
   // LEADERBOARD_DISPLAY_CAP (500) — cobre qualquer volume realista hoje
   // (diária: ~50-200 votantes/mês, ver comentário em
   // upsertOwnEntryInSnapshot acima; web é bem menor ainda) sem risco de
-  // estourar o HTML/render no mobile. A cauda 0/N (#4008 item 2) continua
-  // agregada — "todos" aqui não reabre aquela decisão.
+  // estourar o HTML/render no mobile.
   const rankedAll = rankEntries(scores);
-  const { visible, hiddenCount } = partitionLeaderboardForDisplay(rankedAll);
+  const { visible } = partitionLeaderboardForDisplay(rankedAll, 0);
   const ranked = visible.slice(0, LEADERBOARD_DISPLAY_CAP);
 
   const rows = ranked.map((s) => {
@@ -838,8 +846,18 @@ function renderLeaderboardHtml(
     // do `display` acima). NUNCA hashear `s.masked` aqui — é lossy e produziria
     // um uid que o self-highlight client-side (que hasheia o e-mail real) jamais
     // conseguiria casar.
-    const uid = s.uid ?? hashEmailForMatch(s.email ?? "");
-    return `<tr${trClass} data-uid="${uid}">
+    // #4162: só emite o atributo quando `brand === "web"` — o ÚNICO brand
+    // com script consumidor (selfHighlightHtml abaixo é gated do mesmo jeito).
+    // Antes o data-uid saía em TODOS os brands (inclusive diaria/clarice, sem
+    // nenhum script pra ler) — FNV-1a de 32 bits sem sal é reversível offline
+    // (dado um e-mail candidato, dá pra recomputar o hash e desmascarar a
+    // linha `wut…@***`), então servir o atributo onde ninguém o consome só
+    // ampliava a superfície de exposição sem ganho nenhum. Não implementamos
+    // aqui um uid salgado por segredo do worker (mitigaria a reversibilidade
+    // que PERMANECE no brand web) — decisão do editor foi descartar esse
+    // escopo nesta rodada.
+    const uidAttr = brand === "web" ? ` data-uid="${s.uid ?? hashEmailForMatch(s.email ?? "")}"` : "";
+    return `<tr${trClass}${uidAttr}>
       <td>${s.medal}</td>
       <td>${escaped}</td>
       <td>${s.correct}/${s.total}</td>
@@ -889,13 +907,10 @@ function renderLeaderboardHtml(
     ? `<a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a>`
     : "";
   const navHtml = annualLinkHtml || archiveLinkHtml ? `<p class="nav">${annualLinkHtml}${archiveLinkHtml}</p>` : "";
-  // #4008 item 2: linha agregada de prova social pra quem ficou de fora da
-  // listagem por baixo engajamento (< MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING
-  // tentativas) — nunca aparece se `partitionLeaderboardForDisplay` não
-  // cortou ninguém (fallback anti-leaderboard-vazio, hiddenCount === 0).
-  const tailNoteHtml = hiddenCount > 0
-    ? `<p style="margin-top:8px;font-size:0.85rem;color:${DS_COLORS.ink}">+ ${hiddenCount} jogador${hiddenCount === 1 ? "" : "es"} ${periodNoun} (poucas tentativas pra entrar na lista)</p>`
-    : "";
+  // #4122 (decisão do editor 260727): agregado "+ N jogadores" removido —
+  // era a contrapartida visual do corte de cauda revertido acima
+  // (`partitionLeaderboardForDisplay` agora chamado com minAttempts=0,
+  // hiddenCount sempre 0). Sem ninguém escondido, o agregado perde sentido.
   // #4029 (item 2): self-highlight — destaca a linha do PRÓPRIO jogador
   // quando ele visita o ranking. Só faz sentido pro brand `web` (único com
   // identidade local persistida — `localStorage["eia_web_identified_email"]`,
@@ -979,7 +994,6 @@ ${navHtml}
 <thead><tr><th>#</th><th>Jogador(a)</th><th>Acertos</th><th>%</th></tr></thead>
 <tbody>${rows || `<tr><td colspan=4 style='color:${DS_COLORS.ink};text-align:center;padding:20px'>Ainda sem votos.</td></tr>`}</tbody>
 </table>
-${tailNoteHtml}
 ${selfHighlightHtml}
 <p style="margin-top:30px;font-size:0.8rem;color:${DS_COLORS.ink}">Critérios: acertos absolutos (1º); em caso de empate, mais tentativas vence (2º).</p>
 <p style="margin-top:8px;font-size:0.8rem;color:${DS_COLORS.ink}">Atualizado em tempo real · Nicknames escolhidos pelos leitores · E-mails mascarados</p>

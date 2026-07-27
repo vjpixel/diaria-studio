@@ -1037,6 +1037,35 @@ describe("validação de apelidos (#1758)", () => {
     it("dois apelidos equivalentes colidem", () => {
       assert.equal(normalizeNickname("Bruna Quevedo"), normalizeNickname("bruna  quevedo"));
     });
+
+    // #4122 (achado 3, decisão do editor 260727): homóglifos entre alfabetos
+    // contornavam o guard de apelido duplicado (#1758/#3117) — NFD+lowercase
+    // fecha acento, mas "pаixel" (com а cirílico, U+0430) e "paixel" (latino)
+    // normalizavam diferente e coexistiam como linhas visualmente idênticas
+    // no leaderboard público.
+    it("homóglifo cirílico colide com o equivalente latino — 'pаixel' (а U+0430) === 'paixel'", () => {
+      const cyrillic = "pаixel"; // а CYRILLIC SMALL LETTER A
+      assert.equal(normalizeNickname(cyrillic), normalizeNickname("paixel"));
+      assert.notEqual(cyrillic, "paixel", "sanity: são strings byte-diferentes antes de normalizar");
+    });
+
+    it("homóglifo grego colide com o equivalente latino — 'αlpha' (α U+03B1) === 'alpha'", () => {
+      const greek = "αlpha"; // α GREEK SMALL LETTER ALPHA
+      assert.equal(normalizeNickname(greek), normalizeNickname("alpha"));
+    });
+
+    it("mistura de múltiplos confusáveis cirílicos ainda colide ('раixel' com р+а cirílicos === 'paixel')", () => {
+      const mixed = "раixel"; // р (U+0440) + а (U+0430), ambos cirílicos
+      assert.equal(normalizeNickname(mixed), normalizeNickname("paixel"));
+    });
+
+    it("apelido legitimamente não-latino, sem nenhum caractere na tabela de confusáveis, continua distinto — escopo enxuto não colide à toa", () => {
+      // "гвинт" — todas as letras (г,в,и,н,т) ficam FORA da tabela enxuta de
+      // confusáveis (só cobre os mais comuns, ver comentário de
+      // NICKNAME_CONFUSABLES em lib.ts) — normaliza pra si mesma, não pra
+      // latino. Documenta o limite deliberado do escopo, não uma falha.
+      assert.notEqual(normalizeNickname("гвинт"), normalizeNickname("gvint"));
+    });
   });
 
   describe("isBlacklistedNickname", () => {
