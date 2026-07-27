@@ -23,6 +23,7 @@ import {
   type SnapshotEntry,
   type Env,
 } from "../workers/poll/src/index.ts";
+import { hashEmailForMatch, maskEmail } from "../workers/poll/src/lib.ts";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 import { makePollEnv } from "./_helpers/make-poll-env.ts";
 
@@ -122,7 +123,8 @@ describe("#2152 — snapshot ausente não deve destruir votantes existentes (mod
   it("snapshot existente com N entradas + voto novo → N+1 entradas (upsert normal)", async () => {
     // Snapshot PRESENTE: caminho normal do upsert não é afetado.
     const existingEntries = Array.from({ length: 5 }, (_, i) => ({
-      email: `voter${i + 1}@x.com`,
+      uid: hashEmailForMatch(`voter${i + 1}@x.com`),
+      masked: maskEmail(`voter${i + 1}@x.com`),
       nickname: `Voter${i + 1}`,
       correct: i + 1,
       total: 10,
@@ -145,11 +147,11 @@ describe("#2152 — snapshot ausente não deve destruir votantes existentes (mod
     const payload = JSON.parse(put!.value);
     assert.equal(payload.entries.length, 6, "5 existentes + 1 novo = 6");
     assert.ok(
-      payload.entries.find((e: SnapshotEntry) => e.email === "new@x.com"),
+      payload.entries.find((e: SnapshotEntry) => e.uid === hashEmailForMatch("new@x.com")),
       "novo votante deve estar presente",
     );
     // F8: verificar que pelo menos um votante pré-existente tem dados corretos
-    const voter1 = payload.entries.find((e: SnapshotEntry) => e.email === "voter1@x.com");
+    const voter1 = payload.entries.find((e: SnapshotEntry) => e.uid === hashEmailForMatch("voter1@x.com"));
     assert.ok(voter1, "voter1 pré-existente deve ser preservado");
     assert.equal(voter1.correct, 1, "correct de voter1 pré-existente preservado");
     assert.equal(voter1.nickname, "Voter1", "nickname de voter1 pré-existente preservado");
@@ -160,8 +162,8 @@ describe("#2152 — snapshot ausente não deve destruir votantes existentes (mod
     const kv = makeTrackedKv({
       "leaderboard-snapshot:2026-06": JSON.stringify({
         entries: [
-          { email: "alice@x.com", nickname: "Alice", correct: 2, total: 3 },
-          { email: "bob@x.com", nickname: "Bob", correct: 1, total: 3 },
+          { uid: hashEmailForMatch("alice@x.com"), masked: maskEmail("alice@x.com"), nickname: "Alice", correct: 2, total: 3 },
+          { uid: hashEmailForMatch("bob@x.com"), masked: maskEmail("bob@x.com"), nickname: "Bob", correct: 1, total: 3 },
         ],
         computed_at: "2026-06-10T00:00:00.000Z",
       }),
@@ -177,11 +179,11 @@ describe("#2152 — snapshot ausente não deve destruir votantes existentes (mod
     assert.ok(put);
     const payload = JSON.parse(put!.value);
     assert.equal(payload.entries.length, 2, "revoto não duplica a entry");
-    const alice = payload.entries.find((e: SnapshotEntry) => e.email === "alice@x.com");
+    const alice = payload.entries.find((e: SnapshotEntry) => e.uid === hashEmailForMatch("alice@x.com"));
     assert.equal(alice.total, 4, "total de Alice atualizado");
     assert.equal(alice.correct, 3, "correct de Alice atualizado");
     // F8: verificar que bob (pré-existente) foi preservado intacto
-    const bob = payload.entries.find((e: SnapshotEntry) => e.email === "bob@x.com");
+    const bob = payload.entries.find((e: SnapshotEntry) => e.uid === hashEmailForMatch("bob@x.com"));
     assert.ok(bob, "bob pré-existente preservado");
     assert.equal(bob.correct, 1, "correct de bob não alterado");
   });
@@ -215,8 +217,12 @@ describe("#2152 — snapshot ausente não deve destruir votantes existentes (mod
     // O próximo READ (getOrComputeSnapshot) reconstrói tudo
     const result = await getOrComputeSnapshot(env, "2026-06");
     assert.equal(result.length, 4, "Alice + Bob + Carol + Dave (lazy rebuild via GET)");
-    const emails = result.map((e: SnapshotEntry) => e.email).sort();
-    assert.deepEqual(emails, ["alice@x.com", "bob@x.com", "carol@x.com", "dave@x.com"]);
+    // #4123: SnapshotEntry não carrega mais `email` — compara por `uid`.
+    const uids = result.map((e: SnapshotEntry) => e.uid).sort();
+    const expectedUids = ["alice@x.com", "bob@x.com", "carol@x.com", "dave@x.com"]
+      .map((email) => hashEmailForMatch(email))
+      .sort();
+    assert.deepEqual(uids, expectedUids);
   });
 });
 
@@ -229,7 +235,7 @@ describe("#2129 — upsert preserva TTL 24h (não rebaixa para 300s)", () => {
     // causando recompute repetido no pico de leitura pós-envio.
     const kv = makeTrackedKv({
       "leaderboard-snapshot:2026-06": JSON.stringify({
-        entries: [{ email: "alice@x.com", nickname: "Alice", correct: 2, total: 3 }],
+        entries: [{ uid: hashEmailForMatch("alice@x.com"), masked: maskEmail("alice@x.com"), nickname: "Alice", correct: 2, total: 3 }],
         computed_at: "2026-06-10T00:00:00.000Z",
       }),
     });
@@ -292,7 +298,7 @@ describe("#2129 — upsert preserva TTL 24h (não rebaixa para 300s)", () => {
     const raw = await kv.get("leaderboard-snapshot:2026-06");
     assert.ok(raw, "snapshot deve existir");
     const payload = JSON.parse(raw!);
-    const alice = payload.entries.find((e: SnapshotEntry) => e.email === "alice@x.com");
+    const alice = payload.entries.find((e: SnapshotEntry) => e.uid === hashEmailForMatch("alice@x.com"));
     assert.ok(alice, "alice deve estar no snapshot (read-your-own-write)");
     assert.equal(alice.correct, 3);
     assert.equal(alice.total, 5);

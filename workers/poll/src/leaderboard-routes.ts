@@ -49,14 +49,21 @@ export interface LeaderTop1Entry {
 }
 
 export function computeTop1(
-  scores: Array<{ email: string; nickname: string | null; correct: number; total: number }>,
+  // #4123: `email` OPCIONAL — entries vindas do snapshot (`getOrComputeSnapshot`,
+  // via handleLeaderboardTop1 abaixo) não carregam mais e-mail cru, só
+  // `masked`/`uid` (SnapshotEntry). Chamadas diretas com dados crus (testes,
+  // outros consumidores) continuam passando `email` normalmente.
+  scores: Array<{ email?: string; nickname: string | null; correct: number; total: number }>,
 ): LeaderTop1Entry[] {
   const withNickname = scores
     // #3975: entradas sob a identidade anônima do brand web (token client-side
     // ainda não associado a um e-mail via /jogar/identify) nunca aparecem no
     // ranking público — continuam existindo no KV (upsertOwnEntryInSnapshot
     // nunca as apaga), só ficam fora da exibição até o jogador se identificar.
-    .filter((s) => !isAnonymousWebIdentity(s.email))
+    // #4123: entries do snapshot já vêm PRÉ-filtradas na escrita (computeSnapshotEntries/
+    // upsertOwnEntryInSnapshot) e não carregam `email` — o guard `s.email === undefined`
+    // trata esse caso como "já garantidamente não-anônimo", nunca como bypass do filtro.
+    .filter((s) => s.email === undefined || !isAnonymousWebIdentity(s.email))
     .filter((s) => s.nickname && s.nickname.trim().length > 0)
     .filter((s) => s.total > 0)
     .map((s) => ({
@@ -100,7 +107,10 @@ export interface PodiumEntry {
 }
 
 export function computePodium(
-  scores: Array<{ email: string; nickname: string | null; correct: number; total: number }>,
+  // #4123: `email` OPCIONAL, `masked` NOVO (opcional) — mesmo racional de
+  // computeTop1 acima. Entries do snapshot trazem `masked` (já mascarado na
+  // escrita) em vez de `email` cru.
+  scores: Array<{ email?: string; masked?: string; nickname: string | null; correct: number; total: number }>,
 ): PodiumEntry[] {
   // Reusa rankEntries com shape LeaderboardEntry (precisa pct + streak).
   // #3113: medalha exige correct >= 1 — sem isso, o tiebreak "mais tentativas
@@ -110,12 +120,16 @@ export function computePodium(
   // elegível suba pro rank 1/2/3 — não deixa o pódio com "buracos".
   const eligible = scores
     // #3975: mesmo filtro de computeTop1 acima — identidade anônima web nunca
-    // aparece no pódio público.
-    .filter((s) => !isAnonymousWebIdentity(s.email))
+    // aparece no pódio público. #4123: guard `email === undefined` (ver
+    // computeTop1) — entries do snapshot já vêm pré-filtradas.
+    .filter((s) => s.email === undefined || !isAnonymousWebIdentity(s.email))
     .filter((s) => s.total > 0 && s.correct >= 1)
     .map((s) => {
       const hasNickname = s.nickname && s.nickname.trim().length > 0;
-      const display = hasNickname ? s.nickname!.trim() : maskEmail(s.email);
+      // #4123: prefere `masked` (já derivado na escrita do snapshot) — só
+      // recalcula `maskEmail(s.email)` on-the-fly quando a entry ainda traz
+      // e-mail cru (chamada direta, fora do pipeline do snapshot).
+      const display = hasNickname ? s.nickname!.trim() : (s.masked ?? maskEmail(s.email ?? ""));
       return {
         email: s.email,
         nickname: display,
@@ -164,14 +178,42 @@ export async function handleLeaderboardTop1(url: URL, env: Env): Promise<Respons
  * `rankEntries` caia no fallback de displayKey para TODOS os empates.
  * Back-compat: snapshots antigos sem o campo são tratados como undefined
  * (fallback de displayKey) — sem migração necessária.
+ *
+ * #4123: NUNCA mais `email` cru — este payload é `JSON.stringify`ado direto
+ * pro KV (`leaderboard-snapshot:{slug}`), e um bug NÃO relacionado (#4111,
+ * `/img/{key}` sem allowlist de prefixo) já vazou publicamente ~50 e-mails de
+ * leitores lidos DIRETO desta chave. `uid`/`masked` são derivados do e-mail
+ * cru NO MOMENTO da escrita (`computeSnapshotEntries`/`upsertOwnEntryInSnapshot`,
+ * únicos pontos onde o e-mail cru ainda existe em memória) e nunca revertem
+ * pro e-mail original — mesmo se esta chave vazar de novo por qualquer outro
+ * bug futuro, não há e-mail nenhum pra extrair dela.
  */
 export interface SnapshotEntry {
-  email: string;
+  /** #4123: hash opaco (`hashEmailForMatch`) do e-mail cru — usado pro
+   * matching (upsert por identidade) e pelo self-highlight client-side (#4029),
+   * que precisa do hash do e-mail REAL (não de `masked`, que é lossy). */
+  uid: string;
+  /** #4123: local-part mascarado (`maskEmail`) — usado como fallback de
+   * exibição quando não há nickname. */
+  masked: string;
   nickname: string | null;
   correct: number;
   total: number;
   /** #2123: ISO 8601 timestamp do voto mais recente — tiebreaker em `rankEntries`. */
   last_vote_ts?: string;
+}
+
+/**
+ * #4123: detecta snapshot no formato LEGADO (pré-fix, com `email` cru por
+ * entry) — usado tanto por `getOrComputeSnapshot` (cache-hit) quanto por
+ * `upsertOwnEntryInSnapshot` (upsert em snapshot existente) pra tratar
+ * qualquer resíduo do formato antigo como INVÁLIDO, forçando recompute/
+ * skip em vez de propagar (ou re-persistir) e-mail cru. Auto-expurga a PII
+ * residual sem precisar de migração manual — a próxima escrita já regrava
+ * no formato novo (uid/masked).
+ */
+function hasLegacyEmailField(entries: unknown[]): boolean {
+  return entries.some((e) => e !== null && typeof e === "object" && "email" in e);
 }
 
 interface SnapshotPayload {
@@ -196,7 +238,11 @@ export async function getOrComputeSnapshot(
   if (cached) {
     try {
       const parsed = JSON.parse(cached) as SnapshotPayload;
-      if (Array.isArray(parsed.entries)) return parsed.entries;
+      // #4123: formato legado (e-mail cru por entry) é tratado como cache
+      // INVÁLIDO — cai pro recompute abaixo, que já grava no formato novo
+      // (uid/masked) e sobrescreve o resíduo de PII sozinho, sem migração
+      // manual. Nunca retorna/propaga o e-mail cru residual.
+      if (Array.isArray(parsed.entries) && !hasLegacyEmailField(parsed.entries)) return parsed.entries;
     } catch {
       // Corrupted snapshot — fall through pra recompute
     }
@@ -270,11 +316,35 @@ export async function invalidateSnapshot(env: Env, slug: string): Promise<void> 
  *   mês (JSON em KV) cresce ~200 bytes/votante → <40KB para 200 votantes, bem
  *   abaixo do limite de 128MB do KV da Cloudflare.
  */
+/**
+ * #4123: shape de ENTRADA de `upsertOwnEntryInSnapshot` — carrega o e-mail
+ * CRU do votante (parâmetro em memória, nunca persistido). Distinto de
+ * `SnapshotEntry` (o que É gravado no KV) desde a correção da issue #4123 —
+ * antes os dois eram o mesmo tipo, e era exatamente esse `email` que ia
+ * parar (cru) dentro do JSON de `leaderboard-snapshot:{slug}`.
+ */
+export interface OwnScoreEntry {
+  email: string;
+  nickname: string | null;
+  correct: number;
+  total: number;
+  last_vote_ts?: string;
+}
+
 export async function upsertOwnEntryInSnapshot(
   env: Env,
   slug: string,
-  own: SnapshotEntry,
+  own: OwnScoreEntry,
 ): Promise<void> {
+  // #4123: identidade anônima do brand web nunca entra no snapshot. Antes
+  // (#3975) essas entries eram gravadas com e-mail cru e só ficavam de fora
+  // da EXIBIÇÃO pública (filtro em computeTop1/computePodium/
+  // scoreByMonthEntriesToLeaderboard, no momento da LEITURA). Agora que o
+  // snapshot não persiste mais e-mail (só uid/masked, derivados e
+  // irreversíveis — ver SnapshotEntry acima), o filtro TEM que acontecer
+  // aqui: é o único ponto deste write path onde o e-mail cru ainda existe.
+  if (isAnonymousWebIdentity(own.email)) return;
+
   const snapKey = `leaderboard-snapshot:${slug}`;
   const cached = await env.POLL.get(snapKey);
 
@@ -285,7 +355,10 @@ export async function upsertOwnEntryInSnapshot(
   let entries: SnapshotEntry[];
   try {
     const parsed = JSON.parse(cached) as { entries: SnapshotEntry[]; computed_at: string };
-    if (!Array.isArray(parsed.entries)) {
+    // #4123: formato legado (e-mail cru por entry) tratado igual a corrompido
+    // — skip + lazy-rebuild. Nunca re-persiste o upsert em cima de um
+    // resíduo de PII do formato antigo.
+    if (!Array.isArray(parsed.entries) || hasLegacyEmailField(parsed.entries)) {
       // Snapshot corrompido (JSON válido mas estrutura errada) → skip, lazy-rebuild.
       // Antes do fix persistia como 1-entry por 24h (#F1).
       await env.POLL.delete(snapKey);
@@ -298,9 +371,14 @@ export async function upsertOwnEntryInSnapshot(
     return;
   }
 
+  // #4123: uid/masked derivados do e-mail cru AQUI, uma única vez — nunca
+  // persistidos como e-mail dali em diante. `uid` (hash opaco) substitui
+  // `email.toLowerCase()` como critério de matching da própria entry.
+  const uid = hashEmailForMatch(own.email);
+  const masked = maskEmail(own.email);
+
   // Snapshot presente e válido: upsert da própria entry.
-  const emailLower = own.email.toLowerCase();
-  const idx = entries.findIndex((e) => e.email.toLowerCase() === emailLower);
+  const idx = entries.findIndex((e) => e.uid === uid);
   if (idx >= 0) {
     // #2123 (review): own com last_vote_ts EXPLICITAMENTE undefined apagaria o valor
     // existente via spread — filtra chaves undefined antes do merge.
@@ -308,16 +386,21 @@ export async function upsertOwnEntryInSnapshot(
     // last_vote_ts nunca é null em produção — ver computeSnapshotEntries). Para campos
     // onde null tem semântica de "limpar" (nickname: string | null), null é PRESERVADO
     // intencionalmente, permitindo que upsert limpe um nickname existente.
+    // #4123: `email` nunca entra no spread — `own` só existe pra derivar
+    // uid/masked acima; o merge usa só nickname/correct/total/last_vote_ts.
+    const { email: _ownEmail, ...ownRest } = own;
     const ownDefined = Object.fromEntries(
-      Object.entries(own).filter(([k, v]) => {
+      Object.entries(ownRest).filter(([k, v]) => {
         if (v === undefined) return false; // nunca spreada undefined
         if (v === null && k === "last_vote_ts") return false; // null aqui é fantasma
         return true; // nickname:null e outros null são valores legítimos
       }),
     );
-    entries[idx] = { ...entries[idx], ...ownDefined, email: emailLower } as SnapshotEntry;
+    entries[idx] = { ...entries[idx], ...ownDefined, uid, masked } as SnapshotEntry;
   } else {
-    entries.push({ ...own, email: emailLower });
+    const pushed: SnapshotEntry = { uid, masked, nickname: own.nickname, correct: own.correct, total: own.total };
+    if (own.last_vote_ts != null) pushed.last_vote_ts = own.last_vote_ts;
+    entries.push(pushed);
   }
   const payload = { entries, computed_at: new Date().toISOString() };
   // #2129: TTL 24h — same safety net do compute path (getOrComputeSnapshot).
@@ -362,12 +445,25 @@ export async function computeSnapshotEntries(
         console.error(`[snapshot] skip corrupted entry: ${batch[j]}`);
         continue;
       }
+      // #4123: e-mail cru só existe NESTE escopo (extraído do nome da chave
+      // KV) — é o único lugar do compute path onde ele existe em memória.
+      // Filtra identidade anônima do brand web ANTES de derivar/persistir
+      // (#3975 aplicava esse filtro na LEITURA — computeTop1/computePodium/
+      // scoreByMonthEntriesToLeaderboard; agora que o snapshot não carrega
+      // mais e-mail, não dá pra filtrar depois: uid/masked não revertem pro
+      // e-mail original, então uma entry anônima que escapasse daqui ficaria
+      // pra sempre irreconhecível como anônima nos consumidores a jusante).
+      const rawEmail = batch[j].replace(prefix, "");
+      if (isAnonymousWebIdentity(rawEmail)) continue;
       // #2123: propaga last_vote_ts pra SnapshotEntry — tiebreaker de dense-rank
       // via snapshot (rankEntries usa o campo; sem ele cai em displayKey).
       // undefined quando a entry foi gravada antes de #1383 ou na migração de
       // backfill — fallback de displayKey preservado sem migração.
+      // #4123: `uid`/`masked` substituem `email` — derivados aqui (único
+      // ponto com o e-mail cru) e nunca revertidos. Ver SnapshotEntry acima.
       const snapshotEntry: SnapshotEntry = {
-        email: batch[j].replace(prefix, ""),
+        uid: hashEmailForMatch(rawEmail),
+        masked: maskEmail(rawEmail),
         nickname: entry.nickname ?? null,
         correct: entry.correct ?? 0,
         total: entry.total ?? 0,
@@ -408,10 +504,20 @@ export async function* listAllKeys(env: Env, prefix: string): AsyncGenerator<str
  * Caller fornece o array já materializado (pra ser testável sem KV mock).
  * Entries sem `total` (corrompidas) viram pct=0; entries sem nickname
  * caem no fallback de email masked igual ao /leaderboard atual.
+ *
+ * #4123: `email` ficou OPCIONAL e `masked`/`uid` (opcionais) foram
+ * adicionados — os 3 call sites de produção (handleLeaderboardByMonth,
+ * handleLeaderboardByMonthJson, handleLeaderboardByYear) alimentam esta
+ * função com `SnapshotEntry[]` (uid/masked, sem e-mail cru — ver #4123).
+ * CUIDADO (revisor): esta função continua aceitando e-mail cru normalmente
+ * pra quem chama fora do pipeline do snapshot (testes, uso direto) — o
+ * comportamento COM `email` presente não muda em nada.
  */
 export function scoreByMonthEntriesToLeaderboard(
   entries: Array<{
-    email: string;
+    email?: string;
+    masked?: string;
+    uid?: string;
     nickname: string | null;
     correct: number;
     total: number;
@@ -422,11 +528,16 @@ export function scoreByMonthEntriesToLeaderboard(
     // #3975: mesmo filtro de computeTop1/computePodium — cobre os 3 pontos de
     // renderização que consomem esta função (handleLeaderboardByMonth,
     // handleLeaderboardByMonthJson, handleLeaderboardByYear via mergeYearEntries).
-    .filter((e) => !isAnonymousWebIdentity(e.email))
+    // #4123: guard `e.email === undefined` — entries do snapshot já vêm
+    // pré-filtradas na escrita (computeSnapshotEntries/upsertOwnEntryInSnapshot),
+    // então a ausência de `email` aqui significa "já garantidamente não-anônimo".
+    .filter((e) => e.email === undefined || !isAnonymousWebIdentity(e.email))
     .map((e) => {
       const pct = e.total > 0 ? Math.round((e.correct / e.total) * 100) : 0;
       return {
         email: e.email,
+        masked: e.masked,
+        uid: e.uid,
         nickname: e.nickname,
         correct: e.correct,
         total: e.total,
@@ -559,7 +670,10 @@ export async function handleLeaderboardByMonthJson(
     // Ternário (não `??`) preservado deliberadamente — nickname "" (vazio,
     // não deveria ocorrer via handleSetName mas defensivo p/ dado histórico)
     // deve cair pro masked email como antes, não ser exibido como string vazia.
-    const displayNickname = rawNickname ? rawNickname : maskEmail(e.email);
+    // #4123: prefere `e.masked` (já derivado na escrita do snapshot — o
+    // caminho de produção real, via getOrComputeSnapshot acima); fallback
+    // `maskEmail(e.email)` só cobre chamada direta fora do pipeline do snapshot.
+    const displayNickname = rawNickname ? rawNickname : (e.masked ?? maskEmail(e.email ?? ""));
     return {
       rank: e.rank,
       // #3113: medalha exige correct >= 1 (mesmo gate de rankEntries/computePodium
@@ -592,21 +706,22 @@ export async function handleLeaderboardByMonthJson(
 
 /**
  * Pure (#2006): merge dos snapshots mensais de um ano em entries anuais —
- * soma (correct, total) por email; nickname = último não-nulo na ordem dos
+ * soma (correct, total) por leitor; nickname = último não-nulo na ordem dos
  * meses (mês mais recente vence, espelhando a propagação de nickname mensal).
+ *
+ * #4123: chave de merge é `uid` (hash opaco), não mais `email.toLowerCase()`
+ * — SnapshotEntry não carrega mais e-mail cru. `uid` já é derivado de
+ * `hashEmailForMatch`, que normaliza trim+lowercase ANTES de hashear (ver
+ * lib.ts) — mesma garantia de estabilidade entre meses que a normalização
+ * de e-mail antiga (case divergente entre meses ainda cai no mesmo uid).
  */
 export function mergeYearEntries(perMonth: SnapshotEntry[][]): SnapshotEntry[] {
-  const byEmail = new Map<string, SnapshotEntry>();
+  const byUid = new Map<string, SnapshotEntry>();
   for (const month of perMonth) {
     for (const e of month) {
-      const key = e.email.toLowerCase();
-      const prev = byEmail.get(key);
+      const prev = byUid.get(e.uid);
       if (!prev) {
-        // #2018: armazenar email lowercase — case divergente entre meses
-        // (ex: "A@X.com" em jan, "a@x.com" em fev) resultava em entrada
-        // com email original (mixed-case) na saída, quebrando exibição e
-        // lookups subsequentes. Normalizar aqui garante consistência.
-        byEmail.set(key, { ...e, email: key });
+        byUid.set(e.uid, { ...e });
       } else {
         prev.correct += e.correct;
         prev.total += e.total;
@@ -624,7 +739,7 @@ export function mergeYearEntries(perMonth: SnapshotEntry[][]): SnapshotEntry[] {
       }
     }
   }
-  return [...byEmail.values()];
+  return [...byUid.values()];
 }
 
 /**
@@ -702,7 +817,11 @@ function renderLeaderboardHtml(
 
   const rows = ranked.map((s) => {
     // #3118 (item 11): maskEmail (lib.ts) — consolida com as outras 2 implementações.
-    const display = s.nickname || maskEmail(s.email);
+    // #4123: prefere `s.masked` (já derivado na escrita do snapshot — nunca
+    // recalcula a partir de e-mail cru aqui, que nem existe mais na maioria
+    // dos casos). Fallback pra `maskEmail(s.email)` só cobre chamadas diretas
+    // fora do pipeline do snapshot (testes/back-compat).
+    const display = s.nickname || s.masked || maskEmail(s.email ?? "");
     // #2191: usa htmlEscape (de lib.ts) em vez de replace inline que omitia "'".
     const escaped = htmlEscape(display);
     const trClass = s.rank === 1 ? ' class="leader"' : '';
@@ -713,7 +832,14 @@ function renderLeaderboardHtml(
     // de self-highlight (brand web, ver selfHighlightHtml abaixo) casa a
     // PRÓPRIA identidade local contra este atributo sem o servidor nunca
     // expor e-mail de ninguém em claro no HTML.
-    return `<tr${trClass} data-uid="${hashEmailForMatch(s.email)}">
+    // #4123: prefere `s.uid` (hash já derivado do e-mail REAL no momento da
+    // escrita do snapshot) — recalcular a partir de `s.email` só serve pro
+    // fallback de chamada direta fora do pipeline do snapshot (mesmo racional
+    // do `display` acima). NUNCA hashear `s.masked` aqui — é lossy e produziria
+    // um uid que o self-highlight client-side (que hasheia o e-mail real) jamais
+    // conseguiria casar.
+    const uid = s.uid ?? hashEmailForMatch(s.email ?? "");
+    return `<tr${trClass} data-uid="${uid}">
       <td>${s.medal}</td>
       <td>${escaped}</td>
       <td>${s.correct}/${s.total}</td>

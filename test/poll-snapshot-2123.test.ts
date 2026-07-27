@@ -17,9 +17,10 @@ import {
   upsertOwnEntryInSnapshot,
   scoreByMonthEntriesToLeaderboard,
   type SnapshotEntry,
+  type OwnScoreEntry,
   type Env,
 } from "../workers/poll/src/index.ts";
-import { editionToMonthSlug } from "../workers/poll/src/lib.ts";
+import { editionToMonthSlug, hashEmailForMatch, maskEmail } from "../workers/poll/src/lib.ts";
 import { rankEntries } from "../workers/poll/src/leaderboard.ts";
 import worker from "../workers/poll/src/index.ts";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
@@ -130,7 +131,10 @@ describe("upsertOwnEntryInSnapshot propaga last_vote_ts (#2123 fix 1b)", () => {
       }),
     });
     const env = makeEnv(kv);
-    const own: SnapshotEntry = {
+    // #4123: `own` agora é `OwnScoreEntry` (email cru, parâmetro em memória —
+    // upsertOwnEntryInSnapshot deriva uid/masked internamente e nunca persiste
+    // o e-mail em si; ver SnapshotEntry/OwnScoreEntry em leaderboard-routes.ts).
+    const own: OwnScoreEntry = {
       email: "alice@x.com",
       nickname: "Alice",
       correct: 3,
@@ -142,7 +146,8 @@ describe("upsertOwnEntryInSnapshot propaga last_vote_ts (#2123 fix 1b)", () => {
     const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
     assert.ok(put, "snapshot deve ser gravado");
     const payload = JSON.parse(put!.value);
-    const entry = payload.entries.find((e: SnapshotEntry) => e.email === "alice@x.com");
+    // #4123: entry persistida não tem mais `.email` — casar por `uid`.
+    const entry = payload.entries.find((e: SnapshotEntry) => e.uid === hashEmailForMatch("alice@x.com"));
     assert.ok(entry, "entry alice deve existir");
     assert.equal(entry.last_vote_ts, ts, "last_vote_ts deve ser persistido no snapshot");
   });
@@ -150,7 +155,14 @@ describe("upsertOwnEntryInSnapshot propaga last_vote_ts (#2123 fix 1b)", () => {
   it("upsert em snapshot existente preserva last_vote_ts da entry atualizada", async () => {
     const existingSnapshot = JSON.stringify({
       entries: [
-        { email: "bob@x.com", nickname: "Bob", correct: 2, total: 3, last_vote_ts: "2026-06-09T00:00:00.000Z" },
+        {
+          uid: hashEmailForMatch("bob@x.com"),
+          masked: maskEmail("bob@x.com"),
+          nickname: "Bob",
+          correct: 2,
+          total: 3,
+          last_vote_ts: "2026-06-09T00:00:00.000Z",
+        },
       ],
       computed_at: "2026-06-09T00:00:00.000Z",
     });
@@ -167,7 +179,7 @@ describe("upsertOwnEntryInSnapshot propaga last_vote_ts (#2123 fix 1b)", () => {
     const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
     assert.ok(put);
     const payload = JSON.parse(put!.value);
-    const bob = payload.entries.find((e: SnapshotEntry) => e.email === "bob@x.com");
+    const bob = payload.entries.find((e: SnapshotEntry) => e.uid === hashEmailForMatch("bob@x.com"));
     assert.equal(bob.correct, 3, "correct atualizado");
     assert.equal(bob.last_vote_ts, newTs, "last_vote_ts atualizado");
   });
@@ -180,8 +192,8 @@ describe("upsertOwnEntryInSnapshot propaga last_vote_ts (#2123 fix 1b)", () => {
       }),
     });
     const env = makeEnv(kv);
-    // SnapshotEntry sem last_vote_ts (back-compat — campo é opcional)
-    const own: SnapshotEntry = {
+    // OwnScoreEntry sem last_vote_ts (back-compat — campo é opcional)
+    const own: OwnScoreEntry = {
       email: "carol@x.com",
       nickname: "Carol",
       correct: 1,
@@ -191,7 +203,7 @@ describe("upsertOwnEntryInSnapshot propaga last_vote_ts (#2123 fix 1b)", () => {
     const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
     assert.ok(put);
     const payload = JSON.parse(put!.value);
-    const carol = payload.entries.find((e: SnapshotEntry) => e.email === "carol@x.com");
+    const carol = payload.entries.find((e: SnapshotEntry) => e.uid === hashEmailForMatch("carol@x.com"));
     // last_vote_ts deve ser undefined (não presente no JSON) — não "undefined" como string
     assert.equal(carol.last_vote_ts, undefined, "sem last_vote_ts no own → campo ausente");
   });
@@ -208,7 +220,7 @@ describe("upsertOwnEntryInSnapshot — TTL 24h pós-upsert (#2129 fix)", () => {
     const kv = makeTrackedKv({
       // snapshot existente com dados de outro votante
       "leaderboard-snapshot:2026-06": JSON.stringify({
-        entries: [{ email: "bob@x.com", nickname: "Bob", correct: 1, total: 1 }],
+        entries: [{ uid: hashEmailForMatch("bob@x.com"), masked: maskEmail("bob@x.com"), nickname: "Bob", correct: 1, total: 1 }],
         computed_at: "2026-06-10T00:00:00.000Z",
       }),
     });
@@ -313,7 +325,7 @@ describe("#2130 — upsertOwnEntryInSnapshot filtra null além de undefined", ()
     const kv = makeTrackedKv({
       "leaderboard-snapshot:2026-06": JSON.stringify({
         entries: [
-          { email: "alice@x.com", nickname: "Alice", correct: 3, total: 5, last_vote_ts: existingTs },
+          { uid: hashEmailForMatch("alice@x.com"), masked: maskEmail("alice@x.com"), nickname: "Alice", correct: 3, total: 5, last_vote_ts: existingTs },
         ],
         computed_at: "2026-06-10T00:00:00.000Z",
       }),
@@ -328,12 +340,12 @@ describe("#2130 — upsertOwnEntryInSnapshot filtra null além de undefined", ()
       total: 6,
       last_vote_ts: null as unknown as string, // null injetado via JSON
     };
-    await upsertOwnEntryInSnapshot(env, "2026-06", own as SnapshotEntry);
+    await upsertOwnEntryInSnapshot(env, "2026-06", own as OwnScoreEntry);
 
     const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
     assert.ok(put, "snapshot deve ser regravado");
     const payload = JSON.parse(put!.value);
-    const alice = payload.entries.find((e: SnapshotEntry) => e.email === "alice@x.com");
+    const alice = payload.entries.find((e: SnapshotEntry) => e.uid === hashEmailForMatch("alice@x.com"));
     assert.ok(alice, "alice deve estar no snapshot");
     assert.equal(alice.correct, 4, "correct atualizado");
     assert.equal(
@@ -352,13 +364,13 @@ describe("#2130 — upsertOwnEntryInSnapshot filtra null além de undefined", ()
     const kv = makeTrackedKv({
       "leaderboard-snapshot:2026-06": JSON.stringify({
         entries: [
-          { email: "bob@x.com", nickname: "Bob", correct: 2, total: 4 },
+          { uid: hashEmailForMatch("bob@x.com"), masked: maskEmail("bob@x.com"), nickname: "Bob", correct: 2, total: 4 },
         ],
         computed_at: "2026-06-10T00:00:00.000Z",
       }),
     });
     const env = makeEnv(kv);
-    const own: SnapshotEntry = {
+    const own: OwnScoreEntry = {
       email: "bob@x.com",
       nickname: null, // null explícito → deve limpar o nickname existente
       correct: 3,
@@ -368,7 +380,7 @@ describe("#2130 — upsertOwnEntryInSnapshot filtra null além de undefined", ()
     const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
     assert.ok(put);
     const payload = JSON.parse(put!.value);
-    const bob = payload.entries.find((e: SnapshotEntry) => e.email === "bob@x.com");
+    const bob = payload.entries.find((e: SnapshotEntry) => e.uid === hashEmailForMatch("bob@x.com"));
     assert.equal(bob.correct, 3, "correct atualizado");
     assert.equal(bob.nickname, null, "nickname:null deve limpar nickname existente — filtro field-aware #2130");
   });
@@ -380,19 +392,19 @@ describe("#2130 — upsertOwnEntryInSnapshot filtra null além de undefined", ()
     const kv = makeTrackedKv({
       "leaderboard-snapshot:2026-06": JSON.stringify({
         entries: [
-          { email: "carol@x.com", nickname: "Carol", correct: 5, total: 8, last_vote_ts: "2026-06-01T10:00:00.000Z" },
+          { uid: hashEmailForMatch("carol@x.com"), masked: maskEmail("carol@x.com"), nickname: "Carol", correct: 5, total: 8, last_vote_ts: "2026-06-01T10:00:00.000Z" },
         ],
         computed_at: "2026-06-10T00:00:00.000Z",
       }),
     });
     const env = makeEnv(kv);
     // Simula entry com last_vote_ts explicitamente null (edge case defensivo)
-    const own = { email: "carol@x.com", nickname: "Carol", correct: 6, total: 9, last_vote_ts: null } as unknown as SnapshotEntry;
+    const own = { email: "carol@x.com", nickname: "Carol", correct: 6, total: 9, last_vote_ts: null } as unknown as OwnScoreEntry;
     await upsertOwnEntryInSnapshot(env, "2026-06", own);
     const put = kv.puts.find((p) => p.key === "leaderboard-snapshot:2026-06");
     assert.ok(put);
     const payload = JSON.parse(put!.value);
-    const carol = payload.entries.find((e: SnapshotEntry) => e.email === "carol@x.com");
+    const carol = payload.entries.find((e: SnapshotEntry) => e.uid === hashEmailForMatch("carol@x.com"));
     assert.equal(carol.correct, 6, "correct atualizado");
     assert.equal(carol.last_vote_ts, "2026-06-01T10:00:00.000Z", "last_vote_ts:null não deve sobrescrever timestamp existente");
   });

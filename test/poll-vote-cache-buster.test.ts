@@ -19,7 +19,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { votePageHtml, upsertOwnEntryInSnapshot, type Env, type SnapshotEntry } from "../workers/poll/src/index.ts";
+import { votePageHtml, upsertOwnEntryInSnapshot, type Env, type SnapshotEntry, type OwnScoreEntry } from "../workers/poll/src/index.ts";
+import { hashEmailForMatch, maskEmail } from "../workers/poll/src/lib.ts";
 
 // ── (a) Cache-buster no link "Ver leaderboard" ──────────────────────────────
 
@@ -96,7 +97,7 @@ describe("upsertOwnEntryInSnapshot (#2113b)", () => {
     // os N votantes existentes (#2152) e evita N gets dentro do voto (#F3).
     const kv = makeKv() as unknown as KVNamespace & { _data: Record<string, string> };
     const env = makeEnv(kv);
-    const own: SnapshotEntry = { email: "a@x.com", nickname: "Ana", correct: 1, total: 1 };
+    const own: OwnScoreEntry = { email: "a@x.com", nickname: "Ana", correct: 1, total: 1 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
     const snapKey = "leaderboard-snapshot:2026-05";
     const raw = (kv as unknown as { _data: Record<string, string> })._data[snapKey];
@@ -104,13 +105,15 @@ describe("upsertOwnEntryInSnapshot (#2113b)", () => {
   });
 
   it("faz upsert de entry existente (substitui valores)", async () => {
+    // #4123: snapshot persistido não carrega mais `email` — seed no formato
+    // novo (uid/masked, derivados do e-mail "de teste" via hashEmailForMatch/maskEmail).
     const existing = JSON.stringify({
-      entries: [{ email: "a@x.com", nickname: null, correct: 0, total: 1 }],
+      entries: [{ uid: hashEmailForMatch("a@x.com"), masked: maskEmail("a@x.com"), nickname: null, correct: 0, total: 1 }],
       computed_at: "2026-06-01T00:00:00Z",
     });
     const kv = makeKv({ "leaderboard-snapshot:2026-05": existing }) as unknown as KVNamespace & { _data: Record<string, string> };
     const env = makeEnv(kv);
-    const own: SnapshotEntry = { email: "a@x.com", nickname: "Ana", correct: 1, total: 2 };
+    const own: OwnScoreEntry = { email: "a@x.com", nickname: "Ana", correct: 1, total: 2 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
     const raw = (kv as unknown as { _data: Record<string, string> })._data["leaderboard-snapshot:2026-05"];
     const parsed = JSON.parse(raw);
@@ -122,41 +125,46 @@ describe("upsertOwnEntryInSnapshot (#2113b)", () => {
 
   it("adiciona entry nova a snapshot com outras entries", async () => {
     const existing = JSON.stringify({
-      entries: [{ email: "b@x.com", nickname: "Bob", correct: 3, total: 5 }],
+      entries: [{ uid: hashEmailForMatch("b@x.com"), masked: maskEmail("b@x.com"), nickname: "Bob", correct: 3, total: 5 }],
       computed_at: "2026-06-01T00:00:00Z",
     });
     const kv = makeKv({ "leaderboard-snapshot:2026-05": existing }) as unknown as KVNamespace & { _data: Record<string, string> };
     const env = makeEnv(kv);
-    const own: SnapshotEntry = { email: "a@x.com", nickname: null, correct: 1, total: 1 };
+    const own: OwnScoreEntry = { email: "a@x.com", nickname: null, correct: 1, total: 1 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
     const raw = (kv as unknown as { _data: Record<string, string> })._data["leaderboard-snapshot:2026-05"];
     const parsed = JSON.parse(raw);
     assert.equal(parsed.entries.length, 2, "deve ter 2 entries");
-    const emailsInSnapshot = parsed.entries.map((e: SnapshotEntry) => e.email);
-    assert.ok(emailsInSnapshot.includes("b@x.com"));
-    assert.ok(emailsInSnapshot.includes("a@x.com"));
+    // #4123: entries persistidas não carregam mais `email` — compara por `uid`.
+    const uidsInSnapshot = parsed.entries.map((e: SnapshotEntry) => e.uid);
+    assert.ok(uidsInSnapshot.includes(hashEmailForMatch("b@x.com")));
+    assert.ok(uidsInSnapshot.includes(hashEmailForMatch("a@x.com")));
   });
 
-  it("email de entrada em case misto é normalizado pra lowercase na saída (snapshot presente)", async () => {
-    // Modelo híbrido: normalização de email só ocorre quando snapshot está PRESENTE.
+  it("e-mail de entrada em case misto colapsa pro MESMO uid na saída (snapshot presente)", async () => {
+    // Modelo híbrido: normalização só ocorre quando snapshot está PRESENTE.
     // Quando ausente, skip-on-missing (ver teste acima).
+    // #4123: o equivalente pós-fix do antigo "email normalizado pra lowercase"
+    // é "uid (hash) é o mesmo independente do casing do e-mail de entrada" —
+    // hashEmailForMatch normaliza trim+lowercase ANTES de hashear (lib.ts).
     const existing = JSON.stringify({
       entries: [],
       computed_at: "2026-06-01T00:00:00Z",
     });
     const kv = makeKv({ "leaderboard-snapshot:2026-05": existing }) as unknown as KVNamespace & { _data: Record<string, string> };
     const env = makeEnv(kv);
-    const own: SnapshotEntry = { email: "A@X.COM", nickname: null, correct: 1, total: 1 };
+    const own: OwnScoreEntry = { email: "A@X.COM", nickname: null, correct: 1, total: 1 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
     const raw = (kv as unknown as { _data: Record<string, string> })._data["leaderboard-snapshot:2026-05"];
     const parsed = JSON.parse(raw);
-    assert.equal(parsed.entries[0].email, "a@x.com");
+    assert.equal(parsed.entries[0].uid, hashEmailForMatch("a@x.com"));
+    assert.equal(parsed.entries[0].masked, maskEmail("A@X.COM"));
   });
 
   it("snapshot corrompido → deleta e retorna sem gravar entry", async () => {
     const kv = makeKv({ "leaderboard-snapshot:2026-05": "{ corrupted json [" }) as unknown as KVNamespace & { _data: Record<string, string> };
     const env = makeEnv(kv);
-    const own: SnapshotEntry = { email: "a@x.com", nickname: null, correct: 1, total: 1 };
+    const own: OwnScoreEntry = { email: "a@x.com", nickname: null, correct: 1, total: 1 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
     // Snap deve ter sido deletado (não regravado com dados parciais)
     assert.equal(
@@ -166,15 +174,15 @@ describe("upsertOwnEntryInSnapshot (#2113b)", () => {
     );
   });
 
-  it("upsert é case-insensitive: email em lowercase no snapshot encontra entrada uppercase", async () => {
+  it("upsert é case-insensitive: e-mail em lowercase no snapshot encontra entrada uppercase (casam pelo mesmo uid)", async () => {
     const existing = JSON.stringify({
-      entries: [{ email: "a@x.com", nickname: null, correct: 0, total: 1 }],
+      entries: [{ uid: hashEmailForMatch("a@x.com"), masked: maskEmail("a@x.com"), nickname: null, correct: 0, total: 1 }],
       computed_at: "2026-06-01T00:00:00Z",
     });
     const kv = makeKv({ "leaderboard-snapshot:2026-05": existing }) as unknown as KVNamespace & { _data: Record<string, string> };
     const env = makeEnv(kv);
     // Mesmo email em uppercase → deve fazer upsert, não append
-    const own: SnapshotEntry = { email: "A@X.COM", nickname: "Ana", correct: 1, total: 2 };
+    const own: OwnScoreEntry = { email: "A@X.COM", nickname: "Ana", correct: 1, total: 2 };
     await upsertOwnEntryInSnapshot(env, "2026-05", own);
     const raw = (kv as unknown as { _data: Record<string, string> })._data["leaderboard-snapshot:2026-05"];
     const parsed = JSON.parse(raw);

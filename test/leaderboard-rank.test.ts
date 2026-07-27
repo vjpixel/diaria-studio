@@ -294,15 +294,49 @@ describe("partitionLeaderboardForDisplay (#4008 item 2 — cauda de 0/N)", () =>
     assert.equal(hiddenCount, 1);
   });
 
-  it("mantém o RANK original das entries visíveis (não renumera após o corte)", () => {
+  it("entry escondida é a ÚLTIMA do seu grupo de empate — re-rank (#4122) coincide com os ranks originais", () => {
+    // #4122: partitionLeaderboardForDisplay agora RE-ranqueia o subconjunto
+    // visível (antes só filtrava, preservando o rank original — o que abria
+    // buracos quando a entry escondida NÃO era a última do grupo, ver teste
+    // seguinte). Neste fixture específico, b(0,1) é sozinha em seu próprio
+    // grupo (correct=0,total=1) e cai no corte — como não há mais ninguém
+    // depois dela com esse mesmo (correct,total), o re-rank produz o MESMO
+    // resultado que a numeração original (a=1, c=2): nenhum buraco se forma
+    // mesmo sem o fix, mas o comportamento pós-#4122 é sempre re-ranquear,
+    // não "só coincide que preservou".
     const ranked = rankEntries([
       entry("a@x.com", 5, 5, "a"),
-      entry("b@x.com", 0, 1, "b"), // cai fora — abre um "buraco" no rank visível
+      entry("b@x.com", 0, 1, "b"), // cai fora — mas não abre buraco (ver acima)
       entry("c@x.com", 3, 4, "c"),
     ]);
     const { visible } = partitionLeaderboardForDisplay(ranked);
     assert.deepEqual(visible.map((e) => e.email), ["a@x.com", "c@x.com"]);
-    assert.deepEqual(visible.map((e) => e.rank), [1, 2]); // ranks intactos, sem renumerar
+    assert.deepEqual(visible.map((e) => e.rank), [1, 2]);
+  });
+
+  it("#4122: corte de cauda NÃO deixa buraco no dense-rank — prata reaparece quando só quem a ocupava foi escondido", () => {
+    // Reprodução do bug reportado na issue #4122:
+    //   A(5,10), B(5,10) empatados em ouro; C(4,2) sozinho na prata mas com só
+    //   2 tentativas (abaixo do mínimo de 3, #4008 item 2) — cai no corte;
+    //   D(3,8) no bronze.
+    // Ranks ORIGINAIS (antes do corte): a=1, b=1, c=2, d=3 — c ocupa a prata
+    // sozinho. Sem re-ranquear, a sequência EXIBIDA seria [1, 1, 3] — um
+    // buraco onde devia estar o rank 2 (a prata "desaparecia").
+    const ranked = rankEntries([
+      entry("a@x.com", 5, 10, "a"),
+      entry("b@x.com", 5, 10, "b"),
+      entry("c@x.com", 4, 2, "c"), // só 2 tentativas — cai no corte (min=3)
+      entry("d@x.com", 3, 8, "d"),
+    ]);
+    assert.deepEqual(ranked.map((r) => r.rank), [1, 1, 2, 3], "sanity: ranks originais (sem corte) — c sozinho ocupa a prata");
+
+    const { visible, hiddenCount } = partitionLeaderboardForDisplay(ranked);
+    assert.deepEqual(visible.map((e) => e.email), ["a@x.com", "b@x.com", "d@x.com"]);
+    assert.equal(hiddenCount, 1);
+    // Com o fix (#4122): d assume o rank 2 (prata), preenchendo o buraco —
+    // a sequência exibida é [1, 1, 2], nunca [1, 1, 3].
+    assert.deepEqual(visible.map((e) => e.rank), [1, 1, 2]);
+    assert.deepEqual(visible.map((e) => e.medal), ["🥇", "🥇", "🥈"]);
   });
 
   it("fallback anti-leaderboard-vazio: se NINGUÉM atinge o mínimo, mostra todo mundo (hiddenCount=0)", () => {

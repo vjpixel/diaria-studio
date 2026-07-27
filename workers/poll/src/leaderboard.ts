@@ -22,7 +22,25 @@
  */
 
 export interface LeaderboardEntry {
-  email: string;
+  /**
+   * #4123: OPCIONAL desde a correção da issue #4123 — entries que vêm do
+   * pipeline do snapshot (`getOrComputeSnapshot`/`scoreByMonthEntriesToLeaderboard`)
+   * não carregam mais e-mail cru (só `masked`/`uid` derivados, ver abaixo).
+   * Continua presente/obrigatório na prática pra quem chama `rankEntries`
+   * direto com dados crus (fora do pipeline do snapshot — ex: testes,
+   * consumidores que ainda não migraram).
+   */
+  email?: string;
+  /** #4123: local-part mascarado (`maskEmail`), derivado do e-mail cru NO
+   * MOMENTO da escrita do snapshot — nunca reversível. Substitui
+   * `maskEmail(e.email)` como fallback de exibição quando não há nickname. */
+  masked?: string;
+  /** #4123: hash opaco (`hashEmailForMatch`) do e-mail cru, derivado no
+   * momento da escrita do snapshot. Substitui `hashEmailForMatch(e.email)`
+   * no atributo `data-uid` do self-highlight (#4029) — precisa refletir o
+   * e-mail REAL (não `masked`, que é lossy) pra casar com o hash calculado
+   * client-side a partir do e-mail verdadeiro do jogador. */
+  uid?: string;
   nickname: string | null;
   correct: number;
   total: number;
@@ -42,9 +60,16 @@ export interface RankedEntry extends LeaderboardEntry {
   medal: string;
 }
 
-/** Display key usado pra tiebreaker estável dentro do empate. */
+/**
+ * Display key usado pra tiebreaker estável dentro do empate.
+ *
+ * #4123: fallback estendido pra `masked` — entries do pipeline do snapshot
+ * não carregam mais `email` cru (só `masked`/`uid`). `email` continua no
+ * fim da cadeia pra back-compat com chamadas diretas de `rankEntries` com
+ * dados crus (fora do snapshot).
+ */
 function displayKey(e: LeaderboardEntry): string {
-  return (e.nickname || e.email).toLowerCase();
+  return (e.nickname || e.masked || e.email || "").toLowerCase();
 }
 
 /**
@@ -73,7 +98,21 @@ export function rankEntries(scores: LeaderboardEntry[]): RankedEntry[] {
     return displayKey(a).localeCompare(displayKey(b));
   });
 
-  const ranked: RankedEntry[] = [];
+  return assignDenseRanks(sorted);
+}
+
+/**
+ * #4122: núcleo de agrupamento dense-rank, extraído de `rankEntries` pra ser
+ * reusado por `partitionLeaderboardForDisplay` — que precisa RE-ranquear o
+ * subconjunto que sobra depois do corte de cauda de baixo-engajamento (#4008
+ * item 2), sem duplicar a lógica de fronteira de grupo/medalha.
+ *
+ * Assume que `sorted` já está na ordem final de exibição (rankEntries ordena
+ * o conjunto completo; o subconjunto filtrado de partitionLeaderboardForDisplay
+ * preserva essa ordem relativa) — NÃO ordena de novo.
+ */
+function assignDenseRanks<T extends LeaderboardEntry>(sorted: T[]): (T & { rank: number; medal: string })[] {
+  const ranked: (T & { rank: number; medal: string })[] = [];
   let currentRank = 0;
   for (let i = 0; i < sorted.length; i++) {
     const e = sorted[i];
@@ -137,6 +176,16 @@ export const MIN_ATTEMPTS_FOR_LEADERBOARD_LISTING = 3;
  * esconde ninguém — mostrar a cauda inteira é preferível a um leaderboard
  * vazio. Nesse caso `hiddenCount` retorna 0 (sinaliza "nenhum corte
  * aplicado", não "ninguém escondido apesar de existir cauda").
+ *
+ * #4122: RE-ranqueia (dense) o subconjunto qualificado antes de devolver.
+ * `ranked` já vem com rank atribuído sobre o conjunto COMPLETO — cortar a
+ * cauda sem re-ranquear deixava buracos na sequência exibida sempre que a
+ * entry escondida NÃO era a última do seu grupo de empate (ex: A/B empatados
+ * em ouro, C sozinho na prata mas escondido pelo corte, D no bronze — sem
+ * re-ranquear, a exibição pulava direto de 🥇🥇 pra "3." — a prata "sumia").
+ * `qualifying` preserva a ordem relativa de `ranked` (que já veio ordenado de
+ * `rankEntries`) — só precisamos recalcular as fronteiras de grupo sobre o
+ * subconjunto, não resortar do zero.
  */
 export function partitionLeaderboardForDisplay(
   ranked: RankedEntry[],
@@ -144,5 +193,5 @@ export function partitionLeaderboardForDisplay(
 ): { visible: RankedEntry[]; hiddenCount: number } {
   const qualifying = ranked.filter((e) => e.total >= minAttempts);
   if (qualifying.length === 0) return { visible: ranked, hiddenCount: 0 };
-  return { visible: qualifying, hiddenCount: ranked.length - qualifying.length };
+  return { visible: assignDenseRanks(qualifying), hiddenCount: ranked.length - qualifying.length };
 }

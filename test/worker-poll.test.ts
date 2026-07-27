@@ -32,6 +32,7 @@ import {
   nicknameHasContent,
   validateNickname,
   isUnsubstitutedMergeTag,
+  hashEmailForMatch,
 } from "../workers/poll/src/lib.ts";
 import {
   computeTop1,
@@ -630,10 +631,11 @@ describe("computeSnapshotEntries — parallel gets (#1348)", () => {
     const env = makeMockEnvWithGets(data);
     const entries = await computeSnapshotEntries(env as never, "2026-05");
     assert.equal(entries.length, 2);
-    const byEmail = Object.fromEntries(entries.map((e) => [e.email, e]));
-    assert.equal(byEmail["alice@x.com"].nickname, "Alice");
-    assert.equal(byEmail["alice@x.com"].correct, 5);
-    assert.equal(byEmail["bob@x.com"].nickname, "Bob");
+    // #4123: entries do compute path não carregam mais `email` — indexa por `uid`.
+    const byUid = Object.fromEntries(entries.map((e) => [e.uid, e]));
+    assert.equal(byUid[hashEmailForMatch("alice@x.com")].nickname, "Alice");
+    assert.equal(byUid[hashEmailForMatch("alice@x.com")].correct, 5);
+    assert.equal(byUid[hashEmailForMatch("bob@x.com")].nickname, "Bob");
   });
 
   it("filtra entries com raw null (key listada mas get retorna null)", async () => {
@@ -661,7 +663,7 @@ describe("computeSnapshotEntries — parallel gets (#1348)", () => {
     };
     const entries = await computeSnapshotEntries(env as never, "2026-05");
     assert.equal(entries.length, 1, "ghost entry filtrada — apenas Alice no resultado");
-    assert.equal(entries[0].email, "alice@x.com");
+    assert.equal(entries[0].uid, hashEmailForMatch("alice@x.com"));
   });
 
   it("skip entry com JSON corrupted (review fix A)", async () => {
@@ -688,7 +690,7 @@ describe("computeSnapshotEntries — parallel gets (#1348)", () => {
     const entries = await computeSnapshotEntries(env as never, "2026-05");
     // Corrupted entry skipada, Alice preservada — compute não morre.
     assert.equal(entries.length, 1);
-    assert.equal(entries[0].email, "alice@x.com");
+    assert.equal(entries[0].uid, hashEmailForMatch("alice@x.com"));
   });
 
   it("defaults pra correct/total/nickname ausentes na entry", async () => {

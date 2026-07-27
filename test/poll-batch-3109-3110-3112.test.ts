@@ -227,8 +227,11 @@ function makeEnv(seed: Record<string, string> = {}): Env {
 describe("#3112 — integração via worker fetch: /leaderboard/{YYYY}/arquivo/{AAMMDD}", () => {
   it("brand clarice via query param real: página de voto mostra 'Mês de AAAA' sem dia, mês de ENVIO (#3464)", async () => {
     // #3464: 260701 = conteúdo julho → enviado em agosto.
+    // #4117: `correct:{edition}` é sempre CRUA (sem prefixo de brand) — o
+    // handler lê via `env` cru desde a correção do #4117 (antes lia via
+    // `bEnv`, que nunca batia com a chave crua gravada por close-poll.ts).
     const { default: worker } = await import("../workers/poll/src/index.ts");
-    const env = makeEnv({ "clarice:correct:260701": "A" });
+    const env = makeEnv({ "correct:260701": "A" });
     const res = await worker.fetch(
       new Request("https://poll.diaria.workers.dev/leaderboard/2026/arquivo/260701?brand=clarice"),
       env,

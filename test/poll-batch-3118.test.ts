@@ -58,13 +58,21 @@ import { hmacSign, renderResultImagesHtml, type Env } from "../workers/poll/src/
 import workerDefault from "../workers/poll/src/index.ts";
 import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 import { makePollEnv } from "./_helpers/make-poll-env.ts";
+import { hashEmailForMatch, maskEmail } from "../workers/poll/src/lib.ts";
 
 // ── Item 1: mergeYearEntries — tiebreak por last_vote_ts mais recente ──────
 
+// #4123: SnapshotEntry não carrega mais `email` cru — mescla é por `uid`
+// (hash opaco, ver leaderboard-routes.ts). Helper deriva uid/masked a partir
+// do e-mail "de teste" pra manter os fixtures abaixo legíveis.
+function snapshotEntry(email: string, nickname: string | null, correct: number, total: number, last_vote_ts?: string) {
+  return { uid: hashEmailForMatch(email), masked: maskEmail(email), nickname, correct, total, last_vote_ts };
+}
+
 describe("mergeYearEntries — last_vote_ts reflete o voto mais RECENTE entre meses (#3118 item 1)", () => {
   it("mês mais recente (2º no array) sobrescreve last_vote_ts do mês mais antigo (1º)", () => {
-    const jan = [{ email: "a@x.com", nickname: "A", correct: 1, total: 1, last_vote_ts: "2026-01-15T10:00:00.000Z" }];
-    const feb = [{ email: "a@x.com", nickname: "A", correct: 1, total: 1, last_vote_ts: "2026-02-20T10:00:00.000Z" }];
+    const jan = [snapshotEntry("a@x.com", "A", 1, 1, "2026-01-15T10:00:00.000Z")];
+    const feb = [snapshotEntry("a@x.com", "A", 1, 1, "2026-02-20T10:00:00.000Z")];
     const merged = mergeYearEntries([jan, feb]);
     assert.equal(merged.length, 1);
     assert.equal(
@@ -75,39 +83,39 @@ describe("mergeYearEntries — last_vote_ts reflete o voto mais RECENTE entre me
   });
 
   it("regressão exata do bug: SEM o fix, a 1ª ocorrência nunca era sobrescrita — aqui deve ser", () => {
-    const older = [{ email: "b@x.com", nickname: "B", correct: 2, total: 3, last_vote_ts: "2026-03-01T00:00:00.000Z" }];
-    const newer = [{ email: "b@x.com", nickname: "B", correct: 1, total: 1, last_vote_ts: "2026-06-30T23:59:59.000Z" }];
+    const older = [snapshotEntry("b@x.com", "B", 2, 3, "2026-03-01T00:00:00.000Z")];
+    const newer = [snapshotEntry("b@x.com", "B", 1, 1, "2026-06-30T23:59:59.000Z")];
     const merged = mergeYearEntries([older, newer]);
     assert.notEqual(merged[0].last_vote_ts, "2026-03-01T00:00:00.000Z", "não deve ficar preso no valor do 1º mês");
     assert.equal(merged[0].last_vote_ts, "2026-06-30T23:59:59.000Z");
   });
 
   it("ordem de chegada não importa — sempre vence o timestamp cronologicamente mais recente", () => {
-    const feb = [{ email: "c@x.com", nickname: "C", correct: 1, total: 1, last_vote_ts: "2026-02-20T10:00:00.000Z" }];
-    const jan = [{ email: "c@x.com", nickname: "C", correct: 1, total: 1, last_vote_ts: "2026-01-15T10:00:00.000Z" }];
+    const feb = [snapshotEntry("c@x.com", "C", 1, 1, "2026-02-20T10:00:00.000Z")];
+    const jan = [snapshotEntry("c@x.com", "C", 1, 1, "2026-01-15T10:00:00.000Z")];
     // perMonth fora de ordem cronológica (fev antes de jan) — resultado deve ser o mesmo
     const merged = mergeYearEntries([feb, jan]);
     assert.equal(merged[0].last_vote_ts, "2026-02-20T10:00:00.000Z");
   });
 
   it("last_vote_ts ausente num mês não apaga o já setado noutro", () => {
-    const jan = [{ email: "d@x.com", nickname: "D", correct: 1, total: 1, last_vote_ts: "2026-01-15T10:00:00.000Z" }];
-    const mar = [{ email: "d@x.com", nickname: "D", correct: 1, total: 1 }]; // sem last_vote_ts
+    const jan = [snapshotEntry("d@x.com", "D", 1, 1, "2026-01-15T10:00:00.000Z")];
+    const mar = [snapshotEntry("d@x.com", "D", 1, 1)]; // sem last_vote_ts
     const merged = mergeYearEntries([jan, mar]);
     assert.equal(merged[0].last_vote_ts, "2026-01-15T10:00:00.000Z");
   });
 
   it("correct/total continuam somando normalmente (comportamento pré-existente inalterado)", () => {
-    const jan = [{ email: "e@x.com", nickname: "E", correct: 1, total: 1, last_vote_ts: "2026-01-01T00:00:00.000Z" }];
-    const feb = [{ email: "e@x.com", nickname: "E", correct: 0, total: 1, last_vote_ts: "2026-02-01T00:00:00.000Z" }];
+    const jan = [snapshotEntry("e@x.com", "E", 1, 1, "2026-01-01T00:00:00.000Z")];
+    const feb = [snapshotEntry("e@x.com", "E", 0, 1, "2026-02-01T00:00:00.000Z")];
     const merged = mergeYearEntries([jan, feb]);
     assert.equal(merged[0].correct, 1);
     assert.equal(merged[0].total, 2);
   });
 
   it("emails distintos não se misturam", () => {
-    const jan = [{ email: "f@x.com", nickname: "F", correct: 1, total: 1, last_vote_ts: "2026-01-01T00:00:00.000Z" }];
-    const feb = [{ email: "g@x.com", nickname: "G", correct: 1, total: 1, last_vote_ts: "2026-02-01T00:00:00.000Z" }];
+    const jan = [snapshotEntry("f@x.com", "F", 1, 1, "2026-01-01T00:00:00.000Z")];
+    const feb = [snapshotEntry("g@x.com", "G", 1, 1, "2026-02-01T00:00:00.000Z")];
     const merged = mergeYearEntries([jan, feb]);
     assert.equal(merged.length, 2);
   });

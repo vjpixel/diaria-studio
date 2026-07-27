@@ -1408,10 +1408,18 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path.startsWith("/leaderboard/") && (request.method === "GET" || request.method === "HEAD")) {
       // #2867: /leaderboard/{YYYY}/arquivo[/{AAMMDD}] — arquivo retroativo do
       // ano. Checado ANTES do monthMatch/yearMatch abaixo (regex mais específica).
+      // #4117: `env` CRU (não `bEnv`) — os dois handlers só tocam KV pra ler
+      // `correct:{edition}`/`correct:{yy}*` (gabarito compartilhado, mesma
+      // chave CRUA em todo brand — ver #3600/#4038). `bEnv` prefixava a leitura
+      // (ex: `clarice:correct:260101`), que nunca existe — `close-poll.ts`
+      // sempre grava `correct:` sem prefixo. Resultado: arquivo do brand
+      // clarice (o ÚNICO que expõe este link, ver #3615) sempre vinha vazio
+      // + página de voto individual sempre 404. `brand` continua threadeado
+      // separadamente pros dois handlers (cosmético — copy/branding do HTML).
       const archiveVoteMatch = path.match(/^\/leaderboard\/(\d{4})\/arquivo\/(\d{6})$/);
-      if (archiveVoteMatch) return handleArchiveVotePage(archiveVoteMatch[1], archiveVoteMatch[2], bEnv, brand);
+      if (archiveVoteMatch) return handleArchiveVotePage(archiveVoteMatch[1], archiveVoteMatch[2], env, brand);
       const archiveListMatch = path.match(/^\/leaderboard\/(\d{4})\/arquivo$/);
-      if (archiveListMatch) return handleLeaderboardArchive(archiveListMatch[1], bEnv, brand);
+      if (archiveListMatch) return handleLeaderboardArchive(archiveListMatch[1], env, brand);
 
       const monthMatch = path.match(/^\/leaderboard\/(\d{4}-\d{2})$/);
       // #2114(b): auto-heal: links mensais já enviados com leaderboardPeriod="year"

@@ -12,42 +12,48 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mergeYearEntries, type SnapshotEntry } from "../workers/poll/src/index";
-import { leaderboardHref } from "../workers/poll/src/lib";
+import { leaderboardHref, hashEmailForMatch, maskEmail } from "../workers/poll/src/lib";
 
+// #4123: SnapshotEntry não carrega mais `email` cru (só `uid`/`masked`,
+// derivados na escrita — ver leaderboard-routes.ts). O helper deriva os dois
+// a partir do e-mail "de teste" pra manter os fixtures legíveis; `mergeYearEntries`
+// mescla por `uid` (não mais `email.toLowerCase()`).
 const e = (email: string, correct: number, total: number, nickname: string | null = null): SnapshotEntry =>
-  ({ email, nickname, correct, total });
+  ({ uid: hashEmailForMatch(email), masked: maskEmail(email), nickname, correct, total });
 
 describe("mergeYearEntries (#2006)", () => {
-  it("soma correct/total por email através dos meses", () => {
+  it("soma correct/total por leitor (uid) através dos meses", () => {
     const out = mergeYearEntries([
       [e("a@x.com", 1, 1), e("b@x.com", 0, 1)],
       [e("a@x.com", 0, 1)],
       [e("a@x.com", 1, 1), e("c@x.com", 1, 1)],
     ]);
-    const byEmail = Object.fromEntries(out.map((r) => [r.email, r]));
-    assert.deepEqual({ correct: byEmail["a@x.com"].correct, total: byEmail["a@x.com"].total }, { correct: 2, total: 3 });
-    assert.deepEqual({ correct: byEmail["b@x.com"].correct, total: byEmail["b@x.com"].total }, { correct: 0, total: 1 });
-    assert.deepEqual({ correct: byEmail["c@x.com"].correct, total: byEmail["c@x.com"].total }, { correct: 1, total: 1 });
+    const byUid = Object.fromEntries(out.map((r) => [r.uid, r]));
+    const uidA = hashEmailForMatch("a@x.com");
+    const uidB = hashEmailForMatch("b@x.com");
+    const uidC = hashEmailForMatch("c@x.com");
+    assert.deepEqual({ correct: byUid[uidA].correct, total: byUid[uidA].total }, { correct: 2, total: 3 });
+    assert.deepEqual({ correct: byUid[uidB].correct, total: byUid[uidB].total }, { correct: 0, total: 1 });
+    assert.deepEqual({ correct: byUid[uidC].correct, total: byUid[uidC].total }, { correct: 1, total: 1 });
   });
 
-  it("email é case-insensitive no merge", () => {
+  it("uid é case-insensitive no merge (hashEmailForMatch normaliza trim+lowercase antes de hashear)", () => {
     const out = mergeYearEntries([[e("A@X.com", 1, 1)], [e("a@x.com", 0, 1)]]);
     assert.equal(out.length, 1);
     assert.equal(out[0].total, 2);
   });
 
-  // #2018: email armazenado SEMPRE em lowercase — antes byEmail.set(key, { ...e })
-  // mantinha o email original (mixed-case) na entrada; lookups subsequentes e
-  // exibição no leaderboard ficavam com casing inconsistente.
-  it("#2018: email na saída é sempre lowercase (não mixed-case da entrada)", () => {
-    const out = mergeYearEntries([[e("USER@Example.COM", 1, 1)]]);
-    assert.equal(out.length, 1);
-    assert.equal(out[0].email, "user@example.com", "email deve ser lowercase mesmo na 1ª entrada");
-  });
-
-  it("#2018: email lowercase quando entrada mista de meses com casing diferente", () => {
-    const out = mergeYearEntries([[e("A@X.com", 1, 1)], [e("a@x.com", 0, 1)]]);
-    assert.equal(out[0].email, "a@x.com", "email merged deve ser lowercase");
+  // #2018 (pré-#4123): o bug original era `email` armazenado em mixed-case,
+  // causando lookups inconsistentes / entradas duplicadas cross-mês. Pós-#4123,
+  // SnapshotEntry não tem mais `email` — a identidade de merge é `uid`, que já
+  // normaliza trim+lowercase ANTES de hashear (hashEmailForMatch, lib.ts). O
+  // equivalente estrutural do #2018 é: casing diferente do e-mail cru entre
+  // meses ainda colapsa pro MESMO uid (nunca duplica a linha).
+  it("#2018 (equivalente pós-#4123): uid colapsa pro mesmo valor independente do casing do e-mail cru entre meses", () => {
+    const out = mergeYearEntries([[e("USER@Example.COM", 1, 1)], [e("user@example.com", 0, 1)]]);
+    assert.equal(out.length, 1, "mesmo uid — não deve duplicar por casing diferente entre meses");
+    assert.equal(out[0].uid, hashEmailForMatch("user@example.com"));
+    assert.equal(out[0].total, 2, "soma normalmente apesar do casing diferente");
   });
 
   it("nickname: o do mês mais recente (não-nulo) vence; nulo não apaga", () => {
