@@ -128,6 +128,33 @@ describe("enrichPrimarySource", () => {
     assert.match(a.matched_launch_keyword as string, /unveil/i);
   });
 
+  it("flaga título em voz PASSIVA (#4080, caso real edição 260727, self-review PR #4134 finding 1)", () => {
+    // Regressão: os DOIS mecanismos que dependem de detectLaunchCandidate
+    // (enrichPrimarySource aqui + o guard review-highlight-source.ts, já
+    // coberto em test/review-highlight-source.test.ts) compartilham a mesma
+    // função corrigida no #4080. Faltava um teste dedicado provando que
+    // enrichPrimarySource também passou a enxergar o título exato do
+    // Tecnoblog ("Claude Opus 5 é lançado...") que motivou a issue — sem
+    // esse teste, uma regressão futura na função compartilhada só quebraria
+    // o outro mecanismo visivelmente, deixando este silenciosamente cego de
+    // novo.
+    const input = {
+      radar: [
+        {
+          url: "https://tecnoblog.net/noticias/claude-opus-5-anthropic/",
+          title: "Claude Opus 5 é lançado com foco no desempenho e controle de custos",
+          summary: "A Anthropic lançou o Opus 5 nesta semana.",
+          category: "noticias",
+        },
+      ],
+    };
+    const { output, flagged } = enrichPrimarySource(input);
+    assert.equal(flagged, 1);
+    const a = (output.radar as Array<Record<string, unknown>>)[0];
+    assert.equal(a.launch_candidate, true);
+    assert.equal(a.suggested_primary_domain, "anthropic.com");
+  });
+
   it("input com radar vazio não quebra", () => {
     const { output, flagged } = enrichPrimarySource({ radar: [], lancamento: [] });
     assert.equal(flagged, 0);

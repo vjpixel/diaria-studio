@@ -122,6 +122,109 @@ describe("detectLaunchCandidate — voz passiva (#4080, caso real edição 26072
   });
 
   // ---------------------------------------------------------------------
+  // Calibração adicional (self-review PR #4134, finding 2) — "chega" em
+  // sentido de aniversário/marco temporal, não lançamento. O bug de raiz era
+  // o grupo de preposição (ao|à|as|no|na|para) casar como PREFIXO de palavra
+  // ("aos" começa com "ao") — corrigido com lookahead `(?!\w)` exigindo
+  // palavra inteira, mais um segundo lookahead excluindo "marca"/"número"
+  // logo após a preposição (marco de uso, não lugar/lançamento).
+  // ---------------------------------------------------------------------
+
+  it("'Empresa chega aos 10 anos com nova rodada de investimento' → false (aniversário/marco temporal)", () => {
+    const det = detectLaunchCandidate({
+      title: "Empresa chega aos 10 anos com nova rodada de investimento",
+      summary: "A Anthropic celebra a data com anúncio de expansão",
+    });
+    assert.equal(det.is_candidate, false);
+  });
+
+  it("'Base de assinantes da Anthropic chega à marca de 800 milhões de usuários' → false (marco de uso)", () => {
+    const det = detectLaunchCandidate({
+      title: "Base de assinantes da Anthropic chega à marca de 800 milhões de usuários",
+    });
+    assert.equal(det.is_candidate, false);
+  });
+
+  it("'xAI Grok chega ao mercado corporativo' → true (chega ao <lugar> continua lançamento)", () => {
+    // Regressão de calibração: as travas do finding 2 não podem quebrar o
+    // caso positivo original — "ao" como palavra inteira seguida de lugar
+    // (não "marca"/"número") continua candidato.
+    const det = detectLaunchCandidate({
+      title: "xAI Grok chega ao mercado corporativo",
+    });
+    assert.equal(det.is_candidate, true);
+    assert.equal(det.suggested_domain, "x.ai");
+  });
+
+  // ---------------------------------------------------------------------
+  // Voz passiva — futura e progressiva (self-review PR #4134, finding 3).
+  // A cobertura original (#4080) só pegava a forma simples (é/foi/são/foram).
+  // Faltavam futura ("será/serão lançado") e progressiva ("está/estão sendo
+  // lançado", "vem/vêm sendo apresentado") — comuns em manchete de veículo
+  // brasileiro cobrindo pré-lançamento confirmado.
+  // ---------------------------------------------------------------------
+
+  it("'Claude Opus 5 será lançado em setembro pela Anthropic' → true (futura, será lançado)", () => {
+    const det = detectLaunchCandidate({
+      title: "Claude Opus 5 será lançado em setembro pela Anthropic",
+    });
+    assert.equal(det.is_candidate, true);
+    assert.equal(det.suggested_domain, "anthropic.com");
+  });
+
+  it("'Novo modelo será anunciado pela OpenAI ainda este mês' → true (futura, será anunciado)", () => {
+    const det = detectLaunchCandidate({
+      title: "Novo modelo será anunciado pela OpenAI ainda este mês",
+    });
+    assert.equal(det.is_candidate, true);
+    assert.equal(det.suggested_domain, "openai.com");
+  });
+
+  it("'Gemini 3 está sendo lançado em fases pelo Google' → true (progressiva, está sendo lançado)", () => {
+    const det = detectLaunchCandidate({
+      title: "Gemini 3 está sendo lançado em fases pelo Google",
+    });
+    assert.equal(det.is_candidate, true);
+  });
+
+  it("'Copilot vem sendo apresentado em eventos da Microsoft' → true (progressiva, vem sendo apresentado)", () => {
+    const det = detectLaunchCandidate({
+      title: "Copilot vem sendo apresentado em eventos da Microsoft",
+    });
+    assert.equal(det.is_candidate, true);
+    assert.equal(det.suggested_domain, "blogs.microsoft.com");
+  });
+
+  it("'Modelos da Mistral estão sendo lançados nesta semana' → true (progressiva, plural)", () => {
+    const det = detectLaunchCandidate({
+      title: "Modelos da Mistral estão sendo lançados nesta semana",
+    });
+    assert.equal(det.is_candidate, true);
+    assert.equal(det.suggested_domain, "mistral.ai");
+  });
+
+  // Fronteira deliberada (finding 3): futura/progressiva cobre ANÚNCIO DE
+  // FATO ("será lançado", "está sendo lançado"), não modal de especulação
+  // ("deve chegar", "pode ser anunciado" — rumor, ainda sem confirmação).
+  // "deve"/"pode" nunca entram no grupo de verbos, e o infinitivo
+  // ("chegar"/"ser") não casa com as formas conjugadas exigidas pelos regexes
+  // — por construção, não por lista de exclusão.
+
+  it("'Novo iPhone dobrável deve chegar em 2027, dizem rumores' → false (modal, especulação — não anúncio consumado)", () => {
+    const det = detectLaunchCandidate({
+      title: "Novo iPhone dobrável deve chegar em 2027, dizem rumores",
+    });
+    assert.equal(det.is_candidate, false);
+  });
+
+  it("'Modelo da OpenAI pode ser anunciado ainda este ano, aponta site' → false (modal, especulação)", () => {
+    const det = detectLaunchCandidate({
+      title: "Modelo da OpenAI pode ser anunciado ainda este ano, aponta site",
+    });
+    assert.equal(det.is_candidate, false);
+  });
+
+  // ---------------------------------------------------------------------
   // Calibração — análise/opinião que só menciona um produto/empresa,
   // sem verbo de anúncio nem construção de lançamento.
   // ---------------------------------------------------------------------

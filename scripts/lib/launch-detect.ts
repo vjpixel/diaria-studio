@@ -38,25 +38,46 @@ const LAUNCH_KEYWORDS: RegExp[] = [
   /\bestreia(m|r|ndo)?\b/i,
   /\bdisponibiliza(m|r|ndo)?\b/i,
   /\bdisponível agora\b/i,
-  // PT — voz passiva (#4080): "X é/foi lançado(a)(s) [pela Empresa]", "X é/foi
-  // anunciado/apresentado". Cobre lançar/anunciar/apresentar nas duas flexões
-  // de gênero/número; a empresa é detectada em qualquer posição do título pela
-  // regra 2 (haystack completo), então não importa se vem antes ou depois do
-  // verbo.
+  // PT — voz passiva (#4080), formas simples/futura/progressiva: "X é/foi
+  // lançado(a)(s) [pela Empresa]", "X será/serão lançado" (futura, anúncio já
+  // confirmado — não confundir com modal "deve"/"pode", ver nota de escopo
+  // abaixo), "X está/estão sendo lançado" ou "vem/vêm sendo apresentado"
+  // (progressiva, #4080 self-review, PR #4134). "sendo" é opcional no grupo pra cobrir
+  // simples/futura (sem "sendo") e progressiva (com "sendo") num regex só.
+  // Cobre lançar/anunciar/apresentar nas duas flexões de gênero/número; a
+  // empresa é detectada em qualquer posição do título pela regra 2 (haystack
+  // completo), então não importa se vem antes ou depois do verbo.
+  //
+  // Nota de escopo (#4080 self-review, PR #4134): deliberadamente NÃO cobre modal +
+  // infinitivo ("deve chegar em 2027", "pode ser anunciado ainda este ano")
+  // — são rumor/especulação, não anúncio consumado. "deve"/"pode" não entram
+  // no grupo de verbos, e "chegar"/"ser" (infinitivo) não casam com o grupo
+  // abaixo (que exige a forma conjugada é/foi/são/foram/será/serão/está/
+  // estão/vem/vêm) nem com o regex de "chega" mais abaixo (que exige a forma
+  // conjugada "chega"/"chegam", não o infinitivo "chegar"). Ver teste
+  // negativo correspondente.
   //
   // Nota: usa lookbehind `(?<=^|\s)` em vez de `\b` antes do grupo — "é" é um
   // caractere acentuado, fora de `\w` (ASCII-only em regex JS sem flag `u`),
   // então `\b` nunca encontra fronteira antes dele (os dois lados — espaço e
   // "é" — contam como "não-\w") e o match falha silenciosamente. `\b` depois
   // do particípio funciona normal (termina em o/a/s, todos `\w`).
-  /(?<=^|\s)(é|foi|são|foram)\s+(lan[çc]ad|anunciad|apresentad)[oa]s?\b/i,
+  /(?<=^|\s)(é|foi|são|foram|será|serão|está|estão|vem|vêm)\s+(sendo\s+)?(lan[çc]ad|anunciad|apresentad)[oa]s?\b/i,
   // PT — "X ganha (nova) versão" (feature/produto novo sem verbo de anúncio).
   /\bganha(m)?\s+(nova\s+)?vers[ãa]o\b/i,
   // PT — "X chega ao/à/no/na/para <lugar>" (chegada de produto ao mercado).
   // Deliberadamente NÃO casa "chega a <valor/número>" (ex: "mercado de IA
   // chega a US$ 50 bilhões") — esse uso é estatística/análise, não lançamento;
   // ver #4080 e o teste negativo correspondente.
-  /\bchega(m)?\s+(ao|à|as|no|na|para)/i,
+  //
+  // #4080 self-review, PR #4134: duas travas adicionais contra sentido não-lançamento —
+  // (a) `(?!\w)` depois do grupo de preposição garante palavra INTEIRA, não
+  // prefixo: sem essa trava "chega aos 10 anos" casava "chega ao" (prefixo de
+  // "aos") e virava falso-positivo de aniversário/marco temporal; (b) segundo
+  // lookahead negativo exclui "chega à/ao marca/número ..." (marco de uso —
+  // "chega à marca de 800 milhões de usuários" — não é lançamento, mesmo
+  // sendo gramaticalmente "chegada a um lugar-conceito").
+  /\bchega(m)?\s+(ao|à|as|no|na|para)(?!\w)(?!\s+(marca|n[uú]mero)\b)/i,
 ];
 
 /**
