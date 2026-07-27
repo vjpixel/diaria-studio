@@ -226,17 +226,34 @@ export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = i
   }
 }
 
-/** Monta o additionalContext do hook a partir da URL do PR, effort resolvido e warning opcional. Pure/testável. */
+/**
+ * Monta o additionalContext do hook a partir da URL do PR, effort resolvido e
+ * warning opcional. Pure/testável.
+ *
+ * #4034 (260726): `/code-review` deixou de ser invocável via Skill tool
+ * (`disable-model-invocation` — gate de plataforma, não config nossa,
+ * confirmado usageCount:462 funcionando por meses antes do flip). A
+ * instrução deixou de pedir `/code-review {effort} --comment` (o Skill tool
+ * rejeita a chamada) e passa a pedir um dispatch via ferramenta Agent
+ * (`general-purpose`, `model: sonnet` explícito, #2019 — imune a esse gate,
+ * que só afeta Skill) com o rubrico de review embutido no prompt, postando
+ * os achados como comentários inline na PR. Mesmo mecanismo usado na
+ * Fase 1.5 do overnight/develop (`.claude/skills/diaria-overnight/SKILL.md`,
+ * `.claude/skills/diaria-develop/SKILL.md`).
+ */
 export function buildReviewInstruction(prUrl, effort, warning = null) {
   const effortNote =
     effort === "low"
-      ? "at LOW effort (#3326 default — token-optimized; fewer, high-confidence findings only; ask for max explicitly for deeper review)"
-      : "at ULTRACODE / maximum effort: the full multi-agent review (many finder angles -> verify -> sweep, recall mode)";
+      ? "at LOW effort (#3326 default — token-optimized; report only a few high-confidence findings; ask for max explicitly for deeper review)"
+      : "at ULTRACODE / MAXIMUM effort (be thorough — read every changed file, not just the diff hunks)";
   const warningNote = warning ? ` [aviso: ${warning}]` : "";
   return (
-    `A pull request was just created: ${prUrl} — per project policy, run ` +
-    `\`/code-review ${effort} --comment\` on it now, ${effortNote}, ` +
-    "posting findings as inline PR comments. Do NOT use cloud `ultra` (it is user-triggered/billed and cannot be self-launched)." +
+    `A pull request was just created: ${prUrl} — per project policy, review it now. ` +
+    "`/code-review` cannot be self-invoked via the Skill tool (platform gate, #4034) — instead, dispatch an Agent " +
+    "(general-purpose, model:sonnet explicit, #2019) with an inline review rubric (correctness, " +
+    "simplification/efficiency, test-coverage, security) over `git diff` for this PR's branch vs its base, " +
+    `${effortNote}, then post its findings as inline PR comments (\`gh pr comment\`/\`gh api\`). ` +
+    "Do NOT use cloud `ultra` (it is user-triggered/billed and cannot be self-launched)." +
     warningNote
   );
 }
