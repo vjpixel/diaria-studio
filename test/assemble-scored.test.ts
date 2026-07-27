@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   assemble,
   applyNegativeImpactBackstop,
+  applyPlaceholderTitleBackstop,
   type Selection,
   type AllScoredFile,
   type AssembledOutput,
@@ -124,3 +125,80 @@ describe("applyNegativeImpactBackstop", () => {
     assert.equal(out.negative_impact_promoted, undefined);
   });
 });
+
+// #4102 — backstop determinístico: nenhum highlight final pode ter título placeholder
+describe("applyPlaceholderTitleBackstop", () => {
+  const finalists: FinalistLike[] = [
+    { url: "https://yc.com/placeholder-item", score: 119, bucket: "radar", article: { url: "https://yc.com/placeholder-item", title: '(newsletter:"Lenny\'s Newsletter")' } },
+    { url: "https://real.com/good-article", score: 95, bucket: "radar", article: { url: "https://real.com/good-article", title: "Um título real e bom" } },
+  ];
+
+  it("no-op quando nenhum highlight tem título placeholder", () => {
+    const assembled: AssembledOutput = {
+      highlights: [{ rank: 1, url: "https://real.com/good-article", score: 95, article: { url: "https://real.com/good-article", title: "Um título real e bom" } }],
+      runners_up: [],
+      all_scored: [],
+    };
+    const out = applyPlaceholderTitleBackstop(assembled, finalists);
+    assert.equal(out, assembled, "deve retornar a MESMA referência quando não demove (no-op)");
+    assert.equal(out.placeholder_title_demoted, undefined);
+  });
+
+  it("CASO REAL 260727: highlight com título '(newsletter:...)' e score 119 (o mais alto do pool) é substituído", () => {
+    const assembled: AssembledOutput = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://yc.com/placeholder-item",
+          score: 119,
+          article: { url: "https://yc.com/placeholder-item", title: '(newsletter:"Lenny\'s Newsletter")' },
+        },
+      ],
+      runners_up: [],
+      all_scored: [],
+    };
+    const out = applyPlaceholderTitleBackstop(assembled, finalists);
+    assert.ok(out.placeholder_title_demoted, "backstop deve ter demovido");
+    assert.equal(out.placeholder_title_demoted!.length, 1);
+    assert.equal(out.placeholder_title_demoted![0].demoted_url, "https://yc.com/placeholder-item");
+    assert.equal(out.placeholder_title_demoted![0].promoted_url, "https://real.com/good-article");
+    assert.equal(out.highlights[0].url, "https://real.com/good-article");
+  });
+
+  it("roda DEPOIS do negative-impact backstop no fluxo main() — última palavra, mesmo se o outro backstop reintroduzir o ofensor", () => {
+    // Cenário adversarial: o candidato de MAIOR score do pool é SIMULTANEAMENTE
+    // o único highlight com título placeholder E o único finalista fora dos
+    // highlights com negative_impact:true e MAIOR score entre os tagueados.
+    // Se rodássemos placeholder-backstop ANTES, o negative-impact backstop
+    // (que não sabe filtrar por título) reintroduziria o mesmo ofensor —
+    // exatamente o bug que a ordem "negative-impact primeiro, placeholder por
+    // último" evita: o placeholder backstop tem a palavra final.
+    const finalistsWithNegImpact: FinalistLike[] = [
+      { url: "https://yc.com/placeholder-item", score: 119, bucket: "radar", article: { url: "https://yc.com/placeholder-item", title: '(newsletter:"Lenny\'s Newsletter")', negative_impact: true } },
+      { url: "https://real.com/good-article", score: 95, bucket: "radar", article: { url: "https://real.com/good-article", title: "Um título real e bom" } },
+    ];
+    let assembled: AssembledOutput = {
+      highlights: [
+        { rank: 1, url: "https://yc.com/placeholder-item", score: 119, article: { url: "https://yc.com/placeholder-item", title: '(newsletter:"Lenny\'s Newsletter")', negative_impact: true } },
+      ],
+      runners_up: [],
+      all_scored: [],
+    };
+    // 1) negative-impact backstop primeiro: highlights já tem 1 tagueado → no-op.
+    assembled = applyNegativeImpactBackstop(assembled, finalistsWithNegImpact);
+    assert.equal(assembled.highlights[0].url, "https://yc.com/placeholder-item", "no-op esperado (já satisfaz a regra)");
+    // 2) placeholder backstop por último: título placeholder NUNCA sobrevive,
+    //    mesmo que isso derrube a regra de negative-impact (warning-only, #3916/#3918).
+    assembled = applyPlaceholderTitleBackstop(assembled, finalistsWithNegImpact);
+    assert.equal(assembled.highlights[0].url, "https://real.com/good-article");
+    assert.ok(
+      !isPlaceholderTitleOf(assembled.highlights[0]),
+      "nenhum highlight final pode ter título placeholder, mesmo custando a regra de negative-impact",
+    );
+  });
+});
+
+function isPlaceholderTitleOf(h: { article?: { title?: string } }): boolean {
+  const t = (h.article?.title ?? "").trim();
+  return t === "" || /^\((?:inbox|no title|sem t[ií]tulo|newsletter:.*)\)$/i.test(t);
+}

@@ -22,6 +22,7 @@ import {
   checkCategorizedHasEiaSection,
   checkNoUseMelhorHighlights,
   checkHasNegativeImpactHighlight,
+  checkNoPlaceholderTitleHighlights,
 } from "../scripts/lib/invariant-checks/stage-1.ts";
 import {
   checkReviewedPassesAllLints,
@@ -95,6 +96,12 @@ describe("invariant-checks registry (#1007)", () => {
   it("#3436 registry contém entry no-use-melhor-highlights no stage 1 (severity error)", () => {
     const entry = ALL_INVARIANT_RULES.find((r) => r.id === "no-use-melhor-highlights");
     assert.ok(entry !== undefined, "ALL_INVARIANT_RULES deve conter 'no-use-melhor-highlights'");
+    assert.equal(entry!.stage, 1);
+  });
+
+  it("#4102 registry contém entry no-placeholder-title-highlights no stage 1", () => {
+    const entry = ALL_INVARIANT_RULES.find((r) => r.id === "no-placeholder-title-highlights");
+    assert.ok(entry !== undefined, "ALL_INVARIANT_RULES deve conter 'no-placeholder-title-highlights'");
     assert.equal(entry!.stage, 1);
   });
 
@@ -492,6 +499,85 @@ describe("Stage 1 invariants", () => {
   it("has-negative-impact-highlight sem violation quando JSON malformado (coberto por approved-parseable)", () => {
     writeFileSync(join(fixture, "_internal", "01-approved.json"), "{ not valid json");
     const v = checkHasNegativeImpactHighlight(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // --- #4102: destaque nunca pode ter título placeholder não-enriquecido ---
+
+  it("no-placeholder-title-highlights sem violation quando 01-approved.json ausente", () => {
+    const v = checkNoPlaceholderTitleHighlights(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("no-placeholder-title-highlights passa com títulos reais", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "radar", url: "https://a.com", article: { url: "https://a.com", title: "OpenAI anuncia GPT-5" } },
+        ],
+      }),
+    );
+    const v = checkNoPlaceholderTitleHighlights(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  // CASO REAL 260727 (#4102): item do Y Combinator via "Lenny's Newsletter",
+  // score 119 (o mais alto do pool), título nunca enriquecido.
+  it("no-placeholder-title-highlights falha (error) quando article.title casa '(newsletter:...)'", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          {
+            bucket: "radar",
+            score: 119,
+            article: { url: "https://ycombinator.com/library/x", title: '(newsletter:"Lenny\'s Newsletter")' },
+          },
+        ],
+      }),
+    );
+    const v = checkNoPlaceholderTitleHighlights(fixture);
+    assert.equal(v.length, 1);
+    assert.equal(v[0].rule, "no-placeholder-title-highlights");
+    assert.equal(v[0].severity, "error", "título placeholder é sempre bug de pipeline, nunca trade-off editorial — hard block");
+    assert.equal(v[0].source_issue, "#4102");
+    assert.match(v[0].message, /ycombinator\.com/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("no-placeholder-title-highlights falha quando título top-level (não nested) é '(inbox)'", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [{ bucket: "radar", url: "https://a.com", title: "(inbox)" }],
+      }),
+    );
+    const v = checkNoPlaceholderTitleHighlights(fixture);
+    assert.equal(v.length, 1);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("no-placeholder-title-highlights NÃO falso-positiva em título real com parênteses", () => {
+    writeFileSync(
+      join(fixture, "_internal", "01-approved.json"),
+      JSON.stringify({
+        highlights: [
+          { bucket: "radar", article: { url: "https://a.com", title: "GPT-5 (versão de pesquisa) chega em outubro" } },
+        ],
+      }),
+    );
+    const v = checkNoPlaceholderTitleHighlights(fixture);
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("no-placeholder-title-highlights sem violation quando JSON malformado (coberto por approved-parseable)", () => {
+    writeFileSync(join(fixture, "_internal", "01-approved.json"), "{ not valid json");
+    const v = checkNoPlaceholderTitleHighlights(fixture);
     assert.equal(v.length, 0);
     rmSync(fixture, { recursive: true, force: true });
   });

@@ -388,3 +388,41 @@ Links usados:
     assert.equal(kept.use_melhor?.length, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #4102 — CASO REAL 260727: eugeneyan.com//writing/cybersecurity-evals/ (barra
+// dupla) escapou do dedup contra a edição 260715 (mesmo artigo). Locka a
+// URL EXATA do incidente para nunca regredir — complementa os testes
+// genéricos de #2581 acima (que já cobrem o mecanismo de canonicalize()).
+// ---------------------------------------------------------------------------
+
+describe("dedupEvergreenBuckets — CASO REAL #4102 (eugeneyan.com cybersecurity-evals)", () => {
+  const PAST_MD_4102 = `# Últimas edições publicadas
+
+## 2026-07-15 — "Edição 260715"
+
+Links usados:
+- https://eugeneyan.com/writing/cybersecurity-evals/
+
+---
+`;
+
+  it("URL re-descoberta com barra dupla casa contra a mesma URL (sem //) publicada na 260715", () => {
+    const pastUrls = extractPastUrlsUnbounded(PAST_MD_4102);
+    const input = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        {
+          url: "https://eugeneyan.com//writing/cybersecurity-evals/",
+          title: "How I Think About Cybersecurity Evals",
+        },
+      ],
+      video: [],
+    };
+    const { kept, removed } = dedupEvergreenBuckets(input, pastUrls);
+    assert.equal(removed.length, 1, "a URL com // deve ser reconhecida como o MESMO artigo da 260715");
+    assert.equal(removed[0].url, "https://eugeneyan.com//writing/cybersecurity-evals/");
+    assert.equal(kept.use_melhor?.length, 0);
+  });
+});

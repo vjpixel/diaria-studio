@@ -110,6 +110,32 @@ describe("#720 — joinScore URL opacity", () => {
     assert.equal(result.article.score, null);
     assert.equal(result.article.score_recovered, undefined);
   });
+
+  // #4102: trava a fronteira entre a normalização de URL do DEDUP (que agora
+  // colapsa "//" — ver dedup-evergreen-buckets.test.ts) e o join do SCORER,
+  // que #720 documenta como sendo por URL EXATA de propósito. A normalização
+  // de dedup NUNCA deve vazar pro join — este teste garante que uma URL com
+  // barra dupla no pool ainda dá url_mismatch=true contra a MESMA URL sem
+  // barra dupla no scored, mesmo que dedup-evergreen-buckets trate as duas
+  // como o MESMO artigo.
+  it("#4102: URL com barra dupla NÃO casa por igualdade de string — join continua exigindo URL exata", () => {
+    const poolUrl = "https://eugeneyan.com//writing/cybersecurity-evals/";
+    const scoredUrl = "https://eugeneyan.com/writing/cybersecurity-evals/"; // mesma barra simples
+    const title = "How I Think About Cybersecurity Evals";
+
+    const article: Article = { url: poolUrl, title };
+    const scored: ScoredEntry = { url: scoredUrl, score: 72, title };
+    const { scoreMap, titleIndex } = buildScoreIndexes([scored]);
+
+    const result = joinScore(article, scoreMap, [scored], titleIndex);
+
+    // Join por URL exata falha (strings diferentes, mesmo sendo o "mesmo" artigo
+    // depois de canonicalizado) — só o recovery por título salva o score aqui,
+    // exatamente como o caso pré-existente de trailing-slash acima.
+    assert.equal(result.url_mismatch, true, "URL com // não deve casar por igualdade de string no join do scorer");
+    assert.equal(result.article.score_recovered, true, "recovery por título ainda funciona");
+    assert.equal(result.article.url, poolUrl, "URL original do pool preservada — nunca substituída pela canonicalizada");
+  });
 });
 
 // ---------------------------------------------------------------------------

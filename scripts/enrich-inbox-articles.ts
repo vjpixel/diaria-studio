@@ -80,18 +80,45 @@ const PLACEHOLDER_TITLES = [
   "(sem título)",
 ];
 
+// #4102: título sintético de links extraídos de newsletter capturada (ver
+// capture-newsletter-urls.ts / inject-inbox-urls.ts) — `(newsletter:{sender})`,
+// ex: `(newsletter:"Lenny's Newsletter")`. Mesma classe de placeholder que
+// "(inbox)", mas com conteúdo variável (nome do remetente) — precisa de regex,
+// não de match literal na lista `PLACEHOLDER_TITLES`. Antes deste fix, nem
+// `hasPlaceholderTitle` nem o `titleIsPlaceholder` local de `mergeMetadata`
+// reconheciam esse padrão: mesmo quando o fetch de og:title tinha sucesso, o
+// título placeholder NUNCA era substituído (o guard de "não sobrescrever
+// título real" barrava a própria substituição que deveria acontecer).
+const NEWSLETTER_PLACEHOLDER_RE = /^\(newsletter:/i;
+
 /** Submissão do inbox editorial (network-eligible pro fetch de enrichment). */
 export function isInboxArticle(article: InboxArticle): boolean {
-  return article.flag === "editor_submitted" || article.source === "inbox";
+  return (
+    article.flag === "editor_submitted" ||
+    // #4102: newsletter_extracted é um placeholder sintético igual ao inbox
+    // (título nunca é conteúdo real) — merece a mesma garantia de fetch
+    // incondicional em cache-miss, não o fallback bounded de "fonte regular".
+    article.flag === "newsletter_extracted" ||
+    article.source === "inbox"
+  );
 }
 
+/**
+ * Título placeholder — inclui os literais fixos ("(inbox)", "(no title)",
+ * "(sem título)"), os prefixos `[INBOX]`/`(inbox` e o padrão de newsletter
+ * capturada `(newsletter:...)` (#4102). Fonte única usada tanto pelo filtro
+ * `needsEnrichment` quanto pelo guard de "não sobrescrever título real" em
+ * `mergeMetadata` — duplicar esta lógica nos dois lugares foi exatamente
+ * como o padrão `(newsletter:...)` escapou de ambos originalmente.
+ */
 function hasPlaceholderTitle(article: InboxArticle): boolean {
   const title = (article.title ?? "").trim();
   return (
     !title ||
     PLACEHOLDER_TITLES.includes(title.toLowerCase()) ||
     /^\[inbox\]/i.test(title) ||
-    /^\(inbox/i.test(title)
+    /^\(inbox/i.test(title) ||
+    NEWSLETTER_PLACEHOLDER_RE.test(title)
   );
 }
 
@@ -197,12 +224,11 @@ export function mergeMetadata(
   let titleUpdated = false;
   let summaryUpdated = false;
 
-  const currentTitle = (article.title ?? "").trim();
-  const titleIsPlaceholder =
-    !currentTitle ||
-    PLACEHOLDER_TITLES.includes(currentTitle.toLowerCase()) ||
-    /^\[inbox\]/i.test(currentTitle) ||
-    /^\(inbox/i.test(currentTitle);
+  // #4102: reusa hasPlaceholderTitle (fonte única) em vez de duplicar a regex
+  // aqui — a duplicação anterior (sem o padrão `(newsletter:...)`) foi
+  // exatamente o motivo do bug: mesmo com fetch bem-sucedido, este guard
+  // achava que o título já era "real" e recusava a substituição.
+  const titleIsPlaceholder = hasPlaceholderTitle(article);
 
   if (meta.title && titleIsPlaceholder) {
     out.title = meta.title;
