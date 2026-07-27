@@ -1147,8 +1147,47 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
   // negativo. Padrão consistente.
   const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 
-  const key = decodeURIComponent(path.slice("/img/".length));
+  // #4111: `decodeURIComponent` lança URIError em `%` malformado (`/img/%`).
+  // Sem este guard, uma rota pública devolvia 500 pra input trivial.
+  let key: string;
+  try {
+    key = decodeURIComponent(path.slice("/img/".length));
+  } catch {
+    return new Response("not found", { status: 404, headers: corsHeaders });
+  }
   if (!key) {
+    return new Response("not found", { status: 404, headers: corsHeaders });
+  }
+
+  // #4111 (P0, achado do review 260727 e CONFIRMADO em produção): sem esta
+  // allowlist, `/img/{key}` era um leitor arbitrário do KV INTEIRO — a chave
+  // vinha crua da URL direto pro `get`. Em produção dava, sem autenticação
+  // nenhuma e com `Access-Control-Allow-Origin: *`:
+  //   GET /img/correct:{hoje}                 → o gabarito do dia (spoiler
+  //                                             total; a chave é escrita no
+  //                                             Stage 4, ANTES do e-mail sair)
+  //   GET /img/leaderboard-snapshot:{slug}    → e-mails dos leitores EM CLARO
+  //                                             (o snapshot guarda `email`
+  //                                             cru; ~50 por mês)
+  //   GET /img/score:{email}, /img/vote:{ed}:{email}, /img/nickname:{apelido}
+  //                                           → dado individual + harvest de
+  //                                             e-mail a partir dos apelidos
+  //                                             públicos do leaderboard
+  // Isso derrubava de uma vez o anti-spoiler de todas as outras superfícies e
+  // o mascaramento de e-mail (`maskEmail` #3118, `hashEmailForMatch` #4029).
+  //
+  // O gate é o prefixo `img-`: TODA chave de imagem gravada pelo pipeline usa
+  // `img-{edition}-{basename}` / `img-monthly-*` (upload-images-public.ts,
+  // lib/mensal/monthly-image-upload.ts), e NENHUMA chave de estado começa
+  // assim — todas usam namespace com `:` (`correct:`, `stats:`, `vote:`,
+  // `score:`, `score-by-month:`, `nickname:`, `counted:`, `votelog:`,
+  // `identify-linked:`, `leaderboard-snapshot:`, `eiameta:`, `rl:`,
+  // `subscriber:`, mais os prefixos de brand `clarice:`/`web:`) ou são
+  // singletons (`valid_editions`). Recusar `:` é defesa em profundidade
+  // (redundante hoje, protege de uma chave futura tipo `img-algo:secreto`) e
+  // não restringe charset de filename — não quebra nenhuma URL já enviada em
+  // edição passada, que é o requisito duro aqui.
+  if (!/^img-[^:]+$/.test(key)) {
     return new Response("not found", { status: 404, headers: corsHeaders });
   }
 
