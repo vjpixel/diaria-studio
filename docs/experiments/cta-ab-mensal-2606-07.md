@@ -73,6 +73,7 @@ Acumular envios até ~150 cliques de topo somados nos dois braços (ou fim do ci
   - Guardrail furado sem parar o round: B já estava abaixo do limiar de abertura (<15%) no envio 8, e o envio 9B saiu mesmo assim — com resultado pior. Enforcement automático entre envios: ver issue irmã do #4061.
   - `status` do experimento no registro da dashboard atualizado pra `encerrado` com `closureNote` (`workers/brevo-dashboard/src/experiment-cta.ts`).
 - 2026-07-27 — **investigação de causa (#4061), escopo autônomo = só diagnóstico offline** (decisão do editor, comentário 260727): diff dos dois HTMLs canônicos + hipótese de gatilho, sem tocar campanhas.
+- 2026-07-27 — **CTA-01 CONGELADO pelo editor**, seguindo a recomendação desta investigação. Não há novo round enquanto as duas pré-condições não forem atendidas: (a) **#4063** — circuit breaker de spam lendo o Postmaster em vez do `complaints` da Brevo, **e** reputação do domínio de volta abaixo de 0,3%; (b) **#4064** — enforcement de guardrail entre envios, pra que um braço que furou o limiar no envio N não saia no envio N+1. A decisão de repetir ou abandonar de vez o CTA-01 fica para quando as duas estiverem cumpridas — não é "abandonado", é **adiado com pré-condições explícitas**. #4061 fechada como investigada; o trabalho remanescente vive em #4063 e #4064.
 
 ## Investigação de causa (#4061)
 
