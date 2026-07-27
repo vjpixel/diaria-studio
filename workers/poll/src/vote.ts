@@ -68,6 +68,16 @@ export async function buildAlreadyVotedResponse(
   edition: string,
   email: string,
   existingFromKv: string | null,
+  /** #4065 follow-up (achado 260727): a tela de "já votou" nunca recebeu o
+   * card de compartilhamento nem o CTA/cadastro inline que #4065 trouxe pro
+   * resultado normal — quem revisita um link já votado (o caso mais comum:
+   * clicou 2x no mesmo link da newsletter) caía num beco sem saída idêntico
+   * ao que #4065 fechou pro voto fresco. `correct` é opcional (chamadores
+   * legados/teste continuam funcionando sem share card, mesmo comportamento
+   * de antes) — quando fornecido, monta o MESMO payload {edition, correct}
+   * usado por handleVote/handleVoteFastPath (share.ts).
+   */
+  correct: boolean | null = null,
 ): Promise<Response> {
   // choice: "?" é um edge aceitável: ocorre quando o 2º votante concorrente
   // chegou tão rapidamente que o KV eventual ainda não propagou o put do 1º
@@ -120,7 +130,18 @@ export async function buildAlreadyVotedResponse(
     const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
     prevNicknameForm = { email, sig: prevSig };
   }
-  return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
+  // #4065 follow-up: mesmo payload {edition, correct} do voto fresco — share
+  // card (todos os brands) + CTA/cadastro inline (brand clarice, via
+  // votePageHtml internamente) também aparecem em quem revisita já-votado.
+  const sharePayload: SharePayload = { edition, correct };
+  const shareCard: { token: string; payload: SharePayload } = {
+    token: await encodeShareToken(env.POLL_SECRET, sharePayload),
+    payload: sharePayload,
+  };
+  return voteHtmlResponse(
+    votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand, null, shareCard),
+    200,
+  );
 }
 
 /**
@@ -492,7 +513,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
     if (!firstVote) {
       // Duplicado detectado pelo DO — servir página "já votou" (#3118 item 10:
       // extraído pra buildAlreadyVotedResponse, compartilhado com o fallback KV).
-      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv);
+      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw ? choice === correctRaw : null);
     }
     // firstVote === true → DO autorizou o voto; prosseguir com gravação normal abaixo.
     } // fim if (doResp === null || doResp.status >= 500) ... else
@@ -506,7 +527,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
       // quase idênticas que já haviam divergido uma vez no passado (#2189
       // corrigiu só um dos dois ramos, deixando o outro com nicknameForm
       // hardcoded null por um tempo).
-      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv);
+      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw ? choice === correctRaw : null);
     }
   }
 
@@ -863,7 +884,7 @@ async function handleVoteFastPath(
   // acertou/errou aquela rodada), só não soma no score. Comportamento
   // intencional, pedido explicitamente pelo editor na issue #3983.
   if (existingFromKv) {
-    return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv);
+    return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw ? choice === correctRaw : null);
   }
 
   const correct = correctRaw ? choice === correctRaw : null;

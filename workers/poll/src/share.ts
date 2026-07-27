@@ -66,7 +66,7 @@
  *     converter tráfego pro jogo, alinhado ao objetivo do EPIC #3514
  *     ("motor de divulgação").
  */
-import { AAMMDD_RE, htmlEscape, formatEditionDate, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST, SUBSCRIBE_UTM_SOURCE } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca; #3978: utm_source fixo do funil
+import { AAMMDD_RE, htmlEscape, formatEditionDate, formatEditionDateForBrand, type Brand, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST, SUBSCRIBE_UTM_SOURCE } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca; #3978: utm_source fixo do funil
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { hmacSign } from "./index";
 import {
@@ -147,9 +147,19 @@ export async function decodeShareToken(secret: string, token: string): Promise<S
 
 /** Pure: mensagem de compartilhamento (usada no OG description, no texto do
  * card, e no payload do Web Share API). Curta o bastante pra não estourar o
- * SVG do card (ver `renderShareCardSvg`). */
-export function buildShareText(payload: SharePayload): string {
-  const dateLabel = formatEditionDate(payload.edition);
+ * SVG do card (ver `renderShareCardSvg`).
+ *
+ * `brand` opcional (default "web", comportamento pré-#4065 preservado nos
+ * call sites que não conhecem o brand de origem — `/share/{token}`/`/og/
+ * {token}`, #3701, deliberadamente genéricos). #4065 follow-up (achado
+ * 260727, ao vivo): desde #4065 o card renderiza pro brand `clarice` também,
+ * que é o ÚNICO brand cuja edição vem no formato de ciclo (`CYCLE_EDITION_RE`,
+ * "YYMM-MM") — sem passar o brand real aqui, `formatEditionDate` (genérico,
+ * só entende AAMMDD por design — #3113 item 13) devolvia o slug cru pro
+ * leitor. O call site que RENDERIZA direto no resultado do voto (`votePageHtml`
+ * em index.ts) conhece o brand de verdade e passa explicitamente. */
+export function buildShareText(payload: SharePayload, brand: Brand = "web"): string {
+  const dateLabel = formatEditionDateForBrand(payload.edition, brand);
   const question = "Você consegue diferenciar uma foto real de uma gerada por IA?";
   if (payload.correct === true) {
     return `Acertei o "É IA?" de hoje (${dateLabel})! ${question} ${PUBLIC_GAME_DISPLAY_HOST}/jogar`;
@@ -223,8 +233,8 @@ export function shareButtonScript(containerSelector: string): string {
  * `/jogar` (jogar.ts, injetada no slot). `id="jogar-share-card"` é o
  * contrato entre as duas pontas — não renomear sem atualizar jogar.ts.
  */
-export function renderShareCardBlock(token: string, payload: SharePayload): string {
-  const text = buildShareText(payload);
+export function renderShareCardBlock(token: string, payload: SharePayload, brand: Brand = "web"): string {
+  const text = buildShareText(payload, brand);
   // #3978: utm_source/utm_campaign completam o funil (antes só utm_medium).
   const shareParams = (medium: string) => new URLSearchParams({
     utm_source: SUBSCRIBE_UTM_SOURCE,
