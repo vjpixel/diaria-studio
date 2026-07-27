@@ -51,6 +51,43 @@ function escapeRegex(s: string): string {
 export const EDITOR_COPY_EMAIL = "vjpixel@gmail.com";
 
 /**
+ * Endereços SEED incluídos em todo envio real (#4045).
+ *
+ * Motivação: nenhuma métrica da Brevo diz ONDE a mensagem caiu — "entregue" só
+ * significa que o servidor aceitou. Aba Principal, Promoções e Spam são
+ * indistinguíveis nos relatórios. Foi essa cegueira que deixou o braço B do
+ * CTA-01 (#4045) perder ~90% do alcance sem sinal nenhum até o dia seguinte.
+ *
+ * Cada endereço aqui é uma caixa de um PROVEDOR diferente; depois de cada
+ * disparo o editor confere em qual aba a mensagem apareceu. Cobertura por
+ * provedor importa mais que quantidade de endereços — dois Gmail medem quase a
+ * mesma coisa (a 2ª caixa só acrescenta um histórico de reputação distinto).
+ * Peso medido na base da diar.ia em 260726: Gmail 73%, Microsoft 10%,
+ * Yahoo 5%, Apple 0,7%. Os 5 abaixo cobrem ~88%.
+ *
+ * Hotmail vs Outlook.com dá na mesma (mesma infraestrutura de consumo da
+ * Microsoft, mesmo filtro). O que acrescentaria informação é um endereço
+ * Microsoft 365 CORPORATIVO — passa pelo Exchange Online Protection, com
+ * regras próprias, análogo ao que `pixel@memelab.com.br` faz pelo lado Google.
+ *
+ * `EDITOR_COPY_EMAIL` continua sendo a cópia QA canônica do editor e segue
+ * primeiro na lista; os demais são seeds de medição de colocação.
+ *
+ * COBERTURA (260726): o `ensureEditorCopyRow` só alcança os CSVs montados por
+ * este pipeline. O fluxo legado `publish-monthly.ts` usa a lista Brevo
+ * ESTÁTICA de `platform.config.json → brevo_monthly.list_id` (hoje 7) — os 5
+ * endereços foram adicionados àquela lista manualmente via API, fechando o
+ * furo descrito no comentário de topo deste arquivo.
+ */
+export const EDITOR_SEED_EMAILS: readonly string[] = [
+  EDITOR_COPY_EMAIL,            // Gmail pessoal — 73% da base é Gmail
+  "pixel@memelab.com.br",       // Google Workspace — Gmail corporativo filtra diferente do pessoal
+  "apixel@gmail.com",           // 2ª caixa Gmail pessoal — reputação/histórico distintos do 1º
+  "vjpixel@hotmail.com",        // Microsoft consumo (10% da base) — Outlook.com filtra por conta própria
+  "vjpixel@yahoo.com",          // Yahoo (5% da base) — 3º maior filtro entre os leitores
+];
+
+/**
  * Garante que `csv` (já normalizado — header com uma coluna `EMAIL`, ver
  * `normalizeImportCsv`) contém uma linha para `editorEmail`. Idempotente:
  * não duplica se o email já estiver presente (dedupe case-insensitive,
@@ -65,7 +102,19 @@ export const EDITOR_COPY_EMAIL = "vjpixel@gmail.com";
  * reconhecível, ou se não houver quebra de linha (só header, sem como saber
  * onde termina) — nunca lança, e nunca força uma coluna que não existe.
  */
-export function ensureEditorCopyRow(csv: string, editorEmail: string = EDITOR_COPY_EMAIL): string {
+export function ensureEditorCopyRow(
+  csv: string,
+  editorEmail: string | readonly string[] = EDITOR_SEED_EMAILS,
+): string {
+  // #4045: aceita um endereço (forma original, back-compat com chamadas e testes
+  // que passam EDITOR_COPY_EMAIL explicitamente) OU a lista de seeds. Cada
+  // endereço passa pelo mesmo caminho idempotente, um de cada vez.
+  const emails = typeof editorEmail === "string" ? [editorEmail] : editorEmail;
+  return emails.reduce((acc, e) => addOneCopyRow(acc, e), csv);
+}
+
+/** Insere UMA linha de cópia (idempotente). Núcleo original de `ensureEditorCopyRow`. */
+function addOneCopyRow(csv: string, editorEmail: string): string {
   const nl = csv.indexOf("\n");
   if (nl < 0) return csv;
 
