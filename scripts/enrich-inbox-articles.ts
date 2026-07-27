@@ -68,7 +68,7 @@ export interface EnrichStats {
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_USER_AGENT =
-  "Mozilla/5.0 (compatible; DiariaBot/1.0; +https://diaria.beehiiv.com)";
+  "Mozilla/5.0 (compatible; DiariaBot/1.0; +https://diar.ia.br)"; // #4059: host de marca canônico
 
 // ---------------------------------------------------------------------------
 // Pure helpers — exported for tests

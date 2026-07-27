@@ -130,11 +130,12 @@ describe("template mensal — bloco APRESENTAÇÃO (#2913)", () => {
     // Beehiiv taggeia esses assinantes como "sendinblue" e a migração fica
     // invisível na atribuição). Ver test/monthly-utm-clarice-2975.test.ts.
     // Esse mecanismo é ortogonal ao #3971 (que só muda o CTA explícito "aqui").
-    assert.match(html, /<a href="https:\/\/diaria\.beehiiv\.com\/\?utm_source=clarice[^"]*utm_campaign=clarice-2606-07"[^>]*>/);
-    // O CTA "aqui" (#3971) aponta direto pro href canônico diar.ia.br, já com
-    // o próprio utm_source=clarice do template — não passa pela reescrita
-    // normalizeKnownUrl (que só se aplica a hosts diaria.beehiiv.com).
-    assert.match(html, /<a href="https:\/\/diar\.ia\.br\/\?utm_source=clarice"[^>]*>aqui<\/a>/);
+    // #4059: o host de marca (diar.ia.br) é o destino do wordmark agora.
+    // #4040: o utm_campaign carrega o sufixo da POSIÇÃO — wordmark-{seção}.
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\/\?utm_source=clarice[^"]*utm_campaign=clarice-2606-07-wordmark-apresentacao"[^>]*>/);
+    // O CTA "aqui" (#3971) aponta pro mesmo host canônico e, desde o #4040,
+    // também é normalizado com a posição `inline`.
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\/\?utm_source=clarice[^"]*utm_campaign=clarice-2606-07-inline"[^>]*>aqui<\/a>/);
     assert.doesNotMatch(html, /sendinblue/);
   });
 });

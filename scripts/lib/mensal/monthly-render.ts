@@ -21,6 +21,13 @@ import { applyWordJoiner } from "../word-joiner.ts"; // #2018 — shared helper 
 import { applyBrandWordmark } from "../newsletter-render-html.ts"; // wordmark diar.ia.br, mesmo da diária (#3181) — candidato a mover pra shared/, ver docs/render-unification-analysis-3269.md
 import { tealDot } from "../shared/email-components.ts"; // #3269 — extraído de newsletter-render-html.ts pra shared/ (era o mesmo import cruzado ad-hoc do applyBrandWordmark acima; ponto ● teal, #3181)
 import { buildMensalStyleBlock } from "../shared/newsletter-styles.ts"; // #2635 — CSS base compartilhado
+// #4040/#4041: fonte única dos valores de UTM + composição do sufixo de posição.
+import {
+  MENSAL_UTM_SOURCE,
+  MENSAL_UTM_MEDIUM,
+  buildMensalCampaign,
+  slugifySecao,
+} from "../shared/utm-registry.ts";
 import {
   DIARIA_FACEBOOK_PAGE_URL,
   DIARIA_LINKEDIN_PAGE_URL,
@@ -84,7 +91,10 @@ export function stripBackslashEscapes(s: string): string {
 // o wordmark linkado converte esse público pro Diar.ia). A diária NÃO recebe o
 // link (já vive no Beehiiv) — por isso o destino entra como argumento aqui, não
 // no applyBrandWordmark compartilhado.
-const MENSAL_BRAND_LINK = "https://diaria.beehiiv.com";
+// #4059: host de marca canônico (o redirect no Cloudflare preserva a query
+// string desde 260723, então o UTM sobrevive — premissa do #2613 caiu).
+const MENSAL_BRAND_HOST = "diar.ia.br";
+const MENSAL_BRAND_LINK = `https://${MENSAL_BRAND_HOST}`;
 
 /**
  * #2975: assinantes que migram da Clarice News mensal pro Beehiiv chegavam
@@ -104,29 +114,61 @@ const MENSAL_BRAND_LINK = "https://diaria.beehiiv.com";
  */
 let currentMonthlyUtmCiclo: string | null = null;
 
+/**
+ * #4040: seção corrente do render (`APRESENTAÇÃO`, `RADAR`, `DESTAQUE 1`, …).
+ * Só o wordmark usa — ele repete N vezes por edição em posições muito
+ * diferentes, e o editor decidiu (260726) medir por seção
+ * (`wordmark-radar`, `wordmark-apresentacao`) em vez de um slug flat
+ * `wordmark`. Mesma disciplina de estado module-level do ciclo acima:
+ * `draftToEmail` é síncrono e single-pass, seta a seção antes de despachar
+ * cada chunk e reseta no `finally`.
+ */
+let currentMonthlyUtmSecao: string | null = null;
+
 /** Exposto para teste direto de `withClariceUtm`/`normalizeKnownUrl` sem passar por `draftToEmail`. */
 export function setMonthlyUtmCiclo(ciclo: string | null): void {
   currentMonthlyUtmCiclo = ciclo;
 }
 
+/** #4040: exposto pelo mesmo motivo de `setMonthlyUtmCiclo` — teste direto do
+ * sufixo `wordmark-{secao}` sem montar um draft inteiro. */
+export function setMonthlyUtmSecao(secao: string | null): void {
+  currentMonthlyUtmSecao = secao;
+}
+
 /**
- * Injeta (ou sobrescreve) o UTM de atribuição Clarice em URLs que apontam pra
- * `diaria.beehiiv.com` — no-op para qualquer outro host (Clarice, tecnoblog,
- * Workers de curadoria, etc.) e no-op se nenhum ciclo estiver setado no
- * momento (render fora de `draftToEmail`, ex.: chamada direta de teste).
+ * #4040: posição do wordmark = `wordmark-{secao-corrente}`. Sem seção setada
+ * (render fora de `draftToEmail`, ex.: chamada direta de teste) cai em
+ * `wordmark-geral` via `slugifySecao`.
  */
-function withClariceUtm(url: string): string {
+function wordmarkPosicao(): string {
+  return `wordmark-${slugifySecao(currentMonthlyUtmSecao)}`;
+}
+
+/**
+ * Injeta (ou sobrescreve) o UTM de atribuição Clarice em URLs que apontam pro
+ * host de marca (`diar.ia.br`, #4059) — no-op para qualquer outro host
+ * (Clarice, tecnoblog, Workers de curadoria, etc.) e no-op se nenhum ciclo
+ * estiver setado no momento (render fora de `draftToEmail`).
+ *
+ * #4040: `posicao` distingue POR QUAL LINK o assinante converteu. O Beehiiv
+ * não persiste `utm_content` na subscription (só source/medium/campaign/
+ * channel/referring_site), então a posição precisa virar SUFIXO do
+ * `utm_campaign` pra fechar o funil até a conversão — ver
+ * `buildMensalCampaign` em `lib/shared/utm-registry.ts`.
+ */
+function withClariceUtm(url: string, posicao: string): string {
   if (!currentMonthlyUtmCiclo) return url;
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    return url; // URL relativa/inválida — não é o link do Beehiiv, preserva como está.
+    return url; // URL relativa/inválida — não é o link de marca, preserva como está.
   }
-  if (parsed.hostname !== "diaria.beehiiv.com") return url;
-  parsed.searchParams.set("utm_source", "clarice");
-  parsed.searchParams.set("utm_medium", "email");
-  parsed.searchParams.set("utm_campaign", `clarice-${currentMonthlyUtmCiclo}`);
+  if (parsed.hostname !== MENSAL_BRAND_HOST) return url;
+  parsed.searchParams.set("utm_source", MENSAL_UTM_SOURCE);
+  parsed.searchParams.set("utm_medium", MENSAL_UTM_MEDIUM);
+  parsed.searchParams.set("utm_campaign", buildMensalCampaign(currentMonthlyUtmCiclo, posicao));
   return parsed.toString();
 }
 
@@ -151,7 +193,10 @@ function renderTextInline(s: string): string {
   // na mensal, envolve num link pro Beehiiv (#template-branding 260703).
   return applyBrandWordmark(
     applyWordJoiner(escHtmlWithEmphasis(s)),
-    withClariceUtm(MENSAL_BRAND_LINK), // #2975: link do wordmark carrega UTM clarice
+    // #2975: link do wordmark carrega UTM clarice.
+    // #4040: posição `wordmark-{secao}` — granularidade por seção (decisão do
+    // editor 260726), não um slug flat.
+    withClariceUtm(MENSAL_BRAND_LINK, wordmarkPosicao()),
   );
 }
 
@@ -186,16 +231,33 @@ const LEGACY_URL_FIXES: LegacyUrlFix[] = [
   // referencia o subdomínio legado.
   [/^https?:\/\/cursos\.diaria\.workers\.dev(?=$|[/?#])/i, "https://cursos.diar.ia.br", true],
   [/^https?:\/\/livros\.diaria\.workers\.dev(?=$|[/?#])/i, "https://livros.diar.ia.br", true],
+  // #4059: host de marca canônico. Precisa vir DEPOIS das 2 entradas
+  // `diaria.beehiiv.com/cursos|livros` acima (que mapeiam pra outro domínio) e
+  // com `preserveSuffix` — o path/query do post não pode ser descartado. Sem
+  // esta entrada, um link legado escrito pelo writer-monthly sairia no
+  // `diaria.beehiiv.com` E perderia o UTM (o `withClariceUtm` abaixo só casa o
+  // host de marca).
+  [/^https?:\/\/diaria\.beehiiv\.com(?=$|[/?#])/i, "https://diar.ia.br", true],
 ];
 
-export function normalizeKnownUrl(url: string): string {
+/**
+ * @param posicao #4040 — posição do link no e-mail (`inline`, `cta`, `titulo`,
+ *   `pill`). Vira sufixo do `utm_campaign`. Default `inline`: é o único call
+ *   site que não passa nada explicitamente (link markdown no meio do texto).
+ */
+export function normalizeKnownUrl(url: string, posicao = "inline"): string {
   for (const [re, fixed, preserveSuffix] of LEGACY_URL_FIXES) {
-    if (re.test(url)) return preserveSuffix ? url.replace(re, fixed) : fixed;
+    if (re.test(url)) {
+      const rewritten = preserveSuffix ? url.replace(re, fixed) : fixed;
+      // #4059: o rewrite pode ter produzido uma URL do host de marca (entrada
+      // `diaria.beehiiv.com` acima) — nesse caso ela ainda precisa do UTM.
+      return withClariceUtm(rewritten, posicao);
+    }
   }
   // #2975: cobre links `diaria.beehiiv.com` escritos como markdown `[texto](url)`
   // pelo writer-monthly (boilerplate APRESENTAÇÃO, CTA de ENCERRAMENTO) — não só
   // o wordmark automático (`renderTextInline`/`applyBrandWordmark`).
-  return withClariceUtm(url);
+  return withClariceUtm(url, posicao);
 }
 
 /**
@@ -357,7 +419,7 @@ export function renderInline(text: string): string {
     }
 
     if (textBefore.length > 0) parts.push(renderTextInline(textBefore));
-    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
+    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url, "inline"))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
     parts.push(boldLink ? `<strong>${linkHtml}</strong>` : linkHtml);
     lastIdx = boldLink ? j + 3 : j + 1;
     linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
@@ -562,7 +624,7 @@ export function renderCtaButton(line: string): string {
   const linkM = text.match(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/);
   if (!linkM) return `<p style="margin:16px 0 0 0;font-family:${FONT_SANS};color:${INK};">${renderInline(text)}</p>`;
   const idx = linkM.index ?? 0;
-  const url = normalizeKnownUrl(linkM[2]); // #2975: CTA pra diaria.beehiiv.com também ganha UTM clarice
+  const url = normalizeKnownUrl(linkM[2], "cta"); // #2975: CTA pro host de marca também ganha UTM clarice (#4040: posição `cta`)
   const linkText = linkM[1];
   const pre = text.slice(0, idx).trim().replace(/[:：]\s*$/, "").trim();
   const post = text.slice(idx + linkM[0].length).trim().replace(/[.。]\s*$/, "").trim();
@@ -725,7 +787,7 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
     .map(({ title, desc }) => {
       const tm = title.match(/^\[(.+?)\]\((https?:\/\/[^)]+)\)/);
       const titleHtml = tm
-        ? `<p style="margin:0 0 4px 0;"><a href="${escHtml(normalizeKnownUrl(tm[2]))}" style="font-family:${FONT_SERIF};font-size:20px;line-height:1.25;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${escHtml(tm[1])}</a></p>`
+        ? `<p style="margin:0 0 4px 0;"><a href="${escHtml(normalizeKnownUrl(tm[2], "titulo"))}" style="font-family:${FONT_SERIF};font-size:20px;line-height:1.25;color:${INK};text-decoration:underline;text-decoration-color:${TEAL};text-decoration-thickness:2px;text-underline-offset:3px;">${escHtml(tm[1])}</a></p>`
         : `<p style="margin:0 0 4px 0;font-family:${FONT_SERIF};font-size:20px;color:${INK};">${renderInline(title)}</p>`;
       return titleHtml + (desc
         ? `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(desc)}</p>`
@@ -775,7 +837,7 @@ export function renderEncerramento(body: string): string {
     for (const line of lines) {
       const m = line.match(/^[-*]\s+\[(.+?)\]\((https?:\/\/[^)]+)\)\s*$/);
       if (m) {
-        pills.push(renderPillLink(m[1], normalizeKnownUrl(m[2])));
+        pills.push(renderPillLink(m[1], normalizeKnownUrl(m[2], "pill")));
         hadPill = true;
       } else {
         nonLink.push(line);
@@ -1237,6 +1299,7 @@ export function draftToEmail(
     return draftToEmailBody();
   } finally {
     setMonthlyUtmCiclo(null);
+    setMonthlyUtmSecao(null); // #4040: mesmo racional do reset de ciclo — não vaza pra chamada seguinte.
   }
 
   function draftToEmailBody(): { subject: string; previewText: string; html: string } {
@@ -1246,6 +1309,13 @@ export function draftToEmail(
 
     const firstLine = chunk.split("\n")[0].trim();
     const label = normalizeLabel(firstLine);
+
+    // #4040: seção corrente — o wordmark renderizado dentro deste chunk sai
+    // com `utm_campaign=clarice-{ciclo}-wordmark-{secao}`. Setado ANTES de
+    // qualquer render* deste chunk; zerado após o loop (o header cobrand, o
+    // rodapé social e o wrapEmail ficam com `wordmark-geral`, não herdam a
+    // última seção do corpo).
+    setMonthlyUtmSecao(label);
 
     // REMETENTE: metadata, não renderiza no corpo.
     if (label === "REMETENTE") continue;
@@ -1380,6 +1450,10 @@ export function draftToEmail(
     // Fallback: render as plain paragraphs (chunk inteiro, com label).
     bodyParts.push(renderParagraphs(chunk));
   }
+
+  // #4040: fora do corpo não existe "seção" — wrapEmail/header/rodapé caem em
+  // `wordmark-geral` em vez de herdar a última seção iterada.
+  setMonthlyUtmSecao(null);
 
   return {
     subject,

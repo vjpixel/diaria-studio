@@ -242,6 +242,11 @@ export function extractUrlsFromMd(md: string): string[] {
  * de manter cópia própria.
  */
 export const FOOTER_DOMAINS = [
+  // #4059: `diar.ia.br` virou o host canônico dos CTAs públicos (o redirect no
+  // Cloudflare preserva a query string desde 260723). `diaria.beehiiv.com`
+  // CONTINUA aqui — edições já publicadas seguem com o host antigo, e esta
+  // lista também é lida contra arquivo histórico.
+  "diar.ia.br",
   "diaria.beehiiv.com",
   "wisprflow.ai",
   "clarice.ai",

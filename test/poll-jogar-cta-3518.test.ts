@@ -44,10 +44,14 @@ import {
 const CTA_HREF_ESCAPED = buildBrandSiteUrl("web", "posvoto-cta", "eia-jogar-conhecer").replace(/&/g, "&amp;");
 
 describe("buildSubscribeUrl (#3518) — URL de assinatura com UTM do funil (segue viva pós-#3589, ver header)", () => {
-  it("usa diaria.beehiiv.com DIRETO — não diar.ia.br (redirect do Registro.br dropa query string, #2613)", () => {
+  it("#4059: usa diar.ia.br (host de marca canônico), nunca diaria.beehiiv.com — o redirect do Cloudflare preserva a query string desde 260723", () => {
     const url = buildSubscribeUrl();
-    assert.match(url, /^https:\/\/diaria\.beehiiv\.com\/\?/);
-    assert.doesNotMatch(url, /diar\.ia\.br/);
+    assert.match(url, /^https:\/\/diar\.ia\.br\/\?/);
+    assert.doesNotMatch(url, /diaria\.beehiiv\.com/);
+    // Regressão real do #4059: a premissa do #2613 era que o UTM se perderia
+    // no redirect — o href tem que continuar carregando o funil completo.
+    const parsed = new URL(url);
+    assert.equal(parsed.searchParams.get("utm_campaign"), "eia-jogar-posvoto");
   });
 
   it("carrega utm_source/utm_medium/utm_campaign do funil", () => {

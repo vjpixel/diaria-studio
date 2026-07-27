@@ -61,7 +61,7 @@ const ENVIOS: EnvioCfg[] = [
   { envio: 9, campaignId: 96, srcListId: 79, day: "sex 24/07" },
 ];
 
-// Posições dos 7 links `diaria.beehiiv.com` no render canônico, em ordem de
+// Posições dos 7 links de marca (`diar.ia.br`, #4059) no render canônico, em ordem de
 // documento (verificado em 260722): wordmarks intercalados com os 3 CTAs.
 const UTM_TERM_LABELS = [
   "topo-marca", // apresentação: wordmark "em parceria com a diar.ia.br"
@@ -73,13 +73,13 @@ const UTM_TERM_LABELS = [
   "fim-marca2", // encerramento: wordmark do parágrafo social
 ] as const;
 
-const BASE_UTM = "https://diaria.beehiiv.com/?utm_source=clarice";
+const BASE_UTM = "https://diar.ia.br/?utm_source=clarice"; // #4059: host de marca canônico
 const CAMPAIGN_TOKEN = `clarice-${CYCLE}`;
 
 // Frase do topo no braço A (exata no render canônico, com &amp; nos hrefs).
 const TOPO_A =
   `Se quiser receber tutoriais e notícias de IA todos os dias, se cadastre gratuitamente ` +
-  `<a href="https://diaria.beehiiv.com/?utm_source=clarice&amp;utm_medium=email&amp;utm_campaign=clarice-2606-07" ` +
+  `<a href="https://diar.ia.br/?utm_source=clarice&amp;utm_medium=email&amp;utm_campaign=clarice-2606-07-inline" ` +
   `style="color:#171411;text-decoration:underline;text-decoration-color:#00A0A0;">aqui</a>.`;
 
 // Copy B1 aprovada pelo editor (260722). Wordmark em bold SEM link — os dois
@@ -89,7 +89,7 @@ const WORDMARK_PLAIN =
 const TOPO_B =
   `E pra não esperar um mês: a ${WORDMARK_PLAIN} entrega isso todo dia — 5 minutos pra se manter ` +
   `atualizado e usar melhor as IAs. ` +
-  `<a href="https://diaria.beehiiv.com/?utm_source=clarice&amp;utm_medium=email&amp;utm_campaign=clarice-2606-07" ` +
+  `<a href="https://diar.ia.br/?utm_source=clarice&amp;utm_medium=email&amp;utm_campaign=clarice-2606-07-inline" ` +
   `style="color:#171411;text-decoration:underline;text-decoration-color:#00A0A0;">Assine grátis a edição diária →</a>`;
 
 /**
@@ -100,15 +100,24 @@ const TOPO_B =
 export function tagVariantUtms(html: string, arm: "a" | "b"): string {
   let idx = 0;
   const out = html.replace(
-    // casa `utm_campaign=clarice-2606-07"` imediatamente após um href do Beehiiv
-    new RegExp(`(${BASE_UTM.replace(/[.?]/g, "\\$&")}(?:&(?:amp;)?utm_medium=email)(&(?:amp;)?)utm_campaign=${CAMPAIGN_TOKEN}")`, "g"),
-    (_m, full: string, sep: string) => {
+    // #4040: o render agora emite `utm_campaign=clarice-{ciclo}-{posicao}"`
+    // (wordmark-apresentacao, inline, cta, titulo, pill…), não mais o token
+    // pelado `clarice-{ciclo}"`. O braço A/B COMPÕE em cima da posição —
+    // `-{posicao}-cta-{arm}` — em vez de substituí-la. O grupo `posicao` é
+    // opcional pra continuar casando HTML canônico pré-#4040 (renders já
+    // gerados em `data/monthly/**` que o script ainda possa reprocessar).
+    new RegExp(
+      `(${BASE_UTM.replace(/[.?]/g, "\\$&")}(?:&(?:amp;)?utm_medium=email)(&(?:amp;)?)utm_campaign=${CAMPAIGN_TOKEN}(-[a-z0-9-]+)?")`,
+      "g",
+    ),
+    (_m, full: string, sep: string, posicao: string | undefined) => {
       const label = UTM_TERM_LABELS[idx];
-      if (!label) throw new Error(`Mais links Beehiiv que o esperado (${UTM_TERM_LABELS.length}) — render mudou, revisar UTM_TERM_LABELS.`);
+      if (!label) throw new Error(`Mais links de marca que o esperado (${UTM_TERM_LABELS.length}) — render mudou, revisar UTM_TERM_LABELS.`);
       idx++;
+      const suffix = posicao ?? "";
       return full.replace(
-        `utm_campaign=${CAMPAIGN_TOKEN}"`,
-        `utm_campaign=${CAMPAIGN_TOKEN}-cta-${arm}${sep}utm_term=${label}"`,
+        `utm_campaign=${CAMPAIGN_TOKEN}${suffix}"`,
+        `utm_campaign=${CAMPAIGN_TOKEN}${suffix}-cta-${arm}${sep}utm_term=${label}"`,
       );
     },
   );

@@ -105,11 +105,10 @@ const JOGAR_BRAND = "web" as const;
 
 /**
  * #3518: URL de assinatura da diária usada no CTA de conversão pós-voto do
- * jogo standalone (o passo de conversão do EPIC #3514). `diaria.beehiiv.com`
- * DIRETO — não `diar.ia.br` — mesma decisão já documentada em
- * `count-subscriptions-by-utm.ts` (#2457) e `monthly-render.ts` (#2975): o
- * redirect do Registro.br em `diar.ia.br` dropa a query string (#2613), o que
- * apagaria silenciosamente o UTM. `utm_source=eia-standalone` segue a MESMA
+ * jogo standalone (o passo de conversão do EPIC #3514). `diar.ia.br` — host
+ * de marca canônico desde 260723 (#4059): o domínio passou pro Cloudflare e o
+ * redirect PRESERVA a query string, então a premissa do #2613 (Registro.br
+ * dropava a query e apagava o UTM) caiu. `utm_source=eia-standalone` segue a MESMA
  * convenção de medição já usada pra Clarice (`utm_source=clarice`) —
  * `count-subscriptions-by-utm.ts --source eia-standalone` mede quantos
  * assinantes vieram por este funil sem nenhum código novo (o script já
@@ -138,7 +137,7 @@ export function buildSubscribeUrl(): string {
     utm_medium: SUBSCRIBE_UTM_MEDIUM,
     utm_campaign: SUBSCRIBE_UTM_CAMPAIGN,
   });
-  return `https://diaria.beehiiv.com/?${params.toString()}`;
+  return `https://diar.ia.br/?${params.toString()}`;
 }
 
 /**
@@ -214,7 +213,7 @@ export const QUIZ_SUBSCRIBE_UTM_CAMPAIGN = "eia-quiz-posvoto";
 
 /**
  * Pure (#3579): URL de assinatura com UTM próprio do funil do quiz relâmpago
- * — mesmo destino (`diaria.beehiiv.com`) do `buildSubscribeUrl` (#3518), UTM
+ * — mesmo destino (`diar.ia.br`, #4059) do `buildSubscribeUrl` (#3518), UTM
  * distinto pra medir o quiz separadamente.
  */
 export function buildQuizSubscribeUrl(): string {
@@ -223,7 +222,7 @@ export function buildQuizSubscribeUrl(): string {
     utm_medium: QUIZ_SUBSCRIBE_UTM_MEDIUM,
     utm_campaign: QUIZ_SUBSCRIBE_UTM_CAMPAIGN,
   });
-  return `https://diaria.beehiiv.com/?${params.toString()}`;
+  return `https://diar.ia.br/?${params.toString()}`;
 }
 
 /**
