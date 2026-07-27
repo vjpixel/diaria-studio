@@ -77,3 +77,10 @@ export const VOTE_CLARICE_INLINE_UTM = {
   medium: "vote-inline",
   campaign: "eia-vote-clarice-signup",
 } as const;
+
+/** Cadastro inline na tela de gate de /jogar (#4054). @see scripts/lib/shared/utm-registry.ts */
+export const JOGAR_GATE_INLINE_UTM = {
+  source: EIA_STANDALONE_SOURCE,
+  medium: "jogar-gate",
+  campaign: "eia-jogar-gate-signup",
+} as const;

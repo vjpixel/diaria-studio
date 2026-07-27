@@ -29,6 +29,9 @@ import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter
 // header de share.ts sobre por que o payload é {edition, correct}, sem
 // leitura KV extra).
 import { encodeShareToken, type SharePayload } from "./share";
+// #4054: identidade pós-gate do caminho de fora — cookie de sessão PARALELO
+// ao token anônimo (ver bloco "identidade pós-gate" abaixo).
+import { readWebSessionEmail } from "./web-gate";
 
 /**
  * #3384: contas do próprio editor usadas pra testar o fluxo de voto no e-mail
@@ -155,11 +158,15 @@ export async function buildAlreadyVotedResponse(
  * ExecutionContext de verdade) exercita o fast-path — zero regressão na
  * suíte existente, ganho de latência 100% em produção.
  */
-export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", rawEnv: Env = env, ctx?: ExecutionContext): Promise<Response> {
+export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", rawEnv: Env = env, ctx?: ExecutionContext, request?: Request): Promise<Response> {
   // #1083: Beehiiv não URL-encoda `{{ subscriber.email }}`; URLSearchParams
   // converte `+` em ` `. Restaurar antes de qualquer uso (HMAC, KV key).
   const emailRaw = url.searchParams.get("email")?.toLowerCase().trim();
-  const email = emailRaw ? emailRaw.replace(/ /g, "+") : emailRaw;
+  // #4054: `let`, não `const` — pode ser sobrescrito pela identidade do
+  // cookie de sessão do brand `web` MAIS ABAIXO, depois que o guard
+  // anti-forjamento (#3976/#4011) já validou o token original. Ver o bloco
+  // "identidade pós-gate" logo após esse guard.
+  let email = emailRaw ? emailRaw.replace(/ /g, "+") : emailRaw;
   const edition = url.searchParams.get("edition");
   const choice = url.searchParams.get("choice")?.toUpperCase();
   // sig ausente = merge-tag mode: Beehiiv substitui {{ subscriber.email }} no envio
@@ -221,6 +228,25 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // afetado — só o domínio reservado do web é bloqueado fora do brand web.
   if ((brand === "web" || isAnonymousWebIdentity(email)) && !isValidWebToken(email)) {
     return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
+  }
+
+  // #4054: identidade pós-gate — origem PARALELA ao token anônimo, nunca uma
+  // substituição do guard acima. O guard já rodou e JÁ EXIGIU um token
+  // `isValidWebToken` válido no parâmetro `?email=` (comportamento
+  // pré-#4054, intocado) — só DEPOIS disso, se a request carrega um cookie de
+  // sessão válido (emitido por `POST /jogar/gate/verify`/`subscribe`,
+  // web-gate.ts), a identidade REAL do cookie assume o lugar do token pra
+  // todo o resto da função (score/vote/counted/nickname passam a ser
+  // gravados sob o e-mail verdadeiro, não o pseudo-email). `?email=` cru
+  // continua 100% rejeitado pelo guard acima — não há caminho onde um valor
+  // arbitrário de query string vira identidade; só um cookie ASSINADO pelo
+  // próprio worker pode fazer isso. `request` é opcional (retrocompat com
+  // toda a suíte de teste que já chama `handleVote` sem ele, e com o brand
+  // "diaria"/"clarice" onde este bloco nunca roda) — ausente ou sem cookie
+  // válido, comportamento 100% igual ao pré-#4054.
+  if (brand === "web" && request) {
+    const cookieEmail = await readWebSessionEmail(rawEnv.COOKIE_HMAC_SECRET, request.headers.get("Cookie"));
+    if (cookieEmail) email = cookieEmail;
   }
 
   if (!["A", "B"].includes(choice)) {

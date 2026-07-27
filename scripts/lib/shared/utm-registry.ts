@@ -139,6 +139,16 @@ export const VOTE_CLARICE_INLINE_UTM = {
   campaign: "eia-vote-clarice-signup",
 } as const;
 
+/** Cadastro inline na tela de gate de `/jogar` (#4054) — visitante de fora
+ * que já usou a rodada livre anônima e cadastra pra continuar jogando. UTM
+ * próprio (não o `eia-jogar-inline-signup` do #3580) pra medir esta
+ * conversão separada do cadastro inline do fim de página do jogo. */
+export const JOGAR_GATE_INLINE_UTM = {
+  source: EIA_STANDALONE_SOURCE,
+  medium: "jogar-gate",
+  campaign: "eia-jogar-gate-signup",
+} as const;
+
 /** Uma entrada do inventário: um ponto do código que emite UTM. */
 export interface UtmEmitter {
   /** Identificador estável — chave de join com os metadados editáveis da UI. */
@@ -245,6 +255,18 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     description:
       "Cadastro na tela de resultado do voto em /vote?brand=clarice (#4065) — " +
       "utm_source próprio pra não poluir o funil web com conversões vindas do e-mail mensal.",
+    status: "ativo",
+  },
+  {
+    id: "jogar-gate-inline",
+    label: "É IA? — cadastro na tela de gate",
+    source: JOGAR_GATE_INLINE_UTM.source,
+    medium: JOGAR_GATE_INLINE_UTM.medium,
+    campaignPattern: JOGAR_GATE_INLINE_UTM.campaign,
+    originFile: "workers/poll/src/web-gate.ts",
+    description:
+      "Cadastro na tela de gate de /jogar (#4054) — visitante de fora que já " +
+      "usou a rodada livre anônima e precisa se identificar/cadastrar pra continuar.",
     status: "ativo",
   },
   {

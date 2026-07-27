@@ -100,6 +100,10 @@ import { extractEditionsForYear, groupEditionsByMonth, listAllKeys } from "./lea
 // dia 1). Ver rationale completo em `reorderJogarSequenceBySurprise` abaixo.
 import { getSummedEditionStats } from "./vote";
 import { JOGAR_POSVOTO_UTM, QUIZ_POSVOTO_UTM } from "./utm-registry"; // #4041
+// #4054: gate por rodada do caminho de fora — cookie de sessão (identidade
+// pós-gate) + cookie de "rodada livre já usada" + a própria tela de gate.
+import { FREE_ROUND_COOKIE, readWebSessionEmail, renderJogarGatePage } from "./web-gate";
+import { parseCookieHeader } from "./session-cookie";
 
 /** Brand fixo desta página — `/jogar` É o standalone, não um parâmetro. */
 const JOGAR_BRAND = "web" as const;
@@ -921,6 +925,16 @@ ${renderBrandFooter(JOGAR_BRAND)}
       // preferimos a navegação nativa garantida a silenciosamente não votar.
       if (!choice) { form.submit(); return; }
       try { window.localStorage.setItem(votedKey, choice); } catch (e) {}
+      // #4054: marca "rodada livre já usada" — cookie NÃO-httponly (o
+      // servidor só PRECISA saber que existe, não confia nele como prova de
+      // identidade nenhuma; ver rationale em web-gate.ts). 1 ano de validade.
+      // Sem tentar checar sessão aqui (é HttpOnly, JS não consegue ler) — se
+      // o jogador já está logado, o servidor ignora este cookie (a checagem
+      // de sessão válida tem prioridade, ver handleJogarPage).
+      try {
+        var oneYear = 60 * 60 * 24 * 365;
+        document.cookie = ${JSON.stringify(FREE_ROUND_COOKIE)} + "=1; path=/; max-age=" + oneYear + "; SameSite=Lax";
+      } catch (e) {}
 
       var choiceButtons = form.querySelectorAll('button[type="submit"]');
       for (var bi = 0; bi < choiceButtons.length; bi++) choiceButtons[bi].disabled = true;
@@ -1782,6 +1796,15 @@ ${renderIdentityFormBlock()}`;
     var originalIndex = playIndices[round];
     var edition = editions[originalIndex];
 
+    // #4054: marca "rodada livre já usada" assim que a 1ª escolha da
+    // sequência acontece — mesmo cookie/rationale de renderJogarPageHtml
+    // acima (não é prova de identidade, só sinaliza o servidor pra gatear a
+    // PRÓXIMA visita se não houver sessão válida).
+    try {
+      var oneYear4054 = 60 * 60 * 24 * 365;
+      document.cookie = ${JSON.stringify(FREE_ROUND_COOKIE)} + "=1; path=/; max-age=" + oneYear4054 + "; SameSite=Lax";
+    } catch (e) {}
+
     setChoicesDisabled(true);
     progressEl.textContent = "Par " + (originalIndex + 1) + " de " + total + " — conferindo…";
 
@@ -2058,7 +2081,28 @@ ${renderBrandFooter(JOGAR_BRAND)}
  * escanear TODO o keyspace `correct:*` — mesma economia de I/O que
  * `handleJogarArchivePage` já faz por ano.
  */
-export async function handleJogarPage(url: URL, env: Env): Promise<Response> {
+export async function handleJogarPage(url: URL, env: Env, request?: Request): Promise<Response> {
+  // #4054: gate por rodada do caminho de fora — "1 rodada livre, e-mail
+  // exigido pra continuar". O client (`renderJogarPageHtml`, script de voto)
+  // seta o cookie NÃO-httponly `FREE_ROUND_COOKIE` assim que a 1ª rodada
+  // anônima é votada; aqui, se esse cookie está presente E não há sessão
+  // válida (`readWebSessionEmail`), serve a tela de gate em vez do jogo.
+  // `request` opcional (retrocompat com testes que chamam sem ele — nesse
+  // caso o gate nunca ativa, mesmo comportamento pré-#4054).
+  if (request) {
+    const cookieHeader = request.headers.get("Cookie");
+    const freeRoundUsed = !!parseCookieHeader(cookieHeader, FREE_ROUND_COOKIE);
+    if (freeRoundUsed) {
+      const sessionEmail = await readWebSessionEmail(env.COOKIE_HMAC_SECRET, cookieHeader);
+      if (!sessionEmail) {
+        const gateEdition = url.searchParams.get("edition");
+        return new Response(renderJogarGatePage(gateEdition), {
+          headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store" },
+        });
+      }
+    }
+  }
+
   const explicitEdition = url.searchParams.get("edition");
   if (explicitEdition && AAMMDD_RE.test(explicitEdition)) {
     const edition = explicitEdition;

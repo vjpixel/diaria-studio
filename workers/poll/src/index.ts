@@ -116,6 +116,29 @@ export interface Env {
    * quebrar fixtures de teste existentes que constroem `Env` sem esse campo
    * (nesse caso corsHeaders() trata como request sem Origin). */
   _requestOrigin?: string | null;
+  /** #4054: KV do sync de assinantes ATIVOS da Diar.ia (mesma população de
+   * `CURSOS_SUBSCRIBERS`, #4052 — chave `subscriber:{sha256(email)}`, ver
+   * `subscriber-verify.ts`). Verificação PRIMÁRIA de "?jogar=" quem chegou por
+   * fora já é assinante" (`web-gate.ts`, `checkWebSubscriber`). OPCIONAL — sem
+   * este binding, `checkWebSubscriber` cai direto no fallback Beehiiv
+   * (`BEEHIIV_API_KEY`/`BEEHIIV_PUBLICATION_ID`) ou, sem os dois, trata todo
+   * mundo como "não verificado" (nunca lança, nunca bloqueia o cadastro
+   * inline). Criar via `wrangler kv namespace create SUBSCRIBERS_KV` — mesmo
+   * sync (`scripts/sync-cursos-subscribers-kv.ts`) pode popular os dois KVs
+   * (rodar 2x com bindings diferentes, ou apontar os dois workers pro MESMO
+   * namespace id — a população é idêntica, "assinante ativo da Diar.ia" não
+   * depende de qual worker está perguntando). */
+  SUBSCRIBERS_KV?: KVNamespace;
+  /** #4054: assina/verifica o cookie de sessão do caminho `/jogar` (brand
+   * `web`), mesmo primitivo de `workers/cursos` (#4052, ver `session-cookie.ts`
+   * espelhado neste diretório). OPCIONAL SÓ pra não quebrar fixtures de teste
+   * que não testam o gate — em produção, sem este secret, `/jogar/gate/verify`
+   * e `/jogar/gate/subscribe` NUNCA emitem sessão (nenhum cookie sai sem
+   * segredo pra assiná-lo). Configurar via `wrangler secret put
+   * COOKIE_HMAC_SECRET` (gerar: `openssl rand -hex 32`) — pode reusar o MESMO
+   * valor do secret homônimo em `workers/cursos`, são worker/domínio
+   * diferentes, a chave só precisa ser secreta, não compartilhada por design. */
+  COOKIE_HMAC_SECRET?: string;
 }
 
 // ── Brand namespacing (#1905) ─────────────────────────────────────────────────
@@ -364,6 +387,8 @@ import { inlineSignupScript, renderInlineSignupFormBlock, renderInlineSignupForm
 // de index; index importa o handler de volta) é o mesmo padrão seguro já usado
 // por vote.ts/jogar.ts — valores só usados em request-time.
 import { handleJogarSubscribe } from "./subscribe";
+// #4054: gate por rodada do caminho de fora — tela + verify + subscribe.
+import { handleJogarGateSubscribe, handleJogarGateVerify, renderJogarGatePage } from "./web-gate";
 // #3975: identidade por e-mail no leaderboard do brand web (POST
 // /jogar/identify) — mesmo padrão de ciclo de import seguro de subscribe.ts
 // acima (identify.ts importa `json`/`corsHeaders` de index; index importa o
@@ -1239,7 +1264,9 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // mesmo padrão de `handleImage`/`/img/*`); voto/score/nickname passam
     // pelos endpoints normais (`/vote?brand=web` etc.), que já branding via
     // `bEnv` quando `?brand=web` é passado por eles.
-    if (path === "/jogar" && request.method === "GET") return handleJogarPage(url, env);
+    // #4054: 3º arg `request` — habilita o gate por rodada (cookie
+    // "rodada livre já usada" + checagem de sessão), ver rationale em jogar.ts.
+    if (path === "/jogar" && request.method === "GET") return handleJogarPage(url, env, request);
     // #3519: arquivo de pares passados (índice) — mesmo racional acima:
     // `env` cru, lê `correct:{edition}` compartilhado, não `bEnv`.
     if (path === "/jogar/arquivo" && request.method === "GET") return handleJogarArchivePage(url, env);
@@ -1258,6 +1285,16 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // a assinatura é do brand `web`). Anti-abuso (honeypot + rate-limit +
     // validação server-side) dentro do handler, ver subscribe.ts.
     if (path === "/jogar/subscribe" && request.method === "POST") return handleJogarSubscribe(request, env);
+    // #4054: gate por rodada do caminho de fora — `env` CRU (mesmo racional
+    // do resto de /jogar*: rate-limit/subscriber-check/cookie de sessão não
+    // dependem de brand namespacing). Ver web-gate.ts.
+    if (path === "/jogar/gate" && request.method === "GET") {
+      return new Response(renderJogarGatePage(url.searchParams.get("edition")), {
+        headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+    if (path === "/jogar/gate/verify" && request.method === "POST") return handleJogarGateVerify(request, env);
+    if (path === "/jogar/gate/subscribe" && request.method === "POST") return handleJogarGateSubscribe(request, env);
     // #3521: widget embutível (iframe) pra sites parceiros — `env` CRU
     // (mesmo racional acima: só lê `correct:{edition}` compartilhado); a
     // allowlist de embutimento (EMBED_ALLOWED_ORIGINS) é independente de
@@ -1280,7 +1317,9 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // o fast-path (responde o veredito na hora, adia contabilidade pesada pra
     // ctx.waitUntil()). Ver rationale completo em vote.ts (handleVote/
     // handleVoteFastPath).
-    if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand, env, ctx);
+    // #4054: 6º arg `request` — habilita a identidade pós-gate do caminho de
+    // fora (cookie de sessão, brand "web"), ver rationale em vote.ts.
+    if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand, env, ctx, request);
     if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv, brand);
     // #3257: lista as edições/ciclos com stats registrados neste brand — usado
     // pelo botão "Atualizar" da aba Engajamento do clarice-dashboard pra
@@ -1367,5 +1406,5 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/gate", "/jogar/gate/verify", "/jogar/gate/subscribe", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/img/{key}"] }, 404, env);
 }
