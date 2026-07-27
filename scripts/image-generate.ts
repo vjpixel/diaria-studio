@@ -60,6 +60,50 @@ export const STYLE_SUFFIX =
 const NEGATIVE_PROMPT =
   "photorealistic, photography, pixel art, blurry, low quality, deformed, ugly, The Starry Night, Starry Night, still life, flowers in vase, fruit bowl, potted plant, self-portrait, portrait of a man, picture frame, gallery wall, museum, painting as object, field of flowers, wheat field, landscape, wall painting";
 
+export type ImageRatio = "2x1" | "1x1" | "4x5" | "master";
+
+export interface RatioResolution {
+  ratio: ImageRatio;
+  wide: boolean;
+  portrait45: boolean;
+  master: boolean;
+  width: number;
+  height: number;
+}
+
+/**
+ * Resolve a proporção efetiva (explícita via `--ratio`, ou default por
+ * destaque quando omitida) e as dimensões finais de saída.
+ *
+ * Extraído de `main()` (#4093) pra ser testável sem invocar o gerador de
+ * imagem real (execFileSync → gemini-image.js custaria dinheiro por teste).
+ * `--ratio 4x5` e `--ratio master` ganharam a flag no #4114 sem cobertura
+ * própria das dimensões — só STYLE_SUFFIX tinha teste (test/image-generate-safe-area.test.ts).
+ */
+export function resolveRatio(rawRatio: string | undefined, destaque: string): RatioResolution {
+  if (rawRatio !== undefined && rawRatio !== "2x1" && rawRatio !== "1x1" && rawRatio !== "4x5" && rawRatio !== "master") {
+    throw new Error(`--ratio deve ser 2x1, 1x1, 4x5 ou master. Recebido: ${rawRatio}`);
+  }
+  // Default wide para d1/d2/d3: hero 2:1 inline. --ratio 1x1 ainda funciona
+  // como override (ex: mensal que precisasse apenas do square).
+  const wide = rawRatio === "2x1" || (rawRatio === undefined && /^d[123]$/.test(destaque));
+  // 4:5 NATIVO (1080×1350): card de feed gerado na proporção final, sem crop.
+  const portrait45 = rawRatio === "4x5";
+  // MASTER (1600×1350, ~6:5): proporção-envelope que CONTÉM 2:1 e 4:5 (rejeitada
+  // como default em favor de geração dedicada por formato, ver #4093, mas a
+  // flag continua funcional pra edições antigas / uso manual).
+  const master = rawRatio === "master";
+  const { width, height } = master
+    ? { width: 1600, height: 1350 }
+    : portrait45
+      ? { width: 1080, height: 1350 }
+      : wide
+        ? { width: 1600, height: 800 }
+        : { width: 1024, height: 1024 };
+  const ratio: ImageRatio = master ? "master" : portrait45 ? "4x5" : wide ? "2x1" : "1x1";
+  return { ratio, wide, portrait45, master, width, height };
+}
+
 function buildPositivePrompt(editorialText: string): string {
   // Remove markdown formatting (headings, bold, links) and get clean scene description
   const scene = editorialText
@@ -97,23 +141,15 @@ function main() {
 
   // #1916: --ratio força o formato. Sem a flag, default da diária (todos os
   // destaques d1/d2/d3 usam 2x1 como hero inline no email, #2133/#2141).
-  const ratio = args["ratio"];
-  if (ratio !== undefined && ratio !== "2x1" && ratio !== "1x1" && ratio !== "4x5" && ratio !== "master") {
-    console.error(`--ratio deve ser 2x1, 1x1, 4x5 ou master. Recebido: ${ratio}`);
+  // #4093: resolução extraída para resolveRatio() — testável sem gerar imagem.
+  const rawRatio = args["ratio"];
+  let wide: boolean, portrait45: boolean, master: boolean, sdWidth: number, sdHeight: number;
+  try {
+    ({ wide, portrait45, master, width: sdWidth, height: sdHeight } = resolveRatio(rawRatio, destaque));
+  } catch (e) {
+    console.error((e as Error).message);
     process.exit(1);
   }
-  // Default wide para d1/d2/d3: hero 2:1 inline. --ratio 1x1 ainda funciona
-  // como override (ex: mensal que precisasse apenas do square).
-  const wide = ratio === "2x1" || (ratio === undefined && /^d[123]$/.test(destaque));
-  // 4:5 NATIVO (1080×1350): card de feed gerado na proporção final, sem crop.
-  // O crop 2:1→4:5 recorta laterais E ganha altura, o que já decapitou figura
-  // (edição 260727, D2/D3). Gerar nativo elimina a classe inteira do problema.
-  const portrait45 = ratio === "4x5";
-  // MASTER (1600×1350, ~6:5): proporção-envelope que CONTÉM 2:1 e 4:5. O 2:1 sai
-  // cortando altura (mantém a largura inteira), o 4:5 sai cortando largura
-  // (mantém a altura inteira) — nenhum dos dois precisa esticar. A área segura
-  // comum aos dois é o retângulo central de 1080×800.
-  const master = ratio === "master";
 
   // Ler prompt editorial
   const editorialText = readFileSync(editorialPath, "utf8");
@@ -125,13 +161,8 @@ function main() {
   const sdPromptRaw: Record<string, unknown> = {
     positive: positivePrompt,
     negative: NEGATIVE_PROMPT,
-    ...(master
-      ? { final_width: 1600, final_height: 1350 }
-      : portrait45
-      ? { final_width: 1080, final_height: 1350 }
-      : wide
-        ? { final_width: 1600, final_height: 800 }
-        : { final_width: 1024, final_height: 1024 }),
+    final_width: sdWidth,
+    final_height: sdHeight,
   };
   // #649: validar shape antes de gravar — fail-loud se positive curto, dims fora do range
   const sdPrompt = parseSdPrompt(sdPromptRaw);

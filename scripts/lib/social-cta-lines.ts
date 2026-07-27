@@ -63,6 +63,59 @@ export const CHANNEL_CTA_LINES: Record<SocialChannel, string | null> = {
   instagram: INSTAGRAM_CTA_LINE,
 };
 
+/**
+ * Fonte única de verdade dos canais sociais conhecidos pelo projeto — usada
+ * pelo preview (`render-social-html.ts`, #4091) pra rotular cada bloco de
+ * texto com as redes de destino, sem duplicar a lista em outro módulo.
+ *
+ * Cobre TODOS os canais que o pipeline publica (`platform.config.json >
+ * socials`), não só os 3 que recebem CTA de linha (`CHANNEL_CTA_LINES`
+ * acima é um subconjunto — `twitter`/`threads` não têm CTA injetado, mas
+ * ainda precisam de rótulo no preview).
+ */
+export interface ChannelDisplay {
+  channel: string;
+  /** "" quando o canal não usa emoji no rótulo (ex: Threads). */
+  emoji: string;
+  label: string;
+}
+
+export const KNOWN_SOCIAL_CHANNELS: readonly ChannelDisplay[] = [
+  { channel: "linkedin", emoji: "💼", label: "LinkedIn" },
+  { channel: "facebook", emoji: "📘", label: "Facebook" },
+  { channel: "instagram", emoji: "📷", label: "Instagram" },
+  { channel: "twitter", emoji: "𝕏", label: "X (Twitter)" },
+  { channel: "threads", emoji: "", label: "Threads" },
+];
+
+/** Canais do texto único (LinkedIn/Facebook/Instagram, #3991). */
+export const TEXTO_UNICO_CHANNELS = ["linkedin", "facebook", "instagram"] as const;
+
+/** Canais do texto curto (X/Threads, #3992). */
+export const CURTO_CHANNELS = ["twitter", "threads"] as const;
+
+/**
+ * Formata uma lista de canais (por chave) no rótulo "emoji Label · emoji Label"
+ * usado no preview. Lança se algum canal não estiver em `KNOWN_SOCIAL_CHANNELS`
+ * — nunca cai num fallback silencioso quando um canal novo aparece sem entrada
+ * aqui (#4091).
+ */
+export function formatChannelLabels(channels: readonly string[]): string {
+  return channels
+    .map((c) => {
+      const entry = KNOWN_SOCIAL_CHANNELS.find((k) => k.channel === c);
+      if (!entry) {
+        throw new Error(
+          `[social-cta-lines] canal desconhecido: "${c}". Canais conhecidos: ` +
+            `${KNOWN_SOCIAL_CHANNELS.map((k) => k.channel).join(", ")}. ` +
+            `Adicione uma entry em KNOWN_SOCIAL_CHANNELS (scripts/lib/social-cta-lines.ts).`,
+        );
+      }
+      return entry.emoji ? `${entry.emoji} ${entry.label}` : entry.label;
+    })
+    .join(" · ");
+}
+
 export interface SplitBodyAndTags {
   /** Corpo editorial, sem o bloco de hashtags finais (trim aplicado). */
   body: string;
