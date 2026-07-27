@@ -1,0 +1,53 @@
+name: Deploy artigos Worker
+
+# #4084: workers/artigos não tinha deploy automático — mesmo gap fechado
+# pra workers/livros e workers/poll (#3399, #3268) no mesmo lote. Este
+# workflow dispara `wrangler deploy` automaticamente sempre que um push em
+# master tocar `workers/artigos/**`. Padrão seguido: deploy-poll.yml (o mais
+# recente dos 2 workflows de deploy que já existiam no repo).
+#
+# workers/artigos era um worker de static assets sem package.json próprio
+# (deploy manual documentado no README como `npx wrangler deploy`). #4084
+# adicionou um package.json + package-lock.json mínimos (wrangler ^4.100.0,
+# mesma versão já pinada em linkedin-cron/package-lock.json) só pra
+# viabilizar este workflow no mesmo padrão dos outros workers.
+#
+# Secrets reusados (mesmos do deploy-poll.yml/deploy-brevo-dashboard.yml):
+# CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_WORKERS_TOKEN.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/artigos/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-artigos
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Install artigos worker deps
+        working-directory: workers/artigos
+        run: npm ci
+
+      - name: Deploy to Cloudflare Workers
+        working-directory: workers/artigos
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy

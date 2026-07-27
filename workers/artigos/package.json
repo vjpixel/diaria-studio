@@ -1,0 +1,15 @@
+{
+  "name": "diaria-artigos",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Worker de static assets — artigos especiais avulsos (especial.diar.ia.br). Adicionado em #4084 para viabilizar deploy-artigos.yml (npm ci exige lockfile).",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "wrangler": "^4.0.0"
+  }
+}
