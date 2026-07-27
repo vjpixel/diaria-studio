@@ -681,8 +681,11 @@ async function main() {
       continue;
     }
 
-    // Check image — all destaques use 1x1 variant (#502: image-generate always outputs 04-dN-1x1.jpg)
-    const imageFile = `04-${d}-1x1.jpg`;
+    // Card 4:5 (1080x1350, título embutido) quando a edição o gerou — mesmo
+    // critério do Instagram. Fallback: 1x1 (#502, sempre presente).
+    const imageFile = existsSync(resolve(editionDir, `04-${d}-4x5.jpg`))
+      ? `04-${d}-4x5.jpg`
+      : `04-${d}-1x1.jpg`;
     const imagePath = resolve(editionDir, imageFile);
     if (!existsSync(imagePath)) {
       console.error(`ERROR: Image ${imageFile} not found`);

@@ -115,9 +115,12 @@ describe("loadImageMap — nunca falha em silêncio (#1800)", () => {
 describe("render-social-html — check de contagem de imagens (#1800)", () => {
   const platforms = parsePlatforms(MD);
 
-  it("expectedImageCount conta posts de destaque nas 2 plataformas", () => {
-    // 3 destaques × 2 plataformas = 6 posts esperando imagem
-    assert.equal(expectedImageCount(platforms), 6);
+  it("expectedImageCount conta DESTAQUES distintos, não posts (preview agrupado)", () => {
+    // 260727: o preview passou a agrupar por destaque — cada imagem aparece 1×,
+    // com os textos de cada rede embaixo. 3 destaques × 2 seções = 6 posts, mas
+    // só 3 imagens. Contar por post inflava o esperado e disparava falso
+    // "imagem faltando" num preview completo.
+    assert.equal(expectedImageCount(platforms), 3);
   });
 
   it("COM imagens: <img> == esperado (preview completo)", () => {
@@ -180,7 +183,7 @@ Opinião pessoal do Pixel sobre o D1, em primeira pessoa.
   it("render mostra o label 'POST PESSOAL — vjpixel' e reusa a imagem do D1", () => {
     const platforms = parsePlatforms(MD_PIXEL);
     const html = buildSocialHtml(platforms, IMAGES.images);
-    assert.match(html, /POST PESSOAL — vjpixel \(D1\)/, "label do post pessoal");
+    assert.match(html, /POST PESSOAL — vjpixel \(imagem do D1\)/, "label do post pessoal");
     // post_pixel reusa a imagem do d1 → o src do d1 aparece 2× (d1 + post_pixel)
     assert.ok((html.match(/img\.example\/d1\.jpg/g) ?? []).length >= 2, "post_pixel reusa imagem do d1");
   });
@@ -198,7 +201,7 @@ Opinião pessoal do Pixel sobre o D1, em primeira pessoa.
     };
     const platforms = parsePlatforms(MD_PIXEL);
     const html = buildSocialHtml(platforms, images, "2");
-    assert.match(html, /POST PESSOAL — vjpixel \(D2\)/, "label reflete o destaque do override");
+    assert.match(html, /POST PESSOAL — vjpixel \(imagem do D2\)/, "label reflete o destaque do override");
     // post_pixel agora aponta pra imagem do d2 (não a do d1).
     assert.match(html, /img\.example\/d2\.jpg/, "post_pixel usa a imagem do d2");
   });
@@ -210,7 +213,7 @@ Opinião pessoal do Pixel sobre o D1, em primeira pessoa.
     };
     const platforms = parsePlatforms(MD_PIXEL);
     const html = buildSocialHtml(platforms, images); // sem 3º arg → "1"
-    assert.match(html, /POST PESSOAL — vjpixel \(D1\)/, "default continua D1");
+    assert.match(html, /POST PESSOAL — vjpixel \(imagem do D1\)/, "default continua D1");
     assert.ok((html.match(/img\.example\/d1\.jpg/g) ?? []).length >= 2, "post_pixel reusa imagem do d1 por default");
   });
 });

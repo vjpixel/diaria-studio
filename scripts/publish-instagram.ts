@@ -440,8 +440,10 @@ async function main() {
       continue;
     }
 
-    // Verificar imagem — Instagram prefere quadrada (1x1)
-    const imageFile = `04-${d}-1x1.jpg`;
+    // Card 4:5 (1080x1350, título embutido) quando a edição o gerou — é o
+    // formato que mais ocupa tela no feed do Instagram. Fallback: 1:1 de sempre.
+    const has4x5 = existsSync(resolve(editionDir, `04-${d}-4x5.jpg`));
+    const imageFile = has4x5 ? `04-${d}-4x5.jpg` : `04-${d}-1x1.jpg`;
     const imagePath = resolve(editionDir, imageFile);
     if (!existsSync(imagePath)) {
       console.error(`ERROR: Imagem ${imageFile} não encontrada em ${editionDir}`);
@@ -481,7 +483,8 @@ async function main() {
     // Chave esperada: images.d1 / images.d2 / images.d3 (crop 1x1 — mesmo
     // shape lido por publish-linkedin.ts, ver ImageCacheFile em publish-linkedin.ts)
     const images = (publicImages as { images?: Record<string, { url?: string }> }).images;
-    const imageUrl = images?.[d]?.url;
+    // Mesma precedência do arquivo local: card 4:5 quando existe no cache.
+    const imageUrl = images?.[`${d}_4x5`]?.url ?? images?.[d]?.url;
     if (!imageUrl) {
       console.error(
         `ERROR: URL pública para ${d} não encontrada em 06-public-images.json.\n` +

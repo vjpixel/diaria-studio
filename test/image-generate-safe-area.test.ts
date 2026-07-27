@@ -77,4 +77,40 @@ describe("image-generate STYLE_SUFFIX — safe-area central (#2657)", () => {
       "STYLE_SUFFIX não deve referenciar Noite Estrelada",
     );
   });
+
+  // A arte 2:1 do e-mail também vira card de feed (4:5) e story (9:16). Antes,
+  // a safe-area só falava do crop 1:1 — os formatos retrato cortavam figura
+  // (edição 260727: D2 e D3 decapitados, 2 regenerações manuais no gate).
+  it("instrui composição para os crops RETRATO (4:5 e 9:16), não só 1:1", () => {
+    assert.match(
+      STYLE_SUFFIX,
+      /4:5|9:16|portrait/i,
+      "STYLE_SUFFIX deve mencionar os formatos retrato derivados",
+    );
+    assert.match(
+      STYLE_SUFFIX,
+      /central 67% of the width/i,
+      "zona segura horizontal = interseção com o crop retrato (1080 de 1600)",
+    );
+    assert.match(
+      STYLE_SUFFIX,
+      /central 59% of the height/i,
+      "zona segura vertical = interseção com o crop wide (800 de 1350)",
+    );
+  });
+
+  // O título do card é sobreposto na base da imagem: sem área calma reservada,
+  // o texto cai sobre rosto/mão/objeto-chave (caso do D3 na 260727).
+  it("reserva a base do quadro para o texto que entra depois", () => {
+    assert.match(
+      STYLE_SUFFIX,
+      /bottom fifth|headline will later be placed/i,
+      "STYLE_SUFFIX deve reservar a faixa inferior pro headline sobreposto",
+    );
+    assert.match(
+      STYLE_SUFFIX,
+      /no faces, hands or key objects/i,
+      "a faixa reservada deve excluir explicitamente rosto, mãos e objetos-chave",
+    );
+  });
 });
