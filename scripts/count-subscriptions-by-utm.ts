@@ -76,9 +76,16 @@ export interface SubscriptionAttribution {
   referring_site: string | null;
 }
 
-/** Resultado agregado por utm_source. */
+/** Resultado agregado por utm_source (e, desde o #4041, por utm_campaign). */
 export interface UtmCountResult {
   counts: Record<string, number>;
+  /**
+   * #4041: contagem por `utm_campaign` normalizado. Aditivo — os callers
+   * antigos (CLI `--source`, `formatCountsTable`) só olham `counts`. A página
+   * `/utms` do Studio precisa desta fatia pra cruzar com o registry, já que o
+   * sufixo de posição do #4040 vive no campaign, não no source.
+   */
+  campaignCounts: Record<string, number>;
   total: number;
   fetched_at: string;
 }
@@ -108,6 +115,21 @@ export function aggregateByUtmSource(subs: Array<Record<string, unknown>>): Reco
   const counts: Record<string, number> = {};
   for (const sub of subs) {
     const key = normalizeUtmSource(sub["utm_source"]);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/**
+ * Agrega por `utm_campaign` normalizado (#4041). Mesma normalização de
+ * `normalizeUtmSource` — `__none__` pra ausente/vazio.
+ *
+ * @pure testável sem I/O
+ */
+export function aggregateByUtmCampaign(subs: Array<Record<string, unknown>>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const sub of subs) {
+    const key = normalizeUtmSource(sub["utm_campaign"]);
     counts[key] = (counts[key] ?? 0) + 1;
   }
   return counts;
@@ -247,6 +269,7 @@ export async function fetchAndAggregate(
 
   return {
     counts: aggregateByUtmSource(allSubs),
+    campaignCounts: aggregateByUtmCampaign(allSubs), // #4041
     total: allSubs.length,
     fetched_at: new Date().toISOString(),
   };

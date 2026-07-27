@@ -101,7 +101,7 @@ const MENSAL_BRAND_LINK = `https://${MENSAL_BRAND_HOST}`;
  * "anônimos" no Acquisition details (Brevo auto-taggeia `utm_source=sendinblue`
  * + `utm_campaign` vazio nos links que ele reenvia) — impossível medir a
  * conversão da migração Clarice→Diar.ia, que é o objetivo de todo o rollout
- * cold em andamento. Solução: UTM PRÓPRIO em todo link `diaria.beehiiv.com`
+ * cold em andamento. Solução: UTM PRÓPRIO em todo link do host de marca
  * do email mensal (`utm_source=clarice`, `utm_medium=email`,
  * `utm_campaign=clarice-{ciclo}`) — sobrescreve/precede o auto-tag do Brevo e
  * permite filtrar no Beehiiv "assinantes vindos da Clarice" por ciclo.
@@ -1289,7 +1289,7 @@ export function draftToEmail(
   const chunkBody = (chunk: string): string =>
     chunk.split("\n").slice(1).join("\n").trim();
 
-  // #2975: liga o UTM `clarice-{ciclo}` pra todo link diaria.beehiiv.com renderizado
+  // #2975: liga o UTM `clarice-{ciclo}` pra todo link do host de marca renderizado
   // abaixo (wordmark + markdown links + CTA). `eiaEditionFromYymm` já deriva o
   // ciclo `{YYMM-conteúdo}-{MM-envio}` (ex: "2606" → "2606-07") — mesmo formato
   // usado no resto do email (É IA?, polls). `finally` garante reset mesmo em erro,

@@ -62,6 +62,10 @@ export const NAV_ITEMS = [
   { id: "painel-diaria", label: "Dashboard diária", href: "/painel/diaria", pageIds: ["painel-diaria"], group: "negocio" },
   // 🔌 Sistema.
   { id: "integracoes", label: "Integrações", href: "/integracoes", pageIds: ["integracoes"], group: "sistema" },
+  // #4041: inventário de UTMs (o que o código emite) × conversão real no
+  // Beehiiv × clique na Brevo. Vizinha de Integrações — mesma natureza
+  // "sistema": inventário de superfície técnica, não conteúdo editorial.
+  { id: "utms", label: "UTMs", href: "/utms", pageIds: ["utms"], group: "sistema" },
 ];
 
 /** Documentos autocontidos (ver docstring acima) — sempre abrem em nova aba,
