@@ -1677,9 +1677,14 @@ ${renderIdentityFormBlock()}`;
     // da sequência inteira. Fire-and-forget (.catch vazio): se a rede falhar,
     // o checkpoint segue funcional (placar + "Continuar jogando"), só sem o
     // card de compartilhamento.
+    // #4120: &origin=sequence — este endpoint é o mesmo do quiz relâmpago
+    // (ver rationale de #3589 acima), mas quem chegou aqui jogou a SEQUÊNCIA,
+    // não o quiz. Sem o marcador, o card final se anunciava como "quiz
+    // relâmpago" e mandava o destinatário pro modo errado (/jogar/quiz) —
+    // ver rationale completo de QuizSharePayload.origin em share.ts.
     var batchShareSlot = document.getElementById("seq-batch-share-slot");
     if (batchShareSlot && typeof window.fetch === "function") {
-      fetch("/jogar/quiz/result?score=" + encodeURIComponent(String(batchCorrect)) + "&total=" + encodeURIComponent(String(BATCH_SIZE)))
+      fetch("/jogar/quiz/result?score=" + encodeURIComponent(String(batchCorrect)) + "&total=" + encodeURIComponent(String(BATCH_SIZE)) + "&origin=sequence")
         .then(function (res) { if (!res.ok) throw new Error("result fetch failed"); return res.text(); })
         .then(function (html) {
           batchShareSlot.innerHTML = html;
@@ -1905,7 +1910,10 @@ ${renderIdentityFormBlock()}`;
     var slot = document.getElementById("seq-share-slot");
     // #3589: reusa LITERALMENTE /jogar/quiz/result (#3520) — mesmo endpoint,
     // mesmo QuizSharePayload {score,total}, zero mudança em share.ts/handleQuizResult.
-    fetch("/jogar/quiz/result?score=" + encodeURIComponent(String(score)) + "&total=" + encodeURIComponent(String(total)))
+    // #4120: &origin=sequence (ver rationale no comentário gêmeo de showBatchBreak
+    // acima) — sem isso, o card final da sequência (o modo PADRÃO de /jogar)
+    // se anunciava como "quiz relâmpago" e mandava o destinatário pra /jogar/quiz.
+    fetch("/jogar/quiz/result?score=" + encodeURIComponent(String(score)) + "&total=" + encodeURIComponent(String(total)) + "&origin=sequence")
       .then(function (res) { if (!res.ok) throw new Error("result fetch failed"); return res.text(); })
       .then(function (html) {
         if (!slot) return;
@@ -2897,27 +2905,44 @@ export const QUIZ_RESULT_MAX_TOTAL = 31;
  * Nota (ver rationale no header de share.ts): não há verificação contra
  * respostas REAIS aqui — `score`/`total` são confiados do cliente. Trade-off
  * deliberado (forja só produz vaidade sem efeito no sistema).
- */
-export function resolveQuizResultParams(rawScore: string | null, rawTotal: string | null): QuizSharePayload | null {
+ *
+ * #4120: `rawOrigin` opcional — `"sequence"` marca que quem chamou foi a
+ * SEQUÊNCIA (`renderJogarSequencePageHtml`, `showBatchBreak`/`showFinal`),
+ * não o quiz relâmpago de verdade. Qualquer outro valor (ausente, "quiz",
+ * lixo) vira `undefined` no payload retornado — mesmo comportamento de
+ * antes do #4120 (payload sem a chave `origin`, tratado como "quiz" por todo
+ * consumidor downstream). Comparação estrita por igualdade (não um parser
+ * de enum) é suficiente aqui: o pior caso de um valor inesperado é só
+ * "não vira sequência" — sem risco de segurança (mesmo racional de
+ * `score`/`total` não-verificados, ver nota acima). */
+export function resolveQuizResultParams(
+  rawScore: string | null,
+  rawTotal: string | null,
+  rawOrigin?: string | null,
+): QuizSharePayload | null {
   if (!rawScore || !rawTotal) return null;
   if (!/^\d+$/.test(rawScore) || !/^\d+$/.test(rawTotal)) return null;
   const score = parseInt(rawScore, 10);
   const total = parseInt(rawTotal, 10);
   if (total < 1 || total > QUIZ_RESULT_MAX_TOTAL) return null;
   if (score < 0 || score > total) return null;
-  return { score, total };
+  return rawOrigin === "sequence" ? { score, total, origin: "sequence" } : { score, total };
 }
 
 /**
- * Handler `GET /jogar/quiz/result?score=X&total=N` (#3520). Assina o
- * `QuizSharePayload` e retorna DIRETO o bloco `renderQuizShareCardBlock`
- * (não uma página inteira) — o cliente injeta a resposta via
- * `slot.innerHTML` sem precisar de DOMParser (ao contrário do fetch de
- * `/vote` em `renderJogarPageHtml`, cuja resposta é uma página completa da
- * qual só um fragmento é extraído).
+ * Handler `GET /jogar/quiz/result?score=X&total=N[&origin=sequence]` (#3520,
+ * `origin` desde #4120). Assina o `QuizSharePayload` e retorna DIRETO o
+ * bloco `renderQuizShareCardBlock` (não uma página inteira) — o cliente
+ * injeta a resposta via `slot.innerHTML` sem precisar de DOMParser (ao
+ * contrário do fetch de `/vote` em `renderJogarPageHtml`, cuja resposta é
+ * uma página completa da qual só um fragmento é extraído).
  */
 export async function handleQuizResult(url: URL, env: Env): Promise<Response> {
-  const payload = resolveQuizResultParams(url.searchParams.get("score"), url.searchParams.get("total"));
+  const payload = resolveQuizResultParams(
+    url.searchParams.get("score"),
+    url.searchParams.get("total"),
+    url.searchParams.get("origin"), // #4120: "sequence" quando vem de showBatchBreak/showFinal da sequência
+  );
   if (!payload) {
     return json({ error: "invalid score/total" }, 400, env);
   }
