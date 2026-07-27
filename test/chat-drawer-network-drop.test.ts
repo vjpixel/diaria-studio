@@ -75,13 +75,56 @@ describe("chat-drawer.js: sendMessage sobrevive a queda de rede a meio-turno (#3
     assert.match(catchBody, /setToggleStatus\("down"\);/);
   });
 
-  it("o finally restaura sending=false e el.send.disabled=false INCONDICIONALMENTE (roda mesmo com erro)", () => {
+  it("o finally restaura sending=false incondicionalmente e decide el.send.disabled a partir de chatEnabled (roda mesmo com erro; #4078 sobre #3887)", () => {
+    // Nota sobre fragilidade de asserção-por-texto-fonte: esta suíte inteira é
+    // "contrato estático" via regex (ver docstring do topo) porque não há
+    // harness de DOM aqui. Isso já mordeu uma vez (#4078): o teste original
+    // assertava o texto literal `el.send.disabled = false;` no finally, e
+    // quebrou quando o #4078 mudou a expressão pra `!chatEnabled` — uma
+    // mudança de comportamento LEGÍTIMA (ver comentário no código-fonte),
+    // não uma regressão. Em vez de voltar a fixar um texto-fonte diferente
+    // (que quebraria de novo na próxima variação equivalente da expressão),
+    // este teste extrai a expressão à direita do `=` e AVALIA seu resultado
+    // para os dois cenários que importam — isso verifica o comportamento
+    // resultante, não a forma sintática de como ele é escrito.
     const body = extractSendMessageBody();
     const finallyMatch = body.match(/\}\s*finally\s*\{([\s\S]*?)\n\}/);
     assert.ok(finallyMatch, "deveria existir um bloco finally em sendMessage");
     const finallyBody = finallyMatch![1];
+
+    // Garantia original do network-drop (#3887): sending sempre volta a
+    // false, incondicionalmente — sem isso o botão fica preso em "enviando".
     assert.match(finallyBody, /sending\s*=\s*false;/);
-    assert.match(finallyBody, /el\.send\.disabled\s*=\s*false;/);
+
+    // Garantia sobre el.send.disabled: precisa depender de chatEnabled (não
+    // mais uma constante), pra cobrir tanto o caso antigo (chat ativo + erro
+    // → reabilita) quanto o caso novo do #4078 (chat desativado pelo toggle
+    // DURANTE o turno → continua desabilitado ao final).
+    const disabledMatch = finallyBody.match(/el\.send\.disabled\s*=\s*([^;]+);/);
+    assert.ok(
+      disabledMatch,
+      "deveria existir uma atribuição a el.send.disabled no finally de sendMessage",
+    );
+    const disabledExpr = disabledMatch![1];
+    const evalDisabled = (chatEnabled: boolean): unknown =>
+      new Function("chatEnabled", `return (${disabledExpr});`)(chatEnabled);
+
+    // Caso 1 (garantia original do #3887, preservada): chat ATIVO + erro de
+    // rede a meio-turno → botão precisa voltar a ficar habilitado.
+    assert.equal(
+      evalDisabled(true),
+      false,
+      "com chatEnabled=true (caso do #3887: sem toggle durante o turno), el.send.disabled deveria resolver para false",
+    );
+
+    // Caso 2 (garantia nova do #4078): chat foi DESATIVADO pelo toggle
+    // durante o turno → botão precisa continuar desabilitado ao final,
+    // mesmo que o finally rode (inclusive em erro).
+    assert.equal(
+      evalDisabled(false),
+      true,
+      "com chatEnabled=false (caso do #4078: toggle desativado durante o turno), el.send.disabled deveria resolver para true",
+    );
   });
 
   it("regressão: sending/el.send.disabled NÃO são restaurados soltos fora do finally (não sobrou o código antigo duplicado)", () => {
