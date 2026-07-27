@@ -1290,6 +1290,94 @@ describe("refreshApoiosData (#3859)", () => {
       rmSync(cacheDir, { recursive: true, force: true });
     }
   });
+
+  // ── #4171: mensagens não-parseadas nunca somem caladas ─────────────────
+
+  it("#4171 — drain com 'unparsed' > 0 (mensagem que casou a query mas não bateu template): editor vê o contador no 'error' do refresh", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-unparsed-"));
+    try {
+      const contacts = [makeContact({ id: "c1", name: "Fulano", emails: ["fulano@x.com"] })];
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 })) as typeof fetch;
+      const gmailDrain = async (): Promise<DrainApoiaSeResult> => ({
+        notifications: [],
+        most_recent_iso: "2026-07-27T15:15:02Z",
+        skipped: false,
+        unparsed: 2,
+      });
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain,
+      });
+
+      // Não é um erro que trava nada — o force-refresh de pagamento roda normal.
+      assert.equal(result.contacts[0].status.label, "nao_apoia");
+      assert.match(result.error ?? "", /2 mensagem\(ns\) da apoia\.se não reconhecida/);
+      assert.match(result.error ?? "", /unparsed-quarantine\.jsonl/);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("#4171 — drain com 'errors' > 0 (thread do Gmail que falhou ao carregar): antes deste fix esse contador nunca chegava ao editor; agora aparece no 'error' do refresh", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-thread-errors-"));
+    try {
+      const contacts = [makeContact({ id: "c1", name: "Fulano", emails: ["fulano@x.com"] })];
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 })) as typeof fetch;
+      const gmailDrain = async (): Promise<DrainApoiaSeResult> => ({
+        notifications: [],
+        most_recent_iso: "2026-07-27T15:15:02Z",
+        skipped: false,
+        errors: 1,
+      });
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain,
+      });
+
+      assert.match(result.error ?? "", /1 thread\(s\) do Gmail falharam ao carregar/);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it("#4171 — drain sem 'unparsed' nem 'errors' (nenhum dos dois presente): 'error' continua null (caminho feliz não regride)", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-no-unparsed-no-errors-"));
+    try {
+      const contacts = [makeContact({ id: "c1", name: "Fulano", emails: ["fulano@x.com"] })];
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 })) as typeof fetch;
+      const gmailDrain = async (): Promise<DrainApoiaSeResult> => ({
+        notifications: [],
+        most_recent_iso: "2026-07-27T15:15:02Z",
+        skipped: false,
+      });
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain,
+      });
+
+      assert.equal(result.error, null);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── importNewApoiadoresFromGmail — aplicação pura das notificações ────

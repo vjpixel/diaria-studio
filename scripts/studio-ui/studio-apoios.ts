@@ -105,6 +105,16 @@
  * refresh). Dedup idêntico ao de apoio confirmado: contato cujo email já
  * existe (de qualquer origem — cadastro manual, import anterior, ou o import
  * de confirmado que acabou de rodar acima) nunca gera duplicata.
+ *
+ * **Mensagens não-parseadas nunca somem caladas (#4171):** uma mensagem que
+ * casa a query do Gmail mas não bate nenhum dos 2 templates de corpo (ex:
+ * template mudou de novo) é contada em `drainResult.unparsed` e seu
+ * messageId vai pra `data/apoia-se/unparsed-quarantine.jsonl` — o cursor
+ * avança por cima dela do mesmo jeito (não trava o drain), mas o contador
+ * aparece em `error` (mesmo canal fail-soft acima) pra o editor perceber que
+ * algo chegou e não foi entendido. Mesmo tratamento pra `drainResult.errors`
+ * (threads que falharam ao carregar), que antes deste fix também nunca
+ * chegava ao payload do refresh.
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
@@ -893,6 +903,27 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
         );
         contacts = updatedContacts;
         if (mutated) saveContacts(rootDir, contacts);
+      }
+      // #4171: mensagens que casaram a query mas não bateram nenhum template
+      // (`unparsed`) e threads que falharam ao carregar (`errors`) nunca
+      // chegavam ao editor antes — a mensagem sumia calada e o campo `errors`
+      // (que já existia) também não era lido aqui. Trazendo os dois pro mesmo
+      // canal de aviso fail-soft (`gmailDrainError`) que os outros casos desta
+      // função já usam, pra o editor perceber que algo chegou e não foi
+      // entendido (mesmo raciocínio de #573 pra estado externo ambíguo).
+      const unparsedCount = drainResult.unparsed ?? 0;
+      const threadErrorCount = drainResult.errors ?? 0;
+      if (unparsedCount > 0 || threadErrorCount > 0) {
+        const parts: string[] = [];
+        if (unparsedCount > 0) {
+          parts.push(
+            `${unparsedCount} mensagem(ns) da apoia.se não reconhecida(s) pelo parser (ver data/apoia-se/unparsed-quarantine.jsonl)`,
+          );
+        }
+        if (threadErrorCount > 0) {
+          parts.push(`${threadErrorCount} thread(s) do Gmail falharam ao carregar`);
+        }
+        gmailDrainError = parts.join(" — ");
       }
     }
   } catch (e) {
