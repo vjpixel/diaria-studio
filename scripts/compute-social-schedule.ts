@@ -54,8 +54,11 @@ export interface ComputeScheduleInput {
   /** Mantido para compatibilidade de API. O schedule é atualmente unificado entre
    *  plataformas (#345). Pode ser usado no futuro para overrides por plataforma.
    *  #3817: "instagram" adicionado — mesmo fallback_schedule unificado, só muda
-   *  o rótulo usado nos logs de non-zero dayOffset / past-slot shift abaixo. */
-  platform: "linkedin" | "facebook" | "instagram" | "threads";
+   *  o rótulo usado nos logs de non-zero dayOffset / past-slot shift abaixo.
+   *  #4103: "twitter" adicionado — X via Buffer (`prep-twitter-posts.ts`) passa
+   *  a usar o mesmo fallback_schedule (antes usava a fila própria da Buffer,
+   *  `mode: addToQueue`, dessincronizada dos demais canais). */
+  platform: "linkedin" | "facebook" | "instagram" | "threads" | "twitter";
   dayOffsetOverride?: number;
   /**
    * Injetável para testes (#2552). Defaults para `Date.now()`.
