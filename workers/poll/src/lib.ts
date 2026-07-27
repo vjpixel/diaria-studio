@@ -215,12 +215,18 @@ export function isValidVoteEmailFormat(email: string): boolean {
 // nibble de versão "4", nibble de variante em {8,9,a,b}). `isValidVoteEmailFormat`
 // (acima) aceita QUALQUER local-part no formato `local@domínio.tld` — não
 // distingue um token gerado pelo cliente legítimo (`/jogar`) de um local-part
-// arbitrário forjado por um HTTP client externo (bot/scanner exercitando os
-// endpoints diretamente) apontando pro MESMO domínio reservado.
+// arbitrário apontando pro MESMO domínio reservado, venha ele de onde vier
+// (script de verificação, HTTP client externo, curl na mão).
 //
 // Achado #3976: entrada fantasma `verify1840428@web.eia.diaria.local` no
 // leaderboard público — local-part "verify1840428" não é forma UUID, prova
-// que não veio do client oficial. `isValidWebToken` fecha a classe inteira
+// que não veio do client oficial. ATRIBUIÇÃO CORRIGIDA (editor, 260726): o
+// corpo do #3976 registrou isso como "forjado por um cliente externo
+// (bot/monitor/scanner)"; era um e-mail de TESTE da própria sessão de
+// verificação do jogo. Nunca houve abuso externo observado. O guard segue
+// necessário — o que ele fecha é a SUPERFÍCIE (`/vote` com brand web é
+// alcançável por qualquer HTTP client, sem credencial nenhuma), não um
+// atacante específico. `isValidWebToken` fecha a classe inteira
 // (não só o padrão "verify*"): qualquer local-part não-UUID sob o domínio
 // reservado é rejeitado, em TODOS os pontos de entrada que aceitam a
 // identidade anônima do brand `web` (`handleVote` quando brand==="web",

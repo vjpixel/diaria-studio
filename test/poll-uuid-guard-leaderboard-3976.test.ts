@@ -5,9 +5,13 @@
  * público do jogo web — NÃO é e-mail de ninguém real, é um pseudo-email do
  * jogo (`/jogar`) cujo local-part deveria ser SEMPRE um UUID v4 gerado
  * client-side (`crypto.randomUUID()`, `anonEmailForToken` em jogar.ts).
- * `verify1840428` não é UUID → foi forjado por um HTTP client externo
- * (bot/scanner) exercitando os endpoints diretamente, sem passar pelo
- * client oficial (`/jogar`).
+ * `verify1840428` não é UUID → não veio do client oficial (`/jogar`), e sim
+ * de um HTTP client exercitando os endpoints diretamente. ATRIBUIÇÃO
+ * CORRIGIDA (editor, 260726): o corpo do #3976 registrou esse client como
+ * "externo (bot/monitor/scanner)"; era a própria sessão de verificação do
+ * jogo — e-mail de teste, sem abuso externo envolvido. O guard permanece
+ * necessário pela SUPERFÍCIE (`/vote` com brand web aceita qualquer client,
+ * sem credencial), não pelo incidente que o revelou.
  *
  * Causa raiz: `isValidVoteEmailFormat` (lib.ts) só valida a FORMA genérica
  * `local@domínio.tld` — aceita QUALQUER local-part, não distingue um token
