@@ -14,7 +14,12 @@
  *   npx tsx scripts/close-poll.ts --edition 2605-06 --brand clarice --cycle 2605-06
  *
  * #2115: --edition agora aceita o formato de ciclo 2605-06 (novo canônico)
- * além do legado AAMMDD 260531. Ambos funcionam: as chaves KV são opacas.
+ * além do legado AAMMDD 260531 — mas não intercambiáveis para todo brand.
+ * #4157: --brand clarice (ou qualquer brand anual) + --edition no formato
+ * AAMMDD é REJEITADO pelo Worker (400) — só o diária (`leaderboardPeriod
+ * "month"`) aceita AAMMDD; a mensal precisa do formato de ciclo, senão
+ * sobrescreveria o gabarito de uma edição diária real que compartilha o
+ * mesmo AAMMDD. Ver workers/poll/src/index.ts (handleAdminCorrect).
  *
  * O --cycle é obrigatório quando --brand clarice para gravar o marker de gabarito
  * em data/monthly/{cycle}/_internal/.close-poll-clarice.json. Este marker é
