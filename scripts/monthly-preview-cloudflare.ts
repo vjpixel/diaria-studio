@@ -45,6 +45,7 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { draftToEmail, eiaEditionFromYymm, parseEiaLegend, captionForGenerator } from "./lib/mensal/monthly-render.ts"; // #2018-fix: captionForGenerator centralizado
+import { relinkMonthlyEditionHtml } from "./monthly-relink-to-diaria.ts"; // #4048
 import { uploadDestaqueImages, uploadEiaImages, uploadLivrosImage, LIVROS_PROMO_FILENAME } from "./lib/mensal/monthly-image-upload.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { fetchMonthlyEiaPrevResultLine } from "./lib/mensal/monthly-eia-prev-result.ts"; // #2948
@@ -207,7 +208,26 @@ async function main(): Promise<void> {
   }
 
   // Render no design da MENSAL (mesmo HTML que vai pro Brevo).
-  const { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages, destaqueImageCaption, livrosImageUrl, eiaPrevResultLine);
+  let { html } = draftToEmail(draft, chosenSubject, yymm, eia.a, eia.b, eiaCredit, destaqueImages, destaqueImageCaption, livrosImageUrl, eiaPrevResultLine);
+
+  // #4048: pós-processa os DESTAQUES pra apontar pra edição diária de origem
+  // em vez do veículo terceiro (redireciona clique de conteúdo pra visita ao
+  // produto — ver rationale em monthly-relink-to-diaria.ts). Fail-soft: sem
+  // `raw-destaques.json` (ex.: preview rodado fora do fluxo normal de
+  // `collect-monthly.ts`, ou ciclo antigo sem esse artefato) o HTML original
+  // segue intacto — nunca bloqueia o preview.
+  try {
+    const relinked = relinkMonthlyEditionHtml(html, monthlyDir, ROOT);
+    html = relinked.html;
+    console.error(
+      `Relink pra edição diária (#4048): ${relinked.relinked} reescritos, ${relinked.servico} mantidos (serviço), ${relinked.naoMapeado} sem mapeamento`,
+    );
+    if (relinked.ambiguous.length) {
+      console.error(`  ⚠️ ${relinked.ambiguous.length} URL(s) ambíguas entre edições — usada a primeira ocorrência do mês`);
+    }
+  } catch (e) {
+    console.error(`warn: relink pra edição diária (#4048) falhou — ${(e as Error).message}`);
+  }
 
   // Persiste o HTML local — desde #3214, este é o artefato final do script.
   // Quem publica pro editor é o top-level Claude Code via `Artifact` direto

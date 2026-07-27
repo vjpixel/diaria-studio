@@ -36,9 +36,18 @@
  * essa separação, um `import` deste módulo num teste executaria o script
  * inteiro e sobrescreveria o HTML de saída — achado do review da PR #4066.
  *
- * Uso:
+ * Uso (CLI standalone — reanálise ad-hoc de HTML já gerado):
  *   npx tsx scripts/monthly-relink-to-diaria.ts --cycle 2606-07
  *   npx tsx scripts/monthly-relink-to-diaria.ts --cycle 2606-07 --in <html> --out <html>
+ *
+ * #4048: desde este PR, esta transformação também roda AUTOMATICAMENTE em toda
+ * edição — `relinkMonthlyEditionHtml` (abaixo) é chamada por
+ * `scripts/monthly-preview-cloudflare.ts` logo após `draftToEmail` produzir o
+ * HTML, ANTES de gravar `_internal/cloudflare-preview.html` (o HTML que
+ * efetivamente vira campanha Brevo — ver `clarice-schedule-sends.ts
+ * --update-html`). O CLI acima segue existindo pra reanálise pontual de HTML
+ * histórico (ex.: ciclos publicados antes do #4048) — não é mais o único jeito
+ * de aplicar o relink, só o modo manual.
  */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -216,6 +225,45 @@ export function makeEditionUrlResolver(
   };
 }
 
+/**
+ * #4048: monta os maps de relink (raw-destaques.json + monthly-clicks.json +
+ * índice de posts do Beehiiv) e aplica `buildRelink` — MESMA lógica exposta
+ * pelo CLI (`main()` abaixo), extraída pra função importável. Ponto único
+ * chamado tanto pelo CLI standalone (reanálise ad-hoc de HTML histórico)
+ * quanto pelo pipeline real (`scripts/monthly-preview-cloudflare.ts`, que
+ * gera `_internal/cloudflare-preview.html` — o HTML que efetivamente vira
+ * campanha Brevo via `clarice-schedule-sends.ts --update-html`). Lança se
+ * `raw-destaques.json` não existir — caller decide se isso é fatal (CLI) ou
+ * fail-soft com HTML original preservado (pipeline, ver
+ * `monthly-preview-cloudflare.ts`).
+ */
+export function relinkMonthlyEditionHtml(
+  html: string,
+  monthlyDir: string,
+  root: string,
+  campaignOverride?: string,
+): RelinkResult & { ambiguous: { url: string; editions: string[] }[] } {
+  const rawPath = resolve(monthlyDir, "_internal/raw-destaques.json");
+  if (!existsSync(rawPath)) throw new Error(`não achei ${rawPath}`);
+  const raw = JSON.parse(readFileSync(rawPath, "utf8"));
+  const { urlToEdition, editionToPostId, ambiguous } = buildUrlToEdition(raw.destaques ?? []);
+
+  const servicoUrls = new Set<string>();
+  const clicksPath = resolve(monthlyDir, "_internal/monthly-clicks.json");
+  if (existsSync(clicksPath)) {
+    const cl = JSON.parse(readFileSync(clicksPath, "utf8"));
+    for (const bucket of ["use_melhor", "radar"]) {
+      for (const it of cl[bucket] ?? []) if (it.url) servicoUrls.add(normUrl(it.url));
+    }
+  }
+
+  const idx = JSON.parse(readFileSync(resolve(root, "data/beehiiv-cache/posts/index.json"), "utf8"));
+  const editionUrl = makeEditionUrlResolver(idx, editionToPostId);
+
+  const r = buildRelink(html, { urlToEdition, servicoUrls, editionUrl }, campaignOverride);
+  return { ...r, ambiguous };
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -228,28 +276,13 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const IN = String(args.in ?? resolve(MDIR, "_internal/cta-ab/envio9-a.html"));
   const OUT = String(args.out ?? resolve(MDIR, "_internal/relink-diaria.html"));
 
-  const rawPath = resolve(MDIR, "_internal/raw-destaques.json");
-  if (!existsSync(rawPath)) throw new Error(`não achei ${rawPath}`);
-  const raw = JSON.parse(readFileSync(rawPath, "utf8"));
-  const { urlToEdition, editionToPostId, ambiguous } = buildUrlToEdition(raw.destaques ?? []);
-
-  const servicoUrls = new Set<string>();
-  const clicksPath = resolve(MDIR, "_internal/monthly-clicks.json");
-  if (existsSync(clicksPath)) {
-    const cl = JSON.parse(readFileSync(clicksPath, "utf8"));
-    for (const bucket of ["use_melhor", "radar"]) {
-      for (const it of cl[bucket] ?? []) if (it.url) servicoUrls.add(normUrl(it.url));
-    }
-  }
-
-  const idx = JSON.parse(readFileSync(resolve(ROOT, "data/beehiiv-cache/posts/index.json"), "utf8"));
-  const editionUrl = makeEditionUrlResolver(idx, editionToPostId);
-
-  const r = buildRelink(
+  const r = relinkMonthlyEditionHtml(
     readFileSync(IN, "utf8"),
-    { urlToEdition, servicoUrls, editionUrl },
+    MDIR,
+    ROOT,
     args.campaign ? String(args.campaign) : undefined,
   );
+  const ambiguous = r.ambiguous;
   writeFileSync(OUT, r.html, "utf8");
 
   console.log(`entrada : ${IN}`);
