@@ -245,6 +245,13 @@ export async function handleJogarGateSubscribe(
  */
 export function renderJogarGatePage(edition: string | null): string {
   const editionParam = edition ? `&edition=${encodeURIComponent(edition)}` : "";
+  // #4109 (achado ao vivo 260727, editor): o gate original (#4054) bloqueava
+  // sem saída — quem não queria assinar ficava travado na tela. Link de skip
+  // manda `skip_gate=1`, único-uso por navegação (handleJogarPage abaixo só
+  // lê esse param nesta request específica, não grava cookie/sessão nenhuma)
+  // — a próxima transição de rodada volta a checar o servidor e pode gatear
+  // de novo (nudge recorrente, não permanente; decisão do editor).
+  const skipHref = `/jogar?v=${Date.now()}${editionParam}&skip_gate=1`;
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -263,6 +270,7 @@ export function renderJogarGatePage(edition: string | null): string {
   #gate-msg { margin-top: 10px; min-height: 1.2em; }
   #gate-msg.err { padding: 12px 14px; font-size: 0.95rem; font-weight: 700; color: ${DS_COLORS.ink}; background: #FBECEC; border: 1px solid #E3B4B4; border-radius: 4px; }
   #gate-msg.info { font-size: 0.9rem; color: ${DS_COLORS.ink}; opacity: 0.75; }
+  .skip-link { display: block; margin-top: 18px; font-size: 0.9rem; opacity: 0.75; }
 </style>
 </head>
 <body>
@@ -276,6 +284,7 @@ export function renderJogarGatePage(edition: string | null): string {
   <button type="submit">Continuar jogando</button>
 </form>
 <p id="gate-msg"></p>
+<a class="skip-link" href="${skipHref}">Agora não, continuar jogando</a>
 <script>
 (function () {
   var form = document.getElementById("gate-form");
