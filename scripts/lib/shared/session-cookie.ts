@@ -42,12 +42,6 @@ async function hmacVerify(secret: string, message: string, sig: string): Promise
   return diff === 0;
 }
 
-export interface SessionCookiePayload {
-  email: string;
-  /** epoch seconds (não ms — mais curto no cookie). */
-  expiresAt: number;
-}
-
 export type SessionVerifyResult =
   | { ok: true; email: string }
   | { ok: false; reason: "malformed" | "bad_signature" | "expired" };
