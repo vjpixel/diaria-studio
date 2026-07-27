@@ -345,6 +345,19 @@ describe("GET /jogar — gate por rodada (#4054)", () => {
     );
     assert.match(await again.text(), /Você já jogou sua rodada livre/);
   });
+
+  it("#4109 (self-review): skip_gate=1 com ?edition= explícito NUNCA é public — CDN não pode cachear o bypass pra outros visitantes", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(
+      new Request("https://poll.test/jogar?edition=260701&skip_gate=1", {
+        headers: { Cookie: `${FREE_ROUND_COOKIE}=1` },
+      }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(await res.text(), /Você já jogou sua rodada livre/);
+    assert.equal(res.headers.get("Cache-Control"), "no-store");
+  });
 });
 
 // ── GET /vote?brand=web — identidade pós-gate via cookie (paralela ao token) ─

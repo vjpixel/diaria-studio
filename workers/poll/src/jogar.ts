@@ -2144,7 +2144,11 @@ export async function handleJogarPage(url: URL, env: Env, request?: Request): Pr
     return new Response(renderJogarPageHtml({ edition, revealed: correctRaw !== null }), {
       headers: {
         "Content-Type": "text/html;charset=utf-8",
-        "Cache-Control": "public, max-age=120",
+        // #4109 (self-review): skip_gate=1 é um bypass de UMA navegação —
+        // nunca pode ser `public`, ou um CDN/cache intermediário serviria a
+        // versão sem gate pra QUALQUER visitante que caísse na mesma URL
+        // cacheada, derrotando o gate pra todo mundo até o max-age expirar.
+        "Cache-Control": skipGate ? "no-store" : "public, max-age=120",
       },
     });
   }
