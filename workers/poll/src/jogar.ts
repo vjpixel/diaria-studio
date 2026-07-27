@@ -1777,6 +1777,33 @@ ${renderIdentityFormBlock()}`;
     function goNext() {
       resultEl.hidden = true;
       resultEl.innerHTML = "";
+      // #4054 follow-up (achado 260727, ao vivo): a sequência avança de
+      // rodada em rodada 100% client-side (advance() acima — sem reload nem
+      // ida ao servidor), então o gate por rodada (handleJogarPage, checado
+      // só em GET /jogar) NUNCA disparava aqui — a promessa "1 rodada
+      // livre" nunca se cumpria na prática pra quem joga a sequência
+      // (a experiência padrão do /jogar, sem ?edition=). Corrigido: só na
+      // transição rodada 1 → 2 (round === 0, único ponto onde o cookie
+      // FREE_ROUND_COOKIE acabou de ser setado pela 1ª vez, ver onChoice
+      // acima), faz 1 fetch leve pro próprio /jogar pra deixar o SERVIDOR
+      // decidir — se ele responder com o gate (mesma marca id="gate-form"
+      // de renderJogarGatePage/web-gate.ts), troca a página pro gate em vez
+      // de continuar a sequência. Sessão já válida (assinante identificado)
+      // → resposta normal do jogo, fetch descartado, advance() roda igual
+      // sempre rodou — zero fricção extra pra quem já não precisa do gate.
+      if (round === 0) {
+        fetch("/jogar?v=" + Date.now())
+          .then(function (res) { return res.text(); })
+          .then(function (html) {
+            if (html.indexOf('id="gate-form"') !== -1) {
+              window.location.href = "/jogar?v=" + Date.now();
+              return;
+            }
+            advance();
+          })
+          .catch(function () { advance(); }); // fail-open: rede falhou, não trava o jogo por causa do gate-check
+        return;
+      }
       // Não precisa reabilitar os botões aqui — advance()/renderRound()
       // substitui choicesEl.innerHTML por um novo par de botões (já
       // habilitados) ou, na última rodada, esconde o play inteiro
