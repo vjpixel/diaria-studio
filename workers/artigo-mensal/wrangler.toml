@@ -29,7 +29,7 @@ custom_domain = true
 #   cd workers/artigo-mensal && npx wrangler kv namespace create ARTICLES --remote
 [[kv_namespaces]]
 binding = "ARTICLES"
-id = "REPLACE_ME_APOS_CRIAR_NAMESPACE_ARTICLES"
+id = "6ff9d54d034547feb959ede65fd5e990"
 
 # KV namespace com a allowlist de e-mails de apoiadores R$10+/mês (mês
 # vigente) — chave única `emails` (JSON array de e-mails normalizados,
@@ -43,4 +43,4 @@ id = "REPLACE_ME_APOS_CRIAR_NAMESPACE_ARTICLES"
 #   cd workers/artigo-mensal && npx wrangler kv namespace create ALLOWLIST --remote
 [[kv_namespaces]]
 binding = "ALLOWLIST"
-id = "REPLACE_ME_APOS_CRIAR_NAMESPACE_ALLOWLIST"
+id = "9b06bf0af3b042cdb9670d9a0726f2f0"
