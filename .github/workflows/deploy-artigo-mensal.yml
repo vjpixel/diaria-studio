@@ -1,0 +1,59 @@
+name: Deploy artigo-mensal Worker
+
+# #4084: workers/artigo-mensal não tinha deploy automático — mesmo gap
+# fechado pra workers/livros e workers/poll (#3399, #3268) no mesmo lote.
+# Este workflow dispara `wrangler deploy` automaticamente sempre que um push
+# em master tocar `workers/artigo-mensal/**`. Padrão seguido: deploy-poll.yml
+# (o mais recente dos 2 workflows de deploy que já existiam no repo).
+#
+# ATENÇÃO (achado da verificação pré-workflow): `workers/artigo-mensal/wrangler.toml`
+# ainda tem os 2 KV namespace ids como placeholder literal
+# (`REPLACE_ME_APOS_CRIAR_NAMESPACE_ARTICLES` / `REPLACE_ME_APOS_CRIAR_NAMESPACE_ALLOWLIST`,
+# #3940) — os namespaces nunca foram criados em produção. O 1º push que
+# disparar este workflow vai FALHAR (`wrangler deploy` rejeita id inválido).
+# Isso é esperado e aceitável: falha barulhenta no Actions é estritamente
+# melhor que o gap silencioso que esta issue existe pra fechar — mas o editor
+# precisa rodar `wrangler kv namespace create ARTICLES --remote` e
+# `wrangler kv namespace create ALLOWLIST --remote` (dentro de
+# workers/artigo-mensal) e substituir os ids no wrangler.toml antes que este
+# worker consiga deployar de novo (manual ou via CI).
+#
+# Secrets reusados (mesmos do deploy-poll.yml/deploy-brevo-dashboard.yml):
+# CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_WORKERS_TOKEN.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/artigo-mensal/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-artigo-mensal
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Install artigo-mensal worker deps
+        working-directory: workers/artigo-mensal
+        run: npm ci
+
+      - name: Deploy to Cloudflare Workers
+        working-directory: workers/artigo-mensal
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy

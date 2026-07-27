@@ -1,0 +1,55 @@
+name: Deploy linkedin-cron Worker
+
+# #4084: workers/linkedin-cron não tinha deploy automático — mesmo gap
+# fechado pra workers/livros e workers/poll (#3399, #3268) no mesmo lote.
+# Este workflow dispara `wrangler deploy` automaticamente sempre que um push
+# em master tocar `workers/linkedin-cron/**`. Padrão seguido: deploy-poll.yml
+# (o mais recente dos 2 workflows de deploy que já existiam no repo).
+#
+# Verificação pré-workflow (#4084): NÃO é protótipo — worker de produção com
+# Durable Object (LinkedInScheduler) + fila LINKEDIN_QUEUE, deployado
+# manualmente várias vezes (#2236, rearm #1168, Instagram #3817/#3818,
+# Threads #3944 Parte B, confirmado de novo em 260723 — ver comentários em
+# wrangler.toml). A migration `new_sqlite_classes` já foi aplicada em
+# produção; `wrangler deploy` via CI não precisa recriá-la (migrations do
+# wrangler são incrementais/idempotentes — só a 1ª aplica).
+#
+# Secrets reusados (mesmos do deploy-poll.yml/deploy-brevo-dashboard.yml):
+# CLOUDFLARE_ACCOUNT_ID e CLOUDFLARE_WORKERS_TOKEN.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'workers/linkedin-cron/**'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-linkedin-cron
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Install linkedin-cron worker deps
+        working-directory: workers/linkedin-cron
+        run: npm ci
+
+      - name: Deploy to Cloudflare Workers
+        working-directory: workers/linkedin-cron
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npm run deploy
