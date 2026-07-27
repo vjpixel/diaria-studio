@@ -232,12 +232,12 @@ function renderPost(post: Post, color: string, imageUrls: ImageMap, postPixelIma
  */
 export function channelsForSection(sectionName: string): string {
   const n = sectionName.toLowerCase();
-  if (n.includes("curto")) return "X (Twitter) · Threads";
-  if (n.includes("social")) return "LinkedIn · Facebook · Instagram";
+  if (n.includes("curto")) return "𝕏 X (Twitter) · Threads";
+  if (n.includes("social")) return "💼 LinkedIn · 📘 Facebook · 📷 Instagram";
   // Formato legado (pré-#3991): uma seção por rede.
-  if (n.includes("linkedin")) return "LinkedIn";
-  if (n.includes("facebook")) return "Facebook";
-  if (n.includes("instagram")) return "Instagram";
+  if (n.includes("linkedin")) return "💼 LinkedIn";
+  if (n.includes("facebook")) return "📘 Facebook";
+  if (n.includes("instagram")) return "📷 Instagram";
   return sectionName;
 }
 
