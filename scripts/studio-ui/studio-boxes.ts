@@ -290,6 +290,74 @@ export function buildBoxContent(
   );
 }
 
+// ── título de conteúdo: campo dedicado (#4079) ──────────────────────────────
+//
+// `extractBoxTitle` já deriva o título de conteúdo (1º heading Markdown, ou a
+// 1ª linha não-vazia de texto puro) — mas até aqui era só LEITURA: pra mudar
+// o que o leitor vê, o editor precisava editar a 1ª linha do painel
+// "Conteúdo" diretamente. As 2 funções abaixo dão um campo dedicado
+// (`editor-titulo` no client) com a mesma UX de `nome`/`categoria`, sem exigir
+// um 3º painel: o campo edita o TEXTO da 1ª linha do "Conteúdo", preservando o
+// FORMATO original (heading vs. texto puro) e todo o resto do corpo.
+
+/** Título de conteúdo pronto pro campo dedicado do editor (#4079): mesmo
+ * algoritmo de `extractBoxTitle`, mas aplicado a `conteudo` (já sem o header
+ * de comentário) e retornando `""` (não o sentinel de exibição `"(vazio)"`)
+ * quando não há texto — um campo de formulário deve começar vazio, nunca com
+ * o literal "(vazio)" preenchido (que pareceria um título de verdade se o
+ * editor salvasse sem tocar o campo). Nunca lança. */
+export function extractConteudoTitulo(conteudo: string): string {
+  const t = extractBoxTitle(conteudo);
+  return t === "(vazio)" ? "" : t;
+}
+
+/** Reescreve a PRIMEIRA linha não-vazia de `conteudo` (#4079) pra refletir um
+ * novo título, preservando o RESTO do corpo intacto e o FORMATO da linha
+ * original — heading Markdown `#`-`######` mantém o mesmo nível (`##` continua
+ * `##`), texto puro continua texto puro; nunca converte um no outro. Análogo
+ * ao upsert cirúrgico de `nome:` no header (`buildBoxContentWithNome`), só que
+ * aqui a "primeira linha" é o CONTEÚDO visível (o que renderiza na edição),
+ * não uma linha de header.
+ *
+ * Byte-estável quando não há mudança real: se o título já extraído da 1ª
+ * linha for IGUAL a `titulo` (trimado), devolve `conteudo` sem tocar —
+ * essencial pro invariante "salvar sem alterar nada é byte-idêntico" (mesmo
+ * invariante já coberto pra nome/categoria/notas/conteudo, ver
+ * "PUT {conteudo} salvando SEM alterar nada é byte-estável" em
+ * test/studio-boxes.test.ts): sem este guard, um heading com espaçamento
+ * não-canônico (`##   Título`) seria normalizado pra `## Título` numa
+ * gravação que, do ponto de vista do editor, não mudou nada.
+ *
+ * `titulo` vazio/whitespace -> no-op (preserva `conteudo` como está); o campo
+ * dedicado nunca deveria submeter vazio na prática (a UI trata isso
+ * client-side), mas o server é fail-soft e nunca apaga a 1ª linha por
+ * engano com um título em branco.
+ *
+ * Corpo vazio ou só linhas em branco (nenhuma linha não-vazia encontrada) ->
+ * cria a 1ª linha do zero como texto puro (`titulo`) — não há formato
+ * original a preservar (#4079, escopo da issue: "provavelmente cria a
+ * primeira linha do zero").
+ *
+ * Nunca lança. */
+export function replaceBoxContentTitle(conteudo: string, titulo: string): string {
+  const clean = (titulo ?? "").trim();
+  if (!clean) return conteudo;
+
+  const src = conteudo ?? "";
+  const lines = src.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+    const currentText = (heading ? heading[2] : trimmed).trim();
+    if (currentText === clean) return src; // já é o título desejado — byte-estável, não reescreve
+    lines[i] = heading ? `${heading[1]} ${clean}` : clean;
+    return lines.join("\n");
+  }
+  // Nenhuma linha não-vazia — corpo vazio/só espaço: cria a 1ª linha do zero.
+  return clean;
+}
+
 // ── slots (platform.config.json → boxes_divulgacao, somente leitura) ────
 
 export type BoxSlot = 1 | 2 | 3;
@@ -644,6 +712,11 @@ export interface BoxContentState {
   /** Painel "Conteúdo" (#3979): o arquivo com o header inteiro removido — o
    * que renderiza na newsletter. */
   conteudo?: string;
+  /** Título de conteúdo pronto pro campo dedicado do editor (#4079): a 1ª
+   * linha de `conteudo` (heading ou texto puro), ou `""` se o conteúdo
+   * estiver vazio/só branco. Salvar por este campo reescreve só essa 1ª
+   * linha via `replaceBoxContentTitle` — ver `handleApiBoxSave` (server.ts). */
+  titulo?: string;
   modifiedAt: string | null;
 }
 
@@ -661,6 +734,7 @@ export function readBox(rootDir: string, slug: string): BoxContentState {
   }
   const content = readFileSync(filePath, "utf8");
   const modifiedAt = statSync(filePath).mtime.toISOString();
+  const conteudo = extractBoxConteudo(content);
   return {
     ok: true,
     slug,
@@ -669,7 +743,8 @@ export function readBox(rootDir: string, slug: string): BoxContentState {
     categoria: parseBoxCategoria(content),
     body: stripNomeLine(content),
     notas: extractBoxNotas(content),
-    conteudo: extractBoxConteudo(content),
+    conteudo,
+    titulo: extractConteudoTitulo(conteudo),
     modifiedAt,
   };
 }

@@ -45,6 +45,8 @@ import {
   extractBoxNotas,
   extractBoxConteudo,
   buildBoxContent,
+  extractConteudoTitulo,
+  replaceBoxContentTitle,
   resolveBoxDisplayName,
   readBoxSlotsState,
   replaceBoxesDivulgacaoBlock,
@@ -589,6 +591,79 @@ describe("extractBoxNotas / extractBoxConteudo (#3979)", () => {
   });
   it("extractBoxConteudo: sem header -> devolve o conteúdo como está", () => {
     assert.equal(extractBoxConteudo("# Só conteúdo"), "# Só conteúdo");
+  });
+});
+
+// ─── título de conteúdo: campo dedicado (pura, #4079) ─────────────────────
+
+describe("extractConteudoTitulo (#4079)", () => {
+  it("heading -> texto sem os '#'", () => {
+    assert.equal(extractConteudoTitulo("## Um heading\n\ncorpo"), "Um heading");
+  });
+  it("texto puro -> a 1ª linha não-vazia", () => {
+    assert.equal(extractConteudoTitulo("Olá, leitor!\n\ncorpo"), "Olá, leitor!");
+  });
+  it("conteúdo vazio/só branco -> '' (NÃO o sentinel '(vazio)' de exibição)", () => {
+    assert.equal(extractConteudoTitulo(""), "");
+    assert.equal(extractConteudoTitulo("\n\n   \n"), "");
+  });
+});
+
+describe("replaceBoxContentTitle (#4079)", () => {
+  it("heading: reescreve só o TEXTO, preserva o nível (#, ##, etc.)", () => {
+    const out = replaceBoxContentTitle("## Título antigo\n\ncorpo preservado", "Título novo");
+    assert.equal(out, "## Título novo\n\ncorpo preservado");
+  });
+
+  it("heading nível 1 preservado (não vira nível 2 nem vice-versa)", () => {
+    assert.equal(replaceBoxContentTitle("# T1\n\ncorpo", "T2"), "# T2\n\ncorpo");
+    assert.equal(replaceBoxContentTitle("### T1\n\ncorpo", "T2"), "### T2\n\ncorpo");
+  });
+
+  it("texto puro: reescreve a linha inteira como texto puro (nunca vira heading)", () => {
+    const out = replaceBoxContentTitle("Título antigo\n\ncorpo preservado", "Título novo");
+    assert.equal(out, "Título novo\n\ncorpo preservado");
+    assert.ok(!out.startsWith("#"));
+  });
+
+  it("preserva o RESTO do corpo intacto, byte a byte, incluindo formatação interna", () => {
+    const body = "Título antigo\n\nParágrafo 1.\n\n- item 1\n- item 2\n\n**negrito**";
+    const out = replaceBoxContentTitle(body, "Título novo");
+    assert.equal(out, "Título novo\n\nParágrafo 1.\n\n- item 1\n- item 2\n\n**negrito**");
+  });
+
+  it("preserva linhas em branco ANTES da 1ª linha não-vazia", () => {
+    const out = replaceBoxContentTitle("\n\nTítulo antigo\ncorpo", "Novo");
+    assert.equal(out, "\n\nNovo\ncorpo");
+  });
+
+  it("byte-estável quando o título já é o desejado (heading) — não reescreve nada", () => {
+    const body = "##   Título   \n\ncorpo"; // espaçamento não-canônico de propósito
+    assert.equal(replaceBoxContentTitle(body, "Título"), body);
+  });
+
+  it("byte-estável quando o título já é o desejado (texto puro) — não reescreve nada", () => {
+    const body = "Título igual\n\ncorpo";
+    assert.equal(replaceBoxContentTitle(body, "Título igual"), body);
+  });
+
+  it("titulo vazio/whitespace -> no-op, preserva o conteúdo como está", () => {
+    const body = "# Título\n\ncorpo";
+    assert.equal(replaceBoxContentTitle(body, ""), body);
+    assert.equal(replaceBoxContentTitle(body, "   "), body);
+  });
+
+  it("corpo vazio -> cria a 1ª linha do zero, como texto puro", () => {
+    assert.equal(replaceBoxContentTitle("", "Título novo"), "Título novo");
+  });
+
+  it("corpo só com linhas em branco -> cria a 1ª linha do zero", () => {
+    assert.equal(replaceBoxContentTitle("\n\n   \n", "Título novo"), "Título novo");
+  });
+
+  it("titulo com espaço nas pontas é trimado antes de comparar/escrever", () => {
+    assert.equal(replaceBoxContentTitle("Título\n\ncorpo", "  Título  "), "Título\n\ncorpo"); // sem mudança real -> byte-estável
+    assert.equal(replaceBoxContentTitle("Título\n\ncorpo", "  Novo  "), "Novo\n\ncorpo");
   });
 });
 
@@ -1435,6 +1510,119 @@ describe("categoria + notas/conteúdo via HTTP: GET conteudo/notas/categoria, PU
       readFileSync(join(root, "context", "snippets", "so-categoria.md"), "utf8"),
       "<!--\ncategoria: Achado da semana\n-->\n\n# X\n\ncorpo",
     );
+  });
+});
+
+// ─── título de conteúdo: campo dedicado via HTTP (#4079) ──────────────────
+
+describe("campo dedicado 'titulo' via HTTP: GET devolve titulo, PUT {titulo} reescreve a 1ª linha (#4079)", () => {
+  let root: string;
+  let server: StudioServer;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-4079-http-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "README.md"), "# Formato\n\nDoc.");
+    writeFileSync(
+      join(root, "context", "snippets", "com-heading.md"),
+      "<!--\nnome: Rótulo Interno\n-->\n\n## Título de conteúdo\n\ncorpo preservado\n\n- item",
+    );
+    writeFileSync(join(root, "context", "snippets", "texto-puro.md"), "Título em texto puro\n\ncorpo");
+    writeFileSync(join(root, "platform.config.json"), JSON.stringify({ boxes_divulgacao: {} }));
+    server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("GET /api/boxes/:slug devolve 'titulo' derivado da 1ª linha do conteúdo (heading, sem os '#')", async () => {
+    const body = await (await fetch(new URL("/api/boxes/com-heading.md", server.url))).json();
+    assert.equal(body.titulo, "Título de conteúdo");
+  });
+
+  it("GET /api/boxes/:slug devolve 'titulo' derivado da 1ª linha de texto puro", async () => {
+    const body = await (await fetch(new URL("/api/boxes/texto-puro.md", server.url))).json();
+    assert.equal(body.titulo, "Título em texto puro");
+  });
+
+  it("PUT com 'titulo' reescreve só a 1ª linha do conteúdo (heading), preserva nível + resto do corpo", async () => {
+    const get = await (await fetch(new URL("/api/boxes/com-heading.md", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/com-heading.md", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nome: get.nome,
+        conteudo: get.conteudo,
+        titulo: "Novo título",
+        expectedModifiedAt: get.modifiedAt,
+      }),
+    });
+    assert.equal(put.status, 200);
+    const onDisk = readFileSync(join(root, "context", "snippets", "com-heading.md"), "utf8");
+    assert.equal(onDisk, "<!--\nnome: Rótulo Interno\n-->\n\n## Novo título\n\ncorpo preservado\n\n- item");
+
+    // e a lista reflete o novo contentTitle
+    const list = await (await fetch(new URL("/api/boxes", server.url))).json();
+    const updated = list.boxes.find((b: { slug: string }) => b.slug === "com-heading.md");
+    assert.equal(updated.contentTitle, "Novo título");
+    // nome (rótulo interno) não foi afetado pela troca de título de conteúdo
+    assert.equal(updated.nome, "Rótulo Interno");
+  });
+
+  it("PUT com 'titulo' reescreve texto puro sem introduzir markdown (nunca converte pra heading)", async () => {
+    const get = await (await fetch(new URL("/api/boxes/texto-puro.md", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/texto-puro.md", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conteudo: get.conteudo, titulo: "Título trocado", expectedModifiedAt: get.modifiedAt }),
+    });
+    assert.equal(put.status, 200);
+    const onDisk = readFileSync(join(root, "context", "snippets", "texto-puro.md"), "utf8");
+    assert.equal(onDisk, "Título trocado\n\ncorpo");
+    assert.ok(!onDisk.startsWith("#"));
+  });
+
+  it("PUT sem o campo 'titulo' (omitido) preserva o conteúdo como enviado — comportamento pré-#4079 intacto", async () => {
+    const get = await (await fetch(new URL("/api/boxes/texto-puro.md", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/texto-puro.md", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conteudo: get.conteudo, expectedModifiedAt: get.modifiedAt }),
+    });
+    assert.equal(put.status, 200);
+    assert.equal(readFileSync(join(root, "context", "snippets", "texto-puro.md"), "utf8"), get.conteudo);
+  });
+
+  it("PUT {conteudo, titulo} salvando SEM alterar o título é byte-estável (round-trip GET -> PUT idêntico ao original)", async () => {
+    const before = readFileSync(join(root, "context", "snippets", "com-heading.md"), "utf8");
+    const get = await (await fetch(new URL("/api/boxes/com-heading.md", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/com-heading.md", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nome: get.nome,
+        conteudo: get.conteudo,
+        titulo: get.titulo,
+        expectedModifiedAt: get.modifiedAt,
+      }),
+    });
+    assert.equal(put.status, 200);
+    assert.equal(readFileSync(join(root, "context", "snippets", "com-heading.md"), "utf8"), before);
+  });
+
+  it("PUT com 'titulo' vazio -> no-op sobre a 1ª linha (preserva o conteúdo enviado)", async () => {
+    const get = await (await fetch(new URL("/api/boxes/com-heading.md", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/com-heading.md", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nome: get.nome, conteudo: get.conteudo, titulo: "", expectedModifiedAt: get.modifiedAt }),
+    });
+    assert.equal(put.status, 200);
+    const onDisk = readFileSync(join(root, "context", "snippets", "com-heading.md"), "utf8");
+    assert.match(onDisk, /## Novo título/); // valor do teste anterior, intacto
   });
 });
 

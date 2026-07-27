@@ -63,6 +63,19 @@
  *     `?sessionId=` opcional invalida (resposta vazia) um transcript
  *     atrelado a uma sessão já superada — ver `studio-chat.ts`
  *     `getChatHistory`/`appendChatHistoryEvent`.
+ *   - `GET/PUT /api/chat/enabled` (#4078) — toggle "chat ativo/desativado":
+ *     GET devolve `{enabled, updatedAt}`; PUT `{enabled: boolean}` liga/
+ *     desliga. Estado persistido em `data/studio-chat-enabled.json` (novo,
+ *     dedicado — nunca sobrescreve outro arquivo de estado do Studio), lido/
+ *     escrito via `scripts/lib/studio-chat-enabled.ts` — o MESMO módulo que
+ *     uma sessão de automação (overnight/develop) importa (ou invoca via CLI,
+ *     `npx tsx scripts/lib/studio-chat-enabled.ts`) pra checar
+ *     `isChatEnabled()` ANTES de reiniciar o `Diaria-Studio-Server`, sem
+ *     precisar do server rodando (incidente
+ *     260726/27: restart em cima de uma conversa em andamento invalidou o
+ *     gate/`toolUseId` do painel e derrubou uma edição não salva).
+ *     `POST /api/chat` recusa com 409 quando o toggle está desligado (ver
+ *     `handleApiChat`), pra uma aba antiga aberta não burlar o desligamento.
  *   - `GET /revisao/:aammdd` — painel de revisão de conteúdo rica (#3559):
  *     mesma estratégia de rewrite, servindo `public/revisao.html`. Consome
  *     `GET/PUT /api/editions/:aammdd/review/:slug` (`slug` = categorized |
@@ -180,7 +193,9 @@
  * conduz uma sessão Claude real (a UI só invoca — a lógica de negócio
  * permanece nas skills/scripts que essa sessão chama, mesmo princípio do epic
  * #3554), `POST /api/chat/answer` (#3557, resolve um gate em memória — não
- * escreve disco, mas é mutação de estado do processo), e as rotas de ação de
+ * escreve disco, mas é mutação de estado do processo), `PUT /api/chat/enabled`
+ * (#4078, escreve `data/studio-chat-enabled.json` — arquivo novo e dedicado ao
+ * toggle, ver doc-comment acima), e as rotas de ação de
  * revisão de conteúdo (#3559, detalhadas
  * abaixo). Sem autenticação nesta fatia — acesso remoto é escopo da #3560;
  * aqui o único guard de segurança é o bind loopback. #3558 (cockpit de
@@ -316,6 +331,10 @@ import {
   DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS,
   type QueryFn,
 } from "./studio-chat.ts";
+// #4078: toggle "chat ativo/desativado" — estado persistido em
+// data/studio-chat-enabled.json, lido/escrito tanto por este server quanto
+// por sessões de automação externas (ver docstring do módulo).
+import { readChatEnabledState, setChatEnabled, isChatEnabled } from "../lib/studio-chat-enabled.ts";
 // #3559: painel de revisão de conteúdo rica — arquivos próprios desta fatia,
 // import isolado (nenhuma outra rota depende deles). Ver studio-review.ts.
 import {
@@ -354,6 +373,7 @@ import {
   listArchivedBoxes,
   buildBoxContentWithNome,
   buildBoxContent, // #3979/#3981 — modo {nome, categoria, notas, conteudo}
+  replaceBoxContentTitle, // #4079 — campo dedicado "Título de conteúdo"
   readBoxSlotsState,
   saveBoxSlots,
 } from "./studio-boxes.ts";
@@ -521,6 +541,50 @@ function handleApiChatHistory(rootDir: string, req: IncomingMessage, res: Server
     return;
   }
   sendJson(res, 200, { history: getChatHistory(rootDir), sessionId: currentSessionId ?? null });
+}
+
+// ── #4078: toggle "chat ativo/desativado" ───────────────────────────────────
+
+const CHAT_ENABLED_MAX_BODY_BYTES = 2_000; // corpo é só {enabled: boolean} — teto pequeno de propósito.
+
+/** `GET /api/chat/enabled` (#4078) — estado atual do toggle "chat ativo/
+ * desativado". Sempre 200: `readChatEnabledState` é fail-soft (arquivo
+ * ausente/corrompido -> `{enabled:true, updatedAt:null}`, nunca lança) —
+ * mesma disciplina "sempre 200, nunca erro" de `handleApiChatPending`. */
+function handleApiChatEnabledGet(rootDir: string, res: ServerResponse): void {
+  sendJson(res, 200, readChatEnabledState(rootDir));
+}
+
+/** `PUT /api/chat/enabled` (#4078) — liga/desliga o chat do painel. Corpo
+ * `{enabled: boolean}`. O editor usa isto pra sinalizar explicitamente "não
+ * estou usando o chat agora" (`enabled: false`) antes de uma sessão de
+ * automação reiniciar/religar o Studio — ver docstring de
+ * `scripts/lib/studio-chat-enabled.ts` pra como uma sessão de automação
+ * CHECA esse estado (sem precisar do server rodando). 400 corpo malformado,
+ * 500 só se a escrita em disco falhar de verdade (I/O real, não parte do
+ * contrato fail-soft de leitura). */
+async function handleApiChatEnabledSave(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, CHAT_ENABLED_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const parsed = body as { enabled?: unknown } | null;
+  if (typeof parsed?.enabled !== "boolean") {
+    sendJson(res, 400, { error: "campo 'enabled' (boolean) é obrigatório no corpo" });
+    return;
+  }
+  try {
+    sendJson(res, 200, setChatEnabled(rootDir, parsed.enabled));
+  } catch (e) {
+    sendJson(res, 500, { error: (e as Error).message });
+  }
 }
 
 function handleApiEdition(rootDir: string, aammdd: string, res: ServerResponse): void {
@@ -723,6 +787,18 @@ async function handleApiChat(
   const parsed = parseChatRequestBody(raw);
   if (!parsed.ok) {
     sendJson(res, 400, { error: parsed.error });
+    return;
+  }
+
+  // #4078: o editor desativou o chat pelo painel (sinal explícito de "não
+  // estou usando agora") — recusa a mensagem em vez de rodar o turno. Cobre
+  // o caso de uma aba ANTIGA ainda aberta tentar enviar depois do toggle ser
+  // desligado em outra aba/sessão (o toggle sozinho não fecha conexões já
+  // abertas, só impede turnos NOVOS).
+  if (!isChatEnabled(rootDir)) {
+    sendJson(res, 409, {
+      error: "chat desativado pelo painel — reative em \"Chat ativo\" no header do drawer antes de enviar mensagens.",
+    });
     return;
   }
 
@@ -1259,6 +1335,7 @@ async function handleApiBoxSave(
     nome?: unknown;
     categoria?: unknown;
     notas?: unknown;
+    titulo?: unknown;
     expectedModifiedAt?: unknown;
     force?: unknown;
   } | null;
@@ -1268,6 +1345,12 @@ async function handleApiBoxSave(
   //      Categoria). O server RECONSTRÓI o header inteiro a partir desses 4
   //      valores (`buildBoxContent` — reconstrução completa, não upsert
   //      cirúrgico, porque a UI de 2 painéis edita o header inteiro).
+  //      `titulo` (#4079, opcional, só neste modo): campo dedicado "Título de
+  //      conteúdo" — quando presente (string, mesmo vazia), reescreve a 1ª
+  //      linha de `conteudo` ANTES de montar o header (`replaceBoxContentTitle`
+  //      — autoritativo sobre o que quer que já esteja na 1ª linha do
+  //      `conteudo` enviado, mesmo padrão de nome/categoria sempre vencerem
+  //      sobre o header pré-existente).
   //   2. #3933 (legado) — `{nome, body}`: upsert cirúrgico só do `nome:`
   //      dentro de um header pré-existente (`buildBoxContentWithNome`).
   //   3. Legado original (#3924) — `{content}`: conteúdo bruto como veio.
@@ -1276,7 +1359,9 @@ async function handleApiBoxSave(
     const nome = typeof parsed.nome === "string" ? parsed.nome : "";
     const categoria = typeof parsed.categoria === "string" ? parsed.categoria : "";
     const notas = typeof parsed.notas === "string" ? parsed.notas : "";
-    content = buildBoxContent({ nome, categoria, notas }, parsed.conteudo);
+    const conteudo =
+      typeof parsed.titulo === "string" ? replaceBoxContentTitle(parsed.conteudo, parsed.titulo) : parsed.conteudo;
+    content = buildBoxContent({ nome, categoria, notas }, conteudo);
   } else if (typeof parsed?.body === "string") {
     const nome = typeof parsed.nome === "string" ? parsed.nome : "";
     content = buildBoxContentWithNome(nome, parsed.body);
@@ -1580,6 +1665,21 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         return;
       }
 
+      // #4078: liga/desliga o chat do painel — mesmo tratamento "rota de
+      // mutação checada antes do guard read-only" das rotas de /api/chat/*
+      // acima. GET (leitura do estado atual) é tratado mais abaixo, junto
+      // das outras rotas read-only de /api/chat/*.
+      if (urlPath === "/api/chat/enabled" && req.method === "PUT") {
+        handleApiChatEnabledSave(rootDir, req, res).catch((e) => {
+          if (!res.headersSent) {
+            sendJson(res, 500, { error: (e as Error).message });
+          } else {
+            res.end();
+          }
+        });
+        return;
+      }
+
       // #3559: exceção estreita ao invariante read-only (ver nota no topo do
       // arquivo) — só estas 3 rotas aceitam método de escrita, e só pra
       // AÇÕES do painel de revisão de conteúdo. Checadas ANTES do guard
@@ -1684,7 +1784,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       }
 
       if (req.method !== "GET" && req.method !== "HEAD") {
-        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556) e as rotas de ação do #3559/#3602/#3806/#3859/#3861/#3924/#3928" });
+        sendJson(res, 405, { error: "method not allowed — studio-server é read-only nesta fatia (#3555), exceto POST /api/chat (#3556) e as rotas de ação do #3559/#3602/#3806/#3859/#3861/#3924/#3928/#4078" });
         return;
       }
 
@@ -1703,6 +1803,12 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // de rota de API desconhecida mais abaixo).
       if (urlPath === "/api/chat/history") {
         handleApiChatHistory(rootDir, req, res);
+        return;
+      }
+      // #4078: estado ATUAL do toggle "chat ativo/desativado" — o PUT (escrita)
+      // já foi tratado acima, na seção de mutação.
+      if (urlPath === "/api/chat/enabled") {
+        handleApiChatEnabledGet(rootDir, res);
         return;
       }
       if (urlPath === "/api/events") {

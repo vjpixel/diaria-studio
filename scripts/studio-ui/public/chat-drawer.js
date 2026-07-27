@@ -157,6 +157,7 @@ drawer.innerHTML = `
       <span class="chat-toggle-badge" id="chat-toggle-badge" style="display:none"></span>
     </button>
     <button type="button" id="chat-mobile-close" class="chat-mobile-close" title="Fechar chat" aria-label="Fechar chat">✕</button>
+    <button type="button" id="chat-enabled-toggle" class="chat-enabled-toggle" title="Ativar/desativar o chat — desative antes de reiniciar o Studio (#4078)" aria-pressed="true">Chat ativo</button>
     <button type="button" id="chat-reset" title="Nova conversa">nova conversa</button>
   </div>
   <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
@@ -186,6 +187,7 @@ const el = {
   input: drawer.querySelector("#chat-input"),
   send: drawer.querySelector("#chat-send"),
   reset: drawer.querySelector("#chat-reset"),
+  enabledToggle: drawer.querySelector("#chat-enabled-toggle"), // #4078
 };
 
 // #3851: mantém `--chat-viewport-height` (lida por chat-drawer.css só no
@@ -368,6 +370,77 @@ el.reset.addEventListener("click", () => {
   el.messages.innerHTML = "";
   permissionCards.clear();
   appendSystemNote("nova conversa — sessão anterior desvinculada (o histórico continua no disco do Claude Code, só não é mais retomado por padrão).");
+});
+
+// ─── toggle "chat ativo/desativado" (#4078) ────────────────────────────────
+//
+// Mitigação do incidente 260726/27 (ver docstring de
+// scripts/lib/studio-chat-enabled.ts): o editor desativa o chat aqui pra
+// sinalizar explicitamente "não estou usando agora" — sessões de automação
+// (overnight/develop) podem checar `GET /api/chat/enabled` (ou importar/
+// invocar o mesmo módulo direto, sem precisar do server rodando) ANTES de
+// reiniciar/religar o `Diaria-Studio-Server`. Desativar aqui NÃO fecha o
+// painel nem a conexão em si — só impede turnos NOVOS (o botão Enviar fica
+// desabilitado, e o server recusa `POST /api/chat` com 409 de qualquer
+// forma — defesa em profundidade caso outra aba/dispositivo ainda tente
+// enviar com este estado obsoleto em cache).
+let chatEnabled = true;
+
+function applyChatEnabledUi() {
+  el.enabledToggle.textContent = chatEnabled ? "Chat ativo" : "Chat desativado";
+  el.enabledToggle.classList.toggle("chat-disabled", !chatEnabled);
+  el.enabledToggle.setAttribute("aria-pressed", String(chatEnabled));
+  el.input.disabled = !chatEnabled;
+  el.send.disabled = !chatEnabled || sending;
+  el.input.placeholder = chatEnabled
+    ? "Mensagem para a sessão Claude..."
+    : "Chat desativado — reative pelo botão acima pra enviar mensagens.";
+}
+
+/** Busca o estado ATUAL do toggle no server ao montar o drawer (#4078) —
+ * outra aba/sessão pode ter desativado o chat; sem este fetch, o painel
+ * mostraria sempre "Chat ativo" até o editor clicar. Best-effort: falha de
+ * rede/server offline mantém o default local (`true`), mesma disciplina
+ * fail-soft de `hydratePendingPermissions`/`hydrateChatHistory`. */
+async function fetchChatEnabled() {
+  try {
+    const res = await fetch("/api/chat/enabled");
+    if (res.ok) {
+      const json = await res.json();
+      if (typeof json.enabled === "boolean") chatEnabled = json.enabled;
+    }
+  } catch {
+    // best-effort — ver doc-comment acima.
+  }
+  applyChatEnabledUi();
+}
+
+el.enabledToggle.addEventListener("click", async () => {
+  const next = !chatEnabled;
+  el.enabledToggle.disabled = true;
+  try {
+    const res = await fetch("/api/chat/enabled", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: next }),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      chatEnabled = typeof json.enabled === "boolean" ? json.enabled : next;
+      appendSystemNote(
+        chatEnabled
+          ? "chat reativado."
+          : "chat desativado — seguro reiniciar/religar o Studio agora (sessões de automação checam este estado antes de restart).",
+      );
+    } else {
+      appendErrorNote("não foi possível atualizar o estado do chat — tente de novo.");
+    }
+  } catch {
+    appendErrorNote("não foi possível atualizar o estado do chat (rede) — tente de novo.");
+  } finally {
+    el.enabledToggle.disabled = false;
+    applyChatEnabledUi();
+  }
 });
 
 // ─── render ─────────────────────────────────────────────────────────────
@@ -804,6 +877,7 @@ async function hydrateChatHistory() {
 }
 
 (async () => {
+  await fetchChatEnabled(); // #4078 — antes do histórico/pendências: reflete o estado real assim que possível
   await hydrateChatHistory();
   await hydratePendingPermissions();
 })();
@@ -874,6 +948,15 @@ let sending = false;
 
 async function sendMessage(text) {
   if (sending || !text.trim()) return;
+  // #4078: guard client-side além do desabilitar visual do botão/textarea —
+  // `sendMessage` também é chamado programaticamente via
+  // `window.diariaStudioChat.sendMessage` (outras páginas), que não passa
+  // pelo botão desabilitado. O server recusa com 409 de qualquer forma
+  // (defesa em profundidade final), mas o feedback aqui é imediato.
+  if (!chatEnabled) {
+    appendErrorNote("chat desativado — reative pelo botão \"Chat desativado\" no header antes de enviar mensagens.");
+    return;
+  }
   sending = true;
   el.send.disabled = true;
   setToggleStatus("ok");
@@ -956,7 +1039,10 @@ async function sendMessage(text) {
     setToggleStatus("down");
   } finally {
     sending = false;
-    el.send.disabled = false;
+    // #4078: nunca reabilita incondicionalmente — se o chat foi desativado
+    // pelo toggle DURANTE este turno, o botão precisa continuar desabilitado
+    // depois que o turno terminar.
+    el.send.disabled = !chatEnabled;
     setToggleActive(false);
   }
 }

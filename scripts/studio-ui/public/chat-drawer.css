@@ -79,7 +79,8 @@ body.chat-drawer-present.chat-drawer-collapsed {
   text-overflow: ellipsis;
 }
 .chat-drawer.collapsed .chat-drawer-title,
-.chat-drawer.collapsed #chat-reset {
+.chat-drawer.collapsed #chat-reset,
+.chat-drawer.collapsed .chat-enabled-toggle {
   display: none;
 }
 .chat-toggle-dot {
@@ -131,6 +132,27 @@ body.chat-drawer-present.chat-drawer-collapsed {
   white-space: nowrap;
 }
 #chat-reset:hover { background: rgba(255, 255, 255, 0.12); }
+
+/* #4078: toggle "chat ativo/desativado" — mesmo estilo base de #chat-reset,
+   com um estado visual distinto (borda/texto em --status-danger) quando
+   desativado, pra o editor NUNCA confundir "desativado" com o estado normal
+   (R11 de docs/studio-ui-ux-guidelines.md — cor nunca é o único canal: o
+   texto do botão também muda, ver applyChatEnabledUi() em chat-drawer.js). */
+.chat-enabled-toggle {
+  background: transparent;
+  border: 1px solid var(--on-ink);
+  color: var(--on-ink);
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chat-enabled-toggle:hover { background: rgba(255, 255, 255, 0.12); }
+.chat-enabled-toggle.chat-disabled {
+  border-color: var(--status-danger);
+  color: var(--status-danger);
+}
 
 /* #3851: botão de "fechar explícito" do overlay mobile — só existe
    (visualmente) abaixo do breakpoint de 720px e só quando o painel está
@@ -468,6 +490,7 @@ body.chat-drawer-present.chat-drawer-collapsed {
   .chat-drawer:not(.collapsed) .chat-drawer-header,
   .chat-drawer:not(.collapsed) .chat-expand-toggle,
   #chat-reset,
+  .chat-enabled-toggle,
   .chat-mobile-close,
   #chat-send,
   .chat-permission-option,
