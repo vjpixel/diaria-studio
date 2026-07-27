@@ -16,12 +16,19 @@
  * Corpo (text/plain) da notificação tem a linha:
  *   {NOME} <{email}> acabou de apoiar sua campanha diar.ia.br com o valor de *R${valor}* !
  * (os asteriscos são markdown do template da apoia.se/Brevo — `*R$25*` — não
- * fazem parte do valor).
+ * fazem parte do valor). **#4171:** a posição do asterisco não é garantida —
+ * ver nota abaixo sobre promessa, cujo corpo real veio com `R$ *{valor}*`
+ * (asterisco DEPOIS do `R$`, não antes) — os dois parsers toleram asterisco
+ * dos dois lados do `R$` por precaução, não só o lado confirmado ao vivo.
  *
  * **Promessas (#3912):** a apoia.se também manda um e-mail distinto quando um
  * apoiador PROMETE (mas ainda não pagou) — subject "Você tem uma nova
- * promessa de apoiador! :D", corpo com a linha:
- *   {NOME} <{email}> recém prometeu um apoio de R${valor}
+ * promessa de apoiador! :D", corpo com a linha (formato CONFIRMADO ao vivo em
+ * 260727, #4171 — a versão anterior desta docstring documentava
+ * `R${valor}` sem asterisco, formato inferido por analogia e nunca checado
+ * contra um e-mail real; o parser rejeitava silenciosamente todo e-mail real
+ * de promessa até o fix de #4171):
+ *   {NOME} <{email}> recém prometeu um apoio de R$ *{valor}* para sua campanha diar.ia.br.
  * A query abaixo casa AMBOS os templates (`OR` de subject) numa única busca —
  * cada mensagem é tentada primeiro contra `parseApoioNotificationEmail`
  * (confirmado) e, se não bater, contra `parsePromessaEmail` (promessa).
@@ -38,7 +45,7 @@
  * busca cobre ambas).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { gFetch } from "../google-auth.ts";
 import { parseGmailThread, parseGmailThreadsList } from "./schemas/gmail.ts";
@@ -64,11 +71,15 @@ export interface ApoioNotification {
 /**
  * `{NOME} <{email}> acabou de apoiar sua campanha diar.ia.br com o valor de
  * *R${valor}* !` — não-ganancioso no nome ([^\n<>]+?) pra não engolir o `<`
- * do email; asteriscos/pontuação em volta do valor são opcionais (o template
- * pode variar). Vírgula decimal (`R$25,50`) é aceita e normalizada pra ponto.
+ * do email; asterisco tolerado dos DOIS LADOS do `R$` (antes E logo depois,
+ * antes do dígito) — #4171: o parser irmão de promessa só tolerava asterisco
+ * ANTES do `R$` e quebrou contra o template real, que tem o asterisco DEPOIS;
+ * aplicando a mesma tolerância aqui por precaução, não porque este template
+ * já tenha sido visto variar. Vírgula decimal (`R$25,50`) é aceita e
+ * normalizada pra ponto.
  */
 const APOIO_LINE_RE =
-  /([^\n<>]+?)\s*<\s*([^\s<>]+@[^\s<>]+)\s*>\s*acabou de apoiar sua campanha diar\.ia\.br com o valor de\s*\*?\s*R\$\s*(\d+(?:[.,]\d+)?)\s*\*?\s*!?/i;
+  /([^\n<>]+?)\s*<\s*([^\s<>]+@[^\s<>]+)\s*>\s*acabou de apoiar sua campanha diar\.ia\.br com o valor de\s*\*?\s*R\$\s*\*?\s*(\d+(?:[.,]\d+)?)\s*\*?\s*!?/i;
 
 /**
  * Parseia o corpo text/plain de uma notificação "novo apoio" da apoia.se.
@@ -92,12 +103,17 @@ export function parseApoioNotificationEmail(bodyText: string): ApoioNotification
 export type PromessaNotification = ApoioNotification;
 
 /**
- * `{NOME} <{email}> recém prometeu um apoio de R${valor}` — mesma tolerância
- * de template do parser de apoio confirmado (asteriscos/pontuação opcionais,
- * vírgula decimal normalizada). "recém"/"recem" (sem acento) ambos casam.
+ * `{NOME} <{email}> recém prometeu um apoio de R$ *{valor}*` — mesma
+ * tolerância de template do parser de apoio confirmado, com asterisco tolerado
+ * dos DOIS LADOS do `R$` (#4171: o corpo real confirmado ao vivo em 260727
+ * tem o asterisco DEPOIS do `R$`, envolvendo só o número — `R$ *10*` — não
+ * antes; a regex anterior só tolerava asterisco antes do `R$` e retornava
+ * `null` pra todo e-mail real de promessa, silenciosamente, desde que a
+ * feature #3912 foi entregue). Vírgula decimal normalizada. "recém"/"recem"
+ * (sem acento) ambos casam.
  */
 const PROMESSA_LINE_RE =
-  /([^\n<>]+?)\s*<\s*([^\s<>]+@[^\s<>]+)\s*>\s*rec[eé]m prometeu um apoio de\s*\*?\s*R\$\s*(\d+(?:[.,]\d+)?)\s*\*?\s*!?/i;
+  /([^\n<>]+?)\s*<\s*([^\s<>]+@[^\s<>]+)\s*>\s*rec[eé]m prometeu um apoio de\s*\*?\s*R\$\s*\*?\s*(\d+(?:[.,]\d+)?)\s*\*?\s*!?/i;
 
 /**
  * Parseia o corpo text/plain de uma notificação "nova promessa" da apoia.se
@@ -148,6 +164,40 @@ export function saveGmailDrainCursor(rootDir: string, cursor: GmailDrainCursor):
   const path = gmailDrainCursorPath(rootDir);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(cursor, null, 2), "utf-8");
+}
+
+// ---------------------------------------------------------------------------
+// Quarentena de mensagens não-parseadas (#4171)
+// ---------------------------------------------------------------------------
+//
+// O cursor SEMPRE avança, mesmo quando uma mensagem não bate nenhum dos 2
+// templates (decisão do coordenador, #4171: travar o cursor numa mensagem
+// cronicamente não-parseável congelaria o drain inteiro para sempre — pior
+// failure mode que perder 1 mensagem). A mitigação é registrar o messageId
+// aqui para reprocessamento MANUAL explícito depois (não há replay
+// automático). Append-only, 1 linha JSON por mensagem — mesmo padrão de
+// `data/run-log.jsonl`.
+
+export interface UnparsedQuarantineEntry {
+  messageId: string;
+  threadId: string;
+  /** ISO do envelope Gmail (`internalDate`) — mesma fonte de `receivedAtIso`
+   * em `DrainedPromessa`. */
+  receivedAtIso: string;
+  /** Primeiros ~200 chars do corpo text/plain — só o suficiente pra
+   * diagnóstico manual (identificar se o template mudou de novo); nunca o
+   * corpo inteiro (evita inflar o arquivo e reter mais PII que o necessário). */
+  bodySnippet: string;
+}
+
+export function unparsedQuarantinePath(rootDir: string): string {
+  return resolve(rootDir, "data", "apoia-se", "unparsed-quarantine.jsonl");
+}
+
+export function appendUnparsedQuarantine(rootDir: string, entry: UnparsedQuarantineEntry): void {
+  const path = unparsedQuarantinePath(rootDir);
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, `${JSON.stringify(entry)}\n`, "utf-8");
 }
 
 // ---------------------------------------------------------------------------
@@ -223,13 +273,24 @@ export interface DrainApoiaSeResult {
   /** Threads que falharam ao carregar (parse/rede) — fail-soft por thread,
    * não derruba o drain inteiro. */
   errors?: number;
+  /** #4171: mensagens que casaram a QUERY (subject "novo apoio"/"nova
+   * promessa") mas não bateram nenhum dos 2 parsers de corpo — nunca eram
+   * contadas antes (o bug-driver desta issue: uma promessa real sumiu sem
+   * deixar rastro). O cursor avança por cima delas mesmo assim (ver
+   * cabeçalho da seção "Quarentena" acima) — o messageId de cada uma vai pra
+   * `unparsed-quarantine.jsonl` pra reprocessamento manual. Ausente (não `0`)
+   * quando nenhuma — mesma convenção de `errors`. */
+  unparsed?: number;
 }
 
 /**
  * Busca + parseia notificações de "novo apoio" novas desde o cursor. Nunca
  * lança — falha de busca (rede, auth) vira `skipped: true` com `reason`;
  * falha de thread individual é contada em `errors` e pulada (mesmo padrão de
- * `iterateThreads` em inbox-drain.ts).
+ * `iterateThreads` em inbox-drain.ts). Mensagem que casa a query mas não bate
+ * nenhum dos 2 templates de corpo é contada em `unparsed` e seu messageId vai
+ * pra `unparsed-quarantine.jsonl` (#4171) — o cursor avança por cima dela do
+ * mesmo jeito (ver comentário na seção "Quarentena" acima pro rationale).
  */
 export async function drainApoiaSeNotifications(
   rootDir: string,
@@ -261,6 +322,7 @@ export async function drainApoiaSeNotifications(
   const promessas: DrainedPromessa[] = [];
   let mostRecentIso: string | null = null;
   let errors = 0;
+  let unparsed = 0;
 
   for (const thread of threads) {
     let full;
@@ -287,7 +349,28 @@ export async function drainApoiaSeNotifications(
       // Não bateu com "novo apoio" confirmado — tenta promessa (#3912) antes
       // de descartar a mensagem.
       const promessa = parsePromessaEmail(body);
-      if (promessa) promessas.push({ ...promessa, receivedAtIso: iso });
+      if (promessa) {
+        promessas.push({ ...promessa, receivedAtIso: iso });
+        continue;
+      }
+      // #4171: casou a query (subject "novo apoio"/"nova promessa") mas não
+      // bateu NENHUM dos 2 templates de corpo — antes deste fix, sumia sem
+      // deixar rastro (nem erro, nem contador, nem log) e o cursor avançava
+      // por cima dela do mesmo jeito, tornando a perda permanente. Continua
+      // avançando o cursor (decisão do coordenador: travar aqui congelaria o
+      // drain inteiro pra sempre se uma mensagem for cronicamente
+      // não-parseável), mas agora fica contada E em quarentena pra
+      // reprocessamento manual.
+      unparsed += 1;
+      appendUnparsedQuarantine(rootDir, {
+        messageId: msg.id,
+        // `thread.id` (do loop externo, o mesmo id usado pra buscar
+        // `threads/{id}?format=full`) — não `msg.threadId`, que é opcional
+        // no schema e nem sempre vem preenchido no payload da mensagem.
+        threadId: thread.id,
+        receivedAtIso: iso,
+        bodySnippet: body.slice(0, 200),
+      });
     }
   }
 
@@ -299,5 +382,6 @@ export async function drainApoiaSeNotifications(
     most_recent_iso: mostRecentIso,
     skipped: false,
     ...(errors > 0 ? { errors } : {}),
+    ...(unparsed > 0 ? { unparsed } : {}),
   };
 }

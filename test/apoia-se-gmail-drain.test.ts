@@ -14,7 +14,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -24,6 +24,8 @@ import {
   loadGmailDrainCursor,
   saveGmailDrainCursor,
   drainApoiaSeNotifications,
+  unparsedQuarantinePath,
+  appendUnparsedQuarantine,
   APOIA_SE_GMAIL_QUERY,
 } from "../scripts/lib/apoia-se-gmail-drain.ts";
 
@@ -105,6 +107,19 @@ describe("parseApoioNotificationEmail (#3859)", () => {
     assert.deepEqual(parsed, { name: "ALMIR", email: "alalmas@gmail.com", value: 25 });
   });
 
+  it("#4171 — as 3 variantes de posição do asterisco parseiam pro MESMO resultado (fecha a classe, não só a instância da promessa)", () => {
+    const semAsterisco =
+      "ALMIR <alalmas@gmail.com> acabou de apoiar sua campanha diar.ia.br com o valor de R$25 !";
+    const asteriscoAntes =
+      "ALMIR <alalmas@gmail.com> acabou de apoiar sua campanha diar.ia.br com o valor de *R$25* !";
+    const asteriscoDepois =
+      "ALMIR <alalmas@gmail.com> acabou de apoiar sua campanha diar.ia.br com o valor de R$ *25* !";
+    const esperado = { name: "ALMIR", email: "alalmas@gmail.com", value: 25 };
+    assert.deepEqual(parseApoioNotificationEmail(semAsterisco), esperado);
+    assert.deepEqual(parseApoioNotificationEmail(asteriscoAntes), esperado);
+    assert.deepEqual(parseApoioNotificationEmail(asteriscoDepois), esperado);
+  });
+
   it("corpo sem match (e-mail de marketing/suporte comunidade@apoia.se) retorna null", () => {
     const body = "Confira as novidades da comunidade apoia.se este mês! Novos recursos disponíveis.";
     assert.equal(parseApoioNotificationEmail(body), null);
@@ -128,6 +143,28 @@ describe("parseApoioNotificationEmail (#3859)", () => {
 // ─── parsePromessaEmail (#3912) ──────────────────────────────────────────
 
 describe("parsePromessaEmail (#3912)", () => {
+  it("#4171 — corpo REAL da apoia.se (260727, Raul): asterisco DEPOIS do R$ (R$ *10*), não antes — TRAVA O BUG", () => {
+    // Corpo text/plain real capturado da mensagem Gmail 19fa424ce8e48ec7,
+    // 2026-07-27T15:15:02Z. Este é o formato que a apoia.se realmente manda —
+    // a versão anterior de PROMESSA_LINE_RE só tolerava asterisco ANTES do
+    // `R$` e retornava null pra este corpo (por isso a promessa do Raul foi
+    // perdida em produção). Se este teste falhar, o fix de #4171 regrediu.
+    const body =
+      "Raul <raul.jperez@gmail.com> recém prometeu um apoio de R$ *10* para sua campanha diar.ia.br.";
+    const parsed = parsePromessaEmail(body);
+    assert.deepEqual(parsed, { name: "Raul", email: "raul.jperez@gmail.com", value: 10 });
+  });
+
+  it("#4171 — as 3 variantes de posição do asterisco parseiam pro MESMO resultado", () => {
+    const semAsterisco = "Raul <raul.jperez@gmail.com> recém prometeu um apoio de R$10";
+    const asteriscoAntes = "Raul <raul.jperez@gmail.com> recém prometeu um apoio de *R$10*";
+    const asteriscoDepois = "Raul <raul.jperez@gmail.com> recém prometeu um apoio de R$ *10*";
+    const esperado = { name: "Raul", email: "raul.jperez@gmail.com", value: 10 };
+    assert.deepEqual(parsePromessaEmail(semAsterisco), esperado);
+    assert.deepEqual(parsePromessaEmail(asteriscoAntes), esperado);
+    assert.deepEqual(parsePromessaEmail(asteriscoDepois), esperado);
+  });
+
   it("caso comprovado 260722: Ivan — promessa de R$10", () => {
     const body = "Ivan <ivan.andrade81@gmail.com> recém prometeu um apoio de R$10";
     const parsed = parsePromessaEmail(body);
@@ -231,6 +268,62 @@ describe("gmailDrainCursorPath / loadGmailDrainCursor / saveGmailDrainCursor (#3
       mkdirSync(join(root, "data", "apoia-se"), { recursive: true });
       writeFileSync(join(root, "data", "apoia-se", "gmail-drain-cursor.json"), "{not json");
       assert.deepEqual(loadGmailDrainCursor(root), { last_drain_iso: null });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── quarentena de mensagens não-parseadas (#4171) ──────────────────────
+
+describe("unparsedQuarantinePath / appendUnparsedQuarantine (#4171)", () => {
+  it("path segue a convenção de gmail-drain-cursor.json, sob data/apoia-se/", () => {
+    const path = unparsedQuarantinePath("/root");
+    assert.match(path, /apoia-se[\\/]unparsed-quarantine\.jsonl$/);
+  });
+
+  it("append cria o arquivo (+diretório) se ausente e escreve 1 linha JSON", () => {
+    const root = mkdtempSync(join(tmpdir(), "apoia-unparsed-quarantine-create-"));
+    try {
+      appendUnparsedQuarantine(root, {
+        messageId: "m1",
+        threadId: "t1",
+        receivedAtIso: "2026-07-27T15:15:02.000Z",
+        bodySnippet: "corpo não reconhecido",
+      });
+      const raw = readFileSync(unparsedQuarantinePath(root), "utf-8");
+      const lines = raw.trim().split("\n");
+      assert.equal(lines.length, 1);
+      assert.deepEqual(JSON.parse(lines[0]), {
+        messageId: "m1",
+        threadId: "t1",
+        receivedAtIso: "2026-07-27T15:15:02.000Z",
+        bodySnippet: "corpo não reconhecido",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("2 appends acumulam (append-only, não sobrescreve)", () => {
+    const root = mkdtempSync(join(tmpdir(), "apoia-unparsed-quarantine-accumulate-"));
+    try {
+      appendUnparsedQuarantine(root, {
+        messageId: "m1",
+        threadId: "t1",
+        receivedAtIso: "2026-07-27T15:15:02.000Z",
+        bodySnippet: "primeiro",
+      });
+      appendUnparsedQuarantine(root, {
+        messageId: "m2",
+        threadId: "t1",
+        receivedAtIso: "2026-07-27T16:00:00.000Z",
+        bodySnippet: "segundo",
+      });
+      const lines = readFileSync(unparsedQuarantinePath(root), "utf-8").trim().split("\n");
+      assert.equal(lines.length, 2);
+      assert.equal(JSON.parse(lines[0]).messageId, "m1");
+      assert.equal(JSON.parse(lines[1]).messageId, "m2");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -535,6 +628,129 @@ describe("drainApoiaSeNotifications (#3859)", () => {
       assert.equal(result.notifications[0].email, "alalmas@gmail.com");
       assert.equal(result.promessas?.length, 1);
       assert.equal(result.promessas?.[0].email, "ivan.andrade81@gmail.com");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // ─── mensagens não-parseadas (#4171) ────────────────────────────────────
+
+  it("mensagem que casa a query mas não bate nenhum template: contabilizada em 'unparsed', messageId em quarentena, e o cursor AINDA ASSIM avança", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apoia-gmail-drain-unparsed-"));
+    try {
+      const gmailFetch = (async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/threads?")) {
+          return new Response(JSON.stringify({ threads: [makeThreadSummary("t1")] }), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({
+            id: "t1",
+            messages: [
+              // Casa a query (subject "novo apoio"/"nova promessa"), mas o
+              // corpo não bate nenhum dos 2 templates — ex: apoia.se mudou o
+              // template de novo, ou é ruído que escapou da query.
+              makePlainMessage("m1", "1752652800000", "Novo template inesperado da apoia.se — sem match nenhum."),
+            ],
+          }),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+
+      const result = await drainApoiaSeNotifications(root, { gmailFetch });
+
+      assert.equal(result.notifications.length, 0);
+      assert.deepEqual(result.promessas, undefined);
+      assert.equal(result.unparsed, 1);
+
+      // Quarentena recebeu o messageId pra reprocessamento manual (#4171).
+      const quarantineLines = readFileSync(unparsedQuarantinePath(root), "utf-8").trim().split("\n");
+      assert.equal(quarantineLines.length, 1);
+      const entry = JSON.parse(quarantineLines[0]);
+      assert.equal(entry.messageId, "m1");
+      assert.equal(entry.threadId, "t1");
+      assert.equal(entry.receivedAtIso, new Date(1752652800000).toISOString());
+      assert.match(entry.bodySnippet, /Novo template inesperado/);
+
+      // DECISÃO DO COORDENADOR (#4171): o cursor avança por cima da mensagem
+      // não-parseada mesmo assim — travar aqui congelaria o drain inteiro
+      // pra sempre contra uma mensagem cronicamente não-parseável.
+      const cursor = loadGmailDrainCursor(root);
+      assert.equal(cursor.last_drain_iso, new Date(1752652800000).toISOString());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("nenhuma mensagem não-parseada -> campo 'unparsed' fica ausente (não 0) — mesma convenção de 'errors'/'promessas', e nenhuma quarentena é criada", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apoia-gmail-drain-no-unparsed-"));
+    try {
+      const gmailFetch = (async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/threads?")) {
+          return new Response(JSON.stringify({ threads: [makeThreadSummary("t1")] }), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({
+            id: "t1",
+            messages: [
+              makePlainMessage(
+                "m1",
+                "1752652800000",
+                "ALMIR <alalmas@gmail.com> acabou de apoiar sua campanha diar.ia.br com o valor de *R$25* !",
+              ),
+            ],
+          }),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+
+      const result = await drainApoiaSeNotifications(root, { gmailFetch });
+
+      assert.equal("unparsed" in result, false);
+      assert.equal(existsSync(unparsedQuarantinePath(root)), false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#4171 regressão: apoio confirmado + promessa válida + mensagem não-parseada na MESMA leva — cada um vai pro destino certo", async () => {
+    const root = mkdtempSync(join(tmpdir(), "apoia-gmail-drain-mixed-unparsed-"));
+    try {
+      const gmailFetch = (async (url: string | URL) => {
+        const u = String(url);
+        if (u.includes("/threads?")) {
+          return new Response(JSON.stringify({ threads: [makeThreadSummary("t1")] }), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({
+            id: "t1",
+            messages: [
+              makePlainMessage(
+                "m1",
+                "1752652800000",
+                "ALMIR <alalmas@gmail.com> acabou de apoiar sua campanha diar.ia.br com o valor de *R$25* !",
+              ),
+              makePlainMessage(
+                "m2",
+                "1752739200000",
+                "Raul <raul.jperez@gmail.com> recém prometeu um apoio de R$ *10* para sua campanha diar.ia.br.",
+              ),
+              makePlainMessage("m3", "1752825600000", "Mensagem que não bate nenhum template conhecido."),
+            ],
+          }),
+          { status: 200 },
+        );
+      }) as typeof fetch;
+
+      const result = await drainApoiaSeNotifications(root, { gmailFetch });
+
+      assert.equal(result.notifications.length, 1);
+      assert.equal(result.notifications[0].email, "alalmas@gmail.com");
+      assert.equal(result.promessas?.length, 1);
+      assert.equal(result.promessas?.[0].email, "raul.jperez@gmail.com");
+      assert.equal(result.promessas?.[0].value, 10);
+      assert.equal(result.unparsed, 1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
