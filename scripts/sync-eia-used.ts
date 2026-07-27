@@ -20,8 +20,10 @@ import { enumerateEditionDirs } from "./lib/find-current-edition.ts";
 // #4125 (item 7): lock sobre data/eia-used.json — mesma classe de race de
 // eia-log-used.ts (ver rationale completo lá), mesmo mecanismo de
 // scripts/lib/social-published-store.ts (#758/#918), extraído em
-// scripts/lib/file-lock.ts.
-import { acquireLock, releaseLock } from "./lib/file-lock.ts";
+// scripts/lib/file-lock.ts. `withFileLock` (não acquireLock/releaseLock
+// crus) porque o call site abaixo é exatamente o padrão acquire→try→
+// finally-release que o helper existe pra encapsular.
+import { withFileLock } from "./lib/file-lock.ts";
 
 const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const EAI_USED_PATH = resolve(ROOT, "data", "eia-used.json");
@@ -97,12 +99,7 @@ function main() {
   // silenciosamente perdida quando este script sobrescrevesse com
   // `[...existing, ...toAdd]` baseado num `existing` já desatualizado.
   const lockPath = EAI_USED_PATH + ".lock";
-  acquireLock(lockPath);
-  try {
-    runSync(editionDirs, editionDirsByAammdd, dryRun);
-  } finally {
-    releaseLock(lockPath);
-  }
+  withFileLock(lockPath, () => runSync(editionDirs, editionDirsByAammdd, dryRun));
 }
 
 /** Extraído de main() (#4125 item 7) — corpo real da sincronização, agora sob lock. */

@@ -19,8 +19,10 @@ import fs from 'fs';
 // a 2ª sobrescrever a entrada da 1ª, e uma edição futura pode selecionar foto
 // já usada sem erro visível. Mesmo mecanismo de lock já usado por
 // scripts/lib/social-published-store.ts (#758/#918) — reusado, não
-// reinventado (ver scripts/lib/file-lock.ts).
-import { acquireLock, releaseLock } from './lib/file-lock.ts';
+// reinventado (ver scripts/lib/file-lock.ts). `withFileLock` (não só
+// acquireLock/releaseLock crus) porque o call site abaixo é exatamente o
+// padrão acquire→try→finally-release que o helper existe pra encapsular.
+import { withFileLock } from './lib/file-lock.ts';
 
 interface UsedEntry {
   // Format do edition_date varia historicamente: novas entries usam YYMMDD
@@ -73,9 +75,7 @@ function loadLog(): UsedEntry[] {
 // entrada da 1ª silenciosamente. `.lock` ao lado de LOG_PATH, mesmo mecanismo
 // de scripts/lib/social-published-store.ts (ver scripts/lib/file-lock.ts).
 const lockPath = LOG_PATH + '.lock';
-acquireLock(lockPath);
-let result: { logged: UsedEntry; total_entries: number; dropped_prior_same_edition: number };
-try {
+const result = withFileLock(lockPath, () => {
   const log: UsedEntry[] = loadLog();
 
   const entry: UsedEntry = {
@@ -103,9 +103,7 @@ try {
   fs.writeFileSync(tmpPath, JSON.stringify(cleaned, null, 2) + '\n');
   fs.renameSync(tmpPath, LOG_PATH);
 
-  result = { logged: entry, total_entries: cleaned.length, dropped_prior_same_edition: dropped };
-} finally {
-  releaseLock(lockPath);
-}
+  return { logged: entry, total_entries: cleaned.length, dropped_prior_same_edition: dropped };
+});
 
 console.log(JSON.stringify(result));
