@@ -72,3 +72,38 @@ Acumular envios até ~150 cliques de topo somados nos dois braços (ou fim do ci
   - Leitura: B degrada progressivamente (abertura pela metade no envio 8, colapso no envio 9), com o clique caindo junto. Reclamações formais ~0 nas 4 campanhas → **não é denúncia de leitor, é colocação de caixa de entrada** (foldering), que o contador `complaints` da Brevo não captura. Células comparáveis por construção (split 50/50 sistemático dentro do MESMO envio), então qualidade de contato não explica o gap.
   - Guardrail furado sem parar o round: B já estava abaixo do limiar de abertura (<15%) no envio 8, e o envio 9B saiu mesmo assim — com resultado pior. Enforcement automático entre envios: ver issue irmã do #4061.
   - `status` do experimento no registro da dashboard atualizado pra `encerrado` com `closureNote` (`workers/brevo-dashboard/src/experiment-cta.ts`).
+- 2026-07-27 — **investigação de causa (#4061), escopo autônomo = só diagnóstico offline** (decisão do editor, comentário 260727): diff dos dois HTMLs canônicos + hipótese de gatilho, sem tocar campanhas.
+
+## Investigação de causa (#4061)
+
+### O diff exato entre os braços
+
+Única variável do protocolo, o parágrafo do topo (`scripts/clarice-cta-ab-setup.ts`, `TOPO_A`/`TOPO_B`):
+
+- **A (controle):** "Se quiser receber tutoriais e notícias de IA todos os dias, se cadastre gratuitamente **aqui**." — âncora de 1 palavra ("aqui"), verbo no infinitivo/reflexivo ("se cadastre"), sem marca em destaque, sem símbolo.
+- **B (tratamento):** "E pra não esperar um mês: a **diar.ia.br** entrega isso todo dia — 5 minutos pra se manter atualizado e usar melhor as IAs. **Assine grátis a edição diária →**" — âncora é a frase inteira ("Assine grátis a edição diária →", verbo imperativo + "grátis" + seta), wordmark em bold com cor de destaque logo antes.
+
+O re-PUT do HTML **não é candidato**: o #4045 já comparou 96 vs 98 byte-a-byte e o único diff fora do parágrafo do topo é o sufixo esperado `utm_campaign=cta-a`→`cta-b` — sem corrupção, sem link extra, sem alteração de proporção texto/link no resto do corpo (só esse bloco muda).
+
+### Candidatos e avaliação
+
+1. **Palavra "grátis"** — descartada como diferenciador isolado: aparece nos DOIS braços ("gratuitamente" em A, "grátis" em B), só muda a flexão.
+2. **Proporção texto/link do e-mail inteiro** — descartada: o bloco do meio ("Assinar a edição diária") e o encerramento são idênticos nos dois braços; só o parágrafo do topo muda, e o texto adicional em B (~25 palavras a mais) é marginal frente ao corpo completo do digest.
+3. **HTML corrompido / re-PUT** — descartada (ver acima, já coberto pelo #4045).
+4. **Âncora do link + densidade promocional do bloco** — candidato mais forte, não descartado: em B a âncora clicável é uma frase-CTA completa com verbo imperativo ("Assine"), a palavra "grátis" adjacente ao link (não só em outra frase), e o glifo "→", precedida por uma wordmark em **bold** com cor de destaque. Esse padrão — CTA imperativo + "grátis" + seta, tudo no mesmo bloco clicável, logo no topo do e-mail (above the fold) — é um sinal textual clássico de classificadores de conteúdo promocional/comercial (Gmail e afins), diferente da âncora "aqui" de A, que é neutra e não carrega esses tokens.
+
+### Leitura: gatilho vs condição de fundo
+
+A causa mais provável **não é puramente a copy nem puramente a infraestrutura** — é a combinação:
+
+- A reputação do domínio remetente (`clarice.ai`) já estava degradada antes do experimento: Postmaster Tools mostra reclamação de spam em ~1,0% desde início de julho (pico 1,5% em 20/07), muito acima do limiar do Google (0,10%) — ver #4063. A Brevo não captura isso (`complaints` fica ≤0,02%) porque a maior parte da base é Gmail e o botão "marcar como spam" do Gmail não passa por feedback loop.
+- Nessa condição de reputação já fragilizada, o parágrafo de topo de B, com densidade de sinais promocionais (CTA imperativo + "grátis" + seta + marca em destaque, tudo above the fold) é plausivelmente o empurrão que faltava para o classificador de conteúdo do Gmail foldear aquele fluxo especificamente para Promoções/Spam — enquanto A, com âncora neutra, ficou abaixo do limiar de suspeita.
+- **Isto não está provado, é a hipótese mais consistente com a evidência disponível.** Os dois braços são confundidos com a tendência temporal de reputação (envio 9 pior que envio 8 nos DOIS braços, mesmo em A: 21,7%→19,0%) — não dá para isolar 100% o efeito da copy do efeito de reputação caindo ao longo dos dias com o mesmo teste rodando. O que a evidência permite afirmar com confiança: (a) não é infraestrutura/IP (headers idênticos, #4045); (b) não é reclamação de leitor (complaints ~0); (c) é colocação de caixa, não persuasão (MPP prefetch divergente); (d) dado que a única variável de conteúdo entre os braços é a copy do topo, e a copy de B tem densidade promocional muito maior que A no bloco mais sensível (above the fold), essa é a explicação mais parcimoniosa para por que B piorou MAIS que A ao longo dos dois envios, e não só igualmente com a tendência de fundo.
+
+### Recuperação do canal pós-envio-9 — PENDENTE
+
+Não verificada nesta investigação (escopo 260727 restringiu a diagnóstico offline; sessão rodou em ambiente cloud sem acesso ao junction `data/` nem à dashboard local). Fica pendente de um envio futuro do ramp, conforme a própria decisão do editor no #4061 registra — não bloqueia o fechamento desta parte.
+
+### Recomendação (não é decisão — cabe ao editor)
+
+Não repetir o protocolo A/B nesta peça até: (a) o #4063 corrigir a fonte do circuit breaker de spam (Postmaster em vez de `complaints` da Brevo) e a reputação do domínio voltar a operar abaixo de 0,3%; e (b) o #4064 (enforcement de guardrail entre envios) estar implementado, para que um braço que já furou o limiar de abertura no envio N não volte a sair no envio N+1. Refazer o round hoje, mesmo com espaçamento e alternância de ordem corrigidos, herdaria a mesma reputação degradada de fundo e arriscaria reproduzir o problema.
