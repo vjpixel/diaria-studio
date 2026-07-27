@@ -2116,7 +2116,14 @@ export async function handleJogarPage(url: URL, env: Env, request?: Request): Pr
   // válida (`readWebSessionEmail`), serve a tela de gate em vez do jogo.
   // `request` opcional (retrocompat com testes que chamam sem ele — nesse
   // caso o gate nunca ativa, mesmo comportamento pré-#4054).
-  if (request) {
+  // #4109 (achado ao vivo 260727, editor): o gate não pode ser um bloqueio
+  // sem saída — `skip_gate=1` (setado pelo link "Agora não, continuar
+  // jogando" de `renderJogarGatePage`) libera ESTA navegação específica sem
+  // gravar cookie/sessão nenhuma; a próxima transição de rodada volta a
+  // checar o servidor normalmente e pode gatear de novo (nudge recorrente,
+  // não permanente — decisão do editor, não é bypass permanente).
+  const skipGate = url.searchParams.get("skip_gate") === "1";
+  if (request && !skipGate) {
     const cookieHeader = request.headers.get("Cookie");
     const freeRoundUsed = !!parseCookieHeader(cookieHeader, FREE_ROUND_COOKIE);
     if (freeRoundUsed) {

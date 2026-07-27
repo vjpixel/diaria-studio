@@ -313,6 +313,38 @@ describe("GET /jogar — gate por rodada (#4054)", () => {
     const html = await res.text();
     assert.match(html, /Você já jogou sua rodada livre/);
   });
+
+  it("#4109: link de skip existe na tela de gate", () => {
+    const html = renderJogarGatePage(null);
+    assert.match(html, /Agora não, continuar jogando/);
+    assert.match(html, /skip_gate=1/);
+  });
+
+  it("#4109: cookie de rodada livre usada, SEM sessão, mas com ?skip_gate=1 → jogo normal (bypass de 1 navegação)", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(
+      new Request("https://poll.test/jogar?skip_gate=1", { headers: { Cookie: `${FREE_ROUND_COOKIE}=1` } }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    const html = await res.text();
+    assert.doesNotMatch(html, /Você já jogou sua rodada livre/);
+  });
+
+  it("#4109: skip_gate=1 é não-persistente — próxima requisição sem o param volta a gatear", async () => {
+    const env = makeEnv();
+    const skipped = await worker.fetch(
+      new Request("https://poll.test/jogar?skip_gate=1", { headers: { Cookie: `${FREE_ROUND_COOKIE}=1` } }),
+      env,
+    );
+    assert.doesNotMatch(await skipped.text(), /Você já jogou sua rodada livre/);
+
+    const again = await worker.fetch(
+      new Request("https://poll.test/jogar", { headers: { Cookie: `${FREE_ROUND_COOKIE}=1` } }),
+      env,
+    );
+    assert.match(await again.text(), /Você já jogou sua rodada livre/);
+  });
 });
 
 // ── GET /vote?brand=web — identidade pós-gate via cookie (paralela ao token) ─
