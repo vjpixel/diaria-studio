@@ -214,6 +214,28 @@ export function filterCycleCampaigns(campaigns: BrevoCampaignListItem[], cycle: 
 }
 
 /**
+ * Cross-check WARNING-ONLY pra `--campaign-id N` (finding 2 do review #4142):
+ * o operador pediu explicitamente pra pular toda a descoberta/matching por
+ * nome (#4082 item 2) — isso continua valendo, o script NUNCA bloqueia aqui.
+ * Mas nada avisava se o ID apontasse pra uma campanha de outro ciclo (dedo
+ * gordo ao colar o ID). Retorna a mensagem de aviso (para o caller imprimir)
+ * ou `undefined` se o nome bate com algum prefixo esperado. Pure.
+ */
+export function campaignCycleMismatchWarning(
+  campaign: Pick<BrevoCampaignListItem, "id" | "name">,
+  cycle: string,
+): string | undefined {
+  const prefixes = cycleNamePrefixes(cycle);
+  const name = typeof campaign.name === "string" ? campaign.name : "";
+  if (prefixes.some((p) => name.startsWith(p))) return undefined;
+  return (
+    `⚠ campanha #${campaign.id} se chama "${campaign.name}", que não bate com nenhum prefixo esperado do ` +
+    `ciclo ${cycle} (${prefixes.map((p) => `"${p}"`).join(" ou ")}) — prosseguindo mesmo assim porque ` +
+    `--campaign-id é explícito. Confirme que é a campanha certa antes de responder a qualquer prompt.`
+  );
+}
+
+/**
  * Separa as campanhas do ciclo em queued/scheduled (elegíveis a update) vs.
  * não-elegíveis (puladas — NUNCA recebem PUT). Defensivo: mesmo que a query
  * já tenha filtrado do lado da Brevo, este segundo filtro local garante que
@@ -276,6 +298,37 @@ export async function sumListSubscribers(apiKey: string, listIds: number[]): Pro
   return total;
 }
 
+/**
+ * Detecta audiência anômala (finding 3 do review #4142): `totalSubscribers`
+ * zero, ou `recipients.lists` ausente/vazio, NÃO é sucesso — é estado
+ * anômalo. Antes desta função, uma campanha com `recipients.lists` ausente
+ * somava 0 antes e 0 depois, e `detectPostRescheduleDivergence` (que só
+ * compara antes==depois) deixava passar silenciosamente. Chamado nos dois
+ * momentos (`"antes"` do suspend, `"depois"` do reschedule) — a Brevo re-tira
+ * o snapshot de destinatários ao reagendar, então uma lista que ficou vazia
+ * só se manifesta no momento "depois". Pure — retorna a mensagem de erro ou
+ * `undefined` se a audiência for normal.
+ */
+export function detectZeroAudienceAnomaly(
+  moment: "antes" | "depois",
+  listIds: number[],
+  totalSubscribers: number,
+): string | undefined {
+  if (!Array.isArray(listIds) || listIds.length === 0) {
+    return (
+      `recipients.lists ausente/vazio ${moment} do reapply — 0 lista(s) associada(s) à campanha ` +
+      `(estado anômalo, não sucesso).`
+    );
+  }
+  if (totalSubscribers === 0) {
+    return (
+      `totalSubscribers = 0 ${moment} do reapply (listas: [${listIds.join(",")}]) — audiência vazia é ` +
+      `estado anômalo, não sucesso.`
+    );
+  }
+  return undefined;
+}
+
 export interface FinalStateExpectation {
   scheduledAt?: string | null;
   subject?: string;
@@ -325,6 +378,10 @@ export function detectPostRescheduleDivergence(
       `desde o agendamento original)`,
     );
   }
+  // Finding 3 (#4142): 0==0 passaria pelos checks acima sem soar alarme —
+  // audiência zerada é anômala mesmo quando "antes" e "depois" concordam.
+  const anomaly = detectZeroAudienceAnomaly("depois", actual.listIds, actual.totalSubscribers);
+  if (anomaly) problems.push(anomaly);
   return problems;
 }
 
@@ -357,6 +414,22 @@ export interface ApplyResult {
   finalScheduledAt?: string | null;
   totalSubscribersBefore: number;
   totalSubscribersAfter: number;
+}
+
+/**
+ * Erro distinto (finding 1 do review #4142) pra sinalizar especificamente que
+ * uma campanha ficou PRESA em "suspended" (falha na Fase A crítica, entre o
+ * suspend bem-sucedido e o reschedule bem-sucedido) — o pior estado possível,
+ * já coberto por `emitLoudBanner()` antes de chegar aqui. Distinto de um erro
+ * genérico (ex: divergência pós-reschedule na Fase B, onde a campanha JÁ
+ * voltou pra fila) pra permitir que o runner do lote (`runApplyBatch`) aborte
+ * o processamento das próximas campanhas só neste caso específico.
+ */
+export class StuckSuspendedCampaignError extends Error {
+  constructor(public readonly campaignId: number, message: string) {
+    super(message);
+    this.name = "StuckSuspendedCampaignError";
+  }
 }
 
 /**
@@ -403,6 +476,14 @@ export async function applyReapply(
     totalSubscribers: await sumListSubscribers(apiKey, originalListIds),
   };
 
+  // Finding 3 (#4142): audiência já anômala ANTES de qualquer PUT — falha alto
+  // e não toca nada (nem suspende), em vez de deixar o suspend/reschedule
+  // rodar sobre uma campanha com 0 destinatários.
+  const beforeAnomaly = detectZeroAudienceAnomaly("antes", originalListIds, expected.totalSubscribers);
+  if (beforeAnomaly) {
+    throw new Error(`Campanha #${candidate.id}: ${beforeAnomaly} Abortando antes de suspender (nada foi tocado).`);
+  }
+
   // Fase A (crítica): suspend -> update html -> reschedule. Qualquer falha
   // daqui pra baixo deixa a campanha PRESA em "suspended" — banner obrigatório.
   await setCampaignStatus(apiKey, candidate.id, "suspended");
@@ -428,7 +509,10 @@ export async function applyReapply(
         `{"scheduledAt":"${expected.scheduledAt}"} ou pela UI "Schedule"). Sem essa ação o envio NÃO VAI SAIR — ` +
         `a campanha fica presa em "suspended" indefinidamente.`,
     });
-    throw e;
+    // Finding 1 (#4142): erro distinto (não o `e` genérico) pra que
+    // `runApplyBatch` consiga distinguir "presa suspensa" (abortar o lote)
+    // de qualquer outra falha (ex: divergência pós-reschedule, Fase B).
+    throw new StuckSuspendedCampaignError(candidate.id, message);
   }
 
   // Fase B: verificação pós-reschedule — a campanha JÁ voltou pra fila aqui;
@@ -467,6 +551,69 @@ export async function applyReapply(
     totalSubscribersBefore: expected.totalSubscribers,
     totalSubscribersAfter: totalAfter,
   };
+}
+
+export interface BatchRunResult {
+  /** Campanhas que passaram por `applyReapply` com sucesso. */
+  succeeded: ApplyResult[];
+  /** IDs de TODAS as campanhas que falharam (presas OU divergência pós-reschedule). */
+  failedIds: number[];
+  /** true se o lote foi interrompido por stuck-suspended (finding 1 #4142). */
+  aborted: boolean;
+  /** Campanhas do lote que NUNCA chegaram a ser tentadas por causa do abort. */
+  notProcessed: BrevoCampaignListItem[];
+}
+
+/**
+ * Roda `applyReapply` sequencialmente sobre `toUpdate`. Finding 1 (#4142):
+ * na primeira campanha que fica PRESA em "suspended" (`StuckSuspendedCampaignError`),
+ * aborta o lote inteiro em vez de seguir tentando as próximas — a atenção do
+ * operador já foi consumida pelo banner de `applyReapply`, e continuar mexendo
+ * noutras campanhas agendadas enquanto uma está presa multiplica o risco sem
+ * supervisão. Emite um segundo banner nomeando quais campanhas NÃO chegaram a
+ * ser processadas. Outras falhas (ex: divergência pós-reschedule na Fase B —
+ * a campanha já está de volta na fila, não presa) NÃO abortam o lote, porque
+ * não é o estado "sai da fila em silêncio" que motiva o abort.
+ *
+ * Extraído de `main()` pra ser testável sem depender do HTML em disco
+ * (`html` já vem pronto como parâmetro).
+ */
+export async function runApplyBatch(
+  apiKey: string,
+  cycle: string,
+  toUpdate: BrevoCampaignListItem[],
+  html: string,
+): Promise<BatchRunResult> {
+  const succeeded: ApplyResult[] = [];
+  const failedIds: number[] = [];
+  for (let i = 0; i < toUpdate.length; i++) {
+    const c = toUpdate[i];
+    try {
+      const result = await applyReapply(apiKey, cycle, c, html);
+      if (result) succeeded.push(result);
+    } catch (e) {
+      failedIds.push(c.id);
+      if (e instanceof StuckSuspendedCampaignError) {
+        const notProcessed = toUpdate.slice(i + 1);
+        if (notProcessed.length > 0) {
+          emitLoudBanner({
+            stage: `clarice-reapply-scheduled-html --cycle ${cycle}`,
+            reason:
+              `lote INTERROMPIDO: campanha #${c.id} ficou SUSPENSA (ver banner acima). ` +
+              `${notProcessed.length} campanha(s) do lote NÃO foram processadas — nada foi tocado nelas.`,
+            action:
+              `resolva a campanha #${c.id} presa em "suspended" primeiro (ver ação no banner acima), ` +
+              `depois rode o script de novo pras campanhas que faltam: ` +
+              `#${notProcessed.map((x) => x.id).join(", #")}.`,
+          });
+        }
+        return { succeeded, failedIds, aborted: true, notProcessed };
+      }
+      // Falha não-stuck (ex: divergência pós-reschedule) já emitiu seu
+      // próprio banner em applyReapply — segue pras próximas campanhas.
+    }
+  }
+  return { succeeded, failedIds, aborted: false, notProcessed: [] };
 }
 
 /** Parseia --apply (default false = dry-run). */
@@ -524,6 +671,8 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       `(descoberta por nome pulada — #4082)`,
     );
     const single = await fetchCampaignById(apiKey, campaignIdArg);
+    const mismatchWarning = campaignCycleMismatchWarning(single, cycle);
+    if (mismatchWarning) console.error(mismatchWarning);
     if (isSchedulableStatus(single.status)) {
       toUpdate = [single];
       skipped = [];
@@ -553,20 +702,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     return;
   }
 
-  const failures: number[] = [];
-  for (const c of toUpdate) {
-    try {
-      await applyReapply(apiKey, cycle, c, html);
-    } catch {
-      // applyReapply já emitiu o banner ruidoso (#4082 item 5) — só
-      // registramos aqui pra garantir exit code != 0 no fim do processo.
-      failures.push(c.id);
-    }
+  const { failedIds, aborted, notProcessed } = await runApplyBatch(apiKey, cycle, toUpdate, html);
+
+  if (aborted) {
+    console.error(
+      `\n✗ lote abortado após stuck-suspended — ${notProcessed.length} campanha(s) NÃO processada(s): ` +
+      `#${notProcessed.map((c) => c.id).join(", #")}.`,
+    );
+    process.exit(1);
   }
 
-  if (failures.length > 0) {
+  if (failedIds.length > 0) {
     console.error(
-      `\n✗ ${failures.length} campanha(s) com falha — ver banner(s) acima. IDs: #${failures.join(", #")}`,
+      `\n✗ ${failedIds.length} campanha(s) com falha — ver banner(s) acima. IDs: #${failedIds.join(", #")}`,
     );
     process.exit(1);
   }

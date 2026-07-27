@@ -6,14 +6,18 @@ import {
   cycleNamePrefix,
   cycleNamePrefixes,
   filterCycleCampaigns,
+  campaignCycleMismatchWarning,
   partitionByQueuedStatus,
   buildPlanLines,
   reapplyHtml,
   setCampaignStatus,
   sumListSubscribers,
   detectPostRescheduleDivergence,
+  detectZeroAudienceAnomaly,
   emitLoudBanner,
   applyReapply,
+  runApplyBatch,
+  StuckSuspendedCampaignError,
   parseApplyArg,
   parseCampaignIdArg,
   main,
@@ -179,6 +183,32 @@ describe("cycleNamePrefixes / filterCycleCampaigns — reconhece os dois fluxos 
     ];
     const matched = filterCycleCampaigns(campaigns, "2606-07");
     assert.deepEqual(matched.map((c) => c.id).sort(), [1, 2]);
+  });
+});
+
+describe("campaignCycleMismatchWarning (finding 2 do review #4142 — cross-check warning-only pra --campaign-id)", () => {
+  it("nome bate com prefixo do ciclo -> undefined (sem aviso)", () => {
+    const warning = campaignCycleMismatchWarning(
+      { id: 99, name: "Clarice News 2606 d01-A (sáb)" },
+      "2606-07",
+    );
+    assert.equal(warning, undefined);
+  });
+
+  it("nome bate com o prefixo do fluxo --group -> undefined (sem aviso)", () => {
+    const warning = campaignCycleMismatchWarning({ id: 99, name: "Clarice 2606 grupo:envio10" }, "2606-07");
+    assert.equal(warning, undefined);
+  });
+
+  it("nome não bate com nenhum prefixo do ciclo -> mensagem de aviso clara, nomeando ID e ciclo", () => {
+    const warning = campaignCycleMismatchWarning(
+      { id: 42, name: "Clarice News 2601 d03-C (ciclo antigo)" },
+      "2606-07",
+    );
+    assert.ok(warning);
+    assert.match(warning!, /#42/);
+    assert.match(warning!, /2606-07/);
+    assert.match(warning!, /--campaign-id é explícito/);
   });
 });
 
@@ -369,6 +399,59 @@ describe("detectPostRescheduleDivergence (#4082 item 4 — pure, sem rede)", () 
   });
 });
 
+describe("detectZeroAudienceAnomaly (finding 3 do review #4142 — pure, sem rede)", () => {
+  it("listIds vazio -> anomalia (recipients.lists ausente/vazio)", () => {
+    const msg = detectZeroAudienceAnomaly("antes", [], 0);
+    assert.ok(msg);
+    assert.match(msg!, /ausente\/vazio antes/);
+  });
+
+  it("totalSubscribers 0 mesmo com listIds preenchido -> anomalia", () => {
+    const msg = detectZeroAudienceAnomaly("depois", [55], 0);
+    assert.ok(msg);
+    assert.match(msg!, /totalSubscribers = 0 depois/);
+  });
+
+  it("listIds e totalSubscribers normais -> undefined", () => {
+    assert.equal(detectZeroAudienceAnomaly("antes", [55], 6804), undefined);
+  });
+});
+
+describe("detectPostRescheduleDivergence + anomalia de audiência zero (finding 3 #4142)", () => {
+  const expected = {
+    scheduledAt: "2026-07-27T14:00:00.000Z",
+    subject: "Assunto A",
+    listIds: [] as number[],
+    totalSubscribers: 0,
+  };
+
+  it("0 antes e 0 depois (recipients.lists ausente nos dois momentos) NÃO deve passar silenciosamente — antes bug do finding 3, isto retornava []", () => {
+    const problems = detectPostRescheduleDivergence(expected, {
+      status: "queued",
+      scheduledAt: expected.scheduledAt,
+      subject: expected.subject,
+      listIds: [],
+      totalSubscribers: 0,
+    });
+    assert.ok(problems.length > 0, "deve reportar pelo menos a anomalia de audiência zero");
+    assert.ok(problems.some((p) => /ausente\/vazio depois/.test(p)));
+  });
+
+  it("totalSubscribers 0 pós-reschedule com listIds preenchido -> divergência (anomalia, não sucesso)", () => {
+    const problems = detectPostRescheduleDivergence(
+      { scheduledAt: expected.scheduledAt, subject: expected.subject, listIds: [55], totalSubscribers: 100 },
+      {
+        status: "queued",
+        scheduledAt: expected.scheduledAt,
+        subject: expected.subject,
+        listIds: [55],
+        totalSubscribers: 0,
+      },
+    );
+    assert.ok(problems.some((p) => /totalSubscribers = 0 depois/.test(p)));
+  });
+});
+
 describe("emitLoudBanner (#4082 item 5 — banner impossível de ignorar)", () => {
   it("imprime via console.error contendo STAGE/MOTIVO/AÇÃO", () => {
     const origError = console.error;
@@ -449,7 +532,10 @@ describe("applyReapply — fluxo suspend → update → reschedule (#4082 item 3
   it("scheduledAt restaurado é BYTE-IDÊNTICO ao original capturado antes do suspend", async () => {
     const origFetch = globalThis.fetch;
     const originalScheduledAt = "2026-07-27T14:00:00.000Z";
-    const camp = mockCampaign({ id: 99, scheduledAt: originalScheduledAt, recipients: { lists: [] } });
+    // recipients.lists precisa ser não-vazio/não-zero (finding 3 #4142 aborta
+    // ANTES do suspend se a audiência já for anômala) — este teste quer testar
+    // o byte-identical do scheduledAt, não a anomalia.
+    const camp = mockCampaign({ id: 99, scheduledAt: originalScheduledAt, recipients: { lists: [55] } });
     let capturedScheduledAtPut: string | undefined;
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
       const path = String(url).replace("https://api.brevo.com/v3", "");
@@ -459,6 +545,12 @@ describe("applyReapply — fluxo suspend → update → reschedule (#4082 item 3
         const body = JSON.parse(String(init?.body ?? "{}"));
         if ("scheduledAt" in body) capturedScheduledAtPut = body.scheduledAt;
         return new Response(null, { status: 204 });
+      }
+      if (path.startsWith("/contacts/lists/55")) {
+        return new Response(JSON.stringify({ id: 55, name: "lista", totalSubscribers: 100 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
       }
       if (path === "/emailCampaigns/99") {
         return new Response(JSON.stringify({ ...camp, htmlContent: "<html>novo</html>" }), {
@@ -481,7 +573,11 @@ describe("applyReapply — fluxo suspend → update → reschedule (#4082 item 3
     const origError = console.error;
     const errorLines: string[] = [];
     console.error = ((...args: unknown[]) => { errorLines.push(args.join(" ")); }) as typeof console.error;
-    const camp = mockCampaign({ id: 99, recipients: { lists: [] } });
+    // recipients.lists precisa ser não-vazio com totalSubscribers>0 (finding 3
+    // #4142 adicionou um abort ANTES do suspend pra audiência anômala — este
+    // teste quer exercitar a falha DEPOIS do suspend, então a audiência
+    // "antes" precisa ser normal pra chegar lá).
+    const camp = mockCampaign({ id: 99, recipients: { lists: [55] } });
     globalThis.fetch = (async (url: string, init?: RequestInit) => {
       const path = String(url).replace("https://api.brevo.com/v3", "");
       const method = init?.method ?? "GET";
@@ -494,13 +590,22 @@ describe("applyReapply — fluxo suspend → update → reschedule (#4082 item 3
         }
         return new Response(null, { status: 204 });
       }
+      if (path.startsWith("/contacts/lists/55")) {
+        return new Response(JSON.stringify({ id: 55, name: "lista", totalSubscribers: 100 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
       if (path === "/emailCampaigns/99") {
         return new Response(JSON.stringify(camp), { status: 200, headers: { "content-type": "application/json" } });
       }
       return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
     }) as unknown as typeof globalThis.fetch;
     try {
-      await assert.rejects(() => applyReapply("fake-key", "2606-07", camp, "<html>novo</html>"));
+      await assert.rejects(
+        () => applyReapply("fake-key", "2606-07", camp, "<html>novo</html>"),
+        (e: unknown) => e instanceof StuckSuspendedCampaignError,
+      );
       const out = errorLines.join("\n");
       assert.match(out, /PIPELINE PAROU/);
       assert.match(out, /#99/);
@@ -554,6 +659,98 @@ describe("applyReapply — fluxo suspend → update → reschedule (#4082 item 3
     }
   });
 
+  it("finding 3 (#4142): recipients.lists ausente ANTES do suspend -> aborta sem tocar nada (nenhum PUT, nem suspend)", async () => {
+    const origFetch = globalThis.fetch;
+    const camp = mockCampaign({ id: 99, recipients: {} });
+    let putCalled = false;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "PUT") {
+        putCalled = true;
+        return new Response(null, { status: 204 });
+      }
+      return new Response(JSON.stringify(camp), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      await assert.rejects(
+        () => applyReapply("fake-key", "2606-07", camp, "<html>novo</html>"),
+        /ausente\/vazio antes.*Abortando antes de suspender/,
+      );
+      assert.equal(putCalled, false, "nem suspend nem nenhum outro PUT deve ter sido chamado");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("finding 3 (#4142): totalSubscribers 0 ANTES do suspend (lista existe mas vazia) -> aborta sem tocar nada", async () => {
+    const origFetch = globalThis.fetch;
+    const camp = mockCampaign({ id: 99, recipients: { lists: [55] } });
+    let putCalled = false;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const path = String(url).replace("https://api.brevo.com/v3", "");
+      const method = init?.method ?? "GET";
+      if (method === "PUT") {
+        putCalled = true;
+        return new Response(null, { status: 204 });
+      }
+      if (path.startsWith("/contacts/lists/55")) {
+        return new Response(JSON.stringify({ id: 55, name: "lista", totalSubscribers: 0 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify(camp), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      await assert.rejects(
+        () => applyReapply("fake-key", "2606-07", camp, "<html>novo</html>"),
+        /totalSubscribers = 0 antes.*Abortando antes de suspender/,
+      );
+      assert.equal(putCalled, false, "nem suspend nem nenhum outro PUT deve ter sido chamado");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it("finding 1 (#4142): falha na Fase A (suspend->html->reschedule) rejeita com StuckSuspendedCampaignError", async () => {
+    const origFetch = globalThis.fetch;
+    const origError = console.error;
+    console.error = (() => {}) as typeof console.error;
+    // recipients.lists precisa ser não-vazio/não-zero (finding 3 #4142 aborta
+    // ANTES do suspend se a audiência já for anômala) — este teste quer testar
+    // a falha DEPOIS do suspend (Fase A), não a anomalia de audiência.
+    const camp = mockCampaign({ id: 99, recipients: { lists: [55] } });
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const path = String(url).replace("https://api.brevo.com/v3", "");
+      const method = init?.method ?? "GET";
+      if (method === "PUT" && path.endsWith("/status")) return new Response(null, { status: 204 });
+      if (method === "PUT" && path === "/emailCampaigns/99") return new Response("boom", { status: 500 });
+      if (path.startsWith("/contacts/lists/55")) {
+        return new Response(JSON.stringify({ id: 55, name: "lista", totalSubscribers: 100 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (path === "/emailCampaigns/99") {
+        return new Response(JSON.stringify(camp), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      let caught: unknown;
+      try {
+        await applyReapply("fake-key", "2606-07", camp, "<html>novo</html>");
+      } catch (e) {
+        caught = e;
+      }
+      assert.ok(caught instanceof StuckSuspendedCampaignError, "deve lançar StuckSuspendedCampaignError, não Error genérico");
+      assert.equal((caught as StuckSuspendedCampaignError).campaignId, 99);
+    } finally {
+      globalThis.fetch = origFetch;
+      console.error = origError;
+    }
+  });
+
   it("campanha não é mais queued/scheduled na revalidação -> pula sem tocar (retorna null, nenhum PUT)", async () => {
     const origFetch = globalThis.fetch;
     const camp = mockCampaign({ id: 99 });
@@ -572,6 +769,183 @@ describe("applyReapply — fluxo suspend → update → reschedule (#4082 item 3
       assert.equal(putCalled, false);
     } finally {
       globalThis.fetch = origFetch;
+    }
+  });
+});
+
+describe("runApplyBatch (finding 1 do review #4142 — aborta o lote no primeiro stuck-suspended)", () => {
+  /** Monta um fetch mock por campaign id: `behaviors[id]` = "ok" | "stuck". */
+  function makeBatchFetch(behaviors: Record<number, "ok" | "stuck">) {
+    return (async (url: string, init?: RequestInit) => {
+      const path = String(url).replace("https://api.brevo.com/v3", "");
+      const method = init?.method ?? "GET";
+      const idMatch = path.match(/\/emailCampaigns\/(\d+)/);
+      const id = idMatch ? Number(idMatch[1]) : undefined;
+      if (method === "PUT" && path.endsWith("/status")) return new Response(null, { status: 204 });
+      if (method === "PUT" && id !== undefined && path === `/emailCampaigns/${id}`) {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        if ("htmlContent" in body && behaviors[id] === "stuck") {
+          return new Response("boom", { status: 500 });
+        }
+        return new Response(null, { status: 204 });
+      }
+      if (path.startsWith("/contacts/lists/")) {
+        return new Response(JSON.stringify({ id: 55, name: "lista", totalSubscribers: 100 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (id !== undefined) {
+        return new Response(
+          JSON.stringify({
+            id,
+            name: `Clarice News 2606 d0${id}`,
+            status: "queued",
+            subject: "Assunto",
+            scheduledAt: "2026-07-27T14:00:00.000Z",
+            recipients: { lists: [55] },
+            // Sempre "atualizado" — o GET-verify pós-PUT-html de applyReapply
+            // compara contra o `html` passado ao runApplyBatch (sempre
+            // "<html>novo</html>" nestes testes); não modelamos a ordem
+            // antes/depois do PUT porque não é isso que este describe testa.
+            htmlContent: "<html>novo</html>",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch;
+  }
+
+  function campaignItem(id: number): BrevoCampaignListItem {
+    return {
+      id,
+      name: `Clarice News 2606 d0${id}`,
+      status: "queued",
+      subject: "Assunto",
+      scheduledAt: "2026-07-27T14:00:00.000Z",
+      recipients: { lists: [55] },
+    };
+  }
+
+  it("todas OK -> succeeded com as 3, aborted false, notProcessed vazio", async () => {
+    const origFetch = globalThis.fetch;
+    const origError = console.error;
+    console.error = (() => {}) as typeof console.error;
+    globalThis.fetch = makeBatchFetch({});
+    try {
+      const toUpdate = [campaignItem(1), campaignItem(2), campaignItem(3)];
+      const result = await runApplyBatch("fake-key", "2606-07", toUpdate, "<html>novo</html>");
+      assert.equal(result.succeeded.length, 3);
+      assert.equal(result.failedIds.length, 0);
+      assert.equal(result.aborted, false);
+      assert.deepEqual(result.notProcessed, []);
+    } finally {
+      globalThis.fetch = origFetch;
+      console.error = origError;
+    }
+  });
+
+  it("2ª campanha fica stuck-suspended -> aborta o lote, 3ª NUNCA é tentada (nenhum PUT pra ela)", async () => {
+    const origFetch = globalThis.fetch;
+    const origError = console.error;
+    const errorLines: string[] = [];
+    console.error = ((...args: unknown[]) => { errorLines.push(args.join(" ")); }) as typeof console.error;
+    let putCalledForId3 = false;
+    const baseFetch = makeBatchFetch({ 2: "stuck" });
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "PUT" && String(url).includes("/emailCampaigns/3")) putCalledForId3 = true;
+      return baseFetch(url as any, init);
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const toUpdate = [campaignItem(1), campaignItem(2), campaignItem(3)];
+      const result = await runApplyBatch("fake-key", "2606-07", toUpdate, "<html>novo</html>");
+      assert.equal(result.succeeded.length, 1, "só a campanha #1 deve ter sucedido");
+      assert.equal(result.succeeded[0]?.campaignId, 1);
+      assert.ok(result.failedIds.includes(2));
+      assert.equal(result.aborted, true);
+      assert.deepEqual(result.notProcessed.map((c) => c.id), [3], "campanha #3 nunca deveria ter sido tentada");
+      assert.equal(putCalledForId3, false, "nenhum PUT deveria ter sido emitido pra campanha #3");
+      const out = errorLines.join("\n");
+      assert.match(out, /INTERROMPIDO/);
+      assert.match(out, /#3/);
+      assert.match(out, /NÃO foram processadas/);
+    } finally {
+      globalThis.fetch = origFetch;
+      console.error = origError;
+    }
+  });
+
+  it("stuck-suspended é a ÚLTIMA campanha do lote -> aborta mas não emite banner de 'não processadas' (nada sobrou)", async () => {
+    const origFetch = globalThis.fetch;
+    const origError = console.error;
+    const errorLines: string[] = [];
+    console.error = ((...args: unknown[]) => { errorLines.push(args.join(" ")); }) as typeof console.error;
+    globalThis.fetch = makeBatchFetch({ 2: "stuck" });
+    try {
+      const toUpdate = [campaignItem(1), campaignItem(2)];
+      const result = await runApplyBatch("fake-key", "2606-07", toUpdate, "<html>novo</html>");
+      assert.equal(result.aborted, true);
+      assert.deepEqual(result.notProcessed, []);
+      const out = errorLines.join("\n");
+      assert.ok(!/INTERROMPIDO/.test(out), "sem campanhas remanescentes, não há lote a declarar interrompido");
+    } finally {
+      globalThis.fetch = origFetch;
+      console.error = origError;
+    }
+  });
+
+  it("divergência pós-reschedule (não stuck) NÃO aborta o lote — próxima campanha ainda é tentada", async () => {
+    const origFetch = globalThis.fetch;
+    const origError = console.error;
+    console.error = (() => {}) as typeof console.error;
+    // Campanha #1: totalSubscribers muda entre "antes" (100) e "depois" (50) —
+    // divergência pós-reschedule (Fase B, não stuck: a campanha já voltou pra
+    // fila). Campanha #2: fluxo normal, sem divergência.
+    let listCalls = 0;
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      const path = String(url).replace("https://api.brevo.com/v3", "");
+      const method = init?.method ?? "GET";
+      const idMatch = path.match(/\/emailCampaigns\/(\d+)/);
+      const id = idMatch ? Number(idMatch[1]) : undefined;
+      if (method === "PUT" && path.endsWith("/status")) return new Response(null, { status: 204 });
+      if (method === "PUT" && id !== undefined) return new Response(null, { status: 204 });
+      if (path.startsWith("/contacts/lists/")) {
+        listCalls++;
+        // Chamadas 1-2 = campanha #1 (antes=100, depois=50); 3-4 = campanha #2 (100 nos dois).
+        const total = listCalls <= 1 ? 100 : listCalls === 2 ? 50 : 100;
+        return new Response(JSON.stringify({ id: 55, name: "lista", totalSubscribers: total }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (id !== undefined) {
+        return new Response(
+          JSON.stringify({
+            id,
+            name: `Clarice News 2606 d0${id}`,
+            status: "queued",
+            subject: "Assunto",
+            scheduledAt: "2026-07-27T14:00:00.000Z",
+            recipients: { lists: [55] },
+            htmlContent: "<html>novo</html>",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const toUpdate = [campaignItem(1), campaignItem(2)];
+      const result = await runApplyBatch("fake-key", "2606-07", toUpdate, "<html>novo</html>");
+      assert.equal(result.aborted, false, "divergência pós-reschedule não é stuck-suspended — não aborta o lote");
+      assert.ok(result.failedIds.includes(1), "campanha #1 deve estar em failedIds (divergência)");
+      assert.equal(result.succeeded.length, 1, "campanha #2 deve ter sucedido normalmente");
+      assert.equal(result.succeeded[0]?.campaignId, 2);
+    } finally {
+      globalThis.fetch = origFetch;
+      console.error = origError;
     }
   });
 });
