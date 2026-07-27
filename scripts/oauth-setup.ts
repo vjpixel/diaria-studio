@@ -24,6 +24,8 @@
  *   - https://www.googleapis.com/auth/gmail.labels (criar labels)
  *   - https://www.googleapis.com/auth/gmail.modify (criar labels)
  *   - https://www.googleapis.com/auth/webmasters.readonly (#1989: GSC / seo-pull)
+ *   - https://www.googleapis.com/auth/postmaster.readonly (#4063: Gmail Postmaster
+ *     Tools — spamRate diário que alimenta o circuit breaker de spam da Rampa)
  */
 
 import { createServer } from "node:http";
@@ -45,6 +47,12 @@ const SCOPES = [
   "https://www.googleapis.com/auth/gmail.labels",
   "https://www.googleapis.com/auth/gmail.modify", // para criar labels
   "https://www.googleapis.com/auth/webmasters.readonly", // #1989: GSC Search Analytics (seo-pull)
+  // #4063: Gmail Postmaster Tools. A Brevo só enxerga reclamações de FBL e
+  // subconta o spam em ~50× (73% da base é Gmail, e o "marcar como spam" do
+  // Gmail não passa por FBL). O breaker de spam da Rampa passa a ler o
+  // spamRate diário daqui. A API já está habilitada no projeto GCP — o único
+  // pré-req era o scope.
+  "https://www.googleapis.com/auth/postmaster.readonly",
 ];
 
 function buildAuthUrl(clientId: string): string {

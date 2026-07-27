@@ -99,17 +99,21 @@ import { extractEditionsForYear, groupEditionsByMonth, listAllKeys } from "./lea
 // taxa é quem geraria os votos web, então nunca teria amostra suficiente no
 // dia 1). Ver rationale completo em `reorderJogarSequenceBySurprise` abaixo.
 import { getSummedEditionStats } from "./vote";
+import { JOGAR_POSVOTO_UTM, QUIZ_POSVOTO_UTM } from "./utm-registry"; // #4041
+// #4054: gate por rodada do caminho de fora — cookie de sessão (identidade
+// pós-gate) + cookie de "rodada livre já usada" + a própria tela de gate.
+import { FREE_ROUND_COOKIE, readWebSessionEmail, renderJogarGatePage } from "./web-gate";
+import { parseCookieHeader } from "./session-cookie";
 
 /** Brand fixo desta página — `/jogar` É o standalone, não um parâmetro. */
 const JOGAR_BRAND = "web" as const;
 
 /**
  * #3518: URL de assinatura da diária usada no CTA de conversão pós-voto do
- * jogo standalone (o passo de conversão do EPIC #3514). `diaria.beehiiv.com`
- * DIRETO — não `diar.ia.br` — mesma decisão já documentada em
- * `count-subscriptions-by-utm.ts` (#2457) e `monthly-render.ts` (#2975): o
- * redirect do Registro.br em `diar.ia.br` dropa a query string (#2613), o que
- * apagaria silenciosamente o UTM. `utm_source=eia-standalone` segue a MESMA
+ * jogo standalone (o passo de conversão do EPIC #3514). `diar.ia.br` — host
+ * de marca canônico desde 260723 (#4059): o domínio passou pro Cloudflare e o
+ * redirect PRESERVA a query string, então a premissa do #2613 (Registro.br
+ * dropava a query e apagava o UTM) caiu. `utm_source=eia-standalone` segue a MESMA
  * convenção de medição já usada pra Clarice (`utm_source=clarice`) —
  * `count-subscriptions-by-utm.ts --source eia-standalone` mede quantos
  * assinantes vieram por este funil sem nenhum código novo (o script já
@@ -121,8 +125,9 @@ const JOGAR_BRAND = "web" as const;
  * historicamente importa este binding de `./jogar`.
  */
 export { SUBSCRIBE_UTM_SOURCE };
-export const SUBSCRIBE_UTM_MEDIUM = "jogar";
-export const SUBSCRIBE_UTM_CAMPAIGN = "eia-jogar-posvoto";
+// #4041: valores vindos do registry espelhado (`./utm-registry`).
+export const SUBSCRIBE_UTM_MEDIUM = JOGAR_POSVOTO_UTM.medium;
+export const SUBSCRIBE_UTM_CAMPAIGN = JOGAR_POSVOTO_UTM.campaign;
 
 /**
  * Pure (#3518): URL de assinatura com UTM fixo do funil do jogo. Sem
@@ -138,7 +143,7 @@ export function buildSubscribeUrl(): string {
     utm_medium: SUBSCRIBE_UTM_MEDIUM,
     utm_campaign: SUBSCRIBE_UTM_CAMPAIGN,
   });
-  return `https://diaria.beehiiv.com/?${params.toString()}`;
+  return `https://diar.ia.br/?${params.toString()}`;
 }
 
 /**
@@ -208,13 +213,14 @@ export function renderSubscribeCtaBlock(): string {
 // separadamente quantos assinantes vêm do quiz (várias rodadas, mais
 // engajamento) vs. do jogo de par único. `utm_source` continua
 // `eia-standalone` (mesma convenção de `count-subscriptions-by-utm.ts`).
-export const QUIZ_SUBSCRIBE_UTM_SOURCE = "eia-standalone";
-export const QUIZ_SUBSCRIBE_UTM_MEDIUM = "quiz";
-export const QUIZ_SUBSCRIBE_UTM_CAMPAIGN = "eia-quiz-posvoto";
+// #4041: valores vindos do registry espelhado (`./utm-registry`).
+export const QUIZ_SUBSCRIBE_UTM_SOURCE = QUIZ_POSVOTO_UTM.source;
+export const QUIZ_SUBSCRIBE_UTM_MEDIUM = QUIZ_POSVOTO_UTM.medium;
+export const QUIZ_SUBSCRIBE_UTM_CAMPAIGN = QUIZ_POSVOTO_UTM.campaign;
 
 /**
  * Pure (#3579): URL de assinatura com UTM próprio do funil do quiz relâmpago
- * — mesmo destino (`diaria.beehiiv.com`) do `buildSubscribeUrl` (#3518), UTM
+ * — mesmo destino (`diar.ia.br`, #4059) do `buildSubscribeUrl` (#3518), UTM
  * distinto pra medir o quiz separadamente.
  */
 export function buildQuizSubscribeUrl(): string {
@@ -223,7 +229,7 @@ export function buildQuizSubscribeUrl(): string {
     utm_medium: QUIZ_SUBSCRIBE_UTM_MEDIUM,
     utm_campaign: QUIZ_SUBSCRIBE_UTM_CAMPAIGN,
   });
-  return `https://diaria.beehiiv.com/?${params.toString()}`;
+  return `https://diar.ia.br/?${params.toString()}`;
 }
 
 /**
@@ -919,6 +925,16 @@ ${renderBrandFooter(JOGAR_BRAND)}
       // preferimos a navegação nativa garantida a silenciosamente não votar.
       if (!choice) { form.submit(); return; }
       try { window.localStorage.setItem(votedKey, choice); } catch (e) {}
+      // #4054: marca "rodada livre já usada" — cookie NÃO-httponly (o
+      // servidor só PRECISA saber que existe, não confia nele como prova de
+      // identidade nenhuma; ver rationale em web-gate.ts). 1 ano de validade.
+      // Sem tentar checar sessão aqui (é HttpOnly, JS não consegue ler) — se
+      // o jogador já está logado, o servidor ignora este cookie (a checagem
+      // de sessão válida tem prioridade, ver handleJogarPage).
+      try {
+        var oneYear = 60 * 60 * 24 * 365;
+        document.cookie = ${JSON.stringify(FREE_ROUND_COOKIE)} + "=1; path=/; max-age=" + oneYear + "; SameSite=Lax";
+      } catch (e) {}
 
       var choiceButtons = form.querySelectorAll('button[type="submit"]');
       for (var bi = 0; bi < choiceButtons.length; bi++) choiceButtons[bi].disabled = true;
@@ -1761,6 +1777,33 @@ ${renderIdentityFormBlock()}`;
     function goNext() {
       resultEl.hidden = true;
       resultEl.innerHTML = "";
+      // #4054 follow-up (achado 260727, ao vivo): a sequência avança de
+      // rodada em rodada 100% client-side (advance() acima — sem reload nem
+      // ida ao servidor), então o gate por rodada (handleJogarPage, checado
+      // só em GET /jogar) NUNCA disparava aqui — a promessa "1 rodada
+      // livre" nunca se cumpria na prática pra quem joga a sequência
+      // (a experiência padrão do /jogar, sem ?edition=). Corrigido: só na
+      // transição rodada 1 → 2 (round === 0, único ponto onde o cookie
+      // FREE_ROUND_COOKIE acabou de ser setado pela 1ª vez, ver onChoice
+      // acima), faz 1 fetch leve pro próprio /jogar pra deixar o SERVIDOR
+      // decidir — se ele responder com o gate (mesma marca id="gate-form"
+      // de renderJogarGatePage/web-gate.ts), troca a página pro gate em vez
+      // de continuar a sequência. Sessão já válida (assinante identificado)
+      // → resposta normal do jogo, fetch descartado, advance() roda igual
+      // sempre rodou — zero fricção extra pra quem já não precisa do gate.
+      if (round === 0) {
+        fetch("/jogar?v=" + Date.now())
+          .then(function (res) { return res.text(); })
+          .then(function (html) {
+            if (html.indexOf('id="gate-form"') !== -1) {
+              window.location.href = "/jogar?v=" + Date.now();
+              return;
+            }
+            advance();
+          })
+          .catch(function () { advance(); }); // fail-open: rede falhou, não trava o jogo por causa do gate-check
+        return;
+      }
       // Não precisa reabilitar os botões aqui — advance()/renderRound()
       // substitui choicesEl.innerHTML por um novo par de botões (já
       // habilitados) ou, na última rodada, esconde o play inteiro
@@ -1779,6 +1822,15 @@ ${renderIdentityFormBlock()}`;
   function onChoice(choice) {
     var originalIndex = playIndices[round];
     var edition = editions[originalIndex];
+
+    // #4054: marca "rodada livre já usada" assim que a 1ª escolha da
+    // sequência acontece — mesmo cookie/rationale de renderJogarPageHtml
+    // acima (não é prova de identidade, só sinaliza o servidor pra gatear a
+    // PRÓXIMA visita se não houver sessão válida).
+    try {
+      var oneYear4054 = 60 * 60 * 24 * 365;
+      document.cookie = ${JSON.stringify(FREE_ROUND_COOKIE)} + "=1; path=/; max-age=" + oneYear4054 + "; SameSite=Lax";
+    } catch (e) {}
 
     setChoicesDisabled(true);
     progressEl.textContent = "Par " + (originalIndex + 1) + " de " + total + " — conferindo…";
@@ -2056,7 +2108,35 @@ ${renderBrandFooter(JOGAR_BRAND)}
  * escanear TODO o keyspace `correct:*` — mesma economia de I/O que
  * `handleJogarArchivePage` já faz por ano.
  */
-export async function handleJogarPage(url: URL, env: Env): Promise<Response> {
+export async function handleJogarPage(url: URL, env: Env, request?: Request): Promise<Response> {
+  // #4054: gate por rodada do caminho de fora — "1 rodada livre, e-mail
+  // exigido pra continuar". O client (`renderJogarPageHtml`, script de voto)
+  // seta o cookie NÃO-httponly `FREE_ROUND_COOKIE` assim que a 1ª rodada
+  // anônima é votada; aqui, se esse cookie está presente E não há sessão
+  // válida (`readWebSessionEmail`), serve a tela de gate em vez do jogo.
+  // `request` opcional (retrocompat com testes que chamam sem ele — nesse
+  // caso o gate nunca ativa, mesmo comportamento pré-#4054).
+  // #4109 (achado ao vivo 260727, editor): o gate não pode ser um bloqueio
+  // sem saída — `skip_gate=1` (setado pelo link "Agora não, continuar
+  // jogando" de `renderJogarGatePage`) libera ESTA navegação específica sem
+  // gravar cookie/sessão nenhuma; a próxima transição de rodada volta a
+  // checar o servidor normalmente e pode gatear de novo (nudge recorrente,
+  // não permanente — decisão do editor, não é bypass permanente).
+  const skipGate = url.searchParams.get("skip_gate") === "1";
+  if (request && !skipGate) {
+    const cookieHeader = request.headers.get("Cookie");
+    const freeRoundUsed = !!parseCookieHeader(cookieHeader, FREE_ROUND_COOKIE);
+    if (freeRoundUsed) {
+      const sessionEmail = await readWebSessionEmail(env.COOKIE_HMAC_SECRET, cookieHeader);
+      if (!sessionEmail) {
+        const gateEdition = url.searchParams.get("edition");
+        return new Response(renderJogarGatePage(gateEdition), {
+          headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store" },
+        });
+      }
+    }
+  }
+
   const explicitEdition = url.searchParams.get("edition");
   if (explicitEdition && AAMMDD_RE.test(explicitEdition)) {
     const edition = explicitEdition;
@@ -2064,7 +2144,11 @@ export async function handleJogarPage(url: URL, env: Env): Promise<Response> {
     return new Response(renderJogarPageHtml({ edition, revealed: correctRaw !== null }), {
       headers: {
         "Content-Type": "text/html;charset=utf-8",
-        "Cache-Control": "public, max-age=120",
+        // #4109 (self-review): skip_gate=1 é um bypass de UMA navegação —
+        // nunca pode ser `public`, ou um CDN/cache intermediário serviria a
+        // versão sem gate pra QUALQUER visitante que caísse na mesma URL
+        // cacheada, derrotando o gate pra todo mundo até o max-age expirar.
+        "Cache-Control": skipGate ? "no-store" : "public, max-age=120",
       },
     });
   }

@@ -81,6 +81,39 @@ Sem estes 3 configurados, o mecanismo inteiro (detecção de histórico órfão 
 geração de token + rate-limit + endpoint `/confirm-merge`) já funciona —
 só o e-mail em si não sai até os secrets serem configurados.
 
+## Optional secrets/bindings (#4054 — gate por rodada do caminho de fora)
+
+| Nome | Endpoint | Severidade |
+|------|----------|------------|
+| `COOKIE_HMAC_SECRET` | `POST /jogar/gate/verify`, `POST /jogar/gate/subscribe`, `GET /jogar` (checagem de sessão), `GET /vote?brand=web` (identidade pós-gate) | **opcional** — sem ela, `/jogar/gate/verify` responde 503 mesmo pra assinante confirmado (nunca emite cookie sem segredo), e o resto do fluxo (rodada livre → gate → cadastro) cai de volta 100% no comportamento pré-#4054 (identidade anônima por token, sem sessão) |
+| `SUBSCRIBERS_KV` (KV binding) | `POST /jogar/gate/verify` (verificação primária) | **opcional** — sem o binding, `checkWebSubscriber` cai direto no fallback Beehiiv (`BEEHIIV_API_KEY`/`BEEHIIV_PUBLICATION_ID`, já documentados acima) ou, sem os dois, trata todo mundo como "não verificado" — nunca lança |
+
+`/jogar` (brand `web`, visitante de fora) passou a gatear por RODADA (#4054,
+espelho de #4052/cursos): 1 rodada anônima livre, depois e-mail exigido pra
+continuar/entrar no leaderboard. Login (assinante confirmado) OU cadastro
+inline emitem um cookie de sessão HMAC-assinado (`web-gate.ts`) — origem de
+identidade PARALELA ao token anônimo em `/vote` (nunca substitui o guard
+#3976/#4011 que rejeita `?email=` cru no brand `web`).
+
+```bash
+cd workers/poll
+openssl rand -hex 32 | npx wrangler secret put COOKIE_HMAC_SECRET
+# opcional — pode reusar o MESMO valor do secret homônimo de workers/cursos
+# (mesma decisão de design; worker/domínio diferentes, não precisa ser único)
+npx wrangler kv namespace create SUBSCRIBERS_KV
+# colar o id retornado em workers/poll/wrangler.toml, seção [[kv_namespaces]]
+# a população é a MESMA de CURSOS_SUBSCRIBERS (assinante ativo da Diar.ia) —
+# pode rodar scripts/sync-cursos-subscribers-kv.ts apontando pra este
+# binding também, ou usar o MESMO namespace id nos dois workers
+```
+
+Sem `COOKIE_HMAC_SECRET`: o gate por rodada ainda ATIVA visualmente (a tela
+de `/jogar/gate` aparece depois da 1ª rodada), mas login/cadastro nunca
+emitem sessão — o visitante fica preso na tela de gate até o secret ser
+configurado. Considerar isso ANTES de fazer deploy deste PR (o gate por
+rodada é client-driven via cookie `eia_web_free_round_used`, não depende do
+secret pra ATIVAR, só pra RESOLVER).
+
 ## Re-setar pós-deploy
 
 Após qualquer `wrangler deploy` ou `delete + recreate` do worker, garantir

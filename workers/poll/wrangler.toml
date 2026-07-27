@@ -15,6 +15,20 @@ custom_domain = true
 binding = "POLL"
 id = "72784da4ae39444481eb422ebac357c6"
 
+# #4054: `SUBSCRIBERS_KV` (verificação primária de assinante ativo pro gate
+# de `/jogar`, ver web-gate.ts) é OPCIONAL DE PROPÓSITO e NÃO está declarado
+# aqui — diferente de `CURSOS_SUBSCRIBERS` em workers/cursos/wrangler.toml
+# (#4052). Motivo: `workers/poll` tem deploy AUTOMÁTICO em todo merge pra
+# master que tocar `workers/poll/**` (.github/workflows/deploy-poll.yml,
+# #3399) — um `[[kv_namespaces]]` com id placeholder aqui quebraria esse
+# deploy (wrangler valida o id no `deploy`, não só documenta a intenção).
+# `checkWebSubscriber` (web-gate.ts) já trata o binding ausente com graça
+# (cai pro fallback Beehiiv `by_email`, ou "não verificado" sem os dois — o
+# form de cadastro inline cobre esse caso, nunca quebra o gate). Pra ativar a
+# verificação primária por KV: rodar `wrangler kv namespace create
+# SUBSCRIBERS_KV`, adicionar o bloco `[[kv_namespaces]]` manualmente aqui com
+# o id retornado, E só então mergear/deployar — ver SECRETS.md.
+
 # #2187: Durable Object para serialização de dedup de voto por email.
 # Elimina a race read-modify-write que o KV eventual-consistent expunha.
 # Classe `VoteDedup` exportada de src/vote-dedup.ts (re-exportada por index.ts).

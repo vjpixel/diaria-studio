@@ -29,6 +29,9 @@ import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter
 // header de share.ts sobre por que o payload é {edition, correct}, sem
 // leitura KV extra).
 import { encodeShareToken, type SharePayload } from "./share";
+// #4054: identidade pós-gate do caminho de fora — cookie de sessão PARALELO
+// ao token anônimo (ver bloco "identidade pós-gate" abaixo).
+import { readWebSessionEmail } from "./web-gate";
 
 /**
  * #3384: contas do próprio editor usadas pra testar o fluxo de voto no e-mail
@@ -65,6 +68,26 @@ export async function buildAlreadyVotedResponse(
   edition: string,
   email: string,
   existingFromKv: string | null,
+  /** #4065 follow-up (achado 260727): a tela de "já votou" nunca recebeu o
+   * card de compartilhamento nem o CTA/cadastro inline que #4065 trouxe pro
+   * resultado normal — quem revisita um link já votado (o caso mais comum:
+   * clicou 2x no mesmo link da newsletter) caía num beco sem saída idêntico
+   * ao que #4065 fechou pro voto fresco. `correctRaw` é opcional (chamadores
+   * legados/teste continuam funcionando sem share card, mesmo comportamento
+   * de antes) — quando fornecido, monta o MESMO payload {edition, correct}
+   * usado por handleVote/handleVoteFastPath (share.ts).
+   *
+   * IMPORTANTE (achado no self-review desta PR): `correct` é computado AQUI
+   * DENTRO contra `prev.choice` (o voto REALMENTE persistido, lido de
+   * `existingFromKv` logo abaixo) — nunca contra o `choice` da query string
+   * da requisição atual. Um link antigo/copiado pode chegar com um `choice`
+   * diferente do que a pessoa de fato votou (a requisição é descartada,
+   * "já votou" não sobrescreve nada) — se `correct` fosse derivado desse
+   * `choice` descartado, o card de compartilhamento mostraria acerto/erro
+   * pra uma resposta que o leitor nunca deu, incoerente com a própria
+   * mensagem "já votou" logo acima (que sempre cita `prev.choice`).
+   */
+  correctRaw: string | null = null,
 ): Promise<Response> {
   // choice: "?" é um edge aceitável: ocorre quando o 2º votante concorrente
   // chegou tão rapidamente que o KV eventual ainda não propagou o put do 1º
@@ -92,6 +115,10 @@ export async function buildAlreadyVotedResponse(
   // de bug que este PR corrige — reproduzido via buildAlreadyVotedResponse(...,
   // "null") lançando "Cannot read properties of null (reading 'choice')".
   const jaVotouMsg = `Você já votou na edição de ${formatEditionDateForBrand(edition, brand)} (escolha: ${prev?.choice ?? "?"}).`;
+  // #4065 follow-up: `correct` derivado do voto REALMENTE persistido
+  // (prev.choice), nunca do `choice` da requisição atual — ver rationale
+  // completo no header do parâmetro `correctRaw` acima.
+  const correct = correctRaw && prev?.choice && prev.choice !== "?" ? prev.choice === correctRaw : null;
   // #2189: branch "já votou" NÃO hardcoda nicknameForm=null. Lê o score pra
   // determinar se o votante ainda precisa do form de nickname — sem isso, um
   // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname
@@ -117,7 +144,18 @@ export async function buildAlreadyVotedResponse(
     const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
     prevNicknameForm = { email, sig: prevSig };
   }
-  return voteHtmlResponse(votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand), 200);
+  // #4065 follow-up: mesmo payload {edition, correct} do voto fresco — share
+  // card (todos os brands) + CTA/cadastro inline (brand clarice, via
+  // votePageHtml internamente) também aparecem em quem revisita já-votado.
+  const sharePayload: SharePayload = { edition, correct };
+  const shareCard: { token: string; payload: SharePayload } = {
+    token: await encodeShareToken(env.POLL_SECRET, sharePayload),
+    payload: sharePayload,
+  };
+  return voteHtmlResponse(
+    votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand, null, shareCard),
+    200,
+  );
 }
 
 /**
@@ -155,11 +193,15 @@ export async function buildAlreadyVotedResponse(
  * ExecutionContext de verdade) exercita o fast-path — zero regressão na
  * suíte existente, ganho de latência 100% em produção.
  */
-export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", rawEnv: Env = env, ctx?: ExecutionContext): Promise<Response> {
+export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", rawEnv: Env = env, ctx?: ExecutionContext, request?: Request): Promise<Response> {
   // #1083: Beehiiv não URL-encoda `{{ subscriber.email }}`; URLSearchParams
   // converte `+` em ` `. Restaurar antes de qualquer uso (HMAC, KV key).
   const emailRaw = url.searchParams.get("email")?.toLowerCase().trim();
-  const email = emailRaw ? emailRaw.replace(/ /g, "+") : emailRaw;
+  // #4054: `let`, não `const` — pode ser sobrescrito pela identidade do
+  // cookie de sessão do brand `web` MAIS ABAIXO, depois que o guard
+  // anti-forjamento (#3976/#4011) já validou o token original. Ver o bloco
+  // "identidade pós-gate" logo após esse guard.
+  let email = emailRaw ? emailRaw.replace(/ /g, "+") : emailRaw;
   const edition = url.searchParams.get("edition");
   const choice = url.searchParams.get("choice")?.toUpperCase();
   // sig ausente = merge-tag mode: Beehiiv substitui {{ subscriber.email }} no envio
@@ -221,6 +263,25 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // afetado — só o domínio reservado do web é bloqueado fora do brand web.
   if ((brand === "web" || isAnonymousWebIdentity(email)) && !isValidWebToken(email)) {
     return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
+  }
+
+  // #4054: identidade pós-gate — origem PARALELA ao token anônimo, nunca uma
+  // substituição do guard acima. O guard já rodou e JÁ EXIGIU um token
+  // `isValidWebToken` válido no parâmetro `?email=` (comportamento
+  // pré-#4054, intocado) — só DEPOIS disso, se a request carrega um cookie de
+  // sessão válido (emitido por `POST /jogar/gate/verify`/`subscribe`,
+  // web-gate.ts), a identidade REAL do cookie assume o lugar do token pra
+  // todo o resto da função (score/vote/counted/nickname passam a ser
+  // gravados sob o e-mail verdadeiro, não o pseudo-email). `?email=` cru
+  // continua 100% rejeitado pelo guard acima — não há caminho onde um valor
+  // arbitrário de query string vira identidade; só um cookie ASSINADO pelo
+  // próprio worker pode fazer isso. `request` é opcional (retrocompat com
+  // toda a suíte de teste que já chama `handleVote` sem ele, e com o brand
+  // "diaria"/"clarice" onde este bloco nunca roda) — ausente ou sem cookie
+  // válido, comportamento 100% igual ao pré-#4054.
+  if (brand === "web" && request) {
+    const cookieEmail = await readWebSessionEmail(rawEnv.COOKIE_HMAC_SECRET, request.headers.get("Cookie"));
+    if (cookieEmail) email = cookieEmail;
   }
 
   if (!["A", "B"].includes(choice)) {
@@ -466,7 +527,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
     if (!firstVote) {
       // Duplicado detectado pelo DO — servir página "já votou" (#3118 item 10:
       // extraído pra buildAlreadyVotedResponse, compartilhado com o fallback KV).
-      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv);
+      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw);
     }
     // firstVote === true → DO autorizou o voto; prosseguir com gravação normal abaixo.
     } // fim if (doResp === null || doResp.status >= 500) ... else
@@ -480,7 +541,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
       // quase idênticas que já haviam divergido uma vez no passado (#2189
       // corrigiu só um dos dois ramos, deixando o outro com nicknameForm
       // hardcoded null por um tempo).
-      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv);
+      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw);
     }
   }
 
@@ -837,7 +898,7 @@ async function handleVoteFastPath(
   // acertou/errou aquela rodada), só não soma no score. Comportamento
   // intencional, pedido explicitamente pelo editor na issue #3983.
   if (existingFromKv) {
-    return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv);
+    return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw);
   }
 
   const correct = correctRaw ? choice === correctRaw : null;

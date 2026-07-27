@@ -29,6 +29,7 @@ import {
   renderSharePageHtml,
   renderQuizShareCardSvg,
   serializeSharePayload,
+  shareButtonScript,
   type SharePayload,
   type QuizSharePayload,
 } from "../workers/poll/src/share.ts";
@@ -400,6 +401,111 @@ describe("integração /vote (#3517, #4065) — card embutido em todos os brands
     const res = await worker.fetch(voteReq("clarice", "leitor@example.com", "A"), env);
     const html = await res.text();
     assert.match(html, /data-share-url="https:\/\/eia\.diar\.ia\.br\/share\//);
+  });
+});
+
+// #4065 follow-up (achado 260727, ao vivo): a tela "já votou"
+// (buildAlreadyVotedResponse) nunca recebeu o card de compartilhamento nem o
+// CTA/cadastro inline que #4065 trouxe pro voto fresco — quem revisita um
+// link de voto já usado (o caso mais comum: 2º clique no mesmo link da
+// newsletter) caía num beco sem saída idêntico ao que #4065 fechou. Regressão
+// abaixo: vota 2x com o MESMO e-mail/edição — a 2ª resposta (a real tela de
+// "já votou") precisa ter os mesmos blocos da 1ª.
+describe("buildAlreadyVotedResponse (#4065 follow-up) — share card + CTA também na tela de 'já votou'", () => {
+  const voteReq = (brand: string | null, email: string, choice: string, edition: string) => {
+    const b = brand ? `&brand=${brand}` : "";
+    return new Request(
+      `https://poll.test/vote?email=${encodeURIComponent(email)}&edition=${edition}&choice=${choice}${b}`,
+    );
+  };
+
+  it("2º voto (já votou) em brand=diaria também embute #jogar-share-card", async () => {
+    const env = makeEnv();
+    const first = await worker.fetch(voteReq(null, "repete@example.com", "A", "260601"), env);
+    assert.equal(first.status, 200);
+    const second = await worker.fetch(voteReq(null, "repete@example.com", "B", "260601"), env);
+    assert.equal(second.status, 200);
+    const html = await second.text();
+    assert.match(html, /Você já votou/);
+    assert.match(html, /id="jogar-share-card"/, "share card deve aparecer também na tela de já votou");
+  });
+
+  it("2º voto (já votou) em brand=clarice também embute o form de cadastro inline", async () => {
+    const env = makeEnv();
+    const first = await worker.fetch(voteReq("clarice", "repete-clarice@example.com", "A", "260601"), env);
+    assert.equal(first.status, 200);
+    const second = await worker.fetch(voteReq("clarice", "repete-clarice@example.com", "B", "260601"), env);
+    assert.equal(second.status, 200);
+    const html = await second.text();
+    assert.match(html, /Você já votou/);
+    assert.match(html, /id="jogar-share-card"/, "share card deve aparecer também na tela de já votou");
+    const formTag = /<form id="jogar-signup-form"[^>]*>/.exec(html);
+    assert.ok(formTag, "form de cadastro deve estar presente na tela de já votou");
+    assert.doesNotMatch(formTag![0], /\bhidden\b/, "form de cadastro deve estar VISÍVEL (não hidden), mesmo padrão do voto fresco");
+  });
+
+  it("2º voto (já votou) em brand=web NÃO embute o form de cadastro inline (mesma regra do voto fresco)", async () => {
+    const env = makeEnv();
+    const anonEmail = anonEmailForToken("3fa85f64-5717-4562-b3fc-2c963f66afa6");
+    const first = await worker.fetch(voteReq("web", anonEmail, "A", "260601"), env);
+    assert.equal(first.status, 200);
+    const second = await worker.fetch(voteReq("web", anonEmail, "B", "260601"), env);
+    assert.equal(second.status, 200);
+    const html = await second.text();
+    assert.match(html, /Você já votou/);
+    assert.doesNotMatch(html, /id="jogar-signup-form"/);
+  });
+
+  // Achado no self-review da PR: `correct` do share card era computado a
+  // partir do `choice` da requisição ATUAL (query string), não do voto
+  // REALMENTE persistido — um link reproduzido/copiado com `choice`
+  // diferente do que a pessoa votou de fato faria o share card mentir sobre
+  // acerto/erro, incoerente com a própria mensagem "já votou" (que sempre
+  // cita o voto real). Regressão: vota A (gabarito=A, acertou), depois
+  // "revisita" com choice=B na query — share card precisa continuar
+  // refletindo o voto real (A, acertou), não o B da query descartada.
+  it("REGRESSÃO (self-review): share card usa o voto REALMENTE persistido, não o choice da query de um link reproduzido com valor diferente", async () => {
+    const env = makeEnv({ "correct:260601": "A" });
+    const first = await worker.fetch(voteReq(null, "replay@example.com", "A", "260601"), env);
+    assert.equal(first.status, 200);
+    const firstHtml = await first.text();
+    assert.match(firstHtml, /Acertei/, "1º voto (A, gabarito A) deve ser tratado como acerto");
+
+    // "Revisita" com choice=B — a request é descartada (já votou), mas o
+    // choice B NUNCA deveria influenciar o share card.
+    const second = await worker.fetch(voteReq(null, "replay@example.com", "B", "260601"), env);
+    assert.equal(second.status, 200);
+    const html = await second.text();
+    assert.match(html, /Você já votou na edição de .* \(escolha: A\)/, "mensagem deve citar o voto REAL (A), não o B da query");
+    const shareTextMatch = /<p class="share-text">([\s\S]*?)<\/p>/.exec(html);
+    assert.ok(shareTextMatch, "share card deve estar presente");
+    assert.match(shareTextMatch![1], /Acertei/, "share card deve refletir o voto REAL (A, correto), não o choice=B da query descartada");
+  });
+});
+
+// Achado ao vivo (260727): WhatsApp e "Copiar link" mandavam SÓ a URL,
+// apostando que o unfurl de OG mostraria o texto sozinho — na prática o
+// unfurl do WhatsApp é assíncrono (quem manda rápido não vê preview) e
+// "Copiar link" cola em qualquer lugar sem unfurl nenhum (e-mail, SMS).
+describe("shareButtonScript (#4065 follow-up) — WhatsApp e Copiar link incluem o TEXTO, não só a URL", () => {
+  const script = shareButtonScript("#jogar-share-card");
+
+  it("combina shareText + shareUrl numa variável só (textAndUrl), usada por WhatsApp e Copiar link", () => {
+    assert.match(script, /var textAndUrl = shareText \? \(shareText \+ " " \+ shareUrl\) : shareUrl;/);
+  });
+
+  it("WhatsApp (wa.me) manda textAndUrl, não shareUrl sozinho", () => {
+    assert.match(script, /wa\.me\/\?text=" \+ encodeURIComponent\(textAndUrl\)/);
+    assert.doesNotMatch(script, /wa\.me\/\?text=" \+ encodeURIComponent\(shareUrl\)/, "regressão: não pode voltar a mandar só a URL");
+  });
+
+  it("Copiar link (clipboard.writeText) copia textAndUrl, não shareUrl sozinho", () => {
+    assert.match(script, /navigator\.clipboard\.writeText\(textAndUrl\)/);
+    assert.doesNotMatch(script, /navigator\.clipboard\.writeText\(shareUrl\)/, "regressão: não pode voltar a copiar só a URL");
+  });
+
+  it("Compartilhar nativo (Web Share API) continua mandando {text, url} separados — API própria já suporta os dois", () => {
+    assert.match(script, /navigator\.share\(\{ text: shareText, url: shareUrl \}\)/);
   });
 });
 

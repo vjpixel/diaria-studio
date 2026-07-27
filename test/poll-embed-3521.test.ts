@@ -139,9 +139,10 @@ describe("resolveEmbedPartnerSlug (#3521)", () => {
 });
 
 describe("buildEmbedSubscribeUrl / buildEmbedJogarUrl (#3521) — UTM do funil embed", () => {
-  it("subscribe URL usa diaria.beehiiv.com DIRETO (#2613, mesma convenção do #3518)", () => {
+  it("#4059: subscribe URL usa diar.ia.br (host de marca canônico), com o UTM do parceiro intacto", () => {
     const url = buildEmbedSubscribeUrl("clarice");
-    assert.match(url, /^https:\/\/diaria\.beehiiv\.com\/\?/);
+    assert.match(url, /^https:\/\/diar\.ia\.br\/\?/);
+    assert.doesNotMatch(url, /diaria\.beehiiv\.com/);
     const parsed = new URL(url);
     assert.equal(parsed.searchParams.get("utm_source"), EMBED_UTM_SOURCE);
     assert.equal(parsed.searchParams.get("utm_medium"), EMBED_UTM_MEDIUM);

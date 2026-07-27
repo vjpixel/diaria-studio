@@ -32,3 +32,8 @@ review-result-*.json
 # (allowlist de permissões pessoais/locais) e nunca deve ser versionado —
 # vazou acidentalmente via `git add -A` num subagente overnight (#2824).
 .claude/settings.local.json
+
+# Projeto local que mora dentro do repo por conveniência — não é da Diar.ia.
+# Sem esta linha, qualquer `git add -A` (de sessão paralela ou subagente) o
+# arrasta pra dentro do repo, como já aconteceu com settings.local.json (#2824).
+nimbalyst-local/

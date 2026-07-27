@@ -7,11 +7,13 @@
  * (quase-primeira-página). Reusa o OAuth Google existente (gFetch) + o scope
  * `webmasters.readonly` (adicionado em oauth-setup.ts).
  *
- * **Pré-req do editor (1x):** verificar `https://diaria.beehiiv.com/` como
- * propriedade URL-prefix no GSC (esse é o host canônico — diar.ia.br só 302a).
+ * **Pré-req (feito em 260727, #4089):** `diar.ia.br` verificado como propriedade
+ * **Domínio** (`sc-domain:diar.ia.br`) via TXT no Cloudflare, e a Google Search
+ * Console API habilitada no projeto GCP — ela estava DESLIGADA desde o #1989,
+ * que é por que este script nunca chegou a gerar `data/seo/`.
  *
  * Uso:
- *   npx tsx scripts/seo-pull.ts [--site https://diaria.beehiiv.com/] [--days 28] \
+ *   npx tsx scripts/seo-pull.ts [--site sc-domain:diar.ia.br] [--days 28] \
  *     [--out data/seo/gsc-{YYYY-MM-DD}.json]
  *
  * Exit: 0 ok (grava JSON + opportunities.md); 1 erro de API (ex: scope ausente
@@ -23,6 +25,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { GSC_DEFAULT_SITE } from "./lib/gsc.ts";
 import { gFetch } from "./google-auth.ts";
 
 export interface GscRow {
@@ -129,7 +132,11 @@ async function pullGsc(site: string, startDate: string, endDate: string): Promis
     const body = await res.text();
     if (res.status === 403) {
       throw new Error(
-        `GSC 403 — propriedade não verificada OU scope ausente. (a) verifique '${site}' no Search Console; (b) re-rode 'npx tsx scripts/oauth-setup.ts' (o scope webmasters.readonly foi adicionado em #1989). Body: ${body.slice(0, 200)}`,
+        // #4089: a causa (c) foi a real em 260727 e não estava listada — a
+        // mensagem mandava verificar propriedade/scope, nenhum dos dois sendo
+        // o problema. O corpo distingue: "has not been used in project" = (c);
+        // "does not have sufficient permission for site" = (a).
+        `GSC 403 — três causas possíveis: (a) '${site}' não verificado no Search Console, ou esta conta não é usuária dele; (b) scope ausente → re-rode 'npx tsx scripts/oauth-setup.ts' (webmasters.readonly, #1989); (c) a Google Search Console API está desabilitada no projeto GCP → habilite em console.cloud.google.com/apis/library/searchconsole.googleapis.com. Body: ${body.slice(0, 200)}`,
       );
     }
     throw new Error(`GSC ${res.status}: ${body.slice(0, 200)}`);
@@ -149,7 +156,9 @@ function renderOpportunitiesMd(opps: SeoOpportunity[], site: string, period: str
 async function main(nowMs: number): Promise<number> {
   const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const { values } = parseCliArgs(process.argv.slice(2));
-  const site = String(values["site"] ?? "https://diaria.beehiiv.com/");
+  // #4089 (propriedade) + #4108 (constante única): o porquê do `sc-domain:` e de
+  // não somar com o host beehiiv está em `lib/gsc.ts`, junto da constante.
+  const site = String(values["site"] ?? GSC_DEFAULT_SITE);
   const days = parseInt(String(values["days"] ?? "28"), 10) || 28;
   const endDate = isoDate(nowMs);
   const startDate = isoDate(nowMs - days * 86_400_000);

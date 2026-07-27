@@ -66,9 +66,13 @@
  *     converter tráfego pro jogo, alinhado ao objetivo do EPIC #3514
  *     ("motor de divulgação").
  */
-import { AAMMDD_RE, htmlEscape, formatEditionDate, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST, SUBSCRIBE_UTM_SOURCE } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca; #3978: utm_source fixo do funil
+import { AAMMDD_RE, htmlEscape, formatEditionDate, formatEditionDateForBrand, type Brand, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST, SUBSCRIBE_UTM_SOURCE } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca; #3978: utm_source fixo do funil
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { hmacSign } from "./index";
+import {
+  SHARE_UTM_CAMPAIGN as REGISTRY_SHARE_UTM_CAMPAIGN,
+  QUIZ_SHARE_UTM_CAMPAIGN as REGISTRY_QUIZ_SHARE_UTM_CAMPAIGN,
+} from "./utm-registry"; // #4041
 
 /** Payload assinado embutido no token de compartilhamento — sem PII (ver
  * rationale no header do arquivo). */
@@ -90,10 +94,10 @@ const SIG_LENGTH = 16;
  * `utm_source=share` hardcoded — um valor PRÓPRIO desalinhado da convenção
  * `eia-standalone` usada em todo o resto do funil) — nenhum utm_campaign.
  */
-const SHARE_UTM_CAMPAIGN = "eia-share";
+const SHARE_UTM_CAMPAIGN = REGISTRY_SHARE_UTM_CAMPAIGN; // #4041: registry único
 
 /** #3978: mesmo racional de `SHARE_UTM_CAMPAIGN`, pro card/CTA do quiz relâmpago. */
-const QUIZ_SHARE_UTM_CAMPAIGN = "eia-quiz-share";
+const QUIZ_SHARE_UTM_CAMPAIGN = REGISTRY_QUIZ_SHARE_UTM_CAMPAIGN; // #4041: registry único
 
 /** Pure: serializa o payload pra um corpo compacto e determinístico (vira a
  * mensagem assinada por `encodeShareToken`). Formato: `{AAMMDD}.{0|1|-}`. */
@@ -143,9 +147,19 @@ export async function decodeShareToken(secret: string, token: string): Promise<S
 
 /** Pure: mensagem de compartilhamento (usada no OG description, no texto do
  * card, e no payload do Web Share API). Curta o bastante pra não estourar o
- * SVG do card (ver `renderShareCardSvg`). */
-export function buildShareText(payload: SharePayload): string {
-  const dateLabel = formatEditionDate(payload.edition);
+ * SVG do card (ver `renderShareCardSvg`).
+ *
+ * `brand` opcional (default "web", comportamento pré-#4065 preservado nos
+ * call sites que não conhecem o brand de origem — `/share/{token}`/`/og/
+ * {token}`, #3701, deliberadamente genéricos). #4065 follow-up (achado
+ * 260727, ao vivo): desde #4065 o card renderiza pro brand `clarice` também,
+ * que é o ÚNICO brand cuja edição vem no formato de ciclo (`CYCLE_EDITION_RE`,
+ * "YYMM-MM") — sem passar o brand real aqui, `formatEditionDate` (genérico,
+ * só entende AAMMDD por design — #3113 item 13) devolvia o slug cru pro
+ * leitor. O call site que RENDERIZA direto no resultado do voto (`votePageHtml`
+ * em index.ts) conhece o brand de verdade e passa explicitamente. */
+export function buildShareText(payload: SharePayload, brand: Brand = "web"): string {
+  const dateLabel = formatEditionDateForBrand(payload.edition, brand);
   const question = "Você consegue diferenciar uma foto real de uma gerada por IA?";
   if (payload.correct === true) {
     return `Acertei o "É IA?" de hoje (${dateLabel})! ${question} ${PUBLIC_GAME_DISPLAY_HOST}/jogar`;
@@ -172,13 +186,19 @@ export function buildShareText(payload: SharePayload): string {
  * (`navigator.share` ausente na maioria dos browsers desktop, cai direto pro
  * fallback "copiar link") e (b) exige 1 tap a mais (escolher o app dentro do
  * share sheet) — um link `wa.me` abre o WhatsApp em 1 clique em qualquer
- * plataforma. `wa.me` só aceita 1 parâmetro `text` (sem `url` separado) —
- * manda só `shareUrl` (mesmo dado que a ação "copy" já usa sozinha), não
- * `shareText` + url concatenados: a página de destino (`/share/{token}` ou
- * `/quiz-share/{token}`) já tem meta tags OG (`renderSeoMeta`, `imageUrl`) que
- * o WhatsApp busca sozinho pra montar o preview rico (card + texto) ao
- * desenrolar o link — grudar o texto também na mensagem duplicaria a
- * informação que o unfurl já mostra.
+ * plataforma.
+ *
+ * #4065 follow-up (achado 260727, ao vivo): WhatsApp e "Copiar link" mandavam
+ * SÓ `shareUrl`, na aposta de que o unfurl de OG (`/share/{token}`,
+ * `renderSeoMeta`) mostraria o texto sozinho ao desenrolar o link. Na prática
+ * isso falha em dois casos comuns: (a) o unfurl do WhatsApp é assíncrono —
+ * quem digita e manda rápido envia só a URL crua, sem preview nenhum; (b)
+ * "Copiar link" cola em QUALQUER lugar (e-mail, SMS, bloco de notas), onde
+ * não existe unfurl algum — o texto nunca aparece. Agora os dois combinam
+ * `shareText + shareUrl` (mesma dupla que `navigator.share` já usa pro
+ * Compartilhar nativo) — redundância mínima (o texto já cita o domínio por
+ * extenso, o link no fim é o de fato clicável/rastreado com UTM), mas
+ * garante que a mensagem nunca chega vazia de contexto.
  */
 export function shareButtonScript(containerSelector: string): string {
   return `<script>
@@ -195,18 +215,19 @@ export function shareButtonScript(containerSelector: string): string {
       navigator.share({ text: shareText, url: shareUrl }).catch(function () {});
       return;
     }
+    var textAndUrl = shareText ? (shareText + " " + shareUrl) : shareUrl;
     if (action === "whatsapp") {
-      window.open("https://wa.me/?text=" + encodeURIComponent(shareUrl), "_blank", "noopener");
+      window.open("https://wa.me/?text=" + encodeURIComponent(textAndUrl), "_blank", "noopener");
       return;
     }
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(shareUrl).then(function () {
+      navigator.clipboard.writeText(textAndUrl).then(function () {
         var original = target.textContent;
         target.textContent = "Link copiado!";
         setTimeout(function () { target.textContent = original; }, 2000);
-      }).catch(function () { window.prompt("Copie o link:", shareUrl); });
+      }).catch(function () { window.prompt("Copie o texto:", textAndUrl); });
     } else {
-      window.prompt("Copie o link:", shareUrl);
+      window.prompt("Copie o texto:", textAndUrl);
     }
   });
 })();
@@ -219,8 +240,8 @@ export function shareButtonScript(containerSelector: string): string {
  * `/jogar` (jogar.ts, injetada no slot). `id="jogar-share-card"` é o
  * contrato entre as duas pontas — não renomear sem atualizar jogar.ts.
  */
-export function renderShareCardBlock(token: string, payload: SharePayload): string {
-  const text = buildShareText(payload);
+export function renderShareCardBlock(token: string, payload: SharePayload, brand: Brand = "web"): string {
+  const text = buildShareText(payload, brand);
   // #3978: utm_source/utm_campaign completam o funil (antes só utm_medium).
   const shareParams = (medium: string) => new URLSearchParams({
     utm_source: SUBSCRIBE_UTM_SOURCE,

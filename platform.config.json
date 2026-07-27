@@ -57,9 +57,9 @@
     "min_primary_urls": 5
   },
   "boxes_divulgacao": {
-    "slot1": "recomendacao-leitura.md",
-    "slot2": "livros-divulgacao.md",
-    "slot3": "apoio-divulgacao.md"
+    "slot1": "historia-ia-para-quem-tem-pressa-clarice.md",
+    "slot2": "artigo-especial-apoiadores.md",
+    "slot3": "clarice-divulgacao.md"
   },
   "drive_sync": false,
   "logging": {

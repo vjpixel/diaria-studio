@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diar.ia Studio — UTMs</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+  <link rel="stylesheet" href="/integracoes.css" />
+  <link rel="stylesheet" href="/chat-drawer.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
+    <div class="statusbar-item">
+      <span class="label">UTMs</span>
+      <span class="value" id="exec-mode-value">—</span>
+    </div>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>UTMs — inventário × realidade</h1>
+      <p class="hint">
+        O que o <strong>código emite</strong> (registry único em
+        <code>scripts/lib/shared/utm-registry.ts</code>) cruzado com o que de
+        fato chega: <strong>conversão</strong> no Beehiiv (assinantes por
+        <code>utm_source</code> / <code>utm_campaign</code>) e
+        <strong>clique</strong> na Brevo (<code>linksStats</code> do digest
+        mensal). Num clone <code>cloud</code> sem credenciais, só o inventário
+        aparece — esperado, não um bug.
+      </p>
+      <p class="hint">
+        <strong>Edição:</strong> só metadados editoriais (descrição, status,
+        nota). Os <em>valores</em> de UTM (<code>source</code> /
+        <code>medium</code> / <code>campaign</code>) são read-only aqui e só
+        mudam por PR no registry — editá-los pela UI faria esta página mentir
+        sobre o que a produção emite.
+      </p>
+      <div id="utms-error" class="panel alert-banner" role="alert" hidden></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Drift (<span id="drift-count">0</span>)</h2>
+        <span class="hint">inventário × realidade, nos dois sentidos</span>
+      </div>
+      <div id="drift-empty" class="hint" hidden>Nenhum drift detectado.</div>
+      <ul id="drift-list"></ul>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Emissores (<span id="utms-count">0</span>)</h2>
+        <label class="filter-field">
+          <span class="label">Status</span>
+          <select id="filter-status">
+            <option value="">Todos</option>
+            <option value="ativo">Ativo</option>
+            <option value="aposentado">Aposentado</option>
+          </select>
+        </label>
+        <button id="refresh-btn" type="button">Atualizar</button>
+        <span id="last-updated" class="hint"></span>
+      </div>
+      <div id="utms-empty" class="hint" hidden>Nenhum emissor no registry.</div>
+      <div class="table-scroll">
+        <table class="triage-table">
+          <thead>
+            <tr>
+              <th>Emissor</th>
+              <th>source / medium</th>
+              <th>campaign</th>
+              <th>Assinantes</th>
+              <th>Cliques</th>
+              <th>Status</th>
+              <th>Descrição / origem</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="utms-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>window.STUDIO_PAGE = "utms";</script>
+  <script src="/nav.js" type="module"></script>
+  <script src="/utms.js" type="module"></script>
+  <script src="/chat-drawer.js" type="module"></script>
+</body>
+</html>

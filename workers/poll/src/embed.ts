@@ -104,6 +104,7 @@ import { htmlEscape, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST } from "./li
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { resolveJogarEdition } from "./jogar";
 import { shareButtonScript } from "./share";
+import { EMBED_UTM } from "./utm-registry"; // #4041
 
 /** Brand fixo — mesmo racional de `JOGAR_BRAND` em jogar.ts: o embed É o
  * standalone, não um parâmetro. */
@@ -111,11 +112,12 @@ const EMBED_BRAND = "web" as const;
 
 // ── UTM de conversão do funil embed (#3521, convenção do #3518) ────────────
 
-export const EMBED_UTM_SOURCE = "embed";
-export const EMBED_UTM_MEDIUM = "widget";
+// #4041: valores vindos do registry espelhado (`./utm-registry`).
+export const EMBED_UTM_SOURCE = EMBED_UTM.source;
+export const EMBED_UTM_MEDIUM = EMBED_UTM.medium;
 /** Partner slug default quando `?partner=` está ausente/inválido — mantém o
  * funil mensurável ("origem desconhecida") em vez de quebrar o CTA. */
-export const EMBED_DEFAULT_PARTNER = "generico";
+export const EMBED_DEFAULT_PARTNER = EMBED_UTM.defaultPartner;
 
 /**
  * Pure: sanitiza o slug do parceiro pra uso em `utm_campaign` — minúsculo,
@@ -130,7 +132,7 @@ export function resolveEmbedPartnerSlug(raw: string | null): string {
 }
 
 /** Pure: URL de assinatura com UTM do funil embed — mesmo destino
- * (`diaria.beehiiv.com` DIRETO, #2613) e mesma disciplina de `buildSubscribeUrl`
+ * (`diar.ia.br`, host de marca canônico desde 260723, #4059) e mesma disciplina de `buildSubscribeUrl`
  * (jogar.ts, #3518), `utm_campaign` = slug do parceiro em vez de fixo. */
 export function buildEmbedSubscribeUrl(partnerSlug: string): string {
   const params = new URLSearchParams({
@@ -138,12 +140,11 @@ export function buildEmbedSubscribeUrl(partnerSlug: string): string {
     utm_medium: EMBED_UTM_MEDIUM,
     utm_campaign: partnerSlug,
   });
-  return `https://diaria.beehiiv.com/?${params.toString()}`;
+  return `https://diar.ia.br/?${params.toString()}`;
 }
 
-/** Pure: link "jogue mais" pro `/jogar` completo (mesmo worker, sem o
- * problema de query-string dropada do redirect `diar.ia.br` — #2613, ver
- * `buildSubscribeUrl` em jogar.ts) — carrega o mesmo UTM do funil embed. */
+/** Pure: link "jogue mais" pro `/jogar` completo (mesmo worker) — carrega o
+ * mesmo UTM do funil embed. */
 export function buildEmbedJogarUrl(partnerSlug: string): string {
   const params = new URLSearchParams({
     utm_source: EMBED_UTM_SOURCE,

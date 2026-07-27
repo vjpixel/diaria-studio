@@ -396,6 +396,27 @@ describe("renderJogarSequencePageHtml (#3983) — reveal por rodada, reverte o S
     assert.doesNotMatch(html, /setChoicesDisabled\(false\)/, "advance()/renderRound() já substitui os botões — reabilitar aqui seria sempre um no-op");
   });
 
+  // #4054 follow-up (achado 260727, ao vivo): o gate por rodada (handleJogarPage)
+  // só é checado em GET /jogar (reload de página) — mas a sequência avança
+  // de rodada em rodada 100% client-side (advance(), sem reload), então a
+  // promessa "1 rodada livre, depois gate" nunca disparava na prática pra
+  // quem joga a experiência padrão (a sequência, sem ?edition=). Fix:
+  // goNext(), só na transição rodada 1→2 (round===0), consulta o servidor
+  // (fetch /jogar) antes de continuar — se ele responder com o gate, troca
+  // a página em vez de seguir a sequência client-side.
+  it("goNext checa o gate no servidor (fetch /jogar) só na transição rodada 1→2 — sem isso o gate do #4054 nunca disparava na sequência", () => {
+    const html = renderJogarSequencePageHtml(["260601", "260602", "260603"]);
+    assert.match(html, /if \(round === 0\)/, "checagem de gate só na transição da 1ª rodada");
+    assert.match(html, /fetch\("\/jogar\?v="/, "consulta o servidor via fetch antes de avançar");
+    assert.match(html, /indexOf\('id="gate-form"'\)/, "detecta a resposta de gate pela mesma marca de renderJogarGatePage");
+    assert.match(html, /window\.location\.href = "\/jogar\?v="/, "troca pra página de gate quando o servidor mandar");
+  });
+
+  it("goNext: fail-open se o fetch de checagem de gate falhar (rede indisponível não pode travar o jogo)", () => {
+    const html = renderJogarSequencePageHtml(["260601"]);
+    assert.match(html, /\.catch\(function \(\) \{ advance\(\); \}\)/, "fetch falhou → segue o jogo normalmente, não trava esperando o gate");
+  });
+
   it("fallback de rede: 2ª falha do /vote cai pra navegação nativa (nunca perde o voto silenciosamente)", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
     assert.match(html, /if \(result === null\) \{/);

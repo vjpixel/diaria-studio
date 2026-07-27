@@ -254,10 +254,10 @@ describe("Grupo 3 — cadeia de share (share.ts, #3978) — utm_source/campaign 
 });
 
 describe("O que já estava correto NÃO foi tocado (#3978, regressão)", () => {
-  it("buildSubscribeUrl (jogar.ts) continua indo pra diaria.beehiiv.com direto, com os 3 UTMs originais", async () => {
+  it("#4059: buildSubscribeUrl (jogar.ts) vai pro host de marca diar.ia.br, com os 3 UTMs originais", async () => {
     const { buildSubscribeUrl, SUBSCRIBE_UTM_SOURCE, SUBSCRIBE_UTM_MEDIUM, SUBSCRIBE_UTM_CAMPAIGN } = await import("../workers/poll/src/jogar.ts");
     const url = buildSubscribeUrl();
-    assert.match(url, /^https:\/\/diaria\.beehiiv\.com\/\?/);
+    assert.match(url, /^https:\/\/diar\.ia\.br\/\?/);
     const parsed = new URL(url);
     assert.equal(parsed.searchParams.get("utm_source"), SUBSCRIBE_UTM_SOURCE);
     assert.equal(parsed.searchParams.get("utm_medium"), SUBSCRIBE_UTM_MEDIUM);

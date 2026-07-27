@@ -8,6 +8,7 @@
 // #3113: tokens do DS canônico — mesma fonte usada por leaderboard-routes.ts e
 // index.ts (ver nota em #3111 sobre bundle Cloudflare separado).
 import { DS_COLORS } from "./ds-tokens.generated";
+import { EIA_STANDALONE_SOURCE, EIA_ARCHIVE_UTM } from "./utm-registry"; // #4041
 
 // ── Trailing slash normalization (#1319) ────────────────────────────────────
 
@@ -54,7 +55,11 @@ export const AAMMDD_RE = /^\d{6}$/;
 export const CYCLE_EDITION_RE = /^\d{4}-\d{2}$/;
 
 /** AAMMDD → "10 de maio de 2026". Memória `feedback_no_aammdd_for_subscribers.md`.
- * Invalid input (não-AAMMDD, MM/DD fora de range) → retorna input cru (safe). */
+ * Invalid input (não-AAMMDD, MM/DD fora de range) → retorna input cru (safe).
+ * Deliberadamente NÃO reconhece o formato de ciclo Clarice (`CYCLE_EDITION_RE`)
+ * — quem precisa disso usa `formatEditionDateForBrand(edition, "clarice")`
+ * (que sabe o brand de verdade); este helper genérico devolver o slug cru pra
+ * formato desconhecido é uma escolha defensiva testada (#3113 item 13). */
 export function formatEditionDate(edition: string): string {
   if (!AAMMDD_RE.test(edition)) return edition;
   const yy = parseInt(edition.slice(0, 2), 10);
@@ -674,7 +679,7 @@ export const BRAND_INFO: Record<Brand, { name: string; siteUrl: string; leaderbo
  * `scripts/count-subscriptions-by-utm.ts --source eia-standalone` — mover a
  * declaração não muda o valor, só centraliza.
  */
-export const SUBSCRIBE_UTM_SOURCE = "eia-standalone";
+export const SUBSCRIBE_UTM_SOURCE = EIA_STANDALONE_SOURCE; // #4041: registry único
 
 /**
  * #3978: URL do site principal de `brand` (`BRAND_INFO[brand].siteUrl`) com o
@@ -976,9 +981,11 @@ export function leaderboardHref(brand: Brand, slug?: string | null): string {
 // e-mail contam pro MESMO utm_source no funil, coerência exigida pelo item
 // de aceite #3524 ("UTMs distintos por origem... funil distingue newsletter
 // vs share vs embed").
-export const EMAIL_ARCHIVE_UTM_SOURCE = "newsletter";
-export const EMAIL_ARCHIVE_UTM_MEDIUM = "email";
-export const EMAIL_ARCHIVE_UTM_CAMPAIGN = "eia-arquivo";
+// #4041: os VALORES vêm do registry espelhado (`./utm-registry`) — o mesmo
+// triplo que `scripts/lib/newsletter-render-html.ts` importa do shared.
+export const EMAIL_ARCHIVE_UTM_SOURCE = EIA_ARCHIVE_UTM.source;
+export const EMAIL_ARCHIVE_UTM_MEDIUM = EIA_ARCHIVE_UTM.medium;
+export const EMAIL_ARCHIVE_UTM_CAMPAIGN = EIA_ARCHIVE_UTM.campaign;
 
 /**
  * Href relativo do arquivo jogável (`/jogar/arquivo`, #3519) com o UTM do

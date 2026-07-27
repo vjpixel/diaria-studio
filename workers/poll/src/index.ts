@@ -42,6 +42,8 @@ import {
   lightboxScript, // #4007: script do lightbox de zoom — reusado nas 4 superfícies do par de imagens
   renderLightboxMarkup, // #4007: markup do <dialog> de zoom
   renderLightboxStyles, // #4007: CSS do lightbox + badge de lupa
+  renderBrandShellStyles, // #4110: mesma régua+rodapé de leaderboard/arquivo — /vote era a única página pública sem shell
+  renderBrandFooter, // #4110
 } from "./lib";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
@@ -116,6 +118,29 @@ export interface Env {
    * quebrar fixtures de teste existentes que constroem `Env` sem esse campo
    * (nesse caso corsHeaders() trata como request sem Origin). */
   _requestOrigin?: string | null;
+  /** #4054: KV do sync de assinantes ATIVOS da Diar.ia (mesma população de
+   * `CURSOS_SUBSCRIBERS`, #4052 — chave `subscriber:{sha256(email)}`, ver
+   * `subscriber-verify.ts`). Verificação PRIMÁRIA de "?jogar=" quem chegou por
+   * fora já é assinante" (`web-gate.ts`, `checkWebSubscriber`). OPCIONAL — sem
+   * este binding, `checkWebSubscriber` cai direto no fallback Beehiiv
+   * (`BEEHIIV_API_KEY`/`BEEHIIV_PUBLICATION_ID`) ou, sem os dois, trata todo
+   * mundo como "não verificado" (nunca lança, nunca bloqueia o cadastro
+   * inline). Criar via `wrangler kv namespace create SUBSCRIBERS_KV` — mesmo
+   * sync (`scripts/sync-cursos-subscribers-kv.ts`) pode popular os dois KVs
+   * (rodar 2x com bindings diferentes, ou apontar os dois workers pro MESMO
+   * namespace id — a população é idêntica, "assinante ativo da Diar.ia" não
+   * depende de qual worker está perguntando). */
+  SUBSCRIBERS_KV?: KVNamespace;
+  /** #4054: assina/verifica o cookie de sessão do caminho `/jogar` (brand
+   * `web`), mesmo primitivo de `workers/cursos` (#4052, ver `session-cookie.ts`
+   * espelhado neste diretório). OPCIONAL SÓ pra não quebrar fixtures de teste
+   * que não testam o gate — em produção, sem este secret, `/jogar/gate/verify`
+   * e `/jogar/gate/subscribe` NUNCA emitem sessão (nenhum cookie sai sem
+   * segredo pra assiná-lo). Configurar via `wrangler secret put
+   * COOKIE_HMAC_SECRET` (gerar: `openssl rand -hex 32`) — pode reusar o MESMO
+   * valor do secret homônimo em `workers/cursos`, são worker/domínio
+   * diferentes, a chave só precisa ser secreta, não compartilhada por design. */
+  COOKIE_HMAC_SECRET?: string;
 }
 
 // ── Brand namespacing (#1905) ─────────────────────────────────────────────────
@@ -364,6 +389,8 @@ import { inlineSignupScript, renderInlineSignupFormBlock, renderInlineSignupForm
 // de index; index importa o handler de volta) é o mesmo padrão seguro já usado
 // por vote.ts/jogar.ts — valores só usados em request-time.
 import { handleJogarSubscribe } from "./subscribe";
+// #4054: gate por rodada do caminho de fora — tela + verify + subscribe.
+import { clearWebSessionCookieHeader, handleJogarGateSubscribe, handleJogarGateVerify, renderJogarGatePage } from "./web-gate";
 // #3975: identidade por e-mail no leaderboard do brand web (POST
 // /jogar/identify) — mesmo padrão de ciclo de import seguro de subscribe.ts
 // acima (identify.ts importa `json`/`corsHeaders` de index; index importa o
@@ -746,7 +773,7 @@ export function votePageHtml(
   // reusado literalmente do mesmo helper que /jogar usa pro bloco injetado
   // dinamicamente — ver rationale em share.ts.
   const shareCardHtml = shareCard
-    ? `${renderShareCardBlock(shareCard.token, shareCard.payload)}\n${shareButtonScript("#jogar-share-card")}`
+    ? `${renderShareCardBlock(shareCard.token, shareCard.payload, brand)}\n${shareButtonScript("#jogar-share-card")}`
     : "";
 
   // #4065: cadastro inline (#3580) na tela de resultado do voto — só brand
@@ -795,6 +822,11 @@ export function votePageHtml(
      o arquivo da fonte — cai pra system sans nas 3 igual, sem 3ª origem
      externa/latência extra no worker de maior tráfego. */
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
+  /* #4110: mesmo kicker+régua de leaderboard/arquivo (leaderboard-routes.ts) —
+     /vote era a única página pública do worker sem esse shell mínimo de
+     identidade de marca (achado do editor testando o fluxo de assinante,
+     260727: "não tem cabeçalho nem rodapé", comparando com /jogar). */
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   .msg { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; line-height: 1.4; margin: 20px 0; letter-spacing: -0.01em; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .result-images { display: flex; gap: 12px; margin: 24px 0; justify-content: center; flex-wrap: wrap; }
@@ -861,9 +893,12 @@ export function votePageHtml(
   }
 ${renderLightboxStyles()}
 ${renderInlineSignupFormStyles()}
+${renderBrandShellStyles()}
 </style>
 </head>
 <body>
+<p class="kicker">É IA?</p>
+<hr class="rule">
 <p class="msg">${htmlEscape(message)}</p>
 ${imagesHtml}
 ${eiaMetaHtml}
@@ -873,6 +908,7 @@ ${formHtml}
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-voltar", "eia-vote-voltar"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
 ${renderLightboxMarkup()}
 ${lightboxScript()}
+${renderBrandFooter(brand)}
 </body>
 </html>`;
 }
@@ -1111,8 +1147,47 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
   // negativo. Padrão consistente.
   const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 
-  const key = decodeURIComponent(path.slice("/img/".length));
+  // #4111: `decodeURIComponent` lança URIError em `%` malformado (`/img/%`).
+  // Sem este guard, uma rota pública devolvia 500 pra input trivial.
+  let key: string;
+  try {
+    key = decodeURIComponent(path.slice("/img/".length));
+  } catch {
+    return new Response("not found", { status: 404, headers: corsHeaders });
+  }
   if (!key) {
+    return new Response("not found", { status: 404, headers: corsHeaders });
+  }
+
+  // #4111 (P0, achado do review 260727 e CONFIRMADO em produção): sem esta
+  // allowlist, `/img/{key}` era um leitor arbitrário do KV INTEIRO — a chave
+  // vinha crua da URL direto pro `get`. Em produção dava, sem autenticação
+  // nenhuma e com `Access-Control-Allow-Origin: *`:
+  //   GET /img/correct:{hoje}                 → o gabarito do dia (spoiler
+  //                                             total; a chave é escrita no
+  //                                             Stage 4, ANTES do e-mail sair)
+  //   GET /img/leaderboard-snapshot:{slug}    → e-mails dos leitores EM CLARO
+  //                                             (o snapshot guarda `email`
+  //                                             cru; ~50 por mês)
+  //   GET /img/score:{email}, /img/vote:{ed}:{email}, /img/nickname:{apelido}
+  //                                           → dado individual + harvest de
+  //                                             e-mail a partir dos apelidos
+  //                                             públicos do leaderboard
+  // Isso derrubava de uma vez o anti-spoiler de todas as outras superfícies e
+  // o mascaramento de e-mail (`maskEmail` #3118, `hashEmailForMatch` #4029).
+  //
+  // O gate é o prefixo `img-`: TODA chave de imagem gravada pelo pipeline usa
+  // `img-{edition}-{basename}` / `img-monthly-*` (upload-images-public.ts,
+  // lib/mensal/monthly-image-upload.ts), e NENHUMA chave de estado começa
+  // assim — todas usam namespace com `:` (`correct:`, `stats:`, `vote:`,
+  // `score:`, `score-by-month:`, `nickname:`, `counted:`, `votelog:`,
+  // `identify-linked:`, `leaderboard-snapshot:`, `eiameta:`, `rl:`,
+  // `subscriber:`, mais os prefixos de brand `clarice:`/`web:`) ou são
+  // singletons (`valid_editions`). Recusar `:` é defesa em profundidade
+  // (redundante hoje, protege de uma chave futura tipo `img-algo:secreto`) e
+  // não restringe charset de filename — não quebra nenhuma URL já enviada em
+  // edição passada, que é o requisito duro aqui.
+  if (!/^img-[^:]+$/.test(key)) {
     return new Response("not found", { status: 404, headers: corsHeaders });
   }
 
@@ -1239,7 +1314,9 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // mesmo padrão de `handleImage`/`/img/*`); voto/score/nickname passam
     // pelos endpoints normais (`/vote?brand=web` etc.), que já branding via
     // `bEnv` quando `?brand=web` é passado por eles.
-    if (path === "/jogar" && request.method === "GET") return handleJogarPage(url, env);
+    // #4054: 3º arg `request` — habilita o gate por rodada (cookie
+    // "rodada livre já usada" + checagem de sessão), ver rationale em jogar.ts.
+    if (path === "/jogar" && request.method === "GET") return handleJogarPage(url, env, request);
     // #3519: arquivo de pares passados (índice) — mesmo racional acima:
     // `env` cru, lê `correct:{edition}` compartilhado, não `bEnv`.
     if (path === "/jogar/arquivo" && request.method === "GET") return handleJogarArchivePage(url, env);
@@ -1258,6 +1335,25 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // a assinatura é do brand `web`). Anti-abuso (honeypot + rate-limit +
     // validação server-side) dentro do handler, ver subscribe.ts.
     if (path === "/jogar/subscribe" && request.method === "POST") return handleJogarSubscribe(request, env);
+    // #4054: gate por rodada do caminho de fora — `env` CRU (mesmo racional
+    // do resto de /jogar*: rate-limit/subscriber-check/cookie de sessão não
+    // dependem de brand namespacing). Ver web-gate.ts.
+    if (path === "/jogar/gate" && request.method === "GET") {
+      return new Response(renderJogarGatePage(url.searchParams.get("edition")), {
+        headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
+    if (path === "/jogar/gate/verify" && request.method === "POST") return handleJogarGateVerify(request, env);
+    if (path === "/jogar/gate/subscribe" && request.method === "POST") return handleJogarGateSubscribe(request, env);
+    // #4054: encerra a sessão do caminho de fora (mesmo padrão de
+    // `POST /gate/logout` em workers/cursos, #4052) — útil pra debug/teste
+    // manual e pra um eventual link "sair"/"trocar de conta" na tela de gate.
+    if (path === "/jogar/gate/logout" && request.method === "POST") {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", ...corsHeaders(env), "Set-Cookie": clearWebSessionCookieHeader() },
+      });
+    }
     // #3521: widget embutível (iframe) pra sites parceiros — `env` CRU
     // (mesmo racional acima: só lê `correct:{edition}` compartilhado); a
     // allowlist de embutimento (EMBED_ALLOWED_ORIGINS) é independente de
@@ -1280,7 +1376,9 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // o fast-path (responde o veredito na hora, adia contabilidade pesada pra
     // ctx.waitUntil()). Ver rationale completo em vote.ts (handleVote/
     // handleVoteFastPath).
-    if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand, env, ctx);
+    // #4054: 6º arg `request` — habilita a identidade pós-gate do caminho de
+    // fora (cookie de sessão, brand "web"), ver rationale em vote.ts.
+    if (path === "/vote" && request.method === "GET") return handleVote(url, bEnv, brand, env, ctx, request);
     if (path === "/stats" && request.method === "GET") return handleStats(url, bEnv, brand);
     // #3257: lista as edições/ciclos com stats registrados neste brand — usado
     // pelo botão "Atualizar" da aba Engajamento do clarice-dashboard pra
@@ -1367,5 +1465,5 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/gate", "/jogar/gate/verify", "/jogar/gate/subscribe", "/jogar/gate/logout", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/img/{key}"] }, 404, env);
 }
