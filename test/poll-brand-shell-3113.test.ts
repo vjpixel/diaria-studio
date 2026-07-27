@@ -81,12 +81,11 @@ describe("#3113 item 5 — renderBrandShellStyles / renderBrandFooter (pure)", (
     assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">Diar.ia</a>`), html);
   });
 
-  it("renderBrandFooter(clarice) linka pro clarice.ai (com UTM do funil, #3978, preservando ?via=diaria) com o shortName 'Clarice' (não 'Clarice News')", () => {
+  it("renderBrandFooter(clarice) linka pro diar.ia.br (com UTM do funil, #3978) com o label 'Diar.ia' — #4049: o jogo 'É IA?' é da Diar.ia, não da Clarice", () => {
     const html = renderBrandFooter("clarice");
-    const href = footerHref("clarice");
-    assert.ok(href.startsWith("https://clarice.ai/?via=diaria&"), `via=diaria deve ser preservado: ${href}`);
-    assert.ok(html.includes(`<a href="${footerHrefEscaped("clarice")}">Clarice</a>`), html);
-    assert.doesNotMatch(html, />Clarice News</);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">Diar.ia</a>`), html);
+    assert.doesNotMatch(html, /clarice\.ai/);
+    assert.doesNotMatch(html, />Clarice</);
   });
 });
 
@@ -110,9 +109,9 @@ describe("#3113 item 5 — /leaderboard e /leaderboard/{YYYY}/arquivo ganham ré
     assert.match(html, /<footer class="brand-footer">.*<\/footer>\s*<\/body>/s);
   });
 
-  it("brand clarice: rodapé de marca usa clarice.ai (shortName), não diar.ia.br", async () => {
+  it("brand clarice: rodapé de marca usa diar.ia.br (#4049), não clarice.ai", async () => {
     const html = await fetchHtml("/leaderboard/2026?brand=clarice");
-    assert.ok(html.includes(`<a href="${footerHrefEscaped("clarice")}">Clarice</a>`), html);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">Diar.ia</a>`), html);
   });
 });
 
@@ -128,10 +127,10 @@ describe("#3113 item 11 — renderArchiveVoteHtml ganha kicker + régua + rodap�
     assert.match(html, /<footer class="brand-footer">.*<\/footer>\s*<\/body>/s);
   });
 
-  it("brand clarice: rodapé da página de voto do arquivo usa clarice.ai", async () => {
+  it("brand clarice: rodapé da página de voto do arquivo usa diar.ia.br (#4049)", async () => {
     const res = renderArchiveVoteHtml("260701", "2026", "clarice");
     const html = await res.text();
-    assert.ok(html.includes(`<a href="${footerHrefEscaped("clarice")}">Clarice</a>`), html);
+    assert.ok(html.includes(`<a href="${footerHrefEscaped("diaria")}">Diar.ia</a>`), html);
   });
 
   it("anti-gaming preservado: kicker/régua/rodapé novos não revelam qual imagem é IA (guarda de regressão do #2867)", async () => {

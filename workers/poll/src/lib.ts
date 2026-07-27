@@ -1053,13 +1053,24 @@ export function renderBrandShellStyles(): string {
  * precisa dar identidade (rodapé não-vazio), não navegação cruzada completa.
  */
 export function renderBrandFooter(brand: Brand): string {
-  const info = BRAND_INFO[brand];
+  // #4049: o jogo "É IA?" é da Diar.ia, não da Clarice — o rodapé de
+  // identidade de marca em superfícies `clarice` (leaderboard anual/mensal,
+  // arquivo, /vote) creditava "Clarice" + linkava clarice.ai, mas quem faz o
+  // jogo é a Diar.ia (a Clarice é só a newsletter que hospeda a distribuição
+  // cross-promo, ver sub-copy em leaderboard-routes.ts:742-744, que
+  // permanece como está). Override LOCAL AO RODAPÉ: usa o brand "diaria" pra
+  // label + href (com o mesmo UTM de footer, #3978) em vez de
+  // `BRAND_INFO[brand]` — não mexe em `BRAND_INFO.clarice.siteUrl` (o link
+  // de afiliado `?via=diaria`/Rewardful, #1910, continua usado em outros
+  // call sites, ex: a sub-copy do leaderboard).
+  const footerBrand: Brand = "diaria";
+  const info = BRAND_INFO[footerBrand];
   const label = info.shortName ?? info.name;
   // #3978: href com UTM do funil "É IA?" → site (era só `info.siteUrl` cru,
   // sem nenhum parâmetro de medição — este rodapé aparece em toda página
   // pública do jogo/leaderboard, então era o maior ponto cego de UTM do
   // worker: 9 call sites de uma vez, ver issue).
-  const href = buildBrandSiteUrl(brand, "footer", "eia-footer");
+  const href = buildBrandSiteUrl(footerBrand, "footer", "eia-footer");
   return `<footer class="brand-footer"><a href="${htmlEscape(href)}">${htmlEscape(label)}</a> — jogo "É IA?"</footer>`;
 }
 
