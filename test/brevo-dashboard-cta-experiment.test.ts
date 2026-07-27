@@ -327,10 +327,9 @@ describe("renderExperimentRegistrySection", () => {
     assert.equal(renderExperimentRegistrySection([]), "");
   });
 
-  test("CTA-01 (ativo) — contém hipótese, braços, regra e link do protocolo", () => {
+  test("CTA-01 — contém hipótese, braços, regra e link do protocolo", () => {
     const html = renderExperimentRegistrySection([CTA01_EXPERIMENT]);
     assert.ok(html.includes("Experimento vigente"));
-    assert.ok(html.includes("Ativo"));
     assert.ok(html.includes("Trocar o CTA do topo"));
     assert.ok(html.includes("A (controle) — copy atual"));
     assert.ok(html.includes("B (tratamento) — copy B1 aprovada 22/07"));
@@ -344,6 +343,37 @@ describe("renderExperimentRegistrySection", () => {
     const closed = renderExperimentRegistrySection([{ ...base, status: "encerrado" }]);
     assert.ok(winner.includes("Vencedor"));
     assert.ok(closed.includes("Encerrado"));
+  });
+
+  // #4061: o CTA-01 foi encerrado SEM vencedor por causa de entrega degradada
+  // no braço B. Um badge "Encerrado" sem motivo visível some com a única
+  // informação que importa pra próxima rodada ("não repetir antes de resolver
+  // X") — daí `closureNote` ser renderizado, e só fora do estado "ativo".
+  test("CTA-01 está encerrado e explica o motivo no painel", () => {
+    const html = renderExperimentRegistrySection([CTA01_EXPERIMENT]);
+    assert.equal(CTA01_EXPERIMENT.status, "encerrado");
+    assert.ok(html.includes("Encerrado"));
+    assert.ok(html.includes("Encerramento:"));
+    assert.ok(html.includes("entrega degradada"));
+  });
+
+  test("closureNote é ignorado enquanto o experimento está ativo", () => {
+    const ativo: ExperimentDefinition = {
+      ...CTA01_EXPERIMENT,
+      status: "ativo",
+      closureNote: "MOTIVO-QUE-NAO-DEVE-APARECER",
+    };
+    const html = renderExperimentRegistrySection([ativo]);
+    assert.ok(html.includes("Ativo"));
+    assert.ok(!html.includes("MOTIVO-QUE-NAO-DEVE-APARECER"));
+    assert.ok(!html.includes("Encerramento:"));
+  });
+
+  test("experimento encerrado SEM closureNote não renderiza o bloco vazio", () => {
+    const semNota: ExperimentDefinition = { ...CTA01_EXPERIMENT, status: "encerrado", closureNote: undefined };
+    const html = renderExperimentRegistrySection([semNota]);
+    assert.ok(html.includes("Encerrado"));
+    assert.ok(!html.includes("Encerramento:"));
   });
 
   test("suporta MÚLTIPLOS experimentos simultaneamente (lista, não texto hardcoded)", () => {
