@@ -35,12 +35,13 @@ import { json } from "./index";
 // medium/campaign PRÓPRIOS abaixo distinguem o cadastro inline do CTA-link e
 // do quiz.
 import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
+import { JOGAR_INLINE_UTM, LIVROS_INLINE_UTM } from "./utm-registry"; // #4041
 
 /** UTM próprio do cadastro inline (#3580) — `utm_source` continua
  * `eia-standalone` (convenção de medição), medium/campaign distintos pra medir
  * a conversão INLINE separada do CTA-link (#3518) e do quiz (#3579). */
-export const INLINE_SUBSCRIBE_UTM_MEDIUM = "jogar-inline";
-export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = "eia-jogar-inline-signup";
+export const INLINE_SUBSCRIBE_UTM_MEDIUM = JOGAR_INLINE_UTM.medium; // #4041: registry único
+export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = JOGAR_INLINE_UTM.campaign;
 
 /**
  * #4051: `/jogar/subscribe` passou a ser chamado CROSS-ORIGIN por
@@ -72,8 +73,17 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
   },
   // utm_source=livros / utm_medium distinto por posição — pedido explícito da
   // issue #4051 pra medir hero × fim-de-lista separadamente.
-  "livros-hero": { source: "livros", medium: "inline-hero", campaign: "livros-inline-signup" },
-  "livros-footer": { source: "livros", medium: "inline-footer", campaign: "livros-inline-signup" },
+  // #4041: valores do registry espelhado (\`./utm-registry\`).
+  "livros-hero": {
+    source: LIVROS_INLINE_UTM.source,
+    medium: LIVROS_INLINE_UTM.hero.medium,
+    campaign: LIVROS_INLINE_UTM.campaign,
+  },
+  "livros-footer": {
+    source: LIVROS_INLINE_UTM.source,
+    medium: LIVROS_INLINE_UTM.footer.medium,
+    campaign: LIVROS_INLINE_UTM.campaign,
+  },
 };
 
 /** Pure: resolve o triplo UTM a partir do `source` mandado pelo cliente

@@ -76,6 +76,64 @@ export function buildMensalCampaign(ciclo: string, posicao: string): string {
   return `${MENSAL_UTM_SOURCE}-${ciclo}-${p}`;
 }
 
+// ---------------------------------------------------------------------------
+// VALORES — fonte única. Todo emissor importa daqui; nenhum call site declara
+// literal próprio. As entradas de `UTM_EMITTERS` abaixo DERIVAM destes valores
+// (não os repetem), então inventário e emissão não têm como divergir.
+// ---------------------------------------------------------------------------
+
+/** `utm_source` de tudo que nasce no jogo standalone "É IA?" (#3518). */
+export const EIA_STANDALONE_SOURCE = "eia-standalone";
+
+/** Ponte e-mail diário → arquivo jogável no site (#3524). Duplicado de
+ * propósito entre `newsletter-render-html.ts` e `workers/poll/src/lib.ts`. */
+export const EIA_ARCHIVE_UTM = {
+  source: "newsletter",
+  medium: "email",
+  campaign: "eia-arquivo",
+} as const;
+
+/** CTA de assinatura pós-voto do par único (#3518). */
+export const JOGAR_POSVOTO_UTM = {
+  source: EIA_STANDALONE_SOURCE,
+  medium: "jogar",
+  campaign: "eia-jogar-posvoto",
+} as const;
+
+/** CTA de assinatura no resultado do quiz relâmpago (#3579). */
+export const QUIZ_POSVOTO_UTM = {
+  source: EIA_STANDALONE_SOURCE,
+  medium: "quiz",
+  campaign: "eia-quiz-posvoto",
+} as const;
+
+/** Form de cadastro inline na própria página do jogo (#3580). */
+export const JOGAR_INLINE_UTM = {
+  source: EIA_STANDALONE_SOURCE,
+  medium: "jogar-inline",
+  campaign: "eia-jogar-inline-signup",
+} as const;
+
+/** Funil do embed em site parceiro (#3521) — `campaign` = slug do parceiro. */
+export const EMBED_UTM = {
+  source: "embed",
+  medium: "widget",
+  /** Slug default quando `?partner=` está ausente/inválido. */
+  defaultPartner: "generico",
+} as const;
+
+/** Cartões de compartilhamento (#3978/#3679) — `medium` é dinâmico por canal. */
+export const SHARE_UTM_CAMPAIGN = "eia-share";
+export const QUIZ_SHARE_UTM_CAMPAIGN = "eia-quiz-share";
+
+/** Cadastro inline nas páginas de livros (#4051) — medium por posição. */
+export const LIVROS_INLINE_UTM = {
+  source: "livros",
+  campaign: "livros-inline-signup",
+  hero: { medium: "inline-hero" },
+  footer: { medium: "inline-footer" },
+} as const;
+
 /** Uma entrada do inventário: um ponto do código que emite UTM. */
 export interface UtmEmitter {
   /** Identificador estável — chave de join com os metadados editáveis da UI. */
@@ -112,7 +170,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     label: "Digest mensal (Clarice)",
     source: MENSAL_UTM_SOURCE,
     medium: MENSAL_UTM_MEDIUM,
-    campaignPattern: "clarice-{ciclo}-{posicao}",
+    campaignPattern: `${MENSAL_UTM_SOURCE}-{ciclo}-{posicao}`,
     originFile: "scripts/lib/mensal/monthly-render.ts",
     description:
       "Todo link pro host de marca no e-mail mensal enviado pela Brevo. " +
@@ -122,9 +180,9 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "eia-arquivo-newsletter",
     label: "É IA? — arquivo (e-mail diário)",
-    source: "newsletter",
-    medium: "email",
-    campaignPattern: "eia-arquivo",
+    source: EIA_ARCHIVE_UTM.source,
+    medium: EIA_ARCHIVE_UTM.medium,
+    campaignPattern: EIA_ARCHIVE_UTM.campaign,
     originFile: "scripts/lib/newsletter-render-html.ts",
     description: "Ponte e-mail diário → arquivo jogável do 'É IA?' no site (#3524).",
     status: "ativo",
@@ -132,9 +190,9 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "eia-arquivo-worker",
     label: "É IA? — arquivo (Worker)",
-    source: "newsletter",
-    medium: "email",
-    campaignPattern: "eia-arquivo",
+    source: EIA_ARCHIVE_UTM.source,
+    medium: EIA_ARCHIVE_UTM.medium,
+    campaignPattern: EIA_ARCHIVE_UTM.campaign,
     originFile: "workers/poll/src/lib.ts",
     description:
       "Duplicata DELIBERADA da entrada acima (#3524): o Worker precisa do mesmo " +
@@ -144,9 +202,9 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "eia-jogar-posvoto",
     label: "É IA? — CTA pós-voto",
-    source: "eia-standalone",
-    medium: "jogar",
-    campaignPattern: "eia-jogar-posvoto",
+    source: JOGAR_POSVOTO_UTM.source,
+    medium: JOGAR_POSVOTO_UTM.medium,
+    campaignPattern: JOGAR_POSVOTO_UTM.campaign,
     originFile: "workers/poll/src/jogar.ts",
     description: "Botão 'Assinar a Diar.ia' do CTA pós-voto do jogo standalone (#3518).",
     status: "ativo",
@@ -154,9 +212,9 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "eia-quiz-posvoto",
     label: "É IA? — CTA do quiz relâmpago",
-    source: "eia-standalone",
-    medium: "quiz",
-    campaignPattern: "eia-quiz-posvoto",
+    source: QUIZ_POSVOTO_UTM.source,
+    medium: QUIZ_POSVOTO_UTM.medium,
+    campaignPattern: QUIZ_POSVOTO_UTM.campaign,
     originFile: "workers/poll/src/jogar.ts",
     description: "CTA de assinatura no resultado final do quiz relâmpago (#3579).",
     status: "ativo",
@@ -164,31 +222,51 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "eia-jogar-inline",
     label: "É IA? — cadastro inline",
-    source: "eia-standalone",
-    medium: "jogar-inline",
-    campaignPattern: "eia-jogar-inline-signup",
+    source: JOGAR_INLINE_UTM.source,
+    medium: JOGAR_INLINE_UTM.medium,
+    campaignPattern: JOGAR_INLINE_UTM.campaign,
     originFile: "workers/poll/src/subscribe.ts",
     description: "Form de cadastro embutido na própria página do jogo (#3580).",
     status: "ativo",
   },
   {
+    id: "livros-inline-hero",
+    label: "Livros — cadastro inline (hero)",
+    source: LIVROS_INLINE_UTM.source,
+    medium: LIVROS_INLINE_UTM.hero.medium,
+    campaignPattern: LIVROS_INLINE_UTM.campaign,
+    originFile: "workers/poll/src/subscribe.ts",
+    description: "CTA de cadastro no topo de livros.diar.ia.br (#4051).",
+    status: "ativo",
+  },
+  {
+    id: "livros-inline-footer",
+    label: "Livros — cadastro inline (fim da lista)",
+    source: LIVROS_INLINE_UTM.source,
+    medium: LIVROS_INLINE_UTM.footer.medium,
+    campaignPattern: LIVROS_INLINE_UTM.campaign,
+    originFile: "workers/poll/src/subscribe.ts",
+    description: "CTA de cadastro no fim da lista de cards de livros.diar.ia.br (#4051).",
+    status: "ativo",
+  },
+  {
     id: "embed-widget",
     label: "Embed do jogo (parceiros)",
-    source: "embed",
-    medium: "widget",
+    source: EMBED_UTM.source,
+    medium: EMBED_UTM.medium,
     campaignPattern: "{partner}",
     originFile: "workers/poll/src/embed.ts",
     description:
       "CTA do widget embutido em site parceiro — `utm_campaign` = slug do parceiro " +
-      "(`generico` quando `?partner=` está ausente/inválido) (#3521).",
+      `(\`${EMBED_UTM.defaultPartner}\` quando \`?partner=\` está ausente/inválido) (#3521).`,
     status: "ativo",
   },
   {
     id: "share-eia",
     label: "Compartilhamento do 'É IA?'",
-    source: "eia-standalone",
+    source: EIA_STANDALONE_SOURCE,
     medium: "{medium}",
-    campaignPattern: "eia-share",
+    campaignPattern: SHARE_UTM_CAMPAIGN,
     originFile: "workers/poll/src/share.ts",
     description:
       "Cartão de compartilhamento do resultado — `utm_medium` dinâmico por canal " +
@@ -198,9 +276,9 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
   {
     id: "share-quiz",
     label: "Compartilhamento do quiz",
-    source: "eia-standalone",
+    source: EIA_STANDALONE_SOURCE,
     medium: "{medium}",
-    campaignPattern: "eia-quiz-share",
+    campaignPattern: QUIZ_SHARE_UTM_CAMPAIGN,
     originFile: "workers/poll/src/share.ts",
     description: "Cartão de compartilhamento do quiz relâmpago / sequência mensal (#3978).",
     status: "ativo",
@@ -210,7 +288,7 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     label: "A/B de CTA da mensal (round CTA-01)",
     source: MENSAL_UTM_SOURCE,
     medium: MENSAL_UTM_MEDIUM,
-    campaignPattern: "clarice-{ciclo}-{posicao}-cta-{arm}",
+    campaignPattern: `${MENSAL_UTM_SOURCE}-{ciclo}-{posicao}-cta-{arm}`,
     originFile: "scripts/clarice-cta-ab-setup.ts",
     description:
       "Sufixo de braço A/B composto EM CIMA do sufixo de posição do render (#4040), " +

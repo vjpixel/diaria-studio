@@ -43,6 +43,7 @@ import { monthlyDir as resolveMonthlyDir } from "./lib/mensal/monthly-paths.ts";
 import { assertHtmlHasUnsubscribeLink, pollUntilCount } from "./clarice-schedule-ramp.ts";
 import { EDITOR_COPY_EMAIL } from "./lib/editor-copy.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { MENSAL_UTM_SOURCE } from "./lib/shared/utm-registry.ts"; // #4041: registry único
 
 loadProjectEnv();
 
@@ -73,8 +74,8 @@ const UTM_TERM_LABELS = [
   "fim-marca2", // encerramento: wordmark do parágrafo social
 ] as const;
 
-const BASE_UTM = "https://diar.ia.br/?utm_source=clarice"; // #4059: host de marca canônico
-const CAMPAIGN_TOKEN = `clarice-${CYCLE}`;
+const BASE_UTM = `https://diar.ia.br/?utm_source=${MENSAL_UTM_SOURCE}`; // #4059: host de marca canônico; #4041: source do registry
+const CAMPAIGN_TOKEN = `${MENSAL_UTM_SOURCE}-${CYCLE}`;
 
 // Frase do topo no braço A (exata no render canônico, com &amp; nos hrefs).
 const TOPO_A =

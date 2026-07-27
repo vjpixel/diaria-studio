@@ -27,6 +27,7 @@ import {
   unescapeMd,
   pickErroIntencionalReveal,
 } from "./newsletter-parse.ts";
+import { EIA_ARCHIVE_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM
 import type { AprofundeItem } from "../extract-destaques.ts"; // #3920
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -77,9 +78,11 @@ const PUBLIC_GAME_BASE_URL = "https://eia.diar.ia.br";
 // issue (#3524 "O quê"); `count-subscriptions-by-utm.ts` (#2457) já agrega
 // por QUALQUER utm_source presente na subscription Beehiiv — nenhuma mudança
 // naquele script é necessária pra este valor aparecer no funil.
-export const EIA_ARCHIVE_UTM_SOURCE = "newsletter";
-export const EIA_ARCHIVE_UTM_MEDIUM = "email";
-export const EIA_ARCHIVE_UTM_CAMPAIGN = "eia-arquivo";
+// #4041: os VALORES vêm do registry único (\`lib/shared/utm-registry.ts\`) — os
+// bindings abaixo continuam exportados por back-compat dos callers/testes.
+export const EIA_ARCHIVE_UTM_SOURCE = EIA_ARCHIVE_UTM.source;
+export const EIA_ARCHIVE_UTM_MEDIUM = EIA_ARCHIVE_UTM.medium;
+export const EIA_ARCHIVE_UTM_CAMPAIGN = EIA_ARCHIVE_UTM.campaign;
 
 /**
  * Pure (#3524): URL do arquivo jogável do "É IA?" standalone (`/jogar/arquivo`,

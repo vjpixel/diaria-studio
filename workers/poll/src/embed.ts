@@ -104,6 +104,7 @@ import { htmlEscape, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST } from "./li
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { resolveJogarEdition } from "./jogar";
 import { shareButtonScript } from "./share";
+import { EMBED_UTM } from "./utm-registry"; // #4041
 
 /** Brand fixo — mesmo racional de `JOGAR_BRAND` em jogar.ts: o embed É o
  * standalone, não um parâmetro. */
@@ -111,11 +112,12 @@ const EMBED_BRAND = "web" as const;
 
 // ── UTM de conversão do funil embed (#3521, convenção do #3518) ────────────
 
-export const EMBED_UTM_SOURCE = "embed";
-export const EMBED_UTM_MEDIUM = "widget";
+// #4041: valores vindos do registry espelhado (\`./utm-registry\`).
+export const EMBED_UTM_SOURCE = EMBED_UTM.source;
+export const EMBED_UTM_MEDIUM = EMBED_UTM.medium;
 /** Partner slug default quando `?partner=` está ausente/inválido — mantém o
  * funil mensurável ("origem desconhecida") em vez de quebrar o CTA. */
-export const EMBED_DEFAULT_PARTNER = "generico";
+export const EMBED_DEFAULT_PARTNER = EMBED_UTM.defaultPartner;
 
 /**
  * Pure: sanitiza o slug do parceiro pra uso em `utm_campaign` — minúsculo,

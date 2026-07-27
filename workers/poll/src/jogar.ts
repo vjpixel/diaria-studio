@@ -99,6 +99,7 @@ import { extractEditionsForYear, groupEditionsByMonth, listAllKeys } from "./lea
 // taxa é quem geraria os votos web, então nunca teria amostra suficiente no
 // dia 1). Ver rationale completo em `reorderJogarSequenceBySurprise` abaixo.
 import { getSummedEditionStats } from "./vote";
+import { JOGAR_POSVOTO_UTM, QUIZ_POSVOTO_UTM } from "./utm-registry"; // #4041
 
 /** Brand fixo desta página — `/jogar` É o standalone, não um parâmetro. */
 const JOGAR_BRAND = "web" as const;
@@ -120,8 +121,9 @@ const JOGAR_BRAND = "web" as const;
  * historicamente importa este binding de `./jogar`.
  */
 export { SUBSCRIBE_UTM_SOURCE };
-export const SUBSCRIBE_UTM_MEDIUM = "jogar";
-export const SUBSCRIBE_UTM_CAMPAIGN = "eia-jogar-posvoto";
+// #4041: valores vindos do registry espelhado (\`./utm-registry\`).
+export const SUBSCRIBE_UTM_MEDIUM = JOGAR_POSVOTO_UTM.medium;
+export const SUBSCRIBE_UTM_CAMPAIGN = JOGAR_POSVOTO_UTM.campaign;
 
 /**
  * Pure (#3518): URL de assinatura com UTM fixo do funil do jogo. Sem
@@ -207,9 +209,10 @@ export function renderSubscribeCtaBlock(): string {
 // separadamente quantos assinantes vêm do quiz (várias rodadas, mais
 // engajamento) vs. do jogo de par único. `utm_source` continua
 // `eia-standalone` (mesma convenção de `count-subscriptions-by-utm.ts`).
-export const QUIZ_SUBSCRIBE_UTM_SOURCE = "eia-standalone";
-export const QUIZ_SUBSCRIBE_UTM_MEDIUM = "quiz";
-export const QUIZ_SUBSCRIBE_UTM_CAMPAIGN = "eia-quiz-posvoto";
+// #4041: valores vindos do registry espelhado (\`./utm-registry\`).
+export const QUIZ_SUBSCRIBE_UTM_SOURCE = QUIZ_POSVOTO_UTM.source;
+export const QUIZ_SUBSCRIBE_UTM_MEDIUM = QUIZ_POSVOTO_UTM.medium;
+export const QUIZ_SUBSCRIBE_UTM_CAMPAIGN = QUIZ_POSVOTO_UTM.campaign;
 
 /**
  * Pure (#3579): URL de assinatura com UTM próprio do funil do quiz relâmpago
