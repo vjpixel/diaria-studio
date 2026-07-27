@@ -119,6 +119,7 @@ import {
   computeWeekPlan,
   type Semaphore,
 } from "../workers/brevo-dashboard/src/weekly-plan.ts";
+import { resolveSpamSignal } from "../workers/brevo-dashboard/src/thresholds.ts"; // #4063
 import type { BrevoCampaign } from "../workers/brevo-dashboard/src/types.ts";
 
 loadProjectEnv();
@@ -168,7 +169,13 @@ export function deriveRampVolumes(campaigns: BrevoCampaign[], now: Date = new Da
     return { ok: false, reason: "Volume-base (último envio) indisponível — use --volumes A,B,C explícito." };
   }
   const health = aggregateHealth(mature);
-  const semaphore = decideSemaphore(health);
+  // #4063: este script não lê o KV `postmaster:spam` (isso viveria só no
+  // Worker, via binding) — sinal conservador (indeterminate), que
+  // `decideSemaphore` nunca resolve pra "green" (mesmo comportamento seguro
+  // do dashboard sem leitura manual do Postmaster ainda registrada). Nunca
+  // escalona volume "às cegas" com base no `complaints` subcontado da Brevo.
+  const spamSignal = resolveSpamSignal(null, now);
+  const semaphore = decideSemaphore(health, spamSignal);
   const plan = computeWeekPlan(baseVolume, semaphore);
   return { ok: true, plan: { volumes: plan.volumes, semaphore: plan.semaphore, flagged: plan.flagged, baseVolume } };
 }

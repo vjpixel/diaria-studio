@@ -22,7 +22,7 @@
  * todo uso é dentro de corpos de função chamados em request-time, nunca em
  * top-level do módulo.
  */
-import type { BrevoCampaign } from "./types.ts";
+import type { BrevoCampaign, PostmasterSpamEntry } from "./types.ts";
 import { escHtml, pickStats, ENVIOS_TOOLTIP, parseClariceCampaignKey, aggregateByWeekday, pickTopWeekdays, WEEKDAY_LABELS, renderMixedAudienceNote } from "./sections-core.ts";
 import { DS, fmtTimeBRT, STATUS_COLOR } from "./render-links.ts";
 // #3010: renderScheduledSection foi movida da aba Visão Geral pra Agendamento —
@@ -32,9 +32,9 @@ import { renderScheduledSection } from "./sections-kv.ts";
 // #3078: thresholds extraídos pra módulo compartilhado (sections-core.ts e
 // sections-kv.ts também consomem) — reexportados aqui pra não quebrar
 // consumidores existentes que importam de weekly-plan.ts/index.ts.
-import { DEFAULT_HEALTH_THRESHOLDS, type HealthThresholds } from "./thresholds.ts";
-export { DEFAULT_HEALTH_THRESHOLDS };
-export type { HealthThresholds };
+import { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS, type HealthThresholds, type SpamSignal } from "./thresholds.ts";
+export { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS };
+export type { HealthThresholds, SpamSignal };
 
 /** Janela de maturação — envios mais recentes que isso ficam fora do agregado. */
 export const MATURATION_MS = 48 * 60 * 60 * 1000;
@@ -214,15 +214,33 @@ export function classifyMetric(
   return value < t.green ? "green" : value < t.yellow ? "yellow" : "red";
 }
 
+/**
+ * #4063: classifica o sinal de SPAM que governa o semáforo — nunca
+ * `health.spamRate` (derivado de `complaints` da Brevo, que subconta ~50×).
+ * Sem leitura confiável do Postmaster (`source==="indeterminate"`), o pior
+ * que pode acontecer é 🟡 — nunca 🟢 (é exatamente esse falso-verde que o
+ * #4063 corrige) e nunca 🔴 automático (a trava fica pra depois, decisão do
+ * editor). Com leitura, aplica a mesma classificação de 3 faixas das outras
+ * métricas (`classifyMetric`, thresholds.spamRate).
+ */
+export function classifySpamSignal(
+  signal: SpamSignal,
+  thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
+): Semaphore {
+  if (signal.source === "indeterminate" || signal.ratePct === null) return "yellow";
+  return classifyMetric(signal.ratePct, thresholds.spamRate, "lower");
+}
+
 export function decideSemaphore(
   health: HealthAggregate,
+  spamSignal: SpamSignal,
   thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
 ): Semaphore {
   return [
     classifyMetric(health.openRate, thresholds.openRate, "higher"),
     classifyMetric(health.hardBounceRate, thresholds.hardBounceRate, "lower"),
     classifyMetric(health.bounceRate, thresholds.bounceRate, "lower"),
-    classifyMetric(health.spamRate, thresholds.spamRate, "lower"),
+    classifySpamSignal(spamSignal, thresholds),
     classifyMetric(health.unsubRate, thresholds.unsubRate, "lower"),
   ].reduce(worseOf);
 }
@@ -412,14 +430,23 @@ interface WeeklySendState {
   plan: WeekPlan | null;
   /** dias-calendário BRT distintos entre `mature` (ver HEALTH_SAMPLE_DAYS). */
   dayCount: number;
+  /** #4063: sinal de spam que GOVERNA o semáforo (Postmaster manual, precedência sobre `health.spamRate`/Brevo). `null` só quando `health` também é `null` (sem envio maduro ainda). */
+  spamSignal: SpamSignal | null;
 }
 
-function computeWeeklySendState(campaigns: BrevoCampaign[], now: Date): WeeklySendState {
+function computeWeeklySendState(
+  campaigns: BrevoCampaign[],
+  now: Date,
+  // #4063: leitura manual do Postmaster (KV `postmaster:spam`, ausente por
+  // default — call sites que não passam mantêm o sinal "indeterminate", que
+  // é o comportamento correto quando não há leitura, nunca um "opt-out" do fix).
+  postmasterSpam: PostmasterSpamEntry | null = null,
+): WeeklySendState {
   // TODOS os envios (sem diferenciar cold/quente — o ISP vê a reputação AGREGADA
   // do domínio, ver HEALTH_SAMPLE_DAYS).
   const allSent = campaigns.filter((c) => c.status === "sent" && !!c.sentDate);
   if (allSent.length === 0) {
-    return { allSent, mature: [], immature: [], baseVolume: 0, health: null, semaphore: null, plan: null, dayCount: 0 };
+    return { allSent, mature: [], immature: [], baseVolume: 0, health: null, semaphore: null, plan: null, dayCount: 0, spamSignal: null };
   }
 
   // Saúde = os HEALTH_SAMPLE_DAYS (10) dias-calendário BRT MADUROS (>48h) mais
@@ -440,16 +467,17 @@ function computeWeeklySendState(campaigns: BrevoCampaign[], now: Date): WeeklySe
   // Sem envio maduro ainda → semáforo indefinido (não decidir crescimento sobre
   // dado imaturo).
   if (mature.length === 0) {
-    return { allSent, mature, immature, baseVolume, health: null, semaphore: null, plan: null, dayCount: 0 };
+    return { allSent, mature, immature, baseVolume, health: null, semaphore: null, plan: null, dayCount: 0, spamSignal: null };
   }
 
   const health = aggregateHealth(mature);
-  const semaphore = decideSemaphore(health);
+  const spamSignal = resolveSpamSignal(postmasterSpam, now);
+  const semaphore = decideSemaphore(health, spamSignal);
   const canPlan = baseVolume > 0;
   const plan = canPlan ? computeWeekPlan(baseVolume, semaphore) : null;
   const dayCount = groupByBrtDay(mature).size;
 
-  return { allSent, mature, immature, baseVolume, health, semaphore, plan, dayCount };
+  return { allSent, mature, immature, baseVolume, health, semaphore, plan, dayCount, spamSignal };
 }
 
 function describeSemaphore(semaphore: Semaphore): { label: string; note: string } {
@@ -463,12 +491,32 @@ function describeSemaphore(semaphore: Semaphore): { label: string; note: string 
 }
 
 /**
+ * Estilo neutro (cinza/itálico) — mesmo usado pra "sem dado" — reusado pelo
+ * número da Brevo (#4063: nunca mais colorido como um veredito confiável).
+ * Função (não `const` top-level): `DS` vem de render-links.ts, que faz
+ * import circular com este módulo (mesmo padrão documentado no topo do
+ * arquivo) — seguro só dentro de corpo de função em request-time, nunca
+ * avaliado eagerly no load do módulo.
+ */
+function neutralValueStyle(): string {
+  return `color:${DS.ink};opacity:0.6;font-style:italic;`;
+}
+
+/**
  * Tabela de métricas: valor colorido pelo status + coluna de alvo (limiares) —
  * o editor vê na hora QUAL métrica segura o semáforo. Extraída (#3415) de
  * renderWeeklyPlanTabPanel pra ser reusada por renderHealthSection sem
  * duplicar a lógica de classificação/"sem dado".
+ *
+ * #4063: `spamSignal` (leitura manual do Postmaster, com precedência sobre
+ * `health.spamRate`/Brevo) recebe sua PRÓPRIA linha, colorida — é ela que
+ * governa o semáforo (ver `classifySpamSignal`/`decideSemaphore`). A linha
+ * "Spam" original (derivada de `complaints` da Brevo) continua visível pra
+ * comparação/transparência, mas NUNCA mais colorida como verde/vermelho —
+ * ela subconta o spam real em ~50× (só enxerga feedback loops), então
+ * qualquer cor ali seria um veredito falso.
  */
-function buildMetricRows(health: HealthAggregate): string {
+function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): string {
   const T = DEFAULT_HEALTH_THRESHOLDS;
   // #3081 (achados do code-review low no PR #3166): a checagem de "sem dado"
   // é por MÉTRICA, não hardcoded pro rótulo "Spam" — Abertura usa `delivered`
@@ -481,26 +529,44 @@ function buildMetricRows(health: HealthAggregate): string {
     { label: "Abertura", value: health.openRate, t: T.openRate, dir: "higher" as const, noData: noDataByDelivered },
     { label: "Hard bounce", value: health.hardBounceRate, t: T.hardBounceRate, dir: "lower" as const, noData: noDataBySent },
     { label: "Bounce total", value: health.bounceRate, t: T.bounceRate, dir: "lower" as const, noData: noDataBySent },
-    // #3081: 3 casas (não 2) — mesma precisão de fmtSpamPct/Envios/"Totais por
-    // mês"/Resumo A/B/C por Audiência (o breaker dispara em ≥0.1%, 2 casas
-    // ainda arredondam 0.049%→"0.05%" perto do limiar).
-    { label: "Spam", value: health.spamRate, t: T.spamRate, dir: "lower" as const, decimals: 3, noData: noDataBySent },
     { label: "Unsub", value: health.unsubRate, t: T.unsubRate, dir: "lower" as const, noData: noDataBySent },
   ];
-  return metricDefs
+  const rows = metricDefs
     .map((m) => {
       const targetGreen = m.dir === "higher" ? `≥${m.t.green}%` : `&lt;${m.t.green}%`;
       const targetYellow = m.dir === "higher" ? `≥${m.t.yellow}%` : `&lt;${m.t.yellow}%`;
       // #3081: quando não há dado real (denominador 0), "0.000%" afirmaria
       // falsamente "confirmado zero" — mostra "—" em vez de calcular
       // `classifyMetric`/colorir como se fosse um valor real.
-      const valueFmt = m.noData ? "—" : fmtPct(m.value, "decimals" in m ? m.decimals : undefined);
+      const valueFmt = m.noData ? "—" : fmtPct(m.value);
       const valueStyle = m.noData
-        ? `color:${DS.ink};opacity:0.6;font-style:italic;`
+        ? neutralValueStyle()
         : `color:${STATUS_COLOR[classifyMetric(m.value, m.t, m.dir)]};font-weight:600`;
       return `<tr><td>${m.label}</td><td style="${valueStyle}">${valueFmt}</td><td style="opacity:0.7">${targetGreen}</td><td style="opacity:0.7">${targetYellow}</td></tr>`;
     })
     .join("\n");
+
+  // #4063: "Spam" (Brevo) — 3 casas (o breaker dispara em ≥0.1%, 2 casas ainda
+  // arredondam 0.049%→"0.05%" perto do limiar), mas SEMPRE neutro — nunca
+  // verde/vermelho (ver docstring da função).
+  const spamBrevoValueFmt = noDataBySent ? "—" : fmtPct(health.spamRate, 3);
+  const spamBrevoRow = `<tr><td>Spam (Brevo, subconta — ver Postmaster)</td><td style="${neutralValueStyle()}">${spamBrevoValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
+
+  // #4063: "Spam (Postmaster)" — a linha que GOVERNA o semáforo. Sem leitura
+  // confiável, mostra "— (sem leitura)" em neutro (nunca verde). Com leitura,
+  // colore normalmente pelas mesmas faixas do doc.
+  const spamPostmasterValueFmt = spamSignal.source === "postmaster" && spamSignal.ratePct !== null
+    ? fmtPct(spamSignal.ratePct, 3)
+    : "— (sem leitura)";
+  const spamPostmasterStyle = spamSignal.source === "postmaster"
+    ? `color:${STATUS_COLOR[classifySpamSignal(spamSignal, T)]};font-weight:600`
+    : neutralValueStyle();
+  const spamPostmasterRow = `<tr><td>Spam (Postmaster, manual — governa o semáforo)</td><td style="${spamPostmasterStyle}">${spamPostmasterValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
+
+  // Ordem: abertura, hard bounce, bounce total, os 2 de spam (Postmaster antes
+  // do Brevo — é o que governa), unsub.
+  const [openRow, hardBounceRow, bounceRow, unsubRow] = rows.split("\n");
+  return [openRow, hardBounceRow, bounceRow, spamPostmasterRow, spamBrevoRow, unsubRow].join("\n");
 }
 
 /**
@@ -518,12 +584,15 @@ export function renderWeeklyPlanTabPanel(
   // cá, logo abaixo da recomendação dos próximos 3 envios. Default [] preserva
   // call sites/testes existentes que ainda não passam esse argumento.
   scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }> = [],
+  // #4063: leitura manual do Postmaster (KV `postmaster:spam`) — default
+  // `null` preserva call sites/testes existentes (sinal fica "indeterminate").
+  postmasterSpam: PostmasterSpamEntry | null = null,
 ): string {
   // #3010: renderizada uma única vez e reaproveitada em todos os branches de
   // retorno desta função (mesmo quando não há plano/recomendação ainda).
   const scheduledSection = renderScheduledSection(scheduled);
 
-  const state = computeWeeklySendState(campaigns, now);
+  const state = computeWeeklySendState(campaigns, now, postmasterSpam);
 
   if (state.allSent.length === 0) {
     return `
@@ -601,7 +670,7 @@ ${scheduledSection}`;
   <p class="section-note"><code>npx tsx scripts/weekly-send-plan-audience.ts --volumes ${state.plan.volumes.join(",")} [--write]</code></p>`
     : `<p class="section-note">Sem envio maduro (&gt;48h) da semana anterior ainda — plano indisponível até maturar.</p>`;
 
-  const metricRows = buildMetricRows(state.health!);
+  const metricRows = buildMetricRows(state.health!, state.spamSignal!);
 
   return `
 <section class="phase2-section" id="weekly-plan">
@@ -650,9 +719,12 @@ export function renderHealthSection(
   campaigns: BrevoCampaign[],
   now: Date = new Date(),
   opts: { title?: string } = {},
+  // #4063: leitura manual do Postmaster (KV `postmaster:spam`) — default
+  // `null` preserva call sites/testes existentes (sinal fica "indeterminate").
+  postmasterSpam: PostmasterSpamEntry | null = null,
 ): string {
   const title = opts.title ?? "Agendamento — plano de envio semanal";
-  const state = computeWeeklySendState(campaigns, now);
+  const state = computeWeeklySendState(campaigns, now, postmasterSpam);
 
   if (state.allSent.length === 0) {
     return `
@@ -680,7 +752,7 @@ ${waitRows}
   }
 
   const { label: semLabel, note: semNote } = describeSemaphore(state.semaphore!);
-  const metricRows = buildMetricRows(state.health!);
+  const metricRows = buildMetricRows(state.health!, state.spamSignal!);
 
   return `
 <section class="phase2-section" id="weekly-plan-health">

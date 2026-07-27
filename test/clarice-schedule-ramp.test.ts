@@ -299,15 +299,21 @@ describe("deriveRampVolumes (#3593 item 1 — recomputa volumes via a MESMA lóg
     assert.match(result.reason, /maduro/);
   });
 
-  it("envio maduro, saúde boa (verde) → plano computado com volumes crescentes", () => {
+  // #4063: `decideSemaphore` não recebe mais leitura de Postmaster aqui (este
+  // script não lê o KV `postmaster:spam` — isso vive só no Worker) —
+  // `resolveSpamSignal(null)` é sempre "indeterminate", que nunca resolve pra
+  // "green" (mesmo com `complaints` da Brevo em zero, que ANTES bastava pra
+  // verde). O teto passou a ser "yellow" (mantém volume, nunca escalona às
+  // cegas) até este script também consumir a leitura manual do Postmaster.
+  it("envio maduro, saúde boa (sem leitura de Postmaster) → nunca verde (#4063), plano mantém o volume-base", () => {
     const now = new Date("2026-07-17T00:00:00Z");
     const campaigns = [campaign({ id: 1, sentDate: "2026-07-10T09:00:00Z" })]; // >48h
     const result = deriveRampVolumes(campaigns, now);
     assert.equal(result.ok, true);
     if (!result.ok) throw new Error("unreachable");
-    assert.equal(result.plan.semaphore, "green");
+    assert.equal(result.plan.semaphore, "yellow");
     assert.equal(result.plan.baseVolume, 1000);
-    assert.deepEqual(result.plan.volumes, [1100, 1210, 1331]);
+    assert.deepEqual(result.plan.volumes, [1000, 1000, 1000]);
     assert.equal(result.plan.flagged, false);
   });
 

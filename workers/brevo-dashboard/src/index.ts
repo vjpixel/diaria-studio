@@ -320,8 +320,8 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
 
     // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
     // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
-    const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement } = await readKvTabs(env, isFresh ? "fresh" : "cached");
-    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit);
+    const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam } = await readKvTabs(env, isFresh ? "fresh" : "cached");
+    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam);
     const response = new Response(html, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
