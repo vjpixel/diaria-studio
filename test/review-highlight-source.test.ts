@@ -65,6 +65,27 @@ describe("reviewHighlightSource — destaque lançamento com URL de imprensa (#1
     assert.equal(flagged.length, 1);
   });
 
+  it("flaga destaque em voz PASSIVA com URL de imprensa (#4080, caso real edição 260727)", () => {
+    // Regressão: "Claude Opus 5 é lançado..." não era reconhecido como
+    // launch-candidate antes do #4080 (detectLaunchCandidate só cobria voz
+    // ativa) — o gate nunca via o aviso, mesmo com o link sendo cobertura de
+    // imprensa (Tecnoblog) em vez do anúncio oficial (anthropic.com).
+    const highlights = [
+      {
+        article: {
+          title: "Claude Opus 5 é lançado com foco no desempenho e controle de custos",
+          url: "https://tecnoblog.net/noticias/claude-opus-5-anthropic/",
+          summary: "A Anthropic lançou o Opus 5 nesta semana.",
+        },
+      },
+    ];
+    const { flagged, total } = reviewHighlightSource(highlights);
+    assert.equal(total, 1);
+    assert.equal(flagged.length, 1, "destaque-lançamento em voz passiva com URL de imprensa deve ser flagado");
+    assert.match(flagged[0].url, /tecnoblog/);
+    assert.equal(flagged[0].suggested_domain, "anthropic.com");
+  });
+
   it("ignora highlights sem url; conta total corretamente", () => {
     const highlights = [
       { article: { title: "sem url" } },
