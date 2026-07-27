@@ -26,6 +26,7 @@ import {
   DIVERGENCE_CONFIRM_MESSAGE,
   SAVE_CONFLICT_CONFIRM_MESSAGE,
   activeSidePaneAfterSave,
+  buildSanitizedArtifactWarning,
 } from "../scripts/studio-ui/public/revisao-guards.js";
 
 describe("shouldConfirmDivergenceGuard (#3668 gap 2)", () => {
@@ -118,5 +119,31 @@ describe("activeSidePaneAfterSave (#3872)", () => {
       activeSidePaneAfterSave({ diffHidden: true, lintHidden: true, previewHidden: true }),
       null,
     );
+  });
+});
+
+// #4118 finding 4 (PR #4132 self-review item 4, #4077) — saveReviewFile já
+// retornava `sanitizedArtifact` quando strippava uma tag de tool-call crua
+// do fim do conteúdo salvo, mas o painel não consumia o campo: o editor não
+// ficava sabendo que algo tinha sido removido do que ele colou/salvou.
+// `buildSanitizedArtifactWarning` é a mensagem PURA (mesmo padrão dos guards
+// acima) que nomeia o TEXTO removido, não só "sanitizado".
+describe("buildSanitizedArtifactWarning (#4118 finding 4, #4077)", () => {
+  it("nomeia o texto exato que foi removido, não só 'sanitizado'", () => {
+    const msg = buildSanitizedArtifactWarning("\n</content>\n</invoke>");
+    assert.match(msg, /<\/content>/);
+    assert.match(msg, /<\/invoke>/);
+  });
+
+  it("explica a causa provável (vazamento de tag de tool-call) e cita o #4077", () => {
+    const msg = buildSanitizedArtifactWarning("\n</invoke>");
+    assert.match(msg, /tool-call/);
+    assert.match(msg, /#4077/);
+  });
+
+  it("dá ao editor uma saída caso o trecho removido NÃO fosse lixo (falso-positivo do finding 3)", () => {
+    const msg = buildSanitizedArtifactWarning("\n</function_calls>");
+    assert.match(msg, /NÃO era lixo/);
+    assert.match(msg, /recarregue/i);
   });
 });

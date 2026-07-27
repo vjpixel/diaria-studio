@@ -90,3 +90,24 @@ export function activeSidePaneAfterSave({ diffHidden, lintHidden, previewHidden 
   if (!previewHidden) return "preview";
   return null;
 }
+
+// #4118 finding 4 (PR #4132 self-review item 4, #4077) — `saveReviewFile`
+// (scripts/studio-ui/studio-review.ts) já retorna `sanitizedArtifact` quando
+// strippa uma tag de tool-call crua (`</content>`, `</invoke>`,
+// `</function_calls>`) grudada no fim do conteúdo salvo, mas o painel não
+// consumia o campo — o editor não ficava sabendo que algo foi removido do
+// que ele colou/salvou. Modificar silenciosamente o conteúdo do editor é
+// ruim: ele pode ter colado algo legítimo (ver finding 3 acima) e não
+// perceber a remoção. Mensagem PURA (sem DOM/fetch, mesmo padrão de
+// DIVERGENCE_CONFIRM_MESSAGE/SAVE_CONFLICT_CONFIRM_MESSAGE acima) que NOMEIA
+// o texto removido — não só "sanitizado" — pra o editor poder julgar se era
+// lixo de verdade ou algo colado de propósito.
+export function buildSanitizedArtifactWarning(artifact) {
+  return (
+    `O save removeu automaticamente um trecho colado no fim do arquivo: ${JSON.stringify(artifact)} — ` +
+    "isso tem cara de vazamento de tag de tool-call (`</content>`, `</invoke>`, `</function_calls>`), " +
+    "nunca markdown editorial legítimo (#4077). Se o trecho removido NÃO era lixo — por exemplo, você " +
+    "colou de propósito uma citação literal dessa sintaxe — recarregue a versão do disco e reescreva sem " +
+    "a tag para preservá-lo."
+  );
+}

@@ -215,6 +215,11 @@ npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md {EDITION_DI
 ```
 Compara tokens (Jaccard) do `## post_pixel` com o main de cada `## d{N}`. Falha quando post_pixel é claramente mais parecido com outro destaque que com o D1 vigente. Sinal de que houve reordenação pós-Stage-2 sem re-sincronizar o post pessoal. **Exit 1 = GATE-BLOCKING** (igual aos outros lints invariantes de §4c.2) — ❌ mostrar no resumo com ação: "post_pixel stale — re-sincronizar com D1 atual antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde (exit 0).
 
+```bash
+npx tsx scripts/lint-social-md.ts --check no-xml-artifacts --md {EDITION_DIR}/03-social.md
+```
+`no-xml-artifacts` (#4118 finding 2, #4077): **GATE-BLOCKING** quando exit 1 — mesmo backstop já aplicado a `02-reviewed.md` (§4c.2 acima), agora também em `03-social.md`: tag de tool-call crua (`</content>`, `</invoke>`, `</function_calls>`) grudada no FIM do arquivo, sintoma de um payload de tool-call vazando num caminho de save assistido (ex: chat drawer do Studio). `saveReviewFile` (`scripts/studio-ui/studio-review.ts`) já strippa esse mesmo padrão pra TODOS os slugs (inclusive `social`) ANTES de escrever em disco — este lint é o backstop independente da causa. Ação: remover manualmente o trecho de tag XML solta do fim de `03-social.md` antes de aprovar o gate.
+
 **Antítese-revelação social (#2526) — WARN-ONLY:**
 ```bash
 npx tsx scripts/lint-social-md.ts --check no-antithesis-reveal --md {EDITION_DIR}/03-social.md

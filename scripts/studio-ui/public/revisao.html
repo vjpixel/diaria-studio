@@ -64,6 +64,11 @@
         partir do Markdown (Etapa 4) vai descartar essas mudanças. Confira a aba "HTML
         final" antes de rodar a Etapa 4 de novo.
       </p>
+      <!-- #4118 finding 4 (#4077): saveReviewFile pode strippar silenciosamente
+           uma tag de tool-call vazada do fim do conteúdo salvo — este banner avisa
+           qual trecho foi removido (ver buildSanitizedArtifactWarning em
+           revisao-guards.js), preenchido/mostrado por saveCurrent() em revisao.js. -->
+      <p class="rv-divergence-banner" id="rv-sanitized-banner" role="alert" hidden></p>
     </section>
 
     <section class="panel rv-editor-panel">

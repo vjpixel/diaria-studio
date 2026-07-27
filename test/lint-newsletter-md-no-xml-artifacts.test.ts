@@ -80,6 +80,40 @@ describe("checkNoXmlArtifacts — falso-positivo: tags no MEIO do texto (#4077, 
   });
 });
 
+/**
+ * #4118 finding 3 (PR #4132 self-review item 3) — falso-positivo TEÓRICO,
+ * comportamento ACEITO deliberadamente, NÃO desejado no sentido de "correto
+ * em todo cenário". A Diar.ia é uma newsletter sobre IA — um PARA ENCERRAR
+ * poderia legitimamente terminar citando `</function_calls>` (ou outra tag
+ * vigiada) como exemplo educacional de sintaxe de tool-calling, ex: "...e as
+ * chamadas de ferramenta terminam com `</function_calls>`."
+ *
+ * O trade-off já foi aceito conscientemente no #4077 (baixíssima
+ * probabilidade real dado o formato do PARA ENCERRAR, alto custo de deixar
+ * o vazamento real passar) — este teste NÃO muda o comportamento, só
+ * DOCUMENTA o estado atual (o lint acusa/o guard strippa mesmo nesse caso
+ * extremo) para que uma mudança futura seja deliberada, não acidental. Se
+ * este teste começar a falhar porque alguém "consertou" o falso-positivo,
+ * pare e confirme com o editor antes de seguir — pode ter reintroduzido o
+ * vetor real que o #4077 fechou.
+ */
+describe("checkNoXmlArtifacts — falso-positivo ACEITO: citação literal da tag como ÚLTIMO parágrafo (#4118 finding 3, comportamento atual documentado, NÃO um bug a corrigir)", () => {
+  it("ACUSA (comportamento atual aceito) quando o PARA ENCERRAR cita `</function_calls>` como exemplo educacional no último parágrafo", () => {
+    const md =
+      `${NORMAL_MD}\nPARA ENCERRAR: um jeito simples de entender como a IA "decide" chamar uma ferramenta é lembrar que, ` +
+      `por trás da cena, as chamadas de ferramenta terminam com a tag </function_calls>`;
+    const result = checkNoXmlArtifacts(md);
+    // Comportamento atual: o lint NÃO distingue citação educacional legítima
+    // de um vazamento real de tool-call — ambos terminam a string com uma
+    // das tags vigiadas. Aceito por decisão consciente do #4077 (ver
+    // no-xml-artifacts.ts topo do arquivo, "Escopo deliberadamente
+    // estreito"). Se este assert começar a falhar, é sinal de que o
+    // comportamento mudou — trate como mudança deliberada, não acidental.
+    assert.equal(result.ok, false);
+    assert.equal(result.errors.length, 1);
+  });
+});
+
 describe("detectTrailingToolCallArtifact / stripTrailingToolCallArtifact (#4077)", () => {
   it("detecta e retorna o artefato exato, sem alterar o conteúdo original", () => {
     const md = `${NORMAL_MD}\n</content>\n</invoke>`;

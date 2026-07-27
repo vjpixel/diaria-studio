@@ -836,4 +836,82 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
       /refreshActiveSidePaneAfterSave\(\) pós-save falhou/,
     );
   });
+
+  // #4118 finding 4 (PR #4132 self-review item 4, #4077) — saveReviewFile já
+  // retornava `sanitizedArtifact` no PUT bem-sucedido quando uma tag de
+  // tool-call crua era strippada do fim do conteúdo, mas revisao.js não
+  // consumia o campo: o editor não ficava sabendo que algo tinha sido
+  // removido do que ele colou/salvou. Mesmo padrão "contrato estático" dos
+  // testes acima (revisao.js roda init() no top-level, sem harness de DOM).
+  it("PUT com tag de tool-call grudada no fim retorna sanitizedArtifact E persiste o conteúdo JÁ sanitizado em disco", async () => {
+    const comTagVazada = `${TWO_DESTAQUES_MD}\n</content>\n</invoke>`;
+    const put = await fetch(new URL("/api/editions/260716/review/reviewed", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: comTagVazada }),
+    });
+    assert.equal(put.status, 200);
+    const putBody = await put.json();
+    assert.equal(putBody.ok, true);
+    assert.ok(putBody.sanitizedArtifact, "esperava sanitizedArtifact no corpo da resposta");
+    assert.match(putBody.sanitizedArtifact, /<\/content>/);
+    assert.match(putBody.sanitizedArtifact, /<\/invoke>/);
+
+    const get = await fetch(new URL("/api/editions/260716/review/reviewed", server.url));
+    const getBody = await get.json();
+    assert.doesNotMatch(getBody.content, /<\/content>|<\/invoke>/);
+
+    // restaura o conteúdo original pros testes seguintes (isolamento — este
+    // teste roda no meio da mesma suíte/servidor compartilhado)
+    await fetch(new URL("/api/editions/260716/review/reviewed", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: TWO_DESTAQUES_MD, force: true }),
+    });
+  });
+
+  it("GET /revisao.js importa buildSanitizedArtifactWarning de revisao-guards.js", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    assert.match(body, /from ["']\.\/revisao-guards\.js["']/);
+    assert.match(body, /buildSanitizedArtifactWarning/);
+    assert.match(body, /sanitizedBanner:\s*document\.getElementById\("rv-sanitized-banner"\)/);
+  });
+
+  it("GET /revisao.js — saveCurrent() mostra o banner de sanitização SÓ dentro do guard currentSlug === slugAtSaveStart (mesmo guard que protege dirty/fileStatus, #3672), e esconde quando não há sanitizedArtifact", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function saveCurrent()");
+    assert.ok(fnStart >= 0, "saveCurrent deveria existir em revisao.js");
+    const fnEnd = body.indexOf("\nfunction renderDiff", fnStart);
+    const fnBody = body.slice(fnStart, fnEnd >= 0 ? fnEnd : undefined);
+
+    const okBlockIdx = fnBody.indexOf("if (ok && body && body.ok) {");
+    const guardIdx = fnBody.indexOf("if (currentSlug === slugAtSaveStart) {", okBlockIdx);
+    const sanitizedIdx = fnBody.indexOf("body.sanitizedArtifact", guardIdx);
+    assert.ok(okBlockIdx >= 0 && guardIdx > okBlockIdx, "esperava o guard de aba ativa dentro do branch de sucesso");
+    assert.ok(sanitizedIdx > guardIdx, "o check de body.sanitizedArtifact deveria estar DENTRO do guard currentSlug === slugAtSaveStart");
+    assert.match(fnBody.slice(guardIdx, sanitizedIdx + 400), /buildSanitizedArtifactWarning\(body\.sanitizedArtifact\)/);
+    assert.match(fnBody.slice(guardIdx, sanitizedIdx + 400), /el\.sanitizedBanner\.hidden = false/);
+    // ramo `else` — quando o save é limpo (sem sanitizedArtifact), o banner de
+    // uma tentativa anterior precisa ser escondido de novo, não deixado stale.
+    assert.match(fnBody.slice(guardIdx, sanitizedIdx + 400), /el\.sanitizedBanner\.hidden = true/);
+  });
+
+  it("GET /revisao.js — loadFile() esconde o banner de sanitização ao trocar de arquivo/aba (aviso não deve sobreviver a uma troca de aba)", async () => {
+    const res = await fetch(new URL("/revisao.js", server.url));
+    const body = await res.text();
+    const fnStart = body.indexOf("async function loadFile(");
+    const fnEnd = body.indexOf("\nfunction refreshPreviewIfOpen", fnStart);
+    assert.ok(fnStart >= 0 && fnEnd > fnStart, "loadFile deveria existir e vir antes de refreshPreviewIfOpen");
+    const fnBody = body.slice(fnStart, fnEnd);
+    assert.match(fnBody, /el\.sanitizedBanner\.hidden = true/);
+  });
+
+  it("GET /revisao.html contém o banner #rv-sanitized-banner", async () => {
+    const res = await fetch(new URL("/revisao.html", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.match(body, /id="rv-sanitized-banner"/);
+  });
 });
