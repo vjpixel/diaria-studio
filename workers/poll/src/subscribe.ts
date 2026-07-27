@@ -55,8 +55,13 @@ export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = "eia-jogar-inline-signup";
  * `source` ausente/desconhecido cai no default `jogar` (comportamento
  * pré-#4051, back-compat com o form de `/jogar`/`/jogar/quiz` que não manda
  * esse campo).
+ *
+ * #4065: `"vote-clarice"` — cadastro inline na tela de resultado do voto
+ * (`/vote?brand=clarice`, ver votePageHtml em index.ts). UTM próprio pra
+ * medir essa conversão separada do cadastro inline de `/jogar` — é o mesmo
+ * endpoint/mecanismo (`POST /jogar/subscribe`), só o call site muda.
  */
-export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer";
+export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer" | "vote-clarice";
 
 export interface SubscribeUtm {
   source: string;
@@ -74,6 +79,11 @@ const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
   // issue #4051 pra medir hero × fim-de-lista separadamente.
   "livros-hero": { source: "livros", medium: "inline-hero", campaign: "livros-inline-signup" },
   "livros-footer": { source: "livros", medium: "inline-footer", campaign: "livros-inline-signup" },
+  // #4065: cadastro inline na tela de resultado do voto do brand clarice —
+  // utm_source distinto (não é o funil "eia-standalone" do jogo público, é a
+  // base de e-mail da parceria Clarice) pra não poluir a atribuição do funil
+  // web com conversões que vieram de um e-mail mensal.
+  "vote-clarice": { source: "clarice-email", medium: "vote-inline", campaign: "eia-vote-clarice-signup" },
 };
 
 /** Pure: resolve o triplo UTM a partir do `source` mandado pelo cliente
