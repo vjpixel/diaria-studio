@@ -232,6 +232,38 @@ describe("renderCursosPage (#1745)", () => {
   });
 });
 
+describe("gate-banner: form de verificação inline (#4052 follow-up)", () => {
+  const courses = [
+    course({ id: "aberto", title: "Curso Aberto", teaser: true } as Partial<Course>),
+    course({ id: "fechado-1", title: "Curso Fechado 1" }),
+    course({ id: "fechado-2", title: "Curso Fechado 2" }),
+  ];
+  const teaserHtml = renderCursosPage(courses, "teaser");
+  const fullHtml = renderCursosPage(courses, "full");
+
+  it("modo teaser com curso(s) bloqueado(s): banner tem form inline com campo de e-mail + submit", () => {
+    assert.ok(teaserHtml.includes('id="gate-banner-form"'), "form inline deve estar presente");
+    assert.ok(teaserHtml.includes('id="gate-banner-email"'), "campo de e-mail inline deve estar presente");
+    assert.ok(teaserHtml.includes('id="gate-banner-submit"'), "botão de submit inline deve estar presente");
+  });
+
+  it("form inline chama POST /gate/verify (não duplica o cadastro completo)", () => {
+    assert.match(teaserHtml, /fetch\('\/gate\/verify'/, "deve chamar /gate/verify");
+    assert.ok(teaserHtml.includes('href="/gate"'), "deve manter link pro /gate completo (cadastro com opt-in) como fallback");
+  });
+
+  it("honeypot do form inline segue o mesmo padrão dos outros forms (name=website, tabindex=-1, oculto)", () => {
+    assert.match(teaserHtml, /name="website" class="gate-banner-hp" tabindex="-1"/);
+  });
+
+  it("modo full (sem curso bloqueado) NÃO renderiza o banner nem o form", () => {
+    // CSS de .gate-banner é estático (sempre no <style>) — o que importa é o
+    // elemento em si não ser emitido no body.
+    assert.ok(!fullHtml.includes('<div class="gate-banner">'), "modo full não deve ter <div> de gate banner");
+    assert.ok(!fullHtml.includes('id="gate-banner-form"'), "modo full não deve ter form inline");
+  });
+});
+
 describe("filtros colapsam em mobile (#3107)", () => {
   const courses = [
     course({ id: "a", title: "Curso A", language: "pt-br", level: "iniciante", duration_hours: 2, certificate: true, themes: ["Fundamentos"], platform: "IBM SkillsBuild" }),
