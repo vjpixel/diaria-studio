@@ -186,13 +186,19 @@ export function buildShareText(payload: SharePayload, brand: Brand = "web"): str
  * (`navigator.share` ausente na maioria dos browsers desktop, cai direto pro
  * fallback "copiar link") e (b) exige 1 tap a mais (escolher o app dentro do
  * share sheet) — um link `wa.me` abre o WhatsApp em 1 clique em qualquer
- * plataforma. `wa.me` só aceita 1 parâmetro `text` (sem `url` separado) —
- * manda só `shareUrl` (mesmo dado que a ação "copy" já usa sozinha), não
- * `shareText` + url concatenados: a página de destino (`/share/{token}` ou
- * `/quiz-share/{token}`) já tem meta tags OG (`renderSeoMeta`, `imageUrl`) que
- * o WhatsApp busca sozinho pra montar o preview rico (card + texto) ao
- * desenrolar o link — grudar o texto também na mensagem duplicaria a
- * informação que o unfurl já mostra.
+ * plataforma.
+ *
+ * #4065 follow-up (achado 260727, ao vivo): WhatsApp e "Copiar link" mandavam
+ * SÓ `shareUrl`, na aposta de que o unfurl de OG (`/share/{token}`,
+ * `renderSeoMeta`) mostraria o texto sozinho ao desenrolar o link. Na prática
+ * isso falha em dois casos comuns: (a) o unfurl do WhatsApp é assíncrono —
+ * quem digita e manda rápido envia só a URL crua, sem preview nenhum; (b)
+ * "Copiar link" cola em QUALQUER lugar (e-mail, SMS, bloco de notas), onde
+ * não existe unfurl algum — o texto nunca aparece. Agora os dois combinam
+ * `shareText + shareUrl` (mesma dupla que `navigator.share` já usa pro
+ * Compartilhar nativo) — redundância mínima (o texto já cita o domínio por
+ * extenso, o link no fim é o de fato clicável/rastreado com UTM), mas
+ * garante que a mensagem nunca chega vazia de contexto.
  */
 export function shareButtonScript(containerSelector: string): string {
   return `<script>
@@ -209,18 +215,19 @@ export function shareButtonScript(containerSelector: string): string {
       navigator.share({ text: shareText, url: shareUrl }).catch(function () {});
       return;
     }
+    var textAndUrl = shareText ? (shareText + " " + shareUrl) : shareUrl;
     if (action === "whatsapp") {
-      window.open("https://wa.me/?text=" + encodeURIComponent(shareUrl), "_blank", "noopener");
+      window.open("https://wa.me/?text=" + encodeURIComponent(textAndUrl), "_blank", "noopener");
       return;
     }
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(shareUrl).then(function () {
+      navigator.clipboard.writeText(textAndUrl).then(function () {
         var original = target.textContent;
         target.textContent = "Link copiado!";
         setTimeout(function () { target.textContent = original; }, 2000);
-      }).catch(function () { window.prompt("Copie o link:", shareUrl); });
+      }).catch(function () { window.prompt("Copie o texto:", textAndUrl); });
     } else {
-      window.prompt("Copie o link:", shareUrl);
+      window.prompt("Copie o texto:", textAndUrl);
     }
   });
 })();
