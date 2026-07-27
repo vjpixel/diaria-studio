@@ -42,6 +42,8 @@ import {
   lightboxScript, // #4007: script do lightbox de zoom — reusado nas 4 superfícies do par de imagens
   renderLightboxMarkup, // #4007: markup do <dialog> de zoom
   renderLightboxStyles, // #4007: CSS do lightbox + badge de lupa
+  renderBrandShellStyles, // #4110: mesma régua+rodapé de leaderboard/arquivo — /vote era a única página pública sem shell
+  renderBrandFooter, // #4110
 } from "./lib";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
@@ -820,6 +822,11 @@ export function votePageHtml(
      o arquivo da fonte — cai pra system sans nas 3 igual, sem 3ª origem
      externa/latência extra no worker de maior tráfego. */
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 560px; margin: 40px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
+  /* #4110: mesmo kicker+régua de leaderboard/arquivo (leaderboard-routes.ts) —
+     /vote era a única página pública do worker sem esse shell mínimo de
+     identidade de marca (achado do editor testando o fluxo de assinante,
+     260727: "não tem cabeçalho nem rodapé", comparando com /jogar). */
+  .kicker { font-family: ${DS_FONTS.sans}; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.16em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; }
   .msg { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; line-height: 1.4; margin: 20px 0; letter-spacing: -0.01em; }
   a { color: ${DS_COLORS.ink}; text-decoration: underline; }
   .result-images { display: flex; gap: 12px; margin: 24px 0; justify-content: center; flex-wrap: wrap; }
@@ -886,9 +893,12 @@ export function votePageHtml(
   }
 ${renderLightboxStyles()}
 ${renderInlineSignupFormStyles()}
+${renderBrandShellStyles()}
 </style>
 </head>
 <body>
+<p class="kicker">É IA?</p>
+<hr class="rule">
 <p class="msg">${htmlEscape(message)}</p>
 ${imagesHtml}
 ${eiaMetaHtml}
@@ -898,6 +908,7 @@ ${formHtml}
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-voltar", "eia-vote-voltar"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
 ${renderLightboxMarkup()}
 ${lightboxScript()}
+${renderBrandFooter(brand)}
 </body>
 </html>`;
 }
