@@ -18,6 +18,7 @@ import {
   DIVERGENCE_CONFIRM_MESSAGE,
   SAVE_CONFLICT_CONFIRM_MESSAGE,
   activeSidePaneAfterSave,
+  buildSanitizedArtifactWarning,
 } from "./revisao-guards.js";
 import {
   DESTAQUE_HEADLINE_SELECTOR,
@@ -78,6 +79,7 @@ const el = {
   fileStatus: document.getElementById("rv-file-status"),
   htmlFinalNote: document.getElementById("rv-html-final-note"),
   divergenceBanner: document.getElementById("rv-divergence-banner"),
+  sanitizedBanner: document.getElementById("rv-sanitized-banner"),
   editor: document.getElementById("rv-editor"),
   saveBtn: document.getElementById("rv-save-btn"),
   diffBtn: document.getElementById("rv-diff-btn"),
@@ -211,6 +213,10 @@ async function loadFile(slug, { force } = {}) {
   el.editor.disabled = true;
   el.fileStatus.textContent = "Carregando…";
   dirty = false;
+  // #4118 finding 4: aviso de sanitização é sobre O SAVE que acabou de
+  // acontecer nesta aba — trocar de arquivo/aba não deveria carregar um
+  // aviso stale de uma ação já concluída em outro contexto.
+  if (el.sanitizedBanner) el.sanitizedBanner.hidden = true;
   // #3729: reseta o baseline temporal ANTES do fetch — se o load falhar (ou o
   // arquivo não existir ainda), não deve sobrar um `loadedModifiedAt` de um
   // slug/estado anterior associado à aba agora ativa.
@@ -354,6 +360,21 @@ async function saveCurrent() {
       if (currentSlug === slugAtSaveStart) {
         dirty = false;
         el.fileStatus.textContent = `Modificado ${fmtTime(body.modifiedAt)}`;
+        // #4118 finding 4 (#4077): `saveReviewFile` sanitiza silenciosamente
+        // uma tag de tool-call crua grudada no fim do conteúdo ANTES de
+        // escrever em disco — sem este aviso, o editor não ficava sabendo
+        // que algo foi removido do que ele colou/salvou. Mesmo guard de
+        // `currentSlug === slugAtSaveStart` que protege `dirty`/`fileStatus`
+        // acima (#3672): o aviso é sobre ESTE save, só faz sentido mostrar
+        // se a aba visível ainda é a que foi salva.
+        if (el.sanitizedBanner) {
+          if (body.sanitizedArtifact) {
+            el.sanitizedBanner.textContent = buildSanitizedArtifactWarning(body.sanitizedArtifact);
+            el.sanitizedBanner.hidden = false;
+          } else {
+            el.sanitizedBanner.hidden = true;
+          }
+        }
         // #3729: atualiza o baseline temporal pro que acabou de ser gravado —
         // sem isso, o PRÓXIMO save deste mesmo slug compararia contra o mtime
         // pré-save (sempre divergente) e disparia um falso-positivo de

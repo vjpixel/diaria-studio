@@ -14,6 +14,11 @@
  *    - Detecta "hoje", "ontem", "há N dias", "esta semana", etc.
  *    - Posts vão pra fila com D+1+ delay; relativos envelhecem mal.
  *
+ * 3. `--check no-xml-artifacts` (#4118 finding 2, #4077): tag de tool-call crua
+ *    (`</content>`, `</invoke>`, `</function_calls>`) grudada no FIM do
+ *    documento — mesmo backstop GATE-BLOCKING já aplicado a 02-reviewed.md
+ *    via lint-newsletter-md.ts, reusando `scripts/lib/lint-checks/no-xml-artifacts.ts`.
+ *
  * IMPORTANTE: o flag `--check relative-time` é OBRIGATÓRIO pra validação de
  * timestamps. SEM o flag, o lint só checa CTAs e ignora qualquer "hoje" /
  * "ontem" no MD. Se o orchestrator esquecer o flag, posts com timestamps
@@ -93,6 +98,11 @@ import {
   type ScopedCoverageResult,
   checkScopedHumanizerCoverage,
 } from "./lib/social-lint-rules.ts"; // #2833: extraído — movimentação pura
+import {
+  checkNoXmlArtifacts,
+  type NoXmlArtifactsError,
+  type NoXmlArtifactsReport,
+} from "./lib/lint-checks/no-xml-artifacts.ts"; // #4118 finding 2 (#4077): mesmo backstop do lint-newsletter-md.ts, agora também em 03-social.md
 
 export type { LintError };
 export { extractPlatformSection, parseDestaqueHeaders, lintLinkedinCTAs, lintFacebookCTAs };
@@ -127,6 +137,8 @@ export { lintPlatformHeadersUnique };
 export { extractSocialSections, computeSectionHashes };
 export type { ScopedCoverageResult };
 export { checkScopedHumanizerCoverage };
+export { checkNoXmlArtifacts };
+export type { NoXmlArtifactsError, NoXmlArtifactsReport };
 function main(): void {
   const args = parseArgsStructured(process.argv.slice(2)).values;
   if (!args.md) {
@@ -143,7 +155,8 @@ function main(): void {
         "  ou: lint-social-md.ts --check no-email-cta-instagram --md <path>\n" +
         "  ou: lint-social-md.ts --check no-antithesis-reveal --md <path>\n" +
         "  ou: lint-social-md.ts --check no-trailing-editorial-hook --md <path>\n" +
-        "  ou: lint-social-md.ts --check platform-headers-unicos --md <path>",
+        "  ou: lint-social-md.ts --check platform-headers-unicos --md <path>\n" +
+        "  ou: lint-social-md.ts --check no-xml-artifacts --md <path>",
     );
     process.exit(2);
   }
@@ -398,6 +411,30 @@ function main(): void {
             `Remova o(s) header(s) duplicado(s) antes de prosseguir — publish-${e.platform}.ts para de parsear no 2º header, tratando-o como o fim da seção, e reporta "Destaque não encontrado" pra todos os destaques.`,
         );
       }
+      process.exit(1);
+    }
+    return;
+  }
+
+  // Modo --check no-xml-artifacts (#4118 finding 2, #4077) — mesmo backstop
+  // GATE-BLOCKING já aplicado a 02-reviewed.md em lint-newsletter-md.ts:
+  // tag de tool-call crua (`</content>`, `</invoke>`, `</function_calls>`)
+  // grudada no FIM do documento. 03-social.md tem sua própria seção de lints
+  // gate-blocking no Stage 4 (§4c.2b) e ficava sem backstop pra essa classe
+  // de corrupção — o `saveReviewFile` (studio-review.ts) já strippa o mesmo
+  // padrão pra TODOS os slugs (inclusive `social`), mas esse lint é a rede de
+  // segurança independente da origem.
+  if (args.check === "no-xml-artifacts") {
+    const result = checkNoXmlArtifacts(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ no-xml-artifacts: tag de tool-call grudada no fim do arquivo:`);
+      for (const e of result.errors) {
+        console.error(`  ${JSON.stringify(e.artifact)}`);
+      }
+      console.error(
+        `\nFix: remova o trecho de tag XML solta do fim de ${args.md} — nunca é markdown editorial legítimo (ver #4077).`,
+      );
       process.exit(1);
     }
     return;

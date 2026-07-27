@@ -185,6 +185,7 @@ npx tsx scripts/lint-newsletter-md.ts --check no-trailing-ellipsis --md {EDITION
 npx tsx scripts/lint-newsletter-md.ts --check mid-sentence-ellipsis --md {EDITION_DIR}/02-reviewed.md
 npx tsx scripts/lint-newsletter-md.ts --check stacked-intro-callouts --md {EDITION_DIR}/02-reviewed.md
 npx tsx scripts/lint-newsletter-md.ts --check orphan-box-in-gap --md {EDITION_DIR}/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --check no-xml-artifacts --md {EDITION_DIR}/02-reviewed.md
 ```
 Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 
@@ -195,6 +196,8 @@ Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 `video-links-are-youtube` (#3202): **GATE-BLOCKING** quando exit 1 — item da seção VÍDEOS com URL fora de `youtube.com`/`youtu.be` (regra editorial nova: `context/editorial-rules.md` — Seção "Vídeos"). A resolução automática roda no Stage 1 (`scripts/resolve-video-youtube.ts`, passo 1m-quinquies — busca `site:youtube.com` + substitui a URL quando há match confiável, ou flaga `video_url_unverified` no gate da Etapa 1 quando não há); este lint é o backstop que garante que nada não-YouTube sobrevive até a publicação, mesmo se a resolução foi pulada ou o editor colou um link não-YouTube manualmente. Caso real (260709): página oficial da OpenAI hospedando a livestream "Introducing GPT-Live" bloqueou o bot (403) e acabou reusada como URL do vídeo, duplicando o link de um destaque. Ação: substituir pela URL do YouTube equivalente (`youtube.com/watch?v=...` ou `youtu.be/...`) em `02-reviewed.md` antes de aprovar, ou remover o item de VÍDEOS.
 
 `section-links-resolve` (#3821): **GATE-BLOCKING** quando exit 1 — algum item de seção secundária (LANÇAMENTOS/RADAR/USE MELHOR/VÍDEOS) saiu do parser REAL (`parseSections`, o mesmo que gera o HTML final) com `url` vazia — sintoma de formato não reconhecido por nenhum branch de `parseListItems` (caso real 260722: item de VÍDEOS escrito como `**[Título]** — [Canal](URL)`, 2 links na mesma linha, degradou pro fallback legado — título cru com colchetes/asteriscos literais, sem link nenhum no HTML). Diferente dos lints regex (`section-item-format`/`secondary-items-have-summary`/`video-links-are-youtube`), este roda o parser de produção de verdade, então pega qualquer degradação do mesmo tipo, não só o caso de VÍDEOS. Ação: reescrever o item em `02-reviewed.md` como `[Título](URL)` numa linha + descrição na linha IMEDIATAMENTE seguinte (sem blank line entre elas) — ver `context/templates/newsletter.md`.
+
+`no-xml-artifacts` (#4077): **GATE-BLOCKING** quando exit 1 — tag de tool-call crua (`</content>`, `</invoke>`, `</function_calls>`) grudada no FIM do arquivo, sintoma de um payload de tool-call vazando num caminho de save assistido (ex: chat drawer do Studio editando `02-reviewed.md` via `Edit`/`Write` de um agente LLM). Caso real (edição 260727): 21 bytes de `</content>\n</invoke>` sobreviveram após o último parágrafo do PARA ENCERRAR e nenhum dos outros 15 invariantes/10 lints pegou — o gate ficou verde com a corrupção presente, só foi achado por acaso. `saveReviewFile` (`scripts/studio-ui/studio-review.ts`) já strippa esse mesmo padrão ANTES de escrever em disco (rede de segurança na origem) — este lint é o backstop independente da causa (Studio, edição manual, merge malformado). Ação: remover manualmente o trecho de tag XML solta do fim de `02-reviewed.md` antes de aprovar o gate.
 
 `title-publisher-suffix` + `title-trailing-period` (#2664/#2672): **WARN-ONLY** — exibir matches como ⚠️ no `{violations_block}` com linha + sufixo/título, sem bloquear o gate. A normalização automática roda no Stage 1 (`enrich-inbox-articles.ts` → `normalizeItemTitle`); estes lints são backstop pré-gate para resíduos que escapam (títulos gerados pelo writer LLM ou curados pelo editor). O check de sufixo usa heurística de 1–4 palavras (pode ter falso-positivo em traço editorial legítimo) — por isso WARN, não BLOCK. Ação sugerida ao editor: remover o sufixo de veículo / ponto final em `02-reviewed.md` antes de aprovar.
 
@@ -211,6 +214,11 @@ Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md {EDITION_DIR}/03-social.md
 ```
 Compara tokens (Jaccard) do `## post_pixel` com o main de cada `## d{N}`. Falha quando post_pixel é claramente mais parecido com outro destaque que com o D1 vigente. Sinal de que houve reordenação pós-Stage-2 sem re-sincronizar o post pessoal. **Exit 1 = GATE-BLOCKING** (igual aos outros lints invariantes de §4c.2) — ❌ mostrar no resumo com ação: "post_pixel stale — re-sincronizar com D1 atual antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde (exit 0).
+
+```bash
+npx tsx scripts/lint-social-md.ts --check no-xml-artifacts --md {EDITION_DIR}/03-social.md
+```
+`no-xml-artifacts` (#4118 finding 2, #4077): **GATE-BLOCKING** quando exit 1 — mesmo backstop já aplicado a `02-reviewed.md` (§4c.2 acima), agora também em `03-social.md`: tag de tool-call crua (`</content>`, `</invoke>`, `</function_calls>`) grudada no FIM do arquivo, sintoma de um payload de tool-call vazando num caminho de save assistido (ex: chat drawer do Studio). `saveReviewFile` (`scripts/studio-ui/studio-review.ts`) já strippa esse mesmo padrão pra TODOS os slugs (inclusive `social`) ANTES de escrever em disco — este lint é o backstop independente da causa. Ação: remover manualmente o trecho de tag XML solta do fim de `03-social.md` antes de aprovar o gate.
 
 **Antítese-revelação social (#2526) — WARN-ONLY:**
 ```bash

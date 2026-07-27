@@ -91,7 +91,13 @@ import {
   lintStackedIntroCallouts,
   checkSectionCounts,
   lintNewsletter,
+  checkNoXmlArtifacts,
 } from "../lint-newsletter-md.ts";
+// #4077: guard de tool-call-artifact vazado no fim do arquivo — mesma
+// definição de padrão usada pelo lint acima (`checkNoXmlArtifacts`) E pelo
+// guard de escrita (`saveReviewFile` abaixo), pra nunca divergir as duas
+// redes de segurança.
+import { stripTrailingToolCallArtifact } from "../lib/lint-checks/no-xml-artifacts.ts";
 import type { ApprovedJson } from "../lib/lint-checks/url-bucket.ts";
 import {
   lintSocialMd,
@@ -276,6 +282,17 @@ export interface SaveReviewResult {
    * `conflict` é `true`, pro client decidir entre sobrescrever (force) ou
    * recarregar a versão do disco. */
   currentModifiedAt?: string | null;
+  /**
+   * #4077: presente quando `saveReviewFile` detectou e removeu uma tag de
+   * tool-call crua (`</content>`, `</invoke>`, `</function_calls>`) grudada
+   * no fim do conteúdo recebido, ANTES de escrever em disco — o painel de
+   * revisão nunca escreve XML legítimo, então isso só acontece quando um
+   * payload de tool-call vazou no caminho de save (ex: chat drawer). O save
+   * prossegue normalmente com o conteúdo sanitizado (`ok: true`) — não é um
+   * `conflict`, é uma correção silenciosa na origem; o texto removido fica
+   * aqui pra quem quiser logar/alertar.
+   */
+  sanitizedArtifact?: string;
 }
 
 /** mtime (ISO) do arquivo em disco agora, ou `null` se ele não existe. */
@@ -321,15 +338,29 @@ export function saveReviewFile(
       };
     }
   }
+  // #4077: guard contra tag de tool-call crua grudada no fim do conteúdo —
+  // o painel de revisão nunca escreve XML legítimo, então isso só pode ser
+  // um payload de tool-call vazado num caminho de save assistido (chat
+  // drawer, etc). Strippa em vez de recusar o save inteiro: o conteúdo
+  // editorial legítimo antes do artefato é preservado, o editor não perde a
+  // edição por causa de 21 bytes de lixo que ele nem colocou lá. Roda pra
+  // TODOS os slugs (não só `reviewed`) — o mesmo caminho de escrita serve
+  // `categorized`/`social`/`html-final` também.
+  const { content: sanitizedContent, stripped } = stripTrailingToolCallArtifact(content);
   try {
     // mkdir recursivo do dirname — no-op pros 3 slugs de raiz (dirname já é
     // editionDir, sempre existente), mas necessário pro slug `html-final`
     // (dirname = editionDir/_internal, que pode não existir se o editor
     // salvar antes de qualquer stage ter rodado, ex: edição recém-criada).
     mkdirSync(dirname(resolved.filePath), { recursive: true });
-    writeFileSync(resolved.filePath, content, "utf8");
+    writeFileSync(resolved.filePath, sanitizedContent, "utf8");
     const modifiedAt = statSync(resolved.filePath).mtime.toISOString();
-    return { ok: true, filename: resolved.filename, modifiedAt };
+    return {
+      ok: true,
+      filename: resolved.filename,
+      modifiedAt,
+      ...(stripped !== null ? { sanitizedArtifact: stripped } : {}),
+    };
   } catch (e) {
     return { ok: false, error: (e as Error).message, filename: resolved.filename, modifiedAt: null };
   }
@@ -513,6 +544,7 @@ function lintReviewed(md: string, rootDir: string, editionDir: string): LintRepo
       const orphanGaps = findOrphanBoxWarnings(md);
       return { ok: placement.ok && orphanGaps.length === 0, placement, orphanGaps };
     }),
+    runCheck("no-xml-artifacts", "Sem tag de tool-call grudada no fim do arquivo (#4077)", true, () => checkNoXmlArtifacts(md)),
     // Warn-only (#2715) — mesma classificação da pipeline: nunca bloqueiam,
     // só surfaçam pro editor decidir.
     runCheck("title-publisher-suffix", "Título sem sufixo de veículo (warn)", false, () => checkTitlePublisherSuffix(md)),
