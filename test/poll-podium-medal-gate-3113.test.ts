@@ -18,6 +18,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { rankEntries, type LeaderboardEntry } from "../workers/poll/src/leaderboard.ts";
 import { computePodium, handleLeaderboardByMonthJson } from "../workers/poll/src/leaderboard-routes.ts";
+import { hashEmailForMatch, maskEmail } from "../workers/poll/src/lib.ts";
 import type { Env } from "../workers/poll/src/index.ts";
 
 function entry(email: string, correct: number, total: number, nickname: string | null = null): LeaderboardEntry {
@@ -126,10 +127,15 @@ function makeEnv(seed: Record<string, string> = {}): Env {
 
 describe("handleLeaderboardByMonthJson — mesmo gate de medalha (#3113 item 12)", () => {
   it("entry com 0 acertos em rank <= 3 recebe medal: '' (não emoji)", async () => {
+    // #4123: snapshot persistido não carrega mais `email` cru — seed no
+    // formato novo (uid/masked). Um seed no formato legado (com `email`)
+    // seria tratado como cache inválido por getOrComputeSnapshot e forçaria
+    // recompute (que aqui não teria de onde recompor, já que não há
+    // score-by-month:* seedado — o teste ficaria com entries vazias).
     const snapshot = {
       entries: [
-        { email: "zero@x.com", nickname: "zero", correct: 0, total: 5 },
-        { email: "one@x.com", nickname: "one", correct: 1, total: 1 },
+        { uid: hashEmailForMatch("zero@x.com"), masked: maskEmail("zero@x.com"), nickname: "zero", correct: 0, total: 5 },
+        { uid: hashEmailForMatch("one@x.com"), masked: maskEmail("one@x.com"), nickname: "one", correct: 1, total: 1 },
       ],
       computed_at: new Date().toISOString(),
     };
