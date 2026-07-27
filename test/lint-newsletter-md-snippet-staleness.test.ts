@@ -30,8 +30,10 @@ import {
   readBoxesDivulgacaoConfig,
   isAgradecimentoSnippetUsed,
   runSnippetStalenessCheck,
+  writeSnippetBodyHashManifest,
   type BoxesDivulgacaoConfigLike,
 } from "../scripts/lib/lint-checks/snippet-staleness.ts";
+import { snippetBodyHash } from "../scripts/lib/shared/snippet-header.ts";
 
 // ─── Fixture de 02-reviewed.md com box no slot1 (gap D1/D2) ────────────────
 const REVIEWED_MD_WITH_SLOT1_BOX = [
@@ -242,6 +244,48 @@ describe("evaluateSnippetStaleness (#4076) — comparação pura de mtimes", () 
     );
     assert.equal(report.ok, true);
   });
+
+  it("#4150: mtime mais novo MAS bodyHash IGUAL (recorded === current) → silêncio (edição de metadado)", () => {
+    const report = evaluateSnippetStaleness(
+      REVIEWED_MS,
+      [{
+        file: "clarice-divulgacao.md",
+        slot: "slot3",
+        mtimeMs: REVIEWED_MS + 60_000,
+        recordedBodyHash: "abc123",
+        currentBodyHash: "abc123",
+      }],
+      { engaged: false, mtimeMs: null },
+    );
+    assert.equal(report.ok, true);
+    assert.equal(report.warnings.length, 0);
+  });
+
+  it("#4150: mtime mais novo E bodyHash DIFERENTE → warning (comportamento antigo preservado)", () => {
+    const report = evaluateSnippetStaleness(
+      REVIEWED_MS,
+      [{
+        file: "clarice-divulgacao.md",
+        slot: "slot3",
+        mtimeMs: REVIEWED_MS + 60_000,
+        recordedBodyHash: "abc123",
+        currentBodyHash: "def456",
+      }],
+      { engaged: false, mtimeMs: null },
+    );
+    assert.equal(report.ok, false);
+    assert.equal(report.warnings.length, 1);
+    assert.equal(report.warnings[0].file, "clarice-divulgacao.md");
+  });
+
+  it("#4150: mtime mais novo MAS recordedBodyHash/currentBodyHash ausentes (edição pré-#4150, sem manifest) → warning (fallback mtime-puro)", () => {
+    const report = evaluateSnippetStaleness(
+      REVIEWED_MS,
+      [{ file: "clarice-divulgacao.md", slot: "slot3", mtimeMs: REVIEWED_MS + 60_000 }],
+      { engaged: false, mtimeMs: null },
+    );
+    assert.equal(report.ok, false, "sem hash disponível, deve preservar o comportamento mtime-puro (nunca deixar de avisar por falta de dado novo)");
+  });
 });
 
 describe("runSnippetStalenessCheck (#4076) — end-to-end com fixture em diretório TEMPORÁRIO", () => {
@@ -399,6 +443,175 @@ describe("runSnippetStalenessCheck (#4076) — end-to-end com fixture em diretó
       const result = runSnippetStalenessCheck(join(root, "nao-existe.md"), root);
       assert.equal(result.ok, true);
       assert.equal(result.warnings.length, 0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runSnippetStalenessCheck (#4150) — hash do corpo distingue edição de METADADO de edição de CONTEÚDO", () => {
+  // Snippet com cabeçalho de comentário real (nome/categoria) — o cenário do
+  // #4143 que originou o achado: 7 snippets editados só pra acrescentar
+  // `alt:` no header, incluindo clarice-divulgacao.md (slot3 no #4143).
+  const ORIGINAL_HEADER = "<!--\nnome: Curadoria de Livros\ncategoria: Divulgação\n-->\n\n";
+  const ORIGINAL_BODY = "**📚 CURADORIA DE LIVROS**\n\nConteúdo do box de divulgação do slot 1.";
+  const ORIGINAL_CONTENT = ORIGINAL_HEADER + ORIGINAL_BODY;
+
+  /**
+   * Fixture igual à de `runSnippetStalenessCheck (#4076)` acima, mas com
+   * `livros-divulgacao.md` já trazendo um cabeçalho de comentário real (as
+   * fixtures anteriores usam um snippet SEM header, o que não exercita a
+   * distinção metadado/corpo) + o manifest `_internal/.snippet-body-hashes.json`
+   * já gravado com o hash do CORPO original — simulando o que
+   * `stitch-newsletter.ts` grava no momento do stitch (#4150).
+   */
+  function setupFixtureWithManifest(): { root: string; editionDir: string; snippetsDir: string; mdPath: string } {
+    const root = mkdtempSync(join(tmpdir(), "diaria-snippet-staleness-hash-"));
+    const snippetsDir = join(root, "context", "snippets");
+    mkdirSync(snippetsDir, { recursive: true });
+    const editionDir = join(root, "data", "editions", "990101");
+    mkdirSync(editionDir, { recursive: true });
+    const configPath = join(root, "platform.config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({ boxes_divulgacao: { slot1: "livros-divulgacao.md", slot2: null, slot3: null } }),
+    );
+    writeFileSync(join(snippetsDir, "encerramento-social-apoio.md"), "Quem quiser apoiar, visite apoia.se/diaria.\n\nSiga no LinkedIn e Facebook.");
+    writeFileSync(join(snippetsDir, "livros-divulgacao.md"), ORIGINAL_CONTENT);
+    const mdPath = join(editionDir, "02-reviewed.md");
+    writeFileSync(mdPath, REVIEWED_MD_WITH_SLOT1_BOX);
+
+    // Baseline: tudo "escrito" há 1 dia, igual à fixture #4076.
+    const baseline = new Date(Date.now() - 24 * 60 * 60_000);
+    for (const p of [configPath, join(snippetsDir, "encerramento-social-apoio.md"), join(snippetsDir, "livros-divulgacao.md"), mdPath]) {
+      utimesSync(p, baseline, baseline);
+    }
+
+    // Manifest gravado no momento do stitch (#4150) — hash do CORPO original
+    // (pós-cabeçalho) de livros-divulgacao.md, como `buildSnippetBodyHashManifest`
+    // computaria a partir do `used` real. `_internal/` normalmente já existe
+    // (stitch grava `02-draft.md` ali antes) — a fixture de teste precisa
+    // criar explicitamente.
+    mkdirSync(join(editionDir, "_internal"), { recursive: true });
+    writeSnippetBodyHashManifest(editionDir, {
+      "livros-divulgacao.md": snippetBodyHash(ORIGINAL_CONTENT),
+    });
+
+    return { root, editionDir, snippetsDir, mdPath };
+  }
+
+  it("edição restrita ao CABEÇALHO (acrescenta alt:) pós-stitch → silêncio (achado #4150/#4143)", () => {
+    const { root, snippetsDir, mdPath } = setupFixtureWithManifest();
+    try {
+      const oldTime = new Date(Date.now() - 10 * 60_000);
+      utimesSync(mdPath, oldTime, oldTime);
+
+      // Editor acrescenta `alt:` ao cabeçalho — o CORPO (o que o stitch
+      // injeta na newsletter) permanece byte-a-byte idêntico.
+      const newHeader = "<!--\nnome: Curadoria de Livros\ncategoria: Divulgação\nalt: Prévia da página de curadoria de livros\n-->\n\n";
+      const snippetPath = join(snippetsDir, "livros-divulgacao.md");
+      writeFileSync(snippetPath, newHeader + ORIGINAL_BODY);
+      const newTime = new Date();
+      utimesSync(snippetPath, newTime, newTime);
+
+      const result = runSnippetStalenessCheck(mdPath, root);
+      assert.equal(
+        result.ok,
+        true,
+        `esperava silêncio (só o cabeçalho mudou, corpo idêntico), achou: ${JSON.stringify(result.warnings)}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("edição do CORPO pós-stitch → warning (comportamento atual NÃO regride)", () => {
+    const { root, snippetsDir, mdPath } = setupFixtureWithManifest();
+    try {
+      const oldTime = new Date(Date.now() - 10 * 60_000);
+      utimesSync(mdPath, oldTime, oldTime);
+
+      // Editor muda o CORPO (cabeçalho intacto) — divergência real de
+      // conteúdo, o guard deve continuar acusando.
+      const snippetPath = join(snippetsDir, "livros-divulgacao.md");
+      writeFileSync(
+        snippetPath,
+        ORIGINAL_HEADER + "**📚 CURADORIA DE LIVROS**\n\nConteúdo COMPLETAMENTE diferente do original.",
+      );
+      const newTime = new Date();
+      utimesSync(snippetPath, newTime, newTime);
+
+      const result = runSnippetStalenessCheck(mdPath, root);
+      assert.equal(result.ok, false, `esperava warning (corpo mudou), achou silêncio`);
+      assert.ok(
+        result.warnings.some((w) => w.file === "livros-divulgacao.md" && w.kind === "snippet"),
+        `esperava warning kind:snippet para livros-divulgacao.md, achou: ${JSON.stringify(result.warnings)}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("CASO MISTO: cabeçalho E corpo alterados pós-stitch → warning", () => {
+    const { root, snippetsDir, mdPath } = setupFixtureWithManifest();
+    try {
+      const oldTime = new Date(Date.now() - 10 * 60_000);
+      utimesSync(mdPath, oldTime, oldTime);
+
+      const newHeader = "<!--\nnome: Curadoria de Livros\ncategoria: Divulgação\nalt: Prévia nova\n-->\n\n";
+      const snippetPath = join(snippetsDir, "livros-divulgacao.md");
+      writeFileSync(
+        snippetPath,
+        newHeader + "**📚 CURADORIA DE LIVROS**\n\nConteúdo COMPLETAMENTE diferente do original.",
+      );
+      const newTime = new Date();
+      utimesSync(snippetPath, newTime, newTime);
+
+      const result = runSnippetStalenessCheck(mdPath, root);
+      assert.equal(result.ok, false, `esperava warning (cabeçalho E corpo mudaram), achou silêncio`);
+      assert.ok(
+        result.warnings.some((w) => w.file === "livros-divulgacao.md" && w.kind === "snippet"),
+        `esperava warning kind:snippet para livros-divulgacao.md, achou: ${JSON.stringify(result.warnings)}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("manifest AUSENTE (edição pré-#4150) → fallback mtime-puro, guard continua funcionando", () => {
+    // Mesma fixture do #4076 original (sem writeSnippetBodyHashManifest) —
+    // header-only edit deveria, nesse caso SEM manifest, ainda disparar
+    // warning (degrada pro comportamento antigo, não silencia por engano).
+    const root = mkdtempSync(join(tmpdir(), "diaria-snippet-staleness-hash-nomanifest-"));
+    try {
+      const snippetsDir = join(root, "context", "snippets");
+      mkdirSync(snippetsDir, { recursive: true });
+      const editionDir = join(root, "data", "editions", "990101");
+      mkdirSync(editionDir, { recursive: true });
+      writeFileSync(
+        join(root, "platform.config.json"),
+        JSON.stringify({ boxes_divulgacao: { slot1: "livros-divulgacao.md", slot2: null, slot3: null } }),
+      );
+      writeFileSync(join(snippetsDir, "encerramento-social-apoio.md"), "apoio");
+      writeFileSync(join(snippetsDir, "livros-divulgacao.md"), ORIGINAL_CONTENT);
+      const mdPath = join(editionDir, "02-reviewed.md");
+      writeFileSync(mdPath, REVIEWED_MD_WITH_SLOT1_BOX);
+      const oldTime = new Date(Date.now() - 10 * 60_000);
+      utimesSync(mdPath, oldTime, oldTime);
+
+      // Header-only edit, SEM manifest gravado (nenhum stitch #4150 rodou).
+      const newHeader = "<!--\nnome: Curadoria de Livros\ncategoria: Divulgação\nalt: Prévia\n-->\n\n";
+      const snippetPath = join(snippetsDir, "livros-divulgacao.md");
+      writeFileSync(snippetPath, newHeader + ORIGINAL_BODY);
+      const newTime = new Date();
+      utimesSync(snippetPath, newTime, newTime);
+
+      const result = runSnippetStalenessCheck(mdPath, root);
+      assert.equal(
+        result.ok,
+        false,
+        "sem manifest, o guard deve preservar o comportamento mtime-puro pré-#4150 (nunca deixar de avisar por falta de dado novo)",
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

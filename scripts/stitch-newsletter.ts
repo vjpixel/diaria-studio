@@ -44,6 +44,12 @@ import {
 } from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal; split #3368 (reorder); renderEncerramentoSocialApoio #3382 fix (fallback de conteúdo real quando o split falha)
 import { readSnippetFile } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
 import { extractBoxDivulgacao1, extractBoxDivulgacao3 } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap); extractBoxDivulgacao3 #3476
+import {
+  resolveUsedSnippets,
+  isAgradecimentoSnippetUsed,
+  buildSnippetBodyHashManifest,
+  writeSnippetBodyHashManifest,
+} from "./lib/lint-checks/snippet-staleness.ts"; // #4150: grava hash do corpo pós-cabeçalho dos snippets usados, pro guard de staleness distinguir edição de metadado de edição de conteúdo
 
 interface ArticleLike {
   url?: string;
@@ -678,6 +684,39 @@ function main(): void {
     });
     const outPath = join(editionDir, "_internal", "02-draft.md");
     writeFileSync(outPath, out);
+
+    // #4150: grava hash do corpo pós-cabeçalho de cada snippet USADO nesta
+    // edição (mesmo `used` que o guard de staleness recalcula depois) — o
+    // guard compara esse hash contra o recomputado no gate, silenciando
+    // warning quando só o cabeçalho de comentário (nome/categoria/alt) mudou
+    // pós-stitch. Fail-soft: nunca derruba o stitch, só degrada o guard de
+    // volta pro mtime-puro (mesmo padrão de `.social-source-hash.json`/#1413).
+    try {
+      const snippetsDir = join(ROOT, "context", "snippets");
+      // Recarrega a mesma config que `stitchNewsletter()` usou internamente
+      // (main() não passa `boxesDivulgacao` explícito, então o default é
+      // sempre reler `platform.config.json` — idêntico ao que rodou dentro
+      // da função pura acima; `--no-sponsor` só suprime a INSERÇÃO do box,
+      // não muda o mapeamento slot→arquivo usado aqui).
+      const boxesCfgLoaded = loadBoxesDivulgacaoConfig();
+      const boxesCfgForHash = {
+        slot1: boxesCfgLoaded.slot1,
+        slot2: boxesCfgLoaded.slot2,
+        slot3: boxesCfgLoaded.slot3 ?? null,
+      };
+      const used = resolveUsedSnippets(
+        out,
+        boxesCfgForHash,
+        isAgradecimentoSnippetUsed(snippetsDir),
+      );
+      const hashes = buildSnippetBodyHashManifest(used, snippetsDir);
+      writeSnippetBodyHashManifest(editionDir, hashes);
+    } catch (hashErr) {
+      console.error(
+        `[stitch-newsletter] warn — falha gravando snippet-body-hashes: ${(hashErr as Error).message}`,
+      );
+    }
+
     console.log(JSON.stringify({ out_path: outPath, bytes: out.length, destaque_count: destaqueCount }, null, 2));
   } catch (e) {
     console.error(`[stitch-newsletter] erro: ${(e as Error).message}`);

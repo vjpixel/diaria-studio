@@ -104,15 +104,42 @@
  *     haver divergência real (MD tem um nome que o snippet-fonte já não
  *     tem). Diferente do ponto acima, este é um miss real (não só teórico)
  *     — não apenas uma atribuição incorreta de qual arquivo avisar.
+ *
+ * #4150 (achado do review consolidado, interação com #4143): o guard original
+ * comparava só `mtimeMs` bruto do snippet contra o `02-reviewed.md` — uma
+ * edição restrita ao CABEÇALHO de comentário (`nome:`/`categoria:`/`alt:`,
+ * nunca injetado no corpo pelo stitch, ver `snippet-header.ts`) disparava
+ * warning sem nenhuma divergência real de conteúdo. Corrigido comparando
+ * `bodyHash` (sha256 do corpo PÓS-cabeçalho, via `snippetBodyHash`) gravado
+ * por `stitch-newsletter.ts` no momento do stitch (manifest
+ * `_internal/.snippet-body-hashes.json`, mesmo padrão de
+ * `.social-source-hash.json`/#1413) contra o hash recomputado agora — mtime
+ * mais novo + hash IGUAL = silêncio (só o cabeçalho mudou); hash DIFERENTE =
+ * warning (comportamento antigo preservado). Escolhido em vez de comparar o
+ * corpo cru diretamente contra o texto embutido em `02-reviewed.md` (approach
+ * "a" cogitada na issue) porque o conteúdo baked-in passa por transformação
+ * NÃO-literal em pelo menos 2 dos 5 candidatos: `buildParaEncerrar()`
+ * (`encerramento-social-apoio.md`, SEMPRE candidato) faz split+reorder dos
+ * parágrafos intercalados com blocos fixos, e o `02-reviewed.md` final ainda
+ * passa por humanizador + Clarice (Stage 2, Passo 3) ANTES do `cp` final —
+ * qualquer um dos dois pode reescrever palavras dentro do bloco, o que faria
+ * uma comparação texto-a-texto contra o MD final disparar falso-positivo em
+ * quase toda edição (muito pior que o bug original). Hash do corpo-FONTE ao
+ * longo do tempo (nunca comparado contra o MD humanizado/corrigido) evita
+ * esse problema por construção. Fallback gracioso: manifest ausente (edição
+ * anterior ao #4150) ou hash de um snippet específico ausente → volta pro
+ * comportamento mtime-puro de sempre, nunca deixa de avisar por falta de
+ * dado novo.
  */
 
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   extractBoxDivulgacao1,
   extractBoxDivulgacao2,
   extractBoxDivulgacao3,
 } from "../newsletter-parse.ts";
+import { snippetBodyHash } from "../shared/snippet-header.ts";
 
 /** Mesmo shape de `BoxesDivulgacaoConfig` (stitch-newsletter.ts) — duplicado
  * aqui (não importado) de propósito: este módulo precisa ler
@@ -245,10 +272,27 @@ const DEFAULT_TOLERANCE_MS = 1000;
  * Pure — compara mtimes já resolvidos (nenhum acesso a filesystem). Usado
  * tanto pelos testes (mtimes fabricados) quanto por `runSnippetStalenessCheck`
  * (mtimes reais lidos do disco).
+ *
+ * #4150: `recordedBodyHash`/`currentBodyHash` (ambos opcionais, back-compat
+ * com chamadas/testes pré-#4150 que só passam mtime) permitem distinguir
+ * edição de METADADO (linhas `nome:`/`categoria:`/`alt:` do cabeçalho de
+ * comentário, nunca injetadas no corpo pelo stitch — ver `snippetBodyHash`)
+ * de edição de CONTEÚDO real. Quando ambos os hashes estão presentes E
+ * batem, o mtime mais novo é ignorado (silêncio) — só o cabeçalho mudou, o
+ * corpo que o stitch de fato consumiu é idêntico ao gravado no momento do
+ * stitch. Ausência de qualquer um dos dois (edição sem o manifest de hash,
+ * ex: anterior ao #4150, ou arquivo que sumiu) preserva o comportamento
+ * ANTIGO (mtime puro) — nunca deixa de avisar por falta de dado novo.
  */
 export function evaluateSnippetStaleness(
   reviewedMtimeMs: number,
-  usedSnippets: Array<{ file: string; slot: SnippetSlot; mtimeMs: number | null }>,
+  usedSnippets: Array<{
+    file: string;
+    slot: SnippetSlot;
+    mtimeMs: number | null;
+    recordedBodyHash?: string | null;
+    currentBodyHash?: string | null;
+  }>,
   boxesConfig: { engaged: boolean; mtimeMs: number | null },
   toleranceMs: number = DEFAULT_TOLERANCE_MS,
 ): SnippetStalenessReport {
@@ -256,6 +300,16 @@ export function evaluateSnippetStaleness(
   for (const s of usedSnippets) {
     if (s.mtimeMs === null) continue; // arquivo ausente — nada a comparar (graceful)
     if (s.mtimeMs - reviewedMtimeMs > toleranceMs) {
+      // #4150: mtime mais novo, mas o CORPO pós-cabeçalho é idêntico ao
+      // gravado no momento do stitch — mudança restrita ao cabeçalho de
+      // comentário (nome/categoria/alt), que nunca chega no MD. Silêncio.
+      if (
+        s.recordedBodyHash != null &&
+        s.currentBodyHash != null &&
+        s.recordedBodyHash === s.currentBodyHash
+      ) {
+        continue;
+      }
       warnings.push({
         kind: "snippet",
         file: s.file,
@@ -289,6 +343,81 @@ export interface RunSnippetStalenessOptions {
   configPath?: string;
 }
 
+// #4150: manifest de hash do CORPO pós-cabeçalho de cada snippet usado, no
+// momento do stitch (Stage 2) — irmão de `_internal/.social-source-hash.json`
+// (#1413, mesmo padrão: hash gravado na produção, comparado depois). Vive
+// dentro de `_internal/` da própria edição (ao lado de `02-draft.md`), não em
+// `snippetsDir`/`configPath` (que podem ser overrides de teste apontando pra
+// um diretório de fixture sem relação com a edição).
+const SNIPPET_BODY_HASH_MANIFEST_RELPATH = join("_internal", ".snippet-body-hashes.json");
+
+interface SnippetBodyHashManifest {
+  hashes?: Record<string, string>;
+  generated_at?: string;
+}
+
+/**
+ * Lê o manifest de hashes gravado por `buildSnippetBodyHashManifest` +
+ * `writeSnippetBodyHashManifest` (chamado por `stitch-newsletter.ts` logo
+ * após escrever `02-draft.md`). `null` se ausente/corrompido/formato
+ * inesperado — graceful, o caller cai de volta pro comportamento mtime-puro
+ * (edição anterior ao #4150, ou qualquer falha ao gravar o manifest).
+ */
+export function readSnippetBodyHashManifest(editionDir: string): Record<string, string> | null {
+  const p = join(editionDir, SNIPPET_BODY_HASH_MANIFEST_RELPATH);
+  try {
+    const raw = JSON.parse(readFileSync(p, "utf8")) as SnippetBodyHashManifest;
+    if (raw.hashes && typeof raw.hashes === "object") return raw.hashes;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Monta `{ file: bodyHash }` para os snippets efetivamente USADOS nesta
+ * edição — chamado por `stitch-newsletter.ts` (main()) logo após montar
+ * `02-draft.md`, com o `used` já resolvido via `resolveUsedSnippets` sobre o
+ * MD recém-montado. Arquivo ausente/ilegível para um dado snippet é pulado
+ * (graceful — mesma postura de `safeMtimeMs`); esse snippet simplesmente não
+ * entra no manifest e o guard cai pro fallback mtime-puro pra ele.
+ */
+export function buildSnippetBodyHashManifest(
+  usedSnippets: UsedSnippetEntry[],
+  snippetsDir: string,
+): Record<string, string> {
+  const hashes: Record<string, string> = {};
+  for (const u of usedSnippets) {
+    try {
+      const raw = readFileSync(join(snippetsDir, u.file), "utf8");
+      hashes[u.file] = snippetBodyHash(raw);
+    } catch {
+      // arquivo sumiu entre resolveUsedSnippets e aqui, ou é ilegível —
+      // graceful, sem esse snippet no manifest.
+    }
+  }
+  return hashes;
+}
+
+/**
+ * Grava o manifest em `{editionDir}/_internal/.snippet-body-hashes.json`.
+ * Pode lançar (I/O) — caller (`stitch-newsletter.ts`) envolve em try/catch
+ * fail-soft, mesmo padrão de `merge-social-md.ts` gravando
+ * `.social-source-hash.json` (#1413): a escrita do manifest NUNCA deve
+ * derrubar o stitch em si, só degradar o guard de volta pro mtime-puro.
+ */
+export function writeSnippetBodyHashManifest(
+  editionDir: string,
+  hashes: Record<string, string>,
+): void {
+  const p = join(editionDir, SNIPPET_BODY_HASH_MANIFEST_RELPATH);
+  writeFileSync(
+    p,
+    JSON.stringify({ hashes, generated_at: new Date().toISOString() }, null, 2) + "\n",
+    "utf8",
+  );
+}
+
 /**
  * Impuro — monta o report real a partir do disco. `mdPath` é sempre real
  * (o `02-reviewed.md` da edição em curso); `snippetsDir`/`configPath` são
@@ -315,11 +444,30 @@ export function runSnippetStalenessCheck(
   const agradecimentoUsed = isAgradecimentoSnippetUsed(snippetsDir);
   const used = resolveUsedSnippets(reviewedMd, boxesCfg, agradecimentoUsed);
 
-  const usedWithMtimes = used.map((u) => ({
-    file: u.file,
-    slot: u.slot,
-    mtimeMs: safeMtimeMs(join(snippetsDir, u.file)),
-  }));
+  // #4150: editionDir = diretório de 02-reviewed.md (onde `_internal/` mora)
+  // — sempre real, nunca os overrides de teste de snippetsDir/configPath.
+  const editionDir = join(mdPath, "..");
+  const bodyHashManifest = readSnippetBodyHashManifest(editionDir);
+
+  const usedWithMtimes = used.map((u) => {
+    const filePath = join(snippetsDir, u.file);
+    const mtimeMs = safeMtimeMs(filePath);
+    let currentBodyHash: string | null = null;
+    if (bodyHashManifest && bodyHashManifest[u.file] !== undefined) {
+      try {
+        currentBodyHash = snippetBodyHash(readFileSync(filePath, "utf8"));
+      } catch {
+        currentBodyHash = null;
+      }
+    }
+    return {
+      file: u.file,
+      slot: u.slot,
+      mtimeMs,
+      recordedBodyHash: bodyHashManifest ? bodyHashManifest[u.file] ?? null : null,
+      currentBodyHash,
+    };
+  });
   const boxesEngaged = used.some(
     (u) => u.slot === "slot1" || u.slot === "slot2" || u.slot === "slot3",
   );
