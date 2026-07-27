@@ -129,6 +129,29 @@ export function summarize(rows: IndexStatus[]): IndexSummary {
   };
 }
 
+/**
+ * Parseia flag numérica preservando o `0` explícito. `parseInt(x) || fallback`
+ * trata 0 como falsy — `--limit 0` (dry-run: lê o sitemap sem gastar quota)
+ * voltava silenciosamente pras 200 URLs default (code-review PR #4106).
+ */
+export function parseIntFlag(raw: unknown, fallback: number): number {
+  const n = parseInt(String(raw), 10);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+/**
+ * Exit code da rodada. Rodar com ZERO URLs não é sucesso: se o sitemap mudar de
+ * forma (ex: slug deixar de ser `/p/…` e o `--only-posts` zerar o filtro), a
+ * task semanal continuaria verde pra sempre sem medir nada — exatamente a
+ * regressão que este script existe pra detectar (code-review PR #4106).
+ * Exceção: `--limit 0` é um pedido explícito de não inspecionar nada.
+ */
+export function resolveExitCode(rows: IndexStatus[], requestedLimit: number): number {
+  if (requestedLimit === 0) return 0;
+  if (rows.length === 0) return 1;
+  return rows.every((r) => r.error) ? 1 : 0;
+}
+
 /** Só as URLs de edição (`/p/…`) — as institucionais poluem a métrica. */
 export function filterPosts(urls: string[]): string[] {
   return urls.filter((u) => /\/p\//.test(u));
@@ -211,8 +234,8 @@ async function main(nowMs: number): Promise<number> {
   const { values, flags } = parseCliArgs(process.argv.slice(2));
   const site = String(values["site"] ?? DEFAULT_SITE);
   const sitemapUrl = String(values["sitemap"] ?? DEFAULT_SITEMAP);
-  const limit = parseInt(String(values["limit"] ?? DEFAULT_LIMIT), 10) || DEFAULT_LIMIT;
-  const concurrency = parseInt(String(values["concurrency"] ?? DEFAULT_CONCURRENCY), 10) || DEFAULT_CONCURRENCY;
+  const limit = parseIntFlag(values["limit"] ?? DEFAULT_LIMIT, DEFAULT_LIMIT);
+  const concurrency = parseIntFlag(values["concurrency"] ?? DEFAULT_CONCURRENCY, DEFAULT_CONCURRENCY);
   const date = new Date(nowMs).toISOString().slice(0, 10);
 
   let urls: string[];
@@ -238,8 +261,10 @@ async function main(nowMs: number): Promise<number> {
   writeFileSync(jsonPath, JSON.stringify({ site, date, sitemap: sitemapUrl, summary: sum, rows }, null, 2));
   writeFileSync(resolve(seoDir, `index-status-${date}.md`), renderMd(rows, sum, site, date));
   console.log(JSON.stringify({ site, date, ...sum, out: jsonPath }, null, 2));
-  // Erro em TODAS as URLs = falha real (quota/scope), não "0% de cobertura".
-  return sum.errors === rows.length && rows.length > 0 ? 1 : 0;
+  if (rows.length === 0 && limit !== 0) {
+    console.error(`[seo-index-check] nenhuma URL inspecionada — o sitemap ${sitemapUrl} não rendeu URL alguma após o filtro`);
+  }
+  return resolveExitCode(rows, limit);
 }
 
 if (isMainModule(import.meta.url)) {

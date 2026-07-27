@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseInspection, summarize, filterPosts, mapLimit, renderMd, DEFAULT_SITE, type IndexStatus } from "../scripts/seo-index-check.ts";
+import { parseInspection, summarize, filterPosts, mapLimit, renderMd, parseIntFlag, resolveExitCode, DEFAULT_SITE, type IndexStatus } from "../scripts/seo-index-check.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -163,6 +163,35 @@ describe("renderMd (#4105)", () => {
 describe("DEFAULT_SITE (#4105)", () => {
   it("é a domain property verificada — o host beehiiv dá 403 (siteUnverifiedUser)", () => {
     assert.equal(DEFAULT_SITE, "sc-domain:diar.ia.br");
+  });
+});
+
+describe("resolveExitCode + parseIntFlag (code-review PR #4106)", () => {
+  it("zero URLs inspecionadas reprova a rodada — a task semanal não pode ficar verde sem medir nada", () => {
+    // Cenário: o sitemap muda de forma (slug deixa de ser /p/…) e --only-posts
+    // zera o filtro. Antes, `errors === rows.length && rows.length > 0` era
+    // false → exit 0, e a série temporal congelava silenciosamente.
+    assert.equal(resolveExitCode([], 200), 1);
+  });
+
+  it("--limit 0 é pedido explícito de não inspecionar nada → sucesso", () => {
+    assert.equal(resolveExitCode([], 0), 0);
+  });
+
+  it("todas com erro reprova; ao menos uma medida aprova", () => {
+    assert.equal(resolveExitCode([{ url: "a", error: "429" }], 200), 1);
+    assert.equal(resolveExitCode([{ url: "a", error: "429" }, { url: "b", verdict: "PASS" }], 200), 0);
+  });
+
+  it("parseIntFlag preserva o 0 explícito (o `|| default` o engolia)", () => {
+    assert.equal(parseIntFlag("0", 200), 0);
+    assert.equal(parseIntFlag("50", 200), 50);
+  });
+
+  it("parseIntFlag cai no default em valor inválido ou negativo", () => {
+    assert.equal(parseIntFlag("abc", 200), 200);
+    assert.equal(parseIntFlag("-5", 200), 200);
+    assert.equal(parseIntFlag(undefined, 200), 200);
   });
 });
 
