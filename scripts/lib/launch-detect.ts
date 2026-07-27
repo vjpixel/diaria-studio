@@ -31,13 +31,32 @@ const LAUNCH_KEYWORDS: RegExp[] = [
   /\bavailable now\b/i,
   /\bgenerally available\b/i,
   /\bopen-?sources?\b/i,
-  // PT
+  // PT — voz ativa ("Empresa lança X")
   /\blan[çc]a(m|r|ndo)?\b/i,
   /\bapresenta(m|r|ndo)?\b/i,
   /\banuncia(m|r|ndo)?\b/i,
   /\bestreia(m|r|ndo)?\b/i,
   /\bdisponibiliza(m|r|ndo)?\b/i,
   /\bdisponível agora\b/i,
+  // PT — voz passiva (#4080): "X é/foi lançado(a)(s) [pela Empresa]", "X é/foi
+  // anunciado/apresentado". Cobre lançar/anunciar/apresentar nas duas flexões
+  // de gênero/número; a empresa é detectada em qualquer posição do título pela
+  // regra 2 (haystack completo), então não importa se vem antes ou depois do
+  // verbo.
+  //
+  // Nota: usa lookbehind `(?<=^|\s)` em vez de `\b` antes do grupo — "é" é um
+  // caractere acentuado, fora de `\w` (ASCII-only em regex JS sem flag `u`),
+  // então `\b` nunca encontra fronteira antes dele (os dois lados — espaço e
+  // "é" — contam como "não-\w") e o match falha silenciosamente. `\b` depois
+  // do particípio funciona normal (termina em o/a/s, todos `\w`).
+  /(?<=^|\s)(é|foi|são|foram)\s+(lan[çc]ad|anunciad|apresentad)[oa]s?\b/i,
+  // PT — "X ganha (nova) versão" (feature/produto novo sem verbo de anúncio).
+  /\bganha(m)?\s+(nova\s+)?vers[ãa]o\b/i,
+  // PT — "X chega ao/à/no/na/para <lugar>" (chegada de produto ao mercado).
+  // Deliberadamente NÃO casa "chega a <valor/número>" (ex: "mercado de IA
+  // chega a US$ 50 bilhões") — esse uso é estatística/análise, não lançamento;
+  // ver #4080 e o teste negativo correspondente.
+  /\bchega(m)?\s+(ao|à|as|no|na|para)/i,
 ];
 
 /**
