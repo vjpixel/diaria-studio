@@ -232,7 +232,9 @@ test("#3090: a tabela Cohorts tem um glossário gerado de COHORTS_COLUMNS", () =
 
 test("#3090: a tabela de Links agregados tem um glossário gerado de AGGREGATED_LINKS_COLUMNS", () => {
   const rows: AggregatedLinkRow[] = [
-    { url: "https://exemplo.com", displayUrl: "https://exemplo.com", totalClicks: 10, campaignCount: 2 },
+    // #4053: AggregatedLinkRow ganhou `content` (chave de agrupamento) e
+    // `variantCount` (quantas URLs colapsaram nesse conteúdo).
+    { content: "https://exemplo.com", url: "https://exemplo.com", displayUrl: "https://exemplo.com", variantCount: 1, totalClicks: 10, campaignCount: 2 },
   ];
   const html = renderAggregatedLinksSection(rows, null);
   assert.match(html, /<details class="links-ctr" id="glossary-links-agregados">/);

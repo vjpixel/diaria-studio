@@ -2652,22 +2652,35 @@ describe("aggregateLinksAcrossCampaigns (#2249)", () => {
     statistics: { globalStats: makeGlobalStats({ sent: 100 }), linksStats: links },
   });
 
-  test("agrega por ORIGIN, soma paths/UTM do mesmo domínio (#2263) + filtra sistema (#2249)", () => {
-    // #2263: paths/query diferentes do MESMO domínio colapsam num origin só.
+  test("agrega por CONTEÚDO (#4053, sucede o agrupamento por ORIGIN do #2263) + filtra sistema (#2249)", () => {
+    // #4053: origin OVER-colapsava — /a e /b do mesmo domínio (destaques
+    // DIFERENTES) viravam uma linha só. Agora só variantes do MESMO conteúdo
+    // (mesma URL normalizada, UTMs à parte) colapsam; /a e /b permanecem
+    // linhas distintas.
     // #2249: a função funciona com linksStats populado (a seção vazia em produção
     // era o GET de linksStats no param combinado retornando zerado — corrigido #2260).
     const rows = aggregateLinksAcrossCampaigns([
-      withLinks(90, 1, { "https://diaria.com.br/a?utm=x": 12, "https://diaria.com.br/b": 5 }),
+      withLinks(90, 1, { "https://diaria.com.br/a?utm_source=x": 12, "https://diaria.com.br/b": 5 }),
       withLinks(91, 2, { "https://diaria.com.br/a": 8, "https://unsubscribe.brevo.com/x": 99 }),
     ]);
     assert.ok(rows.length > 0, "deve retornar links agregados, não vazio");
-    const d = rows.find((r) => r.url === "https://diaria.com.br")!;
-    assert.ok(d, "agrupa por origin https://diaria.com.br");
-    assert.equal(d.totalClicks, 12 + 5 + 8, "soma a(12)+b(5)+a(8) do mesmo origin = 25");
-    assert.equal(d.campaignCount, 2, "2 campanhas (cada conta 1× por origin)");
-    assert.equal(d.displayUrl, "https://diaria.com.br", "exibe só o origin");
+
+    // /a?utm_source=x (campanha 90) e /a (campanha 91) são o MESMO conteúdo
+    // (UTM removido na normalização de fallback) — colapsam numa linha.
+    const a = rows.find((r) => r.content === "https://diaria.com.br/a")!;
+    assert.ok(a, "conteúdo https://diaria.com.br/a existe (UTM variant colapsada)");
+    assert.equal(a.totalClicks, 12 + 8, "soma a(12, campanha 90) + a(8, campanha 91) = 20");
+    assert.equal(a.campaignCount, 2, "2 campanhas contribuíram pro mesmo conteúdo");
+    assert.equal(a.variantCount, 2, "2 URLs distintas (com/sem utm_source) colapsadas");
+
+    // /b é um conteúdo DIFERENTE de /a — não deve colapsar com ele (fix do
+    // over-collapse por origin, #4053).
+    const b = rows.find((r) => r.content === "https://diaria.com.br/b")!;
+    assert.ok(b, "conteúdo https://diaria.com.br/b existe como linha separada de /a");
+    assert.equal(b.totalClicks, 5);
+    assert.equal(b.campaignCount, 1);
+
     assert.ok(!rows.some((r) => /unsubscribe/.test(r.url)), "links de sistema filtrados");
-    assert.ok(!rows.some((r) => r.url.includes("/a") || r.url.includes("/b") || r.url.includes("utm")), "sem path/query no resultado");
   });
 
   test("seção de links agregados aparece após as seções principais (#2249, #2472)", () => {
