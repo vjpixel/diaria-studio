@@ -105,6 +105,7 @@ interface Article {
   title?: string;
   source?: string;
   discovered_source?: boolean;
+  flag?: string;
   [key: string]: unknown;
 }
 
@@ -395,10 +396,26 @@ export function dedup(
   // universo de pares que o dedup pairwise antigo, sem perda de artigos (só
   // dobra em vez de deletar). Títulos placeholder "(inbox)" nunca clusterizam
   // por título (#482) — dedup real deles já foi por URL na sub-pass 2a.
+  //
+  // #4102: `flag: "newsletter_extracted"` (links extraídos de newsletter
+  // capturada, ver capture-newsletter-urls.ts/inject-inbox-urls.ts) TAMBÉM
+  // nunca clusteriza por título — pelo MESMO motivo estrutural do "(inbox)"
+  // acima, mas por uma via diferente: todos os links extraídos da MESMA
+  // newsletter compartilham o LITERAL mesmo título sintético
+  // `(newsletter:{sender})` (idêntico, não só similar) até serem enriquecidos
+  // via og:title. Título idêntico → titleSimilarity = 1.0 → o algoritmo
+  // single-linkage agrupava TODOS os links da mesma newsletter num cluster
+  // só, mesmo sendo notícias sem relação alguma entre si (caso real 260727,
+  // #4102: item do Y Combinator ganhou cluster_sources apontando pra Fallout
+  // da Bethesda, livros na Amazon, um tweet pessoal — links compartilham
+  // ORIGEM, o mesmo e-mail, não ASSUNTO). A checagem é bidirecional (também
+  // no membro do cluster já formado) para nunca aceitar um newsletter_extracted
+  // como âncora de outro artigo.
   const clusters: Article[][] = [];
   for (const art of afterUrlDedup) {
     const artTitle = art.title;
-    if (!artTitle || artTitle.toLowerCase() === "(inbox)") {
+    const artIsNewsletterExtracted = art.flag === "newsletter_extracted";
+    if (!artTitle || artTitle.toLowerCase() === "(inbox)" || artIsNewsletterExtracted) {
       clusters.push([art]);
       continue;
     }
@@ -407,6 +424,7 @@ export function dedup(
       for (const member of cluster) {
         const memberTitle = member.title;
         if (!memberTitle || memberTitle.toLowerCase() === "(inbox)") continue;
+        if (member.flag === "newsletter_extracted") continue;
         if (titleSimilarity(artTitle, memberTitle) >= titleThreshold) {
           cluster.push(art);
           placed = true;

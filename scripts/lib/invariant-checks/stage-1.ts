@@ -19,6 +19,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { isPlaceholderHighlightTitle } from "../placeholder-title-guard.ts"; // #4102
 
 interface HighlightLike {
   bucket?: string;
@@ -279,6 +280,57 @@ function checkHasNegativeImpactHighlight(editionDir: string): InvariantViolation
   ];
 }
 
+/**
+ * #4102: destaque NUNCA pode ter título placeholder (sintético, nunca
+ * enriquecido com o conteúdo real do artigo — ex: "(newsletter:...)" de link
+ * extraído de newsletter capturada, "(inbox)" de submissão editorial não
+ * resolvida). Backstop determinístico já existe em `assemble-scored.ts`
+ * (`applyPlaceholderTitleBackstop`) — este check é a rede de segurança final,
+ * cobrindo também o caminho `1q-fallback` (scorer single-call legado, que não
+ * gera `tmp-finalists.json` e por isso não passa pelo backstop de
+ * assemble-scored.ts).
+ *
+ * Caso real (edição 260727): item do Y Combinator chegou ao scorer com
+ * `title: "(newsletter:\"Lenny's Newsletter\")"` e score 119 (o mais alto do
+ * pool) — virou candidato a D1 com título sintético. Recuperado manualmente.
+ *
+ * **Severity "error" (hard block)** — diferente do `has-negative-impact-highlight`
+ * (warning-only): título placeholder chegando ao publicado é sempre um bug de
+ * pipeline, nunca um caso legítimo de "sem candidato melhor" — não há
+ * trade-off editorial aqui.
+ */
+function isPlaceholderTitleHighlight(h: HighlightLike): boolean {
+  const title = h.article?.title ?? h.title;
+  return isPlaceholderHighlightTitle(title);
+}
+
+function checkNoPlaceholderTitleHighlights(editionDir: string): InvariantViolation[] {
+  const path = resolve(editionDir, "_internal", "01-approved.json");
+  if (!existsSync(path)) return []; // covered by approved-exists
+  let data: ApprovedJson;
+  try {
+    data = JSON.parse(readFileSync(path, "utf8")) as ApprovedJson;
+  } catch {
+    return []; // covered by approved-parseable
+  }
+  const highlights = Array.isArray(data.highlights) ? data.highlights : [];
+  const offenders = highlights.filter(isPlaceholderTitleHighlight);
+  if (offenders.length === 0) return [];
+  const urls = offenders.map((h) => h.url ?? h.article?.url ?? "(sem url)").join("; ");
+  return [
+    {
+      rule: "no-placeholder-title-highlights",
+      message:
+        `${offenders.length} destaque(s) com título placeholder (nunca enriquecido) em highlights[] — ` +
+        `URLs: ${urls}. Título sintético (ex: "(newsletter:...)", "(inbox)") não pode virar D1/D2/D3 (#4102). ` +
+        `Resolver o título via og:title/submitted_subject antes de aprovar, ou trocar por outro candidato do pool.`,
+      source_issue: "#4102",
+      severity: "error",
+      file: path,
+    },
+  ];
+}
+
 export const STAGE_1_RULES: InvariantRule[] = [
   {
     id: "approved-has-3-highlights",
@@ -315,6 +367,13 @@ export const STAGE_1_RULES: InvariantRule[] = [
     stage: 1,
     run: checkHasNegativeImpactHighlight,
   },
+  {
+    id: "no-placeholder-title-highlights",
+    description: "highlights[] nunca contém item com título placeholder não-enriquecido (#4102)",
+    source_issue: "#4102",
+    stage: 1,
+    run: checkNoPlaceholderTitleHighlights,
+  },
 ];
 
 export {
@@ -325,4 +384,6 @@ export {
   isUseMelhorHighlight,
   checkHasNegativeImpactHighlight,
   isNegativeImpactHighlight,
+  checkNoPlaceholderTitleHighlights,
+  isPlaceholderTitleHighlight,
 };

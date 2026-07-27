@@ -9,6 +9,7 @@ import {
   mergeMetadata,
   enrichArticles,
   titleFromSubmittedSubject,
+  isInboxArticle,
   NON_INBOX_FALLBACK_FETCH_CAP,
 } from "../scripts/enrich-inbox-articles.ts";
 import { bodyCacheFilename } from "../scripts/lib/url-body-cache.ts";
@@ -958,5 +959,101 @@ describe("NON_INBOX_FALLBACK_FETCH_CAP — constante exportada (#2545)", () => {
   it("cap padrão é um valor positivo e razoável (1–20)", () => {
     assert.ok(NON_INBOX_FALLBACK_FETCH_CAP > 0, "cap > 0");
     assert.ok(NON_INBOX_FALLBACK_FETCH_CAP <= 20, "cap <= 20 (conservador)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4102 — item da edição 260727: URL extraída de newsletter capturada (YC via
+// "Lenny's Newsletter") chegou ao scorer com title="(newsletter:\"Lenny's
+// Newsletter\")" (score 119, o mais alto do pool). Root cause: nem
+// `hasPlaceholderTitle` nem o guard local de `mergeMetadata` reconheciam o
+// padrão `(newsletter:...)` — mesmo com fetch bem-sucedido, o título
+// placeholder nunca era substituído pelo og:title real.
+// ---------------------------------------------------------------------------
+
+describe("#4102: título placeholder de newsletter capturada — (newsletter:\"...\")", () => {
+  it("isInboxArticle reconhece flag newsletter_extracted (mesma garantia de fetch do inbox)", () => {
+    assert.equal(
+      isInboxArticle({
+        url: "https://ycombinator.com/library/x",
+        title: '(newsletter:"Lenny\'s Newsletter")',
+        flag: "newsletter_extracted",
+        source: 'inbox_newsletter:"Lenny\'s Newsletter"',
+      }),
+      true,
+    );
+  });
+
+  it("needsEnrichment identifica título (newsletter:...) como placeholder precisando de enrich", () => {
+    assert.equal(
+      needsEnrichment({
+        url: "https://ycombinator.com/library/x",
+        title: '(newsletter:"Lenny\'s Newsletter")',
+        flag: "newsletter_extracted",
+      }),
+      true,
+    );
+  });
+
+  it("mergeMetadata SUBSTITUI o título (newsletter:...) pelo og:title fetched (CASO REAL 260727)", () => {
+    const out = mergeMetadata(
+      {
+        url: "https://ycombinator.com/library/Pa-tokenmaxxing",
+        title: '(newsletter:"Lenny\'s Newsletter")',
+        flag: "newsletter_extracted",
+      },
+      { title: "Tokenmaxxing: how YC startups think about LLM cost", summary: "Resumo real." },
+    );
+    assert.equal(out.article.title, "Tokenmaxxing: how YC startups think about LLM cost");
+    assert.equal(out.titleUpdated, true);
+    assert.equal(out.article.summary, "Resumo real.");
+    assert.equal(out.summaryUpdated, true);
+  });
+
+  it("enrichArticles fim-a-fim: newsletter_extracted em cache-miss faz fetch INCONDICIONAL (sem bodiesDir) e resolve o título", async () => {
+    const articles = [
+      {
+        url: "https://ycombinator.com/library/x",
+        title: '(newsletter:"Lenny\'s Newsletter")',
+        flag: "newsletter_extracted",
+        source: 'inbox_newsletter:"Lenny\'s Newsletter"',
+      },
+    ];
+    let fetcherCalls = 0;
+    const fetcher = async (): Promise<string | null> => {
+      fetcherCalls++;
+      return `<meta property="og:title" content="Y Combinator: real launch title"/>`;
+    };
+    const { articles: out, outcomes } = await enrichArticles(articles, fetcher);
+    assert.equal(fetcherCalls, 1, "newsletter_extracted deve disparar fetch sem depender de cache/cap bounded");
+    assert.equal(out[0].title, "Y Combinator: real launch title");
+    assert.equal(outcomes[0].enriched, true);
+    assert.equal(outcomes[0].title_updated, true);
+  });
+
+  it("hasPlaceholderTitle (via needsEnrichment) NÃO falso-positiva em título legítimo com parênteses", () => {
+    // Guarda contra over-match: título real que contém parênteses não deve
+    // ser tratado como placeholder de newsletter.
+    assert.equal(
+      needsEnrichment({
+        url: "https://openai.com/blog/x",
+        title: "GPT-5 (versão de pesquisa) chega em outubro",
+        summary: "Resumo já preenchido.",
+      }),
+      false,
+    );
+  });
+
+  it("hasPlaceholderTitle NÃO falso-positiva em título que começa com '(' mas não é o padrão newsletter", () => {
+    // Adversarial: título começa com parêntese (como o padrão real faz),
+    // mas o conteúdo não é "newsletter:" — não deve casar a regex ancorada.
+    assert.equal(
+      needsEnrichment({
+        url: "https://openai.com/blog/y",
+        title: "(Atualização) modelo novo chega em outubro",
+        summary: "Resumo já preenchido.",
+      }),
+      false,
+    );
   });
 });

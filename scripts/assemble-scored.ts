@@ -27,6 +27,7 @@ import { resolve } from "node:path";
 import type { ScorePair } from "./merge-scored-chunks.ts";
 import { parseArgsWithTrueDefault as parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
 import { ensureNegativeImpactHighlight, type FinalistLike } from "./lib/negative-impact-promotion.ts"; // #3916, #3918
+import { demotePlaceholderTitleHighlights, type PlaceholderDemotion } from "./lib/placeholder-title-guard.ts"; // #4102
 
 const ROOT = resolve(import.meta.dirname, "..");
 
@@ -65,6 +66,9 @@ export interface AssembledOutput {
   all_scored: ScorePair[];
   warning_pool_too_small?: boolean;
   negative_impact_promoted?: NegativeImpactPromotion;
+  // #4102: presente só quando o backstop demoveu ≥1 highlight com título
+  // placeholder (ex: "(newsletter:...)", "(inbox)").
+  placeholder_title_demoted?: PlaceholderDemotion[];
 }
 
 /**
@@ -104,6 +108,33 @@ export function applyNegativeImpactBackstop(
   };
 }
 
+/**
+ * #4102: backstop determinístico — nenhum highlight final pode ter título
+ * placeholder (ex: "(newsletter:...)", "(inbox)"). Roda DEPOIS do backstop de
+ * negative-impact (acima), como última palavra: se o candidato placeholder
+ * tiver score alto O SUFICIENTE para também ser o melhor candidato
+ * `negative_impact:true` do pool, `ensureNegativeImpactHighlight` poderia
+ * reintroduzi-lo (ela não sabe filtrar por título) depois de este guard já
+ * ter demovido — rodando por último, este guard sempre tem a palavra final.
+ * Trade-off aceito: na coincidência rara de o único candidato
+ * `negative_impact:true` disponível ser também o ofensor de título, a regra
+ * de negative-impact (#3916/#3918, warning-only, "pool sem candidato digno" é
+ * caso legítimo) cede — nunca o inverso, pois título placeholder sobrevivendo
+ * a highlight é o bug visível e grave que #4102 existe para prevenir.
+ */
+export function applyPlaceholderTitleBackstop(
+  assembled: AssembledOutput,
+  finalists: FinalistLike[],
+): AssembledOutput {
+  const result = demotePlaceholderTitleHighlights(assembled.highlights, finalists);
+  if (result.demotions.length === 0) return assembled;
+  return {
+    ...assembled,
+    highlights: result.highlights,
+    placeholder_title_demoted: result.demotions,
+  };
+}
+
 export function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const selectionPath = args.selection;
@@ -131,6 +162,7 @@ export function main(): void {
     const finalists: FinalistLike[] = Array.isArray(finalistsRaw)
       ? finalistsRaw
       : (finalistsRaw.finalists ?? []);
+
     const before = assembled.negative_impact_promoted;
     assembled = applyNegativeImpactBackstop(assembled, finalists);
     if (!before && assembled.negative_impact_promoted) {
@@ -138,6 +170,21 @@ export function main(): void {
         `[assemble-scored] backstop determinístico promoveu ${assembled.negative_impact_promoted.promoted_url} ` +
           `(demoveu ${assembled.negative_impact_promoted.demoted_url}) — scorer-select não garantiu negative_impact (#3916/#3918)`,
       );
+    }
+
+    // #4102: roda POR ÚLTIMO — ver doc de applyPlaceholderTitleBackstop pra
+    // motivo da ordem (última palavra sobre título placeholder, mesmo que o
+    // backstop de negative-impact acima tenha reintroduzido o ofensor).
+    assembled = applyPlaceholderTitleBackstop(assembled, finalists);
+    if (assembled.placeholder_title_demoted) {
+      for (const d of assembled.placeholder_title_demoted) {
+        console.error(
+          `[assemble-scored] backstop determinístico demoveu highlight com título placeholder: ` +
+            `${d.demoted_url} (${d.demoted_title ?? "(sem título)"})` +
+            (d.promoted_url ? ` — substituído por ${d.promoted_url}` : " — removido, sem substituto disponível") +
+            " (#4102)",
+        );
+      }
     }
   }
 
@@ -149,6 +196,7 @@ export function main(): void {
       runners_up: assembled.runners_up.length,
       all_scored: assembled.all_scored.length,
       ...(assembled.negative_impact_promoted ? { negative_impact_promoted: true } : {}),
+      ...(assembled.placeholder_title_demoted ? { placeholder_title_demoted: assembled.placeholder_title_demoted.length } : {}),
     }) + "\n",
   );
 }
