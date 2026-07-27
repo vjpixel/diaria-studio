@@ -433,8 +433,8 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
 
     // #4053: agrupado por conteúdo — mesma URL exata entre as 2 campanhas
     // colapsa numa linha só (independente de origin/path).
-    const diaria = rows.find((r) => r.content === "https://diar.ia/edicao/260613");
-    assert.ok(diaria, "conteúdo https://diar.ia/edicao/260613 deve aparecer no resultado");
+    const diaria = rows.find((r) => r.content === "260613 (diar.ia)");
+    assert.ok(diaria, "conteúdo 260613 (diar.ia) deve aparecer no resultado");
     assert.equal(diaria!.totalClicks, 35, "deve somar 20+15=35 clicks do mesmo conteúdo");
     assert.equal(diaria!.campaignCount, 2, "deve contar 2 campanhas para o mesmo conteúdo");
   });

@@ -556,6 +556,10 @@ ${monthlyAbcSectionsByDate}
   .links-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
   .links-table th, .links-table td { padding: 4px 6px; border-bottom: 1px solid var(--rule); text-align: left; vertical-align: top; }
   .links-table th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.4px; background: transparent; color: var(--ink); opacity: 0.7; }
+  /* #4053: reset explícito — sem isso, a regra global .table-wrap th:first-child
+     (sticky da 1ª coluna, ver acima) vaza pro <th> "Conteúdo" e deixa só ele
+     com fundo --paper-alt, quebrando a cor uniforme do cabeçalho. */
+  .links-table th:first-child { position: static; background: transparent; }
   .links-table td.link-url { max-width: 420px; word-break: break-all; }
   .links-table td.link-url a { color: var(--brand); text-decoration: none; }
   .links-table td.link-url a:hover { text-decoration: underline; }

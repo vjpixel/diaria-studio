@@ -2667,16 +2667,16 @@ describe("aggregateLinksAcrossCampaigns (#2249)", () => {
 
     // /a?utm_source=x (campanha 90) e /a (campanha 91) são o MESMO conteúdo
     // (UTM removido na normalização de fallback) — colapsam numa linha.
-    const a = rows.find((r) => r.content === "https://diaria.com.br/a")!;
-    assert.ok(a, "conteúdo https://diaria.com.br/a existe (UTM variant colapsada)");
+    const a = rows.find((r) => r.content === "a (diaria.com.br)")!;
+    assert.ok(a, "conteúdo a (diaria.com.br) existe (UTM variant colapsada)");
     assert.equal(a.totalClicks, 12 + 8, "soma a(12, campanha 90) + a(8, campanha 91) = 20");
     assert.equal(a.campaignCount, 2, "2 campanhas contribuíram pro mesmo conteúdo");
     assert.equal(a.variantCount, 2, "2 URLs distintas (com/sem utm_source) colapsadas");
 
     // /b é um conteúdo DIFERENTE de /a — não deve colapsar com ele (fix do
     // over-collapse por origin, #4053).
-    const b = rows.find((r) => r.content === "https://diaria.com.br/b")!;
-    assert.ok(b, "conteúdo https://diaria.com.br/b existe como linha separada de /a");
+    const b = rows.find((r) => r.content === "b (diaria.com.br)")!;
+    assert.ok(b, "conteúdo b (diaria.com.br) existe como linha separada de /a");
     assert.equal(b.totalClicks, 5);
     assert.equal(b.campaignCount, 1);
 

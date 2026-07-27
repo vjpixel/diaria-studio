@@ -87,6 +87,18 @@ describe("classifyLinkContent (#4053)", () => {
     assert.equal(r.variant, undefined);
   });
 
+  test("fallback: rótulo nunca é uma URL crua (sem esquema/query, path vira texto legível)", () => {
+    const r = classifyLinkContent("https://openai.com/blog/gpt-5-launch?utm_source=diaria");
+    assert.equal(r.content, "gpt 5 launch (openai.com)");
+    assert.ok(!/^https?:\/\//.test(r.content), "não deve começar com esquema");
+    assert.ok(!r.content.includes("?"), "não deve conter query string");
+  });
+
+  test("fallback: URL sem path (home de domínio desconhecido) usa só o host como rótulo", () => {
+    const r = classifyLinkContent("https://exemplo-parceiro.com/");
+    assert.equal(r.content, "exemplo-parceiro.com");
+  });
+
   test("/vote fora do host do poll não é classificado como enquete", () => {
     const r = classifyLinkContent("https://example.com/vote?choice=A");
     assert.notEqual(r.content, "É IA? (voto)");
@@ -244,7 +256,7 @@ describe("aggregateLinksAcrossCampaigns agrupa por conteúdo (#4053)", () => {
     for (let i = 1; i < rows.length; i++) {
       assert.ok(rows[i - 1].totalClicks >= rows[i].totalClicks);
     }
-    assert.equal(rows[0].content, "https://anthropic.com/news/claude-4");
+    assert.equal(rows[0].content, "claude 4 (anthropic.com)");
   });
 
   test("link não-classificado cai no fallback sem crashar, sem perder o link", () => {
