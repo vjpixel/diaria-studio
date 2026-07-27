@@ -1,5 +1,6 @@
 import type { BrevoCampaign, BrevoLinksStats } from "./types.ts";
 import { DS_COLORS, DS_FONTS as DSF } from "./ds-tokens.generated.ts";
+import { classifyLinkContent } from "./link-content.ts";
 // NOTE (#2832): import circular com sections-core.ts (esHtml/parseClariceCampaignKey/
 // monthKeyBRT são usados aqui mas definidos lá). Seguro — todos os usos abaixo são
 // dentro de corpos de função chamados em request-time, nunca em top-level do módulo,
@@ -119,20 +120,48 @@ export function getCampaignLinksStats(
 }
 
 /**
+ * Detalhe de uma variante de URL colapsada dentro do mesmo conteúdo — ex: o
+ * split A/B da enquete "É IA?" (#4053). Não entra na ordenação/chave, é só
+ * sinal editorial secundário.
+ */
+export interface LinkVariantDetail {
+  /** Rótulo da variante (ex: choice "A"/"B" da enquete) */
+  label: string;
+  clicks: number;
+}
+
+/**
  * Estrutura de um link processado para exibição no dashboard.
+ *
+ * #4053: a linha agora é indexada por CONTEÚDO (`content`), não por URL —
+ * várias URLs que apontam pro mesmo conteúdo editorial (ex: os 2 links da
+ * enquete "É IA?", ou a mesma página com UTMs diferentes) colapsam numa
+ * única linha com os cliques somados. `url`/`displayUrl` seguem existindo
+ * como a URL REPRESENTATIVA (a de maior clique dentro do grupo) — útil como
+ * link clicável — e `variantCount` denuncia quando há mais de 1 URL por trás
+ * do conteúdo.
  */
 export interface LinkStatRow {
+  /** Rótulo de conteúdo (chave de agrupamento, #4053) */
+  content: string;
+  /** URL representativa (maior clique dentro do grupo de conteúdo) */
   url: string;
-  /** URL truncada para exibição (max 70 chars) */
+  /** URL representativa truncada para exibição (max 70 chars) */
   displayUrl: string;
+  /** Quantas URLs distintas foram colapsadas neste conteúdo */
+  variantCount: number;
   clicks: number;
   /** Participação percentual em relação ao total de clicks editoriais da campanha (links de sistema excluídos) */
   pctOfTotal: string;
+  /** Split por variante (ex: A/B da enquete) — presente só quando o classificador emite `variant` */
+  variants?: LinkVariantDetail[];
 }
 
 /**
  * Parseia `linksStats` (mapa url→clicks) da Brevo, filtra links de sistema,
- * ordena por clicks DESC e retorna array de LinkStatRow com participação %.
+ * agrupa por CONTEÚDO (#4053, via `classifyLinkContent` — não mais por URL
+ * completa) e retorna array de LinkStatRow ordenado por clicks DESC com
+ * participação %.
  *
  * Nota sobre unique-clicks: a API Brevo v3 (`GET /v3/emailCampaigns/{id}?statistics=linksStats`)
  * expõe apenas clicks totais por URL — sem unique-clicks por link. Unique-clicks
@@ -150,19 +179,56 @@ export function parseLinksStats(linksStats: BrevoLinksStats | undefined | null):
     // #2216 finding #3: Number.isFinite guard — `clicks > 0` is NaN-transparent
     // (NaN > 0 is false, but NaN can still propagate if checked differently elsewhere).
     // isFinite covers NaN, Infinity, and -Infinity. Consistent with #2207 NaN class.
-    .filter(([, clicks]) => Number.isFinite(clicks) && clicks > 0)
-    .sort(([, a], [, b]) => b - a);
+    .filter(([, clicks]) => Number.isFinite(clicks) && clicks > 0);
 
   if (entries.length === 0) return [];
 
   const totalClicks = entries.reduce((sum, [, clicks]) => sum + clicks, 0);
 
-  return entries.map(([url, clicks]) => ({
-    url,
-    displayUrl: truncateUrl(url), // #2216 finding #2: extraído helper truncateUrl
-    clicks,
-    pctOfTotal: pct(clicks, totalClicks), // reusa helper pct() (#2183)
-  }));
+  // #4053: agrupa por content — cada bucket acumula as URLs (pra achar a
+  // representativa) e, quando o classificador emite `variant`, o split por
+  // variante (ex: A/B).
+  const buckets = new Map<
+    string,
+    { urlClicks: Map<string, number>; variantClicks: Map<string, number> }
+  >();
+
+  for (const [url, clicks] of entries) {
+    const { content, variant } = classifyLinkContent(url);
+    let bucket = buckets.get(content);
+    if (!bucket) {
+      bucket = { urlClicks: new Map(), variantClicks: new Map() };
+      buckets.set(content, bucket);
+    }
+    bucket.urlClicks.set(url, (bucket.urlClicks.get(url) ?? 0) + clicks);
+    if (variant) {
+      bucket.variantClicks.set(variant, (bucket.variantClicks.get(variant) ?? 0) + clicks);
+    }
+  }
+
+  const rows: LinkStatRow[] = Array.from(buckets.entries()).map(([content, bucket]) => {
+    const urlEntries = Array.from(bucket.urlClicks.entries()).sort(([, a], [, b]) => b - a);
+    const representativeUrl = urlEntries[0][0];
+    const clicks = urlEntries.reduce((sum, [, c]) => sum + c, 0);
+    const variants: LinkVariantDetail[] | undefined =
+      bucket.variantClicks.size > 0
+        ? Array.from(bucket.variantClicks.entries())
+            .map(([label, vClicks]) => ({ label, clicks: vClicks }))
+            .sort((a, b) => b.clicks - a.clicks)
+        : undefined;
+
+    return {
+      content,
+      url: representativeUrl,
+      displayUrl: truncateUrl(representativeUrl), // #2216 finding #2: extraído helper truncateUrl
+      variantCount: urlEntries.length,
+      clicks,
+      pctOfTotal: pct(clicks, totalClicks), // reusa helper pct() (#2183)
+      variants,
+    };
+  });
+
+  return rows.sort((a, b) => b.clicks - a.clicks);
 }
 
 /**
@@ -210,11 +276,23 @@ export function renderLinksSection(
     // Defensive XSS guard: neutralize javascript: and other dangerous schemes (#2183).
     // Only allow http:// and https:// as href values.
     const safeHref = /^https?:\/\//i.test(r.url) ? escHtml(r.url) : "";
+    // #4053: tooltip do link representativo mostra também o split por variante
+    // (ex: A/B da enquete) quando presente — detalhe secundário, não afeta a chave.
+    const variantSuffix = r.variants
+      ? ` (${r.variants.map((v) => `${v.label}: ${v.clicks}`).join(", ")})`
+      : "";
+    const linkTitle = escHtml(`${r.url}${variantSuffix}`);
     const linkContent = safeHref
-      ? `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" title="${escHtml(r.url)}">${escHtml(r.displayUrl)}</a>`
+      ? `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" title="${linkTitle}">${escHtml(r.displayUrl)}</a>`
       : escHtml(r.displayUrl);
+    // #4053: quando >1 URL colapsou no mesmo conteúdo, sinaliza a contagem
+    // ao lado do link representativo (o detalhe completo fica no title=).
+    const variantBadge = r.variantCount > 1
+      ? ` <span class="link-variant-count" title="${linkTitle}">(${r.variantCount} variantes)</span>`
+      : "";
     return `<tr>
-      <td class="link-url">${linkContent}</td>
+      <td class="link-content">${escHtml(r.content)}</td>
+      <td class="link-url">${linkContent}${variantBadge}</td>
       <td class="link-clicks metric">${r.clicks}</td>
       <td class="link-pct">${r.pctOfTotal}</td>
     </tr>`;
@@ -226,15 +304,16 @@ export function renderLinksSection(
   <table class="links-table">
     <thead>
       <tr>
-        <th scope="col" class="link-url-th" title="URL do link clicado (links de sistema e descadastramento excluídos)">Link</th>
-        <th scope="col" title="Total de cliques neste link (unique-clicks por link não disponível na API Brevo v3)">Clicks</th>
-        <th scope="col" title="Participação deste link no total de clicks editoriais (links de sistema excluídos). Denominador = soma dos clicks editoriais desta seção — difere do total da campanha exibido no summary acima.">% do total</th>
+        <th scope="col" class="link-content-th" title="Rótulo de conteúdo editorial — URLs que apontam pro mesmo conteúdo (ex: variantes A/B da enquete É IA?, ou a mesma página com UTMs diferentes) são somadas numa única linha (#4053)">Conteúdo</th>
+        <th scope="col" class="link-url-th" title="URL representativa deste conteúdo (links de sistema e descadastramento excluídos)">Link</th>
+        <th scope="col" title="Total de cliques somados neste conteúdo (unique-clicks por link não disponível na API Brevo v3)">Clicks</th>
+        <th scope="col" title="Participação deste conteúdo no total de clicks editoriais (links de sistema excluídos). Denominador = soma dos clicks editoriais desta seção — difere do total da campanha exibido no summary acima.">% do total</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
   </table>
   </div>
-  <p class="links-note">Clicks totais por link — unique-clicks por link não disponível na API Brevo v3 (apenas agregado em Clicks 🖱️ acima).</p>
+  <p class="links-note">Clicks totais por conteúdo — unique-clicks por link não disponível na API Brevo v3 (apenas agregado em Clicks 🖱️ acima).</p>
 </details>`;
 }
 
@@ -242,26 +321,28 @@ export function renderLinksSection(
 
 /**
  * Linha de link agregado (across campanhas).
+ *
+ * #4053: agrupado por CONTEÚDO (`content`), sucedendo o agrupamento por
+ * ORIGIN do #2263 — origin ainda colapsava acidentalmente A/B da enquete
+ * (mesmo domínio) mas OVER-colapsava tudo sob diar.ia.br numa linha só
+ * (destaques distintos misturados). `url`/`displayUrl` seguem como a URL
+ * representativa (maior clique) dentro do conteúdo.
  */
 export interface AggregatedLinkRow {
+  /** Rótulo de conteúdo (chave de agrupamento, #4053) */
+  content: string;
+  /** URL representativa (maior clique) deste conteúdo */
   url: string;
-  /** URL truncada para exibição (max 70 chars) */
+  /** URL representativa truncada para exibição (max 70 chars) */
   displayUrl: string;
-  /** Soma de clicks deste link entre todas as campanhas do período */
+  /** Quantas URLs distintas foram colapsadas neste conteúdo */
+  variantCount: number;
+  /** Soma de clicks deste conteúdo entre todas as campanhas do período */
   totalClicks: number;
-  /** Número de campanhas onde este link apareceu */
+  /** Número de campanhas onde este CONTEÚDO apareceu (1× por campanha, mesmo com múltiplas URLs/variantes na mesma campanha) */
   campaignCount: number;
 }
 
-/**
- * Agrega links de TODAS as campanhas do período, somando o mesmo URL entre campanhas.
- * Filtra links de sistema usando `isSystemLink` (reutilizado — sem duplicação).
- * Retorna array ordenado por totalClicks DESC.
- * Graceful: sem dados de links → retorna [].
- *
- * @param campaigns - lista de campanhas (todas, com statistics.linksStats populado)
- * @returns array de AggregatedLinkRow ordenado por totalClicks DESC
- */
 /**
  * #2263: extrai o ORIGIN (`scheme://host`, i.e. domínio+subdomínio) de uma URL,
  * descartando path/query/UTM. Ex: `https://clarice.ai/?via=diaria&utm_...` →
@@ -269,6 +350,9 @@ export interface AggregatedLinkRow {
  * — domínio de marca; era poll.diaria.workers.dev) → `https://eia.diar.ia.br`.
  * Fallback (URL não-parseável) → a string original, pra não perder o link nem
  * quebrar o render.
+ *
+ * Mantido exportado por retrocompat (não é mais usado pelo agrupamento
+ * principal desde #4053, que usa `classifyLinkContent`).
  */
 export function urlOrigin(url: string): string {
   try {
@@ -278,51 +362,74 @@ export function urlOrigin(url: string): string {
   }
 }
 
+/**
+ * Agrega links de TODAS as campanhas do período, somando o mesmo CONTEÚDO
+ * entre campanhas (#4053, via `classifyLinkContent` — sucede o agrupamento
+ * por origin do #2263). Filtra links de sistema usando `isSystemLink`
+ * (reutilizado — sem duplicação). Retorna array ordenado por totalClicks DESC.
+ * Graceful: sem dados de links → retorna [].
+ *
+ * @param campaigns - lista de campanhas (todas, com statistics.linksStats populado)
+ * @returns array de AggregatedLinkRow ordenado por totalClicks DESC
+ */
 export function aggregateLinksAcrossCampaigns(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
 ): AggregatedLinkRow[] {
-  // #2263: agrupado por ORIGIN (domínio+subdomínio), não URL completa. Detalhe
-  // por página fica no drill-down por campanha (#2177).
-  const originMap = new Map<string, { totalClicks: number; campaignCount: number }>();
+  const contentMap = new Map<string, { urlClicks: Map<string, number>; campaignCount: number }>();
 
   for (const c of campaigns) {
     // #2216 finding #4: getCampaignLinksStats helper elimina dual-source duplicado
     const linksStats = getCampaignLinksStats(c);
     if (!linksStats) continue;
 
-    // Soma por origin DENTRO desta campanha primeiro, pra contar a campanha UMA
-    // vez por origin (mesmo que ela tenha vários links do mesmo domínio).
-    const perOrigin = new Map<string, number>();
+    // Soma por conteúdo DENTRO desta campanha primeiro, pra contar a campanha
+    // UMA vez por conteúdo (mesmo que ela tenha várias URLs/variantes do
+    // mesmo conteúdo — ex: os 2 links A/B da enquete na mesma edição).
+    const perContent = new Map<string, Map<string, number>>();
     for (const [url, clicks] of Object.entries(linksStats)) {
-      // Filtro de sistema sobre a URL COMPLETA (antes de reduzir a origin).
+      // Filtro de sistema sobre a URL COMPLETA (antes de classificar).
       if (isSystemLink(url)) continue;
       // #2216 finding #3: Number.isFinite guard — `clicks <= 0` é NaN-transparente
       // (NaN <= 0 é false, então NaN passaria o guard e acumularia em totalClicks).
       if (!Number.isFinite(clicks) || clicks <= 0) continue;
-      const origin = urlOrigin(url);
-      perOrigin.set(origin, (perOrigin.get(origin) ?? 0) + clicks);
+      const { content } = classifyLinkContent(url);
+      let urlClicks = perContent.get(content);
+      if (!urlClicks) {
+        urlClicks = new Map();
+        perContent.set(content, urlClicks);
+      }
+      urlClicks.set(url, (urlClicks.get(url) ?? 0) + clicks);
     }
 
-    for (const [origin, clicks] of perOrigin) {
-      const existing = originMap.get(origin);
-      if (existing) {
-        existing.totalClicks += clicks;
-        existing.campaignCount += 1;
-      } else {
-        originMap.set(origin, { totalClicks: clicks, campaignCount: 1 });
+    for (const [content, urlClicks] of perContent) {
+      let bucket = contentMap.get(content);
+      if (!bucket) {
+        bucket = { urlClicks: new Map(), campaignCount: 0 };
+        contentMap.set(content, bucket);
       }
+      for (const [url, clicks] of urlClicks) {
+        bucket.urlClicks.set(url, (bucket.urlClicks.get(url) ?? 0) + clicks);
+      }
+      bucket.campaignCount += 1; // 1× por campanha, mesmo com múltiplas URLs do mesmo conteúdo
     }
   }
 
-  if (originMap.size === 0) return [];
+  if (contentMap.size === 0) return [];
 
-  return Array.from(originMap.entries())
-    .map(([origin, { totalClicks, campaignCount }]) => ({
-      url: origin,
-      displayUrl: origin, // #2263: origin já é curto — sem truncateUrl
-      totalClicks,
-      campaignCount,
-    }))
+  return Array.from(contentMap.entries())
+    .map(([content, { urlClicks, campaignCount }]) => {
+      const urlEntries = Array.from(urlClicks.entries()).sort(([, a], [, b]) => b - a);
+      const representativeUrl = urlEntries[0][0];
+      const totalClicks = urlEntries.reduce((sum, [, c]) => sum + c, 0);
+      return {
+        content,
+        url: representativeUrl,
+        displayUrl: truncateUrl(representativeUrl),
+        variantCount: urlEntries.length,
+        totalClicks,
+        campaignCount,
+      };
+    })
     .sort((a, b) => b.totalClicks - a.totalClicks);
 }
 
@@ -371,10 +478,11 @@ export function deriveLinksSectionTitle(
  * quanto no `<details>` "Glossário das colunas". Exportado pra teste unitário.
  */
 export const AGGREGATED_LINKS_COLUMNS: Array<{ label: string; tooltip: string }> = [
-  { label: "Link", tooltip: "URL do link (links de sistema e descadastramento excluídos)" },
+  { label: "Conteúdo", tooltip: "Rótulo de conteúdo editorial — URLs que apontam pro mesmo conteúdo (ex: variantes A/B da enquete É IA?, ou a mesma página com UTMs diferentes) são somadas numa única linha (#4053)" },
+  { label: "Link", tooltip: "URL representativa deste conteúdo (links de sistema e descadastramento excluídos)" },
   { label: "Clicks", tooltip: "Total de cliques somados entre todos os envios do período" },
   { label: "%", tooltip: "Participação percentual no total de clicks editoriais do período" },
-  { label: "Envios", tooltip: "Número de envios onde este link apareceu" },
+  { label: "Envios", tooltip: "Número de envios onde este CONTEÚDO apareceu (1× por envio, mesmo com múltiplas variantes de URL no mesmo envio)" },
 ];
 
 /**
@@ -425,11 +533,15 @@ export function renderAggregatedLinksSection(
 
   const tableRows = rows.map((r) => {
     const safeHref = /^https?:\/\//i.test(r.url) ? escHtml(r.url) : "";
+    // #4053: tooltip do link representativo denuncia quantas URLs colapsaram no conteúdo.
+    const variantSuffix = r.variantCount > 1 ? ` (${r.variantCount} variantes)` : "";
+    const linkTitle = escHtml(`${r.url}${variantSuffix}`);
     const linkContent = safeHref
-      ? `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" title="${escHtml(r.url)}">${escHtml(r.displayUrl)}</a>`
+      ? `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" title="${linkTitle}">${escHtml(r.displayUrl)}</a>`
       : escHtml(r.displayUrl);
     const pctShare = pct(r.totalClicks, totalClicks);
     return `<tr>
+      <td class="link-content">${escHtml(r.content)}</td>
       <td class="link-url">${linkContent}</td>
       <td class="link-clicks metric">${r.totalClicks}</td>
       <td class="link-pct">${pctShare}</td>
@@ -440,21 +552,21 @@ export function renderAggregatedLinksSection(
   return `
 <section class="phase2-section" id="links-agregados">
   <h2 class="section-title">${sectionTitle}</h2>
-  <p class="section-note">${rows.length} links editoriais · ${totalClicks} clicks totais (soma across envios). Links de sistema excluídos.</p>
+  <p class="section-note">${rows.length} conteúdos editoriais · ${totalClicks} clicks totais (soma across envios). Links de sistema excluídos.</p>
   ${renderColumnGlossary("links-agregados", AGGREGATED_LINKS_COLUMNS)}
   <div class="table-wrap">
   <table class="links-table">
     <thead>
       <tr>
         ${AGGREGATED_LINKS_COLUMNS.map(
-          (c, i) => `<th scope="col"${i === 0 ? ' class="link-url-th"' : ""} title="${escHtml(c.tooltip)}">${c.label}</th>`,
+          (c, i) => `<th scope="col"${i === 0 ? ' class="link-content-th"' : i === 1 ? ' class="link-url-th"' : ""} title="${escHtml(c.tooltip)}">${c.label}</th>`,
         ).join("\n")}
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>
   </table>
   </div>
-  <p class="links-note">Clicks totais por link — unique-clicks por link não disponível na API Brevo v3.</p>
+  <p class="links-note">Clicks totais por conteúdo — unique-clicks por link não disponível na API Brevo v3.</p>
 </section>`;
 }
 

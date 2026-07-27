@@ -431,11 +431,12 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
     };
     const rows = aggregateLinksAcrossCampaigns([campaign1, campaign2]);
 
-    // #2263: agrupado por origin — diar.ia/edicao/260613 → https://diar.ia
-    const diaria = rows.find((r) => r.url === "https://diar.ia");
-    assert.ok(diaria, "origin diar.ia deve aparecer no resultado");
-    assert.equal(diaria!.totalClicks, 35, "deve somar 20+15=35 clicks do mesmo origin");
-    assert.equal(diaria!.campaignCount, 2, "deve contar 2 campanhas para o mesmo origin");
+    // #4053: agrupado por conteúdo — mesma URL exata entre as 2 campanhas
+    // colapsa numa linha só (independente de origin/path).
+    const diaria = rows.find((r) => r.content === "https://diar.ia/edicao/260613");
+    assert.ok(diaria, "conteúdo https://diar.ia/edicao/260613 deve aparecer no resultado");
+    assert.equal(diaria!.totalClicks, 35, "deve somar 20+15=35 clicks do mesmo conteúdo");
+    assert.equal(diaria!.campaignCount, 2, "deve contar 2 campanhas para o mesmo conteúdo");
   });
 
   test("filtra links de sistema reutilizando isSystemLink (sem duplicar lógica)", () => {
@@ -454,9 +455,9 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
       "unsubscribe deve ser filtrado por isSystemLink");
     assert.ok(!urls.includes("https://example.com/email/preferences?token=xyz"),
       "preferences deve ser filtrado por isSystemLink");
-    // Links editoriais SIM (por origin — #2263)
-    assert.ok(urls.includes("https://diar.ia"), "origin editorial deve aparecer");
-    assert.ok(urls.includes("https://openai.com"), "origin editorial deve aparecer");
+    // Links editoriais SIM (por conteúdo — #4053)
+    assert.ok(urls.includes("https://diar.ia/edicao/260613"), "conteúdo editorial deve aparecer");
+    assert.ok(urls.includes("https://openai.com/blog/gpt-5"), "conteúdo editorial deve aparecer");
   });
 
   test("ordena por totalClicks DESC", () => {
@@ -466,9 +467,9 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
       assert.ok(rows[i - 1].totalClicks >= rows[i].totalClicks,
         `row ${i - 1} (${rows[i - 1].totalClicks}) deve ter totalClicks ≥ row ${i} (${rows[i].totalClicks})`);
     }
-    // O origin com mais clicks (42) deve ser primeiro (#2263)
-    assert.equal(rows[0].url, "https://diar.ia",
-      "origin com mais clicks (42) deve ser primeiro");
+    // O conteúdo com mais clicks (42) deve ser primeiro (#4053)
+    assert.equal(rows[0].url, "https://diar.ia/edicao/260613",
+      "conteúdo com mais clicks (42) deve ser primeiro");
   });
 
   test("graceful: sem dados → retorna []", () => {
@@ -490,13 +491,14 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
       },
     };
     const rows = aggregateLinksAcrossCampaigns([campaign]);
-    // #2263: /ok e /zero colapsam em https://diar.ia; /zero (0 clicks) é excluído
+    // #4053: /ok e /zero são conteúdos DISTINTOS (paths diferentes); /zero
+    // (0 clicks) é excluído ANTES do agrupamento, então nunca chega a formar linha.
     assert.equal(rows.length, 1, "link com 0 clicks deve ser excluído");
-    assert.equal(rows[0].url, "https://diar.ia");
+    assert.equal(rows[0].url, "https://diar.ia/ok");
     assert.equal(rows[0].totalClicks, 5, "só o /ok (5) conta");
   });
 
-  test("displayUrl é o origin (sem path/query, sem truncamento) (#2263)", () => {
+  test("displayUrl reflete a URL normalizada representativa (UTM removido), sem truncar URLs curtas (#4053)", () => {
     const longUrl = "https://example.com/" + "a".repeat(80) + "?utm_source=x";
     const campaign = {
       ...baseCampaign,
@@ -507,8 +509,11 @@ describe("#2212: aggregateLinksAcrossCampaigns", () => {
     };
     const rows = aggregateLinksAcrossCampaigns([campaign]);
     assert.equal(rows.length, 1);
-    assert.equal(rows[0].url, "https://example.com", "url reduzida ao origin");
-    assert.equal(rows[0].displayUrl, "https://example.com", "displayUrl = origin (sem path/truncamento)");
+    // #4053: fallback normaliza (remove utm_source) pra CHAVE de conteúdo, mas a
+    // URL REPRESENTATIVA exibida é a URL original (com UTM) — só o rótulo de
+    // agrupamento é normalizado, não o link clicável exibido.
+    assert.equal(rows[0].url, longUrl, "url representativa preserva a URL original");
+    assert.ok(rows[0].displayUrl.length <= 70, "displayUrl truncada a 70 chars (URL longa)");
   });
 
   test("campaignCount correto: link em 1 campanha vs 2 campanhas", () => {
@@ -595,9 +600,10 @@ describe("#2212: renderAggregatedLinksSection", () => {
   test("links editoriais aparecem na tabela", () => {
     const rows = makeRows();
     const html = renderAggregatedLinksSection(rows);
-    assert.match(html, /https:\/\/diar\.ia\b/, "origin editorial deve aparecer");
-    assert.match(html, /https:\/\/openai\.com\b/, "origin editorial deve aparecer");
-    assert.doesNotMatch(html, /edicao\/260613/, "path NÃO deve aparecer (só origin)");
+    // #4053: agrupado por CONTEÚDO — a URL completa (com path) aparece, não
+    // só o origin (o over-collapse do #2263 é justamente o que este fix reverte).
+    assert.match(html, /https:\/\/diar\.ia\/edicao\/260613/, "conteúdo editorial completo deve aparecer");
+    assert.match(html, /https:\/\/openai\.com\/blog\/gpt-5/, "conteúdo editorial completo deve aparecer");
   });
 
   test("links de sistema NÃO aparecem na tabela", () => {
@@ -612,7 +618,7 @@ describe("#2212: renderAggregatedLinksSection", () => {
   test("links ordenados por clicks DESC (maior primeiro)", () => {
     const rows = makeRows();
     const html = renderAggregatedLinksSection(rows);
-    const pos42 = html.indexOf("https://diar.ia"); // 42 clicks (origin #2263)
+    const pos42 = html.indexOf("https://diar.ia"); // 42 clicks (conteúdo, #4053)
     const pos8 = html.indexOf("techcrunch.com");          // 8 clicks
     assert.ok(pos42 > -1, "diar.ia (42 clicks) deve aparecer");
     assert.ok(pos8 > -1, "techcrunch (8 clicks) deve aparecer");
@@ -633,8 +639,9 @@ describe("#2212: renderAggregatedLinksSection", () => {
   });
 
   test("click count e número de campanhas aparecem nas células", () => {
-    const row1 = { url: "https://test.com", displayUrl: "https://test.com", totalClicks: 42, campaignCount: 3 };
-    const row2 = { url: "https://other.com", displayUrl: "https://other.com", totalClicks: 10, campaignCount: 1 };
+    // #4053: AggregatedLinkRow ganhou `content` (chave de agrupamento) e `variantCount`.
+    const row1 = { content: "https://test.com", url: "https://test.com", displayUrl: "https://test.com", variantCount: 1, totalClicks: 42, campaignCount: 3 };
+    const row2 = { content: "https://other.com", url: "https://other.com", displayUrl: "https://other.com", variantCount: 1, totalClicks: 10, campaignCount: 1 };
     const html = renderAggregatedLinksSection([row1, row2]);
     assert.match(html, /<td[^>]*>42<\/td>/, "deve mostrar 42 clicks");
     assert.match(html, /<td>3<\/td>/, "deve mostrar 3 campanhas");
@@ -642,8 +649,8 @@ describe("#2212: renderAggregatedLinksSection", () => {
 
   test("% do total correto (participação relativa)", () => {
     // 42 de (42+10) = 42/52 ≈ 80.8%
-    const row1 = { url: "https://test.com", displayUrl: "https://test.com", totalClicks: 42, campaignCount: 1 };
-    const row2 = { url: "https://other.com", displayUrl: "https://other.com", totalClicks: 10, campaignCount: 1 };
+    const row1 = { content: "https://test.com", url: "https://test.com", displayUrl: "https://test.com", variantCount: 1, totalClicks: 42, campaignCount: 1 };
+    const row2 = { content: "https://other.com", url: "https://other.com", displayUrl: "https://other.com", variantCount: 1, totalClicks: 10, campaignCount: 1 };
     const html = renderAggregatedLinksSection([row1, row2]);
     assert.match(html, /80\.[0-9]%/, "deve mostrar ~80.8% de participação para o link com 42 clicks");
   });
