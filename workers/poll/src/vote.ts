@@ -195,11 +195,14 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // via crypto.randomUUID() (jogar.ts) virando o pseudo-email
   // `{uuid}@web.eia.diaria.local` (anonEmailForToken). O check acima
   // (isValidVoteEmailFormat) só valida a FORMA genérica `local@domínio.tld` —
-  // não distingue esse token legítimo de um local-part arbitrário forjado por
-  // um HTTP client externo (bot/scanner) apontando pro mesmo domínio
-  // reservado. Achado #3976: entrada fantasma "verify1840428@web.eia.diaria.local"
-  // no leaderboard público — sem este guard, qualquer client pode votar com
-  // qualquer token e poluir o ranking.
+  // não distingue esse token legítimo de um local-part arbitrário apontando
+  // pro mesmo domínio reservado, venha ele de onde vier. Achado #3976:
+  // entrada fantasma "verify1840428@web.eia.diaria.local" no leaderboard
+  // público — que era um e-mail de TESTE da própria sessão de verificação, e
+  // não um bot/scanner externo como o corpo daquela issue registrou
+  // (atribuição corrigida pelo editor em 260726; ver comentário no #3976).
+  // O guard vale pela SUPERFÍCIE, não pelo incidente: sem ele, qualquer
+  // client pode votar com qualquer token e poluir o ranking público.
   //
   // #4011: o #3976 original só aplicava este guard quando `brand === "web"` —
   // um e-mail forjado sob o domínio reservado `@web.eia.diaria.local` era
