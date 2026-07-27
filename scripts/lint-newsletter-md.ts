@@ -114,6 +114,11 @@ import {
   type WhyMattersLengthError,
   type WhyMattersLengthReport,
 } from "./lib/lint-checks/why-matters-length.ts"; // #3993
+import {
+  checkNoXmlArtifacts,
+  type NoXmlArtifactsError,
+  type NoXmlArtifactsReport,
+} from "./lib/lint-checks/no-xml-artifacts.ts"; // #4077
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -234,6 +239,13 @@ export {
   type WhyMattersLengthError,
   type WhyMattersLengthReport,
 } from "./lib/lint-checks/why-matters-length.ts"; // #3993
+export {
+  checkNoXmlArtifacts,
+  detectTrailingToolCallArtifact,
+  stripTrailingToolCallArtifact,
+  type NoXmlArtifactsError,
+  type NoXmlArtifactsReport,
+} from "./lib/lint-checks/no-xml-artifacts.ts"; // #4077
 export {
   lintNewsletter,
   extractUrlsBySection,
@@ -1312,6 +1324,37 @@ function main(): void {
     return;
   }
 
+  // Modo --check no-xml-artifacts (#4077) — tag de tool-call crua
+  // (`</content>`, `</invoke>`, `</function_calls>`) grudada no FIM do
+  // documento, sintoma de payload de tool-call vazando num fluxo assistido
+  // (ex: chat drawer do Studio). GATE-BLOCKING: esse texto iria direto pro
+  // e-mail publicado, e nenhum outro lint olha pro fim cru do arquivo.
+  if (args.check === "no-xml-artifacts") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check no-xml-artifacts --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const md = readFileSync(mdPath, "utf8");
+    const result = checkNoXmlArtifacts(md);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(`\n❌ no-xml-artifacts: tag de tool-call grudada no fim do arquivo:`);
+      for (const e of result.errors) {
+        console.error(`  ${JSON.stringify(e.artifact)}`);
+      }
+      console.error(
+        `\nFix: remova o trecho de tag XML solta do fim de ${args.md} — nunca é markdown editorial legítimo (ver #4077).`,
+      );
+      process.exit(1);
+    }
+    return;
+  }
+
   if (!args.md || !args.approved) {
     console.error(
       "Uso: lint-newsletter-md.ts --md <md-path> --approved <01-approved.json-path>\n" +
@@ -1340,7 +1383,8 @@ function main(): void {
         "  ou: lint-newsletter-md.ts --check callout-placement --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check stacked-intro-callouts --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check orphan-box-in-gap --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check aprofunde-format --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check aprofunde-format --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check no-xml-artifacts --md <md-path>",
     );
     process.exit(2);
   }

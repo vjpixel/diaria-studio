@@ -235,6 +235,44 @@ describe("saveReviewFile — conflito de escrita concorrente (#3729 warn-before-
     assert.equal(result.conflict, undefined);
   });
 
+  // #4077: guard contra tag de tool-call crua grudada no fim do conteúdo
+  // recebido via PUT (caso real, edição 260727 — 21 bytes de
+  // `</content>\n</invoke>` sobreviveram até o gate do Stage 4).
+  it("#4077: strippa artefato </content></invoke> no fim do conteúdo antes de escrever em disco", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "original", "utf8");
+    const corrupted =
+      "Agora que chegou ao final da edição, siga a diar.ia.br no Instagram.\n</content>\n</invoke>";
+    const result = saveReviewFile(root, "260716", "reviewed", corrupted);
+    assert.equal(result.ok, true);
+    assert.ok(result.sanitizedArtifact, "deveria reportar o trecho removido");
+    assert.match(result.sanitizedArtifact!, /<\/content>/);
+    assert.match(result.sanitizedArtifact!, /<\/invoke>/);
+    const onDisk = readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8");
+    assert.equal(
+      onDisk,
+      "Agora que chegou ao final da edição, siga a diar.ia.br no Instagram.",
+    );
+    assert.doesNotMatch(onDisk, /<\/content>|<\/invoke>/);
+  });
+
+  it("#4077: conteúdo markdown normal (sem artefato) é gravado intacto, sem sanitizedArtifact", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "original", "utf8");
+    const clean = "Conteúdo editorial normal, terminando em ponto final.";
+    const result = saveReviewFile(root, "260716", "reviewed", clean);
+    assert.equal(result.ok, true);
+    assert.equal(result.sanitizedArtifact, undefined);
+    assert.equal(readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8"), clean);
+  });
+
+  it("#4077: sanitiza também quando o conteúdo tem só </function_calls> solta no fim", () => {
+    writeFileSync(resolve(editionDir, "02-reviewed.md"), "original", "utf8");
+    const corrupted = "Conteúdo editorial normal.\n</function_calls>";
+    const result = saveReviewFile(root, "260716", "reviewed", corrupted);
+    assert.equal(result.ok, true);
+    assert.ok(result.sanitizedArtifact);
+    assert.equal(readFileSync(resolve(editionDir, "02-reviewed.md"), "utf8"), "Conteúdo editorial normal.");
+  });
+
   it("expectedModifiedAt:null (arquivo ainda não existia no load) detecta conflito quando o pipeline CRIA o arquivo nesse meio tempo", () => {
     // Cenário: editor abre o painel numa edição onde 02-reviewed.md ainda não
     // existe (Stage 2 não terminou) — GET retorna modifiedAt:null. Nesse meio
@@ -427,6 +465,23 @@ describe("runReviewLints (#3559)", () => {
     const report = runReviewLints(root, editionDir, "reviewed", TWO_DESTAQUES_MD);
     assert.ok(report.checks.some((c) => c.id === "section-counts"));
     assert.ok(report.checks.some((c) => c.id === "url-bucket"));
+  });
+
+  it("#4077: reviewed inclui no-xml-artifacts, e acusa conteúdo terminando em tag de tool-call crua", () => {
+    const corrupted = `${TWO_DESTAQUES_MD}\n</content>\n</invoke>`;
+    const report = runReviewLints(root, editionDir, "reviewed", corrupted);
+    const check = report.checks.find((c) => c.id === "no-xml-artifacts");
+    assert.ok(check, "check no-xml-artifacts deveria estar presente no conjunto de reviewed");
+    assert.equal(check!.blocking, true);
+    assert.equal(check!.ok, false);
+    assert.equal(report.ok, false);
+  });
+
+  it("#4077: no-xml-artifacts passa em markdown normal (sem artefato) dentro do conjunto reviewed", () => {
+    const report = runReviewLints(root, editionDir, "reviewed", TWO_DESTAQUES_MD);
+    const check = report.checks.find((c) => c.id === "no-xml-artifacts");
+    assert.ok(check);
+    assert.equal(check!.ok, true);
   });
 
   it("reviewed: check crashado (approved malformado não deveria crashar, mas simulamos md vazio) não derruba o batch", () => {
