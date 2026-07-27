@@ -73,6 +73,21 @@
     font-size: 18px; background: var(--card); }
   .highlight { font-size: 15px; font-style: italic; color: var(--ink); margin: 16px 0 0; }
 
+  .cta-subscribe { margin: 0; padding: 22px 26px; background: var(--card); border: 1px solid var(--rule); border-radius: 2px; max-width: 480px; }
+  .cta-subscribe.cta-subscribe--hero { margin: 28px 0 0; }
+  .cta-subscribe.cta-subscribe--end { margin: 48px auto 0; text-align: left; }
+  .cta-subscribe .cta-text { font-family: Georgia, 'Times New Roman', serif; font-size: 18px; line-height: 1.4; margin: 0 0 14px; color: var(--ink); }
+  .cta-subscribe .cta-field { display: block; margin: 0 0 10px; font-size: 13px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  .cta-subscribe .cta-field input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 2px; font-size: 15px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; color: var(--ink); background: var(--paper); }
+  .cta-subscribe .cta-optin { display: block; margin: 4px 0 14px; font-size: 13px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; line-height: 1.4; }
+  .cta-subscribe .cta-optin input { margin-right: 8px; }
+  .cta-subscribe .cta-hp { position: absolute !important; left: -9999px !important; width: 1px; height: 1px; overflow: hidden; }
+  .cta-subscribe .cta-submit { display: inline-block; padding: 11px 22px; background: var(--teal); color: #fff; border: none; border-radius: 2px; font-weight: 700; cursor: pointer; font-size: 15px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  .cta-subscribe .cta-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+  .cta-subscribe .cta-status { margin: 10px 0 0; font-size: 13px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  .cta-subscribe .cta-status.ok { color: var(--teal); }
+  .cta-subscribe .cta-status.err { color: var(--ink); font-weight: 600; }
+
   footer { border-top: 1px solid var(--rule); }
   footer .wrap { padding: 24px 28px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 11px; letter-spacing: 0.1em;
     text-transform: uppercase; color: var(--ink); }
@@ -91,6 +106,16 @@
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
       <p class="lede">Uma seleção dos melhores livros sobre inteligência artificial, reunida a partir de mais de 10 listas e ranqueada por um critério subjetivo (prêmios do livro ou do autor) e um objetivo (nota na Amazon). Quando há edição em português, é ela que aparece.</p>
       <p class="lede">Os links são de afiliado — comprando por eles, você apoia a Diar.ia sem pagar nada a mais.</p>
+      <div class="cta-subscribe cta-subscribe--hero">
+        <form id="livros-cta-hero" class="cta-subscribe-form" data-source="livros-hero" novalidate>
+          <p class="cta-text">Gostou da curadoria? Assine a Diar.ia e receba tutoriais e notícias de IA todo dia, sem enrolação.</p>
+          <label class="cta-field"><input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" maxlength="254" required></label>
+          <div class="cta-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
+          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter gratuita de IA, 5 minutos por dia, seg-sex.</label>
+          <button type="submit" class="cta-submit">Assinar a Diar.ia (grátis)</button>
+          <p class="cta-status" role="status" aria-live="polite" hidden></p>
+        </form>
+      </div>
     </div>
   </header>
   <div class="filters">
@@ -402,9 +427,19 @@
       </article>
         <p class="empty" id="empty" style="display:none">Nenhum livro com esses filtros.</p>
       </div>
+      <div class="cta-subscribe cta-subscribe--end">
+        <form id="livros-cta-footer" class="cta-subscribe-form" data-source="livros-footer" novalidate>
+          <p class="cta-text">Chegou até aqui? Assine a Diar.ia — 5 minutos por dia com o que importa em IA.</p>
+          <label class="cta-field"><input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" maxlength="254" required></label>
+          <div class="cta-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
+          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter gratuita de IA, 5 minutos por dia, seg-sex.</label>
+          <button type="submit" class="cta-submit">Assinar a Diar.ia (grátis)</button>
+          <p class="cta-status" role="status" aria-live="polite" hidden></p>
+        </form>
+      </div>
     </div>
   </main>
-  <footer><div class="wrap"><p class="foot-nav"><a href="https://diar.ia.br">Diar.ia</a> · <a href="https://cursos.diar.ia.br/">Cursos</a> · <a href="https://livros.diar.ia.br/">Livros</a> · <a href="https://eia.diar.ia.br/leaderboard">É IA?</a></p><p class="foot-credit">diar.ia.br — curadoria de livros sobre IA</p></div></footer>
+  <footer><div class="wrap"><p class="foot-nav"><a href="https://diar.ia.br?utm_source=livros&amp;utm_medium=footer-nav">Diar.ia</a> · <a href="https://cursos.diar.ia.br/">Cursos</a> · <a href="https://livros.diar.ia.br/">Livros</a> · <a href="https://eia.diar.ia.br/leaderboard">É IA?</a></p><p class="foot-credit">diar.ia.br — curadoria de livros sobre IA</p></div></footer>
 <script>
   (function () {
     // #3118 item 6: mapa slug→label completo — data-themes/option value agora
@@ -454,5 +489,67 @@
     apply();
   })();
 </script>
+<script>
+  (function () {
+    var forms = Array.prototype.slice.call(document.querySelectorAll(".cta-subscribe-form"));
+    forms.forEach(function (form) {
+      var status = form.querySelector(".cta-status");
+      function setStatus(msg, ok) {
+        if (!status) return;
+        status.hidden = false;
+        status.textContent = msg;
+        status.className = "cta-status" + (ok ? " ok" : " err");
+      }
+      function val(sel) { var el = form.querySelector(sel); return el ? el.value : ""; }
+      form.addEventListener("submit", function (ev) {
+        ev.preventDefault();
+        var optin = form.querySelector('input[name="optin"]');
+        if (!optin || !optin.checked) { setStatus("Marque a caixinha de consentimento pra assinar.", false); return; }
+        var email = (val('input[name="email"]') || "").trim();
+        if (!email || email.indexOf("@") < 0) { setStatus("Digite um e-mail válido.", false); return; }
+        var btn = form.querySelector('button[type="submit"]');
+        if (btn) btn.disabled = true;
+        setStatus("Enviando…", true);
+        var payload = {
+          email: email,
+          optin: true,
+          website: val('input[name="website"]') || "",
+          source: form.getAttribute("data-source") || ""
+        };
+        if (typeof window.fetch !== "function") {
+          setStatus("Seu navegador não suporta o cadastro direto — visite diar.ia.br pra assinar.", false);
+          if (btn) btn.disabled = false;
+          return;
+        }
+        window.fetch("https://eia.diar.ia.br/jogar/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        }).then(function (res) {
+          return res.json().then(function (d) { return { status: res.status, body: d }; }, function () { return { status: res.status, body: null }; });
+        }).then(function (r) {
+          if (r.status === 200 && r.body && r.body.ok) {
+            form.reset();
+            setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
+            var fields = form.querySelectorAll("input, button");
+            for (var i = 0; i < fields.length; i++) fields[i].disabled = true;
+          } else if (r.status === 429) {
+            setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
+            if (btn) btn.disabled = false;
+          } else if (r.status === 503) {
+            setStatus("Cadastro direto indisponível agora — visite diar.ia.br pra assinar.", false);
+            if (btn) btn.disabled = false;
+          } else {
+            setStatus("Não deu pra assinar agora. Confira o e-mail e tente de novo.", false);
+            if (btn) btn.disabled = false;
+          }
+        }).catch(function () {
+          setStatus("Erro de conexão. Tente de novo.", false);
+          if (btn) btn.disabled = false;
+        });
+      });
+    });
+  })();
+  </script>
 </body>
 </html>
