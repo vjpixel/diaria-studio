@@ -1147,7 +1147,7 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
   // negativo. Padrão consistente.
   const corsHeaders = { "Access-Control-Allow-Origin": "*" };
 
-  // #4111: `decodeURIComponent` lança URIError em `%` malformado (`/img/%`).
+  // #4112: `decodeURIComponent` lança URIError em `%` malformado (`/img/%`).
   // Sem este guard, uma rota pública devolvia 500 pra input trivial.
   let key: string;
   try {
@@ -1159,7 +1159,7 @@ export async function handleImage(path: string, env: Env): Promise<Response> {
     return new Response("not found", { status: 404, headers: corsHeaders });
   }
 
-  // #4111 (P0, achado do review 260727 e CONFIRMADO em produção): sem esta
+  // #4112 (P0, achado do review 260727 e CONFIRMADO em produção): sem esta
   // allowlist, `/img/{key}` era um leitor arbitrário do KV INTEIRO — a chave
   // vinha crua da URL direto pro `get`. Em produção dava, sem autenticação
   // nenhuma e com `Access-Control-Allow-Origin: *`:
@@ -1329,7 +1329,12 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // #3595: skip-and-credit — reporta voted/correct por edição pro token
     // consultante (mesma chave `vote:{edition}:{email}` de vote.ts). `env`
     // CRU (mesmo racional do resto de /jogar*, ver rationale em jogar.ts).
-    if (path === "/jogar/seq-state" && request.method === "GET") return handleJogarSeqState(url, env);
+    // #4115: 3º arg `request` — habilita a identidade pós-gate (cookie de
+    // sessão) na leitura do estado de votos, espelhando o override que
+    // `handleVote` já aplica na ESCRITA desde o #4054. Sem isso o endpoint
+    // lia só a chave do token anônimo e reportava "não votado" pra tudo que
+    // o jogador votou depois de se identificar no gate.
+    if (path === "/jogar/seq-state" && request.method === "GET") return handleJogarSeqState(url, env, request);
     // #3580: cadastro inline pós-jogo — POST público que cria assinante direto
     // na Beehiiv. `env` CRU (o rate-limit usa `env.POLL` sem prefixo de brand;
     // a assinatura é do brand `web`). Anti-abuso (honeypot + rate-limit +
