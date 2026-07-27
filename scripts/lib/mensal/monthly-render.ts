@@ -1301,13 +1301,25 @@ export function draftToEmail(
       continue;
     }
 
-    // LIVRO: box de indicação de UM livro (bege), kicker "Livro" e SEM título
-    // interno (noSubtitle) — o título do livro em negrito-com-link é o próprio
-    // âncora visual. Sem imagem. (#3581: kicker perdeu o sufixo "do mês", que
-    // era redundante pro leitor; label longo "LIVRO DO MÊS" segue aceito na
-    // detecção por back-compat com edições/drafts em voo.)
+    // LIVRO: box de indicação de UM livro (bege). Kicker = CATEGORIA da seção
+    // ("Livro do mês"); título interno = primeira linha do bloco
+    // ("Recomendação de leitura"). Decisão do editor 260727 — reverte o #3581,
+    // que havia tirado o sufixo "do mês" E o título interno por redundância:
+    // eram redundantes quando kicker e título diziam a mesma coisa, deixaram de
+    // ser quando passaram a dizer coisas diferentes (categoria vs. natureza do
+    // box). Sem imagem. Label curto e longo ambos aceitos na detecção.
+    // Back-compat: blocos ESCRITOS NO FORMATO ANTIGO abrem direto no parágrafo
+    // do livro (`[**Título**](url), de Autor.`). Consumir essa linha como
+    // título deformaria a caixa — o título do livro viraria <h3> e o corpo
+    // perderia o 1º parágrafo. Detecta pelo `[` inicial (parágrafo com link) e
+    // cai no comportamento pré-260727 (sem título interno) nesse caso, sem
+    // exigir migração dos snippets antigos.
     if (label === "LIVRO" || label === "LIVRO DO MÊS") {
-      bodyParts.push(renderClariceBox(chunk, "Livro", undefined, true));
+      const linhas = chunk.split("\n");
+      let k = 1;
+      while (k < linhas.length && !linhas[k].trim()) k++;
+      const abreComParagrafoDeLink = (linhas[k] ?? "").trim().startsWith("[");
+      bodyParts.push(renderClariceBox(chunk, "Livro do mês", undefined, abreComParagrafoDeLink));
       continue;
     }
 

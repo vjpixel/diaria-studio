@@ -121,6 +121,10 @@ describe("box LIVRO (kicker próprio, sem título interno) — #3581 removeu 'do
     "",
     "**LIVRO**",
     "",
+    // 260727: o box voltou a ter título interno; a 1ª linha do bloco É o título.
+    // Sem ela, o link do livro seria consumido como título (ver renderClariceBox).
+    "Recomendação de leitura",
+    "",
     "[**2041: Livro Teste**](https://link.amazon/ABC), de Fulano de Tal.",
     "",
     "Fulano de Tal foi presidente do Google na China.",
@@ -131,17 +135,55 @@ describe("box LIVRO (kicker próprio, sem título interno) — #3581 removeu 'do
   // Mesmo conteúdo, mas com o label longo legado — cobre o draft antigo em voo.
   const draftLegacyLabel = draft.replace("**LIVRO**", "**LIVRO DO MÊS**");
 
-  it("kicker 'Livro' (SEM 'do mês') + SEM <h3> interno", () => {
+  // Formato ANTIGO (pré-260727): bloco sem linha de título, abrindo direto no
+  // parágrafo do livro. É a forma de context/snippets/recomendacao-leitura-mensal.md
+  // e de todo draft mensal anterior — precisa continuar renderizando certo.
+  const draftFormatoAntigo = draft.replace("Recomendação de leitura\n\n", "");
+
+  // 260727 (reverte #3581): kicker volta a ser a CATEGORIA ("Livro do mês") e o
+  // box volta a ter título interno, agora vindo da 1ª linha do bloco
+  // ("Recomendação de leitura"). Deixaram de ser redundantes porque passaram a
+  // dizer coisas diferentes.
+  it("kicker 'Livro do mês' (categoria) + título interno da 1ª linha do bloco", () => {
     const { html } = draftToEmail(draft, "Teste", "2606");
-    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro<\/td>/.test(html), "kicker Livro sem sufixo");
-    assert.ok(!html.includes("Livro do m"), "kicker não deve mais conter 'do mês'/'do Mês'");
-    assert.ok(!html.includes("<h3"), "box não deve ter título interno (h3)");
+    assert.ok(
+      /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
+      "kicker deve ser a categoria 'Livro do mês'",
+    );
+    assert.ok(html.includes("Recomendação de leitura"), "título interno do box");
+    assert.ok(
+      !/<h3[^>]*>\s*<a href="https:\/\/link\.amazon\/ABC"/.test(html),
+      "o link do livro NÃO pode ser consumido como título do box",
+    );
   });
 
-  it("label legado 'LIVRO DO MÊS' (back-compat) ainda renderiza kicker 'Livro' sem sufixo", () => {
+  // Regressão do review da PR #4081: sem esta tolerância, um bloco no formato
+  // antigo perde o 1º parágrafo (o link do livro vira <h3> serifado) — e o
+  // template mensal ainda manda usar exatamente esse formato.
+  it("formato antigo (sem linha de título) NÃO transforma o link do livro em título", () => {
+    const { html } = draftToEmail(draftFormatoAntigo, "Teste", "2606");
+    assert.ok(
+      /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
+      "kicker de categoria também no formato antigo",
+    );
+    assert.ok(
+      !/<h3[^>]*>[\s\S]{0,60}2041: Livro Teste/.test(html),
+      "o título do livro não pode virar <h3>",
+    );
+    assert.ok(
+      /<a href="https:\/\/link\.amazon\/ABC"[^>]*><strong>2041: Livro Teste<\/strong><\/a>/.test(html),
+      "o parágrafo do livro tem de sobreviver como parágrafo, com o link",
+    );
+    assert.ok(html.includes("Fulano de Tal foi presidente do Google"), "bio do autor preservada");
+  });
+
+  it("label legado 'LIVRO DO MÊS' (back-compat) renderiza o mesmo kicker de categoria", () => {
     const { html } = draftToEmail(draftLegacyLabel, "Teste", "2606");
-    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro<\/td>/.test(html), "kicker Livro sem sufixo mesmo a partir do label longo");
-    assert.ok(!html.includes("Livro do m"), "kicker não deve conter 'do mês'/'do Mês' mesmo com input legado");
+    assert.ok(
+      /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
+      "mesmo kicker a partir do label longo",
+    );
+    assert.ok(html.includes("Recomendação de leitura"), "título interno também no label legado");
   });
 
   it("título do livro: **dentro** do link vira <strong>, sem ** literal", () => {
