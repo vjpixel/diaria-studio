@@ -135,6 +135,11 @@ describe("box LIVRO (kicker próprio, sem título interno) — #3581 removeu 'do
   // Mesmo conteúdo, mas com o label longo legado — cobre o draft antigo em voo.
   const draftLegacyLabel = draft.replace("**LIVRO**", "**LIVRO DO MÊS**");
 
+  // Formato ANTIGO (pré-260727): bloco sem linha de título, abrindo direto no
+  // parágrafo do livro. É a forma de context/snippets/recomendacao-leitura-mensal.md
+  // e de todo draft mensal anterior — precisa continuar renderizando certo.
+  const draftFormatoAntigo = draft.replace("Recomendação de leitura\n\n", "");
+
   // 260727 (reverte #3581): kicker volta a ser a CATEGORIA ("Livro do mês") e o
   // box volta a ter título interno, agora vindo da 1ª linha do bloco
   // ("Recomendação de leitura"). Deixaram de ser redundantes porque passaram a
@@ -150,6 +155,26 @@ describe("box LIVRO (kicker próprio, sem título interno) — #3581 removeu 'do
       !/<h3[^>]*>\s*<a href="https:\/\/link\.amazon\/ABC"/.test(html),
       "o link do livro NÃO pode ser consumido como título do box",
     );
+  });
+
+  // Regressão do review da PR #4081: sem esta tolerância, um bloco no formato
+  // antigo perde o 1º parágrafo (o link do livro vira <h3> serifado) — e o
+  // template mensal ainda manda usar exatamente esse formato.
+  it("formato antigo (sem linha de título) NÃO transforma o link do livro em título", () => {
+    const { html } = draftToEmail(draftFormatoAntigo, "Teste", "2606");
+    assert.ok(
+      /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
+      "kicker de categoria também no formato antigo",
+    );
+    assert.ok(
+      !/<h3[^>]*>[\s\S]{0,60}2041: Livro Teste/.test(html),
+      "o título do livro não pode virar <h3>",
+    );
+    assert.ok(
+      /<a href="https:\/\/link\.amazon\/ABC"[^>]*><strong>2041: Livro Teste<\/strong><\/a>/.test(html),
+      "o parágrafo do livro tem de sobreviver como parágrafo, com o link",
+    );
+    assert.ok(html.includes("Fulano de Tal foi presidente do Google"), "bio do autor preservada");
   });
 
   it("label legado 'LIVRO DO MÊS' (back-compat) renderiza o mesmo kicker de categoria", () => {
