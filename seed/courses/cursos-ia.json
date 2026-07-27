@@ -2,7 +2,7 @@
   "_meta": {
     "issue": "#1745, #2451, #3458",
     "status": "31 cursos — fonte: doc de pesquisa do editor 'Busca Cursos Gratuitos IA' (Google Drive, dez/2025) + cursos oficiais Anthropic e OpenAI (#2451) + catálogo completo das duas academias mapeado via WebFetch/WebSearch (#3458). Todos gratuitos ou de auditoria livre; 11 PT-BR, 20 EN.",
-    "instrucoes": "Fonte de verdade: a curadoria do editor (doc Drive) + catálogo oficial das academias Anthropic/OpenAI (#3458, verificado ao vivo via WebFetch em cada URL). REGRAS: (1) links DIRETOS pra plataforma/curso — SEM encurtador de afiliado fabricado (#1632); (2) quando há versão PT-BR, listar a PT; (3) duração de cursos 'Variável' no doc, OU sem duração publicada pela academia, é ESTIMATIVA (marcada com duration_estimated:true); (4) cost: 'free' = 100% grátis (acesso+conteúdo); a coluna certificate indica se há certificado SEM custo extra (auditoria do Coursera = cert pago → certificate:false). Rode `npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html` pra regenerar.",
+    "instrucoes": "Fonte de verdade: a curadoria do editor (doc Drive) + catálogo oficial das academias Anthropic/OpenAI (#3458, verificado ao vivo via WebFetch em cada URL). REGRAS: (1) links DIRETOS pra plataforma/curso — SEM encurtador de afiliado fabricado (#1632); (2) quando há versão PT-BR, listar a PT; (3) duração de cursos 'Variável' no doc, OU sem duração publicada pela academia, é ESTIMATIVA (marcada com duration_estimated:true); (4) cost: 'free' = 100% grátis (acesso+conteúdo); a coluna certificate indica se há certificado SEM custo extra (auditoria do Coursera = cert pago → certificate:false). Rode `npx tsx scripts/build-cursos-page.ts --out workers/cursos/public/index.html` pra regenerar. #4052: campo teaser marca cursos abertos (não-gated) no HTML público — 4 cursos marcados, cobrindo pt-br/en e plataformas distintas.",
     "schema": {
       "id": "slug-kebab-case (estável)",
       "title": "string",
@@ -16,7 +16,8 @@
       "cost": "free | paid | subscription",
       "certificate": "boolean (certificado SEM custo extra disponível)",
       "themes": "array de rótulos livres",
-      "summary": "string (para quem é / o que cobre)"
+      "summary": "string (para quem é / o que cobre)",
+      "teaser": "boolean opcional (#4052 — true = aberto/não-gated no HTML público; ausente/false = gated)"
     },
     "count": 31
   },
@@ -35,7 +36,8 @@
       "themes": [
         "Fundamentos"
       ],
-      "summary": "Bases conceituais de IA pra quem está começando, com credencial digital gratuita da IBM ao concluir."
+      "summary": "Bases conceituais de IA pra quem está começando, com credencial digital gratuita da IBM ao concluir.",
+      "teaser": true
     },
     {
       "id": "ibm-introducao-ia-generativa",
@@ -169,7 +171,8 @@
       "themes": [
         "IA Generativa"
       ],
-      "summary": "Módulo curto de fundamentos de GenAI no idioma local — arquiteturas de modelo generativo e GCP."
+      "summary": "Módulo curto de fundamentos de GenAI no idioma local — arquiteturas de modelo generativo e GCP.",
+      "teaser": true
     },
     {
       "id": "microsoft-azure-ai-900",
@@ -311,7 +314,8 @@
         "Produtividade",
         "Prompt Engineering"
       ],
-      "summary": "GenAI, prompt engineering e produtividade — como usar IA pra gerar ideias, pesquisar e acelerar tarefas diárias."
+      "summary": "GenAI, prompt engineering e produtividade — como usar IA pra gerar ideias, pesquisar e acelerar tarefas diárias.",
+      "teaser": true
     },
     {
       "id": "mit-ocw-machine-learning",
@@ -422,7 +426,8 @@
         "Prompt Engineering",
         "Produtividade"
       ],
-      "summary": "Curso oficial da Anthropic pra quem está começando com Claude: recursos essenciais, boas práticas do dia a dia e como organizar o trabalho em projetos. Certificado gratuito ao concluir."
+      "summary": "Curso oficial da Anthropic pra quem está começando com Claude: recursos essenciais, boas práticas do dia a dia e como organizar o trabalho em projetos. Certificado gratuito ao concluir.",
+      "teaser": true
     },
     {
       "id": "anthropic-claude-code-101",
