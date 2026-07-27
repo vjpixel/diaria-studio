@@ -207,6 +207,27 @@ describe("boxDivulgacao1 — box entre D1 e D2", () => {
     }
   });
 
+  it("#4086 regressão: renderBoxDivulgacao com imagem NÃO explícita (livros_promo, forceImage=false) ainda repassa altOverride", () => {
+    // Bug encontrado no self-review: o branch fallback de renderBoxDivulgacao
+    // (imagem presente mas forceImage=false — o caso comum do box de livros via
+    // livros_promo) chamava renderMidCallout SEM o 6º argumento altOverride,
+    // descartando-o em silêncio. Declarar `alt:` em livros-divulgacao.md nunca
+    // teria efeito no HTML final sem este fix.
+    const html = renderBoxDivulgacao(
+      LIVROS_CALLOUT,
+      "https://img.example/livros.jpg",
+      true,
+      false, // forceImage=false — imagem veio de livros_promo, não de box_slot{N}_image
+      false,
+      "Prévia da página de curadoria de livros sobre IA da diar.ia.br",
+    );
+    assert.match(
+      html,
+      /alt="Prévia da página de curadoria de livros sobre IA da diar\.ia\.br"/,
+      "altOverride deve aparecer no atributo alt mesmo sem forceImage",
+    );
+  });
+
   it("e2e: sem entry livros_promo → readBoxDivulgacao1Image null → box só-texto (degradação graciosa)", () => {
     const dir = mkdtempSync(join(tmpdir(), "midcallout-"));
     try {
@@ -218,6 +239,50 @@ describe("boxDivulgacao1 — box entre D1 e D2", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("#4086: sem altOverride, alt da imagem cai no anchor text do 1º link (comportamento legado)", () => {
+    const url = "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo.jpg";
+    const html = renderMidCallout(
+      "📚 Promo da página. [Confira a nova página](https://livros.diaria.workers.dev).",
+      url,
+    );
+    const imgTag = html.match(/<img[^>]+src="https:\/\/poll[^"]*"[^>]*>/)?.[0] ?? "";
+    assert.match(imgTag, /alt="Confira a nova página"/, "alt default = anchor text do link");
+  });
+
+  it("#4086: altOverride (alt: do snippet) vence o anchor text no atributo alt da imagem", () => {
+    const url = "https://poll.diaria.workers.dev/img/img-260604-04-livros-promo.jpg";
+    const html = renderMidCallout(
+      "📚 Promo da página. [Confira a nova página](https://livros.diaria.workers.dev).",
+      url,
+      true,
+      false,
+      false,
+      'Capa do livro "A História da IA Para Quem Tem Pressa", de Peter J. Bentley',
+    );
+    const imgTag = html.match(/<img[^>]+src="https:\/\/poll[^"]*"[^>]*>/)?.[0] ?? "";
+    assert.match(
+      imgTag,
+      /alt="Capa do livro &quot;A História da IA Para Quem Tem Pressa&quot;, de Peter J\. Bentley"/,
+      "alt deve ser o altOverride (escapado), não o anchor text",
+    );
+    assert.doesNotMatch(imgTag, /alt="Confira a nova página"/, "anchor text não deve vazar quando há altOverride");
+    // O CTA/label do botão continua vindo do anchor text — só o atributo alt muda.
+    assert.ok(html.includes("Confira a nova página"), "label do botão CTA continua sendo o anchor text");
+  });
+
+  it("#4086: sem imagem, altOverride é ignorado (renderIntroCallout não usa alt de imagem)", () => {
+    const html = renderMidCallout(
+      "📣 Sem imagem. [Acesse](https://example.com).",
+      null,
+      true,
+      false,
+      false,
+      "Alt que não deveria aparecer",
+    );
+    assert.ok(!html.includes("<img"), "sem imageUrl, nenhuma tag <img> é emitida");
+    assert.ok(!html.includes("Alt que não deveria aparecer"));
   });
 
   it("remove TODOS os links do corpo, não só o primeiro (#3J)", () => {

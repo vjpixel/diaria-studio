@@ -1,6 +1,7 @@
 <!--
 nome: Clarice
 categoria: Divulgação
+alt: Logo da Clarice, ferramenta brasileira de revisão e correção de texto em português
 Bloco canônico de DIVULGAÇÃO da Clarice (patrocínio). Fonte única reaproveitável
 nas edições (diária via midCallout entre D1 e D2; mensal como seção própria).
 O separador "Divulgação" é adicionado automaticamente por ser patrocinado —

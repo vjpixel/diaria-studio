@@ -34,6 +34,7 @@ import {
   singularizeSectionName,
   pickErroIntencionalReveal,
   readBoxDivulgacaoCategoriaForSlot,
+  readBoxDivulgacaoAltForSlot,
 } from "../scripts/render-newsletter-html.ts";
 import { DS_STYLE_BLOCK, mdInlineToHtml, renderHeroImageInner, renderErroIntencionalReveal } from "../scripts/lib/newsletter-render-html.ts";
 
@@ -3392,6 +3393,133 @@ describe("readBoxDivulgacaoCategoriaForSlot (#3981, pure)", () => {
     );
     try {
       assert.equal(readBoxDivulgacaoCategoriaForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("readBoxDivulgacaoAltForSlot (#4086, pure)", () => {
+  function setupRoot() {
+    const root = mkdtempSync(join(tmpdir(), "box-alt-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "context", "snippets", "com-alt.md"),
+      "<!--\nalt: Capa do livro X, de Autor Y\ndoc interno\n-->\n\nConteúdo público.",
+    );
+    writeFileSync(join(root, "context", "snippets", "sem-alt.md"), "# Sem alt\n\ntexto");
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({
+        boxes_divulgacao: { slot1: "com-alt.md", slot2: "sem-alt.md", slot3: "" },
+      }),
+    );
+    return root;
+  }
+
+  it("slot com alt: devolve o valor do header", () => {
+    const root = setupRoot();
+    try {
+      assert.equal(readBoxDivulgacaoAltForSlot(1, root), "Capa do livro X, de Autor Y");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("slot sem alt: null", () => {
+    const root = setupRoot();
+    try {
+      assert.equal(readBoxDivulgacaoAltForSlot(2, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("slot vazio (string vazia em boxes_divulgacao): null", () => {
+    const root = setupRoot();
+    try {
+      assert.equal(readBoxDivulgacaoAltForSlot(3, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("platform.config.json ausente: null, nunca lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-alt-noconfig-"));
+    try {
+      assert.equal(readBoxDivulgacaoAltForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("boxes_divulgacao ausente/malformado: null, nunca lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-alt-malformed-"));
+    writeFileSync(join(root, "platform.config.json"), JSON.stringify({ newsletter: "beehiiv" }));
+    try {
+      assert.equal(readBoxDivulgacaoAltForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("JSON corrompido: null, nunca lança", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-alt-corrupt-"));
+    writeFileSync(join(root, "platform.config.json"), "{ not json");
+    try {
+      assert.equal(readBoxDivulgacaoAltForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("arquivo do snippet não existe (config aponta pra arquivo removido): null", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-alt-missing-file-"));
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "nao-existe.md" } }),
+    );
+    try {
+      assert.equal(readBoxDivulgacaoAltForSlot(1, root), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("alt com markdown (**, #, -) é sanitizado — invariante 'output final sem markdown' vale pro atributo alt", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-alt-markdown-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "context", "snippets", "com-markdown.md"),
+      "<!--\nalt: **Capa do livro** #destaque\n-->\n\nConteúdo.",
+    );
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "com-markdown.md" } }),
+    );
+    try {
+      const alt = readBoxDivulgacaoAltForSlot(1, root);
+      assert.equal(alt, "Capa do livro destaque");
+      assert.ok(!alt?.includes("*"));
+      assert.ok(!alt?.includes("#"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("alt só com markdown (sobra vazio após sanitizar): null, não string vazia", () => {
+    const root = mkdtempSync(join(tmpdir(), "box-alt-onlymarkdown-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(
+      join(root, "context", "snippets", "so-markdown.md"),
+      "<!--\nalt: - **#**\n-->\n\nConteúdo.",
+    );
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ boxes_divulgacao: { slot1: "so-markdown.md" } }),
+    );
+    try {
+      assert.equal(readBoxDivulgacaoAltForSlot(1, root), null);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -1,6 +1,7 @@
 <!--
 nome: 2041
 categoria: Recomendação de Livro
+alt: Capa do livro "2041: Como a inteligência artificial vai mudar sua vida nas próximas décadas", de Kai-Fu Lee e Chen Qiufan
 -->
 
 [**2041: Como a inteligência artificial vai mudar sua vida nas próximas décadas**](https://link.amazon/B05FlAaJ7), de Kai-Fu Lee e Chen Qiufan.

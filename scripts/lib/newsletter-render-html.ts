@@ -801,7 +801,14 @@ export function renderBoxDivulgacao(
   if (shouldForceCtaPill(box)) {
     return renderIntroCallout(box, "serif", true, bold);
   }
-  return renderMidCallout(box, imageUrl, bold);
+  // #4086 fix: altOverride tinha que sobreviver também neste caminho (imagem
+  // NÃO explícita — ex: livros_promo auto-atribuída ao box de livros). Antes,
+  // só o branch forceImage acima repassava altOverride pra renderMidCallout;
+  // aqui ele era descartado silenciosamente — declarar `alt:` no snippet de
+  // livros-divulgacao.md (o caso mais comum de imagem em box, via
+  // livros_promo) nunca teria efeito no HTML final, mesmo com o campo
+  // presente e o guard #4086 (checkBoxDivulgacaoAltMissing) reportando "ok".
+  return renderMidCallout(box, imageUrl, bold, portrait, false, altOverride);
 }
 
 /**

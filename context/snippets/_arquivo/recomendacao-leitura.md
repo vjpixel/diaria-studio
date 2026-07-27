@@ -1,5 +1,6 @@
 <!--
 nome: Recomendação: 2041
+alt: Capa do livro "2041: Como a inteligência artificial vai mudar sua vida nas próximas décadas", de Kai-Fu Lee e Chen Qiufan
 Bloco de DIVULGAÇÃO de recomendação de leitura pessoal do editor. Mesma
 categoria de apoio-divulgacao.md/_arquivo/alexa-plus-divulgacao.md (slot 1 D1/D2 ou
 slot 2 D2/D3, #2978) — NÃO auto-injetado por padrão (diferente de livros,
