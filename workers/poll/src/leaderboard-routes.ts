@@ -756,7 +756,10 @@ function renderLeaderboardHtml(
   // leaderboard MENSAL (fecha todo mês) — não existe "ranking anual" pra
   // linkar. `navHtml` fica "" (parágrafo inteiro some) quando não há NENHUM
   // link (nem anual nem arquivo) pra oferecer.
-  const annualLinkHtml = BRAND_INFO[brand].leaderboardPeriod === "year"
+  // #4049: além do gate de brand, também não linkar quando a view ATUAL já é
+  // a anual — evitava um self-link cujo href era byte-a-byte o canonicalPath
+  // da própria página (`handleLeaderboardByYear` chama com periodKind="year").
+  const annualLinkHtml = BRAND_INFO[brand].leaderboardPeriod === "year" && periodKind !== "year"
     ? `<a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a>`
     : "";
   const navHtml = annualLinkHtml || archiveLinkHtml ? `<p class="nav">${annualLinkHtml}${archiveLinkHtml}</p>` : "";

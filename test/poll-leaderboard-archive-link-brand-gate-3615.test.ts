@@ -87,9 +87,19 @@ describe("renderLeaderboardHtml — link de ranking anual gated por leaderboardP
     assert.doesNotMatch(html, /Ver ranking anual/, "web não deveria ter link de ranking anual");
   });
 
-  it("brand clarice MANTÉM 'Ver ranking anual' (leaderboard é anual)", async () => {
+  // #4049 item 1: `GET /leaderboard?brand=clarice` (sem `?brand=` diária)
+  // dispatcha direto pra `handleLeaderboardByYear` (index.ts — leaderboardPeriod
+  // "year" pula `handleLeaderboard`/`handleLeaderboardByMonth` por completo),
+  // então esta é SEMPRE a própria view anual (periodKind "year") — nunca
+  // existiu, na prática, uma view "mensal" de clarice reachable que pudesse
+  // linkar PRA a anual. A asserção original deste teste (mantida até #4049)
+  // codificava exatamente o self-link bug do #4049: "Ver ranking anual"
+  // apontando pra própria URL canônica da página em que o leitor já está.
+  // Corrigido aqui; guarda de regressão dedicada em
+  // test/poll-leaderboard-annual-self-link-4049.test.ts.
+  it("brand clarice NÃO mostra 'Ver ranking anual' em /leaderboard (já é a view anual, #4049)", async () => {
     const html = await fetchHtml("/leaderboard?brand=clarice");
-    assert.match(html, /Ver ranking anual de \d{4}/, "clarice deveria manter o link de ranking anual");
+    assert.doesNotMatch(html, /Ver ranking anual/, "clarice não deveria self-linkar pro ranking anual na própria página anual");
   });
 
   it("diária: <p class=\"nav\"> inteiro some quando não há nenhum link a oferecer", async () => {
@@ -97,8 +107,8 @@ describe("renderLeaderboardHtml — link de ranking anual gated por leaderboardP
     assert.doesNotMatch(html, /<p class="nav">/, "não deveria sobrar um parágrafo de nav vazio pra diária");
   });
 
-  it("clarice: <p class=\"nav\"> presente com os dois links (anual + arquivo)", async () => {
+  it("clarice: <p class=\"nav\"> presente com o link de arquivo (#4049: sem o self-link anual)", async () => {
     const html = await fetchHtml("/leaderboard?brand=clarice");
-    assert.match(html, /<p class="nav">.*Ver ranking anual.*Votar em edições passadas.*<\/p>/s, "clarice deveria ter os 2 links no mesmo parágrafo");
+    assert.match(html, /<p class="nav">.*Votar em edições passadas.*<\/p>/s, "clarice deveria manter o link de arquivo em nav");
   });
 });

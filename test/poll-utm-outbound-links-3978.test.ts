@@ -129,9 +129,9 @@ describe("Grupo 1 — renderBrandFooter (lib.ts) ganha UTM, 1 fix cobre 9 call s
     }
   });
 
-  it("href gerado é exatamente buildBrandSiteUrl(brand, 'footer', 'eia-footer') escapado", () => {
+  it("href gerado é exatamente buildBrandSiteUrl('diaria', 'footer', 'eia-footer') escapado — #4049: rodapé sempre credita Diar.ia, mesmo em brand clarice", () => {
     const html = renderBrandFooter("clarice");
-    const expectedHref = buildBrandSiteUrl("clarice", "footer", "eia-footer").replace(/&/g, "&amp;");
+    const expectedHref = buildBrandSiteUrl("diaria", "footer", "eia-footer").replace(/&/g, "&amp;");
     assert.ok(html.includes(`href="${expectedHref}"`), html);
   });
 
@@ -140,9 +140,9 @@ describe("Grupo 1 — renderBrandFooter (lib.ts) ganha UTM, 1 fix cobre 9 call s
     assert.match(html, /<footer class="brand-footer">[\s\S]*?utm_source=eia-standalone[\s\S]*?<\/footer>/);
   });
 
-  it("GET /leaderboard/2026?brand=clarice: rodapé usa clarice.ai preservando via=diaria + UTM", async () => {
+  it("GET /leaderboard/2026?brand=clarice: rodapé usa diar.ia.br (#4049) com UTM, não clarice.ai", async () => {
     const html = await fetchHtml("/leaderboard/2026?brand=clarice");
-    assert.match(html, /href="https:\/\/clarice\.ai\/\?via=diaria&amp;utm_source=eia-standalone&amp;utm_medium=footer&amp;utm_campaign=eia-footer"/);
+    assert.match(html, /href="https:\/\/diar\.ia\.br\/\?utm_source=eia-standalone&amp;utm_medium=footer&amp;utm_campaign=eia-footer"/);
   });
 });
 

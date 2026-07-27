@@ -114,14 +114,15 @@ describe("#3108 — navegação (arquivo + anual) ANTES da tabela; #3615 restrin
     assert.doesNotMatch(html, /<p class="nav">/, "diária não deveria ter nenhum link de nav (nem anual, nem arquivo)");
   });
 
-  it("GET /leaderboard/2026?brand=clarice: nav preserva ?brand=clarice nos 2 links", async () => {
+  it("GET /leaderboard/2026?brand=clarice: nav preserva ?brand=clarice no link de arquivo; SEM 'Ver ranking anual' — a página já É a anual (#4049 item 1)", async () => {
     const html = await fetchHtml("/leaderboard/2026?brand=clarice");
     const navIdx = idx(html, '<p class="nav">');
     const tableIdx = idx(html, "<table>");
     assert.ok(navIdx >= 0 && navIdx < tableIdx, "nav deve existir e vir antes da table na visão anual (clarice)");
-    assert.match(html, /href="\/leaderboard\/2026\?brand=clarice">Ver ranking anual de 2026<\/a>/);
+    assert.doesNotMatch(html, /Ver ranking anual/, "a view anual não deveria linkar pra si mesma");
     assert.match(html, /href="\/leaderboard\/2026\/arquivo\?brand=clarice">Votar em edições passadas<\/a>/);
   });
+
 
   it("GET /leaderboard/2026-03 (mês específico, diaria): SEM nav (#3615)", async () => {
     const html = await fetchHtml("/leaderboard/2026-03");
