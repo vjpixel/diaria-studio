@@ -64,6 +64,9 @@ import {
 // #3920: preserva perdedores de clusters same-story como cluster_sources[] no
 // vencedor mais completo, em vez de descartá-los.
 import { foldCluster, type ClusterArticle } from "./lib/cluster-sources.ts";
+// #4102 finding 3: checagem por CONTEÚDO do título atual (não por flag) — um
+// newsletter_extracted já enriquecido (título real) deve poder clusterizar.
+import { isPlaceholderHighlightTitle } from "./lib/placeholder-title-guard.ts";
 
 export { canonicalize };
 export {
@@ -397,25 +400,32 @@ export function dedup(
   // dobra em vez de deletar). Títulos placeholder "(inbox)" nunca clusterizam
   // por título (#482) — dedup real deles já foi por URL na sub-pass 2a.
   //
-  // #4102: `flag: "newsletter_extracted"` (links extraídos de newsletter
-  // capturada, ver capture-newsletter-urls.ts/inject-inbox-urls.ts) TAMBÉM
-  // nunca clusteriza por título — pelo MESMO motivo estrutural do "(inbox)"
-  // acima, mas por uma via diferente: todos os links extraídos da MESMA
-  // newsletter compartilham o LITERAL mesmo título sintético
-  // `(newsletter:{sender})` (idêntico, não só similar) até serem enriquecidos
-  // via og:title. Título idêntico → titleSimilarity = 1.0 → o algoritmo
-  // single-linkage agrupava TODOS os links da mesma newsletter num cluster
-  // só, mesmo sendo notícias sem relação alguma entre si (caso real 260727,
-  // #4102: item do Y Combinator ganhou cluster_sources apontando pra Fallout
-  // da Bethesda, livros na Amazon, um tweet pessoal — links compartilham
-  // ORIGEM, o mesmo e-mail, não ASSUNTO). A checagem é bidirecional (também
-  // no membro do cluster já formado) para nunca aceitar um newsletter_extracted
-  // como âncora de outro artigo.
+  // #4102 (revisado, finding 3 do self-review): título ainda PLACEHOLDER
+  // (`(inbox)`, `(newsletter:{sender})`, etc — ver
+  // `isPlaceholderHighlightTitle`) nunca clusteriza por título — mesmo motivo
+  // estrutural do "(inbox)" original, mas agora a checagem é por CONTEÚDO do
+  // título atual, não pela flag `newsletter_extracted`. `enrich-inbox-
+  // articles.ts` roda ANTES do dedup e resolve title/summary reais quando o
+  // fetch de og:title funciona, mas nunca remove a flag do artigo — checar só
+  // a flag excluía do clustering PERMANENTEMENTE todo item newsletter_
+  // extracted, mesmo já enriquecido com título real, perdendo pra sempre o
+  // bônus de cobertura e o bloco "Aprofunde:" cruzado (não só no caso de falha
+  // de enrichment, que é o cenário real do incidente 260727 — item do Y
+  // Combinator ganhou cluster_sources apontando pra Fallout da Bethesda,
+  // livros na Amazon, um tweet pessoal, porque o título sintético idêntico
+  // `(newsletter:{sender})` dava titleSimilarity = 1.0 entre links sem relação
+  // alguma, só a mesma origem/e-mail). Com a checagem por conteúdo: título
+  // ainda placeholder (enrichment falhou ou não rodou) → isolado, igual antes;
+  // título já enriquecido (real) → participa do clustering normalmente. A
+  // checagem é bidirecional (também no membro do cluster já formado) para
+  // nunca aceitar um título placeholder como âncora de outro artigo.
   const clusters: Article[][] = [];
   for (const art of afterUrlDedup) {
     const artTitle = art.title;
-    const artIsNewsletterExtracted = art.flag === "newsletter_extracted";
-    if (!artTitle || artTitle.toLowerCase() === "(inbox)" || artIsNewsletterExtracted) {
+    // `!artTitle ||` é redundante em runtime (isPlaceholderHighlightTitle já
+    // trata undefined/vazio como placeholder) mas necessário pro TS estreitar
+    // artTitle pra `string` no restante do loop (a função não é um type guard).
+    if (!artTitle || isPlaceholderHighlightTitle(artTitle)) {
       clusters.push([art]);
       continue;
     }
@@ -423,8 +433,7 @@ export function dedup(
     for (const cluster of clusters) {
       for (const member of cluster) {
         const memberTitle = member.title;
-        if (!memberTitle || memberTitle.toLowerCase() === "(inbox)") continue;
-        if (member.flag === "newsletter_extracted") continue;
+        if (!memberTitle || isPlaceholderHighlightTitle(memberTitle)) continue;
         if (titleSimilarity(artTitle, memberTitle) >= titleThreshold) {
           cluster.push(art);
           placed = true;

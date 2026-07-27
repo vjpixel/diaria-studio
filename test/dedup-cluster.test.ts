@@ -93,8 +93,17 @@ describe("dedup cluster same-story (#3920)", () => {
   // cobertura da mesma história, mesmo sendo notícias sem relação alguma
   // (o item do Y Combinator ganhou cluster_sources apontando pra Fallout da
   // Bethesda, livros na Amazon e um tweet pessoal).
-  describe("newsletter_extracted nunca clusteriza (#4102)", () => {
-    it("2 artigos newsletter_extracted com título idêntico NÃO clusterizam entre si", () => {
+  //
+  // Revisado (finding 3 do self-review, #4102): a exclusão é por CONTEÚDO do
+  // título ATUAL (isPlaceholderHighlightTitle), não pela flag
+  // `newsletter_extracted` — a flag nunca é removida pelo enrich, então
+  // checar só a flag excluía do clustering PERMANENTEMENTE todo artigo
+  // newsletter_extracted, mesmo já enriquecido com título real (perdendo o
+  // bônus de cobertura e o bloco "Aprofunde:" pra sempre, não só quando o
+  // enrichment falha). Os testes abaixo cobrem os dois lados: título AINDA
+  // placeholder → isolado; título JÁ enriquecido (real) → participa normal.
+  describe("newsletter_extracted nunca clusteriza ENQUANTO título for placeholder (#4102)", () => {
+    it("2 artigos newsletter_extracted com título placeholder idêntico NÃO clusterizam entre si", () => {
       const articles = [
         {
           url: "https://ycombinator.com/library/x",
@@ -114,36 +123,18 @@ describe("dedup cluster same-story (#3920)", () => {
       assert.ok(kept.every((a) => a.cluster_sources === undefined));
     });
 
-    it("artigo newsletter_extracted NÃO vira membro do cluster de um artigo normal com título idêntico", () => {
-      // Cenário adversarial: o título sintético coincide (mesmo por acaso)
-      // com o título de um artigo já enriquecido de outra fonte — mesmo
-      // assim, o newsletter_extracted não deve entrar no cluster.
-      const sameTitle = "Notícia sobre IA que por coincidência bate o título";
+    it("artigo newsletter_extracted com título AINDA placeholder NÃO vira membro do cluster de um artigo normal", () => {
       const articles = [
-        { url: "https://real-source.com/a", title: sameTitle, source: "TechCrunch", summary: "resumo real" },
-        { url: "https://ycombinator.com/library/y", title: sameTitle, flag: "newsletter_extracted", summary: "" },
+        { url: "https://real-source.com/a", title: "Notícia real sobre IA generativa", source: "TechCrunch", summary: "resumo real" },
+        { url: "https://ycombinator.com/library/y", title: '(newsletter:"Lenny\'s Newsletter")', flag: "newsletter_extracted", summary: "" },
       ];
       const { kept } = dedup(articles, new Set(), 0.85);
-      assert.equal(kept.length, 2, "newsletter_extracted não deve se fundir no artigo real mesmo com título idêntico");
+      assert.equal(kept.length, 2, "título placeholder não pode clusterizar com o artigo real");
       const real = kept.find((a) => a.url === "https://real-source.com/a");
-      assert.equal(real?.cluster_sources, undefined, "artigo real não deve herdar cluster_sources do newsletter_extracted");
+      assert.equal(real?.cluster_sources, undefined);
     });
 
-    it("artigo normal NÃO clusteriza com newsletter_extracted mesmo que o normal seja processado DEPOIS", () => {
-      // Ordem invertida do teste anterior — garante que a checagem funciona
-      // tanto quando newsletter_extracted já está no cluster (via `art`)
-      // quanto quando é um `member` pré-existente sendo comparado (via loop
-      // interno) — os dois early-returns do guard.
-      const sameTitle = "Outra coincidência de título entre newsletter e fonte real";
-      const articles = [
-        { url: "https://ycombinator.com/library/z", title: sameTitle, flag: "newsletter_extracted", summary: "" },
-        { url: "https://real-source.com/b", title: sameTitle, source: "The Verge", summary: "resumo real" },
-      ];
-      const { kept } = dedup(articles, new Set(), 0.85);
-      assert.equal(kept.length, 2);
-    });
-
-    it("newsletter_extracted com títulos SIMILARES (não idênticos) também não clusterizam entre si", () => {
+    it("newsletter_extracted com títulos placeholder SIMILARES (não idênticos) também não clusterizam entre si", () => {
       const articles = [
         { url: "https://a.com/x", title: '(newsletter:AI Roundup)', flag: "newsletter_extracted", summary: "" },
         { url: "https://b.com/y", title: '(newsletter:AI Roundup Extra)', flag: "newsletter_extracted", summary: "" },
@@ -152,4 +143,39 @@ describe("dedup cluster same-story (#3920)", () => {
       assert.equal(kept.length, 2);
     });
   });
+
+  describe("newsletter_extracted JÁ ENRIQUECIDO (título real) participa do clustering normalmente (#4102 finding 3)", () => {
+    it("2 artigos newsletter_extracted com título REAL idêntico (pós-enrich) clusterizam normalmente", () => {
+      const sameTitle = "OpenAI anuncia novo modelo de raciocínio";
+      const articles = [
+        { url: "https://ycombinator.com/library/z", title: sameTitle, flag: "newsletter_extracted", source: "YC Digest", summary: "b".repeat(120) },
+        { url: "https://real-source.com/b", title: sameTitle, flag: "newsletter_extracted", source: "The Verge", summary: "a".repeat(400) },
+      ];
+      const { kept } = dedup(articles, new Set(), 0.85);
+      assert.equal(kept.length, 1, "título real idêntico deve clusterizar mesmo com a flag newsletter_extracted presente");
+      assert.equal(kept[0].cluster_sources?.length, 1);
+    });
+
+    it("newsletter_extracted já enriquecido (título real) clusteriza com artigo normal da mesma história", () => {
+      const sameTitle = "OpenAI anuncia novo modelo de raciocínio";
+      const articles = [
+        { url: "https://real-source.com/a", title: sameTitle, source: "TechCrunch", summary: "resumo real e completo".repeat(5) },
+        { url: "https://ycombinator.com/library/y", title: sameTitle, flag: "newsletter_extracted", source: "YC", summary: "curto" },
+      ];
+      const { kept } = dedup(articles, new Set(), 0.85);
+      assert.equal(kept.length, 1, "newsletter_extracted enriquecido deve se fundir com o artigo real da mesma história");
+      assert.equal(kept[0].cluster_sources?.length, 1);
+    });
+
+    it("ordem invertida (newsletter_extracted enriquecido processado ANTES) também clusteriza", () => {
+      const sameTitle = "Outra história coberta por múltiplas fontes";
+      const articles = [
+        { url: "https://ycombinator.com/library/w", title: sameTitle, flag: "newsletter_extracted", source: "YC", summary: "curto" },
+        { url: "https://real-source.com/c", title: sameTitle, source: "The Verge", summary: "resumo real e completo".repeat(5) },
+      ];
+      const { kept } = dedup(articles, new Set(), 0.85);
+      assert.equal(kept.length, 1);
+    });
+  });
+
 });

@@ -123,4 +123,65 @@ describe("demotePlaceholderTitleHighlights (#4102)", () => {
     const out = demotePlaceholderTitleHighlights(highlights, finalists);
     assert.equal(out.highlights[0], goodHighlight, "highlight não-ofensor preserva a mesma referência");
   });
+
+  // Finding 5 do self-review (#4102): remoção sem substituto pode deixar
+  // `rank` com buraco (ex: 1, 2, 4) — reindexar por posição corrige isso.
+  describe("reindexação de rank após remoção sem substituto (finding 5, #4102)", () => {
+    it("remoção do highlight do MEIO (rank 2 de 3) compacta ranks pra 1, 2 (sem buraco)", () => {
+      const h1: PlaceholderHighlightLike = { rank: 1, score: 100, url: "https://a.com/1", article: { url: "https://a.com/1", title: "Título real A" } };
+      const h3: PlaceholderHighlightLike = { rank: 3, score: 80, url: "https://c.com/3", article: { url: "https://c.com/3", title: "Título real C" } };
+      const highlights: PlaceholderHighlightLike[] = [
+        h1,
+        { rank: 2, score: 119, url: "https://yc.com/placeholder-item", article: { url: "https://yc.com/placeholder-item", title: '(newsletter:"Lenny\'s Newsletter")' } },
+        h3,
+      ];
+      // finalists sem nenhum substituto disponível (nenhum finalist não-placeholder e não já escolhido)
+      const noReplacementFinalists: PlaceholderFinalistLike[] = [
+        { url: "https://yc.com/placeholder-item", score: 119, article: { url: "https://yc.com/placeholder-item", title: '(newsletter:"Lenny\'s Newsletter")' } },
+        { url: "https://a.com/1", score: 100, article: { url: "https://a.com/1", title: "Título real A" } },
+        { url: "https://c.com/3", score: 80, article: { url: "https://c.com/3", title: "Título real C" } },
+      ];
+      const out = demotePlaceholderTitleHighlights(highlights, noReplacementFinalists);
+      assert.equal(out.highlights.length, 2);
+      assert.deepEqual(out.highlights.map((h) => h.rank), [1, 2], "ranks remanescentes devem ser contíguos 1..N, sem buraco");
+      assert.equal(out.highlights[0].url, "https://a.com/1");
+      assert.equal(out.highlights[1].url, "https://c.com/3");
+    });
+
+    it("exemplo do finding: 6 highlights, offender na posição 3 (rank 3) removido sem substituto → ranks finais 1,2,3,4,5 (não 1,2,4,5,6)", () => {
+      const mk = (rank: number, url: string, title: string): PlaceholderHighlightLike => ({
+        rank,
+        score: 100 - rank,
+        url,
+        article: { url, title },
+      });
+      const highlights: PlaceholderHighlightLike[] = [
+        mk(1, "https://a.com/1", "Título 1"),
+        mk(2, "https://a.com/2", "Título 2"),
+        { rank: 3, score: 119, url: "https://yc.com/placeholder-item", article: { url: "https://yc.com/placeholder-item", title: '(newsletter:"Lenny\'s Newsletter")' } },
+        mk(4, "https://a.com/4", "Título 4"),
+        mk(5, "https://a.com/5", "Título 5"),
+        mk(6, "https://a.com/6", "Título 6"),
+      ];
+      // Nenhum finalist substituto disponível além dos já escolhidos (todos os 5 títulos
+      // reais já estão em highlights; só sobra o próprio ofensor, que é filtrado por título).
+      const noReplacementFinalists: PlaceholderFinalistLike[] = [
+        { url: "https://yc.com/placeholder-item", score: 119, article: { url: "https://yc.com/placeholder-item", title: '(newsletter:"Lenny\'s Newsletter")' } },
+      ];
+      const out = demotePlaceholderTitleHighlights(highlights, noReplacementFinalists);
+      assert.equal(out.highlights.length, 5);
+      assert.deepEqual(out.highlights.map((h) => h.rank), [1, 2, 3, 4, 5], "sem buraco (não deve ficar 1,2,4,5,6)");
+    });
+
+    it("no-op (nenhuma remoção): ranks originais preservados sem reindexar (substituição no lugar não conta como remoção)", () => {
+      const highlights: PlaceholderHighlightLike[] = [
+        { rank: 1, score: 95, url: "https://real.com/good-article", article: { url: "https://real.com/good-article", title: "Um título real e bom" } },
+        { rank: 2, score: 119, url: "https://yc.com/placeholder-item", article: { url: "https://yc.com/placeholder-item", title: '(newsletter:"Lenny\'s Newsletter")' } },
+      ];
+      const out = demotePlaceholderTitleHighlights(highlights, finalists);
+      // substituição (não remoção) — count preservado, ranks já contíguos 1,2
+      assert.equal(out.highlights.length, 2);
+      assert.deepEqual(out.highlights.map((h) => h.rank), [1, 2]);
+    });
+  });
 });

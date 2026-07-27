@@ -156,5 +156,24 @@ export function demotePlaceholderTitleHighlights<H extends PlaceholderHighlightL
     });
   }
 
-  return { highlights: result, demotions };
+  // Finding 5 do self-review (#4102): quando ≥1 ofensor é REMOVIDO sem
+  // substituto (não apenas trocado), `result` fica mais curto que
+  // `highlights` e o campo `rank` dos itens remanescentes pode ficar com
+  // buraco (ex: 1, 2, 4 — o rank 3 nunca existiu no array final). Reindexa
+  // 1..N por POSIÇÃO (preserva a ordem editorial já decidida) sempre que
+  // houve remoção — preserva a mesma referência de objeto quando o rank já
+  // bate com a posição (não force-cria objeto novo sem necessidade, mantendo
+  // o comportamento de "preserva highlights não-ofensores intactos").
+  const hadRemoval = result.length < highlights.length;
+  const reindexed = hadRemoval
+    ? result.map((h, i) => {
+        const expectedRank = i + 1;
+        if ("rank" in h && h.rank !== expectedRank) {
+          return { ...h, rank: expectedRank };
+        }
+        return h;
+      })
+    : result;
+
+  return { highlights: reindexed, demotions };
 }
