@@ -28,12 +28,14 @@ const MONTHLY_SKILL_MD = resolve(ROOT, ".claude/skills/diaria-mensal/SKILL.md");
 describe("clarice-divulgacao.md — fluência da frase de cupom (#2866)", () => {
   const content = readFileSync(CLARICE_DIVULGACAO_MD, "utf8");
 
-  it("frase começa com 'Quem assina o plano anual' (sem 'E' inicial)", () => {
-    assert.match(
-      content,
-      /acumulando até 67% de desconto\. Quem assina o plano anual/,
-      "clarice-divulgacao.md deve remover o 'E' inicial antes de 'quem assina' (#2866)",
-    );
+  it("frase de cupom termina no acúmulo de desconto, sem cauda pendurada", () => {
+    // 260727: a frase "Quem assina o plano anual…" foi removida do snippet
+    // pelo editor; o parágrafo agora encerra no acúmulo. O que o #2866
+    // protegia era a FLUÊNCIA da emenda entre as duas frases — sem a segunda,
+    // o que resta a garantir é que a primeira fecha limpa e o CTA de cupom
+    // continua logo abaixo.
+    assert.match(content, /acumulando até 67% de desconto\./);
+    assert.match(content, /cupons NEWS25 ou NEWS50/);
   });
 
   it("não regride pra 'E quem assina' (#2866)", () => {

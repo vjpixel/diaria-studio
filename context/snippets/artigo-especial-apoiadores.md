@@ -1,5 +1,7 @@
 <!--
-nome: Artigo Especial (mensal, apoiadores R$10+)
+nome: Artigo Especial Julho
+categoria: Artigo Especial
+alt: Artigo Especial de julho da diar.ia.br — "O agente da OpenAI que atacou a Hugging Face sozinho: por que isso importa", por Pixel
 Bloco de divulgação do Artigo Especial mensal — reuso pontual em slot 1/2/3
 no lugar do default (`apoio-divulgacao.md` no slot 3, #3824), quando o editor
 quer promover o Artigo Especial do mês em vez do CTA genérico de apoio.
@@ -29,10 +31,10 @@ vira peso normal (#3373), mesmo padrão de `apoio-divulgacao.md`. Só o título
 do artigo (item 2) leva negrito, inline.
 -->
 
-Artigo Especial de {mês}
+**Artigo Especial de Julho**
 
-O Artigo Especial desse mês é: **"{título do artigo}"**. {1 frase de contexto/gancho}.
+O Artigo Especial desse mês é: **"O agente da OpenAI que atacou a Hugging Face sozinho: por que isso importa"**. É sobre o caso de segurança que rodou nos destaques recentes, mas indo fundo na escalada de dois anos por trás dele.
 
-Quem apoia a partir de R$10/mês recebe um Artigo Especial assim todo mês, com acesso a todos os que já saíram.
+Quem apoia a partir de R$10/mês recebe um Artigo Especial todo mês, com acesso a todos os que já saíram.
 
 [Quero apoiar](https://apoia.se/diaria)

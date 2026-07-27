@@ -762,6 +762,48 @@ describe("#3820 — VÍDEOS antes de LANÇAMENTOS (ordem canônica permanente, d
   });
 });
 
+describe("snippets dos slots vigentes — guardas de forma (rotação editorial 260727)", () => {
+  const ROOT_DIR = join(import.meta.dirname ?? new URL(".", import.meta.url).pathname, "..");
+  const cfg = JSON.parse(readFileSync(join(ROOT_DIR, "platform.config.json"), "utf8")) as {
+    boxes_divulgacao?: Record<string, string | null>;
+  };
+  const slots = Object.entries(cfg.boxes_divulgacao ?? {}).filter(([, f]) => Boolean(f)) as [string, string][];
+  const bodyOf = (file: string) =>
+    readFileSync(join(ROOT_DIR, "context", "snippets", file), "utf8").replace(/<!--[\s\S]*?-->/g, "").trim();
+
+  it("os slots configurados apontam pra snippets que existem", () => {
+    assert.ok(slots.length > 0, "platform.config.json deveria ter ao menos 1 slot configurado");
+    for (const [slot, file] of slots) {
+      assert.doesNotThrow(() => bodyOf(file), `${slot} → context/snippets/${file} não existe`);
+    }
+  });
+
+  it("nenhum snippet de slot carrega placeholder não substituído ({mês} e afins)", () => {
+    // Nada no pipeline substitui `{...}` nesses snippets — um placeholder
+    // esquecido aqui é publicado literal pro leitor. Foi o que quase aconteceu
+    // com "Artigo Especial de {mês}" na rotação de 260727.
+    for (const [slot, file] of slots) {
+      const body = bodyOf(file);
+      const found = body.match(/\{[^}\n]{1,40}\}/g);
+      assert.equal(
+        found,
+        null,
+        `${slot} (${file}) tem placeholder não substituído: ${found?.join(", ")} — ou resolva no texto, ou implemente a substituição`,
+      );
+    }
+  });
+
+  it("o kicker de abertura sai em negrito (decisão 260717, bold-wrap sem detecção por emoji)", () => {
+    // O #3475 tirou os marcadores emoji; o negrito do título virou o único
+    // sinal visual de kicker. Um snippet novo que esqueça o `**` sai com o
+    // título indistinguível do corpo no e-mail.
+    for (const [slot, file] of slots) {
+      const firstLine = bodyOf(file).split("\n")[0].trim();
+      assert.match(firstLine, /^\*\*/, `${slot} (${file}) deveria abrir com kicker em negrito; achou: ${firstLine.slice(0, 60)}`);
+    }
+  });
+});
+
 describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
   function setupEdition() {
     const dir = mkdtempSync(join(tmpdir(), "stitch-boxes-"));
@@ -782,16 +824,16 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
     ...extra,
   });
 
-  it("config default do platform.config.json (slot1=recomendacao-leitura, slot2=livros, #3212): injeta os 2 slots", () => {
+  it("config default do platform.config.json (#3212): injeta os 2 slots", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir));
       const slot1 = extractBoxDivulgacao1(out);
-      assert.ok(slot1, "slot1 (recomendação de leitura) injetado por default");
-      assert.match(slot1!, /Recomendação de leitura/);
+      assert.ok(slot1, "slot1 injetado por default");
+      assert.match(slot1!, /Recomendação de Leitura/);
       const slot2 = extractBoxDivulgacao2(out);
-      assert.ok(slot2, "slot2 (curadoria de livros) injetado por default");
-      assert.match(slot2!, /curadoria de livros/);
+      assert.ok(slot2, "slot2 injetado por default");
+      assert.match(slot2!, /Artigo Especial/);
     } finally {
       cleanup();
     }
@@ -800,8 +842,11 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
   it("#3306: loadDivulgacaoSnippet aceita formato multi-parágrafo sem bold-wrap total (📖 recomendacao-leitura.md) — antes retornava null e a edição saía sem o box", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
+      // O snippet foi pro _arquivo/ na rotação de 260727, mas segue sendo o
+      // fixture certo pro caso do #3306: é o formato multi-parágrafo que
+      // quebrava o loader. Mesmo padrão do teste do Alexa+ logo abaixo.
       const out = stitchNewsletter(base(dir, internalDir, {
-        boxesDivulgacao: { slot1: "recomendacao-leitura.md", slot2: null },
+        boxesDivulgacao: { slot1: "_arquivo/recomendacao-leitura.md", slot2: null },
       }));
       const slot1 = extractBoxDivulgacao1(out);
       assert.ok(slot1, "slot1 (📖, formato genérico) injetado, não mais null");
@@ -922,21 +967,30 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
     ...extra,
   });
 
-  it("#3212/#3476/#3824: config default de platform.config.json injeta os 3 slots (recomendação de leitura, livros, apoio)", () => {
+  // Âncoras de conteúdo dos 3 slots DEFAULT de platform.config.json. A rotação
+  // dos boxes é decisão editorial e muda algumas vezes por ano (260727: leitura
+  // → livro do Bentley, livros → artigo especial, apoio → Clarice); quando
+  // mudar, é só trocar estas 3 linhas. Os testes de POSIÇÃO abaixo não usam
+  // âncora de texto de propósito — derivam a posição do próprio box extraído,
+  // então sobrevivem à rotação sem edição nenhuma.
+  const SLOT1_ANCHOR = /Recomendação de Leitura/;
+  const SLOT2_ANCHOR = /Artigo Especial/;
+  const SLOT3_ANCHOR = /Escreva melhor em português com a Clarice/;
+
+  it("#3212/#3476/#3824: config default de platform.config.json injeta os 3 slots", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       // Sem override — lê boxes_divulgacao direto de platform.config.json.
       const out = stitchNewsletter(base(dir, internalDir));
       const slot1 = extractBoxDivulgacao1(out);
-      assert.ok(slot1, "slot1 (recomendação de leitura) injetado por default");
-      assert.match(slot1!, /Recomendação de leitura/);
+      assert.ok(slot1, "slot1 injetado por default");
+      assert.match(slot1!, SLOT1_ANCHOR);
       const slot2 = extractBoxDivulgacao2(out);
-      assert.ok(slot2, "slot2 (curadoria de livros) injetado por default");
-      assert.match(slot2!, /curadoria de livros/);
+      assert.ok(slot2, "slot2 injetado por default");
+      assert.match(slot2!, SLOT2_ANCHOR);
       const slot3 = extractBoxDivulgacao3(out);
-      assert.ok(slot3, "slot3 (apoio-divulgacao) injetado por default (#3824)");
-      assert.match(slot3!, /Apoie a diar\.ia\.br/);
-      assert.match(slot3!, /Quero apoiar/);
+      assert.ok(slot3, "slot3 injetado por default (#3824)");
+      assert.match(slot3!, SLOT3_ANCHOR);
     } finally {
       cleanup();
     }
@@ -947,7 +1001,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
     try {
       const out = stitchNewsletter(base(dir, internalDir));
       const d3Pos = out.indexOf("DESTAQUE 3");
-      const slot3Pos = out.indexOf("Apoie a diar.ia.br");
+      const slot3Pos = out.indexOf(extractBoxDivulgacao3(out) ?? " ");
       const umPos = out.indexOf("USE MELHOR");
       assert.ok(slot3Pos > 0, "box3 deveria estar presente");
       assert.ok(
@@ -982,7 +1036,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
       );
       const out = stitchNewsletter(base(dir, internalDir));
       assert.doesNotMatch(out, /USE MELHOR/);
-      const slot3Pos = out.indexOf("Apoie a diar.ia.br");
+      const slot3Pos = out.indexOf(extractBoxDivulgacao3(out) ?? " ");
       const eiaPos = out.indexOf("É IA?");
       assert.ok(slot3Pos > 0 && eiaPos > 0);
       assert.ok(slot3Pos < eiaPos, "É IA? deve vir logo após box3 quando USE MELHOR está ausente");
@@ -1008,7 +1062,7 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
       });
       const slot3 = extractBoxDivulgacao3(out);
       assert.ok(slot3, "slot3 deve injetar mesmo sem D3 (é pós-último-destaque, não uma lacuna D2/D3)");
-      assert.match(slot3!, /Apoie a diar\.ia\.br/);
+      assert.match(slot3!, SLOT3_ANCHOR);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1023,7 +1077,10 @@ describe("#3476 — 3 boxes de divulgação sempre presentes + É IA? depois de 
       );
       const out = stitchNewsletter(base(dir, internalDir));
       assert.equal((out.match(/🔧/g) || []).length, 1, "só 1 marcador 🔧 (não dupla-injeta)");
-      assert.ok(!out.includes("Quero apoiar"), "não injeta o snippet default por cima do box já colado");
+      // Âncora do slot3 e não "Quero apoiar": esta última passou a existir
+      // também no slot2 (artigo-especial-apoiadores) na rotação de 260727, e
+      // um match dela aqui não distinguiria mais os dois boxes.
+      assert.doesNotMatch(out, SLOT3_ANCHOR, "não injeta o snippet default por cima do box já colado");
     } finally {
       cleanup();
     }
@@ -1085,17 +1142,17 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
     try {
       const out = stitchNewsletter(base(dir, internalDir));
       const d1Pos = out.indexOf("DESTAQUE 1");
-      const calloutPos = out.indexOf("Recomendação de leitura");
+      const calloutPos = out.indexOf(extractBoxDivulgacao1(out) ?? " ");
       const d2Pos = out.indexOf("DESTAQUE 2");
       assert.ok(d1Pos < calloutPos && calloutPos < d2Pos, "callout entre D1 e D2");
       // acceptance #3212: slot1 default agora é a recomendação de leitura específica,
       // curadoria geral de livros move pro slot2 — boxDivulgacao1 acha o box no HTML final.
       const mid = extractBoxDivulgacao1(out);
       assert.ok(mid, "extractBoxDivulgacao1 acha o box");
-      // 260717: título volta a sair em negrito (bold-wrap kicker, ver
-      // context/snippets/recomendacao-leitura.md) — reverte o efeito
-      // colateral do #3475 sem detecção por emoji.
-      assert.match(mid!, /^\*\*Recomendação de leitura\*\*/);
+      // 260717: título volta a sair em negrito (bold-wrap kicker) — reverte o
+      // efeito colateral do #3475 sem detecção por emoji. O kicker segue o
+      // slot1 vigente (260727: historia-ia-para-quem-tem-pressa-clarice.md).
+      assert.match(mid!, /^\*\*Recomendação de Leitura\*\*/);
     } finally {
       cleanup();
     }
@@ -1139,12 +1196,12 @@ describe("#1938 — boxDivulgacao1 CLARICE auto-injetado entre D1 e D2", () => {
         "**Curadoria de livros [ver](https://livros.diaria.workers.dev)**\n\n**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2",
       );
       const out = stitchNewsletter(base(dir, internalDir));
-      assert.ok(!out.includes("Recomendação de leitura"), "não injeta slot1 quando já há box pré-existente");
-      // #3212: slot2 (D2/D3) default também é livros agora — o box pré-existente
-      // (colado manualmente na região do slot1) NÃO deve duplicar, mas o slot2
-      // segue injetando seu próprio box independentemente (posições/gaps diferentes).
-      // Total esperado: 1 (pré-existente, slot1 suprimido) + 1 (auto-injetado, slot2) = 2.
-      assert.equal((out.match(/curadoria de livros/gi) || []).length, 2);
+      assert.ok(!out.includes("Recomendação de Leitura"), "não injeta slot1 quando já há box pré-existente");
+      // O box de livros colado à mão continua único: o slot2 default deixou de
+      // ser livros na rotação de 260727 (agora é o artigo especial), então não
+      // há mais um segundo box de livros auto-injetado pra somar aqui.
+      // O ponto do teste segue de pé: o box pré-existente não é duplicado.
+      assert.equal((out.match(/curadoria de livros/gi) || []).length, 1);
     } finally {
       cleanup();
     }
