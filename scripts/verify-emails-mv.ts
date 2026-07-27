@@ -197,6 +197,58 @@ export function readStoreCandidates(
 }
 
 /**
+ * TODOS os contatos do cohort no store (verificados ou não) — usado pra
+ * recompor `name` de emails que já saíram do candidate-set de
+ * `readStoreCandidates` (mv_bucket já preenchido) mas ainda precisam
+ * aparecer nos 3 CSVs de saída porque o checkpoint DESTE ciclo os contém
+ * (#4071 — materializar o checkpoint completo nos outputs, não só
+ * `processed_this_run`/candidatos ainda pendentes). Mesmo shape de
+ * `readStoreCandidates` pra dar drop-in em `splitRows`.
+ */
+export function readAllCohortRows(
+  db: DatabaseSync,
+  cohort: string,
+): { rows: Record<string, string>[]; fields: string[]; emailKey: string } {
+  const raw = db
+    .prepare(`SELECT email, name FROM clarice_users WHERE cohort = ?`)
+    .all(cohort) as Array<{ email: string; name: string | null }>;
+  const rows = raw
+    .filter((r) => (r.email ?? "").trim().length > 0)
+    .map((r) => ({ email: r.email.trim().toLowerCase(), name: r.name ?? "" }));
+  return { rows, fields: ["email", "name"], emailKey: "email" };
+}
+
+/**
+ * Materializa o conjunto final de linhas pra escrever nos 3 CSVs de saída a
+ * partir do CHECKPOINT COMPLETO do ciclo (`.mv-cache-*.json`), não só dos
+ * candidatos desta rodada (#4071). Um contato verificado numa rodada
+ * anterior do MESMO ciclo já pode ter saído do candidate-set de
+ * `readStoreCandidates` (o store foi re-ingerido entre as rodadas e seu
+ * `mv_bucket` já está preenchido) — sem essa materialização, o CSV final
+ * reflete só `processed_this_run`/pendentes, descartando resultado pago.
+ *
+ * `name` vem, em ordem de preferência: (1) `currentRows` (candidatos desta
+ * rodada, fresh do store), (2) `allCohortRows` (todo o cohort, cobre quem
+ * já saiu do candidate-set), (3) string vazia (email do checkpoint que não
+ * está mais no cohort — trocou de cohort, ou foi removido do store; ainda
+ * assim precisa aparecer no CSV, já que crédito MV foi gasto nele).
+ */
+export function buildOutputRows(
+  checkpoint: Checkpoint,
+  currentRows: Record<string, string>[],
+  allCohortRows: Record<string, string>[],
+  emailKey: string,
+): Record<string, string>[] {
+  const nameByEmail = new Map<string, string>();
+  for (const r of allCohortRows) nameByEmail.set(r[emailKey], r.name ?? "");
+  for (const r of currentRows) nameByEmail.set(r[emailKey], r.name ?? ""); // fresh > all-cohort snapshot
+  return Object.keys(checkpoint).map((email) => ({
+    [emailKey]: email,
+    name: nameByEmail.get(email) ?? "",
+  }));
+}
+
+/**
  * Total de contatos do cohort no store, independente de já terem sido
  * verificados (#2886 PR3 review). Usado só pra diferenciar "0 candidatos
  * porque o cohort já foi todo verificado em ciclos anteriores" (nenhum aviso
@@ -509,10 +561,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // falhar (store corrompido, erro de schema inesperado) — mesmo padrão de
   // `clarice-mv-status.ts` (`try { ... } finally { db.close(); }`).
   const db = openClariceDb(args.db);
-  let rows: Record<string, string>[], fields: string[], emailKey: string, memberCount: number;
+  let rows: Record<string, string>[],
+    fields: string[],
+    emailKey: string,
+    memberCount: number,
+    allCohortRows: Record<string, string>[];
   try {
     ({ rows, fields, emailKey } = readStoreCandidates(db, cohort));
     memberCount = cohortMemberCount(db, cohort);
+    // #4071: snapshot de TODO o cohort (não só candidatos) — dá `name` pra
+    // quem já saiu do candidate-set mas ainda está no checkpoint deste ciclo.
+    ({ rows: allCohortRows } = readAllCohortRows(db, cohort));
   } finally {
     db.close();
   }
@@ -619,7 +678,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   process.off("SIGTERM", onSignal);
 
   // --- Split + write outputs ---
-  const split = splitRows(rows, emailKey, checkpoint);
+  // #4071: materializar o CHECKPOINT COMPLETO (não `rows`, que só tem os
+  // candidatos desta rodada) — uma rodada anterior do mesmo ciclo pode ter
+  // verificado emails que já saíram do candidate-set (store re-ingerido
+  // entre rodadas); sem isso o CSV final descartava esse resultado pago.
+  const outputRows = buildOutputRows(checkpoint, rows, allCohortRows, emailKey);
+  const split = splitRows(outputRows, emailKey, checkpoint);
   // Colunas fixas (originais + MV_*) pra header SEMPRE sair, mesmo em bucket
   // vazio — Papa.unparse([]) gera string vazia (CSV sem header) que quebra import.
   const outFields = [...fields, "MV_RESULT", "MV_QUALITY", "MV_CODE"];

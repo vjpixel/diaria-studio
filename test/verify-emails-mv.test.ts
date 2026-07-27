@@ -6,9 +6,11 @@ import {
   buildVerifyUrl,
   mvOutputBase,
   readStoreCandidates,
+  readAllCohortRows,
   cohortMemberCount,
   hasLegacyInputFlag,
   splitRows,
+  buildOutputRows,
   parseArgs,
   type Bucket,
 } from "../scripts/verify-emails-mv.ts";
@@ -276,6 +278,99 @@ describe("splitRows", () => {
       0,
     );
     assert.equal(total, rows.length);
+  });
+});
+
+describe("readAllCohortRows (#4071 — snapshot de TODO o cohort, verificado ou não)", () => {
+  it("retorna todos os membros do cohort, mesmo com mv_bucket preenchido", () => {
+    const db = seedDb([
+      { email: "a@b.com", name: "A", cohort: "leads-2026-07", mv_bucket: null },
+      { email: "b@b.com", name: "B", cohort: "leads-2026-07", mv_bucket: "verified", mv_cycle: "2607-08" },
+      { email: "c@b.com", name: "C", cohort: "outro-cohort", mv_bucket: null },
+    ]);
+    try {
+      const { rows } = readAllCohortRows(db, "leads-2026-07");
+      assert.deepEqual(rows.map((r) => r.email).sort(), ["a@b.com", "b@b.com"]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("buildOutputRows (#4071 — CSV final materializa o CHECKPOINT COMPLETO, não só a rodada atual)", () => {
+  it("regressão exata do incidente 260726: 2ª rodada com candidatos novos preserva os da 1ª", () => {
+    // Rodada 1: cohort tinha 2 candidatos (nenhum verificado ainda no store).
+    const round1Candidates = [
+      { email: "old1@b.com", name: "Old1" },
+      { email: "old2@b.com", name: "Old2" },
+    ];
+    const checkpointAfterRound1: Record<string, { result: string; resultcode: number; quality: string }> = {
+      "old1@b.com": { result: "ok", resultcode: 1, quality: "good" },
+      "old2@b.com": { result: "invalid", resultcode: 6, quality: "bad" },
+    };
+
+    // Entre as rodadas, clarice-build-db.ts ingeriu o CSV da rodada 1 → o
+    // store agora marca old1/old2 com mv_bucket preenchido, então eles NÃO
+    // aparecem mais como candidatos de readStoreCandidates (saíram do
+    // candidate-set) — só o resto do cohort permanece.
+    const allCohortAfterIngest = [
+      { email: "old1@b.com", name: "Old1" },
+      { email: "old2@b.com", name: "Old2" },
+      { email: "new1@b.com", name: "New1" },
+    ];
+    // Rodada 2: só o candidato novo aparece (comportamento real de
+    // readStoreCandidates pós-ingestão).
+    const round2Candidates = [{ email: "new1@b.com", name: "New1" }];
+    // Checkpoint do CICLO acumula os 2 antigos + o novo — é o que estava
+    // certo mesmo antes do fix (#4071 confirma isso ao vivo: 1960 = 1628+332).
+    const checkpointAfterRound2 = {
+      ...checkpointAfterRound1,
+      "new1@b.com": { result: "catch_all", resultcode: 2, quality: "risky" },
+    };
+
+    // Antes do fix, o bug era: splitRows(round2Candidates, ...) — old1/old2 SOMEM
+    // do CSV final porque round2Candidates só tem o candidato novo da 2ª rodada.
+    const buggyOutput = splitRows(round2Candidates, "email", checkpointAfterRound2);
+    assert.deepEqual(buggyOutput.verified.map((r) => r.email), ["new1@b.com"]); // old1 sumiu
+    assert.deepEqual(buggyOutput.rejected.map((r) => r.email), []); // old2 sumiu
+
+    // Fix: materializar o checkpoint completo, usando o snapshot de cohort
+    // pra recuperar `name` de quem já saiu do candidate-set.
+    const outputRows = buildOutputRows(
+      checkpointAfterRound2,
+      round2Candidates,
+      allCohortAfterIngest,
+      "email",
+    );
+    const fixedOutput = splitRows(outputRows, "email", checkpointAfterRound2);
+
+    assert.deepEqual(fixedOutput.verified.map((r) => r.email).sort(), ["new1@b.com", "old1@b.com"]);
+    assert.deepEqual(fixedOutput.rejected.map((r) => r.email), ["old2@b.com"]);
+    // `name` foi corretamente recuperado do snapshot de cohort pros antigos.
+    assert.equal(fixedOutput.verified.find((r) => r.email === "old1@b.com")!.name, "Old1");
+    assert.equal(fixedOutput.rejected.find((r) => r.email === "old2@b.com")!.name, "Old2");
+
+    // União completa: nenhuma linha do checkpoint foi perdida.
+    const total =
+      fixedOutput.verified.length + fixedOutput.rejected.length + fixedOutput.unknown.length;
+    assert.equal(total, Object.keys(checkpointAfterRound2).length);
+  });
+
+  it("email do checkpoint ausente de currentRows E de allCohortRows ainda aparece, com name vazio", () => {
+    const checkpoint = { "ghost@b.com": { result: "ok", resultcode: 1, quality: "good" } };
+    const rows = buildOutputRows(checkpoint, [], [], "email");
+    assert.deepEqual(rows, [{ email: "ghost@b.com", name: "" }]);
+  });
+
+  it("currentRows tem prioridade sobre allCohortRows pro name (dado mais fresco)", () => {
+    const checkpoint = { "a@b.com": { result: "ok", resultcode: 1, quality: "good" } };
+    const rows = buildOutputRows(
+      checkpoint,
+      [{ email: "a@b.com", name: "Fresh" }],
+      [{ email: "a@b.com", name: "Stale" }],
+      "email",
+    );
+    assert.deepEqual(rows, [{ email: "a@b.com", name: "Fresh" }]);
   });
 });
 
