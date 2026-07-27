@@ -70,7 +70,7 @@ pelo slot nem pelo emoji:
   o último link vira botão pill centralizado no HTML (legado #3204: um
   marcador `🛒` de abertura também acionava este formato; removido em #3475
   por ser redundante com o sinal (b) em todo conteúdo real observado).
-  Formato de `alexa-plus-divulgacao.md`.
+  Formato de `_arquivo/alexa-plus-divulgacao.md`.
 - **multi-parágrafo com lista** — mesma família estrutural do carrinho (texto
   plano, sem bold-wrap), mas com um bloco de lista `- item` no meio que vira
   `<ul><li>` real no HTML. Formato de `apoio-divulgacao.md`.
@@ -93,13 +93,13 @@ pelo slot nem pelo emoji:
   — nos outros slots isso não muda nada (kicker já sairia de qualquer forma),
   mas importa se um dia esse conteúdo for usado no topo.
 
-## Os 8 arquivos
+## Os 9 arquivos
 
 | Arquivo | Slot(s) | Formato | Auto-injetável via `boxes_divulgacao`? | Quando usar |
 |---|---|---|---|---|
 | `livros-divulgacao.md` | Slot 1, 2 (default) ou 3 | bold-line/mid-callout | **Sim** — é o default de `slot2` (#3212) | Curadoria própria (`livros.diar.ia.br`), roda sem intervenção na maioria das edições (#2527). |
 | `clarice-divulgacao.md` | Slot 1, 2 ou 3 | bold-line/mid-callout, link de afiliado (`?via=diaria`) | **Sim** | Trocar o config quando quiser rodar a campanha Clarice no lugar de livros (era o default pré-#2527). Também reusado no mensal como seção própria. |
-| `alexa-plus-divulgacao.md` | Slot 1, 2 ou 3 | carrinho/CTA pill, com disclosure de comissão no próprio corpo | **Sim** (último parágrafo é só o link CTA — sinal estrutural) | Trocar o config quando quiser divulgar a campanha de afiliado Alexa+. |
+| `_arquivo/alexa-plus-divulgacao.md` | Slot 1, 2 ou 3 (quando ativo) | carrinho/CTA pill, com disclosure de comissão no próprio corpo | Arquivado (260726) — movido pra `_arquivo/`, fora de `boxes_divulgacao` | Campanha de afiliado Alexa+ encerrada/pausada. Mantido só como referência de formato; mover de volta pra `context/snippets/` e reconfigurar `boxes_divulgacao` se a campanha reativar. |
 | `recomendacao-leitura.md` | Slot 1 (default) ou qualquer outro | bold-line/mid-callout genérico (só 1 link no bloco, nenhum parágrafo CTA-only → não vira carrinho) | **Sim** (#3306) — `loadDivulgacaoSnippet` tem um 3º fallback genérico: quando o conteúdo não bate bold-line nem carrinho, devolve o texto cru em vez de `null`. É o default de `slot1` desde #3212. | Default automático — não precisa fazer nada. Recomendação de leitura pessoal (livro/artigo) com link afiliado; título+autor em negrito-com-link, 1 comentário pessoal em 1ª pessoa, sem CTA pill. Editor substitui o conteúdo a cada reuso (troca manual do arquivo/edição pontual). |
 | `indicacao-ferramenta.md` | Slot 1, 2 ou 3 | bold-line/mid-callout genérico (mesmo fallback do #3306) | **Sim** — era o default de `slot3` (#3476), substituído por `apoio-divulgacao.md` em #3824 (260722). Segue disponível pra reuso pontual — trocar o config quando quiser rodar essa campanha em vez da de apoio. | Indicação pessoal de ferramenta que o editor usa/recomenda, SEM comissão — disclaimer em itálico no próprio corpo. Editor substitui nome/link/comentário a cada reuso. |
 | `apoio-divulgacao.md` | Slot 3 (default, #3824) — também colável em slot 1/2 | multi-parágrafo com lista + CTA pill | **Sim** — é o default de `slot3` desde #3824 (260722, decisão permanente do editor, substitui `indicacao-ferramenta.md`). Colar manualmente no draft (`02-d1-draft.md`/`02-d2-draft.md`/`02-d3-draft.md`) também funciona pra rodar num slot diferente pontualmente — o parse do lado do render é marcador-agnóstico e não depende de `loadDivulgacaoSnippet`. | Default automático. Programa de apoio (apoia.se/diaria) com lista de recompensas em bullets. |
