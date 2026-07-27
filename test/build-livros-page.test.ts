@@ -165,8 +165,15 @@ describe("renderLivrosPage (#1744)", () => {
     assert.doesNotMatch(html, /c\.hidden\s*=/);
     assert.match(html, /id="empty"[^>]*style="display:none"/);
   });
-  it("self-contained (sem fetch de dados)", () => {
-    assert.doesNotMatch(html, /fetch\(/);
+  it("self-contained pros DADOS dos livros (sem fetch pra montar a lista) — #4051 introduz 1 fetch, mas é o POST do CTA de assinatura, não busca de dados", () => {
+    // Todo `fetch(` no HTML deve ser o endpoint de assinatura cross-origin
+    // (eia.diar.ia.br/jogar/subscribe, ver describe "CTA de assinatura inline"
+    // abaixo) — nunca uma busca de dados dos livros em si (que continuam
+    // embutidos inline no HTML, ver `cards` acima).
+    const fetchCalls = html.match(/fetch\([^)]*\)/g) ?? [];
+    for (const call of fetchCalls) {
+      assert.match(call, /eia\.diar\.ia\.br\/jogar\/subscribe/, `fetch inesperado: ${call}`);
+    }
   });
   it("escapa conteúdo (sem injeção)", () => {
     const evil = renderLivrosPage([book({ title: "<script>alert(1)</script>", summary: "x & y" })]);
@@ -246,6 +253,53 @@ describe("data-themes/option value slugificados — #3118 item 6", () => {
     const html = renderLivrosPage([book({ themes: ["Ética em IA"] })]);
     assert.match(html, /\(THEME_LABELS\[a\] \|\| a\)\.localeCompare\(THEME_LABELS\[b\] \|\| b, 'pt-BR'\)/);
     assert.match(html, /esc\(THEME_LABELS\[t\] \|\| t\)/);
+  });
+});
+
+describe("CTA de assinatura inline — hero + fim de lista (#4051)", () => {
+  const html = renderLivrosPage([book()]);
+
+  it("hero CTA aparece logo após a lede, ANTES da barra de filtros", () => {
+    const ledeIdx = html.indexOf('class="lede"');
+    const heroIdx = html.indexOf('id="livros-cta-hero"');
+    const filtersIdx = html.indexOf('class="filters"');
+    assert.ok(ledeIdx >= 0 && heroIdx >= 0 && filtersIdx >= 0, "todos os 3 marcadores devem existir");
+    assert.ok(ledeIdx < heroIdx, "hero CTA deve vir depois da lede");
+    assert.ok(heroIdx < filtersIdx, "hero CTA deve vir antes da barra de filtros");
+  });
+
+  it("footer CTA aparece depois do grid de cards", () => {
+    const gridIdx = html.indexOf('id="grid"');
+    const footerCtaIdx = html.indexOf('id="livros-cta-footer"');
+    const siteFooterIdx = html.indexOf("<footer>");
+    assert.ok(gridIdx < footerCtaIdx, "footer CTA deve vir depois do grid");
+    assert.ok(footerCtaIdx < siteFooterIdx, "footer CTA deve vir antes do <footer> do site");
+  });
+
+  it("cada CTA tem data-source distinto — hero=livros-hero, footer=livros-footer", () => {
+    const heroBlock = html.slice(html.indexOf('id="livros-cta-hero"'), html.indexOf('id="livros-cta-hero"') + 400);
+    const footerBlock = html.slice(html.indexOf('id="livros-cta-footer"'), html.indexOf('id="livros-cta-footer"') + 400);
+    assert.match(heroBlock, /data-source="livros-hero"/);
+    assert.match(footerBlock, /data-source="livros-footer"/);
+  });
+
+  it("os 2 forms têm e-mail, honeypot e opt-in (mesma disciplina anti-abuso/LGPD do #3580)", () => {
+    const forms = html.match(/<form id="livros-cta-[^"]+"[^>]*>[\s\S]*?<\/form>/g) ?? [];
+    assert.equal(forms.length, 2);
+    for (const f of forms) {
+      assert.match(f, /type="email" name="email"/);
+      assert.match(f, /name="website"/); // honeypot
+      assert.match(f, /type="checkbox" name="optin"/);
+    }
+  });
+
+  it("script POSTa pra eia.diar.ia.br/jogar/subscribe (endpoint cross-origin do worker poll) com o data-source como campo source", () => {
+    assert.match(html, /fetch\("https:\/\/eia\.diar\.ia\.br\/jogar\/subscribe"/);
+    assert.match(html, /source: form\.getAttribute\("data-source"\) \|\| ""/);
+  });
+
+  it("footer de navegação (Diar.ia) carrega UTM utm_source=livros&utm_medium=footer-nav", () => {
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\?utm_source=livros&amp;utm_medium=footer-nav">Diar\.ia<\/a>/);
   });
 });
 

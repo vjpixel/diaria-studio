@@ -122,6 +122,34 @@ export function renderCuradoriaFooterStyles(): string {
   footer .foot-credit { margin: 6px 0 0; }`;
 }
 
+/**
+ * CSS do bloco de CTA de assinatura inline (#4051) — 2 posições em
+ * `build-livros-page.ts` (hero + fim da lista). Extraído aqui (não em
+ * `build-livros-page.ts`) porque cursos/É IA? podem querer o mesmo bloco no
+ * futuro (mesma disciplina de #3113 — CSS compartilhado entre páginas de
+ * curadoria). Reusa `.signup-*`/`.subscribe-*` como PREFIXO de classe
+ * (`.cta-subscribe`) — nomes DIFERENTES dos usados em `workers/poll/src/jogar.ts`
+ * (`.signup-form`) porque são bundles CSS separados (scripts/ vs workers/poll/),
+ * sem risco de colisão, mas manter nomes próprios evita confusão de grep
+ * cross-repo entre os dois estilos.
+ */
+export function renderCuradoriaCtaSubscribeStyles(): string {
+  return `  .cta-subscribe { margin: 0; padding: 22px 26px; background: var(--card); border: 1px solid var(--rule); border-radius: 2px; max-width: 480px; }
+  .cta-subscribe.cta-subscribe--hero { margin: 28px 0 0; }
+  .cta-subscribe.cta-subscribe--end { margin: 48px auto 0; text-align: left; }
+  .cta-subscribe .cta-text { font-family: ${SERIF}; font-size: 18px; line-height: 1.4; margin: 0 0 14px; color: var(--ink); }
+  .cta-subscribe .cta-field { display: block; margin: 0 0 10px; font-size: 13px; font-family: ${SANS}; }
+  .cta-subscribe .cta-field input { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--rule); border-radius: 2px; font-size: 15px; font-family: ${SANS}; color: var(--ink); background: var(--paper); }
+  .cta-subscribe .cta-optin { display: block; margin: 4px 0 14px; font-size: 13px; font-family: ${SANS}; line-height: 1.4; }
+  .cta-subscribe .cta-optin input { margin-right: 8px; }
+  .cta-subscribe .cta-hp { position: absolute !important; left: -9999px !important; width: 1px; height: 1px; overflow: hidden; }
+  .cta-subscribe .cta-submit { display: inline-block; padding: 11px 22px; background: var(--teal); color: #fff; border: none; border-radius: 2px; font-weight: 700; cursor: pointer; font-size: 15px; font-family: ${SANS}; }
+  .cta-subscribe .cta-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+  .cta-subscribe .cta-status { margin: 10px 0 0; font-size: 13px; font-family: ${SANS}; }
+  .cta-subscribe .cta-status.ok { color: var(--teal); }
+  .cta-subscribe .cta-status.err { color: var(--ink); font-weight: 600; }`;
+}
+
 export interface CuradoriaNavLink {
   readonly label: string;
   readonly url: string;
@@ -151,8 +179,20 @@ export const CURADORIA_NAV_LINKS: readonly CuradoriaNavLink[] = [
 /**
  * Rodapé comum: nav cruzada (Diar.ia · Cursos · Livros · É IA?) + linha de
  * crédito específica da página (ex: "diar.ia.br — curadoria de cursos sobre IA").
+ *
+ * `diariaUtm` (#4051): query string (sem `?`, ex: `"utm_source=livros&utm_medium=footer-nav"`)
+ * apensada SÓ ao link "Diar.ia" — as outras 3 entradas (Cursos/Livros/É IA?)
+ * não são o objeto de medição desta issue e continuam sem UTM. Parâmetro
+ * OPCIONAL e passado pelo CALLER (nunca hardcoded aqui) porque
+ * `CURADORIA_NAV_LINKS` é um singleton `readonly` compartilhado por
+ * cursos/livros/É IA? (#3113) — hardcodear o UTM de uma página aqui
+ * vazaria pras outras duas. Cada página passa o próprio valor; ausência
+ * preserva o comportamento anterior (link bare, sem UTM).
  */
-export function renderCuradoriaFooter(creditText: string): string {
-  const nav = CURADORIA_NAV_LINKS.map((l) => `<a href="${escHtml(l.url)}">${escHtml(l.label)}</a>`).join(" · ");
+export function renderCuradoriaFooter(creditText: string, diariaUtm?: string): string {
+  const nav = CURADORIA_NAV_LINKS.map((l) => {
+    const href = l.label === "Diar.ia" && diariaUtm ? `${l.url}?${diariaUtm}` : l.url;
+    return `<a href="${escHtml(href)}">${escHtml(l.label)}</a>`;
+  }).join(" · ");
   return `<footer><div class="wrap"><p class="foot-nav">${nav}</p><p class="foot-credit">${escHtml(creditText)}</p></div></footer>`;
 }

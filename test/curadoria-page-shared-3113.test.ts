@@ -100,6 +100,20 @@ describe("curadoria-page.ts — módulo compartilhado (#3113)", () => {
     assert.match(html, /d&#39;ele/);
   });
 
+  // #4051: 2º parâmetro OPCIONAL — query string apensada SÓ ao link "Diar.ia".
+  it("sem diariaUtm (2º parâmetro ausente) — link Diar.ia continua bare, comportamento pré-#4051", () => {
+    const html = renderCuradoriaFooter("crédito");
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br">Diar\.ia<\/a>/);
+  });
+
+  it("com diariaUtm — apensa SÓ no link Diar.ia; Cursos/Livros/É IA? continuam sem UTM", () => {
+    const html = renderCuradoriaFooter("crédito", "utm_source=livros&utm_medium=footer-nav");
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\?utm_source=livros&amp;utm_medium=footer-nav">Diar\.ia<\/a>/);
+    assert.match(html, /<a href="https:\/\/cursos\.diar\.ia\.br\/">Cursos<\/a>/);
+    assert.match(html, /<a href="https:\/\/livros\.diar\.ia\.br\/">Livros<\/a>/);
+    assert.match(html, /<a href="https:\/\/eia\.diar\.ia\.br\/leaderboard">É IA\?<\/a>/);
+  });
+
   it("URLs de Cursos/Livros na nav batem com o PAGE_URL exportado de cada builder — sem isso, mudar o domínio num builder e esquecer aqui reintroduz o drift silencioso que o #3113 elimina", () => {
     const byLabel = Object.fromEntries(CURADORIA_NAV_LINKS.map((l) => [l.label, l.url]));
     assert.equal(byLabel["Cursos"], CURSOS_PAGE_URL);

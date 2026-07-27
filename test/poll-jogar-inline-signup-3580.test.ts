@@ -109,7 +109,7 @@ describe("parseSubscribeBody (#3580)", () => {
       JSON.stringify({ name: "Ana", email: "ana@example.com", optin: true, website: "" }),
       "application/json",
     );
-    assert.deepEqual(p, { name: "Ana", email: "ana@example.com", optin: true, honeypot: "" });
+    assert.deepEqual(p, { name: "Ana", email: "ana@example.com", optin: true, honeypot: "", source: "" });
   });
 
   it("aceita optin como string 'on' (form nativo)", () => {
@@ -126,7 +126,7 @@ describe("parseSubscribeBody (#3580)", () => {
 
   it("JSON malformado → input vazio (nunca lança)", () => {
     const p = parseSubscribeBody("{ not json", "application/json");
-    assert.deepEqual(p, { name: "", email: "", optin: false, honeypot: "" });
+    assert.deepEqual(p, { name: "", email: "", optin: false, honeypot: "", source: "" });
   });
 });
 
@@ -134,23 +134,23 @@ describe("parseSubscribeBody (#3580)", () => {
 
 describe("validateSubscribeInput (#3580)", () => {
   it("honeypot preenchido → status 200 error honeypot (descarte silencioso)", () => {
-    const v = validateSubscribeInput({ name: "", email: "a@b.com", optin: true, honeypot: "bot" });
+    const v = validateSubscribeInput({ name: "", email: "a@b.com", optin: true, honeypot: "bot", source: "" });
     assert.deepEqual(v, { ok: false, status: 200, error: "honeypot" });
   });
 
   it("opt-in NÃO marcado → 400 optin_required (consentimento LGPD obrigatório)", () => {
-    const v = validateSubscribeInput({ name: "Ana", email: "a@b.com", optin: false, honeypot: "" });
+    const v = validateSubscribeInput({ name: "Ana", email: "a@b.com", optin: false, honeypot: "", source: "" });
     assert.deepEqual(v, { ok: false, status: 400, error: "optin_required" });
   });
 
   it("e-mail inválido → 400 invalid_email", () => {
-    const v = validateSubscribeInput({ name: "Ana", email: "not-an-email", optin: true, honeypot: "" });
+    const v = validateSubscribeInput({ name: "Ana", email: "not-an-email", optin: true, honeypot: "", source: "" });
     assert.deepEqual(v, { ok: false, status: 400, error: "invalid_email" });
   });
 
   it("válido → ok com nome trimado e cortado em 100 chars", () => {
     const longName = "x".repeat(200);
-    const v = validateSubscribeInput({ name: `  ${longName}  `, email: " a@b.com ", optin: true, honeypot: "" });
+    const v = validateSubscribeInput({ name: `  ${longName}  `, email: " a@b.com ", optin: true, honeypot: "", source: "" });
     assert.equal(v.ok, true);
     if (v.ok) {
       assert.equal(v.email, "a@b.com");

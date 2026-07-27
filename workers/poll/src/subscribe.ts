@@ -42,6 +42,47 @@ import { isValidVoteEmailFormat, SUBSCRIBE_UTM_SOURCE } from "./lib";
 export const INLINE_SUBSCRIBE_UTM_MEDIUM = "jogar-inline";
 export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = "eia-jogar-inline-signup";
 
+/**
+ * #4051: `/jogar/subscribe` passou a ser chamado CROSS-ORIGIN por
+ * `livros.diar.ia.br` (2 CTAs — hero + fim da lista de cards, ver
+ * `scripts/build-livros-page.ts`), não só pelo próprio `/jogar` (mesma
+ * origem). O UTM não pode mais ser um único triplo fixo — cada call site
+ * mede sua própria conversão via `scripts/count-subscriptions-by-utm.ts`.
+ *
+ * O cliente manda `source` (string curta, `SubscribeSource`) no corpo do
+ * POST; o servidor resolve o triplo UTM daqui — NUNCA aceita utm_* vindo do
+ * cliente diretamente (evitaria abuso de atribuição/spoofing de campanha).
+ * `source` ausente/desconhecido cai no default `jogar` (comportamento
+ * pré-#4051, back-compat com o form de `/jogar`/`/jogar/quiz` que não manda
+ * esse campo).
+ */
+export type SubscribeSource = "jogar" | "livros-hero" | "livros-footer";
+
+export interface SubscribeUtm {
+  source: string;
+  medium: string;
+  campaign: string;
+}
+
+const SUBSCRIBE_UTM_BY_SOURCE: Record<SubscribeSource, SubscribeUtm> = {
+  jogar: {
+    source: SUBSCRIBE_UTM_SOURCE,
+    medium: INLINE_SUBSCRIBE_UTM_MEDIUM,
+    campaign: INLINE_SUBSCRIBE_UTM_CAMPAIGN,
+  },
+  // utm_source=livros / utm_medium distinto por posição — pedido explícito da
+  // issue #4051 pra medir hero × fim-de-lista separadamente.
+  "livros-hero": { source: "livros", medium: "inline-hero", campaign: "livros-inline-signup" },
+  "livros-footer": { source: "livros", medium: "inline-footer", campaign: "livros-inline-signup" },
+};
+
+/** Pure: resolve o triplo UTM a partir do `source` mandado pelo cliente
+ * (default `jogar` pra valor ausente/desconhecido — nunca lança). */
+export function resolveSubscribeUtm(raw: unknown): SubscribeUtm {
+  const key = typeof raw === "string" ? raw : "";
+  return SUBSCRIBE_UTM_BY_SOURCE[key as SubscribeSource] ?? SUBSCRIBE_UTM_BY_SOURCE.jogar;
+}
+
 /** Teto de tamanho do nome capturado — evita payload abusivo (o campo é
  * opcional; a Beehiiv nem tem um campo nativo de nome, ver `subscribeToBeehiiv`). */
 export const SUBSCRIBE_NAME_MAX = 100;
@@ -58,6 +99,9 @@ export interface ParsedSubscribe {
   optin: boolean;
   /** honeypot — campo invisível que só bot preenche. */
   honeypot: string;
+  /** #4051 — chave de call site (ver `SubscribeSource`); string crua, resolvida
+   * só depois via `resolveSubscribeUtm` (nunca usada diretamente como UTM). */
+  source: string;
 }
 
 function asStr(v: unknown): string {
@@ -86,9 +130,10 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
         email: asStr(o.email),
         optin: truthyFlag(o.optin),
         honeypot: asStr(o.website),
+        source: asStr(o.source),
       };
     } catch {
-      return { name: "", email: "", optin: false, honeypot: "" };
+      return { name: "", email: "", optin: false, honeypot: "", source: "" };
     }
   }
   const params = new URLSearchParams(raw);
@@ -97,11 +142,12 @@ export function parseSubscribeBody(raw: string, contentType: string): ParsedSubs
     email: params.get("email") ?? "",
     optin: truthyFlag(params.get("optin")),
     honeypot: params.get("website") ?? "",
+    source: params.get("source") ?? "",
   };
 }
 
 export type SubscribeValidation =
-  | { ok: true; name: string; email: string }
+  | { ok: true; name: string; email: string; source: string }
   | { ok: false; status: number; error: string };
 
 /**
@@ -127,7 +173,7 @@ export function validateSubscribeInput(p: ParsedSubscribe): SubscribeValidation 
     return { ok: false, status: 400, error: "invalid_email" };
   }
   const name = (p.name || "").trim().slice(0, SUBSCRIBE_NAME_MAX);
-  return { ok: true, name, email };
+  return { ok: true, name, email, source: p.source };
 }
 
 export interface RateLimitResult {
@@ -188,6 +234,7 @@ export async function subscribeToBeehiiv(
   env: Env,
   input: { name: string; email: string },
   fetchImpl: typeof fetch = fetch,
+  utm: SubscribeUtm = SUBSCRIBE_UTM_BY_SOURCE.jogar,
 ): Promise<SubscribeResult> {
   const apiKey = env.BEEHIIV_API_KEY;
   const pubId = env.BEEHIIV_PUBLICATION_ID;
@@ -198,9 +245,9 @@ export async function subscribeToBeehiiv(
     email: input.email,
     reactivate_existing: false,
     send_welcome_email: true,
-    utm_source: SUBSCRIBE_UTM_SOURCE,
-    utm_medium: INLINE_SUBSCRIBE_UTM_MEDIUM,
-    utm_campaign: INLINE_SUBSCRIBE_UTM_CAMPAIGN,
+    utm_source: utm.source,
+    utm_medium: utm.medium,
+    utm_campaign: utm.campaign,
     referring_site: "jogar-eia-inline",
   };
   if (input.name && env.BEEHIIV_NAME_FIELD) {
@@ -263,7 +310,8 @@ export async function handleJogarSubscribe(
   const rl = await checkSubscribeRateLimit(env.POLL, ip);
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
 
-  const result = await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl);
+  const utm = resolveSubscribeUtm(v.source);
+  const result = await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl, utm);
   if (result.ok) return json({ ok: true }, 200, env);
   if (result.reason === "not_configured") {
     return json({ ok: false, error: "subscribe_unavailable" }, 503, env);

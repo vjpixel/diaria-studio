@@ -58,7 +58,10 @@ new_sqlite_classes = ["StatsCounter"]
 # NÃO deployar sem esse bloco em qualquer env que use VOTE_DEDUP.
 
 [vars]
-ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com"
+# #4051: livros.diar.ia.br adicionado — CTA inline de assinatura na página de
+# livros chama POST /jogar/subscribe cross-origin (worker diferente). Entrada
+# explícita, nunca "*" (mesma convenção de EMBED_ALLOWED_ORIGINS abaixo).
+ALLOWED_ORIGINS = "https://diar.ia.br,https://diaria.beehiiv.com,https://livros.diar.ia.br"
 
 # #3521: allowlist de origens autorizadas a embutir GET /embed dentro de um
 # <iframe> (CSP frame-ancestors, ver workers/poll/src/embed.ts). VAZIO =
