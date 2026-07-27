@@ -815,7 +815,7 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter(base(dir, internalDir, {
-        boxesDivulgacao: { slot1: "alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" },
+        boxesDivulgacao: { slot1: "_arquivo/alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" },
       }));
       const slot1 = extractBoxDivulgacao1(out);
       assert.ok(slot1, "slot1 injetado");
@@ -863,7 +863,7 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
     try {
       const out = stitchNewsletter(base(dir, internalDir, {
         sponsor: false,
-        boxesDivulgacao: { slot1: "alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" },
+        boxesDivulgacao: { slot1: "_arquivo/alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" },
       }));
       assert.equal(extractBoxDivulgacao1(out), null, "slot1 suprimido");
       assert.equal(extractBoxDivulgacao2(out), null, "slot2 suprimido");
@@ -886,7 +886,7 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
         d3Path: null,
         approvedCappedPath: join(internalDir, "01-approved-capped.json"),
         editionDir: dir,
-        boxesDivulgacao: { slot1: "alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" },
+        boxesDivulgacao: { slot1: "_arquivo/alexa-plus-divulgacao.md", slot2: "livros-divulgacao.md" },
       });
       assert.ok(extractBoxDivulgacao1(out), "slot1 (D1/D2) ainda existe em edição de 2 destaques");
       assert.equal(extractBoxDivulgacao2(out), null, "slot2 nunca injeta sem gap D2/D3");
