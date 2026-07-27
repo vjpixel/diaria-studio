@@ -388,7 +388,7 @@ import { inlineSignupScript, renderInlineSignupFormBlock, renderInlineSignupForm
 // por vote.ts/jogar.ts — valores só usados em request-time.
 import { handleJogarSubscribe } from "./subscribe";
 // #4054: gate por rodada do caminho de fora — tela + verify + subscribe.
-import { handleJogarGateSubscribe, handleJogarGateVerify, renderJogarGatePage } from "./web-gate";
+import { clearWebSessionCookieHeader, handleJogarGateSubscribe, handleJogarGateVerify, renderJogarGatePage } from "./web-gate";
 // #3975: identidade por e-mail no leaderboard do brand web (POST
 // /jogar/identify) — mesmo padrão de ciclo de import seguro de subscribe.ts
 // acima (identify.ts importa `json`/`corsHeaders` de index; index importa o
@@ -1295,6 +1295,15 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     }
     if (path === "/jogar/gate/verify" && request.method === "POST") return handleJogarGateVerify(request, env);
     if (path === "/jogar/gate/subscribe" && request.method === "POST") return handleJogarGateSubscribe(request, env);
+    // #4054: encerra a sessão do caminho de fora (mesmo padrão de
+    // `POST /gate/logout` em workers/cursos, #4052) — útil pra debug/teste
+    // manual e pra um eventual link "sair"/"trocar de conta" na tela de gate.
+    if (path === "/jogar/gate/logout" && request.method === "POST") {
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json", ...corsHeaders(env), "Set-Cookie": clearWebSessionCookieHeader() },
+      });
+    }
     // #3521: widget embutível (iframe) pra sites parceiros — `env` CRU
     // (mesmo racional acima: só lê `correct:{edition}` compartilhado); a
     // allowlist de embutimento (EMBED_ALLOWED_ORIGINS) é independente de
@@ -1406,5 +1415,5 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     if (path.startsWith("/img/") && (request.method === "GET" || request.method === "HEAD")) return handleImage(path, env);
     // #1239: /html/{key} migrado pra Worker draft (https://draft.diaria.workers.dev/{edition})
 
-    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/gate", "/jogar/gate/verify", "/jogar/gate/subscribe", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/img/{key}"] }, 404, env);
+    return json({ error: "not found", endpoints: ["/jogar", "/jogar/arquivo", "/jogar/quiz", "/jogar/quiz/answer", "/jogar/quiz/result", "/jogar/seq-state", "/jogar/subscribe", "/jogar/gate", "/jogar/gate/verify", "/jogar/gate/subscribe", "/jogar/gate/logout", "/jogar/identify", "/confirm-merge", "/embed", "/share/{token}", "/og/{token}", "/quiz-share/{token}", "/quiz-og/{token}", "/vote", "/stats", "/editions", "/leaderboard", "/leaderboard/{YYYY-MM}", "/leaderboard/{YYYY-MM}.json", "/leaderboard/{YYYY}/arquivo", "/leaderboard/{YYYY}/arquivo/{AAMMDD}", "/leaderboard/top1", "/set-name", "/admin/correct", "/admin/eiameta", "/img/{key}"] }, 404, env);
 }

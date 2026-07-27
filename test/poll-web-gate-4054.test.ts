@@ -209,6 +209,15 @@ describe("POST /jogar/gate/subscribe (#4054)", () => {
   });
 });
 
+describe("POST /jogar/gate/logout (#4054)", () => {
+  it("limpa o cookie de sessão do caminho de fora", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(new Request("https://poll.test/jogar/gate/logout", { method: "POST" }), env);
+    assert.match(getCookieHeader(res) ?? "", /Max-Age=0/);
+    assert.match(getCookieHeader(res) ?? "", new RegExp(WEB_SESSION_COOKIE));
+  });
+});
+
 // ── GET /jogar — gate por rodada (cookie "rodada livre usada") ──────────────
 
 describe("GET /jogar — gate por rodada (#4054)", () => {
