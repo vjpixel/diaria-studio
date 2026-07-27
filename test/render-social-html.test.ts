@@ -18,6 +18,8 @@ import {
   expectedImageCount,
   countImgTags,
   isPostPixel,
+  groupByDestaque,
+  channelsForSection,
 } from "../scripts/render-social-html.ts";
 
 const MD = `# LinkedIn
@@ -215,5 +217,167 @@ Opinião pessoal do Pixel sobre o D1, em primeira pessoa.
     const html = buildSocialHtml(platforms, images); // sem 3º arg → "1"
     assert.match(html, /POST PESSOAL — vjpixel \(imagem do D1\)/, "default continua D1");
     assert.ok((html.match(/img\.example\/d1\.jpg/g) ?? []).length >= 2, "post_pixel reusa imagem do d1 por default");
+  });
+});
+
+describe("channelsForSection — fonte única de verdade compartilhada (#4091)", () => {
+  it("'# Social' (texto único, #3991) → LinkedIn · Facebook · Instagram", () => {
+    assert.equal(channelsForSection("Social"), "💼 LinkedIn · 📘 Facebook · 📷 Instagram");
+  });
+
+  it("'# Curto' (#3992) → X (Twitter) · Threads", () => {
+    assert.equal(channelsForSection("Curto"), "𝕏 X (Twitter) · Threads");
+  });
+
+  it("nomes legados de canal único (pré-#3991) continuam resolvendo 1 canal", () => {
+    assert.equal(channelsForSection("LinkedIn"), "💼 LinkedIn");
+    assert.equal(channelsForSection("Facebook"), "📘 Facebook");
+    assert.equal(channelsForSection("Instagram"), "📷 Instagram");
+  });
+
+  it("seção não reconhecida FALHA ALTO em vez de cair num fallback silencioso", () => {
+    assert.throws(
+      () => channelsForSection("Bluesky"),
+      /seção social não reconhecida.*Bluesky/,
+      "canal novo sem entry em KNOWN_SOCIAL_CHANNELS deve lançar, não devolver o nome cru da seção",
+    );
+  });
+});
+
+describe("groupByDestaque — reagrupamento por destaque (#4091)", () => {
+  const IMAGES = {
+    d1: { url: "https://img.example/d1.jpg" },
+    d2: { url: "https://img.example/d2.jpg" },
+    d3: { url: "https://img.example/d3.jpg" },
+    eia_a: { url: "https://img.example/eia-a.jpg" },
+    eia_b: { url: "https://img.example/eia-b.jpg" },
+  };
+
+  it("2 seções (texto único + curto, #3991/#3992) agrupam no MESMO destaque, cada uma com seu bloco", () => {
+    const MD_2SEC = `# Social
+
+## d1
+
+Texto único do d1.
+
+## d2
+
+Texto único do d2.
+
+# Curto
+
+## d1
+
+Texto curto do d1.
+
+## d2
+
+Texto curto do d2.
+`;
+    const platforms = parsePlatforms(MD_2SEC);
+    const groups = groupByDestaque(platforms, IMAGES);
+    assert.equal(groups.length, 2, "2 destaques, não 4 — cada imagem aparece 1×");
+    const d1 = groups.find((g) => g.key === "d1")!;
+    assert.equal(d1.blocks.length, 2, "d1 recebe os 2 blocos (texto único + curto)");
+    assert.equal(d1.blocks[0].channels, "💼 LinkedIn · 📘 Facebook · 📷 Instagram");
+    assert.equal(d1.blocks[1].channels, "𝕏 X (Twitter) · Threads");
+  });
+
+  it("ordem: destaques numerados (d1→d3) → É IA? → post_pixel, mesmo com MD fora de ordem", () => {
+    // Seção deliberadamente escrita fora de ordem (post_pixel antes, eia no
+    // meio, d3 antes de d1) — a ordem de EXIBIÇÃO não pode depender da ordem
+    // de escrita no markdown.
+    const MD_SCRAMBLED = `# Social
+
+## post_pixel
+
+Post pessoal.
+
+## eia
+
+Texto do É IA?
+
+## d3
+
+Texto do d3.
+
+## d1
+
+Texto do d1.
+
+## d2
+
+Texto do d2.
+`;
+    const platforms = parsePlatforms(MD_SCRAMBLED);
+    const groups = groupByDestaque(platforms, IMAGES);
+    assert.deepEqual(
+      groups.map((g) => g.key),
+      ["d1", "d2", "d3", "eia", "post_pixel"],
+      "ordem final deve ser d1→d3, depois É IA?, depois post_pixel — independente da ordem no MD",
+    );
+  });
+
+  it("É IA? monta o par de imagens A/B (opção A e opção B), não uma imagem só", () => {
+    const MD_EIA = `# Social
+
+## eia
+
+Texto do É IA? de hoje.
+`;
+    const platforms = parsePlatforms(MD_EIA);
+    const groups = groupByDestaque(platforms, IMAGES);
+    const eia = groups.find((g) => g.key === "eia")!;
+    assert.equal(eia.label, "É IA?");
+    assert.equal(eia.imageUrl, "", "É IA? não usa a imagem `imageUrl` de destaque numerado");
+    assert.equal(eia.extraImages?.length, 2, "deve ter exatamente o par A/B");
+    assert.equal(eia.extraImages?.[0].label, "Opção A");
+    assert.equal(eia.extraImages?.[0].url, "https://img.example/eia-a.jpg");
+    assert.equal(eia.extraImages?.[1].label, "Opção B");
+    assert.equal(eia.extraImages?.[1].url, "https://img.example/eia-b.jpg");
+  });
+
+  it("formato legado pré-#3991 (3 seções, uma por rede) agrupa por destaque igual ao formato novo", () => {
+    const MD_LEGACY = `# LinkedIn
+
+## d1
+
+Post LinkedIn do d1.
+
+## d2
+
+Post LinkedIn do d2.
+
+# Facebook
+
+## d1
+
+Post Facebook do d1.
+
+## d2
+
+Post Facebook do d2.
+
+# Instagram
+
+## d1
+
+Post Instagram do d1.
+
+## d2
+
+Post Instagram do d2.
+`;
+    const platforms = parsePlatforms(MD_LEGACY);
+    assert.equal(platforms.length, 3, "3 seções de rede no formato legado");
+    const groups = groupByDestaque(platforms, IMAGES);
+    assert.equal(groups.length, 2, "agrupado por destaque (d1, d2), não por rede");
+    const d1 = groups.find((g) => g.key === "d1")!;
+    assert.equal(d1.blocks.length, 3, "d1 recebe 1 bloco por rede legada (LinkedIn/Facebook/Instagram)");
+    assert.deepEqual(
+      d1.blocks.map((b) => b.channels),
+      ["💼 LinkedIn", "📘 Facebook", "📷 Instagram"],
+      "cada bloco legado rotulado com o canal único correspondente",
+    );
   });
 });

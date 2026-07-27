@@ -24,6 +24,12 @@ import { dirname, resolve } from "node:path";
 import { resolveSocialImageUrl } from "./lib/social-image-url.ts";
 import { isMainModule } from "./lib/cli-args.ts";
 import { escHtml } from "./lib/html-escape.ts"; // #1990 follow-up
+import {
+  KNOWN_SOCIAL_CHANNELS,
+  TEXTO_UNICO_CHANNELS,
+  CURTO_CHANNELS,
+  formatChannelLabels,
+} from "./lib/social-cta-lines.ts"; // #4091: fonte única de verdade dos canais
 
 export interface ImageMap {
   [key: string]: {
@@ -181,64 +187,30 @@ export function countImgTags(html: string): number {
   return (html.match(/<img\b/g) ?? []).length;
 }
 
-function renderPost(post: Post, color: string, imageUrls: ImageMap, postPixelImageNum = "1"): string {
-  const imgUrl = getImageUrl(post.destaque, imageUrls, postPixelImageNum);
-  const imgHtml = imgUrl
-    ? `<div class="post-image"><img src="${escHtml(imgUrl)}" alt="${escHtml(post.destaque)}" /></div>`
-    : "";
-
-  const mainParas = post.main
-    .split(/\n\n+/)
-    .filter(Boolean)
-    .map(p => `<p>${escHtml(p).replace(/\n/g, "<br>").replace(/\{edition_url\}/g, "<em>[link da edição]</em>")}</p>`)
-    .join("\n");
-
-  const hashtags = post.hashtags
-    ? `<div class="hashtags">${escHtml(post.hashtags).replace(/#(\w+)/g, `<span style="color:${color}">#$1</span>`)}</div>`
-    : "";
-
-  let comments = "";
-  if (post.commentDiaria) {
-    const cd = escHtml(post.commentDiaria).replace(/\n/g, "<br>").replace(/\{edition_url\}/g, "<em>[link da edição]</em>");
-    comments += `<details class="comment"><summary>💬 Comentário Diar.ia (company page)</summary><p>${cd}</p></details>`;
-  }
-  if (post.commentPixel) {
-    const cp = escHtml(post.commentPixel).replace(/\n/g, "<br>");
-    comments += `<details class="comment"><summary>💬 Comentário Pixel (pessoal)</summary><p>${cp}</p></details>`;
-  }
-
-  // #1690: label claro pro post pessoal (vjpixel) no preview. #2549: o destaque
-  // referenciado segue o override (default D1).
-  const headerLabel = isPostPixel(post.destaque)
-    ? `📣 POST PESSOAL — vjpixel (D${postPixelImageNum})`
-    : post.destaque;
-
-  return `
-    <div class="post">
-      <div class="post-header" style="border-left: 3px solid ${color}">${headerLabel}</div>
-      ${imgHtml}
-      <div class="post-body">
-        ${mainParas}
-        ${hashtags}
-      </div>
-      ${comments}
-    </div>`;
-}
-
 /**
  * Canais de destino de cada seção do `03-social.md`. O preview existe pra o
  * editor conferir o que vai pra onde — sem isso, "# Social" e "# Curto" não
  * dizem nada sobre destino, e a mesma imagem se repetia em cada seção.
+ *
+ * #4091: os rótulos vêm de `KNOWN_SOCIAL_CHANNELS` (social-cta-lines.ts) —
+ * fonte única de verdade compartilhada com o mecanismo de CTA de publish, em
+ * vez de string literal duplicada aqui. Seção não reconhecida (nem
+ * "social"/"curto", nem nome de canal legado) **lança** — canal novo (ex:
+ * Bluesky) que apareça num `03-social.md` sem entry correspondente falha alto
+ * em vez de cair num fallback silencioso que escondia o problema do editor.
  */
 export function channelsForSection(sectionName: string): string {
   const n = sectionName.toLowerCase();
-  if (n.includes("curto")) return "𝕏 X (Twitter) · Threads";
-  if (n.includes("social")) return "💼 LinkedIn · 📘 Facebook · 📷 Instagram";
+  if (n.includes("curto")) return formatChannelLabels(CURTO_CHANNELS);
+  if (n.includes("social")) return formatChannelLabels(TEXTO_UNICO_CHANNELS);
   // Formato legado (pré-#3991): uma seção por rede.
-  if (n.includes("linkedin")) return "💼 LinkedIn";
-  if (n.includes("facebook")) return "📘 Facebook";
-  if (n.includes("instagram")) return "📷 Instagram";
-  return sectionName;
+  const legacy = KNOWN_SOCIAL_CHANNELS.find((k) => n.includes(k.channel));
+  if (legacy) return formatChannelLabels([legacy.channel]);
+  throw new Error(
+    `[channelsForSection] seção social não reconhecida: "${sectionName}". ` +
+      `Canais conhecidos: ${KNOWN_SOCIAL_CHANNELS.map((k) => k.channel).join(", ")}. ` +
+      `Se for um canal novo, adicione uma entry em KNOWN_SOCIAL_CHANNELS (scripts/lib/social-cta-lines.ts).`,
+  );
 }
 
 export interface GroupedBlock {
