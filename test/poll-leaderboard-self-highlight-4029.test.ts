@@ -8,12 +8,16 @@
  *      decisão do editor: cap alto como salvaguarda de escala, cauda 0/N
  *      (#4008 item 2) continua agregada/escondida (não reabre aquela
  *      decisão).
- *   2. Self-highlight: cada linha ganha um `data-uid` opaco
+ *   2. Self-highlight: cada linha do brand `web` ganha um `data-uid` opaco
  *      (`hashEmailForMatch`, lib.ts) — o browser casa a PRÓPRIA identidade
- *      local (brand `web`, `localStorage["eia_web_identified_email"]`)
- *      contra esse atributo sem o servidor nunca expor e-mail de ninguém em
- *      claro. Só brand `web` ganha o script (único brand com identidade
- *      client-side) — diaria/clarice não.
+ *      local (`localStorage["eia_web_identified_email"]`) contra esse
+ *      atributo sem o servidor nunca expor e-mail de ninguém em claro. Só
+ *      brand `web` ganha o script (único brand com identidade client-side).
+ *
+ *   #4162 (260727): `data-uid` deixou de ser emitido em diaria/clarice —
+ *      antes saía em TODOS os brands mesmo sem nenhum script consumidor lá,
+ *      ampliando à toa a superfície de um hash reversível offline (FNV-1a
+ *      32 bits sem sal). Ver describe "self-highlight (#4029 item 2)" abaixo.
  */
 
 import { describe, it } from "node:test";
@@ -82,6 +86,18 @@ describe("self-highlight (#4029 item 2) — data-uid por linha + script client-s
     assert.match(html, new RegExp(`data-uid="${expectedUid}"`));
   });
 
+  it("brand web: jogador com só 1-2 tentativas ganha data-uid igual a quem tem mais votos (#4122 achado 2 — antes a cauda sumia da tabela e o self-highlight mentia 'você ainda não aparece' pra quem tinha jogado)", async () => {
+    const env = makeEnv({
+      "score-by-month:2020-01:ana@example.com": JSON.stringify({ total: 5, correct: 4, nickname: "Ana" }),
+      "score-by-month:2020-01:novato@example.com": JSON.stringify({ total: 1, correct: 0, nickname: "Novato" }),
+    });
+    const res = await handleLeaderboardByMonth("2020-01", env, "web");
+    const html = await res.text();
+    assert.match(html, /Novato/, "jogador com 1 tentativa deve ter linha própria na tabela");
+    const expectedUid = hashEmailForMatch("novato@example.com");
+    assert.match(html, new RegExp(`data-uid="${expectedUid}"`), "data-uid presente pro jogador de baixo engajamento — o script consegue casar a linha dele");
+  });
+
   it("brand web: script de self-highlight presente, lê localStorage e casa contra data-uid", async () => {
     const env = makeEnv({
       "score-by-month:2020-01:ana@example.com": JSON.stringify({ total: 5, correct: 4, nickname: "Ana" }),
@@ -132,13 +148,22 @@ describe("self-highlight (#4029 item 2) — data-uid por linha + script client-s
     assert.doesNotMatch(html, /id="self-cta"/);
   });
 
-  it("brand diaria: linhas continuam com data-uid (custo desprezível, mantém 1 único caminho de render) mesmo sem script consumidor", async () => {
+  it("brand diaria: NENHUM data-uid no HTML renderizado (#4162 — FNV-1a sem sal era reversível offline, servido sem consumidor)", async () => {
     const env = makeEnv({
       "score-by-month:2020-01:ana@x.com": JSON.stringify({ total: 5, correct: 4, nickname: "Ana" }),
     });
     const res = await handleLeaderboardByMonth("2020-01", env, "diaria");
     const html = await res.text();
-    assert.match(html, /data-uid="/);
+    assert.doesNotMatch(html, /data-uid=/);
+  });
+
+  it("brand clarice: NENHUM data-uid no HTML renderizado (#4162, mesmo racional do brand diaria)", async () => {
+    const env = makeEnv({
+      "score-by-month:2020-01:ana@x.com": JSON.stringify({ total: 5, correct: 4, nickname: "Ana" }),
+    });
+    const res = await handleLeaderboardByMonth("2020-01", env, "clarice");
+    const html = await res.text();
+    assert.doesNotMatch(html, /data-uid=/);
   });
 
   it("anti-vazamento: e-mail em claro nunca aparece no HTML (só o hash opaco + nickname/masked)", async () => {
