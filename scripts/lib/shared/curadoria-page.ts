@@ -146,8 +146,9 @@ export function renderCuradoriaCtaSubscribeStyles(): string {
   .cta-subscribe .cta-submit { display: inline-block; padding: 11px 22px; background: var(--teal); color: #fff; border: none; border-radius: 2px; font-weight: 700; cursor: pointer; font-size: 15px; font-family: ${SANS}; }
   .cta-subscribe .cta-submit:disabled { opacity: 0.5; cursor: not-allowed; }
   .cta-subscribe .cta-status { margin: 10px 0 0; font-size: 13px; font-family: ${SANS}; }
-  .cta-subscribe .cta-status.ok { color: var(--teal); }
-  .cta-subscribe .cta-status.err { color: var(--ink); font-weight: 600; }`;
+  .cta-subscribe .cta-status.err { color: var(--ink); font-weight: 600; }
+  .cta-subscribe .cta-status.ok { margin: 0; padding: 16px 18px; font-size: 16px; font-weight: 700; line-height: 1.4; color: #fff; background: var(--teal); border-radius: 2px; display: flex; align-items: center; gap: 10px; }
+  .cta-subscribe .cta-status.ok::before { content: "✓"; font-size: 20px; line-height: 1; flex: none; }`;
 }
 
 export interface CuradoriaNavLink {

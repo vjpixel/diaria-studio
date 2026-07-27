@@ -134,6 +134,42 @@ export function classifyLinkContent(url: string): LinkContentClassification {
     return { content: "Diar.ia (home)" };
   }
 
-  // 4. Fallback: URL normalizada (resolve "mesmo destino, UTMs diferentes")
-  return { content: normalizeUrlForContent(url) };
+  // 4. Fallback: rótulo humano derivado da URL — a coluna "Conteúdo" nunca
+  // deve mostrar uma URL crua (com esquema/query), então isto NÃO chama
+  // normalizeUrlForContent (que mantém path+query) como rótulo visível.
+  // normalizeUrlForContent segue usada só como CHAVE de agrupamento (abaixo).
+  return { content: humanLabelForUrl(url) };
+}
+
+/**
+ * Deriva um rótulo legível (nunca uma URL) pra conteúdo sem regra própria.
+ * Usa o host (sem "www.") como base; se houver um path, usa o ÚLTIMO
+ * segmento — decodificado e com separadores virando espaço — como rótulo
+ * principal, com o host entre parênteses pra contexto. Sem path (home do
+ * domínio), o rótulo é só o host. Nunca inclui esquema, query ou barras.
+ */
+function humanLabelForUrl(url: string): string {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return url;
+  }
+
+  const host = u.hostname.toLowerCase().replace(/^www\./, "");
+  const segments = u.pathname.split("/").filter(Boolean);
+  if (segments.length === 0) return host;
+
+  let last: string;
+  try {
+    last = decodeURIComponent(segments[segments.length - 1]);
+  } catch {
+    last = segments[segments.length - 1];
+  }
+  const label = last
+    .replace(/\.(html?|php|aspx?)$/i, "")
+    .replace(/[-_]+/g, " ")
+    .trim();
+
+  return label ? `${label} (${host})` : host;
 }

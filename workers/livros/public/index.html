@@ -85,8 +85,9 @@
   .cta-subscribe .cta-submit { display: inline-block; padding: 11px 22px; background: var(--teal); color: #fff; border: none; border-radius: 2px; font-weight: 700; cursor: pointer; font-size: 15px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
   .cta-subscribe .cta-submit:disabled { opacity: 0.5; cursor: not-allowed; }
   .cta-subscribe .cta-status { margin: 10px 0 0; font-size: 13px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
-  .cta-subscribe .cta-status.ok { color: var(--teal); }
   .cta-subscribe .cta-status.err { color: var(--ink); font-weight: 600; }
+  .cta-subscribe .cta-status.ok { margin: 0; padding: 16px 18px; font-size: 16px; font-weight: 700; line-height: 1.4; color: #fff; background: var(--teal); border-radius: 2px; display: flex; align-items: center; gap: 10px; }
+  .cta-subscribe .cta-status.ok::before { content: "✓"; font-size: 20px; line-height: 1; flex: none; }
 
   footer { border-top: 1px solid var(--rule); }
   footer .wrap { padding: 24px 28px; font-family: 'Geist', -apple-system, BlinkMacSystemFont, system-ui, sans-serif; font-size: 11px; letter-spacing: 0.1em;
@@ -111,7 +112,7 @@
           <p class="cta-text">Gostou da curadoria? Assine a Diar.ia e receba tutoriais e notícias de IA todo dia, sem enrolação.</p>
           <label class="cta-field"><input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" maxlength="254" required></label>
           <div class="cta-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter gratuita de IA, 5 minutos por dia, seg-sex.</label>
+          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</label>
           <button type="submit" class="cta-submit">Assinar a Diar.ia (grátis)</button>
           <p class="cta-status" role="status" aria-live="polite" hidden></p>
         </form>
@@ -432,7 +433,7 @@
           <p class="cta-text">Chegou até aqui? Assine a Diar.ia — 5 minutos por dia com o que importa em IA.</p>
           <label class="cta-field"><input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" maxlength="254" required></label>
           <div class="cta-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter gratuita de IA, 5 minutos por dia, seg-sex.</label>
+          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</label>
           <button type="submit" class="cta-submit">Assinar a Diar.ia (grátis)</button>
           <p class="cta-status" role="status" aria-live="polite" hidden></p>
         </form>
@@ -532,7 +533,8 @@
             form.reset();
             setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
             var fields = form.querySelectorAll("input, button");
-            for (var i = 0; i < fields.length; i++) fields[i].disabled = true;
+            for (var i = 0; i < fields.length; i++) { fields[i].disabled = true; fields[i].style.display = "none"; }
+            if (status && status.scrollIntoView) status.scrollIntoView({ behavior: "smooth", block: "center" });
           } else if (r.status === 429) {
             setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
             if (btn) btn.disabled = false;

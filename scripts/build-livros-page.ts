@@ -197,7 +197,7 @@ function renderSubscribeCta(v: SubscribeCtaVariant, variantClass: "hero" | "end"
           <p class="cta-text">${esc(v.heading)}</p>
           <label class="cta-field"><input type="email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" maxlength="254" required></label>
           <div class="cta-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
-          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter gratuita de IA, 5 minutos por dia, seg-sex.</label>
+          <label class="cta-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, seg-sex, direto no e-mail.</label>
           <button type="submit" class="cta-submit">Assinar a Diar.ia (grátis)</button>
           <p class="cta-status" role="status" aria-live="polite" hidden></p>
         </form>
@@ -257,7 +257,8 @@ function renderSubscribeCtaScript(): string {
             form.reset();
             setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
             var fields = form.querySelectorAll("input, button");
-            for (var i = 0; i < fields.length; i++) fields[i].disabled = true;
+            for (var i = 0; i < fields.length; i++) { fields[i].disabled = true; fields[i].style.display = "none"; }
+            if (status && status.scrollIntoView) status.scrollIntoView({ behavior: "smooth", block: "center" });
           } else if (r.status === 429) {
             setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
             if (btn) btn.disabled = false;

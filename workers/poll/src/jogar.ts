@@ -298,8 +298,9 @@ export function renderInlineSignupFormStyles(): string {
   .signup-btn { display: block; width: 100%; box-sizing: border-box; padding: 12px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 1rem; font-family: ${DS_FONTS.sans}; }
   .signup-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .signup-status { margin: 10px 0 0 0; font-size: 0.9rem; font-family: ${DS_FONTS.sans}; }
-  .signup-status.ok { color: ${DS_COLORS.brand}; }
   .signup-status.err { color: ${DS_COLORS.ink}; font-weight: 600; }
+  .signup-status.ok { margin: 0; padding: 16px 18px; font-size: 1rem; font-weight: 700; line-height: 1.4; color: #fff; background: ${DS_COLORS.brand}; border-radius: 4px; display: flex; align-items: center; gap: 10px; }
+  .signup-status.ok::before { content: "✓"; font-size: 1.25rem; line-height: 1; flex: none; }
   .signup-hp { position: absolute !important; left: -9999px !important; width: 1px; height: 1px; overflow: hidden; }
   /* #3975: nota "jogando como {email}" pós-identificação — mesma disciplina
      visual de .signup-status.ok (reusada aqui como classe base). */
@@ -538,7 +539,8 @@ export function inlineSignupScript(): string {
         form.reset();
         setStatus("Pronto! Confira seu e-mail pra confirmar a assinatura.", true);
         var fields = form.querySelectorAll("input, button");
-        for (var i = 0; i < fields.length; i++) fields[i].disabled = true;
+        for (var i = 0; i < fields.length; i++) { fields[i].disabled = true; fields[i].style.display = "none"; }
+        if (status && status.scrollIntoView) status.scrollIntoView({ behavior: "smooth", block: "center" });
       } else if (r.status === 429) {
         setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
         if (btn) btn.disabled = false;
