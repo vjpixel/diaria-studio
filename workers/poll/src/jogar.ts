@@ -102,7 +102,7 @@ import { getSummedEditionStats } from "./vote";
 import { JOGAR_POSVOTO_UTM, QUIZ_POSVOTO_UTM } from "./utm-registry"; // #4041
 // #4054: gate por rodada do caminho de fora — cookie de sessão (identidade
 // pós-gate) + cookie de "rodada livre já usada" + a própria tela de gate.
-import { FREE_ROUND_COOKIE, readWebSessionEmail, renderJogarGatePage } from "./web-gate";
+import { FREE_ROUND_COOKIE, readWebSession, readWebSessionEmail, renderJogarGatePage } from "./web-gate";
 import { parseCookieHeader } from "./session-cookie";
 
 /** Brand fixo desta página — `/jogar` É o standalone, não um parâmetro. */
@@ -1834,16 +1834,29 @@ ${renderIdentityFormBlock()}`;
       // transição rodada 1 → 2 (round === 0, único ponto onde o cookie
       // FREE_ROUND_COOKIE acabou de ser setado pela 1ª vez, ver onChoice
       // acima), faz 1 fetch leve pro próprio /jogar pra deixar o SERVIDOR
-      // decidir — se ele responder com o gate (mesma marca id="gate-form"
-      // de renderJogarGatePage/web-gate.ts), troca a página pro gate em vez
-      // de continuar a sequência. Sessão já válida (assinante identificado)
-      // → resposta normal do jogo, fetch descartado, advance() roda igual
-      // sempre rodou — zero fricção extra pra quem já não precisa do gate.
+      // decidir — se ele responder com o gate, troca a página pro gate em
+      // vez de continuar a sequência. Sessão já válida (assinante
+      // identificado) → resposta normal do jogo, fetch descartado,
+      // advance() roda igual sempre rodou — zero fricção extra pra quem já
+      // não precisa do gate.
+      //
+      // #4160: o sinal de "isso é a página de gate" é o HEADER X-Eia-Gate
+      // (renderJogarGatePage/web-gate.ts, jogar.ts, index.ts), NUNCA uma
+      // busca textual no corpo — a versão antiga, html.indexOf com a string
+      // literal do id do form de gate, procurava por uma agulha que morava
+      // DENTRO do próprio template literal desta página de sequência (o
+      // comentário/expressão de busca também são servidos ao navegador),
+      // então a agulha se encontrava a si mesma e o check era SEMPRE
+      // verdadeiro — 100% dos jogadores levavam reload de página inteira
+      // nesta transição, mesmo quem já tinha passado pelo gate. CUIDADO:
+      // nenhum crase (backtick) neste bloco de comentário — este script
+      // inteiro mora dentro do template literal de renderJogarSequencePageHtml
+      // em TypeScript, e uma crase aqui fecharia essa string por acidente
+      // (mesma classe de bug documentada em memória de sessão anterior).
       if (round === 0) {
         fetch("/jogar?v=" + Date.now())
-          .then(function (res) { return res.text(); })
-          .then(function (html) {
-            if (html.indexOf('id="gate-form"') !== -1) {
+          .then(function (res) {
+            if (res.headers.get("X-Eia-Gate")) {
               window.location.href = "/jogar?v=" + Date.now();
               return;
             }
@@ -2193,7 +2206,13 @@ export async function handleJogarPage(url: URL, env: Env, request?: Request): Pr
       if (!sessionEmail) {
         const gateEdition = url.searchParams.get("edition");
         return new Response(renderJogarGatePage(gateEdition), {
-          headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store" },
+          // #4160: header dedicado — o client (goNext, mais abaixo neste
+          // arquivo) usa ISSO pra decidir se a resposta é a tela de gate, não
+          // mais uma busca textual no corpo (`id="gate-form"` morava DENTRO
+          // do próprio template literal da página de SEQUÊNCIA — a agulha se
+          // encontrava a si mesma e o check nunca dava falso). Header nunca
+          // pode aparecer no corpo por acidente — zero acoplamento.
+          headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": "no-store", "X-Eia-Gate": "1" },
         });
       }
     }
@@ -2321,9 +2340,19 @@ export async function handleJogarSeqState(url: URL, env: Env, request?: Request)
   //
   // `request` é opcional pra retrocompat com os testes que chamam sem ele —
   // ausente ou sem cookie válido, comportamento 100% igual ao pré-#4054.
-  const sessionEmail = request
-    ? await readWebSessionEmail(env.COOKIE_HMAC_SECRET, request.headers.get("Cookie"))
+  //
+  // #4121: só conta como identidade primária quando a sessão é `confirmed` —
+  // espelha exatamente o critério que `handleVote` (vote.ts) usa pra decidir
+  // ONDE o voto foi escrito. Uma sessão `pending` nunca sobrepôs a escrita
+  // (o voto continuou sob o token), então tratá-la aqui como primária só
+  // faria esta leitura errar a chave (2 gets desperdiçados até cair no
+  // fallback do token) — sem essa checagem o resultado final ainda seria
+  // correto (o `secondaryIdentity`/fallback abaixo resolve), mas de forma
+  // inconsistente com o que foi de fato gravado.
+  const session = request
+    ? await readWebSession(env.COOKIE_HMAC_SECRET, request.headers.get("Cookie"))
     : null;
+  const sessionEmail = session && !session.pending ? session.email : null;
   const secondaryIdentity = sessionEmail && sessionEmail !== email ? email : null;
   // Sessão é a identidade PRIMÁRIA quando existe: pós-gate ela cobre todas as
   // rodadas menos a livre, então a 1ª fase abaixo já resolve quase tudo.

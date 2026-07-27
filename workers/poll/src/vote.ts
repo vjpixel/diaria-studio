@@ -31,7 +31,10 @@ import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter
 import { encodeShareToken, type SharePayload } from "./share";
 // #4054: identidade pós-gate do caminho de fora — cookie de sessão PARALELO
 // ao token anônimo (ver bloco "identidade pós-gate" abaixo).
-import { readWebSessionEmail } from "./web-gate";
+// #4121: `readWebSession` (não só o e-mail) — o override abaixo precisa saber
+// se a sessão é `pending` (cadastro sem confirmação da Beehiiv ainda) pra NÃO
+// aplicar a sobreposição de identidade nesse caso.
+import { readWebSession } from "./web-gate";
 
 /**
  * #3384: contas do próprio editor usadas pra testar o fluxo de voto no e-mail
@@ -88,6 +91,11 @@ export async function buildAlreadyVotedResponse(
    * mensagem "já votou" logo acima (que sempre cita `prev.choice`).
    */
   correctRaw: string | null = null,
+  /** #4161: env CRU (não branded) — lê `eiameta:{edition}` compartilhado,
+   * mesmo racional de `correctRaw` acima (#3600/#4065). Default `= env`
+   * preserva chamadores legados/teste que não passam este argumento
+   * (equivalente a brand="diaria", onde `bEnv === env` de qualquer forma). */
+  rawEnv: Env = env,
 ): Promise<Response> {
   // choice: "?" é um edge aceitável: ocorre quando o 2º votante concorrente
   // chegou tão rapidamente que o KV eventual ainda não propagou o put do 1º
@@ -152,8 +160,38 @@ export async function buildAlreadyVotedResponse(
     token: await encodeShareToken(env.POLL_SECRET, sharePayload),
     payload: sharePayload,
   };
+
+  // #4161: mesmo padrão de resultImages do voto fresco (handleVote/
+  // handleVoteFastPath) — a tela de "já votou" computava `correct` mas nunca
+  // montava `resultImages`/`eiaMeta`, afirmando um resultado ("Acertei o
+  // 'É IA?' de hoje!", ver shareCard acima) sem nunca mostrar as duas imagens
+  // reveladas nem a descrição/crédito da foto real. `clickedSide` DEVE ser
+  // `prev.choice` (o voto REALMENTE persistido, lido acima) — nunca um
+  // `choice` de query string (este helper nem recebe um; mesmo racional já
+  // documentado pro cômputo de `correct` no header do parâmetro `correctRaw`).
+  const showImages = correct !== null;
+  const aiSide: "A" | "B" | null = showImages && correctRaw ? (correctRaw as "A" | "B") : null;
+  const clickedSide: "A" | "B" | null = prev?.choice === "A" || prev?.choice === "B" ? prev.choice : null;
+  const resultImages = showImages && aiSide && clickedSide
+    ? { edition, aiSide, clickedSide }
+    : null;
+
+  let eiaMeta: { description: string; credit: string } | null = null;
+  if (correct !== null) {
+    try {
+      const eiaMetaRaw = await rawEnv.POLL.get(`eiameta:${edition}`);
+      const parsed = safeParseKv<{ description?: string; credit?: string }>(eiaMetaRaw, "vote_already_voted_eiameta_parse_error", edition);
+      if (parsed && (parsed.description || parsed.credit)) {
+        eiaMeta = { description: parsed.description ?? "", credit: parsed.credit ?? "" };
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "vote_already_voted_eiameta_fetch_failed", edition, error: String(e) }));
+      // eiaMeta permanece null — fallback silencioso (bloco não renderiza).
+    }
+  }
+
   return voteHtmlResponse(
-    votePageHtml(jaVotouMsg, false, prevNicknameForm, null, editionToMonthSlug(edition), brand, null, shareCard),
+    votePageHtml(jaVotouMsg, false, prevNicknameForm, resultImages, editionToMonthSlug(edition), brand, null, shareCard, eiaMeta),
     200,
   );
 }
@@ -279,9 +317,15 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // toda a suíte de teste que já chama `handleVote` sem ele, e com o brand
   // "diaria"/"clarice" onde este bloco nunca roda) — ausente ou sem cookie
   // válido, comportamento 100% igual ao pré-#4054.
+  // #4121: só aplica o override quando a sessão é `confirmed` — uma sessão
+  // `pending` (cadastro feito no gate, Beehiiv ainda não confirmou o double
+  // opt-in) NÃO prova posse do e-mail ainda. Sem essa checagem, o cookie
+  // emitido na hora do cadastro (`handleJogarGateSubscribe`, web-gate.ts)
+  // bastava pra "roubar" a identidade de qualquer e-mail que o atacante
+  // digitasse, sem nunca clicar no link de confirmação (achado #4121).
   if (brand === "web" && request) {
-    const cookieEmail = await readWebSessionEmail(rawEnv.COOKIE_HMAC_SECRET, request.headers.get("Cookie"));
-    if (cookieEmail) email = cookieEmail;
+    const session = await readWebSession(rawEnv.COOKIE_HMAC_SECRET, request.headers.get("Cookie"));
+    if (session && !session.pending) email = session.email;
   }
 
   if (!["A", "B"].includes(choice)) {
@@ -527,7 +571,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
     if (!firstVote) {
       // Duplicado detectado pelo DO — servir página "já votou" (#3118 item 10:
       // extraído pra buildAlreadyVotedResponse, compartilhado com o fallback KV).
-      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw);
+      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw, rawEnv);
     }
     // firstVote === true → DO autorizou o voto; prosseguir com gravação normal abaixo.
     } // fim if (doResp === null || doResp.status >= 500) ... else
@@ -541,7 +585,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
       // quase idênticas que já haviam divergido uma vez no passado (#2189
       // corrigiu só um dos dois ramos, deixando o outro com nicknameForm
       // hardcoded null por um tempo).
-      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw);
+      return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw, rawEnv);
     }
   }
 
@@ -898,7 +942,7 @@ async function handleVoteFastPath(
   // acertou/errou aquela rodada), só não soma no score. Comportamento
   // intencional, pedido explicitamente pelo editor na issue #3983.
   if (existingFromKv) {
-    return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw);
+    return buildAlreadyVotedResponse(env, brand, edition, email, existingFromKv, correctRaw, rawEnv);
   }
 
   const correct = correctRaw ? choice === correctRaw : null;

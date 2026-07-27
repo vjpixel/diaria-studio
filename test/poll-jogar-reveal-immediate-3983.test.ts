@@ -408,7 +408,13 @@ describe("renderJogarSequencePageHtml (#3983) — reveal por rodada, reverte o S
     const html = renderJogarSequencePageHtml(["260601", "260602", "260603"]);
     assert.match(html, /if \(round === 0\)/, "checagem de gate só na transição da 1ª rodada");
     assert.match(html, /fetch\("\/jogar\?v="/, "consulta o servidor via fetch antes de avançar");
-    assert.match(html, /indexOf\('id="gate-form"'\)/, "detecta a resposta de gate pela mesma marca de renderJogarGatePage");
+    // #4160: detecta a resposta de gate pelo HEADER X-Eia-Gate (res.headers.get),
+    // NUNCA por busca textual no corpo — a versão antiga (`html.indexOf('id="gate-form"')`)
+    // procurava por uma string que morava DENTRO deste mesmo template literal
+    // (a agulha se encontrava a si mesma, sempre !== -1). Este teste também
+    // trava que a agulha antiga não reapareça.
+    assert.match(html, /res\.headers\.get\("X-Eia-Gate"\)/, "detecta a resposta de gate pelo header dedicado, não pelo corpo");
+    assert.doesNotMatch(html, /indexOf\('id="gate-form"'\)/, "REGRESSÃO #4160: busca textual pela agulha do próprio corpo nunca deve voltar");
     assert.match(html, /window\.location\.href = "\/jogar\?v="/, "troca pra página de gate quando o servidor mandar");
   });
 
