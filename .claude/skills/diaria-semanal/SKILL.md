@@ -31,7 +31,15 @@ Decisões do editor já tomadas (não são desta skill pra revisitar):
   `scheduled_publish_time` — nunca envio imediato).
 - `--no-gates` — pula a confirmação interativa do Passo 2 e já roda com
   `--schedule` (auto-aprova, mesmo padrão de `/diaria-edicao --no-gates`).
-- `--channels` — CSV pra restringir os canais (default: todos).
+- `--channels` — CSV pra restringir os canais (default: todos). Valida contra
+  a lista conhecida (`linkedin,facebook,instagram,threads`) — canal
+  desconhecido/typo **falha alto** listando os válidos, nunca é ignorado em
+  silêncio (self-review finding 9).
+- `--force-incomplete-week` — necessário quando menos de 4 dos 5 D1 esperados
+  foram encontrados (self-review finding 6). Sem a flag, o script imprime um
+  aviso e ABORTA — não publica um post materialmente incompleto em silêncio.
+  Passe a flag só depois de confirmar com o editor que a semana curta é
+  legítima (feriado etc.).
 
 ## Pré-requisitos
 
@@ -116,8 +124,13 @@ faz isto diretamente:
 
 ## Casos de borda (ver #4101)
 
-- **Semana com <5 edições** (feriado, edição pulada): o post sai com o que
-  existir — nunca completa com D2/D3 de outra edição.
+- **Semana com 4 ou 5 edições**: o post sai com o que existir — nunca
+  completa com D2/D3 de outra edição.
+- **Semana com 1-3 edições (< 4 de 5 — "materialmente incompleta", self-review
+  finding 6)**: o script aborta com um aviso alto a menos que
+  `--force-incomplete-week` seja passado explicitamente. Confirme com o
+  editor que é uma semana curta legítima (feriado etc.) antes de re-rodar com
+  a flag — nunca passe a flag sem essa confirmação.
 - **Semana com 0 edições**: nenhum publisher é chamado; reporte isso ao
   editor em vez de publicar um post vazio.
 - **Virada de mês/ano**: `computeWeekdayEditionDates` (em

@@ -45,10 +45,20 @@
  *   npx tsx scripts/publish-weekly-social.ts --saturday 260801 [--schedule]
  *     [--editions-root data/editions] [--time 11:00]
  *     [--channels linkedin,facebook,instagram,threads]
- *     [--no-skip-existing]
+ *     [--no-skip-existing] [--force-incomplete-week] [--test-mode]
  *
  * `--saturday` é OBRIGATÓRIO e explícito (mesmo invariante de CLAUDE.md pras
  * skills `/diaria-*`: nunca inferir data de `today()`).
+ *
+ * `--channels` valida contra a lista conhecida (linkedin/facebook/instagram/
+ * threads, #4101 self-review finding 9) — canal desconhecido (typo) FALHA
+ * ALTO listando os canais válidos, nunca é ignorado em silêncio.
+ *
+ * `--force-incomplete-week` (#4101 self-review finding 6): se menos de 4 dos
+ * 5 D1 esperados forem encontrados, o script imprime um aviso impossível de
+ * ignorar e ABORTA — a menos que esta flag seja passada, confirmando que a
+ * semana curta é legítima (feriado etc.) e que publicar mesmo assim é a
+ * decisão consciente do editor.
  *
  * Output: appends em `data/weekly/{saturday}/06-weekly-published.json`
  * (nunca em `data/editions/` — aquele diretório é das edições diárias).
@@ -72,6 +82,7 @@ import { appendSocialPosts, readSocialPublished, PostEntry } from "./lib/social-
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts";
 import { parseEditionDate, timezoneOffsetIso } from "./compute-social-schedule.ts";
 import { validateScheduledTime } from "./publish-facebook.ts";
+import { retryWithBackoff } from "./lib/retry-with-backoff.ts"; // #4101 finding 10 — reusa o mecanismo de retry dos publishers diários
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -80,6 +91,17 @@ export const DEFAULT_WEEKLY_TIME = "11:00";
 
 const ALL_CHANNELS = ["linkedin", "facebook", "instagram", "threads"] as const;
 export type WeeklyChannel = (typeof ALL_CHANNELS)[number];
+
+/**
+ * Limiar de semana "materialmente incompleta" (#4101 self-review finding 6).
+ * Abaixo de 4 dos 5 D1 esperados, o post semanal entrega algo perceptivelmente
+ * diferente do prometido ("os 5 D1 da semana") — falta 1 (chega a 4) é
+ * tolerado sem confirmação (glitch pontual de render numa única edição não
+ * deveria travar o sábado); faltar 2+ (3 ou menos) exige `--force-incomplete-week`
+ * explícito. Ver checagem em `main()`, logo após `selectWeeklyD1`.
+ */
+export const WEEKLY_MIN_ITEMS = 4;
+const WEEKLY_EXPECTED_ITEMS = 5;
 
 /**
  * Pure: calcula o ISO datetime do agendamento do post semanal — sempre
@@ -160,12 +182,24 @@ async function publishFacebookWeekly(opts: {
   return data as { id: string; post_id?: string };
 }
 
-async function main() {
-  const { flags, values } = parseArgs(process.argv.slice(2));
+/**
+ * `dataRoot` é injetável (default `{ROOT}/data`, #4101 finding 7) — permite
+ * testes de dispatch redirecionarem `data/weekly/{saturday}/` pra um tmpdir
+ * em vez de escrever no `data/` real do projeto (que pode ser o junction do
+ * OneDrive numa máquina de dev — nunca poluir isso a partir de um teste,
+ * mesmo padrão de injeção já usado em `publish-monthly.ts` com `uploadDeps`).
+ */
+export async function main(
+  argv: string[] = process.argv.slice(2),
+  opts: { dataRoot?: string } = {},
+) {
+  const dataRoot = opts.dataRoot ?? resolve(ROOT, "data");
+  const { flags, values } = parseArgs(argv);
   const saturday = values["saturday"];
   if (!saturday) {
     console.error("ERRO: --saturday AAMMDD é obrigatório (data explícita, nunca inferida de today()).");
     process.exit(1);
+    return;
   }
   // Valida formato/existência da data cedo (fail-fast, mensagem clara).
   try {
@@ -173,16 +207,34 @@ async function main() {
   } catch (e: any) {
     console.error(`ERRO: ${e.message}`);
     process.exit(1);
+    return;
   }
 
   const editionsRoot = resolve(ROOT, values["editions-root"] ?? "data/editions");
   const time = values["time"] ?? DEFAULT_WEEKLY_TIME;
   const doSchedule = flags.has("schedule");
   const skipExisting = !flags.has("no-skip-existing");
-  const requestedChannels = (values["channels"] ?? ALL_CHANNELS.join(","))
+  const isTest = flags.has("test-mode"); // #4101 finding 10 — pula sleeps do retry/backoff em teste
+  const forceIncompleteWeek = flags.has("force-incomplete-week"); // #4101 finding 6
+
+  // #4101 self-review finding 9: `--channels` com typo era ignorado em
+  // silêncio (nenhum branch do dispatch batia, nenhum erro, nenhum post).
+  // Fail-loud contra a lista conhecida — mesma régua de `channelsForSection`
+  // (#4091, render-social-html.ts): canal desconhecido aborta listando os válidos.
+  const rawChannels = (values["channels"] ?? ALL_CHANNELS.join(","))
     .split(",")
     .map((c) => c.trim())
-    .filter(Boolean) as WeeklyChannel[];
+    .filter(Boolean);
+  const unknownChannels = rawChannels.filter((c) => !(ALL_CHANNELS as readonly string[]).includes(c));
+  if (unknownChannels.length > 0) {
+    console.error(
+      `ERRO: --channels contém canal(is) desconhecido(s): ${unknownChannels.join(", ")}. ` +
+        `Canais válidos: ${ALL_CHANNELS.join(", ")}.`,
+    );
+    process.exit(1);
+    return;
+  }
+  const requestedChannels = rawChannels as WeeklyChannel[];
 
   const { year, month, day } = parseEditionDate(saturday);
   const saturdayDate = new Date(year, month - 1, day);
@@ -207,6 +259,39 @@ async function main() {
     return;
   }
 
+  // #4101 self-review finding 6: antes, uma semana com edições faltando no
+  // disco só gerava um console.warn (dentro de selectWeeklyD1) e o post saía
+  // incompleto em silêncio. O valor inteiro do post é "os 5 D1 da semana" —
+  // publicar menos disso é uma entrega materialmente diferente da prometida.
+  // Limiar: < WEEKLY_MIN_ITEMS (4 de 5) é "materialmente incompleta" e exige
+  // confirmação explícita via --force-incomplete-week (semana curta legítima,
+  // ex: feriado, ainda deve ser publicável — só não em silêncio).
+  if (items.length < WEEKLY_MIN_ITEMS) {
+    const foundDates = new Set(items.map((i) => i.editionDate));
+    const missingDates = weekCandidates.filter((c) => !foundDates.has(c.date)).map((c) => c.date);
+    const banner = [
+      "",
+      "=".repeat(72),
+      `ATENÇÃO: semana MATERIALMENTE INCOMPLETA para o post semanal de ${saturday}.`,
+      `Encontrados ${items.length} de ${WEEKLY_EXPECTED_ITEMS} D1 esperados (mínimo aceito sem confirmação: ${WEEKLY_MIN_ITEMS}).`,
+      `Edições ausentes ou sem DESTAQUE 1 parseável: ${missingDates.join(", ") || "(nenhuma — falha foi no parse do D1, não no arquivo)"}`,
+      "",
+      "O valor do post semanal é 'os 5 D1 da semana' — publicar menos que isso",
+      "entrega ao leitor algo diferente do prometido.",
+      "",
+      forceIncompleteWeek
+        ? "--force-incomplete-week presente: prosseguindo mesmo assim (confirmação explícita do editor)."
+        : "Se esta for uma semana curta LEGÍTIMA (feriado, etc.), rode de novo com --force-incomplete-week para confirmar e publicar assim mesmo. Sem a flag, o script aborta.",
+      "=".repeat(72),
+      "",
+    ].join("\n");
+    console.error(banner);
+    if (!forceIncompleteWeek) {
+      process.exit(1);
+      return;
+    }
+  }
+
   console.log(`[publish-weekly-social] ${items.length} D1 selecionado(s): ${items.map((i) => i.editionDate).join(", ")}`);
 
   const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
@@ -229,8 +314,8 @@ async function main() {
     return;
   }
 
-  mkdirSync(resolve(ROOT, "data", "weekly", saturday), { recursive: true });
-  const publishedPath = resolve(ROOT, "data", "weekly", saturday, "06-weekly-published.json");
+  mkdirSync(resolve(dataRoot, "weekly", saturday), { recursive: true });
+  const publishedPath = resolve(dataRoot, "weekly", saturday, "06-weekly-published.json");
 
   const tagAndAppend = (entry: PostEntry): void => appendSocialPosts(publishedPath, [entry]);
 
@@ -241,6 +326,31 @@ async function main() {
       (p) => p.platform === channel && p.destaque === "weekly" && (p.status === "draft" || p.status === "scheduled"),
     );
   };
+
+  // #4101 self-review finding 10: Facebook já validava `scheduledAt` (>= 10min
+  // no futuro, ver validateScheduledTime em publish-facebook.ts) antes de
+  // despachar; LinkedIn/Instagram/Threads (via Worker queue) não tinham
+  // checagem client-side equivalente — agendar pro passado falharia em algum
+  // lugar mais adiante no Worker, ou pior, publicaria imediato. `scheduledAt`
+  // é o MESMO valor para todos os canais deste run (calculado uma única vez
+  // acima) — uma validação única cobre todos, em vez de checar por canal.
+  try {
+    validateScheduledTime(scheduledAt);
+  } catch (e: any) {
+    console.error(`ERRO: scheduled_at "${scheduledAt}" inválido para o post semanal: ${e.message}`);
+    for (const channel of requestedChannels) {
+      tagAndAppend({
+        platform: channel,
+        destaque: "weekly",
+        url: null,
+        status: "failed",
+        scheduled_at: scheduledAt,
+        reason: `scheduled_time_invalid: ${e.message}`,
+      });
+    }
+    process.exit(1);
+    return;
+  }
 
   for (const channel of requestedChannels) {
     const existing = alreadyPublished(channel);
@@ -337,22 +447,25 @@ async function main() {
         tagAndAppend({ platform: "facebook", destaque: "weekly", url: null, status: "failed", scheduled_at: null, reason: "image_missing" });
         continue;
       }
+      // scheduledAt já validado (uma vez, pra todos os canais) antes deste loop.
       try {
-        validateScheduledTime(scheduledAt);
-      } catch (e: any) {
-        console.error(`SKIP facebook/weekly: ${e.message}`);
-        tagAndAppend({ platform: "facebook", destaque: "weekly", url: null, status: "failed", scheduled_at: scheduledAt, reason: e.message });
-        continue;
-      }
-      try {
-        const result = await publishFacebookWeekly({
-          pageId,
-          pageToken,
-          apiVersion,
-          imagePath,
-          caption: formatted.facebook,
-          scheduledAt,
-        });
+        // #4101 self-review finding 10: antes, uma falha transiente de rede
+        // aqui marcava `status: "failed"` na 1ª tentativa. Reusa o mesmo
+        // mecanismo de retry+backoff exponencial (1s, 2s) que os publishers
+        // diários já usam (publish-facebook.ts) via helper compartilhado —
+        // não reimplementado inline pela 4ª vez.
+        const result = await retryWithBackoff(
+          () =>
+            publishFacebookWeekly({
+              pageId,
+              pageToken,
+              apiVersion,
+              imagePath,
+              caption: formatted.facebook,
+              scheduledAt,
+            }),
+          { maxAttempts: 3, isTest, logPrefix: "publish-weekly-social/facebook" },
+        );
         const postId = result.post_id ?? result.id;
         tagAndAppend({
           platform: "facebook",
