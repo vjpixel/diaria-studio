@@ -33,7 +33,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { resolve, dirname, join } from "node:path";
+import { resolve, dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getRulesForStage } from "./lib/invariant-checks/index.ts";
 import type { InvariantViolation } from "./lib/invariant-checks/types.ts";
@@ -141,10 +141,94 @@ export function checkNoHtmlInMonthlyDriveSync(baseDir?: string): Violation[] {
 }
 
 /**
+ * #4059: nenhum CTA público novo pode apontar pra `diaria.beehiiv.com`.
+ *
+ * O host de marca (`diar.ia.br`) virou canônico em 260723 — o redirect no
+ * Cloudflare preserva a query string, então a premissa do #2613 (UTM morria no
+ * redirect) caiu. A varredura do #4059 limpou o que existia; sem este guard a
+ * sujeira volta, que foi exatamente o que aconteceu depois do #2613.
+ *
+ * Escopo do scan: `scripts/**` + `workers/**` (`.ts`), procurando o host
+ * dentro de uma STRING de URL clicável — `https://diaria.beehiiv.com` — e não
+ * menções em comentário/doc (que continuam legítimas pra explicar o histórico).
+ *
+ * A allowlist abaixo é por ARQUIVO e cobre os casos de infra/medição/histórico
+ * levantados na issue: CORS do embed, parsing de links de tracking de edições
+ * já publicadas, lint do wrapper de tracking, allowlists de URL de rodapé,
+ * Search Console (propriedade verificada ainda é o host antigo) e a API de
+ * polls do próprio Beehiiv.
+ *
+ * @param baseDir Opcional — permite testar com fixture dir sem tocar o repo.
+ */
+export const BEEHIIV_CTA_ALLOWLIST = [
+  // CORS: o embed do jogo roda DENTRO da página do Beehiiv.
+  "workers/poll/wrangler.toml",
+  "workers/poll/src/index.ts",
+  // Leitura de dado histórico (links de tracking de edições já publicadas).
+  "scripts/refresh-past-editions.ts",
+  // Reconhece `link.diaria.beehiiv.com` como wrapper de tracking do Beehiiv.
+  "scripts/lint-test-email-link-tracking.ts",
+  // Allowlists de URL de rodapé/afiliado — `diar.ia.br` foi ADICIONADO ao lado,
+  // o host antigo continua porque links velhos seguem vivos no arquivo.
+  "scripts/lib/canonical-urls.ts",
+  "scripts/lib/newsletter-count.ts",
+  "scripts/check-stage2-invariants.ts",
+  // Propriedade VERIFICADA no Search Console ainda é o host antigo.
+  "scripts/seo-pull.ts",
+  // URLs de poll da própria API do Beehiiv.
+  "scripts/fetch-beehiiv-poll-stats.ts",
+  // Normalizador `diaria.beehiiv.com` → `diar.ia.br`: precisa citar os dois.
+  "scripts/monthly-relink-to-diaria.ts",
+  "scripts/lib/mensal/monthly-render.ts",
+  // Este próprio arquivo (a allowlist acima menciona o host).
+  "scripts/check-invariants.ts",
+] as const;
+
+export function checkNoBeehiivHostInPublicCta(baseDir?: string): Violation[] {
+  const violations: Violation[] = [];
+  const root = baseDir ?? ROOT;
+  const targetDirs = [join(root, "scripts"), join(root, "workers")];
+  const allow = new Set<string>(BEEHIIV_CTA_ALLOWLIST.map((p) => p.replace(/\//g, sep)));
+
+  for (const dir of targetDirs) {
+    if (!existsSync(dir)) continue;
+    for (const path of walkTs(dir)) {
+      const rel = path.slice(root.length + 1);
+      if (allow.has(rel)) continue;
+      const lines = readFileSync(path, "utf8").split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        // Só URL absoluta dentro de string/template — menção em comentário
+        // (`// ver diaria.beehiiv.com`) não é um href clicável.
+        if (!/https?:\/\/(?:link\.)?diaria\.beehiiv\.com/.test(line)) continue;
+        if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+        violations.push({
+          rule: "no-beehiiv-host-in-public-cta",
+          message:
+            `CTA público aponta pra diaria.beehiiv.com — use diar.ia.br ` +
+            `(host de marca canônico desde 260723). Se for infra/medição/histórico, ` +
+            `adicione o arquivo em BEEHIIV_CTA_ALLOWLIST: "${line.trim().slice(0, 120)}"`,
+          source_issue: "#4059",
+          severity: "error",
+          file: path.replace(root, ""),
+          line: i + 1,
+        });
+      }
+    }
+  }
+  return violations;
+}
+
+/**
  * Auto-discoverable rule descriptors. Cada rule pode rodar em modo static
  * ou per-edition.
  */
 export const STATIC_RULES = [
+  {
+    id: "no-beehiiv-host-in-public-cta",
+    description: "CTA público nunca aponta pra diaria.beehiiv.com (#4059)",
+    run: checkNoBeehiivHostInPublicCta,
+  },
   {
     id: "no-forensic-in-drive-sync",
     description: "drive-sync nunca inclui _internal/_forensic/ (#959)",
@@ -188,6 +272,19 @@ export function PER_EDITION_RULES(editionDir: string) {
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
+
+/** #4059: lista .ts/.toml recursivamente (node_modules e dist ignorados). */
+function walkTs(dir: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    if (name === "node_modules" || name === "dist" || name === ".wrangler") continue;
+    const full = join(dir, name);
+    const st = statSync(full);
+    if (st.isDirectory()) out.push(...walkTs(full));
+    else if (name.endsWith(".ts") || name.endsWith(".toml")) out.push(full);
+  }
+  return out;
+}
 
 function walkMd(dir: string, visit: (path: string) => void): void {
   for (const name of readdirSync(dir)) {
