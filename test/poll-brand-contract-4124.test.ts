@@ -39,20 +39,40 @@
  *        a. falha se não houver entrada no mapa (handler novo sem marker
  *           registrado — força quem adicionou a rota a também decidir como
  *           ela seria encontrada pelo scan);
- *        b. falha se NENHUM arquivo em `test/*.test.ts` contiver um marker de
- *           rota daquele handler JUNTO (mesmo arquivo) com um marker de brand
- *           de prefixo não-vazio (`brand=clarice`, `brand=web`, `"clarice"`,
- *           `'clarice'`, `"web"`, `'web'`).
+ *        b. falha se NENHUM `it()`, em NENHUM arquivo `test/*.test.ts`, tiver
+ *           um marker de rota daquele handler (no próprio corpo do `it()` OU
+ *           no texto de nível de módulo do MESMO arquivo — cobre o padrão de
+ *           helper, ver `hasNonDefaultBrandCoverage` abaixo) JUNTO com um
+ *           marker de brand de prefixo não-vazio (`brand=clarice`,
+ *           `brand=web`, `"clarice"`, `'clarice'`, `"web"`, `'web'`) DENTRO
+ *           do próprio corpo desse `it()`.
+ *
+ * Revisão pós self-review #2038 (PR #4172): a 1ª versão deste teste usava uma
+ * janela de distância em CHARS entre os dois markers em vez de escopo por
+ * `it()` — o self-review achou um falso-positivo REAL (não hipotético) com
+ * essa versão: `poll-leaderboard-head-3998.test.ts` tem um `it()` testando
+ * `/leaderboard/top1` e, ~150-330 chars depois, um `it()` IRMÃO testando
+ * `/leaderboard?brand=clarice` — perto o bastante pra qualquer janela
+ * generosa o bastante pra não regredir os casos legítimos (que chegam a ~41
+ * chars de distância). Escopar por `it()` elimina essa classe de falso-
+ * positivo por construção — markers de um `it()` irmão nunca contam pro
+ * `it()` sob teste — sem precisar achar o "N mágico" certo pra uma janela.
  *
  * Limites conhecidos (aceitos — mesma classe de trade-off que
  * lib-boundary.test.ts assume pro scan estático de imports, que também não
  * executa os módulos):
- *   - falso-positivo: o marker de brand por substring (`"web"`/`'web'`) pode,
- *     em teoria, coincidir com um uso não relacionado a este contrato num
- *     arquivo que já referencia a rota por outro motivo.
+ *   - falso-positivo residual: o texto de nível de módulo (helpers, imports)
+ *     é compartilhado por TODOS os `it()` do arquivo — um arquivo que
+ *     definisse 2 helpers de rotas DIFERENTES ainda poderia creditar a rota
+ *     errada se um `it()` de uma tiver brand marker. Não observado na suíte
+ *     atual (convenção é 1 arquivo = 1 classe de rota/bug), mas não é
+ *     impossível por construção.
+ *   - falso-positivo por substring: o marker de brand (`"web"`/`'web'`) pode,
+ *     em teoria, coincidir com um uso não relacionado a este contrato DENTRO
+ *     do mesmo `it()` que também tem o marker de rota.
  *   - falso-negativo: um teste que exercite a rota só via closure/helper sem
- *     repetir o path/nome do handler como string literal no MESMO arquivo
- *     não é detectado.
+ *     repetir o path/nome do handler como string literal em nenhum lugar do
+ *     arquivo (nem no `it()`, nem no nível de módulo) não é detectado.
  *   - granularidade por HANDLER, não por URL exata: `handleLeaderboardByYear`
  *     é despachado tanto por `/leaderboard` (quando `leaderboardPeriod`==
  *     "year") quanto por `/leaderboard/{YYYY}` — cobrir uma URL cobre a
@@ -214,46 +234,99 @@ function stripRouteCoverageArrayLiteral(src: string): string {
 }
 
 /**
- * Distância máxima (em chars) entre um marker de rota e um marker de brand
- * pra contarem como "o MESMO caso de teste" — não basta co-ocorrerem em
- * QUALQUER lugar do mesmo arquivo. Achado ao rodar este scan pela 1ª vez
- * (260727): `poll-batch-3118.test.ts` cobre >10 fixes distintos do #3118 num
- * único arquivo — `/leaderboard/{YYYY-MM}.json` aparece (sem brand, só
- * diaria) e `brand=clarice` aparece ~5.666 chars depois (num `it()` TOTALMENTE
- * diferente, sobre `/admin/correct`). Um check "mesmo arquivo" credita
- * `handleLeaderboardByMonthJson` como coberto por brand=clarice quando NENHUM
- * teste de verdade faz isso — falso-positivo real, não hipotético (só foi
- * pego rodando o scan, não por inspeção). Medido nos ~10 arquivos de
- * cobertura genuína já existentes na suíte (#3600, #4038, #4117, #4118,
- * #3975, #3996, #3615, #3350, #4029, ver histórico do PR): distância real
- * entre marker de rota e marker de brand no MESMO teste sempre <=41 chars.
- * 500 dá margem generosa (12x) sem se aproximar da distância do
- * falso-positivo acima (~5.666 chars).
+ * Extrai todos os spans top-level de chamadas que casam `calleeRe` (ex:
+ * `it(`/`it.only(`/`it.skip(`, ou `describe(`/`describe.only(`/`describe.skip(`)
+ * via contagem de parênteses a partir do "(" — ignora chaves (só a paridade
+ * de `()` importa pra achar onde a chamada externa fecha; o corpo em `{...}`
+ * do callback fica todo DENTRO do span, sem afetar a contagem de parênteses
+ * externa). NÃO é string-aware (não pula parênteses dentro de literais) —
+ * risco aceito, mesma classe dos outros scans deste arquivo; comentários já
+ * foram removidos por `stripComments` antes de chegar aqui.
  */
-const COVERAGE_PROXIMITY_WINDOW = 500;
-
-/** Todas as posições (índice) onde `re` casa em `content` — usa cópia com flag `g`. */
-function allMatchIndices(content: string, re: RegExp): number[] {
-  const flags = re.flags.includes("g") ? re.flags : `${re.flags}g`;
-  const global = new RegExp(re.source, flags);
-  const indices: number[] = [];
-  for (let m = global.exec(content); m; m = global.exec(content)) {
-    indices.push(m.index);
-    if (m[0].length === 0) global.lastIndex++; // guarda contra loop infinito em match vazio (não esperado aqui)
+function extractCallSpans(content: string, calleeRe: RegExp): Array<{ start: number; end: number; text: string }> {
+  const flags = calleeRe.flags.includes("g") ? calleeRe.flags : `${calleeRe.flags}g`;
+  const re = new RegExp(calleeRe.source, flags);
+  const spans: Array<{ start: number; end: number; text: string }> = [];
+  for (let m = re.exec(content); m; m = re.exec(content)) {
+    const openParenIdx = m.index + m[0].length - 1; // "(" é o último char do match
+    let depth = 0;
+    let i = openParenIdx;
+    for (; i < content.length; i++) {
+      if (content[i] === "(") depth++;
+      else if (content[i] === ")") {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    spans.push({ start: m.index, end: i + 1, text: content.slice(m.index, i + 1) });
   }
-  return indices;
+  return spans;
 }
 
+const DESCRIBE_CALL_RE = /\bdescribe(?:\.only|\.skip)?\(/g;
+const IT_CALL_RE = /\bit(?:\.only|\.skip)?\(/g;
+
+/**
+ * Texto "nível de módulo" de um arquivo de teste: o conteúdo INTEIRO MENOS
+ * todo span `describe(...)` (que, por convenção deste repo, contém todos os
+ * `it()` do arquivo). Sobra o que fica FORA de qualquer describe/it — imports,
+ * e sobretudo HELPERS de módulo (ex: `function statsUrl(...)`, `async function
+ * postAdminCorrect(...)`) que constroem a URL/path da rota testada e são
+ * chamados de DENTRO de cada `it()` com o brand como argumento (padrão comum
+ * nesta suíte — ver `poll-admin-correct-raw-key-4038.test.ts`,
+ * `poll-stats-gabarito-brand-raw-read-4118.test.ts`).
+ */
+function moduleLevelText(content: string): string {
+  const describeSpans = extractCallSpans(content, DESCRIBE_CALL_RE);
+  if (describeSpans.length === 0) return content;
+  // Mescla spans sobrepostos/aninhados (describe dentro de describe) antes de
+  // remover, pra não desalinhar índices removendo em 2 passadas sobre o mesmo texto.
+  const sorted = [...describeSpans].sort((a, b) => a.start - b.start);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const s of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && s.start <= last.end) last.end = Math.max(last.end, s.end);
+    else merged.push({ start: s.start, end: s.end });
+  }
+  let out = "";
+  let cursor = 0;
+  for (const span of merged) {
+    out += content.slice(cursor, span.start);
+    cursor = span.end;
+  }
+  out += content.slice(cursor);
+  return out;
+}
+
+/**
+ * Cobertura = existe pelo menos 1 `it()`, em algum arquivo, cujo texto
+ * "efetivo" (próprio corpo do `it()` UNIDO ao texto de nível de módulo do
+ * MESMO arquivo) contém um marker de rota E um marker de brand não-vazio.
+ *
+ * Por que não window de distância em char (1ª versão deste teste, revisada
+ * após self-review #2038 do PR): um arquivo com VÁRIOS `it()` testando rotas
+ * DIFERENTES faz um marker de rota do `it()` A ficar fisicamente perto (em
+ * chars) de um marker de brand do `it()` B, sem NENHUM teste de verdade
+ * exercitar rota+brand juntos — achado real, não hipotético, em
+ * `poll-leaderboard-head-3998.test.ts` (`/leaderboard/top1` num `it()` e
+ * `brand=clarice` no `it()` SEGUINTE, ~150-330 chars de distância — dentro de
+ * qualquer window generoso o bastante pra não regredir os casos legítimos).
+ * Escopar por `it()` elimina essa classe inteira: markers de um `it()`
+ * IRMÃO nunca contam pro `it()` sob teste. Unir o texto de nível de módulo
+ * preserva o padrão de helper (o marker de ROTA mora no helper, fora de
+ * qualquer `it()`; o marker de BRAND é o argumento passado pelo `it()` que
+ * CHAMA o helper) sem precisar resolver call-graph por nome de função.
+ */
 function hasNonDefaultBrandCoverage(entry: RouteEntry, fileContents: Map<string, string>): boolean {
   for (const content of fileContents.values()) {
-    const routeIdxs = entry.routeMarkers.flatMap((re) => allMatchIndices(content, re));
-    if (routeIdxs.length === 0) continue;
-    const brandIdxs = allMatchIndices(content, BRAND_MARKER);
-    if (brandIdxs.length === 0) continue;
-    for (const r of routeIdxs) {
-      for (const b of brandIdxs) {
-        if (Math.abs(r - b) <= COVERAGE_PROXIMITY_WINDOW) return true;
-      }
+    const itBlocks = extractCallSpans(content, IT_CALL_RE);
+    if (itBlocks.length === 0) continue;
+    const moduleText = moduleLevelText(content);
+    const moduleHasRoute = entry.routeMarkers.some((re) => re.test(moduleText));
+    for (const block of itBlocks) {
+      const hasRoute = moduleHasRoute || entry.routeMarkers.some((re) => re.test(block.text));
+      if (!hasRoute) continue;
+      if (BRAND_MARKER.test(block.text)) return true;
     }
   }
   return false;
