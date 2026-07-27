@@ -6,8 +6,8 @@ Box de recomendação de leitura — variante IMPESSOAL (3ª pessoa), mesma
 estrutura de recomendacao-leitura-mensal.md (base Clarice, decisão do editor
 260716).
 
-APROVADO pelo editor em 260727 (era RASCUNHO até então). O comentário sobre o
-livro foi escrito a partir de conhecimento geral sobre o autor, não de sinopse
+APROVADO pelo editor em 260727 (até então estava marcado como não revisado).
+O comentário sobre o livro foi escrito a partir de conhecimento geral, não de sinopse
 — a página da Amazon não tem descrição do produto (reconfirmado em 260727).
 Título, autoria (Peter J. Bentley) e link de associado (tag diaria-20, resolve
 pro produto certo na Amazon BR) foram verificados na mesma data.

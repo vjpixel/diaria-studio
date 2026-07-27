@@ -793,6 +793,23 @@ describe("snippets dos slots vigentes — guardas de forma (rotação editorial 
     }
   });
 
+  it("nenhum slot vigente aponta pra snippet marcado RASCUNHO", () => {
+    // O code-review da PR #4111 pegou `historia-ia-para-quem-tem-pressa-clarice.md`
+    // virando slot1 default AINDA marcado "RASCUNHO — ainda não revisado pelo
+    // editor": texto gerado sem sinopse sairia entre D1 e D2 pro leitor. O
+    // marcador mora no comentário de header (por isso lemos o arquivo cru, não
+    // o corpo). Há snippets RASCUNHO dormentes no repo — a guarda é só contra
+    // promover um deles a slot de produção sem revisão.
+    for (const [slot, file] of slots) {
+      const raw = readFileSync(join(ROOT_DIR, "context", "snippets", file), "utf8");
+      assert.doesNotMatch(
+        raw,
+        /RASCUNHO/,
+        `${slot} (${file}) está marcado RASCUNHO — revise o texto e troque o marcador por uma nota de aprovação antes de configurá-lo como slot`,
+      );
+    }
+  });
+
   it("o kicker de abertura sai em negrito (decisão 260717, bold-wrap sem detecção por emoji)", () => {
     // O #3475 tirou os marcadores emoji; o negrito do título virou o único
     // sinal visual de kicker. Um snippet novo que esqueça o `**` sai com o
