@@ -454,6 +454,32 @@ describe("buildAlreadyVotedResponse (#4065 follow-up) — share card + CTA tamb�
     assert.match(html, /Você já votou/);
     assert.doesNotMatch(html, /id="jogar-signup-form"/);
   });
+
+  // Achado no self-review da PR: `correct` do share card era computado a
+  // partir do `choice` da requisição ATUAL (query string), não do voto
+  // REALMENTE persistido — um link reproduzido/copiado com `choice`
+  // diferente do que a pessoa votou de fato faria o share card mentir sobre
+  // acerto/erro, incoerente com a própria mensagem "já votou" (que sempre
+  // cita o voto real). Regressão: vota A (gabarito=A, acertou), depois
+  // "revisita" com choice=B na query — share card precisa continuar
+  // refletindo o voto real (A, acertou), não o B da query descartada.
+  it("REGRESSÃO (self-review): share card usa o voto REALMENTE persistido, não o choice da query de um link reproduzido com valor diferente", async () => {
+    const env = makeEnv({ "correct:260601": "A" });
+    const first = await worker.fetch(voteReq(null, "replay@example.com", "A", "260601"), env);
+    assert.equal(first.status, 200);
+    const firstHtml = await first.text();
+    assert.match(firstHtml, /Acertei/, "1º voto (A, gabarito A) deve ser tratado como acerto");
+
+    // "Revisita" com choice=B — a request é descartada (já votou), mas o
+    // choice B NUNCA deveria influenciar o share card.
+    const second = await worker.fetch(voteReq(null, "replay@example.com", "B", "260601"), env);
+    assert.equal(second.status, 200);
+    const html = await second.text();
+    assert.match(html, /Você já votou na edição de .* \(escolha: A\)/, "mensagem deve citar o voto REAL (A), não o B da query");
+    const shareTextMatch = /<p class="share-text">([\s\S]*?)<\/p>/.exec(html);
+    assert.ok(shareTextMatch, "share card deve estar presente");
+    assert.match(shareTextMatch![1], /Acertei/, "share card deve refletir o voto REAL (A, correto), não o choice=B da query descartada");
+  });
 });
 
 describe("#4065: cadastro inline (#3580) na tela de resultado do voto — só brand clarice", () => {
