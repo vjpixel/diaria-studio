@@ -18,3 +18,4 @@
 # (vazio por padrão — adicione conforme necessário)
 cohere.com/blog/transcribe-arabic
 developers.googleblog.com/litertjs-googles-high-performance-web-ai-inference
+huggingface.co/blog/nunchaku-diffusers

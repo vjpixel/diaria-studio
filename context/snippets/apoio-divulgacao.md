@@ -1,4 +1,5 @@
 <!--
+nome: Apoie a diar.ia.br
 Bloco canônico de DIVULGAÇÃO do programa de apoio (apoia.se/diaria).
 
 **Slot 3 fixo (#3824, 260722, decisão permanente do editor):** este é o

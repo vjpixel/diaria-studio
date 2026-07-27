@@ -1,6 +1,7 @@
 <!--
+nome: Recomendação: 2041
 Bloco de DIVULGAÇÃO de recomendação de leitura pessoal do editor. Mesma
-categoria de apoio-divulgacao.md/alexa-plus-divulgacao.md (slot 1 D1/D2 ou
+categoria de apoio-divulgacao.md/_arquivo/alexa-plus-divulgacao.md (slot 1 D1/D2 ou
 slot 2 D2/D3, #2978) — NÃO auto-injetado por padrão (diferente de livros,
 #2527): o editor cola este bloco na lacuna desejada quando quiser divulgar
 uma leitura específica.
@@ -46,6 +47,6 @@ diário que fica em 1ª pessoa por design).
 
 **Recomendação de leitura**
 
-[**2041: Como a inteligência artificial vai mudar sua vida nas próximas décadas**](https://link.amazon/B05FlAaJ7), de Kai-Fu Lee e Chen Qiufan.
+[**2041: Como a inteligência artificial vai mudar sua vida nas próximas décadas**](https://www.amazon.com.br/2041-intelig%C3%AAncia-artificial-pr%C3%B3ximas-d%C3%A9cadas/dp/6559870537), de Kai-Fu Lee e Chen Qiufan.
 
 Estou terminando agora e, como fã de ficção científica e curioso, gosto da estrutura: cada capítulo abre com um conto e depois desconstrói as tecnologias que aparecem nele. Está com 45% de desconto até terminar o estoque (o livro físico está mais barato que o digital).
