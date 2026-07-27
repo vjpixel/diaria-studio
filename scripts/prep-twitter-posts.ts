@@ -1,5 +1,6 @@
 /**
- * prep-twitter-posts.ts (#3994, substitui publish-twitter.ts/twitter-oauth1.ts)
+ * prep-twitter-posts.ts (#3994, substitui publish-twitter.ts/twitter-oauth1.ts;
+ * #4103 — dueAt via schedule compartilhado, mode customScheduled)
  *
  * Publicação no X mudou de "API direta da X" (OAuth 1.0a, pay-per-usage desde
  * que o free tier acabou — ~$0.20/post com link) para "via Buffer" (MCP
@@ -19,14 +20,26 @@
  * **Sem fallback** — ausência da seção/destaque é tratada como "sem conteúdo
  * pronto pro X nesta edição", nunca improvisando texto (decisão da issue #3994).
  *
+ * **dueAt (#4103):** cada post ganha um `dueAt` calculado por
+ * `computeScheduledAt` de `compute-social-schedule.ts` — o MESMO helper usado
+ * por `publish-facebook.ts`/`publish-linkedin.ts`/`publish-instagram.ts`/
+ * `publish-threads.ts` (fallback_schedule/timezone de `platform.config.json`).
+ * Antes do #4103, o dispatch usava `mode: "addToQueue"` (fila própria da
+ * Buffer) — os slots do canal na Buffer não têm relação com os horários
+ * editoriais dos demais canais, e dessincronizavam (ex: X saindo às 08:55
+ * enquanto Facebook/LinkedIn/Instagram/Threads saíam às 10:00, caso real
+ * 260727). O orchestrator agora usa esse `dueAt` com `mode: "customScheduled"`
+ * — um só dono do cronograma editorial (o `fallback_schedule` compartilhado).
+ *
  * Uso:
  *   npx tsx scripts/prep-twitter-posts.ts \
  *     --edition-dir data/editions/260624/ \
  *     [--skip-existing]     # pula destaques já em 06-social-published.json (default: true)
  *     [--no-skip-existing]  # força re-inclusão
  *
- * Output (stdout, JSON): { enabled, published_path, posts: [{destaque, text}], skipped: [...] }
- * `posts` é a lista que o orchestrator deve efetivamente postar via Buffer MCP.
+ * Output (stdout, JSON): { enabled, published_path, posts: [{destaque, text, dueAt}], skipped: [...] }
+ * `posts` é a lista que o orchestrator deve efetivamente postar via Buffer MCP
+ * (`mode: "customScheduled"`, `dueAt` = `post.dueAt`).
  */
 
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
@@ -36,6 +49,7 @@ import { readSocialPublished } from "./lib/social-published-store.ts";
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection } from "./lib/extract-section.ts";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
+import { computeScheduledAt } from "./compute-social-schedule.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -74,14 +88,24 @@ export function extractCurtoText(socialMd: string, destaque: string): string | n
 export interface PrepResult {
   enabled: boolean;
   published_path: string | null;
-  posts: Array<{ destaque: string; text: string }>;
+  posts: Array<{ destaque: string; text: string; dueAt: string }>;
   skipped: Array<{ destaque: string; reason: string }>;
+}
+
+/**
+ * Deriva `editionDate` (AAMMDD) a partir do último segmento de `editionDir` —
+ * mesmo padrão usado por `publish-facebook.ts`/`publish-linkedin.ts` (#270).
+ */
+function deriveEditionDate(editionDir: string): string {
+  return editionDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() ?? "";
 }
 
 export function prepTwitterPosts(
   editionDir: string,
-  opts: { skipExisting: boolean } = { skipExisting: true },
+  opts: { skipExisting?: boolean; editionDate?: string; now?: number } = {},
 ): PrepResult {
+  const skipExisting = opts.skipExisting ?? true;
+  const editionDate = opts.editionDate ?? deriveEditionDate(editionDir);
   const gateConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const twitterGateConfig = gateConfig?.publishing?.social?.twitter;
   if (twitterGateConfig?.enabled === false) {
@@ -117,7 +141,7 @@ export function prepTwitterPosts(
   const published = readSocialPublished(publishedPath);
 
   for (const d of destaques) {
-    if (opts.skipExisting) {
+    if (skipExisting) {
       const existing = published.posts.find(
         (p) =>
           p.platform === "twitter" &&
@@ -144,7 +168,17 @@ export function prepTwitterPosts(
       continue;
     }
 
-    posts.push({ destaque: d, text });
+    // #4103: dueAt calculado pelo MESMO helper compartilhado com
+    // Facebook/LinkedIn/Instagram/Threads — nunca uma fila própria da Buffer.
+    const dueAt = computeScheduledAt({
+      config: gateConfig,
+      editionDate,
+      destaque: d as "d1" | "d2" | "d3",
+      platform: "twitter",
+      now: opts.now,
+    });
+
+    posts.push({ destaque: d, text, dueAt });
   }
 
   return { enabled: true, published_path: publishedPath, posts, skipped };

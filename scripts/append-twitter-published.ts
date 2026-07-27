@@ -13,10 +13,14 @@
  *     --status published \
  *     [--url https://x.com/diariabr/status/...] \
  *     [--buffer-post-id 6a668bb2ecad4329a917a05f] \
+ *     [--scheduled-at 2026-07-27T10:00:00-03:00] \
  *     [--reason "texto excede 280 chars"]
  *
  * `--status` ∈ {published, scheduled, draft, failed}. `--url`/`--buffer-post-id`
  * fazem sentido pra published/scheduled/draft; `--reason` pra failed.
+ * `--scheduled-at` (#4103) — o `dueAt` que foi passado ao `create_post` (Buffer,
+ * `mode: customScheduled`); grava em `scheduled_at` pra auditoria/paridade com
+ * os demais canais (que sempre gravam o horário agendado, nunca `null`).
  */
 
 import { appendSocialPosts, PostEntry } from "./lib/social-published-store.ts";
@@ -46,7 +50,7 @@ function main() {
     destaque,
     url: values["url"] ?? null,
     status: status as PostEntry["status"],
-    scheduled_at: null,
+    scheduled_at: values["scheduled-at"] ?? null,
     ...(values["reason"] ? { reason: values["reason"] } : {}),
     ...(values["buffer-post-id"] ? { buffer_post_id: values["buffer-post-id"] } : {}),
   };

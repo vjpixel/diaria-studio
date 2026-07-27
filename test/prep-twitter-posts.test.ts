@@ -1,10 +1,15 @@
 /**
- * prep-twitter-posts.test.ts (#3994)
+ * prep-twitter-posts.test.ts (#3994; dueAt/#4103)
  *
  * Testa prep-twitter-posts.ts: extração da seção '# Curto' (sem fallback),
  * gate de platform.config.json, skip-existing e limite de 280 chars.
  * Não chama nenhuma API — a publicação em si é feita pelo orchestrator via
  * Buffer MCP (create_post), fora do escopo deste script.
+ *
+ * #4103: cobre o invariante que motivou a troca addToQueue → customScheduled —
+ * o `dueAt` de cada post do X precisa ser IDÊNTICO ao que o mesmo
+ * `computeScheduledAt` (compute-social-schedule.ts) produziria para os demais
+ * canais na mesma edição/destaque, nunca um horário calculado à parte.
  */
 
 import { describe, it } from "node:test";
@@ -19,6 +24,7 @@ import {
   prepTwitterPosts,
   TWITTER_CHAR_LIMIT,
 } from "../scripts/prep-twitter-posts.ts";
+import { computeScheduledAt } from "../scripts/compute-social-schedule.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -59,6 +65,13 @@ function makeEditionDir(prefix: string, socialMd: string): string {
   writeFileSync(join(tmpDir, "03-social.md"), socialMd, "utf8");
   return tmpDir;
 }
+
+// editionDate no futuro + `now` injetado bem antes dela: garante que o slot
+// calculado nunca cai no guard de past-slot shift (#2552) — dueAt sempre o
+// horário canônico do fallback_schedule, determinístico independente de
+// quando a suíte rodar (nunca depende de Date.now() real).
+const FUTURE_EDITION_DATE = "271231";
+const FUTURE_NOW = new Date("2027-12-01T12:00:00Z").getTime();
 
 // ─── extractDestaquesFromCurto ──────────────────────────────────────────────
 
@@ -112,7 +125,7 @@ describe("prepTwitterPosts", () => {
   it("retorna os 3 destaques prontos pra postar quando Curto existe e nada foi publicado ainda", () => {
     const dir = makeEditionDir("diaria-twitter-prep-", MD_CURTO);
     try {
-      const result = prepTwitterPosts(dir);
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
       assert.equal(result.enabled, true);
       assert.equal(result.posts.length, 3);
       assert.deepEqual(result.posts.map((p) => p.destaque), ["d1", "d2", "d3"]);
@@ -143,7 +156,7 @@ describe("prepTwitterPosts", () => {
         }),
         "utf8",
       );
-      const result = prepTwitterPosts(dir);
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
       assert.deepEqual(result.posts.map((p) => p.destaque), ["d2", "d3"]);
       assert.deepEqual(result.skipped, [{ destaque: "d1", reason: "already published" }]);
     } finally {
@@ -161,7 +174,7 @@ describe("prepTwitterPosts", () => {
         }),
         "utf8",
       );
-      const result = prepTwitterPosts(dir, { skipExisting: false });
+      const result = prepTwitterPosts(dir, { skipExisting: false, editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
       assert.deepEqual(result.posts.map((p) => p.destaque), ["d1", "d2", "d3"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -192,5 +205,81 @@ describe("prepTwitterPosts", () => {
       socials?: string[];
     };
     assert.ok(cfg.socials!.includes("twitter"), "socials deve conter 'twitter'");
+  });
+});
+
+// ─── #4103: dueAt vem do MESMO schedule compartilhado, não de uma fila própria ──
+
+describe("#4103: prepTwitterPosts.dueAt usa o schedule compartilhado (não addToQueue)", () => {
+  // editionDate bem no futuro + `now` injetado bem antes dela: garante que o
+  // slot calculado nunca cai no guard de past-slot shift (#2552), then dueAt
+  // é sempre o horário canônico do fallback_schedule — determinístico
+  // independente de quando a suíte rodar.
+  it("dueAt de cada destaque é idêntico ao computeScheduledAt (platform: twitter) chamado diretamente", () => {
+    const dir = makeEditionDir("diaria-twitter-prep-dueat-", MD_CURTO);
+    try {
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+      const config = JSON.parse(readFileSync(resolve(__ROOT, "platform.config.json"), "utf8"));
+
+      for (const post of result.posts) {
+        const expected = computeScheduledAt({
+          config,
+          editionDate: FUTURE_EDITION_DATE,
+          destaque: post.destaque as "d1" | "d2" | "d3",
+          platform: "twitter",
+          now: FUTURE_NOW,
+        });
+        assert.equal(
+          post.dueAt,
+          expected,
+          `dueAt de ${post.destaque} deve vir do mesmo computeScheduledAt usado pelos demais canais`,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dueAt bate com o horário editorial usado por Facebook/LinkedIn/Instagram/Threads pro MESMO destaque", () => {
+    const dir = makeEditionDir("diaria-twitter-prep-parity-", MD_CURTO);
+    try {
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+      const config = JSON.parse(readFileSync(resolve(__ROOT, "platform.config.json"), "utf8"));
+
+      for (const platform of ["facebook", "linkedin", "instagram"] as const) {
+        for (const post of result.posts) {
+          const otherChannelDueAt = computeScheduledAt({
+            config,
+            editionDate: FUTURE_EDITION_DATE,
+            destaque: post.destaque as "d1" | "d2" | "d3",
+            platform,
+            now: FUTURE_NOW,
+          });
+          assert.equal(
+            post.dueAt,
+            otherChannelDueAt,
+            `#4103: X (${post.destaque}) deve sair no mesmo horário que ${platform} — dois donos do mesmo cronograma foi exatamente o bug`,
+          );
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dueAt é ISO 8601 com offset explícito (exigido pela Buffer pra mode: customScheduled)", () => {
+    const dir = makeEditionDir("diaria-twitter-prep-iso-", MD_CURTO);
+    try {
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+      for (const post of result.posts) {
+        assert.match(
+          post.dueAt,
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/,
+          `dueAt de ${post.destaque} deve ser ISO 8601 com offset (recebido: ${post.dueAt})`,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

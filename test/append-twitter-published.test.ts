@@ -50,6 +50,47 @@ describe("append-twitter-published.ts", () => {
     }
   });
 
+  it("grava entry 'scheduled' com --scheduled-at (#4103, paridade com os demais canais)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-append-twitter-sched-"));
+    const publishedPath = join(tmpDir, "06-social-published.json");
+    try {
+      const r = run([
+        "--published-path", publishedPath,
+        "--destaque", "d1",
+        "--status", "scheduled",
+        "--url", "https://x.com/diariabr/status/456",
+        "--buffer-post-id", "def456",
+        "--scheduled-at", "2026-07-27T10:00:00-03:00",
+      ]);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const data = JSON.parse(readFileSync(publishedPath, "utf8"));
+      const entry = data.posts.find((p: any) => p.destaque === "d1");
+      assert.equal(entry.status, "scheduled");
+      assert.equal(entry.scheduled_at, "2026-07-27T10:00:00-03:00");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem --scheduled-at, grava scheduled_at: null (default preservado)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-append-twitter-nosched-"));
+    const publishedPath = join(tmpDir, "06-social-published.json");
+    try {
+      const r = run([
+        "--published-path", publishedPath,
+        "--destaque", "d1",
+        "--status", "published",
+        "--url", "https://x.com/diariabr/status/789",
+      ]);
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      const data = JSON.parse(readFileSync(publishedPath, "utf8"));
+      const entry = data.posts.find((p: any) => p.destaque === "d1");
+      assert.equal(entry.scheduled_at, null);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("grava entry 'failed' com reason, sem url", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "diaria-append-twitter-fail-"));
     const publishedPath = join(tmpDir, "06-social-published.json");
