@@ -1301,13 +1301,15 @@ export function draftToEmail(
       continue;
     }
 
-    // LIVRO: box de indicação de UM livro (bege), kicker "Livro" e SEM título
-    // interno (noSubtitle) — o título do livro em negrito-com-link é o próprio
-    // âncora visual. Sem imagem. (#3581: kicker perdeu o sufixo "do mês", que
-    // era redundante pro leitor; label longo "LIVRO DO MÊS" segue aceito na
-    // detecção por back-compat com edições/drafts em voo.)
+    // LIVRO: box de indicação de UM livro (bege). Kicker = CATEGORIA da seção
+    // ("Livro do mês"); título interno = primeira linha do bloco
+    // ("Recomendação de leitura"). Decisão do editor 260727 — reverte o #3581,
+    // que havia tirado o sufixo "do mês" E o título interno por redundância:
+    // eram redundantes quando kicker e título diziam a mesma coisa, deixaram de
+    // ser quando passaram a dizer coisas diferentes (categoria vs. natureza do
+    // box). Sem imagem. Label curto e longo ambos aceitos na detecção.
     if (label === "LIVRO" || label === "LIVRO DO MÊS") {
-      bodyParts.push(renderClariceBox(chunk, "Livro", undefined, true));
+      bodyParts.push(renderClariceBox(chunk, "Livro do mês"));
       continue;
     }
 

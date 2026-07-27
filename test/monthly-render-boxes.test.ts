@@ -121,6 +121,10 @@ describe("box LIVRO (kicker próprio, sem título interno) — #3581 removeu 'do
     "",
     "**LIVRO**",
     "",
+    // 260727: o box voltou a ter título interno; a 1ª linha do bloco É o título.
+    // Sem ela, o link do livro seria consumido como título (ver renderClariceBox).
+    "Recomendação de leitura",
+    "",
     "[**2041: Livro Teste**](https://link.amazon/ABC), de Fulano de Tal.",
     "",
     "Fulano de Tal foi presidente do Google na China.",
@@ -131,17 +135,30 @@ describe("box LIVRO (kicker próprio, sem título interno) — #3581 removeu 'do
   // Mesmo conteúdo, mas com o label longo legado — cobre o draft antigo em voo.
   const draftLegacyLabel = draft.replace("**LIVRO**", "**LIVRO DO MÊS**");
 
-  it("kicker 'Livro' (SEM 'do mês') + SEM <h3> interno", () => {
+  // 260727 (reverte #3581): kicker volta a ser a CATEGORIA ("Livro do mês") e o
+  // box volta a ter título interno, agora vindo da 1ª linha do bloco
+  // ("Recomendação de leitura"). Deixaram de ser redundantes porque passaram a
+  // dizer coisas diferentes.
+  it("kicker 'Livro do mês' (categoria) + título interno da 1ª linha do bloco", () => {
     const { html } = draftToEmail(draft, "Teste", "2606");
-    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro<\/td>/.test(html), "kicker Livro sem sufixo");
-    assert.ok(!html.includes("Livro do m"), "kicker não deve mais conter 'do mês'/'do Mês'");
-    assert.ok(!html.includes("<h3"), "box não deve ter título interno (h3)");
+    assert.ok(
+      /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
+      "kicker deve ser a categoria 'Livro do mês'",
+    );
+    assert.ok(html.includes("Recomendação de leitura"), "título interno do box");
+    assert.ok(
+      !/<h3[^>]*>\s*<a href="https:\/\/link\.amazon\/ABC"/.test(html),
+      "o link do livro NÃO pode ser consumido como título do box",
+    );
   });
 
-  it("label legado 'LIVRO DO MÊS' (back-compat) ainda renderiza kicker 'Livro' sem sufixo", () => {
+  it("label legado 'LIVRO DO MÊS' (back-compat) renderiza o mesmo kicker de categoria", () => {
     const { html } = draftToEmail(draftLegacyLabel, "Teste", "2606");
-    assert.ok(/<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro<\/td>/.test(html), "kicker Livro sem sufixo mesmo a partir do label longo");
-    assert.ok(!html.includes("Livro do m"), "kicker não deve conter 'do mês'/'do Mês' mesmo com input legado");
+    assert.ok(
+      /<span style="color:#00A0A0;">&#9679;<\/span>&nbsp;Livro do mês<\/td>/.test(html),
+      "mesmo kicker a partir do label longo",
+    );
+    assert.ok(html.includes("Recomendação de leitura"), "título interno também no label legado");
   });
 
   it("título do livro: **dentro** do link vira <strong>, sem ** literal", () => {
