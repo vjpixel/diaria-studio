@@ -349,6 +349,50 @@ describe("runSnippetStalenessCheck (#4076) — end-to-end com fixture em diretó
     }
   });
 
+  it("#4140 finding 3 — SLOT RENOMEADO: boxesCfg.slot1 passa a apontar pra um snippet DIFERENTE do que gerou o box já presente no MD → guard ainda detecta (kind: config)", () => {
+    // Cenário literal da issue #4076 ("os slots foram trocados"): o MD já
+    // tem o box do slot1 gerado a partir de `livros-divulgacao.md` (fixture
+    // padrão). Pós-stitch, o editor troca `platform.config.json` pra apontar
+    // slot1 pra um snippet DIFERENTE (`novo-parceiro-divulgacao.md`) — não
+    // apenas toca o mtime do mesmo arquivo (isso já era coberto pelo teste
+    // anterior). O box antigo continua fisicamente presente em
+    // `02-reviewed.md`, então `extractBoxDivulgacao1` ainda o encontra e o
+    // slot conta como engajado — a comparação de mtime do
+    // `platform.config.json` (que mudou de valor E de mtime) deve disparar
+    // normalmente, mesmo com o VALOR do slot diferente do que gerou o box.
+    const { root, snippetsDir, configPath, mdPath } = setupFixture();
+    try {
+      const oldTime = new Date(Date.now() - 10 * 60_000);
+      utimesSync(mdPath, oldTime, oldTime);
+
+      // Snippet novo existe (o config vai apontar pra ele), mas o box em
+      // 02-reviewed.md ainda é o do snippet ANTIGO (livros-divulgacao.md) —
+      // ninguém re-stitchou depois da troca do slot.
+      writeFileSync(
+        join(snippetsDir, "novo-parceiro-divulgacao.md"),
+        "**📚 NOVO PARCEIRO**\n\nConteúdo do box de divulgação do novo parceiro.",
+      );
+
+      // Slot RENOMEADO: platform.config.json passa a apontar slot1 pro
+      // snippet novo — mudança de VALOR, não só de mtime do mesmo arquivo.
+      writeFileSync(
+        configPath,
+        JSON.stringify({ boxes_divulgacao: { slot1: "novo-parceiro-divulgacao.md", slot2: null, slot3: null } }),
+      );
+      const newTime = new Date();
+      utimesSync(configPath, newTime, newTime);
+
+      const result = runSnippetStalenessCheck(mdPath, root);
+      assert.equal(result.ok, false, `esperava warning pro slot renomeado, achou: ${JSON.stringify(result.warnings)}`);
+      assert.ok(
+        result.warnings.some((w) => w.file === "platform.config.json" && w.kind === "config"),
+        `esperava warning kind:config de platform.config.json, achou: ${JSON.stringify(result.warnings)}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("02-reviewed.md ausente → sem crash, report ok (skip gracioso)", () => {
     const root = mkdtempSync(join(tmpdir(), "diaria-snippet-staleness-missing-"));
     try {

@@ -76,6 +76,34 @@
  * ANTIGO — `extractBoxDivulgacao{1,2,3}` encontra esse box antigo, o slot
  * conta como engajado, e a comparação de mtime do `platform.config.json`
  * dispara normalmente.
+ *
+ * Duas imprecisões adicionais conhecidas e aceitas (self-review #4140,
+ * mesma filosofia acima — não corrigidas aqui):
+ *
+ *   - Atribuição de arquivo enganosa quando `boxesCfg.slotN` é TROCADO
+ *     (aponta pra um snippet diferente) pós-stitch. `resolveUsedSnippets`
+ *     usa o valor ATUAL do slot como nome do arquivo candidato, não o
+ *     snippet que de fato produziu o box já baked-in em `02-reviewed.md`
+ *     (o `extractBoxDivulgacao{1,2,3}` só confirma que HÁ um box na posição
+ *     — não de qual arquivo ele veio). Inofensivo no caso comum (config
+ *     inalterado) e o cenário real do #4076 é coberto normalmente pelo
+ *     check de `platform.config.json` (kind: "config"). Mas se, além da
+ *     troca de slot, o arquivo NOVO também tiver mtime recente por
+ *     coincidência não-relacionada, o report emitiria um warning
+ *     `kind: "snippet"` nomeando um arquivo que NUNCA foi de fato
+ *     incorporado nesta edição (o conteúdo baked-in veio do arquivo
+ *     ANTIGO). Severidade baixa (dupla coincidência necessária), warn-only.
+ *   - `isAgradecimentoSnippetUsed` reflete o estado ATUAL do disco, não o
+ *     estado no momento do stitch — pode silenciar uma divergência real no
+ *     sentido inverso. Se o editor preencheu `{apoiadores}` com um nome
+ *     real (box presente em `02-reviewed.md`) e DEPOIS reverteu pro
+ *     placeholder (ex: desfez a edição), a função volta a retornar `false`
+ *     e o arquivo sai do conjunto "usado" — mesmo que o box com o nome
+ *     antigo ainda esteja fisicamente em `02-reviewed.md` e o arquivo-fonte
+ *     tenha mtime mais novo que o MD. O guard fica em silêncio apesar de
+ *     haver divergência real (MD tem um nome que o snippet-fonte já não
+ *     tem). Diferente do ponto acima, este é um miss real (não só teórico)
+ *     — não apenas uma atribuição incorreta de qual arquivo avisar.
  */
 
 import { readFileSync, existsSync, statSync } from "node:fs";
