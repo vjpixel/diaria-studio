@@ -205,6 +205,61 @@ async function createThreadsContainer(
   return data.id;
 }
 
+/** Intervalo entre polls de status do container, em ms (#3995). */
+export const CONTAINER_POLL_INTERVAL_MS = 1000;
+/** Máximo de polls antes de desistir e tentar publicar mesmo assim (#3995). */
+export const CONTAINER_POLL_MAX_ATTEMPTS = 10;
+
+/**
+ * Aguarda o container ficar pronto (`status: FINISHED`) antes de publicar
+ * (#3995). Achado na investigação: em 260724, 2 de 3 destaques falharam com
+ * `HTTP 400 code=24 subcode=4279009 "Media not found"` no `/threads_publish`
+ * chamado LOGO APÓS `createThreadsContainer` retornar um `container_id` —
+ * um teste manual mais tarde (mesmo container, mesmo texto) publicou com
+ * sucesso, indicando propagação assíncrona do lado da Meta (o container
+ * existe mas ainda não está pronto pra ser referenciado por
+ * `threads_publish`), não problema de token/permissão.
+ *
+ * Poll `GET /{container-id}?fields=status,error_message`, mesmo padrão
+ * documentado pra containers de mídia da Graph API (Instagram). Timeout
+ * limitado ({@link CONTAINER_POLL_MAX_ATTEMPTS} × {@link CONTAINER_POLL_INTERVAL_MS}
+ * ≈ 10s) — se esgotar sem `FINISHED`, segue pra `publishThreadsContainer`
+ * mesmo assim (best-effort: não é garantido que o polling cubra 100% dos
+ * casos, e a chamada de publish já tem sua própria mensagem de erro clara
+ * se ainda não estiver pronta). `status: ERROR` aborta cedo com a mensagem
+ * da API, sem gastar as tentativas restantes.
+ */
+export async function waitForContainerReady(
+  containerId: string,
+  accessToken: string,
+  apiVersion: string,
+  sleepFn: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<void> {
+  const url = `${THREADS_API_BASE}/${apiVersion}/${containerId}?fields=status,error_message&access_token=${encodeURIComponent(accessToken)}`;
+  for (let attempt = 1; attempt <= CONTAINER_POLL_MAX_ATTEMPTS; attempt++) {
+    let status: string | undefined;
+    let errorMessage: string | undefined;
+    try {
+      const res = await fetch(url, { method: "GET" });
+      if (res.ok) {
+        const data = (await res.json()) as { status?: string; error_message?: string };
+        status = data.status;
+        errorMessage = data.error_message;
+      }
+    } catch {
+      // Falha de rede no polling — best-effort, tenta de novo até esgotar.
+    }
+    if (status === "FINISHED") return;
+    if (status === "ERROR") {
+      throw new Error(`Threads container ${containerId} status=ERROR: ${errorMessage ?? "sem detalhe"}`);
+    }
+    if (attempt < CONTAINER_POLL_MAX_ATTEMPTS) {
+      await sleepFn(CONTAINER_POLL_INTERVAL_MS);
+    }
+  }
+  // Timeout do polling — segue pro publish mesmo assim (best-effort, ver docstring).
+}
+
 /**
  * Passo 2: publica o container criado no passo 1.
  * Retorna o media_id do post publicado.
@@ -259,6 +314,7 @@ async function publishThread(
       replyToId,
       apiVersion,
     );
+    await waitForContainerReady(containerId, accessToken, apiVersion); // #3995
     const mediaId = await publishThreadsContainer(userId, accessToken, containerId, apiVersion);
 
     if (i === 0) {

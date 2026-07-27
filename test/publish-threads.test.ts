@@ -21,6 +21,8 @@ import {
   extractPostText,
   splitIntoThreadChunks,
   THREADS_CHAR_LIMIT,
+  waitForContainerReady,
+  CONTAINER_POLL_MAX_ATTEMPTS,
 } from "../scripts/publish-threads.ts";
 import { postToWorkerQueue } from "../scripts/lib/worker-queue-client.ts"; // #3944 Parte B
 
@@ -769,6 +771,101 @@ describe("#3944 Parte B --schedule subprocess: fail-fast e guard de multi-chunk"
       assert.match(entry.reason, /500/, "motivo deve citar o limite de 500 chars");
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── waitForContainerReady (#3995) ───────────────────────────────────────────
+//
+// Achado na investigação: em 260724, 2 de 3 destaques falharam com "Media not
+// found" no /threads_publish chamado logo após createThreadsContainer, mas um
+// teste manual mais tarde (mesmo texto) publicou com sucesso — propagação
+// assíncrona do lado da Meta, não problema de credencial. Fix: poll de status
+// do container antes de tentar publicar.
+
+describe("waitForContainerReady (#3995)", () => {
+  const ORIGINAL_FETCH = global.fetch;
+
+  it("resolve imediatamente quando status já é FINISHED (sem dormir)", async () => {
+    let fetchCalls = 0;
+    global.fetch = (async () => {
+      fetchCalls++;
+      return { ok: true, json: async () => ({ status: "FINISHED" }) } as Response;
+    }) as typeof fetch;
+    let slept = 0;
+    try {
+      await waitForContainerReady("cid1", "token", "v1.0", async () => {
+        slept++;
+      });
+      assert.equal(fetchCalls, 1);
+      assert.equal(slept, 0, "não deve dormir se já veio FINISHED no 1º poll");
+    } finally {
+      global.fetch = ORIGINAL_FETCH;
+    }
+  });
+
+  it("faz polling (IN_PROGRESS → FINISHED) dormindo entre tentativas", async () => {
+    let call = 0;
+    global.fetch = (async () => {
+      call++;
+      const status = call < 3 ? "IN_PROGRESS" : "FINISHED";
+      return { ok: true, json: async () => ({ status }) } as Response;
+    }) as typeof fetch;
+    let slept = 0;
+    try {
+      await waitForContainerReady("cid2", "token", "v1.0", async () => {
+        slept++;
+      });
+      assert.equal(call, 3);
+      assert.equal(slept, 2, "deve dormir entre cada poll que não terminou (2 sleeps antes do 3º poll)");
+    } finally {
+      global.fetch = ORIGINAL_FETCH;
+    }
+  });
+
+  it("lança erro claro quando status é ERROR (não gasta tentativas restantes)", async () => {
+    let call = 0;
+    global.fetch = (async () => {
+      call++;
+      return { ok: true, json: async () => ({ status: "ERROR", error_message: "conteúdo rejeitado" }) } as Response;
+    }) as typeof fetch;
+    try {
+      await assert.rejects(
+        () => waitForContainerReady("cid3", "token", "v1.0", async () => {}),
+        /status=ERROR.*conteúdo rejeitado/,
+      );
+      assert.equal(call, 1, "não deve continuar tentando após ERROR");
+    } finally {
+      global.fetch = ORIGINAL_FETCH;
+    }
+  });
+
+  it("esgota CONTAINER_POLL_MAX_ATTEMPTS sem lançar (best-effort, segue pro publish)", async () => {
+    let call = 0;
+    global.fetch = (async () => {
+      call++;
+      return { ok: true, json: async () => ({ status: "IN_PROGRESS" }) } as Response;
+    }) as typeof fetch;
+    try {
+      await waitForContainerReady("cid4", "token", "v1.0", async () => {});
+      assert.equal(call, CONTAINER_POLL_MAX_ATTEMPTS, "deve tentar exatamente o máximo configurado");
+    } finally {
+      global.fetch = ORIGINAL_FETCH;
+    }
+  });
+
+  it("falha de rede no polling não lança — segue tentando até esgotar/terminar", async () => {
+    let call = 0;
+    global.fetch = (async () => {
+      call++;
+      if (call === 1) throw new Error("network blip");
+      return { ok: true, json: async () => ({ status: "FINISHED" }) } as Response;
+    }) as typeof fetch;
+    try {
+      await waitForContainerReady("cid5", "token", "v1.0", async () => {});
+      assert.equal(call, 2, "1ª tentativa falhou de rede, 2ª teve sucesso");
+    } finally {
+      global.fetch = ORIGINAL_FETCH;
     }
   });
 });
