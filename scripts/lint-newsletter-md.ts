@@ -119,6 +119,11 @@ import {
   type NoXmlArtifactsError,
   type NoXmlArtifactsReport,
 } from "./lib/lint-checks/no-xml-artifacts.ts"; // #4077
+import {
+  runSnippetStalenessCheck,
+  type SnippetStalenessReport,
+  type SnippetStalenessWarning,
+} from "./lib/lint-checks/snippet-staleness.ts"; // #4076
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -246,6 +251,17 @@ export {
   type NoXmlArtifactsError,
   type NoXmlArtifactsReport,
 } from "./lib/lint-checks/no-xml-artifacts.ts"; // #4077
+export {
+  runSnippetStalenessCheck,
+  resolveUsedSnippets,
+  evaluateSnippetStaleness,
+  readBoxesDivulgacaoConfig,
+  isAgradecimentoSnippetUsed,
+  type SnippetStalenessReport,
+  type SnippetStalenessWarning,
+  type UsedSnippetEntry,
+  type BoxesDivulgacaoConfigLike,
+} from "./lib/lint-checks/snippet-staleness.ts"; // #4076
 export {
   lintNewsletter,
   extractUrlsBySection,
@@ -1355,6 +1371,39 @@ function main(): void {
     return;
   }
 
+  // Modo --check snippet-staleness (#4076) — snippet de context/snippets/
+  // (ou platform.config.json > boxes_divulgacao) usado nesta edição foi
+  // editado DEPOIS do stitch (Stage 2) — a mudança ficou presa no
+  // snippet-fonte, nunca chegou a 02-reviewed.md. WARN-ONLY (nunca bloqueia
+  // o gate): reaplicar automaticamente arriscaria clobberar uma edição que
+  // o editor tenha feito direto no MD.
+  if (args.check === "snippet-staleness") {
+    if (!args.md) {
+      console.error("Uso: lint-newsletter-md.ts --check snippet-staleness --md <md-path>");
+      process.exit(2);
+    }
+    const mdPath = resolve(ROOT, args.md);
+    if (!existsSync(mdPath)) {
+      console.error(`Arquivo não existe: ${mdPath}`);
+      process.exit(2);
+    }
+    const result = runSnippetStalenessCheck(mdPath, ROOT);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n⚠️  snippet-staleness: ${result.warnings.length} arquivo(s) editado(s) APÓS o stitch (Stage 2):`,
+      );
+      for (const w of result.warnings) {
+        console.error(
+          `  '${w.file}' foi editado APÓS o stitch — a mudança NÃO está em ${args.md} (${w.lag_minutes} min de atraso).\n` +
+            `   Reaplique manualmente ou re-rode o Stage 2.`,
+        );
+      }
+      // WARN-ONLY (#4076): exit 0 mesmo com warnings — não bloqueia o gate.
+    }
+    return;
+  }
+
   if (!args.md || !args.approved) {
     console.error(
       "Uso: lint-newsletter-md.ts --md <md-path> --approved <01-approved.json-path>\n" +
@@ -1384,7 +1433,8 @@ function main(): void {
         "  ou: lint-newsletter-md.ts --check stacked-intro-callouts --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check orphan-box-in-gap --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check aprofunde-format --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check no-xml-artifacts --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check no-xml-artifacts --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check snippet-staleness --md <md-path>",
     );
     process.exit(2);
   }

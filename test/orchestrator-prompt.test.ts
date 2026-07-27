@@ -151,7 +151,11 @@ describe("orchestrator-prompt (#634)", () => {
       // humanizer-section-coverage do passo 6.7 — mesmo padrão do #3929,
       // adaptado pro fluxo scoped/full-file de re-humanização do Stage 4).
       // Teto bumped de 648→665 com headroom (era 649 medido pós-#3947).
-      "orchestrator-stage-4.md": 665,
+      // #4076: +18 linhas (chamada do novo lint `snippet-staleness` em §4c.2
+      // + doc WARN-ONLY do check — guard de staleness de snippets/boxes de
+      // divulgação pós-Stage-2). Teto bumped de 665→685 com headroom (era
+      // 667 medido pós-#4076).
+      "orchestrator-stage-4.md": 685,
       "orchestrator-stage-5.md": 455,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
