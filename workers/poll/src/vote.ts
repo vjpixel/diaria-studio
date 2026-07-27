@@ -1586,11 +1586,32 @@ async function updateScore(
  * segunda vez para o identificador AAMMDD LEGADO do mesmo ciclo (ver
  * `legacyMonthlyEditionForCycle`) — votos gravados ANTES do cutover #2115
  * (370fba43, 2026-06-11) usam essa 2ª chave, não a chave de ciclo.
+ *
+ * #4118: `rawEnv` — env CRU (sem prefixo de brand), usado SÓ para ler o
+ * gabarito compartilhado `correct:{edition}` — mesmo racional já aplicado a
+ * `handleVote` (`rawEnv`, #3600) e `handleAdminCorrect` (#4038, que fixou a
+ * ESCRITA pra sempre usar o env cru). Esta função lia `correct:{edition}` via
+ * `env` (branded, o `bEnv` que `handleStats`/`routeRequest` já passavam) —
+ * pra brand="web"/"clarice" isso resolvia `web:correct:{edition}`/
+ * `clarice:correct:{edition}`, chaves que `/admin/correct` NUNCA escreve
+ * desde o #4038 (grava sempre a chave crua). Resultado: `/stats?brand=clarice`
+ * (e `web`) sempre devolvia `correct_answer: null` mesmo com o gabarito já
+ * fechado — quebrando o sanity check de `scripts/close-poll.ts` (aborta com
+ * "FATAL" achando que a escrita falhou) e zerando `correct_choice` na aba
+ * Engajamento da dashboard (`build-poll-eia-data.ts`). Com `brand="diaria"`
+ * (prefixo vazio) cru===branded, então o bug ficava invisível em qualquer
+ * teste que só exercitasse esse brand — é por isso que o teste de regressão
+ * deste fix cobre `clarice`/`web` explicitamente, não só `diaria`.
+ * `stats:{edition}` CONTINUA lido via `env` (branded) — é o espelho do DO
+ * `{brand}:{edition}`, genuinamente por-brand (cada marca tem sua própria
+ * contagem de votos). Default `= env` preserva compat com chamadas de teste
+ * legadas que passam um único env (equivalente a brand="diaria").
  */
 async function fetchEditionStatsAndCorrect(
   env: Env,
   brand: Brand,
   edition: string,
+  rawEnv: Env = env,
 ): Promise<{ stats: StatsCounterData; correctRaw: string | null }> {
   // Fix #4 (#2223): correctRaw é independente dos stats — paralela as duas leituras.
   // #3115: o espelho KV `stats:{edition}` é SEMPRE lido em paralelo (não só no
@@ -1614,7 +1635,8 @@ async function fetchEditionStatsAndCorrect(
       }
       return null;
     })(),
-    env.POLL.get(`correct:${edition}`),
+    // #4118: CRU (rawEnv), não branded — ver rationale no header desta função.
+    rawEnv.POLL.get(`correct:${edition}`),
     env.POLL.get(`stats:${edition}`),
   ]);
 
@@ -1709,17 +1731,22 @@ export function sumStatsCounterData(
  * PRÓPRIO votante já foi incrementado no DO/KV ANTES deste ponto no fluxo de
  * `handleVote` (`updateStatsCounter`, guard-key `stats`, mais acima) —
  * portanto o valor lido aqui já reflete o voto que está sendo processado.
+ *
+ * #4118: `rawEnv` (default = env) — repassado pra `fetchEditionStatsAndCorrect`
+ * pra que o gabarito seja lido CRU nas duas chamadas (primary + legacy). Ver
+ * rationale completo no header de `fetchEditionStatsAndCorrect`.
  */
 export async function getSummedEditionStats(
   env: Env,
   brand: Brand,
   edition: string,
+  rawEnv: Env = env,
 ): Promise<{ stats: StatsCounterData; correctRaw: string | null }> {
   const legacyEdition = legacyMonthlyEditionForCycle(edition);
 
   const [primary, legacy] = await Promise.all([
-    fetchEditionStatsAndCorrect(env, brand, edition),
-    legacyEdition ? fetchEditionStatsAndCorrect(env, brand, legacyEdition) : Promise.resolve(null),
+    fetchEditionStatsAndCorrect(env, brand, edition, rawEnv),
+    legacyEdition ? fetchEditionStatsAndCorrect(env, brand, legacyEdition, rawEnv) : Promise.resolve(null),
   ]);
 
   const stats = sumStatsCounterData(primary.stats, legacy?.stats ?? null);
@@ -1727,12 +1754,18 @@ export async function getSummedEditionStats(
   return { stats, correctRaw };
 }
 
-export async function handleStats(url: URL, env: Env, brand: Brand = "diaria"): Promise<Response> {
+// #4118: 4º parâmetro `rawEnv` (default = env, preserva compat com chamadas
+// legadas/teste com env único) — env CRU usado SÓ pro read do gabarito
+// `correct:{edition}` dentro de `getSummedEditionStats`/
+// `fetchEditionStatsAndCorrect`. `stats:{edition}` continua via `env`
+// (branded). `index.ts` passa o `env` cru como 4º arg em `routeRequest`
+// (mesmo padrão de `handleVote`/#3600 e `handleAdminCorrect`/#4038).
+export async function handleStats(url: URL, env: Env, brand: Brand = "diaria", rawEnv: Env = env): Promise<Response> {
   const edition = url.searchParams.get("edition");
   if (!edition) return json({ error: "missing edition" }, 400, env);
   if (!isValidVoteEditionFormat(edition)) return json({ error: "invalid edition format" }, 400, env);
 
-  const { stats, correctRaw } = await getSummedEditionStats(env, brand, edition);
+  const { stats, correctRaw } = await getSummedEditionStats(env, brand, edition, rawEnv);
   const total = stats.total;
 
   return json({
