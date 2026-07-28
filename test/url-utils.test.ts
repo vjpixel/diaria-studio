@@ -22,6 +22,26 @@ describe("canonicalize", () => {
     );
   });
 
+  it("#4148: remove _bhlid (link-id que o Beehiiv injeta em todo link publicado)", () => {
+    assert.equal(
+      canonicalize("https://example.com/article?_bhlid=abc123"),
+      "https://example.com/article",
+    );
+  });
+
+  it("#4148 CASO REAL: URL publicada (utm_*+_bhlid) casa com a mesma URL fresh (sem query)", () => {
+    // Forma exata da linha em past-editions.md (260715) pro incidente 260727:
+    // eugeneyan.com/writing/cybersecurity-evals repetiu 12 dias depois porque
+    // canonicalize() não removia "_bhlid" — a forma publicada (com o link-id do
+    // Beehiiv) e a forma re-descoberta (sem query) canonicalizavam para strings
+    // diferentes, e o dedup evergreen (URL exata) não reconhecia como o mesmo artigo.
+    const published =
+      "https://eugeneyan.com/writing/cybersecurity-evals/?utm_source=diar.ia.br&utm_medium=newsletter&utm_campaign=terroristas-driblam-chatbots-para-montar-armas&_bhlid=2e762fad5e97619481495067bd9ebf5c013711a0";
+    const rediscovered = "https://eugeneyan.com//writing/cybersecurity-evals/";
+
+    assert.equal(canonicalize(published), canonicalize(rediscovered));
+  });
+
   it("preserva outros query params", () => {
     assert.equal(
       canonicalize("https://example.com/article?id=1&tag=ai"),

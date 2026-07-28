@@ -426,3 +426,65 @@ Links usados:
     assert.equal(kept.use_melhor?.length, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #4148 — causa raiz REAL do incidente 260727 (investigação `/diaria-develop`
+// 260727b): o diagnóstico original do #4102 item 2 (barra dupla) estava
+// ERRADO — canonicalize() já colapsa // desde #2581 (ver teste acima, que
+// usa uma URL de past-editions.md SANITIZADA sem query string e por isso não
+// reproduzia a falha real).
+//
+// A causa raiz de fato: o artigo FOI categorizado corretamente como
+// `tutorial`/`use_melhor` (verificado contra `tmp-categorized.json` e
+// `01-highlight-theme-check.json` da edição 260727 real — o item ainda
+// aparecia em `use_melhor` mesmo DEPOIS do dedup-evergreen-buckets ter
+// rodado). O que faltou foi o URL-MATCH: a linha real em `past-editions.md`
+// (gerada a partir do post JÁ PUBLICADO via Beehiiv MCP,
+// `refresh-past-editions.ts`) carrega `_bhlid` — o link-id que o Beehiiv
+// injeta em TODO link de um post publicado — além de `utm_*`. `canonicalize()`
+// já removia `utm_*` mas não `_bhlid`, então a forma publicada
+// (`...?utm_source=...&_bhlid=...`) e a forma re-descoberta pela pesquisa
+// (sem query nenhuma) canonicalizavam para strings DIFERENTES, e o dedup
+// evergreen (URL exata) não reconhecia o mesmo artigo. Fix: `_bhlid`
+// adicionado a `TRACKING_PARAMS_EXACT` em `scripts/lib/url-utils.ts`.
+// ---------------------------------------------------------------------------
+
+describe("dedupEvergreenBuckets — CASO REAL #4148 (past-editions.md com utm_*+_bhlid, forma real de produção)", () => {
+  // Linha EXATA de data/past-editions.md (edição 260715) no incidente real —
+  // com utm_source/utm_medium/utm_campaign + _bhlid, como o Beehiiv publica.
+  const PAST_MD_4148 = `# Últimas edições publicadas
+
+## 2026-07-15 — "Edição 260715"
+
+Links usados:
+- https://eugeneyan.com/writing/cybersecurity-evals/?utm_source=diar.ia.br&utm_medium=newsletter&utm_campaign=terroristas-driblam-chatbots-para-montar-armas&_bhlid=2e762fad5e97619481495067bd9ebf5c013711a0
+
+---
+`;
+
+  it("URL fresh (sem query) casa contra a URL PUBLICADA (com utm_*+_bhlid) da 260715", () => {
+    const pastUrls = extractPastUrlsUnbounded(PAST_MD_4148);
+    const input = {
+      lancamento: [],
+      radar: [],
+      use_melhor: [
+        {
+          // Forma como o artigo chega recém-pesquisado (tmp-categorized.json
+          // real da 260727) — barra dupla, sem query string nenhuma.
+          url: "https://eugeneyan.com//writing/cybersecurity-evals/",
+          title: "Patterns for Building Cybersecurity Evals",
+        },
+      ],
+      video: [],
+    };
+
+    const { kept, removed } = dedupEvergreenBuckets(input, pastUrls);
+
+    assert.equal(
+      removed.length,
+      1,
+      "a URL fresh deve casar contra a URL publicada (com tracking params) da 260715",
+    );
+    assert.equal(kept.use_melhor?.length, 0);
+  });
+});

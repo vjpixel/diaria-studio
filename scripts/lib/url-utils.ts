@@ -9,7 +9,17 @@
 
 // Parametros de tracking removidos na canonicalizacao
 const TRACKING_PARAM_PREFIXES = ["utm_"];
-const TRACKING_PARAMS_EXACT = new Set(["ref", "ref_src"]);
+// #4148: "_bhlid" e o link-id que o Beehiiv injeta em TODO link de um post
+// publicado (rastreio de clique por assinante). past-editions.md e alimentado
+// a partir do conteudo JA PUBLICADO (via Beehiiv MCP, ver refresh-past-editions.ts),
+// entao qualquer URL la sempre carrega esse parametro — mas a URL re-descoberta
+// pela pesquisa (fresh, nunca publicada) nunca carrega. Sem strippar "_bhlid",
+// canonicalize() das duas formas diverge e o dedup evergreen (que compara por
+// URL EXATA canonicalizada) falha silenciosamente pro MESMO artigo. Causa raiz
+// real do incidente 260727 (eugeneyan.com/writing/cybersecurity-evals repetiu
+// 12 dias depois) — a categorizacao estava correta (foi pra use_melhor), o elo
+// que faltou foi este.
+const TRACKING_PARAMS_EXACT = new Set(["ref", "ref_src", "_bhlid"]);
 
 /**
  * Remove tracking params, hash e normaliza pathname (trailing slash).
