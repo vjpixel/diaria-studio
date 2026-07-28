@@ -1,12 +1,15 @@
 /**
  * test/brevo-dashboard-link-section-4184.test.ts (#4184)
  *
- * Coluna "Seção" (Destaques/Use Melhor/Radar) nas tabelas de link do
- * dashboard Clarice. Cobre:
+ * Coluna "Seção" nas tabelas de link do dashboard Clarice — pool ATUAL
+ * (Destaques/Use Melhor/Radar, ciclos 2605-06/2606-07) e pool LEGADO
+ * (Destaques/Lançamentos/Pesquisas/Outras Notícias, ciclos 2603-04/2604-05).
+ * Cobre:
  *  - parsePrioritizedSections / buildLinkSectionMap (scripts/lib/mensal/
  *    monthly-link-sections.ts) — parser puro do prioritized.md, incluindo
- *    fixture REAL copiada de data/monthly/2606-07/prioritized.md (não lê
- *    data/ em tempo de teste).
+ *    fixtures REAIS copiadas de data/monthly/{2606-07,2603-04,2604-05}/prioritized.md
+ *    (não lê data/ em tempo de teste) — inclusive o cabeçalho com sufixo
+ *    parentético do 2604-05 (`## Outras Notícias (8 destaques standalone)`).
  *  - resolveLinkSection / formatLinkSectionCell / mergeLinkSectionMaps /
  *    normalizeLinkSectionMap (workers/brevo-dashboard/src/link-section.ts).
  *  - collectMonthlyLinkCycles (sections-core.ts).
@@ -98,24 +101,83 @@ Os 7 links mais clicados do mês (excluindo os já cobertos nos Destaques e no U
 - Mercado e adoção (empresas/consumo BR): 12 artigos
 `;
 
-// Fixture do formato ANTIGO (ex: data/monthly/2603-04) — só ## Destaques,
-// sem Use Melhor/Radar (pool daquela época usava outras seções).
+// ─── Fixture REAL: cópia de data/monthly/2603-04/prioritized.md (#4184, rodada 2) ────
+// Ciclo LEGADO com as 4 seções reais daquela época: Destaques, Lançamentos,
+// Pesquisas, Outras Notícias (+ Warnings, prosa sem lista de link — NÃO deve
+// virar seção reconhecida). Copiada verbatim (trecho representativo) — o
+// parser NUNCA lê data/ em tempo de teste.
 const FIXTURE_2603_04_LEGACY = `# Diar.ia — Digest Mensal 2603
+
+## Resumo
+
+- Edições no mês: 15
 
 ## Destaques
 
-D1: Anthropic vs Pentágono
-Tema: Regulação
-Artigos de suporte (1):
+D1: Anthropic vs Pentágono: o mês que redefiniu a IA
+Tema: Regulação e geopolítica (Anthropic-Pentágono)
+Artigos de suporte (2):
 - 260302 — A nova doutrina militar da IA — https://www.npr.org/2026/02/27/nx-s1-5729118/trump-anthropic-pentagon-openai-ai-weapons-ban
+- 260309 — Anthropic processa governo dos EUA — https://www.anthropic.com/news/where-stand-department-war
 
 ## Lançamentos
 
 - [editorial] 260309 — GPT-5.4: raciocínio mais confiável — https://openai.com/pt-BR/index/introducing-gpt-5-4/
+- [editorial] 260325 — Claude agora controla seu computador — https://claude.com/blog/dispatch-and-computer-use
+
+## Pesquisas
+
+- [editorial] 260320 — O que 81.000 pessoas querem da IA — https://www.anthropic.com/81k-interviews
+- [editorial] 260316 — O teste que a IA não consegue passar (HLE) — https://www.sciencedaily.com/releases/2026/03/260313002650.htm
+
+## Outras Notícias
+
+- [editorial] 260327 — Claude Mythos: o modelo mais perigoso do mundo — https://www.techzine.eu/news/applications/140017/details-leak-on-anthropics-step-change-mythos-model/
+- [editorial] 260302 — Apagão global atinge o Claude — https://mashable.com/article/claude-down-ai-anthropic-outage
 
 ## Warnings
 
-- BRASIL AUSENTE — sem cobertura este mês.
+- BRASIL AUSENTE — DECISÃO EDITORIAL CRÍTICA: o mês de março de 2026 não tem nenhum destaque com cobertura específica do Brasil.
+
+---
+
+## Apêndice — todos os temas detectados
+
+- Regulação e geopolítica (Anthropic-Pentágono): 2 artigos [usado em D1]
+`;
+
+// ─── Fixture REAL: cópia de data/monthly/2604-05/prioritized.md (#4184, rodada 2) ────
+// Ciclo LEGADO com só Destaques + "Outras Notícias" — e o cabeçalho real tem
+// um sufixo parentético (`(8 destaques standalone)`) que o parser precisa
+// ignorar para não perder a seção inteira.
+const FIXTURE_2604_05_LEGACY = `# Diar.ia — Digest Mensal 2604
+
+## Resumo
+
+- Edições no mês: 8
+
+## Destaques
+
+D1: Anthropic acelera aposta enterprise e em segurança
+Tema: Anthropic
+Artigos de suporte (2):
+- 260417 — Anthropic lança Claude Opus 4.7 — https://www.anthropic.com/news/claude-opus-4-7
+- 260419 — Anthropic usa modelo para encontrar zero-days — https://www.anthropic.com/glasswing
+
+## Outras Notícias (8 destaques standalone)
+
+- [93] 260424 — OpenAI lança GPT-5.5 com foco em agentes — https://openai.com/index/introducing-gpt-5-5/
+- [s/score] 260417 — Por que a IA é boa e ruim ao mesmo tempo — https://exame.com/inteligencia-artificial/o-que-e-jagged-intelligence-e-como-ela-pode-reformular-o-debate-sobre-ia/
+
+## Warnings
+
+- Apenas 8 destaques standalone disponíveis (esperado: 10).
+
+---
+
+## Apêndice — todos os temas detectados
+
+- Anthropic: 2 artigos (escolhido — D1)
 `;
 
 // ─── parsePrioritizedSections ───────────────────────────────────────────────
@@ -147,17 +209,65 @@ describe("parsePrioritizedSections (#4184) — fixture real 2606-07", () => {
     assert.equal(all.length, 10, "Apêndice (sem URL, mas por segurança) não deve inflar a contagem");
   });
 
-  test("ciclo formato ANTIGO (2603-04): só Destaques populado, Use Melhor/Radar vazios — não é erro", () => {
-    const sections = parsePrioritizedSections(FIXTURE_2603_04_LEGACY);
-    assert.equal(sections.destaques.length, 1);
-    assert.deepEqual(sections["use-melhor"], [], "ciclo antigo não tem Use Melhor — array vazio, não throw");
-    assert.deepEqual(sections.radar, [], "ciclo antigo não tem Radar — array vazio, não throw");
-  });
-
-  test("markdown vazio/sem headers reconhecidos → 3 arrays vazios, nunca lança", () => {
+  test("markdown vazio/sem headers reconhecidos → 6 arrays vazios, nunca lança", () => {
     assert.doesNotThrow(() => parsePrioritizedSections(""));
     const sections = parsePrioritizedSections("# Título\n\nsem seções aqui\n");
-    assert.deepEqual(sections, { destaques: [], "use-melhor": [], radar: [] });
+    assert.deepEqual(sections, {
+      destaques: [], "use-melhor": [], radar: [],
+      lancamentos: [], pesquisas: [], "outras-noticias": [],
+    });
+  });
+});
+
+describe("parsePrioritizedSections (#4184, rodada 2) — pool LEGADO, fixture real 2603-04", () => {
+  test("ciclo LEGADO (2603-04): Destaques populado, Use Melhor/Radar vazios (não é erro — pool daquela época era outro)", () => {
+    const sections = parsePrioritizedSections(FIXTURE_2603_04_LEGACY);
+    assert.equal(sections.destaques.length, 2);
+    assert.deepEqual(sections["use-melhor"], [], "2603-04 não tem Use Melhor — array vazio, não throw");
+    assert.deepEqual(sections.radar, [], "2603-04 não tem Radar — array vazio, não throw");
+  });
+
+  test("extrai Lançamentos como seção PRÓPRIA (nunca fundida em Use Melhor/Radar)", () => {
+    const sections = parsePrioritizedSections(FIXTURE_2603_04_LEGACY);
+    assert.equal(sections.lancamentos.length, 2);
+    assert.ok(sections.lancamentos.includes("https://openai.com/pt-BR/index/introducing-gpt-5-4/"));
+    assert.ok(sections.lancamentos.includes("https://claude.com/blog/dispatch-and-computer-use"));
+  });
+
+  test("extrai Pesquisas como seção própria", () => {
+    const sections = parsePrioritizedSections(FIXTURE_2603_04_LEGACY);
+    assert.equal(sections.pesquisas.length, 2);
+    assert.ok(sections.pesquisas.includes("https://www.anthropic.com/81k-interviews"));
+  });
+
+  test("extrai Outras Notícias como seção própria", () => {
+    const sections = parsePrioritizedSections(FIXTURE_2603_04_LEGACY);
+    assert.equal(sections["outras-noticias"].length, 2);
+    assert.ok(sections["outras-noticias"].includes("https://mashable.com/article/claude-down-ai-anthropic-outage"));
+  });
+
+  test("Warnings/Resumo/Apêndice NÃO vazam URL — total extraído bate exatamente com as 4 seções reais (2+2+2+2)", () => {
+    const sections = parsePrioritizedSections(FIXTURE_2603_04_LEGACY);
+    const total = Object.values(sections).reduce((sum, urls) => sum + urls.length, 0);
+    assert.equal(total, 8, "Warnings é prosa do analista, sem lista de link — não deve contribuir nenhuma URL");
+  });
+});
+
+describe("parsePrioritizedSections (#4184, rodada 2) — cabeçalho com sufixo parentético, fixture real 2604-05", () => {
+  test("'## Outras Notícias (8 destaques standalone)' é reconhecido apesar do sufixo — senão a seção inteira se perde", () => {
+    const sections = parsePrioritizedSections(FIXTURE_2604_05_LEGACY);
+    assert.equal(sections["outras-noticias"].length, 2, "sufixo parentético não pode fazer a seção sumir");
+    assert.ok(sections["outras-noticias"].includes("https://openai.com/index/introducing-gpt-5-5/"));
+    assert.ok(sections["outras-noticias"].includes(
+      "https://exame.com/inteligencia-artificial/o-que-e-jagged-intelligence-e-como-ela-pode-reformular-o-debate-sobre-ia/",
+    ));
+  });
+
+  test("2604-05 não tem Lançamentos/Pesquisas (só Destaques + Outras Notícias) — arrays vazios, não throw", () => {
+    const sections = parsePrioritizedSections(FIXTURE_2604_05_LEGACY);
+    assert.deepEqual(sections.lancamentos, []);
+    assert.deepEqual(sections.pesquisas, []);
+    assert.equal(sections.destaques.length, 2);
   });
 });
 
@@ -180,10 +290,21 @@ describe("buildLinkSectionMap (#4184)", () => {
       destaques: ["https://exemplo.com/artigo-x"],
       "use-melhor": [],
       radar: ["https://exemplo.com/artigo-x"],
+      lancamentos: [],
+      pesquisas: [],
+      "outras-noticias": [],
     };
     const map = buildLinkSectionMap(raw);
     const key = Object.keys(map)[0];
     assert.deepEqual(new Set(map[key]), new Set(["destaques", "radar"]));
+  });
+
+  test("seções legadas (Lançamentos/Pesquisas/Outras Notícias) resolvem pro rótulo de CONTEÚDO igual às atuais", () => {
+    const raw = parsePrioritizedSections(FIXTURE_2603_04_LEGACY);
+    const map = buildLinkSectionMap(raw);
+    const key = Object.keys(map).find((k) => k.includes("dispatch and computer use") || k.includes("dispatch-and-computer-use"));
+    assert.ok(key, "conteúdo do link de Lançamentos deve estar no mapa");
+    assert.deepEqual(map[key!], ["lancamentos"]);
   });
 });
 
@@ -199,6 +320,13 @@ describe("resolveLinkSection / formatLinkSectionCell (#4184)", () => {
     assert.equal(resolveLinkSection(["radar", "destaques"])?.primary, "destaques");
     assert.equal(resolveLinkSection(["use-melhor", "radar"])?.primary, "use-melhor");
     assert.equal(resolveLinkSection(["radar", "use-melhor", "destaques"])?.primary, "destaques");
+  });
+
+  test("precedência estendida (#4184, rodada 2): pool ATUAL sempre vence pool LEGADO — Radar > Lançamentos, Lançamentos > Pesquisas > Outras Notícias", () => {
+    assert.equal(resolveLinkSection(["lancamentos", "radar"])?.primary, "radar");
+    assert.equal(resolveLinkSection(["outras-noticias", "lancamentos"])?.primary, "lancamentos");
+    assert.equal(resolveLinkSection(["outras-noticias", "pesquisas"])?.primary, "pesquisas");
+    assert.equal(resolveLinkSection(["outras-noticias", "pesquisas", "lancamentos", "destaques"])?.primary, "destaques");
   });
 
   test("also lista as seções secundárias em ordem de precedência, nunca inclui primary", () => {
@@ -240,8 +368,15 @@ describe("resolveLinkSection / formatLinkSectionCell (#4184)", () => {
     assert.equal(lookupLinkSectionCell("x", null).label, LINK_SECTION_FALLBACK_LABEL);
   });
 
-  test("LINK_SECTION_LABELS cobre as 3 seções", () => {
-    assert.deepEqual(LINK_SECTION_LABELS, { destaques: "Destaques", "use-melhor": "Use Melhor", radar: "Radar" });
+  test("LINK_SECTION_LABELS cobre as 6 seções (3 pool atual + 3 pool legado)", () => {
+    assert.deepEqual(LINK_SECTION_LABELS, {
+      destaques: "Destaques",
+      "use-melhor": "Use Melhor",
+      radar: "Radar",
+      lancamentos: "Lançamentos",
+      pesquisas: "Pesquisas",
+      "outras-noticias": "Outras Notícias",
+    });
   });
 });
 

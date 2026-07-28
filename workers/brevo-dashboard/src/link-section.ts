@@ -1,7 +1,8 @@
-// #4184: resolução da seção editorial (Destaques/Use Melhor/Radar) de um
-// CONTEÚDO (não URL crua, ver link-content.ts/#4053) para exibição nas
-// tabelas de link do dashboard — módulo puro e sem I/O, mesmo espírito de
-// link-content.ts.
+// #4184: resolução da seção editorial (Destaques/Use Melhor/Radar — pool
+// atual — e Lançamentos/Pesquisas/Outras Notícias — pool legado, ciclos
+// 2603-04/2604-05) de um CONTEÚDO (não URL crua, ver link-content.ts/#4053)
+// para exibição nas tabelas de link do dashboard — módulo puro e sem I/O,
+// mesmo espírito de link-content.ts.
 //
 // O mapa (`LinkSectionMap`, tipo em scripts/lib/dashboard-kv-types.ts,
 // re-exportado por ./types.ts) é montado FORA deste módulo:
@@ -21,19 +22,39 @@ export const LINK_SECTION_LABELS: Record<LinkSectionName, string> = {
   destaques: "Destaques",
   "use-melhor": "Use Melhor",
   radar: "Radar",
+  lancamentos: "Lançamentos",
+  pesquisas: "Pesquisas",
+  "outras-noticias": "Outras Notícias",
 };
 
 /**
  * #4184: precedência de exibição quando o MESMO conteúdo aparece em mais de
  * uma seção da mesma edição (acontece — ex: um link do Radar também citado
- * num destaque). Regra escolhida: Destaques > Use Melhor > Radar — a seção
- * de maior peso editorial (mais alto no funil de curadoria, tipicamente mais
- * clicada) vence a exibição PRIMÁRIA; as demais nunca são descartadas
- * silenciosamente — aparecem como detalhe secundário no tooltip da célula
- * (ver `formatLinkSectionCell`), mesmo padrão já usado pro split A/B da
- * enquete "É IA?" em render-links.ts (`variants`/tooltip).
+ * num destaque). Regra escolhida: **Destaques > Use Melhor > Radar >
+ * Lançamentos > Pesquisas > Outras Notícias**. Destaques no topo (seção de
+ * maior peso editorial, tipicamente mais clicada) — isso não muda entre
+ * pool atual e legado. As 3 do pool ATUAL (Use Melhor/Radar, ranqueado por
+ * cliques, #1901/#1902) vêm antes das 3 do pool LEGADO (Lançamentos/
+ * Pesquisas/Outras Notícias, standalones sem ranking, `2603-04`/`2604-05`)
+ * — na prática os dois pools nunca coexistem no MESMO ciclo (cada
+ * `prioritized.md` tem só um dos dois formatos), então esse trecho da ordem
+ * só importa pro merge cross-ciclo da tabela agregada
+ * (`mergeLinkSectionMaps`), e Lançamentos > Pesquisas > Outras Notícias
+ * segue a ordem em que essas seções apareciam no próprio documento (mais
+ * editorial/"oficial" primeiro, "Outras Notícias" — o catch-all do nome —
+ * por último). Qualquer seção nunca é descartada silenciosamente — as
+ * demais aparecem como detalhe secundário no tooltip da célula (ver
+ * `formatLinkSectionCell`), mesmo padrão já usado pro split A/B da enquete
+ * "É IA?" em render-links.ts (`variants`/tooltip).
  */
-export const LINK_SECTION_PRECEDENCE: readonly LinkSectionName[] = ["destaques", "use-melhor", "radar"];
+export const LINK_SECTION_PRECEDENCE: readonly LinkSectionName[] = [
+  "destaques",
+  "use-melhor",
+  "radar",
+  "lancamentos",
+  "pesquisas",
+  "outras-noticias",
+];
 
 export interface ResolvedLinkSection {
   /** Seção vencedora pela precedência — o que a célula EXIBE. */
@@ -127,7 +148,14 @@ export function mergeLinkSectionMaps(
   return out;
 }
 
-const VALID_SECTIONS = new Set<LinkSectionName>(["destaques", "use-melhor", "radar"]);
+const VALID_SECTIONS = new Set<LinkSectionName>([
+  "destaques",
+  "use-melhor",
+  "radar",
+  "lancamentos",
+  "pesquisas",
+  "outras-noticias",
+]);
 
 /**
  * Normaliza um payload cru lido do KV (`secao:{ciclo}`) — defende contra JSON
@@ -157,4 +185,4 @@ export function normalizeLinkSectionMap(raw: unknown): LinkSectionMap | null {
  * campanha (`renderLinksSection`) — evita duas cópias do mesmo texto. */
 export const LINK_SECTION_COLUMN_LABEL = "Seção";
 export const LINK_SECTION_COLUMN_TOOLTIP =
-  "Seção editorial do digest MENSAL onde este conteúdo apareceu (Destaques/Use Melhor/Radar), a partir do prioritized.md do ciclo de envio (#4184). Só cobre envios do digest mensal via Clarice — links de edições diárias, CTA e rodapé caem no fallback \"—\" (sem seção mapeada).";
+  "Seção editorial do digest MENSAL onde este conteúdo apareceu (Destaques/Use Melhor/Radar nos ciclos atuais; Lançamentos/Pesquisas/Outras Notícias nos ciclos legados 2603-04/2604-05), a partir do prioritized.md do ciclo de envio (#4184). Só cobre envios do digest mensal via Clarice — links de edições diárias, CTA e rodapé caem no fallback \"—\" (sem seção mapeada).";

@@ -2,19 +2,29 @@
  * monthly-link-sections.ts (#4184)
  *
  * Parser de `data/monthly/{ciclo}/prioritized.md` pra extrair, por seção
- * editorial (`## Destaques` / `## Use Melhor` / `## Radar`), quais URLs
- * apareceram nela — fonte que alimenta a coluna "Seção" nas tabelas de link
- * do dashboard Clarice (`workers/brevo-dashboard/src/render-links.ts`).
+ * editorial, quais URLs apareceram nela — fonte que alimenta a coluna
+ * "Seção" nas tabelas de link do dashboard Clarice
+ * (`workers/brevo-dashboard/src/render-links.ts`).
  *
- * Formato real (conferido nos 4 ciclos existentes em `data/monthly/` na
- * sessão #4184): só `2605-06` e `2606-07` têm as 3 seções — introduzidas
- * junto com o pool "Use Melhor"/"Radar" ranqueado por cliques (#1901/#1902).
- * Ciclos mais antigos (`2603-04`, `2604-05`) só têm `## Destaques` — o pool
- * de standalones daquela época usava outras seções (`## Lançamentos`/
- * `## Pesquisas`/`## Outras Notícias`/`## Warnings`), sem equivalente a Use
- * Melhor/Radar. `parsePrioritizedSections` trata seção ausente como "zero
- * URLs daquela seção" — nunca erro; retroatividade PARCIAL nos ciclos
- * antigos é o comportamento correto (não um bug do parser).
+ * Formato real (conferido nos 4 ciclos existentes em `data/monthly/` —
+ * correção feita na 2ª rodada da #4184 depois de generalizar errado a partir
+ * de 1 arquivo só):
+ *
+ *   2603-04: Destaques, Lançamentos, Pesquisas, Outras Notícias
+ *   2604-05: Destaques, Outras Notícias
+ *   2605-06: Destaques, Use Melhor, Radar
+ *   2606-07: Destaques, Use Melhor, Radar
+ *
+ * `## Use Melhor`/`## Radar` foram introduzidas junto com o pool ranqueado
+ * por cliques (#1901/#1902) — ciclos anteriores usavam o pool de
+ * standalones antigo (`## Lançamentos`/`## Pesquisas`/`## Outras
+ * Notícias`/`## Warnings`). As 3 primeiras são seções LEGÍTIMAS com links
+ * próprios (reconhecidas abaixo com rótulo próprio, nunca fundidas em Use
+ * Melhor/Radar); `## Warnings` é nota do analista em prosa, sem lista de
+ * link estruturada — não é uma seção reconhecida por este parser.
+ * `parsePrioritizedSections` trata seção ausente como "zero URLs daquela
+ * seção" — nunca erro; retroatividade PARCIAL (cada ciclo só emite as
+ * seções que de fato tinha) é o comportamento correto, não um bug do parser.
  *
  * Duas camadas deliberadas:
  *   - `parsePrioritizedSections` — PURA, recebe o markdown já lido (texto),
@@ -37,15 +47,36 @@ import { monthlyDir } from "./monthly-paths.ts";
 import { classifyLinkContent } from "../../../workers/brevo-dashboard/src/link-content.ts";
 import type { LinkSectionName, LinkSectionMap } from "../dashboard-kv-types.ts";
 
-/** As 3 seções reconhecidas + o texto EXATO do cabeçalho `##` no `prioritized.md`. */
+/** As 6 seções reconhecidas + o texto (normalizado: minúsculas, sem sufixo
+ * parentético) do cabeçalho `##` correspondente no `prioritized.md`. Inclui
+ * as 3 seções do pool ATUAL (ranqueado por cliques, #1901/#1902) e as 3 do
+ * pool LEGADO (`2603-04`/`2604-05`, standalones sem ranking) — nomes
+ * distintos, nunca fundidos entre si (cada um vira seu próprio rótulo na
+ * coluna "Seção", refletindo o que a edição de fato tinha). */
 const SECTION_HEADER_NAMES: Record<LinkSectionName, string> = {
   destaques: "destaques",
   "use-melhor": "use melhor",
   radar: "radar",
+  lancamentos: "lançamentos",
+  pesquisas: "pesquisas",
+  "outras-noticias": "outras notícias",
 };
 
+/**
+ * Normaliza um texto de cabeçalho `##` pra comparação: remove um sufixo
+ * parentético final (ex: `2604-05` tem literalmente `## Outras Notícias (8
+ * destaques standalone)` — o "(8 destaques standalone)" não faz parte do
+ * NOME da seção, só uma contagem incidental daquele mês), trim, minúsculas.
+ * Sem isso, essa seção inteira seria perdida (o parser não reconheceria o
+ * cabeçalho e todos os links de "Outras Notícias" daquele ciclo cairiam
+ * silenciosamente fora do mapa).
+ */
+function normalizeHeaderText(headerText: string): string {
+  return headerText.replace(/\s*\([^)]*\)\s*$/, "").trim().toLowerCase();
+}
+
 function matchSectionName(headerText: string): LinkSectionName | null {
-  const norm = headerText.trim().toLowerCase();
+  const norm = normalizeHeaderText(headerText);
   for (const [section, name] of Object.entries(SECTION_HEADER_NAMES) as Array<[LinkSectionName, string]>) {
     if (norm === name) return section;
   }
@@ -82,6 +113,9 @@ export function parsePrioritizedSections(markdown: string): Record<LinkSectionNa
     destaques: [],
     "use-melhor": [],
     radar: [],
+    lancamentos: [],
+    pesquisas: [],
+    "outras-noticias": [],
   };
 
   // Localiza todos os cabeçalhos `## Nome` de nível 2, na ordem em que aparecem.

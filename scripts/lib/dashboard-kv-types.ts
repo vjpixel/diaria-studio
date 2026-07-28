@@ -134,15 +134,31 @@ export interface PostmasterSpamEntry {
 }
 
 /**
- * #4184: seção editorial de origem de um link dentro do digest MENSAL —
- * Destaques (D1-D3) / Use Melhor / Radar. Fonte: `data/monthly/{ciclo}/prioritized.md`
- * (só os ciclos com o pool novo #1901/#1902 têm as 3 seções — ciclos mais
- * antigos só têm `## Destaques`, ver scripts/lib/mensal/monthly-link-sections.ts).
- * Não cobre a diária (sem `prioritized.md` equivalente) nem CTA/rodapé/links
- * de sistema — esses casos caem no fallback "sem seção conhecida" no render
+ * #4184: seção editorial de origem de um link dentro do digest MENSAL.
+ * Fonte: `data/monthly/{ciclo}/prioritized.md` — a estrutura de seções MUDA
+ * por ciclo (corrigido na 2ª rodada da #4184, depois de generalizar errado a
+ * partir de 1 arquivo só):
+ *
+ *   2603-04: destaques, lancamentos, pesquisas, outras-noticias
+ *   2604-05: destaques, outras-noticias
+ *   2605-06: destaques, use-melhor, radar
+ *   2606-07: destaques, use-melhor, radar
+ *
+ * `use-melhor`/`radar` (pool ranqueado por cliques, #1901/#1902) e
+ * `lancamentos`/`pesquisas`/`outras-noticias` (pool de standalones legado,
+ * anterior a #1901/#1902) são seções DISTINTAS, nunca fundidas entre si —
+ * ver `scripts/lib/mensal/monthly-link-sections.ts` pro parser. Não cobre a
+ * diária (sem `prioritized.md` equivalente) nem CTA/rodapé/links de sistema
+ * — esses casos caem no fallback "sem seção conhecida" no render
  * (`workers/brevo-dashboard/src/link-section.ts`).
  */
-export type LinkSectionName = "destaques" | "use-melhor" | "radar";
+export type LinkSectionName =
+  | "destaques"
+  | "use-melhor"
+  | "radar"
+  | "lancamentos"
+  | "pesquisas"
+  | "outras-noticias";
 
 /**
  * Payload gravado no KV sob a chave `secao:{ciclo}` (ex: `secao:2605-06`),
