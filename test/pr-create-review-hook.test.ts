@@ -7,6 +7,8 @@ import {
   resolveEffort,
   buildReviewInstruction,
   isOvernightRoundActive,
+  REVIEW_AGENT,
+  REVIEW_FLEET_MAX,
 } from "../.claude/hooks/pr-create-review.mjs";
 
 // #2754/#3322/#3326: overnight (token-sensitive) sempre resolveu /code-review
@@ -181,6 +183,65 @@ describe("buildReviewInstruction (#2754)", () => {
   it("warning presente → aparece anexado ao final da instrução", () => {
     const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low", "branch divergente do padrão");
     assert.match(msg, /\[aviso: branch divergente do padrão\]$/);
+  });
+});
+
+// #4234: o dispatch passou a usar os agentes do plugin pr-review-toolkit
+// (opção (b) do plano do #4034, verificada em 260728). O nome é PREFIXADO pelo
+// plugin — `code-reviewer` puro, como o plano do #4034 supunha, resolve
+// `Agent type not found`. Estes testes travam justamente o que uma regressão
+// silenciosa quebraria: o prefixo, o fallback e a distinção low/max.
+describe("buildReviewInstruction — agentes do pr-review-toolkit (#4234)", () => {
+  const PR = "https://github.com/o/r/pull/1";
+
+  it("nome do agente é prefixado pelo plugin, nunca `code-reviewer` solto", () => {
+    assert.equal(REVIEW_AGENT, "pr-review-toolkit:code-reviewer");
+    const msg = buildReviewInstruction(PR, "low");
+    assert.match(msg, /pr-review-toolkit:code-reviewer/);
+    // sem prefixo em nenhum lugar: `(?<!pr-review-toolkit:)code-reviewer`
+    assert.doesNotMatch(msg, /(?<!pr-review-toolkit:)code-reviewer/);
+  });
+
+  it("effort=low dispatcha UM agente — nenhum membro do fleet max aparece", () => {
+    const msg = buildReviewInstruction(PR, "low");
+    assert.match(msg, /ONE Agent/);
+    for (const agent of REVIEW_FLEET_MAX) {
+      assert.ok(!msg.includes(agent), `low não deveria citar ${agent}`);
+    }
+  });
+
+  it("effort=max dispatcha o fleet completo em paralelo", () => {
+    const msg = buildReviewInstruction(PR, "max");
+    assert.match(msg, /IN PARALLEL/);
+    assert.match(msg, /pr-review-toolkit:code-reviewer/);
+    for (const agent of REVIEW_FLEET_MAX) {
+      assert.ok(msg.includes(agent), `max deveria citar ${agent}`);
+    }
+  });
+
+  // O plugin vem do marketplace por máquina: sessão cloud / clone fresco não o
+  // tem, mesmo com `enabledPlugins` versionado. Sem esta instrução o hook
+  // deixaria a PR sem review nenhum, em silêncio — a regressão exata que o
+  // #4034 documentou como "degradação de qualidade invisível".
+  it("todo effort carrega o fallback pro general-purpose com rubrico inline", () => {
+    for (const effort of ["low", "max"]) {
+      const msg = buildReviewInstruction(PR, effort);
+      assert.match(msg, /Agent type \.\.\. not found/);
+      assert.match(msg, /general-purpose/);
+      assert.match(msg, /correctness, simplification\/efficiency, test-coverage, security/);
+    }
+  });
+
+  // O agente do plugin tem toolset completo e revisa `git diff` unstaged por
+  // default — duas armadilhas: revisar o diff errado, e churnar um checkout
+  // compartilhado com o coordenador (incidentes 260703/260708).
+  it("todo effort exige escopo de diff explícito e agente read-only", () => {
+    for (const effort of ["low", "max"]) {
+      const msg = buildReviewInstruction(PR, effort);
+      assert.match(msg, /UNSTAGED changes, which are not this PR/);
+      assert.match(msg, /READ-ONLY/);
+      assert.match(msg, /no `git checkout`/);
+    }
   });
 });
 

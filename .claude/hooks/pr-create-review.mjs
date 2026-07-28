@@ -235,24 +235,67 @@ export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = i
  * confirmado usageCount:462 funcionando por meses antes do flip). A
  * instrução deixou de pedir `/code-review {effort} --comment` (o Skill tool
  * rejeita a chamada) e passa a pedir um dispatch via ferramenta Agent
- * (`general-purpose`, `model: sonnet` explícito, #2019 — imune a esse gate,
- * que só afeta Skill) com o rubrico de review embutido no prompt, postando
- * os achados como comentários inline na PR. Mesmo mecanismo usado na
- * Fase 1.5 do overnight/develop (`.claude/skills/diaria-overnight/SKILL.md`,
+ * (imune a esse gate, que só afeta Skill), postando os achados como
+ * comentários inline na PR. Mesmo mecanismo usado na Fase 1.5 do
+ * overnight/develop (`.claude/skills/diaria-overnight/SKILL.md`,
  * `.claude/skills/diaria-develop/SKILL.md`).
+ *
+ * #4234 (260728): o dispatch passou a usar os agentes do plugin
+ * `pr-review-toolkit@claude-plugins-official` — a opção (b) que o #4034 deixou
+ * pendente de verificação ("é agente, não comando, então não caiu no gate do
+ * code-review; mas confirmar disponibilidade antes de depender dele").
+ * Verificado em 260728: registram com nome PREFIXADO pelo plugin
+ * (`pr-review-toolkit:code-reviewer`), não `code-reviewer` puro como o plano
+ * do #4034 supunha — usar o nome sem prefixo resolve `Agent type not found`.
+ *
+ * FALLBACK obrigatório: a habilitação viaja no repo (`enabledPlugins` no
+ * `.claude/settings.json` versionado), mas os ARQUIVOS do plugin vêm do
+ * marketplace por máquina — sessão cloud, clone fresco ou plugin desabilitado
+ * resolvem `Agent type ... not found`. Nesse caso a instrução manda cair no
+ * `general-purpose` + rubrico inline, que é exatamente o comportamento
+ * pré-#4234 (#4057). O caminho degradado é sempre "review pior", nunca
+ * "review nenhum em silêncio".
+ *
+ * Mapeamento de effort (preserva o default `low` do #3326): `low` = UM agente
+ * (`code-reviewer`); `max` = fleet paralelo com os 4 analisadores
+ * especializados junto. Antes do #4234 os dois efforts mandavam o MESMO
+ * rubrico e diferiam só numa frase de profundidade — `max` só agora tem
+ * conteúdo próprio. Consequência deliberada: o fail-safe `max` de
+ * `resolveEffort` (estado indeterminado) passou a custar 5 agentes em vez de
+ * 1 — segue valendo a escolha de errar pro lado caro quando o hook não
+ * consegue nem determinar o que está revisando, e o caminho é raro.
  */
+
+/** Agente primário do review por PR (nome prefixado pelo plugin — ver #4234). */
+export const REVIEW_AGENT = "pr-review-toolkit:code-reviewer";
+
+/** Analisadores especializados que entram junto SÓ no effort `max` (#4234). */
+export const REVIEW_FLEET_MAX = [
+  "pr-review-toolkit:silent-failure-hunter",
+  "pr-review-toolkit:pr-test-analyzer",
+  "pr-review-toolkit:comment-analyzer",
+  "pr-review-toolkit:type-design-analyzer",
+];
+
 export function buildReviewInstruction(prUrl, effort, warning = null) {
   const effortNote =
     effort === "low"
-      ? "at LOW effort (#3326 default — token-optimized; report only a few high-confidence findings; ask for max explicitly for deeper review)"
-      : "at ULTRACODE / MAXIMUM effort (be thorough — read every changed file, not just the diff hunks)";
+      ? `at LOW effort (#3326 default — token-optimized): dispatch ONE Agent, subagent_type \`${REVIEW_AGENT}\`, ` +
+        "model:sonnet explicit (#2019); report only a few high-confidence findings. Ask for max explicitly for deeper review"
+      : `at ULTRACODE / MAXIMUM effort: dispatch the full toolkit fleet IN PARALLEL — \`${REVIEW_AGENT}\` plus ` +
+        `${REVIEW_FLEET_MAX.join(", ")} — each with model:sonnet explicit (#2019), then aggregate their findings`;
   const warningNote = warning ? ` [aviso: ${warning}]` : "";
   return (
     `A pull request was just created: ${prUrl} — per project policy, review it now. ` +
     "`/code-review` cannot be self-invoked via the Skill tool (platform gate, #4034) — instead, dispatch an Agent " +
-    "(general-purpose, model:sonnet explicit, #2019) with an inline review rubric (correctness, " +
-    "simplification/efficiency, test-coverage, security) over `git diff` for this PR's branch vs its base, " +
-    `${effortNote}, then post its findings as inline PR comments (\`gh pr comment\`/\`gh api\`). ` +
+    `${effortNote}, over \`git diff\` for this PR's branch vs its base. State that range EXPLICITLY in the prompt — ` +
+    "the toolkit agents default to reviewing UNSTAGED changes, which are not this PR. " +
+    "Instruct every agent to stay READ-ONLY (no file edits, no `git checkout`/`switch`/`stash`/`reset`, no commits): " +
+    "a concurrent session may share this checkout (incidents 260703/260708). " +
+    `If a dispatch fails with \`Agent type ... not found\` (plugin \`pr-review-toolkit\` absent — cloud session or ` +
+    "fresh clone), fall back to `general-purpose` with an inline review rubric (correctness, " +
+    "simplification/efficiency, test-coverage, security) — never skip the review silently (#4234). " +
+    "Then post the findings as inline PR comments (`gh pr comment`/`gh api`). " +
     "Do NOT use cloud `ultra` (it is user-triggered/billed and cannot be self-launched)." +
     warningNote
   );
