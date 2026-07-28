@@ -26,6 +26,7 @@ import {
 } from "../scripts/clarice-build-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
 import { cohortFromTier, INTERNAL_EMAILS } from "../scripts/lib/cohorts.ts";
+import { clariceSegmentsDir } from "../scripts/lib/clarice-paths.ts";
 
 function row(p: Partial<SegmentRow> & { email: string }): SegmentRow {
   const tier = p.tier ?? null;
@@ -174,7 +175,7 @@ function captureLogs(fn: () => void): string[] {
 test("main: --dry-run não escreve nada, imprime summary correto", () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-"));
   const dbPath = resolve(dir, "store.db");
-  const segDir = resolve(dir, "segments");
+  const segDir = clariceSegmentsDir("2606-07", dir);
   const db = openClariceDb(dbPath);
   // priority_points é recomputado por recomputeDerived (opens_count/sends_count) —
   // não precisa inseri-lo diretamente.
@@ -188,7 +189,7 @@ test("main: --dry-run não escreve nada, imprime summary correto", () => {
   db.close();
 
   const logs = captureLogs(() => {
-    main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--dry-run", "--segments-dir", segDir]);
+    main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--dry-run", "--data-root", dir]);
   });
   const out = JSON.parse(logs.join("\n"));
   assert.equal(out.cycle, "2606-07");
@@ -198,18 +199,48 @@ test("main: --dry-run não escreve nada, imprime summary correto", () => {
   assert.equal(existsSync(resolve(segDir, "engajados.csv")), false, "dry-run não deve escrever CSV");
 });
 
-// NOTA (#4176): os testes de `main()` abaixo passam `--segments-dir` apontando
-// pra um tmpdir isolado — sem a flag, `clariceSegmentsDir`/`clariceCycleDir`
-// resolveriam a partir da raiz FIXA do repo (`data/clarice-subscribers/…`),
-// que pode ter artefatos REAIS de invocações passadas do editor no mesmo
-// ciclo `2606-07` (ex: `sent-or-queued.json`), fazendo a asserção de
-// ausência (`existsSync(...) === false`) falhar em qualquer máquina local que
-// já tenha rodado um `--group` real nesse ciclo — só passa em CI (clone novo
-// sem a junction `data/`). `--dry-run` continua garantindo que nada é escrito
-// de fato; `--segments-dir` garante que a checagem de ausência não read o
-// disco real de produção. O branch `if (!dryRun)` (escrita real) e o SHAPE do
-// CSV/manifest já são cobertos pelos testes puros de `buildSegmentArtifact`
-// acima — aqui só validamos a integração main()+store+summary.
+test("main: SEM --dry-run escreve CSV+manifest+sent-or-queued.json de fato, isolado em tmpdir via --data-root (#4207)", () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-real-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket) VALUES ('real@x.com','Real',2,3,3,'verified')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs = captureLogs(() => {
+    main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--data-root", dir]);
+  });
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.selected, 1);
+
+  // `clariceSegmentsDir(cycle, dir)` — mesmo root injetado via --data-root
+  // (#4207) que main() usou por dentro; NUNCA sob CLARICE_BASE (raiz fixa de
+  // produção) — o branch `if (!dryRun)` (escrita real) fica, pela 1ª vez,
+  // coberto ponta-a-ponta via main() sem tocar o disco real do editor.
+  const segDir = clariceSegmentsDir("2606-07", dir);
+  assert.ok(segDir.startsWith(dir), "segDir resolvido sob o tmpdir injetado, não CLARICE_BASE");
+  assert.ok(existsSync(resolve(segDir, "engajados.csv")), "escreve o CSV de fato (sem --dry-run)");
+  assert.ok(existsSync(resolve(segDir, "engajados-manifest.json")), "escreve o manifest de fato");
+  assert.ok(existsSync(sentOrQueuedFilePath(segDir)), "escreve sent-or-queued.json de fato");
+
+  const csv = readFileSync(resolve(segDir, "engajados.csv"), "utf8");
+  assert.ok(csv.includes("real@x.com"), "CSV contém o contato selecionado");
+});
+
+// NOTA (#4207, generaliza o `--segments-dir` pontual do #4176): os testes de
+// `main()` abaixo passam `--data-root` apontando pra um tmpdir isolado — sem a
+// flag, `clariceSegmentsDir`/`clariceCycleDir` resolveriam a partir de
+// `CLARICE_BASE` (raiz FIXA do repo, `data/clarice-subscribers/…`), que pode
+// ter artefatos REAIS de invocações passadas do editor no mesmo ciclo de
+// produção (ex: `sent-or-queued.json`), fazendo a asserção de ausência
+// (`existsSync(...) === false`) falhar em qualquer máquina local que já tenha
+// rodado um `--group` real nesse ciclo — só passa em CI (clone novo sem a
+// junction `data/`). O teste logo acima já cobre o branch `if (!dryRun)`
+// (escrita real) ponta-a-ponta via `main()`; os testes abaixo continuam sob
+// `--dry-run` porque o que verificam é justamente o comportamento de
+// NÃO-escrita.
 
 test("main: --budget corta o grupo antes de escrever", () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-budget-"));
@@ -231,11 +262,10 @@ test("main: --budget corta o grupo antes de escrever", () => {
   recomputeDerived(db);
   db.close();
 
-  const segDir = resolve(dir, "segments");
   const logs = captureLogs(() => {
     main([
       "--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--budget", "2", "--dry-run",
-      "--segments-dir", segDir,
+      "--data-root", dir,
     ]);
   });
   const out = JSON.parse(logs.join("\n"));
@@ -256,11 +286,10 @@ test("main: --score é alias de --min-score (#2973) — CLI aceita o vocabulári
   recomputeDerived(db);
   db.close();
 
-  const segDir = resolve(dir, "segments");
   const logs = captureLogs(() => {
     main([
       "--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--score", "50", "--dry-run",
-      "--segments-dir", segDir,
+      "--data-root", dir,
     ]);
   });
   const out = JSON.parse(logs.join("\n"));
@@ -272,8 +301,9 @@ test("main: --score é alias de --min-score (#2973) — CLI aceita o vocabulári
 // Guard anti-duplo-envio POR CICLO (#3227) — sent-or-queued.json
 // ---------------------------------------------------------------------------
 //
-// `main()` aceita `--segments-dir` (#4176) pra isolar testes do disco real de
-// produção — ver a NOTA acima. Aqui abaixo testamos as funções PURAS/injetáveis (`loadSentOrQueuedEmails`,
+// `main()` aceita `--data-root` (#4207, generaliza `--segments-dir` do #4176)
+// pra isolar testes do disco real de produção — ver a NOTA acima. Aqui abaixo
+// testamos as funções PURAS/injetáveis (`loadSentOrQueuedEmails`,
 // `excludeSentOrQueued`, `appendSentOrQueuedEmails`) diretamente contra um
 // `segmentsDir` de tmpdir — o mesmo padrão de `collectPriorCycleEmails`/
 // `excludeAlreadySentEmails` em test/clarice-build-edition-sends.test.ts.
@@ -406,11 +436,12 @@ test("REGRESSÃO (#3227): --dry-run NÃO escreve sent-or-queued.json e não afet
 test("main: --dry-run também não escreve sent-or-queued.json (integração)", () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-main-dryrun-"));
   const dbPath = resolve(dir, "store.db");
-  // #4176: segDir ISOLADO (tmpdir), nunca clariceSegmentsDir("2606-07") — a
-  // raiz fixa de produção pode ter sent-or-queued.json de um --group REAL já
-  // rodado nesse ciclo em qualquer máquina local, o que faria a asserção de
-  // ausência abaixo falhar por motivo alheio ao dry-run sob teste.
-  const segDir = resolve(dir, "segments");
+  // #4207 (generaliza #4176): segDir ISOLADO sob o tmpdir via --data-root,
+  // nunca sob a raiz fixa de produção (CLARICE_BASE) — que pode ter
+  // sent-or-queued.json de um --group REAL já rodado nesse ciclo em qualquer
+  // máquina local, o que faria a asserção de ausência abaixo falhar por
+  // motivo alheio ao dry-run sob teste.
+  const segDir = clariceSegmentsDir("2606-07", dir);
   const db = openClariceDb(dbPath);
   db.prepare(
     "INSERT INTO clarice_users (email, name, tier, sends_count, mv_bucket) VALUES ('warm@x.com','Warm',1,0,'verified')",
@@ -419,7 +450,7 @@ test("main: --dry-run também não escreve sent-or-queued.json (integração)", 
   db.close();
 
   captureLogs(() => {
-    main(["--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--dry-run", "--segments-dir", segDir]);
+    main(["--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--dry-run", "--data-root", dir]);
   });
 
   assert.equal(existsSync(sentOrQueuedFilePath(segDir)), false, "dry-run não deve escrever sent-or-queued.json");
