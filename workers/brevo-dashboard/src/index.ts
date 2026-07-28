@@ -57,6 +57,7 @@ import {
   fetchScheduledCampaigns,
   getCouponUsage,
   readKvTabs,
+  readLinkSectionsByCycle, // #4184
   buildRateLimitFallback,
   rateLimitResponse,
   BrevoRateLimitError,
@@ -73,7 +74,7 @@ import {
   type LastGoodCampaignsPayload,
 } from "./brevo-api.ts";
 import { LASTGOOD_TTL, POSTMASTER_SPAM_KV_KEY } from "./types.ts";
-import { renderDashboardHtml, escHtml } from "./sections-core.ts";
+import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles
 import { refreshEiaEngagement } from "./eia-refresh.ts";
 export * from "./eia-refresh.ts";
 
@@ -330,7 +331,12 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
     // #2733: seções KV-independentes (coortes, MV, contatos, cupons) — sempre
     // frescas do KV, tanto aqui quanto no fallback de rate-limit do Brevo.
     const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam } = await readKvTabs(env, isFresh ? "fresh" : "cached");
-    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam);
+    // #4184: só ciclos MENSAIS (naming "Clarice News AAMM-MM — X", ver
+    // parseClariceCampaignKey) têm prioritized.md/mapa de seção — campanhas
+    // diárias não entram aqui e caem no fallback "—" sem custo extra.
+    const monthlyCycles = collectMonthlyLinkCycles([...campaigns, ...scheduled]);
+    const linkSectionsByCycle = await readLinkSectionsByCycle(env, monthlyCycles);
+    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam, { linkSectionsByCycle });
     const response = new Response(html, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",

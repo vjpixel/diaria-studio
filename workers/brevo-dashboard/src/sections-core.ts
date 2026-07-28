@@ -3,7 +3,7 @@ import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 // #3092: PT_MONTHS_ABBR — dependency-free/Workers-safe (mesmo padrão de
 // cohortSendRank em sections-kv.ts), reusado por formatCycleEnvioLabel.
 import { PT_MONTHS_ABBR } from "../../../scripts/lib/cohorts.ts";
-import { DS, DS_FONTS as DSF, pct, cellClass, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT, renderColumnGlossary, brevoReportLink } from "./render-links.ts";
+import { DS, DS_FONTS as DSF, pct, cellClass, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT, renderColumnGlossary, brevoReportLink, mergeLinkSectionMaps, type LinkSectionMap } from "./render-links.ts"; // #4184: mergeLinkSectionMaps/LinkSectionMap
 import {
   renderVolumeSection,
   aggregateByMonth,
@@ -80,6 +80,44 @@ export interface RenderDashboardOptions {
    * Worker de produção nunca passa este parâmetro, então nada muda lá.
    */
   studioMode?: boolean;
+  /**
+   * #4184: mapa de seção editorial (Destaques/Use Melhor/Radar) por CICLO
+   * mensal (`"AAMM-MM"`, ex: `"2606-07"`), usado para popular a coluna
+   * "Seção" nas tabelas de link (agregada e drill-down por campanha).
+   *
+   * Fonte por superfície:
+   *   - Worker: KV `secao:{ciclo}` (script explícito `push-link-sections-kv.ts`,
+   *     nunca escrito pelo caminho de render — decisão do editor #4184).
+   *   - Studio: montado em memória a partir de `data/monthly/{ciclo}/prioritized.md`
+   *     local (sem KV — ver `scripts/studio-ui/dashboard-clarice.ts`).
+   *
+   * Ausente/`null` (default) preserva o comportamento anterior — toda linha
+   * cai no fallback "—" (seção desconhecida). O drill-down por campanha usa
+   * o mapa do ciclo EXATO daquela campanha (`parseClariceCampaignKey`); a
+   * tabela agregada usa a união de todos os ciclos presentes na janela
+   * (`mergeLinkSectionMaps`) — ver comentário em `link-section.ts`.
+   */
+  linkSectionsByCycle?: Record<string, LinkSectionMap> | null;
+}
+
+/**
+ * #4184: ciclos mensais (`"AAMM-MM"`, `parseClariceCampaignKey().monthly`)
+ * distintos presentes numa lista de campanhas — usado pra decidir quais
+ * chaves `secao:{ciclo}` buscar no KV (Worker) ou quais `prioritized.md`
+ * ler em disco (Studio). Campanhas DIÁRIAS (`cycle` de 4 dígitos, sem
+ * sufixo de mês de envio) nunca têm `prioritized.md` equivalente — não
+ * entram no resultado, e seu conteúdo cai no fallback "sem seção" sem
+ * nenhuma checagem especial (não há chave pra elas em nenhum mapa).
+ */
+export function collectMonthlyLinkCycles(
+  campaigns: ReadonlyArray<Pick<BrevoCampaign, "name">>,
+): string[] {
+  const cycles = new Set<string>();
+  for (const c of campaigns) {
+    const parsed = parseClariceCampaignKey(c.name ?? "");
+    if (parsed?.monthly) cycles.add(parsed.cycle);
+  }
+  return [...cycles];
 }
 
 export function renderDashboardHtml(
@@ -133,6 +171,8 @@ export function renderDashboardHtml(
     const ms = Date.parse(raw);
     return Number.isFinite(ms) ? ms : -Infinity;
   };
+  // #4184: mapa de seção editorial por ciclo mensal (ver RenderDashboardOptions).
+  const linkSectionsByCycle = opts.linkSectionsByCycle ?? null;
   const sortedCampaigns = [...campaigns].sort((a, b) => toSortableTime(b) - toSortableTime(a));
   const rows = sortedCampaigns
     .map((c) => {
@@ -149,10 +189,19 @@ export function renderDashboardHtml(
       // c.statistics?.linksStats is canonical (set by fetchRecentCampaigns #2199.3).
       // c.linksStats fallback preserved for backward compat (tests/mocks that pass top-level).
       const linksStats = c.statistics?.linksStats ?? c.linksStats;
+      // #4184: mapa de seção do ciclo EXATO desta campanha (não o merge
+      // cross-ciclo usado na tabela agregada, mais abaixo) — campanhas
+      // diárias (`cycle` de 4 dígitos, sem sufixo de mês de envio) nunca têm
+      // prioritized.md equivalente, então `monthly` é false e a linha cai no
+      // fallback "—" sem nenhuma checagem especial.
+      const campaignCycleKey = parseClariceCampaignKey(c.name ?? "");
+      const campaignSectionMap = campaignCycleKey?.monthly
+        ? linkSectionsByCycle?.[campaignCycleKey.cycle] ?? null
+        : null;
       if (!s) {
         // #2198 Bug 1: passa linksStats real mesmo quando stats ausente, evitando
         // "dados não disponíveis" para campanha que tem linksStats mas não globalStats/campaignStats.
-        const linksHtmlNoStats = renderLinksSection(c.id, linksStats);
+        const linksHtmlNoStats = renderLinksSection(c.id, linksStats, undefined, campaignSectionMap);
         // #3082: mesmo rótulo de edição/célula das rows com stats — uma célula
         // A/B/C sem stats ainda pode aparecer na tabela (ex: envio recentíssimo).
         const editionLabelNoStats = deriveCampaignEditionLabel(c.name ?? "");
@@ -217,6 +266,7 @@ export function renderDashboardHtml(
         c.id,
         linksStats,
         s.uniqueClicks,
+        campaignSectionMap, // #4184
       );
       return `<tr>
         <td>${brevoReportLink(c.id)}</td>
@@ -386,7 +436,13 @@ ${monthlyAbcSectionsByDate}
     : "";
   // #2212: seção de links agregados do período
   // #2421: título inclui label da edição (cycle-sendMonth) quando detectável.
-  const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns);
+  // #4184: mescla os mapas de TODOS os ciclos mensais presentes na janela —
+  // a tabela agregada soma cliques cross-ciclo por natureza, então a seção
+  // também é resolvida na união (ver limitação documentada em mergeLinkSectionMaps).
+  const mergedLinkSectionMap = linkSectionsByCycle
+    ? mergeLinkSectionMaps(Object.values(linkSectionsByCycle))
+    : null;
+  const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns, mergedLinkSectionMap);
   const edicaoLabel = deriveLinksSectionTitle(campaigns);
   // #3081: campaignCount = tamanho da janela agregada (campaigns.length) — o
   // título reflete a janela real, não implica que os dados são de 1 edição só.
@@ -609,6 +665,8 @@ ${monthlyAbcSectionsByDate}
   /* #3088: contagens de link (13px/600) — mesmo motivo do td.metric acima. */
   .links-table td.link-clicks { font-weight: 600; color: var(--ink); }
   .links-table td.link-pct { opacity: 0.75; }
+  /* #4184: evita quebra em 2 linhas de rótulos curtos ("Use Melhor"). */
+  .links-table td.link-section { white-space: nowrap; }
   /* #3089: opacity 0.5 a 11.5px media ~3.5:1 (abaixo de AA 4.5:1). 0.7 sobe pra
      ~5.6-6.8:1 (WCAG relative luminance, ink #171411 sobre --paper/--card/--paper-alt). */
   .links-note { font-size: 0.72rem; color: var(--ink); opacity: 0.7; padding: 2px 12px 6px; margin: 0; }

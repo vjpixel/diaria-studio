@@ -106,6 +106,8 @@ export type {
   ContactsSummary,
   CohortStatsRow,
   PostmasterSpamEntry,
+  LinkSectionName, // #4184
+  LinkSectionMap, // #4184
 } from "../../../scripts/lib/dashboard-kv-types.ts";
 // #2609: status MillionVerifier por grupo de contatos (tipo em dashboard-kv-types.ts).
 
@@ -146,6 +148,15 @@ export const EIA_ENGAGEMENT_KV_KEY = "eia:engagement";
 // (re-exportada de scripts/lib/dashboard-kv-types.ts) e resolveSpamSignal em
 // thresholds.ts (precedência sobre complaints da Brevo).
 export const POSTMASTER_SPAM_KV_KEY = "postmaster:spam";
+
+// #4184: mapa de seção editorial (Destaques/Use Melhor/Radar) por ciclo
+// mensal, gravado por scripts/push-link-sections-kv.ts. Diferente das
+// constantes acima, não é uma chave singleton — 1 chave POR ciclo — então o
+// helper formata a partir do ciclo em vez de exportar uma string fixa. Ver
+// LinkSectionMap (re-exportada acima) e resolveLinkSection (link-section.ts).
+export function linkSectionsKvKey(cycle: string): string {
+  return `secao:${cycle}`;
+}
 
 export interface EiaEngagementEdition {
   /** AAMMDD */
