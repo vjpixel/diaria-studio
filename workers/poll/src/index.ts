@@ -35,8 +35,8 @@ import {
   parseBrandParam,
   brandKvPrefix,
   leaderboardHref,
-  brandHiddenInput, // #3118 item 12
-  maskEmail, // #3118 item 11
+  renderNicknameFormHtml, // #4232: extraído pra reuso no leaderboard
+  renderNicknameFormStyles, // #4232: CSS do .nick-box, idem
   jogarArchiveHref, // #3524
   buildBrandSiteUrl, // #3978: href com UTM do rodapé de /vote
   lightboxScript, // #4007: script do lightbox de zoom — reusado nas 5 superfícies do par de imagens (#4125 item 3: quiz incluído)
@@ -785,24 +785,10 @@ export function votePageHtml(
   // !scoreObj?.nickname — então este form aparece em CADA vote até ser
   // preenchido. Texto explícito sobre consequência (aparecer como email
   // mascarado no leaderboard) incentiva preenchimento.
-  // #3109: "mensal" estava hardcoded mesmo pro brand clarice, cujo leaderboard
-  // é ANUAL (BRAND_INFO.clarice.leaderboardPeriod === "year"). Deriva do
-  // mesmo campo já usado em vote.ts (#2061) — um 3º brand anual herda o
-  // texto correto sem tocar aqui.
-  const leaderboardPeriodWord = BRAND_INFO[brand].leaderboardPeriod === "year" ? "anual" : "mensal";
-  const formHtml = nicknameForm ? `
-<div class="nick-box">
-  <p class="nick-title">Defina seu nickname pra aparecer no leaderboard ${leaderboardPeriodWord}</p>
-  <p class="nick-explain">Sem nickname você aparece como <code>${htmlEscape(maskEmail(nicknameForm.email))}</code> no ranking público.</p>
-  <form action="/set-name" method="GET" class="nick-form">
-    <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
-    <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
-    ${brandHiddenInput(brand)}
-    <input type="text" name="name" placeholder="Seu nome" maxlength="40" required class="nick-input">
-    <button type="submit" class="nick-save">Salvar</button>
-  </form>
-  <p class="nick-note">Pode ser apelido. Mostrado publicamente.</p>
-</div>` : "";
+  // #3109/#4232: "mensal"/"anual" (BRAND_INFO.leaderboardPeriod) e o markup do
+  // form em si agora vivem em renderNicknameFormHtml (lib.ts) — extraído pra
+  // ser reusado por renderLeaderboardHtml (leaderboard-routes.ts, #4232).
+  const formHtml = nicknameForm ? renderNicknameFormHtml(nicknameForm, brand) : "";
 
   // #1351: HTML pra mostrar imagens A e B com labels + highlight da clicada
   const imagesHtml = renderResultImagesHtml(resultImages);
@@ -837,9 +823,25 @@ export function votePageHtml(
 
   // #2113(a): link do leaderboard com cache-buster quando vindo do resultado do voto.
   const leaderboardBase = leaderboardHref(brand, leaderboardSlug);
-  const leaderboardLink = cacheBusterTs
-    ? `${leaderboardBase}${leaderboardBase.includes("?") ? "&" : "?"}v=${cacheBusterTs}`
+  const appendLeaderboardParam = (href: string, key: string, value: string): string =>
+    `${href}${href.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(value)}`;
+  let leaderboardLink = cacheBusterTs
+    ? appendLeaderboardParam(leaderboardBase, "v", cacheBusterTs)
     : leaderboardBase;
+  // #4232: carrega email+sig assinados (mesmo par de `nicknameForm` — sig
+  // HMAC de `setname:${email}`, ver #1078) no link "Ver leaderboard" SÓ
+  // quando o leitor ainda não definiu nickname. `handleLeaderboardByMonth`/
+  // `handleLeaderboardByYear` (leaderboard-routes.ts) verificam a sig e
+  // renderizam o mesmo form ali — antes só existia na tela de resultado do
+  // voto, obrigando o leitor a votar de novo pra ver o form (issue #4232).
+  // #4232 (escopo): só brands com voto por e-mail assinado (diaria/clarice) —
+  // brand "web" já resolve nickname via identidade local (`eia_web_identified_email`,
+  // #3975) + form de identificação inline; não precisa (nem deveria) deste
+  // mecanismo baseado em link assinado por e-mail.
+  if (nicknameForm && brand !== "web") {
+    leaderboardLink = appendLeaderboardParam(leaderboardLink, "email", nicknameForm.email);
+    leaderboardLink = appendLeaderboardParam(leaderboardLink, "sig", nicknameForm.sig);
+  }
 
   // #3578 (correção do #3524, feedback do editor 260716): a metade "página
   // pós-voto (email) → arquivo" da ponte cross-canal (EPIC #3514) agora só
@@ -896,18 +898,7 @@ export function votePageHtml(
   .share-text { font-family: ${DS_FONTS.serif}; font-size: 1.05rem; margin: 0 0 14px 0; line-height: 1.4; }
   .share-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
   .share-actions button { padding: 10px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
-  /* #1675/#1779: nickname form + textos como classes (eram inline → media query
-     não conseguia ampliar; causa do "texto miúdo no mobile"). */
-  .nick-box { margin: 30px auto; padding: 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 380px; }
-  .nick-title { font-size: 1.1rem; margin: 0 0 12px 0; font-weight: 600; }
-  .nick-explain { font-size: 0.95rem; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; line-height: 1.5; }
-  .nick-explain code { background: ${DS_COLORS.paper}; padding: 1px 4px; border-radius: 3px; }
-  .nick-note { font-size: 0.85rem; color: ${DS_COLORS.ink}; margin: 10px 0 0 0; }
-  .nick-form { display: flex; gap: 8px; }
-  .nick-input { flex: 1; padding: 8px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
-  /* #3110: fundo ink, não teal — botão cheio em teal reprovava
-     contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk dá ~15:1. */
-  .nick-save { padding: 8px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: ${DS_FONTS.sans}; }
+${renderNicknameFormStyles()}
   .footer-links { font-size: 0.95rem; }
   .footer-links a { display: inline-block; padding: 6px 4px; }
   /* #1675: tráfego majoritariamente mobile. Abaixo de 480px: menos margem topo,
@@ -921,15 +912,6 @@ export function votePageHtml(
     /* Empilha A/B full-width: imagens GRANDES e legíveis em vez de 2-up minúsculo. */
     .result-image { flex-basis: 100%; max-width: 100%; }
     .result-image .label { font-size: 1.05rem; }
-    .nick-box { max-width: 100%; padding: 20px 18px; }
-    .nick-title { font-size: 1.15rem; }
-    .nick-explain { font-size: 1rem; }
-    .nick-note { font-size: 0.9rem; }
-    .nick-form { flex-direction: column; }
-    /* flex:none reseta o flex:1 do base — em coluna, flex-grow agiria no eixo
-       vertical (input esticaria). Cross-axis stretch mantém largura total. */
-    .nick-input { flex: none; padding: 14px; font-size: 1.1rem; }
-    .nick-save { width: 100%; padding: 14px 16px; font-size: 1.1rem; }
     .footer-links { font-size: 1.05rem; }
     .footer-links a { padding: 12px 10px; }
     .share-card { max-width: 100%; padding: 20px 18px; }
@@ -1456,9 +1438,9 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
       // "year" → visão anual (clarice: 1 voto/mês, faz sentido agregar ano inteiro).
       // "month" → visão mensal (diária: votos diários, ranking mês corrente).
       if (BRAND_INFO[brand].leaderboardPeriod === "year") {
-        return handleLeaderboardByYear(currentMonthSlugBrt(new Date()).slice(0, 4), bEnv, brand);
+        return handleLeaderboardByYear(currentMonthSlugBrt(new Date()).slice(0, 4), bEnv, brand, url);
       }
-      return handleLeaderboard(bEnv, brand);
+      return handleLeaderboard(bEnv, brand, url);
     }
     if (path === "/leaderboard/top1" && (request.method === "GET" || request.method === "HEAD")) return handleLeaderboardTop1(url, bEnv);
     // #1345: /leaderboard/{YYYY-MM} — URL única por mês de publicação
@@ -1505,9 +1487,12 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
       }
       const jsonMonthMatch = path.match(/^\/leaderboard\/(\d{4}-\d{2})\.json$/);
       if (jsonMonthMatch) return handleLeaderboardByMonthJson(jsonMonthMatch[1], bEnv, brand);
-      if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], bEnv, brand);
+      // #4232: `url` repassado (5º arg, canonicalPath fica `undefined`, o
+      // default de handleLeaderboardByMonth) pra resolver o form de nickname
+      // a partir de email+sig na query string do link "Ver leaderboard".
+      if (monthMatch) return handleLeaderboardByMonth(monthMatch[1], bEnv, brand, undefined, url);
       const yearMatch = path.match(/^\/leaderboard\/(\d{4})$/); // #2006: rota anual explícita (ambas as marcas)
-      if (yearMatch) return handleLeaderboardByYear(yearMatch[1], bEnv, brand);
+      if (yearMatch) return handleLeaderboardByYear(yearMatch[1], bEnv, brand, url);
     }
     if (path === "/set-name" && request.method === "GET") return handleSetName(url, bEnv, brand);
     // #4038: 4º arg `env` (cru) — mesmo padrão de handleVote (rawEnv, #3600) —

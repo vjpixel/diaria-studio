@@ -7,7 +7,9 @@
  */
 // #3113: tokens do DS canônico — mesma fonte usada por leaderboard-routes.ts e
 // index.ts (ver nota em #3111 sobre bundle Cloudflare separado).
-import { DS_COLORS } from "./ds-tokens.generated";
+// #4232: DS_FONTS entra pra renderNicknameFormStyles (nick-input/nick-save
+// usam font-family — antes só DS_COLORS era consumido aqui).
+import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { EIA_STANDALONE_SOURCE, EIA_ARCHIVE_UTM } from "./utm-registry"; // #4041
 
 // ── Trailing slash normalization (#1319) ────────────────────────────────────
@@ -1025,6 +1027,76 @@ export function withBrandQuery(base: string, brand: Brand): string {
  * arquivo é escapar tudo que é interpolado em atributo). */
 export function brandHiddenInput(brand: Brand): string {
   return brand === "diaria" ? "" : `<input type="hidden" name="brand" value="${htmlEscape(brand)}">`;
+}
+
+// ── Form de nickname reusável (#4232) ───────────────────────────────────────
+//
+// Extraído de `votePageHtml` (index.ts) pra ser reusado também no leaderboard
+// (`renderLeaderboardHtml`, leaderboard-routes.ts) — issue #4232: quem clica
+// em "Ver leaderboard" antes de definir nickname (ou chega direto no
+// leaderboard com o link assinado do resultado do voto) ganha o MESMO form
+// ali, sem precisar voltar e votar de novo. `nicknameForm` sempre presente
+// aqui (diferente do `formHtml` de votePageHtml, que aceita `null` e retorna
+// "" — cada caller decide ANTES de chamar esta função se deve renderizar).
+
+/**
+ * Pure (#4232, extraído de votePageHtml/#1078): bloco HTML do form de
+ * nickname (`nick-box`). `leaderboardPeriodWord` deriva de
+ * `BRAND_INFO[brand].leaderboardPeriod` (#3109 — "anual" pra brand com
+ * ranking anual, hoje só `clarice`; "mensal" pros demais).
+ */
+export function renderNicknameFormHtml(
+  nicknameForm: { email: string; sig: string },
+  brand: Brand,
+): string {
+  const leaderboardPeriodWord = BRAND_INFO[brand].leaderboardPeriod === "year" ? "anual" : "mensal";
+  return `<div class="nick-box">
+  <p class="nick-title">Defina seu nickname pra aparecer no leaderboard ${leaderboardPeriodWord}</p>
+  <p class="nick-explain">Sem nickname você aparece como <code>${htmlEscape(maskEmail(nicknameForm.email))}</code> no ranking público.</p>
+  <form action="/set-name" method="GET" class="nick-form">
+    <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
+    <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
+    ${brandHiddenInput(brand)}
+    <input type="text" name="name" placeholder="Seu nome" maxlength="40" required class="nick-input">
+    <button type="submit" class="nick-save">Salvar</button>
+  </form>
+  <p class="nick-note">Pode ser apelido. Mostrado publicamente.</p>
+</div>`;
+}
+
+/**
+ * CSS do `.nick-box` (#4232, extraído de votePageHtml/#1675/#1779/#3110) —
+ * self-contained com seu próprio `@media (max-width: 600px)` (mesmo padrão de
+ * `renderLightboxStyles` acima: bloco de media query independente, não
+ * mesclado com o `@media` das demais regras de cada página — CSS válido ter
+ * múltiplos blocos pro mesmo breakpoint). Chamado por `votePageHtml`
+ * (index.ts) e por `renderLeaderboardHtml` (leaderboard-routes.ts, #4232).
+ */
+export function renderNicknameFormStyles(): string {
+  return `  /* #1675/#1779: nickname form + textos como classes (eram inline → media query
+     não conseguia ampliar; causa do "texto miúdo no mobile"). */
+  .nick-box { margin: 30px auto; padding: 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 380px; }
+  .nick-title { font-size: 1.1rem; margin: 0 0 12px 0; font-weight: 600; }
+  .nick-explain { font-size: 0.95rem; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; line-height: 1.5; }
+  .nick-explain code { background: ${DS_COLORS.paper}; padding: 1px 4px; border-radius: 3px; }
+  .nick-note { font-size: 0.85rem; color: ${DS_COLORS.ink}; margin: 10px 0 0 0; }
+  .nick-form { display: flex; gap: 8px; }
+  .nick-input { flex: 1; padding: 8px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
+  /* #3110: fundo ink, não teal — botão cheio em teal reprovava
+     contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk dá ~15:1. */
+  .nick-save { padding: 8px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: ${DS_FONTS.sans}; }
+  /* #1675/#1779: tráfego majoritariamente mobile — form empilhado, botão full-width. */
+  @media (max-width: 600px) {
+    .nick-box { max-width: 100%; padding: 20px 18px; }
+    .nick-title { font-size: 1.15rem; }
+    .nick-explain { font-size: 1rem; }
+    .nick-note { font-size: 0.9rem; }
+    .nick-form { flex-direction: column; }
+    /* flex:none reseta o flex:1 do base — em coluna, flex-grow agiria no eixo
+       vertical (input esticaria). Cross-axis stretch mantém largura total. */
+    .nick-input { flex: none; padding: 14px; font-size: 1.1rem; }
+    .nick-save { width: 100%; padding: 14px 16px; font-size: 1.1rem; }
+  }`;
 }
 
 // ── Shell editorial: régua teal + rodapé de marca (#3113) ───────────────────
