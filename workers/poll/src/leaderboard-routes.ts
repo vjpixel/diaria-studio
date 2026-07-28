@@ -24,9 +24,13 @@ import {
   lightboxScript, // #4007: script do lightbox de zoom — reusado nas 5 superfícies do par de imagens (#4125 item 3: quiz incluído)
   renderLightboxMarkup, // #4007: markup do <dialog> de zoom
   renderLightboxStyles, // #4007: CSS do lightbox + badge de lupa
+  renderNicknameFormHtml, // #4232: bloco nick-box reusado do resultado do voto
+  renderNicknameFormStyles, // #4232: CSS do nick-box, idem
+  isValidVoteEmailFormat, // #4232: valida forma do email recebido via query param
+  safeParseKv, // #4232: parse seguro de score:{email} (mesmo padrão de handleSetName)
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
-import { corsHeaders, json, votePageHtml } from "./index";
+import { corsHeaders, hmacVerify, json, votePageHtml } from "./index";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
 // cor/fonte inline aqui (ver test/poll-ds-tokens.test.ts para a trava).
@@ -560,6 +564,75 @@ export function shouldShowMonthNotStarted(slugCmp: number, entryCount: number): 
   return slugCmp > 0 && entryCount === 0;
 }
 
+// ── Nickname form no leaderboard (#4232) ─────────────────────────────────────
+//
+// Reusa o esquema de link assinado (HMAC `email`+`sig`) que já protege
+// `/set-name` (index.ts, handleSetName) — o mesmo sig gerado por vote.ts
+// (`hmacSign(env.POLL_SECRET, "setname:" + email)`, ver #1078) agora também
+// viaja no link "Ver leaderboard" da página de resultado do voto (votePageHtml,
+// index.ts) quando o leitor ainda não definiu nickname. Aqui verificamos essa
+// MESMA sig e, se válida e o leitor ainda não tem nickname, renderizamos o
+// mesmo bloco `nick-box` direto no leaderboard — sem precisar votar de novo
+// pra ver o form.
+
+/**
+ * #4232: resolve se o form de nickname deve renderizar nesta view do
+ * leaderboard, a partir de `email`+`sig` na query string. Fail-closed em
+ * QUALQUER caso ambíguo — parâmetro ausente, forma de e-mail inválida, sig
+ * inválida/expirada, e-mail sem voto registrado (`score:{email}` ausente) ou
+ * nickname já definido: todos retornam `null` (nunca expõe o form
+ * indevidamente). `env` é o env BRANDED (`bEnv` no router de index.ts) — mesmo
+ * KV namespace que `handleSetName`/vote.ts leem `score:{email}`.
+ *
+ * `brand === "web"` sempre retorna `null` — mesmo escopo do #4232: o brand
+ * `web` (`/jogar` standalone) já resolve nickname via identidade local
+ * (`eia_web_identified_email`, #3975) + form de identificação inline, não via
+ * link assinado por e-mail. Defesa em profundidade — `votePageHtml` (index.ts)
+ * já não anexa `email`/`sig` ao link "Ver leaderboard" pro brand `web`, mas
+ * nada impede alguém de montar a URL manualmente.
+ */
+export async function resolveLeaderboardNicknameForm(
+  url: URL,
+  env: Env,
+  brand: Brand,
+): Promise<{ email: string; sig: string } | null> {
+  if (brand === "web") return null;
+  const email = url.searchParams.get("email")?.toLowerCase().trim();
+  const sig = url.searchParams.get("sig");
+  if (!email || !sig) return null;
+  if (!isValidVoteEmailFormat(email)) return null;
+
+  const valid = await hmacVerify(env.POLL_SECRET, `setname:${email}`, sig);
+  if (!valid) {
+    // Log (não bloqueia) — distingue "sig inválida/expirada" das demais
+    // causas de `null` (sem voto, já tem nickname), que são estado normal e
+    // não precisam de sinal — achado do review consolidado (#4232): sem
+    // isso, um POLL_SECRET rotacionado ou uma divergência de normalização de
+    // email entre votePageHtml (quem assina) e esta função (quem verifica)
+    // ficaria invisível em produção — "a CTA parou de aparecer" sem nenhum
+    // log pra correlacionar.
+    console.error(JSON.stringify({ event: "leaderboard_nickname_form_invalid_sig", email }));
+    return null;
+  }
+
+  // #4232 (achado do review consolidado, silent-failure-hunter): `env.POLL.get`
+  // é uma chamada de rede real (KV) e PODE lançar (erro interno, rate-limit)
+  // — sem este try/catch, uma falha aqui derrubava a página de leaderboard
+  // INTEIRA (scores/HTML já computados, request inteira 500) por causa de um
+  // form OPCIONAL/decorativo. Fail-closed real: qualquer exceção vira `null`
+  // (mesmo contrato documentado acima — "nunca expõe o form indevidamente"),
+  // nunca propaga pro caller.
+  try {
+    const raw = await env.POLL.get(`score:${email}`);
+    const score = safeParseKv<{ nickname?: string | null }>(raw, "leaderboard_nickname_form_score_parse_error", email);
+    if (!score || score.nickname) return null; // sem voto registrado, ou já tem nickname
+    return { email, sig };
+  } catch (e) {
+    console.error(JSON.stringify({ event: "leaderboard_nickname_form_kv_error", email, error: String(e) }));
+    return null;
+  }
+}
+
 /**
  * Handler `/leaderboard/{YYYY-MM}` — lê apenas score-by-month:{slug}:* e
  * renderiza o mesmo HTML do leaderboard atual. Cache header diferente
@@ -570,6 +643,11 @@ export async function handleLeaderboardByMonth(
   env: Env,
   brand: Brand = "diaria",
   canonicalPath?: string, // #3106: override usado por handleLeaderboard() — canonical de "/leaderboard", não "/leaderboard/{slug}"
+  // #4232: URL da request — quando presente, resolve email+sig (query params)
+  // pro form de nickname. Opcional pra não quebrar as dezenas de chamadas
+  // diretas já existentes em teste (sem url = comportamento idêntico ao
+  // pré-#4232, nunca renderiza o form).
+  url?: URL,
 ): Promise<Response> {
   const parsed = parseMonthSlug(monthSlug);
   if (!parsed) {
@@ -606,9 +684,14 @@ export async function handleLeaderboardByMonth(
     ? closedPeriodCacheControl() // #3118 item 2: 1h (não mais 30d immutable — voto retroativo)
     : "public, max-age=60"; // 60s pro mês corrente
 
+  // #4232: resolve o form de nickname (email+sig do link "Ver leaderboard")
+  // só quando a request carrega `url` (router de index.ts sempre passa).
+  const nicknameForm = url ? await resolveLeaderboardNicknameForm(url, env, brand) : null;
+
   return renderLeaderboardHtml(
     scores, periodLabel, parsed.year, cacheControl, brand, "month",
     canonicalPath ?? leaderboardHref(brand, monthSlug),
+    nicknameForm,
   );
 }
 
@@ -752,6 +835,9 @@ export async function handleLeaderboardByYear(
   yearStr: string,
   env: Env,
   brand: Brand = "diaria",
+  // #4232: mesmo racional do parâmetro homônimo em handleLeaderboardByMonth —
+  // opcional, resolve o form de nickname só quando presente.
+  url?: URL,
 ): Promise<Response> {
   const year = parseInt(yearStr, 10);
   if (!/^\d{4}$/.test(yearStr) || year < 2000 || year > 2099) {
@@ -782,7 +868,9 @@ export async function handleLeaderboardByYear(
   const cacheControl = year < currentYear
     ? closedPeriodCacheControl() // #3118 item 2: 1h (não mais 30d immutable — voto retroativo)
     : "public, max-age=60"; // corrente: real-time-ish (igual ao mensal)
-  return renderLeaderboardHtml(scores, "", year, cacheControl, brand, "year", leaderboardHref(brand, yearStr));
+  // #4232: mesmo racional de handleLeaderboardByMonth acima.
+  const nicknameForm = url ? await resolveLeaderboardNicknameForm(url, env, brand) : null;
+  return renderLeaderboardHtml(scores, "", year, cacheControl, brand, "year", leaderboardHref(brand, yearStr), nicknameForm);
 }
 
 /** Pure render — separado pra ser reusado por `/leaderboard` (corrente) + `/leaderboard/{YYYY-MM}`. */
@@ -794,6 +882,10 @@ function renderLeaderboardHtml(
   brand: Brand = "diaria",
   periodKind: "month" | "year" = "month", // #2006: visão anual (Clarice News)
   canonicalPath?: string, // #3106: path canônico da view atual (default = /leaderboard)
+  // #4232: presente (resolvido via resolveLeaderboardNicknameForm) só quando
+  // o leitor chegou com email+sig válidos e ainda não tem nickname — renderiza
+  // o mesmo bloco nick-box da tela de resultado do voto.
+  nicknameForm: { email: string; sig: string } | null = null,
 ): Response {
   // #1905: título/copy/link por marca (Diar.ia diário vs Clarice News mensal).
   const info = BRAND_INFO[brand];
@@ -907,6 +999,10 @@ function renderLeaderboardHtml(
     ? `<a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a>`
     : "";
   const navHtml = annualLinkHtml || archiveLinkHtml ? `<p class="nav">${annualLinkHtml}${archiveLinkHtml}</p>` : "";
+  // #4232: bloco nick-box (mesmo markup da tela de resultado do voto) — só
+  // quando `resolveLeaderboardNicknameForm` validou email+sig da query string
+  // E o leitor ainda não tem nickname.
+  const nicknameFormHtml = nicknameForm ? renderNicknameFormHtml(nicknameForm, brand) : "";
   // #4122 (decisão do editor 260727): agregado "+ N jogadores" removido —
   // era a contrapartida visual do corte de cauda revertido acima
   // (`partitionLeaderboardForDisplay` agora chamado com minAttempts=0,
@@ -981,6 +1077,7 @@ ${seoMeta}
   tr.self-row td:first-child { border-left: 3px solid ${DS_COLORS.brand}; }
   .self-badge { display: inline-block; padding: 2px 8px; background: ${DS_COLORS.brand}; color: ${DS_COLORS.paper}; border-radius: 4px; font-size: 0.7rem; font-weight: 700; margin-left: 6px; }
   .self-cta { margin-top: 14px; padding: 12px 16px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; font-size: 0.85rem; }
+${renderNicknameFormStyles()}
 ${renderBrandShellStyles()}
 </style>
 </head>
@@ -990,6 +1087,7 @@ ${renderBrandShellStyles()}
 <h1>${heading}</h1>
 ${subCopy}
 ${navHtml}
+${nicknameFormHtml}
 <table>
 <thead><tr><th>#</th><th>Jogador(a)</th><th>Acertos</th><th>%</th></tr></thead>
 <tbody>${rows || `<tr><td colspan=4 style='color:${DS_COLORS.ink};text-align:center;padding:20px'>Ainda sem votos.</td></tr>`}</tbody>
@@ -1001,21 +1099,34 @@ ${renderBrandFooter(brand)}
 </body>
 </html>`;
 
+  // #4232 (achado do review consolidado — code-reviewer): quando `nicknameForm`
+  // está presente, a página carrega o e-mail CRU do leitor + uma sig HMAC
+  // válida pra `/set-name` (mesmo par usado no hidden input do form) — mesma
+  // classe de payload sensível que `voteHtmlResponse` (index.ts) já trata com
+  // `no-store` ("voto é estado mutável por-usuário"). Servir essa versão com
+  // `Cache-Control: public` (o cacheControl normal do período) arriscaria um
+  // cache intermediário (proxy corporativo, navegador de máquina compartilhada)
+  // guardar a resposta por URL e servir o e-mail+sig de um leitor pra outro
+  // dentro do TTL. `no-store` só nesta resposta específica — o caminho SEM
+  // nicknameForm (a esmagadora maioria do tráfego) mantém o cache normal.
+  const finalCacheControl = nicknameForm ? "no-store, no-cache, must-revalidate" : cacheControl;
   return new Response(html, {
-    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": cacheControl }
+    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": finalCacheControl }
   });
 }
 
 // ── /leaderboard ──────────────────────────────────────────────────────────────
 
-export async function handleLeaderboard(env: Env, brand: Brand = "diaria"): Promise<Response> {
+export async function handleLeaderboard(env: Env, brand: Brand = "diaria", url?: URL): Promise<Response> {
   // #1345: /leaderboard agora delega pro slug do mês corrente. Schema único
   // (`score-by-month:*`) — `score:*` global continua mantido pra all-time
   // potencial mas não é mais lido pelo leaderboard.
   // #3106: canonical explícito de "/leaderboard" (self) — sem isso o override
   // default de handleLeaderboardByMonth apontaria canonical pro slug do mês
   // corrente, e o crawler indexaria a URL errada pra quem chegou via "/leaderboard".
-  return handleLeaderboardByMonth(currentMonthSlugBrt(new Date()), env, brand, leaderboardHref(brand));
+  // #4232: `url` repassado pra resolver o form de nickname (query params
+  // email+sig), quando presente.
+  return handleLeaderboardByMonth(currentMonthSlugBrt(new Date()), env, brand, leaderboardHref(brand), url);
 }
 
 // ── /leaderboard/{YYYY}/arquivo — arquivo retroativo (#2867) ────────────────
