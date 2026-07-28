@@ -1,7 +1,8 @@
-import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry } from "./types.ts";
-import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, RECENT_STATS_TTL } from "./types.ts";
+import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, LinkSectionMap } from "./types.ts";
+import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, RECENT_STATS_TTL, linkSectionsKvKey } from "./types.ts";
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
-import { renderDashboardHtml, escHtml } from "./sections-core.ts";
+import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles
+import { normalizeLinkSectionMap } from "./link-section.ts"; // #4184
 
 /**
  * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
@@ -293,8 +294,15 @@ async function readPlanCreditsKv(kv: KVNamespace): Promise<number | null> {
 export async function fetchPlanCredits(
   env: Pick<Env, "BREVO_API_KEY" | "STATS_CACHE">,
   mode: CouponUsageMode = "cached",
+  // #4186: `true` só no painel Studio local — desliga leitura E escrita de
+  // `brevo:plan-credits` no KV COMPARTILHADO de produção (mesmo namespace do
+  // Worker desde #4165/#4173). O fetch ao vivo à Brevo continua acontecendo
+  // normalmente (o Studio ainda precisa do valor); só o cache-aside no KV
+  // público é pulado. `false` (default) preserva o Worker de produção
+  // EXATAMENTE como antes.
+  skipKvCache = false,
 ): Promise<number | null> {
-  const kv = env.STATS_CACHE;
+  const kv = skipKvCache ? undefined : env.STATS_CACHE;
   // #3081 (review): lido no máximo 1x por chamada — sem isto, mode="cached"
   // com KV miss + fetch ao vivo também falho caía no fallback final, que
   // re-lia a MESMA chave (miss garantido, nada escreveu nela entre as duas
@@ -859,6 +867,64 @@ export async function readKvTabs(
 }
 
 /**
+ * #4184: lê `secao:{ciclo}` do KV pra cada ciclo mensal em `cycles` (dedup
+ * automático), em paralelo — mesmo espírito de `readKvTabs` acima. Chaves
+ * ausentes/corrompidas (`normalizeLinkSectionMap` retornando `null`) são
+ * simplesmente omitidas do resultado (o caller trata cycle ausente como
+ * "sem mapa", igual a `readKvTabs` tratando payload `null`). Sem
+ * `env.STATS_CACHE` ou `cycles` vazio → `{}` sem nenhuma chamada de rede.
+ *
+ * Gravada por `scripts/push-link-sections-kv.ts` (script explícito, nunca
+ * por este Worker) — ver docstring daquele script e `RenderDashboardOptions`
+ * em sections-core.ts.
+ */
+export async function readLinkSectionsByCycle(
+  env: Env,
+  cycles: readonly string[],
+): Promise<Record<string, LinkSectionMap>> {
+  const kv = env.STATS_CACHE;
+  const uniqueCycles = [...new Set(cycles)];
+  if (!kv || uniqueCycles.length === 0) return {};
+  const entries = await Promise.all(
+    uniqueCycles.map(async (cycle) => {
+      const raw = await kv.get(linkSectionsKvKey(cycle), "json").catch(() => null);
+      return [cycle, normalizeLinkSectionMap(raw)] as const;
+    }),
+  );
+  const result: Record<string, LinkSectionMap> = {};
+  for (const [cycle, map] of entries) {
+    if (map) result[cycle] = map;
+  }
+  return result;
+}
+
+/**
+ * #4184 (revisão pós-#4191): monta `linkSectionsByCycle` pros caminhos de
+ * FALLBACK (rate-limit e erro fatal, abaixo) — mesma leitura de
+ * `secao:{ciclo}` via KV que o render normal usa (`readLinkSectionsByCycle`
+ * acima). Deliberado: o custo aqui é só leitura de KV, NUNCA uma chamada à
+ * Brevo — não compete pela quota que esses 2 caminhos existem justamente
+ * pra proteger, então não há razão pra degradar a coluna "Seção" pro
+ * fallback "—" nesses renders (decisão revertida da 1ª rodada da #4184, que
+ * tinha escopado isso fora por engano — antes do #4191, esses 2 caminhos
+ * eram raros; depois dele, o Studio passou a reusar `buildRateLimitFallback`
+ * pro seu próprio catch de rate-limit, então "raro" deixou de ser verdade).
+ */
+async function buildLinkSectionsByCycleForFallback(
+  env: Env,
+  // `| undefined`: os call sites passam `staleCampaigns`/`staleScheduled` já
+  // tipados via `Parameters<typeof renderDashboardHtml>[N]` — como esses 2
+  // parâmetros têm default value na assinatura, o tipo resolvido inclui
+  // `undefined` (nunca o valor real em runtime, sempre um array via
+  // `Array.isArray(...) ? ... : []`, mas o TS não sabe disso na origem do cast).
+  campaigns: ReadonlyArray<Pick<BrevoCampaign, "name">> | undefined,
+  scheduled: ReadonlyArray<Pick<BrevoCampaign, "name">> | undefined,
+): Promise<Record<string, LinkSectionMap>> {
+  const monthlyCycles = collectMonthlyLinkCycles([...(campaigns ?? []), ...(scheduled ?? [])]);
+  return readLinkSectionsByCycle(env, monthlyCycles);
+}
+
+/**
  * #2733: monta a resposta de fallback quando o Brevo está em rate-limit (429).
  * Serve o dashboard com campanhas STALE (do KV `dash:lastgood:campaigns`) + as
  * abas de KV FRESCAS (Cupons/Contatos/coortes/MV via readKvTabs) + banner — em
@@ -904,6 +970,9 @@ export async function buildRateLimitFallback(
     typeof renderDashboardHtml
   >[1];
   try {
+    // #4184: coluna "Seção" também populada aqui — ver
+    // buildLinkSectionsByCycleForFallback (custo é só KV, nunca Brevo).
+    const linkSectionsByCycle = await buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled);
     const html = renderDashboardHtml(
       staleCampaigns,
       staleScheduled,
@@ -916,6 +985,7 @@ export async function buildRateLimitFallback(
       null, // dataGeneratedAt: KV stale payload não tem timestamp de render fiável aqui
       staleCampaignsLimit, // #3080: limite gravado junto do payload (self-describing)
       postmasterSpam, // #4063
+      { linkSectionsByCycle }, // #4184
     );
     // buildStaleResponse injeta o banner "Brevo em rate-limit" (só as seções de
     // campanha estão atrasadas; Cupons/Contatos estão frescos).
@@ -928,6 +998,127 @@ export async function buildRateLimitFallback(
       renderErr instanceof Error ? renderErr.message : renderErr,
     );
     return rateLimitResponse(retryAfterSecs, true);
+  }
+}
+
+/**
+ * #4187: página de estado vazio quando NÃO há nenhum last-good pra servir
+ * (KV ausente, ou `dash:lastgood:campaigns` nunca foi gravado) e o render
+ * autenticado lançou uma exceção não-tratada. Distinta de `rateLimitResponse`
+ * (que presume Brevo em 429) -- aqui a causa é desconhecida, então a
+ * mensagem não aponta dedo pra Brevo. Zero I/O -- não pode, por construção,
+ * lançar de novo (é o piso absoluto do catch de última instância do #4187).
+ */
+export function genericFatalErrorResponse(): Response {
+  const body = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><title>Dashboard indisponível — Clarice News Dashboard</title>
+<style>body{font-family:system-ui,sans-serif;max-width:600px;margin:60px auto;padding:0 20px;text-align:center;}</style>
+</head>
+<body>
+<h1>⚠️ Dashboard temporariamente indisponível</h1>
+<p>Um erro inesperado impediu o render, e não há nenhum dado recente salvo pra mostrar como fallback.<br>
+<a href="?fresh=1">Tentar novamente</a></p>
+</body></html>`;
+  return new Response(body, {
+    status: 500,
+    headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "X-Dashboard-Stale": "fatal-error-empty" },
+  });
+}
+
+/**
+ * #4187: banner de erro inesperado -- distinto de `injectStaleBanner` (que
+ * presume Brevo em rate-limit) e de `injectInflightBanner` (coalescing).
+ * Usado pelo catch de última instância: a causa pode ser QUALQUER exceção
+ * não-tratada, não necessariamente a Brevo, então a mensagem não afirma uma
+ * causa específica. Mesmo mecanismo de inserção (logo após `<body>`, senão
+ * prepend) dos outros 2 banners -- ver docstring de `injectStaleBanner`.
+ */
+export function injectFatalErrorBanner(html: string): string {
+  const banner =
+    `<div style="background:#FBE1DC;color:#7a1f0d;padding:10px 16px;text-align:center;` +
+    `font-family:system-ui,sans-serif;font-size:14px;border-bottom:1px solid #E8A899;">` +
+    `⚠️ Erro inesperado no render — mostrando o último dado bom conhecido. ` +
+    `<a href="?fresh=1">Tentar novamente</a>.</div>`;
+  if (/<body[^>]*>/i.test(html)) {
+    return html.replace(/<body[^>]*>/i, (m) => m + banner);
+  }
+  return banner + html;
+}
+
+/**
+ * #4187: catch de ÚLTIMA INSTÂNCIA do render autenticado (`/`) -- Cloudflare
+ * `Error 1101` é sempre uma exceção JS não-tratada escapando do `fetch()`
+ * handler, seja qual for a causa raiz (Brevo, KV, um bug de render ainda não
+ * catalogado). Chamada pelo `catch` mais externo em `index.ts`, quando algo
+ * ESCAPOU de todos os catches específicos já existentes (BrevoRateLimitError,
+ * o catch genérico de `buildDashboardResponse`, etc.) -- ou seja, é
+ * literalmente o caso "não sabemos o que lançou".
+ *
+ * Reusa a MESMA composição de dado stale que `buildRateLimitFallback` (KV
+ * `dash:lastgood:campaigns` + abas de KV frescas via `readKvTabs` + créditos
+ * do plano), mas com banner honesto sobre erro inesperado -- não presume
+ * rate-limit. Estruturalmente idêntica a `buildRateLimitFallback` no quesito
+ * que importa aqui: NUNCA lança. Qualquer falha no meio do caminho degrada
+ * pra `genericFatalErrorResponse()` (zero I/O, piso absoluto).
+ *
+ * `cause` é só logado (nunca exposto ao cliente) -- é a exceção que o
+ * `catch` externo capturou antes de chamar esta função.
+ */
+export async function buildFatalErrorFallback(env: Env, cause: unknown): Promise<Response> {
+  console.error(
+    "[#4187] catch de última instância — exceção não-tratada no render autenticado:",
+    cause instanceof Error ? (cause.stack ?? cause.message) : cause,
+  );
+  try {
+    if (!env.STATS_CACHE) return genericFatalErrorResponse();
+    const staleCampaignsRaw = (await env.STATS_CACHE
+      .get(LASTGOOD_CAMPAIGNS_KEY, "json")
+      .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[]; campaignsLimit?: unknown } | null;
+    if (!staleCampaignsRaw) return genericFatalErrorResponse();
+    const staleCampaignsLimit =
+      typeof staleCampaignsRaw.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
+    const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam } =
+      await readKvTabs(env, "kv-only");
+    const planCredits = await fetchPlanCredits(env, "kv-only").catch(() => null);
+    const rawCampaigns = staleCampaignsRaw.campaigns;
+    const rawScheduled = staleCampaignsRaw.scheduled;
+    const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
+      typeof renderDashboardHtml
+    >[0];
+    const staleScheduled = (Array.isArray(rawScheduled) ? rawScheduled : []) as Parameters<
+      typeof renderDashboardHtml
+    >[1];
+    // #4184: coluna "Seção" também populada aqui — mesmo racional de
+    // buildRateLimitFallback (custo é só KV, nunca Brevo).
+    const linkSectionsByCycle = await buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled);
+    const html = renderDashboardHtml(
+      staleCampaigns,
+      staleScheduled,
+      cohorts,
+      mvStatus,
+      contactsSummary,
+      couponUsage,
+      eiaEngagement,
+      planCredits,
+      null,
+      staleCampaignsLimit,
+      postmasterSpam,
+      { linkSectionsByCycle }, // #4184
+    );
+    return new Response(injectFatalErrorBanner(html), {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-Dashboard-Stale": "fatal-error",
+      },
+    });
+  } catch (renderErr) {
+    console.error(
+      "[#4187] fallback de última instância TAMBÉM falhou — degradando pro estado mínimo absoluto:",
+      renderErr instanceof Error ? renderErr.message : renderErr,
+    );
+    return genericFatalErrorResponse();
   }
 }
 
@@ -1129,7 +1320,15 @@ export async function fetchRecentCampaigns(
   isFresh = false, // #2144: fresh=1 bypassa tanto edge cache quanto KV de stats imutaveis
   // _fetchFn: injetavel em testes para mockar chamadas Brevo (padrao: brevoFetch)
   _fetchFn: typeof brevoFetch = brevoFetch,
+  // #4186: `true` só no painel Studio local — desliga leitura E escrita de
+  // `list:{id}`/`stats:{id}` no KV COMPARTILHADO de produção. `env` é
+  // sombreado localmente (env.STATS_CACHE → undefined) pra reusar, sem
+  // tocar, toda a lógica de cache-aside abaixo, que já trata
+  // `!env.STATS_CACHE` como "sem cache, buscar sempre ao vivo". `false`
+  // (default) preserva o Worker de produção EXATAMENTE como antes.
+  skipKvCache = false,
 ): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number }>> {
+  if (skipKvCache) env = { ...env, STATS_CACHE: undefined as unknown as Env["STATS_CACHE"] };
   // #2280: a listagem NÃO era re-tentada — um único 429 aqui derrubava a página
   // inteira (503). withRateLimitRetry honra x-sib-ratelimit-reset com backoff curto.
   const data = await withRateLimitRetry(() =>
@@ -1467,7 +1666,11 @@ export async function fetchScheduledCampaigns(
   limit = 50,
   isFresh = false,
   _fetchFn: typeof brevoFetch = brevoFetch,
+  // #4186: mesmo racional/mecanismo de skipKvCache em fetchRecentCampaigns —
+  // ver docstring lá. Só afeta o cache `list:{id}` (nomes de lista).
+  skipKvCache = false,
 ): Promise<Array<BrevoCampaign & { listName?: string; listSize?: number }>> {
+  if (skipKvCache) env = { ...env, STATS_CACHE: undefined as unknown as Env["STATS_CACHE"] };
   const data = await withRateLimitRetry(() =>
     _fetchFn<{ campaigns: BrevoCampaign[] }>(
       `/v3/emailCampaigns?status=queued&limit=${limit}&sort=asc`,

@@ -1,6 +1,18 @@
 import type { BrevoCampaign, BrevoLinksStats } from "./types.ts";
 import { DS_COLORS, DS_FONTS as DSF } from "./ds-tokens.generated.ts";
 import { classifyLinkContent } from "./link-content.ts";
+// #4184: coluna "Seção" (Destaques/Use Melhor/Radar) — resolução/formatação
+// pura, ver link-section.ts. Re-exportado via `export *` abaixo (mesmo
+// padrão de billing-cycle.ts/staleness.ts — index.ts agrega tudo).
+import {
+  type LinkSectionMap,
+  type LinkSectionCell,
+  lookupLinkSectionCell,
+  formatLinkSectionCell,
+  LINK_SECTION_COLUMN_LABEL,
+  LINK_SECTION_COLUMN_TOOLTIP,
+} from "./link-section.ts";
+export * from "./link-section.ts";
 // NOTE (#2832): import circular com sections-core.ts (esHtml/parseClariceCampaignKey/
 // monthKeyBRT são usados aqui mas definidos lá). Seguro — todos os usos abaixo são
 // dentro de corpos de função chamados em request-time, nunca em top-level do módulo,
@@ -155,6 +167,14 @@ export interface LinkStatRow {
   pctOfTotal: string;
   /** Split por variante (ex: A/B da enquete) — presente só quando o classificador emite `variant` */
   variants?: LinkVariantDetail[];
+  /**
+   * #4184: seção editorial (Destaques/Use Melhor/Radar) de origem deste
+   * conteúdo, já resolvida/formatada (fallback "—" quando desconhecida).
+   * Opcional só pra retrocompat com construções manuais em teste — toda linha
+   * produzida por `parseLinksStats` sempre a popula (nunca fica `undefined`
+   * organicamente).
+   */
+  section?: LinkSectionCell;
 }
 
 /**
@@ -169,9 +189,14 @@ export interface LinkStatRow {
  * Portanto, a tabela exibe apenas "Clicks" (total) e omite coluna unique graciosamente.
  *
  * @param linksStats - mapa url→clicks da Brevo (pode ser undefined/null)
+ * @param sectionMap - #4184: mapa CONTEÚDO→seções (Destaques/Use Melhor/Radar)
+ *   do ciclo mensal desta campanha, ou `null`/ausente (fallback "—" em toda linha)
  * @returns array de LinkStatRow ordenado por clicks DESC, vazio se sem dados
  */
-export function parseLinksStats(linksStats: BrevoLinksStats | undefined | null): LinkStatRow[] {
+export function parseLinksStats(
+  linksStats: BrevoLinksStats | undefined | null,
+  sectionMap?: LinkSectionMap | null,
+): LinkStatRow[] {
   if (!linksStats) return [];
 
   const entries = Object.entries(linksStats)
@@ -225,6 +250,7 @@ export function parseLinksStats(linksStats: BrevoLinksStats | undefined | null):
       clicks,
       pctOfTotal: pct(clicks, totalClicks), // reusa helper pct() (#2183)
       variants,
+      section: lookupLinkSectionCell(content, sectionMap), // #4184
     };
   });
 
@@ -238,13 +264,17 @@ export function parseLinksStats(linksStats: BrevoLinksStats | undefined | null):
  * @param campaignId - usado no id do <details> para unicidade
  * @param linksStats - mapa url→clicks (pode ser undefined)
  * @param totalClicks - uniqueClicks da campanha (pra contexto no summary)
+ * @param sectionMap - #4184: mapa CONTEÚDO→seções do ciclo mensal EXATO desta
+ *   campanha (não um merge cross-ciclo — ver `renderAggregatedLinksSection`
+ *   pra esse caso), ou `null`/ausente (fallback "—" em toda linha)
  */
 export function renderLinksSection(
   campaignId: number,
   linksStats: BrevoLinksStats | undefined | null,
   totalClicks?: number,
+  sectionMap?: LinkSectionMap | null,
 ): string {
-  const rows = parseLinksStats(linksStats);
+  const rows = parseLinksStats(linksStats, sectionMap);
 
   // Stub graceful: sem linksStats ou sem links editoriais → seção oculta mas presente
   if (rows.length === 0) {
@@ -290,8 +320,12 @@ export function renderLinksSection(
     const variantBadge = r.variantCount > 1
       ? ` <span class="link-variant-count" title="${linkTitle}">(${r.variantCount} variantes)</span>`
       : "";
+    // #4184: seção editorial (fallback "—" quando o construtor não populou —
+    // ex: fixture de teste manual que não passa por parseLinksStats).
+    const sectionCell = r.section ?? formatLinkSectionCell(null);
     return `<tr>
       <td class="link-content">${escHtml(r.content)}</td>
+      <td class="link-section" title="${escHtml(sectionCell.tooltip)}">${escHtml(sectionCell.label)}</td>
       <td class="link-url">${linkContent}${variantBadge}</td>
       <td class="link-clicks metric">${r.clicks}</td>
       <td class="link-pct">${r.pctOfTotal}</td>
@@ -305,6 +339,7 @@ export function renderLinksSection(
     <thead>
       <tr>
         <th scope="col" class="link-content-th" title="Rótulo de conteúdo editorial — URLs que apontam pro mesmo conteúdo (ex: variantes A/B da enquete É IA?, ou a mesma página com UTMs diferentes) são somadas numa única linha (#4053)">Conteúdo</th>
+        <th scope="col" class="link-section-th" title="${escHtml(LINK_SECTION_COLUMN_TOOLTIP)}">${LINK_SECTION_COLUMN_LABEL}</th>
         <th scope="col" class="link-url-th" title="URL representativa deste conteúdo (links de sistema e descadastramento excluídos)">Link</th>
         <th scope="col" title="Total de cliques somados neste conteúdo (unique-clicks por link não disponível na API Brevo v3)">Clicks</th>
         <th scope="col" title="Participação deste conteúdo no total de clicks editoriais (links de sistema excluídos). Denominador = soma dos clicks editoriais desta seção — difere do total da campanha exibido no summary acima.">% do total</th>
@@ -341,6 +376,8 @@ export interface AggregatedLinkRow {
   totalClicks: number;
   /** Número de campanhas onde este CONTEÚDO apareceu (1× por campanha, mesmo com múltiplas URLs/variantes na mesma campanha) */
   campaignCount: number;
+  /** #4184: ver LinkStatRow.section — mesma semântica, mesmo fallback. */
+  section?: LinkSectionCell;
 }
 
 /**
@@ -370,10 +407,14 @@ export function urlOrigin(url: string): string {
  * Graceful: sem dados de links → retorna [].
  *
  * @param campaigns - lista de campanhas (todas, com statistics.linksStats populado)
+ * @param sectionMap - #4184: mapa CONTEÚDO→seções, tipicamente já MESCLADO
+ *   (`mergeLinkSectionMaps`) entre todos os ciclos mensais presentes em
+ *   `campaigns` — ou `null`/ausente (fallback "—" em toda linha)
  * @returns array de AggregatedLinkRow ordenado por totalClicks DESC
  */
 export function aggregateLinksAcrossCampaigns(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
+  sectionMap?: LinkSectionMap | null,
 ): AggregatedLinkRow[] {
   const contentMap = new Map<string, { urlClicks: Map<string, number>; campaignCount: number }>();
 
@@ -428,6 +469,7 @@ export function aggregateLinksAcrossCampaigns(
         variantCount: urlEntries.length,
         totalClicks,
         campaignCount,
+        section: lookupLinkSectionCell(content, sectionMap), // #4184
       };
     })
     .sort((a, b) => b.totalClicks - a.totalClicks);
@@ -479,6 +521,7 @@ export function deriveLinksSectionTitle(
  */
 export const AGGREGATED_LINKS_COLUMNS: Array<{ label: string; tooltip: string }> = [
   { label: "Conteúdo", tooltip: "Rótulo de conteúdo editorial — URLs que apontam pro mesmo conteúdo (ex: variantes A/B da enquete É IA?, ou a mesma página com UTMs diferentes) são somadas numa única linha (#4053)" },
+  { label: LINK_SECTION_COLUMN_LABEL, tooltip: LINK_SECTION_COLUMN_TOOLTIP }, // #4184
   { label: "Link", tooltip: "URL representativa deste conteúdo (links de sistema e descadastramento excluídos)" },
   { label: "Clicks", tooltip: "Total de cliques somados entre todos os envios do período" },
   { label: "%", tooltip: "Participação percentual no total de clicks editoriais do período" },
@@ -540,8 +583,11 @@ export function renderAggregatedLinksSection(
       ? `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" title="${linkTitle}">${escHtml(r.displayUrl)}</a>`
       : escHtml(r.displayUrl);
     const pctShare = pct(r.totalClicks, totalClicks);
+    // #4184: fallback "—" quando o construtor não populou (fixture manual de teste).
+    const sectionCell = r.section ?? formatLinkSectionCell(null);
     return `<tr>
       <td class="link-content">${escHtml(r.content)}</td>
+      <td class="link-section" title="${escHtml(sectionCell.tooltip)}">${escHtml(sectionCell.label)}</td>
       <td class="link-url">${linkContent}</td>
       <td class="link-clicks metric">${r.totalClicks}</td>
       <td class="link-pct">${pctShare}</td>
@@ -559,7 +605,10 @@ export function renderAggregatedLinksSection(
     <thead>
       <tr>
         ${AGGREGATED_LINKS_COLUMNS.map(
-          (c, i) => `<th scope="col"${i === 0 ? ' class="link-content-th"' : i === 1 ? ' class="link-url-th"' : ""} title="${escHtml(c.tooltip)}">${c.label}</th>`,
+          // #4184: por LABEL, não por índice posicional — inserir/remover uma
+          // coluna no meio (ex: "Seção" antes de "Link") não deve deslocar
+          // silenciosamente qual coluna ganha qual classe CSS.
+          (c) => `<th scope="col"${c.label === "Conteúdo" ? ' class="link-content-th"' : c.label === "Link" ? ' class="link-url-th"' : ""} title="${escHtml(c.tooltip)}">${c.label}</th>`,
         ).join("\n")}
       </tr>
     </thead>

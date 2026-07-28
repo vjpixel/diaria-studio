@@ -94,7 +94,21 @@ export function stripBackslashEscapes(s: string): string {
 // #4059: host de marca canônico (o redirect no Cloudflare preserva a query
 // string desde 260723, então o UTM sobrevive — premissa do #2613 caiu).
 const MENSAL_BRAND_HOST = "diar.ia.br";
-const MENSAL_BRAND_LINK = `https://${MENSAL_BRAND_HOST}`;
+
+/**
+ * Hosts NOSSOS que recebem UTM da mensal: o host de marca e seus subdomínios
+ * (`cursos.`, `livros.`, `eia.`). Antes o match era só o host exato, então as
+ * curadorias de cursos/livros e o "Ver ranking" do É IA? saíam sem UTM nenhum —
+ * não dava pra saber sequer que o clique veio da mensal.
+ *
+ * Casa `diar.ia.br` e `*.diar.ia.br`, nunca um sufixo colado (`naodiar.ia.br`).
+ * Host de terceiro (clarice.ai, apoia.se, exame.com, redes sociais) segue
+ * intocado — UTM nosso em domínio alheio não mede nada e polui o link deles.
+ */
+export function isOwnedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === MENSAL_BRAND_HOST || h.endsWith(`.${MENSAL_BRAND_HOST}`);
+}
 
 /**
  * #2975: assinantes que migram da Clarice News mensal pro Beehiiv chegavam
@@ -114,35 +128,9 @@ const MENSAL_BRAND_LINK = `https://${MENSAL_BRAND_HOST}`;
  */
 let currentMonthlyUtmCiclo: string | null = null;
 
-/**
- * #4040: seção corrente do render (`APRESENTAÇÃO`, `RADAR`, `DESTAQUE 1`, …).
- * Só o wordmark usa — ele repete N vezes por edição em posições muito
- * diferentes, e o editor decidiu (260726) medir por seção
- * (`wordmark-radar`, `wordmark-apresentacao`) em vez de um slug flat
- * `wordmark`. Mesma disciplina de estado module-level do ciclo acima:
- * `draftToEmail` é síncrono e single-pass, seta a seção antes de despachar
- * cada chunk e reseta no `finally`.
- */
-let currentMonthlyUtmSecao: string | null = null;
-
 /** Exposto para teste direto de `withClariceUtm`/`normalizeKnownUrl` sem passar por `draftToEmail`. */
 export function setMonthlyUtmCiclo(ciclo: string | null): void {
   currentMonthlyUtmCiclo = ciclo;
-}
-
-/** #4040: exposto pelo mesmo motivo de `setMonthlyUtmCiclo` — teste direto do
- * sufixo `wordmark-{secao}` sem montar um draft inteiro. */
-export function setMonthlyUtmSecao(secao: string | null): void {
-  currentMonthlyUtmSecao = secao;
-}
-
-/**
- * #4040: posição do wordmark = `wordmark-{secao-corrente}`. Sem seção setada
- * (render fora de `draftToEmail`, ex.: chamada direta de teste) cai em
- * `wordmark-geral` via `slugifySecao`.
- */
-function wordmarkPosicao(): string {
-  return `wordmark-${slugifySecao(currentMonthlyUtmSecao)}`;
 }
 
 /**
@@ -159,13 +147,22 @@ function wordmarkPosicao(): string {
  */
 function withClariceUtm(url: string, posicao: string): string {
   if (!currentMonthlyUtmCiclo) return url;
+
+  // NUNCA tocar em URL com merge tag. `new URL(...).toString()` percent-encoda
+  // as chaves — `{{ contact.EMAIL }}` vira `%7B%7B%20contact.EMAIL%20%7D%7D`, a
+  // Brevo não substitui, e o link sai quebrado pra TODO destinatário. Enquanto
+  // o match era só o host exato isso não aparecia (os links de voto do É IA?
+  // moram em `eia.diar.ia.br`); ao aceitar subdomínio, o guard passa a ser o que
+  // segura o poll de pé.
+  if (url.includes("{{")) return url;
+
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     return url; // URL relativa/inválida — não é o link de marca, preserva como está.
   }
-  if (parsed.hostname !== MENSAL_BRAND_HOST) return url;
+  if (!isOwnedHost(parsed.hostname)) return url;
   parsed.searchParams.set("utm_source", MENSAL_UTM_SOURCE);
   parsed.searchParams.set("utm_medium", MENSAL_UTM_MEDIUM);
   parsed.searchParams.set("utm_campaign", buildMensalCampaign(currentMonthlyUtmCiclo, posicao));
@@ -189,15 +186,19 @@ function renderTextInline(s: string): string {
   // #2008/#2018: applyWordJoiner roda após escHtml+bold/italic — anti auto-linkify
   // via shared helper (scripts/lib/word-joiner.ts; lookbehind protege URLs cruas).
   // applyBrandWordmark após word-joiner (mesma ordem da diária, #2532/#2533):
-  // estiliza "diar.ia" / "diar.ia.br" como o wordmark da marca (pontos teal) E,
-  // na mensal, envolve num link pro Beehiiv (#template-branding 260703).
-  return applyBrandWordmark(
-    applyWordJoiner(escHtmlWithEmphasis(s)),
-    // #2975: link do wordmark carrega UTM clarice.
-    // #4040: posição `wordmark-{secao}` — granularidade por seção (decisão do
-    // editor 260726), não um slug flat.
-    withClariceUtm(MENSAL_BRAND_LINK, wordmarkPosicao()),
-  );
+  // estiliza "diar.ia" / "diar.ia.br" como o wordmark da marca (pontos teal).
+  //
+  // SEM link (decisão do editor 260727, revertendo o #template-branding de
+  // 260703): o wordmark deixou de ser clicável na mensal. Ele aparecia 4× por
+  // edição — apresentação, divulgação e 2× no encerramento — todas apontando
+  // pra raiz do site, e o editor conferiu que não convertem. Somadas ao "aqui"
+  // (2×) e ao botão, davam 7 âncoras pro mesmo destino: densidade promocional
+  // no eixo que o CTA-01 identificou como gatilho de spam, sem retorno.
+  // O nome da marca no meio da prosa é reconhecimento, não call-to-action.
+  //
+  // A diária nunca linkou (chama `applyBrandWordmark` com 1 argumento) — agora
+  // as duas superfícies se comportam igual.
+  return applyBrandWordmark(applyWordJoiner(escHtmlWithEmphasis(s)));
 }
 
 /**
@@ -365,7 +366,7 @@ function nextLinkStartIndex(str: string, from: number): number {
  * independente que só encosta no link por acidente, nem quando um dos 2+
  * links consecutivos bold-wrapped "rouba" o `**` de fechamento do anterior).
  */
-export function renderInline(text: string): string {
+export function renderInline(text: string, posicao = "inline"): string {
   // Pre-strip backslash escapes ANTES do escHtml — assim `\&` vira `&` que então
   // vira `&amp;`, e não `\&amp;` (que aconteceria se strippássemos depois).
   const input = stripBackslashEscapes(text);
@@ -419,7 +420,7 @@ export function renderInline(text: string): string {
     }
 
     if (textBefore.length > 0) parts.push(renderTextInline(textBefore));
-    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url, "inline"))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
+    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url, posicao))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
     parts.push(boldLink ? `<strong>${linkHtml}</strong>` : linkHtml);
     lastIdx = boldLink ? j + 3 : j + 1;
     linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
@@ -753,9 +754,45 @@ export function renderClarice(chunk: string): string {
  */
 export function renderLinkListSection(chunk: string, displayTitle: string): string {
   const lines = chunk.split("\n");
-  const content = lines.slice(1).join("\n").trim();
+  let content = lines.slice(1).join("\n").trim();
 
   const header = renderKicker(displayTitle);
+
+  // CTA de seção — parágrafo que CONTÉM um link markdown mas não COMEÇA com um,
+  // na primeira ou na última posição da seção. Sem isto ele cairia no `descBuf`
+  // e sairia concatenado no parágrafo de um dos tutoriais (o CTA do Use Melhor
+  // renderizava como se fosse continuação da descrição de um item).
+  //
+  // A regra é inequívoca porque o template proíbe link na descrição ("No Use
+  // Melhor e no Radar, o título é a âncora") — só título e CTA têm link, e só o
+  // título COMEÇA com ele. Descrição sem link nunca é confundida.
+  //
+  // Aceita nas duas pontas de propósito: o CTA fecha ou abre a seção conforme a
+  // decisão editorial, sem exigir mudança de código pra mover a linha.
+  //
+  // Guard é `> 0`, não `> 1` (achado da review da PR #4189): com `> 1`, uma
+  // seção que tivesse SÓ o CTA e nenhum item não disparava nenhum dos dois
+  // ramos, o parágrafo caía no parser de itens (que exige linha começando com
+  // `[`), não abria `currentTitle` e era DESCARTADO EM SILÊNCIO — saía só o
+  // kicker. Não é o caminho de produção (Use Melhor tem 3 itens e Radar 7,
+  // garantidos por monthly-click-sections.ts), mas descarte silencioso é a
+  // mesma classe do #2794 e não deve existir numa função exportada.
+  // `isCta` já protege contra falso positivo: título de item COMEÇA com `[`, e
+  // descrição não tem link nenhum (regra do template).
+  const isCta = (p: string) => !/^\[/.test(p) && /\]\(https?:\/\//.test(p);
+  const paras = content.split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p);
+  let intro: string | null = null;
+  let footer: string | null = null;
+  let corpo = paras;
+  if (corpo.length > 0 && isCta(corpo[0])) {
+    intro = corpo[0];
+    corpo = corpo.slice(1);
+  }
+  if (corpo.length > 0 && isCta(corpo[corpo.length - 1])) {
+    footer = corpo[corpo.length - 1];
+    corpo = corpo.slice(0, -1);
+  }
+  if (intro || footer) content = corpo.join("\n\n");
 
   // Items: [título](url) + blank line + descrição (separados por blank entre itens).
   // split(/\n\n+/) quebra título e descrição em chunks separados — a descrição
@@ -795,7 +832,17 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
     })
     .join("\n");
 
-  return header + itemsHtml;
+  // #4040: posição própria derivada da SEÇÃO (`use-melhor`, `radar`) em vez do
+  // `inline` genérico — senão o CTA cairia no mesmo utm_campaign do "aqui" da
+  // APRESENTAÇÃO, dos wordmarks e de qualquer link no meio da prosa, e não
+  // daria pra medir se a seção mais clicada da peça é de fato o melhor lugar
+  // pro convite de cadastro. Na 2606-07 esse link raiz aparecia 7× com o MESMO
+  // utm_campaign — os cliques chegavam somados e sem origem.
+  const posicao = slugifySecao(displayTitle);
+  const ctaHtml = (texto: string) =>
+    `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(texto, posicao)}</p>`;
+
+  return header + (intro ? ctaHtml(intro) : "") + itemsHtml + (footer ? ctaHtml(footer) : "");
 }
 
 /** @deprecated back-compat: use renderLinkListSection. */
@@ -837,7 +884,10 @@ export function renderEncerramento(body: string): string {
     for (const line of lines) {
       const m = line.match(/^[-*]\s+\[(.+?)\]\((https?:\/\/[^)]+)\)\s*$/);
       if (m) {
-        pills.push(renderPillLink(m[1], normalizeKnownUrl(m[2], "pill")));
+        // Posição por RÓTULO (`pill-cursos-de-ia`, `pill-livros-sobre-ia`): com
+        // o `pill` genérico as duas curadorias caíam no mesmo utm_campaign e
+        // eram indistinguíveis — que é justamente o que se quer medir aqui.
+        pills.push(renderPillLink(m[1], normalizeKnownUrl(m[2], `pill-${slugifySecao(m[1])}`)));
         hadPill = true;
       } else {
         nonLink.push(line);
@@ -987,7 +1037,7 @@ ${prevResultHtml}
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">
-      <a href="${workerUrl}/leaderboard/20${yymm.slice(0, 2)}?brand=clarice" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
+      <a href="${escHtml(normalizeKnownUrl(`${workerUrl}/leaderboard/20${yymm.slice(0, 2)}?brand=clarice`, "leaderboard"))}" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
     </p>
 
   </td></tr>
@@ -1299,7 +1349,6 @@ export function draftToEmail(
     return draftToEmailBody();
   } finally {
     setMonthlyUtmCiclo(null);
-    setMonthlyUtmSecao(null); // #4040: mesmo racional do reset de ciclo — não vaza pra chamada seguinte.
   }
 
   function draftToEmailBody(): { subject: string; previewText: string; html: string } {
@@ -1315,7 +1364,6 @@ export function draftToEmail(
     // qualquer render* deste chunk; zerado após o loop (o header cobrand, o
     // rodapé social e o wrapEmail ficam com `wordmark-geral`, não herdam a
     // última seção do corpo).
-    setMonthlyUtmSecao(label);
 
     // REMETENTE: metadata, não renderiza no corpo.
     if (label === "REMETENTE") continue;
@@ -1453,7 +1501,6 @@ export function draftToEmail(
 
   // #4040: fora do corpo não existe "seção" — wrapEmail/header/rodapé caem em
   // `wordmark-geral` em vez de herdar a última seção iterada.
-  setMonthlyUtmSecao(null);
 
   return {
     subject,

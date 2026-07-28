@@ -11,7 +11,7 @@
  */
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { CanUseTool, HookCallback, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -45,6 +45,8 @@ import {
   getKnownFileMtime,
   clearKnownFileMtimeTracking,
   EDIT_GUARD_STALE_MESSAGE,
+  sanitizeGuardedFileIfNeeded,
+  makeEditFreshnessGuardHooks,
   createCloseAbortGuard,
   DEFAULT_CHAT_CLOSE_ABORT_DEBOUNCE_MS,
   type ChatWireEvent,
@@ -1488,6 +1490,216 @@ describe("guard de frescor (#3806) — fim-a-fim via runChatTurn + hooks reais (
 
     const { pre } = await runToolThroughHooks("Edit", { file_path: filePath, old_string: "x", new_string: "y" });
     assert.notEqual(pre.decision, "block", "sem baseline pós-clear, nada a comparar — não deveria bloquear");
+  });
+});
+
+describe("sanitizeGuardedFileIfNeeded (#4133) — strip do artefato de tool-call em disco", () => {
+  let root: string;
+  let filePath: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-chat-contentguard-"));
+    const editionDir = resolve(root, "data", "editions", "260727");
+    mkdirSync(editionDir, { recursive: true });
+    filePath = resolve(editionDir, "02-reviewed.md");
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("caso real do #4077: strippa `</content>\\n</invoke>` grudado no fim, preserva o resto", () => {
+    writeFileSync(filePath, "PARA ENCERRAR\n\nAté amanhã!\n</content>\n</invoke>", "utf8");
+    const stripped = sanitizeGuardedFileIfNeeded(filePath);
+    assert.equal(stripped, "\n</content>\n</invoke>");
+    assert.equal(readFileSync(filePath, "utf8"), "PARA ENCERRAR\n\nAté amanhã!");
+  });
+
+  it("conteúdo limpo — retorna null, arquivo intacto (idempotente)", () => {
+    const original = "PARA ENCERRAR\n\nAté amanhã!";
+    writeFileSync(filePath, original, "utf8");
+    const stripped = sanitizeGuardedFileIfNeeded(filePath);
+    assert.equal(stripped, null);
+    assert.equal(readFileSync(filePath, "utf8"), original);
+  });
+
+  it("arquivo inexistente — fail-soft, retorna null sem lançar", () => {
+    assert.doesNotThrow(() => {
+      const result = sanitizeGuardedFileIfNeeded(resolve(root, "nao-existe.md"));
+      assert.equal(result, null);
+    });
+  });
+});
+
+describe("guard de conteúdo (#4133) — fim-a-fim via runChatTurn + hooks reais (fs de verdade)", () => {
+  let root: string;
+  let filePath: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-chat-contentguard-e2e-"));
+    const editionDir = resolve(root, "data", "editions", "260727");
+    mkdirSync(editionDir, { recursive: true });
+    filePath = resolve(editionDir, "02-reviewed.md");
+    writeFileSync(filePath, "conteúdo inicial", "utf8");
+  });
+  afterEach(() => {
+    clearKnownFileMtimeTracking(root);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Mesmo harness de "guard de frescor (#3806)" acima — dispara UMA tool
+   * call (Edit/Write/Read) através dos hooks reais que `runChatTurn` registra
+   * em `options.hooks`. Duplicado aqui (em vez de reusar o helper do describe
+   * anterior, que é local àquele bloco) pra manter os dois blocos de teste
+   * independentes — mesmo padrão de isolamento já usado no arquivo. */
+  async function runToolThroughHooks(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<{ pre: Awaited<ReturnType<HookCallback>>; post: Awaited<ReturnType<HookCallback>> }> {
+    let captured: { pre: Awaited<ReturnType<HookCallback>>; post: Awaited<ReturnType<HookCallback>> } | undefined;
+    const fakeQuery: QueryFn = (params) => {
+      async function* gen() {
+        const hooks = params.options?.hooks;
+        const preHook = hooks?.PreToolUse?.[0]?.hooks[0];
+        const postHook = hooks?.PostToolUse?.[0]?.hooks[0];
+        assert.ok(preHook && postHook, "runChatTurn deveria registrar os hooks do guard de frescor/conteúdo");
+        const baseInput = { session_id: "s1", transcript_path: "/tmp/t.jsonl", cwd: root };
+        const pre = await preHook(
+          { ...baseInput, hook_event_name: "PreToolUse", tool_name: toolName, tool_input: input, tool_use_id: "tu-1" },
+          "tu-1",
+          { signal: new AbortController().signal },
+        );
+        const post =
+          pre.decision === "block"
+            ? {}
+            : await postHook(
+                { ...baseInput, hook_event_name: "PostToolUse", tool_name: toolName, tool_input: input, tool_response: {} },
+                "tu-1",
+                { signal: new AbortController().signal },
+              );
+        captured = { pre, post };
+        yield { type: "result", subtype: "success", is_error: false, result: "ok", session_id: "s1" } as unknown as SDKMessage;
+      }
+      return gen() as unknown as ReturnType<QueryFn>;
+    };
+    await runChatTurn({ message: "oi", cwd: root, queryFn: fakeQuery, onEvent: () => {} });
+    assert.ok(captured, "o generator deveria ter rodado e capturado pre/post");
+    return captured!;
+  }
+
+  it("regressão (#4133/#4077): Edit do chat drawer termina em `\\n</content>\\n</invoke>` — sanitizado em disco pelo PostToolUse, SEM depender do lint do Stage 4", async () => {
+    // Simula o Edit real do agente já tendo rodado (o hook PostToolUse só vê
+    // o resultado em disco, não o diff — mesmo padrão dos testes de frescor
+    // acima, ex: "Write (não só Edit) também é coberto pelo guard").
+    writeFileSync(filePath, "PARA ENCERRAR\n\nAté amanhã!\n</content>\n</invoke>", "utf8");
+
+    const { post } = await runToolThroughHooks("Edit", {
+      file_path: filePath,
+      old_string: "conteúdo inicial",
+      new_string: "PARA ENCERRAR\n\nAté amanhã!\n</content>\n</invoke>",
+    });
+
+    // O artefato NÃO deveria estar mais em disco — sanitizado na origem, não
+    // apenas detectado tarde demais pelo lint gate-blocking do Stage 4.
+    assert.equal(readFileSync(filePath, "utf8"), "PARA ENCERRAR\n\nAté amanhã!");
+    assert.match(post.hookSpecificOutput?.additionalContext ?? "", /#4133/);
+    assert.match(post.hookSpecificOutput?.additionalContext ?? "", /tool-call/);
+  });
+
+  it("Write (não só Edit) do chat drawer também é sanitizado", async () => {
+    writeFileSync(filePath, "corpo do post\n</function_calls>", "utf8");
+    await runToolThroughHooks("Write", { file_path: filePath, content: "corpo do post\n</function_calls>" });
+    assert.equal(readFileSync(filePath, "utf8"), "corpo do post");
+  });
+
+  it("conteúdo limpo (sem artefato) — arquivo intacto, additionalContext ausente", async () => {
+    writeFileSync(filePath, "conteúdo legítimo sem lixo no fim", "utf8");
+    const { post } = await runToolThroughHooks("Edit", {
+      file_path: filePath,
+      old_string: "conteúdo inicial",
+      new_string: "conteúdo legítimo sem lixo no fim",
+    });
+    assert.equal(readFileSync(filePath, "utf8"), "conteúdo legítimo sem lixo no fim");
+    assert.equal(post.hookSpecificOutput, undefined);
+  });
+
+  it("arquivo FORA do escopo revisável (ex: scripts/*.ts) nunca é sanitizado, mesmo terminando no padrão perigoso", async () => {
+    const scriptPath = resolve(root, "scripts", "algum-script.ts");
+    mkdirSync(resolve(root, "scripts"), { recursive: true });
+    const trailing = "// comentário de exemplo\n</content>\n</invoke>";
+    writeFileSync(scriptPath, trailing, "utf8");
+
+    await runToolThroughHooks("Edit", { file_path: scriptPath, old_string: "x", new_string: trailing });
+
+    assert.equal(readFileSync(scriptPath, "utf8"), trailing, "fora de REVIEW_FILES — guard de conteúdo não se aplica");
+  });
+
+  it("depois da sanitização, o carimbo de frescor reflete o mtime PÓS-strip — 2ª edição no mesmo turno não é bloqueada pelo guard de #3806", async () => {
+    // Chama os hooks DIRETO (via makeEditFreshnessGuardHooks), não pelo
+    // helper pareado `runToolThroughHooks` acima — este cenário precisa da
+    // ordem causal REAL (Pre ANTES da escrita, Post DEPOIS), que o helper
+    // pareado não reproduz sozinho (ele chama Pre+Post sobre o que já estiver
+    // em disco NO MOMENTO da chamada, não em torno de uma escrita no meio).
+    const hooks = makeEditFreshnessGuardHooks(root);
+    const preHook = hooks.PreToolUse![0].hooks[0];
+    const postHook = hooks.PostToolUse![0].hooks[0];
+    const baseInput = { session_id: "s1", transcript_path: "/tmp/t.jsonl", cwd: root };
+    const signalOpts = { signal: new AbortController().signal };
+
+    // Read inicial — grava o carimbo T0 (conteúdo ainda "conteúdo inicial").
+    await postHook(
+      { ...baseInput, hook_event_name: "PostToolUse", tool_name: "Read", tool_input: { file_path: filePath }, tool_response: {} },
+      "tu-0",
+      signalOpts,
+    );
+
+    // Pre do 1º Edit — dispara ANTES de qualquer escrita, arquivo ainda no
+    // conteúdo lido: não deveria bloquear.
+    const pre1 = await preHook(
+      {
+        ...baseInput,
+        hook_event_name: "PreToolUse",
+        tool_name: "Edit",
+        tool_input: { file_path: filePath, old_string: "conteúdo inicial", new_string: "1ª edição\n</content>\n</invoke>" },
+        tool_use_id: "tu-1",
+      },
+      "tu-1",
+      signalOpts,
+    );
+    assert.notEqual(pre1.decision, "block");
+
+    // A tool "executa": o Edit real escreve o resultado (com o artefato
+    // grudado) em disco.
+    writeFileSync(filePath, "1ª edição\n</content>\n</invoke>", "utf8");
+
+    // Post do 1º Edit — dispara DEPOIS da escrita: deveria sanitizar o
+    // artefato e gravar o carimbo de frescor com o mtime PÓS-strip.
+    const post1 = await postHook(
+      {
+        ...baseInput,
+        hook_event_name: "PostToolUse",
+        tool_name: "Edit",
+        tool_input: { file_path: filePath, old_string: "conteúdo inicial", new_string: "1ª edição\n</content>\n</invoke>" },
+        tool_response: {},
+      },
+      "tu-1",
+      signalOpts,
+    );
+    assert.equal(readFileSync(filePath, "utf8"), "1ª edição", "sanitizado pelo PostToolUse antes do carimbo ser gravado");
+    assert.match(post1.hookSpecificOutput?.additionalContext ?? "", /#4133/);
+
+    // 2ª edição no MESMO turno, SEM nenhuma mudança externa desde então: não
+    // deveria ser bloqueada por uma divergência de mtime autoinfligida pela
+    // própria escrita de sanitização do guard.
+    const pre2 = await preHook(
+      {
+        ...baseInput,
+        hook_event_name: "PreToolUse",
+        tool_name: "Edit",
+        tool_input: { file_path: filePath, old_string: "1ª edição", new_string: "2ª edição, limpa" },
+        tool_use_id: "tu-2",
+      },
+      "tu-2",
+      signalOpts,
+    );
+    assert.notEqual(pre2.decision, "block");
   });
 });
 

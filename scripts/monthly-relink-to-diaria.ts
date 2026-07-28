@@ -151,9 +151,23 @@ export interface RelinkResult {
 
 /** Reescreve o HTML. Pura: não lê nem escreve arquivo. */
 export function buildRelink(htmlIn: string, maps: RelinkMaps, campaignOverride?: string): RelinkResult {
+  // Extrai SÓ o `clarice-{ciclo}`, descartando qualquer sufixo do primeiro link
+  // que aparecer no HTML. Antes casava `[a-z0-9-]+` inteiro, o que funcionava
+  // enquanto todo link tinha o mesmo `utm_campaign` puro — mas desde o #4040
+  // cada link carrega a POSIÇÃO no sufixo, e o primeiro do documento é o
+  // wordmark da APRESENTAÇÃO. Resultado observado ao re-renderizar a 2606-07 em
+  // 260727: os 23 links de destaque relinkados saíram todos como
+  // `clarice-2606-07-wordmark-apresentacao` — posição errada (são links inline,
+  // espalhados pelos DESTAQUES 1/2/3) e leitura enganosa no agregado, que
+  // creditaria os cliques deles ao wordmark da apresentação.
+  //
+  // O que estes links precisam é do campaign do CICLO, sem posição: quem os
+  // separa entre si é o `utm_term` (slug do texto âncora), e a edição de
+  // destino já está no próprio path `/p/{slug}`.
   const campaign =
     campaignOverride ??
-    ((htmlIn.match(/utm_campaign=([a-z0-9\-]+)/i) ?? [])[1] ?? "clarice").replace(/-cta-[ab]$/i, "");
+    (htmlIn.match(/utm_campaign=(clarice-\d{4}-\d{2})/i) ?? [])[1] ??
+    "clarice";
 
   let relinked = 0, servico = 0, naoMapeado = 0;
   const termsUsed = new Set<string>();
