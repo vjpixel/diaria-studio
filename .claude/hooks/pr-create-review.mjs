@@ -18,23 +18,23 @@
 // Output: a PostToolUse `additionalContext` payload instructing Claude to run
 // the effort-aware /code-review on the new PR.
 //
-// #3326 (260711): default effort is `low` for EVERY PR, period — not just
-// `overnight/*` (#2754) or active-round branches (#3322). The editor opts
-// INTO more depth explicitly (e.g. "roda um code-review max nisso") instead
-// of the hook silently paying for the full multi-agent fleet (5+5 finder
-// angles + verify + sweep) on every PR by default. Trigger: PR #3324 (a
-// manual/develop branch, no overnight signal) resolved `max` under the old
-// rule and burned ~1.5M tokens reviewing a ~250-line diff — real bugs found,
-// but that depth shouldn't be the automatic floor for routine PRs.
-// This inverts the #2754 direction, which kept `max` as the default and
-// only downgraded overnight-signaled branches to `low`. Post-#3326, the
-// branch-prefix (#2754) and active-round-guard (#3322) checks below no
-// longer change the resolved *effort* in the non-error path (it's `low`
-// either way) — they still matter for the naming-drift `warning` (#3322:
-// flags when an active overnight round's branch skipped the `overnight/*`
-// convention). `max` survives only as the fail-safe for genuinely unknown
-// state (gh unavailable, PR number unparseable, active-round check
-// throwing) — see resolveEffort below.
+// Effort: o default do caminho "sem sinal de overnight" mora na constante
+// `DEFAULT_EFFORT` (ver o docblock dela) e já foi nos dois sentidos — `max` com
+// desconto pra overnight (#2754), `low` geral (#3326, motivado pelo PR #3324
+// que queimou ~1,5M tokens num diff de ~250 linhas), e `max` de novo desde
+// #4234 (260728), a pedido do editor e declaradamente provisório. NÃO repetir o
+// valor vigente aqui: este cabeçalho já ficou mentindo uma vez, entre o #4234 e
+// a correção em #4242 — e não sozinho (o mesmo PR achou outras duas cópias do
+// valor espalhadas pelo arquivo). O que é estável e vale documentar neste nível:
+//   - branch `overnight/*` (#2754) e guard de sessão ativa (#3322) resolvem
+//     `low` explicitamente, independente do default — é o caminho
+//     token-sensível, e o guard existe porque naming é convenção frágil
+//     (incidente #3321, 260710: ~50 PRs, zero com o prefixo, gating nunca
+//     disparou a noite inteira);
+//   - estado genuinamente indeterminado (gh indisponível, número de PR não
+//     parseável, guard lançando erro) resolve `max` como fail-safe, também
+//     independente do default;
+//   - o `warning` do #3322 é sobre naming divergente, nunca sobre effort.
 // Never throws / never exits non-zero, so it can't block the Bash tool.
 //
 // #3322: branch-prefix alone is NOT the primary signal anymore — it's a fragile
@@ -138,13 +138,14 @@ function activeSessionPath(repoRoot, tag) {
  * Na dúvida, não afirma que uma rodada está ativa — nunca finge certeza sobre
  * um marker ausente/expirado/corrompido.
  *
- * #3326: essa direção de fail-safe já não controla mais o effort resolvido em
- * `resolveEffort` (o default geral virou `low`, com ou sem rodada ativa) —
- * antes de #3326, `false` aqui empurrava o caller pro fallback `max`; hoje só
- * decide se o `warning` de naming divergente (#3322) é anexado ou não. Manter
- * o fail-open pra `false` continua correto pelo motivo original (não afirmar
- * "ativa" sobre estado duvidoso), só que o motivo já não é mais "isso barra o
- * desconto de effort".
+ * O peso desta função sobre o effort resolvido oscila com `DEFAULT_EFFORT`, e
+ * o fail-open pra `false` está certo em qualquer um dos dois regimes: enquanto
+ * o default foi `low` (#3326), retornar `false` não mudava effort nenhum e só
+ * decidia se o `warning` de naming (#3322) era anexado; com o default em `max`
+ * (#4234), `false` volta a empurrar o caller pro caminho caro. Em ambos, a
+ * justificativa é a mesma e independe do default: não afirmar "rodada ativa"
+ * sobre marker ausente/expirado/corrompido. Na dúvida, o caro — nunca conceder
+ * o desconto em cima de estado que não se conseguiu determinar.
  */
 export function isOvernightRoundActive(
   repoRoot = resolveMainRepoRoot(),
@@ -181,6 +182,13 @@ export function isOvernightRoundActive(
  * overnight (#2754/#3322) NÃO passa por aqui e segue intacto: rodada overnight
  * é o caminho token-sensível e continua em 1 agente. Na prática isto restaura
  * a semântica pré-#3326: `max` geral, `low` pra overnight.
+ *
+ * AO TROCAR ESTA CONSTANTE, varrer o arquivo por cópias do valor antigo:
+ * `grep -nE "default (geral|low|max)|#3326 default|token-discount"`. O #4234
+ * trocou a constante e deixou três afirmações stale pra trás (o cabeçalho do
+ * arquivo, o docblock de `buildReviewInstruction` e — pior — a própria string
+ * de instrução entregue ao agente, que seguiu chamando `low` de "#3326 default"
+ * depois que `low` já era só o desconto de overnight). O #4242 limpou as três.
  */
 export const DEFAULT_EFFORT = "max";
 
@@ -277,7 +285,8 @@ export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = i
  * pré-#4234 (#4057). O caminho degradado é sempre "review pior", nunca
  * "review nenhum em silêncio".
  *
- * Mapeamento de effort (preserva o default `low` do #3326): `low` = UM agente
+ * Mapeamento de effort (a semântica do #3326 pra `low` segue inalterada — o que
+ * mudou no #4234 foi qual dos dois é o default, ver `DEFAULT_EFFORT`): `low` = UM agente
  * (`code-reviewer`); `max` = fleet paralelo com os 4 analisadores
  * especializados junto. Antes do #4234 os dois efforts mandavam o MESMO
  * rubrico e diferiam só numa frase de profundidade — `max` só agora tem
@@ -301,8 +310,8 @@ export const REVIEW_FLEET_MAX = [
 export function buildReviewInstruction(prUrl, effort, warning = null) {
   const effortNote =
     effort === "low"
-      ? `at LOW effort (#3326 default — token-optimized): dispatch ONE Agent, subagent_type \`${REVIEW_AGENT}\`, ` +
-        "model:sonnet explicit (#2019); report only a few high-confidence findings. Ask for max explicitly for deeper review"
+      ? `at LOW effort (overnight token-discount, #2754/#3322): dispatch ONE Agent, subagent_type \`${REVIEW_AGENT}\`, ` +
+        "model:sonnet explicit (#2019); report only a few high-confidence findings. The editor can ask for a deeper pass explicitly"
       : `at ULTRACODE / MAXIMUM effort: dispatch the full toolkit fleet IN PARALLEL — \`${REVIEW_AGENT}\` plus ` +
         `${REVIEW_FLEET_MAX.join(", ")} — each with model:sonnet explicit (#2019), then aggregate their findings`;
   // O caminho degradado tem que preservar a PROFUNDIDADE pedida, não só existir:

@@ -158,14 +158,18 @@ describe("resolveEffort (#2754)", () => {
 });
 
 describe("buildReviewInstruction (#2754)", () => {
-  // #3326: "low" agora é o default geral (não só overnight), então o texto não
-  // deve mais alegar "overnight branch" — isso enganaria o coordenador numa PR
-  // manual/develop comum que resolveu low pelo novo default.
-  it("effort=low menciona LOW effort e #3326 (não mais 'overnight branch')", () => {
+  // O texto de `low` já alegou coisas que o default vigente desmentia, nas duas
+  // direções. Sob #3326 (low = default geral) ele não podia falar em overnight,
+  // porque low valia pra PR manual também. Sob #4234 (max = default) é o
+  // inverso: `low` só é alcançável pelo desconto de overnight (#2754/#3322), e
+  // chamá-lo de "#3326 default" mentia pro próprio agente que recebe a string —
+  // além de mandar "peça max explicitamente" quando max JÁ é o default.
+  // Achado do comment-analyzer na PR #4242.
+  it("effort=low atribui o low ao desconto de overnight, sem alegar ser o default", () => {
     const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low");
     assert.match(msg, /LOW effort/);
-    assert.match(msg, /#3326/);
-    assert.doesNotMatch(msg, /overnight branch/);
+    assert.match(msg, /overnight token-discount/);
+    assert.doesNotMatch(msg, /#3326 default/);
   });
 
   // #4034: `/code-review` deixou de ser invocável via Skill tool (gate de
