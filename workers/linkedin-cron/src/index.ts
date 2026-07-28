@@ -126,6 +126,14 @@ export interface QueueEntry {
   parent_destaque?: string; // qual destaque o comment pertence (auditoria)
   // #3817 — canal de disparo. Ver QueueChannel acima — default "linkedin".
   channel?: QueueChannel;
+  // #4153 — lista de imagens pro carrossel do Instagram (5 cards do post
+  // semanal, 1 por dia). ALÉM de `image_url` acima, nunca no lugar dele —
+  // entries já no KV de produção antes desta issue nunca tiveram este campo
+  // (mesma disciplina de backward-compat do `channel` ausente, #3817).
+  // Semântica em dispatch.ts::fireInstagram: length > 1 = carrossel (fluxo de
+  // 3 passos da Graph API); length === 1 ou ausente = caminho single-image de
+  // sempre (via `image_urls[0]` ou `image_url`, indistinguível pro caller).
+  image_urls?: string[];
   // (#2230 bug 2 fix) Tombstone de cancelamento: setado por handleQueueDelete quando
   // o KV.delete falha após o DO cancel. O cron detecta este flag, pula o item sem
   // postar, e o deleta do KV (cleanup do tombstone).
@@ -138,6 +146,14 @@ export const MAX_RETRIES = 5; // #880 — após isso, vai pra dlq:
 export const FETCH_TIMEOUT_MS = 30_000; // #881 — timeout por fetch ao Make
 export const MAX_TEXT_LENGTH = 10_000; // #882 — limite de caracteres do post
 export const MAX_URL_LENGTH = 2_000; // #882 — limite de comprimento de image_url
+// #4153 — limites do carrossel da Graph API do Instagram (2 a 10 itens).
+// CAROUSEL_MIN_ITEMS é só documentacional aqui: `image_urls` com 1 item é
+// válido (caminho single-image, não-carrossel — ver dispatch.ts::fireInstagram),
+// então o enforcement em handleEnqueue só rejeita 0 (vazio) e >10 (acima do
+// máximo). O mínimo de 2 pra ser um carrossel de fato é natural: length > 1
+// já implica length >= 2.
+export const CAROUSEL_MIN_ITEMS = 2;
+export const CAROUSEL_MAX_ITEMS = 10;
 export const DLQ_TTL_SECONDS = 30 * 24 * 3600; // #894 P1-B — DLQ entries expiram em 30 dias
 // (#2219 bug 2 fix) TTL do claim: se `claiming=true` por mais de 5min, o claim
 // é considerado expirado (crash mid-flight sem release). CF DO tem timeout de
@@ -310,11 +326,53 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
   ) {
     return json({ error: "channel must be 'linkedin', 'instagram', or 'threads'" }, 400);
   }
+  // #4153 — Validar image_urls (opcional; lista pro carrossel do Instagram).
+  // Independente de channel: o campo é genérico em QueueEntry, só o dispatch
+  // do Instagram de fato consome. Validar ANTES de enfileirar (não só no
+  // disparo) — publicar um carrossel com contagem inválida falharia horas
+  // depois na Graph API, e o post promete N dias no texto.
+  if (body.image_urls !== undefined) {
+    if (!Array.isArray(body.image_urls)) {
+      return json({ error: "image_urls must be an array of strings" }, 400);
+    }
+    const imageUrls = body.image_urls as unknown[];
+    if (imageUrls.length === 0) {
+      return json(
+        { error: "image_urls must not be empty (omit the field to use image_url alone)" },
+        400,
+      );
+    }
+    if (imageUrls.length > CAROUSEL_MAX_ITEMS) {
+      return json(
+        {
+          error: `image_urls exceeds the Instagram carousel max of ${CAROUSEL_MAX_ITEMS} items (got ${imageUrls.length})`,
+        },
+        400,
+      );
+    }
+    for (const u of imageUrls) {
+      if (typeof u !== "string") {
+        return json({ error: "image_urls must contain only strings" }, 400);
+      }
+      if (u.length > MAX_URL_LENGTH) {
+        return json(
+          { error: `image_urls item exceeds ${MAX_URL_LENGTH} chars` },
+          400,
+        );
+      }
+    }
+  }
+
   // Instagram Graph API (Content Publishing) exige imagem — sem ela o
   // container nem chega a ser criado. Falhar aqui (enqueue) é melhor que
-  // falhar só no disparo, horas/dias depois.
-  if (body.channel === "instagram" && !body.image_url) {
-    return json({ error: "image_url is required when channel='instagram'" }, 400);
+  // falhar só no disparo, horas/dias depois. #4153 — `image_urls` (não-vazio,
+  // já validado acima) também satisfaz esta exigência, não só `image_url`.
+  if (
+    body.channel === "instagram" &&
+    !body.image_url &&
+    !(Array.isArray(body.image_urls) && body.image_urls.length > 0)
+  ) {
+    return json({ error: "image_url or image_urls is required when channel='instagram'" }, 400);
   }
   // #3944 Parte B — chunking agendado (thread multi-post via reply_to_id)
   // não é suportado no Worker: risco de duplicar posts em retry automático.
@@ -370,6 +428,8 @@ async function handleEnqueue(request: Request, env: Env): Promise<Response> {
     ...(body.parent_destaque !== undefined && { parent_destaque: body.parent_destaque as string }),
     // #3817 — omitido se undefined: entries sem channel resolvem "linkedin" (default)
     ...(body.channel !== undefined && { channel: body.channel as QueueEntry["channel"] }),
+    // #4153 — omitido se undefined: entries sem image_urls usam image_url (single-image)
+    ...(body.image_urls !== undefined && { image_urls: body.image_urls as string[] }),
   };
   await env.LINKEDIN_QUEUE.put(key, JSON.stringify(entry));
 

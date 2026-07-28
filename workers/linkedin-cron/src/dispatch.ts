@@ -123,10 +123,39 @@ async function fireLinkedIn(entry: QueueEntry, webhookUrl: string, apiKey?: stri
 }
 
 /**
+ * (#4153) Resolve a lista de imagens efetiva de uma entry: `image_urls` tem
+ * prioridade quando presente e não-vazia (carrossel OU single-via-lista);
+ * cai pra `image_url` singular quando `image_urls` está ausente (entries
+ * legadas — mesma disciplina de backward-compat do `channel` ausente,
+ * #3817). Array vazio nunca é gravado pelo enqueue (handleEnqueue rejeita),
+ * mas o fallback pra `image_url` cobre esse edge case defensivamente mesmo
+ * assim.
+ */
+function resolveImageUrls(entry: QueueEntry): string[] {
+  if (entry.image_urls && entry.image_urls.length > 0) return entry.image_urls;
+  if (entry.image_url) return [entry.image_url];
+  return [];
+}
+
+/**
  * Dispara o post do Instagram via Graph API direta (#3817 — sem Make, a API
  * do Instagram é aberta e o Make não agregaria nada, só herdaria limitações
- * de conector).
- *
+ * de conector). Ponto de entrada único do canal Instagram — despacha pro
+ * caminho single-image (#3817, inalterado) ou carrossel (#4153) conforme a
+ * contagem de imagens resolvida por `resolveImageUrls`.
+ */
+async function fireInstagram(entry: QueueEntry, creds: InstagramCreds): Promise<FireOutcome> {
+  const images = resolveImageUrls(entry);
+  if (images.length === 0) {
+    return { status: "dlq", reason: "image_url ausente — Instagram Graph API exige imagem" };
+  }
+  if (images.length === 1) {
+    return fireInstagramSingle(images[0], entry.text, creds);
+  }
+  return fireInstagramCarousel(images, entry.text, creds);
+}
+
+/**
  * Sequência de 2 passos (idêntica a scripts/publish-instagram.ts):
  *   (1) POST /{ig-user-id}/media          → cria media container
  *   (2) POST /{ig-user-id}/media_publish   → publica o container
@@ -136,19 +165,21 @@ async function fireLinkedIn(entry: QueueEntry, webhookUrl: string, apiKey?: stri
  * poll best-effort e limitado do `status_code` do container (imagem única
  * normalmente fica FINISHED de imediato; o poll é só uma rede de segurança
  * contra o raro IN_PROGRESS — nunca bloqueia mais que ~3s).
+ *
+ * (#4153) Extraída de `fireInstagram` sem alteração de lógica — só passou a
+ * receber `imageUrl`/`caption` como parâmetros em vez de ler `entry.image_url`/
+ * `entry.text` diretamente, pra ser reusável tanto pro caminho `image_url`
+ * legado quanto pro caminho `image_urls` com 1 item só.
  */
-async function fireInstagram(entry: QueueEntry, creds: InstagramCreds): Promise<FireOutcome> {
-  if (!entry.image_url) {
-    return { status: "dlq", reason: "image_url ausente — Instagram Graph API exige imagem" };
-  }
+async function fireInstagramSingle(imageUrl: string, caption: string, creds: InstagramCreds): Promise<FireOutcome> {
   const base = `https://graph.facebook.com/${creds.apiVersion}`;
 
   // Passo 1: criar media container
   let containerId: string;
   try {
     const params = new URLSearchParams({
-      image_url: entry.image_url,
-      caption: entry.text,
+      image_url: imageUrl,
+      caption,
       access_token: creds.accessToken,
     });
     const res = await fetch(`${base}/${creds.igUserId}/media`, {
@@ -239,6 +270,185 @@ async function fireInstagram(entry: QueueEntry, creds: InstagramCreds): Promise<
     return {
       status: "failed",
       reason: `Instagram /media_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (container_id=${containerId})`,
+    };
+  }
+}
+
+/**
+ * Dispara um carrossel Instagram (#4153) — fluxo de 3 passos da Graph API:
+ *   1. N containers filhos (`is_carousel_item=true`), 1 POST por imagem, na
+ *      ordem da lista — cada um devolve um `creation_id`.
+ *   2. 1 container pai (`media_type=CAROUSEL`, `children=[ids]`, `caption`).
+ *   3. `media_publish` do container pai.
+ *
+ * Falha parcial (decisão de escopo #4153): se QUALQUER passo falhar —
+ * inclusive um único container filho no meio da lista — o post inteiro é
+ * abortado e o outcome é SEMPRE "dlq", nunca "failed"/retriable. Isto é
+ * DELIBERADAMENTE diferente do caminho single-image (`fireInstagramSingle`),
+ * que deixa falhas transitórias serem re-tentadas pelo `retry_count` normal
+ * (#880): publicar um carrossel incompleto é pior que não publicar (o texto
+ * do post promete N dias), e re-tentar do zero recriaria N containers a cada
+ * ciclo do cron sem garantia de sucesso — a fila de retry padrão foi
+ * desenhada pra 1 chamada isolada, não pra uma cadeia de até 7 chamadas
+ * interdependentes. Motivo real (não só "cron", crash mid-flight — inclui
+ * `alarm()` do DO) é preservado no `reason`, junto com quantos containers já
+ * tinham sido criados até o ponto da falha (auditoria manual pelo editor).
+ */
+async function fireInstagramCarousel(
+  imageUrls: string[],
+  caption: string,
+  creds: InstagramCreds,
+): Promise<FireOutcome> {
+  // Defesa em profundidade: handleEnqueue já barra >10 itens no enqueue
+  // (#4153) — isto cobre entries legacy/inseridas fora do caminho normal
+  // (mesmo padrão de fireThreads guardando texto >500 chars, ver acima).
+  if (imageUrls.length > 10) {
+    return {
+      status: "dlq",
+      reason: `Instagram carrossel: ${imageUrls.length} imagens excede o máximo de 10 da Graph API`,
+    };
+  }
+
+  const base = `https://graph.facebook.com/${creds.apiVersion}`;
+  const childIds: string[] = [];
+
+  // Passo 1: N containers filhos — 1 POST por imagem, na ordem da lista.
+  // `is_carousel_item=true` e SEM caption (a Graph API só aceita caption no
+  // container pai — colocar caption num filho é rejeitado pela API).
+  for (let i = 0; i < imageUrls.length; i++) {
+    const imageUrl = imageUrls[i];
+    try {
+      const params = new URLSearchParams({
+        image_url: imageUrl,
+        is_carousel_item: "true",
+        access_token: creds.accessToken,
+      });
+      const res = await fetch(`${base}/${creds.igUserId}/media`, {
+        method: "POST",
+        body: params,
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      const text = await res.text();
+      let data: { id?: string; error?: { message?: string } };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        return {
+          status: "dlq",
+          reason: `Instagram carrossel: child container ${i + 1}/${imageUrls.length} resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (containers já criados: ${childIds.length})`,
+        };
+      }
+      if (!res.ok || data.error) {
+        return {
+          status: "dlq",
+          reason: `Instagram carrossel: child container ${i + 1}/${imageUrls.length} falhou: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (containers já criados: ${childIds.length})`,
+        };
+      }
+      if (!data.id) {
+        return {
+          status: "dlq",
+          reason: `Instagram carrossel: child container ${i + 1}/${imageUrls.length} sem id: ${text.slice(0, 200)} (containers já criados: ${childIds.length})`,
+        };
+      }
+      childIds.push(data.id);
+    } catch (e) {
+      const err = e as Error;
+      const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+      return {
+        status: "dlq",
+        reason: `Instagram carrossel: child container ${i + 1}/${imageUrls.length} fetch ${timeout ? "timeout" : "failed"}: ${err.message} (containers já criados: ${childIds.length})`,
+      };
+    }
+  }
+
+  // Passo 2: container pai — media_type=CAROUSEL + children (ordem
+  // preservada, mesma ordem dos POSTs do passo 1) + caption.
+  let parentId: string;
+  try {
+    const params = new URLSearchParams({
+      media_type: "CAROUSEL",
+      children: childIds.join(","),
+      caption,
+      access_token: creds.accessToken,
+    });
+    const res = await fetch(`${base}/${creds.igUserId}/media`, {
+      method: "POST",
+      body: params,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: { id?: string; error?: { message?: string } };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return {
+        status: "dlq",
+        reason: `Instagram carrossel: container pai resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (children=${childIds.join(",")})`,
+      };
+    }
+    if (!res.ok || data.error) {
+      return {
+        status: "dlq",
+        reason: `Instagram carrossel: container pai falhou: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (children=${childIds.join(",")})`,
+      };
+    }
+    if (!data.id) {
+      return {
+        status: "dlq",
+        reason: `Instagram carrossel: container pai sem id: ${text.slice(0, 200)} (children=${childIds.join(",")})`,
+      };
+    }
+    parentId = data.id;
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return {
+      status: "dlq",
+      reason: `Instagram carrossel: container pai fetch ${timeout ? "timeout" : "failed"}: ${err.message} (children=${childIds.join(",")})`,
+    };
+  }
+
+  // Passo 3: publicar o container pai — NENHUMA chamada aqui acontece se
+  // qualquer passo acima retornou cedo.
+  try {
+    const params = new URLSearchParams({
+      creation_id: parentId,
+      access_token: creds.accessToken,
+    });
+    const res = await fetch(`${base}/${creds.igUserId}/media_publish`, {
+      method: "POST",
+      body: params,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: { id?: string; error?: { message?: string } };
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return {
+        status: "dlq",
+        reason: `Instagram carrossel: media_publish resposta não-JSON: HTTP ${res.status}: ${text.slice(0, 200)} (parent_id=${parentId})`,
+      };
+    }
+    if (!res.ok || data.error) {
+      return {
+        status: "dlq",
+        reason: `Instagram carrossel: media_publish falhou: HTTP ${res.status}: ${data.error?.message ?? text.slice(0, 200)} (parent_id=${parentId})`,
+      };
+    }
+    if (!data.id) {
+      return {
+        status: "dlq",
+        reason: `Instagram carrossel: media_publish sem id: ${text.slice(0, 200)} (parent_id=${parentId})`,
+      };
+    }
+    return { status: "fired" };
+  } catch (e) {
+    const err = e as Error;
+    const timeout = err.name === "AbortError" || err.name === "TimeoutError";
+    return {
+      status: "dlq",
+      reason: `Instagram carrossel: media_publish fetch ${timeout ? "timeout" : "failed"}: ${err.message} (parent_id=${parentId})`,
     };
   }
 }
