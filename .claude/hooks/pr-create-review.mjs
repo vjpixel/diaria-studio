@@ -193,6 +193,37 @@ export function isOvernightRoundActive(
 export const DEFAULT_EFFORT = "max";
 
 /**
+ * #4243: piso barato pro fleet de 5 agentes que `DEFAULT_EFFORT=max` (#4234)
+ * passou a disparar em TODA PR sem sinal de overnight — inclusive diffs
+ * triviais (docs-only, 1 linha de comentário) onde 4 dos 5 agentes do fleet
+ * não têm o que analisar. Espelha o limiar já documentado como convenção de
+ * "diff trivial" em `.claude/skills/diaria-overnight/SKILL.md` (~50 linhas,
+ * usado ali pra decidir se a Fase 1.5 roda o review consolidado).
+ */
+export const TRIVIAL_DIFF_LINE_THRESHOLD = 50;
+
+/**
+ * Soma additions+deletions do PR via `gh pr view --json additions,deletions`.
+ * Retorna `null` em QUALQUER falha (gh indisponível, JSON malformado, campos
+ * não-numéricos) — o caller trata `null` como "não dá pra saber o tamanho do
+ * diff" e nunca deixa isso virar "pular o review" (#4243 parte 2: fail-soft
+ * obrigatório).
+ */
+function getDiffLineCount(num, execFn) {
+  try {
+    const raw = execFn("gh", ["pr", "view", num, "--json", "additions,deletions"], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    const parsed = JSON.parse(raw);
+    const total = Number(parsed.additions) + Number(parsed.deletions);
+    return Number.isFinite(total) ? total : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve o headRefName de um PR e decide o effort de /code-review.
  * `execFn` é injetável (default = execFileSync real) pra ser testável sem gh live.
  * `checkRoundActive` é injetável (default = isOvernightRoundActive real) pra ser
@@ -201,6 +232,15 @@ export const DEFAULT_EFFORT = "max";
  * Default geral: `DEFAULT_EFFORT` (ver acima). Caminhos com sinal de overnight
  * — prefixo `overnight/*` (#2754) ou sessão ativa nesta máquina (#3322) —
  * continuam resolvendo `low` explicitamente, independente do default.
+ *
+ * #4243: quando NENHUM sinal de overnight se aplica, um diff trivial (soma de
+ * additions+deletions < `TRIVIAL_DIFF_LINE_THRESHOLD`) também rebaixa pra
+ * `low`, independente do `DEFAULT_EFFORT` vigente — mesma lógica de "4 dos 5
+ * agentes do fleet não têm o que analisar" que já vale pra Fase 1.5 do
+ * overnight/develop. Fail-soft: se `getDiffLineCount` não conseguir determinar
+ * o tamanho (gh indisponível, JSON malformado), este ramo é ignorado e o fluxo
+ * cai no `DEFAULT_EFFORT` normal — nunca pula o review por não saber o tamanho
+ * do diff.
  *
  * Fail-safe: em estado genuinamente indeterminado — gh indisponível, PR sem
  * número reconhecível na URL, `checkRoundActive` lançando erro — mantém `max`.
@@ -244,7 +284,14 @@ export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = i
           "warning é só sobre o naming divergente.",
       };
     }
-    // Sem sinal de overnight/rodada-ativa → default geral (ver DEFAULT_EFFORT).
+    // Sem sinal de overnight/rodada-ativa: diff trivial rebaixa pra low
+    // independente do DEFAULT_EFFORT (#4243). getDiffLineCount() retornando
+    // `null` (falha de qualquer tipo) faz este ramo ser ignorado de propósito.
+    const diffLineCount = getDiffLineCount(num, execFn);
+    if (diffLineCount !== null && diffLineCount < TRIVIAL_DIFF_LINE_THRESHOLD) {
+      return { effort: "low", warning: null };
+    }
+    // Sem sinal de overnight/rodada-ativa/diff-trivial → default geral (ver DEFAULT_EFFORT).
     return { effort: DEFAULT_EFFORT, warning: null };
   } catch {
     // fail-safe: estado desconhecido (gh indisponível, timeout, checkRoundActive
