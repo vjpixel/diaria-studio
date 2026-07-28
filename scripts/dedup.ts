@@ -106,9 +106,13 @@ export { needsTitleResolution, fetchTitle, resolveInboxTitles };
 interface Article {
   url: string;
   title?: string;
+  summary?: string;
   source?: string;
   discovered_source?: boolean;
   flag?: string;
+  /** #4193: quando um sobrevivente herda a proveniência do editor de uma
+   *  cópia same-story removida, guarda a URL original que o editor enviou. */
+  editor_submitted_url?: string;
   [key: string]: unknown;
 }
 
@@ -116,6 +120,30 @@ interface RemovedEntry {
   url: string;
   title?: string;
   dedup_note: string;
+  /** #4192: true quando o artigo removido tinha `flag: "editor_submitted"` —
+   *  usado pra decidir o que precisa aparecer no aviso do gate (Stage 1) e
+   *  pra alimentar a checagem de "resgate" same-story do Pass 3 (#4193). */
+  editor_submitted?: boolean;
+}
+
+/**
+ * #4192/#4193: registra uma remoção marcando se o artigo era
+ * `flag: "editor_submitted"`. Todo `removed.push(...)` do dedup passa por
+ * aqui — é o que permite ao CLI (main()) e ao gate do Stage 1 saberem quando
+ * uma submissão do editor foi descartada por QUALQUER pass, não só o
+ * Pass-1d (#1475), sem precisar duplicar a checagem em cada call site.
+ */
+function pushRemoved(
+  removed: RemovedEntry[],
+  art: { url: string; title?: string; flag?: string },
+  note: string,
+): void {
+  removed.push({
+    url: art.url,
+    title: art.title,
+    dedup_note: note,
+    editor_submitted: art.flag === "editor_submitted",
+  });
 }
 
 export function dedup(
@@ -144,7 +172,14 @@ export function dedup(
   // different URLs/titles (e.g., "DeepSeek corta 75%" vs "IA concorrente
   // do Gemini derruba preco em 75%").
   pastHighlights: { title: string; url: string; themes?: string[] }[] = [],
-): { kept: Article[]; removed: RemovedEntry[] } {
+): {
+  kept: Article[];
+  removed: RemovedEntry[];
+  /** #4192: submissões do editor removidas por qualquer pass SEM sobrevivente
+   *  same-story que tenha herdado a proveniência — o que precisa aparecer no
+   *  aviso do gate da Etapa 1. Subconjunto de `removed` (mesmas entries). */
+  editorSubmittedLost: RemovedEntry[];
+} {
   const kept: Article[] = [];
   const removed: RemovedEntry[] = [];
 
@@ -154,11 +189,11 @@ export function dedup(
   let pass0Editorial = 0;
   for (const art of articles) {
     if (isAggregator(art.url)) {
-      removed.push({ url: art.url, title: art.title, dedup_note: "agregador/roundup bloqueado (use fonte primária)" });
+      pushRemoved(removed, art, "agregador/roundup bloqueado (use fonte primária)");
       pass0Rejected++;
     } else if (isEditoriallyBlocked(art.url)) {
       // #1760: fonte que o editor decidiu não incluir (ex: simonwillison.net).
-      removed.push({ url: art.url, title: art.title, dedup_note: "fonte em blacklist editorial (#1760)" });
+      pushRemoved(removed, art, "fonte em blacklist editorial (#1760)");
       pass0Editorial++;
     } else {
       afterPass0.push(art);
@@ -187,7 +222,7 @@ export function dedup(
     // #1512: removed #1068 secondary→destaque promotion at dedup time.
     // URL that appeared in ANY past edition is blocked — same URL in a
     // published newsletter should never re-appear regardless of section.
-    removed.push({ url: art.url, title: art.title, dedup_note: "url-match com edição anterior" });
+    pushRemoved(removed, art, "url-match com edição anterior");
   }
   // #1512: promotedFromSecondary counter removed — promotion no longer applies.
 
@@ -206,11 +241,11 @@ export function dedup(
       for (const pastTitle of pastTitles) {
         const sim = titleSimilarity(art.title, pastTitle);
         if (sim >= titleVsPastThreshold) {
-          removed.push({
-            url: art.url,
-            title: art.title,
-            dedup_note: `título similar (${(sim * 100).toFixed(0)}%) ao headline de edição anterior "${pastTitle}"`,
-          });
+          pushRemoved(
+            removed,
+            art,
+            `título similar (${(sim * 100).toFixed(0)}%) ao headline de edição anterior "${pastTitle}"`,
+          );
           isDupVsPast = true;
           break;
         }
@@ -278,11 +313,11 @@ export function dedup(
         const entitiesNote = bestMatch.entitiesShared.length > 0
           ? ` [entidade compartilhada: ${bestMatch.entitiesShared.join(", ")}]`
           : "";
-        removed.push({
-          url: art.url,
-          title: art.title,
-          dedup_note: `subject similar (${(bestMatch.sim * 100).toFixed(0)}% Jaccard, threshold ${bestMatch.effectiveThreshold}) a artigo de edição anterior "${bestMatch.title}"${entitiesNote}`,
-        });
+        pushRemoved(
+          removed,
+          art,
+          `subject similar (${(bestMatch.sim * 100).toFixed(0)}% Jaccard, threshold ${bestMatch.effectiveThreshold}) a artigo de edição anterior "${bestMatch.title}"${entitiesNote}`,
+        );
         isDupVsPastSubject = true;
       }
       if (!isDupVsPastSubject) afterPass1c.push(art);
@@ -300,7 +335,16 @@ export function dedup(
   // Bloqueia artigos cujo título/summary contém entidade-chave de um highlight
   // recente, mesmo se URL e Jaccard divergem. Caso real 260525: "SoberanIA"
   // era destaque na 260522 com URL diferente e Jaccard baixo (~0.14).
+  //
+  // #4192: artigo `flag: "editor_submitted"` NUNCA é descartado por esse
+  // match — no máximo marcado. O editor já exerceu curadoria ao enviar o
+  // link; repetição de tema é decisão dele, não do filtro (mesmo precedente
+  // do bypass de score mínimo em finalize-stage1.ts). Incidente real
+  // 260728: artigo ZDNet (summary vazio) foi descartado porque a entidade
+  // "reddit" — citada de passagem no corpo — casou com o destaque "Reddit e
+  // jornais cogitam banir o Google" de outra edição, assuntos sem relação.
   const afterPass1d: Article[] = [];
+  let pass1dEditorSubmittedSpared = 0;
   if (pastThemeEntities.size > 0) {
     for (const art of afterPass1c) {
       const matchedEntity = matchesRecentTheme(
@@ -309,11 +353,16 @@ export function dedup(
         pastThemeEntities,
       );
       if (matchedEntity) {
-        removed.push({
-          url: art.url,
-          title: art.title,
-          dedup_note: `theme-entity match: "${matchedEntity}" apareceu em highlight de edição recente (#1475)`,
-        });
+        if (art.flag === "editor_submitted") {
+          afterPass1d.push({ ...art, theme_entity_flagged: matchedEntity });
+          pass1dEditorSubmittedSpared++;
+          continue;
+        }
+        pushRemoved(
+          removed,
+          art,
+          `theme-entity match: "${matchedEntity}" apareceu em highlight de edição recente (#1475)`,
+        );
       } else {
         afterPass1d.push(art);
       }
@@ -321,6 +370,11 @@ export function dedup(
     if (afterPass1c.length > afterPass1d.length) {
       console.error(
         `dedup Pass-1d (#1475): ${afterPass1c.length - afterPass1d.length} artigo(s) removido(s) por theme-entity match contra edição anterior`,
+      );
+    }
+    if (pass1dEditorSubmittedSpared > 0) {
+      console.error(
+        `dedup Pass-1d (#4192): ${pass1dEditorSubmittedSpared} submissão(ões) do editor poupada(s) do theme-entity match (marcada(s) com theme_entity_flagged, não removida(s))`,
       );
     }
   } else {
@@ -340,11 +394,11 @@ export function dedup(
     for (const art of afterPass1d) {
       if (matchedUrls.has(art.url)) {
         const match = entityMatches.find((m) => m.url === art.url)!;
-        removed.push({
-          url: art.url,
-          title: art.title,
-          dedup_note: `entity_duplicate: compartilha entidades [${match.sharedEntities.join(", ")}] com highlight "${match.matchedHighlight}" de edição anterior (#1492)`,
-        });
+        pushRemoved(
+          removed,
+          art,
+          `entity_duplicate: compartilha entidades [${match.sharedEntities.join(", ")}] com highlight "${match.matchedHighlight}" de edição anterior (#1492)`,
+        );
       } else {
         afterPass1e.push(art);
       }
@@ -381,9 +435,21 @@ export function dedup(
       if (aDisc !== bDisc) return aDisc - bDisc; // non-discovered first
       return (b.title?.length ?? 0) - (a.title?.length ?? 0);
     });
-    afterUrlDedup.push(sorted[0]);
+    const winner = sorted[0];
+    // #4193: mesma URL canônica capturada 2x (ex: editor mandou um link que o
+    // crawler também achou) — se o vencedor escolhido por completude não é a
+    // cópia editor_submitted mas outro membro do grupo é, o vencedor herda a
+    // proveniência do editor em vez de perdê-la silenciosamente.
+    if (winner.flag !== "editor_submitted") {
+      const editorCopy = sorted.find((a) => a.flag === "editor_submitted");
+      if (editorCopy) {
+        winner.flag = "editor_submitted";
+        winner.editor_submitted_url = editorCopy.url;
+      }
+    }
+    afterUrlDedup.push(winner);
     for (let i = 1; i < sorted.length; i++) {
-      removed.push({ url: sorted[i].url, title: sorted[i].title, dedup_note: `url-duplicado na lista (mantido: ${sorted[0].url})` });
+      pushRemoved(removed, sorted[i], `url-duplicado na lista (mantido: ${winner.url})`);
     }
   }
 
@@ -455,13 +521,12 @@ export function dedup(
     kept.push(canonical as Article);
     foldedClusters++;
     for (const loser of others) {
-      removed.push({
-        url: (loser as Article).url,
-        title: (loser as Article).title,
-        dedup_note:
-          `cluster same-story (#3920): dobrado em "${canonical.title ?? ""}" ` +
+      pushRemoved(
+        removed,
+        loser as Article,
+        `cluster same-story (#3920): dobrado em "${canonical.title ?? ""}" ` +
           `(${canonical.url}) como cluster_source`,
-      });
+      );
     }
   }
   if (foldedClusters > 0) {
@@ -471,7 +536,84 @@ export function dedup(
     );
   }
 
-  return { kept, removed };
+  // ---- Pass 3: same-story survivor inheritance p/ remoções órfãs (#4193) --
+  // Pass 2a (URL idêntica) e Pass 2b (title-similarity >= titleThreshold, via
+  // foldCluster) acima já cobrem inheritance quando o dedup detecta a
+  // duplicata pelos próprios mecanismos. Mas no incidente real (260728) as
+  // duas cópias da MESMA história (ZDNet do editor + VentureBeat do crawler)
+  // não colidiram em NENHUM desses passes — seguiram caminhos separados (a do
+  // editor foi removida pelo Pass-1d antes do #4192; a do VentureBeat
+  // sobreviveu sem qualquer interação com ela). Este pass roda por último,
+  // sobre o resultado final de `kept`/`removed`, e tenta "resgatar" a
+  // proveniência do editor pra qualquer sobrevivente que pareça cobrir a
+  // MESMA história de uma submissão removida.
+  //
+  // Heurística deliberadamente mais permissiva que o subject-dedup padrão
+  // (Pass 1c usa Jaccard >= 0.55-0.6 contra past editions): títulos da MESMA
+  // história em veículos diferentes podem ter overlap lexical baixo (o par
+  // real ZDNet×VentureBeat tem Jaccard ~0.31). Pra conter falso-positivo,
+  // exige tanto um piso de Jaccard quanto uma contagem MÍNIMA ABSOLUTA de
+  // tokens compartilhados — títulos de eventos genuinamente diferentes
+  // raramente compartilham 3+ palavras não-triviais. Ainda é heurística: o
+  // resultado nunca é silencioso — `editor_submitted_url` fica no artigo pra
+  // o editor conferir/reverter no gate se o match for espúrio.
+  const SAME_STORY_JACCARD_THRESHOLD = 0.28;
+  const SAME_STORY_MIN_SHARED_TOKENS = 3;
+  let sameStoryRescued = 0;
+  const editorRemovedForRescue = removed.filter(
+    (r) =>
+      r.editor_submitted &&
+      !r.dedup_note.startsWith("cluster same-story") &&
+      !r.dedup_note.startsWith("url-duplicado na lista"),
+  );
+  for (const removedEntry of editorRemovedForRescue) {
+    const removedArticle = articles.find((a) => a.url === removedEntry.url);
+    if (!removedArticle?.title) continue;
+    const removedTokens = tokenizeForJaccard(removedArticle.title);
+    if (removedTokens.size === 0) continue;
+    let best: { article: Article; sim: number } | null = null;
+    for (const survivor of kept) {
+      if (survivor.flag === "editor_submitted") continue; // já tem proveniência
+      if (!survivor.title) continue;
+      const survivorTokens = tokenizeForJaccard(survivor.title);
+      if (survivorTokens.size === 0) continue;
+      let shared = 0;
+      for (const t of removedTokens) if (survivorTokens.has(t)) shared++;
+      if (shared < SAME_STORY_MIN_SHARED_TOKENS) continue;
+      const sim = jaccardSimilarity(removedTokens, survivorTokens);
+      if (sim < SAME_STORY_JACCARD_THRESHOLD) continue;
+      if (!best || sim > best.sim) best = { article: survivor, sim };
+    }
+    if (best) {
+      best.article.flag = "editor_submitted";
+      best.article.editor_submitted_url = removedArticle.url;
+      sameStoryRescued++;
+    }
+  }
+  if (sameStoryRescued > 0) {
+    console.error(
+      `dedup Pass-3 (#4193): ${sameStoryRescued} sobrevivente(s) herdaram editor_submitted de submissão removida em pass separado (same-story cross-pass)`,
+    );
+  }
+
+  // #4192: o que precisa aparecer no gate — submissão do editor removida por
+  // QUALQUER pass e que NENHUM sobrevivente resgatou (Pass 2a/2b acima ou o
+  // Pass 3 logo acima). Consumido pelo orchestrator no gate da Etapa 1.
+  const rescuedUrls = new Set(
+    kept
+      .filter((a) => typeof a.editor_submitted_url === "string")
+      .map((a) => a.editor_submitted_url as string),
+  );
+  const editorSubmittedLost = removed.filter(
+    (r) => r.editor_submitted && !rescuedUrls.has(r.url),
+  );
+  if (editorSubmittedLost.length > 0) {
+    console.error(
+      `dedup: ${editorSubmittedLost.length} submissão(ões) do editor removida(s) sem sobrevivente same-story — aparece no gate (#4192)`,
+    );
+  }
+
+  return { kept, removed, editorSubmittedLost };
 }
 
 // ---------------------------------------------------------------------------
@@ -641,6 +783,28 @@ async function main() {
     message: `dedup: ${removed} artigos removidos por similaridade, ${kept} mantidos`,
     details: { removed, kept },
   }, logRootDir);
+
+  // #4192: submissão do editor removida por qualquer regra de dedup, sem
+  // sobrevivente same-story que tenha herdado a proveniência (#4193) —
+  // precisa aparecer no gate da Etapa 1. `result.editorSubmittedLost` já vai
+  // no JSON de saída (`--out`); aqui só emitimos o aviso no formato que o
+  // orchestrator repassa ao editor + registramos em run-log pra auditoria.
+  if (result.editorSubmittedLost.length > 0) {
+    const n = result.editorSubmittedLost.length;
+    for (const entry of result.editorSubmittedLost) {
+      console.error(
+        `⚠️ ${n} submissão(ões) sua(s) removida(s) pelo dedup: ${entry.title ?? entry.url} — motivo: ${entry.dedup_note}`,
+      );
+    }
+    logEvent({
+      edition: null,
+      stage: 1,
+      agent: "dedup.ts",
+      level: "warn",
+      message: `dedup: ${result.editorSubmittedLost.length} submissão(ões) do editor removida(s) sem resgate same-story (#4192)`,
+      details: { editorSubmittedLost: result.editorSubmittedLost },
+    }, logRootDir);
+  }
 
   const json = JSON.stringify(result, null, 2);
   if (outPath) {

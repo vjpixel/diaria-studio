@@ -42,6 +42,11 @@ export interface ClusterArticle {
   published_at?: string;
   date?: string;
   cluster_sources?: ClusterSource[];
+  /** Origem do artigo — `"editor_submitted"` quando veio de submissão do editor. */
+  flag?: string;
+  /** #4193: URL original do editor quando o canônico herdou a proveniência
+   *  de um membro perdedor do cluster (ver `foldCluster`). */
+  editor_submitted_url?: string;
   [key: string]: unknown;
 }
 
@@ -131,6 +136,13 @@ export function pickCanonical(members: ClusterArticle[]): {
  * Materializa um cluster: escolhe o canônico e anexa os perdedores como
  * `cluster_sources[]` (merge idempotente com qualquer cluster_sources
  * pré-existente). Muta e retorna o próprio objeto canônico.
+ *
+ * #4193: quando o canônico escolhido por completude NÃO é a cópia do editor
+ * mas outro membro do cluster É (`flag: "editor_submitted"`), o canônico
+ * herda essa proveniência — senão o interesse explícito do editor
+ * desaparece do sistema sempre que uma cobertura mais completa (summary
+ * maior, por exemplo) vence o cluster mas cobre a MESMA história que ele
+ * mandou.
  */
 export function foldCluster(members: ClusterArticle[]): {
   canonical: ClusterArticle;
@@ -149,5 +161,14 @@ export function foldCluster(members: ClusterArticle[]): {
     added.push(toClusterSource(o));
   }
   canonical.cluster_sources = [...existing, ...added];
+
+  if (canonical.flag !== "editor_submitted") {
+    const editorSource = others.find((o) => o.flag === "editor_submitted");
+    if (editorSource) {
+      canonical.flag = "editor_submitted";
+      canonical.editor_submitted_url = editorSource.url;
+    }
+  }
+
   return { canonical, others };
 }

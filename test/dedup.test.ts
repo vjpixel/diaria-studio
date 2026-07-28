@@ -1043,6 +1043,154 @@ body
   });
 });
 
+describe("dedup Pass 1d — editor_submitted não é descartado por theme-entity match (#4192)", () => {
+  // Caso real 260728: editor mandou um link do ZDNet sobre conversas do
+  // Claude indexadas pelo Google. O artigo entrou com summary vazio e o
+  // título, ao mencionar o Reddit de passagem (cobertura cruzada de outro
+  // caso de indexação no mesmo artigo), casou com a entidade "reddit" do
+  // destaque "Reddit e jornais cogitam banir o Google" de outra edição —
+  // assuntos sem relação nenhuma. Antes do #4192 isso descartava o artigo do
+  // editor silenciosamente.
+  const zdnetTitle =
+    "Claude AI shared chats indexed by Google alongside Reddit posts - see if your conversations were exposed";
+
+  it("artigo editor_submitted sobrevive ao Pass-1d mesmo com match de entidade (par real ZDNet/reddit)", () => {
+    const articles = [
+      {
+        url: "https://www.zdnet.com/article/claude-ai-shared-chats-indexed-by-google/",
+        title: zdnetTitle,
+        summary: "",
+        flag: "editor_submitted",
+        source: "inbox",
+      },
+    ];
+    const pastThemeEntities = new Set(["reddit"]);
+    const result = dedup(
+      articles, new Set(), 0.85, [], 0.7, [], 0.6, undefined, 0.55, pastThemeEntities, [],
+    );
+    assert.equal(result.kept.length, 1, "editor_submitted deve sobreviver ao Pass-1d");
+    assert.equal(result.removed.length, 0);
+    assert.equal(result.kept[0].theme_entity_flagged, "reddit", "match ainda é marcado no artigo, só não descarta");
+  });
+
+  it("artigo SEM editor_submitted continua sendo removido por theme-entity match (comportamento preexistente preservado)", () => {
+    const articles = [
+      { url: "https://example.com/x", title: zdnetTitle, summary: "" },
+    ];
+    const pastThemeEntities = new Set(["reddit"]);
+    const result = dedup(
+      articles, new Set(), 0.85, [], 0.7, [], 0.6, undefined, 0.55, pastThemeEntities, [],
+    );
+    assert.equal(result.kept.length, 0);
+    assert.equal(result.removed.length, 1);
+    assert.equal(result.removed[0].editor_submitted, false);
+    assert.ok(result.removed[0].dedup_note.includes("theme-entity match"));
+  });
+
+  it("editor_submitted removido por OUTRO pass (não Pass-1d) sem sobrevivente same-story aparece em editorSubmittedLost", () => {
+    // Regressão do critério de aceite #2 da #4192: "um editor_submitted
+    // removido por QUALQUER regra de dedup aparece no relatório do gate".
+    const articles = [
+      {
+        url: "https://www.zdnet.com/article/claude-ai-shared-chats-indexed-by-google/",
+        title: zdnetTitle,
+        summary: "",
+        flag: "editor_submitted",
+        source: "inbox",
+      },
+    ];
+    // Bloqueado por já ter saído em edição anterior (Pass 1) — sem qualquer
+    // artigo relacionado no pool atual pra herdar a proveniência.
+    const pastUrls = new Set(["https://www.zdnet.com/article/claude-ai-shared-chats-indexed-by-google"]);
+    const result = dedup(articles, pastUrls, 0.85);
+    assert.equal(result.kept.length, 0);
+    assert.equal(result.removed.length, 1);
+    assert.equal(result.removed[0].editor_submitted, true);
+    assert.equal(result.editorSubmittedLost.length, 1, "sem sobrevivente same-story, a remoção precisa aparecer no gate");
+    assert.equal(result.editorSubmittedLost[0].url, articles[0].url);
+  });
+});
+
+describe("dedup Pass 2a — URL duplicada herda editor_submitted (#4193)", () => {
+  it("vencedor por completude herda flag/URL do editor quando o outro membro do grupo é a cópia dele", () => {
+    const articles = [
+      {
+        url: "https://a.com/x",
+        title: "Título curto do editor",
+        flag: "editor_submitted",
+        source: "inbox",
+        discovered_source: false,
+      },
+      {
+        url: "https://a.com/x",
+        title: "Título bem mais longo achado pelo crawler sobre o mesmo assunto",
+        discovered_source: false,
+      },
+    ];
+    const result = dedup(articles, new Set(), 0.85);
+    assert.equal(result.kept.length, 1);
+    assert.equal(result.kept[0].flag, "editor_submitted");
+    assert.equal(result.kept[0].editor_submitted_url, "https://a.com/x");
+    assert.equal(result.editorSubmittedLost.length, 0, "resgatado — não deve aparecer como perdido");
+  });
+});
+
+describe("dedup Pass 3 — same-story survivor inheritance p/ remoções órfãs (#4193)", () => {
+  const editorTitle =
+    "Claude AI shared chats indexed by Google - see if your conversations were exposed";
+  const crawlerTitle =
+    "Uh-oh: some Claude shared conversations and artifacts appear to be indexed and publicly accessible on Google Search";
+
+  it("regressão par real ZDNet+VentureBeat: sobrevivente herda editor_submitted quando a cópia do editor é removida por pass separado", () => {
+    const editorUrl = "https://www.zdnet.com/article/claude-ai-shared-chats-indexed-by-google/";
+    const articles = [
+      {
+        url: editorUrl,
+        title: editorTitle,
+        summary: "",
+        flag: "editor_submitted",
+        source: "inbox",
+      },
+      {
+        url: "https://venturebeat.com/technology/uh-oh-some-claude-shared-conversations-and-artifacts-appear-to-be-indexed-and-publicly-accessible-on-google-search",
+        title: crawlerTitle,
+        summary: "Anthropic's Claude AI chatbot conversations are showing up in Google search results.",
+      },
+    ];
+    // Cópia do editor removida via Pass 1 (url-match com edição anterior) —
+    // caminho SEPARADO da cópia do crawler, que nunca colide com ela em
+    // nenhum outro pass (título/Jaccard baixo demais pra clusterizar).
+    const pastUrls = new Set(["https://www.zdnet.com/article/claude-ai-shared-chats-indexed-by-google"]);
+    const result = dedup(articles, pastUrls, 0.85);
+    assert.equal(result.kept.length, 1);
+    assert.equal(result.kept[0].flag, "editor_submitted");
+    assert.equal(result.kept[0].editor_submitted_url, editorUrl);
+    assert.equal(result.editorSubmittedLost.length, 0, "resgatado pelo Pass 3 — não deve aparecer como perdido no gate");
+  });
+
+  it("NÃO resgata quando não há sobrevivente same-story suficientemente similar (evita falso-positivo)", () => {
+    const editorUrl = "https://www.zdnet.com/article/claude-ai-shared-chats-indexed-by-google/";
+    const articles = [
+      {
+        url: editorUrl,
+        title: editorTitle,
+        summary: "",
+        flag: "editor_submitted",
+        source: "inbox",
+      },
+      {
+        url: "https://example.com/completamente-nao-relacionado",
+        title: "Brasil aprova marco regulatório de agrotóxicos no Congresso",
+      },
+    ];
+    const pastUrls = new Set(["https://www.zdnet.com/article/claude-ai-shared-chats-indexed-by-google"]);
+    const result = dedup(articles, pastUrls, 0.85);
+    assert.equal(result.kept.length, 1);
+    assert.equal(result.kept[0].flag, undefined, "sobrevivente não relacionado não deve herdar a flag");
+    assert.equal(result.editorSubmittedLost.length, 1, "sem match same-story, precisa aparecer no gate como perdida");
+  });
+});
+
 describe("dedup com pastDestaqueUrlsSet (#1068)", () => {
   const mkArt = (url: string, title = `Title for ${url}`) => ({
     url,
