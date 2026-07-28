@@ -1175,15 +1175,18 @@ async function runVoteBookkeeping(
         // sobrescrever score:{email} inteiro com base num snapshot já
         // obsoleto, perdendo o incremento do voto que terminou primeiro.
         //
-        // MITIGAÇÃO, não eliminação: ainda resta uma janela pequena entre
-        // esta leitura e o `put` dentro de updateScore (KV não tem
-        // compare-and-swap) — mesmo residual já aceito em updateScoreByMonth
-        // (que também relê fresco a própria chave, ver ali) e em
-        // updateStatsCounter antes do StatsCounter DO (#2223). Fechar de vez
-        // exigiria um Durable Object dedicado serializando por e-mail (mesmo
-        // padrão de VOTE_DEDUP/STATS_COUNTER) — fora do escopo deste lote
-        // (#4125 item 1: achado desproporcional a um P2 num conjunto de P3s,
-        // reportado como follow-up em vez de forçado aqui).
+        // MITIGAÇÃO, não eliminação: na época deste comentário (#4125 item 1)
+        // ainda restava uma janela pequena entre esta leitura e o `put`
+        // dentro de updateScore (KV não tem compare-and-swap). ATUALIZAÇÃO
+        // (#4169): essa janela foi FECHADA — `updateScore` agora serializa o
+        // read-modify-write via Durable Object `ScoreCounter` (mesmo padrão
+        // de VOTE_DEDUP/STATS_COUNTER) quando `env.SCORE_COUNTER` está
+        // presente (ver docblock de `updateScore` e rationale completo em
+        // score-counter.ts). O `freshScoreRaw` lido aqui continua útil como
+        // `kvBaseline` — semente pro DO só quando ele nunca foi
+        // inicializado — mas a race get→put descrita acima não existe mais
+        // com o binding presente (produção). Sem o binding (fallback KV, só
+        // testes/dev), a race documentada abaixo permanece.
         const freshScoreRaw = await env.POLL.get(`score:${email}`);
         await updateScore(env, email, edition, correct, freshScoreRaw, brand);
         await env.POLL.put(scoreGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
@@ -1412,10 +1415,15 @@ export async function adjustScoreByMonthCorrectOnly(
         body: JSON.stringify({ monthSlug, prevCorrect, newCorrect } satisfies AdjustMonthCorrectPayload),
       });
       if (!doResp.ok) {
-        console.error(JSON.stringify({ event: "score_counter_adjust_month_correct_error", status: doResp.status, edition }));
+        // #4169 (achado silent-failure-hunter): captura o corpo (diagnóstico
+        // do DO, ex: "invalid correct_count") — mesma disciplina já aplicada
+        // ao 4xx de updateScore/updateScoreByMonth. email_domain (não email
+        // cru) — mesma convenção de vote_dedup_do_error.
+        const body = await doResp.text().catch(() => "(unreadable)");
+        console.error(JSON.stringify({ event: "score_counter_adjust_month_correct_error", status: doResp.status, body, edition, email_domain: email.split("@")[1] ?? "unknown" }));
       }
     } catch (e) {
-      console.error(JSON.stringify({ event: "score_counter_adjust_month_correct_error", edition, error: String(e) }));
+      console.error(JSON.stringify({ event: "score_counter_adjust_month_correct_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
     }
   }
 }
@@ -1483,10 +1491,14 @@ export async function adjustScoreCorrectOnly(
         body: JSON.stringify({ prevCorrect, newCorrect } satisfies AdjustScoreCorrectPayload),
       });
       if (!doResp.ok) {
-        console.error(JSON.stringify({ event: "score_counter_adjust_correct_error", status: doResp.status, email }));
+        // #4169 (achado silent-failure-hunter): corpo do erro + email_domain
+        // (não email cru) — mesma disciplina de updateScore/updateScoreByMonth
+        // e da convenção pré-existente de vote_dedup_do_error.
+        const body = await doResp.text().catch(() => "(unreadable)");
+        console.error(JSON.stringify({ event: "score_counter_adjust_correct_error", status: doResp.status, body, email_domain: email.split("@")[1] ?? "unknown" }));
       }
     } catch (e) {
-      console.error(JSON.stringify({ event: "score_counter_adjust_correct_error", email, error: String(e) }));
+      console.error(JSON.stringify({ event: "score_counter_adjust_correct_error", email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
     }
   }
 }
@@ -1568,20 +1580,45 @@ async function updateScoreByMonth(
         body: JSON.stringify({ edition, monthSlug, correct, kvBaseline } satisfies UpdateMonthPayload),
       });
       if (doResp.ok) {
-        const { month } = await doResp.json() as { ok: true; month: MonthScoreData };
+        // #4169 (achado silent-failure-hunter): parse isolado do corpo — o DO
+        // já commitou o incremento no PRÓPRIO storage (blockConcurrencyWhile)
+        // antes de responder; se só a RESPOSTA vier corrompida/truncada, um
+        // catch genérico cairia no fallback KV RMW abaixo e re-incrementaria —
+        // double-count exatamente da classe que este DO existe pra eliminar.
+        // Falha de parse aqui NUNCA cai no fallback: o DO já está correto
+        // internamente, só o espelho desta rodada fica stale (auto-corrige no
+        // PRÓXIMO voto bem-sucedido deste jogador, que relê o KV como
+        // kvBaseline — irrelevante pois o DO já tem estado real).
+        let month: MonthScoreData;
+        try {
+          ({ month } = await doResp.json() as { ok: true; month: MonthScoreData });
+        } catch (e) {
+          console.error(JSON.stringify({ event: "score_counter_do_month_parse_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+          return;
+        }
         const merged = { ...month, nickname };
+        let mirrorWritten = false;
         try {
           await env.POLL.put(key, JSON.stringify(merged));
+          mirrorWritten = true;
         } catch (e) {
-          console.error(JSON.stringify({ event: "score_by_month_kv_mirror_failed", edition, error: String(e) }));
+          console.error(JSON.stringify({ event: "score_by_month_kv_mirror_failed", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
         }
-        await upsertOwnEntryInSnapshot(env, monthSlug, {
-          email,
-          nickname: merged.nickname ?? null,
-          correct: merged.correct,
-          total: merged.total,
-          last_vote_ts: merged.last_vote_ts,
-        });
+        // #4169 (achado silent-failure-hunter): só faz upsert no snapshot se o
+        // mirror KV foi de fato escrito — senão o snapshot (cache) fica à
+        // frente do registro per-player (única fonte que `computeSnapshotEntries`
+        // relê numa recomputação futura), e essa recomputação REGRIDE a
+        // entry de volta pro valor stale, apagando silenciosamente o voto que
+        // o DO já registrou corretamente.
+        if (mirrorWritten) {
+          await upsertOwnEntryInSnapshot(env, monthSlug, {
+            email,
+            nickname: merged.nickname ?? null,
+            correct: merged.correct,
+            total: merged.total,
+            last_vote_ts: merged.last_vote_ts,
+          });
+        }
         return;
       }
       // DO retornou erro de cliente (4xx) — mesmo racional do #2293/updateStatsCounter:
@@ -1589,13 +1626,13 @@ async function updateScoreByMonth(
       // warning e pula este incremento, deixando o resto do voto completar normalmente.
       if (doResp.status >= 400 && doResp.status < 500) {
         const body = await doResp.text().catch(() => "(unreadable)");
-        console.warn(JSON.stringify({ event: "score_counter_do_month_client_error", status: doResp.status, body, edition, action: "skip_month_update" }));
+        console.warn(JSON.stringify({ event: "score_counter_do_month_client_error", status: doResp.status, body, edition, email_domain: email.split("@")[1] ?? "unknown", action: "skip_month_update" }));
         return;
       }
       // DO retornou erro de servidor (5xx) — fallback para KV RMW abaixo.
-      console.error(JSON.stringify({ event: "score_counter_do_month_error", status: doResp.status, edition }));
+      console.error(JSON.stringify({ event: "score_counter_do_month_error", status: doResp.status, edition, email_domain: email.split("@")[1] ?? "unknown" }));
     } catch (e) {
-      console.error(JSON.stringify({ event: "score_counter_do_month_error", edition, error: String(e) }));
+      console.error(JSON.stringify({ event: "score_counter_do_month_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
     }
   }
 
@@ -1754,12 +1791,26 @@ async function updateScore(
         body: JSON.stringify({ edition, correct, brand, kvBaseline } satisfies UpdateScorePayload),
       });
       if (doResp.ok) {
-        const { score } = await doResp.json() as { ok: true; score: ScoreData };
+        // #4169 (achado silent-failure-hunter): parse isolado do corpo — o DO
+        // já commitou o incremento no PRÓPRIO storage (blockConcurrencyWhile)
+        // antes de responder; se só a RESPOSTA vier corrompida/truncada, um
+        // catch genérico cairia no fallback KV RMW abaixo e re-incrementaria —
+        // double-count exatamente da classe que este DO existe pra eliminar.
+        // Falha de parse aqui NUNCA cai no fallback: o DO já está correto
+        // internamente, só o espelho desta rodada fica stale (auto-corrige no
+        // PRÓXIMO voto bem-sucedido deste jogador).
+        let score: ScoreData;
+        try {
+          ({ score } = await doResp.json() as { ok: true; score: ScoreData });
+        } catch (e) {
+          console.error(JSON.stringify({ event: "score_counter_do_parse_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+          return;
+        }
         const merged = { ...score, nickname: existingNickname };
         try {
           await env.POLL.put(scoreKey, JSON.stringify(merged));
         } catch (e) {
-          console.error(JSON.stringify({ event: "score_kv_mirror_failed", edition, error: String(e) }));
+          console.error(JSON.stringify({ event: "score_kv_mirror_failed", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
         }
         return;
       }
@@ -1768,13 +1819,13 @@ async function updateScore(
       // warning e pula este incremento, deixando o resto do voto completar normalmente.
       if (doResp.status >= 400 && doResp.status < 500) {
         const body = await doResp.text().catch(() => "(unreadable)");
-        console.warn(JSON.stringify({ event: "score_counter_do_client_error", status: doResp.status, body, edition, action: "skip_score_update" }));
+        console.warn(JSON.stringify({ event: "score_counter_do_client_error", status: doResp.status, body, edition, email_domain: email.split("@")[1] ?? "unknown", action: "skip_score_update" }));
         return;
       }
       // DO retornou erro de servidor (5xx) — fallback para KV RMW abaixo.
-      console.error(JSON.stringify({ event: "score_counter_do_error", status: doResp.status, edition }));
+      console.error(JSON.stringify({ event: "score_counter_do_error", status: doResp.status, edition, email_domain: email.split("@")[1] ?? "unknown" }));
     } catch (e) {
-      console.error(JSON.stringify({ event: "score_counter_do_error", edition, error: String(e) }));
+      console.error(JSON.stringify({ event: "score_counter_do_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
     }
   }
 

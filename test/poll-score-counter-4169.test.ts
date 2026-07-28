@@ -22,7 +22,10 @@
  * ## Cobertura
  * 1. ScoreCounter DO isolado: update-score/update-month serializam
  *    increments concorrentes (sem perda), streak calculado corretamente.
- * 2. adjust-correct/adjust-month-correct (sync com correção de gabarito).
+ * 2. adjust-correct/adjust-month-correct (sync com correção de gabarito) —
+ *    unidade (DO isolado) E integração fim-a-fim via handleAdminCorrect
+ *    (achado do code-review: a unidade sozinha não provava que o wiring de
+ *    produção — id do DO, payload, endpoint — está correto).
  * 3. Brand isolation.
  * 4. REGRESSÃO CENTRAL (#4169): dois `runVoteBookkeeping` concorrentes do
  *    MESMO email (edições diferentes) via `handleVote` fast-path real —
@@ -36,6 +39,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { handleVote } from "../workers/poll/src/vote.ts";
+import worker, { hmacSign } from "../workers/poll/src/index.ts";
 import {
   ScoreCounter,
   type ScoreData,
@@ -592,5 +596,310 @@ describe("Idempotência #2229 (guard-key) — DO ScoreCounter não re-incrementa
 
     const doInst = getInstance("diaria:guard4169@x.com");
     assert.ok(doInst, "instância DO deve existir (pré-carregada)");
+  });
+});
+
+// ── 6. Achados do review automatizado (#4248) ────────────────────────────────
+// code-reviewer + pr-test-analyzer: cobertura fim-a-fim faltando pro wiring de
+// produção (brand threading, erros do DO via handleVote real, sync do
+// handleAdminCorrect). silent-failure-hunter: 3 fixes aplicados em vote.ts
+// (parse isolado do corpo do DO, snapshot gated no mirror-write, email_domain
+// nos logs) — os testes abaixo travam esse comportamento.
+
+/**
+ * Namespace ScoreCounter que permite sobrescrever a resposta de uma rota
+ * específica (status/corpo customizado) — usado pra exercitar os ramos de
+ * erro do DO (4xx/5xx/corpo corrompido) que `updateScore`/`updateScoreByMonth`
+ * tratam de forma distinta. Mesmo padrão de `makeFlakyStatsCounterNs` em
+ * poll-stats-do-stale-4125.test.ts.
+ */
+function makeFlakyScoreCounterNs(
+  path: string,
+  respond: () => Response | Promise<Response>,
+): { ns: DurableObjectNamespace; getInstance: (name: string) => ScoreCounter | undefined } {
+  const instances = new Map<string, ScoreCounter>();
+  const ns: DurableObjectNamespace = {
+    idFromName: (name: string): DurableObjectId => ({ name, toString: () => name }) as unknown as DurableObjectId,
+    get: (id: DurableObjectId): DurableObjectStub => {
+      const name = id.toString();
+      if (!instances.has(name)) instances.set(name, makeScoreCounter());
+      const inst = instances.get(name)!;
+      return {
+        fetch: async (url: RequestInfo, init?: RequestInit) => {
+          const req = new Request(url as string, init);
+          if (new URL(req.url).pathname === path) return respond();
+          return inst.fetch(req);
+        },
+      } as unknown as DurableObjectStub;
+    },
+  } as unknown as DurableObjectNamespace;
+  return { ns, getInstance: (name) => instances.get(name) };
+}
+
+describe("#4169/#4248 — brand threading em handleVote/runVoteBookkeeping (achado pr-test-analyzer)", () => {
+  it("brand='clarice' cria a instância DO 'clarice:{email}', NÃO 'diaria:{email}' (proteção contra hardcode acidental)", async () => {
+    const email = "brand-thread@x.com";
+    const { ns: scoreNs, getInstance } = makeScoreCounterNs();
+    const env: Env = {
+      POLL: makeTrackedKv({ "correct:260601": "A" }) as unknown as KVNamespace,
+      SCORE_COUNTER: scoreNs,
+      POLL_SECRET: "poll-secret",
+      ADMIN_SECRET: "admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+    const req = makeRealCtx();
+    await handleVote(voteUrl(email, "260601", "A"), env, "clarice", env, req.ctx);
+    await flush(req.scheduled);
+
+    assert.ok(getInstance(`clarice:${email}`), "instância DO deve existir sob a chave clarice:{email}");
+    assert.ok(!getInstance(`diaria:${email}`), "NUNCA deve criar uma instância diaria:{email} — brand hardcoded seria bug silencioso");
+  });
+});
+
+describe("#4169/#4248 — erros do DO ScoreCounter via handleVote real (achado pr-test-analyzer)", () => {
+  it("DO 500 em /update-score → cai no fallback KV RMW, voto completa e score:{email} é incrementado", async () => {
+    const email = "do500-score@x.com";
+    const kv = makeTrackedKv({ "correct:260601": "A" });
+    const { ns: flakyNs } = makeFlakyScoreCounterNs("/update-score", () => new Response("simulated DO 500", { status: 500 }));
+    const env: Env = { POLL: kv as unknown as KVNamespace, SCORE_COUNTER: flakyNs, POLL_SECRET: "s", ADMIN_SECRET: "a", ALLOWED_ORIGINS: "*" };
+
+    const req = makeRealCtx();
+    const res = await handleVote(voteUrl(email, "260601", "A"), env, "diaria", env, req.ctx);
+    assert.match(await res.text(), /✅ Acertou!/);
+    await flush(req.scheduled);
+
+    const score = JSON.parse((await kv.get(`score:${email}`))!);
+    assert.equal(score.total, 1, "fallback KV RMW deve ter incrementado normalmente após o 5xx do DO");
+    assert.equal(score.correct, 1);
+  });
+
+  it("DO 400 em /update-score → pula o incremento (nem DO nem fallback), voto ainda completa e voteKey é commitado", async () => {
+    const email = "do400-score@x.com";
+    const kv = makeTrackedKv({ "correct:260601": "A" });
+    const { ns: flakyNs } = makeFlakyScoreCounterNs("/update-score", () => new Response(JSON.stringify({ error: "simulated invalid payload" }), { status: 400 }));
+    const env: Env = { POLL: kv as unknown as KVNamespace, SCORE_COUNTER: flakyNs, POLL_SECRET: "s", ADMIN_SECRET: "a", ALLOWED_ORIGINS: "*" };
+
+    const req = makeRealCtx();
+    const res = await handleVote(voteUrl(email, "260601", "A"), env, "diaria", env, req.ctx);
+    assert.match(await res.text(), /✅ Acertou!/, "voto do jogador NUNCA falha por causa de um 400 do DO");
+    await flush(req.scheduled);
+
+    assert.equal(await kv.get(`score:${email}`), null, "4xx: incremento é pulado — nem DO nem fallback tocam score:{email}");
+    assert.ok(await kv.get(`vote:260601:${email}`), "voteKey continua sendo commitado normalmente (400 do DO não bloqueia o resto do voto)");
+  });
+
+  it("DO retorna 200 mas corpo corrompido em /update-score → NÃO cai no fallback (evitaria double-count); score:{email} fica ausente nesta rodada", async () => {
+    // #4169 (achado silent-failure-hunter): o DO já commitou o incremento no
+    // PRÓPRIO storage antes de responder — se a RESPOSTA vier corrompida, um
+    // catch genérico caindo no fallback re-incrementaria (double-count). Este
+    // teste prova que a resposta corrompida NÃO aciona o fallback: nenhuma
+    // escrita em score:{email} acontece nesta rodada (o mirror fica stale só
+    // até o PRÓXIMO voto bem-sucedido deste jogador).
+    const email = "do-corrupt-score@x.com";
+    const kv = makeTrackedKv({ "correct:260601": "A" });
+    const { ns: flakyNs } = makeFlakyScoreCounterNs("/update-score", () => new Response("isto não é json", { status: 200 }));
+    const env: Env = { POLL: kv as unknown as KVNamespace, SCORE_COUNTER: flakyNs, POLL_SECRET: "s", ADMIN_SECRET: "a", ALLOWED_ORIGINS: "*" };
+
+    const req = makeRealCtx();
+    const res = await handleVote(voteUrl(email, "260601", "A"), env, "diaria", env, req.ctx);
+    assert.match(await res.text(), /✅ Acertou!/);
+    await flush(req.scheduled);
+
+    assert.equal(
+      await kv.get(`score:${email}`),
+      null,
+      "REGRESSÃO: corpo corrompido não deve acionar o fallback KV RMW (double-count) — mirror fica ausente, não duplicado",
+    );
+  });
+
+  it("DO 500 em /update-month → cai no fallback KV RMW, entry mensal é escrita", async () => {
+    const email = "do500-month@x.com";
+    const kv = makeTrackedKv({ "correct:260601": "A" });
+    const { ns: flakyNs } = makeFlakyScoreCounterNs("/update-month", () => new Response("simulated DO 500", { status: 500 }));
+    const env: Env = { POLL: kv as unknown as KVNamespace, SCORE_COUNTER: flakyNs, POLL_SECRET: "s", ADMIN_SECRET: "a", ALLOWED_ORIGINS: "*" };
+
+    const req = makeRealCtx();
+    await handleVote(voteUrl(email, "260601", "A"), env, "diaria", env, req.ctx);
+    await flush(req.scheduled);
+
+    const month = JSON.parse((await kv.get(`score-by-month:2026-06:${email}`))!);
+    assert.equal(month.total, 1, "fallback deve ter gravado a entry mensal após o 5xx do DO");
+  });
+
+  it("DO retorna 200 mas corpo corrompido em /update-month → NÃO cai no fallback; score-by-month:{...} fica ausente nesta rodada", async () => {
+    const email = "do-corrupt-month@x.com";
+    const kv = makeTrackedKv({ "correct:260601": "A" });
+    const { ns: flakyNs } = makeFlakyScoreCounterNs("/update-month", () => new Response("isto não é json", { status: 200 }));
+    const env: Env = { POLL: kv as unknown as KVNamespace, SCORE_COUNTER: flakyNs, POLL_SECRET: "s", ADMIN_SECRET: "a", ALLOWED_ORIGINS: "*" };
+
+    const req = makeRealCtx();
+    await handleVote(voteUrl(email, "260601", "A"), env, "diaria", env, req.ctx);
+    await flush(req.scheduled);
+
+    assert.equal(
+      await kv.get(`score-by-month:2026-06:${email}`),
+      null,
+      "REGRESSÃO: corpo corrompido não deve acionar o fallback KV RMW (double-count) no mensal",
+    );
+  });
+});
+
+describe("#4169/#4248 — snapshot do leaderboard NÃO diverge de um mirror-write falho (achado CRÍTICO silent-failure-hunter)", () => {
+  it("mirror KV de score-by-month falha ao escrever → upsertOwnEntryInSnapshot é PULADO (snapshot pré-existente permanece intacto)", async () => {
+    // #4169: sem este guard, upsertOwnEntryInSnapshot rodava incondicionalmente
+    // mesmo quando o `env.POLL.put(key, merged)` (mirror per-player) falhava —
+    // o snapshot (cache) ficaria À FRENTE do registro per-player (única fonte
+    // que uma recomputação futura relê), e essa recomputação REGREDIRIA a
+    // entry de volta pro valor stale, apagando silenciosamente o voto que o
+    // DO já registrou corretamente. Este teste força a falha do mirror-write
+    // (put específico pra essa chave lança) e prova que o snapshot NÃO muda.
+    const email = "snapshot-guard@x.com";
+    const monthKey = `score-by-month:2026-06:${email}`;
+    const snapKey = "leaderboard-snapshot:2026-06";
+    const sentinelSnapshot = JSON.stringify({ entries: [], computed_at: "2026-06-01T00:00:00.000Z" });
+
+    const baseKv = makeTrackedKv({
+      "correct:260601": "A",
+      [snapKey]: sentinelSnapshot,
+    });
+    const kv = {
+      ...baseKv,
+      async put(key: string, value: string, opts?: { expirationTtl?: number }) {
+        if (key === monthKey) {
+          throw new Error("simulated KV put failure (#4169 mirror-write test)");
+        }
+        return baseKv.put(key, value, opts);
+      },
+    };
+
+    const { ns: scoreNs } = makeScoreCounterNs();
+    const env: Env = { POLL: kv as unknown as KVNamespace, SCORE_COUNTER: scoreNs, POLL_SECRET: "s", ADMIN_SECRET: "a", ALLOWED_ORIGINS: "*" };
+
+    const req = makeRealCtx();
+    const res = await handleVote(voteUrl(email, "260601", "A"), env, "diaria", env, req.ctx);
+    assert.match(await res.text(), /✅ Acertou!/, "falha do mirror-write mensal não deve derrubar o voto do jogador");
+    await flush(req.scheduled);
+
+    assert.equal(await kv.get(monthKey), null, "sanity: o mirror per-player de fato não foi escrito (put lançou)");
+    assert.equal(
+      await kv.get(snapKey),
+      sentinelSnapshot,
+      "REGRESSÃO: o snapshot do leaderboard NÃO deve mudar quando o mirror per-player falhou — senão diverge e uma recomputação futura regride o voto",
+    );
+    assert.equal(
+      baseKv.puts.filter((p) => p.key === snapKey).length,
+      0,
+      "upsertOwnEntryInSnapshot nunca deve ser chamado quando o mirror-write falhou",
+    );
+  });
+});
+
+describe("#4169/#4248 — handleAdminCorrect sincroniza o DO ScoreCounter fim-a-fim (achado code-reviewer + pr-test-analyzer)", () => {
+  it("correção de gabarito (false→true) via /admin/correct atualiza o correct CACHEADO no DO, não só o KV", async () => {
+    const email = "admin-sync@x.com";
+    const kv = makeTrackedKv();
+    const { ns: scoreNs } = makeScoreCounterNs();
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      SCORE_COUNTER: scoreNs,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    // Vota A no gabarito ainda indefinido → registra como errado quando o
+    // gabarito abrir como B (voto A ≠ gabarito B).
+    const voteReq = makeRealCtx();
+    await handleVote(voteUrl(email, "260613", "A"), env, "diaria", env, voteReq.ctx);
+    await flush(voteReq.scheduled);
+
+    // Fecha o gabarito como B — este voto (A) vira INCORRETO (correct:false).
+    const sigB = await hmacSign("test-admin-secret", "diaria:260613:B");
+    const adminUrlB = new URL("https://poll.diaria.workers.dev/admin/correct");
+    adminUrlB.searchParams.set("edition", "260613");
+    adminUrlB.searchParams.set("answer", "B");
+    adminUrlB.searchParams.set("sig", sigB);
+    await worker.fetch(new Request(adminUrlB.toString(), { method: "POST" }), env, {} as ExecutionContext);
+
+    const scoreAfterB = JSON.parse((await kv.get(`score:${email}`))!);
+    assert.equal(scoreAfterB.correct, 0, "sanity: gabarito B, voto A → correct:false → score.correct deve ser 0");
+
+    // Editor corrige o gabarito de volta pra A — o voto (A) agora vira CORRETO.
+    // Isto é o backfill que deve sincronizar o DO via /adjust-correct.
+    const sigA = await hmacSign("test-admin-secret", "diaria:260613:A");
+    const adminUrlA = new URL("https://poll.diaria.workers.dev/admin/correct");
+    adminUrlA.searchParams.set("edition", "260613");
+    adminUrlA.searchParams.set("answer", "A");
+    adminUrlA.searchParams.set("sig", sigA);
+    const adminResA = await worker.fetch(new Request(adminUrlA.toString(), { method: "POST" }), env, {} as ExecutionContext);
+    assert.equal(adminResA.status, 200);
+
+    const scoreAfterA = JSON.parse((await kv.get(`score:${email}`))!);
+    assert.equal(scoreAfterA.correct, 1, "sanity: KV já reflete correct:1 após a 2ª correção");
+
+    // O TESTE CENTRAL: o DO precisa refletir correct:1 também — não só o KV.
+    // Sonda o DO diretamente com um update NEUTRO (correct:null, não altera
+    // correct/streak) pra ler o valor ATUAL cacheado sem incrementá-lo.
+    const doId = scoreNs.idFromName("diaria:" + email);
+    const doStub = scoreNs.get(doId);
+    const probeResp = await doStub.fetch(new Request("https://internal/update-score", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ edition: "990101", correct: null, brand: "diaria" } satisfies UpdateScorePayload),
+    }));
+    const { score: doScore } = await probeResp.json() as { score: ScoreData };
+    assert.equal(
+      doScore.correct,
+      1,
+      `REGRESSÃO: o DO ScoreCounter deve refletir correct:1 após a correção de gabarito — sem o sync do handleAdminCorrect, ficaria stale em 0 (got ${doScore.correct})`,
+    );
+  });
+
+  it("correção de gabarito no registro MENSAL também sincroniza o DO", async () => {
+    const email = "admin-sync-month@x.com";
+    const kv = makeTrackedKv();
+    const { ns: scoreNs } = makeScoreCounterNs();
+    const env: Env = {
+      POLL: kv as unknown as KVNamespace,
+      SCORE_COUNTER: scoreNs,
+      POLL_SECRET: "test-secret",
+      ADMIN_SECRET: "test-admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+
+    const voteReq = makeRealCtx();
+    await handleVote(voteUrl(email, "260613", "A"), env, "diaria", env, voteReq.ctx);
+    await flush(voteReq.scheduled);
+
+    const sigB = await hmacSign("test-admin-secret", "diaria:260613:B");
+    const adminUrlB = new URL("https://poll.diaria.workers.dev/admin/correct");
+    adminUrlB.searchParams.set("edition", "260613");
+    adminUrlB.searchParams.set("answer", "B");
+    adminUrlB.searchParams.set("sig", sigB);
+    await worker.fetch(new Request(adminUrlB.toString(), { method: "POST" }), env, {} as ExecutionContext);
+
+    const sigA = await hmacSign("test-admin-secret", "diaria:260613:A");
+    const adminUrlA = new URL("https://poll.diaria.workers.dev/admin/correct");
+    adminUrlA.searchParams.set("edition", "260613");
+    adminUrlA.searchParams.set("answer", "A");
+    adminUrlA.searchParams.set("sig", sigA);
+    await worker.fetch(new Request(adminUrlA.toString(), { method: "POST" }), env, {} as ExecutionContext);
+
+    const monthAfter = JSON.parse((await kv.get("score-by-month:2026-06:" + email))!);
+    assert.equal(monthAfter.correct, 1, "sanity: KV mensal já reflete correct:1");
+
+    const doId = scoreNs.idFromName("diaria:" + email);
+    const doStub = scoreNs.get(doId);
+    const probeResp = await doStub.fetch(new Request("https://internal/update-month", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ edition: "990101", monthSlug: "2026-06", correct: null } satisfies UpdateMonthPayload),
+    }));
+    const { month: doMonth } = await probeResp.json() as { month: MonthScoreData };
+    assert.equal(
+      doMonth.correct,
+      1,
+      `REGRESSÃO: o DO ScoreCounter (mensal) deve refletir correct:1 após a correção de gabarito — got ${doMonth.correct}`,
+    );
   });
 });
