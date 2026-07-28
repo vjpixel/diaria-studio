@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { computeScheduledAt as computeScheduledAtShared } from "./compute-social-schedule.ts";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
+import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
 import { extractSection } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
@@ -438,7 +439,11 @@ async function rescheduleFacebookPosts(opts: {
       continue;
     }
 
-    const imageFile = `04-${d}-1x1.jpg`;
+    // #4090 self-review: antes desta troca, o fluxo de reschedule sempre
+    // usava 1x1, mesmo quando a edição tinha o card 4:5 gerado — a checagem
+    // `has4x5` só existia no dispatch inicial abaixo. Seletor compartilhado
+    // fecha essa divergência (mesmo critério nos 3 call sites).
+    const imageFile = selectSocialCardImageFile(opts.editionDir, d);
     const imagePath = resolve(opts.editionDir, imageFile);
     if (!existsSync(imagePath)) {
       console.error(`ERROR: Image ${imageFile} not found`);
@@ -683,9 +688,7 @@ async function main() {
 
     // Card 4:5 (1080x1350, título embutido) quando a edição o gerou — mesmo
     // critério do Instagram. Fallback: 1x1 (#502, sempre presente).
-    const imageFile = existsSync(resolve(editionDir, `04-${d}-4x5.jpg`))
-      ? `04-${d}-4x5.jpg`
-      : `04-${d}-1x1.jpg`;
+    const imageFile = selectSocialCardImageFile(editionDir, d);
     const imagePath = resolve(editionDir, imageFile);
     if (!existsSync(imagePath)) {
       console.error(`ERROR: Image ${imageFile} not found`);

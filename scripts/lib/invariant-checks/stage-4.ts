@@ -1128,6 +1128,58 @@ function checkBoxDivulgacaoAltMissing(
   return violations;
 }
 
+/**
+ * #4090 item 4 (decisão do editor, 260727): se a edição gerou o card 4:5
+ * (`04-d{N}-4x5.jpg` no disco — mandatório desde a decisão 260728, ver
+ * `checkCard4x5Exists` em stage-3.ts) mas o upload (`06-public-images.json`)
+ * não tem a entry `d{N}_4x5`, avisar no gate — silêncio aqui publica o post
+ * no formato ERRADO (1:1 sem título) sem ninguém perceber, porque os
+ * publishers fazem fallback silencioso (`selectSocialCardImageFile`).
+ *
+ * Severity "warning", não "error": a issue original pede "avisar no gate",
+ * não bloquear — `upload-images-public.ts` trata a entry `d{N}_4x5` como
+ * `optional: true` (upload de card é adicional ao fluxo newsletter/social
+ * que já funciona sem ele), e `checkCard4x5Exists` (Stage 3) já é a barreira
+ * dura pra GERAÇÃO. Este check cobre o passo seguinte — UPLOAD — que pode
+ * falhar independente da geração ter dado certo (rede, cache stale, etc).
+ */
+function checkCard4x5UploadMismatch(editionDir: string): InvariantViolation[] {
+  const imagesPath = resolve(editionDir, "06-public-images.json");
+  const destaqueCount = readDestaqueCount(editionDir);
+  const slots = destaqueCount === 2 ? (["d1", "d2"] as const) : (["d1", "d2", "d3"] as const);
+
+  let images: PublicImagesJson["images"] = {};
+  if (existsSync(imagesPath)) {
+    try {
+      images = (JSON.parse(readFileSync(imagesPath, "utf8")) as PublicImagesJson).images ?? {};
+    } catch {
+      images = {}; // JSON inválido já é coberto por public-images-parseable
+    }
+  }
+
+  const violations: InvariantViolation[] = [];
+  for (const d of slots) {
+    const cardPath = resolve(editionDir, `04-${d}-4x5.jpg`);
+    if (!existsSync(cardPath)) continue; // sem card gerado nesta edição — nada a cruzar
+    const url = images?.[`${d}_4x5`]?.url;
+    if (!url || typeof url !== "string" || url.trim().length === 0) {
+      violations.push({
+        rule: "card-4x5-upload-missing",
+        message:
+          `04-${d}-4x5.jpg existe no disco mas 06-public-images.json não tem ` +
+          `images.${d}_4x5.url — upload-images-public.ts não subiu o card 4:5 (ou rodou ` +
+          `antes do card existir). Publishers vão cair pro 1:1 EM SILÊNCIO (post sai sem ` +
+          `título embutido). Fix: re-rodar "npx tsx scripts/upload-images-public.ts ` +
+          `--edition-dir ${editionDir}" antes de publicar.`,
+        source_issue: "#4090",
+        severity: "warning",
+        file: imagesPath,
+      });
+    }
+  }
+  return violations;
+}
+
 export const STAGE_4_RULES: InvariantRule[] = [
   {
     id: "public-images-populated",
@@ -1241,6 +1293,13 @@ export const STAGE_4_RULES: InvariantRule[] = [
     stage: 4,
     run: checkBoxDivulgacaoAltMissing,
   },
+  {
+    id: "card-4x5-upload-missing",
+    description: "card 4:5 existe no disco mas 06-public-images.json não tem a entry d{N}_4x5 (#4090, warning-only)",
+    source_issue: "#4090",
+    stage: 4,
+    run: checkCard4x5UploadMismatch,
+  },
   // #1694 finding 8: publication env-var checks movidas pra STAGE_5_RULES.
   // Facebook/LinkedIn tokens só são necessários no Stage 5 (Publicação) — não devem
   // bloquear a Revisão (Stage 4) quando tokens expirados ou não configurados.
@@ -1267,4 +1326,5 @@ export {
   checkCaptureFailedSubmissionCount,
   checkCropReviewWarnings,
   checkBoxDivulgacaoAltMissing,
+  checkCard4x5UploadMismatch,
 };

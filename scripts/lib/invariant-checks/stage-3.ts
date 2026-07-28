@@ -208,6 +208,55 @@ function checkEiaAnswerResolved(editionDir: string): InvariantViolation[] {
   return [];
 }
 
+const CARD_4X5_BASE = ["04-d1-4x5.jpg", "04-d2-4x5.jpg"];
+const CARD_4X5_D3 = ["04-d3-4x5.jpg"];
+
+/**
+ * #4090 (decisão do editor, comentário 260728 na issue): o card social 4:5
+ * (feed do Instagram/Facebook, título embutido, #4114) passa de opcional pra
+ * MANDATÓRIO — "se o card 4:5 não gerar, o Stage 3 para. Nenhuma edição sai
+ * sem card 4:5." Antes dessa decisão, `gen-social-card-4x5.ts` falhando era
+ * tratado como não-bloqueante (orchestrator-stage-3.md logava warn e seguia)
+ * e os publishers caíam pro 1:1 em silêncio — o estado que motivou a #4114
+ * originalmente.
+ *
+ * Regra SEPARADA de `checkAllImagesExist` (não misturada na mesma lista) por
+ * dois motivos: (1) evita alterar a contagem fixa que testes existentes
+ * assertam pra `checkAllImagesExist`; (2) a causa mais comum de falha aqui é
+ * específica (fonte de marca ausente — ver `assert-brand-font.ts`) e vale
+ * nomear na mensagem, o que uma lista genérica de "imagem ausente" não faz.
+ *
+ * Esta checagem é defesa em profundidade: o call site real
+ * (`orchestrator-stage-3.md`) já deve abortar no exit code não-zero de
+ * `gen-social-card-4x5.ts` antes de chegar aqui. Este invariant cobre o caso
+ * de uma sessão retomada pular essa instrução (resume de checkpoint, ou
+ * edição de orquestração que não seguiu o prosa à risca).
+ */
+function checkCard4x5Exists(editionDir: string): InvariantViolation[] {
+  const destaqueCount = readDestaqueCount(editionDir);
+  const required = destaqueCount === 2 ? CARD_4X5_BASE : [...CARD_4X5_BASE, ...CARD_4X5_D3];
+  const violations: InvariantViolation[] = [];
+  for (const name of required) {
+    const path = resolve(editionDir, name);
+    if (!existsSync(path)) {
+      violations.push({
+        rule: "card-4x5-exists",
+        message:
+          `Card social 4:5 ausente: ${name}. Decisão do editor (#4090, 260728): nenhuma ` +
+          `edição sai sem o card 4:5 — sem ele, os publishers caem pro 1:1 EM SILÊNCIO. ` +
+          `Causa mais comum: fonte de marca (Georgia) ausente nesta máquina — rode ` +
+          `"npx tsx scripts/gen-social-card-4x5.ts --edition-dir ${editionDir}" pra ver o ` +
+          `erro específico (a mensagem nomeia a fonte e a saída). Geração de card é LOCAL ` +
+          `por decisão do editor — não roda em CI/container sem a fonte instalada.`,
+        source_issue: "#4090",
+        severity: "error",
+        file: path,
+      });
+    }
+  }
+  return violations;
+}
+
 export const STAGE_3_RULES: InvariantRule[] = [
   {
     id: "all-images-exist",
@@ -230,12 +279,20 @@ export const STAGE_3_RULES: InvariantRule[] = [
     stage: 3,
     run: checkEiaAnswerResolved,
   },
+  {
+    id: "card-4x5-exists",
+    description: "card social 4:5 (feed IG/FB, título embutido) existe pra cada destaque — mandatório por decisão do editor (#4090)",
+    source_issue: "#4090",
+    stage: 3,
+    run: checkCard4x5Exists,
+  },
 ];
 
 export {
   checkAllImagesExist,
   checkPromptsClean,
   checkEiaAnswerResolved,
+  checkCard4x5Exists,
   readDestaqueCount,
   REQUIRED_IMAGES,
   REQUIRED_IMAGES_BASE,
@@ -243,4 +300,6 @@ export {
   PROMPT_FILES,
   PROMPT_FILES_BASE,
   PROMPT_FILES_D3,
+  CARD_4X5_BASE,
+  CARD_4X5_D3,
 };

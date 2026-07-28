@@ -156,7 +156,7 @@ npx tsx scripts/render-halt-banner.ts \
    ```bash
    npx tsx scripts/check-invariants.ts --stage 4 --edition-dir {EDITION_DIR}/
    ```
-   Exit 1 = pausar com violations no stderr. Editor corrige e re-roda. Inclui `image-crop-warn` (#3951, revisor de crop do Stage 3) — severity warning, nunca pausa; incluir no `{violations_block}` do gate (§4d).
+   Exit 1 = pausar com violations no stderr. Editor corrige e re-roda. Inclui `image-crop-warn` (#3951, revisor de crop do Stage 3) — severity warning, nunca pausa; incluir no `{violations_block}` do gate (§4d). Inclui também `card-4x5-upload-missing` (#4090 item 4) — dispara quando `04-d{N}-4x5.jpg` existe no disco mas `06-public-images.json` não tem `d{N}_4x5.url` (upload não subiu o card); severity warning, nunca pausa, mas silêncio aqui publica o post no formato errado (1:1 sem título) — incluir no `{violations_block}` do gate (§4d).
 
 ### 4c. Montar resumo consolidado da edição
 
