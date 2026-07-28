@@ -244,10 +244,47 @@ describe("serve-preview.ts CLI", () => {
     ]);
     try {
       assert.ok(json.url.startsWith("http://127.0.0.1:"), `url deveria ser loopback: ${json.url}`);
-      // dá um instante pro handler de persist (síncrono, mas depois do console.log) rodar.
-      await new Promise((r) => setTimeout(r, 300));
-      assert.ok(existsSync(persistPath), "arquivo de persist deveria existir");
-      const persisted = JSON.parse(readFileSync(persistPath, "utf8"));
+      // Polling com deadline: o handler de persist é síncrono mas roda depois
+      // do console.log de start — um sleep fixo (300ms) virou corrida sob
+      // carga de CI (#4240, caso levou 614ms no run 30358360022). Poll a cada
+      // ~25ms até um teto generoso deixa o caminho feliz rápido e resiste a
+      // carga.
+      //
+      // `--field` grava em DUAS escritas sequenciais (url, depois `{field}_pid`
+      // — cada uma via `persistFieldToJsonFile`, read-merge-write próprio) —
+      // então checar só `existsSync` reabre a mesma classe de flake: o arquivo
+      // já existe (1ª escrita) mas `newsletter_url_pid` ainda não foi gravado
+      // (2ª escrita ainda não rodou). Poll até o conteúdo completo aparecer,
+      // não só até o arquivo existir.
+      const deadline = Date.now() + 5000;
+      let persisted: { newsletter_url?: string; newsletter_url_pid?: string } | undefined;
+      let lastRawContent: string | undefined;
+      let lastParseError: unknown;
+      while (Date.now() < deadline) {
+        if (existsSync(persistPath)) {
+          try {
+            lastRawContent = readFileSync(persistPath, "utf8");
+            const candidate = JSON.parse(lastRawContent);
+            if (candidate.newsletter_url_pid !== undefined) {
+              persisted = candidate;
+              break;
+            }
+          } catch (e) {
+            // Leitura pode falhar transitoriamente (ENOENT/parse) numa janela
+            // estreita ao redor do rename() do writer — tenta de novo no
+            // próximo tick. Guarda o erro só pra diagnóstico caso o deadline
+            // estoure (não deveria acontecer no caminho feliz).
+            lastParseError = e;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      assert.ok(
+        persisted,
+        "arquivo de persist deveria existir com newsletter_url + newsletter_url_pid gravados " +
+          `(último conteúdo lido: ${lastRawContent ?? "<arquivo nunca criado>"}; ` +
+          `último erro de parse: ${lastParseError ?? "nenhum"})`,
+      );
       assert.equal(persisted.newsletter_url, json.url);
       assert.equal(String(persisted.newsletter_url_pid), String(json.pid));
     } finally {
