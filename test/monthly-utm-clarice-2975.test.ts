@@ -19,7 +19,9 @@
  *   - wordmark automático: NÃO é mais link (decisão do editor 260727) — não
  *     convertia, e 4 âncoras por edição pro mesmo destino só somavam densidade
  *     promocional. O sufixo `wordmark-{seção}` do #4040 foi aposentado junto;
- *   - link markdown inline (`renderInline`)     → `inline`
+ *   - link markdown inline (`renderInline`)     → `inline-{seção}` (a edição
+ *     tem dois CTAs "aqui", apresentação e encerramento; com o slug flat os
+ *     dois saíam com href idêntico e o linksStats somava)
  *   - botão CTA (`renderCtaButton`)             → `cta`
  *   - título de destaque linkado                → `titulo`
  *   - pill link do encerramento                 → `pill-{rótulo}` (cursos e
@@ -45,6 +47,7 @@ import {
   renderEncerramento,
   renderLinkListSection,
   setMonthlyUtmCiclo,
+  setMonthlyUtmSecao,
 } from "../scripts/lib/mensal/monthly-render.ts";
 import {
   buildMensalCampaign,
@@ -67,7 +70,7 @@ describe("UTM clarice em links do host de marca (#2975)", () => {
       const out = normalizeKnownUrl("https://diar.ia.br");
       assert.match(out, /utm_source=clarice/);
       assert.match(out, /utm_medium=email/);
-      assert.match(out, /utm_campaign=clarice-2606-07-inline/);
+      assert.match(out, /utm_campaign=clarice-2606-07-inline-geral/);
       assert.doesNotMatch(out, /sendinblue/);
     } finally {
       setMonthlyUtmCiclo(null);
@@ -80,7 +83,7 @@ describe("UTM clarice em links do host de marca (#2975)", () => {
       const out = normalizeKnownUrl("https://diaria.beehiiv.com");
       assert.match(out, /^https:\/\/diar\.ia\.br\//);
       assert.doesNotMatch(out, /diaria\.beehiiv\.com/);
-      assert.match(out, /utm_campaign=clarice-2606-07-inline/);
+      assert.match(out, /utm_campaign=clarice-2606-07-inline-geral/);
     } finally {
       setMonthlyUtmCiclo(null);
     }
@@ -162,6 +165,45 @@ describe("UTM clarice em links do host de marca (#2975)", () => {
     }
   });
 
+  // A 2606-07 tinha DOIS CTAs "aqui" — apresentação e encerramento — com href
+  // IDÊNTICO. O linksStats da Brevo agrega por URL exata, então os cliques dos
+  // dois chegavam somados. Mesma classe do que motivou o #4040 pros wordmarks.
+  it("dois links inline em seções diferentes não colidem", () => {
+    setMonthlyUtmCiclo("2606-07");
+    try {
+      setMonthlyUtmSecao("APRESENTAÇÃO");
+      const apre = renderInline("cadastre-se [aqui](https://diar.ia.br).");
+      setMonthlyUtmSecao("PARA ENCERRAR");
+      const fim = renderInline("cadastre-se [aqui](https://diar.ia.br).");
+      assert.match(apre, /utm_campaign=clarice-2606-07-inline-apresentacao/);
+      assert.match(fim, /utm_campaign=clarice-2606-07-inline-para-encerrar/);
+      assert.notEqual(campaigns(apre)[0], campaigns(fim)[0], "os dois \"aqui\" voltaram a colidir");
+    } finally {
+      setMonthlyUtmSecao(null);
+      setMonthlyUtmCiclo(null);
+    }
+  });
+
+  // Guard de ponta a ponta: nenhum href pode aparecer 2x na MESMA edicao.
+  it("draftToEmail: nenhum href de marca se repete na edição", () => {
+    const draft = [
+      "**APRESENTAÇÃO**",
+      "",
+      "se cadastre gratuitamente [aqui](https://diar.ia.br).",
+      "",
+      "**PARA ENCERRAR**",
+      "",
+      "cadastre-se gratuitamente [aqui](https://diar.ia.br).",
+    ].join("\n");
+    const { html } = draftToEmail(draft, "Assunto", "2606");
+    const hrefs = [...html.matchAll(/href="([^"]*diar\.ia\.br[^"]*)"/g)].map((m) => m[1]);
+    assert.equal(
+      new Set(hrefs).size,
+      hrefs.length,
+      `href de marca repetido na edição: ${hrefs.join(" | ")}`,
+    );
+  });
+
   it("normalizeKnownUrl não mexe em hosts de terceiros", () => {
     setMonthlyUtmCiclo("2606-07");
     try {
@@ -194,7 +236,7 @@ describe("#4040 — utm_campaign distinto por POSIÇÃO do link", () => {
     setMonthlyUtmCiclo("2606-07");
     try {
       const html = renderInline("cadastre-se [aqui](https://diar.ia.br).");
-      assert.match(html, /utm_campaign=clarice-2606-07-inline"/);
+      assert.match(html, /utm_campaign=clarice-2606-07-inline-geral"/);
     } finally {
       setMonthlyUtmCiclo(null);
     }
@@ -213,7 +255,7 @@ describe("#4040 — utm_campaign distinto por POSIÇÃO do link", () => {
         "Use Melhor", // título de exibição real em produção (#1919), sem "do Mês"
       );
       assert.match(html, /utm_campaign=clarice-2606-07-use-melhor"/);
-      assert.doesNotMatch(html, /utm_campaign=clarice-2606-07-inline/);
+      assert.doesNotMatch(html, /utm_campaign=clarice-2606-07-inline-geral/);
     } finally {
       setMonthlyUtmCiclo(null);
     }
@@ -305,7 +347,7 @@ describe("#4040 — utm_campaign distinto por POSIÇÃO do link", () => {
     );
 
     for (const esperada of [
-      "clarice-2606-07-inline", // boilerplate APRESENTAÇÃO
+      "clarice-2606-07-inline-apresentacao", // boilerplate APRESENTAÇÃO
       "clarice-2606-07-cta",    // botão CTA "→ [..](..)" do box de divulgação
       "clarice-2606-07-titulo", // título de item do Radar
     ]) {
@@ -348,7 +390,7 @@ describe("#4040 — utm_campaign distinto por POSIÇÃO do link", () => {
     assert.equal(normalizeKnownUrl("https://diar.ia.br"), "https://diar.ia.br");
     setMonthlyUtmCiclo("2607-08");
     try {
-      assert.match(normalizeKnownUrl("https://diar.ia.br"), /utm_campaign=clarice-2607-08-inline/);
+      assert.match(normalizeKnownUrl("https://diar.ia.br"), /utm_campaign=clarice-2607-08-inline-geral/);
     } finally {
       setMonthlyUtmCiclo(null);
     }
