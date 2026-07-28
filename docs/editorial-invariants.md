@@ -55,7 +55,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | id | descrição | issue |
 |---|---|---|
 | `all-images-exist` | imagens obrigatórias (eia A/B + d1/d2 2x1/1x1; d3 2x1/1x1 condicional a destaque_count=3) (#2133/#2141/#2352) | #stage-3 |
-| `card-4x5-exists` | card social 4:5 (feed IG/FB, título embutido) existe pra cada destaque — mandatório por decisão do editor (#4090) | #4090 |
+| `card-4x5-exists` | card social 4:5 (feed IG/FB, título embutido) existe pra cada destaque — mandatório (error) em sessão local (#4090); rebaixado a warning automaticamente em sessão cloud (#4227) | #4090 |
 | `eia-answer-resolved` | 01-eia.md tem eia_answer A\|B resolvido (#192) | #192 |
 | `prompts-clean` | Prompts não mencionam pixels nem Noite Estrelada (d3 condicional a destaque_count=3, #2352) | #editorial-rules |
 
