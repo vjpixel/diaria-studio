@@ -1,12 +1,17 @@
 /**
- * publish-weekly-social.test.ts (#4101)
+ * publish-weekly-social.test.ts (#4101, carrossel Instagram #4146)
  *
  * Cobre:
  *   - computeWeeklyScheduledAt (pura, baseada em `saturday` — nunca Date.now()).
- *   - resolvePublicImageUrl / resolveLocalImagePath (leitura de disco).
+ *   - resolvePublicImageUrl / resolveLocalImagePath / resolveWeeklyImageUrls
+ *     (leitura de disco).
  *   - Integração: semana com 0 edições válidas → o script encerra ANTES de
  *     qualquer publisher ser chamado (nunca lança por falta de credenciais
  *     Facebook/Worker, porque nunca chega a precisar delas).
+ *   - #4146: Instagram despacha carrossel de N imagens (`image_urls`, 1 por
+ *     dia da semana) em vez de reusar só a imagem da última edição; falha o
+ *     post inteiro se qualquer dia não resolver imagem. Facebook continua
+ *     usando só a imagem da última edição (inalterado, #4146 é Instagram-only).
  */
 
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
@@ -21,6 +26,7 @@ import {
   computeWeeklyScheduledAt,
   resolvePublicImageUrl,
   resolveLocalImagePath,
+  resolveWeeklyImageUrls,
   DEFAULT_WEEKLY_TIME,
   WEEKLY_MIN_ITEMS,
   main,
@@ -101,6 +107,53 @@ describe("resolvePublicImageUrl / resolveLocalImagePath", () => {
   });
 });
 
+describe("resolveWeeklyImageUrls (#4146 — carrossel Instagram)", () => {
+  function makeEditionsWithImages(root: string, dates: string[], missingIndex?: number): void {
+    dates.forEach((date, i) => {
+      const dir = resolve(root, date);
+      mkdirSync(dir, { recursive: true });
+      if (i === missingIndex) return; // simula 06-public-images.json ausente
+      writeFileSync(
+        resolve(dir, "06-public-images.json"),
+        JSON.stringify({ images: { d1: { url: `https://cdn.example.com/${date}.jpg` } } }),
+        "utf8",
+      );
+    });
+  }
+
+  it("retorna 1 URL por item, na mesma ordem de `items`, quando todos resolvem", () => {
+    const root = mkdtempSync(join(tmpdir(), "diaria-weekly-carousel-"));
+    try {
+      const dates = ["260727", "260728", "260729", "260730", "260731"];
+      makeEditionsWithImages(root, dates);
+      const items = dates.map((d) => ({ editionDate: d, title: `T ${d}`, url: `https://x/${d}`, category: "noticias" }));
+      const result = resolveWeeklyImageUrls(items, root);
+      assert.equal(result.ok, true);
+      if (result.ok) {
+        assert.deepEqual(result.urls, dates.map((d) => `https://cdn.example.com/${d}.jpg`));
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna ok:false apontando o editionDate que falhou, quando um dia não resolve imagem", () => {
+    const root = mkdtempSync(join(tmpdir(), "diaria-weekly-carousel-"));
+    try {
+      const dates = ["260727", "260728", "260729", "260730", "260731"];
+      makeEditionsWithImages(root, dates, 2); // 260729 (3º dia) sem imagem
+      const items = dates.map((d) => ({ editionDate: d, title: `T ${d}`, url: `https://x/${d}`, category: "noticias" }));
+      const result = resolveWeeklyImageUrls(items, root);
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.equal(result.missingEditionDate, "260729");
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("integração: semana com 0 edições — nenhum publisher é chamado", () => {
   it("script encerra sem lançar e sem exigir credenciais Facebook/Worker", () => {
     const editionsRoot = mkdtempSync(join(tmpdir(), "diaria-weekly-empty-"));
@@ -155,22 +208,44 @@ function setupEdition(root: string, date: string, title: string, url: string): s
 }
 
 /** Adiciona os assets de imagem exigidos por Facebook (jpg local) e Instagram (06-public-images.json). */
-function addImageFixtures(dir: string): void {
+function addImageFixtures(dir: string, imageUrl = "https://cdn.example.com/d1-1x1.jpg"): void {
   writeFileSync(resolve(dir, "04-d1-1x1.jpg"), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
   writeFileSync(
     resolve(dir, "06-public-images.json"),
-    JSON.stringify({ images: { d1: { url: "https://cdn.example.com/d1-1x1.jpg" } } }),
+    JSON.stringify({ images: { d1: { url: imageUrl } } }),
     "utf8",
   );
 }
 
-/** Monta as 5 (ou `count`) edições da semana anterior a `saturdayDate`, com imagens na última. */
-function setupWeekFixtures(root: string, saturdayDate: Date, count = 5): { dates: string[]; dirs: string[] } {
+/**
+ * Monta as 5 (ou `count`) edições da semana anterior a `saturdayDate`.
+ * `imagesFor: "last"` (default, comportamento pré-#4146) adiciona imagem só
+ * na última edição — usado pelos testes de Facebook (inalterado por #4146).
+ * `imagesFor: "all"` adiciona 1 imagem por dia, com URL distinta por data
+ * (`https://cdn.example.com/{date}.jpg`) — usado pelos testes de carrossel
+ * Instagram, pra poder verificar ordem. `skipImageAt` (índice 0-based) omite
+ * a imagem de 1 dia específico mesmo com `imagesFor: "all"` — simula o dia
+ * que falha a resolução (#4146 finding: post inteiro deve falhar).
+ */
+function setupWeekFixtures(
+  root: string,
+  saturdayDate: Date,
+  count = 5,
+  opts: { imagesFor?: "last" | "all"; skipImageAt?: number } = {},
+): { dates: string[]; dirs: string[] } {
   const dates = computeWeekdayEditionDates(saturdayDate).slice(0, count);
   const dirs = dates.map((date, i) =>
     setupEdition(root, date, `Título ${date}`, `https://example.com/${date}`),
   );
-  if (dirs.length > 0) addImageFixtures(dirs[dirs.length - 1]);
+  const imagesFor = opts.imagesFor ?? "last";
+  if (imagesFor === "all") {
+    dirs.forEach((dir, i) => {
+      if (i === opts.skipImageAt) return;
+      addImageFixtures(dir, `https://cdn.example.com/${dates[i]}.jpg`);
+    });
+  } else if (dirs.length > 0) {
+    addImageFixtures(dirs[dirs.length - 1]);
+  }
   return { dates, dirs };
 }
 
@@ -414,17 +489,18 @@ describe("main(): dispatch mockado (#4101 self-review findings 6/7/9/10)", () =>
       assert.equal(out.posts.find((p: any) => p.platform === "threads").status, "scheduled");
     });
 
-    it("instagram: POST /queue com image_url do 06-public-images.json, marca status scheduled", async () => {
+    // ─── #4146: Instagram carrossel de 5 (1 imagem por dia) ────────────────
+    it("instagram: POST /queue com image_urls (1 por dia, ordem correta), image_url null, status scheduled", async () => {
       const saturday = new Date(2027, 11, 25);
       const saturdayStr = aammddOf(saturday);
-      setupWeekFixtures(editionsRoot, saturday, 5);
+      const { dates } = setupWeekFixtures(editionsRoot, saturday, 5, { imagesFor: "all" });
 
-      let capturedImageUrl: string | null = null;
+      let capturedBody: any = null;
       mockAgent
         .get("https://worker.test")
         .intercept({ path: "/queue", method: "POST" })
         .reply((opts) => {
-          capturedImageUrl = JSON.parse(opts.body as string).image_url;
+          capturedBody = JSON.parse(opts.body as string);
           return {
             statusCode: 200,
             data: JSON.stringify({
@@ -441,9 +517,54 @@ describe("main(): dispatch mockado (#4101 self-review findings 6/7/9/10)", () =>
         { dataRoot },
       );
 
-      assert.equal(capturedImageUrl, "https://cdn.example.com/d1-1x1.jpg");
+      assert.equal(capturedBody.image_url, null);
+      assert.deepEqual(capturedBody.image_urls, dates.map((d) => `https://cdn.example.com/${d}.jpg`));
       const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
       assert.equal(out.posts.find((p: any) => p.platform === "instagram").status, "scheduled");
+    });
+
+    it("instagram: 3º dia sem imagem → post inteiro falha nomeando o dia, Worker NUNCA é chamado pro instagram", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      const { dates } = setupWeekFixtures(editionsRoot, saturday, 5, { imagesFor: "all", skipImageAt: 2 });
+
+      // disableNetConnect() já garante que qualquer fetch não-mockado lança —
+      // nenhum interceptor registrado de propósito: se o script chegasse a
+      // POSTar pro Worker apesar da imagem faltando, o teste falharia aqui.
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--channels", "instagram", "--test-mode"],
+        { dataRoot },
+      );
+
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      const instagram = out.posts.find((p: any) => p.platform === "instagram");
+      assert.equal(instagram.status, "failed");
+      assert.equal(instagram.reason, `public_image_url_missing:${dates[2]}`);
+    });
+
+    // ─── Regressão: Facebook continua single-image (última edição), #4146 é Instagram-only ───
+    it("facebook: continua usando só a imagem da ÚLTIMA edição, mesmo com dias anteriores sem imagem própria", async () => {
+      const saturday = new Date(2027, 11, 25);
+      const saturdayStr = aammddOf(saturday);
+      // imagesFor "last" (default) — só a última edição tem 04-d1-*.jpg;
+      // as 4 anteriores não têm NENHUM asset de imagem (nem 06-public-images.json).
+      setupWeekFixtures(editionsRoot, saturday, 5);
+
+      let called = false;
+      const fbMock = mockAgent.get("https://graph.facebook.com");
+      fbMock.intercept({ path: /\/v25\.0\/999\/photos/, method: "POST" }).reply(() => {
+        called = true;
+        return { statusCode: 200, data: JSON.stringify({ id: "post999" }) };
+      });
+
+      await main(
+        ["--saturday", saturdayStr, "--editions-root", editionsRoot, "--schedule", "--channels", "facebook", "--test-mode"],
+        { dataRoot },
+      );
+
+      assert.ok(called, "POST /photos deveria ter sido chamado com a imagem da última edição");
+      const out = JSON.parse(readFileSync(resolve(dataRoot, "weekly", saturdayStr, "06-weekly-published.json"), "utf8"));
+      assert.equal(out.posts.find((p: any) => p.platform === "facebook").status, "scheduled");
     });
   });
 
