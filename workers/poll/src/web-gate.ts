@@ -437,8 +437,8 @@ export function renderJogarGatePage(edition: string | null): string {
 <p class="explain">Com seu e-mail a gente guarda seus acertos e te coloca no ranking público do mês. Já assina a Diar.ia? Entra direto. Continuar jogando sem cadastrar também vale — é só seguir.</p>
 <form id="gate-form">
   <input type="text" name="website" class="website" tabindex="-1" autocomplete="off">
-  <input type="email" name="email" placeholder="seu@email.com" required>
   <input type="text" name="name" placeholder="Seu nome ou apelido" required>
+  <input type="email" name="email" placeholder="seu@email.com" required>
   <label class="optin"><input type="checkbox" name="optin" value="1"> Quero receber a Diar.ia — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, direto no seu e-mail.</label>
   <button type="submit">Entrar no ranking</button>
 </form>

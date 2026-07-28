@@ -350,6 +350,20 @@ export function maskEmail(email: string): string {
   return at > 0 ? `${truncated}@***` : `${truncated}***`;
 }
 
+/**
+ * #4258 item 2: Wikimedia grava "Own work" (e variantes localizadas) no
+ * crédito quando quem enviou a imagem é o próprio fotógrafo sem propagar um
+ * nome de verdade — ruído pro leitor, não informação. Espelho de
+ * `isOwnWorkOnlyCredit` em `scripts/eia-compose.ts` (mesmo predicado, mesmo
+ * motivo de espelhamento de `session-cookie.ts`/`subscriber-verify.ts`: o
+ * bundle do Worker não alcança `scripts/**`). Defensivo — cobre edições
+ * ANTIGAS já gravadas no KV com "Own work" cru, que o fix na origem (script)
+ * não retroage.
+ */
+export function isOwnWorkOnlyCredit(text: string): boolean {
+  return /^(own work|trabalho próprio|self-photographed)$/i.test(text.trim());
+}
+
 // ── Hash opaco de e-mail pro self-highlight do leaderboard (#4029 item 2) ──
 
 /**

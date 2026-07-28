@@ -44,6 +44,7 @@ import {
   renderLightboxStyles, // #4007: CSS do lightbox + badge de lupa
   renderBrandShellStyles, // #4110: mesma régua+rodapé de leaderboard/arquivo — /vote era a única página pública sem shell
   renderBrandFooter, // #4110
+  isOwnWorkOnlyCredit, // #4258 item 2: suprime "Own work" cru gravado no KV de edições antigas
 } from "./lib";
 // #3111: tokens do DS canônico gerados por scripts/generate-worker-tokens.ts a
 // partir de scripts/lib/shared/design-tokens.ts — nunca hardcodear valores de
@@ -1011,7 +1012,11 @@ ${renderSide("B")}
  */
 export function renderEiaMetaHtml(eiaMeta: { description: string; credit: string } | null | undefined): string {
   if (!eiaMeta) return "";
-  const { description, credit } = eiaMeta;
+  const { description } = eiaMeta;
+  // #4258 item 2: "Own work" cru (edições antigas, gravado no KV antes do fix
+  // na origem — scripts/eia-compose.ts) não é crédito nenhum pro leitor.
+  // Defensivo aqui pra suprimir independente de quando a edição foi composta.
+  const credit = isOwnWorkOnlyCredit(eiaMeta.credit) ? "" : eiaMeta.credit;
   if (!description && !credit) return "";
   const descriptionHtml = description ? `<p class="eia-meta-description">${htmlEscape(description)}</p>` : "";
   const creditHtml = credit ? `<p class="eia-meta-credit">${htmlEscape(credit)}</p>` : "";

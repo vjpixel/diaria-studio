@@ -431,3 +431,13 @@ describe("#4253 item 6: POST /jogar/identify (máquina reusada, ver poll-jogar-i
     assert.equal(score.nickname, "Fulano", "nickname deve vir do name — este é o bug original: nome era descartado");
   });
 });
+
+describe("#4258 item 4: campo nome vem ANTES do e-mail no form do gate (consistência com identityFormScript)", () => {
+  it("input name aparece antes do input email no HTML", () => {
+    const html = renderJogarGatePage(null);
+    const nameIdx = html.indexOf('<input type="text" name="name"');
+    const emailIdx = html.indexOf('<input type="email" name="email"');
+    assert.ok(nameIdx > -1 && emailIdx > -1, "ambos os campos devem existir");
+    assert.ok(nameIdx < emailIdx, "campo nome deve vir antes do campo e-mail no markup");
+  });
+});

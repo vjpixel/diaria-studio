@@ -19,6 +19,7 @@ import {
   pickSubjectWikipediaLink,
   tokenizeImageTitle,
   readUsedTitles,
+  isOwnWorkOnlyCredit,
 } from "../scripts/eia-compose.ts";
 
 interface MockImage {
@@ -635,6 +636,73 @@ describe("buildCreditLine (#256 markdown links inline)", () => {
     const image = { description: { text: "Imagem sem autor." } };
     const credit = buildCreditLine(image);
     assert.match(credit, /Wikimedia Commons/);
+  });
+
+  it("#4258 item 2: artist ausente + credit.text='Own work' → 'Wikimedia Commons', não 'Own work'", () => {
+    // Caso real reportado pelo editor: Wikimedia grava 'Own work' quando quem
+    // enviou a imagem é o próprio fotógrafo, sem propagar nome de verdade —
+    // 'Own work' publicado como se fosse o NOME do artista é ruído/confuso.
+    const image = { description: { text: "Ave em voo." }, credit: { text: "Own work" } };
+    const credit = buildCreditLine(image);
+    assert.ok(!credit.includes("Own work"), `credit não deve conter 'Own work': ${credit}`);
+    assert.match(credit, /Wikimedia Commons/);
+  });
+
+  it("#4258 item 2: artist.text='Own work' DIRETO (não via fallback de credit) também vira 'Wikimedia Commons'", () => {
+    // Achado do review consolidado (pr-test-analyzer): o teste acima só
+    // exercita o caminho de FALLBACK (artist ausente, credit.text='Own
+    // work'). Wikimedia mais comumente grava 'Own work' no PRÓPRIO campo
+    // artist — testar esse caminho direto, não só via `??`.
+    const image = { description: { text: "Ave em voo." }, artist: { text: "Own work" } };
+    const credit = buildCreditLine(image);
+    assert.ok(!credit.includes("Own work"), `credit não deve conter 'Own work': ${credit}`);
+    assert.match(credit, /Wikimedia Commons/);
+  });
+
+  it("#4258 item 2: artist.text='Own work' + artist.html com link real do uploader → nome vira 'Wikimedia Commons' mas o link é preservado", () => {
+    // Achado do review consolidado (pr-test-analyzer): quando o Commons
+    // hyperlinka o 'Own work' pro user page de quem enviou (comum na
+    // prática), o resultado atribui a INSTITUIÇÃO mas linka pro INDIVÍDUO —
+    // combinação um pouco estranha, mas pré-existente (o link já vinha do
+    // mesmo html ANTES deste fix; só o nome mudou de 'Own work' pra
+    // 'Wikimedia Commons') — documentando o comportamento, não uma regressão
+    // nova introduzida aqui.
+    const image = {
+      description: { text: "Ave em voo." },
+      artist: {
+        text: "Own work",
+        html: '<a href="//commons.wikimedia.org/wiki/User:SomeUploader">Own work</a>',
+      },
+    };
+    const credit = buildCreditLine(image);
+    assert.ok(!credit.includes("Own work"), `credit não deve conter 'Own work': ${credit}`);
+    assert.match(credit, /\[Wikimedia Commons\]\(.*User:SomeUploader\)/);
+  });
+});
+
+describe("isOwnWorkOnlyCredit (#4258 item 2, pure)", () => {
+  it("'Own work' (e variações de case/espaço) → true", () => {
+    assert.equal(isOwnWorkOnlyCredit("Own work"), true);
+    assert.equal(isOwnWorkOnlyCredit("own work"), true);
+    assert.equal(isOwnWorkOnlyCredit("OWN WORK"), true);
+    assert.equal(isOwnWorkOnlyCredit("  Own work  "), true);
+  });
+
+  it("variantes localizadas → true", () => {
+    assert.equal(isOwnWorkOnlyCredit("Trabalho próprio"), true);
+    assert.equal(isOwnWorkOnlyCredit("Self-photographed"), true);
+  });
+
+  it("crédito com nome de verdade → false (nunca suprimir crédito real)", () => {
+    assert.equal(isOwnWorkOnlyCredit("Tisha Mukherjee"), false);
+  });
+
+  it("'Own work' como SUBSTRING de um texto maior → false (só suprime quando é o campo INTEIRO)", () => {
+    assert.equal(isOwnWorkOnlyCredit("Own work by Jane Doe"), false);
+  });
+
+  it("string vazia → false", () => {
+    assert.equal(isOwnWorkOnlyCredit(""), false);
   });
 });
 
