@@ -154,7 +154,7 @@ export function openClariceDb(dbPath: string = DEFAULT_DB_PATH): DatabaseSync {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA journal_mode = WAL;");
   // #3021: sem busy_timeout, um reader que colide com a janela de escrita da
-  // task diária (Diaria-Clarice-Sync, 07:30) recebe SQLITE_BUSY imediatamente
+  // task diária (Diaria-Clarice-Sync, 08:30) recebe SQLITE_BUSY imediatamente
   // em vez de esperar e tentar de novo. 5s cobre folgadamente uma transação
   // de sync incremental típica sem travar scripts de leitura por muito tempo.
   db.exec("PRAGMA busy_timeout = 5000;");
