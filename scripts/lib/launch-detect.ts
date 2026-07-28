@@ -105,6 +105,27 @@ export interface DomainMismatchCandidate {
   suggested_domain?: string;
 }
 
+/** Casa haystack contra `COMPANY_TO_DOMAIN` — 1ª empresa conhecida encontrada. */
+function matchKnownCompany(haystack: string): { company: string; domain: string } | undefined {
+  for (const { keyword, domain } of COMPANY_TO_DOMAIN) {
+    const m = haystack.match(keyword);
+    if (m) return { company: m[0], domain };
+  }
+  return undefined;
+}
+
+/** `true` se `url` já pertence ao domínio oficial (ou subdomínio) informado. */
+function isOfficialDomainUrl(url: string | undefined, domain: string): boolean {
+  if (!url) return false;
+  let host = "";
+  try {
+    host = new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    host = "";
+  }
+  return !!host && (host === domain || host.endsWith(`.${domain}`));
+}
+
 /**
  * Detecta se um artigo é candidato a virar LANÇAMENTO via fonte primária.
  *
@@ -137,40 +158,20 @@ export function detectLaunchCandidate(article: {
   if (!matchedKeyword) return { is_candidate: false };
 
   // Regra 2: empresa conhecida no título ou summary.
-  let matchedCompany: string | undefined;
-  let suggestedDomain: string | undefined;
-  for (const { keyword, domain } of COMPANY_TO_DOMAIN) {
-    const m = haystack.match(keyword);
-    if (m) {
-      matchedCompany = m[0];
-      suggestedDomain = domain;
-      break;
-    }
-  }
-  if (!matchedCompany || !suggestedDomain) {
-    return { is_candidate: false };
-  }
+  const companyMatch = matchKnownCompany(haystack);
+  if (!companyMatch) return { is_candidate: false };
 
-  // Regra 3: URL atual não é do domínio oficial.
-  if (article.url) {
-    let host = "";
-    try {
-      host = new URL(article.url).hostname.replace(/^www\./, "");
-    } catch {
-      host = "";
-    }
-    if (host && (host === suggestedDomain || host.endsWith(`.${suggestedDomain}`))) {
-      // Já é do domínio oficial — nesse caso categorize.ts deveria ter
-      // classificado como lancamento. Não-candidato.
-      return { is_candidate: false };
-    }
+  // Regra 3: URL atual não é do domínio oficial (senão já é lançamento —
+  // categorize.ts deveria ter classificado como tal; não-candidato aqui).
+  if (isOfficialDomainUrl(article.url, companyMatch.domain)) {
+    return { is_candidate: false };
   }
 
   return {
     is_candidate: true,
     matched_keyword: matchedKeyword,
-    matched_company: matchedCompany,
-    suggested_domain: suggestedDomain,
+    matched_company: companyMatch.company,
+    suggested_domain: companyMatch.domain,
   };
 }
 
@@ -189,39 +190,18 @@ export function detectDomainMismatchCandidate(article: {
   summary?: string | null;
   url?: string;
 }): DomainMismatchCandidate {
-  const title = article.title ?? "";
-  const summary = article.summary ?? "";
-  const haystack = `${title}\n${summary}`;
+  const haystack = `${article.title ?? ""}\n${article.summary ?? ""}`;
 
-  let matchedCompany: string | undefined;
-  let suggestedDomain: string | undefined;
-  for (const { keyword, domain } of COMPANY_TO_DOMAIN) {
-    const m = haystack.match(keyword);
-    if (m) {
-      matchedCompany = m[0];
-      suggestedDomain = domain;
-      break;
-    }
-  }
-  if (!matchedCompany || !suggestedDomain) {
+  const companyMatch = matchKnownCompany(haystack);
+  if (!companyMatch) return { is_candidate: false };
+
+  if (isOfficialDomainUrl(article.url, companyMatch.domain)) {
     return { is_candidate: false };
-  }
-
-  if (article.url) {
-    let host = "";
-    try {
-      host = new URL(article.url).hostname.replace(/^www\./, "");
-    } catch {
-      host = "";
-    }
-    if (host && (host === suggestedDomain || host.endsWith(`.${suggestedDomain}`))) {
-      return { is_candidate: false };
-    }
   }
 
   return {
     is_candidate: true,
-    matched_company: matchedCompany,
-    suggested_domain: suggestedDomain,
+    matched_company: companyMatch.company,
+    suggested_domain: companyMatch.domain,
   };
 }
