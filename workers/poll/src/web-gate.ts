@@ -475,9 +475,16 @@ export function renderJogarGatePage(edition: string | null): string {
   // separadamente). optin é SEMPRE false aqui — o opt-in de newsletter já
   // foi resolvido por gate/verify ou gate/subscribe antes desta chamada;
   // repassar true duplicaria a tentativa de assinatura na Beehiiv.
+  // Retorna { pending: boolean } — nunca lança. pending=true só quando o
+  // servidor confirmou histórico órfão (#3996); qualquer falha de rede/parse
+  // vira pending=false (achado do review consolidado: antes o caller não
+  // tinha como diferenciar "confirmação por e-mail pendente" de "deu erro,
+  // mas segue o jogo igual" — os dois casos redirecionavam em silêncio pro
+  // jogo sem explicar nada, mesmo já existindo a mensagem certa pra isso em
+  // identityFormScript/jogar.ts).
   function identifyAfterGate(email, name) {
     var anonEmail = getAnonEmail();
-    if (!anonEmail || typeof window.fetch !== "function") return Promise.resolve();
+    if (!anonEmail || typeof window.fetch !== "function") return Promise.resolve({ pending: false });
     return window.fetch("/jogar/identify?brand=web", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -488,13 +495,28 @@ export function renderJogarGatePage(edition: string | null): string {
       // pending=true = histórico órfão detectado, merge aguardando
       // confirmação por link mágico — NÃO marca como identificado ainda
       // (mesma disciplina de identityFormScript/jogar.ts).
-      if (d && d.ok && !d.pending) {
+      if (d && d.ok && d.pending) return { pending: true };
+      if (d && d.ok) {
         try { window.localStorage.setItem("eia_web_identified_email", email); } catch (e) {}
       }
-    }).catch(function () {});
+      return { pending: false };
+    }).catch(function () { return { pending: false }; });
   }
   function goToGame() {
     window.location.href = "/jogar?v=" + Date.now() + "${editionParam}";
+  }
+  // Achado do review consolidado: sem isso, um histórico órfão (#3996)
+  // redirecionava em silêncio pro jogo, sem avisar que o merge ficou
+  // pendente de confirmação por e-mail — mesma mensagem que
+  // identityFormScript (jogar.ts) já usa pro caso equivalente. A sessão do
+  // gate (verify/subscribe) já libera o jogo de qualquer forma — quem quiser
+  // seguir sem esperar clica no link de skip abaixo.
+  function afterIdentify(result) {
+    if (result && result.pending) {
+      setMsg("Quase lá! Enviamos um e-mail de confirmação — clique no link pra migrar seu histórico e entrar no ranking. Enquanto isso, toque em \"Continuar sem cadastrar\" abaixo pra seguir jogando.", "info");
+      return;
+    }
+    goToGame();
   }
   form.addEventListener("submit", function (ev) {
     ev.preventDefault();
@@ -522,7 +544,7 @@ export function renderJogarGatePage(edition: string | null): string {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: email, name: name, website: website }),
     }).then(function (r) { return r.json(); }).then(function (data) {
-      if (data.ok) { return identifyAfterGate(email, name).then(goToGame); }
+      if (data.ok) { return identifyAfterGate(email, name).then(afterIdentify); }
       // #4253 item 4: opt-in deixa de ser pré-requisito pra continuar — sem
       // e-mail assinante confirmado, tenta cadastrar (com ou sem newsletter,
       // gate/subscribe decide server-side a partir de optin).
@@ -531,7 +553,7 @@ export function renderJogarGatePage(edition: string | null): string {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email, name: name, optin: optin, website: website }),
       }).then(function (r2) { return r2.json(); }).then(function (data2) {
-        if (data2 && data2.ok && !data2.sessionUnavailable) { return identifyAfterGate(email, name).then(goToGame); }
+        if (data2 && data2.ok && !data2.sessionUnavailable) { return identifyAfterGate(email, name).then(afterIdentify); }
         if (data2 && data2.ok && data2.sessionUnavailable) { setMsg("Assinatura feita! Confirme o e-mail que te enviamos — depois é só voltar aqui pra continuar jogando.", "err"); return; }
         setMsg("Não deu — tenta de novo em instantes.", "err");
       });

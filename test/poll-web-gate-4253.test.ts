@@ -324,14 +324,20 @@ describe("#4253 item 6: gate script aciona POST /jogar/identify após verify/sub
     assert.match(html, /optin:\s*false,\s*edition:\s*GATE_EDITION/);
   });
 
-  it("localStorage['eia_web_identified_email'] só é setado quando a resposta NÃO é pending (histórico órfão)", () => {
-    assert.match(html, /if \(d && d\.ok && !d\.pending\)/);
+  it("identifyAfterGate resolve { pending: true } no histórico órfão, ANTES de tocar localStorage", () => {
+    assert.match(html, /if \(d && d\.ok && d\.pending\) return \{ pending: true \};/);
     assert.match(html, /localStorage\.setItem\("eia_web_identified_email", email\)/);
   });
 
-  it("identifyAfterGate roda ANTES do redirect pro jogo, nos dois caminhos (verify OK e subscribe OK)", () => {
-    assert.match(html, /if \(data\.ok\) \{ return identifyAfterGate\(email, name\)\.then\(goToGame\); \}/);
-    assert.match(html, /if \(data2 && data2\.ok && !data2\.sessionUnavailable\) \{ return identifyAfterGate\(email, name\)\.then\(goToGame\); \}/);
+  it("SEGURANÇA (achado do review consolidado, silent-failure): pending NÃO redireciona em silêncio — mostra a mensagem de confirmação por e-mail antes de deixar continuar", () => {
+    assert.match(html, /function afterIdentify\(result\) \{/);
+    assert.match(html, /if \(result && result\.pending\) \{/);
+    assert.match(html, /Enviamos um e-mail de confirmação/);
+  });
+
+  it("identifyAfterGate roda ANTES do redirect pro jogo, nos dois caminhos (verify OK e subscribe OK) — via afterIdentify", () => {
+    assert.match(html, /if \(data\.ok\) \{ return identifyAfterGate\(email, name\)\.then\(afterIdentify\); \}/);
+    assert.match(html, /if \(data2 && data2\.ok && !data2\.sessionUnavailable\) \{ return identifyAfterGate\(email, name\)\.then\(afterIdentify\); \}/);
   });
 
   it("edição representativa (?edition=) é repassada como GATE_EDITION pro merge mensal", () => {
