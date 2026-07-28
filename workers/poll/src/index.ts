@@ -823,10 +823,15 @@ export function votePageHtml(
 
   // #2113(a): link do leaderboard com cache-buster quando vindo do resultado do voto.
   const leaderboardBase = leaderboardHref(brand, leaderboardSlug);
-  const appendLeaderboardParam = (href: string, key: string, value: string): string =>
-    `${href}${href.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(value)}`;
+  const appendLeaderboardQueryParam = (href: string, key: string, rawValue: string): string =>
+    `${href}${href.includes("?") ? "&" : "?"}${key}=${rawValue}`;
+  // #2113(a) preservado: cacheBusterTs NUNCA passou por encodeURIComponent (o
+  // timestamp ISO só tem `:`/`.`/`T`/`Z`/dígitos/hífen — travado byte-a-byte
+  // pelos testes de test/poll-vote-cache-buster.test.ts). `email`/`sig`
+  // (abaixo, #4232) SÃO encodados — carregam `@` e outros caracteres que
+  // `:`/`.` não têm.
   let leaderboardLink = cacheBusterTs
-    ? appendLeaderboardParam(leaderboardBase, "v", cacheBusterTs)
+    ? appendLeaderboardQueryParam(leaderboardBase, "v", cacheBusterTs)
     : leaderboardBase;
   // #4232: carrega email+sig assinados (mesmo par de `nicknameForm` — sig
   // HMAC de `setname:${email}`, ver #1078) no link "Ver leaderboard" SÓ
@@ -839,8 +844,8 @@ export function votePageHtml(
   // #3975) + form de identificação inline; não precisa (nem deveria) deste
   // mecanismo baseado em link assinado por e-mail.
   if (nicknameForm && brand !== "web") {
-    leaderboardLink = appendLeaderboardParam(leaderboardLink, "email", nicknameForm.email);
-    leaderboardLink = appendLeaderboardParam(leaderboardLink, "sig", nicknameForm.sig);
+    leaderboardLink = appendLeaderboardQueryParam(leaderboardLink, "email", encodeURIComponent(nicknameForm.email));
+    leaderboardLink = appendLeaderboardQueryParam(leaderboardLink, "sig", encodeURIComponent(nicknameForm.sig));
   }
 
   // #3578 (correção do #3524, feedback do editor 260716): a metade "página
