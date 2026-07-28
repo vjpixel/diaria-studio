@@ -40,8 +40,15 @@
  * usava o nome digitado, porque `handleJogarGateSubscribe`/`handleJogarGateVerify`
  * só emitiam o cookie de sessão (que só decide se o gate reaparece, nunca
  * mergeia score nem seta identidade local). Reusar `/jogar/identify` (em vez
- * de duplicar a lógica de merge aqui) preserva de graça a proteção contra
- * histórico órfão (#3996, link mágico de confirmação cross-device).
+ * de duplicar a lógica de merge aqui) preserva a proteção contra histórico
+ * órfão (#3996, link mágico de confirmação cross-device) — MAS só porque o
+ * campo "Nome" do gate é `required` (achado do review consolidado: era
+ * "opcional" na 1ª versão deste PR). `identify.ts` só roda a checagem de
+ * histórico órfão quando `name` não é vazio (a premissa de #3996 é que
+ * `name === ""` só vem do re-sync silencioso automático de um device JÁ
+ * linkado, nunca de um submit humano explícito) — um campo opcional aqui
+ * teria reaberto exatamente o que o #3996 fechou, só que através de uma UI
+ * normal em vez de uma chamada de API forjada.
  */
 import type { Env } from "./index";
 import { corsHeaders, json } from "./index";
@@ -57,7 +64,7 @@ import {
   signSessionCookie,
   verifySessionCookie,
 } from "./session-cookie";
-import { isValidVoteEmailFormat, isAnonymousWebIdentity } from "./lib"; // #4121: isAnonymousWebIdentity fecha o gap do domínio reservado no gate
+import { isValidVoteEmailFormat, isAnonymousWebIdentity, WEB_TOKEN_DOMAIN } from "./lib"; // #4121: isAnonymousWebIdentity fecha o gap do domínio reservado no gate
 import { subscribeToBeehiiv, resolveSubscribeUtm, type SubscribeDeps } from "./subscribe";
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 
@@ -67,8 +74,8 @@ import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
  * cada worker é o seu próprio host). */
 export const WEB_SESSION_COOKIE = "diaria_jogar_session";
 /** ~30 dias — mesma decisão de #4052 (sessão longa, verificação já é
- * soft-gate; re-gatear a cada visita destruiria a UX de "1 rodada livre" pra
- * quem já se identificou). */
+ * soft-gate; re-gatear a cada visita destruiria a UX do nudge periódico
+ * (#4253 item 3) pra quem já se identificou). */
 export const WEB_SESSION_TTL_SEC = 30 * 24 * 60 * 60;
 
 /**
@@ -280,11 +287,21 @@ export interface GateSubscribeDeps extends SubscribeDeps {}
  * (a promessa do gate) e assinatura da newsletter são coisas DIFERENTES —
  * amarrar as duas fazia quem só queria continuar jogando (sem newsletter)
  * ficar barrado sem saída real. Sem `optin`: pula a Beehiiv inteiramente e
- * emite sessão `confirmed` na hora — não há double opt-in pra esperar
- * (nenhum contato foi criado), mesmo nível de confiança que
- * `handleJogarGateVerify` já aceita pra um e-mail digitado sem prova de
- * posse (ver identify.ts, mesma decisão de trust). Com `optin`: comportamento
- * INALTERADO (tenta Beehiiv, sessão `pending` até a confirmação).
+ * emite sessão `pending` (NUNCA `confirmed` — achado do review consolidado:
+ * `confirmed` é o marcador que `handleVote`/vote.ts usa pra SOBREPOR a
+ * identidade do voto pelo e-mail da sessão, sem exigir o token anônimo de
+ * novo — reservado pra quando o e-mail foi VERIFICADO de verdade, seja
+ * `checkWebSubscriber` achando "active", seja a Beehiiv confirmando o double
+ * opt-in. Sem `optin` não existe verificação NENHUMA — nenhum contato foi
+ * criado, nenhum e-mail foi enviado, é só um e-mail digitado. Emitir
+ * `confirmed` aqui reabriria a vulnerabilidade que o #4121 fechou: qualquer
+ * um digitando o e-mail de outra pessoa herdaria a identidade de voto dela
+ * sem nunca provar posse. `pending` ainda libera o gate normalmente — ver
+ * `handleJogarPage`/#4121, que já trata pending e confirmed igual pra esse
+ * fim — a identidade de RANKING de verdade vem do merge via
+ * `POST /jogar/identify` (`identifyAfterGate`, #4253 item 6), que não
+ * depende do estado desta sessão). Com `optin`: comportamento INALTERADO
+ * (tenta Beehiiv, sessão `pending` até a confirmação).
  */
 export async function handleJogarGateSubscribe(
   request: Request,
@@ -331,12 +348,15 @@ export async function handleJogarGateSubscribe(
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
 
   // #4253 item 4: sem opt-in, pula a Beehiiv inteiramente — identidade de
-  // ranking não depende de assinar a newsletter. Sessão sai `confirmed` na
-  // hora: não existe double opt-in pendente pra esperar (nenhum contato foi
-  // criado na Beehiiv por este caminho).
+  // ranking não depende de assinar a newsletter. Sessão sai `pending`, NUNCA
+  // `confirmed` (achado do review consolidado — ver docstring da função):
+  // sem qualquer verificação, `confirmed` sobreporia a identidade do voto
+  // (vote.ts) pra um e-mail nunca provado. `pending` já libera o gate
+  // normalmente; a identidade de ranking de verdade vem do merge via
+  // /jogar/identify (item 6), independente deste cookie.
   if (!optin) {
     if (!env.COOKIE_HMAC_SECRET) return json({ ok: false, error: "gate_unavailable" }, 503, env);
-    const setCookie = await issueWebSessionCookie(env.COOKIE_HMAC_SECRET, email, "confirmed");
+    const setCookie = await issueWebSessionCookie(env.COOKIE_HMAC_SECRET, email, "pending");
     return jsonWithCookie({ ok: true }, 200, env, setCookie);
   }
 
@@ -418,7 +438,7 @@ export function renderJogarGatePage(edition: string | null): string {
 <form id="gate-form">
   <input type="text" name="website" class="website" tabindex="-1" autocomplete="off">
   <input type="email" name="email" placeholder="seu@email.com" required>
-  <input type="text" name="name" placeholder="Nome (opcional)">
+  <input type="text" name="name" placeholder="Seu nome ou apelido" required>
   <label class="optin"><input type="checkbox" name="optin" value="1"> Quero receber a Diar.ia — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, direto no seu e-mail.</label>
   <button type="submit">Entrar no ranking</button>
 </form>
@@ -444,7 +464,7 @@ export function renderJogarGatePage(edition: string | null): string {
     var token = null;
     try { token = window.localStorage.getItem("eia_web_token"); } catch (e) {}
     if (!token) token = readCookie("eia_web_token");
-    return token ? token + "@web.eia.diaria.local" : "";
+    return token ? token + "@" + ${JSON.stringify(WEB_TOKEN_DOMAIN)} : "";
   }
   // #4253 item 6 (bugfix): aciona a MESMA máquina de identificação que o
   // form de identidade do jogo já usa (POST /jogar/identify, identify.ts) —
@@ -478,11 +498,25 @@ export function renderJogarGatePage(edition: string | null): string {
   }
   form.addEventListener("submit", function (ev) {
     ev.preventDefault();
-    setMsg("Verificando…", "info");
     var email = form.email.value.trim();
     var name = form.name.value.trim();
     var optin = form.optin.checked;
     var website = form.website.value;
+    // #4253 (achado do review consolidado): nome é OBRIGATÓRIO (atributo
+    // required acima cobre o caminho normal do navegador, este check cobre
+    // qualquer submit programático que pule a validação nativa). Sem isso,
+    // identifyAfterGate chamaria /jogar/identify com name="" pra uma
+    // identificação de PRIMEIRA VEZ — e identify.ts só roda a checagem de
+    // histórico órfão (#3996) quando name não é vazio (a premissa lá é que
+    // name="" só vem do re-sync silencioso automático de um device JÁ
+    // linkado, nunca de um submit humano explícito). Sem esta validação, um
+    // e-mail já identificado sob OUTRO device seria mergeado na hora, sem
+    // confirmação por link mágico — reabrindo exatamente o que o #3996 fechou.
+    if (!name) { setMsg("Digite seu nome ou apelido.", "err"); return; }
+    setMsg("Verificando…", "info");
+    // #4253 item 6: handleJogarGateVerify (web-gate.ts) não LÊ o campo name —
+    // vai só pra identifyAfterGate logo abaixo, se a verificação der certo.
+    // Mantido no corpo por paridade com o subscribe (mesmo shape nos 2 POSTs).
     fetch("/jogar/gate/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

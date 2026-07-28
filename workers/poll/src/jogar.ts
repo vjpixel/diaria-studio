@@ -2378,10 +2378,13 @@ export async function handleJogarSeqState(url: URL, env: Env, request?: Request)
   // #4115 (self-review): duas fases em vez de 2 gets paralelos por edição.
   //
   // A 1ª fase resolve todas as edições sob a identidade primária (a sessão,
-  // quando existe — pós-gate ela cobre todas as rodadas menos a livre); a 2ª
-  // só reconsulta as que ficaram SEM voto, sob a secundária. No caso real
-  // (jogador identificado que já jogou o mês) a 2ª fase custa ~1 get: só a
-  // rodada livre fica sob o token.
+  // quando existe — pós-gate ela cobre todas as rodadas jogadas DEPOIS da
+  // sessão ser emitida); a 2ª só reconsulta as que ficaram SEM voto, sob a
+  // secundária. No caso real (jogador identificado que já jogou o mês) a 2ª
+  // fase custa até ROUNDS_NUDGE_INTERVAL - 1 gets (#4253 item 3: nudge só a
+  // partir da 5ª rodada, então até 4 rodadas anônimas podem ficar sob o
+  // token antes da sessão existir — não mais só "1 rodada livre" como no
+  // gate binário pré-#4253).
   //
   // A motivação original foi o teto de subrequests — o worker estava no free
   // plan (50/request) e 2 × mês inteiro (31 pares) = 62 estourava. O upgrade

@@ -194,7 +194,15 @@ describe("#4253 item 4: POST /jogar/gate/subscribe sem opt-in", () => {
     });
   }
 
-  it("sem optin → 200 + cookie de sessão CONFIRMED na hora, SEM tocar a Beehiiv", async () => {
+  it("sem optin → 200 + cookie de sessão PENDING (NUNCA confirmed), SEM tocar a Beehiiv", async () => {
+    // Achado do review consolidado (findings convergentes de 4/5 agentes):
+    // sem NENHUMA verificação (nem Beehiiv, nem KV), emitir "confirmed"
+    // reabriria a vulnerabilidade do #4121 — vote.ts sobrepõe a identidade do
+    // voto pra QUALQUER sessão confirmed, então "confirmed" sem prova de
+    // posse permitiria a qualquer um digitar o e-mail de outra pessoa e
+    // herdar a identidade de voto dela. "pending" ainda libera o gate
+    // normalmente (#4121); a identidade de ranking de verdade vem do merge
+    // via /jogar/identify (item 6), independente deste cookie.
     const env = makeEnv({ BEEHIIV_API_KEY: "test-key", BEEHIIV_PUBLICATION_ID: "pub_test" });
     let beehiivCalled = false;
     const originalFetch = globalThis.fetch;
@@ -210,10 +218,34 @@ describe("#4253 item 4: POST /jogar/gate/subscribe sem opt-in", () => {
       assert.ok(setCookie, "deve emitir cookie de sessão mesmo sem opt-in");
       const raw = setCookie!.split(";")[0].split("=")[1];
       const session = await readWebSession("cookie-secret", `${WEB_SESSION_COOKIE}=${raw}`);
-      assert.deepEqual(session, { email: "semoptin@example.com", pending: false }, "sem opt-in não há double opt-in pendente — sessão sai CONFIRMED direto");
+      assert.deepEqual(session, { email: "semoptin@example.com", pending: true }, "sem qualquer verificação, a sessão NUNCA pode sair confirmed");
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("SEGURANÇA (regressão #4121): sessão emitida sem opt-in NÃO sobrepõe a identidade do voto", async () => {
+    const anonEmail = "3fa85f64-5717-4562-b3fc-2c963f66afa6@web.eia.diaria.local";
+    const env = makeEnv({ COOKIE_HMAC_SECRET: "cookie-secret" });
+    const res = await worker.fetch(subReq({ email: "vitima@example.com", optin: false }), env);
+    const setCookie = getCookieHeader(res)!;
+    const sessionCookie = setCookie.split(";")[0];
+    const voteRes = await worker.fetch(
+      new Request(
+        `https://poll.test/vote?email=${encodeURIComponent(anonEmail)}&edition=260701&choice=A&brand=web`,
+        { headers: { Cookie: sessionCookie } },
+      ),
+      env,
+    );
+    assert.equal(voteRes.status, 200);
+    assert.ok(
+      env.POLL._map.has(`web:vote:260701:${anonEmail}`),
+      "voto deve continuar sob o token anônimo — a sessão sem opt-in não prova posse do e-mail",
+    );
+    assert.ok(
+      !env.POLL._map.has("web:vote:260701:vitima@example.com"),
+      "NUNCA deve gravar sob o e-mail da sessão sem verificação — reabriria o #4121",
+    );
   });
 
   it("sem optin e sem COOKIE_HMAC_SECRET → 503 gate_unavailable (nunca 200 sem cookie)", async () => {
@@ -310,6 +342,59 @@ describe("#4253 item 6: gate script aciona POST /jogar/identify após verify/sub
 
   it("verify agora envia 'name' no corpo (antes só mandava email+website)", () => {
     assert.match(html, /body: JSON\.stringify\(\{ email: email, name: name, website: website \}\)/);
+  });
+
+  // SEGURANÇA (achado do review consolidado — findings convergentes de 4/5
+  // agentes): a 1ª versão deste PR tinha o campo "Nome" OPCIONAL no gate.
+  // identify.ts só roda a checagem de histórico órfão (#3996) quando `name`
+  // não é vazio (a premissa é que name="" só vem do re-sync silencioso
+  // automático, nunca de um submit humano explícito) — um "Nome" opcional no
+  // gate permitia bypassar #3996 pela UI normal (sem forjar request nenhuma):
+  // bastava digitar o e-mail de alguém com histórico já estabelecido sob
+  // OUTRO device e deixar o nome em branco pra mergear na hora, sem
+  // confirmação por link mágico. Fix: nome é required (client + validação JS).
+
+  it("SEGURANÇA (#3996): campo 'Nome' do gate é required — nunca mais opcional", () => {
+    assert.match(html, /<input type="text" name="name" placeholder="[^"]*" required>/);
+    assert.doesNotMatch(html, /placeholder="Nome \(opcional\)"/);
+  });
+
+  it("SEGURANÇA (#3996): submit com nome vazio é bloqueado no client ANTES de qualquer fetch", () => {
+    assert.match(html, /if \(!name\) \{ setMsg\("Digite seu nome ou apelido\.", "err"\); return; \}/);
+  });
+});
+
+describe("#4253 item 6 SEGURANÇA: proteção de histórico órfão (#3996) preservada via o gate", () => {
+  it("e-mail com score PRÉ-EXISTENTE sob OUTRO token → pending:true, NÃO mergeia na hora (mesmo vindo do gate, com nome preenchido)", async () => {
+    const attackerAnonEmail = "3fa85f64-5717-4562-b3fc-2c963f66afa6@web.eia.diaria.local";
+    const env = makeEnv({
+      POLL: makeMapKV({
+        // vítima já tem histórico estabelecido sob um token DIFERENTE do atacante.
+        "web:score:vitima@example.com": JSON.stringify({ total: 500, correct: 400, streak: 10, last_edition: "260701" }),
+        [`web:score:${attackerAnonEmail}`]: JSON.stringify({ total: 3, correct: 1, streak: 1, last_edition: "260701" }),
+      }) as unknown as ReturnType<typeof makeMapKV>,
+    });
+    const res = await worker.fetch(
+      new Request("https://poll.test/jogar/identify?brand=web", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Atacante", // nome preenchido (agora obrigatório no gate) — NÃO deve bypassar a checagem
+          email: "vitima@example.com",
+          anonEmail: attackerAnonEmail,
+          optin: false,
+          edition: "",
+        }),
+      }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    const data = (await res.json()) as { ok: boolean; pending?: boolean };
+    assert.equal(data.ok, true);
+    assert.equal(data.pending, true, "histórico órfão deve exigir confirmação por link mágico, nunca merge imediato");
+    const scoreRaw = await env.POLL.get("web:score:vitima@example.com");
+    const score = JSON.parse(scoreRaw!);
+    assert.equal(score.total, 500, "score da vítima NUNCA deve ser alterado sem confirmação — reabriria o #3996");
   });
 });
 

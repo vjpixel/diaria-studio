@@ -312,9 +312,15 @@ export function isValidVoteEditionFormat(edition: string): boolean {
 
 // ── Máscara de email pra exibição pública (#3118 item 11) ──────────────────
 
+/** Quantos chars do local-part `maskEmail` preserva antes de truncar (#4253
+ * item 5) — extraído como constante nomeada (achado do review consolidado)
+ * pra não duplicar o literal `5` nos dois pontos de uso dentro da função. */
+export const MASKED_EMAIL_TRUNCATE_LEN = 5;
+
 /**
- * Mascara email pra exibição pública — trunca o local-part pros 5 primeiros
- * caracteres (+ "…" se houver mais) e nunca revela o domínio.
+ * Mascara email pra exibição pública — trunca o local-part pros
+ * `MASKED_EMAIL_TRUNCATE_LEN` primeiros caracteres (+ "…" se houver mais) e
+ * nunca revela o domínio.
  *
  * #4008 item 1: antes exibia o local-part INTEIRO (ex: `wutrecht@***`) — pra
  * quem já conhece a pessoa, isso é o e-mail quase completo, não uma máscara
@@ -340,7 +346,7 @@ export function isValidVoteEditionFormat(edition: string): boolean {
 export function maskEmail(email: string): string {
   const at = email.indexOf("@");
   const local = at > 0 ? email.slice(0, at) : email;
-  const truncated = local.length > 5 ? `${local.slice(0, 5)}…` : local;
+  const truncated = local.length > MASKED_EMAIL_TRUNCATE_LEN ? `${local.slice(0, MASKED_EMAIL_TRUNCATE_LEN)}…` : local;
   return at > 0 ? `${truncated}@***` : `${truncated}***`;
 }
 

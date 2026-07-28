@@ -417,6 +417,11 @@ describe("renderJogarSequencePageHtml (#3983) — reveal por rodada, reverte o S
     assert.match(html, /res\.headers\.get\("X-Eia-Gate"\)/, "detecta a resposta de gate pelo header dedicado, não pelo corpo");
     assert.doesNotMatch(html, /indexOf\('id="gate-form"'\)/, "REGRESSÃO #4160: busca textual pela agulha do próprio corpo nunca deve voltar");
     assert.match(html, /window\.location\.href = "\/jogar\?v="/, "troca pra página de gate quando o servidor mandar");
+    // #4253 item 6: o redirect pro gate carrega a edição representativa
+    // (editions[0]) — deriva o índice MENSAL do merge de identificação (ver
+    // rationale em web-gate.ts/renderJogarGatePage). Sem isso o gate
+    // renderizaria com GATE_EDITION="" e o merge só migraria o score global.
+    assert.match(html, /window\.location\.href = "\/jogar\?v=" \+ Date\.now\(\) \+ "&edition=" \+ encodeURIComponent\(editions\[0\]\)/, "redirect pro gate repassa a edição representativa da sequência");
   });
 
   it("goNext: fail-open se o fetch de checagem de gate falhar (rede indisponível não pode travar o jogo)", () => {
