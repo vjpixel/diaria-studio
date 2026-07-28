@@ -135,4 +135,46 @@ describe("foldCluster (#3920)", () => {
     const { canonical } = foldCluster([solo]);
     assert.equal(canonical.cluster_sources, undefined);
   });
+
+  // #4193: quando o cluster same-story mistura uma cópia editor_submitted
+  // (perdedora por completude) com a cobertura de outro veículo (vencedora),
+  // o vencedor precisa herdar a proveniência do editor — senão o interesse
+  // explícito dele desaparece toda vez que outra fonte cobre a MESMA história
+  // com mais detalhe.
+  it("canônico herda flag editor_submitted de um perdedor do cluster (#4193)", () => {
+    const editorCopy = art({
+      url: "https://zdnet.com/x",
+      summary: "x".repeat(10), // menos completo — perde por summary curto
+      flag: "editor_submitted",
+    });
+    const richerCoverage = art({
+      url: "https://venturebeat.com/x",
+      summary: "x".repeat(500), // mais completo — vence o cluster
+    });
+    const { canonical } = foldCluster([richerCoverage, editorCopy]);
+    assert.equal(canonical.url, "https://venturebeat.com/x");
+    assert.equal(canonical.flag, "editor_submitted");
+    assert.equal(canonical.editor_submitted_url, "https://zdnet.com/x");
+  });
+
+  it("canônico que JÁ é a cópia do editor não precisa de herança (no-op)", () => {
+    const editorCopy = art({
+      url: "https://zdnet.com/x",
+      summary: "x".repeat(500),
+      flag: "editor_submitted",
+    });
+    const other = art({ url: "https://venturebeat.com/x", summary: "x".repeat(10) });
+    const { canonical } = foldCluster([editorCopy, other]);
+    assert.equal(canonical.url, "https://zdnet.com/x");
+    assert.equal(canonical.flag, "editor_submitted");
+    assert.equal(canonical.editor_submitted_url, undefined, "já era o próprio editor — sem URL a rastrear");
+  });
+
+  it("nenhum membro é editor_submitted → canônico não ganha a flag", () => {
+    const a = art({ url: "https://a.com/x", summary: "x".repeat(500) });
+    const b = art({ url: "https://b.com/x", summary: "x".repeat(10) });
+    const { canonical } = foldCluster([a, b]);
+    assert.equal(canonical.flag, undefined);
+    assert.equal(canonical.editor_submitted_url, undefined);
+  });
 });

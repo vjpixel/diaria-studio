@@ -331,6 +331,8 @@ npx tsx scripts/dedup.ts \
 ```
 Pré-passo automático (#485): artigos inbox com título placeholder `(inbox)` têm o título real resolvido via fetch antes do dedup principal, evitando falsos-positivos de similaridade entre artigos com mesmo placeholder. Ler `kept[]` do JSON de saída como lista de artigos daqui em diante. Logar `removed[]` (apenas contagem e motivos) para rastreabilidade. Limpar arquivos temporários com Bash.
 
+**Proveniência do editor (#4192, #4193).** `flag: "editor_submitted"` nunca é descartado pelo Pass-1d (theme-entity match) — no máximo marcado (`theme_entity_flagged`). Quando uma submissão do editor É removida por outro pass, o próprio `dedup.ts` tenta primeiro resgatar a proveniência num sobrevivente same-story (URL duplicada, cluster #3920, ou o Pass-3 same-story cross-pass — o sobrevivente ganha `flag: "editor_submitted"` + `editor_submitted_url` apontando pro link original). Só o que **não** foi resgatado chega em `editorSubmittedLost[]` no JSON de saída. Guardar essa lista — é o input do item 4a do gate (1x) abaixo.
+
 ### 1m. Categorizar
 
 Gravar `kept[]` em `{EDITION_DIR}/_internal/tmp-kept.json` e rodar:
@@ -725,6 +727,12 @@ Apresentar ao usuário:
        Publicado:  "{matched_title}" ({matched_edition}) | Sim.: {jaccard*100}% → trocar candidato.
    ```
    `secondary_warnings[]` não-vazio (RADAR/LANÇAMENTOS): `⚠️ RADAR REPETIDO — [{bucket}] empresa+tema cobertos em {matched_edition}: "{item_title}" ({item_url}) ← "{matched_title}" | Empresa: {shared_entities} | {theme_evidence} → trocar ou manter se ângulo novo.` (#2684 item 7 — `item_url` incluído pra o editor identificar o item exato no gate mobile, onde título sozinho pode ser ambíguo.)
+
+4a. **⚠️ Submissões do editor removidas pelo dedup (#4192):** ler `editorSubmittedLost[]` de `_internal/tmp-dedup-output.json` (guardado no passo 1l). **Best-effort — nunca bloquear.** Se vazio ou arquivo ausente: omitir. Se não-vazio, exibir uma linha por entry:
+   ```
+   ⚠️ N submissão(ões) sua(s) removida(s) pelo dedup: {title} — motivo: {dedup_note}
+   ```
+   Onde N = `editorSubmittedLost.length`. Nota: `editorSubmittedLost` já exclui as submissões que o próprio dedup conseguiu resgatar via um sobrevivente same-story (`editor_submitted_url`, #4193) — só o que ficou genuinamente sem sobrevivente aparece aqui.
 
 5. **Relatório de saúde das fontes:**
    - `⚠️` por fonte com outcome não-ok *nesta execução*.
