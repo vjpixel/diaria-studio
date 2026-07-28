@@ -24,4 +24,4 @@ SEM apoiador novo na edição: o bloco é OMITIDO inteiro — não deixar a fras
 placeholder vazio nem um agradecimento genérico sem nome.
 -->
 
-**Agradeço ao novo apoiador: **Murilo Sarno**. Seu apoio ajuda a manter essa curadoria diária de pé!**
+**Agradeço ao novo apoiador: **Raul Perez**. Seu apoio ajuda a manter essa curadoria diária de pé!**
