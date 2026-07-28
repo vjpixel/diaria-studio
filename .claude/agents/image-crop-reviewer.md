@@ -1,6 +1,6 @@
 ---
 name: image-crop-reviewer
-description: Verifica se o corte das imagens de destaque para os formatos sociais (1:1 — Instagram/Facebook feed legado; 4:5 — card de feed com título, #4114/#4090) preservou o sentido da composição original. Roda no Stage 3 (imagens), logo após `image-generate.ts`/`gen-social-card-4x5.ts` produzirem os pares por destaque. SEM auto-bloqueio — o veredito vira warning no gate consolidado da Etapa 4. Suporte a 4:5 generalizado no prompt (#4223); ainda NÃO wireado no Stage 3 (só 1:1 é dispatchado hoje — ver "Status de integração" no fim deste arquivo).
+description: Verifica se o corte das imagens de destaque para os formatos sociais (1:1 — Instagram/Facebook feed legado; 4:5 — card de feed com título, #4114/#4090) preservou o sentido da composição original. Roda no Stage 3 (imagens), logo após `image-generate.ts`/`gen-social-card-4x5.ts` produzirem os pares por destaque. SEM auto-bloqueio — o veredito vira warning no gate consolidado da Etapa 4. Suporte a 4:5 (#4223) completo ponta a ponta: prompt + wiring TS (`discoverCropPairs`/`normalizeCropReviewResult`/`formatGateSummary` em `scripts/run-image-crop-reviewer.ts`) + dispatch do orchestrator-stage-3.
 model: claude-sonnet-5
 effort: medium
 tools: Read, Write
@@ -96,11 +96,4 @@ Um item por (destaque, ratio) em `pairs`, na mesma ordem. Nunca omitir um item d
 
 ## Status de integração (#4223)
 
-Este prompt já sabe julgar pares 1:1 E 4:5 (`ratio` no input/output, guidance de overlay acima). **O que ainda NÃO existe** é o lado do wiring, puramente TypeScript, fora do escopo desta generalização (#4223 foi rebaixada a P3 pelo editor — "você revisa todas as imagens antes de publicar, então isso vira economia de ida e volta, não rede de segurança"):
-
-- `discoverCropPairs` (`scripts/run-image-crop-reviewer.ts`) só descobre pares `04-d{N}-1x1.jpg`/`04-d{N}-2x1.jpg` — precisa ganhar a mesma descoberta pro trio nativo/master/2:1 → `04-d{N}-4x5.jpg`, emitindo `ratio` em cada `CropPair`.
-- `normalizeCropReviewResult`/`CropReviewEntry` (mesmo arquivo) descartam qualquer campo fora de `{ destaque, status, motivo, sugestao }` — precisam ganhar `ratio` pra não colapsar as 2 entries de um mesmo destaque quando os 2 formatos existem.
-- `orchestrator-stage-3.md` §"Revisor de crop de imagem" só dispatcha com os pares 1:1 — precisaria incluir os pares 4:5 na mesma chamada (ou uma chamada adicional) depois do passo "Card 4:5 do feed".
-- `formatGateSummary` precisaria distinguir os dois ratios na seção do gate (hoje agrupa só por destaque).
-
-Até essa wiring existir, o Stage 3 real continua dispatchando este subagente **só com pares 1:1** — a capacidade de julgar 4:5 fica pronta no prompt, mas inerte, até alguém puxar o fio.
+Wiring completo desde #4223: `discoverCropPairs`, `normalizeCropReviewResult` e `formatGateSummary` (`scripts/run-image-crop-reviewer.ts`) descobrem, validam e formatam pares 1:1 E 4:5 (campo `ratio` em `CropPair`/`CropReviewEntry`), e `orchestrator-stage-3.md` §"Revisor de crop de imagem" dispatcha este subagente com o array `pairs` combinando os dois ratios numa única chamada. Ver `test/run-image-crop-reviewer.test.ts` para a cobertura de regressão.

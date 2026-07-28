@@ -2,9 +2,10 @@
  * run-image-crop-reviewer.ts (#3951)
  *
  * Script de orquestração do subagente `image-crop-reviewer` no Stage 3.
- * Descobre os pares hero(2:1)/crop(1:1) gerados por `image-generate.ts` para
- * os destaques presentes na edição, prepara os parâmetros de dispatch do
- * subagente, e — depois do subagente rodar — normaliza/grava o veredito em
+ * Descobre os pares hero/crop (1:1 legado — `image-generate.ts` — e 4:5 card
+ * de feed — `gen-social-card-4x5.ts`, #4223) gerados para os destaques
+ * presentes na edição, prepara os parâmetros de dispatch do subagente, e —
+ * depois do subagente rodar — normaliza/grava o veredito em
  * `_internal/04-crop-review.json`.
  *
  * O revisor em si é um subagente vision/multimodal (não unit-testável
@@ -40,18 +41,27 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 export type DestaqueId = "d1" | "d2" | "d3";
 export type CropReviewStatus = "ok" | "warn";
+export type CropReviewRatio = "1x1" | "4x5";
 
-/** Par de imagens descoberto no disco para um destaque. */
+/** Par de imagens descoberto no disco para um destaque, para um ratio específico. */
 export interface CropPair {
   destaque: DestaqueId;
-  /** Hero 2:1 original. `null` quando o destaque só tem 1:1 nativo (sem crop). */
+  /** Qual formato social este par representa (#4223). */
+  ratio: CropReviewRatio;
+  /**
+   * Fonte usada para o crop/card final.
+   * `ratio: "1x1"` → hero 2:1 original, `null` quando o destaque só tem 1:1 nativo (sem crop).
+   * `ratio: "4x5"` → fonte que `gen-social-card-4x5.ts` de fato usou (nativa 4:5, master 6:5,
+   * ou 2:1, nessa ordem de preferência), `null` apenas se nenhuma das 3 existir.
+   */
   hero_path: string | null;
-  /** Crop 1:1 — o que de fato vai pro social (Instagram/Facebook). */
+  /** Crop/card final — o que de fato vai pro social (Instagram/Facebook). */
   crop_path: string;
 }
 
 export interface CropReviewEntry {
   destaque: DestaqueId;
+  ratio: CropReviewRatio;
   status: CropReviewStatus;
   motivo?: string;
   sugestao?: string;
@@ -77,12 +87,22 @@ const DESTAQUE_IDS: DestaqueId[] = ["d1", "d2", "d3"];
 // ---------------------------------------------------------------------------
 
 /**
- * Descobre os pares hero(2:1)/crop(1:1) presentes no disco para uma edição.
- * Um destaque só entra na lista se o crop 1:1 existir (é o que de fato vai
- * pro social — sem ele não há nada pra revisar). O hero 2:1 é opcional:
- * ausente = destaque nativo 1:1 (gerado com `--ratio 1x1`, sem crop real) —
- * nesse caso a checagem do subagente vira "está enquadrado e coerente?"
- * em vez de comparação 2:1↔1:1 (ver `.claude/agents/image-crop-reviewer.md`).
+ * Descobre os pares hero/crop presentes no disco para uma edição, um item por
+ * (destaque, ratio) — até 2 por destaque quando ambos os formatos existem (#4223):
+ *
+ * - `ratio: "1x1"` (legado): crop = `04-{d}-1x1.jpg` (o que de fato vai pro
+ *   social — sem ele não há nada pra revisar). Hero = `04-{d}-2x1.jpg`,
+ *   opcional: ausente = destaque nativo 1:1 (gerado com `--ratio 1x1`, sem
+ *   crop real) — nesse caso a checagem do subagente vira "está enquadrado e
+ *   coerente?" em vez de comparação 2:1↔1:1 (ver `.claude/agents/image-crop-reviewer.md`).
+ * - `ratio: "4x5"` (card de feed com título, #4114/#4090): crop = `04-{d}-4x5.jpg`
+ *   (card final, já com título e gradiente compostos — o que de fato vai pro
+ *   feed). Só emitido se este arquivo existir. Hero = a fonte que
+ *   `gen-social-card-4x5.ts` de fato usou, na mesma ordem de fallback do
+ *   script: `04-{d}-4x5-nativo.jpg` (arte nativa) → `04-{d}-master.jpg`
+ *   (master 6:5) → `04-{d}-2x1.jpg` (legado). `null` só se nenhuma existir
+ *   (defensivo — não deveria acontecer, geração do card já é bloqueante no
+ *   Stage 3, #4090).
  *
  * Não assume destaque_count fixo — escaneia o disco diretamente (2 ou 3
  * destaques), consistente com o restante do Stage 3 (#2352/#3369).
@@ -90,14 +110,32 @@ const DESTAQUE_IDS: DestaqueId[] = ["d1", "d2", "d3"];
 export function discoverCropPairs(editionDir: string): CropPair[] {
   const pairs: CropPair[] = [];
   for (const destaque of DESTAQUE_IDS) {
-    const cropPath = join(editionDir, `04-${destaque}-1x1.jpg`);
-    if (!existsSync(cropPath)) continue;
-    const heroPath = join(editionDir, `04-${destaque}-2x1.jpg`);
-    pairs.push({
-      destaque,
-      hero_path: existsSync(heroPath) ? heroPath : null,
-      crop_path: cropPath,
-    });
+    const cropPath1x1 = join(editionDir, `04-${destaque}-1x1.jpg`);
+    if (existsSync(cropPath1x1)) {
+      const heroPath = join(editionDir, `04-${destaque}-2x1.jpg`);
+      pairs.push({
+        destaque,
+        ratio: "1x1",
+        hero_path: existsSync(heroPath) ? heroPath : null,
+        crop_path: cropPath1x1,
+      });
+    }
+
+    const cropPath4x5 = join(editionDir, `04-${destaque}-4x5.jpg`);
+    if (existsSync(cropPath4x5)) {
+      const heroCandidates4x5 = [
+        join(editionDir, `04-${destaque}-4x5-nativo.jpg`),
+        join(editionDir, `04-${destaque}-master.jpg`),
+        join(editionDir, `04-${destaque}-2x1.jpg`),
+      ];
+      const heroPath4x5 = heroCandidates4x5.find((p) => existsSync(p)) ?? null;
+      pairs.push({
+        destaque,
+        ratio: "4x5",
+        hero_path: heroPath4x5,
+        crop_path: cropPath4x5,
+      });
+    }
   }
   return pairs;
 }
@@ -119,10 +157,12 @@ export function normalizeCropReviewResult(raw: unknown, edition: string): CropRe
         !!r &&
         typeof r === "object" &&
         DESTAQUE_IDS.includes((r as Record<string, unknown>).destaque as DestaqueId) &&
+        ((r as Record<string, unknown>).ratio === "1x1" || (r as Record<string, unknown>).ratio === "4x5") &&
         ((r as Record<string, unknown>).status === "ok" || (r as Record<string, unknown>).status === "warn"),
     )
     .map((r) => ({
       destaque: r.destaque as DestaqueId,
+      ratio: r.ratio as CropReviewRatio,
       status: r.status as CropReviewStatus,
       motivo: typeof r.motivo === "string" ? r.motivo : undefined,
       sugestao: typeof r.sugestao === "string" ? r.sugestao : undefined,
@@ -160,7 +200,7 @@ export function formatGateSummary(result: CropReviewResult): string {
   }
 
   if (summary.warn === 0) {
-    lines.push(`  ✅ ${summary.ok}/${summary.total} destaque(s) — crop 1:1 preserva o sentido da imagem.`);
+    lines.push(`  ✅ ${summary.ok}/${summary.total} destaque(s) — crop preserva o sentido da imagem.`);
     lines.push("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     return lines.join("\n");
   }
@@ -170,7 +210,9 @@ export function formatGateSummary(result: CropReviewResult): string {
   );
   lines.push("");
   for (const r of results.filter((r) => r.status === "warn")) {
-    lines.push(`  ⚠️  ${r.destaque.toUpperCase()} — ${r.motivo ?? "crop 1:1 pode ter perdido o sentido da imagem original"}`);
+    lines.push(
+      `  ⚠️  ${r.destaque.toUpperCase()} (${r.ratio}) — ${r.motivo ?? "crop pode ter perdido o sentido da imagem original"}`,
+    );
     if (r.sugestao) lines.push(`       Sugestão: ${r.sugestao}`);
   }
   lines.push("");
