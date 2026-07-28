@@ -22,6 +22,7 @@
 export type ForbiddenCategory =
   | "starry_night_pt"
   | "starry_night_en"
+  | "spiral_sky_motif"
   | "pixel_resolution"
   | "pixel_count"
   | "dpi";
@@ -68,6 +69,50 @@ export const FORBIDDEN_PATTERNS: ReadonlyArray<{
   // DPI mentions — "300 dpi", "150DPI".
   { category: "dpi", pattern: /\b\d+\s*dpi\b/gi },
 ];
+
+/**
+ * #4201: "espiral"/"espirais" perto de linguagem de céu/estrelas/amarelo é o
+ * motivo visual de Noite Estrelada mesmo quando o prompt NUNCA nomeia a obra
+ * (caso real edição 260728 D3: "espirais amarelas" — a string "Noite
+ * Estrelada" também apareceu, só que numa instrução NEGATIVA, e nomear a obra
+ * — mesmo pra dizer "evite" — tende a ancorar o modelo nela). Detectado via
+ * janela de contexto (não regex único) porque "espiral" sozinho é legítimo
+ * fora de contexto de céu (ex: "espiral de crescimento", "escada em
+ * espiral") — bloquear a palavra tout court geraria falso-positivo demais.
+ */
+// Nota: plural de "espiral" em PT-BR é "espirais" (troca -al por -ais), não
+// "espirals" — precisa de alternância explícita, não sufixo "s?".
+const SPIRAL_WORD_PATTERN = /\bespira(?:l|is)\b/gi;
+const SKY_CONTEXT_PATTERN = /\b(?:c[eé]us?|estrelas?|amarel\w*)\b/i;
+const SPIRAL_SKY_CONTEXT_WINDOW = 60;
+
+/**
+ * Categorias detectadas fora de `FORBIDDEN_PATTERNS` (janela de contexto em
+ * vez de regex único stateless) — usado pelos testes de invariante de
+ * `CATEGORY_RULES` pra não tratar essas categorias como "órfãs".
+ */
+export const CONTEXTUAL_FORBIDDEN_CATEGORIES: readonly ForbiddenCategory[] = [
+  "spiral_sky_motif",
+];
+
+function findSpiralSkyMotifIssues(prompt: string): ForbiddenIssue[] {
+  const issues: ForbiddenIssue[] = [];
+  SPIRAL_WORD_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SPIRAL_WORD_PATTERN.exec(prompt)) !== null) {
+    const start = Math.max(0, match.index - SPIRAL_SKY_CONTEXT_WINDOW);
+    const end = Math.min(
+      prompt.length,
+      match.index + match[0].length + SPIRAL_SKY_CONTEXT_WINDOW,
+    );
+    const window = prompt.slice(start, end);
+    if (SKY_CONTEXT_PATTERN.test(window)) {
+      issues.push({ category: "spiral_sky_motif", match: match[0], index: match.index });
+    }
+    if (match.index === SPIRAL_WORD_PATTERN.lastIndex) SPIRAL_WORD_PATTERN.lastIndex++;
+  }
+  return issues;
+}
 
 /**
  * Palavras-gatilho que tendem a fazer Gemini renderizar texto na cena.
@@ -125,6 +170,10 @@ export function findForbiddenPhrases(prompt: string): ForbiddenIssue[] {
     }
   }
 
+  // #4201: espiral(is) em contexto de céu/estrela/amarelo — janela de
+  // contexto, não regex simples (ver findSpiralSkyMotifIssues acima).
+  issues.push(...findSpiralSkyMotifIssues(prompt));
+
   // Ordena por posição pra output legível (contexto progride no prompt)
   issues.sort((a, b) => a.index - b.index);
   return issues;
@@ -154,6 +203,8 @@ export function formatIssues(prompt: string, issues: ForbiddenIssue[]): string {
 export const CATEGORY_RULES: Record<ForbiddenCategory, string> = {
   starry_night_pt: "Regra editorial proíbe referências a Noite Estrelada (style copy).",
   starry_night_en: "Regra editorial proíbe referências a The Starry Night (style copy).",
+  spiral_sky_motif:
+    "Regra editorial proíbe descrever o motivo visual de Noite Estrelada (espirais/redemoinhos em céu/estrelas/amarelo) mesmo sem nomear a obra — nomear ou descrever a obra, inclusive em instrução negativa ('sem espirais'), tende a ancorar o modelo nela (#4201).",
   pixel_resolution:
     "Regra editorial proíbe especificar resolução em pixels (ex: 1024x1024) — Gemini decide aspect ratio via parâmetro.",
   pixel_count:

@@ -11,9 +11,14 @@
  *
  * Este script é chamado APÓS o passo 1m-ter. Para cada artigo em `lancamento`
  * com `primary_source_substituted: { from, to }`, verifica se a URL oficial
- * (`to`) está em `data/past-editions.md`. Se sim, DEMOTE o artigo de volta
- * para `radar`, restaurando a URL original (`from`), e adiciona
- * `primary_source_demoted: { url_oficial, reason }` para rastreabilidade.
+ * (`to`) (a) está em `data/past-editions.md`, (b) já existe como artigo
+ * NATIVO em qualquer bucket (`lancamento`/`radar`/`use_melhor`/`video`) da
+ * PRÓPRIA edição em curso (#4200 — colisão intra-edição, ex: promoção de
+ * fonte primária batendo com cobertura nativa do mesmo domínio já no pool),
+ * ou (c) colide com outra promoção pro mesmo destino nesta mesma rodada. Se
+ * qualquer uma, DEMOTE o artigo de volta para `radar`, restaurando a URL
+ * original (`from`), e adiciona `primary_source_demoted: { url_oficial, reason }`
+ * para rastreabilidade.
  *
  * Escolha de resolução: DEMOTE → radar (mantém o artigo sem violar o invariante).
  *   - Mais seguro que DROP (preserva o item, editor vê no gate).
@@ -80,8 +85,46 @@ export interface CheckPromotedDedupResult {
 // ---------------------------------------------------------------------------
 
 /**
+ * Nomes dos 4 buckets padrão produzidos por `categorize.ts`. Usado pra
+ * varrer TODOS os buckets da edição corrente em busca de artigos nativos
+ * (#4200), não só `lancamento`.
+ */
+const ALL_BUCKET_NAMES = ["lancamento", "radar", "use_melhor", "video"] as const;
+
+/**
+ * #4200: coleta as URLs canonicalizadas de todo artigo NATIVO (sem
+ * `primary_source_substituted.to`) já presente em qualquer bucket da edição
+ * corrente, no estado ANTES de qualquer demote desta rodada. Usado pra
+ * detectar colisão intra-edição entre um item promovido (radar→lançamento,
+ * passo 1m-ter) e um artigo que já estava no pool da mesma edição sob a
+ * mesma URL (ex: cobertura nativa do mesmo domínio, já presente antes da
+ * promoção rodar) — cenário distinto do "duas promoções pro mesmo destino"
+ * já coberto abaixo, e do que `dedup.ts`/pastUrls cobrem (edições ANTERIORES).
+ *
+ * Caso real (edição 260728): promoção de fonte primária colidiu com um
+ * artigo nativo do mesmo domínio já presente no pool — `check-promoted-dedup`
+ * só olhava `past-editions.md`, então a colisão passou e `finalize-stage1`
+ * duplicou o registro em `lancamento`.
+ */
+function collectNativeEditionUrls(buckets: CategorizedFlat): Set<string> {
+  const urls = new Set<string>();
+  for (const bucketName of ALL_BUCKET_NAMES) {
+    const arr = buckets[bucketName];
+    if (!Array.isArray(arr)) continue;
+    for (const article of arr) {
+      if (article?.primary_source_substituted?.to) continue; // promovido — checado à parte
+      if (typeof article?.url !== "string" || article.url === "") continue;
+      urls.add(canonicalize(article.url));
+    }
+  }
+  return urls;
+}
+
+/**
  * Verifica artigos promovidos de radar→lançamento (via passo 1m-ter, campo
- * `primary_source_substituted`) contra o conjunto de URLs de edições passadas.
+ * `primary_source_substituted`) contra o conjunto de URLs de edições passadas,
+ * contra duplicatas within-edition entre promoções, E contra artigos nativos
+ * já presentes nos buckets da própria edição corrente (#4200).
  *
  * Muta `buckets` in-place: move itens com URL repetida de `lancamento` para
  * `radar`, restaurando a URL original.
@@ -104,6 +147,11 @@ export function checkPromotedDedup(
   // Iterar in-place (splice conforme demotamos)
   const lancamentos = buckets.lancamento;
 
+  // #4200: URLs de artigos NATIVOS já presentes em qualquer bucket da edição
+  // corrente (calculado uma vez, ANTES do loop — artigos nativos nunca são
+  // movidos por este script, só os promovidos/demotados são).
+  const nativeEditionUrls = collectNativeEditionUrls(buckets);
+
   // Detectar duplicatas within-edition: duas promoções para a mesma URL oficial
   // na mesma rodada (passo 1m-ter pode substituir dois artigos pro mesmo destino).
   // Estratégia: manter o PRIMEIRO encontrado; demote todos os subsequentes.
@@ -122,10 +170,14 @@ export function checkPromotedDedup(
     checked++;
     const canonicalTo = canonicalize(sub.to);
 
-    // Verificar repetição histórica (past-editions) OU duplicata within-edition
+    // Verificar repetição histórica (past-editions), colisão com artigo NATIVO
+    // já no pool desta edição (#4200), OU duplicata within-edition entre promoções.
     const repeatsHistory = pastUrls.has(canonicalTo);
+    const collidesWithNative = !repeatsHistory && nativeEditionUrls.has(canonicalTo);
     // Duplicata within-edition: já alocamos esta URL oficial a outro item nesta edição
-    const isWithinEditionDuplicate = !repeatsHistory && allocatedOfficialUrls.has(canonicalTo);
+    const isWithinEditionPromotionDuplicate =
+      !repeatsHistory && !collidesWithNative && allocatedOfficialUrls.has(canonicalTo);
+    const isWithinEditionDuplicate = collidesWithNative || isWithinEditionPromotionDuplicate;
 
     if (!repeatsHistory && !isWithinEditionDuplicate) {
       // URL nova e não duplicada: alocar (manter em lancamento)
@@ -164,9 +216,11 @@ export function checkPromotedDedup(
         ? `; a URL do radar TAMBÉM repete — não re-promover sem trocar a URL`
         : "";
 
-    const reason = isWithinEditionDuplicate
-      ? `URL oficial (${sub.to}) duplicada within-edition (duas promoções para o mesmo destino) — rebaixado para radar${fromRepeatSuffix}`
-      : `URL oficial (${sub.to}) repete últimas edições — rebaixado para radar${fromRepeatSuffix}`;
+    const reason = collidesWithNative
+      ? `URL oficial (${sub.to}) já existe como artigo nativo no pool desta edição (#4200) — rebaixado para radar${fromRepeatSuffix}`
+      : isWithinEditionPromotionDuplicate
+        ? `URL oficial (${sub.to}) duplicada within-edition (duas promoções para o mesmo destino) — rebaixado para radar${fromRepeatSuffix}`
+        : `URL oficial (${sub.to}) repete últimas edições — rebaixado para radar${fromRepeatSuffix}`;
 
     // Restaurar URL de pesquisa original, EXCETO quando from===to (ambas repetem — manter from mesmo assim
     // para rastreabilidade, mas anotar o fato no primary_source_demoted).

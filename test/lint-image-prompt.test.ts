@@ -9,6 +9,7 @@ import {
   TRIGGER_RULES,
   FORBIDDEN_PATTERNS,
   TEXT_TRIGGER_PATTERNS,
+  CONTEXTUAL_FORBIDDEN_CATEGORIES,
 } from "../scripts/lib/lint-image-prompt.ts";
 
 describe("findForbiddenPhrases — detecção de violações (#810)", () => {
@@ -168,14 +169,73 @@ describe("CATEGORY_RULES — descritivos pra cada categoria (#810)", () => {
     }
   });
 
-  it("CATEGORY_RULES não tem keys órfãs (sem pattern correspondente)", () => {
-    const patternCategories = new Set(FORBIDDEN_PATTERNS.map((p) => p.category));
+  it("CATEGORY_RULES não tem keys órfãs (sem pattern ou detector contextual correspondente)", () => {
+    const patternCategories = new Set([
+      ...FORBIDDEN_PATTERNS.map((p) => p.category),
+      ...CONTEXTUAL_FORBIDDEN_CATEGORIES,
+    ]);
     for (const key of Object.keys(CATEGORY_RULES)) {
       assert.ok(
         patternCategories.has(key as never),
-        `CATEGORY_RULES tem '${key}' mas FORBIDDEN_PATTERNS não — drift`,
+        `CATEGORY_RULES tem '${key}' mas nem FORBIDDEN_PATTERNS nem CONTEXTUAL_FORBIDDEN_CATEGORIES têm — drift`,
       );
     }
+  });
+});
+
+describe("findForbiddenPhrases — espiral(is) em contexto de céu (#4201)", () => {
+  it("detecta 'espirais amarelas' + céu — caso real edição 260728 D3", () => {
+    const r = findForbiddenPhrases(
+      "Céu noturno com espirais amarelas girando sobre servidores",
+    );
+    const spiral = r.find((i) => i.category === "spiral_sky_motif");
+    assert.ok(spiral, "deve detectar espiral_sky_motif");
+    assert.equal(spiral!.match, "espirais");
+  });
+
+  it("detecta 'espiral' singular perto de 'estrelas'", () => {
+    const r = findForbiddenPhrases("Uma espiral de luz entre as estrelas ao fundo");
+    assert.ok(r.some((i) => i.category === "spiral_sky_motif"));
+  });
+
+  it("detecta mesmo quando espiral vem DEPOIS da palavra de contexto (céu antes)", () => {
+    const r = findForbiddenPhrases("Sob um céu amarelo dourado, formas em espiral pairam");
+    assert.ok(r.some((i) => i.category === "spiral_sky_motif"));
+  });
+
+  it("NÃO confunde 'espiral' fora de contexto de céu (falso-positivo)", () => {
+    const r = findForbiddenPhrases(
+      "Uma escada em espiral conecta os andares do escritório futurista",
+    );
+    assert.ok(!r.some((i) => i.category === "spiral_sky_motif"));
+  });
+
+  it("NÃO confunde 'espiral de crescimento' (metáfora de negócio)", () => {
+    const r = findForbiddenPhrases("Gráfico mostrando espiral de crescimento da empresa");
+    assert.ok(!r.some((i) => i.category === "spiral_sky_motif"));
+  });
+
+  it("detecta 'Noite Estrelada' mesmo dentro de instrução NEGATIVA (#4201)", () => {
+    // Caso real: prompt dizia "sem espirais estilo Noite Estrelada" — o próprio
+    // ato de nomear a obra numa negação já é a violação (não precisa reforço
+    // de posição/polaridade — findForbiddenPhrases já casa a string crua).
+    const r = findForbiddenPhrases(
+      "Cena de datacenter, sem espirais estilo Noite Estrelada, sem redemoinhos no céu",
+    );
+    const starryNight = r.find((i) => i.category === "starry_night_pt");
+    assert.ok(starryNight, "deve detectar Noite Estrelada mesmo em instrução negativa");
+    // E o companion "espirais" (perto de "céu" na mesma frase) também deve pegar
+    assert.ok(
+      r.some((i) => i.category === "spiral_sky_motif"),
+      "deve detectar espirais como motivo visual, mesmo em instrução negativa",
+    );
+  });
+
+  it("prompt limpo (Van Gogh impasto sem menção a espiral/céu-estrelado) não gera issue", () => {
+    const r = findForbiddenPhrases(
+      "Pintura impasto Van Gogh de servidores em data center sob luz quente, 2:1",
+    );
+    assert.deepEqual(r, []);
   });
 });
 
