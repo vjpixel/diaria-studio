@@ -492,6 +492,77 @@ describe("buildCoverReplaceStep2_UploadJs (#2283 — split replace step 2, DataT
       "MIME check deve ser condicional a blob.type ser truthy",
     );
   });
+
+  // ─── #4210 regressions (follow-up do #4203/#4209: fallback secundário tinha
+  // os mesmos 2 defeitos do método primário — fileInput global e clique sem
+  // guard de <a>/dimensão) ───────────────────────────────────────────────────
+
+  it("#4210 fix 1: SEMPRE tenta (re)abrir o painel de thumbnail ANTES de ler o fileInput", () => {
+    const js = buildCoverReplaceStep2_UploadJs("https://x/y.jpg");
+    const idxThumbSearch = js.indexOf("thumbRe.test(b.textContent");
+    const idxFileInputRead = js.indexOf("container ? container.querySelector");
+    assert.ok(idxThumbSearch !== -1, "deve buscar o botão de thumbnail via thumbRe");
+    assert.ok(idxFileInputRead !== -1, "deve ler fileInput escopado ao container");
+    assert.ok(
+      idxThumbSearch < idxFileInputRead,
+      "a busca/clique do botão de thumbnail deve vir ANTES da leitura do fileInput — " +
+        "mesmo bug do #4203: buscar 'Add/Change thumbnail' só quando fileInput JÁ estava " +
+        "ausente deixava de reabrir o painel quando um input genérico de outra seção casava primeiro",
+    );
+  });
+
+  it("#4210 fix 1 (agravante): regex do botão casa 'Web thumbnail', 'Add thumbnail' e 'Change thumbnail'", () => {
+    const thumbRe = /(web |add |change )?thumbnail/i;
+    assert.match("Web thumbnail", thumbRe, "deve casar 'Web thumbnail' — nome atual da UI (#4203)");
+    assert.match("Add thumbnail", thumbRe, "deve casar 'Add thumbnail' — nome legado, sem cover ainda");
+    assert.match("Change thumbnail", thumbRe, "deve casar 'Change thumbnail' — nome usado no fallback do replace");
+    assert.doesNotMatch("Add author", thumbRe, "não deve casar textos não relacionados a thumbnail");
+
+    const js = buildCoverReplaceStep2_UploadJs("https://x/y.jpg");
+    assert.match(js, /const thumbRe = \/\(web \|add \|change \)\?thumbnail\/i;/, "JS gerado deve declarar o mesmo regex");
+  });
+
+  it("#4210 fix 2: escopa o fileInput ao container do botão de thumbnail, não document.querySelector global incondicional", () => {
+    const js = buildCoverReplaceStep2_UploadJs("https://x/y.jpg");
+    assert.match(
+      js,
+      /let fileInput = container \? container\.querySelector\('input\[type="file"\]'\) : null;/,
+      "leitura primária de fileInput deve ser escopada ao container (não document global)",
+    );
+    const scopedIdx = js.indexOf("let fileInput = container ?");
+    const globalFallbackIdx = js.indexOf('fileInput = document.querySelector(\'input[type="file"]\');', scopedIdx + 1);
+    assert.ok(
+      globalFallbackIdx > scopedIdx,
+      "o fallback pra document.querySelector global só deve existir DEPOIS da tentativa escopada ao container",
+    );
+  });
+
+  it("#4210 fix 3: nunca clica em img dentro de <a> — guard !img.closest('a') presente no seletor de upload", () => {
+    const js = buildCoverReplaceStep2_UploadJs("https://x/y.jpg");
+    assert.match(js, /!i\.closest\('a'\)/, "deve excluir imagens dentro de <a> do clique de aplicar");
+  });
+
+  it("#4210 fix 4: filtra por dimensão mínima (>=100px) — exclui o logo do Beehiiv (16x15)", () => {
+    const js = buildCoverReplaceStep2_UploadJs("https://x/y.jpg");
+    assert.match(js, /const MIN_DIM = 100;/, "deve declarar threshold mínimo de 100px");
+    assert.match(js, /i\.naturalWidth >= MIN_DIM && i\.naturalHeight >= MIN_DIM/, "deve exigir largura E altura mínimas");
+  });
+
+  it("#4210: fixture negativa do incidente 260728 — logo output-onlinepngtools.png (16x15, dentro de <a>) casaria o regex de src positivo, mas é barrado por AMBOS os guards novos", () => {
+    const js = buildCoverReplaceStep2_UploadJs("https://x/y.jpg");
+    const logoSrc = "https://media.beehiiv.com/output-onlinepngtools.png";
+    assert.match(logoSrc, /(media\.beehiiv|beehiiv-images-production.*uploads)/i);
+    assert.doesNotMatch(logoSrc, /static_assets|publication\.logo/i, "o guard de exclusão pré-existente também não pegava esse caso");
+    assert.match(js, /!i\.closest\('a'\)/);
+    assert.match(js, /i\.naturalWidth >= MIN_DIM && i\.naturalHeight >= MIN_DIM/);
+  });
+
+  it("#4210: guard de exclusão do existingSrcSnapshot (#2283 fix #6) sobrevive à adição dos novos guards", () => {
+    const url = "https://poll.diaria.workers.dev/img/new.jpg";
+    const oldSrc = "https://beehiiv-images-production.s3.amazonaws.com/uploads/old-cover.jpg";
+    const js = buildCoverReplaceStep2_UploadJs(url, "04-d1-2x1.jpg", oldSrc);
+    assert.match(js, /i\.src !== existingSrcSnapshot/, "exclusão da cover antiga deve continuar presente junto dos novos guards");
+  });
 });
 
 describe("buildCoverReplaceStep1_RemoveExistingJs — confirmBtn guard (#2283 fix #7)", () => {
