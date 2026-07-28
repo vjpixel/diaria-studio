@@ -2,8 +2,31 @@
  * dashboard-clarice.ts (#3563 — fatia 9 do epic #3554 "Studio UI", endereça #3553-A)
  *
  * Modo LOCAL do dashboard mensal (Clarice/Brevo) — reusa `renderDashboardHtml`
- * de `workers/brevo-dashboard/src/sections-core.ts` (zero fork de template),
- * mas monta os inputs a partir de fontes LOCAIS em vez do KV do Worker:
+ * de `workers/brevo-dashboard/src/sections-core.ts` (zero fork de template).
+ *
+ * #4206 (inverte a direção do #4186): o render DEFAULT (`buildClariceDashboardHtml()`,
+ * sem `fresh`) agora é 100% KV-only — ZERO chamadas Brevo ao abrir o painel.
+ * Studio = consumidor read-only do KV; o Worker `clarice-dashboard` (que tem
+ * cache, retry de 429 e last-good, `dash:lastgood:campaigns`) e o push diário
+ * das 07:30 (`clarice-db-summary.ts` → `contacts:summary`) são os ÚNICOS
+ * escritores. `renderClariceDashboardKvOnlyUncached()` lê
+ * `dash:lastgood:campaigns` + `readKvTabs(env, "kv-only")` +
+ * `fetchPlanCredits(env, "kv-only")` (nenhum dos três chama a Brevo em modo
+ * "kv-only" — só o KV) e injeta um banner mostrando o `fetchedAt` real da
+ * última coleta (`generatedAt` do payload `dash:lastgood:campaigns`) — a
+ * defasagem fica VISÍVEL, não suposta (#4187 pediu o mesmo banner; ver
+ * `injectKvOnlyBanner` abaixo, que reusa o padrão dos banners de
+ * `buildRateLimitFallback`/`buildFatalErrorFallback` em brevo-api.ts sem
+ * reusar a wording de erro — aqui não há nenhum erro, é o comportamento NOVO
+ * do painel). Fresqueza vira ação EXPLÍCITA do editor: o botão "Atualizar
+ * agora" do banner é um link `?fresh=1` (mesmo mecanismo de bypass de cache
+ * já usado pelo Worker e pelo `PAGE_CACHE_TTL_MS` abaixo) que dispara
+ * `renderClariceDashboardLiveUncached()` — o fetch ao vivo de sempre (com
+ * `skipKvCache: true` nas 3 chamadas, #4186), inalterado.
+ *
+ * Documentação original (ainda válida para o caminho AO VIVO, `?fresh=1`):
+ * monta os inputs a partir de fontes LOCAIS em vez do KV do Worker quando o
+ * editor pede dado fresco:
  *
  *   - campanhas enviadas/agendadas → Brevo API direto (`fetchRecentCampaigns`/
  *     `fetchScheduledCampaigns`/`fetchPlanCredits` de brevo-api.ts, com
@@ -55,9 +78,11 @@ import {
   readKvTabs,
   CAMPAIGNS_FETCH_LIMIT,
   BrevoRateLimitError,
-  buildRateLimitFallback, // #4187: reusa o fallback last-good+banner do Worker
+  buildRateLimitFallback, // #4187: reusa o fallback last-good+banner do Worker (usado só no caminho AO VIVO, ver #4206)
+  LASTGOOD_CAMPAIGNS_KEY, // #4206: chave do último payload de campanhas bom conhecido — fonte do render default (KV-only)
 } from "../../workers/brevo-dashboard/src/brevo-api.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "../../workers/brevo-dashboard/src/sections-core.ts";
+import { fmtTimeBRT } from "../../workers/brevo-dashboard/src/render-links.ts"; // #4206: label do banner de fetchedAt
 import type { Env, ContactsSummary, LinkSectionMap } from "../../workers/brevo-dashboard/src/types.ts";
 import { createRemoteKvNamespace } from "../lib/cloudflare-kv-upload.ts";
 import { loadLinkSectionMapForCycle } from "../lib/mensal/monthly-link-sections.ts"; // #4184
@@ -230,7 +255,118 @@ function errorHtml(message: string): string {
 </body></html>`;
 }
 
-async function renderClariceDashboardHtmlUncached(): Promise<string> {
+/**
+ * #4206: banner do render DEFAULT (KV-only) — distinto de `injectStaleBanner`
+ * (#2733/#2280, presume Brevo em rate-limit) e de `injectFatalErrorBanner`
+ * (#4187, presume erro inesperado): aqui NÃO há erro nenhum, é o
+ * comportamento normal e intencional do painel (Studio nunca chama a Brevo
+ * ao abrir). `fetchedAt` é o `generatedAt` de `dash:lastgood:campaigns` — o
+ * instante do último fetch ao vivo bem-sucedido que populou o KV (produzido
+ * pelo Worker `clarice-dashboard`, ou por uma sessão Studio anterior que
+ * clicou "Atualizar agora" — ver nota em `renderClariceDashboardKvOnlyUncached`
+ * abaixo sobre por que este render NUNCA escreve essa chave). `null` quando o
+ * KV nunca foi populado (painel local recém-configurado, ou sessão sem
+ * `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN` — `buildEnv()` degrada
+ * pro `MemoryKv`, que nunca tem esta chave) — mensagem honesta em vez de
+ * inventar um horário.
+ */
+export function injectKvOnlyBanner(html: string, fetchedAt: string | null): string {
+  const fetchedLabel = fetchedAt != null ? `${fmtTimeBRT(fetchedAt)} BRT` : "nunca (ainda sem coleta)";
+  const banner =
+    `<div style="background:#DCEEFB;color:#0b4a6f;padding:10px 16px;text-align:center;` +
+    `font-family:system-ui,sans-serif;font-size:14px;border-bottom:1px solid #A9D6F5;">` +
+    `📋 Mostrando a última coleta salva no KV — ${escHtml(fetchedLabel)}. Zero chamadas à Brevo nesta abertura. ` +
+    `<a href="?fresh=1" style="font-weight:600;">Atualizar agora</a> busca ao vivo (usa quota da Brevo).</div>`;
+  if (/<body[^>]*>/i.test(html)) {
+    return html.replace(/<body[^>]*>/i, (m) => m + banner);
+  }
+  return banner + html;
+}
+
+/**
+ * #4206: render DEFAULT do painel Studio — 100% a partir do KV, ZERO
+ * chamadas Brevo. Reusa a MESMA composição de dado que `buildRateLimitFallback`
+ * (brevo-api.ts): `dash:lastgood:campaigns` (campanhas enviadas/agendadas) +
+ * `readKvTabs(env, "kv-only")` (cohorts/couponUsage/eiaEngagement/
+ * postmasterSpam — nunca cai pro fetch Stripe ao vivo em modo kv-only) +
+ * `fetchPlanCredits(env, "kv-only")` (nunca faz `GET /v3/account`). Não
+ * reusa `buildRateLimitFallback` diretamente porque a semântica é diferente
+ * (aqui não é um fallback de ERRO — é o caminho feliz e default do painel) e
+ * a wording do banner precisa refletir isso (`injectKvOnlyBanner`, não
+ * `injectStaleBanner`).
+ *
+ * Nunca escreve em `dash:lastgood:campaigns`/`brevo:plan-credits`/etc — só
+ * lê. Mantém o invariante do #4186/#4206 (Studio = consumidor read-only;
+ * Worker = único escritor) mesmo neste caminho.
+ *
+ * `contactsSummary` continua vindo do store SQLite LOCAL (não do KV) — é
+ * MELHOR fidelidade (não depende do push das 07:30) e não tem custo Brevo
+ * nenhum (#3553), então não há razão pra downgradar isso pro KV só porque
+ * este é o caminho "sem Brevo".
+ */
+async function renderClariceDashboardKvOnlyUncached(): Promise<string> {
+  const env = buildEnv();
+
+  if (!env.BREVO_API_KEY) {
+    return notConfiguredHtml();
+  }
+
+  try {
+    const staleCampaignsRaw = (await env.STATS_CACHE
+      .get(LASTGOOD_CAMPAIGNS_KEY, "json")
+      .catch(() => null)) as { campaigns?: unknown[]; scheduled?: unknown[]; campaignsLimit?: unknown; generatedAt?: unknown } | null;
+    const staleCampaignsLimit =
+      typeof staleCampaignsRaw?.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
+    const fetchedAt = typeof staleCampaignsRaw?.generatedAt === "string" ? staleCampaignsRaw.generatedAt : null;
+
+    const { cohorts, mvStatus, couponUsage, eiaEngagement, postmasterSpam } = await readKvTabs(env, "kv-only");
+    const contactsSummary = buildContactsSummaryLocal();
+    const planCredits = await fetchPlanCredits(env, "kv-only").catch(() => null);
+
+    const rawCampaigns = staleCampaignsRaw?.campaigns;
+    const rawScheduled = staleCampaignsRaw?.scheduled;
+    const campaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<typeof renderDashboardHtml>[0];
+    const scheduled = (Array.isArray(rawScheduled) ? rawScheduled : []) as Parameters<typeof renderDashboardHtml>[1];
+    // #4184/#4206: `scheduled` é `Parameters<typeof renderDashboardHtml>[1]`, que
+    // o TS resolve com `| undefined` por causa do default value na assinatura
+    // (nunca o valor real em runtime — sempre um array via Array.isArray acima —
+    // mas o TS não sabe disso na origem do cast, mesmo padrão de
+    // buildLinkSectionsByCycleForFallback em brevo-api.ts). `?? []` só satisfaz o
+    // compilador.
+    const linkSectionsByCycle = buildLinkSectionsByCycleLocal([...campaigns, ...(scheduled ?? [])]);
+
+    // #4206: ao contrário de `buildRateLimitFallback` (que passa `null` de
+    // propósito — ver comentário lá), aqui passamos o `fetchedAt` REAL: o
+    // objetivo explícito da issue é "defasagem visível, não suposta" — um
+    // `null` faria `renderDashboardHtml` cair no `now` local (mascarando a
+    // idade real do dado nesta linha específica, mesmo com o banner acima
+    // mostrando o horário certo). Redundância deliberada entre banner e
+    // sub-header, não contradição.
+    const html = renderDashboardHtml(
+      campaigns,
+      scheduled,
+      cohorts,
+      mvStatus,
+      contactsSummary,
+      couponUsage,
+      eiaEngagement,
+      planCredits,
+      fetchedAt,
+      staleCampaignsLimit,
+      postmasterSpam,
+      { studioMode: true, linkSectionsByCycle },
+    );
+    return injectKvOnlyBanner(html, fetchedAt);
+  } catch (e) {
+    // Fail-soft: qualquer falha de leitura do KV/SQLite vira página de erro
+    // amigável, nunca lança pro caller (mesmo padrão do caminho ao vivo
+    // abaixo). Não há fetch Brevo neste caminho, então BrevoRateLimitError
+    // nunca é a causa aqui.
+    return errorHtml(e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function renderClariceDashboardLiveUncached(): Promise<string> {
   const env = buildEnv();
 
   if (!env.BREVO_API_KEY) {
@@ -319,14 +455,25 @@ const PAGE_CACHE_TTL_MS = 5 * 60 * 1000; // 5min — mesmo TTL do edge cache do 
 /**
  * Monta o painel Clarice local completo. Cacheado em memória por 5min
  * (mesmo espírito do `Cache-Control: private, max-age=300` do Worker) —
- * chamadas repetidas (reload da página) dentro da janela não tocam a Brevo
- * de novo. `opts.fresh` bypassa o cache (mesmo espírito do `?fresh=1`).
+ * chamadas repetidas (reload da página) dentro da janela reusam o mesmo HTML.
+ *
+ * #4206: `opts.fresh` agora decide QUAL caminho renderiza, não só se bypassa
+ * o cache de página — `false`/omitido (default, todo load normal do painel)
+ * → `renderClariceDashboardKvOnlyUncached()` (ZERO chamadas Brevo, só KV);
+ * `true` (clique em "Atualizar agora" no banner, `?fresh=1`) →
+ * `renderClariceDashboardLiveUncached()` (fetch ao vivo de sempre, com
+ * `skipKvCache: true` nas 3 chamadas — #4186, inalterado). O bypass do cache
+ * de página em `fresh` continua necessário pelo mesmo motivo de antes: sem
+ * ele, um clique em "Atualizar agora" dentro da janela de 5min serviria o
+ * HTML KV-only cacheado, nunca disparando o fetch ao vivo pedido.
  */
 export async function buildClariceDashboardHtml(opts: { fresh?: boolean } = {}): Promise<string> {
   if (!opts.fresh && cachedHtml && cachedHtml.expiresAt > Date.now()) {
     return cachedHtml.html;
   }
-  const html = await renderClariceDashboardHtmlUncached();
+  const html = opts.fresh
+    ? await renderClariceDashboardLiveUncached()
+    : await renderClariceDashboardKvOnlyUncached();
   cachedHtml = { html, expiresAt: Date.now() + PAGE_CACHE_TTL_MS };
   return html;
 }
