@@ -57,9 +57,10 @@ import {
   BrevoRateLimitError,
   buildRateLimitFallback, // #4187: reusa o fallback last-good+banner do Worker
 } from "../../workers/brevo-dashboard/src/brevo-api.ts";
-import { renderDashboardHtml, escHtml } from "../../workers/brevo-dashboard/src/sections-core.ts";
-import type { Env, ContactsSummary } from "../../workers/brevo-dashboard/src/types.ts";
+import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "../../workers/brevo-dashboard/src/sections-core.ts";
+import type { Env, ContactsSummary, LinkSectionMap } from "../../workers/brevo-dashboard/src/types.ts";
 import { createRemoteKvNamespace } from "../lib/cloudflare-kv-upload.ts";
+import { loadLinkSectionMapForCycle } from "../lib/mensal/monthly-link-sections.ts"; // #4184
 
 // ─── Shim de KVNamespace em memória (processo local, sem Cloudflare) ────────
 //
@@ -183,6 +184,31 @@ function buildContactsSummaryLocal(): ContactsSummary | null {
   }
 }
 
+/**
+ * #4184: monta o mapa de seção (Destaques/Use Melhor/Radar) por ciclo mensal
+ * LOCALMENTE, direto do `prioritized.md` em disco (`data/monthly/{ciclo}/`)
+ * — SEM KV, ao contrário do Worker (que lê `secao:{ciclo}` via
+ * `readLinkSectionsByCycle`, brevo-api.ts). Decisão do editor (#4184): o
+ * painel Studio nunca deve depender do script de push nem tocar o KV pra
+ * este recurso (mesmo espírito do #4186 — não agravar o padrão de escrita
+ * "demais" no KV de produção que abrir o painel já causa). Fail-soft por
+ * ciclo: `loadLinkSectionMapForCycle` retorna `null` quando o
+ * `prioritized.md` daquele ciclo não existe (ou `data/` está inacessível —
+ * sessão cloud sem o junction OneDrive, #2643) — o ciclo simplesmente não
+ * entra no resultado, sem quebrar o render.
+ */
+function buildLinkSectionsByCycleLocal(
+  campaignsAndScheduled: Array<{ name: string }>,
+): Record<string, LinkSectionMap> {
+  const cycles = collectMonthlyLinkCycles(campaignsAndScheduled);
+  const result: Record<string, LinkSectionMap> = {};
+  for (const cycle of cycles) {
+    const map = loadLinkSectionMapForCycle(cycle);
+    if (map) result[cycle] = map;
+  }
+  return result;
+}
+
 function notConfiguredHtml(): string {
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -250,6 +276,9 @@ async function renderClariceDashboardHtmlUncached(): Promise<string> {
     // (melhor fidelidade que o KV, #3553).
     const { cohorts, mvStatus, couponUsage, eiaEngagement, postmasterSpam } = await readKvTabs(env, "cached");
     const contactsSummary = buildContactsSummaryLocal();
+    // #4184: mapa de seção montado localmente (sem KV) a partir do
+    // prioritized.md em disco — ver docstring de buildLinkSectionsByCycleLocal.
+    const linkSectionsByCycle = buildLinkSectionsByCycleLocal([...campaigns, ...scheduled]);
 
     const dataGeneratedAt = new Date().toISOString();
     return renderDashboardHtml(
@@ -264,7 +293,7 @@ async function renderClariceDashboardHtmlUncached(): Promise<string> {
       dataGeneratedAt,
       CAMPAIGNS_FETCH_LIMIT,
       postmasterSpam,
-      { studioMode: true },
+      { studioMode: true, linkSectionsByCycle },
     );
   } catch (e) {
     if (e instanceof BrevoRateLimitError) {

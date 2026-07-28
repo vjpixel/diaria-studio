@@ -133,6 +133,36 @@ export interface PostmasterSpamEntry {
   recordedAt: string;
 }
 
+/**
+ * #4184: seção editorial de origem de um link dentro do digest MENSAL —
+ * Destaques (D1-D3) / Use Melhor / Radar. Fonte: `data/monthly/{ciclo}/prioritized.md`
+ * (só os ciclos com o pool novo #1901/#1902 têm as 3 seções — ciclos mais
+ * antigos só têm `## Destaques`, ver scripts/lib/mensal/monthly-link-sections.ts).
+ * Não cobre a diária (sem `prioritized.md` equivalente) nem CTA/rodapé/links
+ * de sistema — esses casos caem no fallback "sem seção conhecida" no render
+ * (`workers/brevo-dashboard/src/link-section.ts`).
+ */
+export type LinkSectionName = "destaques" | "use-melhor" | "radar";
+
+/**
+ * Payload gravado no KV sob a chave `secao:{ciclo}` (ex: `secao:2605-06`),
+ * um POR CICLO mensal — não um singleton como os demais tipos deste arquivo.
+ * Gravado por `scripts/push-link-sections-kv.ts` (script explícito, nunca
+ * pelo caminho de render — decisão do editor, #4184, mesmo cuidado do #4186)
+ * e lido pelo worker `brevo-dashboard` (`readLinkSectionsByCycle`,
+ * brevo-api.ts) OU montado em memória (sem KV) pelo painel Studio local, a
+ * partir do `prioritized.md` em disco (`scripts/studio-ui/dashboard-clarice.ts`).
+ *
+ * Chave = rótulo de CONTEÚDO (`classifyLinkContent(url).content`, #4053) —
+ * NUNCA a URL crua, pra casar com o agrupamento já feito pelas tabelas de
+ * link do dashboard (`render-links.ts`). Valor = lista de seções onde aquele
+ * conteúdo apareceu no `prioritized.md` do ciclo — mais de uma quando o mesmo
+ * conteúdo é citado em 2 seções na mesma edição (ex: um link do Radar também
+ * citado num destaque); a precedência de exibição é resolvida por
+ * `resolveLinkSection` (workers/brevo-dashboard/src/link-section.ts).
+ */
+export type LinkSectionMap = Record<string, LinkSectionName[]>;
+
 export interface ContactsSummary {
   generated_at: string;
   total: number;

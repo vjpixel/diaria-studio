@@ -1,7 +1,8 @@
-import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry } from "./types.ts";
-import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, RECENT_STATS_TTL } from "./types.ts";
+import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, LinkSectionMap } from "./types.ts";
+import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, RECENT_STATS_TTL, linkSectionsKvKey } from "./types.ts";
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml } from "./sections-core.ts";
+import { normalizeLinkSectionMap } from "./link-section.ts"; // #4184
 
 /**
  * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
@@ -866,6 +867,38 @@ export async function readKvTabs(
 }
 
 /**
+ * #4184: lê `secao:{ciclo}` do KV pra cada ciclo mensal em `cycles` (dedup
+ * automático), em paralelo — mesmo espírito de `readKvTabs` acima. Chaves
+ * ausentes/corrompidas (`normalizeLinkSectionMap` retornando `null`) são
+ * simplesmente omitidas do resultado (o caller trata cycle ausente como
+ * "sem mapa", igual a `readKvTabs` tratando payload `null`). Sem
+ * `env.STATS_CACHE` ou `cycles` vazio → `{}` sem nenhuma chamada de rede.
+ *
+ * Gravada por `scripts/push-link-sections-kv.ts` (script explícito, nunca
+ * por este Worker) — ver docstring daquele script e `RenderDashboardOptions`
+ * em sections-core.ts.
+ */
+export async function readLinkSectionsByCycle(
+  env: Env,
+  cycles: readonly string[],
+): Promise<Record<string, LinkSectionMap>> {
+  const kv = env.STATS_CACHE;
+  const uniqueCycles = [...new Set(cycles)];
+  if (!kv || uniqueCycles.length === 0) return {};
+  const entries = await Promise.all(
+    uniqueCycles.map(async (cycle) => {
+      const raw = await kv.get(linkSectionsKvKey(cycle), "json").catch(() => null);
+      return [cycle, normalizeLinkSectionMap(raw)] as const;
+    }),
+  );
+  const result: Record<string, LinkSectionMap> = {};
+  for (const [cycle, map] of entries) {
+    if (map) result[cycle] = map;
+  }
+  return result;
+}
+
+/**
  * #2733: monta a resposta de fallback quando o Brevo está em rate-limit (429).
  * Serve o dashboard com campanhas STALE (do KV `dash:lastgood:campaigns`) + as
  * abas de KV FRESCAS (Cupons/Contatos/coortes/MV via readKvTabs) + banner — em
@@ -911,6 +944,11 @@ export async function buildRateLimitFallback(
     typeof renderDashboardHtml
   >[1];
   try {
+    // #4184: fallback de rate-limit (429) NÃO busca `secao:{ciclo}` — escopo
+    // deliberado: caminho raro, e o custo de outra rodada de KV.get por
+    // ciclo não se justifica aqui. A coluna "Seção" degrada pro fallback
+    // "—" em toda linha neste render (só neste caminho; o render normal
+    // acima tem o mapa completo).
     const html = renderDashboardHtml(
       staleCampaigns,
       staleScheduled,
