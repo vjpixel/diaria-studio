@@ -258,24 +258,32 @@ describe("serve-preview.ts CLI", () => {
       // não só até o arquivo existir.
       const deadline = Date.now() + 5000;
       let persisted: { newsletter_url?: string; newsletter_url_pid?: string } | undefined;
+      let lastRawContent: string | undefined;
+      let lastParseError: unknown;
       while (Date.now() < deadline) {
         if (existsSync(persistPath)) {
           try {
-            const candidate = JSON.parse(readFileSync(persistPath, "utf8"));
+            lastRawContent = readFileSync(persistPath, "utf8");
+            const candidate = JSON.parse(lastRawContent);
             if (candidate.newsletter_url_pid !== undefined) {
               persisted = candidate;
               break;
             }
-          } catch {
-            // leitura no meio de uma escrita atômica (rename em andamento) —
-            // tenta de novo no próximo tick.
+          } catch (e) {
+            // Leitura pode falhar transitoriamente (ENOENT/parse) numa janela
+            // estreita ao redor do rename() do writer — tenta de novo no
+            // próximo tick. Guarda o erro só pra diagnóstico caso o deadline
+            // estoure (não deveria acontecer no caminho feliz).
+            lastParseError = e;
           }
         }
         await new Promise((r) => setTimeout(r, 25));
       }
       assert.ok(
         persisted,
-        "arquivo de persist deveria existir com newsletter_url + newsletter_url_pid gravados",
+        "arquivo de persist deveria existir com newsletter_url + newsletter_url_pid gravados " +
+          `(último conteúdo lido: ${lastRawContent ?? "<arquivo nunca criado>"}; ` +
+          `último erro de parse: ${lastParseError ?? "nenhum"})`,
       );
       assert.equal(persisted.newsletter_url, json.url);
       assert.equal(String(persisted.newsletter_url_pid), String(json.pid));
