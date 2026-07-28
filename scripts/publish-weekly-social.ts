@@ -27,13 +27,15 @@
  * `scripts/append-twitter-published.ts` pra registrar o resultado depois do
  * `create_post` (reaproveitado — aceita `--destaque` arbitrário).
  *
- * Instagram — simplificação assumida (decisão a confirmar com o editor, ver
- * PR body): posta a imagem 4:5 (título embutido) da edição de SEXTA como
- * imagem ÚNICA, não um carrossel de 5 cards. Um carrossel real do Instagram
- * exige criar 5 media containers `is_carousel_item=true` + 1 container pai
- * `CAROUSEL` — fluxo não suportado pelo Worker de agendamento existente
- * (que só aceita 1 `image_url` por entry). Ver `formatInstagramWeekly` em
- * `scripts/lib/format-weekly-social.ts`.
+ * Instagram — carrossel de 5 (#4146, decisão do editor 260727, pré-requisito
+ * de Worker #4153 já entregue): posta 1 card 4:5 por dia da semana (1 URL por
+ * item de `items`, na mesma ordem numerada da caption) via `image_urls` no
+ * payload do Worker queue — o Worker decide sozinho single-image vs carrossel
+ * conforme o tamanho da lista (`resolveImageUrls`/`fireInstagram` em
+ * `workers/linkedin-cron/src/dispatch.ts`). Se QUALQUER dia da semana não
+ * tiver imagem pública resolvível, o post inteiro FALHA (não publica um
+ * carrossel parcial) — ver `resolveWeeklyImageUrls` abaixo. Ver
+ * `formatInstagramWeekly` em `scripts/lib/format-weekly-social.ts`.
  *
  * Horário — `--time` (default "11:00", ver DEFAULT_WEEKLY_TIME abaixo) é uma
  * ASSUNÇÃO da implementação, não uma decisão do editor: a issue #4101 deixa
@@ -141,6 +143,31 @@ export function resolvePublicImageUrl(editionDir: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve 1 URL pública por dia da semana (#4146 — carrossel Instagram,
+ * pré-requisito #4153), na mesma ordem de `items` (= ordem numerada da
+ * caption gerada por `formatInstagramWeekly`). Design decision (assunção
+ * minha, ver PR body): se QUALQUER dia não resolver imagem, o post inteiro
+ * falha em vez de publicar um carrossel com menos cards do que dias
+ * legendados — mesmo racional do #4153 pro DLQ de carrossel parcial no
+ * Worker ("carrossel incompleto é pior que não publicar, porque o texto
+ * promete os 5 dias"). Retorna qual `editionDate` falhou, pra auditoria
+ * (`reason: "public_image_url_missing:{editionDate}"` no caller).
+ */
+export function resolveWeeklyImageUrls(
+  items: WeeklyD1Item[],
+  editionsRoot: string,
+): { ok: true; urls: string[] } | { ok: false; missingEditionDate: string } {
+  const urls: string[] = [];
+  for (const item of items) {
+    const dir = resolve(editionsRoot, item.editionDate);
+    const url = resolvePublicImageUrl(dir);
+    if (!url) return { ok: false, missingEditionDate: item.editionDate };
+    urls.push(url);
+  }
+  return { ok: true, urls };
 }
 
 /** Resolve o path local do arquivo de imagem do D1 (4:5 preferido, fallback 1:1), para Facebook. */
@@ -405,19 +432,30 @@ export async function main(
         tagAndAppend({ platform: "instagram", destaque: "weekly", url: null, status: "failed", scheduled_at: null, reason: "worker_not_configured" });
         continue;
       }
-      // Imagem: reusa a 4:5/1:1 já publicada publicamente pela última edição
-      // da semana (tipicamente sexta) — ver resolvePublicImageUrl acima.
-      const lastEditionDir = resolve(editionsRoot, items[items.length - 1].editionDate);
-      const imageUrl = resolvePublicImageUrl(lastEditionDir);
-      if (!imageUrl) {
-        console.error(`ERRO instagram/weekly: 06-public-images.json ausente/sem URL em ${lastEditionDir}.`);
-        tagAndAppend({ platform: "instagram", destaque: "weekly", url: null, status: "failed", scheduled_at: null, reason: "public_image_url_missing" });
+      // Carrossel: 1 imagem por dia da semana, na ordem de `items` (#4146).
+      // Ver resolveWeeklyImageUrls acima — falha o post inteiro se qualquer
+      // dia não resolver imagem (não publica carrossel parcial).
+      const resolvedImages = resolveWeeklyImageUrls(items, editionsRoot);
+      if (!resolvedImages.ok) {
+        console.error(
+          `ERRO instagram/weekly: 06-public-images.json ausente/sem URL para o dia ${resolvedImages.missingEditionDate} ` +
+            `(${resolve(editionsRoot, resolvedImages.missingEditionDate)}) — carrossel de ${items.length} dias cancelado inteiro, não publica parcial.`,
+        );
+        tagAndAppend({
+          platform: "instagram",
+          destaque: "weekly",
+          url: null,
+          status: "failed",
+          scheduled_at: null,
+          reason: `public_image_url_missing:${resolvedImages.missingEditionDate}`,
+        });
         continue;
       }
       try {
         const response = await postToWorkerQueue(workerUrl, workerToken, {
           text: formatted.instagram,
-          image_url: imageUrl,
+          image_url: null,
+          image_urls: resolvedImages.urls,
           scheduled_at: scheduledAt,
           destaque: "weekly",
           channel: "instagram",

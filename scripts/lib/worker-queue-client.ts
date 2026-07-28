@@ -21,6 +21,12 @@ import { parseWorkerQueueResponse } from "./schemas/linkedin-payload.ts";
 export interface WorkerQueuePayload {
   text: string;
   image_url?: string | null;
+  // #4146 — carrossel Instagram (pré-requisito #4153, já implementado no
+  // Worker): lista de N URLs (1-10, validada no Worker) usada no lugar de
+  // `image_url` quando o post tem mais de 1 imagem (ex: post semanal com 1
+  // card 4:5 por dia). Opcional — omitido/`undefined` preserva o caminho de
+  // imagem única (`image_url`) para LinkedIn/Threads/Instagram diário.
+  image_urls?: string[] | null;
   scheduled_at: string;
   destaque: string;
   // #4101 — "linkedin" adicionado: o Worker (workers/linkedin-cron/src/index.ts)

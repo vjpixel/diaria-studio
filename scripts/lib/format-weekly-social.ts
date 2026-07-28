@@ -63,12 +63,12 @@ export function formatFacebookWeekly(items: WeeklyD1Item[]): string {
  * caption do IG (2200 chars) preservando palavras inteiras, mesmo padrão de
  * `truncateCaption` em publish-instagram.ts.
  *
- * Formato de imagem (decisão de implementação, ver PR #4101 self-review):
- * usa o card 4:5 (título embutido) da edição de SEXTA como imagem única do
- * post — não um carrossel de 5 cards. Um carrossel Instagram exige criar 5
- * media containers `is_carousel_item` + 1 container pai `CAROUSEL`, fluxo
- * não coberto pelo Worker de agendamento existente (que só aceita 1
- * `image_url` por entry) — ver nota no cabeçalho de `publish-weekly-social.ts`.
+ * Formato de imagem: carrossel de 5 cards (#4146, decisão do editor 260727,
+ * pré-requisito de Worker #4153 já entregue) — 1 card 4:5 por dia da semana,
+ * na mesma ordem numerada desta caption. Esta função só numera os títulos
+ * (`items.length` dias); a montagem do carrossel em si (`image_urls`) é
+ * responsabilidade de `publish-weekly-social.ts` (`resolveWeeklyImageUrls`)
+ * — ver nota no cabeçalho desse arquivo.
  */
 export function formatInstagramWeekly(items: WeeklyD1Item[]): string {
   if (items.length === 0) return "";
