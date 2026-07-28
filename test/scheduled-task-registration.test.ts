@@ -205,3 +205,39 @@ describe("#4155 — New-ScheduledTaskTrigger: sintaxe que impede o registro", ()
     }
   }
 });
+
+/**
+ * O horário do sync Clarice é um INVARIANTE operacional, não preferência.
+ *
+ * Ele tem que cair DEPOIS do envio canônico das 06:00 BRT: rodando antes (era
+ * 03:40 até 260727), a onda do dia ficava invisível pro store — `sends_count` e
+ * `brevo_list_ids` não refletiam quem tinha acabado de receber, e um
+ * `clarice-build-segment --group` montado no mesmo dia repescava as mesmas
+ * pessoas (a armadilha do #3682; o `--group` não tem o guard anti-duplicata que
+ * o `clarice-schedule-ramp --build-audience` tem).
+ *
+ * O risco que este teste cobre é silencioso: `Register-ScheduledTask -Force`
+ * substitui a task INTEIRA, então re-rodar o script com o horário antigo
+ * reverte a task na máquina sem log, sem aviso e sem falha visível.
+ */
+describe("setup-clarice-sync-schedule.ps1: horário posterior ao envio das 06:00 BRT", () => {
+  const file = join(ROOT, "scripts", "setup-clarice-sync-schedule.ps1");
+  const trigger = logicalLines(readFileSync(file, "utf8")).find((l) =>
+    /New-ScheduledTaskTrigger/i.test(l),
+  );
+
+  it("declara exatamente um New-ScheduledTaskTrigger", () => {
+    assert.ok(trigger, "nenhum New-ScheduledTaskTrigger encontrado no script");
+  });
+
+  it("dispara às 07:30, depois do envio das 06:00 (nunca de madrugada)", () => {
+    const hora = Number((trigger!.match(/-Hour\s+(\d+)/i) ?? [])[1]);
+    const minuto = Number((trigger!.match(/-Minute\s+(\d+)/i) ?? [])[1]);
+    assert.equal(hora, 7, `hora do trigger: ${trigger!.trim()}`);
+    assert.equal(minuto, 30, `minuto do trigger: ${trigger!.trim()}`);
+    assert.ok(
+      hora * 60 + minuto > 6 * 60,
+      "o sync tem que rodar DEPOIS das 06:00 BRT, senão o envio do dia fica invisível pro store (#3682)",
+    );
+  });
+});
