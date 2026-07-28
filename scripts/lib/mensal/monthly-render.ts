@@ -365,7 +365,7 @@ function nextLinkStartIndex(str: string, from: number): number {
  * independente que só encosta no link por acidente, nem quando um dos 2+
  * links consecutivos bold-wrapped "rouba" o `**` de fechamento do anterior).
  */
-export function renderInline(text: string): string {
+export function renderInline(text: string, posicao = "inline"): string {
   // Pre-strip backslash escapes ANTES do escHtml — assim `\&` vira `&` que então
   // vira `&amp;`, e não `\&amp;` (que aconteceria se strippássemos depois).
   const input = stripBackslashEscapes(text);
@@ -419,7 +419,7 @@ export function renderInline(text: string): string {
     }
 
     if (textBefore.length > 0) parts.push(renderTextInline(textBefore));
-    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url, "inline"))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
+    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url, posicao))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
     parts.push(boldLink ? `<strong>${linkHtml}</strong>` : linkHtml);
     lastIdx = boldLink ? j + 3 : j + 1;
     linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
@@ -753,9 +753,45 @@ export function renderClarice(chunk: string): string {
  */
 export function renderLinkListSection(chunk: string, displayTitle: string): string {
   const lines = chunk.split("\n");
-  const content = lines.slice(1).join("\n").trim();
+  let content = lines.slice(1).join("\n").trim();
 
   const header = renderKicker(displayTitle);
+
+  // CTA de seção — parágrafo que CONTÉM um link markdown mas não COMEÇA com um,
+  // na primeira ou na última posição da seção. Sem isto ele cairia no `descBuf`
+  // e sairia concatenado no parágrafo de um dos tutoriais (o CTA do Use Melhor
+  // renderizava como se fosse continuação da descrição de um item).
+  //
+  // A regra é inequívoca porque o template proíbe link na descrição ("No Use
+  // Melhor e no Radar, o título é a âncora") — só título e CTA têm link, e só o
+  // título COMEÇA com ele. Descrição sem link nunca é confundida.
+  //
+  // Aceita nas duas pontas de propósito: o CTA fecha ou abre a seção conforme a
+  // decisão editorial, sem exigir mudança de código pra mover a linha.
+  //
+  // Guard é `> 0`, não `> 1` (achado da review da PR #4189): com `> 1`, uma
+  // seção que tivesse SÓ o CTA e nenhum item não disparava nenhum dos dois
+  // ramos, o parágrafo caía no parser de itens (que exige linha começando com
+  // `[`), não abria `currentTitle` e era DESCARTADO EM SILÊNCIO — saía só o
+  // kicker. Não é o caminho de produção (Use Melhor tem 3 itens e Radar 7,
+  // garantidos por monthly-click-sections.ts), mas descarte silencioso é a
+  // mesma classe do #2794 e não deve existir numa função exportada.
+  // `isCta` já protege contra falso positivo: título de item COMEÇA com `[`, e
+  // descrição não tem link nenhum (regra do template).
+  const isCta = (p: string) => !/^\[/.test(p) && /\]\(https?:\/\//.test(p);
+  const paras = content.split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p);
+  let intro: string | null = null;
+  let footer: string | null = null;
+  let corpo = paras;
+  if (corpo.length > 0 && isCta(corpo[0])) {
+    intro = corpo[0];
+    corpo = corpo.slice(1);
+  }
+  if (corpo.length > 0 && isCta(corpo[corpo.length - 1])) {
+    footer = corpo[corpo.length - 1];
+    corpo = corpo.slice(0, -1);
+  }
+  if (intro || footer) content = corpo.join("\n\n");
 
   // Items: [título](url) + blank line + descrição (separados por blank entre itens).
   // split(/\n\n+/) quebra título e descrição em chunks separados — a descrição
@@ -795,7 +831,17 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
     })
     .join("\n");
 
-  return header + itemsHtml;
+  // #4040: posição própria derivada da SEÇÃO (`use-melhor`, `radar`) em vez do
+  // `inline` genérico — senão o CTA cairia no mesmo utm_campaign do "aqui" da
+  // APRESENTAÇÃO, dos wordmarks e de qualquer link no meio da prosa, e não
+  // daria pra medir se a seção mais clicada da peça é de fato o melhor lugar
+  // pro convite de cadastro. Na 2606-07 esse link raiz aparecia 7× com o MESMO
+  // utm_campaign — os cliques chegavam somados e sem origem.
+  const posicao = slugifySecao(displayTitle);
+  const ctaHtml = (texto: string) =>
+    `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(texto, posicao)}</p>`;
+
+  return header + (intro ? ctaHtml(intro) : "") + itemsHtml + (footer ? ctaHtml(footer) : "");
 }
 
 /** @deprecated back-compat: use renderLinkListSection. */

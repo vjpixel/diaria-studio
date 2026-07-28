@@ -123,6 +123,25 @@ describe("#4040 — utm_campaign distinto por POSIÇÃO do link", () => {
     }
   });
 
+  // O CTA de seção não pode herdar `inline`: na 2606-07 o link raiz apareceu 7×
+  // (4 wordmarks + 2 "aqui" + 1 botão) com o MESMO utm_campaign, e os cliques
+  // chegaram somados, sem dar pra saber de onde vieram.
+  it("CTA de seção do Use Melhor emite a posição da SEÇÃO, não `inline`", () => {
+    setMonthlyUtmCiclo("2606-07");
+    try {
+      const html = renderLinkListSection(
+        "**USE MELHOR**\n\n" +
+          "Dicas como essas saem todos os dias na edição diária. Para receber, [cadastre-se gratuitamente](https://diar.ia.br/?utm_source=clarice).\n\n" +
+          "[Tutorial](https://exemplo.com/t)\n\nO que ensina.",
+        "Use Melhor", // título de exibição real em produção (#1919), sem "do Mês"
+      );
+      assert.match(html, /utm_campaign=clarice-2606-07-use-melhor"/);
+      assert.doesNotMatch(html, /utm_campaign=clarice-2606-07-inline/);
+    } finally {
+      setMonthlyUtmCiclo(null);
+    }
+  });
+
   it("título de item de lista (Radar / Use Melhor) emite a posição `titulo`", () => {
     setMonthlyUtmCiclo("2606-07");
     try {
