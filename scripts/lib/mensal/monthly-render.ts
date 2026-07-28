@@ -768,16 +768,26 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
   //
   // Aceita nas duas pontas de propósito: o CTA fecha ou abre a seção conforme a
   // decisão editorial, sem exigir mudança de código pra mover a linha.
+  //
+  // Guard é `> 0`, não `> 1` (achado da review da PR #4189): com `> 1`, uma
+  // seção que tivesse SÓ o CTA e nenhum item não disparava nenhum dos dois
+  // ramos, o parágrafo caía no parser de itens (que exige linha começando com
+  // `[`), não abria `currentTitle` e era DESCARTADO EM SILÊNCIO — saía só o
+  // kicker. Não é o caminho de produção (Use Melhor tem 3 itens e Radar 7,
+  // garantidos por monthly-click-sections.ts), mas descarte silencioso é a
+  // mesma classe do #2794 e não deve existir numa função exportada.
+  // `isCta` já protege contra falso positivo: título de item COMEÇA com `[`, e
+  // descrição não tem link nenhum (regra do template).
   const isCta = (p: string) => !/^\[/.test(p) && /\]\(https?:\/\//.test(p);
   const paras = content.split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p);
   let intro: string | null = null;
   let footer: string | null = null;
   let corpo = paras;
-  if (corpo.length > 1 && isCta(corpo[0])) {
+  if (corpo.length > 0 && isCta(corpo[0])) {
     intro = corpo[0];
     corpo = corpo.slice(1);
   }
-  if (corpo.length > 1 && isCta(corpo[corpo.length - 1])) {
+  if (corpo.length > 0 && isCta(corpo[corpo.length - 1])) {
     footer = corpo[corpo.length - 1];
     corpo = corpo.slice(0, -1);
   }

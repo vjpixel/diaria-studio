@@ -103,6 +103,17 @@ describe("renderLinkListSection", () => {
     assert.doesNotMatch(html, /Maior corte de uma vez só\.\s*Dicas como essas/);
   });
 
+  // Achado da review da PR #4189: com o guard antigo (`corpo.length > 1`) uma
+  // seção só com o CTA e nenhum item saía SÓ com o kicker — o parágrafo era
+  // descartado em silêncio. Fora do caminho de produção, mas descarte silencioso
+  // numa função exportada é a mesma classe do #2794.
+  it("seção só com o CTA e nenhum item ainda renderiza o CTA", () => {
+    const html = renderLinkListSection(`**USE MELHOR**\n\n${CTA}`, "Use Melhor");
+    assert.ok(html.includes("Use Melhor"), "kicker ausente");
+    assert.ok(html.includes("Dicas como essas"), "CTA sumiu do render");
+    assert.match(html, /href="https:\/\/diar\.ia\.br\//, "link do CTA sumiu");
+  });
+
   it("descrição sem link nunca é confundida com CTA de seção", () => {
     const html = renderLinkListSection(chunk, "Radar do Mês");
     assert.ok(html.includes("Maior corte de uma vez só."));
