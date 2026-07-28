@@ -27,12 +27,18 @@
  *                (rótulo pt-BR, ex: "junho", ou forma canônica "YYYY-MM", ex:
  *                "2026-06" — ver `resolveCohortArg`). Sem a flag, roda sobre a
  *                base inteira (comportamento pré-#2817, sem mudança).
+ *
+ * GUARD DE DEFASAGEM (#4214, follow-up do #4205): antes de montar a fila de
+ * prioridade, `main()` chama `isDerivedStale` (clarice-db.ts) e emite um
+ * WARNING (não abort — efeito aqui é ordem de fila imprecisa, não
+ * invisibilidade) se o store tiver engajamento Brevo mais recente que o
+ * último `recomputeDerived`. Ver comentário inline em `main()`.
  */
 
 import { writeFileSync, readdirSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
-import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
+import { openClariceDb, DEFAULT_DB_PATH, isDerivedStale } from "./lib/clarice-db.ts";
 import {
   segmentFromStore,
   priorityQueue,
@@ -143,6 +149,29 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const cohort = cohortArg ? resolveCohortArg(cohortArg) : null;
 
   const db = openClariceDb(dbPath);
+
+  // #4214 (follow-up do #4205): `priorityQueue` (clarice-segment.ts) também
+  // particiona por priority_points — re-envio ENGAJADO (priority_points>0)
+  // antes de re-envio DECAÍDO — então está exposta à mesma classe de
+  // defasagem do guard de 'engajados' em clarice-build-segment.ts: um sync
+  // incremental que atualizou opens_count/etc no Brevo mas foi interrompido
+  // ANTES do `recomputeDerived` final deixa priority_points pra trás. Aqui o
+  // efeito é mais brando que lá — os contatos ainda ENTRAM na wave (não há
+  // corte por priority_points, só por send_eligible), só a ORDEM da fila
+  // pode sair imprecisa (alguém que abriu recentemente cai no bucket
+  // decaído com o ponto velho). Por isso WARNING, não abort — a onda
+  // continua sendo montada.
+  if (isDerivedStale(db)) {
+    console.error(
+      "⚠️  store defasado (#4214/#4205): existem contatos com engajamento Brevo " +
+        "mais recente que o último recompute de priority_points — a ordem da " +
+        "fila de prioridade (engajado → 1º envio → decaído) pode estar " +
+        "imprecisa (não afeta QUEM entra na wave, só a ORDEM). Rode " +
+        "`npx tsx scripts/clarice-build-db.ts` (ou `clarice-sync-brevo.ts` até " +
+        "o fim, sem interrupção) antes de montar esta onda para uma ordem mais precisa.",
+    );
+  }
+
   const rows = db
     .prepare(
       `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count

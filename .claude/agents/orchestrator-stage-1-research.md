@@ -609,20 +609,24 @@ Editor decide no gate. Auto-aprovação (`--no-gates`) bypassa o lint mas loga w
 Antes do gate, rodar o guard determinístico que pega item mal-bucketado em `use_melhor` (newsletter/análise/cobertura em vez de tutorial — em 260604 dois posts da `latent.space` entraram). **Warn-only — nunca bloqueia** (o editor cura USE MELHOR no gate, 0-1 item):
 
 ```bash
-npx tsx scripts/review-use-melhor.ts --approved {EDITION_DIR}/_internal/01-approved.json
+npx tsx scripts/review-use-melhor.ts --approved {EDITION_DIR}/_internal/01-categorized.json
 ```
 
 Se o JSON de saída tiver `suspicious[]` não-vazio, **incluir no gate output** os itens com o motivo (domínio newsletter/agregador **E** sem sinal de tutorial no título/slug — o vetor real de mis-bucket), pra o editor decidir manter ou trocar. USE MELHOR é tutorial de verdade, não cobertura/análise.
+
+**Nota (#4221):** apesar do nome do parâmetro (`--approved`, herdado de quando o script só rodava pós-gate), este passo roda ANTES do gate — `01-approved.json` ainda não existe neste ponto. O script apenas lê o campo `use_melhor[]` do JSON passado, e `01-categorized.json` já tem esse campo populado (mesmo shape de `01-approved.json` — ver `scripts/lib/types/categorized-json.ts`), então funciona igual. `--approved` é só o nome do flag, não uma exigência de que o arquivo se chame `01-approved.json`.
 
 ### 1v-quater. Guard fonte-primária em DESTAQUES (#1699)
 
 Antes do gate, flagar destaque que é **lançamento** mas usa URL de cobertura de imprensa em vez da fonte primária (a #160 só cobre a seção LANÇAMENTOS; destaques sobre lançamentos escapavam — caso 260602: RTX Spark com link Canaltech). **Warn-only**:
 
 ```bash
-npx tsx scripts/review-highlight-source.ts --approved {EDITION_DIR}/_internal/01-approved.json
+npx tsx scripts/review-highlight-source.ts --approved {EDITION_DIR}/_internal/01-categorized.json
 ```
 
 Se `flagged[]` não-vazio, **surfar no gate** cada destaque com a fonte oficial sugerida (`suggested_domain`), pra o editor trocar a URL pela newsroom/site oficial. (Busca ativa + substituição automática é fase 2 do #1699 — aqui só sinaliza melhor.)
+
+**Nota (#4221):** mesma observação do 1v-ter acima — `--approved` é o nome do flag, não uma exigência de `01-approved.json` (inexistente pré-gate). O script lê `highlights[]`, presente também em `01-categorized.json` com o mesmo shape.
 
 ### 1v-quinquies. Cross-check destaque-imprensa × oficial no POOL da mesma edição (#4135 item 3)
 

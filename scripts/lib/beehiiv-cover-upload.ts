@@ -639,6 +639,17 @@ export function buildCoverReplaceStep1_RemoveExistingJs(): string {
  *
  * NUNCA combinar Step1 + Step2 num único javascript_tool: total >20s → CDP timeout.
  *
+ * #4210 (follow-up do #4203/#4209): este fallback secundário tinha os MESMOS 2
+ * defeitos do método primário antes do fix — (a) `input[type=file]` buscado
+ * global via `document.querySelector`, sem escopo ao container do painel de
+ * thumbnail; (b) seleção de img pra clicar-e-aplicar sem guard `!closest('a')`
+ * nem filtro de dimensão mínima (risco do clique casar o logo do Beehiiv,
+ * que vive dentro de `<a href="https://www.beehiiv.com">`, e navegar a aba
+ * inteira pra fora do post). Portados os mesmos 4 guards de
+ * `buildCoverDataTransferJs` (#4209): sempre reabrir o painel de thumbnail
+ * ANTES de ler o fileInput, escopar o fileInput ao container do botão,
+ * `!i.closest('a')`, e `MIN_DIM = 100`.
+ *
  * @see buildCoverReplaceStep1_RemoveExistingJs — Etapa 1: remove cover existente.
  */
 export function buildCoverReplaceStep2_UploadJs(
@@ -656,14 +667,34 @@ export function buildCoverReplaceStep2_UploadJs(
       // existingSrc capturado pela Etapa 1 — excluir da busca da img subida (#2283 fix #6)
       const existingSrcSnapshot = ${JSON.stringify(existingSrc)};
 
-      // 1) garantir input[type=file] — se ausente, abrir 'Add/Change thumbnail'
-      let fileInput = document.querySelector('input[type="file"]');
-      if (!fileInput) {
-        const addThumb = buttons().find(b => /add thumbnail|change thumbnail/i.test(b.textContent || ''));
-        if (addThumb) { addThumb.click(); steps.push('clicked: Add/Change thumbnail'); await sleep(1500); }
-        fileInput = document.querySelector('input[type="file"]');
+      // 1) SEMPRE tentar (re)abrir o painel de thumbnail ANTES de ler o
+      // fileInput (#4210, mesmo fix #1+#2 do #4203/#4209 na primária) — a
+      // Etapa 1 já removeu a cover existente, então o painel pode ter
+      // fechado ou o input[type=file] visível pode ser de outra seção da
+      // página. Casar tanto "Add thumbnail" (legado) quanto "Web thumbnail"
+      // / "Change thumbnail" (nomes atuais da UI). Escopar o fileInput ao
+      // container do botão, não document.querySelector global.
+      const thumbRe = /(web |add |change )?thumbnail/i;
+      const thumbBtn = buttons().find(b => thumbRe.test(b.textContent || ''));
+      let container = null;
+      if (thumbBtn) {
+        let t = thumbBtn;
+        for (let i = 0; i < 6 && t.parentElement; i++) t = t.parentElement;
+        container = t;
+        thumbBtn.click();
+        steps.push('clicked: ' + (thumbBtn.textContent || '').trim().slice(0, 40));
+        await sleep(1500);
       }
-      if (!fileInput) return { error: 'input[type=file] não encontrado após Add/Change thumbnail', steps };
+
+      let fileInput = container ? container.querySelector('input[type="file"]') : null;
+      if (!fileInput) {
+        // fallback: painel já pode estar aberto (sem botão toggle visível) ou
+        // o container calculado não continha o input — cai pro escopo do
+        // document como último recurso, mas registra o degrade pra triage.
+        fileInput = document.querySelector('input[type="file"]');
+        if (fileInput) steps.push('fileInput: fallback document-wide (escopo por container não achou)');
+      }
+      if (!fileInput) return { error: 'input[type=file] não encontrado (nem após abrir painel de thumbnail)', steps };
 
       // 2) fetch da imagem → File → DataTransfer (método primário #1500/#1801)
       let blob;
@@ -684,11 +715,20 @@ export function buildCoverReplaceStep2_UploadJs(
       await sleep(5000);
 
       // 3) clicar na img recém-subida → aplica automático (sem botão Insert)
-      // Excluir existingSrcSnapshot — DOM pode ainda ter a old cover (async detach) (#2283 fix #6)
+      // #4210 fix 3+4 (mesmo do #4203/#4209 na primária): NUNCA clicar numa
+      // img dentro de <a> (o logo do Beehiiv vive em
+      // <a href="https://www.beehiiv.com">; clicar navega a aba inteira pra
+      // fora do post) e filtrar por dimensão mínima (o logo tem 16×15;
+      // qualquer cover real é ordens de grandeza maior). Excluir também
+      // existingSrcSnapshot — DOM pode ainda ter a old cover (async detach)
+      // (#2283 fix #6).
+      const MIN_DIM = 100;
       const uploaded = Array.from(document.querySelectorAll('img')).find(i =>
         visible(i) &&
         /(media\\.beehiiv|beehiiv-images-production.*uploads)/i.test(i.src) &&
         !(/static_assets|publication.logo/i.test(i.src)) &&
+        !i.closest('a') &&
+        i.naturalWidth >= MIN_DIM && i.naturalHeight >= MIN_DIM &&
         (existingSrcSnapshot ? i.src !== existingSrcSnapshot : true));
       if (uploaded) { uploaded.click(); steps.push('clicked: uploaded img (apply)'); await sleep(3000); } // 3000ms = mesmo do buildCoverDataTransferJs validado (#2283 fix #5)
       else steps.push('uploaded img não localizada (pode ter auto-aplicado)');
