@@ -23,6 +23,26 @@ import {
 import { DEFAULT_POLL_WORKER_URL } from "./eia-refresh.ts";
 
 /**
+ * #4165/#4173: URL pública do Worker `clarice-dashboard` (produção) — usada
+ * como link de "veja lá" nas seções que dependem do KV `STATS_CACHE`
+ * (cohorts, cupons, engajamento É IA?) quando o painel local (Studio) não
+ * consegue servi-las (credencial Cloudflare ausente, rede indisponível, ou o
+ * dado genuinamente nunca foi populado — as 3 causas são indistinguíveis
+ * daqui, e o link funciona como fallback honesto nas 3).
+ */
+export const CLARICE_DASHBOARD_URL = "https://clarice-dashboard.diaria.workers.dev";
+
+/**
+ * #4165/#4173: aviso padrão pra uma seção KV-dependente que veio `null` no
+ * painel local (`opts.studioMode`). Substitui, no Studio, tanto a instrução
+ * "rode o script X" (que fazia sentido só no Worker) quanto a omissão muda da
+ * aba Cupons (#4173) — nenhuma seção deve mais "sumir calada".
+ */
+export function renderKvUnavailableNote(panelAnchor: string): string {
+  return `<p class="section-note">Indisponível no painel local — ver <a href="${CLARICE_DASHBOARD_URL}/?fresh=1#${panelAnchor}" target="_blank" rel="noopener">dashboard Cloudflare</a>.</p>`;
+}
+
+/**
  * #3684: deriva o ANO-CALENDÁRIO (YYYY) do leaderboard Clarice a partir de um
  * ciclo `YYMM-MM` (conteúdo-envio, ex: "2606-07").
  *
@@ -611,12 +631,15 @@ export function renderMonthlyTotalsSection(
 export function renderEngagementCohortsSection(
   cohorts: EngagementCohorts | null,
   headerNow: Date = new Date(),
+  opts: { studioMode?: boolean } = {}, // #4165/#4173
 ): string {
   if (!cohorts) {
     return `
 <section class="phase2-section" id="engagement-cohorts">
   <h2 class="section-title">Coortes de engajamento</h2>
-  <p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/clarice-engagement-cohorts.ts</code> para popular (faz os GETs per-contato e grava no KV).</p>
+  ${opts.studioMode
+    ? renderKvUnavailableNote("panel-engajamento")
+    : '<p class="section-note">Dados ainda não gerados. Rode <code>npx tsx scripts/clarice-engagement-cohorts.ts</code> para popular (faz os GETs per-contato e grava no KV).</p>'}
 </section>`;
   }
 
@@ -1282,16 +1305,31 @@ const EIA_REFRESH_BUTTON = `<form method="POST" action="/api/eia/refresh" style=
   <button type="submit" style="padding:4px 12px;border:1px solid var(--rule);border-radius:4px;background:var(--paper-alt);color:var(--ink);cursor:pointer;font-size:0.85rem;">🔄 Atualizar votos</button>
 </form>`;
 
+/**
+ * #4165/#4173: substitui `EIA_REFRESH_BUTTON` quando `opts.studioMode` é
+ * `true` — o form acima faz `POST /api/eia/refresh`, rota que só existe no
+ * Worker (`clarice-dashboard`); servido pelo studio-server, esse mesmo path
+ * resolve contra `studio.diar.ia.br`, que não tem essa rota → cai no guard
+ * read-only → 405 (#4165). Em vez de tentar consertar a action pra um
+ * endpoint equivalente (não existe um que grave o KV real a partir do
+ * Studio), o link honesto leva o editor pro dashboard Cloudflare, onde o
+ * botão de fato funciona.
+ */
+const EIA_REFRESH_LINK = `<p class="section-note" style="margin:0 0 12px 0;"><a href="${CLARICE_DASHBOARD_URL}/?fresh=1#panel-engajamento" target="_blank" rel="noopener">🔄 Atualizar votos no dashboard Cloudflare →</a></p>`;
+
 export function renderEiaEngagementSection(
   eiaEngagement: EiaEngagementSummary | null,
   headerNow: Date = new Date(),
+  opts: { studioMode?: boolean } = {}, // #4165/#4173
 ): string {
   if (!eiaEngagement || eiaEngagement.editions.length === 0) {
     return `
 <section class="phase2-section" id="eia-engagement">
   <h2 class="section-title">Engajamento — É IA?</h2>
-  <p class="section-note">Dados ainda não gerados. Clique em "Atualizar votos" abaixo, ou rode <code>npx tsx scripts/build-poll-eia-data.ts --push</code> no terminal.</p>
-  ${EIA_REFRESH_BUTTON}
+  ${opts.studioMode
+    ? renderKvUnavailableNote("panel-engajamento")
+    : `<p class="section-note">Dados ainda não gerados. Clique em "Atualizar votos" abaixo, ou rode <code>npx tsx scripts/build-poll-eia-data.ts --push</code> no terminal.</p>
+  ${EIA_REFRESH_BUTTON}`}
 </section>`;
   }
 
@@ -1346,7 +1384,7 @@ export function renderEiaEngagementSection(
 <section class="phase2-section" id="eia-engagement">
   <h2 class="section-title">Engajamento — É IA?</h2>
   <p class="section-note">Votos no poll "É IA?" por edição (${shown.length}), mais recente primeiro.${capNote}${genBRT ? ` Atualizado às ${escHtml(genBRT)} BRT.` : ""}</p>
-  ${EIA_REFRESH_BUTTON}
+  ${opts.studioMode ? EIA_REFRESH_LINK : EIA_REFRESH_BUTTON}
   <div class="table-wrap">
   <table>
     <thead>

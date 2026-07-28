@@ -14,6 +14,7 @@ import {
   renderCouponTabPanel,
   renderCohortsTabPanel,
   renderScheduledSection,
+  renderKvUnavailableNote, // #4165/#4173
   COHORT_DEVIATION_THRESHOLD_PP,
 } from "./sections-kv.ts";
 import { billingCycleWindow, isInBillingWindow, type BillingCycleWindow } from "./billing-cycle.ts";
@@ -56,6 +57,31 @@ function deriveCampaignEditionLabel(name: string): string | null {
   return `${deriveEditionName(name)} — ${parsed.cell}`;
 }
 
+/**
+ * #4165/#4173: opções que mudam o render pra contexto Studio (painel local),
+ * mesmo padrão de `RenderDashboardOptions` em
+ * `workers/diaria-dashboard/src/index.ts` (#3861) — parâmetro explícito, não
+ * detecção de ambiente (o mesmo módulo serve Worker de produção E Studio).
+ */
+export interface RenderDashboardOptions {
+  /**
+   * Liga o modo Studio nas seções KV-dependentes (cohorts, cupons,
+   * engajamento É IA?):
+   *   - Quando o dado vem `null`, o texto passa a ser "indisponível no
+   *     painel local — ver dashboard Cloudflare" (com link), em vez da
+   *     instrução "rode o script X" (que faz sentido no Worker, mas não
+   *     necessariamente aqui — ver #4173) ou, no caso da aba Cupons, sumir
+   *     sem nenhuma explicação (o bug original do #4173).
+   *   - O botão "Atualizar votos" (form POST pra `/api/eia/refresh`, rota que
+   *     só existe no Worker) vira um link pro dashboard Cloudflare real — o
+   *     mesmo POST na origem do Studio 405a (#4165), porque o studio-server
+   *     não tem essa rota.
+   * `false`/ausente (default) preserva o comportamento atual EXATAMENTE — o
+   * Worker de produção nunca passa este parâmetro, então nada muda lá.
+   */
+  studioMode?: boolean;
+}
+
 export function renderDashboardHtml(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
   scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }> = [], // #2251
@@ -84,6 +110,9 @@ export function renderDashboardHtml(
   // da Brevo. `null` (default) preserva call sites/testes existentes
   // (sinal fica "indeterminate" — nunca reporta 🟢 falso, ver thresholds.ts).
   postmasterSpam: PostmasterSpamEntry | null = null,
+  // #4165/#4173: ver RenderDashboardOptions. `{}` (default) preserva o
+  // comportamento atual — nenhum call site de produção passa isto.
+  opts: RenderDashboardOptions = {},
 ): string {
   // #3017: ordena a tabela "Envios" por data de envio, mais recente primeiro.
   // sentDate é a fonte canônica aqui (campanha já enviada); scheduledAt só
@@ -375,7 +404,8 @@ ${monthlyAbcSectionsByDate}
     isCampaignsWindowFull ? campaignsWindowLimit : null,
   );
   // #2426: coortes de engajamento por contato (pré-computadas via KV, lidas na rota).
-  const cohortsSection = renderEngagementCohortsSection(cohorts, nowDate);
+  // #4165/#4173: opts.studioMode troca o stub null pro aviso "indisponível localmente".
+  const cohortsSection = renderEngagementCohortsSection(cohorts, nowDate, opts);
   // #2736: "Status MillionVerifier por grupo" removida da aba Engajamento
   // (ruído, decisão do editor). renderMvStatusSection permanece exportada e
   // testada (reuso futuro); a leitura do KV mv:status em readKvTabs também
@@ -393,9 +423,17 @@ ${monthlyAbcSectionsByDate}
     contactsSummary?.cycle_start ?? null,
   );
   // #2738: engajamento do poll "É IA?" por edição (pré-computado via KV).
-  const eiaEngagementSection = renderEiaEngagementSection(eiaEngagement, nowDate);
+  // #4165/#4173: opts.studioMode troca o stub null pro aviso + o botão de
+  // refresh (que 405a servido pelo Studio) por um link pro dashboard Cloudflare.
+  const eiaEngagementSection = renderEiaEngagementSection(eiaEngagement, nowDate, opts);
   // #2718: tab de cupons Stripe (apenas quando couponUsage não é null — PII-gated).
-  const couponTabHtml = couponUsage ? renderCouponTabPanel(couponUsage, nowDate) : "";
+  // #4165/#4173: em opts.studioMode, um couponUsage null NÃO omite mais a aba
+  // inteira sem explicação (era o bug do #4173) — mostra o aviso no lugar do
+  // conteúdo PII-gated (showCuponsTab decide se a aba existe, ver template abaixo).
+  const couponTabHtml = couponUsage
+    ? renderCouponTabPanel(couponUsage, nowDate)
+    : (opts.studioMode ? renderKvUnavailableNote("panel-cupons") : "");
+  const showCuponsTab = couponUsage !== null || opts.studioMode === true;
   // #3415: variante scoped só pra Visão Geral — mesmo painel, header "Total
   // por mês" → "Cupons" (rename que não pode vazar pra aba Cupons, fonte
   // compartilhada — ver renderCouponTabPanel opts.monthlyTitle).
@@ -673,7 +711,7 @@ ${monthlyAbcSectionsByDate}
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-engajamento">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-links">
 <input type="radio" class="tab-radios" name="dash-tab" id="tab-contatos">
-${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-cupons">' : ''}
+${showCuponsTab ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-cupons">' : ''}
 
 <!-- tab bar (labels referencing the radio inputs above; aria-controls liga aba↔painel) -->
 <div class="tab-bar" role="tablist">
@@ -683,7 +721,7 @@ ${couponUsage ? '<input type="radio" class="tab-radios" name="dash-tab" id="tab-
   <label class="tab-label" id="tablabel-engajamento" for="tab-engajamento" role="tab" aria-controls="panel-engajamento">Engajamento</label>
   <label class="tab-label" id="tablabel-links" for="tab-links" role="tab" aria-controls="panel-links">Links / Cliques</label>
   <label class="tab-label" id="tablabel-contatos" for="tab-contatos" role="tab" aria-controls="panel-contatos">Contatos</label>
-  ${couponUsage ? '<label class="tab-label" id="tablabel-cupons" for="tab-cupons" role="tab" aria-controls="panel-cupons">Cupons</label>' : ''}
+  ${showCuponsTab ? '<label class="tab-label" id="tablabel-cupons" for="tab-cupons" role="tab" aria-controls="panel-cupons">Cupons</label>' : ''}
 </div>
 
 <!-- tab panels -->
@@ -829,7 +867,7 @@ ${contactsSummarySection}
 ${cohortsTabSection}
   </div><!-- /panel-contatos -->
 
-${couponUsage ? `  <!-- Aba 5: Cupons — uso de cupons Stripe (#2718, PII-gated) -->
+${showCuponsTab ? `  <!-- Aba 5: Cupons — uso de cupons Stripe (#2718, PII-gated; #4165/#4173: aviso em vez de sumir quando null em studioMode) -->
   <div class="tab-panel" id="panel-cupons" role="tabpanel" aria-labelledby="tablabel-cupons">
 ${couponTabHtml}
   </div><!-- /panel-cupons -->` : ''}
