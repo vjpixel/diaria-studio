@@ -53,6 +53,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
+import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
 import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts)
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
@@ -441,9 +442,9 @@ async function main() {
     }
 
     // Card 4:5 (1080x1350, título embutido) quando a edição o gerou — é o
-    // formato que mais ocupa tela no feed do Instagram. Fallback: 1:1 de sempre.
-    const has4x5 = existsSync(resolve(editionDir, `04-${d}-4x5.jpg`));
-    const imageFile = has4x5 ? `04-${d}-4x5.jpg` : `04-${d}-1x1.jpg`;
+    // formato que mais ocupa tela no feed do Instagram. Fallback: 1:1 de
+    // sempre. Seletor compartilhado com o Facebook (#4090 item 5).
+    const imageFile = selectSocialCardImageFile(editionDir, d);
     const imagePath = resolve(editionDir, imageFile);
     if (!existsSync(imagePath)) {
       console.error(`ERROR: Imagem ${imageFile} não encontrada em ${editionDir}`);

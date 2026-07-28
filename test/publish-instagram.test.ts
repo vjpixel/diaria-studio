@@ -263,7 +263,7 @@ describe("Erro claro quando imagem ausente", () => {
     assert.match(SRC, /not found/, "deve mencionar 'not found' quando imagem ausente");
   });
 
-  it("usa imagem 1x1 (quadrada) para Instagram", () => {
+  it("usa imagem 1x1 (quadrada) como fallback pro Instagram (2x1 nunca é usado)", () => {
     // Instagram prefere formato quadrado — verificar que usa 04-dN-1x1.jpg
     const imageFile = (d: string) => `04-${d}-1x1.jpg`;
     assert.equal(imageFile("d1"), "04-d1-1x1.jpg");
@@ -272,8 +272,16 @@ describe("Erro claro quando imagem ausente", () => {
     for (const f of ["d1", "d2", "d3"].map(imageFile)) {
       assert.ok(!f.includes("2x1"), "não deve usar imagem 2x1 no Instagram");
     }
-    // Verificar no source também
-    assert.match(SRC, /04-\$\{d\}-1x1\.jpg|1x1\.jpg/, "deve usar imagem 1x1 no Instagram");
+    // #4090 item 5: a escolha 4x5→1x1 foi extraída pra selectSocialCardImageFile
+    // (scripts/lib/select-social-card-image.ts, testada comportamentalmente em
+    // test/select-social-card-image.test.ts) — aqui só confirmamos que o
+    // publisher delega a ela em vez de duplicar a lógica inline.
+    assert.match(
+      SRC,
+      /import\s*\{\s*selectSocialCardImageFile\s*\}\s*from\s*"\.\/lib\/select-social-card-image\.ts"/,
+      "deve importar selectSocialCardImageFile",
+    );
+    assert.match(SRC, /selectSocialCardImageFile\(/, "deve chamar selectSocialCardImageFile");
   });
 
   it("emite erro quando 06-public-images.json ausente", () => {

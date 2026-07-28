@@ -179,8 +179,14 @@ export function editionDateLabel(editionDir: string): string {
 
 export type CardRatio = "4x5" | "9x16";
 
-/** Dimensões por proporção. 9:16 = Stories (ocupa a tela inteira). */
-const RATIOS: Record<CardRatio, { w: number; h: number; textH: number }> = {
+/**
+ * Dimensões por proporção. 9:16 = Stories (ocupa a tela inteira). Exportado
+ * (#4090 item 5) pra teste direto — antes só era exercitado indiretamente via
+ * dims arbitrários passados a `buildCardSvg`/`buildOverlaySvg`, o que não
+ * pegaria um valor errado aqui se `generateCard` continuasse construindo os
+ * dims manualmente em vez de ler deste record.
+ */
+export const RATIOS: Record<CardRatio, { w: number; h: number; textH: number }> = {
   "4x5": { w: 1080, h: 1350, textH: 470 },
   "9x16": { w: 1080, h: 1920, textH: 620 },
 };

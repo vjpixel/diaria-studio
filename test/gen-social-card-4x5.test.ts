@@ -23,6 +23,7 @@ import {
   buildCardSvg,
   buildOverlaySvg,
   editionDateLabel,
+  RATIOS,
 } from "../scripts/gen-social-card-4x5.ts";
 
 describe("wrapTitle (#4114)", () => {
@@ -123,6 +124,35 @@ describe("buildCardSvg / buildOverlaySvg — SVG bem-formado (#4114)", () => {
   });
 });
 
+describe("RATIOS — dimensões por ratio (#4090 item 5)", () => {
+  it("4:5 é 1080x1350 com faixa de texto 470", () => {
+    assert.deepEqual(RATIOS["4x5"], { w: 1080, h: 1350, textH: 470 });
+  });
+
+  it("9:16 (Stories) é 1080x1920 com faixa de texto 620", () => {
+    assert.deepEqual(RATIOS["9x16"], { w: 1080, h: 1920, textH: 620 });
+  });
+
+  it("9:16 é mais alto que 4:5 na mesma largura (Stories ocupa mais tela)", () => {
+    assert.equal(RATIOS["4x5"].w, RATIOS["9x16"].w);
+    assert.ok(RATIOS["9x16"].h > RATIOS["4x5"].h);
+  });
+
+  it("buildCardSvg com os dims reais de 4:5 produz SVG com essas dimensões exatas", () => {
+    const { w, h, textH } = RATIOS["4x5"];
+    const svg = buildCardSvg("Título de teste", "", "27 JUL 2026", { w, h, textH });
+    assert.match(svg, /width="1080" height="1350"/);
+    assert.match(svg, /viewBox="0 0 1080 1350"/);
+  });
+
+  it("buildOverlaySvg com os dims reais de 9:16 produz SVG com essas dimensões exatas", () => {
+    const { w, h } = RATIOS["9x16"];
+    const svg = buildOverlaySvg("Título de teste", "27 JUL 2026", { w, h });
+    assert.match(svg, /width="1080" height="1920"/);
+    assert.match(svg, /viewBox="0 0 1080 1920"/);
+  });
+});
+
 describe("editionDateLabel (#4114)", () => {
   const withEdition = (name: string, fn: (dir: string) => void): void => {
     const base = mkdtempSync(join(tmpdir(), "card4x5-"));
@@ -173,11 +203,26 @@ describe("call-site do Stage 3 (#4114 — o achado do code-review)", () => {
     assert.ok(nativoIdx < cardIdx, "a arte nativa precisa ser gerada ANTES da composição do card");
   });
 
-  it("os publishers seguem preferindo o 4x5 e caindo no 1x1 (contrato que o call-site alimenta)", () => {
+  it("os publishers usam o seletor compartilhado (#4090 item 5 — contrato que o call-site alimenta)", () => {
+    // Antes do #4090 item 5 cada publisher tinha `existsSync(4x5) ? 4x5 :
+    // 1x1` inline (checado aqui por regex — um teste fraco: passaria mesmo
+    // com a ordem da condição invertida). Agora os 2 importam a mesma função
+    // pura, testada de ponta a ponta com arquivos reais em
+    // test/select-social-card-image.test.ts — este teste garante só que os
+    // dois call sites de fato USAM o seletor (não regrediram pra lógica
+    // inline duplicada).
     for (const f of ["publish-facebook.ts", "publish-instagram.ts"]) {
       const src = readFileSyncUtf8(join(ROOT, "scripts", f));
-      assert.match(src, /04-\$\{d\}-4x5\.jpg/, `${f} deveria preferir o card 4:5`);
-      assert.match(src, /04-\$\{d\}-1x1\.jpg/, `${f} deveria manter o fallback 1:1`);
+      assert.match(
+        src,
+        /import\s*\{\s*selectSocialCardImageFile\s*\}\s*from\s*"\.\/lib\/select-social-card-image\.ts"/,
+        `${f} deveria importar selectSocialCardImageFile`,
+      );
+      assert.match(
+        src,
+        /selectSocialCardImageFile\(/,
+        `${f} deveria chamar selectSocialCardImageFile em vez de duplicar a checagem existsSync inline`,
+      );
     }
   });
 });
