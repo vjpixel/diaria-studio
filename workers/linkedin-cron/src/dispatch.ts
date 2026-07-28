@@ -1,5 +1,5 @@
 import type { Env, QueueEntry, WebhookTarget, QueueAction } from "./index";
-import { FETCH_TIMEOUT_MS } from "./index";
+import { FETCH_TIMEOUT_MS, CAROUSEL_MAX_ITEMS } from "./index";
 import { isUnsupportedCommentTarget } from "./guards";
 
 // ── Dispatch compartilhado entre fire.ts (cron) e durable-object.ts (alarm) ──
@@ -299,13 +299,13 @@ async function fireInstagramCarousel(
   caption: string,
   creds: InstagramCreds,
 ): Promise<FireOutcome> {
-  // Defesa em profundidade: handleEnqueue já barra >10 itens no enqueue
-  // (#4153) — isto cobre entries legacy/inseridas fora do caminho normal
-  // (mesmo padrão de fireThreads guardando texto >500 chars, ver acima).
-  if (imageUrls.length > 10) {
+  // Defesa em profundidade: handleEnqueue já barra >CAROUSEL_MAX_ITEMS no
+  // enqueue (#4153) — isto cobre entries legacy/inseridas fora do caminho
+  // normal (mesmo padrão de fireThreads guardando texto >500 chars, ver acima).
+  if (imageUrls.length > CAROUSEL_MAX_ITEMS) {
     return {
       status: "dlq",
-      reason: `Instagram carrossel: ${imageUrls.length} imagens excede o máximo de 10 da Graph API`,
+      reason: `Instagram carrossel: ${imageUrls.length} imagens excede o máximo de ${CAROUSEL_MAX_ITEMS} da Graph API`,
     };
   }
 
