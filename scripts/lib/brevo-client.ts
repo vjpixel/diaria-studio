@@ -336,7 +336,7 @@ export async function brevoGet(
 //
 // #3682 (P1): `status=queued` sozinho não basta — `sends_count` local também
 // não distingue "nunca recebeu" de "recebeu, mas o sync incremental do store
-// (task diária 07:30) ainda não propagou o incremento" (lag observado: até
+// (task diária 08:30) ainda não propagou o incremento" (lag observado: até
 // ~1 dia no incidente real, envios 07-12/07-14 só apareceram como
 // `sends_count=1` no snapshot de 07-17). Um build de audiência rodado NESSA
 // janela de lag re-seleciona contatos que JÁ receberam um envio `sent` do

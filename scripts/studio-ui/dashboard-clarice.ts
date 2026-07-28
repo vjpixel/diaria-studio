@@ -8,7 +8,7 @@
  * sem `fresh`) agora é 100% KV-only — ZERO chamadas Brevo ao abrir o painel.
  * Studio = consumidor read-only do KV; o Worker `clarice-dashboard` (que tem
  * cache, retry de 429 e last-good, `dash:lastgood:campaigns`) e o push diário
- * das 07:30 (`clarice-db-summary.ts` → `contacts:summary`) são os ÚNICOS
+ * das 08:30 (`clarice-db-summary.ts` → `contacts:summary`) são os ÚNICOS
  * escritores. `renderClariceDashboardKvOnlyUncached()` lê
  * `dash:lastgood:campaigns` + `readKvTabs(env, "kv-only")` +
  * `fetchPlanCredits(env, "kv-only")` (nenhum dos três chama a Brevo em modo
@@ -34,7 +34,7 @@
  *   - `contactsSummary` (aba Contatos) → store SQLite LOCAL direto
  *     (`scripts/lib/clarice-db.ts` + `computeStoreSummary` de
  *     `scripts/clarice-db-summary.ts`) — MELHOR que o snapshot KV (#3553): não
- *     depende do push diário das 07:30, sempre fresco.
+ *     depende do push diário das 08:30, sempre fresco.
  *   - coortes de engajamento / cupons Stripe / engajamento É IA?
  *     (`cohorts`/`couponUsage`/`eiaEngagement`, via `readKvTabs`) → #4165/#4173:
  *     agora lidas do namespace KV REAL do Worker `clarice-dashboard`
@@ -300,7 +300,7 @@ export function injectKvOnlyBanner(html: string, fetchedAt: string | null): stri
  * Worker = único escritor) mesmo neste caminho.
  *
  * `contactsSummary` continua vindo do store SQLite LOCAL (não do KV) — é
- * MELHOR fidelidade (não depende do push das 07:30) e não tem custo Brevo
+ * MELHOR fidelidade (não depende do push das 08:30) e não tem custo Brevo
  * nenhum (#3553), então não há razão pra downgradar isso pro KV só porque
  * este é o caminho "sem Brevo".
  */

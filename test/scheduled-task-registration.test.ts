@@ -230,10 +230,10 @@ describe("setup-clarice-sync-schedule.ps1: horário posterior ao envio das 06:00
     assert.ok(trigger, "nenhum New-ScheduledTaskTrigger encontrado no script");
   });
 
-  it("dispara às 07:30, depois do envio das 06:00 (nunca de madrugada)", () => {
+  it("dispara às 08:30, depois do envio das 06:00 (nunca de madrugada)", () => {
     const hora = Number((trigger!.match(/-Hour\s+(\d+)/i) ?? [])[1]);
     const minuto = Number((trigger!.match(/-Minute\s+(\d+)/i) ?? [])[1]);
-    assert.equal(hora, 7, `hora do trigger: ${trigger!.trim()}`);
+    assert.equal(hora, 8, `hora do trigger: ${trigger!.trim()}`);
     assert.equal(minuto, 30, `minuto do trigger: ${trigger!.trim()}`);
     assert.ok(
       hora * 60 + minuto > 6 * 60,
