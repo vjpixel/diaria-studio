@@ -4,9 +4,11 @@ Playbook semântico+operacional pra criar a newsletter Diar.ia no Beehiiv como *
 
 ## TLDR (#1327)
 
-> **Novo fluxo padrão desde 260625 (#2550):** upload Worker com `--no-wrap` + `fetch()` in-page + `tr.insertText(html, snippetPos+1)` via `javascript_tool`. O `fetch()` funciona in-page (o bloqueio CSP do #2495 não se confirmou como permanente após re-teste em 260625). O `tr.insertText` — em vez de `editor.commands.insertContent` — evita o congelamento do renderer que ocorria em 260623. Fallback chunked base64 disponível enquanto a estabilidade do fetch+insertText é validada (2-3 sessões) — ver Apêndice.
+> **Fonte única de verdade sobre o estado da Fase 3 (#4196):** este arquivo — nenhum outro documento (`CLAUDE.md`, `.claude/agents/orchestrator-stage-5.md`, `.claude/skills/diaria-5-publicacao/SKILL.md`) deve duplicar o diagnóstico; eles apontam pra cá.
 >
-> **Nota histórica #2495 (260623):** naquela sessão o `fetch()` ficou pendurado e o `insertContent` congelou a página. O novo fluxo endereça ambos: `--no-wrap` sobe o fragmento bruto (preservando `{{email}}`); `tr.insertText` insere sem parsing HTML. Se o fetch voltar a pendurar, acione o fallback chunked manualmente.
+> **Novo fluxo padrão desde 260625 (#2550), auto-protegido desde #4196:** upload Worker com `--no-wrap` + `fetch()` in-page (com timeout) + `tr.insertText(html, snippetPos+1)` via `javascript_tool`. O `tr.insertText` — em vez de `editor.commands.insertContent` — evita o congelamento do renderer que ocorria em 260623. O `fetch()` roda com `AbortController` + timeout de 25s (`DEFAULT_FETCH_TIMEOUT_MS` em `scripts/lib/beehiiv-insert-text.ts`) e **qualquer falha da Fase 3 — HTTP não-2xx, timeout, exceção de rede — aciona o fallback chunked base64 automaticamente**, sem seleção manual. Depois do paste, o tamanho do corpo inserido é verificado como plausível contra o arquivo local (`verifyBodySizePlausible`) antes de declarar sucesso. Ver §Fase 3 abaixo.
+>
+> **Nota histórica #2495 (260623):** naquela sessão o `fetch()` ficou pendurado (bloqueio CSP nunca confirmado como permanente — não se repetiu no re-teste de 260625, #2550) e o `insertContent` congelou a página. O novo fluxo endereça os dois: `--no-wrap` sobe o fragmento bruto (preservando `{{email}}`); `tr.insertText` insere sem parsing HTML. **O modo de falha real do #2495 não era o CSP em si — era o fetch pendurado nunca disparar o fallback** (a Fase 2, que roda no shell, já tinha terminado com exit 0; o auto-fallback só olhava esse exit code). O #4196 (260728) resolveu isso com o timeout explícito acima: agora um fetch pendurado sempre produz um erro detectável dentro do prazo, independente de a causa raiz ser CSP, rede ou Worker lento.
 
 Beehiiv newsletter = 1 comando + 1 paste JS:
 
@@ -554,7 +556,7 @@ Também resetar **Subtitle** se vier com valor da edição anterior (verificar s
 
 > **Fluxo padrão desde 260625 (#2550):** usar `--no-wrap` para subir o fragmento HTML **bruto** (sem o wrapper de preview). O wrapper adicionado pelo default `upload-html-public.ts` é útil para revisão visual no browser, mas não deve ir para o email enviado. O fragmento bruto preserva `{{email}}` e as merge-tags de poll. Se `--no-wrap` não estiver disponível (versão antiga do script), use o wrapper e remova-o manualmente antes do paste.
 >
-> **Nota histórica #2495 (260623):** o `fetch()` desta Fase 3 ficou pendurado naquela sessão. Re-testado em 260625: funciona in-page. Se o fetch voltar a pendurar, acione o fallback chunked (apêndice) manualmente — o auto-fallback detecta apenas exit não-zero do `upload-html-public.ts`.
+> **Nota histórica #2495 (260623) → resolvida em #4196 (260728):** o `fetch()` da Fase 3 ficou pendurado naquela sessão; o auto-fallback desta Fase 2 (que só olha o exit code do `upload-html-public.ts`, um script de shell) não disparava porque a Fase 2 já tinha terminado com exit 0 — o fetch pendurado é um evento da Fase 3, in-page, invisível pra este exit code. Desde #4196, a Fase 3 tem seu próprio timeout (ver abaixo) e não depende mais deste fallback baseado em exit code pra se proteger.
 
 Em vez de chunkar + pushar via `javascript_tool` (consome ~80K tokens por edição), hospedar o HTML no Worker existente (`draft.diaria.workers.dev/{edition}`). Browser fetcha direto. Custo total ~5K tokens.
 
@@ -582,35 +584,61 @@ TTL 12h no KV — cobre paste do dia + retries no mesmo turno. Re-rodar sobrescr
 
 **Revisão online antes do paste**: a URL retornada (`url` no JSON) renderiza o HTML cru no browser. Use pra revisar o conteúdo final no celular/desktop antes de colar no Beehiiv — botões A/B do poll funcionam, imagens carregam. **Não substitui o test email do Beehiiv** (CSS específico do email client não está aplicado), mas é suficiente pra revisão de conteúdo. Apresentar a URL ao editor explicitamente: "Newsletter pronta pra revisão: {url} — confirme paste no Beehiiv?".
 
-**Fallback automático Worker→chunked**: se `upload-html-public.ts` falhar (exit code não-zero — Worker 5xx, network, ADMIN_SECRET ausente, etc.), cair direto pra apêndice "Fallback chunked (legacy)" no fim do arquivo — sem perguntar. Log do erro vai pra `data/run-log.jsonl`. Caso comum: Worker em manutenção; chunked sempre funciona offline-after-chunk. **Mas se Worker estiver up, NUNCA proponha o caminho chunked como primeira opção em runtime — é 16× mais caro em tokens.**
+**Fallback automático Worker→chunked (Fase 2)**: se `upload-html-public.ts` falhar (exit code não-zero — Worker 5xx, network, ADMIN_SECRET ausente, etc.), cair direto pra apêndice "Fallback chunked (legacy)" no fim do arquivo — sem perguntar. Log do erro vai pra `data/run-log.jsonl`. Caso comum: Worker em manutenção; chunked sempre funciona offline-after-chunk. **Mas se Worker estiver up, NUNCA proponha o caminho chunked como primeira opção em runtime — é 16× mais caro em tokens.**
 
-**Fase 3 — Fetch + paste via `tr.insertText` (#1178, #2550)**:
+**Fallback automático da Fase 3 (fetch in-page, #4196) — mecanismo separado, cobre o que o fallback acima não cobre.** A Fase 2 acima só vê o exit code de um script de shell; a Fase 3 roda inteiramente dentro do browser (via `javascript_tool`), então precisa do seu próprio gatilho — ver detalhes na Fase 3 abaixo.
 
-> **Fluxo padrão desde 260625 (#2550).** Browser baixa o fragmento bruto do Worker via `fetch()` e insere no TipTap via `tr.insertText(html, snippetPos+1)` — em vez de `editor.commands.insertContent`. O `tr.insertText` evita o congelamento do renderer que ocorria com o `insertContent` após ~34KB + imagens (#2495). O `fetch()` foi re-validado como funcional in-page em 260625 (o bloqueio CSP de 260623 não se replicou).
+**Fase 3 — Fetch + paste via `tr.insertText` (#1178, #2550, timeout+fallback #4196)**:
+
+> **Fluxo padrão desde 260625 (#2550), auto-protegido desde #4196.** Browser baixa o fragmento bruto do Worker via `fetch()` e insere no TipTap via `tr.insertText(html, snippetPos+1)` — em vez de `editor.commands.insertContent`. O `tr.insertText` evita o congelamento do renderer que ocorria com o `insertContent` após ~34KB + imagens (#2495).
 >
-> **Se o fetch pendurar novamente:** usar o fallback chunked base64 (apêndice). O auto-fallback detecta apenas exit não-zero do `upload-html-public.ts`; se o `fetch()` pendurar sem erro (exit 0), selecione o chunked manualmente.
+> **Timeout explícito (#4196):** o `fetch()` é envolvido por `AbortController` com timeout de 25s (`DEFAULT_FETCH_TIMEOUT_MS`, `scripts/lib/beehiiv-insert-text.ts`). Se o fetch pendurar — CSP, rede, Worker lento, qualquer causa — o abort produz `{ error: 'fetch_timeout', ... }`, um resultado detectável em vez de uma Promise pendurada pra sempre (o modo de falha real do #2495/260623: não era o CSP em si que quebrava o fluxo, era a ausência de um timeout que tornasse essa falha visível).
+>
+> **Fallback automático, não mais manual:** `classifyInsertResult(result)` roteia QUALQUER falha da Fase 3 — timeout, erro HTTP, exceção de rede, `inserted: false`, merge-tag `{{email}}` ausente — para `"retry_chunked"`. Acionar o fallback chunked base64 (apêndice) automaticamente quando isso acontecer; não é mais necessário escolher manualmente.
+>
+> **Verificação pós-inserção (#4196):** mesmo quando `classifyInsertResult` retorna `"ok"`, chamar `verifyBodySizePlausible(result.htmlBytes, readLocalFragmentBytes(newsletterFinalHtmlPath))` antes de declarar o paste concluído — um `{{email}}` presente e `inserted: true` não garantem que o corpo inteiro chegou (Worker pode ter servido resposta parcial sem erro HTTP). Se `ok: false`, tratar como falha do paste (acionar fallback chunked) em vez de prosseguir com um corpo truncado.
 
 Browser baixa HTML direto do Worker e insere no editor TipTap. Single javascript_tool call (~5K tokens vs ~80K do chunked flow).
 
 **Helper recomendado** (`scripts/lib/beehiiv-insert-text.ts`):
 
 ```typescript
-import { buildInsertTextJs, verifyFragmentPreserved, classifyInsertResult } from "scripts/lib/beehiiv-insert-text.ts";
+import {
+  buildInsertTextJs,
+  verifyFragmentPreserved,
+  classifyInsertResult,
+  verifyBodySizePlausible,
+  readLocalFragmentBytes,
+} from "scripts/lib/beehiiv-insert-text.ts";
 
 // Antes do paste: validar que o fragmento baixado do Worker tem {{email}}
 // (confirma que --no-wrap foi usado e o renderer preservou as merge-tags)
 // Nota: verifyFragmentPreserved opera sobre o fragmento BAIXADO — não é necessário
 // baixar previamente; a validação está embutida na varredura pós-paste (hasEmail).
 
-// Construir e executar o snippet
+// Construir e executar o snippet (timeout embutido, #4196 — default 25s, ver DEFAULT_FETCH_TIMEOUT_MS)
 const snippet = buildInsertTextJs(DRAFT_PREVIEW_URL);
 const result = await mcp__claude-in-chrome__javascript_tool({ code: snippet });
 
 // Classificar resultado e decidir ação
 const action = classifyInsertResult(result);
-// "ok"            → continuar para §5.3
+// "ok"            → prosseguir pra verificação de tamanho abaixo, depois §5.3
 // "verify_only"   → javascript_tool retornou {} (async longa) → varredura extra
-// "retry_chunked" → acionar fallback chunked base64 (apêndice)
+// "retry_chunked" → acionar fallback chunked base64 (apêndice) — cobre timeout/abort
+//                   da Fase 3 (#4196), erro HTTP, exceção de rede e merge-tag ausente
+
+// Verificação pós-inserção (#4196) — só quando action === "ok":
+// um "ok" aqui não garante corpo completo (Worker pode servir resposta parcial
+// sem erro HTTP). Comparar o tamanho observado contra o arquivo local que gerou
+// o upload ANTES de declarar sucesso.
+if (action === "ok") {
+  const expectedBytes = readLocalFragmentBytes(`${edition_dir}/_internal/newsletter-final.html`);
+  const sizeCheck = verifyBodySizePlausible(result.htmlBytes, expectedBytes);
+  if (!sizeCheck.ok) {
+    // corpo vazio/truncado — NÃO declarar sucesso; tratar como falha de paste
+    // e acionar o fallback chunked base64 (apêndice), mesmo caminho de "retry_chunked".
+  }
+}
 ```
 
 **Snippet manual equivalente** (para referência / debug):

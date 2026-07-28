@@ -1,5 +1,5 @@
 /**
- * test/beehiiv-insert-text.test.ts (#2550)
+ * test/beehiiv-insert-text.test.ts (#2550, timeout+fallback+verificação #4196)
  *
  * Regressão para o helper `scripts/lib/beehiiv-insert-text.ts`:
  *
@@ -7,20 +7,38 @@
  *    JS gerado contém `tr.insertText` e preserva a merge-tag literalmente.
  *  - `verifyFragmentPreserved`: detecta ausência de `{{email}}` e fragmento vazio.
  *  - `classifyInsertResult`: roteamento ok/retry_chunked/verify_only.
+ *  - (#4196) `buildInsertTextJs` com fetch que nunca resolve → timeout dispara →
+ *    `classifyInsertResult` roteia pro fallback chunked automaticamente.
+ *  - (#4196) `verifyBodySizePlausible`/`readLocalFragmentBytes`: verificação de
+ *    tamanho pós-paste — corpo vazio/truncado não "declara sucesso silenciosamente".
  *
  * **SPEC do #2550:** "tr.insertText num fixture de htmlSnippet vazio → node.textContent
  * == fragmento; merge-tag {{email}} preservada".  Esta suite testa o seam TS puro —
  * a execução real no browser (DOM TipTap) não é unit-testável aqui.
+ *
+ * **SPEC do #4196:** o critério de aceite é comportamental ("fetch pendurado →
+ * timeout dispara → cai no chunked automaticamente"), não só textual — por isso o
+ * describe "buildInsertTextJs timeout" abaixo efetivamente `eval()`a o snippet
+ * gerado contra um `fetch` mock que só resolve/rejeita quando abortado (replica o
+ * comportamento real de `fetch` + `AbortController` em browsers), em vez de só
+ * inspecionar a string produzida.
  *
  * Regressão #633: PR de feature de publish-flow → teste obrigatório.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildInsertTextJs,
   verifyFragmentPreserved,
   classifyInsertResult,
+  verifyBodySizePlausible,
+  readLocalFragmentBytes,
+  DEFAULT_FETCH_TIMEOUT_MS,
+  DEFAULT_MIN_BODY_SIZE_RATIO,
 } from "../scripts/lib/beehiiv-insert-text.ts";
 
 // ---------------------------------------------------------------------------
@@ -126,6 +144,198 @@ describe("buildInsertTextJs (#2550)", () => {
       () => buildInsertTextJs("https://draft.workers.dev/it's-broken"),
       /aspas simples/,
     );
+  });
+
+  it("usa AbortController + timeout no fetch (#4196)", () => {
+    const snippet = buildInsertTextJs(RAW_URL);
+    assert.match(snippet, /new AbortController\(\)/, "snippet deve criar um AbortController");
+    assert.match(
+      snippet,
+      /signal:\s*controller\.signal/,
+      "snippet deve passar controller.signal pro fetch",
+    );
+  });
+
+  it("default timeoutMs é DEFAULT_FETCH_TIMEOUT_MS (#4196)", () => {
+    const snippet = buildInsertTextJs(RAW_URL);
+    assert.match(
+      snippet,
+      new RegExp(`controller\\.abort\\(\\),\\s*${DEFAULT_FETCH_TIMEOUT_MS}\\)`),
+      `snippet deve usar o timeout default (${DEFAULT_FETCH_TIMEOUT_MS}ms)`,
+    );
+  });
+
+  it("timeoutMs customizado aparece literalmente no snippet (#4196)", () => {
+    const snippet = buildInsertTextJs(RAW_URL, 5000);
+    assert.match(snippet, /controller\.abort\(\),\s*5000\)/);
+    // não deve sobrar o default quando um valor customizado foi passado
+    assert.doesNotMatch(snippet, new RegExp(`,\\s*${DEFAULT_FETCH_TIMEOUT_MS}\\)`));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4196 — timeout do fetch in-page dispara o fallback chunked automaticamente
+// ---------------------------------------------------------------------------
+
+describe("buildInsertTextJs timeout (#4196) — fetch pendurado nunca resolve", () => {
+  it("aborta após o timeout e retorna error:fetch_timeout — critério de aceite: cai no fallback chunked SEM intervenção", async () => {
+    const TIMEOUT_MS = 30; // curto de propósito — o teste não deve esperar os 25s reais de produção
+    const snippet = buildInsertTextJs(RAW_URL, TIMEOUT_MS);
+
+    const originalFetch = (globalThis as { fetch?: unknown }).fetch;
+
+    // Mock de fetch que replica o comportamento real de fetch+AbortController em
+    // browsers: a promise NUNCA resolve por conta própria (simula o Worker/CSP
+    // pendurado do #2495), só rejeita quando o AbortSignal dispara.
+    (globalThis as { fetch: (url: string, opts: { signal: AbortSignal }) => Promise<unknown> }).fetch = (
+      _url: string,
+      opts: { signal: AbortSignal },
+    ) => {
+      return new Promise((_resolve, reject) => {
+        opts.signal.addEventListener("abort", () => {
+          const err = new Error("The operation was aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    };
+
+    try {
+      // eslint-disable-next-line no-eval -- exercita o snippet gerado de fato, não só a string
+      const result = (await eval(snippet)) as {
+        error?: string;
+        url?: string;
+        timeoutMs?: number;
+      };
+
+      assert.equal(result.error, "fetch_timeout", "fetch pendurado deve produzir error:fetch_timeout");
+      assert.equal(result.url, RAW_URL);
+      assert.equal(result.timeoutMs, TIMEOUT_MS);
+
+      // O critério de aceite real do #4196: esse resultado precisa cair automaticamente
+      // no fallback chunked — mesmo caminho de qualquer outro erro de fetch, sem
+      // nenhuma lógica adicional/intervenção manual.
+      assert.equal(
+        classifyInsertResult(result),
+        "retry_chunked",
+        "timeout deve rotear pro fallback chunked automaticamente, sem intervenção",
+      );
+    } finally {
+      (globalThis as { fetch?: unknown }).fetch = originalFetch;
+    }
+  });
+
+  it("erro de rede (não-abort) também produz error detectável (não trava a promise)", async () => {
+    const snippet = buildInsertTextJs(RAW_URL, 5000);
+    const originalFetch = (globalThis as { fetch?: unknown }).fetch;
+
+    (globalThis as { fetch: () => Promise<unknown> }).fetch = () =>
+      Promise.reject(new TypeError("Failed to fetch"));
+
+    try {
+      // eslint-disable-next-line no-eval
+      const result = (await eval(snippet)) as { error?: string };
+      assert.ok(result.error?.startsWith("fetch_exception:"), "erro de rede deve virar fetch_exception, não travar");
+      assert.equal(classifyInsertResult(result), "retry_chunked");
+    } finally {
+      (globalThis as { fetch?: unknown }).fetch = originalFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4196 — verificação de tamanho pós-paste
+// ---------------------------------------------------------------------------
+
+describe("verifyBodySizePlausible (#4196)", () => {
+  it("ok:true quando observedBytes está dentro da razão mínima do esperado", () => {
+    const result = verifyBodySizePlausible(9500, 10000);
+    assert.equal(result.ok, true);
+    assert.equal(result.reason, undefined);
+    assert.ok(result.ratio >= DEFAULT_MIN_BODY_SIZE_RATIO);
+  });
+
+  it("ok:false reason:empty_body quando o corpo é vazio — falha explícita, não sucesso silencioso", () => {
+    const result = verifyBodySizePlausible(0, 10000);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "empty_body");
+  });
+
+  it("ok:false reason:body_too_small quando o corpo é bem menor que o arquivo local (paste truncado/parcial)", () => {
+    const result = verifyBodySizePlausible(2000, 10000); // 20% do esperado
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "body_too_small");
+    assert.ok(result.ratio < DEFAULT_MIN_BODY_SIZE_RATIO);
+  });
+
+  it("ok:false reason:expected_bytes_invalid quando expectedBytes <= 0 (uso incorreto do caller)", () => {
+    const result = verifyBodySizePlausible(5000, 0);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "expected_bytes_invalid");
+  });
+
+  it("respeita minRatio customizado", () => {
+    const result = verifyBodySizePlausible(5000, 10000, 0.4);
+    assert.equal(result.ok, true, "50% >= 40% (minRatio customizado) deve passar");
+  });
+
+  it("valores negativos de observedBytes são tratados como corpo vazio, não como sucesso", () => {
+    const result = verifyBodySizePlausible(-1, 10000);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "empty_body");
+  });
+});
+
+describe("readLocalFragmentBytes (#4196)", () => {
+  it("mede bytes UTF-8 (não unidades UTF-16) — relevante pra conteúdo PT-BR acentuado", () => {
+    const tmpPath = join(tmpdir(), `beehiiv-insert-text-test-${Date.now()}-${Math.random().toString(36).slice(2)}.html`);
+    const content = "<p>Título com acentuação: ção, ã, é, ç, à</p>";
+    writeFileSync(tmpPath, content, "utf8");
+    try {
+      const bytes = readLocalFragmentBytes(tmpPath);
+      assert.equal(bytes, Buffer.byteLength(content, "utf8"));
+      assert.ok(
+        bytes > content.length,
+        "bytes UTF-8 devem exceder .length UTF-16 quando o conteúdo tem acentos PT-BR",
+      );
+    } finally {
+      unlinkSync(tmpPath);
+    }
+  });
+});
+
+describe("integração: paste classificado 'ok' porém truncado é pego pela verificação de tamanho (#4196)", () => {
+  it("classifyInsertResult diz ok, mas verifyBodySizePlausible detecta o corpo truncado — falha explícita, não sucesso silencioso", () => {
+    const truncatedResult = {
+      inserted: true,
+      htmlBytes: 500, // muito menor que o arquivo local (simulando paste parcial)
+      docSize: 504,
+      hasEmail: true,
+      hasPollA: true,
+      hasPollB: true,
+    };
+
+    // classifyInsertResult sozinho não detecta truncamento — é exatamente por
+    // isso que verifyBodySizePlausible existe como passo separado (#4196).
+    assert.equal(classifyInsertResult(truncatedResult), "ok");
+
+    const sizeCheck = verifyBodySizePlausible(truncatedResult.htmlBytes, 28341);
+    assert.equal(sizeCheck.ok, false);
+    assert.equal(sizeCheck.reason, "body_too_small");
+  });
+
+  it("classifyInsertResult diz ok E verifyBodySizePlausible confirma tamanho plausível — sucesso real", () => {
+    const fullResult = {
+      inserted: true,
+      htmlBytes: 27800,
+      docSize: 27804,
+      hasEmail: true,
+      hasPollA: true,
+      hasPollB: true,
+    };
+    assert.equal(classifyInsertResult(fullResult), "ok");
+    const sizeCheck = verifyBodySizePlausible(fullResult.htmlBytes, 28341);
+    assert.equal(sizeCheck.ok, true);
   });
 });
 
