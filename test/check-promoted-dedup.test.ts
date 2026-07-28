@@ -436,6 +436,110 @@ describe("#2338/fix2 — from===to repeated URL annotated in reason", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #4200 — colisão com artigo NATIVO já presente nos buckets da edição corrente
+// ---------------------------------------------------------------------------
+
+describe("#4200 — colisão intra-edição com artigo nativo (não só past-editions)", () => {
+  it("demote quando URL oficial promovida já existe como artigo nativo em lancamento", () => {
+    // Caso real (edição 260728): promoção de fonte primária colidiu com um
+    // artigo nativo do mesmo domínio já presente no pool de lancamento.
+    const nativeUrl = "https://openai.com/blog/gpt5-launch";
+    const researchUrl = "https://techcrunch.com/2026/07/27/gpt5-coverage/";
+
+    const buckets: CategorizedFlat = {
+      lancamento: [
+        makeDirectLancamento(nativeUrl, "GPT-5 (cobertura nativa)"),
+        makePromotedLancamento({ researchUrl, officialUrl: nativeUrl, title: "GPT-5 (via promoção)" }),
+      ],
+      radar: [],
+    };
+    // past-editions vazio — a colisão é SÓ intra-edição, não histórica
+    const pastUrls = new Set<string>();
+
+    const result = checkPromotedDedup(buckets, pastUrls);
+
+    assert.equal(result.checked, 1, "1 promoção verificada (artigo nativo não tem primary_source_substituted)");
+    assert.equal(result.demoted.length, 1, "deve demote a promoção colidente");
+    // O artigo nativo permanece intocado em lancamento
+    assert.equal(buckets.lancamento?.length, 1, "só o nativo resta em lancamento");
+    assert.equal(buckets.lancamento![0].url, nativeUrl);
+    assert.equal(buckets.lancamento![0].title, "GPT-5 (cobertura nativa)");
+    // O promovido foi rebaixado pra radar com a URL de pesquisa original
+    assert.equal(buckets.radar?.length, 1, "promoção colidente vai pra radar");
+    assert.equal(buckets.radar![0].url, researchUrl);
+    // Reason identifica claramente a causa (colisão com nativo, não past-editions
+    // nem duas-promoções-pro-mesmo-destino)
+    assert.match(result.demoted[0].reason, /nativo/i, "reason deve mencionar colisão com artigo nativo (#4200)");
+  });
+
+  it("demote quando URL oficial promovida colide com artigo nativo em OUTRO bucket (radar)", () => {
+    const nativeUrl = "https://anthropic.com/news/claude-update";
+    const researchUrl = "https://the-decoder.com/2026/07/27/claude-update-coverage/";
+
+    const buckets: CategorizedFlat = {
+      lancamento: [
+        makePromotedLancamento({ researchUrl, officialUrl: nativeUrl, title: "Claude update" }),
+      ],
+      radar: [makeDirectLancamento(nativeUrl, "Claude update (radar nativo)")],
+    };
+    const pastUrls = new Set<string>();
+
+    const result = checkPromotedDedup(buckets, pastUrls);
+
+    assert.equal(result.demoted.length, 1, "deve demote — URL já existe nativamente em radar");
+    assert.equal(buckets.lancamento?.length, 0, "lancamento fica vazio (promoção revertida)");
+    // radar agora tem 2: o nativo original + o demotado
+    assert.equal(buckets.radar?.length, 2, "radar ganha o item demotado, mantém o nativo original");
+    assert.match(result.demoted[0].reason, /nativo/i);
+  });
+
+  it("NÃO demote quando URL oficial promovida é nova (sem colisão nativa nem histórica)", () => {
+    const buckets: CategorizedFlat = {
+      lancamento: [
+        makeDirectLancamento("https://openai.com/blog/other-thing", "Outra coisa"),
+        makePromotedLancamento({
+          researchUrl: "https://techcrunch.com/2026/07/27/new-launch/",
+          officialUrl: "https://openai.com/blog/brand-new-launch",
+          title: "Lançamento novo",
+        }),
+      ],
+      radar: [],
+    };
+    const pastUrls = new Set<string>();
+
+    const result = checkPromotedDedup(buckets, pastUrls);
+
+    assert.equal(result.demoted.length, 0, "URLs distintas — sem colisão");
+    assert.equal(buckets.lancamento?.length, 2, "ambos permanecem em lancamento");
+  });
+
+  it("colisão com nativo tem precedência de mensagem sobre duplicata within-edition-promotion", () => {
+    // Garante que quando HÁ nativo colidente, a reason não confunde com o caso
+    // "duas promoções pro mesmo destino" (mensagens diferentes, causas diferentes).
+    const url = "https://openai.com/blog/thing";
+    const buckets: CategorizedFlat = {
+      lancamento: [
+        makeDirectLancamento(url, "Nativo"),
+        makePromotedLancamento({
+          researchUrl: "https://techcrunch.com/2026/07/27/thing/",
+          officialUrl: url,
+          title: "Promovido",
+        }),
+      ],
+      radar: [],
+    };
+    const result = checkPromotedDedup(buckets, new Set<string>());
+
+    assert.equal(result.demoted.length, 1);
+    assert.doesNotMatch(
+      result.demoted[0].reason,
+      /duas promoções/i,
+      "reason não deve usar a mensagem de duas-promoções quando a colisão é com um artigo nativo",
+    );
+  });
+});
+
 describe("#2338/fix2 — empty from guard", () => {
   it("from='' com to válido e repetido: deve demote (não pular silenciosamente)", () => {
     const officialUrl = "https://huggingface.co/some/model";

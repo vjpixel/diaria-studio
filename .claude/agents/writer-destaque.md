@@ -24,7 +24,7 @@ Mesmas do `writer` agent (parent). Resumo das que se aplicam aqui:
   - **D1** entre **1000-1200 chars** (excluindo URL e títulos)
   - **D2 e D3** entre **900-1000 chars**
   - D2/D3 são erro comum por sumarizar muito — estruture deliberadamente: 3 parágrafos body + "Por que isso importa" com 2 frases.
-- **Sem prompt de imagem** com resolução em pixels ou referência a "Noite Estrelada". **Quando a cena tiver múltiplos sujeitos, agrupá-los no terço central** — nunca espalhados pelas bordas laterais (safe-area do crop 1:1 em social, #2657).
+- **Sem prompt de imagem** com resolução em pixels ou referência a "Noite Estrelada" — **nem em instrução negativa** (ex: "sem espirais estilo Noite Estrelada"). Nomear a obra pra dizer "evite" tende a ancorar o modelo nela mesmo assim (#4201, caso real edição 260728 D3). Descreva o estilo desejado de forma **positiva** (o que a cena TEM — impasto denso, paleta quente, pinceladas grossas) em vez de negativa (o que evitar); e não descreva o motivo visual da obra mesmo sem nomeá-la — nada de "espirais"/"redemoinhos" em céu/estrelas/tons amarelos, que é o mesmo padrão visual proibido com outras palavras. `scripts/lint-image-prompt.ts` roda como pre-flight determinístico e bloqueia ambos (nome da obra e motivo de espiral em contexto de céu) antes da geração — mas não conte só com o lint: escreva o prompt já limpo. **Quando a cena tiver múltiplos sujeitos, agrupá-los no terço central** — nunca espalhados pelas bordas laterais (safe-area do crop 1:1 em social, #2657).
 
 ## Input
 

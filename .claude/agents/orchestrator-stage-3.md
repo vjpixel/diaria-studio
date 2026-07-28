@@ -56,7 +56,7 @@ Detecção de conclusão por **file-presence check** (mais robusto que pollar ba
   Bash("curl -sf http://127.0.0.1:8188/system_stats > /dev/null")
   ```
   Se falhar, pausar e instruir o usuário a iniciar o ComfyUI.
-- **Lint pre-flight do prompt (#810).** Para cada destaque presente (d1, d2 — e d3 **somente se `destaque_count === 3`**), rodar lint determinístico antes de gastar API call. Detecta violações da regra editorial (`context/editorial-rules.md`): "Noite Estrelada" / "Starry Night", resolução em pixels, DPI:
+- **Lint pre-flight do prompt (#810).** Para cada destaque presente (d1, d2 — e d3 **somente se `destaque_count === 3`**), rodar lint determinístico antes de gastar API call. Detecta violações da regra editorial (`context/editorial-rules.md`): "Noite Estrelada" / "Starry Night" (mesmo em instrução negativa), motivo visual de espiral/redemoinho perto de céu/estrelas/amarelo mesmo sem nomear a obra (#4201), resolução em pixels, DPI:
   ```bash
   npx tsx scripts/lint-image-prompt.ts {EDITION_DIR}/_internal/02-d{N}-prompt.md
   ```
