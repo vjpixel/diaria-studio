@@ -294,10 +294,21 @@ export function classifyCoverVerify(
  * NOTA (#2341): `javascript_tool` pode retornar `{}` para funções async longas.
  * `{}` NÃO significa falha — verificar estado via DOM re-scan ou `get_post`.
  *
- * Fluxo:
- *   1. garantir `input[type=file]` (se ausente, abrir 'Add thumbnail')
+ * Fluxo (revisado #4203 — ver defeitos 1 e 2 na issue):
+ *   1. SEMPRE tentar abrir o painel de thumbnail primeiro (nunca condicionar
+ *      a `!fileInput` — posts do template "HTML" já têm um input[type=file]
+ *      genérico na página com o painel FECHADO); casar o botão por
+ *      `/(web |add )?thumbnail/i` (cobre tanto "Add thumbnail" — legado, sem
+ *      cover ainda — quanto "Web thumbnail" — nome atual da UI). Escopar o
+ *      `fileInput` ao container que contém esse botão, não `document`
+ *      global (evita casar um input[type=file] genérico de outra seção).
  *   2. fetch(imageUrl) → Blob → File → DataTransfer → `input.files` + change
- *   3. aguardar ~5s, clicar na img recém-subida (aplica automático)
+ *   3. aguardar ~5s, clicar na img recém-subida (aplica automático) — NUNCA
+ *      num `img` dentro de `<a>` (o logo do Beehiiv vive em
+ *      `<a href="https://www.beehiiv.com">`; clicar navega a aba inteira pra
+ *      fora do post, incidente 260728) e SÓ se a imagem tiver dimensão
+ *      mínima (o logo tem 16×15 — qualquer cover real é ordens de grandeza
+ *      maior)
  *   4. verificar via DOM: 'Add thumbnail' sumiu + thumbnail beehiiv-images presente
  *
  * Retorna o shape `CoverVerifyRaw` → classificar direto com `classifyCoverVerify`.
@@ -321,14 +332,39 @@ export function buildCoverDataTransferJs(
       const buttons = () =>
         Array.from(document.querySelectorAll('button, [role="menuitem"]')).filter(visible);
 
-      // 1) garantir input[type=file] — se ausente, abrir 'Add thumbnail'
-      let fileInput = document.querySelector('input[type="file"]');
-      if (!fileInput) {
-        const addThumb = buttons().find(b => /add thumbnail/i.test(b.textContent || ''));
-        if (addThumb) { addThumb.click(); steps.push('clicked: Add thumbnail'); await sleep(1500); }
-        fileInput = document.querySelector('input[type="file"]');
+      // 1) SEMPRE tentar abrir o painel de thumbnail antes (#4203 fix 1) —
+      // NÃO condicionar a !fileInput: posts criados do template "HTML" já
+      // têm um input[type=file] genérico na página com o painel FECHADO;
+      // pular a abertura dispara o change no input errado e a media library
+      // nunca abre. Casar tanto "Add thumbnail" (legado, sem cover ainda)
+      // quanto "Web thumbnail" (nome atual da UI — agravante do #4203: o
+      // fallback antigo só casava "add thumbnail" e nunca encontrava esse
+      // botão).
+      const thumbRe = /(web |add )?thumbnail/i;
+      const thumbBtn = buttons().find(b => thumbRe.test(b.textContent || ''));
+      // #4203 fix 2: escopar o fileInput ao container que contém o botão do
+      // thumbnail, não document.querySelector global — evita casar um
+      // input[type=file] genérico de outra seção da página (ex: avatar de
+      // Authors) quando o painel de thumbnail está fechado.
+      let container = null;
+      if (thumbBtn) {
+        let t = thumbBtn;
+        for (let i = 0; i < 6 && t.parentElement; i++) t = t.parentElement;
+        container = t;
+        thumbBtn.click();
+        steps.push('clicked: ' + (thumbBtn.textContent || '').trim().slice(0, 40));
+        await sleep(1500);
       }
-      if (!fileInput) return { error: 'input[type=file] não encontrado (nem após Add thumbnail)', steps };
+
+      let fileInput = container ? container.querySelector('input[type="file"]') : null;
+      if (!fileInput) {
+        // fallback: painel já pode estar aberto (sem botão toggle visível) ou
+        // o container calculado não continha o input — cai pro escopo do
+        // document como último recurso, mas registra o degrade pra triage.
+        fileInput = document.querySelector('input[type="file"]');
+        if (fileInput) steps.push('fileInput: fallback document-wide (escopo por container não achou)');
+      }
+      if (!fileInput) return { error: 'input[type=file] não encontrado (nem após abrir painel de thumbnail)', steps };
 
       // 2) fetch da imagem → File → DataTransfer (método #1500)
       let blob;
@@ -349,10 +385,18 @@ export function buildCoverDataTransferJs(
       await sleep(5000);
 
       // 3) clicar na img recém-subida → aplica automático (sem botão Insert)
+      // #4203 fix 3+4: NUNCA clicar numa img dentro de <a> (o logo do Beehiiv
+      // vive em <a href="https://www.beehiiv.com">; clicar navega a aba
+      // inteira pra fora do post — incidente 260728) e filtrar por dimensão
+      // mínima (o logo tem 16×15; qualquer cover real é ordens de grandeza
+      // maior).
+      const MIN_DIM = 100;
       const uploaded = Array.from(document.querySelectorAll('img')).find(i =>
         visible(i) &&
         /(media\\.beehiiv|beehiiv-images-production.*uploads)/i.test(i.src) &&
-        !(/static_assets|publication.logo/i.test(i.src)));
+        !(/static_assets|publication.logo/i.test(i.src)) &&
+        !i.closest('a') &&
+        i.naturalWidth >= MIN_DIM && i.naturalHeight >= MIN_DIM);
       if (uploaded) { uploaded.click(); steps.push('clicked: uploaded img (apply)'); await sleep(3000); }
       else steps.push('uploaded img não localizada (pode ter auto-aplicado)');
 
