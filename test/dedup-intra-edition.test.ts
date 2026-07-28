@@ -33,8 +33,11 @@ import {
   extractNamedEntitiesIntra,
   extractProductEntitiesIntra,
   extractCompanyMentionsIntra,
+  extractProductCodeTokens,
+  highlightSummary,
   stripVehicleSuffix,
 } from "../scripts/dedup-intra-edition.ts";
+import { tokenizeForJaccard, jaccardSimilarity } from "../scripts/lib/title-similarity.ts";
 
 // ---------------------------------------------------------------------------
 // Regressão 260618: SpaceX/Cursor (caso real)
@@ -1329,3 +1332,272 @@ describe("dedup-intra-edition — regressão #3099 CASO REAL 260708: DeepSeek ch
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// #4185: destaque com cobertura múltipla — código de produto compartilhado
+// ---------------------------------------------------------------------------
+//
+// Regressão do caso real (edição 260728): D1 "Itaú coloca IA para cuidar do
+// relacionamento com o cliente" (Tecnoblog) + RADAR "Nova IA do Itaú mostra
+// para onde vai o seu dinheiro e te ajuda a controlar gastos" (Canaltech) —
+// cobrem o MESMO lançamento (assistente "ia.i" do Itaú), mas nenhum título
+// menciona "ia.i" literalmente — só o lead/corpo de cada matéria (confirmado
+// contra as matérias reais: Canaltech abre com "...o seu novo assistente de
+// IA: o ia.i.", Tecnoblog cobre a mesma revelação). O único token de título
+// compartilhado é "itau" (Jaccard ~0.07, abaixo do threshold intra-edição de
+// 0.45; entity-match via só o título vê 1 entidade compartilhada, abaixo do
+// mínimo de 2). Nenhum dos matchers pré-#4185 (jaccard/entity/domain/
+// cross_vehicle) detecta o par.
+
+const itauD1Title = "Itaú coloca IA para cuidar do relacionamento com o cliente";
+const itauD1Summary =
+  "O Itaú anunciou a adoção de IA generativa no aplicativo oficial sob o nome ia.i, chatbot na tela inicial que responde perguntas dos clientes.";
+const itauCanaltechTitle =
+  "Nova IA do Itaú mostra para onde vai o seu dinheiro e te ajuda a controlar gastos";
+const itauCanaltechSummary =
+  "O Itaú lançou nesta segunda-feira o seu novo assistente de IA: o ia.i. Com a novidade, o banco oferece aos clientes uma nova interface para acessar a conta corrente como se estivesse em uma conversa.";
+
+describe("extractProductCodeTokens (#4185)", () => {
+  it("extrai código de produto com ponto sem espaço ('ia.i')", () => {
+    const tokens = extractProductCodeTokens(itauCanaltechSummary);
+    assert.ok(tokens.has("ia.i"), "deve capturar 'ia.i' do lead da matéria");
+  });
+
+  it("extrai codinome alfanumérico versionado ('gpt4o' — letra inicial, dígitos depois do ponto)", () => {
+    const tokens = extractProductCodeTokens("OpenAI atualiza o gpt4o.mini para desenvolvedores");
+    assert.ok(tokens.has("gpt4o.mini"));
+  });
+
+  it("#4185 (decisão conservadora): NÃO extrai token puramente numérico ('3.1' de 'Llama 3.1')", () => {
+    // Deliberado: exigir letra inicial (`[a-z][a-z0-9]*(?:\.[a-z0-9]+)+`) evita
+    // que "1.500" (separador de milhar comum em PT-BR: "1.500 clientes",
+    // "1.500 funcionários") vire um falso sinal de mesmo-produto entre duas
+    // matérias DIFERENTES da mesma empresa que coincidentemente citam o mesmo
+    // número redondo. Custo aceito: um par real como "GPT-4.1" ganha o token
+    // via o prefixo alfabético ("gpt" + a versão colada, ex: "gpt4o.mini"
+    // acima) — o cenário puro "Nome 3.1" com espaço antes do número (sem
+    // prefixo grudado) fica de fora. Ver PR body (#4185) pra trade-off.
+    const tokens = extractProductCodeTokens("Meta lança Llama 3.1 com contexto maior");
+    assert.equal(tokens.size, 0, "token puramente numérico não deve casar (risco de falso-positivo com separador de milhar PT-BR)");
+  });
+
+  it("normaliza pra lowercase (case-insensitive)", () => {
+    const tokens = extractProductCodeTokens("A empresa lançou o IA.I hoje");
+    assert.ok(tokens.has("ia.i"));
+  });
+
+  it("não casa ponto de fim de frase (requer alnum grudado dos dois lados)", () => {
+    const tokens = extractProductCodeTokens("Isso é uma frase normal. Outra frase aqui.");
+    assert.equal(tokens.size, 0, "pontuação de frase normal não deve virar token");
+  });
+
+  it("string vazia/sem padrão retorna set vazio", () => {
+    assert.equal(extractProductCodeTokens("").size, 0);
+    assert.equal(extractProductCodeTokens("nenhum código de produto aqui").size, 0);
+  });
+});
+
+describe("highlightSummary (#4185)", () => {
+  it("extrai summary do campo direto", () => {
+    assert.equal(highlightSummary({ summary: "um resumo" }), "um resumo");
+  });
+
+  it("extrai summary do campo article.summary (shape real do pipeline)", () => {
+    assert.equal(
+      highlightSummary({ article: { url: "u", summary: "resumo aninhado" } }),
+      "resumo aninhado",
+    );
+  });
+
+  it("retorna null quando ambos ausentes", () => {
+    assert.equal(highlightSummary({}), null);
+  });
+});
+
+describe("isIntraEditionDuplicate — código de produto + entidade compartilhados (#4185)", () => {
+  it("REGRESSÃO par real 260728: Tecnoblog (D1) + Canaltech (RADAR) sobre o ia.i do Itaú casam via product_code", () => {
+    const highlights = [
+      {
+        rank: 1,
+        url: "https://tecnoblog.net/noticias/itau-coloca-ia-para-cuidar-do-relacionamento-com-o-cliente/",
+        title: itauD1Title,
+        summary: itauD1Summary,
+      },
+    ];
+    const article = {
+      url: "https://canaltech.com.br/apps/nova-ia-do-itau-mostra-para-onde-vai-o-seu-dinheiro-e-te-ajuda-a-controlar-gastos/",
+      title: itauCanaltechTitle,
+      summary: itauCanaltechSummary,
+    };
+
+    // Confirma a premissa do incidente: nenhum dos sinais PRÉ-#4185 dispara.
+    const jaccard = jaccardOf(article.title, itauD1Title);
+    assert.ok(jaccard < INTRA_JACCARD_THRESHOLD, `Jaccard ${jaccard} deveria estar abaixo do threshold ${INTRA_JACCARD_THRESHOLD}`);
+    const entities1 = extractNamedEntitiesIntra(article.title);
+    const entities2 = extractNamedEntitiesIntra(itauD1Title);
+    const shared = [...entities1].filter((e) => entities2.has(e));
+    assert.ok(shared.length < INTRA_ENTITY_MIN_SHARED, "entity-match (b) sozinho não deveria bastar (só 'itau')");
+
+    const result = isIntraEditionDuplicate(article, highlights);
+    assert.ok(result !== null, "deve detectar o par via código de produto compartilhado (ia.i)");
+    assert.equal(result!.match_type, "product_code");
+    assert.equal(result!.matched_highlight, itauD1Title);
+  });
+
+  it("NÃO casa quando há código de produto compartilhado mas NENHUMA entidade nomeada em comum", () => {
+    // Títulos sem nenhuma palavra capitalizada (artEntities.size === 0) —
+    // item (e) exige os DOIS sinais (AND), não só o código de produto.
+    const highlights = [
+      { rank: 1, url: "https://a.com/x", title: "ferramenta chega com suporte a ia.i para todos" },
+    ];
+    const article = {
+      url: "https://b.com/y",
+      title: "empresa rival também anuncia recurso baseado em ia.i",
+    };
+    const result = isIntraEditionDuplicate(article, highlights);
+    assert.equal(result, null, "código de produto sozinho, sem entidade compartilhada, não deve casar");
+  });
+
+  it("NÃO casa quando há entidade compartilhada mas NENHUM código de produto em comum (comportamento preexistente)", () => {
+    // Mesma empresa (Itaú), histórias DIFERENTES, sem termo versionado/
+    // codinome em nenhum dos dois lados — não deve colidir via item (e).
+    const highlights = [
+      { rank: 1, url: "https://a.com/x", title: "Itaú anuncia resultado trimestral acima do esperado" },
+    ];
+    const article = {
+      url: "https://b.com/y",
+      title: "Itaú patrocina evento de tecnologia em São Paulo",
+    };
+    const result = isIntraEditionDuplicate(article, highlights);
+    assert.equal(result, null, "sem código de produto compartilhado, entidade única não deve bastar");
+  });
+});
+
+describe("dedupIntraEdition — cluster_sources[] preservado no destaque (#4185)", () => {
+  it("REGRESSÃO par real 260728: Canaltech sai do RADAR e vira cluster_sources[] do D1 (Tecnoblog)", () => {
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://tecnoblog.net/noticias/itau-coloca-ia-para-cuidar-do-relacionamento-com-o-cliente/",
+          article: {
+            url: "https://tecnoblog.net/noticias/itau-coloca-ia-para-cuidar-do-relacionamento-com-o-cliente/",
+            title: itauD1Title,
+            summary: itauD1Summary,
+            source: "Tecnoblog",
+          },
+        },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/apps/nova-ia-do-itau-mostra-para-onde-vai-o-seu-dinheiro-e-te-ajuda-a-controlar-gastos/",
+          title: itauCanaltechTitle,
+          summary: itauCanaltechSummary,
+          source: "Canaltech",
+        },
+        {
+          // Item não-relacionado — deve sobreviver no RADAR intacto.
+          url: "https://wired.com/apple-wwdc-2026",
+          title: "Apple anuncia novidades no WWDC 2026",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    // (1) Canaltech não aparece mais como item independente do RADAR.
+    assert.equal(kept.radar?.length, 1, "só o item não-relacionado deve sobrar no RADAR");
+    assert.equal(kept.radar?.[0].url, "https://wired.com/apple-wwdc-2026");
+    assert.equal(removed.length, 1);
+    assert.equal(
+      removed[0].url,
+      "https://canaltech.com.br/apps/nova-ia-do-itau-mostra-para-onde-vai-o-seu-dinheiro-e-te-ajuda-a-controlar-gastos/",
+    );
+    assert.equal(removed[0].match_type, "product_code");
+
+    // (2) Canaltech chega ao writer-destaque via cluster_sources[] do D1 —
+    // não é um descarte silencioso (critério de aceite da #4185).
+    const d1 = kept.highlights?.[0] as { article?: { cluster_sources?: Array<{ url: string; title?: string; source?: string }> } };
+    assert.ok(d1.article?.cluster_sources, "D1 deve carregar cluster_sources[] após o rescue");
+    assert.equal(d1.article!.cluster_sources!.length, 1);
+    assert.equal(
+      d1.article!.cluster_sources![0].url,
+      "https://canaltech.com.br/apps/nova-ia-do-itau-mostra-para-onde-vai-o-seu-dinheiro-e-te-ajuda-a-controlar-gastos/",
+    );
+    assert.equal(d1.article!.cluster_sources![0].source, "Canaltech");
+
+    // (3) input original não foi mutado (contrato "pure function").
+    assert.equal(
+      (input.highlights[0].article as { cluster_sources?: unknown[] }).cluster_sources,
+      undefined,
+      "dedupIntraEdition não deve mutar o objeto de input",
+    );
+  });
+
+  it("acumula 2 fontes extras no mesmo destaque quando 2 itens de buckets diferentes casam", () => {
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://tecnoblog.net/noticias/itau-coloca-ia-para-cuidar-do-relacionamento-com-o-cliente/",
+          article: {
+            url: "https://tecnoblog.net/noticias/itau-coloca-ia-para-cuidar-do-relacionamento-com-o-cliente/",
+            title: itauD1Title,
+            summary: itauD1Summary,
+          },
+        },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/apps/nova-ia-do-itau",
+          title: itauCanaltechTitle,
+          summary: itauCanaltechSummary,
+        },
+      ],
+      lancamento: [
+        {
+          url: "https://techtudo.com.br/itau-ia-i-gastos",
+          title: "Itaú lança IA que ajuda a controlar gastos e entender seu perfil financeiro",
+          summary: "O ia.i chega para clientes do Itaú com foco em controle de gastos mensais.",
+        },
+      ],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+    assert.equal(removed.length, 2, "os 2 artigos secundários devem casar com o D1");
+    const d1 = kept.highlights?.[0] as { article?: { cluster_sources?: Array<{ url: string }> } };
+    assert.equal(d1.article?.cluster_sources?.length, 2, "as 2 fontes extras devem se acumular no mesmo destaque");
+  });
+
+  it("highlights fora do top-N (rank 4+) não são tocados/clonados desnecessariamente", () => {
+    const input = {
+      highlights: [
+        { rank: 1, url: "https://a.com/1", title: "Destaque 1 sem relação" },
+        { rank: 2, url: "https://a.com/2", title: "Destaque 2 sem relação" },
+        { rank: 3, url: "https://a.com/3", title: "Destaque 3 sem relação" },
+        { rank: 4, url: "https://a.com/4", title: "Candidato não-promovido rank 4" },
+      ],
+      radar: [],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+    const { kept } = dedupIntraEdition(input);
+    assert.equal(kept.highlights?.length, 4);
+    // rank 4 passa como a MESMA referência do input (não fazia parte do
+    // top-N comparado, não precisa ser clonado).
+    assert.equal(kept.highlights?.[3], input.highlights[3]);
+  });
+});
+
+/** Helper local só pra afirmar a premissa do incidente no teste de regressão. */
+function jaccardOf(a: string, b: string): number {
+  const ta = tokenizeForJaccard(a);
+  const tb = tokenizeForJaccard(b);
+  return jaccardSimilarity(ta, tb);
+}
