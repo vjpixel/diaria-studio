@@ -13,7 +13,7 @@ import { subscriberKvKey } from "../workers/poll/src/subscriber-verify.ts";
 import {
   issueWebSessionCookie,
   WEB_SESSION_COOKIE,
-  FREE_ROUND_COOKIE,
+  ROUNDS_PLAYED_COOKIE,
   renderJogarGatePage,
 } from "../workers/poll/src/web-gate.ts";
 
@@ -165,11 +165,9 @@ describe("POST /jogar/gate/subscribe (#4054)", () => {
     });
   }
 
-  it("sem opt-in → 400 optin_required", async () => {
-    const env = makeEnv();
-    const res = await worker.fetch(subReq({ email: "x@example.com", optin: false }), env);
-    assert.equal(res.status, 400);
-  });
+  // #4253 item 4: opt-in não é mais pré-requisito — ver
+  // test/poll-web-gate-4253.test.ts pro comportamento novo (sessão CONFIRMED
+  // na hora, sem tocar a Beehiiv).
 
   it("Beehiiv não configurado → 503 subscribe_unavailable", async () => {
     const env = makeEnv();
@@ -224,9 +222,11 @@ describe("renderJogarGatePage — cópia e UX (#4054 follow-up)", () => {
     assert.doesNotMatch(html, /Quero receber a newsletter di.ria da Diar\.ia<\/label>/);
   });
 
-  it("aviso de erro (checkbox desmarcada) usa a classe .err (banner destacado, não texto de 0.9rem solto)", () => {
+  it("banner de erro (.err) segue destacado — mesmo estilo, agora usado só pra falhas de rede/servidor", () => {
+    // #4253 item 4: a mensagem "Marque a caixinha..." não existe mais (o
+    // opt-in deixou de ser bloqueio) — ver test/poll-web-gate-4253.test.ts.
     assert.match(html, /#gate-msg\.err\s*\{[^}]*font-weight:\s*700/);
-    assert.match(html, /setMsg\("Marque a caixinha pra assinar e continuar\.", "err"\)/);
+    assert.doesNotMatch(html, /Marque a caixinha pra assinar e continuar/);
   });
 
   it("REGRESSÃO: sessionUnavailable (cadastro OK mas sem COOKIE_HMAC_SECRET) NÃO redireciona cegamente pro jogo", () => {
@@ -257,18 +257,18 @@ describe("GET /jogar — gate por rodada (#4054)", () => {
     const res = await worker.fetch(new Request("https://poll.test/jogar"), env);
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.doesNotMatch(html, /Você já jogou sua rodada livre/);
+    assert.doesNotMatch(html, /Quer disputar o ranking\?/);
   });
 
   it("cookie de rodada livre usada, SEM sessão → serve a tela de gate", async () => {
     const env = makeEnv();
     const res = await worker.fetch(
-      new Request("https://poll.test/jogar", { headers: { Cookie: `${FREE_ROUND_COOKIE}=1` } }),
+      new Request("https://poll.test/jogar", { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` } }),
       env,
     );
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.match(html, /Você já jogou sua rodada livre/);
+    assert.match(html, /Quer disputar o ranking\?/);
   });
 
   it("cookie de rodada livre usada + sessão válida → jogo normal, sem gate", async () => {
@@ -276,13 +276,13 @@ describe("GET /jogar — gate por rodada (#4054)", () => {
     const sessionCookie = (await issueWebSessionCookie("cookie-secret", "leitor@example.com")).split(";")[0];
     const res = await worker.fetch(
       new Request("https://poll.test/jogar", {
-        headers: { Cookie: `${FREE_ROUND_COOKIE}=1; ${sessionCookie}` },
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5; ${sessionCookie}` },
       }),
       env,
     );
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.doesNotMatch(html, /Você já jogou sua rodada livre/);
+    assert.doesNotMatch(html, /Quer disputar o ranking\?/);
   });
 
   it("sessão com secret ERRADO (forjada) → gate continua ativo (cookie inválido = sem sessão)", async () => {
@@ -290,12 +290,12 @@ describe("GET /jogar — gate por rodada (#4054)", () => {
     const forged = (await issueWebSessionCookie("secret-errado", "leitor@example.com")).split(";")[0];
     const res = await worker.fetch(
       new Request("https://poll.test/jogar", {
-        headers: { Cookie: `${FREE_ROUND_COOKIE}=1; ${forged}` },
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5; ${forged}` },
       }),
       env,
     );
     const html = await res.text();
-    assert.match(html, /Você já jogou sua rodada livre/);
+    assert.match(html, /Quer disputar o ranking\?/);
   });
 
   it("sessão EXPIRADA → gate continua ativo", async () => {
@@ -306,56 +306,56 @@ describe("GET /jogar — gate por rodada (#4054)", () => {
     const expiredCookieValue = await expired("cookie-secret", "leitor@example.com", -10);
     const res = await worker.fetch(
       new Request("https://poll.test/jogar", {
-        headers: { Cookie: `${FREE_ROUND_COOKIE}=1; ${WEB_SESSION_COOKIE}=${encodeURIComponent(expiredCookieValue)}` },
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5; ${WEB_SESSION_COOKIE}=${encodeURIComponent(expiredCookieValue)}` },
       }),
       env,
     );
     const html = await res.text();
-    assert.match(html, /Você já jogou sua rodada livre/);
+    assert.match(html, /Quer disputar o ranking\?/);
   });
 
   it("#4109: link de skip existe na tela de gate", () => {
     const html = renderJogarGatePage(null);
-    assert.match(html, /Agora não, continuar jogando/);
+    assert.match(html, /Continuar sem cadastrar/);
     assert.match(html, /skip_gate=1/);
   });
 
   it("#4109: cookie de rodada livre usada, SEM sessão, mas com ?skip_gate=1 → jogo normal (bypass de 1 navegação)", async () => {
     const env = makeEnv();
     const res = await worker.fetch(
-      new Request("https://poll.test/jogar?skip_gate=1", { headers: { Cookie: `${FREE_ROUND_COOKIE}=1` } }),
+      new Request("https://poll.test/jogar?skip_gate=1", { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` } }),
       env,
     );
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.doesNotMatch(html, /Você já jogou sua rodada livre/);
+    assert.doesNotMatch(html, /Quer disputar o ranking\?/);
   });
 
   it("#4109: skip_gate=1 é não-persistente — próxima requisição sem o param volta a gatear", async () => {
     const env = makeEnv();
     const skipped = await worker.fetch(
-      new Request("https://poll.test/jogar?skip_gate=1", { headers: { Cookie: `${FREE_ROUND_COOKIE}=1` } }),
+      new Request("https://poll.test/jogar?skip_gate=1", { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` } }),
       env,
     );
-    assert.doesNotMatch(await skipped.text(), /Você já jogou sua rodada livre/);
+    assert.doesNotMatch(await skipped.text(), /Quer disputar o ranking\?/);
 
     const again = await worker.fetch(
-      new Request("https://poll.test/jogar", { headers: { Cookie: `${FREE_ROUND_COOKIE}=1` } }),
+      new Request("https://poll.test/jogar", { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` } }),
       env,
     );
-    assert.match(await again.text(), /Você já jogou sua rodada livre/);
+    assert.match(await again.text(), /Quer disputar o ranking\?/);
   });
 
   it("#4109 (self-review): skip_gate=1 com ?edition= explícito NUNCA é public — CDN não pode cachear o bypass pra outros visitantes", async () => {
     const env = makeEnv();
     const res = await worker.fetch(
       new Request("https://poll.test/jogar?edition=260701&skip_gate=1", {
-        headers: { Cookie: `${FREE_ROUND_COOKIE}=1` },
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` },
       }),
       env,
     );
     assert.equal(res.status, 200);
-    assert.doesNotMatch(await res.text(), /Você já jogou sua rodada livre/);
+    assert.doesNotMatch(await res.text(), /Quer disputar o ranking\?/);
     assert.equal(res.headers.get("Cache-Control"), "no-store");
   });
 });

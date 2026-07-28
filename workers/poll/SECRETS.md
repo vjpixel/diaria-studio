@@ -85,12 +85,14 @@ só o e-mail em si não sai até os secrets serem configurados.
 
 | Nome | Endpoint | Severidade |
 |------|----------|------------|
-| `COOKIE_HMAC_SECRET` | `POST /jogar/gate/verify`, `POST /jogar/gate/subscribe`, `GET /jogar` (checagem de sessão), `GET /vote?brand=web` (identidade pós-gate) | **opcional** — sem ela, `/jogar/gate/verify` responde 503 mesmo pra assinante confirmado (nunca emite cookie sem segredo), e o resto do fluxo (rodada livre → gate → cadastro) cai de volta 100% no comportamento pré-#4054 (identidade anônima por token, sem sessão) |
+| `COOKIE_HMAC_SECRET` | `POST /jogar/gate/verify`, `POST /jogar/gate/subscribe`, `GET /jogar` (checagem de sessão), `GET /vote?brand=web` (identidade pós-gate) | **opcional** — sem ela, `/jogar/gate/verify` responde 503 mesmo pra assinante confirmado (nunca emite cookie sem segredo), e o resto do fluxo (nudge periódico → gate → cadastro) cai de volta 100% no comportamento pré-#4054 (identidade anônima por token, sem sessão) |
 | `SUBSCRIBERS_KV` (KV binding) | `POST /jogar/gate/verify` (verificação primária) | **opcional** — sem o binding, `checkWebSubscriber` cai direto no fallback Beehiiv (`BEEHIIV_API_KEY`/`BEEHIIV_PUBLICATION_ID`, já documentados acima) ou, sem os dois, trata todo mundo como "não verificado" — nunca lança |
 
 `/jogar` (brand `web`, visitante de fora) passou a gatear por RODADA (#4054,
-espelho de #4052/cursos): 1 rodada anônima livre, depois e-mail exigido pra
-continuar/entrar no leaderboard. Login (assinante confirmado) OU cadastro
+espelho de #4052/cursos): jogar quantas rodadas quiser sem e-mail nenhum; a
+partir da 5ª rodada, e daí em diante a cada 5 (#4253 item 3), um nudge
+periódico convida a entrar no ranking — nunca bloqueia o jogo em si. Login
+(assinante confirmado) OU cadastro
 inline emitem um cookie de sessão HMAC-assinado (`web-gate.ts`) — origem de
 identidade PARALELA ao token anônimo em `/vote` (nunca substitui o guard
 #3976/#4011 que rejeita `?email=` cru no brand `web`).
@@ -108,10 +110,10 @@ npx wrangler kv namespace create SUBSCRIBERS_KV
 ```
 
 Sem `COOKIE_HMAC_SECRET`: o gate por rodada ainda ATIVA visualmente (a tela
-de `/jogar/gate` aparece depois da 1ª rodada), mas login/cadastro nunca
-emitem sessão — o visitante fica preso na tela de gate até o secret ser
+de `/jogar/gate` aparece a partir da 5ª rodada, #4253 item 3), mas login/cadastro
+nunca emitem sessão — o visitante fica preso na tela de gate até o secret ser
 configurado. Considerar isso ANTES de fazer deploy deste PR (o gate por
-rodada é client-driven via cookie `eia_web_free_round_used`, não depende do
+rodada é client-driven via cookie `eia_web_rounds_played`, não depende do
 secret pra ATIVAR, só pra RESOLVER).
 
 ## Re-setar pós-deploy

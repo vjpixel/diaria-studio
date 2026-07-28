@@ -101,8 +101,15 @@ import { extractEditionsForYear, groupEditionsByMonth, listAllKeys } from "./lea
 import { getSummedEditionStats } from "./vote";
 import { JOGAR_POSVOTO_UTM, QUIZ_POSVOTO_UTM } from "./utm-registry"; // #4041
 // #4054: gate por rodada do caminho de fora — cookie de sessão (identidade
-// pós-gate) + cookie de "rodada livre já usada" + a própria tela de gate.
-import { FREE_ROUND_COOKIE, readWebSession, readWebSessionEmail, renderJogarGatePage } from "./web-gate";
+// pós-gate) + contador de rodadas jogadas (#4253 item 3) + a própria tela de gate.
+import {
+  ROUNDS_PLAYED_COOKIE,
+  ROUNDS_NUDGE_INTERVAL,
+  roundsHitNudgeThreshold,
+  readWebSession,
+  readWebSessionEmail,
+  renderJogarGatePage,
+} from "./web-gate";
 import { parseCookieHeader } from "./session-cookie";
 
 /** Brand fixo desta página — `/jogar` É o standalone, não um parâmetro. */
@@ -925,15 +932,15 @@ ${renderBrandFooter(JOGAR_BRAND)}
       // preferimos a navegação nativa garantida a silenciosamente não votar.
       if (!choice) { form.submit(); return; }
       try { window.localStorage.setItem(votedKey, choice); } catch (e) {}
-      // #4054: marca "rodada livre já usada" — cookie NÃO-httponly (o
-      // servidor só PRECISA saber que existe, não confia nele como prova de
-      // identidade nenhuma; ver rationale em web-gate.ts). 1 ano de validade.
-      // Sem tentar checar sessão aqui (é HttpOnly, JS não consegue ler) — se
-      // o jogador já está logado, o servidor ignora este cookie (a checagem
-      // de sessão válida tem prioridade, ver handleJogarPage).
+      // #4054/#4253 item 3: incrementa o contador de rodadas jogadas — cookie
+      // NÃO-httponly (o servidor só PRECISA saber o valor, não confia nele
+      // como prova de identidade nenhuma; ver rationale em web-gate.ts). 1
+      // ano de validade. Sem tentar checar sessão aqui (é HttpOnly, JS não
+      // consegue ler) — se o jogador já está logado, o servidor ignora este
+      // cookie (a checagem de sessão válida tem prioridade, ver handleJogarPage).
       try {
-        var oneYear = 60 * 60 * 24 * 365;
-        document.cookie = ${JSON.stringify(FREE_ROUND_COOKIE)} + "=1; path=/; max-age=" + oneYear + "; SameSite=Lax";
+        var roundsPlayed = (parseInt(readCookie(${JSON.stringify(ROUNDS_PLAYED_COOKIE)}), 10) || 0) + 1;
+        writeCookie(${JSON.stringify(ROUNDS_PLAYED_COOKIE)}, String(roundsPlayed));
       } catch (e) {}
 
       var choiceButtons = form.querySelectorAll('button[type="submit"]');
@@ -1616,6 +1623,10 @@ ${renderIdentityFormBlock()}`;
   var playIndices = [];
   var preCredited = 0;
   var round = 0; // índice dentro de playIndices, NÃO de editions
+  // #4253 item 3: valor do contador ROUNDS_PLAYED_COOKIE logo após o voto
+  // desta rodada (setado em onChoice, lido em goNext) — decide se a
+  // transição pra próxima rodada dispara o gate-check no servidor.
+  var lastRoundsPlayed = 0;
   var results = {}; // originalIndex (string) -> true | false | null
 
   // #4005 (item 3): tamanho do 1º lote antes do placar parcial —
@@ -1828,14 +1839,13 @@ ${renderIdentityFormBlock()}`;
       // #4054 follow-up (achado 260727, ao vivo): a sequência avança de
       // rodada em rodada 100% client-side (advance() acima — sem reload nem
       // ida ao servidor), então o gate por rodada (handleJogarPage, checado
-      // só em GET /jogar) NUNCA disparava aqui — a promessa "1 rodada
-      // livre" nunca se cumpria na prática pra quem joga a sequência
-      // (a experiência padrão do /jogar, sem ?edition=). Corrigido: só na
-      // transição rodada 1 → 2 (round === 0, único ponto onde o cookie
-      // FREE_ROUND_COOKIE acabou de ser setado pela 1ª vez, ver onChoice
-      // acima), faz 1 fetch leve pro próprio /jogar pra deixar o SERVIDOR
-      // decidir — se ele responder com o gate, troca a página pro gate em
-      // vez de continuar a sequência. Sessão já válida (assinante
+      // só em GET /jogar) NUNCA disparava aqui. Corrigido: na transição em
+      // que lastRoundsPlayed (contador ROUNDS_PLAYED_COOKIE, atualizado em
+      // onChoice) cruza um múltiplo de ROUNDS_NUDGE_INTERVAL — #4253 item 3,
+      // nudge só a partir da 5ª rodada, depois a cada 5 (10ª, 15ª...), nunca
+      // mais na 1ª — faz 1 fetch leve pro próprio /jogar pra deixar o
+      // SERVIDOR decidir — se ele responder com o gate, troca a página pro
+      // gate em vez de continuar a sequência. Sessão já válida (assinante
       // identificado) → resposta normal do jogo, fetch descartado,
       // advance() roda igual sempre rodou — zero fricção extra pra quem já
       // não precisa do gate.
@@ -1853,11 +1863,14 @@ ${renderIdentityFormBlock()}`;
       // inteiro mora dentro do template literal de renderJogarSequencePageHtml
       // em TypeScript, e uma crase aqui fecharia essa string por acidente
       // (mesma classe de bug documentada em memória de sessão anterior).
-      if (round === 0) {
+      if (lastRoundsPlayed > 0 && lastRoundsPlayed % ${ROUNDS_NUDGE_INTERVAL} === 0) {
         fetch("/jogar?v=" + Date.now())
           .then(function (res) {
             if (res.headers.get("X-Eia-Gate")) {
-              window.location.href = "/jogar?v=" + Date.now();
+              // #4253 item 6: repassa a edição representativa desta sequência
+              // pro gate — deriva o índice MENSAL do merge de identificação
+              // (ver rationale em web-gate.ts/renderJogarGatePage).
+              window.location.href = "/jogar?v=" + Date.now() + "&edition=" + encodeURIComponent(editions[0]);
               return;
             }
             advance();
@@ -1884,13 +1897,14 @@ ${renderIdentityFormBlock()}`;
     var originalIndex = playIndices[round];
     var edition = editions[originalIndex];
 
-    // #4054: marca "rodada livre já usada" assim que a 1ª escolha da
-    // sequência acontece — mesmo cookie/rationale de renderJogarPageHtml
-    // acima (não é prova de identidade, só sinaliza o servidor pra gatear a
-    // PRÓXIMA visita se não houver sessão válida).
+    // #4054/#4253 item 3: incrementa o contador de rodadas jogadas assim que
+    // a escolha desta rodada acontece — mesmo cookie/rationale de
+    // renderJogarPageHtml acima (não é prova de identidade, só sinaliza o
+    // servidor pra gatear a PRÓXIMA transição se cruzar um múltiplo de
+    // ROUNDS_NUDGE_INTERVAL e não houver sessão válida).
     try {
-      var oneYear4054 = 60 * 60 * 24 * 365;
-      document.cookie = ${JSON.stringify(FREE_ROUND_COOKIE)} + "=1; path=/; max-age=" + oneYear4054 + "; SameSite=Lax";
+      lastRoundsPlayed = (parseInt(readCookie(${JSON.stringify(ROUNDS_PLAYED_COOKIE)}), 10) || 0) + 1;
+      writeCookie(${JSON.stringify(ROUNDS_PLAYED_COOKIE)}, String(lastRoundsPlayed));
     } catch (e) {}
 
     setChoicesDisabled(true);
@@ -2152,7 +2166,7 @@ ${renderBrandShellStyles()}
 ${renderJogarBrandLogoBlock()}
 <p class="kicker">É IA?</p>
 <hr class="rule">
-<h1>Você consegue dizer qual imagem foi feita por IA?</h1>
+<h1>Qual imagem foi gerada por IA?</h1>
 ${bodyHtml}
 
 <!-- #4030 (item 1): link do rodapé pro arquivo removido de novo — o editor
@@ -2184,24 +2198,27 @@ ${renderBrandFooter(JOGAR_BRAND)}
  * `handleJogarArchivePage` já faz por ano.
  */
 export async function handleJogarPage(url: URL, env: Env, request?: Request): Promise<Response> {
-  // #4054: gate por rodada do caminho de fora — "1 rodada livre, e-mail
-  // exigido pra continuar". O client (`renderJogarPageHtml`, script de voto)
-  // seta o cookie NÃO-httponly `FREE_ROUND_COOKIE` assim que a 1ª rodada
-  // anônima é votada; aqui, se esse cookie está presente E não há sessão
-  // válida (`readWebSessionEmail`), serve a tela de gate em vez do jogo.
+  // #4054: gate por rodada do caminho de fora. #4253 item 3: NÃO é mais "1
+  // rodada livre" — o client (`renderJogarPageHtml`/`renderJogarSequencePageHtml`)
+  // mantém o cookie NÃO-httponly `ROUNDS_PLAYED_COOKIE` (contador, incrementado
+  // a cada voto); aqui, se o valor cruza um múltiplo de `ROUNDS_NUDGE_INTERVAL`
+  // (`roundsHitNudgeThreshold`) E não há sessão válida (`readWebSessionEmail`),
+  // serve a tela de gate em vez do jogo — nudge recorrente (5ª, 10ª, 15ª...),
+  // nunca bloqueio permanente a partir da 1ª rodada.
   // `request` opcional (retrocompat com testes que chamam sem ele — nesse
   // caso o gate nunca ativa, mesmo comportamento pré-#4054).
   // #4109 (achado ao vivo 260727, editor): o gate não pode ser um bloqueio
-  // sem saída — `skip_gate=1` (setado pelo link "Agora não, continuar
-  // jogando" de `renderJogarGatePage`) libera ESTA navegação específica sem
-  // gravar cookie/sessão nenhuma; a próxima transição de rodada volta a
-  // checar o servidor normalmente e pode gatear de novo (nudge recorrente,
-  // não permanente — decisão do editor, não é bypass permanente).
+  // sem saída — `skip_gate=1` (setado pelo link "Continuar sem cadastrar" de
+  // `renderJogarGatePage`) libera ESTA navegação específica sem gravar
+  // cookie/sessão nenhuma; a próxima transição de rodada volta a checar o
+  // servidor normalmente e pode gatear de novo (nudge recorrente, não
+  // permanente — decisão do editor, não é bypass permanente).
   const skipGate = url.searchParams.get("skip_gate") === "1";
   if (request && !skipGate) {
     const cookieHeader = request.headers.get("Cookie");
-    const freeRoundUsed = !!parseCookieHeader(cookieHeader, FREE_ROUND_COOKIE);
-    if (freeRoundUsed) {
+    const roundsPlayedRaw = parseCookieHeader(cookieHeader, ROUNDS_PLAYED_COOKIE);
+    const roundsPlayed = roundsPlayedRaw ? parseInt(roundsPlayedRaw, 10) || 0 : 0;
+    if (roundsHitNudgeThreshold(roundsPlayed)) {
       const sessionEmail = await readWebSessionEmail(env.COOKIE_HMAC_SECRET, cookieHeader);
       if (!sessionEmail) {
         const gateEdition = url.searchParams.get("edition");
@@ -2361,10 +2378,13 @@ export async function handleJogarSeqState(url: URL, env: Env, request?: Request)
   // #4115 (self-review): duas fases em vez de 2 gets paralelos por edição.
   //
   // A 1ª fase resolve todas as edições sob a identidade primária (a sessão,
-  // quando existe — pós-gate ela cobre todas as rodadas menos a livre); a 2ª
-  // só reconsulta as que ficaram SEM voto, sob a secundária. No caso real
-  // (jogador identificado que já jogou o mês) a 2ª fase custa ~1 get: só a
-  // rodada livre fica sob o token.
+  // quando existe — pós-gate ela cobre todas as rodadas jogadas DEPOIS da
+  // sessão ser emitida); a 2ª só reconsulta as que ficaram SEM voto, sob a
+  // secundária. No caso real (jogador identificado que já jogou o mês) a 2ª
+  // fase custa até ROUNDS_NUDGE_INTERVAL - 1 gets (#4253 item 3: nudge só a
+  // partir da 5ª rodada, então até 4 rodadas anônimas podem ficar sob o
+  // token antes da sessão existir — não mais só "1 rodada livre" como no
+  // gate binário pré-#4253).
   //
   // A motivação original foi o teto de subrequests — o worker estava no free
   // plan (50/request) e 2 × mês inteiro (31 pares) = 62 estourava. O upgrade

@@ -1,0 +1,433 @@
+/**
+ * test/poll-web-gate-4253.test.ts (#4253)
+ *
+ * Achados do editor jogando ao vivo o `/jogar` (aba anônima, caminho de
+ * fora) em 260728: o gate por rodada (#4054/#4109/#4121) estava agressivo
+ * demais e, no item 6, quebrado — quem cadastrava pelo gate não entrava no
+ * ranking. Esta suíte cobre os 6 ajustes da issue (item 1, título da
+ * sequência, já coberto em poll-jogar-cold-visitor-4005.test.ts; item 5,
+ * maskEmail, já coberto em poll-batch-3118.test.ts e integração nos
+ * arquivos de leaderboard):
+ *
+ *   2. Copy do gate — vende a vantagem (ranking), não cobra pedágio.
+ *   3. Nudge só a partir da 5ª rodada, depois a cada 5 (contador
+ *      ROUNDS_PLAYED_COOKIE em vez do binário FREE_ROUND_COOKIE).
+ *   4. Opt-in de newsletter deixa de ser pré-requisito pra continuar.
+ *   6. BUGFIX: cadastro/login pelo gate aciona POST /jogar/identify (mesma
+ *      máquina do form de identidade do jogo, #3975) — mergeia o histórico
+ *      anônimo, grava nickname a partir do nome, e persiste
+ *      localStorage["eia_web_identified_email"]. Regressão de #633.
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+
+import worker, { type Env } from "../workers/poll/src/index.ts";
+import { subscriberKvKey } from "../workers/poll/src/subscriber-verify.ts";
+import {
+  ROUNDS_PLAYED_COOKIE,
+  ROUNDS_NUDGE_INTERVAL,
+  roundsHitNudgeThreshold,
+  renderJogarGatePage,
+  readWebSession,
+  WEB_SESSION_COOKIE,
+} from "../workers/poll/src/web-gate.ts";
+
+function makeMapKV(initial: Record<string, string> = {}) {
+  const m = new Map<string, string>(Object.entries(initial));
+  return {
+    async get(key: string) {
+      const v = m.get(key);
+      return v === undefined ? null : v;
+    },
+    async getWithMetadata(key: string) {
+      const v = m.get(key);
+      return { value: v ?? null, metadata: null };
+    },
+    async put(key: string, value: string) {
+      m.set(key, value);
+    },
+    async delete(key: string) {
+      m.delete(key);
+    },
+    async list({ prefix = "" }: { prefix?: string; cursor?: string } = {}) {
+      const keys = [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
+      return { keys, list_complete: true, cursor: undefined };
+    },
+    _map: m,
+  };
+}
+
+const makeEnv = (overrides: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeMapKV> } => ({
+  POLL: makeMapKV(),
+  POLL_SECRET: "poll-secret",
+  ADMIN_SECRET: "admin-secret",
+  ALLOWED_ORIGINS: "*",
+  COOKIE_HMAC_SECRET: "cookie-secret",
+  ...overrides,
+});
+
+function getCookieHeader(res: Response): string | null {
+  return res.headers.get("Set-Cookie");
+}
+
+// ── item 2: copy do gate ─────────────────────────────────────────────────────
+
+describe("#4253 item 2: copy do gate vende a vantagem, não cobra pedágio", () => {
+  const html = renderJogarGatePage(null);
+
+  it("h1 pergunta pelo ranking, não anuncia fim da rodada livre", () => {
+    assert.match(html, /<h1>Quer disputar o ranking\?<\/h1>/);
+    assert.doesNotMatch(html, /Você já jogou sua rodada livre/);
+  });
+
+  it("texto explicativo deixa claro que dá pra continuar jogando sem cadastrar", () => {
+    assert.match(html, /Continuar jogando sem cadastrar também vale/);
+  });
+
+  it("botão principal é 'Entrar no ranking', não 'Continuar jogando'", () => {
+    assert.match(html, /<button type="submit">Entrar no ranking<\/button>/);
+  });
+
+  it("link de skip é 'Continuar sem cadastrar', não 'Agora não, continuar jogando'", () => {
+    assert.match(html, /Continuar sem cadastrar/);
+    assert.doesNotMatch(html, /Agora não, continuar jogando/);
+  });
+
+  it("título da aba reflete a nova copy", () => {
+    assert.match(html, /<title>É IA\? \| Entrar no ranking<\/title>/);
+  });
+
+  it("mensagem de opt-in obrigatório não existe mais no script (item 4)", () => {
+    assert.doesNotMatch(html, /Marque a caixinha pra assinar e continuar/);
+  });
+});
+
+// ── item 3: nudge por contador, não binário ─────────────────────────────────
+
+describe("#4253 item 3: roundsHitNudgeThreshold (pure)", () => {
+  it("ROUNDS_NUDGE_INTERVAL é 5", () => {
+    assert.equal(ROUNDS_NUDGE_INTERVAL, 5);
+  });
+
+  it("0 rodadas → não gateia", () => {
+    assert.equal(roundsHitNudgeThreshold(0), false);
+  });
+
+  it("1 a 4 rodadas → não gateia (nunca mais bloqueia na 1ª)", () => {
+    for (const n of [1, 2, 3, 4]) assert.equal(roundsHitNudgeThreshold(n), false, `count=${n}`);
+  });
+
+  it("5 rodadas → gateia (1º nudge)", () => {
+    assert.equal(roundsHitNudgeThreshold(5), true);
+  });
+
+  it("6 a 9 rodadas → não gateia (nudge é periódico, não permanente a partir da 5ª)", () => {
+    for (const n of [6, 7, 8, 9]) assert.equal(roundsHitNudgeThreshold(n), false, `count=${n}`);
+  });
+
+  it("10, 15, 20 rodadas → gateiam (múltiplos seguintes)", () => {
+    for (const n of [10, 15, 20]) assert.equal(roundsHitNudgeThreshold(n), true, `count=${n}`);
+  });
+});
+
+describe("#4253 item 3: GET /jogar usa o contador ROUNDS_PLAYED_COOKIE, não um binário", () => {
+  it("contador em 4 (abaixo do limiar) + SEM sessão → jogo normal, sem gate", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(
+      new Request("https://poll.test/jogar", { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=4` } }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(await res.text(), /Quer disputar o ranking\?/);
+  });
+
+  it("contador em 5 (no limiar) + SEM sessão → gate", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(
+      new Request("https://poll.test/jogar", { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` } }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /Quer disputar o ranking\?/);
+  });
+
+  it("contador em 9 (entre múltiplos) + SEM sessão → jogo normal, sem gate", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(
+      new Request("https://poll.test/jogar", { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=9` } }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(await res.text(), /Quer disputar o ranking\?/);
+  });
+
+  it("contador em 10 (2º múltiplo) + SEM sessão → gate de novo", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(
+      new Request("https://poll.test/jogar", { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=10` } }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /Quer disputar o ranking\?/);
+  });
+
+  it("cookie inválido/não-numérico → tratado como 0, nunca lança", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(
+      new Request("https://poll.test/jogar", { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=abc` } }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    assert.doesNotMatch(await res.text(), /Quer disputar o ranking\?/);
+  });
+});
+
+// ── item 4: opt-in deixa de ser pré-requisito ───────────────────────────────
+
+describe("#4253 item 4: POST /jogar/gate/subscribe sem opt-in", () => {
+  function subReq(body: unknown) {
+    return new Request("https://poll.test/jogar/gate/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("sem optin → 200 + cookie de sessão PENDING (NUNCA confirmed), SEM tocar a Beehiiv", async () => {
+    // Achado do review consolidado (findings convergentes de 4/5 agentes):
+    // sem NENHUMA verificação (nem Beehiiv, nem KV), emitir "confirmed"
+    // reabriria a vulnerabilidade do #4121 — vote.ts sobrepõe a identidade do
+    // voto pra QUALQUER sessão confirmed, então "confirmed" sem prova de
+    // posse permitiria a qualquer um digitar o e-mail de outra pessoa e
+    // herdar a identidade de voto dela. "pending" ainda libera o gate
+    // normalmente (#4121); a identidade de ranking de verdade vem do merge
+    // via /jogar/identify (item 6), independente deste cookie.
+    const env = makeEnv({ BEEHIIV_API_KEY: "test-key", BEEHIIV_PUBLICATION_ID: "pub_test" });
+    let beehiivCalled = false;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      beehiivCalled = true;
+      throw new Error("não deveria chamar a Beehiiv sem opt-in");
+    }) as typeof fetch;
+    try {
+      const res = await worker.fetch(subReq({ email: "semoptin@example.com", name: "Fulano", optin: false }), env);
+      assert.equal(res.status, 200);
+      assert.equal(beehiivCalled, false);
+      const setCookie = getCookieHeader(res);
+      assert.ok(setCookie, "deve emitir cookie de sessão mesmo sem opt-in");
+      const raw = setCookie!.split(";")[0].split("=")[1];
+      const session = await readWebSession("cookie-secret", `${WEB_SESSION_COOKIE}=${raw}`);
+      assert.deepEqual(session, { email: "semoptin@example.com", pending: true }, "sem qualquer verificação, a sessão NUNCA pode sair confirmed");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("SEGURANÇA (regressão #4121): sessão emitida sem opt-in NÃO sobrepõe a identidade do voto", async () => {
+    const anonEmail = "3fa85f64-5717-4562-b3fc-2c963f66afa6@web.eia.diaria.local";
+    const env = makeEnv({ COOKIE_HMAC_SECRET: "cookie-secret" });
+    const res = await worker.fetch(subReq({ email: "vitima@example.com", optin: false }), env);
+    const setCookie = getCookieHeader(res)!;
+    const sessionCookie = setCookie.split(";")[0];
+    const voteRes = await worker.fetch(
+      new Request(
+        `https://poll.test/vote?email=${encodeURIComponent(anonEmail)}&edition=260701&choice=A&brand=web`,
+        { headers: { Cookie: sessionCookie } },
+      ),
+      env,
+    );
+    assert.equal(voteRes.status, 200);
+    assert.ok(
+      env.POLL._map.has(`web:vote:260701:${anonEmail}`),
+      "voto deve continuar sob o token anônimo — a sessão sem opt-in não prova posse do e-mail",
+    );
+    assert.ok(
+      !env.POLL._map.has("web:vote:260701:vitima@example.com"),
+      "NUNCA deve gravar sob o e-mail da sessão sem verificação — reabriria o #4121",
+    );
+  });
+
+  it("sem optin e sem COOKIE_HMAC_SECRET → 503 gate_unavailable (nunca 200 sem cookie)", async () => {
+    const env = makeEnv({ COOKIE_HMAC_SECRET: undefined });
+    const res = await worker.fetch(subReq({ email: "x@example.com", optin: false }), env);
+    assert.equal(res.status, 503);
+    assert.equal(getCookieHeader(res), null);
+  });
+
+  it("com optin, comportamento pré-#4253 INALTERADO: Beehiiv não configurado → 503", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(subReq({ email: "x@example.com", optin: true }), env);
+    assert.equal(res.status, 503);
+    const data = (await res.json()) as { error: string };
+    assert.equal(data.error, "subscribe_unavailable");
+  });
+
+  it("com optin, sucesso → cookie PENDING (comportamento pré-#4253 preservado, ver #4121)", async () => {
+    const env = makeEnv({ BEEHIIV_API_KEY: "test-key", BEEHIIV_PUBLICATION_ID: "pub_test" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: { id: "sub_1" } }), { status: 201 })) as typeof fetch;
+    try {
+      const res = await worker.fetch(subReq({ email: "comoptin@example.com", optin: true }), env);
+      assert.equal(res.status, 200);
+      const setCookie = getCookieHeader(res);
+      const raw = setCookie!.split(";")[0].split("=")[1];
+      const session = await readWebSession("cookie-secret", `${WEB_SESSION_COOKIE}=${raw}`);
+      assert.deepEqual(session, { email: "comoptin@example.com", pending: true });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("e-mail inválido ainda é rejeitado mesmo sem optin", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(subReq({ email: "não-é-email", optin: false }), env);
+    assert.equal(res.status, 400);
+  });
+
+  it("rate-limit continua valendo pro caminho sem opt-in", async () => {
+    const env = makeEnv();
+    const mkReq = () =>
+      new Request("https://poll.test/jogar/gate/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "y@example.com", optin: false }),
+      });
+    let last: Response | null = null;
+    for (let i = 0; i < 9; i++) {
+      last = await worker.fetch(
+        new Request(mkReq(), { headers: { "Content-Type": "application/json", "CF-Connecting-IP": "8.8.4.4" } }),
+        env,
+      );
+    }
+    assert.equal(last!.status, 429);
+  });
+});
+
+// ── item 6 (bugfix): gate aciona /jogar/identify — merge + nickname + localStorage ──
+
+describe("#4253 item 6: gate script aciona POST /jogar/identify após verify/subscribe", () => {
+  const html = renderJogarGatePage(null);
+
+  it("script chama /jogar/identify?brand=web com email, name e anonEmail lido do token", () => {
+    assert.match(html, /\/jogar\/identify\?brand=web/);
+    assert.match(html, /name:\s*name,\s*email:\s*email,\s*anonEmail:\s*anonEmail/);
+  });
+
+  it("token anônimo é lido de localStorage/cookie eia_web_token (read-only, nunca cria)", () => {
+    assert.match(html, /localStorage\.getItem\("eia_web_token"\)/);
+    assert.match(html, /readCookie\("eia_web_token"\)/);
+  });
+
+  it("optin do POST /jogar/identify é SEMPRE false (Beehiiv já resolvida por verify/subscribe)", () => {
+    assert.match(html, /optin:\s*false,\s*edition:\s*GATE_EDITION/);
+  });
+
+  it("identifyAfterGate resolve { pending: true } no histórico órfão, ANTES de tocar localStorage", () => {
+    assert.match(html, /if \(d && d\.ok && d\.pending\) return \{ pending: true \};/);
+    assert.match(html, /localStorage\.setItem\("eia_web_identified_email", email\)/);
+  });
+
+  it("SEGURANÇA (achado do review consolidado, silent-failure): pending NÃO redireciona em silêncio — mostra a mensagem de confirmação por e-mail antes de deixar continuar", () => {
+    assert.match(html, /function afterIdentify\(result\) \{/);
+    assert.match(html, /if \(result && result\.pending\) \{/);
+    assert.match(html, /Enviamos um e-mail de confirmação/);
+  });
+
+  it("identifyAfterGate roda ANTES do redirect pro jogo, nos dois caminhos (verify OK e subscribe OK) — via afterIdentify", () => {
+    assert.match(html, /if \(data\.ok\) \{ return identifyAfterGate\(email, name\)\.then\(afterIdentify\); \}/);
+    assert.match(html, /if \(data2 && data2\.ok && !data2\.sessionUnavailable\) \{ return identifyAfterGate\(email, name\)\.then\(afterIdentify\); \}/);
+  });
+
+  it("edição representativa (?edition=) é repassada como GATE_EDITION pro merge mensal", () => {
+    const htmlComEdicao = renderJogarGatePage("260701");
+    assert.match(htmlComEdicao, /var GATE_EDITION = "260701";/);
+    assert.match(html, /var GATE_EDITION = "";/);
+  });
+
+  it("verify agora envia 'name' no corpo (antes só mandava email+website)", () => {
+    assert.match(html, /body: JSON\.stringify\(\{ email: email, name: name, website: website \}\)/);
+  });
+
+  // SEGURANÇA (achado do review consolidado — findings convergentes de 4/5
+  // agentes): a 1ª versão deste PR tinha o campo "Nome" OPCIONAL no gate.
+  // identify.ts só roda a checagem de histórico órfão (#3996) quando `name`
+  // não é vazio (a premissa é que name="" só vem do re-sync silencioso
+  // automático, nunca de um submit humano explícito) — um "Nome" opcional no
+  // gate permitia bypassar #3996 pela UI normal (sem forjar request nenhuma):
+  // bastava digitar o e-mail de alguém com histórico já estabelecido sob
+  // OUTRO device e deixar o nome em branco pra mergear na hora, sem
+  // confirmação por link mágico. Fix: nome é required (client + validação JS).
+
+  it("SEGURANÇA (#3996): campo 'Nome' do gate é required — nunca mais opcional", () => {
+    assert.match(html, /<input type="text" name="name" placeholder="[^"]*" required>/);
+    assert.doesNotMatch(html, /placeholder="Nome \(opcional\)"/);
+  });
+
+  it("SEGURANÇA (#3996): submit com nome vazio é bloqueado no client ANTES de qualquer fetch", () => {
+    assert.match(html, /if \(!name\) \{ setMsg\("Digite seu nome ou apelido\.", "err"\); return; \}/);
+  });
+});
+
+describe("#4253 item 6 SEGURANÇA: proteção de histórico órfão (#3996) preservada via o gate", () => {
+  it("e-mail com score PRÉ-EXISTENTE sob OUTRO token → pending:true, NÃO mergeia na hora (mesmo vindo do gate, com nome preenchido)", async () => {
+    const attackerAnonEmail = "3fa85f64-5717-4562-b3fc-2c963f66afa6@web.eia.diaria.local";
+    const env = makeEnv({
+      POLL: makeMapKV({
+        // vítima já tem histórico estabelecido sob um token DIFERENTE do atacante.
+        "web:score:vitima@example.com": JSON.stringify({ total: 500, correct: 400, streak: 10, last_edition: "260701" }),
+        [`web:score:${attackerAnonEmail}`]: JSON.stringify({ total: 3, correct: 1, streak: 1, last_edition: "260701" }),
+      }) as unknown as ReturnType<typeof makeMapKV>,
+    });
+    const res = await worker.fetch(
+      new Request("https://poll.test/jogar/identify?brand=web", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: "Atacante", // nome preenchido (agora obrigatório no gate) — NÃO deve bypassar a checagem
+          email: "vitima@example.com",
+          anonEmail: attackerAnonEmail,
+          optin: false,
+          edition: "",
+        }),
+      }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    const data = (await res.json()) as { ok: boolean; pending?: boolean };
+    assert.equal(data.ok, true);
+    assert.equal(data.pending, true, "histórico órfão deve exigir confirmação por link mágico, nunca merge imediato");
+    const scoreRaw = await env.POLL.get("web:score:vitima@example.com");
+    const score = JSON.parse(scoreRaw!);
+    assert.equal(score.total, 500, "score da vítima NUNCA deve ser alterado sem confirmação — reabriria o #3996");
+  });
+});
+
+describe("#4253 item 6: POST /jogar/identify (máquina reusada, ver poll-jogar-identify-3975.test.ts pro resto da cobertura)", () => {
+  it("merge imediato: histórico anônimo + nickname a partir de name aparecem em score:{email}", async () => {
+    const anonEmail = "3fa85f64-5717-4562-b3fc-2c963f66afa6@web.eia.diaria.local";
+    const env = makeEnv({
+      POLL: makeMapKV({
+        [`web:score:${anonEmail}`]: JSON.stringify({ total: 3, correct: 2, streak: 2, last_edition: "260701" }),
+      }) as unknown as ReturnType<typeof makeMapKV>,
+    });
+    const res = await worker.fetch(
+      new Request("https://poll.test/jogar/identify?brand=web", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Fulano", email: "fulano@example.com", anonEmail, optin: false, edition: "" }),
+      }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    const data = (await res.json()) as { ok: boolean; subscribed: boolean };
+    assert.equal(data.ok, true);
+    const scoreRaw = await env.POLL.get("web:score:fulano@example.com");
+    assert.ok(scoreRaw, "score:{email} deve existir após o merge — este é o bug original: ficava vazio");
+    const score = JSON.parse(scoreRaw!);
+    assert.equal(score.total, 3);
+    assert.equal(score.correct, 2);
+    assert.equal(score.nickname, "Fulano", "nickname deve vir do name — este é o bug original: nome era descartado");
+  });
+});

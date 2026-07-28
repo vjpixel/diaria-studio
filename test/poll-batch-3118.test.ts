@@ -596,17 +596,17 @@ describe("integração — voto duplicado com registro corrompido no KV não der
 // ── Item 11: maskEmail consolidado ──────────────────────────────────────────
 
 describe("maskEmail — consolidação das 3 implementações (#3118 item 11)", () => {
-  it("email normal (local-part > 3 chars) → 3 primeiros chars + '…@***' (#4008 item 1)", () => {
-    assert.equal(maskEmail("usuario@example.com"), "usu…@***");
+  it("email normal (local-part > 5 chars) → 5 primeiros chars + '…@***' (#4253 item 5)", () => {
+    assert.equal(maskEmail("usuario@example.com"), "usuar…@***");
   });
-  it("local-part com exatamente 3 chars → sem truncar (nada além dos 3 chars a esconder)", () => {
-    assert.equal(maskEmail("abc@example.com"), "abc@***");
+  it("local-part com exatamente 5 chars → sem truncar (nada além dos 5 chars a esconder)", () => {
+    assert.equal(maskEmail("abcde@example.com"), "abcde@***");
   });
-  it("local-part com menos de 3 chars → sem truncar", () => {
+  it("local-part com menos de 5 chars → sem truncar", () => {
     assert.equal(maskEmail("ab@example.com"), "ab@***");
   });
-  it("email sem @ (defensivo — dado histórico pré-#3118 item 3) → mesma truncagem de 3 chars, sem '@'", () => {
-    assert.equal(maskEmail("semarroba"), "sem…***");
+  it("email sem @ (defensivo — dado histórico pré-#3118 item 3) → mesma truncagem de 5 chars, sem '@'", () => {
+    assert.equal(maskEmail("semarroba"), "semar…***");
   });
   it("email com múltiplos @ usa o PRIMEIRO como separador", () => {
     assert.equal(maskEmail("a@b@c.com"), "a@***");

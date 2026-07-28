@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 
 import worker, { type Env } from "../workers/poll/src/index.ts";
 import { renderJogarSequencePageHtml } from "../workers/poll/src/jogar.ts";
-import { renderJogarGatePage, FREE_ROUND_COOKIE } from "../workers/poll/src/web-gate.ts";
+import { renderJogarGatePage, ROUNDS_PLAYED_COOKIE } from "../workers/poll/src/web-gate.ts";
 
 function makeMapKV(initial: Record<string, string> = {}) {
   const m = new Map<string, string>(Object.entries(initial));
@@ -80,16 +80,16 @@ describe("#4160: a página de GATE carrega o sinal X-Eia-Gate — a página de s
     assert.match(html, /id="gate-form"/);
   });
 
-  it("GET /jogar com FREE_ROUND_COOKIE e SEM sessão → resposta é o gate, com header X-Eia-Gate: 1", async () => {
+  it("GET /jogar com ROUNDS_PLAYED_COOKIE no limiar e SEM sessão → resposta é o gate, com header X-Eia-Gate: 1", async () => {
     const env = makeEnv();
     const res = await worker.fetch(
-      new Request("https://poll.test/jogar", { headers: { Cookie: `${FREE_ROUND_COOKIE}=1` } }),
+      new Request("https://poll.test/jogar", { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` } }),
       env,
     );
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("X-Eia-Gate"), "1");
     const html = await res.text();
-    assert.match(html, /Você já jogou sua rodada livre/);
+    assert.match(html, /Quer disputar o ranking\?/);
   });
 
   it("GET /jogar SEM o cookie de rodada livre (jogo normal) → SEM o header X-Eia-Gate", async () => {

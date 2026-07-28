@@ -15,18 +15,40 @@
  * `ds-tokens.generated.ts`).
  *
  * Diferença de #4052 (cursos, gate PARCIAL: teaser sempre visível, cadastro é
- * convite): aqui o gate é POR RODADA — "1 rodada livre, e-mail exigido pra
- * continuar / entrar no leaderboard" (decisão do editor, #4054). O client
- * (`jogar.ts`, `renderJogarPageHtml`) seta um cookie NÃO-httponly
- * `eia_web_free_round_used=1` (1 ano) assim que a 1ª rodada anônima é votada;
- * `handleJogarPage` (jogar.ts) checa esse cookie + a AUSÊNCIA de sessão válida
- * pra decidir se serve o jogo normal ou esta tela.
+ * convite): aqui o gate é POR RODADA — nunca é preciso e-mail pra JOGAR
+ * (qualquer número de rodadas), só pra entrar no ranking público e guardar o
+ * histórico entre sessões. O client (`jogar.ts`, `renderJogarPageHtml`/
+ * `renderJogarSequencePageHtml`) mantém um cookie NÃO-httponly
+ * `eia_web_rounds_played` (contador, 1 ano) incrementado a cada voto;
+ * `handleJogarPage` (jogar.ts) o gateia pra esta tela quando o valor cruza um
+ * múltiplo de `ROUNDS_NUDGE_INTERVAL` (#4253 item 3 — nudge recorrente a cada
+ * 5 rodadas, não bloqueio na 1ª) E não há sessão válida.
  *
  * Identidade pós-gate: o cookie de sessão emitido aqui é uma origem de
  * identidade PARALELA ao token anônimo (`isValidWebToken`) em `/vote` —
  * NUNCA substitui o guard que rejeita `?email=` cru no brand `web` (#3976/
  * #4011, `vote.ts`). Ver o bloco "identidade pós-gate" em `handleVote`
  * (vote.ts) pro mecanismo de override.
+ *
+ * #4253 item 6 (bugfix): cadastrar/identificar pelo gate agora TAMBÉM aciona
+ * `POST /jogar/identify` (mesmo endpoint que o form de identidade do jogo já
+ * usa, #3975/identify.ts) — client-side, logo após verify/subscribe
+ * responder ok (ver script de `renderJogarGatePage`). Isso mergeia o
+ * histórico anônimo pro e-mail, grava o nickname a partir do `name` do form,
+ * e persiste `localStorage["eia_web_identified_email"]` — sem isso (bug
+ * original), quem se cadastrava pelo gate nunca aparecia no ranking nem
+ * usava o nome digitado, porque `handleJogarGateSubscribe`/`handleJogarGateVerify`
+ * só emitiam o cookie de sessão (que só decide se o gate reaparece, nunca
+ * mergeia score nem seta identidade local). Reusar `/jogar/identify` (em vez
+ * de duplicar a lógica de merge aqui) preserva a proteção contra histórico
+ * órfão (#3996, link mágico de confirmação cross-device) — MAS só porque o
+ * campo "Nome" do gate é `required` (achado do review consolidado: era
+ * "opcional" na 1ª versão deste PR). `identify.ts` só roda a checagem de
+ * histórico órfão quando `name` não é vazio (a premissa de #3996 é que
+ * `name === ""` só vem do re-sync silencioso automático de um device JÁ
+ * linkado, nunca de um submit humano explícito) — um campo opcional aqui
+ * teria reaberto exatamente o que o #3996 fechou, só que através de uma UI
+ * normal em vez de uma chamada de API forjada.
  */
 import type { Env } from "./index";
 import { corsHeaders, json } from "./index";
@@ -42,7 +64,7 @@ import {
   signSessionCookie,
   verifySessionCookie,
 } from "./session-cookie";
-import { isValidVoteEmailFormat, isAnonymousWebIdentity } from "./lib"; // #4121: isAnonymousWebIdentity fecha o gap do domínio reservado no gate
+import { isValidVoteEmailFormat, isAnonymousWebIdentity, WEB_TOKEN_DOMAIN } from "./lib"; // #4121: isAnonymousWebIdentity fecha o gap do domínio reservado no gate
 import { subscribeToBeehiiv, resolveSubscribeUtm, type SubscribeDeps } from "./subscribe";
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 
@@ -52,8 +74,8 @@ import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
  * cada worker é o seu próprio host). */
 export const WEB_SESSION_COOKIE = "diaria_jogar_session";
 /** ~30 dias — mesma decisão de #4052 (sessão longa, verificação já é
- * soft-gate; re-gatear a cada visita destruiria a UX de "1 rodada livre" pra
- * quem já se identificou). */
+ * soft-gate; re-gatear a cada visita destruiria a UX do nudge periódico
+ * (#4253 item 3) pra quem já se identificou). */
 export const WEB_SESSION_TTL_SEC = 30 * 24 * 60 * 60;
 
 /**
@@ -135,14 +157,32 @@ export function clearWebSessionCookieHeader(): string {
   return buildClearCookieHeader(WEB_SESSION_COOKIE);
 }
 
-/** Cookie NÃO-httponly, lido/escrito pelo próprio JS de `jogar.ts` — marca
- * "esta rodada livre já foi usada neste navegador". Não é sessão nem prova de
- * identidade nenhuma, só um contador binário client-controlled (o pior caso
- * de abuso — limpar cookies pra "resetar" a rodada livre — é exatamente o
- * mesmo custo/benefício de qualquer paywall soft baseado em localStorage; não
- * é o mecanismo que protege o ranking, `isValidWebToken`/o dedup por edição
- * continuam sendo a defesa real). */
-export const FREE_ROUND_COOKIE = "eia_web_free_round_used";
+/** Cookie NÃO-httponly, lido/escrito pelo próprio JS de `jogar.ts` — conta
+ * quantas rodadas este navegador já jogou (incrementado a cada voto, nunca
+ * resetado). Não é sessão nem prova de identidade nenhuma, só um contador
+ * client-controlled (o pior caso de abuso — limpar cookies pra "resetar" a
+ * contagem — é exatamente o mesmo custo/benefício de qualquer paywall soft
+ * baseado em localStorage; não é o mecanismo que protege o ranking,
+ * `isValidWebToken`/o dedup por edição continuam sendo a defesa real).
+ *
+ * #4253 item 3: substitui o antigo `FREE_ROUND_COOKIE` (binário, "rodada
+ * livre já usada", gate na transição rodada 1→2). O gate original (#4054)
+ * era agressivo demais — cobrava e-mail a cada 1 rodada. Agora o servidor
+ * decide pelo VALOR do contador (`roundsHitNudgeThreshold` abaixo) em vez de
+ * só presença/ausência do cookie: 1ª cobrança só depois da 5ª rodada, e daí
+ * em diante a cada 5 (10ª, 15ª...) — "nudge recorrente", nunca bloqueio
+ * permanente (mesmo espírito do skip de #4109). */
+export const ROUNDS_PLAYED_COOKIE = "eia_web_rounds_played";
+
+/** A cada quantas rodadas o gate volta a aparecer (#4253 item 3). */
+export const ROUNDS_NUDGE_INTERVAL = 5;
+
+/** Pure: decide se a contagem de rodadas jogadas cruza um múltiplo do
+ * intervalo de nudge — mesma checagem usada pelo servidor (`handleJogarPage`,
+ * jogar.ts) e espelhada no client (`goNext`, renderJogarSequencePageHtml). */
+export function roundsHitNudgeThreshold(count: number): boolean {
+  return count > 0 && count % ROUNDS_NUDGE_INTERVAL === 0;
+}
 
 /** Cadastro/verificação: N tentativas por IP por janela — mesmo teto de
  * `GATE_RATE_LIMIT` (#4052, `workers/cursos/src/gate.ts`). */
@@ -242,6 +282,26 @@ export interface GateSubscribeDeps extends SubscribeDeps {}
  * a confirmação da Beehiiv segue em paralelo (double opt-in), o cookie NÃO
  * espera por ela (decisão do editor, #4054: a fricção de esperar clique em
  * e-mail mataria a conversão do gate).
+ *
+ * #4253 item 4: `optin` deixa de ser pré-requisito. Identidade de ranking
+ * (a promessa do gate) e assinatura da newsletter são coisas DIFERENTES —
+ * amarrar as duas fazia quem só queria continuar jogando (sem newsletter)
+ * ficar barrado sem saída real. Sem `optin`: pula a Beehiiv inteiramente e
+ * emite sessão `pending` (NUNCA `confirmed` — achado do review consolidado:
+ * `confirmed` é o marcador que `handleVote`/vote.ts usa pra SOBREPOR a
+ * identidade do voto pelo e-mail da sessão, sem exigir o token anônimo de
+ * novo — reservado pra quando o e-mail foi VERIFICADO de verdade, seja
+ * `checkWebSubscriber` achando "active", seja a Beehiiv confirmando o double
+ * opt-in. Sem `optin` não existe verificação NENHUMA — nenhum contato foi
+ * criado, nenhum e-mail foi enviado, é só um e-mail digitado. Emitir
+ * `confirmed` aqui reabriria a vulnerabilidade que o #4121 fechou: qualquer
+ * um digitando o e-mail de outra pessoa herdaria a identidade de voto dela
+ * sem nunca provar posse. `pending` ainda libera o gate normalmente — ver
+ * `handleJogarPage`/#4121, que já trata pending e confirmed igual pra esse
+ * fim — a identidade de RANKING de verdade vem do merge via
+ * `POST /jogar/identify` (`identifyAfterGate`, #4253 item 6), que não
+ * depende do estado desta sessão). Com `optin`: comportamento INALTERADO
+ * (tenta Beehiiv, sessão `pending` até a confirmação).
  */
 export async function handleJogarGateSubscribe(
   request: Request,
@@ -273,7 +333,6 @@ export async function handleJogarGateSubscribe(
 
   const optinRaw = parsed.optin;
   const optin = optinRaw === true || optinRaw === "on" || optinRaw === "true" || optinRaw === "1" || optinRaw === "yes";
-  if (!optin) return json({ ok: false, error: "optin_required" }, 400, env);
 
   const email = typeof parsed.email === "string" ? parsed.email.trim().toLowerCase() : "";
   if (!isValidEmailFormat(email)) return json({ ok: false, error: "invalid_email" }, 400, env);
@@ -287,6 +346,19 @@ export async function handleJogarGateSubscribe(
   const ip = clientIpFromRequest(request);
   const rl = await checkGateRateLimit(env.POLL, ip);
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
+
+  // #4253 item 4: sem opt-in, pula a Beehiiv inteiramente — identidade de
+  // ranking não depende de assinar a newsletter. Sessão sai `pending`, NUNCA
+  // `confirmed` (achado do review consolidado — ver docstring da função):
+  // sem qualquer verificação, `confirmed` sobreporia a identidade do voto
+  // (vote.ts) pra um e-mail nunca provado. `pending` já libera o gate
+  // normalmente; a identidade de ranking de verdade vem do merge via
+  // /jogar/identify (item 6), independente deste cookie.
+  if (!optin) {
+    if (!env.COOKIE_HMAC_SECRET) return json({ ok: false, error: "gate_unavailable" }, 503, env);
+    const setCookie = await issueWebSessionCookie(env.COOKIE_HMAC_SECRET, email, "pending");
+    return jsonWithCookie({ ok: true }, 200, env, setCookie);
+  }
 
   const utm = resolveSubscribeUtm("jogar-gate");
   const result = await subscribeToBeehiiv(env, { name, email }, fetchImpl, utm);
@@ -323,6 +395,15 @@ export async function handleJogarGateSubscribe(
  */
 export function renderJogarGatePage(edition: string | null): string {
   const editionParam = edition ? `&edition=${encodeURIComponent(edition)}` : "";
+  // #4253 item 6: repassado pro script (via JSON.stringify abaixo) como
+  // `edition` do POST /jogar/identify — deriva o índice MENSAL do merge
+  // (score-by-month:{slug}:{email}), que é o que o leaderboard público
+  // (period="month") de fato lê. Sem isso o merge ainda funciona (só o score
+  // GLOBAL é migrado na hora; o mensal se autocorrige no próximo voto via
+  // sync(), ver identityFormScript/jogar.ts), mas o jogador veria "você ainda
+  // não aparece no ranking" por mais 1 rodada — o mesmo sintoma do bug
+  // original, só que temporário em vez de permanente.
+  const gateEdition = edition ?? "";
   // #4109 (achado ao vivo 260727, editor): o gate original (#4054) bloqueava
   // sem saída — quem não queria assinar ficava travado na tela. Link de skip
   // manda `skip_gate=1`, único-uso por navegação (handleJogarPage abaixo só
@@ -335,7 +416,7 @@ export function renderJogarGatePage(edition: string | null): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>É IA? | Continue jogando</title>
+<title>É IA? | Entrar no ranking</title>
 <style>
   body { font-family: ${DS_FONTS.sans}; font-size: 17px; max-width: 480px; margin: 60px auto; padding: 0 20px; text-align: center; color: ${DS_COLORS.ink}; background: ${DS_COLORS.paper}; }
   h1 { font-family: ${DS_FONTS.serif}; font-size: 1.5rem; line-height: 1.4; margin: 0 0 12px 0; }
@@ -352,45 +433,127 @@ export function renderJogarGatePage(edition: string | null): string {
 </style>
 </head>
 <body>
-<h1>Você já jogou sua rodada livre</h1>
-<p class="explain">Pra continuar jogando (e entrar no ranking), é só confirmar seu e-mail. Já assina a Diar.ia? Entra direto. Ainda não? Cadastra na hora.</p>
+<h1>Quer disputar o ranking?</h1>
+<p class="explain">Com seu e-mail a gente guarda seus acertos e te coloca no ranking público do mês. Já assina a Diar.ia? Entra direto. Continuar jogando sem cadastrar também vale — é só seguir.</p>
 <form id="gate-form">
   <input type="text" name="website" class="website" tabindex="-1" autocomplete="off">
   <input type="email" name="email" placeholder="seu@email.com" required>
-  <input type="text" name="name" placeholder="Nome (opcional)">
+  <input type="text" name="name" placeholder="Seu nome ou apelido" required>
   <label class="optin"><input type="checkbox" name="optin" value="1"> Quero receber a Diar.ia — newsletter diária e gratuita que resume as principais notícias e tutoriais de IA em 5 minutos de leitura, direto no seu e-mail.</label>
-  <button type="submit">Continuar jogando</button>
+  <button type="submit">Entrar no ranking</button>
 </form>
 <p id="gate-msg"></p>
-<a class="skip-link" href="${skipHref}">Agora não, continuar jogando</a>
+<a class="skip-link" href="${skipHref}">Continuar sem cadastrar</a>
 <script>
 (function () {
   var form = document.getElementById("gate-form");
   var msg = document.getElementById("gate-msg");
+  var GATE_EDITION = ${JSON.stringify(gateEdition)};
   function setMsg(text, cls) {
     msg.textContent = text;
     msg.className = cls || "";
   }
+  // #4253 item 6: token anônimo é read-ONLY aqui (nunca cria um novo) —
+  // quem chega no gate já votou pelo menos 1 rodada, então o token já
+  // existe (mesmo padrão de leitura de /jogar/arquivo, jogar.ts).
+  function readCookie(name) {
+    var m = document.cookie.match(new RegExp("(?:^|; )" + name + "=([^;]*)"));
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+  function getAnonEmail() {
+    var token = null;
+    try { token = window.localStorage.getItem("eia_web_token"); } catch (e) {}
+    if (!token) token = readCookie("eia_web_token");
+    return token ? token + "@" + ${JSON.stringify(WEB_TOKEN_DOMAIN)} : "";
+  }
+  // #4253 item 6 (bugfix): aciona a MESMA máquina de identificação que o
+  // form de identidade do jogo já usa (POST /jogar/identify, identify.ts) —
+  // mergeia o histórico anônimo pro e-mail, grava o nickname a partir do
+  // nome, e preserva a proteção contra histórico órfão (#3996: se este
+  // e-mail já tem ranking sob outro device/token, NÃO mergeia na hora — a
+  // resposta vem com pending=true e um e-mail de confirmação é enviado
+  // separadamente). optin é SEMPRE false aqui — o opt-in de newsletter já
+  // foi resolvido por gate/verify ou gate/subscribe antes desta chamada;
+  // repassar true duplicaria a tentativa de assinatura na Beehiiv.
+  // Retorna { pending: boolean } — nunca lança. pending=true só quando o
+  // servidor confirmou histórico órfão (#3996); qualquer falha de rede/parse
+  // vira pending=false (achado do review consolidado: antes o caller não
+  // tinha como diferenciar "confirmação por e-mail pendente" de "deu erro,
+  // mas segue o jogo igual" — os dois casos redirecionavam em silêncio pro
+  // jogo sem explicar nada, mesmo já existindo a mensagem certa pra isso em
+  // identityFormScript/jogar.ts).
+  function identifyAfterGate(email, name) {
+    var anonEmail = getAnonEmail();
+    if (!anonEmail || typeof window.fetch !== "function") return Promise.resolve({ pending: false });
+    return window.fetch("/jogar/identify?brand=web", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, email: email, anonEmail: anonEmail, optin: false, edition: GATE_EDITION }),
+    }).then(function (res) {
+      return res.json().then(function (d) { return d; }, function () { return null; });
+    }).then(function (d) {
+      // pending=true = histórico órfão detectado, merge aguardando
+      // confirmação por link mágico — NÃO marca como identificado ainda
+      // (mesma disciplina de identityFormScript/jogar.ts).
+      if (d && d.ok && d.pending) return { pending: true };
+      if (d && d.ok) {
+        try { window.localStorage.setItem("eia_web_identified_email", email); } catch (e) {}
+      }
+      return { pending: false };
+    }).catch(function () { return { pending: false }; });
+  }
+  function goToGame() {
+    window.location.href = "/jogar?v=" + Date.now() + "${editionParam}";
+  }
+  // Achado do review consolidado: sem isso, um histórico órfão (#3996)
+  // redirecionava em silêncio pro jogo, sem avisar que o merge ficou
+  // pendente de confirmação por e-mail — mesma mensagem que
+  // identityFormScript (jogar.ts) já usa pro caso equivalente. A sessão do
+  // gate (verify/subscribe) já libera o jogo de qualquer forma — quem quiser
+  // seguir sem esperar clica no link de skip abaixo.
+  function afterIdentify(result) {
+    if (result && result.pending) {
+      setMsg("Quase lá! Enviamos um e-mail de confirmação — clique no link pra migrar seu histórico e entrar no ranking. Enquanto isso, toque em \"Continuar sem cadastrar\" abaixo pra seguir jogando.", "info");
+      return;
+    }
+    goToGame();
+  }
   form.addEventListener("submit", function (ev) {
     ev.preventDefault();
-    setMsg("Verificando…", "info");
     var email = form.email.value.trim();
     var name = form.name.value.trim();
     var optin = form.optin.checked;
     var website = form.website.value;
+    // #4253 (achado do review consolidado): nome é OBRIGATÓRIO (atributo
+    // required acima cobre o caminho normal do navegador, este check cobre
+    // qualquer submit programático que pule a validação nativa). Sem isso,
+    // identifyAfterGate chamaria /jogar/identify com name="" pra uma
+    // identificação de PRIMEIRA VEZ — e identify.ts só roda a checagem de
+    // histórico órfão (#3996) quando name não é vazio (a premissa lá é que
+    // name="" só vem do re-sync silencioso automático de um device JÁ
+    // linkado, nunca de um submit humano explícito). Sem esta validação, um
+    // e-mail já identificado sob OUTRO device seria mergeado na hora, sem
+    // confirmação por link mágico — reabrindo exatamente o que o #3996 fechou.
+    if (!name) { setMsg("Digite seu nome ou apelido.", "err"); return; }
+    setMsg("Verificando…", "info");
+    // #4253 item 6: handleJogarGateVerify (web-gate.ts) não LÊ o campo name —
+    // vai só pra identifyAfterGate logo abaixo, se a verificação der certo.
+    // Mantido no corpo por paridade com o subscribe (mesmo shape nos 2 POSTs).
     fetch("/jogar/gate/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: email, website: website }),
+      body: JSON.stringify({ email: email, name: name, website: website }),
     }).then(function (r) { return r.json(); }).then(function (data) {
-      if (data.ok) { window.location.href = "/jogar?v=" + Date.now() + "${editionParam}"; return; }
-      if (!optin) { setMsg("Marque a caixinha pra assinar e continuar.", "err"); return; }
+      if (data.ok) { return identifyAfterGate(email, name).then(afterIdentify); }
+      // #4253 item 4: opt-in deixa de ser pré-requisito pra continuar — sem
+      // e-mail assinante confirmado, tenta cadastrar (com ou sem newsletter,
+      // gate/subscribe decide server-side a partir de optin).
       return fetch("/jogar/gate/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: email, name: name, optin: optin, website: website }),
       }).then(function (r2) { return r2.json(); }).then(function (data2) {
-        if (data2 && data2.ok && !data2.sessionUnavailable) { window.location.href = "/jogar?v=" + Date.now() + "${editionParam}"; return; }
+        if (data2 && data2.ok && !data2.sessionUnavailable) { return identifyAfterGate(email, name).then(afterIdentify); }
         if (data2 && data2.ok && data2.sessionUnavailable) { setMsg("Assinatura feita! Confirme o e-mail que te enviamos — depois é só voltar aqui pra continuar jogando.", "err"); return; }
         setMsg("Não deu — tenta de novo em instantes.", "err");
       });
