@@ -22,6 +22,8 @@ import * as sharedSubscriber from "../scripts/lib/shared/subscriber-verify.ts";
 import * as mirrorSubscriber from "../workers/poll/src/subscriber-verify.ts";
 import * as sharedRateLimit from "../scripts/lib/shared/rate-limit.ts";
 import * as mirrorRateLimit from "../workers/poll/src/rate-limit.ts";
+import { isOwnWorkOnlyCredit as originIsOwnWorkOnlyCredit } from "../scripts/eia-compose.ts";
+import { isOwnWorkOnlyCredit as mirrorIsOwnWorkOnlyCredit } from "../workers/poll/src/lib.ts";
 
 describe("#4054 — espelho de session-cookie.ts não pode driftar", () => {
   it("assina e verifica idêntico (mesmo secret/email/ttl/now fixo)", async () => {
@@ -142,5 +144,39 @@ describe("#4054 — espelho de rate-limit.ts não pode driftar", () => {
 
     const withNeither = new Request("https://x.test");
     assert.equal(mirrorRateLimit.clientIpFromRequest(withNeither), sharedRateLimit.clientIpFromRequest(withNeither));
+  });
+});
+
+// #4258 item 2: `isOwnWorkOnlyCredit` — mesmo mecanismo de espelhamento
+// acima, mas a origem é `scripts/eia-compose.ts` (não `scripts/lib/shared/`,
+// já que este predicado é específico do domínio "É IA?", não genérico o
+// bastante pra viver em shared/) — mesmo motivo de fundo (bundle do Worker
+// não alcança scripts/**). Achado do review consolidado (3 agentes
+// convergentes): sem este teste, um synonym adicionado só de um lado (ex:
+// 4ª variante localizada de "Own work") driftaria em silêncio — a origem
+// suprimiria o synonym novo em composições futuras, mas o Worker continuaria
+// exibindo-o pra qualquer edição já gravada no KV, sem nenhum sinal de CI.
+describe("#4258 item 2 — espelho de isOwnWorkOnlyCredit não pode driftar", () => {
+  const cases = [
+    "Own work",
+    "own work",
+    "OWN WORK",
+    "  Own work  ",
+    "Trabalho próprio",
+    "Self-photographed",
+    "Tisha Mukherjee",
+    "Own work by Jane Doe",
+    "",
+    "Unknown",
+  ];
+
+  it("mesma saída pros dois lados, pra cada caso", () => {
+    for (const input of cases) {
+      assert.equal(
+        mirrorIsOwnWorkOnlyCredit(input),
+        originIsOwnWorkOnlyCredit(input),
+        `input=${JSON.stringify(input)}`,
+      );
+    }
   });
 });

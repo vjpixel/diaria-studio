@@ -1053,6 +1053,13 @@ async function main(): Promise<void> {
   // "" como "sem crédito", nenhuma mudança necessária lá pra este caminho).
   const creditRaw = stripHtml(image.credit?.text ?? image.artist?.text ?? "");
   const credit = isOwnWorkOnlyCredit(creditRaw) ? "" : creditRaw;
+  // Achado do review consolidado (silent-failure-hunter): eia-log-used.ts
+  // grava `data/eia-used.json`, uma trilha de AUDITORIA humana ("que crédito
+  // a Wikimedia deu pra essa imagem") — passar o `credit` já suprimido
+  // conflaria "Own work" com "genuinamente sem crédito nenhum" (os dois
+  // virariam "" no log, indistinguíveis). Log usa o valor CRU de propósito;
+  // a supressão só vale pros caminhos voltados ao leitor (01-eia.md,
+  // 01-eia-meta.json, revelação do jogo), nunca pra este audit trail.
   runScript("scripts/eia-log-used.ts", [
     "--edition",
     edition,
@@ -1061,7 +1068,7 @@ async function main(): Promise<void> {
     "--title",
     image.title ?? "",
     "--credit",
-    credit,
+    creditRaw,
     "--url",
     imageUrl,
   ]);

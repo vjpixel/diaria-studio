@@ -33,12 +33,18 @@ import {
   extractFirstWikipediaUrl,
   extractCommonsUserUrl,
   extractFirstHref,
+  isOwnWorkOnlyCredit,
 } from "../scripts/eia-compose.ts";
+
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]*>/g, "").trim();
+}
 
 interface FakeImage {
   title: string;
   description: { text: string; html: string };
   artist: { text: string; html: string };
+  credit?: { text: string };
   license: { type: string; url: string };
 }
 
@@ -89,7 +95,13 @@ function composeAndWrite(outDir: string, image: FakeImage, rand: number): void {
   const mdPath = join(outDir, "01-eia.md");
   writeFileSync(mdPath, buildEiaMd(sides, creditLine, null));
 
-  const credit = image.artist?.text ?? "";
+  // #4258 item 2: espelha a lógica ATUAL de main() (credit?.text primeiro,
+  // artist?.text como fallback, stripHtml, e supressão de "Own work" cru) —
+  // achado do review consolidado: esta simulação tinha ficado stale (só
+  // `artist?.text ?? ""`, sem stripHtml nem a supressão) desde antes do #4258,
+  // então um revert da linha real de main() não seria pego por nenhum teste.
+  const creditRaw = stripHtml(image.credit?.text ?? image.artist?.text ?? "");
+  const credit = isOwnWorkOnlyCredit(creditRaw) ? "" : creditRaw;
   const artistUrl =
     extractCommonsUserUrl(image.artist?.html) ??
     extractFirstHref(image.artist?.html) ??
@@ -180,6 +192,32 @@ describe("eia-compose credit line — sem staleness entre re-runs (#2987)", () =
       assert.match(md, /Third Photographer/);
       assert.ok(!md.includes("Harry Warnecke") && !md.includes("National Portrait Gallery"));
       assert.equal(meta.wikimedia.credit, "Third Photographer");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#4258 item 2: credit.text='Own work' (sem artist real) → wikimedia.credit vazio no meta.json de verdade", () => {
+    // Achado do review consolidado (pr-test-analyzer): os testes de
+    // isOwnWorkOnlyCredit/buildCreditLine existentes cobrem a função pura,
+    // mas não a linha real de main() que escreve 01-eia-meta.json — este
+    // teste fecha esse gap simulando o fluxo completo (composeAndWrite,
+    // igual aos testes de staleness acima) com um credit.text="Own work".
+    const dir = makeDir();
+    const IMAGE_OWN_WORK: FakeImage = {
+      title: "File:Bird_photo.jpg",
+      description: {
+        text: "A rare bird in flight.",
+        html: "A rare bird in flight.",
+      },
+      artist: { text: "", html: "" },
+      credit: { text: "Own work" },
+      license: { type: "CC BY-SA 4.0", url: "https://creativecommons.org/licenses/by-sa/4.0" },
+    };
+    try {
+      composeAndWrite(dir, IMAGE_OWN_WORK, 0.3);
+      const meta = JSON.parse(readFileSync(join(dir, "_internal/01-eia-meta.json"), "utf8"));
+      assert.equal(meta.wikimedia.credit, "", "credit deve sair vazio, nunca 'Own work'");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -647,6 +647,37 @@ describe("buildCreditLine (#256 markdown links inline)", () => {
     assert.ok(!credit.includes("Own work"), `credit não deve conter 'Own work': ${credit}`);
     assert.match(credit, /Wikimedia Commons/);
   });
+
+  it("#4258 item 2: artist.text='Own work' DIRETO (não via fallback de credit) também vira 'Wikimedia Commons'", () => {
+    // Achado do review consolidado (pr-test-analyzer): o teste acima só
+    // exercita o caminho de FALLBACK (artist ausente, credit.text='Own
+    // work'). Wikimedia mais comumente grava 'Own work' no PRÓPRIO campo
+    // artist — testar esse caminho direto, não só via `??`.
+    const image = { description: { text: "Ave em voo." }, artist: { text: "Own work" } };
+    const credit = buildCreditLine(image);
+    assert.ok(!credit.includes("Own work"), `credit não deve conter 'Own work': ${credit}`);
+    assert.match(credit, /Wikimedia Commons/);
+  });
+
+  it("#4258 item 2: artist.text='Own work' + artist.html com link real do uploader → nome vira 'Wikimedia Commons' mas o link é preservado", () => {
+    // Achado do review consolidado (pr-test-analyzer): quando o Commons
+    // hyperlinka o 'Own work' pro user page de quem enviou (comum na
+    // prática), o resultado atribui a INSTITUIÇÃO mas linka pro INDIVÍDUO —
+    // combinação um pouco estranha, mas pré-existente (o link já vinha do
+    // mesmo html ANTES deste fix; só o nome mudou de 'Own work' pra
+    // 'Wikimedia Commons') — documentando o comportamento, não uma regressão
+    // nova introduzida aqui.
+    const image = {
+      description: { text: "Ave em voo." },
+      artist: {
+        text: "Own work",
+        html: '<a href="//commons.wikimedia.org/wiki/User:SomeUploader">Own work</a>',
+      },
+    };
+    const credit = buildCreditLine(image);
+    assert.ok(!credit.includes("Own work"), `credit não deve conter 'Own work': ${credit}`);
+    assert.match(credit, /\[Wikimedia Commons\]\(.*User:SomeUploader\)/);
+  });
 });
 
 describe("isOwnWorkOnlyCredit (#4258 item 2, pure)", () => {
