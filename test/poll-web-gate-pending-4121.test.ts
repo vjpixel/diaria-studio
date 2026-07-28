@@ -36,7 +36,7 @@ import {
   readWebSession,
   readWebSessionEmail,
   WEB_SESSION_COOKIE,
-  FREE_ROUND_COOKIE,
+  ROUNDS_PLAYED_COOKIE,
 } from "../workers/poll/src/web-gate.ts";
 import { signSessionCookie } from "../workers/poll/src/session-cookie.ts";
 
@@ -220,13 +220,13 @@ describe("#4121: gate por rodada (handleJogarPage) — sessão PENDING ainda lib
     const pendingCookie = (await issueWebSessionCookie("cookie-secret", "leitor@example.com", "pending")).split(";")[0];
     const res = await worker.fetch(
       new Request("https://poll.test/jogar", {
-        headers: { Cookie: `${FREE_ROUND_COOKIE}=1; ${pendingCookie}` },
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5; ${pendingCookie}` },
       }),
       env,
     );
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.doesNotMatch(html, /Você já jogou sua rodada livre/, "sessão pending deve liberar o gate, mesmo sem confirmação da Beehiiv");
+    assert.doesNotMatch(html, /Quer disputar o ranking\?/, "sessão pending deve liberar o gate, mesmo sem confirmação da Beehiiv");
   });
 });
 

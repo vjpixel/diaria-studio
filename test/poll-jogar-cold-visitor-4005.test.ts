@@ -52,8 +52,12 @@ const makeEnv = (seed: Record<string, string> = {}): Env => ({
 describe("título pra visitante frio (#4005 item 1)", () => {
   it("h1 vira uma pergunta direta — sem pressupor 'sequência do mês' nem conhecimento prévio", () => {
     const html = renderJogarSequencePageHtml(["260601"]);
-    assert.match(html, /<h1>Você consegue dizer qual imagem foi feita por IA\?<\/h1>/);
+    // #4253 item 1: encurtado ("Você consegue dizer qual imagem foi feita por
+    // IA?" → "Qual imagem foi gerada por IA?"), alinhado à página de edição
+    // única (jogar.ts:737). O <title>/OG continua na forma longa (SEO).
+    assert.match(html, /<h1>Qual imagem foi gerada por IA\?<\/h1>/);
     assert.doesNotMatch(html, /Sequência do mês — jogue e entre no leaderboard/);
+    assert.doesNotMatch(html, /Você consegue dizer qual imagem foi feita por IA\?/);
   });
 
   it("<title> e meta description acompanham a nova copy (sem 'sequência do mês anterior' como enquadramento)", () => {

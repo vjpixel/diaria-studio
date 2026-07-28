@@ -58,7 +58,7 @@ describe("leaderboard HTML — email mascarado truncado (#4008 item 1, integraç
     });
     const res = await handleLeaderboardByMonth("2020-01", env, "diaria");
     const html = await res.text();
-    assert.match(html, /wut…@\*\*\*/);
+    assert.match(html, /wutre…@\*\*\*/);
     assert.doesNotMatch(html, /wutrecht@\*\*\*/, "local-part completo não deve mais aparecer");
   });
 });

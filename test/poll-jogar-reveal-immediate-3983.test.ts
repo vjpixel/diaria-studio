@@ -398,15 +398,16 @@ describe("renderJogarSequencePageHtml (#3983) — reveal por rodada, reverte o S
 
   // #4054 follow-up (achado 260727, ao vivo): o gate por rodada (handleJogarPage)
   // só é checado em GET /jogar (reload de página) — mas a sequência avança
-  // de rodada em rodada 100% client-side (advance(), sem reload), então a
-  // promessa "1 rodada livre, depois gate" nunca disparava na prática pra
-  // quem joga a experiência padrão (a sequência, sem ?edition=). Fix:
-  // goNext(), só na transição rodada 1→2 (round===0), consulta o servidor
-  // (fetch /jogar) antes de continuar — se ele responder com o gate, troca
-  // a página em vez de seguir a sequência client-side.
-  it("goNext checa o gate no servidor (fetch /jogar) só na transição rodada 1→2 — sem isso o gate do #4054 nunca disparava na sequência", () => {
+  // de rodada em rodada 100% client-side (advance(), sem reload), então o
+  // gate nunca disparava na prática pra quem joga a experiência padrão (a
+  // sequência, sem ?edition=). Fix: goNext() consulta o servidor (fetch
+  // /jogar) antes de continuar — se ele responder com o gate, troca a
+  // página em vez de seguir a sequência client-side. #4253 item 3: a
+  // condição de disparo virou o contador `lastRoundsPlayed` cruzando um
+  // múltiplo de ROUNDS_NUDGE_INTERVAL (5), não mais só a 1ª transição.
+  it("goNext checa o gate no servidor (fetch /jogar) quando o contador de rodadas cruza um múltiplo de 5 (#4253 item 3)", () => {
     const html = renderJogarSequencePageHtml(["260601", "260602", "260603"]);
-    assert.match(html, /if \(round === 0\)/, "checagem de gate só na transição da 1ª rodada");
+    assert.match(html, /if \(lastRoundsPlayed > 0 && lastRoundsPlayed % 5 === 0\)/, "checagem de gate a cada múltiplo de 5 rodadas jogadas");
     assert.match(html, /fetch\("\/jogar\?v="/, "consulta o servidor via fetch antes de avançar");
     // #4160: detecta a resposta de gate pelo HEADER X-Eia-Gate (res.headers.get),
     // NUNCA por busca textual no corpo — a versão antiga (`html.indexOf('id="gate-form"')`)

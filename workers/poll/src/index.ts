@@ -1366,8 +1366,8 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // mesmo padrão de `handleImage`/`/img/*`); voto/score/nickname passam
     // pelos endpoints normais (`/vote?brand=web` etc.), que já branding via
     // `bEnv` quando `?brand=web` é passado por eles.
-    // #4054: 3º arg `request` — habilita o gate por rodada (cookie
-    // "rodada livre já usada" + checagem de sessão), ver rationale em jogar.ts.
+    // #4054: 3º arg `request` — habilita o gate por rodada (contador de
+    // rodadas jogadas, #4253 item 3 + checagem de sessão), ver rationale em jogar.ts.
     if (path === "/jogar" && request.method === "GET") return handleJogarPage(url, env, request);
     // #3519: arquivo de pares passados (índice) — mesmo racional acima:
     // `env` cru, lê `correct:{edition}` compartilhado, não `bEnv`.

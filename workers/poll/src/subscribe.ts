@@ -63,9 +63,9 @@ export const INLINE_SUBSCRIBE_UTM_CAMPAIGN = JOGAR_INLINE_UTM.campaign;
  * endpoint/mecanismo (`POST /jogar/subscribe`), só o call site muda.
  *
  * #4054: `"jogar-gate"` — cadastro na tela de gate do caminho de fora
- * (`web-gate.ts`, `POST /jogar/gate/subscribe`), quando o visitante já usou a
- * rodada livre anônima e não é assinante. UTM próprio pra medir esta
- * conversão separada do cadastro inline de fim-de-página (#3580).
+ * (`web-gate.ts`, `POST /jogar/gate/subscribe`), quando o visitante cruza o
+ * nudge periódico de rodadas (#4253 item 3) e não é assinante. UTM próprio
+ * pra medir esta conversão separada do cadastro inline de fim-de-página (#3580).
  *
  * #4125 (item 4): `"jogar-identify"` — opt-in de newsletter embutido no form
  * de IDENTIDADE (#3975, `identify.ts` → `subscribeToBeehiiv`, NÃO passa por

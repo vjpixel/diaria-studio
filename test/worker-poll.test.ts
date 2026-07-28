@@ -350,7 +350,7 @@ describe("computePodium (#1160 followup — masked email fallback)", () => {
     assert.equal(r.length, 3);
     assert.deepEqual(r.map((e) => e.nickname), [
       "Alice",
-      "bec…@***", // #4008 item 1: maskEmail trunca local-part > 3 chars
+      "becke…@***", // #4253 item 5: maskEmail trunca local-part > 5 chars
       "Carol",
     ]);
     assert.deepEqual(r.map((e) => e.rank), [1, 2, 3]);

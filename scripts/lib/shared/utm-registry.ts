@@ -140,9 +140,9 @@ export const VOTE_CLARICE_INLINE_UTM = {
 } as const;
 
 /** Cadastro inline na tela de gate de `/jogar` (#4054) — visitante de fora
- * que já usou a rodada livre anônima e cadastra pra continuar jogando. UTM
- * próprio (não o `eia-jogar-inline-signup` do #3580) pra medir esta
- * conversão separada do cadastro inline do fim de página do jogo. */
+ * que cruza o nudge periódico de rodadas (#4253 item 3) e cadastra pra
+ * entrar no ranking. UTM próprio (não o `eia-jogar-inline-signup` do #3580)
+ * pra medir esta conversão separada do cadastro inline do fim de página do jogo. */
 export const JOGAR_GATE_INLINE_UTM = {
   source: EIA_STANDALONE_SOURCE,
   medium: "jogar-gate",
@@ -296,8 +296,8 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: JOGAR_GATE_INLINE_UTM.campaign,
     originFile: "workers/poll/src/web-gate.ts",
     description:
-      "Cadastro na tela de gate de /jogar (#4054) — visitante de fora que já " +
-      "usou a rodada livre anônima e precisa se identificar/cadastrar pra continuar.",
+      "Cadastro na tela de gate de /jogar (#4054) — visitante de fora que " +
+      "cruzou o nudge periódico de rodadas (#4253 item 3) e se identifica/cadastra.",
     status: "ativo",
   },
   {
