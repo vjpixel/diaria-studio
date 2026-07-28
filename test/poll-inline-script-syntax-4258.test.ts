@@ -3,8 +3,10 @@
  *
  * Guard sistêmico contra uma classe de bug que já mordeu duas vezes: um
  * template literal TS mal-escapado corrompe o texto do `<script>` inline
- * emitido ao navegador, sem que NENHUM outro teste perceba (os testes
- * existentes fazem regex sobre substrings, nunca parseiam o JS de verdade).
+ * emitido ao navegador, sem que os testes que cobriam esta página
+ * percebessem (faziam regex sobre substrings — ex: `poll-web-gate-4054.test.ts`/
+ * `poll-web-gate-4253.test.ts` checavam só `assert.match(html, /Continuar sem
+ * cadastrar/)`, que passa mesmo com a aspa escapada corrompida).
  *
  *   1. Crase dentro de comentário fecha o template literal TS por acidente
  *      (documentado em vários headers deste worker, ex: goNext em jogar.ts).
@@ -24,18 +26,20 @@
  * usar aspas simples.
  *
  * Este teste NÃO garante que a COPY está certa — só que o `<script>`
- * emitido por CADA página do worker `poll` é JAVASCRIPT VÁLIDO
- * (`new Function(js)` não lança `SyntaxError`). Roda contra os renders MAIS
- * ricos possíveis de cada página (todos os parâmetros opcionais
- * preenchidos), pra maximizar quanto texto/branch do script é exercitado —
- * um `<script>` só aparece na saída quando o bloco condicional que o embute
- * é verdadeiro (ex: nicknameForm/resultImages/eiaMeta em votePageHtml).
+ * emitido por CADA página do worker `poll` (incluindo o leaderboard, via
+ * `handleLeaderboardByMonth`) é JAVASCRIPT VÁLIDO (`new Function(js)` não
+ * lança `SyntaxError`). Roda contra os renders MAIS ricos possíveis de cada
+ * página (todos os parâmetros opcionais preenchidos), pra maximizar quanto
+ * texto/branch do script é exercitado — um `<script>` só aparece na saída
+ * quando o bloco condicional que o embute é verdadeiro (ex:
+ * nicknameForm/resultImages/eiaMeta em votePageHtml, self-highlight só em
+ * brand `web` no leaderboard, inlineSignupScript só em brand `clarice`).
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { votePageHtml } from "../workers/poll/src/index.ts";
+import { votePageHtml, type Env } from "../workers/poll/src/index.ts";
 import { renderJogarGatePage } from "../workers/poll/src/web-gate.ts";
 import {
   renderJogarPageHtml,
@@ -45,14 +49,21 @@ import {
 } from "../workers/poll/src/jogar.ts";
 import { renderSharePageHtml, renderQuizSharePageHtml } from "../workers/poll/src/share.ts";
 import { renderEmbedPageHtml } from "../workers/poll/src/embed.ts";
-import { renderArchiveListHtml, renderArchiveVoteHtml } from "../workers/poll/src/leaderboard-routes.ts";
+import {
+  renderArchiveListHtml,
+  renderArchiveVoteHtml,
+  handleLeaderboardByMonth,
+} from "../workers/poll/src/leaderboard-routes.ts";
+import { makeTrackedKv } from "./_helpers/make-tracked-kv.ts";
 
-/** Extrai todo `<script>...</script>` do HTML e valida cada um com `new
- * Function` — mesmo parser (Acorn/V8) que o navegador real usaria; um erro
- * de sintaxe aqui É o mesmo erro que o navegador veria. */
-function assertAllScriptsParse(html: string, label: string, expectAtLeastOne = true): void {
-  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-  if (expectAtLeastOne) {
+/** Extrai todo `<script ...>...</script>` do HTML e valida cada um com `new
+ * Function` — mesmo motor (V8) que Node e o Chrome usam pra executar JS; um
+ * erro de sintaxe aqui É o mesmo erro que o navegador veria. Casa também
+ * `<script type="...">`/atributos (não só `<script>` cru) — uma página
+ * futura com script atributado não pode virar um blind spot silencioso. */
+function assertAllScriptsParse(html: string, label: string, requireAtLeastOneScript = true): void {
+  const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  if (requireAtLeastOneScript) {
     assert.ok(scripts.length > 0, `${label}: esperava pelo menos 1 <script>, achou 0 — page shape mudou?`);
   }
   for (const [i, js] of scripts.entries()) {
@@ -61,6 +72,15 @@ function assertAllScriptsParse(html: string, label: string, expectAtLeastOne = t
       throw new Error(`${label} [script ${i}]: ${err.message}\n\n${js}`);
     });
   }
+}
+
+function makeEnv(seed: Record<string, string> = {}): Env & { POLL: ReturnType<typeof makeTrackedKv> } {
+  return {
+    POLL: makeTrackedKv(seed),
+    POLL_SECRET: "poll-secret",
+    ADMIN_SECRET: "admin-secret",
+    ALLOWED_ORIGINS: "*",
+  } as Env & { POLL: ReturnType<typeof makeTrackedKv> };
 }
 
 describe("#4258 item 1: todo <script> inline emitido pelo worker poll é JS válido", () => {
@@ -107,6 +127,11 @@ describe("#4258 item 1: todo <script> inline emitido pelo worker poll é JS vál
     assertAllScriptsParse(html, "vote (mínimo)");
   });
 
+  it("votePageHtml (/vote?brand=clarice) — inlineSignupScript (achado do review consolidado: branch não coberto na 1ª versão desta issue)", () => {
+    const html = votePageHtml("✅ Acertou!", true, null, null, null, "clarice");
+    assertAllScriptsParse(html, "vote (brand=clarice)");
+  });
+
   it("renderSharePageHtml (/share/{token})", () => {
     const html = renderSharePageHtml({
       token: "share-token-123",
@@ -140,6 +165,21 @@ describe("#4258 item 1: todo <script> inline emitido pelo worker poll é JS vál
   it("renderArchiveVoteHtml (/leaderboard/{ano}/arquivo/{edição})", async () => {
     const res = renderArchiveVoteHtml("260601", "2026", "web");
     assertAllScriptsParse(await res.text(), "archive vote");
+  });
+
+  it("handleLeaderboardByMonth (/leaderboard, página mais acessada do worker) — self-highlight script (brand web)", async () => {
+    // Achado do review consolidado (2 agentes independentes, silent-failure-hunter
+    // + pr-test-analyzer): a 1ª versão desta issue não cobria renderLeaderboardHtml
+    // (module-private, só alcançável via handleLeaderboardByMonth/handleLeaderboardByYear)
+    // — justamente a página com mais tráfego do worker inteiro ("Ver leaderboard"
+    // aparece depois de CADA voto), com um <script> de self-highlight tão dinâmico
+    // quanto o do gate que quebrou. O comentário do header desta issue alegava
+    // cobertura de "CADA página" sem isso ser verdade — corrigido aqui.
+    const env = makeEnv({
+      "score-by-month:2020-01:ana@example.com": JSON.stringify({ total: 5, correct: 4, nickname: "Ana" }),
+    });
+    const res = await handleLeaderboardByMonth("2020-01", env, "web");
+    assertAllScriptsParse(await res.text(), "leaderboard (brand web, self-highlight)");
   });
 });
 
