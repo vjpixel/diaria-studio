@@ -109,7 +109,6 @@ export function isOwnedHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
   return h === MENSAL_BRAND_HOST || h.endsWith(`.${MENSAL_BRAND_HOST}`);
 }
-const MENSAL_BRAND_LINK = `https://${MENSAL_BRAND_HOST}`;
 
 /**
  * #2975: assinantes que migram da Clarice News mensal pro Beehiiv chegavam
