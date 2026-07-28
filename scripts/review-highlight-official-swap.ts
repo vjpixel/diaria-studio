@@ -112,9 +112,21 @@ export interface OfficialSwapResult {
   suggestions: OfficialSwapSuggestion[];
 }
 
-/** Extrai o `article` aninhado de um HighlightLike, tolerando shape flat. */
-function highlightArticle(h: HighlightLike): PoolArticle | undefined {
-  return h.article;
+/**
+ * Extrai `cluster_sources[]` de um HighlightLike, tolerando tanto o shape
+ * nested `{ article: { cluster_sources } }` (formato real do pipeline —
+ * `attachClusterSource` de dedup-intra-edition.ts escreve aqui quando o
+ * highlight tem `article`) quanto o flat `{ cluster_sources }` (mesmo
+ * fallback que `attachClusterSource` usa quando `article` está ausente —
+ * ver #229/review-highlight-source.ts "tolera shape sem wrapper").
+ */
+function highlightClusterSources(
+  h: HighlightLike,
+): Array<{ url: string; title?: string; [k: string]: unknown }> {
+  const nested = h.article?.cluster_sources;
+  if (Array.isArray(nested)) return nested;
+  const flat = (h as { cluster_sources?: unknown }).cluster_sources;
+  return Array.isArray(flat) ? (flat as Array<{ url: string; title?: string }>) : [];
 }
 
 /**
@@ -172,7 +184,7 @@ export function findOfficialSwapSuggestions(
     // Fonte 2: cluster_sources[] já dobrados pelo dedup intra-edição (#4185).
     // O fold só acontece quando isIntraEditionDuplicate já confirmou mesmo
     // evento — não precisa re-checar similaridade, só a classificação oficial.
-    const clusterSources = highlightArticle(h)?.cluster_sources ?? [];
+    const clusterSources = highlightClusterSources(h);
     for (const cs of clusterSources) {
       if (!cs?.url || cs.url === hUrl) continue;
       if (!isOfficialLancamentoUrl(cs.url)) continue;

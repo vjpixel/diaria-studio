@@ -103,6 +103,24 @@ describe("findOfficialSwapSuggestions — cross-check pool da edição (#4135 it
     assert.equal(suggestions[0].source, "cluster_source");
   });
 
+  it("encontra cluster_sources[] no shape FLAT (sem wrapper article, #229)", () => {
+    const categorized = {
+      highlights: [
+        {
+          rank: 1,
+          url: TECNOBLOG_URL,
+          title: TECNOBLOG_TITLE,
+          cluster_sources: [{ url: ANTHROPIC_URL, title: ANTHROPIC_TITLE }],
+        },
+      ],
+      radar: [],
+    };
+    const { suggestions } = findOfficialSwapSuggestions(categorized as never);
+    assert.equal(suggestions.length, 1);
+    assert.equal(suggestions[0].official_url, ANTHROPIC_URL);
+    assert.equal(suggestions[0].source, "cluster_source");
+  });
+
   it("respeita destaqueCount — não sugere troca para candidatos fora do top-N", () => {
     const categorized = {
       highlights: [
