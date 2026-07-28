@@ -18,6 +18,11 @@
  *    quando o mesmo conteúdo está em 2 seções; regressão de colunas/glossário.
  *  - discoverCyclesWithPrioritized (scripts/push-link-sections-kv.ts) via
  *    diretório temporário injetado (nunca data/ real).
+ *  - buildRateLimitFallback / buildFatalErrorFallback (#4184, revisão pós-#4191):
+ *    esses 2 caminhos de degradação agora TAMBÉM populam a coluna "Seção" via
+ *    KV (nunca Brevo) — decisão revertida da 1ª rodada depois que o #4191 fez
+ *    o Studio reusar buildRateLimitFallback pro seu próprio catch de
+ *    rate-limit, deixando de ser um caminho raro.
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -40,6 +45,10 @@ import {
   parseLinksStats,
   collectMonthlyLinkCycles,
   renderDashboardHtml,
+  buildRateLimitFallback,
+  buildFatalErrorFallback,
+  linkSectionsKvKey,
+  LASTGOOD_CAMPAIGNS_KEY,
   type LinkSectionMap,
   type BrevoLinksStats,
 } from "../workers/brevo-dashboard/src/index.ts";
@@ -613,5 +622,101 @@ describe("discoverCyclesWithPrioritized (#4184)", () => {
     withTempMonthlyBase((base) => {
       assert.deepEqual(discoverCyclesWithPrioritized(base), []);
     });
+  });
+});
+
+// ─── buildRateLimitFallback / buildFatalErrorFallback: Seção também via KV ──
+// (#4184, revisão pós-#4191 — coordenador pediu reavaliar; ver docstring do
+// topo do arquivo). Mock de KV local — mesmo padrão de test/brevo-dashboard-2733.test.ts.
+
+function makeKv(initial: Record<string, string> = {}) {
+  const store = new Map(Object.entries(initial));
+  return {
+    get: async (key: string, type?: string) => {
+      const val = store.get(key);
+      if (val == null) return null;
+      return type === "json" ? JSON.parse(val) : val;
+    },
+    put: async (key: string, value: string) => { store.set(key, value); },
+    delete: async (key: string) => { store.delete(key); },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  } as any;
+}
+
+const staleMonthlyCampaign = {
+  id: 901,
+  name: "Clarice News 2606-07 — A · dom",
+  subject: "s",
+  status: "sent",
+  sentDate: "2026-07-20T09:00:00Z",
+  scheduledAt: null,
+  createdAt: "2026-07-20T09:00:00Z",
+  recipients: { lists: [] as number[] },
+  statistics: { linksStats: { "https://openai.com/blog/gpt-5": 10 } },
+};
+
+describe("buildRateLimitFallback: coluna Seção via KV (#4184, revisão pós-#4191)", () => {
+  test("com secao:{ciclo} presente no KV → coluna Seção populada no fallback de 429", async () => {
+    const kv = makeKv({
+      [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
+        campaigns: [staleMonthlyCampaign],
+        scheduled: [],
+        generatedAt: "2026-07-20T10:00:00.000Z",
+      }),
+      [linkSectionsKvKey("2606-07")]: JSON.stringify({ "gpt 5 (openai.com)": ["radar"] }),
+    });
+    const env = { STATS_CACHE: kv };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resp = await buildRateLimitFallback(env as any, 60);
+    assert.strictEqual(resp.status, 200);
+    const body = await resp.text();
+    assert.match(body, />Radar</, "coluna Seção deve mostrar 'Radar' — não mais sempre '—' (decisão pós-#4191)");
+  });
+
+  test("SEM secao:{ciclo} no KV → fallback '—', sem crash (regressão)", async () => {
+    const kv = makeKv({
+      [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
+        campaigns: [staleMonthlyCampaign],
+        scheduled: [],
+        generatedAt: "2026-07-20T10:00:00.000Z",
+      }),
+    });
+    const env = { STATS_CACHE: kv };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let resp: Response;
+    await assert.doesNotReject(async () => { resp = await buildRateLimitFallback(env as any, 60); });
+    const body = await resp!.text();
+    assert.match(body, new RegExp(`class="link-section"[^>]*>${LINK_SECTION_FALLBACK_LABEL}<`));
+  });
+});
+
+describe("buildFatalErrorFallback: coluna Seção via KV (#4184, revisão pós-#4191)", () => {
+  test("com secao:{ciclo} presente no KV → coluna Seção populada no catch de última instância", async () => {
+    const kv = makeKv({
+      [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
+        campaigns: [staleMonthlyCampaign],
+        scheduled: [],
+        generatedAt: "2026-07-20T10:00:00.000Z",
+      }),
+      [linkSectionsKvKey("2606-07")]: JSON.stringify({ "gpt 5 (openai.com)": ["destaques"] }),
+    });
+    const env = { STATS_CACHE: kv, COUPONS_TAB_ENABLED: "true" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resp = await buildFatalErrorFallback(env as any, new Error("causa sintética"));
+    assert.strictEqual(resp.status, 200);
+    const body = await resp.text();
+    assert.match(body, />Destaques</, "coluna Seção deve mostrar 'Destaques' no fallback de erro fatal também");
+  });
+
+  test("SEM secao:{ciclo} no KV → fallback '—', nunca lança (regressão)", async () => {
+    const kv = makeKv({
+      [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
+        campaigns: [staleMonthlyCampaign],
+        scheduled: [],
+      }),
+    });
+    const env = { STATS_CACHE: kv, COUPONS_TAB_ENABLED: "true" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await assert.doesNotReject(async () => buildFatalErrorFallback(env as any, "causa não-Error"));
   });
 });

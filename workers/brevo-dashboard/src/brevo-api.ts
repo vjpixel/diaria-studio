@@ -1,7 +1,7 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, LinkSectionMap } from "./types.ts";
 import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, RECENT_STATS_TTL, linkSectionsKvKey } from "./types.ts";
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
-import { renderDashboardHtml, escHtml } from "./sections-core.ts";
+import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles
 import { normalizeLinkSectionMap } from "./link-section.ts"; // #4184
 
 /**
@@ -899,6 +899,32 @@ export async function readLinkSectionsByCycle(
 }
 
 /**
+ * #4184 (revisão pós-#4191): monta `linkSectionsByCycle` pros caminhos de
+ * FALLBACK (rate-limit e erro fatal, abaixo) — mesma leitura de
+ * `secao:{ciclo}` via KV que o render normal usa (`readLinkSectionsByCycle`
+ * acima). Deliberado: o custo aqui é só leitura de KV, NUNCA uma chamada à
+ * Brevo — não compete pela quota que esses 2 caminhos existem justamente
+ * pra proteger, então não há razão pra degradar a coluna "Seção" pro
+ * fallback "—" nesses renders (decisão revertida da 1ª rodada da #4184, que
+ * tinha escopado isso fora por engano — antes do #4191, esses 2 caminhos
+ * eram raros; depois dele, o Studio passou a reusar `buildRateLimitFallback`
+ * pro seu próprio catch de rate-limit, então "raro" deixou de ser verdade).
+ */
+async function buildLinkSectionsByCycleForFallback(
+  env: Env,
+  // `| undefined`: os call sites passam `staleCampaigns`/`staleScheduled` já
+  // tipados via `Parameters<typeof renderDashboardHtml>[N]` — como esses 2
+  // parâmetros têm default value na assinatura, o tipo resolvido inclui
+  // `undefined` (nunca o valor real em runtime, sempre um array via
+  // `Array.isArray(...) ? ... : []`, mas o TS não sabe disso na origem do cast).
+  campaigns: ReadonlyArray<Pick<BrevoCampaign, "name">> | undefined,
+  scheduled: ReadonlyArray<Pick<BrevoCampaign, "name">> | undefined,
+): Promise<Record<string, LinkSectionMap>> {
+  const monthlyCycles = collectMonthlyLinkCycles([...(campaigns ?? []), ...(scheduled ?? [])]);
+  return readLinkSectionsByCycle(env, monthlyCycles);
+}
+
+/**
  * #2733: monta a resposta de fallback quando o Brevo está em rate-limit (429).
  * Serve o dashboard com campanhas STALE (do KV `dash:lastgood:campaigns`) + as
  * abas de KV FRESCAS (Cupons/Contatos/coortes/MV via readKvTabs) + banner — em
@@ -944,11 +970,9 @@ export async function buildRateLimitFallback(
     typeof renderDashboardHtml
   >[1];
   try {
-    // #4184: fallback de rate-limit (429) NÃO busca `secao:{ciclo}` — escopo
-    // deliberado: caminho raro, e o custo de outra rodada de KV.get por
-    // ciclo não se justifica aqui. A coluna "Seção" degrada pro fallback
-    // "—" em toda linha neste render (só neste caminho; o render normal
-    // acima tem o mapa completo).
+    // #4184: coluna "Seção" também populada aqui — ver
+    // buildLinkSectionsByCycleForFallback (custo é só KV, nunca Brevo).
+    const linkSectionsByCycle = await buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled);
     const html = renderDashboardHtml(
       staleCampaigns,
       staleScheduled,
@@ -961,6 +985,7 @@ export async function buildRateLimitFallback(
       null, // dataGeneratedAt: KV stale payload não tem timestamp de render fiável aqui
       staleCampaignsLimit, // #3080: limite gravado junto do payload (self-describing)
       postmasterSpam, // #4063
+      { linkSectionsByCycle }, // #4184
     );
     // buildStaleResponse injeta o banner "Brevo em rate-limit" (só as seções de
     // campanha estão atrasadas; Cupons/Contatos estão frescos).
@@ -1064,6 +1089,9 @@ export async function buildFatalErrorFallback(env: Env, cause: unknown): Promise
     const staleScheduled = (Array.isArray(rawScheduled) ? rawScheduled : []) as Parameters<
       typeof renderDashboardHtml
     >[1];
+    // #4184: coluna "Seção" também populada aqui — mesmo racional de
+    // buildRateLimitFallback (custo é só KV, nunca Brevo).
+    const linkSectionsByCycle = await buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled);
     const html = renderDashboardHtml(
       staleCampaigns,
       staleScheduled,
@@ -1076,6 +1104,7 @@ export async function buildFatalErrorFallback(env: Env, cause: unknown): Promise
       null,
       staleCampaignsLimit,
       postmasterSpam,
+      { linkSectionsByCycle }, // #4184
     );
     return new Response(injectFatalErrorBanner(html), {
       headers: {
