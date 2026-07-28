@@ -59,7 +59,7 @@ describe("handleVote via /vote — gabarito correct:{edition} é lido CRU (brand
     const otherToken = "55555555-5555-4555-8555-555555555555@web.eia.diaria.local";
     const resMiss = await vote(kv, otherToken, "260601", "B", "web"); // erra
     const htmlMiss = await resMiss.text();
-    assert.match(htmlMiss, /❌ Não foi dessa vez — era a foto real\./, "brand=web deve revelar o erro usando o gabarito cru");
+    assert.match(htmlMiss, /❌ Não foi dessa vez, era a foto real\./, "brand=web deve revelar o erro usando o gabarito cru");
 
     // Confirma que NENHUMA chave branded foi tocada — o read é 100% cru.
     assert.equal(await kv.get("web:correct:260601"), null, "web:correct:{edition} nunca deve ser escrito nem necessário pro reveal");

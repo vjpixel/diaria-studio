@@ -207,7 +207,7 @@ export function renderEmbedPageHtml(opts: EmbedPageOptions): string {
   const jogarUrl = buildEmbedJogarUrl(partnerSlug);
   const subCopy = revealed
     ? "Vote e veja na hora se acertou."
-    : "Vote — o resultado sai assim que o poll de hoje fechar.";
+    : "Vote. O resultado sai assim que a enquete de hoje fechar.";
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">

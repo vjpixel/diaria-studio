@@ -119,7 +119,7 @@ describe("stats pós-voto via /vote — sufixo aparece quando gabarito revelado 
     assert.equal(res.status, 200);
     const html = await res.text();
 
-    assert.match(html, /❌ Não foi dessa vez — era a foto real\./);
+    assert.match(html, /❌ Não foi dessa vez, era a foto real\./);
     // total=20 (voto errado ainda soma ao total), correct_count continua 14 → 70%.
     assert.match(html, /70% dos jogadores acertaram este par\./);
   });

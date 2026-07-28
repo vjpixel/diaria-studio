@@ -55,7 +55,7 @@ import { writeEiaAnswerSidecar, eiaAnswerSidecarPath } from "./lib/eia-answer.ts
 import { runTsx } from "./lib/run-tsx.ts"; // #1811
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
-interface WikimediaImage {
+export interface WikimediaImage {
   title?: string;
   description?: { text?: string; html?: string };
   thumbnail?: { source?: string; width?: number; height?: number };
@@ -1136,6 +1136,18 @@ async function main(): Promise<void> {
   const prevResultLine = buildPrevResultLine(prevStats);
   const mdPath = resolve(outDir, "01-eia.md");
   writeFileSync(mdPath, buildEiaMd(sides, creditLine, prevResultLine));
+
+  // #4258 item 3: persiste o mínimo necessário pra `buildCreditLine` ser
+  // re-invocada DEPOIS (Stage 3 do orchestrator, passo de humanizador+Clarice
+  // sobre `descriptionSentence`) sem precisar refazer a chamada Wikimedia
+  // (subject/pt-BR label) nem a tradução Gemini — ver
+  // scripts/apply-eia-description.ts, que lê este arquivo pra regerar a
+  // linha de crédito com a frase JÁ corrigida, mantendo 01-eia.md e
+  // 01-eia-meta.json sincronizados (mesma fonte, nunca divergem).
+  writeFileSync(
+    resolve(internalDir, "01-eia-compose-context.json"),
+    JSON.stringify({ image, ptLabel, ptWikipediaUrl }, null, 2) + "\n",
+  );
 
   // 8. Write meta JSON
   // #256: artist_url + subject_wikipedia_url + license_url extraídos do

@@ -159,7 +159,7 @@ describe("handleVote fast-path (#3983) — veredito imediato, contabilidade em b
     const { ctx, scheduled } = makeRealCtx();
     const res = await handleVote(voteUrl("b@x.com", "260601", "B"), env, "diaria", env, ctx);
     const html = await res.text();
-    assert.match(html, /❌ Não foi dessa vez — era a foto real\./);
+    assert.match(html, /❌ Não foi dessa vez, era a foto real\./);
     await flush(scheduled);
     const scoreRaw = await env.POLL.get("score:b@x.com");
     assert.ok(scoreRaw, "score deve ter sido gravado em background");

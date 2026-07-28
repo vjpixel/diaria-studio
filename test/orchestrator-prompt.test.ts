@@ -146,7 +146,11 @@ describe("orchestrator-prompt (#634)", () => {
       // o check humanizer-section-coverage de reversões legítimas da Clarice).
       // Teto bumped de 548→575 com headroom (era 559 medido pós-#3929).
       "orchestrator-stage-2.md": 575,
-      "orchestrator-stage-3.md": 135,
+      // #4258 item 3: +8 linhas (novo §3a-bis — passo de humanizador+Clarice
+      // sobre a frase de descrição do É IA?, único texto da edição que não
+      // passava por esse fluxo). Teto bumped de 135→150 com headroom (era
+      // 142 medido pós-#4258).
+      "orchestrator-stage-3.md": 150,
       // #3947: +14 linhas (snapshot pós-humanizador/pré-Clarice em §4d.1
       // passos 6.3 e 6.2' + fallback/uso desse snapshot no check
       // humanizer-section-coverage do passo 6.7 — mesmo padrão do #3929,

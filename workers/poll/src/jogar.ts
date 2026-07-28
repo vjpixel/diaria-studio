@@ -291,7 +291,7 @@ export function renderQuizSubscribeCtaBlock(): string {
  */
 export function renderInlineSignupFormBlock(hidden: boolean = true): string {
   return `<form id="jogar-signup-form" class="signup-form"${hidden ? " hidden" : ""} novalidate>
-  <p class="signup-text">Prefere direto? Assine aqui — sem sair da página.</p>
+  <p class="signup-text">Prefere direto? Assine aqui, sem sair da página.</p>
   <label class="signup-field"><span>Nome</span><input type="text" name="name" autocomplete="name" maxlength="100"></label>
   <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
   <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
@@ -373,7 +373,7 @@ export function renderInlineSignupFormStyles(): string {
  */
 export function renderIdentityFormBlock(): string {
   return `<form id="jogar-identity-form" class="signup-form" hidden novalidate>
-  <p class="signup-text">Quer um par desses todo dia no seu e-mail? Deixe seu nome e e-mail — assine a Diar.ia e entre no ranking.</p>
+  <p class="signup-text">Quer um par desses todo dia no seu e-mail? Deixe seu nome e e-mail: assine a Diar.ia e entre no ranking.</p>
   <label class="signup-field"><span>Nome ou apelido</span><input type="text" name="name" autocomplete="name" maxlength="100" required></label>
   <label class="signup-field"><span>E-mail</span><input type="email" name="email" autocomplete="email" maxlength="254" required></label>
   <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
@@ -469,7 +469,7 @@ export function identityFormScript(): string {
       website: val('input[name="website"]') || ""
     };
     if (typeof window.fetch !== "function") {
-      setStatus("Seu navegador não suporta esse cadastro — tente noutro navegador.", false);
+      setStatus("Seu navegador não suporta esse cadastro. Tente noutro navegador.", false);
       if (btn) btn.disabled = false;
       return;
     }
@@ -488,7 +488,7 @@ export function identityFormScript(): string {
         // enganoso — o form continua visível pra permitir nova tentativa
         // (ex: digitar outro e-mail) enquanto a confirmação não chega.
         if (btn) btn.disabled = false;
-        setStatus("Enviamos um e-mail de confirmação — clique no link pra migrar seu histórico e entrar no ranking.", true);
+        setStatus("Enviamos um e-mail de confirmação: clique no link pra migrar seu histórico e entrar no ranking.", true);
       } else if (r.status === 200 && r.body && r.body.ok) {
         setIdentifiedEmail(email);
         form.hidden = true;
@@ -554,7 +554,7 @@ export function inlineSignupScript(source: string = ""): string {
       source: ${JSON.stringify(source)}
     };
     if (typeof window.fetch !== "function") {
-      setStatus("Seu navegador não suporta o cadastro direto — use o link de assinatura acima.", false);
+      setStatus("Seu navegador não suporta o cadastro direto. Use o link de assinatura acima.", false);
       if (btn) btn.disabled = false;
       return;
     }
@@ -575,7 +575,7 @@ export function inlineSignupScript(source: string = ""): string {
         setStatus("Muitas tentativas. Tente de novo mais tarde.", false);
         if (btn) btn.disabled = false;
       } else if (r.status === 503) {
-        setStatus("Cadastro direto indisponível agora — use o link de assinatura acima.", false);
+        setStatus("Cadastro direto indisponível agora. Use o link de assinatura acima.", false);
         if (btn) btn.disabled = false;
       } else {
         setStatus("Não deu pra assinar agora. Confira o e-mail e tente de novo.", false);
@@ -646,7 +646,7 @@ export function renderJogarPageHtml(opts: JogarPageOptions): string {
   const pageTitle = `É IA? — jogue e vote | ${info.name}`;
   const subCopy = revealed
     ? "Vote e veja na hora se acertou."
-    : "Vote — o resultado sai assim que o poll de hoje fechar.";
+    : "Vote. O resultado sai assim que a enquete de hoje fechar.";
   const leaderboardLink = leaderboardHref(JOGAR_BRAND);
   const seoMeta = renderSeoMeta({
     title: pageTitle,
