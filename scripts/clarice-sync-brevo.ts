@@ -41,19 +41,28 @@ import {
 } from "./lib/clarice-db.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 
-// import.meta.dirname pode vir undefined em loaders CJS (tsx eval / import
-// deep-relative) — fallback pra cwd (scripts rodam da raiz do repo).
-const ROOT = import.meta.dirname ? resolve(import.meta.dirname, "..") : process.cwd();
-const CHECKPOINT = resolve(
-  ROOT,
-  "data/clarice-subscribers/.brevo-sync-checkpoint.json",
-);
-// #2928: checkpoint SEPARADO pro incremental — enumera um conjunto diferente
-// (só os mudados), não pode clobberar o resume do full.
-const CHECKPOINT_INC = resolve(
-  ROOT,
-  "data/clarice-subscribers/.brevo-sync-checkpoint-inc.json",
-);
+/**
+ * #4205: caminho dos 2 arquivos de checkpoint (full + incremental — #2928,
+ * SEPARADOS pra não clobberar o resume um do outro), derivado do DIRETÓRIO do
+ * `--db` em vez de um `ROOT`/`data/` fixo. Antes eram consts hardcoded
+ * ancoradas em `data/clarice-subscribers/` do repo real — impossível de
+ * injetar em teste (um `main()` de teste escreveria fora do tmpdir isolado,
+ * em `data/`, que num worktree fresco/cloud nem existe). Como o checkpoint já
+ * sempre viveu ao LADO do `.db` (mesma pasta `data/clarice-subscribers/` do
+ * `DEFAULT_DB_PATH`), co-localizar com `dbPath` preserva o comportamento de
+ * produção (`--db` omitido → mesmo path de sempre) e torna o par
+ * db+checkpoint isolável junto num `--db <tmp>/store.db` de teste. Pura/testável.
+ */
+export function checkpointPathsForDb(dbPath: string): {
+  checkpoint: string;
+  checkpointInc: string;
+} {
+  const dir = resolve(dbPath, "..");
+  return {
+    checkpoint: resolve(dir, ".brevo-sync-checkpoint.json"),
+    checkpointInc: resolve(dir, ".brevo-sync-checkpoint-inc.json"),
+  };
+}
 const BATCH = 200; // flush no DB + checkpoint a cada N contatos (durabilidade)
 const PAGE_PACING_MS = 250; // pacing leve entre páginas do listing (memória brevo-hourly-ratelimit)
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -168,6 +177,8 @@ export async function main(
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
   const concurrency = Number(getArg(argv, "concurrency")) || 4;
   const limitArg = Number(getArg(argv, "limit")) || 0;
+  const { checkpoint: CHECKPOINT, checkpointInc: CHECKPOINT_INC } =
+    checkpointPathsForDb(dbPath);
 
   const db = openClariceDb(dbPath);
   const upsertBrevo = makeBrevoUpsert(db);

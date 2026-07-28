@@ -134,6 +134,16 @@ CREATE TABLE IF NOT EXISTS priority_optin (
   added_at  TEXT NOT NULL
 );
 
+-- #4205: metadado key/value de 1 linha só (last_recomputed_at) — carimba
+-- QUANDO o último recomputeDerived rodou, pra clarice-build-segment.ts
+-- detectar defasagem (MAX(brevo_modified_at) mais recente que o último
+-- recompute) sem depender de heurística sobre priority_points, que teria
+-- falso-positivo em qualquer contato legitimamente decaído (ver isDerivedStale).
+CREATE TABLE IF NOT EXISTS derived_meta (
+  key    TEXT PRIMARY KEY,
+  value  TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_users_tier        ON clarice_users(tier);
 CREATE INDEX IF NOT EXISTS idx_users_eligible    ON clarice_users(send_eligible);
 CREATE INDEX IF NOT EXISTS idx_users_points       ON clarice_users(priority_points);
@@ -760,12 +770,78 @@ export function recomputeDerived(
       );
       n++;
     }
+    // #4205: carimba QUANDO este recompute rodou — isDerivedStale() abaixo
+    // compara contra MAX(brevo_modified_at) pra detectar defasagem sem
+    // depender de heurística sobre priority_points (que teria falso-positivo
+    // em qualquer contato legitimamente decaído). Dentro da MESMA transação
+    // que os UPDATEs acima — um Ctrl+C não pode deixar o carimbo "à frente"
+    // de derivados que na verdade não terminaram de ser recomputados.
+    db.prepare(
+      `INSERT INTO derived_meta (key, value) VALUES ('last_recomputed_at', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    ).run(new Date().toISOString());
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
     throw e;
   }
   return n;
+}
+
+/**
+ * #4205: timestamp ISO do último `recomputeDerived` bem-sucedido, ou `null` se
+ * o store nunca passou por um recompute nesta versão (store novo, ou store
+ * migrado antes do 1º recompute pós-deploy desta feature).
+ */
+export function getLastRecomputedAt(db: DatabaseSync): string | null {
+  const row = db
+    .prepare("SELECT value FROM derived_meta WHERE key = 'last_recomputed_at'")
+    .get() as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+/**
+ * #4205: guard de defasagem — defesa em profundidade pro incidente onde
+ * `clarice-sync-brevo.ts --incremental` atualiza `opens_count`/`clicks_count`/
+ * etc mas é interrompido (rate-limit/Ctrl+C) ANTES de alcançar o
+ * `recomputeDerived` final, OU um caminho futuro atualiza colunas Brevo sem
+ * passar por `recomputeDerived`. `isEngajados` (clarice-segment.ts) filtra por
+ * `priority_points > 0`, não por `opens_count` diretamente — se o store está
+ * defasado, contatos que abriram recentemente ficam invisíveis no segmento
+ * SEM nenhum sinal de erro (a onda simplesmente sai menor).
+ *
+ * Detecta via `MAX(brevo_modified_at) > last_recomputed_at`: se QUALQUER
+ * linha foi tocada pelo Brevo depois do último recompute, o store está
+ * defasado — não precisa saber QUAL linha, só que existe pelo menos uma.
+ *
+ * Deliberadamente NÃO usa `opens_count > 0 AND priority_points <= 0` como
+ * sinal (a heurística sugerida originalmente na issue #4205): medido em
+ * produção (260727), ~165/14.290 contatos batem essa condição MESMO logo
+ * após um `recomputeDerived` fresco — são contatos que abriram algumas vezes
+ * mas ignoraram sends recentes o suficiente pra decair pra `priority_points
+ * <= 0` (`computePriorityPoints`: `-10` por send não-aberto pesa mais que
+ * `+20` por 1 abertura antiga). Essa condição é um estado LEGÍTIMO e
+ * PERMANENTE pra parte da base — usá-la como sinal de staleness faria o guard
+ * disparar em praticamente toda invocação, sempre, mesmo com o store
+ * perfeitamente fresco (falso-positivo sistemático, não só ocasional).
+ *
+ * Fail-OPEN (retorna `false`) quando `last_recomputed_at` é `null` — store
+ * ainda não passou por um recompute desta versão; o próximo sync/build já
+ * resolve. Fail-OPEN também quando não há nenhuma linha com
+ * `brevo_modified_at` (store sem Brevo sincronizado ainda — nada pra estar
+ * defasado em relação a).
+ */
+export function isDerivedStale(db: DatabaseSync): boolean {
+  const lastRecomputedAt = getLastRecomputedAt(db);
+  if (!lastRecomputedAt) return false;
+  const row = db
+    .prepare("SELECT MAX(brevo_modified_at) AS m FROM clarice_users")
+    .get() as { m: string | null };
+  if (!row?.m) return false;
+  const maxModified = new Date(row.m).getTime();
+  const lastRecomputed = new Date(lastRecomputedAt).getTime();
+  if (!Number.isFinite(maxModified) || !Number.isFinite(lastRecomputed)) return false;
+  return maxModified > lastRecomputed;
 }
 
 // ---------------------------------------------------------------------------
