@@ -45,6 +45,17 @@ class_name = "VoteDedup"
 name = "STATS_COUNTER"
 class_name = "StatsCounter"
 
+# #4169: Durable Object para serialização do read-modify-write de
+# score:{email} (global) e score-by-month:{month}:{email} (mensal). Elimina a
+# race que o #4168 (releitura fresca de score:{email}) só ESTREITOU sem
+# eliminar — dois runVoteBookkeeping concorrentes do MESMO email (edições
+# diferentes) podiam intercalar entre o get e o put, perdendo um incremento.
+# Instanciado por {brand}:{email} — brand incluído para isolamento diaria×clarice×web.
+# Classe `ScoreCounter` exportada de src/score-counter.ts (re-exportada por index.ts).
+[[durable_objects.bindings]]
+name = "SCORE_COUNTER"
+class_name = "ScoreCounter"
+
 # Migration obrigatória para new_sqlite_classes (#2187, #2236).
 # Ao deploying pela primeira vez: wrangler deploy cria os namespaces DO
 # automaticamente. Não é necessário nenhuma ação manual além do deploy.
@@ -62,6 +73,12 @@ new_sqlite_classes = ["VoteDedup"]
 [[migrations]]
 tag = "v2-stats-counter"
 new_sqlite_classes = ["StatsCounter"]
+
+# Migration para ScoreCounter (#4169). Tag separada de v1/v2 — migration tags
+# são cumulativas no CF; nova tag cobre apenas a classe nova. NÃO deployar sem isto.
+[[migrations]]
+tag = "v3-score-counter"
+new_sqlite_classes = ["ScoreCounter"]
 
 # Nota (#2187 finding #3): não há seção [env.staging] neste wrangler.toml.
 # O projeto poll não usa um ambiente staging separado — testes de integração
