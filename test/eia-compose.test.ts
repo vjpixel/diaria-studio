@@ -19,6 +19,7 @@ import {
   pickSubjectWikipediaLink,
   tokenizeImageTitle,
   readUsedTitles,
+  isOwnWorkOnlyCredit,
 } from "../scripts/eia-compose.ts";
 
 interface MockImage {
@@ -635,6 +636,42 @@ describe("buildCreditLine (#256 markdown links inline)", () => {
     const image = { description: { text: "Imagem sem autor." } };
     const credit = buildCreditLine(image);
     assert.match(credit, /Wikimedia Commons/);
+  });
+
+  it("#4258 item 2: artist ausente + credit.text='Own work' → 'Wikimedia Commons', não 'Own work'", () => {
+    // Caso real reportado pelo editor: Wikimedia grava 'Own work' quando quem
+    // enviou a imagem é o próprio fotógrafo, sem propagar nome de verdade —
+    // 'Own work' publicado como se fosse o NOME do artista é ruído/confuso.
+    const image = { description: { text: "Ave em voo." }, credit: { text: "Own work" } };
+    const credit = buildCreditLine(image);
+    assert.ok(!credit.includes("Own work"), `credit não deve conter 'Own work': ${credit}`);
+    assert.match(credit, /Wikimedia Commons/);
+  });
+});
+
+describe("isOwnWorkOnlyCredit (#4258 item 2, pure)", () => {
+  it("'Own work' (e variações de case/espaço) → true", () => {
+    assert.equal(isOwnWorkOnlyCredit("Own work"), true);
+    assert.equal(isOwnWorkOnlyCredit("own work"), true);
+    assert.equal(isOwnWorkOnlyCredit("OWN WORK"), true);
+    assert.equal(isOwnWorkOnlyCredit("  Own work  "), true);
+  });
+
+  it("variantes localizadas → true", () => {
+    assert.equal(isOwnWorkOnlyCredit("Trabalho próprio"), true);
+    assert.equal(isOwnWorkOnlyCredit("Self-photographed"), true);
+  });
+
+  it("crédito com nome de verdade → false (nunca suprimir crédito real)", () => {
+    assert.equal(isOwnWorkOnlyCredit("Tisha Mukherjee"), false);
+  });
+
+  it("'Own work' como SUBSTRING de um texto maior → false (só suprime quando é o campo INTEIRO)", () => {
+    assert.equal(isOwnWorkOnlyCredit("Own work by Jane Doe"), false);
+  });
+
+  it("string vazia → false", () => {
+    assert.equal(isOwnWorkOnlyCredit(""), false);
   });
 });
 

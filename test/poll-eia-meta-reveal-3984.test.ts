@@ -55,6 +55,33 @@ describe("renderEiaMetaHtml (#3984, pure)", () => {
     assert.match(html, /eia-meta-description/);
     assert.doesNotMatch(html, /eia-meta-credit/);
   });
+
+  it("#4258 item 2: credit='Own work' (edição antiga já gravada no KV) → suprimido, nunca exibido", () => {
+    // Defensivo: cobre edições compostas ANTES do fix na origem
+    // (scripts/eia-compose.ts), que já têm 'Own work' cru gravado em
+    // eiameta:{edition} — corrigir só a origem não retroage.
+    const html = renderEiaMetaHtml({ description: "Uma ave rara.", credit: "Own work" });
+    assert.match(html, /eia-meta-description/);
+    assert.doesNotMatch(html, /eia-meta-credit/);
+    assert.doesNotMatch(html, /Own work/);
+  });
+
+  it("#4258 item 2: credit='Own work' + description vazia → string vazia (bloco inteiro omitido, não só o <p>)", () => {
+    const html = renderEiaMetaHtml({ description: "", credit: "Own work" });
+    assert.equal(html, "");
+  });
+
+  it("#4258 item 2: variantes de case/espaço ('own work', 'OWN WORK', com espaço) também suprimidas", () => {
+    assert.doesNotMatch(renderEiaMetaHtml({ description: "D.", credit: "own work" }), /eia-meta-credit/);
+    assert.doesNotMatch(renderEiaMetaHtml({ description: "D.", credit: "OWN WORK" }), /eia-meta-credit/);
+    assert.doesNotMatch(renderEiaMetaHtml({ description: "D.", credit: "  Own work  " }), /eia-meta-credit/);
+  });
+
+  it("#4258 item 2: crédito real que só CONTÉM 'own work' como substring não é suprimido (só o campo INTEIRO)", () => {
+    const html = renderEiaMetaHtml({ description: "D.", credit: "Own work by Jane Doe" });
+    assert.match(html, /eia-meta-credit/);
+    assert.match(html, /Own work by Jane Doe/);
+  });
 });
 
 // ── POST /admin/eiameta ──────────────────────────────────────────────────────

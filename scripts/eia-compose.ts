@@ -753,6 +753,18 @@ function truncateVerboseArtistText(text: string): string {
   return candidate;
 }
 
+// #4258 item 2: Wikimedia grava "Own work" (e variantes localizadas/em inglês
+// equivalentes) no campo `credit`/`artist` quando quem enviou a imagem é o
+// próprio fotógrafo, sem propagar um nome de verdade pra API — pro leitor não
+// é informação nenhuma, é ruído ("Own work" não diz QUEM tirou a foto).
+// Exportado pra reuso: mesmo predicado precisa rodar no Worker
+// (`renderEiaMetaHtml`, index.ts) pra suprimir credit já gravado no KV de
+// edições antigas — bundle do Worker não alcança scripts/**, ver mesmo
+// padrão de espelhamento em session-cookie.ts/subscriber-verify.ts.
+export function isOwnWorkOnlyCredit(text: string): boolean {
+  return /^(own work|trabalho próprio|self-photographed)$/i.test(text.trim());
+}
+
 function extractArtistName(artistText: string | undefined): string {
   // Campo ausente → creditar a instituição (comportamento anterior preservado)
   if (!artistText) return "Wikimedia Commons";
@@ -760,6 +772,10 @@ function extractArtistName(artistText: string | undefined): string {
   // Wikimedia frequentemente retorna "Unknown" ou "Unknown author" para domínio
   // público antigo sem atribuição — tratar como desconhecido em vez de publicar "Unknown".
   if (!stripped || /^unknown(\s+author)?$/i.test(stripped)) return "autor desconhecido";
+  // #4258 item 2: "Own work" caindo aqui (via fallback `artist?.text ??
+  // credit?.text` no call site) não é um NOME de artista — mesmo
+  // tratamento do campo ausente, creditar a instituição.
+  if (isOwnWorkOnlyCredit(stripped)) return "Wikimedia Commons";
   return truncateVerboseArtistText(stripped);
 }
 
@@ -1032,7 +1048,11 @@ async function main(): Promise<void> {
   unlinkSync(rawPath);
 
   // 4. Log used
-  const credit = stripHtml(image.credit?.text ?? image.artist?.text ?? "");
+  // #4258 item 2: "Own work" cru vira "" — vazio omite o <p> de crédito na
+  // revelação do jogo (renderEiaMetaHtml, workers/poll/src/index.ts já trata
+  // "" como "sem crédito", nenhuma mudança necessária lá pra este caminho).
+  const creditRaw = stripHtml(image.credit?.text ?? image.artist?.text ?? "");
+  const credit = isOwnWorkOnlyCredit(creditRaw) ? "" : creditRaw;
   runScript("scripts/eia-log-used.ts", [
     "--edition",
     edition,
