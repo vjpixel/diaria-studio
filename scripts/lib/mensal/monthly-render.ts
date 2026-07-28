@@ -757,21 +757,31 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
 
   const header = renderKicker(displayTitle);
 
-  // Rodapé de seção (CTA) — parágrafo final que CONTÉM um link markdown mas não
-  // COMEÇA com um. Sem isto ele cairia no `descBuf` do último item e sairia
-  // concatenado no parágrafo daquele tutorial (o CTA do Use Melhor renderizava
-  // como se fosse continuação da descrição do 3º item).
+  // CTA de seção — parágrafo que CONTÉM um link markdown mas não COMEÇA com um,
+  // na primeira ou na última posição da seção. Sem isto ele cairia no `descBuf`
+  // e sairia concatenado no parágrafo de um dos tutoriais (o CTA do Use Melhor
+  // renderizava como se fosse continuação da descrição de um item).
   //
   // A regra é inequívoca porque o template proíbe link na descrição ("No Use
-  // Melhor e no Radar, o título é a âncora") — só título e rodapé têm link, e
-  // só o título COMEÇA com ele. Descrição sem link nunca é confundida.
+  // Melhor e no Radar, o título é a âncora") — só título e CTA têm link, e só o
+  // título COMEÇA com ele. Descrição sem link nunca é confundida.
+  //
+  // Aceita nas duas pontas de propósito: o CTA fecha ou abre a seção conforme a
+  // decisão editorial, sem exigir mudança de código pra mover a linha.
+  const isCta = (p: string) => !/^\[/.test(p) && /\]\(https?:\/\//.test(p);
   const paras = content.split(/\n\s*\n/).map((p) => p.trim()).filter((p) => p);
-  const last = paras[paras.length - 1];
+  let intro: string | null = null;
   let footer: string | null = null;
-  if (paras.length > 1 && last && !/^\[/.test(last) && /\]\(https?:\/\//.test(last)) {
-    footer = last;
-    content = paras.slice(0, -1).join("\n\n");
+  let corpo = paras;
+  if (corpo.length > 1 && isCta(corpo[0])) {
+    intro = corpo[0];
+    corpo = corpo.slice(1);
   }
+  if (corpo.length > 1 && isCta(corpo[corpo.length - 1])) {
+    footer = corpo[corpo.length - 1];
+    corpo = corpo.slice(0, -1);
+  }
+  if (intro || footer) content = corpo.join("\n\n");
 
   // Items: [título](url) + blank line + descrição (separados por blank entre itens).
   // split(/\n\n+/) quebra título e descrição em chunks separados — a descrição
@@ -811,15 +821,17 @@ export function renderLinkListSection(chunk: string, displayTitle: string): stri
     })
     .join("\n");
 
-  // #4040: posição própria (`use-melhor`) em vez do `inline` genérico — senão o
-  // CTA cairia no mesmo utm_campaign do "aqui" da APRESENTAÇÃO e de qualquer
-  // link no meio da prosa dos destaques, e não daria pra medir se a seção mais
-  // clicada da peça é de fato o melhor lugar pro convite de cadastro.
-  const footerHtml = footer
-    ? `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(footer, "use-melhor")}</p>`
-    : "";
+  // #4040: posição própria derivada da SEÇÃO (`use-melhor`, `radar`) em vez do
+  // `inline` genérico — senão o CTA cairia no mesmo utm_campaign do "aqui" da
+  // APRESENTAÇÃO, dos wordmarks e de qualquer link no meio da prosa, e não
+  // daria pra medir se a seção mais clicada da peça é de fato o melhor lugar
+  // pro convite de cadastro. Na 2606-07 esse link raiz aparecia 7× com o MESMO
+  // utm_campaign — os cliques chegavam somados e sem origem.
+  const posicao = slugifySecao(displayTitle);
+  const ctaHtml = (texto: string) =>
+    `<p style="margin:0 0 20px 0;font-family:${FONT_SANS};color:${INK};">${renderInline(texto, posicao)}</p>`;
 
-  return header + itemsHtml + footerHtml;
+  return header + (intro ? ctaHtml(intro) : "") + itemsHtml + (footer ? ctaHtml(footer) : "");
 }
 
 /** @deprecated back-compat: use renderLinkListSection. */

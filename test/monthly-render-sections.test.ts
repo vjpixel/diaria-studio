@@ -71,35 +71,42 @@ describe("renderLinkListSection", () => {
     assert.ok(html.includes("Claude chega a PMEs"));
   });
 
-  // CTA de rodapé do Use Melhor: parágrafo final que CONTÉM link mas não COMEÇA
-  // com um. Antes deste suporte ele era engolido pelo descBuf e saía concatenado
-  // na descrição do último item — o CTA parecia parte do tutorial.
-  const chunkComCta = [
-    chunk,
-    "",
-    "Dicas como essas saem todos os dias na edição diária. Para receber, [cadastre-se gratuitamente](https://diar.ia.br/?utm_source=clarice&utm_term=use-melhor).",
-  ].join("\n");
+  // CTA de seção: parágrafo que CONTÉM link mas não COMEÇA com um, na 1ª ou na
+  // última posição. Sem este suporte ele era engolido pelo descBuf e saía
+  // concatenado na descrição de um item — o CTA parecia parte do tutorial.
+  const CTA =
+    "Dicas como essas saem todos os dias na edição diária. Para receber, [cadastre-se gratuitamente](https://diar.ia.br/?utm_source=clarice).";
+  const linhas = chunk.split("\n");
+  // Posição de produção (#Use Melhor): logo após o rótulo, antes do 1º item.
+  const chunkCtaNoTopo = [linhas[0], "", CTA, ...linhas.slice(1)].join("\n");
+  const chunkCtaNoFim = [chunk, "", CTA].join("\n");
 
-  it("CTA de rodapé sai em parágrafo próprio, não colado na descrição do último item", () => {
-    const html = renderLinkListSection(chunkComCta, "Use Melhor do Mês");
-    assert.ok(html.includes("diar.ia.br"), "o link do CTA sobrevive ao render");
+  it("CTA no topo sai entre o kicker e o 1º item, em parágrafo próprio", () => {
+    const html = renderLinkListSection(chunkCtaNoTopo, "Use Melhor do Mês");
+    const idxCta = html.indexOf("Dicas como essas");
+    const idxItem1 = html.indexOf("Claude chega a PMEs");
+    assert.ok(idxCta > -1, "CTA ausente do render");
+    assert.ok(idxCta < idxItem1, "CTA tem que vir antes do 1º tutorial");
     assert.ok(
-      !/Maior corte de uma vez só\.\s*Dicas como essas/.test(html),
-      "CTA não pode ser concatenado na descrição do último item",
+      html.slice(idxCta, idxItem1).includes("</p>"),
+      "há fechamento de parágrafo entre o CTA e o 1º item",
     );
+    // Não pode ser absorvido como descrição de item nenhum.
+    assert.doesNotMatch(html, /Dicas como essas[^<]*Pacote com conectores/);
+  });
+
+  it("CTA no fim também é reconhecido (mover a linha não exige mudança de código)", () => {
+    const html = renderLinkListSection(chunkCtaNoFim, "Use Melhor do Mês");
     const idxDesc = html.indexOf("Maior corte de uma vez só.");
     const idxCta = html.indexOf("Dicas como essas");
     assert.ok(idxDesc > -1 && idxCta > idxDesc, "CTA vem depois dos itens");
-    assert.ok(
-      html.slice(idxDesc, idxCta).includes("</p>"),
-      "há fechamento de parágrafo entre a última descrição e o CTA",
-    );
+    assert.doesNotMatch(html, /Maior corte de uma vez só\.\s*Dicas como essas/);
   });
 
-  it("descrição sem link nunca é confundida com rodapé", () => {
+  it("descrição sem link nunca é confundida com CTA de seção", () => {
     const html = renderLinkListSection(chunk, "Radar do Mês");
     assert.ok(html.includes("Maior corte de uma vez só."));
-    // 2 itens → 2 títulos ancorados; nenhum parágrafo órfão de rodapé.
+    // 2 itens → 2 títulos ancorados; nenhum parágrafo órfão de CTA.
     assert.equal((html.match(/<a href="https:\/\//g) || []).length, 2);
   });
 });
