@@ -75,9 +75,15 @@ import type {
   SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
-import { statSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { REVIEW_FILES } from "./studio-review.ts";
+// #4133: mesma definição de padrão perigoso já usada pelo guard de escrita do
+// PUT/painel (`saveReviewFile`, #4077/#4132) e pelo lint gate-blocking do
+// Stage 4 (`checkNoXmlArtifacts`) — o chat drawer precisa da MESMA rede de
+// segurança no seu PRÓPRIO caminho de escrita (ver seção "guard de conteúdo"
+// mais abaixo), nunca duplicando a regex em um 3º lugar.
+import { stripTrailingToolCallArtifact } from "../lib/lint-checks/no-xml-artifacts.ts";
 
 // ─── contrato de wire (testável sem SDK real) ──────────────────────────────
 
@@ -1207,11 +1213,76 @@ export function evaluateEditGuard(params: {
   return { blocked: true, reason: EDIT_GUARD_STALE_MESSAGE(params.filePath) };
 }
 
-/** Hook `PostToolUse` (#3806): depois de um `Read`/`Edit`/`Write` bem-sucedido
- * sobre um arquivo revisável, grava o mtime ATUAL em disco como "o que o
- * agente sabe" — inclui `Edit`/`Write` (não só `Read`) pra que uma 2ª edição
- * no MESMO turno não seja bloqueada comparando contra o carimbo PRÉ-edição
- * (a própria escrita do agente já é conhecimento fresco válido). */
+// ─── guard de conteúdo: tag de tool-call vazada (#4133) ────────────────────
+//
+// Achado do #4133 (investigação de origem do #4077/#4132): o guard de
+// frescor acima intercepta `Edit`/`Write` em arquivo revisável (`PreToolUse`/
+// `PostToolUse`, os ÚNICOS pontos de interceptação possíveis pra essas tools
+// — ver doc-comment da seção anterior, `Edit`/`Write` são pré-aprovadas em
+// `.claude/settings.json` e nunca chegam em `canUseTool`), mas só valida
+// FRESCOR (mtime), nunca CONTEÚDO. `saveReviewFile` (`studio-review.ts`,
+// caminho do PUT/painel) strippa uma tag de tool-call crua (`</content>`,
+// `</invoke>`, `</function_calls>`) grudada no fim do conteúdo ANTES de
+// escrever — mas esse guard só cobre o caminho do painel; o chat drawer
+// escreve DIRETO no disco via `Edit`/`Write` do agente, sem nunca passar por
+// `saveReviewFile`. Se o payload de tool-call vazar nesse caminho (a
+// hipótese mais provável do #4077, nunca confirmada), o guard "na origem" do
+// #4132 é cego pra esse vetor — só o lint gate-blocking do Stage 4
+// (`no-xml-artifacts`, backstop independente da origem) pegaria, tarde
+// demais no fluxo (só no gate de revisão, não na escrita).
+//
+// Mesma escolha de design do #4077 item 3: STRIPPAR o artefato, não recusar
+// a escrita inteira — o conteúdo editorial legítimo que o agente escreveu
+// antes do artefato é preservado. Reusa a MESMA definição de padrão
+// (`stripTrailingToolCallArtifact`) pra nunca divergir das outras duas redes
+// de segurança (o strip no PUT e o lint do Stage 4).
+
+/** Lê `absPath`, strippa um artefato de tool-call grudado no fim (se houver)
+ * via `stripTrailingToolCallArtifact`, e reescreve o arquivo com o conteúdo
+ * sanitizado — chamado pelo hook `PostToolUse` (abaixo) DEPOIS de um
+ * `Edit`/`Write` bem-sucedido sobre um arquivo revisável guardado. Não há
+ * como prever aqui o conteúdo final de um `Edit` ANTES dele rodar (exigiria
+ * reimplementar a lógica de substituição da própria tool), então sanitizar
+ * DEPOIS — inspecionando o resultado real em disco — é o único ponto de
+ * interceptação viável (ao contrário do guard de frescor, que consegue
+ * bloquear ANTES via `PreToolUse` porque só compara timestamps, não
+ * conteúdo). Fail-soft: qualquer erro de leitura/escrita retorna `null`
+ * (nunca lança, nunca derruba o turno do chat) — mesma disciplina do resto
+ * do módulo. Retorna o texto do artefato removido (pra alimentar o
+ * `additionalContext` do hook, avisando o agente), ou `null` quando não havia
+ * nada pra remover. */
+export function sanitizeGuardedFileIfNeeded(absPath: string): string | null {
+  let raw: string;
+  try {
+    raw = readFileSync(absPath, "utf8");
+  } catch {
+    return null;
+  }
+  const { content, stripped } = stripTrailingToolCallArtifact(raw);
+  if (stripped === null) return null;
+  try {
+    writeFileSync(absPath, content, "utf8");
+  } catch {
+    return null;
+  }
+  return stripped;
+}
+
+/** Hook `PostToolUse` (#3806, guard de conteúdo #4133): depois de um
+ * `Read`/`Edit`/`Write` bem-sucedido sobre um arquivo revisável, grava o
+ * mtime ATUAL em disco como "o que o agente sabe" — inclui `Edit`/`Write`
+ * (não só `Read`) pra que uma 2ª edição no MESMO turno não seja bloqueada
+ * comparando contra o carimbo PRÉ-edição (a própria escrita do agente já é
+ * conhecimento fresco válido).
+ *
+ * #4133: ANTES de gravar esse carimbo, `Edit`/`Write` sobre um arquivo
+ * revisável guardado passam primeiro por `sanitizeGuardedFileIfNeeded` — se
+ * uma tag de tool-call crua vazou no fim do arquivo, ela é removida e o
+ * arquivo reescrito ANTES do carimbo de frescor ser lido, pra ele refletir o
+ * mtime PÓS-sanitização (senão a própria escrita deste guard mudaria o mtime
+ * de novo e a PRÓXIMA comparação de frescor do #3806 veria uma divergência
+ * autoinfligida, bloqueando a edição seguinte do agente por um motivo que
+ * não é dele). */
 function makeEditGuardPostToolUseHook(rootDir: string): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== "PostToolUse") return {};
@@ -1219,8 +1290,27 @@ function makeEditGuardPostToolUseHook(rootDir: string): HookCallback {
     const filePath = extractFilePathInput(input.tool_input);
     if (!filePath) return {};
     const abs = resolve(filePath);
+
+    let sanitizedArtifact: string | null = null;
+    if ((input.tool_name === "Edit" || input.tool_name === "Write") && isGuardedReviewPath(rootDir, abs)) {
+      sanitizedArtifact = sanitizeGuardedFileIfNeeded(abs);
+    }
+
     const mtime = statMtimeIso(abs);
     if (mtime !== null) recordKnownFileMtime(rootDir, abs, mtime);
+
+    if (sanitizedArtifact !== null) {
+      return {
+        hookSpecificOutput: {
+          hookEventName: "PostToolUse",
+          additionalContext:
+            `Aviso automático (#4133): uma tag de tool-call crua (${JSON.stringify(sanitizedArtifact)}) ` +
+            `apareceu grudada no fim de ${filePath} depois desta edição e foi removida automaticamente antes ` +
+            `de persistir em disco — mesma classe de corrupção do #4077. Não repita esse padrão; se precisar ` +
+            `confirmar o conteúdo atual do arquivo, releia com Read.`,
+        },
+      };
+    }
     return {};
   };
 }
