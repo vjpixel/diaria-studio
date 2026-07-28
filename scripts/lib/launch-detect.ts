@@ -97,6 +97,14 @@ export interface LaunchCandidate {
   suggested_domain?: string;
 }
 
+export interface DomainMismatchCandidate {
+  is_candidate: boolean;
+  /** Empresa identificada por keyword no título/summary. */
+  matched_company?: string;
+  /** Domínio oficial sugerido pra busca de fonte primária. */
+  suggested_domain?: string;
+}
+
 /**
  * Detecta se um artigo é candidato a virar LANÇAMENTO via fonte primária.
  *
@@ -161,6 +169,58 @@ export function detectLaunchCandidate(article: {
   return {
     is_candidate: true,
     matched_keyword: matchedKeyword,
+    matched_company: matchedCompany,
+    suggested_domain: suggestedDomain,
+  };
+}
+
+/**
+ * #4135 item 2: variante de `detectLaunchCandidate` SEM a Regra 1 (verbo de
+ * lançamento) — só empresa conhecida (Regra 2) + domínio não-oficial (Regra
+ * 3). Mais propensa a falso-positivo do que a original (análise/opinião/
+ * retrospectiva citam empresa conhecida sem ser cobertura de lançamento) —
+ * por isso NÃO é chamada de forma solta: o chamador (`review-highlight-source.ts`)
+ * só invoca quando o destaque já está no bucket `lancamento` (classificação
+ * prévia do categorizer), que reduz a superfície de falso-positivo sem exigir
+ * heurística de linguagem adicional (decisão de calibragem do editor, #4135).
+ */
+export function detectDomainMismatchCandidate(article: {
+  title?: string;
+  summary?: string | null;
+  url?: string;
+}): DomainMismatchCandidate {
+  const title = article.title ?? "";
+  const summary = article.summary ?? "";
+  const haystack = `${title}\n${summary}`;
+
+  let matchedCompany: string | undefined;
+  let suggestedDomain: string | undefined;
+  for (const { keyword, domain } of COMPANY_TO_DOMAIN) {
+    const m = haystack.match(keyword);
+    if (m) {
+      matchedCompany = m[0];
+      suggestedDomain = domain;
+      break;
+    }
+  }
+  if (!matchedCompany || !suggestedDomain) {
+    return { is_candidate: false };
+  }
+
+  if (article.url) {
+    let host = "";
+    try {
+      host = new URL(article.url).hostname.replace(/^www\./, "");
+    } catch {
+      host = "";
+    }
+    if (host && (host === suggestedDomain || host.endsWith(`.${suggestedDomain}`))) {
+      return { is_candidate: false };
+    }
+  }
+
+  return {
+    is_candidate: true,
     matched_company: matchedCompany,
     suggested_domain: suggestedDomain,
   };

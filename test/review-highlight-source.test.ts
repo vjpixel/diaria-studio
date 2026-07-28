@@ -95,4 +95,49 @@ describe("reviewHighlightSource — destaque lançamento com URL de imprensa (#1
     assert.equal(total, 2);
     assert.equal(flagged.length, 0);
   });
+
+  it("flaga destaque bucket=lancamento SEM verbo de anúncio, só empresa+domínio de imprensa (#4135 item 2)", () => {
+    const highlights = [
+      {
+        bucket: "lancamento",
+        article: {
+          title: "Novo modelo Claude Opus 5 chama atenção de desenvolvedores",
+          url: "https://tecnoblog.net/noticias/claude-opus-5-anthropic/",
+        },
+      },
+    ];
+    const { flagged } = reviewHighlightSource(highlights);
+    assert.equal(flagged.length, 1, "bucket=lancamento sem verbo ainda deve ser flagado (item 2)");
+    assert.equal(flagged[0].match_type, "domain_mismatch");
+    assert.equal(flagged[0].suggested_domain, "anthropic.com");
+  });
+
+  it("NÃO flaga destaque SEM verbo se o bucket NÃO é lancamento (escopo do item 2 evita falso-positivo de análise/opinião)", () => {
+    const highlights = [
+      {
+        bucket: "noticias",
+        article: {
+          title: "Por que o Claude Opus 5 divide opiniões entre desenvolvedores",
+          url: "https://tecnoblog.net/analise/claude-opus-5-opiniao/",
+        },
+      },
+    ];
+    const { flagged } = reviewHighlightSource(highlights);
+    assert.equal(flagged.length, 0, "sem bucket=lancamento, análise/opinião não deve ser flagada");
+  });
+
+  it("caso verbo (match_type='verb') continua marcado corretamente ao lado do novo campo", () => {
+    const highlights = [
+      {
+        bucket: "lancamento",
+        article: {
+          title: "NVIDIA lança o RTX Spark, novo PC de IA para desktop",
+          url: "https://canaltech.com.br/hardware/nvidia-rtx-spark/",
+        },
+      },
+    ];
+    const { flagged } = reviewHighlightSource(highlights);
+    assert.equal(flagged.length, 1);
+    assert.equal(flagged[0].match_type, "verb");
+  });
 });

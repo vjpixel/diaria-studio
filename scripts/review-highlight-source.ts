@@ -11,6 +11,15 @@
  * fase 2). Só surfa o suspeito com a fonte primária sugerida (suggested_domain),
  * pra o editor trocar no gate. É 'sinalizar melhor', não 'buscar ativamente'.
  *
+ * #4135 item 2: além do sinal de `detectLaunchCandidate` (verbo de lançamento +
+ * empresa + domínio não-oficial), destaques cujo `bucket` já é `lancamento`
+ * (classificação prévia do categorizer) também passam por
+ * `detectDomainMismatchCandidate` — mesma checagem de empresa+domínio, mas
+ * SEM exigir verbo. O scoping por bucket é a mitigação de falso-positivo
+ * (análise/opinião não cai em `lancamento`); ver launch-detect.ts para a
+ * nota de calibragem completa. `match_type` no resultado distingue os dois
+ * mecanismos ("verb" vs "domain_mismatch").
+ *
  * Uso:
  *   npx tsx scripts/review-highlight-source.ts --approved data/editions/AAMMDD/_internal/01-approved.json
  *
@@ -22,7 +31,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
-import { detectLaunchCandidate } from "./lib/launch-detect.ts";
+import { detectLaunchCandidate, detectDomainMismatchCandidate } from "./lib/launch-detect.ts";
 import { isOfficialLancamentoUrl } from "./categorize.ts";
 
 export interface HighlightArticle {
@@ -33,6 +42,8 @@ export interface HighlightArticle {
 }
 
 export interface HighlightEntry {
+  /** Categoria atribuída pelo categorizer (#4135 item 2 checa "lancamento"). */
+  bucket?: string;
   article?: HighlightArticle;
   [k: string]: unknown;
 }
@@ -43,6 +54,8 @@ export interface FlaggedHighlight {
   matched_keyword?: string;
   matched_company?: string;
   suggested_domain?: string;
+  /** #4135 item 2: qual mecanismo flagou — verbo de lançamento ou só domínio. */
+  match_type: "verb" | "domain_mismatch";
 }
 
 export interface ReviewResult {
@@ -61,15 +74,35 @@ export function reviewHighlightSource(highlights: HighlightEntry[]): ReviewResul
     const a: HighlightArticle = (h?.article ?? h) as HighlightArticle;
     const url = typeof a?.url === "string" ? a.url : "";
     if (!url) continue;
+    const title = typeof a.title === "string" ? a.title : undefined;
+
     const det = detectLaunchCandidate({ title: a.title, summary: a.summary, url });
     if (det.is_candidate && !isOfficialLancamentoUrl(url)) {
       flagged.push({
         url,
-        title: typeof a.title === "string" ? a.title : undefined,
+        title,
         matched_keyword: det.matched_keyword,
         matched_company: det.matched_company,
         suggested_domain: det.suggested_domain,
+        match_type: "verb",
       });
+      continue;
+    }
+
+    // #4135 item 2: sem verbo de lançamento, mas o categorizer já classificou
+    // este destaque como `lancamento` — checa só empresa+domínio (scoping por
+    // bucket é a mitigação de falso-positivo, ver launch-detect.ts).
+    if (h?.bucket === "lancamento") {
+      const dm = detectDomainMismatchCandidate({ title: a.title, summary: a.summary, url });
+      if (dm.is_candidate && !isOfficialLancamentoUrl(url)) {
+        flagged.push({
+          url,
+          title,
+          matched_company: dm.matched_company,
+          suggested_domain: dm.suggested_domain,
+          match_type: "domain_mismatch",
+        });
+      }
     }
   }
   return { total: highlights.length, flagged };
@@ -112,7 +145,8 @@ function main(): void {
     for (const f of result.flagged) {
       const titleHint = f.title ? ` ("${f.title.slice(0, 60)}")` : "";
       const sug = f.suggested_domain ? ` → fonte oficial provável: ${f.suggested_domain}` : "";
-      console.error(`  ${f.url}${titleHint}${sug}`);
+      const mechanism = f.match_type === "domain_mismatch" ? " [sem verbo, bucket=lancamento, #4135]" : "";
+      console.error(`  ${f.url}${titleHint}${sug}${mechanism}`);
     }
     console.error(
       "Revise no gate: lançamento deve linkar a newsroom/site oficial, não cobertura de terceiro (#160 estendido a destaques).",
