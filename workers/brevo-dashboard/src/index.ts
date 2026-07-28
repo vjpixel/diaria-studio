@@ -69,6 +69,7 @@ import {
   buildInflightCoalescedCampaignsJson,
   coalesceRefresh,
   normalizePostmasterSpamEntry,
+  buildFatalErrorFallback,
   type LastGoodCampaignsPayload,
 } from "./brevo-api.ts";
 import { LASTGOOD_TTL, POSTMASTER_SPAM_KV_KEY } from "./types.ts";
@@ -221,7 +222,13 @@ async function buildCampaignsResponse(
     if (e instanceof BrevoRateLimitError) {
       return rateLimitResponse(e.retryAfterSecs, false);
     }
-    return new Response(`Brevo fetch error: ${(e as Error).message}`, { status: 502 });
+    // #4187: `e` nem sempre é um Error (fetch nativo/dependência externa pode
+    // lançar qualquer valor) -- (e as Error).message em cima de um não-Error
+    // é `undefined`, e o `${...}` template literal aceita isso sem lançar
+    // (interpola a string "undefined"). Mantido defensivo mesmo assim para
+    // consistência com o guard equivalente abaixo (buildDashboardResponse),
+    // onde o mesmo padrão ALIMENTA escHtml() e lá sim pode lançar.
+    return new Response(`Brevo fetch error: ${e instanceof Error ? e.message : String(e)}`, { status: 502 });
   } finally {
     if (lockAcquired) await releaseRefreshLock(env, path);
   }
@@ -343,8 +350,15 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
       // original: aba de Cupons pós-deploy oculta). Throw-safe: degrada p/ 503.
       return buildRateLimitFallback(env, e.retryAfterSecs, planCredits);
     }
+    // #4187 (achado do diagnóstico do 1101): `e` nem sempre é um Error --
+    // `(e as Error).message` num valor não-Error é `undefined`, e
+    // `escHtml(undefined)` lança (`.replace` em `undefined`) DENTRO deste
+    // catch, sem nenhum try em volta -- exatamente o tipo de exceção que
+    // escapa até o `fetch()` handler e vira Error 1101 no Cloudflare. Guard
+    // torna este catch genuinamente never-throw, fechando essa lacuna
+    // independente de qualquer causa raiz específica.
     return new Response(
-      `<!DOCTYPE html><html><body><h1>Dashboard error</h1><p>${escHtml((e as Error).message)}</p></body></html>`,
+      `<!DOCTYPE html><html><body><h1>Dashboard error</h1><p>${escHtml(e instanceof Error ? e.message : String(e))}</p></body></html>`,
       { status: 502, headers: { "Content-Type": "text/html; charset=utf-8" } },
     );
   } finally {
@@ -355,8 +369,13 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
   }
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+/**
+ * #4187: corpo original do handler `fetch()` -- extraído pra função própria
+ * pra poder ser envolvido por um catch de última instância abaixo (`export
+ * default.fetch`). Toda a lógica de roteamento já existente permanece
+ * INALTERADA aqui; a mudança real é só a camada de segurança que a envolve.
+ */
+async function handleFetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -522,6 +541,35 @@ export default {
     }
 
     return new Response("Not found", { status: 404 });
+}
+
+export default {
+  /**
+   * #4187: catch de última instância -- `Error 1101` do Cloudflare é sempre
+   * uma exceção JS não-tratada escapando deste handler, independente da
+   * causa raiz (Brevo, KV, bug de render ainda não catalogado). Todo o
+   * roteamento real (auth, cache de borda, rotas) já é feito por
+   * `handleFetch`, cujas rotas individuais já têm seus próprios catches
+   * específicos (BrevoRateLimitError → fallback stale, erro genérico → 502)
+   * -- este é o piso: se ALGO mesmo assim escapar de todos eles, nunca deixa
+   * a exceção subir pro runtime. `buildFatalErrorFallback` por si só já não
+   * lança (degrada internamente pro estado mínimo em qualquer falha), mas o
+   * `try/catch` extra aqui é defesa em profundidade -- o mesmo tipo de
+   * promessa que várias funções já faziam antes deste incidente.
+   */
+  async fetch(request: Request, env: Env): Promise<Response> {
+    try {
+      return await handleFetch(request, env);
+    } catch (e) {
+      try {
+        return await buildFatalErrorFallback(env, e);
+      } catch {
+        return new Response("Dashboard indisponível. Tente novamente em instantes.", {
+          status: 500,
+          headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+        });
+      }
+    }
   },
   // #3553 (parte B): scheduled() (Cron Trigger) removido — sem `[triggers]`
   // em wrangler.toml, nenhuma atualização automática roda mais neste Worker.

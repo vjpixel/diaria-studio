@@ -55,6 +55,7 @@ import {
   readKvTabs,
   CAMPAIGNS_FETCH_LIMIT,
   BrevoRateLimitError,
+  buildRateLimitFallback, // #4187: reusa o fallback last-good+banner do Worker
 } from "../../workers/brevo-dashboard/src/brevo-api.ts";
 import { renderDashboardHtml, escHtml } from "../../workers/brevo-dashboard/src/sections-core.ts";
 import type { Env, ContactsSummary } from "../../workers/brevo-dashboard/src/types.ts";
@@ -98,6 +99,12 @@ class MemoryKv {
   async put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void> {
     const expiresAt = opts?.expirationTtl ? Date.now() + opts.expirationTtl * 1000 : null;
     this.store.set(key, { value, expiresAt });
+  }
+
+  /** #4186: fecha o gap dormente de `MinimalKvNamespace.delete` — em memória,
+   * não há como falhar, então não precisa de try/catch. */
+  async delete(key: string): Promise<void> {
+    this.store.delete(key);
   }
 }
 
@@ -187,17 +194,6 @@ function notConfiguredHtml(): string {
 </body></html>`;
 }
 
-function rateLimitedHtml(retryAfterSecs: number | null): string {
-  const wait = retryAfterSecs !== null ? `~${retryAfterSecs}s` : "alguns minutos";
-  return `<!DOCTYPE html>
-<html lang="pt-BR">
-<head><meta charset="utf-8"><title>Painel Clarice — rate limit</title></head>
-<body style="font-family:sans-serif;max-width:640px;margin:60px auto;padding:0 20px">
-<h1>Painel Clarice (local)</h1>
-<p>A Brevo API está em rate-limit no momento. Tente de novo em ${escHtml(wait)}.</p>
-</body></html>`;
-}
-
 function errorHtml(message: string): string {
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -215,17 +211,33 @@ async function renderClariceDashboardHtmlUncached(): Promise<string> {
     return notConfiguredHtml();
   }
 
+  // #4187: declarado FORA do try (não `const` lá dentro) para que o catch de
+  // BrevoRateLimitError abaixo consiga repassar o último valor conhecido pro
+  // fallback (mesmo padrão de `planCredits` em buildDashboardResponse,
+  // index.ts) -- sem isso, o fallback cairia sempre no "kv-only" mesmo
+  // quando um fetch fresco já tinha sucedido nesta própria chamada.
+  let planCredits: number | null = null;
   try {
     // Mesma ordem sequencial (não paralela) do fetch ao vivo do Worker
     // (index.ts): créditos (barato) → agendadas (barato) → enviadas (caro,
     // ~100+ GETs) — preserva o mesmo perfil de concorrência contra a janela
     // de rate-limit da Brevo que a produção já assume como seguro.
-    const planCredits = await fetchPlanCredits(env, "cached").catch(() => null);
-    const scheduled = await fetchScheduledCampaigns(env, 50, false).catch((e) => {
+    //
+    // #4186: `skipKvCache: true` (último argumento) nas 3 chamadas -- o
+    // painel Studio NÃO deve ler/escrever `list:{id}`/`stats:{id}`/
+    // `brevo:plan-credits` no KV COMPARTILHADO de produção (mesmo namespace
+    // desde #4165/#4173). Medido: sem isso, abrir o painel local disparava
+    // até ~100 GETs na Brevo com a key de produção e escrevia no KV público
+    // sem nenhuma coordenação (`tryAcquireRefreshLock`/`coalesceRefresh` só
+    // existem em index.ts) -- contribuiu pro incidente de rate-limit
+    // registrado no #4187. `readKvTabs` abaixo continua usando o KV real
+    // normalmente -- isso NÃO muda (é o que #4165/#4173 pediram).
+    planCredits = await fetchPlanCredits(env, "cached", true).catch(() => null);
+    const scheduled = await fetchScheduledCampaigns(env, 50, false, undefined, true).catch((e) => {
       console.error("[dashboard-clarice] fetchScheduledCampaigns falhou — seção de agendadas oculta:", e instanceof Error ? e.message : e);
       return [];
     });
-    const campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, false);
+    const campaigns = await fetchRecentCampaigns(env, CAMPAIGNS_FETCH_LIMIT, false, undefined, true);
 
     // #4165/#4173: cohorts/couponUsage/eiaEngagement agora vêm do namespace KV
     // REAL (ver `buildEnv()`/docstring do módulo) — só ficam `null` quando as
@@ -256,9 +268,19 @@ async function renderClariceDashboardHtmlUncached(): Promise<string> {
     );
   } catch (e) {
     if (e instanceof BrevoRateLimitError) {
-      return rateLimitedHtml(e.retryAfterSecs);
+      // #4187: antes retornava uma tela de erro em branco (`rateLimitedHtml`,
+      // ver docstring removida) sem nenhum dado -- exatamente o sintoma
+      // observado pelo editor. Reusa o MESMO fallback do Worker
+      // (`buildRateLimitFallback`, banner + campanhas stale do KV
+      // `dash:lastgood:campaigns` + abas de KV frescas via readKvTabs) em vez
+      // de duplicar a lógica aqui. `env.STATS_CACHE` aqui é o namespace KV
+      // REAL (RemoteKvNamespace, #4165/#4173) quando as credenciais
+      // Cloudflare estão presentes -- então o mesmo `dash:lastgood:campaigns`
+      // que o Worker de produção grava fica disponível pro Studio também.
+      const response = await buildRateLimitFallback(env, e.retryAfterSecs, planCredits);
+      return response.text();
     }
-    return errorHtml((e as Error).message);
+    return errorHtml(e instanceof Error ? e.message : String(e));
   }
 }
 

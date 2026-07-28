@@ -276,13 +276,60 @@ export async function putTextToWorkerKV(
   }
 }
 
+/**
+ * #4186 (gap dormente P3): contraparte de EXCLUSÃO fetch-based, mesmo padrão
+ * de `getTextFromWorkerKV`/`putTextToWorkerKV` acima. Necessária porque
+ * `tryAcquireRefreshLock`/`releaseRefreshLock` (brevo-api.ts) chamam
+ * `kv.delete(...)` -- antes desta função, `RemoteKvNamespace` não tinha
+ * `delete` nenhum, então um call site futuro que exercitasse essa lógica a
+ * partir do Studio lançaria `TypeError: kv.delete is not a function` sem
+ * fail-soft. Hoje esses helpers só rodam a partir do Worker (`index.ts`),
+ * nunca do Studio -- não é bug ATIVO, só um gap que fica fechado por
+ * completude. Cloudflare KV DELETE responde 200 mesmo se a key já não
+ * existir (idempotente) -- só um !res.ok real (rede/auth) é erro de fato.
+ */
+export async function deleteTextFromWorkerKV(
+  key: string,
+  cfg: CloudflareKVConfig,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const accountId = cfg.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID;
+  const token = cfg.token ?? process.env.CLOUDFLARE_WORKERS_TOKEN;
+
+  if (!accountId || !token) {
+    throw new Error(
+      "deleteTextFromWorkerKV: CLOUDFLARE_ACCOUNT_ID ou CLOUDFLARE_WORKERS_TOKEN não definidos. " +
+        "Passar via cfg ou env.",
+    );
+  }
+  if (!cfg.kvNamespaceId) {
+    throw new Error("deleteTextFromWorkerKV: cfg.kvNamespaceId obrigatório");
+  }
+
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${cfg.kvNamespaceId}/values/${encodeURIComponent(key)}`;
+  const res = await fetchImpl(url, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(8000),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Cloudflare KV delete de '${key}' falhou (${res.status}): ${body.slice(0, 300)}`);
+  }
+}
+
 /** Formato mínimo que os call sites de `brevo-api.ts`/`readKvTabs` esperam de
- * `env.STATS_CACHE` (confirmado por grep — só `get(key, "json"|"text")` e
- * `put(key, value, {expirationTtl})`) — mesmo shape que `MemoryKv` (o stub em
+ * `env.STATS_CACHE` -- `get(key, "json"|"text")` e `put(key, value,
+ * {expirationTtl})`, usados por praticamente toda leitura/escrita, e
+ * `delete(key)` (#4186), usado só por `tryAcquireRefreshLock`/
+ * `releaseRefreshLock` (hoje exclusivo do Worker; ver docstring de
+ * `deleteTextFromWorkerKV` acima). Mesmo shape que `MemoryKv` (o stub em
  * `scripts/studio-ui/dashboard-clarice.ts`) já implementa. */
 export interface MinimalKvNamespace {
   get(key: string, type?: "json" | "text"): Promise<unknown>;
   put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>;
+  delete(key: string): Promise<void>;
 }
 
 /**
@@ -333,6 +380,18 @@ export class RemoteKvNamespace implements MinimalKvNamespace {
     } catch (e) {
       console.error(
         `[RemoteKvNamespace] put('${key}') falhou — no-op (fail-soft, #4165/#4173):`,
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+
+  /** #4186: fail-soft pelo mesmo motivo de `get`/`put` acima -- nunca lança. */
+  async delete(key: string): Promise<void> {
+    try {
+      await deleteTextFromWorkerKV(key, this.cfg, this.fetchImpl);
+    } catch (e) {
+      console.error(
+        `[RemoteKvNamespace] delete('${key}') falhou — no-op (fail-soft, #4186):`,
         e instanceof Error ? e.message : e,
       );
     }
