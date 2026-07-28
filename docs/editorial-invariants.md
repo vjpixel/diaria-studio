@@ -4,7 +4,7 @@ Gerado por `npx tsx scripts/list-invariants.ts` a partir de `scripts/lib/invaria
 
 Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada stage. Violations com `severity: error` bloqueiam transição; `warning` só registra.
 
-**Total**: 63 invariants.
+**Total**: 65 invariants.
 
 ## Static (estrutura do repo)
 
@@ -55,6 +55,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 | id | descrição | issue |
 |---|---|---|
 | `all-images-exist` | imagens obrigatórias (eia A/B + d1/d2 2x1/1x1; d3 2x1/1x1 condicional a destaque_count=3) (#2133/#2141/#2352) | #stage-3 |
+| `card-4x5-exists` | card social 4:5 (feed IG/FB, título embutido) existe pra cada destaque — mandatório por decisão do editor (#4090) | #4090 |
 | `eia-answer-resolved` | 01-eia.md tem eia_answer A\|B resolvido (#192) | #192 |
 | `prompts-clean` | Prompts não mencionam pixels nem Noite Estrelada (d3 condicional a destaque_count=3, #2352) | #editorial-rules |
 
@@ -64,6 +65,7 @@ Cada regra é verificada por `check-invariants.ts` antes do gate humano de cada 
 |---|---|---|
 | `box-divulgacao-alt-missing` | slot de box de divulgação com imagem mas sem alt: descritivo no snippet (#4086, warning-only) | #4086 |
 | `capture-failed-submission-count` | captura de newsletters (0b-bis) falhou — coverage line não pode afirmar '0 submissões' (#2878) | #2878 |
+| `card-4x5-upload-missing` | card 4:5 existe no disco mas 06-public-images.json não tem a entry d{N}_4x5 (#4090, warning-only) | #4090 |
 | `eia-credit-synced` | crédito do bloco É IA? em 02-reviewed.md bate com 01-eia.md, a fonte real do render (#3825) | #3825 |
 | `has-negative-impact-highlight` | ≥1 destaque tagueado negative_impact:true — repetido no gate consolidado (#3916, #3918, warning-only) | #3916 |
 | `image-content-fresh` | imagem de destaque bate com highlight D{N} atual (#1730) | #1730 |
