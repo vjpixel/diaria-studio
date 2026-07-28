@@ -40,11 +40,11 @@
  *     ou `data/` inacessível (sessão cloud sem o junction OneDrive, #2643)
  *     retornam `null`, nunca lançam.
  *
- * #4198: `parseUrlTitles`/`buildLinkTitleMap`/`loadLinkTitleMapForCycle`
- * espelham exatamente a camada acima, mas para o TÍTULO editorial de cada
- * item (o texto entre o prefixo `[tag]`/data opcional e a URL, ex: "Como ter
- * acesso à Alexa+" na linha `- 260630 — Como ter acesso à Alexa+ —
- * https://link.amazon/B0249coGp (5 cliques)`). Motivação: URLs opacas
+ * #4198: `parsePrioritizedUrlTitles`/`buildLinkTitleMap` espelham a camada
+ * acima (mesmo `splitRecognizedSectionBodies`), mas para o TÍTULO editorial
+ * de cada item (o texto entre o prefixo `[tag]`/data opcional e a URL, ex:
+ * "Como ter acesso à Alexa+" na linha `- 260630 — Como ter acesso à Alexa+
+ * — https://link.amazon/B0249coGp (5 cliques)`). Motivação: URLs opacas
  * (encurtadores, links de produto sem slug) caem no fallback de
  * `classifyLinkContent` (regra 4) e produzem rótulos ilegíveis (ex:
  * "B0249coGp (link.amazon)") nas tabelas "Links mais clicados" do dashboard
@@ -53,7 +53,12 @@
  * a CHAVE (mesmo cálculo independente que `render-links.ts` faz sobre as
  * URLs de clique da Brevo) — preserva a MESMA chave de agrupamento/seção já
  * em uso, o título é só um valor adicional consultado pela camada de render
- * na hora de EXIBIR o conteúdo (nunca na hora de agrupar).
+ * na hora de EXIBIR o conteúdo (nunca na hora de agrupar). Sem loader de I/O
+ * próprio ainda — um `loadLinkTitleMapForCycle` (espelhando
+ * `loadLinkSectionMapForCycle`) foi cogitado e removido antes do merge
+ * (nota inline logo após `buildLinkTitleMap` abaixo): sem consumidor real
+ * até o wiring KV/Studio (fora do escopo do #4198 nesta rodada), um wrapper
+ * de I/O sem chamador é só um export morto pro knip.
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -296,20 +301,11 @@ export function buildLinkTitleMap(
   return out;
 }
 
-/**
- * Carrega e parseia `data/monthly/{ciclo}/prioritized.md`, já resolvido pro
- * mapa CONTEÚDO→TÍTULO (#4198) — irmão de `loadLinkSectionMapForCycle`,
- * mesma convenção fail-soft (arquivo ausente, ciclo sem `prioritized.md`, ou
- * `data/` inacessível retornam `null`, nunca lançam) e a mesma restrição
- * `allowLegacyFallback: false`.
- */
-export function loadLinkTitleMapForCycle(cycle: string): Record<string, string> | null {
-  try {
-    const path = join(monthlyDir(cycle, { allowLegacyFallback: false }), "prioritized.md");
-    if (!existsSync(path)) return null;
-    const markdown = readFileSync(path, "utf-8");
-    return buildLinkTitleMap(parsePrioritizedUrlTitles(markdown));
-  } catch {
-    return null;
-  }
-}
+// NOTA (#4198, achado de CI/knip 260728): um `loadLinkTitleMapForCycle`
+// (I/O, espelhando `loadLinkSectionMapForCycle` acima) foi cogitado aqui mas
+// REMOVIDO antes do merge — sem nenhum consumidor ainda (nem produção nem
+// teste), knip acusa "unused export" corretamente. `buildLinkTitleMap` +
+// `parsePrioritizedUrlTitles` (ambos usados, ver testes) já compõem o
+// carregamento fim-a-fim (`buildLinkTitleMap(parsePrioritizedUrlTitles(fs.readFileSync(...)))`)
+// pra quando o wiring KV/Studio (escopo explicitamente fora deste PR — ver
+// PR body) precisar dele; reintroduzir o wrapper nesse momento é trivial.
