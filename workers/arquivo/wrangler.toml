@@ -1,0 +1,27 @@
+# workers/arquivo — página de arquivo estático com TODAS as edições publicadas
+# da Diar.ia (#4105).
+#
+# Problema: só 10.8% (24/223) das edições diárias estão indexadas pelo
+# Google — o site (hospedado no Beehiiv, domínio canônico diar.ia.br) expõe
+# quase nenhum link `<a href>` crawlable server-side pra edições antigas.
+#
+# Decisão do editor (comentário em #4105): Worker que server-renderiza uma
+# página HTML estática listando TODAS as edições publicadas, com `<a href>`
+# reais (sem JS client-side, sem paginação), reusando a mesma fonte de dados
+# do sitemap (`https://diar.ia.br/sitemap.xml`, parseado por
+# `scripts/lib/fetch-sitemap.ts`).
+#
+# Worker deliberadamente simples: sem KV, sem secrets, sem [assets] — src/index.ts
+# faz fetch do sitemap a cada request e renderiza on-the-fly (Cache-Control
+# de 1h absorve o resto via edge cache do Cloudflare).
+name = "arquivo"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Domínio de marca (arquivo.diar.ia.br), mesmo padrão de cursos.diar.ia.br
+# (#3698). workers_dev = true continua ativo como fallback.
+[[routes]]
+pattern = "arquivo.diar.ia.br"
+custom_domain = true
