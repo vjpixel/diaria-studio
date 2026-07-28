@@ -77,6 +77,93 @@ describe("buildCoverDataTransferJs — método primário (#1801 / #1500)", () =>
       "MIME check deve ser condicional a blob.type ser truthy",
     );
   });
+
+  // ─── #4203 regressions (edição 260728: panel fechado no template "HTML" +
+  // clique navegou pra fora do post ao casar o logo do Beehiiv) ─────────────
+
+  it("#4203 fix 1: SEMPRE tenta abrir o painel de thumbnail ANTES de ler o fileInput (não condiciona a !fileInput)", () => {
+    const js = buildCoverDataTransferJs("https://x/y.jpg");
+    const idxThumbSearch = js.indexOf("thumbRe.test(b.textContent");
+    const idxFileInputRead = js.indexOf("container ? container.querySelector");
+    assert.ok(idxThumbSearch !== -1, "deve buscar o botão de thumbnail via thumbRe");
+    assert.ok(idxFileInputRead !== -1, "deve ler fileInput escopado ao container");
+    assert.ok(
+      idxThumbSearch < idxFileInputRead,
+      "a busca/clique do botão de thumbnail deve vir ANTES da leitura do fileInput — " +
+        "o bug original só abria o painel quando fileInput JÁ estava ausente, o que nunca " +
+        "acontecia no template HTML (input genérico sempre presente)",
+    );
+  });
+
+  it("#4203 fix 1 (agravante): regex do botão casa tanto 'Web thumbnail' (UI atual) quanto 'Add thumbnail' (legado)", () => {
+    // Mesmo regex embutido no JS gerado — duplicado aqui de propósito (convenção
+    // do arquivo: travar o comportamento observável do JS gerado via regex de
+    // string, não via eval/DOM real — ver demais testes deste arquivo).
+    const thumbRe = /(web |add )?thumbnail/i;
+    assert.match("Web thumbnail", thumbRe, "deve casar 'Web thumbnail' — nome atual da UI (#4203)");
+    assert.match("Add thumbnail", thumbRe, "deve casar 'Add thumbnail' — nome legado, sem cover ainda");
+    assert.doesNotMatch("Add author", thumbRe, "não deve casar textos não relacionados a thumbnail");
+
+    const js = buildCoverDataTransferJs("https://x/y.jpg");
+    assert.match(js, /const thumbRe = \/\(web \|add \)\?thumbnail\/i;/, "JS gerado deve declarar o mesmo regex");
+    // Guard textual do bug original: o fallback antigo só procurava 'add thumbnail'
+    // sem cobrir 'web thumbnail' — garantir que o texto antigo isolado não é mais
+    // a ÚNICA fonte de match pro botão de abrir o painel.
+    assert.doesNotMatch(
+      js.split("clicked: uploaded img")[0], // só a metade "abrir painel", não a verificação pós-upload
+      /const addThumb = buttons\(\)\.find\(b => \/add thumbnail\/i\.test/,
+      "não deve mais existir o find antigo restrito só a 'add thumbnail' na etapa de ABRIR o painel",
+    );
+  });
+
+  it("#4203 fix 2: escopa o fileInput ao container do botão de thumbnail, não document.querySelector global incondicional", () => {
+    const js = buildCoverDataTransferJs("https://x/y.jpg");
+    assert.match(
+      js,
+      /let fileInput = container \? container\.querySelector\('input\[type="file"\]'\) : null;/,
+      "leitura primária de fileInput deve ser escopada ao container (não document global)",
+    );
+    const scopedIdx = js.indexOf("let fileInput = container ?");
+    const globalFallbackIdx = js.indexOf('fileInput = document.querySelector(\'input[type="file"]\');', scopedIdx + 1);
+    assert.ok(
+      globalFallbackIdx > scopedIdx,
+      "o fallback pra document.querySelector global só deve existir DEPOIS da tentativa escopada ao container",
+    );
+  });
+
+  it("#4203 fix 3: nunca clica em img dentro de <a> — guard !img.closest('a') presente no seletor de upload", () => {
+    const js = buildCoverDataTransferJs("https://x/y.jpg");
+    assert.match(js, /!i\.closest\('a'\)/, "deve excluir imagens dentro de <a> do clique de aplicar");
+  });
+
+  it("#4203 fix 4: filtra por dimensão mínima (>=100px) — exclui o logo do Beehiiv (16x15)", () => {
+    const js = buildCoverDataTransferJs("https://x/y.jpg");
+    assert.match(js, /const MIN_DIM = 100;/, "deve declarar threshold mínimo de 100px");
+    assert.match(js, /i\.naturalWidth >= MIN_DIM && i\.naturalHeight >= MIN_DIM/, "deve exigir largura E altura mínimas");
+  });
+
+  it("#4203: fixture negativa do incidente 260728 — logo output-onlinepngtools.png (16x15, dentro de <a>) casaria o regex de src positivo, mas é barrado por AMBOS os guards novos", () => {
+    const js = buildCoverDataTransferJs("https://x/y.jpg");
+    const logoSrc = "https://media.beehiiv.com/output-onlinepngtools.png";
+    // Documenta por que o incidente aconteceu: o regex de match positivo original
+    // (media\.beehiiv|beehiiv-images-production.*uploads) CASA o logo — por isso
+    // o defeito não era detectável só olhando esse regex isoladamente.
+    assert.match(logoSrc, /(media\.beehiiv|beehiiv-images-production.*uploads)/i);
+    assert.doesNotMatch(logoSrc, /static_assets|publication\.logo/i, "o guard de exclusão pré-existente também não pegava esse caso");
+    // Os dois guards novos (dimensão + <a>) é que fecham a lacuna — ambos presentes:
+    assert.match(js, /!i\.closest\('a'\)/);
+    assert.match(js, /i\.naturalWidth >= MIN_DIM && i\.naturalHeight >= MIN_DIM/);
+  });
+
+  it("#4203: a verificação pós-upload (addThumbAfter) permanece com o regex original — fora de escopo desta issue", () => {
+    // self-review: a issue pede fix só na abertura do painel + guards de clique;
+    // a checagem de 'Add thumbnail sumiu' pós-upload é deliberadamente deixada
+    // com o regex antigo /add thumbnail/i — ver Nota da issue #4203 (verificação
+    // via get_post().thumbnail_url fica pra um follow-up, não nesta issue).
+    const js = buildCoverDataTransferJs("https://x/y.jpg");
+    const postUploadSection = js.split("clicked: uploaded img")[1] ?? "";
+    assert.match(postUploadSection, /const addThumbAfter = buttons\(\)\.find\(b => \/add thumbnail\/i\.test/);
+  });
 });
 
 describe("aplicar/verificar capa por clique real (#1705)", () => {
