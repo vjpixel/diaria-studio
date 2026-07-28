@@ -18,23 +18,22 @@
 // Output: a PostToolUse `additionalContext` payload instructing Claude to run
 // the effort-aware /code-review on the new PR.
 //
-// #3326 (260711): default effort is `low` for EVERY PR, period — not just
-// `overnight/*` (#2754) or active-round branches (#3322). The editor opts
-// INTO more depth explicitly (e.g. "roda um code-review max nisso") instead
-// of the hook silently paying for the full multi-agent fleet (5+5 finder
-// angles + verify + sweep) on every PR by default. Trigger: PR #3324 (a
-// manual/develop branch, no overnight signal) resolved `max` under the old
-// rule and burned ~1.5M tokens reviewing a ~250-line diff — real bugs found,
-// but that depth shouldn't be the automatic floor for routine PRs.
-// This inverts the #2754 direction, which kept `max` as the default and
-// only downgraded overnight-signaled branches to `low`. Post-#3326, the
-// branch-prefix (#2754) and active-round-guard (#3322) checks below no
-// longer change the resolved *effort* in the non-error path (it's `low`
-// either way) — they still matter for the naming-drift `warning` (#3322:
-// flags when an active overnight round's branch skipped the `overnight/*`
-// convention). `max` survives only as the fail-safe for genuinely unknown
-// state (gh unavailable, PR number unparseable, active-round check
-// throwing) — see resolveEffort below.
+// Effort: o default do caminho "sem sinal de overnight" mora na constante
+// `DEFAULT_EFFORT` (ver o docblock dela) e já foi nos dois sentidos — `max` com
+// desconto pra overnight (#2754), `low` geral (#3326, motivado pelo PR #3324
+// que queimou ~1,5M tokens num diff de ~250 linhas), e `max` de novo desde
+// #4234 (260728), a pedido do editor e declaradamente provisório. NÃO repetir o
+// valor vigente aqui: este cabeçalho já ficou mentindo uma vez, entre o #4234 e
+// o PR que o corrigiu. O que é estável e vale documentar neste nível:
+//   - branch `overnight/*` (#2754) e guard de sessão ativa (#3322) resolvem
+//     `low` explicitamente, independente do default — é o caminho
+//     token-sensível, e o guard existe porque naming é convenção frágil
+//     (incidente #3321, 260710: ~50 PRs, zero com o prefixo, gating nunca
+//     disparou a noite inteira);
+//   - estado genuinamente indeterminado (gh indisponível, número de PR não
+//     parseável, guard lançando erro) resolve `max` como fail-safe, também
+//     independente do default;
+//   - o `warning` do #3322 é sobre naming divergente, nunca sobre effort.
 // Never throws / never exits non-zero, so it can't block the Bash tool.
 //
 // #3322: branch-prefix alone is NOT the primary signal anymore — it's a fragile
