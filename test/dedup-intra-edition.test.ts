@@ -1537,6 +1537,58 @@ describe("dedupIntraEdition — cluster_sources[] preservado no destaque (#4185)
     );
   });
 
+  // #4228: lacuna entre o #4192/#4193 (dedup.ts resgata/protege submissões
+  // do editor no pool bruto) e o #4185 (dedup-intra-edition.ts dobra um item
+  // do pool num cluster_source de destaque). Um artigo editor_submitted que
+  // sobrevive ao pool mas depois é reconhecido como duplicata intra-edição
+  // de um destaque precisa preservar o marcador de proveniência no
+  // cluster_source resultante — antes do fix em toClusterSource, o sinal
+  // desaparecia (a URL sobrevivia, "isto veio do editor" não).
+  it("artigo editor_submitted que colide com um destaque preserva flag/editor_submitted_url no cluster_source (#4228)", () => {
+    const input = {
+      highlights: [
+        {
+          rank: 1,
+          url: "https://tecnoblog.net/noticias/itau-coloca-ia-para-cuidar-do-relacionamento-com-o-cliente/",
+          article: {
+            url: "https://tecnoblog.net/noticias/itau-coloca-ia-para-cuidar-do-relacionamento-com-o-cliente/",
+            title: itauD1Title,
+            summary: itauD1Summary,
+            source: "Tecnoblog",
+          },
+        },
+      ],
+      radar: [
+        {
+          url: "https://canaltech.com.br/apps/nova-ia-do-itau-mostra-para-onde-vai-o-seu-dinheiro-e-te-ajuda-a-controlar-gastos/",
+          title: itauCanaltechTitle,
+          summary: itauCanaltechSummary,
+          source: "Canaltech",
+          flag: "editor_submitted",
+          editor_submitted_url: "https://canaltech.com.br/apps/nova-ia-do-itau-mostra-para-onde-vai-o-seu-dinheiro-e-te-ajuda-a-controlar-gastos/",
+        },
+      ],
+      lancamento: [],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    assert.equal(removed.length, 1, "Canaltech ainda deve ser reconhecido como duplicata intra-edição do D1");
+    const d1 = kept.highlights?.[0] as {
+      article?: { cluster_sources?: Array<{ url: string; flag?: string; editor_submitted_url?: string }> };
+    };
+    assert.ok(d1.article?.cluster_sources, "D1 deve carregar cluster_sources[] após o rescue");
+    const entry = d1.article!.cluster_sources!.find((c) => c.url.includes("canaltech"));
+    assert.ok(entry, "esperava a entrada da Canaltech em cluster_sources[]");
+    assert.equal(entry!.flag, "editor_submitted", "o marcador de proveniência do editor não pode desaparecer ao virar cluster_source");
+    assert.equal(
+      entry!.editor_submitted_url,
+      "https://canaltech.com.br/apps/nova-ia-do-itau-mostra-para-onde-vai-o-seu-dinheiro-e-te-ajuda-a-controlar-gastos/",
+    );
+  });
+
   it("acumula 2 fontes extras no mesmo destaque quando 2 itens de buckets diferentes casam", () => {
     const input = {
       highlights: [

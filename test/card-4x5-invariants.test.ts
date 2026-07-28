@@ -74,11 +74,19 @@ describe("checkCard4x5Exists — Stage 3, gate-blocking (#4090, decisão 260728)
     fixture = makeFixtureEdition();
   });
 
+  // #4227: severity agora depende do exec-mode ambiente (o registry chama
+  // `rule.run(editionDir)` com 1 arg só, deixando o default
+  // `detectExecMode()` decidir). Passar "local" explicitamente aqui mantém
+  // estes testes determinísticos independente de rodarem numa máquina do
+  // editor (junction `data/` presente → "local") ou num worktree/CI sem o
+  // junction (→ "cloud") — o comportamento cloud tem describe block próprio
+  // logo abaixo.
+
   it("falha (error) pros 3 destaques quando nenhum card 4:5 existe e destaque_count=3 (default sem 01-approved-capped.json)", () => {
-    const v = checkCard4x5Exists(fixture);
+    const v = checkCard4x5Exists(fixture, "local");
     assert.equal(v.length, 3, `esperava 3 violations (d1/d2/d3), achei ${JSON.stringify(v)}`);
     for (const violation of v) {
-      assert.equal(violation.severity, "error", "decisão 260728: card 4:5 é MANDATÓRIO, não warning");
+      assert.equal(violation.severity, "error", "decisão 260728: card 4:5 é MANDATÓRIO em sessão local, não warning");
       assert.equal(violation.rule, "card-4x5-exists");
       assert.equal(violation.source_issue, "#4090");
     }
@@ -87,7 +95,7 @@ describe("checkCard4x5Exists — Stage 3, gate-blocking (#4090, decisão 260728)
 
   it("falha só pros 2 destaques quando destaque_count=2 (#2352 — d3 fora de escopo)", () => {
     writeApprovedCapped(fixture, 2);
-    const v = checkCard4x5Exists(fixture);
+    const v = checkCard4x5Exists(fixture, "local");
     assert.equal(v.length, 2, `esperava 2 violations (d1/d2), achei ${JSON.stringify(v)}`);
     assert.ok(!v.some((x) => x.file?.includes("d3")), "d3 não deveria ser exigido com destaque_count=2");
     rmSync(fixture, { recursive: true, force: true });
@@ -96,7 +104,7 @@ describe("checkCard4x5Exists — Stage 3, gate-blocking (#4090, decisão 260728)
   it("passa (0 violations) quando todos os cards 4:5 existem", () => {
     writeApprovedCapped(fixture, 3);
     for (const name of [...CARD_4X5_BASE, ...CARD_4X5_D3]) touch(fixture, name);
-    const v = checkCard4x5Exists(fixture);
+    const v = checkCard4x5Exists(fixture, "local");
     assert.equal(v.length, 0, `esperava 0 violations, achei ${JSON.stringify(v)}`);
     rmSync(fixture, { recursive: true, force: true });
   });
@@ -105,17 +113,69 @@ describe("checkCard4x5Exists — Stage 3, gate-blocking (#4090, decisão 260728)
     writeApprovedCapped(fixture, 3);
     touch(fixture, "04-d1-4x5.jpg");
     touch(fixture, "04-d2-4x5.jpg");
-    const v = checkCard4x5Exists(fixture);
+    const v = checkCard4x5Exists(fixture, "local");
     assert.equal(v.length, 1);
     assert.match(v[0].message, /04-d3-4x5\.jpg/);
     rmSync(fixture, { recursive: true, force: true });
   });
 
   it("mensagem de erro é acionável — nomeia a fonte de marca e o comando pra reproduzir (decisão 260728)", () => {
-    const v = checkCard4x5Exists(fixture);
+    const v = checkCard4x5Exists(fixture, "local");
     assert.ok(v.length > 0);
     assert.match(v[0].message, /Georgia/, "erro deve nomear a fonte de marca (causa mais comum)");
     assert.match(v[0].message, /gen-social-card-4x5\.ts/, "erro deve nomear o comando de reprodução");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+});
+
+describe("checkCard4x5Exists — exec-mode gate (#4227)", () => {
+  let fixture: string;
+
+  beforeEach(() => {
+    fixture = makeFixtureEdition();
+  });
+
+  it("modo 'local' explícito — severity error (comportamento intencional do editor, inalterado)", () => {
+    const v = checkCard4x5Exists(fixture, "local");
+    assert.equal(v.length, 3);
+    assert.ok(v.every((x) => x.severity === "error"), "sessão local continua bloqueando — decisão do editor #4090 permanece intacta");
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("modo 'cloud' — severity rebaixada automaticamente pra warning, SEM exigir DIARIA_ALLOW_FONT_FALLBACK", () => {
+    const originalEnv = process.env.DIARIA_ALLOW_FONT_FALLBACK;
+    delete process.env.DIARIA_ALLOW_FONT_FALLBACK; // prova que não depende da env var manual
+    try {
+      const v = checkCard4x5Exists(fixture, "cloud");
+      assert.equal(v.length, 3, "ainda reporta os 3 destaques ausentes — só a severity muda, não a detecção");
+      assert.ok(v.every((x) => x.severity === "warning"), "sessão cloud nunca deve parar o Stage 3 sozinha — só avisar");
+      assert.ok(v.every((x) => x.rule === "card-4x5-exists" && x.source_issue === "#4090"));
+    } finally {
+      if (originalEnv !== undefined) process.env.DIARIA_ALLOW_FONT_FALLBACK = originalEnv;
+    }
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("modo 'cloud' — mensagem explica o rebaixamento automático (não confunde o editor achando que é bug)", () => {
+    const v = checkCard4x5Exists(fixture, "cloud");
+    assert.match(v[0].message, /sess[ãa]o cloud/i);
+    assert.match(v[0].message, /Rebaixado a warning automaticamente/);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("modo 'cloud' — 0 violations quando os cards existem (comportamento idêntico ao local nesse caso)", () => {
+    writeApprovedCapped(fixture, 3);
+    for (const name of [...CARD_4X5_BASE, ...CARD_4X5_D3]) touch(fixture, name);
+    const v = checkCard4x5Exists(fixture, "cloud");
+    assert.equal(v.length, 0);
+    rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it("respeita destaque_count=2 igual em modo cloud (d3 fora de escopo, #2352 continua valendo)", () => {
+    writeApprovedCapped(fixture, 2);
+    const v = checkCard4x5Exists(fixture, "cloud");
+    assert.equal(v.length, 2);
+    assert.ok(!v.some((x) => x.file?.includes("d3")));
     rmSync(fixture, { recursive: true, force: true });
   });
 });

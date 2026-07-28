@@ -466,14 +466,23 @@ const PAGE_CACHE_TTL_MS = 5 * 60 * 1000; // 5min — mesmo TTL do edge cache do 
  * de página em `fresh` continua necessário pelo mesmo motivo de antes: sem
  * ele, um clique em "Atualizar agora" dentro da janela de 5min serviria o
  * HTML KV-only cacheado, nunca disparando o fetch ao vivo pedido.
+ *
+ * #4226: `cachedHtml` só é populado pelo caminho KV-only (não
+ * `fresh`). O resultado de `?fresh=1` NUNCA é escrito no cache — é uma ação
+ * explícita e pontual do editor, não precisa de cache, e antes desse fix
+ * sobrescrevia o slot único (sem chave por modo) fazendo QUALQUER load normal
+ * subsequente dentro do TTL servir o HTML ao vivo sem o banner "KV-only",
+ * quebrando silenciosamente o invariante central do #4206 ("Studio =
+ * consumidor read-only, zero chamadas Brevo ao abrir").
  */
 export async function buildClariceDashboardHtml(opts: { fresh?: boolean } = {}): Promise<string> {
   if (!opts.fresh && cachedHtml && cachedHtml.expiresAt > Date.now()) {
     return cachedHtml.html;
   }
-  const html = opts.fresh
-    ? await renderClariceDashboardLiveUncached()
-    : await renderClariceDashboardKvOnlyUncached();
+  if (opts.fresh) {
+    return renderClariceDashboardLiveUncached();
+  }
+  const html = await renderClariceDashboardKvOnlyUncached();
   cachedHtml = { html, expiresAt: Date.now() + PAGE_CACHE_TTL_MS };
   return html;
 }

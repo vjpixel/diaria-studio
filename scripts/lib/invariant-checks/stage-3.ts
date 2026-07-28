@@ -12,6 +12,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import type { InvariantRule, InvariantViolation } from "./types.ts";
+import { detectExecMode, type ExecMode } from "../exec-mode.ts";
 
 const REQUIRED_IMAGES_BASE = [
   "01-eia-A.jpg",
@@ -231,25 +232,47 @@ const CARD_4X5_D3 = ["04-d3-4x5.jpg"];
  * `gen-social-card-4x5.ts` antes de chegar aqui. Este invariant cobre o caso
  * de uma sessão retomada pular essa instrução (resume de checkpoint, ou
  * edição de orquestração que não seguiu o prosa à risca).
+ *
+ * #4227: a mensagem acima já admitia que "geração de card é LOCAL por decisão
+ * do editor — não roda em CI/container sem a fonte instalada", mas o check
+ * continuava `severity: "error"` incondicional, sem consultar o sinal
+ * canônico dessa exata classe de problema (`scripts/lib/exec-mode.ts` — ver
+ * CLAUDE.md § Label `local`). Resultado: qualquer rodada `/diaria-overnight`/
+ * `/diaria-edicao` em sessão cloud parava inteiramente no Stage 3, a menos
+ * que alguém lembrasse de setar `DIARIA_ALLOW_FONT_FALLBACK=1` manualmente —
+ * uma feature antes silenciosamente degradável virou hard-stop sem
+ * acomodação automática pra cloud. Agora: em modo `cloud`, a violação sai
+ * como `warning` automaticamente (sem exigir a env var); em modo `local`
+ * (default), mantém `error` — comportamento intencional do editor,
+ * inalterado. `execMode` é injetável só pra teste (default
+ * `detectExecMode()`, mesmo padrão de `ExecModeOptions`).
  */
-function checkCard4x5Exists(editionDir: string): InvariantViolation[] {
+function checkCard4x5Exists(
+  editionDir: string,
+  execMode: ExecMode = detectExecMode(),
+): InvariantViolation[] {
   const destaqueCount = readDestaqueCount(editionDir);
   const required = destaqueCount === 2 ? CARD_4X5_BASE : [...CARD_4X5_BASE, ...CARD_4X5_D3];
+  const isCloud = execMode === "cloud";
   const violations: InvariantViolation[] = [];
   for (const name of required) {
     const path = resolve(editionDir, name);
     if (!existsSync(path)) {
       violations.push({
         rule: "card-4x5-exists",
-        message:
-          `Card social 4:5 ausente: ${name}. Decisão do editor (#4090, 260728): nenhuma ` +
-          `edição sai sem o card 4:5 — sem ele, os publishers caem pro 1:1 EM SILÊNCIO. ` +
-          `Causa mais comum: fonte de marca (Georgia) ausente nesta máquina — rode ` +
-          `"npx tsx scripts/gen-social-card-4x5.ts --edition-dir ${editionDir}" pra ver o ` +
-          `erro específico (a mensagem nomeia a fonte e a saída). Geração de card é LOCAL ` +
-          `por decisão do editor — não roda em CI/container sem a fonte instalada.`,
+        message: isCloud
+          ? `Card social 4:5 ausente: ${name}. Rebaixado a warning automaticamente — sessão ` +
+            `cloud (exec-mode.ts) não tem a fonte de marca (Georgia) instalada, e geração de ` +
+            `card é LOCAL por decisão do editor (#4090, 260728). Em sessão local isto bloqueia ` +
+            `o Stage 3; aqui os publishers caem pro 1:1 em silêncio pra este destaque.`
+          : `Card social 4:5 ausente: ${name}. Decisão do editor (#4090, 260728): nenhuma ` +
+            `edição sai sem o card 4:5 — sem ele, os publishers caem pro 1:1 EM SILÊNCIO. ` +
+            `Causa mais comum: fonte de marca (Georgia) ausente nesta máquina — rode ` +
+            `"npx tsx scripts/gen-social-card-4x5.ts --edition-dir ${editionDir}" pra ver o ` +
+            `erro específico (a mensagem nomeia a fonte e a saída). Geração de card é LOCAL ` +
+            `por decisão do editor — não roda em CI/container sem a fonte instalada.`,
         source_issue: "#4090",
-        severity: "error",
+        severity: isCloud ? "warning" : "error",
         file: path,
       });
     }
@@ -281,7 +304,7 @@ export const STAGE_3_RULES: InvariantRule[] = [
   },
   {
     id: "card-4x5-exists",
-    description: "card social 4:5 (feed IG/FB, título embutido) existe pra cada destaque — mandatório por decisão do editor (#4090)",
+    description: "card social 4:5 (feed IG/FB, título embutido) existe pra cada destaque — mandatório (error) em sessão local (#4090); rebaixado a warning automaticamente em sessão cloud (#4227)",
     source_issue: "#4090",
     stage: 3,
     run: checkCard4x5Exists,
