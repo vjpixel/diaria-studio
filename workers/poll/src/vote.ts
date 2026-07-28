@@ -25,6 +25,19 @@ import {
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
 import { type StatsCounterData, mergeStatsWithKvFallback } from "./stats-counter";
+// #4169: DO que serializa o read-modify-write de score:{email} (global) e
+// score-by-month:{month}:{email} (mensal) — ver rationale completo no header
+// de score-counter.ts.
+import {
+  type ScoreData,
+  type MonthScoreData,
+  type UpdateScorePayload,
+  type UpdateMonthPayload,
+  type AdjustScoreCorrectPayload,
+  type AdjustMonthCorrectPayload,
+  isValidScoreData,
+  isValidMonthScoreData,
+} from "./score-counter";
 // #3517 / #4065: share card pós-jogo — todos os brands (ver rationale no
 // header de share.ts sobre por que o payload é {edition, correct}, sem
 // leitura KV extra).
@@ -703,7 +716,8 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
     })(),
     (async () => {
       if (!(await env.POLL.get(monthGuardKey))) {
-        await updateScoreByMonth(env, email, edition, correct, scoreRaw);
+        // #4169: brand p/ id do DO ScoreCounter (`{brand}:{email}`).
+        await updateScoreByMonth(env, email, edition, correct, scoreRaw, brand);
         await env.POLL.put(monthGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
       }
     })(),
@@ -1161,15 +1175,18 @@ async function runVoteBookkeeping(
         // sobrescrever score:{email} inteiro com base num snapshot já
         // obsoleto, perdendo o incremento do voto que terminou primeiro.
         //
-        // MITIGAÇÃO, não eliminação: ainda resta uma janela pequena entre
-        // esta leitura e o `put` dentro de updateScore (KV não tem
-        // compare-and-swap) — mesmo residual já aceito em updateScoreByMonth
-        // (que também relê fresco a própria chave, ver ali) e em
-        // updateStatsCounter antes do StatsCounter DO (#2223). Fechar de vez
-        // exigiria um Durable Object dedicado serializando por e-mail (mesmo
-        // padrão de VOTE_DEDUP/STATS_COUNTER) — fora do escopo deste lote
-        // (#4125 item 1: achado desproporcional a um P2 num conjunto de P3s,
-        // reportado como follow-up em vez de forçado aqui).
+        // MITIGAÇÃO, não eliminação: na época deste comentário (#4125 item 1)
+        // ainda restava uma janela pequena entre esta leitura e o `put`
+        // dentro de updateScore (KV não tem compare-and-swap). ATUALIZAÇÃO
+        // (#4169): essa janela foi FECHADA — `updateScore` agora serializa o
+        // read-modify-write via Durable Object `ScoreCounter` (mesmo padrão
+        // de VOTE_DEDUP/STATS_COUNTER) quando `env.SCORE_COUNTER` está
+        // presente (ver docblock de `updateScore` e rationale completo em
+        // score-counter.ts). O `freshScoreRaw` lido aqui continua útil como
+        // `kvBaseline` — semente pro DO só quando ele nunca foi
+        // inicializado — mas a race get→put descrita acima não existe mais
+        // com o binding presente (produção). Sem o binding (fallback KV, só
+        // testes/dev), a race documentada abaixo permanece.
         const freshScoreRaw = await env.POLL.get(`score:${email}`);
         await updateScore(env, email, edition, correct, freshScoreRaw, brand);
         await env.POLL.put(scoreGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
@@ -1177,7 +1194,8 @@ async function runVoteBookkeeping(
     })(),
     (async () => {
       if (!(await env.POLL.get(monthGuardKey))) {
-        await updateScoreByMonth(env, email, edition, correct, scoreRaw);
+        // #4169: brand p/ id do DO ScoreCounter (`{brand}:{email}`).
+        await updateScoreByMonth(env, email, edition, correct, scoreRaw, brand);
         await env.POLL.put(monthGuardKey, "1", { expirationTtl: 90 * 24 * 3600 });
       }
     })(),
@@ -1339,6 +1357,13 @@ async function updateStatsCounter(
  *
  * Chamado de handleAdminCorrect — substitui o adjustScoreByMonthCorrect
  * increment-only anterior (removido em #2206).
+ *
+ * #4169: `brand` (default "diaria") — sincroniza best-effort o DO
+ * ScoreCounter (`/adjust-month-correct`), se o binding estiver presente, pra
+ * evitar que o `correct` cacheado no DO fique stale após esta correção (ver
+ * rationale completo no header de score-counter.ts). Falha do DO aqui é
+ * logada mas NUNCA bloqueia o backfill — o KV (atualizado abaixo) já está
+ * correto de qualquer forma.
  */
 export async function adjustScoreByMonthCorrectOnly(
   env: Env,
@@ -1346,6 +1371,7 @@ export async function adjustScoreByMonthCorrectOnly(
   edition: string,
   prevCorrect: boolean | null,
   newCorrect: boolean,
+  brand: Brand = "diaria",
 ): Promise<void> {
   // Idempotente: sem mudança, sem escrita.
   if (prevCorrect === newCorrect) return;
@@ -1377,6 +1403,29 @@ export async function adjustScoreByMonthCorrectOnly(
 
   await env.POLL.put(key, JSON.stringify(entry));
   // Invalidação feita pelo caller (handleAdminCorrect) uma vez após o loop — não aqui.
+
+  // #4169: mantém o DO ScoreCounter (mensal) em sincronia — best-effort.
+  if (env.SCORE_COUNTER) {
+    try {
+      const doId = env.SCORE_COUNTER.idFromName(`${brand}:${email}`);
+      const doStub = env.SCORE_COUNTER.get(doId);
+      const doResp = await doStub.fetch("https://internal/adjust-month-correct", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ monthSlug, prevCorrect, newCorrect } satisfies AdjustMonthCorrectPayload),
+      });
+      if (!doResp.ok) {
+        // #4169 (achado silent-failure-hunter): captura o corpo (diagnóstico
+        // do DO, ex: "invalid correct_count") — mesma disciplina já aplicada
+        // ao 4xx de updateScore/updateScoreByMonth. email_domain (não email
+        // cru) — mesma convenção de vote_dedup_do_error.
+        const body = await doResp.text().catch(() => "(unreadable)");
+        console.error(JSON.stringify({ event: "score_counter_adjust_month_correct_error", status: doResp.status, body, edition, email_domain: email.split("@")[1] ?? "unknown" }));
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "score_counter_adjust_month_correct_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+    }
+  }
 }
 
 /**
@@ -1392,12 +1441,20 @@ export async function adjustScoreByMonthCorrectOnly(
  *
  * @param prevCorrect  valor anterior de `vote.correct` (antes do backfill)
  * @param newCorrect   novo valor calculado contra o gabarito correto
+ *
+ * #4169: `brand` (default "diaria") — sincroniza best-effort o DO
+ * ScoreCounter (`/adjust-correct`), se o binding estiver presente, pra evitar
+ * que o `correct` cacheado no DO fique stale após esta correção (ver
+ * rationale completo no header de score-counter.ts). Falha do DO aqui é
+ * logada mas NUNCA bloqueia o backfill — o KV (atualizado abaixo) já está
+ * correto de qualquer forma.
  */
 export async function adjustScoreCorrectOnly(
   env: Env,
   email: string,
   prevCorrect: boolean | null,
   newCorrect: boolean,
+  brand: Brand = "diaria",
 ): Promise<void> {
   const scoreKey = `score:${email}`;
   const raw = await env.POLL.get(scoreKey);
@@ -1407,6 +1464,9 @@ export async function adjustScoreCorrectOnly(
   // `edition` disponível nesta assinatura, usa `email` como contexto do log.
   const score = safeParseKv<{ correct?: number }>(raw, "admin_correct_score_parse_error", email);
   if (!score) return;
+
+  // Idempotente: sem mudança, sem escrita/sync do DO.
+  if (prevCorrect === newCorrect) return;
 
   // Ajusta apenas o campo `correct`:
   //  - false/null → true: incrementa correct
@@ -1419,6 +1479,28 @@ export async function adjustScoreCorrectOnly(
   // total e streak NÃO são tocados (invariante do backfill)
 
   await env.POLL.put(scoreKey, JSON.stringify(score));
+
+  // #4169: mantém o DO ScoreCounter (global) em sincronia — best-effort.
+  if (env.SCORE_COUNTER) {
+    try {
+      const doId = env.SCORE_COUNTER.idFromName(`${brand}:${email}`);
+      const doStub = env.SCORE_COUNTER.get(doId);
+      const doResp = await doStub.fetch("https://internal/adjust-correct", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prevCorrect, newCorrect } satisfies AdjustScoreCorrectPayload),
+      });
+      if (!doResp.ok) {
+        // #4169 (achado silent-failure-hunter): corpo do erro + email_domain
+        // (não email cru) — mesma disciplina de updateScore/updateScoreByMonth
+        // e da convenção pré-existente de vote_dedup_do_error.
+        const body = await doResp.text().catch(() => "(unreadable)");
+        console.error(JSON.stringify({ event: "score_counter_adjust_correct_error", status: doResp.status, body, email_domain: email.split("@")[1] ?? "unknown" }));
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "score_counter_adjust_correct_error", email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+    }
+  }
 }
 
 /**
@@ -1432,6 +1514,17 @@ export async function adjustScoreCorrectOnly(
  * #2190: `preloadedScoreRaw` — valor já lido de `score:{email}` no handleVote
  * (pré-commit). Quando fornecido, evita a re-leitura da mesma chave para
  * copiar o nickname. Quando omitido, faz o get normalmente (outras calls).
+ *
+ * #4169: quando `env.SCORE_COUNTER` está disponível, o incremento
+ * total/correct/last_edition/last_vote_ts é SERIALIZADO via DO ScoreCounter
+ * (`/update-month`) — fecha a race read-modify-write que existia aqui (dois
+ * `runVoteBookkeeping` concorrentes do MESMO email, edições diferentes,
+ * podiam intercalar entre este `get` e o `put` abaixo, perdendo um
+ * incremento). `nickname` continua sendo resolvido/mesclado AQUI a partir do
+ * KV (o DO não gerencia nickname — ver rationale no header de
+ * score-counter.ts) antes de gravar o mirror. Sem o binding (ou em erro do
+ * DO), cai no fallback KV — mesma race residual de antes deste fix.
+ * `brand` (default "diaria") é necessário pro id do DO (`{brand}:{email}`).
  */
 async function updateScoreByMonth(
   env: Env,
@@ -1439,6 +1532,7 @@ async function updateScoreByMonth(
   edition: string,
   correct: boolean | null,
   preloadedScoreRaw?: string | null,
+  brand: Brand = "diaria",
 ): Promise<void> {
   const monthSlug = editionToMonthSlug(edition);
   if (monthSlug === null) return; // edition malformado — não corrompe schema
@@ -1448,15 +1542,104 @@ async function updateScoreByMonth(
   // #3298: entry corrompida cai no mesmo default de "sem entry ainda" — este
   // path roda em TODO voto (não só backfill do admin), então um registro
   // malformado aqui derrubaria o voto do leitor atual, não só a manutenção.
-  const entry = safeParseKv<{
+  const existing = safeParseKv<{
     total: number;
     correct: number;
     last_edition: string | null;
     nickname: string | null;
     last_vote_ts?: string;
-  }>(raw, "update_score_by_month_parse_error", edition)
-    ?? { total: 0, correct: 0, last_edition: null, nickname: null };
+  }>(raw, "update_score_by_month_parse_error", edition);
 
+  // Nickname: resolvido AQUI (fora do DO) — copiado de score:{email} SOMENTE
+  // se a entry ainda não tem um. #2190: usa preloadedScoreRaw se disponível
+  // (já lido antes do commit do voto), evitando re-leitura redundante.
+  let nickname: string | null = existing?.nickname ?? null;
+  if (nickname === null) {
+    const scoreRaw = preloadedScoreRaw !== undefined
+      ? preloadedScoreRaw
+      : await env.POLL.get(`score:${email}`);
+    // #3298: score:{email} corrompido aqui só afeta o nickname copiado (não
+    // bloqueia o resto do voto) — trata como "sem score ainda" (nickname
+    // permanece null, igual ao caminho scoreRaw ausente).
+    const scoreObj = safeParseKv<{ nickname?: string | null }>(scoreRaw, "update_score_by_month_nickname_parse_error", edition);
+    if (scoreObj) {
+      nickname = scoreObj.nickname ?? null;
+    }
+  }
+
+  if (env.SCORE_COUNTER) {
+    const doId = env.SCORE_COUNTER.idFromName(`${brand}:${email}`);
+    const doStub = env.SCORE_COUNTER.get(doId);
+    const kvBaseline: MonthScoreData | null = existing && isValidMonthScoreData(existing)
+      ? { total: existing.total, correct: existing.correct, last_edition: existing.last_edition, last_vote_ts: existing.last_vote_ts }
+      : null;
+    try {
+      const doResp = await doStub.fetch("https://internal/update-month", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ edition, monthSlug, correct, kvBaseline } satisfies UpdateMonthPayload),
+      });
+      if (doResp.ok) {
+        // #4169 (achado silent-failure-hunter): parse isolado do corpo — o DO
+        // já commitou o incremento no PRÓPRIO storage (blockConcurrencyWhile)
+        // antes de responder; se só a RESPOSTA vier corrompida/truncada, um
+        // catch genérico cairia no fallback KV RMW abaixo e re-incrementaria —
+        // double-count exatamente da classe que este DO existe pra eliminar.
+        // Falha de parse aqui NUNCA cai no fallback: o DO já está correto
+        // internamente, só o espelho desta rodada fica stale (auto-corrige no
+        // PRÓXIMO voto bem-sucedido deste jogador, que relê o KV como
+        // kvBaseline — irrelevante pois o DO já tem estado real).
+        let month: MonthScoreData;
+        try {
+          ({ month } = await doResp.json() as { ok: true; month: MonthScoreData });
+        } catch (e) {
+          console.error(JSON.stringify({ event: "score_counter_do_month_parse_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+          return;
+        }
+        const merged = { ...month, nickname };
+        let mirrorWritten = false;
+        try {
+          await env.POLL.put(key, JSON.stringify(merged));
+          mirrorWritten = true;
+        } catch (e) {
+          console.error(JSON.stringify({ event: "score_by_month_kv_mirror_failed", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+        }
+        // #4169 (achado silent-failure-hunter): só faz upsert no snapshot se o
+        // mirror KV foi de fato escrito — senão o snapshot (cache) fica à
+        // frente do registro per-player (única fonte que `computeSnapshotEntries`
+        // relê numa recomputação futura), e essa recomputação REGRIDE a
+        // entry de volta pro valor stale, apagando silenciosamente o voto que
+        // o DO já registrou corretamente.
+        if (mirrorWritten) {
+          await upsertOwnEntryInSnapshot(env, monthSlug, {
+            email,
+            nickname: merged.nickname ?? null,
+            correct: merged.correct,
+            total: merged.total,
+            last_vote_ts: merged.last_vote_ts,
+          });
+        }
+        return;
+      }
+      // DO retornou erro de cliente (4xx) — mesmo racional do #2293/updateStatsCounter:
+      // não lança (500 pro votante), não cai no KV RMW (reintroduziria a race) — loga
+      // warning e pula este incremento, deixando o resto do voto completar normalmente.
+      if (doResp.status >= 400 && doResp.status < 500) {
+        const body = await doResp.text().catch(() => "(unreadable)");
+        console.warn(JSON.stringify({ event: "score_counter_do_month_client_error", status: doResp.status, body, edition, email_domain: email.split("@")[1] ?? "unknown", action: "skip_month_update" }));
+        return;
+      }
+      // DO retornou erro de servidor (5xx) — fallback para KV RMW abaixo.
+      console.error(JSON.stringify({ event: "score_counter_do_month_error", status: doResp.status, edition, email_domain: email.split("@")[1] ?? "unknown" }));
+    } catch (e) {
+      console.error(JSON.stringify({ event: "score_counter_do_month_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+    }
+  }
+
+  // Fallback: KV read-modify-write (sem binding DO, ou em erro do DO).
+  // ATENÇÃO: mantém a race original (#4169) — usado apenas em testes/dev ou
+  // em caso de falha do DO. Em produção, SCORE_COUNTER binding deve estar presente.
+  const entry = existing ?? { total: 0, correct: 0, last_edition: null, nickname: null };
   // #3355: mesmo guard `?? 0` de updateStatsCounter (ver nota lá) — shape
   // incompleto vindo de safeParseKv (JSON válido, campo numérico ausente)
   // não deve produzir NaN/perda silenciosa do total acumulado.
@@ -1466,22 +1649,7 @@ async function updateScoreByMonth(
   // #1383: timestamp do voto pra tiebreaker no leaderboard. Voto mais recente
   // vence empate de (correct, total). Sobrescreve a cada vote (não acumula).
   entry.last_vote_ts = new Date().toISOString();
-
-  // Pull nickname from global score key. handleSetName propaga em writes
-  // subsequentes, mas o snapshot no momento do vote já é capturado aqui.
-  // #2190: usa o preloadedScoreRaw se disponível (já lido antes do commit do voto).
-  if (entry.nickname === null) {
-    const scoreRaw = preloadedScoreRaw !== undefined
-      ? preloadedScoreRaw
-      : await env.POLL.get(`score:${email}`);
-    // #3298: score:{email} corrompido aqui só afeta o nickname copiado (não
-    // bloqueia o resto do voto) — trata como "sem score ainda" (nickname
-    // permanece null, igual ao caminho scoreRaw ausente).
-    const scoreObj = safeParseKv<{ nickname?: string | null }>(scoreRaw, "update_score_by_month_nickname_parse_error", edition);
-    if (scoreObj) {
-      entry.nickname = scoreObj.nickname ?? null;
-    }
-  }
+  entry.nickname = nickname;
 
   await env.POLL.put(key, JSON.stringify(entry));
 
@@ -1571,6 +1739,20 @@ export async function recordVoteLog(
  * #2190: `preloadedScoreRaw` — valor já lido de `score:{email}` no caller
  * (handleVote lê antes do commit do voto para evitar re-leitura redundante,
  * ver #2189). Quando omitido (ex: chamadas do admin backfill) faz o get normalmente.
+ *
+ * #4169: quando `env.SCORE_COUNTER` está disponível, o incremento de
+ * total/correct/streak/last_edition é SERIALIZADO via DO ScoreCounter
+ * (`/update-score`) — fecha a race read-modify-write que existia aqui (dois
+ * `runVoteBookkeeping` concorrentes do MESMO email, edições diferentes,
+ * podiam intercalar entre este `get` e o `put` no final, perdendo um
+ * incremento — mesmo após o #4168 estreitar a janela relendo `score:{email}`
+ * fresco). Ver rationale completo no header de score-counter.ts.
+ * `nickname` continua sendo resolvido AQUI a partir do KV (o DO não gerencia
+ * nickname, ver mesmo rationale) antes de gravar o mirror — preserva
+ * qualquer nickname já definido por `handleSetName` (que escreve
+ * `score:{email}` direto, sem passar pelo DO). Sem o binding (ou em erro do
+ * DO), cai no fallback KV — mesma race residual de antes deste fix (aceita
+ * em testes/dev; produção sempre tem o binding).
  */
 async function updateScore(
   env: Env,
@@ -1587,14 +1769,70 @@ async function updateScore(
   // do guard-key de handleVote) — um score:{email} corrompido derrubava o
   // voto do leitor atual com 500. Corrompido cai no mesmo default de "sem
   // score ainda" usado quando a chave nunca foi gravada.
-  const score = safeParseKv<{
+  const existing = safeParseKv<{
     total: number;
     correct: number;
     streak: number;
     last_edition: string | null;
     nickname?: string | null;
-  }>(raw, "update_score_parse_error", edition)
-    ?? { total: 0, correct: 0, streak: 0, last_edition: null, nickname: null };
+  }>(raw, "update_score_parse_error", edition);
+  const existingNickname = existing?.nickname ?? null;
+
+  if (env.SCORE_COUNTER) {
+    const doId = env.SCORE_COUNTER.idFromName(`${brand}:${email}`);
+    const doStub = env.SCORE_COUNTER.get(doId);
+    const kvBaseline: ScoreData | null = existing && isValidScoreData(existing)
+      ? { total: existing.total, correct: existing.correct, streak: existing.streak, last_edition: existing.last_edition }
+      : null;
+    try {
+      const doResp = await doStub.fetch("https://internal/update-score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ edition, correct, brand, kvBaseline } satisfies UpdateScorePayload),
+      });
+      if (doResp.ok) {
+        // #4169 (achado silent-failure-hunter): parse isolado do corpo — o DO
+        // já commitou o incremento no PRÓPRIO storage (blockConcurrencyWhile)
+        // antes de responder; se só a RESPOSTA vier corrompida/truncada, um
+        // catch genérico cairia no fallback KV RMW abaixo e re-incrementaria —
+        // double-count exatamente da classe que este DO existe pra eliminar.
+        // Falha de parse aqui NUNCA cai no fallback: o DO já está correto
+        // internamente, só o espelho desta rodada fica stale (auto-corrige no
+        // PRÓXIMO voto bem-sucedido deste jogador).
+        let score: ScoreData;
+        try {
+          ({ score } = await doResp.json() as { ok: true; score: ScoreData });
+        } catch (e) {
+          console.error(JSON.stringify({ event: "score_counter_do_parse_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+          return;
+        }
+        const merged = { ...score, nickname: existingNickname };
+        try {
+          await env.POLL.put(scoreKey, JSON.stringify(merged));
+        } catch (e) {
+          console.error(JSON.stringify({ event: "score_kv_mirror_failed", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+        }
+        return;
+      }
+      // DO retornou erro de cliente (4xx) — mesmo racional do #2293/updateStatsCounter:
+      // não lança (500 pro votante), não cai no KV RMW (reintroduziria a race) — loga
+      // warning e pula este incremento, deixando o resto do voto completar normalmente.
+      if (doResp.status >= 400 && doResp.status < 500) {
+        const body = await doResp.text().catch(() => "(unreadable)");
+        console.warn(JSON.stringify({ event: "score_counter_do_client_error", status: doResp.status, body, edition, email_domain: email.split("@")[1] ?? "unknown", action: "skip_score_update" }));
+        return;
+      }
+      // DO retornou erro de servidor (5xx) — fallback para KV RMW abaixo.
+      console.error(JSON.stringify({ event: "score_counter_do_error", status: doResp.status, edition, email_domain: email.split("@")[1] ?? "unknown" }));
+    } catch (e) {
+      console.error(JSON.stringify({ event: "score_counter_do_error", edition, email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
+    }
+  }
+
+  // Fallback: KV read-modify-write (sem binding DO, ou em erro do DO).
+  // ATENÇÃO: mantém a race original (#4169) — usado apenas em testes/dev ou
+  // em caso de falha do DO. Em produção, SCORE_COUNTER binding deve estar presente.
+  const score = existing ?? { total: 0, correct: 0, streak: 0, last_edition: null, nickname: null };
 
   // #3355: mesmo guard `?? 0` de updateStatsCounter (ver nota lá).
   score.total = (score.total ?? 0) + 1;

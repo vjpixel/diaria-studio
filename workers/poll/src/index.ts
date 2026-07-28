@@ -51,6 +51,7 @@ import {
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 export { VoteDedup } from "./vote-dedup";
 export { StatsCounter } from "./stats-counter";
+export { ScoreCounter } from "./score-counter";
 
 export interface Env {
   POLL: KVNamespace;
@@ -65,6 +66,16 @@ export interface Env {
    * Instanciado por `{brand}:{edition}` — brand incluído para isolamento entre
    * diaria×clarice (mesmo padrão do VOTE_DEDUP). */
   STATS_COUNTER?: DurableObjectNamespace;
+  /** #4169: Durable Object namespace para serialização do read-modify-write
+   * de `score:{email}` (global) e `score-by-month:{month}:{email}` (mensal).
+   * Opcional para compat com testes que não passam o binding (fallback
+   * gracioso para KV read-modify-write quando SCORE_COUNTER não está
+   * disponível — mesma race residual que existia antes deste fix).
+   *
+   * Instanciado por `{brand}:{email}` — brand incluído para isolamento entre
+   * diaria×clarice×web (mesmo padrão do VOTE_DEDUP/STATS_COUNTER). Classe
+   * `ScoreCounter` exportada de src/score-counter.ts (re-exportada acima). */
+  SCORE_COUNTER?: DurableObjectNamespace;
   POLL_SECRET: string;
   ADMIN_SECRET: string;
   ALLOWED_ORIGINS: string;
@@ -608,10 +619,14 @@ async function handleAdminCorrect(url: URL, env: Env, brand: Brand = "diaria", r
       await env.POLL.put(keyName, JSON.stringify({ ...vote, correct: newCorrect }));
       const email = keyName.replace(prefix, "");
       // #2202: adjustScoreCorrectOnly — ajusta apenas `correct`, NUNCA total/streak.
-      await adjustScoreCorrectOnly(env, email, prevCorrect, newCorrect);
+      // #4169: `brand` passado explicitamente — mantém o DO ScoreCounter (se
+      // presente) sincronizado com a correção de gabarito, senão o cache do
+      // DO ficaria stale e o PRÓXIMO voto incrementaria a partir da base
+      // errada (ver rationale completo no header de score-counter.ts).
+      await adjustScoreCorrectOnly(env, email, prevCorrect, newCorrect, brand);
       // #2206: adjustScoreByMonthCorrectOnly — espelha a bidirecionalidade no mensal.
       // Decrementa em true→false (antes era increment-only, causando acerto fantasma).
-      await adjustScoreByMonthCorrectOnly(env, email, edition, prevCorrect, newCorrect);
+      await adjustScoreByMonthCorrectOnly(env, email, edition, prevCorrect, newCorrect, brand);
       updated++;
     }
     if (newCorrect) correctCount++;
