@@ -196,7 +196,7 @@ describe("GET /jogar (#3516)", () => {
   it("copy de apoio muda conforme o gabarito compartilhado (correct:{edition}) já existe ou não", async () => {
     const envOpen = makeEnv();
     const htmlOpen = await (await worker.fetch(new Request("https://poll.test/jogar?edition=260101"), envOpen)).text();
-    assert.match(htmlOpen, /resultado sai assim que o poll de hoje fechar/i);
+    assert.match(htmlOpen, /resultado sai assim que a enquete de hoje fechar/i);
 
     const envClosed = makeEnv({ "correct:260101": "A" });
     const htmlClosed = await (await worker.fetch(new Request("https://poll.test/jogar?edition=260101"), envClosed)).text();

@@ -146,7 +146,11 @@ describe("orchestrator-prompt (#634)", () => {
       // o check humanizer-section-coverage de reversões legítimas da Clarice).
       // Teto bumped de 548→575 com headroom (era 559 medido pós-#3929).
       "orchestrator-stage-2.md": 575,
-      "orchestrator-stage-3.md": 135,
+      // #4258 item 3: +9 linhas (novo §3a-bis — passo de humanizador+Clarice
+      // sobre a frase de descrição do É IA?, único texto da edição que não
+      // passava por esse fluxo). Teto bumped de 135→150 com headroom (era
+      // 142 medido pós-#4258).
+      "orchestrator-stage-3.md": 150,
       // #3947: +14 linhas (snapshot pós-humanizador/pré-Clarice em §4d.1
       // passos 6.3 e 6.2' + fallback/uso desse snapshot no check
       // humanizer-section-coverage do passo 6.7 — mesmo padrão do #3929,
@@ -613,6 +617,65 @@ describe("#3953: passo 6.4 (verify-scoped-humanization.ts --post) usa o snapshot
     assert.ok(
       snapshotIdx < step64Idx,
       "#3953: o snapshot pós-humanizador (6.3) precisa existir ANTES do passo 6.4 tentar usá-lo como --post",
+    );
+  });
+});
+
+describe("#4258 item 3: §3a-bis (humanizador+Clarice na descrição do É IA?) preserva as invariantes operacionais", () => {
+  // Achado do review consolidado (pr-test-analyzer): a única cobertura desta
+  // seção era o teto de linhas + hash do snapshot — nenhum dos dois protege
+  // linguagem semântica específica (ex: uma edição futura poderia remover o
+  // "retry 3x + abort" e só quebraria via --update-snapshots, que é
+  // exatamente o caminho sancionado pra mudanças intencionais).
+  const stage3 = readFileSync(resolve(AGENTS_DIR, "orchestrator-stage-3.md"), "utf8");
+  const section3aBis = stage3.slice(stage3.indexOf("### 3a-bis"), stage3.indexOf("### 3b."));
+
+  it("existe e cobre os 4 passos (extract → humanizador → Clarice → apply)", () => {
+    assert.ok(section3aBis.includes("extract-eia-description.ts"), "§3a-bis não menciona extract-eia-description.ts");
+    assert.ok(section3aBis.includes('Skill("humanizador"'), "§3a-bis não invoca a skill humanizador");
+    assert.ok(section3aBis.includes("mcp__clarice__correct_text"), "§3a-bis não menciona a Clarice");
+    assert.ok(section3aBis.includes("apply-eia-description.ts"), "§3a-bis não menciona apply-eia-description.ts");
+  });
+
+  it("passo 2 (humanizador) E passo 3 (Clarice) exigem retry 3x + abort Stage 3 — nenhum dos dois pode falhar em silêncio (#1072)", () => {
+    const step2Idx = section3aBis.indexOf("Skill(\"humanizador\"");
+    const step3Idx = section3aBis.indexOf("Clarice inline");
+    assert.ok(step2Idx !== -1 && step3Idx !== -1);
+    const step2Text = section3aBis.slice(step2Idx, step3Idx);
+    const step4Idx = section3aBis.indexOf("apply-eia-description.ts", step3Idx);
+    const step3Text = section3aBis.slice(step3Idx, step4Idx);
+    assert.ok(
+      /retry 3x.*abort stage 3/i.test(step2Text),
+      "#4258 item 3: passo 2 (humanizador) precisa do mandato explícito 'retry 3x + abort Stage 3' (#1072)",
+    );
+    assert.ok(
+      /retry 3x.*abort stage 3/i.test(step3Text),
+      "#4258 item 3 (achado do review consolidado): passo 3 (Clarice) precisa do MESMO mandato do passo 2 — sem isso, uma falha da Clarice (MCP + fallback REST) cai no exit 2/3 de apply-eia-description.ts sem o orchestrator saber que deveria abortar em vez de prosseguir",
+    );
+  });
+
+  it("instrui a rejeitar sugestões de formalização da Clarice, preservando a voz casual do produto", () => {
+    assert.ok(
+      /formaliza|"pra".*"para"/.test(section3aBis),
+      "#4258 item 3: §3a-bis precisa instruir explicitamente a rejeitar formalização da Clarice (decisão do editor nesta sessão — a voz do produto é deliberadamente casual)",
+    );
+  });
+
+  it("exit codes de extract-eia-description.ts e apply-eia-description.ts são distinguidos (2 = skip benigno, 3 = erro de verdade) — não conflar os dois", () => {
+    const step1Idx = section3aBis.indexOf("extract-eia-description.ts");
+    const step2Idx = section3aBis.indexOf("Skill(\"humanizador\"");
+    const step1Text = section3aBis.slice(step1Idx, step2Idx);
+    const step4Idx = section3aBis.indexOf("apply-eia-description.ts");
+    const step4Text = section3aBis.slice(step4Idx);
+    assert.ok(/exit `2`/i.test(step1Text) && /exit `3`/i.test(step1Text), "passo 1 precisa documentar exit 2 E exit 3 distintos");
+    assert.ok(/exit `2`/i.test(step4Text) && /exit `3`/i.test(step4Text), "passo 4 precisa documentar exit 2 E exit 3 distintos");
+    assert.ok(
+      /skip pra 3b/i.test(step1Text) && /halt banner/i.test(step1Text),
+      "#4258 item 3 (achado do review consolidado): exit 2 (skip benigno) e exit 3 (halt banner, erro de verdade) do passo 1 não podem ser conflados na mesma ação",
+    );
+    assert.ok(
+      /sem abortar/i.test(step4Text) && /halt banner/i.test(step4Text),
+      "#4258 item 3 (achado do review consolidado): exit 2 (skip benigno) e exit 3 (halt banner, erro de verdade) do passo 4 não podem ser conflados na mesma ação",
     );
   });
 });

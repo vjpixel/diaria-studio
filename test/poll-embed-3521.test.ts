@@ -217,7 +217,7 @@ describe("renderEmbedPageHtml (#3521)", () => {
 
   it("copy de apoio muda com `revealed`, sem alterar o form nem revelar a resposta", () => {
     const revealedHtml = renderEmbedPageHtml({ edition: "260101", revealed: true, partnerSlug: "clarice" });
-    assert.match(html, /o resultado sai assim que o poll de hoje fechar/i);
+    assert.match(html, /o resultado sai assim que a enquete de hoje fechar/i);
     assert.match(revealedHtml, /Vote e veja na hora se acertou/i);
   });
 });

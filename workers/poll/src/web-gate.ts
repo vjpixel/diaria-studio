@@ -434,7 +434,7 @@ export function renderJogarGatePage(edition: string | null): string {
 </head>
 <body>
 <h1>Quer disputar o ranking?</h1>
-<p class="explain">Com seu e-mail a gente guarda seus acertos e te coloca no ranking público do mês. Já assina a Diar.ia? Entra direto. Continuar jogando sem cadastrar também vale — é só seguir.</p>
+<p class="explain">Com seu e-mail a gente guarda seus acertos e te coloca no ranking público do mês. Já assina a Diar.ia? Entre direto. Continuar jogando sem cadastrar também vale. É só seguir.</p>
 <form id="gate-form">
   <input type="text" name="website" class="website" tabindex="-1" autocomplete="off">
   <input type="text" name="name" placeholder="Seu nome ou apelido" required>
@@ -513,7 +513,7 @@ export function renderJogarGatePage(edition: string | null): string {
   // seguir sem esperar clica no link de skip abaixo.
   function afterIdentify(result) {
     if (result && result.pending) {
-      setMsg("Quase lá! Enviamos um e-mail de confirmação — clique no link pra migrar seu histórico e entrar no ranking. Enquanto isso, toque em 'Continuar sem cadastrar' abaixo pra seguir jogando.", "info");
+      setMsg("Quase lá! Enviamos um e-mail de confirmação: clique no link pra migrar seu histórico e entrar no ranking. Enquanto isso, toque em 'Continuar sem cadastrar' abaixo pra seguir jogando.", "info");
       return;
     }
     goToGame();
@@ -554,10 +554,10 @@ export function renderJogarGatePage(edition: string | null): string {
         body: JSON.stringify({ email: email, name: name, optin: optin, website: website }),
       }).then(function (r2) { return r2.json(); }).then(function (data2) {
         if (data2 && data2.ok && !data2.sessionUnavailable) { return identifyAfterGate(email, name).then(afterIdentify); }
-        if (data2 && data2.ok && data2.sessionUnavailable) { setMsg("Assinatura feita! Confirme o e-mail que te enviamos — depois é só voltar aqui pra continuar jogando.", "err"); return; }
-        setMsg("Não deu — tenta de novo em instantes.", "err");
+        if (data2 && data2.ok && data2.sessionUnavailable) { setMsg("Assinatura feita! Confirme o e-mail que te enviamos, depois é só voltar aqui pra continuar jogando.", "err"); return; }
+        setMsg("Não deu, tente de novo em instantes.", "err");
       });
-    }).catch(function () { setMsg("Erro de conexão — tenta de novo.", "err"); });
+    }).catch(function () { setMsg("Erro de conexão. Tente de novo.", "err"); });
   });
 })();
 </script>

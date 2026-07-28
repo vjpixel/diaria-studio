@@ -633,7 +633,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
     const testMsg = correct === true
       ? "✅ [TEST] Acertou! Era a imagem gerada por IA. (não gravado em KV)"
       : correct === false
-      ? "❌ [TEST] Não foi dessa vez — era a foto real. (não gravado em KV)"
+      ? "❌ [TEST] Não foi dessa vez, era a foto real. (não gravado em KV)"
       : "[TEST] Voto recebido. (não gravado em KV — gabarito ainda não definido)";
     return voteHtmlResponse(votePageHtml(testMsg, true, null, null, null, brand), 200);
   }
@@ -829,7 +829,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   const msg = correct === true
     ? `✅ Acertou! Era a imagem gerada por IA.${renderStreakSuffix(streakForDisplay, brand)}${statsSuffix}`
     : correct === false
-    ? `❌ Não foi dessa vez — era a foto real.${statsSuffix}`
+    ? `❌ Não foi dessa vez, era a foto real.${statsSuffix}`
     : "Voto registrado! O resultado sai na próxima edição.";
 
   // #1078 — primeiro voto: oferecer nickname pra leaderboard. scoreObj já foi
@@ -967,7 +967,7 @@ async function handleVoteFastPath(
     const testMsg = correct === true
       ? "✅ [TEST] Acertou! Era a imagem gerada por IA. (não gravado em KV)"
       : correct === false
-      ? "❌ [TEST] Não foi dessa vez — era a foto real. (não gravado em KV)"
+      ? "❌ [TEST] Não foi dessa vez, era a foto real. (não gravado em KV)"
       : "[TEST] Voto recebido. (não gravado em KV — gabarito ainda não definido)";
     return voteHtmlResponse(votePageHtml(testMsg, true, null, null, null, brand), 200);
   }
@@ -1022,7 +1022,7 @@ async function handleVoteFastPath(
   const msg = correct === true
     ? "✅ Acertou! Era a imagem gerada por IA."
     : correct === false
-    ? "❌ Não foi dessa vez — era a foto real."
+    ? "❌ Não foi dessa vez, era a foto real."
     : "Voto registrado! O resultado sai na próxima edição.";
 
   const response = voteHtmlResponse(
