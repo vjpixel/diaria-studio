@@ -61,6 +61,7 @@ describe("discoverCropPairs (#3951)", () => {
       const pairs = discoverCropPairs(dir);
       assert.equal(pairs.length, 1);
       assert.equal(pairs[0].destaque, "d1");
+      assert.equal(pairs[0].ratio, "1x1");
       assert.ok(pairs[0].hero_path?.endsWith("04-d1-2x1.jpg"));
       assert.ok(pairs[0].crop_path.endsWith("04-d1-1x1.jpg"));
     } finally {
@@ -120,6 +121,122 @@ describe("discoverCropPairs (#3951)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // -------------------------------------------------------------------------
+  // 4:5 (#4223) — wiring que faltava: descoberta do par nativo/master/2:1 → card
+  // -------------------------------------------------------------------------
+
+  it("destaque com só 1:1 (sem card 4:5 gerado) continua funcionando como antes — #4223", () => {
+    const dir = makeTmpEdition();
+    try {
+      writeFileSync(join(dir, "04-d1-2x1.jpg"), "x");
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "x");
+      // sem 04-d1-4x5.jpg
+      const pairs = discoverCropPairs(dir);
+      assert.equal(pairs.length, 1, "só deve emitir o par 1:1 quando não há card 4:5");
+      assert.equal(pairs[0].ratio, "1x1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("destaque com 1:1 E 4:5 gera 2 pares (um por ratio), fallback de hero 4:5 = nativo — #4223", () => {
+    const dir = makeTmpEdition();
+    try {
+      writeFileSync(join(dir, "04-d1-2x1.jpg"), "x");
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "x");
+      writeFileSync(join(dir, "04-d1-4x5-nativo.jpg"), "x");
+      writeFileSync(join(dir, "04-d1-master.jpg"), "x");
+      writeFileSync(join(dir, "04-d1-4x5.jpg"), "x"); // card final
+
+      const pairs = discoverCropPairs(dir);
+      assert.equal(pairs.length, 2, "deve emitir 1 par 1:1 + 1 par 4:5 pro mesmo destaque");
+
+      const pair1x1 = pairs.find((p) => p.ratio === "1x1");
+      const pair4x5 = pairs.find((p) => p.ratio === "4x5");
+      assert.ok(pair1x1, "par 1:1 deve existir");
+      assert.ok(pair4x5, "par 4:5 deve existir");
+      assert.equal(pair1x1?.destaque, "d1");
+      assert.equal(pair4x5?.destaque, "d1");
+      assert.ok(pair4x5?.crop_path.endsWith("04-d1-4x5.jpg"));
+      // fallback de hero: nativo existe → deve preferir nativo sobre master/2:1
+      assert.ok(
+        pair4x5?.hero_path?.endsWith("04-d1-4x5-nativo.jpg"),
+        `esperava hero_path apontando pro nativo, recebeu: ${pair4x5?.hero_path}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fallback de hero 4:5 usa master 6:5 quando o nativo não existe — #4223", () => {
+    const dir = makeTmpEdition();
+    try {
+      writeFileSync(join(dir, "04-d2-2x1.jpg"), "x");
+      writeFileSync(join(dir, "04-d2-master.jpg"), "x"); // sem 04-d2-4x5-nativo.jpg
+      writeFileSync(join(dir, "04-d2-4x5.jpg"), "x");
+
+      const pairs = discoverCropPairs(dir);
+      const pair4x5 = pairs.find((p) => p.ratio === "4x5");
+      assert.ok(pair4x5);
+      assert.ok(
+        pair4x5?.hero_path?.endsWith("04-d2-master.jpg"),
+        `esperava hero_path apontando pro master, recebeu: ${pair4x5?.hero_path}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fallback de hero 4:5 usa o 2:1 legado quando nem nativo nem master existem — #4223", () => {
+    const dir = makeTmpEdition();
+    try {
+      writeFileSync(join(dir, "04-d3-2x1.jpg"), "x"); // único candidato de hero
+      writeFileSync(join(dir, "04-d3-4x5.jpg"), "x");
+
+      const pairs = discoverCropPairs(dir);
+      const pair4x5 = pairs.find((p) => p.ratio === "4x5");
+      assert.ok(pair4x5);
+      assert.ok(
+        pair4x5?.hero_path?.endsWith("04-d3-2x1.jpg"),
+        `esperava hero_path apontando pro 2:1 legado, recebeu: ${pair4x5?.hero_path}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("hero 4:5 é null (defensivo) quando nenhum dos 3 candidatos existe — #4223", () => {
+    const dir = makeTmpEdition();
+    try {
+      // só o card final, sem nenhuma fonte (não deveria acontecer no Stage 3 real, #4090)
+      writeFileSync(join(dir, "04-d1-4x5.jpg"), "x");
+
+      const pairs = discoverCropPairs(dir);
+      assert.equal(pairs.length, 1);
+      assert.equal(pairs[0].ratio, "4x5");
+      assert.equal(pairs[0].hero_path, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("card 4:5 ausente → nenhum par 4:5 emitido mesmo com nativo/master/2:1 no disco — #4223", () => {
+    const dir = makeTmpEdition();
+    try {
+      writeFileSync(join(dir, "04-d1-4x5-nativo.jpg"), "x");
+      writeFileSync(join(dir, "04-d1-master.jpg"), "x");
+      writeFileSync(join(dir, "04-d1-2x1.jpg"), "x");
+      writeFileSync(join(dir, "04-d1-1x1.jpg"), "x");
+      // sem 04-d1-4x5.jpg (card final) — nada pra revisar em 4:5
+
+      const pairs = discoverCropPairs(dir);
+      assert.equal(pairs.length, 1, "só o par 1:1 deve existir, sem o card 4:5 não há nada a revisar");
+      assert.equal(pairs[0].ratio, "1x1");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -132,8 +249,8 @@ describe("normalizeCropReviewResult (#3951)", () => {
       edition: "260722",
       checked_at: "2026-07-22T10:00:00.000Z",
       results: [
-        { destaque: "d1", status: "ok" },
-        { destaque: "d2", status: "warn", motivo: "sujeito cortado", sugestao: "regenerar" },
+        { destaque: "d1", ratio: "1x1", status: "ok" },
+        { destaque: "d2", ratio: "1x1", status: "warn", motivo: "sujeito cortado", sugestao: "regenerar" },
       ],
     };
     const result = normalizeCropReviewResult(raw, "260722");
@@ -147,9 +264,9 @@ describe("normalizeCropReviewResult (#3951)", () => {
   it("filtra entries inválidas (destaque fora de d1/d2/d3, status inválido)", () => {
     const raw = {
       results: [
-        { destaque: "d1", status: "ok" },
-        { destaque: "d4", status: "ok" }, // destaque inválido
-        { destaque: "d2", status: "maybe" }, // status inválido
+        { destaque: "d1", ratio: "1x1", status: "ok" },
+        { destaque: "d4", ratio: "1x1", status: "ok" }, // destaque inválido
+        { destaque: "d2", ratio: "1x1", status: "maybe" }, // status inválido
         null, // inválido
       ],
     };
@@ -161,9 +278,9 @@ describe("normalizeCropReviewResult (#3951)", () => {
   it("recalcula summary a partir dos results, independente do raw", () => {
     const raw = {
       results: [
-        { destaque: "d1", status: "warn" },
-        { destaque: "d2", status: "warn" },
-        { destaque: "d3", status: "ok" },
+        { destaque: "d1", ratio: "1x1", status: "warn" },
+        { destaque: "d2", ratio: "1x1", status: "warn" },
+        { destaque: "d3", ratio: "1x1", status: "ok" },
       ],
       summary: { total: 999, ok: 999, warn: 0 }, // valores errados propositais
     };
@@ -186,9 +303,48 @@ describe("normalizeCropReviewResult (#3951)", () => {
   });
 
   it("motivo/sugestao ausentes viram undefined, não string vazia", () => {
-    const result = normalizeCropReviewResult({ results: [{ destaque: "d1", status: "ok" }] }, "260722");
+    const result = normalizeCropReviewResult(
+      { results: [{ destaque: "d1", ratio: "1x1", status: "ok" }] },
+      "260722",
+    );
     assert.equal(result.results[0].motivo, undefined);
     assert.equal(result.results[0].sugestao, undefined);
+  });
+
+  // ---------------------------------------------------------------------
+  // ratio (#4223) — preservação e validação
+  // ---------------------------------------------------------------------
+
+  it("preserva ratio de cada entry, distinguindo 1:1 e 4:5 do MESMO destaque — #4223", () => {
+    const raw = {
+      results: [
+        { destaque: "d2", ratio: "1x1", status: "ok" },
+        { destaque: "d2", ratio: "4x5", status: "warn", motivo: "título cobre o rosto" },
+      ],
+    };
+    const result = normalizeCropReviewResult(raw, "260722");
+    assert.equal(result.results.length, 2, "as 2 entries do mesmo destaque não devem colapsar");
+    const r1x1 = result.results.find((r) => r.ratio === "1x1");
+    const r4x5 = result.results.find((r) => r.ratio === "4x5");
+    assert.ok(r1x1);
+    assert.ok(r4x5);
+    assert.equal(r1x1?.status, "ok");
+    assert.equal(r4x5?.status, "warn");
+    assert.equal(r4x5?.motivo, "título cobre o rosto");
+  });
+
+  it("rejeita entry com ratio inválido (fora de 1x1/4x5) — #4223", () => {
+    const raw = {
+      results: [
+        { destaque: "d1", ratio: "1x1", status: "ok" },
+        { destaque: "d2", ratio: "2x1", status: "ok" }, // ratio inválido
+        { destaque: "d3", status: "ok" }, // ratio ausente
+      ],
+    };
+    const result = normalizeCropReviewResult(raw, "260722");
+    assert.equal(result.results.length, 1, "entries com ratio inválido/ausente devem ser filtradas");
+    assert.equal(result.results[0].destaque, "d1");
+    assert.equal(result.results[0].ratio, "1x1");
   });
 });
 
@@ -214,8 +370,8 @@ describe("formatGateSummary (#3951)", () => {
     const result: CropReviewResult = {
       ...EMPTY_RESULT,
       results: [
-        { destaque: "d1", status: "ok" },
-        { destaque: "d2", status: "ok" },
+        { destaque: "d1", ratio: "1x1", status: "ok" },
+        { destaque: "d2", ratio: "1x1", status: "ok" },
       ],
       summary: { total: 2, ok: 2, warn: 0 },
     };
@@ -228,8 +384,8 @@ describe("formatGateSummary (#3951)", () => {
     const result: CropReviewResult = {
       ...EMPTY_RESULT,
       results: [
-        { destaque: "d1", status: "ok" },
-        { destaque: "d2", status: "warn", motivo: "sujeito cortado nas bordas", sugestao: "regenerar D2" },
+        { destaque: "d1", ratio: "1x1", status: "ok" },
+        { destaque: "d2", ratio: "1x1", status: "warn", motivo: "sujeito cortado nas bordas", sugestao: "regenerar D2" },
       ],
       summary: { total: 2, ok: 1, warn: 1 },
     };
@@ -243,12 +399,46 @@ describe("formatGateSummary (#3951)", () => {
   it("nunca inclui linguagem de bloqueio (warning-only, #3951)", () => {
     const result: CropReviewResult = {
       ...EMPTY_RESULT,
-      results: [{ destaque: "d1", status: "warn", motivo: "x" }],
+      results: [{ destaque: "d1", ratio: "1x1", status: "warn", motivo: "x" }],
       summary: { total: 1, ok: 0, warn: 1 },
     };
     const s = formatGateSummary(result);
     assert.ok(!/bloque|abort|impedir|não pode publicar/i.test(s), `não deve conter linguagem de bloqueio: ${s}`);
     assert.ok(s.includes("Decisão final"), "deve remeter a decisão final ao editor");
+  });
+
+  // ---------------------------------------------------------------------
+  // ratio na seção do gate (#4223)
+  // ---------------------------------------------------------------------
+
+  it("mostra o ratio em cada linha de warn, distinguindo 1:1 de 4:5 do mesmo destaque — #4223", () => {
+    const result: CropReviewResult = {
+      ...EMPTY_RESULT,
+      results: [
+        { destaque: "d2", ratio: "1x1", status: "warn", motivo: "sujeito cortado nas bordas" },
+        { destaque: "d2", ratio: "4x5", status: "warn", motivo: "título cobre o rosto no card" },
+      ],
+      summary: { total: 2, ok: 0, warn: 2 },
+    };
+    const s = formatGateSummary(result);
+    assert.ok(s.includes("D2 (1x1)"), `esperava linha D2 (1x1) na saída: ${s}`);
+    assert.ok(s.includes("D2 (4x5)"), `esperava linha D2 (4x5) na saída: ${s}`);
+    assert.ok(s.includes("sujeito cortado nas bordas"));
+    assert.ok(s.includes("título cobre o rosto no card"));
+  });
+
+  it("contagem ok/total do resumo conta pares (destaque,ratio), não só destaques — #4223", () => {
+    const result: CropReviewResult = {
+      ...EMPTY_RESULT,
+      results: [
+        { destaque: "d1", ratio: "1x1", status: "ok" },
+        { destaque: "d1", ratio: "4x5", status: "ok" },
+        { destaque: "d2", ratio: "1x1", status: "ok" },
+      ],
+      summary: { total: 3, ok: 3, warn: 0 },
+    };
+    const s = formatGateSummary(result);
+    assert.ok(s.includes("3/3"), `esperava contagem 3/3 (3 pares, não 2 destaques): ${s}`);
   });
 });
 
@@ -307,8 +497,8 @@ describe("run-image-crop-reviewer CLI --input-json (#3951)", () => {
         edition: "260722",
         checked_at: "2026-07-22T10:00:00Z",
         results: [
-          { destaque: "d1", status: "ok" },
-          { destaque: "d2", status: "warn", motivo: "sujeito cortado", sugestao: "regenerar" },
+          { destaque: "d1", ratio: "1x1", status: "ok" },
+          { destaque: "d2", ratio: "4x5", status: "warn", motivo: "sujeito cortado", sugestao: "regenerar" },
         ],
       };
       const inputJsonPath = join(dir, "agent-output.json");
@@ -320,6 +510,7 @@ describe("run-image-crop-reviewer CLI --input-json (#3951)", () => {
       // o warning do editor em vez de mostrá-lo no gate).
       assert.equal(result.status, 0, `exit 0 esperado (warning-only). stderr: ${result.stderr}`);
       assert.ok(result.stdout.includes("⚠️"), "stdout deve conter ⚠️ para o warn");
+      assert.ok(result.stdout.includes("D2 (4x5)"), "stdout deve indicar o ratio do warn (#4223)");
 
       const outPath = join(dir, "_internal", "04-crop-review.json");
       assert.ok(existsSync(outPath), "04-crop-review.json deve ter sido gravado");
@@ -336,8 +527,8 @@ describe("run-image-crop-reviewer CLI --input-json (#3951)", () => {
     try {
       const agentOutput = {
         results: [
-          { destaque: "d1", status: "ok" },
-          { destaque: "d2", status: "ok" },
+          { destaque: "d1", ratio: "1x1", status: "ok" },
+          { destaque: "d2", ratio: "1x1", status: "ok" },
         ],
       };
       const inputJsonPath = join(dir, "agent-output.json");
