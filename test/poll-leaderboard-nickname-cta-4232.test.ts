@@ -167,15 +167,25 @@ describe("handleLeaderboardByMonth — renderiza nick-box com sig válida da que
     assert.match(html, /<form action="\/set-name" method="GET" class="nick-form">/);
     assert.match(html, new RegExp(`name="email" value="${email.replace(".", "\\.")}"`));
     assert.match(html, new RegExp(`name="sig" value="${sig}"`));
+    // #4232 (achado do review consolidado — code-reviewer): página com
+    // nicknameForm carrega e-mail+sig sensíveis (mesmo par que autoriza
+    // /set-name) — nunca pode sair com Cache-Control público, senão um cache
+    // intermediário serviria o e-mail+sig de um leitor pra outro dentro do
+    // TTL (mesmo racional do no-store já aplicado em voteHtmlResponse).
+    assert.equal(res.headers.get("Cache-Control"), "no-store, no-cache, must-revalidate");
   });
 
-  it("sig inválida → nick-box NÃO renderiza", async () => {
+  it("sig inválida → nick-box NÃO renderiza (e Cache-Control volta a ser o público normal do período)", async () => {
     const email = "reader@x.com";
     const env = makeEnv({ [`score:${email}`]: JSON.stringify({ total: 3, correct: 2, nickname: null }) });
     const url = new URL(`https://poll.example/leaderboard/2020-01?email=${encodeURIComponent(email)}&sig=lixo`);
     const res = await handleLeaderboardByMonth("2020-01", env, "diaria", undefined, url);
     const html = await res.text();
     assert.doesNotMatch(html, /<div class="nick-box">/);
+    // "2020-01" é mês PASSADO (closedPeriodCacheControl) relativo a qualquer
+    // data real de execução do teste — sem nicknameForm válido, cache público
+    // normal do período (não o no-store forçado do caso com form).
+    assert.equal(res.headers.get("Cache-Control"), "public, max-age=3600", "sem form válido, cache público normal do período");
   });
 
   it("sem `url` (chamadas pré-#4232, ex: testes existentes) → nick-box NÃO renderiza — back-compat", async () => {
@@ -228,7 +238,7 @@ describe("handleLeaderboardByMonth — renderiza nick-box com sig válida da que
 });
 
 describe("handleLeaderboardByYear — mesmo mecanismo, brand clarice (ranking anual, #4232)", () => {
-  it("sig válida + sem nickname → nick-box renderiza no leaderboard anual", async () => {
+  it("sig válida + sem nickname → nick-box renderiza no leaderboard anual, com hidden inputs corretos", async () => {
     const email = "reader@x.com";
     const sig = await hmacSign(SECRET, `setname:${email}`);
     const env = makeEnv({
@@ -239,5 +249,55 @@ describe("handleLeaderboardByYear — mesmo mecanismo, brand clarice (ranking an
     const res = await handleLeaderboardByYear("2026", env, "clarice", url);
     const html = await res.text();
     assert.match(html, /<div class="nick-box">/);
+    assert.match(html, /<form action="\/set-name" method="GET" class="nick-form">/);
+    assert.match(html, new RegExp(`name="email" value="${email.replace(".", "\\.")}"`));
+    assert.match(html, new RegExp(`name="sig" value="${sig}"`));
+    // #4232 (achado do review consolidado — code-reviewer): página com
+    // nicknameForm carrega e-mail+sig sensíveis, não pode sair `public`.
+    assert.equal(res.headers.get("Cache-Control"), "no-store, no-cache, must-revalidate");
+  });
+
+  it("sig inválida → nick-box NÃO renderiza (mesma cobertura negativa do mensal)", async () => {
+    const email = "reader@x.com";
+    const env = makeEnv({ [`score:${email}`]: JSON.stringify({ total: 3, correct: 2, nickname: null }) });
+    const url = new URL(`https://poll.example/leaderboard/2026?email=${encodeURIComponent(email)}&sig=lixo`);
+    const res = await handleLeaderboardByYear("2026", env, "clarice", url);
+    const html = await res.text();
+    assert.doesNotMatch(html, /<div class="nick-box">/);
+  });
+
+  it("sem `url` → nick-box NÃO renderiza — back-compat", async () => {
+    const env = makeEnv({
+      "score-by-month:2026-05:ana@x.com": JSON.stringify({ total: 5, correct: 4, nickname: "Ana" }),
+    });
+    const res = await handleLeaderboardByYear("2026", env, "clarice");
+    const html = await res.text();
+    assert.doesNotMatch(html, /<div class="nick-box">/);
+  });
+
+  it("votante já com nickname (mesmo com sig válida) → nick-box NÃO renderiza", async () => {
+    const email = "reader@x.com";
+    const sig = await hmacSign(SECRET, `setname:${email}`);
+    const env = makeEnv({ [`score:${email}`]: JSON.stringify({ total: 3, correct: 2, nickname: "JaTemNick" }) });
+    const url = new URL(`https://poll.example/leaderboard/2026?email=${encodeURIComponent(email)}&sig=${sig}`);
+    const res = await handleLeaderboardByYear("2026", env, "clarice", url);
+    const html = await res.text();
+    assert.doesNotMatch(html, /<div class="nick-box">/);
+  });
+
+  it("brand 'web' fim-a-fim → nick-box NUNCA renderiza mesmo com sig válida (index.ts roteia /leaderboard/{YYYY} pra QUALQUER brand, não só clarice)", async () => {
+    // #4232 (achado do review consolidado — pr-test-analyzer): a rota
+    // `/leaderboard/{YYYY}` em index.ts despacha handleLeaderboardByYear pra
+    // "ambas as marcas" (comentário no router), não só clarice — então o guard
+    // brand==="web" dentro de resolveLeaderboardNicknameForm precisa provar
+    // que se sustenta no handler INTEIRO, não só isolado (já coberto em
+    // resolveLeaderboardNicknameForm acima).
+    const email = "anon-token@web.local";
+    const sig = await hmacSign(SECRET, `setname:${email}`);
+    const env = makeEnv({ [`score:${email}`]: JSON.stringify({ total: 3, correct: 2, nickname: null }) });
+    const url = new URL(`https://poll.example/leaderboard/2026?email=${encodeURIComponent(email)}&sig=${sig}`);
+    const res = await handleLeaderboardByYear("2026", env, "web", url);
+    const html = await res.text();
+    assert.doesNotMatch(html, /<div class="nick-box">/);
   });
 });

@@ -1099,8 +1099,19 @@ ${renderBrandFooter(brand)}
 </body>
 </html>`;
 
+  // #4232 (achado do review consolidado — code-reviewer): quando `nicknameForm`
+  // está presente, a página carrega o e-mail CRU do leitor + uma sig HMAC
+  // válida pra `/set-name` (mesmo par usado no hidden input do form) — mesma
+  // classe de payload sensível que `voteHtmlResponse` (index.ts) já trata com
+  // `no-store` ("voto é estado mutável por-usuário"). Servir essa versão com
+  // `Cache-Control: public` (o cacheControl normal do período) arriscaria um
+  // cache intermediário (proxy corporativo, navegador de máquina compartilhada)
+  // guardar a resposta por URL e servir o e-mail+sig de um leitor pra outro
+  // dentro do TTL. `no-store` só nesta resposta específica — o caminho SEM
+  // nicknameForm (a esmagadora maioria do tráfego) mantém o cache normal.
+  const finalCacheControl = nicknameForm ? "no-store, no-cache, must-revalidate" : cacheControl;
   return new Response(html, {
-    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": cacheControl }
+    headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": finalCacheControl }
   });
 }
 
