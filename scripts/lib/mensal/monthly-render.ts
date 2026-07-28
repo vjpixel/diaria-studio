@@ -109,7 +109,6 @@ export function isOwnedHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
   return h === MENSAL_BRAND_HOST || h.endsWith(`.${MENSAL_BRAND_HOST}`);
 }
-const MENSAL_BRAND_LINK = `https://${MENSAL_BRAND_HOST}`;
 
 /**
  * #2975: assinantes que migram da Clarice News mensal pro Beehiiv chegavam
@@ -129,35 +128,9 @@ const MENSAL_BRAND_LINK = `https://${MENSAL_BRAND_HOST}`;
  */
 let currentMonthlyUtmCiclo: string | null = null;
 
-/**
- * #4040: seção corrente do render (`APRESENTAÇÃO`, `RADAR`, `DESTAQUE 1`, …).
- * Só o wordmark usa — ele repete N vezes por edição em posições muito
- * diferentes, e o editor decidiu (260726) medir por seção
- * (`wordmark-radar`, `wordmark-apresentacao`) em vez de um slug flat
- * `wordmark`. Mesma disciplina de estado module-level do ciclo acima:
- * `draftToEmail` é síncrono e single-pass, seta a seção antes de despachar
- * cada chunk e reseta no `finally`.
- */
-let currentMonthlyUtmSecao: string | null = null;
-
 /** Exposto para teste direto de `withClariceUtm`/`normalizeKnownUrl` sem passar por `draftToEmail`. */
 export function setMonthlyUtmCiclo(ciclo: string | null): void {
   currentMonthlyUtmCiclo = ciclo;
-}
-
-/** #4040: exposto pelo mesmo motivo de `setMonthlyUtmCiclo` — teste direto do
- * sufixo `wordmark-{secao}` sem montar um draft inteiro. */
-export function setMonthlyUtmSecao(secao: string | null): void {
-  currentMonthlyUtmSecao = secao;
-}
-
-/**
- * #4040: posição do wordmark = `wordmark-{secao-corrente}`. Sem seção setada
- * (render fora de `draftToEmail`, ex.: chamada direta de teste) cai em
- * `wordmark-geral` via `slugifySecao`.
- */
-function wordmarkPosicao(): string {
-  return `wordmark-${slugifySecao(currentMonthlyUtmSecao)}`;
 }
 
 /**
@@ -213,15 +186,19 @@ function renderTextInline(s: string): string {
   // #2008/#2018: applyWordJoiner roda após escHtml+bold/italic — anti auto-linkify
   // via shared helper (scripts/lib/word-joiner.ts; lookbehind protege URLs cruas).
   // applyBrandWordmark após word-joiner (mesma ordem da diária, #2532/#2533):
-  // estiliza "diar.ia" / "diar.ia.br" como o wordmark da marca (pontos teal) E,
-  // na mensal, envolve num link pro Beehiiv (#template-branding 260703).
-  return applyBrandWordmark(
-    applyWordJoiner(escHtmlWithEmphasis(s)),
-    // #2975: link do wordmark carrega UTM clarice.
-    // #4040: posição `wordmark-{secao}` — granularidade por seção (decisão do
-    // editor 260726), não um slug flat.
-    withClariceUtm(MENSAL_BRAND_LINK, wordmarkPosicao()),
-  );
+  // estiliza "diar.ia" / "diar.ia.br" como o wordmark da marca (pontos teal).
+  //
+  // SEM link (decisão do editor 260727, revertendo o #template-branding de
+  // 260703): o wordmark deixou de ser clicável na mensal. Ele aparecia 4× por
+  // edição — apresentação, divulgação e 2× no encerramento — todas apontando
+  // pra raiz do site, e o editor conferiu que não convertem. Somadas ao "aqui"
+  // (2×) e ao botão, davam 7 âncoras pro mesmo destino: densidade promocional
+  // no eixo que o CTA-01 identificou como gatilho de spam, sem retorno.
+  // O nome da marca no meio da prosa é reconhecimento, não call-to-action.
+  //
+  // A diária nunca linkou (chama `applyBrandWordmark` com 1 argumento) — agora
+  // as duas superfícies se comportam igual.
+  return applyBrandWordmark(applyWordJoiner(escHtmlWithEmphasis(s)));
 }
 
 /**
@@ -1372,7 +1349,6 @@ export function draftToEmail(
     return draftToEmailBody();
   } finally {
     setMonthlyUtmCiclo(null);
-    setMonthlyUtmSecao(null); // #4040: mesmo racional do reset de ciclo — não vaza pra chamada seguinte.
   }
 
   function draftToEmailBody(): { subject: string; previewText: string; html: string } {
@@ -1388,7 +1364,6 @@ export function draftToEmail(
     // qualquer render* deste chunk; zerado após o loop (o header cobrand, o
     // rodapé social e o wrapEmail ficam com `wordmark-geral`, não herdam a
     // última seção do corpo).
-    setMonthlyUtmSecao(label);
 
     // REMETENTE: metadata, não renderiza no corpo.
     if (label === "REMETENTE") continue;
@@ -1526,7 +1501,6 @@ export function draftToEmail(
 
   // #4040: fora do corpo não existe "seção" — wrapEmail/header/rodapé caem em
   // `wordmark-geral` em vez de herdar a última seção iterada.
-  setMonthlyUtmSecao(null);
 
   return {
     subject,

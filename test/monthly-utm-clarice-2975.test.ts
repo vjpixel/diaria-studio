@@ -16,9 +16,9 @@
  * (`clarice-{ciclo}-{posicao}`), porque o Beehiiv não persiste `utm_content`
  * na subscription: sem o sufixo dava pra saber que o assinante veio da mensal
  * do ciclo X, mas não POR QUAL LINK ele converteu. As 5 origens são:
- *   - wordmark automático (`applyBrandWordmark` via `renderTextInline`) —
- *     granularidade POR SEÇÃO (`wordmark-apresentacao`, `wordmark-radar`, …),
- *     decisão do editor 260726;
+ *   - wordmark automático: NÃO é mais link (decisão do editor 260727) — não
+ *     convertia, e 4 âncoras por edição pro mesmo destino só somavam densidade
+ *     promocional. O sufixo `wordmark-{seção}` do #4040 foi aposentado junto;
  *   - link markdown inline (`renderInline`)     → `inline`
  *   - botão CTA (`renderCtaButton`)             → `cta`
  *   - título de destaque linkado                → `titulo`
@@ -45,7 +45,6 @@ import {
   renderEncerramento,
   renderLinkListSection,
   setMonthlyUtmCiclo,
-  setMonthlyUtmSecao,
 } from "../scripts/lib/mensal/monthly-render.ts";
 import {
   buildMensalCampaign,
@@ -245,33 +244,30 @@ describe("#4040 — utm_campaign distinto por POSIÇÃO do link", () => {
     }
   });
 
-  it("wordmark carrega a SEÇÃO corrente no sufixo (granularidade decidida pelo editor 260726)", () => {
+  // Decisão do editor 260727: o wordmark deixou de ser link na mensal. Aparecia
+  // 4× por edição, todas pra raiz do site, e o editor conferiu que não
+  // convertem — somadas ao "aqui" (2×) e ao botão davam 7 âncoras pro mesmo
+  // destino. Isto reverte o #template-branding de 260703 e aposenta junto o
+  // sufixo `wordmark-{seção}` do #4040, que existia só pra medir esse link.
+  it("wordmark NÃO é link na mensal (nem com ciclo UTM ativo)", () => {
     setMonthlyUtmCiclo("2606-07");
     try {
-      setMonthlyUtmSecao("APRESENTAÇÃO");
-      const apre = renderInline("a diar.ia.br publica todo dia");
-      assert.match(apre, /utm_campaign=clarice-2606-07-wordmark-apresentacao"/);
-
-      setMonthlyUtmSecao("RADAR");
-      const radar = renderInline("a diar.ia.br publica todo dia");
-      assert.match(radar, /utm_campaign=clarice-2606-07-wordmark-radar"/);
-
-      // Os dois wordmarks NÃO podem colidir — é justamente o ponto do #4040.
-      assert.notEqual(campaigns(apre)[0], campaigns(radar)[0]);
+      const html = renderInline("a diar.ia.br publica todo dia");
+      assert.doesNotMatch(html, /<a\s/, "wordmark voltou a ser clicável");
+      assert.doesNotMatch(html, /utm_campaign=/, "wordmark sem link não pode emitir UTM");
+      // O wordmark em si (pontos teal da marca) continua — é branding, não CTA.
+      assert.match(html, /diar/, "o texto da marca sumiu junto com o link");
+      assert.match(html, /#00A0A0|color:/, "estilo do wordmark perdido");
     } finally {
-      setMonthlyUtmSecao(null);
       setMonthlyUtmCiclo(null);
     }
   });
 
-  it("sem seção setada o wordmark cai em `wordmark-geral` (nunca campaign quebrado)", () => {
-    setMonthlyUtmCiclo("2606-07");
-    try {
-      const html = renderInline("a diar.ia.br publica todo dia");
-      assert.match(html, /utm_campaign=clarice-2606-07-wordmark-geral"/);
-    } finally {
-      setMonthlyUtmCiclo(null);
-    }
+  it("a mensal agora se comporta como a diária: applyBrandWordmark sem href", () => {
+    // A diária nunca linkou o wordmark. Um `<a>` aqui significaria que alguém
+    // voltou a passar o 2º argumento em renderTextInline.
+    const html = renderInline("leia mais em diar.ia.br hoje");
+    assert.doesNotMatch(html, /<a\s/);
   });
 
   it("draftToEmail: as 5 origens emitem campanhas DISTINTAS e nenhuma vira sendinblue", () => {
@@ -322,10 +318,10 @@ describe("#4040 — utm_campaign distinto por POSIÇÃO do link", () => {
     assert.ok(pills.length >= 1, `nenhum pill por rótulo; achei: ${[...found].sort().join(", ")}`);
     assert.ok(!found.has("clarice-2606-07-pill"), "pill flat não deve mais existir");
 
-    // Wordmark: pelo menos um, e SEMPRE por seção (nunca o slug flat).
-    const wordmarks = [...found].filter((c) => c.startsWith("clarice-2606-07-wordmark-"));
-    assert.ok(wordmarks.length >= 1, `nenhum wordmark por seção; achei: ${[...found].sort().join(", ")}`);
-    assert.ok(!found.has("clarice-2606-07-wordmark"), "wordmark caiu no slug flat (regressão do #4040)");
+    // Wordmark: NENHUM. Deixou de ser link em 260727 — se voltar a aparecer um
+    // campaign `wordmark-*`, alguém re-linkou o wordmark sem querer.
+    const wordmarks = [...found].filter((c) => c.includes("wordmark"));
+    assert.equal(wordmarks.length, 0, `wordmark voltou a ser link: ${wordmarks.join(", ")}`);
 
     // #2975 + #4059: nada de sendinblue, nada de host antigo (o link legado do
     // encerramento foi normalizado).
@@ -347,13 +343,12 @@ describe("#4040 — utm_campaign distinto por POSIÇÃO do link", () => {
     }
   });
 
-  it("draftToEmail reseta ciclo E seção após terminar (não vazam pra chamada seguinte)", () => {
+  it("draftToEmail reseta o ciclo após terminar (não vaza pra chamada seguinte)", () => {
     draftToEmail("**RADAR**\n\ntexto [aqui](https://diar.ia.br).", "Assunto", "2606");
     assert.equal(normalizeKnownUrl("https://diar.ia.br"), "https://diar.ia.br");
     setMonthlyUtmCiclo("2607-08");
     try {
-      // Se a seção "RADAR" tivesse vazado, sairia `wordmark-radar`.
-      assert.match(renderInline("a diar.ia.br"), /utm_campaign=clarice-2607-08-wordmark-geral"/);
+      assert.match(normalizeKnownUrl("https://diar.ia.br"), /utm_campaign=clarice-2607-08-inline/);
     } finally {
       setMonthlyUtmCiclo(null);
     }

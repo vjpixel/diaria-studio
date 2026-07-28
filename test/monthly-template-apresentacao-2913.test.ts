@@ -26,9 +26,9 @@
  *        - descadastro → merge tag {{ unsubscribe }}
  *        - "na Clarice" (não "em Clarice")
  *   2. O bloco extraído do template, passado pelo render real (`draftToEmail`),
- *      produz HTML com o wordmark da marca aplicado (o wordmark automático de
- *      "diar.ia.br" continua linkando pro Beehiiv com UTM — #2937/#2975, fora
- *      do escopo do #3971) e o link "aqui" apontando direto pro href canônico
+ *      produz HTML com o wordmark da marca aplicado (desde 260727 o wordmark
+ *      é só estilo, NÃO é mais link — não convertia e somava densidade
+ *      promocional) e o link "aqui" apontando direto pro href canônico
  *      diar.ia.br com UTM — fechando o ciclo entre "o texto está certo" e "o
  *      render faz o que a gente espera com esse texto".
  */
@@ -109,7 +109,7 @@ describe("template mensal — bloco APRESENTAÇÃO (#2913)", () => {
     assert.doesNotMatch(block, /se cadastrou em \[Clarice\]/);
   });
 
-  it("renderiza via draftToEmail com o wordmark da marca + link pro Beehiiv aplicados", () => {
+  it("renderiza via draftToEmail com o wordmark da marca SEM link + o CTA 'aqui'", () => {
     const template = readTemplate();
     const block = extractFormatBlock(template);
     const apresentacaoSection = block
@@ -125,14 +125,13 @@ describe("template mensal — bloco APRESENTAÇÃO (#2913)", () => {
     // O wordmark estiliza "diar.ia.br" com pontos teal (applyBrandWordmark) —
     // ver test/monthly-branding-2937.test.ts para o formato exato do span.
     assert.match(html, /diar<span[^>]*>\.<\/span>ia<span[^>]*>\.br<\/span>/);
-    // E, na mensal, o wordmark vira link pro Beehiiv (MENSAL_BRAND_LINK, #2937),
-    // carregando o UTM de atribuição Clarice→Beehiiv (#2975 — sem isso, o
-    // Beehiiv taggeia esses assinantes como "sendinblue" e a migração fica
-    // invisível na atribuição). Ver test/monthly-utm-clarice-2975.test.ts.
-    // Esse mecanismo é ortogonal ao #3971 (que só muda o CTA explícito "aqui").
-    // #4059: o host de marca (diar.ia.br) é o destino do wordmark agora.
-    // #4040: o utm_campaign carrega o sufixo da POSIÇÃO — wordmark-{seção}.
-    assert.match(html, /<a href="https:\/\/diar\.ia\.br\/\?utm_source=clarice[^"]*utm_campaign=clarice-2606-07-wordmark-apresentacao"[^>]*>/);
+    // O wordmark NÃO é link (decisão do editor 260727, revertendo o
+    // #template-branding de 260703). Ele aparecia 4× por edição, todas
+    // apontando pra raiz do site, e o editor conferiu que não convertem —
+    // somadas ao "aqui" (2×) e ao botão davam 7 âncoras pro mesmo destino, só
+    // densidade promocional no eixo que o CTA-01 apontou como gatilho de spam.
+    // A diária nunca linkou; agora as duas superfícies se comportam igual.
+    assert.doesNotMatch(html, /utm_campaign=clarice-2606-07-wordmark/);
     // O CTA "aqui" (#3971) aponta pro mesmo host canônico e, desde o #4040,
     // também é normalizado com a posição `inline`.
     assert.match(html, /<a href="https:\/\/diar\.ia\.br\/\?utm_source=clarice[^"]*utm_campaign=clarice-2606-07-inline"[^>]*>aqui<\/a>/);
