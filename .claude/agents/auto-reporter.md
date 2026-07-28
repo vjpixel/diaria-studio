@@ -118,8 +118,8 @@ Pra cada signal em ordem:
 #### 3a. Construir query de busca
 
 Baseada em `kind` + `details`. **Sem qualificador `state:` na query** (#4177
-— o filtro de estado passa a ser controlado pela flag `--state` do `gh
-search` em 3b, não embutido na query em texto):
+— a chamada em 3b não filtra por estado nenhum, nem via `--state` nem via
+qualifier na query; ver 3b pro motivo):
 
 - `source_streak`: `"{source}" label:post-mortem`
 - `unfixed_issue` com `related_issue`: pular busca, usar issue number direto (ex: `#39`).
@@ -129,19 +129,27 @@ search` em 3b, não embutido na query em texto):
 
 #### 3b. `gh search issues` com a query
 
-**#4177**: a busca cobre issues abertas E fechadas numa chamada só
-(`--state all`). Motivo: se o bug já foi corrigido e a issue original
-fechada ANTES do auto-reporter processar o log de runtime-fixes dessa
-edição (drift incidente↔report), uma busca só `state:open` não encontra
-nada e **recria a issue do zero** — já aconteceu 2× (#4163/#4164
-duplicaram #4102, que já estava fechada e mergeada ~4h antes).
+**#4177**: a busca cobre issues abertas E fechadas numa chamada só —
+**omitindo a flag `--state`** (não passar `--state all`: `gh search
+issues --state` só aceita `open`/`closed`, `all` é inválido e o comando
+falha com exit≠0 — confirmado via `gh search issues --help`; omitir a
+flag inteiramente é o que faz a busca cobrir os dois estados). Motivo do
+fix: se o bug já foi corrigido e a issue original fechada ANTES do
+auto-reporter processar o log de runtime-fixes dessa edição (drift
+incidente↔report), uma busca com `--state open` (ou a antiga qualifier
+`state:open` na query) não encontra nada e **recria a issue do zero** —
+já aconteceu 2× (#4163/#4164 duplicaram #4102, que já estava fechada e
+mergeada ~4h antes).
 
 ```bash
-gh search issues --repo {repo} --state all '{query}' --json number,title,state,closedAt --limit 5
+gh search issues --repo {repo} '{query}' --json number,title,state,closedAt --limit 5
 ```
 
 Parsear JSON. Se array tem match, capturar issue number + título + `state`
-(`OPEN`/`CLOSED`) + `closedAt`:
+(`OPEN`/`CLOSED`) + `closedAt` (nota: pra issue ABERTA, `closedAt` vem como
+timestamp zero-value `"0001-01-01T00:00:00Z"`, não `null` — nunca citar
+`closedAt` no comment/body de uma issue aberta, só usar o campo quando
+`state == "CLOSED"`):
 - **Issue ABERTA**: proposta **comment** na issue existente (não criar
   duplicada) — comportamento inalterado.
 - **Issue FECHADA (#4177)**: proposta **comment** na issue existente,
