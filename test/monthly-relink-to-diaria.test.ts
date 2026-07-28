@@ -174,6 +174,34 @@ describe("buildRelink", () => {
     assert.equal(r.ctaSuffixRemovidos, 1);
   });
 
+  // Regressão: o #4040 pôs a POSIÇÃO no sufixo do utm_campaign, e o primeiro
+  // link do HTML renderizado é o wordmark da APRESENTAÇÃO. Com o match antigo
+  // (`[a-z0-9-]+` inteiro) os links de destaque relinkados herdavam esse sufixo
+  // e saíam como `-wordmark-apresentacao` — posição errada (são inline, nos
+  // DESTAQUES) e agregado enganoso. Observado ao re-renderizar a 2606-07 em
+  // 260727: 23 links contaminados.
+  it("campaign ignora o sufixo de POSIÇÃO do #4040 (não só o de braço A/B)", () => {
+    const r = buildRelink(
+      `<a href="https://diar.ia.br/?utm_campaign=clarice-2606-07-wordmark-apresentacao">x</a>` +
+        `<a href="https://exame.com/a">y</a>`,
+      maps(),
+    );
+    assert.equal(r.campaign, "clarice-2606-07");
+    assert.doesNotMatch(r.html, /utm_campaign=clarice-2606-07-wordmark-apresentacao&/);
+    assert.match(r.html, /utm_campaign=clarice-2606-07&/);
+  });
+
+  it("campaign ignora sufixo de posição em qualquer das formas do #4040", () => {
+    for (const pos of ["inline", "cta", "titulo", "pill", "use-melhor"]) {
+      const r = buildRelink(
+        `<a href="https://diar.ia.br/?utm_campaign=clarice-2607-08-${pos}">x</a>` +
+          `<a href="https://exame.com/a">y</a>`,
+        maps(),
+      );
+      assert.equal(r.campaign, "clarice-2607-08", `posição ${pos} vazou pro campaign`);
+    }
+  });
+
   it("normaliza diaria.beehiiv.com e poll.diaria.workers.dev", () => {
     const r = buildRelink(
       `<a href="https://diaria.beehiiv.com/p/x">a</a><a href="https://poll.diaria.workers.dev/vote?brand=clarice">b</a>`,
