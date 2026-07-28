@@ -165,36 +165,58 @@ export function isOvernightRoundActive(
 }
 
 /**
+ * Effort do review por PR quando NÃO há sinal de rodada overnight (branch sem
+ * prefixo `overnight/*` e sem sessão ativa nesta máquina).
+ *
+ * Histórico curto: #2754 usava `max` aqui com desconto pra overnight; #3326
+ * (260711) inverteu pra `low` geral, motivado pelo PR #3324 (~1,5M tokens de
+ * review num diff de ~250 linhas). #4234 (260728): o editor pediu `max` de
+ * volta **por enquanto** — decisão declaradamente provisória, tomada logo
+ * depois de `max` passar a significar algo distinto de `low` (fleet de 5
+ * agentes do pr-review-toolkit em paralelo, contra 1 agente no `low`; antes do
+ * #4234 os dois efforts mandavam o MESMO rubrico e diferiam só numa frase).
+ *
+ * Voltar ao comportamento do #3326 é trocar esta constante por `"low"` — uma
+ * linha, de propósito, porque a decisão é temporária. O desconto de `low` pra
+ * overnight (#2754/#3322) NÃO passa por aqui e segue intacto: rodada overnight
+ * é o caminho token-sensível e continua em 1 agente. Na prática isto restaura
+ * a semântica pré-#3326: `max` geral, `low` pra overnight.
+ */
+export const DEFAULT_EFFORT = "max";
+
+/**
  * Resolve o headRefName de um PR e decide o effort de /code-review.
  * `execFn` é injetável (default = execFileSync real) pra ser testável sem gh live.
  * `checkRoundActive` é injetável (default = isOvernightRoundActive real) pra ser
  * testável sem tocar `data/overnight/` no disco real.
  *
- * #3326: default é `low` — inclusive no caminho "sem sinal nenhum" (sem prefixo
- * `overnight/*`, sem rodada ativa) que antes caía em `max` (#2754). O editor
- * escala pra `max` pedindo explicitamente; o hook não paga o fleet completo
- * (5+5 ângulos + verify + sweep) por padrão em toda PR manual/develop.
+ * Default geral: `DEFAULT_EFFORT` (ver acima). Caminhos com sinal de overnight
+ * — prefixo `overnight/*` (#2754) ou sessão ativa nesta máquina (#3322) —
+ * continuam resolvendo `low` explicitamente, independente do default.
  *
  * Fail-safe: em estado genuinamente indeterminado — gh indisponível, PR sem
  * número reconhecível na URL, `checkRoundActive` lançando erro — mantém `max`.
- * Isso NÃO é mais "o default geral com um desconto pra overnight" (#3326 já
- * inverteu isso); é uma escolha deliberada e independente: quando o hook não
- * consegue nem determinar o que está revisando, erra pro lado mais caro em vez
- * de conceder o mais barato silenciosamente sobre um estado desconhecido.
+ * Continua sendo uma escolha deliberada e independente do default geral (era o
+ * único uso de `max` entre #3326 e #4234, e segue valendo mesmo se o default
+ * voltar pra `low`): quando o hook não consegue nem determinar o que está
+ * revisando, erra pro lado mais caro em vez de conceder o mais barato
+ * silenciosamente sobre um estado desconhecido.
  *
  * Retorna `{ effort, warning }`: `warning` é `null` no caminho feliz, ou uma nota
  * (#3322 direção 3) quando a branch NÃO seguiu a convenção `overnight/*` (#3321)
- * apesar de uma rodada ativa nesta máquina. Desde #3326 esse guard não muda mais
- * o `effort` resolvido (já é `low` por padrão de qualquer forma) — o warning
- * continua útil por si só: torna a divergência de naming visível ao coordenador
- * em vez de passar em silêncio (era justamente esse silêncio que atrasou a
- * detecção do #3321).
+ * apesar de uma rodada ativa nesta máquina. O warning é sobre naming, não sobre
+ * effort: entre #3326 e #4234 ele não mudava o effort resolvido (era `low` de
+ * qualquer jeito); com o default de volta em `max` (#4234) o guard volta a ter
+ * efeito real sobre o effort, mas o texto do warning segue falando só do naming
+ * divergente — que é o que ele sempre tornou visível ao coordenador, em vez de
+ * passar em silêncio (era justamente esse silêncio que atrasou a detecção do
+ * #3321).
  */
 export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = isOvernightRoundActive) {
   try {
     const num = prUrl.match(/\/pull\/(\d+)/)?.[1];
     // fail-safe: sem número de PR nem dá pra chamar `gh` — estado indeterminado,
-    // mantém max (#3326: única sobra do max fora do fail-safe de erro).
+    // mantém max independente de qual seja o DEFAULT_EFFORT vigente.
     if (!num) return { effort: "max", warning: null };
     const branch = execFn(
       "gh",
@@ -209,19 +231,18 @@ export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = i
           `branch "${branch}" não usa o prefixo overnight/ apesar de uma sessão ` +
           "overnight ativa nesta máquina (data/overnight/.active-session-*.json) — " +
           "SKILL.md diaria-overnight (Fase 1, passo 2) deveria ter instruído esse " +
-          "prefixo no dispatch do subagente implementador (#3321). Effort já seria " +
-          "low pelo default geral (#3326) de qualquer forma — este warning é só " +
-          "sobre o naming divergente, não sobre o effort resolvido.",
+          "prefixo no dispatch do subagente implementador (#3321). O desconto de " +
+          "effort foi aplicado pelo guard de sessão ativa, não pelo naming — este " +
+          "warning é só sobre o naming divergente.",
       };
     }
-    // #3326: default geral — sem sinal de overnight/rodada-ativa, ainda assim low.
-    // O editor escala pra max explicitamente quando quiser mais profundidade.
-    return { effort: "low", warning: null };
+    // Sem sinal de overnight/rodada-ativa → default geral (ver DEFAULT_EFFORT).
+    return { effort: DEFAULT_EFFORT, warning: null };
   } catch {
     // fail-safe: estado desconhecido (gh indisponível, timeout, checkRoundActive
-    // lançando erro) → mantém o default mais caro. Não é mais "o default geral
-    // com desconto pra overnight" (#3326 inverteu isso) — é uma escolha deliberada
-    // e independente pra quando o hook não consegue nem determinar o que revisar.
+    // lançando erro) → `max` literal, nunca DEFAULT_EFFORT. São decisões
+    // independentes: esta vale mesmo quando o default geral for `low`, porque o
+    // hook não consegue nem determinar o que está revisando.
     return { effort: "max", warning: null };
   }
 }
@@ -284,6 +305,15 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
         "model:sonnet explicit (#2019); report only a few high-confidence findings. Ask for max explicitly for deeper review"
       : `at ULTRACODE / MAXIMUM effort: dispatch the full toolkit fleet IN PARALLEL — \`${REVIEW_AGENT}\` plus ` +
         `${REVIEW_FLEET_MAX.join(", ")} — each with model:sonnet explicit (#2019), then aggregate their findings`;
+  // O caminho degradado tem que preservar a PROFUNDIDADE pedida, não só existir:
+  // sem isto, um `max` que caia no fallback (plugin ausente — justamente sessão
+  // cloud / clone fresco) produziria instrução idêntica à de `low`, entregando
+  // review raso sob o effort mais caro. Vale ainda mais desde que `max` virou o
+  // default (#4234): o fallback deixou de ser caminho de exceção.
+  const fallbackDepth =
+    effort === "low"
+      ? ""
+      : " Keep MAXIMUM depth in that degraded path too: be thorough, read every changed file, not just the diff hunks.";
   const warningNote = warning ? ` [aviso: ${warning}]` : "";
   return (
     `A pull request was just created: ${prUrl} — per project policy, review it now. ` +
@@ -294,7 +324,7 @@ export function buildReviewInstruction(prUrl, effort, warning = null) {
     "a concurrent session may share this checkout (incidents 260703/260708). " +
     `If a dispatch fails with \`Agent type ... not found\` (plugin \`pr-review-toolkit\` absent — cloud session or ` +
     "fresh clone), fall back to `general-purpose` with an inline review rubric (correctness, " +
-    "simplification/efficiency, test-coverage, security) — never skip the review silently (#4234). " +
+    `simplification/efficiency, test-coverage, security) — never skip the review silently (#4234).${fallbackDepth} ` +
     "Then post the findings as inline PR comments (`gh pr comment`/`gh api`). " +
     "Do NOT use cloud `ultra` (it is user-triggered/billed and cannot be self-launched)." +
     warningNote
