@@ -10,6 +10,7 @@ import {
   REVIEW_AGENT,
   REVIEW_FLEET_MAX,
   DEFAULT_EFFORT,
+  TRIVIAL_DIFF_LINE_THRESHOLD,
 } from "../.claude/hooks/pr-create-review.mjs";
 
 // #2754/#3322/#3326: overnight (token-sensitive) sempre resolveu /code-review
@@ -154,6 +155,83 @@ describe("resolveEffort (#2754)", () => {
       const result = resolveEffort("https://github.com/o/r/pull/1", execFn, throwingCheck);
       assert.equal(result.effort, "max");
     });
+  });
+});
+
+// #4243: DEFAULT_EFFORT=max (#4234) passou a disparar o fleet de 5 agentes em
+// toda PR sem sinal de overnight — inclusive diffs triviais (docs-only, 1
+// linha de comentário) onde 4 dos 5 agentes não têm o que analisar. Este
+// bloco trava o piso barato: diff pequeno rebaixa pra low independente do
+// DEFAULT_EFFORT vigente, e qualquer falha ao obter o tamanho do diff cai no
+// DEFAULT_EFFORT normal — nunca em "pular o review".
+//
+// `execFn` aqui precisa discriminar por chamada (branch vs. diff stats),
+// diferente dos mocks acima (que ignoram os args): resolveEffort agora faz
+// duas chamadas de `gh` quando não há sinal de overnight.
+describe("resolveEffort — diff trivial (#4243)", () => {
+  function makeExecFn({ branch = "develop/fix-4243\n", diff } = {}) {
+    return (_cmd, args) => {
+      if (args.includes("additions,deletions")) {
+        if (diff === undefined) throw new Error("gh pr view --json additions,deletions failed");
+        return diff;
+      }
+      return branch;
+    };
+  }
+
+  it("diff pequeno (< limiar) → low, mesmo com DEFAULT_EFFORT configurado como max", () => {
+    const execFn = makeExecFn({ diff: JSON.stringify({ additions: 1, deletions: 0 }) });
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "low");
+    assert.notEqual(result.effort, DEFAULT_EFFORT);
+    assert.equal(result.warning, null);
+  });
+
+  it("diff exatamente no limiar → NÃO é trivial (limiar é exclusivo), resolve DEFAULT_EFFORT", () => {
+    const execFn = makeExecFn({
+      diff: JSON.stringify({ additions: TRIVIAL_DIFF_LINE_THRESHOLD, deletions: 0 }),
+    });
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, DEFAULT_EFFORT);
+  });
+
+  it("diff grande (≥ limiar) → resolve o DEFAULT_EFFORT normal (max)", () => {
+    const execFn = makeExecFn({ diff: JSON.stringify({ additions: 200, deletions: 50 }) });
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, DEFAULT_EFFORT);
+    assert.equal(result.warning, null);
+  });
+
+  it("falha ao obter o tamanho do diff (gh lança erro) → resolve o DEFAULT_EFFORT, nunca 'skip'", () => {
+    const execFn = makeExecFn({}); // diff undefined → a chamada de stats lança
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, DEFAULT_EFFORT);
+  });
+
+  it("falha ao obter o tamanho do diff (JSON malformado) → resolve o DEFAULT_EFFORT, nunca 'skip'", () => {
+    const execFn = (_cmd, args) => (args.includes("additions,deletions") ? "not valid json" : "develop/fix-4243\n");
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, DEFAULT_EFFORT);
+  });
+
+  it("campos additions/deletions não-numéricos → tratado como falha, resolve o DEFAULT_EFFORT", () => {
+    const execFn = makeExecFn({ diff: JSON.stringify({ additions: "n/a", deletions: null }) });
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, DEFAULT_EFFORT);
+  });
+
+  it("branch overnight/* já resolve low sem sequer checar o tamanho do diff", () => {
+    let diffChecked = false;
+    const execFn = (_cmd, args) => {
+      if (args.includes("additions,deletions")) {
+        diffChecked = true;
+        return JSON.stringify({ additions: 500, deletions: 500 });
+      }
+      return "overnight/fix-1234\n";
+    };
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "low");
+    assert.equal(diffChecked, false, "não deveria checar o diff quando o branch overnight/* já resolveu low");
   });
 });
 
