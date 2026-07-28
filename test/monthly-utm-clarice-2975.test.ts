@@ -41,6 +41,7 @@ import {
   normalizeKnownUrl,
   renderCtaButton,
   renderInline,
+  renderEia,
   renderEncerramento,
   renderLinkListSection,
   setMonthlyUtmCiclo,
@@ -142,6 +143,26 @@ describe("UTM clarice em links do host de marca (#2975)", () => {
       setMonthlyUtmCiclo(null);
     }
   });
+  // Lacuna apontada na review da PR #4194: `renderEia` só era exercitado SEM
+  // ciclo UTM setado, e nesse caso `withClariceUtm` retorna cedo — a URL nunca
+  // ganhava `&`, então o `escHtml` em volta nunca era testado sobre uma string
+  // com query param. Uma regressão que escapasse ANTES de montar a URL
+  // (`&amp;amp;`) passaria pela suíte inteira.
+  it("link do leaderboard: posição `leaderboard` + `&` escapado UMA vez só", () => {
+    setMonthlyUtmCiclo("2606-07");
+    try {
+      const html = renderEia("É IA? — DESTAQUE DO MÊS\n[placeholder]", "2606");
+      const href = (html.match(/href="([^"]*leaderboard[^"]*)"/) ?? [])[1] ?? "";
+      assert.ok(href, "link do leaderboard ausente");
+      assert.match(href, /utm_campaign=clarice-2606-07-leaderboard/);
+      assert.match(href, /brand=clarice/, "brand não pode se perder na re-montagem da URL");
+      assert.match(href, /&amp;/, "separador de query tem que sair escapado no HTML");
+      assert.doesNotMatch(href, /&amp;amp;/, "duplo-escape: escapou antes de montar a URL");
+    } finally {
+      setMonthlyUtmCiclo(null);
+    }
+  });
+
   it("normalizeKnownUrl não mexe em hosts de terceiros", () => {
     setMonthlyUtmCiclo("2606-07");
     try {
