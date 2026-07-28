@@ -57,10 +57,13 @@
  *                Sem a flag, nenhum corte por score é aplicado (comportamento
  *                inalterado).
  *   --dry-run    só conta/imprime o plano, nada escrito.
- *   --segments-dir DIR   OPCIONAL, uso interno de teste (#4176) — override de
- *                onde o sent-or-queued.json/CSV são lidos/escritos, no lugar de
- *                `clariceSegmentsDir(cycle)` (raiz fixa do repo). Sem a flag,
- *                comportamento de produção inalterado.
+ *   --data-root DIR   OPCIONAL, uso interno de teste (#4207, generaliza o
+ *                `--segments-dir` pontual do #4176) — substitui `CLARICE_BASE`
+ *                (raiz fixa `data/clarice-subscribers`) na resolução de
+ *                `clariceSegmentsDir(cycle, baseDir)`, então o sent-or-queued.json/CSV
+ *                são lidos/escritos sob `{data-root}/{cycle}/segments` em vez do
+ *                disco real de produção. Sem a flag, comportamento de produção
+ *                inalterado (baseDir default = `CLARICE_BASE`).
  *
  * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/segments/):
  *   {group}.csv              (colunas: email,NOME — compatível com clarice-import-waves)
@@ -354,9 +357,11 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   // SELECIONADO por qualquer grupo nomeado (não só este `group`) neste mesmo
   // ciclo, ANTES do predicado/sort/budget de buildSegmentArtifact. Automático
   // (sem flag), inclusive em --dry-run (só LEITURA aqui — nunca escreve).
-  // `--segments-dir` (#4176): override de teste — sem a flag, resolve a raiz
-  // fixa de produção via clariceSegmentsDir(cycle) (comportamento inalterado).
-  const segDir = getArg(argv, "segments-dir") || clariceSegmentsDir(cycle);
+  // `--data-root` (#4207, generaliza `--segments-dir` do #4176): override de
+  // teste do root usado por `clariceSegmentsDir` — sem a flag, resolve a raiz
+  // fixa de produção via `CLARICE_BASE` (comportamento inalterado).
+  const dataRootArg = getArg(argv, "data-root");
+  const segDir = clariceSegmentsDir(cycle, dataRootArg || undefined);
   const sentOrQueued = loadSentOrQueuedEmails(segDir);
   const universe = excludeSentOrQueued(rows, sentOrQueued);
   const alreadyTracked = rows.length - universe.length;

@@ -58,19 +58,28 @@ export function isValidCycle(c: string | undefined | null): c is string {
   return sendMonth === (contentMonth % 12) + 1;
 }
 
-/** Diretório do ciclo (`…/clarice-subscribers/{conteúdo}-{envio}`). Pure (path join). */
-export function clariceCycleDir(cycle: string): string {
+/**
+ * Diretório do ciclo (`…/clarice-subscribers/{conteúdo}-{envio}`). Pure (path join).
+ *
+ * @param baseDir Opcional, default = `CLARICE_BASE` (raiz REAL, junction pro
+ *                OneDrive). Aceito pra permitir testes de `main()` apontarem
+ *                a escrita pra um tmpdir isolado em vez do disco real de
+ *                produção — mesmo padrão de `checkNoHtmlInMonthlyDriveSync(baseDir?)`
+ *                em `scripts/check-invariants.ts` (#4207, generaliza o
+ *                workaround pontual `--segments-dir` do #4176).
+ */
+export function clariceCycleDir(cycle: string, baseDir?: string): string {
   if (!isValidCycle(cycle)) {
     throw new Error(
       `ciclo inválido: ${cycle} (esperado {conteúdo}-{envio} com envio = conteúdo+1, ex: 2605-06)`,
     );
   }
-  return resolve(CLARICE_BASE, cycle);
+  return resolve(baseDir ?? CLARICE_BASE, cycle);
 }
 
-/** Diretório de waves do ciclo (`…/{conteúdo}-{envio}/waves`). */
-export function clariceWavesDir(cycle: string): string {
-  return resolve(clariceCycleDir(cycle), "waves");
+/** Diretório de waves do ciclo (`…/{conteúdo}-{envio}/waves`). `baseDir` — ver `clariceCycleDir` (#4207). */
+export function clariceWavesDir(cycle: string, baseDir?: string): string {
+  return resolve(clariceCycleDir(cycle, baseDir), "waves");
 }
 
 /**
@@ -78,10 +87,10 @@ export function clariceWavesDir(cycle: string): string {
  * #2885 — `scripts/clarice-build-segment.ts`). Irmão de `waves/`: a rampa
  * (crescer alcance) mora em `waves/`, os grupos por objetivo (retenção,
  * re-ativação, 1º-envio-seguro) moram aqui — não se misturam nem colidem em
- * nome de arquivo.
+ * nome de arquivo. `baseDir` — ver `clariceCycleDir` (#4207).
  */
-export function clariceSegmentsDir(cycle: string): string {
-  return resolve(clariceCycleDir(cycle), "segments");
+export function clariceSegmentsDir(cycle: string, baseDir?: string): string {
+  return resolve(clariceCycleDir(cycle, baseDir), "segments");
 }
 
 /**
@@ -93,10 +102,10 @@ export function clariceSegmentsDir(cycle: string): string {
  * `ramp-warm` de 1 lista só) — os 3 CSVs disjuntos (ter/sex/dom) deste script
  * teriam o MESMO nome de arquivo (`ramp-warm.csv`) que o grupo nomeado
  * homônimo se compartilhassem `segments/`, colidindo/sobrescrevendo caso os
- * dois fluxos rodem no mesmo ciclo.
+ * dois fluxos rodem no mesmo ciclo. `baseDir` — ver `clariceCycleDir` (#4207).
  */
-export function clariceRampDir(cycle: string): string {
-  return resolve(clariceCycleDir(cycle), "ramp");
+export function clariceRampDir(cycle: string, baseDir?: string): string {
+  return resolve(clariceCycleDir(cycle, baseDir), "ramp");
 }
 
 /** Caminho de um arquivo de input-base (root, não por-ciclo): stripe, excluded, tiers. */
