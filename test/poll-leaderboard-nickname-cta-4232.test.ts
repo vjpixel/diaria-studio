@@ -131,6 +131,25 @@ describe("resolveLeaderboardNicknameForm (#4232)", () => {
     const result = await resolveLeaderboardNicknameForm(url, env, "web");
     assert.equal(result, null);
   });
+
+  it("KV.get lança (achado do review consolidado #4232) → null, NÃO propaga a exceção", async () => {
+    // `env.POLL.get` é uma chamada de rede real (KV) e pode lançar (erro
+    // interno, rate-limit) — sem o try/catch em resolveLeaderboardNicknameForm,
+    // isso derrubaria a página inteira do leaderboard por causa de um form
+    // opcional/decorativo (achado do silent-failure-hunter no review
+    // consolidado do PR). Fail-closed real: a exceção nunca escapa.
+    const email = "reader@x.com";
+    const sig = await hmacSign(SECRET, `setname:${email}`);
+    const env: Env = {
+      POLL: { get: async () => { throw new Error("kv boom"); } } as unknown as Env["POLL"],
+      POLL_SECRET: SECRET,
+      ADMIN_SECRET: "admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+    const url = new URL(`https://poll.example/leaderboard?email=${encodeURIComponent(email)}&sig=${sig}`);
+    const result = await resolveLeaderboardNicknameForm(url, env, "diaria");
+    assert.equal(result, null);
+  });
 });
 
 describe("handleLeaderboardByMonth — renderiza nick-box com sig válida da query string (#4232)", () => {
@@ -176,6 +195,35 @@ describe("handleLeaderboardByMonth — renderiza nick-box com sig válida da que
     const res = await handleLeaderboardByMonth("2020-01", env, "diaria", undefined, url);
     const html = await res.text();
     assert.doesNotMatch(html, /<div class="nick-box">/);
+  });
+
+  it("KV.get de score:{email} lança → página inteira ainda renderiza 200 (sem nick-box), NÃO propaga 500 (achado do review consolidado #4232)", async () => {
+    const email = "reader@x.com";
+    const sig = await hmacSign(SECRET, `setname:${email}`);
+    const trackedKv = makeTrackedKv({
+      "score-by-month:2020-01:ana@x.com": JSON.stringify({ total: 5, correct: 4, nickname: "Ana" }),
+    });
+    // `score:{email}` (lido só por resolveLeaderboardNicknameForm) lança;
+    // demais keys (score-by-month:*, usada por getOrComputeSnapshot pro
+    // ranking em si) seguem funcionando normalmente via o KV tracked real.
+    const env: Env & { POLL: ReturnType<typeof makeTrackedKv> } = {
+      POLL: {
+        ...trackedKv,
+        get: async (key: string) => {
+          if (key === `score:${email}`) throw new Error("kv boom");
+          return trackedKv.get(key);
+        },
+      } as unknown as ReturnType<typeof makeTrackedKv>,
+      POLL_SECRET: SECRET,
+      ADMIN_SECRET: "admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+    const url = new URL(`https://poll.example/leaderboard/2020-01?email=${encodeURIComponent(email)}&sig=${sig}`);
+    const res = await handleLeaderboardByMonth("2020-01", env, "diaria", undefined, url);
+    assert.equal(res.status, 200, "página do leaderboard não deve 500 por causa do form opcional de nickname");
+    const html = await res.text();
+    assert.match(html, /Ana/, "ranking em si continua renderizando normalmente");
+    assert.doesNotMatch(html, /<div class="nick-box">/, "form de nickname fica de fora (fail-closed), não quebra a página");
   });
 });
 

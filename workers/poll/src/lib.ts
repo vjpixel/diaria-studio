@@ -1067,7 +1067,7 @@ export function renderNicknameFormHtml(
 /**
  * CSS do `.nick-box` (#4232, extraído de votePageHtml/#1675/#1779/#3110) —
  * self-contained com seu próprio `@media (max-width: 600px)` (mesmo padrão de
- * `renderLightboxStyles` acima: bloco de media query independente, não
+ * `renderLightboxStyles` neste arquivo: bloco de media query independente, não
  * mesclado com o `@media` das demais regras de cada página — CSS válido ter
  * múltiplos blocos pro mesmo breakpoint). Chamado por `votePageHtml`
  * (index.ts) e por `renderLeaderboardHtml` (leaderboard-routes.ts, #4232).

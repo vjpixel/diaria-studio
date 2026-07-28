@@ -603,13 +603,34 @@ export async function resolveLeaderboardNicknameForm(
   if (!isValidVoteEmailFormat(email)) return null;
 
   const valid = await hmacVerify(env.POLL_SECRET, `setname:${email}`, sig);
-  if (!valid) return null;
+  if (!valid) {
+    // Log (não bloqueia) — distingue "sig inválida/expirada" das demais
+    // causas de `null` (sem voto, já tem nickname), que são estado normal e
+    // não precisam de sinal — achado do review consolidado (#4232): sem
+    // isso, um POLL_SECRET rotacionado ou uma divergência de normalização de
+    // email entre votePageHtml (quem assina) e esta função (quem verifica)
+    // ficaria invisível em produção — "a CTA parou de aparecer" sem nenhum
+    // log pra correlacionar.
+    console.error(JSON.stringify({ event: "leaderboard_nickname_form_invalid_sig", email }));
+    return null;
+  }
 
-  const raw = await env.POLL.get(`score:${email}`);
-  const score = safeParseKv<{ nickname?: string | null }>(raw, "leaderboard_nickname_form_score_parse_error", email);
-  if (!score || score.nickname) return null; // sem voto registrado, ou já tem nickname
-
-  return { email, sig };
+  // #4232 (achado do review consolidado, silent-failure-hunter): `env.POLL.get`
+  // é uma chamada de rede real (KV) e PODE lançar (erro interno, rate-limit)
+  // — sem este try/catch, uma falha aqui derrubava a página de leaderboard
+  // INTEIRA (scores/HTML já computados, request inteira 500) por causa de um
+  // form OPCIONAL/decorativo. Fail-closed real: qualquer exceção vira `null`
+  // (mesmo contrato documentado acima — "nunca expõe o form indevidamente"),
+  // nunca propaga pro caller.
+  try {
+    const raw = await env.POLL.get(`score:${email}`);
+    const score = safeParseKv<{ nickname?: string | null }>(raw, "leaderboard_nickname_form_score_parse_error", email);
+    if (!score || score.nickname) return null; // sem voto registrado, ou já tem nickname
+    return { email, sig };
+  } catch (e) {
+    console.error(JSON.stringify({ event: "leaderboard_nickname_form_kv_error", email, error: String(e) }));
+    return null;
+  }
 }
 
 /**
