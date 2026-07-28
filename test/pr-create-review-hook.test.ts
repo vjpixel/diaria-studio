@@ -7,15 +7,20 @@ import {
   resolveEffort,
   buildReviewInstruction,
   isOvernightRoundActive,
+  REVIEW_AGENT,
+  REVIEW_FLEET_MAX,
+  DEFAULT_EFFORT,
 } from "../.claude/hooks/pr-create-review.mjs";
 
 // #2754/#3322/#3326: overnight (token-sensitive) sempre resolveu /code-review
 // low via branch-prefix (#2754) ou guard de sessão ativa (#3322). #3326
-// (260711) estendeu esse `low` pra default GERAL — develop/manual não guarda
-// mais `max` como fallback quando não há sinal de overnight; o editor escala
-// pra `max` pedindo explicitamente. `max` sobra só como fail-safe de estado
-// indeterminado (gh indisponível, PR sem número reconhecível na URL,
-// checkRoundActive lançando erro) — não mais como "o default geral".
+// (260711) estendeu esse `low` pra default GERAL; #4234 (260728) devolveu o
+// default pra `max` a pedido do editor ("por enquanto"), preservando intacto o
+// desconto de overnight. O que NUNCA mudou nesse vai-e-vem: overnight resolve
+// `low`, e estado indeterminado (gh indisponível, PR sem número reconhecível na
+// URL, checkRoundActive lançando erro) resolve `max` como fail-safe — os testes
+// abaixo travam essas duas pontas via DEFAULT_EFFORT, então uma troca futura da
+// constante mexe num teste só.
 // Regressão do PR que introduziu a branch-detection original — sem isso, todo
 // PR (inclusive overnight/*) voltaria a pagar o custo do review multi-agente
 // max por cima do self-review interno da skill.
@@ -42,20 +47,39 @@ describe("resolveEffort (#2754)", () => {
     assert.equal(result.effort, "low");
   });
 
-  // #3326: default geral virou low — develop/manual sem sinal de overnight não
-  // guarda mais o fallback max daqui.
-  it("branch develop/fix-1234, sem rodada ativa → low (#3326 default geral)", () => {
+  // #3326 tinha fixado `low` aqui; #4234 devolveu o default pra `max` a pedido
+  // do editor ("por enquanto"). Estes dois casos asseguram apenas que o caminho
+  // "sem sinal de overnight" segue o DEFAULT_EFFORT vigente — trocar a constante
+  // não deve exigir reescrever teste, só o caso que trava o valor dela.
+  it("branch develop/fix-1234, sem rodada ativa → DEFAULT_EFFORT", () => {
     const execFn = () => "develop/fix-1234\n";
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
-    assert.equal(result.effort, "low");
+    assert.equal(result.effort, DEFAULT_EFFORT);
     assert.equal(result.warning, null);
   });
 
-  it("branch sem prefixo especial (manual), sem rodada ativa → low (#3326 default geral)", () => {
+  it("branch sem prefixo especial (manual), sem rodada ativa → DEFAULT_EFFORT", () => {
     const execFn = () => "fix-something\n";
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
-    assert.equal(result.effort, "low");
+    assert.equal(result.effort, DEFAULT_EFFORT);
     assert.equal(result.warning, null);
+  });
+
+  // #4234: trava o VALOR da constante. É o único teste que precisa mudar quando
+  // o editor reverter a decisão provisória — o resto da suíte se ajusta sozinho.
+  it("DEFAULT_EFFORT é `max` (decisão provisória do editor, #4234)", () => {
+    assert.equal(DEFAULT_EFFORT, "max");
+  });
+
+  // #4234: o risco concreto de mexer no default é levar junto o desconto de
+  // overnight (#2754/#3322) — que é o caminho token-sensível e NÃO deve seguir
+  // DEFAULT_EFFORT. Com o default em `max` os dois valores diferem, então este
+  // teste passa a distinguir de verdade (entre #3326 e #4234 era tautológico).
+  it("desconto de overnight sobrevive ao default: branch overnight/* → low ≠ DEFAULT_EFFORT", () => {
+    const execFn = () => "overnight/fix-1234\n";
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "low");
+    assert.notEqual(result.effort, DEFAULT_EFFORT);
   });
 
   it("gh indisponível/erro → fail-safe max", () => {
@@ -78,13 +102,11 @@ describe("resolveEffort (#2754)", () => {
     assert.equal(called, false, "não deveria invocar gh sem número de PR");
   });
 
-  // #3326: com noActiveRound, tanto o match correto (não-prefixo) quanto um
-  // hipotético false-positive no `startsWith` resolveriam "low" (default geral
-  // agora), então esse cenário sozinho não distingue mais os dois casos. Usar
-  // activeRound + checar o `warning` (só presente no caminho correto, que NÃO
-  // deu match no prefixo) é o jeito que continua pegando a regressão: um
-  // false-positive no `startsWith` faria o early-return `{effort:"low",
-  // warning:null}` disparar ANTES do checkRoundActive, engolindo o warning.
+  // O discriminador aqui é o `warning`, não o effort: um false-positive no
+  // `startsWith` faria o early-return `{effort:"low", warning:null}` disparar
+  // ANTES do checkRoundActive, engolindo o warning. Checar o warning pega essa
+  // regressão em qualquer DEFAULT_EFFORT — inclusive no período #3326→#4234, em
+  // que ambos os caminhos resolviam "low" e o effort sozinho nada distinguia.
   it("branch com substring 'overnight' mas não como prefixo, com rodada ativa → low COM warning (evita false-positive no startsWith)", () => {
     const execFn = () => "feature/overnight-related-refactor\n";
     const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
@@ -111,13 +133,12 @@ describe("resolveEffort (#2754)", () => {
       assert.equal(result.warning, null);
     });
 
-    // #3326: agora idêntico ao default geral (não é mais o guard quem resolve
-    // isso) — sem prefixo overnight/ e sem rodada ativa cai direto no fallback
-    // "low" de resolveEffort, sem passar pelo warning branch do guard.
-    it("branch sem prefixo + SEM rodada ativa → low (#3326 default geral, não é o guard quem resolve)", () => {
+    // Sem prefixo overnight/ e sem rodada ativa, não é o guard quem resolve:
+    // cai no DEFAULT_EFFORT de resolveEffort, sem passar pelo branch de warning.
+    it("branch sem prefixo + SEM rodada ativa → DEFAULT_EFFORT (não é o guard quem resolve)", () => {
       const execFn = () => "fix-something\n";
       const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
-      assert.equal(result.effort, "low");
+      assert.equal(result.effort, DEFAULT_EFFORT);
       assert.equal(result.warning, null);
     });
 
@@ -181,6 +202,77 @@ describe("buildReviewInstruction (#2754)", () => {
   it("warning presente → aparece anexado ao final da instrução", () => {
     const msg = buildReviewInstruction("https://github.com/o/r/pull/1", "low", "branch divergente do padrão");
     assert.match(msg, /\[aviso: branch divergente do padrão\]$/);
+  });
+});
+
+// #4234: o dispatch passou a usar os agentes do plugin pr-review-toolkit
+// (opção (b) do plano do #4034, verificada em 260728). O nome é PREFIXADO pelo
+// plugin — `code-reviewer` puro, como o plano do #4034 supunha, resolve
+// `Agent type not found`. Estes testes travam justamente o que uma regressão
+// silenciosa quebraria: o prefixo, o fallback e a distinção low/max.
+describe("buildReviewInstruction — agentes do pr-review-toolkit (#4234)", () => {
+  const PR = "https://github.com/o/r/pull/1";
+
+  it("nome do agente é prefixado pelo plugin, nunca `code-reviewer` solto", () => {
+    assert.equal(REVIEW_AGENT, "pr-review-toolkit:code-reviewer");
+    const msg = buildReviewInstruction(PR, "low");
+    assert.match(msg, /pr-review-toolkit:code-reviewer/);
+    // sem prefixo em nenhum lugar: `(?<!pr-review-toolkit:)code-reviewer`
+    assert.doesNotMatch(msg, /(?<!pr-review-toolkit:)code-reviewer/);
+  });
+
+  it("effort=low dispatcha UM agente — nenhum membro do fleet max aparece", () => {
+    const msg = buildReviewInstruction(PR, "low");
+    assert.match(msg, /ONE Agent/);
+    for (const agent of REVIEW_FLEET_MAX) {
+      assert.ok(!msg.includes(agent), `low não deveria citar ${agent}`);
+    }
+  });
+
+  it("effort=max dispatcha o fleet completo em paralelo", () => {
+    const msg = buildReviewInstruction(PR, "max");
+    assert.match(msg, /IN PARALLEL/);
+    assert.match(msg, /pr-review-toolkit:code-reviewer/);
+    for (const agent of REVIEW_FLEET_MAX) {
+      assert.ok(msg.includes(agent), `max deveria citar ${agent}`);
+    }
+  });
+
+  // O plugin vem do marketplace por máquina: sessão cloud / clone fresco não o
+  // tem, mesmo com `enabledPlugins` versionado. Sem esta instrução o hook
+  // deixaria a PR sem review nenhum, em silêncio — a regressão exata que o
+  // #4034 documentou como "degradação de qualidade invisível".
+  it("todo effort carrega o fallback pro general-purpose com rubrico inline", () => {
+    for (const effort of ["low", "max"]) {
+      const msg = buildReviewInstruction(PR, effort);
+      assert.match(msg, /Agent type \.\.\. not found/);
+      assert.match(msg, /general-purpose/);
+      assert.match(msg, /correctness, simplification\/efficiency, test-coverage, security/);
+    }
+  });
+
+  // Achado do review da própria PR #4238: o fallback precisa preservar a
+  // PROFUNDIDADE, não só existir. Sem isso um `max` degradado (plugin ausente —
+  // justamente sessão cloud / clone fresco) produzia instrução idêntica à de
+  // `low`: review raso sob o effort mais caro, em silêncio.
+  it("fallback preserva a profundidade do effort — max carrega instrução extra que low não tem", () => {
+    const low = buildReviewInstruction(PR, "low");
+    const max = buildReviewInstruction(PR, "max");
+    assert.match(max, /Keep MAXIMUM depth in that degraded path too/);
+    assert.doesNotMatch(low, /Keep MAXIMUM depth/);
+    assert.match(max, /read every changed file, not just the diff hunks/);
+  });
+
+  // O agente do plugin tem toolset completo e revisa `git diff` unstaged por
+  // default — duas armadilhas: revisar o diff errado, e churnar um checkout
+  // compartilhado com o coordenador (incidentes 260703/260708).
+  it("todo effort exige escopo de diff explícito e agente read-only", () => {
+    for (const effort of ["low", "max"]) {
+      const msg = buildReviewInstruction(PR, effort);
+      assert.match(msg, /UNSTAGED changes, which are not this PR/);
+      assert.match(msg, /READ-ONLY/);
+      assert.match(msg, /no `git checkout`/);
+    }
   });
 });
 
