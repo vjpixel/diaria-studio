@@ -624,6 +624,16 @@ npx tsx scripts/review-highlight-source.ts --approved {EDITION_DIR}/_internal/01
 
 Se `flagged[]` não-vazio, **surfar no gate** cada destaque com a fonte oficial sugerida (`suggested_domain`), pra o editor trocar a URL pela newsroom/site oficial. (Busca ativa + substituição automática é fase 2 do #1699 — aqui só sinaliza melhor.)
 
+### 1v-quinquies. Cross-check destaque-imprensa × oficial no POOL da mesma edição (#4135 item 3)
+
+Antes do gate, mecanismo INDEPENDENTE do 1v-quater acima (não depende de heurística de voz/verbo de anúncio): se um destaque tem URL de cobertura de imprensa (não-oficial) e existe no pool desta MESMA edição (lancamento/radar/use_melhor/video) um artigo de domínio OFICIAL sobre o MESMO tema, sugere a troca. Caso real (edição 260727): D2 apontava pro Tecnoblog enquanto o anúncio oficial da Anthropic (score 72) estava no RADAR, a um bucket de distância — passou batido pelos guards existentes. **Warn-only**:
+
+```bash
+npx tsx scripts/review-highlight-official-swap.ts --categorized {EDITION_DIR}/_internal/01-categorized.json
+```
+
+Se `suggestions[]` não-vazio, **surfar no gate** cada destaque com a URL oficial já disponível no pool (`official_url`), pra o editor trocar. Item 2 do #4135 (mismatch de domínio por voz — mais propenso a falso-positivo) permanece fora de escopo, aguardando calibragem do editor.
+
 ### 1w-quint. Validator anti-skip de 1f (#1091)
 
 Antes do `validate-stage-1-output.ts`, rodar:
