@@ -141,6 +141,13 @@ export interface PrevPollStats {
   skipped?: string;
 }
 
+// Prefixo literal da prevResultLine — exportado (não só usado inline aqui)
+// porque scripts/apply-eia-description.ts precisa do MESMO texto pra
+// localizar o fim da creditLine em 01-eia.md sem depender de um "\n\n"
+// genérico (que poderia casar com uma quebra de linha interna à própria
+// creditLine, caso humanizador/Clarice algum dia produza uma — #4258 item 3).
+export const PREV_RESULT_LINE_PREFIX = "Resultado da última edição:";
+
 /**
  * Constrói a linha "Resultado da última edição" (#107) a partir das stats
  * do poll. Retorna `null` quando não há nada útil pra reportar (skipped,
@@ -152,7 +159,7 @@ export function buildPrevResultLine(stats: PrevPollStats | null): string | null 
   if (!stats.total_responses || stats.total_responses === 0) return null;
   if (stats.below_threshold) return null;
   if (stats.pct_correct === null || stats.pct_correct === undefined) return null;
-  return `Resultado da última edição: ${stats.pct_correct}% das pessoas acertaram.`;
+  return `${PREV_RESULT_LINE_PREFIX} ${stats.pct_correct}% das pessoas acertaram.`;
 }
 
 /**

@@ -21,9 +21,29 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { spawnSync } from "node:child_process";
+
 import { extractDescriptionFromMeta } from "../scripts/extract-eia-description.ts";
 import { replaceCreditLineInEiaMd } from "../scripts/apply-eia-description.ts";
-import { buildCreditLine, buildEiaMd, chooseSides } from "../scripts/eia-compose.ts";
+import { buildCreditLine, buildEiaMd, chooseSides, PREV_RESULT_LINE_PREFIX } from "../scripts/eia-compose.ts";
+
+const PROJECT_ROOT = join(import.meta.dirname, "..");
+
+function runExtractCli(args: string[]) {
+  return spawnSync(
+    process.execPath,
+    ["--import", "tsx", join(PROJECT_ROOT, "scripts", "extract-eia-description.ts"), ...args],
+    { cwd: PROJECT_ROOT, encoding: "utf8" },
+  );
+}
+
+function runApplyCli(args: string[]) {
+  return spawnSync(
+    process.execPath,
+    ["--import", "tsx", join(PROJECT_ROOT, "scripts", "apply-eia-description.ts"), ...args],
+    { cwd: PROJECT_ROOT, encoding: "utf8" },
+  );
+}
 
 // ── extractDescriptionFromMeta (pure) ───────────────────────────────────────
 
@@ -63,25 +83,60 @@ describe("extractDescriptionFromMeta (#4258 item 3, pure)", () => {
 describe("replaceCreditLineInEiaMd (#4258 item 3, pure)", () => {
   const sides = chooseSides(0.5);
 
-  it("substitui a creditLine preservando frontmatter + header, sem prevResultLine", () => {
+  it("substitui a creditLine preservando frontmatter + header, sem prevResultLine — byte-exato vs. buildEiaMd", () => {
     const md = buildEiaMd(sides, "Crédito original — [Foto](https://x.com/a) / CC BY-SA 4.0.", null);
-    const result = replaceCreditLineInEiaMd(md, "Crédito corrigido — [Foto](https://x.com/a) / CC BY-SA 4.0.");
+    const newCredit = "Crédito corrigido — [Foto](https://x.com/a) / CC BY-SA 4.0.";
+    const result = replaceCreditLineInEiaMd(md, newCredit);
     assert.match(result, /^---\neia_answer:/, "frontmatter preservado no início");
     assert.match(result, /\*\*É IA\?\*\*/, "header preservado");
     assert.match(result, /Crédito corrigido/);
     assert.ok(!result.includes("Crédito original"), "creditLine antiga não deve sobreviver");
+    // Achado do review consolidado (pr-test-analyzer): asserções por
+    // substring/match não pegam uma quebra sutil (ex: 1 newline a mais/a
+    // menos) — comparar byte-a-byte contra o que buildEiaMd geraria direto
+    // com a creditLine nova é o jeito de travar isso de verdade.
+    assert.equal(result, buildEiaMd(sides, newCredit, null));
   });
 
-  it("preserva prevResultLine intacta ao substituir a creditLine", () => {
-    const md = buildEiaMd(
-      sides,
-      "Crédito original.",
-      "Resultado da última edição: 62% das pessoas acertaram.",
-    );
-    const result = replaceCreditLineInEiaMd(md, "Crédito corrigido.");
+  it("preserva prevResultLine intacta ao substituir a creditLine — byte-exato vs. buildEiaMd", () => {
+    const prevResultLine = "Resultado da última edição: 62% das pessoas acertaram.";
+    const md = buildEiaMd(sides, "Crédito original.", prevResultLine);
+    const newCredit = "Crédito corrigido.";
+    const result = replaceCreditLineInEiaMd(md, newCredit);
     assert.match(result, /Crédito corrigido\./);
     assert.match(result, /Resultado da última edição: 62% das pessoas acertaram\./);
     assert.ok(!result.includes("Crédito original"));
+    assert.equal(result, buildEiaMd(sides, newCredit, prevResultLine));
+  });
+
+  it("#4258 item 3 (achado do review consolidado, bug real reproduzido e corrigido): creditLine antiga com quebra de linha interna NÃO vaza fragmento no resultado", () => {
+    // Antes do fix, o boundary do fim da creditLine era achado via
+    // rest.indexOf("\n\n") genérico — se a creditLine ANTIGA (texto livre,
+    // já passado por humanizador/Clarice) tivesse uma quebra de linha
+    // interna, esse indexOf casava com ELA em vez do separador de verdade
+    // antes de um prevResultLine, deixando um fragmento da creditLine velha
+    // sobrando no arquivo sem lançar nenhum erro. O fix ancora no prefixo
+    // literal de PREV_RESULT_LINE_PREFIX (exportado por eia-compose.ts) em
+    // vez de um "\n\n" genérico.
+    const prevResultLine = `${PREV_RESULT_LINE_PREFIX} 62% das pessoas acertaram.`;
+    const oldCreditWithInternalBlankLine = "Linha um.\n\nLinha dois (não pode vazar).";
+    const md = buildEiaMd(sides, oldCreditWithInternalBlankLine, prevResultLine);
+    const result = replaceCreditLineInEiaMd(md, "Nova linha única.");
+    assert.ok(
+      !result.includes("Linha dois (não pode vazar)"),
+      `fragmento da creditLine antiga vazou no resultado: ${result}`,
+    );
+    assert.match(result, /Nova linha única\./);
+    assert.match(result, /Resultado da última edição: 62% das pessoas acertaram\./);
+    assert.equal(result, buildEiaMd(sides, "Nova linha única.", prevResultLine));
+  });
+
+  it("#4258 item 3 (mesmo bug, variante sem prevResultLine): creditLine antiga com quebra de linha interna e SEM prevResultLine também não vaza", () => {
+    const oldCreditWithInternalBlankLine = "Linha um.\n\nLinha dois (não pode vazar).";
+    const md = buildEiaMd(sides, oldCreditWithInternalBlankLine, null);
+    const result = replaceCreditLineInEiaMd(md, "Nova linha única.");
+    assert.ok(!result.includes("Linha dois (não pode vazar)"));
+    assert.equal(result, buildEiaMd(sides, "Nova linha única.", null));
   });
 
   it("preserva o mapping eia_answer (A/B real|ia) byte-a-byte", () => {
@@ -105,9 +160,16 @@ describe("replaceCreditLineInEiaMd (#4258 item 3, pure)", () => {
   });
 });
 
-// ── Fim-a-fim: extract → (humanizador/Clarice simulado) → apply ────────────
+// ── Composição pura: extract → (humanizador/Clarice simulado) → apply ──────
+// NÃO é fim-a-fim de verdade — chama as funções puras diretamente, sem
+// spawnar os CLIs (rápido, bom pra iterar na lógica de composição). A
+// cobertura real da CLI (exit codes, parsing de args, I/O) está no describe
+// "extract-eia-description.ts CLI"/"apply-eia-description.ts CLI" abaixo,
+// que spawna os scripts de verdade via subprocess (achado do review
+// consolidado: chamar só as funções puras dava falsa confiança de que a
+// wiring da CLI também estava coberta).
 
-describe("#4258 item 3: extract + apply mantêm 01-eia.md e 01-eia-meta.json sincronizados", () => {
+describe("#4258 item 3: extract + apply mantêm 01-eia.md e 01-eia-meta.json sincronizados (composição pura, sem subprocess)", () => {
   function makeDir(): string {
     return mkdtempSync(join(tmpdir(), "diaria-eia-humanize-"));
   }
@@ -168,6 +230,223 @@ describe("#4258 item 3: extract + apply mantêm 01-eia.md e 01-eia-meta.json sin
       assert.ok(!JSON.stringify(finalMeta).includes(originalSentence), "frase antiga não deve sobreviver no meta");
       // Nunca divergem: a frase corrigida aparece IGUAL nos dois lugares.
       assert.match(finalMd, new RegExp(correctedSentence.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── extract-eia-description.ts CLI (achado do review consolidado: zero ────
+// cobertura da CLI de verdade — exit codes, parsing de args, I/O) ──────────
+
+describe("extract-eia-description.ts CLI (#4258 item 3)", () => {
+  function makeDir(): string {
+    return mkdtempSync(join(tmpdir(), "diaria-eia-extract-cli-"));
+  }
+
+  it("exit 1: args obrigatórios ausentes", () => {
+    const r = runExtractCli([]);
+    assert.equal(r.status, 1);
+  });
+
+  it("exit 0: description presente → escreve --out com o texto exato", () => {
+    const dir = makeDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(
+        join(dir, "_internal/01-eia-meta.json"),
+        JSON.stringify({ wikimedia: { description: "Uma ave rara em voo." } }),
+      );
+      const outPath = join(dir, "_internal/01-eia-description-raw.txt");
+      const r = runExtractCli(["--edition-dir", dir, "--out", outPath]);
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(readFileSync(outPath, "utf8"), "Uma ave rara em voo.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 2 (skip benigno): 01-eia-meta.json parseia OK mas sem description", () => {
+    const dir = makeDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "_internal/01-eia-meta.json"), JSON.stringify({ wikimedia: {} }));
+      const r = runExtractCli(["--edition-dir", dir, "--out", join(dir, "out.txt")]);
+      assert.equal(r.status, 2, r.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 3 (erro de verdade): 01-eia-meta.json ausente", () => {
+    const dir = makeDir();
+    try {
+      const r = runExtractCli(["--edition-dir", dir, "--out", join(dir, "out.txt")]);
+      assert.equal(r.status, 3, r.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 3 (erro de verdade): 01-eia-meta.json malformado (JSON inválido)", () => {
+    const dir = makeDir();
+    try {
+      mkdirSync(join(dir, "_internal"), { recursive: true });
+      writeFileSync(join(dir, "_internal/01-eia-meta.json"), "{ isso não é json");
+      const r = runExtractCli(["--edition-dir", dir, "--out", join(dir, "out.txt")]);
+      assert.equal(r.status, 3, r.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── apply-eia-description.ts CLI (mesmo achado — zero cobertura da CLI) ───
+
+describe("apply-eia-description.ts CLI (#4258 item 3)", () => {
+  function makeDir(): string {
+    return mkdtempSync(join(tmpdir(), "diaria-eia-apply-cli-"));
+  }
+
+  function seedValidEdition(dir: string): { correctedPath: string } {
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    const image = {
+      title: "File:Test_bird.jpg",
+      description: { text: "A rare bird.", html: "A rare bird." },
+      artist: { text: "Jane Doe", html: '<a href="//commons.wikimedia.org/wiki/User:JaneDoe">Jane Doe</a>' },
+      license: { type: "CC BY-SA 4.0", url: "https://creativecommons.org/licenses/by-sa/4.0" },
+    };
+    const originalSentence = "A rare bird.";
+    const originalCreditLine = buildCreditLine(image, { translatedSentence: originalSentence });
+    writeFileSync(join(dir, "01-eia.md"), buildEiaMd(chooseSides(0.5), originalCreditLine, null));
+    writeFileSync(
+      join(internalDir, "01-eia-meta.json"),
+      JSON.stringify({ edition: "260101", wikimedia: { description: originalSentence } }),
+    );
+    writeFileSync(
+      join(internalDir, "01-eia-compose-context.json"),
+      JSON.stringify({ image, ptLabel: null, ptWikipediaUrl: null }),
+    );
+    const correctedPath = join(internalDir, "01-eia-description-corrected.txt");
+    writeFileSync(correctedPath, "Uma ave rara.", "utf8");
+    return { correctedPath };
+  }
+
+  it("exit 1: args obrigatórios ausentes", () => {
+    const r = runApplyCli([]);
+    assert.equal(r.status, 1);
+  });
+
+  it("exit 0 (fim-a-fim de verdade via subprocess): regrava 01-eia.md + 01-eia-meta.json sincronizados", () => {
+    const dir = makeDir();
+    try {
+      const { correctedPath } = seedValidEdition(dir);
+      const r = runApplyCli(["--edition-dir", dir, "--corrected", correctedPath]);
+      assert.equal(r.status, 0, r.stderr);
+      const md = readFileSync(join(dir, "01-eia.md"), "utf8");
+      const meta = JSON.parse(readFileSync(join(dir, "_internal/01-eia-meta.json"), "utf8"));
+      assert.match(md, /Uma ave rara\./);
+      assert.equal(meta.wikimedia.description, "Uma ave rara.");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 2 (único skip benigno): 01-eia-compose-context.json ausente (edição pré-#4258)", () => {
+    const dir = makeDir();
+    try {
+      const { correctedPath } = seedValidEdition(dir);
+      rmSync(join(dir, "_internal/01-eia-compose-context.json"));
+      const r = runApplyCli(["--edition-dir", dir, "--corrected", correctedPath]);
+      assert.equal(r.status, 2, r.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 3: --corrected ausente", () => {
+    const dir = makeDir();
+    try {
+      seedValidEdition(dir);
+      const r = runApplyCli(["--edition-dir", dir, "--corrected", join(dir, "nao-existe.txt")]);
+      assert.equal(r.status, 3, r.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 3: --corrected vazio", () => {
+    const dir = makeDir();
+    try {
+      const { correctedPath } = seedValidEdition(dir);
+      writeFileSync(correctedPath, "   ", "utf8");
+      const r = runApplyCli(["--edition-dir", dir, "--corrected", correctedPath]);
+      assert.equal(r.status, 3, r.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 3: 01-eia-compose-context.json presente mas sem campo image válido", () => {
+    const dir = makeDir();
+    try {
+      const { correctedPath } = seedValidEdition(dir);
+      writeFileSync(join(dir, "_internal/01-eia-compose-context.json"), JSON.stringify({ ptLabel: null }));
+      const r = runApplyCli(["--edition-dir", dir, "--corrected", correctedPath]);
+      assert.equal(r.status, 3, r.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 3: 01-eia-meta.json ausente", () => {
+    const dir = makeDir();
+    try {
+      const { correctedPath } = seedValidEdition(dir);
+      rmSync(join(dir, "_internal/01-eia-meta.json"));
+      const r = runApplyCli(["--edition-dir", dir, "--corrected", correctedPath]);
+      assert.equal(r.status, 3, r.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 3: 01-eia-meta.json sem campo wikimedia", () => {
+    const dir = makeDir();
+    try {
+      const { correctedPath } = seedValidEdition(dir);
+      writeFileSync(join(dir, "_internal/01-eia-meta.json"), JSON.stringify({ edition: "260101" }));
+      const r = runApplyCli(["--edition-dir", dir, "--corrected", correctedPath]);
+      assert.equal(r.status, 3, r.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 3: 01-eia.md ausente", () => {
+    const dir = makeDir();
+    try {
+      const { correctedPath } = seedValidEdition(dir);
+      rmSync(join(dir, "01-eia.md"));
+      const r = runApplyCli(["--edition-dir", dir, "--corrected", correctedPath]);
+      assert.equal(r.status, 3, r.stderr);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exit 3 (o 'falhar alto' de replaceCreditLineInEiaMd nunca pode virar exit 2): 01-eia.md sem o header \"**É IA?**\"", () => {
+    const dir = makeDir();
+    try {
+      const { correctedPath } = seedValidEdition(dir);
+      writeFileSync(join(dir, "01-eia.md"), "conteúdo sem o header esperado");
+      const r = runApplyCli(["--edition-dir", dir, "--corrected", correctedPath]);
+      assert.equal(
+        r.status,
+        3,
+        `#4258 item 3 (achado do review consolidado): o throw proposital de replaceCreditLineInEiaMd nunca pode ser reportado com o MESMO exit code do skip benigno (2) — stderr: ${r.stderr}`,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

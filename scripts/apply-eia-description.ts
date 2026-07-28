@@ -24,18 +24,37 @@
  * Exit codes:
  *   0 — sucesso, ambos os arquivos regravados
  *   1 — args inválidos
- *   2 — algum input ausente/malformado (meta.json, compose-context.json,
- *       01-eia.md, ou o arquivo --corrected)
+ *   2 — `01-eia-compose-context.json` ausente (edição composta ANTES do
+ *       #4258 — o único caso benigno; orchestrator trata como skip, não
+ *       como erro)
+ *   3 — qualquer outro input ausente/malformado (meta.json, --corrected,
+ *       compose-context.json presente mas com shape errado, 01-eia.md sem o
+ *       header esperado) — erro de verdade, orchestrator deve reportar ao
+ *       editor, nunca tratar como skip silencioso (achado do review
+ *       consolidado: exit 2 estava sobrecarregado com ~8 causas distintas,
+ *       incluindo o "falhar alto" proposital de replaceCreditLineInEiaMd
+ *       logo abaixo, que virava indistinguível do skip benigno)
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
-import { buildCreditLine, type WikimediaImage } from "./eia-compose.ts";
+import { buildCreditLine, PREV_RESULT_LINE_PREFIX, type WikimediaImage } from "./eia-compose.ts";
 
 interface ComposeContext {
   image: WikimediaImage;
   ptLabel: string | null;
   ptWikipediaUrl: string | null;
+}
+
+/** Runtime shape check pro JSON.parse de `01-eia-compose-context.json` —
+ * campo `image` é o único usado de fato (ptLabel/ptWikipediaUrl aceitam
+ * null); sem isso, um `context.image` ausente só explodiria bem mais tarde,
+ * dentro de `buildCreditLine`, como exceção não capturada (achado do review
+ * consolidado). */
+function isValidComposeContext(value: unknown): value is ComposeContext {
+  if (!value || typeof value !== "object") return false;
+  const image = (value as { image?: unknown }).image;
+  return !!image && typeof image === "object";
 }
 
 /**
@@ -45,12 +64,24 @@ interface ComposeContext {
  * `buildEiaMd` (eia-compose.ts): frontmatter, linha em branco, header,
  * linha em branco, creditLine, [linha em branco, prevResultLine].
  *
- * Localiza a creditLine pelo marcador `**É IA?**\n\n` (início) e pelo
- * próximo `\n\n` ou fim de string (fim) — nunca faz parsing de markdown
- * genérico, só string slicing determinístico sobre um formato conhecido.
+ * Localiza o INÍCIO da creditLine pelo marcador `**É IA?**\n\n`. Localiza o
+ * FIM ancorando no prefixo literal de `prevResultLine`
+ * (`PREV_RESULT_LINE_PREFIX`, exportado por eia-compose.ts) — nunca num
+ * "\n\n" genérico: a creditLine já passa por humanizador/Clarice (texto
+ * livre, não gerado por template) e uma quebra de linha interna ali faria um
+ * "\n\n" genérico casar no lugar errado, vazando um fragmento da creditLine
+ * ANTIGA pro output sem lançar nenhum erro (bug real encontrado pelo review
+ * consolidado, reproduzido com uma creditLine contendo "\n\n" no meio).
+ * Nunca faz parsing de markdown genérico, só string slicing determinístico
+ * sobre um formato conhecido.
  *
  * Lança se o marcador não existir (formato inesperado — falhar alto em vez
- * de corromper o arquivo silenciosamente).
+ * de corromper o arquivo silenciosamente). Isso só pode acontecer pra
+ * edições anteriores a #1100 (header não-negrito) — que também são
+ * anteriores a #4258 e portanto já teriam sido filtradas antes pelo check de
+ * `01-eia-compose-context.json` ausente (exit 2) no `main()` abaixo; chegar
+ * aqui com o marcador ausente indica uma edição pós-#4258 genuinamente
+ * corrompida, daí o exit 3 (erro de verdade) no catch do `main()`.
  */
 export function replaceCreditLineInEiaMd(md: string, newCreditLine: string): string {
   const marker = "**É IA?**\n\n";
@@ -60,11 +91,12 @@ export function replaceCreditLineInEiaMd(md: string, newCreditLine: string): str
   }
   const afterMarker = markerIdx + marker.length;
   const rest = md.slice(afterMarker);
-  const sepIdx = rest.indexOf("\n\n");
+  const prevResultMarker = `\n\n${PREV_RESULT_LINE_PREFIX}`;
+  const prevResultIdx = rest.indexOf(prevResultMarker);
   // Sem prevResultLine, `rest` É a creditLine inteira + newline(s) finais
   // (buildEiaMd sempre termina com `lines.push(""); lines.join("\n")`) —
   // preserva só essas newlines finais, descarta o texto da creditLine antiga.
-  const tail = sepIdx === -1 ? rest.slice(rest.search(/\n*$/)) : rest.slice(sepIdx);
+  const tail = prevResultIdx === -1 ? rest.slice(rest.search(/\n*$/)) : rest.slice(prevResultIdx);
   return md.slice(0, afterMarker) + newCreditLine + tail;
 }
 
@@ -86,14 +118,17 @@ function main(): void {
   const correctedPath = resolve(args.corrected);
   if (!existsSync(correctedPath)) {
     console.error(`[apply-eia-description] ${correctedPath} não existe.`);
-    process.exit(2);
+    process.exit(3);
   }
   const correctedSentence = readFileSync(correctedPath, "utf8").trim();
   if (!correctedSentence) {
     console.error(`[apply-eia-description] ${correctedPath} está vazio.`);
-    process.exit(2);
+    process.exit(3);
   }
 
+  // Único caso benigno (exit 2): edição composta antes do #4258 nunca
+  // gravou este arquivo. Qualquer outra falha a partir daqui é erro de
+  // verdade (exit 3) — ver nota nos exit codes do header.
   const contextPath = resolve(args.editionDir, "_internal/01-eia-compose-context.json");
   if (!existsSync(contextPath)) {
     console.error(
@@ -104,33 +139,38 @@ function main(): void {
   }
   let context: ComposeContext;
   try {
-    context = JSON.parse(readFileSync(contextPath, "utf8"));
+    const parsed = JSON.parse(readFileSync(contextPath, "utf8"));
+    if (!isValidComposeContext(parsed)) {
+      console.error(`[apply-eia-description] ${contextPath} sem campo image válido — formato inesperado.`);
+      process.exit(3);
+    }
+    context = parsed;
   } catch (e) {
     console.error(`[apply-eia-description] ${contextPath} não parseia: ${(e as Error).message}`);
-    process.exit(2);
+    process.exit(3);
   }
 
   const metaPath = resolve(args.editionDir, "_internal/01-eia-meta.json");
   if (!existsSync(metaPath)) {
     console.error(`[apply-eia-description] ${metaPath} não existe.`);
-    process.exit(2);
+    process.exit(3);
   }
   let meta: { wikimedia?: { description?: string } };
   try {
     meta = JSON.parse(readFileSync(metaPath, "utf8"));
   } catch (e) {
     console.error(`[apply-eia-description] ${metaPath} não parseia: ${(e as Error).message}`);
-    process.exit(2);
+    process.exit(3);
   }
   if (!meta.wikimedia) {
     console.error(`[apply-eia-description] ${metaPath} sem campo wikimedia — formato inesperado.`);
-    process.exit(2);
+    process.exit(3);
   }
 
   const mdPath = resolve(args.editionDir, "01-eia.md");
   if (!existsSync(mdPath)) {
     console.error(`[apply-eia-description] ${mdPath} não existe.`);
-    process.exit(2);
+    process.exit(3);
   }
   const md = readFileSync(mdPath, "utf8");
 
@@ -145,7 +185,7 @@ function main(): void {
     newMd = replaceCreditLineInEiaMd(md, newCreditLine);
   } catch (e) {
     console.error(`[apply-eia-description] ${(e as Error).message}`);
-    process.exit(2);
+    process.exit(3);
   }
 
   writeFileSync(mdPath, newMd, "utf8");

@@ -19,9 +19,16 @@
  * Exit codes:
  *   0 — description extraída, arquivo escrito
  *   1 — args inválidos
- *   2 — 01-eia-meta.json ausente/malformado, OU sem campo description —
- *       nada pra humanizar. Orchestrator trata como SKIP (edição sem
- *       description, ex: backfill antigo), nunca como erro fatal.
+ *   2 — 01-eia-meta.json parseia OK mas sem campo description (edição sem
+ *       essa metadata, ex: backfill de antes do #3984) — único caso
+ *       benigno; orchestrator trata como SKIP, nunca como erro fatal.
+ *   3 — 01-eia-meta.json ausente ou malformado. Pelo passo Stage 3a-bis rodar
+ *       só depois de Stage 3a confirmar que 01-eia.md existe (que é escrito
+ *       pelo MESMO main() de eia-compose.ts que escreve 01-eia-meta.json
+ *       logo em seguida), esse arquivo faltar/estar corrompido aqui é sinal
+ *       de escrita parcial ou bug — erro de verdade, orchestrator deve
+ *       reportar, nunca tratar como skip benigno (achado do review
+ *       consolidado: exit 2 conflava as duas causas).
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -55,8 +62,8 @@ function main(): void {
 
   const metaPath = resolve(args.editionDir, "_internal/01-eia-meta.json");
   if (!existsSync(metaPath)) {
-    console.error(`[extract-eia-description] ${metaPath} não existe — nada pra extrair.`);
-    process.exit(2);
+    console.error(`[extract-eia-description] ${metaPath} não existe.`);
+    process.exit(3);
   }
 
   let meta: unknown;
@@ -64,7 +71,7 @@ function main(): void {
     meta = JSON.parse(readFileSync(metaPath, "utf8"));
   } catch (e) {
     console.error(`[extract-eia-description] ${metaPath} não parseia: ${(e as Error).message}`);
-    process.exit(2);
+    process.exit(3);
   }
 
   const description = extractDescriptionFromMeta(meta);
