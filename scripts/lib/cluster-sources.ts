@@ -28,6 +28,16 @@ export interface ClusterSource {
   source?: string;
   /** Data de publicação (ISO, tipicamente só data — pesquisadores não capturam hora). */
   published_at?: string;
+  /**
+   * #4228: proveniência de submissão do editor, propagada do artigo de
+   * origem (`ClusterArticle.flag`/`.editor_submitted_url`) quando presente.
+   * Sem isso, um artigo `editor_submitted` que vira `cluster_source` (seja
+   * via `foldCluster` aqui, seja via `attachClusterSource` em
+   * `dedup-intra-edition.ts`, #4185) perde o sinal de prioridade — a URL
+   * sobrevive no "Aprofunde:", mas "isto veio do editor" desaparece.
+   */
+  flag?: string;
+  editor_submitted_url?: string;
 }
 
 /** Shape mínimo de artigo que os helpers de cluster consomem. */
@@ -83,6 +93,15 @@ export function toClusterSource(a: ClusterArticle): ClusterSource {
   if (source) cs.source = source;
   const pub = a.published_at ?? a.date;
   if (typeof pub === "string" && pub.trim()) cs.published_at = pub;
+  // #4228: propaga o marcador de proveniência do editor pro cluster_source
+  // individual — mesmo espírito da herança que `foldCluster` já fazia no
+  // NÍVEL DO CANÔNICO (linhas abaixo), só que aqui no nível de cada entrada
+  // de `cluster_sources[]`, que é o que `attachClusterSource`
+  // (dedup-intra-edition.ts, #4185) consome diretamente.
+  if (typeof a.flag === "string" && a.flag.trim()) cs.flag = a.flag;
+  if (typeof a.editor_submitted_url === "string" && a.editor_submitted_url.trim()) {
+    cs.editor_submitted_url = a.editor_submitted_url;
+  }
   return cs;
 }
 

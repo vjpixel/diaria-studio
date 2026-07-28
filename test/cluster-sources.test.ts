@@ -55,6 +55,27 @@ describe("toClusterSource (#3920)", () => {
     const cs = toClusterSource({ url: "https://a.com/x", title: "  ", source: "" });
     assert.deepEqual(cs, { url: "https://a.com/x", source: "a.com" });
   });
+
+  // #4228: sem isso, um artigo editor_submitted que vira cluster_source
+  // (seja via foldCluster, seja via attachClusterSource em
+  // dedup-intra-edition.ts) perdia o marcador de proveniência.
+  it("propaga flag/editor_submitted_url quando presentes no artigo de origem (#4228)", () => {
+    const cs = toClusterSource({
+      url: "https://a.com/x",
+      title: "Título A",
+      flag: "editor_submitted",
+      editor_submitted_url: "https://original-do-editor.com/x",
+    });
+    assert.equal(cs.flag, "editor_submitted");
+    assert.equal(cs.editor_submitted_url, "https://original-do-editor.com/x");
+  });
+
+  it("não inventa flag/editor_submitted_url quando o artigo de origem não os tem", () => {
+    const cs = toClusterSource({ url: "https://a.com/x", title: "Título A" });
+    assert.equal(cs.flag, undefined);
+    assert.equal(cs.editor_submitted_url, undefined);
+    assert.deepEqual(cs, { url: "https://a.com/x", title: "Título A", source: "a.com" });
+  });
 });
 
 describe("compareCompleteness (#3920)", () => {
@@ -176,5 +197,25 @@ describe("foldCluster (#3920)", () => {
     const { canonical } = foldCluster([a, b]);
     assert.equal(canonical.flag, undefined);
     assert.equal(canonical.editor_submitted_url, undefined);
+  });
+
+  // #4228: além da herança no NÍVEL DO CANÔNICO (#4193, testes acima), a
+  // entrada individual em cluster_sources[] do perdedor editor_submitted
+  // também precisa preservar seu próprio flag — é o que
+  // dedup-intra-edition.ts consome quando reusa toClusterSource fora do
+  // fluxo de herança do canônico.
+  it("entrada do perdedor em cluster_sources[] preserva seu próprio flag editor_submitted (#4228)", () => {
+    const winner = art({ url: "https://w", summary: "x".repeat(300) });
+    const editorLoser = art({
+      url: "https://l1",
+      summary: "x".repeat(50),
+      flag: "editor_submitted",
+      editor_submitted_url: "https://l1",
+    });
+    const { canonical } = foldCluster([winner, editorLoser]);
+    const entry = canonical.cluster_sources?.find((c) => c.url === "https://l1");
+    assert.ok(entry, "esperava a entrada do perdedor em cluster_sources[]");
+    assert.equal(entry!.flag, "editor_submitted");
+    assert.equal(entry!.editor_submitted_url, "https://l1");
   });
 });

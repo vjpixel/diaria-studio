@@ -35,7 +35,7 @@
  *      by test/brevo-dashboard-studio-skip-kv-cache-4186.test.ts for this
  *      exact file (mounting the full pipeline needs real Brevo+SQLite).
  */
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -152,6 +152,72 @@ describe("buildClariceDashboardHtml({ fresh: true }) — botão 'Atualizar agora
 });
 
 // ---------------------------------------------------------------------------
+// (e) #4226 — o resultado de ?fresh=1 nunca deve poluir o cache module-level
+// que os loads NORMAIS (sem fresh) leem. Antes do fix, os dois caminhos
+// escreviam no MESMO slot `cachedHtml` (TTL 5min) sem chave por modo: um
+// clique em "Atualizar agora" sobrescrevia o cache, e qualquer load normal
+// subsequente dentro do TTL recebia o HTML do fetch ao vivo (sem o banner
+// "KV-only"), quebrando o invariante central do #4206.
+// ---------------------------------------------------------------------------
+
+describe("buildClariceDashboardHtml — cache não é poluído por ?fresh=1 (#4226)", () => {
+  let originalBrevoKey: string | undefined;
+  let originalAccount: string | undefined;
+  let originalToken: string | undefined;
+
+  beforeEach(() => {
+    _resetClariceDashboardCache();
+    originalBrevoKey = process.env.BREVO_CLARICE_API_KEY;
+    originalAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
+    originalToken = process.env.CLOUDFLARE_WORKERS_TOKEN;
+    process.env.BREVO_CLARICE_API_KEY = "test-key-4226";
+    // Determinístico: sem credenciais Cloudflare, buildEnv() cai pro MemoryKv
+    // (sempre vazio) — o caminho KV-only nunca toca a rede, mesmo fora de
+    // withFetchSpy.
+    delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    delete process.env.CLOUDFLARE_WORKERS_TOKEN;
+  });
+
+  afterEach(() => {
+    if (originalBrevoKey !== undefined) process.env.BREVO_CLARICE_API_KEY = originalBrevoKey;
+    else delete process.env.BREVO_CLARICE_API_KEY;
+    if (originalAccount !== undefined) process.env.CLOUDFLARE_ACCOUNT_ID = originalAccount;
+    if (originalToken !== undefined) process.env.CLOUDFLARE_WORKERS_TOKEN = originalToken;
+  });
+
+  it("sequência GET normal → GET ?fresh=1 → GET normal de novo (dentro do TTL) continua KV-only, nunca live", async () => {
+    // 1. GET normal — popula o cache com o render KV-only.
+    const htmlNormal1 = await buildClariceDashboardHtml();
+    assert.match(htmlNormal1, /Mostrando a última coleta/, "1º load normal deve ser o render KV-only (com o banner)");
+
+    // 2. GET ?fresh=1 — o fetch ao vivo falha neste ambiente de teste
+    // (withFetchSpy proíbe rede), então o caminho live retorna a página de
+    // erro. O ponto do teste não é o conteúdo do erro em si, é o que
+    // acontece DEPOIS: esse HTML (de erro) nunca deve ser gravado no cache
+    // que os loads normais leem.
+    let htmlFresh = "";
+    await withFetchSpy(async (calls) => {
+      htmlFresh = await buildClariceDashboardHtml({ fresh: true });
+      assert.ok(calls.length > 0, "fresh:true deve tentar buscar ao vivo na Brevo");
+    });
+    assert.match(htmlFresh, /Painel Clarice \(local\) — erro/, "com fetch bloqueado, o caminho live retorna a página de erro (prova que passou pelo caminho vivo, não o KV-only)");
+
+    // 3. GET normal de novo, dentro do TTL de 5min — com o bug do #4226, o
+    // slot cachedHtml teria sido sobrescrito no passo 2 e este load
+    // retornaria o HTML de ERRO do fetch ao vivo, sem nenhuma chamada de
+    // rede (porque "cacheado"). Com o fix, este load ignora completamente o
+    // que aconteceu no passo 2 e serve de novo o KV-only.
+    await withFetchSpy(async (calls) => {
+      const htmlNormal2 = await buildClariceDashboardHtml();
+      assert.deepStrictEqual(calls, [], "load normal pós-fresh não deve tocar a rede — nem para popular o cache");
+      assert.match(htmlNormal2, /Mostrando a última coleta/, "load normal pós-fresh deve continuar KV-only");
+      assert.doesNotMatch(htmlNormal2, /Painel Clarice \(local\) — erro/, "load normal pós-fresh NUNCA deve servir o resultado (nem que seja de erro) do fetch ao vivo");
+      assert.notStrictEqual(htmlNormal2, htmlFresh, "load normal e load fresh devem divergir — provam que não compartilham cache");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // (b) injectKvOnlyBanner — unidade pura, sem precisar montar o pipeline
 // ---------------------------------------------------------------------------
 
@@ -193,7 +259,25 @@ describe("dashboard-clarice.ts — wiring do render KV-only default (#4206)", ()
   const src = readFileSync(srcPath, "utf-8");
 
   it("buildClariceDashboardHtml despacha pra renderClariceDashboardKvOnlyUncached quando !opts.fresh", () => {
-    assert.match(src, /opts\.fresh\s*\n?\s*\?\s*await renderClariceDashboardLiveUncached\(\)\s*\n?\s*:\s*await renderClariceDashboardKvOnlyUncached\(\)/);
+    assert.match(src, /const html = await renderClariceDashboardKvOnlyUncached\(\);/);
+  });
+
+  it("opts.fresh retorna renderClariceDashboardLiveUncached() diretamente, sem passar pela atribuição de cachedHtml (#4226)", () => {
+    const fnStart = src.indexOf("export async function buildClariceDashboardHtml");
+    assert.ok(fnStart > 0, "não achei buildClariceDashboardHtml no arquivo-fonte");
+    const fnEnd = src.indexOf("\n}", fnStart);
+    const body = src.slice(fnStart, fnEnd);
+    assert.match(
+      body,
+      /if\s*\(opts\.fresh\)\s*\{\s*return renderClariceDashboardLiveUncached\(\);\s*\}/,
+      "o caminho fresh deve retornar direto (early return), nunca escrever em cachedHtml",
+    );
+    const freshReturnIdx = body.indexOf("return renderClariceDashboardLiveUncached();");
+    const cacheWriteIdx = body.indexOf("cachedHtml = {");
+    assert.ok(
+      freshReturnIdx > 0 && cacheWriteIdx > freshReturnIdx,
+      "o return do caminho fresh precisa vir ANTES da única escrita em cachedHtml (que é do caminho KV-only)",
+    );
   });
 
   it("renderClariceDashboardKvOnlyUncached lê dash:lastgood:campaigns via env.STATS_CACHE.get", () => {
