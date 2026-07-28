@@ -44,6 +44,9 @@ import {
 import { detectLaunchCandidate } from "./lib/launch-detect.ts";
 import { SECONDARY_BUCKETS } from "./check-secondary-themes.ts";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
+// #4185: mesmo mecanismo de preservação do Pass-2b de dedup.ts (#3920) —
+// aqui aplicado no ponto destaque-vs-pool (pós-scorer), não no pool bruto.
+import { toClusterSource, type ClusterSource, type ClusterArticle } from "./lib/cluster-sources.ts";
 
 // ---------------------------------------------------------------------------
 // #2397: Extração de entidades LOCAL (não usa extractNamedEntities do dedup.ts)
@@ -267,17 +270,26 @@ export function extractProductEntitiesIntra(title: string): Set<string> {
 interface Article {
   url: string;
   title?: string;
+  /** #4185: usado (junto com o title) como haystack pro sinal de código de
+   *  produto (`extractProductCodeTokens`) — nome de produto versionado/
+   *  codinome muitas vezes só aparece no corpo/lead da matéria, não na
+   *  manchete. */
+  summary?: string;
   /** Domínio oficial sugerido por `enrich-primary-source.ts` (#487).
    *  Ex: "google.com" para RADAR item cobrindo lançamento do Google.
    *  Usado pelo dedup intra-edição (Furo 2, #2548) para detectar cobertura de
    *  imprensa de um lançamento que já aparece como destaque. */
   suggested_primary_domain?: string;
+  /** #4185: fontes extras preservadas quando este artigo é o CANÔNICO
+   *  (destaque) de um cluster same-story detectado intra-edição. */
+  cluster_sources?: ClusterSource[];
   [key: string]: unknown;
 }
 
 interface HighlightEntry {
   url?: string;
   title?: string;
+  summary?: string;
   article?: Article;
   [key: string]: unknown;
 }
@@ -298,7 +310,7 @@ export interface IntraEditionDedupResult {
     url: string;
     title?: string;
     bucket: string;
-    match_type: "jaccard" | "entity" | "domain" | "cross_vehicle";
+    match_type: "jaccard" | "entity" | "domain" | "cross_vehicle" | "product_code";
     matched_highlight: string;
     score: number;
   }>;
@@ -351,6 +363,56 @@ export function highlightUrl(h: HighlightEntry): string | null {
   const u = h.url ?? h.article?.url;
   if (u && typeof u === "string") return u;
   return null;
+}
+
+/** #4185: extrai summary de um HighlightEntry (mesmo padrão de highlightTitle/highlightUrl). */
+export function highlightSummary(h: HighlightEntry): string | null {
+  const s = h.summary ?? h.article?.summary;
+  if (s && typeof s === "string") return s;
+  return null;
+}
+
+/**
+ * #4185: extrai tokens que parecem CÓDIGO/VERSÃO de produto — sequências
+ * alfanuméricas unidas por ponto SEM espaço em nenhum dos lados, exigindo
+ * LETRA inicial (ex: "ia.i", "itau.com.br", "gpt4o.mini"). Padrão raro o
+ * bastante em prosa normal (frase termina em ". " — com espaço depois do
+ * ponto — que não casa) pra servir de sinal de ALTA precisão quando
+ * EXATAMENTE o mesmo token aparece nos dois lados.
+ *
+ * **Decisão deliberadamente conservadora:** token PURAMENTE numérico (ex:
+ * "3.1" de "Llama 3.1") NÃO casa — a letra inicial é exigida. Sem essa
+ * trava, "1.500" (separador de milhar comum em manchete PT-BR: "1.500
+ * clientes", "1.500 funcionários") viraria sinal de mesmo-produto entre duas
+ * matérias DIFERENTES da mesma empresa que coincidentemente citam o mesmo
+ * número redondo — falso-positivo pior que o ganho de cobertura de números
+ * de versão soltos. Custo aceito: "Llama 3.1" sozinho (sem prefixo
+ * alfabético grudado) não gera token; "gpt4o.mini"/"ia.i" continuam cobertos
+ * porque a letra inicial ancora o match a um nome de produto, não a um
+ * número solto.
+ *
+ * Complementa o entity-match por capitalização (`extractNamedEntitiesIntra`):
+ * nomes de produto versionados/codinomes em minúsculo (ex: "ia.i") nunca são
+ * capturados por ela, e frequentemente só aparecem no corpo/lead da matéria,
+ * não na manchete — por isso os callers aplicam esta função a título+summary
+ * combinados, não só ao título.
+ *
+ * Caso real #4185 (edição 260728): D1 "Itaú coloca IA para cuidar do
+ * relacionamento com o cliente" (Tecnoblog) + RADAR "Nova IA do Itaú mostra
+ * para onde vai o seu dinheiro e te ajuda a controlar gastos" (Canaltech) —
+ * cobrem o MESMO lançamento (assistente "ia.i" do Itaú), mas nenhum título
+ * menciona "ia.i" literalmente (só o lead de cada matéria); o único token de
+ * título compartilhado é "itau" (Jaccard ~0.07, abaixo até do threshold
+ * intra-edição de 0.45; entity-match (b) via só o título vê 1 entidade
+ * compartilhada, abaixo do mínimo de 2).
+ */
+export function extractProductCodeTokens(text: string): Set<string> {
+  const tokens = new Set<string>();
+  const re = /\b[a-z][a-z0-9]*(?:\.[a-z0-9]+)+\b/gi;
+  const matches = text.match(re);
+  if (!matches) return tokens;
+  for (const m of matches) tokens.add(m.toLowerCase());
+  return tokens;
 }
 
 /**
@@ -530,7 +592,7 @@ export function isIntraEditionDuplicate(
     entityMinShared?: number;
   } = {},
 ): {
-  match_type: "jaccard" | "entity" | "domain" | "cross_vehicle";
+  match_type: "jaccard" | "entity" | "domain" | "cross_vehicle" | "product_code";
   matched_highlight: string;
   score: number;
 } | null {
@@ -663,6 +725,47 @@ export function isIntraEditionDuplicate(
         };
       }
     }
+
+    // (e) #4185: código/versão de produto compartilhado (título+summary) +
+    // QUALQUER entidade nomeada compartilhada (não restrita à lista fixa de
+    // gigantes de IA usada em (b)/(d)). Empresas fora dessa lista — bancos,
+    // varejistas, etc. cobrindo lançamento de IA próprio — não tinham NENHUM
+    // caminho de match quando o nome distintivo do produto só aparece no
+    // corpo da matéria, não na manchete (ver docstring de
+    // `extractProductCodeTokens` pro caso real que motivou este item).
+    //
+    // Exige AMBOS os sinais (AND, não OR) pra manter falso-positivo baixo:
+    // um código de produto sozinho pode aparecer em textos sem relação
+    // alguma (menção de passagem a um concorrente); uma entidade
+    // compartilhada sozinha já é o entity-match (b), calibrado a exigir 2
+    // justamente pra não confundir 2 histórias DIFERENTES da mesma empresa.
+    // A combinação (entidade comum + código de produto EXATO comum) é mais
+    // restritiva que qualquer um dos dois sozinho — um codinome de produto
+    // ("ia.i") repetido ao lado do mesmo nome próprio em textos diferentes
+    // é, na prática, sempre o mesmo evento (ver docstring de
+    // `extractProductCodeTokens` sobre a exigência deliberada de letra
+    // inicial — números de versão soltos como "3.1" não contam sozinhos).
+    const artProductCodes = extractProductCodeTokens(
+      `${artTitle} ${article.summary ?? ""}`,
+    );
+    if (artProductCodes.size > 0 && artEntities.size > 0) {
+      const hProductCodes = extractProductCodeTokens(
+        `${hTitle} ${highlightSummary(h) ?? ""}`,
+      );
+      const sharedProductCodes = [...artProductCodes].filter((t) =>
+        hProductCodes.has(t),
+      );
+      const sharedEntitiesForCode = [...artEntities].filter((e) =>
+        hEntities.has(e),
+      );
+      if (sharedProductCodes.length >= 1 && sharedEntitiesForCode.length >= 1) {
+        return {
+          match_type: "product_code",
+          matched_highlight: hTitle,
+          score: sharedProductCodes.length,
+        };
+      }
+    }
   }
 
   return null;
@@ -684,12 +787,49 @@ export function isIntraEditionDuplicate(
 export const DEFAULT_INTRA_DESTAQUE_COUNT = 3;
 
 /**
+ * #4185: anexa `article` como `cluster_sources[]` do destaque (highlight
+ * CLONE — nunca o original de `input`) que ele duplicou intra-edição. Mesma
+ * semântica do `foldCluster` de `scripts/lib/cluster-sources.ts` (#3920),
+ * aplicada aqui no ponto destaque-vs-pool (pós-scorer) em vez de no pool
+ * bruto pré-categorização. Sem isso, um item removido do RADAR/LANÇAMENTOS
+ * por duplicar um destaque simplesmente desaparece — não chega ao
+ * `writer-destaque` (que só recebe `destaque.article` + `cluster_sources[]`,
+ * ver `.claude/agents/orchestrator-stage-2.md` §2a), e os fatos que só
+ * existem naquela cobertura secundária ficam inacessíveis — a raiz do
+ * problema relatado na #4185 (contaminação cruzada de fonte ao tentar
+ * enriquecer o destaque manualmente com um fato de uma URL não citada).
+ *
+ * Suporta os dois shapes de `HighlightEntry`: `{ article: {...} }` (formato
+ * real de `01-categorized.json > highlights[]`) e flat `{ url, title,
+ * cluster_sources? }` (formato usado em testes/shapes legados). Idempotente
+ * (dedup por URL, mesmo padrão de `foldCluster`).
+ */
+function attachClusterSource(h: HighlightEntry, article: Article): void {
+  const target = (h.article ?? h) as unknown as {
+    cluster_sources?: ClusterSource[];
+  };
+  const existing = Array.isArray(target.cluster_sources)
+    ? target.cluster_sources
+    : [];
+  if (existing.some((c) => c.url === article.url)) return;
+  target.cluster_sources = [
+    ...existing,
+    toClusterSource(article as unknown as ClusterArticle),
+  ];
+}
+
+/**
  * Aplica dedup intra-edição ao JSON de categorized.
  * Remove dos buckets secundários itens que duplicam um destaque.
  *
  * #2397: compara contra top-`destaqueCount` highlights por rank (default 3),
  * não contra todos os 6 candidatos do scorer. Evita remoção pré-gate de itens
  * que seriam legítimos se o editor não promover o candidato rank 4–6.
+ *
+ * #4185: todo item removido por duplicar um destaque é preservado como
+ * `cluster_sources[]` NAQUELE destaque (ver `attachClusterSource`) — não é
+ * mais um descarte silencioso. O destaque some do output como cópia
+ * ENRIQUECIDA (nunca a referência original de `input`).
  *
  * Pure function — não muta input.
  */
@@ -716,6 +856,16 @@ export function dedupIntraEdition(
     .slice(0, n);
   const removed: IntraEditionDedupResult["removed"] = [];
 
+  // #4185: clona os highlights candidatos ANTES de qualquer mutação — a
+  // função permanece pure (não muta `input`); as cópias substituem os
+  // originais no `kept` final, preservando ordem/campos.
+  const highlightClones = new Map<HighlightEntry, HighlightEntry>();
+  for (const h of highlights) {
+    const clone: HighlightEntry = { ...h };
+    if (h.article) clone.article = { ...h.article };
+    highlightClones.set(h, clone);
+  }
+
   const keptBuckets: Record<string, Article[]> = {};
 
   for (const bucket of SECONDARY_BUCKETS) {
@@ -731,6 +881,14 @@ export function dedupIntraEdition(
           bucket,
           ...match,
         });
+        // #4185: preserva o artigo como cluster_sources[] no destaque
+        // (clone) que ele duplicou, em vez de só descartá-lo.
+        const matchedHighlight = highlights.find(
+          (h) => highlightTitle(h) === match.matched_highlight,
+        );
+        if (matchedHighlight) {
+          attachClusterSource(highlightClones.get(matchedHighlight)!, article);
+        }
       } else {
         bucketKept.push(article);
       }
@@ -739,9 +897,17 @@ export function dedupIntraEdition(
     keptBuckets[bucket] = bucketKept;
   }
 
+  // #4185: reconstrói highlights[] substituindo o top-N (possivelmente
+  // enriquecido com cluster_sources[]) pelas cópias; entradas fora do
+  // top-N (rank 4+) passam intactas, mesma ordem original. Só grava a chave
+  // quando `input.highlights` já existia — preserva a semântica anterior de
+  // "ausente continua ausente" (spread não inventava a chave).
   const kept: CategorizedWithHighlights = {
     ...input,
     ...keptBuckets,
+    ...(input.highlights !== undefined
+      ? { highlights: allHighlights.map((h) => highlightClones.get(h) ?? h) }
+      : {}),
   };
 
   return { kept, removed };
