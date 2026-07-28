@@ -1,12 +1,15 @@
 ﻿<#
 .SYNOPSIS
     Registra (ou remove) a task "Diaria-Clarice-Sync" no Task Scheduler — sync
-    incremental diário do store Clarice às 03:40.
+    incremental diário do store Clarice às 07:30.
 
 .DESCRIPTION
     Cria uma tarefa agendada que roda `run-clarice-sync-daily.ps1` (que chama
-    `clarice-sync-brevo.ts --incremental`) todo dia às 03:40 — off-peak, captura o
-    dia inteiro de engajamento maduro, sem disputar o teto horário do Brevo.
+    `clarice-sync-brevo.ts --incremental`) todo dia às 07:30 — logo depois do envio
+    canônico das 06:00 BRT e antes do editor montar a onda seguinte, para que
+    `sends_count`/`brevo_list_ids` já reflitam o envio da manhã (antes rodava 03:40,
+    ANTES do envio: a onda do dia ficava invisível pro store e o `--group` repetia
+    as mesmas pessoas — ver a armadilha do #3682).
 
     StartWhenAvailable: se o horário for perdido (máquina desligada), roda quando
     disponível — e o incremental deriva de MAX(brevo_modified_at), cobrindo o gap
@@ -45,7 +48,7 @@ $RepoRoot   = (Resolve-Path (Join-Path $ScriptDir "..")).Path
 $WrapperPs1 = Join-Path $RepoRoot "scripts\run-clarice-sync-daily.ps1"
 
 $TaskName = "Diaria-Clarice-Sync"
-$TaskDesc = "Diar.ia: sync incremental diario do store Clarice (#2932) - 03:40, --incremental."
+$TaskDesc = "Diar.ia: sync incremental diario do store Clarice (#2932) - 07:30, --incremental."
 
 if (-not (Test-Path $WrapperPs1)) {
     Write-Error "Wrapper nao encontrado: $WrapperPs1"
@@ -74,8 +77,9 @@ $Action = New-ScheduledTaskAction `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$WrapperPs1`"" `
     -WorkingDirectory $RepoRoot
 
-# Diário às 03:40 (once/dia; o sync é idempotente + resumível).
-$Trigger = New-ScheduledTaskTrigger -Daily -At (Get-Date -Hour 3 -Minute 40 -Second 0)
+# Diário às 07:30 (once/dia; o sync é idempotente + resumível). Depois do envio
+# das 06:00 BRT de propósito — ver .DESCRIPTION.
+$Trigger = New-ScheduledTaskTrigger -Daily -At (Get-Date -Hour 7 -Minute 30 -Second 0)
 
 $Settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit   (New-TimeSpan -Hours 3) `
@@ -116,7 +120,7 @@ Write-Output ""
 Write-Output "Configuracao:"
 Write-Output "  Wrapper : $WrapperPs1"
 Write-Output "  Repo    : $RepoRoot"
-Write-Output "  Horario : 03:40 diario (--incremental)"
+Write-Output "  Horario : 07:30 diario (--incremental)"
 Write-Output "  Log     : data\clarice-subscribers\.brevo-sync-daily.log"
 Write-Output ""
 Write-Output "Verificar: Get-ScheduledTask -TaskName '$TaskName' | Get-ScheduledTaskInfo"

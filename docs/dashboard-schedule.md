@@ -117,7 +117,7 @@ Implementação: `scripts/studio-ui/dashboard-diaria.ts`. Teste:
 (`workers/brevo-dashboard`): busca campanhas/agendadas/créditos direto na
 Brevo API (`BREVO_CLARICE_API_KEY`, ver `.env.example`) e lê o sumário de
 contatos direto do store SQLite local (`scripts/lib/clarice-db.ts`) — mais
-fresco que o snapshot KV do push diário das 03:40 (#2932). Cache de página
+fresco que o snapshot KV do push diário das 07:30 (#2932). Cache de página
 de 5min (mesmo TTL do edge cache do Worker) protege contra o limite horário
 da Brevo em reloads repetidos do editor. Sem `BREVO_CLARICE_API_KEY`
 configurada, nenhuma chamada de rede é feita.
@@ -149,7 +149,7 @@ Cache API (#2144, limita a 1 fetch real por 5min mesmo com múltiplos
 visitantes) e `STATS_CACHE` para stats imutáveis (campanhas >7d).
 
 A tab de contatos (`ContactsSummary`) continua alimentada exclusivamente pelo
-push local diário das 03:40 (`clarice-db-summary.ts`, #2932) — esse push
+push local diário das 07:30 (`clarice-db-summary.ts`, #2932) — esse push
 **não foi afetado** por esta mudança; o Cron Trigger removido era só do
 Worker `brevo-dashboard`, um mecanismo separado do agendador local do
 Windows.

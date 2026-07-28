@@ -11,7 +11,7 @@
  *   - `contactsSummary` (aba Contatos) → store SQLite LOCAL direto
  *     (`scripts/lib/clarice-db.ts` + `computeStoreSummary` de
  *     `scripts/clarice-db-summary.ts`) — MELHOR que o snapshot KV (#3553): não
- *     depende do push diário das 03:40, sempre fresco.
+ *     depende do push diário das 07:30, sempre fresco.
  *   - coortes de engajamento / cupons Stripe / engajamento É IA?
  *     (`cohorts`/`couponUsage`/`eiaEngagement`, via `readKvTabs`) → #4165/#4173:
  *     agora lidas do namespace KV REAL do Worker `clarice-dashboard`
