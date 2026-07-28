@@ -58,6 +58,7 @@ import {
   getCouponUsage,
   readKvTabs,
   readLinkSectionsByCycle, // #4184
+  readLinkTitlesByCycle, // #4198
   buildRateLimitFallback,
   rateLimitResponse,
   BrevoRateLimitError,
@@ -335,8 +336,11 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
     // parseClariceCampaignKey) têm prioritized.md/mapa de seção — campanhas
     // diárias não entram aqui e caem no fallback "—" sem custo extra.
     const monthlyCycles = collectMonthlyLinkCycles([...campaigns, ...scheduled]);
-    const linkSectionsByCycle = await readLinkSectionsByCycle(env, monthlyCycles);
-    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam, { linkSectionsByCycle });
+    const [linkSectionsByCycle, linkTitlesByCycle] = await Promise.all([
+      readLinkSectionsByCycle(env, monthlyCycles),
+      readLinkTitlesByCycle(env, monthlyCycles), // #4198
+    ]);
+    const html = renderDashboardHtml(campaigns, scheduled, cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, planCredits, dataGeneratedAt, campaignsWindowLimit, postmasterSpam, { linkSectionsByCycle, linkTitlesByCycle });
     const response = new Response(html, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",

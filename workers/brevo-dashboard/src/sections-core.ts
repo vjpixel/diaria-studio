@@ -3,7 +3,7 @@ import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 // #3092: PT_MONTHS_ABBR — dependency-free/Workers-safe (mesmo padrão de
 // cohortSendRank em sections-kv.ts), reusado por formatCycleEnvioLabel.
 import { PT_MONTHS_ABBR } from "../../../scripts/lib/cohorts.ts";
-import { DS, DS_FONTS as DSF, pct, cellClass, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT, renderColumnGlossary, brevoReportLink, mergeLinkSectionMaps, type LinkSectionMap } from "./render-links.ts"; // #4184: mergeLinkSectionMaps/LinkSectionMap
+import { DS, DS_FONTS as DSF, pct, cellClass, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT, renderColumnGlossary, brevoReportLink, mergeLinkSectionMaps, mergeLinkTitleMaps, type LinkSectionMap } from "./render-links.ts"; // #4184: mergeLinkSectionMaps/LinkSectionMap; #4198: mergeLinkTitleMaps
 import {
   renderVolumeSection,
   aggregateByMonth,
@@ -98,6 +98,18 @@ export interface RenderDashboardOptions {
    * (`mergeLinkSectionMaps`) — ver comentário em `link-section.ts`.
    */
   linkSectionsByCycle?: Record<string, LinkSectionMap> | null;
+  /**
+   * #4198: mapa CONTEÚDO BASE→TÍTULO editorial por CICLO mensal, sibling de
+   * `linkSectionsByCycle` acima (mesma fonte por superfície: Worker via KV
+   * `titulo:{ciclo}`, Studio via `prioritized.md` local — ver
+   * `buildLinkTitlesByCycleLocal` em `scripts/studio-ui/dashboard-clarice.ts`).
+   * Usado pra SUBSTITUIR o rótulo opaco derivado da URL na coluna "Conteúdo"
+   * das tabelas de link (agregada e drill-down por campanha) — nunca afeta a
+   * chave de agrupamento/seção, que continua o conteúdo BASE (ver
+   * `render-links.ts::parseLinksStats`). Ausente/`null` (default) preserva o
+   * comportamento anterior ao #4198 — rótulo sempre derivado da URL.
+   */
+  linkTitlesByCycle?: Record<string, Record<string, string>> | null;
 }
 
 /**
@@ -173,6 +185,8 @@ export function renderDashboardHtml(
   };
   // #4184: mapa de seção editorial por ciclo mensal (ver RenderDashboardOptions).
   const linkSectionsByCycle = opts.linkSectionsByCycle ?? null;
+  // #4198: mapa de título editorial por ciclo mensal (ver RenderDashboardOptions).
+  const linkTitlesByCycle = opts.linkTitlesByCycle ?? null;
   const sortedCampaigns = [...campaigns].sort((a, b) => toSortableTime(b) - toSortableTime(a));
   const rows = sortedCampaigns
     .map((c) => {
@@ -198,10 +212,16 @@ export function renderDashboardHtml(
       const campaignSectionMap = campaignCycleKey?.monthly
         ? linkSectionsByCycle?.[campaignCycleKey.cycle] ?? null
         : null;
+      // #4198: mapa de título do ciclo EXATO desta campanha — mesmo espírito
+      // de campaignSectionMap acima (drill-down nunca usa o merge cross-ciclo,
+      // que é só pra tabela agregada mais abaixo).
+      const campaignTitleMap = campaignCycleKey?.monthly
+        ? linkTitlesByCycle?.[campaignCycleKey.cycle] ?? null
+        : null;
       if (!s) {
         // #2198 Bug 1: passa linksStats real mesmo quando stats ausente, evitando
         // "dados não disponíveis" para campanha que tem linksStats mas não globalStats/campaignStats.
-        const linksHtmlNoStats = renderLinksSection(c.id, linksStats, undefined, campaignSectionMap);
+        const linksHtmlNoStats = renderLinksSection(c.id, linksStats, undefined, campaignSectionMap, campaignTitleMap);
         // #3082: mesmo rótulo de edição/célula das rows com stats — uma célula
         // A/B/C sem stats ainda pode aparecer na tabela (ex: envio recentíssimo).
         const editionLabelNoStats = deriveCampaignEditionLabel(c.name ?? "");
@@ -267,6 +287,7 @@ export function renderDashboardHtml(
         linksStats,
         s.uniqueClicks,
         campaignSectionMap, // #4184
+        campaignTitleMap, // #4198
       );
       return `<tr>
         <td>${brevoReportLink(c.id)}</td>
@@ -442,7 +463,12 @@ ${monthlyAbcSectionsByDate}
   const mergedLinkSectionMap = linkSectionsByCycle
     ? mergeLinkSectionMaps(Object.values(linkSectionsByCycle))
     : null;
-  const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns, mergedLinkSectionMap);
+  // #4198: mesmo racional — a tabela agregada soma cliques cross-ciclo, então
+  // o título editorial também é resolvido na união de todos os ciclos.
+  const mergedLinkTitleMap = linkTitlesByCycle
+    ? mergeLinkTitleMaps(Object.values(linkTitlesByCycle))
+    : null;
+  const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns, mergedLinkSectionMap, mergedLinkTitleMap);
   const edicaoLabel = deriveLinksSectionTitle(campaigns);
   // #3081: campaignCount = tamanho da janela agregada (campaigns.length) — o
   // título reflete a janela real, não implica que os dados são de 1 edição só.

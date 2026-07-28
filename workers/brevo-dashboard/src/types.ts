@@ -158,6 +158,15 @@ export function linkSectionsKvKey(cycle: string): string {
   return `secao:${cycle}`;
 }
 
+// #4198: mapa CONTEÚDO→TÍTULO editorial por ciclo mensal, gravado por
+// scripts/push-link-titles-kv.ts — sibling de linkSectionsKvKey acima (mesmo
+// racional: 1 chave POR ciclo, não singleton). Ver Record<string,string>
+// (título) em vez de LinkSectionMap (array de seção), e normalizeLinkTitleMap
+// (link-section.ts).
+export function linkTitlesKvKey(cycle: string): string {
+  return `titulo:${cycle}`;
+}
+
 export interface EiaEngagementEdition {
   /** AAMMDD */
   edition: string;

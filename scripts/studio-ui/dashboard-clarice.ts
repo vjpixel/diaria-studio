@@ -85,7 +85,7 @@ import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "../../wo
 import { fmtTimeBRT } from "../../workers/brevo-dashboard/src/render-links.ts"; // #4206: label do banner de fetchedAt
 import type { Env, ContactsSummary, LinkSectionMap } from "../../workers/brevo-dashboard/src/types.ts";
 import { createRemoteKvNamespace } from "../lib/cloudflare-kv-upload.ts";
-import { loadLinkSectionMapForCycle } from "../lib/mensal/monthly-link-sections.ts"; // #4184
+import { loadLinkSectionMapForCycle, loadLinkTitleMapForCycle } from "../lib/mensal/monthly-link-sections.ts"; // #4184 / #4198
 
 // ─── Shim de KVNamespace em memória (processo local, sem Cloudflare) ────────
 //
@@ -234,6 +234,27 @@ function buildLinkSectionsByCycleLocal(
   return result;
 }
 
+/**
+ * #4198: sibling de `buildLinkSectionsByCycleLocal` acima — monta o mapa de
+ * TÍTULO editorial por ciclo mensal LOCALMENTE, direto do `prioritized.md`
+ * em disco, mesmo racional (sem KV, painel Studio nunca depende do script de
+ * push nem toca o KV pra este recurso). Fail-soft por ciclo:
+ * `loadLinkTitleMapForCycle` retorna `null` quando o ciclo não tem
+ * `prioritized.md` (ou `data/` está inacessível) — o ciclo simplesmente não
+ * entra no resultado, sem quebrar o render.
+ */
+function buildLinkTitlesByCycleLocal(
+  campaignsAndScheduled: Array<{ name: string }>,
+): Record<string, Record<string, string>> {
+  const cycles = collectMonthlyLinkCycles(campaignsAndScheduled);
+  const result: Record<string, Record<string, string>> = {};
+  for (const cycle of cycles) {
+    const map = loadLinkTitleMapForCycle(cycle);
+    if (map) result[cycle] = map;
+  }
+  return result;
+}
+
 function notConfiguredHtml(): string {
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -334,6 +355,7 @@ async function renderClariceDashboardKvOnlyUncached(): Promise<string> {
     // buildLinkSectionsByCycleForFallback em brevo-api.ts). `?? []` só satisfaz o
     // compilador.
     const linkSectionsByCycle = buildLinkSectionsByCycleLocal([...campaigns, ...(scheduled ?? [])]);
+    const linkTitlesByCycle = buildLinkTitlesByCycleLocal([...campaigns, ...(scheduled ?? [])]); // #4198
 
     // #4206: ao contrário de `buildRateLimitFallback` (que passa `null` de
     // propósito — ver comentário lá), aqui passamos o `fetchedAt` REAL: o
@@ -354,7 +376,7 @@ async function renderClariceDashboardKvOnlyUncached(): Promise<string> {
       fetchedAt,
       staleCampaignsLimit,
       postmasterSpam,
-      { studioMode: true, linkSectionsByCycle },
+      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle },
     );
     return injectKvOnlyBanner(html, fetchedAt);
   } catch (e) {
@@ -415,6 +437,8 @@ async function renderClariceDashboardLiveUncached(): Promise<string> {
     // #4184: mapa de seção montado localmente (sem KV) a partir do
     // prioritized.md em disco — ver docstring de buildLinkSectionsByCycleLocal.
     const linkSectionsByCycle = buildLinkSectionsByCycleLocal([...campaigns, ...scheduled]);
+    // #4198: idem pro mapa de título editorial.
+    const linkTitlesByCycle = buildLinkTitlesByCycleLocal([...campaigns, ...scheduled]);
 
     const dataGeneratedAt = new Date().toISOString();
     return renderDashboardHtml(
@@ -429,7 +453,7 @@ async function renderClariceDashboardLiveUncached(): Promise<string> {
       dataGeneratedAt,
       CAMPAIGNS_FETCH_LIMIT,
       postmasterSpam,
-      { studioMode: true, linkSectionsByCycle },
+      { studioMode: true, linkSectionsByCycle, linkTitlesByCycle },
     );
   } catch (e) {
     if (e instanceof BrevoRateLimitError) {

@@ -148,6 +148,48 @@ export function mergeLinkSectionMaps(
   return out;
 }
 
+/**
+ * #4198: mescla N mapas TÍTULO (tipicamente 1 por ciclo mensal presente na
+ * janela agregada) num único `Record<string,string>` — mesmo espírito de
+ * `mergeLinkSectionMaps` acima, mas união de STRING (título), não de array.
+ * Quando o MESMO conteúdo base tem título em mais de um mapa (raro — títulos
+ * de ciclos diferentes pro mesmo conteúdo), o PRIMEIRO mapa da lista vence
+ * (nunca o último sobrescreve silenciosamente) — consistente com a regra
+ * "primeiro título encontrado vence" de `buildLinkTitleMap`, e com a ordem
+ * natural em que `Object.values(linkTitlesByCycle)` tende a listar os ciclos
+ * (mais antigo → mais recente, mesmo `for...of` de `mergeLinkSectionMaps`).
+ */
+export function mergeLinkTitleMaps(
+  maps: ReadonlyArray<Record<string, string> | null | undefined>,
+): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const map of maps) {
+    if (!map) continue;
+    for (const [content, title] of Object.entries(map)) {
+      if (!(content in merged)) merged[content] = title;
+    }
+  }
+  return merged;
+}
+
+/**
+ * #4198: normaliza um payload cru lido do KV (`titulo:{ciclo}`) — mesmo
+ * padrão defensivo de `normalizeLinkSectionMap` acima, mas os valores são
+ * STRINGS (título editorial), não arrays de seção. `null` = payload que nem
+ * é um objeto (KV vazio, JSON corrompido, formato alheio). Um objeto válido
+ * com ALGUNS valores inválidos (não-string) filtra só as entradas ruins e
+ * mantém o resto — nunca descarta o mapa inteiro por causa de 1 entrada
+ * malformada.
+ */
+export function normalizeLinkTitleMap(raw: unknown): Record<string, string> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out: Record<string, string> = {};
+  for (const [content, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string" && value.length > 0) out[content] = value;
+  }
+  return out;
+}
+
 const VALID_SECTIONS = new Set<LinkSectionName>([
   "destaques",
   "use-melhor",

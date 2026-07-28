@@ -1,8 +1,8 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoList, BrevoLinksStats, EngagementCohorts, MvStatus, MvGroupStatus, ContactsSummary, EiaEngagementSummary, EiaEngagementEdition, CohortStatsRow, PostmasterSpamEntry, LinkSectionMap } from "./types.ts";
-import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, RECENT_STATS_TTL, linkSectionsKvKey } from "./types.ts";
+import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEMENT_KV_KEY, POSTMASTER_SPAM_KV_KEY, RECENT_STATS_TTL, linkSectionsKvKey, linkTitlesKvKey } from "./types.ts"; // #4198: linkTitlesKvKey
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles
-import { normalizeLinkSectionMap } from "./link-section.ts"; // #4184
+import { normalizeLinkSectionMap, normalizeLinkTitleMap } from "./link-section.ts"; // #4184 / #4198
 
 /**
  * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
@@ -899,6 +899,39 @@ export async function readLinkSectionsByCycle(
 }
 
 /**
+ * #4198: lê `titulo:{ciclo}` do KV pra cada ciclo mensal em `cycles` (dedup
+ * automático), em paralelo — espelha `readLinkSectionsByCycle` acima
+ * exatamente (mesma estrutura dedup/paralelo/empty-guard), trocando
+ * `linkSectionsKvKey`/`normalizeLinkSectionMap` pelos equivalentes de título.
+ * Chaves ausentes/corrompidas (`normalizeLinkTitleMap` retornando `null`) são
+ * simplesmente omitidas do resultado. Sem `env.STATS_CACHE` ou `cycles`
+ * vazio → `{}` sem nenhuma chamada de rede.
+ *
+ * Gravada por `scripts/push-link-titles-kv.ts` (script explícito, nunca por
+ * este Worker) — ver docstring daquele script e `RenderDashboardOptions` em
+ * sections-core.ts.
+ */
+export async function readLinkTitlesByCycle(
+  env: Env,
+  cycles: readonly string[],
+): Promise<Record<string, Record<string, string>>> {
+  const kv = env.STATS_CACHE;
+  const uniqueCycles = [...new Set(cycles)];
+  if (!kv || uniqueCycles.length === 0) return {};
+  const entries = await Promise.all(
+    uniqueCycles.map(async (cycle) => {
+      const raw = await kv.get(linkTitlesKvKey(cycle), "json").catch(() => null);
+      return [cycle, normalizeLinkTitleMap(raw)] as const;
+    }),
+  );
+  const result: Record<string, Record<string, string>> = {};
+  for (const [cycle, map] of entries) {
+    if (map) result[cycle] = map;
+  }
+  return result;
+}
+
+/**
  * #4184 (revisão pós-#4191): monta `linkSectionsByCycle` pros caminhos de
  * FALLBACK (rate-limit e erro fatal, abaixo) — mesma leitura de
  * `secao:{ciclo}` via KV que o render normal usa (`readLinkSectionsByCycle`
@@ -922,6 +955,21 @@ async function buildLinkSectionsByCycleForFallback(
 ): Promise<Record<string, LinkSectionMap>> {
   const monthlyCycles = collectMonthlyLinkCycles([...(campaigns ?? []), ...(scheduled ?? [])]);
   return readLinkSectionsByCycle(env, monthlyCycles);
+}
+
+/**
+ * #4198: sibling de `buildLinkSectionsByCycleForFallback` acima — mesmo
+ * racional (custo é só leitura de KV, nunca Brevo, então os 2 caminhos de
+ * fallback também merecem a coluna "Conteúdo" com título editorial em vez do
+ * rótulo opaco derivado da URL).
+ */
+async function buildLinkTitlesByCycleForFallback(
+  env: Env,
+  campaigns: ReadonlyArray<Pick<BrevoCampaign, "name">> | undefined,
+  scheduled: ReadonlyArray<Pick<BrevoCampaign, "name">> | undefined,
+): Promise<Record<string, Record<string, string>>> {
+  const monthlyCycles = collectMonthlyLinkCycles([...(campaigns ?? []), ...(scheduled ?? [])]);
+  return readLinkTitlesByCycle(env, monthlyCycles);
 }
 
 /**
@@ -972,7 +1020,11 @@ export async function buildRateLimitFallback(
   try {
     // #4184: coluna "Seção" também populada aqui — ver
     // buildLinkSectionsByCycleForFallback (custo é só KV, nunca Brevo).
-    const linkSectionsByCycle = await buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled);
+    // #4198: idem pro título editorial da coluna "Conteúdo".
+    const [linkSectionsByCycle, linkTitlesByCycle] = await Promise.all([
+      buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled),
+      buildLinkTitlesByCycleForFallback(env, staleCampaigns, staleScheduled),
+    ]);
     const html = renderDashboardHtml(
       staleCampaigns,
       staleScheduled,
@@ -985,7 +1037,7 @@ export async function buildRateLimitFallback(
       null, // dataGeneratedAt: KV stale payload não tem timestamp de render fiável aqui
       staleCampaignsLimit, // #3080: limite gravado junto do payload (self-describing)
       postmasterSpam, // #4063
-      { linkSectionsByCycle }, // #4184
+      { linkSectionsByCycle, linkTitlesByCycle }, // #4184 / #4198
     );
     // buildStaleResponse injeta o banner "Brevo em rate-limit" (só as seções de
     // campanha estão atrasadas; Cupons/Contatos estão frescos).
@@ -1091,7 +1143,11 @@ export async function buildFatalErrorFallback(env: Env, cause: unknown): Promise
     >[1];
     // #4184: coluna "Seção" também populada aqui — mesmo racional de
     // buildRateLimitFallback (custo é só KV, nunca Brevo).
-    const linkSectionsByCycle = await buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled);
+    // #4198: idem pro título editorial da coluna "Conteúdo".
+    const [linkSectionsByCycle, linkTitlesByCycle] = await Promise.all([
+      buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled),
+      buildLinkTitlesByCycleForFallback(env, staleCampaigns, staleScheduled),
+    ]);
     const html = renderDashboardHtml(
       staleCampaigns,
       staleScheduled,
@@ -1104,7 +1160,7 @@ export async function buildFatalErrorFallback(env: Env, cause: unknown): Promise
       null,
       staleCampaignsLimit,
       postmasterSpam,
-      { linkSectionsByCycle }, // #4184
+      { linkSectionsByCycle, linkTitlesByCycle }, // #4184 / #4198
     );
     return new Response(injectFatalErrorBanner(html), {
       headers: {

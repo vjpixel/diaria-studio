@@ -53,12 +53,11 @@
  * a CHAVE (mesmo cálculo independente que `render-links.ts` faz sobre as
  * URLs de clique da Brevo) — preserva a MESMA chave de agrupamento/seção já
  * em uso, o título é só um valor adicional consultado pela camada de render
- * na hora de EXIBIR o conteúdo (nunca na hora de agrupar). Sem loader de I/O
- * próprio ainda — um `loadLinkTitleMapForCycle` (espelhando
- * `loadLinkSectionMapForCycle`) foi cogitado e removido antes do merge
- * (nota inline logo após `buildLinkTitleMap` abaixo): sem consumidor real
- * até o wiring KV/Studio (fora do escopo do #4198 nesta rodada), um wrapper
- * de I/O sem chamador é só um export morto pro knip.
+ * na hora de EXIBIR o conteúdo (nunca na hora de agrupar). `loadLinkTitleMapForCycle`
+ * (logo após `buildLinkTitleMap` abaixo) espelha `loadLinkSectionMapForCycle`
+ * — mesmo I/O único, mesmo fail-soft — e alimenta o wiring KV/Studio
+ * (`scripts/push-link-titles-kv.ts`, `brevo-api.ts::readLinkTitlesByCycle`,
+ * `dashboard-clarice.ts::buildLinkTitlesByCycleLocal`).
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -301,11 +300,23 @@ export function buildLinkTitleMap(
   return out;
 }
 
-// NOTA (#4198, achado de CI/knip 260728): um `loadLinkTitleMapForCycle`
-// (I/O, espelhando `loadLinkSectionMapForCycle` acima) foi cogitado aqui mas
-// REMOVIDO antes do merge — sem nenhum consumidor ainda (nem produção nem
-// teste), knip acusa "unused export" corretamente. `buildLinkTitleMap` +
-// `parsePrioritizedUrlTitles` (ambos usados, ver testes) já compõem o
-// carregamento fim-a-fim (`buildLinkTitleMap(parsePrioritizedUrlTitles(fs.readFileSync(...)))`)
-// pra quando o wiring KV/Studio (escopo explicitamente fora deste PR — ver
-// PR body) precisar dele; reintroduzir o wrapper nesse momento é trivial.
+/**
+ * Carrega e parseia `data/monthly/{ciclo}/prioritized.md`, já resolvido pro
+ * mapa CONTEÚDO→TÍTULO final (#4198) — espelha `loadLinkSectionMapForCycle`
+ * acima exatamente (mesmo try/catch-null, mesmo `monthlyDir(cycle, {
+ * allowLegacyFallback: false })`). Fail-soft: ciclo sem `prioritized.md` (ex:
+ * edição em andamento, ou `data/` inacessível — sessão cloud sem o junction
+ * OneDrive, #2643) retorna `null`, nunca lança. Consumida pelo wiring
+ * KV/Studio (`scripts/push-link-titles-kv.ts`, `workers/brevo-dashboard/src/brevo-api.ts::readLinkTitlesByCycle`,
+ * `scripts/studio-ui/dashboard-clarice.ts::buildLinkTitlesByCycleLocal`).
+ */
+export function loadLinkTitleMapForCycle(cycle: string): Record<string, string> | null {
+  try {
+    const path = join(monthlyDir(cycle, { allowLegacyFallback: false }), "prioritized.md");
+    if (!existsSync(path)) return null;
+    const markdown = readFileSync(path, "utf-8");
+    return buildLinkTitleMap(parsePrioritizedUrlTitles(markdown));
+  } catch {
+    return null;
+  }
+}
