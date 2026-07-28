@@ -513,7 +513,7 @@ export function renderJogarGatePage(edition: string | null): string {
   // seguir sem esperar clica no link de skip abaixo.
   function afterIdentify(result) {
     if (result && result.pending) {
-      setMsg("Quase lá! Enviamos um e-mail de confirmação — clique no link pra migrar seu histórico e entrar no ranking. Enquanto isso, toque em \"Continuar sem cadastrar\" abaixo pra seguir jogando.", "info");
+      setMsg("Quase lá! Enviamos um e-mail de confirmação — clique no link pra migrar seu histórico e entrar no ranking. Enquanto isso, toque em 'Continuar sem cadastrar' abaixo pra seguir jogando.", "info");
       return;
     }
     goToGame();
