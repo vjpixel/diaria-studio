@@ -57,6 +57,10 @@
  *                Sem a flag, nenhum corte por score é aplicado (comportamento
  *                inalterado).
  *   --dry-run    só conta/imprime o plano, nada escrito.
+ *   --segments-dir DIR   OPCIONAL, uso interno de teste (#4176) — override de
+ *                onde o sent-or-queued.json/CSV são lidos/escritos, no lugar de
+ *                `clariceSegmentsDir(cycle)` (raiz fixa do repo). Sem a flag,
+ *                comportamento de produção inalterado.
  *
  * Outputs (em data/clarice-subscribers/{conteúdo}-{envio}/segments/):
  *   {group}.csv              (colunas: email,NOME — compatível com clarice-import-waves)
@@ -350,7 +354,9 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   // SELECIONADO por qualquer grupo nomeado (não só este `group`) neste mesmo
   // ciclo, ANTES do predicado/sort/budget de buildSegmentArtifact. Automático
   // (sem flag), inclusive em --dry-run (só LEITURA aqui — nunca escreve).
-  const segDir = clariceSegmentsDir(cycle);
+  // `--segments-dir` (#4176): override de teste — sem a flag, resolve a raiz
+  // fixa de produção via clariceSegmentsDir(cycle) (comportamento inalterado).
+  const segDir = getArg(argv, "segments-dir") || clariceSegmentsDir(cycle);
   const sentOrQueued = loadSentOrQueuedEmails(segDir);
   const universe = excludeSentOrQueued(rows, sentOrQueued);
   const alreadyTracked = rows.length - universe.length;

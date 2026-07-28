@@ -204,6 +204,56 @@ export function parseSubjectArg(argv: string[]): string | undefined {
   return v || undefined;
 }
 
+/** Shape do JSON impresso ao final de `main()` — ver `buildInvocationSummary` (#4202). */
+export interface InvocationSummary {
+  key: string;
+  listId: number;
+  campaignId?: number;
+  phase: string;
+  status?: CampaignEntry["status"];
+  cycleTotals: { created: number; scheduled: number };
+}
+
+/**
+ * #4202 — monta o resumo impresso ao final de `main()`. Antes disso, o JSON
+ * de saída era só `{ created: campaigns.length, scheduled: N }`: o
+ * ACUMULADO do state file do ciclo inteiro (todas as invocações --create já
+ * feitas neste ciclo), não o resultado da invocação ATUAL — `created: 2` logo
+ * após criar 1 campanha lia como "criei duas por engano", quando na verdade
+ * havia 1 campanha desta invocação + 1 de uma invocação anterior sob outra
+ * --key. Puro/testável: recebe as flags de fase resolvidas, a entrada
+ * (possivelmente recém-criada/atualizada) da campanha desta --key, e a lista
+ * completa de campanhas do ciclo (só pra computar `cycleTotals`, que continua
+ * disponível — só não é mais confundido com o resultado da invocação).
+ */
+export function buildInvocationSummary(
+  key: string,
+  listId: number,
+  flags: { create: boolean; updateHtml: boolean; sendTest: boolean; schedule: boolean },
+  campaign: CampaignEntry | undefined,
+  allCampaigns: CampaignEntry[],
+): InvocationSummary {
+  const phase = [
+    flags.create && "create",
+    flags.updateHtml && "update-html",
+    flags.sendTest && "send-test",
+    flags.schedule && "schedule",
+  ]
+    .filter((p): p is string => typeof p === "string")
+    .join("+");
+  return {
+    key,
+    listId,
+    campaignId: campaign?.campaignId,
+    phase,
+    status: campaign?.status,
+    cycleTotals: {
+      created: allCampaigns.length,
+      scheduled: allCampaigns.filter((c) => c.status === "scheduled").length,
+    },
+  };
+}
+
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = parseCycleArg(argv);
   if (!cycle) {
@@ -425,7 +475,13 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   console.log(
     JSON.stringify(
-      { created: campaigns.length, scheduled: campaigns.filter((c) => c.status === "scheduled").length },
+      buildInvocationSummary(
+        key,
+        listId,
+        { create: doCreate, updateHtml: doUpdateHtml, sendTest: doTest, schedule: doSchedule },
+        byKey.get(key),
+        campaigns,
+      ),
       null,
       2,
     ),

@@ -15,9 +15,23 @@
 //      na chave de agrupamento).
 //   2. Links afiliados da Clarice (`?via=diaria`) → "Clarice".
 //   3. Superfícies próprias por host (livros/cursos/leaderboard/home).
-//   4. Fallback: URL normalizada — remove `utm_*` e outros params de
+//   4. Fallback: título editorial (`editorialTitle`, #4198 — ver abaixo) se
+//      disponível, senão URL normalizada — remove `utm_*` e outros params de
 //      tracking conhecidos, remove barra final, minúsculas no host. Isso já
 //      resolve sozinho "mesmo destino, UTMs diferentes".
+//
+// #4198: URLs opacas (encurtadores, links de produto sem slug — ex:
+// `link.amazon/B0249coGp`) caem na regra 4 e produzem um rótulo ilegível
+// (`B0249coGp (link.amazon)`) — a coluna "Conteúdo" das tabelas de link
+// existe justamente pra dizer O QUE rendeu clique, e um ID opaco não diz
+// nada. `classifyLinkContent` aceita agora um 2º parâmetro OPCIONAL,
+// `editorialTitle` — quando presente e a URL cai na regra 4 (fallback), o
+// título substitui o rótulo derivado da URL. Nunca lê nada sozinho (módulo
+// continua puro/sem I/O) — o título é responsabilidade do CALLER resolver
+// (ex: `scripts/lib/mensal/monthly-link-sections.ts`, que extrai o título
+// editorial ao lado de cada URL em `prioritized.md`). Deliberadamente NÃO
+// aplicado às regras 1-3 (poll/Clarice/superfícies próprias) — são rótulos
+// curados, título editorial nunca deveria substituí-los.
 
 /** Hosts do worker de poll ("É IA?"). #3904: domínio de marca é eia.diar.ia.br;
  *  poll.diaria.workers.dev mantido por retrocompat com deploys/fixtures antigos. */
@@ -97,17 +111,26 @@ export interface LinkContentClassification {
 /**
  * Classifica uma URL em um rótulo de conteúdo estável, seguindo as 4 regras
  * ordenadas do módulo (poll A/B → Clarice afiliado → superfícies próprias →
- * fallback normalizado). Pura, determinística, nunca lança — URLs
- * malformadas caem no fallback (retornam a string original como conteúdo).
+ * fallback normalizado/título editorial). Pura, determinística, nunca lança —
+ * URLs malformadas caem no fallback (retornam o título, se houver, ou a
+ * string original como conteúdo).
+ *
+ * @param editorialTitle - #4198, OPCIONAL. Título editorial já resolvido pelo
+ *   CALLER (nunca lido aqui — módulo continua sem I/O). Só é consultado na
+ *   regra 4 (fallback) — string vazia/undefined preserva o comportamento
+ *   anterior ao #4198 exatamente.
  */
-export function classifyLinkContent(url: string): LinkContentClassification {
+export function classifyLinkContent(url: string, editorialTitle?: string): LinkContentClassification {
+  const title = editorialTitle?.trim() || undefined;
+
   let u: URL;
   try {
     u = new URL(url);
   } catch {
-    // URL não-parseável: sem host pra classificar — usa a própria string
-    // como rótulo de conteúdo (fallback determinístico, nunca crasha).
-    return { content: url };
+    // URL não-parseável: sem host pra classificar — usa o título (se houver)
+    // ou a própria string como rótulo de conteúdo (fallback determinístico,
+    // nunca crasha).
+    return { content: title ?? url };
   }
 
   const host = u.hostname.toLowerCase();
@@ -134,11 +157,12 @@ export function classifyLinkContent(url: string): LinkContentClassification {
     return { content: "Diar.ia (home)" };
   }
 
-  // 4. Fallback: rótulo humano derivado da URL — a coluna "Conteúdo" nunca
-  // deve mostrar uma URL crua (com esquema/query), então isto NÃO chama
-  // normalizeUrlForContent (que mantém path+query) como rótulo visível.
-  // normalizeUrlForContent segue usada só como CHAVE de agrupamento (abaixo).
-  return { content: humanLabelForUrl(url) };
+  // 4. Fallback: título editorial (#4198) se disponível, senão rótulo humano
+  // derivado da URL — a coluna "Conteúdo" nunca deve mostrar uma URL crua
+  // (com esquema/query), então isto NÃO chama normalizeUrlForContent (que
+  // mantém path+query) como rótulo visível. normalizeUrlForContent segue
+  // usada só como CHAVE de agrupamento (abaixo).
+  return { content: title ?? humanLabelForUrl(url) };
 }
 
 /**

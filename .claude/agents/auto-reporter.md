@@ -117,26 +117,47 @@ Pra cada signal em ordem:
 
 #### 3a. Construir query de busca
 
-Baseada em `kind` + `details`:
+Baseada em `kind` + `details`. **Sem qualificador `state:` na query** (#4177
+— o filtro de estado passa a ser controlado pela flag `--state` do `gh
+search` em 3b, não embutido na query em texto):
 
-- `source_streak`: `"{source}" label:post-mortem state:open`
+- `source_streak`: `"{source}" label:post-mortem`
 - `unfixed_issue` com `related_issue`: pular busca, usar issue number direto (ex: `#39`).
-- `unfixed_issue` sem `related_issue`: `"{reason}" state:open`
-- `chrome_disconnects`: `"chrome_disconnected" state:open`
+- `unfixed_issue` sem `related_issue`: `"{reason}"`
+- `chrome_disconnects`: `"chrome_disconnected"`
 - `editor_error_log`: busca livre por palavras-chave do conteúdo do `error.md`; se não encontrar match, propor criar nova issue com label `editor-reported`.
 
 #### 3b. `gh search issues` com a query
 
+**#4177**: a busca cobre issues abertas E fechadas numa chamada só
+(`--state all`). Motivo: se o bug já foi corrigido e a issue original
+fechada ANTES do auto-reporter processar o log de runtime-fixes dessa
+edição (drift incidente↔report), uma busca só `state:open` não encontra
+nada e **recria a issue do zero** — já aconteceu 2× (#4163/#4164
+duplicaram #4102, que já estava fechada e mergeada ~4h antes).
+
 ```bash
-gh search issues --repo {repo} --state open '{query}' --json number,title --limit 5
+gh search issues --repo {repo} --state all '{query}' --json number,title,state,closedAt --limit 5
 ```
 
-Parsear JSON. Se array tem match:
-- **Proposta: comment** na issue existente (não criar duplicada).
-- Capturar issue number + título.
+Parsear JSON. Se array tem match, capturar issue number + título + `state`
+(`OPEN`/`CLOSED`) + `closedAt`:
+- **Issue ABERTA**: proposta **comment** na issue existente (não criar
+  duplicada) — comportamento inalterado.
+- **Issue FECHADA (#4177)**: proposta **comment** na issue existente,
+  **nunca reabrir automaticamente** — a issue pode ter sido corrigida de
+  verdade (caso comum: runtime-fix manual + PR já mergeado antes do
+  auto-reporter rodar). O comment só registra que este sinal já tem PR
+  mergeado (cita `closedAt`), pro editor decidir manualmente se quer
+  reabrir. Nunca propor "criar" quando há match, mesmo fechado — é
+  justamente essa lacuna que duplicou #4102 duas vezes.
 
 Se array vazio:
 - **Proposta: criar** nova issue.
+
+**Dedup conservador vale pros dois estados**: em caso de match fraco
+(título parecido, contexto diferente), preferir propor **create** — pior
+criar duplicada que comentar na issue errada (aberta ou fechada).
 
 **Se o comando `gh` falhar** (exit != 0 ou JSON malformado), tratar como "zero matches" + logar warn no run-log. Não fabricar dados.
 
@@ -162,7 +183,12 @@ Lista numerada com cada signal e proposta:
     Evidence: first_occurrences=[t1,t2,t3,t4,t5]
     Proposta: criar issue P1 com label post-mortem
 
-Aprovar [1,2,3] / editar / pular?
+[4] JÁ CORRIGIDA (#4102, fechada 260727T17:03): título placeholder no Stage 1
+    Kind: unfixed_issue, severity: medium
+    Evidence: match de busca contra issue FECHADA (#4177) — PR já mergeado
+    Proposta: comment em #4102 registrando a recorrência, NÃO reabrir, NÃO criar nova
+
+Aprovar [1,2,3,4] / editar / pular?
 ```
 
 ### 5. Aguardar decisão do editor (gate humano)
@@ -188,7 +214,24 @@ EOF
 )"
 ```
 
-Capturar URL retornada na stdout — usar como `issue_url` no relatório.
+**Issue FECHADA (#4177)**: mesmo comando, corpo ligeiramente diferente —
+deixa claro que o sinal já tem fix mergeado, em vez de "reincidente":
+
+```bash
+gh issue comment {NN} --repo {repo} --body "$(cat <<'EOF'
+Sinal recorrente detectado na edição {AAMMDD}: {signal.title}
+
+Esta issue já está FECHADA (fechada em {closedAt}) — o auto-reporter
+encontrou este match e está só registrando a ocorrência, **não reabrindo
+automaticamente**. Se o fix mergeado não cobre este caso, reabra
+manualmente.
+
+{formatted evidence}
+EOF
+)"
+```
+
+Capturar URL retornada na stdout — usar como `issue_url` no relatório (em ambos os casos).
 
 #### 6b. Para "criar nova issue"
 
@@ -265,7 +308,7 @@ Shape do `issues-reported.json`:
 - **Dedup conservador**: em caso de ambiguidade (match fraco no search), preferir propor **create** (editor decide se é reincidência). Pior criar duplicada que perder sinal.
 - **Rate limit GitHub API**: se tiver >10 signals, batch a apresentação (mostrar primeiros 10, aguardar confirmação, prosseguir com resto). Evita spam em edição catastrófica.
 - **Formato de evidence**: quando for comment em issue existente, incluir seção `## Reincidente em edição {AAMMDD}` com bullet points da `details` do signal.
-- **Nunca editar/fechar issues existentes** — só create ou comment.
+- **Nunca editar/fechar/reabrir issues existentes** — só create ou comment. Match contra issue FECHADA (#4177) vira comment, nunca `gh issue reopen` — decisão de reabrir é do editor.
 - **Se GitHub MCP falhar** (rate limit, auth expired, etc.): gravar `{edition_dir}/_internal/issues-draft-report.md` com o plano em markdown pra editor filar manualmente, e retornar:
   ```json
   { "action": "fallback_md", "md_path": "..." }
