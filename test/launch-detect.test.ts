@@ -16,7 +16,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { detectLaunchCandidate } from "../scripts/lib/launch-detect.ts";
+import { detectLaunchCandidate, detectDomainMismatchCandidate } from "../scripts/lib/launch-detect.ts";
 
 describe("detectLaunchCandidate — voz passiva (#4080, caso real edição 260727)", () => {
   // Os 4 títulos exatos citados na issue #4080.
@@ -255,5 +255,45 @@ describe("detectLaunchCandidate — voz passiva (#4080, caso real edição 26072
       title: "Google detalha como o Gemini funciona por trás das cortinas",
     });
     assert.equal(det.is_candidate, false);
+  });
+});
+
+describe("detectDomainMismatchCandidate — sem verbo, só empresa+domínio (#4135 item 2)", () => {
+  it("'Novo modelo Claude Opus 5 chama atenção de desenvolvedores' → true (empresa + domínio de imprensa, sem verbo de anúncio)", () => {
+    const det = detectDomainMismatchCandidate({
+      title: "Novo modelo Claude Opus 5 chama atenção de desenvolvedores",
+      url: "https://tecnoblog.net/noticias/claude-opus-5-anthropic/",
+    });
+    assert.equal(det.is_candidate, true);
+    assert.equal(det.matched_company, "Claude");
+    assert.equal(det.suggested_domain, "anthropic.com");
+  });
+
+  it("NÃO flaga quando a URL já é do domínio oficial", () => {
+    const det = detectDomainMismatchCandidate({
+      title: "Claude Opus 5 chama atenção de desenvolvedores",
+      url: "https://anthropic.com/news/claude-opus-5",
+    });
+    assert.equal(det.is_candidate, false);
+  });
+
+  it("NÃO flaga quando nenhuma empresa conhecida é mencionada", () => {
+    const det = detectDomainMismatchCandidate({
+      title: "Startup brasileira de IA capta rodada seed",
+      url: "https://startse.com/noticias/startup-seed/",
+    });
+    assert.equal(det.is_candidate, false);
+  });
+
+  it("'Por que o Claude Opus 5 divide opiniões entre desenvolvedores' → true (mesmo sendo análise — trade-off deliberado do item 2, mitigado por scoping externo a bucket=lancamento)", () => {
+    // Esta função sozinha NÃO distingue análise de lançamento (é exatamente o
+    // trade-off descrito na issue #4135) — quem mitiga o falso-positivo é o
+    // chamador (review-highlight-source.ts), que só invoca esta função para
+    // destaques já classificados como bucket "lancamento" pelo categorizer.
+    const det = detectDomainMismatchCandidate({
+      title: "Por que o Claude Opus 5 divide opiniões entre desenvolvedores",
+      url: "https://tecnoblog.net/analise/claude-opus-5-opiniao/",
+    });
+    assert.equal(det.is_candidate, true);
   });
 });
