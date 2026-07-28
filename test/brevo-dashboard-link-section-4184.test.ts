@@ -55,7 +55,10 @@ import {
 import {
   parsePrioritizedSections,
   buildLinkSectionMap,
+  parsePrioritizedUrlTitles,
+  buildLinkTitleMap,
 } from "../scripts/lib/mensal/monthly-link-sections.ts";
+import { classifyLinkContent } from "../workers/brevo-dashboard/src/link-content.ts";
 import { discoverCyclesWithPrioritized } from "../scripts/push-link-sections-kv.ts";
 
 // ─── Fixture REAL: cópia de data/monthly/2606-07/prioritized.md (#4184) ────
@@ -314,6 +317,104 @@ describe("buildLinkSectionMap (#4184)", () => {
     const key = Object.keys(map).find((k) => k.includes("dispatch and computer use") || k.includes("dispatch-and-computer-use"));
     assert.ok(key, "conteúdo do link de Lançamentos deve estar no mapa");
     assert.deepEqual(map[key!], ["lancamentos"]);
+  });
+});
+
+// ─── parsePrioritizedUrlTitles / buildLinkTitleMap (#4198) ─────────────────
+//
+// Caso real da issue: `https://link.amazon/B0249coGp` (URL opaca) classifica
+// como "B0249coGp (link.amazon)" — o rótulo ilegível que motivou o #4198. O
+// título editorial ("Como ter acesso à Alexa+") já está na MESMA linha do
+// prioritized.md, ao lado da URL — `data/monthly/2606-07/prioritized.md:103`
+// (fixture real, ver FIXTURE_2606_07_PRIORITIZED acima).
+
+describe("parsePrioritizedUrlTitles (#4198) — fixture real 2606-07", () => {
+  test("extrai título de linha COM prefixo de data (AAMMDD — título — URL)", () => {
+    const pairs = parsePrioritizedUrlTitles(FIXTURE_2606_07_PRIORITIZED);
+    const alexa = pairs.find((p) => p.url === "https://link.amazon/B0249coGp");
+    assert.ok(alexa, "par url/título do link opaco deve estar presente");
+    assert.equal(alexa!.title, "Como ter acesso à Alexa+");
+  });
+
+  test("extrai título de linha SEM prefixo de data (pool Use Melhor)", () => {
+    const pairs = parsePrioritizedUrlTitles(FIXTURE_2606_07_PRIORITIZED);
+    const tutorial = pairs.find((p) => p.url === "https://blog.ibe.ia.br/blog/como-criar-seu-primeiro-agente-ia");
+    assert.ok(tutorial, "par url/título do tutorial Use Melhor deve estar presente");
+    assert.equal(tutorial!.title, "Como criar seu primeiro agente de IA");
+  });
+
+  test("extrai título de linha com tag [editorial] + data (pool legado)", () => {
+    const pairs = parsePrioritizedUrlTitles(FIXTURE_2603_04_LEGACY);
+    const gpt = pairs.find((p) => p.url === "https://openai.com/pt-BR/index/introducing-gpt-5-4/");
+    assert.ok(gpt, "par url/título com tag [editorial] deve estar presente");
+    assert.equal(gpt!.title, "GPT-5.4: raciocínio mais confiável");
+  });
+
+  test("extrai título de linha com tag numérica [93] (pool legado 2604-05)", () => {
+    const pairs = parsePrioritizedUrlTitles(FIXTURE_2604_05_LEGACY);
+    const gpt55 = pairs.find((p) => p.url === "https://openai.com/index/introducing-gpt-5-5/");
+    assert.ok(gpt55, "par url/título com tag [93] deve estar presente");
+    assert.equal(gpt55!.title, "OpenAI lança GPT-5.5 com foco em agentes");
+  });
+
+  test("todos os pares do 2606-07 têm título extraído (10 URLs, formato consistente)", () => {
+    const pairs = parsePrioritizedUrlTitles(FIXTURE_2606_07_PRIORITIZED);
+    assert.equal(pairs.length, 10);
+    assert.ok(pairs.every((p) => typeof p.title === "string" && p.title.length > 0));
+  });
+
+  test("markdown vazio/sem headers reconhecidos → array vazio, nunca lança", () => {
+    assert.deepEqual(parsePrioritizedUrlTitles("# só um título, sem seções"), []);
+  });
+});
+
+describe("buildLinkTitleMap (#4198)", () => {
+  test("URL opaca (link.amazon/B0249coGp) → mapa tem o título editorial, chaveado pelo CONTEÚDO BASE (sem título)", () => {
+    const pairs = parsePrioritizedUrlTitles(FIXTURE_2606_07_PRIORITIZED);
+    const titleMap = buildLinkTitleMap(pairs);
+    const baseContent = classifyLinkContent("https://link.amazon/B0249coGp").content;
+    assert.equal(baseContent, "B0249coGp (link.amazon)", "pré-condição: rótulo opaco sem título");
+    assert.equal(titleMap[baseContent], "Como ter acesso à Alexa+");
+  });
+
+  test("classifyLinkContent(url, titleMap[baseContent]) resolve pro título — a integração fim-a-fim que o #4198 pede", () => {
+    const pairs = parsePrioritizedUrlTitles(FIXTURE_2606_07_PRIORITIZED);
+    const titleMap = buildLinkTitleMap(pairs);
+    const url = "https://link.amazon/B0249coGp";
+    const base = classifyLinkContent(url).content;
+    const withTitle = classifyLinkContent(url, titleMap[base]).content;
+    assert.equal(withTitle, "Como ter acesso à Alexa+");
+  });
+
+  test("URL COM slug legível (não-opaca) — título ainda é registrado no mapa, mas a chave já é o base content normal", () => {
+    const pairs = parsePrioritizedUrlTitles(FIXTURE_2606_07_PRIORITIZED);
+    const titleMap = buildLinkTitleMap(pairs);
+    const seriesH = classifyLinkContent("https://www.anthropic.com/news/series-h").content;
+    assert.equal(titleMap[seriesH], "Anthropic capta US$ 65 bi na rodada Série H");
+  });
+
+  test("conteúdo SEM título no mapa (URL fora do prioritized.md) → classifyLinkContent cai no rótulo atual (regressão do #4053 preservada)", () => {
+    const pairs = parsePrioritizedUrlTitles(FIXTURE_2606_07_PRIORITIZED);
+    const titleMap = buildLinkTitleMap(pairs);
+    const url = "https://outro-dominio-qualquer.com/pagina-nunca-citada";
+    const base = classifyLinkContent(url).content;
+    assert.equal(titleMap[base], undefined, "pré-condição: URL não está no prioritized.md");
+    assert.equal(classifyLinkContent(url, titleMap[base]).content, base);
+  });
+
+  test("pares sem título (title: undefined) não entram no mapa", () => {
+    const map = buildLinkTitleMap([
+      { url: "https://exemplo.com/a", title: "Título A" },
+      { url: "https://exemplo.com/b", title: undefined },
+    ]);
+    const contentA = classifyLinkContent("https://exemplo.com/a").content;
+    const contentB = classifyLinkContent("https://exemplo.com/b").content;
+    assert.equal(map[contentA], "Título A");
+    assert.equal(contentB in map, false);
+  });
+
+  test("lista vazia → mapa vazio", () => {
+    assert.deepEqual(buildLinkTitleMap([]), {});
   });
 });
 

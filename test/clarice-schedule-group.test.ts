@@ -8,6 +8,7 @@ import {
   campaignNameFor,
   parseSubjectArg,
   checkListIdMismatch,
+  buildInvocationSummary,
   type CampaignEntry,
 } from "../scripts/clarice-schedule-group.ts";
 import { appendGroupListsRegistry } from "../scripts/clarice-import-waves.ts";
@@ -195,6 +196,126 @@ describe("checkListIdMismatch (#3354 — --create idempotente por key não compa
     if (result.ok) throw new Error("unreachable");
     assert.match(result.message, /--key distinta/);
     assert.match(result.message, /ramp-warm-2/);
+  });
+});
+
+describe("buildInvocationSummary (#4202 — JSON de saída reflete a INVOCAÇÃO, não o acumulado do ciclo)", () => {
+  // Cenário real do incidente (envio11/#100 de 260727): o ciclo já tinha uma
+  // campanha anterior (envio10/#90, scheduled) quando --create criou a #100 —
+  // o JSON antigo ({created: campaigns.length, scheduled: N}) reportava
+  // `created: 2` logo após criar 1 campanha, porque contava as DUAS entradas
+  // do state file do ciclo inteiro.
+  const envio10: CampaignEntry = {
+    key: "envio10",
+    campaignId: 90,
+    listId: 84,
+    subject: "Assunto envio10",
+    scheduledAt: "2026-07-20T09:00:00.000Z",
+    status: "scheduled",
+  };
+
+  it("--create: phase='create', campaignId/listId da invocação atual — não 'created: 2' com só 1 campanha nova", () => {
+    const envio11Draft: CampaignEntry = {
+      key: "envio11",
+      campaignId: 100,
+      listId: 85,
+      subject: "Assunto envio11",
+      scheduledAt: "2026-07-27T09:00:00.000Z",
+      status: "draft",
+    };
+    const allCampaigns = [envio10, envio11Draft];
+    const summary = buildInvocationSummary(
+      "envio11",
+      85,
+      { create: true, updateHtml: false, sendTest: false, schedule: false },
+      envio11Draft,
+      allCampaigns,
+    );
+    assert.equal(summary.key, "envio11");
+    assert.equal(summary.campaignId, 100);
+    assert.equal(summary.listId, 85);
+    assert.equal(summary.phase, "create");
+    assert.equal(summary.status, "draft");
+    // acumulado do ciclo continua disponível, mas NOMEADO/SEPARADO — nunca
+    // confundido com o resultado desta invocação (que criou 1 campanha).
+    assert.deepEqual(summary.cycleTotals, { created: 2, scheduled: 1 });
+  });
+
+  it("--send-test: phase='send-test', não herda 'created'/'scheduled' de fases anteriores", () => {
+    const envio11Draft: CampaignEntry = {
+      key: "envio11",
+      campaignId: 100,
+      listId: 85,
+      subject: "Assunto envio11",
+      scheduledAt: "2026-07-27T09:00:00.000Z",
+      status: "draft",
+    };
+    const summary = buildInvocationSummary(
+      "envio11",
+      85,
+      { create: false, updateHtml: false, sendTest: true, schedule: false },
+      envio11Draft,
+      [envio10, envio11Draft],
+    );
+    assert.equal(summary.phase, "send-test");
+    assert.equal(summary.campaignId, 100);
+    assert.equal(summary.status, "draft"); // --send-test não muda o status
+  });
+
+  it("--schedule: phase='schedule', status reflete 'scheduled' pós-agendamento desta invocação", () => {
+    const envio11Scheduled: CampaignEntry = {
+      key: "envio11",
+      campaignId: 100,
+      listId: 85,
+      subject: "Assunto envio11",
+      scheduledAt: "2026-07-27T09:00:00.000Z",
+      status: "scheduled",
+    };
+    const allCampaigns = [envio10, envio11Scheduled];
+    const summary = buildInvocationSummary(
+      "envio11",
+      85,
+      { create: false, updateHtml: false, sendTest: false, schedule: true },
+      envio11Scheduled,
+      allCampaigns,
+    );
+    assert.equal(summary.phase, "schedule");
+    assert.equal(summary.status, "scheduled");
+    // só agora as DUAS campanhas do ciclo estão scheduled — cycleTotals
+    // reflete isso, mas continua separado do resultado desta invocação.
+    assert.deepEqual(summary.cycleTotals, { created: 2, scheduled: 2 });
+  });
+
+  it("nenhuma flag de fase (plan-only) → phase vazio, sem quebrar o shape", () => {
+    const summary = buildInvocationSummary(
+      "envio12",
+      86,
+      { create: false, updateHtml: false, sendTest: false, schedule: false },
+      undefined,
+      [envio10],
+    );
+    assert.equal(summary.phase, "");
+    assert.equal(summary.campaignId, undefined);
+    assert.equal(summary.status, undefined);
+  });
+
+  it("múltiplas flags na mesma invocação → phase concatena todas as fases executadas", () => {
+    const c: CampaignEntry = {
+      key: "envio11",
+      campaignId: 100,
+      listId: 85,
+      subject: "X",
+      scheduledAt: "2026-07-27T09:00:00.000Z",
+      status: "scheduled",
+    };
+    const summary = buildInvocationSummary(
+      "envio11",
+      85,
+      { create: true, updateHtml: false, sendTest: true, schedule: true },
+      c,
+      [c],
+    );
+    assert.equal(summary.phase, "create+send-test+schedule");
   });
 });
 

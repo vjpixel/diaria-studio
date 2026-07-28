@@ -105,6 +105,54 @@ describe("classifyLinkContent (#4053)", () => {
   });
 });
 
+// ─── editorialTitle (#4198) ──────────────────────────────────────────────
+//
+// Caso real: `https://link.amazon/B0249coGp` (URL opaca, sem slug legível)
+// classificava como "B0249coGp (link.amazon)" — regra 4 (fallback) sem
+// nenhum sinal de que o link levava a "Como ter acesso à Alexa+". O título
+// editorial (extraído de `prioritized.md` por
+// `scripts/lib/mensal/monthly-link-sections.ts`) entra como 2º parâmetro
+// OPCIONAL — nunca lido por este módulo (continua puro/sem I/O).
+describe("classifyLinkContent com editorialTitle (#4198)", () => {
+  test("URL opaca + título conhecido → usa o título, não o rótulo derivado da URL", () => {
+    const r = classifyLinkContent("https://link.amazon/B0249coGp", "Como ter acesso à Alexa+");
+    assert.equal(r.content, "Como ter acesso à Alexa+");
+  });
+
+  test("URL opaca SEM título → cai no rótulo atual (regressão do #4053 preservada)", () => {
+    const r = classifyLinkContent("https://link.amazon/B0249coGp");
+    assert.equal(r.content, "B0249coGp (link.amazon)");
+  });
+
+  test("editorialTitle vazio/só espaços → tratado como ausente, cai no rótulo atual", () => {
+    assert.equal(classifyLinkContent("https://link.amazon/B0249coGp", "").content, "B0249coGp (link.amazon)");
+    assert.equal(classifyLinkContent("https://link.amazon/B0249coGp", "   ").content, "B0249coGp (link.amazon)");
+  });
+
+  test("URL malformada + título → usa o título (fallback determinístico, não crasha)", () => {
+    const r = classifyLinkContent("not a url at all", "Título editorial");
+    assert.equal(r.content, "Título editorial");
+  });
+
+  test("URL malformada sem título → comportamento inalterado (retorna a própria string)", () => {
+    assert.equal(classifyLinkContent("not a url at all").content, "not a url at all");
+  });
+
+  test("título NUNCA sobrepõe as regras 1-3 (curadas) — poll/Clarice/superfícies próprias ignoram editorialTitle", () => {
+    const poll = classifyLinkContent(
+      "https://eia.diar.ia.br/vote?email=x@y.com&edition=260726&choice=A",
+      "Título que não deveria aparecer",
+    );
+    assert.equal(poll.content, "É IA? (voto)");
+
+    const clarice = classifyLinkContent("https://clarice.ai/precos-planos?via=diaria", "Outro título ignorado");
+    assert.equal(clarice.content, "Clarice");
+
+    const home = classifyLinkContent("https://diar.ia.br/", "Mais um título ignorado");
+    assert.equal(home.content, "Diar.ia (home)");
+  });
+});
+
 describe("normalizeUrlForContent (#4053)", () => {
   test("remove utm_* e trailing slash, lowercase host", () => {
     assert.equal(
@@ -185,6 +233,43 @@ describe("parseLinksStats agrupa por conteúdo (#4053)", () => {
       assert.ok(rows[i - 1].clicks >= rows[i].clicks, `linha ${i - 1} deve ter clicks >= linha ${i}`);
     }
     assert.equal(rows[0].url, "https://anthropic.com/news/claude-4", "maior clique individual lidera quando > soma da enquete (20 > 8)");
+  });
+
+  // #4198: titleMap opcional — substitui o rótulo EXIBIDO quando o
+  // conteúdo base (mesma chave calculada por classifyLinkContent sem
+  // título) tem título editorial conhecido.
+  test("titleMap: conteúdo com título conhecido exibe o título, não o rótulo derivado da URL", () => {
+    const linksStats: BrevoLinksStats = { "https://link.amazon/B0249coGp": 5 };
+    const base = classifyLinkContent("https://link.amazon/B0249coGp").content;
+    assert.equal(base, "B0249coGp (link.amazon)"); // pré-condição
+    const rows = parseLinksStats(linksStats, null, { [base]: "Como ter acesso à Alexa+" });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].content, "Como ter acesso à Alexa+");
+    assert.equal(rows[0].url, "https://link.amazon/B0249coGp", "URL representativa continua a URL real, só o rótulo muda");
+  });
+
+  test("titleMap: conteúdo SEM título no mapa cai no rótulo atual (regressão preservada)", () => {
+    const linksStats: BrevoLinksStats = { "https://link.amazon/B0249coGp": 5 };
+    const rows = parseLinksStats(linksStats, null, { "outro-conteudo": "Título de outra coisa" });
+    assert.equal(rows[0].content, "B0249coGp (link.amazon)");
+  });
+
+  test("titleMap ausente (undefined/null) — comportamento idêntico ao pré-#4198", () => {
+    const linksStats: BrevoLinksStats = { "https://link.amazon/B0249coGp": 5 };
+    assert.equal(parseLinksStats(linksStats)[0].content, "B0249coGp (link.amazon)");
+    assert.equal(parseLinksStats(linksStats, null, null)[0].content, "B0249coGp (link.amazon)");
+  });
+
+  test("titleMap não afeta a coluna Seção — chave de lookup continua o conteúdo BASE, não o título", () => {
+    const linksStats: BrevoLinksStats = { "https://link.amazon/B0249coGp": 5 };
+    const base = classifyLinkContent("https://link.amazon/B0249coGp").content;
+    const rows = parseLinksStats(
+      linksStats,
+      { [base]: ["radar"] },
+      { [base]: "Como ter acesso à Alexa+" },
+    );
+    assert.equal(rows[0].content, "Como ter acesso à Alexa+");
+    assert.equal(rows[0].section?.label, "Radar", "seção resolvida pelo conteúdo BASE continua funcionando com título aplicado");
   });
 });
 
@@ -285,5 +370,24 @@ describe("aggregateLinksAcrossCampaigns agrupa por conteúdo (#4053)", () => {
     ]);
     assert.ok(!rows.some((r) => /unsubscribe/.test(r.url)));
     assert.equal(rows.length, 1);
+  });
+
+  // #4198: mesma capacidade de parseLinksStats, na função de agregado.
+  test("titleMap: conteúdo com título conhecido exibe o título na tabela agregada", () => {
+    const base = classifyLinkContent("https://link.amazon/B0249coGp").content;
+    const rows = aggregateLinksAcrossCampaigns(
+      [makeCampaignWithLinks(1, "2026-07-01T09:00:00Z", { "https://link.amazon/B0249coGp": 5 })],
+      null,
+      { [base]: "Como ter acesso à Alexa+" },
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].content, "Como ter acesso à Alexa+");
+  });
+
+  test("titleMap ausente — comportamento idêntico ao pré-#4198", () => {
+    const rows = aggregateLinksAcrossCampaigns([
+      makeCampaignWithLinks(1, "2026-07-01T09:00:00Z", { "https://link.amazon/B0249coGp": 5 }),
+    ]);
+    assert.equal(rows[0].content, "B0249coGp (link.amazon)");
   });
 });

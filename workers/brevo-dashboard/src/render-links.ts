@@ -191,11 +191,20 @@ export interface LinkStatRow {
  * @param linksStats - mapa url→clicks da Brevo (pode ser undefined/null)
  * @param sectionMap - #4184: mapa CONTEÚDO→seções (Destaques/Use Melhor/Radar)
  *   do ciclo mensal desta campanha, ou `null`/ausente (fallback "—" em toda linha)
+ * @param titleMap - #4198: mapa CONTEÚDO BASE→título editorial (`scripts/lib/mensal/monthly-link-sections.ts::buildLinkTitleMap`),
+ *   ou `null`/ausente (comportamento anterior ao #4198 preservado — rótulo
+ *   sempre derivado da URL). Quando o conteúdo tem título conhecido, ele
+ *   SUBSTITUI o rótulo exibido na coluna "Conteúdo" — não afeta a chave de
+ *   agrupamento (`content`, ainda calculada por `classifyLinkContent(url)`
+ *   sem título) nem a resolução de `section` acima, que continuam chaveadas
+ *   pelo CONTEÚDO BASE (evita dessincronizar do mapa de seção, que é
+ *   resolvido independentemente sobre as mesmas URLs de clique).
  * @returns array de LinkStatRow ordenado por clicks DESC, vazio se sem dados
  */
 export function parseLinksStats(
   linksStats: BrevoLinksStats | undefined | null,
   sectionMap?: LinkSectionMap | null,
+  titleMap?: Record<string, string> | null,
 ): LinkStatRow[] {
   if (!linksStats) return [];
 
@@ -243,7 +252,10 @@ export function parseLinksStats(
         : undefined;
 
     return {
-      content,
+      // #4198: título editorial substitui o rótulo derivado da URL quando
+      // conhecido — chave de agrupamento/seção (acima/abaixo) permanece o
+      // conteúdo BASE, só o valor EXIBIDO muda.
+      content: titleMap?.[content] ?? content,
       url: representativeUrl,
       displayUrl: truncateUrl(representativeUrl), // #2216 finding #2: extraído helper truncateUrl
       variantCount: urlEntries.length,
@@ -267,14 +279,18 @@ export function parseLinksStats(
  * @param sectionMap - #4184: mapa CONTEÚDO→seções do ciclo mensal EXATO desta
  *   campanha (não um merge cross-ciclo — ver `renderAggregatedLinksSection`
  *   pra esse caso), ou `null`/ausente (fallback "—" em toda linha)
+ * @param titleMap - #4198: mapa CONTEÚDO BASE→título editorial do ciclo
+ *   mensal EXATO desta campanha, ou `null`/ausente (rótulo derivado da URL,
+ *   comportamento anterior ao #4198 preservado). Ver `parseLinksStats`.
  */
 export function renderLinksSection(
   campaignId: number,
   linksStats: BrevoLinksStats | undefined | null,
   totalClicks?: number,
   sectionMap?: LinkSectionMap | null,
+  titleMap?: Record<string, string> | null,
 ): string {
-  const rows = parseLinksStats(linksStats, sectionMap);
+  const rows = parseLinksStats(linksStats, sectionMap, titleMap);
 
   // Stub graceful: sem linksStats ou sem links editoriais → seção oculta mas presente
   if (rows.length === 0) {
@@ -410,11 +426,18 @@ export function urlOrigin(url: string): string {
  * @param sectionMap - #4184: mapa CONTEÚDO→seções, tipicamente já MESCLADO
  *   (`mergeLinkSectionMaps`) entre todos os ciclos mensais presentes em
  *   `campaigns` — ou `null`/ausente (fallback "—" em toda linha)
+ * @param titleMap - #4198: mapa CONTEÚDO BASE→título editorial, tipicamente
+ *   já mesclado entre os ciclos presentes em `campaigns` (mesmo espírito de
+ *   `sectionMap`/`mergeLinkSectionMaps` — títulos de ciclos diferentes pro
+ *   mesmo conteúdo base são raros; quando colidem, o último merge vence, sem
+ *   garantia de precedência) — ou `null`/ausente (rótulo derivado da URL,
+ *   comportamento anterior ao #4198 preservado). Ver `parseLinksStats`.
  * @returns array de AggregatedLinkRow ordenado por totalClicks DESC
  */
 export function aggregateLinksAcrossCampaigns(
   campaigns: Array<BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats }>,
   sectionMap?: LinkSectionMap | null,
+  titleMap?: Record<string, string> | null,
 ): AggregatedLinkRow[] {
   const contentMap = new Map<string, { urlClicks: Map<string, number>; campaignCount: number }>();
 
@@ -463,7 +486,10 @@ export function aggregateLinksAcrossCampaigns(
       const representativeUrl = urlEntries[0][0];
       const totalClicks = urlEntries.reduce((sum, [, c]) => sum + c, 0);
       return {
-        content,
+        // #4198: título editorial substitui o rótulo derivado da URL quando
+        // conhecido — mesma ressalva de parseLinksStats: chave de
+        // agrupamento/seção permanece o conteúdo BASE.
+        content: titleMap?.[content] ?? content,
         url: representativeUrl,
         displayUrl: truncateUrl(representativeUrl),
         variantCount: urlEntries.length,
