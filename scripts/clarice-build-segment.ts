@@ -26,6 +26,16 @@
  *                     pedido pela #2885 — este grupo é sobre segurança de 1º
  *                     contato, não retenção/reativação).
  *
+ * GUARD DE DEFASAGEM (#4205): `--group engajados` filtra por priority_points
+ * — se o store foi tocado pelo sync do Brevo (opens_count/etc atualizado)
+ * DEPOIS do último `recomputeDerived`, esse grupo sairia menor sem avisar
+ * (quem abriu recentemente fica invisível até o próximo rebuild). Antes de
+ * montar 'engajados', `main()` chama `isDerivedStale` (clarice-db.ts) e
+ * ABORTA com instrução se detectar a defasagem — defesa em profundidade sobre
+ * o fix primário (`clarice-sync-brevo.ts` sempre chamar `recomputeDerived` ao
+ * final, mesmo no `--incremental`). Não se aplica a 'reativacao'/'ramp-warm'
+ * (nenhum dos dois filtra por priority_points).
+ *
  * SEGURANÇA: só ESCREVE CSV+manifest LOCAIS — não envia nada. O envio segue
  * gated no import (`clarice-import-waves.ts --group {group}`, #2916 —
  * dry-run por padrão) + schedule (manual). `--dry-run` aqui só imprime o
@@ -90,7 +100,7 @@
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
-import { openClariceDb, DEFAULT_DB_PATH } from "./lib/clarice-db.ts";
+import { openClariceDb, DEFAULT_DB_PATH, isDerivedStale } from "./lib/clarice-db.ts";
 import {
   NAMED_GROUPS,
   isNamedGroupKey,
@@ -299,6 +309,29 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const dryRun = hasFlag(argv, "dry-run");
 
   const db = openClariceDb(dbPath);
+
+  // #4205: 'engajados' é o único grupo nomeado que filtra por priority_points
+  // (`isEngajados`, clarice-segment.ts) — o único, portanto, exposto ao
+  // incidente do #4205 (sync que atualiza opens_count sem recomputeDerived
+  // alcançar o fim, deixando priority_points pra trás). 'reativacao'/
+  // 'ramp-warm' não dependem de priority_points, então não precisam do guard.
+  // Defesa em profundidade: mesmo com o (1) implementado (clarice-sync-brevo.ts
+  // sempre chama recomputeDerived ao final), um run interrompido por
+  // rate-limit/Ctrl+C ANTES do recompute final — ou um caminho futuro que
+  // bypasse recomputeDerived — recria o problema silenciosamente. Abortar aqui
+  // troca "onda menor sem aviso" por uma instrução clara de como destravar.
+  if (group === "engajados" && isDerivedStale(db)) {
+    db.close();
+    console.error(
+      "❌ store defasado (#4205): existem contatos com engajamento Brevo mais " +
+        "recente que o último recompute de priority_points — o grupo 'engajados' " +
+        "sairia menor do que deveria, silenciosamente. Rode " +
+        "`npx tsx scripts/clarice-build-db.ts` (ou `clarice-sync-brevo.ts` até o " +
+        "fim, sem interrupção) antes de montar esta onda.",
+    );
+    process.exit(1);
+  }
+
   const rows = db
     .prepare(
       `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
