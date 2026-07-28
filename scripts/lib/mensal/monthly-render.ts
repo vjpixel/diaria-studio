@@ -94,6 +94,21 @@ export function stripBackslashEscapes(s: string): string {
 // #4059: host de marca canônico (o redirect no Cloudflare preserva a query
 // string desde 260723, então o UTM sobrevive — premissa do #2613 caiu).
 const MENSAL_BRAND_HOST = "diar.ia.br";
+
+/**
+ * Hosts NOSSOS que recebem UTM da mensal: o host de marca e seus subdomínios
+ * (`cursos.`, `livros.`, `eia.`). Antes o match era só o host exato, então as
+ * curadorias de cursos/livros e o "Ver ranking" do É IA? saíam sem UTM nenhum —
+ * não dava pra saber sequer que o clique veio da mensal.
+ *
+ * Casa `diar.ia.br` e `*.diar.ia.br`, nunca um sufixo colado (`naodiar.ia.br`).
+ * Host de terceiro (clarice.ai, apoia.se, exame.com, redes sociais) segue
+ * intocado — UTM nosso em domínio alheio não mede nada e polui o link deles.
+ */
+export function isOwnedHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === MENSAL_BRAND_HOST || h.endsWith(`.${MENSAL_BRAND_HOST}`);
+}
 const MENSAL_BRAND_LINK = `https://${MENSAL_BRAND_HOST}`;
 
 /**
@@ -159,13 +174,22 @@ function wordmarkPosicao(): string {
  */
 function withClariceUtm(url: string, posicao: string): string {
   if (!currentMonthlyUtmCiclo) return url;
+
+  // NUNCA tocar em URL com merge tag. `new URL(...).toString()` percent-encoda
+  // as chaves — `{{ contact.EMAIL }}` vira `%7B%7B%20contact.EMAIL%20%7D%7D`, a
+  // Brevo não substitui, e o link sai quebrado pra TODO destinatário. Enquanto
+  // o match era só o host exato isso não aparecia (os links de voto do É IA?
+  // moram em `eia.diar.ia.br`); ao aceitar subdomínio, o guard passa a ser o que
+  // segura o poll de pé.
+  if (url.includes("{{")) return url;
+
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     return url; // URL relativa/inválida — não é o link de marca, preserva como está.
   }
-  if (parsed.hostname !== MENSAL_BRAND_HOST) return url;
+  if (!isOwnedHost(parsed.hostname)) return url;
   parsed.searchParams.set("utm_source", MENSAL_UTM_SOURCE);
   parsed.searchParams.set("utm_medium", MENSAL_UTM_MEDIUM);
   parsed.searchParams.set("utm_campaign", buildMensalCampaign(currentMonthlyUtmCiclo, posicao));
@@ -883,7 +907,10 @@ export function renderEncerramento(body: string): string {
     for (const line of lines) {
       const m = line.match(/^[-*]\s+\[(.+?)\]\((https?:\/\/[^)]+)\)\s*$/);
       if (m) {
-        pills.push(renderPillLink(m[1], normalizeKnownUrl(m[2], "pill")));
+        // Posição por RÓTULO (`pill-cursos-de-ia`, `pill-livros-sobre-ia`): com
+        // o `pill` genérico as duas curadorias caíam no mesmo utm_campaign e
+        // eram indistinguíveis — que é justamente o que se quer medir aqui.
+        pills.push(renderPillLink(m[1], normalizeKnownUrl(m[2], `pill-${slugifySecao(m[1])}`)));
         hadPill = true;
       } else {
         nonLink.push(line);
@@ -1033,7 +1060,7 @@ ${prevResultHtml}
 
     <!-- Leaderboard -->
     <p style="margin:12px 0 0;font-family:${FONT_SANS};font-size:12px;color:${INK};">
-      <a href="${workerUrl}/leaderboard/20${yymm.slice(0, 2)}?brand=clarice" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
+      <a href="${escHtml(normalizeKnownUrl(`${workerUrl}/leaderboard/20${yymm.slice(0, 2)}?brand=clarice`, "leaderboard"))}" style="color:${INK};text-decoration:none;border-bottom:1px solid ${TEAL};">Ver ranking</a>
     </p>
 
   </td></tr>

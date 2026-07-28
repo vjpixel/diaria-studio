@@ -22,7 +22,14 @@
  *   - link markdown inline (`renderInline`)     → `inline`
  *   - botão CTA (`renderCtaButton`)             → `cta`
  *   - título de destaque linkado                → `titulo`
- *   - pill link (Radar / Use Melhor)            → `pill`
+ *   - pill link do encerramento                 → `pill-{rótulo}` (cursos e
+ *     livros saem no mesmo encerramento; com o slug flat eram indistinguíveis)
+ *   - "Ver ranking" do É IA?                     → `leaderboard`
+ *
+ * Host: `diar.ia.br` E seus subdomínios (`cursos.`, `livros.`, `eia.`) — antes
+ * era só o host exato, e as curadorias saíam sem UTM nenhum. URL com merge tag
+ * (`{{ contact.EMAIL }}` nos links de voto) NUNCA é tocada: `new URL().toString()`
+ * percent-encodaria as chaves e a Brevo não substituiria.
  * Cada origem tem que emitir um `utm_campaign` DISTINTO, e nenhuma pode
  * regredir pra `sendinblue`.
  */
@@ -85,6 +92,56 @@ describe("UTM clarice em links do host de marca (#2975)", () => {
     assert.doesNotMatch(out, /utm_campaign/);
   });
 
+  // Curadorias (cursos/livros) e o "Ver ranking" do É IA? moram em SUBDOMÍNIO
+  // do host de marca. Com o match de host exato saíam sem UTM nenhum — não dava
+  // pra saber nem que o clique veio da mensal.
+  it("subdomínio nosso (cursos/livros/eia) também recebe UTM", () => {
+    setMonthlyUtmCiclo("2606-07");
+    try {
+      for (const u of ["https://cursos.diar.ia.br", "https://livros.diar.ia.br", "https://eia.diar.ia.br/leaderboard/2026?brand=clarice"]) {
+        const out = normalizeKnownUrl(u, "pill");
+        assert.match(out, /utm_source=clarice/, u);
+        assert.match(out, /utm_campaign=clarice-2606-07-pill/, u);
+      }
+      // sufixo colado NÃO é subdomínio nosso
+      assert.equal(normalizeKnownUrl("https://naodiar.ia.br/x"), "https://naodiar.ia.br/x");
+    } finally {
+      setMonthlyUtmCiclo(null);
+    }
+  });
+
+  // Se o merge tag for percent-encodado, a Brevo não substitui e TODO voto do
+  // É IA? sai com e-mail literal quebrado. O guard é o que segura o poll.
+  it("URL com merge tag nunca é tocada, mesmo em host nosso", () => {
+    setMonthlyUtmCiclo("2606-07");
+    try {
+      const voto = "https://eia.diar.ia.br/vote?email={{ contact.EMAIL }}&edition=2606-07&choice=A&brand=clarice";
+      assert.equal(normalizeKnownUrl(voto, "pill"), voto);
+      assert.equal(normalizeKnownUrl("{{ unsubscribe }}"), "{{ unsubscribe }}");
+    } finally {
+      setMonthlyUtmCiclo(null);
+    }
+  });
+
+  // Com o `pill` genérico as duas curadorias caíam no MESMO utm_campaign e eram
+  // indistinguíveis — que é justamente o que se quer medir aqui.
+  it("pills de curadoria têm posição por RÓTULO (cursos != livros)", () => {
+    setMonthlyUtmCiclo("2606-07");
+    try {
+      const html = renderEncerramento(
+        [
+          "Até o mês que vem.",
+          "",
+          "- [Cursos de IA](https://cursos.diar.ia.br)",
+          "- [Livros sobre IA](https://livros.diar.ia.br)",
+        ].join("\n"),
+      );
+      assert.match(html, /utm_campaign=clarice-2606-07-pill-cursos-de-ia/);
+      assert.match(html, /utm_campaign=clarice-2606-07-pill-livros-sobre-ia/);
+    } finally {
+      setMonthlyUtmCiclo(null);
+    }
+  });
   it("normalizeKnownUrl não mexe em hosts de terceiros", () => {
     setMonthlyUtmCiclo("2606-07");
     try {
@@ -155,11 +212,13 @@ describe("#4040 — utm_campaign distinto por POSIÇÃO do link", () => {
     }
   });
 
-  it("pill link do encerramento emite a posição `pill`", () => {
+  it("pill link do encerramento emite a posição `pill-{rótulo}`", () => {
     setMonthlyUtmCiclo("2606-07");
     try {
       const html = renderEncerramento("Até o mês que vem.\n\n- [Assine a diária](https://diar.ia.br)");
-      assert.match(html, /utm_campaign=clarice-2606-07-pill"/);
+      assert.match(html, /utm_campaign=clarice-2606-07-pill-assine-a-diaria"/);
+      // Nunca o slug flat: dois pills no mesmo e-mail seriam indistinguíveis.
+      assert.doesNotMatch(html, /utm_campaign=clarice-2606-07-pill"/);
     } finally {
       setMonthlyUtmCiclo(null);
     }
@@ -232,10 +291,15 @@ describe("#4040 — utm_campaign distinto por POSIÇÃO do link", () => {
       "clarice-2606-07-inline", // boilerplate APRESENTAÇÃO
       "clarice-2606-07-cta",    // botão CTA "→ [..](..)" do box de divulgação
       "clarice-2606-07-titulo", // título de item do Radar
-      "clarice-2606-07-pill",   // pill do encerramento
     ]) {
       assert.ok(found.has(esperada), `faltou ${esperada}; achei: ${[...found].sort().join(", ")}`);
     }
+
+    // Pill: pelo menos um, e SEMPRE por rótulo (nunca o slug flat) — cursos e
+    // livros saem no mesmo encerramento e precisam ser distinguíveis.
+    const pills = [...found].filter((c) => c.startsWith("clarice-2606-07-pill-"));
+    assert.ok(pills.length >= 1, `nenhum pill por rótulo; achei: ${[...found].sort().join(", ")}`);
+    assert.ok(!found.has("clarice-2606-07-pill"), "pill flat não deve mais existir");
 
     // Wordmark: pelo menos um, e SEMPRE por seção (nunca o slug flat).
     const wordmarks = [...found].filter((c) => c.startsWith("clarice-2606-07-wordmark-"));
