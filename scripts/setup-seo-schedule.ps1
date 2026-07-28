@@ -5,7 +5,10 @@
 
 .DESCRIPTION
     Cria uma tarefa agendada que roda `run-seo-weekly.ps1` (seo-index-check +
-    seo-pull) toda segunda as 04:10 — off-peak, depois do sync Clarice (03:40).
+    seo-pull) toda segunda as 04:10 — off-peak, e sem disputa com o sync
+    Clarice, que desde 260727 roda as 07:30 (antes 03:40; mudou pra cair DEPOIS
+    do envio canonico das 06:00 BRT). As duas tasks nao se cruzam mais: a de
+    SEO roda ~3h antes, nao mais logo depois.
 
     Semanal (nao diario) de proposito: indexacao se move em dias/semanas, e a
     URL Inspection API tem quota de 2.000/dia. Uma rodada gasta ~223.
