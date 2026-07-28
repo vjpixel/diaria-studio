@@ -17,6 +17,7 @@ import {
   uploadImageToWorkerKV,
   getTextFromWorkerKV,
   putTextToWorkerKV,
+  deleteTextFromWorkerKV,
   RemoteKvNamespace,
   createRemoteKvNamespace,
 } from "../scripts/lib/cloudflare-kv-upload.ts";
@@ -207,6 +208,46 @@ describe("putTextToWorkerKV (#4165/#4173)", () => {
   });
 });
 
+describe("deleteTextFromWorkerKV (#4186 — fecha o gap dormente de MinimalKvNamespace.delete)", () => {
+  it("falha quando kvNamespaceId está vazio", async () => {
+    await assert.rejects(
+      async () => deleteTextFromWorkerKV("k", { ...CFG, kvNamespaceId: "" }),
+      /kvNamespaceId obrigatório/,
+    );
+  });
+
+  it("falha quando accountId+token faltam", async () => {
+    const savedAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
+    const savedToken = process.env.CLOUDFLARE_WORKERS_TOKEN;
+    delete process.env.CLOUDFLARE_ACCOUNT_ID;
+    delete process.env.CLOUDFLARE_WORKERS_TOKEN;
+    try {
+      await assert.rejects(
+        async () => deleteTextFromWorkerKV("k", { kvNamespaceId: "ns" }),
+        /CLOUDFLARE_ACCOUNT_ID ou CLOUDFLARE_WORKERS_TOKEN/,
+      );
+    } finally {
+      if (savedAccount) process.env.CLOUDFLARE_ACCOUNT_ID = savedAccount;
+      if (savedToken) process.env.CLOUDFLARE_WORKERS_TOKEN = savedToken;
+    }
+  });
+
+  it("chama DELETE na URL da key, sem corpo", async () => {
+    const { fetchImpl, calls } = makeMockFetch(() => new Response("", { status: 200 }));
+    await deleteTextFromWorkerKV("k", CFG, fetchImpl);
+    assert.equal(calls[0].init?.method, "DELETE");
+    assert.match(calls[0].url, /\/values\/k$/);
+  });
+
+  it("resposta não-ok → lança com status e corpo", async () => {
+    const { fetchImpl } = makeMockFetch(() => new Response("delete denied", { status: 403 }));
+    await assert.rejects(
+      async () => deleteTextFromWorkerKV("k", CFG, fetchImpl),
+      /falhou \(403\).*delete denied/,
+    );
+  });
+});
+
 describe("RemoteKvNamespace — fail-soft por construção (#4165/#4173)", () => {
   it("get(): 200 com type='json' → parseia o JSON", async () => {
     const { fetchImpl } = makeMockFetch(() => new Response(JSON.stringify({ a: 1 }), { status: 200 }));
@@ -274,6 +315,31 @@ describe("RemoteKvNamespace — fail-soft por construção (#4165/#4173)", () =>
     const { fetchImpl } = makeMockFetch(() => new Response("denied", { status: 403 }));
     const kv = new RemoteKvNamespace(CFG, fetchImpl);
     await assert.doesNotReject(async () => kv.put("k", "v"));
+  });
+
+  // #4186: MinimalKvNamespace ganhou `delete` (gap dormente -- tryAcquireRefreshLock/
+  // releaseRefreshLock em brevo-api.ts chamam kv.delete, mas RemoteKvNamespace
+  // não implementava). Mesmo padrão fail-soft de get/put.
+  it("delete(): chamada normal não lança", async () => {
+    const { fetchImpl, calls } = makeMockFetch(() => new Response("", { status: 200 }));
+    const kv = new RemoteKvNamespace(CFG, fetchImpl);
+    await kv.delete("k");
+    assert.equal(calls[0].init?.method, "DELETE");
+  });
+
+  it("delete(): fetch rejeita → NUNCA lança (fail-soft), vira no-op logado", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("timeout");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+    const kv = new RemoteKvNamespace(CFG, fetchImpl);
+    await assert.doesNotReject(async () => kv.delete("k"));
+  });
+
+  it("delete(): resposta não-ok → NUNCA lança", async () => {
+    const { fetchImpl } = makeMockFetch(() => new Response("denied", { status: 403 }));
+    const kv = new RemoteKvNamespace(CFG, fetchImpl);
+    await assert.doesNotReject(async () => kv.delete("k"));
   });
 });
 

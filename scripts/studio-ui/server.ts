@@ -1037,7 +1037,12 @@ function handlePainelClarice(req: IncomingMessage, res: ServerResponse): void {
   buildClariceDashboardHtml({ fresh })
     .then((html) => sendHtml(res, 200, html))
     .catch((e) => {
-      sendHtml(res, 500, `<!DOCTYPE html><html><body><h1>Painel Clarice — erro</h1><p>${escHtmlLite((e as Error).message)}</p></body></html>`);
+      // #4187: `e` nem sempre é um Error (fetch nativo/dependência externa
+      // pode lançar qualquer valor) -- `(e as Error).message` num não-Error é
+      // `undefined`; guard evita que o `.catch()` em si lance de novo (o que
+      // viraria unhandled rejection e derrubaria o processo do studio-server,
+      // pior que um 500 por request).
+      sendHtml(res, 500, `<!DOCTYPE html><html><body><h1>Painel Clarice — erro</h1><p>${escHtmlLite(e instanceof Error ? e.message : String(e))}</p></body></html>`);
     });
 }
 
