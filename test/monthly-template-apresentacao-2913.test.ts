@@ -132,9 +132,10 @@ describe("template mensal — bloco APRESENTAÇÃO (#2913)", () => {
     // densidade promocional no eixo que o CTA-01 apontou como gatilho de spam.
     // A diária nunca linkou; agora as duas superfícies se comportam igual.
     assert.doesNotMatch(html, /utm_campaign=clarice-2606-07-wordmark/);
-    // O CTA "aqui" (#3971) aponta pro mesmo host canônico e, desde o #4040,
-    // também é normalizado com a posição `inline`.
-    assert.match(html, /<a href="https:\/\/diar\.ia\.br\/\?utm_source=clarice[^"]*utm_campaign=clarice-2606-07-inline"[^>]*>aqui<\/a>/);
+    // O CTA "aqui" (#3971) aponta pro mesmo host canônico, com a posição por
+    // SEÇÃO: a edição tem outro "aqui" no encerramento, e com o `inline` flat
+    // os dois saíam com href idêntico (linksStats somava os cliques).
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\/\?utm_source=clarice[^"]*utm_campaign=clarice-2606-07-inline-apresentacao"[^>]*>aqui<\/a>/);
     assert.doesNotMatch(html, /sendinblue/);
   });
 });

@@ -134,6 +134,38 @@ export function setMonthlyUtmCiclo(ciclo: string | null): void {
 }
 
 /**
+ * Seção corrente do render (`APRESENTAÇÃO`, `PARA ENCERRAR`, `DESTAQUE 1`, …).
+ *
+ * Nasceu no #4040 pro wordmark; foi removida no #4195 quando o wordmark deixou
+ * de ser link, e VOLTA aqui por um consumidor diferente: o link markdown
+ * inline. A auditoria do HTML da 2606-07 mostrou que os dois CTAs "aqui" —
+ * um na APRESENTAÇÃO, outro no PARA ENCERRAR — saíam com href IDÊNTICO
+ * (`…utm_campaign=clarice-2606-07-inline`), e o `linksStats` da Brevo agrega
+ * por URL exata: os cliques dos dois chegavam somados, sem dar pra saber qual
+ * converte. Mesma classe de problema que motivou o #4040 pros wordmarks.
+ *
+ * Mesma disciplina de estado module-level do ciclo acima: `draftToEmail` é
+ * síncrono e single-pass, seta a seção antes de despachar cada chunk e reseta
+ * no `finally`.
+ */
+let currentMonthlyUtmSecao: string | null = null;
+
+/** Exposto pelo mesmo motivo de `setMonthlyUtmCiclo` — teste direto do sufixo
+ *  `inline-{secao}` sem montar um draft inteiro. */
+export function setMonthlyUtmSecao(secao: string | null): void {
+  currentMonthlyUtmSecao = secao;
+}
+
+/**
+ * Posição de link inline = `inline-{secao-corrente}`. Sem seção setada (render
+ * fora de `draftToEmail`, ex.: chamada direta de teste) cai em `inline-geral`
+ * via `slugifySecao`.
+ */
+function inlinePosicao(): string {
+  return `inline-${slugifySecao(currentMonthlyUtmSecao)}`;
+}
+
+/**
  * Injeta (ou sobrescreve) o UTM de atribuição Clarice em URLs que apontam pro
  * host de marca (`diar.ia.br`, #4059) — no-op para qualquer outro host
  * (Clarice, tecnoblog, Workers de curadoria, etc.) e no-op se nenhum ciclo
@@ -246,19 +278,20 @@ const LEGACY_URL_FIXES: LegacyUrlFix[] = [
  *   `pill`). Vira sufixo do `utm_campaign`. Default `inline`: é o único call
  *   site que não passa nada explicitamente (link markdown no meio do texto).
  */
-export function normalizeKnownUrl(url: string, posicao = "inline"): string {
+export function normalizeKnownUrl(url: string, posicao?: string): string {
+  const pos = posicao ?? inlinePosicao();
   for (const [re, fixed, preserveSuffix] of LEGACY_URL_FIXES) {
     if (re.test(url)) {
       const rewritten = preserveSuffix ? url.replace(re, fixed) : fixed;
       // #4059: o rewrite pode ter produzido uma URL do host de marca (entrada
       // `diaria.beehiiv.com` acima) — nesse caso ela ainda precisa do UTM.
-      return withClariceUtm(rewritten, posicao);
+      return withClariceUtm(rewritten, pos);
     }
   }
   // #2975: cobre links `diaria.beehiiv.com` escritos como markdown `[texto](url)`
   // pelo writer-monthly (boilerplate APRESENTAÇÃO, CTA de ENCERRAMENTO) — não só
   // o wordmark automático (`renderTextInline`/`applyBrandWordmark`).
-  return withClariceUtm(url, posicao);
+  return withClariceUtm(url, pos);
 }
 
 /**
@@ -366,7 +399,14 @@ function nextLinkStartIndex(str: string, from: number): number {
  * independente que só encosta no link por acidente, nem quando um dos 2+
  * links consecutivos bold-wrapped "rouba" o `**` de fechamento do anterior).
  */
-export function renderInline(text: string, posicao = "inline"): string {
+/**
+ * `posicao` omitida → `inline-{secao-corrente}` (ver `inlinePosicao`). Não é
+ * um literal `inline` porque a mesma edição tem mais de um link markdown pro
+ * mesmo destino em seções diferentes — os dois CTAs "aqui" da 2606-07 saíam
+ * com href idêntico e o `linksStats` somava os cliques.
+ */
+export function renderInline(text: string, posicao?: string): string {
+  const pos = posicao ?? inlinePosicao();
   // Pre-strip backslash escapes ANTES do escHtml — assim `\&` vira `&` que então
   // vira `&amp;`, e não `\&amp;` (que aconteceria se strippássemos depois).
   const input = stripBackslashEscapes(text);
@@ -420,7 +460,7 @@ export function renderInline(text: string, posicao = "inline"): string {
     }
 
     if (textBefore.length > 0) parts.push(renderTextInline(textBefore));
-    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url, posicao))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
+    const linkHtml = `<a href="${escHtml(normalizeKnownUrl(url, pos))}" style="color:${INK};text-decoration:underline;text-decoration-color:${TEAL};">${escHtmlWithEmphasis(m[1])}</a>`;
     parts.push(boldLink ? `<strong>${linkHtml}</strong>` : linkHtml);
     lastIdx = boldLink ? j + 3 : j + 1;
     linkStart.lastIndex = lastIdx; // retoma a busca após o link (e o `**` de fechamento, se consumido)
@@ -1349,6 +1389,7 @@ export function draftToEmail(
     return draftToEmailBody();
   } finally {
     setMonthlyUtmCiclo(null);
+    setMonthlyUtmSecao(null); // mesmo racional do reset de ciclo — não vaza pra chamada seguinte.
   }
 
   function draftToEmailBody(): { subject: string; previewText: string; html: string } {
@@ -1359,11 +1400,12 @@ export function draftToEmail(
     const firstLine = chunk.split("\n")[0].trim();
     const label = normalizeLabel(firstLine);
 
-    // #4040: seção corrente — o wordmark renderizado dentro deste chunk sai
-    // com `utm_campaign=clarice-{ciclo}-wordmark-{secao}`. Setado ANTES de
-    // qualquer render* deste chunk; zerado após o loop (o header cobrand, o
-    // rodapé social e o wrapEmail ficam com `wordmark-geral`, não herdam a
-    // última seção do corpo).
+    // Seção corrente — os links markdown deste chunk saem com
+    // `utm_campaign=clarice-{ciclo}-inline-{secao}`. Setado ANTES de qualquer
+    // render* deste chunk; zerado após o loop (o header cobrand, o rodapé
+    // social e o wrapEmail ficam com `inline-geral`, não herdam a última seção
+    // do corpo).
+    setMonthlyUtmSecao(label);
 
     // REMETENTE: metadata, não renderiza no corpo.
     if (label === "REMETENTE") continue;
@@ -1499,8 +1541,9 @@ export function draftToEmail(
     bodyParts.push(renderParagraphs(chunk));
   }
 
-  // #4040: fora do corpo não existe "seção" — wrapEmail/header/rodapé caem em
-  // `wordmark-geral` em vez de herdar a última seção iterada.
+  // Fora do corpo não existe "seção" — wrapEmail/header/rodapé caem em
+  // `inline-geral` em vez de herdar a última seção iterada.
+  setMonthlyUtmSecao(null);
 
   return {
     subject,
