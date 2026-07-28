@@ -273,11 +273,23 @@ export function PER_EDITION_RULES(editionDir: string) {
 // CLI
 // ---------------------------------------------------------------------------
 
-/** #4059: lista .ts/.toml recursivamente (node_modules e dist ignorados). */
+/**
+ * #4059: lista .ts/.toml recursivamente (node_modules e dist ignorados).
+ *
+ * `worker-configuration.d.ts` é gerado pelo `wrangler types` e gitignorado
+ * (`.gitignore:25`), valendo pra QUALQUER worker — não só o `poll`. Ele apenas
+ * espelha, como tipo, o `[vars]` do `wrangler.toml` (que é o arquivo de fato
+ * policiado por esta regra). Não é código de runtime: não existe CTA clicável
+ * ali. Pular por nome de arquivo em vez de allowlistar caminho a caminho, senão
+ * cada worker novo com `ALLOWED_ORIGINS` reprova o `--static` de novo — e só na
+ * máquina de quem rodou `wrangler types`, nunca no CI (clone fresco não tem o
+ * arquivo), que foi exatamente como isso passou despercebido.
+ */
 function walkTs(dir: string): string[] {
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
     if (name === "node_modules" || name === "dist" || name === ".wrangler") continue;
+    if (name === "worker-configuration.d.ts") continue;
     const full = join(dir, name);
     const st = statSync(full);
     if (st.isDirectory()) out.push(...walkTs(full));

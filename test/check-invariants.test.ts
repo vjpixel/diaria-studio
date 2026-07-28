@@ -200,4 +200,43 @@ describe("check-invariants — checkNoBeehiivHostInPublicCta (#4059)", () => {
     assert.ok(BEEHIIV_CTA_ALLOWLIST.length >= 5);
     assert.ok(BEEHIIV_CTA_ALLOWLIST.includes("workers/poll/wrangler.toml"));
   });
+
+  it("REGRESSÃO: worker-configuration.d.ts (gerado por `wrangler types`) não é flagado", () => {
+    // O .d.ts é gitignorado, então o CI (clone fresco) nunca o vê — só a máquina
+    // de quem rodou `wrangler types`. Ele espelha o `[vars]` do wrangler.toml,
+    // que JÁ está na allowlist. Skip é por NOME de arquivo: um worker novo com
+    // ALLOWED_ORIGINS não pode voltar a reprovar o `--static`.
+    const dir = mkdtempSync(join(tmpdir(), "inv-cta-wrangler-"));
+    try {
+      mkdirSync(join(dir, "workers", "novo"), { recursive: true });
+      writeFileSync(
+        join(dir, "workers", "novo", "worker-configuration.d.ts"),
+        "declare namespace Cloudflare {\n" +
+          "\tinterface Env {\n" +
+          '\t\tALLOWED_ORIGINS: "https://diar.ia.br,https://diaria.beehiiv.com";\n' +
+          "\t}\n}\n",
+        "utf8",
+      );
+      assert.deepEqual(checkNoBeehiivHostInPublicCta(dir), []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("o skip é só do arquivo gerado — outro .d.ts no mesmo worker continua policiado", () => {
+    const dir = mkdtempSync(join(tmpdir(), "inv-cta-dts-"));
+    try {
+      mkdirSync(join(dir, "workers", "novo"), { recursive: true });
+      writeFileSync(
+        join(dir, "workers", "novo", "ambient.d.ts"),
+        'declare const CTA: "https://diaria.beehiiv.com/?utm_source=x";\n',
+        "utf8",
+      );
+      const violations = checkNoBeehiivHostInPublicCta(dir);
+      assert.equal(violations.length, 1, JSON.stringify(violations, null, 2));
+      assert.equal(violations[0].rule, "no-beehiiv-host-in-public-cta");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
