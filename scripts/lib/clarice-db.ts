@@ -382,7 +382,13 @@ export type IneligibleReason =
   | "mv_unknown"
   | "mv_unverified"
   | "dispute"
-  | "soft_bounce";
+  | "soft_bounce"
+  // #4249: razões de COERÊNCIA POR CAIXA CANÔNICA — ver `resolveMailboxCoherence`
+  // abaixo. Não são vereditos sobre a linha em si (nem Brevo nem MV disseram
+  // nada sobre ELA) — são efeito de uma linha IRMÃ na mesma caixa Gmail
+  // (`canonicalizeGmail`, #1969: ponto/+tag ignorados, mesmo inbox físico).
+  | "mailbox_suppressed" // linha irmã tem unsubscribed/blacklist/complaint
+  | "duplicate_mailbox"; // linha irmã venceu o desempate de duplicata
 
 export interface EligibilityInput {
   email_blacklisted: boolean;
@@ -622,6 +628,263 @@ export function lookupCsvBackfill(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Coerência por caixa canônica (#4249) — Gmail ignora ponto/+tag no
+// local-part; `nome.sobrenome@gmail.com` e `nomesobrenome@gmail.com` são a
+// MESMA caixa física (`canonicalizeGmail`, #1969). Até aqui `recomputeDerived`
+// tratava cada LINHA do store de forma independente — o que permitia 2 bugs
+// reais (achados 260728, varredura de 433.648 linhas, 106 grupos de mesma
+// caixa, 125 linhas extras):
+//
+//   1. supressão vazando: pessoa pede pra sair (unsubscribed/blacklist/
+//      complaint) numa linha, continua recebendo pela OUTRA linha da mesma
+//      caixa (1 caso vivo — risco de spam-complaint, guardrail de rampa).
+//   2. cohort trocado: uma linha `assinantes-ativos` (pagante) e outra
+//      `leads-*` da MESMA caixa — o pagante levava onda de reconversão (4
+//      grupos, 2 já enviados).
+//   3. duplicata de envio: 2+ linhas elegíveis da mesma caixa recebem a
+//      MESMA edição (38 grupos ainda elegíveis; 31 caixas já receberam por
+//      ≥2 linhas, 40 envios extras entregues).
+//
+// `resolveMailboxCoherence` roda como um SEGUNDO PASSO sobre o resultado
+// per-row já calculado (cohort/priority_points individuais) — nunca
+// substitui a classificação per-row, só corrige quando 2+ linhas da MESMA
+// passagem de `recomputeDerived` colidem na forma canônica.
+//
+// Ordem de resolução (determinística):
+//   a. cohort: `assinantes-ativos` em QUALQUER linha do grupo vence — todas
+//      as linhas do grupo resolvem pro mesmo cohort (só promove, nunca
+//      rebaixa). Divergência SEM `assinantes-ativos` presente não é
+//      corrigida automaticamente (não há precedência óbvia entre 2 cohorts
+//      de lead) — só sinalizada (`cohort_diverged_unresolved`).
+//   b. elegibilidade INDIVIDUAL é RE-avaliada com o cohort já corrigido —
+//      uma linha promovida a `assinantes-ativos` herda a isenção de MV
+//      (#3819, "assinante ativo é sempre elegível") mesmo que a linha
+//      original (como lead) estivesse cortada por mv_unverified/mv_rejected/
+//      mv_unknown.
+//   c. supressão em QUALQUER linha do grupo torna as OUTRAS linhas do grupo
+//      (sem o sinal na própria linha) inelegíveis com razão
+//      `mailbox_suppressed`. Inclui `email_blacklisted`/`unsubscribed`/
+//      `complained` (consentimento) E `hard_bounced` (#4249, decisão do
+//      editor 260729): apesar de `hard_bounced` ser tecnicamente um sinal
+//      POR ENDEREÇO, não de consentimento, a caixa física é a MESMA — se o
+//      Gmail rejeitou `nome.sobrenome@gmail.com` por "mailbox does not
+//      exist", rejeitaria `nomesobrenome@gmail.com` do mesmo jeito. Uma linha
+//      já inelegível por conta própria (ex: hard_bounce, mv_rejected) mantém
+//      a PRÓPRIA razão — `mailbox_suppressed` só se aplica à linha que SERIA
+//      elegível sozinha.
+//   d. dedup: das linhas que sobram elegíveis no grupo (pós a/b/c), se
+//      restar mais de 1, mantém só 1 (desempate: maior `priority_points` →
+//      maior `opens_count` → maior `sends_count` → `created` mais recente →
+//      arbitrário/determinístico por e-mail se empatar em TUDO). As demais
+//      viram inelegíveis com razão `duplicate_mailbox`.
+//
+// Domínios fora de `GMAIL_DOMAINS` nunca agrupam — `canonicalizeGmail` só
+// normaliza ponto/+tag pra gmail.com/googlemail.com; fora disso a chave é só
+// lowercase, então só e-mails LITERALMENTE iguais colidem.
+// ---------------------------------------------------------------------------
+
+/** Agrupa `rows` pela forma canônica do e-mail (`canonicalizeGmail`, #1969). */
+export function groupByCanonicalMailbox<T extends { email: string }>(
+  rows: T[],
+): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const r of rows) {
+    const key = canonicalizeGmail(r.email);
+    const arr = groups.get(key);
+    if (arr) arr.push(r);
+    else groups.set(key, [r]);
+  }
+  return groups;
+}
+
+/**
+ * Insumo por linha pra `resolveMailboxCoherence` — os mesmos campos crus de
+ * `EligibilityInput` (pra re-avaliar elegibilidade com o cohort corrigido,
+ * passo b) mais os campos de desempate do dedup (passo d). `cohort` aqui é o
+ * BASELINE já resolvido per-row (preserve-then-backfill via `computeCohort`/
+ * `lookupCsvBackfill`), não o valor cru da coluna.
+ */
+export interface MailboxRow extends EligibilityInput {
+  email: string;
+  opens_count: number;
+  sends_count: number;
+  created: string | null;
+}
+
+/** União dos motivos "per-row" (`IneligibleReason`) com os motivos que só existem NO CONTEXTO do grupo (#4249). */
+export type MailboxIneligibleReason =
+  | IneligibleReason
+  | "mailbox_suppressed"
+  | "duplicate_mailbox";
+
+export interface MailboxResolution {
+  cohort: string | null;
+  send_eligible: boolean;
+  ineligible_reason: MailboxIneligibleReason | null;
+  /** cohort desta linha foi promovido pra `assinantes-ativos` por causa de uma linha irmã. */
+  cohort_corrected: boolean;
+  /** grupo tem cohorts divergentes SEM `assinantes-ativos` pra resolver — não corrigido, só sinalizado. */
+  cohort_diverged_unresolved: boolean;
+  /** esta linha virou inelegível por sinal de supressão de uma linha IRMÃ (não da própria). */
+  mailbox_suppressed: boolean;
+  /** esta linha perdeu o desempate de duplicata na mesma caixa. */
+  duplicate_loser: boolean;
+  /** tamanho do grupo de caixa canônica (1 = sem colisão, nenhuma das correções acima se aplica). */
+  group_size: number;
+  /** e-mail da linha sobrevivente do dedup, quando o grupo teve >1 candidata elegível (populado pra TODAS as linhas do grupo nesse caso, inclusive a vencedora). */
+  survivor_email: string | null;
+  /** critério que decidiu o desempate — só quando esta linha de fato perdeu o dedup. */
+  tie_break_criterion: "priority_points" | "opens_count" | "sends_count" | "created" | "arbitrary" | null;
+}
+
+/** Desempate de sobrevivência (passo d): DESC priority_points → DESC opens_count → DESC sends_count → DESC created (mais recente primeiro) → ASC email (determinístico, arbitrário de fato). */
+function compareForMailboxSurvival(a: MailboxRow, b: MailboxRow): number {
+  if (a.priority_points !== b.priority_points) return b.priority_points - a.priority_points;
+  if (a.opens_count !== b.opens_count) return b.opens_count - a.opens_count;
+  if (a.sends_count !== b.sends_count) return b.sends_count - a.sends_count;
+  const aCreated = a.created ?? "";
+  const bCreated = b.created ?? "";
+  if (aCreated !== bCreated) return aCreated < bCreated ? 1 : -1;
+  return a.email < b.email ? -1 : a.email > b.email ? 1 : 0;
+}
+
+/** Qual critério decidiu entre a 1ª e a 2ª colocada (`sorted` já ordenado por `compareForMailboxSurvival`)? "arbitrary" = empate em TODOS os critérios reais (desempate final por e-mail). */
+function decisiveTieBreakCriterion(
+  sorted: MailboxRow[],
+): "priority_points" | "opens_count" | "sends_count" | "created" | "arbitrary" {
+  const [top, second] = sorted;
+  if (top.priority_points !== second.priority_points) return "priority_points";
+  if (top.opens_count !== second.opens_count) return "opens_count";
+  if (top.sends_count !== second.sends_count) return "sends_count";
+  if ((top.created ?? "") !== (second.created ?? "")) return "created";
+  return "arbitrary";
+}
+
+/**
+ * Resolve coerência (supressão + cohort + dedup, #4249) por caixa canônica
+ * sobre um conjunto de linhas JÁ classificadas individualmente (`cohort`/
+ * `priority_points` já resolvidos per-row, ver `recomputeDerived`). Pura —
+ * sem I/O, testável isolada.
+ *
+ * Fonte ÚNICA: usada tanto por `recomputeDerived` (grava no store) quanto
+ * por `clarice-mailbox-dryrun.ts` (só relatório, nunca escreve) — dry-run e
+ * efeito real nunca divergem por definição, porque não há 2 implementações
+ * pra manter sincronizadas.
+ */
+export function resolveMailboxCoherence(
+  rows: MailboxRow[],
+): Map<string, MailboxResolution> {
+  const out = new Map<string, MailboxResolution>();
+
+  for (const groupRows of groupByCanonicalMailbox(rows).values()) {
+    if (groupRows.length === 1) {
+      const r = groupRows[0];
+      const elig = classifyEligibility(r);
+      out.set(r.email, {
+        cohort: r.cohort ?? null,
+        send_eligible: elig.send_eligible,
+        ineligible_reason: elig.ineligible_reason,
+        cohort_corrected: false,
+        cohort_diverged_unresolved: false,
+        mailbox_suppressed: false,
+        duplicate_loser: false,
+        group_size: 1,
+        survivor_email: null,
+        tie_break_criterion: null,
+      });
+      continue;
+    }
+
+    // (a) cohort: assinantes-ativos em QUALQUER linha vence pro grupo inteiro.
+    const hasAssinante = groupRows.some((r) => r.cohort === COHORT_ASSINANTES_ATIVOS);
+    const diverged = new Set(groupRows.map((r) => r.cohort ?? null)).size > 1;
+    const resolvedCohort = new Map<string, string | null>();
+    for (const r of groupRows) {
+      resolvedCohort.set(r.email, hasAssinante ? COHORT_ASSINANTES_ATIVOS : (r.cohort ?? null));
+    }
+
+    // (b) elegibilidade individual, RE-avaliada com o cohort já corrigido —
+    // uma linha promovida a assinantes-ativos herda a isenção de MV (#3819).
+    const ownElig = new Map<string, { send_eligible: boolean; ineligible_reason: IneligibleReason | null }>();
+    for (const r of groupRows) {
+      ownElig.set(
+        r.email,
+        classifyEligibility({
+          email_blacklisted: r.email_blacklisted,
+          unsubscribed: r.unsubscribed,
+          hard_bounced: r.hard_bounced,
+          complained: r.complained,
+          mv_bucket: r.mv_bucket,
+          dispute_losses: r.dispute_losses,
+          soft_bounce_count: r.soft_bounce_count,
+          priority_points: r.priority_points,
+          cohort: resolvedCohort.get(r.email) ?? null,
+        }),
+      );
+    }
+
+    // (c) supressão propaga pra caixa inteira — consentimento
+    // (blacklist/unsub/complaint) E hard_bounce (#4249, decisão do editor
+    // 260729: mesma caixa física, mesmo destino de fato inexistente).
+    const mailboxSuppressed = groupRows.some(
+      (r) => r.email_blacklisted || r.unsubscribed || r.complained || r.hard_bounced,
+    );
+    const afterSuppression = new Map<
+      string,
+      { eligible: boolean; reason: MailboxIneligibleReason | null; suppressedBySibling: boolean }
+    >();
+    for (const r of groupRows) {
+      const own = ownElig.get(r.email)!;
+      const ownSignal = r.email_blacklisted || r.unsubscribed || r.complained;
+      if (!own.send_eligible) {
+        afterSuppression.set(r.email, {
+          eligible: false,
+          reason: own.ineligible_reason,
+          suppressedBySibling: false,
+        });
+      } else if (mailboxSuppressed && !ownSignal) {
+        afterSuppression.set(r.email, {
+          eligible: false,
+          reason: "mailbox_suppressed",
+          suppressedBySibling: true,
+        });
+      } else {
+        afterSuppression.set(r.email, { eligible: true, reason: null, suppressedBySibling: false });
+      }
+    }
+
+    // (d) dedup entre as que sobraram elegíveis.
+    const candidates = groupRows.filter((r) => afterSuppression.get(r.email)!.eligible);
+    let survivorEmail: string | null = null;
+    let tieCriterion: ReturnType<typeof decisiveTieBreakCriterion> | null = null;
+    if (candidates.length > 0) {
+      const sorted = [...candidates].sort(compareForMailboxSurvival);
+      survivorEmail = sorted[0].email;
+      if (candidates.length > 1) tieCriterion = decisiveTieBreakCriterion(sorted);
+    }
+
+    for (const r of groupRows) {
+      const supp = afterSuppression.get(r.email)!;
+      const isLoser = candidates.length > 1 && supp.eligible && r.email !== survivorEmail;
+      out.set(r.email, {
+        cohort: resolvedCohort.get(r.email) ?? null,
+        send_eligible: supp.eligible && !isLoser,
+        ineligible_reason: isLoser ? "duplicate_mailbox" : supp.reason,
+        cohort_corrected: hasAssinante && (r.cohort ?? null) !== COHORT_ASSINANTES_ATIVOS,
+        cohort_diverged_unresolved: diverged && !hasAssinante,
+        mailbox_suppressed: supp.suppressedBySibling,
+        duplicate_loser: isLoser,
+        group_size: groupRows.length,
+        survivor_email: candidates.length > 1 ? survivorEmail : null,
+        tie_break_criterion: isLoser ? tieCriterion : null,
+      });
+    }
+  }
+
+  return out;
+}
+
 /**
  * Recomputa as colunas derivadas (`priority_optin`, `priority_points`,
  * `send_eligible`, `ineligible_reason`, `cohort` — #2817, taxonomia
@@ -721,6 +984,10 @@ export function recomputeDerived(
   let n = 0;
   db.exec("BEGIN");
   try {
+    // Passo 1: baseline PER-ROW (cohort + priority_points), exatamente como
+    // antes do #4249 — cada linha classificada de forma independente, sem
+    // olhar pras irmãs de caixa canônica ainda.
+    const baseline: Array<MailboxRow & { isOptin: boolean }> = [];
     for (const r of rows) {
       const isOptin = optin.has(r.email);
       const points = computePriorityPoints({
@@ -730,9 +997,7 @@ export function recomputeDerived(
       });
       // #2857 fase C: preserva um cohort já reconhecido (escrito fresco por
       // ingestStripe a partir do merge); backfill via computeCohort (fallback
-      // legado tier+created) só quando ausente/não-reconhecido. Precisa ser
-      // computado ANTES de classifyEligibility — #2888 usa o cohort pra
-      // isentar assinantes-ativos da exigência de mv_unverified.
+      // legado tier+created) só quando ausente/não-reconhecido.
       let cohort =
         r.cohort != null && isKnownCohortSlug(r.cohort)
           ? r.cohort
@@ -749,7 +1014,13 @@ export function recomputeDerived(
           cohort = computeCohort(null, csvMatch.created);
         }
       }
-      const elig = classifyEligibility({
+      baseline.push({
+        email: r.email,
+        cohort,
+        priority_points: points,
+        opens_count: r.opens_count ?? 0,
+        sends_count: r.sends_count ?? 0,
+        created: r.created,
         email_blacklisted: !!r.email_blacklisted,
         unsubscribed: !!r.unsubscribed,
         hard_bounced: !!r.hard_bounced,
@@ -757,16 +1028,27 @@ export function recomputeDerived(
         mv_bucket: r.mv_bucket,
         dispute_losses: r.dispute_losses ?? 0,
         soft_bounce_count: r.soft_bounce_count ?? 0,
-        priority_points: points, // #2876 — engajamento>0 sobrepõe veredito MV
-        cohort, // #2888 — assinantes-ativos isento de mv_unverified
+        isOptin,
       });
+    }
+
+    // Passo 2 (#4249): coerência por caixa canônica — supressão propaga,
+    // cohort de assinantes-ativos vence, dedup de duplicata na mesma caixa.
+    // Sem colisão (grupo de tamanho 1), o resultado é IDÊNTICO ao
+    // `classifyEligibility` direto de antes do #4249 (ver caso `group_size===1`
+    // em `resolveMailboxCoherence`) — comportamento pré-existente preservado.
+    const resolved = resolveMailboxCoherence(baseline);
+
+    // Passo 3: grava.
+    for (const b of baseline) {
+      const res = resolved.get(b.email)!;
       update.run(
-        isOptin ? 1 : 0,
-        points,
-        elig.send_eligible ? 1 : 0,
-        elig.ineligible_reason,
-        cohort,
-        r.email,
+        b.isOptin ? 1 : 0,
+        b.priority_points, // #2876 — engajamento>0 sobrepõe veredito MV (per-row, não afetado pela coerência de caixa)
+        res.send_eligible ? 1 : 0,
+        res.ineligible_reason,
+        res.cohort, // #2888/#4249 — assinantes-ativos (próprio ou promovido pela caixa) isento de mv_unverified
+        b.email,
       );
       n++;
     }
