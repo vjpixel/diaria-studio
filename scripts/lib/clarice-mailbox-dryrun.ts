@@ -39,7 +39,7 @@ export interface MailboxDryrunReport {
   }>;
   supressao_groups: Array<{
     mailbox: string;
-    /** linha(s) com sinal PRÓPRIO (email_blacklisted/unsubscribed/complained). */
+    /** linha(s) com sinal PRÓPRIO (email_blacklisted/unsubscribed/complained/hard_bounced). */
     suppressed_lines: string[];
     /** linha(s) irmã que vira(m) inelegível por propagação (não tinham sinal próprio). */
     newly_ineligible: string[];
@@ -116,7 +116,7 @@ export function computeMailboxDryrunReport(
         tieCriterion = res.tie_break_criterion;
       }
       if (res.mailbox_suppressed) newlySuppressed.push(r.email);
-      if (r.email_blacklisted || r.unsubscribed || r.complained) ownSuppressionLines.push(r.email);
+      if (r.email_blacklisted || r.unsubscribed || r.complained || r.hard_bounced) ownSuppressionLines.push(r.email);
       if (res.cohort_corrected) promoted.push(r.email);
 
       if (transitioned) {
@@ -210,7 +210,7 @@ ${table(dupRows, "| (nenhum) | | | |")}
 
 ## Supressão propagada (${fmt(r.supressao_groups.length)} grupos, ${fmt(r.eligible_to_ineligible.supressao_propagada)} linhas)
 
-| caixa | linha(s) com sinal próprio (blacklist/unsub/complaint) | linha(s) irmã que vira(m) inelegível |
+| caixa | linha(s) com sinal próprio (blacklist/unsub/complaint/hard_bounce) | linha(s) irmã que vira(m) inelegível |
 |---|---|---|
 ${table(suppRows, "| (nenhum) | | |")}
 

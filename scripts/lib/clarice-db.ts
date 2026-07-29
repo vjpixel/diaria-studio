@@ -662,13 +662,17 @@ export function lookupCsvBackfill(
 //      (#3819, "assinante ativo é sempre elegível") mesmo que a linha
 //      original (como lead) estivesse cortada por mv_unverified/mv_rejected/
 //      mv_unknown.
-//   c. supressão de CONSENTIMENTO (`email_blacklisted`/`unsubscribed`/
-//      `complained` — NÃO `hard_bounced`, que é sinal técnico por endereço,
-//      não de consentimento) em QUALQUER linha do grupo torna as OUTRAS
-//      linhas do grupo (sem o sinal na própria linha) inelegíveis com razão
-//      `mailbox_suppressed`. Uma linha já inelegível por conta própria (ex:
-//      hard_bounce, mv_rejected) mantém a PRÓPRIA razão — `mailbox_suppressed`
-//      só se aplica à linha que SERIA elegível sozinha.
+//   c. supressão em QUALQUER linha do grupo torna as OUTRAS linhas do grupo
+//      (sem o sinal na própria linha) inelegíveis com razão
+//      `mailbox_suppressed`. Inclui `email_blacklisted`/`unsubscribed`/
+//      `complained` (consentimento) E `hard_bounced` (#4249, decisão do
+//      editor 260729): apesar de `hard_bounced` ser tecnicamente um sinal
+//      POR ENDEREÇO, não de consentimento, a caixa física é a MESMA — se o
+//      Gmail rejeitou `nome.sobrenome@gmail.com` por "mailbox does not
+//      exist", rejeitaria `nomesobrenome@gmail.com` do mesmo jeito. Uma linha
+//      já inelegível por conta própria (ex: hard_bounce, mv_rejected) mantém
+//      a PRÓPRIA razão — `mailbox_suppressed` só se aplica à linha que SERIA
+//      elegível sozinha.
 //   d. dedup: das linhas que sobram elegíveis no grupo (pós a/b/c), se
 //      restar mais de 1, mantém só 1 (desempate: maior `priority_points` →
 //      maior `opens_count` → maior `sends_count` → `created` mais recente →
@@ -820,10 +824,11 @@ export function resolveMailboxCoherence(
       );
     }
 
-    // (c) supressão de CONSENTIMENTO propaga pra caixa inteira (não hard_bounce
-    // — técnico por endereço, não sinal de consentimento).
+    // (c) supressão propaga pra caixa inteira — consentimento
+    // (blacklist/unsub/complaint) E hard_bounce (#4249, decisão do editor
+    // 260729: mesma caixa física, mesmo destino de fato inexistente).
     const mailboxSuppressed = groupRows.some(
-      (r) => r.email_blacklisted || r.unsubscribed || r.complained,
+      (r) => r.email_blacklisted || r.unsubscribed || r.complained || r.hard_bounced,
     );
     const afterSuppression = new Map<
       string,

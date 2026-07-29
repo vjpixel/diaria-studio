@@ -92,14 +92,15 @@ describe("resolveMailboxCoherence: supressão propaga pela caixa canônica (#424
     assert.equal(resolved.get(b.email)!.mailbox_suppressed, false);
   });
 
-  it("hard_bounce NÃO propaga (sinal técnico por endereço, não de consentimento)", () => {
+  it("hard_bounce PROPAGA pra caixa inteira (#4249, decisão do editor 260729 — mesma caixa física)", () => {
     const a: MailboxRow = { ...CLEAN, email: "a.b@gmail.com", hard_bounced: true };
     const b: MailboxRow = { ...CLEAN, email: "ab@gmail.com" };
     const resolved = resolveMailboxCoherence([a, b]);
     assert.equal(resolved.get(a.email)!.send_eligible, false);
-    assert.equal(resolved.get(a.email)!.ineligible_reason, "hard_bounce");
-    assert.equal(resolved.get(b.email)!.send_eligible, true, "hard_bounce é por endereço — não suprime a caixa inteira");
-    assert.equal(resolved.get(b.email)!.mailbox_suppressed, false);
+    assert.equal(resolved.get(a.email)!.ineligible_reason, "hard_bounce", "linha com o sinal próprio mantém a razão própria, não mailbox_suppressed");
+    assert.equal(resolved.get(b.email)!.send_eligible, false, "mesma caixa física — se a.b@ quicou, ab@ também quicaria");
+    assert.equal(resolved.get(b.email)!.ineligible_reason, "mailbox_suppressed");
+    assert.equal(resolved.get(b.email)!.mailbox_suppressed, true);
   });
 
   it("linha já inelegível por conta própria (ex: mv_rejected) mantém a PRÓPRIA razão, não mailbox_suppressed", () => {
@@ -213,16 +214,16 @@ describe("resolveMailboxCoherence: dedup de duplicata na mesma caixa (#4249 — 
   });
 
   it("dedup só considera quem sobra elegível DEPOIS da supressão/cohort (linha já inelegível por conta própria não compete no dedup)", () => {
-    // hard_bounced é um veredito PRÓPRIO da linha (não propaga pra caixa,
-    // diferente de unsubscribed/blacklist/complaint) e — diferente de
-    // mv_rejected/mv_unknown — NUNCA é sobreposto por priority_points alto
-    // (#2876: engajamento só sobrepõe veredito MV, nunca entrega real) —
-    // isola o dedup da propagação de supressão do Problema 1, testada à parte.
-    const alreadyIneligible: MailboxRow = { ...CLEAN, email: "d.e@gmail.com", hard_bounced: true, priority_points: 100 };
+    // mv_rejected é um veredito PRÓPRIO da linha (não propaga pra caixa —
+    // diferente de unsubscribed/blacklist/complaint/hard_bounce, #4249) — com
+    // priority_points: 0 (sem override por engajamento, #2876) fica
+    // inelegível só por conta própria, isolando o dedup da propagação de
+    // supressão do Problema 1, testada à parte.
+    const alreadyIneligible: MailboxRow = { ...CLEAN, email: "d.e@gmail.com", mv_bucket: "rejected", priority_points: 0 };
     const survivor: MailboxRow = { ...CLEAN, email: "de@gmail.com", priority_points: 0 };
     const resolved = resolveMailboxCoherence([alreadyIneligible, survivor]);
     assert.equal(resolved.get(alreadyIneligible.email)!.send_eligible, false);
-    assert.equal(resolved.get(alreadyIneligible.email)!.ineligible_reason, "hard_bounce");
+    assert.equal(resolved.get(alreadyIneligible.email)!.ineligible_reason, "mv_rejected");
     assert.equal(resolved.get(alreadyIneligible.email)!.duplicate_loser, false, "não é duplicata — nunca chegou a ser candidata (já inelegível por conta própria)");
     assert.equal(resolved.get(survivor.email)!.send_eligible, true, "única elegível remanescente — não é uma 'duplicata perdedora'");
     assert.equal(resolved.get(survivor.email)!.duplicate_loser, false);
