@@ -1869,8 +1869,13 @@ ${renderIdentityFormBlock()}`;
             if (res.headers.get("X-Eia-Gate")) {
               // #4253 item 6: repassa a edição representativa desta sequência
               // pro gate — deriva o índice MENSAL do merge de identificação
-              // (ver rationale em web-gate.ts/renderJogarGatePage).
-              window.location.href = "/jogar?v=" + Date.now() + "&edition=" + encodeURIComponent(editions[0]);
+              // (ver rationale em web-gate.ts/renderJogarGatePage). #4271:
+              // seq_ctx_edition (NUNCA edition=) — handleJogarPage (jogar.ts)
+              // usa o NOME do param pra saber que isto é só contexto do
+              // identify, nunca destino de navegação pós-gate (edition= fica
+              // reservado pra link de edição única de verdade, ponte
+              // clarice/arquivo).
+              window.location.href = "/jogar?v=" + Date.now() + "&seq_ctx_edition=" + encodeURIComponent(editions[0]);
               return;
             }
             advance();
@@ -2221,8 +2226,28 @@ export async function handleJogarPage(url: URL, env: Env, request?: Request): Pr
     if (roundsHitNudgeThreshold(roundsPlayed)) {
       const sessionEmail = await readWebSessionEmail(env.COOKIE_HMAC_SECRET, cookieHeader);
       if (!sessionEmail) {
-        const gateEdition = url.searchParams.get("edition");
-        return new Response(renderJogarGatePage(gateEdition), {
+        // #4271: `edition=` sozinho não basta mais pra decidir "isso é uma
+        // navegação de verdade pra 1 edição" vs "isso é só o contexto do
+        // identify passado por goNext() (linha ~1873, no meio da
+        // sequência)" — as duas origens chegavam como a MESMA string na
+        // MESMA posição da URL (achado do #4268/#4269, tradeoff aceito
+        // então, resolvido agora). goNext() foi atualizado pra mandar
+        // `seq_ctx_edition=` em vez de reusar `edition=` quando o gate
+        // dispara no meio da sequência — quando esse param está presente,
+        // `edition=` NUNCA é o destino de navegação (mesmo que apareça por
+        // algum motivo, seqCtxEdition vence: prioriza o comportamento
+        // seguro do #4268, nunca reabre o dead end). Só quando
+        // `seq_ctx_edition=` está AUSENTE é que um `edition=` válido na URL
+        // de entrada é, de fato, uma navegação real pra edição única (ponte
+        // clarice/arquivo, ~linha 2190 abaixo) — nesse caso ele vira tanto o
+        // contexto do identify quanto o destino a preservar pós-skip/cadastro
+        // (`navigationTargetEdition` abaixo, propagado pro skip-link e pro
+        // goToGame() em renderJogarGatePage/web-gate.ts).
+        const seqCtxEdition = url.searchParams.get("seq_ctx_edition");
+        const rawEdition = url.searchParams.get("edition");
+        const genuineEdition = !seqCtxEdition && rawEdition && AAMMDD_RE.test(rawEdition) ? rawEdition : null;
+        const gateEdition = seqCtxEdition ?? genuineEdition;
+        return new Response(renderJogarGatePage(gateEdition, genuineEdition), {
           // #4160: header dedicado — o client (goNext, mais abaixo neste
           // arquivo) usa ISSO pra decidir se a resposta é a tela de gate, não
           // mais uma busca textual no corpo (`id="gate-form"` morava DENTRO
