@@ -41,7 +41,7 @@ import {
   tokenizeForJaccard,
   jaccardSimilarity,
 } from "./dedup.ts";
-import { detectLaunchCandidate } from "./lib/launch-detect.ts";
+import { detectLaunchCandidate, detectDomainMismatchCandidate } from "./lib/launch-detect.ts";
 import { SECONDARY_BUCKETS } from "./check-secondary-themes.ts";
 import { parseArgsSimple, isMainModule } from "./lib/cli-args.ts";
 // #4185: mesmo mecanismo de preservação do Pass-2b de dedup.ts (#3920) —
@@ -310,7 +310,13 @@ export interface IntraEditionDedupResult {
     url: string;
     title?: string;
     bucket: string;
-    match_type: "jaccard" | "entity" | "domain" | "cross_vehicle" | "product_code";
+    match_type:
+      | "jaccard"
+      | "entity"
+      | "domain"
+      | "cross_vehicle"
+      | "product_code"
+      | "content_terms";
     matched_highlight: string;
     score: number;
   }>;
@@ -346,6 +352,37 @@ export const INTRA_ENTITY_MIN_SHARED = 2;
  * o nome do produto (ex: "Gemini").
  */
 export const INTRA_DOMAIN_JACCARD_MIN = 0.2;
+
+/**
+ * #4262: threshold do path de TERMOS DE CONTEÚDO compartilhados — só ativo em
+ * `options.crossEditionMode` (ver `isIntraEditionDuplicate`). Mínimo de
+ * tokens específicos (não-genéricos, ≥ CROSS_EDITION_TERM_MIN_LEN chars)
+ * compartilhados entre o título candidato e o título histórico, quando
+ * NENHUM dos sinais anteriores (jaccard/entity/domain/cross_vehicle/
+ * product_code) disparou.
+ *
+ * Caso real #4262 (edição 260729): "Com prompt invisível, professor
+ * desmascara 32 alunos usando IA em prova" (Canaltech, candidato) x
+ * "Professor cria armadilha para descobrir quem usou IA e reprova 32 de 35
+ * alunos" (g1, edição passada) — nenhuma empresa de IA é citada (path (d)
+ * cross_vehicle não se aplica), "professor" não é capturável pela heurística
+ * de capitalização do entity-match (b) porque no título real do Canaltech é
+ * substantivo comum minúsculo mid-sentence, e o Jaccard geral (~0.25) fica
+ * abaixo do threshold intra-edição (0.45). "professor"/"alunos" SÃO o sinal
+ * de mesma-história aqui — 2 tokens de conteúdo específicos compartilhados,
+ * mesmo sem capitalização nem menção de empresa.
+ *
+ * Restrito a `crossEditionMode` (não ativo por default no dedup
+ * intra-edição de produção, `dedup-intra-edition.ts` main()) porque é o path
+ * mais permissivo dos seis — dois títulos DIFERENTES no mesmo dia podem
+ * coincidentemente compartilhar 2 palavras de 6+ chars sem ser o mesmo
+ * evento. Aceitável só no contexto cross-edição, que é warn-only
+ * (`check-highlight-themes.ts` nunca bloqueia o gate).
+ */
+export const CROSS_EDITION_TERM_MIN_LEN = 6;
+
+/** Ver docstring de `CROSS_EDITION_TERM_MIN_LEN`. */
+export const CROSS_EDITION_TERM_MIN_SHARED = 2;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -527,10 +564,15 @@ function normalizeDomainForMatch(domain: string): string {
  *      não escreveu de volta). Aplica os mesmos critérios que `enrich-primary-source`.
  *
  * Sem nenhum dos dois, o check é no-op (retorna false graciosamente).
+ *
+ * #4262: aceita `options.crossEditionMode` — quando true, tenta uma Fonte 3
+ * (`detectDomainMismatchCandidate`) antes de desistir. Ver docstring do
+ * bloco Fonte 3 abaixo para o porquê disso ser restrito ao modo cross-edição.
  */
 export function isPressCovertageOfHighlight(
   article: Article,
   highlightUrl: string | null,
+  options: { crossEditionMode?: boolean } = {},
 ): boolean {
   if (!highlightUrl) return false;
 
@@ -542,6 +584,30 @@ export function isPressCovertageOfHighlight(
   // Mesmo critério de enrich-primary-source.ts: verbo de lançamento + empresa.
   if (!suggestedDomain) {
     const det = detectLaunchCandidate(article);
+    if (det.is_candidate && det.suggested_domain) {
+      suggestedDomain = det.suggested_domain;
+    }
+  }
+
+  // Fonte 3 (#4262): só em `crossEditionMode` — `detectDomainMismatchCandidate`,
+  // que NÃO exige verbo de lançamento no título (só empresa conhecida + URL
+  // fora do domínio oficial). Necessário porque no caso cross-edição o
+  // candidato costuma ser uma matéria de ANÁLISE/follow-up do lançamento
+  // passado ("Claude Opus 5: o que muda no novo modelo"), não o anúncio em
+  // si — Fonte 2 nunca dispara aí. Caso real #4262: Exame "Claude Opus 5: o
+  // que muda no novo modelo" x destaque passado "Anthropic lança o Claude
+  // Opus 5" (anthropic.com) — sem esta fonte, path (c) não encontra nenhum
+  // `suggested_primary_domain` pro lado Exame.
+  //
+  // Restrito a `crossEditionMode`: `detectDomainMismatchCandidate` é
+  // deliberadamente mais permissiva (ver docstring em launch-detect.ts) —
+  // fora do modo cross-edição isso arriscaria remover itens RADAR legítimos
+  // do mesmo dia que só citam uma empresa de passagem. Aqui fica seguro
+  // porque path (c) ainda exige um SEGUNDO sinal logo abaixo
+  // (`hasEntitySignal || hasJaccardSignal`), e o único caller de
+  // `crossEditionMode` (`check-highlight-themes.ts`) é warn-only.
+  if (!suggestedDomain && options.crossEditionMode) {
+    const det = detectDomainMismatchCandidate(article);
     if (det.is_candidate && det.suggested_domain) {
       suggestedDomain = det.suggested_domain;
     }
@@ -582,6 +648,18 @@ export function isPressCovertageOfHighlight(
  * real do #2548 passar sem trapaça: D1 inglês + RADAR português têm Jaccard ~0,
  * mas ambos citam o produto ("Gemini") → entidade compartilhada → mesmo evento.
  *
+ * #4262: `options.crossEditionMode` — quando true, habilita dois sinais
+ * ADICIONAIS calibrados especificamente pra comparar candidato-a-destaque da
+ * edição corrente contra o CORPO INTEIRO (não só destaques) de edições
+ * PASSADAS, onde o gap de paráfrase é maior que intra-edição no mesmo dia:
+ *   - (c) ganha uma 3ª fonte de `suggested_primary_domain` via
+ *     `detectDomainMismatchCandidate` (sem exigir verbo de lançamento).
+ *   - (f) novo path: termos de conteúdo compartilhados (ver
+ *     `CROSS_EDITION_TERM_MIN_LEN`/`CROSS_EDITION_TERM_MIN_SHARED`), fallback
+ *     de último recurso quando nenhum sinal anterior disparou.
+ * Ambos OFF por default (comportamento de produção do dedup intra-edição
+ * inalterado) — só `check-highlight-themes.ts` liga `crossEditionMode`.
+ *
  * @returns match info se duplicata, null caso contrário.
  */
 export function isIntraEditionDuplicate(
@@ -590,9 +668,17 @@ export function isIntraEditionDuplicate(
   options: {
     jaccardThreshold?: number;
     entityMinShared?: number;
+    /** #4262: ver docstring acima. Default false — inalterado pro dedup intra-edição de produção. */
+    crossEditionMode?: boolean;
   } = {},
 ): {
-  match_type: "jaccard" | "entity" | "domain" | "cross_vehicle" | "product_code";
+  match_type:
+    | "jaccard"
+    | "entity"
+    | "domain"
+    | "cross_vehicle"
+    | "product_code"
+    | "content_terms";
   matched_highlight: string;
   score: number;
 } | null {
@@ -642,7 +728,7 @@ export function isIntraEditionDuplicate(
     // O caminho de entidade-de-produto é o que faz o caso real do #2548 passar
     // SEM trapaça: D1 em inglês + RADAR em português têm Jaccard ~0, mas ambos
     // citam o produto ("Gemini") → entidade compartilhada → mesmo evento.
-    if (isPressCovertageOfHighlight(article, hUrl)) {
+    if (isPressCovertageOfHighlight(article, hUrl, { crossEditionMode: options.crossEditionMode })) {
       const hProductEntities = extractProductEntitiesIntra(hTitle);
       const sharedProduct = [...artProductEntities].filter((e) =>
         hProductEntities.has(e),
@@ -763,6 +849,30 @@ export function isIntraEditionDuplicate(
           match_type: "product_code",
           matched_highlight: hTitle,
           score: sharedProductCodes.length,
+        };
+      }
+    }
+
+    // (f) #4262: termos de conteúdo compartilhados — só em `crossEditionMode`.
+    // Fallback de ÚLTIMO recurso (roda por último, só quando nenhum path
+    // acima disparou): pega o caso onde a história-repetida não tem empresa
+    // de IA citada (path d não se aplica) e as palavras discriminantes
+    // ("professor", "alunos") não são capitalizadas no título real — o
+    // entity-match (b), que depende de heurística de capitalização, não vê
+    // nenhuma entidade em pelo menos um dos lados. Ver docstring de
+    // `CROSS_EDITION_TERM_MIN_LEN`/`CROSS_EDITION_TERM_MIN_SHARED`.
+    if (options.crossEditionMode) {
+      const isContentTerm = (t: string) =>
+        t.length >= CROSS_EDITION_TERM_MIN_LEN && !TOPIC_TOKEN_STOPWORDS_INTRA.has(t);
+      const hContentTerms = new Set([...hTokens].filter(isContentTerm));
+      const sharedContentTerms = [...artTokens].filter(
+        (t) => isContentTerm(t) && hContentTerms.has(t),
+      );
+      if (sharedContentTerms.length >= CROSS_EDITION_TERM_MIN_SHARED) {
+        return {
+          match_type: "content_terms",
+          matched_highlight: hTitle,
+          score: sharedContentTerms.length / Math.max(artTokens.size, hTokens.size, 1),
         };
       }
     }

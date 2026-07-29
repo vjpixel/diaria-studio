@@ -36,6 +36,9 @@ import {
   extractProductCodeTokens,
   highlightSummary,
   stripVehicleSuffix,
+  isPressCovertageOfHighlight,
+  CROSS_EDITION_TERM_MIN_LEN,
+  CROSS_EDITION_TERM_MIN_SHARED,
 } from "../scripts/dedup-intra-edition.ts";
 import { tokenizeForJaccard, jaccardSimilarity } from "../scripts/lib/title-similarity.ts";
 
@@ -1653,3 +1656,144 @@ function jaccardOf(a: string, b: string): number {
   const tb = tokenizeForJaccard(b);
   return jaccardSimilarity(ta, tb);
 }
+
+// ---------------------------------------------------------------------------
+// #4262: crossEditionMode — sinais adicionais pra comparação candidato vs.
+// CORPO INTEIRO de edições passadas (usado por check-highlight-themes.ts).
+// Caso real (edição 260729): 5 dos 6 candidatos a destaque eram histórias já
+// publicadas em 260727/260728. Ver docstrings de `CROSS_EDITION_TERM_MIN_LEN`
+// e da Fonte 3 em `isPressCovertageOfHighlight` para o racional completo.
+// ---------------------------------------------------------------------------
+
+describe("isIntraEditionDuplicate — crossEditionMode desligado por default (#4262)", () => {
+  it("sem crossEditionMode, o par imprensa×fonte-oficial (sem verbo de lançamento no candidato) NÃO casa", () => {
+    const match = isIntraEditionDuplicate(
+      {
+        title: "Claude Opus 5: o que muda no novo modelo",
+        url: "https://exame.com/tecnologia/claude-opus-5-o-que-muda-no-novo-modelo/",
+      },
+      [
+        { title: "Anthropic lança o Claude Opus 5", url: "https://anthropic.com/news/claude-opus-5" },
+      ],
+    );
+    assert.equal(match, null, "sem crossEditionMode, Fonte 3 (detectDomainMismatchCandidate) não é tentada");
+  });
+
+  it("sem crossEditionMode, o par PT×PT sem empresa de IA citada (professor/alunos) NÃO casa", () => {
+    const match = isIntraEditionDuplicate(
+      {
+        title: "Com prompt invisível, professor desmascara 32 alunos usando IA em prova",
+        url: "https://canaltech.com.br/comportamento/x",
+      },
+      [
+        {
+          title: "Professor cria armadilha para descobrir quem usou IA e reprova 32 de 35 alunos",
+          url: "https://g1.globo.com/x",
+        },
+      ],
+    );
+    assert.equal(match, null, "sem crossEditionMode, path (f) content_terms não roda");
+  });
+});
+
+describe("isIntraEditionDuplicate — crossEditionMode: 3 pares reais da #4262", () => {
+  it("Fonte 3 (detectDomainMismatchCandidate): Exame 'o que muda' x anthropic.com (imprensa×oficial, sem verbo de lançamento)", () => {
+    const match = isIntraEditionDuplicate(
+      {
+        title: "Claude Opus 5: o que muda no novo modelo",
+        url: "https://exame.com/tecnologia/claude-opus-5-o-que-muda-no-novo-modelo/",
+      },
+      [
+        { title: "Anthropic lança o Claude Opus 5", url: "https://anthropic.com/news/claude-opus-5" },
+      ],
+      { crossEditionMode: true },
+    );
+    assert.ok(match, "deve detectar mesma-história via domain-match cross-edição");
+    assert.equal(match!.match_type, "domain");
+  });
+
+  it("path (f) content_terms: Canaltech x g1 (professor/alunos, PT×PT, sem empresa citada)", () => {
+    const match = isIntraEditionDuplicate(
+      {
+        title: "Com prompt invisível, professor desmascara 32 alunos usando IA em prova",
+        url: "https://canaltech.com.br/comportamento/com-prompt-invisivel-professor-desmascara-32-alunos-usando-ia-em-prova/",
+      },
+      [
+        {
+          title: "Professor cria armadilha para descobrir quem usou IA e reprova 32 de 35 alunos",
+          url: "https://g1.globo.com/educacao/noticia/2026/07/27/professor-cria-armadilha.ghtml",
+        },
+      ],
+      { crossEditionMode: true },
+    );
+    assert.ok(match, "deve detectar mesma-história via termos de conteúdo compartilhados");
+    assert.equal(match!.match_type, "content_terms");
+  });
+
+  it("cross-língua Claude/Google (PT×EN): já é pego pelo path (d) cross_vehicle existente, sem depender de crossEditionMode", () => {
+    // Nota (ver comentário do editor na #4262): este par passa porque "Google"
+    // e "Claude" são cognatos que aparecem idênticos nos dois idiomas — não
+    // porque o mecanismo faz tradução/semântica cross-língua de verdade. Um
+    // par verdadeiramente traduzido (sem termo compartilhado literal) não
+    // seria pego por nenhum path deste comparador.
+    const artigo = {
+      title: "Usa o Claude? Suas conversas íntimas podem estar no Google",
+      url: "https://canaltech.com.br/ia/usa-o-claude-suas-conversas-intimas-podem-estar-no-google/",
+    };
+    const historico = [
+      {
+        title: "Uh-oh, some Claude shared conversations were indexed by Google search",
+        url: "https://zdnet.com/article/claude-ai-shared-chats-indexed-by-google/",
+      },
+    ];
+    const semCrossEdition = isIntraEditionDuplicate(artigo, historico);
+    assert.ok(semCrossEdition, "cross_vehicle já detecta este par sem crossEditionMode");
+    assert.equal(semCrossEdition!.match_type, "cross_vehicle");
+
+    const comCrossEdition = isIntraEditionDuplicate(artigo, historico, { crossEditionMode: true });
+    assert.equal(comCrossEdition!.match_type, "cross_vehicle", "crossEditionMode não muda o path que dispara aqui");
+  });
+
+  it("guard de falso-positivo: duas histórias genuinamente diferentes não casam mesmo com crossEditionMode", () => {
+    const match = isIntraEditionDuplicate(
+      {
+        title: "Google lança novo modelo Gemini para desenvolvedores",
+        url: "https://a.com/1",
+      },
+      [
+        {
+          title: "Meta anuncia parceria com fabricante de chips para data centers",
+          url: "https://b.com/2",
+        },
+      ],
+      { crossEditionMode: true },
+    );
+    assert.equal(match, null);
+  });
+});
+
+describe("isPressCovertageOfHighlight — Fonte 3 crossEditionMode (#4262)", () => {
+  it("sem crossEditionMode, detectDomainMismatchCandidate não é tentada (retorna false)", () => {
+    const result = isPressCovertageOfHighlight(
+      { title: "Claude Opus 5: o que muda no novo modelo", url: "https://exame.com/x" },
+      "https://anthropic.com/news/claude-opus-5",
+    );
+    assert.equal(result, false);
+  });
+
+  it("com crossEditionMode, detecta domínio oficial via empresa citada sem verbo de lançamento", () => {
+    const result = isPressCovertageOfHighlight(
+      { title: "Claude Opus 5: o que muda no novo modelo", url: "https://exame.com/x" },
+      "https://anthropic.com/news/claude-opus-5",
+      { crossEditionMode: true },
+    );
+    assert.equal(result, true);
+  });
+});
+
+describe("CROSS_EDITION_TERM_MIN_LEN / CROSS_EDITION_TERM_MIN_SHARED (#4262)", () => {
+  it("são inteiros positivos", () => {
+    assert.ok(Number.isInteger(CROSS_EDITION_TERM_MIN_LEN) && CROSS_EDITION_TERM_MIN_LEN > 0);
+    assert.ok(Number.isInteger(CROSS_EDITION_TERM_MIN_SHARED) && CROSS_EDITION_TERM_MIN_SHARED > 0);
+  });
+});

@@ -95,6 +95,10 @@ import { enumerateEditionDirs } from "./lib/find-current-edition.ts"; // #2463/#
 import { SECONDARY_BUCKETS } from "./check-secondary-themes.ts";
 // #2834: CategorizedJson/Highlight local consolidado no reader canônico.
 import type { CategorizedJson } from "./lib/types/categorized-json.ts";
+// #4262: reusa o comparador cross-veículo já calibrado de dedup-intra-edition.ts
+// (jaccard/entity/domain/cross_vehicle/product_code + os 2 sinais adicionais de
+// `crossEditionMode`) em vez de desenhar um detector novo — ver checkFullBodyThemes.
+import { isIntraEditionDuplicate } from "./dedup-intra-edition.ts";
 
 // ---------------------------------------------------------------------------
 // Entity stopwords — entidades tão genéricas que não discriminam tema
@@ -793,6 +797,176 @@ export function readPastApprovedSecondary(
   return items;
 }
 
+// ---------------------------------------------------------------------------
+// Full-body cross-edition check (#4262)
+//
+// Problema (#4262): `checkHighlightThemes` acima compara candidato a destaque
+// só contra os TÍTULOS DE DESTAQUE passados (headline de `past-editions.md`).
+// Um item que saiu como RADAR/LANÇAMENTOS ontem pode virar destaque hoje sem
+// nenhum alarme, porque ele nunca entra no universo comparado. Caso real
+// 260729: 5 dos 6 candidatos a destaque eram histórias já cobertas nas
+// edições 260727/260728 — 3 delas como item SECUNDÁRIO (não destaque) na
+// edição anterior.
+//
+// Fix: comparar candidatos a destaque contra o CORPO INTEIRO (destaques +
+// todos os buckets secundários) de `01-approved.json` das últimas N edições,
+// reusando o mesmo comparador cross-veículo de `dedup-intra-edition.ts`
+// (`isIntraEditionDuplicate`, com `crossEditionMode: true`) em vez de
+// desenhar um detector novo — decisão do editor no comentário da #4262: o
+// mecanismo já existe e está calibrado, só precisa olhar pro histórico.
+//
+// WARN-ONLY, como o resto deste arquivo — nunca bloqueia o gate. O guard
+// GATE-BLOCKING pré-Stage-2 proposto na #4262 (item 3) é responsabilidade de
+// outro ponto do pipeline (fora do escopo deste arquivo).
+// ---------------------------------------------------------------------------
+
+/** Buckets do corpo inteiro de uma edição passada: destaques + secundários. */
+const FULL_BODY_BUCKETS = ["highlights", ...SECONDARY_BUCKETS];
+
+export interface PastFullBodyItem {
+  edition: string; // AAMMDD
+  bucket: string;  // "highlights" | radar | lancamento | use_melhor | video
+  title: string;
+  url: string;
+}
+
+/**
+ * Lê TODOS os itens (destaques + buckets secundários) dos `01-approved.json`
+ * das `window` edições mais recentes em `editionsDir`, excluindo `currentAammdd`.
+ *
+ * Mesma resolução de path (flat/nested, `_internal/` vs root) de
+ * `readPastApprovedSecondary` — diferença: inclui o bucket `highlights` e
+ * também captura `url` (necessário pro comparador de `dedup-intra-edition.ts`,
+ * que usa a URL só pra pular self-match quando bate com a do candidato).
+ *
+ * Falha gracioso: arquivo ausente/corrompido → skip silencioso.
+ */
+export function readPastFullBodyItems(
+  editionsDir: string,
+  window: number,
+  currentAammdd?: string,
+): PastFullBodyItem[] {
+  if (!existsSync(editionsDir)) return [];
+  const recent = recentEditionDirs(editionsDir, window, currentAammdd);
+  const editionDirsByAammdd = enumerateEditionDirs(editionsDir);
+  const items: PastFullBodyItem[] = [];
+
+  for (const aammdd of recent) {
+    const editionDir = editionDirsByAammdd.get(aammdd);
+    if (!editionDir) continue;
+    const candidates = [
+      resolve(editionDir, "_internal", "01-approved.json"),
+      resolve(editionDir, "01-approved.json"),
+    ];
+    let parsed: RawBuckets | null = null;
+
+    for (const path of candidates) {
+      if (!existsSync(path)) continue;
+      try {
+        const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+        if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+        parsed = raw as RawBuckets;
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (!parsed) continue;
+
+    for (const bucket of FULL_BODY_BUCKETS) {
+      const arr = parsed[bucket];
+      if (!Array.isArray(arr)) continue;
+      for (const item of arr) {
+        if (item === null || typeof item !== "object") continue;
+        const art = item.article ?? {};
+        const title = (art.title ?? item.title ?? "").trim();
+        const url = (art.url ?? item.url ?? "").trim();
+        if (title) items.push({ edition: aammdd, bucket, title, url });
+      }
+    }
+  }
+  return items;
+}
+
+export interface FullBodyThemeWarning {
+  candidate_rank: number;
+  candidate_title: string;
+  candidate_url: string;
+  matched_edition: string;
+  matched_bucket: string;
+  matched_title: string;
+  /** match_type retornado por `isIntraEditionDuplicate` — ver dedup-intra-edition.ts. */
+  match_type: string;
+  score: number;
+}
+
+export interface CheckFullBodyThemesResult {
+  full_body_warnings: FullBodyThemeWarning[];
+  full_body_checked: number;
+  /** Edições distintas do histórico que de fato contribuíram algum item (mesma semântica de secondary_editions_with_data). */
+  full_body_editions_with_data: number;
+  full_body_window_requested: number;
+}
+
+export const DEFAULT_FULL_BODY_WINDOW = 10;
+
+/**
+ * Verifica se candidatos a destaque da edição corrente repetem uma história
+ * já coberta em QUALQUER bucket (não só destaque) das edições passadas.
+ *
+ * Reusa `isIntraEditionDuplicate` com `crossEditionMode: true` — o mesmo
+ * comparador jaccard/entity/domain/cross_vehicle/product_code do dedup
+ * intra-edição, mais os 2 sinais adicionais calibrados pro gap de paráfrase
+ * cross-edição (ver docstring de `crossEditionMode` em dedup-intra-edition.ts).
+ *
+ * WARN-ONLY — nunca bloqueia o gate.
+ */
+export function checkFullBodyThemes(
+  candidates: HighlightCandidate[],
+  pastItems: PastFullBodyItem[],
+  requestedWindow: number = DEFAULT_FULL_BODY_WINDOW,
+): CheckFullBodyThemesResult {
+  const full_body_warnings: FullBodyThemeWarning[] = [];
+  const pastAsHighlights = pastItems.map((p) => ({ title: p.title, url: p.url }));
+
+  for (const candidate of candidates) {
+    if (!candidate.title) continue;
+    const match = isIntraEditionDuplicate(
+      { title: candidate.title, url: candidate.url },
+      pastAsHighlights,
+      { crossEditionMode: true },
+    );
+    if (!match) continue;
+
+    // #4262: recupera edição/bucket do item casado pra exibir no warning —
+    // isIntraEditionDuplicate só retorna o título (`matched_highlight`), não
+    // a referência do item de origem. Match por título é suficiente aqui
+    // (display-only, warn-only) — colisão de título idêntico entre 2 itens
+    // de edições diferentes é rara o bastante pra não justificar refatorar
+    // o comparador só pra devolver o índice.
+    const matchedPast = pastItems.find((p) => p.title === match.matched_highlight);
+
+    full_body_warnings.push({
+      candidate_rank: candidate.rank,
+      candidate_title: candidate.title,
+      candidate_url: candidate.url,
+      matched_edition: matchedPast?.edition ?? "unknown",
+      matched_bucket: matchedPast?.bucket ?? "unknown",
+      matched_title: match.matched_highlight,
+      match_type: match.match_type,
+      score: match.score,
+    });
+  }
+
+  const distinctEditions = new Set(pastItems.map((p) => p.edition));
+  return {
+    full_body_warnings,
+    full_body_checked: candidates.length,
+    full_body_editions_with_data: distinctEditions.size,
+    full_body_window_requested: requestedWindow,
+  };
+}
+
 /**
  * Verifica se itens dos buckets secundários (RADAR/LANÇAMENTOS) da edição corrente
  * repetem uma combinação empresa+sub-tema de itens das edições anteriores.
@@ -904,6 +1078,10 @@ async function main(): Promise<void> {
   // #2652: secondary check flags
   const editionsDir = args["editions-dir"] ?? "data/editions";
   const secondaryWindow = parseInt(args["secondary-window"] ?? String(DEFAULT_SECONDARY_WINDOW), 10);
+  // #4262: full-body cross-edition check flag (destaque vs CORPO INTEIRO das
+  // edições passadas, não só destaques passados). Default: mesma janela do
+  // secondary check (10) — histórico de mesma profundidade.
+  const fullBodyWindow = parseInt(args["full-body-window"] ?? String(DEFAULT_FULL_BODY_WINDOW), 10);
   // #2652: fallback p/ deriveCurrentEdition (espelha dedup.ts CLI #1856) — sem isso,
   // re-run/resume onde o 01-approved.json da edição atual já existe inclui a própria
   // edição na janela e gera self-match (Jaccard ~1.0) em todo item secundário.
@@ -912,7 +1090,8 @@ async function main(): Promise<void> {
   if (!categorizedPath) {
     console.error(
       "Uso: check-highlight-themes.ts --categorized <path> [--past-editions <path>] [--window 12] " +
-      "[--editions-dir data/editions] [--secondary-window 10] [--current-edition AAMMDD] [--out-json <path>]",
+      "[--editions-dir data/editions] [--secondary-window 10] [--full-body-window 10] " +
+      "[--current-edition AAMMDD] [--out-json <path>]",
     );
     process.exit(1);
   }
@@ -970,16 +1149,37 @@ async function main(): Promise<void> {
     );
   }
 
-  // Combina os dois resultados num único JSON (backward-compatible: novos campos adicionados)
+  // #4262: full-body cross-edition check — candidato a destaque vs CORPO
+  // INTEIRO (destaques + secundários) das edições passadas.
+  const pastFullBody = readPastFullBodyItems(editionsDir, fullBodyWindow, currentEdition);
+  const fullBodyResult = checkFullBodyThemes(candidates, pastFullBody, fullBodyWindow);
+
+  if (fullBodyResult.full_body_warnings.length > 0) {
+    for (const w of fullBodyResult.full_body_warnings) {
+      console.error(
+        `[check-highlight-themes] ⚠️  CORPO INTEIRO Candidato #${w.candidate_rank} "${w.candidate_title}" (${w.candidate_url}) repete história de ${w.matched_edition} [${w.matched_bucket}] "${w.matched_title}" (${w.match_type}, score=${w.score.toFixed(2)})`,
+      );
+    }
+  } else {
+    console.error(
+      `[check-highlight-themes] ✓ ${fullBodyResult.full_body_checked} candidato(s) verificado(s) contra o corpo inteiro de ${fullBodyResult.full_body_editions_with_data}/${fullBodyResult.full_body_window_requested} edição(ões) com dados na janela — nenhuma história repetida detectada.`,
+    );
+  }
+
+  // Combina os resultados num único JSON (backward-compatible: novos campos adicionados)
   const combined = {
     warnings: highlightResult.warnings,
     secondary_warnings: secondaryResult.secondary_warnings,
+    full_body_warnings: fullBodyResult.full_body_warnings,
     checked: highlightResult.checked,
     secondary_checked: secondaryResult.secondary_checked,
+    full_body_checked: fullBodyResult.full_body_checked,
     window: highlightResult.window,
     // #2684 item 4: secondary_window (nome enganoso) substituído pelos 2 campos abaixo.
     secondary_editions_with_data: secondaryResult.secondary_editions_with_data,
     secondary_window_requested: secondaryResult.secondary_window_requested,
+    full_body_editions_with_data: fullBodyResult.full_body_editions_with_data,
+    full_body_window_requested: fullBodyResult.full_body_window_requested,
   };
 
   const json = JSON.stringify(combined, null, 2);

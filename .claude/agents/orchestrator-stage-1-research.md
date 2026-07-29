@@ -685,15 +685,15 @@ npx tsx scripts/log-stage-1-payload-sizes.ts --edition {AAMMDD}
 
 Output: grava `_internal/01-payload-sizes.json` (relatório completo) e append em `data/run-log.jsonl` com `level: info`, `message: "stage1_payload_sizes"`, `details.totals` + `details.top_3`. Nunca falha — best-effort. Próximo PR usa esses dados pra escolher entre Opção A (subagents retornam só path) ou Opção B (agregação imediata) descritas no #891.
 
-### 1w-quint-b. Check de repeat-de-tema nos destaques candidatos e itens secundários (#2073, #2652)
+### 1w-quint-b. Check de repeat-de-tema nos destaques candidatos e itens secundários (#2073, #2652, #4262)
 
-Antes do gate, verificar se algum candidato a destaque repete o TEMA de um destaque publicado nas **últimas 12 edições** e se algum item RADAR/LANÇAMENTOS repete empresa+sub-tema de itens em `01-approved.json` das **últimas 10 edições** (match: entidade + Jaccard ≥ 0.15 OU prefixo ≥ 6 chars). **Warn-only — nunca bloqueia.**
+Antes do gate, verificar se algum candidato a destaque repete o TEMA de um destaque publicado nas **últimas 12 edições**, se algum item RADAR/LANÇAMENTOS repete empresa+sub-tema de itens em `01-approved.json` das **últimas 10 edições** (match: entidade + Jaccard ≥ 0.15 OU prefixo ≥ 6 chars), e se algum candidato a destaque repete uma história já coberta no CORPO INTEIRO (destaques + todos os buckets secundários, não só destaques publicados) das **últimas 10 edições** (#4262 — reusa o comparador cross-veículo de `dedup-intra-edition.ts`). **Warn-only — nunca bloqueia.**
 
 ```bash
 npx tsx scripts/check-highlight-themes.ts \
   --categorized {EDITION_DIR}/_internal/01-categorized.json \
   --past-editions data/past-editions.md --window 12 \
-  --editions-dir data/editions --secondary-window 10 --current-edition {AAMMDD} \
+  --editions-dir data/editions --secondary-window 10 --full-body-window 10 --current-edition {AAMMDD} \
   --out-json {EDITION_DIR}/_internal/01-highlight-theme-check.json
 ```
 
@@ -733,7 +733,7 @@ Apresentar ao usuário:
 
 3. **Avisos de mínimos por seção (#488):** exibir avisos registrados na verificação de mínimos (ver 1t). Se não houver avisos, omitir este bloco.
 
-4. **⚠️ Repeat-de-tema em destaques (#2073) e RADAR (#2652):** ler `_internal/01-highlight-theme-check.json`. Exibir antes dos avisos. **Best-effort — nunca bloquear.** Se arquivo não existir, ambos=[]: omitir.
+4. **⚠️ Repeat-de-tema em destaques (#2073), RADAR (#2652) e corpo inteiro (#4262):** ler `_internal/01-highlight-theme-check.json`. Exibir antes dos avisos. **Best-effort — nunca bloquear.** Se arquivo não existir, todos=[]: omitir.
    `warnings[]` não-vazio (destaques):
    ```
    ⚠️  TEMA REPETIDO — D{rank} candidato repete tema de {matched_edition}:
@@ -741,6 +741,7 @@ Apresentar ao usuário:
        Publicado:  "{matched_title}" ({matched_edition}) | Sim.: {jaccard*100}% → trocar candidato.
    ```
    `secondary_warnings[]` não-vazio (RADAR/LANÇAMENTOS): `⚠️ RADAR REPETIDO — [{bucket}] empresa+tema cobertos em {matched_edition}: "{item_title}" ({item_url}) ← "{matched_title}" | Empresa: {shared_entities} | {theme_evidence} → trocar ou manter se ângulo novo.` (#2684 item 7 — `item_url` incluído pra o editor identificar o item exato no gate mobile, onde título sozinho pode ser ambíguo.)
+   `full_body_warnings[]` não-vazio (candidato a destaque repete história já coberta em QUALQUER bucket — não só destaque publicado — das edições passadas, #4262): `⚠️  CORPO INTEIRO — D{candidate_rank} candidato "{candidate_title}" ({candidate_url}) repete história já coberta em {matched_edition} [{matched_bucket}]: "{matched_title}" | Match: {match_type}, score={score.toFixed(2)} → trocar candidato ou confirmar ângulo novo.`
 
 4a. **⚠️ Submissões do editor removidas pelo dedup (#4192):** ler `editorSubmittedLost[]` de `_internal/tmp-dedup-output.json` (guardado no passo 1l). **Best-effort — nunca bloquear.** Se vazio ou arquivo ausente: omitir. Se não-vazio, exibir uma linha por entry:
    ```

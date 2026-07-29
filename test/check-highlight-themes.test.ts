@@ -37,10 +37,14 @@ import {
   DEFAULT_SECONDARY_BUCKETS,
   ENTITY_ONLY_RECENT_WINDOW,
   ENTITY_ONLY_MIN_SHARED,
+  readPastFullBodyItems,
+  checkFullBodyThemes,
+  DEFAULT_FULL_BODY_WINDOW,
   type PastEditionEntry,
   type HighlightThemeWarning,
   type SecondaryItem,
   type PastSecondaryItem,
+  type PastFullBodyItem,
 } from "../scripts/check-highlight-themes.ts";
 
 // ---------------------------------------------------------------------------
@@ -1242,5 +1246,191 @@ describe("readPastApprovedSecondary — guard de resume p/ formato antigo/corrom
     } finally {
       rmSync(editionsDir, { recursive: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4262: check cross-edição contra o CORPO INTEIRO (destaques + secundários)
+// ---------------------------------------------------------------------------
+//
+// Regressão real (edição 260729): 5 dos 6 candidatos a destaque do
+// scorer-select eram histórias já publicadas em 260727/260728 — o dedup
+// URL+Jaccard não pegou nenhuma, e checkHighlightThemes (candidato vs
+// TÍTULO DE DESTAQUE passado) também não pegou os casos onde a cobertura
+// anterior tinha saído como item SECUNDÁRIO (RADAR), não como destaque.
+//
+// Fixture com os 3 pares reais citados na issue, cobrindo os 3 vetores:
+//   1. Paráfrase PT×PT sem empresa citada (Canaltech×g1, professor/alunos).
+//   2. Cross-língua PT×EN (Canaltech×ZDNet, Claude/Google).
+//   3. Imprensa×fonte-oficial (Exame×anthropic.com, Claude Opus 5).
+//
+// Nota sobre o par cross-língua (2): o editor registrou na issue que esse
+// vetor provavelmente está fora do alcance de qualquer método baseado em
+// token — e de fato NÃO é pego por tradução/semântica alguma aqui. Ele passa
+// porque "Google" e "Claude" são nomes próprios que aparecem LITERALMENTE
+// idênticos nos dois idiomas (cognatos/loanwords) — path (d) cross_vehicle
+// (empresa citada + token de tópico compartilhado) já capturava isso SEM
+// nenhuma mudança deste PR. Documentado aqui pra não sugerir ao leitor futuro
+// que o mecanismo faz correspondência semântica cross-idioma de verdade —
+// ele não faz, e um par verdadeiramente traduzido (sem termo cognato) NÃO
+// seria pego. O caminho de embedding, que seria o mecanismo correto pra esse
+// vetor, está quebrado em produção (`topic-cluster.ts` — "todos os embeddings
+// falharam, usando Jaccard") — fora do escopo deste PR (scripts/dedup*.ts,
+// scripts/check-highlight-themes.ts).
+describe("checkFullBodyThemes — regressão #4262 (260729, 3 pares reais)", () => {
+  const candidates = [
+    {
+      rank: 1,
+      title: "Com prompt invisível, professor desmascara 32 alunos usando IA em prova",
+      url: "https://canaltech.com.br/comportamento/com-prompt-invisivel-professor-desmascara-32-alunos-usando-ia-em-prova/",
+    },
+    {
+      rank: 2,
+      title: "Usa o Claude? Suas conversas íntimas podem estar no Google",
+      url: "https://canaltech.com.br/ia/usa-o-claude-suas-conversas-intimas-podem-estar-no-google/",
+    },
+    {
+      rank: 3,
+      title: "Claude Opus 5: o que muda no novo modelo",
+      url: "https://exame.com/tecnologia/claude-opus-5-o-que-muda-no-novo-modelo/",
+    },
+  ];
+
+  const pastItems: PastFullBodyItem[] = [
+    // 260728 — item SECUNDÁRIO (radar), não destaque: é exatamente o caso
+    // que checkHighlightThemes (destaque-vs-destaque-passado) não cobre.
+    {
+      edition: "260728",
+      bucket: "radar",
+      title: "Professor cria armadilha para descobrir quem usou IA e reprova 32 de 35 alunos",
+      url: "https://g1.globo.com/educacao/noticia/2026/07/27/professor-cria-armadilha.ghtml",
+    },
+    {
+      edition: "260728",
+      bucket: "radar",
+      title: "Uh-oh, some Claude shared conversations were indexed by Google search",
+      url: "https://zdnet.com/article/claude-ai-shared-chats-indexed-by-google/",
+    },
+    // 260727 — este SIM foi destaque (a manchete oficial do lançamento).
+    {
+      edition: "260727",
+      bucket: "highlights",
+      title: "Anthropic lança o Claude Opus 5",
+      url: "https://anthropic.com/news/claude-opus-5",
+    },
+  ];
+
+  it("detecta os 3 pares como mesma-história (jaccard/cross_vehicle/domain/content_terms)", () => {
+    const result = checkFullBodyThemes(candidates, pastItems);
+    assert.equal(result.full_body_warnings.length, 3, "os 3 candidatos devem disparar warning");
+
+    const byRank = new Map(result.full_body_warnings.map((w) => [w.candidate_rank, w]));
+
+    const professor = byRank.get(1);
+    assert.ok(professor, "par professor/alunos (PT×PT sem empresa) deve ser detectado");
+    assert.equal(professor!.matched_edition, "260728");
+    assert.equal(professor!.matched_bucket, "radar");
+    assert.equal(professor!.match_type, "content_terms");
+
+    const claudeGoogle = byRank.get(2);
+    assert.ok(claudeGoogle, "par Claude/Google (cross-língua via cognato) deve ser detectado");
+    assert.equal(claudeGoogle!.matched_edition, "260728");
+    assert.equal(claudeGoogle!.match_type, "cross_vehicle");
+
+    const opus5 = byRank.get(3);
+    assert.ok(opus5, "par Opus 5 (imprensa×fonte-oficial) deve ser detectado");
+    assert.equal(opus5!.matched_edition, "260727");
+    assert.equal(opus5!.matched_bucket, "highlights");
+    assert.equal(opus5!.match_type, "domain");
+  });
+
+  it("checked/window fields refletem candidatos e edições distintas do histórico", () => {
+    const result = checkFullBodyThemes(candidates, pastItems, 10);
+    assert.equal(result.full_body_checked, 3);
+    assert.equal(result.full_body_editions_with_data, 2); // 260727 + 260728
+    assert.equal(result.full_body_window_requested, 10);
+  });
+
+  it("NÃO dispara warning para um candidato genuinamente inédito (guard de falso-positivo)", () => {
+    const inedito = [
+      {
+        rank: 1,
+        title: "Startup brasileira lança assistente de IA para agronegócio",
+        url: "https://example.com/agro-ia-startup",
+      },
+    ];
+    const result = checkFullBodyThemes(inedito, pastItems);
+    assert.equal(result.full_body_warnings.length, 0);
+  });
+});
+
+describe("readPastFullBodyItems (#4262)", () => {
+  it("lê destaques E buckets secundários do 01-approved.json de edições passadas", () => {
+    const editionsDir = makeTempEditionsDir();
+    try {
+      const editionDir = resolve(editionsDir, "260727");
+      mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
+      writeFileSync(
+        resolve(editionDir, "_internal", "01-approved.json"),
+        JSON.stringify({
+          highlights: [
+            { rank: 1, article: { title: "Anthropic lança o Claude Opus 5", url: "https://anthropic.com/news/claude-opus-5" } },
+          ],
+          radar: [{ title: "Item radar", url: "https://example.com/radar" }],
+          lancamento: [{ title: "Item lancamento", url: "https://example.com/lancamento" }],
+          use_melhor: [{ title: "Item use_melhor", url: "https://example.com/use-melhor" }],
+          video: [{ title: "Item video", url: "https://example.com/video" }],
+        }),
+        "utf8",
+      );
+
+      const items = readPastFullBodyItems(editionsDir, 10);
+      const buckets = items.map((i) => i.bucket).sort();
+      assert.deepEqual(buckets, ["highlights", "lancamento", "radar", "use_melhor", "video"].sort());
+
+      const highlight = items.find((i) => i.bucket === "highlights");
+      assert.equal(highlight?.title, "Anthropic lança o Claude Opus 5");
+      assert.equal(highlight?.url, "https://anthropic.com/news/claude-opus-5");
+      assert.equal(highlight?.edition, "260727");
+    } finally {
+      rmSync(editionsDir, { recursive: true });
+    }
+  });
+
+  it("edição com 01-approved.json ausente/corrompido é pulada sem lançar", () => {
+    const editionsDir = makeTempEditionsDir();
+    try {
+      const editionDir = resolve(editionsDir, "260727");
+      mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
+      writeFileSync(resolve(editionDir, "_internal", "01-approved.json"), "not json", "utf8");
+      assert.deepEqual(readPastFullBodyItems(editionsDir, 10), []);
+    } finally {
+      rmSync(editionsDir, { recursive: true });
+    }
+  });
+
+  it("exclui a edição corrente via currentAammdd (evita self-match)", () => {
+    const editionsDir = makeTempEditionsDir();
+    try {
+      const editionDir = resolve(editionsDir, "260729");
+      mkdirSync(resolve(editionDir, "_internal"), { recursive: true });
+      writeFileSync(
+        resolve(editionDir, "_internal", "01-approved.json"),
+        JSON.stringify({ radar: [{ title: "Item da própria edição", url: "https://example.com/x" }] }),
+        "utf8",
+      );
+
+      const items = readPastFullBodyItems(editionsDir, 10, "260729");
+      assert.deepEqual(items, []);
+    } finally {
+      rmSync(editionsDir, { recursive: true });
+    }
+  });
+});
+
+describe("DEFAULT_FULL_BODY_WINDOW (#4262)", () => {
+  it("é um inteiro positivo, na mesma ordem de grandeza do secondary window", () => {
+    assert.ok(Number.isInteger(DEFAULT_FULL_BODY_WINDOW));
+    assert.ok(DEFAULT_FULL_BODY_WINDOW > 0);
   });
 });
