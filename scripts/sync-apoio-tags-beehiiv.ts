@@ -250,6 +250,28 @@ async function apiRequest<T>(
  * ignora `per_page` além de um limite (comentário original desse arquivo),
  * daí `hasMorePages` decidir por `total_results`/`limit` em vez de assumir
  * que o `per_page` pedido sempre volta cheio.
+ *
+ * **Falha loud, sempre (achado do review, PR #4307).** `/subscriptions` é o
+ * recurso PRINCIPAL deste script, não um endpoint opcional (diferente do
+ * padrão `optional: true`/`fetchAllPages` de `scripts/backup-beehiiv.ts`,
+ * reservado a features fora do plano). O próprio `backup-beehiiv.ts`, ao
+ * paginar ESSE MESMO endpoint (`/subscriptions`), nunca tolera 404/403 —
+ * `if (!res.ok) throw` incondicional. Uma versão anterior deste arquivo
+ * tratava 404/403 como "fim de paginação" (copiado sem questionar de
+ * `sync-cursos-subscribers-kv.ts`, script aditivo/baixo-risco onde isso é
+ * defensável) — aqui é destrutivo: uma página truncada faz assinantes reais
+ * desaparecerem de `current`, e `diffApoioTags` os classifica como
+ * `notBeehiivSubscriber` ("não é erro") quando na verdade é "nunca
+ * chegamos lá" — e pior, um assinante já taggeado que caiu fora da leitura
+ * truncada vira uma remoção fantasma (`toRemove`) sem que `shouldBlockRemovals`
+ * tenha qualquer sinal disso (o guard só enxerga `data.error`/`sem_dados` do
+ * lado apoia.se, nunca truncamento do lado Beehiiv). Por isso: qualquer
+ * `!res.ok` aqui é sempre fatal — nunca vira `break` silencioso.
+ *
+ * **Reconciliação anti-truncamento-silencioso** (mesmo padrão de
+ * `backup-beehiiv.ts` #1897): se a API informou `total_results` e o loop
+ * terminou (`hasMorePages` retornou `false`) sem ter coletado esse total,
+ * falha barulhento em vez de devolver uma lista parcial que pareça completa.
  */
 export async function fetchCurrentBeehiivState(
   publicationId: string,
@@ -259,6 +281,7 @@ export async function fetchCurrentBeehiivState(
   const out: BeehiivSubscriptionSnapshot[] = [];
   let page = 1;
   let more = true;
+  let totalResults: number | null = null;
   while (more) {
     const res = await apiRequest<Page<BeehiivSubscriptionApi>>(
       `/publications/${publicationId}/subscriptions?status=active&expand[]=custom_fields&per_page=${PER_PAGE}&page=${page}`,
@@ -266,7 +289,6 @@ export async function fetchCurrentBeehiivState(
       fetchImpl,
     );
     if (!res.ok) {
-      if (res.status === 404 || res.status === 403) break;
       throw new Error(`Beehiiv API ${res.status} em /subscriptions (página ${page})`);
     }
     const body = res.body!;
@@ -278,6 +300,7 @@ export async function fetchCurrentBeehiivState(
         apoioNivel: extractApoioNivelValue(s.custom_fields),
       });
     }
+    if (body.total_results != null) totalResults = body.total_results;
     more = hasMorePages({
       collected: out.length,
       gotLength: got.length,
@@ -286,6 +309,12 @@ export async function fetchCurrentBeehiivState(
       requestedPerPage: PER_PAGE,
     });
     page++;
+  }
+  if (totalResults != null && totalResults > 0 && out.length < totalResults) {
+    throw new Error(
+      `paginação de /subscriptions terminou cedo: coletado ${out.length} de ${totalResults} ` +
+        "reportado pela API — leitura truncada nunca alimenta o diff (risco de remoção fantasma).",
+    );
   }
   return out;
 }

@@ -14,6 +14,13 @@
  *   3. Mudança de faixa (troca de valor, nunca acumula duas).
  *   4. Assinante taggeado que parou de apoiar (perde o valor).
  *   5. Apoiador que não é assinante da Beehiiv (ignorado/reportado, sem erro).
+ *
+ * Também testa `applyApoioTagEntry` (achado #2 do review da PR #4307) — a
+ * função de escrita+releitura, com `fetchImpl` mockado (nunca rede real). É o
+ * mecanismo de segurança central do módulo (a lição documentada no cabeçalho
+ * do arquivo: nunca confiar só no status code, sempre reler — exatamente a
+ * armadilha que a issue #4273 documentou pra `tags`), então precisa de
+ * cobertura direta, não só inferida via `diffApoioTags`.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -22,6 +29,8 @@ import {
   diffApoioTags,
   extractApoioNivelValue,
   shouldBlockRemovals,
+  applyApoioTagEntry,
+  type ApoioTagDiffEntry,
   type BeehiivSubscriptionSnapshot,
 } from "../scripts/sync-apoio-tags-beehiiv.ts";
 import type { ContactWithStatus } from "../scripts/studio-ui/studio-apoios.ts";
@@ -309,5 +318,142 @@ describe("diffApoioTags — mistura completa (regressão de composição)", () =
     const sobeEntry = diff.toApply.find((e) => e.email === "sobe@x.com");
     assert.equal(sobeEntry?.fromLevel, "apoiador");
     assert.equal(sobeEntry?.toLevel, "patrono");
+  });
+});
+
+// ── applyApoioTagEntry (escrita + releitura, I/O mockado, #4307 achado 2) ──
+
+interface RecordedCall {
+  url: string;
+  method: string;
+  body: unknown;
+}
+
+/** Mock sequencial de `typeof fetch`: a N-ésima chamada recebe a N-ésima
+ * resposta da lista (a última se a lista acabar). Grava todas as chamadas
+ * (`calls`) pra assert de método/body — nunca faz rede real. */
+function mockFetchSeq(responses: Array<{ status: number; body?: unknown }>): {
+  fetchImpl: typeof fetch;
+  calls: RecordedCall[];
+} {
+  const calls: RecordedCall[] = [];
+  let i = 0;
+  const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+    const method = init?.method ?? "GET";
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    calls.push({ url: String(url), method, body });
+    const r = responses[Math.min(i, responses.length - 1)];
+    i++;
+    return {
+      ok: r.status >= 200 && r.status < 300,
+      status: r.status,
+      headers: { get: () => null },
+      text: async () => (r.body !== undefined ? JSON.stringify(r.body) : ""),
+    } as unknown as Response;
+  }) as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+function diffEntry(overrides: Partial<ApoioTagDiffEntry>): ApoioTagDiffEntry {
+  return {
+    contactId: "c1",
+    contactName: "Fulano",
+    email: "fulano@x.com",
+    subscriptionId: "sub-1",
+    fromLevel: null,
+    toLevel: "amigo",
+    ...overrides,
+  };
+}
+
+function subscriptionBody(email: string, customFields: Array<{ name: string; value: unknown }>) {
+  return { data: { id: "sub-1", email, status: "active", custom_fields: customFields } };
+}
+
+describe("applyApoioTagEntry (#4307 achado 2 — write+reread nunca testado)", () => {
+  it("(a) PUT ok + GET confirma o valor esperado → resolve limpo", async () => {
+    const entry = diffEntry({ email: "confirma@x.com", toLevel: "mantenedor" });
+    const { fetchImpl, calls } = mockFetchSeq([
+      { status: 200, body: { data: { id: "sub-1" } } },
+      { status: 200, body: subscriptionBody("confirma@x.com", [{ name: "apoio_nivel", value: "mantenedor" }]) },
+    ]);
+    await assert.doesNotReject(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl));
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].method, "PUT");
+    assert.equal(calls[1].method, "GET");
+  });
+
+  it("(a.1) body do PUT — add/troca usa {name, value} (nunca delete)", async () => {
+    const entry = diffEntry({ email: "add@x.com", fromLevel: null, toLevel: "amigo" });
+    const { fetchImpl, calls } = mockFetchSeq([
+      { status: 200, body: {} },
+      { status: 200, body: subscriptionBody("add@x.com", [{ name: "apoio_nivel", value: "amigo" }]) },
+    ]);
+    await applyApoioTagEntry(entry, "pub-1", "key", fetchImpl);
+    assert.deepEqual(calls[0].body, { custom_fields: [{ name: "apoio_nivel", value: "amigo" }] });
+  });
+
+  it("(e) remoção (toLevel null) — body usa {name, delete:true}, releitura confirma ausência", async () => {
+    const entry = diffEntry({ email: "parou@x.com", fromLevel: "patrono", toLevel: null });
+    const { fetchImpl, calls } = mockFetchSeq([
+      { status: 200, body: {} },
+      { status: 200, body: subscriptionBody("parou@x.com", []) },
+    ]);
+    await assert.doesNotReject(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl));
+    assert.deepEqual(calls[0].body, { custom_fields: [{ name: "apoio_nivel", delete: true }] });
+  });
+
+  it("(b) PUT retorna não-ok → lança erro com email e nível alvo na mensagem", async () => {
+    const entry = diffEntry({ email: "putfalha@x.com", toLevel: "apoiador" });
+    const { fetchImpl } = mockFetchSeq([{ status: 500 }]);
+    await assert.rejects(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /putfalha@x\.com/);
+      assert.match(err.message, /apoiador/);
+      return true;
+    });
+  });
+
+  it("(c) GET pós-escrita falha → lança erro DISTINTO (releitura, não PUT)", async () => {
+    const entry = diffEntry({ email: "getfalha@x.com", toLevel: "mantenedor" });
+    const { fetchImpl } = mockFetchSeq([
+      { status: 200, body: {} }, // PUT ok
+      { status: 500 }, // GET falha
+    ]);
+    await assert.rejects(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /releitura pós-escrita falhou/);
+      return true;
+    });
+  });
+
+  it("(d) GET ok mas valor relido ≠ esperado → lança erro com valor esperado E valor real", async () => {
+    // Cenário exato documentado pela issue #4273 pra `tags`: PUT responde 200
+    // mas a mutação não pegou — a releitura devolve o valor ANTIGO.
+    const entry = diffEntry({ email: "diverge@x.com", fromLevel: "apoiador", toLevel: "patrono" });
+    const { fetchImpl } = mockFetchSeq([
+      { status: 200, body: {} },
+      { status: 200, body: subscriptionBody("diverge@x.com", [{ name: "apoio_nivel", value: "apoiador" }]) },
+    ]);
+    await assert.rejects(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /"patrono"/); // esperado
+      assert.match(err.message, /"apoiador"/); // encontrado
+      assert.match(err.message, /NÃO confere/);
+      return true;
+    });
+  });
+
+  it("(d.1) remoção esperada mas releitura ainda mostra valor antigo → lança erro", async () => {
+    const entry = diffEntry({ email: "removeFalha@x.com", fromLevel: "amigo", toLevel: null });
+    const { fetchImpl } = mockFetchSeq([
+      { status: 200, body: {} },
+      { status: 200, body: subscriptionBody("removeFalha@x.com", [{ name: "apoio_nivel", value: "amigo" }]) },
+    ]);
+    await assert.rejects(applyApoioTagEntry(entry, "pub-1", "key", fetchImpl), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /NÃO confere/);
+      return true;
+    });
   });
 });
