@@ -31,6 +31,7 @@ import {
   renderJogarGatePage,
   readWebSession,
   WEB_SESSION_COOKIE,
+  issueWebSessionCookie,
 } from "../workers/poll/src/web-gate.ts";
 
 function makeMapKV(initial: Record<string, string> = {}) {
@@ -439,5 +440,138 @@ describe("#4258 item 4: campo nome vem ANTES do e-mail no form do gate (consist�
     const emailIdx = html.indexOf('<input type="email" name="email"');
     assert.ok(nameIdx > -1 && emailIdx > -1, "ambos os campos devem existir");
     assert.ok(nameIdx < emailIdx, "campo nome deve vir antes do campo e-mail no markup");
+  });
+});
+
+describe("#4268: gate no meio da sequência NUNCA joga o jogador pra fora dela (regressão, achado ao vivo)", () => {
+  // Bug real reproduzido pelo editor 2x seguidas: goNext() em jogar.ts passa
+  // `edition=editions[0]` pro gate (só pro CONTEXTO do identify — deriva o
+  // índice mensal do merge, #4253 item 6). Antes do fix, tanto o link de
+  // skip quanto o redirect pós-cadastro reusavam ESSE MESMO param como alvo
+  // de navegação — handleJogarPage despacha pra página de UMA edição só
+  // (sem next-round) sempre que a URL tem `?edition=`, então o jogador saía
+  // da sequência de verdade e caía numa página sem "próxima rodada". Se
+  // editions[0] já tinha voto de sessão anterior (comum pra quem testa o
+  // jogo com frequência), /vote respondia "já votou" sem caminho de volta —
+  // dead end. Fix: skipHref/goToGame nunca mais carregam `edition=`.
+  it("link 'Continuar sem cadastrar' NUNCA leva edition= no href, mesmo quando a página recebeu uma edição (contexto do identify)", () => {
+    const html = renderJogarGatePage("260601");
+    const hrefMatch = html.match(/class="skip-link" href="([^"]+)"/);
+    assert.ok(hrefMatch, "link de skip deve existir");
+    const href = hrefMatch![1];
+    assert.ok(
+      !/[?&]edition=/.test(href),
+      `#4268: href do skip-link não pode conter edition= (jogaria o jogador pra fora da sequência) — href real: ${href}`,
+    );
+    assert.match(href, /skip_gate=1/, "skip continua liberando esta navegação específica");
+  });
+
+  it("goToGame() (redirect pós-verify OU pós-subscribe bem-sucedidos — login E cadastro passam por aqui, ver docstring da função) NUNCA leva edition= no alvo de navegação", () => {
+    const html = renderJogarGatePage("260601");
+    const fnMatch = html.match(/function goToGame\(\) \{\s*window\.location\.href = ([^;]+);/);
+    assert.ok(fnMatch, "goToGame() deve existir no script");
+    const expr = fnMatch![1];
+    assert.ok(
+      !/edition/.test(expr),
+      `#4268: expressão de goToGame() não pode referenciar edition= (mesmo dead end do skip-link, só que depois de verify/subscribe) — expressão real: ${expr}`,
+    );
+  });
+
+  it("GATE_EDITION (contexto do identify, propósito ORIGINAL do param) continua correto — só a navegação mudou", () => {
+    const html = renderJogarGatePage("260601");
+    assert.match(
+      html,
+      /var GATE_EDITION = "260601"/,
+      "#4268: o fix não pode remover o contexto que o identify precisa pra derivar o índice mensal do merge (#4253 item 6) — só a navegação (skip/goToGame) parar de reusar esse valor",
+    );
+  });
+
+  it("sem edition nenhuma (gate no carregamento inicial de /jogar, sem sequência em andamento): comportamento pré-existente intocado", () => {
+    const html = renderJogarGatePage(null);
+    const hrefMatch = html.match(/class="skip-link" href="([^"]+)"/);
+    assert.ok(hrefMatch);
+    assert.ok(!/edition=/.test(hrefMatch![1]));
+    assert.match(html, /var GATE_EDITION = ""/);
+  });
+
+  // Achado do review consolidado (2 agentes convergentes): os 4 testes acima
+  // só checam a STRING de saída de renderJogarGatePage — nunca a rota de
+  // verdade (handleJogarPage, jogar.ts) que causou o dead end. Os 2 testes
+  // abaixo fecham esse gap fim-a-fim via worker.fetch, seguindo o mesmo
+  // padrão já usado em test/poll-web-gate-4054.test.ts:349-360 (?edition=
+  // explícito + skip_gate=1). Distingue sequência de edição única pelo
+  // <title> (única string sempre presente independente do KV/total de
+  // rodadas — "seq-round-result" e afins só aparecem quando total > 0,
+  // ver renderJogarSequencePageHtml em jogar.ts).
+  const SEQUENCE_TITLE_MARKER = "qual imagem foi feita por IA?";
+  const SINGLE_EDITION_TITLE_MARKER = "jogue e vote";
+
+  it("fim-a-fim: skipHref extraído do gate no meio da sequência resolve pra sequência, NUNCA pra edição única", async () => {
+    const env = makeEnv();
+    // Simula goNext() (jogar.ts:1873): gate no meio da sequência repassa
+    // edition=editions[0] só como contexto do identify.
+    const gateRes = await worker.fetch(
+      new Request("https://poll.test/jogar?edition=260601", {
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` },
+      }),
+      env,
+    );
+    assert.equal(gateRes.status, 200);
+    assert.equal(gateRes.headers.get("X-Eia-Gate"), "1", "essa request deve mesmo cair no gate (contador no limiar, sem sessão)");
+    const gateHtml = await gateRes.text();
+    const hrefMatch = gateHtml.match(/class="skip-link" href="([^"]+)"/);
+    assert.ok(hrefMatch, "gate deve ter o link de skip");
+    const skipHref = hrefMatch![1];
+
+    const nextRes = await worker.fetch(
+      new Request(`https://poll.test${skipHref}`, { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` } }),
+      env,
+    );
+    assert.equal(nextRes.status, 200);
+    const nextHtml = await nextRes.text();
+    assert.match(
+      nextHtml,
+      new RegExp(SEQUENCE_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      "#4268: skipHref deve resolver pra sequência (23 rodadas), não pra edição única — regressão reproduzida ao vivo",
+    );
+    assert.doesNotMatch(nextHtml, new RegExp(SINGLE_EDITION_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+
+  it("fim-a-fim: goToGame() (pós-verify/subscribe, sessão já válida) resolve pra sequência, NUNCA pra edição única", async () => {
+    const env = makeEnv();
+    const gateRes = await worker.fetch(
+      new Request("https://poll.test/jogar?edition=260601", {
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` },
+      }),
+      env,
+    );
+    const gateHtml = await gateRes.text();
+    const fnMatch = gateHtml.match(/function goToGame\(\) \{\s*window\.location\.href = ([^;]+);/);
+    assert.ok(fnMatch, "gate deve ter goToGame()");
+    // avalia a expressão JS ("/jogar?v=" + Date.now()) do jeito que o
+    // browser faria — sem Date.now() real (proibido em scripts, mas isto é
+    // um teste comum, não um workflow script), então trocamos por um valor
+    // fixo equivalente antes de avaliar.
+    const expr = fnMatch![1].replace(/Date\.now\(\)/g, "1");
+    // eslint-disable-next-line no-new-func
+    const target = new Function(`return ${expr};`)() as string;
+
+    // Sessão válida (simula pós-verify/subscribe bem-sucedidos) — gate não
+    // deve reaparecer, então o dispatch cai direto no branch sem edition.
+    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "leitor@example.com")).split(";")[0];
+    const nextRes = await worker.fetch(
+      new Request(`https://poll.test${target}`, {
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5; ${sessionCookie}` },
+      }),
+      env,
+    );
+    assert.equal(nextRes.status, 200);
+    const nextHtml = await nextRes.text();
+    assert.match(
+      nextHtml,
+      new RegExp(SEQUENCE_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      "#4268: goToGame() deve resolver pra sequência (23 rodadas), não pra edição única — regressão reproduzida ao vivo",
+    );
+    assert.doesNotMatch(nextHtml, new RegExp(SINGLE_EDITION_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 });
