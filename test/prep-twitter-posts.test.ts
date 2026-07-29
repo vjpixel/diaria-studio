@@ -23,6 +23,7 @@ import {
   extractCurtoText,
   prepTwitterPosts,
   computeTwitterWeightedLength,
+  resolveTwitterImage,
   TWITTER_CHAR_LIMIT,
   TWITTER_URL_WEIGHT,
 } from "../scripts/prep-twitter-posts.ts";
@@ -66,6 +67,11 @@ function makeEditionDir(prefix: string, socialMd: string): string {
   mkdirSync(join(tmpDir, "_internal"), { recursive: true });
   writeFileSync(join(tmpDir, "03-social.md"), socialMd, "utf8");
   return tmpDir;
+}
+
+/** #4264: escreve `06-public-images.json` no formato lido por `resolveTwitterImage`/`publish-instagram.ts`. */
+function writePublicImages(editionDir: string, images: Record<string, { url: string }>): void {
+  writeFileSync(join(editionDir, "06-public-images.json"), JSON.stringify({ images }), "utf8");
 }
 
 // editionDate no futuro + `now` injetado bem antes dela: garante que o slot
@@ -278,6 +284,101 @@ describe("prepTwitterPosts", () => {
       socials?: string[];
     };
     assert.ok(cfg.socials!.includes("twitter"), "socials deve conter 'twitter'");
+  });
+});
+
+// ─── #4264: imagem do destaque (assets pro Buffer) ─────────────────────────
+
+describe("resolveTwitterImage (#4264)", () => {
+  it("escolhe o card 4x5 quando existe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-twitter-img-4x5-"));
+    try {
+      writePublicImages(dir, {
+        d1_4x5: { url: "https://poll.diaria.workers.dev/img/d1-4x5.jpg" },
+        d1: { url: "https://poll.diaria.workers.dev/img/d1-1x1.jpg" },
+      });
+      const result = resolveTwitterImage(dir, "d1", "260729");
+      assert.equal(result.imageUrl, "https://poll.diaria.workers.dev/img/d1-4x5.jpg");
+      assert.ok(result.altText?.includes("D1"));
+      assert.equal(result.reason, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("cai pro 1:1 quando o card 4x5 não existe pro destaque (só a entry 1:1 presente)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-twitter-img-fallback-"));
+    try {
+      writePublicImages(dir, {
+        d1_4x5: { url: "https://poll.diaria.workers.dev/img/d1-4x5.jpg" },
+        d1: { url: "https://poll.diaria.workers.dev/img/d1-1x1.jpg" },
+        d2: { url: "https://poll.diaria.workers.dev/img/d2-1x1.jpg" },
+      });
+      const result = resolveTwitterImage(dir, "d2", "260729");
+      assert.equal(result.imageUrl, "https://poll.diaria.workers.dev/img/d2-1x1.jpg");
+      assert.equal(result.reason, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna imageUrl null + reason quando 06-public-images.json não existe", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-twitter-img-missing-cache-"));
+    try {
+      const result = resolveTwitterImage(dir, "d1", "260729");
+      assert.equal(result.imageUrl, null);
+      assert.match(result.reason ?? "", /06-public-images\.json ausente/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retorna imageUrl null + reason quando o cache existe mas não tem entry pro destaque", () => {
+    const dir = mkdtempSync(join(tmpdir(), "diaria-twitter-img-missing-entry-"));
+    try {
+      writePublicImages(dir, { d1: { url: "https://poll.diaria.workers.dev/img/d1-1x1.jpg" } });
+      const result = resolveTwitterImage(dir, "d3", "260729");
+      assert.equal(result.imageUrl, null);
+      assert.match(result.reason ?? "", /public URL para d3 ausente/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("prepTwitterPosts — imageUrl/skipped_image (#4264)", () => {
+  it("com 06-public-images.json presente: d1 usa o card 4x5, d2 cai pro 1:1 (4x5 ausente pra d2)", () => {
+    const dir = makeEditionDir("diaria-twitter-prep-img-", MD_CURTO);
+    try {
+      writePublicImages(dir, {
+        d1_4x5: { url: "https://poll.diaria.workers.dev/img/d1-4x5.jpg" },
+        d1: { url: "https://poll.diaria.workers.dev/img/d1-1x1.jpg" },
+        d2: { url: "https://poll.diaria.workers.dev/img/d2-1x1.jpg" }, // sem d2_4x5
+        d3: { url: "https://poll.diaria.workers.dev/img/d3-1x1.jpg" },
+      });
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+
+      const d1 = result.posts.find((p) => p.destaque === "d1");
+      const d2 = result.posts.find((p) => p.destaque === "d2");
+      assert.equal(d1?.imageUrl, "https://poll.diaria.workers.dev/img/d1-4x5.jpg");
+      assert.equal(d2?.imageUrl, "https://poll.diaria.workers.dev/img/d2-1x1.jpg");
+      assert.equal(result.skipped_image.length, 0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem 06-public-images.json: posts continuam saindo (só texto), motivo vai pra skipped_image, não pra skipped", () => {
+    const dir = makeEditionDir("diaria-twitter-prep-noimg-", MD_CURTO);
+    try {
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+      assert.equal(result.posts.length, 3);
+      assert.ok(result.posts.every((p) => p.imageUrl === null));
+      assert.equal(result.skipped.length, 0);
+      assert.equal(result.skipped_image.length, 3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

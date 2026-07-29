@@ -30,6 +30,16 @@
  * real. Ver `computeTwitterWeightedLength` abaixo pro porquê o gate de
  * limite não usa `text.length` cru contra essa URL.
  *
+ * **Imagem (#4264):** cada post ganha `imageUrl`/`altText` resolvidos de
+ * `06-public-images.json` (gerado por `upload-images-public.ts` no 5c-pre),
+ * MESMO critério de precedência já usado por `publish-instagram.ts`
+ * (~L488): `images.d{N}_4x5.url` (card com título, preferencial) com
+ * fallback pra `images.d{N}.url` (1:1, sempre presente). **Sem fallback
+ * silencioso pro destaque inteiro** — se o cache não existe ou não tem a
+ * entry, o post continua saindo (só texto, `imageUrl: null`) e o motivo vai
+ * pra `skipped_image` (visível no resumo da edição) — X sem imagem é pior
+ * que X nenhum, então isso nunca vira um `skipped` de verdade.
+ *
  * **dueAt (#4103):** cada post ganha um `dueAt` calculado por
  * `computeScheduledAt` de `compute-social-schedule.ts` — o MESMO helper usado
  * por `publish-facebook.ts`/`publish-linkedin.ts`/`publish-instagram.ts`/
@@ -47,9 +57,10 @@
  *     [--skip-existing]     # pula destaques já em 06-social-published.json (default: true)
  *     [--no-skip-existing]  # força re-inclusão
  *
- * Output (stdout, JSON): { enabled, published_path, posts: [{destaque, text, dueAt}], skipped: [...] }
+ * Output (stdout, JSON): { enabled, published_path, posts: [{destaque, text, dueAt, imageUrl, altText}], skipped: [...], skipped_image: [...] }
  * `posts` é a lista que o orchestrator deve efetivamente postar via Buffer MCP
- * (`mode: "customScheduled"`, `dueAt` = `post.dueAt`).
+ * (`mode: "customScheduled"`, `dueAt` = `post.dueAt`; quando `imageUrl` não é
+ * `null`, passar `assets: [{ image: { url: imageUrl, metadata: { altText } } }]`).
  */
 
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
@@ -126,8 +137,64 @@ export function extractCurtoText(socialMd: string, destaque: string): string | n
 export interface PrepResult {
   enabled: boolean;
   published_path: string | null;
-  posts: Array<{ destaque: string; text: string; dueAt: string }>;
+  posts: Array<{
+    destaque: string;
+    text: string;
+    dueAt: string;
+    imageUrl: string | null;
+    altText: string | null;
+  }>;
   skipped: Array<{ destaque: string; reason: string }>;
+  /** #4264: destaques com post normal mas sem imagem resolvida — motivo aqui, nunca em `skipped`. */
+  skipped_image: Array<{ destaque: string; reason: string }>;
+}
+
+/**
+ * Resolve a URL pública + alt text de um destaque a partir de
+ * `06-public-images.json` (#4264). MESMO critério de precedência de
+ * `publish-instagram.ts` (~L488): card 4:5 (com título) > 1:1 (sempre
+ * presente, sem título). Retorna `{ imageUrl: null, reason }` quando o
+ * cache não existe ou não tem entry pro destaque — nunca lança.
+ */
+export function resolveTwitterImage(
+  editionDir: string,
+  destaque: string,
+  editionDate: string,
+): { imageUrl: string | null; altText: string | null; reason: string | null } {
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  if (!existsSync(publicImagesPath)) {
+    return {
+      imageUrl: null,
+      altText: null,
+      reason: "06-public-images.json ausente — rode upload-images-public.ts",
+    };
+  }
+
+  let images: Record<string, { url?: string }> | undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(publicImagesPath, "utf8")) as {
+      images?: Record<string, { url?: string }>;
+    };
+    images = parsed.images;
+  } catch (e: any) {
+    return {
+      imageUrl: null,
+      altText: null,
+      reason: `06-public-images.json inválido — ${e.message}`,
+    };
+  }
+
+  const imageUrl = images?.[`${destaque}_4x5`]?.url ?? images?.[destaque]?.url ?? null;
+  if (!imageUrl) {
+    return {
+      imageUrl: null,
+      altText: null,
+      reason: `public URL para ${destaque} ausente em 06-public-images.json`,
+    };
+  }
+
+  const altText = `Imagem do destaque ${destaque.toUpperCase()} da edição Diar.ia de ${editionDate}`;
+  return { imageUrl, altText, reason: null };
 }
 
 /**
@@ -147,7 +214,7 @@ export function prepTwitterPosts(
   const gateConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const twitterGateConfig = gateConfig?.publishing?.social?.twitter;
   if (twitterGateConfig?.enabled === false) {
-    return { enabled: false, published_path: null, posts: [], skipped: [] };
+    return { enabled: false, published_path: null, posts: [], skipped: [], skipped_image: [] };
   }
 
   const socialMdPath = resolve(editionDir, "03-social.md");
@@ -171,9 +238,10 @@ export function prepTwitterPosts(
   const destaques = extractDestaquesFromCurto(socialMd);
   const posts: PrepResult["posts"] = [];
   const skipped: PrepResult["skipped"] = [];
+  const skippedImage: PrepResult["skipped_image"] = [];
 
   if (destaques.length === 0) {
-    return { enabled: true, published_path: publishedPath, posts, skipped };
+    return { enabled: true, published_path: publishedPath, posts, skipped, skipped_image: skippedImage };
   }
 
   const published = readSocialPublished(publishedPath);
@@ -220,10 +288,15 @@ export function prepTwitterPosts(
       now: opts.now,
     });
 
-    posts.push({ destaque: d, text, dueAt });
+    const { imageUrl, altText, reason: imageReason } = resolveTwitterImage(editionDir, d, editionDate);
+    if (imageReason) {
+      skippedImage.push({ destaque: d, reason: imageReason });
+    }
+
+    posts.push({ destaque: d, text, dueAt, imageUrl, altText });
   }
 
-  return { enabled: true, published_path: publishedPath, posts, skipped };
+  return { enabled: true, published_path: publishedPath, posts, skipped, skipped_image: skippedImage };
 }
 
 async function main() {
