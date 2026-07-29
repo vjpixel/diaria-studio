@@ -165,6 +165,26 @@ describe("processThreads — core logic", () => {
     assert.ok(result.urls_filtered >= 1);
   });
 
+  it("#4280: não captura sufixo de lixo ')_==_' colado nos params de tracking", () => {
+    const threads = [
+      makeThread({
+        thread_id: "garbage-suffix",
+        body:
+          "Veja https://platform.claude.com/prompting-claude-opus-5?utm_source=diaria&_bhlid=abc123)_==_ para mais.",
+      }),
+    ];
+    const cursor: CapturedCursor = { processed_thread_ids: [] };
+
+    const { articles } = processThreads(threads, cursor);
+
+    assert.equal(articles.length, 1);
+    assert.equal(
+      articles[0].url,
+      "https://platform.claude.com/prompting-claude-opus-5?utm_source=diaria&_bhlid=abc123",
+    );
+    assert.ok(!articles[0].url.endsWith(")_==_"), `sufixo de lixo vazou: ${articles[0].url}`);
+  });
+
   it("deduplicates URLs across threads by canonical form", () => {
     const threads = [
       makeThread({

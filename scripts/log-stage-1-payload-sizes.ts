@@ -19,7 +19,13 @@
  * Uso:
  *   npx tsx scripts/log-stage-1-payload-sizes.ts \
  *     --edition 260507 \
- *     [--edition-dir data/editions/260507]   # default: data/editions/{edition}
+ *     [--edition-dir data/editions/260507]   # default: resolveEditionDir()
+ *                                             # (#4278 — disk-aware, cobre
+ *                                             # layout flat E nested)
+ *     [--editions-dir data/editions]         # override só pra teste, isola
+ *                                             # do data/editions/ real
+ *     [--log-path data/run-log.jsonl]        # override só pra teste, isola
+ *                                             # do run-log.jsonl real
  *
  * Exit codes:
  *   0 — sucesso (sempre, mesmo se _internal/ vazio — não bloqueia gate)
@@ -38,6 +44,7 @@ import {
 } from "node:fs";
 import { dirname, resolve, relative } from "node:path";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { resolveEditionDir } from "./lib/find-current-edition.ts"; // #4278: layout flat+nested
 
 interface FileSize {
   path: string;          // relative to repo root
@@ -221,11 +228,29 @@ if (isCli) {
     process.exit(2);
   }
   const repoRoot = process.cwd();
+  // #4278: monta a raiz de edições e delega a resolução do path exato pra
+  // `resolveEditionDir` — que checa o disco pelos DOIS layouts possíveis
+  // (flat legado `{AAMMDD}/` e nested novo `{AAMM}/{AAMMDD}/`, #2463/#3024)
+  // em vez de montar `data/editions/{AAMMDD}` à mão (grava num diretório
+  // órfão flat quando a edição já existe no layout nested — achado #4278).
+  // `--editions-dir` (mesma convenção de log-runtime-fix.ts #3496) isola
+  // testes do `data/editions/` real (junction OneDrive) sem precisar de um
+  // `--edition-dir` completo — só pra teste, nunca usado em produção.
+  const editionsRootDir = args["editions-dir"]
+    ? resolve(repoRoot, args["editions-dir"])
+    : resolve(repoRoot, "data/editions");
   const editionDir = args["edition-dir"]
     ? resolve(repoRoot, args["edition-dir"])
-    : resolve(repoRoot, "data/editions", args.edition);
+    : resolveEditionDir(editionsRootDir, args.edition);
   const internalDir = resolve(editionDir, "_internal");
-  const logPath = resolve(repoRoot, "data/run-log.jsonl");
+  // `--log-path` (override só pra teste, mesmo espírito de `--editions-dir`
+  // acima): sem isso, um teste CLI de ponta a ponta escreveria no
+  // `data/run-log.jsonl` REAL (junction OneDrive) sempre que `cwd` for a raiz
+  // do repo — necessário pra `--import tsx` resolver o pacote a partir de um
+  // tmpdir fora da árvore do projeto.
+  const logPath = args["log-path"]
+    ? resolve(repoRoot, args["log-path"])
+    : resolve(repoRoot, "data/run-log.jsonl");
   const outPath = resolve(internalDir, "01-payload-sizes.json");
 
   const now = new Date();

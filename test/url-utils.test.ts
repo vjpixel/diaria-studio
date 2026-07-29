@@ -344,6 +344,27 @@ describe("stripUrlTrailingPunct (#626)", () => {
       "https://x.com/y",
     );
   });
+
+  it("#4280: strip sufixo ')_==_' colado após query string real (caso real capture-newsletter-urls)", () => {
+    assert.equal(
+      stripUrlTrailingPunct(
+        "https://platform.claude.com/prompting-claude-opus-5?utm_source=x&_bhlid=abc123)_==_",
+      ),
+      "https://platform.claude.com/prompting-claude-opus-5?utm_source=x&_bhlid=abc123",
+    );
+  });
+
+  it("#4280: strip sufixo '_==_' sem parêntese de fechamento junto", () => {
+    assert.equal(
+      stripUrlTrailingPunct("https://x.com/a?b=c_==_"),
+      "https://x.com/a?b=c",
+    );
+  });
+
+  it("#4280: NÃO mexe em query string terminando só em '=' (sem o artefato completo)", () => {
+    assert.equal(stripUrlTrailingPunct("https://x.com/a?b="), "https://x.com/a?b=");
+    assert.equal(stripUrlTrailingPunct("https://x.com/a?b=="), "https://x.com/a?b==");
+  });
 });
 
 describe("extractUrls (#626)", () => {

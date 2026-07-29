@@ -24,16 +24,21 @@
  * Exit codes:
  *   0 — sucesso, ambos os arquivos regravados
  *   1 — args inválidos
- *   2 — `01-eia-compose-context.json` ausente (edição composta ANTES do
- *       #4258 — o único caso benigno; orchestrator trata como skip, não
- *       como erro)
- *   3 — qualquer outro input ausente/malformado (meta.json, --corrected,
- *       compose-context.json presente mas com shape errado, 01-eia.md sem o
- *       header esperado) — erro de verdade, orchestrator deve reportar ao
- *       editor, nunca tratar como skip silencioso (achado do review
- *       consolidado: exit 2 estava sobrecarregado com ~8 causas distintas,
- *       incluindo o "falhar alto" proposital de replaceCreditLineInEiaMd
- *       logo abaixo, que virava indistinguível do skip benigno)
+ *   3 — qualquer input ausente/malformado (`01-eia-compose-context.json`,
+ *       meta.json, --corrected, compose-context.json presente mas com shape
+ *       errado, 01-eia.md sem o header esperado) — sempre erro de verdade,
+ *       orchestrator reporta halt banner ao editor, nunca skip silencioso.
+ *
+ * #4281 (post-mortem 260729): `01-eia-compose-context.json` ausente era
+ * tratado como exit 2 "benigno" sob a premissa de que só aconteceria em
+ * edições compostas ANTES do #4258. Essa premissa se provou falsa — o caso
+ * ocorreu numa edição composta DEPOIS do #4258 (causa raiz não investigada,
+ * fora de escopo aqui), e o skip silencioso deixou a descrição do "É IA?" em
+ * inglês na edição sem sinalização loud. Ausência desse arquivo agora é
+ * tratada como qualquer outro erro real (exit 3, halt banner) — nunca mais
+ * um skip automático. Editor que precisar reprocessar uma edição legado
+ * genuinamente pré-#4258 roda humanizador/Clarice manualmente sobre a
+ * creditLine, como o comentário do exit 2 antigo já sugeria.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -126,16 +131,18 @@ function main(): void {
     process.exit(3);
   }
 
-  // Único caso benigno (exit 2): edição composta antes do #4258 nunca
-  // gravou este arquivo. Qualquer outra falha a partir daqui é erro de
-  // verdade (exit 3) — ver nota nos exit codes do header.
+  // #4281: ausência deste arquivo NÃO é mais tratada como skip benigno — a
+  // premissa "só acontece em edições pré-#4258" se provou falsa (post-mortem
+  // 260729, edição composta pós-#4258). Sem esse contexto a descrição do
+  // "É IA?" fica em inglês sem sinalização — erro de verdade, halt loud.
   const contextPath = resolve(args.editionDir, "_internal/01-eia-compose-context.json");
   if (!existsSync(contextPath)) {
     console.error(
-      `[apply-eia-description] ${contextPath} não existe — edições compostas antes do #4258 ` +
-        "não têm esse arquivo (nada a regerar; rode humanizador/Clarice direto se quiser corrigir manualmente).",
+      `[apply-eia-description] ${contextPath} não existe — sem esse contexto a descrição do ` +
+        "\"É IA?\" fica em inglês (não traduzida/adaptada). Halt: investigar por que eia-compose.ts " +
+        "não gravou esse arquivo nesta edição antes de prosseguir.",
     );
-    process.exit(2);
+    process.exit(3);
   }
   let context: ComposeContext;
   try {

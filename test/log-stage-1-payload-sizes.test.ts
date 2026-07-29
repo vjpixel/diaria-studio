@@ -1,8 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import {
   buildReport,
   listInternalJsonFiles,
@@ -10,6 +11,8 @@ import {
   PAYLOAD_WARN_BYTES,
   PAYLOAD_ERROR_BYTES,
 } from "../scripts/log-stage-1-payload-sizes.ts";
+
+const PROJECT_ROOT = join(import.meta.dirname, "..");
 
 function makeFixture(): { root: string; internalDir: string; edition: string } {
   const root = mkdtempSync(join(tmpdir(), "stage1-payload-sizes-"));
@@ -256,5 +259,102 @@ describe("payloadLevel ratchet (#891, recalibrado #1203)", () => {
   it("constants exportadas: warn=1MB, error=2.5MB (#1203)", () => {
     assert.equal(PAYLOAD_WARN_BYTES, 1024 * 1024);
     assert.equal(PAYLOAD_ERROR_BYTES, 2.5 * 1024 * 1024);
+  });
+});
+
+describe("CLI (#4278: disk-aware via resolveEditionDir, layout nested)", () => {
+  // #3484/#3496 pattern (ver test/log-runtime-fix.test.ts): cwd fica em
+  // PROJECT_ROOT (senão `--import tsx` não resolve o pacote a partir de um
+  // tmpdir fora da árvore do projeto) e o isolamento do `data/editions/` REAL
+  // (junction OneDrive nesta máquina) é feito via `--editions-dir` explícito
+  // apontando pro fixture tmpdir — nunca lendo/escrevendo a árvore de verdade.
+  // `--log-path` isola também o `data/run-log.jsonl` REAL pelo mesmo motivo
+  // (cwd == PROJECT_ROOT faria o script escrever lá sem o override).
+  function runCli(args: string[], logDir: string) {
+    return spawnSync(
+      process.execPath,
+      [
+        "--import", "tsx", join(PROJECT_ROOT, "scripts", "log-stage-1-payload-sizes.ts"),
+        ...args,
+        "--log-path", join(logDir, "run-log.jsonl"),
+      ],
+      { cwd: PROJECT_ROOT, encoding: "utf8", timeout: 15000 },
+    );
+  }
+
+  it("edição no layout nested (data/editions/{AAMM}/{AAMMDD}) grava o relatório no diretório REAL, não num flat órfão", () => {
+    // Fixture reproduz o caso real da edição 260729: a edição só existe no
+    // disco no layout nested (#2463/#3024). Antes do #4278, o script montava
+    // `data/editions/{AAMMDD}` à mão e criava um diretório flat órfão em vez
+    // de escrever no diretório real — e reportava 0 arquivos.
+    const editionsDir = mkdtempSync(join(tmpdir(), "stage1-payload-cli-nested-"));
+    try {
+      const nestedInternalDir = join(editionsDir, "2607", "260729", "_internal");
+      mkdirSync(nestedInternalDir, { recursive: true });
+      writeFileSync(join(nestedInternalDir, "01-approved.json"), "{}");
+
+      const result = runCli(["--edition", "260729", "--editions-dir", editionsDir], editionsDir);
+      assert.equal(result.status, 0, result.stderr);
+
+      const nestedReportPath = join(nestedInternalDir, "01-payload-sizes.json");
+      assert.ok(existsSync(nestedReportPath), `relatório deveria existir no diretório nested real: ${nestedReportPath}`);
+      const report = JSON.parse(readFileSync(nestedReportPath, "utf8"));
+      // No momento da geração só 01-approved.json estava presente em
+      // _internal/ — 1 arquivo, não 0 (o bug original reportava 0 porque
+      // olhava pro diretório flat órfão, sempre vazio).
+      assert.equal(report.totals.file_count, 1, "deveria contar o 01-approved.json fixture, não reportar 0");
+
+      const flatOrphanReportPath = join(editionsDir, "260729", "_internal", "01-payload-sizes.json");
+      assert.ok(
+        !existsSync(flatOrphanReportPath),
+        `#4278: não deveria criar diretório flat órfão em ${flatOrphanReportPath}`,
+      );
+    } finally {
+      rmSync(editionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("edição no layout flat legado (data/editions/{AAMMDD}) continua funcionando", () => {
+    const editionsDir = mkdtempSync(join(tmpdir(), "stage1-payload-cli-flat-"));
+    try {
+      const flatInternalDir = join(editionsDir, "260501", "_internal");
+      mkdirSync(flatInternalDir, { recursive: true });
+      writeFileSync(join(flatInternalDir, "01-approved.json"), "{}");
+
+      const result = runCli(["--edition", "260501", "--editions-dir", editionsDir], editionsDir);
+      assert.equal(result.status, 0, result.stderr);
+
+      const reportPath = join(flatInternalDir, "01-payload-sizes.json");
+      assert.ok(existsSync(reportPath), `relatório deveria existir no diretório flat: ${reportPath}`);
+    } finally {
+      rmSync(editionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("edição ainda não criada em disco (nenhum layout existente) cai no default nested — não quebra", () => {
+    const editionsDir = mkdtempSync(join(tmpdir(), "stage1-payload-cli-none-"));
+    try {
+      const result = runCli(["--edition", "260601", "--editions-dir", editionsDir], editionsDir);
+      assert.equal(result.status, 0, result.stderr);
+      const reportPath = join(editionsDir, "2606", "260601", "_internal", "01-payload-sizes.json");
+      assert.ok(existsSync(reportPath), `relatório deveria existir no default nested: ${reportPath}`);
+    } finally {
+      rmSync(editionsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("--edition-dir explícito continua tendo prioridade sobre resolveEditionDir()", () => {
+    const root = mkdtempSync(join(tmpdir(), "stage1-payload-cli-override-"));
+    try {
+      const customDir = join(root, "custom-dir");
+      mkdirSync(join(customDir, "_internal"), { recursive: true });
+      writeFileSync(join(customDir, "_internal", "x.json"), "{}");
+
+      const result = runCli(["--edition", "260501", "--edition-dir", customDir], root);
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(existsSync(join(customDir, "_internal", "01-payload-sizes.json")));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

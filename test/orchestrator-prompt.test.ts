@@ -661,21 +661,28 @@ describe("#4258 item 3: §3a-bis (humanizador+Clarice na descrição do É IA?) 
     );
   });
 
-  it("exit codes de extract-eia-description.ts e apply-eia-description.ts são distinguidos (2 = skip benigno, 3 = erro de verdade) — não conflar os dois", () => {
+  it("passo 1 (extract-eia-description.ts) distingue exit 2 (skip benigno) de exit 3 (erro de verdade) — não conflar os dois", () => {
     const step1Idx = section3aBis.indexOf("extract-eia-description.ts");
     const step2Idx = section3aBis.indexOf("Skill(\"humanizador\"");
     const step1Text = section3aBis.slice(step1Idx, step2Idx);
-    const step4Idx = section3aBis.indexOf("apply-eia-description.ts");
-    const step4Text = section3aBis.slice(step4Idx);
     assert.ok(/exit `2`/i.test(step1Text) && /exit `3`/i.test(step1Text), "passo 1 precisa documentar exit 2 E exit 3 distintos");
-    assert.ok(/exit `2`/i.test(step4Text) && /exit `3`/i.test(step4Text), "passo 4 precisa documentar exit 2 E exit 3 distintos");
     assert.ok(
       /skip pra 3b/i.test(step1Text) && /halt banner/i.test(step1Text),
       "#4258 item 3 (achado do review consolidado): exit 2 (skip benigno) e exit 3 (halt banner, erro de verdade) do passo 1 não podem ser conflados na mesma ação",
     );
-    assert.ok(
-      /sem abortar/i.test(step4Text) && /halt banner/i.test(step4Text),
-      "#4258 item 3 (achado do review consolidado): exit 2 (skip benigno) e exit 3 (halt banner, erro de verdade) do passo 4 não podem ser conflados na mesma ação",
-    );
+  });
+
+  it("#4281: passo 4 (apply-eia-description.ts) NÃO tem mais skip benigno — todo erro (inclusive compose-context.json ausente) é halt banner", () => {
+    // Antes do #4281, passo 4 tinha exit 2 (skip benigno, "sem abortar") pra
+    // 01-eia-compose-context.json ausente, sob a premissa de que só acontecia
+    // em edições pré-#4258. Post-mortem 260729 provou a premissa falsa — o
+    // skip silencioso deixou a descrição em inglês numa edição pós-#4258. A
+    // prosa agora documenta só exit 3 (sempre halt), nunca mais "sem abortar".
+    const step4Idx = section3aBis.indexOf("apply-eia-description.ts", section3aBis.indexOf("Clarice inline"));
+    const step4Text = section3aBis.slice(step4Idx);
+    assert.ok(/exit `3`/i.test(step4Text), "passo 4 precisa documentar exit 3");
+    assert.ok(!/exit `2`/i.test(step4Text), "#4281: passo 4 não deve mais documentar um exit 2 benigno pra apply-eia-description.ts");
+    assert.ok(!/sem abortar/i.test(step4Text), "#4281: passo 4 não deve mais ter caminho 'sem abortar' — todo erro é halt banner");
+    assert.ok(/halt banner/i.test(step4Text), "#4281: passo 4 precisa manter o halt banner pra qualquer erro");
   });
 });
