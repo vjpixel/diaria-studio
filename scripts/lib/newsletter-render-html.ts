@@ -1438,6 +1438,26 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
     parts.push(renderCoverageTrailer(content.coverageLineTrailer));
   }
 
+  // #4274: box de divulgação slot 0 — SEMPRE na região de introdução, entre a
+  // linha/bloco de cobertura (+ callout/agradecimento, se houver) e o 1º
+  // destaque. Mesmo dispatcher (`renderBoxDivulgacao`) e kicker
+  // (`renderDivulgacaoSeparator`) dos demais slots.
+  if (content.boxDivulgacao0) {
+    const label0 = content.boxDivulgacao0Categoria
+      || (isAgradecimentoBox(content.boxDivulgacao0) ? "Agradecimento" : "Divulgação");
+    parts.push(renderDivulgacaoSeparator(label0));
+    parts.push(
+      renderBoxDivulgacao(
+        content.boxDivulgacao0,
+        content.boxDivulgacao0Image ?? null,
+        content.boxDivulgacao0Bold ?? true,
+        content.boxDivulgacaoImageExplicit?.[0] ?? false,
+        content.boxDivulgacaoImagePortrait?.[0] ?? false,
+        content.boxDivulgacaoImageAlt?.[0] ?? null,
+      ),
+    );
+  }
+
   const includeEia = !!(!opts.excludeEia && content.eia.credit);
   let eiaInserted = false;
   for (let i = 0; i < content.destaques.length; i++) {

@@ -135,6 +135,7 @@
 import { readFileSync, existsSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  extractBoxDivulgacao0,
   extractBoxDivulgacao1,
   extractBoxDivulgacao2,
   extractBoxDivulgacao3,
@@ -151,6 +152,9 @@ export interface BoxesDivulgacaoConfigLike {
   slot1: string | null;
   slot2: string | null;
   slot3: string | null;
+  /** #4274: opcional por back-compat (mesma razão de `BoxesDivulgacaoConfig.slot3`
+   * em stitch-newsletter.ts) — ausência tratada como `null` (sem slot0). */
+  slot0?: string | null;
 }
 
 /** Retorna `mtimeMs` do arquivo, ou `null` se ausente/inacessível. */
@@ -176,12 +180,13 @@ export function readBoxesDivulgacaoConfig(configPath: string): BoxesDivulgacaoCo
         slot1: raw.boxes_divulgacao.slot1 ?? null,
         slot2: raw.boxes_divulgacao.slot2 ?? null,
         slot3: raw.boxes_divulgacao.slot3 ?? null,
+        slot0: raw.boxes_divulgacao.slot0 ?? null,
       };
     }
   } catch {
     // graceful — config ausente/corrompido cai no default legado abaixo
   }
-  return { slot1: "livros-divulgacao.md", slot2: null, slot3: null };
+  return { slot1: "livros-divulgacao.md", slot2: null, slot3: null, slot0: null };
 }
 
 /**
@@ -209,7 +214,7 @@ export function isAgradecimentoSnippetUsed(snippetsDir: string): boolean {
   return !raw.includes("{apoiadores}");
 }
 
-export type SnippetSlot = "encerramento" | "agradecimento" | "slot1" | "slot2" | "slot3";
+export type SnippetSlot = "encerramento" | "agradecimento" | "slot0" | "slot1" | "slot2" | "slot3";
 
 export interface UsedSnippetEntry {
   file: string;
@@ -234,6 +239,9 @@ export function resolveUsedSnippets(
   ];
   if (agradecimentoUsed) {
     used.push({ file: "agradecimento-apoiadores.md", slot: "agradecimento" });
+  }
+  if (boxesCfg.slot0 && extractBoxDivulgacao0(reviewedMd) !== null) {
+    used.push({ file: boxesCfg.slot0, slot: "slot0" });
   }
   if (boxesCfg.slot1 && extractBoxDivulgacao1(reviewedMd) !== null) {
     used.push({ file: boxesCfg.slot1, slot: "slot1" });
@@ -469,7 +477,7 @@ export function runSnippetStalenessCheck(
     };
   });
   const boxesEngaged = used.some(
-    (u) => u.slot === "slot1" || u.slot === "slot2" || u.slot === "slot3",
+    (u) => u.slot === "slot0" || u.slot === "slot1" || u.slot === "slot2" || u.slot === "slot3",
   );
 
   return evaluateSnippetStaleness(reviewedMtime, usedWithMtimes, {

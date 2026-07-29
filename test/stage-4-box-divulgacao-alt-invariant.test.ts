@@ -7,7 +7,8 @@
  * test/stage-4-title-normalization-invariant.test.ts (#2693 item 3).
  *
  * checkBoxDivulgacaoAltMissing dispara (warning, nunca error) quando um slot
- * de box de divulgação (1/2/3) tem imagem — `box_slot{N}_image` explícito, ou
+ * de box de divulgação (0/1/2/3 — slot 0 desde #4274) tem imagem —
+ * `box_slot{N}_image` explícito, ou
  * `livros_promo` no box de livros — mas o snippet atribuído àquele slot em
  * `boxes_divulgacao.slot{N}` (platform.config.json) não declara `alt:` no
  * header.
@@ -95,6 +96,38 @@ function makeRoot(snippetFilename: string, snippetContent: string): string {
   return root;
 }
 
+/** #4274: MD com box na região de intro (slot 0) — sem box no slot 1. */
+const SLOT0_MD = `Para esta edição, selecionamos 15 itens.
+
+---
+
+🔧 Indicação de ferramenta: [Raycast](https://raycast.com).
+
+---
+
+**DESTAQUE 1 | 🚀 LANÇAMENTO**
+
+**[Título D1](https://example.com/d1)**
+
+Corpo do destaque 1.
+
+Por que isso importa:
+
+Algo importante.
+`;
+
+/** #4274: mesmo contrato de `makeRoot`, mas atribui o snippet ao slot0. */
+function makeRootSlot0(snippetFilename: string, snippetContent: string): string {
+  const root = mkdtempSync(join(tmpdir(), "stage4-box-alt-root-slot0-"));
+  mkdirSync(join(root, "context", "snippets"), { recursive: true });
+  writeFileSync(join(root, "context", "snippets", snippetFilename), snippetContent);
+  writeFileSync(
+    join(root, "platform.config.json"),
+    JSON.stringify({ boxes_divulgacao: { slot0: snippetFilename } }),
+  );
+  return root;
+}
+
 describe("checkBoxDivulgacaoAltMissing (#4086)", () => {
   it("retorna [] quando 02-reviewed.md não existe (stage não chegou lá)", () => {
     const dir = mkdtempSync(join(tmpdir(), "stage4-box-alt-missing-md-"));
@@ -166,6 +199,22 @@ describe("checkBoxDivulgacaoAltMissing (#4086)", () => {
       const v = checkBoxDivulgacaoAltMissing(dir, root);
       assert.equal(v.length, 1);
       assert.equal(v[0].rule, "box-divulgacao-alt-missing");
+    } finally {
+      rmSync(dir, { recursive: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("#4274: warning quando a imagem vem de box_slot0_image (introdução) e o snippet não declara alt:", () => {
+    const dir = makeEdition(SLOT0_MD, {
+      box_slot0_image: { cloudflare_url: "https://img.example/explicit0.jpg" },
+    });
+    const root = makeRootSlot0("sem-alt-slot0.md", "<!--\nnome: Ferramenta\n-->\n\nConteúdo.");
+    try {
+      const v = checkBoxDivulgacaoAltMissing(dir, root);
+      assert.equal(v.length, 1);
+      assert.equal(v[0].rule, "box-divulgacao-alt-missing");
+      assert.match(v[0].message, /slot 0/i);
     } finally {
       rmSync(dir, { recursive: true });
       rmSync(root, { recursive: true, force: true });

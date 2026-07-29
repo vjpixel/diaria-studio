@@ -343,10 +343,10 @@ describe("imageSpecsFor (#192 — runtime detection A/B vs legacy)", () => {
       keys.sort(),
       [
         "cover", "d1", "d2", "d2_2x1", "d3", "d3_2x1",
-        "box_slot1_image", "box_slot2_image", "box_slot3_image",
+        "box_slot0_image", "box_slot1_image", "box_slot2_image", "box_slot3_image", // #4274: slot0 (introdução)
         "eia_a", "eia_b", "livros_promo",
       ].sort(),
-      "newsletter = cover + d1/d2/d3 (1x1 + 2x1) + 3 box slots + eia_a/eia_b + livros_promo",
+      "newsletter = cover + d1/d2/d3 (1x1 + 2x1) + 4 box slots (#4274) + eia_a/eia_b + livros_promo",
     );
     assert.ok(
       specs.filter((s) => s.key.startsWith("box_slot")).every((s) => s.optional),

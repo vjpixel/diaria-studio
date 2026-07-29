@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   extractContent,
+  extractBoxDivulgacao0,
   extractBoxDivulgacao1,
   extractBoxDivulgacao2,
   extractBoxDivulgacao3,
@@ -489,5 +490,155 @@ ${d(3, "💼 TRABALHO", "https://example.com/d3")}
 Desc.`;
     const warnings = findOrphanBoxWarnings(reviewed);
     assert.equal(warnings.find((w) => w.gapIndex === 2), undefined);
+  });
+});
+
+// ─── #4274 — extractBoxDivulgacao0: box na região de introdução ─────────────
+
+describe("#4274 — extractBoxDivulgacao0: box posicionado entre a linha de cobertura e DESTAQUE 1", () => {
+  function buildReviewedWithBox0(box0: string | null, agradecimento = ""): string {
+    const agr = agradecimento ? `${agradecimento}\n\n---\n\n` : "";
+    const box = box0 ? `${box0}\n\n---\n\n` : "";
+    return `Para esta edição, selecionamos 12 itens.
+
+---
+
+${agr}${box}${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}
+
+---
+
+${d(2, "💼 MERCADO", "https://example.com/d2")}
+
+---
+
+${d(3, "💼 TRABALHO", "https://example.com/d3")}
+
+---
+
+${EIA}
+
+---
+
+**📡 RADAR**
+
+**[Item de radar](https://example.com/r1)**
+Resumo do item.
+`;
+  }
+
+  it("box0 isolado entre a linha de cobertura e DESTAQUE 1 é extraído", () => {
+    const box0 = "🔧 Indicação de ferramenta: uso o Raycast todo dia.\n\n_Não recebi comissão por essa indicação._";
+    const reviewed = buildReviewedWithBox0(box0);
+    const found = extractBoxDivulgacao0(reviewed);
+    assert.ok(found, "box0 deveria ser extraído");
+    assert.match(found!, /uso o Raycast todo dia/);
+    assert.match(found!, /Não recebi comissão/);
+  });
+
+  it("sem box0 na região — extractBoxDivulgacao0 retorna null (não confunde a linha de cobertura com o box)", () => {
+    const reviewed = buildReviewedWithBox0(null);
+    assert.equal(extractBoxDivulgacao0(reviewed), null);
+  });
+
+  it("box0 + agradecimento a apoiadores presentes ao mesmo tempo — ambos extraídos sem colisão", () => {
+    const agradecimento = "**Agradeço ao novo apoiador: **Fulano**. Seu apoio ajuda a manter essa curadoria diária de pé!**";
+    const box0 = "🔧 Indicação de ferramenta: [Raycast](https://raycast.com).";
+    const reviewed = buildReviewedWithBox0(box0, agradecimento);
+    const foundBox0 = extractBoxDivulgacao0(reviewed);
+    assert.ok(foundBox0, "box0 deveria ser extraído mesmo com agradecimento na região");
+    assert.match(foundBox0!, /Raycast/);
+    assert.doesNotMatch(foundBox0!, /novo apoiador/, "box0 não deveria absorver o texto do agradecimento");
+  });
+
+  it("box0 renderiza no HTML ANTES do Destaque 1 (round-trip extractContent + renderHTML)", () => {
+    const box0 = "🔧 Indicação de ferramenta: uso o [Raycast](https://raycast.com) todo dia.";
+    const reviewed = buildReviewedWithBox0(box0);
+    const dir = mkdtempSync(join(tmpdir(), "ed-4274-"));
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), reviewed, "utf8");
+      writeFileSync(join(dir, "01-eia.md"), EIA, "utf8");
+      const content = extractContent(dir);
+      assert.ok(content.boxDivulgacao0, "content.boxDivulgacao0 populado");
+      const html = renderHTML(content);
+      const box0Idx = html.indexOf("uso o");
+      const d1Idx = html.indexOf("<!-- Destaque 1 -->");
+      assert.ok(box0Idx !== -1 && d1Idx !== -1);
+      assert.ok(box0Idx < d1Idx, `box0(${box0Idx}) deveria vir antes de Destaque 1(${d1Idx})`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("edição de 2 destaques (sem D3) com box0 preenchido continua parseando normalmente", () => {
+    const box0 = "🔧 Indicação de ferramenta: [Raycast](https://raycast.com).";
+    const reviewed = `Para esta edição, selecionamos 8 itens.
+
+---
+
+${box0}
+
+---
+
+${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}
+
+---
+
+${d(2, "💼 MERCADO", "https://example.com/d2")}
+
+---
+
+${EIA}
+`;
+    const dir = mkdtempSync(join(tmpdir(), "ed-4274-2d-"));
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), reviewed, "utf8");
+      writeFileSync(join(dir, "01-eia.md"), EIA, "utf8");
+      const content = extractContent(dir);
+      assert.equal(content.destaques.length, 2);
+      assert.ok(content.boxDivulgacao0, "content.boxDivulgacao0 populado mesmo em edição de 2 destaques");
+      assert.match(content.boxDivulgacao0!, /Raycast/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("slots 1/2/3 continuam funcionando sem regressão com box0 também presente", () => {
+    const box0 = "🔧 Indicação de ferramenta: [Raycast](https://raycast.com).";
+    const box1 = "**📚 Curadoria de livros: [Confira](https://livros.diar.ia.br).**";
+    const box3 = "🎯 Box pós-destaques: [Ver](https://example.com/f).";
+    const reviewed = `Para esta edição, selecionamos 12 itens.
+
+---
+
+${box0}
+
+---
+
+${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}
+
+---
+
+${box1}
+
+---
+
+${d(2, "💼 MERCADO", "https://example.com/d2")}
+
+---
+
+${d(3, "💼 TRABALHO", "https://example.com/d3")}
+
+---
+
+${box3}
+
+---
+
+${EIA}
+`;
+    assert.match(extractBoxDivulgacao0(reviewed) ?? "", /Raycast/);
+    assert.match(extractBoxDivulgacao1(reviewed) ?? "", /Curadoria de livros/);
+    assert.equal(extractBoxDivulgacao2(reviewed), null); // sem bloco entre D2 e D3 nesta fixture
+    assert.match(extractBoxDivulgacao3(reviewed) ?? "", /Box pós-destaques/);
   });
 });

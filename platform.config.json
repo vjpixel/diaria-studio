@@ -57,6 +57,7 @@
     "min_primary_urls": 5
   },
   "boxes_divulgacao": {
+    "slot0": null,
     "slot1": "historia-ia-para-quem-tem-pressa-clarice.md",
     "slot2": "artigo-especial-apoiadores.md",
     "slot3": "clarice-divulgacao.md"
