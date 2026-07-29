@@ -61,7 +61,7 @@ import {
   type UtmEmitterStatus,
 } from "../lib/shared/utm-registry.ts";
 import { fetchAndAggregate } from "../count-subscriptions-by-utm.ts";
-import { loadBeehiivConfig } from "../lib/beehiiv-config.ts";
+import { resolveBeehiivConfig } from "../lib/beehiiv-config.ts";
 import { brevoGet } from "../lib/brevo-client.ts";
 
 // Mesmo racional de `studio-integrations.ts`/`dashboard-clarice.ts`: garante
@@ -417,19 +417,27 @@ export async function buildUtmsData(
   let beehiivError: string | undefined;
   try {
     const fetcher = opts.fetchSubscriptions ?? fetchAndAggregate;
-    // `loadBeehiivConfig` faz `process.exit(1)` quando a credencial falta (é
+    // `loadBeehiivConfig` faz `process.exit(2)` quando a credencial falta (é
     // um helper de CLI). No studio-server isso derrubaria o processo INTEIRO —
-    // então a ausência é detectada ANTES e vira o campo `beehiivError`, que é
-    // o comportamento fail-soft que o resto do módulo promete.
+    // então usamos `resolveBeehiivConfig` (#4296), a versão pura que nunca
+    // termina o processo: a ausência vira `beehiivError` diretamente, sem
+    // reimplementar a checagem de credencial (a reimplementação anterior
+    // exigia `BEEHIIV_PUBLICATION_ID` no env e perdia o fallback pra
+    // `platform.config.json` — causa raiz do #4296). Roda SEMPRE (não só
+    // quando `!injected`) — é leitura pura de env + arquivo local, nunca
+    // rede — pra que testes com `fetchSubscriptions` injetado também
+    // exerçam o caminho real de resolução (era exatamente essa lacuna,
+    // pular a resolução quando injetado, que deixou o bug original invisível
+    // à suíte). Só falha quando NÃO há fetcher injetado pra absorver a
+    // ausência de credencial.
     const injected = Boolean(opts.fetchSubscriptions);
-    if (!injected && (!env.BEEHIIV_API_KEY || !env.BEEHIIV_PUBLICATION_ID)) {
-      throw new Error(
-        "BEEHIIV_API_KEY/BEEHIIV_PUBLICATION_ID ausentes — dados de conversão indisponíveis neste ambiente.",
-      );
+    let cfg = { publicationId: "", apiKey: "" };
+    const resolved = resolveBeehiivConfig(env);
+    if (resolved.ok) {
+      cfg = resolved.config;
+    } else if (!injected) {
+      throw new Error(resolved.reason);
     }
-    const cfg = injected
-      ? { publicationId: "", apiKey: "" }
-      : loadBeehiivConfig("[studio-utms]");
     const result = await fetcher(cfg.publicationId, cfg.apiKey);
     sourceCounts = result.counts ?? {};
     campaignCounts = result.campaignCounts ?? {};
