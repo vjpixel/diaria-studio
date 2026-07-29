@@ -110,6 +110,18 @@ describe("render-newsletter-html CLI — --esp (#4266)", () => {
     }
   });
 
+  it('--esp=brevo (sintaxe com igual): sai 1 em vez de cair silenciosamente no default beehiiv (2º achado do review #4267 — parseCliArgs não suporta "=" em lugar nenhum do repo)', () => {
+    const dir = makeEditionDir();
+    try {
+      const r = run([dir, "--esp=brevo"]);
+      assert.equal(r.status, 1, '--esp=brevo deve falhar explicitamente, não render silenciosamente com merge tag Beehiiv');
+      assert.match(r.stderr, /--esp não aceita sintaxe/);
+      assert.match(r.stderr, /--esp brevo/, "mensagem deve sugerir a forma correta (espaço, não igual)");
+    } finally {
+      rmSync(resolve(dir, ".."), { recursive: true, force: true }); // remove o tmpdir base inteiro (dir é a subpasta "260999")
+    }
+  });
+
   it('--esp com valor inválido (ex: "Brevo" com maiúscula, ou "foo"): sai 1 com mensagem clara', () => {
     const dir = makeEditionDir();
     try {

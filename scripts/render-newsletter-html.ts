@@ -93,8 +93,13 @@ import { extractContent } from "./lib/newsletter-parse.ts";
 import { renderHTML, renderEiaStandalone, type Esp } from "./lib/newsletter-render-html.ts";
 
 // #4266 — fonte única do conjunto válido; deriva mensagem de uso/erro do CLI
-// em vez de repetir o union literal (ver doc comment de `Esp`).
-const VALID_ESP: readonly Esp[] = ["beehiiv", "brevo"];
+// em vez de repetir o union literal (ver doc comment de `Esp`). `Record<Esp,
+// true>` (não array solto) é de propósito: se `Esp` ganhar um 3º valor e
+// alguém esquecer de adicionar aqui, o TS recusa compilar (propriedade
+// faltando) — um array `readonly Esp[]` não daria esse erro (achado do
+// review automatizado do PR #4267, type-design-analyzer).
+const ESP_SET: Record<Esp, true> = { beehiiv: true, brevo: true };
+const VALID_ESP = Object.keys(ESP_SET) as Esp[];
 
 // ── Main ──────────────────────────────────────────────────────────────
 
@@ -111,6 +116,26 @@ function main(): void {
       "Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>] [--split] [--esp beehiiv|brevo]\n" +
         "  --split: produz 2 arquivos em {edition}/_internal/ — newsletter-body.html (sem È IA?) + newsletter-eia.html (È IA? standalone, preserva merge tags). #1046\n" +
         `  --esp: merge tag do link de voto do É IA? (${VALID_ESP.join("|")}, default beehiiv). #4266`,
+    );
+    process.exit(1);
+  }
+
+  // #4266 — `--esp=valor` (sintaxe com igual) NÃO é suportada por
+  // `parseCliArgs` em lugar nenhum do repo (parser só reconhece "--chave
+  // valor" com espaço) — sem este guard, `arg.slice(2)` produz a chave
+  // literal "esp=brevo" (nunca reconhecida como "esp"), então `flags.has`/
+  // `values["esp"]` abaixo NUNCA veem esse token e o `?? "beehiiv"` aceita o
+  // default errado silenciosamente. 2º achado do review automatizado do PR
+  // #4267 (silent-failure-hunter + pr-test-analyzer, confirmado por repro em
+  // ambos): limitação pré-existente de `cli-args.ts` (compartilhado por
+  // dezenas de scripts, não é esta issue que deve corrigir o parser em si —
+  // ver issue de follow-up), mas esta flag específica merece o guard local
+  // porque um `--esp` mal-configurado tem consequência de produção (voto
+  // perdido sem aviso).
+  const espEquals = args.find((a) => a.startsWith("--esp="));
+  if (espEquals) {
+    console.error(
+      `--esp não aceita sintaxe "=" (recebido "${espEquals}") — use "--esp ${espEquals.slice(6)}" (espaço, não igual).`,
     );
     process.exit(1);
   }
