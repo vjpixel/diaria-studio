@@ -41,6 +41,7 @@ const el = {
   tileTotal: document.getElementById("tile-total"),
   tileConverted: document.getElementById("tile-converted"),
   tileValue: document.getElementById("tile-value"),
+  vinculoSummary: document.getElementById("vinculo-summary"),
   rewardGroups: document.getElementById("reward-groups"),
   contactsCount: document.getElementById("contacts-count"),
   filterStatus: document.getElementById("filter-status"),
@@ -142,6 +143,22 @@ function openRateBadge(openRate) {
   return `<span class="open-rate-badge open-rate-ok" title="${escapeHtml(String(openRate.totalUniqueOpened))}/${escapeHtml(String(openRate.totalDelivered))} aberturas · click ${escapeHtml(String(Math.round(openRate.clickRatePct)))}%">abertura: ${pct}%</span>`;
 }
 
+// #4273 parte 3: confirmação de vínculo Beehiiv — sinal independente do
+// status de apoio, vem de um cache separado (data/apoia-se/beehiiv-vinculo.json)
+// populado manualmente. `vinculo === null` significa "nenhum email do contato
+// foi consultado ainda" (cache pode estar desatualizado) — diferente de
+// `hasVinculo: false` (consultado, sem vínculo confirmado). Os 3 estados têm
+// badges visualmente distintos, nenhum deles é silencioso.
+function vinculoBadge(vinculo) {
+  if (!vinculo) {
+    return '<span class="vinculo-badge vinculo-sem-dados" title="nenhum email deste contato foi consultado ainda">vínculo Beehiiv: —</span>';
+  }
+  if (vinculo.hasVinculo) {
+    return '<span class="vinculo-badge vinculo-ok" title="assinante Beehiiv confirmado">✅ assinante Beehiiv</span>';
+  }
+  return '<span class="vinculo-badge vinculo-falta" title="não encontrado como assinante Beehiiv">❌ não é assinante Beehiiv</span>';
+}
+
 function renderError() {
   if (data.error) {
     el.error.hidden = false;
@@ -156,6 +173,24 @@ function renderTiles() {
   el.tileTotal.textContent = String(c.totalContacts);
   el.tileConverted.textContent = String(c.totalConverted);
   el.tileValue.textContent = fmtBRL(c.monthlyValueSum ?? 0);
+  renderVinculoSummary();
+}
+
+// #4273 parte 3: contador agregado "N de M apoiadores sem vínculo Beehiiv" —
+// calculado client-side sobre o snapshot já carregado (nenhuma agregação nova
+// do servidor). M = apoiadores confirmados este mês ("apoiando"); N = os que
+// NÃO têm vínculo Beehiiv confirmado (vinculo === null, ainda não consultado,
+// OU hasVinculo === false, consultado e sem vínculo — os dois contam como
+// "não confirmado" pro propósito de checar se a recompensa está sendo
+// entregue). M === 0 não mostra nada (nada pra reportar ainda).
+function renderVinculoSummary() {
+  const apoiadores = data.contacts.filter((c) => c.status?.label === "apoiando");
+  const semVinculo = apoiadores.filter((c) => !c.vinculo?.hasVinculo);
+  if (apoiadores.length === 0) {
+    el.vinculoSummary.textContent = "";
+    return;
+  }
+  el.vinculoSummary.textContent = `${semVinculo.length} de ${apoiadores.length} apoiadores sem vínculo Beehiiv confirmado.`;
 }
 
 // #3844 parte 2: renderiza a visão por grupo/nível de recompensa do mês
@@ -221,6 +256,7 @@ function renderContacts() {
         <span class="contact-name">${escapeHtml(c.name)}</span>
         ${statusBadge(c.status)}
         ${openRateBadge(c.openRate)}
+        ${vinculoBadge(c.vinculo)}
       </div>
       <div class="contact-emails">${c.emails.map(escapeHtml).join(", ")}</div>
       ${c.notes ? `<div class="contact-notes">${escapeHtml(c.notes)}</div>` : ""}

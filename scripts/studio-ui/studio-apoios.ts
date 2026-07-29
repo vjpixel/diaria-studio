@@ -186,11 +186,32 @@ export interface OpenRateInfo {
  * (lowercase/trim), mesmo tratamento de `normalizeEmailList`. */
 export type OpenRateCache = Record<string, OpenRateInfo>;
 
+/** Confirmação de vínculo Beehiiv (#4273 parte 3 — a pessoa é assinante
+ * Beehiiv ou não). `status` reflete o `status` da subscription na Beehiiv
+ * (`active`/`pending`/etc), `null` quando `hasVinculo: false`. */
+export interface VinculoInfo {
+  hasVinculo: boolean;
+  subscriptionId: string | null;
+  status: string | null;
+  fetchedAt: string;
+}
+
+/** Cache lido de `data/apoia-se/beehiiv-vinculo.json` — chaves normalizadas
+ * (lowercase/trim), mesmo tratamento de `normalizeEmailList`. Populado
+ * manualmente por uma sessão top-level com MCP Beehiiv conectado (mesmo
+ * mecanismo do `OpenRateCache` acima, #3612) — o painel só LÊ, nunca chama a
+ * API Beehiiv ao vivo. */
+export type VinculoCache = Record<string, VinculoInfo>;
+
 export interface ContactWithStatus extends ApoioContact {
   status: ContactBackerStatus;
   /** `null` sempre que o cache está ausente/corrompido ou nenhum email do
    * contato tem entrada nele — independente do status de apoio (#3612). */
   openRate: OpenRateInfo | null;
+  /** Confirmação de vínculo Beehiiv (#4273 parte 3). `null` quando NENHUM
+   * email do contato aparece no cache (nunca consultado — não confundir com
+   * `{ hasVinculo: false, ... }`, que significa "consultado, sem vínculo"). */
+  vinculo: VinculoInfo | null;
 }
 
 export interface ApoiosData {
@@ -468,6 +489,27 @@ export function deriveOpenRate(contact: ApoioContact, cache: OpenRateCache): Ope
   return best;
 }
 
+/**
+ * Deriva a confirmação de vínculo Beehiiv de um contato cruzando TODOS os
+ * seus emails contra o cache (#4273 parte 3). Diferente de `deriveOpenRate`
+ * (que escolhe o email de MAIOR `totalDelivered` em caso de múltiplos hits),
+ * aqui basta 1 email do contato ter `hasVinculo: true` no cache — a pessoa
+ * pode ter assinado a newsletter com um email diferente do que usa pra pagar
+ * o apoio. `null` quando NENHUM email do contato aparece no cache (nunca
+ * consultado); `{ hasVinculo: false, ... }` quando algum email foi
+ * consultado mas nenhum tem vínculo confirmado.
+ */
+export function deriveVinculo(contact: ApoioContact, cache: VinculoCache): VinculoInfo | null {
+  let fallback: VinculoInfo | null = null;
+  for (const email of normalizeEmailList(contact.emails)) {
+    const info = cache[email];
+    if (!info) continue;
+    if (info.hasVinculo) return info;
+    if (!fallback) fallback = info;
+  }
+  return fallback;
+}
+
 // ── agregação de campanha (puro) ────────────────────────────────────────
 
 export function emptyCampaignSummary(): CampaignSummary {
@@ -684,6 +726,64 @@ export function loadOpenRateCache(rootDir: string): OpenRateCache {
   return cache;
 }
 
+// ── I/O: cache de vínculo Beehiiv (leitura fail-soft, #4273 parte 3) ────
+
+export function vinculoCachePath(rootDir: string): string {
+  return resolve(rootDir, "data", "apoia-se", "beehiiv-vinculo.json");
+}
+
+/** Valida o shape de 1 entrada crua do cache — descarta silenciosamente
+ * entradas malformadas (mesmo tratamento defensivo de `sanitizeOpenRateEntry`,
+ * o arquivo é populado por um processo externo/manual). */
+function sanitizeVinculoEntry(raw: unknown): VinculoInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (
+    typeof r.hasVinculo !== "boolean" ||
+    (r.subscriptionId !== null && typeof r.subscriptionId !== "string") ||
+    (r.status !== null && typeof r.status !== "string") ||
+    typeof r.fetchedAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    hasVinculo: r.hasVinculo,
+    subscriptionId: r.subscriptionId as string | null,
+    status: r.status as string | null,
+    fetchedAt: r.fetchedAt,
+  };
+}
+
+/**
+ * Lê `data/apoia-se/beehiiv-vinculo.json` (#4273 parte 3) — arquivo LOCAL,
+ * gitignored, populado manualmente por uma sessão com MCP Beehiiv conectado
+ * (consulta `list_subscriptions` por email, mesmo mecanismo do
+ * `beehiiv-open-rate.json`, #3612). Fail-soft total: arquivo ausente, JSON
+ * corrompido, shape inesperado, ou entrada individual malformada → nunca
+ * lança, na pior hipótese devolve `{}` (todo contato aparece com
+ * `vinculo: null`). Chaves normalizadas (lowercase/trim) pra casar direto
+ * contra `normalizeEmailList`.
+ */
+export function loadVinculoCache(rootDir: string): VinculoCache {
+  const path = vinculoCachePath(rootDir);
+  if (!existsSync(path)) return {};
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf-8"));
+  } catch {
+    return {};
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const cache: VinculoCache = {};
+  for (const [rawEmail, value] of Object.entries(raw as Record<string, unknown>)) {
+    const email = rawEmail.trim().toLowerCase();
+    if (!email) continue;
+    const entry = sanitizeVinculoEntry(value);
+    if (entry) cache[email] = entry;
+  }
+  return cache;
+}
+
 // ── I/O: consulta ao vivo do mês corrente (reusa checkBacker) ───────────
 
 export interface FetchCurrentStatusesResult {
@@ -737,10 +837,22 @@ export interface BuildApoiosDataOptions {
   /** Injetável pra testes — evita I/O de `beehiiv-open-rate.json` real
    * (#3612). Default: `loadOpenRateCache(rootDir)`. */
   openRateCache?: OpenRateCache;
+  /** Injetável pra testes — evita I/O de `beehiiv-vinculo.json` real
+   * (#4273 parte 3). Default: `loadVinculoCache(rootDir)`. */
+  vinculoCache?: VinculoCache;
 }
 
-function toSemDados(contacts: ApoioContact[], openRateCache: OpenRateCache): ContactWithStatus[] {
-  return contacts.map((c) => ({ ...c, status: { label: "sem_dados" as const }, openRate: deriveOpenRate(c, openRateCache) }));
+function toSemDados(
+  contacts: ApoioContact[],
+  openRateCache: OpenRateCache,
+  vinculoCache: VinculoCache,
+): ContactWithStatus[] {
+  return contacts.map((c) => ({
+    ...c,
+    status: { label: "sem_dados" as const },
+    openRate: deriveOpenRate(c, openRateCache),
+    vinculo: deriveVinculo(c, vinculoCache),
+  }));
 }
 
 /**
@@ -768,17 +880,19 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
     return { contacts: [], campaign: emptyCampaignSummary(), rewardGroups: emptyRewardGroupsView(), error: (e as Error).message, generatedAt };
   }
 
-  // Taxa de abertura Beehiiv (#3612) é um sinal INDEPENDENTE do status de
-  // apoio apoia.se — carregado cedo, antes do gate de credenciais abaixo,
-  // pra aparecer em TODOS os caminhos de retorno (inclusive quando as
-  // credenciais apoia.se estão ausentes).
+  // Taxa de abertura Beehiiv (#3612) e confirmação de vínculo Beehiiv (#4273
+  // parte 3) são sinais INDEPENDENTES do status de apoio apoia.se —
+  // carregados cedo, antes do gate de credenciais abaixo, pra aparecerem em
+  // TODOS os caminhos de retorno (inclusive quando as credenciais apoia.se
+  // estão ausentes).
   const openRateCache = opts.openRateCache ?? loadOpenRateCache(rootDir);
+  const vinculoCache = opts.vinculoCache ?? loadVinculoCache(rootDir);
 
   let env: ApoiaSeEnv;
   try {
     env = opts.env ?? readApoiaSeEnv();
   } catch (e) {
-    const withStatus = toSemDados(contacts, openRateCache);
+    const withStatus = toSemDados(contacts, openRateCache, vinculoCache);
     return {
       contacts: withStatus,
       campaign: computeCampaignSummary(withStatus),
@@ -819,10 +933,10 @@ export async function buildApoiosData(rootDir: string, opts: BuildApoiosDataOpti
     if (status.label === "nao_apoia") {
       const hasUnresolvedEmail = normalizeEmailList(c.emails).some((e) => !resolvedEmails.has(e));
       if (hasUnresolvedEmail) {
-        return { ...c, status: { label: "sem_dados" }, openRate: deriveOpenRate(c, openRateCache) };
+        return { ...c, status: { label: "sem_dados" }, openRate: deriveOpenRate(c, openRateCache), vinculo: deriveVinculo(c, vinculoCache) };
       }
     }
-    return { ...c, status, openRate: deriveOpenRate(c, openRateCache) };
+    return { ...c, status, openRate: deriveOpenRate(c, openRateCache), vinculo: deriveVinculo(c, vinculoCache) };
   });
 
   return {
@@ -931,12 +1045,13 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
   }
 
   const openRateCache = opts.openRateCache ?? loadOpenRateCache(rootDir);
+  const vinculoCache = opts.vinculoCache ?? loadVinculoCache(rootDir);
 
   let env: ApoiaSeEnv;
   try {
     env = opts.env ?? readApoiaSeEnv();
   } catch (e) {
-    const withStatus = toSemDados(contacts, openRateCache);
+    const withStatus = toSemDados(contacts, openRateCache, vinculoCache);
     return {
       contacts: withStatus,
       campaign: computeCampaignSummary(withStatus),
@@ -1007,10 +1122,10 @@ export async function refreshApoiosData(rootDir: string, opts: RefreshApoiosData
     if (status.label === "nao_apoia") {
       const hasUnresolvedEmail = normalizeEmailList(c.emails).some((e) => !resolvedEmails.has(e));
       if (hasUnresolvedEmail) {
-        return { ...c, status: { label: "sem_dados" }, openRate: deriveOpenRate(c, openRateCache) };
+        return { ...c, status: { label: "sem_dados" }, openRate: deriveOpenRate(c, openRateCache), vinculo: deriveVinculo(c, vinculoCache) };
       }
     }
-    return { ...c, status, openRate: deriveOpenRate(c, openRateCache) };
+    return { ...c, status, openRate: deriveOpenRate(c, openRateCache), vinculo: deriveVinculo(c, vinculoCache) };
   });
 
   return {

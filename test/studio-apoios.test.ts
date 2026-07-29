@@ -34,6 +34,9 @@ import {
   deriveOpenRate,
   loadOpenRateCache,
   openRateCachePath,
+  deriveVinculo,
+  loadVinculoCache,
+  vinculoCachePath,
   computeCampaignSummary,
   emptyCampaignSummary,
   computeRewardGroup,
@@ -55,6 +58,8 @@ import {
   type ContactWithStatus,
   type OpenRateInfo,
   type OpenRateCache,
+  type VinculoInfo,
+  type VinculoCache,
 } from "../scripts/studio-ui/studio-apoios.ts";
 import type { ApoiaSeEnv, BackerStatus } from "../scripts/lib/apoia-se.ts";
 import type { DrainApoiaSeResult, DrainedPromessa } from "../scripts/lib/apoia-se-gmail-drain.ts";
@@ -352,6 +357,137 @@ describe("loadOpenRateCache (#3612)", () => {
     const cache = loadOpenRateCache(dir);
     assert.equal(cache["bom@x.com"]?.openRatePct, 70);
     assert.equal("ruim@x.com" in cache, false);
+  });
+});
+
+// ─── confirmação de vínculo Beehiiv (#4273 parte 3) ─────────────────────
+
+function makeVinculoInfo(overrides: Partial<VinculoInfo> = {}): VinculoInfo {
+  return {
+    hasVinculo: true,
+    subscriptionId: "sub-1",
+    status: "active",
+    fetchedAt: "2026-07-29T15:00:00Z",
+    ...overrides,
+  };
+}
+
+describe("deriveVinculo (#4273 parte 3)", () => {
+  it("contato com 1 email, cache tem hasVinculo: true -> retorna a entrada", () => {
+    const contact = makeContact({ emails: ["fulano@x.com"] });
+    const cache: VinculoCache = { "fulano@x.com": makeVinculoInfo() };
+    const result = deriveVinculo(contact, cache);
+    assert.equal(result?.hasVinculo, true);
+    assert.equal(result?.subscriptionId, "sub-1");
+  });
+
+  it("contato com 2 emails, só o SEGUNDO está no cache com hasVinculo: true -> retorna vínculo (cruza todos os emails)", () => {
+    const contact = makeContact({ emails: ["primeiro@x.com", "segundo@x.com"] });
+    const cache: VinculoCache = { "segundo@x.com": makeVinculoInfo({ subscriptionId: "sub-2" }) };
+    const result = deriveVinculo(contact, cache);
+    assert.equal(result?.hasVinculo, true);
+    assert.equal(result?.subscriptionId, "sub-2");
+  });
+
+  it("contato cujo único email está no cache com hasVinculo: false -> retorna a entrada (não é null)", () => {
+    const contact = makeContact({ emails: ["fulano@x.com"] });
+    const cache: VinculoCache = {
+      "fulano@x.com": makeVinculoInfo({ hasVinculo: false, subscriptionId: null, status: null }),
+    };
+    const result = deriveVinculo(contact, cache);
+    assert.notEqual(result, null);
+    assert.equal(result?.hasVinculo, false);
+  });
+
+  it("contato sem nenhum email no cache -> null", () => {
+    const contact = makeContact({ emails: ["nao-cadastrado@x.com"] });
+    const cache: VinculoCache = { "outro@x.com": makeVinculoInfo() };
+    assert.equal(deriveVinculo(contact, cache), null);
+  });
+
+  it("cache vazio -> null, sem lançar", () => {
+    const contact = makeContact({ emails: ["fulano@x.com"] });
+    assert.equal(deriveVinculo(contact, {}), null);
+  });
+
+  it("QUALQUER email com hasVinculo: true basta, mesmo se outro email do contato tem hasVinculo: false", () => {
+    const contact = makeContact({ emails: ["nao-vinculado@x.com", "vinculado@x.com"] });
+    const cache: VinculoCache = {
+      "nao-vinculado@x.com": makeVinculoInfo({ hasVinculo: false, subscriptionId: null, status: null }),
+      "vinculado@x.com": makeVinculoInfo({ hasVinculo: true, subscriptionId: "sub-v" }),
+    };
+    const result = deriveVinculo(contact, cache);
+    assert.equal(result?.hasVinculo, true);
+    assert.equal(result?.subscriptionId, "sub-v");
+  });
+});
+
+describe("loadVinculoCache (#4273 parte 3)", () => {
+  let root: string;
+
+  before(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-apoios-vinculo-"));
+  });
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  it("arquivo ausente -> {} (sem lançar)", () => {
+    const dir = join(root, "missing");
+    mkdirSync(dir, { recursive: true });
+    assert.deepEqual(loadVinculoCache(dir), {});
+  });
+
+  it("JSON corrompido -> {} (sem lançar)", () => {
+    const dir = join(root, "corrupted");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(vinculoCachePath(dir), "{ nao é json válido");
+    assert.deepEqual(loadVinculoCache(dir), {});
+  });
+
+  it("array no lugar de objeto -> {} (shape inesperado)", () => {
+    const dir = join(root, "array-shape");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(vinculoCachePath(dir), JSON.stringify([1, 2, 3]));
+    assert.deepEqual(loadVinculoCache(dir), {});
+  });
+
+  it("arquivo válido -> parseia e normaliza chaves (lowercase/trim)", () => {
+    const dir = join(root, "valid");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(
+      vinculoCachePath(dir),
+      JSON.stringify({ " Fulano@X.com ": makeVinculoInfo({ subscriptionId: "sub-x" }) }),
+    );
+    const cache = loadVinculoCache(dir);
+    assert.equal(cache["fulano@x.com"]?.subscriptionId, "sub-x");
+  });
+
+  it("entrada individual malformada é descartada, resto do cache sobrevive", () => {
+    const dir = join(root, "partial-malformed");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(
+      vinculoCachePath(dir),
+      JSON.stringify({
+        "bom@x.com": makeVinculoInfo({ subscriptionId: "sub-bom" }),
+        "ruim@x.com": { hasVinculo: "not-a-boolean" }, // faltam campos + tipo errado
+      }),
+    );
+    const cache = loadVinculoCache(dir);
+    assert.equal(cache["bom@x.com"]?.subscriptionId, "sub-bom");
+    assert.equal("ruim@x.com" in cache, false);
+  });
+
+  it("hasVinculo: false com subscriptionId/status null é uma entrada VÁLIDA (não malformada)", () => {
+    const dir = join(root, "valid-no-vinculo");
+    mkdirSync(join(dir, "data", "apoia-se"), { recursive: true });
+    writeFileSync(
+      vinculoCachePath(dir),
+      JSON.stringify({
+        "sem-vinculo@x.com": makeVinculoInfo({ hasVinculo: false, subscriptionId: null, status: null }),
+      }),
+    );
+    const cache = loadVinculoCache(dir);
+    assert.equal(cache["sem-vinculo@x.com"]?.hasVinculo, false);
+    assert.equal(cache["sem-vinculo@x.com"]?.subscriptionId, null);
   });
 });
 
@@ -780,6 +916,70 @@ describe("buildApoiosData (#3602)", () => {
       rmSync(cacheDir, { recursive: true, force: true });
     }
   });
+
+  // ── #4273 parte 3: confirmação de vínculo Beehiiv é ortogonal ao status de
+  // apoio e à taxa de abertura — mesma disciplina de injeção via
+  // `vinculoCache` + fail-soft, cobrindo os mesmos 2 caminhos de retorno.
+
+  it("cache de vínculo ausente/vazio -> TODOS os contatos com vinculo: null (mesmo sem credenciais apoia.se)", async () => {
+    const saved = {
+      key: process.env.APOIA_SE_API_KEY,
+      secret: process.env.APOIA_SE_API_SECRET,
+      campaign: process.env.APOIA_SE_CAMPAIGN,
+    };
+    delete process.env.APOIA_SE_API_KEY;
+    delete process.env.APOIA_SE_API_SECRET;
+    delete process.env.APOIA_SE_CAMPAIGN;
+    try {
+      const contacts = [makeContact({ id: "c1", emails: ["fulano@x.com"] })];
+      const result = await buildApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        openRateCache: {},
+        vinculoCache: {},
+      });
+      assert.equal(result.contacts[0].status.label, "sem_dados"); // credenciais ausentes
+      assert.equal(result.contacts[0].vinculo, null); // cache vazio, sem lançar
+    } finally {
+      if (saved.key !== undefined) process.env.APOIA_SE_API_KEY = saved.key;
+      if (saved.secret !== undefined) process.env.APOIA_SE_API_SECRET = saved.secret;
+      if (saved.campaign !== undefined) process.env.APOIA_SE_CAMPAIGN = saved.campaign;
+    }
+  });
+
+  it("caminho feliz: vinculo populado via cache injetado, independente do status de apoio", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-vinculo-happy-cache-"));
+    try {
+      const contacts = [
+        makeContact({ id: "c1", name: "Vinculado", emails: ["vinculado@x.com"] }),
+        makeContact({ id: "c2", name: "SemVinculo", emails: ["sem-vinculo@x.com"] }),
+        makeContact({ id: "c3", name: "NuncaConsultado", emails: ["nunca-consultado@x.com"] }),
+      ];
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 })) as typeof fetch;
+      const vinculoCache: VinculoCache = {
+        "vinculado@x.com": makeVinculoInfo({ subscriptionId: "sub-vinculado", hasVinculo: true }),
+        "sem-vinculo@x.com": makeVinculoInfo({ hasVinculo: false, subscriptionId: null, status: null }),
+      };
+
+      const result = await buildApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        vinculoCache,
+      });
+
+      const byId = Object.fromEntries(result.contacts.map((c) => [c.id, c.vinculo]));
+      assert.equal(byId.c1?.hasVinculo, true);
+      assert.equal(byId.c1?.subscriptionId, "sub-vinculado");
+      assert.equal(byId.c2?.hasVinculo, false); // consultado, sem vínculo — não é null
+      assert.equal(byId.c3, null); // nunca consultado
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── refreshApoiosData — force-refresh seletivo (#3859 metade 2) ───────
@@ -996,6 +1196,35 @@ describe("refreshApoiosData (#3859)", () => {
       if (saved.key !== undefined) process.env.APOIA_SE_API_KEY = saved.key;
       if (saved.secret !== undefined) process.env.APOIA_SE_API_SECRET = saved.secret;
       if (saved.campaign !== undefined) process.env.APOIA_SE_CAMPAIGN = saved.campaign;
+    }
+  });
+
+  // ── #4273 parte 3: vinculo populado via cache injetado, sem I/O real ──
+
+  it("vinculo populado corretamente no ContactWithStatus, cache injetável via vinculoCache não bate em I/O real", async () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), "studio-apoios-refresh-vinculo-"));
+    try {
+      const contacts = [makeContact({ id: "c1", name: "Vinculado", emails: ["vinculado@x.com"] })];
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ isBacker: false, isPaidThisMonth: false }), { status: 200 })) as typeof fetch;
+      const vinculoCache: VinculoCache = {
+        "vinculado@x.com": makeVinculoInfo({ subscriptionId: "sub-refresh", hasVinculo: true }),
+      };
+
+      const result = await refreshApoiosData("irrelevant-root", {
+        now: FIXED_NOW,
+        contacts,
+        env: TEST_ENV,
+        cacheDir,
+        fetchImpl,
+        gmailDrain: NOOP_GMAIL_DRAIN,
+        vinculoCache,
+      });
+
+      assert.equal(result.contacts[0].vinculo?.hasVinculo, true);
+      assert.equal(result.contacts[0].vinculo?.subscriptionId, "sub-refresh");
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
     }
   });
 
