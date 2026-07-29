@@ -1190,6 +1190,47 @@ export interface OrphanBoxWarning {
  */
 export function findOrphanBoxWarnings(text: string): OrphanBoxWarning[] {
   const warnings: OrphanBoxWarning[] = [];
+  // #4290: região de introdução (slot 0) — entre o bloco de cobertura e
+  // `**DESTAQUE 1`. Mesmo raciocínio dos loops abaixo (2+ blocos `---`-
+  // isolados candidatos é ambíguo), mas com 2 diferenças que espelham
+  // `locateBoxAtIntro`: (a) o candidato vencedor é o ÚLTIMO bloco da região,
+  // não o 1º (mesma prioridade do stitch); (b) o bloco já reivindicado por
+  // `findIntroCalloutMatch` (introCallout/agradecimento a apoiadores) NUNCA
+  // conta como candidato a box — contá-lo geraria falso-positivo toda vez que
+  // um callout legítimo dividir a região em blocos junto com um box0 real
+  // (ver desambiguação documentada na docstring de `locateBoxAtIntro`).
+  const firstMarkerMatch = /^\*\*DESTAQUE/m.exec(text);
+  if (firstMarkerMatch) {
+    const introRegion = text.slice(0, firstMarkerMatch.index);
+    const introMatch = findIntroCalloutMatch(introRegion);
+    const extraIntro: string[] = [];
+    for (const block of splitByGapSeparator(introRegion).slice(1)) {
+      if (
+        introMatch &&
+        introMatch.matchStart >= block.rawStart &&
+        introMatch.matchStart < block.rawEnd
+      ) {
+        continue; // bloco já reivindicado pelo introCallout/agradecimento
+      }
+      const trimmed = block.text.trim();
+      if (!trimmed) continue;
+      const firstLine = trimmed.split(/\r?\n/, 1)[0];
+      if (DESTAQUE_HEADER_IN_BLOCK_RE.test(firstLine)) continue; // defensivo
+      if (SECTION_HEADER_RE.test(firstLine)) continue; // defensivo
+      extraIntro.push(trimmed);
+    }
+    if (extraIntro.length > 1) {
+      warnings.push({
+        gapIndex: -1,
+        reason:
+          `${extraIntro.length} blocos extras na região de introdução (slot 0, entre a cobertura ` +
+          `e **DESTAQUE 1, excluindo o bloco já reivindicado pelo callout/agradecimento) — apenas ` +
+          `o ÚLTIMO vira box de divulgação (mesma posição usada pelo stitch); os demais seriam ` +
+          `descartados silenciosamente. Isole 1 único bloco de box nessa região, ou mova o ` +
+          `excedente pra outro slot.`,
+      });
+    }
+  }
   for (const gap of interDestaqueGaps(text)) {
     const region = text.slice(gap.start, gap.end);
     const extra = splitByGapSeparator(region)

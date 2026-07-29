@@ -49,11 +49,11 @@
  * disco é tratado como "não encontrada" (404), igual a qualquer slug
  * inválido.
  *
- * **Atribuição de slot (#3924 leitura + #3937 escrita)** — `listBoxes` cruza
- * contra `platform.config.json` → `boxes_divulgacao.slot{1,2,3}` pra exibir o
- * badge "slot N"; `saveBoxSlots` é o único ponto desta fatia que ESCREVE
- * nesse arquivo, e faz isso cirurgicamente (só a chave `boxes_divulgacao`,
- * ver `replaceBoxesDivulgacaoBlock`).
+ * **Atribuição de slot (#3924 leitura + #3937 escrita; slot0 #4290)** —
+ * `listBoxes` cruza contra `platform.config.json` → `boxes_divulgacao.slot{0,1,2,3}`
+ * pra exibir o badge "slot N"; `saveBoxSlots` é o único ponto desta fatia que
+ * ESCREVE nesse arquivo, e faz isso cirurgicamente (só a chave
+ * `boxes_divulgacao`, ver `replaceBoxesDivulgacaoBlock`).
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -397,10 +397,11 @@ export function replaceBoxContentTitle(conteudo: string, titulo: string): string
 
 // ── slots (platform.config.json → boxes_divulgacao, somente leitura) ────
 
-export type BoxSlot = 1 | 2 | 3;
+export type BoxSlot = 0 | 1 | 2 | 3;
 
-/** Lê `platform.config.json` → `boxes_divulgacao.slot1/2/3` (valores são
- * filenames de snippet) e inverte pra `filename -> slot`. Fail-soft total:
+/** Lê `platform.config.json` → `boxes_divulgacao.slot0/1/2/3` (valores são
+ * filenames de snippet, `slot0` pode vir `null` — default de slot vazio,
+ * #4274/#4290) e inverte pra `filename -> slot`. Fail-soft total:
  * config ausente, JSON corrompido, ou chave ausente/malformada -> `{}` (todo
  * box aparece sem badge de slot) — nunca lança. Somente leitura: nenhuma
  * função deste módulo escreve neste arquivo. */
@@ -419,6 +420,7 @@ export function readBoxSlotAssignments(rootDir: string): Partial<Record<string, 
   const b = boxes as Record<string, unknown>;
   const out: Partial<Record<string, BoxSlot>> = {};
   for (const [key, slot] of [
+    ["slot0", 0],
     ["slot1", 1],
     ["slot2", 2],
     ["slot3", 3],
@@ -429,12 +431,20 @@ export function readBoxSlotAssignments(rootDir: string): Partial<Record<string, 
   return out;
 }
 
-// ── slots: gestão pela UI (#3937 — leitura direta + ESCRITA) ─────────────
+// ── slots: gestão pela UI (#3937 — leitura direta + ESCRITA; #4290 estende
+// pro slot0, introdução, ver docstring de `locateBoxAtIntro` em
+// newsletter-parse.ts pra desambiguação vs. introCallout) ─────────────────
 
-const SLOT_KEYS = ["slot1", "slot2", "slot3"] as const;
+const SLOT_KEYS = ["slot0", "slot1", "slot2", "slot3"] as const;
 type SlotKey = (typeof SLOT_KEYS)[number];
 
 export interface BoxSlotsState {
+  /** #4290: slot0 (introdução) — mesma convenção "" = vazio dos demais slots
+   * nesta interface, mesmo que `platform.config.json` grave `null` pra slot0
+   * vazio (`boxAlreadyPresentAtIntro`/`loadDivulgacaoSnippet` em
+   * stitch-newsletter.ts tratam `""` e `null` de forma idêntica — ambos
+   * falsy). */
+  slot0: string;
   slot1: string;
   slot2: string;
   slot3: string;
@@ -450,27 +460,29 @@ function readRawBoxesDivulgacao(cfg: unknown): Record<string, unknown> {
   return boxes && typeof boxes === "object" ? (boxes as Record<string, unknown>) : {};
 }
 
-/** Lê `platform.config.json` → `boxes_divulgacao.slot{1,2,3}` na forma DIRETA
- * (slot -> filename, "" se vazio/ausente) — o inverso de
+/** Lê `platform.config.json` → `boxes_divulgacao.slot{0,1,2,3}` na forma
+ * DIRETA (slot -> filename, "" se vazio/ausente — inclusive quando slot0 é
+ * `null` no JSON, seu default de vazio desde #4274) — o inverso de
  * `readBoxSlotAssignments` (que inverte pra filename -> slot, só pro badge da
- * lista). Usado pela tela de gestão de slots (#3937): mostra a atribuição
- * ATUAL de cada slot + o mtime que o client reenvia como guard de conflito no
- * save. Fail-soft total: config ausente -> todos os slots "" e
- * `modifiedAt: null`; JSON corrompido -> todos os slots "" mas `modifiedAt`
- * real (o arquivo existe, só não parseia); nunca lança. */
+ * lista). Usado pela tela de gestão de slots (#3937, estendida ao slot0 em
+ * #4290): mostra a atribuição ATUAL de cada slot + o mtime que o client
+ * reenvia como guard de conflito no save. Fail-soft total: config ausente ->
+ * todos os slots "" e `modifiedAt: null`; JSON corrompido -> todos os slots ""
+ * mas `modifiedAt` real (o arquivo existe, só não parseia); nunca lança. */
 export function readBoxSlotsState(rootDir: string): BoxSlotsState {
+  const empty = { slot0: "", slot1: "", slot2: "", slot3: "" } as const;
   const configPath = resolve(rootDir, "platform.config.json");
-  if (!existsSync(configPath)) return { slot1: "", slot2: "", slot3: "", modifiedAt: null };
+  if (!existsSync(configPath)) return { ...empty, modifiedAt: null };
   const modifiedAt = statSync(configPath).mtime.toISOString();
   let cfg: unknown;
   try {
     cfg = JSON.parse(readFileSync(configPath, "utf8"));
   } catch {
-    return { slot1: "", slot2: "", slot3: "", modifiedAt };
+    return { ...empty, modifiedAt };
   }
   const b = readRawBoxesDivulgacao(cfg);
   const get = (key: SlotKey) => (typeof b[key] === "string" ? (b[key] as string) : "");
-  return { slot1: get("slot1"), slot2: get("slot2"), slot3: get("slot3"), modifiedAt };
+  return { slot0: get("slot0"), slot1: get("slot1"), slot2: get("slot2"), slot3: get("slot3"), modifiedAt };
 }
 
 /** Reescreve SÓ o bloco `"boxes_divulgacao": { ... }` dentro do texto BRUTO de
@@ -488,11 +500,22 @@ export function readBoxSlotsState(rootDir: string): BoxSlotsState {
  * Localiza o bloco via regex ancorada na indentação da linha
  * `"boxes_divulgacao": {` e no `}` de fechamento na MESMA indentação — só
  * funciona porque o valor de `boxes_divulgacao` é sempre um objeto raso
- * (slot1/2/3 -> string), sem chaves aninhadas por dentro (se algum dia
+ * (slot0/1/2/3 -> string), sem chaves aninhadas por dentro (se algum dia
  * ganhar aninhamento, este regex precisa ser revisitado). Se a chave não
  * existir ainda no arquivo (defensivo — não deveria acontecer no repo, onde
  * ela sempre está presente), insere um bloco novo (2 espaços de indentação,
  * convenção do repo) logo antes do fechamento do objeto top-level.
+ *
+ * #4290: `values.slot0` sempre grava como STRING (`""` quando vazio) — não
+ * como `null`, diferente do valor original em disco (`"slot0": null`, ver
+ * platform.config.json). Isso é seguro: todo leitor de `boxes_divulgacao.slot0`
+ * (`loadDivulgacaoSnippet` em stitch-newsletter.ts, `readBoxDivulgacaoCategoriaForSlot`/
+ * `readBoxDivulgacaoAltForSlot`/`readBoxSlotImage` em newsletter-parse.ts)
+ * trata `""` e `null` de forma IDÊNTICA (ambos falsy / `typeof !== "string"`)
+ * — nenhum desses call-sites distingue "nunca configurado" de "configurado e
+ * depois esvaziado". Uma vez que o editor salva pela UI, `slot0` normaliza
+ * pra `""` como os demais slots (perde o `null` original, sem efeito
+ * observável).
  *
  * Lança se não conseguir localizar nem o bloco nem um ponto de inserção
  * seguro (arquivo não é um objeto JSON bem-formado no nível esperado) — o
@@ -500,12 +523,13 @@ export function readBoxSlotsState(rootDir: string): BoxSlotsState {
  * potencialmente corrompido. */
 export function replaceBoxesDivulgacaoBlock(
   raw: string,
-  values: { slot1: string; slot2: string; slot3: string },
+  values: { slot0: string; slot1: string; slot2: string; slot3: string },
 ): string {
   const outerIndent = "  ";
   const innerIndent = "    ";
   const block = [
     `${outerIndent}"boxes_divulgacao": {`,
+    `${innerIndent}"slot0": ${JSON.stringify(values.slot0)},`,
     `${innerIndent}"slot1": ${JSON.stringify(values.slot1)},`,
     `${innerIndent}"slot2": ${JSON.stringify(values.slot2)},`,
     `${innerIndent}"slot3": ${JSON.stringify(values.slot3)}`,
@@ -528,6 +552,7 @@ export function replaceBoxesDivulgacaoBlock(
 }
 
 export interface SaveBoxSlotsInput {
+  slot0: string;
   slot1: string;
   slot2: string;
   slot3: string;
@@ -590,6 +615,7 @@ export function saveBoxSlots(
   }
 
   const values: Record<SlotKey, string> = {
+    slot0: normalizeSlotValue(input.slot0),
     slot1: normalizeSlotValue(input.slot1),
     slot2: normalizeSlotValue(input.slot2),
     slot3: normalizeSlotValue(input.slot3),
@@ -932,10 +958,15 @@ export interface ArchiveBoxResult {
  * subpastas) mas o conteúdo NÃO é deletado — reversível via `unarchiveBox`.
  *
  * **Guard de slot (defense-in-depth):** uma caixa atribuída a
- * `boxes_divulgacao.slot{1,2,3}` é auto-injetada em toda newsletter pelo
+ * `boxes_divulgacao.slot{0,1,2,3}` é auto-injetada em toda newsletter pelo
  * `stitchNewsletter` (que procura o arquivo por nome em `context/snippets/`).
  * Arquivá-la quebraria o pipeline, então é bloqueado no server mesmo que o
- * client tente — não só desabilitado na UI. Fail-soft: nunca lança. */
+ * client tente — não só desabilitado na UI. Fail-soft: nunca lança.
+ *
+ * #4290: a checagem é `slot !== undefined`, NÃO um truthy check (`if (slot)`)
+ * — `BoxSlot` inclui `0` (slot0, introdução) desde #4290, e `0` é falsy em JS.
+ * Um truthy check deixaria uma caixa no slot0 arquivar sem bloqueio, quebrando
+ * o mesmo invariante que já vale pros slots 1/2/3. */
 export function archiveBox(rootDir: string, slug: string): ArchiveBoxResult {
   if (!isValidBoxSlug(slug)) {
     return { ok: false, error: `slug inválido: ${slug}`, slug, notFound: true };
@@ -945,7 +976,7 @@ export function archiveBox(rootDir: string, slug: string): ArchiveBoxResult {
     return { ok: false, error: `caixa não encontrada: ${slug}`, slug, notFound: true };
   }
   const slot = readBoxSlotAssignments(rootDir)[slug];
-  if (slot) {
+  if (slot !== undefined) {
     return {
       ok: false,
       error: `a caixa "${slug}" está no slot ${slot} (platform.config.json → boxes_divulgacao) e é injetada em toda newsletter — remova a atribuição de slot antes de arquivar`,

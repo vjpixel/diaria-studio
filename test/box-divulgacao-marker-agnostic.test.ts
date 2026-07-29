@@ -642,3 +642,108 @@ ${EIA}
     assert.match(extractBoxDivulgacao3(reviewed) ?? "", /Box pós-destaques/);
   });
 });
+
+describe("#4290 — findOrphanBoxWarnings: região de introdução (slot 0) com blocos extras ambíguos", () => {
+  it("2 blocos --- isolados na região de intro (sem callout) → warning (só o ÚLTIMO vira box0)", () => {
+    const reviewed = `Para esta edição, selecionamos 12 itens.
+
+---
+
+🔧 Primeiro candidato
+
+[Link 1](https://example.com/1)
+
+---
+
+🎁 Segundo candidato (ambíguo — mesma região)
+
+[Link 2](https://example.com/2)
+
+---
+
+${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}`;
+    const warnings = findOrphanBoxWarnings(reviewed);
+    const introWarning = warnings.find((w) => w.gapIndex === -1);
+    assert.ok(introWarning, "deveria haver warning pra região de introdução (gapIndex -1)");
+    assert.match(introWarning!.reason, /2 blocos extras/);
+  });
+
+  it("região de intro com só 1 bloco extra → sem warning", () => {
+    const reviewed = `Para esta edição, selecionamos 12 itens.
+
+---
+
+🔧 Box único
+
+[Link](https://example.com/x)
+
+---
+
+${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}`;
+    const warnings = findOrphanBoxWarnings(reviewed);
+    assert.equal(warnings.find((w) => w.gapIndex === -1), undefined);
+  });
+
+  it("região de intro sem nenhum bloco extra → sem warning", () => {
+    const reviewed = `Para esta edição, selecionamos 12 itens.
+
+---
+
+${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}`;
+    const warnings = findOrphanBoxWarnings(reviewed);
+    assert.equal(warnings.find((w) => w.gapIndex === -1), undefined);
+  });
+
+  it("callout/agradecimento + 1 box0 real → sem warning (bloco do callout não conta pra ambiguidade)", () => {
+    const agradecimento = "**Agradeço ao novo apoiador: **Fulano**. Seu apoio ajuda a manter essa curadoria diária de pé!**";
+    const box0 = "🔧 Indicação de ferramenta: [Raycast](https://raycast.com).";
+    const reviewed = `Para esta edição, selecionamos 12 itens.
+
+---
+
+${agradecimento}
+
+---
+
+${box0}
+
+---
+
+${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}`;
+    const warnings = findOrphanBoxWarnings(reviewed);
+    assert.equal(
+      warnings.find((w) => w.gapIndex === -1),
+      undefined,
+      "callout + 1 box0 real não é ambíguo — não deveria gerar warning",
+    );
+  });
+
+  it("callout/agradecimento + 2 candidatos a box0 → warning (ambiguidade real, excluindo o bloco do callout)", () => {
+    const agradecimento = "**Agradeço ao novo apoiador: **Fulano**. Seu apoio ajuda a manter essa curadoria diária de pé!**";
+    const reviewed = `Para esta edição, selecionamos 12 itens.
+
+---
+
+${agradecimento}
+
+---
+
+🔧 Primeiro candidato a box0
+
+[Link 1](https://example.com/1)
+
+---
+
+🎁 Segundo candidato a box0 (ambíguo)
+
+[Link 2](https://example.com/2)
+
+---
+
+${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}`;
+    const warnings = findOrphanBoxWarnings(reviewed);
+    const introWarning = warnings.find((w) => w.gapIndex === -1);
+    assert.ok(introWarning, "2 candidatos a box0 (além do callout) deveriam ser flagrados como ambíguos");
+    assert.match(introWarning!.reason, /2 blocos extras/);
+  });
+});

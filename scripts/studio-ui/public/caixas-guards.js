@@ -60,8 +60,12 @@ export function validateNewBoxSlug(raw) {
 // ── #3937: gestão de slots de divulgação ──────────────────────────────────
 
 /** Posição de cada slot no layout (`stitch-newsletter.ts`) — texto fixo,
- * mostrado ao lado do seletor de cada slot na UI. */
+ * mostrado ao lado do seletor de cada slot na UI. `slot0` (introdução, #4290)
+ * é o único slot ANTES do 1º destaque — ver `locateBoxAtIntro` em
+ * newsletter-parse.ts pra desambiguação vs. o callout editorial que também
+ * vive nessa região. */
 export const SLOT_POSITION_LABEL = {
+  slot0: "na introdução, antes de D1 (depois de qualquer callout/agradecimento)",
   slot1: "entre D1 e D2",
   slot2: "entre D2 e D3 (só materializa em edição de 3 destaques)",
   slot3: "depois do último destaque (D3, ou D2 se só houver 2)",
@@ -79,13 +83,13 @@ export const SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE =
   "assim, ou Cancelar para RECARREGAR o estado mais recente do disco (suas mudanças não salvas aqui serão perdidas).";
 
 /** Acha a primeira caixa atribuída a mais de um slot ao mesmo tempo (guard 2
- * do #3937), PURO — sem `document`/`fetch`, testável (#633). Ignora slots
- * vazios (`""`) — só compara slugs preenchidos entre si. Espelha
- * (client-side, feedback imediato) o mesmo guard que `saveBoxSlots`
- * (server, autoridade final) aplica antes de escrever. Retorna o slug
- * duplicado, ou `null` se não há conflito. */
+ * do #3937, estendido ao slot0 em #4290), PURO — sem `document`/`fetch`,
+ * testável (#633). Ignora slots vazios (`""`) — só compara slugs preenchidos
+ * entre si. Espelha (client-side, feedback imediato) o mesmo guard que
+ * `saveBoxSlots` (server, autoridade final) aplica antes de escrever. Retorna
+ * o slug duplicado, ou `null` se não há conflito. */
 export function findDuplicateSlotAssignment(slots) {
-  const filled = [slots.slot1, slots.slot2, slots.slot3]
+  const filled = [slots.slot0, slots.slot1, slots.slot2, slots.slot3]
     .map((v) => String(v ?? "").trim())
     .filter((v) => v !== "");
   return filled.find((v, i) => filled.indexOf(v) !== i) ?? null;
