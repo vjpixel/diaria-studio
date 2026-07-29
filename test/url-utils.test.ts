@@ -365,6 +365,18 @@ describe("stripUrlTrailingPunct (#626)", () => {
     assert.equal(stripUrlTrailingPunct("https://x.com/a?b="), "https://x.com/a?b=");
     assert.equal(stripUrlTrailingPunct("https://x.com/a?b=="), "https://x.com/a?b==");
   });
+
+  it("#4280 (self-review): artefato '_==_' logo após ')' balanceado de Wikipedia NÃO consome o ')' real", () => {
+    // Achado do self-review: uma versão anterior do fix usava `\)?_==_$`, que
+    // consumia o `)` de fechamento junto — corrompendo `Foo_(bar)` pra
+    // `Foo_(bar` se o artefato aparecesse logo depois. O fix final só remove
+    // `_==_` e deixa o check de parênteses desbalanceados (já existente)
+    // decidir se o `)` exposto deve ou não ser removido.
+    assert.equal(
+      stripUrlTrailingPunct("https://en.wikipedia.org/wiki/Foo_(bar)_==_"),
+      "https://en.wikipedia.org/wiki/Foo_(bar)",
+    );
+  });
 });
 
 describe("extractUrls (#626)", () => {

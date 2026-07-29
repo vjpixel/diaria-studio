@@ -113,9 +113,13 @@ export function stripUrlTrailingPunct(url: string): string {
     // string real (caso real: `...&_bhlid=abc)_==_`). Diferente do `)=`/`]=`
     // do #1863 (que só é stripado no path, pra não corromper query params
     // PHP-style tipo `?filter[status]=`), este artefato nunca é ambíguo com
-    // sintaxe de URL válida — remove incondicionalmente, com ou sem o `)` de
-    // fechamento de link markdown junto.
-    cleaned = cleaned.replace(/\)?_==_$/, "");
+    // sintaxe de URL válida — remove incondicionalmente. NÃO consome um `)`
+    // que porventura preceda o artefato (ex: `Foo_(bar)_==_`) — isso ficaria
+    // a cargo do check de parênteses desbalanceados logo abaixo, que já sabe
+    // diferenciar `)` real de Wikipedia balanceado de `)` acidental (achado
+    // do self-review: uma versão anterior consumia `\)?_==_` de uma vez e
+    // corrompia URLs Wikipedia balanceadas seguidas do artefato).
+    cleaned = cleaned.replace(/_==_$/, "");
     // #1863: artefatos de markdown (`)=` / `]=` no fim; `]` desbalanceado) só são
     // limpos no PATH — quando NÃO há query string. Gate em `?` ausente evita
     // corromper query params válidos que terminam em `]=`/`)=`/`]`: PHP-style
