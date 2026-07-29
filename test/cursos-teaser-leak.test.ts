@@ -26,6 +26,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  type Course,
   loadCourses,
   openCourseCount,
   renderCursosPage,
@@ -59,6 +60,50 @@ describe("cursos teaser: nunca vaza conteúdo gated (#4052)", () => {
     for (const c of marked.slice(0, open.length)) {
       assert.ok(openIds.has(c.id), `curso marcado ${c.id} deveria estar entre os abertos`);
     }
+  });
+
+  // #4305: as funções puras só eram exercitadas contra o seed real (31 cursos
+  // → 6 abertos). Os tamanhos abaixo pinam o comportamento nas pontas, que
+  // ninguém tinha olhado.
+  describe("openCourseCount / selectOpenCourses nas pontas (#4305)", () => {
+    const fake = (n: number, markedCount = 0): Course[] =>
+      Array.from({ length: n }, (_, i) => ({ ...courses[0], id: `fake-${i}`, teaser: i < markedCount }));
+
+    it("catálogo com 4 cursos ou menos abre ZERO — floor(0.2×n) literal", () => {
+      // ATENÇÃO: com ≤4 cursos a página pública sai sem nenhum card, só com o
+      // banner "Mais N cursos curados". A regra do editor (#4052) é "20%
+      // arredondado pra baixo" e é isso que está implementado — nada de piso
+      // implícito de 1, porque inventar desvio da decisão registrada foi
+      // exatamente o defeito que o #4305 corrigiu. Se a curadoria encolher pra
+      // perto disso, é decisão do editor mudar a regra, não do código.
+      for (const n of [0, 1, 2, 3, 4]) {
+        assert.equal(openCourseCount(n), 0, `n=${n}`);
+        assert.equal(selectOpenCourses(fake(n)).length, 0, `n=${n}`);
+      }
+    });
+
+    it("5 cursos é a primeira vaga aberta", () => {
+      assert.equal(openCourseCount(5), 1);
+      assert.equal(selectOpenCourses(fake(5)).length, 1);
+    });
+
+    it("marcar mais cursos que o teto não abre mais nenhum — o excedente cai", () => {
+      const all10Marked = fake(10, 10); // teto = 2
+      const result = selectOpenCourses(all10Marked);
+      assert.equal(result.length, 2);
+      assert.deepEqual(
+        result.map((c) => c.id),
+        ["fake-0", "fake-1"],
+        "corta na ordem do seed, mantendo os primeiros marcados",
+      );
+    });
+
+    it("marcar menos que o teto não deixa vaga vazia — completa com os não-marcados", () => {
+      const ten = fake(10, 1); // teto = 2, só 1 marcado
+      const result = selectOpenCourses(ten);
+      assert.equal(result.length, 2);
+      assert.equal(result[0].id, "fake-0", "o marcado vem primeiro");
+    });
   });
 
   // Um valor que um curso ABERTO também tem não é vazamento — ele está no HTML
@@ -123,7 +168,26 @@ describe("cursos teaser: nunca vaza conteúdo gated (#4052)", () => {
       }
     });
 
+    // #4305: as asserções por campo acima isentam valor que um curso ABERTO
+    // também tem, senão acusam vazamento onde não há. Isso abre um buraco
+    // estrutural: se o seed mudar a ponto de um curso gated coincidir em TODO
+    // campo com abertos diferentes, um vazamento real do card inteiro passaria
+    // com cada campo tendo uma explicação inocente. Esta asserção não depende
+    // de coincidência de dados — um card renderizado traz título E url E
+    // summary juntos, então os três presentes ao mesmo tempo é vazamento
+    // independente de quem mais compartilha cada um.
+    it(`${target.label}: nenhum curso gated tem título + url + summary presentes ao mesmo tempo`, () => {
+      for (const c of gated) {
+        const all3 =
+          target.html.includes(escHtml(c.title)) && target.html.includes(c.url) && target.html.includes(c.summary);
+        assert.ok(!all3, `${target.label} vazou o card inteiro de ${c.id}`);
+      }
+    });
+
     it(`${target.label}: mostra a chamada agregada "mais N cursos" sem enumerar nada`, () => {
+      // Plural hardcoded: o render singulariza quando `hiddenCount === 1`, mas
+      // hoje são 25 gated. Se a curadoria encolher a ponto de sobrar 1 fechado,
+      // é este assert que quebra — e não é bug do render.
       assert.ok(
         target.html.includes(`Mais ${gated.length} cursos curados`),
         `${target.label} deveria trazer a CTA agregada com a contagem de gated`,

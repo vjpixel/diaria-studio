@@ -2,12 +2,15 @@
  * workers/cursos — Cloudflare Worker (#4052, converte de static-assets-only
  * pra scripted worker + assets).
  *
- * Gate PARCIAL (decisão do editor, ver PR #4052): 4 cursos abertos
- * (`teaser: true` no seed) ficam completos e indexáveis no HTML público
- * (`workers/cursos/public/index.html`, servido via `env.ASSETS`); os demais
- * aparecem como card bloqueado (título+plataforma só) até o leitor verificar
- * assinatura ativa OU se cadastrar. A CTA é um convite, não uma parede —
- * nunca 403.
+ * Gate PARCIAL (decisão do editor, ver #4052 e o follow-up #4305): os cursos
+ * ABERTOS são `openCourseCount()` do catálogo — 20% arredondado pra baixo,
+ * hoje 6 de 31 —, com os marcados `teaser: true` no seed ocupando as vagas
+ * primeiro (`selectOpenCourses`, em `scripts/build-cursos-page.ts`). Ficam
+ * completos e indexáveis no HTML público (`workers/cursos/public/index.html`,
+ * servido via `env.ASSETS`). Os demais NÃO são renderizados de forma alguma —
+ * nem título, nem plataforma, nem tema/contagem nos filtros — até o leitor
+ * verificar assinatura ativa OU se cadastrar; só a contagem agregada aparece
+ * no banner de gate. A CTA é um convite, não uma parede — nunca 403.
  *
  * Dois caminhos de entrada:
  *   A. `?email=` na URL (merge-tag da newsletter, `{{email}}`/`{{ contact.EMAIL }}`
@@ -81,32 +84,65 @@ function html(body: string, extraHeaders: Record<string, string> = {}): Response
   return new Response(body, { headers: { "Content-Type": "text/html;charset=utf-8", ...extraHeaders } });
 }
 
-/** Handler `GET /` — resolve qual variante servir. Path A (`?email=`) tem
+/** #4305: paths que servem o MESMO asset (`public/index.html`) e portanto
+ * precisam passar pelo gate. Tem que casar com o `run_worker_first` do
+ * `wrangler.toml` — declarar lá um path que `fetch` não roteia pra
+ * `handleIndex` faz o script rodar só pra devolver o teaser cru, um gate que
+ * promete cobertura e não entrega (travado por `test/cursos-worker-first.test.ts`). */
+export const GATED_INDEX_PATHS = ["/", "/index.html"];
+
+/** Handler do index — resolve qual variante servir. Path A (`?email=`) tem
  * prioridade sobre o cookie (a newsletter é a fonte de verdade mais fresca);
- * cookie é o fallback pra navegação subsequente na mesma sessão. */
+ * cookie é o fallback pra navegação subsequente na mesma sessão.
+ *
+ * #4305: fail-soft. Antes do `run_worker_first`, o asset era servido sem o
+ * script rodar, então nada aqui podia derrubar a home. Agora TODA visita a
+ * `/` depende deste handler terminar — um throw do KV (`kv.get` não é
+ * envolvido em try/catch em lugar nenhum da cadeia) passaria direto pro
+ * `fetch` e derrubaria a página inteira. O catch devolve o teaser, que é o
+ * comportamento pré-fix: degradar pra "todo mundo vê o teaser" é aceitável,
+ * derrubar a home não. */
 async function handleIndex(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url);
-  const emailParam = (url.searchParams.get("email") || "").trim();
+  try {
+    const url = new URL(request.url);
+    const emailParam = (url.searchParams.get("email") || "").trim();
 
-  if (emailParam && isValidEmailFormat(emailParam)) {
-    const result = await checkGateSubscriber(env, emailParam);
-    if (result === "active") {
-      const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, emailParam);
-      return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
+    // #4305: sem o secret do HMAC não existe sessão confiável — assinar com
+    // `undefined` NÃO lança (`TextEncoder().encode(undefined)` devolve buffer
+    // vazio), produziria assinatura forjável por qualquer um, e agora que o
+    // cookie de fato desbloqueia isso é bypass do gate. Sem o secret, só
+    // teaser. Mesmo guard de `workers/poll/src/web-gate.ts`.
+    const canIssueSession = Boolean(env.COOKIE_HMAC_SECRET);
+
+    if (canIssueSession && emailParam && isValidEmailFormat(emailParam)) {
+      const result = await checkGateSubscriber(env, emailParam);
+      if (result === "active") {
+        const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, emailParam);
+        return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
+      }
+      // #4052: e-mail na URL mas não confirmado ativo — NUNCA vaza esse sinal
+      // pro leitor (poderia ser link velho/editado à mão); cai pro teaser
+      // normal, silenciosamente, igual a não ter mandado `?email=` nenhum.
     }
-    // #4052: e-mail na URL mas não confirmado ativo — NUNCA vaza esse sinal
-    // pro leitor (poderia ser link velho/editado à mão); cai pro teaser
-    // normal, silenciosamente, igual a não ter mandado `?email=` nenhum.
-  }
 
-  const cookieEmail = await readSessionEmail(env.COOKIE_HMAC_SECRET, request.headers.get("Cookie"));
-  if (cookieEmail) return html(CURSOS_FULL_HTML);
+    if (canIssueSession) {
+      const cookieEmail = await readSessionEmail(env.COOKIE_HMAC_SECRET, request.headers.get("Cookie"));
+      if (cookieEmail) return html(CURSOS_FULL_HTML);
+    }
+  } catch (err) {
+    console.error("[cursos] handleIndex falhou, degradando pro teaser:", err);
+  }
 
   return env.ASSETS.fetch(request);
 }
 
 /** Handler `POST /gate/verify` — só verificação (sem criar assinante). */
 async function handleGateVerify(request: Request, env: Env): Promise<Response> {
+  // #4305: fail-closed — sem o secret do HMAC não dá pra emitir sessão
+  // confiável (ver `handleIndex`). Melhor 503 explícito que cookie assinado
+  // com chave vazia, que qualquer um forja.
+  if (!env.COOKIE_HMAC_SECRET) return json({ ok: false, error: "gate_unavailable" }, 503, env);
+
   const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || "";
   const rl = await checkGateRateLimit(env.CURSOS_SUBSCRIBERS, ip);
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
@@ -141,7 +177,7 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(runtimeEnv) });
     }
 
-    if (url.pathname === "/" && request.method === "GET") {
+    if (GATED_INDEX_PATHS.includes(url.pathname) && request.method === "GET") {
       return handleIndex(request, runtimeEnv);
     }
     if (url.pathname === "/gate" && request.method === "GET") {

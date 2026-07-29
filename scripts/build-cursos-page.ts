@@ -121,8 +121,12 @@ export function openCourseCount(total: number): number {
 
 /**
  * Subconjunto que fica ABERTO no modo teaser: os marcados `teaser: true`
- * primeiro (curadoria — cobrem pt-br/en e plataformas distintas), depois os
- * demais na ordem do seed, cortando em `openCourseCount(total)`. Pure.
+ * primeiro, depois os demais na ordem do seed, cortando em
+ * `openCourseCount(total)`. Pure.
+ *
+ * Nota pra quem cura o seed: ao marcar `teaser: true`, prefira cobrir pt-br/en
+ * e plataformas distintas — é o que os marcados de hoje fazem, mas o código
+ * não impõe nada disso.
  */
 export function selectOpenCourses(courses: Course[]): Course[] {
   const limit = openCourseCount(courses.length);
@@ -270,14 +274,25 @@ function renderFilter(id: string, label: string, opts: Array<{ value: string; la
  * cursos, devolve HTML 100% self-contained (Georgia é system font — sem fonte externa).
  */
 export function renderCursosPage(courses: Course[], mode: CursosRenderMode = "full"): string {
-  // #4052: no teaser, os cursos gated NÃO entram no render de forma alguma —
-  // `visible` é a única lista que alimenta cards, filtros e contagens, pra
-  // nenhum metadado de curso fechado (título, plataforma, tema, contagem)
-  // vazar por uma via lateral. No modo full, `visible` é o catálogo inteiro.
-  const open = new Set(mode === "teaser" ? selectOpenCourses(courses) : courses);
-  const visible = courses.filter((c) => open.has(c));
-  const hiddenCount = courses.length - visible.length;
+  // #4052/#4305: no teaser, os cursos gated NÃO entram no render de forma
+  // alguma — nem título, nem plataforma, nem tema/contagem nos filtros. O
+  // catálogo completo morre AQUI: `renderPageBody` recebe só os visíveis e a
+  // contagem dos escondidos, então nenhuma derivação lá dentro consegue
+  // alcançar um curso fechado nem por engano — `courses` não existe naquele
+  // escopo. A primeira versão do gate errou exatamente assim (condicional
+  // repetida em cada derivação, uma delas esquecida), e comentário não segura
+  // isso; escopo segura.
+  const openIds = new Set((mode === "teaser" ? selectOpenCourses(courses) : courses).map((c) => c.id));
+  const visible = courses.filter((c) => openIds.has(c.id));
+  return renderPageBody(visible, courses.length - visible.length, mode);
+}
 
+/**
+ * Corpo do render. Recebe SÓ os cursos visíveis — nunca o catálogo completo
+ * (ver `renderCursosPage`). `hiddenCount` é a única informação sobre os
+ * fechados que atravessa a fronteira, e só vira contagem agregada na CTA.
+ */
+function renderPageBody(visible: Course[], hiddenCount: number, mode: CursosRenderMode): string {
   const cards = visible.map(renderCard).join("\n");
   // #4052: banner de gate — só no modo teaser, e só quando há pelo menos 1
   // curso fechado (se um dia o catálogo couber inteiro na cota aberta, o

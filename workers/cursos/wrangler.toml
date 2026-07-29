@@ -2,8 +2,9 @@
 #
 # #4052: convertido de static-assets-only pra worker com SCRIPT
 # (`main = src/index.ts`) + assets. `env.ASSETS` continua servindo
-# `workers/cursos/public/index.html` (teaser — 4 cursos abertos, resto
-# bloqueado) como fallback; o script intercepta `/`, `/gate`, `/gate/verify`,
+# `workers/cursos/public/index.html` (teaser — floor(20%×total) cursos
+# abertos, os demais AUSENTES do render, nem título; ver #4305) como
+# fallback; o script intercepta `/`, `/index.html`, `/gate`, `/gate/verify`,
 # `/gate/subscribe` pra decidir teaser × conteúdo completo (ver src/index.ts).
 # O HTML teaser é gerado por `scripts/build-cursos-page.ts` a partir de
 # `seed/courses/cursos-ia.json` (fonte de verdade, versionada); o HTML
@@ -47,8 +48,12 @@ binding = "ASSETS"
 # era ignorado e o cookie de sessão nunca era lido (caminho B desbloqueava,
 # setava o cookie e a página seguia teaser). Só `/gate*` funcionava, porque
 # não tem asset correspondente. `run_worker_first` força o script a decidir
-# em `/` — o teaser continua vindo do ASSETS binding, mas só depois de
-# `handleIndex` checar `?email=`/cookie. Travado por
+# em `/` (e em `/index.html`, o MESMO asset por outro path) — o teaser
+# continua vindo do ASSETS binding, mas só depois de `handleIndex` checar
+# `?email=`/cookie. Esta lista precisa casar com `GATED_INDEX_PATHS` em
+# `src/index.ts`: declarar aqui um path que o `fetch` não roteia pra
+# `handleIndex` faz o script rodar só pra devolver o teaser cru — gate que
+# promete cobertura e não entrega. Travado por
 # `test/cursos-worker-first.test.ts`.
 run_worker_first = ["/", "/index.html"]
 

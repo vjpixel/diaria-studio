@@ -146,6 +146,11 @@ export interface SubscribeDeps {
  * cookie de sessão (o novo assinante não precisa esperar o próximo sync KV
  * pra ver o conteúdo completo — a Beehiiv já confirmou a criação). */
 export async function handleGateSubscribe(request: Request, env: Env, deps: SubscribeDeps = {}): Promise<Response> {
+  // #4305: fail-closed — sem `COOKIE_HMAC_SECRET` a sessão sairia assinada com
+  // chave vazia (forjável por qualquer um). Recusa antes de criar assinante na
+  // Beehiiv, senão o cadastro acontece e a pessoa fica sem acesso mesmo assim.
+  if (!env.COOKIE_HMAC_SECRET) return json({ ok: false, error: "gate_unavailable" }, 503, env);
+
   const fetchImpl = deps.fetchImpl ?? fetch;
   const raw = await request.text();
   const parsed = parseSubscribeBody(raw, request.headers.get("Content-Type") ?? "");

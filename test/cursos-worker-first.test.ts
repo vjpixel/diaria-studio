@@ -79,4 +79,36 @@ describe("workers/cursos: script roda antes do asset em / (#4052)", () => {
       `run_worker_first precisa incluir "/index.html" — declarado: ${JSON.stringify(routes)}`,
     );
   });
+
+  // #4305: `run_worker_first` só faz o script RODAR; quem decide se o gate é
+  // consultado é o roteamento em `src/index.ts`. Declarar um path só no toml
+  // faz o worker rodar pra cair no `env.ASSETS.fetch` do fim e devolver o
+  // teaser cru — o gate promete cobertura e não entrega, silenciosamente. Foi
+  // o que aconteceu com `/index.html`: estava no toml, mas o `fetch` só
+  // casava `pathname === "/"`. As duas listas TÊM que concordar.
+  it("todo path de `run_worker_first` é roteado pra `handleIndex` em src/index.ts", async () => {
+    const boolLiteral = assets.match(/^\s*run_worker_first\s*=\s*(true|false)\s*$/m);
+    if (boolLiteral?.[1] === "true") return; // cobertura total: nada a conciliar
+    const routes = tomlStringArray(assets, "run_worker_first") ?? [];
+    const { GATED_INDEX_PATHS } = await import("../workers/cursos/src/index.ts");
+    for (const r of routes) {
+      assert.ok(
+        GATED_INDEX_PATHS.includes(r),
+        `wrangler.toml declara "${r}" em run_worker_first, mas src/index.ts não roteia esse path pra handleIndex (GATED_INDEX_PATHS = ${JSON.stringify(GATED_INDEX_PATHS)}) — o worker rodaria só pra devolver o teaser cru`,
+      );
+    }
+  });
+
+  it("todo path gated em src/index.ts está em `run_worker_first` (senão o script nem roda)", async () => {
+    const boolLiteral = assets.match(/^\s*run_worker_first\s*=\s*(true|false)\s*$/m);
+    if (boolLiteral?.[1] === "true") return;
+    const routes = tomlStringArray(assets, "run_worker_first") ?? [];
+    const { GATED_INDEX_PATHS } = await import("../workers/cursos/src/index.ts");
+    for (const p of GATED_INDEX_PATHS) {
+      assert.ok(
+        routes.includes(p),
+        `src/index.ts gateia "${p}", mas wrangler.toml não o declara em run_worker_first — o asset ganha e handleIndex nunca roda`,
+      );
+    }
+  });
 });
