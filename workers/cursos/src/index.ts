@@ -140,9 +140,14 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
     // merge tag quebrada (Beehiiv mandando `{{email}}` cru, lista errada
     // sincronizada pro KV) produz exatamente este caminho em 100% dos cliques
     // da newsletter e fica indistinguível do tráfego normal de quem não
-    // assina. O e-mail em si fica DE FORA: `?email=` vem de assinante real, e
-    // despejar endereço em log de plataforma é vazamento de PII a troco de
-    // nada — a contagem é o que importa, não quem.
+    // assina. O e-mail em si fica DE FORA destes dois `console.warn` — eles
+    // não interpolam `emailParam` em lugar nenhum. Isso vale só pra estes
+    // dois ramos: o handler como um todo (incluindo o `catch` genérico lá
+    // embaixo, que loga `request.url` cru) também garante isso, mas por outro
+    // mecanismo — redação explícita do param `email` antes de logar, não
+    // ausência de interpolação. Despejar endereço em log de plataforma é
+    // vazamento de PII a troco de nada — a contagem é o que importa, não
+    // quem.
     if (canIssueSession && emailParam && !isValidEmailFormat(emailParam)) {
       console.warn("[cursos] ?email= presente mas malformado — provável merge tag não resolvida");
     }
@@ -167,10 +172,23 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
     }
   } catch (err) {
     // Contexto no log: sem ele não dá pra distinguir "um request com azar" de
-    // "100% dos requests falhando" num `wrangler tail`. `request.url` cru
-    // porque re-parsear aqui poderia lançar de novo.
+    // "100% dos requests falhando" num `wrangler tail`. `?email=` é redigido
+    // antes de logar — este catch é genérico (qualquer exceção não tratada
+    // no bloco acima) e uma URL com e-mail de assinante real não pode virar
+    // PII em log de plataforma. Se o próprio `new URL(request.url)` lançar
+    // (URL malformada — não deveria, o runtime já validou pra chegar aqui),
+    // cai no fallback com a URL inteira omitida, nunca com o cru.
+    const safeUrl = (() => {
+      try {
+        const u = new URL(request.url);
+        if (u.searchParams.has("email")) u.searchParams.set("email", "[redacted]");
+        return u.toString();
+      } catch {
+        return "[url indisponível]";
+      }
+    })();
     console.error(
-      `[cursos] handleIndex falhou (url=${request.url}, cookie=${request.headers.has("Cookie")}) — degradando pro teaser:`,
+      `[cursos] handleIndex falhou (url=${safeUrl}, cookie=${request.headers.has("Cookie")}) — degradando pro teaser:`,
       err,
     );
   }

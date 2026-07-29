@@ -351,6 +351,16 @@ describe("workers/cursos: gate no follow-up #4305", () => {
     assert.equal(logs.lines.length, 1, "a degradação precisa deixar rastro");
     assert.match(logs.lines[0], /handleIndex falhou/);
     assert.match(logs.lines[0], /url=/, "sem contexto de request não dá pra distinguir 1 request de 100%");
+    // 3º passe de review (fb030eda): o `catch` é genérico — qualquer exceção
+    // não tratada no handler cai aqui, inclusive com `?email=` de assinante
+    // real na URL. `request.url` cru vazaria PII pro log de plataforma; o
+    // param precisa vir redigido.
+    assert.ok(!logs.lines[0].includes("alguem@example.com"), "e-mail não pode vazar no log de exceção genérica");
+    assert.match(
+      logs.lines[0],
+      /email=%5Bredacted%5D/,
+      "o param redigido ainda precisa aparecer (url-encoded) pra sinalizar que havia email na URL",
+    );
   });
 
   it("?email= não-ativo loga a taxa SEM o endereço — merge tag quebrada é indistinguível sem isso", async () => {
@@ -409,6 +419,39 @@ describe("workers/cursos: gate no follow-up #4305", () => {
     assert.ok(
       logs.lines.some((l) => /cadastro na Beehiiv falhou/.test(l)),
       "sem log, Beehiiv fora do ar mata todo cadastro do gate em silêncio",
+    );
+  });
+
+  it("fetch pra Beehiiv lançando (rede caída) loga — ramo distinto de resposta HTTP não-ok", async () => {
+    // 3º passe de review (fb030eda): o `catch` de `subscribeToBeehiiv` cobre o
+    // `fetch` LANÇANDO (DNS/rede), não só devolvendo status não-ok — ramo
+    // testado acima. Sem este teste, um `fetchImpl` que rejeita nunca exercita
+    // o `console.error("[cursos] fetch pra Beehiiv lançou:", err)`.
+    const env = baseEnv({ BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: "pub_1" });
+    const { handleGateSubscribe } = await import("../workers/cursos/src/subscribe.ts");
+    const logs = captureErrorLogs();
+    let res: Response;
+    try {
+      res = await handleGateSubscribe(
+        new Request("https://cursos.diar.ia.br/gate/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "novo@example.com", optin: true }),
+        }),
+        env,
+        {
+          fetchImpl: (async () => {
+            throw new Error("network down");
+          }) as unknown as typeof fetch,
+        },
+      );
+    } finally {
+      logs.restore();
+    }
+    assert.equal(res.status, 502);
+    assert.ok(
+      logs.lines.some((l) => /fetch pra Beehiiv lançou/.test(l)),
+      "exceção de rede no fetch da Beehiiv precisa deixar rastro distinto de resposta não-ok",
     );
   });
 
