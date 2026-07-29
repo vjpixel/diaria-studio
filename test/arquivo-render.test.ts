@@ -147,6 +147,33 @@ describe("buildArchiveHtml (#4105)", () => {
     assert.match(html, /julho de 2026/);
     assert.match(html, /com-hora/);
   });
+
+  it("(#4312) o UTM do link de rodapé pra Diar.ia está catalogado em UTM_EMITTERS", async () => {
+    // Regressão: #4299 introduziu o literal solto `utm_source=arquivo&...`
+    // direto no call site (violando a regra do próprio utm-registry.ts) e
+    // nenhum teste pegou, porque `knownUtmSources()` DERIVA de
+    // `UTM_EMITTERS` — sem a entrada, o "furo" era invisível pros testes
+    // existentes (`test/utm-registry-4041.test.ts`/`test/studio-utms-4041.test.ts`).
+    // Este teste lê o `utm_source`/`utm_medium` de fato emitidos pelo render
+    // e confere contra o registry — falha SEM a entrada `arquivo-footer-nav`.
+    const { knownUtmSources, ARQUIVO_FOOTER_NAV_UTM } = await import(
+      "../scripts/lib/shared/utm-registry.ts"
+    );
+    const html = buildArchiveHtml([entry("https://diar.ia.br/p/edicao-a", "2026-07-27")]);
+    const m = /href="https:\/\/diar\.ia\.br\/?\?(utm_source=[^"]+)"/.exec(html);
+    assert.ok(m, "link 'Diar.ia' do rodapé não tem UTM na URL");
+    // `escHtml` (aplicado no `href`) escreve `&` como `&amp;` — desfaz antes
+    // de parsear a query string.
+    const params = new URLSearchParams(m[1].replace(/&amp;/g, "&"));
+    const utmSource = params.get("utm_source");
+    const utmMedium = params.get("utm_medium");
+    assert.equal(utmSource, ARQUIVO_FOOTER_NAV_UTM.source);
+    assert.equal(utmMedium, ARQUIVO_FOOTER_NAV_UTM.medium);
+    assert.ok(
+      knownUtmSources().includes((utmSource ?? "").toLowerCase()),
+      `utm_source="${utmSource}" emitido pelo render mas ausente de UTM_EMITTERS`,
+    );
+  });
 });
 
 describe("displayTextFromLoc (#4105)", () => {

@@ -132,6 +132,17 @@ export const LIVROS_INLINE_UTM = {
   footer: { medium: "inline-footer" },
 } as const;
 
+/** Link "Diar.ia" no rodapé de navegação cruzada da página de arquivo
+ * (`workers/arquivo/src/render-archive.ts`, #4265 item 9) — só source+medium,
+ * SEM `utm_campaign` (mesmo padrão do link footer-nav de livros em
+ * `build-livros-page.ts:360`, que reusa o `utm_source` de `LIVROS_INLINE_UTM`
+ * acima mas nunca ganhou entrada própria no registry — não mexido aqui, fora
+ * do escopo do #4312, mas é o mesmo tipo de link). */
+export const ARQUIVO_FOOTER_NAV_UTM = {
+  source: "arquivo",
+  medium: "footer-nav",
+} as const;
+
 /** Cadastro inline na tela de resultado do voto do brand clarice (#4065). */
 export const VOTE_CLARICE_INLINE_UTM = {
   source: "clarice-email",
@@ -318,6 +329,21 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: LIVROS_INLINE_UTM.campaign,
     originFile: "workers/poll/src/subscribe.ts",
     description: "CTA de cadastro no fim da lista de cards de livros.diar.ia.br (#4051).",
+    status: "ativo",
+  },
+  {
+    id: "arquivo-footer-nav",
+    label: "Arquivo — link de rodapé pra Diar.ia",
+    source: ARQUIVO_FOOTER_NAV_UTM.source,
+    medium: ARQUIVO_FOOTER_NAV_UTM.medium,
+    // #4312: sem utm_campaign de verdade (link de nav, só source+medium) —
+    // padrão-placeholder que nunca casa contra dado real, só pra satisfazer o
+    // schema (campaignPattern não-vazio, `test/utm-registry-4041.test.ts`).
+    campaignPattern: "arquivo-footer-nav",
+    originFile: "workers/arquivo/src/render-archive.ts",
+    description:
+      'Link "Diar.ia" no rodapé de navegação cruzada da página de arquivo — ' +
+      "sem utm_campaign, só source+medium (#4265 item 9, gap fechado no #4312).",
     status: "ativo",
   },
   {

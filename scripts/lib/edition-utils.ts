@@ -10,8 +10,28 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { enumerateEditionDirs } from "./find-current-edition.ts";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const EDITIONS_DIR = resolve(ROOT, "data", "editions");
+// #4308: ROOT/EDITIONS_DIR eram computados no TOP LEVEL do módulo (eager),
+// via `fileURLToPath(import.meta.url)`. Este módulo é importado
+// TRANSITIVAMENTE por `isValidEditionDir` — reexportado por `dedup.ts` (via
+// `past-editions-extract.ts`), importado por `canonical-urls.ts`, importado
+// por `curadoria-page.ts` (#4265 item 9) — cadeia que, desde #4299, passou a
+// ser puxada pelo worker `arquivo` (`render-archive.ts`). O bundle do
+// Wrangler executa o top level do módulo dentro do runtime de Workers, onde
+// `import.meta.url` não resolve como no Node; `fileURLToPath(undefined)`
+// derrubou o deploy (gh run 30468902827, #4308) mesmo o worker nunca
+// chamando `listEditions`/`getPreviousEditionDate` (só a função pura
+// `isValidEditionDir`, que não depende de ROOT). Fix: computar sob demanda —
+// só quando uma função que precisa do path default é de fato invocada sem
+// `editionsDir` explícito (nunca acontece no worker; sempre acontece nos
+// scripts Node que já usavam o default).
+let cachedDefaultEditionsDir: string | undefined;
+function defaultEditionsDir(): string {
+  if (cachedDefaultEditionsDir === undefined) {
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+    cachedDefaultEditionsDir = resolve(root, "data", "editions");
+  }
+  return cachedDefaultEditionsDir;
+}
 
 /**
  * #1680: validação ESTRITA de nome de pasta de edição AAMMDD — 6 dígitos +
@@ -55,7 +75,7 @@ function sortedValidAammdd(dirs: Map<string, string>): string[] {
  * `enumerateEditionDirs` — antes só via `readdirSync` direto, o que perdia
  * edições criadas no layout nested pós-#3023.
  */
-export function listEditions(editionsDir: string = EDITIONS_DIR): string[] {
+export function listEditions(editionsDir: string = defaultEditionsDir()): string[] {
   return sortedValidAammdd(enumerateEditionDirs(editionsDir));
 }
 
@@ -102,7 +122,7 @@ export function pickLatestEditionEntry(
  * de disco por chamada, e resolvia o path com um `!` sem guard).
  */
 export function findLatestEditionEntry(
-  editionsDir: string = EDITIONS_DIR,
+  editionsDir: string = defaultEditionsDir(),
 ): { aammdd: string; dir: string } | null {
   return pickLatestEditionEntry(enumerateEditionDirs(editionsDir));
 }
@@ -120,7 +140,7 @@ export function findLatestEditionEntry(
  */
 export function getPreviousEditionDate(
   currentAammdd: string,
-  editionsDir: string = EDITIONS_DIR,
+  editionsDir: string = defaultEditionsDir(),
 ): string | null {
   if (!isValidEditionDir(currentAammdd)) {
     throw new Error(`getPreviousEditionDate: AAMMDD inválido: ${currentAammdd}`);
