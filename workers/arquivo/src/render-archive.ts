@@ -31,6 +31,7 @@ import {
   renderCuradoriaFooter,
 } from "../../../scripts/lib/shared/curadoria-page.ts";
 import { renderSeoMeta } from "../../../scripts/lib/shared/seo-meta.ts";
+import { ARQUIVO_FOOTER_NAV_UTM } from "../../../scripts/lib/shared/utm-registry.ts";
 
 /** URL pública canônica desta página (Workers Custom Domain, #4105/#3698). */
 export const PAGE_URL = "https://arquivo.diar.ia.br/";
@@ -203,7 +204,10 @@ ${renderCuradoriaFooterStyles()}
 ${body}
     </div>
   </main>
-  ${renderCuradoriaFooter("diar.ia.br — arquivo de edições", "utm_source=arquivo&utm_medium=footer-nav")}
+  ${renderCuradoriaFooter(
+    "diar.ia.br — arquivo de edições",
+    `utm_source=${ARQUIVO_FOOTER_NAV_UTM.source}&utm_medium=${ARQUIVO_FOOTER_NAV_UTM.medium}`,
+  )}
 </body>
 </html>
 `;
