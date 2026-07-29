@@ -23,11 +23,22 @@
  * vendo TODAS — pular o rascunho não pode pular a checagem do erro
  * intencional (decisão explícita da issue).
  *
+ * #4324: reply a e-mail de AUTOMAÇÃO da Beehiiv (ex: o boas-vindas, que pede
+ * explicitamente "responda com um oi" como truque de entregabilidade) é
+ * excluída TOTALMENTE de `replies[]` — diferente de `trivial` acima, aqui não
+ * há rascunho pulado nem crédito de concurso a checar: quem responde ao
+ * boas-vindas ainda não recebeu edição nenhuma, então atribuí-lo a uma edição
+ * seria sempre falso. Detecção por ASSUNTO normalizado (`normalizeSubject`)
+ * contra uma lista pequena de assuntos de automação conhecidos
+ * (`AUTOMATED_SUBJECTS` — adicionar um novo é uma linha). O total excluído é
+ * reportado em `automatedSubjectCount` — nunca some em silêncio (mesmo
+ * princípio do #4095).
+ *
  * Uso:
  *   npx tsx scripts/filter-subscriber-replies.ts --in captured-replies.json
  *
  * Input: JSON array de { thread_id, from, subject, date?, body? }.
- * Output JSON: { total, replies: CapturedReply[] } (cada reply com `trivial`).
+ * Output JSON: { total, replies: CapturedReply[], automatedSubjectCount } (cada reply com `trivial`).
  * Exit: 0 (sempre — é filtro, não gate; o draft+gate é no playbook).
  */
 
@@ -195,19 +206,91 @@ export function isTrivialReply(cleanBody: string | undefined | null): boolean {
   return false;
 }
 
+/**
+ * #4324: prefixo de resposta/encaminhamento a remover (repetidamente) do
+ * assunto antes de comparar contra a lista de automações. Superset de
+ * `REPLY_PREFIX_RE` — inclui `Fwd:`/`Enc:` porque, pra fins de NORMALIZAÇÃO de
+ * assunto, um "Fwd: Bem-vindo(a) à Diar.ia!" deve casar igual a um "Re:"
+ * (a exclusão aqui é sobre o e-mail de automação em si, não sobre se é
+ * resposta ou encaminhamento — `looksLikeSubscriberReply` já decidiu isso
+ * antes de `isAutomatedSubject` ser chamado).
+ */
+const SUBJECT_PREFIX_STRIP_RE = /^\s*(?:re|res|fwd|enc)\s*(?:\[\d+\])?\s*:\s*/i;
+
+/** Remove diacríticos (á→a, ã→a, ç→c, …) preservando o restante do texto. */
+function stripAccents(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+/**
+ * #4324: normaliza um assunto pra comparação contra `AUTOMATED_SUBJECTS` —
+ * remove prefixos `Re:`/`Res:`/`Fwd:`/`Enc:` repetidos (qualquer quantidade,
+ * em qualquer combinação), minúsculas, sem acento, espaços de borda
+ * colapsados. Pura, nunca lança; assunto ausente → `""`.
+ */
+export function normalizeSubject(subject: string | undefined | null): string {
+  let s = (subject ?? "").trim();
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(SUBJECT_PREFIX_STRIP_RE, "").trim();
+  } while (s !== prev);
+  return stripAccents(s.toLowerCase()).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * #4324: assuntos de e-mails de AUTOMAÇÃO da Beehiiv cuja resposta nunca deve
+ * virar rascunho nem entrar na resolução de edição/matcher do concurso "ache o
+ * erro" — a exclusão é total (ver docstring do módulo), diferente de
+ * `trivial`. Comparados via `normalizeSubject`, então cada entry aqui cobre
+ * qualquer variação de prefixo Re:/Res:/Fwd:/Enc:, caixa e acento.
+ *
+ * Blacklist de propósito (decisão da issue #4324): assuntos de EDIÇÃO variam
+ * por teste A/B — uma whitelist descartaria retorno legítimo em silêncio.
+ *
+ * Adicionar uma nova automação é UMA LINHA aqui.
+ */
+const AUTOMATED_SUBJECTS = [
+  "Bem-vindo(a) à Diar.ia!", // atual
+  "Bem-vindo à Diar.ia!", // usado até ~2026-07-09, sem o "(a)"
+];
+const AUTOMATED_SUBJECTS_NORMALIZED = new Set(AUTOMATED_SUBJECTS.map(normalizeSubject));
+
+/**
+ * `true` se o assunto (normalizado) casa com um e-mail de automação conhecido
+ * da Beehiiv (ex: o boas-vindas). Compara o assunto INTEIRO normalizado —
+ * `"Re: Bem-vindo ao AYA Books"` (outra newsletter, mesma caixa) nunca casa
+ * porque o texto normalizado difere de qualquer entry de `AUTOMATED_SUBJECTS`
+ * (a âncora em "diar.ia" vem de cada entry conhecida já conter o nome da
+ * publicação, não de um teste de substring separado).
+ */
+export function isAutomatedSubject(subject: string | undefined | null): boolean {
+  return AUTOMATED_SUBJECTS_NORMALIZED.has(normalizeSubject(subject));
+}
+
 export interface FilterResult {
   total: number;
   replies: CapturedReply[];
+  /**
+   * #4324: quantas threads que passariam no filtro de assinante (Re: +
+   * remetente humano) foram excluídas por casar um assunto de automação da
+   * Beehiiv (ex: reply ao boas-vindas) — excluídas de `replies[]` por
+   * completo, antes de qualquer resolução de edição/matcher do concurso.
+   * Reportado agregado pelo consumidor (nunca some em silêncio).
+   */
+  automatedSubjectCount: number;
 }
 
 export function filterSubscriberReplies(threads: CapturedReply[]): FilterResult {
-  const replies = threads
-    .filter((t) => looksLikeSubscriberReply({ subject: t.subject, from: t.from }))
+  const candidates = threads.filter((t) => looksLikeSubscriberReply({ subject: t.subject, from: t.from }));
+  const automatedSubjectCount = candidates.filter((t) => isAutomatedSubject(t.subject)).length;
+  const replies = candidates
+    .filter((t) => !isAutomatedSubject(t.subject))
     .map((t) => ({
       ...t,
       trivial: isTrivialReply(stripQuotedAndSignature(t.body)),
     }));
-  return { total: threads.length, replies };
+  return { total: threads.length, replies, automatedSubjectCount };
 }
 
 function main(): void {
@@ -249,6 +332,14 @@ function main(): void {
     if (trivialCount > 0) {
       console.error(`  ⚪ ${trivialCount} resposta(s) trivial(is) ignorada(s) (sem rascunho)`);
     }
+  }
+  // #4324: reply ao e-mail de automação da Beehiiv (ex: boas-vindas) é
+  // excluída de replies[] por completo — reportada aqui mesmo quando
+  // result.replies está vazio (cenário: toda thread capturada era boas-vindas).
+  if (result.automatedSubjectCount > 0) {
+    console.error(
+      `  📧 ${result.automatedSubjectCount} resposta(s) ao e-mail de boas-vindas ignorada(s)`,
+    );
   }
 }
 

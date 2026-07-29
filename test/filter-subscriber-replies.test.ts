@@ -12,6 +12,8 @@ import {
   extractEmail,
   stripQuotedAndSignature,
   isTrivialReply,
+  normalizeSubject,
+  isAutomatedSubject,
 } from "../scripts/filter-subscriber-replies.ts";
 
 describe("looksLikeSubscriberReply (#1797)", () => {
@@ -300,5 +302,99 @@ describe("filterSubscriberReplies — marcação trivial (#4095)", () => {
     const threads = [{ thread_id: "1", subject: "Re: x", from: "leitor@x.com", body }];
     const { replies } = filterSubscriberReplies(threads);
     assert.equal(replies[0].trivial, true, "sem a limpeza, o corpo de milhares de chars pareceria substancial");
+  });
+});
+
+// ── #4324: normalizeSubject — normalização de assunto ───────────────────────
+
+describe("normalizeSubject (#4324)", () => {
+  it("ausente/vazio → string vazia, nunca lança", () => {
+    assert.equal(normalizeSubject(undefined), "");
+    assert.equal(normalizeSubject(null), "");
+    assert.equal(normalizeSubject(""), "");
+  });
+
+  it("remove prefixo Re:/Res:/Fwd:/Enc: (1x)", () => {
+    assert.equal(normalizeSubject("Re: Bem-vindo à Diar.ia!"), "bem-vindo a diar.ia!");
+    assert.equal(normalizeSubject("Res: Bem-vindo à Diar.ia!"), "bem-vindo a diar.ia!");
+    assert.equal(normalizeSubject("Fwd: Bem-vindo à Diar.ia!"), "bem-vindo a diar.ia!");
+    assert.equal(normalizeSubject("Enc: Bem-vindo à Diar.ia!"), "bem-vindo a diar.ia!");
+  });
+
+  it("remove prefixos repetidos (Re: Re: / Fwd: Res: / Re[2]:)", () => {
+    assert.equal(normalizeSubject("Re: Re: Bem-vindo à Diar.ia!"), "bem-vindo a diar.ia!");
+    assert.equal(normalizeSubject("Fwd: Res: Bem-vindo à Diar.ia!"), "bem-vindo a diar.ia!");
+    assert.equal(normalizeSubject("Re[2]: Bem-vindo à Diar.ia!"), "bem-vindo a diar.ia!");
+  });
+
+  it("minúsculas + sem acento + espaços colapsados", () => {
+    assert.equal(normalizeSubject("BEM-VINDO(A)   À   DIAR.IA!"), "bem-vindo(a) a diar.ia!");
+  });
+});
+
+// ── #4324: isAutomatedSubject / exclusão total em filterSubscriberReplies ──
+
+describe("isAutomatedSubject (#4324)", () => {
+  it("as duas variantes de boas-vindas → true, com prefixo Re:", () => {
+    assert.ok(isAutomatedSubject("Re: Bem-vindo(a) à Diar.ia!"), "variante atual (com '(a)')");
+    assert.ok(isAutomatedSubject("Re: Bem-vindo à Diar.ia!"), "variante antiga (sem '(a)', até ~2026-07-09)");
+  });
+
+  it("caixa/acento/prefixo variando ainda casa", () => {
+    assert.ok(isAutomatedSubject("RES: bem-vindo(a) à diar.ia!"));
+    assert.ok(isAutomatedSubject("re: BEM-VINDO À DIAR.IA!"));
+  });
+
+  it("'Re: Bem-vindo ao AYA Books' (outra newsletter, mesma caixa) → false", () => {
+    assert.ok(!isAutomatedSubject("Re: Bem-vindo ao AYA Books"));
+  });
+
+  it("reply a edição de verdade → false", () => {
+    assert.ok(!isAutomatedSubject("Re: Diar.ia — 27/07"));
+  });
+
+  it("ausente → false", () => {
+    assert.ok(!isAutomatedSubject(undefined));
+    assert.ok(!isAutomatedSubject(""));
+  });
+});
+
+describe("filterSubscriberReplies — exclusão de automação (#4324)", () => {
+  it("reply ao boas-vindas (ambas variantes) não entra em replies[]; automatedSubjectCount reporta a contagem", () => {
+    const threads = [
+      { thread_id: "1", subject: "Re: Bem-vindo(a) à Diar.ia!", from: "leitor1@x.com", body: "oi" },
+      { thread_id: "2", subject: "Re: Bem-vindo à Diar.ia!", from: "leitor2@x.com", body: "Oi!" },
+      { thread_id: "3", subject: "Re: Diar.ia — 27/07", from: "leitor3@x.com", body: "Gostei muito!" },
+    ];
+    const { total, replies, automatedSubjectCount } = filterSubscriberReplies(threads);
+    assert.equal(total, 3);
+    assert.equal(automatedSubjectCount, 2, "as duas replies de boas-vindas foram excluídas");
+    assert.equal(replies.length, 1, "só a reply a uma edição de verdade continua entrando");
+    assert.equal(replies[0].thread_id, "3");
+  });
+
+  it("'Re: Bem-vindo ao AYA Books' (outra newsletter, mesma caixa) NÃO é afetado", () => {
+    const threads = [
+      { thread_id: "1", subject: "Re: Bem-vindo ao AYA Books", from: "leitor@x.com", body: "Legal, obrigado!" },
+    ];
+    const { replies, automatedSubjectCount } = filterSubscriberReplies(threads);
+    assert.equal(automatedSubjectCount, 0);
+    assert.equal(replies.length, 1, "AYA Books não é automação da Diar.ia — continua elegível");
+    assert.equal(replies[0].thread_id, "1");
+  });
+
+  it("reply a uma edição de verdade continua entrando (regressão)", () => {
+    const threads = [
+      { thread_id: "1", subject: "Re: Diar.ia — 27/07", from: "leitor@x.com", body: "Qual foi o erro de hoje?" },
+    ];
+    const { replies, automatedSubjectCount } = filterSubscriberReplies(threads);
+    assert.equal(automatedSubjectCount, 0);
+    assert.equal(replies.length, 1);
+  });
+
+  it("nenhuma automação → automatedSubjectCount 0", () => {
+    const threads = [{ thread_id: "1", subject: "Re: Diar.ia — 27/07", from: "leitor@x.com" }];
+    const { automatedSubjectCount } = filterSubscriberReplies(threads);
+    assert.equal(automatedSubjectCount, 0);
   });
 });
