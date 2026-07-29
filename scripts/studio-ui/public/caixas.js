@@ -15,6 +15,12 @@
 // GET/PUT /api/boxes/slots, MESMO mecanismo de guard de mtime
 // (`SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE`) e ZERO UI otimista (refetcha slots +
 // lista após salvar, pra o badge "slot N" dos cards refletir o disco).
+//
+// #4274: a seção "PARA ENCERRAR" gerencia os slots A/B de TEXTO DIRETO
+// (sempre presentes, sem pool de candidatos — diferente dos slots 0-3 acima)
+// — GET/PUT /api/boxes/para-encerrar, mesmo mecanismo de guard de mtime
+// (`PARA_ENCERRAR_SAVE_CONFLICT_CONFIRM_MESSAGE`) sobre a mesma chave de
+// `platform.config.json`.
 
 import {
   BOX_SAVE_CONFLICT_CONFIRM_MESSAGE,
@@ -22,6 +28,7 @@ import {
   validateNewBoxSlug,
   findDuplicateSlotAssignment,
   SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE,
+  PARA_ENCERRAR_SAVE_CONFLICT_CONFIRM_MESSAGE, // #4274
 } from "./caixas-guards.js";
 
 const el = {
@@ -71,6 +78,11 @@ const el = {
   slot3Select: document.getElementById("slot3-select"),
   slotsSaveBtn: document.getElementById("slots-save-btn"),
   slotsStatus: document.getElementById("slots-status"),
+  // #4274: slots A/B de texto direto do PARA ENCERRAR
+  paraEncerrarSlotA: document.getElementById("para-encerrar-slot-a"),
+  paraEncerrarSlotB: document.getElementById("para-encerrar-slot-b"),
+  paraEncerrarSaveBtn: document.getElementById("para-encerrar-save-btn"),
+  paraEncerrarStatus: document.getElementById("para-encerrar-status"),
 };
 
 /** Chaves de slot na ordem canônica — usado pra iterar os 4 `<select>` juntos
@@ -104,6 +116,14 @@ let dirty = false;
  * resolver. `modifiedAt` é reenviado como `expectedModifiedAt` no PUT (guard
  * de mtime #3729, mesmo mecanismo do editor de 1 caixa acima). */
 let slotsState = null;
+
+/** Snapshot do conteúdo dos slots A/B do PARA ENCERRAR (#4274) — `{slotA,
+ * slotB, modifiedAt}`, `null` até o 1º GET /api/boxes/para-encerrar resolver.
+ * `modifiedAt` é reenviado como `expectedModifiedAt` no PUT (mesmo guard de
+ * mtime #3729 dos slots 0-3). Ao contrário de `slotsState`, o dirty-check é
+ * simples (compara o valor atual do textarea contra o snapshot) — não há UI
+ * otimista a proteger, só o guard de conflito de mtime. */
+let paraEncerrarState = null;
 
 function escapeHtml(s) {
   return String(s)
@@ -367,6 +387,82 @@ async function saveSlots() {
     el.slotsStatus.className = "cx-save-status err";
   } finally {
     el.slotsSaveBtn.disabled = false;
+  }
+}
+
+/** Repopula os 2 textareas a partir de `paraEncerrarState` (#4274). No-op
+ * antes do 1º GET /api/boxes/para-encerrar resolver (`paraEncerrarState`
+ * ainda `null`). */
+function renderParaEncerrarSection() {
+  if (!paraEncerrarState) return;
+  el.paraEncerrarSlotA.value = paraEncerrarState.slotA ?? "";
+  el.paraEncerrarSlotB.value = paraEncerrarState.slotB ?? "";
+}
+
+async function fetchParaEncerrar() {
+  try {
+    const { ok, status, body } = await fetchJson("/api/boxes/para-encerrar");
+    if (!ok) throw new Error(`HTTP ${status}`);
+    paraEncerrarState = body;
+  } catch (e) {
+    if (!paraEncerrarState) {
+      el.paraEncerrarStatus.textContent = `Falha ao buscar PARA ENCERRAR: ${e.message ?? e}`;
+      el.paraEncerrarStatus.className = "cx-save-status err";
+    }
+    return;
+  }
+  renderParaEncerrarSection();
+}
+
+async function saveParaEncerrarSlots() {
+  if (!paraEncerrarState) return;
+  const input = {
+    slotA: el.paraEncerrarSlotA.value,
+    slotB: el.paraEncerrarSlotB.value,
+  };
+  const expectedModifiedAtAtSaveStart = paraEncerrarState.modifiedAt;
+  el.paraEncerrarSaveBtn.disabled = true;
+  el.paraEncerrarStatus.textContent = "Salvando…";
+  el.paraEncerrarStatus.className = "cx-save-status";
+  try {
+    let { ok, status, body } = await fetchJson("/api/boxes/para-encerrar", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...input, expectedModifiedAt: expectedModifiedAtAtSaveStart }),
+    });
+
+    // #3729/#4274: mesmo guard de mtime dos slots 0-3 — 409 = platform.config.json
+    // mudou em disco desde o load.
+    if (!ok && status === 409) {
+      const overwrite = window.confirm(PARA_ENCERRAR_SAVE_CONFLICT_CONFIRM_MESSAGE);
+      if (overwrite) {
+        ({ ok, status, body } = await fetchJson("/api/boxes/para-encerrar", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...input, force: true }),
+        }));
+      } else {
+        el.paraEncerrarStatus.textContent = "Não salvo — recarregando o estado mais recente do disco…";
+        await fetchParaEncerrar();
+        el.paraEncerrarStatus.textContent = "Recarregado — suas mudanças não salvas foram descartadas.";
+        el.paraEncerrarSaveBtn.disabled = false;
+        return;
+      }
+    }
+
+    if (ok && body && body.ok) {
+      el.paraEncerrarStatus.textContent = "PARA ENCERRAR atualizado.";
+      el.paraEncerrarStatus.className = "cx-save-status ok";
+      await fetchParaEncerrar();
+    } else {
+      el.paraEncerrarStatus.textContent = `Erro ao salvar: ${(body && body.error) || "falha desconhecida"}`;
+      el.paraEncerrarStatus.className = "cx-save-status err";
+    }
+  } catch (e) {
+    el.paraEncerrarStatus.textContent = `Erro ao salvar: ${e.message ?? e}`;
+    el.paraEncerrarStatus.className = "cx-save-status err";
+  } finally {
+    el.paraEncerrarSaveBtn.disabled = false;
   }
 }
 
@@ -668,8 +764,10 @@ el.refreshBtn.addEventListener("click", () => {
   fetchBoxes();
   fetchArchived();
   fetchSlots();
+  fetchParaEncerrar();
 });
 el.slotsSaveBtn.addEventListener("click", () => saveSlots());
+el.paraEncerrarSaveBtn.addEventListener("click", () => saveParaEncerrarSlots());
 el.retryBtn.addEventListener("click", () => fetchBoxes());
 el.closeEditorBtn.addEventListener("click", () => closeEditor());
 el.saveBtn.addEventListener("click", () => saveCurrentBox());
@@ -714,3 +812,4 @@ el.archivedList.addEventListener("click", (ev) => {
 fetchBoxes();
 fetchArchived();
 fetchSlots();
+fetchParaEncerrar();

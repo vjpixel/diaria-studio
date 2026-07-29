@@ -382,6 +382,8 @@ import {
   replaceBoxContentTitle, // #4079 — campo dedicado "Título de conteúdo"
   readBoxSlotsState,
   saveBoxSlots,
+  readParaEncerrarState, // #4274
+  saveParaEncerrar, // #4274
 } from "./studio-boxes.ts";
 // #3564: notificação Telegram (gate 4/6 pendente + AskUserQuestion pendente
 // no chat) com dedup — arquivo próprio desta fatia, import isolado (nenhuma
@@ -1533,6 +1535,58 @@ async function handleApiBoxSlotsSave(
   sendJson(res, status, result);
 }
 
+/** `GET /api/boxes/para-encerrar` — conteúdo cru dos slots A/B do PARA
+ * ENCERRAR + mtime de `platform.config.json` (#4274). Sempre 200:
+ * `readParaEncerrarState` é fail-soft (config ausente/corrompido -> slots
+ * vazios). */
+function handleApiParaEncerrarGet(rootDir: string, res: ServerResponse): void {
+  sendJson(res, 200, readParaEncerrarState(rootDir));
+}
+
+/** `PUT /api/boxes/para-encerrar` — salva o conteúdo dos slots A/B do PARA
+ * ENCERRAR (#4274). Mesmo contrato de `expectedModifiedAt`/`force` de
+ * `handleApiBoxSlotsSave`. Status: 200 sucesso, 409 conflito de mtime, 400
+ * corpo malformado ou falha genérica de escrita. */
+async function handleApiParaEncerrarSave(
+  rootDir: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = JSON.parse(await readRequestBody(req, BOXES_MAX_BODY_BYTES));
+  } catch {
+    sendJson(res, 400, { error: "corpo da request precisa ser JSON válido" });
+    return;
+  }
+  const parsed = body as {
+    slotA?: unknown;
+    slotB?: unknown;
+    expectedModifiedAt?: unknown;
+    force?: unknown;
+  } | null;
+  const slotField = (v: unknown): string | null => (v === undefined || v === null ? "" : typeof v === "string" ? v : null);
+  const slotA = slotField(parsed?.slotA);
+  const slotB = slotField(parsed?.slotB);
+  if (slotA === null || slotB === null) {
+    sendJson(res, 400, { error: "campos 'slotA'/'slotB' precisam ser string ou vazio" });
+    return;
+  }
+  let expectedModifiedAt: string | null | undefined;
+  if (parsed && "expectedModifiedAt" in parsed) {
+    const raw = parsed.expectedModifiedAt ?? null;
+    if (raw !== null && typeof raw !== "string") {
+      sendJson(res, 400, { error: "campo 'expectedModifiedAt' precisa ser string ISO ou null" });
+      return;
+    }
+    expectedModifiedAt = raw;
+  }
+  const force = parsed?.force === true;
+  const result = saveParaEncerrar(rootDir, { slotA, slotB }, { expectedModifiedAt, force });
+  const status = result.ok ? 200 : result.conflict ? 409 : 400;
+  sendJson(res, status, result);
+}
+
 // ── #3848: status de todas as integrações (APIs + MCPs) ────────────────
 
 /** `GET /api/integrations` — status de todas as integrações (#3848). Sempre
@@ -1781,6 +1835,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         );
         return;
       }
+      // #4274: salvar o conteúdo dos slots A/B do PARA ENCERRAR — mesmo
+      // motivo de checagem antecipada do bloco de "slots" acima (o regex
+      // `/api/boxes/:slug` casaria "para-encerrar" também).
+      if (urlPath === "/api/boxes/para-encerrar" && req.method === "PUT") {
+        handleApiParaEncerrarSave(rootDir, req, res).catch((e) =>
+          sendJson(res, 500, { error: (e as Error).message }),
+        );
+        return;
+      }
       // #3924: seção "Caixas" — salvar 1 snippet. Mesmo tratamento das rotas
       // de escrita acima (checada antes do guard genérico de método).
       const boxSaveMatch = urlPath.match(/^\/api\/boxes\/([^/]+)$/);
@@ -1928,6 +1991,12 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // get-por-slug casaria "slots" também.
       if (urlPath === "/api/boxes/slots") {
         handleApiBoxSlotsGet(rootDir, res);
+        return;
+      }
+      // #4274: conteúdo atual dos slots A/B do PARA ENCERRAR — mesmo motivo
+      // de checagem antecipada do bloco de "slots" acima.
+      if (urlPath === "/api/boxes/para-encerrar") {
+        handleApiParaEncerrarGet(rootDir, res);
         return;
       }
       const boxGetMatch = urlPath.match(/^\/api\/boxes\/([^/]+)$/);

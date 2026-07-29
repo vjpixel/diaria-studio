@@ -5,6 +5,16 @@ Bloco canônico de ENCERRAMENTO — convite social (LinkedIn/Facebook/Instagram)
 encerramento-snippet.ts`) quanto no mensal (seção `PARA ENCERRAR`, escrita
 pelo `writer-monthly` a partir deste arquivo — #3219).
 
+#4274 (diário apenas): este arquivo virou o DEFAULT/fallback do diário, não
+a fonte editada diretamente todo dia — o conteúdo (parágrafo de apoio +
+bloco de ferramentas = slot A, convite social = slot B) agora é editável
+pelo painel Caixas do Studio, persistido em `platform.config.json` →
+`para_encerrar.slot_a`/`para_encerrar.slot_b`. `buildParaEncerrar()` (stitch-newsletter.ts)
+lê o config primeiro; só cai de volta neste arquivo quando um slot não tem
+override (config ausente, campo vazio, ou edição anterior ao #4274). O
+mensal (`writer-monthly`) continua lendo este arquivo diretamente — não foi
+tocado pelo #4274.
+
 Marcador `{{OPENING}}` no início do parágrafo de apoio é substituído conforme o formato (a frase de apoio em si — "Quem quiser apoiar..." — é IDÊNTICA nos dois formatos; só a cláusula de abertura muda):
 
   - Diário:  "" (vazio — o parágrafo já abre direto em "Quem quiser apoiar...")

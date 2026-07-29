@@ -139,7 +139,7 @@ O script é determinístico, sem LLM. Ordem canonical (#3476, slot0 desde #4274)
 - **VÍDEOS** (formato canonical `**[title](url)**` + summary, singular/plural conforme count #1324) — **#3820: agora ANTES de LANÇAMENTOS** (decisão editorial 260722; antes ficava depois, #3100 só tinha subido VÍDEOS pra antes de RADAR)
 - **LANÇAMENTOS**, **RADAR** (idem; omite seção vazia — RADAR mergeia PESQUISAS + OUTRAS NOTÍCIAS, #1569)
 - **ERRO INTENCIONAL** placeholder (`render-erro-intencional.ts` re-insere ao final pós-Clarice — auto-converge)
-- **🎁 SORTEIO** + **🙋🏼‍♀️ PARA ENCERRAR** (texto fixo)
+- **🎁 SORTEIO** (texto fixo) + **🙋🏼‍♀️ PARA ENCERRAR** (#4274: cabeçalho fixo; slot A — apoio+ferramentas — e slot B — convite social, sempre último — são texto editável via painel Caixas em `platform.config.json` → `para_encerrar.{slot_a,slot_b}`, default = o texto de sempre quando não customizado)
 
 Lint pós-stitch valida overlap de hook entre destaques; se overlap detectado, re-dispatch o destaque "perdedor" com peer_titles atualizado.
 

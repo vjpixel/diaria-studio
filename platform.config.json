@@ -62,6 +62,10 @@
     "slot2": "artigo-especial-apoiadores.md",
     "slot3": "clarice-divulgacao.md"
   },
+  "para_encerrar": {
+    "slot_a": null,
+    "slot_b": null
+  },
   "drive_sync": false,
   "logging": {
     "path": "data/run-log.jsonl"

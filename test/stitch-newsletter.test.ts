@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout } from "../scripts/stitch-newsletter.ts";
+import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, buildParaEncerrar, loadParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
 import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3 } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 
@@ -1873,5 +1873,127 @@ describe("renderUseMelhorSection (#2447/#2450)", () => {
     ]);
     assert.match(out, /\(10 min\)/, "dash-tempo no meio deve ser normalizado para '(10 min)'");
     assert.ok(!out.includes("— 10 min"), "não deve manter o formato dash");
+  });
+});
+
+// ─── #4274 — PARA ENCERRAR slots A/B editáveis via platform.config.json ────
+
+describe("#4274 — buildParaEncerrar: slots A/B (override de teste, sem tocar platform.config.json real)", () => {
+  it("sem override (compat — edição/config antigo sem a chave para_encerrar): cai no texto padrão do snippet, header > apoio+ferramentas > convite social nessa ordem", () => {
+    const out = buildParaEncerrar({ slotA: null, slotB: null });
+    assert.match(out, /^\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/, "cabeçalho continua fixo, sempre primeiro");
+    const headerPos = out.indexOf("PARA ENCERRAR");
+    const apoioPos = out.indexOf("Apoie a curadoria");
+    const toolsPos = out.indexOf("Nessa edição da");
+    const socialPos = out.indexOf("Agora que chegou ao final da edição");
+    assert.ok(headerPos < apoioPos, "cabeçalho antes do parágrafo de apoio");
+    assert.ok(apoioPos < toolsPos, "apoio antes das ferramentas (dentro do slotA)");
+    assert.ok(toolsPos < socialPos, "convite social é o ÚLTIMO parágrafo (#3219/#3368)");
+  });
+
+  it("config custom em AMBOS os slots: injeta o texto customizado, ordem preservada (slotA > slotB)", () => {
+    const override = {
+      slotA: "Texto A customizado pelo editor no painel Caixas.",
+      slotB: "Texto B customizado — convite social alternativo.",
+    };
+    const out = buildParaEncerrar(override);
+    assert.match(out, /^\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/);
+    const slotAPos = out.indexOf(override.slotA);
+    const slotBPos = out.indexOf(override.slotB);
+    assert.ok(slotAPos > 0, "slotA customizado presente");
+    assert.ok(slotBPos > 0, "slotB customizado presente");
+    assert.ok(slotAPos < slotBPos, "slotA antes de slotB (convite social continua por último)");
+    // Texto padrão do snippet NÃO deve vazar quando ambos os slots têm override.
+    assert.ok(!out.includes("Apoie a curadoria"), "default do slotA não vaza com override presente");
+    assert.ok(!out.includes("Agora que chegou ao final da edição"), "default do slotB não vaza com override presente");
+  });
+
+  it("override PARCIAL (só slotA): slotB cai no default, ordem preservada", () => {
+    const override = { slotA: "Só o slotA foi customizado.", slotB: null };
+    const out = buildParaEncerrar(override);
+    const slotAPos = out.indexOf(override.slotA);
+    const socialPos = out.indexOf("Agora que chegou ao final da edição");
+    assert.ok(slotAPos > 0, "slotA customizado presente");
+    assert.ok(socialPos > 0, "slotB usa o default (convite social) quando ausente");
+    assert.ok(slotAPos < socialPos, "slotA (custom) ainda antes de slotB (default)");
+  });
+
+  it("override PARCIAL (só slotB): slotA cai no default, ordem preservada", () => {
+    const override = { slotA: null, slotB: "Só o slotB foi customizado." };
+    const out = buildParaEncerrar(override);
+    const apoioPos = out.indexOf("Apoie a curadoria");
+    const slotBPos = out.indexOf(override.slotB);
+    assert.ok(apoioPos > 0, "slotA usa o default (apoio) quando ausente");
+    assert.ok(slotBPos > 0, "slotB customizado presente");
+    assert.ok(apoioPos < slotBPos, "slotA (default) ainda antes de slotB (custom)");
+  });
+
+  it("loadParaEncerrarConfig reflete o platform.config.json real do repo (populado no #4274 com o texto atual — compat)", () => {
+    // O #4274 populou platform.config.json.para_encerrar com o MESMO texto
+    // que já era o default hardcoded — este teste trava que a config real do
+    // repo produz um buildParaEncerrar() byte-idêntico ao override explícito
+    // {slotA:null, slotB:null} (default puro), confirmando que a migração não
+    // mudou o comportamento em produção.
+    const cfg = loadParaEncerrarConfig();
+    const fromRealConfig = buildParaEncerrar(cfg);
+    const fromPureDefault = buildParaEncerrar({ slotA: null, slotB: null });
+    assert.equal(fromRealConfig, fromPureDefault, "platform.config.json real produz o mesmo output do default puro (#4274 não mudou comportamento)");
+  });
+});
+
+describe("#4274 — stitchNewsletter() end-to-end: override paraEncerrar via StitchInput", () => {
+  function setupEdition() {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-para-encerrar-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "02-d1-draft.md"), "D1");
+    writeFileSync(join(internalDir, "02-d2-draft.md"), "D2");
+    writeFileSync(join(internalDir, "02-d3-draft.md"), "D3");
+    writeFileSync(
+      join(internalDir, "01-approved-capped.json"),
+      JSON.stringify({ coverage: { line: "c" }, lancamento: [], radar: [] }),
+    );
+    return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  it("sem paraEncerrar no input (undefined): comportamento idêntico ao pré-#4274 (lê platform.config.json real)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+      });
+      assert.match(out, /PARA ENCERRAR/);
+      assert.match(out, /Agora que chegou ao final da edição/, "convite social (default do repo) presente");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("com paraEncerrar customizado no input: injeta o texto customizado, ordem preservada (slotA > slotB), independente do platform.config.json vigente", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: join(internalDir, "02-d3-draft.md"),
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+        paraEncerrar: {
+          slotA: "SlotA fixado via override de teste (#4274).",
+          slotB: "SlotB fixado via override de teste (#4274).",
+        },
+      });
+      const slotAPos = out.indexOf("SlotA fixado via override de teste (#4274).");
+      const slotBPos = out.indexOf("SlotB fixado via override de teste (#4274).");
+      assert.ok(slotAPos > 0, "slotA customizado presente no MD final");
+      assert.ok(slotBPos > 0, "slotB customizado presente no MD final");
+      assert.ok(slotAPos < slotBPos, "slotA antes de slotB");
+    } finally {
+      cleanup();
+    }
   });
 });

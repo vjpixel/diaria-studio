@@ -102,18 +102,59 @@ Esta edição tem um erro proposital. Responda este e-mail com a correção para
 };
 
 /**
- * #3219/#3368: monta o bloco PARA ENCERRAR completo — cabeçalho (fixo,
- * `FIXED_BLOCKS.para_encerrar_header`) + parágrafo de apoio (Apoia.se) +
- * parágrafo de ferramentas/pills "Acesse:" (fixo,
- * `FIXED_BLOCKS.para_encerrar_tools`) + convite social (LinkedIn/Facebook).
- * Apoio e convite social vêm de `context/snippets/encerramento-social-apoio.md`
- * via `splitEncerramentoSocialApoio` — fonte única compartilhada com o
- * mensal (mesmo texto aprovado pelo editor, ver comentário do snippet).
+ * #4274 (reescopo do gate /diaria-develop 260729): shape da config
+ * `para_encerrar` de `platform.config.json` — os 2 blocos de conteúdo
+ * SEMPRE-PRESENTES da seção PARA ENCERRAR, editáveis pelo painel Caixas como
+ * texto direto (sem pool de snippets, diferente dos slots 0-3 de
+ * `boxes_divulgacao`, que são opcionais e sorteiam entre candidatos).
  *
- * Ordem (#3368, pedido do editor na edição 260713): cabeçalho > apoio >
- * ferramentas/Acesse, com o convite social como ÚLTIMO parágrafo da seção —
- * antes (#3219) a ordem era cabeçalho > ferramentas/Acesse > apoio > convite
- * social (só o cabeçalho não mudou de posição).
+ *   - `slotA`: parágrafo de apoio (Apoia.se) + bloco de ferramentas/"Acesse
+ *     nossas curadorias" — um único bloco de texto.
+ *   - `slotB`: convite social (LinkedIn/Facebook/Instagram) — o ÚLTIMO
+ *     parágrafo da seção (invariante do #3219/#3368, preservada).
+ *
+ * `null` = sem override, cai no default (`computeParaEncerrarDefaults`) —
+ * mesmo contrato de `BoxesDivulgacaoConfig` (ausência/vazio nunca quebra,
+ * comportamento idêntico ao pré-#4274).
+ */
+export interface ParaEncerrarConfig {
+  slotA: string | null;
+  slotB: string | null;
+}
+
+/**
+ * #4274: lê `platform.config.json.para_encerrar.{slot_a,slot_b}`. Chave
+ * ausente, config corrompido, ou valor vazio/não-string em qualquer um dos 2
+ * campos -> `null` NESSE campo (fallback pro default em `buildParaEncerrar`,
+ * ver `computeParaEncerrarDefaults`) — cada slot é independente, um override
+ * parcial (só slotA ou só slotB) é válido. Nunca lança.
+ */
+export function loadParaEncerrarConfig(): ParaEncerrarConfig {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const p = join(root, "platform.config.json");
+  try {
+    const raw = JSON.parse(readFileSync(p, "utf8"));
+    if (raw.para_encerrar && typeof raw.para_encerrar === "object") {
+      const rawA = raw.para_encerrar.slot_a;
+      const rawB = raw.para_encerrar.slot_b;
+      const slotA = typeof rawA === "string" && rawA.trim() ? rawA.trim() : null;
+      const slotB = typeof rawB === "string" && rawB.trim() ? rawB.trim() : null;
+      return { slotA, slotB };
+    }
+  } catch {
+    // graceful — config ausente/corrompido cai no default abaixo
+  }
+  return { slotA: null, slotB: null };
+}
+
+/**
+ * #4274: valores DEFAULT de slotA/slotB — reproduz byte-a-byte a lógica
+ * pré-#4274 de `buildParaEncerrar` (3 níveis de fallback do
+ * `splitEncerramentoSocialApoio`/`renderEncerramentoSocialApoio`, ver
+ * docstring de cada um em `lib/shared/encerramento-snippet.ts`), só que
+ * dividida nos 2 slots em vez de montar o bloco inteiro direto. Usada quando
+ * `platform.config.json` não tem override pra um slot (config ausente,
+ * campo vazio, ou edição anterior ao #4274).
  *
  * `splitEncerramentoSocialApoio` retorna `null` em 2 situações BEM diferentes
  * (finding de self-review do #3382, thread em encerramento-snippet.ts:80):
@@ -125,23 +166,48 @@ Esta edição tem um erro proposital. Responda este e-mail com a correção para
  *      parágrafo). Antes deste fix, esse caso caía indistintamente no MESMO
  *      fallback hardcoded do caso 1 — descartando silenciosamente conteúdo
  *      real do editor só porque o reorder (#3368) não conseguiu separar os
- *      parágrafos. Agora usa o render INTEIRO, não-dividido, na posição
- *      ANTERIOR ao reorder (header > tools > render inteiro) — perde só o
- *      reorder (apoio não fica mais em primeiro), nunca o conteúdo.
+ *      parágrafos. Agora usa o render INTEIRO, não-dividido, como slotB
+ *      (header > tools/slotA > render inteiro/slotB) — perde só o reorder
+ *      (apoio não fica mais isolado do convite social), nunca o conteúdo.
  */
-export function buildParaEncerrar(): string {
+function computeParaEncerrarDefaults(): { slotA: string; slotB: string } {
   const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
   if (split) {
-    return `${FIXED_BLOCKS.para_encerrar_header}\n\n${split.apoio}\n\n${FIXED_BLOCKS.para_encerrar_tools}\n\n${split.socialInvite}`;
+    return {
+      slotA: `${split.apoio}\n\n${FIXED_BLOCKS.para_encerrar_tools}`,
+      slotB: split.socialInvite,
+    };
   }
   // Split falhou — distingue arquivo ausente (caso 1) de arquivo presente mas
   // com forma inesperada (caso 2, #3382).
   const whole = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
   if (whole) {
-    return `${FIXED_BLOCKS.para_encerrar_header}\n\n${FIXED_BLOCKS.para_encerrar_tools}\n\n${whole}`;
+    return { slotA: FIXED_BLOCKS.para_encerrar_tools, slotB: whole };
   }
   const socialFallback = `Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) ou no [Facebook](${DIARIA_FACEBOOK_PAGE_URL})? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!`;
-  return `${FIXED_BLOCKS.para_encerrar_header}\n\n${FIXED_BLOCKS.para_encerrar_tools}\n\n${socialFallback}`;
+  return { slotA: FIXED_BLOCKS.para_encerrar_tools, slotB: socialFallback };
+}
+
+/**
+ * #3219/#3368/#4274: monta o bloco PARA ENCERRAR completo — cabeçalho (fixo,
+ * `FIXED_BLOCKS.para_encerrar_header`) + slotA (apoio + ferramentas) + slotB
+ * (convite social), nessa ordem (invariante do #3219/#3368 preservada — o
+ * convite social é sempre o ÚLTIMO parágrafo). #4274: cada slot lê primeiro
+ * de `platform.config.json.para_encerrar` (editável pelo painel Caixas);
+ * ausência/vazio cai no default (`computeParaEncerrarDefaults`) — mesmo
+ * output de antes do #4274 pra qualquer config sem a chave nova.
+ *
+ * `override` — pula a leitura de `platform.config.json` e usa esta config
+ * diretamente (mesmo contrato de `input.boxesDivulgacao` em `StitchInput`).
+ * Produção nunca passa este parâmetro (sempre lê do disco via
+ * `loadParaEncerrarConfig`).
+ */
+export function buildParaEncerrar(override?: ParaEncerrarConfig): string {
+  const cfg = override ?? loadParaEncerrarConfig();
+  const defaults = computeParaEncerrarDefaults();
+  const slotA = cfg.slotA ?? defaults.slotA;
+  const slotB = cfg.slotB ?? defaults.slotB;
+  return `${FIXED_BLOCKS.para_encerrar_header}\n\n${slotA}\n\n${slotB}`;
 }
 
 /**
@@ -417,6 +483,11 @@ interface StitchInput {
   /** Override de teste: pula a leitura de `platform.config.json` e usa esta
    * config diretamente. Produção nunca passa este campo (sempre lê do disco). */
   boxesDivulgacao?: BoxesDivulgacaoConfig;
+  /** #4274: override de teste pro conteúdo dos slots A/B do PARA ENCERRAR —
+   * mesmo contrato de `boxesDivulgacao` acima. Produção nunca passa este
+   * campo (sempre lê `platform.config.json.para_encerrar` via
+   * `loadParaEncerrarConfig`). */
+  paraEncerrar?: ParaEncerrarConfig;
 }
 
 export function stitchNewsletter(input: StitchInput): string {
@@ -661,7 +732,7 @@ export function stitchNewsletter(input: StitchInput): string {
   parts.push("");
   parts.push("---");
   parts.push("");
-  parts.push(buildParaEncerrar());
+  parts.push(buildParaEncerrar(input.paraEncerrar));
   parts.push("");
 
   return parts.join("\n");
