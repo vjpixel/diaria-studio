@@ -402,11 +402,19 @@ export async function performIdentifyMerge(bEnv: Env, input: IdentifyMergeInput)
  * (`checkMagicLinkSendRateLimit`): nenhum desses 3 motivos é diferenciado
  * na resposta (ver rationale de enumeração de e-mail no header de
  * magic-link.ts).
+ *
+ * #4311: `input.optin` é persistido em `createPendingMerge` (campo do
+ * `PendingMerge`, magic-link.ts) — antes do fix ele nem chegava até aqui (o
+ * objeto criado no call site não carregava `optin`), então o consentimento
+ * do form era descartado em silêncio assim que o caminho órfão desviava pro
+ * link mágico. A assinatura em si só é tentada em `handleConfirmMerge`
+ * (magic-link.ts) — o único ponto que sabe que a pessoa de fato confirmou a
+ * posse do e-mail.
  */
 async function handleOrphanIdentify(
   request: Request,
   bEnv: Env,
-  input: { email: string; anonEmail: string; name: string; edition: string },
+  input: { email: string; anonEmail: string; name: string; edition: string; optin: boolean },
   fetchImpl: typeof fetch,
 ): Promise<Response> {
   const { email, anonEmail, name } = input;
@@ -511,7 +519,10 @@ export async function handleJogarIdentify(
   // estabelecido alhures.
   const orphan = name.trim() !== "" && (await hasOrphanHistory(bEnv, email, anonEmail));
   if (orphan) {
-    return handleOrphanIdentify(request, bEnv, { email, anonEmail, name, edition: edition ?? "" }, fetchImpl);
+    // #4311: `optin` precisa viajar junto — sem isto o consentimento do form
+    // era descartado em silêncio (o `return` aqui acontece ANTES do bloco de
+    // opt-in mais abaixo, e o objeto de pending merge nem carregava o campo).
+    return handleOrphanIdentify(request, bEnv, { email, anonEmail, name, edition: edition ?? "", optin: v.optin }, fetchImpl);
   }
 
   await performIdentifyMerge(bEnv, { email, anonEmail, name, edition });
@@ -526,8 +537,16 @@ export async function handleJogarIdentify(
       const utm = resolveSubscribeUtm("jogar-identify");
       const result = await subscribeToBeehiiv(bEnv, { name, email }, fetchImpl, utm);
       subscribed = result.ok;
+      if (!subscribed) {
+        // #4311 (item 3): antes só a EXCEÇÃO (catch abaixo) deixava rastro —
+        // um retorno `{ ok: false, reason }` sem lançar (ex: secret ausente,
+        // Beehiiv rejeitou) passava batido, sem log nenhum. Mesmo evento do
+        // caminho de confirmação (handleConfirmMerge, magic-link.ts) pra
+        // facilitar busca por "opt-in chegou e não virou assinatura".
+        console.error(JSON.stringify({ event: "identify_optin_not_subscribed", stage: "immediate", reason: result.reason ?? null }));
+      }
     } catch (e) {
-      console.error(JSON.stringify({ event: "identify_subscribe_failed", error: String(e) }));
+      console.error(JSON.stringify({ event: "identify_optin_not_subscribed", stage: "immediate", error: String(e) }));
       // subscribed permanece false — identificação já commitada acima, o
       // opt-in de newsletter é best-effort e nunca desfaz o merge de score.
     }

@@ -153,7 +153,7 @@ describe("checkMagicLinkSendRateLimit (#3996)", () => {
 // ── createPendingMerge / consumePendingMerge / hasPendingMerge ──────────────
 
 describe("createPendingMerge / consumePendingMerge (#3996)", () => {
-  const pending: PendingMerge = { email: "ana@x.com", anonEmail: ANON_B, name: "Ana", edition: "260610" };
+  const pending: PendingMerge = { email: "ana@x.com", anonEmail: ANON_B, name: "Ana", edition: "260610", optin: false };
 
   it("cria token com TTL e índice secundário (pending-for) com o MESMO TTL", async () => {
     const env = makeEnv();
@@ -336,7 +336,7 @@ describe("handleConfirmMerge (#3996)", () => {
       "score:ana@x.com": JSON.stringify({ total: 10, correct: 8, streak: 3, last_edition: "260601", nickname: "Ana Original" }),
       [`score:${ANON_B}`]: JSON.stringify({ total: 2, correct: 1, streak: 1, last_edition: "260615" }),
     });
-    const token = await createPendingMerge(env, { email: "ana@x.com", anonEmail: ANON_B, name: "Ana Nova", edition: "260615" });
+    const token = await createPendingMerge(env, { email: "ana@x.com", anonEmail: ANON_B, name: "Ana Nova", edition: "260615", optin: false });
 
     const res = await handleConfirmMerge(confirmUrl(token), env);
     assert.equal(res.status, 200);
@@ -355,7 +355,7 @@ describe("handleConfirmMerge (#3996)", () => {
       "score:ana@x.com": JSON.stringify({ total: 10, correct: 8, streak: 3, last_edition: "260601", nickname: "Ana" }),
       [`score:${ANON_B}`]: JSON.stringify({ total: 2, correct: 1, streak: 1, last_edition: "260615" }),
     });
-    const token = await createPendingMerge(env, { email: "ana@x.com", anonEmail: ANON_B, name: "Ana", edition: "" });
+    const token = await createPendingMerge(env, { email: "ana@x.com", anonEmail: ANON_B, name: "Ana", edition: "", optin: false });
     await handleConfirmMerge(confirmUrl(token), env);
     const secondClick = await handleConfirmMerge(confirmUrl(token), env);
     assert.equal(secondClick.status, 400);
@@ -489,6 +489,190 @@ describe("handleJogarIdentify com histórico órfão (#3996)", () => {
     assert.deepEqual(body, { ok: true, subscribed: false });
     assert.equal(calls.length, 0, "sem conflito — nunca envolve a Brevo");
     assert.ok(await env.POLL.get("score:bia@x.com"), "merge imediato de qualquer forma aconteceu");
+  });
+});
+
+// ── opt-in sobrevive ao round-trip do link mágico (#4311) ──────────────────
+//
+// Achado por leitura de código, nunca reproduzido em produção (reproduzir
+// exigiria plantar histórico órfão real no KV) — as fixtures abaixo simulam
+// esse estado via seed do KV mockado (mesmo padrão do resto deste arquivo),
+// nunca dependendo de KV real. Dois pontos de falha independentes cobertos:
+//   1. `PendingMerge` (magic-link.ts) não carregava `optin` — o consentimento
+//      era descartado assim que o caminho órfão desviava pro link mágico,
+//      mesmo corrigindo o `return` precoce em identify.ts.
+//   2. O `return` do caminho órfão em identify.ts precedia o bloco de opt-in
+//      — mesmo se `optin` sobrevivesse, nada tentava assinar.
+
+function makeBeehiivEnv(seed: Record<string, string> = {}, extra: Partial<Env> = {}): Env & { POLL: ReturnType<typeof makeTrackedKv> } {
+  return makeEnv(seed, {
+    BEEHIIV_API_KEY: "test-key",
+    BEEHIIV_PUBLICATION_ID: "pub_test",
+    BEEHIIV_API_URL: "https://beehiiv.test/v2",
+    ...extra,
+  });
+}
+
+function findPendingMergeToken(env: Env & { POLL: ReturnType<typeof makeTrackedKv> }): string {
+  const put = env.POLL.puts.find((p) => p.key.startsWith("magiclink:"));
+  assert.ok(put, "esperava um token de link mágico gravado no KV");
+  return put!.key.slice("magiclink:".length);
+}
+
+describe("caminho órfão persiste optin no PendingMerge (#4311, ponto de falha 1)", () => {
+  function identifyRequest(body: unknown): Request {
+    return new Request("https://eia.diar.ia.br/jogar/identify?brand=web", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("optin:true sobrevive à criação do PendingMerge — antes do #4311 o campo nem existia no objeto", async () => {
+    const env = makeEnv(
+      { "score:ana@x.com": JSON.stringify({ total: 20, correct: 15, streak: 5, last_edition: "260601", nickname: "Ana" }) },
+      { BREVO_API_KEY: "key", BREVO_SENDER_EMAIL: "editor@diar.ia.br" },
+    );
+    const { fn } = makeFakeFetch();
+    const res = await handleJogarIdentify(
+      identifyRequest({ name: "Ana", email: "ana@x.com", anonEmail: ANON_B, optin: true, edition: "260615" }),
+      env,
+      { fetchImpl: fn },
+    );
+    const body = await res.json() as { ok: boolean; pending?: boolean };
+    assert.deepEqual(body, { ok: true, pending: true });
+
+    const token = findPendingMergeToken(env);
+    const stored = JSON.parse((await env.POLL.get(`magiclink:${token}`))!) as PendingMerge;
+    assert.equal(stored.optin, true, "REGRESSÃO #4311: o consentimento marcado no form precisa sobreviver ao objeto persistido");
+  });
+
+  it("optin:false também é persistido explicitamente (não fica undefined)", async () => {
+    const env = makeEnv(
+      { "score:bia@x.com": JSON.stringify({ total: 9, correct: 7, streak: 2, last_edition: "260601", nickname: "Bia" }) },
+      { BREVO_API_KEY: "key", BREVO_SENDER_EMAIL: "editor@diar.ia.br" },
+    );
+    const { fn } = makeFakeFetch();
+    await handleJogarIdentify(
+      identifyRequest({ name: "Bia", email: "bia@x.com", anonEmail: ANON_A, optin: false, edition: "260615" }),
+      env,
+      { fetchImpl: fn },
+    );
+    const token = findPendingMergeToken(env);
+    const stored = JSON.parse((await env.POLL.get(`magiclink:${token}`))!) as PendingMerge;
+    assert.equal(stored.optin, false);
+  });
+});
+
+describe("handleConfirmMerge honra o opt-in diferido (#4311, ponto de falha 2)", () => {
+  it("FIM-A-FIM: opt-in no form → histórico órfão → confirmação do link mágico → assinatura na Beehiiv", async () => {
+    const identifyEnv = makeBeehiivEnv(
+      { "score:ana@x.com": JSON.stringify({ total: 20, correct: 15, streak: 5, last_edition: "260601", nickname: "Ana" }) },
+      { BREVO_API_KEY: "key", BREVO_SENDER_EMAIL: "editor@diar.ia.br" },
+    );
+    const brevoFetch = makeFakeFetch();
+    const identifyRes = await handleJogarIdentify(
+      new Request("https://eia.diar.ia.br/jogar/identify?brand=web", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Ana", email: "ana@x.com", anonEmail: ANON_B, optin: true, edition: "260615" }),
+      }),
+      identifyEnv,
+      { fetchImpl: brevoFetch.fn },
+    );
+    assert.deepEqual(await identifyRes.json(), { ok: true, pending: true });
+
+    const token = findPendingMergeToken(identifyEnv);
+    const beehiivFetch = makeFakeFetch(() => new Response(JSON.stringify({ id: "sub_1" }), { status: 201 }));
+    const confirmRes = await handleConfirmMerge(
+      new URL(`https://eia.diar.ia.br/confirm-merge?token=${encodeURIComponent(token)}&brand=web`),
+      identifyEnv,
+      { fetchImpl: beehiivFetch.fn },
+    );
+    assert.equal(confirmRes.status, 200);
+
+    assert.equal(beehiivFetch.calls.length, 1, "REGRESSÃO #4311: o opt-in diferido precisa virar 1 chamada real à Beehiiv na confirmação");
+    assert.equal(beehiivFetch.calls[0].url, "https://beehiiv.test/v2/publications/pub_test/subscriptions");
+    const sentBody = JSON.parse(String(beehiivFetch.calls[0].init?.body));
+    assert.equal(sentBody.email, "ana@x.com");
+    assert.equal(sentBody.utm_medium, "jogar-identify", "mesmo UTM do caminho imediato (#4125 item 4), não o default jogar-inline");
+
+    const merged = JSON.parse((await identifyEnv.POLL.get("score:ana@x.com"))!);
+    assert.equal(merged.total, 20, "merge de score continua acontecendo independente do opt-in (sanity)");
+  });
+
+  it("pending.optin=false NÃO chama a Beehiiv na confirmação (sem regressão de over-firing)", async () => {
+    const env = makeBeehiivEnv({
+      "score:carla@x.com": JSON.stringify({ total: 5, correct: 4, streak: 1, last_edition: "260601", nickname: "Carla" }),
+    });
+    const token = await createPendingMerge(env, { email: "carla@x.com", anonEmail: ANON_B, name: "Carla", edition: "", optin: false });
+    const { fn, calls } = makeFakeFetch();
+    const res = await handleConfirmMerge(new URL(`https://eia.diar.ia.br/confirm-merge?token=${token}&brand=web`), env, { fetchImpl: fn });
+    assert.equal(res.status, 200);
+    assert.equal(calls.length, 0, "sem optin, nunca deve tocar a Beehiiv");
+  });
+
+  it("falha da assinatura na confirmação (Beehiiv not_configured) NÃO impede o merge — best-effort, e loga identify_optin_not_subscribed (item 3 da issue)", async () => {
+    // env SEM BEEHIIV_API_KEY/BEEHIIV_PUBLICATION_ID — subscribeToBeehiiv
+    // retorna not_configured sem lançar.
+    const env = makeEnv({
+      "score:dora@x.com": JSON.stringify({ total: 3, correct: 2, streak: 1, last_edition: "260601", nickname: "Dora" }),
+    });
+    const token = await createPendingMerge(env, { email: "dora@x.com", anonEmail: ANON_B, name: "Dora", edition: "", optin: true });
+
+    const originalConsoleError = console.error;
+    const errors: string[] = [];
+    console.error = (msg: string) => { errors.push(msg); };
+    let res: Response;
+    try {
+      const { fn } = makeFakeFetch();
+      res = await handleConfirmMerge(new URL(`https://eia.diar.ia.br/confirm-merge?token=${token}&brand=web`), env, { fetchImpl: fn });
+    } finally {
+      console.error = originalConsoleError;
+    }
+    assert.equal(res.status, 200, "merge de score não pode falhar por causa do opt-in best-effort");
+    const merged = JSON.parse((await env.POLL.get("score:dora@x.com"))!);
+    assert.equal(merged.total, 3, "merge aconteceu normalmente (sem incoming score, permanece o existente)");
+
+    assert.ok(
+      errors.some((e) => e.includes("identify_optin_not_subscribed") && e.includes("confirm_merge")),
+      "REGRESSÃO #4311 item 3: antes não havia log nenhum quando o opt-in chegava e não virava assinatura — " + JSON.stringify(errors),
+    );
+  });
+});
+
+describe("caminho imediato: falha SEM exceção da Beehiiv também é logada (#4311 item 3, antes só o catch logava)", () => {
+  function identifyRequest(body: unknown): Request {
+    return new Request("https://eia.diar.ia.br/jogar/identify?brand=web", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("Beehiiv responde erro HTTP (sem lançar) → identify_optin_not_subscribed é logado", async () => {
+    const env = makeBeehiivEnv();
+    const errorFetch = makeFakeFetch(() => new Response(JSON.stringify({ message: "rejected" }), { status: 422 }));
+
+    const originalConsoleError = console.error;
+    const errors: string[] = [];
+    console.error = (msg: string) => { errors.push(msg); };
+    let res: Response;
+    try {
+      res = await handleJogarIdentify(
+        identifyRequest({ name: "Eva", email: "eva@x.com", anonEmail: ANON_A, optin: true, edition: "" }),
+        env,
+        { fetchImpl: errorFetch.fn },
+      );
+    } finally {
+      console.error = originalConsoleError;
+    }
+    const body = await res.json() as { ok: boolean; subscribed: boolean };
+    assert.equal(body.subscribed, false);
+    assert.ok(
+      errors.some((e) => e.includes("identify_optin_not_subscribed") && e.includes("immediate")),
+      "antes do #4311, um retorno {ok:false} sem exceção não deixava rastro nenhum — " + JSON.stringify(errors),
+    );
   });
 });
 
