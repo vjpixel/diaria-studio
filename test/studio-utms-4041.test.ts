@@ -301,6 +301,52 @@ describe("#4041 — buildUtmsData (orquestração fail-soft)", () => {
     }
   });
 
+  it("REGRESSÃO #4296: BEEHIIV_API_KEY presente + BEEHIIV_PUBLICATION_ID ausente do env → resolve via platform.config.json, SEM beehiivError falso", async () => {
+    // Cenário EXATO do bug: o guard antigo (`!env.BEEHIIV_API_KEY || !env.BEEHIIV_PUBLICATION_ID`)
+    // disparava aqui mesmo com credencial válida, porque platform.config.json
+    // nunca era consultado. `fetchSubscriptions` continua injetado — nunca
+    // bate na rede real — mas a resolução de credencial roda de verdade
+    // (não é bypassada só por haver um fetcher injetado, ver studio-utms.ts).
+    const root = tempRoot("studio-utms-4296-regression-");
+    clearUtmsCache();
+    let receivedArgs: [string, string] | undefined;
+    try {
+      const data = await buildUtmsData(root, {
+        env: { BEEHIIV_API_KEY: "test-key-not-real" }, // BEEHIIV_PUBLICATION_ID de propósito ausente
+        fetchSubscriptions: (async (publicationId: string, apiKey: string) => {
+          receivedArgs = [publicationId, apiKey];
+          return { counts: { clarice: 5 }, campaignCounts: {}, total: 5, fetched_at: "x" };
+        }) as never,
+        fetchClicks: fakeClicks({}),
+      });
+      assert.equal(data.beehiivError, undefined, "credencial válida (via fallback config) não pode virar beehiivError");
+      assert.equal(data.totals.subscribers, 5);
+      assert.ok(receivedArgs, "o fetcher deve ter sido chamado (credencial resolvida com sucesso)");
+      assert.equal(receivedArgs?.[1], "test-key-not-real");
+      assert.ok(
+        receivedArgs?.[0].startsWith("pub_"),
+        `publicationId resolvido deveria vir do fallback platform.config.json, got: ${receivedArgs?.[0]}`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("BEEHIIV_API_KEY ausente do env → beehiivError menciona só a key (mensagem específica, #4296 item 3)", async () => {
+    const root = tempRoot("studio-utms-4296-keymissing-");
+    clearUtmsCache();
+    try {
+      const data = await buildUtmsData(root, {
+        env: {}, // sem fetchSubscriptions injetado — força o caminho real de resolução
+        fetchClicks: fakeClicks({}),
+      });
+      assert.match(data.beehiivError ?? "", /BEEHIIV_API_KEY/);
+      assert.equal(data.emitters[0].subscribers, null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("o overlay de metadados sobrescreve descrição/status na saída", async () => {
     const root = tempRoot("studio-utms-overlay-");
     clearUtmsCache();
