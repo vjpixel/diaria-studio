@@ -91,16 +91,50 @@ describe("subscriber-verify (#4052)", () => {
       assert.equal(r, "unknown");
     });
 
-    it("API DOWN (fetch lança): fail-soft, nunca propaga a exceção", async () => {
+    it("API DOWN (fetch lança): fail-soft, nunca propaga a exceção — verification_failed desde #4321 (era unknown)", async () => {
       const fetchImpl = (async () => {
         throw new Error("network down");
       }) as typeof fetch;
       const r = await verifySubscriberViaBeehiivByEmail("key", "pub", "x@example.com", { fetchImpl });
-      assert.equal(r, "unknown");
+      assert.equal(r, "verification_failed");
     });
 
-    it("resposta 500: trata como unknown", async () => {
+    it("resposta 500: verification_failed desde #4321 (era unknown)", async () => {
       const fetchImpl = (async () => new Response("err", { status: 500 })) as typeof fetch;
+      const r = await verifySubscriberViaBeehiivByEmail("key", "pub", "x@example.com", { fetchImpl });
+      assert.equal(r, "verification_failed");
+    });
+  });
+
+  // #4321: separa "verificado negativo" (404 — a pessoa não existe) de "não
+  // conseguimos verificar" (401/403/429/5xx/exceção de rede — a pessoa PODE
+  // ser assinante, só não dá pra confirmar). Antes desta issue os 2 casos
+  // colapsavam no mesmo "unknown" e nada a jusante conseguia distinguir uma
+  // rotação de key não sincronizada de "não é assinante".
+  describe("verifySubscriberViaBeehiivByEmail — verification_failed (#4321)", () => {
+    it("401 (key rotacionada/inválida): verification_failed, distinto de 404", async () => {
+      const fetchImpl = (async () => new Response("unauthorized", { status: 401 })) as typeof fetch;
+      const r = await verifySubscriberViaBeehiivByEmail("key", "pub", "x@example.com", { fetchImpl });
+      assert.equal(r, "verification_failed");
+    });
+
+    it("429 (rate-limit da Beehiiv): verification_failed", async () => {
+      const fetchImpl = (async () => new Response("too many requests", { status: 429 })) as typeof fetch;
+      const r = await verifySubscriberViaBeehiivByEmail("key", "pub", "x@example.com", { fetchImpl });
+      assert.equal(r, "verification_failed");
+    });
+
+    it("5xx (Beehiiv fora do ar): verification_failed", async () => {
+      const fetchImpl = (async () => new Response("internal error", { status: 503 })) as typeof fetch;
+      const r = await verifySubscriberViaBeehiivByEmail("key", "pub", "x@example.com", { fetchImpl });
+      assert.equal(r, "verification_failed");
+    });
+
+    // Exceção de rede já coberta acima ("API DOWN (fetch lança)"); mantida lá
+    // pra não duplicar. 404 continua "unknown" — resposta legítima, não é
+    // falha de verificação:
+    it("404 continua unknown — resposta legítima, não é falha de verificação", async () => {
+      const fetchImpl = (async () => new Response("{}", { status: 404 })) as typeof fetch;
       const r = await verifySubscriberViaBeehiivByEmail("key", "pub", "x@example.com", { fetchImpl });
       assert.equal(r, "unknown");
     });
