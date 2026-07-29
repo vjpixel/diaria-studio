@@ -17,6 +17,7 @@ import {
   postToWorkerQueue,
   type InstagramQueuePayload,
 } from "../scripts/publish-instagram.ts";
+import { INSTAGRAM_CTA_LINE } from "../scripts/lib/social-cta-lines.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -165,6 +166,39 @@ describe("extractPostText/extractDestaquesFromSocialMd (instagram) — formato n
   });
 });
 
+describe("regressão #4309: '## eia'/'## post_pixel' vazando pro post do Instagram", () => {
+  // Forma REAL de 03-social.md pós-#3991/#3471 (merge-social-md.ts): dentro de
+  // '# Social', a ordem é d1 → d2 → d3 → ## eia → ## post_pixel. As fixtures
+  // ANTIGAS deste arquivo tinham d2 (ou d3) como último bloco da seção — por
+  // isso a suíte ficava verde com o bug ao vivo em produção (260727-260729):
+  // o terminador errado só vazava quando havia uma seção irmã DEPOIS do
+  // último destaque, cenário que nenhuma fixture cobria.
+  const SOCIAL_MD_REAL_SHAPE =
+    "# Social\n\n" +
+    "## d1\n\nTexto d1.\n\n#tag1\n\n" +
+    "## d2\n\nTexto d2.\n\n#tag2\n\n" +
+    "## d3\n\nTexto d3 exclusivo.\n\n#tag3\n\n" +
+    "## eia\n\n<!-- destaque: eia -->\n\nTexto do É IA? de hoje. Imagem: 01-eia-A.jpg\n\n" +
+    "## post_pixel\n\nPost pessoal do Pixel. {edition_url} {outros_count}\n";
+
+  it("extrai d3 (último destaque) sem vazar '## eia'/'## post_pixel' nem os placeholders", () => {
+    const t = extractPostText(SOCIAL_MD_REAL_SHAPE, "d3");
+    assert.ok(t.includes("Texto d3 exclusivo."));
+    assert.ok(!t.includes("## eia"));
+    assert.ok(!t.includes("Texto do É IA?"));
+    assert.ok(!t.includes("01-eia-A.jpg"));
+    assert.ok(!t.includes("## post_pixel"));
+    assert.ok(!t.includes("Post pessoal do Pixel"));
+    assert.ok(!t.includes("{edition_url}"));
+    assert.ok(!t.includes("{outros_count}"));
+  });
+
+  it("extrai d1/d2 normalmente na forma real (3 destaques + eia + post_pixel)", () => {
+    assert.ok(extractPostText(SOCIAL_MD_REAL_SHAPE, "d1").includes("Texto d1."));
+    assert.ok(extractPostText(SOCIAL_MD_REAL_SHAPE, "d2").includes("Texto d2."));
+  });
+});
+
 // ─── truncateCaption ─────────────────────────────────────────────────────────
 
 describe("truncateCaption", () => {
@@ -191,6 +225,73 @@ describe("truncateCaption", () => {
     const text = "ola mundo tudo bem";
     const result = truncateCaption(text, 10);
     assert.ok(result.length <= 10);
+  });
+});
+
+describe("truncateCaption preserva o CTA da bio (regressão #4309)", () => {
+  // Bug ao vivo (260727/28): o corte cego pelo fim comia o CTA "Edição
+  // completa no link da bio..." no meio de uma frase quando body + CTA + tags
+  // excediam 2200 chars — o post saía sem CTA nenhum. `injectChannelLine`
+  // monta o texto como `{body}\n\n{CTA}\n\n{tags}`, então o CTA quase sempre
+  // fica perto do fim, exatamente onde o corte cego mordia.
+
+  it("caption que excederia 2200 chars SEM o CTA: preserva o CTA inteiro, corta só o corpo", () => {
+    const body = "A".repeat(2300); // corpo sozinho já estoura o limite
+    const tags = "#ia #tecnologia";
+    const caption = `${body}\n\n${INSTAGRAM_CTA_LINE}\n\n${tags}`;
+    const result = truncateCaption(caption);
+
+    assert.ok(result.length <= 2200, `esperado <= 2200, veio ${result.length}`);
+    assert.ok(result.includes(INSTAGRAM_CTA_LINE), "CTA completo deve sobreviver ao truncamento");
+    assert.ok(result.includes(tags), "tags após o CTA também devem sobreviver");
+    assert.ok(!result.trim().endsWith(INSTAGRAM_CTA_LINE.slice(0, -5)), "CTA não deve ficar cortado no meio");
+  });
+
+  it("caption real (corpo + CTA + tags) que só estoura por causa do CTA: CTA some por completo sem o fix", () => {
+    // Corpo sozinho cabe em 2200, mas corpo+CTA+tags não — este é o caso que
+    // apareceu ao vivo: o corte cego cortava a partir do FIM, comendo o CTA.
+    const body = "Texto do post. ".repeat(140).trim(); // ~2100 chars, cabe sozinho
+    const tags = "#inteligenciaartificial #tecnologia #futuro #inovacao #ia";
+    const caption = `${body}\n\n${INSTAGRAM_CTA_LINE}\n\n${tags}`;
+    assert.ok(caption.length > 2200, "fixture deve exceder o limite pra exercitar o truncamento");
+
+    const result = truncateCaption(caption);
+    assert.ok(result.length <= 2200);
+    assert.ok(result.includes(INSTAGRAM_CTA_LINE), "CTA deve estar 100% presente, não cortado");
+    assert.ok(result.includes(tags), "tags devem sobreviver junto com o CTA");
+  });
+
+  it("corpo cabe inteiro dentro do budget (folga de whitespace antes do CTA): sem elipse espúria (#4309 finding 3)", () => {
+    // Self-review #2038: quando o corpo cabe inteiro no espaço disponível
+    // antes do CTA (rawBody.length <= budget), truncateCaption NÃO deve
+    // anexar "..." — antes do fix, a elipse era concatenada incondicionalmente
+    // mesmo sem nenhum corte real. Fixture usa uma folga de whitespace bem
+    // maior que o separator padrão (2 chars) entre corpo e CTA pra inflar
+    // `caption.length` acima de 2200 sem que o corpo em si precise ser cortado.
+    const body = "B".repeat(50);
+    const gap = "\n".repeat(2100);
+    const tags = "#tag";
+    const caption = `${body}${gap}${INSTAGRAM_CTA_LINE}\n\n${tags}`;
+    assert.ok(caption.length > 2200, "fixture deve exceder o limite pra exercitar truncateCaption");
+
+    const result = truncateCaption(caption);
+    assert.ok(!result.includes("..."), "corpo cabe inteiro no budget — não deve aparecer elipse espúria");
+    assert.ok(result.includes(body), "corpo deve sobreviver por completo, sem corte");
+    assert.ok(result.includes(INSTAGRAM_CTA_LINE), "CTA deve sobreviver por completo");
+    assert.ok(result.includes(tags), "tags devem sobreviver");
+  });
+
+  it("sem o CTA no texto (ex: LinkedIn/legado), cai no truncamento cego de sempre", () => {
+    const long = "A".repeat(2100) + " " + "B".repeat(200); // sem INSTAGRAM_CTA_LINE
+    const result = truncateCaption(long);
+    assert.ok(result.length <= 2200);
+    assert.ok(result.endsWith("..."));
+  });
+
+  it("CTA + tags gigantes que sozinhos já excedem maxLen: best-effort, cai no truncamento cego (não trava/lança)", () => {
+    const hugeTags = Array.from({ length: 400 }, (_, i) => `#tag${i}`).join(" ");
+    const caption = `Corpo curto.\n\n${INSTAGRAM_CTA_LINE}\n\n${hugeTags}`;
+    assert.doesNotThrow(() => truncateCaption(caption));
   });
 });
 

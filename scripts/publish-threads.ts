@@ -76,7 +76,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
-import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts)
+import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-instagram.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3944 Parte B — mesmo fallback_schedule usado por LinkedIn/Facebook/Instagram
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Instagram
@@ -122,13 +122,14 @@ export function extractPostText(socialMd: string, destaque: string): string | nu
   const section = extractSection(normalized, "Curto");
   if (section === null) return null;
 
-  const dRe = new RegExp(
-    `(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`,
-    "i",
-  );
-  const dMatch = section.match(dRe);
-  if (!dMatch) return null;
-  return dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
+  // #4309: terminador corrigido via helper compartilhado (era `\n## d\d+\b`,
+  // vazaria seções irmãs não-`## dN` — latente aqui hoje, mas mesma classe do
+  // bug ativado em publish-instagram.ts/publish-facebook.ts).
+  const dText = extractDestaqueBlock(section, destaque);
+  if (dText === null) return null;
+  const text = dText.trim();
+  assertNoScaffolding(text, `destaque '${destaque}' (threads)`);
+  return text;
 }
 
 /**
@@ -561,7 +562,28 @@ async function main() {
     // Diferente do comportamento antigo (fail-fast com status "failed"),
     // isso é um skip: nada foi tentado, então nada é persistido em
     // 06-social-published.json — o destaque simplesmente não sai neste run.
-    const text = extractPostText(socialMd, d);
+    // #4309 finding 2 (self-review #2038): extractPostText pode lançar via
+    // assertNoScaffolding (guard de scaffolding vazado/placeholder não
+    // resolvido) — try/catch por destaque evita que 1 destaque ruim derrube
+    // o main() inteiro; grava "failed" e segue com os demais destaques,
+    // mesmo padrão de status:"failed" já usado no resto deste arquivo.
+    let text: string | null;
+    try {
+      text = extractPostText(socialMd, d);
+    } catch (e: any) {
+      console.error(`ERROR extracting text for threads/${d}: ${e.message}`);
+      const entry: PostEntry = {
+        platform: "threads",
+        destaque: d,
+        url: null,
+        status: "failed",
+        scheduled_at: null,
+        reason: e.message,
+      };
+      tagAndAppend(entry);
+      results.push(entry);
+      continue;
+    }
     if (!text) {
       const reason = "destaque ausente ou incompleto na seção '# Curto' — sem fallback (#4294)";
       console.warn(`SKIP threads/${d}: ${reason}`);
