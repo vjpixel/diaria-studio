@@ -38,6 +38,16 @@ workers_dev = true
 pattern = "cursos.diar.ia.br"
 custom_domain = true
 
+# #4305: sem isto o `console.error` do worker só existe enquanto alguém está
+# com `wrangler tail` aberto — e o fail-soft de `handleIndex` responde 200,
+# então some também do gráfico de erro nativo do Cloudflare, que é o sinal
+# ambiente que um 500 daria de graça. Falha persistente (secret rotacionado,
+# KV apontando pro namespace errado) ficaria invisível pra sempre: todo
+# visitante veria o teaser e ninguém saberia. Workers Logs é opt-in de config
+# e entra no free tier.
+[observability]
+enabled = true
+
 [assets]
 directory = "./public"
 binding = "ASSETS"

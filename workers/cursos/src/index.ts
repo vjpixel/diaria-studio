@@ -99,20 +99,35 @@ export const GATED_INDEX_PATHS = ["/", "/index.html"];
  * script rodar, então nada aqui podia derrubar a home. Agora TODA visita a
  * `/` depende deste handler terminar — um throw do KV (`kv.get` não é
  * envolvido em try/catch em lugar nenhum da cadeia) passaria direto pro
- * `fetch` e derrubaria a página inteira. O catch devolve o teaser, que é o
- * comportamento pré-fix: degradar pra "todo mundo vê o teaser" é aceitável,
- * derrubar a home não. */
+ * `fetch` e derrubaria a página inteira. O catch devolve o teaser: degradar
+ * pra "todo mundo vê o teaser" é aceitável, derrubar a home não.
+ *
+ * O custo disso é observabilidade — 200 silencioso não aparece no gráfico de
+ * erro nativo do Cloudflare como um 500 apareceria. Por isso TODO caminho de
+ * degradação aqui loga, e `[observability]` está ligado no `wrangler.toml`
+ * (sem ele o `console.error` só existe durante um `wrangler tail` aberto na
+ * hora, e falha persistente — secret rotacionado, KV apontando pro namespace
+ * errado — ficaria invisível pra sempre). */
 async function handleIndex(request: Request, env: Env): Promise<Response> {
   try {
     const url = new URL(request.url);
     const emailParam = (url.searchParams.get("email") || "").trim();
 
-    // #4305: sem o secret do HMAC não existe sessão confiável — assinar com
-    // `undefined` NÃO lança (`TextEncoder().encode(undefined)` devolve buffer
-    // vazio), produziria assinatura forjável por qualquer um, e agora que o
-    // cookie de fato desbloqueia isso é bypass do gate. Sem o secret, só
-    // teaser. Mesmo guard de `workers/poll/src/web-gate.ts`.
+    // #4305: sem o secret do HMAC não dá pra emitir nem ler sessão — a
+    // assinatura em si NÃO fica fraca (`TextEncoder().encode(undefined)`
+    // devolve buffer vazio sem lançar, mas o `crypto.subtle.importKey`
+    // seguinte rejeita chave de tamanho zero com `DataError`, por spec da
+    // WebCrypto — verificado). Ou seja: sem o guard isto QUEBRA, não vaza. O
+    // guard troca esse throw por degradação explícita e logada. Mesmo guard de
+    // `workers/poll/src/web-gate.ts`.
     const canIssueSession = Boolean(env.COOKIE_HMAC_SECRET);
+    if (!canIssueSession) {
+      // Este ramo é a única degradação que NÃO passa pelo catch abaixo (é
+      // desvio de fluxo, não exceção) — sem log próprio, um deploy sem o
+      // secret serviria teaser pra assinante ativo vindo da newsletter com
+      // zero sinal em qualquer camada: nem status HTTP, nem log.
+      console.error("[cursos] COOKIE_HMAC_SECRET ausente — servindo teaser; NINGUÉM consegue desbloquear");
+    }
 
     if (canIssueSession && emailParam && isValidEmailFormat(emailParam)) {
       const result = await checkGateSubscriber(env, emailParam);
@@ -130,7 +145,13 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
       if (cookieEmail) return html(CURSOS_FULL_HTML);
     }
   } catch (err) {
-    console.error("[cursos] handleIndex falhou, degradando pro teaser:", err);
+    // Contexto no log: sem ele não dá pra distinguir "um request com azar" de
+    // "100% dos requests falhando" num `wrangler tail`. `request.url` cru
+    // porque re-parsear aqui poderia lançar de novo.
+    console.error(
+      `[cursos] handleIndex falhou (url=${request.url}, cookie=${request.headers.has("Cookie")}) — degradando pro teaser:`,
+      err,
+    );
   }
 
   return env.ASSETS.fetch(request);
@@ -138,10 +159,15 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
 
 /** Handler `POST /gate/verify` — só verificação (sem criar assinante). */
 async function handleGateVerify(request: Request, env: Env): Promise<Response> {
-  // #4305: fail-closed — sem o secret do HMAC não dá pra emitir sessão
-  // confiável (ver `handleIndex`). Melhor 503 explícito que cookie assinado
-  // com chave vazia, que qualquer um forja.
-  if (!env.COOKIE_HMAC_SECRET) return json({ ok: false, error: "gate_unavailable" }, 503, env);
+  // #4305: fail-closed — sem o secret do HMAC a emissão de sessão quebra (ver
+  // `handleIndex`). 503 explícito em vez de exceção não-tratada: o front
+  // distingue os dois (`gate_unavailable` vira aviso de indisponibilidade, não
+  // "e-mail não encontrado" — culpar o e-mail da pessoa por erro nosso é pior
+  // que não responder).
+  if (!env.COOKIE_HMAC_SECRET) {
+    console.error("[cursos] COOKIE_HMAC_SECRET ausente — /gate/verify indisponível");
+    return json({ ok: false, error: "gate_unavailable" }, 503, env);
+  }
 
   const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || "";
   const rl = await checkGateRateLimit(env.CURSOS_SUBSCRIBERS, ip);

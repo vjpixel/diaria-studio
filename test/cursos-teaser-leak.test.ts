@@ -62,10 +62,11 @@ describe("cursos teaser: nunca vaza conteúdo gated (#4052)", () => {
     }
   });
 
-  // #4305: as funções puras só eram exercitadas contra o seed real (31 cursos
-  // → 6 abertos). Os tamanhos abaixo pinam o comportamento nas pontas, que
-  // ninguém tinha olhado.
-  describe("openCourseCount / selectOpenCourses nas pontas (#4305)", () => {
+  // Adicionados no #4305, mas NÃO são regressão do bug dele: passam igual no
+  // código pré-fix (a lógica destas duas funções não mudou). São cobertura
+  // nova de comportamento que ninguém tinha olhado — as funções só eram
+  // exercitadas contra o seed real, 31 cursos → 6 abertos, longe das pontas.
+  describe("openCourseCount / selectOpenCourses nas pontas", () => {
     const fake = (n: number, markedCount = 0): Course[] =>
       Array.from({ length: n }, (_, i) => ({ ...courses[0], id: `fake-${i}`, teaser: i < markedCount }));
 

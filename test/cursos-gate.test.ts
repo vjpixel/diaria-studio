@@ -260,11 +260,29 @@ describe("workers/cursos POST /gate/logout (#4052)", () => {
 });
 
 /**
- * #4305 — regressões do follow-up. Os três casos abaixo só passaram a
- * importar quando `run_worker_first` fez o script de fato rodar em `/`: antes
- * disso o asset era servido sem `handleIndex` existir na prática, e nada aqui
- * podia ser observado em produção.
+ * #4305 — regressões do follow-up. Os casos abaixo só passaram a importar
+ * quando `run_worker_first` fez o script de fato rodar em `/`: antes disso o
+ * asset era servido sem `handleIndex` existir na prática, e nada aqui podia
+ * ser observado em produção.
  */
+
+/** Captura `console.error` pra afirmar que uma degradação deixou rastro.
+ * Necessário porque todo caminho de falha aqui responde 200/teaser — sem o
+ * log, o único jeito de saber que algo quebrou seria um leitor reclamando. */
+function captureErrorLogs() {
+  const original = console.error;
+  const lines: string[] = [];
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(" "));
+  };
+  return {
+    lines,
+    restore() {
+      console.error = original;
+    },
+  };
+}
+
 describe("workers/cursos: gate no follow-up #4305", () => {
   it("/index.html é gateado igual a / — mesmo asset, mesmo tratamento", async () => {
     const email = "assinante@example.com";
@@ -307,14 +325,46 @@ describe("workers/cursos: gate no follow-up #4305", () => {
       delete: async () => {},
     } as unknown as KVNamespace;
     const env = baseEnv({ CURSOS_SUBSCRIBERS: explodingKV });
-    const res = await worker.fetch(new Request("https://cursos.diar.ia.br/?email=alguem@example.com"), env);
+    const logs = captureErrorLogs();
+    let res: Response;
+    try {
+      res = await worker.fetch(new Request("https://cursos.diar.ia.br/?email=alguem@example.com"), env);
+    } finally {
+      logs.restore();
+    }
     assert.equal(res.status, 200);
     assert.equal(await res.text(), TEASER_HTML);
+    // O 200 silencioso some do gráfico de erro nativo do Cloudflare, que um
+    // 500 daria de graça. O log é o ÚNICO sinal que sobra — se alguém apagar
+    // o `console.error`, a degradação vira invisível e nada mais avisa.
+    assert.equal(logs.lines.length, 1, "a degradação precisa deixar rastro");
+    assert.match(logs.lines[0], /handleIndex falhou/);
+    assert.match(logs.lines[0], /url=/, "sem contexto de request não dá pra distinguir 1 request de 100%");
   });
 
-  it("sem COOKIE_HMAC_SECRET, / serve o teaser em vez de emitir sessão forjável", async () => {
-    // `TextEncoder().encode(undefined)` não lança — sem o guard, o cookie
-    // sairia assinado com chave vazia, ou seja, forjável por qualquer um.
+  it("sem COOKIE_HMAC_SECRET, / loga — é o ramo que NÃO passa pelo catch", async () => {
+    // Desvio de fluxo, não exceção: sem log próprio, um deploy sem o secret
+    // serviria teaser pra assinante ativo vindo da newsletter com zero sinal
+    // em qualquer camada — nem status HTTP, nem log.
+    const env = baseEnv({ COOKIE_HMAC_SECRET: undefined as unknown as string });
+    const logs = captureErrorLogs();
+    try {
+      await worker.fetch(new Request("https://cursos.diar.ia.br/?email=alguem@example.com"), env);
+    } finally {
+      logs.restore();
+    }
+    assert.equal(logs.lines.length, 1);
+    assert.match(logs.lines[0], /COOKIE_HMAC_SECRET ausente/);
+  });
+
+  it("sem COOKIE_HMAC_SECRET, / serve o teaser (degradação explícita, não exceção)", async () => {
+    // A primeira versão deste guard foi escrita com a justificativa errada
+    // ("cookie assinado com chave vazia, forjável"). Não é o que acontece:
+    // `TextEncoder().encode(undefined)` de fato não lança, mas o
+    // `crypto.subtle.importKey` seguinte rejeita chave de tamanho zero com
+    // `DataError` (spec da WebCrypto — verificado em Node). Sem o guard isto
+    // QUEBRA, não vaza. O guard existe pra trocar a exceção por degradação
+    // explícita e logada, não pra fechar um bypass.
     const email = "assinante@example.com";
     const key = await subscriberKvKey(email);
     const env = baseEnv({

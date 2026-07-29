@@ -361,6 +361,10 @@
           btn.disabled = false;
           if (r.data && r.data.ok) { setMsg('Verificado! Redirecionando…'); window.location.href = '/'; return; }
           if (r.status === 429) { setMsg('Muitas tentativas. Tente novamente em alguns minutos.'); return; }
+          // #4305: 503 é erro NOSSO (gate mal configurado), não e-mail errado
+          // da pessoa. Sem este ramo, uma falha de config manda o leitor
+          // assinar de novo achando que o e-mail dele é que não presta.
+          if (r.status === 503) { setMsg('O desbloqueio está temporariamente indisponível. Tente daqui a pouco.'); return; }
           setMsg('Não encontramos assinatura ativa com esse e-mail. Use o link abaixo pra assinar e desbloquear.');
         })
         .catch(function () { btn.disabled = false; setMsg('Erro de rede. Tente novamente.'); });
