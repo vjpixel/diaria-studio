@@ -143,6 +143,35 @@ describe("regressão #4309 (defesa em profundidade — hoje latente em '# Curto'
   });
 });
 
+describe("regressão #4309 finding 1 (self-review #2038): guard não derruba o prepTwitterPosts() inteiro", () => {
+  // Antes do fix: extractCurtoText podia lançar via assertNoScaffolding, e o
+  // call site em prepTwitterPosts() não tinha try/catch — um throw em
+  // QUALQUER destaque derrubava a função inteira da edição. Depois do fix: só
+  // o destaque afetado vira "skipped" (com o motivo do erro), e os demais
+  // seguem normalmente.
+  it("d2 com placeholder cru vira 'skipped' com o motivo do erro, sem impedir d1/d3", () => {
+    const md =
+      "# Curto\n\n" +
+      "## d1\nPost d1 normal.\n\n" +
+      "## d2\nTexto quebrado com {edition_url} cru.\n\n" +
+      "## d3\nPost d3 normal.\n";
+    const dir = makeEditionDir("diaria-twitter-prep-guardfires-", md);
+    try {
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+      assert.deepEqual(
+        result.posts.map((p) => p.destaque),
+        ["d1", "d3"],
+        "d1/d3 devem seguir prontos pra postar, sem o crash derrubar a função inteira",
+      );
+      const d2Skip = result.skipped.find((s) => s.destaque === "d2");
+      assert.ok(d2Skip, "d2 deve aparecer em skipped, não silenciosamente omitido");
+      assert.match(d2Skip!.reason, /edition_url|#4309/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("TWITTER_CHAR_LIMIT", () => {
   it("é 280 (limite do free tier/Buffer)", () => {
     assert.equal(TWITTER_CHAR_LIMIT, 280);

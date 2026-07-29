@@ -163,13 +163,16 @@ export function truncateCaption(caption: string, maxLen = 2200): string {
     const budget = maxLen - suffix.length - separator.length - ellipsis.length;
     if (budget > 0) {
       const rawBody = caption.slice(0, ctaIdx).trimEnd();
-      let truncatedBody = rawBody;
+      // #4309 finding 3 (self-review #2038): só corta (e só anexa "...") se o
+      // corpo de fato excede o budget — senão o corpo cabe inteiro e um
+      // ellipsis espúrio apareceria mesmo sem nada ter sido cortado.
       if (rawBody.length > budget) {
         const cut = rawBody.lastIndexOf(" ", budget - 1);
         const idx = cut > 0 ? cut : budget;
-        truncatedBody = rawBody.slice(0, idx).trimEnd();
+        const truncatedBody = rawBody.slice(0, idx).trimEnd();
+        return `${truncatedBody}${ellipsis}${separator}${suffix}`;
       }
-      return `${truncatedBody}${ellipsis}${separator}${suffix}`;
+      return `${rawBody}${separator}${suffix}`;
     }
     // CTA+sufixo sozinho já não cabe em maxLen — best-effort, cai no truncamento cego abaixo.
   }

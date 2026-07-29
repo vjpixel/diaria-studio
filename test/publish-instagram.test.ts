@@ -261,6 +261,26 @@ describe("truncateCaption preserva o CTA da bio (regressão #4309)", () => {
     assert.ok(result.includes(tags), "tags devem sobreviver junto com o CTA");
   });
 
+  it("corpo cabe inteiro dentro do budget (folga de whitespace antes do CTA): sem elipse espúria (#4309 finding 3)", () => {
+    // Self-review #2038: quando o corpo cabe inteiro no espaço disponível
+    // antes do CTA (rawBody.length <= budget), truncateCaption NÃO deve
+    // anexar "..." — antes do fix, a elipse era concatenada incondicionalmente
+    // mesmo sem nenhum corte real. Fixture usa uma folga de whitespace bem
+    // maior que o separator padrão (2 chars) entre corpo e CTA pra inflar
+    // `caption.length` acima de 2200 sem que o corpo em si precise ser cortado.
+    const body = "B".repeat(50);
+    const gap = "\n".repeat(2100);
+    const tags = "#tag";
+    const caption = `${body}${gap}${INSTAGRAM_CTA_LINE}\n\n${tags}`;
+    assert.ok(caption.length > 2200, "fixture deve exceder o limite pra exercitar truncateCaption");
+
+    const result = truncateCaption(caption);
+    assert.ok(!result.includes("..."), "corpo cabe inteiro no budget — não deve aparecer elipse espúria");
+    assert.ok(result.includes(body), "corpo deve sobreviver por completo, sem corte");
+    assert.ok(result.includes(INSTAGRAM_CTA_LINE), "CTA deve sobreviver por completo");
+    assert.ok(result.includes(tags), "tags devem sobreviver");
+  });
+
   it("sem o CTA no texto (ex: LinkedIn/legado), cai no truncamento cego de sempre", () => {
     const long = "A".repeat(2100) + " " + "B".repeat(200); // sem INSTAGRAM_CTA_LINE
     const result = truncateCaption(long);

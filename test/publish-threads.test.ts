@@ -172,6 +172,60 @@ describe("regressão #4309 (defesa em profundidade — hoje latente em '# Curto'
   });
 });
 
+describe("regressão #4309 finding 2 (self-review #2038): guard não derruba o main() inteiro", () => {
+  // Antes do fix: extractPostText podia lançar via assertNoScaffolding, e o
+  // call site em main() (dentro do for-loop) não tinha try/catch — um throw
+  // em QUALQUER destaque derrubava main() inteiro (process.exit(1), "Fatal
+  // error") e nenhum entry "failed" era gravado. Depois do fix: só o destaque
+  // afetado vira "failed" (via tagAndAppend), e os demais seguem normalmente.
+  const SCRIPT = resolve(__ROOT, "scripts/publish-threads.ts");
+
+  it("d2 com placeholder cru vira status 'failed' sem impedir d1/d3 de seguir pro dry-run", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-guard-fires-"));
+    try {
+      mkdirSync(join(tmpDir, "_internal"), { recursive: true });
+      // d2 simula um bug upstream que deixou {edition_url} não-resolvido no
+      // PRÓPRIO corpo do destaque — assertNoScaffolding recusa esse texto.
+      const md =
+        "# Curto\n\n" +
+        "## d1\nPost d1 normal.\n\n" +
+        "## d2\nTexto quebrado com {edition_url} cru.\n\n" +
+        "## d3\nPost d3 normal.\n";
+      writeFileSync(join(tmpDir, "03-social.md"), md, "utf8");
+
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", SCRIPT, "--edition-dir", tmpDir, "--dry-run", "--log-root-dir", tmpDir],
+        {
+          encoding: "utf8",
+          cwd: __ROOT,
+          env: {
+            ...process.env,
+            THREADS_USER_ID: "fake_user_id_guardfires",
+            THREADS_ACCESS_TOKEN: "fake_access_token_guardfires",
+          },
+        },
+      );
+
+      assert.equal(r.status, 0, `main() não deve crashar o processo — stderr: ${r.stderr}`);
+      assert.doesNotMatch(r.stderr, /Fatal error/, "guard não deve derrubar main() inteiro");
+      assert.match(r.stdout, /DRY-RUN threads\/d1/, "d1 deve seguir pro dry-run normalmente");
+      assert.match(r.stdout, /DRY-RUN threads\/d3/, "d3 deve seguir pro dry-run normalmente");
+      assert.doesNotMatch(r.stdout, /DRY-RUN threads\/d2/, "d2 (guard disparado) não deve chegar ao dry-run");
+
+      const published = JSON.parse(
+        readFileSync(join(tmpDir, "_internal", "06-social-published.json"), "utf8"),
+      );
+      const d2Entry = published.posts.find((p: any) => p.destaque === "d2");
+      assert.ok(d2Entry, "d2 deve ter um entry gravado (não silenciosamente omitido)");
+      assert.equal(d2Entry.status, "failed");
+      assert.match(d2Entry.reason, /edition_url|#4309/);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── Caso feliz: texto do Threads idêntico ao do X pro mesmo destaque ───────
 
 describe("Curto compartilhado entre X e Threads (#4294 regressão)", () => {

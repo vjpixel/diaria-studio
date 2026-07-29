@@ -562,7 +562,28 @@ async function main() {
     // Diferente do comportamento antigo (fail-fast com status "failed"),
     // isso é um skip: nada foi tentado, então nada é persistido em
     // 06-social-published.json — o destaque simplesmente não sai neste run.
-    const text = extractPostText(socialMd, d);
+    // #4309 finding 2 (self-review #2038): extractPostText pode lançar via
+    // assertNoScaffolding (guard de scaffolding vazado/placeholder não
+    // resolvido) — try/catch por destaque evita que 1 destaque ruim derrube
+    // o main() inteiro; grava "failed" e segue com os demais destaques,
+    // mesmo padrão de status:"failed" já usado no resto deste arquivo.
+    let text: string | null;
+    try {
+      text = extractPostText(socialMd, d);
+    } catch (e: any) {
+      console.error(`ERROR extracting text for threads/${d}: ${e.message}`);
+      const entry: PostEntry = {
+        platform: "threads",
+        destaque: d,
+        url: null,
+        status: "failed",
+        scheduled_at: null,
+        reason: e.message,
+      };
+      tagAndAppend(entry);
+      results.push(entry);
+      continue;
+    }
     if (!text) {
       const reason = "destaque ausente ou incompleto na seção '# Curto' — sem fallback (#4294)";
       console.warn(`SKIP threads/${d}: ${reason}`);

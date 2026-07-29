@@ -261,7 +261,18 @@ export function prepTwitterPosts(
       }
     }
 
-    const text = extractCurtoText(socialMd, d);
+    // #4309 finding 1 (self-review #2038): extractCurtoText pode lançar via
+    // assertNoScaffolding (guard de scaffolding vazado/placeholder não
+    // resolvido) — try/catch por destaque evita que 1 destaque ruim derrube
+    // o prepTwitterPosts() inteiro da edição, mesmo padrão gracioso já usado
+    // em publish-facebook.ts/publish-instagram.ts.
+    let text: string | null;
+    try {
+      text = extractCurtoText(socialMd, d);
+    } catch (e: any) {
+      skipped.push({ destaque: d, reason: `erro extraindo texto: ${e.message}` });
+      continue;
+    }
     if (!text) {
       skipped.push({ destaque: d, reason: "destaque ausente na seção '# Curto'" });
       continue;
