@@ -441,3 +441,55 @@ describe("#4258 item 4: campo nome vem ANTES do e-mail no form do gate (consist�
     assert.ok(nameIdx < emailIdx, "campo nome deve vir antes do campo e-mail no markup");
   });
 });
+
+describe("#4268: gate no meio da sequência NUNCA joga o jogador pra fora dela (regressão, achado ao vivo)", () => {
+  // Bug real reproduzido pelo editor 2x seguidas: goNext() em jogar.ts passa
+  // `edition=editions[0]` pro gate (só pro CONTEXTO do identify — deriva o
+  // índice mensal do merge, #4253 item 6). Antes do fix, tanto o link de
+  // skip quanto o redirect pós-cadastro reusavam ESSE MESMO param como alvo
+  // de navegação — handleJogarPage despacha pra página de UMA edição só
+  // (sem next-round) sempre que a URL tem `?edition=`, então o jogador saía
+  // da sequência de verdade e caía numa página sem "próxima rodada". Se
+  // editions[0] já tinha voto de sessão anterior (comum pra quem testa o
+  // jogo com frequência), /vote respondia "já votou" sem caminho de volta —
+  // dead end. Fix: skipHref/goToGame nunca mais carregam `edition=`.
+  it("link 'Continuar sem cadastrar' NUNCA leva edition= no href, mesmo quando a página recebeu uma edição (contexto do identify)", () => {
+    const html = renderJogarGatePage("260601");
+    const hrefMatch = html.match(/class="skip-link" href="([^"]+)"/);
+    assert.ok(hrefMatch, "link de skip deve existir");
+    const href = hrefMatch![1];
+    assert.ok(
+      !/[?&]edition=/.test(href),
+      `#4268: href do skip-link não pode conter edition= (jogaria o jogador pra fora da sequência) — href real: ${href}`,
+    );
+    assert.match(href, /skip_gate=1/, "skip continua liberando esta navegação específica");
+  });
+
+  it("goToGame() (redirect pós-cadastro bem-sucedido) NUNCA leva edition= no alvo de navegação", () => {
+    const html = renderJogarGatePage("260601");
+    const fnMatch = html.match(/function goToGame\(\) \{\s*window\.location\.href = ([^;]+);/);
+    assert.ok(fnMatch, "goToGame() deve existir no script");
+    const expr = fnMatch![1];
+    assert.ok(
+      !/edition/.test(expr),
+      `#4268: expressão de goToGame() não pode referenciar edition= (mesmo dead end do skip-link, só que pós-cadastro) — expressão real: ${expr}`,
+    );
+  });
+
+  it("GATE_EDITION (contexto do identify, propósito ORIGINAL do param) continua correto — só a navegação mudou", () => {
+    const html = renderJogarGatePage("260601");
+    assert.match(
+      html,
+      /var GATE_EDITION = "260601"/,
+      "#4268: o fix não pode remover o contexto que o identify precisa pra derivar o índice mensal do merge (#4253 item 6) — só a navegação (skip/goToGame) parar de reusar esse valor",
+    );
+  });
+
+  it("sem edition nenhuma (gate no carregamento inicial de /jogar, sem sequência em andamento): comportamento pré-existente intocado", () => {
+    const html = renderJogarGatePage(null);
+    const hrefMatch = html.match(/class="skip-link" href="([^"]+)"/);
+    assert.ok(hrefMatch);
+    assert.ok(!/edition=/.test(hrefMatch![1]));
+    assert.match(html, /var GATE_EDITION = ""/);
+  });
+});

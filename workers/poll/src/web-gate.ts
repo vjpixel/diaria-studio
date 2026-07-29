@@ -394,7 +394,6 @@ export async function handleJogarGateSubscribe(
  * resto do worker.
  */
 export function renderJogarGatePage(edition: string | null): string {
-  const editionParam = edition ? `&edition=${encodeURIComponent(edition)}` : "";
   // #4253 item 6: repassado pro script (via JSON.stringify abaixo) como
   // `edition` do POST /jogar/identify — deriva o índice MENSAL do merge
   // (score-by-month:{slug}:{email}), que é o que o leaderboard público
@@ -404,13 +403,26 @@ export function renderJogarGatePage(edition: string | null): string {
   // não aparece no ranking" por mais 1 rodada — o mesmo sintoma do bug
   // original, só que temporário em vez de permanente.
   const gateEdition = edition ?? "";
+  // Achado ao vivo (editor, 260728): o gate encontrado NO MEIO da sequência
+  // (goNext em jogar.ts) repassa `edition=editions[0]` pra cá — mas isso é só
+  // o contexto do identify acima (GATE_EDITION), NUNCA deveria ir pro alvo de
+  // navegação abaixo. `handleJogarPage` despacha pra página de UMA edição só
+  // (sem next-round) sempre que a URL tem `?edition=`, ANTES de olhar pro
+  // gate — então incluir editionParam aqui jogava o jogador pra fora da
+  // sequência de 23 rodadas direto pra edition[0] isolada. Se editions[0] já
+  // tinha voto de uma sessão anterior (bem provável pra quem testa o jogo
+  // com frequência), o /vote respondia "já votou" sem nenhum caminho de
+  // volta — dead end reproduzido ao vivo. Fix: a navegação pós-gate (skip OU
+  // sucesso) volta SEMPRE pra `/jogar` puro (sequência), nunca carrega
+  // `edition` — só GATE_EDITION (acima) continua levando o contexto pro
+  // identify, que é o único lugar que precisa dele.
   // #4109 (achado ao vivo 260727, editor): o gate original (#4054) bloqueava
   // sem saída — quem não queria assinar ficava travado na tela. Link de skip
   // manda `skip_gate=1`, único-uso por navegação (handleJogarPage abaixo só
   // lê esse param nesta request específica, não grava cookie/sessão nenhuma)
   // — a próxima transição de rodada volta a checar o servidor e pode gatear
   // de novo (nudge recorrente, não permanente; decisão do editor).
-  const skipHref = `/jogar?v=${Date.now()}${editionParam}&skip_gate=1`;
+  const skipHref = `/jogar?v=${Date.now()}&skip_gate=1`;
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -503,7 +515,7 @@ export function renderJogarGatePage(edition: string | null): string {
     }).catch(function () { return { pending: false }; });
   }
   function goToGame() {
-    window.location.href = "/jogar?v=" + Date.now() + "${editionParam}";
+    window.location.href = "/jogar?v=" + Date.now();
   }
   // Achado do review consolidado: sem isso, um histórico órfão (#3996)
   // redirecionava em silêncio pro jogo, sem avisar que o merge ficou
