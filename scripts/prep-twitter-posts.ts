@@ -68,7 +68,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readSocialPublished } from "./lib/social-published-store.ts";
 import { parseDestaqueHeaders } from "./lint-social-md.ts";
-import { extractSection } from "./lib/extract-section.ts";
+import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #4309 — extração do `## dN` + guard de scaffolding
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
 
@@ -125,13 +125,14 @@ export function extractCurtoText(socialMd: string, destaque: string): string | n
   const section = extractSection(normalized, "Curto");
   if (section === null) return null;
 
-  const dRe = new RegExp(
-    `(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`,
-    "i",
-  );
-  const dMatch = section.match(dRe);
-  if (!dMatch) return null;
-  return dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
+  // #4309: terminador corrigido via helper compartilhado (era `\n## d\d+\b`,
+  // vazaria seções irmãs não-`## dN` — latente aqui hoje, mas mesma classe do
+  // bug ativado em publish-instagram.ts/publish-facebook.ts).
+  const dText = extractDestaqueBlock(section, destaque);
+  if (dText === null) return null;
+  const text = dText.trim();
+  assertNoScaffolding(text, `destaque '${destaque}' (twitter/curto)`);
+  return text;
 }
 
 export interface PrepResult {

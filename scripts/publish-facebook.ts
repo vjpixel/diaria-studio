@@ -36,7 +36,7 @@ import { computeScheduledAt as computeScheduledAtShared } from "./compute-social
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
 import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
-import { extractSection } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`
+import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`; #4309 — extração do `## dN` + guard de scaffolding
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { DIARIA_FACEBOOK_PAGE_URL } from "./lib/canonical-urls.ts"; // #2695 fonte única
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts"; // #2834
@@ -137,12 +137,14 @@ export function extractPostText(socialMd: string, platform: string, destaque: st
   // Then extract the destaque subsection
   // #725 bug #3: `## d\d` aceitava `## d10` como `## d1` + `0` no lookahead.
   // `\d+\b` garante match completo de número (2+ dígitos não batem em `d1`).
-  const dRe = new RegExp(`(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`, "i");
-  const dMatch = platMatch[1].match(dRe);
-  if (!dMatch) throw new Error(`Destaque '${destaque}' not found under '${platform}'`);
+  // #4309: terminador corrigido via helper compartilhado — o anterior
+  // (`\n## d\d+\b`) vazava `## eia`/`## post_pixel` pro `## d3` publicado ao vivo.
+  const dText = extractDestaqueBlock(platMatch[1], destaque);
+  if (dText === null) throw new Error(`Destaque '${destaque}' not found under '${platform}'`);
 
-  const text = dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
-  return platform === "facebook" ? injectChannelLine(text, "facebook") : text;
+  const text = platform === "facebook" ? injectChannelLine(dText.trim(), "facebook") : dText.trim();
+  assertNoScaffolding(text, `destaque '${destaque}' (${platform})`);
+  return text;
 }
 
 // computeScheduledAt foi movido pra `scripts/compute-social-schedule.ts` (#270)

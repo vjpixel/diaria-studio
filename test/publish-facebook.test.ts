@@ -93,6 +93,33 @@ describe("extractPostText (publish-facebook) — formato novo # Social (#3991)",
   });
 });
 
+describe("regressão #4309: '## eia'/'## post_pixel' vazando pro post do Facebook", () => {
+  // Forma REAL de 03-social.md pós-#3991/#3471 (merge-social-md.ts): dentro de
+  // '# Social', a ordem é d1 → d2 → d3 → ## eia → ## post_pixel. Bug ao vivo
+  // em produção (FB 260727/28): d3 (último destaque) absorvia ## eia/## post_pixel
+  // inteiros — placeholders {edition_url}/{outros_count} e o path 01-eia-A.jpg
+  // literais no post publicado.
+  const SOCIAL_MD_REAL_SHAPE =
+    "# Social\n\n" +
+    "## d1\n\nTexto d1.\n\n#tag1\n\n" +
+    "## d2\n\nTexto d2.\n\n#tag2\n\n" +
+    "## d3\n\nTexto d3 exclusivo.\n\n#tag3\n\n" +
+    "## eia\n\n<!-- destaque: eia -->\n\nTexto do É IA? de hoje. Imagem: 01-eia-A.jpg\n\n" +
+    "## post_pixel\n\nPost pessoal do Pixel. {edition_url} {outros_count}\n";
+
+  it("extrai d3 (último destaque) sem vazar '## eia'/'## post_pixel' nem os placeholders", () => {
+    const t = extractPostText(SOCIAL_MD_REAL_SHAPE, "facebook", "d3");
+    assert.ok(t.includes("Texto d3 exclusivo."));
+    assert.ok(!t.includes("## eia"));
+    assert.ok(!t.includes("Texto do É IA?"));
+    assert.ok(!t.includes("01-eia-A.jpg"));
+    assert.ok(!t.includes("## post_pixel"));
+    assert.ok(!t.includes("Post pessoal do Pixel"));
+    assert.ok(!t.includes("{edition_url}"));
+    assert.ok(!t.includes("{outros_count}"));
+  });
+});
+
 describe("validateScheduledTime 15 min boundary (#527)", () => {
   const now = new Date("2026-04-28T12:00:00Z");
   it("aceita > 15 min futuro com margem 900s", () => { assert.doesNotThrow(() => validateScheduledTime("2026-04-28T12:20:00Z", now, 900)); });

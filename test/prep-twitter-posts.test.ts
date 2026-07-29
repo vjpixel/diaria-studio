@@ -121,6 +121,28 @@ describe("extractCurtoText", () => {
   });
 });
 
+describe("regressão #4309 (defesa em profundidade — hoje latente em '# Curto')", () => {
+  // '# Curto' não recebe '## eia'/'## post_pixel' hoje (só '# Social' recebe,
+  // via merge-social-md.ts) — mas o terminador do '## dN' era o MESMO código
+  // com o MESMO bug (`\n## d\d+\b`) que quebrou ao vivo em Facebook/Instagram.
+  // Trava aqui pra não reativar se uma seção irmã aparecer depois do último
+  // destaque em '# Curto' no futuro.
+  const MD_CURTO_COM_SIBLING =
+    "# Curto\n\n" +
+    "## d1\nPost d1.\n\n" +
+    "## d2\nPost d2.\n\n" +
+    "## d3\nPost d3 exclusivo.\n\n" +
+    "## post_pixel\nPost pessoal do Pixel. {edition_url}\n";
+
+  it("d3 (último destaque) não vaza '## post_pixel' nem {edition_url} não-resolvido", () => {
+    const t = extractCurtoText(MD_CURTO_COM_SIBLING, "d3");
+    assert.ok(t?.includes("Post d3 exclusivo."));
+    assert.ok(!t?.includes("## post_pixel"));
+    assert.ok(!t?.includes("Post pessoal do Pixel"));
+    assert.ok(!t?.includes("{edition_url}"));
+  });
+});
+
 describe("TWITTER_CHAR_LIMIT", () => {
   it("é 280 (limite do free tier/Buffer)", () => {
     assert.equal(TWITTER_CHAR_LIMIT, 280);

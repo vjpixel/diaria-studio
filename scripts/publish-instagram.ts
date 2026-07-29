@@ -54,8 +54,8 @@ import { fileURLToPath } from "node:url";
 import { appendSocialPosts, PostEntry, SocialPublished } from "./lib/social-published-store.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts";
 import { selectSocialCardImageFile } from "./lib/select-social-card-image.ts"; // #4090 item 5
-import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts)
-import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
+import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #2834 fonte única (era duplicada aqui/publish-threads.ts/lint-social-md.ts); #4309 — extração do `## dN` + guard de scaffolding
+import { injectChannelLine, INSTAGRAM_CTA_LINE } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish; #4309 — proteger o CTA no truncamento
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3817 — mesmo fallback_schedule usado por LinkedIn/Facebook
 import {
@@ -108,14 +108,17 @@ export function extractPostText(socialMd: string, destaque: string): string {
   socialMd = socialMd.replace(/\r\n/g, "\n");
 
   // #3991: seção nova `# Social` tem precedência.
+  // #4309: terminador do `## dN` corrigido via helper compartilhado
+  // `extractDestaqueBlock` — o anterior (`\n## d\d+\b`) vazava `## eia`/
+  // `## post_pixel` pro texto do último destaque (`## d3`) publicado ao vivo.
   const socialRe = /(?:^|\n)# Social\n([\s\S]*?)(?=\n# |$)/i;
   const socialMatch = socialMd.match(socialRe);
   if (socialMatch) {
-    const dRe = new RegExp(`(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`, "i");
-    const dMatch = socialMatch[1].match(dRe);
-    if (dMatch) {
-      const text = dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
-      return injectChannelLine(text, "instagram");
+    const dText = extractDestaqueBlock(socialMatch[1], destaque);
+    if (dText !== null) {
+      const text = injectChannelLine(dText.trim(), "instagram");
+      assertNoScaffolding(text, `destaque '${destaque}' (instagram/Social)`);
+      return text;
     }
   }
 
@@ -125,13 +128,11 @@ export function extractPostText(socialMd: string, destaque: string): string {
     const platMatch = socialMd.match(platRe);
     if (!platMatch) continue;
 
-    const dRe = new RegExp(
-      `(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`,
-      "i",
-    );
-    const dMatch = platMatch[1].match(dRe);
-    if (dMatch) {
-      return dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
+    const dText = extractDestaqueBlock(platMatch[1], destaque);
+    if (dText !== null) {
+      const text = dText.trim();
+      assertNoScaffolding(text, `destaque '${destaque}' (instagram/${platTitle} legado)`);
+      return text;
     }
   }
 
@@ -142,10 +143,37 @@ export function extractPostText(socialMd: string, destaque: string): string {
 
 /**
  * Trunca caption para o limite do Instagram (2200 caracteres).
- * Preserva hashtags — corta no último espaço antes do limite.
+ *
+ * #4309: antes cortava cegamente pelo fim, comendo o CTA "Edição completa no
+ * link da bio..." (`INSTAGRAM_CTA_LINE`, injetado por `injectChannelLine` ANTES
+ * de chegar aqui) no meio de uma frase — visto ao vivo em 2 posts publicados
+ * (260727/28). Quando o CTA está presente, preserva-o (+ tudo que vem depois,
+ * ex: hashtags) e trunca só o corpo ANTERIOR a ele. Se mesmo o CTA+sufixo já
+ * excede `maxLen` sozinho (raro — hashtags gigantes), cai no truncamento cego
+ * de antes como último recurso.
  */
 export function truncateCaption(caption: string, maxLen = 2200): string {
   if (caption.length <= maxLen) return caption;
+
+  const ctaIdx = caption.indexOf(INSTAGRAM_CTA_LINE);
+  if (ctaIdx >= 0) {
+    const ellipsis = "...";
+    const separator = "\n\n";
+    const suffix = caption.slice(ctaIdx).trimEnd(); // CTA + linhas seguintes (tags), sem espaço à direita
+    const budget = maxLen - suffix.length - separator.length - ellipsis.length;
+    if (budget > 0) {
+      const rawBody = caption.slice(0, ctaIdx).trimEnd();
+      let truncatedBody = rawBody;
+      if (rawBody.length > budget) {
+        const cut = rawBody.lastIndexOf(" ", budget - 1);
+        const idx = cut > 0 ? cut : budget;
+        truncatedBody = rawBody.slice(0, idx).trimEnd();
+      }
+      return `${truncatedBody}${ellipsis}${separator}${suffix}`;
+    }
+    // CTA+sufixo sozinho já não cabe em maxLen — best-effort, cai no truncamento cego abaixo.
+  }
+
   const cut = caption.lastIndexOf(" ", maxLen - 3);
   const idx = cut > 0 ? cut : maxLen - 3;
   return caption.slice(0, idx) + "...";

@@ -64,7 +64,7 @@ import { CONFIG } from "./lib/config.ts";
 import { logEvent } from "./lib/run-log.ts";
 import { outrosCount as _outrosCount, resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
 import { extractPlatformSection, parseDestaqueHeaders } from "./lint-social-md.ts"; // #2343: reuso de section split + parse de ## dN
-import { extractSection } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`
+import { extractSection, extractDestaqueBlock as extractDestaqueBlockShared, assertNoScaffolding } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`; #4309 — extração do `## dN` compartilhada + guard de scaffolding
 import { injectChannelLine } from "./lib/social-cta-lines.ts"; // #3991 — injeção determinística da linha de canal no publish
 import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts"; // #2454: constante centralizada da URL base
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
@@ -129,14 +129,17 @@ function extractDestaqueBlock(socialMd: string, destaque: string): string {
   // #725 bug #3: `\d+\b` em vez de `\d` — evita `## d10` bater como `## d1`+`0`
   // #1690: termina em QUALQUER sibling `## ` (não só `## dN`) — senão o último
   // bloco (d3) absorve a seção `## post_pixel`. `\n## ` não casa `\n### comment_*`.
-  const dRe = new RegExp(
-    `(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## |\\n# |$)`,
-    "i",
-  );
-  const dMatch = sectionBody.match(dRe);
-  if (!dMatch) throw new Error(`Destaque '${destaque}' não encontrado em Social/LinkedIn`);
+  // #4309: extração movida pra `lib/extract-section.ts` (`extractDestaqueBlock`)
+  // — mesmo terminador, agora compartilhado com os outros 4 publishers que
+  // tinham o terminador ERRADO (`\n## d\d+\b`, vazava `## eia`/`## post_pixel`).
+  // Sem guard de scaffolding aqui: este bloco CRU ainda pode conter
+  // `### comment_diaria`/`### comment_pixel` com placeholders não resolvidos —
+  // contrato próprio de `extractCommentDiaria`/`extractCommentPixel` abaixo.
+  // O guard entra em `extractPostText` (texto final, pós-corte dos comments).
+  const text = extractDestaqueBlockShared(sectionBody, destaque);
+  if (text === null) throw new Error(`Destaque '${destaque}' não encontrado em Social/LinkedIn`);
 
-  return dMatch[1].replace(/<!--[\s\S]*?-->/g, "");
+  return text;
 }
 
 /**
@@ -170,7 +173,11 @@ export function extractPostText(socialMd: string, destaque: string): string {
   const commentRe = /\n### comment_(diaria|pixel)\b/;
   const cut = block.search(commentRe);
   const mainOnly = cut >= 0 ? block.slice(0, cut) : block;
-  return injectChannelLine(mainOnly.trim(), "linkedin");
+  const text = injectChannelLine(mainOnly.trim(), "linkedin");
+  // #4309: guard no ponto de saída do texto FINAL (pós-corte dos comments) —
+  // este é o texto que de fato vai pro post principal do LinkedIn.
+  assertNoScaffolding(text, `destaque '${destaque}' (linkedin, post principal)`);
+  return text;
 }
 
 /**
