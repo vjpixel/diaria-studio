@@ -82,6 +82,11 @@ describe("diaria-develop 4 ondas priorizadas (#4319)", () => {
     assert.match(develop, /\*\*Não entra no alvo em NENHUMA política\*\*/);
     assert.match(develop, /`fora-do-escopo`/);
     assert.match(develop, /`elegivel_especial`/);
+    assert.match(
+      develop,
+      /`not-this-week` como issue-inteira-excluída/,
+      "not-this-week (issue inteira, distinto do motivo cat. D) deve estar documentado como fora do alvo",
+    );
   });
 
   it("ondas são montadas DEPOIS do filtro --bugs/--priority/--issues/--only; Goal avaliado contra o escopo filtrado", () => {
@@ -201,11 +206,54 @@ describe("diaria-develop agrupamento por colisão vira 1 PR (#4319)", () => {
 });
 
 describe("diaria-develop plan.json schema — goal.tiers / current_tier / tier3_gate (#4319)", () => {
-  it("exemplo de goal no schema documenta tiers, current_tier e tier3_gate", () => {
+  it("exemplo de goal no schema documenta tiers, current_tier e tier3_gate como array de disparos", () => {
     assert.match(develop, /"tiers":\s*\{\s*"1a":/);
     assert.match(develop, /"current_tier":\s*"1a"/);
-    assert.match(develop, /"tier3_gate":\s*\{/);
+    assert.match(develop, /"tier3_gate":\s*\[/, "tier3_gate deve ser array (histórico por disparo), não objeto único");
     assert.match(develop, /`decision` ∈ `entrar`\|`parar`\|`escolher`\|`sem-resposta`/);
+  });
+
+  it("current_tier nunca é gravado sob table_only (mesmo tratamento explícito-vazio de target_set/remaining)", () => {
+    assert.match(
+      develop,
+      /com `policy: "table_only"` o campo \*\*nunca é gravado\*\*, fica ausente a sessão inteira/,
+    );
+  });
+
+  it("migração de legado: current_tier ausente NÃO vira '1a' por default em resume", () => {
+    assert.match(
+      develop,
+      /`current_tier` ausente num resume não vira `"1a"` por default/,
+      "resume de sessão pré-#4319 não deve inferir tier 1a silenciosamente",
+    );
+  });
+});
+
+describe("diaria-develop terminal para issue elegível cuja implementação falha sem chegar ao CI (#4319)", () => {
+  it("nao-destravavel-na-sessao cobre explicitamente falha de implementação, não só bloqueio não resolvido", () => {
+    assert.match(
+      develop,
+      /implementação de issue elegível que falha sem nunca abrir PR\/chegar ao CI/,
+      "deve existir caminho terminal pra issue elegível cuja implementação trava/falha",
+    );
+  });
+
+  it("Fase 1 passo 5 instrui halt banner + status terminal pra esse caso, não retry infinito silencioso", () => {
+    assert.match(
+      develop,
+      /renderizar halt banner.*gravar `pulada` motivo `nao-destravavel-na-sessao` com o erro/s,
+    );
+  });
+});
+
+describe("diaria-develop seção Gates atualizada — 5 gates, sem linguagem obsoleta de serialização (#4319)", () => {
+  it("Gates lista o gate do grupo 3 como 5o gate", () => {
+    assert.match(develop, /\*\*Cinco gates\*\*/);
+    assert.match(develop, /GATE DO GRUPO 3 — ENTRADA NA CAUDA LONGA/);
+  });
+
+  it("bullet do Gate de Onda não menciona mais 'o que serializa' (colisão funde, não serializa)", () => {
+    assert.doesNotMatch(develop, /Apresenta clusters \+ singletons \+ o que serializa/);
   });
 });
 
