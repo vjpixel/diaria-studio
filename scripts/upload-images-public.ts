@@ -250,6 +250,7 @@ export function imageSpecsFor(mode: UploadMode, editionDir?: string): ImageSpec[
     // livros (`isBoxDivulgacaoLivros`, #2136), estas valem pra qualquer snippet
     // que caia no slot — a associação é posicional, não por link de destino.
     // optional: a maioria das edições não tem nenhuma.
+    { key: "box_slot0_image", filename: "04-box-slot0.jpg", optional: true }, // #4274
     { key: "box_slot1_image", filename: "04-box-slot1.jpg", optional: true },
     { key: "box_slot2_image", filename: "04-box-slot2.jpg", optional: true },
     { key: "box_slot3_image", filename: "04-box-slot3.jpg", optional: true },

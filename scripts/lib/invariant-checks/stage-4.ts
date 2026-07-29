@@ -16,9 +16,11 @@ import {
   parseEiaMirrorBlock,
   parseEIA,
   fallbackEIA,
+  extractBoxDivulgacao0,
   extractBoxDivulgacao1,
   extractBoxDivulgacao2,
   extractBoxDivulgacao3,
+  readBoxDivulgacao0Image,
   readBoxDivulgacao1Image,
   readBoxDivulgacao2Image,
   readBoxDivulgacao3Image,
@@ -1064,8 +1066,9 @@ function checkCropReviewWarnings(editionDir: string): InvariantViolation[] {
 }
 
 /**
- * #4086 item 2: warn-only guard — quando um slot de box de divulgação (1/2/3)
- * tem imagem (explícita via `box_slot{N}_image`, ou `livros_promo` quando o
+ * #4086 item 2: warn-only guard — quando um slot de box de divulgação
+ * (0/1/2/3 — slot 0 desde #4274) tem imagem (explícita via
+ * `box_slot{N}_image`, ou `livros_promo` quando o
  * box é de livros — mesmo contrato de `readBoxDivulgacao{N}Image`), mas o
  * snippet atualmente atribuído àquele slot (`boxes_divulgacao.slot{N}` em
  * `platform.config.json`) não declara `alt:` no header, o alt renderizado cai
@@ -1092,10 +1095,11 @@ function checkBoxDivulgacaoAltMissing(
   const md = readFileSync(path, "utf8");
 
   const slots: Array<{
-    n: 1 | 2 | 3;
+    n: 0 | 1 | 2 | 3;
     extract: (text: string) => string | null;
     readImage: (editionDir: string, boxText?: string | null) => string | null;
   }> = [
+    { n: 0, extract: extractBoxDivulgacao0, readImage: readBoxDivulgacao0Image }, // #4274
     { n: 1, extract: extractBoxDivulgacao1, readImage: readBoxDivulgacao1Image },
     { n: 2, extract: extractBoxDivulgacao2, readImage: readBoxDivulgacao2Image },
     { n: 3, extract: extractBoxDivulgacao3, readImage: readBoxDivulgacao3Image },

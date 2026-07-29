@@ -43,7 +43,7 @@ import {
   ENCERRAMENTO_OPENING_DAILY,
 } from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal; split #3368 (reorder); renderEncerramentoSocialApoio #3382 fix (fallback de conteúdo real quando o split falha)
 import { readSnippetFile } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
-import { extractBoxDivulgacao1, extractBoxDivulgacao3 } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap); extractBoxDivulgacao3 #3476
+import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao3 } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap); extractBoxDivulgacao3 #3476; extractBoxDivulgacao0 #4274
 import {
   resolveUsedSnippets,
   isAgradecimentoSnippetUsed,
@@ -238,6 +238,13 @@ export interface BoxesDivulgacaoConfig {
    * escritos antes do #3476 que só passam slot1/slot2 continuam válidos —
    * ausência é tratada como `null` (sem slot3) nos call-sites. */
   slot3?: string | null;
+  /** #4274: box 0 — posicionado na região de introdução, entre a linha/bloco
+   * de cobertura e `**DESTAQUE 1`. Opcional por back-compat (mesma razão do
+   * slot3); ausência tratada como `null` (sem slot0) nos call-sites. Default
+   * editorial é `null` (5 slots preenchidos seria demais numa edição de
+   * leitura de 5 minutos, #4274) — diferente do slot1, que tem fallback
+   * legado não-null. */
+  slot0?: string | null;
 }
 
 /**
@@ -260,12 +267,13 @@ export function loadBoxesDivulgacaoConfig(): BoxesDivulgacaoConfig {
         slot1: raw.boxes_divulgacao.slot1 ?? null,
         slot2: raw.boxes_divulgacao.slot2 ?? null,
         slot3: raw.boxes_divulgacao.slot3 ?? null,
+        slot0: raw.boxes_divulgacao.slot0 ?? null,
       };
     }
   } catch {
     // graceful — config ausente/corrompido cai no default legado abaixo
   }
-  return { slot1: "livros-divulgacao.md", slot2: null, slot3: null };
+  return { slot1: "livros-divulgacao.md", slot2: null, slot3: null, slot0: null };
 }
 
 /**
@@ -532,6 +540,28 @@ export function stitchNewsletter(input: StitchInput): string {
   // (que termina na frase-CTA de apoio), ainda dentro da região de intro.
   const agradecimentoBox = loadAgradecimentoSnippet();
 
+  // #4274: box de divulgação slot 0 (introdução) — SEMPRE o ÚLTIMO bloco
+  // `---`-isolado antes de `**DESTAQUE 1` (depois de qualquer agradecimento
+  // a apoiadores já presente) — mesma posição que `locateBoxAtIntro`
+  // (newsletter-parse.ts) varre de trás pra frente. Idempotência: sonda a
+  // MESMA forma final (coverage line + agradecimento, se houver, + D1) via
+  // `extractBoxDivulgacao0` — mesma técnica de `boxAlreadyPresentInGap`/
+  // `boxAlreadyPresentAfterLastDestaque` acima.
+  function boxAlreadyPresentAtIntro(
+    cov: string,
+    agr: string | null,
+    firstDestaqueText: string,
+  ): boolean {
+    const probeParts = [cov, "", "---", ""];
+    if (agr) probeParts.push(agr, "", "---", "");
+    probeParts.push(firstDestaqueText);
+    return extractBoxDivulgacao0(probeParts.join("\n")) !== null;
+  }
+  const slot0AlreadyPresent = boxAlreadyPresentAtIntro(coverageLine, agradecimentoBox, d1);
+  const slot0Box = wantSponsor && !slot0AlreadyPresent
+    ? loadDivulgacaoSnippet(boxesCfg.slot0)
+    : null;
+
   const parts: string[] = [
     coverageLine,
     "",
@@ -541,6 +571,11 @@ export function stitchNewsletter(input: StitchInput): string {
   // absorvida pela captura da coverage (#3477) e sai como parágrafo plano.
   if (agradecimentoBox) {
     parts.push("---", "", agradecimentoBox, "");
+  }
+  // #4274: slot0 vai por ÚLTIMO na região de intro — logo antes do `---` que
+  // abre D1 (mesma posição que `locateBoxAtIntro` espera).
+  if (slot0Box) {
+    parts.push("---", "", slot0Box, "");
   }
   parts.push(
     "---",
@@ -703,6 +738,7 @@ function main(): void {
         slot1: boxesCfgLoaded.slot1,
         slot2: boxesCfgLoaded.slot2,
         slot3: boxesCfgLoaded.slot3 ?? null,
+        slot0: boxesCfgLoaded.slot0 ?? null,
       };
       const used = resolveUsedSnippets(
         out,

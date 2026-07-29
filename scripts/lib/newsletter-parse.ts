@@ -141,6 +141,21 @@ export interface NewsletterContent {
    * momento do render (não via `02-reviewed.md`) — ver docstring de
    * `readBoxDivulgacaoCategoriaForSlot`. */
   boxDivulgacao1Categoria?: string | null;
+  /** #4274: box de divulgação posicionado ENTRE a linha/bloco de cobertura e
+   * o marcador `**DESTAQUE 1** — SLOT 0 (introdução), o mais alto valor de
+   * atenção da edição. Diferente dos slots 1/2/3 (todos ANCORADOS em
+   * marcadores `**DESTAQUE`), este vive na região de intro — mesma região
+   * onde já moram `introCallout`/o box de agradecimento a apoiadores; ver
+   * `locateBoxAtIntro` pela lógica de desambiguação. Default `null`
+   * (opcional, decisão editorial #4274 — 5 slots preenchidos seria demais
+   * pra uma edição). */
+  boxDivulgacao0?: string | null;
+  /** Mesmo contrato de `boxDivulgacao1Image`, pro slot 0. */
+  boxDivulgacao0Image?: string | null;
+  /** Mesmo contrato de `boxDivulgacao1Bold`, pro slot 0. */
+  boxDivulgacao0Bold?: boolean;
+  /** #3981: mesmo contrato de `boxDivulgacao1Categoria`, pro slot 0. */
+  boxDivulgacao0Categoria?: string | null;
   /** Box de divulgação (#2978) posicionado ENTRE o 2º e o 3º destaque — SLOT
    * fixo por posição (gap D2/D3), mesmo contrato de formato do slot 1. Em
    * edições de 2 destaques (sem gap D2/D3) fica sempre `null`. */
@@ -170,12 +185,12 @@ export interface NewsletterContent {
   /** Slots cuja imagem veio de `box_slot{N}_image` (atribuição EXPLÍCITA do
    * editor), não de `livros_promo`. O renderer usa isso pra forçar o layout com
    * imagem mesmo em box que normalmente cairia no caminho pill-only. */
-  boxDivulgacaoImageExplicit?: { 1?: boolean; 2?: boolean; 3?: boolean };
+  boxDivulgacaoImageExplicit?: { 0?: boolean; 1?: boolean; 2?: boolean; 3?: boolean };
   /** Slots cuja imagem é RETRATO (capa de livro etc): renderizada reduzida e
    * centralizada em vez de ocupar a largura toda do box. */
-  boxDivulgacaoImagePortrait?: { 1?: boolean; 2?: boolean; 3?: boolean };
+  boxDivulgacaoImagePortrait?: { 0?: boolean; 1?: boolean; 2?: boolean; 3?: boolean };
   /** `alt:` do snippet de cada slot — texto alternativo da imagem do box. */
-  boxDivulgacaoImageAlt?: { 1?: string | null; 2?: string | null; 3?: string | null };
+  boxDivulgacaoImageAlt?: { 0?: string | null; 1?: string | null; 2?: string | null; 3?: string | null };
   /** Mesmo contrato de `boxDivulgacao1Bold`, pro slot 3. */
   boxDivulgacao3Bold?: boolean;
   /** #3981: mesmo contrato de `boxDivulgacao1Categoria`, pro slot 3. */
@@ -745,16 +760,20 @@ const BOLD_WRAP_RE = /^\*\*\s*([\s\S]+)\*\*\s*$/m;
  */
 function findIntroCalloutMatch(
   introRegion: string,
-): { groupText: string; matchEnd: number } | null {
+): { groupText: string; matchStart: number; matchEnd: number } | null {
   for (const seg of boldWrapSegments(introRegion)) {
     const m = seg.text.match(BOLD_WRAP_RE);
     if (m && m.index !== undefined) {
-      return { groupText: m[1].trim(), matchEnd: seg.offset + m.index + m[0].length };
+      return {
+        groupText: m[1].trim(),
+        matchStart: seg.offset + m.index,
+        matchEnd: seg.offset + m.index + m[0].length,
+      };
     }
   }
   const whole = introRegion.match(BOLD_WRAP_RE);
   if (whole && whole.index !== undefined) {
-    return { groupText: whole[1].trim(), matchEnd: whole.index + whole[0].length };
+    return { groupText: whole[1].trim(), matchStart: whole.index, matchEnd: whole.index + whole[0].length };
   }
   return null;
 }
@@ -1248,6 +1267,84 @@ export function isBoxDivulgacao2Bold(text: string): boolean {
 }
 
 /**
+ * #4274: localiza o box de divulgação do slot 0 (introdução) — região
+ * bounded entre a linha/bloco de cobertura (SEMPRE `blocks[0]`, nunca
+ * candidato) e o marcador `**DESTAQUE 1`. Diferente de `locateBoxInGap`
+ * (candidato = 1º bloco extra) e de `locateBoxAfterLastDestaque` (mesma
+ * regra, região sem limite fixo à frente), aqui o candidato é o ÚLTIMO bloco
+ * `---`-isolado antes de `**DESTAQUE 1` — a mesma posição em que
+ * `stitchNewsletter` injeta o slot0 (depois de qualquer agradecimento a
+ * apoiadores/callout editorial já presente, logo antes do separador que abre
+ * D1).
+ *
+ * Não precisa de "strip" antes do parse de destaques (diferente dos slots
+ * 1/2/3): `parseDestaques`/`parseSections` já ignoram qualquer bloco
+ * `---`-isolado que não bata no header de destaque/seção — o bloco do slot 0
+ * nunca é absorvido por engano.
+ *
+ * Desambiguação vs. `introCallout`/agradecimento (#3477/#3705): ambos vivem
+ * na MESMA região e podem ser estruturalmente idênticos (bloco inteiro
+ * embrulhado em `**...**`, ver `agradecimento-apoiadores.md`). O bloco
+ * reivindicado por `findIntroCalloutMatch` (SEMPRE o 1º bloco bold-wrap da
+ * região, mesma prioridade de `extractIntroCallout`) nunca vira candidato a
+ * slot0 — evita render duplicado (o mesmo texto sairia como callout E como
+ * box). Limitação conhecida e documentada (#4274): se o slot0 for a ÚNICA
+ * ocupação da região de intro E vier em formato bold-wrap (ex: o mesmo
+ * formato-padrão usado pelo slot 1, `livros-divulgacao.md`), ele é
+ * interpretado como `introCallout` — não como `boxDivulgacao0` — perdendo a
+ * paridade de imagem/categoria dos demais slots (o conteúdo ainda renderiza,
+ * só que pelo caminho do callout). Recomendação: usar snippet em formato
+ * multi-parágrafo (sem bold-wrap total) pro slot0 quando não houver nenhum
+ * outro conteúdo de intro na edição.
+ */
+function locateBoxAtIntro(
+  text: string,
+): { inner: string; bold: boolean; matchStart: number; matchEnd: number } | null {
+  const firstMarkerMatch = /^\*\*DESTAQUE/m.exec(text);
+  if (!firstMarkerMatch) return null;
+  const region = text.slice(0, firstMarkerMatch.index);
+  const blocks = splitByGapSeparator(region);
+  if (blocks.length < 2) return null; // só o bloco de cobertura, sem `---` — nada a achar
+  const introMatch = findIntroCalloutMatch(region);
+  for (let i = blocks.length - 1; i >= 1; i--) {
+    const block = blocks[i];
+    if (
+      introMatch &&
+      introMatch.matchStart >= block.rawStart &&
+      introMatch.matchStart < block.rawEnd
+    ) {
+      continue; // bloco já reivindicado pelo introCallout/agradecimento
+    }
+    const trimmed = block.text.trim();
+    if (!trimmed) continue;
+    const firstLine = trimmed.split(/\r?\n/, 1)[0];
+    if (DESTAQUE_HEADER_IN_BLOCK_RE.test(firstLine)) continue; // defensivo
+    if (SECTION_HEADER_RE.test(firstLine)) continue; // defensivo
+    const leadingWs = block.text.length - block.text.trimStart().length;
+    const trailingWs = block.text.length - block.text.trimEnd().length;
+    const matchStart = block.rawStart + leadingWs;
+    const matchEnd = block.rawEnd - trailingWs;
+    const formatted = formatBoxInner(trimmed);
+    return { inner: formatted.inner, bold: formatted.bold, matchStart, matchEnd };
+  }
+  return null;
+}
+
+/**
+ * Box de divulgação posicionado ENTRE a linha/bloco de cobertura e
+ * `**DESTAQUE 1** (slot 0, introdução, #4274). Ver `locateBoxAtIntro` pela
+ * lógica de desambiguação vs. `introCallout`/agradecimento.
+ */
+export function extractBoxDivulgacao0(text: string): string | null {
+  return locateBoxAtIntro(text)?.inner ?? null;
+}
+
+/** Mesma lógica de `isBoxDivulgacao1Bold`, pro slot 0 (introdução). */
+export function isBoxDivulgacao0Bold(text: string): boolean {
+  return locateBoxAtIntro(text)?.bold ?? true;
+}
+
+/**
  * #3476: box de divulgação posicionado SEMPRE após o ÚLTIMO destaque (D3 em
  * edições de 3 destaques, D2 em edições de 2), antes de USE MELHOR/É IA?.
  * Diferente dos slots 1/2 (lacuna ENTRE 2 destaques), este é a região
@@ -1400,12 +1497,12 @@ function readJpegDimensions(path: string): { width: number; height: number } | n
  * o renderer usa este sinal pra exibi-la reduzida e centralizada. Imagem
  * horizontal (screenshot, header de artigo) mantém a largura total de sempre.
  */
-export function isBoxSlotImagePortrait(editionDir: string, slot: 1 | 2 | 3): boolean {
+export function isBoxSlotImagePortrait(editionDir: string, slot: 0 | 1 | 2 | 3): boolean {
   const dim = readJpegDimensions(resolve(editionDir, `04-box-slot${slot}.jpg`));
   return dim !== null && dim.height > dim.width;
 }
 
-function readBoxSlotImage(editionDir: string, slot: 1 | 2 | 3): string | null {
+function readBoxSlotImage(editionDir: string, slot: 0 | 1 | 2 | 3): string | null {
   const p = resolve(editionDir, "06-public-images.json");
   if (!existsSync(p)) return null;
   try {
@@ -1477,6 +1574,18 @@ export function readBoxDivulgacao3Image(
   return readBoxSlotImage(editionDir, 3) ?? readBoxDivulgacaoImage(editionDir, boxText);
 }
 
+/**
+ * Slot 0 (introdução, #4274). Mesmo contrato dos demais slots — imagem só
+ * quando o box é o de livros (`livros_promo`) OU quando o editor atribuiu
+ * explicitamente uma imagem ao slot (`box_slot0_image`).
+ */
+export function readBoxDivulgacao0Image(
+  editionDir: string,
+  boxText?: string | null,
+): string | null {
+  return readBoxSlotImage(editionDir, 0) ?? readBoxDivulgacaoImage(editionDir, boxText);
+}
+
 /** Raiz do repo, resolvida a partir do próprio módulo (`scripts/lib/` ->
  * `..` -> `scripts/` -> `..` -> raiz) — usada por
  * `readBoxDivulgacaoCategoriaForSlot` como default de `rootDir` no call site
@@ -1512,7 +1621,7 @@ const REPO_ROOT_FROM_MODULE = resolve(dirname(fileURLToPath(import.meta.url)), "
  * total, nunca lança.
  */
 export function readBoxDivulgacaoCategoriaForSlot(
-  slot: 1 | 2 | 3,
+  slot: 0 | 1 | 2 | 3,
   rootDir: string = REPO_ROOT_FROM_MODULE,
 ): string | null {
   try {
@@ -1555,7 +1664,7 @@ export function readBoxDivulgacaoCategoriaForSlot(
  * Ausente → null (renderer cai no anchor text, comportamento de sempre).
  */
 export function readBoxDivulgacaoAltForSlot(
-  slot: 1 | 2 | 3,
+  slot: 0 | 1 | 2 | 3,
   rootDir: string = REPO_ROOT_FROM_MODULE,
 ): string | null {
   try {
@@ -1674,6 +1783,12 @@ export function extractContent(editionDir: string): NewsletterContent {
   const coverageLineTrailer = rawCoverageLineTrailer
     ? reconcileCoverageCount(rawCoverageLineTrailer, renderedItemCount)
     : rawCoverageLineTrailer;
+  // #4274: box de divulgação slot 0 — região de introdução, entre a
+  // linha/bloco de cobertura e `**DESTAQUE 1`.
+  const boxDivulgacao0 = extractBoxDivulgacao0(reviewedText);
+  const boxDivulgacao0Image = readBoxDivulgacao0Image(editionDir, boxDivulgacao0);
+  const boxDivulgacao0Bold = isBoxDivulgacao0Bold(reviewedText);
+  const boxDivulgacao0Categoria = boxDivulgacao0 ? readBoxDivulgacaoCategoriaForSlot(0) : null;
   // #2978: box de divulgação slot 1 (gap D1/D2) e slot 2 (gap D2/D3) — cada
   // slot é fixo por posição, aceitando qualquer formato (bold-line 📚/📣/🎉
   // OU carrinho 🛒).
@@ -1701,16 +1816,19 @@ export function extractContent(editionDir: string): NewsletterContent {
   const boxDivulgacao3Bold = isBoxDivulgacao3Bold(reviewedText);
   const boxDivulgacao3Categoria = boxDivulgacao3 ? readBoxDivulgacaoCategoriaForSlot(3) : null;
   const boxDivulgacaoImageExplicit = {
+    0: readBoxSlotImage(editionDir, 0) !== null,
     1: readBoxSlotImage(editionDir, 1) !== null,
     2: readBoxSlotImage(editionDir, 2) !== null,
     3: readBoxSlotImage(editionDir, 3) !== null,
   };
   const boxDivulgacaoImageAlt = {
+    0: readBoxDivulgacaoAltForSlot(0),
     1: readBoxDivulgacaoAltForSlot(1),
     2: readBoxDivulgacaoAltForSlot(2),
     3: readBoxDivulgacaoAltForSlot(3),
   };
   const boxDivulgacaoImagePortrait = {
+    0: boxDivulgacaoImageExplicit[0] && isBoxSlotImagePortrait(editionDir, 0),
     1: boxDivulgacaoImageExplicit[1] && isBoxSlotImagePortrait(editionDir, 1),
     2: boxDivulgacaoImageExplicit[2] && isBoxSlotImagePortrait(editionDir, 2),
     3: boxDivulgacaoImageExplicit[3] && isBoxSlotImagePortrait(editionDir, 3),
@@ -1739,6 +1857,10 @@ export function extractContent(editionDir: string): NewsletterContent {
     coverageLine,
     introCallout,
     coverageLineTrailer,
+    boxDivulgacao0,
+    boxDivulgacao0Image,
+    boxDivulgacao0Bold,
+    boxDivulgacao0Categoria,
     boxDivulgacao1,
     boxDivulgacao1Image,
     boxDivulgacao1Bold,
