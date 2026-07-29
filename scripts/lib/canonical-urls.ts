@@ -32,7 +32,7 @@
  * `build-link-ctr.ts` e `lint-social-md.ts`.
  */
 
-import { normalizeTitle } from "../dedup.ts";
+import { normalizeTitle } from "./title-similarity.ts";
 
 /**
  * Slug canônico da página da Diar.ia no Facebook (sem `https://`, sem `www.`).
