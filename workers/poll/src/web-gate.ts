@@ -393,7 +393,10 @@ export async function handleJogarGateSubscribe(
  * `/jogar/gate/subscribe`. Mesmo DS canônico (`ds-tokens.generated.ts`) do
  * resto do worker.
  */
-export function renderJogarGatePage(identifyContextEdition: string | null): string {
+export function renderJogarGatePage(
+  identifyContextEdition: string | null,
+  navigationTargetEdition: string | null = null,
+): string {
   // #4253 item 6: repassado pro script (via JSON.stringify abaixo) como
   // `edition` do POST /jogar/identify — deriva o índice MENSAL do merge
   // (score-by-month:{slug}:{email}), que é o que o leaderboard público
@@ -427,23 +430,29 @@ export function renderJogarGatePage(identifyContextEdition: string | null): stri
   // navegação", e o único guard contra reusar o valor errado era este
   // comentário.
   //
-  // Tradeoff aceito (achado do review consolidado): quem chega no gate via
-  // um link de edição única de verdade (ponte clarice/arquivo, jogar.ts
-  // ~linha 2190, #3524/#3578) e cruza o nudge nessa mesma visita agora
-  // volta pra sequência genérica em vez de voltar pra edição específica
-  // pedida — perda de destino, não um dead end (o jogo continua jogável).
-  // Resolver isso de verdade exigiria diferenciar as duas origens de
-  // `edition=` na URL na origem (goNext()/jogar.ts passaria o contexto do
-  // identify por um query param separado, preservando `edition=` com
-  // significado único de "navegar pra esta edição") — fora do escopo deste
-  // fix. Rastreado em #4271.
+  // #4271 (fix — resolve o tradeoff aceito no #4268/#4269): quem chega no
+  // gate via um link de edição única de verdade (ponte clarice/arquivo,
+  // jogar.ts ~linha 2190, #3524/#3578) precisa voltar pra ESSA edição
+  // específica pós-skip/cadastro, não pra sequência genérica. `handleJogarPage`
+  // agora diferencia as duas origens na URL de entrada por NOME de param, não
+  // mais reusando `edition=` pros dois papéis: `seq_ctx_edition=` (setado só
+  // por goNext(), jogar.ts, quando o gate dispara NO MEIO da sequência) é
+  // SÓ contexto do identify, nunca destino de navegação — preserva o fix do
+  // #4268 (nunca reabre o dead end); `edition=` sobrevive na request de
+  // entrada SÓ quando a navegação já era, de fato, pra uma edição única (sem
+  // `seq_ctx_edition=` concorrente) — nesse caso é ao mesmo tempo o contexto
+  // do identify E o destino que `navigationTargetEdition` (parâmetro novo
+  // desta função) propaga pro skip-link e pro goToGame() abaixo.
+  // `navigationTargetEdition` nulo (default, e sempre o caso da sequência)
+  // preserva 100% o comportamento do #4268/#4269 sem mudança nenhuma.
   // #4109 (achado ao vivo 260727, editor): o gate original (#4054) bloqueava
   // sem saída — quem não queria assinar ficava travado na tela. Link de skip
   // manda `skip_gate=1`, único-uso por navegação (handleJogarPage abaixo só
   // lê esse param nesta request específica, não grava cookie/sessão nenhuma)
   // — a próxima transição de rodada volta a checar o servidor e pode gatear
   // de novo (nudge recorrente, não permanente; decisão do editor).
-  const skipHref = `/jogar?v=${Date.now()}&skip_gate=1`;
+  const navSuffix = navigationTargetEdition ? `&edition=${encodeURIComponent(navigationTargetEdition)}` : "";
+  const skipHref = `/jogar?v=${Date.now()}&skip_gate=1${navSuffix}`;
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -536,7 +545,11 @@ export function renderJogarGatePage(identifyContextEdition: string | null): stri
     }).catch(function () { return { pending: false }; });
   }
   function goToGame() {
-    window.location.href = "/jogar?v=" + Date.now();
+    // #4271: mesmo navSuffix computado server-side acima (embutido como
+    // string literal via JSON.stringify) — vazio na sequência (#4268 intocado),
+    // "&edition=X" só quando o gate foi alcançado via link de edição única
+    // de verdade.
+    window.location.href = "/jogar?v=" + Date.now() + ${JSON.stringify(navSuffix)};
   }
   // Achado do review consolidado: sem isso, um histórico órfão (#3996)
   // redirecionava em silêncio pro jogo, sem avisar que o merge ficou
