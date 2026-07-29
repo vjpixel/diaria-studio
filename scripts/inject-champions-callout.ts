@@ -121,6 +121,13 @@ function readJsonGraceful<T>(path: string): T | null {
  * como `**🎉 ...**` na região de intro de `reviewedText`, imediatamente antes
  * do separador `---` que precede o 1º `**DESTAQUE`.
  *
+ * O box fica delimitado por `---` em AMBOS os lados (#4310): um fechando a
+ * região de intro/coverage line logo antes dele, outro reabrindo antes de
+ * DESTAQUE 1. Necessário para que `captureUntilCoverageBoundary`
+ * (`newsletter-parse.ts`) não estenda a coverage line pra dentro do box —
+ * sem o `---` de abertura, o box some dentro da coverage line E
+ * `extractIntroCallout` extrai o mesmo bloco de novo, duplicando no HTML.
+ *
  * Retorna `null` se:
  *  - já existe um introCallout na região de intro (precedência — caller loga
  *    e pula, #2725);
@@ -154,7 +161,7 @@ export function insertChampionsCallout(
   // e `extractIntroCallout` extrai o MESMO bloco de novo — duplicação no
   // HTML final. Com a coverage line legada (linha única), o bug não se
   // manifestava porque o regex de coverage line dela não se estende por
-  // boundary — só a coverage line multi-parágrafo (#3456/#3691, formato
+  // boundary — só a coverage line multi-parágrafo (#3461/#3691, formato
   // padrão desde 260715) expõe o bug.
   const block = `\n\n---\n\n**${calloutInner}**\n\n---\n\n`;
   const text = reviewedText.replace(SEP_BEFORE_DESTAQUE, block);

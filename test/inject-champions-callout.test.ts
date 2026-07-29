@@ -339,7 +339,7 @@ describe("main() CLI (#2725 integração)", () => {
 /**
  * #4310: reprodução do bug real via round-trip completo (insertChampionsCallout
  * → extractContent → renderHTML) usando a coverage line MULTI-PARÁGRAFO
- * (#3456/#3691), formato padrão desde 260715 — a fixture legada de linha única
+ * (#3461/#3691), formato padrão desde 260715 — a fixture legada de linha única
  * usada acima (`REVIEWED_BASE`) não exercitava o bug porque
  * `captureUntilCoverageBoundary` só entra em jogo pro formato novo. Sem o
  * fix, o box de campeões é fundido na coverage line (`captureUntilCoverageBoundary`
