@@ -353,13 +353,20 @@ describe("apply-eia-description.ts CLI (#4258 item 3)", () => {
     }
   });
 
-  it("exit 2 (único skip benigno): 01-eia-compose-context.json ausente (edição pré-#4258)", () => {
+  it("#4281: 01-eia-compose-context.json ausente → falha LOUD (exit 3, mensagem clara), nunca skip silencioso", () => {
+    // Antes do #4281, isto era exit 2 "benigno" (premissa: só edições
+    // pré-#4258 careciam desse arquivo). A premissa se provou falsa
+    // (post-mortem 260729, edição composta pós-#4258) — agora é tratado como
+    // qualquer outro erro real: exit 3 + mensagem explicando o impacto
+    // (descrição do "É IA?" ficaria em inglês) pro orchestrator renderizar
+    // halt banner em vez de seguir silenciosamente pro passo 3b.
     const dir = makeDir();
     try {
       const { correctedPath } = seedValidEdition(dir);
       rmSync(join(dir, "_internal/01-eia-compose-context.json"));
       const r = runApplyCli(["--edition-dir", dir, "--corrected", correctedPath]);
-      assert.equal(r.status, 2, r.stderr);
+      assert.equal(r.status, 3, r.stderr);
+      assert.match(r.stderr, /não existe/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
