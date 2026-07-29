@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { extractUrlsFromMd, FOOTER_DOMAINS } from "./lib/canonical-urls.ts"; // #1456 / #2695
 import { intentionalErrorJsonPath } from "./lib/intentional-errors.ts"; // #3222
+import { isVideoUrl } from "./lib/video-youtube-resolve.ts"; // #4263
 
 interface VerifyCacheEntry {
   verdict: "accessible" | "paywall" | "blocked" | "aggregator" | "uncertain" | "anti_bot";
@@ -190,6 +191,14 @@ export function checkIntentionalErrorFrontmatter(editionDir: string): CheckResul
  * (#1456). Pelo design conservador, URLs ausentes do cache são tratadas como
  * suspeitas — caller pode re-rodar `verify-accessibility` pra popular.
  *
+ * #4263: URLs de vídeo (YouTube/Vimeo, `isVideoUrl`) são puladas também, por
+ * design — `url-verify-cache.ts` documenta explicitamente que o verdict
+ * `video` NUNCA é persistido no cache cross-edição ("barato detectar, sem
+ * fetch, sem benefício de cache"). Sem este skip, toda URL da seção VÍDEOS
+ * caía em `not_in_cache` e reprovava o check — falso-positivo estrutural
+ * (confirmado 260729: `verify-accessibility.ts` rodou explicitamente sobre a
+ * URL e persistiu 0 novos entries, por design, não por falha).
+ *
  * @param cachePath path pro link-verify-cache.json (default
  *   `data/link-verify-cache.json`). Quando ausente/inválido, skip silencioso
  *   (não bloqueia stage 2 mas perde a defesa).
@@ -254,6 +263,7 @@ export function checkUrlsAccessible(
   const suspicious: { url: string; reason: string }[] = [];
   for (const url of urls) {
     if (FOOTER_DOMAINS.some((d) => url.includes(d))) continue;
+    if (isVideoUrl(url)) continue; // #4263: video verdict nunca é cacheado, por design — não é not_in_cache
     const entry = lookupCacheEntry(url);
     if (!entry) {
       suspicious.push({ url, reason: "not_in_cache (URL nova pós-edit manual)" });
@@ -275,9 +285,19 @@ export function checkUrlsAccessible(
     } catch {
       // Best-effort — não bloqueia o check se write falhar.
     }
+    // #4263: URL completa (não truncada) sempre vai pro JSON persistido acima.
+    // Aqui, na mensagem de console, `.slice(0, 80)` é só pra caber na linha —
+    // mas sem indicador, um corte no meio do slug parece URL corrompida (foi
+    // lido como "extração truncou a URL" no caso real 260729, quando na
+    // verdade a extração sempre retornou a URL completa e correta — só o
+    // display cortava). Reticências deixam explícito que é truncamento de
+    // exibição, não o valor usado na checagem.
     const list = suspicious
       .slice(0, 5)
-      .map((s) => `${s.url.slice(0, 80)} (${s.reason})`)
+      .map((s) => {
+        const shown = s.url.length > 80 ? `${s.url.slice(0, 80)}…` : s.url;
+        return `${shown} (${s.reason})`;
+      })
       .join("; ");
     const more = suspicious.length > 5 ? ` +${suspicious.length - 5} mais em _internal/02-urls-suspicious.json` : "";
     return {

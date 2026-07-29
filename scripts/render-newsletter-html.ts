@@ -120,18 +120,17 @@ function main(): void {
     process.exit(1);
   }
 
-  // #4266 — `--esp=valor` (sintaxe com igual) NÃO é suportada por
-  // `parseCliArgs` em lugar nenhum do repo (parser só reconhece "--chave
-  // valor" com espaço) — sem este guard, `arg.slice(2)` produz a chave
-  // literal "esp=brevo" (nunca reconhecida como "esp"), então `flags.has`/
-  // `values["esp"]` abaixo NUNCA veem esse token e o `?? "beehiiv"` aceita o
-  // default errado silenciosamente. 2º achado do review automatizado do PR
-  // #4267 (silent-failure-hunter + pr-test-analyzer, confirmado por repro em
-  // ambos): limitação pré-existente de `cli-args.ts` (compartilhado por
-  // dezenas de scripts, não é esta issue que deve corrigir o parser em si —
-  // ver issue de follow-up), mas esta flag específica merece o guard local
-  // porque um `--esp` mal-configurado tem consequência de produção (voto
-  // perdido sem aviso).
+  // #4266 — guard local que REJEITA explicitamente `--esp=valor` (sintaxe
+  // com igual), em vez de aceitá-la. Nota #4272: `parseCliArgs`
+  // (`scripts/lib/cli-args.ts`) passou a suportar `--key=valor` de modo
+  // geral — sem este guard, `--esp=brevo` seria parseado normalmente e
+  // aceito. Mas esta flag específica mantém a rejeição por decisão
+  // deliberada (preservada do commit 7f899655): um `--esp` mal-configurado
+  // tem consequência de produção (voto perdido sem aviso), então prefere-se
+  // forçar a forma canônica única (`--esp valor`, com espaço) e falhar alto
+  // em qualquer variação, a aceitar silenciosamente uma segunda sintaxe.
+  // Guard não é redundante pós-#4272 — é uma restrição intencional mais
+  // estrita que o parser genérico permite.
   const espEquals = args.find((a) => a.startsWith("--esp="));
   if (espEquals) {
     console.error(
