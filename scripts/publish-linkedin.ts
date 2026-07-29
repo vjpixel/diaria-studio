@@ -276,14 +276,6 @@ export interface ImageCacheState {
 }
 
 /**
- * #3385: classifica cada destaque em 3 buckets a partir de 06-public-images.json,
- * distinguindo "genuinamente sem imagem" (no_image: true, dispatch OK) de
- * "falha real" (nem URL nem marcador, dispara fail-fast #999/#1275).
- *
- * Exported pra teste direto (evita precisar spawnar o CLI só pra cobrir a
- * classificação — #633 regression coverage do bug original + do novo caso).
- */
-/**
  * #4293: resolve a URL de imagem pública pra um destaque, aplicando a mesma
  * precedência já usada por publish-instagram.ts (~L488) e prep-twitter-posts.ts
  * (resolveTwitterImage, #4264): card 4:5 (`{destaque}_4x5`, com título
@@ -307,6 +299,14 @@ export function resolvePublicCardImageUrl(
   return cardUrl ?? baseUrl ?? null;
 }
 
+/**
+ * #3385: classifica cada destaque em 3 buckets a partir de 06-public-images.json,
+ * distinguindo "genuinamente sem imagem" (no_image: true, dispatch OK) de
+ * "falha real" (nem URL nem marcador, dispara fail-fast #999/#1275).
+ *
+ * Exported pra teste direto (evita precisar spawnar o CLI só pra cobrir a
+ * classificação — #633 regression coverage do bug original + do novo caso).
+ */
 export function classifyImageCache(
   destaques: string[],
   imgCache: ImageCacheFile | null,
