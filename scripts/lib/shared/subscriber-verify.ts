@@ -46,7 +46,18 @@ export async function subscriberKvKey(email: string): Promise<string> {
   return `subscriber:${await sha256Hex(email)}`;
 }
 
-export type SubscriberVerifyState = "active" | "inactive" | "unknown";
+/**
+ * `"verification_failed"` (#4321): distinto de `"unknown"` — 404 é resposta
+ * LEGÍTIMA da Beehiiv ("este e-mail não existe", `"unknown"`); 401/403/429/5xx
+ * e exceção de rede/parse são "NÃO CONSEGUIMOS verificar" (key rotacionada,
+ * API fora do ar, rate-limit) — o e-mail PODE ser assinante ativo, só não dá
+ * pra confirmar agora. Colapsar os dois no mesmo valor (comportamento
+ * pré-#4321) torna uma rotação de key não sincronizada indistinguível de
+ * "não é assinante" pra qualquer caller a jusante. Callers que só checam
+ * `=== "active"` (o único caso positivo) não precisam de nenhuma mudança —
+ * este valor é aditivo à união.
+ */
+export type SubscriberVerifyState = "active" | "inactive" | "unknown" | "verification_failed";
 
 /**
  * Verificação PRIMÁRIA (default): consulta o KV populado pelo sync agendado.
@@ -82,8 +93,12 @@ export interface BeehiivByEmailDeps {
  * https://api.beehiiv.com/v2/publications/$PUB_ID/subscriptions/by_email/EMAIL`)
  * e reportar aqui/na issue se o shape de resposta bate com o parse abaixo.
  *
- * Trata qualquer erro de rede/parse como `"unknown"` (fail-soft — nunca
- * lança, nunca derruba o request do caller).
+ * Trata qualquer erro de rede/parse como `"verification_failed"` (fail-soft —
+ * nunca lança, nunca derruba o request do caller). #4321: 404 continua
+ * `"unknown"` (resposta legítima — o e-mail não existe na Beehiiv); qualquer
+ * outro `!res.ok` (401/403 key rotacionada, 429 rate-limit, 5xx API fora do
+ * ar) E exceção de rede/parse viram `"verification_failed"` — distinto de
+ * "verificamos e a pessoa não é assinante".
  */
 export async function verifySubscriberViaBeehiivByEmail(
   apiKey: string,
@@ -99,13 +114,13 @@ export async function verifySubscriberViaBeehiivByEmail(
       { headers: { Authorization: `Bearer ${apiKey}` } },
     );
     if (res.status === 404) return "unknown";
-    if (!res.ok) return "unknown";
+    if (!res.ok) return "verification_failed";
     const body = (await res.json()) as { data?: { status?: string } };
     const status = body?.data?.status;
     if (status === "active") return "active";
     if (status === "inactive" || status === "cancelled") return "inactive";
     return "unknown";
   } catch {
-    return "unknown";
+    return "verification_failed";
   }
 }

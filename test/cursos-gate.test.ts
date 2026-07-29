@@ -539,3 +539,113 @@ describe("workers/cursos: gate no follow-up #4305", () => {
     assert.equal(beehiivChamada, false, "não pode chamar a Beehiiv se o cadastro não vai poder entrar");
   });
 });
+
+/**
+ * #4321 — `checkGateSubscriber` deixa de colapsar "verificado negativo" e
+ * "não conseguimos verificar" no mesmo `not_active`. Critério de aceite
+ * central: a resposta HTTP ao visitante É IDÊNTICA nos dois casos (anti-
+ * probing do #4052 intacto) — só o log distingue. Os 2 call sites afetados:
+ * `handleIndex` (caminho `?email=` da newsletter) e `/gate/verify`.
+ */
+describe("workers/cursos: checkGateSubscriber distingue verification_failed (#4321)", () => {
+  /** KV sempre vazio (chave ausente) — força `checkGateSubscriber` a cair no
+   * caminho secundário (Beehiiv `by_email`), que é o único que produz
+   * `verification_failed`. */
+  function beehiivEnv(): Env {
+    return baseEnv({ BEEHIIV_API_KEY: "test-key", BEEHIIV_PUBLICATION_ID: "pub_test" });
+  }
+
+  const FAILURE_STATUSES = [401, 429, 503] as const;
+
+  for (const status of FAILURE_STATUSES) {
+    it(`/gate/verify: Beehiiv responde ${status} → resposta not_active IDÊNTICA ao negativo confirmado, mas loga diferente`, async () => {
+      const env = beehiivEnv();
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async () => new Response("err", { status })) as typeof fetch;
+      const logs = captureErrorLogs();
+      let res: Response;
+      try {
+        res = await worker.fetch(
+          new Request("https://cursos.diar.ia.br/gate/verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: "talvez-assinante@example.com" }),
+          }),
+          env,
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+        logs.restore();
+      }
+      const data = (await res.json()) as { ok: boolean; error: string };
+      // Resposta ao visitante: byte-idêntica ao caso "confirmed_negative"
+      // (ver teste "não-assinante → ok:false, error not_active" acima) — o
+      // status HTTP e o corpo NÃO podem entregar que houve uma falha de
+      // verificação em vez de um negativo real.
+      assert.equal(res.status, 200);
+      assert.equal(data.ok, false);
+      assert.equal(data.error, "not_active");
+      assert.equal(getCookieHeader(res), null);
+      // Log distingue: precisa mencionar a falha de verificação, não o texto
+      // genérico de "não confirmado como assinante ativo".
+      assert.ok(
+        logs.lines.some((l) => /verificação Beehiiv falhou/.test(l)),
+        `esperava log de verification_failed pro status ${status}`,
+      );
+    });
+  }
+
+  it("/gate/verify: Beehiiv responde 404 (negativo confirmado) → não loga como verification_failed", async () => {
+    const env = beehiivEnv();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("{}", { status: 404 })) as typeof fetch;
+    const logs = captureErrorLogs();
+    let res: Response;
+    try {
+      res = await worker.fetch(
+        new Request("https://cursos.diar.ia.br/gate/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "ninguem@example.com" }),
+        }),
+        env,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      logs.restore();
+    }
+    const data = (await res.json()) as { ok: boolean; error: string };
+    assert.equal(data.ok, false);
+    assert.equal(data.error, "not_active");
+    assert.ok(
+      !logs.lines.some((l) => /verificação Beehiiv falhou/.test(l)),
+      "404 é negativo confirmado — não deve logar como falha de verificação",
+    );
+  });
+
+  it("handleIndex (?email=): Beehiiv responde 500 → cai pro teaser IDÊNTICO ao negativo confirmado, loga diferente (error, não warn)", async () => {
+    const env = beehiivEnv();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("err", { status: 500 })) as typeof fetch;
+    const logs = captureErrorLogs();
+    let res: Response;
+    try {
+      res = await worker.fetch(
+        new Request("https://cursos.diar.ia.br/?email=talvez-assinante@example.com"),
+        env,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      logs.restore();
+    }
+    // Resposta idêntica ao caso "?email= de e-mail NÃO assinante" acima —
+    // teaser, sem cookie, sem qualquer sinal do tipo de falha.
+    assert.equal(await res.text(), TEASER_HTML);
+    assert.equal(getCookieHeader(res), null);
+    assert.ok(
+      logs.lines.some((l) => /verificação Beehiiv falhou/.test(l)),
+      "esperava log error de verification_failed",
+    );
+    assert.equal(logs.warns.length, 0, "não deve emitir o warn genérico de negativo confirmado neste ramo");
+  });
+});

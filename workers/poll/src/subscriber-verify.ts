@@ -19,7 +19,10 @@ export async function subscriberKvKey(email: string): Promise<string> {
   return `subscriber:${await sha256Hex(email)}`;
 }
 
-export type SubscriberVerifyState = "active" | "inactive" | "unknown";
+// #4321: "verification_failed" — ver docstring do original em
+// `scripts/lib/shared/subscriber-verify.ts` pro rationale completo. Espelho
+// mantido em sincronia comportamental por `test/poll-shared-mirror-4054.test.ts`.
+export type SubscriberVerifyState = "active" | "inactive" | "unknown" | "verification_failed";
 
 export async function verifySubscriberViaKv(
   kv: KVNamespace,
@@ -49,13 +52,13 @@ export async function verifySubscriberViaBeehiivByEmail(
       { headers: { Authorization: `Bearer ${apiKey}` } },
     );
     if (res.status === 404) return "unknown";
-    if (!res.ok) return "unknown";
+    if (!res.ok) return "verification_failed";
     const body = (await res.json()) as { data?: { status?: string } };
     const status = body?.data?.status;
     if (status === "active") return "active";
     if (status === "inactive" || status === "cancelled") return "inactive";
     return "unknown";
   } catch {
-    return "unknown";
+    return "verification_failed";
   }
 }

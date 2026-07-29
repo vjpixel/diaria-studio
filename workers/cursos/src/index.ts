@@ -153,8 +153,8 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
     }
 
     if (canIssueSession && emailParam && isValidEmailFormat(emailParam)) {
-      const result = await checkGateSubscriber(env, emailParam);
-      if (result === "active") {
+      const outcome = await checkGateSubscriber(env, emailParam);
+      if (outcome.status === "active") {
         const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, emailParam);
         return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
       }
@@ -163,7 +163,19 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
       // normal, igual a não ter mandado `?email=` nenhum. Do lado do servidor,
       // porém, isto é o sinal de saúde do caminho A: taxa baixa é normal, taxa
       // de 100% é o gate quebrado de novo.
-      console.warn("[cursos] ?email= não confirmado como assinante ativo — servindo teaser");
+      //
+      // #4321: `reason` distingue "verificamos e não é assinante" (warn, taxa
+      // é o sinal) de "não conseguimos verificar" (error — Beehiiv fora do
+      // ar/key rotacionada/rate-limit; sinal distinto, não deve se misturar
+      // com a taxa de negativo confirmado nem no alarme nem no dashboard de
+      // logs). A resposta ao visitante não muda em nenhum dos dois ramos.
+      if (outcome.reason === "verification_failed") {
+        console.error(
+          "[cursos] ?email= — verificação Beehiiv falhou (rede/401/403/429/5xx) — servindo teaser mesmo assim",
+        );
+      } else {
+        console.warn("[cursos] ?email= não confirmado como assinante ativo — servindo teaser");
+      }
     }
 
     if (canIssueSession) {
@@ -226,8 +238,18 @@ async function handleGateVerify(request: Request, env: Env): Promise<Response> {
   const email = typeof body.email === "string" ? body.email.trim() : "";
   if (!email || !isValidEmailFormat(email)) return json({ ok: false, error: "invalid_email" }, 400, env);
 
-  const result = await checkGateSubscriber(env, email);
-  if (result !== "active") return json({ ok: false, error: "not_active" }, 200, env);
+  const outcome = await checkGateSubscriber(env, email);
+  if (outcome.status !== "active") {
+    // #4321: mesma distinção de `handleIndex` — resposta ao visitante
+    // inalterada (anti-probing #4052), só o log distingue "confirmado
+    // negativo" de "não conseguimos verificar".
+    if (outcome.reason === "verification_failed") {
+      console.error(
+        "[cursos] /gate/verify — verificação Beehiiv falhou (rede/401/403/429/5xx) — respondendo not_active mesmo assim",
+      );
+    }
+    return json({ ok: false, error: "not_active" }, 200, env);
+  }
 
   const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, email);
   return json({ ok: true }, 200, env, { "Set-Cookie": setCookie });
