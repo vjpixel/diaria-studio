@@ -192,6 +192,16 @@ export const DS_STYLE_BLOCK = buildDiariaStyleBlock(PAGE_BG, TEAL);
 // uma vez — mesmo padrão de DS_STYLE_BLOCK acima, não recalculado por render.
 const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
 
+/**
+ * #4266 — provedor de destino do envio. Usado só pela merge tag de voto do
+ * É IA? (`renderEIA`): Beehiiv usa `{{email}}` cru; Brevo usa
+ * `{{ contact.EMAIL }}` com `&` escapado como `&amp;` (mesma sintaxe já usada
+ * pelo mensal, `lib/mensal/monthly-render.ts`). Exportado — `render-newsletter-html.ts`
+ * importa este tipo em vez de repetir o union literal na validação do CLI,
+ * então um 3º ESP futuro só precisa mudar aqui.
+ */
+export type Esp = "beehiiv" | "brevo";
+
 export interface RenderOpts {
   /** #1046 — quando `true`, omite a seção É IA? do body. Usado pelo paste
    * híbrido (Stage 4 publish-newsletter): body via ClipboardEvent + È IA?
@@ -203,12 +213,9 @@ export interface RenderOpts {
    * pro preview/email Worker-hosted. Default `false`: emite só o container 600px
    * (fragmento pro paste no Beehiiv, que provê o shell). */
   fullDocument?: boolean;
-  /** #4266 — provedor de destino do envio, usado só pela merge tag de voto do
-   * É IA? (`renderEIA`): Beehiiv usa `{{email}}` cru; Brevo usa
-   * `{{ contact.EMAIL }}` com `&` escapado como `&amp;` (mesma sintaxe já usada
-   * pelo mensal, `lib/mensal/monthly-render.ts`). Default `"beehiiv"` —
-   * comportamento inalterado pra todo caller existente. */
-  esp?: "beehiiv" | "brevo";
+  /** #4266 — ver `Esp`. Default `"beehiiv"` — comportamento inalterado pra
+   * todo caller existente. */
+  esp?: Esp;
 }
 
 /** Remove emoji/símbolo + espaço do início do label (DS usa ponto ●, não emoji). */
@@ -975,7 +982,7 @@ export function renderDestaque(d: RenderDestaque): string {
 </td></tr>`;
 }
 
-export function renderEIA(eia: EIA, esp: "beehiiv" | "brevo" = "beehiiv"): string {
+export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   const creditHtml = processInlineLinks(eia.credit);
   // Leaderboard (#1160): linha "🏆 Vencedores…" sans ink dentro do painel.
   // #3103: 12px → 16px (não 14px — o type-scale do e-mail só permite
@@ -1009,9 +1016,7 @@ export function renderEIA(eia: EIA, esp: "beehiiv" | "brevo" = "beehiiv"): strin
     ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
     : "";
 
-  // #4266: Brevo usa merge tag `{{ contact.EMAIL }}` (não `{{email}}` do
-  // Beehiiv) e precisa do `&` escapado como `&amp;` por estar embutido em HTML
-  // cru — mesma sintaxe comprovada em `lib/mensal/monthly-render.ts` (renderEia).
+  // #4266 — ver rationale completo no doc comment de `Esp`, acima.
   const buildVoteUrl = (choice: "A" | "B") =>
     esp === "brevo"
       ? `${PUBLIC_GAME_BASE_URL}/vote?email={{ contact.EMAIL }}&amp;edition=${eia.edition}&amp;choice=${choice}`

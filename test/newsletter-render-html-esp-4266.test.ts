@@ -91,7 +91,7 @@ describe("renderHTML(content, { esp }) — threading pelos 3 call sites internos
     assert.match(html, /Modelos se replicam/);
   });
 
-  it('opts.esp: "brevo" + fullDocument: true — combinação usada pelo publisher diário Brevo', () => {
+  it('opts.esp: "brevo" + fullDocument: true — combinação que o futuro publisher diário Brevo (#4266 item 2, ainda não implementado) vai consumir', () => {
     const html = renderHTML(fixtureComEia, { esp: "brevo", fullDocument: true });
     assert.match(html, /<!doctype html>/i);
     assert.match(html, /\{\{ contact\.EMAIL \}\}/);
