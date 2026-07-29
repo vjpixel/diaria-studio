@@ -1,10 +1,11 @@
 /**
- * publish-threads.test.ts (#2479)
+ * publish-threads.test.ts (#2479; contrato sem fallback #4294)
  *
  * Testa o fluxo de 2 passos da Threads API (container → threads_publish)
  * com mock da API (sem chamadas reais), incluindo:
- *   - extractDestaquesFromSocialMd (Threads / fallback Facebook)
- *   - extractPostText (Threads / fallback Facebook / CRLF)
+ *   - extractDestaquesFromSocialMd (SÓ '# Curto', sem fallback — #4294/#3994)
+ *   - extractPostText (SÓ '# Curto', sem fallback, sem throw — #4294/#3994)
+ *   - textContainsEditionUrl / warnMissingEditionUrl (guard não-fatal #4294)
  *   - splitIntoThreadChunks (limite 500 chars + encadeamento)
  *   - Verificação estática do script (creds, CLI guard, severity, etc.)
  */
@@ -19,6 +20,8 @@ import { tmpdir } from "node:os";
 import {
   extractDestaquesFromSocialMd,
   extractPostText,
+  textContainsEditionUrl,
+  warnMissingEditionUrl,
   splitIntoThreadChunks,
   THREADS_CHAR_LIMIT,
   waitForContainerReady,
@@ -33,86 +36,63 @@ const SRC = readFileSync(resolve(__ROOT, "scripts/publish-threads.ts"), "utf8");
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
 
-const MD_THREADS = `# Threads
+const MD_CURTO = `# Curto
 
 ## d1
-Post d1 no Threads. #inovacao #tecnologia
+Post curto d1 no X/Threads. #inovacao #tecnologia
 
 ## d2
-Post d2 no Threads. #ia #futuro
+Post curto d2. #ia #futuro
 
 ## d3
-Post d3 no Threads. #dados
+Post curto d3. #dados
 <!-- comentario oculto -->
 
 # Facebook
 
 ## d1
-Post d1 Facebook diferente.
+Post d1 Facebook diferente — não deveria vazar pro Threads.
 `;
 
-const MD_SEM_THREADS = `# Facebook
+/** Formato pós-#3991: LinkedIn/Facebook/Instagram colapsados em '# Social', sem '# Curto'. */
+const MD_SO_SOCIAL = `# Social
 
 ## d1
-Post d1 Facebook.
+Post d1 Social.
 
 ## d2
-Post d2 Facebook.
+Post d2 Social.
 
 ## d3
-Post d3 Facebook.
+Post d3 Social.
 `;
 
-const MD_CRLF = MD_THREADS.replace(/\n/g, "\r\n");
+const MD_CRLF = MD_CURTO.replace(/\n/g, "\r\n");
 
 // ─── extractDestaquesFromSocialMd ────────────────────────────────────────────
 
-// #3992: seção Curto (texto único Twitter/Threads) tem prioridade máxima.
-const MD_CURTO_E_FACEBOOK = `# Curto
-
-## d1
-Texto curto d1, o preferido.
-
-## d2
-Texto curto d2, o preferido.
-
-# Facebook
-
-## d1
-Post d1 Facebook, não deveria ser usado quando Curto existe.
-`;
-
-describe("extractDestaquesFromSocialMd (threads) — preferência #3992", () => {
-  it("prefere seção Curto sobre Facebook quando ambas existem", () => {
-    const destaques = extractDestaquesFromSocialMd(MD_CURTO_E_FACEBOOK);
-    assert.deepEqual(destaques, ["d1", "d2"]);
-  });
-
-  it("extractPostText usa o texto de Curto, não o de Facebook, quando Curto existe", () => {
-    const t = extractPostText(MD_CURTO_E_FACEBOOK, "d1");
-    assert.ok(t.includes("Texto curto d1, o preferido."));
-    assert.ok(!t.includes("não deveria ser usado"));
-  });
-});
-
-describe("extractDestaquesFromSocialMd (threads)", () => {
-  it("retorna d1/d2/d3 quando seção Threads existe com 3 destaques", () => {
-    const destaques = extractDestaquesFromSocialMd(MD_THREADS);
+describe("extractDestaquesFromSocialMd (threads) — SÓ '# Curto' (#4294)", () => {
+  it("retorna d1/d2/d3 quando seção Curto existe com 3 destaques", () => {
+    const destaques = extractDestaquesFromSocialMd(MD_CURTO);
     assert.deepEqual(destaques, ["d1", "d2", "d3"]);
   });
 
-  it("usa fallback Facebook quando seção Threads ausente", () => {
-    const destaques = extractDestaquesFromSocialMd(MD_SEM_THREADS);
-    assert.deepEqual(destaques, ["d1", "d2", "d3"]);
+  it("não usa '# Facebook' mesmo quando Curto tem menos destaques", () => {
+    const md = `# Curto\n\n## d1\nPost curto d1.\n\n# Facebook\n\n## d1\nFB d1.\n\n## d2\nFB d2.\n\n## d3\nFB d3.\n`;
+    const destaques = extractDestaquesFromSocialMd(md);
+    assert.deepEqual(destaques, ["d1"], "não deve pegar d2/d3 de Facebook");
   });
 
-  it("retorna fallback [d1,d2,d3] quando nenhuma seção existe", () => {
-    const destaques = extractDestaquesFromSocialMd("# Outra\n## d1\ntexto");
-    assert.deepEqual(destaques, ["d1", "d2", "d3"]);
+  it("retorna [] quando seção Curto ausente — SEM fallback pra '# Social'/'# Facebook' (#4294)", () => {
+    assert.deepEqual(extractDestaquesFromSocialMd(MD_SO_SOCIAL), []);
   });
 
-  it("retorna d1/d2 quando edição tem só 2 destaques na seção Threads", () => {
-    const md = `# Threads\n\n## d1\nPost d1.\n\n## d2\nPost d2.\n`;
+  it("retorna [] quando nenhuma seção existe", () => {
+    assert.deepEqual(extractDestaquesFromSocialMd("# Outra\n## d1\ntexto"), []);
+  });
+
+  it("retorna d1/d2 quando edição tem só 2 destaques na seção Curto", () => {
+    const md = `# Curto\n\n## d1\nPost d1.\n\n## d2\nPost d2.\n`;
     const destaques = extractDestaquesFromSocialMd(md);
     assert.deepEqual(destaques, ["d1", "d2"]);
   });
@@ -120,52 +100,68 @@ describe("extractDestaquesFromSocialMd (threads)", () => {
 
 // ─── extractPostText ─────────────────────────────────────────────────────────
 
-describe("extractPostText (threads)", () => {
-  it("extrai d1 da seção Threads", () => {
-    const t = extractPostText(MD_THREADS, "d1");
-    assert.ok(t.includes("Post d1 no Threads."));
-    assert.ok(!t.includes("Post d1 Facebook diferente."));
+describe("extractPostText (threads) — SÓ '# Curto', sem fallback, sem throw (#4294)", () => {
+  it("extrai d1 da seção Curto", () => {
+    const t = extractPostText(MD_CURTO, "d1");
+    assert.ok(t?.includes("Post curto d1 no X/Threads."));
+    assert.ok(!t?.includes("Post d1 Facebook diferente."));
   });
 
   it("extrai d2 sem vazar d1 ou d3", () => {
-    const t = extractPostText(MD_THREADS, "d2");
-    assert.ok(t.includes("Post d2 no Threads."));
-    assert.ok(!t.includes("Post d1"));
-    assert.ok(!t.includes("Post d3"));
+    const t = extractPostText(MD_CURTO, "d2");
+    assert.ok(t?.includes("Post curto d2."));
+    assert.ok(!t?.includes("Post curto d1"));
+    assert.ok(!t?.includes("Post curto d3"));
   });
 
   it("extrai d3 e remove comentários HTML", () => {
-    const t = extractPostText(MD_THREADS, "d3");
-    assert.ok(t.includes("Post d3 no Threads."));
-    assert.ok(!t.includes("comentario oculto"));
+    const t = extractPostText(MD_CURTO, "d3");
+    assert.ok(t?.includes("Post curto d3."));
+    assert.ok(!t?.includes("comentario oculto"));
   });
 
-  it("não vaza seção Facebook quando Threads presente", () => {
-    const t = extractPostText(MD_THREADS, "d1");
-    assert.ok(!t.includes("Post d1 Facebook diferente."));
-  });
-
-  it("usa fallback Facebook quando seção Threads ausente", () => {
-    const t = extractPostText(MD_SEM_THREADS, "d1");
-    assert.ok(t.includes("Post d1 Facebook."));
+  it("não vaza seção Facebook quando Curto presente", () => {
+    const t = extractPostText(MD_CURTO, "d1");
+    assert.ok(!t?.includes("Post d1 Facebook diferente."));
   });
 
   it("normaliza CRLF para LF", () => {
     const t = extractPostText(MD_CRLF, "d1");
-    assert.ok(t.includes("Post d1 no Threads."));
+    assert.ok(t?.includes("Post curto d1 no X/Threads."));
   });
 
-  it("lança quando destaque não encontrado", () => {
-    assert.throws(
-      () => extractPostText(MD_THREADS, "d9"),
-      /d9|não encontrado/i,
-    );
+  it("retorna null quando destaque não existe dentro da seção Curto — nunca lança", () => {
+    assert.equal(extractPostText(MD_CURTO, "d9"), null);
   });
 
-  it("lança quando não há seção Threads nem Facebook", () => {
-    assert.throws(
-      () => extractPostText("# LinkedIn\n## d1\ntexto", "d1"),
-      /não encontrado/i,
+  it("retorna null quando não há seção Curto — NUNCA cai pra '# Social'/'# Facebook' (regressão #4294)", () => {
+    const t = extractPostText(MD_SO_SOCIAL, "d1");
+    assert.equal(t, null, "sem '# Curto', extractPostText nunca deve extrair de '# Social'");
+  });
+
+  it("regressão #4294: 03-social.md pós-#3991 (só '# Social', sem '# Curto') não vaza texto pra nenhum destaque", () => {
+    for (const d of ["d1", "d2", "d3"]) {
+      assert.equal(extractPostText(MD_SO_SOCIAL, d), null, `${d} deveria ser null (skip), nunca texto de '# Social'`);
+    }
+  });
+
+  it("retorna null (não lança) para seção Curto ausente com input arbitrário", () => {
+    assert.equal(extractPostText("# LinkedIn\n## d1\ntexto", "d1"), null);
+  });
+});
+
+// ─── Caso feliz: texto do Threads idêntico ao do X pro mesmo destaque ───────
+
+describe("Curto compartilhado entre X e Threads (#4294 regressão)", () => {
+  it("com '# Curto' já com {edition_url} resolvido, extractPostText retorna o mesmo texto que o X consumiria", () => {
+    const editionUrl = "https://diar.ia.br/p/titulo-do-destaque-d1";
+    const md = `# Curto\n\n## d1\nTexto do destaque D1. Saiba mais: ${editionUrl}\n\n## d2\nTexto do destaque D2.\n`;
+    const t = extractPostText(md, "d1");
+    assert.ok(t?.includes(editionUrl), "texto deve conter a URL da edição já resolvida");
+    assert.equal(
+      t,
+      `Texto do destaque D1. Saiba mais: ${editionUrl}`,
+      "Threads deve extrair exatamente o mesmo texto que prep-twitter-posts.ts extrairia de '# Curto'",
     );
   });
 });
@@ -558,7 +554,7 @@ describe("--dry-run subprocess guard (#2540 P2)", () => {
   const SCRIPT = resolve(__ROOT, "scripts/publish-threads.ts");
 
   /** Minimal 03-social.md com seção Threads para que o script chegue ao loop. */
-  const SOCIAL_MD = `# Threads\n\n## d1\nPost de teste para dry-run.\n\n## d2\nPost d2 dry-run.\n\n## d3\nPost d3 dry-run.\n`;
+  const SOCIAL_MD = `# Curto\n\n## d1\nPost de teste para dry-run.\n\n## d2\nPost d2 dry-run.\n\n## d3\nPost d3 dry-run.\n`;
 
   it("--dry-run: 06-social-published.json NÃO é criado (sem side-effect)", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-dryrun-"));
@@ -700,10 +696,10 @@ describe("#3944 Parte B postToWorkerQueue (cliente compartilhado com Instagram)"
 
 describe("#3944 Parte B --schedule subprocess: fail-fast e guard de multi-chunk", () => {
   const SCRIPT = resolve(__ROOT, "scripts/publish-threads.ts");
-  const SOCIAL_MD_SHORT = `# Threads\n\n## d1\nPost curto de teste.\n`;
+  const SOCIAL_MD_SHORT = `# Curto\n\n## d1\nPost curto de teste.\n`;
   // Texto >500 chars via repetição — força multi-chunk.
   const LONG_TEXT = "Parágrafo longo de teste para forçar multi-chunk. ".repeat(15);
-  const SOCIAL_MD_LONG = `# Threads\n\n## d1\n${LONG_TEXT}\n`;
+  const SOCIAL_MD_LONG = `# Curto\n\n## d1\n${LONG_TEXT}\n`;
 
   it("--schedule sem DIARIA_LINKEDIN_CRON_URL/TOKEN → exit 2, sem publicar nada", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-schedule-nowoker-"));
@@ -866,6 +862,244 @@ describe("waitForContainerReady (#3995)", () => {
       assert.equal(call, 2, "1ª tentativa falhou de rede, 2ª teve sucesso");
     } finally {
       global.fetch = ORIGINAL_FETCH;
+    }
+  });
+});
+
+// ─── textContainsEditionUrl / warnMissingEditionUrl (guard não-fatal #4294) ──
+
+describe("textContainsEditionUrl (#4294)", () => {
+  it("true quando o texto contém a URL literal", () => {
+    assert.equal(
+      textContainsEditionUrl("Texto com https://diar.ia.br/p/slug-x aqui", "https://diar.ia.br/p/slug-x"),
+      true,
+    );
+  });
+
+  it("false quando o texto não contém a URL", () => {
+    assert.equal(textContainsEditionUrl("Texto sem link nenhum.", "https://diar.ia.br/p/slug-x"), false);
+  });
+});
+
+describe("warnMissingEditionUrl (#4294) — não-fatal, grava em data/run-log.jsonl", () => {
+  it("grava evento warn no run-log sob o rootDir injetado (isolado do log real)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-warnlog-"));
+    try {
+      warnMissingEditionUrl(
+        "d1",
+        "Texto do post sem link.",
+        "https://diar.ia.br/p/slug-teste",
+        "260999",
+        tmpDir,
+      );
+      const logPath = join(tmpDir, "data", "run-log.jsonl");
+      assert.ok(existsSync(logPath), "deve criar data/run-log.jsonl sob o rootDir injetado");
+      const lines = readFileSync(logPath, "utf8").trim().split("\n");
+      const event = JSON.parse(lines[lines.length - 1]);
+      assert.equal(event.level, "warn");
+      assert.equal(event.agent, "publish-threads");
+      assert.equal(event.edition, "260999");
+      assert.match(event.message, /#4294/);
+      assert.match(event.message, /edição resolvida/);
+      assert.equal(event.details.edition_url, "https://diar.ia.br/p/slug-teste");
+      assert.equal(event.details.destaque, "d1");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("nunca lança mesmo se logEvent falhar internamente (best-effort)", () => {
+    // rootDir inválido (caractere nulo) força falha de fs — logEvent engole o erro.
+    assert.doesNotThrow(() => {
+      warnMissingEditionUrl("d1", "texto", "https://diar.ia.br/p/x", null, "\0invalid");
+    });
+  });
+});
+
+// ─── Guard edition_url ausente end-to-end (#4294, subprocess --dry-run) ─────
+
+describe("Guard edition_url ausente end-to-end (#4294, --dry-run + --log-root-dir)", () => {
+  const SCRIPT = resolve(__ROOT, "scripts/publish-threads.ts");
+
+  it("texto sem a URL da edição: warn gravado em run-log, post NÃO é bloqueado (segue pro dry-run)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-urlguard-"));
+    try {
+      const internalDir = join(tmpDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      writeFileSync(
+        join(tmpDir, "03-social.md"),
+        `# Curto\n\n## d1\nTexto do destaque D1 sem nenhum link.\n`,
+        "utf8",
+      );
+      writeFileSync(join(internalDir, "05-edition-url.txt"), "https://diar.ia.br/p/slug-guard-teste", "utf8");
+
+      const r = spawnSync(
+        process.execPath,
+        [
+          "--import", "tsx", SCRIPT,
+          "--edition-dir", tmpDir,
+          "--dry-run",
+          "--log-root-dir", tmpDir,
+        ],
+        {
+          encoding: "utf8",
+          cwd: __ROOT,
+          env: {
+            ...process.env,
+            THREADS_USER_ID: "fake_user_id_urlguard",
+            THREADS_ACCESS_TOKEN: "fake_access_token_urlguard",
+          },
+        },
+      );
+
+      assert.equal(r.status, 0, `deve sair 0 mesmo com o guard disparando; stderr: ${r.stderr}`);
+      // Guard não bloqueia — o dry-run segue normalmente pro destaque.
+      assert.match(r.stdout, /DRY-RUN threads\/d1/, "post não deve ser bloqueado pelo guard");
+      // Aviso visível (stderr, via console.warn) mencionando o guard #4294.
+      assert.match(r.stderr, /#4294/, "deve avisar sobre o guard de edition_url no stderr");
+
+      const logPath = join(tmpDir, "data", "run-log.jsonl");
+      assert.ok(existsSync(logPath), "deve gravar warn em data/run-log.jsonl sob --log-root-dir");
+      const event = JSON.parse(readFileSync(logPath, "utf8").trim().split("\n").pop()!);
+      assert.equal(event.level, "warn");
+      assert.equal(event.agent, "publish-threads");
+      assert.equal(event.details.edition_url, "https://diar.ia.br/p/slug-guard-teste");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("texto COM a URL da edição: nenhum warn é gravado", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-urlguard-ok-"));
+    try {
+      const internalDir = join(tmpDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      const editionUrl = "https://diar.ia.br/p/slug-guard-ok";
+      writeFileSync(
+        join(tmpDir, "03-social.md"),
+        `# Curto\n\n## d1\nTexto do destaque D1. Leia mais: ${editionUrl}\n`,
+        "utf8",
+      );
+      writeFileSync(join(internalDir, "05-edition-url.txt"), editionUrl, "utf8");
+
+      const r = spawnSync(
+        process.execPath,
+        [
+          "--import", "tsx", SCRIPT,
+          "--edition-dir", tmpDir,
+          "--dry-run",
+          "--log-root-dir", tmpDir,
+        ],
+        {
+          encoding: "utf8",
+          cwd: __ROOT,
+          env: {
+            ...process.env,
+            THREADS_USER_ID: "fake_user_id_urlguard_ok",
+            THREADS_ACCESS_TOKEN: "fake_access_token_urlguard_ok",
+          },
+        },
+      );
+
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.doesNotMatch(r.stderr, /#4294/, "não deve avisar quando o texto já contém a URL da edição");
+      const logPath = join(tmpDir, "data", "run-log.jsonl");
+      assert.ok(!existsSync(logPath), "não deve criar run-log.jsonl quando não há nada a avisar");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── Regressão #4294: sem '# Curto' end-to-end (nunca cai pra outra seção) ──
+
+describe("Regressão #4294: 03-social.md pós-#3991 (só '# Social', sem '# Curto') end-to-end", () => {
+  const SCRIPT = resolve(__ROOT, "scripts/publish-threads.ts");
+
+  it("nenhum destaque é publicado a partir de '# Social' — sem side-effect, exit 0", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-sosocial-"));
+    try {
+      mkdirSync(join(tmpDir, "_internal"), { recursive: true });
+      writeFileSync(join(tmpDir, "03-social.md"), MD_SO_SOCIAL, "utf8");
+
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", SCRIPT, "--edition-dir", tmpDir, "--dry-run", "--log-root-dir", tmpDir],
+        {
+          encoding: "utf8",
+          cwd: __ROOT,
+          env: {
+            ...process.env,
+            THREADS_USER_ID: "fake_user_id_sosocial",
+            THREADS_ACCESS_TOKEN: "fake_access_token_sosocial",
+          },
+        },
+      );
+
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      // Nenhum texto de '# Social' deve ter sido usado como post.
+      assert.doesNotMatch(r.stdout, /Post d1 Social\.|Post d2 Social\.|Post d3 Social\./);
+      assert.doesNotMatch(r.stdout, /DRY-RUN threads\//, "nenhum destaque deve chegar ao dry-run sem '# Curto'");
+      assert.ok(
+        !existsSync(join(tmpDir, "_internal", "06-social-published.json")),
+        "não deve criar 06-social-published.json — nada foi tentado",
+      );
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── skipped_no_curto: destaque com header mas conteúdo vazio (#4294) ───────
+
+describe("skipped_no_curto: destaque incompleto (header presente, conteúdo vazio) vira skip (#4294)", () => {
+  const SCRIPT = resolve(__ROOT, "scripts/publish-threads.ts");
+
+  it("destaque com só comentário HTML em '# Curto' vira skip, nunca post em branco", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-incompleto-"));
+    try {
+      mkdirSync(join(tmpDir, "_internal"), { recursive: true });
+      // d1 tem texto real; d3 só tem um comentário HTML (esvazia após strip) — d2 nem aparece.
+      writeFileSync(
+        join(tmpDir, "03-social.md"),
+        `# Curto\n\n## d1\nTexto real do destaque D1.\n\n## d3\n<!-- comentario oculto, sem texto -->\n`,
+        "utf8",
+      );
+
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", SCRIPT, "--edition-dir", tmpDir, "--dry-run", "--log-root-dir", tmpDir],
+        {
+          encoding: "utf8",
+          cwd: __ROOT,
+          env: {
+            ...process.env,
+            THREADS_USER_ID: "fake_user_id_incompleto",
+            THREADS_ACCESS_TOKEN: "fake_access_token_incompleto",
+          },
+        },
+      );
+
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.match(r.stdout, /DRY-RUN threads\/d1/, "d1 (com texto) deve seguir pro dry-run normalmente");
+      assert.doesNotMatch(r.stdout, /DRY-RUN threads\/d3/, "d3 (vazio) nunca deve chegar ao dry-run");
+      assert.match(r.stderr, /SKIP threads\/d3/, "d3 deve ser explicitamente sinalizado como skip");
+
+      // O último console.log é o JSON pretty-printed (indent 2) do resumo —
+      // localizamos seu início pela chave "out_path" (não `lastIndexOf("{\n")`
+      // isolado: o array "posts" também tem objetos aninhados que começam
+      // com "{\n" indentado, e esses vêm DEPOIS textualmente).
+      const jsonStart = r.stdout.indexOf('{\n  "out_path"');
+      assert.ok(jsonStart >= 0, `stdout deve conter o bloco JSON final; stdout: ${r.stdout}`);
+      const output = JSON.parse(r.stdout.slice(jsonStart));
+      assert.deepEqual(
+        output.skipped_no_curto.map((s: any) => s.destaque),
+        ["d3"],
+        "skipped_no_curto deve listar d3",
+      );
+      assert.match(output.skipped_no_curto[0].reason, /#4294/);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 });

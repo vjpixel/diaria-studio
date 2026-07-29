@@ -103,6 +103,43 @@ describe("buildArchiveHtml (#4105)", () => {
     assert.match(html, /0 ediç/);
   });
 
+  it("(#4265) <head> tem viewport, canonical e OG/Twitter — não regride numa refatoração futura", () => {
+    const html = buildArchiveHtml([
+      entry("https://diar.ia.br/p/edicao-real", "2026-07-27"),
+    ]);
+    assert.match(
+      html,
+      /<meta name="viewport" content="width=device-width, initial-scale=1">/,
+    );
+    assert.match(
+      html,
+      /<link rel="canonical" href="https:\/\/arquivo\.diar\.ia\.br\/">/,
+    );
+    assert.match(html, /<meta property="og:title" content="[^"]+">/);
+    assert.match(html, /<meta property="og:description" content="[^"]+">/);
+    assert.match(html, /<meta property="og:url" content="[^"]+">/);
+    assert.match(html, /<meta name="twitter:card" content="summary">/);
+    assert.match(html, /<link rel="icon" href="data:image\/svg\+xml/);
+  });
+
+  it("(#4265) tem CSS do DS canônico (não renderiza mais no default do navegador)", () => {
+    const html = buildArchiveHtml([
+      entry("https://diar.ia.br/p/edicao-real", "2026-07-27"),
+    ]);
+    assert.match(html, /<style>/);
+    assert.match(html, /#00A0A0/); // teal do DS
+    assert.match(html, /Georgia/); // serif do DS
+  });
+
+  it("(#4265) os 225 <a href> continuam intactos com o novo layout (objetivo primário do #4105 não regride)", () => {
+    const html = buildArchiveHtml([
+      entry("https://diar.ia.br/p/edicao-a", "2026-07-27"),
+      entry("https://diar.ia.br/p/edicao-b", "2026-06-15"),
+    ]);
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\/p\/edicao-a">/);
+    assert.match(html, /<a href="https:\/\/diar\.ia\.br\/p\/edicao-b">/);
+  });
+
   it("aceita lastmod datetime ISO completo (não só YYYY-MM-DD)", () => {
     const html = buildArchiveHtml([
       entry("https://diar.ia.br/p/com-hora", "2026-07-27T14:30:00Z"),

@@ -1,6 +1,6 @@
 ---
 name: social-curto
-description: Gera 1 texto curto (≤280 chars) por destaque — compartilhado por Twitter/X e Threads — a partir dos highlights aprovados em `01-approved.json` (Etapa 2, em paralelo com newsletter, LinkedIn, Facebook e Instagram). Output temporário em `_internal/03-curto.tmp.md` com seções `## d1`, `## d2`, `## d3`; o orchestrator faz o merge final em `03-social.md` como `# Curto`. #3992 — texto único compartilhado, elimina o fallback de Facebook que `publish-threads.ts` usava.
+description: Gera 1 texto curto (≤280 chars) por destaque — compartilhado por Twitter/X e Threads — a partir dos highlights aprovados em `01-approved.json` (Etapa 2, em paralelo com newsletter, LinkedIn, Facebook e Instagram). Output temporário em `_internal/03-curto.tmp.md` com seções `## d1`, `## d2`, `## d3`; o orchestrator faz o merge final em `03-social.md` como `# Curto`. #3992 — texto único compartilhado, elimina o fallback de Facebook que `publish-threads.ts` usava; ausência/incompletude em `# Curto` agora vira skip (#4294), nunca fallback.
 model: claude-sonnet-5
 effort: medium
 tools: Read, Write

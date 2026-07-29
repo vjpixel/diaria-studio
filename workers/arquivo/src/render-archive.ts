@@ -11,9 +11,49 @@
  * capitaliza a 1ª letra) — NÃO fazemos fetch de cada uma das ~223 páginas
  * pra pegar o título real (223+1 fetches por load seria lento/caro demais).
  * O objetivo é só existir o `<a href>` crawlable; o Googlebot lê o título
- * real ao seguir o link.
+ * real ao seguir o link. Títulos derivados-do-slug quebrados (acentos
+ * removidos viram espaço), agrupamento por `lastmod` em vez de `publish_date`
+ * e navegação por 225 itens são #4105 itens 1/2/5 — FORA de escopo aqui
+ * (#4265, dependem de `data/beehiiv-cache/`, sessão local).
+ *
+ * Design/SEO (#4265 itens 7/8/9): DS canônico da Diar.ia via
+ * `scripts/lib/shared/{design-tokens,curadoria-page,seo-meta}.ts` — mesmo
+ * padrão de `cursos.diar.ia.br`/`livros.diar.ia.br` (#3698). Zero JS
+ * client-side (mantém o requisito original do #4105 de página 100%
+ * server-rendered, sem paginação).
  */
 import type { SitemapEntry } from "../../../scripts/lib/fetch-sitemap.ts";
+import { FONTS } from "../../../scripts/lib/shared/design-tokens.ts";
+import {
+  renderCuradoriaRootStyles,
+  renderCuradoriaHeaderStyles,
+  renderCuradoriaFooterStyles,
+  renderCuradoriaFooter,
+} from "../../../scripts/lib/shared/curadoria-page.ts";
+import { renderSeoMeta } from "../../../scripts/lib/shared/seo-meta.ts";
+
+/** URL pública canônica desta página (Workers Custom Domain, #4105/#3698). */
+export const PAGE_URL = "https://arquivo.diar.ia.br/";
+const PAGE_TITLE = "Arquivo — todas as edições da Diar.ia";
+const PAGE_DESCRIPTION =
+  "Índice de todas as edições publicadas da newsletter Diar.ia, agrupadas por mês.";
+
+/** CSS específico da listagem (seções por mês + lista de edições) — não
+ * coberto por `curadoria-page.ts` (que atende o padrão de grid de cards de
+ * cursos/livros, não uma lista simples de links). */
+function renderArchiveListStyles(): string {
+  return `  main { padding: 40px 0 64px; }
+  .count { font-family: ${FONTS.sans}; font-size: 14px; color: var(--ink); margin: 8px 0 40px; }
+  section { margin: 0 0 40px; }
+  section h2 { font-family: ${FONTS.serif}; font-size: 22px; font-weight: 700;
+    color: var(--ink); margin: 0 0 4px; }
+  section h2::first-letter { text-transform: uppercase; }
+  section ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); }
+  section li { border-bottom: 1px solid var(--rule); }
+  section li a { display: block; padding: 13px 2px; font-family: ${FONTS.sans}; font-size: 16px;
+    line-height: 1.4; color: var(--ink); text-decoration: none; }
+  section li a:hover { color: var(--teal); }`;
+}
 
 const MONTH_NAMES_PT = [
   "janeiro",
@@ -133,16 +173,37 @@ export function buildArchiveHtml(entries: SitemapEntry[]): string {
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
-<title>Arquivo — todas as edições da Diar.ia</title>
-<meta name="description" content="Índice de todas as edições publicadas da newsletter Diar.ia, agrupadas por mês.">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(PAGE_TITLE)}</title>
+${renderSeoMeta({ title: PAGE_TITLE, description: PAGE_DESCRIPTION, url: PAGE_URL })}
 <meta name="robots" content="index, follow">
+<style>
+${renderCuradoriaRootStyles()}
+
+${renderCuradoriaHeaderStyles()}
+
+${renderArchiveListStyles()}
+
+${renderCuradoriaFooterStyles()}
+</style>
 </head>
 <body>
+  <header>
+    <div class="wrap">
+      <p class="eyebrow">Diar.ia · Arquivo</p>
+      <hr class="rule">
+      <h1>Arquivo<span class="dot" aria-hidden="true">.</span></h1>
+      <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
+      <p class="lede">Todas as edições já publicadas da newsletter Diar.ia, agrupadas por mês.</p>
+    </div>
+  </header>
   <main>
-    <h1>Arquivo — todas as edições da Diar.ia</h1>
-    <p>${count} ediç${count === 1 ? "ão" : "ões"} publicada${count === 1 ? "" : "s"}.</p>
+    <div class="wrap">
+      <p class="count">${count} ediç${count === 1 ? "ão" : "ões"} publicada${count === 1 ? "" : "s"}.</p>
 ${body}
+    </div>
   </main>
+  ${renderCuradoriaFooter("diar.ia.br — arquivo de edições", "utm_source=arquivo&utm_medium=footer-nav")}
 </body>
 </html>
 `;

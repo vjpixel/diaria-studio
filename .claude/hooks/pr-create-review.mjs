@@ -73,7 +73,7 @@
 // rationale. Keep the two in sync by hand; each side has its own test file.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -250,28 +250,39 @@ function getDiffLineCount(num, execFn) {
  * revisando, erra pro lado mais caro em vez de conceder o mais barato
  * silenciosamente sobre um estado desconhecido.
  *
- * Retorna `{ effort, warning }`: `warning` é `null` no caminho feliz, ou uma nota
- * (#3322 direção 3) quando a branch NÃO seguiu a convenção `overnight/*` (#3321)
- * apesar de uma rodada ativa nesta máquina. O warning é sobre naming, não sobre
- * effort: entre #3326 e #4234 ele não mudava o effort resolvido (era `low` de
- * qualquer jeito); com o default de volta em `max` (#4234) o guard volta a ter
- * efeito real sobre o effort, mas o texto do warning segue falando só do naming
- * divergente — que é o que ele sempre tornou visível ao coordenador, em vez de
- * passar em silêncio (era justamente esse silêncio que atrasou a detecção do
- * #3321).
+ * Retorna `{ effort, warning, reason }`: `warning` é `null` no caminho feliz, ou
+ * uma nota (#3322 direção 3) quando a branch NÃO seguiu a convenção
+ * `overnight/*` (#3321) apesar de uma rodada ativa nesta máquina. O warning é
+ * sobre naming, não sobre effort: entre #3326 e #4234 ele não mudava o effort
+ * resolvido (era `low` de qualquer jeito); com o default de volta em `max`
+ * (#4234) o guard volta a ter efeito real sobre o effort, mas o texto do
+ * warning segue falando só do naming divergente — que é o que ele sempre
+ * tornou visível ao coordenador, em vez de passar em silêncio (era justamente
+ * esse silêncio que atrasou a detecção do #3321).
+ *
+ * `reason` (#4252): código curto e estável identificando QUAL ramo decidiu —
+ * `pr_sem_numero` | `branch_overnight` | `sessao_overnight_ativa` |
+ * `diff_trivial` | `default` | `estado_indeterminado`. Campo aditivo: nenhum
+ * teste existente inspeciona o objeto inteiro (só `.effort`/`.warning`), então
+ * adicioná-lo não quebra nada. Existe só pra alimentar o log de instrumentação
+ * (`logEffortDecision`, chamado no entrypoint CLI abaixo — nunca aqui dentro,
+ * pra manter `resolveEffort` livre de I/O e os ~20 call sites do teste
+ * existentes hermeticamente intocados) — descoberto como lacuna na própria
+ * #4252: "nada hoje registra qual effort foi resolvido por PR nem quantos
+ * agentes rodaram".
  */
 export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = isOvernightRoundActive) {
   try {
     const num = prUrl.match(/\/pull\/(\d+)/)?.[1];
     // fail-safe: sem número de PR nem dá pra chamar `gh` — estado indeterminado,
     // mantém max independente de qual seja o DEFAULT_EFFORT vigente.
-    if (!num) return { effort: "max", warning: null };
+    if (!num) return { effort: "max", warning: null, reason: "pr_sem_numero" };
     const branch = execFn(
       "gh",
       ["pr", "view", num, "--json", "headRefName", "--jq", ".headRefName"],
       { encoding: "utf8", timeout: 10_000 },
     ).trim();
-    if (branch.startsWith("overnight/")) return { effort: "low", warning: null };
+    if (branch.startsWith("overnight/")) return { effort: "low", warning: null, reason: "branch_overnight" };
     if (checkRoundActive()) {
       return {
         effort: "low",
@@ -282,6 +293,7 @@ export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = i
           "prefixo no dispatch do subagente implementador (#3321). O desconto de " +
           "effort foi aplicado pelo guard de sessão ativa, não pelo naming — este " +
           "warning é só sobre o naming divergente.",
+        reason: "sessao_overnight_ativa",
       };
     }
     // Sem sinal de overnight/rodada-ativa: diff trivial rebaixa pra low
@@ -289,16 +301,72 @@ export function resolveEffort(prUrl, execFn = execFileSync, checkRoundActive = i
     // `null` (falha de qualquer tipo) faz este ramo ser ignorado de propósito.
     const diffLineCount = getDiffLineCount(num, execFn);
     if (diffLineCount !== null && diffLineCount < TRIVIAL_DIFF_LINE_THRESHOLD) {
-      return { effort: "low", warning: null };
+      return { effort: "low", warning: null, reason: "diff_trivial" };
     }
     // Sem sinal de overnight/rodada-ativa/diff-trivial → default geral (ver DEFAULT_EFFORT).
-    return { effort: DEFAULT_EFFORT, warning: null };
+    return { effort: DEFAULT_EFFORT, warning: null, reason: "default" };
   } catch {
     // fail-safe: estado desconhecido (gh indisponível, timeout, checkRoundActive
     // lançando erro) → `max` literal, nunca DEFAULT_EFFORT. São decisões
     // independentes: esta vale mesmo quando o default geral for `low`, porque o
     // hook não consegue nem determinar o que está revisando.
-    return { effort: "max", warning: null };
+    return { effort: "max", warning: null, reason: "estado_indeterminado" };
+  }
+}
+
+/**
+ * Quantos agentes de review o effort resolvido dispara — 1 pra `low`
+ * (`REVIEW_AGENT` sozinho), 5 pra `max` (`REVIEW_AGENT` + `REVIEW_FLEET_MAX`,
+ * ver `buildReviewInstruction`). Usado só pro log de instrumentação (#4252).
+ */
+function agentCountForEffort(effort) {
+  return effort === "low" ? 1 : REVIEW_FLEET_MAX.length + 1;
+}
+
+/**
+ * #4252: instrumenta a decisão de effort no run-log — a lacuna descoberta na
+ * própria issue ("nada hoje registra qual effort foi resolvido por PR nem
+ * quantos agentes rodaram"). Chamado UMA vez, só no entrypoint CLI (não dentro
+ * de `resolveEffort`, que fica livre de I/O e é o que a suíte de testes
+ * chama diretamente — instrumentar ali obrigaria os ~20 call sites existentes
+ * a injetar um logger fake ou passar a escrever de verdade em
+ * `data/run-log.jsonl` a cada `npx tsx --test`, incluindo o checkout PRINCIPAL
+ * compartilhado quando o teste roda de dentro de um worktree — ver
+ * `resolveMainRepoRoot`).
+ *
+ * Não reusa `scripts/log-event.ts` diretamente: aquele arquivo é um script CLI
+ * que faz `process.exit()`/parse de `process.argv` no top-level assim que é
+ * importado (sem uma função exportada) — importar de um `.mjs` self-contained
+ * (ver docblock do topo do arquivo: "no `scripts/*.ts` imports") executaria
+ * esse top-level e potencialmente abortaria o hook inteiro. Em vez disso,
+ * replica o MESMO formato de linha JSON (`timestamp, edition, stage, agent,
+ * level, message, details`) — ver `LogEvent` em `scripts/log-event.ts`.
+ *
+ * Fail-soft, igual ao resto do hook: nunca lança, nunca bloqueia a criação da
+ * PR nem a instrução de review por falha ao logar (disco cheio, `data/`
+ * ausente — worktree sem junction e sem fallback de repo root, etc).
+ */
+export function logEffortDecision(
+  { prUrl, effort, reason },
+  { repoRoot = resolveMainRepoRoot(), appendFn = appendFileSync, mkdirFn = mkdirSync } = {},
+) {
+  try {
+    const pr = prUrl?.match(/\/pull\/(\d+)/)?.[1] ?? null;
+    const event = {
+      timestamp: new Date().toISOString(),
+      edition: null,
+      stage: null,
+      agent: "code-review",
+      level: "info",
+      message: "effort_resolved",
+      details: { pr, effort, motivo: reason, agentes: agentCountForEffort(effort) },
+    };
+    const logPath = join(repoRoot, "data", "run-log.jsonl");
+    mkdirFn(dirname(logPath), { recursive: true });
+    appendFn(logPath, JSON.stringify(event) + "\n", "utf8");
+  } catch {
+    // Swallow everything, same contract as the rest of this file: a logging
+    // failure must never block PR creation or the review instruction.
   }
 }
 
@@ -406,7 +474,8 @@ if (
           : JSON.stringify(payload.tool_response ?? "");
       const match = resp.match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/);
       if (match) {
-        const { effort, warning } = resolveEffort(match[0]);
+        const { effort, warning, reason } = resolveEffort(match[0]);
+        logEffortDecision({ prUrl: match[0], effort, reason }); // #4252
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {

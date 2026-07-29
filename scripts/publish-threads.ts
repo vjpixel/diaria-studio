@@ -14,12 +14,21 @@
  * os primeiros 500 chars, e os subsequentes encadeiam via reply_to_id —
  * análogo a um thread no Twitter/X.
  *
- * Fallback de conteúdo (#3992): prefere a seção `# Curto` (texto único
- * compartilhado com Twitter/X, ≤280 chars, escrito por `social-curto`) — cabe
- * inteiro nos 500 chars do Threads sem truncar. Se `# Curto` estiver ausente
- * (edição antiga, agent não rodou), tenta `# Threads` (nunca existiu como
- * seção própria — mantido só por compat futura) e por fim `# Facebook` como
- * último recurso, truncando para 500 chars.
+ * Fonte do texto (#4294, substitui o fallback do #3992): SÓ a seção
+ * `# Curto` de 03-social.md (texto único compartilhado com X/Twitter, ≤280
+ * chars, escrito por `social-curto`) — cabe inteiro nos 500 chars do Threads
+ * sem truncar. **Sem fallback** — mesmo contrato de `prep-twitter-posts.ts`
+ * (#3994): destaque ausente ou incompleto em `# Curto` vira skip, nunca um
+ * post improvisado a partir de `# Social`/`# Facebook`. O fallback antigo já
+ * estava quebrado na prática: procurava `# Facebook`, seção que o #3991
+ * colapsou em `# Social`, então o último degrau nem casava mais — e o texto
+ * de `# Social`/`# Facebook` nunca carrega o CTA `{edition_url}` do #4285
+ * (só `# Curto`, escrito por `social-curto`, tem o placeholder), então o
+ * fallback sairia sem link nenhum quando de fato disparasse.
+ *
+ * Guard não-fatal de conteúdo (#4294, mesmo padrão do #3277): se o texto do
+ * post não contiver a URL da edição resolvida (`_internal/05-edition-url.txt`),
+ * loga um warn em `data/run-log.jsonl` — nunca bloqueia o dispatch.
  *
  * AGENDAMENTO (#3944 Parte B): a Threads API NÃO tem agendamento nativo —
  * `threads_publish` sempre publica no instante da chamada. `--schedule`
@@ -71,6 +80,7 @@ import { extractSection } from "./lib/extract-section.ts"; // #2834 fonte única
 import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substitui parseArgs local
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3944 Parte B — mesmo fallback_schedule usado por LinkedIn/Facebook/Instagram
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Instagram
+import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -88,48 +98,82 @@ function loadPublished(path: string): SocialPublished {
 }
 
 /**
- * Extrai a lista de destaques da seção do 03-social.md usada pelo Threads.
- * Ordem de preferência (#3992): Curto → Threads (legado, nunca teve agent
- * próprio) → Facebook (último recurso).
- * Último fallback: ["d1","d2","d3"].
+ * Extrai a lista de destaques da seção `# Curto` do 03-social.md.
+ * Sem fallback (#4294, mesmo contrato de `extractDestaquesFromCurto` em
+ * `prep-twitter-posts.ts` #3994): se a seção `# Curto` não existe, retorna
+ * `[]` — nunca cai pra `# Threads`/`# Facebook`/`# Social`.
  */
 export function extractDestaquesFromSocialMd(socialMd: string): string[] {
-  let section = extractSection(socialMd, "Curto");
-  if (section === null) section = extractSection(socialMd, "Threads");
-  if (section === null) {
-    // Fallback para Facebook (mesma lógica do publish-instagram.ts)
-    section = extractSection(socialMd, "Facebook");
-  }
-  if (section === null) return ["d1", "d2", "d3"];
-  const valid = parseDestaqueHeaders(section);
-  return valid.length >= 2 ? valid : ["d1", "d2", "d3"];
+  const section = extractSection(socialMd, "Curto");
+  if (section === null) return [];
+  return parseDestaqueHeaders(section);
 }
 
 /**
- * Extrai o texto do post para um destaque específico.
- * Ordem de preferência (#3992): Curto → Threads (legado) → Facebook (último recurso).
+ * Extrai o texto do post `# Curto` para um destaque específico.
+ * Retorna `null` se a seção `# Curto` ou o destaque dentro dela não existir
+ * — nunca lança nem cai pra outra seção (#4294, mesmo contrato de
+ * `extractCurtoText` em `prep-twitter-posts.ts` #3994).
  */
-export function extractPostText(socialMd: string, destaque: string): string {
+export function extractPostText(socialMd: string, destaque: string): string | null {
   // Normalizar CRLF → LF
-  socialMd = socialMd.replace(/\r\n/g, "\n");
+  const normalized = socialMd.replace(/\r\n/g, "\n");
 
-  for (const platTitle of ["Curto", "Threads", "Facebook"]) {
-    const platRe = new RegExp(`(?:^|\\n)# ${platTitle}\\n([\\s\\S]*?)(?=\\n# |$)`, "i");
-    const platMatch = socialMd.match(platRe);
-    if (!platMatch) continue;
+  const section = extractSection(normalized, "Curto");
+  if (section === null) return null;
 
-    const dRe = new RegExp(
-      `(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`,
-      "i",
-    );
-    const dMatch = platMatch[1].match(dRe);
-    if (dMatch) {
-      return dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
-    }
-  }
+  const dRe = new RegExp(
+    `(?:^|\\n)## ${destaque}\\n([\\s\\S]*?)(?=\\n## d\\d+\\b|\\n# |$)`,
+    "i",
+  );
+  const dMatch = section.match(dRe);
+  if (!dMatch) return null;
+  return dMatch[1].replace(/<!--[\s\S]*?-->/g, "").trim();
+}
 
-  throw new Error(
-    `Destaque '${destaque}' não encontrado em seção Curto, Threads ou Facebook de 03-social.md`,
+/**
+ * Guard não-fatal (#4294, mesmo padrão do guard anti-placeholder #3277): true
+ * quando `text` contém `editionUrl` literal. Pure — só string match, exposta
+ * pra ser testável sem fixture em disco.
+ */
+export function textContainsEditionUrl(text: string, editionUrl: string): boolean {
+  return text.includes(editionUrl);
+}
+
+/**
+ * Emite o warning não-fatal (#4294) quando o texto de um post Threads não
+ * contém a URL da edição resolvida — stderr + `data/run-log.jsonl` (nível
+ * warn, via `logEvent`). NUNCA bloqueia o dispatch — o caller publica o texto
+ * mesmo assim. Extraída de `main()` pra ser testável isoladamente, mesmo
+ * padrão de `warnUnresolvedPlaceholders` (`resolve-edition-url.ts`, #3277).
+ *
+ * `rootDir` é repassado a `logEvent` (default `undefined` → cai pro
+ * `process.cwd()` de `logEvent`). `main()` sempre passa um root explícito
+ * (`ROOT` do repo, ou `--log-root-dir` em teste) pelo mesmo motivo de
+ * `resolve-edition-url.ts`: sem isso, testes que spawnam o CLI poluiriam
+ * `data/run-log.jsonl` real com edições fictícias.
+ */
+export function warnMissingEditionUrl(
+  destaque: string,
+  text: string,
+  editionUrl: string,
+  editionId: string | null,
+  rootDir?: string,
+): void {
+  console.warn(
+    `AVISO (#4294 guard edition_url — não-fatal): texto do Threads (destaque ${destaque}) ` +
+      `não contém a URL da edição resolvida (${editionUrl}). O post será publicado mesmo assim.`,
+  );
+  logEvent(
+    {
+      edition: editionId,
+      stage: 5,
+      agent: "publish-threads",
+      level: "warn",
+      message: `#4294: texto do Threads (destaque ${destaque}) não contém a URL da edição resolvida — dispatch NÃO bloqueado`,
+      details: { destaque, edition_url: editionUrl, text_preview: text.slice(0, 120) },
+    },
+    rootDir,
   );
 }
 
@@ -367,6 +411,13 @@ async function main() {
   const isTest = flags.has("test-mode");
   const isDryRun = flags.has("dry-run");
   const doSchedule = flags.has("schedule"); // #3944 Parte B
+  // #4294 code-review (#3277 pattern): --log-root-dir é override SÓ pra
+  // teste — sem ela, o guard de edition_url ausente sempre grava em
+  // `{ROOT}/data/run-log.jsonl` (ROOT = raiz do repo, cwd-independente).
+  // Testes que spawnam o CLI via subprocess apontam pro próprio tmpdir pra
+  // não poluir o log real com warns fabricados.
+  const logRootDirArg = values["log-root-dir"];
+  const logRootDir = logRootDirArg ? resolve(ROOT, logRootDirArg) : ROOT;
 
   // #3944 Parte B — mesmo guard de platform.config.json que publish-instagram.ts
   // já tinha: permite ao editor desligar o canal via config (decisão editorial),
@@ -469,10 +520,15 @@ async function main() {
     publishedPath = internalPath;
   }
 
-  // Extrair destaques da seção Threads (ou fallback para Facebook)
+  // Extrair destaques da seção '# Curto' — sem fallback (#4294)
   const destaques = extractDestaquesFromSocialMd(socialMd);
   const results: PostEntry[] = [];
   let skippedCount = 0;
+  // #4294 — destaques que viraram skip por ausência/incompletude em '# Curto'
+  // (distinto de skippedCount, que também conta "já publicado" via resume).
+  const skippedNoCurto: Array<{ destaque: string; reason: string }> = [];
+  // #4294 — guard não-fatal de edition_url ausente no texto (ver loop abaixo).
+  const editionUrlFile = resolve(editionDir, "_internal", "05-edition-url.txt");
 
   const tagAndAppend = (entry: PostEntry): void => {
     if (isTest) entry.is_test = true;
@@ -498,43 +554,31 @@ async function main() {
       }
     }
 
-    // Extrair texto do post
-    let text: string;
-    try {
-      text = extractPostText(socialMd, d);
-    } catch (e: any) {
-      console.error(`ERROR extracting text for threads/${d}: ${e.message}`);
-      const entry: PostEntry = {
-        platform: "threads",
-        destaque: d,
-        url: null,
-        status: "failed",
-        scheduled_at: null,
-        reason: e.message,
-      };
-      // #2522 review: --dry-run não persiste (early-exit não pode escrever entry
-      // "failed" em 06-social-published.json — viola o contrato no-side-effect).
-      if (!isDryRun) tagAndAppend(entry);
-      results.push(entry);
+    // Extrair texto do post — SÓ a seção '# Curto' (#4294, mesmo contrato de
+    // prep-twitter-posts.ts #3994): nunca cai pra outra seção. `!text` cobre
+    // tanto ausência (null) quanto conteúdo vazio após strip de comentários
+    // HTML (ex: destaque com só `<!-- comentario -->`) — ambos "incompleto".
+    // Diferente do comportamento antigo (fail-fast com status "failed"),
+    // isso é um skip: nada foi tentado, então nada é persistido em
+    // 06-social-published.json — o destaque simplesmente não sai neste run.
+    const text = extractPostText(socialMd, d);
+    if (!text) {
+      const reason = "destaque ausente ou incompleto na seção '# Curto' — sem fallback (#4294)";
+      console.warn(`SKIP threads/${d}: ${reason}`);
+      skippedNoCurto.push({ destaque: d, reason });
+      skippedCount += 1;
       continue;
     }
 
-    // Guard: texto vazio (ex: destaque com apenas comentários HTML) → fail-fast
-    // sem tentar publicar post em branco na Threads API.
-    if (!text) {
-      console.error(`ERROR threads/${d}: texto vazio após strip de comentários — skip`);
-      const entry: PostEntry = {
-        platform: "threads",
-        destaque: d,
-        url: null,
-        status: "failed",
-        scheduled_at: null,
-        reason: "texto vazio após strip de comentários HTML",
-      };
-      // #2522 review: --dry-run não persiste (ver acima).
-      if (!isDryRun) tagAndAppend(entry);
-      results.push(entry);
-      continue;
+    // Guard não-fatal (#4294, mesmo padrão do #3277): se o texto não contiver
+    // a URL da edição resolvida, avisa em stderr + data/run-log.jsonl mas
+    // NUNCA bloqueia o dispatch — o post sai mesmo assim.
+    if (existsSync(editionUrlFile)) {
+      const editionUrl = readFileSync(editionUrlFile, "utf8").trim();
+      if (editionUrl && !textContainsEditionUrl(text, editionUrl)) {
+        const editionId = /^\d{6}$/.test(editionDate) ? editionDate : null;
+        warnMissingEditionUrl(d, text, editionUrl, editionId, logRootDir);
+      }
     }
 
     // Dividir em chunks de 500 chars se necessário
@@ -723,7 +767,13 @@ async function main() {
     skipped: skippedCount,
   };
 
-  console.log(JSON.stringify({ out_path: publishedPath, summary, posts: results }, null, 2));
+  console.log(
+    JSON.stringify(
+      { out_path: publishedPath, summary, posts: results, skipped_no_curto: skippedNoCurto },
+      null,
+      2,
+    ),
+  );
 }
 
 if (isMainModule(import.meta.url)) {
