@@ -16,6 +16,9 @@
  * --format html (default): outputs HTML body content for Beehiiv Custom HTML block
  * --format json: outputs structured JSON with all parsed sections
  * --out: write to file instead of stdout
+ * --esp beehiiv|brevo: merge tag do link de voto do É IA? (#4266). Default
+ *   beehiiv (`{{email}}`). brevo usa `{{ contact.EMAIL }}` — só relevante pro
+ *   modo --format html sem --split (É IA? standalone/split fica sempre Beehiiv).
  *
  * Image references use {{IMG:filename}} placeholders. The publish agent
  * uploads images to Beehiiv CDN first, then replaces placeholders with URLs.
@@ -87,7 +90,16 @@ export { singularizeSectionName } from "./lib/section-naming.ts";
 
 // ── Imports for main() ─────────────────────────────────────────────────
 import { extractContent } from "./lib/newsletter-parse.ts";
-import { renderHTML, renderEiaStandalone } from "./lib/newsletter-render-html.ts";
+import { renderHTML, renderEiaStandalone, type Esp } from "./lib/newsletter-render-html.ts";
+
+// #4266 — fonte única do conjunto válido; deriva mensagem de uso/erro do CLI
+// em vez de repetir o union literal (ver doc comment de `Esp`). `Record<Esp,
+// true>` (não array solto) é de propósito: se `Esp` ganhar um 3º valor e
+// alguém esquecer de adicionar aqui, o TS recusa compilar (propriedade
+// faltando) — um array `readonly Esp[]` não daria esse erro (achado do
+// review automatizado do PR #4267, type-design-analyzer).
+const ESP_SET: Record<Esp, true> = { beehiiv: true, brevo: true };
+const VALID_ESP = Object.keys(ESP_SET) as Esp[];
 
 // ── Main ──────────────────────────────────────────────────────────────
 
@@ -101,10 +113,59 @@ function main(): void {
 
   if (!editionDir) {
     console.error(
-      "Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>] [--split]\n" +
-        "  --split: produz 2 arquivos em {edition}/_internal/ — newsletter-body.html (sem È IA?) + newsletter-eia.html (È IA? standalone, preserva merge tags). #1046",
+      "Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>] [--split] [--esp beehiiv|brevo]\n" +
+        "  --split: produz 2 arquivos em {edition}/_internal/ — newsletter-body.html (sem È IA?) + newsletter-eia.html (È IA? standalone, preserva merge tags). #1046\n" +
+        `  --esp: merge tag do link de voto do É IA? (${VALID_ESP.join("|")}, default beehiiv). #4266`,
     );
     process.exit(1);
+  }
+
+  // #4266 — `--esp=valor` (sintaxe com igual) NÃO é suportada por
+  // `parseCliArgs` em lugar nenhum do repo (parser só reconhece "--chave
+  // valor" com espaço) — sem este guard, `arg.slice(2)` produz a chave
+  // literal "esp=brevo" (nunca reconhecida como "esp"), então `flags.has`/
+  // `values["esp"]` abaixo NUNCA veem esse token e o `?? "beehiiv"` aceita o
+  // default errado silenciosamente. 2º achado do review automatizado do PR
+  // #4267 (silent-failure-hunter + pr-test-analyzer, confirmado por repro em
+  // ambos): limitação pré-existente de `cli-args.ts` (compartilhado por
+  // dezenas de scripts, não é esta issue que deve corrigir o parser em si —
+  // ver issue de follow-up), mas esta flag específica merece o guard local
+  // porque um `--esp` mal-configurado tem consequência de produção (voto
+  // perdido sem aviso).
+  const espEquals = args.find((a) => a.startsWith("--esp="));
+  if (espEquals) {
+    console.error(
+      `--esp não aceita sintaxe "=" (recebido "${espEquals}") — use "--esp ${espEquals.slice(6)}" (espaço, não igual).`,
+    );
+    process.exit(1);
+  }
+
+  // #4266 — `--esp` SEM valor (último argv, ou seguido de outra --flag) cai em
+  // `flags`, não em `values` (contrato de parseCliArgs) — sem este guard
+  // explícito, `values["esp"]` fica `undefined` e o `?? "beehiiv"` abaixo
+  // aceitaria silenciosamente o default errado em vez de falhar. Achado do
+  // review automatizado do PR #4267 (silent-failure-hunter, confirmado por
+  // repro): exatamente a classe de bug que este PR existe pra evitar — voto
+  // vindo de um envio Brevo mal-configurado chegaria com merge tag errada e
+  // não creditaria ninguém, sem nenhum aviso.
+  if (flags.has("esp")) {
+    console.error(`--esp requer um valor (${VALID_ESP.join("|")}) — recebido sem valor.`);
+    process.exit(1);
+  }
+  const espRaw = values["esp"] ?? "beehiiv";
+  if (!VALID_ESP.includes(espRaw as Esp)) {
+    console.error(`--esp inválido: "${espRaw}" (esperado ${VALID_ESP.join("|")})`);
+    process.exit(1);
+  }
+  const esp = espRaw as Esp;
+
+  // #4266 — modo --split sempre emite È IA? standalone Beehiiv-only
+  // (renderEiaStandalone não aceita esp, ver lib/newsletter-render-html.ts) —
+  // mesmo padrão de aviso explícito já usado pra --split + --out (abaixo).
+  if (split && esp === "brevo") {
+    console.error(
+      "--split + --esp brevo: --esp ignorado. newsletter-eia.html do modo split é sempre Beehiiv (paste híbrido não suporta Brevo).",
+    );
   }
 
   const resolvedDir = resolve(ROOT, editionDir);
@@ -149,7 +210,7 @@ function main(): void {
   } else {
     // #1936 --full: documento HTML completo (shell DS + preheader) pro preview/
     // email Worker-hosted. Sem a flag: fragmento container pro paste no Beehiiv.
-    output = renderHTML(content, { fullDocument: flags.has("full") });
+    output = renderHTML(content, { fullDocument: flags.has("full"), esp });
   }
 
   if (outPath) {

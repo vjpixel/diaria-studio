@@ -1,0 +1,124 @@
+/**
+ * test/newsletter-render-html-esp-4266.test.ts (#4266)
+ *
+ * Cobre a merge tag do link de voto do É IA? por ESP de destino: Beehiiv usa
+ * `{{email}}` cru (comportamento legado, inalterado); Brevo usa
+ * `{{ contact.EMAIL }}` com `&` escapado como `&amp;` (mesma sintaxe já usada
+ * pelo mensal em `lib/mensal/monthly-render.ts`). Sem `esp`/`esp: "beehiiv"`
+ * o comportamento é idêntico ao pré-#4266 — regressão coberta abaixo.
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { renderEIA, renderHTML, renderEiaStandalone, type EIA } from "../scripts/lib/newsletter-render-html.ts";
+
+const baseEia: EIA = {
+  credit: "Foto: Author / CC BY-SA 4.0.",
+  imageA: "01-eia-A.jpg",
+  imageB: "01-eia-B.jpg",
+  edition: "260999",
+};
+
+describe("renderEIA(eia, esp) — #4266", () => {
+  it("sem esp (default): merge tag Beehiiv {{email}}, & cru", () => {
+    const html = renderEIA(baseEia);
+    assert.match(html, /\{\{email\}\}/);
+    assert.match(html, /&edition=260999&choice=A/);
+    assert.ok(!html.includes("{{ contact.EMAIL }}"), "não deve conter merge tag Brevo");
+  });
+
+  it('esp: "beehiiv" explícito — idêntico ao default (regressão byte-a-byte)', () => {
+    assert.equal(renderEIA(baseEia), renderEIA(baseEia, "beehiiv"));
+  });
+
+  it('esp: "brevo" — merge tag {{ contact.EMAIL }}, & escapado como &amp;', () => {
+    const html = renderEIA(baseEia, "brevo");
+    assert.match(html, /\{\{ contact\.EMAIL \}\}/);
+    assert.match(html, /&amp;edition=260999&amp;choice=A/);
+    assert.match(html, /&amp;edition=260999&amp;choice=B/);
+    assert.ok(!html.includes("{{email}}"), "não deve conter merge tag Beehiiv");
+    assert.ok(!html.includes("&edition=260999&choice="), "& não pode aparecer cru (sem escape) na variante Brevo");
+  });
+
+  it('esp: "brevo" — resto do painel (crédito, imagens, leaderboard) inalterado', () => {
+    const beehiivHtml = renderEIA(baseEia);
+    const brevoHtml = renderEIA(baseEia, "brevo");
+    assert.match(brevoHtml, /Foto: Author/);
+    assert.match(brevoHtml, /\{\{IMG:01-eia-A\.jpg\}\}/);
+    assert.match(brevoHtml, /\{\{IMG:01-eia-B\.jpg\}\}/);
+    assert.match(brevoHtml, /\/leaderboard"/);
+    // Mesmo tamanho de diferença esperado: só a URL de voto muda.
+    assert.notEqual(beehiivHtml, brevoHtml);
+  });
+});
+
+describe("renderHTML(content, { esp }) — threading pelos 3 call sites internos (#4266)", () => {
+  const baseDestaque = {
+    n: 1 as const,
+    category: "RISCO",
+    title: "Modelos se replicam sozinhos",
+    body: "Parágrafo 1.\nParágrafo 2.",
+    why: "Por que importa.",
+    url: "https://example.com/d1",
+    emoji: "⚠️",
+    imageFile: "04-d1-2x1.jpg",
+  };
+  const fixtureComEia = {
+    title: "Edição teste",
+    subtitle: "Teste com È IA?",
+    coverImage: "04-d1-2x1.jpg",
+    destaques: [baseDestaque],
+    eia: {
+      credit: "Foto: Author / CC BY-SA 4.0.",
+      imageA: "01-eia-A.jpg",
+      imageB: "01-eia-B.jpg",
+      edition: "260999",
+    },
+    sections: [],
+  };
+
+  it("sem opts.esp: comportamento inalterado (merge tag Beehiiv)", () => {
+    const html = renderHTML(fixtureComEia);
+    assert.match(html, /\{\{email\}\}/);
+    assert.ok(!html.includes("{{ contact.EMAIL }}"));
+  });
+
+  it('opts.esp: "brevo": merge tag Brevo no HTML completo', () => {
+    const html = renderHTML(fixtureComEia, { esp: "brevo" });
+    assert.match(html, /\{\{ contact\.EMAIL \}\}/);
+    assert.ok(!html.includes("{{email}}"), "não deve sobrar merge tag Beehiiv");
+    // Regressão: resto do corpo (destaque) intacto.
+    assert.match(html, /Modelos se replicam/);
+  });
+
+  it('opts.esp: "brevo" + fullDocument: true — combinação que o futuro publisher diário Brevo (#4266 item 2, ainda não implementado) vai consumir', () => {
+    const html = renderHTML(fixtureComEia, { esp: "brevo", fullDocument: true });
+    assert.match(html, /<!doctype html>/i);
+    assert.match(html, /\{\{ contact\.EMAIL \}\}/);
+  });
+
+  it("USE MELHOR presente: É IA? renderiza DEPOIS da seção — esp ainda propaga nesse ramo", () => {
+    const fixtureComUseMelhor = {
+      ...fixtureComEia,
+      sections: [
+        {
+          name: "USE MELHOR",
+          emoji: "🛠️",
+          items: [{ title: "X", description: "Descrição X.", url: "https://example.com/x" }],
+        },
+      ],
+    };
+    const html = renderHTML(fixtureComUseMelhor, { esp: "brevo" });
+    assert.match(html, /\{\{ contact\.EMAIL \}\}/);
+    const useMelhorIdx = html.indexOf("USE MELHOR");
+    const eiaIdx = html.indexOf("{{ contact.EMAIL }}");
+    assert.ok(useMelhorIdx > -1 && eiaIdx > useMelhorIdx, "É IA? deve vir depois de USE MELHOR");
+  });
+
+  it("renderEiaStandalone permanece sempre Beehiiv — sem parâmetro esp (paste híbrido é Beehiiv-only)", () => {
+    const html = renderEiaStandalone(fixtureComEia);
+    assert.ok(html);
+    assert.match(html!, /\{\{email\}\}/);
+    assert.ok(!html!.includes("{{ contact.EMAIL }}"));
+  });
+});

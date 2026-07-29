@@ -192,6 +192,16 @@ export const DS_STYLE_BLOCK = buildDiariaStyleBlock(PAGE_BG, TEAL);
 // uma vez — mesmo padrão de DS_STYLE_BLOCK acima, não recalculado por render.
 const DARK_CANVAS_STYLE_BLOCK = buildDarkCanvasStyleBlock(TEXT_COLOR);
 
+/**
+ * #4266 — provedor de destino do envio. Usado só pela merge tag de voto do
+ * É IA? (`renderEIA`): Beehiiv usa `{{email}}` cru; Brevo usa
+ * `{{ contact.EMAIL }}` com `&` escapado como `&amp;` (mesma sintaxe já usada
+ * pelo mensal, `lib/mensal/monthly-render.ts`). Exportado — `render-newsletter-html.ts`
+ * importa este tipo em vez de repetir o union literal na validação do CLI,
+ * então um 3º ESP futuro só precisa mudar aqui.
+ */
+export type Esp = "beehiiv" | "brevo";
+
 export interface RenderOpts {
   /** #1046 — quando `true`, omite a seção É IA? do body. Usado pelo paste
    * híbrido (Stage 4 publish-newsletter): body via ClipboardEvent + È IA?
@@ -203,6 +213,9 @@ export interface RenderOpts {
    * pro preview/email Worker-hosted. Default `false`: emite só o container 600px
    * (fragmento pro paste no Beehiiv, que provê o shell). */
   fullDocument?: boolean;
+  /** #4266 — ver `Esp`. Default `"beehiiv"` — comportamento inalterado pra
+   * todo caller existente. */
+  esp?: Esp;
 }
 
 /** Remove emoji/símbolo + espaço do início do label (DS usa ponto ●, não emoji). */
@@ -969,7 +982,7 @@ export function renderDestaque(d: RenderDestaque): string {
 </td></tr>`;
 }
 
-export function renderEIA(eia: EIA): string {
+export function renderEIA(eia: EIA, esp: Esp = "beehiiv"): string {
   const creditHtml = processInlineLinks(eia.credit);
   // Leaderboard (#1160): linha "🏆 Vencedores…" sans ink dentro do painel.
   // #3103: 12px → 16px (não 14px — o type-scale do e-mail só permite
@@ -1003,8 +1016,11 @@ export function renderEIA(eia: EIA): string {
     ? `\n      <tr><td><p style="margin:6px 0 0;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${TEXT_COLOR};">${processInlineLinks(eia.prevResultLine)}</p></td></tr>`
     : "";
 
+  // #4266 — ver rationale completo no doc comment de `Esp`, acima.
   const buildVoteUrl = (choice: "A" | "B") =>
-    `${PUBLIC_GAME_BASE_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
+    esp === "brevo"
+      ? `${PUBLIC_GAME_BASE_URL}/vote?email={{ contact.EMAIL }}&amp;edition=${eia.edition}&amp;choice=${choice}`
+      : `${PUBLIC_GAME_BASE_URL}/vote?email={{email}}&edition=${eia.edition}&choice=${choice}`;
   // #2541: imagens A/B empilhadas (1 coluna), A acima de B, em desktop e mobile.
   const eiaChoice = (choice: "A" | "B", imgFile: string, paddingTop?: string) => {
     // #3101: width="480" em pixels (600px container − 32px×2 padding da seção
@@ -1498,20 +1514,20 @@ export function renderHTML(content: NewsletterContent, opts: RenderOpts = {}): s
   // destaques/box3), preservando o fallback "nunca desaparece" (#1085).
   const useMelhorIdx = content.sections.findIndex((s) => s.name === "USE MELHOR");
   if (includeEia && useMelhorIdx === -1) {
-    parts.push(renderEIA(content.eia));
+    parts.push(renderEIA(content.eia, opts.esp));
     eiaInserted = true;
   }
   for (let i = 0; i < content.sections.length; i++) {
     parts.push(renderSection(content.sections[i]));
     if (includeEia && !eiaInserted && i === useMelhorIdx) {
-      parts.push(renderEIA(content.eia));
+      parts.push(renderEIA(content.eia, opts.esp));
       eiaInserted = true;
     }
   }
   // Defensivo (#1085): nunca deveria disparar (os 2 ramos acima cobrem todo
   // caso), mas garante que É IA? nunca desapareça silenciosamente.
   if (includeEia && !eiaInserted) {
-    parts.push(renderEIA(content.eia));
+    parts.push(renderEIA(content.eia, opts.esp));
   }
 
   // #1076: blocos fixos do template Beehiiv (SORTEIO + PARA ENCERRAR).
