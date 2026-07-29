@@ -54,6 +54,15 @@
  * pra exibir o badge "slot N"; `saveBoxSlots` é o único ponto desta fatia que
  * ESCREVE nesse arquivo, e faz isso cirurgicamente (só a chave
  * `boxes_divulgacao`, ver `replaceBoxesDivulgacaoBlock`).
+ *
+ * **PARA ENCERRAR slot A/B (#4274)** — mecanismo IRMÃO, mas DIFERENTE: os
+ * slots 0-3 acima atribuem um FILENAME de `context/snippets/` (pool
+ * opcional); `readParaEncerrarState`/`saveParaEncerrar`/
+ * `replaceParaEncerrarBlock` gerenciam 2 campos de TEXTO DIRETO (sem pool,
+ * sempre presentes), escritos em `platform.config.json` → `para_encerrar.
+ * {slot_a,slot_b}` — mesma disciplina de reescrita cirúrgica + guard de
+ * mtime, chave de config diferente. Ver `buildParaEncerrar` em
+ * `../stitch-newsletter.ts` pro consumo desses valores no stitch.
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
