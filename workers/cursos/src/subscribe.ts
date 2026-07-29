@@ -131,7 +131,12 @@ export async function subscribeToBeehiiv(
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-  } catch {
+  } catch (err) {
+    // #4305: o catch nu engolia a causa — o handler acima só via
+    // `beehiiv_error` e não dava pra distinguir rede caída de payload
+    // rejeitado. A exceção morre aqui de propósito (o cadastro não pode
+    // derrubar o request), mas não sem deixar o motivo.
+    console.error("[cursos] fetch pra Beehiiv lançou:", err);
     return { ok: false, status: 502, reason: "beehiiv_error" };
   }
   if (res.ok) return { ok: true, status: res.status };
@@ -170,7 +175,17 @@ export async function handleGateSubscribe(request: Request, env: Env, deps: Subs
 
   const result = await subscribeToBeehiiv(env, { name: v.name, email: v.email }, fetchImpl);
   if (!result.ok) {
-    if (result.reason === "not_configured") return json({ ok: false, error: "subscribe_unavailable" }, 503, env);
+    // #4305: os dois ramos abaixo eram a MESMA classe de falha muda que este
+    // PR corrigiu no `COOKIE_HMAC_SECRET` — 503/502 e ninguém avisado. O
+    // `beehiiv_error` é o mais grave dos dois: não é config estática que
+    // alguém eventualmente relê, é chamada externa viva que pode começar a
+    // falhar a qualquer momento (Beehiiv fora, key revogada, 429) e derrubar
+    // TODO cadastro vindo do gate sem deixar rastro.
+    if (result.reason === "not_configured") {
+      console.error("[cursos] BEEHIIV_API_KEY/PUBLICATION_ID ausentes — cadastro inline indisponível");
+      return json({ ok: false, error: "subscribe_unavailable" }, 503, env);
+    }
+    console.error(`[cursos] cadastro na Beehiiv falhou (HTTP ${result.status}) — nenhum assinante criado`);
     return json({ ok: false, error: "subscribe_failed" }, 502, env);
   }
 

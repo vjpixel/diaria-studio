@@ -103,11 +103,16 @@ export const GATED_INDEX_PATHS = ["/", "/index.html"];
  * pra "todo mundo vê o teaser" é aceitável, derrubar a home não.
  *
  * O custo disso é observabilidade — 200 silencioso não aparece no gráfico de
- * erro nativo do Cloudflare como um 500 apareceria. Por isso TODO caminho de
- * degradação aqui loga, e `[observability]` está ligado no `wrangler.toml`
- * (sem ele o `console.error` só existe durante um `wrangler tail` aberto na
- * hora, e falha persistente — secret rotacionado, KV apontando pro namespace
- * errado — ficaria invisível pra sempre). */
+ * erro nativo do Cloudflare como um 500 apareceria. Mitigado, NÃO resolvido:
+ * todo caminho de degradação deste handler loga e `[observability]` está
+ * ligado no `wrangler.toml`, então o rastro passa a ser coletado e
+ * consultável. Mas ninguém consome esses logs — não há Logpush, alerta, nem
+ * check agendado (o repo tem o padrão pronto em
+ * `scripts/clarice-guardrail-alarm.ts`, não aplicado aqui). Na prática: a
+ * falha deixa de ser invisível e passa a ser visível-se-alguém-for-olhar, e
+ * ninguém tem motivo pra olhar. Some-se que Workers Logs amostra sob volume
+ * alto, ou seja, o sinal degrada justo durante uma pane total. Fechar isso de
+ * verdade é a #4305. */
 async function handleIndex(request: Request, env: Env): Promise<Response> {
   try {
     const url = new URL(request.url);
@@ -129,6 +134,19 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
       console.error("[cursos] COOKIE_HMAC_SECRET ausente — servindo teaser; NINGUÉM consegue desbloquear");
     }
 
+    // #4305: os dois ramos abaixo logam SEM o endereço. O anti-probing do
+    // #4052 exige que a RESPOSTA não distinga os casos — o log do servidor é
+    // invisível pro visitante e não enfraquece nada disso. Sem ele, uma
+    // merge tag quebrada (Beehiiv mandando `{{email}}` cru, lista errada
+    // sincronizada pro KV) produz exatamente este caminho em 100% dos cliques
+    // da newsletter e fica indistinguível do tráfego normal de quem não
+    // assina. O e-mail em si fica DE FORA: `?email=` vem de assinante real, e
+    // despejar endereço em log de plataforma é vazamento de PII a troco de
+    // nada — a contagem é o que importa, não quem.
+    if (canIssueSession && emailParam && !isValidEmailFormat(emailParam)) {
+      console.warn("[cursos] ?email= presente mas malformado — provável merge tag não resolvida");
+    }
+
     if (canIssueSession && emailParam && isValidEmailFormat(emailParam)) {
       const result = await checkGateSubscriber(env, emailParam);
       if (result === "active") {
@@ -137,7 +155,10 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
       }
       // #4052: e-mail na URL mas não confirmado ativo — NUNCA vaza esse sinal
       // pro leitor (poderia ser link velho/editado à mão); cai pro teaser
-      // normal, silenciosamente, igual a não ter mandado `?email=` nenhum.
+      // normal, igual a não ter mandado `?email=` nenhum. Do lado do servidor,
+      // porém, isto é o sinal de saúde do caminho A: taxa baixa é normal, taxa
+      // de 100% é o gate quebrado de novo.
+      console.warn("[cursos] ?email= não confirmado como assinante ativo — servindo teaser");
     }
 
     if (canIssueSession) {

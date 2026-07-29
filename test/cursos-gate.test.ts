@@ -266,19 +266,30 @@ describe("workers/cursos POST /gate/logout (#4052)", () => {
  * ser observado em produção.
  */
 
-/** Captura `console.error` pra afirmar que uma degradação deixou rastro.
- * Necessário porque todo caminho de falha aqui responde 200/teaser — sem o
- * log, o único jeito de saber que algo quebrou seria um leitor reclamando. */
+/** Captura `console.error`/`console.warn` pra afirmar que uma degradação
+ * deixou rastro. Necessário porque quase todo caminho de falha aqui responde
+ * 200/teaser ou um 4xx/5xx genérico — sem o log, o único jeito de saber que
+ * algo quebrou seria um leitor reclamando. `error` = quebrou; `warn` = caminho
+ * de degradação esperado, cuja TAXA é o sinal (1% é normal, 100% é o gate
+ * quebrado). */
 function captureErrorLogs() {
-  const original = console.error;
+  const originalError = console.error;
+  const originalWarn = console.warn;
   const lines: string[] = [];
+  const warns: string[] = [];
+  const fmt = (args: unknown[]) => args.map((a) => (a instanceof Error ? a.message : String(a))).join(" ");
   console.error = (...args: unknown[]) => {
-    lines.push(args.map((a) => (a instanceof Error ? a.message : String(a))).join(" "));
+    lines.push(fmt(args));
+  };
+  console.warn = (...args: unknown[]) => {
+    warns.push(fmt(args));
   };
   return {
     lines,
+    warns,
     restore() {
-      console.error = original;
+      console.error = originalError;
+      console.warn = originalWarn;
     },
   };
 }
@@ -342,6 +353,65 @@ describe("workers/cursos: gate no follow-up #4305", () => {
     assert.match(logs.lines[0], /url=/, "sem contexto de request não dá pra distinguir 1 request de 100%");
   });
 
+  it("?email= não-ativo loga a taxa SEM o endereço — merge tag quebrada é indistinguível sem isso", async () => {
+    // A resposta continua idêntica a "não mandou email nenhum" (anti-probing
+    // do #4052 preservado); o log é servidor-side e invisível pro visitante.
+    // Sem ele, uma merge tag quebrada produz este caminho em 100% dos cliques
+    // da newsletter e some no meio do tráfego normal.
+    const env = baseEnv();
+    const logs = captureErrorLogs();
+    let res: Response;
+    try {
+      res = await worker.fetch(new Request("https://cursos.diar.ia.br/?email=ninguem@example.com"), env);
+    } finally {
+      logs.restore();
+    }
+    assert.equal(await res.text(), TEASER_HTML, "resposta não pode mudar — anti-probing");
+    assert.equal(logs.warns.length, 1);
+    assert.match(logs.warns[0], /não confirmado como assinante ativo/);
+    assert.ok(
+      !logs.warns[0].includes("ninguem@example.com"),
+      "endereço de assinante não pode ir parar em log de plataforma (PII a troco de nada)",
+    );
+  });
+
+  it("?email= malformado loga como provável merge tag não resolvida", async () => {
+    const env = baseEnv();
+    const logs = captureErrorLogs();
+    try {
+      await worker.fetch(new Request("https://cursos.diar.ia.br/?email=%7B%7Bemail%7D%7D"), env);
+    } finally {
+      logs.restore();
+    }
+    assert.equal(logs.warns.length, 1);
+    assert.match(logs.warns[0], /malformado/);
+  });
+
+  it("falha do cadastro na Beehiiv loga — 502 mudo derrubaria todo signup sem rastro", async () => {
+    const env = baseEnv({ BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: "pub_1" });
+    const { handleGateSubscribe } = await import("../workers/cursos/src/subscribe.ts");
+    const logs = captureErrorLogs();
+    let res: Response;
+    try {
+      res = await handleGateSubscribe(
+        new Request("https://cursos.diar.ia.br/gate/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "novo@example.com", optin: true }),
+        }),
+        env,
+        { fetchImpl: (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch },
+      );
+    } finally {
+      logs.restore();
+    }
+    assert.equal(res.status, 502);
+    assert.ok(
+      logs.lines.some((l) => /cadastro na Beehiiv falhou/.test(l)),
+      "sem log, Beehiiv fora do ar mata todo cadastro do gate em silêncio",
+    );
+  });
+
   it("sem COOKIE_HMAC_SECRET, / loga — é o ramo que NÃO passa pelo catch", async () => {
     // Desvio de fluxo, não exceção: sem log próprio, um deploy sem o secret
     // serviria teaser pra assinante ativo vindo da newsletter com zero sinal
@@ -379,7 +449,7 @@ describe("workers/cursos: gate no follow-up #4305", () => {
     assert.equal(getCookieHeader(res), null);
   });
 
-  it("sem COOKIE_HMAC_SECRET, /gate/verify responde 503 em vez de cookie de chave vazia", async () => {
+  it("sem COOKIE_HMAC_SECRET, /gate/verify responde 503 em vez de estourar exceção", async () => {
     const email = "assinante@example.com";
     const key = await subscriberKvKey(email);
     const env = baseEnv({
