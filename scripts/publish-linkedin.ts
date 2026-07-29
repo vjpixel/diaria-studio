@@ -283,6 +283,30 @@ export interface ImageCacheState {
  * Exported pra teste direto (evita precisar spawnar o CLI só pra cobrir a
  * classificação — #633 regression coverage do bug original + do novo caso).
  */
+/**
+ * #4293: resolve a URL de imagem pública pra um destaque, aplicando a mesma
+ * precedência já usada por publish-instagram.ts (~L488) e prep-twitter-posts.ts
+ * (resolveTwitterImage, #4264): card 4:5 (`{destaque}_4x5`, com título
+ * embutido, #4114/#4090) quando presente no cache, senão o 1:1 legado
+ * (`{destaque}`). A chave `_4x5` é `optional` em upload-images-public.ts —
+ * sua ausência (edição legada, geração pulada) cai silenciosamente pro 1:1,
+ * nunca é tratada como falha.
+ *
+ * O marcador `no_image` (#3385) NÃO é lido aqui — quem chama esta função
+ * continua consultando `imgCache.images?.[destaque]?.no_image` na chave BASE,
+ * nunca na `_4x5` (a variante 4:5 sendo opcional, sua ausência não é sinal de
+ * "sem imagem"). `classifyImageCache` abaixo também classifica pela chave
+ * base, então o fail-fast #999/#1275 não muda de semântica.
+ */
+export function resolvePublicCardImageUrl(
+  imgCache: ImageCacheFile | null,
+  destaque: string,
+): string | null {
+  const cardUrl = imgCache?.images?.[`${destaque}_4x5`]?.url;
+  const baseUrl = imgCache?.images?.[destaque]?.url;
+  return cardUrl ?? baseUrl ?? null;
+}
+
 export function classifyImageCache(
   destaques: string[],
   imgCache: ImageCacheFile | null,
@@ -952,7 +976,9 @@ async function main(): Promise<void> {
       try {
         const imgCache = JSON.parse(readFileSync(imgCachePath, "utf8")) as ImageCacheFile;
         const entry = imgCache.images?.[d];
-        const url = entry?.url ?? null;
+        // #4293: card 4:5 (com título) > 1:1 legado — mesma precedência do
+        // Instagram/Twitter-X. no_image continua lido da chave base (entry) abaixo.
+        const url = resolvePublicCardImageUrl(imgCache, d);
         if (url) {
           imageUrl = url;
           console.log(`linkedin/${d}: imagem → ${url}`);

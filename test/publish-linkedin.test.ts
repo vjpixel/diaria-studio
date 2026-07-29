@@ -11,6 +11,7 @@ import {
   sanitizeFallbackReason,
   resolveOutrosCount,
   classifyImageCache,
+  resolvePublicCardImageUrl,
   type DispatchContext,
   type DispatchInput,
   type ImageCacheFile,
@@ -518,6 +519,67 @@ describe("image_url via cache 06-public-images.json (#725 bug #9)", () => {
     const emptyCache = {} as { images?: Record<string, {url?: string}> };
     const url = emptyCache.images?.["d1"]?.url ?? null;
     assert.equal(url, null);
+  });
+});
+
+describe("resolvePublicCardImageUrl (#4293 — LinkedIn card 4:5 > 1:1 legado)", () => {
+  it("cache com _4x5 → escolhe o card 4:5, não o 1:1", () => {
+    const cache: ImageCacheFile = {
+      images: {
+        d1: { url: "https://cdn.test/04-d1-1x1.jpg" },
+        d1_4x5: { url: "https://cdn.test/04-d1-4x5.jpg" },
+      },
+    };
+    assert.equal(resolvePublicCardImageUrl(cache, "d1"), "https://cdn.test/04-d1-4x5.jpg");
+  });
+
+  it("cache só com a chave base (sem _4x5) → cai no 1:1 (edição legada / geração pulada)", () => {
+    const cache: ImageCacheFile = {
+      images: { d2: { url: "https://cdn.test/04-d2-1x1.jpg" } },
+    };
+    assert.equal(resolvePublicCardImageUrl(cache, "d2"), "https://cdn.test/04-d2-1x1.jpg");
+  });
+
+  it("no_image:true na chave base → resolvePublicCardImageUrl retorna null (comportamento #3385 preservado pelo caller)", () => {
+    // resolvePublicCardImageUrl não decide no_image — só resolve URL. O caller
+    // (main() em publish-linkedin.ts) consulta `no_image` na entry BASE
+    // separadamente antes de tratar isso como falha real (#999/#1275).
+    const cache: ImageCacheFile = {
+      images: { d3: { no_image: true } },
+    };
+    assert.equal(resolvePublicCardImageUrl(cache, "d3"), null);
+    assert.equal(cache.images?.d3?.no_image, true);
+  });
+
+  it("_4x5 presente mas SEM url (marcador incompleto) → cai no 1:1 da chave base", () => {
+    const cache: ImageCacheFile = {
+      images: {
+        d1: { url: "https://cdn.test/04-d1-1x1.jpg" },
+        d1_4x5: {},
+      },
+    };
+    assert.equal(resolvePublicCardImageUrl(cache, "d1"), "https://cdn.test/04-d1-1x1.jpg");
+  });
+
+  it("nem _4x5 nem base → null", () => {
+    const cache: ImageCacheFile = { images: {} };
+    assert.equal(resolvePublicCardImageUrl(cache, "d1"), null);
+  });
+
+  it("cache null → null sem throw", () => {
+    assert.equal(resolvePublicCardImageUrl(null, "d1"), null);
+  });
+
+  it("classifyImageCache continua classificando pela chave BASE mesmo quando só o 4:5 existe (fail-fast #999/#1275 intacto)", () => {
+    // Regressão de proteção: se o produtor emitir só a variante _4x5 sem a
+    // base (nunca deveria acontecer — base é sempre gerada primeiro), o
+    // destaque deve continuar contando como `missing` (fail-fast), não como
+    // "tem imagem" — classifyImageCache não conhece resolvePublicCardImageUrl,
+    // então isso é garantido por construção; o teste trava esse invariante.
+    const cache: ImageCacheFile = { images: { d1_4x5: { url: "https://cdn.test/04-d1-4x5.jpg" } } };
+    const r = classifyImageCache(["d1"], cache);
+    assert.deepEqual(r.missing, ["d1"]);
+    assert.deepEqual(r.destaques_with_url, []);
   });
 });
 
