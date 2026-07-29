@@ -180,10 +180,11 @@
  *     `README.md`, com badge de slot cruzado de `platform.config.json` →
  *     `boxes_divulgacao`) + `GET/PUT /api/boxes/:slug` (conteúdo + save com o
  *     MESMO guard de mtime de `#3729`, ver `studio-boxes.ts`) +
- *     `GET/PUT /api/boxes/slots` (#3937 — atribuição dos 3 slots de
- *     divulgação pela própria UI, escrita cirúrgica de `boxes_divulgacao` em
- *     `platform.config.json`, mesmo guard de mtime). Criação de caixa nova
- *     está fora de escopo — só edita conteúdo já existente.
+ *     `GET/PUT /api/boxes/slots` (#3937 — atribuição dos 4 slots de
+ *     divulgação, slot0/1/2/3 (slot0 desde #4290), pela própria UI, escrita
+ *     cirúrgica de `boxes_divulgacao` em `platform.config.json`, mesmo guard
+ *     de mtime). Criação de caixa nova está fora de escopo — só edita
+ *     conteúdo já existente.
  *   - Notificação Telegram (#3564, sem rota HTTP própria): um watcher em
  *     background, subido por `startStudioServer` e fechado em `close()`,
  *     observa `gatesPending`/`chatPermissionsPending` (mesmo `buildStudioState`
@@ -1498,6 +1499,7 @@ async function handleApiBoxSlotsSave(
     return;
   }
   const parsed = body as {
+    slot0?: unknown;
     slot1?: unknown;
     slot2?: unknown;
     slot3?: unknown;
@@ -1505,11 +1507,12 @@ async function handleApiBoxSlotsSave(
     force?: unknown;
   } | null;
   const slotField = (v: unknown): string | null => (v === undefined || v === null ? "" : typeof v === "string" ? v : null);
+  const slot0 = slotField(parsed?.slot0);
   const slot1 = slotField(parsed?.slot1);
   const slot2 = slotField(parsed?.slot2);
   const slot3 = slotField(parsed?.slot3);
-  if (slot1 === null || slot2 === null || slot3 === null) {
-    sendJson(res, 400, { error: "campos 'slot1'/'slot2'/'slot3' precisam ser string (slug da caixa) ou vazio" });
+  if (slot0 === null || slot1 === null || slot2 === null || slot3 === null) {
+    sendJson(res, 400, { error: "campos 'slot0'/'slot1'/'slot2'/'slot3' precisam ser string (slug da caixa) ou vazio" });
     return;
   }
   let expectedModifiedAt: string | null | undefined;
@@ -1522,7 +1525,7 @@ async function handleApiBoxSlotsSave(
     expectedModifiedAt = raw;
   }
   const force = parsed?.force === true;
-  const result = saveBoxSlots(rootDir, { slot1, slot2, slot3 }, { expectedModifiedAt, force });
+  const result = saveBoxSlots(rootDir, { slot0, slot1, slot2, slot3 }, { expectedModifiedAt, force });
   // `invalid` (guards 1/2) e qualquer outra falha genérica (config ausente,
   // erro de escrita) caem no mesmo 400 — só `conflict` (guard 4, #3729) tem
   // status próprio (409).

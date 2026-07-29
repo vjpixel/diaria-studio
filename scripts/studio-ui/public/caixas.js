@@ -11,10 +11,10 @@
 // nunca sobrescrita silenciosa (R5 de docs/studio-ui-ux-guidelines.md).
 //
 // #3937: a seção "Slots de divulgação" (topo da página) gerencia a
-// atribuição dos 3 slots pela própria UI — GET/PUT /api/boxes/slots, MESMO
-// mecanismo de guard de mtime (`SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE`) e ZERO
-// UI otimista (refetcha slots + lista após salvar, pra o badge "slot N" dos
-// cards refletir o disco).
+// atribuição dos 4 slots (slot0/1/2/3, slot0 desde #4290) pela própria UI —
+// GET/PUT /api/boxes/slots, MESMO mecanismo de guard de mtime
+// (`SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE`) e ZERO UI otimista (refetcha slots +
+// lista após salvar, pra o badge "slot N" dos cards refletir o disco).
 
 import {
   BOX_SAVE_CONFLICT_CONFIRM_MESSAGE,
@@ -64,7 +64,8 @@ const el = {
   archivedHint: document.getElementById("archived-hint"),
   archivedEmpty: document.getElementById("archived-empty"),
   archivedList: document.getElementById("archived-list"),
-  // #3937: gestão de slots de divulgação
+  // #3937: gestão de slots de divulgação (slot0 desde #4290)
+  slot0Select: document.getElementById("slot0-select"),
   slot1Select: document.getElementById("slot1-select"),
   slot2Select: document.getElementById("slot2-select"),
   slot3Select: document.getElementById("slot3-select"),
@@ -72,10 +73,16 @@ const el = {
   slotsStatus: document.getElementById("slots-status"),
 };
 
-/** Chaves de slot na ordem canônica — usado pra iterar os 3 `<select>` juntos
- * (#3937). Espelha `SLOT_KEYS` de `studio-boxes.ts` (server, autoridade). */
-const SLOT_KEYS = ["slot1", "slot2", "slot3"];
-const SLOT_SELECTS = { slot1: el.slot1Select, slot2: el.slot2Select, slot3: el.slot3Select };
+/** Chaves de slot na ordem canônica — usado pra iterar os 4 `<select>` juntos
+ * (#3937, estendido ao slot0 em #4290). Espelha `SLOT_KEYS` de
+ * `studio-boxes.ts` (server, autoridade). */
+const SLOT_KEYS = ["slot0", "slot1", "slot2", "slot3"];
+const SLOT_SELECTS = {
+  slot0: el.slot0Select,
+  slot1: el.slot1Select,
+  slot2: el.slot2Select,
+  slot3: el.slot3Select,
+};
 
 /** Snapshot da última lista bem-sucedida — `null` até o 1º fetch resolver. */
 let boxes = null;
@@ -92,10 +99,10 @@ let currentSlug = null;
 let loadedModifiedAt = null;
 let dirty = false;
 
-/** Snapshot da atribuição de slots (#3937) — `{slot1, slot2, slot3, modifiedAt}`,
- * `null` até o 1º GET /api/boxes/slots resolver. `modifiedAt` é reenviado como
- * `expectedModifiedAt` no PUT (guard de mtime #3729, mesmo mecanismo do editor
- * de 1 caixa acima). */
+/** Snapshot da atribuição de slots (#3937) — `{slot0, slot1, slot2, slot3,
+ * modifiedAt}` (slot0 desde #4290), `null` até o 1º GET /api/boxes/slots
+ * resolver. `modifiedAt` é reenviado como `expectedModifiedAt` no PUT (guard
+ * de mtime #3729, mesmo mecanismo do editor de 1 caixa acima). */
 let slotsState = null;
 
 function escapeHtml(s) {
@@ -156,7 +163,11 @@ function renderList() {
   for (const box of list) {
     const card = document.createElement("div");
     card.className = "box-card";
-    const slotBadge = box.slot ? `<span class="box-slot-badge">slot ${escapeHtml(String(box.slot))}</span>` : "";
+    // #4290: guard EXPLÍCITO contra null/undefined, não truthy check — `box.slot`
+    // pode ser `0` (slot0, introdução), que é falsy em JS; `box.slot ? … : …`
+    // esconderia o badge/desabilitação pra caixas no slot0.
+    const hasSlot = box.slot !== null && box.slot !== undefined;
+    const slotBadge = hasSlot ? `<span class="box-slot-badge">slot ${escapeHtml(String(box.slot))}</span>` : "";
     // #3981: rótulo exibido acima da caixa na newsletter (quando ocupa um slot ativo).
     const categoriaBadge = box.categoria ? `<span class="box-categoria-badge">${escapeHtml(box.categoria)}</span>` : "";
     const dirtyBadge = box.dirtyVsGit
@@ -165,7 +176,7 @@ function renderList() {
     // #3928: arquivar (não deletar). Caixa em slot ativo é auto-injetada em
     // toda newsletter — arquivá-la quebraria o pipeline, então o botão fica
     // desabilitado (o server também bloqueia, defense-in-depth).
-    const archiveBtn = box.slot
+    const archiveBtn = hasSlot
       ? `<button type="button" class="cx-archive-btn" disabled title="Em uso no slot ${escapeHtml(String(box.slot))} — libere o slot na seção &quot;Slots de divulgação&quot; acima antes de arquivar">Arquivar</button>`
       : `<button type="button" class="cx-archive-btn" data-action="archive" data-slug="${escapeHtml(box.slug)}">Arquivar</button>`;
     // #3933: quando a caixa tem um nome interno explícito que difere do título
@@ -259,7 +270,7 @@ function buildSlotOptionsHtml(assignedSlug) {
   return opts.join("");
 }
 
-/** Repopula os 3 `<select>` a partir de `slotsState` (atribuição atual) +
+/** Repopula os 4 `<select>` a partir de `slotsState` (atribuição atual) +
  * `boxes` (opções disponíveis). No-op antes do 1º GET /api/boxes/slots
  * resolver (`slotsState` ainda `null`) — chamado tanto por `renderAll()`
  * (toda vez que a lista de caixas atualiza) quanto por `fetchSlots()`
@@ -295,6 +306,7 @@ async function fetchSlots() {
 async function saveSlots() {
   if (!slotsState) return;
   const input = {
+    slot0: el.slot0Select.value,
     slot1: el.slot1Select.value,
     slot2: el.slot2Select.value,
     slot3: el.slot3Select.value,

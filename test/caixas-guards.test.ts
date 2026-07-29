@@ -76,7 +76,7 @@ describe("boxArchiveConfirmMessage (#3928)", () => {
   });
 });
 
-describe("findDuplicateSlotAssignment (#3937)", () => {
+describe("findDuplicateSlotAssignment (#3937; slot0 #4290)", () => {
   it("null quando todos os slots são distintos", () => {
     assert.equal(
       findDuplicateSlotAssignment({ slot1: "a.md", slot2: "b.md", slot3: "c.md" }),
@@ -113,6 +113,31 @@ describe("findDuplicateSlotAssignment (#3937)", () => {
   it("tolera undefined/null nos valores dos slots", () => {
     assert.equal(findDuplicateSlotAssignment({ slot1: undefined, slot2: null, slot3: "" }), null);
   });
+
+  it("#4290: null quando slot0 está preenchido e distinto dos demais", () => {
+    assert.equal(
+      findDuplicateSlotAssignment({ slot0: "z.md", slot1: "a.md", slot2: "b.md", slot3: "c.md" }),
+      null,
+    );
+  });
+
+  it("#4290: detecta a mesma caixa em slot0 e slot1", () => {
+    assert.equal(
+      findDuplicateSlotAssignment({ slot0: "a.md", slot1: "a.md", slot2: "", slot3: "" }),
+      "a.md",
+    );
+  });
+
+  it("#4290: tolera slot0 undefined/null (não conta como duplicata)", () => {
+    assert.equal(
+      findDuplicateSlotAssignment({ slot0: undefined, slot1: "a.md", slot2: "", slot3: "" }),
+      null,
+    );
+    assert.equal(
+      findDuplicateSlotAssignment({ slot0: null, slot1: "a.md", slot2: "", slot3: "" }),
+      null,
+    );
+  });
 });
 
 describe("SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE (#3937)", () => {
@@ -123,12 +148,17 @@ describe("SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE (#3937)", () => {
   });
 });
 
-describe("SLOT_POSITION_LABEL (#3937)", () => {
+describe("SLOT_POSITION_LABEL (#3937; slot0 #4290)", () => {
   it("tem uma entrada por slot com a posição descrita na issue", () => {
     assert.match(SLOT_POSITION_LABEL.slot1, /D1/);
     assert.match(SLOT_POSITION_LABEL.slot1, /D2/);
     assert.match(SLOT_POSITION_LABEL.slot2, /D2/);
     assert.match(SLOT_POSITION_LABEL.slot2, /D3/);
     assert.match(SLOT_POSITION_LABEL.slot3, /último destaque/i);
+  });
+
+  it("#4290: slot0 (introdução) descreve a posição antes de D1", () => {
+    assert.match(SLOT_POSITION_LABEL.slot0, /introdução/i);
+    assert.match(SLOT_POSITION_LABEL.slot0, /D1/);
   });
 });
