@@ -1,0 +1,103 @@
+/* skills.css (#4270) — catálogo de skills. Reusa .panel/.hint/.alert-banner
+   de style.css e .panel-header-row/.filter-field de triagem.css (já
+   linkados em skills.html) — só o layout de cards por grupo é específico
+   desta página (uma tabela ficaria ruim aqui: description e o bloco de
+   Argumentos são texto livre, de tamanho variável). */
+
+.skills-group {
+  margin-bottom: 1.5rem;
+}
+.skills-group-title {
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.7;
+  margin: 0 0 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--rule);
+}
+.skills-group:first-child .skills-group-title {
+  border-top: none;
+  padding-top: 0;
+}
+
+.skill-card {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+  background: var(--paper);
+}
+
+.skill-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
+.skill-invocable {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.skill-copy-btn {
+  font-size: 0.72rem;
+  padding: 0.15rem 0.5rem;
+  /* R12: alvo de toque ainda pequeno de propósito (ação reversível/local,
+     R6) — mas com padding suficiente pra não colar no texto vizinho. */
+}
+.skill-copy-btn[data-copied="1"] {
+  background: var(--status-ok);
+  color: #fff;
+  border-color: var(--status-ok);
+}
+
+.skill-description {
+  margin: 0 0 0.4rem;
+  font-size: 0.88rem;
+}
+.skill-description:empty::before,
+.skill-description.is-missing::before {
+  content: "(sem descrição no frontmatter)";
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.skill-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-bottom: 0.4rem;
+}
+.skill-flag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  opacity: 0.85;
+}
+.skill-flag-disabled {
+  border-color: var(--status-warn);
+  color: var(--status-warn-ink, inherit);
+}
+
+.skill-args {
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  background: var(--paper-alt);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  margin: 0;
+  font-family: var(--font-mono);
+}
+
+.skill-source {
+  font-size: 0.7rem;
+  opacity: 0.6;
+  margin-top: 0.35rem;
+}

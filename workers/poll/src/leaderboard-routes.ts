@@ -575,6 +575,11 @@ export function shouldShowMonthNotStarted(slugCmp: number, entryCount: number): 
 // mesmo bloco `nick-box` direto no leaderboard — sem precisar votar de novo
 // pra ver o form.
 
+// #4250: atraso do retry único abaixo (bounded — nunca mais de 1 espera por
+// request). KV costuma converger bem abaixo disso; documentado como
+// constante nomeada em vez de literal solto pro racional ficar buscável.
+const NICKNAME_FORM_SCORE_RETRY_MS = 150;
+
 /**
  * #4232: resolve se o form de nickname deve renderizar nesta view do
  * leaderboard, a partir de `email`+`sig` na query string. Fail-closed em
@@ -590,6 +595,26 @@ export function shouldShowMonthNotStarted(slugCmp: number, entryCount: number): 
  * link assinado por e-mail. Defesa em profundidade — `votePageHtml` (index.ts)
  * já não anexa `email`/`sig` ao link "Ver leaderboard" pro brand `web`, mas
  * nada impede alguém de montar a URL manualmente.
+ *
+ * #4250 (fix — race de baixa severidade, achado no review consolidado
+ * develop 260728): `/vote` sempre toma o fast-path (`ctx.waitUntil`, #3983,
+ * `handleVoteFastPath`/vote.ts) — a resposta (com o link "Ver leaderboard"
+ * carregando `email`+`sig`, é ISSO que autoriza a sig aqui) é enviada ANTES
+ * de `runVoteBookkeeping` gravar `score:{email}` no KV em background. Pra um
+ * votante de PRIMEIRA vez, se esse leitor (ou um prefetch do navegador)
+ * acessar esta URL antes dessa escrita terminar, `env.POLL.get` abaixo não
+ * encontrava `score:{email}` ainda e o form silenciosamente não renderizava
+ * — justo pra população-alvo do CTA. Fix escolhido (decisão do editor,
+ * #4250): retry ÚNICO, com atraso curto, só neste read opcional/decorativo —
+ * NUNCA no fast-path de `/vote` em si (hot path, #3983; esperar
+ * `runVoteBookkeeping` ali de volta introduziria a latência que o #3983
+ * existe pra eliminar, pra TODO votante de primeira vez, não só quem cai
+ * nesta race — risco desproporcional pra uma race P3 de baixo impacto). Uma
+ * sig válida só é alcançável tendo genuinamente recebido a resposta de
+ * `/vote` (depende de `POLL_SECRET`), então "sig válida + score ausente" é,
+ * na prática, ou esta race (retry resolve) ou uma anomalia real (retry
+ * apenas confirma o `null`, mesmo resultado fail-closed de antes — nunca
+ * piora).
  */
 export async function resolveLeaderboardNicknameForm(
   url: URL,
@@ -623,9 +648,15 @@ export async function resolveLeaderboardNicknameForm(
   // (mesmo contrato documentado acima — "nunca expõe o form indevidamente"),
   // nunca propaga pro caller.
   try {
-    const raw = await env.POLL.get(`score:${email}`);
+    let raw = await env.POLL.get(`score:${email}`);
+    // #4250: só retry quando a 1ª leitura veio vazia — o caminho quente
+    // (score já gravado, o caso comum fora da race) nunca paga o atraso.
+    if (raw === null) {
+      await new Promise<void>((resolve) => setTimeout(resolve, NICKNAME_FORM_SCORE_RETRY_MS));
+      raw = await env.POLL.get(`score:${email}`);
+    }
     const score = safeParseKv<{ nickname?: string | null }>(raw, "leaderboard_nickname_form_score_parse_error", email);
-    if (!score || score.nickname) return null; // sem voto registrado, ou já tem nickname
+    if (!score || score.nickname) return null; // sem voto registrado (mesmo após o retry), ou já tem nickname
     return { email, sig };
   } catch (e) {
     console.error(JSON.stringify({ event: "leaderboard_nickname_form_kv_error", email, error: String(e) }));

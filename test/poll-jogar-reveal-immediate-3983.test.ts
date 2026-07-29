@@ -421,7 +421,14 @@ describe("renderJogarSequencePageHtml (#3983) — reveal por rodada, reverte o S
     // (editions[0]) — deriva o índice MENSAL do merge de identificação (ver
     // rationale em web-gate.ts/renderJogarGatePage). Sem isso o gate
     // renderizaria com GATE_EDITION="" e o merge só migraria o score global.
-    assert.match(html, /window\.location\.href = "\/jogar\?v=" \+ Date\.now\(\) \+ "&edition=" \+ encodeURIComponent\(editions\[0\]\)/, "redirect pro gate repassa a edição representativa da sequência");
+    // #4271: o param mudou de nome pra `seq_ctx_edition` (NUNCA mais
+    // `edition`) — handleJogarPage (jogar.ts) agora usa o NOME do param pra
+    // diferenciar "contexto do identify vindo da sequência" de "navegação de
+    // verdade pra 1 edição" (link de ponte clarice/arquivo); reusar `edition`
+    // aqui faria o gate tratar isto como o 2º caso e vazar o valor pro
+    // destino de navegação pós-skip/cadastro de novo (regressão do #4268).
+    assert.match(html, /window\.location\.href = "\/jogar\?v=" \+ Date\.now\(\) \+ "&seq_ctx_edition=" \+ encodeURIComponent\(editions\[0\]\)/, "redirect pro gate repassa a edição representativa da sequência via seq_ctx_edition");
+    assert.doesNotMatch(html, /"&edition=" \+ encodeURIComponent\(editions\[0\]\)/, "#4271: nunca mais deve mandar edition= (só seq_ctx_edition=) — reintroduziria a ambiguidade do #4268");
   });
 
   it("goNext: fail-open se o fetch de checagem de gate falhar (rede indisponível não pode travar o jogo)", () => {

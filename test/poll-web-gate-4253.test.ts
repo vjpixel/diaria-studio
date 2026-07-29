@@ -468,7 +468,7 @@ describe("#4268: gate no meio da sequência NUNCA joga o jogador pra fora dela (
 
   it("goToGame() (redirect pós-verify OU pós-subscribe bem-sucedidos — login E cadastro passam por aqui, ver docstring da função) NUNCA leva edition= no alvo de navegação", () => {
     const html = renderJogarGatePage("260601");
-    const fnMatch = html.match(/function goToGame\(\) \{\s*window\.location\.href = ([^;]+);/);
+    const fnMatch = html.match(/function goToGame\(\) \{[\s\S]*?window\.location\.href = ([^;]+);/);
     assert.ok(fnMatch, "goToGame() deve existir no script");
     const expr = fnMatch![1];
     assert.ok(
@@ -508,10 +508,11 @@ describe("#4268: gate no meio da sequência NUNCA joga o jogador pra fora dela (
 
   it("fim-a-fim: skipHref extraído do gate no meio da sequência resolve pra sequência, NUNCA pra edição única", async () => {
     const env = makeEnv();
-    // Simula goNext() (jogar.ts:1873): gate no meio da sequência repassa
-    // edition=editions[0] só como contexto do identify.
+    // Simula goNext() (jogar.ts:1873, atualizado no #4271): gate no meio da
+    // sequência repassa seq_ctx_edition=editions[0] (NUNCA edition=) só como
+    // contexto do identify.
     const gateRes = await worker.fetch(
-      new Request("https://poll.test/jogar?edition=260601", {
+      new Request("https://poll.test/jogar?seq_ctx_edition=260601", {
         headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` },
       }),
       env,
@@ -540,13 +541,13 @@ describe("#4268: gate no meio da sequência NUNCA joga o jogador pra fora dela (
   it("fim-a-fim: goToGame() (pós-verify/subscribe, sessão já válida) resolve pra sequência, NUNCA pra edição única", async () => {
     const env = makeEnv();
     const gateRes = await worker.fetch(
-      new Request("https://poll.test/jogar?edition=260601", {
+      new Request("https://poll.test/jogar?seq_ctx_edition=260601", {
         headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` },
       }),
       env,
     );
     const gateHtml = await gateRes.text();
-    const fnMatch = gateHtml.match(/function goToGame\(\) \{\s*window\.location\.href = ([^;]+);/);
+    const fnMatch = gateHtml.match(/function goToGame\(\) \{[\s\S]*?window\.location\.href = ([^;]+);/);
     assert.ok(fnMatch, "gate deve ter goToGame()");
     // avalia a expressão JS ("/jogar?v=" + Date.now()) do jeito que o
     // browser faria — sem Date.now() real (proibido em scripts, mas isto é
@@ -572,6 +573,140 @@ describe("#4268: gate no meio da sequência NUNCA joga o jogador pra fora dela (
       new RegExp(SEQUENCE_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
       "#4268: goToGame() deve resolver pra sequência (23 rodadas), não pra edição única — regressão reproduzida ao vivo",
     );
+    assert.doesNotMatch(nextHtml, new RegExp(SINGLE_EDITION_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+});
+
+describe("#4271: gate via link de edição única de verdade preserva o destino pós-skip/cadastro", () => {
+  // Follow-up do #4268/#4269 (tradeoff aceito então, resolvido agora): quem
+  // chega no gate via um link de edição única de verdade (ponte
+  // clarice/arquivo, jogar.ts ~linha 2190, #3524/#3578) — não via goNext() no
+  // meio da sequência — precisa voltar pra ESSA edição específica após
+  // skip/cadastro, não pra sequência genérica. Diferenciado agora por NOME de
+  // param: `seq_ctx_edition=` (só goNext()) nunca vira destino de navegação;
+  // `edition=` sobrevivendo na URL de entrada SEM `seq_ctx_edition=` é, de
+  // fato, uma navegação real pra edição única.
+  const SEQUENCE_TITLE_MARKER = "qual imagem foi feita por IA?";
+  const SINGLE_EDITION_TITLE_MARKER = "jogue e vote";
+
+  it("renderJogarGatePage(ctx, targetEdition) inclui edition= no skip-link quando targetEdition é passado", () => {
+    const html = renderJogarGatePage("260601", "260601");
+    const hrefMatch = html.match(/class="skip-link" href="([^"]+)"/);
+    assert.ok(hrefMatch, "link de skip deve existir");
+    assert.match(
+      hrefMatch![1],
+      /[?&]edition=260601\b/,
+      "#4271: skip-link deve preservar edition= quando o gate veio de um link de edição única real",
+    );
+    assert.match(hrefMatch![1], /skip_gate=1/, "skip continua liberando esta navegação específica");
+  });
+
+  it("renderJogarGatePage(ctx, targetEdition) inclui edition= no alvo de goToGame() quando targetEdition é passado", () => {
+    const html = renderJogarGatePage("260601", "260601");
+    const fnMatch = html.match(/function goToGame\(\) \{[\s\S]*?window\.location\.href = ([^;]+);/);
+    assert.ok(fnMatch, "goToGame() deve existir no script");
+    const expr = fnMatch![1].replace(/Date\.now\(\)/g, "1");
+    // eslint-disable-next-line no-new-func
+    const target = new Function(`return ${expr};`)() as string;
+    assert.match(target, /[?&]edition=260601\b/, "#4271: goToGame() deve preservar edition= quando o gate veio de um link de edição única real");
+  });
+
+  it("sem targetEdition (default, caso da sequência): skip-link e goToGame() continuam sem edition= — #4268 intocado", () => {
+    const html = renderJogarGatePage("260601");
+    const hrefMatch = html.match(/class="skip-link" href="([^"]+)"/);
+    assert.ok(hrefMatch);
+    assert.ok(!/[?&]edition=/.test(hrefMatch![1]));
+    const fnMatch = html.match(/function goToGame\(\) \{[\s\S]*?window\.location\.href = ([^;]+);/);
+    assert.ok(fnMatch);
+    assert.ok(!/edition/.test(fnMatch![1]));
+  });
+
+  it("fim-a-fim: link de edição única de verdade no gate — skipHref preserva a edição pedida, NUNCA cai na sequência genérica", async () => {
+    const env = makeEnv();
+    // Navegação real pra 1 edição (sem seq_ctx_edition=) cruzando o nudge
+    // sem sessão — o cenário descrito na issue #4271.
+    const gateRes = await worker.fetch(
+      new Request("https://poll.test/jogar?edition=260601", {
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` },
+      }),
+      env,
+    );
+    assert.equal(gateRes.status, 200);
+    assert.equal(gateRes.headers.get("X-Eia-Gate"), "1", "essa request deve mesmo cair no gate (contador no limiar, sem sessão)");
+    const gateHtml = await gateRes.text();
+    const hrefMatch = gateHtml.match(/class="skip-link" href="([^"]+)"/);
+    assert.ok(hrefMatch, "gate deve ter o link de skip");
+    const skipHref = hrefMatch![1];
+    assert.match(skipHref, /[?&]edition=260601\b/, "#4271: skipHref deve preservar a edição pedida");
+
+    const nextRes = await worker.fetch(
+      new Request(`https://poll.test${skipHref}`, { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` } }),
+      env,
+    );
+    assert.equal(nextRes.status, 200);
+    const nextHtml = await nextRes.text();
+    assert.match(
+      nextHtml,
+      new RegExp(SINGLE_EDITION_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      "#4271: skipHref deve resolver pra edição única pedida, não pra sequência genérica",
+    );
+    assert.doesNotMatch(nextHtml, new RegExp(SEQUENCE_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+
+  it("fim-a-fim: link de edição única de verdade no gate — goToGame() (pós-verify/subscribe) também preserva a edição pedida", async () => {
+    const env = makeEnv();
+    const gateRes = await worker.fetch(
+      new Request("https://poll.test/jogar?edition=260601", {
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` },
+      }),
+      env,
+    );
+    const gateHtml = await gateRes.text();
+    const fnMatch = gateHtml.match(/function goToGame\(\) \{[\s\S]*?window\.location\.href = ([^;]+);/);
+    assert.ok(fnMatch, "gate deve ter goToGame()");
+    const expr = fnMatch![1].replace(/Date\.now\(\)/g, "1");
+    // eslint-disable-next-line no-new-func
+    const target = new Function(`return ${expr};`)() as string;
+    assert.match(target, /[?&]edition=260601\b/, "#4271: alvo de goToGame() deve preservar a edição pedida");
+
+    const sessionCookie = (await issueWebSessionCookie("cookie-secret", "leitor@example.com")).split(";")[0];
+    const nextRes = await worker.fetch(
+      new Request(`https://poll.test${target}`, {
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5; ${sessionCookie}` },
+      }),
+      env,
+    );
+    assert.equal(nextRes.status, 200);
+    const nextHtml = await nextRes.text();
+    assert.match(
+      nextHtml,
+      new RegExp(SINGLE_EDITION_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      "#4271: goToGame() deve resolver pra edição única pedida, não pra sequência genérica",
+    );
+    assert.doesNotMatch(nextHtml, new RegExp(SEQUENCE_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+
+  it("regressão #4268: sequência (seq_ctx_edition=, sem edition=) continua indo pra sequência, nunca pra edição única", async () => {
+    const env = makeEnv();
+    const gateRes = await worker.fetch(
+      new Request("https://poll.test/jogar?seq_ctx_edition=260601", {
+        headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` },
+      }),
+      env,
+    );
+    assert.equal(gateRes.status, 200);
+    assert.equal(gateRes.headers.get("X-Eia-Gate"), "1");
+    const gateHtml = await gateRes.text();
+    const hrefMatch = gateHtml.match(/class="skip-link" href="([^"]+)"/);
+    assert.ok(hrefMatch);
+    assert.ok(!/[?&]edition=/.test(hrefMatch![1]), "#4271: seq_ctx_edition nunca deve vazar como edition= de navegação");
+
+    const nextRes = await worker.fetch(
+      new Request(`https://poll.test${hrefMatch![1]}`, { headers: { Cookie: `${ROUNDS_PLAYED_COOKIE}=5` } }),
+      env,
+    );
+    const nextHtml = await nextRes.text();
+    assert.match(nextHtml, new RegExp(SEQUENCE_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.doesNotMatch(nextHtml, new RegExp(SINGLE_EDITION_TITLE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 });

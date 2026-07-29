@@ -123,6 +123,80 @@ describe("resolveLeaderboardNicknameForm (#4232)", () => {
     assert.equal(result, null);
   });
 
+  // #4250 (regressão): fast-path de /vote (#3983) responde ANTES de
+  // runVoteBookkeeping gravar score:{email} em background. Um votante de
+  // primeira vez que acessa este endpoint (ou um prefetch do navegador)
+  // antes dessa escrita terminar via, sem o retry, um falso "sem voto
+  // registrado" — o form some justo pra quem ele foi feito. Fix: 1 retry
+  // curto quando a 1ª leitura vem vazia (ver NICKNAME_FORM_SCORE_RETRY_MS em
+  // leaderboard-routes.ts).
+  it("#4250: 1ª leitura vazia (race do fast-path em voo) + retry já resolvido → CTA aparece (não perde o form pra quem acabou de votar)", async () => {
+    const email = "reader@x.com";
+    const sig = await hmacSign(SECRET, `setname:${email}`);
+    let calls = 0;
+    const env: Env = {
+      POLL: {
+        get: async (key: string) => {
+          if (key !== `score:${email}`) return null;
+          calls++;
+          // 1ª leitura: bookkeeping em background ainda não gravou (race).
+          // 2ª leitura (retry): já gravou — mesmo timing real que o
+          // ctx.waitUntil converge em produção.
+          return calls === 1 ? null : JSON.stringify({ total: 1, correct: 1, nickname: null });
+        },
+      } as unknown as Env["POLL"],
+      POLL_SECRET: SECRET,
+      ADMIN_SECRET: "admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+    const url = new URL(`https://poll.example/leaderboard?email=${encodeURIComponent(email)}&sig=${sig}`);
+    const result = await resolveLeaderboardNicknameForm(url, env, "diaria");
+    assert.deepEqual(result, { email, sig }, "#4250: retry deve recuperar o score gravado em voo e liberar o form");
+    assert.equal(calls, 2, "deve ter tentado 2x: 1ª leitura vazia + retry");
+  });
+
+  it("#4250: score continua ausente mesmo após o retry → null (fail-closed preservado, sem regressão no caminho sem voto de verdade)", async () => {
+    const email = "nunca-votou-de-verdade@x.com";
+    const sig = await hmacSign(SECRET, `setname:${email}`);
+    let calls = 0;
+    const env: Env = {
+      POLL: {
+        get: async () => {
+          calls++;
+          return null;
+        },
+      } as unknown as Env["POLL"],
+      POLL_SECRET: SECRET,
+      ADMIN_SECRET: "admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+    const url = new URL(`https://poll.example/leaderboard?email=${encodeURIComponent(email)}&sig=${sig}`);
+    const result = await resolveLeaderboardNicknameForm(url, env, "diaria");
+    assert.equal(result, null, "#4250: sem score mesmo após o retry continua fail-closed, nunca expõe o form indevidamente");
+    assert.equal(calls, 2, "o retry acontece mesmo quando o resultado final é null — não dá pra saber de antemão que é definitivo");
+  });
+
+  it("#4250: score já presente na 1ª leitura → NUNCA dispara o retry (caminho comum sem atraso extra)", async () => {
+    const email = "reader@x.com";
+    const sig = await hmacSign(SECRET, `setname:${email}`);
+    let calls = 0;
+    const env: Env = {
+      POLL: {
+        get: async () => {
+          calls++;
+          return JSON.stringify({ total: 1, correct: 1, nickname: null });
+        },
+      } as unknown as Env["POLL"],
+      POLL_SECRET: SECRET,
+      ADMIN_SECRET: "admin-secret",
+      ALLOWED_ORIGINS: "*",
+    };
+    const url = new URL(`https://poll.example/leaderboard?email=${encodeURIComponent(email)}&sig=${sig}`);
+    const result = await resolveLeaderboardNicknameForm(url, env, "diaria");
+    assert.deepEqual(result, { email, sig });
+    assert.equal(calls, 1, "#4250: sem race (score já presente), o retry nunca deve disparar — sem atraso extra no caminho comum");
+  });
+
   it("brand 'web' → sempre null, mesmo com sig válida (defesa em profundidade — escopo #4232)", async () => {
     const email = "reader@x.com";
     const sig = await hmacSign(SECRET, `setname:${email}`);

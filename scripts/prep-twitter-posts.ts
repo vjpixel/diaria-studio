@@ -1,6 +1,7 @@
 /**
  * prep-twitter-posts.ts (#3994, substitui publish-twitter.ts/twitter-oauth1.ts;
- * #4103 — dueAt via schedule compartilhado, mode customScheduled)
+ * #4103 — dueAt via schedule compartilhado, mode customScheduled;
+ * #4285/#4264 adendo do editor — gate de char limit pondera URL como 23 chars)
  *
  * Publicação no X mudou de "API direta da X" (OAuth 1.0a, pay-per-usage desde
  * que o free tier acabou — ~$0.20/post com link) para "via Buffer" (MCP
@@ -20,6 +21,25 @@
  * **Sem fallback** — ausência da seção/destaque é tratada como "sem conteúdo
  * pronto pro X nesta edição", nunca improvisando texto (decisão da issue #3994).
  *
+ * **CTA aponta pra edição, não pra home (#4285/#4264 adendo do editor):**
+ * `social-curto.md` escreve o placeholder literal `{edition_url}` no CTA
+ * (mesmo padrão do `## post_pixel`) em vez de `"Mais em diar.ia.br"`
+ * hardcoded. `resolve-edition-url.ts` já substitui `{edition_url}` no
+ * `03-social.md` inteiro (incluindo `# Curto`) ANTES deste script rodar
+ * (5c-2 roda antes de 5c-3b) — este script sempre lê o texto já com a URL
+ * real. Ver `computeTwitterWeightedLength` abaixo pro porquê o gate de
+ * limite não usa `text.length` cru contra essa URL.
+ *
+ * **Imagem (#4264):** cada post ganha `imageUrl`/`altText` resolvidos de
+ * `06-public-images.json` (gerado por `upload-images-public.ts` no 5c-pre),
+ * MESMO critério de precedência já usado por `publish-instagram.ts`
+ * (~L488): `images.d{N}_4x5.url` (card com título, preferencial) com
+ * fallback pra `images.d{N}.url` (1:1, sempre presente). **Sem fallback
+ * silencioso pro destaque inteiro** — se o cache não existe ou não tem a
+ * entry, o post continua saindo (só texto, `imageUrl: null`) e o motivo vai
+ * pra `skipped_image` (visível no resumo da edição) — X sem imagem é pior
+ * que X nenhum, então isso nunca vira um `skipped` de verdade.
+ *
  * **dueAt (#4103):** cada post ganha um `dueAt` calculado por
  * `computeScheduledAt` de `compute-social-schedule.ts` — o MESMO helper usado
  * por `publish-facebook.ts`/`publish-linkedin.ts`/`publish-instagram.ts`/
@@ -37,9 +57,10 @@
  *     [--skip-existing]     # pula destaques já em 06-social-published.json (default: true)
  *     [--no-skip-existing]  # força re-inclusão
  *
- * Output (stdout, JSON): { enabled, published_path, posts: [{destaque, text, dueAt}], skipped: [...] }
+ * Output (stdout, JSON): { enabled, published_path, posts: [{destaque, text, dueAt, imageUrl, altText}], skipped: [...], skipped_image: [...] }
  * `posts` é a lista que o orchestrator deve efetivamente postar via Buffer MCP
- * (`mode: "customScheduled"`, `dueAt` = `post.dueAt`).
+ * (`mode: "customScheduled"`, `dueAt` = `post.dueAt`; quando `imageUrl` não é
+ * `null`, passar `assets: [{ image: { url: imageUrl, metadata: { altText } } }]`).
  */
 
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
@@ -55,6 +76,34 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Limite de caracteres por tweet. */
 export const TWITTER_CHAR_LIMIT = 280;
+
+/**
+ * Peso que o X (t.co) atribui a QUALQUER URL dentro de um post, independente
+ * do comprimento literal — desde #3994. `text.length` cru superestima o custo
+ * de uma URL longa (#4285/#4264 adendo do editor): `{edition_url}` resolve
+ * pra `https://diar.ia.br/p/{slug}`, tipicamente 40-80 chars literais, mas o
+ * X sempre conta 23 na hora de aplicar o limite de 280. Sem essa correção,
+ * um slug longo derrubava o post pro `skipped` sem que ele de fato
+ * estourasse no X.
+ */
+export const TWITTER_URL_WEIGHT = 23;
+
+/** Reconhece URLs http(s) dentro do texto do post, pra fins de contagem ponderada. */
+const URL_RE = /https?:\/\/\S+/g;
+
+/**
+ * Calcula o comprimento "ponderado" de um post do X, contando cada URL como
+ * `TWITTER_URL_WEIGHT` chars (t.co) em vez do comprimento literal — o mesmo
+ * critério que o X usa de verdade pra aplicar o limite de 280 (#4285/#4264
+ * adendo do editor, #3994). Texto sem nenhuma URL: idêntico a `text.length`.
+ */
+export function computeTwitterWeightedLength(text: string): number {
+  let delta = 0;
+  for (const match of text.matchAll(URL_RE)) {
+    delta += TWITTER_URL_WEIGHT - match[0].length;
+  }
+  return text.length + delta;
+}
 
 /**
  * Extrai a lista de destaques da seção `# Curto` do 03-social.md.
@@ -88,8 +137,64 @@ export function extractCurtoText(socialMd: string, destaque: string): string | n
 export interface PrepResult {
   enabled: boolean;
   published_path: string | null;
-  posts: Array<{ destaque: string; text: string; dueAt: string }>;
+  posts: Array<{
+    destaque: string;
+    text: string;
+    dueAt: string;
+    imageUrl: string | null;
+    altText: string | null;
+  }>;
   skipped: Array<{ destaque: string; reason: string }>;
+  /** #4264: destaques com post normal mas sem imagem resolvida — motivo aqui, nunca em `skipped`. */
+  skipped_image: Array<{ destaque: string; reason: string }>;
+}
+
+/**
+ * Resolve a URL pública + alt text de um destaque a partir de
+ * `06-public-images.json` (#4264). MESMO critério de precedência de
+ * `publish-instagram.ts` (~L488): card 4:5 (com título) > 1:1 (sempre
+ * presente, sem título). Retorna `{ imageUrl: null, reason }` quando o
+ * cache não existe ou não tem entry pro destaque — nunca lança.
+ */
+export function resolveTwitterImage(
+  editionDir: string,
+  destaque: string,
+  editionDate: string,
+): { imageUrl: string | null; altText: string | null; reason: string | null } {
+  const publicImagesPath = resolve(editionDir, "06-public-images.json");
+  if (!existsSync(publicImagesPath)) {
+    return {
+      imageUrl: null,
+      altText: null,
+      reason: "06-public-images.json ausente — rode upload-images-public.ts",
+    };
+  }
+
+  let images: Record<string, { url?: string }> | undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(publicImagesPath, "utf8")) as {
+      images?: Record<string, { url?: string }>;
+    };
+    images = parsed.images;
+  } catch (e: any) {
+    return {
+      imageUrl: null,
+      altText: null,
+      reason: `06-public-images.json inválido — ${e.message}`,
+    };
+  }
+
+  const imageUrl = images?.[`${destaque}_4x5`]?.url ?? images?.[destaque]?.url ?? null;
+  if (!imageUrl) {
+    return {
+      imageUrl: null,
+      altText: null,
+      reason: `public URL para ${destaque} ausente em 06-public-images.json`,
+    };
+  }
+
+  const altText = `Imagem do destaque ${destaque.toUpperCase()} da edição Diar.ia de ${editionDate}`;
+  return { imageUrl, altText, reason: null };
 }
 
 /**
@@ -109,7 +214,7 @@ export function prepTwitterPosts(
   const gateConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8"));
   const twitterGateConfig = gateConfig?.publishing?.social?.twitter;
   if (twitterGateConfig?.enabled === false) {
-    return { enabled: false, published_path: null, posts: [], skipped: [] };
+    return { enabled: false, published_path: null, posts: [], skipped: [], skipped_image: [] };
   }
 
   const socialMdPath = resolve(editionDir, "03-social.md");
@@ -133,9 +238,10 @@ export function prepTwitterPosts(
   const destaques = extractDestaquesFromCurto(socialMd);
   const posts: PrepResult["posts"] = [];
   const skipped: PrepResult["skipped"] = [];
+  const skippedImage: PrepResult["skipped_image"] = [];
 
   if (destaques.length === 0) {
-    return { enabled: true, published_path: publishedPath, posts, skipped };
+    return { enabled: true, published_path: publishedPath, posts, skipped, skipped_image: skippedImage };
   }
 
   const published = readSocialPublished(publishedPath);
@@ -160,10 +266,14 @@ export function prepTwitterPosts(
       continue;
     }
 
-    if (text.length > TWITTER_CHAR_LIMIT) {
+    // #4285/#4264 adendo do editor: conta URL como TWITTER_URL_WEIGHT (peso
+    // real do X via t.co), não o comprimento literal — {edition_url} resolvido
+    // pode ter 40-80 chars literais sem de fato estourar o limite no X.
+    const weightedLength = computeTwitterWeightedLength(text);
+    if (weightedLength > TWITTER_CHAR_LIMIT) {
       skipped.push({
         destaque: d,
-        reason: `texto de ${text.length} chars excede ${TWITTER_CHAR_LIMIT} — sem truncagem silenciosa`,
+        reason: `texto com ${weightedLength} chars (peso X, URL=${TWITTER_URL_WEIGHT}; ${text.length} chars literais) excede ${TWITTER_CHAR_LIMIT} — sem truncagem silenciosa`,
       });
       continue;
     }
@@ -178,10 +288,15 @@ export function prepTwitterPosts(
       now: opts.now,
     });
 
-    posts.push({ destaque: d, text, dueAt });
+    const { imageUrl, altText, reason: imageReason } = resolveTwitterImage(editionDir, d, editionDate);
+    if (imageReason) {
+      skippedImage.push({ destaque: d, reason: imageReason });
+    }
+
+    posts.push({ destaque: d, text, dueAt, imageUrl, altText });
   }
 
-  return { enabled: true, published_path: publishedPath, posts, skipped };
+  return { enabled: true, published_path: publishedPath, posts, skipped, skipped_image: skippedImage };
 }
 
 async function main() {
