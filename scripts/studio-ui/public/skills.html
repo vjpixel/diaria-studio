@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Diar.ia Studio — Skills</title>
+  <link rel="stylesheet" href="/tokens.generated.css" />
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/nav.css" />
+  <link rel="stylesheet" href="/triagem.css" />
+  <link rel="stylesheet" href="/integracoes.css" />
+  <link rel="stylesheet" href="/skills.css" />
+  <link rel="stylesheet" href="/chat-drawer.css" />
+</head>
+<body>
+  <header class="statusbar">
+    <nav id="app-nav" class="app-nav" aria-label="Navegação do Studio"></nav>
+    <div class="statusbar-item">
+      <span class="label">Skills</span>
+      <span class="value" id="exec-mode-value">—</span>
+    </div>
+    <div class="statusbar-item conn" id="fetch-status">
+      <span class="dot" id="fetch-dot"></span>
+      <span id="fetch-label">carregando…</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h1>Skills — catálogo de comandos</h1>
+      <p class="hint">
+        Todas as skills versionadas em <code>.claude/skills/*/SKILL.md</code>,
+        lidas do filesystem a cada carregamento — nunca uma lista mantida à
+        mão (é exatamente essa duplicação que já defasa hoje no CLAUDE.md).
+        Diretórios sem <code>SKILL.md</code> (stale/vazios) não aparecem.
+      </p>
+      <p class="hint">
+        <strong>Só skills deste repositório.</strong> A skill
+        <code>humanizador</code> é instalada globalmente
+        (<code>~/.claude/skills/humanizador</code>, fora do checkout — ver
+        CLAUDE.md setup 3a) e não entra neste catálogo.
+      </p>
+      <p class="hint">
+        <strong>Fora de escopo:</strong> este catálogo é somente leitura.
+        Disparar uma skill continua sendo pelo chat drawer — o botão "Copiar
+        comando" existe pra colar lá.
+      </p>
+      <div id="skills-error" class="panel alert-banner" role="alert" hidden></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header-row">
+        <h2>Skills (<span id="skills-count">0</span>)</h2>
+        <label class="filter-field">
+          <span class="label">Buscar</span>
+          <input type="search" id="filter-search" placeholder="nome ou descrição…" />
+        </label>
+        <button id="refresh-btn" type="button">Atualizar</button>
+        <span id="last-updated" class="hint"></span>
+      </div>
+      <div id="skills-empty" class="hint" hidden>Nenhuma skill encontrada.</div>
+      <div id="skills-groups"></div>
+    </section>
+  </main>
+
+  <script>window.STUDIO_PAGE = "skills";</script>
+  <script src="/nav.js" type="module"></script>
+  <script src="/skills.js" type="module"></script>
+  <script src="/chat-drawer.js" type="module"></script>
+</body>
+</html>

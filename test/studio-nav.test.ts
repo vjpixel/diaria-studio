@@ -42,9 +42,9 @@ const SERVER_TS = readFileSync(resolve(REPO_ROOT, "scripts", "studio-ui", "serve
 // ─── lógica pura (nav-core.js) ──────────────────────────────────────────
 
 describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra server.ts", () => {
-  it("cobre os 10 destinos de página, agora agrupados por fluxo de trabalho (#4002: home/revisao/caixas · rodada/triagem/relatorios · apoios/painel-diaria · integracoes)", () => {
+  it("cobre os 11 destinos de página, agora agrupados por fluxo de trabalho (#4002: home/revisao/caixas · rodada/triagem/relatorios · apoios/painel-diaria · integracoes/utms/skills)", () => {
     const ids = NAV_ITEMS.map((i) => i.id);
-    assert.deepEqual(ids, ["home", "revisao", "caixas", "rodada", "triagem", "relatorios", "apoios", "painel-diaria", "integracoes", "utms"]);
+    assert.deepEqual(ids, ["home", "revisao", "caixas", "rodada", "triagem", "relatorios", "apoios", "painel-diaria", "integracoes", "utms", "skills"]);
   });
 
   it("todo item (exceto revisao, que resolve em runtime) tem href estático não-vazio", () => {
@@ -130,13 +130,13 @@ describe("NAV_ITEMS / DASHBOARD_LINKS (#3849) — shape e drift-guard contra ser
     }
   });
 
-  it("(#4002): agrupamento por fluxo de trabalho — Edição (home/revisao/caixas), Operação (rodada/triagem/relatorios), Negócio (apoios/painel-diaria/dashboard clarice), Sistema (integracoes/utms)", () => {
+  it("(#4002): agrupamento por fluxo de trabalho — Edição (home/revisao/caixas), Operação (rodada/triagem/relatorios), Negócio (apoios/painel-diaria/dashboard clarice), Sistema (integracoes/utms/skills)", () => {
     const byGroup = (g) => NAV_ITEMS.filter((i) => i.group === g).map((i) => i.id);
     assert.deepEqual(byGroup("edicao"), ["home", "revisao", "caixas"]);
     assert.deepEqual(byGroup("operacao"), ["rodada", "triagem", "relatorios"]);
     assert.deepEqual(byGroup("negocio"), ["apoios", "painel-diaria"]);
-    // #4041: "utms" entra em Sistema, vizinho de Integrações.
-    assert.deepEqual(byGroup("sistema"), ["integracoes", "utms"]);
+    // #4041: "utms" entra em Sistema, vizinho de Integrações. #4270: "skills" idem.
+    assert.deepEqual(byGroup("sistema"), ["integracoes", "utms", "skills"]);
     assert.deepEqual(DASHBOARD_LINKS.map((d) => d.group), ["negocio"], "Dashboard Clarice cai no mesmo grupo Negócio, junto de Apoios/Dashboard diária");
   });
 });
@@ -153,6 +153,7 @@ describe("resolveActiveNavId (#3849)", () => {
     assert.equal(resolveActiveNavId("relatorios"), "relatorios");
     assert.equal(resolveActiveNavId("integracoes"), "integracoes");
     assert.equal(resolveActiveNavId("painel-diaria"), "painel-diaria");
+    assert.equal(resolveActiveNavId("skills"), "skills");
   });
 
   it("retorna null pra pageId desconhecido/ausente (fail-closed — nenhum item marcado ativo por engano)", () => {
@@ -175,7 +176,7 @@ describe("resolveRevisaoHref (#3849)", () => {
 });
 
 describe("buildNavHtml (#3849)", () => {
-  it("renderiza os 10 itens de página + Dashboard Clarice, agrupados (#4002)", () => {
+  it("renderiza os 11 itens de página + Dashboard Clarice, agrupados (#4002)", () => {
     const html = buildNavHtml("rodada", "/revisao/260722");
     assert.match(html, /id="app-nav-list"/);
     assert.match(html, /href="\/">Home<\/a>/);
@@ -186,6 +187,7 @@ describe("buildNavHtml (#3849)", () => {
     assert.match(html, /href="\/apoios"/);
     assert.match(html, /href="\/relatorios"/);
     assert.match(html, /href="\/integracoes"/);
+    assert.match(html, /href="\/skills"/);
     assert.match(html, /href="\/painel\/clarice"[^>]*target="_blank"/);
   });
 
@@ -284,6 +286,7 @@ describe("GET de cada página real inclui #app-nav + nav.js + STUDIO_PAGE corret
     { path: "/relatorios", page: "relatorios" },
     { path: "/integracoes", page: "integracoes" },
     { path: "/utms", page: "utms" }, // #4041
+    { path: "/skills", page: "skills" }, // #4270
     { path: "/edicao/260722", page: "edicao" },
     { path: "/revisao/260722", page: "revisao" },
   ];

@@ -155,6 +155,11 @@
  *     nome de env var ausente.
  *   - `GET /integracoes` — página de status (#3848): mesma estratégia de
  *     rewrite de `/apoios`/`/relatorios`, servindo `public/integracoes.html`.
+ *   - `GET /api/skills` (#4270) — catálogo read-only das skills versionadas
+ *     em `.claude/skills/{id}/SKILL.md`, gerado do filesystem a cada request
+ *     (sem cache, sem lista paralela) — ver `studio-skills.ts` pro parser.
+ *   - `GET /skills` (#4270) — catálogo de skills: mesma estratégia de
+ *     rewrite, servindo `public/skills.html`. Consome `GET /api/skills`.
  *   - `POST /api/painel/eia/refresh` (#3861) — botão "Atualizar É IA?" da
  *     dashboard diária embutida (`GET /painel/diaria`, `dashboard-diaria.ts`):
  *     regenera SÓ `data/poll-eia-summary.json` local a partir dos endpoints
@@ -392,6 +397,9 @@ import { buildIntegrationsData } from "./studio-integrations.ts";
 // #4041: inventário de UTMs (registry) × conversão real (Beehiiv) × clique
 // (Brevo). Ver studio-utms.ts pra fronteira de edição (só metadados).
 import { buildUtmsData, saveUtmMetadata } from "./studio-utms.ts";
+// #4270: catálogo read-only das skills versionadas (.claude/skills/*/SKILL.md),
+// gerado do filesystem — ver studio-skills.ts.
+import { buildSkillsData } from "./studio-skills.ts";
 // #3861: botão "Atualizar É IA?" da dashboard diária embutida — reusa a
 // função exportada de build-poll-eia-data.ts (mesmo módulo do CLI --push),
 // mas SÓ a metade local (nunca o push pro KV do clarice-dashboard). Ver
@@ -1580,6 +1588,20 @@ async function handleApiUtmsPut(
   sendJson(res, result.ok ? 200 : 400, result);
 }
 
+// ── #4270: catálogo read-only de skills (.claude/skills/*/SKILL.md) ────
+
+/** `GET /api/skills` — inventário das skills versionadas, gerado do
+ * filesystem (`buildSkillsData`). Sempre 200: leitura local só de arquivos
+ * pequenos, sem rede/credencial — o único jeito de falhar é `rootDir`
+ * inacessível, que já quebraria o server inteiro antes de chegar aqui. */
+function handleApiSkills(rootDir: string, res: ServerResponse): void {
+  try {
+    sendJson(res, 200, buildSkillsData(rootDir));
+  } catch (e) {
+    sendJson(res, 500, { error: (e as Error).message });
+  }
+}
+
 /** `POST /api/painel/eia/refresh` — botão "Atualizar É IA?" (#3861): regenera
  * SÓ `data/poll-eia-summary.json` local a partir dos endpoints públicos do
  * worker poll (`refreshPollEiaSummaryLocal`) — NUNCA dispara o push paralelo
@@ -1877,6 +1899,11 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
         handleApiUtms(rootDir, req, res);
         return;
       }
+      // #4270: catálogo read-only de skills.
+      if (urlPath === "/api/skills") {
+        handleApiSkills(rootDir, res);
+        return;
+      }
       // #3924: seção "Caixas" — GET (PUT de save já tratado acima, antes do
       // guard de método). Lista checada antes do get-por-slug pra não colidir
       // (regex de slug `[^/]+` casaria "boxes" também se checado depois, mas
@@ -2021,6 +2048,15 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // #4041: mesma estratégia de rewrite — a página busca /api/utms.
       if (urlPath === "/utms" || urlPath === "/utms/") {
         const served = serveStaticFile(PUBLIC_DIR, "/utms.html", res, req);
+        if (!served) {
+          res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+          res.end("Not found");
+        }
+        return;
+      }
+      // #4270: mesma estratégia de rewrite — a página busca /api/skills.
+      if (urlPath === "/skills" || urlPath === "/skills/") {
+        const served = serveStaticFile(PUBLIC_DIR, "/skills.html", res, req);
         if (!served) {
           res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
           res.end("Not found");
