@@ -3,6 +3,7 @@ import { COHORTS_KV_KEY, MV_STATUS_KV_KEY, CONTACTS_SUMMARY_KV_KEY, EIA_ENGAGEME
 import { fetchCouponUsage, type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
 import { renderDashboardHtml, escHtml, collectMonthlyLinkCycles } from "./sections-core.ts"; // #4184: collectMonthlyLinkCycles
 import { normalizeLinkSectionMap, normalizeLinkTitleMap } from "./link-section.ts"; // #4184 / #4198
+import { fmtTimeBRT } from "./render-links.ts"; // #4251: timestamp "defasado desde X" do banner de indisponibilidade
 
 /**
  * #2280: injeta um banner discreto de "dados podem estar atrasados" no topo de um
@@ -67,6 +68,77 @@ Aguarde <strong>${escHtml(retryMsg)}</strong> e tente novamente.<br>
 
   return new Response(
     JSON.stringify({ error: "brevo_rate_limit", retryAfterSecs }),
+    { status: 503, headers: { ...headers, "Content-Type": "application/json" } },
+  );
+}
+
+/**
+ * #4251: injeta o banner de "Brevo indisponível" (403/5xx) no topo de um
+ * render bom servido como fallback. Irmão de `injectStaleBanner` (429) — cor
+ * distinta (vermelho claro, não amarelo) pra não confundir com rate-limit:
+ * aqui a Brevo não está apenas ocupada, está genuinamente fora do ar (ou
+ * recusando auth por falha de infra do lado deles, incidente 260728).
+ * `generatedAt` (ISO, do payload stale) vira "defasado desde {timestamp BRT}"
+ * quando disponível — sem ele, cai numa frase honesta sobre a ausência do
+ * dado (nunca inventa um timestamp).
+ */
+export function injectUpstreamErrorBanner(html: string, status: number, generatedAt: string | null): string {
+  const sinceMsg = generatedAt ? `, defasado desde ${fmtTimeBRT(generatedAt)}` : "";
+  const banner =
+    `<div style="background:#FBE1DC;color:#7a1f0d;padding:10px 16px;text-align:center;` +
+    `font-family:system-ui,sans-serif;font-size:14px;border-bottom:1px solid #E8A899;">` +
+    `🔌 Brevo indisponível (HTTP ${status}) — mostrando o último dado bom conhecido${sinceMsg}. ` +
+    `Cupons e Contatos estão atualizados. <a href="?fresh=1">Tentar novamente</a>.</div>`;
+  if (/<body[^>]*>/i.test(html)) {
+    return html.replace(/<body[^>]*>/i, (m) => m + banner);
+  }
+  return banner + html;
+}
+
+/**
+ * #4251: irmão de `buildStaleResponse` (429) pro caso de indisponibilidade
+ * genérica da Brevo (403/5xx). `X-Dashboard-Stale: upstream-error` distingue
+ * este caso de `rate-limit`/`fatal-error`/`inflight-coalesced` pra quem for
+ * monitorar — mesmo racional dos irmãos: HTTP 200 (não 5xx), pra não acionar
+ * alertas de disponibilidade quando o dashboard está de fato servindo
+ * conteúdo útil (só que desatualizado).
+ */
+export function buildUpstreamErrorStaleResponse(lastGoodHtml: string, status: number, generatedAt: string | null): Response {
+  return new Response(injectUpstreamErrorBanner(lastGoodHtml, status, generatedAt), {
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Dashboard-Stale": "upstream-error",
+    },
+  });
+}
+
+/**
+ * #4251: resposta de erro explícito quando a Brevo está indisponível
+ * (403/5xx, ver `isBrevoOutageStatus`) E não há nenhum último dado bom pra
+ * servir (STATS_CACHE ausente ou `dash:lastgood:campaigns` nunca gravado).
+ * Irmã de `rateLimitResponse` — mesma forma (503 amigável em HTML, JSON
+ * estruturado na API), mensagem honesta: a causa é a Brevo, não nós, e não é
+ * uma questão de "espere N segundos" como o rate-limit (a Brevo pode ficar
+ * fora por muito mais tempo, sem um Retry-After confiável).
+ */
+export function upstreamErrorResponse(status: number, isHtml: boolean): Response {
+  const headers: Record<string, string> = { "Cache-Control": "no-store" };
+  if (isHtml) {
+    const body = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><title>Brevo indisponível — Clarice News Dashboard</title>
+<style>body{font-family:system-ui,sans-serif;max-width:600px;margin:60px auto;padding:0 20px;text-align:center;}</style>
+</head>
+<body>
+<h1>🔌 Brevo indisponível</h1>
+<p>A API da Brevo retornou HTTP <strong>${status}</strong>, e não há nenhum dado recente salvo pra mostrar como fallback.<br>
+<a href="?fresh=1">Tentar novamente</a></p>
+</body></html>`;
+    return new Response(body, { status: 503, headers: { ...headers, "Content-Type": "text/html; charset=utf-8" } });
+  }
+  return new Response(
+    JSON.stringify({ error: "brevo_upstream_error", status }),
     { status: 503, headers: { ...headers, "Content-Type": "application/json" } },
   );
 }
@@ -1054,6 +1126,112 @@ export async function buildRateLimitFallback(
 }
 
 /**
+ * #4251: irmã de `buildRateLimitFallback` — mesma composição (campanhas
+ * STALE do KV `dash:lastgood:campaigns` + abas de KV FRESCAS via
+ * `readKvTabs`), mas pro caso de indisponibilidade genérica da Brevo (403 ou
+ * 5xx, ver `isBrevoOutageStatus`) em vez de rate-limit (429). Banner honesto
+ * distinto (`injectUpstreamErrorBanner`, com "defasado desde {timestamp}"
+ * quando `generatedAt` estiver no payload stale) — não afirma "rate limit"
+ * quando a causa real é outra.
+ *
+ * `mode="kv-only"` (#2779) e `Array.isArray` guard seguem o mesmo racional de
+ * `buildRateLimitFallback`. Sem STATS_CACHE ou sem stale bom pra servir →
+ * `upstreamErrorResponse` (erro explícito, nunca página em branco nem dado
+ * inventado — critério do #4251).
+ *
+ * Exported for unit tests (#4251).
+ */
+export async function buildUpstreamErrorFallback(
+  env: Env,
+  status: number,
+  planCreditsOverride?: number | null,
+): Promise<Response> {
+  if (!env.STATS_CACHE) return upstreamErrorResponse(status, true);
+  const staleCampaignsRaw = (await env.STATS_CACHE
+    .get(LASTGOOD_CAMPAIGNS_KEY, "json")
+    .catch(() => null)) as
+    | { campaigns?: unknown[]; scheduled?: unknown[]; campaignsLimit?: unknown; generatedAt?: unknown }
+    | null;
+  if (!staleCampaignsRaw) return upstreamErrorResponse(status, true);
+  const staleCampaignsLimit =
+    typeof staleCampaignsRaw.campaignsLimit === "number" ? staleCampaignsRaw.campaignsLimit : null;
+  const staleGeneratedAt = typeof staleCampaignsRaw.generatedAt === "string" ? staleCampaignsRaw.generatedAt : null;
+  const { cohorts, mvStatus, contactsSummary, couponUsage, eiaEngagement, postmasterSpam } = await readKvTabs(env, "kv-only");
+  const planCredits =
+    typeof planCreditsOverride === "number"
+      ? planCreditsOverride
+      : await fetchPlanCredits(env, "kv-only").catch(() => null);
+  const rawCampaigns = staleCampaignsRaw.campaigns;
+  const rawScheduled = staleCampaignsRaw.scheduled;
+  const staleCampaigns = (Array.isArray(rawCampaigns) ? rawCampaigns : []) as Parameters<
+    typeof renderDashboardHtml
+  >[0];
+  const staleScheduled = (Array.isArray(rawScheduled) ? rawScheduled : []) as Parameters<
+    typeof renderDashboardHtml
+  >[1];
+  try {
+    const [linkSectionsByCycle, linkTitlesByCycle] = await Promise.all([
+      buildLinkSectionsByCycleForFallback(env, staleCampaigns, staleScheduled),
+      buildLinkTitlesByCycleForFallback(env, staleCampaigns, staleScheduled),
+    ]);
+    const html = renderDashboardHtml(
+      staleCampaigns,
+      staleScheduled,
+      cohorts,
+      mvStatus,
+      contactsSummary,
+      couponUsage,
+      eiaEngagement,
+      planCredits,
+      null, // dataGeneratedAt: KV stale payload não tem timestamp de render fiável aqui (o banner usa staleGeneratedAt à parte)
+      staleCampaignsLimit,
+      postmasterSpam,
+      { linkSectionsByCycle, linkTitlesByCycle },
+    );
+    return buildUpstreamErrorStaleResponse(html, status, staleGeneratedAt);
+  } catch (renderErr) {
+    console.error(
+      "[#4251] re-render no fallback de indisponibilidade da Brevo falhou — degradando p/ 503:",
+      renderErr instanceof Error ? renderErr.message : renderErr,
+    );
+    return upstreamErrorResponse(status, true);
+  }
+}
+
+/**
+ * #4251: irmã de `buildInflightCoalescedCampaignsJson` pra `/api/campaigns` —
+ * mesmo shape de resposta (array cru de campanhas, sem wrapper, pra não
+ * quebrar consumidores de automação existentes que esperam `CampaignRow[]`
+ * direto — ex: o lookup de próxima wave da migração Clarice descrito no
+ * CLAUDE.md #1172). A defasagem é sinalizada só via headers
+ * (`X-Dashboard-Stale`/`X-Dashboard-Stale-Since`), nunca no corpo. `null`
+ * quando não há stale bom pra servir — o caller degrada pro 502/503 explícito
+ * (nunca corpo vazio silencioso).
+ */
+export async function buildUpstreamErrorCampaignsJsonFallback(
+  env: Pick<Env, "STATS_CACHE">,
+  limit: number,
+  status: number,
+): Promise<Response | null> {
+  if (!env.STATS_CACHE) return null;
+  const staleCampaignsRaw = (await env.STATS_CACHE
+    .get(LASTGOOD_CAMPAIGNS_KEY, "json")
+    .catch(() => null)) as { campaigns?: unknown[]; generatedAt?: unknown } | null;
+  const rawCampaigns = staleCampaignsRaw?.campaigns;
+  if (!Array.isArray(rawCampaigns) || rawCampaigns.length === 0) return null;
+  const staleGeneratedAt = typeof staleCampaignsRaw?.generatedAt === "string" ? staleCampaignsRaw.generatedAt : null;
+  return new Response(JSON.stringify(rawCampaigns.slice(0, limit), null, 2), {
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      "X-Dashboard-Stale": "upstream-error",
+      "X-Dashboard-Upstream-Status": String(status),
+      ...(staleGeneratedAt ? { "X-Dashboard-Stale-Since": staleGeneratedAt } : {}),
+    },
+  });
+}
+
+/**
  * #4187: página de estado vazio quando NÃO há nenhum last-good pra servir
  * (KV ausente, ou `dash:lastgood:campaigns` nunca foi gravado) e o render
  * autenticado lançou uma exceção não-tratada. Distinta de `rateLimitResponse`
@@ -1310,6 +1488,38 @@ export class BrevoRateLimitError extends Error {
   }
 }
 
+/**
+ * #4251: erro especial para respostas de erro HTTP da Brevo que NÃO são
+ * rate-limit (429, que já tem `BrevoRateLimitError` com seu próprio fallback
+ * stale desde #2280/#2733). Carrega o `status` HTTP pra o caller decidir se o
+ * caso justifica o mesmo tratamento de "servir último dado bom" — hoje isso
+ * cobre 403 (ex: incidente 260728, `token-manager.brevo.com` fora do ar e a
+ * Brevo devolvendo 403 pra qualquer chamada autenticada) e 5xx (Brevo com
+ * problema de infra do lado deles). Ver `isBrevoOutageStatus`.
+ */
+export class BrevoUpstreamError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "BrevoUpstreamError";
+  }
+}
+
+/**
+ * #4251: `true` quando o status HTTP indica uma indisponibilidade da Brevo
+ * que justifica servir o último dado bom (stale) em vez de simplesmente
+ * falhar — 403 (ex: falha de infra do lado deles impedindo até a validação
+ * de auth, incidente 260728) ou qualquer 5xx. Deliberadamente NÃO cobre 4xx
+ * "normais" (400 bad request, 404, etc.) — esses são bugs nossos (payload/URL
+ * errados), não indisponibilidade externa, e mascarar com dado stale
+ * esconderia a regressão em vez de expô-la.
+ */
+export function isBrevoOutageStatus(status: number): boolean {
+  return status === 403 || status >= 500;
+}
+
 // #2337 fix 1: exportado para teste direto do parse de headers de rate-limit
 // (epoch-elapsed → retryAfterSecs inteiro 0 + floorMs 250).
 export async function brevoFetch<T>(path: string, env: Env): Promise<T> {
@@ -1353,7 +1563,11 @@ export async function brevoFetch<T>(path: string, env: Env): Promise<T> {
     throw new BrevoRateLimitError(retryAfter, floorMs);
   }
   if (!res.ok) {
-    throw new Error(`Brevo API ${path} failed (${res.status}): ${await res.text()}`);
+    // #4251: status carregado num campo estruturado (não só embutido na
+    // mensagem) — o caller (buildDashboardResponse/buildCampaignsResponse em
+    // index.ts) precisa do `status` pra decidir se serve o fallback stale
+    // (403/5xx, ver isBrevoOutageStatus) sem parsear a string de mensagem.
+    throw new BrevoUpstreamError(res.status, `Brevo API ${path} failed (${res.status}): ${await res.text()}`);
   }
   return res.json() as Promise<T>;
 }

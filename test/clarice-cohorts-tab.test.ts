@@ -336,6 +336,89 @@ test("renderCohortsTabPanel: <details> envolve uma TABELA inteira (HTML válido)
 });
 
 // ---------------------------------------------------------------------------
+// #4257 Parte 2 — tabela "Cohorts sem envio" ganha linha Total (mesmo shape da
+// Total ativa) + resumo no <summary> (o <details> nasce recolhido).
+// ---------------------------------------------------------------------------
+
+test("renderCohortsTabPanel: <details> de nunca-enviados ganha linha Total com contatos/elegíveis somados (#4257)", () => {
+  const stats: Record<string, CohortStatsRow> = {
+    "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 50, opened: 40, clicked: 10, unsub: 1 }), // ATIVO
+    "ex-assinantes": mk({ contacts: 500, eligible: 480, received: 0 }), // NUNCA-ENVIADO
+    "leads-caudao": mk({ contacts: 300, eligible: 280, received: 0 }), // NUNCA-ENVIADO
+  };
+  const html = renderCohortsTabPanel(stats);
+  const detailsIdx = html.indexOf('<details class="never-sent">');
+  const detailsBlock = html.slice(detailsIdx);
+  assert.match(detailsBlock, /<tr class="total-row">/, "linha Total presente dentro do <details>");
+  // contatos: 500+300=800; elegíveis: 480+280=760
+  assert.match(detailsBlock, /<tr class="total-row">[\s\S]*?<td>Total<\/td>\s*<td>800<\/td>\s*<td>0<\/td>\s*<td>760<\/td>/);
+  // 2 linhas class="total-row" no total (1 na tabela ativa + 1 no <details>)
+  const totalRowCount = (html.match(/<tr class="total-row">/g) ?? []).length;
+  assert.equal(totalRowCount, 2, "1 Total na tabela ativa + 1 Total no <details>");
+});
+
+test("renderCohortsTabPanel: <details> de nunca-enviados — taxas da linha Total caem em '—' (received=0 por construção), nunca NaN%/0%(#4257)", () => {
+  const stats: Record<string, CohortStatsRow> = {
+    "ex-assinantes": mk({ contacts: 500, eligible: 480, received: 0 }),
+    "leads-caudao": mk({ contacts: 300, eligible: 280, received: 0 }),
+  };
+  const html = renderCohortsTabPanel(stats);
+  assert.doesNotMatch(html, /<details class="never-sent">[\s\S]*?NaN/, "sem NaN% na Total do <details>");
+  const detailsBlock = html.slice(html.indexOf('<details class="never-sent">'));
+  const totalRowMatch = detailsBlock.match(/<tr class="total-row">[\s\S]*?<\/tr>/);
+  assert.ok(totalRowMatch, "linha Total capturável");
+  // As 4 últimas células (abertura/clique/unsub/bounce) devem ser "—", não 0.0%/NaN%.
+  const cells = [...totalRowMatch![0].matchAll(/<td>([^<]*)<\/td>/g)].map((m) => m[1]);
+  assert.deepEqual(cells.slice(-4), ["—", "—", "—", "—"], "taxas em travessão quando received=0 (divisão por zero degradou pra null)");
+});
+
+test("renderCohortsTabPanel: <summary> mostra contatos/elegíveis SEM precisar expandir (#4257)", () => {
+  const stats: Record<string, CohortStatsRow> = {
+    "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 50, opened: 40 }),
+    "ex-assinantes": mk({ contacts: 500, eligible: 480, received: 0 }),
+    "leads-caudao": mk({ contacts: 300, eligible: 280, received: 0 }),
+  };
+  const html = renderCohortsTabPanel(stats);
+  assert.match(
+    html,
+    /<summary>Cohorts sem envio \(2\) — nunca receberam · 800 contatos, 760 elegíveis<\/summary>/,
+    "resumo com contagem no próprio <summary> (visível mesmo recolhido)",
+  );
+});
+
+test("renderCohortsTabPanel: 'Falta enviar'/'Recebeu neste ciclo' da Total do <details> são COMPUTADOS, não hardcoded em 0 (#4257)", () => {
+  // Cenário artificial (não ocorre na prática — received=0 mas receivedThisCycle>0
+  // seria inconsistente no store real): prova que o cálculo é genérico, não um
+  // caminho especial que sempre devolve 0 pro conjunto nunca-enviado.
+  const stats: Record<string, CohortStatsRow> = {
+    "ex-assinantes": {
+      contacts: 500, eligible: 480, received: 0,
+      received_this_cycle: 50, // valor não-zero, deliberadamente inconsistente com received=0
+      opened: 0, clicked: 0, unsub: 0, hard_bounce: 0,
+    } as CohortStatsRow,
+  };
+  const html = renderCohortsTabPanel(stats, "2026-06-01T00:00:00Z"); // cycleStart presente → colunas numéricas, não "—"
+  const detailsBlock = html.slice(html.indexOf('<details class="never-sent">'));
+  const totalRowMatch = detailsBlock.match(/<tr class="total-row">[\s\S]*?<\/tr>/);
+  const cells = [...totalRowMatch![0].matchAll(/<td>([^<]*)<\/td>/g)].map((m) => m[1]);
+  // ordem: Total | contatos | brevo | elegíveis | recebeu | recebeu-ciclo | falta-enviar | ...
+  assert.equal(cells[5], "50", "recebeu-ciclo soma o valor real (50), não hardcoded em 0");
+  assert.equal(cells[6], "430", "falta-enviar = elegíveis(480) - recebeu-ciclo(50) = 430, calculado de verdade");
+});
+
+test("renderCohortsTabPanel: nenhum cohort nunca-enviado → <details> ausente, comportamento pré-#4257 preservado", () => {
+  const stats: Record<string, CohortStatsRow> = {
+    "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 50, opened: 40 }),
+  };
+  const html = renderCohortsTabPanel(stats);
+  assert.doesNotMatch(html, /<details class="never-sent">/);
+  // Total da tabela ATIVA continua igual — a mudança do #4257 não a afeta.
+  assert.match(html, /<tr class="total-row">[\s\S]*?<td>Total<\/td>\s*<td>100<\/td>/);
+  const totalRowCount = (html.match(/<tr class="total-row">/g) ?? []).length;
+  assert.equal(totalRowCount, 1, "só a Total ativa, sem <details> pra ter uma 2ª");
+});
+
+// ---------------------------------------------------------------------------
 // renderDashboardHtml — integração da tabela Cohorts dentro da aba Contatos
 // ---------------------------------------------------------------------------
 

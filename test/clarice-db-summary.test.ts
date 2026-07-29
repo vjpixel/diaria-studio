@@ -154,6 +154,39 @@ test("computeStoreSummary: ti@clarice.ai é interno — excluído de priority_po
   db.close();
 });
 
+// #4257: os 3 seeds de medição de colocação de caixa do #4045
+// (vjpixel@yahoo.com, vjpixel@hotmail.com, apixel@gmail.com) entraram no
+// store via sync Brevo SEM registro Stripe/created — igual ao cenário do
+// ti@clarice.ai acima (#2880), mas com `cohort` NULL em vez de atribuído por
+// tier. Antes do fix, isso os fazia aparecer como a linha "sem cohort"
+// (`cohort_stats["null"]`) da aba Cohorts. Mesmo molde do teste ti@clarice.ai
+// acima — replicado pro caso `cohort IS NULL`.
+test("computeStoreSummary: seed do editor (#4045) com cohort NULL é interno — some de cohort_stats['null'], segue no total (#4257)", () => {
+  const db = openClariceDb(":memory:");
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // seed do editor: sem tier/cohort (mesmo shape real — entrou só via sync
+  // Brevo, sem registro Stripe). Engajado (2 opens de 2 → +40) — não pode
+  // aparecer no histograma nem no cohort_stats.
+  ins("INSERT INTO clarice_users (email, opens_count, sends_count) VALUES ('vjpixel@yahoo.com',2,2)");
+  // assinante real, cohort explícito — não deve ser afetado.
+  ins("INSERT INTO clarice_users (email, tier, cohort, opens_count, sends_count) VALUES ('real@x.com',1,'assinantes-ativos',3,3)");
+  recomputeDerived(db);
+
+  const s = computeStoreSummary(db);
+
+  // total conta os dois (o seed segue no store); só a exibição exclui.
+  assert.equal(s.total, 2);
+  assert.equal(s.priority_points.internal_excluded, 1, "vjpixel@yahoo.com contado como interno");
+  // A chave "null" NÃO deve existir em cohort_stats — nenhuma linha
+  // NÃO-interna ficou sem cohort neste fixture (a regressão do #4257 era
+  // justamente essa chave aparecer só por causa do seed).
+  assert.equal(s.cohort_stats["null"], undefined, "seed excluído — chave 'null' não aparece em cohort_stats (#4257)");
+  assert.equal(s.cohort_stats["assinantes-ativos"].contacts, 1, "só o contato real permanece no cohort");
+
+  db.close();
+});
+
 // ---------------------------------------------------------------------------
 // #2880 — coluna "elegíveis" (send_eligible=1) no histograma de priority_points
 // ---------------------------------------------------------------------------
