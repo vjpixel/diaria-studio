@@ -16,6 +16,38 @@ describe("parseArgs — pares key-value", () => {
   });
 });
 
+describe("parseArgs — sintaxe --key=valor (#4272)", () => {
+  it("extrai --key=valor tal qual --key valor (regressão da forma com espaço)", () => {
+    const { values } = parseArgs(["--esp=brevo"]);
+    assert.equal(values["esp"], "brevo");
+  });
+
+  it("--key= (sem nada após o igual) produz valor vazio explícito, não flag", () => {
+    const { values, flags } = parseArgs(["--esp="]);
+    assert.equal(values["esp"], "");
+    assert.equal(flags.has("esp"), false);
+    assert.equal(flags.has("esp="), false);
+  });
+
+  it("--key=a=b: split só no PRIMEIRO igual, valor preserva o resto", () => {
+    const { values } = parseArgs(["--filter=a=b"]);
+    assert.equal(values["filter"], "a=b");
+  });
+
+  it("mistura --key=valor com --key valor e posicionais no mesmo argv", () => {
+    const { values, positional } = parseArgs(["foo.md", "--esp=brevo", "--format", "html"]);
+    assert.deepEqual(positional, ["foo.md"]);
+    assert.equal(values["esp"], "brevo");
+    assert.equal(values["format"], "html");
+  });
+
+  it("--key=valor não consome o próximo token como valor separado", () => {
+    const { values, positional } = parseArgs(["--esp=brevo", "resto.md"]);
+    assert.equal(values["esp"], "brevo");
+    assert.deepEqual(positional, ["resto.md"]);
+  });
+});
+
 describe("parseArgs — flags booleanas", () => {
   it("registra --flag como boolean quando não seguido de valor", () => {
     const { flags } = parseArgs(["--health-check"]);

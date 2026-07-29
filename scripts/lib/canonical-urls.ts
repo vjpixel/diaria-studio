@@ -252,6 +252,13 @@ export const FOOTER_DOMAINS = [
   "clarice.ai",
   "beehiiv.com?via",
   "linkedin.com/company",
+  // #4263: bio do editor na coverage line (injetada por render-categorized-md.ts
+  // / inbox-stats.ts em TODA edição — "Olá! Eu sou o Pixel, editor desta
+  // newsletter."). O LinkedIn bloqueia crawler por padrão em perfis pessoais
+  // (`verdict=blocked` permanente, não sinal de link quebrado), então esse
+  // link de template reprovava urls_accessible/findMismatchedUrls em toda
+  // edição — ruído estrutural, não curadoria.
+  "linkedin.com/in/vjpixel",
   DIARIA_FACEBOOK_PAGE_SLUG,
   "wikipedia.org", // todas as variantes (pt/en/es/...)
   "wikimedia.org", // commons + upload

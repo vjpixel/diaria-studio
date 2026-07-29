@@ -830,6 +830,114 @@ describe("#2498 — Worker URLs fixas do rodapé não bloqueiam urls_accessible"
     }
   });
 
+  it("linkedin.com/in/vjpixel (bio do editor) NÃO bloqueia mesmo com verdict=blocked no cache (#4263)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `${REVIEWED_WITH_FM}\nOlá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor desta newsletter.`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      // Simula o cache real: LinkedIn bloqueia crawler por padrão em perfis pessoais.
+      writeFileSync(
+        cachePath,
+        JSON.stringify({
+          version: 1,
+          entries: { "https://www.linkedin.com/in/vjpixel/": { verdict: "blocked" } },
+        }),
+      );
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, true, "linkedin.com/in/vjpixel deve ser allowlistado");
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("URL de vídeo (youtu.be) NÃO bloqueia mesmo ausente do cache — verdict video nunca é cacheado por design (#4263)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `${REVIEWED_WITH_FM}\n[Vídeo](https://youtu.be/SdVJ078Za_Q?is=OmhU9ThuauZKjxRr)`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} })); // cache vazio de propósito
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, true, "URL de vídeo deve ser pulada, não flagada not_in_cache");
+      assert.equal(r.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("youtube.com/watch (não só youtu.be) também é pulado — mesma cobertura de isVideoUrl (#4263)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `${REVIEWED_WITH_FM}\n[Vídeo](https://www.youtube.com/watch?v=abc123)`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} }));
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // #4263: caso real 260729 — a mensagem de console truncava a URL em 80
+  // chars SEM indicador, fazendo parecer que a extração cortou a URL (não
+  // cortou — extractUrlsFromMd sempre retorna a URL completa, ver
+  // test/canonical-urls.test.ts). Trava que o display agora sinaliza
+  // truncamento com reticências, e que o valor persistido no JSON continua
+  // completo (nunca cortado) — é só a mensagem de console que é encurtada.
+  it("mensagem de console marca truncamento com reticências; JSON persistido mantém a URL completa (#4263)", () => {
+    const { dir, cleanup } = mkEdition();
+    try {
+      writeFileSync(join(dir, "_internal", "02-normalized.md"), "a");
+      writeFileSync(join(dir, "_internal", "02-humanized.md"), "a hum");
+      writeFileSync(join(dir, "_internal", "02-pre-clarice.md"), "b");
+      const longUrl =
+        "https://venturebeat.com/infrastructure/mcp-just-got-its-biggest-update-ever-heres-what-changes-for-ai-agents";
+      writeFileSync(
+        join(dir, "02-reviewed.md"),
+        `${REVIEWED_WITH_FM}\n[MCP update](${longUrl})`,
+      );
+      writeFileSync(join(dir, "_internal", "02-clarice-suggestions.json"), "[]");
+      const cachePath = join(dir, "verify-cache.json");
+      writeFileSync(cachePath, JSON.stringify({ version: 1, entries: {} })); // not_in_cache
+      const r = checkStage2Invariants(dir, { cachePath });
+      assert.equal(r.checks.urls_accessible.ok, false);
+      // Mensagem de console: cortada em 80 chars + "…" — não a URL completa crua.
+      assert.match(r.checks.urls_accessible.label ?? "", /…/);
+      assert.ok(
+        !(r.checks.urls_accessible.label ?? "").includes(longUrl),
+        "label de console não deve conter a URL completa sem indicação de corte",
+      );
+      // JSON persistido: URL completa, nunca truncada — é o que o editor usa pra corrigir.
+      const persisted = JSON.parse(
+        readFileSync(join(dir, "_internal", "02-urls-suspicious.json"), "utf8"),
+      );
+      assert.equal(persisted.suspicious[0].url, longUrl);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("URL editorial externa desconhecida AINDA bloqueia (allowlist não é permissiva)", () => {
     // Garantia de que a allowlist só cobre os Workers específicos, não qualquer URL.
     const { dir, cleanup } = mkEdition();

@@ -111,6 +111,21 @@ Some code with https://code.com/x or [fake](https://fake.com/y)
     const md = "---\r\nintentional_error:\r\n  url: \"https://yaml.com/x\"\r\n---\r\n\r\n[**Real**](https://body.com/y)\r\n";
     assert.deepEqual(extractUrlsFromMd(md), ["https://body.com/y"]);
   });
+
+  // #4263: caso real 260729 — check-stage2-invariants reportou uma URL
+  // truncada em "...ever-here" (cortando bem antes do slug completo). A
+  // investigação mostrou que extractUrlsFromMd SEMPRE retornou a URL
+  // completa e correta — o corte era só na mensagem de console (`.slice(0,
+  // 80)`, corrigido em check-stage2-invariants.ts), não na extração. Este
+  // teste trava a fixture real (texto do link com apóstrofo tipográfico
+  // U+2019 em "here's") pra impedir regressão futura na extração em si.
+  it("apóstrofo tipográfico (U+2019) no texto do link não afeta a extração da URL (#4263)", () => {
+    const md =
+      "**[MCP just got its biggest update ever, here’s what changes for AI agents](https://venturebeat.com/infrastructure/mcp-just-got-its-biggest-update-ever-heres-what-changes-for-ai-agents)**";
+    assert.deepEqual(extractUrlsFromMd(md), [
+      "https://venturebeat.com/infrastructure/mcp-just-got-its-biggest-update-ever-heres-what-changes-for-ai-agents",
+    ]);
+  });
 });
 
 describe("findMismatchedUrls (#1456)", () => {
@@ -148,6 +163,21 @@ describe("findMismatchedUrls (#1456)", () => {
 [**N**](https://example.com/n)
 [LinkedIn](https://www.linkedin.com/company/diar.ia.br/)
 [Facebook](https://www.facebook.com/diar.ia.br)
+`;
+    assert.deepEqual(findMismatchedUrls(md, approved), []);
+  });
+
+  // #4263: bio do editor na coverage line ("Olá! Eu sou o Pixel, editor desta
+  // newsletter.") injeta este link de perfil pessoal em TODA edição
+  // (render-categorized-md.ts / inbox-stats.ts). LinkedIn bloqueia crawler
+  // por padrão em perfis pessoais — verdict=blocked permanente, não sinal de
+  // link quebrado — então urls_accessible reprovava toda edição por esse
+  // link de template, não-curatorial.
+  it("ignora o link do perfil pessoal do editor no LinkedIn (#4263)", () => {
+    const approved = { radar: [{ title: "N", url: "https://example.com/n" }] };
+    const md = `
+[**N**](https://example.com/n)
+Olá! Eu sou o [Pixel](https://www.linkedin.com/in/vjpixel/), editor desta newsletter.
 `;
     assert.deepEqual(findMismatchedUrls(md, approved), []);
   });

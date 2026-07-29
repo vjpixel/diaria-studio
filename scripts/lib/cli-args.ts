@@ -20,6 +20,16 @@ export interface ParsedArgs {
  *
  * Regra: `--key` seguido de valor que não começa com `--` → values["key"] = valor.
  * `--key` seguido de outro `--key` ou fim do array → flags.add("key").
+ *
+ * Suporta também a sintaxe `--key=valor` (#4272): quando o token contém `=`,
+ * splita na PRIMEIRA ocorrência — `values["key"] = valor` mesmo que `valor`
+ * comece com `--` ou contenha outros `=` (ex: `--key=a=b` → value `"a=b"`).
+ * `--key=` (sem nada após o `=`) produz `values["key"] = ""` — é um valor
+ * vazio explícito, não um `flags.add`. Antes desta mudança, um token
+ * `--key=valor` produzia a chave garbled literal `"key=valor"` — nunca
+ * reconhecida por nenhum caller (nem em `flags` nem em `values["key"]`) —
+ * então suportar `=` é aditivo: não altera o comportamento de nenhum caller
+ * existente, só passa a reconhecer uma sintaxe que antes caía fora do radar.
  */
 export function parseArgs(argv: string[]): ParsedArgs {
   const flags = new Set<string>();
@@ -30,6 +40,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
     const arg = argv[i];
     if (!arg.startsWith("--")) {
       positional.push(arg);
+      continue;
+    }
+    const eqIdx = arg.indexOf("=");
+    if (eqIdx !== -1) {
+      const key = arg.slice(2, eqIdx);
+      values[key] = arg.slice(eqIdx + 1);
       continue;
     }
     const key = arg.slice(2);
