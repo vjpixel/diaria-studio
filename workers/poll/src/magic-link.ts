@@ -77,6 +77,11 @@ import type { Env } from "./index";
 import { htmlEscape, safeParseKv } from "./lib";
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { performIdentifyMerge, type IdentifyMergeInput } from "./identify";
+// #4311: opt-in de assinatura precisa ser honrado também no caminho de
+// confirmação (o merge imediato em identify.ts já faz isto — ver
+// `handleJogarIdentify`). Sem import circular novo: subscribe.ts não importa
+// de magic-link.ts nem de identify.ts.
+import { resolveSubscribeUtm, subscribeToBeehiiv } from "./subscribe";
 
 /** TTL do token de confirmação — 24h (item 2 da issue). */
 export const MAGIC_LINK_TTL_SEC = 60 * 60 * 24;
@@ -199,6 +204,13 @@ export interface PendingMerge {
   anonEmail: string;
   name: string;
   edition: string;
+  /** #4311: opt-in de assinatura marcado no form de identidade — precisa
+   * sobreviver ao round-trip do link mágico (criado aqui em `createPendingMerge`,
+   * consumido em `handleConfirmMerge`) pra não ser descartado silenciosamente
+   * no caminho órfão. Antes do #4311 este campo não existia — o consentimento
+   * do form era perdido assim que `handleOrphanIdentify` desviava pro link
+   * mágico, mesmo corrigindo o `return` precoce em identify.ts. */
+  optin: boolean;
 }
 
 /**
@@ -388,8 +400,18 @@ export function confirmMergeHtmlResponse(ok: boolean, message: string): Response
  * `/share/{token}`/`/quiz-share/{token}`, exceto que aqui não faz sentido
  * redirecionar pro jogo com um 302 silencioso: é uma confirmação explícita,
  * a pessoa precisa saber que não funcionou).
+ *
+ * #4311: se `pending.optin` foi marcado no form original, honra o opt-in
+ * AQUI — é o único ponto que sabe que a confirmação de fato aconteceu. Best-
+ * effort (nunca desfaz o merge de score, mesmo padrão do caminho imediato em
+ * identify.ts) — falha de assinatura é logada (`identify_optin_not_subscribed`)
+ * pra não repetir o silêncio que causou o #4311.
  */
-export async function handleConfirmMerge(url: URL, bEnv: Env): Promise<Response> {
+export async function handleConfirmMerge(
+  url: URL,
+  bEnv: Env,
+  deps: { fetchImpl?: typeof fetch } = {},
+): Promise<Response> {
   const token = (url.searchParams.get("token") ?? "").trim();
   if (!token || !isValidMagicLinkToken(token)) {
     return confirmMergeHtmlResponse(false, "Link inválido.");
@@ -405,5 +427,21 @@ export async function handleConfirmMerge(url: URL, bEnv: Env): Promise<Response>
     edition: pending.edition || null,
   };
   await performIdentifyMerge(bEnv, mergeInput);
+
+  if (pending.optin) {
+    const fetchImpl = deps.fetchImpl ?? fetch;
+    try {
+      const utm = resolveSubscribeUtm("jogar-identify");
+      const result = await subscribeToBeehiiv(bEnv, { name: pending.name, email: pending.email }, fetchImpl, utm);
+      if (!result.ok) {
+        console.error(JSON.stringify({ event: "identify_optin_not_subscribed", stage: "confirm_merge", reason: result.reason ?? null }));
+      }
+    } catch (e) {
+      console.error(JSON.stringify({ event: "identify_optin_not_subscribed", stage: "confirm_merge", error: String(e) }));
+      // best-effort — o merge de score já foi commitado acima, o opt-in de
+      // newsletter nunca desfaz isso.
+    }
+  }
+
   return confirmMergeHtmlResponse(true, `Pronto! Seu histórico foi migrado — você está no ranking como ${pending.email}.`);
 }
