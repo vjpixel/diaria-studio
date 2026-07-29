@@ -370,6 +370,19 @@ export function renderInlineSignupFormStyles(): string {
  * tutoriais + um par desses todo dia") e não foi tocado — página/funil
  * diferente. `renderSubscribeCtaBlock` (caixa de descoberta) também não foi
  * tocado — travado por test/poll-jogar-cta-3518.test.ts (#3589 item 4).
+ *
+ * #4316: `.signup-note` reescrita — a versão anterior ("Seu e-mail entra no
+ * ranking público e sai do modo anônimo. Assinar a Diar.ia é opcional, só se
+ * você marcar a caixinha.") errava duas vezes. (1) O e-mail nunca é
+ * renderizado no leaderboard — só o nome/nickname que a pessoa digita neste
+ * form (`hasNickname ? nickname : masked`, leaderboard-routes.ts:136 e mais
+ * 3 ocorrências; confirmado ao vivo via curl em produção). (2) "opcional"
+ * era disclaimer redundante — o checkbox de opt-in já entra desmarcado por
+ * padrão (LGPD art. 8º §1º), a caixa desmarcada JÁ comunica opcionalidade.
+ * Cuidado ao editar de novo: não reintroduzir "nunca aparece" — o #4253
+ * item 5 aumentou de propósito a truncagem do `maskEmail` de 3→5 chars para
+ * reconhecimento, então o e-mail (mascarado) aparece por decisão do editor;
+ * a copy afirma o NOME, não nega o e-mail em absoluto.
  */
 export function renderIdentityFormBlock(): string {
   return `<form id="jogar-identity-form" class="signup-form" hidden novalidate>
@@ -379,7 +392,7 @@ export function renderIdentityFormBlock(): string {
   <div class="signup-hp" aria-hidden="true"><label>Deixe em branco<input type="text" name="website" tabindex="-1" autocomplete="off"></label></div>
   <label class="signup-optin"><input type="checkbox" name="optin" value="on"> Quero receber a Diar.ia — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>
   <button type="submit" class="signup-btn">Entrar no ranking</button>
-  <p class="signup-note">Seu e-mail entra no ranking público e sai do modo anônimo. Assinar a Diar.ia é opcional, só se você marcar a caixinha.</p>
+  <p class="signup-note">No ranking você aparece pelo nome. O e-mail é usado como seu identificador. Marque a caixinha pra receber a diar.ia.br.</p>
   <p class="signup-status" role="status" aria-live="polite" hidden></p>
 </form>
 <p id="jogar-identified-note" class="identified-note" hidden></p>`;
