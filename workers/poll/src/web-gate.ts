@@ -393,7 +393,7 @@ export async function handleJogarGateSubscribe(
  * `/jogar/gate/subscribe`. Mesmo DS canônico (`ds-tokens.generated.ts`) do
  * resto do worker.
  */
-export function renderJogarGatePage(edition: string | null): string {
+export function renderJogarGatePage(identifyContextEdition: string | null): string {
   // #4253 item 6: repassado pro script (via JSON.stringify abaixo) como
   // `edition` do POST /jogar/identify — deriva o índice MENSAL do merge
   // (score-by-month:{slug}:{email}), que é o que o leaderboard público
@@ -402,20 +402,41 @@ export function renderJogarGatePage(edition: string | null): string {
   // sync(), ver identityFormScript/jogar.ts), mas o jogador veria "você ainda
   // não aparece no ranking" por mais 1 rodada — o mesmo sintoma do bug
   // original, só que temporário em vez de permanente.
-  const gateEdition = edition ?? "";
-  // Achado ao vivo (editor, 260728): o gate encontrado NO MEIO da sequência
-  // (goNext em jogar.ts) repassa `edition=editions[0]` pra cá — mas isso é só
-  // o contexto do identify acima (GATE_EDITION), NUNCA deveria ir pro alvo de
-  // navegação abaixo. `handleJogarPage` despacha pra página de UMA edição só
-  // (sem next-round) sempre que a URL tem `?edition=`, ANTES de olhar pro
-  // gate — então incluir editionParam aqui jogava o jogador pra fora da
-  // sequência de 23 rodadas direto pra edition[0] isolada. Se editions[0] já
-  // tinha voto de uma sessão anterior (bem provável pra quem testa o jogo
-  // com frequência), o /vote respondia "já votou" sem nenhum caminho de
-  // volta — dead end reproduzido ao vivo. Fix: a navegação pós-gate (skip OU
-  // sucesso) volta SEMPRE pra `/jogar` puro (sequência), nunca carrega
-  // `edition` — só GATE_EDITION (acima) continua levando o contexto pro
-  // identify, que é o único lugar que precisa dele.
+  const gateEdition = identifyContextEdition ?? "";
+  // #4268 (achado ao vivo, editor, 260728): o gate encontrado NO MEIO da
+  // sequência (goNext em jogar.ts) repassa `edition=editions[0]` pra cá —
+  // mas isso é só o contexto do identify acima (GATE_EDITION), NUNCA deveria
+  // ir pro alvo de navegação abaixo. `handleJogarPage` roda o check de gate
+  // PRIMEIRO — só depois, se o gate liberar a request (skip_gate=1 OU
+  // sessão já válida), despacha pra página de UMA edição só (sem
+  // next-round) sempre que a URL tiver `?edition=`, sem saber se esse valor
+  // veio de um link legítimo pra uma edição específica ou só do contexto do
+  // identify que acabou de passar pelo gate. Antes deste fix, a navegação
+  // pós-gate (skip OU sucesso) ainda carregava `edition=editions[0]` —
+  // exatamente a request seguinte que o gate libera — então caía direto
+  // nesse dispatch de edição única, jogando o jogador pra fora da sequência
+  // de 23 rodadas. Se editions[0] já tinha voto de uma sessão anterior (bem
+  // provável pra quem testa o jogo com frequência), o /vote respondia "já
+  // votou" sem nenhum caminho de volta — dead end reproduzido ao vivo. Fix:
+  // a navegação pós-gate (skip OU sucesso) volta SEMPRE pra `/jogar` puro
+  // (sequência), nunca carrega `edition` — só GATE_EDITION (acima) continua
+  // levando o contexto pro identify, que é o único lugar que precisa dele.
+  // Parâmetro renomeado de `edition` pra `identifyContextEdition`
+  // (achado do review consolidado): o nome genérico convidava reincidência
+  // — nada no tipo distinguia "contexto do identify" de "destino de
+  // navegação", e o único guard contra reusar o valor errado era este
+  // comentário.
+  //
+  // Tradeoff aceito (achado do review consolidado): quem chega no gate via
+  // um link de edição única de verdade (ponte clarice/arquivo, jogar.ts
+  // ~linha 2190, #3524/#3578) e cruza o nudge nessa mesma visita agora
+  // volta pra sequência genérica em vez de voltar pra edição específica
+  // pedida — perda de destino, não um dead end (o jogo continua jogável).
+  // Resolver isso de verdade exigiria diferenciar as duas origens de
+  // `edition=` na URL na origem (goNext()/jogar.ts passaria o contexto do
+  // identify por um query param separado, preservando `edition=` com
+  // significado único de "navegar pra esta edição") — fora do escopo deste
+  // fix. Rastreado em #4271.
   // #4109 (achado ao vivo 260727, editor): o gate original (#4054) bloqueava
   // sem saída — quem não queria assinar ficava travado na tela. Link de skip
   // manda `skip_gate=1`, único-uso por navegação (handleJogarPage abaixo só
