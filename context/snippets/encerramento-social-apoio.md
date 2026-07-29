@@ -9,7 +9,7 @@ pelo `writer-monthly` a partir deste arquivo — #3219).
 a fonte editada diretamente todo dia — o conteúdo (parágrafo de apoio +
 bloco de ferramentas = slot A, convite social = slot B) agora é editável
 pelo painel Caixas do Studio, persistido em `platform.config.json` →
-`para_encerrar.{slot_a,slot_b}`. `buildParaEncerrar()` (stitch-newsletter.ts)
+`para_encerrar.slot_a`/`para_encerrar.slot_b`. `buildParaEncerrar()` (stitch-newsletter.ts)
 lê o config primeiro; só cai de volta neste arquivo quando um slot não tem
 override (config ausente, campo vazio, ou edição anterior ao #4274). O
 mensal (`writer-monthly`) continua lendo este arquivo diretamente — não foi

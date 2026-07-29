@@ -63,8 +63,8 @@
     "slot3": "clarice-divulgacao.md"
   },
   "para_encerrar": {
-    "slot_a": "Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria) para ganhar recompensas como artigo especial do mês, sorteios e acesso antecipado a novos projetos.\n\nNessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).\n\n- [Cursos de IA](https://cursos.diar.ia.br)\n- [Livros sobre IA](https://livros.diar.ia.br)",
-    "slot_b": "Agora que chegou ao final da edição, siga a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), no [Facebook](https://www.facebook.com/diar.ia.br) ou no [Instagram](https://www.instagram.com/diar.ia.br). Todo dia publicamos por lá um resumo das 3 principais notícias."
+    "slot_a": null,
+    "slot_b": null
   },
   "drive_sync": false,
   "logging": {
