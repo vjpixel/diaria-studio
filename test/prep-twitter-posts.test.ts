@@ -22,7 +22,9 @@ import {
   extractDestaquesFromCurto,
   extractCurtoText,
   prepTwitterPosts,
+  computeTwitterWeightedLength,
   TWITTER_CHAR_LIMIT,
+  TWITTER_URL_WEIGHT,
 } from "../scripts/prep-twitter-posts.ts";
 import { computeScheduledAt } from "../scripts/compute-social-schedule.ts";
 
@@ -119,6 +121,41 @@ describe("TWITTER_CHAR_LIMIT", () => {
   });
 });
 
+// ─── #4285/#4264 adendo do editor: gate de char limit pondera URL como 23 ───
+
+describe("TWITTER_URL_WEIGHT", () => {
+  it("é 23 (peso que o X/t.co atribui a QUALQUER URL, #3994)", () => {
+    assert.equal(TWITTER_URL_WEIGHT, 23);
+  });
+});
+
+describe("computeTwitterWeightedLength", () => {
+  it("texto sem URL: idêntico a text.length", () => {
+    const text = "Post curto sem nenhum link, só texto puro.";
+    assert.equal(computeTwitterWeightedLength(text), text.length);
+  });
+
+  it("texto com 1 URL: URL conta como TWITTER_URL_WEIGHT, não seu comprimento literal", () => {
+    const url = "https://diar.ia.br/p/titulo-bem-longo-da-edicao-de-hoje-com-varias-palavras";
+    const text = `Mais em ${url}`;
+    const expected = "Mais em ".length + TWITTER_URL_WEIGHT;
+    assert.equal(computeTwitterWeightedLength(text), expected);
+    assert.ok(text.length > expected, "fixture precisa ter URL mais longa que o peso pra provar a ponderação");
+  });
+
+  it("URL curta (mais curta que o peso 23): weighted ainda usa 23, não o literal menor", () => {
+    const text = "Veja: https://x.co/a";
+    const weighted = computeTwitterWeightedLength(text);
+    assert.ok(weighted > text.length, `URL curta deve INFLAR a contagem ponderada: ${weighted} vs ${text.length}`);
+  });
+
+  it("múltiplas URLs no texto: cada uma pesa TWITTER_URL_WEIGHT independentemente", () => {
+    const text = "https://diar.ia.br/p/slug-um https://diar.ia.br/p/slug-dois";
+    const expected = 1 /* espaço entre as 2 URLs */ + TWITTER_URL_WEIGHT * 2;
+    assert.equal(computeTwitterWeightedLength(text), expected);
+  });
+});
+
 // ─── prepTwitterPosts (integração, sem subprocess — só função pura) ─────────
 
 describe("prepTwitterPosts", () => {
@@ -190,6 +227,42 @@ describe("prepTwitterPosts", () => {
       assert.deepEqual(result.posts, []);
       assert.equal(result.skipped.length, 1);
       assert.match(result.skipped[0].reason, /280/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #4285/#4264 adendo do editor: {edition_url} resolvido pode ter 40-80 chars
+  // literais (https://diar.ia.br/p/{slug}) — antes do fix, um slug longo
+  // estourava o gate `text.length > TWITTER_CHAR_LIMIT` mesmo quando o post
+  // NÃO estouraria de fato no X (que conta qualquer URL como 23 chars via t.co).
+  it("#4285: URL de edição longa NÃO vai pra skipped quando o comprimento PONDERADO (URL=23) cabe em 280, mesmo com o literal estourando", () => {
+    const longUrl = `https://diar.ia.br/p/${"a".repeat(60)}`; // 22 + 60 = 82 chars literais
+    const body = "b".repeat(250);
+    const text = `${body} ${longUrl}`; // literal: 250 + 1 + 82 = 333 chars (> 280)
+    assert.ok(text.length > TWITTER_CHAR_LIMIT, `fixture precisa estourar o limite literal: ${text.length}`);
+
+    const md = `# Curto\n\n## d1\n${text}\n`;
+    const dir = makeEditionDir("diaria-twitter-prep-weighted-", md);
+    try {
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+      assert.equal(result.skipped.length, 0, `nao deveria pular por char limit: ${JSON.stringify(result.skipped)}`);
+      assert.equal(result.posts.length, 1);
+      assert.equal(result.posts[0].text, text);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#4285: texto que estoura o limite mesmo PONDERADO (sem URL) continua indo pra skipped", () => {
+    const longText = "a".repeat(300); // sem URL: literal == ponderado
+    const md = `# Curto\n\n## d1\n${longText}\n`;
+    const dir = makeEditionDir("diaria-twitter-prep-toolong-weighted-", md);
+    try {
+      const result = prepTwitterPosts(dir);
+      assert.deepEqual(result.posts, []);
+      assert.equal(result.skipped.length, 1);
+      assert.match(result.skipped[0].reason, /peso X/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

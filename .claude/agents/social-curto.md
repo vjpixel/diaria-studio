@@ -36,9 +36,9 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
    - **Nunca usar referências temporais relativas (#747):** "hoje", "ontem", "agora", "esta semana", "recentemente" ficam errados no D+1 ou depois. Use datas absolutas ou framing neutro.
    - 1 frase de contexto/impacto no máximo — este é o formato mais compacto da pipeline, não há espaço pra 2-3 parágrafos.
    - **#1762: não encerrar com pergunta.** Feche com uma afirmação antes do CTA.
-   - CTA final fixo, o mais curto possível: `"Mais em diar.ia.br"` (sem `https://`, sem ponto final — cabe no orçamento de caracteres tanto no X quanto no Threads, nenhum dos dois exige o prefixo pra exibir preview).
-   - No máximo 1 hashtag (`#InteligenciaArtificial` OU uma hashtag específica do tema — nunca `#Tecnologia`, genérica demais). Hashtags adicionais estouram o orçamento de 280 chars com folga zero — priorize o texto.
-   - **Orçamento rígido: ≤280 caracteres TOTAL** (hook + contexto + CTA + hashtag, tudo incluído). Conte antes de finalizar — estourar o limite quebra a publicação no X (Threads tolera, mas o texto é compartilhado).
+   - **CTA final = link da edição, nunca a home (#4285/#4264).** Use o placeholder literal `{edition_url}` (mesmo padrão do `## post_pixel` em `social-writer.md`) — nunca `"Mais em diar.ia.br"` nem qualquer variante hardcoded da raiz. `scripts/resolve-edition-url.ts` reescreve `03-social.md` inteiro no Stage 5 (Passo 5c-2), incluindo a seção `# Curto` — o placeholder é resolvido de graça, não escreva a URL você mesmo. Exemplo de fechamento: `Mais em {edition_url}` (sem `https://` redundante já embutido no placeholder, sem ponto final).
+   - **Palavras-chave finais SEMPRE com `#` (#4285/#4264 adendo do editor).** Feche com um bloco de 1+ hashtags — toda palavra-chave que encerra o texto entra como hashtag (`#Anthropic`, `#ViésAlgorítmico`), nunca como palavra solta sem `#`. Use hashtags específicas do tema, nunca genéricas (`#Tecnologia`, `#IA` só se não houver termo mais específico). Se corpo + hashtags + link não couberem nos 280 chars, o sacrifício é **corpo → hashtags extras**: o link da edição e pelo menos 1 hashtag nunca caem.
+   - **Orçamento rígido: ≤280 caracteres TOTAL** (hook + contexto + CTA + hashtags, tudo incluído) — mas conte o CTA como se `{edition_url}` já fosse a URL real resolvida, **pesada em 23 caracteres** (é assim que o X conta qualquer URL via t.co, #3994/#4285), não os 14 chars do placeholder literal escrito no arquivo nem o comprimento real do slug (`https://diar.ia.br/p/{slug}`, 40-80 chars). O `char_count` que você declara no comentário HTML deve refletir esse pior caso ponderado, não a contagem literal do placeholder. Conte antes de finalizar — estourar o orçamento ponderado quebra a publicação no X (Threads tolera, mas o texto é compartilhado).
 4. Gravar **um arquivo temporário** `{out_dir}/_internal/03-curto.tmp.md` com o formato abaixo. O orchestrator fará o merge em `03-social.md` numa etapa seguinte.
 
 ```markdown
@@ -46,19 +46,19 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 
 <!-- char_count: 265 -->
 
-<texto curto d1 aqui, ≤280 chars>
+<texto curto d1 aqui, hook + contexto + "Mais em {edition_url}" + bloco de hashtags com #, ≤280 chars ponderados (URL=23)>
 
 ## d2
 
 <!-- char_count: 240 -->
 
-<texto curto d2 aqui, ≤280 chars>
+<texto curto d2 aqui, ≤280 chars ponderados (URL=23)>
 
 ## d3
 
 <!-- char_count: 270 -->
 
-<texto curto d3 aqui, ≤280 chars>
+<texto curto d3 aqui, ≤280 chars ponderados (URL=23)>
 ```
 
 ## Output
@@ -81,4 +81,4 @@ Lista completa em `context/invariants.md`; abaixo só as que se aplicam ao socia
 - Não repetir o mesmo hook entre os 3 textos, nem repetir literalmente o hook já usado no LinkedIn/Facebook/Instagram — ângulo próprio, mesmo compacto.
 - Evitar "IA" e "inteligência artificial" sempre que possível — usar o sujeito concreto (o orçamento de caracteres torna isso ainda mais importante que nos outros canais).
 - Zero emojis — o orçamento de 280 chars não sobra espaço pra decoração.
-- **Se qualquer texto ultrapassar 280 chars, corte conteúdo (nunca o CTA nem a hashtag) até caber.** Nunca entregue um texto acima do limite torcendo pro publisher truncar — truncar corta a última palavra no meio e quebra o CTA.
+- **Se qualquer texto ultrapassar o orçamento ponderado (URL=23), corte conteúdo (nunca o link `{edition_url}` nem pelo menos 1 hashtag) até caber.** Ordem de sacrifício: corpo → hashtags extras. Nunca entregue um texto acima do limite torcendo pro publisher truncar — truncar corta a última palavra no meio e quebra o CTA.
