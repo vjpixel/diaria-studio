@@ -1,12 +1,13 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   resolveEffort,
   buildReviewInstruction,
   isOvernightRoundActive,
+  logEffortDecision,
   REVIEW_AGENT,
   REVIEW_FLEET_MAX,
   DEFAULT_EFFORT,
@@ -469,5 +470,255 @@ describe("isOvernightRoundActive (#3322)", () => {
     writeMarker(root, "any-tag", { started_at: new Date(NOW).toISOString() });
     assert.equal(isOvernightRoundActive(root, "any-tag", NOW), true);
     assert.equal(isOvernightRoundActive(freshRoot(), "any-tag", NOW), false);
+  });
+});
+
+// #4252: a issue pede um dado de custo de 1-2 rodadas completas com
+// DEFAULT_EFFORT=max antes de decidir se reverte pra `low` — mas descobriu, ao
+// ser escrita, que nada hoje registra qual effort foi resolvido por PR nem
+// quantos agentes rodaram (`resolveEffort` decide, o hook emite a instrução,
+// nenhum dos dois loga). Este bloco cobre a instrumentação (opção 2 da issue):
+// `reason` em `resolveEffort` identifica QUAL ramo decidiu, e `logEffortDecision`
+// grava isso em `data/run-log.jsonl` no mesmo formato de `scripts/log-event.ts`.
+// Não decide o valor de DEFAULT_EFFORT nem fecha a #4252 — só fecha a lacuna de
+// instrumentação que ela descreve.
+describe("resolveEffort — campo `reason` (#4252)", () => {
+  it("branch overnight/* → low, reason branch_overnight", () => {
+    const execFn = () => "overnight/fix-1234\n";
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "low");
+    assert.equal(result.reason, "branch_overnight");
+  });
+
+  it("sessão overnight ativa (sem prefixo na branch) → low, reason sessao_overnight_ativa", () => {
+    const execFn = () => "fix-3321-branch-naming\n";
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, activeRound);
+    assert.equal(result.effort, "low");
+    assert.equal(result.reason, "sessao_overnight_ativa");
+  });
+
+  it("diff trivial (< limiar) → low, reason diff_trivial", () => {
+    const execFn = (_cmd, args) =>
+      args.includes("additions,deletions")
+        ? JSON.stringify({ additions: 1, deletions: 0 })
+        : "develop/fix-4243\n";
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "low");
+    assert.equal(result.reason, "diff_trivial");
+  });
+
+  it("branch normal, sem rodada ativa, diff grande → DEFAULT_EFFORT (max), reason default", () => {
+    const execFn = (_cmd, args) =>
+      args.includes("additions,deletions")
+        ? JSON.stringify({ additions: 200, deletions: 50 })
+        : "develop/fix-4243\n";
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, DEFAULT_EFFORT);
+    assert.equal(result.effort, "max");
+    assert.equal(result.reason, "default");
+  });
+
+  it("URL sem número de PR → max, reason pr_sem_numero", () => {
+    const execFn = () => "overnight/fix-1\n";
+    const result = resolveEffort("https://github.com/o/r/not-a-pr-url", execFn, noActiveRound);
+    assert.equal(result.effort, "max");
+    assert.equal(result.reason, "pr_sem_numero");
+  });
+
+  it("estado indeterminado (gh lança erro) → max, reason estado_indeterminado", () => {
+    const execFn = () => {
+      throw new Error("gh: command not found");
+    };
+    const result = resolveEffort("https://github.com/o/r/pull/1", execFn, noActiveRound);
+    assert.equal(result.effort, "max");
+    assert.equal(result.reason, "estado_indeterminado");
+  });
+});
+
+describe("logEffortDecision (#4252)", () => {
+  const roots = [];
+
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function freshRoot() {
+    const root = join(
+      tmpdir(),
+      `pr-create-review-hook-effort-log-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    roots.push(root);
+    return root;
+  }
+
+  function readLoggedEvents(root) {
+    const logPath = join(root, "data", "run-log.jsonl");
+    return readFileSync(logPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  }
+
+  it("grava um evento no formato de scripts/log-event.ts (timestamp, edition, stage, agent, level, message, details)", () => {
+    const root = freshRoot();
+    logEffortDecision(
+      { prUrl: "https://github.com/o/r/pull/42", effort: "low", reason: "branch_overnight" },
+      { repoRoot: root },
+    );
+    const [event] = readLoggedEvents(root);
+    assert.equal(typeof event.timestamp, "string");
+    assert.ok(!Number.isNaN(Date.parse(event.timestamp)));
+    assert.equal(event.edition, null);
+    assert.equal(event.stage, null);
+    assert.equal(event.agent, "code-review");
+    assert.equal(event.level, "info");
+    assert.equal(event.message, "effort_resolved");
+    assert.deepEqual(event.details, { pr: "42", effort: "low", motivo: "branch_overnight", agentes: 1 });
+  });
+
+  it("effort=max conta 5 agentes (REVIEW_AGENT + REVIEW_FLEET_MAX)", () => {
+    const root = freshRoot();
+    logEffortDecision(
+      { prUrl: "https://github.com/o/r/pull/7", effort: "max", reason: "default" },
+      { repoRoot: root },
+    );
+    const [event] = readLoggedEvents(root);
+    assert.equal(event.details.agentes, REVIEW_FLEET_MAX.length + 1);
+    assert.equal(event.details.agentes, 5);
+  });
+
+  it("URL sem número de PR reconhecível → details.pr é null, não lança", () => {
+    const root = freshRoot();
+    assert.doesNotThrow(() =>
+      logEffortDecision(
+        { prUrl: "https://github.com/o/r/not-a-pr-url", effort: "max", reason: "pr_sem_numero" },
+        { repoRoot: root },
+      ),
+    );
+    const [event] = readLoggedEvents(root);
+    assert.equal(event.details.pr, null);
+  });
+
+  it("é append-only — duas chamadas escrevem duas linhas, sem sobrescrever a anterior", () => {
+    const root = freshRoot();
+    logEffortDecision({ prUrl: "https://github.com/o/r/pull/1", effort: "low", reason: "diff_trivial" }, { repoRoot: root });
+    logEffortDecision({ prUrl: "https://github.com/o/r/pull/2", effort: "max", reason: "default" }, { repoRoot: root });
+    const events = readLoggedEvents(root);
+    assert.equal(events.length, 2);
+    assert.equal(events[0].details.pr, "1");
+    assert.equal(events[1].details.pr, "2");
+  });
+
+  it("cria data/ se ainda não existir (worktree/tmpdir sem a pasta)", () => {
+    const root = freshRoot(); // freshRoot() nunca cria o diretório — só reserva o path
+    assert.doesNotThrow(() =>
+      logEffortDecision({ prUrl: "https://github.com/o/r/pull/1", effort: "low", reason: "branch_overnight" }, { repoRoot: root }),
+    );
+    assert.equal(readLoggedEvents(root).length, 1);
+  });
+
+  // Fail-soft (mesmo contrato do resto do hook): uma falha ao logar (ex: disco
+  // cheio, permissão negada) nunca pode lançar nem bloquear a criação da PR ou
+  // a instrução de review — só o logging é perdido.
+  it("appendFn lançando erro é engolido — nunca propaga", () => {
+    const throwingAppend = () => {
+      throw new Error("ENOSPC: no space left on device");
+    };
+    assert.doesNotThrow(() =>
+      logEffortDecision(
+        { prUrl: "https://github.com/o/r/pull/1", effort: "low", reason: "branch_overnight" },
+        { repoRoot: freshRoot(), appendFn: throwingAppend },
+      ),
+    );
+  });
+
+  it("mkdirFn lançando erro é engolido — nunca propaga", () => {
+    const throwingMkdir = () => {
+      throw new Error("EACCES: permission denied");
+    };
+    assert.doesNotThrow(() =>
+      logEffortDecision(
+        { prUrl: "https://github.com/o/r/pull/1", effort: "low", reason: "branch_overnight" },
+        { repoRoot: freshRoot(), mkdirFn: throwingMkdir },
+      ),
+    );
+  });
+});
+
+// Cenários fim-a-fim pedidos pela unidade #4252: resolveEffort → logEffortDecision,
+// para os 4 casos citados no dispatch (branch overnight/* → low; diff trivial → low;
+// branch normal com diff grande → max; estado indeterminado → max). Simula o que o
+// entrypoint CLI do hook faz na prática (ver o handler `process.stdin.on("end", ...)`
+// no final de pr-create-review.mjs), sem tocar disco real fora do tmpdir injetado.
+describe("resolveEffort + logEffortDecision — cenários fim-a-fim (#4252)", () => {
+  const roots = [];
+
+  after(() => {
+    for (const root of roots) rmSync(root, { recursive: true, force: true });
+  });
+
+  function freshRoot() {
+    const root = join(
+      tmpdir(),
+      `pr-create-review-hook-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    roots.push(root);
+    return root;
+  }
+
+  function readLoggedEvent(root) {
+    const logPath = join(root, "data", "run-log.jsonl");
+    return JSON.parse(readFileSync(logPath, "utf8").trim().split("\n")[0]);
+  }
+
+  function runAndLog(prUrl, execFn, checkRoundActive, root) {
+    const { effort, reason } = resolveEffort(prUrl, execFn, checkRoundActive);
+    logEffortDecision({ prUrl, effort, reason }, { repoRoot: root });
+    return effort;
+  }
+
+  it("branch overnight/* → low, evento loga effort=low motivo=branch_overnight agentes=1", () => {
+    const root = freshRoot();
+    const execFn = () => "overnight/fix-4252\n";
+    const effort = runAndLog("https://github.com/o/r/pull/100", execFn, noActiveRound, root);
+    assert.equal(effort, "low");
+    const event = readLoggedEvent(root);
+    assert.deepEqual(event.details, { pr: "100", effort: "low", motivo: "branch_overnight", agentes: 1 });
+  });
+
+  it("diff trivial (<50 linhas) → low, evento loga motivo=diff_trivial agentes=1", () => {
+    const root = freshRoot();
+    const execFn = (_cmd, args) =>
+      args.includes("additions,deletions")
+        ? JSON.stringify({ additions: 10, deletions: 5 })
+        : "develop/fix-4252\n";
+    const effort = runAndLog("https://github.com/o/r/pull/101", execFn, noActiveRound, root);
+    assert.equal(effort, "low");
+    const event = readLoggedEvent(root);
+    assert.deepEqual(event.details, { pr: "101", effort: "low", motivo: "diff_trivial", agentes: 1 });
+  });
+
+  it("branch normal com diff grande, sem rodada ativa → max, evento loga motivo=default agentes=5", () => {
+    const root = freshRoot();
+    const execFn = (_cmd, args) =>
+      args.includes("additions,deletions")
+        ? JSON.stringify({ additions: 300, deletions: 100 })
+        : "fix-something-manual\n";
+    const effort = runAndLog("https://github.com/o/r/pull/102", execFn, noActiveRound, root);
+    assert.equal(effort, "max");
+    const event = readLoggedEvent(root);
+    assert.deepEqual(event.details, { pr: "102", effort: "max", motivo: "default", agentes: 5 });
+  });
+
+  it("estado indeterminado (gh indisponível) → max, evento loga motivo=estado_indeterminado agentes=5", () => {
+    const root = freshRoot();
+    const execFn = () => {
+      throw new Error("gh: command not found");
+    };
+    const effort = runAndLog("https://github.com/o/r/pull/103", execFn, noActiveRound, root);
+    assert.equal(effort, "max");
+    const event = readLoggedEvent(root);
+    assert.deepEqual(event.details, { pr: "103", effort: "max", motivo: "estado_indeterminado", agentes: 5 });
   });
 });
