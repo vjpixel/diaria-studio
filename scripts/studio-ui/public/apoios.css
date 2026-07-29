@@ -243,6 +243,22 @@
 .open-rate-ok { border-color: var(--status-info); color: var(--status-info); }
 .open-rate-sem-dados { border-style: dashed; opacity: 0.6; }
 
+/* #4273 parte 3: confirmação de vínculo Beehiiv — mesmo tratamento visual de
+   .status-badge/.open-rate-badge, badge separado porque é um sinal ortogonal
+   (a pessoa é assinante Beehiiv ou não, independente de estar apoiando). */
+.vinculo-badge {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  white-space: nowrap;
+}
+.vinculo-ok { border-color: var(--status-ok); color: var(--status-ok); }
+.vinculo-falta { border-color: var(--status-warn); color: var(--status-warn); }
+.vinculo-sem-dados { border-style: dashed; opacity: 0.6; }
+
 .contact-dialog {
   border: 1px solid var(--rule);
   border-radius: 8px;
