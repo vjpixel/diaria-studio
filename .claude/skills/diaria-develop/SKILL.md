@@ -10,6 +10,8 @@ effort: high
 
 Sessão de desenvolvimento **supervisionada/interativa** focada nas issues **COM BLOQUEIO** — exatamente as que o `/diaria-overnight` pula. Aqui o **bloqueio é o escopo de trabalho, não o filtro de rejeição**. Como o editor está presente, ele desbloqueia ao vivo (cola um token, confirma que criou uma conta de terceiro, decide um trade-off de produto/editorial, ou autoriza uma mudança de alto blast-radius); a skill **valida o desbloqueio deterministicamente (#573)** e leva a issue até o merge **reusando a maquinaria de implementação do overnight**, com uma diferença central: **paraleliza tudo que for seguro** (inverte o #636 — ver seção de Paralelização).
 
+**Por padrão (#4297), a sessão só encerra quando o backlog bloqueado do escopo estiver esgotado** — mesma propriedade de esgotamento do overnight ("resolve a fila autonomamente até esgotá-la"), aplicada ao conjunto complementar. Ver seção "Goal de esgotamento" abaixo pra definição exata do que conta como alvo e como terminal; `goal_policy = table_only` no briefing volta ao comportamento antigo (fecha quando a tabela da Fase 0 acaba, sem re-varredura).
+
 Espelho invertido do `/diaria-overnight` (#2021): onde o overnight é autônomo e recusa tudo que está bloqueado, o `/diaria-develop` é supervisionado e ataca justamente o bloqueado. Esta skill só roda por invocação explícita do editor (`disable-model-invocation: true`) — o blast radius (merges autônomos em master + aplicação de mudanças de alto impacto) exige que a invocação seja o consentimento, mesmo padrão de `/diaria-overnight` e `/diaria-remover-votos-pixel`.
 
 **Modelo/effort do coordenador (#3454).** O frontmatter fixa `model: sonnet` + `effort: high` — mesmo pin do `/diaria-overnight` (#3453). Antes do #3454 o develop **não pinava nada** e o coordenador herdava o modelo/effort ambiente da sessão interativa do editor (potencialmente Opus/effort alto durante as fases mecânicas Fase 1/1.5, que não exigem isso), sem decisão registrada — a análise `docs/develop-token-analysis-3328.md` §3.2 identificou isso como a única lacuna estrutural real da skill. Decisão do editor (#3454): pinar `sonnet` + `high`, igual ao overnight — as decisões de julgamento ao vivo (cat. C/D/E) já passam por gates humanos explícitos (Gate 1, Gate de Onda, Gate B), então effort `high` basta pra mediação; previsibilidade de custo + consistência com o overnight valem mais que rodar mais forte nas fases mecânicas. Mesma limitação de escopo-de-turno do overnight (o override de frontmatter vale pelo turno atual; se o editor digitar uma mensagem livre mid-sessão, a sessão volta ao modelo/effort anteriores a partir daquele ponto — esperado, não bug). `--serial` e os gates humanos não mudam com o pin.
@@ -62,6 +64,50 @@ Diferente do overnight (serial por #636 — sem supervisão, paralelo elevaria o
 
 Categoria inferida na Fase 0 por **labels reais** (`external-blocker`→A/B/E conforme corpo; `on-hold`/`kit-migration`→B; `not-this-week`→D; `beehiiv`→E) + corpo (token/chave→A; "criar conta"/"aguardando terceiro"→B; "decidir entre"/"OU"→C; "blast radius"/"~N sites"/"migração"→D; "CSP"/"plan-gated"/"API limit"→E). **Antes de hardcodar qualquer label, rodar `gh label list`** e confirmar o conjunto real `{ external-blocker, on-hold, kit-migration, not-this-week, beehiiv }` (usar `external-blocker` — NÃO `bloqueio-externo`, que não existe como label; `bloqueio-externo` só aparece como valor textual do campo `motivo`/`status` do `plan.json` do overnight, não como label do GitHub).
 
+## Goal de esgotamento (#4297)
+
+Por padrão, **a sessão só encerra quando nenhuma issue do conjunto-alvo está sem status terminal.** Duas metades precisam de definição precisa, senão a propriedade vira livelock.
+
+### Conjunto-alvo = o complemento exato do overnight
+
+Herdado de `plan.json` do overnight (`status: pulada`) + fresh scan por label — mesma fonte já usada na Fase 0 passos 2-3.
+
+| Entra no alvo | Origem |
+|---|---|
+| `bloqueio-externo` (cat. A/B/E) | motivo do overnight + labels `external-blocker`/`on-hold`/`kit-migration`/`beehiiv` |
+| `ambigua` **quando trade-off-real** (cat. C) | escopo exclusivo do develop por decisão do #2640 |
+| `not-this-week` (cat. D) | label homônima |
+| `requer-sessao-local` | overnight em cloud pula; develop roda local, então é elegível aqui |
+
+**Não** entra no alvo — não são bloqueio, são outra coisa, e incluí-las faria o Goal nunca fechar:
+
+- `fora-do-escopo` — não vira trabalho de develop;
+- `rescan-limit` e `sem-resposta` — artefatos de convergência/briefing do **overnight**; voltam como `elegivel` na próxima rodada dele, não aqui;
+- `elegivel_especial` (EPIC deliberadamente deferido, #3072) — nunca é despachado por design.
+
+### "Resolvida" = estado terminal, não "mergeada"
+
+Parte do backlog bloqueado é **intrinsecamente irresolvível na sessão** (cat. B esperando terceiro criar conta, cat. A com token que o editor ainda vai gerar). Um Goal literal de "todas mergeadas" nunca fecharia. Terminal aceitável (todos já existem nesta skill):
+
+- `mergeada`
+- `draft-ci-vermelho`
+- `pulada` motivo `nao-destravavel-na-sessao` (Fase 1 passo 5 — exige comentário durável explicando o que falta, com dedup)
+- `pulada` motivo `decisao-adiada` (editor saiu no meio)
+
+O Goal força **encarar cada issue do alvo e classificá-la** — o que ele elimina é "a issue nem foi olhada porque não estava na tabela da Fase 0", não a exigência de resolver o irresolvível.
+
+### O Goal é relativo ao escopo da sessão
+
+`--issues`, `--only`, `--bugs` (#3375) e `--priority` (#3499) restringem o conjunto-alvo. O Goal é avaliado **contra o alvo já filtrado** — senão qualquer sessão `--bugs` ou `--priority P0` fica com Goal permanentemente inatingível. O relatório da Fase 2 sempre diz qual dos dois está reportando: `Goal (escopo: --bugs --priority P0,P1): atingido`.
+
+### Opt-out no briefing (`goal_policy`)
+
+Coletado na Fase 0.5 junto de `wave_policy`/`catD_preauth`: `goal_policy` ∈ `{exhaust, table_only}`, **default `exhaust`**. `table_only` = comportamento pré-#4297 (encerra quando a tabela da Fase 0 acaba, sem re-varredura) — pra quando o editor tem só uma janela curta. Nunca re-perguntado em resume.
+
+### O limite que NÃO pode ser cruzado
+
+O develop é supervisionado **por natureza**. O Goal **não** revoga o "Fallback de ausência" (ver seção Gates): se o editor sai, a issue corrente vira `pulada` motivo `decisao-adiada`, `resume_state` é gravado e **a sessão para limpa — nunca continua autônoma**. Se o editor sair com o alvo não esgotado, o Goal fica registrado como **não atingido** com o resíduo no handoff da Fase 2, pra ser retomado no próximo `/diaria-develop`. O Goal também **não** transforma os gates humanos (Gate 1, Gate de Onda, Gate B) em automáticos — é critério de completude, não licença pra rodar sem o editor.
+
 ## Fase 0 — Montar e triar a fila BLOQUEADA (filtro invertido)
 
 0. **Resume** via `plan.json` se existe.
@@ -76,7 +122,7 @@ Categoria inferida na Fase 0 por **labels reais** (`external-blocker`→A/B/E co
 4. **Classificar** cada bloqueio em A–E.
 5. **Imprimir a tabela** do backlog bloqueado, agrupada por categoria, ordenada P0>P1>P2>P3: `#NNNN | P? | cat A-E | o-que-falta-destravar | título`.
 6. Aplicar `--issues`/`--only`/`--bugs`/`--priority`.
-7. Gravar `plan.json`; com `--dry-run`, **parar aqui**.
+7. Gravar `plan.json`, incluindo o campo `goal` inicial — `target_set` = os números das issues classificadas como "entra no alvo" (tabela da seção "Goal de esgotamento", já filtradas por `--issues`/`--only`/`--bugs`/`--priority`), `policy` ainda `null` (coletada na Fase 0.5), `reached: false`, `remaining` = cópia de `target_set`, `rescans_done: 0`. Com `--dry-run`, **parar aqui**.
 
 ## Fase 0.5 — Briefing FRONT-LOADED (colher o máximo de decisões no início, #2966)
 
@@ -90,8 +136,9 @@ Montar o briefing em **múltiplas chamadas `AskUserQuestion` sequenciais** (o ca
 4. **Todas as confirmações cat. B** — estado das contas de terceiro de uma vez; probe real por conta confirmada.
 5. **Política de onda** (`wave_policy`) — UMA pergunta: "auto-compor + mergear as ondas seguras SEM te perguntar cada composição, ou aprovar onda a onda?". **Default sugerido: `auto`** (a onda é livre-de-colisão por construção e o Gate 2 é determinístico). `auto` → pula o Gate de Onda a sessão inteira.
 6. **Política de pré-autorização cat. D** (`catD_preauth`) — UMA pergunta: "pra blast-radius, pré-aprovo a abordagem se o teste local + diff de amostra passarem, ou quero ver CADA Gate B?". **Default = `show_each`** (ver cada Gate B) — a segurança do blast-radius NÃO se remove em silêncio; front-load aqui é OPÇÃO explícita, nunca o default.
+7. **Política de esgotamento** (`goal_policy`, #4297) — UMA pergunta: "a sessão continua re-varrendo até esgotar todo o backlog bloqueado do escopo, ou fecha quando a lista de hoje acabar?". **Default sugerido: `exhaust`** (mesma propriedade do overnight, ver seção "Goal de esgotamento"). `table_only` = comportamento pré-#4297, pra janela de tempo curta.
 
-Gravar tudo em `plan.json` (`attack_order`, `wave_policy`, `catD_preauth`, e por issue `unblock_status`/`unblock_evidence`). **Regra de resume:** nada coletado no briefing é re-perguntado.
+Gravar tudo em `plan.json` (`attack_order`, `wave_policy`, `catD_preauth`, `goal.policy`, e por issue `unblock_status`/`unblock_evidence`). **Regra de resume:** nada coletado no briefing é re-perguntado.
 
 **O que NÃO dá pra front-load** (fica mid-sessão, vira exceção — não o fluxo normal): Gate B cat. D quando `catD_preauth = show_each`; ambiguidade imprevista que só aparece implementando; falha de MCP (#738); input que o editor não tem pronto no briefing. Com o front-load, a maioria das sessões não para em nenhum desses.
 
@@ -113,6 +160,8 @@ A maioria dos desbloqueios já foi **coletada no briefing FRONT-LOADED** (Fase 0
    ```
    Análogo ao `coordinator_tokens_estimate` do overnight (#3453 Rec 1), emitir também um `coordinator_tokens_estimate` ao fim de cada onda + no relatório (mesma forma: `{"phase": "onda {id} | fase_1_5 | fase_2", "tokens": N, "source": "harness_usage | context_size_proxy | unavailable"}`). Risco nenhum (só observabilidade); transforma a Seção 3 da análise #3328 de "leitura de código + analogia" em "medido".
 
+6. **Convergência ao esgotar a fila (#4297, `goal_policy = exhaust`, default):** quando a fila de issues validadas-pendentes esvazia, **antes** de ir pra Fase 1.5, re-varrer o conjunto-alvo (mesma fonte da Fase 0 passos 2-3 — herança do overnight + fresh scan por label — filtrada por `--issues`/`--only`/`--bugs`/`--priority` quando presentes). Reusa **o mesmo guard de convergência do overnight, não um novo**: `rescans_done` com cap K=2 — aceitar todas as novatas do re-scan (issue bloqueada nova criada durante a sessão; overnight rodando antes/junto e marcando `pulada bloqueio-externo`; finding da Fase 1.5 que nasce bloqueado) **antes** de incrementar `rescans_done`; só então incrementar. Quando `rescans_done >= 2` **antes de iniciar** um novo re-scan, não re-varrer — encerra registrando `goal.reached: false` e o resíduo em `goal.remaining`. Issue novata entra no Gate 1 normalmente (não pula direto pra implementação). **Anti-livelock idêntico ao overnight:** issue com status terminal na sessão **nunca** é re-escolhida. Com `goal_policy = table_only`, pular esta etapa inteira — a Fase 1 encerra assim que a tabela original acaba, `goal` fica com `policy: "table_only"` e sem avaliação de `reached`. Atualizar `goal.remaining`/`goal.reached`/`goal.rescans_done` em `plan.json` a cada ciclo.
+
 ## Gates
 
 **Quatro gates** — a separação limpa é o que torna seguro inverter a Regra 1 e paralelizar: **humano no Gate 1 e no Gate de Onda; máquina sozinha no Gate 2.**
@@ -132,6 +181,8 @@ Roda só se houve ≥1 merge e o diff `{base_sha}..HEAD` > ~50 linhas. Forma exe
 
 ## Fase 2 — Relatório + handoff para o overnight
 
+**Abrir sempre com o status do Goal (#4297)**, antes de qualquer outra linha: `Goal (escopo: {descrição do escopo efetivo}): atingido` ou `não atingido`. Escopo efetivo = `--issues`/`--only`/`--bugs`/`--priority` da invocação, resumidos (ex: `--bugs --priority P0,P1`; `nenhum filtro` se a sessão rodou sem flags de escopo). Com `policy: "table_only"`, a linha vira `Goal: não avaliado (goal_policy=table_only)` — não é "não atingido", é fora de escopo por opção do editor no briefing. Quando não atingido, listar os `goal.remaining` com o motivo de cada um não ter chegado a terminal (bloqueio cat. B ainda sem conta de terceiro, token cat. A não colado, `rescans_done` esgotado em `2`, etc.) — é o resíduo que a Seção de HANDOFF abaixo também referencia.
+
 Com `--bugs` (#3375) ativo, abrir o digest com `Modo: --bugs (só issues com label bug)`. Com `--priority` (#3499) ativo, adicionar (ou combinar na mesma linha, se `--bugs` também ativo) `Modo: --priority {lista} (só issues com label de prioridade ∈ {lista})` — inclui a contagem de issues excluídas por não baterem a prioridade. Digest de `plan.json` + run-log (filtrado por `agent: "develop"` + AAMMDD) em 4 buckets: (a) destravadas e mergeadas (agrupadas por onda); (b) destravadas mas pendentes (`--no-implement` ou CI vermelho — **prontas p/ o próximo overnight pegar como `elegivel`**); (c) não-destraváveis na sessão; (d) findings/hotfixes. **Seção de HANDOFF:** quais issues saíram de bloqueada→elegível (label removido + decisão postada) e quais ações fora da sessão o editor ainda precisa agendar. **Linha de coordenador + custo (#3454):** `Coordenador: sonnet / high` (valores CONFIGURADOS no frontmatter, ver evento `coordinator_model` da Fase 0); se houver eventos `subagent_metrics`/`coordinator_tokens_estimate` no run-log, resumir numa tabela `unidade | subagent_tokens | tool_uses | duração` + total, com a ressalva `fonte: unavailable` quando o harness não expuser os tokens — é o primeiro dataset real de develop pra fechar a lacuna da análise #3328. Timeline via `npx tsx scripts/render-overnight-timeline.ts --plan data/develop/{AAMMDD}/plan.json --title "Timeline da sessão" --total-label "Total da sessão"`.
 
 Salvar o digest completo em `data/develop/{AAMMDD}/report.md` (mesma convenção do overnight, `data/overnight/{AAMMDD}/report.md`). **Registrar na superfície de Relatórios do Studio (#3714, decisão do editor 260720 — substitui o antigo draft de Gmail, não soma a ele):**
@@ -149,6 +200,18 @@ Ao detectar edição em curso (`scripts/lib/find-current-edition.ts` retorna can
 ## `plan.json` (`data/develop/{AAMMDD}/`, gitignored)
 
 Reusa o schema do overnight (**inclusive `started_at` — ISO 8601 real capturado no passo 1, nunca a string `{AAMMDD}`, #3841**) + campos próprios de desbloqueio: `block_category` (A–E), `block_label` (literal real), `what_unblocks`, `unblock_status` (`pendente`|`desbloqueada-validada`|`nao-destravavel-na-sessao`), `unblock_evidence` (dry-run exit 0 / comentário #link / probe API ok — **NUNCA o valor do secret**), `editor_input_received` (bool/hash, nunca o secret), `source` (`inherited-overnight`|`fresh-scan`|`manual-issues-arg`), `wave` (id da onda paralela). **Políticas de sessão do briefing front-loaded (#2966):** `attack_order` (ordem escolhida), `wave_policy` (`auto`|`per_wave`, default `auto`), `catD_preauth` (`show_each`|`preapproved`, default `show_each`) — gravadas na Fase 0.5 e relidas em todas as fases; nunca re-perguntadas em resume. **Regra crítica de resume:** nunca re-perguntar um desbloqueio já validado (`unblock_status: desbloqueada-validada` + `status: pendente` → retomar direto na implementação) nem uma política já escolhida. **Segurança:** o plan.json nunca armazena o valor de um token. Develop **não** grava `preempted_*`.
+
+**`goal` (#4297), objeto no nível raiz:**
+```json
+"goal": {
+  "policy": "exhaust",
+  "target_set": [4231, 4288],
+  "reached": false,
+  "remaining": [4288],
+  "rescans_done": 1
+}
+```
+`policy` = `goal_policy` do briefing (`exhaust`|`table_only`), copiado aqui pra não precisar re-ler a Fase 0.5. `target_set` = snapshot congelado das issues classificadas "entra no alvo" (seção "Goal de esgotamento") no momento da Fase 0 passo 7, já filtrado por `--issues`/`--only`/`--bugs`/`--priority` — **imutável durante a sessão exceto por re-scan** (novatas aceitas num re-scan são adicionadas tanto a `target_set` quanto a `remaining`). `remaining` = `target_set` menos as issues que já atingiram status terminal (`mergeada`, `draft-ci-vermelho`, `pulada` motivo `nao-destravavel-na-sessao` ou `decisao-adiada`) — recalculado a cada atualização de status (mesmo ponto do passo 5 da Fase 1). `reached` = `remaining.length === 0`, só relevante quando `policy: "exhaust"`. `rescans_done` = mesmo contador do guard de convergência (Fase 1 passo 6), cap K=2. Com `policy: "table_only"`, `reached` fica `false` e `rescans_done` fica `0` pela sessão inteira — não são avaliados, só presentes pra manter o schema estável.
 
 **`machine_id` (#3033).** `data/` é um junction do OneDrive sincronizado entre máquinas — o `plan.json` desta sessão fica visível pra QUALQUER outra máquina no mesmo OneDrive, e vice-versa. Ao criar/gravar `plan.json` (Fase 0, Passo 7, e todo re-write subsequente), incluir o campo `machine_id` no nível raiz com o output de `npx tsx scripts/lib/machine-id.ts` (hostname desta máquina). Sem esse campo, a statusLine de outra máquina no mesmo OneDrive pode confundir o progresso desta sessão com o dela (`isForeignDevelopPlan` em `scripts/overnight-statusline.ts` filtra por esse campo; ausente = tratado como legado, não filtrado). Gravar 1x por sessão é suficiente (hostname não muda no meio de uma sessão) — não precisa reconsultar a cada write, mas preservar o campo em todo re-write do arquivo.
 
