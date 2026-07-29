@@ -139,7 +139,7 @@ describe("readBoxesDivulgacaoConfig (#4076)", () => {
       JSON.stringify({ boxes_divulgacao: { slot1: "a.md", slot2: null, slot3: "c.md" } }),
     );
     const cfg = readBoxesDivulgacaoConfig(configPath);
-    assert.deepEqual(cfg, { slot1: "a.md", slot2: null, slot3: "c.md" });
+    assert.deepEqual(cfg, { slot0: null, slot1: "a.md", slot2: null, slot3: "c.md" });
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -148,13 +148,13 @@ describe("readBoxesDivulgacaoConfig (#4076)", () => {
     const configPath = join(dir, "platform.config.json");
     writeFileSync(configPath, JSON.stringify({ newsletter: "beehiiv" }));
     const cfg = readBoxesDivulgacaoConfig(configPath);
-    assert.deepEqual(cfg, { slot1: "livros-divulgacao.md", slot2: null, slot3: null });
+    assert.deepEqual(cfg, { slot0: null, slot1: "livros-divulgacao.md", slot2: null, slot3: null });
     rmSync(dir, { recursive: true, force: true });
   });
 
   it("default legado quando o config não existe/é ilegível", () => {
     const cfg = readBoxesDivulgacaoConfig(join(tmpdir(), "arquivo-que-nao-existe-4076.json"));
-    assert.deepEqual(cfg, { slot1: "livros-divulgacao.md", slot2: null, slot3: null });
+    assert.deepEqual(cfg, { slot0: null, slot1: "livros-divulgacao.md", slot2: null, slot3: null });
   });
 });
 

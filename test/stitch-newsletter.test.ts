@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout } from "../scripts/stitch-newsletter.ts";
-import { extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3 } from "../scripts/render-newsletter-html.ts";
+import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3 } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 
 // ─── #4083 — fixtures ESTÁVEIS de boxes_divulgacao ─────────────────────────
@@ -980,6 +980,121 @@ describe("#2978 — boxes_divulgacao config-driven (slot1/slot2)", () => {
       assert.equal(extractBoxDivulgacao2(out), null, "slot2 nunca injeta sem gap D2/D3");
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("#4274 — boxes_divulgacao config-driven (slot0, introdução)", () => {
+  function setupEdition() {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-slot0-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(internalDir, "02-d1-draft.md"), "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1");
+    writeFileSync(join(internalDir, "02-d2-draft.md"), "**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2");
+    writeFileSync(join(internalDir, "02-d3-draft.md"), "**DESTAQUE 3 | ⚖️ REGULAÇÃO**\n\n[**T3**](https://e.com/d3)\n\nbody3");
+    writeFileSync(
+      join(internalDir, "01-approved-capped.json"),
+      JSON.stringify({ coverage: { line: "Para esta edição, selecionamos 10 itens." } }),
+    );
+    return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+  const base = (dir: string, internalDir: string, extra: Record<string, unknown> = {}) => ({
+    d1Path: join(internalDir, "02-d1-draft.md"),
+    d2Path: join(internalDir, "02-d2-draft.md"),
+    d3Path: join(internalDir, "02-d3-draft.md"),
+    approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+    editionDir: dir,
+    ...extra,
+  });
+
+  it("slot0 fixado via override injeta o box ANTES de DESTAQUE 1 (entre a coverage line e o marcador)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: null, slot2: null, slot3: null, slot0: STABLE_SLOT1_FILE },
+      }));
+      const slot0 = extractBoxDivulgacao0(out);
+      assert.ok(slot0, "slot0 injetado");
+      assert.match(slot0!, STABLE_SLOT1_ANCHOR);
+      const slot0Pos = out.indexOf(slot0!);
+      const d1Pos = out.indexOf("DESTAQUE 1");
+      assert.ok(slot0Pos > 0 && slot0Pos < d1Pos, `slot0(${slot0Pos}) deve vir antes de DESTAQUE 1(${d1Pos})`);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("slot0 ausente/null → sem box na região de intro, sem erro (graceful, default editorial #4274)", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: null, slot2: null, slot3: null, slot0: null },
+      }));
+      assert.equal(extractBoxDivulgacao0(out), null);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("sponsor=false suprime o slot0 junto com os demais slots", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      const boxesDivulgacao = { slot1: null, slot2: null, slot3: null, slot0: STABLE_SLOT1_FILE };
+      const withSponsor = stitchNewsletter(base(dir, internalDir, { boxesDivulgacao }));
+      assert.ok(extractBoxDivulgacao0(withSponsor), "pré-condição: slot0 injeta com sponsor on");
+      const out = stitchNewsletter(base(dir, internalDir, { sponsor: false, boxesDivulgacao }));
+      assert.equal(extractBoxDivulgacao0(out), null, "slot0 suprimido");
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("2 destaques (sem D3): slot0 continua injetando normalmente (não depende de D3, #4274)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stitch-slot0-2d-"));
+    const internalDir = join(dir, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    try {
+      writeFileSync(join(internalDir, "02-d1-draft.md"), "**DESTAQUE 1 | 🚀 LANÇAMENTO**\n\n[**T1**](https://e.com/d1)\n\nbody1");
+      writeFileSync(join(internalDir, "02-d2-draft.md"), "**DESTAQUE 2 | 🔬 PESQUISA**\n\n[**T2**](https://e.com/d2)\n\nbody2");
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({ coverage: { line: "cov" }, highlights: [{}, {}] }),
+      );
+      const out = stitchNewsletter({
+        d1Path: join(internalDir, "02-d1-draft.md"),
+        d2Path: join(internalDir, "02-d2-draft.md"),
+        d3Path: null,
+        approvedCappedPath: join(internalDir, "01-approved-capped.json"),
+        editionDir: dir,
+        boxesDivulgacao: { slot1: null, slot2: null, slot3: null, slot0: STABLE_SLOT1_FILE },
+      });
+      assert.ok(extractBoxDivulgacao0(out), "slot0 (intro) existe em edição de 2 destaques");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("idempotência: box já presente na região de intro não é duplo-injetado", () => {
+    const { dir, internalDir, cleanup } = setupEdition();
+    try {
+      // Simula um bloco de box já presente na região de intro (fundido na
+      // própria coverage line pra fim de fixture) — mesma técnica das
+      // demais idempotências deste arquivo (glue direto no draft/coverage).
+      writeFileSync(
+        join(internalDir, "01-approved-capped.json"),
+        JSON.stringify({
+          coverage: {
+            line: "Para esta edição, selecionamos 10 itens.\n\n---\n\n🔧 Já presente: [x](https://link.example/x)",
+          },
+        }),
+      );
+      const out = stitchNewsletter(base(dir, internalDir, {
+        boxesDivulgacao: { slot1: null, slot2: null, slot3: null, slot0: STABLE_SLOT1_FILE },
+      }));
+      assert.equal((out.match(/Já presente/g) || []).length, 1, "só 1 ocorrência (não duplo-injeta)");
+      assert.ok(!out.includes("Recomendação de leitura"), "slot0 configurado não injeta por cima do box já presente");
+    } finally {
+      cleanup();
     }
   });
 });
