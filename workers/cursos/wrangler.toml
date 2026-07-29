@@ -2,8 +2,9 @@
 #
 # #4052: convertido de static-assets-only pra worker com SCRIPT
 # (`main = src/index.ts`) + assets. `env.ASSETS` continua servindo
-# `workers/cursos/public/index.html` (teaser — 4 cursos abertos, resto
-# bloqueado) como fallback; o script intercepta `/`, `/gate`, `/gate/verify`,
+# `workers/cursos/public/index.html` (teaser — floor(20%×total) cursos
+# abertos, os demais AUSENTES do render, nem título; ver #4305) como
+# fallback; o script intercepta `/`, `/index.html`, `/gate`, `/gate/verify`,
 # `/gate/subscribe` pra decidir teaser × conteúdo completo (ver src/index.ts).
 # O HTML teaser é gerado por `scripts/build-cursos-page.ts` a partir de
 # `seed/courses/cursos-ia.json` (fonte de verdade, versionada); o HTML
@@ -37,9 +38,34 @@ workers_dev = true
 pattern = "cursos.diar.ia.br"
 custom_domain = true
 
+# #4305: sem isto o `console.error` do worker só existe enquanto alguém está
+# com `wrangler tail` aberto — e o fail-soft de `handleIndex` responde 200,
+# então some também do gráfico de erro nativo do Cloudflare, que é o sinal
+# ambiente que um 500 daria de graça. Falha persistente (secret rotacionado,
+# KV apontando pro namespace errado) ficaria invisível pra sempre: todo
+# visitante veria o teaser e ninguém saberia. Workers Logs é opt-in de config
+# e entra no free tier.
+[observability]
+enabled = true
+
 [assets]
 directory = "./public"
 binding = "ASSETS"
+# INVARIANTE (#4052 follow-up): Workers com Static Assets servem o ASSET
+# ANTES de invocar o script — se existe arquivo casando com o path, o
+# `fetch` handler NUNCA roda. `public/index.html` casa com `/`, então o
+# gate inteiro ficava morto em produção: `?email=` da newsletter (caminho A)
+# era ignorado e o cookie de sessão nunca era lido (caminho B desbloqueava,
+# setava o cookie e a página seguia teaser). Só `/gate*` funcionava, porque
+# não tem asset correspondente. `run_worker_first` força o script a decidir
+# em `/` (e em `/index.html`, o MESMO asset por outro path) — o teaser
+# continua vindo do ASSETS binding, mas só depois de `handleIndex` checar
+# `?email=`/cookie. Esta lista precisa casar com `GATED_INDEX_PATHS` em
+# `src/index.ts`: declarar aqui um path que o `fetch` não roteia pra
+# `handleIndex` faz o script rodar só pra devolver o teaser cru — gate que
+# promete cobertura e não entrega. Travado por
+# `test/cursos-worker-first.test.ts`.
+run_worker_first = ["/", "/index.html"]
 
 # #4052: KV do sync de assinantes ativos (subscriber:{sha256(email)}), fonte
 # PRIMÁRIA de verificação (scripts/sync-cursos-subscribers-kv.ts popula).

@@ -258,3 +258,284 @@ describe("workers/cursos POST /gate/logout (#4052)", () => {
     assert.match(getCookieHeader(res) ?? "", /Max-Age=0/);
   });
 });
+
+/**
+ * #4305 — regressões do follow-up. Os casos abaixo só passaram a importar
+ * quando `run_worker_first` fez o script de fato rodar em `/`: antes disso o
+ * asset era servido sem `handleIndex` existir na prática, e nada aqui podia
+ * ser observado em produção.
+ */
+
+/** Captura `console.error`/`console.warn` pra afirmar que uma degradação
+ * deixou rastro. Necessário porque quase todo caminho de falha aqui responde
+ * 200/teaser ou um 4xx/5xx genérico — sem o log, o único jeito de saber que
+ * algo quebrou seria um leitor reclamando. `error` = quebrou; `warn` = caminho
+ * de degradação esperado, cuja TAXA é o sinal (1% é normal, 100% é o gate
+ * quebrado). */
+function captureErrorLogs() {
+  const originalError = console.error;
+  const originalWarn = console.warn;
+  const lines: string[] = [];
+  const warns: string[] = [];
+  const fmt = (args: unknown[]) => args.map((a) => (a instanceof Error ? a.message : String(a))).join(" ");
+  console.error = (...args: unknown[]) => {
+    lines.push(fmt(args));
+  };
+  console.warn = (...args: unknown[]) => {
+    warns.push(fmt(args));
+  };
+  return {
+    lines,
+    warns,
+    restore() {
+      console.error = originalError;
+      console.warn = originalWarn;
+    },
+  };
+}
+
+describe("workers/cursos: gate no follow-up #4305", () => {
+  it("/index.html é gateado igual a / — mesmo asset, mesmo tratamento", async () => {
+    const email = "assinante@example.com";
+    const cookie = await issueSessionCookie("cookie-secret", email);
+    const env = baseEnv();
+    const res = await worker.fetch(
+      new Request("https://cursos.diar.ia.br/index.html", {
+        headers: { Cookie: cookie.split(";")[0] },
+      }),
+      env,
+    );
+    // Antes do #4305, `fetch` só casava `pathname === "/"`, então este request
+    // caía no `env.ASSETS.fetch` do fim e devolvia o teaser cru mesmo com
+    // cookie válido — `run_worker_first` prometia cobrir `/index.html` e o
+    // roteamento não entregava.
+    assert.equal(await res.text(), CURSOS_FULL_HTML);
+  });
+
+  it("/index.html?email= de assinante ativo também desbloqueia e seta cookie", async () => {
+    const email = "assinante@example.com";
+    const key = await subscriberKvKey(email);
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }) });
+    const res = await worker.fetch(
+      new Request(`https://cursos.diar.ia.br/index.html?email=${encodeURIComponent(email)}`),
+      env,
+    );
+    assert.equal(await res.text(), CURSOS_FULL_HTML);
+    assert.match(getCookieHeader(res) ?? "", /HttpOnly/);
+  });
+
+  it("KV lançando exceção degrada pro teaser, não derruba a home", async () => {
+    // `run_worker_first` acoplou a home ao sucesso de `handleIndex`. Sem o
+    // fail-soft, um throw do KV subiria pro `fetch` e a página inteira cairia
+    // — pior que o bug original, que ao menos sempre mostrava o teaser.
+    const explodingKV = {
+      get: async () => {
+        throw new Error("KV indisponível");
+      },
+      put: async () => {},
+      delete: async () => {},
+    } as unknown as KVNamespace;
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: explodingKV });
+    const logs = captureErrorLogs();
+    let res: Response;
+    try {
+      res = await worker.fetch(new Request("https://cursos.diar.ia.br/?email=alguem@example.com"), env);
+    } finally {
+      logs.restore();
+    }
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), TEASER_HTML);
+    // O 200 silencioso some do gráfico de erro nativo do Cloudflare, que um
+    // 500 daria de graça. O log é o ÚNICO sinal que sobra — se alguém apagar
+    // o `console.error`, a degradação vira invisível e nada mais avisa.
+    assert.equal(logs.lines.length, 1, "a degradação precisa deixar rastro");
+    assert.match(logs.lines[0], /handleIndex falhou/);
+    assert.match(logs.lines[0], /url=/, "sem contexto de request não dá pra distinguir 1 request de 100%");
+    // 3º passe de review (fb030eda): o `catch` é genérico — qualquer exceção
+    // não tratada no handler cai aqui, inclusive com `?email=` de assinante
+    // real na URL. `request.url` cru vazaria PII pro log de plataforma; o
+    // param precisa vir redigido.
+    assert.ok(!logs.lines[0].includes("alguem@example.com"), "e-mail não pode vazar no log de exceção genérica");
+    assert.match(
+      logs.lines[0],
+      /email=%5Bredacted%5D/,
+      "o param redigido ainda precisa aparecer (url-encoded) pra sinalizar que havia email na URL",
+    );
+  });
+
+  it("?email= não-ativo loga a taxa SEM o endereço — merge tag quebrada é indistinguível sem isso", async () => {
+    // A resposta continua idêntica a "não mandou email nenhum" (anti-probing
+    // do #4052 preservado); o log é servidor-side e invisível pro visitante.
+    // Sem ele, uma merge tag quebrada produz este caminho em 100% dos cliques
+    // da newsletter e some no meio do tráfego normal.
+    const env = baseEnv();
+    const logs = captureErrorLogs();
+    let res: Response;
+    try {
+      res = await worker.fetch(new Request("https://cursos.diar.ia.br/?email=ninguem@example.com"), env);
+    } finally {
+      logs.restore();
+    }
+    assert.equal(await res.text(), TEASER_HTML, "resposta não pode mudar — anti-probing");
+    assert.equal(logs.warns.length, 1);
+    assert.match(logs.warns[0], /não confirmado como assinante ativo/);
+    assert.ok(
+      !logs.warns[0].includes("ninguem@example.com"),
+      "endereço de assinante não pode ir parar em log de plataforma (PII a troco de nada)",
+    );
+  });
+
+  it("?email= malformado loga como provável merge tag não resolvida", async () => {
+    const env = baseEnv();
+    const logs = captureErrorLogs();
+    try {
+      await worker.fetch(new Request("https://cursos.diar.ia.br/?email=%7B%7Bemail%7D%7D"), env);
+    } finally {
+      logs.restore();
+    }
+    assert.equal(logs.warns.length, 1);
+    assert.match(logs.warns[0], /malformado/);
+  });
+
+  it("falha do cadastro na Beehiiv loga — 502 mudo derrubaria todo signup sem rastro", async () => {
+    const env = baseEnv({ BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: "pub_1" });
+    const { handleGateSubscribe } = await import("../workers/cursos/src/subscribe.ts");
+    const logs = captureErrorLogs();
+    let res: Response;
+    try {
+      res = await handleGateSubscribe(
+        new Request("https://cursos.diar.ia.br/gate/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "novo@example.com", optin: true }),
+        }),
+        env,
+        { fetchImpl: (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch },
+      );
+    } finally {
+      logs.restore();
+    }
+    assert.equal(res.status, 502);
+    assert.ok(
+      logs.lines.some((l) => /cadastro na Beehiiv falhou/.test(l)),
+      "sem log, Beehiiv fora do ar mata todo cadastro do gate em silêncio",
+    );
+  });
+
+  it("fetch pra Beehiiv lançando (rede caída) loga — ramo distinto de resposta HTTP não-ok", async () => {
+    // 3º passe de review (fb030eda): o `catch` de `subscribeToBeehiiv` cobre o
+    // `fetch` LANÇANDO (DNS/rede), não só devolvendo status não-ok — ramo
+    // testado acima. Sem este teste, um `fetchImpl` que rejeita nunca exercita
+    // o `console.error("[cursos] fetch pra Beehiiv lançou:", err)`.
+    const env = baseEnv({ BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: "pub_1" });
+    const { handleGateSubscribe } = await import("../workers/cursos/src/subscribe.ts");
+    const logs = captureErrorLogs();
+    let res: Response;
+    try {
+      res = await handleGateSubscribe(
+        new Request("https://cursos.diar.ia.br/gate/subscribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "novo@example.com", optin: true }),
+        }),
+        env,
+        {
+          fetchImpl: (async () => {
+            throw new Error("network down");
+          }) as unknown as typeof fetch,
+        },
+      );
+    } finally {
+      logs.restore();
+    }
+    assert.equal(res.status, 502);
+    assert.ok(
+      logs.lines.some((l) => /fetch pra Beehiiv lançou/.test(l)),
+      "exceção de rede no fetch da Beehiiv precisa deixar rastro distinto de resposta não-ok",
+    );
+  });
+
+  it("sem COOKIE_HMAC_SECRET, / loga — é o ramo que NÃO passa pelo catch", async () => {
+    // Desvio de fluxo, não exceção: sem log próprio, um deploy sem o secret
+    // serviria teaser pra assinante ativo vindo da newsletter com zero sinal
+    // em qualquer camada — nem status HTTP, nem log.
+    const env = baseEnv({ COOKIE_HMAC_SECRET: undefined as unknown as string });
+    const logs = captureErrorLogs();
+    try {
+      await worker.fetch(new Request("https://cursos.diar.ia.br/?email=alguem@example.com"), env);
+    } finally {
+      logs.restore();
+    }
+    assert.equal(logs.lines.length, 1);
+    assert.match(logs.lines[0], /COOKIE_HMAC_SECRET ausente/);
+  });
+
+  it("sem COOKIE_HMAC_SECRET, / serve o teaser (degradação explícita, não exceção)", async () => {
+    // A primeira versão deste guard foi escrita com a justificativa errada
+    // ("cookie assinado com chave vazia, forjável"). Não é o que acontece:
+    // `TextEncoder().encode(undefined)` de fato não lança, mas o
+    // `crypto.subtle.importKey` seguinte rejeita chave de tamanho zero com
+    // `DataError` (spec da WebCrypto — verificado em Node). Sem o guard isto
+    // QUEBRA, não vaza. O guard existe pra trocar a exceção por degradação
+    // explícita e logada, não pra fechar um bypass.
+    const email = "assinante@example.com";
+    const key = await subscriberKvKey(email);
+    const env = baseEnv({
+      CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }),
+      COOKIE_HMAC_SECRET: undefined as unknown as string,
+    });
+    const res = await worker.fetch(
+      new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`),
+      env,
+    );
+    assert.equal(await res.text(), TEASER_HTML);
+    assert.equal(getCookieHeader(res), null);
+  });
+
+  it("sem COOKIE_HMAC_SECRET, /gate/verify responde 503 em vez de estourar exceção", async () => {
+    const email = "assinante@example.com";
+    const key = await subscriberKvKey(email);
+    const env = baseEnv({
+      CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }),
+      COOKIE_HMAC_SECRET: undefined as unknown as string,
+    });
+    const res = await worker.fetch(
+      new Request("https://cursos.diar.ia.br/gate/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      }),
+      env,
+    );
+    assert.equal(res.status, 503);
+    assert.equal(getCookieHeader(res), null);
+  });
+
+  it("sem COOKIE_HMAC_SECRET, /gate/subscribe recusa ANTES de criar assinante na Beehiiv", async () => {
+    // Ordem importa: cadastrar e só depois falhar deixaria a pessoa dentro da
+    // Beehiiv e fora da página, sem nada a fazer.
+    let beehiivChamada = false;
+    const env = baseEnv({
+      COOKIE_HMAC_SECRET: undefined as unknown as string,
+      BEEHIIV_API_KEY: "k",
+      BEEHIIV_PUBLICATION_ID: "pub_1",
+    });
+    const { handleGateSubscribe } = await import("../workers/cursos/src/subscribe.ts");
+    const res = await handleGateSubscribe(
+      new Request("https://cursos.diar.ia.br/gate/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "novo@example.com", optin: true }),
+      }),
+      env,
+      {
+        fetchImpl: (async () => {
+          beehiivChamada = true;
+          return new Response(JSON.stringify({ data: { id: "sub_1" } }), { status: 201 });
+        }) as unknown as typeof fetch,
+      },
+    );
+    assert.equal(res.status, 503);
+    assert.equal(beehiivChamada, false, "não pode chamar a Beehiiv se o cadastro não vai poder entrar");
+  });
+});

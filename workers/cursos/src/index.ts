@@ -2,12 +2,15 @@
  * workers/cursos — Cloudflare Worker (#4052, converte de static-assets-only
  * pra scripted worker + assets).
  *
- * Gate PARCIAL (decisão do editor, ver PR #4052): 4 cursos abertos
- * (`teaser: true` no seed) ficam completos e indexáveis no HTML público
- * (`workers/cursos/public/index.html`, servido via `env.ASSETS`); os demais
- * aparecem como card bloqueado (título+plataforma só) até o leitor verificar
- * assinatura ativa OU se cadastrar. A CTA é um convite, não uma parede —
- * nunca 403.
+ * Gate PARCIAL (decisão do editor, ver #4052 e o follow-up #4305): os cursos
+ * ABERTOS são `openCourseCount()` do catálogo — 20% arredondado pra baixo,
+ * hoje 6 de 31 —, com os marcados `teaser: true` no seed ocupando as vagas
+ * primeiro (`selectOpenCourses`, em `scripts/build-cursos-page.ts`). Ficam
+ * completos e indexáveis no HTML público (`workers/cursos/public/index.html`,
+ * servido via `env.ASSETS`). Os demais NÃO são renderizados de forma alguma —
+ * nem título, nem plataforma, nem tema/contagem nos filtros — até o leitor
+ * verificar assinatura ativa OU se cadastrar; só a contagem agregada aparece
+ * no banner de gate. A CTA é um convite, não uma parede — nunca 403.
  *
  * Dois caminhos de entrada:
  *   A. `?email=` na URL (merge-tag da newsletter, `{{email}}`/`{{ contact.EMAIL }}`
@@ -81,32 +84,130 @@ function html(body: string, extraHeaders: Record<string, string> = {}): Response
   return new Response(body, { headers: { "Content-Type": "text/html;charset=utf-8", ...extraHeaders } });
 }
 
-/** Handler `GET /` — resolve qual variante servir. Path A (`?email=`) tem
+/** #4305: paths que servem o MESMO asset (`public/index.html`) e portanto
+ * precisam passar pelo gate. Tem que casar com o `run_worker_first` do
+ * `wrangler.toml` — declarar lá um path que `fetch` não roteia pra
+ * `handleIndex` faz o script rodar só pra devolver o teaser cru, um gate que
+ * promete cobertura e não entrega (travado por `test/cursos-worker-first.test.ts`). */
+export const GATED_INDEX_PATHS = ["/", "/index.html"];
+
+/** Handler do index — resolve qual variante servir. Path A (`?email=`) tem
  * prioridade sobre o cookie (a newsletter é a fonte de verdade mais fresca);
- * cookie é o fallback pra navegação subsequente na mesma sessão. */
+ * cookie é o fallback pra navegação subsequente na mesma sessão.
+ *
+ * #4305: fail-soft. Antes do `run_worker_first`, o asset era servido sem o
+ * script rodar, então nada aqui podia derrubar a home. Agora TODA visita a
+ * `/` depende deste handler terminar — um throw do KV (`kv.get` não é
+ * envolvido em try/catch em lugar nenhum da cadeia) passaria direto pro
+ * `fetch` e derrubaria a página inteira. O catch devolve o teaser: degradar
+ * pra "todo mundo vê o teaser" é aceitável, derrubar a home não.
+ *
+ * O custo disso é observabilidade — 200 silencioso não aparece no gráfico de
+ * erro nativo do Cloudflare como um 500 apareceria. Mitigado, NÃO resolvido:
+ * todo caminho de degradação deste handler loga e `[observability]` está
+ * ligado no `wrangler.toml`, então o rastro passa a ser coletado e
+ * consultável. Mas ninguém consome esses logs — não há Logpush, alerta, nem
+ * check agendado (o repo tem o padrão pronto em
+ * `scripts/clarice-guardrail-alarm.ts`, não aplicado aqui). Na prática: a
+ * falha deixa de ser invisível e passa a ser visível-se-alguém-for-olhar, e
+ * ninguém tem motivo pra olhar. Some-se que Workers Logs amostra sob volume
+ * alto, ou seja, o sinal degrada justo durante uma pane total. Fechar isso de
+ * verdade é a #4305. */
 async function handleIndex(request: Request, env: Env): Promise<Response> {
-  const url = new URL(request.url);
-  const emailParam = (url.searchParams.get("email") || "").trim();
+  try {
+    const url = new URL(request.url);
+    const emailParam = (url.searchParams.get("email") || "").trim();
 
-  if (emailParam && isValidEmailFormat(emailParam)) {
-    const result = await checkGateSubscriber(env, emailParam);
-    if (result === "active") {
-      const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, emailParam);
-      return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
+    // #4305: sem o secret do HMAC não dá pra emitir nem ler sessão — a
+    // assinatura em si NÃO fica fraca (`TextEncoder().encode(undefined)`
+    // devolve buffer vazio sem lançar, mas o `crypto.subtle.importKey`
+    // seguinte rejeita chave de tamanho zero com `DataError`, por spec da
+    // WebCrypto — verificado). Ou seja: sem o guard isto QUEBRA, não vaza. O
+    // guard troca esse throw por degradação explícita e logada. Mesmo guard de
+    // `workers/poll/src/web-gate.ts`.
+    const canIssueSession = Boolean(env.COOKIE_HMAC_SECRET);
+    if (!canIssueSession) {
+      // Este ramo é a única degradação que NÃO passa pelo catch abaixo (é
+      // desvio de fluxo, não exceção) — sem log próprio, um deploy sem o
+      // secret serviria teaser pra assinante ativo vindo da newsletter com
+      // zero sinal em qualquer camada: nem status HTTP, nem log.
+      console.error("[cursos] COOKIE_HMAC_SECRET ausente — servindo teaser; NINGUÉM consegue desbloquear");
     }
-    // #4052: e-mail na URL mas não confirmado ativo — NUNCA vaza esse sinal
-    // pro leitor (poderia ser link velho/editado à mão); cai pro teaser
-    // normal, silenciosamente, igual a não ter mandado `?email=` nenhum.
-  }
 
-  const cookieEmail = await readSessionEmail(env.COOKIE_HMAC_SECRET, request.headers.get("Cookie"));
-  if (cookieEmail) return html(CURSOS_FULL_HTML);
+    // #4305: os dois ramos abaixo logam SEM o endereço. O anti-probing do
+    // #4052 exige que a RESPOSTA não distinga os casos — o log do servidor é
+    // invisível pro visitante e não enfraquece nada disso. Sem ele, uma
+    // merge tag quebrada (Beehiiv mandando `{{email}}` cru, lista errada
+    // sincronizada pro KV) produz exatamente este caminho em 100% dos cliques
+    // da newsletter e fica indistinguível do tráfego normal de quem não
+    // assina. O e-mail em si fica DE FORA destes dois `console.warn` — eles
+    // não interpolam `emailParam` em lugar nenhum. Isso vale só pra estes
+    // dois ramos: o handler como um todo (incluindo o `catch` genérico lá
+    // embaixo, que loga `request.url` cru) também garante isso, mas por outro
+    // mecanismo — redação explícita do param `email` antes de logar, não
+    // ausência de interpolação. Despejar endereço em log de plataforma é
+    // vazamento de PII a troco de nada — a contagem é o que importa, não
+    // quem.
+    if (canIssueSession && emailParam && !isValidEmailFormat(emailParam)) {
+      console.warn("[cursos] ?email= presente mas malformado — provável merge tag não resolvida");
+    }
+
+    if (canIssueSession && emailParam && isValidEmailFormat(emailParam)) {
+      const result = await checkGateSubscriber(env, emailParam);
+      if (result === "active") {
+        const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, emailParam);
+        return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
+      }
+      // #4052: e-mail na URL mas não confirmado ativo — NUNCA vaza esse sinal
+      // pro leitor (poderia ser link velho/editado à mão); cai pro teaser
+      // normal, igual a não ter mandado `?email=` nenhum. Do lado do servidor,
+      // porém, isto é o sinal de saúde do caminho A: taxa baixa é normal, taxa
+      // de 100% é o gate quebrado de novo.
+      console.warn("[cursos] ?email= não confirmado como assinante ativo — servindo teaser");
+    }
+
+    if (canIssueSession) {
+      const cookieEmail = await readSessionEmail(env.COOKIE_HMAC_SECRET, request.headers.get("Cookie"));
+      if (cookieEmail) return html(CURSOS_FULL_HTML);
+    }
+  } catch (err) {
+    // Contexto no log: sem ele não dá pra distinguir "um request com azar" de
+    // "100% dos requests falhando" num `wrangler tail`. `?email=` é redigido
+    // antes de logar — este catch é genérico (qualquer exceção não tratada
+    // no bloco acima) e uma URL com e-mail de assinante real não pode virar
+    // PII em log de plataforma. Se o próprio `new URL(request.url)` lançar
+    // (URL malformada — não deveria, o runtime já validou pra chegar aqui),
+    // cai no fallback com a URL inteira omitida, nunca com o cru.
+    const safeUrl = (() => {
+      try {
+        const u = new URL(request.url);
+        if (u.searchParams.has("email")) u.searchParams.set("email", "[redacted]");
+        return u.toString();
+      } catch {
+        return "[url indisponível]";
+      }
+    })();
+    console.error(
+      `[cursos] handleIndex falhou (url=${safeUrl}, cookie=${request.headers.has("Cookie")}) — degradando pro teaser:`,
+      err,
+    );
+  }
 
   return env.ASSETS.fetch(request);
 }
 
 /** Handler `POST /gate/verify` — só verificação (sem criar assinante). */
 async function handleGateVerify(request: Request, env: Env): Promise<Response> {
+  // #4305: fail-closed — sem o secret do HMAC a emissão de sessão quebra (ver
+  // `handleIndex`). 503 explícito em vez de exceção não-tratada: o front
+  // distingue os dois (`gate_unavailable` vira aviso de indisponibilidade, não
+  // "e-mail não encontrado" — culpar o e-mail da pessoa por erro nosso é pior
+  // que não responder).
+  if (!env.COOKIE_HMAC_SECRET) {
+    console.error("[cursos] COOKIE_HMAC_SECRET ausente — /gate/verify indisponível");
+    return json({ ok: false, error: "gate_unavailable" }, 503, env);
+  }
+
   const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || "";
   const rl = await checkGateRateLimit(env.CURSOS_SUBSCRIBERS, ip);
   if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
@@ -141,7 +242,7 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(runtimeEnv) });
     }
 
-    if (url.pathname === "/" && request.method === "GET") {
+    if (GATED_INDEX_PATHS.includes(url.pathname) && request.method === "GET") {
       return handleIndex(request, runtimeEnv);
     }
     if (url.pathname === "/gate" && request.method === "GET") {
