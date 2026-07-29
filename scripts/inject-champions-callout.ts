@@ -146,7 +146,17 @@ export function insertChampionsCallout(
       skippedReason: "separador '---' antes de '**DESTAQUE' não encontrado — formato inesperado de 02-reviewed.md, injeção abortada (fail-safe).",
     };
   }
-  const block = `\n\n**${calloutInner}**\n\n---\n\n`;
+  // #4310: SEP_BEFORE_DESTAQUE CONSOME o `---` que separava a região de intro
+  // do DESTAQUE 1 (lookahead não devolve o que veio antes dele no match). O
+  // `block` precisa devolver esse separador — sem ele, a região de intro
+  // (`captureUntilCoverageBoundary`) se estende até DEPOIS do box de
+  // campeões (não encontra o `---` que deveria fechá-la logo antes do box),
+  // e `extractIntroCallout` extrai o MESMO bloco de novo — duplicação no
+  // HTML final. Com a coverage line legada (linha única), o bug não se
+  // manifestava porque o regex de coverage line dela não se estende por
+  // boundary — só a coverage line multi-parágrafo (#3456/#3691, formato
+  // padrão desde 260715) expõe o bug.
+  const block = `\n\n---\n\n**${calloutInner}**\n\n---\n\n`;
   const text = reviewedText.replace(SEP_BEFORE_DESTAQUE, block);
   return { text, skippedReason: null };
 }

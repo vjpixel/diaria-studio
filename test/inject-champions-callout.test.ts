@@ -14,7 +14,9 @@ import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { insertChampionsCallout, parseCliArgs } from "../scripts/inject-champions-callout.ts";
-import { extractIntroCallout } from "../scripts/lib/newsletter-parse.ts";
+import { extractIntroCallout, extractContent } from "../scripts/lib/newsletter-parse.ts";
+import { renderHTML } from "../scripts/lib/newsletter-render-html.ts";
+import { formatCoverageLine } from "../scripts/lib/inbox-stats.ts";
 
 const REVIEWED_BASE = `Para esta edição, eu (o editor) enviei 5 artigos e a Diar.ia encontrou outros 20. Selecionamos os 3 mais relevantes para as pessoas que assinam a newsletter.
 
@@ -85,6 +87,21 @@ describe("insertChampionsCallout (#2725)", () => {
     const result = insertChampionsCallout(weird, CALLOUT_INNER);
     assert.equal(result.text, null);
     assert.match(result.skippedReason!, /separador/);
+  });
+
+  it("#4310: devolve o separador '---' consumido pelo regex antes do box injetado", () => {
+    const result = insertChampionsCallout(REVIEWED_BASE, CALLOUT_INNER);
+    assert.ok(result.text);
+    // Estrutura esperada: coverage line, então um '---' isolado FECHANDO a
+    // coverage line, então o box de campeões, então outro '---' isolado
+    // fechando o box antes de DESTAQUE 1. Sem o fix, o 1º '---' (o que
+    // separava a coverage line do box) nunca existia — só sobrava o que já
+    // vinha no fim do `block`.
+    assert.match(
+      result.text!,
+      /Selecionamos os 3 mais relevantes para as pessoas que assinam a newsletter\.\n\n---\n\n\*\*🎉 Os campeões/,
+      "coverage line deve ser fechada por '---' isolado ANTES do box de campeões",
+    );
   });
 });
 
@@ -313,6 +330,91 @@ describe("main() CLI (#2725 integração)", () => {
       ]);
       const after = readFileSync(reviewedPath, "utf8");
       assert.equal(after, before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * #4310: reprodução do bug real via round-trip completo (insertChampionsCallout
+ * → extractContent → renderHTML) usando a coverage line MULTI-PARÁGRAFO
+ * (#3456/#3691), formato padrão desde 260715 — a fixture legada de linha única
+ * usada acima (`REVIEWED_BASE`) não exercitava o bug porque
+ * `captureUntilCoverageBoundary` só entra em jogo pro formato novo. Sem o
+ * fix, o box de campeões é fundido na coverage line (`captureUntilCoverageBoundary`
+ * não encontra o '---' que deveria fechá-la) E extraído de novo por
+ * `extractIntroCallout` — duplicado no HTML final.
+ */
+describe("#4310 — box de campeões não duplica com coverage line multi-parágrafo", () => {
+  const EIA = `**É IA?**
+
+Foto teste. [Autor](https://example.com/a) / CC.
+
+Resultado da última edição: 40% das pessoas acertaram.
+`;
+
+  const MULTI_PARAGRAPH_COVERAGE = formatCoverageLine({
+    editorSubmissions: 5,
+    diariaDiscovered: 10,
+    selected: 2,
+  });
+
+  function buildReviewed(): string {
+    return `${MULTI_PARAGRAPH_COVERAGE}
+
+---
+
+**DESTAQUE 1 | 💰 MERCADO**
+
+**[Título](https://example.com/d1)**
+
+Corpo do destaque.
+
+Por que isso importa:
+
+Importa.
+
+---
+
+**DESTAQUE 2 | 🚀 PRODUTO**
+
+**[Título 2](https://example.com/d2)**
+
+Corpo.
+
+Por que isso importa:
+
+Importa também.
+
+---
+
+${EIA}
+`;
+  }
+
+  it("renderiza o box de campeões exatamente 1x (não duplica, coverage line intacta)", () => {
+    const reviewed = buildReviewed();
+    const result = insertChampionsCallout(reviewed, CALLOUT_INNER);
+    assert.equal(result.skippedReason, null);
+    assert.ok(result.text);
+
+    const dir = mkdtempSync(join(tmpdir(), "champions-4310-"));
+    try {
+      writeFileSync(join(dir, "02-reviewed.md"), result.text!, "utf8");
+      writeFileSync(join(dir, "01-eia.md"), EIA, "utf8");
+
+      const content = extractContent(dir);
+      // A coverage line não deve ter "engolido" o box de campeões (#4310).
+      assert.ok(
+        !content.coverageLine?.includes("Os campeões"),
+        "coverage line não deve conter o box de campeões — separador '---' precisa fechá-la antes do box",
+      );
+      assert.ok(content.introCallout?.includes("Os campeões"));
+
+      const html = renderHTML(content);
+      const occurrences = (html.match(/Os campeões do É IA\?/g) ?? []).length;
+      assert.equal(occurrences, 1, "box de campeões deve aparecer exatamente 1x no HTML final, nunca 2x");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
