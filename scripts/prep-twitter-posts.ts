@@ -1,6 +1,7 @@
 /**
  * prep-twitter-posts.ts (#3994, substitui publish-twitter.ts/twitter-oauth1.ts;
- * #4103 — dueAt via schedule compartilhado, mode customScheduled)
+ * #4103 — dueAt via schedule compartilhado, mode customScheduled;
+ * #4285/#4264 adendo do editor — gate de char limit pondera URL como 23 chars)
  *
  * Publicação no X mudou de "API direta da X" (OAuth 1.0a, pay-per-usage desde
  * que o free tier acabou — ~$0.20/post com link) para "via Buffer" (MCP
@@ -19,6 +20,15 @@
  * compartilhado com Threads, ≤280 chars, escrito por `social-curto`).
  * **Sem fallback** — ausência da seção/destaque é tratada como "sem conteúdo
  * pronto pro X nesta edição", nunca improvisando texto (decisão da issue #3994).
+ *
+ * **CTA aponta pra edição, não pra home (#4285/#4264 adendo do editor):**
+ * `social-curto.md` escreve o placeholder literal `{edition_url}` no CTA
+ * (mesmo padrão do `## post_pixel`) em vez de `"Mais em diar.ia.br"`
+ * hardcoded. `resolve-edition-url.ts` já substitui `{edition_url}` no
+ * `03-social.md` inteiro (incluindo `# Curto`) ANTES deste script rodar
+ * (5c-2 roda antes de 5c-3b) — este script sempre lê o texto já com a URL
+ * real. Ver `computeTwitterWeightedLength` abaixo pro porquê o gate de
+ * limite não usa `text.length` cru contra essa URL.
  *
  * **Imagem (#4264):** cada post ganha `imageUrl`/`altText` resolvidos de
  * `06-public-images.json` (gerado por `upload-images-public.ts` no 5c-pre),
@@ -66,6 +76,34 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Limite de caracteres por tweet. */
 export const TWITTER_CHAR_LIMIT = 280;
+
+/**
+ * Peso que o X (t.co) atribui a QUALQUER URL dentro de um post, independente
+ * do comprimento literal — desde #3994. `text.length` cru superestima o custo
+ * de uma URL longa (#4285/#4264 adendo do editor): `{edition_url}` resolve
+ * pra `https://diar.ia.br/p/{slug}`, tipicamente 40-80 chars literais, mas o
+ * X sempre conta 23 na hora de aplicar o limite de 280. Sem essa correção,
+ * um slug longo derrubava o post pro `skipped` sem que ele de fato
+ * estourasse no X.
+ */
+export const TWITTER_URL_WEIGHT = 23;
+
+/** Reconhece URLs http(s) dentro do texto do post, pra fins de contagem ponderada. */
+const URL_RE = /https?:\/\/\S+/g;
+
+/**
+ * Calcula o comprimento "ponderado" de um post do X, contando cada URL como
+ * `TWITTER_URL_WEIGHT` chars (t.co) em vez do comprimento literal — o mesmo
+ * critério que o X usa de verdade pra aplicar o limite de 280 (#4285/#4264
+ * adendo do editor, #3994). Texto sem nenhuma URL: idêntico a `text.length`.
+ */
+export function computeTwitterWeightedLength(text: string): number {
+  let delta = 0;
+  for (const match of text.matchAll(URL_RE)) {
+    delta += TWITTER_URL_WEIGHT - match[0].length;
+  }
+  return text.length + delta;
+}
 
 /**
  * Extrai a lista de destaques da seção `# Curto` do 03-social.md.
@@ -228,10 +266,14 @@ export function prepTwitterPosts(
       continue;
     }
 
-    if (text.length > TWITTER_CHAR_LIMIT) {
+    // #4285/#4264 adendo do editor: conta URL como TWITTER_URL_WEIGHT (peso
+    // real do X via t.co), não o comprimento literal — {edition_url} resolvido
+    // pode ter 40-80 chars literais sem de fato estourar o limite no X.
+    const weightedLength = computeTwitterWeightedLength(text);
+    if (weightedLength > TWITTER_CHAR_LIMIT) {
       skipped.push({
         destaque: d,
-        reason: `texto de ${text.length} chars excede ${TWITTER_CHAR_LIMIT} — sem truncagem silenciosa`,
+        reason: `texto com ${weightedLength} chars (peso X, URL=${TWITTER_URL_WEIGHT}; ${text.length} chars literais) excede ${TWITTER_CHAR_LIMIT} — sem truncagem silenciosa`,
       });
       continue;
     }

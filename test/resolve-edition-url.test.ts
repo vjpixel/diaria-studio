@@ -535,6 +535,50 @@ describe("#2454 CLI resolve-edition-url.ts — gravar 05-edition-url.txt", () =>
     rmSync(tmp, { recursive: true, force: true });
   });
 
+  // #4285/#4264 adendo do editor: social-curto.md passou a emitir {edition_url}
+  // no CTA (mesmo padrao do post_pixel) em vez de "Mais em diar.ia.br" fixo.
+  // Cobertura anterior so exercitava # Social/post_pixel — este teste prova
+  // que a substituicao global de substituteEditionUrl (write-then-validate)
+  // tambem resolve {edition_url} DENTRO da secao `# Curto`, sem precisar de
+  // nenhum tratamento especial por secao.
+  it("#4285: --validate-social substitui {edition_url} tambem dentro da secao '# Curto'", () => {
+    const socialMd = [
+      "# Social",
+      "",
+      "## d1",
+      "Post generico d1.",
+      "",
+      "# Curto",
+      "",
+      "## d1",
+      "Post curto d1. Mais em {edition_url} #ia",
+      "",
+      "## d2",
+      "Post curto d2. Mais em {edition_url} #futuro",
+      "",
+    ].join("\n");
+
+    const { exitCode, editionDir, tmp } = runCli(
+      ["--slug", "meu-titulo-teste", "--validate-social"],
+      { "03-social.md": socialMd },
+    );
+    try {
+      assert.equal(exitCode, 0);
+      const rewritten = readFileSync(resolve(editionDir, "03-social.md"), "utf8");
+      const curtoSection = rewritten.split(/\n# Curto\n/)[1] ?? "";
+      assert.ok(
+        curtoSection.includes("https://diar.ia.br/p/meu-titulo-teste"),
+        `secao '# Curto' deve conter a URL real apos a substituicao: ${curtoSection}`,
+      );
+      assert.ok(
+        !curtoSection.includes("{edition_url}"),
+        `secao '# Curto' NAO deve mais conter o placeholder {edition_url}: ${curtoSection}`,
+      );
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("exit 0: acentos PT-BR via --slug passado pre-processado → URL correta", () => {
     const { exitCode, editionDir, tmp } = runCli(["--slug", "automacao-e-panico-no-mercado"]);
     const outPath = resolve(editionDir, "_internal", "05-edition-url.txt");
