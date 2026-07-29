@@ -40,6 +40,17 @@ custom_domain = true
 [assets]
 directory = "./public"
 binding = "ASSETS"
+# INVARIANTE (#4052 follow-up): Workers com Static Assets servem o ASSET
+# ANTES de invocar o script — se existe arquivo casando com o path, o
+# `fetch` handler NUNCA roda. `public/index.html` casa com `/`, então o
+# gate inteiro ficava morto em produção: `?email=` da newsletter (caminho A)
+# era ignorado e o cookie de sessão nunca era lido (caminho B desbloqueava,
+# setava o cookie e a página seguia teaser). Só `/gate*` funcionava, porque
+# não tem asset correspondente. `run_worker_first` força o script a decidir
+# em `/` — o teaser continua vindo do ASSETS binding, mas só depois de
+# `handleIndex` checar `?email=`/cookie. Travado por
+# `test/cursos-worker-first.test.ts`.
+run_worker_first = ["/", "/index.html"]
 
 # #4052: KV do sync de assinantes ativos (subscriber:{sha256(email)}), fonte
 # PRIMÁRIA de verificação (scripts/sync-cursos-subscribers-kv.ts popula).

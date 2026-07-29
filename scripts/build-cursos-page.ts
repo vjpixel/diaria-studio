@@ -90,19 +90,46 @@ export interface Course {
   certificate: boolean;
   themes: string[];
   summary: string;
-  /** #4052: teaser aberto (não-gated) — 3-5 cursos marcados `true` ficam
-   * indexáveis/completos no HTML público (teaser); os demais aparecem como
-   * card bloqueado (só título+plataforma, sem link/resumo) até o leitor
-   * verificar assinatura ativa. Opcional — ausente/false = gated. */
+  /** #4052: PREFERÊNCIA de curadoria pra vaga de curso aberto — não a
+   * decisão final. Quantos ficam abertos é `openCourseCount()` (20% do
+   * total, decisão do editor em #4052); os marcados `true` ocupam as vagas
+   * primeiro, na ordem do seed, e o restante das vagas é preenchido pelos
+   * demais cursos, também na ordem do seed. Marcar mais que o teto não abre
+   * mais cursos; marcar menos não deixa vaga vazia. */
   teaser?: boolean;
 }
 
-/** #4052: modo de render — `"teaser"` é o HTML PÚBLICO/estático (asset),
- * cursos não-teaser viram card bloqueado sem summary/url/badges. `"full"` é
- * o HTML servido pelo Worker SÓ depois do gate passar (nunca committed como
- * asset estático) — todos os cursos completos, igual ao comportamento
- * pré-#4052. */
+/** #4052: modo de render — `"teaser"` é o HTML PÚBLICO/estático (asset), só
+ * com os cursos abertos (`selectOpenCourses`); os gated NÃO são renderizados
+ * de forma alguma — nem título, nem plataforma, nem tema/contagem nos
+ * filtros, só a chamada agregada "mais N cursos" (decisão do editor em
+ * #4052: "o título É o produto da curadoria" — título visível já basta pra
+ * pessoa googlar e achar o curso). `"full"` é o HTML servido pelo Worker SÓ
+ * depois do gate passar (nunca committed como asset estático) — todos os
+ * cursos completos, igual ao comportamento pré-#4052. */
 export type CursosRenderMode = "teaser" | "full";
+
+/** #4052 (decisão do editor, 260727): fração do catálogo que fica aberta sem
+ * e-mail. Calculada dinamicamente sobre o total — pra o número de abertos
+ * acompanhar o catálogo em vez de ficar fixo no código/seed. */
+export const TEASER_OPEN_RATIO = 0.2;
+
+/** Quantos cursos ficam abertos no HTML público, dado o tamanho do catálogo. */
+export function openCourseCount(total: number): number {
+  return Math.floor(total * TEASER_OPEN_RATIO);
+}
+
+/**
+ * Subconjunto que fica ABERTO no modo teaser: os marcados `teaser: true`
+ * primeiro (curadoria — cobrem pt-br/en e plataformas distintas), depois os
+ * demais na ordem do seed, cortando em `openCourseCount(total)`. Pure.
+ */
+export function selectOpenCourses(courses: Course[]): Course[] {
+  const limit = openCourseCount(courses.length);
+  const marked = courses.filter((c) => c.teaser);
+  const rest = courses.filter((c) => !c.teaser);
+  return [...marked, ...rest].slice(0, limit);
+}
 
 const LEVEL_LABEL: Record<Level, string> = {
   iniciante: "Iniciante",
@@ -192,29 +219,6 @@ export function loadCourses(seedPath = SEED_PATH): Course[] {
   return loadSeedItems<Course>(seedPath, "courses", validateCourses);
 }
 
-/**
- * #4052: card BLOQUEADO — usado no modo `"teaser"` pra cursos com
- * `teaser !== true`. Deliberadamente NÃO inclui `c.summary`, `c.url` nem os
- * badges de detalhe (cost/format/certificado/temas) — só título e plataforma,
- * mais um aviso genérico de "assine para desbloquear". `data-*` de
- * lang/level/duration/platform/cert/themes ficam DE FORA de propósito (o
- * dropdown de filtro não pode revelar metadado do card bloqueado pra além do
- * que já é visível — a exceção intencional é `data-lang`, mantida pra o
- * filtro de idioma continuar útil sem vazar conteúdo).
- * Regressão coberta por `test/cursos-teaser-leak.test.ts` (#4052): garante
- * que o HTML público nunca contém `c.summary`/`c.url` de curso não-teaser.
- */
-function renderLockedCard(c: Course): string {
-  return `      <article class="card card--locked" data-lang="${esc(c.language)}">
-        <div class="title-row">
-          <h2>${esc(c.title)}</h2>
-        </div>
-        <p class="platform">${esc(c.platform)}</p>
-        <p class="summary summary--locked">Conteúdo exclusivo para assinantes da Diar.ia.</p>
-        <span class="cta cta--locked" aria-disabled="true">🔒 Assine para desbloquear</span>
-      </article>`;
-}
-
 function renderCard(c: Course): string {
   const dur = `<span class="note">${esc(fmtDuration(c.duration_hours, c.duration_estimated))}</span>`;
   const cta = isSafeUrl(c.url)
@@ -266,16 +270,23 @@ function renderFilter(id: string, label: string, opts: Array<{ value: string; la
  * cursos, devolve HTML 100% self-contained (Georgia é system font — sem fonte externa).
  */
 export function renderCursosPage(courses: Course[], mode: CursosRenderMode = "full"): string {
-  const cards = courses.map((c) => (mode === "teaser" && !c.teaser ? renderLockedCard(c) : renderCard(c))).join("\n");
+  // #4052: no teaser, os cursos gated NÃO entram no render de forma alguma —
+  // `visible` é a única lista que alimenta cards, filtros e contagens, pra
+  // nenhum metadado de curso fechado (título, plataforma, tema, contagem)
+  // vazar por uma via lateral. No modo full, `visible` é o catálogo inteiro.
+  const open = new Set(mode === "teaser" ? selectOpenCourses(courses) : courses);
+  const visible = courses.filter((c) => open.has(c));
+  const hiddenCount = courses.length - visible.length;
+
+  const cards = visible.map(renderCard).join("\n");
   // #4052: banner de gate — só no modo teaser, e só quando há pelo menos 1
-  // curso bloqueado (se o editor um dia marcar todos como teaser, o banner
-  // não faz sentido e não aparece).
-  const lockedCount = mode === "teaser" ? courses.filter((c) => !c.teaser).length : 0;
+  // curso fechado (se um dia o catálogo couber inteiro na cota aberta, o
+  // banner não faz sentido e não aparece).
   const gateBanner =
-    lockedCount > 0
+    mode === "teaser" && hiddenCount > 0
       ? `  <div class="gate-banner">
     <div class="wrap gate-banner-wrap">
-      <p>🔒 ${lockedCount} ${lockedCount === 1 ? "curso completo está" : "cursos completos estão"} disponíveis só para assinantes da Diar.ia.</p>
+      <p>🔒 Mais ${hiddenCount} ${hiddenCount === 1 ? "curso curado" : "cursos curados"} para assinantes da Diar.ia.</p>
       <form id="gate-banner-form" class="gate-banner-form" novalidate>
         <input type="email" id="gate-banner-email" name="email" placeholder="seu@email.com" aria-label="E-mail" autocomplete="email" required>
         <input type="text" name="website" class="gate-banner-hp" tabindex="-1" autocomplete="off" aria-hidden="true">
@@ -290,25 +301,25 @@ export function renderCursosPage(courses: Course[], mode: CursosRenderMode = "fu
 
   // Dropdowns dinâmicos: só renderiza os que têm ≥2 valores distintos.
   const distinct = <T extends string>(vals: T[]) => [...new Set(vals)];
-  const langOpts = distinct(courses.map((c) => c.language)).map((v) => ({ value: v, label: LANG_LABEL[v] }));
+  const langOpts = distinct(visible.map((c) => c.language)).map((v) => ({ value: v, label: LANG_LABEL[v] }));
   const levelOpts = (["iniciante", "intermediario", "avancado"] as Level[])
-    .filter((l) => courses.some((c) => c.level === l))
+    .filter((l) => visible.some((c) => c.level === l))
     .map((v) => ({ value: v, label: LEVEL_LABEL[v] }));
   const costOpts = (["free", "paid", "subscription"] as Cost[])
-    .filter((x) => courses.some((c) => c.cost === x))
+    .filter((x) => visible.some((c) => c.cost === x))
     .map((v) => ({ value: v, label: COST_LABEL[v] }));
   const formatOpts = (["video", "texto", "hands-on"] as Format[])
-    .filter((f) => courses.some((c) => c.format === f))
+    .filter((f) => visible.some((c) => c.format === f))
     .map((v) => ({ value: v, label: FORMAT_LABEL[v] }));
   const durOpts = (["curto", "medio", "longo"] as DurationBin[])
-    .filter((d) => courses.some((c) => durationBin(c.duration_hours) === d))
+    .filter((d) => visible.some((c) => durationBin(c.duration_hours) === d))
     .map((v) => ({ value: v, label: DURATION_LABEL[v] }));
-  const platOpts = distinctPlatforms(courses).map((p) => ({ value: slugify(p), label: p }));
+  const platOpts = distinctPlatforms(visible).map((p) => ({ value: slugify(p), label: p }));
   const certOpts = [
     { value: "sim", label: "Com certificado" },
     { value: "nao", label: "Sem certificado" },
-  ].filter((o) => courses.some((c) => (c.certificate ? "sim" : "nao") === o.value));
-  const themeOpts = distinctThemes(courses).map((t) => ({ value: slugify(t), label: t }));
+  ].filter((o) => visible.some((c) => (c.certificate ? "sim" : "nao") === o.value));
+  const themeOpts = distinctThemes(visible).map((t) => ({ value: slugify(t), label: t }));
   // review #1891: mapa COMPLETO slug→label (todos os temas) embutido no script.
   // Sem ele, rebuildThemes lia o label das <option> ATUAIS — que encolhem a cada
   // rebuild — e um narrow-then-widen (ex: idioma EN→PT) mostrava o slug cru.
@@ -369,10 +380,8 @@ ${renderCuradoriaGridCardStyles()}
   .platform { font-family: ${SANS}; font-size: 12px; letter-spacing: 0.04em; color: var(--ink); margin: 6px 0 0; }
   .badge--cert { border-color: var(--ink); color: var(--ink); }
 
-  /* #4052: card bloqueado (teaser) + banner de gate. */
-  .card--locked { opacity: 0.72; }
-  .summary--locked { font-style: italic; }
-  .cta--locked { display: inline-block; margin-top: 14px; font-family: ${SANS}; font-size: 13px; font-weight: 700; color: var(--ink); }
+  /* #4052: banner de gate (teaser). Não existe estilo de "card bloqueado" —
+     curso gated não é renderizado, só contabilizado no banner. */
   .gate-banner { background: var(--teal); color: #FFFFFF; padding: 14px 0; }
   .gate-banner .wrap { max-width: 1120px; }
   .gate-banner p { margin: 0; font-family: ${SANS}; font-size: 13px; }
@@ -404,8 +413,8 @@ ${gateBanner}  <header>
   <div class="filters">
     <div class="wrap">
       <details class="filters-details" id="filters-details">
-        <summary class="filters-summary"><span id="filters-summary-label">Filtrar (${courses.length}${
-          courses.length === 1 ? " curso" : " cursos"
+        <summary class="filters-summary"><span id="filters-summary-label">Filtrar (${visible.length}${
+          visible.length === 1 ? " curso" : " cursos"
         })</span></summary>
         <div class="filters-body">
 ${filters}
@@ -559,9 +568,9 @@ function main(): void {
 
   const v = validateCourses(courses);
   for (const w of v.warnings) process.stderr.write(`[build-cursos] ⚠ ${w}\n`);
-  const teaserCount = courses.filter((c) => c.teaser).length;
+  const open = selectOpenCourses(courses);
   process.stderr.write(
-    `[build-cursos] ${courses.length} cursos (${teaserCount} teaser/aberto); ${distinctThemes(courses).length} temas; ${distinctPlatforms(courses).length} plataformas.\n`,
+    `[build-cursos] ${courses.length} cursos (${open.length} abertos no teaser = floor(${TEASER_OPEN_RATIO}×${courses.length}); ${courses.length - open.length} só pra assinante); ${distinctThemes(courses).length} temas; ${distinctPlatforms(courses).length} plataformas.\n`,
   );
 
   if (check) {
