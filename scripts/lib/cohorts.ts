@@ -27,8 +27,12 @@
  *
  * Dependency-free / Workers-safe (como `clarice-segment.ts`) — o worker
  * `brevo-dashboard` importa daqui diretamente, sem `node:sqlite` nem outras
- * deps de Node.
+ * deps de Node. Única exceção: `editor-copy.ts` (import de `INTERNAL_EMAILS`
+ * abaixo, #4257) — também dependency-free, então a invariante Workers-safe
+ * se mantém.
  */
+
+import { EDITOR_SEED_EMAILS } from "./editor-copy.ts"; // #4257: ver INTERNAL_EMAILS abaixo
 
 // ---------------------------------------------------------------------------
 // Slugs canônicos
@@ -65,16 +69,26 @@ export function isMvExemptCohort(cohort: string | null | undefined): boolean {
 // pra manter os imports existentes (`clarice-db-summary.ts`) intocados.
 // ---------------------------------------------------------------------------
 
-export const INTERNAL_EMAILS = [
-  "vjpixel@gmail.com",
-  "pixel@memelab.com.br",
+// #4257: `INTERNAL_EMAILS` DERIVA de `EDITOR_SEED_EMAILS` (scripts/lib/editor-copy.ts,
+// #4045) em vez de repetir os mesmos endereços como literais soltos — um seed
+// de medição de colocação de caixa é, por definição, um endereço interno.
+// Enquanto as duas listas fossem independentes, todo seed novo adicionado a
+// `EDITOR_SEED_EMAILS` reabria esta issue: os 3 seeds que não coincidem com
+// os 2 literais já presentes aqui (`vjpixel@yahoo.com`, `vjpixel@hotmail.com`,
+// `apixel@gmail.com`) apareciam como a linha "sem cohort" da aba Cohorts —
+// mesmo bug que o #2880 já tinha resolvido uma vez pra `ti@clarice.ai`.
+// `editor-copy.ts` não importa nada (dependency-free), então este import
+// preserva a invariante Workers-safe que `cohorts.ts` já exige (ver
+// docstring do topo do arquivo) sem criar ciclo nem puxar `node:*`.
+export const INTERNAL_EMAILS: readonly string[] = [
+  ...EDITOR_SEED_EMAILS, // vjpixel@gmail.com, pixel@memelab.com.br, apixel@gmail.com, vjpixel@hotmail.com, vjpixel@yahoo.com
   "felipe@clarice.ai",
   // #2880: endereço da equipe Clarice (sem registro Stripe → aparecia como a
   // única linha "sem cohort"). Mesmo tratamento dos demais internos: excluído
   // das agregações de exibição (priority_points, cohort_stats), mas segue no
   // store e na fila de envio.
   "ti@clarice.ai",
-] as const;
+];
 
 // ---------------------------------------------------------------------------
 // Test accounts (#2895) — plus-addressing do editor (`vjpixel+test*@gmail.com`)

@@ -839,6 +839,23 @@ export function renderContactsSummarySection(
     const restRows = restEntries.map(([k, v]) =>
       `<tr><td>${escHtml(k === "null" ? "sem pontuação" : k)}</td><td style="text-align:right">${n(v)}</td>${withEligible ? `<td style="text-align:right">${n(eHist?.[k] ?? 0)}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(vHist?.[k] ?? 0)}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(bHist?.[k] ?? 0)}</td>` : ""}</tr>`,
     ).join("\n");
+    // #4256: totais explícitos de "Score positivo"/"Score negativo" — derivados
+    // do PRÓPRIO histograma (não de `priority_points` faixas), pra sempre
+    // reconciliar com as linhas exibidas acima. Partição em 4 grupos (não 2):
+    // positivo (rank>0) / zero (rank===0, "eq0" — tem registro, pontuação
+    // zerada) / negativo (rank<0) / "sem pontuação" (chave "null" — nunca
+    // pontuado ainda). `null` NÃO é zero — não entra em nenhum dos 2 subtotais,
+    // igual o resto deste arquivo já trata a distinção (ver `rank` acima).
+    const positiveKeys = sorted.filter(([k]) => k !== "null" && rank(k) > 0).map(([k]) => k);
+    const negativeKeys = sorted.filter(([k]) => k !== "null" && rank(k) < 0).map(([k]) => k);
+    const positiveTotal = sumOverKeys(hist, positiveKeys);
+    const negativeTotal = sumOverKeys(hist, negativeKeys);
+    const subtotalRow = (label: string, keys: string[], total: number): string =>
+      `<tr class="subtotal-row"><td>${escHtml(label)}</td><td style="text-align:right">${n(total)}</td>${withEligible ? `<td style="text-align:right">${n(sumOverKeys(eHist, keys))}</td>` : ""}${withVerified ? `<td style="text-align:right">${n(sumOverKeys(vHist, keys))}</td>` : ""}${withBrevo ? `<td style="text-align:right">${n(sumOverKeys(bHist, keys))}</td>` : ""}</tr>`;
+    const subtotalRows = [
+      subtotalRow("Score positivo", positiveKeys, positiveTotal),
+      subtotalRow("Score negativo", negativeKeys, negativeTotal),
+    ].join("\n");
     const rows = [highRow, restRows].filter(Boolean).join("\n");
     // #2880 E: linha Total — soma cada coluna sobre todas as faixas (= a base
     // inteira menos internos, universo do histograma).
@@ -849,24 +866,38 @@ export function renderContactsSummarySection(
     return `<div class="table-wrap"><table>
       <thead><tr><th scope="col" title="Score = priority_points (engajamento): +40 optin, +20 por abertura, −10 por não-abertura. Fila de re-envio: maior Score primeiro.">Score (valor exato)</th><th scope="col" style="text-align:right">contatos</th>${withEligible ? '<th scope="col" style="text-align:right">elegíveis</th>' : ""}${withVerified ? '<th scope="col" style="text-align:right">verified</th>' : ""}${withBrevo ? '<th scope="col" style="text-align:right">Brevo</th>' : ""}</tr></thead>
       <tbody>${rows}
+${subtotalRows}
 ${totalRow}</tbody></table></div>`;
   };
   // #2812 item 6: fallback pré-#2731 (sem priority_points_histogram) não
   // #2880: fallback pré-#2731 (sem priority_points_histogram) degrada pras
   // faixas antigas — sem sub-linhas de cohort (removidas; ver tabela Cohorts).
-  const renderPriorityPointsFallback = (map: Record<string, number>): string => {
+  //
+  // #4256: recebe `map` (rótulos já formatados, pra manter as linhas de faixa
+  // inalteradas) E `pp` (faixas cruas) separadamente — os subtotais são
+  // calculados sobre `pp`, não sobre `map`, pra não depender de parsear os
+  // rótulos de volta em número. positivo = p1_40+p41_80+gt80; negativo = lt0
+  // (mesma partição pedida na issue: "eq0" e "sem pontuação" não entram em
+  // nenhum dos dois — este fallback não distingue "sem pontuação" de "eq0"
+  // porque a faixa antiga já os funde em `eq0`, comportamento preexistente).
+  const renderPriorityPointsFallback = (map: Record<string, number>, pp: ContactsSummary["priority_points"]): string => {
     const rows = Object.entries(map)
       .sort((a, b) => b[1] - a[1])
       .map(([k, v]) => `<tr><td>${escHtml(k)}</td><td style="text-align:right">${n(v)}</td></tr>`)
       .join("\n");
+    const positiveTotal = pp.p1_40 + pp.p41_80 + pp.gt80;
+    const negativeTotal = pp.lt0;
+    const subtotalRows = `<tr class="subtotal-row"><td>Score positivo</td><td style="text-align:right">${n(positiveTotal)}</td></tr>
+<tr class="subtotal-row"><td>Score negativo</td><td style="text-align:right">${n(negativeTotal)}</td></tr>`;
     return `<div class="table-wrap"><table>
       <thead><tr><th scope="col" title="Score = priority_points (engajamento)">Score (re-envio, por faixa — aguardando refresh)</th><th scope="col" style="text-align:right">contatos</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+      <tbody>${rows}
+${subtotalRows}</tbody></table></div>`;
   };
   // KV pré-#2731 não tem o histograma — degrada pras faixas antigas.
   const priorityPointsSection = s.priority_points_histogram
     ? renderPriorityPointsHistogram(s.priority_points_histogram)
-    : renderPriorityPointsFallback(ppMap);
+    : renderPriorityPointsFallback(ppMap, pp);
   // #3088: teal falha AA em texto pequeno — badge de status volta a --ink
   // (o vermelho de alerta do outro branch é DS.alert, que já passa AA).
   const brevoBadge = brevo.has_signal
@@ -1092,28 +1123,34 @@ export function renderCohortsTabPanel(
 
   const activeTableRows = activeRows.map(renderCohortRow).join("\n");
 
-  // #2880 E: linha Total (só sobre as ATIVAS, #2908). Contagens somadas; taxas
-  // AGREGADAS (Σnum/Σrecebeu, não média de taxas) — a taxa real da base ativa.
-  // "Falta enviar" total = Σelegíveis − Σrecebeu_ciclo. Sem destaque de desvio.
-  const tot = activeRows.reduce(
-    (a, r) => ({
-      contacts: a.contacts + r.contacts,
-      brevo: a.brevo + r.brevo,
-      eligible: a.eligible + r.eligible,
-      received: a.received + r.received,
-      receivedThisCycle: a.receivedThisCycle + r.receivedThisCycle,
-      opened: a.opened + r.opened,
-      clicked: a.clicked + r.clicked,
-      unsub: a.unsub + r.unsub,
-      hardBounce: a.hardBounce + r.hardBounce,
-    }),
-    { contacts: 0, brevo: 0, eligible: 0, received: 0, receivedThisCycle: 0, opened: 0, clicked: 0, unsub: 0, hardBounce: 0 },
-  );
-  const totRate = (num: number): number | null => (tot.received > 0 ? (num / tot.received) * 100 : null);
-  // Total só quando há ≥1 cohort ativo (senão a tabela principal fica vazia — as
-  // linhas foram todas pro <details> de nunca-enviados).
-  const totalRow = activeRows.length
-    ? `<tr class="total-row">
+  // #2880 E / #4257: soma das linhas de um conjunto (ativas OU nunca-enviadas)
+  // — extraído em função pra ser reusado pelas DUAS tabelas (antes só a ativa
+  // tinha Total; a issue pediu o mesmo cálculo pro <details> de nunca-enviados,
+  // reusando este `reduce` em vez de duplicar a soma).
+  const sumRows = (rowsForTotal: Row[]) =>
+    rowsForTotal.reduce(
+      (a, r) => ({
+        contacts: a.contacts + r.contacts,
+        brevo: a.brevo + r.brevo,
+        eligible: a.eligible + r.eligible,
+        received: a.received + r.received,
+        receivedThisCycle: a.receivedThisCycle + r.receivedThisCycle,
+        opened: a.opened + r.opened,
+        clicked: a.clicked + r.clicked,
+        unsub: a.unsub + r.unsub,
+        hardBounce: a.hardBounce + r.hardBounce,
+      }),
+      { contacts: 0, brevo: 0, eligible: 0, received: 0, receivedThisCycle: 0, opened: 0, clicked: 0, unsub: 0, hardBounce: 0 },
+    );
+  // #2880 E: taxas AGREGADAS (Σnum/Σrecebeu, não média de taxas) — a taxa real
+  // do conjunto. "Falta enviar" = Σelegíveis − Σrecebeu_ciclo. Sem destaque de
+  // desvio (Total nunca ganha ▲/▼). Reusada pelas duas tabelas: no <details>
+  // de nunca-enviados `tot.received` é sempre 0 por construção (linhas
+  // filtradas por `received === 0`), então `totRate` degrada pra `null` e as
+  // taxas caem em "—" NATURALMENTE — não é um caso especial hardcoded.
+  const renderTotalRow = (tot: ReturnType<typeof sumRows>): string => {
+    const totRate = (num: number): number | null => (tot.received > 0 ? (num / tot.received) * 100 : null);
+    return `<tr class="total-row">
       <td>Total</td>
       <td>${n(tot.contacts)}</td>
       <td>${n(tot.brevo)}</td>
@@ -1125,8 +1162,12 @@ export function renderCohortsTabPanel(
       <td>${pctOrDash(totRate(tot.clicked))}</td>
       <td>${pctOrDash(totRate(tot.unsub))}</td>
       <td>${pctOrDash(totRate(tot.hardBounce))}</td>
-    </tr>`
-    : "";
+    </tr>`;
+  };
+  const tot = sumRows(activeRows);
+  // Total só quando há ≥1 cohort ativo (senão a tabela principal fica vazia — as
+  // linhas foram todas pro <details> de nunca-enviados).
+  const totalRow = activeRows.length ? renderTotalRow(tot) : "";
 
   // #2908: header compartilhado entre a tabela ativa e o <details> de
   // nunca-enviados (mesmas colunas). 11 colunas (#2909: −Envios(Σ)/−MV verified,
@@ -1139,15 +1180,23 @@ ${COHORTS_COLUMNS.map((c) => `        <th scope="col" title="${escHtml(c.tooltip
 
   // #2908: nunca-enviados (received=0) num <details> recolhível abaixo das
   // ativas — HTML válido (o <details> envolve uma TABELA inteira, não <tr>
-  // soltos). Mesma ordenação (cohortSendRank) e mesmas colunas; sem linha Total.
+  // soltos). Mesma ordenação (cohortSendRank) e mesmas colunas.
+  // #4257: agora COM linha Total (mesmo shape da Total ativa, via `sumRows` +
+  // `renderTotalRow` reusados) — sem isso, saber quantos contatos/elegíveis
+  // estão parados em cohorts nunca tocados exigia expandir e somar as ~9
+  // linhas na mão, exatamente o número que interessa pra dimensionar a rampa.
+  // O resumo (contatos/elegíveis) também aparece no <summary> — o <details>
+  // nasce RECOLHIDO, então o número mais útil precisa aparecer sem expandir.
+  const neverSentTotal = sumRows(neverSentRows);
   const neverSentBlock = neverSentRows.length
     ? `
   <details class="never-sent">
-    <summary>Cohorts sem envio (${neverSentRows.length}) — nunca receberam</summary>
+    <summary>Cohorts sem envio (${neverSentRows.length}) — nunca receberam · ${n(neverSentTotal.contacts)} contatos, ${n(neverSentTotal.eligible)} elegíveis</summary>
     <div class="table-wrap">
     <table>
       <thead>${headerRow}</thead>
-      <tbody>${neverSentRows.map(renderCohortRow).join("\n")}</tbody>
+      <tbody>${neverSentRows.map(renderCohortRow).join("\n")}
+${renderTotalRow(neverSentTotal)}</tbody>
     </table>
     </div>
   </details>`
@@ -1162,7 +1211,7 @@ ${COHORTS_COLUMNS.map((c) => `        <th scope="col" title="${escHtml(c.tooltip
   // o parágrafo original tinha 6-10 linhas e citava issues internas (#2864,
   // #2809, #3091, #2908), jargão que não ajuda o editor a ler o dado.
   const cohortsTakeaway = `Comparativo de envio e engajamento por cohort, ordenado pela fila real de 1º envio (mais morno → mais frio).`;
-  const cohortsMethodology = `Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>. ${cycleNote} Exclui e-mails internos (mesmo filtro do Score de re-envio). Células que desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna ganham <strong>▲</strong> (desvio favorável — abertura/clique acima da média, ou unsub/bounce abaixo dela) ou <span class="alert-label">▼ vermelho</span> (desvio desfavorável — o mesmo "ruim" do resto do dashboard). A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas, e não recebe essa marcação. Cohorts que nunca receberam envio ficam recolhidos abaixo, numa lista separada.`;
+  const cohortsMethodology = `Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>. ${cycleNote} Exclui e-mails internos (mesmo filtro do Score de re-envio). Células que desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna ganham <strong>▲</strong> (desvio favorável — abertura/clique acima da média, ou unsub/bounce abaixo dela) ou <span class="alert-label">▼ vermelho</span> (desvio desfavorável — o mesmo "ruim" do resto do dashboard). A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas, e não recebe essa marcação. Cohorts que nunca receberam envio ficam recolhidos abaixo, numa lista separada — com a própria linha Total (#4257).`;
 
   return `
 <section class="phase2-section" id="cohorts-tab">

@@ -633,6 +633,11 @@ ${monthlyAbcSectionsByDate}
   .alert-label { font-weight: 600; color: var(--alert); }
   /* #2880: linha Total das tabelas do store — destacada, borda superior. */
   tr.total-row td { font-weight: 700; border-top: 2px solid var(--rule); }
+  /* #4256: subtotais "Score positivo"/"Score negativo" do histograma de
+     priority_points — visualmente distintos das linhas de valor exato
+     (itálico, sem o peso/borda da linha Total) mas ainda separados por uma
+     borda fina, já que ficam entre as faixas e a linha Total. */
+  tr.subtotal-row td { font-style: italic; border-top: 1px solid var(--rule); }
   /* #3084: nowrap evita quebra em várias linhas em telas estreitas (usado
      pelo parêntese "sem MPP" da tabela A/B/C por audiência, sections-kv.ts). */
   td .rate-inline { font-weight: normal; color: var(--ink); white-space: nowrap; }
@@ -1577,6 +1582,24 @@ export function classifyClariceAudience(campaignName: string): ClariceAudience |
   // aggregateAbcSummary/detectActiveCycle (testes diários) nem em
   // groupMonthlyAbcTests (que usa parseAbcAudienceCampaign, não este).
   if (/^Diar\.ia Mensal \d{4}\s*[—–-]\s*/i.test(trimmed)) return "warm";
+  // #4255: fluxo `--group` (scripts/clarice-schedule-group.ts:162,
+  // `campaignNameFor` — "Clarice {yymm} grupo:{key}", ex: "Clarice 2606
+  // grupo:envio11"). `workers/` não importa de `scripts/` (bundle do
+  // Worker não alcança o diretório raiz do repo, mesma restrição já
+  // documentada no espelho do worker `poll`), então o padrão fica
+  // ESPELHADO aqui — se `campaignNameFor` mudar de shape, o teste que fixa
+  // a string exata (`clarice-schedule-group.test.ts`) e o teste deste
+  // regex (#4255) devem quebrar juntos, não silenciosamente divergir.
+  // Terceira ocorrência da mesma classe de bug (#3076, #4082 item 2): antes
+  // desta linha, `calcCumulativeSentInBillingWindow` descartava toda
+  // campanha `grupo:` por não bater em nenhum padrão reconhecido —
+  // 14.809 envios (8.005 + 6.804) sumiam do Volume do ciclo (e do
+  // denominador `planTotal`, que soma `planCredits + cumulativeSent`,
+  // ver `renderVolumeSection` em sections-kv.ts) sem nenhum sinal de erro.
+  // Sem segmentação fria/quente documentada pro fluxo `--group` (a lista
+  // de destinatários já filtra isso na composição do grupo, mesmo
+  // racional do Digest Mensal acima) — trata como "warm".
+  if (/^Clarice \d{4} grupo:/.test(trimmed)) return "warm";
   return null;
 }
 

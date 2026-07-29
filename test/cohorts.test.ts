@@ -11,7 +11,9 @@ import {
   cohortDisplayLabel,
   isKnownCohortSlug,
   isTestAccount,
+  INTERNAL_EMAILS,
 } from "../scripts/lib/cohorts.ts";
+import { EDITOR_SEED_EMAILS } from "../scripts/lib/editor-copy.ts";
 
 // Oráculo LOCAL de `tierRank` (#2857 fase C — a função viveu exportada em
 // clarice-segment.ts até a fase B, removida no cutover; o único consumidor de
@@ -225,5 +227,47 @@ describe("isTestAccount", () => {
     assert.equal(isTestAccount("leitor@example.com"), false);
     assert.equal(isTestAccount("vjpixel+newsletter@gmail.com"), false);
     assert.equal(isTestAccount("naotem+test@gmail.com"), false, "prefixo local diferente de vjpixel");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4257: INTERNAL_EMAILS deriva de EDITOR_SEED_EMAILS — os 3 seeds de
+// medição de colocação de caixa (#4045: vjpixel@yahoo.com, vjpixel@hotmail.com,
+// apixel@gmail.com) apareciam como a linha "sem cohort" da aba Cohorts porque
+// não tinham registro Stripe/created e não estavam em INTERNAL_EMAILS (as duas
+// listas eram independentes). O invariante testado aqui é o que impede a
+// regressão de voltar quando um 6º seed for adicionado a EDITOR_SEED_EMAILS
+// sem que ninguém se lembre de tocar cohorts.ts.
+// ---------------------------------------------------------------------------
+
+describe("INTERNAL_EMAILS deriva de EDITOR_SEED_EMAILS (#4257)", () => {
+  it("todo EDITOR_SEED_EMAILS está em INTERNAL_EMAILS — trava a invariante que evita a regressão", () => {
+    const internalLower = new Set(INTERNAL_EMAILS.map((e) => e.toLowerCase()));
+    for (const seed of EDITOR_SEED_EMAILS) {
+      assert.ok(
+        internalLower.has(seed.toLowerCase()),
+        `seed do editor '${seed}' precisa estar em INTERNAL_EMAILS — senão vira a linha "sem cohort" na aba Cohorts (#4257)`,
+      );
+    }
+  });
+
+  it("os 3 seeds do incidente (#4045) especificamente presentes — vjpixel@yahoo.com, vjpixel@hotmail.com, apixel@gmail.com", () => {
+    const internalLower = new Set(INTERNAL_EMAILS.map((e) => e.toLowerCase()));
+    assert.ok(internalLower.has("vjpixel@yahoo.com"));
+    assert.ok(internalLower.has("vjpixel@hotmail.com"));
+    assert.ok(internalLower.has("apixel@gmail.com"));
+  });
+
+  it("os internos Clarice (não-editor) continuam presentes — sem regressão do #2809/#2880", () => {
+    const internalLower = new Set(INTERNAL_EMAILS.map((e) => e.toLowerCase()));
+    assert.ok(internalLower.has("felipe@clarice.ai"));
+    assert.ok(internalLower.has("ti@clarice.ai"));
+  });
+
+  it("INTERNAL_EMAILS = EDITOR_SEED_EMAILS + internos Clarice, sem duplicatas nem itens a mais", () => {
+    const expected = new Set([...EDITOR_SEED_EMAILS.map((e) => e.toLowerCase()), "felipe@clarice.ai", "ti@clarice.ai"]);
+    const actual = new Set(INTERNAL_EMAILS.map((e) => e.toLowerCase()));
+    assert.deepEqual(actual, expected);
+    assert.equal(INTERNAL_EMAILS.length, actual.size, "sem duplicata (mesmo email listado 2x)");
   });
 });

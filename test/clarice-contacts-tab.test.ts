@@ -443,3 +443,87 @@ test("renderContactsSummarySection: 'Inelegíveis por razão' e 'MillionVerifier
     "Inelegíveis antes de MV dentro do container",
   );
 });
+
+// ---------------------------------------------------------------------------
+// #4256 — totais explícitos "Score positivo"/"Score negativo" no histograma
+// de priority_points. Derivados do PRÓPRIO histograma (reconciliam com as
+// linhas de valor exato exibidas acima); fallback pras faixas antigas quando
+// o histograma não está no KV. Partição em 4 grupos: positivo (>0) / zero
+// (eq0) / negativo (<0) / sem pontuação (null) — null NUNCA soma em nenhum
+// dos 2 subtotais.
+// ---------------------------------------------------------------------------
+
+test("renderContactsSummarySection: histograma com chaves positivas/negativas/zero/null → subtotais corretos, null e 0 fora de ambos (#4256)", () => {
+  const withMixed: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: {
+      "-30": 3, // negativo
+      "-10": 5, // negativo
+      "0": 900, // zero — fora dos dois subtotais
+      "15": 40, // positivo
+      "35": 3, // positivo
+      "40": 2, // positivo (entra na linha agregada "40+", mas ainda soma no subtotal)
+      "null": 12, // sem pontuação — fora dos dois subtotais
+    },
+  };
+  const html = renderContactsSummarySection(withMixed);
+  assert.match(html, /<tr class="subtotal-row"><td>Score positivo<\/td><td[^>]*>45<\/td>/, "positivo = 40+3+2 = 45");
+  assert.match(html, /<tr class="subtotal-row"><td>Score negativo<\/td><td[^>]*>8<\/td>/, "negativo = 3+5 = 8");
+  // As duas linhas de subtotal vêm ANTES da linha Total.
+  const idxPos = html.indexOf("Score positivo");
+  const idxNeg = html.indexOf("Score negativo");
+  const idxTotal = html.lastIndexOf("<tr class=\"total-row\">");
+  assert.ok(idxPos > -1 && idxNeg > -1 && idxTotal > -1);
+  assert.ok(idxPos < idxTotal && idxNeg < idxTotal, "subtotais vêm antes da linha Total");
+});
+
+test("renderContactsSummarySection: subtotais também somam as colunas opcionais (elegíveis/verified/Brevo) via sumOverKeys (#4256)", () => {
+  const withCols: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "-10": 5, "15": 40 },
+    priority_points_histogram_eligible: { "-10": 4, "15": 38 },
+    priority_points_histogram_verified: { "-10": 1, "15": 10 },
+    priority_points_histogram_brevo: { "-10": 2, "15": 20 },
+  };
+  const html = renderContactsSummarySection(withCols);
+  // Score positivo: contatos=40, elegíveis=38, verified=10, Brevo=20
+  assert.match(
+    html,
+    /<tr class="subtotal-row"><td>Score positivo<\/td><td[^>]*>40<\/td><td[^>]*>38<\/td><td[^>]*>10<\/td><td[^>]*>20<\/td>/,
+  );
+  // Score negativo: contatos=5, elegíveis=4, verified=1, Brevo=2
+  assert.match(
+    html,
+    /<tr class="subtotal-row"><td>Score negativo<\/td><td[^>]*>5<\/td><td[^>]*>4<\/td><td[^>]*>1<\/td><td[^>]*>2<\/td>/,
+  );
+});
+
+test("renderContactsSummarySection: soma dos subtotais + zero + sem pontuação = linha Total (invariante de partição) (#4256)", () => {
+  const withMixed: ContactsSummary = {
+    ...sample,
+    priority_points_histogram: { "-30": 3, "-10": 5, "0": 900, "15": 40, "40": 2, "null": 12 },
+  };
+  const html = renderContactsSummarySection(withMixed);
+  const totalExpected = 3 + 5 + 900 + 40 + 2 + 12; // = 962
+  assert.match(html, new RegExp(`<tr class="total-row"><td>Total</td><td[^>]*>${totalExpected}<`));
+  // positivo (42) + negativo (8) + zero (900) + sem pontuação (12) = 962
+  assert.equal(42 + 8 + 900 + 12, totalExpected, "sanity check da partição usada no teste");
+});
+
+test("renderContactsSummarySection: payload SEM priority_points_histogram → cai no fallback de faixas, com subtotais derivados de priority_points (#4256)", () => {
+  // sample não tem priority_points_histogram — força o fallback.
+  const withFallback: ContactsSummary = {
+    ...sample,
+    priority_points: { lt0: 7, eq0: 427520, p1_40: 5, p41_80: 1, gt80: 2, optin: 3 },
+  };
+  const html = renderContactsSummarySection(withFallback);
+  assert.doesNotMatch(html, /valor exato/, "confirma que caiu no fallback, não no histograma");
+  // positivo = p1_40 + p41_80 + gt80 = 5 + 1 + 2 = 8; negativo = lt0 = 7
+  assert.match(html, /<tr class="subtotal-row"><td>Score positivo<\/td><td[^>]*>8<\/td><\/tr>/);
+  assert.match(html, /<tr class="subtotal-row"><td>Score negativo<\/td><td[^>]*>7<\/td><\/tr>/);
+});
+
+test("renderContactsSummarySection: subtotais nunca lançam quando histograma vazio/ausente (#4256)", () => {
+  assert.doesNotThrow(() => renderContactsSummarySection({ ...sample, priority_points_histogram: {} }));
+  assert.doesNotThrow(() => renderContactsSummarySection(sample));
+});

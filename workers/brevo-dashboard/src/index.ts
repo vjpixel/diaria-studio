@@ -62,6 +62,11 @@ import {
   buildRateLimitFallback,
   rateLimitResponse,
   BrevoRateLimitError,
+  BrevoUpstreamError, // #4251
+  isBrevoOutageStatus, // #4251
+  buildUpstreamErrorFallback, // #4251
+  buildUpstreamErrorCampaignsJsonFallback, // #4251
+  upstreamErrorResponse, // #4251
   LASTGOOD_CAMPAIGNS_KEY,
   CAMPAIGNS_FETCH_LIMIT,
   fetchPlanCredits,
@@ -224,6 +229,16 @@ async function buildCampaignsResponse(
     if (e instanceof BrevoRateLimitError) {
       return rateLimitResponse(e.retryAfterSecs, false);
     }
+    // #4251: 403/5xx da Brevo (ex: incidente 260728 -- token-manager.brevo.com
+    // fora do ar derrubando toda chamada autenticada com 403) tenta servir o
+    // último array de campanhas bom conhecido em vez de simplesmente falhar --
+    // consumidores de automação (ex: lookup de próxima wave Clarice, CLAUDE.md
+    // #1172) dependem desta rota pra decisão, não só o painel humano.
+    if (e instanceof BrevoUpstreamError && isBrevoOutageStatus(e.status)) {
+      const fallback = await buildUpstreamErrorCampaignsJsonFallback(env, limit, e.status);
+      if (fallback) return fallback;
+      return upstreamErrorResponse(e.status, false);
+    }
     // #4187: `e` nem sempre é um Error (fetch nativo/dependência externa pode
     // lançar qualquer valor) -- (e as Error).message em cima de um não-Error
     // é `undefined`, e o `${...}` template literal aceita isso sem lançar
@@ -359,6 +374,13 @@ async function buildDashboardResponse(request: Request, env: Env, isFresh: boole
       // de rate-limit do Brevo nunca esconde dado KV recém-publicado (o bug
       // original: aba de Cupons pós-deploy oculta). Throw-safe: degrada p/ 503.
       return buildRateLimitFallback(env, e.retryAfterSecs, planCredits);
+    }
+    // #4251: mesmo caminho do 429 acima, mas pra 403/5xx da Brevo (ex:
+    // incidente 260728 -- token-manager.brevo.com fora do ar, Brevo devolvendo
+    // 403 pra qualquer chamada autenticada). Antes disto o painel só falhava
+    // com 502 cru -- agora serve o último dado bom com aviso de defasagem.
+    if (e instanceof BrevoUpstreamError && isBrevoOutageStatus(e.status)) {
+      return buildUpstreamErrorFallback(env, e.status, planCredits);
     }
     // #4187 (achado do diagnóstico do 1101): `e` nem sempre é um Error --
     // `(e as Error).message` num valor não-Error é `undefined`, e
