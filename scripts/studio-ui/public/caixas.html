@@ -81,6 +81,29 @@
       </div>
     </section>
 
+    <section class="panel" id="para-encerrar-panel">
+      <h2>PARA ENCERRAR</h2>
+      <p class="hint">
+        Conteúdo SEMPRE PRESENTE da seção <strong>🙋🏼‍♀️ PARA ENCERRAR</strong> (#4274) — diferente
+        dos slots acima (pool de caixas opcionais), estes 2 campos são texto direto, editado aqui e
+        salvo em <code>platform.config.json</code> → <code>para_encerrar</code>. O cabeçalho da seção
+        continua fixo. Campo vazio = usa o texto padrão do snippet
+        <code>context/snippets/encerramento-social-apoio.md</code>.
+      </p>
+      <label class="cx-field">
+        <span>Slot A <em>(parágrafo de apoio + bloco de ferramentas/"Acesse nossas curadorias")</em></span>
+        <textarea id="para-encerrar-slot-a" class="cx-editor" spellcheck="false" placeholder="(vazio — usa o texto padrão do snippet)"></textarea>
+      </label>
+      <label class="cx-field">
+        <span>Slot B <em>(convite social — LinkedIn/Facebook/Instagram, SEMPRE o último parágrafo da seção)</em></span>
+        <textarea id="para-encerrar-slot-b" class="cx-editor" spellcheck="false" placeholder="(vazio — usa o texto padrão do snippet)"></textarea>
+      </label>
+      <div class="cx-editor-toolbar">
+        <button id="para-encerrar-save-btn" type="button">Salvar PARA ENCERRAR</button>
+        <span id="para-encerrar-status" class="cx-save-status" role="status" aria-live="polite"></span>
+      </div>
+    </section>
+
     <section class="panel" id="create-panel" hidden>
       <h2>Nova caixa</h2>
       <p class="hint">

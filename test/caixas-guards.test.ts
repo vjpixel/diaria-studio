@@ -18,6 +18,7 @@ import {
   findDuplicateSlotAssignment,
   SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE,
   SLOT_POSITION_LABEL,
+  PARA_ENCERRAR_SAVE_CONFLICT_CONFIRM_MESSAGE, // #4274
 } from "../scripts/studio-ui/public/caixas-guards.js";
 
 describe("validateNewBoxSlug (#3928)", () => {
@@ -145,6 +146,14 @@ describe("SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE (#3937)", () => {
     assert.match(SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE, /platform\.config\.json/);
     assert.match(SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE, /sobrescrever/i);
     assert.match(SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE, /recarregar/i);
+  });
+});
+
+describe("PARA_ENCERRAR_SAVE_CONFLICT_CONFIRM_MESSAGE (#4274)", () => {
+  it("nomeia platform.config.json e descreve as duas saídas (sobrescrever/recarregar)", () => {
+    assert.match(PARA_ENCERRAR_SAVE_CONFLICT_CONFIRM_MESSAGE, /platform\.config\.json/);
+    assert.match(PARA_ENCERRAR_SAVE_CONFLICT_CONFIRM_MESSAGE, /sobrescrever/i);
+    assert.match(PARA_ENCERRAR_SAVE_CONFLICT_CONFIRM_MESSAGE, /recarregar/i);
   });
 });
 

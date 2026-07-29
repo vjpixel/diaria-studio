@@ -679,6 +679,184 @@ export function saveBoxSlots(
   return { ok: true, modifiedAt, slots: readBoxSlotsState(rootDir) };
 }
 
+// ── PARA ENCERRAR: slots A/B de texto direto (#4274 — reescopo do gate
+// /diaria-develop 260729) ───────────────────────────────────────────────
+//
+// Diferença de mecanismo vs. os slots 0-3 acima: aqueles atribuem um
+// FILENAME de `context/snippets/` (pool de candidatos, opcionais, podem
+// ficar vazios). Slot A (parágrafo de apoio + bloco de ferramentas/
+// "Acesse nossas curadorias") e Slot B (convite social) são conteúdo
+// SEMPRE-PRESENTE da seção PARA ENCERRAR — 1 campo de TEXTO DIRETO por
+// slot, editado no painel Caixas como um textarea comum, persistido em
+// `platform.config.json` → `para_encerrar.{slot_a,slot_b}` (ver
+// `loadParaEncerrarConfig`/`buildParaEncerrar` em `../stitch-newsletter.ts`).
+//
+// `readParaEncerrarState` devolve o valor CRU do config ("" se ausente/
+// vazio) — NÃO resolve o texto-default de fallback (que `buildParaEncerrar`
+// computa a partir de `context/snippets/encerramento-social-apoio.md`
+// quando o campo está vazio): esse default depende do snippet no ROOT REAL
+// do repo (via `readSnippetFile`), não do `rootDir` de teste que este
+// módulo aceita como parâmetro — resolver aqui quebraria o isolamento dos
+// testes (mesmo motivo por que `readBoxSlotsState` também nunca resolve
+// nada além do valor cru do config). Um campo "" na tela do painel
+// significa "sem override — a edição usa o texto padrão do snippet"; a UI
+// mostra essa explicação, não o texto resolvido.
+
+export interface ParaEncerrarState {
+  slotA: string;
+  slotB: string;
+  /** mtime ISO de `platform.config.json` no momento da leitura, ou `null` se
+   * o arquivo não existe. Mesmo guard de mtime (#3729) de `BoxSlotsState`. */
+  modifiedAt: string | null;
+}
+
+function readRawParaEncerrar(cfg: unknown): Record<string, unknown> {
+  if (!cfg || typeof cfg !== "object") return {};
+  const pe = (cfg as Record<string, unknown>).para_encerrar;
+  return pe && typeof pe === "object" ? (pe as Record<string, unknown>) : {};
+}
+
+/** Lê `platform.config.json` → `para_encerrar.{slot_a,slot_b}` cru ("" se
+ * ausente/vazio/não-string) + mtime. Fail-soft total: config ausente ->
+ * slots "" e `modifiedAt: null`; JSON corrompido -> slots "" mas
+ * `modifiedAt` real; nunca lança. */
+export function readParaEncerrarState(rootDir: string): ParaEncerrarState {
+  const empty = { slotA: "", slotB: "" } as const;
+  const configPath = resolve(rootDir, "platform.config.json");
+  if (!existsSync(configPath)) return { ...empty, modifiedAt: null };
+  const modifiedAt = statSync(configPath).mtime.toISOString();
+  let cfg: unknown;
+  try {
+    cfg = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch {
+    return { ...empty, modifiedAt };
+  }
+  const pe = readRawParaEncerrar(cfg);
+  const get = (key: "slot_a" | "slot_b") => (typeof pe[key] === "string" ? (pe[key] as string) : "");
+  return { slotA: get("slot_a"), slotB: get("slot_b"), modifiedAt };
+}
+
+/** Reescreve SÓ o bloco `"para_encerrar": { ... }` dentro do texto BRUTO de
+ * `platform.config.json` — mesma disciplina de `replaceBoxesDivulgacaoBlock`
+ * (regra #495, preserva todas as outras chaves e formatação byte-a-byte,
+ * NUNCA `JSON.parse`+`JSON.stringify` do objeto inteiro). Localiza o bloco
+ * via regex ancorada na indentação; se a chave ainda não existir no arquivo
+ * (config anterior ao #4274), insere um bloco novo antes do fechamento do
+ * objeto top-level. Lança se não conseguir localizar nem o bloco nem um
+ * ponto de inserção seguro — o caller (`saveParaEncerrar`) decide como
+ * reportar. */
+export function replaceParaEncerrarBlock(
+  raw: string,
+  values: { slotA: string; slotB: string },
+): string {
+  const outerIndent = "  ";
+  const innerIndent = "    ";
+  const block = [
+    `${outerIndent}"para_encerrar": {`,
+    `${innerIndent}"slot_a": ${JSON.stringify(values.slotA)},`,
+    `${innerIndent}"slot_b": ${JSON.stringify(values.slotB)}`,
+    `${outerIndent}}`,
+  ].join("\n");
+
+  const blockRe = /([ \t]*)"para_encerrar"\s*:\s*\{[\s\S]*?\n\1\}/;
+  if (blockRe.test(raw)) {
+    return raw.replace(blockRe, () => block);
+  }
+
+  const topCloseRe = /\n\}(\s*)$/;
+  const m = topCloseRe.exec(raw);
+  if (!m) {
+    throw new Error(
+      "platform.config.json: não foi possível localizar para_encerrar nem um ponto seguro de inserção",
+    );
+  }
+  return raw.slice(0, m.index) + `,\n${block}\n}` + m[1];
+}
+
+export interface SaveParaEncerrarInput {
+  slotA: string;
+  slotB: string;
+}
+
+export interface SaveParaEncerrarOptions {
+  /** mtime (ISO) visto pelo client no último GET — `undefined` pula a
+   * checagem de divergência inteiramente (mesma semântica de
+   * `SaveBoxSlotsOptions.expectedModifiedAt`). */
+  expectedModifiedAt?: string | null;
+  /** `true` = ignora divergência detectada e sobrescreve mesmo assim (o
+   * editor já confirmou no dialog de conflito do client). */
+  force?: boolean;
+}
+
+export interface SaveParaEncerrarResult {
+  ok: boolean;
+  error?: string;
+  modifiedAt: string | null;
+  /** `true` quando o save foi recusado por divergência de mtime (#3729) — o
+   * caller HTTP responde 409. */
+  conflict?: boolean;
+  /** mtime atual em disco no momento da tentativa — só presente quando
+   * `conflict` é `true`. */
+  currentModifiedAt?: string | null;
+  /** Estado novo dos slots (eco pós-write), só presente em sucesso. */
+  state?: ParaEncerrarState;
+}
+
+/** Escreve o conteúdo dos slots A/B do PARA ENCERRAR em `platform.config.json`
+ * (#4274). Trim em cada valor (mesma normalização de `normalizeSlotValue`
+ * pros slots 0-3); um valor vazio pós-trim volta a "" no disco, que
+ * `loadParaEncerrarConfig`/`buildParaEncerrar` (stitch-newsletter.ts) tratam
+ * como "sem override" — cai de volta pro texto-padrão do snippet, nunca
+ * produz uma seção PARA ENCERRAR com um parágrafo faltando. Guard de mtime
+ * (#3729) idêntico a `saveBoxSlots`. Escrita CIRÚRGICA via
+ * `replaceParaEncerrarBlock` — só a chave `para_encerrar` é tocada. Fail-soft:
+ * nunca lança, sempre retorna resultado tipado. */
+export function saveParaEncerrar(
+  rootDir: string,
+  input: SaveParaEncerrarInput,
+  opts: SaveParaEncerrarOptions = {},
+): SaveParaEncerrarResult {
+  const configPath = resolve(rootDir, "platform.config.json");
+  if (!existsSync(configPath)) {
+    return { ok: false, error: "platform.config.json não encontrado", modifiedAt: null };
+  }
+
+  const values = {
+    slotA: normalizeSlotValue(input.slotA),
+    slotB: normalizeSlotValue(input.slotB),
+  };
+
+  const currentModifiedAt = statSync(configPath).mtime.toISOString();
+  if (!opts.force && opts.expectedModifiedAt !== undefined) {
+    if (currentModifiedAt !== opts.expectedModifiedAt) {
+      return {
+        ok: false,
+        error: "platform.config.json foi modificado desde que você abriu a tela — recarregue ou sobrescreva explicitamente",
+        modifiedAt: currentModifiedAt,
+        conflict: true,
+        currentModifiedAt,
+      };
+    }
+  }
+
+  let rewritten: string;
+  try {
+    const raw = readFileSync(configPath, "utf8");
+    rewritten = replaceParaEncerrarBlock(raw, values);
+  } catch (e) {
+    return { ok: false, error: (e as Error).message, modifiedAt: null };
+  }
+
+  try {
+    writeFileSync(configPath, rewritten, "utf8");
+  } catch (e) {
+    return { ok: false, error: (e as Error).message, modifiedAt: null };
+  }
+
+  const modifiedAt = statSync(configPath).mtime.toISOString();
+  return { ok: true, modifiedAt, state: readParaEncerrarState(rootDir) };
+}
+
 // ── dirty vs. git (defesa fail-soft — sem repo git no fixture de teste) ──
 
 /**

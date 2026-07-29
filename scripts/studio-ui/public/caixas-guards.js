@@ -82,6 +82,17 @@ export const SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE =
   "Studio, ou uma edição manual do arquivo. Clique OK para SOBRESCREVER com a sua atribuição de slots mesmo " +
   "assim, ou Cancelar para RECARREGAR o estado mais recente do disco (suas mudanças não salvas aqui serão perdidas).";
 
+// ── #4274: slots A/B de texto do PARA ENCERRAR ─────────────────────────────
+
+/** Mensagem do `confirm()` disparado por `saveParaEncerrar()` quando o server
+ * responde 409 — mesmo texto/motivo de `SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE`
+ * (mesmo arquivo em jogo, `platform.config.json`), só nomeando o conteúdo
+ * certo (texto do PARA ENCERRAR, não atribuição de slots). */
+export const PARA_ENCERRAR_SAVE_CONFLICT_CONFIRM_MESSAGE =
+  "platform.config.json foi modificado desde que você abriu esta tela — provavelmente por outra aba/sessão do " +
+  "Studio, ou uma edição manual do arquivo. Clique OK para SOBRESCREVER com o seu texto do PARA ENCERRAR mesmo " +
+  "assim, ou Cancelar para RECARREGAR o estado mais recente do disco (suas mudanças não salvas aqui serão perdidas).";
+
 /** Acha a primeira caixa atribuída a mais de um slot ao mesmo tempo (guard 2
  * do #3937, estendido ao slot0 em #4290), PURO — sem `document`/`fetch`,
  * testável (#633). Ignora slots vazios (`""`) — só compara slugs preenchidos

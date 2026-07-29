@@ -14,7 +14,7 @@
  *      (conteúdo + save, incluindo o conflito 409 e o retry com `force`),
  *      `GET/PUT /api/boxes/slots` (#3937 — gestão de slots pela UI).
  */
-import { describe, it, before, beforeEach, after } from "node:test";
+import { describe, it, before, beforeEach, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, statSync, existsSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,6 +51,9 @@ import {
   readBoxSlotsState,
   replaceBoxesDivulgacaoBlock,
   saveBoxSlots,
+  readParaEncerrarState, // #4274
+  replaceParaEncerrarBlock, // #4274
+  saveParaEncerrar, // #4274
 } from "../scripts/studio-ui/studio-boxes.ts";
 
 // ─── lógica pura ──────────────────────────────────────────────────────────
@@ -1141,6 +1144,207 @@ describe("saveBoxSlots (#3937, pure; slot0 #4290)", () => {
   });
 });
 
+// ─── PARA ENCERRAR: slots A/B de texto direto (pura, #4274) ────────────────
+
+describe("replaceParaEncerrarBlock (#4274, pure)", () => {
+  it("reescreve só o bloco para_encerrar, preservando o resto byte-a-byte", () => {
+    const raw = [
+      "{",
+      '  "newsletter": "beehiiv",',
+      '  "boxes_divulgacao": {',
+      '    "slot1": "recomendacao-leitura.md"',
+      "  },",
+      '  "para_encerrar": {',
+      '    "slot_a": "texto A antigo",',
+      '    "slot_b": "texto B antigo"',
+      "  },",
+      '  "drive_sync": false',
+      "}",
+    ].join("\n");
+
+    const out = replaceParaEncerrarBlock(raw, { slotA: "novo texto A", slotB: "novo texto B" });
+
+    assert.ok(out.startsWith('{\n  "newsletter": "beehiiv",\n  "boxes_divulgacao": {\n    "slot1": "recomendacao-leitura.md"\n  },\n'));
+    assert.ok(out.endsWith('\n  "drive_sync": false\n}'));
+    assert.match(out, /"slot_a": "novo texto A"/);
+    assert.match(out, /"slot_b": "novo texto B"/);
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.newsletter, "beehiiv");
+    assert.deepEqual(parsed.boxes_divulgacao, { slot1: "recomendacao-leitura.md" });
+    assert.equal(parsed.drive_sync, false);
+    assert.deepEqual(parsed.para_encerrar, { slot_a: "novo texto A", slot_b: "novo texto B" });
+  });
+
+  it("preserva newlines internas (\\n) do texto multi-parágrafo — JSON.stringify escapa corretamente", () => {
+    const raw = '{\n  "para_encerrar": {\n    "slot_a": "a",\n    "slot_b": "b"\n  }\n}';
+    const out = replaceParaEncerrarBlock(raw, { slotA: "parágrafo 1\n\nparágrafo 2", slotB: "b" });
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.para_encerrar.slot_a, "parágrafo 1\n\nparágrafo 2");
+  });
+
+  it("byte-a-byte contra o platform.config.json REAL do repo (regressão do formato canônico)", () => {
+    const raw = readFileSync(resolvePlatformConfigPath(), "utf8");
+    const out = replaceParaEncerrarBlock(raw, { slotA: "x", slotB: "y" });
+    const blockStart = raw.indexOf('"para_encerrar"');
+    assert.ok(blockStart > 0, "fixture do repo precisa ter para_encerrar (#4274 já populou)");
+    assert.equal(out.slice(0, blockStart), raw.slice(0, blockStart));
+    const parsed = JSON.parse(out);
+    assert.deepEqual(parsed.para_encerrar, { slot_a: "x", slot_b: "y" });
+  });
+
+  it("insere o bloco (defensivo) quando para_encerrar ainda não existe no arquivo", () => {
+    const raw = '{\n  "newsletter": "beehiiv"\n}';
+    const out = replaceParaEncerrarBlock(raw, { slotA: "a", slotB: "b" });
+    const parsed = JSON.parse(out);
+    assert.deepEqual(parsed.para_encerrar, { slot_a: "a", slot_b: "b" });
+    assert.equal(parsed.newsletter, "beehiiv");
+  });
+
+  it("lança em vez de escrever algo potencialmente corrompido quando não há ponto de inserção seguro", () => {
+    assert.throws(() => replaceParaEncerrarBlock("não é json de jeito nenhum", { slotA: "", slotB: "" }));
+  });
+});
+
+describe("readParaEncerrarState (#4274, pure)", () => {
+  it("sem platform.config.json -> slots vazios, modifiedAt:null", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-boxes-paraencerrarstate-none-"));
+    assert.deepEqual(readParaEncerrarState(root), { slotA: "", slotB: "", modifiedAt: null });
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("com para_encerrar -> devolve slotA/slotB crus + modifiedAt", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-boxes-paraencerrarstate-"));
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({ para_encerrar: { slot_a: "texto A", slot_b: "texto B" } }),
+    );
+    const state = readParaEncerrarState(root);
+    assert.equal(state.slotA, "texto A");
+    assert.equal(state.slotB, "texto B");
+    assert.ok(state.modifiedAt);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("chave para_encerrar ausente (config anterior ao #4274) -> slots vazios, modifiedAt real", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-boxes-paraencerrarstate-legacy-"));
+    writeFileSync(join(root, "platform.config.json"), JSON.stringify({ newsletter: "beehiiv" }));
+    const state = readParaEncerrarState(root);
+    assert.equal(state.slotA, "");
+    assert.equal(state.slotB, "");
+    assert.ok(state.modifiedAt);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("JSON corrompido -> slots vazios mas modifiedAt real (fail-soft, nunca lança)", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-boxes-paraencerrarstate-corrupt-"));
+    writeFileSync(join(root, "platform.config.json"), "{ not json");
+    const state = readParaEncerrarState(root);
+    assert.equal(state.slotA, "");
+    assert.equal(state.slotB, "");
+    assert.ok(state.modifiedAt);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("saveParaEncerrar (#4274, pure)", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-saveparaencerrar-"));
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify(
+        {
+          newsletter: "beehiiv",
+          para_encerrar: { slot_a: "A original", slot_b: "B original" },
+          drive_sync: false,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("happy path: reescreve e devolve o novo estado + modifiedAt", () => {
+    const result = saveParaEncerrar(root, { slotA: "A novo", slotB: "B novo" });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.state, { slotA: "A novo", slotB: "B novo", modifiedAt: result.modifiedAt });
+  });
+
+  it("trima espaço em branco nas bordas", () => {
+    const result = saveParaEncerrar(root, { slotA: "  com espaço  ", slotB: "b" });
+    assert.equal(result.ok, true);
+    assert.equal(result.state?.slotA, "com espaço");
+  });
+
+  it("valor vazio pós-trim vira '' no disco (cai no default do snippet no próximo build, #4274)", () => {
+    const result = saveParaEncerrar(root, { slotA: "   ", slotB: "b" });
+    assert.equal(result.ok, true);
+    assert.equal(result.state?.slotA, "");
+  });
+
+  it("preserva as outras chaves do platform.config.json byte-a-byte, só para_encerrar muda", () => {
+    const before = readFileSync(join(root, "platform.config.json"), "utf8");
+    const result = saveParaEncerrar(root, { slotA: "novo", slotB: "novo2" });
+    assert.equal(result.ok, true);
+    const after = readFileSync(join(root, "platform.config.json"), "utf8");
+    const blockStart = before.indexOf('"para_encerrar"');
+    assert.equal(after.slice(0, blockStart), before.slice(0, blockStart), "conteúdo ANTES do bloco deve ser idêntico");
+    const parsedAfter = JSON.parse(after);
+    assert.equal(parsedAfter.newsletter, "beehiiv");
+    assert.equal(parsedAfter.drive_sync, false);
+    assert.deepEqual(parsedAfter.para_encerrar, { slot_a: "novo", slot_b: "novo2" });
+  });
+
+  it("guard de mtime: expectedModifiedAt divergente -> conflict:true, NÃO sobrescreve", () => {
+    const configPath = join(root, "platform.config.json");
+    const staleModifiedAt = statSync(configPath).mtime.toISOString();
+    writeFileSync(
+      configPath,
+      JSON.stringify({ para_encerrar: { slot_a: "A concorrente", slot_b: "B concorrente" } }),
+      "utf8",
+    );
+    const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
+    utimesSync(configPath, bumped, bumped);
+
+    const result = saveParaEncerrar(root, { slotA: "A tentativa", slotB: "B tentativa" }, { expectedModifiedAt: staleModifiedAt });
+    assert.equal(result.ok, false);
+    assert.equal(result.conflict, true);
+    assert.ok(result.currentModifiedAt);
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.deepEqual(onDisk.para_encerrar, { slot_a: "A concorrente", slot_b: "B concorrente" }, "não deve sobrescrever em conflito");
+  });
+
+  it("guard de mtime: force:true sobrescreve mesmo com expectedModifiedAt divergente", () => {
+    const configPath = join(root, "platform.config.json");
+    const staleModifiedAt = statSync(configPath).mtime.toISOString();
+    const bumped = new Date(new Date(staleModifiedAt).getTime() + 2000);
+    utimesSync(configPath, bumped, bumped);
+
+    const result = saveParaEncerrar(root, { slotA: "forçado", slotB: "forçado2" }, { expectedModifiedAt: staleModifiedAt, force: true });
+    assert.equal(result.ok, true);
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.deepEqual(onDisk.para_encerrar, { slot_a: "forçado", slot_b: "forçado2" });
+  });
+
+  it("sem expectedModifiedAt no corpo pula a checagem de conflito", () => {
+    const result = saveParaEncerrar(root, { slotA: "a", slotB: "b" });
+    assert.equal(result.ok, true);
+    assert.equal(result.conflict, undefined);
+  });
+
+  it("platform.config.json ausente -> ok:false, sem lançar", () => {
+    const emptyRoot = mkdtempSync(join(tmpdir(), "studio-boxes-saveparaencerrar-noconfig-"));
+    const result = saveParaEncerrar(emptyRoot, { slotA: "", slotB: "" });
+    assert.equal(result.ok, false);
+    rmSync(emptyRoot, { recursive: true, force: true });
+  });
+});
+
 // ─── contrato HTTP ─────────────────────────────────────────────────────────
 
 describe("GET /caixas + /api/boxes + PUT (#3924)", () => {
@@ -2161,5 +2365,131 @@ describe("GET/PUT /api/boxes/slots (#3937; slot0 #4290)", () => {
     assert.equal(archived.status, 200);
 
     await fetch(new URL("/api/boxes/intro-box.md/unarchive", server.url), { method: "POST" });
+  });
+});
+
+// ─── contrato HTTP: slots A/B de texto do PARA ENCERRAR (#4274) ────────────
+
+describe("GET/PUT /api/boxes/para-encerrar (#4274)", () => {
+  let root: string;
+  let server: StudioServer;
+
+  before(async () => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-4274-http-"));
+    mkdirSync(join(root, "data", "editions"), { recursive: true });
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    server = await startStudioServer({ port: 0, rootDir: root, pollIntervalMs: 30 });
+  });
+
+  after(async () => {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify(
+        {
+          newsletter: "beehiiv",
+          para_encerrar: { slot_a: "Texto A inicial", slot_b: "Texto B inicial" },
+          drive_sync: false,
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+  });
+
+  it("GET /api/boxes/para-encerrar devolve o conteúdo atual + modifiedAt", async () => {
+    const res = await fetch(new URL("/api/boxes/para-encerrar", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.slotA, "Texto A inicial");
+    assert.equal(body.slotB, "Texto B inicial");
+    assert.ok(body.modifiedAt);
+  });
+
+  it("GET /api/boxes/para-encerrar nunca é confundido com get-por-slug (/api/boxes/:slug)", async () => {
+    // Sem a checagem explícita antes do regex de slug, isto cairia em
+    // readBox(root, "para-encerrar") -> 404 (mesma classe de regressão do
+    // #3928 pra "archived" / #3937 pra "slots").
+    const res = await fetch(new URL("/api/boxes/para-encerrar", server.url));
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).slotA, "Texto A inicial");
+  });
+
+  it("PUT /api/boxes/para-encerrar feliz — reescreve e devolve o novo estado", async () => {
+    const get = await (await fetch(new URL("/api/boxes/para-encerrar", server.url))).json();
+    const put = await fetch(new URL("/api/boxes/para-encerrar", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slotA: "Novo texto A, editado no painel Caixas.",
+        slotB: "Novo texto B, editado no painel Caixas.",
+        expectedModifiedAt: get.modifiedAt,
+      }),
+    });
+    assert.equal(put.status, 200);
+    const body = await put.json();
+    assert.equal(body.ok, true);
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8")).para_encerrar,
+      { slot_a: "Novo texto A, editado no painel Caixas.", slot_b: "Novo texto B, editado no painel Caixas." },
+    );
+  });
+
+  it("preserva as outras chaves do platform.config.json (newsletter, drive_sync)", async () => {
+    const get = await (await fetch(new URL("/api/boxes/para-encerrar", server.url))).json();
+    await fetch(new URL("/api/boxes/para-encerrar", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slotA: "a", slotB: "b", expectedModifiedAt: get.modifiedAt }),
+    });
+    const onDisk = JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8"));
+    assert.equal(onDisk.newsletter, "beehiiv");
+    assert.equal(onDisk.drive_sync, false);
+  });
+
+  it("409 quando expectedModifiedAt diverge (outra aba/sessão salvou nesse meio tempo), não sobrescreve", async () => {
+    const get = await (await fetch(new URL("/api/boxes/para-encerrar", server.url))).json();
+    // Simula outra sessão salvando primeiro.
+    await fetch(new URL("/api/boxes/para-encerrar", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slotA: "concorrente A", slotB: "concorrente B", expectedModifiedAt: get.modifiedAt }),
+    });
+    // Tentativa com o mtime STALE (visto antes da escrita concorrente).
+    const put = await fetch(new URL("/api/boxes/para-encerrar", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slotA: "tentativa tardia A", slotB: "tentativa tardia B", expectedModifiedAt: get.modifiedAt }),
+    });
+    assert.equal(put.status, 409);
+    const body = await put.json();
+    assert.equal(body.conflict, true);
+    assert.deepEqual(
+      JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8")).para_encerrar,
+      { slot_a: "concorrente A", slot_b: "concorrente B" },
+      "não deve sobrescrever em conflito",
+    );
+  });
+
+  it("400 quando slotA/slotB não são string", async () => {
+    const put = await fetch(new URL("/api/boxes/para-encerrar", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slotA: 123, slotB: "b" }),
+    });
+    assert.equal(put.status, 400);
+  });
+
+  it("400 quando o corpo não é JSON válido", async () => {
+    const put = await fetch(new URL("/api/boxes/para-encerrar", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: "não é json",
+    });
+    assert.equal(put.status, 400);
   });
 });
