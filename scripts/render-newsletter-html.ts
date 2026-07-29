@@ -16,6 +16,9 @@
  * --format html (default): outputs HTML body content for Beehiiv Custom HTML block
  * --format json: outputs structured JSON with all parsed sections
  * --out: write to file instead of stdout
+ * --esp beehiiv|brevo: merge tag do link de voto do É IA? (#4266). Default
+ *   beehiiv (`{{email}}`). brevo usa `{{ contact.EMAIL }}` — só relevante pro
+ *   modo --format html sem --split (É IA? standalone/split fica sempre Beehiiv).
  *
  * Image references use {{IMG:filename}} placeholders. The publish agent
  * uploads images to Beehiiv CDN first, then replaces placeholders with URLs.
@@ -98,14 +101,22 @@ function main(): void {
   const format = values["format"] ?? "html";
   const outPath = values["out"] ?? null;
   const split = flags.has("split"); // #1046 — paste híbrido (body + È IA? standalone)
+  const espRaw = values["esp"] ?? "beehiiv"; // #4266
 
   if (!editionDir) {
     console.error(
-      "Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>] [--split]\n" +
-        "  --split: produz 2 arquivos em {edition}/_internal/ — newsletter-body.html (sem È IA?) + newsletter-eia.html (È IA? standalone, preserva merge tags). #1046",
+      "Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>] [--split] [--esp beehiiv|brevo]\n" +
+        "  --split: produz 2 arquivos em {edition}/_internal/ — newsletter-body.html (sem È IA?) + newsletter-eia.html (È IA? standalone, preserva merge tags). #1046\n" +
+        "  --esp: merge tag do link de voto do É IA? (beehiiv default, ou brevo). #4266",
     );
     process.exit(1);
   }
+
+  if (espRaw !== "beehiiv" && espRaw !== "brevo") {
+    console.error(`--esp inválido: "${espRaw}" (esperado "beehiiv" ou "brevo")`);
+    process.exit(1);
+  }
+  const esp: "beehiiv" | "brevo" = espRaw;
 
   const resolvedDir = resolve(ROOT, editionDir);
   const content = extractContent(resolvedDir);
@@ -149,7 +160,7 @@ function main(): void {
   } else {
     // #1936 --full: documento HTML completo (shell DS + preheader) pro preview/
     // email Worker-hosted. Sem a flag: fragmento container pro paste no Beehiiv.
-    output = renderHTML(content, { fullDocument: flags.has("full") });
+    output = renderHTML(content, { fullDocument: flags.has("full"), esp });
   }
 
   if (outPath) {
