@@ -66,6 +66,11 @@ export const NAV_ITEMS = [
   // Beehiiv × clique na Brevo. Vizinha de Integrações — mesma natureza
   // "sistema": inventário de superfície técnica, não conteúdo editorial.
   { id: "utms", label: "UTMs", href: "/utms", pageIds: ["utms"], group: "sistema" },
+  // #4270: catálogo read-only das skills versionadas
+  // (`.claude/skills/*/SKILL.md`), gerado do filesystem. Vizinha de
+  // Integrações/UTMs — mesma natureza "sistema": inventário de superfície
+  // técnica, não conteúdo editorial.
+  { id: "skills", label: "Skills", href: "/skills", pageIds: ["skills"], group: "sistema" },
 ];
 
 /** Documentos autocontidos (ver docstring acima) — sempre abrem em nova aba,
