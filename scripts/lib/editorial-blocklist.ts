@@ -13,6 +13,7 @@
  */
 export const EDITORIAL_BLOCKLIST: ReadonlySet<string> = new Set<string>([
   "simonwillison.net", // editor 260603 (#1760) — não incluir conteúdo do Simon Willison
+  "sempreupdate.com.br", // editor 260730 — conteúdo genérico tipo listicle sem profundidade (ex: "Como construir seu fluxo de trabalho automatizado com agentes de IA: guia passo a passo para iniciantes")
 ]);
 
 /**
