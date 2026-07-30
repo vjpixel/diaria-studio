@@ -18,9 +18,13 @@
  * (workers/brevo-dashboard/src/experiment-cta.ts) SEM reimplementar limiar —
  * `armMetricsFromCampaign` só adapta o shape de UMA campanha (não um
  * experimento A/B) pro formato `ArmMetrics` que essa função já espera.
+ * EXCEÇÃO (#4154): spam usa `CTA_SPAM_BREACH_YELLOW_PCT` (constante própria
+ * de `experiment-cta.ts`, não `thresholds.spamRate`) — ver docstring de
+ * `describeBreaches` abaixo.
  */
 import {
   evaluateArmGuardrails,
+  CTA_SPAM_BREACH_YELLOW_PCT,
   type ArmMetrics,
   type ArmGuardrailResult,
 } from "../../workers/brevo-dashboard/src/experiment-cta.ts";
@@ -164,7 +168,18 @@ export function resolveNextScheduledSend<T extends { name: string; scheduledAt: 
 
 // ─── E-mail de alarme ────────────────────────────────────────────────────────
 
-/** Descreve, em texto, quais métricas romperam o breaker — usa os mesmos rótulos/limiares do doc, sem reimplementar limiar. */
+/**
+ * Descreve, em texto, quais métricas romperam o breaker — usa os mesmos
+ * rótulos/limiares do doc, sem reimplementar limiar. EXCEÇÃO: spam usa
+ * `CTA_SPAM_BREACH_YELLOW_PCT` (0,1%, fixo), não `thresholds.spamRate.yellow`
+ * — achado do self-review do #4342, 3ª rodada. `evaluateArmGuardrails`
+ * (#4154) desacoplou `spamBreach` do threshold compartilhado (que o #4154
+ * afrouxou de 0,1% pra 0,3% pros limiares oficiais do Postmaster), mas esta
+ * função continuava imprimindo `thresholds.spamRate.yellow` como "o limite"
+ * — pra qualquer complaints entre 0,1% e 0,3%, o e-mail de alarme dizia
+ * "furou o guardrail" mostrando um limite (0,3%) que o número não cruzou,
+ * autocontraditório pro editor que recebe o alerta.
+ */
 export function describeBreaches(
   guardrail: ArmGuardrailResult,
   thresholds: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
@@ -182,7 +197,7 @@ export function describeBreaches(
     out.push(`Unsub ${guardrail.unsubRatePct.toFixed(2)}% (limite: <${thresholds.unsubRate.yellow}%)`);
   }
   if (guardrail.spamBreach) {
-    out.push(`Spam (Brevo/complaints) ${guardrail.spamRatePct.toFixed(3)}% (limite: <${thresholds.spamRate.yellow}%)`);
+    out.push(`Spam (Brevo/complaints) ${guardrail.spamRatePct.toFixed(3)}% (limite: <${CTA_SPAM_BREACH_YELLOW_PCT}%)`);
   }
   return out;
 }
