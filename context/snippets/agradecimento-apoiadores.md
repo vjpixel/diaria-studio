@@ -1,5 +1,5 @@
 <!--
-nome: Agradecimento apoiadores 28/Jul
+nome: Agradecimento apoiadores 29/Jul
 categoria: Agradecimento
 Caixa de AGRADECIMENTO a quem acabou de apoiar via Apoia.se. Fica na região de
 INTRO, imediatamente APÓS a frase-CTA "Se este trabalho faz diferença para você,
@@ -24,4 +24,4 @@ SEM apoiador novo na edição: o bloco é OMITIDO inteiro — não deixar a fras
 placeholder vazio nem um agradecimento genérico sem nome.
 -->
 
-**Agradeço ao novo apoiador: **Raul Perez**. Seu apoio ajuda a manter essa curadoria diária de pé!**
+**Agradeço à nova apoiadora: **Mônica Herculano**. Seu apoio ajuda a manter essa curadoria diária de pé!**
