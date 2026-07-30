@@ -12,6 +12,7 @@ import {
   apiDateToEntryDate,
   parseTrafficStatsResponse,
   findLatestSpamReading,
+  parseLookbackDaysArg,
 } from "../scripts/postmaster-spam-sync.ts";
 
 const NOW = new Date("2026-07-30T09:00:00.000Z");
@@ -77,4 +78,54 @@ test("findLatestSpamReading — esgota lookbackDays sem achar ratio → entry nu
   assert.equal(entry, null);
   assert.equal(daysChecked, 5);
   assert.equal(daysWithDataNoRatio, 5);
+});
+
+// ── httpErrors: erro de HTTP NUNCA pode ser confundido com "sem dado ainda" ──
+// (achado convergente de 3 agentes no self-review do #4342 — 403
+// SERVICE_DISABLED é exatamente o tipo de erro que causou o #4154 original
+// a ser mal-diagnosticado como "sem acesso ao domínio").
+
+test("findLatestSpamReading — status de erro (403) é registrado em httpErrors, NUNCA em daysWithDataNoRatio", async () => {
+  const fetchStats = async (apiDate: string) => {
+    if (apiDate === "20260730") return { status: 403, body: null, errorText: "SERVICE_DISABLED" };
+    return { status: 200, body: { userReportedSpamRatio: 0.01 } };
+  };
+  const { entry, daysWithDataNoRatio, httpErrors } = await findLatestSpamReading(7, NOW, fetchStats);
+  assert.equal(entry?.date, "2026-07-29");
+  assert.equal(daysWithDataNoRatio, 0, "erro de HTTP não é 'dado ausente' — contadores distintos");
+  assert.deepEqual(httpErrors, [{ apiDate: "20260730", status: 403, errorText: "SERVICE_DISABLED" }]);
+});
+
+test("findLatestSpamReading — 404 (não publicado) e erro de HTTP (500) coexistem sem se confundir", async () => {
+  const fetchStats = async (apiDate: string) => {
+    if (apiDate === "20260730") return { status: 404, body: null };
+    if (apiDate === "20260729") return { status: 500, body: null, errorText: "internal" };
+    return { status: 200, body: { userReportedSpamRatio: 0.04 } };
+  };
+  const { entry, httpErrors } = await findLatestSpamReading(7, NOW, fetchStats);
+  assert.equal(entry?.date, "2026-07-28");
+  assert.deepEqual(httpErrors, [{ apiDate: "20260729", status: 500, errorText: "internal" }]);
+});
+
+test("findLatestSpamReading — TODOS os dias com erro de HTTP → entry null e httpErrors com todos os dias (caller decide abortar)", async () => {
+  const fetchStats = async () => ({ status: 403, body: null, errorText: "SERVICE_DISABLED" });
+  const { entry, daysChecked, httpErrors } = await findLatestSpamReading(3, NOW, fetchStats);
+  assert.equal(entry, null);
+  assert.equal(httpErrors.length, daysChecked, "todos os dias sondados falharam com erro — nenhum é 'sem dado ainda'");
+});
+
+// ── parseLookbackDaysArg ──
+
+test("parseLookbackDaysArg — vazio usa o default (7)", () => {
+  assert.equal(parseLookbackDaysArg(""), 7);
+});
+
+test("parseLookbackDaysArg — valor numérico válido é usado", () => {
+  assert.equal(parseLookbackDaysArg("14"), 14);
+});
+
+test("parseLookbackDaysArg — não-numérico ou < 1 lança erro explícito", () => {
+  assert.throws(() => parseLookbackDaysArg("abc"), /inválido/);
+  assert.throws(() => parseLookbackDaysArg("0"), /inválido/);
+  assert.throws(() => parseLookbackDaysArg("-3"), /inválido/);
 });

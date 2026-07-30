@@ -55,6 +55,19 @@ Write-TempLogLine "===== $(Get-Date -Format o) - postmaster spam sync ====="
 & npx tsx "$SyncScript" 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
 $syncCode = $LASTEXITCODE
 
+# $LASTEXITCODE so e setado por um processo nativo que de fato rodou. Se o
+# `npx` nao puder ser resolvido/spawnado neste contexto (ex: PATH nao
+# herdado corretamente sob o Task Scheduler), PowerShell levanta uma
+# excecao nao-terminante e o script segue adiante com $LASTEXITCODE ainda
+# $null de uma sessao nova -- "$null -ne 0" avalia $true, entao sem este
+# guard `exit $null` resolveria pra exit 0 (falso sucesso) exatamente no
+# caso mais provavel de falha de uma invocacao nao-supervisionada
+# (achado no self-review do #4342).
+if ($null -eq $syncCode) {
+    Write-TempLogLine "ERRO: npx nao executou (comando nao encontrado ou falha antes do processo iniciar)."
+    $syncCode = 1
+}
+
 Write-TempLogLine "===== fim (sync=$syncCode) ====="
 
 # Anexa o log temporario (fora de data/, sem risco de lock OneDrive) ao log

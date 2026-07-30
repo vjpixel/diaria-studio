@@ -17,13 +17,15 @@
  * separada, bloqueada por credencial.
  *
  * ATUALIZAÇÃO (#4154, 260730): a premissa acima estava errada — a conta
- * `vjpixel@gmail.com` é OWNER de `clarice.ai` no Postmaster desde 10/abr/2026;
- * o bloqueio real era a Gmail Postmaster Tools API nunca ter sido habilitada
- * no projeto GCP do OAuth client (SERVICE_DISABLED), corrigido em 260730.
- * `scripts/postmaster-spam-sync.ts` automatiza esta leitura via API e grava
- * na MESMA chave KV — é o caminho primário agora. Este script manual continua
- * existindo como fallback (outage da API, checagem pontual antes de um envio
- * sensível).
+ * `vjpixel@gmail.com` tem permissão OWNER em `clarice.ai` no Postmaster
+ * (confirmado ao vivo via UI e via `domains.get`); o bloqueio real era a
+ * Gmail Postmaster Tools API nunca ter sido habilitada no projeto GCP do
+ * OAuth client (403 SERVICE_DISABLED), corrigido em 260730 — a investigação
+ * de 260727 não chegou a testar o endpoint de fato e inferiu "não é dono" de
+ * um sintoma diferente. `scripts/postmaster-spam-sync.ts` automatiza esta
+ * leitura via API e grava na MESMA chave KV — é o caminho primário agora.
+ * Este script manual continua existindo como fallback (outage da API,
+ * checagem pontual antes de um envio sensível).
  *
  * Uso:
  *   npx tsx scripts/postmaster-spam-entry.ts --rate 1.02 [--date 2026-07-27] [--dry-run]
