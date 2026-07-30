@@ -876,11 +876,20 @@ export function normalizeEiaEngagement(raw: unknown): EiaEngagementSummary | nul
 }
 
 /**
- * #4063: normaliza o payload de `PostmasterSpamEntry` (chave KV `postmaster:spam`,
- * gravada por `scripts/postmaster-spam-entry.ts`) NO BOUNDARY — mesmo padrão dos
- * demais normalizadores desta seção. `spamRatePct` precisa ser um número finito
- * (senão o registro é lixo/corrompido) — retorna `null` nesse caso, que
- * `resolveSpamSignal` (thresholds.ts) já trata como "sem leitura" (indeterminado).
+ * #4063/#4154: normaliza o payload de `PostmasterSpamEntry` (chave KV
+ * `postmaster:spam`, gravada automaticamente por `scripts/postmaster-spam-sync.ts`
+ * ou manualmente por `scripts/postmaster-spam-entry.ts`) NO BOUNDARY — mesmo
+ * padrão dos demais normalizadores desta seção. `spamRatePct` precisa ser um
+ * número finito (senão o registro é lixo/corrompido) — retorna `null` nesse
+ * caso, que `resolveSpamSignal` (thresholds.ts) já trata como "sem leitura"
+ * (indeterminado).
+ *
+ * `producedBy` (#4154) precisa ser copiado explicitamente — achado no
+ * self-review do #4342: sem essa linha, o campo é descartado silenciosamente
+ * aqui (o ÚNICO choke point de leitura do KV, usado tanto pelo render do
+ * dashboard quanto por `GET /api/postmaster-spam`) e o rótulo dinâmico
+ * "auto"/"manual" da aba Rampa nunca reflete a origem real da leitura em
+ * produção, mesmo com os dois produtores gravando o campo corretamente.
  */
 export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry | null {
   if (!raw || typeof raw !== "object") return null;
@@ -891,6 +900,7 @@ export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry 
     date: typeof s.date === "string" ? s.date : "",
     spamRatePct: s.spamRatePct,
     recordedAt: s.recordedAt,
+    producedBy: s.producedBy === "manual" || s.producedBy === "auto" ? s.producedBy : undefined,
   };
 }
 

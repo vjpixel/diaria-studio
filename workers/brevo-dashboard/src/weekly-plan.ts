@@ -33,6 +33,7 @@ import { renderScheduledSection } from "./sections-kv.ts";
 // sections-kv.ts também consomem) — reexportados aqui pra não quebrar
 // consumidores existentes que importam de weekly-plan.ts/index.ts.
 import { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS, type HealthThresholds, type SpamSignal } from "./thresholds.ts";
+import type { PostmasterProducer } from "./types.ts";
 export { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS };
 export type { HealthThresholds, SpamSignal };
 
@@ -511,8 +512,8 @@ function neutralValueStyle(): string {
  *
  * #4063/#4154: `spamSignal` (leitura do Postmaster, auto ou manual, com
  * precedência sobre `health.spamRate`/Brevo) recebe sua PRÓPRIA linha,
- * colorida — é ela que
- * governa o semáforo (ver `classifySpamSignal`/`decideSemaphore`). A linha
+ * colorida — é ela que governa o semáforo (ver
+ * `classifySpamSignal`/`decideSemaphore`). A linha
  * "Spam" original (derivada de `complaints` da Brevo) continua visível pra
  * comparação/transparência, mas NUNCA mais colorida como verde/vermelho —
  * ela subconta o spam real em ~50× (só enxerga feedback loops), então
@@ -548,15 +549,18 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
     })
     .join("\n");
 
-  // #4063: "Spam" (Brevo) — 3 casas (o breaker dispara em ≥0.1%, 2 casas ainda
-  // arredondam 0.049%→"0.05%" perto do limiar), mas SEMPRE neutro — nunca
-  // verde/vermelho (ver docstring da função).
+  // #4063/#4154: "Spam" (Brevo) — 3 casas (o breaker dispara em ≥0,3%, 2 casas
+  // ainda arredondam 0.299%→"0.30%" perto do limiar), mas SEMPRE neutro —
+  // nunca verde/vermelho (ver docstring da função).
   const spamBrevoValueFmt = noDataBySent ? "—" : fmtPct(health.spamRate, 3);
   const spamBrevoRow = `<tr><td>Spam (Brevo, subconta — ver Postmaster)</td><td style="${neutralValueStyle()}">${spamBrevoValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
 
   // #4063: "Spam (Postmaster)" — a linha que GOVERNA o semáforo. Sem leitura
   // confiável, mostra "— (sem leitura)" em neutro (nunca verde). Com leitura,
-  // colore normalmente pelas mesmas faixas do doc.
+  // colore pelas faixas de DEFAULT_HEALTH_THRESHOLDS.spamRate — que desde
+  // #4154 são os limiares oficiais do Postmaster Tools, não mais os do doc
+  // "Parceria Editorial Clarice.ai × Diar.ia" (essa é a ÚNICA métrica com
+  // essa exceção; as outras 4 continuam vindo do doc).
   const spamPostmasterValueFmt = spamSignal.source === "postmaster" && spamSignal.ratePct !== null
     ? fmtPct(spamSignal.ratePct, 3)
     : "— (sem leitura)";
@@ -565,9 +569,12 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
     : neutralValueStyle();
   // #4154: rótulo reflete o produtor REAL da leitura (auto via API, manual
   // via painel) em vez de afirmar "manual" incondicionalmente — desde que o
-  // sync automático existe, a maioria das leituras não é mais manual.
-  const spamPostmasterSourceLabel =
-    spamSignal.producedBy === "auto" ? ", automático" : spamSignal.producedBy === "manual" ? ", manual" : "";
+  // sync automático existe, a maioria das leituras não é mais manual. Lookup
+  // (não ternário) pra ficar exaustivo por construção — um 3º valor futuro em
+  // `PostmasterProducer` quebra a checagem de tipo aqui em vez de cair
+  // silenciosamente no fallback "" (achado do self-review do #4342).
+  const SPAM_SOURCE_LABEL: Record<PostmasterProducer, string> = { auto: ", automático", manual: ", manual" };
+  const spamPostmasterSourceLabel = spamSignal.producedBy ? SPAM_SOURCE_LABEL[spamSignal.producedBy] : "";
   const spamPostmasterRow = `<tr><td>Spam (Postmaster${spamPostmasterSourceLabel} — governa o semáforo)</td><td style="${spamPostmasterStyle}">${spamPostmasterValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
 
   // Ordem: abertura, hard bounce, bounce total, os 2 de spam (Postmaster antes

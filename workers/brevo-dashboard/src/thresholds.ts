@@ -2,7 +2,14 @@
  * Thresholds dos circuit breakers do doc "Parceria Editorial Clarice.ai ×
  * Diar.ia" (métricas de reavaliação definidas pelo editor) — FONTE ÚNICA
  * (#3078) consumida pela aba Rampa (`weekly-plan.ts`), pela tabela Envios
- * (`sections-core.ts`) e por "Totais por mês" (`sections-kv.ts`).
+ * (`sections-core.ts`) e por "Totais por mês" (`sections-kv.ts`) — EXCETO
+ * `spamRate`, que desde #4154 é exceção nesta "fonte única": Envios/Totais
+ * NUNCA mais coloriram spam (o número ali vem de `complaints` da Brevo, que
+ * subconta ~50× — só a leitura do Postmaster, exclusiva da aba Rampa, é
+ * confiável o bastante pra colorir), e o guardrail por braço do experimento
+ * CTA (`experiment-cta.ts::CTA_SPAM_BREACH_YELLOW_PCT`) mantém seu próprio
+ * valor fixo, deliberadamente desacoplado deste. `spamRate` aqui governa
+ * SÓ a aba Rampa.
  *
  * Antes do #3078 cada superfície fixava o threshold de bounce por conta
  * própria: a Rampa usava os 2 breakers reais do doc (hard ≥2%, total
@@ -13,7 +20,7 @@
  * Extraído de `weekly-plan.ts` (que reexporta os mesmos nomes pra não quebrar
  * consumidores existentes).
  */
-import type { PostmasterSpamEntry } from "./types.ts";
+import type { PostmasterSpamEntry, PostmasterProducer } from "./types.ts";
 
 export interface HealthThresholds {
   /** Abertura: >= green é 🟢; >= yellow (e < green) é 🟡; abaixo de yellow é 🔴. Maior é melhor. */
@@ -89,7 +96,7 @@ export interface SpamSignal {
   /** `true` quando a leitura do Postmaster cruzou o breaker (`>= thresholds.spamRate.yellow`). Sempre `false` quando indeterminado. */
   breach: boolean;
   /** Qual produtor gravou a leitura (#4154) — `undefined` quando indeterminado ou entry pré-#4154 sem o campo. Só informativo (label da UI), nunca entra na classificação. */
-  producedBy?: "manual" | "auto";
+  producedBy?: PostmasterProducer;
 }
 
 /**

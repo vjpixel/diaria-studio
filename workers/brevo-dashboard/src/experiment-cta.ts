@@ -122,7 +122,7 @@ export const CTA01_EXPERIMENT: ExperimentDefinition = {
   pValueThreshold: 0.05,
   guardrailsNote:
     "Mesmos circuit breakers da aba Rampa, por braço: abertura <15%, hard bounce ≥2% (ou total hard+soft ≥5%), " +
-    "unsub ≥3%, spam ≥0,3% (#4154).",
+    "unsub ≥3%, spam ≥0,1% (limiar próprio do experimento, #4154 — ver CTA_SPAM_BREACH_YELLOW_PCT).",
   docPath: "docs/experiments/cta-ab-mensal-2606-07.md",
   matchCampaign: matchCta01Campaign,
 };
@@ -374,8 +374,23 @@ export interface ArmGuardrailOptions {
 }
 
 /**
+ * #4154 (achado do self-review do #4342, decisão do editor): spam usa um
+ * limiar PRÓPRIO deste experimento, ≥0,1% — deliberadamente DESACOPLADO de
+ * `DEFAULT_HEALTH_THRESHOLDS.spamRate` (thresholds.ts). Aquele threshold
+ * compartilhado foi afrouxado de 0,1%/0,3% pros limiares oficiais do Google
+ * Postmaster Tools porque a Rampa passou a ler o Postmaster de verdade — mas
+ * o guardrail por BRAÇO deste experimento não pode usar Postmaster (é
+ * agregado por domínio, não por braço) e continua lendo `complaints` da
+ * Brevo, que subconta o spam real em ~50× (#4063). Herdar o valor
+ * compartilhado sem essa ressalva teria afrouxado 3× a proteção deste
+ * guardrail sem nenhuma melhora na precisão do dado de entrada.
+ */
+export const CTA_SPAM_BREACH_YELLOW_PCT = 0.1;
+
+/**
  * Mesmos thresholds de `thresholds.ts` (fonte única dos circuit breakers da
- * Rampa/Envios/Totais por mês) — nenhum limiar novo inventado aqui.
+ * Rampa/Envios/Totais por mês) pra abertura/bounce/unsub — spam é exceção,
+ * ver `CTA_SPAM_BREACH_YELLOW_PCT` acima.
  */
 export function evaluateArmGuardrails(
   m: ArmMetrics,
@@ -402,7 +417,7 @@ export function evaluateArmGuardrails(
     : openRatePct > 0 && openRatePct < thresholds.openRate.yellow;
   const bounceBreach = isBounceBreach(hardBounceRatePct, bounceRatePct, thresholds);
   const unsubBreach = unsubRatePct >= thresholds.unsubRate.yellow;
-  const spamBreach = spamRatePct >= thresholds.spamRate.yellow;
+  const spamBreach = spamRatePct >= CTA_SPAM_BREACH_YELLOW_PCT;
   return {
     armId: m.armId, openRatePct, hardBounceRatePct, bounceRatePct, unsubRatePct, spamRatePct,
     openBreach, bounceBreach, unsubBreach, spamBreach,

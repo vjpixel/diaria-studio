@@ -742,6 +742,12 @@ test("resolveSpamSignal — fronteira exata do breaker (0,3%, #4154) já é brea
   assert.equal(resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.299 }), NOW).breach, false);
 });
 
+test("resolveSpamSignal — repassa producedBy pro SpamSignal (#4154, achado do self-review do #4342)", () => {
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ producedBy: "auto" }), NOW).producedBy, "auto");
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ producedBy: "manual" }), NOW).producedBy, "manual");
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({}), NOW).producedBy, undefined);
+});
+
 test("resolveSpamSignal — leitura mais velha que POSTMASTER_STALE_MS (48h) volta a ser indeterminate", () => {
   const staleRecordedAt = new Date(NOW.getTime() - POSTMASTER_STALE_MS - 1000).toISOString();
   const signal = resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 5, recordedAt: staleRecordedAt }), NOW);
@@ -791,4 +797,29 @@ test("renderWeeklyPlanTabPanel — sem leitura de Postmaster, semáforo NUNCA é
   const html = renderWeeklyPlanTabPanel(camps, NOW);
   assert.doesNotMatch(html, /Verde/);
   assert.match(html, /Amarelo/);
+});
+
+// #4154 — rótulo dinâmico da linha "Spam (Postmaster...)" reflete o produtor
+// REAL da leitura. Achado do self-review do #4342: sem este teste, o rótulo
+// nunca é exercitado fim-a-fim (só as partes puras isoladamente), e um bug
+// paralelo (normalizePostmasterSpamEntry descartando producedBy no boundary
+// do KV) passou despercebido justamente porque nada renderizava o HTML de
+// verdade com um producedBy setado.
+test("renderWeeklyPlanTabPanel — rótulo mostra ', automático' quando producedBy='auto'", () => {
+  const camps = [campaignSentHoursAgo(60, { statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600 }) })];
+  const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({ producedBy: "auto" }));
+  assert.match(html, /Spam \(Postmaster, automático — governa o semáforo\)/);
+});
+
+test("renderWeeklyPlanTabPanel — rótulo mostra ', manual' quando producedBy='manual'", () => {
+  const camps = [campaignSentHoursAgo(60, { statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600 }) })];
+  const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({ producedBy: "manual" }));
+  assert.match(html, /Spam \(Postmaster, manual — governa o semáforo\)/);
+});
+
+test("renderWeeklyPlanTabPanel — sem producedBy (entry pré-#4154), rótulo NÃO afirma origem nenhuma", () => {
+  const camps = [campaignSentHoursAgo(60, { statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600 }) })];
+  const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({}));
+  assert.match(html, /Spam \(Postmaster — governa o semáforo\)/);
+  assert.doesNotMatch(html, /Spam \(Postmaster, (automático|manual)/);
 });

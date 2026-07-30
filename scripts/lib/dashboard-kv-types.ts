@@ -127,6 +127,13 @@ export interface CohortStatsRow {
  * o spam em ~50× (a Brevo só enxerga feedback loops; o "marcar como spam" do
  * Gmail não passa por FBL, e 73% da base é Gmail).
  */
+/**
+ * Qual dos dois produtores de `PostmasterSpamEntry` gravou uma leitura
+ * (#4154) — compartilhado com `SpamSignal.producedBy` (workers/brevo-dashboard/src/thresholds.ts)
+ * pra que os dois nunca divirjam silenciosamente (achado do self-review do #4342).
+ */
+export type PostmasterProducer = "manual" | "auto";
+
 export interface PostmasterSpamEntry {
   /** Data (YYYY-MM-DD) a que a leitura se refere — o dia do painel Postmaster consultado. */
   date: string;
@@ -135,7 +142,7 @@ export interface PostmasterSpamEntry {
   /** ISO timestamp de quando esta entrada foi registrada (gravação, não `date`). */
   recordedAt: string;
   /** Qual dos dois produtores gravou esta leitura — opcional pra entries pré-#4154 (schema evolution, nunca inferir um valor). */
-  producedBy?: "manual" | "auto";
+  producedBy?: PostmasterProducer;
 }
 
 /**

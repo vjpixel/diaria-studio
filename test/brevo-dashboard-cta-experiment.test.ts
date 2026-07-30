@@ -294,9 +294,14 @@ describe("evaluateArmGuardrails", () => {
     assert.equal(g.unsubBreach, true);
   });
 
-  test("spam >= 0,3% → spamBreach (#4154)", () => {
-    const g = evaluateArmGuardrails(metrics({ complaints: 35, sent: 10000 })); // 0.35%
+  test("spam >= 0,1% → spamBreach (limiar PRÓPRIO do experimento, #4154 — não herda o 0,3% compartilhado da Rampa)", () => {
+    const g = evaluateArmGuardrails(metrics({ complaints: 15, sent: 10000 })); // 0.15%
     assert.equal(g.spamBreach, true);
+  });
+
+  test("spam < 0,1% → sem spamBreach", () => {
+    const g = evaluateArmGuardrails(metrics({ complaints: 5, sent: 10000 })); // 0.05%
+    assert.equal(g.spamBreach, false);
   });
 
   test("hard bounce >= 2% (mesmo com total < 5%) → bounceBreach (regra OR, #3078)", () => {

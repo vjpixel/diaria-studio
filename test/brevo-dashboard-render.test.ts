@@ -291,8 +291,8 @@ test("renderDashboardHtml: Unsub e Spam têm taxa em cima + count embaixo (como 
   assert.ok(/<td>0\.5%<br><small>5<\/small><\/td>/.test(html),
     "Unsub deve mostrar '0.5%' em cima e '5' embaixo (sem class alert)");
 
-  // Spam: 0/1000 = 0.000% em cima, "0" embaixo (#3081: 3 casas, não 1 — o
-  // circuit breaker dispara em ≥0.1%, 1 casa mascararia valores próximos do limiar)
+  // Spam: 0/1000 = 0.000% em cima, "0" embaixo (#3081: 3 casas, não 1 — evita
+  // mascarar valores pequenos; #4154: nunca colorida nesta tabela de qualquer forma)
   assert.ok(/<td>0\.000%<br><small>0<\/small><\/td>/.test(html),
     "Spam deve mostrar '0.000%' em cima e '0' embaixo (sem class alert)");
 });
@@ -322,22 +322,27 @@ test("renderDashboardHtml: alerta visual quando métrica cruza circuit breaker t
   assert.ok(/<td class="metric alert">/.test(html),
     "Opens deve ter class 'metric alert' quando rate < 15%");
 
-  // Bounces, Unsub, Spam ganham só class alert
+  // Bounces, Unsub ganham só class alert (Spam nunca ganha, #4154 — ver abaixo)
   // #3078: bounce alerta quando hard ≥2% OU total ≥5% (não mais um combinado de 3%).
   // Aqui hard=3% e total=5% cruzam os dois breakers.
   assert.ok(/<td class="alert">5\.0%<br><small>50<\/small><\/td>/.test(html),
     "Bounces deve ter class alert quando hard ≥2% ou total ≥5%");
   assert.ok(/<td class="alert">4\.0%<br><small>40<\/small><\/td>/.test(html),
     "Unsub deve ter class alert quando rate ≥ 3%");
-  assert.ok(/<td class="alert">0\.200%<br><small>2<\/small><\/td>/.test(html),
-    "Spam deve ter class alert quando rate ≥ 0.1%");
+  // #4154: Spam NUNCA ganha class="alert" nesta tabela — o número vem de
+  // `complaints` da Brevo, que subconta o spam real em ~50× (#4063); o
+  // breaker de verdade é a leitura do Postmaster Tools, só na aba Rampa.
+  assert.ok(/<td>0\.200%<br><small>2<\/small><\/td>/.test(html),
+    "Spam nunca deve ter class alert, mesmo em taxa alta — só o Postmaster (aba Rampa) governa esse veredito");
 });
 
-test("renderDashboardHtml: alerta no boundary exato dos thresholds (bounce hard 2%/total 5%, unsub 3%, spam 0.1%)", () => {
+test("renderDashboardHtml: alerta no boundary exato dos thresholds (bounce hard 2%/total 5%, unsub 3%; spam NUNCA alerta aqui, #4154)", () => {
   // Cenário: cada métrica EXATAMENTE no threshold do circuit breaker (#3078:
   // bounce usa os 2 breakers reais do doc — hard ≥2%, total ≥5% — não mais um
-  // ≥3% combinado inventado). unsub 3.0%, spam 0.1%, open 15.0%.
-  // - bounce hard/total, unsub, spam EXATO no limite → alert ON
+  // ≥3% combinado inventado). unsub 3.0%, spam 0.1% (valor histórico, mantido
+  // só pra fixar o formato — não é mais um threshold nesta tabela), open 15.0%.
+  // - bounce hard/total, unsub EXATO no limite → alert ON
+  // - spam NUNCA alerta nesta tabela (#4154 — ver Rampa/Postmaster)
   // - open EXATO em 15% → alert OFF (porque < 15, não ≤)
   const campaigns = [{
     ...baseCampaign,
@@ -357,11 +362,14 @@ test("renderDashboardHtml: alerta no boundary exato dos thresholds (bounce hard 
 
   const html = renderDashboardHtml(campaigns);
 
-  // Bounce, Unsub, Spam: EXATO no threshold → alerta ON (≥)
+  // Bounce, Unsub: EXATO no threshold → alerta ON (≥)
   assert.ok(/<td class="alert">5\.0%<br><small>50<\/small><\/td>/.test(html),
     "Bounce hard 2.0%/total 5.0% (exato nos thresholds) deve acionar alerta");
-  assert.ok(/<td class="alert">0\.100%<br><small>1<\/small><\/td>/.test(html),
-    "Spam 0.1% (exato no threshold) deve acionar alerta");
+  // #4154: Spam NUNCA ganha class="alert" nesta tabela, nem no boundary
+  // antigo (0,1% já nem é mais o threshold real — a Rampa usa 0,3% via
+  // Postmaster; aqui é sempre neutro, qualquer que seja o valor).
+  assert.ok(/<td>0\.100%<br><small>1<\/small><\/td>/.test(html),
+    "Spam nunca deve ter class alert nesta tabela — o breaker de verdade é a leitura do Postmaster, na aba Rampa");
 
   // Open: EXATO em 15.0% → alerta OFF (< 15, não ≤)
   // Opens tem .metric sempre + .alert condicional. No boundary, só .metric.
