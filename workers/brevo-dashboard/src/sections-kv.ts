@@ -557,12 +557,14 @@ export function renderMonthlyTotalsSection(
     // #3081: 3 casas (não 1) — mesma precisão da tabela Envios (sections-core.ts)
     // e do fix de `pct()` (denominador 0 → "—"). `r.spamRate` já vem
     // pré-computado por `aggregateByMonth` — reformatar aqui, não recomputar a
-    // partir de r.totalSpam/r.totalSent (2ª fonte de verdade).
+    // partir de r.totalSpam/r.totalSent (2ª fonte de verdade). #4154: NUNCA
+    // colorida (ver metricCell abaixo) — vem da Brevo/complaints, que
+    // subconta o spam real em ~50× (#4063); o breaker de verdade é a leitura
+    // do Postmaster Tools, na aba Rampa.
     const spamRateFmt = r.totalSent > 0 ? r.spamRate.toFixed(3) + "%" : "—";
     // Circuit breaker alerts (mesmos thresholds da tabela Envios, #3078: hard ≥2% OU total ≥5%)
     const bounceAlert = r.totalSent > 0 && isBounceBreach(r.hardBounceRate, r.bounceRate);
     const unsubAlert = r.totalSent > 0 && r.unsubRate >= 3;
-    const spamAlert = r.totalSent > 0 && r.spamRate >= 0.1;
 
     const firstDate = fmtDateBRT(r.firstSentDate);
     const lastDate = fmtDateBRT(r.lastSentDate);
@@ -582,7 +584,7 @@ export function renderMonthlyTotalsSection(
       ${metricCell(ctorFmt, r.totalClicks)}
       ${metricCell(bounceRateFmt, r.totalBounces, bounceAlert)}
       ${metricCell(unsubRateFmt, r.totalUnsub, unsubAlert)}
-      ${metricCell(spamRateFmt, r.totalSpam, spamAlert)}
+      ${metricCell(spamRateFmt, r.totalSpam)}
     </tr>`;
   }).join("\n");
 
@@ -609,7 +611,7 @@ export function renderMonthlyTotalsSection(
         <th scope="col" title="CTOR (click-to-open rate) = cliques únicos ÷ aberturas únicas. Taxa em cima, count de cliques embaixo. Bench: ~10-15% típico (denominador é opens, não delivered).">CTOR 🖱️</th>
         <th scope="col" title="Hard bounces + soft bounces. Bench: &lt;2% saudável. Pausa o ramp quando hard ≥2% OU total ≥5%.">Bounces</th>
         <th scope="col" title="Descadastros. Bench: &lt;0.5%. ≥3% pausa o ramp.">Unsub</th>
-        <th scope="col" title="Marcações de spam. Bench: &lt;0.1%. ≥0.1% pausa o ramp.">Spam</th>
+        <th scope="col" title="Marcações de spam via complaints da Brevo — subconta ~50× (#4063), NUNCA colorida. Breaker de verdade: Postmaster Tools, aba Rampa.">Spam</th>
       </tr>
     </thead>
     <tbody>${tableRows}</tbody>

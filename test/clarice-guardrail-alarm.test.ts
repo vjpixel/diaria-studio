@@ -144,6 +144,27 @@ test("describeBreaches — só lista as métricas que romperam, com o valor E o 
   assert.match(breaches[0], /limite: ≥15%/);
 });
 
+// #4154, achado do self-review do #4342 (3ª rodada, silent-failure-hunter):
+// evaluateArmGuardrails desacoplou spamBreach de thresholds.spamRate.yellow
+// (afrouxado de 0,1% pra 0,3%) — usa CTA_SPAM_BREACH_YELLOW_PCT (0,1%) fixo.
+// describeBreaches continuava imprimindo thresholds.spamRate.yellow como "o
+// limite": pra qualquer complaints entre 0,1% e 0,3%, o e-mail de alarme
+// dizia "furou o guardrail" mostrando um limite (0,3%) que o número não
+// cruzou — autocontraditório pro editor. Este teste trava o limite CORRETO
+// (0,1%) no texto.
+test("describeBreaches — spam usa CTA_SPAM_BREACH_YELLOW_PCT (0,1%) no texto, NUNCA thresholds.spamRate.yellow (0,3%) — #4154", () => {
+  // 0.15% cruza CTA_SPAM_BREACH_YELLOW_PCT (0,1%) mas fica ABAIXO de
+  // thresholds.spamRate.yellow (0,3%) — a faixa exata que expunha o bug.
+  const guardrail = evaluateSendGuardrails(mkCampaign({ sent: 10000, complaints: 15, uniqueViews: 2000 }));
+  assert.equal(guardrail.spamBreach, true);
+  const breaches = describeBreaches(guardrail);
+  const spamLine = breaches.find((b) => b.startsWith("Spam"));
+  assert.ok(spamLine, "esperava uma linha de Spam entre os breaches");
+  assert.match(spamLine!, /0\.150%/);
+  assert.match(spamLine!, /limite: <0\.1%/);
+  assert.doesNotMatch(spamLine!, /limite: <0\.3%/);
+});
+
 test("buildGuardrailAlarmEmail — SEMPRE nomeia o próximo envio agendado e o prazo de suspensão quando existe (requisito explícito da issue)", () => {
   const guardrail = evaluateSendGuardrails(mkCampaign({ delivered: 6600, uniqueViews: Math.round(6600 * 0.111) }));
   const nextScheduled = { name: "envio 9B", scheduledAt: "2026-07-24T09:00:00.000Z" };

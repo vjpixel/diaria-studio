@@ -155,10 +155,11 @@ export function renderDashboardHtml(
   // profundidade — o limite real pode subir de novo no futuro e cruzar de
   // novo). `null` (default) = desconhecido/não informado → nenhum aviso.
   campaignsWindowLimit: number | null = null,
-  // #4063: leitura manual do Postmaster (KV `postmaster:spam`, via readKvTabs)
-  // — governa o breaker de spam da Rampa com precedência sobre `complaints`
-  // da Brevo. `null` (default) preserva call sites/testes existentes
-  // (sinal fica "indeterminate" — nunca reporta 🟢 falso, ver thresholds.ts).
+  // #4063/#4154: leitura do Postmaster (KV `postmaster:spam`, via readKvTabs,
+  // auto ou manual) — governa o breaker de spam da Rampa com precedência
+  // sobre `complaints` da Brevo. `null` (default) preserva call sites/testes
+  // existentes (sinal fica "indeterminate" — nunca reporta 🟢 falso, ver
+  // thresholds.ts).
   postmasterSpam: PostmasterSpamEntry | null = null,
   // #4165/#4173: ver RenderDashboardOptions. `{}` (default) preserva o
   // comportamento atual — nenhum call site de produção passa isto.
@@ -238,9 +239,11 @@ export function renderDashboardHtml(
       // (não `delivered`). Pequena diferença na prática (sent ≈ delivered +
       // bounces), mas mantém consistência com a doc operacional.
       const unsubRate = pct(s.unsubscriptions, s.sent);
-      // #3081: 3 casas (não 1) — o circuit breaker de spam dispara em ≥0.1%;
-      // com 1 casa, 0.049% arredondaria pra "0.0%" e mascararia o cruzamento
-      // do limiar. Mesma precisão aplicada em "Totais por mês" (sections-kv.ts).
+      // #3081: 3 casas (não 1) — com 1 casa, 0.049% arredondaria pra "0.0%" e
+      // mascararia diferenças pequenas. Mesma precisão aplicada em "Totais por
+      // mês" (sections-kv.ts). #4154: este número (Brevo/complaints) NUNCA é
+      // usado como veredito de breach nesta tabela — ver comentário na célula
+      // abaixo.
       const spamRate = pct(s.complaints, s.sent, 3);
 
       // Numeric versions pra comparar contra thresholds dos circuit breakers
@@ -249,7 +252,6 @@ export function renderDashboardHtml(
       const hardBounceRateNum = s.sent > 0 ? (s.hardBounces / s.sent) * 100 : 0;
       const bounceRateNum = s.sent > 0 ? ((s.hardBounces + s.softBounces) / s.sent) * 100 : 0;
       const unsubRateNum = s.sent > 0 ? (s.unsubscriptions / s.sent) * 100 : 0;
-      const spamRateNum = s.sent > 0 ? (s.complaints / s.sent) * 100 : 0;
       // Thresholds dos circuit breakers.
       // openAlert exige `openRateNum > 0` pra não acionar quando o dado ainda
       // tá propagando (campanha recém-enviada, opens ainda chegando — Brevo
@@ -263,7 +265,6 @@ export function renderDashboardHtml(
       // hard-alto/total-baixo, ex: hard 2.5%/total 2.8%).
       const bounceAlert = isBounceBreach(hardBounceRateNum, bounceRateNum);
       const unsubAlert = unsubRateNum >= 3;
-      const spamAlert = spamRateNum >= 0.1;
 
       // #3678: célula Opens simplificada a pedido do editor — só a taxa total
       // e o count total, sem o parêntese "(X% sem MPP · Y% trackable)" que
@@ -299,7 +300,7 @@ export function renderDashboardHtml(
         <td${cellClass("metric")}>${ctor}<br><small>${s.uniqueClicks}</small></td>
         <td${cellClass(bounceAlert && "alert")}>${bounceRate}<br><small>${s.hardBounces + s.softBounces}</small></td>
         <td${cellClass(unsubAlert && "alert")}>${unsubRate}<br><small>${s.unsubscriptions}</small></td>
-        <td${cellClass(spamAlert && "alert")}>${spamRate}<br><small>${s.complaints}</small></td>
+        <td>${spamRate}<br><small>${s.complaints}</small></td>
       </tr>
       <tr class="links-row"><td colspan="10" class="links-cell">${linksHtml}</td></tr>`;
     })
@@ -966,7 +967,7 @@ ${couponTabHtml}
 <p class="footer">Dados com cache de até 5 min — <a href="?fresh=1" style="color:var(--brand)">?fresh=1</a> força atualização imediata.<br>
 Open rate calculado sobre <em>delivered</em>; CTOR = cliques únicos ÷ <em>aberturas</em> (opens); bounce, unsub e spam sobre <em>sent</em>. Em cada coluna de métrica, a linha de cima é a taxa e a linha de baixo é o count absoluto. Passe o mouse nos headers pra ver detalhes de cada coluna.<br>
 Em Opens, a taxa à esquerda é o total (com Apple MPP e bots, como na Brevo Web UI); entre parênteses (quando há dado de MPP), a taxa sem Apple MPP (ainda pode incluir outros bots) e, quando disponível, a taxa trackable — aberturas com pixel real (trackableViews ÷ delivered), sinal mais limpo de engajamento real por excluir MPP e outros bots que não disparam pixel. Dados brutos em <code>/api/campaigns</code>.<br>
-Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce hard ≥2% ou total ≥5%, unsub ≥3%, spam ≥0.1%). <strong>Vermelho sempre significa "ruim"</strong> em toda a página — inclusive na aba Contatos, tabela Cohorts, onde o critério é desvio desfavorável de mais de ${COHORT_DEVIATION_THRESHOLD_PP}pp da média da coluna em vez de circuit breaker (ver nota da própria tabela).</p>
+Cells em <span class="alert-label">vermelho</span> indicam que a métrica cruzou o threshold de circuit breaker (open <15%, bounce hard ≥2% ou total ≥5%, unsub ≥3%). <strong>Vermelho sempre significa "ruim"</strong> em toda a página — inclusive na aba Contatos, tabela Cohorts, onde o critério é desvio desfavorável de mais de ${COHORT_DEVIATION_THRESHOLD_PP}pp da média da coluna em vez de circuit breaker (ver nota da própria tabela). Spam (nesta tabela) NUNCA é colorida — o número vem da Brevo/complaints, que subconta o spam real em ~50× (#4063); o breaker de spam de verdade é a leitura do Google Postmaster Tools, na aba Rampa.</p>
 <script>
 /* #2622: progressive enhancement — deep-link (hash<->aba) + aria-selected. Sem JS, o CSS-only puro segue funcionando. */
 (function () {
@@ -1069,7 +1070,11 @@ export const ENVIOS_COLUMNS: Array<{ label: string; tooltip: string }> = [
       "Hard bounces (inválido) + soft bounces (caixa cheia). Bench: <2% saudável. Pausa o ramp quando hard ≥2% OU total ≥5%.",
   },
   { label: "Unsub", tooltip: "Descadastros. Esperado em baixo volume. Bench: <0.5%. ≥3% pausa o ramp." },
-  { label: "Spam", tooltip: "Marcações de spam. Prejudica reputação do domínio. Bench: <0.1%. ≥0.1% pausa o ramp." },
+  {
+    label: "Spam",
+    tooltip:
+      "Marcações de spam via complaints da Brevo — subconta o spam real em ~50× (#4063), NUNCA colorida aqui. O breaker de verdade é a leitura do Google Postmaster Tools na aba Rampa.",
+  },
 ];
 
 /**

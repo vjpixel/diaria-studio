@@ -16,6 +16,17 @@
  * A integração com `gmailpostmastertools.googleapis.com` fica pra uma issue
  * separada, bloqueada por credencial.
  *
+ * ATUALIZAÇÃO (#4154, 260730): a premissa acima estava errada — a conta
+ * `vjpixel@gmail.com` tem permissão OWNER em `clarice.ai` no Postmaster
+ * (confirmado ao vivo via UI e via `domains.get`); o bloqueio real era a
+ * Gmail Postmaster Tools API nunca ter sido habilitada no projeto GCP do
+ * OAuth client (403 SERVICE_DISABLED), corrigido em 260730 — a investigação
+ * de 260727 não chegou a testar o endpoint de fato e inferiu "não é dono" de
+ * um sintoma diferente. `scripts/postmaster-spam-sync.ts` automatiza esta
+ * leitura via API e grava na MESMA chave KV — é o caminho primário agora.
+ * Este script manual continua existindo como fallback (outage da API,
+ * checagem pontual antes de um envio sensível).
+ *
  * Uso:
  *   npx tsx scripts/postmaster-spam-entry.ts --rate 1.02 [--date 2026-07-27] [--dry-run]
  *
@@ -74,6 +85,7 @@ export function buildPostmasterSpamEntry(
     date: dateArg.trim() || todayLocalDate(now),
     spamRatePct: rate,
     recordedAt: now.toISOString(),
+    producedBy: "manual",
   };
 }
 

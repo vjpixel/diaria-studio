@@ -503,15 +503,16 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       return shared.clone();
     }
 
-    // #4131 finding 4: expõe a leitura MANUAL do Postmaster (`postmaster:spam`,
-    // gravada por scripts/postmaster-spam-entry.ts) pra automação externa —
-    // sem isso, `scripts/clarice-schedule-ramp.ts` (que roda fora do Worker,
-    // sem acesso ao binding STATS_CACHE) nunca enxergava a leitura manual e o
-    // semáforo do auto-cálculo de volume ficava travado em "yellow" pra
-    // sempre (nunca escalonava, mesmo com uma leitura fresca registrada — ver
-    // `deriveRampVolumes`/`fetchPostmasterSpamEntry`). Pública como
-    // `/api/campaigns` (mesmo racional: automação interna sem cookie de
-    // sessão) — payload é só um % e um timestamp, sem PII.
+    // #4131 finding 4: expõe a leitura do Postmaster (`postmaster:spam`,
+    // gravada automaticamente por scripts/postmaster-spam-sync.ts a cada 12h
+    // desde #4154, ou manualmente por scripts/postmaster-spam-entry.ts como
+    // fallback) pra automação externa — sem isso, `scripts/clarice-schedule-ramp.ts`
+    // (que roda fora do Worker, sem acesso ao binding STATS_CACHE) nunca
+    // enxergava a leitura e o semáforo do auto-cálculo de volume ficava
+    // travado em "yellow" pra sempre (nunca escalonava, mesmo com uma leitura
+    // fresca registrada — ver `deriveRampVolumes`/`fetchPostmasterSpamEntry`).
+    // Pública como `/api/campaigns` (mesmo racional: automação interna sem
+    // cookie de sessão) — payload é só um %, um timestamp e a origem, sem PII.
     if (path === "/api/postmaster-spam") {
       const raw = env.STATS_CACHE ? await env.STATS_CACHE.get(POSTMASTER_SPAM_KV_KEY, "json").catch(() => null) : null;
       const entry = normalizePostmasterSpamEntry(raw);

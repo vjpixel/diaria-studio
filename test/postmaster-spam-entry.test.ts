@@ -18,6 +18,7 @@ test("buildPostmasterSpamEntry — monta a entrada a partir de --rate/--date", (
     date: "2026-07-27",
     spamRatePct: 1.02,
     recordedAt: NOW.toISOString(),
+    producedBy: "manual",
   });
 });
 

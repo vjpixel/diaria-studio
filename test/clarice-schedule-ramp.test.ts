@@ -381,7 +381,25 @@ describe("fetchPostmasterSpamEntry (#4131 finding 4 — leitura manual do Postma
       "https://x",
       fakeFetch(200, { entry: { date: "2026-07-27", spamRatePct: 0.9, recordedAt: "2026-07-27T10:00:00.000Z" } }),
     );
-    assert.deepEqual(entry, { spamRatePct: 0.9, recordedAt: "2026-07-27T10:00:00.000Z" });
+    assert.deepEqual(entry, { spamRatePct: 0.9, recordedAt: "2026-07-27T10:00:00.000Z", producedBy: undefined });
+  });
+
+  // #4154, achado do self-review do #4342 (3ª rodada): producedBy é uma 2ª
+  // leitura da mesma info que normalizePostmasterSpamEntry já normaliza no
+  // worker — sem repassar aqui, o CLI de agendamento da ramp nunca soube
+  // distinguir leitura auto de manual.
+  it("entry com producedBy 'auto'/'manual' preserva o campo", async () => {
+    const auto = await fetchPostmasterSpamEntry(
+      "https://x",
+      fakeFetch(200, { entry: { date: "2026-07-27", spamRatePct: 0.9, recordedAt: "2026-07-27T10:00:00.000Z", producedBy: "auto" } }),
+    );
+    assert.equal(auto?.producedBy, "auto");
+
+    const manual = await fetchPostmasterSpamEntry(
+      "https://x",
+      fakeFetch(200, { entry: { date: "2026-07-27", spamRatePct: 0.9, recordedAt: "2026-07-27T10:00:00.000Z", producedBy: "manual" } }),
+    );
+    assert.equal(manual?.producedBy, "manual");
   });
 
   it("entry null (sem leitura registrada) → null", async () => {

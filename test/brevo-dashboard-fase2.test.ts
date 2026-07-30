@@ -1214,6 +1214,21 @@ describe("#2369 renderMonthlyTotalsSection", () => {
     assert.match(html, /13\.[0-9]%/, "deve exibir CTOR ~13.3%");
   });
 
+  // #4154, achado do self-review do #4342 (3ª rodada, test-analyzer): o mesmo
+  // fix aplicado em sections-core.ts (Envios) — remover a coloração de spam,
+  // que vinha de `complaints` da Brevo (subconta ~50×, #4063) — foi aplicado
+  // aqui também (Totais por mês), mas nenhum teste travava esse comportamento
+  // nesta tabela especificamente.
+  test("#4154: célula Spam NUNCA tem class=\"alert\", mesmo com taxa bem acima do antigo threshold 0,1%", () => {
+    const rows = aggregateByMonth([
+      makeCampaign(1, "Clarice News 2605 d01-A (qua)", "2026-06-10T09:00:00Z",
+        { sent: 1000, delivered: 990, complaints: 15 }), // 1.5% spam — bem acima de 0,1% e 0,3%
+    ]);
+    const html = renderMonthlyTotalsSection(rows);
+    assert.match(html, /1\.500%/, "deve exibir spam rate 1.500%");
+    assert.doesNotMatch(html, /<td class="alert">1\.500%/, "Spam nunca deve ter class alert nesta tabela — o breaker de verdade é o Postmaster, na aba Rampa");
+  });
+
   // #2429: rótulo "E-mails (eventos)" na coluna Sent da tabela mensal (#2491: renomeado de "Envios (eventos)")
   test("#2429 coluna Sent da tabela mensal tem rótulo 'E-mails (eventos)' com tooltip", () => {
     const rows = aggregateByMonth(allCampaigns);

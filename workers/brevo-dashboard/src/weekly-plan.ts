@@ -33,6 +33,7 @@ import { renderScheduledSection } from "./sections-kv.ts";
 // sections-kv.ts também consomem) — reexportados aqui pra não quebrar
 // consumidores existentes que importam de weekly-plan.ts/index.ts.
 import { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS, type HealthThresholds, type SpamSignal } from "./thresholds.ts";
+import type { PostmasterProducer } from "./types.ts";
 export { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS };
 export type { HealthThresholds, SpamSignal };
 
@@ -430,16 +431,17 @@ interface WeeklySendState {
   plan: WeekPlan | null;
   /** dias-calendário BRT distintos entre `mature` (ver HEALTH_SAMPLE_DAYS). */
   dayCount: number;
-  /** #4063: sinal de spam que GOVERNA o semáforo (Postmaster manual, precedência sobre `health.spamRate`/Brevo). `null` só quando `health` também é `null` (sem envio maduro ainda). */
+  /** #4063: sinal de spam que GOVERNA o semáforo (Postmaster, precedência sobre `health.spamRate`/Brevo). `null` só quando `health` também é `null` (sem envio maduro ainda). */
   spamSignal: SpamSignal | null;
 }
 
 function computeWeeklySendState(
   campaigns: BrevoCampaign[],
   now: Date,
-  // #4063: leitura manual do Postmaster (KV `postmaster:spam`, ausente por
-  // default — call sites que não passam mantêm o sinal "indeterminate", que
-  // é o comportamento correto quando não há leitura, nunca um "opt-out" do fix).
+  // #4063/#4154: leitura do Postmaster (KV `postmaster:spam`, auto ou
+  // manual), ausente por default — call sites que não passam mantêm o sinal
+  // "indeterminate", que é o comportamento correto quando não há leitura,
+  // nunca um "opt-out" do fix.
   postmasterSpam: PostmasterSpamEntry | null = null,
 ): WeeklySendState {
   // TODOS os envios (sem diferenciar cold/quente — o ISP vê a reputação AGREGADA
@@ -508,9 +510,10 @@ function neutralValueStyle(): string {
  * renderWeeklyPlanTabPanel pra ser reusada por renderHealthSection sem
  * duplicar a lógica de classificação/"sem dado".
  *
- * #4063: `spamSignal` (leitura manual do Postmaster, com precedência sobre
- * `health.spamRate`/Brevo) recebe sua PRÓPRIA linha, colorida — é ela que
- * governa o semáforo (ver `classifySpamSignal`/`decideSemaphore`). A linha
+ * #4063/#4154: `spamSignal` (leitura do Postmaster, auto ou manual, com
+ * precedência sobre `health.spamRate`/Brevo) recebe sua PRÓPRIA linha,
+ * colorida — é ela que governa o semáforo (ver
+ * `classifySpamSignal`/`decideSemaphore`). A linha
  * "Spam" original (derivada de `complaints` da Brevo) continua visível pra
  * comparação/transparência, mas NUNCA mais colorida como verde/vermelho —
  * ela subconta o spam real em ~50× (só enxerga feedback loops), então
@@ -546,22 +549,33 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
     })
     .join("\n");
 
-  // #4063: "Spam" (Brevo) — 3 casas (o breaker dispara em ≥0.1%, 2 casas ainda
-  // arredondam 0.049%→"0.05%" perto do limiar), mas SEMPRE neutro — nunca
-  // verde/vermelho (ver docstring da função).
+  // #4063/#4154: "Spam" (Brevo) — 3 casas (o breaker dispara em ≥0,3%, 2 casas
+  // ainda arredondam 0.299%→"0.30%" perto do limiar), mas SEMPRE neutro —
+  // nunca verde/vermelho (ver docstring da função).
   const spamBrevoValueFmt = noDataBySent ? "—" : fmtPct(health.spamRate, 3);
   const spamBrevoRow = `<tr><td>Spam (Brevo, subconta — ver Postmaster)</td><td style="${neutralValueStyle()}">${spamBrevoValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
 
   // #4063: "Spam (Postmaster)" — a linha que GOVERNA o semáforo. Sem leitura
   // confiável, mostra "— (sem leitura)" em neutro (nunca verde). Com leitura,
-  // colore normalmente pelas mesmas faixas do doc.
+  // colore pelas faixas de DEFAULT_HEALTH_THRESHOLDS.spamRate — que desde
+  // #4154 são os limiares oficiais do Postmaster Tools, não mais os do doc
+  // "Parceria Editorial Clarice.ai × Diar.ia" (essa é a ÚNICA métrica com
+  // essa exceção; as outras 4 continuam vindo do doc).
   const spamPostmasterValueFmt = spamSignal.source === "postmaster" && spamSignal.ratePct !== null
     ? fmtPct(spamSignal.ratePct, 3)
     : "— (sem leitura)";
   const spamPostmasterStyle = spamSignal.source === "postmaster"
     ? `color:${STATUS_COLOR[classifySpamSignal(spamSignal, T)]};font-weight:600`
     : neutralValueStyle();
-  const spamPostmasterRow = `<tr><td>Spam (Postmaster, manual — governa o semáforo)</td><td style="${spamPostmasterStyle}">${spamPostmasterValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
+  // #4154: rótulo reflete o produtor REAL da leitura (auto via API, manual
+  // via painel) em vez de afirmar "manual" incondicionalmente — desde que o
+  // sync automático existe, a maioria das leituras não é mais manual. Lookup
+  // (não ternário) pra ficar exaustivo por construção — um 3º valor futuro em
+  // `PostmasterProducer` quebra a checagem de tipo aqui em vez de cair
+  // silenciosamente no fallback "" (achado do self-review do #4342).
+  const SPAM_SOURCE_LABEL: Record<PostmasterProducer, string> = { auto: ", automático", manual: ", manual" };
+  const spamPostmasterSourceLabel = spamSignal.producedBy ? SPAM_SOURCE_LABEL[spamSignal.producedBy] : "";
+  const spamPostmasterRow = `<tr><td>Spam (Postmaster${spamPostmasterSourceLabel} — governa o semáforo)</td><td style="${spamPostmasterStyle}">${spamPostmasterValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
 
   // Ordem: abertura, hard bounce, bounce total, os 2 de spam (Postmaster antes
   // do Brevo — é o que governa), unsub.
@@ -584,8 +598,9 @@ export function renderWeeklyPlanTabPanel(
   // cá, logo abaixo da recomendação dos próximos 3 envios. Default [] preserva
   // call sites/testes existentes que ainda não passam esse argumento.
   scheduled: Array<BrevoCampaign & { listName?: string; listSize?: number }> = [],
-  // #4063: leitura manual do Postmaster (KV `postmaster:spam`) — default
-  // `null` preserva call sites/testes existentes (sinal fica "indeterminate").
+  // #4063/#4154: leitura do Postmaster (KV `postmaster:spam`, auto ou
+  // manual) — default `null` preserva call sites/testes existentes (sinal
+  // fica "indeterminate").
   postmasterSpam: PostmasterSpamEntry | null = null,
 ): string {
   // #3010: renderizada uma única vez e reaproveitada em todos os branches de
@@ -719,8 +734,9 @@ export function renderHealthSection(
   campaigns: BrevoCampaign[],
   now: Date = new Date(),
   opts: { title?: string } = {},
-  // #4063: leitura manual do Postmaster (KV `postmaster:spam`) — default
-  // `null` preserva call sites/testes existentes (sinal fica "indeterminate").
+  // #4063/#4154: leitura do Postmaster (KV `postmaster:spam`, auto ou
+  // manual) — default `null` preserva call sites/testes existentes (sinal
+  // fica "indeterminate").
   postmasterSpam: PostmasterSpamEntry | null = null,
 ): string {
   const title = opts.title ?? "Agendamento — plano de envio semanal";
