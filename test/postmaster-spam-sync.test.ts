@@ -134,6 +134,46 @@ test("buildAveragedEntry — lista vazia retorna null (nunca inventa média de z
   assert.equal(buildAveragedEntry([], NOW), null);
 });
 
+// Achado convergente de 2 agentes no self-review do #4345 (silent-failure-hunter
+// + type-design-analyzer): buildAveragedEntry não deve confiar que readings[0]
+// é o mais recente — acha o apiDate máximo explicitamente, mesmo com input
+// fora de ordem (ex: um futuro collectSpamReadings paralelizado que não
+// preserve a ordem sequencial de hoje).
+test("buildAveragedEntry — acha o dia mais recente mesmo com readings fora de ordem", () => {
+  const entry = buildAveragedEntry(
+    [
+      { apiDate: "20260722", ratio: 0.008 }, // mais antigo primeiro
+      { apiDate: "20260730", ratio: 0.02 }, // mais recente no meio/fim
+      { apiDate: "20260725", ratio: 0.01 },
+    ],
+    NOW,
+  );
+  assert.equal(entry?.date, "2026-07-30");
+});
+
+// Cenário real que motivou este PR (print do editor comparando a API contra
+// a UI do Postmaster, 260730): janela de 10 dias, só 3 tinham trafficStats
+// publicado (os outros 7 eram 404), um deles com o campo ausente = 0%.
+test("cenário real 260730: janela de 10 dias com 3 leituras (27/07=0%, 24/07=0.9%, 22/07=0.8%) → média 0.567%", async () => {
+  const now = new Date("2026-07-30T19:52:13.513Z");
+  const responsesByDate: Record<string, { status: number; body: Record<string, unknown> | null }> = {
+    "20260727": { status: 200, body: { domainReputation: "HIGH" } }, // sem o campo = 0%
+    "20260724": { status: 200, body: { userReportedSpamRatio: 0.009 } },
+    "20260722": { status: 200, body: { userReportedSpamRatio: 0.008 } },
+  };
+  const fetchStats = async (apiDate: string) => responsesByDate[apiDate] ?? { status: 404, body: null };
+
+  const { readings, daysChecked, httpErrors } = await collectSpamReadings(10, now, fetchStats);
+  assert.equal(daysChecked, 10);
+  assert.equal(httpErrors.length, 0);
+  assert.equal(readings.length, 3);
+
+  const entry = buildAveragedEntry(readings, now);
+  assert.equal(entry?.date, "2026-07-27");
+  assert.ok(Math.abs((entry?.spamRatePct ?? 0) - 0.5666666666666667) < 1e-9, `esperava ~0.567%, achou ${entry?.spamRatePct}`);
+  assert.equal(entry?.producedBy, "auto");
+});
+
 // ── parseWindowDaysArg ──
 
 test("parseWindowDaysArg — vazio usa o default (HEALTH_SAMPLE_DAYS, mesma janela das outras métricas da Rampa)", () => {

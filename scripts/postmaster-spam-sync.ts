@@ -177,13 +177,23 @@ export async function collectSpamReadings(
  * coletadas — MÉDIA simples do ratio sobre os dias com leitura válida (não
  * ponderada por volume; a API não expõe volume por dia). `null` se não há
  * nenhuma leitura (nunca inventar uma média de zero elementos).
+ *
+ * NÃO assume nenhuma ordem em `readings` — acha o `apiDate` mais recente
+ * explicitamente (`YYYYMMDD` ordena lexicograficamente = ordena
+ * cronologicamente) em vez de confiar que `readings[0]` é o mais recente.
+ * `collectSpamReadings` hoje entrega nessa ordem, mas essa função não deve
+ * depender de um contrato implícito de outra função (achado convergente de
+ * 2 agentes no self-review do #4345 — silent-failure-hunter e
+ * type-design-analyzer): um refactor futuro que paralelize/reordene
+ * `readings` corromperia `date` em silêncio (a média continuaria certa —
+ * soma/contagem é comutativa — só `date` apontaria pro dia errado).
  */
 export function buildAveragedEntry(readings: DayReading[], now: Date): PostmasterSpamEntry | null {
   if (readings.length === 0) return null;
   const avgRatio = readings.reduce((sum, r) => sum + r.ratio, 0) / readings.length;
-  // readings[0] é o dia mais recente (offset 0 sondado primeiro, ver collectSpamReadings).
+  const mostRecent = readings.reduce((latest, r) => (r.apiDate > latest.apiDate ? r : latest), readings[0]);
   return {
-    date: apiDateToEntryDate(readings[0].apiDate),
+    date: apiDateToEntryDate(mostRecent.apiDate),
     spamRatePct: avgRatio * 100,
     recordedAt: now.toISOString(),
     producedBy: "auto",
@@ -258,8 +268,18 @@ async function main(): Promise<void> {
   const entry = buildAveragedEntry(readings, now);
 
   if (!entry) {
+    // Achado do self-review do #4345 (silent-failure-hunter): esta branch
+    // disparava pra 2 causas bem diferentes — janela inteira 404 (benigno,
+    // "nada publicado ainda") OU uma mistura de erro HTTP + 404 sem nenhum
+    // 200 (nem todos os dias erraram, então não bateu o throw acima, mas
+    // também não sobrou nenhuma leitura real). A mensagem antiga dizia
+    // "tudo 404" incondicionalmente, contradizendo o AVISO impresso alguns
+    // segundos antes — quem lê só a última linha do log via cima do erro real.
+    const cause = httpErrors.length > 0
+      ? `${daysChecked - httpErrors.length} dias 404 (não publicado) + ${httpErrors.length} dias com erro HTTP — ver AVISO acima`
+      : `todos os ${daysChecked} dias 404 (não publicado ainda)`;
     console.log(
-      `[postmaster-spam-sync] Nenhum dos últimos ${daysChecked} dias tem trafficStats publicado (tudo 404). ` +
+      `[postmaster-spam-sync] Nenhuma leitura válida na janela (${cause}). ` +
         "NÃO escrevendo no KV — mantendo a última leitura válida (expira em 48h e vira indeterminate, nunca verde falso).",
     );
     return;
@@ -282,8 +302,13 @@ async function main(): Promise<void> {
     accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
     token: process.env.CLOUDFLARE_WORKERS_TOKEN ?? "",
   });
+  // Achado do self-review do #4345 (silent-failure-hunter): a fração
+  // readings/daysChecked e a contagem de erros HTTP também vão na linha
+  // final de sucesso — não só no AVISO alguns segundos antes — porque essa é
+  // a linha mais provável de ser a única lida num resumo de log/cron.
+  const errorSuffix = httpErrors.length > 0 ? `, ${httpErrors.length} erros HTTP` : "";
   console.log(
-    `[postmaster-spam-sync] KV atualizado: ${POSTMASTER_SPAM_KV_KEY} (spamRatePct=${entry.spamRatePct.toFixed(3)}, date=${entry.date}, média de ${readings.length} dias).`,
+    `[postmaster-spam-sync] KV atualizado: ${POSTMASTER_SPAM_KV_KEY} (spamRatePct=${entry.spamRatePct.toFixed(3)}, date=${entry.date}, média de ${readings.length}/${daysChecked} dias${errorSuffix}).`,
   );
 }
 
