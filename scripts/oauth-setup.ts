@@ -54,11 +54,14 @@ const SCOPES = [
   "https://www.googleapis.com/auth/gmail.labels",
   "https://www.googleapis.com/auth/gmail.modify", // para criar labels
   "https://www.googleapis.com/auth/webmasters.readonly", // #1989: GSC Search Analytics (seo-pull)
-  // #4063: Gmail Postmaster Tools. A Brevo só enxerga reclamações de FBL e
-  // subconta o spam em ~50× (73% da base é Gmail, e o "marcar como spam" do
-  // Gmail não passa por FBL). O breaker de spam da Rampa passa a ler o
-  // spamRate diário daqui. A API já está habilitada no projeto GCP — o único
-  // pré-req era o scope.
+  // #4063/#4154: Gmail Postmaster Tools. A Brevo só enxerga reclamações de
+  // FBL e subconta o spam em ~50× (73% da base é Gmail, e o "marcar como
+  // spam" do Gmail não passa por FBL). O breaker de spam da Rampa lê o
+  // spamRate diário daqui (scripts/postmaster-spam-sync.ts). A API precisa
+  // estar HABILITADA no projeto GCP deste OAuth client (console.cloud.google.com
+  // → APIs → Gmail Postmaster Tools API → Ativar) além deste scope — as duas
+  // coisas são independentes; faltar uma dá 403 SERVICE_DISABLED mesmo com o
+  // scope concedido (achado #4154, 260730).
   "https://www.googleapis.com/auth/postmaster.readonly",
   // #4064: enviar o e-mail de alarme de guardrail furado do ramp Clarice
   // (`scripts/clarice-guardrail-alarm.ts`) via Gmail API direta — rodando fora
