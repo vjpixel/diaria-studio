@@ -135,7 +135,7 @@ export interface CohortStatsRow {
 export type PostmasterProducer = "manual" | "auto";
 
 export interface PostmasterSpamEntry {
-  /** Data (YYYY-MM-DD) a que a leitura se refere — o dia do painel Postmaster consultado. */
+  /** Data (YYYY-MM-DD) a que a leitura se refere. Manual: o dia do painel Postmaster consultado. Auto (#4345): o dia mais recente dentro da janela usada pra calcular a média — não o único dia da leitura. */
   date: string;
   /** spamRate (%) lido no painel do Google Postmaster Tools. */
   spamRatePct: number;

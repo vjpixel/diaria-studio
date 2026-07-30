@@ -12,12 +12,13 @@
     de esquecer, e o esquecimento trava o escalonamento de volume do ramp
     (sinal vira `indeterminate` apos 48h sem leitura fresca).
 
-    Cadencia: o Postmaster tem ~2 dias de lag nos proprios dados (o script
-    sonda ate 7 dias pra tras), entao 1x/dia ja bastaria -- 12h da margem
-    contra maquina desligada/execucao perdida sem custo real (a chamada e
-    leve, poucas requests). recordedAt e sempre "agora" no momento da
-    gravacao, entao cada run bem-sucedida reseta a janela de staleness de 48h
-    do breaker (POSTMASTER_STALE_MS em thresholds.ts).
+    Cadencia: a leitura e uma MEDIA sobre HEALTH_SAMPLE_DAYS (mesma janela das
+    outras metricas da aba Rampa, pedido do editor 260730), entao 1x/dia ja
+    bastaria -- 12h da margem contra maquina desligada/execucao perdida sem
+    custo real (a chamada e leve, poucas requests por dia da janela).
+    recordedAt e sempre "agora" no momento da gravacao, entao cada run
+    bem-sucedida reseta a janela de staleness de 48h do breaker
+    (POSTMASTER_STALE_MS em thresholds.ts).
 
     StartWhenAvailable: se o horario for perdido (maquina desligada), roda
     quando disponivel.

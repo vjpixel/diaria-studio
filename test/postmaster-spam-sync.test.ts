@@ -3,6 +3,13 @@
  * do Google Postmaster Tools via API, substituindo a leitura manual
  * (postmaster-spam-entry.ts) sem mudar o consumidor (resolveSpamSignal).
  *
+ * 260730 (pedido do editor + achado comparando contra a UI do Postmaster):
+ * a leitura virou MÉDIA sobre HEALTH_SAMPLE_DAYS (mesma janela das outras
+ * métricas da Rampa), e "200 sem o campo" passou a valer 0% (não mais "dado
+ * insuficiente, pular") — confirmado que a API omite o campo em dias com
+ * spam genuinamente 0%, comportamento padrão de serialização JSON de double
+ * protobuf no valor default.
+ *
  * Cobre só as partes puras/testáveis (sem I/O de rede nem KV).
  */
 import { test } from "node:test";
@@ -10,9 +17,10 @@ import assert from "node:assert/strict";
 import {
   toApiDateStr,
   apiDateToEntryDate,
-  parseTrafficStatsResponse,
-  findLatestSpamReading,
-  parseLookbackDaysArg,
+  extractDayRatio,
+  collectSpamReadings,
+  buildAveragedEntry,
+  parseWindowDaysArg,
 } from "../scripts/postmaster-spam-sync.ts";
 
 const NOW = new Date("2026-07-30T09:00:00.000Z");
@@ -26,107 +34,158 @@ test("apiDateToEntryDate — YYYYMMDD vira YYYY-MM-DD", () => {
   assert.equal(apiDateToEntryDate("20260727"), "2026-07-27");
 });
 
-test("parseTrafficStatsResponse — userReportedSpamRatio presente vira spamRatePct (ratio × 100)", () => {
-  const entry = parseTrafficStatsResponse({ userReportedSpamRatio: 0.0102 }, "20260727", NOW);
-  assert.deepEqual(entry, {
-    date: "2026-07-27",
-    spamRatePct: 1.02,
-    recordedAt: NOW.toISOString(),
-    producedBy: "auto",
-  });
+// ── extractDayRatio — o achado central de 260730 ──
+
+test("extractDayRatio — userReportedSpamRatio presente retorna o valor", () => {
+  assert.equal(extractDayRatio({ userReportedSpamRatio: 0.009 }), 0.009);
 });
 
-test("parseTrafficStatsResponse — userReportedSpamRatio AUSENTE retorna null, nunca 0% (evita falso-verde, #4063)", () => {
-  const entry = parseTrafficStatsResponse({ domainReputation: "HIGH" }, "20260727", NOW);
-  assert.equal(entry, null);
+test("extractDayRatio — userReportedSpamRatio AUSENTE vira 0 (achado 260730: confirmado contra a UI do Postmaster, não é mais 'dado insuficiente')", () => {
+  assert.equal(extractDayRatio({ domainReputation: "HIGH" }), 0);
 });
 
-test("findLatestSpamReading — acha o dia mais recente (offset 0) quando disponível", async () => {
-  const calls: string[] = [];
+// ── collectSpamReadings ──
+
+test("collectSpamReadings — coleta 1 leitura por dia com 200 (campo presente OU ausente=0), pula 404", async () => {
   const fetchStats = async (apiDate: string) => {
-    calls.push(apiDate);
-    return { status: 200, body: { userReportedSpamRatio: 0.005 } };
+    if (apiDate === "20260730") return { status: 404, body: null };
+    if (apiDate === "20260729") return { status: 200, body: { userReportedSpamRatio: 0.009 } };
+    if (apiDate === "20260728") return { status: 200, body: { domainReputation: "HIGH" } }; // sem o campo = 0%
+    return { status: 404, body: null };
   };
-  const { entry, daysChecked } = await findLatestSpamReading(7, NOW, fetchStats);
-  assert.equal(entry?.date, "2026-07-30");
-  assert.equal(daysChecked, 1);
-  assert.deepEqual(calls, ["20260730"]);
+  const { readings, daysChecked } = await collectSpamReadings(7, NOW, fetchStats);
+  assert.equal(daysChecked, 7);
+  assert.deepEqual(readings, [
+    { apiDate: "20260729", ratio: 0.009 },
+    { apiDate: "20260728", ratio: 0 },
+  ]);
 });
 
-test("findLatestSpamReading — pula 404 (dado ainda não publicado, lag ~2 dias) até achar 200", async () => {
-  const fetchStats = async (apiDate: string) => {
-    if (apiDate === "20260730" || apiDate === "20260729") return { status: 404, body: null };
-    return { status: 200, body: { userReportedSpamRatio: 0.02 } };
-  };
-  const { entry, daysChecked } = await findLatestSpamReading(7, NOW, fetchStats);
-  assert.equal(entry?.date, "2026-07-28");
-  assert.equal(daysChecked, 3);
+test("collectSpamReadings — readings[0] é o dia mais recente (offset 0 sondado primeiro)", async () => {
+  const fetchStats = async (apiDate: string) => ({ status: 200, body: { userReportedSpamRatio: 0.01 } });
+  const { readings } = await collectSpamReadings(3, NOW, fetchStats);
+  assert.equal(readings[0].apiDate, "20260730");
+  assert.equal(readings[2].apiDate, "20260728");
 });
 
-test("findLatestSpamReading — 200 mas sem userReportedSpamRatio conta como 'daysWithDataNoRatio' e continua procurando", async () => {
-  const fetchStats = async (apiDate: string) => {
-    if (apiDate === "20260730") return { status: 200, body: { domainReputation: "HIGH" } };
-    return { status: 200, body: { userReportedSpamRatio: 0.03 } };
-  };
-  const { entry, daysWithDataNoRatio } = await findLatestSpamReading(7, NOW, fetchStats);
-  assert.equal(entry?.date, "2026-07-29");
-  assert.equal(daysWithDataNoRatio, 1);
-});
-
-test("findLatestSpamReading — esgota lookbackDays sem achar ratio → entry null, NUNCA inventa 0% (#4063)", async () => {
-  const fetchStats = async () => ({ status: 200, body: { domainReputation: "HIGH" } });
-  const { entry, daysChecked, daysWithDataNoRatio } = await findLatestSpamReading(5, NOW, fetchStats);
-  assert.equal(entry, null);
-  assert.equal(daysChecked, 5);
-  assert.equal(daysWithDataNoRatio, 5);
-});
-
-// ── httpErrors: erro de HTTP NUNCA pode ser confundido com "sem dado ainda" ──
-// (achado convergente de 3 agentes no self-review do #4342 — 403
-// SERVICE_DISABLED é exatamente o tipo de erro que causou o #4154 original
-// a ser mal-diagnosticado como "sem acesso ao domínio").
-
-test("findLatestSpamReading — status de erro (403) é registrado em httpErrors, NUNCA em daysWithDataNoRatio", async () => {
+test("collectSpamReadings — status de erro (403) é registrado em httpErrors, NUNCA vira uma leitura de 0%", async () => {
   const fetchStats = async (apiDate: string) => {
     if (apiDate === "20260730") return { status: 403, body: null, errorText: "SERVICE_DISABLED" };
     return { status: 200, body: { userReportedSpamRatio: 0.01 } };
   };
-  const { entry, daysWithDataNoRatio, httpErrors } = await findLatestSpamReading(7, NOW, fetchStats);
-  assert.equal(entry?.date, "2026-07-29");
-  assert.equal(daysWithDataNoRatio, 0, "erro de HTTP não é 'dado ausente' — contadores distintos");
+  const { readings, httpErrors } = await collectSpamReadings(3, NOW, fetchStats);
+  assert.equal(readings.length, 2, "403 não deve virar uma leitura");
   assert.deepEqual(httpErrors, [{ apiDate: "20260730", status: 403, errorText: "SERVICE_DISABLED" }]);
 });
 
-test("findLatestSpamReading — 404 (não publicado) e erro de HTTP (500) coexistem sem se confundir", async () => {
+test("collectSpamReadings — 404 (não publicado) e erro de HTTP (500) coexistem sem se confundir", async () => {
   const fetchStats = async (apiDate: string) => {
     if (apiDate === "20260730") return { status: 404, body: null };
     if (apiDate === "20260729") return { status: 500, body: null, errorText: "internal" };
-    return { status: 200, body: { userReportedSpamRatio: 0.04 } };
+    return { status: 200, body: { userReportedSpamRatio: 0.02 } };
   };
-  const { entry, httpErrors } = await findLatestSpamReading(7, NOW, fetchStats);
-  assert.equal(entry?.date, "2026-07-28");
+  const { readings, httpErrors } = await collectSpamReadings(3, NOW, fetchStats);
+  assert.equal(readings.length, 1);
   assert.deepEqual(httpErrors, [{ apiDate: "20260729", status: 500, errorText: "internal" }]);
 });
 
-test("findLatestSpamReading — TODOS os dias com erro de HTTP → entry null e httpErrors com todos os dias (caller decide abortar)", async () => {
+test("collectSpamReadings — TODOS os dias com erro de HTTP → readings vazio, httpErrors com todos (caller decide abortar)", async () => {
   const fetchStats = async () => ({ status: 403, body: null, errorText: "SERVICE_DISABLED" });
-  const { entry, daysChecked, httpErrors } = await findLatestSpamReading(3, NOW, fetchStats);
-  assert.equal(entry, null);
-  assert.equal(httpErrors.length, daysChecked, "todos os dias sondados falharam com erro — nenhum é 'sem dado ainda'");
+  const { readings, daysChecked, httpErrors } = await collectSpamReadings(3, NOW, fetchStats);
+  assert.equal(readings.length, 0);
+  assert.equal(httpErrors.length, daysChecked);
 });
 
-// ── parseLookbackDaysArg ──
-
-test("parseLookbackDaysArg — vazio usa o default (7)", () => {
-  assert.equal(parseLookbackDaysArg(""), 7);
+test("collectSpamReadings — janela inteira sem publicação (tudo 404) → readings vazio, sem erro", async () => {
+  const fetchStats = async () => ({ status: 404, body: null });
+  const { readings, httpErrors } = await collectSpamReadings(5, NOW, fetchStats);
+  assert.equal(readings.length, 0);
+  assert.equal(httpErrors.length, 0);
 });
 
-test("parseLookbackDaysArg — valor numérico válido é usado", () => {
-  assert.equal(parseLookbackDaysArg("14"), 14);
+// ── buildAveragedEntry ──
+
+test("buildAveragedEntry — média simples do ratio sobre as leituras, spamRatePct em % (×100)", () => {
+  const entry = buildAveragedEntry(
+    [
+      { apiDate: "20260730", ratio: 0.01 }, // 1.0%
+      { apiDate: "20260728", ratio: 0.02 }, // 2.0%
+    ],
+    NOW,
+  );
+  assert.equal(entry?.spamRatePct, 1.5); // média = 1.5%
+  assert.equal(entry?.date, "2026-07-30"); // dia mais recente da lista
+  assert.equal(entry?.recordedAt, NOW.toISOString());
+  assert.equal(entry?.producedBy, "auto");
 });
 
-test("parseLookbackDaysArg — não-numérico ou < 1 lança erro explícito", () => {
-  assert.throws(() => parseLookbackDaysArg("abc"), /inválido/);
-  assert.throws(() => parseLookbackDaysArg("0"), /inválido/);
-  assert.throws(() => parseLookbackDaysArg("-3"), /inválido/);
+test("buildAveragedEntry — inclui dias com ratio 0 na média (0% real, não descartado)", () => {
+  const entry = buildAveragedEntry(
+    [
+      { apiDate: "20260730", ratio: 0.03 }, // 3.0%
+      { apiDate: "20260729", ratio: 0 }, // 0.0%
+    ],
+    NOW,
+  );
+  assert.equal(entry?.spamRatePct, 1.5); // (3.0 + 0.0) / 2
+});
+
+test("buildAveragedEntry — lista vazia retorna null (nunca inventa média de zero elementos)", () => {
+  assert.equal(buildAveragedEntry([], NOW), null);
+});
+
+// Achado convergente de 2 agentes no self-review do #4345 (silent-failure-hunter
+// + type-design-analyzer): buildAveragedEntry não deve confiar que readings[0]
+// é o mais recente — acha o apiDate máximo explicitamente, mesmo com input
+// fora de ordem (ex: um futuro collectSpamReadings paralelizado que não
+// preserve a ordem sequencial de hoje).
+test("buildAveragedEntry — acha o dia mais recente mesmo com readings fora de ordem", () => {
+  const entry = buildAveragedEntry(
+    [
+      { apiDate: "20260722", ratio: 0.008 }, // mais antigo primeiro
+      { apiDate: "20260730", ratio: 0.02 }, // mais recente no meio/fim
+      { apiDate: "20260725", ratio: 0.01 },
+    ],
+    NOW,
+  );
+  assert.equal(entry?.date, "2026-07-30");
+});
+
+// Cenário real que motivou este PR (print do editor comparando a API contra
+// a UI do Postmaster, 260730): janela de 10 dias, só 3 tinham trafficStats
+// publicado (os outros 7 eram 404), um deles com o campo ausente = 0%.
+test("cenário real 260730: janela de 10 dias com 3 leituras (27/07=0%, 24/07=0.9%, 22/07=0.8%) → média 0.567%", async () => {
+  const now = new Date("2026-07-30T19:52:13.513Z");
+  const responsesByDate: Record<string, { status: number; body: Record<string, unknown> | null }> = {
+    "20260727": { status: 200, body: { domainReputation: "HIGH" } }, // sem o campo = 0%
+    "20260724": { status: 200, body: { userReportedSpamRatio: 0.009 } },
+    "20260722": { status: 200, body: { userReportedSpamRatio: 0.008 } },
+  };
+  const fetchStats = async (apiDate: string) => responsesByDate[apiDate] ?? { status: 404, body: null };
+
+  const { readings, daysChecked, httpErrors } = await collectSpamReadings(10, now, fetchStats);
+  assert.equal(daysChecked, 10);
+  assert.equal(httpErrors.length, 0);
+  assert.equal(readings.length, 3);
+
+  const entry = buildAveragedEntry(readings, now);
+  assert.equal(entry?.date, "2026-07-27");
+  assert.ok(Math.abs((entry?.spamRatePct ?? 0) - 0.5666666666666667) < 1e-9, `esperava ~0.567%, achou ${entry?.spamRatePct}`);
+  assert.equal(entry?.producedBy, "auto");
+});
+
+// ── parseWindowDaysArg ──
+
+test("parseWindowDaysArg — vazio usa o default (HEALTH_SAMPLE_DAYS, mesma janela das outras métricas da Rampa)", () => {
+  assert.equal(parseWindowDaysArg(""), 10);
+});
+
+test("parseWindowDaysArg — valor numérico válido é usado", () => {
+  assert.equal(parseWindowDaysArg("14"), 14);
+});
+
+test("parseWindowDaysArg — não-numérico ou < 1 lança erro explícito", () => {
+  assert.throws(() => parseWindowDaysArg("abc"), /inválido/);
+  assert.throws(() => parseWindowDaysArg("0"), /inválido/);
+  assert.throws(() => parseWindowDaysArg("-3"), /inválido/);
 });
