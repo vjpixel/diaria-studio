@@ -209,11 +209,11 @@ test("classifySpamSignal — indeterminado (sem leitura de Postmaster) NUNCA é 
   assert.equal(classifySpamSignal(indeterminate), "yellow");
 });
 
-test("classifySpamSignal — com leitura do Postmaster, aplica as mesmas 3 faixas do doc: 🔴 ≥0,1%, 🟡 0,05-0,1, 🟢 <0,05", () => {
-  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.049, breach: false }), "green");
-  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.05, breach: false }), "yellow");
-  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.099, breach: false }), "yellow");
-  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.1, breach: true }), "red");
+test("classifySpamSignal — com leitura do Postmaster, aplica as mesmas 3 faixas dos limiares oficiais do Postmaster Tools (#4154): 🔴 ≥0,3%, 🟡 0,1-0,3, 🟢 <0,1", () => {
+  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.099, breach: false }), "green");
+  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.1, breach: false }), "yellow");
+  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.299, breach: false }), "yellow");
+  assert.equal(classifySpamSignal({ source: "postmaster", ratePct: 0.3, breach: true }), "red");
 });
 
 test("decideSemaphore — spam indeterminado (sem leitura Postmaster) nunca deixa o semáforo geral verde, mesmo com tudo mais saudável (#4063, regressão da issue)", () => {
@@ -236,7 +236,7 @@ test("decideSemaphore — spam via Postmaster acima do limite BLOQUEIA o semáfo
 test("decideSemaphore — pior métrica manda (1 vermelha entre verdes → vermelho)", () => {
   assert.equal(decideSemaphore(mkHealth({}), mkSpamOk()), "green");
   assert.equal(
-    decideSemaphore(mkHealth({}), { source: "postmaster", ratePct: 0.2, breach: true }),
+    decideSemaphore(mkHealth({}), { source: "postmaster", ratePct: 0.35, breach: true }),
     "red",
   );
 });
@@ -737,9 +737,9 @@ test("resolveSpamSignal — entrada abaixo do limite resolve breach=false", () =
   assert.equal(signal.breach, false);
 });
 
-test("resolveSpamSignal — fronteira exata do breaker (0,1%) já é breach (>=)", () => {
-  assert.equal(resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.1 }), NOW).breach, true);
-  assert.equal(resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.099 }), NOW).breach, false);
+test("resolveSpamSignal — fronteira exata do breaker (0,3%, #4154) já é breach (>=)", () => {
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.3 }), NOW).breach, true);
+  assert.equal(resolveSpamSignal(mkPostmasterEntry({ spamRatePct: 0.299 }), NOW).breach, false);
 });
 
 test("resolveSpamSignal — leitura mais velha que POSTMASTER_STALE_MS (48h) volta a ser indeterminate", () => {

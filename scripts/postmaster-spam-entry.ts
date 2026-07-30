@@ -85,6 +85,7 @@ export function buildPostmasterSpamEntry(
     date: dateArg.trim() || todayLocalDate(now),
     spamRatePct: rate,
     recordedAt: now.toISOString(),
+    producedBy: "manual",
   };
 }
 

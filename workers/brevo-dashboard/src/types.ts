@@ -143,10 +143,11 @@ export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 // diaria-dashboard).
 export const EIA_ENGAGEMENT_KV_KEY = "eia:engagement";
 
-// #4063: leitura manual do spamRate diário do Postmaster Tools (clarice.ai),
-// gravada por scripts/postmaster-spam-entry.ts. Ver PostmasterSpamEntry acima
-// (re-exportada de scripts/lib/dashboard-kv-types.ts) e resolveSpamSignal em
-// thresholds.ts (precedência sobre complaints da Brevo).
+// #4063/#4154: spamRate diário do Postmaster Tools (clarice.ai), gravado
+// automaticamente via API por scripts/postmaster-spam-sync.ts (a cada 12h) ou
+// manualmente por scripts/postmaster-spam-entry.ts (fallback). Ver
+// PostmasterSpamEntry acima (re-exportada de scripts/lib/dashboard-kv-types.ts)
+// e resolveSpamSignal em thresholds.ts (precedência sobre complaints da Brevo).
 export const POSTMASTER_SPAM_KV_KEY = "postmaster:spam";
 
 // #4184: mapa de seção editorial (Destaques/Use Melhor/Radar) por ciclo

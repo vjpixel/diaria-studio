@@ -36,7 +36,11 @@ export const DEFAULT_HEALTH_THRESHOLDS: HealthThresholds = {
   openRate: { green: 17, yellow: 15 }, // 🔴 <15% (breaker do doc)
   hardBounceRate: { green: 1.5, yellow: 2 }, // 🔴 ≥2% (breaker)
   bounceRate: { green: 4, yellow: 5 }, // 🔴 ≥5% total hard+soft (breaker)
-  spamRate: { green: 0.05, yellow: 0.1 }, // 🔴 ≥0,1% (breaker)
+  // #4154 (260730): atualizado pelo editor pros limiares oficiais do Google
+  // Postmaster Tools (verde <0,10%, amarelo <0,30%, 🔴 ≥0,30%) agora que a
+  // leitura automática via API está em produção — substitui o par 0,05/0,1
+  // anterior, calibrado sobre o número (subcontado) da Brevo.
+  spamRate: { green: 0.1, yellow: 0.3 }, // 🔴 ≥0,3% (limiar oficial do Postmaster Tools)
   unsubRate: { green: 2, yellow: 3 }, // 🔴 ≥3% (breaker)
 };
 
@@ -66,14 +70,15 @@ export function isBounceBreach(
  * pico 1,5%, contra ≤0,02% reportado pela Brevo — o breaker do doc (≥0,1%)
  * nunca disparou.
  *
- * Decisão do editor (sem acesso à API do Postmaster, só ao painel): o
- * breaker NUNCA reporta 🟢 usando o número da Brevo. A fonte que governa é
- * uma leitura MANUAL do painel do Postmaster (`PostmasterSpamEntry`, gravada
- * por `scripts/postmaster-spam-entry.ts`, ~1min antes de cada envio) — com
- * PRECEDÊNCIA sobre `complaints`. Sem leitura (ausente OU velha demais pra
- * confiar), o sinal é `indeterminate`: nunca `breach=true` (não é um
- * bloqueio automático — a trava fica pra depois), mas também nunca colorido
- * verde (ver `classifySpamSignal` em `weekly-plan.ts`, que força 🟡 nesse caso).
+ * Decisão do editor: o breaker NUNCA reporta 🟢 usando o número da Brevo. A
+ * fonte que governa é uma leitura do Postmaster (`PostmasterSpamEntry`,
+ * gravada automaticamente via API por `scripts/postmaster-spam-sync.ts` a
+ * cada 12h desde #4154, ou manualmente por `scripts/postmaster-spam-entry.ts`
+ * como fallback) — com PRECEDÊNCIA sobre `complaints`. Sem leitura (ausente
+ * OU velha demais pra confiar), o sinal é `indeterminate`: nunca
+ * `breach=true` (não é um bloqueio automático — a trava fica pra depois),
+ * mas também nunca colorido verde (ver `classifySpamSignal` em
+ * `weekly-plan.ts`, que força 🟡 nesse caso).
  */
 export type SpamSignalSource = "postmaster" | "indeterminate";
 
@@ -83,6 +88,8 @@ export interface SpamSignal {
   ratePct: number | null;
   /** `true` quando a leitura do Postmaster cruzou o breaker (`>= thresholds.spamRate.yellow`). Sempre `false` quando indeterminado. */
   breach: boolean;
+  /** Qual produtor gravou a leitura (#4154) — `undefined` quando indeterminado ou entry pré-#4154 sem o campo. Só informativo (label da UI), nunca entra na classificação. */
+  producedBy?: "manual" | "auto";
 }
 
 /**
@@ -108,7 +115,7 @@ export const POSTMASTER_STALE_MS = 48 * 60 * 60 * 1000;
  * o resultado).
  */
 export function resolveSpamSignal(
-  entry: Pick<PostmasterSpamEntry, "spamRatePct" | "recordedAt"> | null | undefined,
+  entry: Pick<PostmasterSpamEntry, "spamRatePct" | "recordedAt" | "producedBy"> | null | undefined,
   now: Date = new Date(),
   t: HealthThresholds = DEFAULT_HEALTH_THRESHOLDS,
 ): SpamSignal {
@@ -122,6 +129,7 @@ export function resolveSpamSignal(
   return {
     source: "postmaster",
     ratePct: entry.spamRatePct,
+    producedBy: entry.producedBy,
     breach: entry.spamRatePct >= t.spamRate.yellow,
   };
 }

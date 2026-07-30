@@ -115,6 +115,7 @@ export function parseTrafficStatsResponse(
     date: apiDateToEntryDate(apiDate),
     spamRatePct: body.userReportedSpamRatio * 100,
     recordedAt: now.toISOString(),
+    producedBy: "auto",
   };
 }
 

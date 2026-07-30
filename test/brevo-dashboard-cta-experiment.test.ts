@@ -294,8 +294,8 @@ describe("evaluateArmGuardrails", () => {
     assert.equal(g.unsubBreach, true);
   });
 
-  test("spam >= 0,1% → spamBreach", () => {
-    const g = evaluateArmGuardrails(metrics({ complaints: 15, sent: 10000 })); // 0.15%
+  test("spam >= 0,3% → spamBreach (#4154)", () => {
+    const g = evaluateArmGuardrails(metrics({ complaints: 35, sent: 10000 })); // 0.35%
     assert.equal(g.spamBreach, true);
   });
 

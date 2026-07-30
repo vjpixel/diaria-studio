@@ -122,7 +122,7 @@ export const CTA01_EXPERIMENT: ExperimentDefinition = {
   pValueThreshold: 0.05,
   guardrailsNote:
     "Mesmos circuit breakers da aba Rampa, por braço: abertura <15%, hard bounce ≥2% (ou total hard+soft ≥5%), " +
-    "unsub ≥3%, spam ≥0,1%.",
+    "unsub ≥3%, spam ≥0,3% (#4154).",
   docPath: "docs/experiments/cta-ab-mensal-2606-07.md",
   matchCampaign: matchCta01Campaign,
 };

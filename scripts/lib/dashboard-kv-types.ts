@@ -115,14 +115,17 @@ export interface CohortStatsRow {
  * (nunca confundir "ausente" com "zero").
  */
 /**
- * #4063: leitura MANUAL do spamRate diário do Google Postmaster Tools
- * (domínio `clarice.ai`, painel — sem API, ver decisão do editor na issue).
- * Gravada por `scripts/postmaster-spam-entry.ts` (~1min antes de cada envio)
- * sob a chave KV `postmaster:spam`. Único registro (a leitura mais recente),
- * não histórico — o breaker da Rampa (`workers/brevo-dashboard/src/thresholds.ts::resolveSpamSignal`)
- * usa este valor com PRECEDÊNCIA sobre `globalStats.complaints` da Brevo, que
- * subconta o spam em ~50× (a Brevo só enxerga feedback loops; o "marcar como
- * spam" do Gmail não passa por FBL, e 73% da base é Gmail).
+ * #4063/#4154: leitura do spamRate diário do Google Postmaster Tools
+ * (domínio `clarice.ai`). Gravada sob a chave KV `postmaster:spam` por UM dos
+ * dois produtores (`producedBy` distingue qual): `scripts/postmaster-spam-sync.ts`
+ * (automático, via API, a cada 12h — caminho primário desde #4154) ou
+ * `scripts/postmaster-spam-entry.ts` (manual, leitura do painel — fallback pra
+ * outage da API ou checagem pontual). Único registro (a leitura mais
+ * recente), não histórico — o breaker da Rampa
+ * (`workers/brevo-dashboard/src/thresholds.ts::resolveSpamSignal`) usa este
+ * valor com PRECEDÊNCIA sobre `globalStats.complaints` da Brevo, que subconta
+ * o spam em ~50× (a Brevo só enxerga feedback loops; o "marcar como spam" do
+ * Gmail não passa por FBL, e 73% da base é Gmail).
  */
 export interface PostmasterSpamEntry {
   /** Data (YYYY-MM-DD) a que a leitura se refere — o dia do painel Postmaster consultado. */
@@ -131,6 +134,8 @@ export interface PostmasterSpamEntry {
   spamRatePct: number;
   /** ISO timestamp de quando esta entrada foi registrada (gravação, não `date`). */
   recordedAt: string;
+  /** Qual dos dois produtores gravou esta leitura — opcional pra entries pré-#4154 (schema evolution, nunca inferir um valor). */
+  producedBy?: "manual" | "auto";
 }
 
 /**

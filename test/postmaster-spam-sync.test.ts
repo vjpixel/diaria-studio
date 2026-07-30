@@ -32,6 +32,7 @@ test("parseTrafficStatsResponse — userReportedSpamRatio presente vira spamRate
     date: "2026-07-27",
     spamRatePct: 1.02,
     recordedAt: NOW.toISOString(),
+    producedBy: "auto",
   });
 });
 
