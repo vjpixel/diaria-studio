@@ -1912,6 +1912,34 @@ describe("dedupLancamentoIntraBucket (#4360)", () => {
     assert.equal(kept[0].url, "https://b.com/2", "o único com summary sobrevive");
   });
 
+  it("desempate por segundo nível: nenhum tem summary → prefere o que NÃO é model-card/hub page", () => {
+    // Exercita o 2º nível de desempate (isModelCardOrHubPage) — diferente do
+    // teste CASO REAL acima, que já decide no 1º nível (summary presente vs
+    // ausente). Aqui NENHUM dos 2 itens tem summary, então a decisão cai pro
+    // isModelCardOrHubPage.
+    const articles = [
+      {
+        url: "https://huggingface.co/meta-llama/Llama-4-Scout",
+        title: "Llama 4 Scout",
+        // sem summary — model card (huggingface.co/{org}/{model})
+      },
+      {
+        url: "https://ai.meta.com/blog/llama-4-scout-announcement/",
+        title: "Introducing Llama 4 Scout",
+        // sem summary também — mas NÃO é model-card/hub page
+      },
+    ];
+    const { kept, removed } = dedupLancamentoIntraBucket(articles);
+    assert.equal(removed.length, 1);
+    assert.equal(
+      removed[0].url,
+      "https://huggingface.co/meta-llama/Llama-4-Scout",
+      "model card deve ser o removido quando nenhum tem summary",
+    );
+    assert.equal(kept.length, 1);
+    assert.equal(kept[0].url, "https://ai.meta.com/blog/llama-4-scout-announcement/");
+  });
+
   it("dedupIntraEdition (integração): consolida duplicata intra-LANÇAMENTOS quando nenhum é destaque", () => {
     const input = {
       highlights: [

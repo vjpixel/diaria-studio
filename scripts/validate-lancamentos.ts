@@ -23,17 +23,31 @@
  *   no path indicado para que `sync-intro-count.ts` ajuste menções
  *   narrativas a "X lançamentos" no intro pós-Clarice.
  *
+ *   #4339: SIDE EFFECT — se algum item de `lancamento[]` for `not_a_tool`
+ *   (ver abaixo), o modo `--approved` REESCREVE o arquivo apontado por
+ *   `--approved` IN-PLACE, movendo esse item pra `radar[]` (via
+ *   `demoteNotATool`). Isso significa que este modo não é mais só leitura —
+ *   ele muta `01-approved.json` como efeito colateral da validação. Idempotente
+ *   (rodar de novo não re-move nada, pois o item já não está mais em
+ *   `lancamento[]`).
+ *
  * #1968: verificação POSITIVA de ferramenta. Além do filtro de domínio oficial
  * (#160) e do filtro NEGATIVO de governança (#1799), cada item precisa de um
  * sinal POSITIVO de produto (software/hardware) no slug/título. Item oficial sem
- * sinal → `not_a_tool` → hard-block (exit 1), surfaçado no gate (pega parceria/
- * evento/programa/relatório que passariam só no filtro negativo). Override pra
- * slug atípico legítimo: `seed/lancamentos-tool-allowlist.txt`.
+ * sinal → `not_a_tool`. No modo MD (`validateLancamentos`), isso é hard-block
+ * (exit 1) — o MD final não deveria conter esse item. No modo approved-json
+ * (`mainApproved`, #4339), não é mais hard-block-e-espera: o item é auto-movido
+ * pra RADAR (ver acima) — o hard-block do modo MD continua como defesa-em-
+ * profundidade caso algo escape a auto-demoção. Override pra slug atípico
+ * legítimo: `seed/lancamentos-tool-allowlist.txt`.
  *
- * Exit codes:
+ * Exit codes (modo MD):
  *   0  Todas as URLs em LANÇAMENTOS são oficiais E ferramentas (ou seção vazia)
  *   1  Pelo menos 1 URL não-oficial (#160) OU 1 item sem sinal de produto (#1968)
  *   2  Erro de leitura/uso
+ *
+ * Exit codes (modo approved-json, #4339): 1 só se houver URL não-oficial
+ * (`removed`); not_a_tool não bloqueia mais (é auto-resolvido).
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
