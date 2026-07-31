@@ -135,7 +135,7 @@ export const REVIEW_FILES: Record<ReviewSlug, string> = {
   // #4275 (Fase 1 — "Gerar e revisar"): variante Patronos do HTML final,
   // gerada manualmente via `npx tsx scripts/render-newsletter-html.ts
   // {edition-dir} --full --patronos --out {edition-dir}/_internal/newsletter-final-patronos.html`
-  // (não auto-gerada pelo Stage 4 nesta fase — ver PR #4275 pro raciocínio).
+  // (não auto-gerada pelo Stage 4 nesta fase — ver issue #4275 pro raciocínio).
   // MESMO mecanismo genérico de leitura/save/diff/baseline do slug
   // `html-final` acima — reusa `REVIEW_FILES`/`isReviewSlug`, sem endpoint
   // dedicado.
