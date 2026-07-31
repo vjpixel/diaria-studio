@@ -803,18 +803,20 @@ test("renderWeeklyPlanTabPanel — sem leitura de Postmaster, semáforo NUNCA é
   assert.match(html, /Amarelo/);
 });
 
-// #4400: o rótulo "Spam (Postmaster — governa o semáforo)" voltou a ser
-// ESTÁTICO — não reflete mais `producedBy` (sufixo ", automático"/", manual"
-// introduzido no #4154, removido aqui a pedido do editor por simplicidade).
+// #4400: o rótulo virou "Spam (Postmaster)" — ESTÁTICO em 2 sentidos: (1) não
+// reflete mais `producedBy` (sufixo ", automático"/", manual" introduzido no
+// #4154), e (2) também perdeu o sufixo fixo "— governa o semáforo" (pedido do
+// editor era texto estático SIMPLES, não só remover a parte dinâmica).
 // `producedBy` continua existindo em `SpamSignal`/`PostmasterSpamEntry`
 // (testado em `resolveSpamSignal — repassa producedBy...` acima), só não
 // afeta mais o rótulo renderizado — testado aqui com os 3 valores possíveis
 // (auto, manual, ausente) pra garantir que nenhum deles vaza pro texto.
-test("renderWeeklyPlanTabPanel — rótulo do Postmaster é estático, independente de producedBy", () => {
+test("renderWeeklyPlanTabPanel — rótulo do Postmaster é estático 'Spam (Postmaster)', independente de producedBy", () => {
   const camps = [campaignSentHoursAgo(60, { statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600 }) })];
   for (const producedBy of ["auto", "manual", undefined] as const) {
     const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry(producedBy ? { producedBy } : {}));
-    assert.match(html, /Spam \(Postmaster — governa o semáforo\)/);
-    assert.doesNotMatch(html, /Spam \(Postmaster, (automático|manual)/);
+    assert.match(html, /<tr><td>Spam \(Postmaster\)<\/td>/, `producedBy=${producedBy}`);
+    assert.doesNotMatch(html, /Spam \(Postmaster, (automático|manual)/, `producedBy=${producedBy}`);
+    assert.doesNotMatch(html, /governa o semáforo/, `producedBy=${producedBy}`);
   }
 });

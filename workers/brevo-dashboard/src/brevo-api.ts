@@ -887,9 +887,11 @@ export function normalizeEiaEngagement(raw: unknown): EiaEngagementSummary | nul
  * `producedBy` (#4154) precisa ser copiado explicitamente — achado no
  * self-review do #4342: sem essa linha, o campo é descartado silenciosamente
  * aqui (o ÚNICO choke point de leitura do KV, usado tanto pelo render do
- * dashboard quanto por `GET /api/postmaster-spam`) e o rótulo dinâmico
- * "auto"/"manual" da aba Rampa nunca reflete a origem real da leitura em
- * produção, mesmo com os dois produtores gravando o campo corretamente.
+ * dashboard quanto por `GET /api/postmaster-spam`). Desde #4400, o render do
+ * dashboard não usa mais `producedBy` (o rótulo "Spam (Postmaster)" da aba
+ * Rampa virou estático) — mas `GET /api/postmaster-spam` continua expondo o
+ * campo pra outros consumidores (ex: `scripts/clarice-schedule-ramp.ts`), e
+ * sem esta linha ele voltaria a ser descartado silenciosamente pra todos eles.
  */
 export function normalizePostmasterSpamEntry(raw: unknown): PostmasterSpamEntry | null {
   if (!raw || typeof raw !== "object") return null;

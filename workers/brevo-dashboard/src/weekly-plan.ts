@@ -568,13 +568,17 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
   const spamPostmasterStyle = spamSignal.source === "postmaster"
     ? `color:${STATUS_COLOR[classifySpamSignal(spamSignal, T)]};font-weight:600`
     : neutralValueStyle();
-  // #4400: rótulo simplificado pra estático (era dinâmico por
-  // `spamSignal.producedBy`, sufixo ", automático"/", manual" via
-  // SPAM_SOURCE_LABEL — removido junto, ver histórico no #4154/#4342). O
-  // editor pediu simplicidade; `producedBy` continua disponível em
-  // `SpamSignal`/`PostmasterSpamEntry` (thresholds.ts) pra quem precisar do
-  // dado, só não aparece mais nesta linha da tabela.
-  const spamPostmasterRow = `<tr><td>Spam (Postmaster — governa o semáforo)</td><td style="${spamPostmasterStyle}">${spamPostmasterValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
+  // #4400: rótulo simplificado pra estático "Spam (Postmaster)" — era
+  // "Spam (Postmaster{, automático|, manual} — governa o semáforo)", com
+  // sufixo dinâmico por `spamSignal.producedBy` via SPAM_SOURCE_LABEL
+  // (removido junto, ver histórico no #4154/#4342) mais o sufixo fixo
+  // "— governa o semáforo" (também removido — pedido do editor era texto
+  // estático SIMPLES, não só tirar a parte dinâmica). `producedBy` continua
+  // disponível em `SpamSignal`/`PostmasterSpamEntry` (thresholds.ts) pra quem
+  // precisar do dado, só não aparece mais nesta linha da tabela; a docstring
+  // acima desta função (e o código logo abaixo) continuam sendo a fonte de
+  // verdade de que esta É a linha que governa o semáforo.
+  const spamPostmasterRow = `<tr><td>Spam (Postmaster)</td><td style="${spamPostmasterStyle}">${spamPostmasterValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
 
   // Ordem: abertura, hard bounce, bounce total, os 2 de spam (Postmaster antes
   // do Brevo — é o que governa), unsub.
