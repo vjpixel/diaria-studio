@@ -37,9 +37,11 @@ import { resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { escHtml } from "../lib/html-escape.ts";
 
-export type ReportKind = "edicao" | "overnight" | "develop" | "mensal";
+// #4347: "clarice-novos" — relatório da skill /diaria-clarice-novos (rodada
+// sem gate humano do laço cadastro-novo→envio-imediato, D14).
+export type ReportKind = "edicao" | "overnight" | "develop" | "mensal" | "clarice-novos";
 
-const VALID_KINDS: ReportKind[] = ["edicao", "overnight", "develop", "mensal"];
+const VALID_KINDS: ReportKind[] = ["edicao", "overnight", "develop", "mensal", "clarice-novos"];
 
 export function isReportKind(value: string): value is ReportKind {
   return (VALID_KINDS as string[]).includes(value);

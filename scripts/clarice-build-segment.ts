@@ -41,6 +41,10 @@
  * dry-run por padrão) + schedule (manual). `--dry-run` aqui só imprime o
  * plano sem escrever.
  *
+ * #4347: `BREVO_CLARICE_API_KEY` é OPCIONAL em `--dry-run` (a checagem de
+ * campanhas comprometidas — queued/sent — é pulada com aviso se ausente ou se
+ * a consulta falhar) mas OBRIGATÓRIA pra escrita real (aborta sem ela).
+ *
  * Uso:
  *   npx tsx scripts/clarice-build-segment.ts --group engajados --cycle 2606-07 [--budget N] [--min-score N] [--dry-run]
  *   --group X    OBRIGATÓRIO — um dos grupos nomeados (ver NAMED_GROUPS em clarice-segment.ts).
@@ -57,6 +61,13 @@
  *                Sem a flag, nenhum corte por score é aplicado (comportamento
  *                inalterado).
  *   --dry-run    só conta/imprime o plano, nada escrito.
+ *   --since YYYY-MM-DD   OBRIGATÓRIO só pro grupo `novos` (#4347) — janela de
+ *                "cadastrou desde". Ignorado pelos outros 3 grupos.
+ *   --force      OPCIONAL — só pro grupo `novos` (#4347, D13): destrava a
+ *                escrita quando o grupo selecionou mais que
+ *                `NOVOS_ROUND_SIZE_CAP` (500) contatos. Sem a flag, a rodada
+ *                aborta ANTES de escrever (substitui o gate humano que a
+ *                skill `/diaria-clarice-novos` não tem — D6).
  *   --data-root DIR   OPCIONAL, uso interno de teste (#4207, generaliza o
  *                `--segments-dir` pontual do #4176) — substitui `CLARICE_BASE`
  *                (raiz fixa `data/clarice-subscribers`) na resolução de
@@ -107,15 +118,21 @@
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
+import { loadProjectEnv } from "./lib/env-loader.ts";
 import { openClariceDb, DEFAULT_DB_PATH, isDerivedStale } from "./lib/clarice-db.ts";
 import {
   NAMED_GROUPS,
   isNamedGroupKey,
+  excludeCommittedToQueuedCampaigns,
   type NamedGroupKey,
+  type NamedGroupContext,
   type StoreRow,
 } from "./lib/clarice-segment.ts";
 import { clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
+import { fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
+
+loadProjectEnv();
 
 export interface SegmentRow extends StoreRow {
   name: string | null;
@@ -144,6 +161,7 @@ export function buildSegmentArtifact(
   group: NamedGroupKey,
   budget: number,
   minScore = 0,
+  ctx?: NamedGroupContext,
 ): { csv: string; manifestEntry: SegmentManifestEntry; selected: SegmentRow[] } {
   const def = NAMED_GROUPS[group];
   const nameByEmail = new Map(rows.map((r) => [r.email, firstName(r.name)]));
@@ -154,7 +172,8 @@ export function buildSegmentArtifact(
   // `def.segment` filtra+ordena preservando a IDENTIDADE dos objetos de `rows`
   // (não clona) — o cast de volta pra SegmentRow[] é seguro porque cada
   // elemento retornado É um dos objetos de `rows` (que já são SegmentRow).
-  const ordered = def.segment(scoped) as SegmentRow[];
+  // `ctx` (#4347): só o grupo `novos` precisa (sinceIso) — os outros 3 ignoram.
+  const ordered = def.segment(scoped, ctx) as SegmentRow[];
   const selected = budget > 0 ? ordered.slice(0, budget) : ordered;
 
   const csvRows = selected.map((r) => ({ email: r.email, NOME: nameByEmail.get(r.email) ?? "" }));
@@ -163,6 +182,40 @@ export function buildSegmentArtifact(
   const manifestEntry: SegmentManifestEntry = { key: group, file, desc: def.label, count: selected.length };
 
   return { csv, manifestEntry, selected };
+}
+
+// ---------------------------------------------------------------------------
+// Teto de tamanho da rodada (#4347, D13) — grupo `novos` apenas
+// ---------------------------------------------------------------------------
+//
+// A skill `/diaria-clarice-novos` roda ~4×/semana SEM gate humano (D6) — o
+// teto abaixo é o substituto direto do gate: trava contra `--since` errado,
+// rebuild que zerou `sends_count`, ou backlog inesperado que faria a rodada
+// disparar pra um volume muito maior que o esperado (~100/rodada). Só o
+// grupo `novos` é sujeito a este teto — os outros 3 grupos nomeados
+// (engajados/reativação/ramp-warm) são operados manualmente pelo editor, que
+// já é o gate.
+
+export const NOVOS_ROUND_SIZE_CAP = 500;
+
+/**
+ * Pura/testável: `selectedCount > cap` sem `--force` → aborta (`ok:false`).
+ * `--force` destrava (D13) — o editor já olhou e decidiu prosseguir mesmo
+ * assim. Só se aplica quando `applies` é true (chamado só pro grupo `novos`).
+ */
+export function checkRoundSizeCap(
+  selectedCount: number,
+  cap: number,
+  force: boolean,
+): { ok: true } | { ok: false; message: string } {
+  if (force || selectedCount <= cap) return { ok: true };
+  return {
+    ok: false,
+    message:
+      `❌ grupo 'novos' selecionou ${selectedCount} contato(s) — acima do teto de ${cap} (D13, #4347). ` +
+      `Isso substitui o gate humano que a skill não tem (D6): provável --since errado, rebuild que zerou ` +
+      `sends_count, ou backlog inesperado. Confira antes de prosseguir. Use --force pra destravar depois de olhar.`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +323,7 @@ export function appendSentOrQueuedEmails(
   writeFileSync(file, JSON.stringify(merged, null, 2), "utf8");
 }
 
-export function main(argv: string[] = process.argv.slice(2)): void {
+export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
   const cycle = requireCycleArg(argv);
   const dbPath = getArg(argv, "db") || DEFAULT_DB_PATH;
 
@@ -283,6 +336,20 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     process.exit(1);
   }
   const group: NamedGroupKey = groupArg;
+
+  // #4347: `novos` exige --since YYYY-MM-DD (janela do laço Stripe→MV→envio).
+  // Validação de FORMA aqui (semântica de data delegada ao Date.parse dentro
+  // de isNovos/segmentNovos, via ctx.sinceIso) — os outros 3 grupos ignoram.
+  let ctx: NamedGroupContext | undefined;
+  const forceCap = hasFlag(argv, "force");
+  if (group === "novos") {
+    const sinceArg = getArg(argv, "since");
+    if (!sinceArg || !/^\d{4}-\d{2}-\d{2}$/.test(sinceArg) || Number.isNaN(Date.parse(sinceArg))) {
+      console.error(`❌ --group novos requer --since YYYY-MM-DD (ex: --since 2026-07-01). Recebido: "${sinceArg}".`);
+      process.exit(1);
+    }
+    ctx = { sinceIso: sinceArg };
+  }
 
   // --budget é OPCIONAL (diferente de clarice-build-waves-store.ts, onde é
   // obrigatório): sem a flag, o grupo inteiro (já filtrado pelo predicado) é
@@ -342,7 +409,7 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const rows = db
     .prepare(
       `SELECT email, name, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
-              opens_count, last_sent_at, mv_bucket
+              opens_count, last_sent_at, mv_bucket, brevo_list_ids, created
          FROM clarice_users`,
     )
     .all() as unknown as SegmentRow[];
@@ -363,15 +430,68 @@ export function main(argv: string[] = process.argv.slice(2)): void {
   const dataRootArg = getArg(argv, "data-root");
   const segDir = clariceSegmentsDir(cycle, dataRootArg || undefined);
   const sentOrQueued = loadSentOrQueuedEmails(segDir);
-  const universe = excludeSentOrQueued(rows, sentOrQueued);
-  const alreadyTracked = rows.length - universe.length;
+  const afterSentOrQueued = excludeSentOrQueued(rows, sentOrQueued);
+  const alreadyTracked = rows.length - afterSentOrQueued.length;
   if (alreadyTracked > 0) {
     console.error(
       `🔒 dedup por ciclo (#3227): ${alreadyTracked} contato(s) já selecionado(s) por outra invocação de grupo nomeado neste ciclo — excluído(s) do universo.`,
     );
   }
 
-  const { csv, manifestEntry, selected } = buildSegmentArtifact(universe, group, budget, minScore);
+  // #4347: guard queued/sent (fetchCommittedCampaignListIds/
+  // excludeCommittedToQueuedCampaigns, já usado por
+  // weekly-send-plan-audience.ts/clarice-schedule-ramp.ts/cohort-order-dryrun.ts)
+  // — vale pros 4 grupos nomeados, não só 'novos' (#4347 Etapa 2c). Fail-safe:
+  // --dry-run PROSSEGUE com aviso se a consulta falhar (ou sem a key); escrita
+  // real ABORTA — nunca escreve um grupo sem essa checagem passar, senão duas
+  // rodadas próximas (a cadência de ~4×/semana que a #4347 introduz) podem
+  // re-selecionar quem já recebeu (sync do Brevo é 1×/dia, `sends_count` fica
+  // até 24h defasado — `fetchSentCampaignListIds` é a fonte AO VIVO que fecha
+  // esse furo).
+  const apiKey = process.env.BREVO_CLARICE_API_KEY;
+  let committedListIds: Set<string> = new Set();
+  if (apiKey) {
+    try {
+      committedListIds = await fetchCommittedCampaignListIds(apiKey);
+      if (committedListIds.size > 0) {
+        console.error(
+          `🔒 guard queued/sent: ${committedListIds.size} lista(s) Brevo comprometida(s) (campanha agendada ou já disparada) serão excluídas.`,
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`⚠️  Não foi possível consultar campanhas agendadas/disparadas na Brevo: ${msg}`);
+      if (!dryRun) {
+        console.error("❌ escrita real requer a checagem de campanhas agendadas/disparadas bem-sucedida — evita envio duplicado. Abortando (use --dry-run pra inspecionar sem essa checagem).");
+        process.exit(1);
+      }
+    }
+  } else if (!dryRun) {
+    console.error(
+      "❌ BREVO_CLARICE_API_KEY não definida — necessária pra checar campanhas agendadas/disparadas antes de escrever (--dry-run funciona sem ela).",
+    );
+    process.exit(1);
+  }
+  const universe = excludeCommittedToQueuedCampaigns(afterSentOrQueued, committedListIds);
+  const committedExcluded = afterSentOrQueued.length - universe.length;
+  if (committedExcluded > 0) {
+    console.error(`🔒 ${committedExcluded} contato(s) excluído(s) por já estarem comprometidos com campanha agendada/disparada.`);
+  }
+
+  const { csv, manifestEntry, selected } = buildSegmentArtifact(universe, group, budget, minScore, ctx);
+
+  // #4347 D13: teto de tamanho da rodada — só o grupo 'novos' (substituto do
+  // gate humano que a skill /diaria-clarice-novos não tem, D6). Checado ANTES
+  // de qualquer escrita (CSV/manifest), mesmo em --dry-run (reflete o plano
+  // de verdade) — mas só ABORTA o processo em --dry-run pra sinalizar cedo;
+  // fora de --dry-run também aborta, sempre antes de tocar disco.
+  if (group === "novos") {
+    const cap = checkRoundSizeCap(manifestEntry.count, NOVOS_ROUND_SIZE_CAP, forceCap);
+    if (!cap.ok) {
+      console.error(cap.message);
+      process.exit(1);
+    }
+  }
 
   const summary = {
     cycle,
@@ -380,8 +500,10 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     source: "store-driven, grupo nomeado (#2885)",
     budget: budget || undefined,
     min_score: minScore || undefined,
+    since: ctx?.sinceIso || undefined,
     universe_total: rows.length,
     already_sent_or_queued: alreadyTracked || undefined,
+    already_committed_brevo: committedExcluded || undefined,
     selected: manifestEntry.count,
   };
 
@@ -410,5 +532,8 @@ export function main(argv: string[] = process.argv.slice(2)): void {
 }
 
 if (isMainModule(import.meta.url)) {
-  main();
+  main().catch((e) => {
+    console.error(String((e as Error)?.stack || e));
+    process.exit(1);
+  });
 }

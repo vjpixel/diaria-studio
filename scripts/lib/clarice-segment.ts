@@ -75,6 +75,12 @@ export interface StoreRow {
   // `excludeCommittedToQueuedCampaigns` trata ausência/parse-falho como "sem
   // list nenhuma" (não exclui por engano).
   brevo_list_ids?: string | null;
+  // #4347: ISO date/datetime (Stripe `created`, já persistido na coluna
+  // `created` desde a Etapa 1 — ver clarice-db.ts). Opcional (mesmo padrão dos
+  // campos acima) — só o grupo nomeado `novos` (segmentNovos abaixo) depende
+  // dele; fixtures que não populam o campo continuam válidas pros demais
+  // grupos/segmentFromStore.
+  created?: string | null;
 }
 
 export interface Segmentation {
@@ -242,7 +248,7 @@ export function loadStoreRows(db: {
   return db
     .prepare(
       `SELECT email, tier, cohort, priority_points, send_eligible, ineligible_reason, sends_count,
-              opens_count, last_sent_at, mv_bucket, brevo_list_ids
+              opens_count, last_sent_at, mv_bucket, brevo_list_ids, created
          FROM clarice_users`,
     )
     .all() as StoreRow[];
@@ -454,21 +460,89 @@ export function segmentRampWarm(rows: StoreRow[]): StoreRow[] {
     });
 }
 
+/**
+ * `novos` (#4347 — cadastro novo, laço Stripe→MV→envio imediato): reusa
+ * `isFirstSend` (elegível + nunca enviado) restrito a `created >= sinceIso` E
+ * `mv_bucket='verified' OU cohort MV-isento (#3826)` — mesmo racional de
+ * `isRampWarm`, com o corte temporal extra que distingue "cadastro recente"
+ * da base fria inteira que `ramp-warm` cobre. `mv_bucket='unknown'` fica de
+ * fora (D9, decisão do editor #4347 — sem flag de opt-in, mesmo padrão de
+ * `isRampWarm`). Exclui contas de teste do editor (#2895/#2920), mesmo guard
+ * de defesa em profundidade dos demais grupos.
+ *
+ * `sinceIso` é comparado via epoch (Date.parse), não string — robusto a
+ * `created` vir como ISO datetime completo e `sinceIso` como data pura
+ * (`YYYY-MM-DD`, meia-noite UTC implícita). `created` ausente/inválido nunca
+ * satisfaz (fail-safe: sem data de cadastro conhecida, não é "novo").
+ */
+export function isNovos(
+  r: Pick<StoreRow, "email" | "send_eligible" | "sends_count" | "created" | "mv_bucket" | "cohort">,
+  sinceIso: string,
+): boolean {
+  if (!isFirstSend(r)) return false;
+  const createdMs = r.created ? Date.parse(r.created) : NaN;
+  const sinceMs = Date.parse(sinceIso);
+  if (Number.isNaN(createdMs) || Number.isNaN(sinceMs) || createdMs < sinceMs) return false;
+  return (r.mv_bucket === "verified" || isMvExemptCohort(r.cohort)) && !isTestAccount(r.email);
+}
+
+/**
+ * Ordem de `novos`: `cohortSendRank` (assinantes-ativos primeiro), desempate
+ * `created` DESC (cadastro mais recente primeiro dentro do mesmo cohort),
+ * email ASC como último desempate determinístico.
+ */
+export function segmentNovos(rows: StoreRow[], opts: { sinceIso: string }): StoreRow[] {
+  return rows
+    .filter((r) => isNovos(r, opts.sinceIso))
+    .slice()
+    .sort((a, b) => {
+      const ra = cohortSendRank(a.cohort);
+      const rb = cohortSendRank(b.cohort);
+      if (ra !== rb) return ra < rb ? -1 : 1;
+      const ta = a.created ? Date.parse(a.created) : -Infinity;
+      const tb = b.created ? Date.parse(b.created) : -Infinity;
+      if (ta !== tb) return tb - ta; // DESC — mais recente primeiro
+      return a.email.localeCompare(b.email);
+    });
+}
+
 /** Registro dos grupos nomeados — fonte única pro CLI (`clarice-build-segment.ts`)
  *  validar `--group` e despachar pro predicado certo. */
-export type NamedGroupKey = "engajados" | "reativacao" | "ramp-warm";
+export type NamedGroupKey = "engajados" | "reativacao" | "ramp-warm" | "novos";
+
+/** Contexto extra que um predicado de grupo pode precisar — hoje só `novos`
+ *  (`sinceIso`, obrigatório pra esse grupo). Os outros 3 ignoram `ctx`. */
+export interface NamedGroupContext {
+  sinceIso?: string;
+}
 
 export interface NamedGroupDef {
   key: NamedGroupKey;
   /** Rótulo curto (vira `desc` no manifest, mesma convenção de `describeWave`). */
   label: string;
-  segment: (rows: StoreRow[]) => StoreRow[];
+  segment: (rows: StoreRow[], ctx?: NamedGroupContext) => StoreRow[];
 }
 
 export const NAMED_GROUPS: Record<NamedGroupKey, NamedGroupDef> = {
-  engajados: { key: "engajados", label: "Engajados (retenção)", segment: segmentEngajados },
-  reativacao: { key: "reativacao", label: "Reativação", segment: segmentReativacao },
-  "ramp-warm": { key: "ramp-warm", label: "Ramp warm (1º envio seguro)", segment: segmentRampWarm },
+  engajados: { key: "engajados", label: "Engajados (retenção)", segment: (rows) => segmentEngajados(rows) },
+  reativacao: { key: "reativacao", label: "Reativação", segment: (rows) => segmentReativacao(rows) },
+  "ramp-warm": {
+    key: "ramp-warm",
+    label: "Ramp warm (1º envio seguro)",
+    segment: (rows) => segmentRampWarm(rows),
+  },
+  novos: {
+    key: "novos",
+    label: "Novos (cadastro recente)",
+    segment: (rows, ctx) => {
+      if (!ctx?.sinceIso) {
+        throw new Error(
+          "grupo 'novos' requer sinceIso (via --since) — ver scripts/clarice-build-segment.ts.",
+        );
+      }
+      return segmentNovos(rows, { sinceIso: ctx.sinceIso });
+    },
+  },
 };
 
 /** `key` é um grupo nomeado reconhecido? (type guard pro CLI validar `--group`). */
