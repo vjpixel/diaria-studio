@@ -16,6 +16,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { isAggregator } from "./lib/aggregators";
 import { isEditoriallyBlocked } from "./lib/editorial-blocklist.ts";
+import { isUrlBlocked } from "./lib/url-blocklist.ts";
 import { CONFIG } from "./lib/config.ts";
 import { canonicalize } from "./lib/url-utils.ts";
 import { runMain } from "./lib/exit-handler.ts";
@@ -187,6 +188,7 @@ export function dedup(
   const afterPass0: Article[] = [];
   let pass0Rejected = 0;
   let pass0Editorial = 0;
+  let pass0Url = 0;
   for (const art of articles) {
     if (isAggregator(art.url)) {
       pushRemoved(removed, art, "agregador/roundup bloqueado (use fonte primária)");
@@ -195,6 +197,10 @@ export function dedup(
       // #1760: fonte que o editor decidiu não incluir (ex: simonwillison.net).
       pushRemoved(removed, art, "fonte em blacklist editorial (#1760)");
       pass0Editorial++;
+    } else if (isUrlBlocked(art.url)) {
+      // #4340: artigo específico que o editor decidiu não incluir (fonte continua válida).
+      pushRemoved(removed, art, "artigo em blacklist por URL (#4340)");
+      pass0Url++;
     } else {
       afterPass0.push(art);
     }
@@ -204,6 +210,9 @@ export function dedup(
   }
   if (pass0Editorial > 0) {
     console.error(`dedup Pass-0: ${pass0Editorial} URL(s) de fonte em blacklist editorial rejeitadas (#1760)`);
+  }
+  if (pass0Url > 0) {
+    console.error(`dedup Pass-0: ${pass0Url} URL(s) em blacklist por artigo rejeitadas (#4340)`);
   }
 
   // ---- Pass 1: dedup against past editions (URL only) --------------------
