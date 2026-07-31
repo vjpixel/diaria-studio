@@ -68,15 +68,6 @@ export async function readSession(secret: string, cookieHeader: string | null): 
   return { email: result.email, pending: false };
 }
 
-/** Retrocompat: só o e-mail de uma sessão CONFIRMADA — `null` pra sessão
- * `pending` (acesso completo não pode ser concedido antes da confirmação,
- * #4323) e pra ausência/assinatura inválida. Callers que precisam distinguir
- * os dois estados usam `readSession` diretamente. */
-export async function readSessionEmail(secret: string, cookieHeader: string | null): Promise<string | null> {
-  const session = await readSession(secret, cookieHeader);
-  return session && !session.pending ? session.email : null;
-}
-
 export function clearSessionCookieHeader(): string {
   return buildClearCookieHeader(CURSOS_SESSION_COOKIE);
 }
