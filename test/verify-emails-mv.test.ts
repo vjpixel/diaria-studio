@@ -1,6 +1,10 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import Papa from "papaparse";
 import {
   classifyResult,
   buildVerifyUrl,
@@ -11,6 +15,9 @@ import {
   hasLegacyInputFlag,
   splitRows,
   buildOutputRows,
+  buildErrorRows,
+  verifyCohortList,
+  TRANSIENT_ERROR_RESULT,
   parseArgs,
   type Bucket,
 } from "../scripts/verify-emails-mv.ts";
@@ -413,3 +420,188 @@ describe("parseArgs", () => {
     assert.equal(parseArgs(["--limit", "-5"]).limit, null);
   });
 });
+
+describe("buildErrorRows (#4353 — falhas transitórias materializadas SEM tocar o checkpoint)", () => {
+  it("monta linhas a partir de failures[], resolvendo name de currentRows > allCohortRows > vazio", () => {
+    const rows = buildErrorRows(
+      ["bad@b.com", "ghost@b.com"],
+      [{ email: "bad@b.com", name: "Fresh" }],
+      [{ email: "bad@b.com", name: "Stale" }, { email: "ghost@b.com", name: "Ghost" }],
+      "email",
+    );
+    assert.deepEqual(rows, [
+      { email: "bad@b.com", name: "Fresh" }, // fresh > stale
+      { email: "ghost@b.com", name: "Ghost" },
+    ]);
+  });
+
+  it("email sem name em nenhuma das duas fontes vira string vazia (nunca undefined)", () => {
+    const rows = buildErrorRows(["unknown@b.com"], [], [], "email");
+    assert.deepEqual(rows, [{ email: "unknown@b.com", name: "" }]);
+  });
+
+  it("failures vazio retorna array vazio", () => {
+    assert.deepEqual(buildErrorRows([], [{ email: "a@b.com", name: "A" }], [], "email"), []);
+  });
+});
+
+describe(
+  "verifyCohortList — REGRESSÃO #4353: falha transitória (retries esgotados) some dos 3 CSVs, log mentia 'ficam em unknown'",
+  () => {
+    /** Mock de fetch: `okEmail` sempre sucede; `badEmail` sempre devolve 500
+     *  (transitório, retry) até os 4 attempts (inicial + 3 retries) se
+     *  esgotarem — replica fielmente o cenário real de "falha transitória
+     *  esgotada" descrito na issue. */
+    function mockFetch(okEmail: string, badEmail: string): { fetch: typeof fetch; callsByEmail: Map<string, number> } {
+      const callsByEmail = new Map<string, number>();
+      const fetchFn = (async (input: string | URL) => {
+        const url = new URL(String(input));
+        const email = url.searchParams.get("email") ?? "";
+        callsByEmail.set(email, (callsByEmail.get(email) ?? 0) + 1);
+        if (email === badEmail) {
+          return new Response(null, { status: 500 });
+        }
+        if (email === okEmail) {
+          return new Response(
+            JSON.stringify({ email, result: "ok", resultcode: 1, quality: "good", credits: 100 }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        throw new Error(`email inesperado no mock: ${email}`);
+      }) as typeof fetch;
+      return { fetch: fetchFn, callsByEmail };
+    }
+
+    const okEmail = "ok@b.com";
+    const badEmail = "bad@b.com";
+    const rows = [
+      { email: okEmail, name: "OK" },
+      { email: badEmail, name: "Bad" },
+    ];
+
+    it("(a) email com falha transitória NÃO aparece em verified/rejected; (b) aparece em error.csv rotulado; (c) summary reconcilia", async () => {
+      const cycleDir = mkdtempSync(resolve(tmpdir(), "mv-4353-"));
+      const { fetch: fetchMock } = mockFetch(okEmail, badEmail);
+      const origFetch = globalThis.fetch;
+      globalThis.fetch = fetchMock;
+      try {
+        const summary = await verifyCohortList({
+          apiKey: "fake-key",
+          cohort: "t-4353",
+          cycleDir,
+          rows,
+          fields: ["email", "name"],
+          emailKey: "email",
+          allCohortRows: rows,
+          concurrency: 2,
+          timeout: 5,
+          limit: null,
+          _sleep: async () => {}, // #4353: retries instantâneos no teste (produção usa RETRYABLE_DELAYS_MS de verdade)
+        });
+
+        // (c) summary reconcilia e nomeia a falha explicitamente
+        assert.equal(summary.transient_errors, 1);
+        assert.equal(summary.failed_this_run, 1);
+        assert.equal(summary.reconciled, true, "verified+rejected+unknown+transient_errors deve bater com cached+todo");
+        assert.equal(summary.buckets.verified, 1);
+        assert.equal(summary.buckets.rejected, 0);
+        assert.equal(summary.buckets.unknown, 0);
+        assert.equal(summary.outputs.error, `mv-export-t-4353-error.csv`);
+
+        const base = mvOutputBase("t-4353");
+        const readCsv = (bucket: string) =>
+          Papa.parse<Record<string, string>>(readFileSync(resolve(cycleDir, `${base}-${bucket}.csv`), "utf-8"), {
+            header: true,
+            skipEmptyLines: true,
+          }).data;
+
+        // (a) bad@b.com NUNCA aparece em verified/rejected/unknown — o bug
+        // original (#4353) fazia o email sumir SILENCIOSAMENTE dos 3.
+        const verified = readCsv("verified");
+        const rejected = readCsv("rejected");
+        const unknown = readCsv("unknown");
+        assert.deepEqual(verified.map((r) => r.email), [okEmail]);
+        assert.equal(rejected.length, 0);
+        assert.equal(unknown.length, 0, "bug original: bad@b.com caía aqui só na alegação do log, nunca na prática — aqui deve ficar 0");
+
+        // (b) aparece no 4º arquivo, rotulado com o sentinela de erro transitório.
+        const errorRows = readCsv("error");
+        assert.equal(errorRows.length, 1);
+        assert.equal(errorRows[0].email, badEmail);
+        assert.equal(errorRows[0].MV_RESULT, TRANSIENT_ERROR_RESULT);
+
+        // (d) checkpoint em disco NÃO tem entrada pro email falho — condição
+        // pra retry-forever no próximo run (semântica #2886 preservada).
+        const checkpointPath = resolve(cycleDir, `.mv-cache-${base}.json`);
+        const checkpoint = JSON.parse(readFileSync(checkpointPath, "utf-8")) as Record<string, unknown>;
+        assert.ok(okEmail in checkpoint, "email verificado com sucesso deve estar no checkpoint");
+        assert.ok(!(badEmail in checkpoint), "email com falha transitória NUNCA deve entrar no checkpoint (retry-forever, #2886)");
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    });
+
+    it("(e) 2ª invocação com o MESMO checkpoint ainda tenta o email que falhou (retry preservado) — e desta vez sucede", async () => {
+      const cycleDir = mkdtempSync(resolve(tmpdir(), "mv-4353-retry-"));
+
+      // Rodada 1: bad@b.com falha transitoriamente.
+      const round1 = mockFetch(okEmail, badEmail);
+      const origFetch = globalThis.fetch;
+      globalThis.fetch = round1.fetch;
+      try {
+        await verifyCohortList({
+          apiKey: "fake-key",
+          cohort: "t-4353-retry",
+          cycleDir,
+          rows,
+          fields: ["email", "name"],
+          emailKey: "email",
+          allCohortRows: rows,
+          concurrency: 2,
+          timeout: 5,
+          limit: null,
+          _sleep: async () => {},
+        });
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+      // bad@b.com foi de fato tentado (não pulado) na rodada 1 — 1 attempt + 3 retries = 4 chamadas.
+      assert.equal(round1.callsByEmail.get(badEmail), 4);
+
+      // Rodada 2: MESMO cycleDir (mesmo checkpoint em disco); desta vez bad@b.com sucede.
+      let round2Calls = 0;
+      globalThis.fetch = (async (input: string | URL) => {
+        const url = new URL(String(input));
+        const email = url.searchParams.get("email") ?? "";
+        round2Calls++;
+        return new Response(
+          JSON.stringify({ email, result: "ok", resultcode: 1, quality: "good", credits: 99 }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }) as typeof fetch;
+      try {
+        const summary2 = await verifyCohortList({
+          apiKey: "fake-key",
+          cohort: "t-4353-retry",
+          cycleDir,
+          rows,
+          fields: ["email", "name"],
+          emailKey: "email",
+          allCohortRows: rows,
+          concurrency: 2,
+          timeout: 5,
+          limit: null,
+          _sleep: async () => {},
+        });
+        // Prova de retry-on-next-run: bad@b.com foi re-tentado (senão
+        // round2Calls seria 0, já que okEmail já estava no checkpoint da
+        // rodada 1 e não entraria em `todo` de novo) e desta vez sucedeu.
+        assert.equal(round2Calls, 1, "só bad@b.com deveria estar em todo() na rodada 2 — ok@b.com já está no checkpoint");
+        assert.equal(summary2.buckets.verified, 2, "verified agora inclui ok@b.com (rodada 1) + bad@b.com (rodada 2, retentado com sucesso)");
+        assert.equal(summary2.transient_errors, 0);
+      } finally {
+        globalThis.fetch = origFetch;
+      }
+    });
+  },
+);
