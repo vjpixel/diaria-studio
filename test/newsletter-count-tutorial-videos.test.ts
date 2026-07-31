@@ -8,7 +8,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { countSelectedItems, lintIntroCount } from "../scripts/lib/newsletter-count.ts";
+import { countSelectedItems, lintIntroCount, extractIntroClaimedCount } from "../scripts/lib/newsletter-count.ts";
 
 describe("countSelectedItems — USE MELHOR + VÍDEOS (#1574)", () => {
   it("conta item em USE MELHOR (bucket tutorial)", () => {
@@ -227,5 +227,37 @@ Para esta edição, eu (o editor) enviei 1 submissões e a Diar.ia encontrou out
     assert.equal(result.ok, false);
     assert.equal(result.claimed, 6);
     assert.equal(result.actual, 11);
+  });
+});
+
+describe("#4358 — extractIntroClaimedCount reconhece voz 1ª pessoa singular ('selecionei')", () => {
+  it("extrai a contagem de 'selecionei os N mais relevantes' (voz atual da newsletter)", () => {
+    const md = `Para esta edição, a diar.ia.br analisou 60 artigos: 8 enviados pelo editor, Pixel, e 52 encontrados automaticamente. Após a curadoria, selecionei os 10 mais relevantes.
+
+---
+
+**DESTAQUE 1**
+**[D1](https://example.com/d1)**
+`;
+    assert.equal(extractIntroClaimedCount(md), 10);
+  });
+
+  it("lintIntroCount detecta mismatch mesmo em voz 1ª pessoa singular (antes retornava null e o lint ficava cego)", () => {
+    const md = `Para esta edição, selecionei os 16 mais relevantes.
+
+---
+
+**DESTAQUE 1**
+**[D1](https://example.com/d1)**
+
+---
+
+**DESTAQUE 2**
+**[D2](https://example.com/d2)**
+`;
+    const result = lintIntroCount(md);
+    assert.equal(result.claimed, 16);
+    assert.equal(result.actual, 2);
+    assert.equal(result.ok, false, "16 declarado vs 2 reais deveria falhar o lint, não ser tratado como ausência (null)");
   });
 });

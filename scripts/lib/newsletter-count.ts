@@ -26,6 +26,7 @@
 
 import { SECTION_EMOJI_PREFIX } from "./section-naming.ts"; // #1836 fonte única do prefixo de emoji
 import { FOOTER_DOMAINS } from "./canonical-urls.ts"; // #2695 fonte única (antes cópia local)
+import { COVERAGE_COUNT_VERB_FRAGMENT } from "./newsletter-parse.ts"; // #4358 fonte única do fragmento de verbos (evita divergência com reconcileCoverageCount)
 
 export interface SelectedCounts {
   destaques: number;
@@ -223,18 +224,28 @@ export function countSelectedItems(md: string): SelectedCounts {
 
 /**
  * Pure: extrai o número declarado na frase "Selecionamos os X mais relevantes"
- * do intro. Aceita variações de verbo pós-humanizer/Clarice.
+ * (ou "selecionei os X mais relevantes", voz 1ª pessoa singular) do intro.
+ * Aceita variações de verbo pós-humanizer/Clarice.
+ *
+ * #4358: reusa `COVERAGE_COUNT_VERB_FRAGMENT` (newsletter-parse.ts) — fonte
+ * única com `reconcileCoverageCount`, que já reconhecia "selecionei". Antes
+ * este regex tinha sua própria lista (só 1ª pessoa plural), e divergia:
+ * retornava `null` pra qualquer intro em 1ª pessoa singular (voz atual da
+ * newsletter), deixando o lint `intro-count`/`sync-intro-count.ts` inertes.
  *
  * Retorna `null` se a frase não bater no padrão (caller decide se trata
  * ausência como ok ou erro).
  */
+const INTRO_CLAIMED_COUNT_RE = new RegExp(
+  `(?:${COVERAGE_COUNT_VERB_FRAGMENT})\\s+os?\\s+(\\d+)`,
+  "i",
+);
+
 export function extractIntroClaimedCount(md: string): number | null {
   // Strip frontmatter primeiro pra evitar matchar `description: "Selecionamos
   // os 5..."` em YAML (review #1591 — futuro template pode poluir).
   const body = stripFrontmatter(md).replace(/\r\n/g, "\n");
-  const introMatch = body.match(
-    /(?:Selecionamos|Escolhemos|Reunimos|Destacamos|Separamos|Trouxemos)\s+os?\s+(\d+)/i,
-  );
+  const introMatch = body.match(INTRO_CLAIMED_COUNT_RE);
   if (!introMatch) return null;
   return parseInt(introMatch[1], 10);
 }

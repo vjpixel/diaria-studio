@@ -12,8 +12,23 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const CREDENTIALS_PATH = resolve(ROOT, "data", ".credentials.json");
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
+
+/**
+ * #4344: nome do env var que testes usam para apontar `google-auth.ts` pra um
+ * path de credenciais FAKE (mkdtempSync), evitando escrita direta em
+ * `data/.credentials.json` REAL — o arquivo compartilhado via OneDrive entre
+ * máquinas que `test/drive-sync.test.ts` corrompeu por corrida entre workers
+ * paralelos (#4344). Resolvido dinamicamente a cada chamada (função, não um
+ * const capturado no import) para que testes possam setar/restaurar o env var
+ * em `beforeEach`/`afterEach` sem precisar re-importar o módulo. **Nunca**
+ * setar este env var fora de testes.
+ */
+export const CREDENTIALS_PATH_TEST_OVERRIDE_ENV = "DIARIA_TEST_CREDENTIALS_PATH";
+
+function credentialsPath(): string {
+  return process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] || resolve(ROOT, "data", ".credentials.json");
+}
 
 export interface GoogleCredentials {
   client_id: string;
@@ -40,21 +55,22 @@ export class GoogleAuthError extends Error {
 }
 
 function loadCredentials(): GoogleCredentials {
-  if (!existsSync(CREDENTIALS_PATH)) {
+  const path = credentialsPath();
+  if (!existsSync(path)) {
     throw new GoogleAuthError(
-      `Credenciais não encontradas em ${CREDENTIALS_PATH}.\n` +
+      `Credenciais não encontradas em ${path}.\n` +
         "Execute: npx tsx scripts/oauth-setup.ts"
     );
   }
   try {
-    return JSON.parse(readFileSync(CREDENTIALS_PATH, "utf8")) as GoogleCredentials;
+    return JSON.parse(readFileSync(path, "utf8")) as GoogleCredentials;
   } catch (e) {
-    throw new GoogleAuthError(`Erro ao ler ${CREDENTIALS_PATH}: ${e}`);
+    throw new GoogleAuthError(`Erro ao ler ${path}: ${e}`);
   }
 }
 
 function saveCredentials(creds: GoogleCredentials): void {
-  writeFileSync(CREDENTIALS_PATH, JSON.stringify(creds, null, 2), "utf8");
+  writeFileSync(credentialsPath(), JSON.stringify(creds, null, 2), "utf8");
 }
 
 async function refreshAccessToken(
@@ -176,8 +192,8 @@ export function renderTokenHealthBanner(health: TokenHealth): string {
  * benéfico: um refresh bem-sucedido renova o access_token salvo.
  */
 export async function checkTokenHealth(fetchImpl: typeof fetch = fetch): Promise<TokenHealth> {
-  if (!existsSync(CREDENTIALS_PATH)) {
-    return { ok: false, status: "no_credentials", detail: `credenciais ausentes em ${CREDENTIALS_PATH}` };
+  if (!existsSync(credentialsPath())) {
+    return { ok: false, status: "no_credentials", detail: `credenciais ausentes em ${credentialsPath()}` };
   }
   let creds: GoogleCredentials;
   try {

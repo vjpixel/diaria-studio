@@ -229,6 +229,39 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     // #3698: domínio de marca (era cursos/livros.diaria.workers.dev).
     assert.match(out, /- \[Cursos de IA\]\(https:\/\/cursos\.diar\.ia\.br\)/);
     assert.match(out, /- \[Livros sobre IA\]\(https:\/\/livros\.diar\.ia\.br\)/);
+    // #4356: 3º pill "Equipamentos" — link direto pro Amazon (sem redirect worker).
+    assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
+  });
+
+  it("#4357: override de para_encerrar.slot_a (texto arbitrário, sem lista) NÃO apaga a linha de pills 'Acesse nossas curadorias'", () => {
+    // Reprodução exata do bug relatado: editor sobrescreve o Slot A pelo
+    // painel Caixas com texto arbitrário (sem a lista `- [...]`) — antes do
+    // #4357, isso apagava as pills junto (concatenadas dentro do default do
+    // slot A). Agora as pills são um bloco fixo, concatenado FORA do
+    // alcance do override.
+    const out = buildParaEncerrar({
+      slotA: "Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria). Nesta edição, usei alguns equipamentos legais.",
+      slotB: null,
+    });
+    assert.equal((out.match(/Cursos de IA/g) ?? []).length, 1, "não deveria haver duplicação — só 1 ocorrência da pill");
+    assert.match(out, /- \[Cursos de IA\]\(https:\/\/cursos\.diar\.ia\.br\)/);
+    assert.match(out, /- \[Livros sobre IA\]\(https:\/\/livros\.diar\.ia\.br\)/);
+    assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
+  });
+
+  it("#4357: override de para_encerrar.slot_b (texto arbitrário) também preserva as pills (concatenadas ANTES do slotB)", () => {
+    const out = buildParaEncerrar({
+      slotA: null,
+      slotB: "Um convite social qualquer, sem nenhuma lista.",
+    });
+    assert.match(out, /- \[Cursos de IA\]\(https:\/\/cursos\.diar\.ia\.br\)/);
+    assert.match(out, /- \[Livros sobre IA\]\(https:\/\/livros\.diar\.ia\.br\)/);
+    assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
+    // Pills continuam vindo ANTES do slotB (invariante: convite social é
+    // sempre o ÚLTIMO parágrafo, #3219/#3368).
+    const pillsIdx = out.indexOf("[Cursos de IA]");
+    const slotBIdx = out.indexOf("Um convite social qualquer");
+    assert.ok(pillsIdx >= 0 && slotBIdx >= 0 && pillsIdx < slotBIdx);
   });
 
   it("buildParaEncerrar inclui o parágrafo de apoio (Apoia.se) e o convite social do snippet", () => {

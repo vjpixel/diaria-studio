@@ -45,6 +45,17 @@ interface DraftFile {
 interface ReportedFile {
   reported?: Array<{ signal_kind?: string }>;
   skipped?: Array<{ signal_kind?: string }>;
+  // #4346: aliases observados na prática por drift do agente auto-reporter
+  // (schema documentado em `.claude/agents/auto-reporter.md` §7 é
+  // `reported[]`/`skipped[]`, mas o agente não é 100% determinístico ao
+  // gravar o arquivo — variações históricas já vistas no repo: `reports[]`
+  // (260729), `signals_processed[]` (260505), `signals[]` (260526),
+  // `results[]` (260602)). Tratar qualquer um desses arrays como evidência
+  // de processamento evita falso-positivo permanente de "pendente".
+  reports?: Array<{ signal_kind?: string }>;
+  signals_processed?: Array<{ signal_kind?: string }>;
+  signals?: Array<{ signal_kind?: string }>;
+  results?: Array<{ signal_kind?: string }>;
 }
 
 function summarizeSignals(signals: Signal[]): string {
@@ -67,8 +78,16 @@ export function isDraftProcessed(
   reportedFile: ReportedFile | null,
 ): boolean {
   if (!reportedFile) return false;
+  // #4346: soma todos os aliases de schema conhecidos, não só `reported`/
+  // `skipped`. Cada array conta uma vez (nenhum já visto na prática combina
+  // 2+ aliases no mesmo arquivo, mas somar todos é seguro mesmo se combinar).
   const handledCount =
-    (reportedFile.reported?.length ?? 0) + (reportedFile.skipped?.length ?? 0);
+    (reportedFile.reported?.length ?? 0) +
+    (reportedFile.skipped?.length ?? 0) +
+    (reportedFile.reports?.length ?? 0) +
+    (reportedFile.signals_processed?.length ?? 0) +
+    (reportedFile.signals?.length ?? 0) +
+    (reportedFile.results?.length ?? 0);
   return handledCount >= draftSignals.length;
 }
 

@@ -48,6 +48,7 @@ export {
   reconcileCoverageCount,
   extractIntroCallout,
   extractBoxDivulgacao0,
+  BOX0_SENTINEL, // #4338
   extractBoxDivulgacao1,
   extractBoxDivulgacao2,
   extractBoxDivulgacao3,

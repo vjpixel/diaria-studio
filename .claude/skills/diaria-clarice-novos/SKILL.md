@@ -22,6 +22,8 @@ Fecha o laço operacional que a issue #4347 identificou: cadastro novo no Stripe
 
 Falha de MCP/ferramenta em qualquer passo → halt banner (`scripts/render-halt-banner.ts`), nunca stall silencioso (regra global do projeto, #738).
 
+**Status pós-envio conhecidos (Passo 6, `--send-now`) — não são guards de abort, são exit codes do GET-verify (#4364).** Além dos 8 guards acima (que sempre abortam), o disparo em si tem 3 desfechos possíveis via exit code (ver Passo 6): `0` = confirmado (`sent`); `1` = erro duro; `2` = incerto (`isTerminalSendStatus` não bateu). Dentro do `2`, um status já conhecido e documentado da própria Brevo é `in_review` — revisão automática de compliance/anti-abuso da plataforma (motivo não exposto pela API), reproduzido ao vivo em 260731 (campanha #101). `describeUncertainSendStatus` (`scripts/lib/brevo-client.ts`) emite mensagem específica pra esse caso ("checar app.brevo.com, geralmente exige ação humana no painel, não é erro do nosso lado") em vez do genérico "reconsulte manualmente" — numa rodada autônoma sem editor presente, o tratamento continua o mesmo do exit 2 padrão (registrar como incerto no relatório e re-tentar `--send-now` depois, idempotente).
+
 **Zero elegíveis** em qualquer ponto (delta vazio, grupo `novos` vazio) → sai limpo, grava relatório "0 contatos", **exit 0** (não é erro).
 
 ---
@@ -57,6 +59,12 @@ npx tsx scripts/verify-emails-mv.ts --since {SINCE} --cycle {CICLO_ENVIO}
 Onde `{CICLO_ENVIO}` é o ciclo Clarice (`{YYMM}-{MM}`) — normalmente o mesmo mês-envio corrente (ex: se hoje é julho/2026, `2606-07` ou `2607-08` dependendo do calendário do editor; se não tiver certeza, pergunte ou infira do ciclo mais recente com atividade em `data/clarice-subscribers/`).
 
 O script imprime `N e-mails ≈ US$ X` e, se `N > 500`, ABORTA pedindo `--confirm` (nenhum crédito gasto). Se o editor não estiver presente pra confirmar (sessão desassistida), **não invente `--confirm`** — deixe abortar e registre no relatório final que a rodada parou aqui esperando revisão manual do volume. Se `N ≤ 500`, prossegue sozinho. Cohorts MV-isentos (`assinantes-ativos`) são pulados com log, custo zero.
+
+**Reingira o store antes do Passo 3 (#4362):** `verify-emails-mv.ts` só escreve os resultados em CSV no disco (`mv-export-*.csv`) — quem lê esses CSVs e atualiza `mv_bucket`/`send_eligible`/`ineligible_reason` no store SQLite é `clarice-build-db.ts`. Sem rodá-lo aqui, o Passo 3 (`clarice-build-segment.ts`) enxerga o estado do store de ANTES desta verificação, e os e-mails recém-verificados ficam invisíveis nesta mesma rodada — confirmado ao vivo em 260731 (grupo `novos` pulou de 3 pra 159 contatos ao reingerir):
+
+```bash
+npx tsx scripts/clarice-build-db.ts
+```
 
 ## Passo 3 — Grupo `novos` (D13 + D4)
 
@@ -120,7 +128,9 @@ npx tsx scripts/clarice-schedule-group.ts --cycle {CICLO_ENVIO} --content-cycle 
 npx tsx scripts/clarice-novos-html-state.ts --cycle {CICLO_MENSAL_RESOLVIDO}
 ```
 
-Se `shouldSendTest: true` no JSON de saída (**sempre `--cycle {CICLO_ENVIO}` + `--content-cycle {CICLO_MENSAL_RESOLVIDO}`, mesma dupla do Passo 5**):
+**Este script só recebe `--cycle` (#4365) — nunca `--content-cycle`.** Diferente de `clarice-schedule-group.ts`, `clarice-novos-html-state.ts` só olha conteúdo (HTML + gabarito É IA?), nunca contatos — `main()` só implementa `getArg(argv, "cycle")`, então um `--content-cycle` passado aqui seria silenciosamente ignorado e `--cycle` resolveria errado sempre que os dois ciclos divergirem (reproduzido ao vivo em 260731). Passe **sempre** `{CICLO_MENSAL_RESOLVIDO}` como `--cycle` — mesmo quando ele divergir do `{CICLO_ENVIO}` usado nos Passos 1–5.
+
+Se `shouldSendTest: true` no JSON de saída (a chamada de `clarice-schedule-group.ts` abaixo, essa sim, usa `--cycle {CICLO_ENVIO}` + `--content-cycle {CICLO_MENSAL_RESOLVIDO}`, mesma dupla do Passo 5):
 
 ```bash
 npx tsx scripts/clarice-schedule-group.ts --cycle {CICLO_ENVIO} --content-cycle {CICLO_MENSAL_RESOLVIDO} \

@@ -56,10 +56,22 @@
  * `mv-export-{cohort}` (sem mais depender do basename de um arquivo de input):
  *   mv-export-ex-assinantes-verified.csv   result ok | catch_all   → MANDAR pro Brevo
  *   mv-export-ex-assinantes-rejected.csv   result invalid | disposable → EXCLUIR
- *   mv-export-ex-assinantes-unknown.csv    unknown | reverify | error  → inconclusivo
+ *   mv-export-ex-assinantes-unknown.csv    unknown | reverify | (checkpoint) → inconclusivo
+ *   mv-export-ex-assinantes-error.csv      falha TRANSITÓRIA (retries esgotados) desta
+ *                                          rodada (#4353) — NÃO é o mesmo que `unknown`:
+ *                                          estes emails NUNCA entram no checkpoint de
+ *                                          propósito (semântica "retry no próximo run",
+ *                                          #2886), então não aparecem em NENHUM dos 3
+ *                                          buckets acima. Ficam auditáveis aqui só nesta
+ *                                          rodada — uma invocação futura do mesmo
+ *                                          --cycle/--cohort os retenta automaticamente
+ *                                          (não estão no checkpoint) e este arquivo é
+ *                                          sobrescrito a cada rodada (reflete só o
+ *                                          `failures[]` da execução atual, não histórico).
  *   .mv-cache-mv-export-ex-assinantes.json checkpoint resumível (gitignored via data/)
  *
- * Stdout: JSON sumário; stderr: progresso humano-legível.
+ * Stdout: JSON sumário (inclui `transient_errors` e `reconciled` — #4353); stderr:
+ * progresso humano-legível.
  */
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
@@ -84,6 +96,16 @@ const API_BASE = "https://api.millionverifier.com/api/v3";
 // ---------------------------------------------------------------------------
 
 export type Bucket = "verified" | "rejected" | "unknown";
+
+/**
+ * #4353 — sentinela de MV_RESULT pras linhas do `-error.csv` (falha
+ * transitória, retries esgotados). Nunca é um `result` real vindo da API MV
+ * (que só devolve `ok|catch_all|invalid|disposable|unknown|reverify|""`) —
+ * serve pra deixar óbvio, ao inspecionar o CSV, que a linha não reflete uma
+ * resposta da MV, e sim a ausência de uma (rede/timeout esgotados). Estas
+ * linhas nunca são escritas no checkpoint (ver `buildErrorRows`).
+ */
+export const TRANSIENT_ERROR_RESULT = "error_transient";
 
 /**
  * Mapeia o `result` da MV pro bucket de ação.
@@ -346,16 +368,51 @@ export function readAllCohortRows(
  * está mais no cohort — trocou de cohort, ou foi removido do store; ainda
  * assim precisa aparecer no CSV, já que crédito MV foi gasto nele).
  */
+/** Shared por `buildOutputRows`/`buildErrorRows` — resolve `name` de um email a
+ *  partir do snapshot mais fresco disponível (candidatos desta rodada > todo o
+ *  cohort > vazio, se o email já saiu do store). */
+function buildNameByEmail(
+  currentRows: Record<string, string>[],
+  allCohortRows: Record<string, string>[],
+  emailKey: string,
+): Map<string, string> {
+  const nameByEmail = new Map<string, string>();
+  for (const r of allCohortRows) nameByEmail.set(r[emailKey], r.name ?? "");
+  for (const r of currentRows) nameByEmail.set(r[emailKey], r.name ?? ""); // fresh > all-cohort snapshot
+  return nameByEmail;
+}
+
 export function buildOutputRows(
   checkpoint: Checkpoint,
   currentRows: Record<string, string>[],
   allCohortRows: Record<string, string>[],
   emailKey: string,
 ): Record<string, string>[] {
-  const nameByEmail = new Map<string, string>();
-  for (const r of allCohortRows) nameByEmail.set(r[emailKey], r.name ?? "");
-  for (const r of currentRows) nameByEmail.set(r[emailKey], r.name ?? ""); // fresh > all-cohort snapshot
+  const nameByEmail = buildNameByEmail(currentRows, allCohortRows, emailKey);
   return Object.keys(checkpoint).map((email) => ({
+    [emailKey]: email,
+    name: nameByEmail.get(email) ?? "",
+  }));
+}
+
+/**
+ * #4353 — materializa as linhas de FALHA TRANSITÓRIA (retries esgotados) desta
+ * rodada num shape drop-in pro CSV de auditoria (`-error.csv`). Distinto de
+ * `buildOutputRows`: a fonte aqui é `failures[]` (in-memory, desta execução),
+ * NUNCA o checkpoint — persistir estes emails no checkpoint quebraria a
+ * semântica "retry no próximo run" (#2886/#4353). `TRANSIENT_ERROR_RESULT` é
+ * usado como sentinela de MV_RESULT (distinto de qualquer `result` real da
+ * API MV) pra deixar claro, olhando só a linha, que ela não veio de uma
+ * resposta da API — veio da falta de uma.
+ */
+export function buildErrorRows(
+  failures: string[],
+  currentRows: Record<string, string>[],
+  allCohortRows: Record<string, string>[],
+  emailKey: string,
+): Record<string, string>[] {
+  const nameByEmail = buildNameByEmail(currentRows, allCohortRows, emailKey);
+  return failures.map((email) => ({
     [emailKey]: email,
     name: nameByEmail.get(email) ?? "",
   }));
@@ -434,12 +491,15 @@ async function verifyOne(
   apiKey: string,
   email: string,
   timeoutSec: number,
+  // #4353: injetável (mesmo padrão de `_sleep` em scripts/lib/brevo-client.ts)
+  // — testes de retry-esgotado não esperam 13s (1+3+9s) de verdade.
+  _sleep: (ms: number) => Promise<void> = sleep,
 ): Promise<MvResponse> {
   const url = buildVerifyUrl(apiKey, email, timeoutSec);
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= RETRYABLE_DELAYS_MS.length; attempt++) {
-    if (attempt > 0) await sleep(RETRYABLE_DELAYS_MS[attempt - 1]);
+    if (attempt > 0) await _sleep(RETRYABLE_DELAYS_MS[attempt - 1]);
     const ctrl = new AbortController();
     // Abort client-side um pouco depois do timeout que a MV honra server-side.
     const t = setTimeout(() => ctrl.abort(), (timeoutSec + 10) * 1000);
@@ -599,9 +659,27 @@ export interface CohortVerifySummary {
   unique_emails: number;
   processed_this_run: number;
   failed_this_run: number;
+  /** #4353 — alias explícito de `failed_this_run`, nomeado pro contrato da
+   *  issue: deixa claro (sem precisar ler o código) que estes emails são
+   *  falhas TRANSITÓRIAS que NÃO foram persistidas no checkpoint (por
+   *  design — ver `buildErrorRows`) e que por isso entram na reconciliação
+   *  de `buckets` (ver `reconciled`). Sempre igual a `failed_this_run`;
+   *  mantido como campo próprio em vez de substituí-lo pra não quebrar
+   *  nenhum consumidor que já leia `failed_this_run`. */
+  transient_errors: number;
   credits_remaining: number | null;
   buckets: Record<Bucket, number>;
-  outputs: Record<Bucket, string>;
+  outputs: Record<Bucket, string> & { error: string };
+  /** #4353 — `buckets.verified+rejected+unknown+transient_errors === (o que já
+   *  estava no checkpoint antes desta rodada) + (o que foi de fato atacado
+   *  nesta rodada, já respeitando --limit)`. Deve ser SEMPRE `true`; um
+   *  `false` aqui indica que algum email ATACADO nesta rodada sumiu
+   *  silenciosamente dos outputs (a classe de bug desta issue) — logado como
+   *  warning caso aconteça, nunca deveria acontecer com o fix aplicado.
+   *  Nota: não compara contra `unique_emails` — com `--limit` ativo,
+   *  `unique_emails` inclui candidatos deixados de fora DE PROPÓSITO, o que
+   *  faria essa comparação falso-positivar sempre que `--limit` é usado. */
+  reconciled: boolean;
 }
 
 export async function verifyCohortList(params: {
@@ -615,8 +693,10 @@ export async function verifyCohortList(params: {
   concurrency: number;
   timeout: number;
   limit: number | null;
+  /** #4353: injetável — testes de retry-esgotado não esperam 13s de verdade. */
+  _sleep?: (ms: number) => Promise<void>;
 }): Promise<CohortVerifySummary> {
-  const { apiKey, cohort, cycleDir, rows, fields, emailKey, allCohortRows, concurrency, timeout, limit } = params;
+  const { apiKey, cohort, cycleDir, rows, fields, emailKey, allCohortRows, concurrency, timeout, limit, _sleep } = params;
 
   const base = mvOutputBase(cohort);
   const cpPath = resolve(cycleDir, `.mv-cache-${base}.json`);
@@ -662,7 +742,7 @@ export async function verifyCohortList(params: {
       await runPool(todo, concurrency, async (email) => {
         if (aborting) return;
         try {
-          const res = await verifyOne(apiKey, email, timeout);
+          const res = await verifyOne(apiKey, email, timeout, _sleep);
           checkpoint[email] = {
             result: res.result ?? "",
             resultcode: res.resultcode ?? -1,
@@ -716,12 +796,48 @@ export async function verifyCohortList(params: {
     unknown: writeBucket("unknown"),
   };
 
+  // #4353 — falhas transitórias (retries esgotados) NUNCA entram no checkpoint
+  // (de propósito — ver `buildErrorRows`), então precisam do próprio arquivo
+  // pra não sumir silenciosamente dos 3 CSVs acima. `failures` já não tem
+  // duplicatas: 1 push por email de `todo`, que por sua vez vem de `allEmails`
+  // deduplicado via `Set`.
+  const errorRows = buildErrorRows(failures, rows, allCohortRows, emailKey).map((r) => ({
+    ...r,
+    MV_RESULT: TRANSIENT_ERROR_RESULT,
+    MV_QUALITY: "",
+    MV_CODE: "",
+  }));
+  const errorPath = resolve(cycleDir, `${base}-error.csv`);
+  writeFileSync(errorPath, Papa.unparse({ fields: outFields, data: errorRows }), "utf-8");
+
+  // #4353 — reconciliação determinística: todo email de `todo` (o subconjunto
+  // efetivamente ATACADO nesta rodada — já reflete o corte de `--limit`,
+  // então comparar contra `allEmails.length` daria falso-positivo sempre que
+  // `--limit` deixa candidatos de fora de propósito) termina OU no checkpoint
+  // (→ 1 dos 3 buckets, somado a `cached` = o que já estava lá antes desta
+  // rodada) OU em `failures` (→ error.csv) — nunca em nenhum dos dois (a
+  // menos que um erro FATAL tenha abortado o processo antes, caso em que
+  // este trecho nem é alcançado).
+  const bucketTotal = counts.verified + counts.rejected + counts.unknown;
+  const reconciled = bucketTotal + failures.length === cached + todo.length;
+
   if (failures.length) {
-    console.error(`⚠️  [${cohort}] ${failures.length} emails falharam (erro transitório, ficam em unknown até re-rodar)`);
+    console.error(
+      `⚠️  [${cohort}] ${failures.length} email(s) falharam (erro transitório, retries esgotados) — ` +
+        `NÃO persistidos no checkpoint (serão retentados na próxima invocação), mas visíveis ` +
+        `nesta rodada em ${base}-error.csv para auditoria.`,
+    );
+  }
+  if (!reconciled) {
+    console.error(
+      `⚠️  [${cohort}] contagens não reconciliam: verified+rejected+unknown+error ` +
+        `(${bucketTotal}+${failures.length}=${bucketTotal + failures.length}) ≠ cached+todo ` +
+        `(${cached}+${todo.length}=${cached + todo.length}) — investigar.`,
+    );
   }
 
   console.error(
-    `✅ [${cohort}] verified=${counts.verified} · rejected=${counts.rejected} · unknown=${counts.unknown}` +
+    `✅ [${cohort}] verified=${counts.verified} · rejected=${counts.rejected} · unknown=${counts.unknown} · error=${errorRows.length}` +
       (lastCredits != null ? ` · créditos restantes=${lastCredits}` : ""),
   );
 
@@ -731,13 +847,16 @@ export async function verifyCohortList(params: {
     unique_emails: allEmails.length,
     processed_this_run: done - failures.length,
     failed_this_run: failures.length,
+    transient_errors: failures.length,
     credits_remaining: lastCredits,
     buckets: counts,
     outputs: {
       verified: `${base}-verified.csv`,
       rejected: `${base}-rejected.csv`,
       unknown: `${base}-unknown.csv`,
+      error: `${base}-error.csv`,
     },
+    reconciled,
   };
 }
 

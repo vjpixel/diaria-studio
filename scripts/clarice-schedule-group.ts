@@ -114,7 +114,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
-import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, isTerminalSendStatus } from "./lib/brevo-client.ts";
+import { brevoPost, brevoPut, brevoGetCampaign, brevoSendNow, isTerminalSendStatus, describeUncertainSendStatus } from "./lib/brevo-client.ts";
 import { clariceSegmentsDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.ts";
 import { monthlyDir as resolveMonthlyDir, cycleToYymm } from "./lib/mensal/monthly-paths.ts";
 import { checkEiaGuard, applyVerifyResults } from "./clarice-schedule-sends.ts";
@@ -367,6 +367,7 @@ export function applySendNowVerifyResults(
       logFn(
         `⚠ GET-verify pós-sendNow ${c.key} (campanha #${c.campaignId}): status="${verified.status}" ` +
           `(esperado "sent"/"inProcess" após POST sendNow) — o 2xx do POST não é suficiente. ` +
+          `${describeUncertainSendStatus(verified.status)} ` +
           `Status local NÃO atualizado — re-tente --send-now após checar o Brevo.`,
       );
       continue;

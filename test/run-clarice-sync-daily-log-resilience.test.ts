@@ -44,6 +44,45 @@ function runScript(args: string[], timeoutMs = 120_000) {
   );
 }
 
+// #4343: reproduz o cenário REAL do bug — `npx` genuinamente não resolvível
+// no PATH do processo (o que acontece sob o contexto de serviço do Task
+// Scheduler quando o PATH não é herdado corretamente). Usa o caminho
+// absoluto do powershell.exe (não depende do PATH do processo de teste pra
+// resolver o próprio powershell) e restringe o PATH do FILHO a só
+// System32 (sem o diretório do Node/npx) — `& npx ...` levanta
+// CommandNotFoundException, $LASTEXITCODE fica $null, e sem o guard
+// `exit $null` resolveria pra exit 0 (falso sucesso).
+const POWERSHELL_ABS = join(
+  String(process.env.SystemRoot ?? "C:\\Windows"),
+  "System32",
+  "WindowsPowerShell",
+  "v1.0",
+  "powershell.exe",
+);
+
+function runScriptWithNpxUnresolvable(script: string, args: string[], timeoutMs = 120_000) {
+  const systemRoot = String(process.env.SystemRoot ?? "C:\\Windows");
+  const restrictedPath = [
+    join(systemRoot, "System32"),
+    join(systemRoot, "System32", "WindowsPowerShell", "v1.0"),
+  ].join(";");
+  return spawnSync(
+    POWERSHELL_ABS,
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, ...args],
+    {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      env: {
+        SystemRoot: systemRoot,
+        windir: systemRoot,
+        ComSpec: process.env.ComSpec,
+        PATHEXT: process.env.PATHEXT,
+        PATH: restrictedPath,
+      },
+    },
+  );
+}
+
 describe("run-clarice-sync-daily.ps1: exit code honesto quando o log falha (#4047)", { skip: !isWindows && "requer powershell.exe (Windows)" }, () => {
   let workDir: string;
 
@@ -99,5 +138,42 @@ describe("run-clarice-sync-daily.ps1: exit code honesto quando o log falha (#404
     // O log temporário é preservado (não removido) quando o anexo final falha —
     // evidência de que a run não perdeu o registro do que aconteceu.
     assert.ok(existsSync(tempLog), "esperava o log temporário preservado quando o anexo final falha");
+  });
+});
+
+// #4343: $LASTEXITCODE fica $null se npx não spawnar (falso sucesso). O
+// guard mirror do fix aplicado em run-postmaster-spam-sync.ps1 (#4342) —
+// aplicado aqui e em run-clarice-guardrail-alarm.ps1.
+describe("run-clarice-sync-daily.ps1: exit code honesto quando npx não spawna (#4343)", { skip: !isWindows && "requer powershell.exe (Windows)" }, () => {
+  let workDir: string;
+
+  before(() => {
+    workDir = mkdtempSync(join(tmpdir(), "clarice-sync-daily-npx-test-"));
+  });
+
+  after(() => {
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("PATH sem node/npx -> npx não resolve -> $LASTEXITCODE null -> guard força exit != 0", () => {
+    const tempLog = join(workDir, "npxfail-temp.log");
+    const finalLog = join(workDir, "npxfail-final.log");
+
+    const result = runScriptWithNpxUnresolvable(SCRIPT, [
+      "-SyncScript", NOOP_FIXTURE,
+      "-SummaryScript", NOOP_FIXTURE,
+      "-LogPath", finalLog,
+      "-TempLogPath", tempLog,
+    ]);
+
+    assert.notEqual(
+      result.status,
+      0,
+      `esperava exit != 0 quando npx não spawna, obteve ${result.status}. ` +
+        `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    assert.ok(existsSync(finalLog), "esperava o log final criado mesmo com npx não resolvido");
+    const content = readFileSync(finalLog, "utf8");
+    assert.match(content, /npx nao executou/);
   });
 });

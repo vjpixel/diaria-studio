@@ -470,6 +470,30 @@ export function isTerminalSendStatus(status: string): boolean {
   return status === "sent" || status === "inProcess";
 }
 
+/**
+ * #4364: mensagem específica pro GET-verify pós-`sendNow` quando o status NÃO
+ * é terminal (`isTerminalSendStatus` acima já cobre a checagem de sucesso).
+ * `"in_review"` é um status conhecido e documentado da própria Brevo (revisão
+ * automática de compliance/anti-abuso da plataforma — possivelmente disparada
+ * por sinal de reputação, não confirmado, a API não expõe o motivo em nenhum
+ * campo de `GET /emailCampaigns/{id}`) — reproduzido ao vivo em 260731
+ * (campanha #101, `queued` → `in_review`, nunca chegou a `sent`/`inProcess`).
+ * Antes desta função, `in_review` caía no mesmo branch genérico de "status
+ * incerto, reconsulte manualmente" que qualquer outro valor desconhecido —
+ * o exit code 2 (seguro) já era o comportamento correto, isto só melhora a
+ * mensagem pra nomear o estado real em vez de mascará-lo como "incerto".
+ * Qualquer outro status não-terminal (`queued`, `draft`, etc.) cai no genérico.
+ */
+export function describeUncertainSendStatus(status: string): string {
+  if (status === "in_review") {
+    return (
+      `status="in_review" — campanha em revisão da própria Brevo (compliance/anti-abuso), ` +
+      `checar app.brevo.com; geralmente exige ação humana no painel, não é um erro do nosso lado.`
+    );
+  }
+  return `status="${status}" não confirma disparo — reconsulte a Brevo manualmente.`;
+}
+
 // ---------------------------------------------------------------------------
 // Folders (#4347 Etapa 4) — "Clarice novos" dedicada, resolvida por nome ou
 // criada se ausente. `clarice-import-waves.ts --folder-id N` já aceita um id

@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import { strict as assert } from "node:assert";
 import { writeFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   extractUrls,
@@ -18,6 +18,7 @@ import {
   authExpiredWarn,
   buildSearchFailedResult,
 } from "../scripts/inbox-drain.ts";
+import { CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../scripts/google-auth.ts"; // #4344
 
 describe("#1973 — OAuth expirado vs falha transiente", () => {
   it("isAuthExpiredError: invalid_grant / expired / revoked → true", () => {
@@ -72,7 +73,6 @@ const ROOT = resolve(import.meta.dirname, "..");
 const CONFIG_PATH = resolve(ROOT, "platform.config.json");
 const CURSOR_PATH = resolve(ROOT, "data", "inbox-cursor.json");
 const INBOX_PATH = resolve(ROOT, "data", "inbox.md");
-const CREDS_PATH = resolve(ROOT, "data", ".credentials.json");
 
 const FAKE_CREDS = {
   client_id: "fake",
@@ -81,6 +81,29 @@ const FAKE_CREDS = {
   refresh_token: "fake-refresh",
   expiry_ms: Date.now() + 3_600_000,
 };
+
+// #4344: dir temporário próprio + env var — nunca mais escreve em
+// data/.credentials.json REAL (gitignored, compartilhado via OneDrive entre
+// máquinas). Ver test/drive-sync.test.ts pro histórico completo do incidente
+// que isto corrige (mesmo padrão de fix, arquivo diferente com o mesmo bug).
+let fakeCredsDir: string | undefined;
+let prevCredsEnvValue: string | undefined;
+
+function setupFakeCredentials(): void {
+  prevCredsEnvValue = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+  fakeCredsDir = mkdtempSync(join(tmpdir(), "inbox-drain-creds-"));
+  writeFileSync(join(fakeCredsDir, ".credentials.json"), JSON.stringify(FAKE_CREDS), "utf8");
+  process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = join(fakeCredsDir, ".credentials.json");
+}
+
+function teardownFakeCredentials(): void {
+  if (prevCredsEnvValue !== undefined) process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = prevCredsEnvValue;
+  else delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+  if (fakeCredsDir) {
+    try { rmSync(fakeCredsDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+  fakeCredsDir = undefined;
+}
 
 function makeGmailResponse(body: unknown, status = 200): Response {
   const json = JSON.stringify(body);
@@ -361,7 +384,6 @@ describe("inbox-drain main() integration (#306)", () => {
   let originalFetch: typeof globalThis.fetch;
   let savedConfig: string | null = null;
   let savedCursor: string | null = null;
-  let savedCreds: string | null = null;
   let savedInbox: string | null = null;
 
   beforeEach(() => {
@@ -369,25 +391,28 @@ describe("inbox-drain main() integration (#306)", () => {
     // Save state of all real files that main() may read or write.
     savedConfig = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : null;
     savedCursor = existsSync(CURSOR_PATH) ? readFileSync(CURSOR_PATH, "utf8") : null;
-    savedCreds = existsSync(CREDS_PATH) ? readFileSync(CREDS_PATH, "utf8") : null;
     savedInbox = existsSync(INBOX_PATH) ? readFileSync(INBOX_PATH, "utf8") : null;
 
-    // Write fake creds so getAccessToken() doesn't call fetch
+    // CURSOR_PATH/INBOX_PATH vivem sob data/ — garante que o dir existe
+    // (não relacionado a credenciais; ver setupFakeCredentials() abaixo pro
+    // isolamento de .credentials.json, #4344).
     mkdirSync(resolve(ROOT, "data"), { recursive: true });
-    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+
+    // Fake creds (#4344): dir temporário próprio + env var, nunca mais o path
+    // real — getAccessToken() ainda não precisa chamar fetch pra refresh.
+    setupFakeCredentials();
   });
 
   afterEach(() => {
     // Restore fetch first (no I/O, always safe).
     globalThis.fetch = originalFetch;
+    teardownFakeCredentials();
     // Restore real files in a try/finally so a crash inside the test body
     // can't permanently corrupt the workspace.
     try {
       if (savedConfig !== null) writeFileSync(CONFIG_PATH, savedConfig, "utf8");
       if (savedCursor !== null) writeFileSync(CURSOR_PATH, savedCursor, "utf8");
       else if (existsSync(CURSOR_PATH)) unlinkSync(CURSOR_PATH);
-      if (savedCreds !== null) writeFileSync(CREDS_PATH, savedCreds, "utf8");
-      else if (existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
       if (savedInbox !== null) writeFileSync(INBOX_PATH, savedInbox, "utf8");
       else if (existsSync(INBOX_PATH)) unlinkSync(INBOX_PATH);
     } catch (restoreErr) {

@@ -23,6 +23,7 @@ import {
   checkBoxDivulgacaoAltMissing,
   STAGE_4_RULES,
 } from "../scripts/lib/invariant-checks/stage-4.ts";
+import { BOX0_SENTINEL } from "../scripts/lib/newsletter-parse.ts"; // #4338
 
 const LIVROS_MD = `Para esta edição, selecionamos 15 itens.
 
@@ -96,11 +97,15 @@ function makeRoot(snippetFilename: string, snippetContent: string): string {
   return root;
 }
 
-/** #4274: MD com box na região de intro (slot 0) — sem box no slot 1. */
+/** #4274: MD com box na região de intro (slot 0) — sem box no slot 1.
+ * #4338: precisa do marcador sentinel — sem ele, `extractBoxDivulgacao0`
+ * (detecção por marcador explícito, não mais por posição) não reconhece
+ * este bloco como box0. */
 const SLOT0_MD = `Para esta edição, selecionamos 15 itens.
 
 ---
 
+${BOX0_SENTINEL}
 🔧 Indicação de ferramenta: [Raycast](https://raycast.com).
 
 ---

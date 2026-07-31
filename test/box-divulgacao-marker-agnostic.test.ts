@@ -27,6 +27,7 @@ import {
   extractBoxDivulgacao2,
   extractBoxDivulgacao3,
   findOrphanBoxWarnings,
+  BOX0_SENTINEL,
 } from "../scripts/lib/newsletter-parse.ts";
 import { renderHTML } from "../scripts/lib/newsletter-render-html.ts";
 import { lintCalloutPlacement } from "../scripts/lib/lint-checks/callout-placement.ts";
@@ -498,7 +499,9 @@ Desc.`;
 describe("#4274 — extractBoxDivulgacao0: box posicionado entre a linha de cobertura e DESTAQUE 1", () => {
   function buildReviewedWithBox0(box0: string | null, agradecimento = ""): string {
     const agr = agradecimento ? `${agradecimento}\n\n---\n\n` : "";
-    const box = box0 ? `${box0}\n\n---\n\n` : "";
+    // #4338: box0 real é sempre prefixado pelo marcador sentinel — mesma
+    // convenção que `stitchNewsletter` escreve (ver `BOX0_SENTINEL`).
+    const box = box0 ? `${BOX0_SENTINEL}\n${box0}\n\n---\n\n` : "";
     return `Para esta edição, selecionamos 12 itens.
 
 ---
@@ -575,6 +578,7 @@ Resumo do item.
 
 ---
 
+${BOX0_SENTINEL}
 ${box0}
 
 ---
@@ -610,6 +614,7 @@ ${EIA}
 
 ---
 
+${BOX0_SENTINEL}
 ${box0}
 
 ---
@@ -640,6 +645,49 @@ ${EIA}
     assert.match(extractBoxDivulgacao1(reviewed) ?? "", /Curadoria de livros/);
     assert.equal(extractBoxDivulgacao2(reviewed), null); // sem bloco entre D2 e D3 nesta fixture
     assert.match(extractBoxDivulgacao3(reviewed) ?? "", /Box pós-destaques/);
+  });
+});
+
+describe("#4338 — extractBoxDivulgacao0 não confunde parágrafo de intro puro com box0 real", () => {
+  it("2 blocos --- na região de intro (parágrafo de intro puro + agradecimento bold-wrap), SEM box0 real → retorna null, não duplica o parágrafo de intro", () => {
+    // Reprodução exata do bug relatado (edições 260730/260731): sem
+    // BOX0_SENTINEL em lugar nenhum, mesmo havendo 2 blocos `---`-isolados na
+    // região de intro (o 2º reivindicado pelo agradecimento/callout), o
+    // parágrafo de intro puro (1º bloco extra) NUNCA deveria virar candidato a
+    // box0 — antes do #4338, o loop posicional o tratava como box0 e o HTML
+    // final duplicava o parágrafo de boas-vindas dentro de uma caixa
+    // "Divulgação".
+    const introParagraph =
+      "Hoje trago um recorte especial sobre como a IA está mudando o jeito que a gente trabalha, com destaques que valem a leitura com calma.";
+    const agradecimento =
+      "**Agradeço ao novo apoiador: **Fulano**. Seu apoio ajuda a manter essa curadoria diária de pé!**";
+    const reviewed = `Para esta edição, selecionamos 12 itens.
+
+---
+
+${introParagraph}
+
+---
+
+${agradecimento}
+
+---
+
+${d(1, "🚀 LANÇAMENTO", "https://example.com/d1")}
+
+---
+
+${d(2, "💼 MERCADO", "https://example.com/d2")}
+
+---
+
+${EIA}
+`;
+    assert.equal(
+      extractBoxDivulgacao0(reviewed),
+      null,
+      "sem BOX0_SENTINEL, extractBoxDivulgacao0 nunca deveria inferir o parágrafo de intro como box0",
+    );
   });
 });
 

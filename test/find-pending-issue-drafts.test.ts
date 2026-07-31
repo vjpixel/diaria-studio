@@ -11,7 +11,10 @@ import {
 interface Fixture {
   name: string;
   signals?: Array<{ kind: string }>;
-  reported?: { reported?: Array<{ signal_kind: string }>; skipped?: Array<{ signal_kind: string }> };
+  // Record<string, unknown> (não o shape estrito reported/skipped) porque o
+  // teste de integração #4346 abaixo precisa simular o schema alternativo
+  // 'reports[]' gravado de fato pela edição 260729.
+  reported?: Record<string, unknown>;
   /** Se true, cria edição com apenas diretório, sem drafts. */
   empty?: boolean;
 }
@@ -64,6 +67,39 @@ describe("isDraftProcessed", () => {
   it("reported vazio → false se há signals", () => {
     const reported = { reported: [], skipped: [] };
     assert.equal(isDraftProcessed([{ kind: "x" }], reported), false);
+  });
+
+  // #4346: schema drift do auto-reporter — a edição 260729 gravou
+  // `reports[]` (não `reported[]`) e isDraftProcessed() só reconhecia os
+  // nomes exatos, causando falso-positivo permanente de "pendente".
+  it("aceita alias 'reports[]' (drift observado na edição 260729) → true", () => {
+    const signals = [{ kind: "a" }, { kind: "b" }];
+    const reported = { reports: [{ signal_kind: "a" }, { signal_kind: "b" }] };
+    assert.equal(isDraftProcessed(signals, reported), true);
+  });
+
+  it("aceita alias 'signals_processed[]' (drift observado em 260505) → true", () => {
+    const signals = [{ kind: "a" }];
+    const reported = { signals_processed: [{ signal_kind: "a" }] };
+    assert.equal(isDraftProcessed(signals, reported), true);
+  });
+
+  it("aceita alias 'signals[]' (drift observado em 260526) → true", () => {
+    const signals = [{ kind: "a" }];
+    const reported = { signals: [{ signal_kind: "a" }] };
+    assert.equal(isDraftProcessed(signals, reported), true);
+  });
+
+  it("aceita alias 'results[]' (drift observado em 260602) → true", () => {
+    const signals = [{ kind: "a" }];
+    const reported = { results: [{ signal_kind: "a" }] };
+    assert.equal(isDraftProcessed(signals, reported), true);
+  });
+
+  it("alias com cobertura parcial ainda retorna false", () => {
+    const signals = [{ kind: "a" }, { kind: "b" }, { kind: "c" }];
+    const reported = { reports: [{ signal_kind: "a" }] };
+    assert.equal(isDraftProcessed(signals, reported), false);
   });
 });
 
@@ -216,6 +252,26 @@ describe("findPendingDrafts", () => {
       assert.equal(pending.length, 1);
       assert.equal(pending[0].edition, "260421");
       assert.ok(pending[0].draft_path.includes(join("2604", "260421")));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // #4346: cenário real da edição 260729 — issues-reported.json usa o
+  // schema 'reports[]' (drift do auto-reporter). Antes do fix, essa edição
+  // ficava marcada como "pendente" para sempre mesmo com tudo já reportado.
+  it("edição com issues-reported.json no schema 'reports[]' não aparece como pendente", () => {
+    const dir = setupEditions([
+      {
+        name: "260729",
+        signals: [{ kind: "a" }, { kind: "b" }],
+        reported: { reports: [{ signal_kind: "a" }, { signal_kind: "b" }] },
+      },
+      { name: "260731", empty: true },
+    ]);
+    try {
+      const pending = findPendingDrafts(dir, "260731", 3);
+      assert.equal(pending.length, 0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
