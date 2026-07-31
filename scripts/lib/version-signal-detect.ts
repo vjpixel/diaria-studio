@@ -22,8 +22,3 @@
  */
 export const VERSION_SIGNAL_RE =
   /\bv?\d{1,2}(?:[.\-]\d+)+\b|\bv\d+\b|\b\d{1,3}b\b|\bo[1-9]\b|\b[a-z]{2,}-\d{1,2}o?\b/i;
-
-/** Retorna true se `text` (slug cru ou título) tem sinal de versão explícita. */
-export function hasVersionSignal(text: string): boolean {
-  return VERSION_SIGNAL_RE.test(text);
-}
