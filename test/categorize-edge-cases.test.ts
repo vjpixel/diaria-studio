@@ -26,6 +26,7 @@ import {
   isOpenAIFrontiersStory,
   isFirstPartyToolingBlog,
   isDevReleaseNote,
+  isUpdate,
   type Article,
 } from "../scripts/categorize.ts";
 
@@ -841,5 +842,102 @@ describe("categorize() — #3099 auditoria 260708: guias-de-uso, explainer/ensai
       title: "How to build an agent: RAG vs fine-tuning, step by step",
     };
     assert.equal(categorize(art), "tutorial");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4351 CASO REAL 260731 — posts oficiais de preço/eficiência de modelo JÁ
+// LANÇADO não devem virar LANÇAMENTO.
+// ---------------------------------------------------------------------------
+
+describe("#4351 — price-performance/frontier-efficiency update de modelo já lançado → noticias", () => {
+  it("CASO REAL: 'Advancing the price-performance frontier with GPT-5.6' → noticias (não lancamento)", () => {
+    const art: Article = {
+      url: "https://openai.com/index/advancing-the-price-performance-frontier-with-gpt-5-6",
+      title: "Advancing the price-performance frontier with GPT-5.6",
+    };
+    assert.equal(categorize(art), "noticias");
+    assert.equal(isUpdate(art), true);
+  });
+
+  it("CASO REAL: 'How GPT-5.6 fuses frontier intelligence with frontier efficiency' → noticias (não lancamento)", () => {
+    const art: Article = {
+      url: "https://openai.com/index/gpt-5-6-frontier-intelligence-efficiency",
+      title: "How GPT-5.6 fuses frontier intelligence with frontier efficiency",
+    };
+    assert.equal(categorize(art), "noticias");
+    assert.equal(isUpdate(art), true);
+  });
+
+  it("sem-regressão: 'the frontier of AI' isolado (sem price-performance/eficiência pareada) NÃO dispara isUpdate", () => {
+    assert.equal(
+      isUpdate({ url: "x", title: "Pushing the frontier of AI research" }),
+      false,
+    );
+  });
+
+  it("sem-regressão: lançamento real de produto com 'frontier' no título ainda vira lancamento", () => {
+    const art: Article = {
+      url: "https://openai.com/index/introducing-gpt-6",
+      title: "Introducing GPT-6: a new frontier model",
+    };
+    assert.equal(categorize(art), "lancamento");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4337 CASO REAL 260730 — TUTORIAL_DOMAINS classificando release-note e
+// narrativa/case-study como USE MELHOR.
+// ---------------------------------------------------------------------------
+
+describe("#4337 — release note e narrativa em host misto tutorial/lançamento", () => {
+  it("CASO REAL: langchain.com/blog/deep-agents-v0-7 ('Deep Agents v0.7') → lancamento, não tutorial", () => {
+    const art: Article = {
+      url: "https://www.langchain.com/blog/deep-agents-v0-7",
+      title: "Deep Agents v0.7",
+    };
+    assert.equal(categorize(art), "lancamento");
+  });
+
+  it("blog.langchain.dev com sinal de versão não vira tutorial (mesmo sem estar em official-domains.ts)", () => {
+    // blog.langchain.dev não está cadastrado em official-domains.ts (só
+    // langchain.com/blog/ está) — então uma release note lá cai no default
+    // "noticias" (RADAR) em vez de "lancamento". O importante pro #4337 é que
+    // NÃO seja mais "tutorial" (USE MELHOR) — release note não é tutorial.
+    const art: Article = {
+      url: "https://blog.langchain.dev/langgraph-v1-2",
+      title: "LangGraph v1.2",
+    };
+    assert.notEqual(categorize(art), "tutorial");
+  });
+
+  it("CASO REAL: latent.space 'Codex from 0 to 10M Users: Building ChatGPT Work' → noticias, não tutorial", () => {
+    const art: Article = {
+      url: "https://www.latent.space/p/chatgpt-work",
+      title: "Codex from 0 to 10M Users: Building ChatGPT Work, Akshay Nathan, OpenAI",
+    };
+    assert.equal(categorize(art), "noticias");
+  });
+
+  it("sem-regressão: langchain.com/blog how-to genuíno sem sinal de versão continua tutorial", () => {
+    const art: Article = {
+      url: "https://www.langchain.com/blog/how-to-build-agents-with-langgraph",
+      title: "How to build agents with LangGraph",
+    };
+    assert.equal(categorize(art), "tutorial");
+  });
+
+  it("sem-regressão: cookbook.openai.com com versão de modelo no slug (fora de MIXED_TUTORIAL_ESSAY_HOSTS) continua tutorial", () => {
+    // O guard de versão (#4337) é restrito aos hosts MISTOS — cookbook.openai.com
+    // não está em MIXED_TUTORIAL_ESSAY_HOSTS, então versão no slug não o ejeta.
+    const art: Article = {
+      url: "https://cookbook.openai.com/examples/gpt-4o-mini-fine-tuning",
+      title: "Fine-tuning GPT-4o mini: a cookbook",
+    };
+    assert.equal(categorize(art), "tutorial");
+  });
+
+  it("sem-regressão: latent.space tutorial real sem 'from 0 to' continua tutorial (#59 slice 2)", () => {
+    assert.equal(categorize({ url: "https://www.latent.space/p/agent-eng" }), "tutorial");
   });
 });

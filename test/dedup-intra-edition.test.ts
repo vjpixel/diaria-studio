@@ -1797,3 +1797,157 @@ describe("CROSS_EDITION_TERM_MIN_LEN / CROSS_EDITION_TERM_MIN_SHARED (#4262)", (
     assert.ok(Number.isInteger(CROSS_EDITION_TERM_MIN_SHARED) && CROSS_EDITION_TERM_MIN_SHARED > 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #4360 CASO REAL 260731 — LANÇAMENTOS duplica mesmo lançamento (Gemini
+// Robotics ER 2): model-card page + post oficial de blog, NENHUM dos 2 é
+// destaque — o dedup destaque-vs-bucket nunca os compara entre si.
+// ---------------------------------------------------------------------------
+
+import {
+  dedupLancamentoIntraBucket,
+  isModelCardOrHubPage,
+} from "../scripts/dedup-intra-edition.ts";
+
+describe("isModelCardOrHubPage (#4360)", () => {
+  it("detecta path /models/model-cards/ (caso real deepmind.google)", () => {
+    assert.equal(
+      isModelCardOrHubPage(
+        "https://deepmind.google/models/model-cards/gemini-robotics-er-2",
+      ),
+      true,
+    );
+  });
+
+  it("detecta huggingface.co/{org}/{model} como model card", () => {
+    assert.equal(isModelCardOrHubPage("https://huggingface.co/meta-llama/Llama-3-70B"), true);
+  });
+
+  it("NÃO detecta huggingface.co/blog/{slug} (post, não model card)", () => {
+    assert.equal(isModelCardOrHubPage("https://huggingface.co/blog/smollm3"), false);
+  });
+
+  it("NÃO detecta post oficial de blog (caso real blog.google)", () => {
+    assert.equal(
+      isModelCardOrHubPage(
+        "https://blog.google/technology/google-deepmind/gemini-robotics-er-2/",
+      ),
+      false,
+    );
+  });
+
+  it("retorna false para URL inválida", () => {
+    assert.equal(isModelCardOrHubPage("not-a-url"), false);
+  });
+});
+
+describe("dedupLancamentoIntraBucket (#4360)", () => {
+  it("CASO REAL: consolida model-card + post oficial do mesmo lançamento (Gemini Robotics ER 2)", () => {
+    const articles = [
+      {
+        url: "https://deepmind.google/models/model-cards/gemini-robotics-er-2",
+        title: "Gemini Robotics-ER 1.5",
+        // sem summary — model card, specs técnicas sem prosa descritiva
+      },
+      {
+        url: "https://blog.google/technology/google-deepmind/gemini-robotics-er-2/",
+        title: "Gemini Robotics-ER 1.5: bringing AI into the physical world",
+        summary: "Google DeepMind announces the newest embodied reasoning model.",
+      },
+    ];
+
+    const { kept, removed } = dedupLancamentoIntraBucket(articles);
+
+    assert.equal(removed.length, 1, "deve consolidar em 1 item");
+    assert.equal(
+      removed[0].url,
+      "https://deepmind.google/models/model-cards/gemini-robotics-er-2",
+      "model-card (sem descrição) deve ser o removido",
+    );
+    assert.equal(kept.length, 1);
+    assert.equal(
+      kept[0].url,
+      "https://blog.google/technology/google-deepmind/gemini-robotics-er-2/",
+      "post oficial com descrição deve ser o mantido",
+    );
+    assert.equal(removed[0].consolidated_into, kept[0].url);
+  });
+
+  it("2 lançamentos DIFERENTES não são consolidados", () => {
+    const articles = [
+      { url: "https://a.com/1", title: "Google lança Pixel 10 Pro", summary: "..." },
+      { url: "https://b.com/2", title: "Google anuncia Android 17", summary: "..." },
+    ];
+    const { kept, removed } = dedupLancamentoIntraBucket(articles);
+    assert.equal(removed.length, 0);
+    assert.equal(kept.length, 2);
+  });
+
+  it("bucket com 1 único item não é afetado", () => {
+    const articles = [{ url: "https://a.com/1", title: "Gemini Robotics ER 2" }];
+    const { kept, removed } = dedupLancamentoIntraBucket(articles);
+    assert.equal(removed.length, 0);
+    assert.equal(kept.length, 1);
+  });
+
+  it("bucket vazio não é afetado", () => {
+    const { kept, removed } = dedupLancamentoIntraBucket([]);
+    assert.equal(removed.length, 0);
+    assert.equal(kept.length, 0);
+  });
+
+  it("3 itens do mesmo lançamento consolidam em 1 (transitividade)", () => {
+    const articles = [
+      { url: "https://a.com/1", title: "Gemini Robotics ER 2 model card" },
+      {
+        url: "https://b.com/2",
+        title: "Introducing Gemini Robotics ER 2",
+        summary: "Descrição oficial do lançamento.",
+      },
+      { url: "https://c.com/3", title: "Gemini Robotics ER 2 details" },
+    ];
+    const { kept, removed } = dedupLancamentoIntraBucket(articles);
+    assert.equal(kept.length, 1, "só 1 sobrevive");
+    assert.equal(removed.length, 2);
+    assert.equal(kept[0].url, "https://b.com/2", "o único com summary sobrevive");
+  });
+
+  it("dedupIntraEdition (integração): consolida duplicata intra-LANÇAMENTOS quando nenhum é destaque", () => {
+    const input = {
+      highlights: [
+        { rank: 1, url: "https://highlight.com/x", title: "Um destaque completamente não-relacionado" },
+      ],
+      radar: [],
+      lancamento: [
+        {
+          url: "https://deepmind.google/models/model-cards/gemini-robotics-er-2",
+          title: "Gemini Robotics-ER 1.5",
+        },
+        {
+          url: "https://blog.google/technology/google-deepmind/gemini-robotics-er-2/",
+          title: "Gemini Robotics-ER 1.5: bringing AI into the physical world",
+          summary: "Google DeepMind announces the newest embodied reasoning model.",
+        },
+      ],
+      use_melhor: [],
+      video: [],
+    };
+
+    const { kept, removed } = dedupIntraEdition(input);
+
+    const intraBucketRemoved = removed.filter((r) => r.match_type === "intra_bucket");
+    assert.equal(intraBucketRemoved.length, 1, "deve consolidar via intra_bucket");
+    assert.equal(
+      intraBucketRemoved[0].url,
+      "https://deepmind.google/models/model-cards/gemini-robotics-er-2",
+    );
+    assert.equal(intraBucketRemoved[0].bucket, "lancamento");
+    assert.equal(kept.lancamento?.length, 1, "lançamento consolidado em 1 item");
+    assert.equal(
+      kept.lancamento?.[0].url,
+      "https://blog.google/technology/google-deepmind/gemini-robotics-er-2/",
+    );
+    // destaque não-relacionado preservado
+    assert.equal(kept.highlights?.length, 1);
+  });
+});

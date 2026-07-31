@@ -316,7 +316,9 @@ export interface IntraEditionDedupResult {
       | "domain"
       | "cross_vehicle"
       | "product_code"
-      | "content_terms";
+      | "content_terms"
+      /** #4360: duplicata DENTRO do bucket LANÇAMENTOS (não envolve destaque). */
+      | "intra_bucket";
     matched_highlight: string;
     score: number;
   }>;
@@ -928,6 +930,129 @@ function attachClusterSource(h: HighlightEntry, article: Article): void {
   ];
 }
 
+// ---------------------------------------------------------------------------
+// #4360: dedup DENTRO do bucket LANÇAMENTOS (item-vs-item, não destaque-vs-bucket)
+// ---------------------------------------------------------------------------
+
+/**
+ * #4360: página de MODEL CARD / hub — tipicamente specs técnicas sem prosa
+ * descritiva, ao contrário de um post oficial de blog (que tem lead/resumo).
+ * Usado como critério de desempate em `dedupLancamentoIntraBucket`: quando 2
+ * itens cobrem o MESMO lançamento, o post de blog (com descrição) é
+ * preferido sobre a página de model-card/hub (sem descrição).
+ *
+ * Caso real (#4360, edição 260731): "Gemini Robotics ER 2" tinha 2 entradas em
+ * LANÇAMENTOS — `deepmind.google/models/model-cards/...` (model card, sem
+ * descrição) e `blog.google/.../gemini-robotics-er-2...` (post oficial, com
+ * descrição) — mesmo lançamento, o dedup intra-edição existente (destaque-vs-
+ * bucket) não capturava porque NENHUM dos 2 era destaque.
+ */
+const MODEL_CARD_PATH_RE = /\/models?\/model-cards?\//i;
+
+const HUGGINGFACE_NON_MODEL_SEGMENTS = new Set([
+  "blog",
+  "papers",
+  "learn",
+  "spaces",
+  "datasets",
+  "docs",
+]);
+
+export function isModelCardOrHubPage(url: string): boolean {
+  try {
+    const u = new URL(url);
+    if (MODEL_CARD_PATH_RE.test(u.pathname)) return true;
+    // huggingface.co/{org}/{model} — página de model card (não /blog/, /papers/, etc).
+    if (u.hostname.replace(/^www\./, "") === "huggingface.co") {
+      const segs = u.pathname.split("/").filter(Boolean);
+      if (segs.length >= 1 && !HUGGINGFACE_NON_MODEL_SEGMENTS.has(segs[0].toLowerCase())) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export interface LancamentoIntraBucketResult {
+  kept: Article[];
+  removed: Array<{ url: string; title?: string; consolidated_into: string }>;
+}
+
+/**
+ * #4360: consolida duplicatas DENTRO do bucket LANÇAMENTOS — 2 URLs distintas
+ * cobrindo o MESMO produto/lançamento (ex: model-card + post oficial de
+ * blog). `dedupIntraEdition`/`isIntraEditionDuplicate` só comparam bucket-vs-
+ * HIGHLIGHTS — nunca item-vs-item dentro do mesmo bucket secundário — então o
+ * caso real (#4360) em que os 2 itens estavam SIMULTANEAMENTE fora dos
+ * destaques nunca era comparado um com o outro.
+ *
+ * Sinal de "mesmo lançamento" (mesmos critérios já usados no dedup destaque-
+ * vs-bucket, conservador): Jaccard de título ≥ threshold OU ≥1 entidade de
+ * PRODUTO compartilhada (`extractProductEntitiesIntra` — inclui nome de
+ * modelo, exclui empresa/genéricos). Em caso de match, mantém o item com
+ * `summary` não-vazio; se ambos (ou nenhum) têm summary, prefere o que NÃO é
+ * model-card/hub page (`isModelCardOrHubPage`). Empate residual: mantém o
+ * primeiro da lista (ordem estável).
+ *
+ * Pure function — não muta `articles`.
+ */
+export function dedupLancamentoIntraBucket(
+  articles: Article[],
+  options: { jaccardThreshold?: number } = {},
+): LancamentoIntraBucketResult {
+  const jThreshold = options.jaccardThreshold ?? INTRA_JACCARD_THRESHOLD;
+  const removedUrls = new Set<string>();
+  const removed: LancamentoIntraBucketResult["removed"] = [];
+
+  for (let i = 0; i < articles.length; i++) {
+    const a = articles[i];
+    if (removedUrls.has(a.url) || !a.title) continue;
+    for (let j = i + 1; j < articles.length; j++) {
+      const b = articles[j];
+      if (removedUrls.has(b.url) || removedUrls.has(a.url) || !b.title) continue;
+      if (a.url === b.url) continue;
+
+      const aTokens = tokenizeForJaccard(stripVehicleSuffix(a.title));
+      const bTokens = tokenizeForJaccard(stripVehicleSuffix(b.title));
+      const jaccard = jaccardSimilarity(aTokens, bTokens);
+
+      const aProductEntities = extractProductEntitiesIntra(a.title);
+      const bProductEntities = extractProductEntitiesIntra(b.title);
+      const sharedProduct = [...aProductEntities].filter((e) => bProductEntities.has(e));
+
+      const isSameLaunch = jaccard >= jThreshold || sharedProduct.length >= 1;
+      if (!isSameLaunch) continue;
+
+      // Desempate: preferir item com summary/descrição não-vazia; senão,
+      // preferir o que NÃO é model-card/hub page; senão, manter o primeiro.
+      const aHasSummary = !!(a.summary && a.summary.trim().length > 0);
+      const bHasSummary = !!(b.summary && b.summary.trim().length > 0);
+
+      let keepA: boolean;
+      if (aHasSummary !== bHasSummary) {
+        keepA = aHasSummary;
+      } else {
+        const aIsModelCard = isModelCardOrHubPage(a.url);
+        const bIsModelCard = isModelCardOrHubPage(b.url);
+        keepA = aIsModelCard !== bIsModelCard ? !aIsModelCard : true;
+      }
+
+      const dropped = keepA ? b : a;
+      const kept = keepA ? a : b;
+      removedUrls.add(dropped.url);
+      removed.push({ url: dropped.url, title: dropped.title, consolidated_into: kept.url });
+      if (!keepA) break; // `a` foi descartado — não compará-lo contra os próximos j
+    }
+  }
+
+  return {
+    kept: articles.filter((a) => !removedUrls.has(a.url)),
+    removed,
+  };
+}
+
 /**
  * Aplica dedup intra-edição ao JSON de categorized.
  * Remove dos buckets secundários itens que duplicam um destaque.
@@ -1005,6 +1130,31 @@ export function dedupIntraEdition(
     }
 
     keptBuckets[bucket] = bucketKept;
+  }
+
+  // #4360: consolida duplicatas DENTRO do bucket LANÇAMENTOS (item-vs-item,
+  // não destaque-vs-bucket como o loop acima) — caso em que 2 URLs distintas
+  // cobrem o MESMO lançamento e NENHUMA das duas é destaque, então o loop
+  // acima nunca as compara uma com a outra.
+  const lancamentoAfterHighlightPass = keptBuckets.lancamento ?? [];
+  if (lancamentoAfterHighlightPass.length > 1) {
+    const { kept: lancamentoKept, removed: lancamentoRemoved } = dedupLancamentoIntraBucket(
+      lancamentoAfterHighlightPass,
+      options,
+    );
+    if (lancamentoRemoved.length > 0) {
+      keptBuckets.lancamento = lancamentoKept;
+      for (const r of lancamentoRemoved) {
+        removed.push({
+          url: r.url,
+          title: r.title,
+          bucket: "lancamento",
+          match_type: "intra_bucket",
+          matched_highlight: r.consolidated_into,
+          score: 1,
+        });
+      }
+    }
   }
 
   // #4185: reconstrói highlights[] substituindo o top-N (possivelmente

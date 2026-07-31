@@ -41,6 +41,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isOfficialLancamentoUrl } from "./categorize.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
+import { VERSION_SIGNAL_RE } from "./lib/version-signal-detect.ts"; // #4337: extraído (fonte única)
 
 /**
  * #1968: allowlist de override pra a verificação positiva de ferramenta. Arquivo
@@ -187,6 +188,50 @@ export function isConferenceRoundupWarn(title?: string): boolean {
 const NON_PRODUCT_SLUG_RE =
   /\b(cvpr|neurips|iclr|icml|iccv|eccv|aaai|emnlp|naacl|siggraph|arxiv|preprint|case stud(y|ies)|customer stor(y|ies))\b/i;
 
+/**
+ * #4336: título de CRONOLOGIA DE INCIDENTE DE SEGURANÇA em domínio oficial.
+ * `PRODUCT_SIGNAL_RE` casa substantivo genérico (`agent`) em cobertura desse
+ * tipo — não é lançamento de produto, é relato de incidente.
+ *
+ * Exige CO-OCORRÊNCIA de um termo de incidente (incident/intrusion/breach)
+ * com "timeline" na mesma vizinhança (gap curto, sem atravessar frase) — alta
+ * precisão: um lançamento real raramente combina esses dois termos.
+ *
+ * Caso real (#4336, 260730): "Anatomy of a Frontier Lab Agent Intrusion: A
+ * Technical Timeline of the July 2026 Incident" (huggingface.co/blog/...) —
+ * casava `\bagent\b` em PRODUCT_SIGNAL_RE, mas é cronologia de incidente.
+ */
+const INCIDENT_HINTS_RE =
+  /\b(incident|intrusion|breach)\b[^.\n]{0,80}\btimeline\b|\btimeline\b[^.\n]{0,80}\b(incident|intrusion|breach)\b/i;
+
+/**
+ * #4336: título de CASE STUDY de cliente ("X helping a Y", "customer story",
+ * "case study") em domínio oficial. `PRODUCT_SIGNAL_RE` casa família de marca
+ * (`gemini`) + substantivo genérico (`agents`) em cobertura desse tipo.
+ *
+ * "helping a" é o padrão de alta precisão observado no caso real — narrativa
+ * de benefício pra um terceiro, não anúncio de produto. Conservador de
+ * propósito: NÃO inclui "how {X} is/are" genérico (colidiria com título de
+ * explainer/tutorial legítimo — ver aviso em `isExplainerByTitle`).
+ *
+ * Caso real (#4336, 260730): "How Gemini Flash agents are helping a Michigan
+ * dairy farmer" (blog.google/...) — casava gemini+agents em PRODUCT_SIGNAL_RE,
+ * mas é case study de cliente.
+ */
+const CASE_STUDY_HINTS_RE = /\bhelping\s+a\b|\bcustomer\s+stor(y|ies)\b|\bcase\s+stud(y|ies)\b/i;
+
+/**
+ * #4336: `true` se o título bate em vocabulário de ALTA precisão de incidente
+ * de segurança ou case study de cliente — usado como negative hint que anula
+ * o sinal positivo genérico de `PRODUCT_SIGNAL_RE` (agent/model/gemini/gpt
+ * sozinhos não bastam quando o resto do título é claramente incidente ou
+ * case study).
+ */
+export function hasNonProductHints(title?: string): boolean {
+  if (!title) return false;
+  return INCIDENT_HINTS_RE.test(title) || CASE_STUDY_HINTS_RE.test(title);
+}
+
 /** Slug normalizado (`[-_/]→ espaço`) pra match de palavras; url crua no catch. */
 function normalizedSlug(url: string): string {
   try {
@@ -214,7 +259,10 @@ export function isNonProductLancamento(url: string, title?: string): boolean {
     // #2277: para o título, só os termos de ALTA precisão (PROGRAM_SIGNAL_RE);
     // grants?/partnership ficam em PROGRAM_WARN_RE (warn-only) e NÃO hard-blockam
     // via título — evita over-block de títulos editoriais com essas palavras.
-    (!!title && (NON_PRODUCT_RE.test(title) || PROGRAM_SIGNAL_RE.test(title)))
+    (!!title && (NON_PRODUCT_RE.test(title) || PROGRAM_SIGNAL_RE.test(title))) ||
+    // #4336: incidente de segurança / case study de cliente — hard-block mesmo
+    // quando PRODUCT_SIGNAL_RE casou um substantivo genérico (agent/gemini/etc).
+    hasNonProductHints(title)
   );
 }
 
@@ -252,17 +300,11 @@ export function isProgramWarn(url: string, title?: string): boolean {
 const PRODUCT_SIGNAL_RE =
   /\b(introduc(?:e|es|ing|ed)|launch(?:es|ing|ed)?|announc(?:e|es|ing|ed)|unveil(?:s|ing|ed)?|releas(?:e|es|ed|ing)|ship(?:s|ping|ped)?|debut(?:s|ing|ed)?|now\s?available|available\s?now|general\s?availability|early\s?access|preview|beta|model|models|app|apps|api|apis|sdk|cli|chip|chips|gpu|gpus|tpu|device|devices|hardware|wearable|robot|robots|tool|tools|toolkit|framework|library|runtime|platform|plugin|extension|agent|agents|assistant|copilot|version|product|products|lan[çc]a(?:mos|mento|r|ou)?|dispon[íi]vel|apresenta(?:ndo|m)?|estreia|atualiza[çc][ãa]o|gpt|claude|gemini|llama|mistral|grok|sora|dall\s?e|whisper|qwen|phi|flux|imagen|veo|copilot)\b/iu;
 
-// Versão de produto no slug CRU (dashes preservados): `gpt-4`, `claude-opus-4-5`,
-// `4.5`, `v2`, `7b`, `o3`. Sinal forte de modelo/produto versionado.
-// #1968 code-review: o major é restrito a 1-2 dígitos pra NÃO casar ANOS — um
-// `-2025` / `2026-01` / `2023-2024` (slug datado de parceria/evento/relatório)
-// NÃO é versão. `gpt-4`/`gpt-4o` caem na família `gpt` do PRODUCT_SIGNAL, não
-// aqui. `\d{1,3}b` = contagem de parâmetros (`7b`, `70b`, `405b`); `o[1-9]` =
-// série o1-o9 da OpenAI; `[a-z]{2,}-\d{1,2}o?` = nome-de-modelo + versão de 1-2
-// dígitos (`cosmos-3`, `olmo-2`, `nemotron-4`) — exige nome (≥2 letras) ANTES,
-// então `lg-2025`/`build-2026` (ano, 4 díg) NÃO casam (sem boundary após 2 díg).
-const VERSION_SIGNAL_RE =
-  /\bv?\d{1,2}(?:[.\-]\d+)+\b|\bv\d+\b|\b\d{1,3}b\b|\bo[1-9]\b|\b[a-z]{2,}-\d{1,2}o?\b/i;
+// #4337: VERSION_SIGNAL_RE (versão de produto no slug CRU — `gpt-4`,
+// `claude-opus-4-5`, `4.5`, `v2`, `7b`, `o3`) foi extraído pra
+// `lib/version-signal-detect.ts` (fonte única — `launch-heuristics.ts`
+// também precisa do sinal). Ver docstring lá para o racional completo do
+// regex (major restrito a 1-2 dígitos pra não casar anos, etc).
 
 // Path segment `/product(s)/` — página oficial de produto (ex: blog.google/.../
 // products/notebooklm/...). Sinal estrutural, mais forte que keyword no slug.
@@ -464,15 +506,20 @@ export interface LancamentosRemovedSummary {
    * automaticamente — decisão editorial no gate). */
   flagged_non_product: Array<{ url: string; title?: string }>;
   /** #1968: itens oficiais SEM sinal positivo de produto (verificação positiva
-   * falhou) — hard-block (exit 1). NÃO são auto-removidos: editor decide no gate
-   * (false-positive de slug atípico vai pro allowlist). */
+   * falhou). #4339: não é mais warning-only — `mainApproved` (CLI) auto-move
+   * esses itens de `lancamento[]` pra `radar[]` via `demoteNotATool` (allowlist
+   * continua sendo o escape-hatch pra falso-positivo de slug atípico). */
   not_a_tool: Array<{ url: string; title?: string }>;
   original_count: number;
+  /** #4339: reflete a composição de LANÇAMENTOS APÓS a auto-demoção de
+   * not_a_tool (não só a remoção de URL não-oficial). */
   final_count: number;
 }
 
 interface ApprovedShape {
   lancamento?: Array<{ url?: string; title?: string; [k: string]: unknown }>;
+  /** #4339: destino da auto-demoção de itens not_a_tool. */
+  radar?: Array<{ url?: string; title?: string; [k: string]: unknown }>;
   [k: string]: unknown;
 }
 
@@ -490,6 +537,14 @@ export function validateLancamentosFromApproved(
   const flagged_non_product: Array<{ url: string; title?: string }> = [];
   const not_a_tool: Array<{ url: string; title?: string }> = [];
   let kept = 0;
+  // #4339: contagem PÓS auto-demoção de not_a_tool (ver `demoteNotATool`) —
+  // diferente de `kept` (que só desconta não-oficiais, usado no cálculo de
+  // `original_count`). `final_count` precisa refletir a composição REAL de
+  // LANÇAMENTOS depois que `mainApproved` move os itens not_a_tool pra
+  // radar — senão `sync-intro-count.ts` (que usa `final_count` pra ajustar
+  // "X lançamentos" no intro) subcontaria a demoção e a narrativa ficaria
+  // inflada em relação ao que de fato aparece na seção.
+  let keptAfterDemotion = 0;
 
   for (const item of list) {
     const url = typeof item.url === "string" ? item.url : "";
@@ -511,6 +566,8 @@ export function validateLancamentosFromApproved(
       !isConferenceRoundupWarn(title);
     if (isNatool) {
       not_a_tool.push({ url, title });
+    } else if (official) {
+      keptAfterDemotion++;
     }
     // #1799/#2277/#2493: classificação produto-vs-governança é independente do domínio —
     // openai.com/index/public-policy-agenda é oficial mas NÃO é produto. Inclui
@@ -526,7 +583,60 @@ export function validateLancamentosFromApproved(
   }
 
   const original_count = kept + removed.length;
-  return { removed, flagged_non_product, not_a_tool, original_count, final_count: kept };
+  return { removed, flagged_non_product, not_a_tool, original_count, final_count: keptAfterDemotion };
+}
+
+export interface DemoteNotAToolResult {
+  /** Cópia de `approved` com itens not_a_tool movidos de `lancamento[]` para `radar[]`. */
+  approved: ApprovedShape;
+  /** Itens efetivamente movidos (mesma forma de `not_a_tool` do summary). */
+  demoted: Array<{ url: string; title?: string }>;
+}
+
+/**
+ * #4339: `not_a_tool` era warning-only — o sinal já era correto (item
+ * corretamente flagado gate após gate), mas nada agia sobre ele, e o item
+ * sobrevivia até o editor mover manualmente (caso real: mesmo item
+ * sinalizado em 2 gates seguidos da mesma edição, 260730, sem correção).
+ *
+ * Esta função move automaticamente todo item `not_a_tool` de `lancamento[]`
+ * para `radar[]` — sem esperar decisão do editor. Não é "aposta arriscada":
+ * `isVerifiedTool` já é a verificação de ALTA precisão do #1968 (allowlist
+ * cobre o escape-hatch de falso-positivo — slug atípico legítimo vai pra
+ * `seed/lancamentos-tool-allowlist.txt`, e a partir daí nunca mais aparece
+ * como not_a_tool). Reservar confirmação manual só faria sentido se
+ * houvesse uma categoria de "not_a_tool ambíguo" — não há: pós-allowlist,
+ * not_a_tool já É o sinal de alta confiança que a issue pede.
+ *
+ * Pure function — não muta `approved` (retorna cópia nova).
+ */
+export function demoteNotATool(
+  approved: ApprovedShape,
+  allowlist: string[] = [],
+): DemoteNotAToolResult {
+  const list = Array.isArray(approved.lancamento) ? approved.lancamento : [];
+  const radar = Array.isArray(approved.radar) ? [...approved.radar] : [];
+  const kept: typeof list = [];
+  const demoted: Array<{ url: string; title?: string }> = [];
+
+  for (const item of list) {
+    const url = typeof item.url === "string" ? item.url : "";
+    const title = typeof item.title === "string" ? item.title : undefined;
+    const official = !!url && isOfficialLancamentoUrl(url);
+    const isNatool =
+      official && !isVerifiedTool(url, title, allowlist) && !isConferenceRoundupWarn(title);
+    if (isNatool) {
+      demoted.push({ url, title });
+      radar.push({ ...item, demoted_from: "lancamento", demoted_reason: "not_a_tool" });
+    } else {
+      kept.push(item);
+    }
+  }
+
+  return {
+    approved: { ...approved, lancamento: kept, radar },
+    demoted,
+  };
 }
 
 function mainApproved(args: Record<string, string>, ROOT: string): void {
@@ -577,23 +687,26 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
     }
   }
 
-  // #1968: verificação POSITIVA — item oficial sem sinal de produto = not_a_tool.
-  // Hard-block (exit 1) surfaçado no gate; NÃO auto-removido (editor decide /
-  // allowlist em seed/lancamentos-tool-allowlist.txt pra slug atípico legítimo).
+  // #4339: not_a_tool não é mais warning-only — auto-demove pra RADAR (o sinal
+  // já é #1968 de alta precisão; allowlist cobre o escape-hatch de FP). Reescreve
+  // `01-approved.json` (mesmo path de `--approved`) com o item já movido, ANTES
+  // do writer rodar — o item nunca chega a aparecer em LANÇAMENTOS na newsletter.
   if (summary.not_a_tool.length > 0) {
+    const { approved: demotedApproved, demoted } = demoteNotATool(approved, allowlist);
+    writeFileSync(approvedPath, JSON.stringify(demotedApproved, null, 2) + "\n", "utf8");
     console.error(
-      `\n❌ ${summary.not_a_tool.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) (#1968):`,
+      `\n➡️  ${demoted.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) foram movidos automaticamente para RADAR (#4339):`,
     );
-    for (const n of summary.not_a_tool) {
+    for (const n of demoted) {
       const titleHint = n.title ? ` ("${n.title.slice(0, 60)}")` : "";
       console.error(`  ${n.url}${titleHint}`);
     }
     console.error(
-      "Mova pra NOTÍCIAS, ou — se for ferramenta legítima de slug atípico — adicione a URL a seed/lancamentos-tool-allowlist.txt.",
+      "Se algum destes for ferramenta legítima de slug atípico, adicione a URL a seed/lancamentos-tool-allowlist.txt e rode novamente.",
     );
   }
 
-  if (summary.removed.length > 0 || summary.not_a_tool.length > 0) {
+  if (summary.removed.length > 0) {
     process.exit(1);
   }
 }
