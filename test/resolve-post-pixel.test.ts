@@ -253,6 +253,21 @@ describe("#3052 CLI resolve-post-pixel.ts", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
+  it("#4295 regressão do self-review: 05-edition-url.txt vazio/só-whitespace não lança — comportamento tolerante pré-PR preservado (substituição vazia, não crash)", () => {
+    const { exitCode, stdout, stderr, tmp } = runCli([], {
+      "03-social.md": SOCIAL_MD_WITH_POST_PIXEL,
+      "_internal/05-edition-url.txt": "   \n  ", // só whitespace — .trim() vira ""
+      "_internal/01-approved-capped.json": APPROVED_CAPPED,
+    });
+    assert.equal(exitCode, 0, `esperava exit 0 (nunca crash), stderr: ${stderr}`);
+    assert.doesNotMatch(stderr, /TypeError|Invalid URL/, "não deve lançar/crashar em new URL('')");
+    // {edition_url} vira string vazia (mesmo comportamento tolerante de antes
+    // do #4295 — nenhuma UTM é anexada a uma URL vazia, `new URL("")` nunca é chamado).
+    assert.match(stdout, /reuni tudo na edição em \. Mas o que me fez parar/);
+    assert.doesNotMatch(stdout, /utm_source/);
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
   it("exit 1: sem --edition-dir", () => {
     const result = spawnSync(NPX, ["tsx", "scripts/resolve-post-pixel.ts"], {
       encoding: "utf8",
