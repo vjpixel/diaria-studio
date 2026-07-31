@@ -23,8 +23,12 @@
 #   2. wrangler secret put COOKIE_HMAC_SECRET   (gerar: openssl rand -hex 32)
 #   3. wrangler secret put BEEHIIV_API_KEY          (opcional — ver gate.ts)
 #   4. wrangler secret put BEEHIIV_PUBLICATION_ID   (opcional — ver gate.ts)
-#   5. Rodar scripts/sync-cursos-subscribers-kv.ts pra popular o KV (ou
-#      agendar via Task Scheduler, mesmo padrão de run-clarice-sync-daily.ps1)
+#   5. Rodar scripts/sync-cursos-subscribers-kv.ts pra popular o KV pela 1ª vez
+#      (#4320: já agendado depois disso via Task Scheduler — ver
+#      scripts/setup-cursos-kv-sync-schedule.ps1, task "Diaria-Cursos-Kv-Sync",
+#      diária 09:15 — e o alarme de erro do worker via
+#      scripts/setup-cursos-error-alarm-schedule.ps1, task
+#      "Diaria-Cursos-Error-Alarm", a cada 2h)
 name = "cursos"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
