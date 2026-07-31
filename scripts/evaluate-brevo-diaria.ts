@@ -51,13 +51,31 @@
  * fail-safe: mais vale continuar entregando pelo canal que funciona do que
  * assumir sucesso e cortar a única entrega confirmada.
  *
+ * ## Falha por contato não aborta o run (#4398 review — silent-failure-hunter
+ * + code-reviewer + pr-test-analyzer convergiram independentemente)
+ *
+ * Cada contato do loop principal roda dentro do seu próprio try/catch —
+ * diferente de `sync-pending-to-brevo.ts` cujo padrão este módulo agora
+ * espelha. Uma falha transitória de API (Brevo ou Beehiiv) num contato NUNCA
+ * aborta o run inteiro: é contada em `failed`, logada, e o loop segue pro
+ * próximo contato. `writeStore()` roda uma vez ao final, mas como o `store`
+ * é acumulado em memória a cada sucesso e o loop nunca é abortado por uma
+ * exceção não-tratada, todo progresso de contatos já processados no mesmo
+ * run é persistido mesmo quando outro contato falha no meio. Falha (de
+ * qualquer classe: checagem de status Beehiiv, fetch de contadores Brevo,
+ * promoção, supressão, ou verificação pós-escrita não confirmada) sempre
+ * incrementa `failed` e o processo sai com `exit(1)` ao final — nunca
+ * silenciosamente reportado como sucesso (#738).
+ *
  * ## Uso
  *
  *   npx tsx scripts/evaluate-brevo-diaria.ts           # dry-run (default)
  *   npx tsx scripts/evaluate-brevo-diaria.ts --push     # aplica promoções/supressões
  *
- * **NUNCA executado com --push nesta sessão** (guard de publicação). Validado
- * só via testes com fetch mockado.
+ * Como do PR #4398 (260731), `--push` ainda não foi rodado ao vivo (guard de
+ * publicação, ver `context/overnight-dispatch-rules.md` #1) — validado só via
+ * testes com fetch mockado. Nota datada, não afirmação permanente: reler o
+ * histórico de commits antes de assumir que isso ainda vale.
  */
 
 import { readFileSync } from "node:fs";
@@ -79,6 +97,7 @@ import {
   applySelfConfirmed,
   DEFAULT_STORE_PATH,
   type BrevoDiariaContact,
+  type BrevoDiariaStore,
 } from "./lib/brevo-diaria-store.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -166,12 +185,20 @@ export function evaluateContact(counts: { opens_count: number; sends_count: numb
 
 // ── aplicação (I/O) ─────────────────────────────────────────────────────
 
-/** Suprime na Brevo — `emailBlacklisted: true`, NUNCA deleta (decisão do editor). */
+/**
+ * Suprime na Brevo — `emailBlacklisted: true`, NUNCA deleta (decisão do
+ * editor). NÃO desvincula da lista sozinho (ver `unlinkFromBrevoList`,
+ * chamada separadamente pelo caller — mesma composição do caminho de
+ * promoção) — #4398 review: sem o unlink, `totalSubscribers` da lista
+ * (consumido por `checkDailySendCap` em `publish-daily-brevo.ts`) infla
+ * indefinidamente conforme supressões acumulam, eventualmente bloqueando
+ * envios mesmo com a população `in_brevo` real bem abaixo do cap.
+ */
 export async function suppressInBrevo(apiKey: string, email: string): Promise<void> {
   await brevoPut(apiKey, `/contacts/${encodeURIComponent(email)}`, { emailBlacklisted: true });
 }
 
-/** Desvincula da lista Brevo (contato promovido não precisa mais deste canal). */
+/** Desvincula da lista Brevo (contato promovido/suprimido não precisa mais deste canal). */
 export async function unlinkFromBrevoList(apiKey: string, listId: number, email: string): Promise<void> {
   await brevoPut(apiKey, `/contacts/${encodeURIComponent(email)}`, { unlinkListIds: [listId] });
 }
@@ -214,6 +241,150 @@ export async function verifyPromotedToBeehiiv(
   return status !== null && status !== "pending";
 }
 
+/**
+ * Releitura pós-supressão (#4398 review: `suppressInBrevo`/`unlinkFromBrevoList`
+ * dependiam só do PUT não lançar, diferente de `ingestContactToBrevo`/
+ * `verifyPromotedToBeehiiv`, que sempre releem antes de confiar no sucesso —
+ * precedente documentado: a Beehiiv já aceitou um PATCH com 200 ignorando a
+ * escrita silenciosamente, ver `sync-apoio-tags-beehiiv.ts`). Como
+ * `applyEvaluation` move o contato pra um status TERMINAL (`suppressed`) que
+ * o loop nunca mais reavalia, uma falha silenciosa aqui seria permanente —
+ * `true` só se `emailBlacklisted` estiver confirmado E o contato não constar
+ * mais na lista (`listId`). O caller mantém o contato em `in_brevo`
+ * (fail-safe, mesmo padrão de `verifyPromotedToBeehiiv`) se isto retornar
+ * `false`.
+ */
+export async function verifySuppressedInBrevo(apiKey: string, listId: number, email: string): Promise<boolean> {
+  const res = await brevoGet(apiKey, `/contacts/${encodeURIComponent(email)}`);
+  if (res.status !== 200) return false;
+  const blacklisted = res.body?.emailBlacklisted === true;
+  const listIds: unknown = res.body?.listIds;
+  const stillInList = Array.isArray(listIds) && listIds.includes(listId);
+  return blacklisted && !stillInList;
+}
+
+// ── orquestração testável (#4398 review — pr-test-analyzer: main() precisa
+// de uma função extraída pra ser testável sem mockar env/platform.config.json
+// inteiros) ─────────────────────────────────────────────────────────────
+
+export interface RunEvaluationParams {
+  contacts: BrevoDiariaContact[];
+  store: BrevoDiariaStore;
+  push: boolean;
+  publicationId: string;
+  beehiivApiKey: string;
+  /** Só obrigatória quando `push=true` (mesmo contrato do main() original). */
+  brevoApiKey?: string;
+  listId: number;
+  log: (msg: string) => void;
+}
+
+export interface RunEvaluationResult {
+  store: BrevoDiariaStore;
+  selfConfirmed: number;
+  promoted: number;
+  suppressed: number;
+  kept: number;
+  /**
+   * Conta QUALQUER anomalia por contato: falha transitória de API (checagem
+   * de status Beehiiv, fetch de contadores, promoção, supressão) OU
+   * verificação pós-escrita que não confirma (mantido em `in_brevo` por
+   * fail-safe). Nunca um não-evento silencioso (#738) — o caller (main())
+   * usa isto pra decidir o exit code.
+   */
+  failed: number;
+}
+
+/**
+ * Roda a avaliação sobre a lista de contatos `in_brevo` já dada (sem I/O de
+ * env/config/disco — isso é responsabilidade do `main()`). Falha por contato
+ * NUNCA aborta a função inteira: cada contato roda no próprio try/catch,
+ * contado em `failed` e logado, seguindo pro próximo — mesmo padrão de
+ * `sync-pending-to-brevo.ts`. O `store` retornado acumula todo progresso dos
+ * contatos processados com sucesso, mesmo quando outro contato no meio falha.
+ */
+export async function runEvaluation(params: RunEvaluationParams): Promise<RunEvaluationResult> {
+  const { contacts, push, publicationId, beehiivApiKey, brevoApiKey, listId, log } = params;
+  let store = params.store;
+
+  let selfConfirmed = 0;
+  let promoted = 0;
+  let suppressed = 0;
+  let kept = 0;
+  let failed = 0;
+
+  for (const contact of contacts) {
+    try {
+      // 1) auto-confirmação — sempre checada primeiro, independente do score.
+      let statusCheckFailed = false;
+      const beehiivStatus = await fetchBeehiivSubscriptionStatus(publicationId, beehiivApiKey, contact.email).catch((e) => {
+        log(`warn: falha ao checar status Beehiiv de ${contact.email}: ${(e as Error).message}`);
+        statusCheckFailed = true;
+        return undefined;
+      });
+      if (statusCheckFailed) failed++;
+
+      if (beehiivStatus === "active") {
+        log(`${contact.email}: já ativo na Beehiiv (auto-confirmação) → promovido, sem depender do score.`);
+        selfConfirmed++;
+        if (push) {
+          await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+          store = applySelfConfirmed(store, contact.email);
+        }
+        continue;
+      }
+
+      // 2) score
+      const counts = push
+        ? await fetchBrevoContactCounts(brevoApiKey!, contact.email)
+        : { opens_count: contact.opens_count, sends_count: contact.sends_count };
+      const evalResult = evaluateContact(counts);
+      log(`${contact.email}: score=${evalResult.score} (${counts.opens_count} aberto(s)/${counts.sends_count} enviado(s)) → ${evalResult.action}`);
+
+      if (evalResult.action === "promote_to_beehiiv") promoted++;
+      else if (evalResult.action === "suppress") suppressed++;
+      else kept++;
+
+      if (!push) continue;
+
+      if (evalResult.action === "promote_to_beehiiv") {
+        await promoteBeehiivSubscription(publicationId, beehiivApiKey, contact.email);
+        const confirmed = await verifyPromotedToBeehiiv(publicationId, beehiivApiKey, contact.email);
+        if (!confirmed) {
+          log(`warn: ${contact.email} continua "pending" na Beehiiv após promoção — mantendo in_brevo (fail-safe).`);
+          failed++;
+          store = applyEvaluation(store, contact.email, { ...counts, score: evalResult.score, action: "keep" });
+          continue;
+        }
+        await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+        store = applyEvaluation(store, contact.email, { ...counts, score: evalResult.score, action: "promote_to_beehiiv" });
+      } else if (evalResult.action === "suppress") {
+        await suppressInBrevo(brevoApiKey!, contact.email);
+        await unlinkFromBrevoList(brevoApiKey!, listId, contact.email);
+        const suppressConfirmed = await verifySuppressedInBrevo(brevoApiKey!, listId, contact.email);
+        if (!suppressConfirmed) {
+          log(`warn: ${contact.email} supressão/desvinculação não confirmada na Brevo — mantendo in_brevo (fail-safe).`);
+          failed++;
+          store = applyEvaluation(store, contact.email, { ...counts, score: evalResult.score, action: "keep" });
+          continue;
+        }
+        store = applyEvaluation(store, contact.email, { ...counts, score: evalResult.score, action: "suppress" });
+      } else {
+        store = applyEvaluation(store, contact.email, { ...counts, score: evalResult.score, action: "keep" });
+      }
+    } catch (e) {
+      // #4398 review (fix 1): falha transitória de API num contato NUNCA
+      // aborta o run inteiro — segue pro próximo, progresso já acumulado em
+      // `store` (contatos processados com sucesso antes deste) persiste no
+      // `writeStore()` final, mesmo padrão de `sync-pending-to-brevo.ts`.
+      failed++;
+      log(`FALHA em ${contact.email}: ${(e as Error).message}`);
+    }
+  }
+
+  return { store, selfConfirmed, promoted, suppressed, kept, failed };
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -235,73 +406,34 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  let store = readStore(DEFAULT_STORE_PATH);
+  const store = readStore(DEFAULT_STORE_PATH);
   const inBrevo: BrevoDiariaContact[] = store.contacts.filter((c) => c.status === "in_brevo");
   log(`${inBrevo.length} contato(s) in_brevo a avaliar.`);
 
-  let selfConfirmed = 0;
-  let promoted = 0;
-  let suppressed = 0;
-  let kept = 0;
-
-  for (const contact of inBrevo) {
-    // 1) auto-confirmação — sempre checada primeiro, independente do score.
-    const beehiivStatus = await fetchBeehiivSubscriptionStatus(publicationId, beehiivApiKey, contact.email).catch((e) => {
-      log(`warn: falha ao checar status Beehiiv de ${contact.email}: ${(e as Error).message}`);
-      return undefined;
-    });
-    if (beehiivStatus === "active") {
-      log(`${contact.email}: já ativo na Beehiiv (auto-confirmação) → promovido, sem depender do score.`);
-      selfConfirmed++;
-      if (push) {
-        await unlinkFromBrevoList(brevoApiKey!, brevoDiaria.list_id as number, contact.email);
-        store = applySelfConfirmed(store, contact.email);
-      }
-      continue;
-    }
-
-    // 2) score
-    const counts = push
-      ? await fetchBrevoContactCounts(brevoApiKey!, contact.email)
-      : { opens_count: contact.opens_count, sends_count: contact.sends_count };
-    const evalResult = evaluateContact(counts);
-    log(`${contact.email}: score=${evalResult.score} (${counts.opens_count} aberto(s)/${counts.sends_count} enviado(s)) → ${evalResult.action}`);
-
-    if (evalResult.action === "promote_to_beehiiv") promoted++;
-    else if (evalResult.action === "suppress") suppressed++;
-    else kept++;
-
-    if (!push) continue;
-
-    if (evalResult.action === "promote_to_beehiiv") {
-      await promoteBeehiivSubscription(publicationId, beehiivApiKey, contact.email);
-      const confirmed = await verifyPromotedToBeehiiv(publicationId, beehiivApiKey, contact.email);
-      if (!confirmed) {
-        log(`warn: ${contact.email} continua "pending" na Beehiiv após promoção — mantendo in_brevo (fail-safe).`);
-        store = applyEvaluation(store, contact.email, { ...counts, score: evalResult.score, action: "keep" });
-        continue;
-      }
-      await unlinkFromBrevoList(brevoApiKey!, brevoDiaria.list_id as number, contact.email);
-      store = applyEvaluation(store, contact.email, { ...counts, score: evalResult.score, action: "promote_to_beehiiv" });
-    } else if (evalResult.action === "suppress") {
-      await suppressInBrevo(brevoApiKey!, contact.email);
-      store = applyEvaluation(store, contact.email, { ...counts, score: evalResult.score, action: "suppress" });
-    } else {
-      store = applyEvaluation(store, contact.email, { ...counts, score: evalResult.score, action: "keep" });
-    }
-  }
+  const result = await runEvaluation({
+    contacts: inBrevo,
+    store,
+    push,
+    publicationId,
+    beehiivApiKey,
+    brevoApiKey,
+    listId: brevoDiaria.list_id as number,
+    log,
+  });
 
   log(
-    `resumo: ${selfConfirmed} auto-confirmado(s), ${promoted} promovido(s) por score, ` +
-      `${suppressed} suprimido(s), ${kept} mantido(s).`,
+    `resumo: ${result.selfConfirmed} auto-confirmado(s), ${result.promoted} promovido(s) por score, ` +
+      `${result.suppressed} suprimido(s), ${result.kept} mantido(s), ${result.failed} falha(s).`,
   );
 
   if (!push) {
     log("dry-run (default) — NENHUMA mutação aplicada. Use --push para gravar.");
+    if (result.failed > 0) process.exit(1);
     return;
   }
-  writeStore(store, DEFAULT_STORE_PATH);
+  writeStore(result.store, DEFAULT_STORE_PATH);
   log("push concluído — store atualizado.");
+  if (result.failed > 0) process.exit(1);
 }
 
 if (isMainModule(import.meta.url)) {

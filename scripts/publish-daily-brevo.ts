@@ -30,7 +30,7 @@
  *
  * Uso:
  *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --dry-run
- *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --i-reviewed-the-copy [--send-now]
+ *   npx tsx scripts/publish-daily-brevo.ts <edition-dir> --i-reviewed-the-copy
  *
  * `--i-reviewed-the-copy`: obrigatória pra qualquer ação fora de `--dry-run`
  * — confirmação explícita de que o editor revisou a cópia RASCUNHO do bloco
@@ -39,9 +39,14 @@
  * modo "só draft") — a issue #4266 tratou esse bloco como decisão de
  * compliance, não um detalhe de copy qualquer.
  *
- * **NUNCA executado com efeito real nesta sessão** (guard de publicação —
- * scripts que tocam Beehiiv/Brevo ao vivo não rodam a partir de sessão
- * autônoma). Validado só via testes com fetch mockado + fixtures.
+ * Sem `--send-now`/`--schedule-at` (#4398 review: removida a menção no uso
+ * acima — o script nunca implementou essa flag; a campanha sempre sai como
+ * rascunho, schedule/send é ação manual separada, mesma cautela do publisher
+ * mensal).
+ *
+ * Como do PR #4398 (260731), ainda não rodado com efeito real (guard de
+ * publicação — scripts que tocam Beehiiv/Brevo ao vivo não rodam a partir de
+ * sessão autônoma). Validado só via testes com fetch mockado + fixtures.
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";

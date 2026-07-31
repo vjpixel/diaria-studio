@@ -28,7 +28,7 @@ Clarice mensal (texto plano, sem `**...**` embrulhando o bloco).
 A cópia abaixo é um placeholder honesto (não fabrica confirmação nem usa
 linguagem de "parabéns por ser assinante"), mas o texto final e o link de CTA
 precisam de aprovação explícita do editor antes do primeiro envio real —
-`scripts/publish-daria-brevo.ts` recusa rodar sem `--i-reviewed-the-copy`
+`scripts/publish-daily-brevo.ts` recusa rodar sem `--i-reviewed-the-copy`
 justamente por isso (ver comentário no próprio script). Ajustar a URL do CTA
 pra apontar pro formulário/página de confirmação real da Beehiiv antes de
 aprovar.

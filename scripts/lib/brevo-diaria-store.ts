@@ -27,6 +27,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { BrevoDiariaAction } from "./shared/brevo-diaria-score.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const DEFAULT_STORE_PATH = resolve(ROOT, "data/brevo-diaria/contacts.json");
@@ -126,7 +127,7 @@ export function upsertIngested(
 export function applyEvaluation(
   store: BrevoDiariaStore,
   email: string,
-  update: { opens_count: number; sends_count: number; score: number; action: "promote_to_beehiiv" | "suppress" | "keep" },
+  update: { opens_count: number; sends_count: number; score: number; action: BrevoDiariaAction },
   now: string = new Date().toISOString(),
 ): BrevoDiariaStore {
   const norm = normalizeEmail(email);

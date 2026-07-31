@@ -3,7 +3,7 @@
  * scripts/sync-pending-to-brevo.ts (#4266, item 2a/3 do plano da issue)
  *
  * Triagem de SAÍDA (não envio duplicado aditivo — decisão do editor, sessão
- * /diaria-develop 260731, ver comentário mais recente da issue): identifica
+ * /diaria-develop 260731, comentário 260731 da issue #4266): identifica
  * assinantes com status **Pending** na Beehiiv (assinaram, mas nunca
  * confirmaram o double opt-in — por definição NÃO recebem nada da Beehiiv) e
  * os adiciona à lista da conta Brevo PRÓPRIA do editor (`brevo_diaria` em
@@ -47,9 +47,9 @@
  *
  * Env: BEEHIIV_API_KEY (leitura) + platform.config.json → brevo_diaria.api_key_env (escrita).
  *
- * **NUNCA executado com --push nesta sessão** (guard de publicação — scripts
- * que tocam Beehiiv/Brevo ao vivo não rodam a partir de sessão autônoma).
- * Validado só via testes com fetch mockado.
+ * Como do PR #4398 (260731), `--push` ainda não foi rodado com efeito real
+ * (guard de publicação — scripts que tocam Beehiiv/Brevo ao vivo não rodam a
+ * partir de sessão autônoma). Validado só via testes com fetch mockado.
  */
 
 import { readFileSync } from "node:fs";

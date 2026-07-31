@@ -3,7 +3,7 @@
  *
  * Fórmula de pontuação do canal Brevo separado do editor (conta própria,
  * distinta da parceria Clarice) — decisão do editor, sessão /diaria-develop
- * 260731 (ver comentário mais recente da issue #4266).
+ * 260731 (comentário 260731 da issue #4266).
  *
  * Mesmos FATORES do `computePriorityPoints` da Clarice
  * (`scripts/lib/clarice-db.ts`, ~L285-305):
