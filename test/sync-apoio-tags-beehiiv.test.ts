@@ -30,6 +30,7 @@ import {
   extractApoioNivelValue,
   shouldBlockRemovals,
   applyApoioTagEntry,
+  fetchCurrentBeehiivState,
   type ApoioTagDiffEntry,
   type BeehiivSubscriptionSnapshot,
 } from "../scripts/sync-apoio-tags-beehiiv.ts";
@@ -455,5 +456,62 @@ describe("applyApoioTagEntry (#4307 achado 2 — write+reread nunca testado)", (
       assert.match(err.message, /NÃO confere/);
       return true;
     });
+  });
+});
+
+// ── fetchCurrentBeehiivState (#4317 — fail-loud da paginação + reconciliação
+// anti-truncamento, lógica já corrigida no commit 66a042bf/#4307 mas nunca
+// exercitada diretamente por teste) ──
+
+function pageBody(items: Array<{ id: string; email: string }>, totalResults?: number) {
+  return {
+    data: items.map((i) => ({ id: i.id, email: i.email, status: "active", custom_fields: [] })),
+    total_results: totalResults,
+  };
+}
+
+describe("fetchCurrentBeehiivState (#4317)", () => {
+  it("página no meio da paginação retorna 403 (não-ok) → rejeita, nunca trata como fim-de-lista silencioso", async () => {
+    // total_results=5 com só 2 itens na página 1 força uma 2ª página (hasMorePages:
+    // collected(2) < totalResults(5) → true) — é nessa 2ª chamada que a API "cai".
+    const { fetchImpl } = mockFetchSeq([
+      { status: 200, body: pageBody([{ id: "sub-1", email: "a@x.com" }, { id: "sub-2", email: "b@x.com" }], 5) },
+      { status: 403 },
+    ]);
+    await assert.rejects(fetchCurrentBeehiivState("pub-1", "key", fetchImpl), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /403/);
+      assert.match(err.message, /página 2/);
+      return true;
+    });
+  });
+
+  it("total_results declarado (5) maior que o efetivamente coletado (página final vazia antes de bater o total) → rejeita, mensagem cita truncamento", async () => {
+    const { fetchImpl } = mockFetchSeq([
+      { status: 200, body: pageBody([{ id: "sub-1", email: "a@x.com" }, { id: "sub-2", email: "b@x.com" }], 5) },
+      // Página seguinte vem VAZIA (gotLength=0 → hasMorePages para o loop) antes
+      // de coletar os 5 anunciados — truncamento silencioso, exatamente o risco
+      // de remoção fantasma que a reconciliação pós-loop existe pra barrar.
+      { status: 200, body: pageBody([], 5) },
+    ]);
+    await assert.rejects(fetchCurrentBeehiivState("pub-1", "key", fetchImpl), (err: unknown) => {
+      assert.ok(err instanceof Error);
+      assert.match(err.message, /truncad|terminou cedo/);
+      assert.match(err.message, /2/); // coletado
+      assert.match(err.message, /5/); // total declarado
+      return true;
+    });
+  });
+
+  it("caso feliz: paginação completa (total_results bate com coletado) → resolve com o snapshot esperado", async () => {
+    const { fetchImpl } = mockFetchSeq([
+      { status: 200, body: pageBody([{ id: "sub-1", email: "a@x.com" }, { id: "sub-2", email: "b@x.com" }], 2) },
+    ]);
+    const result = await fetchCurrentBeehiivState("pub-1", "key", fetchImpl);
+    assert.equal(result.length, 2);
+    assert.deepEqual(
+      result.map((r) => r.email).sort(),
+      ["a@x.com", "b@x.com"],
+    );
   });
 });

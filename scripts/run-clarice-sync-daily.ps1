@@ -66,14 +66,46 @@ Write-TempLogLine "===== $(Get-Date -Format o) - clarice sync diario ====="
 
 # 1. Sync incremental → atualiza o STORE (SQLite).
 Write-TempLogLine "----- clarice-sync-brevo --incremental -----"
+# Pre-inicializa $LASTEXITCODE=$null ANTES de cada chamada nativa (#4343):
+# sob Set-StrictMode -Version Latest, se `npx` for a 1a invocacao nativa da
+# sessao e falhar a resolver (CommandNotFoundException -- PATH nao herdado
+# corretamente sob o Task Scheduler), $LASTEXITCODE fica genuinamente
+# INDEFINIDO (nao $null) -- ler uma variavel indefinida sob StrictMode lanca
+# erro (nao-terminante, engolido por $ErrorActionPreference = Continue), e
+# o guard abaixo nunca dispara porque a propria comparacao "$null -eq
+# $syncCode" tambem lanca (verificado empiricamente). Pre-setar aqui garante
+# que a variavel ja existe (com valor $null) antes da tentativa -- uma
+# invocacao nativa que falha a resolver NAO toca $LASTEXITCODE (permanece no
+# valor anterior), entao o guard consegue detectar o caso.
+$LASTEXITCODE = $null
 & npx tsx "$SyncScript" --incremental 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
 $syncCode = $LASTEXITCODE
+
+# $LASTEXITCODE so e setado por um processo nativo que de fato rodou. Se o
+# `npx` nao puder ser resolvido/spawnado neste contexto, o guard acima ja
+# garante que $syncCode fica $null (nunca indefinido) -- "$null -ne 0"
+# avalia $true, entao sem este guard `exit $null` resolveria pra exit 0
+# (falso sucesso) exatamente no caso mais provavel de falha de uma
+# invocacao nao-supervisionada (#4343, mesmo padrao do fix em
+# run-postmaster-spam-sync.ps1, #4342).
+if ($null -eq $syncCode) {
+    Write-TempLogLine "ERRO: npx nao executou (comando nao encontrado ou falha antes do processo iniciar)."
+    $syncCode = 1
+}
 
 # 2. Push do summary → atualiza a DASHBOARD (KV contacts:summary). Store e KV sao
 #    superficies SEPARADAS; sem este passo, o store fresco nao chega na dashboard.
 Write-TempLogLine "----- clarice-db-summary (push KV) -----"
+$LASTEXITCODE = $null
 & npx tsx "$SummaryScript" 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
 $sumCode = $LASTEXITCODE
+
+# Mesmo guard do passo 1 (#4343) -- o passo 2 tambem chama npx e pode falhar
+# a spawnar sob o mesmo contexto de servico do Task Scheduler.
+if ($null -eq $sumCode) {
+    Write-TempLogLine "ERRO: npx nao executou (comando nao encontrado ou falha antes do processo iniciar)."
+    $sumCode = 1
+}
 
 Write-TempLogLine "===== fim (sync=$syncCode summary=$sumCode) ====="
 
