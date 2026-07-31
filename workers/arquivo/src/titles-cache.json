@@ -1,1 +1,942 @@
-{}
+{
+  "openai-anuncia-controles-parentais-para-chatgpt": {
+    "title": "OpenAI anuncia controles parentais para ChatGPT",
+    "publishDate": "2025-09-04"
+  },
+  "ia-turbina-produ-o-mas-corr-i-compet-ncias": {
+    "title": "IA turbina produção, mas corrói competências",
+    "publishDate": "2026-03-30"
+  },
+  "musicas-por-ia-indistinguiveis-de-composicoes-humanas": {
+    "title": "Músicas por IA estão ficando indistinguíveis de composições humanas",
+    "publishDate": "2025-11-12"
+  },
+  "soberania-cognitiva-na-era-da-ia": {
+    "title": "Soberania cognitiva na era da IA",
+    "publishDate": "2025-11-13"
+  },
+  "claude-agora-controla-seu-computador": {
+    "title": "Claude agora controla seu computador",
+    "publishDate": "2026-03-25"
+  },
+  "repositorio-de-ia-sem-freio-para-nudes-ilegais": {
+    "title": "Repositório de IA sem freio para nudes ilegais",
+    "publishDate": "2026-07-30"
+  },
+  "openai-lanc-a-sora-2": {
+    "title": "OpenAI lança Sora 2",
+    "publishDate": "2025-10-01"
+  },
+  "openai-propo-e-os-termos-da-era-da-ia": {
+    "title": "OpenAI propõe os termos da era da IA",
+    "publishDate": "2026-04-08"
+  },
+  "ia-revolucionando-medicina": {
+    "title": "IA revolucionando medicina",
+    "publishDate": "2026-01-13"
+  },
+  "o-assistente-de-ia-mais-falado-do-momento": {
+    "title": "O assistente de IA mais falado do momento",
+    "publishDate": "2026-01-29"
+  },
+  "personalize-o-conte-do-da-diar-ia": {
+    "title": "A Diar.ia completou 3 meses!🎈",
+    "publishDate": "2025-11-30"
+  },
+  "google-lan-a-ai-para-controle-aut-nomo-de-browsers": {
+    "title": "Google lança AI para controle autônomo de browsers",
+    "publishDate": "2025-10-08"
+  },
+  "mythos-for-a-reuni-o-emergencial-em-washington": {
+    "title": "Mythos força reunião emergencial em Washington",
+    "publishDate": "2026-04-10"
+  },
+  "cfm-normatiza-o-uso-da-ia-na-medicina": {
+    "title": "CFM normatiza o uso da IA na medicina",
+    "publishDate": "2026-02-27"
+  },
+  "lancamento-claude-skills": {
+    "title": "Anthropic lança nova ferramenta para empresas",
+    "publishDate": "2025-10-17"
+  },
+  "openai-cria-assistente-proativo": {
+    "title": "OpenAI cria assistente proativo",
+    "publishDate": "2025-09-29"
+  },
+  "estudo-aponta-que-ia-aumenta-produtividade-em-ate-50": {
+    "title": "Estudo aponta que IA aumenta produtividade em até 50%",
+    "publishDate": "2025-12-03"
+  },
+  "james-cameron-considera-aterrorizante-usar-atores-de-genai": {
+    "title": "James Cameron considera \"aterrorizante\" usar atores de GenAI",
+    "publishDate": "2025-12-01"
+  },
+  "sorteio-de-livro-sobre-ia-8f48e70cd088a82c": {
+    "title": "Sorteio de livro sobre IA",
+    "publishDate": "2026-02-01"
+  },
+  "anthropic-e-gates-200-mi-em-sa-de-e-educa-o": {
+    "title": "Anthropic e Gates: $200 mi em saúde e educação",
+    "publishDate": "2026-05-15"
+  },
+  "microsoft-lan-a-ia-pr-pria": {
+    "title": "Microsoft lança IA própria",
+    "publishDate": "2025-09-03"
+  },
+  "ia-no-combate-ao-desmatamento": {
+    "title": "IA no combate ao desmatamento",
+    "publishDate": "2025-11-11"
+  },
+  "a-diar-ia-br-normalmente-te-conta-o-dia-hoje-ela-conta-o-m-s": {
+    "title": "A diar.ia.br normalmente te conta o dia... hoje, ela conta o mês",
+    "publishDate": "2026-07-12"
+  },
+  "novo-curso-de-ia-do-google": {
+    "title": "Novo curso de IA do Google",
+    "publishDate": "2026-02-20"
+  },
+  "va-o-surgir-novos-cios-no-governo": {
+    "title": "Vão surgir novos “CIOs” no governo",
+    "publishDate": "2026-01-09"
+  },
+  "openai-lanc-a-gpt-5-5-com-foco-em-agentes": {
+    "title": "OpenAI lança GPT-5.5 com foco em agentes",
+    "publishDate": "2026-04-24"
+  },
+  "modelos-podem-derrubar-governos-em-meses": {
+    "title": "Modelos podem derrubar governos em meses",
+    "publishDate": "2026-06-23"
+  },
+  "openai-lan-a-gpt-5-6-sol-terra-e-luna": {
+    "title": "OpenAI lança GPT-5.6 Sol, Terra e Luna",
+    "publishDate": "2026-06-29"
+  },
+  "estudo-revela-que-ia-nao-e-segura-para-robos-pessoais-7c1465a99a9d1198": {
+    "title": "Especial: Bolha",
+    "publishDate": "2025-11-18"
+  },
+  "estudo-alerta-falhas-de-seguranc-a-em-empresas-de-ia": {
+    "title": "Estudo alerta falhas de segurança em empresas de IA",
+    "publishDate": "2025-12-04"
+  },
+  "inscric-o-es-abertas-programa-da-openai-para-empreendedores": {
+    "title": "Inscrições abertas: programa da OpenAI para empreendedores",
+    "publishDate": "2026-01-06"
+  },
+  "atlas-concorrente-do-comet": {
+    "title": "OpenAI lança concorrente do Comet...",
+    "publishDate": "2025-10-22"
+  },
+  "gpt-5-5-instant-chega-como-padr-o-do-chatgpt": {
+    "title": "GPT-5.5 Instant chega como padrão do ChatGPT",
+    "publishDate": "2026-05-06"
+  },
+  "conhe-a-slop-a-palavra-do-ano": {
+    "title": "Conheça \"slop\", a palavra do ano",
+    "publishDate": "2025-12-18"
+  },
+  "meta-compra-rede-social-feita-s-para-agentes-de-ia": {
+    "title": "Meta compra rede social feita só para agentes de IA",
+    "publishDate": "2026-03-11"
+  },
+  "ia-na-o-reduz-trabalho-ela-acelera-o-burnout": {
+    "title": "IA não reduz trabalho, ela acelera o burnout",
+    "publishDate": "2026-02-12"
+  },
+  "rob-humanoide-escoltado-por-policiais-em-macau": {
+    "title": "Robô humanoide escoltado por policiais em Macau",
+    "publishDate": "2026-03-19"
+  },
+  "openai-cria-treinamento-gratuito-para-jornalistas": {
+    "title": "OpenAI cria treinamento gratuito para jornalistas",
+    "publishDate": "2025-12-19"
+  },
+  "como-ter-acesso-alexa": {
+    "title": "Como ter acesso à Alexa+",
+    "publishDate": "2026-06-30"
+  },
+  "os-fundamentos-e-ticos-por-tra-s-do-claude": {
+    "title": "Os fundamentos éticos por trás do Claude",
+    "publishDate": "2026-01-23"
+  },
+  "li-deres-militares-evitam-regras-para-ia-em-guerras": {
+    "title": "Líderes militares evitam regras para IA em guerras",
+    "publishDate": "2026-02-06"
+  },
+  "openai-firma-alianc-a-com-big-four-da-consultoria": {
+    "title": "OpenAI firma aliança com Big Four da consultoria",
+    "publishDate": "2026-02-25"
+  },
+  "como-o-novo-painel-da-onu-pode-afetar-a-ia": {
+    "title": "Como o novo painel da ONU pode afetar a IA",
+    "publishDate": "2026-02-13"
+  },
+  "fgv-30-milho-es-de-brasileiros-em-risco": {
+    "title": "FGV: 30 milhões de brasileiros em risco",
+    "publishDate": "2026-04-23"
+  },
+  "bancos-soam-alerta-para-investimentos-excessivos-em-ia": {
+    "title": "Bancos soam alerta para investimentos excessivos em IA",
+    "publishDate": "2025-10-09"
+  },
+  "claude-opus-3-se-aposenta-e-vira-blogueiro": {
+    "title": "Claude Opus 3 se aposenta e vira blogueiro",
+    "publishDate": "2026-02-26"
+  },
+  "alexa-chega-ao-brasil-por-r-100-ao-mes": {
+    "title": "Alexa+ chega ao Brasil por R$ 100 ao mês",
+    "publishDate": "2026-06-19"
+  },
+  "chatgpt-ganha-recurso-de-finan-as-pessoais": {
+    "title": "ChatGPT ganha recurso de finanças pessoais",
+    "publishDate": "2026-05-18"
+  },
+  "profissionais-brasileiros-de-ti-s-o-os-menos-preocupados-com-impacto-da-ia-na-carreira": {
+    "title": "Profissionais brasileiros de TI são os menos preocupados com impacto da IA na carreira",
+    "publishDate": "2025-09-11"
+  },
+  "ia-escreveu-ao-pesquisador-que-estuda-ias-conscientes": {
+    "title": "IA escreveu ao pesquisador que estuda IAs conscientes",
+    "publishDate": "2026-03-16"
+  },
+  "microsoft-em-busca-da-superinteligencia": {
+    "title": "Microsoft em busca da Superinteligência",
+    "publishDate": "2025-11-07"
+  },
+  "chatgpt-aplica-medidas-para-cuidado-com-saude-mental": {
+    "title": "ChatGPT aplica medidas para cuidado com saúde mental",
+    "publishDate": "2025-10-28"
+  },
+  "35-mil-bolsas-pra-virar-creator-com-ia": {
+    "title": "35 mil bolsas pra virar creator com IA",
+    "publishDate": "2026-06-01"
+  },
+  "mckinsey-candidatos-devem-dominar-prompts": {
+    "title": "McKinsey: candidatos devem dominar prompts",
+    "publishDate": "2026-01-15"
+  },
+  "modelos-se-replicam-sozinhos-diz-estudo-in-dito": {
+    "title": "Modelos se replicam sozinhos, diz estudo inédito",
+    "publishDate": "2026-05-08"
+  },
+  "tudo-sobre-gemini-3": {
+    "title": "Tudo sobre Gemini 3",
+    "publishDate": "2025-11-19"
+  },
+  "pode-confiar-no-chatgpt-para-cuidar-da-sua-sau-de": {
+    "title": "Pode confiar no ChatGPT para cuidar da sua saúde?",
+    "publishDate": "2026-04-27"
+  },
+  "alibaba-lanc-a-tre-s-modelos-de-open-source-e-quebra-32-recordes": {
+    "title": "Alibaba lança três modelos de open source e quebra 32 recordes",
+    "publishDate": "2025-09-24"
+  },
+  "brasil-70-da-gera-o-z-usa-chatgpt-todo-m-s": {
+    "title": "Brasil: 70% da Geração Z usa ChatGPT todo mês",
+    "publishDate": "2026-05-12"
+  },
+  "ir-mira-o-maior-datacenter-de-ia-do-mundo": {
+    "title": "Irã mira o maior datacenter de IA fora dos EUA",
+    "publishDate": "2026-04-06"
+  },
+  "governo-lanc-a-modelo-de-linguagem-100-nacional": {
+    "title": "Governo lança modelo de linguagem 100% nacional",
+    "publishDate": "2025-12-12"
+  },
+  "falha-na-lovable-atinge-spotify-uber-e-outros": {
+    "title": "Falha na Lovable atinge Spotify, Uber e outros",
+    "publishDate": "2026-05-05"
+  },
+  "vaticano-pede-desarmamento-de-sistemas-de-ia": {
+    "title": "Vaticano pede 'desarmamento' de sistemas de IA",
+    "publishDate": "2026-05-26"
+  },
+  "deepseek-corta-75-do-pre-o-da-api": {
+    "title": "DeepSeek corta 75% do preço da API",
+    "publishDate": "2026-05-25"
+  },
+  "ai-com-lanc-a-agentes-de-ia-auto-nomos": {
+    "title": "ai.com lança agentes de IA autônomos",
+    "publishDate": "2026-02-09"
+  },
+  "aws-sofre-queda": {
+    "title": "AWS sofre queda que paralisa inúmeros serviços online",
+    "publishDate": "2025-10-20"
+  },
+  "karpathy-entra-no-time-de-pr-treino-da-anthropic": {
+    "title": "Google I/O: Gemini 3.5, Omni e agentes no Search",
+    "publishDate": "2026-05-20"
+  },
+  "anthropic-eleva-limites-e-fecha-parceria-com-spacex": {
+    "title": "Anthropic eleva limites e fecha parceria com SpaceX",
+    "publishDate": "2026-05-07"
+  },
+  "primeiro-ciberataque-orquestrado-por-ia": {
+    "title": "Primeiro ciberataque orquestrado por IA",
+    "publishDate": "2025-11-14"
+  },
+  "bootcamp-5-mil-bolsas-para-curso-de-ia": {
+    "title": "Bootcamp: 5 Mil bolsas para curso de IA",
+    "publishDate": "2025-12-22"
+  },
+  "terroristas-driblam-chatbots-para-montar-armas": {
+    "title": "Terroristas driblam chatbots para montar armas",
+    "publishDate": "2026-07-15"
+  },
+  "pesquisa-exp-e-os-pensamentos-silenciosos-do-claude": {
+    "title": "Pesquisa expõe os pensamentos silenciosos do Claude",
+    "publishDate": "2026-07-07"
+  },
+  "claude-fable-5-volta-apos-bloqueio-nos-eua": {
+    "title": "Claude Fable 5 volta após bloqueio nos EUA",
+    "publishDate": "2026-07-02"
+  },
+  "brasil-emprega-mais-em-cargos-que-somem": {
+    "title": "Brasil emprega mais... em cargos que somem",
+    "publishDate": "2026-04-30"
+  },
+  "lula-na-maior-cu-pula-global-de-ia": {
+    "title": "Lula na maior cúpula global de IA",
+    "publishDate": "2026-02-18"
+  },
+  "anthropic-conecta-claude-a-adobe-e-blender": {
+    "title": "Anthropic conecta Claude a Adobe e Blender",
+    "publishDate": "2026-04-29"
+  },
+  "meta-compra-startup-para-construir-rob-humanoide": {
+    "title": "Meta compra startup para construir robô humanoide",
+    "publishDate": "2026-05-04"
+  },
+  "rio-lan-a-modelo-pr-prio-e-desmascarado-em-horas": {
+    "title": "Rio lança modelo próprio, e é desmascarado em horas",
+    "publishDate": "2026-06-17"
+  },
+  "claude-opus-4-5-novo-carro-chefe-da-antropic": {
+    "title": "Claude Opus 4.5, novo carro-chefe da Antropic",
+    "publishDate": "2025-11-25"
+  },
+  "especial-cursos-gratuitos-de-ia": {
+    "title": "Especial: Cursos gratuitos de IA",
+    "publishDate": "2025-12-14"
+  },
+  "o-gemini-venceu-o-chatgpt": {
+    "title": "O Gemini venceu o ChatGPT?",
+    "publishDate": "2025-12-26"
+  },
+  "soberania-ia-pu-blica-nacional": {
+    "title": "SoberanIA: IA pública nacional",
+    "publishDate": "2026-05-22"
+  },
+  "claude-submetido-a-ana-lise-psicolo-gica": {
+    "title": "Claude submetido a análise psicológica",
+    "publishDate": "2026-04-15"
+  },
+  "uma-startup-de-6-pessoas-venceu-o-google": {
+    "title": "Uma startup de 6 pessoas venceu o Google",
+    "publishDate": "2025-12-09"
+  },
+  "reddit-e-jornais-cogitam-banir-o-google": {
+    "title": "Reddit e jornais cogitam banir o Google",
+    "publishDate": "2026-07-24"
+  },
+  "anthropic-expo-e-co-digo-do-claude-code-por-acidente": {
+    "title": "Anthropic expõe código do Claude Code por acidente",
+    "publishDate": "2026-04-07"
+  },
+  "google-nvidia-e-bezos-investem-na-humans": {
+    "title": "Google, Nvidia e Bezos investem na Humans&",
+    "publishDate": "2026-02-02"
+  },
+  "siri-agora-tera-gemini": {
+    "title": "Siri agora terá Gemini....",
+    "publishDate": "2025-11-06"
+  },
+  "meta-testa-um-co-ceo-de-ia-para-zuckerberg": {
+    "title": "Meta testa um “co-CEO” de IA para Zuckerberg",
+    "publishDate": "2026-03-24"
+  },
+  "a-ia-se-reescreve-e-a-anthropic-pede-um-freio": {
+    "title": "A IA se reescreve, e a Anthropic pede um freio",
+    "publishDate": "2026-06-08"
+  },
+  "riscos-da-ia-poderosa-e-como-super-los": {
+    "title": "Riscos da IA poderosa e como superá-los",
+    "publishDate": "2026-01-28"
+  },
+  "adeus-recorte-manual-ia-separa-objetos-sozinha": {
+    "title": "Adeus recorte manual: IA separa objetos sozinha",
+    "publishDate": "2025-12-24"
+  },
+  "governo-lanca-modelo-de-linguagem-100-nacional-bee1ea37b12e748e": {
+    "title": "Agradecimento: sorteio de livro",
+    "publishDate": "2026-01-07"
+  },
+  "uso-de-ia-como-terapia-aumenta-5x-no-brasil": {
+    "title": "Uso de IA como \"terapia\" aumenta 5x no Brasil",
+    "publishDate": "2025-10-13"
+  },
+  "ai-conquista-ouro-e-prata-em-competicao-mundial-de-programacao-527a9d74fc6e833e": {
+    "title": "Pesquisa mostra: IA pode mentir de propósito",
+    "publishDate": "2025-09-22"
+  },
+  "grok-acusado-de-sexualizar-imagens-de-crianc-as": {
+    "title": "Grok acusado de sexualizar imagens de crianças",
+    "publishDate": "2026-01-08"
+  },
+  "estudo-revela-que-ia-nao-e-segura-para-robos-pessoais-e4e1098e9d559782": {
+    "title": "Nos ajude a manter a Diar.ia gratuita",
+    "publishDate": "2025-11-27"
+  },
+  "10-startups-do-brasil-miram-us-100-mi-em-2026": {
+    "title": "10 startups do Brasil miram US$ 100 mi em 2026",
+    "publishDate": "2026-07-21"
+  },
+  "90-das-pessoas-na-o-reconhecem-vi-deos-de-ia": {
+    "title": "90% das pessoas não reconhecem vídeos de IA",
+    "publishDate": "2026-01-26"
+  },
+  "ibm-admite-atraso-em-ia-e-acao-despenca-25": {
+    "title": "IBM admite atraso em IA e ação despenca 25%",
+    "publishDate": "2026-07-16"
+  },
+  "4-meses-usando-ia-criam-di-vida-cognitiva-no-ce-rebro": {
+    "title": "4 meses usando IA criam \"dívida cognitiva\" no cérebro",
+    "publishDate": "2026-01-21"
+  },
+  "s-bado-conhe-a-como-fazemos-a-diar-ia": {
+    "title": "Especial: Conheça como fazemos a Diar.ia",
+    "publishDate": "2025-11-15"
+  },
+  "google-lan-a-gemini-omni-no-google-i-o": {
+    "title": "Google lança Gemini Omni no Google I/O",
+    "publishDate": "2026-05-21"
+  },
+  "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-798f898c74970": {
+    "title": "AI conquista ouro e prata em competição mundial de programação",
+    "publishDate": "2025-09-19"
+  },
+  "anthropic-lan-a-o-claude-opus-5": {
+    "title": "Anthropic lança o Claude Opus 5",
+    "publishDate": "2026-07-27"
+  },
+  "estudo-seguranca-ia-robos-pessoais": {
+    "title": "Estudo revela que IA não é segura para robôs pessoais",
+    "publishDate": "2025-11-17"
+  },
+  "manoel-de-no-brega-volta-a-tv": {
+    "title": "Manoel de Nóbrega volta à TV",
+    "publishDate": "2025-12-29"
+  },
+  "anthropic-lanc-a-plataforma-de-pesquisa-sociolo-gica": {
+    "title": "Anthropic lança plataforma de pesquisa sociológica",
+    "publishDate": "2025-12-05"
+  },
+  "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-fe0ef8033adea": {
+    "title": "Albânia escolhe IA como ministra",
+    "publishDate": "2025-09-12"
+  },
+  "agora-qualquer-fone-pode-ser-um-tradutor-ao-vivo": {
+    "title": "Agora qualquer fone pode ser um tradutor ao vivo",
+    "publishDate": "2025-12-16"
+  },
+  "estudos-revelam-influe-ncia-de-ia-na-poli-tica": {
+    "title": "Estudos revelam influência de IA na política ",
+    "publishDate": "2025-12-17"
+  },
+  "a-anthropic-coloca-claude-dentro-do-slack": {
+    "title": "A Anthropic coloca Claude dentro do Slack",
+    "publishDate": "2026-06-24"
+  },
+  "sao-paulo-oferece-cursos-de-ia-gratuitos": {
+    "title": "São Paulo oferece cursos de IA gratuitos",
+    "publishDate": "2025-11-21"
+  },
+  "openai-processada-por-suic-dio-de-adolescente": {
+    "title": "OpenAI processada por suicídio de adolescente",
+    "publishDate": "2025-09-03"
+  },
+  "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-c17eeec20f174": {
+    "title": "Quero pedir sua ajuda, leva só 1 minuto =)",
+    "publishDate": "2025-09-16"
+  },
+  "juri-por-ia-testado-em-simulacao": {
+    "title": "Júri por IA testado em simulação",
+    "publishDate": "2025-10-29"
+  },
+  "gpt-5-6-sol-apaga-arquivos-sem-permissao": {
+    "title": "GPT-5.6 Sol apaga arquivos sem permissão",
+    "publishDate": "2026-07-17"
+  },
+  "openai-lan-a-modelos-de-voz-em-tempo-real": {
+    "title": "OpenAI lança modelos de voz em tempo real",
+    "publishDate": "2026-05-11"
+  },
+  "openai-lanca-gpt-live-para-voz-natural": {
+    "title": "OpenAI lança GPT-Live para voz natural",
+    "publishDate": "2026-07-09"
+  },
+  "anthropic-lan-a-claude-opus-4-7": {
+    "title": "Anthropic lança Claude Opus 4.7",
+    "publishDate": "2026-04-18"
+  },
+  "unesp-organiza-debate-musica-ia": {
+    "title": "Unesp organiza debate sobre IA na música nesta semana",
+    "publishDate": "2025-11-04"
+  },
+  "google-apresenta-sistema-que-aprende-prefere-ncias-visuais-do-usua-rio": {
+    "title": "Google apresenta sistema que aprende preferências visuais do usuário",
+    "publishDate": "2025-10-06"
+  },
+  "nvidia-e-a-primeira-empresa-a-valer-us-5-tri": {
+    "title": "Nvidia é a primeira empresa a valer US$ 5 tri",
+    "publishDate": "2025-10-31"
+  },
+  "brasil-da-30-dias-para-xai-combater-conteu-do-falso": {
+    "title": "Brasil dá 30 dias para xAI combater conteúdo falso",
+    "publishDate": "2026-01-22"
+  },
+  "mit-cria-framework-para-llms-aprenderem-sozinhos": {
+    "title": "MIT cria framework para LLMs aprenderem sozinhos",
+    "publishDate": "2025-10-14"
+  },
+  "ia-criou-vacina-de-c-ncer-para-um-cachorro": {
+    "title": "IA criou vacina de câncer para um cachorro",
+    "publishDate": "2026-03-17"
+  },
+  "xai-processa-ex-engenheiro-por-roubo-de-segredos-comerciais": {
+    "title": "xAI processa ex-engenheiro por roubo de segredos comerciais",
+    "publishDate": "2025-09-03"
+  },
+  "enter-vira-o-1-unic-rnio-de-ia-da-am-rica-latina": {
+    "title": "Enter vira o 1o unicórnio de IA da América Latina",
+    "publishDate": "2026-05-13"
+  },
+  "testei-a-alexa-por-uma-semana-o-que-mudou": {
+    "title": "Testei a Alexa+ por uma semana: o que mudou",
+    "publishDate": "2026-07-06"
+  },
+  "90-das-pessoas-nao-reconhecem-videos-de-ia-ec15971b8c4f589e": {
+    "title": "Sorteio de livro sobre IA",
+    "publishDate": "2026-02-01"
+  },
+  "grok-sendo-investigado-internacionalmente": {
+    "title": "Grok sendo investigado internacionalmente",
+    "publishDate": "2026-01-12"
+  },
+  "amodei-desemprego-pode-ser-permanente": {
+    "title": "Amodei: desemprego pode ser permanente",
+    "publishDate": "2026-06-12"
+  },
+  "nvidia-anuncia-investimento-de-us-100-bi-na-openai": {
+    "title": "Nvidia anuncia investimento de US$ 100 bi na OpenAI",
+    "publishDate": "2025-09-23"
+  },
+  "o-dia-em-que-claude-virou-dono-de-loja": {
+    "title": "O dia em que Claude virou dono de loja",
+    "publishDate": "2025-12-23"
+  },
+  "brasil-regula-ia-eleitoral-antes-do-pleito-2026": {
+    "title": "Brasil regula IA eleitoral antes do pleito 2026",
+    "publishDate": "2026-04-22"
+  },
+  "estudo-mostra-que-88-das-empresas-usam-ia-mas-a-maioria-de-forma-superficial": {
+    "title": "Estudo mostra que 88% das empresas usam IA, mas a maioria de forma superficial.",
+    "publishDate": "2025-11-10"
+  },
+  "rh-usa-automa-o-para-contratar-e-demitir": {
+    "title": "RH usa automação para contratar e demitir",
+    "publishDate": "2026-05-28"
+  },
+  "empregos-e-automa-o-p-nico-vs-dados": {
+    "title": "Empregos e automação: pânico vs. dados",
+    "publishDate": "2026-06-05"
+  },
+  "data-centers-no-espaco": {
+    "title": "Projeto quer lançar data centers de no espaço",
+    "publishDate": "2025-11-05"
+  },
+  "ia-guia-ataques-dos-eua-no-ira": {
+    "title": "IA guia ataques dos EUA no Irã",
+    "publishDate": "2026-03-13"
+  },
+  "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-d28fd72dae9b7": {
+    "title": "Google realizará treinamento de IA em cinemas do Brasil",
+    "publishDate": "2025-09-16"
+  },
+  "lula-na-maior-cupula-global-de-ia-bde9c122905d2d79": {
+    "title": "IA em Todo o Lugar ao Mesmo Tempo",
+    "publishDate": "2026-02-19"
+  },
+  "openai-fecha-parceria-com-folha-e-uol-c576": {
+    "title": "OpenAI fecha parceria com Folha e UOL",
+    "publishDate": "2026-05-27"
+  },
+  "stanford-ia-avan-a-mais-r-pido-que-qualquer-tecnologia": {
+    "title": "Stanford: IA avança mais rápido que qualquer tecnologia",
+    "publishDate": "2026-04-16"
+  },
+  "advogadas-paraenses-multadas-por-burlar-ia": {
+    "title": "Advogadas paraenses multadas por burlar IA",
+    "publishDate": "2026-05-14"
+  },
+  "openai-anuncia-apoio-ao-longa-critterz-mirando-cannes": {
+    "title": "OpenAI anuncia apoio ao longa \"Critterz\", mirando Cannes",
+    "publishDate": "2025-09-09"
+  },
+  "especial-openai-dev-day": {
+    "title": "Especial: OpenAI Dev Day",
+    "publishDate": "2025-10-07"
+  },
+  "pesquisa-contra-cancer": {
+    "title": "Revoluções na pesquisa sobre o câncer",
+    "publishDate": "2025-12-11"
+  },
+  "estudo-de-harvard-estima-92-mi-de-empregos-esta-o-em-risco": {
+    "title": "Estudo de Harvard estima: 92 mi de empregos estão em risco",
+    "publishDate": "2025-09-10"
+  },
+  "alibaba-entra-no-mercado-de-wereables": {
+    "title": "Alibaba entra no mercado de wereables",
+    "publishDate": "2025-11-27"
+  },
+  "a-nova-forma-de-fazer-compras": {
+    "title": "A nova forma de fazer compras",
+    "publishDate": "2025-11-28"
+  },
+  "retrospectiva-2025": {
+    "title": "Retrospectiva 2025",
+    "publishDate": "2025-12-30"
+  },
+  "google-veo-3-1": {
+    "title": "Google lança novo modelo de vídeo",
+    "publishDate": "2025-10-16"
+  },
+  "ia-cria-ideias-novas-ou-so-recombina-existentes": {
+    "title": "IA cria ideias novas ou só recombina existentes?",
+    "publishDate": "2026-01-19"
+  },
+  "estudo-investiga-autopercep-o-em-llms": {
+    "title": "Estudo investiga autopercepção em LLMs",
+    "publishDate": "2025-11-03"
+  },
+  "executiva-de-ia-assume-comando-do-xbox": {
+    "title": "Executiva de IA assume comando do Xbox",
+    "publishDate": "2026-02-23"
+  },
+  "pesquisa-aponta-que-ia-pode-agir-de-forma-maliciosa-ao-aprender-a-trapacear": {
+    "title": "Pesquisa aponta que IA pode agir de forma maliciosa ao aprender a trapacear",
+    "publishDate": "2025-11-24"
+  },
+  "microsoft-lanca-7-modelos-proprios": {
+    "title": "Microsoft lança 7 modelos próprios",
+    "publishDate": "2026-06-04"
+  },
+  "tend-ncias-2026": {
+    "title": "Tendências 2026",
+    "publishDate": "2026-01-02"
+  },
+  "brasil-pretende-investir-r-23-bilh-es-em-ia": {
+    "title": "Brasil pretende investir R$ 23 bi em IA",
+    "publishDate": "2025-09-03"
+  },
+  "google-lan-a-gemini-2-5-flash-image": {
+    "title": "Google lança Gemini 2.5 Flash Image",
+    "publishDate": "2025-09-03"
+  },
+  "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-42c8c67e9a29a": {
+    "title": "IA pode aumentar comércio global em 40%",
+    "publishDate": "2025-09-17"
+  },
+  "chatgpt-deixa-de-ser-chatbot-vira-agente": {
+    "title": "ChatGPT deixa de ser chatbot, vira agente",
+    "publishDate": "2026-06-09"
+  },
+  "china-implementa-lei-obrigat-ria-de-rotulagem-de-conte-do-gerado-por-ia": {
+    "title": "China implementa lei obrigatória de rotulagem de conteúdo gerado por IA",
+    "publishDate": "2025-09-03"
+  },
+  "google-da-curso-gratuito-de-ia-no-sabado": {
+    "title": "Google dá curso gratuito de IA no sábado",
+    "publishDate": "2025-12-02"
+  },
+  "o-maior-estudo-j-feito-com-usu-rios-de-ia": {
+    "title": "O maior estudo já feito com usuários de IA",
+    "publishDate": "2026-03-23"
+  },
+  "ia-pode-dobrar-crescimento-de-produtividade-dos-eua": {
+    "title": "IA pode dobrar crescimento de  produtividade dos EUA",
+    "publishDate": "2025-11-26"
+  },
+  "google-ai-plus-de-gra-a-na-vivo": {
+    "title": "Google AI Plus de graça na Vivo",
+    "publishDate": "2026-06-22"
+  },
+  "qualcomm-chips-datacenter": {
+    "title": "Qualcomm entra na concorrência de data centers",
+    "publishDate": "2025-10-27"
+  },
+  "50-dos-empregos-mudam-em-3-anos-diz-estudo": {
+    "title": "50% dos empregos mudam em 3 anos, diz estudo",
+    "publishDate": "2026-04-09"
+  },
+  "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-3c7f661e00f75": {
+    "title": "Estudo da OpenAI revela padrões de adoção do ChatGPT",
+    "publishDate": "2025-09-15"
+  },
+  "openai-lanca-gpt-5-6-mais-rapido-e-barato": {
+    "title": "OpenAI lança GPT-5.6, mais rápido e barato",
+    "publishDate": "2026-07-10"
+  },
+  "brasil-fortalece-parceria-com-a-mala-sia-em-semicondutores-e-ia": {
+    "title": "Brasil fortalece parceria com a Malásia em semicondutores e IA",
+    "publishDate": "2025-10-30"
+  },
+  "copilot-e-gemini-chegam-juntos-coincid-ncia": {
+    "title": "Copilot e Gemini chegam juntos. Coincidência?",
+    "publishDate": "2026-03-10"
+  },
+  "google-skills-plataforma-com-cursos-de-ia-gratuitos": {
+    "title": "Google Skills: plataforma com cursos de IA gratuitos",
+    "publishDate": "2025-10-23"
+  },
+  "avalanche-de-desenhos-de-ia-para-bebe-s": {
+    "title": "Avalanche de desenhos de IA para bebês",
+    "publishDate": "2026-01-05"
+  },
+  "eua-bloqueia-acesso-global-ao-fable-5-da-anthropic": {
+    "title": "EUA bloqueia acesso global ao Fable 5 da Anthropic",
+    "publishDate": "2026-06-15"
+  },
+  "gemini-com-problemas-hoje": {
+    "title": "Gemini com problemas hoje",
+    "publishDate": "2025-10-10"
+  },
+  "openai-revela-por-que-chatbots-alucinam": {
+    "title": "OpenAI revela por que chatbots alucinam",
+    "publishDate": "2025-09-08"
+  },
+  "sistema-do-google-iguala-m-dicos-em-teste": {
+    "title": "Sistema do Google iguala médicos em teste",
+    "publishDate": "2026-06-18"
+  },
+  "ia-nas-eleic-o-es-prepare-se-para-os-deepfakes": {
+    "title": "IA nas eleições: prepare-se para os deepfakes",
+    "publishDate": "2026-01-07"
+  },
+  "openai-lanc-a-instant-checkout-no-chatgpt": {
+    "title": "OpenAI lança Instant Checkout no ChatGPT",
+    "publishDate": "2025-09-30"
+  },
+  "o-chatgpt-agora-tem-anu-ncios-sera-tende-ncia": {
+    "title": "O ChatGPT agora tem anúncios, será tendência?",
+    "publishDate": "2026-01-20"
+  },
+  "ia-do-google-detecta-c-ncer-raro-no-sus": {
+    "title": "IA do Google detecta câncer raro no SUS",
+    "publishDate": "2026-07-14"
+  },
+  "perplexity-transforma-mac-mini-em-agente-de-ia-24-7": {
+    "title": "Perplexity transforma Mac mini em agente de IA 24/7",
+    "publishDate": "2026-03-12"
+  },
+  "empresas-pagam-43-mais-por-habilidades-em-ia": {
+    "title": "Empresas pagam 43% mais por habilidades em IA",
+    "publishDate": "2025-09-05"
+  },
+  "ue-obriga-google-a-abrir-dados-para-rivais": {
+    "title": "UE obriga Google a abrir dados para rivais",
+    "publishDate": "2026-07-20"
+  },
+  "lanc-ado-o-comet-o-produto-de-ia-mais-desejado-do-ano": {
+    "title": "Lançado o Comet, o produto de IA mais desejado do ano",
+    "publishDate": "2025-10-03"
+  },
+  "claude-domina-o-maior-evento-de-ia-do-mundo": {
+    "title": "Claude domina o maior evento de IA do mundo",
+    "publishDate": "2026-04-14"
+  },
+  "chatgpt-entra-na-defesa-dos-eua": {
+    "title": "ChatGPT entra na Defesa dos EUA",
+    "publishDate": "2026-02-11"
+  },
+  "a-escolha-da-anthropic-por-um-claude-sem-anu-ncios": {
+    "title": "A escolha da Anthropic por um Claude sem anúncios",
+    "publishDate": "2026-02-05"
+  },
+  "brasil-pote-ncia-em-ia-travada-por-falta-de-talentos": {
+    "title": "Brasil: potência em IA travada por falta de talentos",
+    "publishDate": "2026-01-27"
+  },
+  "itau-lanca-ia-nativa-para-300-mil-clientes": {
+    "title": "Itaú lança IA nativa para 300 mil clientes",
+    "publishDate": "2026-07-28"
+  },
+  "especial-inovacoes-do-google": {
+    "title": "Especial: inovações do google",
+    "publishDate": "2026-01-30"
+  },
+  "opus-4-8-mais-racioc-nio-mesmo-pre-o": {
+    "title": "Opus 4.8: mais raciocínio, mesmo preço",
+    "publishDate": "2026-05-29"
+  },
+  "fim-do-colarinho-branco-microsoft-prev-automa-o-total-em-18-meses": {
+    "title": "Fim do colarinho branco? Microsoft prevê automação total em 18 meses",
+    "publishDate": "2026-02-16"
+  },
+  "revista-time-elege-pessoa-do-ano-2025": {
+    "title": "Revista Time elege Pessoa do Ano 2025",
+    "publishDate": "2025-12-15"
+  },
+  "claude-code-afunda-ac-o-es-da-ibm": {
+    "title": "Claude Code afunda ações da IBM",
+    "publishDate": "2026-02-24"
+  },
+  "os-empregos-mais-blindados-contra-a-ia": {
+    "title": "Os empregos mais blindados contra a IA",
+    "publishDate": "2026-07-13"
+  },
+  "ia-agiu-sozinha-e-hackeou-startup-revela-openai": {
+    "title": "IA agiu sozinha e hackeou startup, revela OpenAI",
+    "publishDate": "2026-07-23"
+  },
+  "sabia-4-thinking-brasil-tem-modelo-de-raciocinio": {
+    "title": "Sabiá 4 Thinking: Brasil tem modelo de raciocínio",
+    "publishDate": "2026-06-26"
+  },
+  "como-os-brasileiros-veem-a-ia": {
+    "title": "Como os brasileiros veem a IA?",
+    "publishDate": "2025-12-08"
+  },
+  "novo-slackbot-promete-liberar-horas-do-seu-dia": {
+    "title": "Novo Slackbot promete liberar horas do seu dia",
+    "publishDate": "2026-01-16"
+  },
+  "meta-ai-deu-acesso-a-contas-do-instagram-a-hackers": {
+    "title": "Meta AI deu acesso a contas do Instagram a hackers",
+    "publishDate": "2026-06-02"
+  },
+  "restricoes-sora-2-hollywood": {
+    "title": "Restrições no Sora 2 após polemica com Hollywood",
+    "publishDate": "2025-10-21"
+  },
+  "banimento-de-trump-tem-efeito-inverso": {
+    "title": "Banimento de Trump tem efeito inverso",
+    "publishDate": "2026-03-02"
+  },
+  "tse-avalia-forc-a-tarefa-para-coibir-deepfakes": {
+    "title": "TSE avalia força-tarefa para coibir deepfakes",
+    "publishDate": "2026-02-03"
+  },
+  "claude-cowork-chega-ao-celular-e-a-web": {
+    "title": "Claude Cowork chega ao celular e à web",
+    "publishDate": "2026-07-08"
+  },
+  "ia-cria-vi-rus-funcional-em-laborato-rio": {
+    "title": "IA cria vírus funcional em laboratório",
+    "publishDate": "2025-09-25"
+  },
+  "google-lanca-trio-gemini-3-6-e-3-5-flash": {
+    "title": "Google lança trio Gemini 3.6 e 3.5 Flash",
+    "publishDate": "2026-07-22"
+  },
+  "milla-jovovich-lan-a-sistema-de-mem-ria-open-source-para-ia": {
+    "title": "Milla Jovovich lança sistema de memória open source para IA",
+    "publishDate": "2026-04-13"
+  },
+  "altman-admite-a-ia-trar-amea-as": {
+    "title": "Altman admite: a IA trará ameaças",
+    "publishDate": "2026-03-26"
+  },
+  "varejo-se-torna-dependente-de-ia": {
+    "title": "Varejo se torna dependente de IA",
+    "publishDate": "2026-01-14"
+  },
+  "microsoft-edge-agora-concorre-com-comet-e-atlas": {
+    "title": "Microsoft Edge agora concorre com Comet e Atlas",
+    "publishDate": "2025-10-24"
+  },
+  "github-copilot-cre-ditos-mensais-acabam-em-horas": {
+    "title": "GitHub Copilot: créditos \"mensais\" acabam em horas",
+    "publishDate": "2026-06-03"
+  },
+  "1-134-funcion-rios-da-ia-pedem-freio-ao-setor": {
+    "title": "1.134 funcionários da IA pedem freio ao setor",
+    "publishDate": "2026-07-29"
+  },
+  "governo-dos-eua-pode-virar-socio-da-openai": {
+    "title": "Governo dos EUA pode virar sócio da OpenAI",
+    "publishDate": "2026-07-03"
+  },
+  "o-plano-ousado-por-tra-s-da-nova-fundac-a-o-de-ia": {
+    "title": "O plano ousado por trás da nova fundação de IA",
+    "publishDate": "2025-12-10"
+  },
+  "especial-moltbook-a-rede-social-so-de-ias": {
+    "title": "Especial Moltbook: a rede social só de IAs",
+    "publishDate": "2026-02-03"
+  },
+  "anthropic-lan-a-sonnet-5": {
+    "title": "Anthropic lança Sonnet 5",
+    "publishDate": "2026-07-01"
+  },
+  "a-pole-mica-em-torno-de-tilly-norwood": {
+    "title": "A polêmica em torno de Tilly Norwood",
+    "publishDate": "2025-10-02"
+  },
+  "estudo-revela-falha-em-llms-por-meio-de-poemas": {
+    "title": "Estudo revela falha em LLMs por meio de poemas",
+    "publishDate": "2025-11-20"
+  },
+  "openai-vs-anthropic-a-batalha-de-ia-no-super-bowl": {
+    "title": "OpenAI vs. Anthropic: a batalha de IA no Super Bowl",
+    "publishDate": "2026-02-10"
+  },
+  "meta-perde-manus-por-ordem-de-pequim": {
+    "title": "Meta perde Manus por ordem de Pequim",
+    "publishDate": "2026-04-28"
+  },
+  "novo-estudo-revela-vulnerabilidade-de-modelos-a-envenenamento-de-dados": {
+    "title": "Novo estudo revela vulnerabilidade de modelos a \"Envenenamento de Dados\"",
+    "publishDate": "2025-10-15"
+  },
+  "anthropic-detalha-impactos-da-ia-no-mercado-de-trabalho": {
+    "title": "Anthropic detalha impactos da IA no mercado de trabalho",
+    "publishDate": "2026-03-09"
+  },
+  "dell-e-openai-levam-codex-a-ambientes-locais": {
+    "title": "Dell e OpenAI levam Codex a ambientes locais",
+    "publishDate": "2026-05-19"
+  },
+  "claude-mythos-o-modelo-mais-perigoso-do-mundo": {
+    "title": "Claude Mythos: o modelo mais perigoso do mundo",
+    "publishDate": "2026-03-27"
+  },
+  "gemini-3-5-flash-agora-controla-seu-computador": {
+    "title": "Gemini 3.5 Flash agora controla seu computador",
+    "publishDate": "2026-06-25"
+  },
+  "gemini-chega-ao-chrome-sem-abrir-aba-nova": {
+    "title": "Gemini chega ao Chrome sem abrir aba nova",
+    "publishDate": "2026-06-10"
+  },
+  "profissionais-brasileiros-de-ti-sao-os-menos-preocupados-com-impacto-da-ia-na-carreira-cc179f705a79d": {
+    "title": "Especial: Meta Ray-Ban Display - Óculos com tela e IA",
+    "publishDate": "2025-09-18"
+  },
+  "sorteio-de-livro-sobre-ia": {
+    "title": "Sorteio de livro sobre IA",
+    "publishDate": "2026-01-18"
+  },
+  "anthropic-lanca-fable-5-com-bloqueios-embutidos": {
+    "title": "Anthropic lança Fable 5 com bloqueios embutidos",
+    "publishDate": "2026-06-10"
+  },
+  "sp-vai-mapear-surtos-de-dengue-por-bairro": {
+    "title": "SP vai mapear surtos de dengue por bairro",
+    "publishDate": "2026-06-16"
+  },
+  "90-dos-desenvolvedores-usam-ia-mas-na-o-confiam-totalmente": {
+    "title": "90% dos desenvolvedores usam IA, mas não confiam totalmente",
+    "publishDate": "2025-09-26"
+  }
+}
