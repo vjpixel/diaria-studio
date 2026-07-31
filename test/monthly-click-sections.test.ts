@@ -19,6 +19,7 @@ import {
   buildSectionsBlock,
   parseUseMelhorSource,
   parseUseMelhorMinClicks,
+  parseRadarCount,
   useMelhorPrecedenceWarning,
   type LinkItem,
 } from "../scripts/monthly-click-sections.ts";
@@ -103,6 +104,60 @@ describe("parseEdition", () => {
       items.some((i) => i.baseUrl.includes("beehiiv.com")),
       false,
     );
+  });
+
+  // Achado ao vivo, ciclo 2607-08: infra promocional própria (apoia.se,
+  // livros/cursos, afiliado Amazon, referrals fixos da assinatura) aparece
+  // em toda edição e, sem filtro, varria o Radar inteiro por volume — não é
+  // notícia.
+  it("filtra infra promocional própria (apoia.se, livros/cursos, afiliado Amazon, referrals fixos)", () => {
+    const md4 = [
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "[**Notícia real**](https://news.com/y)",
+      "desc",
+      "",
+      "[**Apoie a curadoria**](https://apoia.se/diaria)",
+      "desc apoia",
+      "",
+      "[**Confira a página de livros**](https://livros.diaria.workers.dev)",
+      "desc livros",
+      "",
+      "[**Cursos de IA**](https://cursos.diaria.workers.dev)",
+      "desc cursos",
+      "",
+      "[**2041**](https://link.amazon/B05FlAaJ7)",
+      "desc amazon",
+      "",
+      "[**ganhe descontos**](https://clarice.ai/precos-planos?via=diaria)",
+      "desc clarice referral",
+      "",
+      "[**ganhe um mês do plano Pro**](https://wisprflow.ai/r?ANGELO492=)",
+      "desc wispr",
+      "",
+    ].join("\n");
+    const it4 = parseEdition("260604", md4);
+    assert.equal(it4.length, 1);
+    assert.equal(it4[0].baseUrl, "https://news.com/y");
+  });
+
+  it("filtra infra promocional própria no domínio rebranded diar.ia.br e amazon.com.br (loja/vitrine)", () => {
+    const md5 = [
+      "**📰 OUTRAS NOTÍCIAS**",
+      "",
+      "[**Notícia real**](https://news.com/z)",
+      "desc",
+      "",
+      "[**Confira a página de livros**](https://livros.diar.ia.br)",
+      "desc livros rebranded",
+      "",
+      "[**Confira a vitrine**](https://www.amazon.com.br/shop/vjpixel)",
+      "desc vitrine amazon",
+      "",
+    ].join("\n");
+    const it5 = parseEdition("260605", md5);
+    assert.equal(it5.length, 1);
+    assert.equal(it5[0].baseUrl, "https://news.com/z");
   });
   it("carrega a edição em cada item", () => {
     assert.ok(items.every((i) => i.edition === "260601"));
@@ -366,6 +421,45 @@ describe("selectSections", () => {
     const clicks = new Map(monthItems.map((it, i) => [it.baseUrl, i]));
     const r = selectSections(monthItems, [], clicks, new Set());
     assert.equal(r.use_melhor.length, 3);
+  });
+
+  // radarCount: mesmo padrão do useMelhorCount (#2792), pedido pelo editor
+  // no gate da Etapa 1 do ciclo 2607-08 ("deixe 4 no Use Melhor e 4 no radar").
+  it("radarCount custom (4) retorna 4 itens; caption reflete a contagem real", () => {
+    const monthItems = Array.from({ length: 10 }, (_, i) => item(`https://r.com/${i}`, "outro"));
+    const clicks = new Map(monthItems.map((it, i) => [it.baseUrl, i]));
+    const r = selectSections(monthItems, [], clicks, new Set(), undefined, undefined, 4);
+    assert.equal(r.radar.length, 4);
+    assert.deepEqual(
+      r.radar.map((x) => x.url),
+      ["https://r.com/9", "https://r.com/8", "https://r.com/7", "https://r.com/6"],
+    );
+    const block = buildSectionsBlock({ use_melhor: r.use_melhor, radar: r.radar } as any);
+    assert.ok(block.includes("Os 4 links mais clicados do mês"));
+  });
+
+  it("radarCount ausente: comportamento default (top-7) intacto", () => {
+    const monthItems = Array.from({ length: 10 }, (_, i) => item(`https://s.com/${i}`, "outro"));
+    const clicks = new Map(monthItems.map((it, i) => [it.baseUrl, i]));
+    const r = selectSections(monthItems, [], clicks, new Set());
+    assert.equal(r.radar.length, 7);
+  });
+});
+
+describe("parseRadarCount", () => {
+  it("--radar-count 4", () => {
+    assert.equal(parseRadarCount(["--cycle", "2607-08", "--radar-count", "4"]), 4);
+  });
+  it("--radar-count=4", () => {
+    assert.equal(parseRadarCount(["--radar-count=4"]), 4);
+  });
+  it("ausência → undefined", () => {
+    assert.equal(parseRadarCount(["--cycle", "2607-08"]), undefined);
+  });
+  it("valor inválido (0/negativo/NaN) → undefined", () => {
+    assert.equal(parseRadarCount(["--radar-count", "0"]), undefined);
+    assert.equal(parseRadarCount(["--radar-count", "-2"]), undefined);
+    assert.equal(parseRadarCount(["--radar-count", "abc"]), undefined);
   });
 });
 

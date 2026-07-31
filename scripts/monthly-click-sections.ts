@@ -39,6 +39,9 @@
  *  - --use-melhor-min-clicks N: threshold — TODO tutorial com clicks >= N,
  *    empate na fronteira incluído. Tem precedência sobre --use-melhor-count
  *    (se ambos forem passados, count é ignorado com warning).
+ *
+ * Tamanho do Radar também é configurável, mesmo padrão do Use Melhor:
+ *  - --radar-count N: top-N fixo (default 7).
  */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
@@ -46,12 +49,14 @@ import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isEditorial } from "./build-link-ctr.ts";
 import { isMainModule } from "./lib/cli-args.ts";
+import { resolveEditionDir } from "./lib/find-current-edition.ts";
 import {
   parseMonthlyCycleArg,
   monthlyDir as resolveMonthlyDir,
 } from "./lib/mensal/monthly-paths.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const EDITIONS_ROOT_DIR = join(ROOT, "data/editions");
 
 const USE_MELHOR_COUNT = 3;
 const RADAR_COUNT = 7;
@@ -121,6 +126,37 @@ export interface LinkItem {
 
 const LINK_RE = /\[([^\]]*?)\]\((https?:\/\/[^)\s]+)\)/g;
 
+// Infra própria da Diar.ia que aparece em TODA edição (Divulgação/Para
+// encerrar — ver `boxes_divulgacao` e `para_encerrar` em platform.config.json,
+// e os snippets rotativos em context/snippets/*-divulgacao.md): apoio,
+// curadoria de livros/cursos, afiliado/vitrine Amazon, referrals fixos da
+// assinatura. `isEditorial()` (build-link-ctr.ts) não filtra isso — lá o
+// propósito é medir clique em TUDO (CTR table), aqui é achar as NOTÍCIAS
+// mais clicadas do mês. Sem esse filtro, achado ao vivo no ciclo 2607-08:
+// esses links (clicados em quase toda edição, então acumulam alto no mês)
+// varreram a maioria das vagas do Radar, sobrando pouca notícia real.
+// Inclui tanto domínio legado (`*.diaria.workers.dev`) quanto o rebrand
+// `diar.ia.br` (#3577-ish) — ambos coexistem em ciclos/cache antigos.
+// `amazon.com.br` inteiro entra porque, nesta newsletter, só aparece em
+// caixa de divulgação (livro recomendado ou vitrine `/shop/{usuário}`) —
+// nunca como fonte de notícia.
+const OWN_PROMO_HOSTS_RE =
+  /^(apoia\.se|livros\.(diaria\.workers\.dev|diar\.ia\.br)|cursos\.(diaria\.workers\.dev|diar\.ia\.br)|link\.amazon|amazon\.com\.br)$/i;
+function isOwnPromoLink(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase().replace(/^www\./, "");
+    if (OWN_PROMO_HOSTS_RE.test(host)) return true;
+    // Referral fixo da assinatura "Nessa edição da Diar.ia, usei..." (mesmo
+    // texto em toda edição, ver platform.config.json → para_encerrar.slot_a).
+    if (host === "clarice.ai" && u.pathname.startsWith("/precos-planos")) return true;
+    if (host === "wisprflow.ai") return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 export function parseEdition(edition: string, md: string): LinkItem[] {
   const lines = md.split(/\r?\n/);
   const items: LinkItem[] = [];
@@ -160,6 +196,9 @@ export function parseEdition(edition: string, md: string): LinkItem[] {
 
     // Só consideramos links editoriais (filtra beehiiv/poll/social/etc).
     if (!isEditorial(firstLinkOnLine.url)) continue;
+    // Filtra infra promocional própria (apoia.se, livros/cursos, afiliado
+    // Amazon, referrals fixos) — não é notícia, não deve competir no Radar.
+    if (isOwnPromoLink(firstLinkOnLine.url)) continue;
 
     let title = firstLinkOnLine.title;
     if (!title) {
@@ -303,6 +342,9 @@ export interface ComputeOpts {
   // sobre useMelhorCount quando ambos são passados (count é ignorado, com
   // warning).
   useMelhorMinClicks?: number;
+  // Override do nº de links no Radar (default RADAR_COUNT = 7), mesmo padrão
+  // do useMelhorCount — editor pode pedir outro número no gate da Etapa 1.
+  radarCount?: number;
 }
 
 export function compute(yymm: string, opts: ComputeOpts = {}) {
@@ -321,7 +363,12 @@ export function compute(yymm: string, opts: ComputeOpts = {}) {
   // Coleta itens editoriais (com seção + edição) das edições do mês.
   const monthItems: LinkItem[] = [];
   for (const { edition, prefix } of editions) {
-    const revPath = join(ROOT, "data/editions", edition, "02-reviewed.md");
+    // #2463/#3025: edição pode estar em disco no layout FLAT (recente) ou
+    // NESTED (arquivada, data/editions/{AAMM}/{AAMMDD}/) — resolveEditionDir
+    // já resolve os dois; um join direto (como era antes) perde toda edição
+    // arquivada silenciosamente, como "sem 02-reviewed.md" (achado ao vivo:
+    // 21 das 24 edições de julho/2026 já estavam no layout nested).
+    const revPath = join(resolveEditionDir(EDITIONS_ROOT_DIR, edition), "02-reviewed.md");
     if (!existsSync(revPath)) {
       warnings.push(`${edition}: 02-reviewed.md ausente — pulada`);
       continue;
@@ -337,7 +384,7 @@ export function compute(yymm: string, opts: ComputeOpts = {}) {
   const useMelhorBorrowedFrom: string[] = [];
   const sourceItems: LinkItem[] = [];
   for (const { edition, prefix } of opts.useMelhorSource ?? []) {
-    const revPath = join(ROOT, "data/editions", edition, "02-reviewed.md");
+    const revPath = join(resolveEditionDir(EDITIONS_ROOT_DIR, edition), "02-reviewed.md");
     if (!existsSync(revPath)) {
       warnings.push(`use-melhor-source ${edition}: 02-reviewed.md ausente — pulada`);
       continue;
@@ -362,6 +409,7 @@ export function compute(yymm: string, opts: ComputeOpts = {}) {
     themes,
     opts.useMelhorCount,
     opts.useMelhorMinClicks,
+    opts.radarCount,
   );
   warnings.push(...selected.warnings);
 
@@ -432,6 +480,7 @@ export function selectSections(
   themeUrls: Set<string>,
   useMelhorCount: number = USE_MELHOR_COUNT,
   useMelhorMinClicks?: number,
+  radarCount: number = RADAR_COUNT,
 ) {
   const allPool = new Map<string, Meta>();
   const useMelhorPool = new Map<string, Meta>();
@@ -467,7 +516,7 @@ export function selectSections(
     radarPool.set(b, meta);
   }
   const radarRanked = rank(radarPool, clicksByUrl);
-  const radarTop = radarRanked.slice(0, RADAR_COUNT);
+  const radarTop = radarRanked.slice(0, radarCount);
 
   const warnings: string[] = [];
   if (useMelhorMinClicks !== undefined) {
@@ -478,8 +527,8 @@ export function selectSections(
       `Use Melhor: só ${useMelhorTop.length} candidatos com seção use_melhor (esperado ${useMelhorCount})`,
     );
   }
-  if (radarTop.length < RADAR_COUNT)
-    warnings.push(`Radar: só ${radarTop.length} candidatos elegíveis (esperado ${RADAR_COUNT})`);
+  if (radarTop.length < radarCount)
+    warnings.push(`Radar: só ${radarTop.length} candidatos elegíveis (esperado ${radarCount})`);
 
   return {
     use_melhor: useMelhorTop,
@@ -511,7 +560,7 @@ export function buildSectionsBlock(result: {
     `Os ${result.use_melhor.length} tutoriais mais clicados do mês (seção Use Melhor das edições diárias):\n\n` +
     `${renderItems(result.use_melhor, false)}\n\n` +
     `## Radar\n\n` +
-    `Os 7 links mais clicados do mês (excluindo os já cobertos nos Destaques e no Use Melhor):\n\n` +
+    `Os ${result.radar.length} links mais clicados do mês (excluindo os já cobertos nos Destaques e no Use Melhor):\n\n` +
     `${renderItems(result.radar, true)}\n`
   );
 }
@@ -605,13 +654,28 @@ export function parseUseMelhorMinClicks(argv: string[]): number | undefined {
   return Number.isInteger(n) && n >= 0 ? n : undefined;
 }
 
+/** Lê `--radar-count N` (ou `--radar-count=N`). Retorna undefined se
+ *  ausente/inválido, deixando o default RADAR_COUNT valer. Mesmo padrão de
+ *  `parseUseMelhorCount` — editor pode pedir outro número no gate da Etapa 1. */
+export function parseRadarCount(argv: string[]): number | undefined {
+  const eq = argv.find((a) => a.startsWith("--radar-count="));
+  const raw = eq
+    ? eq.split("=")[1]
+    : (() => {
+        const i = argv.indexOf("--radar-count");
+        return i !== -1 ? argv[i + 1] : "";
+      })();
+  const n = parseInt(raw ?? "", 10);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 function main() {
   // Aceita --cycle 2605-06 (novo) ou argumento posicional 2604 (legado compat).
   const cycle = parseMonthlyCycleArg(process.argv.slice(2));
   if (!cycle) {
     console.error(
       "Usage: npx tsx scripts/monthly-click-sections.ts --cycle YYMM-MM [--use-melhor-source AAMMDD:prefix,...]\n" +
-      "  [--use-melhor-count N | --use-melhor-min-clicks N]\n" +
+      "  [--use-melhor-count N | --use-melhor-min-clicks N] [--radar-count N]\n" +
       "Compat: npx tsx scripts/monthly-click-sections.ts <YYMM>",
     );
     process.exit(2);
@@ -622,7 +686,8 @@ function main() {
   const useMelhorSource = parseUseMelhorSource(process.argv.slice(2));
   const useMelhorCount = parseUseMelhorCount(process.argv.slice(2));
   const useMelhorMinClicks = parseUseMelhorMinClicks(process.argv.slice(2));
-  const result = compute(cycle, { useMelhorSource, useMelhorCount, useMelhorMinClicks });
+  const radarCount = parseRadarCount(process.argv.slice(2));
+  const result = compute(cycle, { useMelhorSource, useMelhorCount, useMelhorMinClicks, radarCount });
   if (useMelhorSource.length)
     console.log(`Use Melhor emprestado de: ${useMelhorSource.map((x) => x.edition).join(", ")}`);
 
@@ -636,7 +701,7 @@ function main() {
   console.log(`prioritized.md ${patched ? "atualizado (Outras Notícias → Use Melhor + Radar)" : "NÃO atualizado (seção não encontrada)"}`);
   console.log(`\nUse Melhor (top ${result.use_melhor.length} por cliques):`);
   for (const x of result.use_melhor) console.log(`  ${x.clicks}  ${x.title} [${x.editions.join(",")}]`);
-  console.log("\nRadar (top 7 por cliques):");
+  console.log(`\nRadar (top ${result.radar.length} por cliques):`);
   for (const x of result.radar) console.log(`  ${x.clicks}  ${x.title} [${x.editions.join(",")}]`);
   if (result.warnings.length) {
     console.log("\nWarnings:");
