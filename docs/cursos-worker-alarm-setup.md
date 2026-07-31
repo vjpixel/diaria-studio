@@ -13,7 +13,7 @@ O worker `cursos` (hosting da página "Cursos sobre IA", `cursos.diar.ia.br`) lo
 
 ### O que ele checa
 
-A cada execução, consulta a Cloudflare GraphQL Analytics API pelos logs do worker `cursos` desde o último cursor salvo (`data/cursos-error-alarm-state.json`) e avalia duas condições:
+**#4382 (redesign):** a versão original consultava a Cloudflare GraphQL Analytics API (dataset `workersInvocationsAdaptiveGroups`) fazendo grep de texto nos logs — CONFIRMADO AO VIVO (credenciais Cloudflare reais) que esse dataset não existe no schema exposto (`unknown field`, não um erro de permissão). A API pública GraphQL Analytics parece expor só métricas agregadas, não conteúdo de log individual. O worker `cursos` agora incrementa 4 contadores cumulativos DIRETO no KV `CURSOS_SUBSCRIBERS` (mesmo namespace do sync de assinantes) nos mesmos pontos onde já loga via `console.error`/`console.warn`/`console.log` — ver `scripts/lib/shared/cursos-alarm-counters.ts` pras chaves. Este script só LÊ os 4 contadores (via `getTextFromWorkerKV`, fetch-based) e calcula o DELTA desde a última checagem (snapshot salvo em `data/cursos-error-alarm-state.json`), avaliando duas condições:
 
 | Condição | Gatilho | O que significa |
 |---|---|---|
@@ -24,7 +24,7 @@ Se qualquer uma disparar, chega **1 e-mail** ao editor (nunca 2 e-mails separado
 
 ### Idempotência
 
-Diferente do alarme de guardrail Clarice (idempotiza por ID de campanha), este idempotiza por **cursor de tempo**: cada execução só consulta `[lastCheckedUntil, now)`. Janelas nunca se sobrepõem, então nunca reavalia (nem realarma) o mesmo intervalo 2×. O cursor só avança se a run terminar com sucesso — uma falha de fetch OU de envio de e-mail deixa o cursor parado, e a mesma janela (agora maior) é reprocessada na próxima execução.
+Diferente do alarme de guardrail Clarice (idempotiza por ID de campanha), este idempotiza por **snapshot de contadores** (#4382 — antes era cursor de tempo): cada execução guarda o valor cumulativo dos 4 contadores da última checagem bem-sucedida (`lastCounters` em `data/cursos-error-alarm-state.json`) e calcula o delta contra a leitura atual. Nunca reavalia (nem realarma) o mesmo incremento 2×. O snapshot só avança se a run terminar com sucesso — uma falha de leitura do KV OU de envio de e-mail deixa o cursor parado, e o próximo delta (agora maior) cobre o intervalo perdido. Na 1ª execução (sem baseline), o delta é sempre zero — nunca alarma retroativamente sobre um histórico cumulativo de idade desconhecida, só estabelece o baseline.
 
 ### Como o editor confere o alarme
 
@@ -50,7 +50,7 @@ Diferente do alarme de guardrail Clarice (idempotiza por ID de campanha), este i
 
 ### Setup (ação local one-time do editor — NÃO feito nesta sessão)
 
-Requer Windows + Task Scheduler + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_API_TOKEN` (escopo "Account Analytics Read"/leitura de Workers Logs — pode ser um token diferente de `CLOUDFLARE_WORKERS_TOKEN`, que só precisa de escrita KV) + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito do alarme de guardrail Clarice, `npx tsx scripts/oauth-setup.ts` se ainda não tiver esse scope) + o junction `data/` (OneDrive).
+Requer Windows + Task Scheduler + `CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_WORKERS_TOKEN` (escopo de leitura/escrita de Workers KV — o MESMO token já usado por outros scripts que leem/escrevem KV Cloudflare via `scripts/lib/cloudflare-kv-upload.ts`, ex: `clarice-engagement-cohorts.ts`; **não** mais `CLOUDFLARE_API_TOKEN`/"Account Analytics Read" — #4382 removeu a dependência da Analytics API) + `CURSOS_KV_NAMESPACE_ID` (id do namespace `CURSOS_SUBSCRIBERS`, o MESMO já usado por `scripts/sync-cursos-subscribers-kv.ts` — ver `workers/cursos/wrangler.toml` `[[kv_namespaces]] id`) + `data/.credentials.json` com o scope `gmail.send` (mesmo requisito do alarme de guardrail Clarice, `npx tsx scripts/oauth-setup.ts` se ainda não tiver esse scope) + o junction `data/` (OneDrive).
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-cursos-error-alarm-schedule.ps1
@@ -58,13 +58,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\setup-cursos-error-a
 
 Isso registra a task `Diaria-Cursos-Error-Alarm` (a cada 2h). Idempotente — re-executar atualiza a task. Remover: mesmo comando com `-Unregister`.
 
-**Importante — schema da query não verificado ao vivo (ver docstring de `scripts/cursos-error-alarm.ts`):** esta sessão (dispatch `/diaria-overnight`, worktree isolado) não tem acesso a credenciais Cloudflare reais nem pode fazer chamada de rede ao vivo. A query GraphQL (`CURSOS_LOGS_QUERY`) foi desenhada com base na documentação pública da Analytics API, mas o shape exato de `logs{}` por grupo de invocação não foi confirmado contra uma resposta real. **Antes de confiar neste alarme em produção**, rodar uma vez com credenciais reais:
+**Antes de confiar neste alarme em produção**, rodar uma vez com credenciais reais:
 
 ```powershell
 npx tsx scripts/cursos-error-alarm.ts --dry-run
 ```
 
-e conferir se a linha `eventCount` no output bate com o volume esperado (não fica em 0 sempre, mesmo com tráfego real no worker). Se a query não casar o schema real da API, só `CURSOS_LOGS_QUERY`/`parseGraphqlLogsResponse` (em `scripts/cursos-error-alarm.ts`) precisam de ajuste — a lógica de alarme (`scripts/lib/cursos-error-alarm.ts`, testada em `test/cursos-error-alarm.test.ts`) não muda.
+e conferir se a linha de log bate com os contadores esperados (não precisa ser 0 sempre — se o worker nunca rodou desde o deploy deste PR, os 4 contadores ainda não existem no KV e a leitura retorna 0 pros 4, o que é esperado até a 1ª ocorrência de cada evento).
 
 ---
 
@@ -98,4 +98,6 @@ Imprime `{ subscribers: N, kv_entries: M, dry_run: true }` — `N` deve bater (o
 
 ## Follow-up explícito deste PR
 
-Nem o registro das duas tasks no Task Scheduler nem a 1ª execução ao vivo do KV sync foram feitos nesta sessão — o dispatch rodou num worktree isolado, sem acesso ao Task Scheduler real da máquina do editor nem a credenciais Cloudflare/Beehiiv ao vivo (escopo intencional, ver corpo do PR). **Ação pendente do editor pós-merge:** rodar os dois comandos `setup-*-schedule.ps1` acima (registro das tasks) e, antes de confiar no alarme, o `--dry-run` de validação do schema da query descrito na seção 1.
+Nem o registro das duas tasks no Task Scheduler nem a 1ª execução ao vivo do KV sync foram feitos na sessão original (#4320) — o dispatch rodou num worktree isolado, sem acesso ao Task Scheduler real da máquina do editor nem a credenciais Cloudflare/Beehiiv ao vivo (escopo intencional, ver corpo do PR). **Ação pendente do editor pós-merge:** rodar os dois comandos `setup-*-schedule.ps1` acima (registro das tasks) e, antes de confiar no alarme, o `--dry-run` descrito na seção 1.
+
+**#4382 (este PR):** o redesign de GraphQL→contadores KV também não foi validado ao vivo (mesmo motivo — worktree isolado sem credenciais reais). A lógica de delta/idempotência é coberta por teste (`test/cursos-error-alarm.test.ts`), e o incremento dos contadores no worker é coberto fim-a-fim (`test/cursos-gate.test.ts`), mas o round-trip real "worker incrementa no KV de produção → script lê o mesmo KV via API HTTP" nunca rodou contra credenciais/deploy reais. **Ação pendente do editor pós-merge (além do registro das tasks acima):** fazer deploy do worker atualizado (`cd workers/cursos && npx wrangler deploy`), gerar pelo menos 1 ocorrência de cada evento (ex: bater em `/gate/verify` com um e-mail não-assinante pra incrementar `emailGateNotConfirmed`) e rodar `npx tsx scripts/cursos-error-alarm.ts --dry-run` conferindo que os contadores lidos batem com o que foi gerado.

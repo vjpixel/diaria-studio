@@ -9,9 +9,11 @@
     dispara sozinho -- mesma licao do "finding 1" do #4131 (guardrail
     Clarice), aplicada aqui de proposito antes de repetir o gap.
 
-    Requer CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN no .env local +
-    data/.credentials.json com o scope gmail.send (ver docstring de
-    scripts/cursos-error-alarm.ts) + o junction data/ (OneDrive).
+    Requer CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_WORKERS_TOKEN + CURSOS_KV_NAMESPACE_ID
+    no .env local (#4382: leitura de contadores KV, não mais
+    CLOUDFLARE_API_TOKEN/Analytics API) + data/.credentials.json com o scope
+    gmail.send (ver docstring de scripts/cursos-error-alarm.ts) + o junction
+    data/ (OneDrive).
 
     Mesmo padrao de log resiliente do #4047 (run-clarice-sync-daily.ps1):
     escreve primeiro num arquivo temporario FORA de data/ (sem risco de lock

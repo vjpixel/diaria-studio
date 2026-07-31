@@ -11,10 +11,10 @@
 
     Cadencia: worker de baixo trafego, sem janela de avaliacao pos-envio
     (diferente do guardrail Clarice) -- 2h e um meio-termo entre "descobrir
-    rapido" e nao gastar cota de leitura da Analytics API a toa. A
-    idempotencia (cursor de tempo em
-    data/cursos-error-alarm-state.json -- ver scripts/lib/cursos-error-alarm.ts)
-    torna execucoes extras seguras e baratas.
+    rapido" e nao gastar leituras de KV a toa. A idempotencia (snapshot de
+    contadores em data/cursos-error-alarm-state.json -- #4382, era cursor de
+    tempo antes; ver scripts/lib/cursos-error-alarm.ts) torna execucoes
+    extras seguras e baratas.
 
     StartWhenAvailable: se o horario for perdido (maquina desligada), roda
     quando disponivel -- o cursor de tempo cobre o gap sozinho (auto-cura,
@@ -37,9 +37,10 @@
     powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-cursos-error-alarm-schedule.ps1 -Unregister
 
 .NOTES
-    Issue: #4320.
+    Issue: #4320 (redesign GraphQL->contadores KV: #4382).
     Requer: Windows + Task Scheduler + junction data/ + CLOUDFLARE_ACCOUNT_ID +
-    CLOUDFLARE_API_TOKEN + data/.credentials.json com scope gmail.send.
+    CLOUDFLARE_WORKERS_TOKEN + CURSOS_KV_NAMESPACE_ID + data/.credentials.json
+    com scope gmail.send.
     Sem Admin: a task roda no contexto do usuario (RunLevel Limited).
 
     *** NAO EXECUTADO nesta sessao (#4320) -- worktree isolado sem acesso ao
