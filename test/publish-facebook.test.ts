@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractPostText, validateScheduledTime, needsReschedule } from "../scripts/publish-facebook.ts";
+import { FACEBOOK_CTA_LINE } from "../scripts/lib/social-cta-lines.ts";
 
 const __ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -66,17 +67,16 @@ describe("extractPostText (publish-facebook) — formato novo # Social (#3991)",
 
   it("extrai d1 de # Social e injeta o CTA de e-mail do Facebook ENTRE corpo e tags", () => {
     const t = extractPostText(SOCIAL_MD, "facebook", "d1");
-    assert.equal(
-      t,
-      "Texto genérico d1.\n\nReceba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.\n\n#IA",
-    );
+    assert.equal(t, `Texto genérico d1.\n\n${FACEBOOK_CTA_LINE}\n\n#IA`);
   });
 
   it("extrai d2 sem vazar d1, com CTA injetada mesmo sem hashtags", () => {
     const t = extractPostText(SOCIAL_MD, "facebook", "d2");
     assert.ok(t.includes("Texto genérico d2."));
     assert.ok(!t.includes("Texto genérico d1."));
-    assert.ok(t.includes("https://diar.ia.br."));
+    // #4295: URL agora carrega UTM — checar o domínio + o source, não mais o
+    // literal "https://diar.ia.br." (que já não é substring exata do texto).
+    assert.ok(t.includes("diar.ia.br") && t.includes("utm_source=facebook"));
   });
 
   it("# Social como fast-path é exclusivo de 'facebook' — outra plataforma cai no fallback literal e lança se ausente", () => {

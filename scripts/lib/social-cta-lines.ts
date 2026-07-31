@@ -38,13 +38,39 @@
  * a única mudança necessária é setar `LINKEDIN_CTA_LINE` para o texto
  * desejado — todo o resto (injectChannelLine, publishers) já está pronto
  * para consumir uma linha não-nula.
+ *
+ * #4295: o link cru `https://diar.ia.br` do CTA de Facebook saía SEM UTM —
+ * ~3 posts/dia viravam `direct` no Beehiiv (audit 260729, maior fatia dos
+ * cadastros não-atribuídos). UTM montado via `new URL()` + `searchParams`
+ * (nunca concatenação) a partir do triplo único em
+ * `scripts/lib/shared/utm-registry.ts` (`FACEBOOK_CTA_UTM`). O ponto final
+ * da frase continua logo após a URL — preservado de propósito
+ * (`.claude/agents/social-facebook.md:37`: o Facebook precisa do `https://`
+ * pra auto-linkar e o ponto fecha a frase); o linkifier do Facebook para em
+ * pontuação terminal comum (`.`, `,`, `;`) que não faz parte da query string,
+ * mesmo comportamento já confirmado ao vivo pro CTA de company page do
+ * LinkedIn (`utm_source=linkedin&utm_medium=organic_social&utm_campaign=company_page_cta`).
  */
+
+import { FACEBOOK_CTA_UTM } from "./shared/utm-registry.ts";
 
 export type SocialChannel = "linkedin" | "facebook" | "instagram";
 
-/** Facebook mantém o CTA de e-mail (driver de assinatura) — formato #602/#3486 preservado. */
+/** Monta a URL do CTA de Facebook com UTM (#4295) — `new URL()` + `searchParams.set`,
+ * nunca concatenação manual de string. Exportada pra teste (garante que a URL
+ * embutida em `FACEBOOK_CTA_LINE` é sempre bem-formada e carrega os 3 params). */
+export function buildFacebookCtaUrl(): string {
+  const url = new URL("https://diar.ia.br");
+  url.searchParams.set("utm_source", FACEBOOK_CTA_UTM.source);
+  url.searchParams.set("utm_medium", FACEBOOK_CTA_UTM.medium);
+  url.searchParams.set("utm_campaign", FACEBOOK_CTA_UTM.campaign);
+  return url.toString();
+}
+
+/** Facebook mantém o CTA de e-mail (driver de assinatura) — formato #602/#3486
+ * preservado; URL com UTM desde #4295 (ver JSDoc do módulo). */
 export const FACEBOOK_CTA_LINE =
-  "Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.";
+  `Receba notícias de IA todo dia por e-mail, assine grátis em ${buildFacebookCtaUrl()}.`;
 
 /** Instagram: "link na bio" + follow (#3486, preservado). Sem URL crua — IG não linka no corpo. */
 export const INSTAGRAM_CTA_LINE =

@@ -15,6 +15,7 @@
 import type { Env } from "./index";
 import { json } from "./index";
 import { checkKvRateLimit } from "../../../scripts/lib/shared/rate-limit.ts";
+import { CURSOS_GATE_INLINE_UTM } from "../../../scripts/lib/shared/utm-registry.ts"; // #4295 fold-in do drift (literais locais antes)
 import { issueSessionCookie } from "./cookie.ts";
 
 export const SUBSCRIBE_RATE_LIMIT = 5;
@@ -95,9 +96,11 @@ export interface SubscribeResult {
   reason?: "not_configured" | "beehiiv_error";
 }
 
-const CURSOS_UTM_SOURCE = "cursos";
-const CURSOS_UTM_MEDIUM = "gate-inline";
-const CURSOS_UTM_CAMPAIGN = "cursos-gate-signup";
+// #4295: valores derivados do registry único (scripts/lib/shared/utm-registry.ts)
+// — antes eram literais locais, ausentes de UTM_EMITTERS/`/utms` (drift).
+const CURSOS_UTM_SOURCE = CURSOS_GATE_INLINE_UTM.source;
+const CURSOS_UTM_MEDIUM = CURSOS_GATE_INLINE_UTM.medium;
+const CURSOS_UTM_CAMPAIGN = CURSOS_GATE_INLINE_UTM.campaign;
 
 /** Mesmo endpoint/contrato de `subscribeToBeehiiv` do #3580 — `fetchImpl`
  * injetável pra teste, nunca faz rede real em testes. */

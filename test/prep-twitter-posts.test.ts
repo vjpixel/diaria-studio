@@ -338,6 +338,57 @@ describe("prepTwitterPosts", () => {
   });
 });
 
+// ─── #4295: tag UTM per-channel na URL da edição já resolvida ──────────────
+
+describe("#4295: tag UTM per-channel (utm_source=twitter) na edition_url", () => {
+  it("posts[].text carrega utm_source=twitter quando _internal/05-edition-url.txt existe e o texto contém a URL base", () => {
+    const editionUrl = "https://diar.ia.br/p/titulo-da-edicao";
+    const md = `# Curto\n\n## d1\nConfira mais em ${editionUrl}\n`;
+    const dir = makeEditionDir("diaria-twitter-prep-utm-", md);
+    try {
+      writeFileSync(join(dir, "_internal", "05-edition-url.txt"), editionUrl, "utf8");
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+      assert.equal(result.posts.length, 1);
+      const text = result.posts[0].text;
+      assert.ok(text.includes("utm_source=twitter"), text);
+      assert.ok(text.includes("utm_medium=organic_social"), text);
+      assert.ok(text.includes("utm_campaign=edicao-diaria"), text);
+      assert.ok(!text.includes(`${editionUrl} `), "URL base sem UTM não deve sobrar solta no texto");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem 05-edition-url.txt: texto segue sem UTM (no-op, comportamento pré-#4295 preservado)", () => {
+    const dir = makeEditionDir("diaria-twitter-prep-noeditionurl-", MD_CURTO);
+    try {
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+      assert.equal(result.posts.length, 3);
+      for (const post of result.posts) {
+        assert.ok(!post.text.includes("utm_source"), post.text);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#4295 não quebra #4285: comprimento ponderado ainda trata a URL como 23 chars mesmo com UTM anexado", () => {
+    const editionUrl = `https://diar.ia.br/p/${"a".repeat(60)}`; // 22 + 60 = 82 chars literais, sem UTM
+    const body = "b".repeat(200);
+    const md = `# Curto\n\n## d1\n${body} ${editionUrl}\n`;
+    const dir = makeEditionDir("diaria-twitter-prep-utm-weight-", md);
+    try {
+      writeFileSync(join(dir, "_internal", "05-edition-url.txt"), editionUrl, "utf8");
+      const result = prepTwitterPosts(dir, { editionDate: FUTURE_EDITION_DATE, now: FUTURE_NOW });
+      assert.equal(result.skipped.length, 0, `não deveria pular por char limit: ${JSON.stringify(result.skipped)}`);
+      assert.equal(result.posts.length, 1);
+      assert.ok(result.posts[0].text.includes("utm_source=twitter"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── #4264: imagem do destaque (assets pro Buffer) ─────────────────────────
 
 describe("resolveTwitterImage (#4264)", () => {

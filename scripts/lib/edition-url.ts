@@ -135,3 +135,51 @@ export function findUnresolvedPlaceholders(text: string): string[] {
 export function substituteEditionUrl(text: string, editionUrl: string): string {
   return text.replaceAll("{edition_url}", () => editionUrl);
 }
+
+/** Triplo UTM usado pelas tags PER-CHANNEL abaixo (#4295) — mesmo shape dos
+ * demais triplos de `scripts/lib/shared/utm-registry.ts`. */
+export interface EditionUrlUtm {
+  source: string;
+  medium: string;
+  campaign: string;
+}
+
+/**
+ * Anexa um triplo UTM a uma edition_url já resolvida (#4295) — `new URL()` +
+ * `searchParams.set`, nunca concatenação manual (mesmo padrão de
+ * `buildBrandSiteUrl` em `workers/poll/src/lib.ts`). Pure.
+ *
+ * Existe porque `{edition_url}` é resolvido UMA VEZ para todo `03-social.md`
+ * (`resolve-edition-url.ts`, Stage 5 passo 5c-2) — o UTM precisa ser
+ * PER-CHANNEL (X/Threads/`post_pixel` do LinkedIn têm `utm_source` distinto),
+ * então a tag é aplicada DEPOIS, no publish de cada canal, nunca na
+ * substituição compartilhada que o editor revisa no gate.
+ */
+export function appendUtmToEditionUrl(editionUrl: string, utm: EditionUrlUtm): string {
+  const url = new URL(editionUrl);
+  url.searchParams.set("utm_source", utm.source);
+  url.searchParams.set("utm_medium", utm.medium);
+  url.searchParams.set("utm_campaign", utm.campaign);
+  return url.toString();
+}
+
+/**
+ * Substitui toda ocorrência literal de `editionUrl` (já resolvido, SEM UTM —
+ * o valor que `resolve-edition-url.ts` gravou em `03-social.md`) por uma
+ * versão com UTM anexado (#4295). Usada pelos publishers PER-CHANNEL
+ * (`prep-twitter-posts.ts`, `publish-threads.ts`, `resolve-post-pixel.ts`)
+ * DEPOIS de extrair o texto do destaque — nunca antes (a extração/guard de
+ * scaffolding precisa ver o texto original).
+ *
+ * Replacer FUNCTION (não string literal) — mesmo motivo de
+ * `substituteEditionUrl` acima (#3314): evita a interpretação de `$&`/`$$`/etc
+ * caso o valor tagged carregasse algum desses tokens.
+ *
+ * No-op (retorna `text` intocado) se `editionUrl` for vazio ou não aparecer
+ * no texto — nunca lança.
+ */
+export function tagEditionUrlInText(text: string, editionUrl: string, utm: EditionUrlUtm): string {
+  if (!editionUrl || !text.includes(editionUrl)) return text;
+  const tagged = appendUtmToEditionUrl(editionUrl, utm);
+  return text.replaceAll(editionUrl, () => tagged);
+}

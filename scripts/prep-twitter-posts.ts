@@ -71,6 +71,8 @@ import { parseDestaqueHeaders } from "./lint-social-md.ts";
 import { extractSection, extractDestaqueBlock, assertNoScaffolding } from "./lib/extract-section.ts"; // #4309 — extração do `## dN` + guard de scaffolding
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 import { computeScheduledAt } from "./compute-social-schedule.ts";
+import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
+import { TWITTER_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -245,6 +247,13 @@ export function prepTwitterPosts(
     return { enabled: true, published_path: publishedPath, posts, skipped, skipped_image: skippedImage };
   }
 
+  // #4295: URL da edição já resolvida (SEM UTM — resolve-edition-url.ts grava
+  // só a URL base em 03-social.md, compartilhada por X/Threads/post_pixel).
+  // Lida uma vez fora do loop; tag aplicada por destaque logo abaixo, DEPOIS
+  // da extração/guard de scaffolding (nunca antes).
+  const editionUrlFile = resolve(editionDir, "_internal", "05-edition-url.txt");
+  const editionUrl = existsSync(editionUrlFile) ? readFileSync(editionUrlFile, "utf8").trim() : null;
+
   const published = readSocialPublished(publishedPath);
 
   for (const d of destaques) {
@@ -277,6 +286,11 @@ export function prepTwitterPosts(
       skipped.push({ destaque: d, reason: "destaque ausente na seção '# Curto'" });
       continue;
     }
+
+    // #4295: tag UTM per-channel (utm_source=twitter) na URL da edição já
+    // resolvida no texto — nunca muda o char count ponderado (a URL, com ou
+    // sem query string, sempre conta TWITTER_URL_WEIGHT via t.co, ver abaixo).
+    if (editionUrl) text = tagEditionUrlInText(text, editionUrl, TWITTER_EDITION_UTM);
 
     // #4285/#4264 adendo do editor: conta URL como TWITTER_URL_WEIGHT (peso
     // real do X via t.co), não o comprimento literal — {edition_url} resolvido

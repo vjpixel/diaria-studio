@@ -17,7 +17,9 @@ import {
   FACEBOOK_CTA_LINE,
   INSTAGRAM_CTA_LINE,
   LINKEDIN_CTA_LINE,
+  buildFacebookCtaUrl,
 } from "../scripts/lib/social-cta-lines.ts";
+import { FACEBOOK_CTA_UTM } from "../scripts/lib/shared/utm-registry.ts";
 
 describe("splitBodyAndTags (#3991)", () => {
   it("separa corpo de 1 linha de hashtags no final", () => {
@@ -69,9 +71,35 @@ describe("splitBodyAndTags (#3991)", () => {
 });
 
 describe("CHANNEL_CTA_LINES / constantes (#3991)", () => {
-  it("Facebook mantém o CTA de e-mail (#602/#3486 preservado)", () => {
-    assert.equal(FACEBOOK_CTA_LINE, "Receba notícias de IA todo dia por e-mail, assine grátis em https://diar.ia.br.");
+  it("Facebook mantém o CTA de e-mail (#602/#3486 preservado) — URL com UTM desde #4295", () => {
+    assert.equal(
+      FACEBOOK_CTA_LINE,
+      `Receba notícias de IA todo dia por e-mail, assine grátis em ${buildFacebookCtaUrl()}.`,
+    );
     assert.equal(CHANNEL_CTA_LINES.facebook, FACEBOOK_CTA_LINE);
+  });
+
+  it("#4295: buildFacebookCtaUrl carrega os 3 params via new URL()/searchParams (nunca concatenação)", () => {
+    const url = new URL(buildFacebookCtaUrl());
+    assert.equal(url.hostname, "diar.ia.br");
+    assert.equal(url.searchParams.get("utm_source"), FACEBOOK_CTA_UTM.source);
+    assert.equal(url.searchParams.get("utm_medium"), FACEBOOK_CTA_UTM.medium);
+    assert.equal(url.searchParams.get("utm_campaign"), FACEBOOK_CTA_UTM.campaign);
+  });
+
+  it("#4295: o ponto final da frase não faz parte da URL (linkifier do FB para na query string, não no ponto)", () => {
+    // FACEBOOK_CTA_LINE termina em "{url}." — remover só o ÚLTIMO char deve
+    // sobrar uma URL válida e idêntica a buildFacebookCtaUrl(); isso prova que
+    // o "." é pontuação de frase, não parte da query string (sem "." embutido
+    // em nenhum valor de UTM, o parse não teria como "engolir" o ponto por
+    // engano). Não simula o parser real do Facebook (impossível sem publicar
+    // ao vivo) — documenta a garantia que dá pra travar em CI.
+    assert.ok(FACEBOOK_CTA_LINE.endsWith("."), "deve terminar em ponto final");
+    const withoutTrailingDot = FACEBOOK_CTA_LINE.slice(0, -1);
+    const urlStart = withoutTrailingDot.indexOf("https://");
+    const urlPart = withoutTrailingDot.slice(urlStart);
+    assert.equal(urlPart, buildFacebookCtaUrl());
+    assert.doesNotThrow(() => new URL(urlPart));
   });
 
   it("Instagram mantém 'link na bio' + follow (#3486 preservado)", () => {
@@ -132,7 +160,7 @@ describe("injectChannelLine (#3991)", () => {
     }
     // Só FB e IG carregam CTA — LinkedIn não.
     assert.ok(!li.includes("diar.ia.br") && !li.includes("bio"));
-    assert.ok(fb.includes("https://diar.ia.br."));
+    assert.ok(fb.includes("diar.ia.br") && fb.includes("utm_source=facebook"));
     assert.ok(ig.includes("link da bio"));
   });
 });
