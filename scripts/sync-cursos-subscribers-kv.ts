@@ -200,12 +200,23 @@ function wranglerKvBulkPut(entries: KvBulkEntry[], namespaceId: string, accountI
   }
 }
 
-/** #4381: lista as chaves `subscriber:*` JÁ presentes no KV — SEMPRE com o
- * prefixo `subscriber:` (ver docstring do topo do arquivo pro porquê: o
+/**
+ * Pure: constrói o command string do wrangler kv key list — SEMPRE com
+ * `--prefix "subscriber:"` (ver docstring do topo do arquivo pro porquê: o
  * namespace é compartilhado com chaves de cooldown/rate-limit do gate, que
- * este script nunca deve enxergar nem tocar). */
+ * este script nunca deve enxergar nem tocar). Exportada pra teste direto do
+ * comando construído, sem precisar mockar `spawnSync` (mesmo padrão de
+ * `buildKvPutCommand` em `scripts/lib/poll-kv.ts`, #1245) — fecha a lacuna de
+ * "prefixo certo" apontada no self-review (#4381 finding 1) sem depender de
+ * uma chamada real ao wrangler.
+ */
+export function buildKvKeyListCommand(args: { namespaceId: string }): string {
+  return `npx wrangler kv key list --namespace-id=${args.namespaceId} --remote --prefix "subscriber:"`;
+}
+
+/** #4381: lista as chaves `subscriber:*` JÁ presentes no KV. */
 function wranglerKvKeyListSubscribers(namespaceId: string, accountId: string): string[] {
-  const cmd = `npx wrangler kv key list --namespace-id=${namespaceId} --remote --prefix "subscriber:"`;
+  const cmd = buildKvKeyListCommand({ namespaceId });
   const r = spawnSync(cmd, {
     cwd: WORKER_DIR,
     encoding: "utf8",
@@ -239,18 +250,27 @@ export function diffStaleSubscriberKeys(existingKeys: string[], currentEntries: 
   return existingKeys.filter((key) => key.startsWith("subscriber:") && !currentKeySet.has(key));
 }
 
+/**
+ * Pure: constrói o command string do wrangler kv bulk delete — SEMPRE com
+ * `--force` (script roda desassistido via Task Scheduler; sem essa flag o
+ * `spawnSync` ficaria esperando uma confirmação interativa que nunca chega).
+ * Exportada pra teste direto, mesmo padrão de `buildKvKeyListCommand` acima.
+ */
+export function buildKvBulkDeleteCommand(args: { tmpFile: string; namespaceId: string }): string {
+  return `npx wrangler kv bulk delete "${args.tmpFile}" --namespace-id=${args.namespaceId} --remote --force`;
+}
+
 /** #4381: contraparte delete de `wranglerKvBulkPut` — mesmo padrão de arquivo
  * JSON temporário (`wrangler kv bulk delete` espera um array de strings, não
- * de `{key,value}` como o bulk put). `--force` pula o prompt de confirmação
- * interativo (script roda desassistido via Task Scheduler). No-op se `keys`
- * vier vazio — evita invocar wrangler à toa quando não há nada pra apagar. */
+ * de `{key,value}` como o bulk put). No-op se `keys` vier vazio — evita
+ * invocar wrangler à toa quando não há nada pra apagar. */
 function wranglerKvBulkDelete(keys: string[], namespaceId: string, accountId: string): void {
   if (keys.length === 0) return;
   const tmpDir = mkdtempSync(join(tmpdir(), "cursos-kv-bulk-del-"));
   const tmpFile = join(tmpDir, "bulk-delete.json");
   try {
     writeFileSync(tmpFile, JSON.stringify(keys), "utf8");
-    const cmd = `npx wrangler kv bulk delete "${tmpFile}" --namespace-id=${namespaceId} --remote --force`;
+    const cmd = buildKvBulkDeleteCommand({ tmpFile, namespaceId });
     const r = spawnSync(cmd, {
       cwd: WORKER_DIR,
       encoding: "utf8",
@@ -268,6 +288,45 @@ function wranglerKvBulkDelete(keys: string[], namespaceId: string, accountId: st
       // best-effort
     }
   }
+}
+
+/** Trio de operações de baixo nível que `syncKvKeys` orquestra — injetável só
+ * pra teste (`test/sync-cursos-subscribers-kv.test.ts` mocka os 3 e verifica
+ * ordem + argumentos sem tocar wrangler/KV de verdade). Em produção, `main()`
+ * sempre usa `defaultKvSyncOps` (as implementações reais via `spawnSync`). */
+export interface KvSyncOps {
+  put: (entries: KvBulkEntry[], namespaceId: string, accountId: string) => void;
+  listSubscribers: (namespaceId: string, accountId: string) => string[];
+  bulkDelete: (keys: string[], namespaceId: string, accountId: string) => void;
+}
+
+const defaultKvSyncOps: KvSyncOps = {
+  put: wranglerKvBulkPut,
+  listSubscribers: wranglerKvKeyListSubscribers,
+  bulkDelete: wranglerKvBulkDelete,
+};
+
+/**
+ * Orquestra put → list → diff → delete NESTA ORDEM FIXA (#4381 self-review
+ * finding 1 — caminho de deleção real, precisa de garantia forte, não só
+ * "funcionou nos meus testes manuais"): `ops.put` roda primeiro e, se lançar,
+ * a exceção propaga direto — `ops.listSubscribers`/`ops.bulkDelete` nunca
+ * rodam nesse caso. Só depois do put ter retornado com sucesso é que lista +
+ * diffa + deleta. `ops` default (`defaultKvSyncOps`) é a implementação real;
+ * o parâmetro só existe pra teste substituir por spies e verificar ordem +
+ * argumentos sem `spawnSync` de verdade.
+ */
+export function syncKvKeys(
+  entries: KvBulkEntry[],
+  namespaceId: string,
+  accountId: string,
+  ops: KvSyncOps = defaultKvSyncOps,
+): { existingKeys: string[]; staleKeys: string[] } {
+  ops.put(entries, namespaceId, accountId);
+  const existingKeys = ops.listSubscribers(namespaceId, accountId);
+  const staleKeys = diffStaleSubscriberKeys(existingKeys, entries);
+  ops.bulkDelete(staleKeys, namespaceId, accountId);
+  return { existingKeys, staleKeys };
 }
 
 async function main(): Promise<void> {
@@ -307,20 +366,15 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  wranglerKvBulkPut(entries, namespaceId, accountId);
+  // #4381: put → list → diff → delete, nesta ordem fixa — ver docstring de
+  // `syncKvKeys` (nunca lista/deleta antes do put confirmar que o conjunto
+  // ativo foi escrito com sucesso; se o put lançar, a exceção propaga direto
+  // e nem chega a listar).
+  const { existingKeys, staleKeys } = syncKvKeys(entries, namespaceId, accountId);
   process.stderr.write(`[sync-cursos-subscribers-kv] KV atualizado: ${entries.length} entradas ativas.\n`);
-
-  // #4381: diff + delete das chaves subscriber:* que sobraram (cancelou desde
-  // o sync anterior). Roda DEPOIS do put — se o put falhar, o processo já
-  // lançou e nunca chega aqui; nunca deleta antes de confirmar que o conjunto
-  // ativo foi escrito com sucesso.
-  process.stderr.write("[sync-cursos-subscribers-kv] listando chaves subscriber:* existentes no KV…\n");
-  const existingKeys = wranglerKvKeyListSubscribers(namespaceId, accountId);
-  const staleKeys = diffStaleSubscriberKeys(existingKeys, entries);
   process.stderr.write(
     `[sync-cursos-subscribers-kv] ${existingKeys.length} chaves existentes, ${staleKeys.length} stale (cancelaram) a apagar.\n`,
   );
-  wranglerKvBulkDelete(staleKeys, namespaceId, accountId);
   if (staleKeys.length > 0) {
     process.stderr.write(`[sync-cursos-subscribers-kv] ${staleKeys.length} chaves stale apagadas.\n`);
   }
