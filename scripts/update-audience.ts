@@ -23,6 +23,7 @@
 import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import Papa from "papaparse";
 import { editionsRoot } from "./lib/edition-paths.ts";
 // isAprofundeAnchor foi movido pra lib/ctr-utils.ts pra quebrar ciclo ESM com
@@ -230,6 +231,71 @@ export function detectDuplicateArchiveWarning(
   if (!latestFile || latestContent === null) return null;
   if (currentContent !== latestContent) return null;
   return `[update-audience] AVISO: snapshot a ser arquivado (${todayFile}) é idêntico ao mais recente já arquivado (${latestFile}) — possível regeneração que falhou silenciosamente numa rodada anterior (ver #4366). Investigar data/run-log.jsonl em torno dessas datas.`;
+}
+
+/**
+ * Pure: monta os argv extras (sem o binário/script) pra `scripts/log-event.ts`
+ * registrar o warning de archive duplicado no run-log estruturado — mesmo
+ * padrão usado por `check-humanizer-social.ts`/`finalize-stage1.ts`
+ * (child_process fire-and-forget). Persistir em `data/run-log.jsonl` (em vez
+ * de só `console.warn`) torna o warning consultável depois via `/diaria-log`,
+ * mesmo que ninguém tenha visto o stdout da sessão que rodou o Stage 0 na
+ * hora (achado do self-review do #4366: um warning só em stdout corre o
+ * mesmo risco de passar despercebido que motivou a issue).
+ */
+export function buildDuplicateArchiveLogArgs(todayFile: string, latestFile: string): string[] {
+  return [
+    "--stage", "0",
+    "--agent", "update-audience",
+    "--level", "warn",
+    "--message",
+    `snapshot arquivado (${todayFile}) é idêntico ao mais recente já arquivado (${latestFile}) — possível regeneração que falhou silenciosamente numa rodada anterior (#4366)`,
+    "--details",
+    JSON.stringify({ today_file: todayFile, latest_file: latestFile, issue: "#4366" }),
+  ];
+}
+
+/**
+ * Dispara `scripts/log-event.ts` via child_process (fire-and-forget, nunca
+ * lança — logging não pode mascarar/bloquear a regeneração do profile).
+ * `spawnFn` é injetável pra teste (captura a chamada sem spawnar processo real).
+ */
+export function logDuplicateArchiveWarning(
+  todayFile: string,
+  latestFile: string,
+  spawnFn: typeof spawnSync = spawnSync,
+): void {
+  try {
+    spawnFn(
+      process.execPath,
+      ["--import", "tsx", resolve(ROOT, "scripts/log-event.ts"), ...buildDuplicateArchiveLogArgs(todayFile, latestFile)],
+      { cwd: ROOT, stdio: "ignore", encoding: "utf8" },
+    );
+  } catch {
+    // fire-and-forget: falha de logging nunca pode mascarar/bloquear o script principal.
+  }
+}
+
+/**
+ * Decide e dispara o guard completo (console.warn + log-event) a partir da
+ * comparação de conteúdo. Consolidado numa função só pra ser testável de
+ * ponta a ponta: cenário de duplicata dispara os 2 canais, caminho feliz não
+ * dispara nenhum. `spawnFn`/`warnFn` injetáveis pra teste.
+ */
+export function handleArchiveGuard(
+  currentContent: string,
+  todayFile: string,
+  latestFile: string | null,
+  latestContent: string | null,
+  spawnFn: typeof spawnSync = spawnSync,
+  warnFn: (message: string) => void = console.warn,
+): void {
+  const warning = detectDuplicateArchiveWarning(currentContent, todayFile, latestFile, latestContent);
+  if (!warning) return;
+  warnFn(warning);
+  // latestFile é garantidamente não-null aqui (detectDuplicateArchiveWarning só
+  // retorna warning quando latestFile existe).
+  logDuplicateArchiveWarning(todayFile, latestFile as string, spawnFn);
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
@@ -467,8 +533,7 @@ function main() {
     const todayFile = `${today}.md`;
     const latestFile = findLatestHistoryFile(HISTORY_DIR, todayFile);
     const latestContent = latestFile ? readFileSync(resolve(HISTORY_DIR, latestFile), "utf8") : null;
-    const warning = detectDuplicateArchiveWarning(currentContent, todayFile, latestFile, latestContent);
-    if (warning) console.warn(warning);
+    handleArchiveGuard(currentContent, todayFile, latestFile, latestContent);
     copyFileSync(OUT, resolve(HISTORY_DIR, todayFile));
   }
 
