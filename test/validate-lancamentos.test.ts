@@ -1299,6 +1299,81 @@ describe("#4339 — demoteNotATool: not_a_tool sai de LANÇAMENTOS automaticamen
     assert.equal(demotedInRadar?.demoted_reason, "not_a_tool");
   });
 
+  // #4386: item demovido pra radar[] pode ser a MESMA matéria que um item já
+  // presente em radar[] vindo da Etapa 1 (Stage 1 dedup só olhou lancamento[]
+  // no momento em que rodou — o item que virou não_a_tool ainda nem existia
+  // em radar[] naquele momento). Sem consolidação, isso duplica no RADAR.
+  it("CASO REAL (#4386): item demovido por not_a_tool consolida com item JÁ existente em radar[] (mesmo lançamento)", () => {
+    const approved = {
+      lancamento: [
+        {
+          // #1968: not_a_tool — "ChatGPT" embutido em "chatgpt-for-..." não
+          // bate \bgpt\b (mesmo caso real já coberto no teste #4339 acima).
+          url: "https://openai.com/index/chatgpt-for-academic-researchers",
+          title: "Accelerating scientific discovery with ChatGPT for Academic Researchers",
+        },
+      ],
+      // Já presente em radar[] vindo da categorização da Etapa 1 — cobertura
+      // de imprensa do MESMO lançamento, com descrição (mais completa).
+      radar: [
+        {
+          url: "https://techcrunch.com/2026/01/openai-chatgpt-academic-researchers",
+          title: "OpenAI libera ChatGPT para pesquisadores, diz reportagem",
+          summary: "OpenAI anuncia acesso gratuito ao ChatGPT para pesquisadores acadêmicos.",
+        },
+      ],
+    };
+
+    const { approved: updated, demoted, consolidated } = demoteNotATool(approved);
+
+    assert.equal(demoted.length, 1, "item ainda é reportado em demoted (saiu de lancamento[])");
+    assert.equal(demoted[0].url, "https://openai.com/index/chatgpt-for-academic-researchers");
+
+    // lancamento: item not_a_tool removido (comportamento pré-existente #4339)
+    assert.equal(updated.lancamento?.length, 0);
+
+    // radar: NÃO deve duplicar — consolidado no item já existente, não os 2.
+    assert.equal(updated.radar?.length, 1, "não deve duplicar em radar[]");
+    assert.equal(
+      updated.radar?.[0].url,
+      "https://techcrunch.com/2026/01/openai-chatgpt-academic-researchers",
+      "mantém o item com descrição (mais completo), segue a preferência já usada por dedupLancamentoIntraBucket",
+    );
+
+    // consolidated: reporta a fusão (item descartado → item mantido).
+    assert.equal(consolidated.length, 1);
+    assert.equal(consolidated[0].url, "https://openai.com/index/chatgpt-for-academic-researchers");
+    assert.equal(
+      consolidated[0].consolidated_into,
+      "https://techcrunch.com/2026/01/openai-chatgpt-academic-researchers",
+    );
+  });
+
+  it("#4386: item demovido que NÃO bate com nenhum item de radar[] não é consolidado (evita falso-positivo)", () => {
+    const approved = {
+      lancamento: [
+        {
+          url: "https://openai.com/index/chatgpt-for-academic-researchers",
+          title: "Accelerating scientific discovery with ChatGPT for Academic Researchers",
+        },
+      ],
+      radar: [
+        { url: "https://existing.com/radar-item", title: "Item completamente não-relacionado sobre robótica" },
+      ],
+    };
+
+    const { approved: updated, demoted, consolidated } = demoteNotATool(approved);
+
+    assert.equal(demoted.length, 1);
+    assert.equal(consolidated.length, 0, "sem match de lançamento — não deve consolidar");
+    // radar: item pré-existente + item demovido, ambos preservados (sem merge).
+    assert.equal(updated.radar?.length, 2);
+    assert.ok(updated.radar?.some((r) => r.url === "https://existing.com/radar-item"));
+    assert.ok(
+      updated.radar?.some((r) => r.url === "https://openai.com/index/chatgpt-for-academic-researchers"),
+    );
+  });
+
   it("allowlist: item na allowlist NÃO é demovido (escape hatch de falso-positivo)", () => {
     // URL oficial (openai.com) sem sinal de produto — mesmo caso já coberto
     // por "validateLancamentos: item oficial sem sinal → not_a_tool" acima.

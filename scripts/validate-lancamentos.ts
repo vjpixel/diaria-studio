@@ -56,6 +56,9 @@ import { fileURLToPath } from "node:url";
 import { isOfficialLancamentoUrl } from "./categorize.ts";
 import { parseArgs as parseCliArgs, isMainModule } from "./lib/cli-args.ts";
 import { VERSION_SIGNAL_RE } from "./lib/version-signal-detect.ts"; // #4337: extraído (fonte única)
+// #4386: reusa o MESMO dedup intra-bucket já usado no Stage 1 (#4360) pra
+// checar o radar[] contra o item recém-demovido (ver `demoteNotATool` abaixo).
+import { dedupLancamentoIntraBucket } from "./dedup-intra-edition.ts";
 
 /**
  * #1968: allowlist de override pra a verificação positiva de ferramenta. Arquivo
@@ -605,6 +608,11 @@ export interface DemoteNotAToolResult {
   approved: ApprovedShape;
   /** Itens efetivamente movidos (mesma forma de `not_a_tool` do summary). */
   demoted: Array<{ url: string; title?: string }>;
+  /** #4386: itens demovidos que colidiram (mesmo lançamento) com um item já
+   *  presente em `radar[]` — consolidados via `dedupLancamentoIntraBucket`
+   *  em vez de duplicados. `url` é o item descartado; `consolidated_into` é
+   *  o item de `radar[]` mantido. */
+  consolidated: Array<{ url: string; title?: string; consolidated_into: string }>;
 }
 
 /**
@@ -621,6 +629,16 @@ export interface DemoteNotAToolResult {
  * como not_a_tool). Reservar confirmação manual só faria sentido se
  * houvesse uma categoria de "not_a_tool ambíguo" — não há: pós-allowlist,
  * not_a_tool já É o sinal de alta confiança que a issue pede.
+ *
+ * #4386: um item demovido pra `radar[]` pode ser a MESMA matéria que um item
+ * já presente em `radar[]` vindo da Etapa 1 (ex: model-card oficial demovido
+ * duplicando uma cobertura de imprensa do mesmo lançamento que a categorização
+ * já tinha posto em radar — nenhum dos 2 mecanismos sabia do timing do
+ * outro). `dedupLancamentoIntraBucket` (#4360) já resolve exatamente esse
+ * tipo de colisão dentro de um bucket — reusada aqui contra o `radar[]` CHEIO
+ * (pré-existente + recém-demovido), não só os itens demovidos entre si, pra
+ * pegar a colisão que o Stage 1 (que só rodou sobre `lancamento[]`) não podia
+ * ver.
  *
  * Pure function — não muta `approved` (retorna cópia nova).
  */
@@ -647,9 +665,33 @@ export function demoteNotATool(
     }
   }
 
+  // #4386: só vale rodar o dedup extra se algo foi de fato demovido nesta
+  // chamada (senão radar[] não mudou aqui — nada novo pra consolidar) e se há
+  // pelo menos 2 itens com URL pra comparar entre si.
+  let finalRadar = radar;
+  const consolidated: Array<{ url: string; title?: string; consolidated_into: string }> = [];
+  if (demoted.length > 0) {
+    const withUrl = radar.filter(
+      (r): r is typeof r & { url: string } => typeof r.url === "string" && r.url.length > 0,
+    );
+    const withoutUrl = radar.filter((r) => !(typeof r.url === "string" && r.url.length > 0));
+    if (withUrl.length > 1) {
+      const { kept: dedupedRadar, removed } = dedupLancamentoIntraBucket(withUrl);
+      if (removed.length > 0) {
+        // Ordem: itens deduped primeiro, depois os (raros) sem URL, que não
+        // participam do dedup por URL e ficam intocados.
+        finalRadar = [...dedupedRadar, ...withoutUrl];
+        for (const r of removed) {
+          consolidated.push({ url: r.url, title: r.title, consolidated_into: r.consolidated_into });
+        }
+      }
+    }
+  }
+
   return {
-    approved: { ...approved, lancamento: kept, radar },
+    approved: { ...approved, lancamento: kept, radar: finalRadar },
     demoted,
+    consolidated,
   };
 }
 
@@ -706,7 +748,7 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
   // `01-approved.json` (mesmo path de `--approved`) com o item já movido, ANTES
   // do writer rodar — o item nunca chega a aparecer em LANÇAMENTOS na newsletter.
   if (summary.not_a_tool.length > 0) {
-    const { approved: demotedApproved, demoted } = demoteNotATool(approved, allowlist);
+    const { approved: demotedApproved, demoted, consolidated } = demoteNotATool(approved, allowlist);
     writeFileSync(approvedPath, JSON.stringify(demotedApproved, null, 2) + "\n", "utf8");
     console.error(
       `\n➡️  ${demoted.length} item(ns) de LANÇAMENTOS sem sinal POSITIVO de produto (não parece ferramenta — parceria/evento/programa/relatório?) foram movidos automaticamente para RADAR (#4339):`,
@@ -718,6 +760,17 @@ function mainApproved(args: Record<string, string>, ROOT: string): void {
     console.error(
       "Se algum destes for ferramenta legítima de slug atípico, adicione a URL a seed/lancamentos-tool-allowlist.txt e rode novamente.",
     );
+    // #4386: item demovido colidiu com um item JÁ presente em radar[] — foram
+    // consolidados (não duplicados) via o mesmo dedup intra-bucket do #4360.
+    if (consolidated.length > 0) {
+      console.error(
+        `\n🔗 ${consolidated.length} item(ns) demovido(s) consolidado(s) com item já existente em RADAR (mesmo lançamento, #4386):`,
+      );
+      for (const c of consolidated) {
+        const titleHint = c.title ? ` ("${c.title.slice(0, 60)}")` : "";
+        console.error(`  ${c.url}${titleHint} → mantido: ${c.consolidated_into}`);
+      }
+    }
   }
 
   if (summary.removed.length > 0) {
