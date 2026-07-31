@@ -1,75 +1,150 @@
 /**
- * test/cursos-error-alarm.test.ts (#4320)
+ * test/cursos-error-alarm.test.ts (#4320, REDESENHADO no #4382)
  *
- * Cobre a lógica PURA de `scripts/lib/cursos-error-alarm.ts`: detecção de
- * padrões fatais (qualquer ocorrência), cálculo da taxa de "?email= não
- * confirmado" (com amostra mínima), janela + cursor de idempotência, e o
- * texto do e-mail de alarme.
+ * Cobre a lógica PURA de `scripts/lib/cursos-error-alarm.ts`: delta de
+ * contadores cumulativos, detecção de padrões fatais (delta > 0), cálculo da
+ * taxa de "?email= não confirmado" (com amostra mínima), idempotência via
+ * snapshot de contadores (não mais cursor de tempo), e o texto do e-mail de
+ * alarme.
+ *
+ * #4382: a versão original testava eventos de log (`CursosLogEvent[]`) lidos
+ * via Cloudflare GraphQL Analytics API — confirmado ao vivo que o dataset
+ * usado (`workersInvocationsAdaptiveGroups`) não existe na API real. O
+ * redesign troca a fonte de dado por 4 contadores cumulativos no KV
+ * (incrementados pelo worker `cursos`, ver `scripts/lib/shared/cursos-alarm-counters.ts`);
+ * este arquivo testa a lógica de DELTA sobre esses contadores.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   FATAL_LOG_PATTERNS,
-  EMAIL_GATE_CONFIRMED_MESSAGE,
-  EMAIL_GATE_NOT_CONFIRMED_MESSAGE,
   DEFAULT_NOT_CONFIRMED_RATE_THRESHOLD_PCT,
   DEFAULT_NOT_CONFIRMED_MIN_SAMPLE,
+  emptyCounterSnapshot,
+  emptyCursosAlarmState,
+  advanceState,
+  computeCounterDelta,
   detectFatalMatches,
   computeNotConfirmedRate,
   isRateBreached,
-  emptyCursosAlarmState,
-  resolveWindow,
-  advanceState,
-  INITIAL_LOOKBACK_MS,
-  evaluateCursosLogs,
+  evaluateCursosCounters,
   shouldAlarm,
   buildCursosAlarmEmail,
-  type CursosLogEvent,
+  type CursosCounterSnapshot,
+  type CursosAlarmState,
 } from "../scripts/lib/cursos-error-alarm.ts";
 
-function ev(message: string, timestamp = "2026-07-31T12:00:00.000Z"): CursosLogEvent {
-  return { timestamp, message };
+function snapshot(overrides: Partial<CursosCounterSnapshot> = {}): CursosCounterSnapshot {
+  return { ...emptyCounterSnapshot(), ...overrides };
 }
+
+function stateWith(overrides: Partial<CursosAlarmState> = {}): CursosAlarmState {
+  return { ...emptyCursosAlarmState(), ...overrides };
+}
+
+// ── computeCounterDelta ──
+
+test("computeCounterDelta — 1ª execução (sem baseline) → delta sempre zerado, mesmo com contadores cumulativos altos", () => {
+  const current = snapshot({ fatalCookieHmacSecretAusente: 40, emailGateConfirmed: 900, emailGateNotConfirmed: 50 });
+  const delta = computeCounterDelta(emptyCursosAlarmState(), current);
+  assert.deepEqual(delta, {
+    fatalCookieHmacSecretAusente: 0,
+    fatalCadastroBeehiivFalhou: 0,
+    emailGateConfirmed: 0,
+    emailGateNotConfirmed: 0,
+    resetDetected: false,
+  });
+});
+
+test("computeCounterDelta — com baseline, calcula a diferença desde a última checagem", () => {
+  const prev = snapshot({ fatalCookieHmacSecretAusente: 2, emailGateConfirmed: 100, emailGateNotConfirmed: 10 });
+  const current = snapshot({ fatalCookieHmacSecretAusente: 3, emailGateConfirmed: 109, emailGateNotConfirmed: 11 });
+  const delta = computeCounterDelta(stateWith({ lastCounters: prev }), current);
+  assert.equal(delta.fatalCookieHmacSecretAusente, 1);
+  assert.equal(delta.emailGateConfirmed, 9);
+  assert.equal(delta.emailGateNotConfirmed, 1);
+  assert.equal(delta.resetDetected, false);
+});
+
+test("computeCounterDelta — sem incrementos desde a última checagem → delta todo zero", () => {
+  const prev = snapshot({ fatalCookieHmacSecretAusente: 5, emailGateConfirmed: 20 });
+  const delta = computeCounterDelta(stateWith({ lastCounters: prev }), prev);
+  assert.deepEqual(delta, {
+    fatalCookieHmacSecretAusente: 0,
+    fatalCadastroBeehiivFalhou: 0,
+    emailGateConfirmed: 0,
+    emailGateNotConfirmed: 0,
+    resetDetected: false,
+  });
+});
+
+test("computeCounterDelta — contador atual MENOR que o anterior (reset externo do KV) → delta clampado a 0 + resetDetected", () => {
+  const prev = snapshot({ fatalCadastroBeehiivFalhou: 10 });
+  const current = snapshot({ fatalCadastroBeehiivFalhou: 2 }); // KV resetado/apagado manualmente
+  const delta = computeCounterDelta(stateWith({ lastCounters: prev }), current);
+  assert.equal(delta.fatalCadastroBeehiivFalhou, 0);
+  assert.equal(delta.resetDetected, true);
+});
+
+test("computeCounterDelta — reset detectado num contador não impede o delta correto dos outros", () => {
+  const prev = snapshot({ fatalCadastroBeehiivFalhou: 10, emailGateConfirmed: 50 });
+  const current = snapshot({ fatalCadastroBeehiivFalhou: 1, emailGateConfirmed: 60 }); // só o 1º resetou
+  const delta = computeCounterDelta(stateWith({ lastCounters: prev }), current);
+  assert.equal(delta.fatalCadastroBeehiivFalhou, 0);
+  assert.equal(delta.emailGateConfirmed, 10);
+  assert.equal(delta.resetDetected, true);
+});
+
+// ── advanceState ──
+
+test("advanceState — grava o snapshot atual + o instante da checagem", () => {
+  const current = snapshot({ fatalCookieHmacSecretAusente: 3 });
+  const now = new Date("2026-07-31T14:00:00.000Z");
+  assert.deepEqual(advanceState(current, now), { lastCounters: current, lastCheckedAt: "2026-07-31T14:00:00.000Z" });
+});
+
+test("cursor encadeado: computeCounterDelta(advanceState(c1, t1), c2) mede só o incremento desde c1 (nunca reprocessa)", () => {
+  const c1 = snapshot({ emailGateConfirmed: 10 });
+  const state1 = advanceState(c1, new Date("2026-07-31T12:00:00.000Z"));
+  const c2 = snapshot({ emailGateConfirmed: 15 });
+  const delta = computeCounterDelta(state1, c2);
+  assert.equal(delta.emailGateConfirmed, 5);
+});
 
 // ── detectFatalMatches ──
 
-test("detectFatalMatches — casa COOKIE_HMAC_SECRET ausente (index.ts e subscribe.ts) e cadastro na Beehiiv falhou", () => {
-  const events: CursosLogEvent[] = [
-    ev("[cursos] COOKIE_HMAC_SECRET ausente — servindo teaser; NINGUÉM consegue desbloquear"),
-    ev("[cursos] COOKIE_HMAC_SECRET ausente — /gate/subscribe indisponível"),
-    ev("[cursos] cadastro na Beehiiv falhou (HTTP 500) — nenhum assinante criado"),
-    ev("[cursos] ?email= não confirmado como assinante ativo — servindo teaser"), // não fatal
-  ];
-  const matches = detectFatalMatches(events);
-  assert.equal(matches.length, 3);
+test("detectFatalMatches — delta > 0 nos dois contadores fatais → 2 matches com o count do delta", () => {
+  const delta = computeCounterDelta(
+    stateWith({ lastCounters: snapshot({ fatalCookieHmacSecretAusente: 0, fatalCadastroBeehiivFalhou: 0 }) }),
+    snapshot({ fatalCookieHmacSecretAusente: 2, fatalCadastroBeehiivFalhou: 1 }),
+  );
+  const matches = detectFatalMatches(delta);
+  assert.equal(matches.length, 2);
   assert.deepEqual(
     matches.map((m) => m.pattern),
-    ["COOKIE_HMAC_SECRET ausente", "COOKIE_HMAC_SECRET ausente", "cadastro na Beehiiv falhou"],
+    ["COOKIE_HMAC_SECRET ausente", "cadastro na Beehiiv falhou"],
   );
+  assert.equal(matches[0].count, 2);
+  assert.equal(matches[1].count, 1);
 });
 
-test("detectFatalMatches — sem eventos fatais → array vazio", () => {
-  const events: CursosLogEvent[] = [ev(EMAIL_GATE_CONFIRMED_MESSAGE), ev("[cursos] ?email= presente mas malformado")];
-  assert.deepEqual(detectFatalMatches(events), []);
+test("detectFatalMatches — sem incremento fatal → array vazio", () => {
+  const delta = computeCounterDelta(stateWith({ lastCounters: snapshot() }), snapshot({ emailGateConfirmed: 5 }));
+  assert.deepEqual(detectFatalMatches(delta), []);
 });
 
-test("detectFatalMatches — todas as constantes de FATAL_LOG_PATTERNS batem literalmente com o log real do worker", () => {
-  // Trava contra drift silencioso: se o texto do log em workers/cursos/src/*.ts
-  // mudar sem atualizar este módulo, o alarme para de detectar em silêncio.
+test("FATAL_LOG_PATTERNS — mantém os nomes originais (documentação/asserção de literal no worker)", () => {
   assert.deepEqual([...FATAL_LOG_PATTERNS], ["COOKIE_HMAC_SECRET ausente", "cadastro na Beehiiv falhou"]);
 });
 
 // ── computeNotConfirmedRate ──
 
-test("computeNotConfirmedRate — conta confirmado x não-confirmado, ignora outras mensagens", () => {
-  const events: CursosLogEvent[] = [
-    ev(EMAIL_GATE_CONFIRMED_MESSAGE),
-    ev(EMAIL_GATE_CONFIRMED_MESSAGE),
-    ev(EMAIL_GATE_NOT_CONFIRMED_MESSAGE),
-    ev("[cursos] ?email= — verificação Beehiiv falhou (rede/401/403/429/5xx) — servindo teaser mesmo assim"), // #4321: fora do cômputo
-    ev("[cursos] ?email= presente mas malformado — provável merge tag não resolvida"), // fora do cômputo
-  ];
-  const result = computeNotConfirmedRate(events, 1);
+test("computeNotConfirmedRate — conta confirmado x não-confirmado do delta", () => {
+  const delta = computeCounterDelta(
+    stateWith({ lastCounters: snapshot() }),
+    snapshot({ emailGateConfirmed: 2, emailGateNotConfirmed: 1 }),
+  );
+  const result = computeNotConfirmedRate(delta, 1);
   assert.equal(result.confirmed, 2);
   assert.equal(result.notConfirmed, 1);
   assert.equal(result.total, 3);
@@ -77,22 +152,23 @@ test("computeNotConfirmedRate — conta confirmado x não-confirmado, ignora out
 });
 
 test("computeNotConfirmedRate — amostra abaixo do mínimo → ratePct null (nunca mede em N pequeno, #eia-poll)", () => {
-  const events: CursosLogEvent[] = [ev(EMAIL_GATE_NOT_CONFIRMED_MESSAGE)];
-  const result = computeNotConfirmedRate(events, DEFAULT_NOT_CONFIRMED_MIN_SAMPLE);
+  const delta = computeCounterDelta(stateWith({ lastCounters: snapshot() }), snapshot({ emailGateNotConfirmed: 1 }));
+  const result = computeNotConfirmedRate(delta, DEFAULT_NOT_CONFIRMED_MIN_SAMPLE);
   assert.equal(result.total, 1);
   assert.equal(result.ratePct, null);
 });
 
 test("computeNotConfirmedRate — 100% não-confirmado (gate morto) → ratePct 100", () => {
-  const events: CursosLogEvent[] = Array.from({ length: 10 }, () => ev(EMAIL_GATE_NOT_CONFIRMED_MESSAGE));
-  const result = computeNotConfirmedRate(events, 5);
+  const delta = computeCounterDelta(stateWith({ lastCounters: snapshot() }), snapshot({ emailGateNotConfirmed: 10 }));
+  const result = computeNotConfirmedRate(delta, 5);
   assert.equal(result.confirmed, 0);
   assert.equal(result.notConfirmed, 10);
   assert.equal(result.ratePct, 100);
 });
 
-test("computeNotConfirmedRate — sem nenhum evento → total 0, ratePct null", () => {
-  const result = computeNotConfirmedRate([], 0);
+test("computeNotConfirmedRate — sem nenhum incremento → total 0, ratePct null", () => {
+  const delta = computeCounterDelta(stateWith({ lastCounters: snapshot() }), snapshot());
+  const result = computeNotConfirmedRate(delta, 0);
   assert.equal(result.total, 0);
   assert.equal(result.ratePct, null);
 });
@@ -110,90 +186,65 @@ test("isRateBreached — cruza o limiar (>=) → true; abaixo → false", () => 
   assert.equal(isRateBreached(belowThreshold, DEFAULT_NOT_CONFIRMED_RATE_THRESHOLD_PCT), false);
 });
 
-// ── janela + cursor de idempotência ──
+// ── evaluateCursosCounters / shouldAlarm ──
 
-test("resolveWindow — sem state prévio (1ª execução), since = now - INITIAL_LOOKBACK_MS", () => {
+test("evaluateCursosCounters + shouldAlarm — sem fatal e sem taxa breach → não alarma", () => {
+  const state = stateWith({ lastCounters: snapshot(), lastCheckedAt: "2026-07-31T10:00:00.000Z" });
+  const current = snapshot({ emailGateConfirmed: 2 });
   const now = new Date("2026-07-31T12:00:00.000Z");
-  const { since, until } = resolveWindow(emptyCursosAlarmState(), now);
-  assert.equal(until.getTime(), now.getTime());
-  assert.equal(since.getTime(), now.getTime() - INITIAL_LOOKBACK_MS);
-});
-
-test("resolveWindow — com cursor salvo, since = lastCheckedUntil (janelas nunca se sobrepõem)", () => {
-  const now = new Date("2026-07-31T14:00:00.000Z");
-  const state = { lastCheckedUntil: "2026-07-31T12:00:00.000Z" };
-  const { since, until } = resolveWindow(state, now);
-  assert.equal(since.toISOString(), "2026-07-31T12:00:00.000Z");
-  assert.equal(until.getTime(), now.getTime());
-});
-
-test("advanceState — grava o fim da janela como ISO", () => {
-  const until = new Date("2026-07-31T14:00:00.000Z");
-  assert.deepEqual(advanceState(until), { lastCheckedUntil: "2026-07-31T14:00:00.000Z" });
-});
-
-test("cursor encadeado: resolveWindow(advanceState(until1), now2).since === until1 (nunca reavalia a mesma janela 2x)", () => {
-  const t1 = new Date("2026-07-31T12:00:00.000Z");
-  const state1 = advanceState(t1);
-  const t2 = new Date("2026-07-31T14:00:00.000Z");
-  const { since } = resolveWindow(state1, t2);
-  assert.equal(since.getTime(), t1.getTime());
-});
-
-// ── evaluateCursosLogs / shouldAlarm ──
-
-test("evaluateCursosLogs + shouldAlarm — sem fatal e sem taxa breach → não alarma", () => {
-  const events: CursosLogEvent[] = [ev(EMAIL_GATE_CONFIRMED_MESSAGE), ev(EMAIL_GATE_CONFIRMED_MESSAGE)];
-  const window = { since: new Date("2026-07-31T10:00:00.000Z"), until: new Date("2026-07-31T12:00:00.000Z") };
-  const evaluation = evaluateCursosLogs(events, window);
+  const evaluation = evaluateCursosCounters(state, current, now);
   assert.equal(evaluation.fatalMatches.length, 0);
   assert.equal(evaluation.rateBreached, false);
   assert.equal(shouldAlarm(evaluation), false);
 });
 
-test("evaluateCursosLogs + shouldAlarm — fatal presente dispara mesmo com taxa saudável", () => {
-  const events: CursosLogEvent[] = [
-    ev("[cursos] cadastro na Beehiiv falhou (HTTP 500) — nenhum assinante criado"),
-    ...Array.from({ length: 9 }, () => ev(EMAIL_GATE_CONFIRMED_MESSAGE)),
-    ev(EMAIL_GATE_NOT_CONFIRMED_MESSAGE),
-  ];
-  const window = { since: new Date("2026-07-31T10:00:00.000Z"), until: new Date("2026-07-31T12:00:00.000Z") };
-  const evaluation = evaluateCursosLogs(events, window);
+test("evaluateCursosCounters + shouldAlarm — fatal presente dispara mesmo com taxa saudável", () => {
+  const state = stateWith({ lastCounters: snapshot(), lastCheckedAt: "2026-07-31T10:00:00.000Z" });
+  const current = snapshot({ fatalCadastroBeehiivFalhou: 1, emailGateConfirmed: 9, emailGateNotConfirmed: 1 });
+  const now = new Date("2026-07-31T12:00:00.000Z");
+  const evaluation = evaluateCursosCounters(state, current, now);
   assert.equal(evaluation.fatalMatches.length, 1);
   assert.equal(evaluation.rateBreached, false);
   assert.equal(shouldAlarm(evaluation), true);
 });
 
-test("evaluateCursosLogs + shouldAlarm — taxa estourada dispara mesmo sem fatal", () => {
-  const events: CursosLogEvent[] = Array.from({ length: 10 }, () => ev(EMAIL_GATE_NOT_CONFIRMED_MESSAGE));
-  const window = { since: new Date("2026-07-31T10:00:00.000Z"), until: new Date("2026-07-31T12:00:00.000Z") };
-  const evaluation = evaluateCursosLogs(events, window);
+test("evaluateCursosCounters + shouldAlarm — taxa estourada dispara mesmo sem fatal", () => {
+  const state = stateWith({ lastCounters: snapshot(), lastCheckedAt: "2026-07-31T10:00:00.000Z" });
+  const current = snapshot({ emailGateNotConfirmed: 10 });
+  const now = new Date("2026-07-31T12:00:00.000Z");
+  const evaluation = evaluateCursosCounters(state, current, now);
   assert.equal(evaluation.fatalMatches.length, 0);
   assert.equal(evaluation.rateBreached, true);
   assert.equal(shouldAlarm(evaluation), true);
 });
 
-test("evaluateCursosLogs — rateThresholdPct customizado é respeitado (--rate-threshold-pct)", () => {
-  const events: CursosLogEvent[] = [
-    ...Array.from({ length: 6 }, () => ev(EMAIL_GATE_NOT_CONFIRMED_MESSAGE)),
-    ...Array.from({ length: 4 }, () => ev(EMAIL_GATE_CONFIRMED_MESSAGE)),
-  ]; // 60% não-confirmado
-  const window = { since: new Date("2026-07-31T10:00:00.000Z"), until: new Date("2026-07-31T12:00:00.000Z") };
-  const strict = evaluateCursosLogs(events, window, { rateThresholdPct: 50 });
-  const lenient = evaluateCursosLogs(events, window, { rateThresholdPct: 90 });
+test("evaluateCursosCounters — rateThresholdPct customizado é respeitado (--rate-threshold-pct)", () => {
+  const state = stateWith({ lastCounters: snapshot(), lastCheckedAt: "2026-07-31T10:00:00.000Z" });
+  const current = snapshot({ emailGateNotConfirmed: 6, emailGateConfirmed: 4 }); // 60% não-confirmado
+  const now = new Date("2026-07-31T12:00:00.000Z");
+  const strict = evaluateCursosCounters(state, current, now, { rateThresholdPct: 50 });
+  const lenient = evaluateCursosCounters(state, current, now, { rateThresholdPct: 90 });
   assert.equal(strict.rateBreached, true);
   assert.equal(lenient.rateBreached, false);
+});
+
+test("evaluateCursosCounters — 1ª execução (sem state.lastCounters) nunca alarma, mesmo com contadores cumulativos altos", () => {
+  const current = snapshot({ fatalCookieHmacSecretAusente: 999, emailGateNotConfirmed: 500 });
+  const now = new Date("2026-07-31T12:00:00.000Z");
+  const evaluation = evaluateCursosCounters(emptyCursosAlarmState(), current, now);
+  assert.equal(evaluation.fatalMatches.length, 0);
+  assert.equal(evaluation.rateBreached, false);
+  assert.equal(shouldAlarm(evaluation), false);
+  assert.equal(evaluation.since, null);
 });
 
 // ── buildCursosAlarmEmail ──
 
 test("buildCursosAlarmEmail — inclui os dois sinais quando ambos disparam, nomeia a janela avaliada", () => {
-  const events: CursosLogEvent[] = [
-    ev("[cursos] COOKIE_HMAC_SECRET ausente — servindo teaser; NINGUÉM consegue desbloquear", "2026-07-31T11:00:00.000Z"),
-    ...Array.from({ length: 10 }, () => ev(EMAIL_GATE_NOT_CONFIRMED_MESSAGE)),
-  ];
-  const window = { since: new Date("2026-07-31T10:00:00.000Z"), until: new Date("2026-07-31T12:00:00.000Z") };
-  const evaluation = evaluateCursosLogs(events, window);
+  const state = stateWith({ lastCounters: snapshot(), lastCheckedAt: "2026-07-31T10:00:00.000Z" });
+  const current = snapshot({ fatalCookieHmacSecretAusente: 1, emailGateNotConfirmed: 10 });
+  const now = new Date("2026-07-31T12:00:00.000Z");
+  const evaluation = evaluateCursosCounters(state, current, now);
   const { subject, body } = buildCursosAlarmEmail(evaluation);
   assert.match(subject, /Worker cursos/);
   assert.match(subject, /erro/);
@@ -205,15 +256,39 @@ test("buildCursosAlarmEmail — inclui os dois sinais quando ambos disparam, nom
 });
 
 test("buildCursosAlarmEmail — só o sinal que disparou aparece (fatal sem taxa)", () => {
-  const events: CursosLogEvent[] = [
-    ev("[cursos] cadastro na Beehiiv falhou (HTTP 500) — nenhum assinante criado"),
-    ...Array.from({ length: 10 }, () => ev(EMAIL_GATE_CONFIRMED_MESSAGE)),
-  ];
-  const window = { since: new Date("2026-07-31T10:00:00.000Z"), until: new Date("2026-07-31T12:00:00.000Z") };
-  const evaluation = evaluateCursosLogs(events, window);
+  const state = stateWith({ lastCounters: snapshot(), lastCheckedAt: "2026-07-31T10:00:00.000Z" });
+  const current = snapshot({ fatalCadastroBeehiivFalhou: 1, emailGateConfirmed: 10 });
+  const now = new Date("2026-07-31T12:00:00.000Z");
+  const evaluation = evaluateCursosCounters(state, current, now);
   const { subject, body } = buildCursosAlarmEmail(evaluation);
   assert.match(subject, /erro/);
   assert.doesNotMatch(subject, /taxa não-confirmado/);
   assert.match(body, /cadastro na Beehiiv falhou/);
   assert.doesNotMatch(body, /Taxa de/);
+});
+
+test("buildCursosAlarmEmail — 1ª execução (sem baseline) nomeia a janela sem 'since', nunca alarma nesse caso mas o texto é sensato se chamado direto", () => {
+  const current = snapshot({ fatalCookieHmacSecretAusente: 1 });
+  const now = new Date("2026-07-31T12:00:00.000Z");
+  // Chamado direto (não via evaluateCursosCounters com state vazio, que nunca
+  // alarmaria) só pra travar o formato do texto de janela sem `since`.
+  const evaluation = evaluateCursosCounters(
+    { lastCounters: current, lastCheckedAt: null },
+    snapshot({ fatalCookieHmacSecretAusente: 2 }),
+    now,
+  );
+  const { body } = buildCursosAlarmEmail(evaluation);
+  assert.match(body, /1ª checagem/);
+});
+
+test("buildCursosAlarmEmail — resetDetected adiciona aviso explícito no corpo", () => {
+  const state = stateWith({ lastCounters: snapshot({ fatalCadastroBeehiivFalhou: 10 }), lastCheckedAt: "2026-07-31T10:00:00.000Z" });
+  const current = snapshot({ fatalCadastroBeehiivFalhou: 1 }); // reset externo
+  const now = new Date("2026-07-31T12:00:00.000Z");
+  const evaluation = evaluateCursosCounters(state, current, now);
+  assert.equal(evaluation.delta.resetDetected, true);
+  // Nesse caso específico não haveria alarme (delta clampado a 0), mas o
+  // texto do e-mail precisa saber relatar o aviso quando chamado.
+  const { body } = buildCursosAlarmEmail(evaluation);
+  assert.match(body, /reset externo/);
 });
