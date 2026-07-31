@@ -10,9 +10,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import worker, { type Env } from "../workers/cursos/src/index.ts";
-import { subscriberKvKey } from "../scripts/lib/shared/subscriber-verify.ts";
+import { subscriberKvKey, sha256Hex } from "../scripts/lib/shared/subscriber-verify.ts";
 import { CURSOS_SESSION_COOKIE, issueSessionCookie, readSession } from "../workers/cursos/src/cookie.ts";
 import { CURSOS_FULL_HTML } from "../workers/cursos/src/courses-full.generated.ts";
+import { pendingPromotionCooldownKey } from "../workers/cursos/src/gate.ts";
 
 /** Decodifica o valor cru do cookie a partir do header `Set-Cookie` completo
  * (como devolvido pelo handler) — usado pelos testes do #4323 pra inspecionar
@@ -814,5 +815,128 @@ describe("workers/cursos: checkGateSubscriber distingue verification_failed (#43
       "esperava log error de verification_failed",
     );
     assert.equal(logs.warns.length, 0, "não deve emitir o warn genérico de negativo confirmado neste ramo");
+  });
+});
+
+/**
+ * #4387 — regressão: a promoção `pending`→`confirmed` em `handleIndex` (#4323,
+ * PR #4384) chamava `checkGateSubscriber` em TODO reload de `/`, sem
+ * rate-limit nenhum. `checkGateSubscriber` cai pra uma chamada AO VIVO da
+ * Beehiiv quando o KV do sync diário (09:15) ainda não tem a chave — um
+ * assinante pending podia ficar até ~24h nessa janela disparando uma chamada
+ * Beehiiv por reload. Os testes abaixo simulam exatamente esse cenário: uma
+ * sessão pending batendo em `/` repetidamente dentro da janela de cooldown.
+ */
+describe("workers/cursos: cooldown da promoção pending→confirmed (#4387)", () => {
+  /** Wrapper de KV que conta quantas vezes `get` é chamado pra uma chave de
+   * ASSINANTE (`subscriber:...`) — é essa a chamada que `checkGateSubscriber`
+   * faz sempre no caminho barato (KV) antes de decidir se cai pro fallback ao
+   * vivo da Beehiiv. Contar aqui mede diretamente "quantas vezes
+   * `checkGateSubscriber` rodou", sem precisar mockar módulos inteiros. */
+  function makeCountingKV(initial: Record<string, string> = {}) {
+    const m = new Map<string, string>(Object.entries(initial));
+    let subscriberGetCalls = 0;
+    const kv = {
+      async get(key: string) {
+        if (key.startsWith("subscriber:")) subscriberGetCalls++;
+        const v = m.get(key);
+        return v === undefined ? null : v;
+      },
+      async put(key: string, value: string) {
+        m.set(key, value);
+      },
+      async delete(key: string) {
+        m.delete(key);
+      },
+    } as unknown as KVNamespace;
+    return { kv, map: m, getSubscriberGetCalls: () => subscriberGetCalls };
+  }
+
+  it("sessão pending recarregando / repetidamente dentro do cooldown: checkGateSubscriber roda no máximo 1x", async () => {
+    const email = "pending-reload@example.com";
+    const cookieValue = await issueSessionCookie("cookie-secret", email, "pending");
+    const cookiePair = cookieValue.split(";")[0];
+    const { kv, getSubscriberGetCalls } = makeCountingKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
+    const req = () => new Request("https://cursos.diar.ia.br/", { headers: { Cookie: cookiePair } });
+
+    // 5 reloads seguidos, ainda dentro da mesma janela de cooldown — antes do
+    // fix, cada um disparava um `checkGateSubscriber` novo (e, sem KV
+    // sincronizado, uma chamada Beehiiv ao vivo por reload).
+    const responses: Response[] = [];
+    for (let i = 0; i < 5; i++) responses.push(await worker.fetch(req(), env));
+
+    for (const res of responses) {
+      assert.equal(await res.text(), TEASER_HTML, "sem confirmação disponível, cada reload continua vendo o teaser");
+    }
+    assert.equal(
+      getSubscriberGetCalls(),
+      1,
+      `checkGateSubscriber deveria ter rodado 1x só, rodou ${getSubscriberGetCalls()}x`,
+    );
+  });
+
+  it("assinante sincroniza no KV DENTRO da janela de cooldown: promoção só acontece depois que o cooldown expira", async () => {
+    const email = "promovido-apos-cooldown@example.com";
+    const cookieValue = await issueSessionCookie("cookie-secret", email, "pending");
+    const cookiePair = cookieValue.split(";")[0];
+    const { kv, map, getSubscriberGetCalls } = makeCountingKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
+    const req = () => new Request("https://cursos.diar.ia.br/", { headers: { Cookie: cookiePair } });
+
+    // 1ª visita: KV ainda não sincronizou — cai pro teaser, mas já consome o
+    // cooldown (marca a sessão como "acabou de rechecar").
+    const first = await worker.fetch(req(), env);
+    assert.equal(await first.text(), TEASER_HTML);
+    assert.equal(getSubscriberGetCalls(), 1);
+
+    // Sync diário roda "no meio da janela" (simulado): o assinante agora está
+    // ativo no KV.
+    const subKey = await subscriberKvKey(email);
+    map.set(subKey, "1");
+
+    // 2ª visita, ainda dentro do cooldown: NÃO deve promover — é exatamente
+    // essa a janela que o bug original deixava aberta (recheck em todo
+    // reload). O fix explicitamente aceita ficar até 1 cooldown atrasado pra
+    // não gastar uma chamada por reload.
+    const second = await worker.fetch(req(), env);
+    assert.equal(
+      await second.text(),
+      TEASER_HTML,
+      "dentro do cooldown, a promoção não deve acontecer mesmo com o assinante já ativo no KV",
+    );
+    assert.equal(getSubscriberGetCalls(), 1, "checkGateSubscriber não deveria ter rodado de novo dentro do cooldown");
+
+    // Cooldown expira (simulado apagando a chave — equivalente a esperar o
+    // TTL): a PRÓXIMA visita finalmente recheca e promove.
+    const emailHash = await sha256Hex(email);
+    map.delete(pendingPromotionCooldownKey(emailHash));
+
+    const third = await worker.fetch(req(), env);
+    assert.equal(await third.text(), CURSOS_FULL_HTML, "após o cooldown expirar, a promoção deve acontecer");
+    assert.match(getCookieHeader(third) ?? "", /HttpOnly/, "promoção deve reemitir cookie CONFIRMED");
+    assert.equal(getSubscriberGetCalls(), 2, "checkGateSubscriber deveria ter rodado de novo só após o cooldown expirar");
+  });
+
+  it("sessão CONFIRMED nunca aciona o cooldown/checkGateSubscriber — só sessão pending passa por essa checagem", async () => {
+    const email = "ja-confirmado@example.com";
+    const cookieValue = await issueSessionCookie("cookie-secret", email); // state default = "confirmed"
+    const cookiePair = cookieValue.split(";")[0];
+    const { kv, map, getSubscriberGetCalls } = makeCountingKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
+    const req = () => new Request("https://cursos.diar.ia.br/", { headers: { Cookie: cookiePair } });
+
+    for (let i = 0; i < 3; i++) {
+      const res = await worker.fetch(req(), env);
+      assert.equal(await res.text(), CURSOS_FULL_HTML, "sessão confirmed sempre serve o conteúdo completo direto");
+    }
+
+    assert.equal(getSubscriberGetCalls(), 0, "sessão confirmed nunca deveria chamar checkGateSubscriber");
+    const emailHash = await sha256Hex(email);
+    assert.equal(
+      map.has(pendingPromotionCooldownKey(emailHash)),
+      false,
+      "sessão confirmed nunca deveria tocar a chave de cooldown — o rate-limit é exclusivo do caminho pending",
+    );
   });
 });
