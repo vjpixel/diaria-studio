@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import { strict as assert } from "node:assert";
-import { writeFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
+import { writeFileSync, existsSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -19,6 +19,11 @@ import {
   buildSearchFailedResult,
 } from "../scripts/inbox-drain.ts";
 import { CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../scripts/google-auth.ts"; // #4344
+import {
+  CONFIG_PATH_TEST_OVERRIDE_ENV,
+  INBOX_CURSOR_PATH_TEST_OVERRIDE_ENV,
+  INBOX_MD_PATH_TEST_OVERRIDE_ENV,
+} from "../scripts/inbox-drain.ts"; // #4369
 
 describe("#1973 — OAuth expirado vs falha transiente", () => {
   it("isAuthExpiredError: invalid_grant / expired / revoked → true", () => {
@@ -70,9 +75,6 @@ function makeMessage(subject: string, id = "msg"): {
 }
 
 const ROOT = resolve(import.meta.dirname, "..");
-const CONFIG_PATH = resolve(ROOT, "platform.config.json");
-const CURSOR_PATH = resolve(ROOT, "data", "inbox-cursor.json");
-const INBOX_PATH = resolve(ROOT, "data", "inbox.md");
 
 const FAKE_CREDS = {
   client_id: "fake",
@@ -103,6 +105,61 @@ function teardownFakeCredentials(): void {
     try { rmSync(fakeCredsDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
   fakeCredsDir = undefined;
+}
+
+// #4369: mesmo padrão do #4344 acima (setupFakeCredentials/teardownFakeCredentials),
+// aplicado aos 3 arquivos reais que inbox-drain.ts lê/escreve por default:
+// platform.config.json (git-tracked!), data/inbox-cursor.json e data/inbox.md.
+// Antes deste fix, os testes salvavam/sobrescreviam/restauravam esses 3 paths
+// REAIS do worktree em beforeEach/afterEach — seguro só se nada mais tocasse
+// os mesmos arquivos durante a janela do teste e se a run não fosse
+// interrompida no meio (mesmo risco do #4344, arquivos diferentes). Agora
+// cada teste roda contra um dir temporário próprio, nunca contra o worktree.
+let fakeInboxDir: string | undefined;
+let prevConfigPathEnvValue: string | undefined;
+let prevCursorPathEnvValue: string | undefined;
+let prevInboxMdPathEnvValue: string | undefined;
+
+function fakeConfigPath(): string {
+  if (!fakeInboxDir) throw new Error("setupFakeInboxPaths() não foi chamado");
+  return join(fakeInboxDir, "platform.config.json");
+}
+
+function fakeCursorPath(): string {
+  if (!fakeInboxDir) throw new Error("setupFakeInboxPaths() não foi chamado");
+  return join(fakeInboxDir, "inbox-cursor.json");
+}
+
+function fakeInboxMdPath(): string {
+  if (!fakeInboxDir) throw new Error("setupFakeInboxPaths() não foi chamado");
+  return join(fakeInboxDir, "inbox.md");
+}
+
+function setupFakeInboxPaths(): void {
+  prevConfigPathEnvValue = process.env[CONFIG_PATH_TEST_OVERRIDE_ENV];
+  prevCursorPathEnvValue = process.env[INBOX_CURSOR_PATH_TEST_OVERRIDE_ENV];
+  prevInboxMdPathEnvValue = process.env[INBOX_MD_PATH_TEST_OVERRIDE_ENV];
+  fakeInboxDir = mkdtempSync(join(tmpdir(), "inbox-drain-paths-"));
+  // inbox-drain.ts só lê config.inbox — base mínima, sem depender do
+  // conteúdo real de platform.config.json (que tem outras chaves alheias
+  // a este script).
+  writeFileSync(fakeConfigPath(), JSON.stringify({}), "utf8");
+  process.env[CONFIG_PATH_TEST_OVERRIDE_ENV] = fakeConfigPath();
+  process.env[INBOX_CURSOR_PATH_TEST_OVERRIDE_ENV] = fakeCursorPath();
+  process.env[INBOX_MD_PATH_TEST_OVERRIDE_ENV] = fakeInboxMdPath();
+}
+
+function teardownFakeInboxPaths(): void {
+  if (prevConfigPathEnvValue !== undefined) process.env[CONFIG_PATH_TEST_OVERRIDE_ENV] = prevConfigPathEnvValue;
+  else delete process.env[CONFIG_PATH_TEST_OVERRIDE_ENV];
+  if (prevCursorPathEnvValue !== undefined) process.env[INBOX_CURSOR_PATH_TEST_OVERRIDE_ENV] = prevCursorPathEnvValue;
+  else delete process.env[INBOX_CURSOR_PATH_TEST_OVERRIDE_ENV];
+  if (prevInboxMdPathEnvValue !== undefined) process.env[INBOX_MD_PATH_TEST_OVERRIDE_ENV] = prevInboxMdPathEnvValue;
+  else delete process.env[INBOX_MD_PATH_TEST_OVERRIDE_ENV];
+  if (fakeInboxDir) {
+    try { rmSync(fakeInboxDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+  fakeInboxDir = undefined;
 }
 
 function makeGmailResponse(body: unknown, status = 200): Response {
@@ -382,42 +439,23 @@ describe("dedupForwards (#1716) — dup intra-thread (sent + received sem Fwd:)"
 
 describe("inbox-drain main() integration (#306)", () => {
   let originalFetch: typeof globalThis.fetch;
-  let savedConfig: string | null = null;
-  let savedCursor: string | null = null;
-  let savedInbox: string | null = null;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    // Save state of all real files that main() may read or write.
-    savedConfig = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf8") : null;
-    savedCursor = existsSync(CURSOR_PATH) ? readFileSync(CURSOR_PATH, "utf8") : null;
-    savedInbox = existsSync(INBOX_PATH) ? readFileSync(INBOX_PATH, "utf8") : null;
-
-    // CURSOR_PATH/INBOX_PATH vivem sob data/ — garante que o dir existe
-    // (não relacionado a credenciais; ver setupFakeCredentials() abaixo pro
-    // isolamento de .credentials.json, #4344).
-    mkdirSync(resolve(ROOT, "data"), { recursive: true });
 
     // Fake creds (#4344): dir temporário próprio + env var, nunca mais o path
     // real — getAccessToken() ainda não precisa chamar fetch pra refresh.
     setupFakeCredentials();
+    // Fake config/cursor/inbox.md (#4369): idem, nunca mais os paths reais de
+    // platform.config.json / data/inbox-cursor.json / data/inbox.md.
+    setupFakeInboxPaths();
   });
 
   afterEach(() => {
     // Restore fetch first (no I/O, always safe).
     globalThis.fetch = originalFetch;
     teardownFakeCredentials();
-    // Restore real files in a try/finally so a crash inside the test body
-    // can't permanently corrupt the workspace.
-    try {
-      if (savedConfig !== null) writeFileSync(CONFIG_PATH, savedConfig, "utf8");
-      if (savedCursor !== null) writeFileSync(CURSOR_PATH, savedCursor, "utf8");
-      else if (existsSync(CURSOR_PATH)) unlinkSync(CURSOR_PATH);
-      if (savedInbox !== null) writeFileSync(INBOX_PATH, savedInbox, "utf8");
-      else if (existsSync(INBOX_PATH)) unlinkSync(INBOX_PATH);
-    } catch (restoreErr) {
-      console.error("[inbox-drain.test afterEach] failed to restore files:", restoreErr);
-    }
+    teardownFakeInboxPaths();
   });
 
   /**
@@ -426,11 +464,11 @@ describe("inbox-drain main() integration (#306)", () => {
    * #3311: drainMain() é chamado IN-PROCESS (não spawnado) — o silent_reset
    * path (linhas 413+/614+ abaixo) dispara logDrainInfo(), que sem
    * isolamento cai no default de logEvent (process.cwd()), aqui a raiz real
-   * do repo/worktree (mesma resolvida por CONFIG_PATH/CURSOR_PATH/ROOT no
-   * topo deste arquivo). Cada chamada a runDrain() cria um tmpdir isolado
-   * SÓ para o destino do run-log de auditoria — CONFIG_PATH/CURSOR_PATH/
-   * INBOX_PATH continuam apontando pro repo real (convenção pré-existente
-   * deste arquivo, com restore em afterEach; fora do escopo de #3311).
+   * do repo/worktree (mesma resolvida por ROOT no topo deste arquivo). Cada
+   * chamada a runDrain() cria um tmpdir isolado SÓ para o destino do run-log
+   * de auditoria — o config/cursor/inbox.md continuam isolados
+   * separadamente via setupFakeInboxPaths() (#4369, beforeEach acima), nunca
+   * tocando os paths reais do worktree.
    */
   async function runDrain(): Promise<Record<string, unknown>> {
     const logRootDir = mkdtempSync(resolve(tmpdir(), "inbox-drain-logroot-"));
@@ -451,7 +489,7 @@ describe("inbox-drain main() integration (#306)", () => {
 
   it("drain com threads = [] → silent_reset path → cursor não avança", async () => {
     // Set up cursor at THRESHOLD so silent_reset fires on empty drain
-    writeFileSync(CURSOR_PATH, JSON.stringify({
+    writeFileSync(fakeCursorPath(), JSON.stringify({
       last_drain_iso: "2026-04-01T00:00:00Z",
       consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
     }), "utf8");
@@ -469,7 +507,7 @@ describe("inbox-drain main() integration (#306)", () => {
     assert.equal(output.skipped, false);
 
     // After silent_reset cursor should reset consecutive_empty_drains to 0
-    const cursor = JSON.parse(readFileSync(CURSOR_PATH, "utf8"));
+    const cursor = JSON.parse(readFileSync(fakeCursorPath(), "utf8"));
     assert.equal(cursor.consecutive_empty_drains, 0);
   });
 
@@ -477,13 +515,13 @@ describe("inbox-drain main() integration (#306)", () => {
   // path acima disparava logDrainInfo() sem rootDir explícito — caía no
   // default de logEvent (process.cwd()), que em drainMain() chamado
   // in-process (não spawnado) é o cwd real do test runner, tipicamente a
-  // raiz do repo/worktree (mesmo ROOT usado por CONFIG_PATH/CURSOR_PATH
-  // acima). Toda run desta suite poluía data/run-log.jsonl real com
+  // raiz do repo/worktree (mesmo ROOT usado por logDrainInfo/logDrainWarn
+  // quando rootDir não é passado). Toda run desta suite poluía data/run-log.jsonl real com
   // entries "auto-reset: inbox vazio..." fabricadas. Este teste prova (a)
   // que o log de auditoria é de fato persistido, e (b) que vai SOMENTE pro
   // tmpdir isolado passado a main() — nunca pro repo real.
   it("#3311: log de auditoria do silent_reset isolado via main(rootDir) — nunca grava em data/run-log.jsonl real", async () => {
-    writeFileSync(CURSOR_PATH, JSON.stringify({
+    writeFileSync(fakeCursorPath(), JSON.stringify({
       last_drain_iso: "2026-04-01T00:00:00Z",
       consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
     }), "utf8");
@@ -540,7 +578,7 @@ describe("inbox-drain main() integration (#306)", () => {
   // compartilhado — mesma técnica do #3311, não a comparação insegura
   // removida no #3479).
   it("#3493: log de auditoria do path auth_expired (logDrainWarn) isolado via main(rootDir) — nunca grava em data/run-log.jsonl real", async () => {
-    writeFileSync(CURSOR_PATH, JSON.stringify({
+    writeFileSync(fakeCursorPath(), JSON.stringify({
       last_drain_iso: "2026-04-01T00:00:00Z",
       consecutive_empty_drains: 0,
     }), "utf8");
@@ -602,7 +640,7 @@ describe("inbox-drain main() integration (#306)", () => {
   });
 
   it("drain com 1 thread com URL → URL extraída em data/inbox.md", async () => {
-    writeFileSync(CURSOR_PATH, JSON.stringify({
+    writeFileSync(fakeCursorPath(), JSON.stringify({
       last_drain_iso: "2026-01-01T00:00:00Z",
       consecutive_empty_drains: 0,
     }), "utf8");
@@ -646,16 +684,16 @@ describe("inbox-drain main() integration (#306)", () => {
     assert.ok((output.urls as Array<{ url: string }>).some((u) => u.url === "https://openai.com/blog/gpt-5"));
 
     // inbox.md deve conter a URL extraída
-    assert.ok(existsSync(INBOX_PATH));
-    const inboxContent = readFileSync(INBOX_PATH, "utf8");
+    assert.ok(existsSync(fakeInboxMdPath()));
+    const inboxContent = readFileSync(fakeInboxMdPath(), "utf8");
     assert.ok(inboxContent.includes("https://openai.com/blog/gpt-5"));
   });
 
   it("inbox disabled → skipped=true sem chamar Gmail API (#430)", async () => {
     // Write config with inbox.enabled: false
-    const config = JSON.parse(savedConfig ?? "{}");
+    const config = JSON.parse(readFileSync(fakeConfigPath(), "utf8"));
     config.inbox = { ...(config.inbox ?? {}), enabled: false };
-    writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+    writeFileSync(fakeConfigPath(), JSON.stringify(config, null, 2), "utf8");
 
     let fetchCalled = false;
     globalThis.fetch = async () => {
@@ -671,12 +709,12 @@ describe("inbox-drain main() integration (#306)", () => {
 
   it("#3362: query default (gmailQuery omitido) cobre os 2 formatos (com/sem ponto)", async () => {
     // Remove gmailQuery do config → main() deve cair no default novo, não em label:.
-    const config = JSON.parse(savedConfig ?? "{}");
+    const config = JSON.parse(readFileSync(fakeConfigPath(), "utf8"));
     config.inbox = { ...(config.inbox ?? {}) };
     delete config.inbox.gmailQuery;
-    writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+    writeFileSync(fakeConfigPath(), JSON.stringify(config, null, 2), "utf8");
 
-    writeFileSync(CURSOR_PATH, JSON.stringify({
+    writeFileSync(fakeCursorPath(), JSON.stringify({
       last_drain_iso: "2026-04-01T00:00:00Z",
       consecutive_empty_drains: 0,
     }), "utf8");
@@ -705,14 +743,14 @@ describe("inbox-drain main() integration (#306)", () => {
     // mesma caixa (ignora pontos), mas o operador `to:` de busca não
     // normaliza pontos — sem o `{ }` OR na query, mensagens endereçadas ao
     // formato COM ponto nunca eram encontradas (perdido por >2 meses em prod).
-    const config = JSON.parse(savedConfig ?? "{}");
+    const config = JSON.parse(readFileSync(fakeConfigPath(), "utf8"));
     config.inbox = {
       ...(config.inbox ?? {}),
       gmailQuery: "in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}",
     };
-    writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+    writeFileSync(fakeConfigPath(), JSON.stringify(config, null, 2), "utf8");
 
-    writeFileSync(CURSOR_PATH, JSON.stringify({
+    writeFileSync(fakeCursorPath(), JSON.stringify({
       last_drain_iso: "2026-07-07T00:00:00Z",
       consecutive_empty_drains: 0,
     }), "utf8");
@@ -758,11 +796,11 @@ describe("inbox-drain main() integration (#306)", () => {
   it("#3217: mensagem encontrada via in:sent to:diariaeditor@gmail.com é parseada em entrada de inbox", async () => {
     // Config explícita com a nova query — simula o cenário real #3199/#3215:
     // 12 e-mails na pasta Sent do editor, sem label nenhum aplicado.
-    const config = JSON.parse(savedConfig ?? "{}");
+    const config = JSON.parse(readFileSync(fakeConfigPath(), "utf8"));
     config.inbox = { ...(config.inbox ?? {}), gmailQuery: "in:sent to:diariaeditor@gmail.com" };
-    writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+    writeFileSync(fakeConfigPath(), JSON.stringify(config, null, 2), "utf8");
 
-    writeFileSync(CURSOR_PATH, JSON.stringify({
+    writeFileSync(fakeCursorPath(), JSON.stringify({
       last_drain_iso: "2026-07-07T00:00:00Z",
       consecutive_empty_drains: 0,
     }), "utf8");
@@ -803,13 +841,13 @@ describe("inbox-drain main() integration (#306)", () => {
       (output.urls as Array<{ url: string }>).some((u) => u.url === "https://openai.com/academy/prompting"),
       "URL da submissão deve estar no resultado",
     );
-    assert.ok(existsSync(INBOX_PATH));
-    const inboxContent = readFileSync(INBOX_PATH, "utf8");
+    assert.ok(existsSync(fakeInboxMdPath()));
+    const inboxContent = readFileSync(fakeInboxMdPath(), "utf8");
     assert.ok(inboxContent.includes("https://openai.com/academy/prompting"));
   });
 
   it("#3217: caminho de label foi removido — não chama /labels e não produz label_filter_warning", async () => {
-    writeFileSync(CURSOR_PATH, JSON.stringify({
+    writeFileSync(fakeCursorPath(), JSON.stringify({
       last_drain_iso: "2026-04-01T00:00:00Z",
       consecutive_empty_drains: 0,
     }), "utf8");
@@ -837,7 +875,7 @@ describe("inbox-drain main() integration (#306)", () => {
   });
 
   it("primary query empty acima do threshold → silent_reset, new_entries=0 (#900)", async () => {
-    writeFileSync(CURSOR_PATH, JSON.stringify({
+    writeFileSync(fakeCursorPath(), JSON.stringify({
       last_drain_iso: "2026-04-01T00:00:00Z",
       consecutive_empty_drains: EMPTY_DRAIN_WARN_THRESHOLD,
     }), "utf8");
@@ -861,40 +899,38 @@ describe("inbox-drain main() integration (#306)", () => {
     assert.equal(output.new_entries, 0);
     assert.equal(output.skipped, false, "skipped=false — drain rodou, só não tinha email");
     // Cursor pós-silent_reset: consecutive_empty_drains zerado
-    const cursor = JSON.parse(readFileSync(CURSOR_PATH, "utf8"));
+    const cursor = JSON.parse(readFileSync(fakeCursorPath(), "utf8"));
     assert.equal(cursor.consecutive_empty_drains, 0, "silent_reset deve zerar contador");
   });
 });
 
 describe("loadCursor — validação de cursor no futuro (#441)", () => {
-  const cursorPath = resolve(ROOT, "data", "inbox-cursor.json");
-  let savedCursor: string | null = null;
-
+  // #4369: mesmo isolamento via env var (setupFakeInboxPaths/teardownFakeInboxPaths)
+  // do describe acima — este describe chama loadCursor() diretamente (fora de
+  // main()), então precisa do próprio setup/teardown independente.
   beforeEach(() => {
-    savedCursor = existsSync(cursorPath) ? readFileSync(cursorPath, "utf8") : null;
-    mkdirSync(resolve(ROOT, "data"), { recursive: true });
+    setupFakeInboxPaths();
   });
   afterEach(() => {
-    if (savedCursor !== null) writeFileSync(cursorPath, savedCursor, "utf8");
-    else if (existsSync(cursorPath)) unlinkSync(cursorPath);
+    teardownFakeInboxPaths();
   });
 
   it("cursor no futuro → retorna null com warn", () => {
     const future = new Date(Date.now() + 3_600_000).toISOString(); // 1h no futuro
-    writeFileSync(cursorPath, JSON.stringify({ last_drain_iso: future }), "utf8");
+    writeFileSync(fakeCursorPath(), JSON.stringify({ last_drain_iso: future }), "utf8");
     const cursor = loadCursor();
     assert.equal(cursor.last_drain_iso, null, "deve resetar cursor no futuro para null");
   });
 
   it("cursor no passado → preservado normalmente", () => {
     const past = "2026-04-01T10:00:00Z";
-    writeFileSync(cursorPath, JSON.stringify({ last_drain_iso: past }), "utf8");
+    writeFileSync(fakeCursorPath(), JSON.stringify({ last_drain_iso: past }), "utf8");
     const cursor = loadCursor();
     assert.equal(cursor.last_drain_iso, past);
   });
 
   it("cursor null → retornado sem modificação", () => {
-    writeFileSync(cursorPath, JSON.stringify({ last_drain_iso: null }), "utf8");
+    writeFileSync(fakeCursorPath(), JSON.stringify({ last_drain_iso: null }), "utf8");
     const cursor = loadCursor();
     assert.equal(cursor.last_drain_iso, null);
   });
