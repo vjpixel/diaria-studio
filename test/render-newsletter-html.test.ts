@@ -1398,6 +1398,31 @@ Agora interaja!`,
     assert.match(html, /font-size:12px[^>]*>Acesse nossas curadorias:/, "kicker deve permanecer em 12px");
   });
 
+  it("#4356: renderiza 3 pills (Cursos/Livros/Equipamentos) sem quebrar o layout", () => {
+    const html = renderHTML(fixt({
+      encerrar: `Nessa edição da **Diar.ia**, usei Claude Code.
+
+- [Cursos de IA](https://cursos.diar.ia.br)
+- [Livros sobre IA](https://livros.diar.ia.br)
+- [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
+
+Agora interaja!`,
+    }));
+    assert.match(html, /href="https:\/\/cursos\.diar\.ia\.br"/);
+    assert.match(html, /href="https:\/\/livros\.diar\.ia\.br"/);
+    assert.match(html, /href="https:\/\/www\.amazon\.com\.br\/shop\/vjpixel"/);
+    // as 3 pills continuam dentro da MESMA table centralizada (#2160 — padding
+    // já dimensionado pra 3 pills em iPhone SE 320px).
+    assert.match(
+      html,
+      /align="center"[^>]*cellpadding="0"[^>]*style="margin:0 auto;"[^]*?cursos\.diar\.ia\.br[^]*?livros\.diar\.ia\.br[^]*?amazon\.com\.br\/shop\/vjpixel/,
+      "as 3 pills devem estar na mesma table centralizada",
+    );
+    // exatamente 3 pills renderizadas (3 âncoras com o pillStyle, não mais/menos)
+    const pillAnchors = html.match(/border-radius:999px[^>]*>[^<]*<\/a>/g) ?? [];
+    assert.equal(pillAnchors.length, 3, "deveriam existir exatamente 3 pills clicáveis");
+  });
+
   it("#1936: item de pill com conteúdo misto NÃO vaza markdown cru", () => {
     const html = renderHTML(fixt({
       encerrar: `Texto.

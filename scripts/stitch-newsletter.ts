@@ -36,14 +36,15 @@ import {
   DIARIA_LINKEDIN_PAGE_URL,
   DIARIA_CURSOS_URL,
   DIARIA_LIVROS_URL,
-} from "./lib/canonical-urls.ts"; // #2695/#2790/#3698 fonte única
+  DIARIA_AMAZON_LOJA_URL,
+} from "./lib/canonical-urls.ts"; // #2695/#2790/#3698 fonte única; DIARIA_AMAZON_LOJA_URL #4356
 import {
   splitEncerramentoSocialApoio,
   renderEncerramentoSocialApoio,
   ENCERRAMENTO_OPENING_DAILY,
 } from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal; split #3368 (reorder); renderEncerramentoSocialApoio #3382 fix (fallback de conteúdo real quando o split falha)
 import { readSnippetFile } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
-import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao3 } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap); extractBoxDivulgacao3 #3476; extractBoxDivulgacao0 #4274
+import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao3, BOX0_SENTINEL } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap); extractBoxDivulgacao3 #3476; extractBoxDivulgacao0 #4274; BOX0_SENTINEL #4338
 import {
   resolveUsedSnippets,
   isAgradecimentoSnippetUsed,
@@ -85,14 +86,27 @@ Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse
   // mudou, o cabeçalho continua abrindo a seção).
   para_encerrar_header: `**🙋🏼‍♀️ PARA ENCERRAR**`,
 
-  // #3219: parágrafo de ferramentas + pills "Acesse:" — fixos, sem
-  // parametrização. O parágrafo de apoio (Apoia.se) + convite social
-  // (LinkedIn/Facebook) vêm de `buildParaEncerrar()` abaixo, carregados do
-  // snippet compartilhado com o mensal.
-  para_encerrar_tools: `Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
+  // #3219: parágrafo de ferramentas — fixo, sem parametrização. O parágrafo
+  // de apoio (Apoia.se) + convite social (LinkedIn/Facebook) vêm de
+  // `buildParaEncerrar()` abaixo, carregados do snippet compartilhado com o
+  // mensal. #4357: a lista de pills "Acesse nossas curadorias" que ANTES
+  // terminava este bloco foi extraída pra `para_encerrar_curadorias` (abaixo)
+  // — ela é navegação estrutural PERMANENTE, não copy editorial do slot A, e
+  // morar aqui a deixava vulnerável a sumir por inteiro sempre que o editor
+  // sobrescrevia `para_encerrar.slot_a` pelo painel Caixas (override é
+  // all-or-nothing por slot — ver `buildParaEncerrar`).
+  para_encerrar_tools: `Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).`,
 
-- [Cursos de IA](${DIARIA_CURSOS_URL})
-- [Livros sobre IA](${DIARIA_LIVROS_URL})`,
+  // #4357: lista de pills "Acesse nossas curadorias" — navegação estrutural
+  // PERMANENTE (não copy editorial), concatenada por `buildParaEncerrar`
+  // DEPOIS do slot A e ANTES do slot B, fora do alcance de qualquer override
+  // de slot. Sobrevive incondicionalmente a qualquer edição do parágrafo de
+  // apoio/ferramentas pelo painel Caixas. #4356: 3º pill "Equipamentos"
+  // (vitrine própria do editor na Amazon, link direto — decisão do editor,
+  // sem camada de redirect via Worker) somado às 2 curadorias originais.
+  para_encerrar_curadorias: `- [Cursos de IA](${DIARIA_CURSOS_URL})
+- [Livros sobre IA](${DIARIA_LIVROS_URL})
+- [Equipamentos](${DIARIA_AMAZON_LOJA_URL})`,
 
   erro_intencional_placeholder: `**ERRO INTENCIONAL**
 
@@ -108,8 +122,13 @@ Esta edição tem um erro proposital. Responda este e-mail com a correção para
  * texto direto (sem pool de snippets, diferente dos slots 0-3 de
  * `boxes_divulgacao`, que são opcionais e sorteiam entre candidatos).
  *
- *   - `slotA`: parágrafo de apoio (Apoia.se) + bloco de ferramentas/"Acesse
- *     nossas curadorias" — um único bloco de texto.
+ *   - `slotA`: parágrafo de apoio (Apoia.se) + bloco de ferramentas — um
+ *     único bloco de texto. #4357: NÃO inclui mais a lista de pills "Acesse
+ *     nossas curadorias" — essa lista é navegação estrutural permanente
+ *     (`FIXED_BLOCKS.para_encerrar_curadorias`), concatenada por
+ *     `buildParaEncerrar` DEPOIS do slot A, fora do alcance deste override
+ *     (antes, sobrescrever slotA apagava as pills junto — override é
+ *     all-or-nothing por slot).
  *   - `slotB`: convite social (LinkedIn/Facebook/Instagram) — o ÚLTIMO
  *     parágrafo da seção (invariante do #3219/#3368, preservada).
  *
@@ -189,13 +208,23 @@ function computeParaEncerrarDefaults(): { slotA: string; slotB: string } {
 }
 
 /**
- * #3219/#3368/#4274: monta o bloco PARA ENCERRAR completo — cabeçalho (fixo,
- * `FIXED_BLOCKS.para_encerrar_header`) + slotA (apoio + ferramentas) + slotB
+ * #3219/#3368/#4274/#4357: monta o bloco PARA ENCERRAR completo — cabeçalho
+ * (fixo, `FIXED_BLOCKS.para_encerrar_header`) + slotA (apoio + ferramentas) +
+ * pills de curadoria (fixo, `FIXED_BLOCKS.para_encerrar_curadorias`) + slotB
  * (convite social), nessa ordem (invariante do #3219/#3368 preservada — o
  * convite social é sempre o ÚLTIMO parágrafo). #4274: cada slot lê primeiro
  * de `platform.config.json.para_encerrar` (editável pelo painel Caixas);
  * ausência/vazio cai no default (`computeParaEncerrarDefaults`) — mesmo
  * output de antes do #4274 pra qualquer config sem a chave nova.
+ *
+ * #4357: a lista de pills "Acesse nossas curadorias" é concatenada FORA do
+ * alcance de qualquer override de slot — antes ela morava dentro do default
+ * do slot A (`computeParaEncerrarDefaults` concatenava `para_encerrar_tools`
+ * inteiro, pills incluídas), e como o override do slot A é all-or-nothing
+ * (`cfg.slotA ?? defaults.slotA`), qualquer texto que o editor salvasse no
+ * painel Caixas apagava a linha de pills junto, em silêncio (achado
+ * 260730/731). Extrair as pills pra um bloco sempre-presente elimina a
+ * causa raiz sem tocar o isolamento de teste do painel (`studio-boxes.ts`).
  *
  * `override` — pula a leitura de `platform.config.json` e usa esta config
  * diretamente (mesmo contrato de `input.boxesDivulgacao` em `StitchInput`).
@@ -207,7 +236,7 @@ export function buildParaEncerrar(override?: ParaEncerrarConfig): string {
   const defaults = computeParaEncerrarDefaults();
   const slotA = cfg.slotA ?? defaults.slotA;
   const slotB = cfg.slotB ?? defaults.slotB;
-  return `${FIXED_BLOCKS.para_encerrar_header}\n\n${slotA}\n\n${slotB}`;
+  return `${FIXED_BLOCKS.para_encerrar_header}\n\n${slotA}\n\n${FIXED_BLOCKS.para_encerrar_curadorias}\n\n${slotB}`;
 }
 
 /**
@@ -644,9 +673,13 @@ export function stitchNewsletter(input: StitchInput): string {
     parts.push("---", "", agradecimentoBox, "");
   }
   // #4274: slot0 vai por ÚLTIMO na região de intro — logo antes do `---` que
-  // abre D1 (mesma posição que `locateBoxAtIntro` espera).
+  // abre D1 (mesma posição que `locateBoxAtIntro` espera). #4338: prefixado
+  // pelo marcador sentinel `BOX0_SENTINEL` — é o ÚNICO sinal que
+  // `locateBoxAtIntro` aceita pra reconhecer um box0 real (nunca mais infere
+  // por posição, o que causava duplicação do parágrafo de intro quando não
+  // havia box0 real configurado, ver docstring de `locateBoxAtIntro`).
   if (slot0Box) {
-    parts.push("---", "", slot0Box, "");
+    parts.push("---", "", BOX0_SENTINEL, slot0Box, "");
   }
   parts.push(
     "---",

@@ -89,9 +89,12 @@
         salvo em <code>platform.config.json</code> → <code>para_encerrar</code>. O cabeçalho da seção
         continua fixo. Campo vazio = usa o texto padrão do snippet
         <code>context/snippets/encerramento-social-apoio.md</code>.
+        A linha "Acesse nossas curadorias" (Cursos/Livros/Equipamentos) é fixa e SEMPRE aparece entre
+        o Slot A e o Slot B, independente do que for salvo abaixo (#4357) — editar o Slot A nunca
+        apaga essas pills.
       </p>
       <label class="cx-field">
-        <span>Slot A <em>(parágrafo de apoio + bloco de ferramentas/"Acesse nossas curadorias")</em></span>
+        <span>Slot A <em>(parágrafo de apoio + bloco de ferramentas)</em></span>
         <textarea id="para-encerrar-slot-a" class="cx-editor" spellcheck="false" placeholder="(vazio — usa o texto padrão do snippet)"></textarea>
       </label>
       <label class="cx-field">

@@ -124,6 +124,10 @@ import {
   type SnippetStalenessReport,
   type SnippetStalenessWarning,
 } from "./lib/lint-checks/snippet-staleness.ts"; // #4076
+import {
+  checkAgradecimentoHardcoded,
+  type AgradecimentoHardcodedResult,
+} from "./lib/lint-checks/agradecimento-hardcoded.ts"; // #4359
 // Re-export pra back-compat (testes + outros módulos importam daqui).
 export {
   lintMultilineLinks,
@@ -262,6 +266,10 @@ export {
   type UsedSnippetEntry,
   type BoxesDivulgacaoConfigLike,
 } from "./lib/lint-checks/snippet-staleness.ts"; // #4076
+export {
+  checkAgradecimentoHardcoded,
+  type AgradecimentoHardcodedResult,
+} from "./lib/lint-checks/agradecimento-hardcoded.ts"; // #4359
 export {
   lintNewsletter,
   extractUrlsBySection,
@@ -1404,6 +1412,36 @@ function main(): void {
     return;
   }
 
+  // Modo --check agradecimento-hardcoded (#4359) — `agradecimento-apoiadores.md`
+  // deveria voltar ao placeholder `{apoiadores}` a cada edição; um nome
+  // hardcoded persistindo por 2+ edições passou em silêncio (caso real:
+  // "Mônica Herculano", 260729-260731). Diferente dos outros checks, este
+  // lê o SNIPPET diretamente (`--snippet`, default
+  // `context/snippets/agradecimento-apoiadores.md`), não o `02-reviewed.md`.
+  // WARN-ONLY — o editor decide se é reset ou se o apoiador é de fato novo
+  // nesta edição.
+  if (args.check === "agradecimento-hardcoded") {
+    const snippetPath = resolve(ROOT, args.snippet ?? "context/snippets/agradecimento-apoiadores.md");
+    if (!existsSync(snippetPath)) {
+      console.error(`Arquivo não existe: ${snippetPath}`);
+      process.exit(2);
+    }
+    const raw = readFileSync(snippetPath, "utf8");
+    const result = checkAgradecimentoHardcoded(raw);
+    console.log(JSON.stringify(result, null, 2));
+    if (!result.ok) {
+      console.error(
+        `\n⚠️  agradecimento-hardcoded: '${snippetPath}' tem um nome hardcoded` +
+          `${result.name ? ` ("${result.name}")` : ""}, não o placeholder '{apoiadores}'.\n` +
+          `   Se esse apoiador já foi creditado numa edição anterior, resete o arquivo pro placeholder\n` +
+          `   antes de rodar o Stage 2 de novo — senão o mesmo agradecimento se repete (ver #4359).`,
+      );
+      // WARN-ONLY (#4359, mesmo espírito do #4076): exit 0 — a decisão de
+      // resetar ou manter (apoiador de fato novo nesta edição) é editorial.
+    }
+    return;
+  }
+
   if (!args.md || !args.approved) {
     console.error(
       "Uso: lint-newsletter-md.ts --md <md-path> --approved <01-approved.json-path>\n" +
@@ -1434,7 +1472,8 @@ function main(): void {
         "  ou: lint-newsletter-md.ts --check orphan-box-in-gap --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check aprofunde-format --md <md-path>\n" +
         "  ou: lint-newsletter-md.ts --check no-xml-artifacts --md <md-path>\n" +
-        "  ou: lint-newsletter-md.ts --check snippet-staleness --md <md-path>",
+        "  ou: lint-newsletter-md.ts --check snippet-staleness --md <md-path>\n" +
+        "  ou: lint-newsletter-md.ts --check agradecimento-hardcoded [--snippet <path>]",
     );
     process.exit(2);
   }
