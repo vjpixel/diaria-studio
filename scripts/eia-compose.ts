@@ -626,11 +626,19 @@ ${text}`
           }],
           generationConfig: {
             temperature: 0.1,
-            maxOutputTokens: 500,
-            // thinkingBudget=0 desativa "thinking tokens" — em Gemini 2.5+,
-            // o modo thinking consome maxOutputTokens antes do output, fazendo
-            // a resposta sair vazia/truncada. Tradução curta não precisa.
-            thinkingConfig: { thinkingBudget: 0 },
+            // 2000 (era 500): com o alias rolling `gemini-flash-latest` em
+            // gemini-3.6-flash, os tokens de thinking contam contra
+            // maxOutputTokens mesmo com thinkingBudget baixo — 500 estourava
+            // (finishReason=MAX_TOKENS) e cortava a tradução no meio da frase
+            // antes de emitir texto nenhum de resposta. Achado e reproduzido
+            // ao vivo no ciclo 2607-08.
+            maxOutputTokens: 2000,
+            // thinkingBudget=0 funcionava em Gemini 2.5, mas passou a ser
+            // rejeitado com HTTP 400 "invalid argument" no gemini-3.6-flash
+            // (reproduzido isolando generationConfig: budget 0 → 400, 1 e
+            // 100 → 200). 64 é folga pequena o bastante pra não competir com
+            // o output real agora que maxOutputTokens tem espaço de sobra.
+            thinkingConfig: { thinkingBudget: 64 },
           }
         }),
         signal: AbortSignal.timeout(CONFIG.timeouts.gemini),
