@@ -119,3 +119,206 @@ describe("nenhum test/*.test.ts escreve fake creds no data/.credentials.json REA
     });
   }
 });
+
+/**
+ * Generalização do guard acima (#4396, segue #4369) — `test/inbox-drain.test.ts`
+ * isolou 3 paths reais adicionais em dirs `mkdtempSync` (`platform.config.json`
+ * na raiz do repo — git-tracked! — e `data/inbox-cursor.json`/`data/inbox.md`),
+ * mas sem rede estática genérica equivalente à de `data/.credentials.json`
+ * acima. Um arquivo de teste FUTURO poderia reintroduzir a mesma classe de bug
+ * (#4344) contra qualquer um desses 3 paths sem que ninguém notasse.
+ *
+ * O regex de `data/.credentials.json` é moldado especificamente pra essa
+ * estrutura (sempre sob `data/`) — `platform.config.json` mora na raiz do
+ * repo, então generalizar limpo exige um padrão por nome de arquivo, não uma
+ * extensão direta do regex existente (ver corpo da issue #4396).
+ */
+interface RealPathTarget {
+  /** Nome legível do path real, usado nas mensagens de erro/nomes de teste. */
+  label: string;
+  /** `writeFileSync(resolve(...)/join(...))` construído inline com o path real. */
+  inlineRe: RegExp;
+  /** `writeFileSync("literal/do/path/real")`. */
+  literalRe: RegExp;
+  /** `const X = resolve(...)` apontando pro path real — variável usada depois em `writeFileSync(X, ...)`. */
+  varDeclRe: RegExp;
+  /** Dica de como isolar corretamente (env var de override + mkdtempSync), citada no assert. */
+  guidance: string;
+}
+
+// Nota (#4396): diferente de `data/.credentials.json` acima (onde o literal
+// "data" na chamada resolve/join já distingue path real de dir fake, porque
+// fixtures fake nunca usam esse literal), `platform.config.json` mora na raiz
+// do repo — SEM segmento distintivo — e vários testes legítimos (ex:
+// test/studio-integrations.test.ts) criam um dir fake via `mkdtempSync` e
+// escrevem `join(root, "platform.config.json")`/`join(root, "data", "inbox-cursor.json")`
+// dentro dele, usando a variável local (lowercase) `root`. Detectado ao vivo:
+// generalizar sem ancorar em algo mais específico gerou falso-positivo maciço
+// contra esse padrão legítimo. A convenção do repo (confirmada por grep em
+// ~35 arquivos test/*.test.ts, ex: test/inbox-drain.test.ts:77,
+// test/drive-sync.test.ts:36) é usar SEMPRE o identificador exato `ROOT`
+// (maiúsculo) pro path real do repo — nunca pra um dir `mkdtempSync` fake.
+// Os padrões abaixo exigem esse identificador exato como argumento de
+// resolve/join — `join(root, ...)` (minúsculo, fake) nunca casa.
+const REAL_PATH_TARGETS: RealPathTarget[] = [
+  {
+    label: "platform.config.json",
+    inlineRe:
+      /writeFileSync\(\s*(?:resolve|join)\(\s*ROOT\b[^)]*?["'`]platform\.config\.json["'`][^)]*?\)/g,
+    literalRe: /writeFileSync\(\s*["'`][^"'`]*platform\.config\.json["'`]/g,
+    varDeclRe:
+      /(?:const|let)\s+(\w+)\s*=\s*(?:resolve|join)\(\s*ROOT\b[^;]*?["'`]platform\.config\.json["'`][^;]*?\)/g,
+    guidance:
+      "use CONFIG_PATH_TEST_OVERRIDE_ENV (scripts/inbox-drain.ts) + mkdtempSync em vez de " +
+      "escrever no platform.config.json real (raiz do repo, git-tracked!) — ver " +
+      "test/inbox-drain.test.ts pro padrão, #4369/#4396.",
+  },
+  {
+    label: "data/inbox-cursor.json",
+    inlineRe:
+      /writeFileSync\(\s*(?:resolve|join)\(\s*ROOT\b[^)]*?["'`]data["'`][^)]*?inbox-cursor\.json[^)]*?\)/g,
+    literalRe: /writeFileSync\(\s*["'`][^"'`]*data[\\/]inbox-cursor\.json["'`]/g,
+    varDeclRe:
+      /(?:const|let)\s+(\w+)\s*=\s*(?:resolve|join)\(\s*ROOT\b[^;]*?["'`]data["'`][^;]*?inbox-cursor\.json[^;]*?\)/g,
+    guidance:
+      "use INBOX_CURSOR_PATH_TEST_OVERRIDE_ENV (scripts/inbox-drain.ts) + mkdtempSync em vez " +
+      "de escrever no data/inbox-cursor.json real — ver test/inbox-drain.test.ts pro padrão, " +
+      "#4369/#4396.",
+  },
+  {
+    label: "data/inbox.md",
+    inlineRe:
+      /writeFileSync\(\s*(?:resolve|join)\(\s*ROOT\b[^)]*?["'`]data["'`][^)]*?inbox\.md[^)]*?\)/g,
+    literalRe: /writeFileSync\(\s*["'`][^"'`]*data[\\/]inbox\.md["'`]/g,
+    varDeclRe:
+      /(?:const|let)\s+(\w+)\s*=\s*(?:resolve|join)\(\s*ROOT\b[^;]*?["'`]data["'`][^;]*?inbox\.md[^;]*?\)/g,
+    guidance:
+      "use INBOX_MD_PATH_TEST_OVERRIDE_ENV (scripts/inbox-drain.ts) + mkdtempSync em vez de " +
+      "escrever no data/inbox.md real — ver test/inbox-drain.test.ts pro padrão, #4369/#4396.",
+  },
+];
+
+/** Acha ofensores (inline / literal / via variável) de `target` em `source` já sem comentários. */
+function findOffendersForTarget(source: string, target: RealPathTarget): string[] {
+  const offenders: string[] = [];
+  let m: RegExpExecArray | null;
+
+  const inlineRe = new RegExp(target.inlineRe.source, target.inlineRe.flags);
+  while ((m = inlineRe.exec(source))) offenders.push(m[0]);
+
+  const literalRe = new RegExp(target.literalRe.source, target.literalRe.flags);
+  while ((m = literalRe.exec(source))) offenders.push(m[0]);
+
+  const varDeclRe = new RegExp(target.varDeclRe.source, target.varDeclRe.flags);
+  const varNames: string[] = [];
+  let vm: RegExpExecArray | null;
+  while ((vm = varDeclRe.exec(source))) varNames.push(vm[1]);
+  for (const varName of varNames) {
+    const varRe = new RegExp(`writeFileSync\\(\\s*${varName}\\b`, "g");
+    while ((m = varRe.exec(source))) offenders.push(m[0]);
+  }
+
+  return offenders;
+}
+
+describe("nenhum test/*.test.ts escreve fake conteúdo em platform.config.json/data/inbox-cursor.json/data/inbox.md REAIS (#4396, segue #4344/#4369)", () => {
+  const files = testFilesUnder(TEST_DIR).filter((f) => resolve(f) !== SELF);
+
+  it("sanity: encontrou vários arquivos test/*.test.ts (senão o scan está quebrado)", () => {
+    assert.ok(
+      files.length > 5,
+      `esperava vários .test.ts sob ${TEST_DIR}, achou ${files.length} — este teste deixaria de proteger silenciosamente.`,
+    );
+  });
+
+  for (const target of REAL_PATH_TARGETS) {
+    for (const file of files) {
+      const rel = file.slice(ROOT.length + 1).replaceAll("\\", "/");
+      const rawSource = readFileSync(file, "utf8");
+      const source = stripComments(rawSource);
+
+      it(`${rel}: nunca escreve em ${target.label} REAL via writeFileSync`, () => {
+        const offenders = findOffendersForTarget(source, target);
+        assert.deepEqual(
+          offenders,
+          [],
+          `escrita direta em ${target.label} REAL detectada em ${rel} — ${target.guidance} ` +
+            `Ofensores:\n${offenders.join("\n")}`,
+        );
+      });
+    }
+  }
+});
+
+describe("fixtures inline: o guard genérico (#4396) pega arquivo de teste FICTÍCIO ofensor", () => {
+  for (const target of REAL_PATH_TARGETS) {
+    it(`${target.label}: construção inline writeFileSync(resolve(...)) é detectada`, () => {
+      const fakeSource =
+        target.label === "platform.config.json"
+          ? `writeFileSync(resolve(ROOT, "platform.config.json"), JSON.stringify({}), "utf8");`
+          : target.label === "data/inbox-cursor.json"
+            ? `writeFileSync(resolve(ROOT, "data", "inbox-cursor.json"), "{}", "utf8");`
+            : `writeFileSync(resolve(ROOT, "data", "inbox.md"), "conteudo", "utf8");`;
+
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse construção inline pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+
+    it(`${target.label}: literal writeFileSync("...") é detectado`, () => {
+      const fakeSource =
+        target.label === "platform.config.json"
+          ? `writeFileSync("platform.config.json", "{}", "utf8");`
+          : target.label === "data/inbox-cursor.json"
+            ? `writeFileSync("data/inbox-cursor.json", "{}", "utf8");`
+            : `writeFileSync("data/inbox.md", "conteudo", "utf8");`;
+
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse literal pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+
+    it(`${target.label}: escrita via variável declarada com o path real é detectada`, () => {
+      const fakeSource =
+        target.label === "platform.config.json"
+          ? `const CONFIG_PATH = resolve(ROOT, "platform.config.json");\nwriteFileSync(CONFIG_PATH, "{}", "utf8");`
+          : target.label === "data/inbox-cursor.json"
+            ? `const CURSOR_PATH = resolve(ROOT, "data", "inbox-cursor.json");\nwriteFileSync(CURSOR_PATH, "{}", "utf8");`
+            : `const INBOX_MD_PATH = resolve(ROOT, "data", "inbox.md");\nwriteFileSync(INBOX_MD_PATH, "conteudo", "utf8");`;
+
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse escrita via variável pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+  }
+
+  it("negativo: padrão real de test/inbox-drain.test.ts (fake dir via mkdtempSync) NÃO é flagado", () => {
+    // Reproduz o padrão legítimo usado em test/inbox-drain.test.ts: o path real
+    // nunca é construído com resolve/join do REPO ROOT — é só um nome de
+    // arquivo dentro do dir fake, via função helper (fakeConfigPath() etc.).
+    const legitSource = `
+      const fakeInboxDir = mkdtempSync(join(tmpdir(), "inbox-drain-paths-"));
+      function fakeConfigPath() { return join(fakeInboxDir, "platform.config.json"); }
+      function fakeCursorPath() { return join(fakeInboxDir, "inbox-cursor.json"); }
+      function fakeInboxMdPath() { return join(fakeInboxDir, "inbox.md"); }
+      writeFileSync(fakeConfigPath(), JSON.stringify({}), "utf8");
+      writeFileSync(fakeCursorPath(), JSON.stringify({ last_drain_iso: null }), "utf8");
+      writeFileSync(fakeInboxMdPath(), "conteudo", "utf8");
+    `;
+
+    for (const target of REAL_PATH_TARGETS) {
+      const offenders = findOffendersForTarget(legitSource, target);
+      assert.deepEqual(
+        offenders,
+        [],
+        `padrão legítimo (mkdtempSync + helper) foi falso-positivo pra ${target.label}: ${offenders.join("\n")}`,
+      );
+    }
+  });
+});
