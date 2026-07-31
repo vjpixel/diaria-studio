@@ -238,7 +238,7 @@ describe("buildInvocationSummary (#4202 — JSON de saída reflete a INVOCAÇÃO
     assert.equal(summary.status, "draft");
     // acumulado do ciclo continua disponível, mas NOMEADO/SEPARADO — nunca
     // confundido com o resultado desta invocação (que criou 1 campanha).
-    assert.deepEqual(summary.cycleTotals, { created: 2, scheduled: 1 });
+    assert.deepEqual(summary.cycleTotals, { created: 2, scheduled: 1, sent: 0 });
   });
 
   it("--send-test: phase='send-test', não herda 'created'/'scheduled' de fases anteriores", () => {
@@ -283,7 +283,7 @@ describe("buildInvocationSummary (#4202 — JSON de saída reflete a INVOCAÇÃO
     assert.equal(summary.status, "scheduled");
     // só agora as DUAS campanhas do ciclo estão scheduled — cycleTotals
     // reflete isso, mas continua separado do resultado desta invocação.
-    assert.deepEqual(summary.cycleTotals, { created: 2, scheduled: 2 });
+    assert.deepEqual(summary.cycleTotals, { created: 2, scheduled: 2, sent: 0 });
   });
 
   it("nenhuma flag de fase (plan-only) → phase vazio, sem quebrar o shape", () => {

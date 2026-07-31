@@ -425,3 +425,100 @@ export async function fetchCommittedCampaignListIds(apiKey: string): Promise<Set
   ]);
   return new Set([...queued, ...sent]);
 }
+
+// ---------------------------------------------------------------------------
+// brevoSendNow (#4347 G7/D7) — dispara uma campanha IMEDIATAMENTE, sem
+// agendamento. `clarice-schedule-group.ts` (`--send-now`) usa isto no lugar
+// do `--schedule` (PUT scheduledAt) quando a janela é "agora" — laço
+// cadastro-novo→envio-imediato da skill `/diaria-clarice-novos`.
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /v3/emailCampaigns/{id}/sendNow` — dispara a campanha AGORA. Mesma
+ * disciplina de retry/rate-limit de `brevoPost` (via `withBrevo429Retry`).
+ * O corpo de resposta é irrelevante (a Brevo retorna 204 sem corpo) — quem
+ * chama deve confirmar o disparo via GET pós-POST
+ * (`brevoGetCampaign`/`isTerminalSendStatus` abaixo), nunca confiar só no 2xx
+ * do POST (#4347 — o mesmo racional de `applyVerifyResults` pro `--schedule`).
+ */
+export async function brevoSendNow(
+  apiKey: string,
+  campaignId: number,
+  _sleep = _defaultSleep,
+): Promise<void> {
+  await withBrevo429Retry(async () => {
+    const res = await brevoRawFetch(`https://api.brevo.com/v3/emailCampaigns/${campaignId}/sendNow`, {
+      method: "POST",
+      headers: { "api-key": apiKey, Accept: "application/json" },
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`Brevo API POST /emailCampaigns/${campaignId}/sendNow falhou (${res.status}): ${text}`);
+    }
+    await res.body?.cancel().catch(() => {});
+  }, _sleep);
+}
+
+/**
+ * Status TERMINAL de um disparo imediato — `sent` (já processado) OU
+ * `inProcess` (a Brevo aceitou e está enviando; "terminal" aqui significa
+ * "confirmadamente em curso", não necessariamente concluído — distinto de
+ * `draft`/`queued`, que indicariam que o `sendNow` NÃO pegou). Usado pelo
+ * GET-verify pós-`sendNow` — nunca confiar só no 2xx do POST (#4347).
+ */
+export function isTerminalSendStatus(status: string): boolean {
+  return status === "sent" || status === "inProcess";
+}
+
+// ---------------------------------------------------------------------------
+// Folders (#4347 Etapa 4) — "Clarice novos" dedicada, resolvida por nome ou
+// criada se ausente. `clarice-import-waves.ts --folder-id N` já aceita um id
+// arbitrário; isto resolve QUAL id passar sem o editor copiar manualmente.
+// ---------------------------------------------------------------------------
+
+/** Paginado, mesmo padrão de `brevoListAllLists`. */
+export async function brevoListAllFolders(
+  apiKey: string,
+  _sleep = _defaultSleep,
+): Promise<{ id: number; name: string }[]> {
+  const out: { id: number; name: string }[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await withBrevo429Retry(async () => {
+      const res = await brevoRawFetch(`https://api.brevo.com/v3/contacts/folders?limit=50&offset=${offset}`, {
+        headers: { "api-key": apiKey, Accept: "application/json" },
+      });
+      if (!res.ok) {
+        const rawText = await res.text();
+        const text = rawText.length > 500 ? rawText.slice(0, 500) + "… [truncado]" : rawText;
+        throw new Error(`Brevo API GET /contacts/folders falhou (${res.status}): ${text}`);
+      }
+      return (await res.json()) as { folders?: { id: number; name: string }[] };
+    }, _sleep);
+    const folders = page.folders ?? [];
+    out.push(...folders.map((f) => ({ id: f.id, name: f.name })));
+    if (folders.length < 50) break;
+    offset += 50;
+  }
+  return out;
+}
+
+/**
+ * Resolve o id da folder Brevo com `name` — reusa se já existe, cria (POST
+ * /contacts/folders) se não. Lança em qualquer falha (o caller decide o
+ * fallback pra folder 1, ver `clarice-resolve-folder.ts`).
+ */
+export async function resolveOrCreateBrevoFolder(
+  apiKey: string,
+  name: string,
+  _sleep = _defaultSleep,
+): Promise<number> {
+  const existing = await brevoListAllFolders(apiKey, _sleep);
+  const found = existing.find((f) => f.name === name);
+  if (found) return found.id;
+  const created = (await brevoPost(apiKey, "/contacts/folders", { name }, _sleep)) as { id?: number };
+  if (typeof created.id !== "number") {
+    throw new Error(`/contacts/folders POST shape inesperado: ${JSON.stringify(created)}`);
+  }
+  return created.id;
+}
