@@ -168,7 +168,13 @@ describe("orchestrator-prompt (#634)", () => {
       // pós-autofix, promovidos de WARN-ONLY a GATE-BLOCKING em §4c.2b sem
       // linhas novas). Teto bumped de 670→674 com headroom pequeno (era 672
       // medido pós-#4361/#4352).
-      "orchestrator-stage-4.md": 674,
+      // #4354 (merge subsequente): +15 linhas (nova §4c.7 — roda
+      // `box-click-report.ts` e apresenta o ranking de boxes de divulgação
+      // por clique no gate, seção `━━━ BOXES DE DIVULGAÇÃO` + regra de
+      // apresentação do `{box_click_report_block}`). Já condensado (de ~22
+      // linhas brutas pra 15) antes de bumpar. Teto bumped de 674→690 com
+      // headroom pequeno pra cobrir os dois PRs combinados.
+      "orchestrator-stage-4.md": 690,
       "orchestrator-stage-5.md": 455,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
