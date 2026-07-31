@@ -26,9 +26,10 @@
  *   CLOUDFLARE_ACCOUNT_ID    obrigatório pro write real (não pro --dry-run)
  *   CURSOS_KV_NAMESPACE_ID   id do namespace CURSOS_SUBSCRIBERS (ou --namespace-id)
  *
- * Follow-up documentado no PR #4052: agendar via Task Scheduler seguindo o
- * MESMO padrão de `scripts/run-clarice-sync-daily.ps1` (não implementado
- * aqui — script funciona standalone/manual primeiro).
+ * Agendado (#4320) via Task Scheduler no mesmo padrão de
+ * `scripts/run-clarice-sync-daily.ps1` — ver `scripts/run-cursos-kv-sync.ps1`
+ * + `scripts/setup-cursos-kv-sync-schedule.ps1` (task "Diaria-Cursos-Kv-Sync",
+ * diária 09:15). Segue funcionando standalone/manual também (uso abaixo).
  */
 import "dotenv/config";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";

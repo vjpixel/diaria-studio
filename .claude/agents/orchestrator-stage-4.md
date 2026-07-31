@@ -231,17 +231,17 @@ npx tsx scripts/lint-social-md.ts --check no-xml-artifacts --md {EDITION_DIR}/03
 ```
 `no-xml-artifacts` (#4118 finding 2, #4077): **GATE-BLOCKING** quando exit 1 — mesmo backstop já aplicado a `02-reviewed.md` (§4c.2 acima), agora também em `03-social.md`: tag de tool-call crua (`</content>`, `</invoke>`, `</function_calls>`) grudada no FIM do arquivo, sintoma de um payload de tool-call vazando num caminho de save assistido (ex: chat drawer do Studio). `saveReviewFile` (`scripts/studio-ui/studio-review.ts`) já strippa esse mesmo padrão pra TODOS os slugs (inclusive `social`) ANTES de escrever em disco — este lint é o backstop independente da causa. Ação: remover manualmente o trecho de tag XML solta do fim de `03-social.md` antes de aprovar o gate.
 
-**Antítese-revelação social (#2526) — WARN-ONLY:**
+**Antítese-revelação social (#2526) — GATE-BLOCKING desde #4352:**
 ```bash
 npx tsx scripts/lint-social-md.ts --check no-antithesis-reveal --md {EDITION_DIR}/03-social.md
 ```
-Detecta construções de "negar pra revelar" que soam a IA (ex: "não é X, é Y", "de verdade, não só", "o que me chama atenção não é..."). **Exit 0 mesmo com matches** — exibir como ⚠️ no `{violations_block}` com linha + trecho, sem bloquear o gate.
+Detecta construções de "negar pra revelar" que soam a IA (ex: "não é X, é Y", "de verdade, não só", "o que me chama atenção não é..."). **Exit 1 = GATE-BLOCKING** (igual aos outros lints invariantes de §4c.2) — ❌ mostrar no resumo com ação: "reescreva a frase direto, sem negar pra revelar, antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde (exit 0). Promovido de WARN-ONLY no #4352 — caso real (edição pré-260731): 2 ocorrências deste tique sobreviveram até a revisão manual do editor porque uma correção mecânica de travessão→pontuação, aplicada DEPOIS do humanizador já ter rodado, reintroduziu o padrão e o warn não travou nada.
 
-**Gancho editorial emendado social (#2658) — WARN-ONLY:**
+**Gancho editorial emendado social (#2658) — GATE-BLOCKING desde #4352:**
 ```bash
 npx tsx scripts/lint-social-md.ts --check no-trailing-editorial-hook --md {EDITION_DIR}/03-social.md
 ```
-Primo de #2526: detecta ", e [gancho editorial]" emendado no fim de uma frase (ex: "...entrou em prévia, e a escolha de focos diz mais sobre estratégia do que os benchmarks costumam revelar"). **Exit 0 mesmo com matches** — exibir como ⚠️ no `{violations_block}` com linha + trecho, sem bloquear o gate. (#2715 — antes desta chamada explícita, o check só rodava como invariante `stage: 2` sem nenhum ponto de apresentação ao editor, e o campo `trailing_hook_matches` de `check-humanizer-social.ts` só era impresso no caminho raro de hash-mismatch pós-humanizador; agora roda sempre, no caminho comum.)
+Primo de #2526: detecta ", e [gancho editorial]" emendado no fim de uma frase (ex: "...entrou em prévia, e a escolha de focos diz mais sobre estratégia do que os benchmarks costumam revelar"). **Exit 1 = GATE-BLOCKING**, mesmo padrão do check acima — ❌ mostrar no resumo com ação: "mover o gancho pro corpo ou cortar a oração emendada, antes de aprovar". Gate só pode ser aprovado (`sim`) após lint verde (exit 0). Promovido de WARN-ONLY no #4352, mesmo racional do check acima. (#2715 — antes desta chamada explícita, o check só rodava como invariante `stage: 2` sem nenhum ponto de apresentação ao editor, e o campo `trailing_hook_matches` de `check-humanizer-social.ts` só era impresso no caminho raro de hash-mismatch pós-humanizador; agora roda sempre, no caminho comum.)
 
 **Guard determinístico do humanizador social (#2279, #2529):**
 ```bash
@@ -252,7 +252,7 @@ Exit code handling:
 - `1` → **GATE-BLOCKING:** sentinel ausente — humanizador não rodou no social ou sentinel não foi gravado. Ação: re-rodar humanizador, depois `--write`, antes de aprovar.
 - `2` → **GATE-BLOCKING:** `03-social.md` foi editado/reordenado após humanização (hash diverge — caso real: edição inline em §4d.1 ou reorder de destaques).
 
-  **#2529 — Tic lint automático no exit 2:** quando o hash diverge, o guard roda automaticamente `lintAntithesisReveal` sobre o `03-social.md` atual e emite WARNs adicionais no stderr. Se o stderr contiver `⚠️  TICS DE IA DETECTADOS`, incluir esses tics no bloco `{violations_block}` do gate como `⚠️ Social editado pós-humanizador acusa tics de IA (lista abaixo) — considere re-humanizar`. Se o stderr contiver apenas `ℹ️  Lint de tics: nenhum tic detectado`, a edição pode ter sido só remoção de tic — apresentar essa informação ao editor para auxiliar a decisão. O evento é sempre logado no run-log automaticamente.
+  **#2529 — Tic lint automático no exit 2:** quando o hash diverge, o guard roda automaticamente `lintAntithesisReveal` sobre o `03-social.md` atual e emite WARNs adicionais no stderr. Se o stderr contiver `⚠️  TICS DE IA DETECTADOS`, incluir esses tics no bloco `{violations_block}` do gate como `⚠️ Social editado pós-humanizador acusa tics de IA (lista abaixo) — considere re-humanizar`. Se o stderr contiver apenas `ℹ️  Lint de tics: nenhum tic detectado`, a edição pode ter sido só remoção de tic — apresentar essa informação ao editor para auxiliar a decisão. O evento é sempre logado no run-log automaticamente. **Nota (#4352):** esta chamada interna permanece informativa por design — o exit 2 já é GATE-BLOCKING independente de tics (hash divergiu, ponto final). O bloqueio de fato para os tiques em si vem das chamadas explícitas e incondicionais de §4c.2b acima (`no-antithesis-reveal`/`no-trailing-editorial-hook`, que rodam sempre, hash tendo divergido ou não) — são essas que capturam o cenário do #4352 (tique sobrevivendo apesar do sentinel bater, porque foi introduzido ANTES do `--write` final).
 
   **Re-humanizar antes de aprovar** (quando exit 2, independente de tics) — seguir o mesmo fluxo SCOPED/FULL-FILE de **§4d.1 passo 6** (re-humanização scoped #3446): a saída do `--check` acima já traz `{ legacy, changed_sections }` no stdout — usar direto, sem rodar o check de novo.
 
@@ -287,18 +287,19 @@ Agent("fact-checker", {
 })
 ```
 
-Após o subagente concluir (gravar `_internal/fact-check.json`), formatar o gate summary:
+Após o subagente concluir (gravar `_internal/fact-check.json`), formatar o gate summary e checar bloqueio (#4361):
 ```bash
-# 2. Formatar seção para o gate (lê o fact-check.json gravado pelo subagente):
+# 2. Formatar seção pro gate e checar claims GATE-BLOCKING (--check-blocking, #4361):
 npx tsx scripts/run-fact-checker.ts --edition-dir {EDITION_DIR}/ \
-  --input-json {EDITION_DIR}/_internal/fact-check.json
+  --input-json {EDITION_DIR}/_internal/fact-check.json --check-blocking
 ```
 
 **Exit code handling:**
 - `0` → capturar stdout (seção formatada) e incluir na seção `━━━ FACT-CHECK` do gate.
 - `1` → fact-checker não rodou (pré-condição falhou ou arquivo ausente) → mostrar `⚠️ Fact-check indisponível: {motivo do stderr}` no gate. **Não bloquear** — fact-check é assistido, não gate-blocking.
+- `2` → **GATE-BLOCKING (#4361):** ao menos 1 claim `NOT_FOUND_IN_SOURCE` não-superlativo (`getBlockingClaims`) — a fonte primária foi verificada com sucesso e o claim simplesmente não está lá. Caso real (edição 260731): "é a segunda vez que a xAI recorre à Justiça..." sobreviveu ao Stage 4 por ser só informativo. **NÃO montar o gate ainda.** Ação: ler os claims no stderr (D{N} + texto + note), reescrever/remover o claim de `02-reviewed.md`/`03-social.md` (ou achar suporte adicional na fonte), re-rodar o fact-checker até sair `0`/`1`, antes de §4c.6b. Escopo estreito de propósito (não over-broaden, #4361): exclui `claim_type: "superlative"` (mais subjetivo, continua informativo) e `DIVERGENT`/`SUSTAINED`/`INFERRED`/`SOURCE_UNREACHABLE` (DIVERGENT já é auto-corrigido em §4c.6b; os demais não confirmam ausência).
 
-**Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (grava `_internal/fact-check.json`), mas pular a apresentação no gate (que é pulado inteiramente). O arquivo fica disponível para auditoria pós-edição.
+**Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (grava `_internal/fact-check.json`, roda `--check-blocking`), mas pular a apresentação no gate (que é pulado inteiramente). **O exit 2 (GATE-BLOCKING) ainda vale** — mesmo sem gate visual, o orchestrator não pode prosseguir para Etapa 5 com um claim NOT_FOUND_IN_SOURCE não resolvido; parar e renderizar halt banner (mesmo padrão do #738) explicando o motivo, já que não há editor no gate pra decidir aqui. O arquivo fica disponível para auditoria pós-edição em qualquer caso.
 
 **4c.6b — Auto-fix de DIVERGENT determinístico (#2598, estendido a social em #3224):**
 
@@ -389,7 +390,10 @@ Rodar SOMENTE os lints relevantes ao arquivo que o autofix de fato tocou:
   npx tsx scripts/lint-social-md.ts --check post_pixel-matches-d1 --md {EDITION_DIR}/03-social.md
   npx tsx scripts/lint-social-md.ts --check linkedin-page-link --md {EDITION_DIR}/03-social.md
   npx tsx scripts/lint-social-md.ts --check platform-headers-unicos --md {EDITION_DIR}/03-social.md
+  npx tsx scripts/lint-social-md.ts --check no-antithesis-reveal --md {EDITION_DIR}/03-social.md
+  npx tsx scripts/lint-social-md.ts --check no-trailing-editorial-hook --md {EDITION_DIR}/03-social.md
   ```
+  (#4352 item 2 — os 2 últimos são os tic-lints GATE-BLOCKING de §4c.2b: o autofix mexe em `03-social.md` DEPOIS do humanizador já ter rodado e pode reintroduzir um tique tipo "não é X, é Y"; sem re-auditar aqui, só o sentinel de HASH era re-selado, sem re-verificar o CONTEÚDO.)
 
 Exit code handling — **GATE-BLOCKING**, mesmo padrão que `check-humanizer-social.ts --check` já usa logo acima: se falhar, tratar como o exit 2 padrão de §4c.2b (re-corrigir e re-selar antes do gate, nunca deixar a violação vazar pro resumo do editor):
 - `0` em todos os lints rodados → continuar.
@@ -502,7 +506,7 @@ Aprovar e prosseguir para Publicação (Etapa 5)?
 Regras de apresentação:
 - `{verify_verdict}` = `✅ acessível` / `⚠️ inacessível` / `⏱ timeout`.
 - `{violations_block}` = uma linha por violation com ❌ (crítico) ou ⚠️ (warning) + mensagem.
-- `{fact_check_block}` = saída do `formatGateSummary` de `scripts/run-fact-checker.ts --input-json` (§4c.6). Se fact-checker falhou ou `fact-check.json` não existe: `⚠️ Fact-check indisponível — verificar manualmente antes de publicar.` **Nunca bloquear o gate por ausência do fact-check.** Decisão final é sempre do editor.
+- `{fact_check_block}` = saída do `formatGateSummary` de `scripts/run-fact-checker.ts --input-json` (§4c.6). Se fact-checker falhou ou `fact-check.json` não existe: `⚠️ Fact-check indisponível — verificar manualmente antes de publicar.` **Nunca bloquear o gate por ausência/indisponibilidade do fact-check** (exit 1) — decisão final é sempre do editor. **Exceção (#4361):** claims `NOT_FOUND_IN_SOURCE` não-superlativos SÃO gate-blocking (exit 2 de `--check-blocking`, ver §4c.6) — o gate não deve nem ser montado enquanto esses claims não forem resolvidos (ver ação em §4c.6).
 - `{box_click_report_block}` = stdout de `scripts/box-click-report.ts` (§4c.7) — nunca bloqueia o gate (ver tratamento de exit code em §4c.7).
 - Títulos dos posts sociais: primeira linha não-vazia de cada post no `03-social.md` (o "hook").
 - Se pré-render falhou em algum passo (newsletter HTML, social HTML), indicar `⚠️ preview indisponível` com motivo.

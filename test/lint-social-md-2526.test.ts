@@ -6,6 +6,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { lintAntithesisReveal } from "../scripts/lint-social-md.ts";
 
 // ---------------------------------------------------------------------------
@@ -182,5 +186,54 @@ describe("lintAntithesisReveal (#2540) — lastIndex reset: contexto correto com
       firstCtx.includes("custo") || firstCtx.includes("é investimento"),
       `contexto deve incluir o 1º match ("custo"/"é investimento"); got: "${firstCtx}"`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4352 — CLI `--check no-antithesis-reveal` promovido de WARN-ONLY para
+// GATE-BLOCKING. Regressão do cenário real: 2 ocorrências de "não é X, é Y"
+// (introduzidas por uma correção mecânica de travessão→pontuação aplicada
+// DEPOIS do humanizador já ter rodado) sobreviveram até a revisão manual do
+// editor porque o CLI sempre saía 0. Este bloco garante que o CLI agora sai
+// 1 quando o padrão está presente, e continua 0 em texto limpo.
+// ---------------------------------------------------------------------------
+
+function mkSocialFixture(body: string): string {
+  return `# LinkedIn\n\n## d1\n\n${body}\n\n# Facebook\n\n## d1\n\nfb\n`;
+}
+
+function runLintSocialCli(md: string) {
+  const dir = mkdtempSync(join(tmpdir(), "antithesis-cli-"));
+  try {
+    const p = join(dir, "03-social.md");
+    writeFileSync(p, md, "utf8");
+    const scriptPath = join(import.meta.dirname, "..", "scripts", "lint-social-md.ts");
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--check", "no-antithesis-reveal", "--md", p],
+      { encoding: "utf8" },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("CLI --check no-antithesis-reveal (#4352 — GATE-BLOCKING)", () => {
+  it("caso real: 'a conta não é a de X: é a de Y' (dash→pontuação pós-humanizador) → exit 1", () => {
+    // Reproduz o incidente relatado no #4352: uma troca mecânica de travessão
+    // por dois-pontos, aplicada depois do humanizador já ter rodado, produziu
+    // esse padrão exato de antítese-revelação.
+    const md = mkSocialFixture("A conta não é a de eletricidade: é a de água.");
+    const result = runLintSocialCli(md);
+    assert.equal(result.status, 1, `exit 1 esperado (GATE-BLOCKING); stderr: ${result.stderr}`);
+    assert.ok(result.stderr.includes("❌"), "stderr deve mostrar ❌, não mais ⚠️ (promovido de warn)");
+  });
+
+  it("texto limpo (sem antítese-revelação) → exit 0", () => {
+    const md = mkSocialFixture(
+      "A Anthropic lançou o Claude 4 com foco em raciocínio de longa duração.",
+    );
+    const result = runLintSocialCli(md);
+    assert.equal(result.status, 0, `exit 0 esperado para texto limpo; stderr: ${result.stderr}`);
   });
 });

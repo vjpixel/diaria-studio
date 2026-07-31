@@ -103,16 +103,16 @@ export const GATED_INDEX_PATHS = ["/", "/index.html"];
  * pra "todo mundo vê o teaser" é aceitável, derrubar a home não.
  *
  * O custo disso é observabilidade — 200 silencioso não aparece no gráfico de
- * erro nativo do Cloudflare como um 500 apareceria. Mitigado, NÃO resolvido:
- * todo caminho de degradação deste handler loga e `[observability]` está
- * ligado no `wrangler.toml`, então o rastro passa a ser coletado e
- * consultável. Mas ninguém consome esses logs — não há Logpush, alerta, nem
- * check agendado (o repo tem o padrão pronto em
- * `scripts/clarice-guardrail-alarm.ts`, não aplicado aqui). Na prática: a
- * falha deixa de ser invisível e passa a ser visível-se-alguém-for-olhar, e
- * ninguém tem motivo pra olhar. Some-se que Workers Logs amostra sob volume
- * alto, ou seja, o sinal degrada justo durante uma pane total. Fechar isso de
- * verdade é a #4305. */
+ * erro nativo do Cloudflare como um 500 apareceria. Mitigado desde #4320:
+ * todo caminho de degradação deste handler loga, `[observability]` está
+ * ligado no `wrangler.toml`, e agora `scripts/cursos-error-alarm.ts` consome
+ * esses logs (Cloudflare GraphQL Analytics API) numa cadência agendada (task
+ * "Diaria-Cursos-Error-Alarm", a cada 2h — ver
+ * `scripts/setup-cursos-error-alarm-schedule.ps1`) e alarma o editor por
+ * e-mail quando uma linha fatal aparece ou a taxa de `?email= não
+ * confirmado` estoura o limiar. Ainda vale a ressalva de que Workers Logs
+ * amostra sob volume alto (o sinal pode degradar justo durante uma pane
+ * total), mas o caminho de descoberta deixou de ser "um leitor reclamar". */
 async function handleIndex(request: Request, env: Env): Promise<Response> {
   try {
     const url = new URL(request.url);
@@ -155,6 +155,14 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
     if (canIssueSession && emailParam && isValidEmailFormat(emailParam)) {
       const outcome = await checkGateSubscriber(env, emailParam);
       if (outcome.status === "active") {
+        // #4320: contraparte do log de "não confirmado" logo abaixo — sem
+        // este log, o caminho de SUCESSO nunca aparecia em nenhuma linha,
+        // e o alarme de taxa (scripts/cursos-error-alarm.ts) não tinha
+        // denominador pra calcular "% não confirmado" (só o numerador).
+        // Mesmo cuidado de redação dos dois `console.warn` logo abaixo:
+        // NUNCA interpola `emailParam` — a contagem é o que importa, não
+        // quem.
+        console.log("[cursos] ?email= confirmado como assinante ativo — desbloqueado");
         const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, emailParam);
         return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
       }

@@ -162,13 +162,18 @@ describe("orchestrator-prompt (#634)", () => {
       // (era 667 medido pós-#4076 — #4140 apertou de 685 pra 670: subir 20
       // pra cobrir 2 linhas de crescimento real pré-autorizava 18 linhas de
       // bloat futuro sem revisão).
-      // #4354: +15 linhas (nova §4c.7 — roda `box-click-report.ts` e
-      // apresenta o ranking de boxes de divulgação por clique no gate,
-      // seção `━━━ BOXES DE DIVULGAÇÃO` + regra de apresentação do
-      // `{box_click_report_block}`). Já condensado (de ~22 linhas brutas
-      // pra 15) antes de bumpar — mais compressão perderia o exit-code
-      // handling ou o próprio bloco do gate. Teto bumped de 670→690 com
-      // headroom pequeno (era 684 medido pós-#4354).
+      // #4361/#4352: +4 linhas (`--check-blocking` no fact-checker §4c.6 +
+      // exit code 2 GATE-BLOCKING para NOT_FOUND_IN_SOURCE não-superlativo;
+      // re-audit de no-antithesis-reveal/no-trailing-editorial-hook em §4c.6c
+      // pós-autofix, promovidos de WARN-ONLY a GATE-BLOCKING em §4c.2b sem
+      // linhas novas). Teto bumped de 670→674 com headroom pequeno (era 672
+      // medido pós-#4361/#4352).
+      // #4354 (merge subsequente): +15 linhas (nova §4c.7 — roda
+      // `box-click-report.ts` e apresenta o ranking de boxes de divulgação
+      // por clique no gate, seção `━━━ BOXES DE DIVULGAÇÃO` + regra de
+      // apresentação do `{box_click_report_block}`). Já condensado (de ~22
+      // linhas brutas pra 15) antes de bumpar. Teto bumped de 674→690 com
+      // headroom pequeno pra cobrir os dois PRs combinados.
       "orchestrator-stage-4.md": 690,
       "orchestrator-stage-5.md": 455,
     };

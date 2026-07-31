@@ -34,6 +34,7 @@ import {
   formatGateSummary,
   normalizeFactCheckResult,
   computeAttentionItems,
+  getBlockingClaims,
   type FactCheckResult,
   type FactClaim,
   type DryRunOutput,
@@ -816,5 +817,210 @@ describe("regressões #2468 — finding 5: ghost-header em formatGateSummary", (
     const s = formatGateSummary(result);
     assert.ok(!s.includes("item(ns) de atenção"), "fallback genérico não deve aparecer com seções reais");
     assert.ok(s.includes("DIVERGÊNCIAS"), "seção de divergências deve aparecer");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4361 — getBlockingClaims + CLI --check-blocking
+//
+// Regressão: claim não-superlativo NOT_FOUND_IN_SOURCE ("é a segunda vez que
+// a xAI recorre à Justiça...", edição 260731) sobreviveu ao Stage 4 porque o
+// fact-check era só informativo ali. Este bloco garante que esse cenário
+// específico agora É capturado/bloqueado via --check-blocking, sem
+// over-broaden (DIVERGENT/SUSTAINED/INFERRED/SOURCE_UNREACHABLE e
+// superlativos continuam non-blocking).
+// ---------------------------------------------------------------------------
+
+describe("getBlockingClaims (#4361)", () => {
+  const makeClaim = (
+    verdict: FactClaim["verdict"],
+    claim_type: FactClaim["claim_type"],
+    text = "test",
+  ): FactClaim => ({
+    destaque: 2,
+    claim_type,
+    text,
+    context: "ctx",
+    sources: ["newsletter"],
+    verdict,
+  });
+
+  it("caso real 260731: NOT_FOUND_IN_SOURCE não-superlativo ('segunda vez...') bloqueia", () => {
+    const claims = [
+      makeClaim("NOT_FOUND_IN_SOURCE", "number", "é a segunda vez que a xAI recorre à Justiça"),
+    ];
+    const blocking = getBlockingClaims(claims);
+    assert.equal(blocking.length, 1, "claim NOT_FOUND_IN_SOURCE não-superlativo deve bloquear");
+    assert.ok(blocking[0].text.includes("segunda vez"));
+  });
+
+  it("NOT_FOUND_IN_SOURCE de superlativo NÃO bloqueia (escopo estreito #4361)", () => {
+    const claims = [makeClaim("NOT_FOUND_IN_SOURCE", "superlative", "pioneira no setor")];
+    assert.equal(getBlockingClaims(claims).length, 0, "superlativo continua informativo, não gate-blocking");
+  });
+
+  it("DIVERGENT não bloqueia (autofix de §4c.6b já cobre)", () => {
+    const claims = [makeClaim("DIVERGENT", "price")];
+    assert.equal(getBlockingClaims(claims).length, 0);
+  });
+
+  it("SUSTAINED não bloqueia", () => {
+    const claims = [makeClaim("SUSTAINED", "price")];
+    assert.equal(getBlockingClaims(claims).length, 0);
+  });
+
+  it("SOURCE_UNREACHABLE não bloqueia (falha de rede, não confirmação de ausência)", () => {
+    const claims = [makeClaim("SOURCE_UNREACHABLE", "date")];
+    assert.equal(getBlockingClaims(claims).length, 0);
+  });
+
+  it("INFERRED não bloqueia", () => {
+    const claims = [makeClaim("INFERRED", "price")];
+    assert.equal(getBlockingClaims(claims).length, 0);
+  });
+
+  it("mistura de claims — só o NOT_FOUND_IN_SOURCE não-superlativo aparece", () => {
+    const claims = [
+      makeClaim("DIVERGENT", "price"),
+      makeClaim("NOT_FOUND_IN_SOURCE", "superlative"),
+      makeClaim("NOT_FOUND_IN_SOURCE", "date", "lançado em março"),
+      makeClaim("SUSTAINED", "number"),
+      makeClaim("SOURCE_UNREACHABLE", "price"),
+    ];
+    const blocking = getBlockingClaims(claims);
+    assert.equal(blocking.length, 1);
+    assert.equal(blocking[0].text, "lançado em março");
+  });
+});
+
+describe("CLI --check-blocking (#4361)", () => {
+  function writeFixture(tmp: string, agentClaims: unknown[]) {
+    const internalDir = join(tmp, "_internal");
+    mkdirSync(internalDir, { recursive: true });
+    writeFileSync(join(tmp, "02-reviewed.md"), "DESTAQUE 2\n\nTexto.\n", "utf8");
+    writeFileSync(join(tmp, "03-social.md"), "# LinkedIn\n## d2\nPost.\n", "utf8");
+    writeFileSync(
+      join(internalDir, "01-approved.json"),
+      JSON.stringify({ highlights: [{ url: "https://ex.com", title_options: ["T"], article: { title: "T", summary: "S" } }] }),
+      "utf8",
+    );
+    const inputJsonPath = join(tmp, "agent.json");
+    writeFileSync(inputJsonPath, JSON.stringify({ claims: agentClaims, checked_at: new Date().toISOString() }), "utf8");
+    return inputJsonPath;
+  }
+
+  it("caso real 260731: claim NOT_FOUND_IN_SOURCE não-superlativo + --check-blocking → exit 2", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "fact-check-4361-block-"));
+    try {
+      const inputJsonPath = writeFixture(tmp, [
+        {
+          destaque: 2,
+          claim_type: "number",
+          text: "é a segunda vez que a xAI recorre à Justiça",
+          context: "é a segunda vez que a xAI recorre à Justiça contra um crítico",
+          sources: ["newsletter"],
+          verdict: "NOT_FOUND_IN_SOURCE",
+          note: "Fonte primária (Canaltech) não menciona ocorrência anterior",
+        },
+      ]);
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath, "--check-blocking"]);
+      assert.equal(result.status, 2, `exit 2 esperado (GATE-BLOCKING). stderr: ${result.stderr}`);
+      assert.ok(result.stderr.includes("GATE-BLOCKING"), "stderr deve indicar GATE-BLOCKING");
+      assert.ok(result.stderr.includes("segunda vez"), "stderr deve mostrar o claim bloqueante");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("mesmo claim SEM --check-blocking → exit 0 (comportamento pré-#4361 preservado)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "fact-check-4361-noflag-"));
+    try {
+      const inputJsonPath = writeFixture(tmp, [
+        {
+          destaque: 2,
+          claim_type: "number",
+          text: "é a segunda vez que a xAI recorre à Justiça",
+          context: "ctx",
+          sources: ["newsletter"],
+          verdict: "NOT_FOUND_IN_SOURCE",
+        },
+      ]);
+      // Sem --check-blocking: mesmo comportamento de sempre (não quebra callers existentes).
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath]);
+      assert.equal(result.status, 0, `exit 0 esperado sem --check-blocking. stderr: ${result.stderr}`);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("claim superlativo NOT_FOUND_IN_SOURCE + --check-blocking → exit 0 (não bloqueia, escopo estreito)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "fact-check-4361-superlative-"));
+    try {
+      const inputJsonPath = writeFixture(tmp, [
+        {
+          destaque: 2,
+          claim_type: "superlative",
+          text: "pioneira no setor",
+          context: "ctx",
+          sources: ["social"],
+          verdict: "NOT_FOUND_IN_SOURCE",
+        },
+      ]);
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath, "--check-blocking"]);
+      assert.equal(result.status, 0, `superlativo não deve bloquear. stderr: ${result.stderr}`);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("claim DIVERGENT + --check-blocking → exit 0 (autofix já cobre, não duplica bloqueio)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "fact-check-4361-divergent-"));
+    try {
+      const inputJsonPath = writeFixture(tmp, [
+        {
+          destaque: 2,
+          claim_type: "price",
+          text: "R$ 99",
+          context: "ctx",
+          sources: ["newsletter"],
+          verdict: "DIVERGENT",
+          suggested_fix: "R$ 24,99",
+        },
+      ]);
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath, "--check-blocking"]);
+      assert.equal(result.status, 0, `DIVERGENT não deve bloquear via este check. stderr: ${result.stderr}`);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("claims todos SUSTAINED + --check-blocking → exit 0", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "fact-check-4361-sustained-"));
+    try {
+      const inputJsonPath = writeFixture(tmp, [
+        { destaque: 2, claim_type: "price", text: "R$ 24,99", context: "ctx", sources: ["newsletter"], verdict: "SUSTAINED" },
+      ]);
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath, "--check-blocking"]);
+      assert.equal(result.status, 0);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("--check-blocking ainda grava fact-check.json normalmente antes de sair 2", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "fact-check-4361-writes-"));
+    try {
+      const inputJsonPath = writeFixture(tmp, [
+        { destaque: 2, claim_type: "date", text: "lançado em março de 2026", context: "ctx", sources: ["newsletter"], verdict: "NOT_FOUND_IN_SOURCE" },
+      ]);
+      const result = runFactCheckerCli(tmp, ["--input-json", inputJsonPath, "--check-blocking"]);
+      assert.equal(result.status, 2);
+      const outPath = join(tmp, "_internal", "fact-check.json");
+      assert.ok(existsSync(outPath), "fact-check.json deve ser gravado mesmo quando --check-blocking sai 2");
+      const saved = JSON.parse(readFileSync(outPath, "utf8"));
+      assert.equal(saved.summary.not_found_in_source, 1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
