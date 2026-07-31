@@ -114,6 +114,18 @@ export const DIARIA_CURSOS_URL = "https://cursos.diar.ia.br";
 export const DIARIA_LIVROS_URL = "https://livros.diar.ia.br";
 
 /**
+ * URL da vitrine de equipamentos do editor na Amazon (#4356) — pill
+ * "Equipamentos" na linha "Acesse nossas curadorias" do PARA ENCERRAR.
+ * DIFERENTE de `DIARIA_CURSOS_URL`/`DIARIA_LIVROS_URL` acima: decisão
+ * explícita do editor (overnight 260731, comentário do #4356) foi linkar
+ * DIRETO pro Amazon, sem camada de redirect via Worker (`equipamentos.diar.ia.br`
+ * foi cogitado e descartado) — mais simples, sem infra nova pra manter. Não
+ * seguir o padrão de domínio de marca pros próximos pills sem confirmar
+ * antes; este é o único direto-a-terceiro por decisão editorial pontual.
+ */
+export const DIARIA_AMAZON_LOJA_URL = "https://www.amazon.com.br/shop/vjpixel";
+
+/**
  * URL canônica do jogo público "É IA?" (#3904) — domínio de marca (Workers
  * Custom Domain, `workers/poll/wrangler.toml`, `eia.diar.ia.br` → worker
  * `poll`) em vez do subdomínio genérico `poll.diaria.workers.dev`. Mesmo
@@ -289,6 +301,14 @@ export const FOOTER_DOMAINS = [
   // afiliado, praticamente nunca usados como link de lançamento.
   "link.amazon",
   "amzn.to",
+  // #4356: pill "Equipamentos" no PARA ENCERRAR — vitrine própria do editor
+  // (`DIARIA_AMAZON_LOJA_URL`). Path ESPECÍFICO (`/shop/vjpixel`), não o
+  // domínio bare `amazon.com.br` — mesma justificativa do comentário acima:
+  // uma página de produto Amazon pode ser link oficial de LANÇAMENTO, e
+  // allowlistar o domínio inteiro suprimiria esse artigo da contagem/
+  // verificação de acessibilidade. O path da vitrine pessoal nunca colide
+  // com uma página de produto.
+  "amazon.com.br/shop/vjpixel",
   // #3219: CTA de apoio financeiro (Apoia.se) no bloco PARA ENCERRAR — link
   // fixo do rodapé (context/snippets/encerramento-social-apoio.md), nunca um
   // artigo pesquisado. Sem isso, urls_accessible flagaria not_in_cache (mesmo

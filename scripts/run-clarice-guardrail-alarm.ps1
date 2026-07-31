@@ -52,8 +52,33 @@ function Write-TempLogLine {
 Write-TempLogLine ""
 Write-TempLogLine "===== $(Get-Date -Format o) - clarice guardrail alarm ====="
 
+# Pre-inicializa $LASTEXITCODE=$null ANTES da chamada nativa (#4343): sob
+# Set-StrictMode -Version Latest, se `npx` for a 1a invocacao nativa da
+# sessao (e o unico caso aqui) e falhar a resolver (CommandNotFoundException
+# -- PATH nao herdado corretamente sob o Task Scheduler), $LASTEXITCODE fica
+# genuinamente INDEFINIDO (nao $null) -- ler uma variavel indefinida sob
+# StrictMode lanca erro (nao-terminante, engolido por $ErrorActionPreference
+# = Continue), e o guard abaixo nunca dispara porque a propria comparacao
+# "$null -eq $alarmCode" tambem lanca (verificado empiricamente). Pre-setar
+# aqui garante que a variavel ja existe (com valor $null) antes da tentativa
+# -- uma invocacao nativa que falha a resolver NAO toca $LASTEXITCODE
+# (permanece no valor anterior), entao o guard consegue detectar o caso.
+$LASTEXITCODE = $null
 & npx tsx "$AlarmScript" 2>&1 | ForEach-Object { $_.ToString() } | Out-File -FilePath $TempLogPath -Append -Encoding utf8
 $alarmCode = $LASTEXITCODE
+
+# $LASTEXITCODE so e setado por um processo nativo que de fato rodou. Se o
+# `npx` nao puder ser resolvido/spawnado neste contexto (ex: PATH nao
+# herdado corretamente sob o Task Scheduler), o guard acima ja garante que
+# $alarmCode fica $null (nunca indefinido) -- "$null -ne 0" avalia $true,
+# entao sem este guard `exit $null` resolveria pra exit 0 (falso sucesso)
+# exatamente no caso mais provavel de falha de uma invocacao
+# nao-supervisionada (#4343, mesmo padrao do fix em
+# run-postmaster-spam-sync.ps1, #4342).
+if ($null -eq $alarmCode) {
+    Write-TempLogLine "ERRO: npx nao executou (comando nao encontrado ou falha antes do processo iniciar)."
+    $alarmCode = 1
+}
 
 Write-TempLogLine "===== fim (alarm=$alarmCode) ====="
 

@@ -286,6 +286,8 @@ npx tsx scripts/register-report.ts --kind develop --id {AAMMDD} \
 ```
 File-based (só escreve `data/reports/index.jsonl`) — nunca depende do `npm run studio` estar no ar; o comando imprime a URL em stdout, capturar pro resumo do terminal. **Não criar mais draft via `create_draft` aqui.** Canal primário = terminal, incluindo a linha `Relatório: {URL do Studio}`; fail-soft #738 — falha do registro (raro, é só escrita local) nunca trava a sessão, só avisa que o relatório ficou local.
 
+**Limpeza de worktrees mergeados (#4335, follow-up do #4326):** por último, depois do relatório salvo/registrado, rodar `npx tsx scripts/cleanup-merged-worktrees.ts` — varre `.claude/worktrees/` (worktrees concorrentes desta sessão + sobras de rodadas anteriores), confirma via `gh pr list --head {branch} --state merged` quais branches já foram mergeadas e remove (`git worktree remove --force`) só essas. **FAIL-SOFT**: o script já nunca lança nem sai não-zero por falha de `gh`/permissão; mesmo assim, tratar qualquer stderr como warning — nunca travar o encerramento da sessão por causa desta limpeza.
+
 ## Guard de colisão editorial — aviso interativo, sem auto-preempt
 
 Ao detectar edição em curso (`scripts/lib/find-current-edition.ts` retorna candidato ou `data/editions/` de hoje/amanhã ganhou arquivos novos), a skill **avisa o editor e pergunta** ("uma edição de hoje/amanhã está em curso — encerrar a sessão develop para liberar a pipeline editorial? s/n"). **Diferente do overnight, develop NÃO grava `preempted_*` nem auto-encerra** — como é supervisionado e nunca continua sem editor, a decisão é humana ao vivo. Se o editor não responde, o `AskUserQuestion` fica bloqueante, `resume_state` é gravado e a sessão para limpa.

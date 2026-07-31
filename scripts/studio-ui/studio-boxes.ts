@@ -693,12 +693,16 @@ export function saveBoxSlots(
 //
 // Diferença de mecanismo vs. os slots 0-3 acima: aqueles atribuem um
 // FILENAME de `context/snippets/` (pool de candidatos, opcionais, podem
-// ficar vazios). Slot A (parágrafo de apoio + bloco de ferramentas/
-// "Acesse nossas curadorias") e Slot B (convite social) são conteúdo
-// SEMPRE-PRESENTE da seção PARA ENCERRAR — 1 campo de TEXTO DIRETO por
-// slot, editado no painel Caixas como um textarea comum, persistido em
-// `platform.config.json` → `para_encerrar.{slot_a,slot_b}` (ver
-// `loadParaEncerrarConfig`/`buildParaEncerrar` em `../stitch-newsletter.ts`).
+// ficar vazios). Slot A (parágrafo de apoio + bloco de ferramentas) e Slot B
+// (convite social) são conteúdo SEMPRE-PRESENTE da seção PARA ENCERRAR — 1
+// campo de TEXTO DIRETO por slot, editado no painel Caixas como um textarea
+// comum, persistido em `platform.config.json` → `para_encerrar.{slot_a,slot_b}`
+// (ver `loadParaEncerrarConfig`/`buildParaEncerrar` em `../stitch-newsletter.ts`).
+// #4357: o Slot A NÃO inclui mais a lista de pills "Acesse nossas
+// curadorias" — ela é navegação estrutural permanente
+// (`FIXED_BLOCKS.para_encerrar_curadorias`), concatenada por
+// `buildParaEncerrar` FORA do alcance deste override (antes, sobrescrever o
+// Slot A apagava as pills junto, em silêncio — achado 260730/731).
 //
 // `readParaEncerrarState` devolve o valor CRU do config ("" se ausente/
 // vazio) — NÃO resolve o texto-default de fallback (que `buildParaEncerrar`
