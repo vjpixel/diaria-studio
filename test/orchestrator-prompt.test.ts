@@ -162,7 +162,13 @@ describe("orchestrator-prompt (#634)", () => {
       // (era 667 medido pós-#4076 — #4140 apertou de 685 pra 670: subir 20
       // pra cobrir 2 linhas de crescimento real pré-autorizava 18 linhas de
       // bloat futuro sem revisão).
-      "orchestrator-stage-4.md": 670,
+      // #4361/#4352: +4 linhas (`--check-blocking` no fact-checker §4c.6 +
+      // exit code 2 GATE-BLOCKING para NOT_FOUND_IN_SOURCE não-superlativo;
+      // re-audit de no-antithesis-reveal/no-trailing-editorial-hook em §4c.6c
+      // pós-autofix, promovidos de WARN-ONLY a GATE-BLOCKING em §4c.2b sem
+      // linhas novas). Teto bumped de 670→674 com headroom pequeno (era 672
+      // medido pós-#4361/#4352).
+      "orchestrator-stage-4.md": 674,
       "orchestrator-stage-5.md": 455,
     };
     for (const file of ORCHESTRATOR_FILES.slice(1)) {
