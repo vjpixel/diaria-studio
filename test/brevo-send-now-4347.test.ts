@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { brevoSendNow, isTerminalSendStatus } from "../scripts/lib/brevo-client.ts";
+import { brevoSendNow, isTerminalSendStatus, describeUncertainSendStatus } from "../scripts/lib/brevo-client.ts";
 import {
   applySendNowVerifyResults,
   resolveScheduleAtArg,
@@ -39,6 +39,23 @@ test("isTerminalSendStatus: 'sent' e 'inProcess' são terminais; 'draft'/'queued
   assert.equal(isTerminalSendStatus("draft"), false);
   assert.equal(isTerminalSendStatus("queued"), false);
   assert.equal(isTerminalSendStatus("scheduled"), false);
+});
+
+// ---------------------------------------------------------------------------
+// describeUncertainSendStatus (#4364) — mensagem específica pra 'in_review'
+// ---------------------------------------------------------------------------
+
+test("REGRESSÃO (#4364): describeUncertainSendStatus('in_review') nomeia o estado real, não o genérico", () => {
+  const msg = describeUncertainSendStatus("in_review");
+  assert.match(msg, /revisão da própria Brevo/);
+  assert.match(msg, /app\.brevo\.com/);
+  assert.doesNotMatch(msg, /reconsulte a Brevo manualmente/);
+});
+
+test("describeUncertainSendStatus: status desconhecido cai no genérico (não confunde com in_review)", () => {
+  const msg = describeUncertainSendStatus("queued");
+  assert.match(msg, /reconsulte a Brevo manualmente/);
+  assert.doesNotMatch(msg, /revisão da própria Brevo/);
 });
 
 // ---------------------------------------------------------------------------
@@ -114,6 +131,23 @@ test("REGRESSÃO (#4347): 2xx do POST mas GET NÃO mostra status terminal — fa
   );
   assert.equal(c.status, "draft", "status NÃO deve ser marcado como sucesso");
   assert.equal(writeCalled, false, "nada deve ser persistido quando o GET não confirma status terminal");
+  assert.ok(logs.some((l) => /não é suficiente/.test(l)));
+});
+
+test("REGRESSÃO (#4364): GET-verify retorna 'in_review' — log nomeia o status real da Brevo, não só o genérico", () => {
+  const c = makeEntry();
+  const campaigns = [c];
+  const logs: string[] = [];
+  applySendNowVerifyResults(
+    [{ status: "fulfilled", value: { status: "in_review" } }],
+    [c],
+    campaigns,
+    "/fake/path.json",
+    () => {},
+    (m) => logs.push(m),
+  );
+  assert.equal(c.status, "draft", "status NÃO deve ser marcado como sucesso pra in_review");
+  assert.ok(logs.some((l) => /revisão da própria Brevo/.test(l)));
   assert.ok(logs.some((l) => /não é suficiente/.test(l)));
 });
 
