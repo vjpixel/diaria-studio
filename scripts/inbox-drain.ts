@@ -44,6 +44,33 @@ import { logEvent } from "./lib/run-log.ts";
 const ROOT = resolve(import.meta.dirname, "..");
 const GMAIL_API = "https://www.googleapis.com/gmail/v1/users/me";
 
+/**
+ * #4369: nomes dos env vars que testes usam pra apontar `inbox-drain.ts` pra
+ * paths FAKE (mkdtempSync) de `platform.config.json` (git-tracked!),
+ * `data/inbox-cursor.json` e `data/inbox.md` — evitando escrita direta nos
+ * arquivos REAIS do worktree, mesmo padrão de risco que
+ * `CREDENTIALS_PATH_TEST_OVERRIDE_ENV` (scripts/google-auth.ts) corrigiu pra
+ * `data/.credentials.json` no #4344. Resolvidos dinamicamente a cada chamada
+ * (função, não um `const` capturado no import) para que testes possam
+ * setar/restaurar o env var em `beforeEach`/`afterEach` sem reimportar o
+ * módulo. **Nunca** setar esses env vars fora de testes.
+ */
+export const CONFIG_PATH_TEST_OVERRIDE_ENV = "DIARIA_TEST_CONFIG_PATH";
+export const INBOX_CURSOR_PATH_TEST_OVERRIDE_ENV = "DIARIA_TEST_INBOX_CURSOR_PATH";
+export const INBOX_MD_PATH_TEST_OVERRIDE_ENV = "DIARIA_TEST_INBOX_MD_PATH";
+
+function resolveConfigPath(): string {
+  return process.env[CONFIG_PATH_TEST_OVERRIDE_ENV] || resolve(ROOT, "platform.config.json");
+}
+
+function resolveCursorPath(): string {
+  return process.env[INBOX_CURSOR_PATH_TEST_OVERRIDE_ENV] || resolve(ROOT, "data", "inbox-cursor.json");
+}
+
+function resolveInboxMdPath(): string {
+  return process.env[INBOX_MD_PATH_TEST_OVERRIDE_ENV] || resolve(ROOT, "data", "inbox.md");
+}
+
 // ---------------------------------------------------------------------------
 // Tipos
 // ---------------------------------------------------------------------------
@@ -255,7 +282,7 @@ export function dedupForwards(messages: GmailMessage[]): GmailMessage[] {
 // ---------------------------------------------------------------------------
 
 export function loadCursor(): InboxCursor {
-  const cursorPath = resolve(ROOT, "data", "inbox-cursor.json");
+  const cursorPath = resolveCursorPath();
   if (!existsSync(cursorPath)) return { last_drain_iso: null };
   try {
     const cursor = JSON.parse(readFileSync(cursorPath, "utf8")) as InboxCursor;
@@ -276,7 +303,7 @@ export function loadCursor(): InboxCursor {
 }
 
 function saveCursor(cursor: InboxCursor): void {
-  const cursorPath = resolve(ROOT, "data", "inbox-cursor.json");
+  const cursorPath = resolveCursorPath();
   mkdirSync(dirname(cursorPath), { recursive: true });
   writeFileSync(cursorPath, JSON.stringify(cursor, null, 2), "utf8");
 }
@@ -519,7 +546,8 @@ function logDrainWarn(message: string, details?: Record<string, unknown>, rootDi
 // ---------------------------------------------------------------------------
 
 function appendToInbox(entries: string[]): void {
-  const inboxPath = resolve(ROOT, "data", "inbox.md");
+  const inboxPath = resolveInboxMdPath();
+  mkdirSync(dirname(inboxPath), { recursive: true });
   if (!existsSync(inboxPath)) {
     writeFileSync(
       inboxPath,
@@ -559,7 +587,7 @@ function appendToInbox(entries: string[]): void {
 // data/run-log.jsonl REAL do worktree.
 async function main(rootDir: string = ROOT): Promise<void> {
   // Ler config
-  const configPath = resolve(ROOT, "platform.config.json");
+  const configPath = resolveConfigPath();
   const config = JSON.parse(readFileSync(configPath, "utf8")) as PlatformConfig;
   const inboxEnabled = config.inbox?.enabled !== false;
   // #3217: default troca de label:Diaria.Editor (dependia de forward+filtro
