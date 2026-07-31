@@ -160,6 +160,67 @@ export const JOGAR_GATE_INLINE_UTM = {
   campaign: "eia-jogar-gate-signup",
 } as const;
 
+/** CTA de e-mail injetado em todo post de Facebook no publish (#3991, valor
+ * UTM adicionado no #4295) — `injectChannelLine` monta a linha a partir daqui
+ * via `scripts/lib/social-cta-lines.ts`. */
+export const FACEBOOK_CTA_UTM = {
+  source: "facebook",
+  medium: "organic_social",
+  campaign: "post-cta",
+} as const;
+
+/** `utm_campaign` compartilhado por X e Threads no CTA de `{edition_url}` da
+ * seção `# Curto` (#4295) — mesmo texto/link, só `utm_source` difere por canal. */
+const EDICAO_DIARIA_UTM_CAMPAIGN = "edicao-diaria";
+
+/** X/Twitter — CTA de `{edition_url}` em `# Curto` (#4295, tag aplicada em
+ * `scripts/prep-twitter-posts.ts` DEPOIS que `resolve-edition-url.ts` já
+ * substituiu o placeholder pela URL base, sem UTM, em 03-social.md). */
+export const TWITTER_EDITION_UTM = {
+  source: "twitter",
+  medium: "organic_social",
+  campaign: EDICAO_DIARIA_UTM_CAMPAIGN,
+} as const;
+
+/** Threads — mesmo CTA/campanha do X acima, `utm_source` distinto (#4295,
+ * tag aplicada em `scripts/publish-threads.ts`). */
+export const THREADS_EDITION_UTM = {
+  source: "threads",
+  medium: "organic_social",
+  campaign: EDICAO_DIARIA_UTM_CAMPAIGN,
+} as const;
+
+/** LinkedIn — CTA de `{edition_url}` no `## post_pixel` (post pessoal do
+ * Pixel, #1690) — distinto do post principal do LinkedIn, que não leva
+ * link/UTM no corpo por decisão preservada em #595/#3627 (ver
+ * `LINKEDIN_CTA_LINE = null` acima). Tag aplicada em
+ * `scripts/resolve-post-pixel.ts` (#4295). */
+export const LINKEDIN_POST_PIXEL_UTM = {
+  source: "linkedin",
+  medium: "organic_social",
+  campaign: "post-pixel",
+} as const;
+
+/** Rodapé de navegação cruzada da página de Cursos (#4295) — mesmo padrão de
+ * `ARQUIVO_FOOTER_NAV_UTM`/`LIVROS_INLINE_UTM` (só source+medium, sem
+ * campaign de verdade — link de nav, não funil de conversão). Cursos ficou
+ * de fora quando Livros ganhou o parâmetro em #4051 — assimetria pura, não
+ * decisão editorial (issue #4295). */
+export const CURSOS_FOOTER_NAV_UTM = {
+  source: "cursos",
+  medium: "footer-nav",
+} as const;
+
+/** Cadastro no gate inline do worker `cursos` (`workers/cursos/src/subscribe.ts`,
+ * #4052) — fold-in do drift pré-existente apontado pelo #4295: o worker já
+ * emitia este triplo com literais locais, ausente do registry/`/utms`. Move
+ * pra cá sem mudar o valor emitido (mesmo `source`/`medium`/`campaign`). */
+export const CURSOS_GATE_INLINE_UTM = {
+  source: "cursos",
+  medium: "gate-inline",
+  campaign: "cursos-gate-signup",
+} as const;
+
 /** Opt-in de newsletter embutido no form de IDENTIDADE (#3975 — nome/e-mail
  * pra entrar no leaderboard, `renderIdentityFormBlock`/`identityFormScript`
  * em `workers/poll/src/jogar.ts`, `POST /jogar/identify`). #4125 (item 4):
@@ -378,6 +439,82 @@ export const UTM_EMITTERS: readonly UtmEmitter[] = [
     campaignPattern: QUIZ_SHARE_UTM_CAMPAIGN,
     originFile: "workers/poll/src/share.ts",
     description: "Cartão de compartilhamento do quiz relâmpago / sequência mensal (#3978).",
+    status: "ativo",
+  },
+  {
+    id: "facebook-post-cta",
+    label: "Facebook — CTA de e-mail em todo post",
+    source: FACEBOOK_CTA_UTM.source,
+    medium: FACEBOOK_CTA_UTM.medium,
+    campaignPattern: FACEBOOK_CTA_UTM.campaign,
+    originFile: "scripts/lib/social-cta-lines.ts",
+    description:
+      "Linha de CTA (e-mail + link) injetada em TODO post de Facebook no publish " +
+      "(~3 posts/dia) — antes sem UTM, virava `direct` no Beehiiv (#4295).",
+    status: "ativo",
+  },
+  {
+    id: "twitter-edicao",
+    label: "X — CTA da edição em '# Curto'",
+    source: TWITTER_EDITION_UTM.source,
+    medium: TWITTER_EDITION_UTM.medium,
+    campaignPattern: TWITTER_EDITION_UTM.campaign,
+    originFile: "scripts/prep-twitter-posts.ts",
+    description:
+      "`{edition_url}` do texto curto compartilhado X/Threads — tag aplicada por " +
+      "canal no publish, depois que resolve-edition-url.ts já gravou a URL base " +
+      "sem UTM em 03-social.md (#4295).",
+    status: "ativo",
+  },
+  {
+    id: "threads-edicao",
+    label: "Threads — CTA da edição em '# Curto'",
+    source: THREADS_EDITION_UTM.source,
+    medium: THREADS_EDITION_UTM.medium,
+    campaignPattern: THREADS_EDITION_UTM.campaign,
+    originFile: "scripts/publish-threads.ts",
+    description: "Mesmo CTA do X acima (twitter-edicao) — só `utm_source` distinto (#4295).",
+    status: "ativo",
+  },
+  {
+    id: "linkedin-post-pixel",
+    label: "LinkedIn — CTA do post pessoal (post_pixel)",
+    source: LINKEDIN_POST_PIXEL_UTM.source,
+    medium: LINKEDIN_POST_PIXEL_UTM.medium,
+    campaignPattern: LINKEDIN_POST_PIXEL_UTM.campaign,
+    originFile: "scripts/resolve-post-pixel.ts",
+    description:
+      "`{edition_url}` do `## post_pixel` (post pessoal do Pixel, #1690) — " +
+      "publicado 100% manual (Claude in Chrome), tag aplicada na resolução que " +
+      "alimenta o copy-paste do editor (#4295). Distinto do post PRINCIPAL do " +
+      "LinkedIn, que não leva link no corpo (#595/#3627, ver LINKEDIN_CTA_LINE).",
+    status: "ativo",
+  },
+  {
+    id: "cursos-footer-nav",
+    label: "Cursos — link de rodapé pra Diar.ia",
+    source: CURSOS_FOOTER_NAV_UTM.source,
+    medium: CURSOS_FOOTER_NAV_UTM.medium,
+    campaignPattern: "cursos-footer-nav",
+    originFile: "scripts/build-cursos-page.ts",
+    description:
+      'Link "Diar.ia" no rodapé de navegação cruzada da página de Cursos — ' +
+      "faltava o 2º parâmetro de renderCuradoriaFooter que Livros já tinha desde " +
+      "#4051 (assimetria pura, fechada no #4295). Sem utm_campaign de verdade " +
+      "(mesmo padrão de arquivo-footer-nav), placeholder só pra satisfazer o schema.",
+    status: "ativo",
+  },
+  {
+    id: "cursos-gate-inline",
+    label: "Cursos — cadastro no gate inline",
+    source: CURSOS_GATE_INLINE_UTM.source,
+    medium: CURSOS_GATE_INLINE_UTM.medium,
+    campaignPattern: CURSOS_GATE_INLINE_UTM.campaign,
+    originFile: "workers/cursos/src/subscribe.ts",
+    description:
+      "Cadastro no banner de gate inline da página de Cursos (#4052) — fold-in " +
+      "do drift pré-existente apontado pelo #4295 (literais locais, ausente do " +
+      "registry/`/utms` antes desta entry).",
     status: "ativo",
   },
   {

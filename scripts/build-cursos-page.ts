@@ -43,6 +43,7 @@ import {
   loadSeedItems,
   type ValidationResult,
 } from "./lib/shared/curadoria-data.ts"; // #3118 item 13: layer de dados comum com build-livros-page.ts
+import { CURSOS_FOOTER_NAV_UTM } from "./lib/shared/utm-registry.ts"; // #4295 — link de rodapé sem UTM (assimetria com Livros/#4051)
 export { esc, isSafeUrl, availableThemes, distinctThemes, type ValidationResult };
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -446,7 +447,10 @@ ${cards}
       </div>
     </div>
   </main>
-  ${renderCuradoriaFooter("diar.ia.br — curadoria de cursos sobre IA")}
+  ${renderCuradoriaFooter(
+    "diar.ia.br — curadoria de cursos sobre IA",
+    `utm_source=${CURSOS_FOOTER_NAV_UTM.source}&utm_medium=${CURSOS_FOOTER_NAV_UTM.medium}`,
+  )}
 <script>
   (function () {
     var THEME_LABELS = ${themeLabelJson};

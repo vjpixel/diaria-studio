@@ -1087,6 +1087,78 @@ describe("Guard edition_url ausente end-to-end (#4294, --dry-run + --log-root-di
   });
 });
 
+// ─── #4295: tag UTM per-channel (utm_source=threads) na edition_url ────────
+
+describe("#4295: tag UTM per-channel na edition_url resolvida (subprocess --dry-run)", () => {
+  const SCRIPT = resolve(__ROOT, "scripts/publish-threads.ts");
+
+  it("texto com a URL da edição: dry-run mostra a URL com utm_source=threads anexado", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-utm-"));
+    try {
+      const internalDir = join(tmpDir, "_internal");
+      mkdirSync(internalDir, { recursive: true });
+      const editionUrl = "https://diar.ia.br/p/slug-utm-teste";
+      // URL logo no início do texto — garante que a query string tagueada
+      // caiba dentro dos 80 chars mostrados pelo dump do --dry-run.
+      writeFileSync(join(tmpDir, "03-social.md"), `# Curto\n\n## d1\n${editionUrl} confira!\n`, "utf8");
+      writeFileSync(join(internalDir, "05-edition-url.txt"), editionUrl, "utf8");
+
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", SCRIPT, "--edition-dir", tmpDir, "--dry-run", "--log-root-dir", tmpDir],
+        {
+          encoding: "utf8",
+          cwd: __ROOT,
+          env: {
+            ...process.env,
+            THREADS_USER_ID: "fake_user_id_utm",
+            THREADS_ACCESS_TOKEN: "fake_access_token_utm",
+          },
+        },
+      );
+
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      // #4295: o dump do --dry-run trunca em 80 chars (só pra display) — a URL
+      // tagueada inteira (com utm_campaign) é coberta pelos testes unitários de
+      // edition-url.ts/utm-registry; aqui confirmamos só que a tag chegou no
+      // texto que o script de fato publicaria (utm_source já aparece no início
+      // da query string, dentro da janela de 80 chars).
+      assert.match(r.stdout, /utm_source=threads/, `dry-run deve mostrar a URL tagueada; stdout: ${r.stdout}`);
+      // Guard #4294 não deve disparar falso-positivo — a checagem roda ANTES da tag.
+      assert.doesNotMatch(r.stderr, /#4294/, "não deve avisar edition_url ausente quando o texto a contém");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sem 05-edition-url.txt: texto segue sem UTM (no-op, comportamento pré-#4295 preservado)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "diaria-threads-noutm-"));
+    try {
+      mkdirSync(join(tmpDir, "_internal"), { recursive: true });
+      writeFileSync(join(tmpDir, "03-social.md"), `# Curto\n\n## d1\nPost sem link nenhum.\n`, "utf8");
+
+      const r = spawnSync(
+        process.execPath,
+        ["--import", "tsx", SCRIPT, "--edition-dir", tmpDir, "--dry-run", "--log-root-dir", tmpDir],
+        {
+          encoding: "utf8",
+          cwd: __ROOT,
+          env: {
+            ...process.env,
+            THREADS_USER_ID: "fake_user_id_noutm",
+            THREADS_ACCESS_TOKEN: "fake_access_token_noutm",
+          },
+        },
+      );
+
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.doesNotMatch(r.stdout, /utm_source/);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── Regressão #4294: sem '# Curto' end-to-end (nunca cai pra outra seção) ──
 
 describe("Regressão #4294: 03-social.md pós-#3991 (só '# Social', sem '# Curto') end-to-end", () => {

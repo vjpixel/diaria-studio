@@ -81,6 +81,8 @@ import { parseArgs, isMainModule } from "./lib/cli-args.ts"; // #2834 — substi
 import { computeScheduledAt } from "./compute-social-schedule.ts"; // #3944 Parte B — mesmo fallback_schedule usado por LinkedIn/Facebook/Instagram
 import { postToWorkerQueue } from "./lib/worker-queue-client.ts"; // #3944 Parte B — cliente HTTP compartilhado com Instagram
 import { logEvent } from "./lib/run-log.ts"; // #4294 — guard não-fatal de edition_url ausente
+import { tagEditionUrlInText } from "./lib/edition-url.ts"; // #4295 — UTM per-channel na URL já resolvida
+import { THREADS_EDITION_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -594,12 +596,18 @@ async function main() {
 
     // Guard não-fatal (#4294, mesmo padrão do #3277): se o texto não contiver
     // a URL da edição resolvida, avisa em stderr + data/run-log.jsonl mas
-    // NUNCA bloqueia o dispatch — o post sai mesmo assim.
+    // NUNCA bloqueia o dispatch — o post sai mesmo assim. A checagem usa o
+    // texto AINDA SEM tag (#4295) — a tag muda a URL literal, então rodar a
+    // checagem depois dela sempre acusaria falso-positivo.
     if (existsSync(editionUrlFile)) {
       const editionUrl = readFileSync(editionUrlFile, "utf8").trim();
-      if (editionUrl && !textContainsEditionUrl(text, editionUrl)) {
-        const editionId = /^\d{6}$/.test(editionDate) ? editionDate : null;
-        warnMissingEditionUrl(d, text, editionUrl, editionId, logRootDir);
+      if (editionUrl) {
+        if (!textContainsEditionUrl(text, editionUrl)) {
+          const editionId = /^\d{6}$/.test(editionDate) ? editionDate : null;
+          warnMissingEditionUrl(d, text, editionUrl, editionId, logRootDir);
+        }
+        // #4295: tag UTM per-channel (utm_source=threads) na URL já resolvida.
+        text = tagEditionUrlInText(text, editionUrl, THREADS_EDITION_UTM);
       }
     }
 

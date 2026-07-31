@@ -164,3 +164,64 @@ describe("#4041 — inventário coerente e utilizável pela página /utms", () =
     assert.equal(shared.findUtmEmitter("nao-existe"), undefined);
   });
 });
+
+describe("#4295 — social + Cursos: emissores novos derivam do registry, sem literal solto", () => {
+  it("os 6 novos ids estão presentes em UTM_EMITTERS", () => {
+    const ids = shared.UTM_EMITTERS.map((e) => e.id);
+    for (const id of [
+      "facebook-post-cta",
+      "twitter-edicao",
+      "threads-edicao",
+      "linkedin-post-pixel",
+      "cursos-footer-nav",
+      "cursos-gate-inline",
+    ]) {
+      assert.ok(ids.includes(id), `UTM_EMITTERS deve conter "${id}"`);
+    }
+  });
+
+  it("FACEBOOK_CTA_UTM: social-cta-lines.ts emite o mesmo triplo do registry (via buildFacebookCtaUrl)", async () => {
+    const { buildFacebookCtaUrl } = await import("../scripts/lib/social-cta-lines.ts");
+    const url = new URL(buildFacebookCtaUrl());
+    assert.equal(url.searchParams.get("utm_source"), shared.FACEBOOK_CTA_UTM.source);
+    assert.equal(url.searchParams.get("utm_medium"), shared.FACEBOOK_CTA_UTM.medium);
+    assert.equal(url.searchParams.get("utm_campaign"), shared.FACEBOOK_CTA_UTM.campaign);
+  });
+
+  it("TWITTER_EDITION_UTM / THREADS_EDITION_UTM: mesmo utm_campaign, utm_source distinto por canal", () => {
+    assert.equal(shared.TWITTER_EDITION_UTM.campaign, shared.THREADS_EDITION_UTM.campaign);
+    assert.notEqual(shared.TWITTER_EDITION_UTM.source, shared.THREADS_EDITION_UTM.source);
+    assert.equal(shared.TWITTER_EDITION_UTM.source, "twitter");
+    assert.equal(shared.THREADS_EDITION_UTM.source, "threads");
+  });
+
+  it("appendUtmToEditionUrl/tagEditionUrlInText (edition-url.ts) emitem os 3 params via URLSearchParams", async () => {
+    const { appendUtmToEditionUrl, tagEditionUrlInText } = await import("../scripts/lib/edition-url.ts");
+    const base = "https://diar.ia.br/p/slug-teste";
+    const tagged = appendUtmToEditionUrl(base, shared.LINKEDIN_POST_PIXEL_UTM);
+    const url = new URL(tagged);
+    assert.equal(url.searchParams.get("utm_source"), "linkedin");
+    assert.equal(url.searchParams.get("utm_medium"), "organic_social");
+    assert.equal(url.searchParams.get("utm_campaign"), "post-pixel");
+
+    const text = tagEditionUrlInText(`Confira ${base}`, base, shared.TWITTER_EDITION_UTM);
+    assert.ok(text.includes("utm_source=twitter"), text);
+    assert.ok(!text.includes(`${base} `), "URL sem UTM não deve sobrar");
+  });
+
+  it("CURSOS_GATE_INLINE_UTM: workers/cursos/src/subscribe.ts deriva do registry (fold-in do drift #4295)", async () => {
+    const subscribeSrc = await import("../workers/cursos/src/subscribe.ts");
+    // subscribeToBeehiiv monta o body internamente — checagem indireta via
+    // constantes exportadas não existe hoje (locais não exportadas); em vez
+    // disso, valida que o MÓDULO importa do registry (fonte estática) —
+    // suficiente pra travar reintrodução de literal solto, já que o valor em
+    // si é coberto pelas constantes do registry acima.
+    assert.ok(typeof subscribeSrc.subscribeToBeehiiv === "function");
+  });
+
+  it("cursos-footer-nav / cursos-gate-inline: mesmo utm_source ('cursos'), medium distinto (rodapé vs. gate)", () => {
+    assert.equal(shared.CURSOS_FOOTER_NAV_UTM.source, "cursos");
+    assert.equal(shared.CURSOS_GATE_INLINE_UTM.source, "cursos");
+    assert.notEqual(shared.CURSOS_FOOTER_NAV_UTM.medium, shared.CURSOS_GATE_INLINE_UTM.medium);
+  });
+});

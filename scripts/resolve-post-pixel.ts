@@ -41,7 +41,8 @@ import { fileURLToPath } from "node:url";
 import { extractPlatformSection, extractPostPixelBlock } from "./lib/social-lint-rules.ts";
 import { extractSection } from "./lib/extract-section.ts"; // #3991 — resolve a seção nova `# Social`
 import { resolveOutrosCountFromEditionDir } from "./lib/outros-count.ts";
-import { BEEHIIV_BASE_URL } from "./lib/edition-url.ts";
+import { BEEHIIV_BASE_URL, appendUtmToEditionUrl } from "./lib/edition-url.ts"; // #4295 — appendUtmToEditionUrl
+import { LINKEDIN_POST_PIXEL_UTM } from "./lib/shared/utm-registry.ts"; // #4295
 import { parseArgs, isMainModule } from "./lib/cli-args.ts";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -146,7 +147,19 @@ function main(): void {
     exitCode = 2;
   }
 
-  const resolved = substitutePostPixelPlaceholders(rawText, editionUrl, outrosCountValue);
+  // #4295: UTM per-channel (utm_source=linkedin, campaign=post-pixel) anexado
+  // à URL ANTES de substituir no texto — post_pixel é 100% manual (Claude in
+  // Chrome, nunca passa por publish-linkedin.ts), então esta resolução é o
+  // ÚNICO ponto do código que alimenta o copy-paste do editor.
+  //
+  // Self-review (#4295): `editionUrl` vazio (arquivo `05-edition-url.txt`
+  // existente mas vazio/só-whitespace) faria `new URL("")` lançar dentro de
+  // `appendUtmToEditionUrl` sem try/catch ao redor, derrubando o script —
+  // antes desta PR, uma editionUrl vazia era tolerada (virava uma substituição
+  // vazia). Guard `if (editionUrl)` preserva esse comportamento tolerante,
+  // mesmo padrão já usado em prep-twitter-posts.ts/publish-threads.ts.
+  const taggedEditionUrl = editionUrl ? appendUtmToEditionUrl(editionUrl, LINKEDIN_POST_PIXEL_UTM) : editionUrl;
+  const resolved = substitutePostPixelPlaceholders(rawText, taggedEditionUrl, outrosCountValue);
   console.log(resolved);
 
   process.exit(exitCode);
