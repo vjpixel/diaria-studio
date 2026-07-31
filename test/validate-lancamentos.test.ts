@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -12,6 +12,8 @@ import {
   hasProductSignal,
   isVerifiedTool,
   isConferenceRoundupWarn,
+  hasNonProductHints,
+  demoteNotATool,
 } from "../scripts/validate-lancamentos.ts";
 import { isOfficialLancamentoUrl } from "../scripts/categorize.ts";
 import { spawnNpx } from "./_helpers/spawn-npx.ts";
@@ -397,7 +399,10 @@ describe("validateLancamentosFromApproved (#876)", () => {
   it("ignora itens sem URL", () => {
     const approved = {
       lancamento: [
-        { url: "https://openai.com/index/x", title: "OK" },
+        // #4339: título/slug com sinal de produto (não só "OK") — senão o item
+        // vira not_a_tool e final_count cai a 0, testando a coisa errada (o
+        // foco deste teste é "ignora item sem URL", não a verificação #1968).
+        { url: "https://openai.com/index/introducing-gpt-5", title: "Introducing GPT-5" },
         { title: "sem url" },
         { url: "" },
       ],
@@ -1139,5 +1144,235 @@ describe("#2493 — roundup de software de conferência → warning, não erro",
     assert.ok(!hasProductSignal("https://huggingface.co/blog/someorg/slug/about-us-page"), "4-seg HF blog → sem sinal estrutural");
     // 3 segmentos exatos ainda passa
     assert.ok(hasProductSignal("https://huggingface.co/blog/someorg/model-v2"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4336 CASOS REAIS 260730 — PRODUCT_SIGNAL_RE casa vocabulário genérico de
+// IA (agent/gemini) em incidente de segurança / case study de cliente.
+// ---------------------------------------------------------------------------
+
+describe("#4336 — incidente de segurança / case study de cliente não são produto", () => {
+  it("hasNonProductHints: cronologia de incidente de segurança (caso real)", () => {
+    assert.ok(
+      hasNonProductHints(
+        "Anatomy of a Frontier Lab Agent Intrusion: A Technical Timeline of the July 2026 Incident",
+      ),
+    );
+  });
+
+  it("hasNonProductHints: case study de cliente 'helping a' (caso real)", () => {
+    assert.ok(
+      hasNonProductHints("How Gemini Flash agents are helping a Michigan dairy farmer"),
+    );
+  });
+
+  it("hasNonProductHints: 'customer story'/'case study' também dispara", () => {
+    assert.ok(hasNonProductHints("A customer story: scaling with our platform"));
+    assert.ok(hasNonProductHints("Case study: how Acme uses our API"));
+  });
+
+  it("hasNonProductHints: NÃO dispara em lançamento real (sem vocabulário de incidente/case-study)", () => {
+    assert.ok(!hasNonProductHints("Introducing GPT-5.6"));
+    assert.ok(!hasNonProductHints("Gemini 2.5 Flash"));
+    assert.ok(!hasNonProductHints(undefined));
+  });
+
+  it("isNonProductLancamento: CASO REAL huggingface.co incident timeline → não-produto", () => {
+    assert.ok(
+      isNonProductLancamento(
+        "https://huggingface.co/blog/agent-intrusion-technical-timeline",
+        "Anatomy of a Frontier Lab Agent Intrusion: A Technical Timeline of the July 2026 Incident",
+      ),
+    );
+  });
+
+  it("isNonProductLancamento: CASO REAL blog.google case study de cliente → não-produto", () => {
+    assert.ok(
+      isNonProductLancamento(
+        "https://blog.google/innovation-and-ai/models-and-research/gemini-models/using-gemini-to-manage-farm/",
+        "How Gemini Flash agents are helping a Michigan dairy farmer",
+      ),
+    );
+  });
+
+  it("isVerifiedTool: CASO REAL incident timeline → não-ferramenta (agent genérico não basta)", () => {
+    assert.ok(
+      !isVerifiedTool(
+        "https://huggingface.co/blog/agent-intrusion-technical-timeline",
+        "Anatomy of a Frontier Lab Agent Intrusion: A Technical Timeline of the July 2026 Incident",
+      ),
+    );
+  });
+
+  it("isVerifiedTool: CASO REAL case study de cliente → não-ferramenta (gemini+agents não basta)", () => {
+    assert.ok(
+      !isVerifiedTool(
+        "https://blog.google/innovation-and-ai/models-and-research/gemini-models/using-gemini-to-manage-farm/",
+        "How Gemini Flash agents are helping a Michigan dairy farmer",
+      ),
+    );
+  });
+
+  it("validateLancamentosFromApproved: os 2 itens reais viram not_a_tool", () => {
+    const approved = {
+      lancamento: [
+        {
+          url: "https://huggingface.co/blog/agent-intrusion-technical-timeline",
+          title: "Anatomy of a Frontier Lab Agent Intrusion: A Technical Timeline of the July 2026 Incident",
+        },
+        {
+          url: "https://blog.google/innovation-and-ai/models-and-research/gemini-models/using-gemini-to-manage-farm/",
+          title: "How Gemini Flash agents are helping a Michigan dairy farmer",
+        },
+      ],
+    };
+    const s = validateLancamentosFromApproved(approved);
+    assert.equal(s.not_a_tool.length, 2);
+  });
+
+  it("sem-regressão: lançamento real com 'agent'/'gemini' genérico ainda passa (sem incident/case-study hints)", () => {
+    assert.ok(!isNonProductLancamento("https://openai.com/index/introducing-agent-builder", "Introducing Agent Builder"));
+    assert.ok(hasProductSignal("https://openai.com/index/introducing-agent-builder", "Introducing Agent Builder"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4339 — not_a_tool auto-demovido pra RADAR em vez de warning-only
+// ---------------------------------------------------------------------------
+
+describe("#4339 — demoteNotATool: not_a_tool sai de LANÇAMENTOS automaticamente", () => {
+  it("validateLancamentosFromApproved: final_count reflete a demoção (não conta not_a_tool)", () => {
+    // #4339: final_count precisa refletir a composição PÓS auto-demoção —
+    // senão sync-intro-count.ts (que ajusta 'X lançamentos' no intro usando
+    // final_count) ficaria com um número inflado em relação ao que de fato
+    // sobra em LANÇAMENTOS depois que mainApproved move o not_a_tool pra radar.
+    const approved = {
+      lancamento: [
+        {
+          url: "https://openai.com/index/chatgpt-for-academic-researchers",
+          title: "Accelerating scientific discovery with ChatGPT for Academic Researchers",
+        },
+        { url: "https://openai.com/index/introducing-gpt-5", title: "Introducing GPT-5" },
+        { url: "https://techcrunch.com/2026/01/x", title: "Cobertura não-oficial" },
+      ],
+    };
+    const s = validateLancamentosFromApproved(approved);
+    assert.equal(s.original_count, 3, "original_count: 2 oficiais + 1 não-oficial removido");
+    assert.equal(s.not_a_tool.length, 1);
+    assert.equal(s.removed.length, 1, "1 não-oficial removido");
+    assert.equal(
+      s.final_count,
+      1,
+      "final_count: 2 oficiais MENOS o not_a_tool auto-demovido = 1",
+    );
+  });
+
+  it("CASO REAL: item not_a_tool corretamente detectado (chatgpt-for-academic-researchers) é movido pra radar", () => {
+    const approved = {
+      lancamento: [
+        {
+          url: "https://openai.com/index/chatgpt-for-academic-researchers",
+          title: "Accelerating scientific discovery with ChatGPT for Academic Researchers",
+        },
+        { url: "https://openai.com/index/introducing-gpt-5", title: "Introducing GPT-5" },
+      ],
+      radar: [{ url: "https://existing.com/radar-item", title: "Item já existente no radar" }],
+    };
+    const { approved: updated, demoted } = demoteNotATool(approved);
+
+    assert.equal(demoted.length, 1);
+    assert.equal(demoted[0].url, "https://openai.com/index/chatgpt-for-academic-researchers");
+
+    // lancamento: item not_a_tool removido, produto real preservado
+    assert.equal(updated.lancamento?.length, 1);
+    assert.equal(updated.lancamento?.[0].url, "https://openai.com/index/introducing-gpt-5");
+
+    // radar: item existente preservado + item demovido anexado
+    assert.equal(updated.radar?.length, 2);
+    assert.ok(updated.radar?.some((r) => r.url === "https://existing.com/radar-item"));
+    const demotedInRadar = updated.radar?.find(
+      (r) => r.url === "https://openai.com/index/chatgpt-for-academic-researchers",
+    );
+    assert.ok(demotedInRadar, "item demovido deve estar em radar");
+    assert.equal(demotedInRadar?.demoted_from, "lancamento");
+    assert.equal(demotedInRadar?.demoted_reason, "not_a_tool");
+  });
+
+  it("allowlist: item na allowlist NÃO é demovido (escape hatch de falso-positivo)", () => {
+    // URL oficial (openai.com) sem sinal de produto — mesmo caso já coberto
+    // por "validateLancamentos: item oficial sem sinal → not_a_tool" acima.
+    const approved = {
+      lancamento: [
+        {
+          url: "https://openai.com/index/economic-research-exchange",
+          title: "Economic Research Exchange",
+        },
+      ],
+    };
+    const withoutAllowlist = demoteNotATool(approved);
+    assert.equal(withoutAllowlist.demoted.length, 1, "sem allowlist → demovido");
+
+    const withAllowlist = demoteNotATool(approved, ["openai.com/index/economic-research"]);
+    assert.equal(withAllowlist.demoted.length, 0, "com allowlist → não demovido");
+    assert.equal(withAllowlist.approved.lancamento?.length, 1);
+  });
+
+  it("não-oficial não é demovido por demoteNotATool (fora de escopo — cai em 'removed', não 'not_a_tool')", () => {
+    const approved = {
+      lancamento: [{ url: "https://techcrunch.com/2026/01/x", title: "Cobertura" }],
+    };
+    const { demoted, approved: updated } = demoteNotATool(approved);
+    assert.equal(demoted.length, 0);
+    assert.equal(updated.lancamento?.length, 1, "não-oficial permanece (validateLancamentosFromApproved trata via 'removed')");
+  });
+
+  it("função pura — não muta o approved original", () => {
+    const approved = {
+      lancamento: [
+        { url: "https://openai.com/index/economic-research-exchange", title: "Economic Research Exchange" },
+      ],
+    };
+    const originalLength = approved.lancamento.length;
+    demoteNotATool(approved);
+    assert.equal(approved.lancamento.length, originalLength, "input não deve ser mutado");
+  });
+
+  it("CLI --approved: not_a_tool é auto-movido pra radar no arquivo (reescrito in-place)", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "validate-lancamentos-demote-"));
+    try {
+      const approvedPath = join(tmp, "01-approved.json");
+      writeFileSync(
+        approvedPath,
+        JSON.stringify({
+          lancamento: [
+            {
+              url: "https://openai.com/index/chatgpt-for-academic-researchers",
+              title: "Accelerating scientific discovery with ChatGPT for Academic Researchers",
+            },
+            { url: "https://openai.com/index/introducing-gpt-5", title: "Introducing GPT-5" },
+          ],
+          radar: [],
+        }),
+        "utf8",
+      );
+
+      const r = spawnNpx(
+        ["tsx", "scripts/validate-lancamentos.ts", "--approved", approvedPath],
+        { encoding: "utf8" },
+      );
+
+      const rewritten = JSON.parse(readFileSync(approvedPath, "utf8"));
+      assert.equal(rewritten.lancamento.length, 1, "not_a_tool removido de lancamento");
+      assert.equal(rewritten.lancamento[0].url, "https://openai.com/index/introducing-gpt-5");
+      assert.equal(rewritten.radar.length, 1, "not_a_tool movido pra radar");
+      assert.equal(
+        rewritten.radar[0].url,
+        "https://openai.com/index/chatgpt-for-academic-researchers",
+      );
+      assert.match(String(r.stderr), /movidos automaticamente para RADAR/);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

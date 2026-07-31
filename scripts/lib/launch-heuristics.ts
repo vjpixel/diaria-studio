@@ -20,6 +20,7 @@ import { isMarketingCaseStudy } from "./use-melhor-curation.ts"; // #2276
 import { isDevReleaseNote } from "./release-note-detect.ts"; // #2469 (finding 4): shared regex — fonte única, evita divergência com use-melhor-curation.ts
 import { hasRoundupSignalInUrlOrTitle } from "./roundup-detect.ts"; // #2691 item 1: shared regex — fonte única, evita divergência com use-melhor-curation.ts
 import { isVideoUrl } from "./video-youtube-resolve.ts"; // #3288: fonte única — antes duplicada byte-a-byte aqui e em verify-accessibility.ts
+import { VERSION_SIGNAL_RE } from "./version-signal-detect.ts"; // #4337: fonte única compartilhada com validate-lancamentos.ts
 export { AI_RELEVANT_TERMS, isArticleAIRelevant };
 export { isVideoUrl }; // #3288: re-exportado pra manter compat com importadores existentes (categorize.ts, testes)
 export type { Article };
@@ -305,6 +306,17 @@ const UPDATE_PATTERNS: RegExp[] = [
   // Infrastructure of Intelligence" (Nvidia blog about a concept, not a product)
   /\b(infrastructure|arquitetura|architecture)\s+of\s+(intelligence|AI|IA)\b/i,
   /\bnew\s+(era|paradigm|model)\s+of\s+(intelligence|computing|AI)\b/i,
+  // #4351: post de acompanhamento sobre PREÇO/EFICIÊNCIA de um modelo JÁ
+  // LANÇADO — não anúncio de lançamento. Casos reais 260731 (GPT-5.6, GA
+  // 3 semanas antes): "Advancing the price-performance frontier with GPT-5.6"
+  // (corte de preço) e "How GPT-5.6 fuses frontier intelligence with frontier
+  // efficiency" (post de eficiência técnica). Ambos usam o framing de
+  // marketing "frontier" (intelligence/efficiency/price-performance) pra
+  // descrever uma CARACTERÍSTICA do modelo, não pra anunciá-lo. Conservador:
+  // exige "price-performance frontier" (frase específica) OU "frontier
+  // intelligence" + "frontier efficiency" co-ocorrendo — não bloqueia "the
+  // frontier of AI" isolado (comum em copy de lançamento real).
+  /\bprice[- ]performance\s+frontier\b|\bfrontier\s+intelligence\b[^.\n]{0,60}\bfrontier\s+efficiency\b|\bfrontier\s+efficiency\b[^.\n]{0,60}\bfrontier\s+intelligence\b/i,
 ];
 
 export function isUpdate(article: Article): boolean {
@@ -743,6 +755,18 @@ export function isNewsNotTutorial(article: Article): boolean {
   // pelo mesmo motivo dos overrides acima (launch slug, roundup, visual
   // guide): sinal de lançamento inequívoco vence how-to genérico no título.
   if (LAUNCH_FAMILY_MEMBER_RE.test(`${article.title ?? ""}\n${article.summary ?? ""}`)) return true;
+  // #4337: release note de versão em host MISTO (tutorial + release notes no
+  // mesmo domínio). Diferente dos overrides de lançamento acima (launch
+  // slug/roundup/lançamento/visual-guide/family-member — todos padrões
+  // estruturais estreitos, improváveis em tutorial genuíno), um número de
+  // versão sozinho é comum em título/slug de tutorial hands-on real nesses
+  // mesmos hosts (ex: "How to fine-tune Claude 3.5 for agents"). Por isso
+  // este sinal só vence quando NÃO há keyword de how-to explícito
+  // (`!isTutorialByKeyword`) — coordenador (review 260731, achado do self-
+  // review inicial do #4337): sem esse guard, "Fine-tuning Claude 3.5 for
+  // agents" (slug com "3-5") seria misroteado pra noticias/RADAR mesmo tendo
+  // sinal de tutorial explícito no título.
+  if (hasReleaseVersionSignalOnMixedHost(article) && !isTutorialByKeyword(article)) return true;
   if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug, roundup, lançamento, visual-guide-explainer e family-member)
   if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
     return true;
@@ -790,6 +814,35 @@ function isMixedTutorialEssayHost(url: string): boolean {
   return MIXED_TUTORIAL_ESSAY_HOSTS.has(host);
 }
 
+/** Path decodificado, dashes preservados — pra match de versão (`v0-7`, `4.5`). */
+function rawUrlSlug(url: string): string {
+  try {
+    return decodeURIComponent(new URL(url).pathname);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * #4337: sinal de release/versão explícita no slug OU título, restrito aos
+ * hosts MISTOS (`MIXED_TUTORIAL_ESSAY_HOSTS` — tutorial + release note no
+ * mesmo domínio). Escopo deliberadamente restrito: fora desses hosts, versão
+ * de modelo no slug (`gpt-4o-mini`, `cosmos-3`) é comum em tutorial LEGÍTIMO
+ * (ex: cookbook.openai.com/examples/gpt-4o-mini-fine-tuning) — aplicar o
+ * guard ali ejetaria tutorial real do USE MELHOR.
+ *
+ * Caso real (#4337, 260730): langchain.com/blog/deep-agents-v0-7 ("Deep
+ * Agents v0.7") — release note de versão do framework, caiu em USE MELHOR só
+ * por estar no domínio cadastrado (TUTORIAL_PATTERNS + seed use_melhor=1).
+ * O slug "deep-agents-v0-7" já bate `VERSION_SIGNAL_RE` ("v0-7").
+ */
+function hasReleaseVersionSignalOnMixedHost(article: Article): boolean {
+  if (!isMixedTutorialEssayHost(article.url ?? "")) return false;
+  const raw = rawUrlSlug(article.url ?? "");
+  const title = article.title ?? "";
+  return VERSION_SIGNAL_RE.test(raw) || VERSION_SIGNAL_RE.test(title);
+}
+
 /**
  * #2985: linguagem de ensaio/especulação sobre tendência — "o futuro de X",
  * "entrevista com", "explica por que" — sinal positivo de análise, não tutorial.
@@ -814,9 +867,20 @@ function isMixedTutorialEssayHost(url: string): boolean {
  *   - "X is a ... problem" — reframing conceitual de um tema (ex:
  *     "Improving Agents is a Data Mining Problem", ensaio LangChain). Também
  *     não é procedimento — é uma tese sobre COMO pensar o problema.
+ *
+ * #4337: adicionado `from\s+0\s+to\s+\S+` — narrativa de bastidores de
+ * crescimento/produto ("X from 0 to 10M Users: Building Y"), não tutorial
+ * hands-on. Caso real 260730: "Codex from 0 to 10M Users: Building ChatGPT
+ * Work, Akshay Nathan, OpenAI" (latent.space/p/chatgpt-work) — `review-use-
+ * melhor.ts` já sinalizava como `suspicious` no gate da Etapa 1, mas nada
+ * agia sobre o sinal (item seguiu até a publicação). Deliberadamente restrito
+ * a "from 0 to X" (estrutura numérica de crescimento) — não adicionado
+ * "building {produto}" solo nem sinal de atribuição por vírgula ("byline"),
+ * ambos arriscariam colidir com título de tutorial real ("Building Effective
+ * Agents", gênero canônico de tutorial hands-on nestes mesmos hosts).
  */
 export const ESSAY_ANALYSIS_TITLE_RE =
-  /\b(future\s+of\b|of\s+the\s+future\b|in\s+conversation\s+with\b|interview\s+with\b|q\s*&\s*a\s+with\b|explains?\s+why\b|on\s+why\b|\w+(?:\s+\w+){0,2}\s+vs\.?\s+\w+(?:\s+\w+){0,2}\s*:|is\s+a\s+[\w\s]{0,25}?\bproblem\b)/i;
+  /\b(future\s+of\b|of\s+the\s+future\b|in\s+conversation\s+with\b|interview\s+with\b|q\s*&\s*a\s+with\b|explains?\s+why\b|on\s+why\b|\w+(?:\s+\w+){0,2}\s+vs\.?\s+\w+(?:\s+\w+){0,2}\s*:|is\s+a\s+[\w\s]{0,25}?\bproblem\b|from\s+0\s+to\s+\S+)/i;
 
 /**
  * #1453: detecta resultado científico/pesquisa em domínio que normalmente
