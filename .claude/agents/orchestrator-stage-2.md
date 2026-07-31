@@ -45,7 +45,7 @@ Exit code handling:
       --approved {EDITION_DIR}/_internal/01-approved.json \
       --write-removed {EDITION_DIR}/_internal/02-lancamentos-removed.json
     ```
-    Exit 1 (URLs removidas) é esperado quando o approved tem URL não-oficial — não bloquear, só informativo.
+    Exit 1 (URLs removidas) é esperado quando o approved tem URL não-oficial — não bloquear, só informativo. **#4339:** itens `not_a_tool` (verificação positiva #1968 — sem sinal de produto) não aparecem mais só no resumo — o script já reescreveu `_internal/01-approved.json` in-place, movendo-os de `lancamento[]` pra `radar[]`, ANTES desta chamada retornar. Não é preciso nenhuma ação manual adicional pra esses itens (diferente da URL não-oficial acima, que segue exigindo o passo de remoção explícito descrito nesta seção).
 - Radar: `max(5, 12 − destaques − lançamentos_final)` (#1629 — substitui caps separados de Pesquisas + Outras Notícias).
   - `lançamentos_final` deve ser contado **após** o passo de validação acima (lançamentos inválidos já removidos).
   - Se validação de lançamentos removeu N itens, os N slots liberados são preenchidos a partir do pool de `radar` (top por score, respeitando o cap resultante).
