@@ -18,14 +18,16 @@
  *      minimizar é grátis). `sha256Hex` usa Web Crypto — roda em Node E no
  *      runtime Workers sem polyfill.
  *
- *   2. `verifySubscriberViaBeehiivByEmail` — SECUNDÁRIA, NÃO VERIFICADA.
- *      Chama `GET /publications/{id}/subscriptions/by_email/{email}`
- *      diretamente na API da Beehiiv. Este endpoint está documentado na
- *      issue original mas **não foi confirmado ao vivo** contra o plano desta
- *      conta neste ambiente (sandbox sem egress de rede / sem key real).
- *      TODO(#4052): confirmar manualmente (`curl` com a key real) antes de
- *      promover este caminho a primário ou usá-lo em produção sem o fallback
- *      KV. Mantido aqui só como caminho DISPONÍVEL, documentado, não-default.
+ *   2. `verifySubscriberViaBeehiivByEmail` — SECUNDÁRIA. Chama `GET
+ *      /publications/{id}/subscriptions/by_email/{email}` diretamente na API
+ *      da Beehiiv. **Confirmado ao vivo** durante o diagnóstico do #4305
+ *      (curl com key real, plano desta conta):
+ *      `GET /publications/{id}/subscriptions/by_email/{email}` →
+ *      `HTTP 200 {"data":{...,"status":"active",...}}` — o shape bate com o
+ *      parse abaixo. Continua SECUNDÁRIA/não-default por decisão separada
+ *      (#4052: KV é mais barato, não gasta chamada de API por request) — a
+ *      confirmação acima só resolve "o endpoint funciona", não muda qual
+ *      caminho é primário (ver a issue do KV defasado, #4322/#4305).
  */
 
 /** SHA-256 hex de `email` normalizado (lowercase + trim) — Web Crypto, sem
@@ -86,12 +88,12 @@ export interface BeehiivByEmailDeps {
  * Verificação SECUNDÁRIA — chamada direta `GET
  * /publications/{id}/subscriptions/by_email/{email}`.
  *
- * TODO(#4052): endpoint NÃO confirmado ao vivo contra o plano desta conta
- * Beehiiv (sandbox sem egress de rede / sem `BEEHIIV_API_KEY` real). Antes de
- * depender deste caminho como primário ou crítico, o editor precisa validar
- * manualmente (`curl -H "Authorization: Bearer $BEEHIIV_API_KEY"
- * https://api.beehiiv.com/v2/publications/$PUB_ID/subscriptions/by_email/EMAIL`)
- * e reportar aqui/na issue se o shape de resposta bate com o parse abaixo.
+ * Endpoint confirmado ao vivo durante o diagnóstico do #4305 (`curl` com a
+ * key real, plano desta conta Beehiiv): `HTTP 200
+ * {"data":{...,"status":"active",...}}` — o shape de resposta bate com o
+ * parse abaixo. Não muda qual caminho é primário (decisão separada, #4052:
+ * KV continua o padrão/default) — só resolve a dúvida de "este caminho
+ * funciona ao vivo", que ficou em aberto desde a extração original.
  *
  * Trata qualquer erro de rede/parse como `"verification_failed"` (fail-soft —
  * nunca lança, nunca derruba o request do caller). #4321: 404 continua

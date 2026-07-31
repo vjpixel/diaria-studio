@@ -234,7 +234,7 @@ describe("renderCursosPage (#1745)", () => {
 
 describe("gate-banner: form de verificação inline (#4052 follow-up)", () => {
   const courses = [
-    course({ id: "aberto", title: "Curso Aberto", teaser: true } as Partial<Course>),
+    course({ id: "aberto", title: "Curso Aberto", preferOpen: true } as Partial<Course>),
     course({ id: "fechado-1", title: "Curso Fechado 1" }),
     course({ id: "fechado-2", title: "Curso Fechado 2" }),
   ];

@@ -55,8 +55,8 @@ describe("cursos teaser: nunca vaza conteúdo gated (#4052)", () => {
     assert.equal(open.length, openCourseCount(courses.length));
   });
 
-  it("os marcados `teaser: true` no seed ocupam as vagas primeiro", () => {
-    const marked = courses.filter((c) => c.teaser);
+  it("os marcados `preferOpen: true` no seed ocupam as vagas primeiro", () => {
+    const marked = courses.filter((c) => c.preferOpen);
     for (const c of marked.slice(0, open.length)) {
       assert.ok(openIds.has(c.id), `curso marcado ${c.id} deveria estar entre os abertos`);
     }

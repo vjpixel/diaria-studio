@@ -93,6 +93,14 @@ export interface SubscribeResult {
   ok: boolean;
   status: number;
   reason?: "not_configured" | "beehiiv_error";
+  /** #4323: `status` do corpo da resposta da Beehiiv (`data.status`), quando
+   * presente/parseável. `"active"` = a Beehiiv já confirmou a assinatura
+   * nesta mesma resposta (caso comum confirmado ao vivo no #4305) — o caller
+   * pode emitir sessão CONFIRMADA sem fricção extra. Qualquer outro valor
+   * (ou ausência do campo) significa que o double opt-in pode continuar
+   * pendente — o caller deve emitir sessão `pending` (ver `cookie.ts`),
+   * nunca confirmada, só por causa de um 2xx na criação. */
+  beehiivStatus?: string;
 }
 
 const CURSOS_UTM_SOURCE = "cursos";
@@ -139,7 +147,21 @@ export async function subscribeToBeehiiv(
     console.error("[cursos] fetch pra Beehiiv lançou:", err);
     return { ok: false, status: 502, reason: "beehiiv_error" };
   }
-  if (res.ok) return { ok: true, status: res.status };
+  if (res.ok) {
+    // #4323: lê o `status` do corpo pra decidir sessão pending × confirmada —
+    // `subscribeToBeehiiv` antes só confirmava o 2xx da CRIAÇÃO, nunca este
+    // campo. Corpo malformado/sem o campo vira `beehiivStatus: undefined`
+    // (nunca lança) — o caller trata isso como "não confirmado", não como
+    // erro de rede.
+    let beehiivStatus: string | undefined;
+    try {
+      const body = (await res.json()) as { data?: { status?: string } };
+      beehiivStatus = body?.data?.status;
+    } catch {
+      beehiivStatus = undefined;
+    }
+    return { ok: true, status: res.status, beehiivStatus };
+  }
   return { ok: false, status: res.status, reason: "beehiiv_error" };
 }
 
@@ -189,6 +211,13 @@ export async function handleGateSubscribe(request: Request, env: Env, deps: Subs
     return json({ ok: false, error: "subscribe_failed" }, 502, env);
   }
 
-  const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, v.email);
+  // #4323: só emite sessão CONFIRMADA quando a própria resposta da Beehiiv já
+  // trouxe `status: "active"` (caminho comum, confirmado ao vivo no #4305 —
+  // continua sem fricção extra). Qualquer outro caso (double opt-in
+  // pendente, campo ausente, corpo não-parseável) emite `pending` — porta o
+  // mesmo padrão de `workers/poll/src/web-gate.ts` (#4121), que já resolveu
+  // este gap pro worker irmão.
+  const state = result.beehiivStatus === "active" ? "confirmed" : "pending";
+  const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, v.email, state);
   return json({ ok: true }, 200, env, { "Set-Cookie": setCookie });
 }

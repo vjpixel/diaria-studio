@@ -38,7 +38,7 @@ describe("cursos full HTML gerado (#4052)", () => {
 
   it("o HTML full contém TODOS os cursos completos (inclusive não-teaser)", () => {
     const courses = loadCourses(SEED);
-    const gated = courses.filter((c) => !c.teaser);
+    const gated = courses.filter((c) => !c.preferOpen);
     assert.ok(gated.length > 0, "sanity: precisa haver pelo menos 1 curso gated pro teste fazer sentido");
     for (const c of gated) {
       assert.ok(CURSOS_FULL_HTML.includes(c.summary), `full HTML deveria conter o summary de ${c.id}`);

@@ -2,7 +2,8 @@
  * lib-shared-subscriber-verify.test.ts (#4052)
  *
  * Cobre `scripts/lib/shared/subscriber-verify.ts` (verificação KV primária +
- * by_email secundária/TODO) e `scripts/lib/shared/rate-limit.ts`. Os 4
+ * by_email secundária, endpoint confirmado ao vivo no #4305/#4322) e
+ * `scripts/lib/shared/rate-limit.ts`. Os 4
  * estados exigidos pelo briefing: ativo / inativo / inexistente / KV-miss
  * (API indisponível trata igual a "unknown" — fail-soft, nunca lança).
  */
@@ -70,7 +71,7 @@ describe("subscriber-verify (#4052)", () => {
     });
   });
 
-  describe("verifySubscriberViaBeehiivByEmail — secundário/TODO, fail-soft", () => {
+  describe("verifySubscriberViaBeehiivByEmail — secundário (confirmado ao vivo #4305), fail-soft", () => {
     it("INATIVO: API responde status inactive", async () => {
       const fetchImpl = (async () =>
         new Response(JSON.stringify({ data: { status: "inactive" } }), { status: 200 })) as typeof fetch;
