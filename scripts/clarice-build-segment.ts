@@ -201,7 +201,9 @@ export const NOVOS_ROUND_SIZE_CAP = 500;
 /**
  * Pura/testável: `selectedCount > cap` sem `--force` → aborta (`ok:false`).
  * `--force` destrava (D13) — o editor já olhou e decidiu prosseguir mesmo
- * assim. Só se aplica quando `applies` é true (chamado só pro grupo `novos`).
+ * assim. O caller decide QUANDO chamar (só pro grupo `novos` — ver `if
+ * (group === "novos")` em `main()`); esta função não sabe qual grupo está
+ * ativo, só recebe o `selectedCount` já resolvido.
  */
 export function checkRoundSizeCap(
   selectedCount: number,
@@ -482,9 +484,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
 
   // #4347 D13: teto de tamanho da rodada — só o grupo 'novos' (substituto do
   // gate humano que a skill /diaria-clarice-novos não tem, D6). Checado ANTES
-  // de qualquer escrita (CSV/manifest), mesmo em --dry-run (reflete o plano
-  // de verdade) — mas só ABORTA o processo em --dry-run pra sinalizar cedo;
-  // fora de --dry-run também aborta, sempre antes de tocar disco.
+  // de qualquer escrita (CSV/manifest) e ABORTA identicamente com ou sem
+  // --dry-run — dry-run já reflete o plano real, então não faz sentido deixar
+  // passar aqui e travar só na execução de verdade.
   if (group === "novos") {
     const cap = checkRoundSizeCap(manifestEntry.count, NOVOS_ROUND_SIZE_CAP, forceCap);
     if (!cap.ok) {
@@ -508,6 +510,17 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   };
 
   if (manifestEntry.count === 0) {
+    // #4347: 'novos' roda desassistido ~4×/semana — 0 cadastros novos desde
+    // o --since é um resultado ROTINEIRO (dia calmo de signups), não um sinal
+    // de bug como seria pros outros 3 grupos (engajados/reativacao/ramp-warm,
+    // onde 0 quase sempre indica predicado errado ou store vazio). SKILL.md
+    // documenta explicitamente "0 contatos → sai limpo, exit 0, não é erro" —
+    // sem esse branch, a skill sem gate humano trataria um dia comum como halt.
+    if (group === "novos") {
+      console.error(`ℹ️  0 contato(s) no grupo 'novos' — rodada vazia (não é erro). Nada escrito.`);
+      console.log(JSON.stringify(summary, null, 2));
+      return;
+    }
     console.error(
       `❌ 0 contato(s) no grupo '${group}' — verifique o predicado (send_eligible/histórico/mv_bucket) contra o store, ou se todo o universo elegível já foi selecionado por outra invocação deste ciclo (${alreadyTracked} excluído(s) via sent-or-queued.json). Nada escrito.`,
     );

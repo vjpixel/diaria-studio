@@ -266,11 +266,12 @@ test("resolveDefaultSince: MAX(created) do store menos 2 dias de folga", () => {
   assert.equal(since, "2026-07-18"); // 20 - 2 dias
 });
 
-test("resolveDefaultSince: store vazio (sem created) cai pra 30 dias atrás de `now`", () => {
+test("REGRESSÃO (#4347 review): resolveDefaultSince — store vazio (sem created) cai pra EXATAMENTE 30 dias atrás de `now` (sem dobrar a folga de 2 dias em cima do fallback)", () => {
   const fakeDb = { prepare: () => ({ get: () => ({ maxCreated: null }) }) };
   const since = resolveDefaultSince(fakeDb, new Date("2026-07-29T00:00:00Z"));
-  // 29/jul - 30d = 29/jun; - 2d de folga = 27/jun
-  assert.equal(since, "2026-06-27");
+  // 29/jul - 30d = 29/jun — a folga de 2 dias só se aplica em cima de um
+  // MAX(created) real (teste acima), nunca em cima do fallback arbitrário.
+  assert.equal(since, "2026-06-29");
 });
 
 test("deltaOutputPath: nome no formato stripe-customers-{YYYY-MM}-delta-{MMDD}.csv (data da execução)", () => {

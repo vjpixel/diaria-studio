@@ -3,8 +3,9 @@
  * clarice-check-derived-stale.ts (#4347 Etapa 4, Passo 0)
  *
  * Wrapper CLI fino sobre `isDerivedStale` (scripts/lib/clarice-db.ts) — até
- * aqui só era consultado inline dentro de `clarice-build-segment.ts --group
- * engajados`. A skill `/diaria-clarice-novos` precisa checar o MESMO sinal no
+ * aqui só era consultado inline (abort em `clarice-build-segment.ts --group
+ * engajados`, #4205; warning não-fatal em `clarice-build-waves-store.ts`). A
+ * skill `/diaria-clarice-novos` precisa checar o MESMO sinal no
  * preflight (Passo 0) ANTES de gastar Stripe/MV/tempo montando uma rodada
  * sobre um store cujos campos derivados (`send_eligible`/`priority_points`)
  * podem estar desatualizados em relação ao último sync do Brevo.

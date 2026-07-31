@@ -675,6 +675,53 @@ function insertNovosRows(db: ReturnType<typeof openClariceDb>, count: number): v
   }
 }
 
+test("REGRESSÃO (#4347): grupo 'novos' com 0 contatos elegíveis é uma RODADA VAZIA (exit 0), não um erro — outros 3 grupos continuam exit 1", async () => {
+  // Store NÃO vazio (senão cai no guard anterior "store vazio", genérico a
+  // qualquer grupo) — mas nenhum contato bate o predicado de 'novos' (created
+  // antes do --since). Isola o branch sob teste: manifestEntry.count === 0,
+  // não rows.length === 0.
+  const dirNovos = mkdtempSync(resolve(tmpdir(), "bseg-novos-empty-"));
+  const dbNovos = resolve(dirNovos, "store.db");
+  const db1 = openClariceDb(dbNovos);
+  db1.prepare(
+    `INSERT INTO clarice_users (email, name, tier, cohort, status, created, sends_count, mv_bucket)
+     VALUES ('velho@x.com', 'Velho', 1, 'assinantes-ativos', 'active', '2026-06-01T00:00:00Z', 0, NULL)`,
+  ).run();
+  recomputeDerived(db1);
+  db1.close();
+
+  const { exitCode: exitNovos, result: logsNovos } = await withoutBrevoKey(() =>
+    withMockedExit(() =>
+      captureLogs(() =>
+        main(["--cycle", "2606-07", "--db", dbNovos, "--group", "novos", "--since", "2026-07-01", "--dry-run", "--data-root", dirNovos]),
+      ),
+    ),
+  );
+  assert.equal(exitNovos, undefined, "grupo 'novos' vazio NÃO deve chamar process.exit — é uma rodada válida, não erro");
+  const outNovos = JSON.parse((logsNovos ?? []).join("\n"));
+  assert.equal(outNovos.selected, 0);
+  assert.equal(outNovos.group, "novos");
+
+  // Mesmo cenário (store sem candidatos), mas grupo 'engajados' — continua
+  // sinalizando erro (exit 1): 0 contatos ali É tipicamente sintoma de bug
+  // (predicado errado, store vazio), diferente de 'novos' (dia calmo é normal).
+  const dirEng = mkdtempSync(resolve(tmpdir(), "bseg-engajados-empty-"));
+  const dbEng = resolve(dirEng, "store.db");
+  const db2 = openClariceDb(dbEng);
+  // sends_count=0 nunca bate isEngajados (exige sends_count>0) — store
+  // não-vazio, mas 0 contatos no grupo 'engajados' especificamente.
+  db2.prepare(
+    "INSERT INTO clarice_users (email, name, tier, sends_count, opens_count) VALUES ('fresh@x.com','Fresh',2,0,0)",
+  ).run();
+  recomputeDerived(db2);
+  db2.close();
+
+  const { exitCode: exitEng } = await withoutBrevoKey(() =>
+    withMockedExit(() => main(["--cycle", "2606-07", "--db", dbEng, "--group", "engajados", "--dry-run", "--data-root", dirEng])),
+  );
+  assert.equal(exitEng, 1, "outros grupos continuam tratando 0 contatos como erro (comportamento pré-existente, sem regressão)");
+});
+
 test("main: --group novos requer --since (aborta sem ele)", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-novos-noSince-"));
   const dbPath = resolve(dir, "store.db");

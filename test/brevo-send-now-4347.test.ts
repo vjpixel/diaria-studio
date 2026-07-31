@@ -15,6 +15,7 @@ import { brevoSendNow, isTerminalSendStatus } from "../scripts/lib/brevo-client.
 import {
   applySendNowVerifyResults,
   resolveScheduleAtArg,
+  resolveContentCycle,
   type CampaignEntry,
 } from "../scripts/clarice-schedule-group.ts";
 
@@ -166,4 +167,23 @@ test("resolveScheduleAtArg: ISO inválido → erro claro", () => {
   const result = resolveScheduleAtArg("não-é-uma-data");
   assert.ok("error" in result);
   assert.match((result as { error: string }).error, /não é ISO 8601 válido/);
+});
+
+// ---------------------------------------------------------------------------
+// resolveContentCycle (#4347 review) — --cycle (segments/campanha) pode
+// divergir de --content-cycle (HTML/gabarito É IA?) quando a skill
+// /diaria-clarice-novos cai (D3) num ciclo mensal ANTERIOR ao ciclo Clarice
+// corrente de contatos.
+// ---------------------------------------------------------------------------
+
+test("resolveContentCycle: sem --content-cycle -> usa o --cycle de segments (comportamento original, todo caller pré-#4347)", () => {
+  assert.equal(resolveContentCycle([], "2606-07"), "2606-07");
+  assert.equal(resolveContentCycle(["--cycle", "2606-07"], "2606-07"), "2606-07");
+});
+
+test("REGRESSÃO (#4347): --content-cycle explícito DIVERGE de --cycle — vence pro HTML/gabarito É IA?", () => {
+  assert.equal(
+    resolveContentCycle(["--cycle", "2607-08", "--content-cycle", "2605-06"], "2607-08"),
+    "2605-06",
+  );
 });

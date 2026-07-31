@@ -237,9 +237,10 @@ export function sliceIntoWaves<T>(ordered: T[], maxSize: number): T[][] {
 
 /**
  * Lê as linhas relevantes pra segmentação do store SQLite. Inclui
- * `opens_count`/`last_sent_at`/`mv_bucket` (#2885) — usados pelos grupos de
- * envio NOMEADOS (`segmentEngajados`/`segmentReativacao`/`segmentRampWarm`),
- * não só pela rampa (`segmentFromStore`/`priorityQueue`, que ignoram esses 3
+ * `opens_count`/`last_sent_at`/`mv_bucket` (#2885) e `created`/`brevo_list_ids`
+ * (#4347) — usados pelos grupos de envio NOMEADOS (`NAMED_GROUPS` — hoje
+ * `segmentEngajados`/`segmentReativacao`/`segmentRampWarm`/`segmentNovos`),
+ * não só pela rampa (`segmentFromStore`/`priorityQueue`, que ignoram esses
  * campos extras sem quebrar).
  */
 export function loadStoreRows(db: {

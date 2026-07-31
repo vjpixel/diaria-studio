@@ -99,20 +99,20 @@ npx tsx scripts/clarice-novos-resolve-cycle.ts [--subject "Assunto explícito"]
 
 Sem `--subject`, o script tenta resolver o assunto vencedor A/B/C já usado nos envios canônicos do ciclo (`campaigns-summary.json`). Se nenhum ciclo estiver pronto (preview + gabarito É IA? + assunto conhecido), ABORTA com o motivo por ciclo candidato — pare a rodada aqui. Se o ciclo mais recente não estava pronto mas um anterior está (D3), o script já resolve automaticamente e sinaliza `fallback: true` — registre isso no relatório.
 
-Resolva a key idempotente do dia:
+Resolva a key idempotente do dia (namespace por `{CICLO_ENVIO}` — é onde `group-campaigns.json` deste grupo mora):
 
 ```bash
-npx tsx scripts/clarice-novos-resolve-key.ts --cycle {CICLO_MENSAL_RESOLVIDO} --date {AAMMDD_HOJE}
+npx tsx scripts/clarice-novos-resolve-key.ts --cycle {CICLO_ENVIO} --date {AAMMDD_HOJE}
 ```
 
-Crie a campanha, SEM `--schedule-at` (rascunho pra envio imediato):
+Crie a campanha, SEM `--schedule-at` (rascunho pra envio imediato). **`--cycle` é sempre `{CICLO_ENVIO}`** (governa `segments/`/`group-campaigns.json` — mesmo namespace dos Passos 2–4); **`--content-cycle` é `{CICLO_MENSAL_RESOLVIDO}`** só quando ele DIVERGE de `{CICLO_ENVIO}` (caso comum no fallback D3) — controla de onde vêm o HTML e o gabarito É IA?:
 
 ```bash
-npx tsx scripts/clarice-schedule-group.ts --cycle {CICLO_MENSAL_RESOLVIDO} --group novos \
-  --key {KEY} --subject "{ASSUNTO}" --create
+npx tsx scripts/clarice-schedule-group.ts --cycle {CICLO_ENVIO} --content-cycle {CICLO_MENSAL_RESOLVIDO} \
+  --group novos --key {KEY} --subject "{ASSUNTO}" --create
 ```
 
-Nota: `{CICLO_MENSAL_RESOLVIDO}` (do Passo 5) é o ciclo do CONTEÚDO/edição mensal a redistribuir — pode ser diferente de `{CICLO_ENVIO}` (Passo 2/3, o ciclo Clarice de contatos/segmentação). Não confunda os dois — cada script usa o que precisa.
+**Nunca passe `{CICLO_MENSAL_RESOLVIDO}` como `--cycle`** — isso faria o script procurar `group-campaigns.json`/o registro de listas do grupo `novos` no namespace ERRADO (o do conteúdo, não o de contatos), quebrando a resolução da lista criada no Passo 4. `--cycle` e `--content-cycle` são propositalmente independentes — sempre os dois flags juntos quando os ciclos divergirem.
 
 ## Passo 6 — Test email condicional (D12) + envio imediato
 
@@ -120,10 +120,11 @@ Nota: `{CICLO_MENSAL_RESOLVIDO}` (do Passo 5) é o ciclo do CONTEÚDO/edição m
 npx tsx scripts/clarice-novos-html-state.ts --cycle {CICLO_MENSAL_RESOLVIDO}
 ```
 
-Se `shouldSendTest: true` no JSON de saída:
+Se `shouldSendTest: true` no JSON de saída (**sempre `--cycle {CICLO_ENVIO}` + `--content-cycle {CICLO_MENSAL_RESOLVIDO}`, mesma dupla do Passo 5**):
 
 ```bash
-npx tsx scripts/clarice-schedule-group.ts --cycle {CICLO_MENSAL_RESOLVIDO} --group novos --key {KEY} --send-test
+npx tsx scripts/clarice-schedule-group.ts --cycle {CICLO_ENVIO} --content-cycle {CICLO_MENSAL_RESOLVIDO} \
+  --group novos --key {KEY} --send-test
 ```
 
 Se `false`, pule — o HTML é idêntico ao da última rodada (D12).
@@ -131,10 +132,11 @@ Se `false`, pule — o HTML é idêntico ao da última rodada (D12).
 Dispare AGORA (guard É IA? embutido; GET-verify pós-disparo confirma status terminal antes de declarar sucesso):
 
 ```bash
-npx tsx scripts/clarice-schedule-group.ts --cycle {CICLO_MENSAL_RESOLVIDO} --group novos --key {KEY} --send-now
+npx tsx scripts/clarice-schedule-group.ts --cycle {CICLO_ENVIO} --content-cycle {CICLO_MENSAL_RESOLVIDO} \
+  --group novos --key {KEY} --send-now
 ```
 
-Se o JSON de saída não mostrar `status: "sent"` (GET-verify não confirmou), NÃO declare sucesso ao editor/relatório — registre como "disparo incerto, reconsulte a Brevo manualmente" e re-tente `--send-now` (idempotente: campanha já `sent` é pulada).
+**Checar o exit code, não só o JSON.** Exit `0` = disparo confirmado (`status: "sent"` no JSON). Exit `2` = o POST `sendNow` foi aceito mas o GET-verify pós-disparo NÃO confirmou status terminal — NÃO declare sucesso ao editor/relatório nesse caso; registre como "disparo incerto, reconsulte a Brevo manualmente" e re-tente `--send-now` (idempotente: campanha já `"sent"` é pulada, então re-tentar é seguro). Qualquer outro exit (`1`) é erro duro (guard É IA?, campanha não criada, etc.) — trate como halt.
 
 Finalize o state (grava SHA do HTML + acumula `sentCount`):
 

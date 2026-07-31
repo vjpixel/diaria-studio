@@ -56,6 +56,14 @@
  *                      confia só no 2xx do POST. Idempotente: campanha já
  *                      `"sent"` é pulada.
  *
+ * --content-cycle X    #4347: OPCIONAL — ciclo mensal do CONTEÚDO (HTML +
+ *                      gabarito É IA?) quando diverge do --cycle de
+ *                      contatos/segments (ex: /diaria-clarice-novos resolve a
+ *                      edição pronta mais recente via resolveLatestMonthlyCycle,
+ *                      que pode cair — D3 — num ciclo mensal ANTERIOR ao ciclo
+ *                      Clarice corrente). Sem a flag, content = --cycle
+ *                      (comportamento original, todo caller pré-#4347).
+ *
  * Resolução da lista (--group XOR --list-id, uma delas obrigatória):
  *   --group NOME       resolve o listId via o registro escrito por
  *                      `clarice-import-waves.ts --group NOME --execute` em
@@ -242,6 +250,16 @@ export function parseSubjectArg(argv: string[]): string | undefined {
  * presente mas inválido/no passado → `{ error }` (NÃO regride o guard
  * existente — mesma mensagem/condição de antes da #4347, só extraída).
  */
+/**
+ * #4347: resolve `--content-cycle` (ver docstring de `CampaignEntry` no
+ * topo) — pura/testável, extraída da linha inline em `main()` pra provar a
+ * regra sem precisar de fixtures reais em `data/monthly/` (`monthlyDir` não
+ * é injetável, mesma limitação documentada nos testes deste arquivo).
+ */
+export function resolveContentCycle(argv: string[], segmentsCycle: string): string {
+  return getArg(argv, "content-cycle") || segmentsCycle;
+}
+
 export function resolveScheduleAtArg(
   raw: string | undefined,
   now: Date = new Date(),
@@ -409,9 +427,19 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const doSendNow = hasFlag(argv, "send-now"); // #4347 G7/D7
   const skipEiaGuard = hasFlag(argv, "skip-eia-guard");
 
+  // #4347: --content-cycle é OPCIONAL — o ciclo do CONTEÚDO/edição mensal a
+  // redistribuir pode DIVERGIR do --cycle de contatos/segments (ex: a skill
+  // /diaria-clarice-novos resolve a edição mais recente PRONTA via
+  // resolveLatestMonthlyCycle, que pode cair — D3 — num ciclo mensal anterior
+  // ao ciclo Clarice corrente de cadastros novos). Sem a flag, comportamento
+  // ORIGINAL preservado: content = segments = --cycle (todo caller pré-#4347
+  // — ramp-warm/engajados/reativação/ramp — sempre usou o mesmo ciclo pros
+  // dois papéis).
+  const contentCycle = resolveContentCycle(argv, cycle);
+
   // HTML render: mesma fonte que clarice-schedule-sends.ts (Stage 4 já subiu
   // as imagens pro Cloudflare KV — nada de upload aqui, ver docstring do topo).
-  const htmlPath = resolve(resolveMonthlyDir(cycle), "_internal", "cloudflare-preview.html");
+  const htmlPath = resolve(resolveMonthlyDir(contentCycle), "_internal", "cloudflare-preview.html");
   if (!existsSync(htmlPath)) throw new Error(`HTML render não existe: ${htmlPath}`);
   const html = readFileSync(htmlPath, "utf8");
 
@@ -551,7 +579,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // --- schedule (PUT scheduledAt + GET-verify) ---
   if (doSchedule) {
     // #2009/#3228: mesmo guard de gabarito É IA? do pipeline canônico.
-    const eiaCheck = checkEiaGuard(cycle, skipEiaGuard, undefined);
+    const eiaCheck = checkEiaGuard(contentCycle, skipEiaGuard, undefined);
     if (!eiaCheck.ok) {
       console.error(eiaCheck.message);
       process.exit(1);
@@ -592,7 +620,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // IMEDIATO, sem agendamento. Mesmo guard É IA? do --schedule (o gate
   // editorial independe de "quando" o envio dispara).
   if (doSendNow) {
-    const eiaCheck = checkEiaGuard(cycle, skipEiaGuard, undefined);
+    const eiaCheck = checkEiaGuard(contentCycle, skipEiaGuard, undefined);
     if (!eiaCheck.ok) {
       console.error(eiaCheck.message);
       process.exit(1);
@@ -612,6 +640,21 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       // racional de applyVerifyResults pro --schedule).
       const verifySettled = await Promise.allSettled([brevoGetCampaign(apiKey, c.campaignId)]);
       applySendNowVerifyResults(verifySettled, [c], campaigns, campaignsPath);
+      // #4347: sem gate humano (D6), a skill /diaria-clarice-novos precisa de
+      // um sinal MÁQUINA-VERIFICÁVEL de "disparo não confirmado" — não só o
+      // texto de warning que applySendNowVerifyResults já loga. process.exitCode
+      // (não process.exit — deixa o JSON de resumo abaixo imprimir normalmente,
+      // útil pro diagnóstico) sinaliza a um caller automatizado que este
+      // --send-now NÃO deve ser tratado como sucesso, mesmo com stdout válido.
+      // Cast: TS estreitou c.status pra "draft" neste branch (os `if`s acima
+      // já excluíram "sent"/"scheduled") e não enxerga que
+      // applySendNowVerifyResults pode MUTAR c.status pra "sent" por
+      // referência — sem o cast, a comparação vira "sempre true" pro
+      // typechecker, mascarando o próprio propósito do guard.
+      if ((c.status as CampaignEntry["status"]) !== "sent") {
+        console.error(`❌ ${key}: sendNow disparado mas GET-verify não confirmou status terminal — NÃO declare sucesso. Re-tente --send-now.`);
+        process.exitCode = 2;
+      }
     }
   }
 

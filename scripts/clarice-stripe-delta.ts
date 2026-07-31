@@ -305,17 +305,24 @@ const SINCE_OVERLAP_DAYS = 2;
 
 /**
  * Resolve o `--since` default a partir do store local: `MAX(created)` menos
- * `SINCE_OVERLAP_DAYS` dias. Store vazio/sem `created` nenhum → fallback pra
- * 30 dias atrás (primeira rodada, sem histórico local ainda).
+ * `SINCE_OVERLAP_DAYS` dias — a folga só faz sentido em cima de um high-water
+ * mark REAL (protege contra o intervalo entre a última ingestão e agora).
+ * Store vazio/sem `created` nenhum → fallback pra EXATAMENTE 30 dias atrás
+ * (1ª rodada, sem histórico local ainda) — SEM aplicar a folga de novo em
+ * cima do fallback (um fallback arbitrário já não tem "borda" pra proteger;
+ * dobrar a folga ali só confundia o operador, que via "30 dias" documentado
+ * mas "32 dias" na prática).
  */
 export function resolveDefaultSince(db: { prepare: (sql: string) => { get: () => unknown } }, now: Date = new Date()): string {
   const row = db.prepare("SELECT MAX(created) as maxCreated FROM clarice_users").get() as
     | { maxCreated: string | null }
     | undefined;
   const maxCreated = row?.maxCreated ? new Date(row.maxCreated) : null;
-  const base = maxCreated && !Number.isNaN(maxCreated.getTime()) ? maxCreated : new Date(now.getTime() - 30 * 86_400_000);
-  const withOverlap = new Date(base.getTime() - SINCE_OVERLAP_DAYS * 86_400_000);
-  return withOverlap.toISOString().slice(0, 10); // YYYY-MM-DD
+  if (maxCreated && !Number.isNaN(maxCreated.getTime())) {
+    const withOverlap = new Date(maxCreated.getTime() - SINCE_OVERLAP_DAYS * 86_400_000);
+    return withOverlap.toISOString().slice(0, 10); // YYYY-MM-DD
+  }
+  return new Date(now.getTime() - 30 * 86_400_000).toISOString().slice(0, 10);
 }
 
 /**

@@ -13,11 +13,17 @@
  *                                    da rampa e aborta em vermelho".
  *   semáforo "yellow"/"green"     → passa (exit 0).
  *   indeterminado (sem envio maduro,
- *   volume-base indisponível, GET falhou) → passa com aviso (exit 0) — não é
- *                                    "vermelho", é "não dá pra saber ainda";
- *                                    bloquear aqui degradaria a skill toda
- *                                    vez que a rampa não tem dado maduro
- *                                    suficiente, o que é comum.
+ *   volume-base indisponível — resposta 2xx bem-formada, só sem dado
+ *   suficiente) → passa com aviso (exit 0) — não é "vermelho", é "não dá pra
+ *                                    saber ainda"; bloquear aqui degradaria a
+ *                                    skill toda vez que a rampa não tem dado
+ *                                    maduro suficiente, o que é comum.
+ *   GET falhou (não-2xx) OU erro de rede → ABORTA (exit 1, propaga como
+ *                                    exceção). Categoria DIFERENTE de
+ *                                    "indeterminado": aqui não sabemos se o
+ *                                    breaker diria vermelho, então trata como
+ *                                    "MCP indisponível = fail-fast" (#738) —
+ *                                    nunca como "seguro prosseguir".
  *
  * Uso:
  *   npx tsx scripts/clarice-check-semaphore.ts [--dashboard-url URL] [--dashboard-limit N]
@@ -55,6 +61,19 @@ export function decideSemaphoreGuard(
   return { ok: true, semaphore: result.plan.semaphore };
 }
 
+/**
+ * #4347 review: uma resposta HTTP não-2xx do dashboard (5xx do Worker, 401/403
+ * de auth drift) é uma classe de falha DIFERENTE de "sem dado maduro ainda"
+ * (`deriveRampVolumes` retornando `ok:false` sobre uma resposta 2xx
+ * bem-formada) — a primeira significa "não sabemos se o breaker diria
+ * vermelho", a segunda significa "o breaker legitimamente não tem nada a
+ * dizer ainda". Tratar as duas como "indeterminate → passa" (como uma
+ * primeira versão deste guard fazia) era ASSIMÉTRICO com o comportamento de
+ * uma falha de REDE (que já propaga como exceção não capturada até
+ * `main().catch()` → aborta) — um 5xx do MESMO serviço silenciosamente
+ * passava enquanto uma queda total da rede abortava. Lança aqui pra tratar os
+ * dois casos igual (mesmo racional de "MCP indisponível = fail-fast", CLAUDE.md #738).
+ */
 export async function checkSemaphore(
   dashboardUrl: string,
   limit: number,
@@ -62,10 +81,14 @@ export async function checkSemaphore(
 ): Promise<SemaphoreCheckResult> {
   const res = await fetchImpl(`${dashboardUrl}/api/campaigns?limit=${limit}`);
   if (!res.ok) {
-    return { ok: true, semaphore: "indeterminate", reason: `GET ${dashboardUrl}/api/campaigns falhou (${res.status}) — não dá pra determinar o semáforo.` };
+    throw new Error(`GET ${dashboardUrl}/api/campaigns falhou (${res.status}) — não dá pra determinar o semáforo, tratado como falha (não "indeterminate/passa").`);
   }
   const campaigns = (await res.json()) as BrevoCampaign[];
-  const spamEntry = await fetchPostmasterSpamEntry(dashboardUrl).catch(() => null);
+  // `fetchImpl` propagado (não o default global `fetch`) — sem isso, testes
+  // que injetam `fetchImpl` pra evitar rede real ainda disparariam uma
+  // chamada de verdade aqui (silenciosamente engolida pelo catch interno de
+  // fetchPostmasterSpamEntry, mas uma chamada de rede real mesmo assim).
+  const spamEntry = await fetchPostmasterSpamEntry(dashboardUrl, fetchImpl).catch(() => null);
   const result = deriveRampVolumes(campaigns, new Date(), spamEntry);
   return decideSemaphoreGuard(result);
 }
