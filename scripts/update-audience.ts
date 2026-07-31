@@ -20,7 +20,7 @@
  * via /diaria-atualiza-audiencia (quando há survey nova).
  */
 
-import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import Papa from "papaparse";
@@ -200,6 +200,38 @@ function parseCtr(): CtrParseResult | null {
   return parseCtrFromCsv(readFileSync(CTR_CSV, "utf8"));
 }
 
+// ─── Archive guard (#4366) ─────────────────────────────────────────────────────
+//
+// Detecta arquivar um snapshot idêntico ao mais recente já arquivado — sinal de
+// que uma rodada anterior arquivou o profile antigo mas falhou/crashou ANTES de
+// escrever conteúdo novo em `context/audience-profile.md` (a regeneração daquela
+// rodada nunca aconteceu, silenciosamente). Não é um hard-fail: o script sempre
+// prossegue (o próprio 07-30 do incidente real acabou tendo sucesso), só loga
+// warning pra não passar despercebido de novo.
+
+const HISTORY_FILE_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
+
+/** Nome do arquivo de histórico mais recente em `historyDir`, excluindo `excludeFilename` (tipicamente o de hoje). Ordena lexicograficamente — seguro porque o nome é sempre YYYY-MM-DD. */
+export function findLatestHistoryFile(historyDir: string, excludeFilename?: string): string | null {
+  if (!existsSync(historyDir)) return null;
+  const files = readdirSync(historyDir)
+    .filter((f) => HISTORY_FILE_RE.test(f) && f !== excludeFilename)
+    .sort();
+  return files.length > 0 ? files[files.length - 1] : null;
+}
+
+/** Pure: mensagem de warning se `currentContent` (prestes a ser arquivado como `todayFile`) for byte-a-byte idêntico ao conteúdo do arquivo de histórico mais recente já existente (`latestFile`/`latestContent`). Retorna `null` quando não há duplicata (ou não há histórico anterior pra comparar). */
+export function detectDuplicateArchiveWarning(
+  currentContent: string,
+  todayFile: string,
+  latestFile: string | null,
+  latestContent: string | null,
+): string | null {
+  if (!latestFile || latestContent === null) return null;
+  if (currentContent !== latestContent) return null;
+  return `[update-audience] AVISO: snapshot a ser arquivado (${todayFile}) é idêntico ao mais recente já arquivado (${latestFile}) — possível regeneração que falhou silenciosamente numa rodada anterior (ver #4366). Investigar data/run-log.jsonl em torno dessas datas.`;
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────────────
 
 function main() {
@@ -230,12 +262,6 @@ function main() {
   if (!ctr && surveyResponses.length === 0) {
     console.error("Nenhuma fonte disponível (CTR CSV ou survey JSON). Nada a gerar.");
     process.exit(1);
-  }
-
-  // Archive existing
-  if (existsSync(OUT)) {
-    mkdirSync(HISTORY_DIR, { recursive: true });
-    copyFileSync(OUT, resolve(HISTORY_DIR, `${today}.md`));
   }
 
   const lines: string[] = [
@@ -424,6 +450,27 @@ function main() {
     "",
     "_Regerado por `scripts/update-audience.ts` a partir de CTR (`data/link-ctr-table.csv`) e survey (`data/audience-raw.json`)._",
   );
+
+  // Archive existing — feito aqui (logo antes do write final), não no topo do
+  // main(): #4366 achou que arquivar cedo demais (antes de `lines` estar
+  // pronto) deixa uma janela onde uma exceção na montagem do conteúdo novo
+  // arquiva o profile antigo mas nunca sobrescreve `context/audience-profile.md`
+  // — a regeneração falha silenciosamente e o próximo run re-arquiva o mesmo
+  // conteúdo stale sob uma data de calendário diferente. Fazer o archive só
+  // quando `lines` já está montado (a exceção, se houver, acontece antes e
+  // propaga sem arquivar nada) fecha essa janela pro caso comum (erro de
+  // montagem de conteúdo); não protege contra falha no meio do próprio I/O de
+  // arquivo, que é um risco residual aceito (mesma classe de qualquer script).
+  if (existsSync(OUT)) {
+    mkdirSync(HISTORY_DIR, { recursive: true });
+    const currentContent = readFileSync(OUT, "utf8");
+    const todayFile = `${today}.md`;
+    const latestFile = findLatestHistoryFile(HISTORY_DIR, todayFile);
+    const latestContent = latestFile ? readFileSync(resolve(HISTORY_DIR, latestFile), "utf8") : null;
+    const warning = detectDuplicateArchiveWarning(currentContent, todayFile, latestFile, latestContent);
+    if (warning) console.warn(warning);
+    copyFileSync(OUT, resolve(HISTORY_DIR, todayFile));
+  }
 
   writeFileSync(OUT, lines.join("\n"), "utf8");
 
