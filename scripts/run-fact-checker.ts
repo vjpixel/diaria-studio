@@ -18,6 +18,11 @@
  *   0 — sucesso (mesmo com attention_items > 0 — fact-check não bloqueia; a
  *       presença de claims é comunicada via stdout + fact-check.json)
  *   1 — erro de args ou arquivo não encontrado
+ *
+ * (#4361) Modo `--check-blocking` (opt-in, só combinado com `--input-json`):
+ * gate-blocking estreito para claims `NOT_FOUND_IN_SOURCE` não-superlativas
+ * (ver `getBlockingClaims`) — exit 2 quando presentes. Sem o flag, o
+ * comportamento é idêntico ao de antes do #4361 (sempre exit 0 neste modo).
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -281,6 +286,31 @@ export function computeAttentionItems(claims: FactClaim[]): number {
 }
 
 /**
+ * (#4361) Claims que devem BLOQUEAR o gate do Stage 4 — não apenas informar.
+ *
+ * Escopo deliberadamente estreito (evitar over-broadening, #4361 briefing):
+ *   - Apenas `verdict === "NOT_FOUND_IN_SOURCE"` — a fonte primária foi
+ *     verificada (fetch teve sucesso) e o claim simplesmente não está lá.
+ *   - Exclui `claim_type === "superlative"` — ineditismo/pioneirismo é mais
+ *     subjetivo (mesmo racional que já separa isso em `computeAttentionItems`)
+ *     e já tem sua própria seção informativa no gate; manter warn-only evita
+ *     travar edições legítimas por causa de uma alegação de tom.
+ *   - Exclui `DIVERGENT`, `SUSTAINED`, `INFERRED`, `SOURCE_UNREACHABLE` — o
+ *     autofix (#2598/§4c.6b) já corrige DIVERGENT com `suggested_fix`
+ *     determinístico antes do gate; `SOURCE_UNREACHABLE` é falha de rede, não
+ *     confirmação de ausência.
+ *
+ * Caso real (#4361, edição 260731): "é a segunda vez que a xAI recorre à
+ * Justiça..." — claim não-superlativo marcado NOT_FOUND_IN_SOURCE sobreviveu
+ * ao Stage 4 porque o fact-check era só informativo ali.
+ */
+export function getBlockingClaims(claims: FactClaim[]): FactClaim[] {
+  return claims.filter(
+    (c) => c.verdict === "NOT_FOUND_IN_SOURCE" && c.claim_type !== "superlative",
+  );
+}
+
+/**
  * Valida e normaliza o output do subagente fact-checker.
  * Garante que o JSON tem o schema esperado antes de gravar.
  * Retorna o resultado normalizado ou lança erro se inválido.
@@ -420,14 +450,37 @@ async function main(): Promise<void> {
     writeFileSync(outPath, JSON.stringify(result, null, 2), "utf8");
     console.log(formatGateSummary(result));
 
-    // Exit code 0 sempre neste modo (#2468 finding 4 + code-review):
-    // A presença de attention_items NÃO é um erro — o fact-check é assistido, não
-    // gate-blocking (orchestrator-stage-4.md §4c.6). A distinção "sem claims" vs
-    // "rodou ok com claims" é comunicada via stdout (formatGateSummary) + o campo
-    // `summary.attention_items` em fact-check.json, ambos lidos pelo orchestrator.
-    // Um exit não-zero aqui seria interpretado pelo orchestrator como "Fact-check
-    // indisponível" (só exit 0/1 são tratados), ESCONDENDO as divergências do editor
-    // — exatamente o oposto do desejado. Por isso este modo sai sempre 0.
+    // Exit code 0 sempre neste modo, SALVO --check-blocking (#2468 finding 4 + code-review):
+    // A presença de attention_items em geral NÃO é um erro — o fact-check é
+    // assistido, não gate-blocking (orchestrator-stage-4.md §4c.6). A distinção
+    // "sem claims" vs "rodou ok com claims" é comunicada via stdout
+    // (formatGateSummary) + o campo `summary.attention_items` em fact-check.json,
+    // ambos lidos pelo orchestrator. Um exit não-zero aqui SEM --check-blocking
+    // seria interpretado pelo orchestrator como "Fact-check indisponível" (só
+    // exit 0/1 são tratados no modo default), ESCONDENDO as divergências do
+    // editor — exatamente o oposto do desejado.
+    //
+    // #4361: --check-blocking é um MODO SEPARADO e opt-in, só usado pelo
+    // orchestrator na 2ª chamada de §4c.6 (depois de já ter formatado o gate
+    // summary acima). Sem o flag, o comportamento de exit code é IDÊNTICO ao
+    // de antes do #4361 — nenhum caller existente é afetado.
+    if (flags.has("check-blocking")) {
+      const blocking = getBlockingClaims(result.claims);
+      if (blocking.length > 0) {
+        console.error(
+          `\n[run-fact-checker] GATE-BLOCKING (#4361): ${blocking.length} claim(s) NOT_FOUND_IN_SOURCE sem suporte na fonte primária:`,
+        );
+        for (const c of blocking) {
+          console.error(`  D${c.destaque} [${c.claim_type}] "${c.text}"`);
+          if (c.note) console.error(`     → ${c.note}`);
+        }
+        console.error(
+          "  Ação: reescrever/remover o claim em 02-reviewed.md e/ou 03-social.md (ou localizar suporte " +
+          "adicional na fonte), depois re-rodar o fact-checker + este check antes de aprovar o gate.",
+        );
+        process.exit(2);
+      }
+    }
     return;
   }
 

@@ -7,6 +7,10 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { lintTrailingEditorialHook } from "../scripts/lint-social-md.ts";
 
 // ---------------------------------------------------------------------------
@@ -212,5 +216,43 @@ describe("lintTrailingEditorialHook (#2658) — WARN-ONLY: ok sempre true", () =
     const r = lintTrailingEditorialHook(md);
     assert.equal(r.ok, true, "ok deve ser true mesmo sem matches");
     assert.equal(r.matches.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #4352 — CLI `--check no-trailing-editorial-hook` promovido de WARN-ONLY
+// para GATE-BLOCKING (mesmo racional/issue do #2526 — ver lint-social-md-2526.test.ts).
+// ---------------------------------------------------------------------------
+
+function runLintSocialCli(md: string) {
+  const dir = mkdtempSync(join(tmpdir(), "trailing-hook-cli-"));
+  try {
+    const p = join(dir, "03-social.md");
+    writeFileSync(p, md, "utf8");
+    const scriptPath = join(import.meta.dirname, "..", "scripts", "lint-social-md.ts");
+    return spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--check", "no-trailing-editorial-hook", "--md", p],
+      { encoding: "utf8" },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe("CLI --check no-trailing-editorial-hook (#4352 — GATE-BLOCKING)", () => {
+  it("gancho editorial emendado (', e diz mais sobre estratégia...') → exit 1", () => {
+    const md = mkMd(
+      "A OpenAI colocou no ar a prévia do GPT-5.6, e a escolha de focos diz mais sobre estratégia do que os benchmarks costumam revelar.",
+    );
+    const result = runLintSocialCli(md);
+    assert.equal(result.status, 1, `exit 1 esperado (GATE-BLOCKING); stderr: ${result.stderr}`);
+    assert.ok(result.stderr.includes("❌"), "stderr deve mostrar ❌, não mais ⚠️ (promovido de warn)");
+  });
+
+  it("coordenação legítima sem gancho editorial → exit 0", () => {
+    const md = mkMd("A empresa lançou o modelo, e disponibilizou a API para desenvolvedores.");
+    const result = runLintSocialCli(md);
+    assert.equal(result.status, 0, `exit 0 esperado para coordenação legítima; stderr: ${result.stderr}`);
   });
 });

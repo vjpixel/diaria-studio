@@ -356,40 +356,48 @@ function main(): void {
     return;
   }
 
-  // Modo --check no-antithesis-reveal (#2526) — detecta construções de antítese-revelação
-  // em posts social. WARN-ONLY: sempre exit 0 mesmo com matches; surfaça como ⚠️ no gate.
+  // Modo --check no-antithesis-reveal (#2526, GATE-BLOCKING desde #4352) —
+  // detecta construções de antítese-revelação em posts social.
+  // Promovido de WARN-ONLY para GATE-BLOCKING no #4352: 2 ocorrências deste
+  // tique sobreviveram a uma edição publicada (introduzidas por uma correção
+  // mecânica de travessão→pontuação DEPOIS do humanizador já ter rodado) e só
+  // foram notadas pelo editor na revisão manual, porque o warn não parava o
+  // gate. `lintAntithesisReveal` em si continua retornando `ok: true` sempre
+  // (é um relatório, não um veredito) — o bloqueio é decidido aqui no CLI.
   if (args.check === "no-antithesis-reveal") {
     const result = lintAntithesisReveal(md);
     console.log(JSON.stringify(result, null, 2));
     if (result.matches.length > 0) {
       console.error(
-        `\n⚠️  ${result.matches.length} construção(ões) de antítese-revelação detectada(s) (#2526 — reescreva direto, sem negar pra revelar):`,
+        `\n❌ ${result.matches.length} construção(ões) de antítese-revelação detectada(s) (#2526/#4352 — reescreva direto, sem negar pra revelar):`,
       );
       for (const m of result.matches) {
         console.error(
           `  linha ${m.line} [${m.pattern}]: "...${m.context}..."`,
         );
       }
-      // WARN-ONLY: exit 0 mesmo com matches — não bloqueia o gate
+      process.exit(1);
     }
     return;
   }
 
-  // Modo --check no-trailing-editorial-hook (#2658) — detecta ", e [gancho editorial]"
-  // em posts social. WARN-ONLY: sempre exit 0 mesmo com matches; surfaça como ⚠️ no gate.
+  // Modo --check no-trailing-editorial-hook (#2658, GATE-BLOCKING desde #4352) —
+  // detecta ", e [gancho editorial]" em posts social. Mesma promoção e mesmo
+  // racional do check acima (#4352) — `lintTrailingEditorialHook` continua
+  // retornando `ok: true` sempre; o bloqueio é decidido aqui no CLI.
   if (args.check === "no-trailing-editorial-hook") {
     const result = lintTrailingEditorialHook(md);
     console.log(JSON.stringify(result, null, 2));
     if (result.matches.length > 0) {
       console.error(
-        `\n⚠️  ${result.matches.length} gancho(s) editorial(is) detectado(s) (#2658 — mover o gancho pro corpo ou cortar a oração emendada):`,
+        `\n❌ ${result.matches.length} gancho(s) editorial(is) detectado(s) (#2658/#4352 — mover o gancho pro corpo ou cortar a oração emendada):`,
       );
       for (const m of result.matches) {
         console.error(
           `  linha ${m.line}: "...${m.context}..."`,
         );
       }
-      // WARN-ONLY: exit 0 mesmo com matches — não bloqueia o gate
+      process.exit(1);
     }
     return;
   }

@@ -579,12 +579,14 @@ function lintSocial(md: string): LintReport {
     runCheck("linkedin-page-link", "Link da página da Diar.ia presente (#2458)", true, () => lintLinkedinPageLink(md)),
     runCheck("platform-headers-unicos", "Headers # LinkedIn / # Facebook únicos (#3388)", true, () => lintPlatformHeadersUnique(md)),
     runCheck("no-credential-bio", "Sem frase de credencial/bio auto-referencial (#2494)", true, () => lintCredentialBio(md)),
-    // Warn-only (#2715-like — o próprio CLI documenta "sempre exit 0").
-    runCheck("no-antithesis-reveal", "Sem construção de antítese-revelação (warn, #2526)", false, () => {
+    // GATE-BLOCKING desde #4352 (era warn-only) — CLI (`lint-social-md.ts`)
+    // e orchestrator-stage-4.md §4c.2b promovidos no mesmo issue; espelhado
+    // aqui pra manter o painel do Studio consistente com o gate real.
+    runCheck("no-antithesis-reveal", "Sem construção de antítese-revelação (#2526/#4352)", true, () => {
       const r = lintAntithesisReveal(md);
       return { ...r, ok: r.matches.length === 0 };
     }),
-    runCheck("no-trailing-editorial-hook", "Sem gancho editorial emendado (warn, #2658)", false, () => {
+    runCheck("no-trailing-editorial-hook", "Sem gancho editorial emendado (#2658/#4352)", true, () => {
       const r = lintTrailingEditorialHook(md);
       return { ...r, ok: r.matches.length === 0 };
     }),
