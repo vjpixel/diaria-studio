@@ -647,6 +647,27 @@ function captureUntilCoverageBoundary(text: string, startIdx: number): string {
 }
 
 /**
+ * #4358: fragmento de verbos reconhecidos na frase de contagem da intro
+ * ("Selecionamos os N mais relevantes" / "selecionei os N mais relevantes" /
+ * "foram selecionados os N mais relevantes" / variações de rephrase do
+ * humanizador). Fonte ÚNICA entre `reconcileCoverageCount` (abaixo, usado no
+ * render pra reconciliar o Z com a contagem real) e `extractIntroClaimedCount`
+ * (`newsletter-count.ts`, usado por `sync-intro-count.ts` e pelo lint
+ * `intro-count`) — antes cada arquivo mantinha seu próprio regex, e
+ * divergiam: `newsletter-count.ts` só reconhecia verbos 1ª-pessoa-plural
+ * (Selecionamos/Escolhemos/Reunimos/Destacamos/Separamos/Trouxemos), não
+ * "selecionei" (1ª pessoa singular — a voz atual da newsletter). Resultado:
+ * desde que a voz mudou, `extractIntroClaimedCount` retornava `null` pra
+ * TODA edição atual, deixando o lint `intro-count` e o `sync-intro-count.ts`
+ * inertes em silêncio (o e-mail final nunca saiu errado só porque o render
+ * sempre recalcula via `reconcileCoverageCount`, que já reconhecia
+ * "selecionei"). Superset das duas listas anteriores — nenhum verbo
+ * reconhecido antes deixa de ser reconhecido agora.
+ */
+export const COVERAGE_COUNT_VERB_FRAGMENT =
+  "selecionamos|selecionei|escolhemos|reunimos|destacamos|separamos|trouxemos|foi selecionado|foram selecionados";
+
+/**
  * Pure (#1761, formato novo #3456, formato de boas-vindas #3461): reconcilia
  * a contagem final ("Selecionamos os Z mais relevantes" / "foram
  * selecionados os Z mais relevantes" / "selecionei os Z mais relevantes")
@@ -666,7 +687,7 @@ export function reconcileCoverageCount(line: string, count: number): string {
   const countPhrase =
     count === 1 ? "o artigo mais relevante" : `os ${count} mais relevantes`;
   return line.replace(
-    /(selecionamos|selecionei|foi selecionado|foram selecionados)\s+(?:o artigo mais relevante|os \d+ mais relevantes)/i,
+    new RegExp(`(${COVERAGE_COUNT_VERB_FRAGMENT})\\s+(?:o artigo mais relevante|os \\d+ mais relevantes)`, "i"),
     (_match, verb: string) => {
       // Voz passiva (#3456) flexiona em número — "foi selecionado" (singular)
       // vira "foram selecionados" (plural) e vice-versa quando o count muda.
@@ -1308,35 +1329,43 @@ export function isBoxDivulgacao2Bold(text: string): boolean {
 }
 
 /**
- * #4274: localiza o box de divulgação do slot 0 (introdução) — região
- * bounded entre a linha/bloco de cobertura (SEMPRE `blocks[0]`, nunca
- * candidato) e o marcador `**DESTAQUE 1`. Diferente de `locateBoxInGap`
- * (candidato = 1º bloco extra) e de `locateBoxAfterLastDestaque` (mesma
- * regra, região sem limite fixo à frente), aqui o candidato é o ÚLTIMO bloco
- * `---`-isolado antes de `**DESTAQUE 1` — a mesma posição em que
- * `stitchNewsletter` injeta o slot0 (depois de qualquer agradecimento a
- * apoiadores/callout editorial já presente, logo antes do separador que abre
- * D1).
+ * #4338: marcador sentinel escrito por `stitchNewsletter` IMEDIATAMENTE antes
+ * do conteúdo do box0 real injetado na região de intro. `locateBoxAtIntro`
+ * usa esse marcador como ÚNICO sinal de "isto é um box0 de verdade" — nunca
+ * infere por posição (ver docstring de `locateBoxAtIntro` pela causa raiz do
+ * bug que isso substitui).
+ */
+export const BOX0_SENTINEL = "<!-- box0 -->";
+
+/**
+ * #4274/#4338: localiza o box de divulgação do slot 0 (introdução) — região
+ * entre a linha/bloco de cobertura e o marcador `**DESTAQUE 1`.
+ *
+ * #4338: detecção por MARCADOR EXPLÍCITO (`BOX0_SENTINEL`), não mais por
+ * posição. A versão anterior tratava o ÚLTIMO bloco `---`-isolado da região
+ * (excluindo o já reivindicado por `findIntroCalloutMatch`) como candidato a
+ * box0 — mas isso é estruturalmente ambíguo: quando a região tem um parágrafo
+ * de intro PURO (ex: `insert-titulo-subtitulo.ts` inserindo um `---` entre o
+ * bloco TÍTULO/SUBTÍTULO e o parágrafo de boas-vindas) e NENHUM box0 real foi
+ * injetado, o loop não tem como distinguir "prosa de intro que sobrou
+ * separada por `---`" de "conteúdo real de box0" — e acabava tratando a
+ * prosa como se fosse o box, duplicando o parágrafo de introdução no HTML
+ * final (reincidente nas edições 260730/260731, mitigado só por workaround
+ * manual — remover o `---`).
+ *
+ * `stitchNewsletter` agora escreve `BOX0_SENTINEL` imediatamente antes do
+ * conteúdo, só quando de fato injeta um box0 real (ver `slot0Box` em
+ * `stitch-newsletter.ts`). Sem o marcador na região, não há box0 — retorna
+ * `null` incondicionalmente, eliminando a ambiguidade de uma vez (em vez de
+ * arriscar inferir errado). Efeito colateral aceito: um `02-reviewed.md`
+ * arquivado de uma edição anterior a este fix, com box0 já embutido sem o
+ * marcador, deixa de ser reconhecido em re-render — não há re-render
+ * automático de edições já enviadas, então o impacto é nulo em produção.
  *
  * Não precisa de "strip" antes do parse de destaques (diferente dos slots
  * 1/2/3): `parseDestaques`/`parseSections` já ignoram qualquer bloco
  * `---`-isolado que não bata no header de destaque/seção — o bloco do slot 0
  * nunca é absorvido por engano.
- *
- * Desambiguação vs. `introCallout`/agradecimento (#3477/#3705): ambos vivem
- * na MESMA região e podem ser estruturalmente idênticos (bloco inteiro
- * embrulhado em `**...**`, ver `agradecimento-apoiadores.md`). O bloco
- * reivindicado por `findIntroCalloutMatch` (SEMPRE o 1º bloco bold-wrap da
- * região, mesma prioridade de `extractIntroCallout`) nunca vira candidato a
- * slot0 — evita render duplicado (o mesmo texto sairia como callout E como
- * box). Limitação conhecida e documentada (#4274): se o slot0 for a ÚNICA
- * ocupação da região de intro E vier em formato bold-wrap (ex: o mesmo
- * formato-padrão usado pelo slot 1, `livros-divulgacao.md`), ele é
- * interpretado como `introCallout` — não como `boxDivulgacao0` — perdendo a
- * paridade de imagem/categoria dos demais slots (o conteúdo ainda renderiza,
- * só que pelo caminho do callout). Recomendação: usar snippet em formato
- * multi-parágrafo (sem bold-wrap total) pro slot0 quando não houver nenhum
- * outro conteúdo de intro na edição.
  */
 function locateBoxAtIntro(
   text: string,
@@ -1344,31 +1373,21 @@ function locateBoxAtIntro(
   const firstMarkerMatch = /^\*\*DESTAQUE/m.exec(text);
   if (!firstMarkerMatch) return null;
   const region = text.slice(0, firstMarkerMatch.index);
-  const blocks = splitByGapSeparator(region);
-  if (blocks.length < 2) return null; // só o bloco de cobertura, sem `---` — nada a achar
-  const introMatch = findIntroCalloutMatch(region);
-  for (let i = blocks.length - 1; i >= 1; i--) {
-    const block = blocks[i];
-    if (
-      introMatch &&
-      introMatch.matchStart >= block.rawStart &&
-      introMatch.matchStart < block.rawEnd
-    ) {
-      continue; // bloco já reivindicado pelo introCallout/agradecimento
-    }
-    const trimmed = block.text.trim();
-    if (!trimmed) continue;
-    const firstLine = trimmed.split(/\r?\n/, 1)[0];
-    if (DESTAQUE_HEADER_IN_BLOCK_RE.test(firstLine)) continue; // defensivo
-    if (SECTION_HEADER_RE.test(firstLine)) continue; // defensivo
-    const leadingWs = block.text.length - block.text.trimStart().length;
-    const trailingWs = block.text.length - block.text.trimEnd().length;
-    const matchStart = block.rawStart + leadingWs;
-    const matchEnd = block.rawEnd - trailingWs;
-    const formatted = formatBoxInner(trimmed);
-    return { inner: formatted.inner, bold: formatted.bold, matchStart, matchEnd };
-  }
-  return null;
+  const sentinelIdx = region.indexOf(BOX0_SENTINEL);
+  if (sentinelIdx === -1) return null; // #4338: sem marcador, sem box0 — nunca infere por posição.
+  const afterSentinel = region.slice(sentinelIdx + BOX0_SENTINEL.length);
+  // #4338: GAP_SEPARATOR_RE não tem flag `g` — cada `.exec()` busca do início
+  // da string passada, sem estado de `lastIndex` pra vazar entre chamadas.
+  const boundaryMatch = GAP_SEPARATOR_RE.exec(afterSentinel);
+  const rawContent = boundaryMatch ? afterSentinel.slice(0, boundaryMatch.index) : afterSentinel;
+  const trimmed = rawContent.trim();
+  if (!trimmed) return null;
+  const leadingWs = rawContent.length - rawContent.trimStart().length;
+  const trailingWs = rawContent.length - rawContent.trimEnd().length;
+  const matchStart = sentinelIdx + BOX0_SENTINEL.length + leadingWs;
+  const matchEnd = sentinelIdx + BOX0_SENTINEL.length + rawContent.length - trailingWs;
+  const formatted = formatBoxInner(trimmed);
+  return { inner: formatted.inner, bold: formatted.bold, matchStart, matchEnd };
 }
 
 /**

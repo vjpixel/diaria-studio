@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, buildParaEncerrar, loadParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
-import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3 } from "../scripts/render-newsletter-html.ts";
+import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3, BOX0_SENTINEL } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
 
 // ─── #4083 — fixtures ESTÁVEIS de boxes_divulgacao ─────────────────────────
@@ -1080,11 +1080,15 @@ describe("#4274 — boxes_divulgacao config-driven (slot0, introdução)", () =>
       // Simula um bloco de box já presente na região de intro (fundido na
       // própria coverage line pra fim de fixture) — mesma técnica das
       // demais idempotências deste arquivo (glue direto no draft/coverage).
+      // #4338: precisa carregar o marcador sentinel — sem ele,
+      // `extractBoxDivulgacao0` (agora detecção por marcador explícito, não
+      // mais por posição) não reconheceria esse bloco como box0 "já
+      // presente" e o slot0 configurado seria injetado por cima.
       writeFileSync(
         join(internalDir, "01-approved-capped.json"),
         JSON.stringify({
           coverage: {
-            line: "Para esta edição, selecionamos 10 itens.\n\n---\n\n🔧 Já presente: [x](https://link.example/x)",
+            line: `Para esta edição, selecionamos 10 itens.\n\n---\n\n${BOX0_SENTINEL}\n🔧 Já presente: [x](https://link.example/x)`,
           },
         }),
       );

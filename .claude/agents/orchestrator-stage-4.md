@@ -187,6 +187,7 @@ npx tsx scripts/lint-newsletter-md.ts --check stacked-intro-callouts --md {EDITI
 npx tsx scripts/lint-newsletter-md.ts --check orphan-box-in-gap --md {EDITION_DIR}/02-reviewed.md
 npx tsx scripts/lint-newsletter-md.ts --check no-xml-artifacts --md {EDITION_DIR}/02-reviewed.md
 npx tsx scripts/lint-newsletter-md.ts --check snippet-staleness --md {EDITION_DIR}/02-reviewed.md
+npx tsx scripts/lint-newsletter-md.ts --check agradecimento-hardcoded
 ```
 Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 
@@ -207,7 +208,7 @@ Capturar violations. Críticas (P1) = mostrar ❌ no resumo com ação sugerida.
 ```
 Ação sugerida ao editor: reaplicar a mudança manualmente em `02-reviewed.md` (edição cirúrgica, #495) ou re-rodar `/diaria-2-escrita {AAMMDD} newsletter` para que o stitch releia o snippet atualizado.
 
-Nota (#4274, reescopo do gate `/diaria-develop` 260729): o slot A (apoio+ferramentas) e o slot B (convite social) do PARA ENCERRAR agora têm override editável em `platform.config.json` → `para_encerrar.{slot_a,slot_b}` (painel Caixas, texto direto — não um pool de snippets). Este lint de staleness ainda só compara `encerramento-social-apoio.md` (o default, usado quando um slot não tem override) — uma mudança feita DIRETO em `para_encerrar` no config não passa por esse guard (o `02-reviewed.md` já foi escrito com o valor exato daquele momento; se o editor trocar o texto no painel Caixas DEPOIS do stitch, o guard não avisa). Limitação conhecida, mesma filosofia "prefira errar pro lado de avisar menos" das demais imprecisões documentadas em `snippet-staleness.ts`.
+Nota (#4274, reescopo do gate `/diaria-develop` 260729): o slot A (apoio+ferramentas) e o slot B (convite social) do PARA ENCERRAR agora têm override editável em `platform.config.json` → `para_encerrar.{slot_a,slot_b}` (painel Caixas, texto direto — não um pool de snippets). Este lint de staleness ainda só compara `encerramento-social-apoio.md` (o default, usado quando um slot não tem override) — uma mudança feita DIRETO em `para_encerrar` no config não passa por esse guard (o `02-reviewed.md` já foi escrito com o valor exato daquele momento; se o editor trocar o texto no painel Caixas DEPOIS do stitch, o guard não avisa). Limitação conhecida, mesma filosofia "prefira errar pro lado de avisar menos" das demais imprecisões documentadas em `snippet-staleness.ts`. Irmão (#4359): `agradecimento-hardcoded` lê `agradecimento-apoiadores.md` direto e acusa quando o placeholder `{apoiadores}` foi trocado por um nome real e nunca resetado (caso real: "Mônica Herculano" sobreviveu 260729→731 sem aviso) — `ok:false` só significa "hoje injeta um nome real", editor confirma se é apoiador NOVO ou reseta antes de aprovar.
 
 `title-publisher-suffix` + `title-trailing-period` (#2664/#2672): **WARN-ONLY** — exibir matches como ⚠️ no `{violations_block}` com linha + sufixo/título, sem bloquear o gate. A normalização automática roda no Stage 1 (`enrich-inbox-articles.ts` → `normalizeItemTitle`); estes lints são backstop pré-gate para resíduos que escapam (títulos gerados pelo writer LLM ou curados pelo editor). O check de sufixo usa heurística de 1–4 palavras (pode ter falso-positivo em traço editorial legítimo) — por isso WARN, não BLOCK. Ação sugerida ao editor: remover o sufixo de veículo / ponto final em `02-reviewed.md` antes de aprovar.
 
