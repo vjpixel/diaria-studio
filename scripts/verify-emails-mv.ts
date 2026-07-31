@@ -72,7 +72,7 @@ import { clariceCycleDir, ensureDir, parseCycleArg } from "./lib/clarice-paths.t
 import { openClariceDb, DEFAULT_DB_PATH, MV_NEVER_VERIFIED_SQL } from "./lib/clarice-db.ts";
 import { COHORT_ASSINANTES_ATIVOS, isMvExemptCohort } from "./lib/cohorts.ts";
 import { resolveCohortArg } from "./lib/clarice-segment.ts";
-import { isMainModule } from "./lib/cli-args.ts";
+import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 
 // .env.local (precedência) + .env — loader canônico do projeto (#923).
 // Bare `dotenv/config` não carrega .env.local, onde os secrets costumam morar.
@@ -194,6 +194,119 @@ export function readStoreCandidates(
     .filter((r) => (r.email ?? "").trim().length > 0)
     .map((r) => ({ email: r.email.trim().toLowerCase(), name: r.name ?? "" }));
   return { rows, fields: ["email", "name"], emailKey: "email" };
+}
+
+/**
+ * #4347 Etapa 2d — variante de `readStoreCandidates` restrita a `created >=
+ * sinceIso` (janela do laço Stripe→MV→envio da skill `/diaria-clarice-novos`).
+ * Mesma semântica "skip forever" (`MV_NEVER_VERIFIED_SQL`) — nunca re-verifica
+ * quem já tem `mv_bucket` preenchido de QUALQUER ciclo anterior.
+ */
+export function readStoreCandidatesSince(
+  db: DatabaseSync,
+  cohort: string,
+  sinceIso: string,
+): { rows: Record<string, string>[]; fields: string[]; emailKey: string } {
+  const raw = db
+    .prepare(
+      `SELECT email, name FROM clarice_users WHERE cohort = ? AND created >= ? AND ${MV_NEVER_VERIFIED_SQL}`,
+    )
+    .all(cohort, sinceIso) as Array<{ email: string; name: string | null }>;
+  const rows = raw
+    .filter((r) => (r.email ?? "").trim().length > 0)
+    .map((r) => ({ email: r.email.trim().toLowerCase(), name: r.name ?? "" }));
+  return { rows, fields: ["email", "name"], emailKey: "email" };
+}
+
+/**
+ * #4347 Etapa 2d — cohorts DISTINTOS com pelo menos 1 contato `created >=
+ * sinceIso` (o "recorte particionado por cohort" da issue #4347). `cohort`
+ * NULL é ignorado (nada a verificar sem cohort conhecido).
+ */
+export function distinctCohortsSince(db: DatabaseSync, sinceIso: string): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT cohort FROM clarice_users WHERE cohort IS NOT NULL AND created IS NOT NULL AND created >= ?`,
+    )
+    .all(sinceIso) as Array<{ cohort: string }>;
+  return rows.map((r) => r.cohort).sort();
+}
+
+// ---------------------------------------------------------------------------
+// Guard de custo (#4347 D8) — 500 e-mails A VERIFICAR exige --confirm
+// ---------------------------------------------------------------------------
+
+/** Custo aproximado do MillionVerifier (~US$1,90/1000 e-mails — CLAUDE.md §MV). */
+export const MV_COST_PER_1000_USD = 1.9;
+/** Teto do guard de custo (D8) — distinto do teto D13 (que mede o TAMANHO
+ *  da lista final de envio, não os e-mails a VERIFICAR). Mesmo valor numérico
+ *  por coincidência do dimensionamento típico de uma rodada, não por serem o
+ *  mesmo guard. */
+export const MV_COST_GUARD_THRESHOLD = 500;
+
+export function estimateMvCostUsd(emailCount: number): number {
+  return (emailCount / 1000) * MV_COST_PER_1000_USD;
+}
+
+/**
+ * Pura/testável: `emailCount > MV_COST_GUARD_THRESHOLD` sem `--confirm` →
+ * aborta ANTES de qualquer chamada à API MV (zero crédito gasto). `--confirm`
+ * destrava. Chamado só no modo `--since` (a issue não pede este guard pro
+ * `--cohort` clássico, que já é uma invocação explícita e escopada pelo
+ * editor).
+ */
+export function checkMvCostGuard(
+  emailCount: number,
+  confirmed: boolean,
+): { ok: true } | { ok: false; message: string } {
+  if (confirmed || emailCount <= MV_COST_GUARD_THRESHOLD) return { ok: true };
+  return {
+    ok: false,
+    message:
+      `❌ ${emailCount} e-mail(s) a verificar ≈ US$ ${estimateMvCostUsd(emailCount).toFixed(2)} — acima do teto de ` +
+      `${MV_COST_GUARD_THRESHOLD} (D8, #4347). Confirme com --confirm pra prosseguir (nenhum crédito foi gasto ainda).`,
+  };
+}
+
+/**
+ * #4347 Etapa 2d — planeja o `--since` SEM gastar crédito: pra cada cohort
+ * distinto com `created >= sinceIso`, resolve candidatos (não-isentos) e o
+ * `todo` (candidatos menos o que já está no checkpoint do ciclo), aplicando
+ * `--limit` por cohort (mesma semântica do modo `--cohort` clássico).
+ * Cohorts MV-isentos (`isMvExemptCohort`) entram com `exempt:true`,
+ * `candidates:[]`, `todoCount:0` — log explícito, custo zero (D2/G4). Nunca
+ * chama a API MV — só leitura de store + checkpoint em disco.
+ */
+export interface SinceCohortPlan {
+  cohort: string;
+  exempt: boolean;
+  candidates: Record<string, string>[];
+  allCohortRows: Record<string, string>[];
+  fields: string[];
+  emailKey: string;
+  todoCount: number;
+}
+
+export function planSinceVerification(
+  db: DatabaseSync,
+  sinceIso: string,
+  cycleDir: string,
+  limit: number | null,
+): SinceCohortPlan[] {
+  const cohorts = distinctCohortsSince(db, sinceIso);
+  return cohorts.map((cohort): SinceCohortPlan => {
+    if (isMvExemptCohort(cohort)) {
+      return { cohort, exempt: true, candidates: [], allCohortRows: [], fields: ["email", "name"], emailKey: "email", todoCount: 0 };
+    }
+    const { rows: candidates, fields, emailKey } = readStoreCandidatesSince(db, cohort, sinceIso);
+    const { rows: allCohortRows } = readAllCohortRows(db, cohort);
+    const cpPath = resolve(cycleDir, `.mv-cache-${mvOutputBase(cohort)}.json`);
+    const checkpoint = loadCheckpoint(cpPath);
+    const allEmails = [...new Set(candidates.map((r) => r[emailKey]).filter((e) => e.length > 0))];
+    let todo = allEmails.filter((e) => !(e in checkpoint));
+    if (limit != null) todo = todo.slice(0, limit);
+    return { cohort, exempt: false, candidates, allCohortRows, fields, emailKey, todoCount: todo.length };
+  });
 }
 
 /**
@@ -433,6 +546,10 @@ interface Args {
   limit: number | null;
   single: string | null;
   cycle: string;
+  /** #4347 Etapa 2d — modo `--since` (particiona por cohort), alternativo ao `--cohort` único. */
+  since: string | null;
+  /** #4347 D8 — destrava o guard de custo do MV acima de MV_COST_GUARD_THRESHOLD. */
+  confirm: boolean;
 }
 
 /** parseInt com fallback: rejeita NaN e ≤0 (senão `--concurrency abc` → NaN
@@ -460,6 +577,167 @@ export function parseArgs(argv: string[]): Args {
     single: get("--single") ?? null,
     // #1961: valida formato/semântica do ciclo (igual import-waves); "" se inválido → main aborta limpo.
     cycle: parseCycleArg(argv),
+    since: get("--since") ?? null,
+    confirm: argv.includes("--confirm"),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// verifyCohortList — núcleo reusável (1 cohort × N candidatos → 3 CSVs)
+// ---------------------------------------------------------------------------
+//
+// #4347 Etapa 2d: extraído do corpo de `main()` (que antes só suportava
+// `--cohort` único) pra ser reusado tanto pelo modo `--cohort` clássico (1
+// chamada) quanto pelo modo novo `--since` (N chamadas, uma por cohort
+// distinto no recorte — ver `planSinceVerification`). Mesmo comportamento de
+// antes: checkpoint resumível, flush periódico + em SIGINT, retry
+// transitório, erro fatal aborta tudo.
+
+export interface CohortVerifySummary {
+  cohort: string;
+  total_rows: number;
+  unique_emails: number;
+  processed_this_run: number;
+  failed_this_run: number;
+  credits_remaining: number | null;
+  buckets: Record<Bucket, number>;
+  outputs: Record<Bucket, string>;
+}
+
+export async function verifyCohortList(params: {
+  apiKey: string;
+  cohort: string;
+  cycleDir: string;
+  rows: Record<string, string>[];
+  fields: string[];
+  emailKey: string;
+  allCohortRows: Record<string, string>[];
+  concurrency: number;
+  timeout: number;
+  limit: number | null;
+}): Promise<CohortVerifySummary> {
+  const { apiKey, cohort, cycleDir, rows, fields, emailKey, allCohortRows, concurrency, timeout, limit } = params;
+
+  const base = mvOutputBase(cohort);
+  const cpPath = resolve(cycleDir, `.mv-cache-${base}.json`);
+
+  const allEmails = [
+    ...new Set(rows.map((r) => (r[emailKey] ?? "").trim().toLowerCase()).filter((e) => e.length > 0)),
+  ];
+
+  const checkpoint = loadCheckpoint(cpPath);
+  const cached = Object.keys(checkpoint).length;
+
+  let todo = allEmails.filter((e) => !(e in checkpoint));
+  if (limit != null) todo = todo.slice(0, limit);
+
+  console.error(
+    `📊 [${cohort}] ${allEmails.length} emails únicos · ${cached} já no checkpoint · ` +
+      `${todo.length} a verificar${limit != null ? ` (limit ${limit})` : ""}`,
+  );
+
+  let dirty = 0;
+  const flush = () => {
+    if (dirty > 0) {
+      saveCheckpoint(cpPath, checkpoint);
+      dirty = 0;
+    }
+  };
+  let aborting = false;
+  const onSignal = () => {
+    aborting = true;
+    flush();
+    console.error("\n⏸️  interrompido — checkpoint salvo. Re-rode pra continuar.");
+    process.exit(130);
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+
+  let done = 0;
+  let lastCredits: number | null = null;
+  const failures: string[] = [];
+
+  if (todo.length > 0) {
+    try {
+      await runPool(todo, concurrency, async (email) => {
+        if (aborting) return;
+        try {
+          const res = await verifyOne(apiKey, email, timeout);
+          checkpoint[email] = {
+            result: res.result ?? "",
+            resultcode: res.resultcode ?? -1,
+            quality: res.quality ?? "",
+          };
+          if (typeof res.credits === "number") {
+            lastCredits = lastCredits == null ? res.credits : Math.min(lastCredits, res.credits);
+          }
+          dirty++;
+        } catch (e) {
+          if (e instanceof FatalApiError) {
+            aborting = true;
+            throw e;
+          }
+          failures.push(email);
+        }
+        done++;
+        if (done % 100 === 0) {
+          flush();
+          console.error(`  …[${cohort}] ${done}/${todo.length}` + (lastCredits != null ? ` (créditos: ${lastCredits})` : ""));
+        }
+      });
+    } catch (e) {
+      if (e instanceof FatalApiError) {
+        flush();
+        process.off("SIGINT", onSignal);
+        process.off("SIGTERM", onSignal);
+        console.error(`❌ erro fatal da API MillionVerifier: ${e.message}`);
+        console.error("   checkpoint salvo — corrija e re-rode pra retomar.");
+        process.exit(1);
+      }
+      throw e;
+    }
+  }
+
+  flush();
+  process.off("SIGINT", onSignal);
+  process.off("SIGTERM", onSignal);
+
+  const outputRows = buildOutputRows(checkpoint, rows, allCohortRows, emailKey);
+  const split = splitRows(outputRows, emailKey, checkpoint);
+  const outFields = [...fields, "MV_RESULT", "MV_QUALITY", "MV_CODE"];
+  const writeBucket = (bucket: Bucket): number => {
+    const path = resolve(cycleDir, `${base}-${bucket}.csv`);
+    writeFileSync(path, Papa.unparse({ fields: outFields, data: split[bucket] }), "utf-8");
+    return split[bucket].length;
+  };
+  const counts = {
+    verified: writeBucket("verified"),
+    rejected: writeBucket("rejected"),
+    unknown: writeBucket("unknown"),
+  };
+
+  if (failures.length) {
+    console.error(`⚠️  [${cohort}] ${failures.length} emails falharam (erro transitório, ficam em unknown até re-rodar)`);
+  }
+
+  console.error(
+    `✅ [${cohort}] verified=${counts.verified} · rejected=${counts.rejected} · unknown=${counts.unknown}` +
+      (lastCredits != null ? ` · créditos restantes=${lastCredits}` : ""),
+  );
+
+  return {
+    cohort,
+    total_rows: rows.length,
+    unique_emails: allEmails.length,
+    processed_this_run: done - failures.length,
+    failed_this_run: failures.length,
+    credits_remaining: lastCredits,
+    buckets: counts,
+    outputs: {
+      verified: `${base}-verified.csv`,
+      rejected: `${base}-rejected.csv`,
+      unknown: `${base}-unknown.csv`,
+    },
   };
 }
 
@@ -515,6 +793,95 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     console.error("--cycle {conteúdo}-{envio} é obrigatório (saídas em {ciclo}/ — ex: --cycle 2605-06).");
     process.exit(1);
   }
+  // #4347: --data-root é OPCIONAL, uso interno de teste (mesmo padrão de
+  // --data-root em clarice-build-segment.ts / --out-dir em
+  // clarice-stripe-delta.ts) — substitui CLARICE_BASE na resolução do dir do
+  // ciclo, pra testes de main() não tocarem data/clarice-subscribers/ real.
+  const dataRootArg = getArg(argv, "data-root");
+  const cycleDir = clariceCycleDir(args.cycle, dataRootArg || undefined);
+  // #2886 PR3 review: ":memory:" passa direto (mesma exceção de
+  // clarice-mv-status.ts) — permite invocar main() com um store in-memory
+  // (smoke manual / integração) sem falsamente reportar "não encontrado".
+  if (args.db !== ":memory:" && !existsSync(args.db)) {
+    console.error(`store não encontrado em ${args.db}. Rode clarice-build-db.ts primeiro, ou use --db para apontar outro path.`);
+    process.exit(1);
+  }
+  // Só cria a pasta do ciclo DEPOIS de validar o store — senão um typo no
+  // --cohort/--db/--since deixa um dir de ciclo vazio órfão (que ainda sincroniza pro OneDrive).
+  ensureDir(cycleDir);
+
+  // #4347 Etapa 2d: --since particiona o recorte por cohort (modo NOVO,
+  // alternativo ao --cohort único). Mutuamente exclusivo em espírito — se
+  // --since foi passado, ele governa; --cohort é ignorado (não há como
+  // combinar "1 cohort" com "particionar por cohort" na mesma invocação).
+  if (args.since) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(args.since) || Number.isNaN(Date.parse(args.since))) {
+      console.error(`❌ --since inválido: "${args.since}" (esperado YYYY-MM-DD).`);
+      process.exit(1);
+    }
+    const db = openClariceDb(args.db);
+    let plan: SinceCohortPlan[];
+    try {
+      plan = planSinceVerification(db, args.since, cycleDir, args.limit);
+    } finally {
+      db.close();
+    }
+
+    const exemptCohorts = plan.filter((p) => p.exempt).map((p) => p.cohort);
+    if (exemptCohorts.length > 0) {
+      console.error(
+        `⏭️  cohort(s) MV-isento(s) (#1297/#3826) pulado(s) com custo ZERO: ${exemptCohorts.join(", ")}`,
+      );
+    }
+    const nonExempt = plan.filter((p) => !p.exempt);
+    if (nonExempt.length === 0 && exemptCohorts.length === 0) {
+      console.error(`ℹ️  nenhum cohort com contato criado desde ${args.since} — nada a verificar.`);
+      console.log(JSON.stringify({ mode: "since", since: args.since, cohorts: [], total_verified: 0 }, null, 2));
+      return;
+    }
+
+    // #4347 D8: guard de custo — soma o `todo` de TODOS os cohorts não-isentos
+    // ANTES de qualquer chamada à API MV (zero crédito gasto até aqui).
+    const totalToVerify = nonExempt.reduce((sum, p) => sum + p.todoCount, 0);
+    console.error(
+      `💰 ${totalToVerify} e-mail(s) a verificar em ${nonExempt.length} cohort(s) ≈ US$ ${estimateMvCostUsd(totalToVerify).toFixed(2)}`,
+    );
+    const costGuard = checkMvCostGuard(totalToVerify, args.confirm);
+    if (!costGuard.ok) {
+      console.error(costGuard.message);
+      process.exit(1);
+    }
+
+    const perCohort: CohortVerifySummary[] = [];
+    for (const p of nonExempt) {
+      const summary = await verifyCohortList({
+        apiKey,
+        cohort: p.cohort,
+        cycleDir,
+        rows: p.candidates,
+        fields: p.fields,
+        emailKey: p.emailKey,
+        allCohortRows: p.allCohortRows,
+        concurrency: args.concurrency,
+        timeout: args.timeout,
+        limit: args.limit,
+      });
+      perCohort.push(summary);
+    }
+
+    const totalVerifiedNow = perCohort.reduce((sum, s) => sum + s.processed_this_run, 0);
+    console.error(`\n✅ --since ${args.since}: ${perCohort.length} cohort(s) processado(s), ${totalVerifiedNow} e-mail(s) verificado(s) nesta rodada.`);
+    console.log(
+      JSON.stringify(
+        { mode: "since", since: args.since, exempt_cohorts: exemptCohorts, cohorts: perCohort, total_verified: totalVerifiedNow },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  // --- Modo clássico: --cohort único ---
   // #2886 PR3 review: resolve o --cohort via o MESMO helper usado pelos
   // scripts irmãos que já aceitam --cohort (clarice-build-waves-store.ts,
   // clarice-build-edition-sends.ts) — aceita o slug canônico, um alias pt-BR
@@ -540,22 +907,6 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
     process.exit(1);
   }
-  const cycleDir = clariceCycleDir(args.cycle);
-  // #2886 PR3 review: ":memory:" passa direto (mesma exceção de
-  // clarice-mv-status.ts) — permite invocar main() com um store in-memory
-  // (smoke manual / integração) sem falsamente reportar "não encontrado".
-  if (args.db !== ":memory:" && !existsSync(args.db)) {
-    console.error(`store não encontrado em ${args.db}. Rode clarice-build-db.ts primeiro, ou use --db para apontar outro path.`);
-    process.exit(1);
-  }
-  // Só cria a pasta do ciclo DEPOIS de validar o store — senão um typo no
-  // --cohort/--db deixa um dir de ciclo vazio órfão (que ainda sincroniza pro OneDrive).
-  ensureDir(cycleDir);
-
-  // Proveniência: as SAÍDAS são do MillionVerifier → prefixo `mv-export-`
-  // (convenção: nome = última ferramenta que processou).
-  const base = mvOutputBase(cohort);
-  const cpPath = resolve(cycleDir, `.mv-cache-${base}.json`);
 
   // #2886 PR3 review: try/finally garante db.close() mesmo se a query
   // falhar (store corrompido, erro de schema inesperado) — mesmo padrão de
@@ -587,143 +938,18 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
   }
 
-  // Emails únicos, normalizados.
-  const allEmails = [
-    ...new Set(
-      rows
-        .map((r) => (r[emailKey] ?? "").trim().toLowerCase())
-        .filter((e) => e.length > 0),
-    ),
-  ];
-
-  const checkpoint = loadCheckpoint(cpPath);
-  const cached = Object.keys(checkpoint).length;
-
-  let todo = allEmails.filter((e) => !(e in checkpoint));
-  if (args.limit != null) todo = todo.slice(0, args.limit);
-
-  console.error(
-    `📊 ${allEmails.length} emails únicos · ${cached} já no checkpoint · ` +
-      `${todo.length} a verificar${args.limit != null ? ` (limit ${args.limit})` : ""}`,
-  );
-
-  // Flush periódico + em SIGINT (protege os créditos já gastos).
-  let dirty = 0;
-  const flush = () => {
-    if (dirty > 0) {
-      saveCheckpoint(cpPath, checkpoint);
-      dirty = 0;
-    }
-  };
-  let aborting = false;
-  const onSignal = () => {
-    aborting = true;
-    flush();
-    console.error("\n⏸️  interrompido — checkpoint salvo. Re-rode pra continuar.");
-    process.exit(130);
-  };
-  process.on("SIGINT", onSignal);
-  process.on("SIGTERM", onSignal);
-
-  let done = 0;
-  let lastCredits: number | null = null;
-  const failures: string[] = [];
-
-  if (todo.length > 0) {
-    try {
-      await runPool(todo, args.concurrency, async (email) => {
-        if (aborting) return;
-        try {
-          const res = await verifyOne(apiKey, email, args.timeout);
-          checkpoint[email] = {
-            result: res.result ?? "",
-            resultcode: res.resultcode ?? -1,
-            quality: res.quality ?? "",
-          };
-          // Mínimo visto (não o último): sob concorrência as respostas chegam
-          // fora de ordem, então `último` poderia "subir" e superestimar o saldo.
-          if (typeof res.credits === "number") {
-            lastCredits = lastCredits == null ? res.credits : Math.min(lastCredits, res.credits);
-          }
-          dirty++;
-        } catch (e) {
-          if (e instanceof FatalApiError) {
-            aborting = true; // sinaliza os workers irmãos a pararem de queimar crédito
-            throw e;
-          }
-          failures.push(email);
-        }
-        done++;
-        if (done % 100 === 0) {
-          flush();
-          console.error(
-            `  …${done}/${todo.length}` +
-              (lastCredits != null ? ` (créditos: ${lastCredits})` : ""),
-          );
-        }
-      });
-    } catch (e) {
-      if (e instanceof FatalApiError) {
-        flush();
-        console.error(`❌ erro fatal da API MillionVerifier: ${e.message}`);
-        console.error("   checkpoint salvo — corrija e re-rode pra retomar.");
-        process.exit(1);
-      }
-      throw e;
-    }
-  }
-
-  flush();
-  process.off("SIGINT", onSignal);
-  process.off("SIGTERM", onSignal);
-
-  // --- Split + write outputs ---
-  // #4071: materializar o CHECKPOINT COMPLETO (não `rows`, que só tem os
-  // candidatos desta rodada) — uma rodada anterior do mesmo ciclo pode ter
-  // verificado emails que já saíram do candidate-set (store re-ingerido
-  // entre rodadas); sem isso o CSV final descartava esse resultado pago.
-  const outputRows = buildOutputRows(checkpoint, rows, allCohortRows, emailKey);
-  const split = splitRows(outputRows, emailKey, checkpoint);
-  // Colunas fixas (originais + MV_*) pra header SEMPRE sair, mesmo em bucket
-  // vazio — Papa.unparse([]) gera string vazia (CSV sem header) que quebra import.
-  const outFields = [...fields, "MV_RESULT", "MV_QUALITY", "MV_CODE"];
-  const writeBucket = (bucket: Bucket): number => {
-    const path = resolve(cycleDir, `${base}-${bucket}.csv`);
-    writeFileSync(path, Papa.unparse({ fields: outFields, data: split[bucket] }), "utf-8");
-    return split[bucket].length;
-  };
-  const counts = {
-    verified: writeBucket("verified"),
-    rejected: writeBucket("rejected"),
-    unknown: writeBucket("unknown"),
-  };
-
-  if (failures.length) {
-    console.error(
-      `⚠️  ${failures.length} emails falharam (erro transitório, ficam em unknown até re-rodar)`,
-    );
-  }
-
-  const summary = {
+  const summary = await verifyCohortList({
+    apiKey,
     cohort,
-    total_rows: rows.length,
-    unique_emails: allEmails.length,
-    // Quantos emails foram efetivamente verificados via API NESTE run (≠ bucket
-    // verified, que reflete o checkpoint inteiro incluindo runs anteriores).
-    processed_this_run: done - failures.length,
-    failed_this_run: failures.length,
-    credits_remaining: lastCredits,
-    buckets: counts,
-    outputs: {
-      verified: `${base}-verified.csv`,
-      rejected: `${base}-rejected.csv`,
-      unknown: `${base}-unknown.csv`,
-    },
-  };
-  console.error(
-    `\n✅ verified=${counts.verified} · rejected=${counts.rejected} · unknown=${counts.unknown}` +
-      (lastCredits != null ? ` · créditos restantes=${lastCredits}` : ""),
-  );
+    cycleDir,
+    rows,
+    fields,
+    emailKey,
+    allCohortRows,
+    concurrency: args.concurrency,
+    timeout: args.timeout,
+    limit: args.limit,
+  });
   console.log(JSON.stringify(summary, null, 2));
 }
 

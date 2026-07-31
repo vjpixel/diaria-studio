@@ -114,7 +114,12 @@ test("REGRESSÃO (#4205): NÃO usa opens_count>0 AND priority_points<=0 como sin
 // clarice-build-segment.ts main() — guard aplicado SÓ a --group engajados
 // ---------------------------------------------------------------------------
 
-function withMockedExit<T>(fn: () => T): { result: T | undefined; exitCode: number | undefined; errors: string[] } {
+// #4347: main() (clarice-build-segment.ts) é async desde o wire do guard
+// queued/sent — `fn` precisa suportar Promise, e o mock de process.exit
+// (que lança) precisa ser capturado via await, não try/catch síncrono.
+async function withMockedExit<T>(
+  fn: () => T | Promise<T>,
+): Promise<{ result: T | undefined; exitCode: number | undefined; errors: string[] }> {
   const origExit = process.exit;
   const origErr = console.error;
   const errors: string[] = [];
@@ -127,7 +132,7 @@ function withMockedExit<T>(fn: () => T): { result: T | undefined; exitCode: numb
   };
   let result: T | undefined;
   try {
-    result = fn();
+    result = await fn();
   } catch (e) {
     if (!(e instanceof Error && (e as Error & { __mockExit?: boolean }).__mockExit)) throw e;
   } finally {
@@ -135,6 +140,20 @@ function withMockedExit<T>(fn: () => T): { result: T | undefined; exitCode: numb
     console.error = origErr;
   }
   return { result, exitCode, errors };
+}
+
+// #4347: isola de um BREVO_CLARICE_API_KEY real que `loadProjectEnv()` possa
+// ter carregado de `.env.local` na máquina do editor — sem isso, o guard
+// queued/sent novo bateria na rede de verdade num teste. Mesmo helper de
+// test/clarice-build-segment.test.ts.
+async function withoutBrevoKey<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.BREVO_CLARICE_API_KEY;
+  delete process.env.BREVO_CLARICE_API_KEY;
+  try {
+    return await fn();
+  } finally {
+    if (prev !== undefined) process.env.BREVO_CLARICE_API_KEY = prev;
+  }
 }
 
 function makeStaleDb(dir: string): string {
@@ -160,12 +179,14 @@ function makeStaleDb(dir: string): string {
   return dbPath;
 }
 
-test("REGRESSÃO (#4205): clarice-build-segment --group engajados ABORTA (exit 1) quando isDerivedStale, com mensagem clara — não monta onda menor em silêncio", () => {
+test("REGRESSÃO (#4205): clarice-build-segment --group engajados ABORTA (exit 1) quando isDerivedStale, com mensagem clara — não monta onda menor em silêncio", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-stale-"));
   const dbPath = makeStaleDb(dir);
 
-  const { exitCode, errors } = withMockedExit(() =>
-    main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--dry-run"]),
+  const { exitCode, errors } = await withoutBrevoKey(() =>
+    withMockedExit(() =>
+      main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--dry-run"]),
+    ),
   );
 
   assert.equal(exitCode, 1);
@@ -175,12 +196,14 @@ test("REGRESSÃO (#4205): clarice-build-segment --group engajados ABORTA (exit 1
   );
 });
 
-test("clarice-build-segment --group ramp-warm NÃO é bloqueado pelo guard (#4205 é escopado a 'engajados' — ramp-warm não usa priority_points)", () => {
+test("clarice-build-segment --group ramp-warm NÃO é bloqueado pelo guard (#4205 é escopado a 'engajados' — ramp-warm não usa priority_points)", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-stale-rampwarm-"));
   const dbPath = makeStaleDb(dir);
 
-  const { exitCode, errors } = withMockedExit(() =>
-    main(["--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--dry-run"]),
+  const { exitCode, errors } = await withoutBrevoKey(() =>
+    withMockedExit(() =>
+      main(["--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--dry-run"]),
+    ),
   );
 
   assert.equal(exitCode, undefined, `não deveria ter chamado process.exit — errors: ${JSON.stringify(errors)}`);

@@ -18,6 +18,8 @@ import {
   segmentReativacao,
   isRampWarm,
   segmentRampWarm,
+  isNovos,
+  segmentNovos,
   isNamedGroupKey,
   NAMED_GROUPS,
   parseBrevoListIds,
@@ -25,7 +27,7 @@ import {
   type StoreRow,
 } from "../scripts/lib/clarice-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
-import { cohortFromTier, INTERNAL_EMAILS } from "../scripts/lib/cohorts.ts";
+import { cohortFromTier, INTERNAL_EMAILS, COHORT_ASSINANTES_ATIVOS } from "../scripts/lib/cohorts.ts";
 
 // Oráculo LOCAL de `tierRank` (#2857 fase C — a função viveu exportada em
 // clarice-segment.ts até a fase B, removida no cutover; ver
@@ -891,11 +893,12 @@ test("segmentRampWarm: ordem cohortSendRank (morno→frio); NÃO exclui internos
   );
 });
 
-test("NAMED_GROUPS / isNamedGroupKey: os 3 grupos da #2885 estão registrados", () => {
-  assert.deepEqual(Object.keys(NAMED_GROUPS).sort(), ["engajados", "ramp-warm", "reativacao"]);
+test("NAMED_GROUPS / isNamedGroupKey: os 3 grupos da #2885 + 'novos' (#4347) estão registrados", () => {
+  assert.deepEqual(Object.keys(NAMED_GROUPS).sort(), ["engajados", "novos", "ramp-warm", "reativacao"]);
   assert.equal(isNamedGroupKey("engajados"), true);
   assert.equal(isNamedGroupKey("reativacao"), true);
   assert.equal(isNamedGroupKey("ramp-warm"), true);
+  assert.equal(isNamedGroupKey("novos"), true);
   assert.equal(isNamedGroupKey("inventado"), false);
 });
 
@@ -1000,4 +1003,182 @@ test("excludeCommittedToQueuedCampaigns: aplica sobre segmentRampWarm real (inte
   assert.deepEqual(rampWarm.map((r) => r.email).sort(), ["warm-committed@x.com", "warm-fresh@x.com"]);
   const filtered = excludeCommittedToQueuedCampaigns(rampWarm, new Set(["68"]));
   assert.deepEqual(filtered.map((r) => r.email), ["warm-fresh@x.com"]);
+});
+
+// ---------------------------------------------------------------------------
+// isNovos / segmentNovos (#4347) — grupo `novos`, laço Stripe→MV→envio imediato
+// ---------------------------------------------------------------------------
+
+const SINCE = "2026-07-01";
+
+test("isNovos: pagante novo (cohort MV-isento) sem mv_bucket ENTRA", () => {
+  const r = row({
+    email: "payer@x.com",
+    sends_count: 0,
+    cohort: COHORT_ASSINANTES_ATIVOS,
+    created: "2026-07-15T00:00:00Z",
+    mv_bucket: null,
+  });
+  assert.equal(isNovos(r, SINCE), true);
+});
+
+test("isNovos: mv_bucket='rejected' FICA FORA (não é isento nem verified)", () => {
+  const r = row({
+    email: "lead-rejected@x.com",
+    sends_count: 0,
+    cohort: "leads-2026-07",
+    created: "2026-07-15T00:00:00Z",
+    mv_bucket: "rejected",
+  });
+  assert.equal(isNovos(r, SINCE), false);
+});
+
+test("isNovos: mv_bucket='unknown' FICA FORA (D9 — sem flag de opt-in)", () => {
+  const r = row({
+    email: "lead-unknown@x.com",
+    sends_count: 0,
+    cohort: "leads-2026-07",
+    created: "2026-07-15T00:00:00Z",
+    mv_bucket: "unknown",
+  });
+  assert.equal(isNovos(r, SINCE), false);
+});
+
+test("isNovos: lead novo (não isento) SEM verificação MV fica fora", () => {
+  const r = row({
+    email: "lead-nomv@x.com",
+    sends_count: 0,
+    cohort: "leads-2026-07",
+    created: "2026-07-15T00:00:00Z",
+    mv_bucket: null,
+  });
+  assert.equal(isNovos(r, SINCE), false);
+});
+
+test("isNovos: lead novo verificado (mv_bucket='verified') ENTRA", () => {
+  const r = row({
+    email: "lead-verified@x.com",
+    sends_count: 0,
+    cohort: "leads-2026-07",
+    created: "2026-07-15T00:00:00Z",
+    mv_bucket: "verified",
+  });
+  assert.equal(isNovos(r, SINCE), true);
+});
+
+test("isNovos: created < since FICA FORA", () => {
+  const r = row({
+    email: "old@x.com",
+    sends_count: 0,
+    cohort: COHORT_ASSINANTES_ATIVOS,
+    created: "2026-06-15T00:00:00Z", // antes de SINCE
+    mv_bucket: null,
+  });
+  assert.equal(isNovos(r, SINCE), false);
+});
+
+test("isNovos: created ausente/inválido FICA FORA (fail-safe)", () => {
+  const semData = row({
+    email: "sem-created@x.com",
+    sends_count: 0,
+    cohort: COHORT_ASSINANTES_ATIVOS,
+    created: null,
+    mv_bucket: null,
+  });
+  const dataInvalida = row({
+    email: "created-invalido@x.com",
+    sends_count: 0,
+    cohort: COHORT_ASSINANTES_ATIVOS,
+    created: "não-é-uma-data",
+    mv_bucket: null,
+  });
+  assert.equal(isNovos(semData, SINCE), false);
+  assert.equal(isNovos(dataInvalida, SINCE), false);
+});
+
+test("isNovos: sends_count > 0 FICA FORA (já recebeu — ciclo de vida sem reentrada)", () => {
+  const r = row({
+    email: "ja-recebeu@x.com",
+    sends_count: 1,
+    cohort: COHORT_ASSINANTES_ATIVOS,
+    created: "2026-07-15T00:00:00Z",
+    mv_bucket: null,
+  });
+  assert.equal(isNovos(r, SINCE), false);
+});
+
+test("isNovos: send_eligible=0 FICA FORA", () => {
+  const r = row({
+    email: "inelegivel@x.com",
+    send_eligible: 0,
+    ineligible_reason: "hard_bounce",
+    sends_count: 0,
+    cohort: COHORT_ASSINANTES_ATIVOS,
+    created: "2026-07-15T00:00:00Z",
+    mv_bucket: null,
+  });
+  assert.equal(isNovos(r, SINCE), false);
+});
+
+test("segmentNovos: ordem = cohortSendRank (assinantes-ativos primeiro) depois created DESC", () => {
+  const rows: StoreRow[] = [
+    row({
+      email: "lead-antigo@x.com",
+      sends_count: 0,
+      cohort: "leads-2026-07",
+      created: "2026-07-02T00:00:00Z",
+      mv_bucket: "verified",
+    }),
+    row({
+      email: "payer-recente@x.com",
+      sends_count: 0,
+      cohort: COHORT_ASSINANTES_ATIVOS,
+      created: "2026-07-20T00:00:00Z",
+      mv_bucket: null,
+    }),
+    row({
+      email: "payer-antigo@x.com",
+      sends_count: 0,
+      cohort: COHORT_ASSINANTES_ATIVOS,
+      created: "2026-07-05T00:00:00Z",
+      mv_bucket: null,
+    }),
+    row({
+      email: "lead-recente@x.com",
+      sends_count: 0,
+      cohort: "leads-2026-07",
+      created: "2026-07-25T00:00:00Z",
+      mv_bucket: "verified",
+    }),
+  ];
+  const out = segmentNovos(rows, { sinceIso: SINCE });
+  assert.deepEqual(out.map((r) => r.email), [
+    "payer-recente@x.com", // assinantes-ativos, created mais recente
+    "payer-antigo@x.com",  // assinantes-ativos, created mais antigo
+    "lead-recente@x.com",  // leads-2026-07, created mais recente
+    "lead-antigo@x.com",   // leads-2026-07, created mais antigo
+  ]);
+});
+
+test("segmentNovos: filtra o universo inteiro (exclusão/inclusão combinadas)", () => {
+  const rows: StoreRow[] = [
+    row({ email: "in@x.com", sends_count: 0, cohort: COHORT_ASSINANTES_ATIVOS, created: "2026-07-10T00:00:00Z", mv_bucket: null }),
+    row({ email: "out-old@x.com", sends_count: 0, cohort: COHORT_ASSINANTES_ATIVOS, created: "2026-06-01T00:00:00Z", mv_bucket: null }),
+    row({ email: "out-unknown@x.com", sends_count: 0, cohort: "leads-2026-07", created: "2026-07-10T00:00:00Z", mv_bucket: "unknown" }),
+    row({ email: "out-sent@x.com", sends_count: 3, cohort: COHORT_ASSINANTES_ATIVOS, created: "2026-07-10T00:00:00Z", mv_bucket: null }),
+  ];
+  const out = segmentNovos(rows, { sinceIso: SINCE });
+  assert.deepEqual(out.map((r) => r.email), ["in@x.com"]);
+});
+
+test("NAMED_GROUPS.novos: reconhecido por isNamedGroupKey, exige ctx.sinceIso (lança sem ele)", () => {
+  assert.equal(isNamedGroupKey("novos"), true);
+  const rows: StoreRow[] = [
+    row({ email: "a@x.com", sends_count: 0, cohort: COHORT_ASSINANTES_ATIVOS, created: "2026-07-10T00:00:00Z", mv_bucket: null }),
+  ];
+  assert.throws(() => NAMED_GROUPS.novos.segment(rows));
+  assert.deepEqual(
+    NAMED_GROUPS.novos.segment(rows, { sinceIso: SINCE }).map((r) => r.email),
+    ["a@x.com"],
+  );
 });

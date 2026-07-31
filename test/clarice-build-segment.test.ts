@@ -21,11 +21,13 @@ import {
   excludeSentOrQueued,
   appendSentOrQueuedEmails,
   sentOrQueuedFilePath,
+  checkRoundSizeCap,
+  NOVOS_ROUND_SIZE_CAP,
   type SegmentRow,
   type SentOrQueuedFile,
 } from "../scripts/clarice-build-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
-import { cohortFromTier, INTERNAL_EMAILS } from "../scripts/lib/cohorts.ts";
+import { cohortFromTier, INTERNAL_EMAILS, COHORT_ASSINANTES_ATIVOS } from "../scripts/lib/cohorts.ts";
 import { clariceSegmentsDir } from "../scripts/lib/clarice-paths.ts";
 
 function row(p: Partial<SegmentRow> & { email: string }): SegmentRow {
@@ -160,19 +162,52 @@ test("buildSegmentArtifact: --min-score=0 (omitido) não corta nada — comporta
 // main() — integração ponta-a-ponta com o store SQLite
 // ---------------------------------------------------------------------------
 
-function captureLogs(fn: () => void): string[] {
+async function captureLogs(fn: () => void | Promise<void>): Promise<string[]> {
   const logs: string[] = [];
   const orig = console.log;
   console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
   try {
-    fn();
+    await fn();
   } finally {
     console.log = orig;
   }
   return logs;
 }
 
-test("main: --dry-run não escreve nada, imprime summary correto", () => {
+// #4347: main() agora é async e faz uma checagem AO VIVO na Brevo
+// (fetchCommittedCampaignListIds) antes de qualquer escrita real — nunca
+// deve bater na rede de verdade num teste. `withoutBrevoKey`/`withFakeBrevoFetch`
+// isolam esse comportamento de qualquer `BREVO_CLARICE_API_KEY` real que
+// `loadProjectEnv()` possa ter carregado de `.env.local` na máquina do editor.
+async function withoutBrevoKey<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = process.env.BREVO_CLARICE_API_KEY;
+  delete process.env.BREVO_CLARICE_API_KEY;
+  try {
+    return await fn();
+  } finally {
+    if (prev !== undefined) process.env.BREVO_CLARICE_API_KEY = prev;
+  }
+}
+
+async function withFakeBrevoFetch<T>(fn: () => Promise<T>): Promise<T> {
+  const prevKey = process.env.BREVO_CLARICE_API_KEY;
+  const prevFetch = globalThis.fetch;
+  process.env.BREVO_CLARICE_API_KEY = "test-fake-key";
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ campaigns: [] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevKey !== undefined) process.env.BREVO_CLARICE_API_KEY = prevKey;
+    else delete process.env.BREVO_CLARICE_API_KEY;
+  }
+}
+
+test("main: --dry-run não escreve nada, imprime summary correto", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-"));
   const dbPath = resolve(dir, "store.db");
   const segDir = clariceSegmentsDir("2606-07", dir);
@@ -188,9 +223,11 @@ test("main: --dry-run não escreve nada, imprime summary correto", () => {
   recomputeDerived(db);
   db.close();
 
-  const logs = captureLogs(() => {
-    main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--dry-run", "--data-root", dir]);
-  });
+  const logs = await withoutBrevoKey(() =>
+    captureLogs(() =>
+      main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--dry-run", "--data-root", dir]),
+    ),
+  );
   const out = JSON.parse(logs.join("\n"));
   assert.equal(out.cycle, "2606-07");
   assert.equal(out.group, "engajados");
@@ -199,7 +236,7 @@ test("main: --dry-run não escreve nada, imprime summary correto", () => {
   assert.equal(existsSync(resolve(segDir, "engajados.csv")), false, "dry-run não deve escrever CSV");
 });
 
-test("main: SEM --dry-run escreve CSV+manifest+sent-or-queued.json de fato, isolado em tmpdir via --data-root (#4207)", () => {
+test("main: SEM --dry-run escreve CSV+manifest+sent-or-queued.json de fato, isolado em tmpdir via --data-root (#4207)", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-real-"));
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
@@ -209,9 +246,9 @@ test("main: SEM --dry-run escreve CSV+manifest+sent-or-queued.json de fato, isol
   recomputeDerived(db);
   db.close();
 
-  const logs = captureLogs(() => {
-    main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--data-root", dir]);
-  });
+  const logs = await withFakeBrevoFetch(() =>
+    captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--data-root", dir])),
+  );
   const out = JSON.parse(logs.join("\n"));
   assert.equal(out.selected, 1);
 
@@ -242,7 +279,7 @@ test("main: SEM --dry-run escreve CSV+manifest+sent-or-queued.json de fato, isol
 // `--dry-run` porque o que verificam é justamente o comportamento de
 // NÃO-escrita.
 
-test("main: --budget corta o grupo antes de escrever", () => {
+test("main: --budget corta o grupo antes de escrever", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-budget-"));
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
@@ -262,18 +299,20 @@ test("main: --budget corta o grupo antes de escrever", () => {
   recomputeDerived(db);
   db.close();
 
-  const logs = captureLogs(() => {
-    main([
-      "--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--budget", "2", "--dry-run",
-      "--data-root", dir,
-    ]);
-  });
+  const logs = await withoutBrevoKey(() =>
+    captureLogs(() =>
+      main([
+        "--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--budget", "2", "--dry-run",
+        "--data-root", dir,
+      ]),
+    ),
+  );
   const out = JSON.parse(logs.join("\n"));
   assert.equal(out.selected, 2);
   assert.equal(out.budget, 2);
 });
 
-test("main: --score é alias de --min-score (#2973) — CLI aceita o vocabulário do editor", () => {
+test("main: --score é alias de --min-score (#2973) — CLI aceita o vocabulário do editor", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-score-"));
   const dbPath = resolve(dir, "store.db");
   const db = openClariceDb(dbPath);
@@ -286,12 +325,14 @@ test("main: --score é alias de --min-score (#2973) — CLI aceita o vocabulári
   recomputeDerived(db);
   db.close();
 
-  const logs = captureLogs(() => {
-    main([
-      "--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--score", "50", "--dry-run",
-      "--data-root", dir,
-    ]);
-  });
+  const logs = await withoutBrevoKey(() =>
+    captureLogs(() =>
+      main([
+        "--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--score", "50", "--dry-run",
+        "--data-root", dir,
+      ]),
+    ),
+  );
   const out = JSON.parse(logs.join("\n"));
   assert.equal(out.min_score, 50);
   assert.equal(out.selected, 1); // só quem bate o piso 50 (a@x.com)
@@ -433,7 +474,7 @@ test("REGRESSÃO (#3227): --dry-run NÃO escreve sent-or-queued.json e não afet
   assert.equal(selected2.length, 4); // todos os 4 — dry-run anterior não tirou ninguém da fila
 });
 
-test("main: --dry-run também não escreve sent-or-queued.json (integração)", () => {
+test("main: --dry-run também não escreve sent-or-queued.json (integração)", async () => {
   const dir = mkdtempSync(resolve(tmpdir(), "bseg-main-dryrun-"));
   const dbPath = resolve(dir, "store.db");
   // #4207 (generaliza #4176): segDir ISOLADO sob o tmpdir via --data-root,
@@ -449,9 +490,305 @@ test("main: --dry-run também não escreve sent-or-queued.json (integração)", 
   recomputeDerived(db);
   db.close();
 
-  captureLogs(() => {
-    main(["--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--dry-run", "--data-root", dir]);
-  });
+  await withoutBrevoKey(() =>
+    captureLogs(() =>
+      main(["--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--dry-run", "--data-root", dir]),
+    ),
+  );
 
   assert.equal(existsSync(sentOrQueuedFilePath(segDir)), false, "dry-run não deve escrever sent-or-queued.json");
+});
+
+// ---------------------------------------------------------------------------
+// #4347 — guard queued/sent (fetchCommittedCampaignListIds) wired em main()
+// ---------------------------------------------------------------------------
+
+async function withMockedExit<T>(
+  fn: () => T | Promise<T>,
+): Promise<{ result: T | undefined; exitCode: number | undefined; errors: string[] }> {
+  const origExit = process.exit;
+  const origErr = console.error;
+  const errors: string[] = [];
+  console.error = (...a: unknown[]) => { errors.push(a.map(String).join(" ")); };
+  let exitCode: number | undefined;
+  // @ts-expect-error — stub de process.exit pra capturar sem matar o test runner
+  process.exit = (code?: number) => {
+    exitCode = code;
+    throw Object.assign(new Error(`__mock_exit__:${code}`), { __mockExit: true });
+  };
+  let result: T | undefined;
+  try {
+    result = await fn();
+  } catch (e) {
+    if (!(e instanceof Error && (e as Error & { __mockExit?: boolean }).__mockExit)) throw e;
+  } finally {
+    process.exit = origExit;
+    console.error = origErr;
+  }
+  return { result, exitCode, errors };
+}
+
+/** Mocka `BREVO_CLARICE_API_KEY` + `fetch` global com um handler custom —
+ *  usado pra simular respostas específicas de `GET /emailCampaigns?status=X`. */
+async function withBrevoFetch<T>(
+  handler: (url: string) => Response | Promise<Response>,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const prevKey = process.env.BREVO_CLARICE_API_KEY;
+  const prevFetch = globalThis.fetch;
+  process.env.BREVO_CLARICE_API_KEY = "test-fake-key";
+  globalThis.fetch = (async (url: string | URL) => handler(String(url))) as typeof fetch;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = prevFetch;
+    if (prevKey !== undefined) process.env.BREVO_CLARICE_API_KEY = prevKey;
+    else delete process.env.BREVO_CLARICE_API_KEY;
+  }
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+}
+
+test("main: contato em lista com campanha 'queued' sai do grupo", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-committed-queued-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids) VALUES ('committed@x.com','C',2,3,3,'verified','[\"68\"]')",
+  ).run();
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids) VALUES ('fresh@x.com','F',2,3,3,'verified','[\"99\"]')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs = await withBrevoFetch(
+    (url) => {
+      if (url.includes("status=queued")) return jsonResponse({ campaigns: [{ id: 1, recipients: { lists: [68] } }] });
+      return jsonResponse({ campaigns: [] });
+    },
+    () => captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--dry-run", "--data-root", dir])),
+  );
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.selected, 1);
+  assert.equal(out.already_committed_brevo, 1);
+});
+
+test("main: contato em lista com campanha 'sent' sai do grupo mesmo com sends_count=0 no store (defasagem do sync)", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-committed-sent-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  // ramp-warm: elegível, sends_count=0 (a defasagem real do incidente #3682 —
+  // o contato JÁ recebeu, mas o sync do Brevo, 1×/dia, ainda não propagou o
+  // incremento de sends_count). Sem o guard queued/sent, este contato
+  // reapareceria em 'ramp-warm' e seria re-enviado.
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, sends_count, mv_bucket, brevo_list_ids) VALUES ('ja-enviado-defasado@x.com','D',1,0,'verified','[\"70\"]')",
+  ).run();
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, sends_count, mv_bucket, brevo_list_ids) VALUES ('fresh@x.com','F',1,0,'verified','[\"99\"]')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs = await withBrevoFetch(
+    (url) => {
+      if (url.includes("status=sent")) return jsonResponse({ campaigns: [{ id: 2, recipients: { lists: [70] } }] });
+      return jsonResponse({ campaigns: [] });
+    },
+    () => captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "ramp-warm", "--dry-run", "--data-root", dir])),
+  );
+  const out = JSON.parse(logs.join("\n"));
+  assert.equal(out.selected, 1);
+  assert.equal(out.already_committed_brevo, 1);
+});
+
+test("main: falha na consulta de campanhas comprometidas ABORTA a escrita real (nunca prossegue silenciosamente)", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-committed-failure-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket) VALUES ('a@x.com','A',2,3,3,'verified')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+  const segDir = clariceSegmentsDir("2606-07", dir);
+
+  const { exitCode } = await withBrevoFetch(
+    () => { throw new Error("network down"); },
+    () =>
+      withMockedExit(() =>
+        main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--data-root", dir]), // SEM --dry-run
+      ),
+  );
+  assert.equal(exitCode, 1);
+  assert.equal(existsSync(resolve(segDir, "engajados.csv")), false, "nada deve ser escrito quando a checagem falha em modo de escrita real");
+});
+
+test("main: falha na consulta de campanhas comprometidas PROSSEGUE (com aviso) em --dry-run", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-committed-failure-dryrun-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket) VALUES ('a@x.com','A',2,3,3,'verified')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const { exitCode, result } = await withBrevoFetch(
+    () => { throw new Error("network down"); },
+    () =>
+      withMockedExit(() =>
+        captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--dry-run", "--data-root", dir])),
+      ),
+  );
+  assert.equal(exitCode, undefined, "dry-run não deve abortar por falha na consulta");
+  const out = JSON.parse((result ?? []).join("\n"));
+  assert.equal(out.selected, 1);
+});
+
+// ---------------------------------------------------------------------------
+// #4347 D13 — teto de tamanho da rodada `novos`
+// ---------------------------------------------------------------------------
+
+test("checkRoundSizeCap: dentro do teto passa", () => {
+  assert.deepEqual(checkRoundSizeCap(NOVOS_ROUND_SIZE_CAP, NOVOS_ROUND_SIZE_CAP, false), { ok: true });
+});
+
+test("checkRoundSizeCap: acima do teto sem --force aborta", () => {
+  const result = checkRoundSizeCap(NOVOS_ROUND_SIZE_CAP + 1, NOVOS_ROUND_SIZE_CAP, false);
+  assert.equal(result.ok, false);
+});
+
+test("checkRoundSizeCap: acima do teto COM --force passa", () => {
+  assert.deepEqual(checkRoundSizeCap(NOVOS_ROUND_SIZE_CAP + 1, NOVOS_ROUND_SIZE_CAP, true), { ok: true });
+});
+
+function insertNovosRows(db: ReturnType<typeof openClariceDb>, count: number): void {
+  for (let i = 0; i < count; i++) {
+    db.prepare(
+      `INSERT INTO clarice_users (email, name, tier, cohort, status, created, sends_count, mv_bucket)
+       VALUES (?, ?, 1, 'assinantes-ativos', 'active', '2026-07-15T00:00:00Z', 0, NULL)`,
+    ).run(`novo${i}@x.com`, `Novo ${i}`);
+  }
+}
+
+test("REGRESSÃO (#4347): grupo 'novos' com 0 contatos elegíveis é uma RODADA VAZIA (exit 0), não um erro — outros 3 grupos continuam exit 1", async () => {
+  // Store NÃO vazio (senão cai no guard anterior "store vazio", genérico a
+  // qualquer grupo) — mas nenhum contato bate o predicado de 'novos' (created
+  // antes do --since). Isola o branch sob teste: manifestEntry.count === 0,
+  // não rows.length === 0.
+  const dirNovos = mkdtempSync(resolve(tmpdir(), "bseg-novos-empty-"));
+  const dbNovos = resolve(dirNovos, "store.db");
+  const db1 = openClariceDb(dbNovos);
+  db1.prepare(
+    `INSERT INTO clarice_users (email, name, tier, cohort, status, created, sends_count, mv_bucket)
+     VALUES ('velho@x.com', 'Velho', 1, 'assinantes-ativos', 'active', '2026-06-01T00:00:00Z', 0, NULL)`,
+  ).run();
+  recomputeDerived(db1);
+  db1.close();
+
+  const { exitCode: exitNovos, result: logsNovos } = await withoutBrevoKey(() =>
+    withMockedExit(() =>
+      captureLogs(() =>
+        main(["--cycle", "2606-07", "--db", dbNovos, "--group", "novos", "--since", "2026-07-01", "--dry-run", "--data-root", dirNovos]),
+      ),
+    ),
+  );
+  assert.equal(exitNovos, undefined, "grupo 'novos' vazio NÃO deve chamar process.exit — é uma rodada válida, não erro");
+  const outNovos = JSON.parse((logsNovos ?? []).join("\n"));
+  assert.equal(outNovos.selected, 0);
+  assert.equal(outNovos.group, "novos");
+
+  // Mesmo cenário (store sem candidatos), mas grupo 'engajados' — continua
+  // sinalizando erro (exit 1): 0 contatos ali É tipicamente sintoma de bug
+  // (predicado errado, store vazio), diferente de 'novos' (dia calmo é normal).
+  const dirEng = mkdtempSync(resolve(tmpdir(), "bseg-engajados-empty-"));
+  const dbEng = resolve(dirEng, "store.db");
+  const db2 = openClariceDb(dbEng);
+  // sends_count=0 nunca bate isEngajados (exige sends_count>0) — store
+  // não-vazio, mas 0 contatos no grupo 'engajados' especificamente.
+  db2.prepare(
+    "INSERT INTO clarice_users (email, name, tier, sends_count, opens_count) VALUES ('fresh@x.com','Fresh',2,0,0)",
+  ).run();
+  recomputeDerived(db2);
+  db2.close();
+
+  const { exitCode: exitEng } = await withoutBrevoKey(() =>
+    withMockedExit(() => main(["--cycle", "2606-07", "--db", dbEng, "--group", "engajados", "--dry-run", "--data-root", dirEng])),
+  );
+  assert.equal(exitEng, 1, "outros grupos continuam tratando 0 contatos como erro (comportamento pré-existente, sem regressão)");
+});
+
+test("main: --group novos requer --since (aborta sem ele)", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-novos-noSince-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  insertNovosRows(db, 1);
+  recomputeDerived(db);
+  db.close();
+
+  const { exitCode } = await withoutBrevoKey(() =>
+    withMockedExit(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "novos", "--dry-run", "--data-root", dir])),
+  );
+  assert.equal(exitCode, 1);
+});
+
+test("REGRESSÃO (#4347 D13): 501 contatos no grupo 'novos' ABORTA sem criar lista/manifest; 500 passa; --force com 501 passa", async () => {
+  const dirOver = mkdtempSync(resolve(tmpdir(), "bseg-novos-cap-over-"));
+  const dbOver = resolve(dirOver, "store.db");
+  const db1 = openClariceDb(dbOver);
+  insertNovosRows(db1, NOVOS_ROUND_SIZE_CAP + 1);
+  recomputeDerived(db1);
+  db1.close();
+  const segDirOver = clariceSegmentsDir("2606-07", dirOver);
+
+  const { exitCode, errors } = await withBrevoFetch(
+    () => jsonResponse({ campaigns: [] }), // nenhuma campanha comprometida — isola o teste no teto D13
+    () =>
+      withMockedExit(() =>
+        main([
+          "--cycle", "2606-07", "--db", dbOver, "--group", "novos", "--since", "2026-07-01", "--data-root", dirOver,
+        ]), // SEM --dry-run: prova que nada é escrito
+      ),
+  );
+  assert.equal(exitCode, 1, "501 contatos sem --force deve abortar");
+  assert.ok(errors.some((e) => /D13|teto/i.test(e)), `esperava erro do teto D13, recebeu: ${JSON.stringify(errors)}`);
+  assert.equal(existsSync(resolve(segDirOver, "novos.csv")), false, "nada deve ser escrito quando o teto abortar");
+  assert.equal(existsSync(resolve(segDirOver, "novos-manifest.json")), false);
+
+  // --force destrava (501 passa)
+  const dirForce = mkdtempSync(resolve(tmpdir(), "bseg-novos-cap-force-"));
+  const dbForce = resolve(dirForce, "store.db");
+  const db2 = openClariceDb(dbForce);
+  insertNovosRows(db2, NOVOS_ROUND_SIZE_CAP + 1);
+  recomputeDerived(db2);
+  db2.close();
+  const logsForce = await withoutBrevoKey(() =>
+    captureLogs(() =>
+      main([
+        "--cycle", "2606-07", "--db", dbForce, "--group", "novos", "--since", "2026-07-01", "--force",
+        "--dry-run", "--data-root", dirForce,
+      ]),
+    ),
+  );
+  const outForce = JSON.parse(logsForce.join("\n"));
+  assert.equal(outForce.selected, NOVOS_ROUND_SIZE_CAP + 1);
+
+  // 500 (exatamente o teto) passa sem --force
+  const dirAt = mkdtempSync(resolve(tmpdir(), "bseg-novos-cap-at-"));
+  const dbAt = resolve(dirAt, "store.db");
+  const db3 = openClariceDb(dbAt);
+  insertNovosRows(db3, NOVOS_ROUND_SIZE_CAP);
+  recomputeDerived(db3);
+  db3.close();
+  const logsAt = await withoutBrevoKey(() =>
+    captureLogs(() =>
+      main(["--cycle", "2606-07", "--db", dbAt, "--group", "novos", "--since", "2026-07-01", "--dry-run", "--data-root", dirAt]),
+    ),
+  );
+  const outAt = JSON.parse(logsAt.join("\n"));
+  assert.equal(outAt.selected, NOVOS_ROUND_SIZE_CAP);
 });

@@ -30,11 +30,11 @@
  * fallback — o Worker KV aceita qualquer string ≤512 bytes, hífens são válidos.
  */
 
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getArg, parseArgs } from "../cli-args.ts";
-import { isValidCycle } from "../clarice-paths.ts";
+import { isValidCycle, clariceCycleDir } from "../clarice-paths.ts";
 
 // scripts/lib/mensal/ → raiz do repo são 3 níveis acima (mensal → lib → scripts).
 // (#2747 desceu este arquivo de scripts/lib/ pra scripts/lib/mensal/ e o `../..`
@@ -243,4 +243,166 @@ export function requireMonthlyCycleArg(argv: string[]): string {
     process.exit(1);
   }
   return v;
+}
+
+// ── resolveLatestMonthlyCycle (#4347 Etapa 3a) ─────────────────────────────
+//
+// A skill `/diaria-clarice-novos` redistribui a edição mensal MAIS RECENTE
+// pra quem chegou depois — precisa achar, sem input do editor, qual ciclo
+// está pronto pra reenvio: HTML renderizado (com merge tag de descadastro),
+// gabarito É IA? gravado, e assunto conhecido (D3: se o ciclo corrente não
+// estiver pronto, cai no anterior — nunca aborta por causa disso).
+
+/** Marker do gabarito É IA? — mesmo path que `checkEiaGuard` (clarice-schedule-sends.ts) usa. */
+function eiaMarkerPath(cycle: string): string {
+  return resolve(monthlyDir(cycle, { allowLegacyFallback: false }), "_internal", ".close-poll-clarice.json");
+}
+
+function previewHtmlPath(cycle: string): string {
+  return resolve(monthlyDir(cycle, { allowLegacyFallback: false }), "_internal", "cloudflare-preview.html");
+}
+
+/**
+ * `cloudflare-preview.html` existe, não está vazio, e contém o merge tag de
+ * descadastro (`{{ unsubscribe }}`) — mesmo critério de "HTML pronto pra
+ * envio" que `clarice-schedule-group.ts`/`clarice-schedule-sends.ts` exigem
+ * antes de qualquer `--create`.
+ */
+export function hasReadyPreviewHtml(cycle: string): boolean {
+  const p = previewHtmlPath(cycle);
+  if (!existsSync(p)) return false;
+  try {
+    const html = readFileSync(p, "utf8");
+    return html.trim().length > 0 && html.includes("{{ unsubscribe }}");
+  } catch {
+    return false;
+  }
+}
+
+/** Gabarito É IA? gravado pro ciclo (mesmo marker de `checkEiaGuard`). */
+export function hasEiaGabarito(cycle: string): boolean {
+  return existsSync(eiaMarkerPath(cycle));
+}
+
+/**
+ * Resolve o assunto vencedor A/B/C já usado nos envios canônicos do ciclo —
+ * lê `{ciclo}/sends/cells/campaigns-summary.json` (escrito por
+ * `clarice-schedule-sends.ts --create`, ver `CampaignEntry.subject`) e
+ * devolve o assunto mais frequente entre as entradas (as campanhas de um
+ * mesmo ciclo compartilham o mesmo assunto vencedor, salvo blocos-célula
+ * A/B/C ainda não resolvidos). `undefined` se o arquivo não existir, estiver
+ * vazio, ou nenhuma entrada tiver `subject`.
+ */
+export function resolveSubjectFromCampaignsSummary(cycle: string): string | undefined {
+  try {
+    const path = resolve(clariceCycleDir(cycle), "sends", "cells", "campaigns-summary.json");
+    if (!existsSync(path)) return undefined;
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Array<{ subject?: string }>;
+    if (!Array.isArray(parsed)) return undefined;
+    const counts = new Map<string, number>();
+    for (const c of parsed) {
+      const s = (c.subject ?? "").trim();
+      if (!s) continue;
+      counts.set(s, (counts.get(s) ?? 0) + 1);
+    }
+    let best: string | undefined;
+    let bestCount = 0;
+    for (const [s, n] of counts) {
+      if (n > bestCount) {
+        best = s;
+        bestCount = n;
+      }
+    }
+    return best;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface MonthlyCycleReadiness {
+  cycle: string;
+  ready: boolean;
+  hasPreview: boolean;
+  hasEiaGabarito: boolean;
+  subject: string | undefined;
+  reasons: string[];
+}
+
+/** Dependências injetáveis (teste sem tocar disco real). Produção usa `resolveLatestMonthlyCycleDeps()`. */
+export interface ResolveLatestMonthlyCycleDeps {
+  /** Lista TODOS os ciclos candidatos (qualquer ordem — a função ordena desc). */
+  listCandidateCycles: () => string[];
+  hasPreviewWithUnsubscribe: (cycle: string) => boolean;
+  hasEiaGabarito: (cycle: string) => boolean;
+  resolveSubject: (cycle: string) => string | undefined;
+}
+
+export type ResolveLatestMonthlyCycleResult =
+  | { cycle: string; subject: string; fallback: boolean; checked: MonthlyCycleReadiness[] }
+  | { cycle: null; subject: null; fallback: false; checked: MonthlyCycleReadiness[] };
+
+/**
+ * Núcleo PURO (#4347 Etapa 3a) — testável sem disco real via `deps`
+ * injetadas. Percorre os ciclos candidatos do MAIOR pro MENOR (string sort
+ * desc — `{YYMM}-{MM}` ordena corretamente como string, mesmo padrão de
+ * `cohortSendRank`) e devolve o PRIMEIRO que satisfizer as 3 condições
+ * (preview pronto + gabarito É IA? + assunto conhecido). `subjectOverride`
+ * (equivalente a `--subject` explícito na CLI) vence a resolução automática
+ * via `campaigns-summary.json` quando informado.
+ *
+ * D3 (decisão do editor, #4347): se o ciclo mais recente não estiver pronto,
+ * cai no ANTERIOR — nunca aborta por causa disso. `fallback: true` sinaliza
+ * que o ciclo escolhido NÃO é o mais recente da lista (pro caller registrar
+ * no relatório da rodada, "por quê" escolheu esse ciclo).
+ */
+export function resolveLatestMonthlyCycle(
+  deps: ResolveLatestMonthlyCycleDeps,
+  subjectOverride?: string,
+): ResolveLatestMonthlyCycleResult {
+  const cycles = [...new Set(deps.listCandidateCycles())]
+    .filter((c) => isValidMonthlyCycle(c))
+    .sort()
+    .reverse(); // desc — mais recente primeiro
+
+  const checked: MonthlyCycleReadiness[] = [];
+  for (let i = 0; i < cycles.length; i++) {
+    const cycle = cycles[i];
+    const hasPreview = deps.hasPreviewWithUnsubscribe(cycle);
+    const hasEia = deps.hasEiaGabarito(cycle);
+    const subject = (subjectOverride && subjectOverride.trim()) || deps.resolveSubject(cycle);
+    const reasons: string[] = [];
+    if (!hasPreview) reasons.push("cloudflare-preview.html ausente/vazio/sem {{ unsubscribe }}");
+    if (!hasEia) reasons.push("gabarito É IA? não gravado");
+    if (!subject) reasons.push("assunto desconhecido (sem --subject nem campanha prévia em campaigns-summary.json)");
+    const ready = hasPreview && hasEia && !!subject;
+    checked.push({ cycle, ready, hasPreview, hasEiaGabarito: hasEia, subject, reasons });
+    if (ready) {
+      return { cycle, subject: subject as string, fallback: i > 0, checked };
+    }
+  }
+  return { cycle: null, subject: null, fallback: false, checked };
+}
+
+/** Dependências de PRODUÇÃO (disco real) — lista `data/monthly/*` como candidatos. */
+export function resolveLatestMonthlyCycleDeps(): ResolveLatestMonthlyCycleDeps {
+  return {
+    listCandidateCycles: () => {
+      if (!existsSync(MONTHLY_BASE)) return [];
+      return readdirSync(MONTHLY_BASE).filter((d) => {
+        try {
+          return statSync(resolve(MONTHLY_BASE, d)).isDirectory();
+        } catch {
+          return false;
+        }
+      });
+    },
+    hasPreviewWithUnsubscribe: hasReadyPreviewHtml,
+    hasEiaGabarito: hasEiaGabarito,
+    resolveSubject: resolveSubjectFromCampaignsSummary,
+  };
+}
+
+/** Atalho de produção — `resolveLatestMonthlyCycle` com as deps reais do disco. */
+export function resolveLatestMonthlyCycleFromDisk(subjectOverride?: string): ResolveLatestMonthlyCycleResult {
+  return resolveLatestMonthlyCycle(resolveLatestMonthlyCycleDeps(), subjectOverride);
 }
