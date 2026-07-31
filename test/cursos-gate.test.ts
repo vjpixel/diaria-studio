@@ -69,6 +69,34 @@ describe("workers/cursos GET / (#4052)", () => {
     assert.match(getCookieHeader(res) ?? "", /HttpOnly/);
   });
 
+  // #4320: sem esta linha, o alarme de erro do worker (scripts/cursos-error-alarm.ts)
+  // não tinha denominador pra calcular a taxa de "?email= não confirmado" — só
+  // o numerador (o branch de falha logo abaixo já logava). Mesmo cuidado de
+  // redação dos `console.warn` de falha: NUNCA interpolar o e-mail no log.
+  it("?email= de assinante ativo → loga a confirmação (console.log), SEM vazar o e-mail (#4320)", async () => {
+    const email = "assinante-log@example.com";
+    const key = await subscriberKvKey(email);
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }) });
+
+    const originalLog = console.log;
+    const lines: string[] = [];
+    console.log = (...args: unknown[]) => {
+      lines.push(args.map(String).join(" "));
+    };
+    try {
+      await worker.fetch(
+        new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`),
+        env,
+      );
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.equal(lines.length, 1, `esperava exatamente 1 console.log, obteve ${lines.length}: ${JSON.stringify(lines)}`);
+    assert.match(lines[0], /\?email= confirmado como assinante ativo/);
+    assert.doesNotMatch(lines[0], new RegExp(email.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+
   it("?email= de e-mail NÃO assinante → cai pro teaser, sem vazar o sinal negativo", async () => {
     const env = baseEnv();
     const res = await worker.fetch(
