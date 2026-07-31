@@ -20,9 +20,10 @@
  * via /diaria-atualiza-audiencia (quando há survey nova).
  */
 
-import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, copyFileSync, mkdirSync, readdirSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import Papa from "papaparse";
 import { editionsRoot } from "./lib/edition-paths.ts";
 // isAprofundeAnchor foi movido pra lib/ctr-utils.ts pra quebrar ciclo ESM com
@@ -200,6 +201,103 @@ function parseCtr(): CtrParseResult | null {
   return parseCtrFromCsv(readFileSync(CTR_CSV, "utf8"));
 }
 
+// ─── Archive guard (#4366) ─────────────────────────────────────────────────────
+//
+// Detecta arquivar um snapshot idêntico ao mais recente já arquivado — sinal de
+// que uma rodada anterior arquivou o profile antigo mas falhou/crashou ANTES de
+// escrever conteúdo novo em `context/audience-profile.md` (a regeneração daquela
+// rodada nunca aconteceu, silenciosamente). Não é um hard-fail: o script sempre
+// prossegue (o próprio 07-30 do incidente real acabou tendo sucesso), só loga
+// warning pra não passar despercebido de novo.
+
+const HISTORY_FILE_RE = /^\d{4}-\d{2}-\d{2}\.md$/;
+
+/** Nome do arquivo de histórico mais recente em `historyDir`, excluindo `excludeFilename` (tipicamente o de hoje). Ordena lexicograficamente — seguro porque o nome é sempre YYYY-MM-DD. */
+export function findLatestHistoryFile(historyDir: string, excludeFilename?: string): string | null {
+  if (!existsSync(historyDir)) return null;
+  const files = readdirSync(historyDir)
+    .filter((f) => HISTORY_FILE_RE.test(f) && f !== excludeFilename)
+    .sort();
+  return files.length > 0 ? files[files.length - 1] : null;
+}
+
+/** Pure: mensagem de warning se `currentContent` (prestes a ser arquivado como `todayFile`) for byte-a-byte idêntico ao conteúdo do arquivo de histórico mais recente já existente (`latestFile`/`latestContent`). Retorna `null` quando não há duplicata (ou não há histórico anterior pra comparar). */
+export function detectDuplicateArchiveWarning(
+  currentContent: string,
+  todayFile: string,
+  latestFile: string | null,
+  latestContent: string | null,
+): string | null {
+  if (!latestFile || latestContent === null) return null;
+  if (currentContent !== latestContent) return null;
+  return `[update-audience] AVISO: snapshot a ser arquivado (${todayFile}) é idêntico ao mais recente já arquivado (${latestFile}) — possível regeneração que falhou silenciosamente numa rodada anterior (ver #4366). Investigar data/run-log.jsonl em torno dessas datas.`;
+}
+
+/**
+ * Pure: monta os argv extras (sem o binário/script) pra `scripts/log-event.ts`
+ * registrar o warning de archive duplicado no run-log estruturado — mesmo
+ * padrão usado por `check-humanizer-social.ts`/`finalize-stage1.ts`
+ * (child_process fire-and-forget). Persistir em `data/run-log.jsonl` (em vez
+ * de só `console.warn`) torna o warning consultável depois via `/diaria-log`,
+ * mesmo que ninguém tenha visto o stdout da sessão que rodou o Stage 0 na
+ * hora (achado do self-review do #4366: um warning só em stdout corre o
+ * mesmo risco de passar despercebido que motivou a issue).
+ */
+export function buildDuplicateArchiveLogArgs(todayFile: string, latestFile: string): string[] {
+  return [
+    "--stage", "0",
+    "--agent", "update-audience",
+    "--level", "warn",
+    "--message",
+    `snapshot arquivado (${todayFile}) é idêntico ao mais recente já arquivado (${latestFile}) — possível regeneração que falhou silenciosamente numa rodada anterior (#4366)`,
+    "--details",
+    JSON.stringify({ today_file: todayFile, latest_file: latestFile, issue: "#4366" }),
+  ];
+}
+
+/**
+ * Dispara `scripts/log-event.ts` via child_process (fire-and-forget, nunca
+ * lança — logging não pode mascarar/bloquear a regeneração do profile).
+ * `spawnFn` é injetável pra teste (captura a chamada sem spawnar processo real).
+ */
+export function logDuplicateArchiveWarning(
+  todayFile: string,
+  latestFile: string,
+  spawnFn: typeof spawnSync = spawnSync,
+): void {
+  try {
+    spawnFn(
+      process.execPath,
+      ["--import", "tsx", resolve(ROOT, "scripts/log-event.ts"), ...buildDuplicateArchiveLogArgs(todayFile, latestFile)],
+      { cwd: ROOT, stdio: "ignore", encoding: "utf8" },
+    );
+  } catch {
+    // fire-and-forget: falha de logging nunca pode mascarar/bloquear o script principal.
+  }
+}
+
+/**
+ * Decide e dispara o guard completo (console.warn + log-event) a partir da
+ * comparação de conteúdo. Consolidado numa função só pra ser testável de
+ * ponta a ponta: cenário de duplicata dispara os 2 canais, caminho feliz não
+ * dispara nenhum. `spawnFn`/`warnFn` injetáveis pra teste.
+ */
+export function handleArchiveGuard(
+  currentContent: string,
+  todayFile: string,
+  latestFile: string | null,
+  latestContent: string | null,
+  spawnFn: typeof spawnSync = spawnSync,
+  warnFn: (message: string) => void = console.warn,
+): void {
+  const warning = detectDuplicateArchiveWarning(currentContent, todayFile, latestFile, latestContent);
+  if (!warning) return;
+  warnFn(warning);
+  // latestFile é garantidamente não-null aqui (detectDuplicateArchiveWarning só
+  // retorna warning quando latestFile existe).
+  logDuplicateArchiveWarning(todayFile, latestFile as string, spawnFn);
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────────────
 
 function main() {
@@ -230,12 +328,6 @@ function main() {
   if (!ctr && surveyResponses.length === 0) {
     console.error("Nenhuma fonte disponível (CTR CSV ou survey JSON). Nada a gerar.");
     process.exit(1);
-  }
-
-  // Archive existing
-  if (existsSync(OUT)) {
-    mkdirSync(HISTORY_DIR, { recursive: true });
-    copyFileSync(OUT, resolve(HISTORY_DIR, `${today}.md`));
   }
 
   const lines: string[] = [
@@ -424,6 +516,26 @@ function main() {
     "",
     "_Regerado por `scripts/update-audience.ts` a partir de CTR (`data/link-ctr-table.csv`) e survey (`data/audience-raw.json`)._",
   );
+
+  // Archive existing — feito aqui (logo antes do write final), não no topo do
+  // main(): #4366 achou que arquivar cedo demais (antes de `lines` estar
+  // pronto) deixa uma janela onde uma exceção na montagem do conteúdo novo
+  // arquiva o profile antigo mas nunca sobrescreve `context/audience-profile.md`
+  // — a regeneração falha silenciosamente e o próximo run re-arquiva o mesmo
+  // conteúdo stale sob uma data de calendário diferente. Fazer o archive só
+  // quando `lines` já está montado (a exceção, se houver, acontece antes e
+  // propaga sem arquivar nada) fecha essa janela pro caso comum (erro de
+  // montagem de conteúdo); não protege contra falha no meio do próprio I/O de
+  // arquivo, que é um risco residual aceito (mesma classe de qualquer script).
+  if (existsSync(OUT)) {
+    mkdirSync(HISTORY_DIR, { recursive: true });
+    const currentContent = readFileSync(OUT, "utf8");
+    const todayFile = `${today}.md`;
+    const latestFile = findLatestHistoryFile(HISTORY_DIR, todayFile);
+    const latestContent = latestFile ? readFileSync(resolve(HISTORY_DIR, latestFile), "utf8") : null;
+    handleArchiveGuard(currentContent, todayFile, latestFile, latestContent);
+    copyFileSync(OUT, resolve(HISTORY_DIR, todayFile));
+  }
 
   writeFileSync(OUT, lines.join("\n"), "utf8");
 
