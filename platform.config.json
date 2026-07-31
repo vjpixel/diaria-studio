@@ -71,6 +71,12 @@
     "slot2": "artigo-especial-apoiadores.md",
     "slot3": "clarice-divulgacao.md"
   },
+  "boxes_divulgacao_patronos": {
+    "slot0": null,
+    "slot1": "patronos-bastidores.md",
+    "slot2": "patronos-acesso-antecipado.md",
+    "slot3": null
+  },
   "para_encerrar": {
     "slot_a": null,
     "slot_b": null

@@ -49,6 +49,7 @@
         <button type="button" class="rv-tab" data-slug="reviewed" role="tab">02 — Newsletter</button>
         <button type="button" class="rv-tab" data-slug="social" role="tab">03 — Social</button>
         <button type="button" class="rv-tab" data-slug="html-final" role="tab">HTML final (última milha)</button>
+        <button type="button" class="rv-tab" data-slug="html-final-patronos" role="tab">HTML final — Patronos</button>
       </div>
       <p class="hint" id="rv-file-status">—</p>
       <p class="hint" id="rv-html-final-note" hidden>
@@ -57,6 +58,14 @@
         passa pelos lints de Markdown nem sincroniza com o Drive. Um novo re-render a
         partir do Markdown (rodar a Etapa 4 de novo) descarta essas edições sem aviso
         automático da pipeline.
+      </p>
+      <p class="hint" id="rv-html-final-patronos-note" hidden>
+        Variante Patronos (#4275, Fase 1 — "Gerar e revisar") — MESMO
+        <code>02-reviewed.md</code>, só a seleção de caixas muda
+        (<code>platform.config.json</code> → <code>boxes_divulgacao_patronos</code>).
+        Gerada manualmente via <code>render-newsletter-html.ts --patronos</code>, ainda
+        não pelo Stage 4 automaticamente. Nada aqui é publicado — publicação segmentada
+        (2º draft Beehiiv + envio por segmento) é Fase 2, fora de escopo desta issue.
       </p>
       <p class="rv-divergence-banner" id="rv-divergence-banner" role="alert" hidden>
         HTML final foi modificado desde a última vez que o painel capturou a versão de

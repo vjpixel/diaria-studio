@@ -68,6 +68,33 @@
   border-color: var(--status-warn);
 }
 
+/* #4275: alterna entre a variante "Padrão" (boxes_divulgacao) e "Patronos"
+   (boxes_divulgacao_patronos) na seção "Slots de divulgação" — mesma família
+   visual de botão de .cx-editor-toolbar, só que com estado "active" (mesmo
+   padrão de .rv-tab em revisao.css). */
+.cx-variant-toggle {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+.cx-variant-btn {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+}
+.cx-variant-btn:hover { border-color: var(--brand); }
+.cx-variant-btn.active {
+  background: var(--brand);
+  color: var(--on-ink);
+  border-color: var(--brand);
+  font-weight: 600;
+}
+
 /* #3937: seção "Slots de divulgação" — 3 linhas label+seletor, mesma família
    visual de .cx-field (borda/raio/paper), layout em linha em vez de coluna. */
 .cx-slots-row {
@@ -176,6 +203,13 @@
   border: 1px solid var(--status-ok);
   color: var(--status-ok);
   white-space: nowrap;
+}
+/* #4275: badge da variante Patronos — usa --brand em vez de --status-ok pra
+   diferenciar visualmente das duas atribuições (uma caixa pode estar em
+   slots diferentes em cada variante, ou só numa delas). */
+.box-slot-badge-patronos {
+  border-color: var(--brand);
+  color: var(--brand);
 }
 .box-dirty-badge {
   display: inline-block;

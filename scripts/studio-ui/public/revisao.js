@@ -30,12 +30,15 @@ import {
 } from "./revisao-inline-edit.js";
 import { nextTabIndex, syncTabAria } from "./tablist-core.js";
 
-const SLUGS = ["categorized", "reviewed", "social", "html-final"];
+const SLUGS = ["categorized", "reviewed", "social", "html-final", "html-final-patronos"];
 const FILE_LABELS = {
   categorized: "01-categorized.md",
   reviewed: "02-reviewed.md",
   social: "03-social.md",
   "html-final": "_internal/newsletter-final.html",
+  // #4275 (Fase 1): variante Patronos do HTML final — mesmo mecanismo
+  // genérico de read/save/diff/baseline do slug "html-final" acima.
+  "html-final-patronos": "_internal/newsletter-final-patronos.html",
 };
 
 function getAammddFromPath() {
@@ -78,6 +81,7 @@ const el = {
   tabs: document.getElementById("rv-tabs"),
   fileStatus: document.getElementById("rv-file-status"),
   htmlFinalNote: document.getElementById("rv-html-final-note"),
+  htmlFinalPatronosNote: document.getElementById("rv-html-final-patronos-note"), // #4275
   divergenceBanner: document.getElementById("rv-divergence-banner"),
   sanitizedBanner: document.getElementById("rv-sanitized-banner"),
   editor: document.getElementById("rv-editor"),
@@ -127,6 +131,7 @@ const PREVIEW_TAB_LABELS = {
   reviewed: "Preview do e-mail",
   social: "Preview social",
   "html-final": "Preview do e-mail",
+  "html-final-patronos": "Preview do e-mail", // #4275
 };
 // innerHTML (não textContent): conteúdo estático próprio (sem input do
 // editor), preserva o <code>/<strong> do markup original em vez de virar
@@ -183,6 +188,8 @@ function renderTabs() {
   syncTabAria(el.tabs.querySelectorAll(".rv-tab"), (btn) => btn.dataset.slug === currentSlug);
   el.arquivo.textContent = FILE_LABELS[currentSlug];
   el.htmlFinalNote.hidden = currentSlug !== "html-final";
+  // #4275: nota SEPARADA da acima — cada slug mostra só a sua própria nota.
+  if (el.htmlFinalPatronosNote) el.htmlFinalPatronosNote.hidden = currentSlug !== "html-final-patronos";
   const previewTabBtn = el.sideTabs.querySelector('[data-pane="preview"]');
   if (previewTabBtn) previewTabBtn.textContent = PREVIEW_TAB_LABELS[currentSlug] || PREVIEW_TAB_LABELS.reviewed;
   if (el.previewHint) el.previewHint.innerHTML = PREVIEW_HINTS[currentSlug] || PREVIEW_HINTS.default;
@@ -547,13 +554,18 @@ function showPreviewError(err) {
 
 async function refreshPreview() {
   try {
-    if (currentSlug === "html-final") {
+    // #4275: "html-final-patronos" é a MESMA natureza de "html-final" — HTML
+    // já pré-renderizado, mostrado via srcdoc direto do que está salvo em
+    // disco (não derivado do Markdown). `currentSlug` na URL generaliza os 2
+    // slugs sem duplicar o branch.
+    if (currentSlug === "html-final" || currentSlug === "html-final-patronos") {
       el.previewFrame.removeAttribute("src");
-      const { body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/html-final`);
+      const { body } = await fetchJson(`/api/editions/${encodeURIComponent(aammdd)}/review/${currentSlug}`);
+      const missingLabel = FILE_LABELS[currentSlug];
       el.previewFrame.srcdoc =
         body && body.ok && body.exists
           ? body.content
-          : "<p style=\"font-family:sans-serif;padding:1rem;color:#444\">newsletter-final.html ainda não existe nesta edição (roda depois da Etapa 4).</p>";
+          : `<p style="font-family:sans-serif;padding:1rem;color:#444">${missingLabel} ainda não existe nesta edição.</p>`;
       return;
     }
     el.previewFrame.removeAttribute("srcdoc");
