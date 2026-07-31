@@ -756,11 +756,18 @@ export function isNewsNotTutorial(article: Article): boolean {
   // guide): sinal de lançamento inequívoco vence how-to genérico no título.
   if (LAUNCH_FAMILY_MEMBER_RE.test(`${article.title ?? ""}\n${article.summary ?? ""}`)) return true;
   // #4337: release note de versão em host MISTO (tutorial + release notes no
-  // mesmo domínio) — mesma precedência dos overrides de lançamento acima
-  // (launch slug/roundup/lançamento/visual-guide/family-member): sinal de
-  // release vence how-to genérico no título.
-  if (hasReleaseVersionSignalOnMixedHost(article)) return true;
-  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug, roundup, lançamento, visual-guide-explainer, family-member e release-version)
+  // mesmo domínio). Diferente dos overrides de lançamento acima (launch
+  // slug/roundup/lançamento/visual-guide/family-member — todos padrões
+  // estruturais estreitos, improváveis em tutorial genuíno), um número de
+  // versão sozinho é comum em título/slug de tutorial hands-on real nesses
+  // mesmos hosts (ex: "How to fine-tune Claude 3.5 for agents"). Por isso
+  // este sinal só vence quando NÃO há keyword de how-to explícito
+  // (`!isTutorialByKeyword`) — coordenador (review 260731, achado do self-
+  // review inicial do #4337): sem esse guard, "Fine-tuning Claude 3.5 for
+  // agents" (slug com "3-5") seria misroteado pra noticias/RADAR mesmo tendo
+  // sinal de tutorial explícito no título.
+  if (hasReleaseVersionSignalOnMixedHost(article) && !isTutorialByKeyword(article)) return true;
+  if (isTutorialByKeyword(article)) return false; // sinal de how-to vence (exceto launch slug, roundup, lançamento, visual-guide-explainer e family-member)
   if (article.type_hint === "noticia" || article.type_hint === "opiniao") {
     return true;
   }

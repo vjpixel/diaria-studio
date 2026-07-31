@@ -899,6 +899,19 @@ describe("#4337 — release note e narrativa em host misto tutorial/lançamento"
     assert.equal(categorize(art), "lancamento");
   });
 
+  it("sem-regressão (self-review + coordenador, 260731): sinal de versão + how-to explícito continua tutorial", () => {
+    // hasReleaseVersionSignalOnMixedHost sozinho venceria (slug/título tem
+    // versão explícita "3-5"/"3.5"), mas o título aqui TAMBÉM tem keyword de
+    // how-to explícito ("how to fine-tune") — how-to deve vencer, senão um
+    // tutorial hands-on real (langchain.com/blog, latent.space) seria
+    // misroteado pra RADAR só por citar a versão do modelo no título/slug.
+    const art: Article = {
+      url: "https://www.langchain.com/blog/how-to-fine-tune-claude-3-5-for-agents",
+      title: "How to fine-tune Claude 3.5 for agents",
+    };
+    assert.equal(categorize(art), "tutorial");
+  });
+
   it("blog.langchain.dev com sinal de versão não vira tutorial (mesmo sem estar em official-domains.ts)", () => {
     // blog.langchain.dev não está cadastrado em official-domains.ts (só
     // langchain.com/blog/ está) — então uma release note lá cai no default
