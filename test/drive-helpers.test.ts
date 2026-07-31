@@ -1,7 +1,8 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
-import { resolve } from "node:path";
+import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   isRetryableStatus,
   backoffMs,
@@ -9,9 +10,7 @@ import {
   buildMultipartBody,
   driveFindFolderByNames,
 } from "../scripts/lib/drive-helpers.ts";
-
-const ROOT = resolve(import.meta.dirname, "..");
-const CREDS_PATH = resolve(ROOT, "data", ".credentials.json");
+import { CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../scripts/google-auth.ts"; // #4344
 
 /** Fake credentials with expiry far in the future — avoids token refresh fetch. */
 const FAKE_CREDS = {
@@ -21,6 +20,29 @@ const FAKE_CREDS = {
   refresh_token: "fake-refresh",
   expiry_ms: Date.now() + 3_600_000, // 1h
 };
+
+// #4344: dir temporário próprio + env var — nunca mais escreve em
+// data/.credentials.json REAL (gitignored, compartilhado via OneDrive entre
+// máquinas). Ver test/drive-sync.test.ts pro histórico completo do incidente
+// que isto corrige (mesmo padrão de fix, arquivo diferente com o mesmo bug).
+let fakeCredsDir: string | undefined;
+let prevCredsEnvValue: string | undefined;
+
+function setupFakeCredentials(): void {
+  prevCredsEnvValue = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+  fakeCredsDir = mkdtempSync(join(tmpdir(), "drive-helpers-creds-"));
+  writeFileSync(join(fakeCredsDir, ".credentials.json"), JSON.stringify(FAKE_CREDS), "utf8");
+  process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = join(fakeCredsDir, ".credentials.json");
+}
+
+function teardownFakeCredentials(): void {
+  if (prevCredsEnvValue !== undefined) process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = prevCredsEnvValue;
+  else delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+  if (fakeCredsDir) {
+    try { rmSync(fakeCredsDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+  fakeCredsDir = undefined;
+}
 
 function makeDriveResponse(body: unknown, status = 200): Response {
   const json = JSON.stringify(body);
@@ -145,25 +167,15 @@ describe("buildMultipartBody (#1308 item 4)", () => {
 
 describe("driveFindFolderByNames (#3573 — resolve pasta tolerante a rename)", () => {
   let originalFetch: typeof globalThis.fetch;
-  let credsExistedBefore: boolean;
-  let prevCredsContent: string | null;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    credsExistedBefore = existsSync(CREDS_PATH);
-    prevCredsContent = credsExistedBefore ? readFileSync(CREDS_PATH, "utf8") : null;
-    mkdirSync(resolve(ROOT, "data"), { recursive: true });
-    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+    setupFakeCredentials();
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    try {
-      if (prevCredsContent !== null) writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
-      else if (!credsExistedBefore && existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
-    } catch (e) {
-      console.error("[afterEach driveFindFolderByNames]", e);
-    }
+    teardownFakeCredentials();
   });
 
   it("nome atual ('diar.ia.br') existe — resolve na 1a tentativa, sem consultar fallback", async () => {

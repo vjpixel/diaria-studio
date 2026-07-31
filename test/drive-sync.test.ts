@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -31,9 +31,9 @@ import {
 } from "../scripts/lib/drive-helpers.ts"; // #1308 item 2 — extraído de drive-sync.ts
 import { resolveEdicoesFolder } from "../scripts/lib/drive-sync-core.ts"; // #3573
 import { DRIVE_ROOT_FOLDER_NAME, DRIVE_ROOT_FOLDER_NAME_FALLBACKS } from "../scripts/lib/drive-constants.ts"; // #3573
+import { CREDENTIALS_PATH_TEST_OVERRIDE_ENV } from "../scripts/google-auth.ts"; // #4344
 
 const ROOT = resolve(import.meta.dirname, "..");
-const CREDS_PATH = resolve(ROOT, "data", ".credentials.json");
 
 /** Fake credentials with expiry far in the future — avoids token refresh fetch. */
 const FAKE_CREDS = {
@@ -43,6 +43,60 @@ const FAKE_CREDS = {
   refresh_token: "fake-refresh",
   expiry_ms: Date.now() + 3_600_000, // 1h
 };
+
+// ── #4344: isolamento de data/.credentials.json REAL ─────────────────────────
+//
+// Este arquivo antes escrevia credenciais fake DIRETO no path real (gitignored,
+// compartilhado via OneDrive entre máquinas) em beforeEach/afterEach, contando
+// com "salvar original → sobrescrever → restaurar" pra ser seguro. `node --test`
+// roda arquivos de teste em paralelo (múltiplos processos) — se outro arquivo
+// de teste ou uma sessão real tocasse o mesmo arquivo durante a janela fake, ou
+// se a run fosse interrompida entre o beforeEach e o afterEach, o arquivo REAL
+// ficava permanentemente corrompido com o fake (incidente 260730, #4344).
+//
+// Fix: cada teste que precisa de credenciais fake usa seu PRÓPRIO dir
+// temporário (mkdtempSync, isolado por processo) e aponta `google-auth.ts` pra
+// lá via `CREDENTIALS_PATH_TEST_OVERRIDE_ENV` (env var, resolvido
+// dinamicamente a cada chamada dentro do módulo) — nunca mais toca o path
+// real. Mesmo padrão de DI de `test/preflight-external-locks.test.ts`
+// (`fakeCredentialsPath` em dir temporário).
+let fakeCredsDir: string | undefined;
+let prevCredsEnvValue: string | undefined;
+
+function fakeCredentialsPath(): string {
+  if (!fakeCredsDir) throw new Error("setupFakeCredentials() não foi chamado antes de fakeCredentialsPath()");
+  return join(fakeCredsDir, ".credentials.json");
+}
+
+/** Cria um dir temporário com credenciais fake e aponta google-auth.ts pra lá. */
+function setupFakeCredentials(overrides: Partial<typeof FAKE_CREDS> = {}): void {
+  prevCredsEnvValue = process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+  fakeCredsDir = mkdtempSync(join(tmpdir(), "drive-sync-creds-"));
+  writeFileSync(join(fakeCredsDir, ".credentials.json"), JSON.stringify({ ...FAKE_CREDS, ...overrides }), "utf8");
+  process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = fakeCredentialsPath();
+}
+
+/** Re-escreve o conteúdo do fake já criado por setupFakeCredentials() (mid-test). */
+function rewriteFakeCredentials(overrides: Partial<typeof FAKE_CREDS> = {}): void {
+  writeFileSync(fakeCredentialsPath(), JSON.stringify({ ...FAKE_CREDS, ...overrides }), "utf8");
+}
+
+/** Restaura o env var e remove o dir temporário. */
+function teardownFakeCredentials(): void {
+  if (prevCredsEnvValue !== undefined) {
+    process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV] = prevCredsEnvValue;
+  } else {
+    delete process.env[CREDENTIALS_PATH_TEST_OVERRIDE_ENV];
+  }
+  if (fakeCredsDir) {
+    try {
+      rmSync(fakeCredsDir, { recursive: true, force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+  fakeCredsDir = undefined;
+}
 
 function makeDriveResponse(body: unknown, status = 200): Response {
   const json = JSON.stringify(body);
@@ -203,33 +257,16 @@ describe("escapeDriveQueryString (#282)", () => {
 
 describe("resolveSubfolder (#281)", () => {
   let originalFetch: typeof globalThis.fetch;
-  let credsExistedBefore: boolean;
-  let prevCredsContent: string | null;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    credsExistedBefore = existsSync(CREDS_PATH);
-    prevCredsContent = credsExistedBefore ? readFileSync(CREDS_PATH, "utf8") : null;
-    mkdirSync(resolve(ROOT, "data"), { recursive: true });
-    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+    setupFakeCredentials();
   });
 
   afterEach(() => {
     // Restore fetch first (no I/O, always safe).
     globalThis.fetch = originalFetch;
-    // Restore creds file in a try/finally so a partial failure can't leave a
-    // fake token on disk and corrupt subsequent test runs or production usage.
-    try {
-      if (prevCredsContent !== null) {
-        writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
-      } else if (!credsExistedBefore && existsSync(CREDS_PATH)) {
-        unlinkSync(CREDS_PATH);
-      }
-    } catch (restoreErr) {
-      // Log but don't swallow — surface so it's visible even if the original
-      // test assertion already passed.
-      console.error("[drive-sync.test afterEach] failed to restore creds:", restoreErr);
-    }
+    teardownFakeCredentials();
   });
 
   function makeCache(yymmdd: string, dayFolderId = "day-folder-id"): {
@@ -308,25 +345,15 @@ describe("resolveSubfolder (#281)", () => {
 
 describe("resolveEdicoesFolder — resolve pasta raiz tolerante a rename (#3573)", () => {
   let originalFetch: typeof globalThis.fetch;
-  let credsExistedBefore: boolean;
-  let prevCredsContent: string | null;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    credsExistedBefore = existsSync(CREDS_PATH);
-    prevCredsContent = credsExistedBefore ? readFileSync(CREDS_PATH, "utf8") : null;
-    mkdirSync(resolve(ROOT, "data"), { recursive: true });
-    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+    setupFakeCredentials();
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    try {
-      if (prevCredsContent !== null) writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
-      else if (!credsExistedBefore && existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
-    } catch (e) {
-      console.error("[afterEach resolveEdicoesFolder]", e);
-    }
+    teardownFakeCredentials();
   });
 
   /**
@@ -483,26 +510,18 @@ describe("pushFile — editor-wins check (#496)", () => {
   const FILE_ID = "drive-file-id-abc";
   const LAST_PUSH_TIME = "2026-05-01T10:00:00.000Z";
   let originalFetch: typeof globalThis.fetch;
-  let credsExistedBefore: boolean;
-  let prevCredsContent: string | null;
   let tmpDir: string;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    credsExistedBefore = existsSync(CREDS_PATH);
-    prevCredsContent = credsExistedBefore ? readFileSync(CREDS_PATH, "utf8") : null;
-    mkdirSync(resolve(ROOT, "data"), { recursive: true });
-    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+    setupFakeCredentials();
     tmpDir = mkdtempSync(join(tmpdir(), "drive-sync-push-"));
     writeFileSync(join(tmpDir, "02-reviewed.md"), "# Test", "utf8");
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    try {
-      if (prevCredsContent !== null) writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
-      else if (!credsExistedBefore && existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
-    } catch (e) { console.error("[afterEach pushFile]", e); }
+    teardownFakeCredentials();
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
@@ -608,25 +627,17 @@ describe("pullFile — cache merge e atualizacao apos download", () => {
   const CACHED_TIME = "2026-05-01T10:00:00.000Z";
   const NEWER_TIME = "2026-05-01T14:00:00.000Z";
   let originalFetch: typeof globalThis.fetch;
-  let credsExistedBefore: boolean;
-  let prevCredsContent: string | null;
   let tmpDir: string;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    credsExistedBefore = existsSync(CREDS_PATH);
-    prevCredsContent = credsExistedBefore ? readFileSync(CREDS_PATH, "utf8") : null;
-    mkdirSync(resolve(ROOT, "data"), { recursive: true });
-    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+    setupFakeCredentials();
     tmpDir = mkdtempSync(join(tmpdir(), "drive-sync-pull-"));
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    try {
-      if (prevCredsContent !== null) writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
-      else if (!credsExistedBefore && existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
-    } catch (e) { console.error("[afterEach pullFile]", e); }
+    teardownFakeCredentials();
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
@@ -843,26 +854,18 @@ describe("pushFile — CONFLICT_TOLERANCE_SECONDS auto-conversion noise (#605, #
   const FILE_ID = "drive-file-id-tol";
   const LAST_PUSH_TIME = "2026-05-01T10:00:00.000Z";
   let originalFetch: typeof globalThis.fetch;
-  let credsExistedBefore: boolean;
-  let prevCredsContent: string | null;
   let tmpDir: string;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    credsExistedBefore = existsSync(CREDS_PATH);
-    prevCredsContent = credsExistedBefore ? readFileSync(CREDS_PATH, "utf8") : null;
-    mkdirSync(resolve(ROOT, "data"), { recursive: true });
-    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+    setupFakeCredentials();
     tmpDir = mkdtempSync(join(tmpdir(), "drive-sync-tol-push-"));
     writeFileSync(join(tmpDir, "02-reviewed.md"), "# Test", "utf8");
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    try {
-      if (prevCredsContent !== null) writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
-      else if (!credsExistedBefore && existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
-    } catch (e) { console.error("[afterEach tolerance pushFile]", e); }
+    teardownFakeCredentials();
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
@@ -1044,22 +1047,15 @@ describe("snapshot helpers (#963)", () => {
 
 describe("listVersionArchives (#998)", () => {
   let originalFetch: typeof globalThis.fetch;
-  let originalCreds: string | null;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    originalCreds = existsSync(CREDS_PATH) ? readFileSync(CREDS_PATH, "utf8") : null;
-    mkdirSync(resolve(ROOT, "data"), { recursive: true });
-    writeFileSync(CREDS_PATH, JSON.stringify(FAKE_CREDS), "utf8");
+    setupFakeCredentials();
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    if (originalCreds === null) {
-      try { unlinkSync(CREDS_PATH); } catch { /* ignore */ }
-    } else {
-      writeFileSync(CREDS_PATH, originalCreds, "utf8");
-    }
+    teardownFakeCredentials();
   });
 
   it("lista e ordena archives .vN ascendentes (extension MD)", async () => {
@@ -1196,26 +1192,18 @@ describe("invalid_grant dedup guard (#2318) — alerta único via pullFile", () 
   const CACHED_TIME = "2026-06-16T10:00:00.000Z";
   const NEWER_TIME = "2026-06-16T12:00:00.000Z";
   let originalFetch: typeof globalThis.fetch;
-  let credsExistedBefore: boolean;
-  let prevCredsContent: string | null;
   let tmpDir: string;
 
   beforeEach(() => {
     originalFetch = globalThis.fetch;
-    credsExistedBefore = existsSync(CREDS_PATH);
-    prevCredsContent = credsExistedBefore ? readFileSync(CREDS_PATH, "utf8") : null;
-    mkdirSync(resolve(ROOT, "data"), { recursive: true });
     // Credenciais com token já vencido (expiry no passado) → força refresh no gFetch
-    writeFileSync(CREDS_PATH, JSON.stringify({ ...FAKE_CREDS, expiry_ms: 1 }), "utf8");
+    setupFakeCredentials({ expiry_ms: 1 });
     tmpDir = mkdtempSync(join(tmpdir(), "drive-sync-oauth-"));
   });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    try {
-      if (prevCredsContent !== null) writeFileSync(CREDS_PATH, prevCredsContent, "utf8");
-      else if (!credsExistedBefore && existsSync(CREDS_PATH)) unlinkSync(CREDS_PATH);
-    } catch (e) { console.error("[afterEach oauth guard]", e); }
+    teardownFakeCredentials();
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
@@ -1271,10 +1259,12 @@ describe("invalid_grant dedup guard (#2318) — alerta único via pullFile", () 
     } catch (err) {
       caught1 = err instanceof Error ? err.message : String(err);
     }
-    // Re-escreve creds expirados antes do segundo pullFile — guard contra race
-    // entre workers paralelos (outro test file pode ter sobrescrito o arquivo
-    // com creds válidos durante o backoff de ~6s do primeiro pullFile).
-    writeFileSync(CREDS_PATH, JSON.stringify({ ...FAKE_CREDS, expiry_ms: 1 }), "utf8");
+    // Re-escreve creds expirados antes do segundo pullFile. Com o fake em dir
+    // temporário próprio (#4344) não há mais race entre workers paralelos —
+    // isto só garante que o refresh do gFetch ainda vê expiry_ms no passado
+    // após o primeiro pullFile (que pode ter deixado o arquivo intacto, mas
+    // não custa reforçar o estado esperado pelo 2º pullFile).
+    rewriteFakeCredentials({ expiry_ms: 1 });
     try {
       await pullFile(tmpDir, "03-social.md", YYMMDD, cache, result);
     } catch (err) {
