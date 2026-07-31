@@ -425,6 +425,23 @@ Exit code handling — **GATE-BLOCKING**, mesmo padrão que `check-humanizer-soc
 
 **Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (aplica as correções, grava `_internal/fact-check-autofix.json`, re-renderiza/republica newsletter e social se aplicável); o gate é pulado.
 
+**4c.7 — Recomendação de boxes de divulgação (#4354):**
+
+Rodar `scripts/box-click-report.ts` pra dar ao editor um ranking orientado por dados de qual box de divulgação (`context/snippets/*.md`, atribuída aos slots 0–3 via `platform.config.json` → `boxes_divulgacao`) performou melhor em cliques nas últimas edições — apoio à decisão de troca de slot no gate, nunca substituindo o julgamento editorial:
+
+```bash
+npx tsx scripts/box-click-report.ts --last 20
+```
+
+Capturar stdout (markdown: tabela de ranking + lista de boxes sem dado de clique mensurável) e incluir na seção `━━━ BOXES DE DIVULGAÇÃO` do gate (§4d).
+
+**Puramente informativo — NUNCA bloqueia o gate, nunca troca a box sozinho.** A troca de slot em `platform.config.json` (painel Caixas do Studio, ou edição manual) continua decisão 100% editorial. Exit code sempre tratado como **não-fatal**:
+- `0` → capturar stdout normalmente (mesmo que o ranking saia vazio — "nenhum box de divulgação com link mensurável encontrado").
+- `1` → `data/editions` ausente (sessão sem o junction `data/` — ver label `local`, CLAUDE.md). Mostrar `⚠️ Recomendação de boxes indisponível: data/ ausente nesta sessão.` e seguir sem bloquear.
+- Qualquer outra falha (script trava, exception não capturada): mesmo tratamento — `⚠️ Recomendação de boxes indisponível: {motivo}.`, nunca halt banner (diferente do #738 — este passo não depende de MCP nem é gate-blocking).
+
+**Comportamento em `auto_approve = true` (`--no-gates`):** executar normalmente (é barato — só leitura de disco), mas pular a apresentação (o gate inteiro é pulado). Sem efeito colateral em disco — não vale a pena nem rodar quando `--no-gates`, mas rodar não tem custo/risco.
+
 ### 4d. Gate humano (#1694)
 
 **GATE HUMANO — RESUMO CONSOLIDADO (#1694):**
@@ -474,6 +491,10 @@ Facebook  D3  "{hook_d3_facebook}"
 
 {fact_check_block}
 
+━━━ BOXES DE DIVULGAÇÃO ━━━━━━━━━━━━
+
+{box_click_report_block}
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Aprovar e prosseguir para Publicação (Etapa 5)?
 
@@ -489,6 +510,7 @@ Regras de apresentação:
 - `{verify_verdict}` = `✅ acessível` / `⚠️ inacessível` / `⏱ timeout`.
 - `{violations_block}` = uma linha por violation com ❌ (crítico) ou ⚠️ (warning) + mensagem.
 - `{fact_check_block}` = saída do `formatGateSummary` de `scripts/run-fact-checker.ts --input-json` (§4c.6). Se fact-checker falhou ou `fact-check.json` não existe: `⚠️ Fact-check indisponível — verificar manualmente antes de publicar.` **Nunca bloquear o gate por ausência do fact-check.** Decisão final é sempre do editor.
+- `{box_click_report_block}` = stdout de `scripts/box-click-report.ts` (§4c.7) — ranking de boxes de divulgação por clique + lista de boxes sem dado mensurável. Se indisponível (ver §4c.7): `⚠️ Recomendação de boxes indisponível: {motivo}.` **Nunca bloquear o gate por isso.** Puramente informativo — a decisão de trocar box de slot continua do editor.
 - Títulos dos posts sociais: primeira linha não-vazia de cada post no `03-social.md` (o "hook").
 - Se pré-render falhou em algum passo (newsletter HTML, social HTML), indicar `⚠️ preview indisponível` com motivo.
 
