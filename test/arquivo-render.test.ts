@@ -14,6 +14,7 @@ import {
   displayTextFromLoc,
   esc,
 } from "../workers/arquivo/src/render-archive.ts";
+import type { TitlesCacheMap } from "../workers/arquivo/src/render-archive.ts";
 import type { SitemapEntry } from "../scripts/lib/fetch-sitemap.ts";
 import worker from "../workers/arquivo/src/index.ts";
 
@@ -50,7 +51,11 @@ describe("buildArchiveHtml (#4105)", () => {
     assert.doesNotMatch(html, /href="https:\/\/diar\.ia\.br\/"/);
     assert.doesNotMatch(html, /href="https:\/\/diar\.ia\.br\/archive"/);
     assert.doesNotMatch(html, /href="https:\/\/diar\.ia\.br\/tags"/);
-    assert.doesNotMatch(html, /href="https:\/\/diar\.ia\.br\/subscribe"/);
+    // Nunca como item DA LISTA (`<li><a href=...>`) — o CTA de assinatura
+    // fixo no header (#4265 item 4) legitimamente linka pra /subscribe fora
+    // da lista, então a assertiva não pode ser "a string nunca aparece na
+    // página inteira".
+    assert.doesNotMatch(html, /<li><a href="https:\/\/diar\.ia\.br\/subscribe"/);
     assert.doesNotMatch(html, /href="https:\/\/diar\.ia\.br\/authors\/alguem"/);
   });
 
@@ -173,6 +178,115 @@ describe("buildArchiveHtml (#4105)", () => {
       knownUtmSources().includes((utmSource ?? "").toLowerCase()),
       `utm_source="${utmSource}" emitido pelo render mas ausente de UTM_EMITTERS`,
     );
+  });
+
+  describe("(#4265 item 1) título real do titles-cache.json", () => {
+    it("slug com acento removido renderiza o TÍTULO REAL do cache, não o texto derivado do slug", () => {
+      const cache: TitlesCacheMap = {
+        "anthropic-lan-a-o-claude-opus-5": {
+          title: "Anthropic lança o Claude Opus 5",
+          publishDate: "2026-07-28",
+        },
+      };
+      const html = buildArchiveHtml(
+        [entry("https://diar.ia.br/p/anthropic-lan-a-o-claude-opus-5", "2026-07-28")],
+        cache,
+      );
+      assert.match(html, /Anthropic lança o Claude Opus 5/);
+      // O texto derivado-do-slug quebrado NÃO deve aparecer mais.
+      assert.doesNotMatch(html, /Anthropic lan a o claude opus 5/);
+    });
+
+    it("slug AUSENTE do cache cai no displayTextFromLoc atual e continua na lista (nunca some um <a href>)", () => {
+      const cache: TitlesCacheMap = {
+        "outro-slug-qualquer": { title: "Outro título", publishDate: "2026-07-01" },
+      };
+      const html = buildArchiveHtml(
+        [entry("https://diar.ia.br/p/slug-sem-cache", "2026-07-15")],
+        cache,
+      );
+      // continua tendo o <a href> real (nunca dropa o link por falta de título)
+      assert.match(html, /<a href="https:\/\/diar\.ia\.br\/p\/slug-sem-cache">/);
+      // e o texto é o fallback derivado do slug (mesmo comportamento pré-#4265)
+      assert.match(html, />Slug sem cache</);
+    });
+  });
+
+  describe("(#4265 item 2) agrupamento usa publish_date do cache, lastmod como fallback", () => {
+    it("usa publishDate do cache pra decidir o MÊS, mesmo com lastmod de outro mês (edição editada depois)", () => {
+      // Edição publicada em julho mas EDITADA em agosto (lastmod pula pro mês
+      // errado) — #4265 item 2. Sem o cache, cairia em "agosto de 2026".
+      const cache: TitlesCacheMap = {
+        "edicao-julho-editada-em-agosto": {
+          title: "Edição de julho, editada depois",
+          publishDate: "2026-07-15",
+        },
+      };
+      const html = buildArchiveHtml(
+        [entry("https://diar.ia.br/p/edicao-julho-editada-em-agosto", "2026-08-02")],
+        cache,
+      );
+      assert.match(html, /julho de 2026/);
+      assert.doesNotMatch(html, /agosto de 2026/);
+    });
+
+    it("slug ausente do cache usa lastmod (fallback) pra agrupar, como antes do #4265", () => {
+      const html = buildArchiveHtml(
+        [entry("https://diar.ia.br/p/sem-cache-nenhum", "2026-05-10")],
+        {},
+      );
+      assert.match(html, /maio de 2026/);
+    });
+  });
+
+  describe("(#4265 item 3) data por edição exibida na lista", () => {
+    it("mostra o dia (DD/MM) da publishDate do cache junto do título", () => {
+      const cache: TitlesCacheMap = {
+        "com-data-no-cache": { title: "Edição com data", publishDate: "2026-07-28" },
+      };
+      const html = buildArchiveHtml(
+        [entry("https://diar.ia.br/p/com-data-no-cache", "2026-07-20")],
+        cache,
+      );
+      // dia vem do CACHE (28/07), não do lastmod (que seria 20/07)
+      assert.match(html, /28\/07/);
+      assert.doesNotMatch(html, /20\/07/);
+    });
+
+    it("sem cache, mostra o dia derivado do lastmod (fallback)", () => {
+      const html = buildArchiveHtml(
+        [entry("https://diar.ia.br/p/sem-cache-data", "2026-06-05")],
+        {},
+      );
+      assert.match(html, /05\/06/);
+    });
+  });
+
+  describe("(#4265 item 5) índice de âncoras por mês", () => {
+    it("emite <nav> com <a href='#YYYY-MM'> por mês, e as <section> ganham id correspondente", () => {
+      const html = buildArchiveHtml([
+        entry("https://diar.ia.br/p/edicao-julho", "2026-07-15"),
+        entry("https://diar.ia.br/p/edicao-maio", "2026-05-10"),
+      ]);
+      assert.match(html, /<nav class="month-index"/);
+      assert.match(html, /<a href="#2026-07">julho de 2026<\/a>/);
+      assert.match(html, /<a href="#2026-05">maio de 2026<\/a>/);
+      assert.match(html, /<section id="2026-07">/);
+      assert.match(html, /<section id="2026-05">/);
+    });
+  });
+
+  describe("(#4265 item 4) CTA de assinatura + caminho de volta pro site", () => {
+    it("tem um link de assinatura (CTA) fora da lista de edições", () => {
+      const html = buildArchiveHtml([entry("https://diar.ia.br/p/edicao-x", "2026-07-15")]);
+      assert.match(html, /<p class="subscribe-cta"><a href="https:\/\/diar\.ia\.br\/subscribe">/);
+    });
+
+    it("o rodapé continua linkando de volta pra diar.ia.br (nav cruzada já existente)", () => {
+      const html = buildArchiveHtml([entry("https://diar.ia.br/p/edicao-x", "2026-07-15")]);
+      assert.match(html, /<footer>/);
+      assert.match(html, /href="https:\/\/diar\.ia\.br\?utm_source=/);
+    });
   });
 });
 
