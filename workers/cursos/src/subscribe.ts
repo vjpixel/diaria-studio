@@ -16,6 +16,7 @@ import type { Env } from "./index";
 import { json } from "./index";
 import { checkKvRateLimit } from "../../../scripts/lib/shared/rate-limit.ts";
 import { CURSOS_GATE_INLINE_UTM } from "../../../scripts/lib/shared/utm-registry.ts"; // #4295 fold-in do drift (literais locais antes)
+import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/lib/shared/cursos-alarm-counters.ts";
 import { issueSessionCookie } from "./cookie.ts";
 
 export const SUBSCRIBE_RATE_LIMIT = 5;
@@ -182,6 +183,7 @@ export async function handleGateSubscribe(request: Request, env: Env, deps: Subs
   // fica de pé e a pessoa continua trancada fora da página, sem nada a fazer.
   if (!env.COOKIE_HMAC_SECRET) {
     console.error("[cursos] COOKIE_HMAC_SECRET ausente — /gate/subscribe indisponível");
+    await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.fatalCookieHmacSecretAusente);
     return json({ ok: false, error: "gate_unavailable" }, 503, env);
   }
 
@@ -211,6 +213,7 @@ export async function handleGateSubscribe(request: Request, env: Env, deps: Subs
       return json({ ok: false, error: "subscribe_unavailable" }, 503, env);
     }
     console.error(`[cursos] cadastro na Beehiiv falhou (HTTP ${result.status}) — nenhum assinante criado`);
+    await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.fatalCadastroBeehiivFalhou);
     return json({ ok: false, error: "subscribe_failed" }, 502, env);
   }
 

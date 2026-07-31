@@ -1,152 +1,82 @@
 /**
- * test/cursos-error-alarm-script.test.ts (#4320)
+ * test/cursos-error-alarm-script.test.ts (#4320, REDESENHADO no #4382)
  *
- * Cobre a camada de I/O de `scripts/cursos-error-alarm.ts` — parsing da
- * resposta GraphQL (`parseGraphqlLogsResponse`) e a chamada de rede em si
- * (`fetchCursosLogEvents`), com `fetch` mockado (nunca rede real em teste,
- * mesmo padrão de `test/postmaster-spam-sync.test.ts`/`check-cloudflare-token.test.ts`).
+ * Cobre a camada de I/O de `scripts/cursos-error-alarm.ts` — parsing do
+ * valor cru lido do KV (`parseCounterValue`) e a leitura dos 4 contadores em
+ * si (`fetchCurrentCounters`), com `fetch` mockado (nunca rede real em
+ * teste, mesmo padrão de `test/cloudflare-kv-upload.test.ts`).
  *
- * IMPORTANTE (ver docstring do módulo): o shape de `logs{}` por grupo de
- * invocação não foi confirmado contra uma resposta real da Cloudflare
- * GraphQL Analytics API nesta sessão (sem credenciais/rede ao vivo). Estes
- * testes travam o CONTRATO assumido por `parseGraphqlLogsResponse` — se o
- * schema real divergir, só essa função (+ `CURSOS_LOGS_QUERY`) precisa
- * mudar, e estes testes voltam a ser o guia de "o que o parser espera".
+ * #4382: a versão original testava `parseGraphqlLogsResponse`/
+ * `fetchCursosLogEvents` contra a Cloudflare GraphQL Analytics API —
+ * confirmado ao vivo que o dataset usado não existe na API real. O redesign
+ * lê 4 chaves KV via `getTextFromWorkerKV` (fetch-based, injetável) em vez de
+ * fazer uma query GraphQL.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  GRAPHQL_URL,
-  CURSOS_SCRIPT_NAME,
-  parseGraphqlLogsResponse,
-  fetchCursosLogEvents,
-  type RawGraphqlLogsResponse,
-} from "../scripts/cursos-error-alarm.ts";
+import { parseCounterValue, fetchCurrentCounters } from "../scripts/cursos-error-alarm.ts";
+import { CURSOS_ALARM_COUNTER_KEYS } from "../scripts/lib/shared/cursos-alarm-counters.ts";
 
-// ── parseGraphqlLogsResponse ──
+// ── parseCounterValue ──
 
-test("parseGraphqlLogsResponse — achata grupos de invocação em CursosLogEvent[], usando o datetime do grupo", () => {
-  const body: RawGraphqlLogsResponse = {
-    data: {
-      viewer: {
-        accounts: [
-          {
-            workersInvocationsAdaptiveGroups: [
-              {
-                dimensions: { datetime: "2026-07-31T10:00:00Z" },
-                logs: [
-                  { message: "[cursos] COOKIE_HMAC_SECRET ausente — servindo teaser; NINGUÉM consegue desbloquear", level: "error" },
-                ],
-              },
-              {
-                dimensions: { datetime: "2026-07-31T10:05:00Z" },
-                logs: [{ message: "[cursos] ?email= não confirmado como assinante ativo — servindo teaser", level: "warn" }],
-              },
-            ],
-          },
-        ],
-      },
-    },
-  };
-  const events = parseGraphqlLogsResponse(body);
-  assert.equal(events.length, 2);
-  assert.equal(events[0].timestamp, "2026-07-31T10:00:00Z");
-  assert.match(events[0].message, /COOKIE_HMAC_SECRET ausente/);
-  assert.equal(events[1].timestamp, "2026-07-31T10:05:00Z");
+test("parseCounterValue — string numérica válida → inteiro", () => {
+  assert.equal(parseCounterValue("42"), 42);
+  assert.equal(parseCounterValue("0"), 0);
 });
 
-test("parseGraphqlLogsResponse — grupo sem `logs` (invocação sem console.log) → nenhum evento, não lança", () => {
-  const body: RawGraphqlLogsResponse = {
-    data: {
-      viewer: {
-        accounts: [
-          {
-            workersInvocationsAdaptiveGroups: [{ dimensions: { datetime: "2026-07-31T10:00:00Z" } }],
-          },
-        ],
-      },
-    },
-  };
-  assert.deepEqual(parseGraphqlLogsResponse(body), []);
+test("parseCounterValue — null (chave ausente no KV) → 0", () => {
+  assert.equal(parseCounterValue(null), 0);
 });
 
-test("parseGraphqlLogsResponse — resposta vazia/sem accounts → array vazio, não lança", () => {
-  assert.deepEqual(parseGraphqlLogsResponse({}), []);
-  assert.deepEqual(parseGraphqlLogsResponse({ data: { viewer: { accounts: [] } } }), []);
+test("parseCounterValue — lixo/corrompido/negativo → 0 (fail-soft, nunca lança)", () => {
+  assert.equal(parseCounterValue("não é número"), 0);
+  assert.equal(parseCounterValue(""), 0);
+  assert.equal(parseCounterValue("-5"), 0);
+  assert.equal(parseCounterValue("NaN"), 0);
 });
 
-test("parseGraphqlLogsResponse — log com message vazia/ausente é descartado", () => {
-  const body: RawGraphqlLogsResponse = {
-    data: {
-      viewer: {
-        accounts: [
-          {
-            workersInvocationsAdaptiveGroups: [
-              {
-                dimensions: { datetime: "2026-07-31T10:00:00Z" },
-                logs: [{ message: "", level: "log" }, { level: "log" }, { message: "linha real" }],
-              },
-            ],
-          },
-        ],
-      },
-    },
-  };
-  const events = parseGraphqlLogsResponse(body);
-  assert.equal(events.length, 1);
-  assert.equal(events[0].message, "linha real");
-});
+// ── fetchCurrentCounters ──
 
-// ── fetchCursosLogEvents ──
-
-function mockFetchOk(body: RawGraphqlLogsResponse) {
-  return async (url: string, init?: RequestInit) => {
-    assert.equal(url, GRAPHQL_URL);
-    const parsedBody = JSON.parse(String(init?.body));
-    assert.equal(parsedBody.variables.scriptName, CURSOS_SCRIPT_NAME);
-    assert.match(String((init?.headers as Record<string, string>)?.Authorization ?? ""), /^Bearer /);
-    return new Response(JSON.stringify(body), { status: 200 });
+function mockFetchWithValues(values: Record<string, string | null>) {
+  return async (url: string) => {
+    const key = decodeURIComponent(url.split("/values/").pop() ?? "");
+    const v = values[key];
+    if (v === undefined || v === null) return new Response("not found", { status: 404 });
+    return new Response(v, { status: 200 });
   };
 }
 
-test("fetchCursosLogEvents — 200 com eventos → retorna CursosLogEvent[] parseado", async () => {
-  const body: RawGraphqlLogsResponse = {
-    data: {
-      viewer: {
-        accounts: [
-          {
-            workersInvocationsAdaptiveGroups: [
-              { dimensions: { datetime: "2026-07-31T10:00:00Z" }, logs: [{ message: "linha 1" }] },
-            ],
-          },
-        ],
-      },
-    },
-  };
-  const events = await fetchCursosLogEvents(
-    "acc123",
-    "token456",
-    new Date("2026-07-31T08:00:00Z"),
-    new Date("2026-07-31T10:00:00Z"),
-    mockFetchOk(body) as typeof fetch,
-  );
-  assert.equal(events.length, 1);
-  assert.equal(events[0].message, "linha 1");
+test("fetchCurrentCounters — lê as 4 chaves e monta o snapshot", async () => {
+  const fetchImpl = mockFetchWithValues({
+    [CURSOS_ALARM_COUNTER_KEYS.fatalCookieHmacSecretAusente]: "3",
+    [CURSOS_ALARM_COUNTER_KEYS.fatalCadastroBeehiivFalhou]: "1",
+    [CURSOS_ALARM_COUNTER_KEYS.emailGateConfirmed]: "120",
+    [CURSOS_ALARM_COUNTER_KEYS.emailGateNotConfirmed]: "8",
+  });
+  const snapshot = await fetchCurrentCounters("ns123", { accountId: "acc1", token: "tok1" }, fetchImpl as typeof fetch);
+  assert.deepEqual(snapshot, {
+    fatalCookieHmacSecretAusente: 3,
+    fatalCadastroBeehiivFalhou: 1,
+    emailGateConfirmed: 120,
+    emailGateNotConfirmed: 8,
+  });
 });
 
-test("fetchCursosLogEvents — HTTP não-ok → lança com status no texto do erro", async () => {
+test("fetchCurrentCounters — chaves ausentes (nunca incrementadas, 1ª leitura do worker) → 0, não lança", async () => {
+  const fetchImpl = mockFetchWithValues({});
+  const snapshot = await fetchCurrentCounters("ns123", { accountId: "acc1", token: "tok1" }, fetchImpl as typeof fetch);
+  assert.deepEqual(snapshot, {
+    fatalCookieHmacSecretAusente: 0,
+    fatalCadastroBeehiivFalhou: 0,
+    emailGateConfirmed: 0,
+    emailGateNotConfirmed: 0,
+  });
+});
+
+test("fetchCurrentCounters — falha de rede/auth real (não-404) propaga exceção (caller decide não avançar o cursor)", async () => {
   const fetchImpl = async () => new Response("token inválido", { status: 401 });
   await assert.rejects(
-    fetchCursosLogEvents("acc123", "token-invalido", new Date(), new Date(), fetchImpl as typeof fetch),
+    fetchCurrentCounters("ns123", { accountId: "acc1", token: "tok-invalido" }, fetchImpl as typeof fetch),
     /401/,
-  );
-});
-
-test("fetchCursosLogEvents — corpo com `errors` do GraphQL (200 mas query inválida) → lança", async () => {
-  const fetchImpl = async () =>
-    new Response(JSON.stringify({ errors: [{ message: 'Unknown argument "scriptName"' }] }), { status: 200 });
-  await assert.rejects(
-    fetchCursosLogEvents("acc123", "token456", new Date(), new Date(), fetchImpl as typeof fetch),
-    /Unknown argument/,
   );
 });

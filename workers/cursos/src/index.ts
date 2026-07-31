@@ -43,6 +43,7 @@ import { renderGatePage } from "./gate-page.ts";
 import { checkGateRateLimit, checkGateSubscriber, shouldRecheckEmailVerification } from "./gate.ts";
 import { clearSessionCookieHeader, issueSessionCookie, readSession } from "./cookie.ts";
 import { handleGateSubscribe, isValidEmailFormat } from "./subscribe.ts";
+import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/lib/shared/cursos-alarm-counters.ts";
 
 export interface Env {
   ASSETS: Fetcher;
@@ -132,6 +133,10 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
       // secret serviria teaser pra assinante ativo vindo da newsletter com
       // zero sinal em qualquer camada: nem status HTTP, nem log.
       console.error("[cursos] COOKIE_HMAC_SECRET ausente — servindo teaser; NINGUÉM consegue desbloquear");
+      // #4382: contraparte em KV do log acima — scripts/cursos-error-alarm.ts
+      // lê este contador (não mais grep de texto via Cloudflare GraphQL
+      // Analytics API, dataset inexistente — ver scripts/lib/cursos-error-alarm.ts).
+      await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.fatalCookieHmacSecretAusente);
     }
 
     // #4305: os dois ramos abaixo logam SEM o endereço. O anti-probing do
@@ -175,6 +180,8 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
           // NUNCA interpola `emailParam` — a contagem é o que importa, não
           // quem.
           console.log("[cursos] ?email= confirmado como assinante ativo — desbloqueado");
+          // #4382: denominador da taxa "?email= não confirmado" que o alarme lê.
+          await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.emailGateConfirmed);
           const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, emailParam);
           return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
         }
@@ -193,8 +200,12 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
           console.error(
             "[cursos] ?email= — verificação Beehiiv falhou (rede/401/403/429/5xx) — servindo teaser mesmo assim",
           );
+          // #4321/#4382: `verification_failed` fica DE FORA de ambos os
+          // contadores da taxa (nem confirmed nem not-confirmed) — não deve se
+          // misturar com o sinal de negativo confirmado.
         } else {
           console.warn("[cursos] ?email= não confirmado como assinante ativo — servindo teaser");
+          await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.emailGateNotConfirmed);
         }
       }
     }
@@ -262,6 +273,7 @@ async function handleGateVerify(request: Request, env: Env): Promise<Response> {
   // que não responder).
   if (!env.COOKIE_HMAC_SECRET) {
     console.error("[cursos] COOKIE_HMAC_SECRET ausente — /gate/verify indisponível");
+    await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.fatalCookieHmacSecretAusente);
     return json({ ok: false, error: "gate_unavailable" }, 503, env);
   }
 

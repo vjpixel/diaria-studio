@@ -14,6 +14,7 @@ import { subscriberKvKey, sha256Hex } from "../scripts/lib/shared/subscriber-ver
 import { CURSOS_SESSION_COOKIE, issueSessionCookie, readSession } from "../workers/cursos/src/cookie.ts";
 import { CURSOS_FULL_HTML } from "../workers/cursos/src/courses-full.generated.ts";
 import { emailVerifyCooldownKey } from "../workers/cursos/src/gate.ts";
+import { CURSOS_ALARM_COUNTER_KEYS } from "../scripts/lib/shared/cursos-alarm-counters.ts";
 
 /** Decodifica o valor cru do cookie a partir do header `Set-Cookie` completo
  * (como devolvido pelo handler) — usado pelos testes do #4323 pra inspecionar
@@ -1054,5 +1055,146 @@ describe("workers/cursos: cooldown do branch ?email= (#4390)", () => {
     );
     assert.equal(await res.text(), CURSOS_FULL_HTML);
     assert.match(getCookieHeader(res) ?? "", /HttpOnly/);
+  });
+});
+
+/**
+ * #4382: contadores de alarme no KV — substituem o grep de texto via
+ * Cloudflare GraphQL Analytics API (dataset `workersInvocationsAdaptiveGroups`
+ * confirmado inexistente ao vivo). Cada ponto que já loga uma das 2 condições
+ * fatais ou o resultado do gate `?email=` agora também incrementa um contador
+ * cumulativo no MESMO KV (`CURSOS_SUBSCRIBERS`) que `scripts/cursos-error-alarm.ts`
+ * passa a ler.
+ */
+describe("workers/cursos: contadores de alarme no KV (#4382)", () => {
+  it("sem COOKIE_HMAC_SECRET, GET / incrementa o contador fatal", async () => {
+    const email = "assinante@example.com";
+    const key = await subscriberKvKey(email);
+    const kv = makeMapKV({ [key]: "1" });
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv, COOKIE_HMAC_SECRET: undefined as unknown as string });
+    await worker.fetch(new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`), env);
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.fatalCookieHmacSecretAusente), "1");
+  });
+
+  it("sem COOKIE_HMAC_SECRET, POST /gate/verify incrementa o MESMO contador fatal (3 call sites somam no mesmo contador)", async () => {
+    const kv = makeMapKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv, COOKIE_HMAC_SECRET: undefined as unknown as string });
+    await worker.fetch(
+      new Request("https://cursos.diar.ia.br/gate/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "x@example.com" }),
+      }),
+      env,
+    );
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.fatalCookieHmacSecretAusente), "1");
+  });
+
+  it("sem COOKIE_HMAC_SECRET, POST /gate/subscribe incrementa o MESMO contador fatal", async () => {
+    const kv = makeMapKV();
+    const env = baseEnv({
+      CURSOS_SUBSCRIBERS: kv,
+      COOKIE_HMAC_SECRET: undefined as unknown as string,
+      BEEHIIV_API_KEY: "k",
+      BEEHIIV_PUBLICATION_ID: "pub_1",
+    });
+    const { handleGateSubscribe } = await import("../workers/cursos/src/subscribe.ts");
+    await handleGateSubscribe(
+      new Request("https://cursos.diar.ia.br/gate/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "novo@example.com", optin: true }),
+      }),
+      env,
+    );
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.fatalCookieHmacSecretAusente), "1");
+  });
+
+  it("3 requests sem o secret, em 3 rotas diferentes, somam 3 no MESMO contador (não 3 contadores separados)", async () => {
+    const kv = makeMapKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv, COOKIE_HMAC_SECRET: undefined as unknown as string });
+    await worker.fetch(new Request("https://cursos.diar.ia.br/"), env);
+    await worker.fetch(
+      new Request("https://cursos.diar.ia.br/gate/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "x@example.com" }),
+      }),
+      env,
+    );
+    await worker.fetch(new Request("https://cursos.diar.ia.br/"), env);
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.fatalCookieHmacSecretAusente), "3");
+  });
+
+  it("falha do cadastro na Beehiiv (HTTP não-ok) incrementa o contador fatal específico", async () => {
+    const kv = makeMapKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv, BEEHIIV_API_KEY: "k", BEEHIIV_PUBLICATION_ID: "pub_1" });
+    const { handleGateSubscribe } = await import("../workers/cursos/src/subscribe.ts");
+    await handleGateSubscribe(
+      new Request("https://cursos.diar.ia.br/gate/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "novo@example.com", optin: true }),
+      }),
+      env,
+      { fetchImpl: (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch },
+    );
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.fatalCadastroBeehiivFalhou), "1");
+  });
+
+  it("Beehiiv não configurada (secrets ausentes) NÃO incrementa o contador de 'cadastro falhou' — condição distinta", async () => {
+    const kv = makeMapKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv }); // sem BEEHIIV_API_KEY/PUBLICATION_ID
+    const { handleGateSubscribe } = await import("../workers/cursos/src/subscribe.ts");
+    const res = await handleGateSubscribe(
+      new Request("https://cursos.diar.ia.br/gate/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: "novo@example.com", optin: true }),
+      }),
+      env,
+    );
+    assert.equal(res.status, 503);
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.fatalCadastroBeehiivFalhou), null);
+  });
+
+  it("?email= confirmado ativo incrementa o contador emailGateConfirmed (denominador da taxa)", async () => {
+    const email = "assinante@example.com";
+    const key = await subscriberKvKey(email);
+    const kv = makeMapKV({ [key]: "1" });
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
+    await worker.fetch(new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`), env);
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateConfirmed), "1");
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateNotConfirmed), null);
+  });
+
+  it("?email= NÃO confirmado ativo (negativo confirmado) incrementa emailGateNotConfirmed", async () => {
+    const kv = makeMapKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
+    await worker.fetch(new Request("https://cursos.diar.ia.br/?email=ninguem@example.com"), env);
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateNotConfirmed), "1");
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateConfirmed), null);
+  });
+
+  it("?email= com verification_failed (Beehiiv fora do ar) NÃO incrementa nenhum dos dois contadores da taxa (#4321)", async () => {
+    const kv = makeMapKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv, BEEHIIV_API_KEY: "test-key", BEEHIIV_PUBLICATION_ID: "pub_test" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("err", { status: 500 })) as typeof fetch;
+    try {
+      await worker.fetch(new Request("https://cursos.diar.ia.br/?email=talvez-assinante@example.com"), env);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateConfirmed), null);
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateNotConfirmed), null);
+  });
+
+  it("?email= malformado (provável merge tag não resolvida) NÃO incrementa nenhum contador da taxa", async () => {
+    const kv = makeMapKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
+    await worker.fetch(new Request("https://cursos.diar.ia.br/?email=%7B%7Bemail%7D%7D"), env);
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateConfirmed), null);
+    assert.equal(await kv.get(CURSOS_ALARM_COUNTER_KEYS.emailGateNotConfirmed), null);
   });
 });

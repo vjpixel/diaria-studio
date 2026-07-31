@@ -1,54 +1,76 @@
 /**
- * cursos-error-alarm.ts (#4320)
+ * cursos-error-alarm.ts (#4320, REDESENHADO no #4382)
  *
  * Lógica PURA (sem I/O) do alarme de erro do worker `cursos` — segue o MESMO
  * molde de `scripts/lib/clarice-guardrail-alarm.ts` (#4064): consulta em
  * cadência, avalia contra limiares, envia e-mail via Gmail API quando
- * dispara, idempotente por CURSOR de tempo (nunca reavalia a mesma janela
- * duas vezes).
+ * dispara, idempotente (nunca reavalia o mesmo intervalo duas vezes).
  *
- * Contexto (#4320, extraído da #4305/PR #4306): o worker `cursos` loga todo
- * caminho de degradação (`console.error`/`console.warn`) e
- * `[observability] enabled = true` no `wrangler.toml` faz o Cloudflare
- * coletar — mas coletar não é avisar. Sem este alarme, o único caminho de
- * descoberta é um leitor reclamar.
+ * ─── #4382: por que este módulo mudou de "eventos de log" pra "contadores" ──
  *
- * Duas condições de alarme:
+ * A versão original (#4320) consultava a Cloudflare GraphQL Analytics API
+ * (dataset `workersInvocationsAdaptiveGroups`) e fazia grep de texto nas
+ * mensagens de log retornadas. Isso foi CONFIRMADO AO VIVO (com credenciais
+ * Cloudflare reais, #4382) como quebrado — o campo `workersInvocationsAdaptiveGroups`
+ * não existe no schema exposto a esta conta, mesmo numa query mínima sem a
+ * sub-seleção `logs{}`. Não é permissão (a mensagem de erro do Cloudflare é
+ * "unknown field", não "not authorized"/"forbidden") — o dataset não existe
+ * pra leitura de conteúdo de log via essa API pública. Ela parece expor só
+ * métricas AGREGADAS (contagem de requests, erros por status, CPU time).
  *
- * 1. FATAL (qualquer ocorrência) — as duas linhas de log que indicam falha
- *    dura, independente de volume:
- *      - "COOKIE_HMAC_SECRET ausente" (index.ts + subscribe.ts — sem o
- *        secret, ninguém consegue desbloquear/cadastrar).
- *      - "cadastro na Beehiiv falhou" (subscribe.ts — Beehiiv rejeitou o
- *        cadastro inline, nenhum assinante novo criado).
+ * O redesign: o worker `cursos` agora incrementa 4 contadores CUMULATIVOS
+ * direto no KV `CURSOS_SUBSCRIBERS` nos mesmos pontos onde já loga (ver
+ * `scripts/lib/shared/cursos-alarm-counters.ts` pras chaves + o helper de
+ * incremento, fail-soft, chamado de `workers/cursos/src/index.ts` e
+ * `subscribe.ts`). Este módulo pura passa a operar sobre um DELTA de
+ * contadores (cumulativo atual − cumulativo da última checagem), não mais
+ * sobre uma lista de eventos com timestamp.
  *
- * 2. TAXA de `?email= não confirmado como assinante ativo` (index.ts) —
- *    sinal de saúde do caminho A (link com merge tag na newsletter). Taxa
- *    baixa é normal (parte de quem clica não é assinante ativo — link
- *    velho, ex-assinante, editado à mão); 100% é merge tag quebrada ou o
- *    gate morto de novo (mesmo raciocínio do comentário #4321 em
- *    `index.ts`, que já antecipa este alarme).
+ * Duas condições de alarme (inalteradas em espírito, só a fonte de dado mudou):
  *
- *    O log original só emite uma linha no caminho de FALHA (`não
- *    confirmado`) — o caminho de SUCESSO (`outcome.status === "active"`)
- *    não logava nada, então não havia denominador pra calcular uma taxa de
- *    verdade (só o numerador). Este PR adiciona
- *    `EMAIL_GATE_CONFIRMED_MESSAGE` no branch de sucesso de `handleIndex`
- *    (workers/cursos/src/index.ts) — instrumentação mínima, mesmo padrão
- *    "todo caminho loga" do #4306, necessária pra essa taxa significar
- *    algo. `verificação Beehiiv falhou` (rede/401/403/429/5xx — outcome
- *    "verification_failed") fica DE FORA do denominador de propósito — o
- *    comentário #4321 em index.ts já é explícito que esse sinal (Beehiiv
- *    fora do ar) não deve se misturar com a taxa de negativo confirmado
- *    "nem no alarme nem no dashboard de logs".
+ * 1. FATAL (qualquer ocorrência, ou seja, delta > 0) — os dois contadores que
+ *    espelham as linhas de log que indicam falha dura:
+ *      - `fatalCookieHmacSecretAusente` ("COOKIE_HMAC_SECRET ausente" —
+ *        index.ts × 2 call sites + subscribe.ts).
+ *      - `fatalCadastroBeehiivFalhou` ("cadastro na Beehiiv falhou" —
+ *        subscribe.ts, só quando a Beehiiv respondeu não-ok; não conta
+ *        `not_configured`/secrets ausentes, que é o outro contador acima).
  *
- *    Amostra mínima (`DEFAULT_NOT_CONFIRMED_MIN_SAMPLE`): mesma lição do
- *    poll "É IA?" (memory `eia-poll-volume-insuficiente-para-medir` — ~8
- *    votos/edição não medem nada) — uma janela com poucos hits não vira
- *    sinal, `ratePct` fica `null` (nunca um alarme baseado em N pequeno).
+ * 2. TAXA de `?email= não confirmado como assinante ativo` (delta de
+ *    `emailGateNotConfirmed` / (delta de `emailGateNotConfirmed` + delta de
+ *    `emailGateConfirmed`)) — sinal de saúde do caminho A (link com merge tag
+ *    na newsletter). Taxa baixa é normal; 100% é merge tag quebrada ou o gate
+ *    morto de novo. `verificação Beehiiv falhou` (outcome "verification_failed")
+ *    fica DE FORA de ambos os contadores de propósito (#4321 — não deve se
+ *    misturar com a taxa de negativo confirmado).
+ *
+ *    Amostra mínima (`DEFAULT_NOT_CONFIRMED_MIN_SAMPLE`): mesma lição do poll
+ *    "É IA?" (memory `eia-poll-volume-insuficiente-para-medir`) — uma janela
+ *    com poucos hits não vira sinal, `ratePct` fica `null`.
+ *
+ * ─── Idempotência: cursor de CONTADORES, não de tempo ──────────────────────
+ *
+ * Diferente da versão original (cursor `lastCheckedUntil`, janela de tempo
+ * `[since, until)` consultada na Analytics API), agora não há "janela"
+ * consultável — só um valor cumulativo lido AGORA. A idempotência vem de
+ * guardar o snapshot cumulativo da última checagem (`lastCounters`) e
+ * calcular o delta contra o snapshot ATUAL — cada execução só "vê" o que foi
+ * incrementado desde a última leitura bem-sucedida, nunca reprocessa o mesmo
+ * incremento 2x (mesmo espírito do cursor de tempo: avança só em sucesso).
+ *
+ * 1ª execução (sem `lastCounters` — `state.lastCounters === null`): NÃO tenta
+ * inferir um delta "desde sempre" a partir de 0 (o total cumulativo pode
+ * conter meses de histórico anterior a este alarme existir — 1 fatal antigo
+ * não pode dar um falso-alarme retroativo no dia em que o alarme liga). A 1ª
+ * execução só ESTABELECE o baseline (delta sempre 0) — a próxima já mede de
+ * verdade. Troca deliberada frente à versão original (que usava
+ * `INITIAL_LOOKBACK_MS` de 24h na 1ª execução): sem "janela" no design de
+ * contador, não há como saber a IDADE do valor cumulativo herdado, então
+ * conservador aqui significa nunca alarmar sobre histórico desconhecido.
  */
 
-// ─── Padrões de log fatal (qualquer ocorrência) ─────────────────────────────
+// ─── Padrões de log fatal (mantidos só pro nome/documentação — a DETECÇÃO
+// agora é por contador, não por grep de texto) ──────────────────────────────
 
 export const FATAL_LOG_PATTERNS = [
   "COOKIE_HMAC_SECRET ausente",
@@ -57,42 +79,113 @@ export const FATAL_LOG_PATTERNS = [
 
 export type FatalLogPattern = (typeof FATAL_LOG_PATTERNS)[number];
 
-// ─── Mensagens do sinal de taxa (path A — `?email=` da newsletter) ─────────
-
-/** Emitida no branch de SUCESSO de `handleIndex` (workers/cursos/src/index.ts). */
-export const EMAIL_GATE_CONFIRMED_MESSAGE = "[cursos] ?email= confirmado como assinante ativo — desbloqueado";
-/** Já existia antes do #4320 (branch de falha `outcome.reason !== "verification_failed"`). */
-export const EMAIL_GATE_NOT_CONFIRMED_MESSAGE = "[cursos] ?email= não confirmado como assinante ativo — servindo teaser";
-
 /** Default do limiar de alarme da taxa — tunável via `--rate-threshold-pct`/env, decisão operacional (não é limiar medido, ver docstring do módulo). */
 export const DEFAULT_NOT_CONFIRMED_RATE_THRESHOLD_PCT = 90;
 /** Amostra mínima antes de calcular `ratePct` — abaixo disso, `null` (nunca alarma em N pequeno). */
 export const DEFAULT_NOT_CONFIRMED_MIN_SAMPLE = 5;
 
-export interface CursosLogEvent {
-  /** ISO 8601. */
-  timestamp: string;
-  message: string;
+// ─── Snapshot de contadores (lido do KV pelo caller de I/O) ────────────────
+
+export interface CursosCounterSnapshot {
+  fatalCookieHmacSecretAusente: number;
+  fatalCadastroBeehiivFalhou: number;
+  emailGateConfirmed: number;
+  emailGateNotConfirmed: number;
 }
+
+export function emptyCounterSnapshot(): CursosCounterSnapshot {
+  return {
+    fatalCookieHmacSecretAusente: 0,
+    fatalCadastroBeehiivFalhou: 0,
+    emailGateConfirmed: 0,
+    emailGateNotConfirmed: 0,
+  };
+}
+
+// ─── Estado + idempotência (cursor de CONTADORES) ──────────────────────────
+
+export interface CursosAlarmState {
+  /** Snapshot cumulativo da última checagem BEM-SUCEDIDA, ou `null` na 1ª execução. */
+  lastCounters: CursosCounterSnapshot | null;
+  /** ISO 8601 da última checagem — só pra REPORTAR no e-mail ("desde X"); não
+   * participa da idempotência (o cursor real é `lastCounters`). `null` na 1ª execução. */
+  lastCheckedAt: string | null;
+}
+
+export function emptyCursosAlarmState(): CursosAlarmState {
+  return { lastCounters: null, lastCheckedAt: null };
+}
+
+/** Pura: avança o cursor pro snapshot recém-lido + o instante desta checagem. */
+export function advanceState(current: CursosCounterSnapshot, now: Date): CursosAlarmState {
+  return { lastCounters: current, lastCheckedAt: now.toISOString() };
+}
+
+// ─── Delta ──────────────────────────────────────────────────────────────────
+
+export interface CounterDelta {
+  fatalCookieHmacSecretAusente: number;
+  fatalCadastroBeehiivFalhou: number;
+  emailGateConfirmed: number;
+  emailGateNotConfirmed: number;
+  /** `true` quando QUALQUER contador atual é MENOR que o da última checagem —
+   * sinal de reset externo do KV (namespace recriado, chave apagada manualmente
+   * etc. — os contadores em si só somam, nunca decrementam sozinhos). O delta
+   * daquele contador específico é clampado a 0 (nunca negativo) — não
+   * interrompe a avaliação dos demais, só é reportado no e-mail se disparar
+   * junto de alguma condição real. */
+  resetDetected: boolean;
+}
+
+/**
+ * Pura: calcula o delta (incrementos desde a última checagem) a partir do
+ * state + snapshot atual. 1ª execução (`state.lastCounters === null`) sempre
+ * retorna delta zerado (ver docstring do módulo — nunca alarma
+ * retroativamente sobre histórico de idade desconhecida).
+ */
+export function computeCounterDelta(state: CursosAlarmState, current: CursosCounterSnapshot): CounterDelta {
+  if (state.lastCounters === null) {
+    return { fatalCookieHmacSecretAusente: 0, fatalCadastroBeehiivFalhou: 0, emailGateConfirmed: 0, emailGateNotConfirmed: 0, resetDetected: false };
+  }
+  const prev = state.lastCounters;
+  let resetDetected = false;
+  const d = (currN: number, prevN: number): number => {
+    if (currN < prevN) {
+      resetDetected = true;
+      return 0;
+    }
+    return currN - prevN;
+  };
+  return {
+    fatalCookieHmacSecretAusente: d(current.fatalCookieHmacSecretAusente, prev.fatalCookieHmacSecretAusente),
+    fatalCadastroBeehiivFalhou: d(current.fatalCadastroBeehiivFalhou, prev.fatalCadastroBeehiivFalhou),
+    emailGateConfirmed: d(current.emailGateConfirmed, prev.emailGateConfirmed),
+    emailGateNotConfirmed: d(current.emailGateNotConfirmed, prev.emailGateNotConfirmed),
+    resetDetected,
+  };
+}
+
+// ─── FATAL: qualquer ocorrência (delta > 0) ────────────────────────────────
 
 export interface FatalMatch {
   pattern: FatalLogPattern;
-  timestamp: string;
-  message: string;
+  /** Quantas vezes o contador incrementou nesta janela (delta). */
+  count: number;
 }
 
-/** Pura: varre os eventos e retorna todo match de um padrão fatal (qualquer ocorrência). */
-export function detectFatalMatches(events: CursosLogEvent[]): FatalMatch[] {
+/** Pura: os contadores fatais com delta > 0 nesta janela. */
+export function detectFatalMatches(delta: CounterDelta): FatalMatch[] {
   const matches: FatalMatch[] = [];
-  for (const ev of events) {
-    for (const pattern of FATAL_LOG_PATTERNS) {
-      if (ev.message.includes(pattern)) {
-        matches.push({ pattern, timestamp: ev.timestamp, message: ev.message });
-      }
-    }
+  if (delta.fatalCookieHmacSecretAusente > 0) {
+    matches.push({ pattern: "COOKIE_HMAC_SECRET ausente", count: delta.fatalCookieHmacSecretAusente });
+  }
+  if (delta.fatalCadastroBeehiivFalhou > 0) {
+    matches.push({ pattern: "cadastro na Beehiiv falhou", count: delta.fatalCadastroBeehiivFalhou });
   }
   return matches;
 }
+
+// ─── Taxa de "?email= não confirmado" ──────────────────────────────────────
 
 export interface NotConfirmedRateResult {
   confirmed: number;
@@ -103,20 +196,17 @@ export interface NotConfirmedRateResult {
 }
 
 /**
- * Pura: conta confirmado × não-confirmado dentre os eventos e calcula a taxa
- * de não-confirmado. `verificação Beehiiv falhou` (verification_failed) NÃO
- * conta pra nenhum dos dois lados — ver docstring do módulo (#4321).
+ * Pura: extrai confirmado × não-confirmado do delta e calcula a taxa de
+ * não-confirmado. `verificação Beehiiv falhou` (verification_failed) já vem
+ * DE FORA de ambos os contadores desde a origem no worker (#4321) — nunca
+ * incrementa nenhum dos dois.
  */
 export function computeNotConfirmedRate(
-  events: CursosLogEvent[],
+  delta: CounterDelta,
   minSample: number = DEFAULT_NOT_CONFIRMED_MIN_SAMPLE,
 ): NotConfirmedRateResult {
-  let confirmed = 0;
-  let notConfirmed = 0;
-  for (const ev of events) {
-    if (ev.message.includes(EMAIL_GATE_CONFIRMED_MESSAGE)) confirmed++;
-    else if (ev.message.includes(EMAIL_GATE_NOT_CONFIRMED_MESSAGE)) notConfirmed++;
-  }
+  const confirmed = delta.emailGateConfirmed;
+  const notConfirmed = delta.emailGateNotConfirmed;
   const total = confirmed + notConfirmed;
   // `total > 0` explícito (não só `total >= minSample`): um `minSample` de 0
   // (ou negativo, por engano) não pode fazer `ratePct` virar `0/0 = NaN` —
@@ -133,50 +223,6 @@ export function isRateBreached(
   return result.ratePct !== null && result.ratePct >= thresholdPct;
 }
 
-// ─── Janela + idempotência (cursor de tempo, não lista de IDs) ─────────────
-//
-// Diferente do guardrail Clarice (que idempotiza por ID de campanha — cada
-// campanha é avaliada exatamente 1x), aqui não há um ID discreto por evento
-// de log. O cursor `lastCheckedUntil` cumpre o mesmo papel: cada execução só
-// consulta [lastCheckedUntil, now) — janelas nunca se sobrepõem, então nunca
-// reavalia (e nunca realarma) o mesmo intervalo 2x. O cursor só avança
-// quando a run termina com sucesso (main() só chama `advanceState` depois de
-// qualquer e-mail de alarme ter sido enviado com sucesso) — uma falha de
-// fetch OU de envio de e-mail deixa o cursor parado, e a MESMA janela (agora
-// maior) é reprocessada na próxima execução. Mesmo padrão de
-// `clarice-sync-brevo.ts --incremental` (`modifiedSince`).
-
-export interface CursosAlarmState {
-  /** ISO 8601, ou `null` na 1ª execução (sem histórico ainda). */
-  lastCheckedUntil: string | null;
-}
-
-export function emptyCursosAlarmState(): CursosAlarmState {
-  return { lastCheckedUntil: null };
-}
-
-/** Lookback da 1ª execução (sem state prévio) — 24h é generoso o bastante pra não perder um incidente recente sem re-processar dias de história. */
-export const INITIAL_LOOKBACK_MS = 24 * 60 * 60 * 1000;
-
-export interface AlarmWindow {
-  since: Date;
-  until: Date;
-}
-
-/** Pura: resolve a janela [since, until) da próxima execução a partir do state + `now`. */
-export function resolveWindow(state: CursosAlarmState, now: Date): AlarmWindow {
-  const until = now;
-  const since = state.lastCheckedUntil
-    ? new Date(Date.parse(state.lastCheckedUntil))
-    : new Date(now.getTime() - INITIAL_LOOKBACK_MS);
-  return { since, until };
-}
-
-/** Pura: avança o cursor pro fim da janela recém-processada. */
-export function advanceState(until: Date): CursosAlarmState {
-  return { lastCheckedUntil: until.toISOString() };
-}
-
 // ─── Avaliação consolidada + e-mail ─────────────────────────────────────────
 
 export interface CursosAlarmOptions {
@@ -189,29 +235,33 @@ export interface CursosAlarmEvaluation {
   rate: NotConfirmedRateResult;
   rateBreached: boolean;
   rateThresholdPct: number;
-  eventCount: number;
-  since: string;
+  delta: CounterDelta;
+  /** ISO 8601 da checagem anterior, ou `null` na 1ª execução (sem baseline pra comparar). */
+  since: string | null;
+  /** ISO 8601 desta checagem. */
   until: string;
 }
 
 /** Pura: consolida os dois sinais (fatal + taxa) numa única avaliação, pra 1 e-mail por run. */
-export function evaluateCursosLogs(
-  events: CursosLogEvent[],
-  window: AlarmWindow,
+export function evaluateCursosCounters(
+  state: CursosAlarmState,
+  current: CursosCounterSnapshot,
+  now: Date,
   opts: CursosAlarmOptions = {},
 ): CursosAlarmEvaluation {
   const rateThresholdPct = opts.rateThresholdPct ?? DEFAULT_NOT_CONFIRMED_RATE_THRESHOLD_PCT;
-  const fatalMatches = detectFatalMatches(events);
-  const rate = computeNotConfirmedRate(events, opts.minSample);
+  const delta = computeCounterDelta(state, current);
+  const fatalMatches = detectFatalMatches(delta);
+  const rate = computeNotConfirmedRate(delta, opts.minSample);
   const rateBreached = isRateBreached(rate, rateThresholdPct);
   return {
     fatalMatches,
     rate,
     rateBreached,
     rateThresholdPct,
-    eventCount: events.length,
-    since: window.since.toISOString(),
-    until: window.until.toISOString(),
+    delta,
+    since: state.lastCheckedAt,
+    until: now.toISOString(),
   };
 }
 
@@ -231,18 +281,9 @@ export function buildCursosAlarmEmail(evaluation: CursosAlarmEvaluation): { subj
 
   if (evaluation.fatalMatches.length > 0) {
     subjectBits.push(`${evaluation.fatalMatches.length} erro(s) fatal(is)`);
-    const byPattern = new Map<string, number>();
-    for (const m of evaluation.fatalMatches) {
-      byPattern.set(m.pattern, (byPattern.get(m.pattern) ?? 0) + 1);
-    }
     parts.push("Erro(s) FATAL (qualquer ocorrência dispara):");
-    for (const [pattern, count] of byPattern) {
-      parts.push(`- "${pattern}" — ${count}x na janela`);
-    }
-    const sample = evaluation.fatalMatches.slice(0, 3);
-    parts.push("", "Amostra (até 3):");
-    for (const m of sample) {
-      parts.push(`  [${m.timestamp}] ${m.message}`);
+    for (const m of evaluation.fatalMatches) {
+      parts.push(`- "${m.pattern}" — ${m.count}x na janela`);
     }
   }
 
@@ -257,17 +298,23 @@ export function buildCursosAlarmEmail(evaluation: CursosAlarmEvaluation): { subj
     );
   }
 
+  if (evaluation.delta.resetDetected) {
+    parts.push(
+      "",
+      "AVISO: pelo menos um contador no KV apareceu MENOR que na checagem anterior (reset externo — namespace recriado/chave " +
+        "apagada manualmente?). O delta desse contador foi tratado como 0 nesta janela — pode estar SUBESTIMADO.",
+    );
+  }
+
   const subject = `[Diar.ia] Worker cursos: ${subjectBits.join(" + ")}`;
-  const header = [
-    `Alarme do worker \`cursos\` — janela avaliada: ${evaluation.since} → ${evaluation.until} (${evaluation.eventCount} eventos de log).`,
-    "",
-  ];
+  const windowLabel = evaluation.since ? `${evaluation.since} → ${evaluation.until}` : `1ª checagem → ${evaluation.until} (sem baseline anterior)`;
+  const header = [`Alarme do worker \`cursos\` — janela avaliada: ${windowLabel}.`, ""];
   const footer = [
     "",
     "Ação: `wrangler tail` (workers/cursos) ou o dashboard Cloudflare Workers Logs do worker `cursos` pra investigar ao vivo. " +
       "Ver docs/cursos-worker-alarm-setup.md pro runbook completo.",
     "",
-    "(alarme automático — #4320)",
+    "(alarme automático — #4320/#4382)",
   ];
   return { subject, body: [...header, ...parts, ...footer].join("\n") };
 }

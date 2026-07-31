@@ -1,51 +1,61 @@
 #!/usr/bin/env node
 /**
- * cursos-error-alarm.ts (#4320)
+ * cursos-error-alarm.ts (#4320, REDESENHADO no #4382)
  *
- * Consulta a Cloudflare GraphQL Analytics API pelos logs do worker `cursos`
- * (dataset `workersInvocationsAdaptiveGroups`, filtrado por `scriptName` +
- * janela de tempo) desde o último cursor salvo, avalia contra os limiares de
+ * Lê 4 contadores cumulativos do KV `CURSOS_SUBSCRIBERS` do worker `cursos`
+ * (ver `scripts/lib/shared/cursos-alarm-counters.ts` pras chaves — o worker
+ * incrementa esses contadores nos mesmos pontos onde já loga via
+ * `console.error`/`console.warn`/`console.log`), calcula o delta desde a
+ * última checagem, avalia contra os limiares de
  * `scripts/lib/cursos-error-alarm.ts` (erro fatal — qualquer ocorrência — e
  * taxa de `?email= não confirmado`) e, se algo disparar, envia e-mail ao
  * editor via Gmail API (mesmo transporte de `clarice-guardrail-alarm.ts`,
  * `scripts/lib/gmail-send.ts`).
  *
- * IMPORTANTE — schema da query não verificado ao vivo: esta sessão não tem
- * acesso a credenciais Cloudflare reais nem pode fazer chamada de rede
- * ao vivo (escopo do dispatch #4320). `CURSOS_LOGS_QUERY`/
- * `parseGraphqlLogsResponse` foram desenhados com base na documentação
- * pública da GraphQL Analytics API (dataset `workersInvocationsAdaptiveGroups`
- * + blog "Introducing Workers Observability" — invocação loga um JSON
- * estruturado com console.log() messages) mas o shape exato de `logs{}` por
- * grupo NÃO foi confirmado contra uma resposta real. Antes de confiar neste
- * alarme em produção: rodar `--dry-run` uma vez com credenciais reais e
- * conferir se `eventCount` bate com o volume esperado (não fica em 0 sempre)
- * — se a query não casar o schema real, ajustar só `CURSOS_LOGS_QUERY` +
- * `parseGraphqlLogsResponse` (a lógica de alarme em si, testada em
- * `test/cursos-error-alarm.test.ts`, não muda).
+ * ─── #4382: por que isto NÃO consulta mais a Cloudflare GraphQL Analytics API ──
+ *
+ * A versão original (#4320) consultava o dataset `workersInvocationsAdaptiveGroups`
+ * e fazia grep de texto nas mensagens de log retornadas. CONFIRMADO AO VIVO
+ * (credenciais Cloudflare reais) que esse campo não existe no schema exposto
+ * — `unknown field "workersInvocationsAdaptiveGroups"`, mesmo numa query
+ * mínima sem `logs{}`. Não é permissão (mensagem seria "not authorized"/
+ * "forbidden"). A API pública GraphQL Analytics parece expor só métricas
+ * AGREGADAS — não o conteúdo de mensagens de log individuais. Redesign
+ * completo (ver docstring de `scripts/lib/cursos-error-alarm.ts`): o worker
+ * agora conta os eventos ele mesmo, direto no KV; este script só LÊ os 4
+ * contadores (leitura fetch-based via `getTextFromWorkerKV`, mesmo helper já
+ * usado pelo Studio pra ler outros KVs Cloudflare — `scripts/lib/cloudflare-kv-upload.ts`,
+ * #4165/#4173) e faz a lógica de delta/alarme em `scripts/lib/cursos-error-alarm.ts`.
  *
  * Uso:
- *   npx tsx scripts/cursos-error-alarm.ts [--dry-run] [--to email@x.com] [--rate-threshold-pct 90]
+ *   npx tsx scripts/cursos-error-alarm.ts [--dry-run] [--to email@x.com] [--rate-threshold-pct 90] [--namespace-id X]
  *
  *   --dry-run            avalia e imprime o que faria, mas NÃO envia e-mail
  *                         nem avança o cursor (idempotência) — inspeção sem
  *                         efeito colateral.
  *   --to                 override do destinatário (default: resolveEditorEmail).
  *   --rate-threshold-pct override do limiar da taxa (default: 90).
+ *   --namespace-id        override do namespace KV (default: env CURSOS_KV_NAMESPACE_ID).
  *
  * Env:
- *   CLOUDFLARE_ACCOUNT_ID   obrigatório.
- *   CLOUDFLARE_API_TOKEN    obrigatório — precisa do escopo "Account
- *                           Analytics Read" (Workers Tail/Logs read), não é
- *                           necessariamente o mesmo token de
- *                           CLOUDFLARE_WORKERS_TOKEN (usado pra escrita KV
- *                           em outros scripts — permissões diferentes).
+ *   CLOUDFLARE_ACCOUNT_ID    obrigatório.
+ *   CLOUDFLARE_WORKERS_TOKEN obrigatório — token com escopo de leitura/escrita
+ *                            de Workers KV (MESMO token usado por
+ *                            `scripts/lib/cloudflare-kv-upload.ts` em outros
+ *                            scripts — ex: `clarice-engagement-cohorts.ts`).
+ *                            Diferente da versão original (que exigia
+ *                            `CLOUDFLARE_API_TOKEN` com escopo "Account
+ *                            Analytics Read") — não há mais chamada à
+ *                            Analytics API.
+ *   CURSOS_KV_NAMESPACE_ID   id do namespace `CURSOS_SUBSCRIBERS` (o mesmo
+ *                            usado por `scripts/sync-cursos-subscribers-kv.ts`
+ *                            — ver `workers/cursos/wrangler.toml` `[[kv_namespaces]] id`).
  *   data/.credentials.json com o scope `gmail.send` (mesmo requisito de
  *                           `clarice-guardrail-alarm.ts`).
  *
- * Estado (idempotência): `data/cursos-error-alarm-state.json` — cursor de
- * tempo (`lastCheckedUntil`), não lista de IDs (ver docstring de
- * `scripts/lib/cursos-error-alarm.ts` §Janela + idempotência).
+ * Estado (idempotência): `data/cursos-error-alarm-state.json` — snapshot
+ * cumulativo da última checagem (`lastCounters`), não cursor de tempo (ver
+ * docstring de `scripts/lib/cursos-error-alarm.ts` §Idempotência).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
@@ -55,16 +65,17 @@ import { hasFlag, getArg, isMainModule } from "./lib/cli-args.ts";
 import { writeFileAtomic } from "./lib/atomic-write.ts";
 import { sendGmailMessage } from "./lib/gmail-send.ts";
 import { resolveEditorEmail } from "./lib/inbox-stats.ts";
+import { getTextFromWorkerKV } from "./lib/cloudflare-kv-upload.ts";
+import { CURSOS_ALARM_COUNTER_KEYS } from "./lib/shared/cursos-alarm-counters.ts";
 import {
-  resolveWindow,
   advanceState,
-  evaluateCursosLogs,
+  evaluateCursosCounters,
   shouldAlarm,
   buildCursosAlarmEmail,
   emptyCursosAlarmState,
   DEFAULT_NOT_CONFIRMED_RATE_THRESHOLD_PCT,
   type CursosAlarmState,
-  type CursosLogEvent,
+  type CursosCounterSnapshot,
 } from "./lib/cursos-error-alarm.ts";
 
 loadProjectEnv();
@@ -73,118 +84,55 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const STATE_PATH = resolve(ROOT, "data", "cursos-error-alarm-state.json");
 const PLATFORM_CONFIG_PATH = resolve(ROOT, "platform.config.json");
 
-export const CURSOS_SCRIPT_NAME = "cursos";
-export const GRAPHQL_URL = "https://api.cloudflare.com/client/v4/graphql";
-/** Máximo de grupos de invocação retornados por consulta — worker de baixo tráfego, folga generosa. */
-export const DEFAULT_QUERY_LIMIT = 1000;
-
-// #4320: ver docstring do módulo — schema não verificado ao vivo. `logs {
-// message level }` é o shape mais plausível pra "logs por grupo de
-// invocação" descrito na doc pública da Workers Observability, mas pode
-// precisar de ajuste contra uma resposta real.
-export const CURSOS_LOGS_QUERY = `
-query CursosWorkerLogs($accountTag: string!, $scriptName: string!, $since: Time!, $until: Time!, $limit: Int!) {
-  viewer {
-    accounts(filter: { accountTag: $accountTag }) {
-      workersInvocationsAdaptiveGroups(
-        limit: $limit
-        filter: { scriptName: $scriptName, datetime_geq: $since, datetime_lt: $until }
-        orderBy: [datetime_ASC]
-      ) {
-        dimensions {
-          datetime
-        }
-        logs {
-          message
-          level
-        }
-      }
-    }
-  }
-}`.trim();
-
-export interface RawGraphqlLogLine {
-  message?: string;
-  level?: string;
-}
-export interface RawGraphqlInvocationGroup {
-  dimensions?: { datetime?: string };
-  logs?: RawGraphqlLogLine[];
-}
-export interface RawGraphqlLogsResponse {
-  data?: {
-    viewer?: {
-      accounts?: Array<{
-        workersInvocationsAdaptiveGroups?: RawGraphqlInvocationGroup[];
-      }>;
-    };
-  };
-  errors?: Array<{ message: string }>;
+/** Pura: converte o valor cru lido do KV (string ou `null`, miss = "0") num
+ * inteiro não-negativo. Nunca lança — corpo corrompido/negativo vira 0
+ * (mesma filosofia fail-soft do resto do módulo: um contador ilegível não
+ * pode travar o alarme inteiro). */
+export function parseCounterValue(raw: string | null): number {
+  if (raw === null) return 0;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
 }
 
 /**
- * Pura/testável: achata a resposta GraphQL em `CursosLogEvent[]`. Isola o
- * "schema não verificado" (ver docstring do módulo) numa única função — se o
- * shape real divergir, só esta função (e `CURSOS_LOGS_QUERY` acima)
- * precisam mudar; a lógica de alarme não depende do shape bruto da API.
+ * Único ponto de I/O de rede do script — lê os 4 contadores via
+ * `getTextFromWorkerKV` (fetch injetável, nunca rede real em teste). Cada
+ * `getTextFromWorkerKV` já é fail-soft-por-status (404 → null), mas propaga
+ * exceção em falha de rede/auth real — o caller (main) decide a política
+ * (não avançar o cursor, reprocessar na próxima run).
  */
-export function parseGraphqlLogsResponse(body: RawGraphqlLogsResponse): CursosLogEvent[] {
-  const groups = body.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptiveGroups ?? [];
-  const events: CursosLogEvent[] = [];
-  for (const g of groups) {
-    const ts = g.dimensions?.datetime ?? new Date(0).toISOString();
-    for (const log of g.logs ?? []) {
-      if (typeof log.message === "string" && log.message.length > 0) {
-        events.push({ timestamp: ts, message: log.message });
-      }
-    }
-  }
-  return events;
-}
-
-/** Único ponto de I/O de rede do script — injetável (`fetchImpl`) pra teste sem rede real. */
-export async function fetchCursosLogEvents(
-  accountId: string,
-  apiToken: string,
-  since: Date,
-  until: Date,
+export async function fetchCurrentCounters(
+  namespaceId: string,
+  cfg: { accountId?: string; token?: string } = {},
   fetchImpl: typeof fetch = fetch,
-  limit: number = DEFAULT_QUERY_LIMIT,
-): Promise<CursosLogEvent[]> {
-  const res = await fetchImpl(GRAPHQL_URL, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      query: CURSOS_LOGS_QUERY,
-      variables: {
-        accountTag: accountId,
-        scriptName: CURSOS_SCRIPT_NAME,
-        since: since.toISOString(),
-        until: until.toISOString(),
-        limit,
-      },
-    }),
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Cloudflare GraphQL Analytics API falhou (${res.status}): ${text.slice(0, 500)}`);
-  }
-  const body = (await res.json()) as RawGraphqlLogsResponse;
-  if (body.errors && body.errors.length > 0) {
-    throw new Error(`Cloudflare GraphQL retornou erro(s): ${body.errors.map((e) => e.message).join("; ")}`);
-  }
-  return parseGraphqlLogsResponse(body);
+): Promise<CursosCounterSnapshot> {
+  const [fatalCookie, fatalBeehiiv, confirmed, notConfirmed] = await Promise.all([
+    getTextFromWorkerKV(CURSOS_ALARM_COUNTER_KEYS.fatalCookieHmacSecretAusente, { kvNamespaceId: namespaceId, ...cfg }, fetchImpl),
+    getTextFromWorkerKV(CURSOS_ALARM_COUNTER_KEYS.fatalCadastroBeehiivFalhou, { kvNamespaceId: namespaceId, ...cfg }, fetchImpl),
+    getTextFromWorkerKV(CURSOS_ALARM_COUNTER_KEYS.emailGateConfirmed, { kvNamespaceId: namespaceId, ...cfg }, fetchImpl),
+    getTextFromWorkerKV(CURSOS_ALARM_COUNTER_KEYS.emailGateNotConfirmed, { kvNamespaceId: namespaceId, ...cfg }, fetchImpl),
+  ]);
+  return {
+    fatalCookieHmacSecretAusente: parseCounterValue(fatalCookie),
+    fatalCadastroBeehiivFalhou: parseCounterValue(fatalBeehiiv),
+    emailGateConfirmed: parseCounterValue(confirmed),
+    emailGateNotConfirmed: parseCounterValue(notConfirmed),
+  };
 }
 
 function loadState(): CursosAlarmState {
   if (!existsSync(STATE_PATH)) return emptyCursosAlarmState();
   try {
     const raw = JSON.parse(readFileSync(STATE_PATH, "utf8"));
-    if (typeof raw?.lastCheckedUntil === "string" || raw?.lastCheckedUntil === null) {
-      return { lastCheckedUntil: raw.lastCheckedUntil };
-    }
-    return emptyCursosAlarmState();
+    const lastCheckedAt = typeof raw?.lastCheckedAt === "string" || raw?.lastCheckedAt === null ? raw.lastCheckedAt : null;
+    const lc = raw?.lastCounters;
+    const isValidSnapshot =
+      lc &&
+      typeof lc.fatalCookieHmacSecretAusente === "number" &&
+      typeof lc.fatalCadastroBeehiivFalhou === "number" &&
+      typeof lc.emailGateConfirmed === "number" &&
+      typeof lc.emailGateNotConfirmed === "number";
+    return { lastCounters: isValidSnapshot ? (lc as CursosCounterSnapshot) : null, lastCheckedAt };
   } catch {
     return emptyCursosAlarmState();
   }
@@ -206,34 +154,36 @@ async function main(): Promise<void> {
   }
 
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
-  const apiToken = process.env.CLOUDFLARE_API_TOKEN ?? "";
-  if (!accountId || !apiToken) {
-    console.error("[cursos-error-alarm] CLOUDFLARE_ACCOUNT_ID e/ou CLOUDFLARE_API_TOKEN não definidos.");
+  const workersToken = process.env.CLOUDFLARE_WORKERS_TOKEN ?? "";
+  const namespaceId = getArg(process.argv, "namespace-id") || process.env.CURSOS_KV_NAMESPACE_ID || "";
+  if (!accountId || !workersToken || !namespaceId) {
+    console.error(
+      "[cursos-error-alarm] CLOUDFLARE_ACCOUNT_ID e/ou CLOUDFLARE_WORKERS_TOKEN e/ou CURSOS_KV_NAMESPACE_ID (env ou --namespace-id) não definidos.",
+    );
     process.exit(1);
     return;
   }
 
   const now = new Date();
   const state = loadState();
-  const window = resolveWindow(state, now);
 
-  let events: CursosLogEvent[];
+  let current: CursosCounterSnapshot;
   try {
-    events = await fetchCursosLogEvents(accountId, apiToken, window.since, window.until);
+    current = await fetchCurrentCounters(namespaceId, { accountId, token: workersToken });
   } catch (e) {
     console.error(
-      `[cursos-error-alarm] erro ao consultar Cloudflare GraphQL Analytics API — cursor NÃO avança, próxima execução reprocessa esta janela: ${(e as Error).message}`,
+      `[cursos-error-alarm] erro ao ler contadores do KV Cloudflare — cursor NÃO avança, próxima execução recalcula o delta desde o último snapshot bem-sucedido: ${(e as Error).message}`,
     );
     process.exit(1);
     return;
   }
 
-  const evaluation = evaluateCursosLogs(events, window, { rateThresholdPct });
+  const evaluation = evaluateCursosCounters(state, current, now, { rateThresholdPct });
   console.log(
-    `[cursos-error-alarm] janela ${evaluation.since} → ${evaluation.until}: ${evaluation.eventCount} eventos de log, ` +
-      `${evaluation.fatalMatches.length} match(es) fatal(is), taxa não-confirmado=${
+    `[cursos-error-alarm] delta desde ${evaluation.since ?? "(1ª checagem, sem baseline)"}: ` +
+      `${evaluation.fatalMatches.length} tipo(s) de erro fatal, taxa não-confirmado=${
         evaluation.rate.ratePct !== null ? evaluation.rate.ratePct.toFixed(1) + "%" : "n/a (amostra insuficiente)"
-      } (${evaluation.rate.notConfirmed}/${evaluation.rate.total}).`,
+      } (${evaluation.rate.notConfirmed}/${evaluation.rate.total}). Contadores atuais: ${JSON.stringify(current)}.`,
   );
 
   if (shouldAlarm(evaluation)) {
@@ -250,7 +200,7 @@ async function main(): Promise<void> {
   }
 
   if (!isDryRun) {
-    saveState(advanceState(window.until));
+    saveState(advanceState(current, now));
   } else {
     console.log("[cursos-error-alarm] --dry-run: cursor NÃO avançado.");
   }
