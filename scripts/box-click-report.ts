@@ -138,18 +138,31 @@ export function loadSnippets(snippetsDir: string = SNIPPETS_DIR): SnippetInfo[] 
     .filter((s): s is SnippetInfo => s !== null);
 }
 
+export interface SnippetMatch {
+  snippet: SnippetInfo;
+  /** A URL (bruta, não normalizada) do BOX que efetivamente bateu com o
+   * snippet — não necessariamente a 1ª URL do box (#4354 self-review finding
+   * 1: um box com >1 link pode ter o link de afiliado/tracked em 2º lugar;
+   * usar cegamente `urls[0]` faria o lookup de clique mirar na URL errada,
+   * mesmo com o snippet corretamente identificado). Caller usa ESTA URL, não
+   * `extractUrls(boxText)[0]`, pro lookup de clique. */
+  url: string;
+}
+
 /** Dado o texto de um box já extraído (`extractBoxDivulgacaoN`), acha qual
- * snippet cadastrado corresponde — por base-URL da 1ª URL do box que bater
- * com alguma URL de algum snippet. `null` quando o box não tem URL, ou
- * nenhum snippet cadastrado corresponde (ex: box escrito manualmente, sem
- * vir de um snippet reaproveitável). */
+ * snippet cadastrado corresponde E qual URL do box foi a que bateu — por
+ * base-URL, testando cada URL do box em ordem até achar uma que exista em
+ * algum snippet cadastrado. `null` quando o box não tem URL, ou nenhuma URL
+ * do box corresponde a nenhum snippet (ex: box escrito manualmente, sem vir
+ * de um snippet reaproveitável). */
 export function matchSnippetForBox(
   boxText: string,
   snippets: SnippetInfo[],
-): SnippetInfo | null {
-  for (const url of extractUrls(boxText).map(toBaseUrl)) {
-    const found = snippets.find((s) => s.urls.includes(url));
-    if (found) return found;
+): SnippetMatch | null {
+  for (const rawUrl of extractUrls(boxText)) {
+    const baseUrl = toBaseUrl(rawUrl);
+    const found = snippets.find((s) => s.urls.includes(baseUrl));
+    if (found) return { snippet: found, url: rawUrl };
   }
   return null;
 }
@@ -232,15 +245,28 @@ export interface BoxUsage {
 
 /** Varre os 4 slots de um `02-reviewed.md` já publicado e devolve, por slot
  * presente, o box de texto + snippet correspondente (se achado) + a URL
- * usada pro lookup de clique (1ª URL do box). */
+ * usada pro lookup de clique.
+ *
+ * #4354 self-review finding 1: quando um snippet É identificado, `url` é a
+ * URL que de fato bateu com o snippet (`SnippetMatch.url`), NUNCA
+ * `extractUrls(boxText)[0]` cego — um box com >1 link poderia ter o link
+ * rastreado/afiliado em 2º lugar, e usar a 1ª URL indiscriminadamente faria o
+ * lookup de clique mirar na URL errada mesmo com o snippet certo. Quando
+ * NENHUM snippet bate, cai no fallback `urls[0] ?? null` só pra fins de
+ * diagnóstico (`buildBoxClickReport` já ignora clique nesse caso — snippet
+ * `null` nunca soma clique). */
 export function extractEditionBoxUsages(reviewedMd: string, snippets: SnippetInfo[]): BoxUsage[] {
   const out: BoxUsage[] = [];
   for (const [slot, extractor] of SLOT_EXTRACTORS) {
     const boxText = extractor(reviewedMd);
     if (!boxText) continue;
-    const snippet = matchSnippetForBox(boxText, snippets);
-    const urls = extractUrls(boxText);
-    out.push({ slot, boxText, snippet, url: urls[0] ?? null });
+    const match = matchSnippetForBox(boxText, snippets);
+    if (match) {
+      out.push({ slot, boxText, snippet: match.snippet, url: match.url });
+    } else {
+      const urls = extractUrls(boxText);
+      out.push({ slot, boxText, snippet: null, url: urls[0] ?? null });
+    }
   }
   return out;
 }

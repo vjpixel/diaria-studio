@@ -92,10 +92,11 @@ describe("matchSnippetForBox", () => {
     { file: "livro.md", nome: "Livro X", urls: ["https://link.amazon/B057LAnK0"] },
   ];
 
-  it("acha o snippet cuja URL bate (ignorando query string)", () => {
+  it("acha o snippet cuja URL bate (ignorando query string) e devolve a URL bruta do box", () => {
     const box = "**Escreva melhor → [Acesse](https://clarice.ai/precos-planos?via=diaria&bhcl_id=abc)**";
     const found = matchSnippetForBox(box, snippets);
-    assert.equal(found?.file, "clarice-divulgacao.md");
+    assert.equal(found?.snippet.file, "clarice-divulgacao.md");
+    assert.equal(found?.url, "https://clarice.ai/precos-planos?via=diaria&bhcl_id=abc");
   });
 
   it("retorna null quando o box não tem URL", () => {
@@ -105,6 +106,19 @@ describe("matchSnippetForBox", () => {
   it("retorna null quando a URL do box não bate com nenhum snippet cadastrado", () => {
     const box = "[link avulso](https://outro-dominio.com/pagina)";
     assert.equal(matchSnippetForBox(box, snippets), null);
+  });
+
+  it("#4354 self-review finding 1: acha a URL CORRETA quando o box tem >1 link e a que bate não é a 1ª", () => {
+    // Link de rodapé (outro-dominio) aparece ANTES do link de afiliado real do
+    // snippet cadastrado — a versão antiga usava cegamente urls[0] (o de
+    // rodapé) pro lookup de clique, mesmo o snippet certo já tendo sido
+    // identificado corretamente.
+    const box =
+      "Veja mais em [nosso site](https://outro-dominio.com/rodape) — ou " +
+      "[assine agora](https://clarice.ai/precos-planos?via=diaria).";
+    const found = matchSnippetForBox(box, snippets);
+    assert.equal(found?.snippet.file, "clarice-divulgacao.md");
+    assert.equal(found?.url, "https://clarice.ai/precos-planos?via=diaria");
   });
 });
 
@@ -206,6 +220,29 @@ describe("extractEditionBoxUsages", () => {
       "Por que isso importa: teste.",
     ].join("\n");
     assert.deepEqual(extractEditionBoxUsages(md, snippets), []);
+  });
+
+  it("#4354 self-review finding 1: usa a URL que bateu com o snippet, não a 1ª URL do box", () => {
+    const md = [
+      "**DESTAQUE 1 | CAT**",
+      "Título 1",
+      "Corpo do destaque 1.",
+      "Por que isso importa: teste.",
+      "---",
+      "Veja mais em [nosso site](https://outro-dominio.com/rodape) — ou " +
+        "[assine a Clarice](https://clarice.ai/precos-planos?via=diaria).",
+      "---",
+      "**DESTAQUE 2 | CAT**",
+      "Título 2",
+      "Corpo do destaque 2.",
+      "Por que isso importa: teste.",
+    ].join("\n");
+
+    const usages = extractEditionBoxUsages(md, snippets);
+    assert.equal(usages.length, 1);
+    assert.equal(usages[0].snippet?.file, "clarice-divulgacao.md");
+    // Não é urls[0] (o link de rodapé) — é a URL que efetivamente bateu com o snippet.
+    assert.equal(usages[0].url, "https://clarice.ai/precos-planos?via=diaria");
   });
 });
 
