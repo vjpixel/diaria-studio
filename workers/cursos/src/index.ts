@@ -40,7 +40,7 @@
  */
 import { CURSOS_FULL_HTML } from "./courses-full.generated.ts";
 import { renderGatePage } from "./gate-page.ts";
-import { checkGateRateLimit, checkGateSubscriber, shouldRecheckPendingSession } from "./gate.ts";
+import { checkGateRateLimit, checkGateSubscriber, shouldRecheckEmailVerification } from "./gate.ts";
 import { clearSessionCookieHeader, issueSessionCookie, readSession } from "./cookie.ts";
 import { handleGateSubscribe, isValidEmailFormat } from "./subscribe.ts";
 import { CURSOS_ALARM_COUNTER_KEYS, incrementKvCounter } from "../../../scripts/lib/shared/cursos-alarm-counters.ts";
@@ -157,43 +157,56 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
       console.warn("[cursos] ?email= presente mas malformado — provável merge tag não resolvida");
     }
 
+    // #4390: mesmo gap de rate-limit corrigido no #4387 pro cookie `pending` —
+    // um link de newsletter salvo/repassado com `?email=` re-dispara
+    // `checkGateSubscriber` (e o fallback ao vivo da Beehiiv, se o KV ainda
+    // não sincronizou) a cada reload, sem nenhum throttle. Cooldown
+    // COMPARTILHADO com o branch `pending` abaixo (mesma chave por hash de
+    // e-mail, ver docstring de `shouldRecheckEmailVerification` em
+    // `gate.ts`) — dentro da janela, este branch simplesmente não chama
+    // `checkGateSubscriber` e cai pro bloco de sessão/cookie logo abaixo
+    // (que serve o conteúdo completo se já houver cookie confirmado, ou o
+    // teaser caso contrário) — nunca um throw, nunca resposta diferente.
     if (canIssueSession && emailParam && isValidEmailFormat(emailParam)) {
-      const outcome = await checkGateSubscriber(env, emailParam);
-      if (outcome.status === "active") {
-        // #4320: contraparte do log de "não confirmado" logo abaixo — sem
-        // este log, o caminho de SUCESSO nunca aparecia em nenhuma linha,
-        // e o alarme de taxa (scripts/cursos-error-alarm.ts) não tinha
-        // denominador pra calcular "% não confirmado" (só o numerador).
-        // Mesmo cuidado de redação dos dois `console.warn` logo abaixo:
-        // NUNCA interpola `emailParam` — a contagem é o que importa, não
-        // quem.
-        console.log("[cursos] ?email= confirmado como assinante ativo — desbloqueado");
-        // #4382: denominador da taxa "?email= não confirmado" que o alarme lê.
-        await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.emailGateConfirmed);
-        const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, emailParam);
-        return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
-      }
-      // #4052: e-mail na URL mas não confirmado ativo — NUNCA vaza esse sinal
-      // pro leitor (poderia ser link velho/editado à mão); cai pro teaser
-      // normal, igual a não ter mandado `?email=` nenhum. Do lado do servidor,
-      // porém, isto é o sinal de saúde do caminho A: taxa baixa é normal, taxa
-      // de 100% é o gate quebrado de novo.
-      //
-      // #4321: `reason` distingue "verificamos e não é assinante" (warn, taxa
-      // é o sinal) de "não conseguimos verificar" (error — Beehiiv fora do
-      // ar/key rotacionada/rate-limit; sinal distinto, não deve se misturar
-      // com a taxa de negativo confirmado nem no alarme nem no dashboard de
-      // logs). A resposta ao visitante não muda em nenhum dos dois ramos.
-      if (outcome.reason === "verification_failed") {
-        console.error(
-          "[cursos] ?email= — verificação Beehiiv falhou (rede/401/403/429/5xx) — servindo teaser mesmo assim",
-        );
-        // #4321/#4382: `verification_failed` fica DE FORA de ambos os
-        // contadores da taxa (nem confirmed nem not-confirmed) — não deve se
-        // misturar com o sinal de negativo confirmado.
-      } else {
-        console.warn("[cursos] ?email= não confirmado como assinante ativo — servindo teaser");
-        await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.emailGateNotConfirmed);
+      const shouldRecheck = await shouldRecheckEmailVerification(env.CURSOS_SUBSCRIBERS, emailParam);
+      if (shouldRecheck) {
+        const outcome = await checkGateSubscriber(env, emailParam);
+        if (outcome.status === "active") {
+          // #4320: contraparte do log de "não confirmado" logo abaixo — sem
+          // este log, o caminho de SUCESSO nunca aparecia em nenhuma linha,
+          // e o alarme de taxa (scripts/cursos-error-alarm.ts) não tinha
+          // denominador pra calcular "% não confirmado" (só o numerador).
+          // Mesmo cuidado de redação dos dois `console.warn` logo abaixo:
+          // NUNCA interpola `emailParam` — a contagem é o que importa, não
+          // quem.
+          console.log("[cursos] ?email= confirmado como assinante ativo — desbloqueado");
+          // #4382: denominador da taxa "?email= não confirmado" que o alarme lê.
+          await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.emailGateConfirmed);
+          const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, emailParam);
+          return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
+        }
+        // #4052: e-mail na URL mas não confirmado ativo — NUNCA vaza esse sinal
+        // pro leitor (poderia ser link velho/editado à mão); cai pro teaser
+        // normal, igual a não ter mandado `?email=` nenhum. Do lado do servidor,
+        // porém, isto é o sinal de saúde do caminho A: taxa baixa é normal, taxa
+        // de 100% é o gate quebrado de novo.
+        //
+        // #4321: `reason` distingue "verificamos e não é assinante" (warn, taxa
+        // é o sinal) de "não conseguimos verificar" (error — Beehiiv fora do
+        // ar/key rotacionada/rate-limit; sinal distinto, não deve se misturar
+        // com a taxa de negativo confirmado nem no alarme nem no dashboard de
+        // logs). A resposta ao visitante não muda em nenhum dos dois ramos.
+        if (outcome.reason === "verification_failed") {
+          console.error(
+            "[cursos] ?email= — verificação Beehiiv falhou (rede/401/403/429/5xx) — servindo teaser mesmo assim",
+          );
+          // #4321/#4382: `verification_failed` fica DE FORA de ambos os
+          // contadores da taxa (nem confirmed nem not-confirmed) — não deve se
+          // misturar com o sinal de negativo confirmado.
+        } else {
+          console.warn("[cursos] ?email= não confirmado como assinante ativo — servindo teaser");
+          await incrementKvCounter(env.CURSOS_SUBSCRIBERS, CURSOS_ALARM_COUNTER_KEYS.emailGateNotConfirmed);
+        }
       }
     }
 
@@ -210,11 +223,12 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
       // no teaser mesmo depois de confirmar, até refazer o cadastro.
       // #4387: sem isto, TODO reload de `/` com sessão pending disparava
       // `checkGateSubscriber` de novo — que cai pra uma chamada AO VIVO da
-      // Beehiiv quando o KV ainda não sincronizou (sync roda só 1x/dia). O
-      // cooldown é por SESSÃO (hash do e-mail), não por IP — ver docstring de
-      // `shouldRecheckPendingSession` em gate.ts pro porquê.
+      // Beehiiv quando o KV ainda não sincronizou (sync roda só 1x/dia).
+      // Cooldown por e-mail, não por IP, e COMPARTILHADO com o branch
+      // `?email=` acima (#4390) — ver docstring de
+      // `shouldRecheckEmailVerification` em gate.ts pro porquê.
       if (session && session.pending) {
-        const shouldRecheck = await shouldRecheckPendingSession(env.CURSOS_SUBSCRIBERS, session.email);
+        const shouldRecheck = await shouldRecheckEmailVerification(env.CURSOS_SUBSCRIBERS, session.email);
         if (shouldRecheck) {
           const outcome = await checkGateSubscriber(env, session.email);
           if (outcome.status === "active") {

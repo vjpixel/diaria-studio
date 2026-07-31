@@ -79,52 +79,63 @@ export async function checkGateSubscriber(env: Env, email: string): Promise<Gate
 }
 
 /**
- * #4387: throttle da promoção `pending`→`confirmed` em `handleIndex` — antes
- * disso, TODO reload de `/` com um cookie `pending` chamava `checkGateSubscriber`
- * direto, sem nenhum rate-limit. `checkGateSubscriber` cai pra uma chamada AO
- * VIVO da API da Beehiiv quando a chave do KV está ausente (sync roda só 1x/dia
- * às 09:15) — um assinante legitimamente pending pode ficar nessa janela por
- * até ~24h, durante as quais cada reload disparava uma chamada Beehiiv sem
- * limite.
+ * #4387 (branch cookie `pending`) / #4390 (branch `?email=`): throttle de
+ * QUALQUER chamada a `checkGateSubscriber` disparada por `handleIndex` — os
+ * dois caminhos de entrada de `handleIndex` (ver docstring do handler em
+ * `index.ts`) caem no mesmo risco: `checkGateSubscriber` cai pra uma chamada
+ * AO VIVO da API da Beehiiv quando a chave do KV está ausente (sync roda só
+ * 1x/dia às 09:15). Sem throttle, TODO reload de `/` — seja com cookie
+ * `pending` (#4387) ou com `?email=` na query string (#4390, link
+ * salvo/repassado da newsletter que mantém o param no bookmark) — dispara uma
+ * chamada Beehiiv nova.
  *
- * Cooldown por SESSÃO (não por IP): o problema aqui não é força-bruta de
- * e-mail (mesma ameaça do `checkGateRateLimit`/#4322) — é UMA sessão já
- * autenticada (cookie HMAC válido) recarregando a mesma página repetidas
- * vezes. Throttle por IP correria o risco de bloquear cruzado entre sessões
- * pending distintas atrás do mesmo NAT/wifi compartilhado, ou de o mesmo IP
- * gastar o balde de `/gate/verify` (#4322) e travar a promoção de uma sessão
- * pending sem relação nenhuma com aquele fluxo. Chave é o hash do e-mail da
- * SESSÃO (nunca o e-mail cru em repouso no KV — mesmo cuidado de PII de
- * `subscriberKvKey`), então o cooldown é por pessoa, não por rede.
+ * Cooldown por PESSOA (hash do e-mail), não por IP: o problema aqui não é
+ * força-bruta de e-mail (mesma ameaça do `checkGateRateLimit`/#4322) — é a
+ * MESMA pessoa recarregando a mesma página repetidas vezes, seja via cookie
+ * de sessão ou via link com `?email=`. Throttle por IP correria o risco de
+ * bloquear cruzado entre sessões distintas atrás do mesmo NAT/wifi
+ * compartilhado, ou de o mesmo IP gastar o balde de `/gate/verify` (#4322) e
+ * travar um recheck sem relação nenhuma com aquele fluxo.
+ *
+ * Chave COMPARTILHADA entre os dois branches (#4390): mesmo hash de e-mail →
+ * mesma entrada de cooldown, independente de a chamada ter vindo do cookie
+ * `pending` ou do `?email=` da URL — é a mesma preocupação de custo/confiabilidade
+ * pro mesmo e-mail, então throttle-los juntos é estritamente melhor que 2
+ * baldes independentes (2 baldes deixaria a pessoa gastar 2× a chamada Beehiiv
+ * na mesma janela só por alternar entre os dois caminhos). O e-mail nunca é
+ * guardado cru em repouso no KV (mesmo cuidado de PII de `subscriberKvKey`).
  *
  * Cooldown simples (não é contador tipo `checkKvRateLimit`): a primeira
  * chamada dentro da janela seta a chave com TTL; qualquer chamada seguinte
  * enquanto a chave ainda existe é recusada. Não conta tentativas — só
- * pergunta "já rechecamos esta sessão recentemente?".
+ * pergunta "já rechecamos este e-mail recentemente?".
  */
-export const PENDING_PROMOTION_COOLDOWN_SEC = 10 * 60; // 10min
+export const EMAIL_VERIFY_COOLDOWN_SEC = 10 * 60; // 10min
 
-/** Exportado pro teste de regressão (#4387) poder inspecionar/expirar a
+/** Exportado pro teste de regressão (#4387/#4390) poder inspecionar/expirar a
  * chave de cooldown diretamente no KV — mesmo padrão de `subscriberKvKey`. */
-export function pendingPromotionCooldownKey(emailHash: string): string {
+export function emailVerifyCooldownKey(emailHash: string): string {
   return `cooldown:cursos-pending-promo:${emailHash}`;
 }
 
 /**
- * `true` = ainda não rechecamos esta sessão pending na janela de cooldown —
- * o caller pode chamar `checkGateSubscriber` e a chave já fica marcada (seta
- * a chave ANTES do caller decidir o que fazer, pra requests concorrentes na
- * mesma janela não passarem os dois — consistência eventual do KV é aceitável
- * aqui, mesma nota de `checkKvRateLimit`: o pior caso é 1-2 chamadas a mais
- * numa corrida, não uma reintrodução do bug original de "sem limite nenhum").
+ * `true` = ainda não rechecamos este e-mail na janela de cooldown — o caller
+ * pode chamar `checkGateSubscriber` e a chave já fica marcada (seta a chave
+ * ANTES do caller decidir o que fazer, pra requests concorrentes na mesma
+ * janela não passarem os dois — consistência eventual do KV é aceitável aqui,
+ * mesma nota de `checkKvRateLimit`: o pior caso é 1-2 chamadas a mais numa
+ * corrida, não uma reintrodução do bug original de "sem limite nenhum").
  * `false` = dentro do cooldown, o caller NÃO deve chamar `checkGateSubscriber`
  * (nem o caminho KV barato, nem o fallback ao vivo da Beehiiv) — degrada pro
  * teaser/sessão pending como está, igual a "ainda não confirmou".
+ *
+ * Usado pelos DOIS branches de `handleIndex` (cookie `pending`, #4387; e
+ * `?email=`, #4390) com a mesma chave por e-mail — ver docstring acima.
  */
-export async function shouldRecheckPendingSession(kv: KVNamespace, email: string): Promise<boolean> {
-  const key = pendingPromotionCooldownKey(await sha256Hex(email));
+export async function shouldRecheckEmailVerification(kv: KVNamespace, email: string): Promise<boolean> {
+  const key = emailVerifyCooldownKey(await sha256Hex(email));
   const existing = await kv.get(key);
   if (existing) return false;
-  await kv.put(key, "1", { expirationTtl: PENDING_PROMOTION_COOLDOWN_SEC });
+  await kv.put(key, "1", { expirationTtl: EMAIL_VERIFY_COOLDOWN_SEC });
   return true;
 }

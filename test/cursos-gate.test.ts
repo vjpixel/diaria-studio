@@ -13,7 +13,7 @@ import worker, { type Env } from "../workers/cursos/src/index.ts";
 import { subscriberKvKey, sha256Hex } from "../scripts/lib/shared/subscriber-verify.ts";
 import { CURSOS_SESSION_COOKIE, issueSessionCookie, readSession } from "../workers/cursos/src/cookie.ts";
 import { CURSOS_FULL_HTML } from "../workers/cursos/src/courses-full.generated.ts";
-import { pendingPromotionCooldownKey } from "../workers/cursos/src/gate.ts";
+import { emailVerifyCooldownKey } from "../workers/cursos/src/gate.ts";
 import { CURSOS_ALARM_COUNTER_KEYS } from "../scripts/lib/shared/cursos-alarm-counters.ts";
 
 /** Decodifica o valor cru do cookie a partir do header `Set-Cookie` completo
@@ -59,6 +59,32 @@ function baseEnv(overrides: Partial<Env> = {}): Env {
 
 function getCookieHeader(res: Response): string | null {
   return res.headers.get("Set-Cookie");
+}
+
+/** Wrapper de KV que conta quantas vezes `get` é chamado pra uma chave de
+ * ASSINANTE (`subscriber:...`) — é essa a chamada que `checkGateSubscriber`
+ * faz sempre no caminho barato (KV) antes de decidir se cai pro fallback ao
+ * vivo da Beehiiv. Contar aqui mede diretamente "quantas vezes
+ * `checkGateSubscriber` rodou", sem precisar mockar módulos inteiros.
+ * Compartilhado pelos testes de cooldown do #4387 (cookie pending) e do #4390
+ * (`?email=`) — os dois branches usam o MESMO mecanismo de throttle. */
+function makeCountingKV(initial: Record<string, string> = {}) {
+  const m = new Map<string, string>(Object.entries(initial));
+  let subscriberGetCalls = 0;
+  const kv = {
+    async get(key: string) {
+      if (key.startsWith("subscriber:")) subscriberGetCalls++;
+      const v = m.get(key);
+      return v === undefined ? null : v;
+    },
+    async put(key: string, value: string) {
+      m.set(key, value);
+    },
+    async delete(key: string) {
+      m.delete(key);
+    },
+  } as unknown as KVNamespace;
+  return { kv, map: m, getSubscriberGetCalls: () => subscriberGetCalls };
 }
 
 describe("workers/cursos GET / (#4052)", () => {
@@ -829,30 +855,6 @@ describe("workers/cursos: checkGateSubscriber distingue verification_failed (#43
  * sessão pending batendo em `/` repetidamente dentro da janela de cooldown.
  */
 describe("workers/cursos: cooldown da promoção pending→confirmed (#4387)", () => {
-  /** Wrapper de KV que conta quantas vezes `get` é chamado pra uma chave de
-   * ASSINANTE (`subscriber:...`) — é essa a chamada que `checkGateSubscriber`
-   * faz sempre no caminho barato (KV) antes de decidir se cai pro fallback ao
-   * vivo da Beehiiv. Contar aqui mede diretamente "quantas vezes
-   * `checkGateSubscriber` rodou", sem precisar mockar módulos inteiros. */
-  function makeCountingKV(initial: Record<string, string> = {}) {
-    const m = new Map<string, string>(Object.entries(initial));
-    let subscriberGetCalls = 0;
-    const kv = {
-      async get(key: string) {
-        if (key.startsWith("subscriber:")) subscriberGetCalls++;
-        const v = m.get(key);
-        return v === undefined ? null : v;
-      },
-      async put(key: string, value: string) {
-        m.set(key, value);
-      },
-      async delete(key: string) {
-        m.delete(key);
-      },
-    } as unknown as KVNamespace;
-    return { kv, map: m, getSubscriberGetCalls: () => subscriberGetCalls };
-  }
-
   it("sessão pending recarregando / repetidamente dentro do cooldown: checkGateSubscriber roda no máximo 1x", async () => {
     const email = "pending-reload@example.com";
     const cookieValue = await issueSessionCookie("cookie-secret", email, "pending");
@@ -911,7 +913,7 @@ describe("workers/cursos: cooldown da promoção pending→confirmed (#4387)", (
     // Cooldown expira (simulado apagando a chave — equivalente a esperar o
     // TTL): a PRÓXIMA visita finalmente recheca e promove.
     const emailHash = await sha256Hex(email);
-    map.delete(pendingPromotionCooldownKey(emailHash));
+    map.delete(emailVerifyCooldownKey(emailHash));
 
     const third = await worker.fetch(req(), env);
     assert.equal(await third.text(), CURSOS_FULL_HTML, "após o cooldown expirar, a promoção deve acontecer");
@@ -935,10 +937,124 @@ describe("workers/cursos: cooldown da promoção pending→confirmed (#4387)", (
     assert.equal(getSubscriberGetCalls(), 0, "sessão confirmed nunca deveria chamar checkGateSubscriber");
     const emailHash = await sha256Hex(email);
     assert.equal(
-      map.has(pendingPromotionCooldownKey(emailHash)),
+      map.has(emailVerifyCooldownKey(emailHash)),
       false,
       "sessão confirmed nunca deveria tocar a chave de cooldown — o rate-limit é exclusivo do caminho pending",
     );
+  });
+});
+
+/**
+ * #4390 — mesmo gap de rate-limit do #4387, no OUTRO branch de `handleIndex`:
+ * link de newsletter salvo/repassado com `?email=` re-dispara
+ * `checkGateSubscriber` (fallback ao vivo da Beehiiv incluso) a cada reload,
+ * sem nenhum throttle — o `?email=` é pré-existente desde #4305/#4321 e ficou
+ * FORA de escopo do #4387 (que cobriu só o cookie `pending`). Os testes abaixo
+ * espelham o padrão do #4387 pro branch `?email=`, e confirmam que a chave de
+ * cooldown é COMPARTILHADA entre os dois branches (mesmo e-mail → mesmo
+ * balde), como o próprio #4390 sugeriu.
+ */
+describe("workers/cursos: cooldown do branch ?email= (#4390)", () => {
+  it("?email= recarregando / repetidamente dentro do cooldown: checkGateSubscriber roda no máximo 1x", async () => {
+    const email = "email-param-reload@example.com";
+    const { kv, getSubscriberGetCalls } = makeCountingKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
+    const req = () =>
+      new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`);
+
+    // 5 reloads seguidos do MESMO link com ?email= (ex: aba salva/bookmark) —
+    // antes do fix, cada um disparava um checkGateSubscriber novo (e, sem KV
+    // sincronizado, uma chamada Beehiiv ao vivo por reload).
+    const responses: Response[] = [];
+    for (let i = 0; i < 5; i++) responses.push(await worker.fetch(req(), env));
+
+    for (const res of responses) {
+      assert.equal(await res.text(), TEASER_HTML, "sem confirmação disponível (KV vazio), cada reload continua vendo o teaser");
+    }
+    assert.equal(
+      getSubscriberGetCalls(),
+      1,
+      `checkGateSubscriber deveria ter rodado 1x só, rodou ${getSubscriberGetCalls()}x`,
+    );
+  });
+
+  it("assinante sincroniza no KV DENTRO da janela de cooldown: ?email= só reflete a confirmação depois que o cooldown expira", async () => {
+    const email = "email-param-promovido@example.com";
+    const { kv, map, getSubscriberGetCalls } = makeCountingKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
+    const req = () =>
+      new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`);
+
+    // 1ª visita: KV ainda não sincronizou — cai pro teaser, mas já consome o
+    // cooldown.
+    const first = await worker.fetch(req(), env);
+    assert.equal(await first.text(), TEASER_HTML);
+    assert.equal(getSubscriberGetCalls(), 1);
+
+    // Sync diário roda "no meio da janela" (simulado): o assinante agora está
+    // ativo no KV.
+    const subKey = await subscriberKvKey(email);
+    map.set(subKey, "1");
+
+    // 2ª visita, ainda dentro do cooldown: NÃO deve chamar checkGateSubscriber
+    // de novo, mesmo com o assinante já ativo no KV — é exatamente a janela
+    // que o bug original deixava aberta.
+    const second = await worker.fetch(req(), env);
+    assert.equal(
+      await second.text(),
+      TEASER_HTML,
+      "dentro do cooldown, o branch ?email= não deve rechecar mesmo com o assinante já ativo no KV",
+    );
+    assert.equal(getCookieHeader(second), null);
+    assert.equal(getSubscriberGetCalls(), 1, "checkGateSubscriber não deveria ter rodado de novo dentro do cooldown");
+
+    // Cooldown expira (simulado apagando a chave — equivalente a esperar o
+    // TTL): a PRÓXIMA visita finalmente recheca e desbloqueia.
+    const emailHash = await sha256Hex(email);
+    map.delete(emailVerifyCooldownKey(emailHash));
+
+    const third = await worker.fetch(req(), env);
+    assert.equal(await third.text(), CURSOS_FULL_HTML, "após o cooldown expirar, o branch ?email= deve desbloquear");
+    assert.match(getCookieHeader(third) ?? "", /HttpOnly/, "desbloqueio deve emitir cookie de sessão");
+    assert.equal(getSubscriberGetCalls(), 2, "checkGateSubscriber deveria ter rodado de novo só após o cooldown expirar");
+  });
+
+  it("cooldown é COMPARTILHADO entre o branch ?email= e o branch de cookie pending para o MESMO e-mail (#4390)", async () => {
+    const email = "compartilhado@example.com";
+    const { kv, getSubscriberGetCalls } = makeCountingKV();
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: kv });
+
+    // 1ª visita via ?email= consome o cooldown do e-mail.
+    const emailReq = new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`);
+    const first = await worker.fetch(emailReq, env);
+    assert.equal(await first.text(), TEASER_HTML);
+    assert.equal(getSubscriberGetCalls(), 1);
+
+    // 2ª visita, MESMO e-mail, mas agora via cookie de sessão pending — deve
+    // respeitar o MESMO cooldown (não gastar uma 2ª chamada Beehiiv só por
+    // ter trocado de caminho de entrada).
+    const cookieValue = await issueSessionCookie("cookie-secret", email, "pending");
+    const cookiePair = cookieValue.split(";")[0];
+    const pendingReq = new Request("https://cursos.diar.ia.br/", { headers: { Cookie: cookiePair } });
+    const second = await worker.fetch(pendingReq, env);
+    assert.equal(await second.text(), TEASER_HTML);
+    assert.equal(
+      getSubscriberGetCalls(),
+      1,
+      "o cooldown do branch ?email= deveria bloquear o recheck do branch pending pro mesmo e-mail",
+    );
+  });
+
+  it("?email= de assinante ativo continua desbloqueando na 1ª visita (sem regressão de comportamento)", async () => {
+    const email = "email-param-ok@example.com";
+    const key = await subscriberKvKey(email);
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }) });
+    const res = await worker.fetch(
+      new Request(`https://cursos.diar.ia.br/?email=${encodeURIComponent(email)}`),
+      env,
+    );
+    assert.equal(await res.text(), CURSOS_FULL_HTML);
+    assert.match(getCookieHeader(res) ?? "", /HttpOnly/);
   });
 });
 
