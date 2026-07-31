@@ -53,8 +53,9 @@ export interface GateCheckOutcome {
 /**
  * Verifica se `email` é assinante ativo. PRIMÁRIO: KV populado pelo sync
  * (`scripts/sync-cursos-subscribers-kv.ts`). Se o KV não tem a chave
- * (`"unknown"`), tenta o caminho SECUNDÁRIO/não-verificado (`by_email` direto
- * na Beehiiv) só quando os secrets estão configurados — nunca falha o
+ * (`"unknown"`), tenta o caminho SECUNDÁRIO (`by_email` direto na Beehiiv,
+ * confirmado ao vivo no #4305 — ver `subscriber-verify.ts`) só quando os
+ * secrets estão configurados — nunca falha o
  * request se ausentes, apenas trata como "not_active"/`confirmed_negative`
  * (o form de cadastro inline cobre esse caso, ver subscribe.ts — decisão
  * deliberada de manter esse caminho como está, #4321 não mexe nisso: secrets

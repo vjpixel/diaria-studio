@@ -11,8 +11,17 @@ import assert from "node:assert/strict";
 
 import worker, { type Env } from "../workers/cursos/src/index.ts";
 import { subscriberKvKey } from "../scripts/lib/shared/subscriber-verify.ts";
-import { issueSessionCookie } from "../workers/cursos/src/cookie.ts";
+import { CURSOS_SESSION_COOKIE, issueSessionCookie, readSession } from "../workers/cursos/src/cookie.ts";
 import { CURSOS_FULL_HTML } from "../workers/cursos/src/courses-full.generated.ts";
+
+/** Decodifica o valor cru do cookie a partir do header `Set-Cookie` completo
+ * (como devolvido pelo handler) — usado pelos testes do #4323 pra inspecionar
+ * o estado pending/confirmed embutido no cookie assinado. */
+function rawCookieValue(setCookieHeader: string): string {
+  const pair = setCookieHeader.split(";")[0];
+  const eq = pair.indexOf("=");
+  return decodeURIComponent(pair.slice(eq + 1));
+}
 
 function makeMapKV(initial: Record<string, string> = {}) {
   const m = new Map<string, string>(Object.entries(initial));
@@ -216,6 +225,46 @@ describe("workers/cursos POST /gate/verify (#4052)", () => {
     for (let i = 0; i < 9; i++) last = await worker.fetch(mkReq(), env);
     assert.equal(last!.status, 429);
   });
+
+  /**
+   * #4322 item 1: `checkGateRateLimit` era consumido ANTES de parsear/validar
+   * o e-mail — um typo repetido 8× trancava o IP por 1h sem que nenhuma
+   * tentativa tivesse alcançado `checkGateSubscriber` (aconteceu ao vivo com
+   * o editor testando o #4305). O rate-limit existe contra força-bruta de
+   * e-mail; requisição que nem chega a consultar assinante não é tentativa
+   * de força-bruta.
+   */
+  it("erro de FORMATO de e-mail não consome o rate-limit (#4322 item 1)", async () => {
+    const env = baseEnv();
+    const ip = "7.7.7.7";
+    const invalidReq = () =>
+      new Request("https://cursos.diar.ia.br/gate/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+        body: JSON.stringify({ email: "isso-nao-e-um-email" }),
+      });
+    // 8 tentativas com e-mail sintaticamente inválido — antes do fix, cada uma
+    // consumia o mesmo balde do rate-limit (limite 8/h) mesmo sem nunca
+    // consultar um assinante de verdade.
+    for (let i = 0; i < 8; i++) {
+      const res = await worker.fetch(invalidReq(), env);
+      assert.equal(res.status, 400, `tentativa ${i + 1} deveria ser 400 (formato inválido), nunca 429`);
+    }
+    // a 9ª tentativa, com e-mail bem formado (mas não-assinante), NÃO pode vir
+    // 429 — só viria se as 8 tentativas de formato inválido tivessem contado.
+    const validRes = await worker.fetch(
+      new Request("https://cursos.diar.ia.br/gate/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "CF-Connecting-IP": ip },
+        body: JSON.stringify({ email: "formato-valido@example.com" }),
+      }),
+      env,
+    );
+    assert.notEqual(validRes.status, 429, "erro de formato não deveria ter consumido o rate-limit real");
+    const data = (await validRes.json()) as { ok: boolean; error?: string };
+    assert.equal(data.ok, false);
+    assert.equal(data.error, "not_active");
+  });
 });
 
 describe("workers/cursos POST /gate/subscribe (#4052)", () => {
@@ -256,6 +305,96 @@ describe("workers/cursos POST /gate/subscribe (#4052)", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  /**
+   * #4323: `handleGateSubscribe` tratava qualquer 2xx do `POST /subscriptions`
+   * como sucesso e emitia direto um cookie de sessão de 30 dias com acesso
+   * COMPLETO — `subscribeToBeehiiv` nunca lia o `status` do corpo da
+   * resposta. O mock acima (`{data:{id:"sub_1"}}`, sem `status`) é exatamente
+   * o caso que travava esse comportamento no CI; os dois testes abaixo
+   * verificam o estado real do cookie emitido (via `readSession`, não só a
+   * presença de `HttpOnly`) nos dois ramos que passaram a existir.
+   */
+  it("Beehiiv responde 2xx mas SEM confirmar status:active → cookie sai PENDING, não concede acesso completo (#4323)", async () => {
+    const env = baseEnv({
+      BEEHIIV_API_KEY: "test-key",
+      BEEHIIV_PUBLICATION_ID: "pub_test",
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: { id: "sub_1" } }), { status: 201 })) as typeof fetch;
+    try {
+      const res = await worker.fetch(subReq({ email: "pendente@example.com", optin: true }), env);
+      assert.equal(res.status, 200, "cadastro em si continua ok:true — só o ESTADO da sessão muda");
+      const setCookie = getCookieHeader(res) ?? "";
+      assert.match(setCookie, /HttpOnly/);
+      const session = await readSession("cookie-secret", `${CURSOS_SESSION_COOKIE}=${encodeURIComponent(rawCookieValue(setCookie))}`);
+      assert.ok(session, "cookie precisa ser um valor válido/verificável");
+      assert.equal(session!.email, "pendente@example.com");
+      assert.equal(session!.pending, true, "sem status:active confirmado, a sessão não pode sair como confirmada");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("Beehiiv confirma status:active na própria resposta → cookie sai CONFIRMED, sem fricção extra (#4323)", async () => {
+    const env = baseEnv({
+      BEEHIIV_API_KEY: "test-key",
+      BEEHIIV_PUBLICATION_ID: "pub_test",
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: { id: "sub_1", status: "active" } }), { status: 201 })) as typeof fetch;
+    try {
+      const res = await worker.fetch(subReq({ email: "ativo-na-hora@example.com", optin: true }), env);
+      assert.equal(res.status, 200);
+      const setCookie = getCookieHeader(res) ?? "";
+      assert.match(setCookie, /HttpOnly/);
+      const session = await readSession("cookie-secret", `${CURSOS_SESSION_COOKIE}=${encodeURIComponent(rawCookieValue(setCookie))}`);
+      assert.ok(session);
+      assert.equal(session!.email, "ativo-na-hora@example.com");
+      assert.equal(session!.pending, false, "status:active na resposta é o caminho comum — nunca deve ganhar fricção extra");
+      // #4323 acceptance (c): confirma que a sessão CONFIRMED de fato libera
+      // o conteúdo completo numa visita seguinte, sem precisar de /gate/verify.
+      const cookiePair = setCookie.split(";")[0];
+      const homeRes = await worker.fetch(
+        new Request("https://cursos.diar.ia.br/", { headers: { Cookie: cookiePair } }),
+        env,
+      );
+      assert.equal(await homeRes.text(), CURSOS_FULL_HTML);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("sessão PENDING não libera o conteúdo completo em / até ser promovida (#4323)", async () => {
+    const email = "ainda-pendente@example.com";
+    const cookieValue = await issueSessionCookie("cookie-secret", email, "pending");
+    const cookiePair = cookieValue.split(";")[0];
+    // KV vazio (assinante ainda não sincronizado) e sem secrets Beehiiv — checkGateSubscriber
+    // não tem como confirmar "active", então a promoção não acontece nesta visita.
+    const env = baseEnv();
+    const res = await worker.fetch(
+      new Request("https://cursos.diar.ia.br/", { headers: { Cookie: cookiePair } }),
+      env,
+    );
+    assert.equal(await res.text(), TEASER_HTML, "sessão pending sem confirmação disponível deve continuar vendo o teaser");
+  });
+
+  it("sessão PENDING é promovida a CONFIRMED em / quando checkGateSubscriber já confirma active (#4323)", async () => {
+    const email = "promovido@example.com";
+    const key = await subscriberKvKey(email);
+    const cookieValue = await issueSessionCookie("cookie-secret", email, "pending");
+    const cookiePair = cookieValue.split(";")[0];
+    // KV já populado (sync rodou depois do cadastro) — a próxima visita deve promover.
+    const env = baseEnv({ CURSOS_SUBSCRIBERS: makeMapKV({ [key]: "1" }) });
+    const res = await worker.fetch(
+      new Request("https://cursos.diar.ia.br/", { headers: { Cookie: cookiePair } }),
+      env,
+    );
+    assert.equal(await res.text(), CURSOS_FULL_HTML, "sessão pending confirmada via KV deve ser promovida a conteúdo completo");
+    assert.match(getCookieHeader(res) ?? "", /HttpOnly/, "promoção deve reemitir um cookie CONFIRMED novo");
   });
 
   it("honeypot preenchido → 200 fake-success, nenhuma chamada à Beehiiv", async () => {

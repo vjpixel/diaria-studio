@@ -41,7 +41,7 @@
 import { CURSOS_FULL_HTML } from "./courses-full.generated.ts";
 import { renderGatePage } from "./gate-page.ts";
 import { checkGateRateLimit, checkGateSubscriber } from "./gate.ts";
-import { clearSessionCookieHeader, issueSessionCookie, readSessionEmail } from "./cookie.ts";
+import { clearSessionCookieHeader, issueSessionCookie, readSession } from "./cookie.ts";
 import { handleGateSubscribe, isValidEmailFormat } from "./subscribe.ts";
 
 export interface Env {
@@ -187,8 +187,23 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
     }
 
     if (canIssueSession) {
-      const cookieEmail = await readSessionEmail(env.COOKIE_HMAC_SECRET, request.headers.get("Cookie"));
-      if (cookieEmail) return html(CURSOS_FULL_HTML);
+      const session = await readSession(env.COOKIE_HMAC_SECRET, request.headers.get("Cookie"));
+      if (session && !session.pending) return html(CURSOS_FULL_HTML);
+      // #4323: sessão `pending` (cadastro feito via /gate/subscribe, Beehiiv
+      // ainda não tinha confirmado `status: "active"` na hora) — reconsulta
+      // o mesmo `checkGateSubscriber` do path `?email=`/`gate/verify`; se já
+      // confirmou ativo, promove pra sessão completa nesta visita (mesmo
+      // mecanismo de promoção do `workers/poll/src/web-gate.ts`, #4121: "na
+      // próxima visita ou no /gate/verify seguinte"). Sem isso, quem assinou
+      // e cujo double opt-in não confirmou na mesma resposta ficaria preso
+      // no teaser mesmo depois de confirmar, até refazer o cadastro.
+      if (session && session.pending) {
+        const outcome = await checkGateSubscriber(env, session.email);
+        if (outcome.status === "active") {
+          const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, session.email);
+          return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
+        }
+      }
     }
   } catch (err) {
     // Contexto no log: sem ele não dá pra distinguir "um request com azar" de
@@ -228,10 +243,12 @@ async function handleGateVerify(request: Request, env: Env): Promise<Response> {
     return json({ ok: false, error: "gate_unavailable" }, 503, env);
   }
 
-  const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || "";
-  const rl = await checkGateRateLimit(env.CURSOS_SUBSCRIBERS, ip);
-  if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
-
+  // #4322 item 1: rate-limit consumido SÓ depois de corpo/formato validados —
+  // antes disso, um typo de e-mail repetido 8× trancava o IP por 1h sem que
+  // nenhuma tentativa tivesse chegado a consultar um assinante de verdade
+  // (aconteceu ao vivo com o editor testando o #4305). O limite existe contra
+  // força-bruta de e-mail; requisição que nem chega a `checkGateSubscriber`
+  // não é tentativa de força-bruta.
   let body: { email?: unknown; website?: unknown };
   try {
     body = (await request.json()) as { email?: unknown; website?: unknown };
@@ -245,6 +262,10 @@ async function handleGateVerify(request: Request, env: Env): Promise<Response> {
   }
   const email = typeof body.email === "string" ? body.email.trim() : "";
   if (!email || !isValidEmailFormat(email)) return json({ ok: false, error: "invalid_email" }, 400, env);
+
+  const ip = request.headers.get("CF-Connecting-IP") || request.headers.get("X-Forwarded-For") || "";
+  const rl = await checkGateRateLimit(env.CURSOS_SUBSCRIBERS, ip);
+  if (!rl.allowed) return json({ ok: false, error: "rate_limited" }, 429, env);
 
   const outcome = await checkGateSubscriber(env, email);
   if (outcome.status !== "active") {
