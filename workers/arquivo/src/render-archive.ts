@@ -2,23 +2,36 @@
  * workers/arquivo/src/render-archive.ts (#4105)
  *
  * Lógica pura de construção do HTML da página de arquivo: filtra o sitemap
- * pra edições reais (`/p/*`), agrupa por ano-mês (derivado do `lastmod`) e
- * renderiza `<a href>` reais — sem JS client-side, sem paginação. Separada
- * do fetch handler (`src/index.ts`) pra ser testável sem rede, mesmo padrão
- * de `scripts/build-cursos-page.ts` (ver `test/build-cursos-page.test.ts`).
+ * pra edições reais (`/p/*`), agrupa por ano-mês e renderiza `<a href>`
+ * reais — sem JS client-side, sem paginação. Separada do fetch handler
+ * (`src/index.ts`) pra ser testável sem rede, mesmo padrão de
+ * `scripts/build-cursos-page.ts` (ver `test/build-cursos-page.test.ts`).
  *
- * `displayText` é derivado só do slug da URL (troca `-` por espaço,
- * capitaliza a 1ª letra) — NÃO fazemos fetch de cada uma das ~223 páginas
- * pra pegar o título real (223+1 fetches por load seria lento/caro demais).
- * O objetivo é só existir o `<a href>` crawlable; o Googlebot lê o título
- * real ao seguir o link. Títulos derivados-do-slug quebrados (acentos
- * removidos viram espaço), agrupamento por `lastmod` em vez de `publish_date`
- * e navegação por 225 itens são #4105 itens 1/2/5 — FORA de escopo aqui
- * (#4265, dependem de `data/beehiiv-cache/`, sessão local).
+ * **Título/data reais via `titles-cache.json` (#4265 item 1).** Antes
+ * (#4105) o texto do link era derivado só do slug da URL (troca `-` por
+ * espaço, capitaliza a 1ª letra) — o Beehiiv remove acentos deixando o
+ * caractere vazio, produzindo palavras quebradas ("Anthropic lan a o claude
+ * opus 5"). `titles-cache.json` (gerado por
+ * `scripts/generate-arquivo-titles.ts` a partir de
+ * `data/beehiiv-cache/posts/*.json`, COMMITADO dentro deste diretório) mapeia
+ * `slug → {title, publishDate}` — o Worker importa estaticamente (build-time,
+ * sem KV/fetch extra). Slug ausente do cache cai no fallback
+ * `displayTextFromLoc` original (nunca derruba o `<a href>` da lista).
  *
- * Design/SEO (#4265 itens 7/8/9): DS canônico da Diar.ia via
- * `scripts/lib/shared/{design-tokens,curadoria-page,seo-meta}.ts` — mesmo
- * padrão de `cursos.diar.ia.br`/`livros.diar.ia.br` (#3698). Zero JS
+ * **Agrupamento/data por edição (#4265 itens 2/3).** `publishDate` do cache
+ * é a fonte preferida pra agrupar por mês e mostrar o dia de cada edição —
+ * `lastmod` do sitemap (última MODIFICAÇÃO, não publicação) é só fallback
+ * pra slugs ausentes do cache.
+ *
+ * **Índice por mês + CTA (#4265 itens 4/5).** Bloco de âncoras no topo
+ * (`#2026-07`) — sem JS, sem paginação, mantendo o requisito original do
+ * #4105 de todos os `<a href>` na mesma resposta. CTA de assinatura simples
+ * (link puro, sem form/JS) + rodapé com nav cruzada de volta pra
+ * `diar.ia.br` (já presente desde #4265 item 9).
+ *
+ * Design/SEO (#4265 itens 7/8/9, já implementados): DS canônico da Diar.ia
+ * via `scripts/lib/shared/{design-tokens,curadoria-page,seo-meta}.ts` —
+ * mesmo padrão de `cursos.diar.ia.br`/`livros.diar.ia.br` (#3698). Zero JS
  * client-side (mantém o requisito original do #4105 de página 100%
  * server-rendered, sem paginação).
  */
@@ -32,9 +45,26 @@ import {
 } from "../../../scripts/lib/shared/curadoria-page.ts";
 import { renderSeoMeta } from "../../../scripts/lib/shared/seo-meta.ts";
 import { ARQUIVO_FOOTER_NAV_UTM } from "../../../scripts/lib/shared/utm-registry.ts";
+import titlesCacheRaw from "./titles-cache.json";
+
+/** Shape de cada entrada do cache (espelha `ArquivoTitleEntry` de
+ * `scripts/generate-arquivo-titles.ts` — não importado direto pra manter
+ * este arquivo livre de dependência do gerador Node, só do JSON gerado).
+ * Exportado só pra tipar o `cacheOverride` de teste de `buildArchiveHtml`. */
+export interface TitleCacheEntry {
+  title: string;
+  /** `YYYY-MM-DD`. */
+  publishDate: string;
+}
+
+export type TitlesCacheMap = Record<string, TitleCacheEntry>;
+
+const titlesCache: TitlesCacheMap = titlesCacheRaw as TitlesCacheMap;
 
 /** URL pública canônica desta página (Workers Custom Domain, #4105/#3698). */
 export const PAGE_URL = "https://arquivo.diar.ia.br/";
+/** URL de assinatura (#4265 item 4 — CTA simples, sem form/JS). */
+const SUBSCRIBE_URL = "https://diar.ia.br/subscribe";
 const PAGE_TITLE = "Arquivo — todas as edições da Diar.ia";
 const PAGE_DESCRIPTION =
   "Índice de todas as edições publicadas da newsletter Diar.ia, agrupadas por mês.";
@@ -44,7 +74,15 @@ const PAGE_DESCRIPTION =
  * cursos/livros, não uma lista simples de links). */
 function renderArchiveListStyles(): string {
   return `  main { padding: 40px 0 64px; }
-  .count { font-family: ${FONTS.sans}; font-size: 14px; color: var(--ink); margin: 8px 0 40px; }
+  .subscribe-cta { margin: 20px 0 0; }
+  .subscribe-cta a { font-family: ${FONTS.sans}; font-size: 15px; font-weight: 700;
+    color: var(--teal); text-decoration: none; border-bottom: 1px solid var(--teal); padding-bottom: 2px; }
+  .subscribe-cta a:hover { opacity: 0.75; }
+  .count { font-family: ${FONTS.sans}; font-size: 14px; color: var(--ink); margin: 8px 0 24px; }
+  .month-index { font-family: ${FONTS.sans}; font-size: 13px; line-height: 2; color: var(--ink);
+    margin: 0 0 40px; padding: 16px 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  .month-index a { color: var(--teal); text-decoration: none; }
+  .month-index a:hover { text-decoration: underline; }
   section { margin: 0 0 40px; }
   section h2 { font-family: ${FONTS.serif}; font-size: 22px; font-weight: 700;
     color: var(--ink); margin: 0 0 4px; }
@@ -53,7 +91,8 @@ function renderArchiveListStyles(): string {
   section li { border-bottom: 1px solid var(--rule); }
   section li a { display: block; padding: 13px 2px; font-family: ${FONTS.sans}; font-size: 16px;
     line-height: 1.4; color: var(--ink); text-decoration: none; }
-  section li a:hover { color: var(--teal); }`;
+  section li a:hover { color: var(--teal); }
+  section li .li-date { color: var(--teal); font-weight: 700; margin-right: 8px; }`;
 }
 
 const MONTH_NAMES_PT = [
@@ -90,23 +129,63 @@ function pathOf(loc: string): string | null {
   }
 }
 
-/** Deriva um texto legível a partir do último segmento do path do `loc`
- * (o slug da edição) — troca `-` por espaço e capitaliza a 1ª letra. Slugs
- * do Beehiiv às vezes têm artefatos de acentuação removida (cosmético,
- * pré-existente, fora de escopo aqui — ver #4105). */
-export function displayTextFromLoc(loc: string): string {
+/** Último segmento não-vazio do path do `loc` (o slug da edição), ou string
+ * vazia se não houver nenhum — usado tanto pelo fallback de título abaixo
+ * quanto pro lookup em `titles-cache.json` (match por SLUG, nunca por URL
+ * completa — ver nota do módulo). */
+function slugOf(loc: string): string {
   const path = pathOf(loc);
   const parts = (path ?? loc).split("/").filter(Boolean);
-  const slug = parts[parts.length - 1] ?? "";
+  return parts[parts.length - 1] ?? "";
+}
+
+/** Deriva um texto legível a partir do slug do `loc` — troca `-` por espaço
+ * e capitaliza a 1ª letra. FALLBACK — só usado quando o slug está ausente de
+ * `titles-cache.json` (#4265 item 1); Slugs do Beehiiv às vezes têm
+ * artefatos de acentuação removida ("lan a o" em vez de "lança o"), daí a
+ * preferência pelo título real do cache sempre que disponível. */
+export function displayTextFromLoc(loc: string): string {
+  const slug = slugOf(loc);
   const text = slug.replace(/-/g, " ").trim();
   if (!text) return loc;
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** Chave de agrupamento `YYYY-MM` a partir de um `lastmod` (aceita tanto
+/** Resolve o título de exibição de uma entrada: título real do cache
+ * (`titles-cache.json`, casado por slug) se disponível, senão o fallback
+ * derivado do slug (#4265 item 1). */
+function resolveTitle(loc: string, slug: string, cache: TitlesCacheMap): string {
+  return cache[slug]?.title ?? displayTextFromLoc(loc);
+}
+
+/** Primeiros 10 caracteres (`YYYY-MM-DD`) de uma data/datetime ISO, ou o
+ * texto original (trimado) se não bater o formato — normaliza `lastmod`
+ * (que pode vir como `YYYY-MM-DD` ou datetime completo) pra comparação
+ * consistente com `publishDate` do cache (sempre `YYYY-MM-DD`). */
+function dateOnly(dateOrDatetime: string): string {
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(dateOrDatetime.trim());
+  return m ? m[1] : dateOrDatetime.trim();
+}
+
+/** Resolve a "data efetiva" de uma entrada pra agrupamento/ordenação/exibição
+ * (#4265 itens 2/3): `publishDate` do cache (data de PUBLICAÇÃO real) quando
+ * o slug está no cache, senão `lastmod` do sitemap (última MODIFICAÇÃO —
+ * fallback, pode divergir da publicação real). */
+function effectiveDate(slug: string, lastmod: string, cache: TitlesCacheMap): string {
+  return cache[slug]?.publishDate ?? dateOnly(lastmod);
+}
+
+/** `DD/MM` a partir de uma data efetiva `YYYY-MM-DD`, ou `null` se não
+ * parseável (exibição sem prefixo de data — nunca quebra o item). */
+function dayMonthLabel(dateLabel: string): string | null {
+  const m = /^\d{4}-(\d{2})-(\d{2})/.exec(dateLabel);
+  return m ? `${m[2]}/${m[1]}` : null;
+}
+
+/** Chave de agrupamento `YYYY-MM` a partir de uma data efetiva (aceita tanto
  * `YYYY-MM-DD` quanto datetime ISO completo) — `null` se não parseável. */
-function yearMonthKey(lastmod: string): string | null {
-  const m = /^(\d{4})-(\d{2})/.exec(lastmod.trim());
+function yearMonthKey(dateLabel: string): string | null {
+  const m = /^(\d{4})-(\d{2})/.exec(dateLabel.trim());
   return m ? `${m[1]}-${m[2]}` : null;
 }
 
@@ -120,29 +199,53 @@ function monthLabel(key: string): string {
 interface GroupedEntry {
   loc: string;
   lastmod: string;
+  /** Slug extraído do path (pra lookup no cache e chave de dedupe visual). */
+  slug: string;
+  /** Título real do cache, ou fallback derivado do slug (#4265 item 1). */
+  title: string;
+  /** Data efetiva `YYYY-MM-DD` — `publishDate` do cache ou `lastmod`
+   * normalizado (#4265 item 2). Fonte única de agrupamento/ordenação/exibição. */
+  date: string;
 }
 
 /**
  * Constrói o HTML completo da página de arquivo a partir das entradas cruas
  * do sitemap. Filtra pra `/p/*` (edições reais — exclui home/archive/tags/
  * subscribe/authors/etc), descarta entradas sem `lastmod` (não dá pra
- * agrupar), agrupa por ano-mês, ordena os meses do mais recente pro mais
- * antigo e, dentro de cada mês, as edições também do mais recente pra mais
- * antigo. Pura — sem fetch, sem I/O. Nunca lança (lista vazia → mensagem,
- * nunca erro).
+ * resolver nenhuma data), agrupa por ano-mês (data efetiva — #4265 item 2),
+ * ordena os meses do mais recente pro mais antigo e, dentro de cada mês, as
+ * edições também da mais recente pra mais antiga. Pura — sem fetch, sem I/O.
+ * Nunca lança (lista vazia → mensagem, nunca erro).
+ *
+ * @param cacheOverride Só pra teste — substitui o `titles-cache.json`
+ * commitado (que em builds normais é o real, importado estaticamente).
+ * Omitido em produção; o Worker (`src/index.ts`) nunca passa este argumento.
  */
-export function buildArchiveHtml(entries: SitemapEntry[]): string {
-  const editions: GroupedEntry[] = entries.filter(
-    (e): e is GroupedEntry => {
+export function buildArchiveHtml(
+  entries: SitemapEntry[],
+  cacheOverride?: TitlesCacheMap,
+): string {
+  const cache = cacheOverride ?? titlesCache;
+  const editions: GroupedEntry[] = entries
+    .filter((e) => {
       if (!e.lastmod) return false;
       const path = pathOf(e.loc);
       return path != null && path.startsWith("/p/");
-    },
-  );
+    })
+    .map((e) => {
+      const slug = slugOf(e.loc);
+      return {
+        loc: e.loc,
+        lastmod: e.lastmod as string,
+        slug,
+        title: resolveTitle(e.loc, slug, cache),
+        date: effectiveDate(slug, e.lastmod as string, cache),
+      };
+    });
 
   const groups = new Map<string, GroupedEntry[]>();
   for (const e of editions) {
-    const key = yearMonthKey(e.lastmod);
+    const key = yearMonthKey(e.date);
     if (!key) continue;
     const list = groups.get(key);
     if (list) list.push(e);
@@ -151,23 +254,33 @@ export function buildArchiveHtml(entries: SitemapEntry[]): string {
 
   const sortedKeys = [...groups.keys()].sort().reverse();
 
+  // Índice de âncoras por mês (#4265 item 5) — sem JS, sem paginação; todos
+  // os `<a href>` das edições continuam na mesma resposta.
+  const monthIndex =
+    sortedKeys.length > 0
+      ? `    <nav class="month-index" aria-label="Navegação por mês">\n      ${sortedKeys
+          .map((key) => `<a href="#${esc(key)}">${esc(monthLabel(key))}</a>`)
+          .join(" · ")}\n    </nav>`
+      : "";
+
   const sections = sortedKeys.map((key) => {
     const list = [...(groups.get(key) ?? [])].sort((a, b) =>
-      b.lastmod.localeCompare(a.lastmod),
+      b.date.localeCompare(a.date),
     );
     const items = list
-      .map(
-        (e) =>
-          `      <li><a href="${esc(e.loc)}">${esc(displayTextFromLoc(e.loc))}</a></li>`,
-      )
+      .map((e) => {
+        const dm = dayMonthLabel(e.date);
+        const datePrefix = dm ? `<span class="li-date">${esc(dm)}</span>` : "";
+        return `      <li><a href="${esc(e.loc)}">${datePrefix}${esc(e.title)}</a></li>`;
+      })
       .join("\n");
-    return `    <section>\n      <h2>${esc(monthLabel(key))}</h2>\n      <ul>\n${items}\n      </ul>\n    </section>`;
+    return `    <section id="${esc(key)}">\n      <h2>${esc(monthLabel(key))}</h2>\n      <ul>\n${items}\n      </ul>\n    </section>`;
   });
 
   const count = editions.length;
   const body =
     sections.length > 0
-      ? sections.join("\n")
+      ? `${monthIndex}\n${sections.join("\n")}`
       : "    <p>Nenhuma edição encontrada.</p>";
 
   return `<!doctype html>
@@ -196,6 +309,7 @@ ${renderCuradoriaFooterStyles()}
       <h1>Arquivo<span class="dot" aria-hidden="true">.</span></h1>
       <p class="tagline">5 minutos diários pra se manter atualizado e usar melhor as IAs</p>
       <p class="lede">Todas as edições já publicadas da newsletter Diar.ia, agrupadas por mês.</p>
+      <p class="subscribe-cta"><a href="${esc(SUBSCRIBE_URL)}">Assine a Diar.ia →</a></p>
     </div>
   </header>
   <main>
