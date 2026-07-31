@@ -121,7 +121,7 @@ import { replaceDestaqueTitleInMd } from "../extract-destaques.ts";
 
 // ── Arquivos revisáveis ─────────────────────────────────────────────────
 
-export type ReviewSlug = "categorized" | "reviewed" | "social" | "html-final";
+export type ReviewSlug = "categorized" | "reviewed" | "social" | "html-final" | "html-final-patronos";
 
 export const REVIEW_FILES: Record<ReviewSlug, string> = {
   categorized: "01-categorized.md",
@@ -132,10 +132,24 @@ export const REVIEW_FILES: Record<ReviewSlug, string> = {
   // como camada de acabamento OPT-IN, fora do fluxo de lint/Drive/MD — ver
   // nota de design no topo do arquivo.
   "html-final": "_internal/newsletter-final.html",
+  // #4275 (Fase 1 — "Gerar e revisar"): variante Patronos do HTML final,
+  // gerada manualmente via `npx tsx scripts/render-newsletter-html.ts
+  // {edition-dir} --full --patronos --out {edition-dir}/_internal/newsletter-final-patronos.html`
+  // (não auto-gerada pelo Stage 4 nesta fase — ver PR #4275 pro raciocínio).
+  // MESMO mecanismo genérico de leitura/save/diff/baseline do slug
+  // `html-final` acima — reusa `REVIEW_FILES`/`isReviewSlug`, sem endpoint
+  // dedicado.
+  "html-final-patronos": "_internal/newsletter-final-patronos.html",
 };
 
 export function isReviewSlug(v: string): v is ReviewSlug {
-  return v === "categorized" || v === "reviewed" || v === "social" || v === "html-final";
+  return (
+    v === "categorized" ||
+    v === "reviewed" ||
+    v === "social" ||
+    v === "html-final" ||
+    v === "html-final-patronos"
+  );
 }
 
 const AAMMDD_RE = /^\d{6}$/;
@@ -597,7 +611,9 @@ function lintSocial(md: string): LintReport {
 /** #3635: `html-final` não tem lints — é edição de última milha do HTML já
  * pré-renderizado, deliberadamente FORA do fluxo de lint/Drive/MD (ver nota
  * de design no topo do arquivo). `note` deixa isso explícito na UI em vez de
- * simplesmente não mostrar nada (ambíguo — pareceria um bug/lista vazia). */
+ * simplesmente não mostrar nada (ambíguo — pareceria um bug/lista vazia).
+ * #4275: mesmo texto serve o slug `html-final-patronos` (mesma natureza —
+ * HTML já pré-renderizado, sem lints de Markdown aplicáveis). */
 function lintHtmlFinal(): LintReport {
   return {
     ok: true,
@@ -621,7 +637,7 @@ export function runReviewLints(
 ): LintReport {
   if (slug === "categorized") return lintCategorized(content, rootDir);
   if (slug === "reviewed") return lintReviewed(content, rootDir, editionDir);
-  if (slug === "html-final") return lintHtmlFinal();
+  if (slug === "html-final" || slug === "html-final-patronos") return lintHtmlFinal();
   return lintSocial(content);
 }
 

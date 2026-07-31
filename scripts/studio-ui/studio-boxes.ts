@@ -55,6 +55,17 @@
  * ESCREVE nesse arquivo, e faz isso cirurgicamente (só a chave
  * `boxes_divulgacao`, ver `replaceBoxesDivulgacaoBlock`).
  *
+ * **Variante Patronos (#4275)** — MESMO mecanismo acima, chave IRMÃ plana
+ * `boxes_divulgacao_patronos` (não aninhada). `readBoxSlotAssignments`/
+ * `readBoxSlotsState`/`saveBoxSlots` ganharam um parâmetro `variant`
+ * (`"default" | "patronos"`, default `"default"` — comportamento idêntico ao
+ * pré-#4275 quando omitido); `replaceBoxesDivulgacaoBlock` ganhou `configKey`
+ * (mesmo default). `listBoxes` expõe as DUAS atribuições por caixa (`slot` +
+ * `slotPatronos`), e `archiveBox` bloqueia arquivamento se a caixa estiver em
+ * uso em QUALQUER uma das duas variantes. Ver `scripts/lib/newsletter-patronos.ts`
+ * pro consumo desses valores no render da variante Patronos (Fase 1: gerar +
+ * revisar, sem publicar).
+ *
  * **PARA ENCERRAR slot A/B (#4274)** — mecanismo IRMÃO, mas DIFERENTE: os
  * slots 0-3 acima atribuem um FILENAME de `context/snippets/` (pool
  * opcional); `readParaEncerrarState`/`saveParaEncerrar`/
@@ -408,13 +419,32 @@ export function replaceBoxContentTitle(conteudo: string, titulo: string): string
 
 export type BoxSlot = 0 | 1 | 2 | 3;
 
+/** As duas variantes de seleção de caixas (#4275): `"default"` é a
+ * newsletter diária de sempre (`boxes_divulgacao`); `"patronos"` é a
+ * variante Patronos — mesmo shape de slots, chave IRMÃ plana
+ * `boxes_divulgacao_patronos` (não aninhada — ver docstring de
+ * `replaceBoxesDivulgacaoBlock` abaixo). Fase 1 da issue: só gera/revisa, não
+ * publica (ver `scripts/lib/newsletter-patronos.ts`). */
+export type BoxSlotVariant = "default" | "patronos";
+
+/** Chave de `platform.config.json` correspondente à variante — único ponto
+ * que conhece o nome literal das duas chaves. */
+export function boxesConfigKeyForVariant(variant: BoxSlotVariant): "boxes_divulgacao" | "boxes_divulgacao_patronos" {
+  return variant === "patronos" ? "boxes_divulgacao_patronos" : "boxes_divulgacao";
+}
+
 /** Lê `platform.config.json` → `boxes_divulgacao.slot0/1/2/3` (valores são
  * filenames de snippet, `slot0` pode vir `null` — default de slot vazio,
- * #4274/#4290) e inverte pra `filename -> slot`. Fail-soft total:
- * config ausente, JSON corrompido, ou chave ausente/malformada -> `{}` (todo
- * box aparece sem badge de slot) — nunca lança. Somente leitura: nenhuma
- * função deste módulo escreve neste arquivo. */
-export function readBoxSlotAssignments(rootDir: string): Partial<Record<string, BoxSlot>> {
+ * #4274/#4290) e inverte pra `filename -> slot`. `variant` (#4275, default
+ * `"default"`) troca pra `boxes_divulgacao_patronos` sem mudar o resto do
+ * contrato. Fail-soft total: config ausente, JSON corrompido, ou chave
+ * ausente/malformada -> `{}` (todo box aparece sem badge de slot) — nunca
+ * lança. Somente leitura: nenhuma função deste módulo escreve neste
+ * arquivo. */
+export function readBoxSlotAssignments(
+  rootDir: string,
+  variant: BoxSlotVariant = "default",
+): Partial<Record<string, BoxSlot>> {
   const configPath = resolve(rootDir, "platform.config.json");
   if (!existsSync(configPath)) return {};
   let cfg: unknown;
@@ -424,7 +454,7 @@ export function readBoxSlotAssignments(rootDir: string): Partial<Record<string, 
     return {};
   }
   if (!cfg || typeof cfg !== "object") return {};
-  const boxes = (cfg as Record<string, unknown>).boxes_divulgacao;
+  const boxes = (cfg as Record<string, unknown>)[boxesConfigKeyForVariant(variant)];
   if (!boxes || typeof boxes !== "object") return {};
   const b = boxes as Record<string, unknown>;
   const out: Partial<Record<string, BoxSlot>> = {};
@@ -463,9 +493,9 @@ export interface BoxSlotsState {
   modifiedAt: string | null;
 }
 
-function readRawBoxesDivulgacao(cfg: unknown): Record<string, unknown> {
+function readRawBoxesDivulgacao(cfg: unknown, variant: BoxSlotVariant = "default"): Record<string, unknown> {
   if (!cfg || typeof cfg !== "object") return {};
-  const boxes = (cfg as Record<string, unknown>).boxes_divulgacao;
+  const boxes = (cfg as Record<string, unknown>)[boxesConfigKeyForVariant(variant)];
   return boxes && typeof boxes === "object" ? (boxes as Record<string, unknown>) : {};
 }
 
@@ -473,12 +503,15 @@ function readRawBoxesDivulgacao(cfg: unknown): Record<string, unknown> {
  * DIRETA (slot -> filename, "" se vazio/ausente — inclusive quando slot0 é
  * `null` no JSON, seu default de vazio desde #4274) — o inverso de
  * `readBoxSlotAssignments` (que inverte pra filename -> slot, só pro badge da
- * lista). Usado pela tela de gestão de slots (#3937, estendida ao slot0 em
- * #4290): mostra a atribuição ATUAL de cada slot + o mtime que o client
- * reenvia como guard de conflito no save. Fail-soft total: config ausente ->
- * todos os slots "" e `modifiedAt: null`; JSON corrompido -> todos os slots ""
- * mas `modifiedAt` real (o arquivo existe, só não parseia); nunca lança. */
-export function readBoxSlotsState(rootDir: string): BoxSlotsState {
+ * lista). `variant` (#4275, default `"default"`) troca pra
+ * `boxes_divulgacao_patronos` sem mudar o resto do contrato. Usado pela tela
+ * de gestão de slots (#3937, estendida ao slot0 em #4290; à variante
+ * Patronos em #4275): mostra a atribuição ATUAL de cada slot + o mtime que o
+ * client reenvia como guard de conflito no save. Fail-soft total: config
+ * ausente -> todos os slots "" e `modifiedAt: null`; JSON corrompido -> todos
+ * os slots "" mas `modifiedAt` real (o arquivo existe, só não parseia);
+ * nunca lança. */
+export function readBoxSlotsState(rootDir: string, variant: BoxSlotVariant = "default"): BoxSlotsState {
   const empty = { slot0: "", slot1: "", slot2: "", slot3: "" } as const;
   const configPath = resolve(rootDir, "platform.config.json");
   if (!existsSync(configPath)) return { ...empty, modifiedAt: null };
@@ -489,7 +522,7 @@ export function readBoxSlotsState(rootDir: string): BoxSlotsState {
   } catch {
     return { ...empty, modifiedAt };
   }
-  const b = readRawBoxesDivulgacao(cfg);
+  const b = readRawBoxesDivulgacao(cfg, variant);
   const get = (key: SlotKey) => (typeof b[key] === "string" ? (b[key] as string) : "");
   return { slot0: get("slot0"), slot1: get("slot1"), slot2: get("slot2"), slot3: get("slot3"), modifiedAt };
 }
@@ -529,15 +562,22 @@ export function readBoxSlotsState(rootDir: string): BoxSlotsState {
  * Lança se não conseguir localizar nem o bloco nem um ponto de inserção
  * seguro (arquivo não é um objeto JSON bem-formado no nível esperado) — o
  * caller (`saveBoxSlots`) decide como reportar; nunca escreve um arquivo
- * potencialmente corrompido. */
+ * potencialmente corrompido.
+ *
+ * #4275: `configKey` (default `"boxes_divulgacao"`) parametriza QUAL chave é
+ * reescrita — `"boxes_divulgacao_patronos"` reusa a MESMA função pra chave
+ * IRMÃ da variante Patronos, sem duplicar a lógica de regex/indentação. As
+ * duas chaves têm o mesmo shape plano (slot0/1/2/3 -> string), então o
+ * mesmo regex ancorado na indentação funciona pra ambas. */
 export function replaceBoxesDivulgacaoBlock(
   raw: string,
   values: { slot0: string; slot1: string; slot2: string; slot3: string },
+  configKey: string = "boxes_divulgacao",
 ): string {
   const outerIndent = "  ";
   const innerIndent = "    ";
   const block = [
-    `${outerIndent}"boxes_divulgacao": {`,
+    `${outerIndent}"${configKey}": {`,
     `${innerIndent}"slot0": ${JSON.stringify(values.slot0)},`,
     `${innerIndent}"slot1": ${JSON.stringify(values.slot1)},`,
     `${innerIndent}"slot2": ${JSON.stringify(values.slot2)},`,
@@ -545,7 +585,8 @@ export function replaceBoxesDivulgacaoBlock(
     `${outerIndent}}`,
   ].join("\n");
 
-  const blockRe = /([ \t]*)"boxes_divulgacao"\s*:\s*\{[\s\S]*?\n\1\}/;
+  const escapedKey = configKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const blockRe = new RegExp(`([ \\t]*)"${escapedKey}"\\s*:\\s*\\{[\\s\\S]*?\\n\\1\\}`);
   if (blockRe.test(raw)) {
     return raw.replace(blockRe, () => block);
   }
@@ -554,7 +595,7 @@ export function replaceBoxesDivulgacaoBlock(
   const m = topCloseRe.exec(raw);
   if (!m) {
     throw new Error(
-      "platform.config.json: não foi possível localizar boxes_divulgacao nem um ponto seguro de inserção",
+      `platform.config.json: não foi possível localizar ${configKey} nem um ponto seguro de inserção`,
     );
   }
   return raw.slice(0, m.index) + `,\n${block}\n}` + m[1];
@@ -575,6 +616,12 @@ export interface SaveBoxSlotsOptions {
   /** `true` = ignora divergência detectada e sobrescreve mesmo assim (o
    * editor já confirmou no dialog de conflito do client). */
   force?: boolean;
+  /** #4275: qual chave de `platform.config.json` esta chamada escreve —
+   * `"default"` (padrão) é `boxes_divulgacao`, `"patronos"` é a chave irmã
+   * `boxes_divulgacao_patronos`. As caixas VIVAS candidatas (guard 1) são as
+   * MESMAS pras duas variantes — `context/snippets/` é um pool único
+   * compartilhado, não há um pool separado por variante. */
+  variant?: BoxSlotVariant;
 }
 
 export interface SaveBoxSlotsResult {
@@ -618,6 +665,8 @@ export function saveBoxSlots(
   input: SaveBoxSlotsInput,
   opts: SaveBoxSlotsOptions = {},
 ): SaveBoxSlotsResult {
+  const variant = opts.variant ?? "default";
+  const configKey = boxesConfigKeyForVariant(variant);
   const configPath = resolve(rootDir, "platform.config.json");
   if (!existsSync(configPath)) {
     return { ok: false, error: "platform.config.json não encontrado", modifiedAt: null };
@@ -669,11 +718,11 @@ export function saveBoxSlots(
     }
   }
 
-  // Guard 3: escrita cirúrgica — só boxes_divulgacao é tocado.
+  // Guard 3: escrita cirúrgica — só a chave da variante (`configKey`) é tocada.
   let rewritten: string;
   try {
     const raw = readFileSync(configPath, "utf8");
-    rewritten = replaceBoxesDivulgacaoBlock(raw, values);
+    rewritten = replaceBoxesDivulgacaoBlock(raw, values, configKey);
   } catch (e) {
     return { ok: false, error: (e as Error).message, modifiedAt: null };
   }
@@ -685,7 +734,7 @@ export function saveBoxSlots(
   }
 
   const modifiedAt = statSync(configPath).mtime.toISOString();
-  return { ok: true, modifiedAt, slots: readBoxSlotsState(rootDir) };
+  return { ok: true, modifiedAt, slots: readBoxSlotsState(rootDir, variant) };
 }
 
 // ── PARA ENCERRAR: slots A/B de texto direto (#4274 — reescopo do gate
@@ -910,7 +959,12 @@ export interface BoxListEntry {
    * edição. A UI mostra "na edição: …" quando difere de `title`. #3933. */
   contentTitle: string;
   mtimeIso: string;
+  /** Slot da variante PADRÃO (`boxes_divulgacao`), ou `null` se não atribuída. */
   slot: BoxSlot | null;
+  /** #4275: slot da variante PATRONOS (`boxes_divulgacao_patronos`), ou
+   * `null` se não atribuída — badge SEPARADO do `slot` padrão acima; uma
+   * caixa pode ocupar um slot em uma variante e outro (ou nenhum) na outra. */
+  slotPatronos: BoxSlot | null;
   dirtyVsGit: boolean;
 }
 
@@ -922,6 +976,9 @@ export function listBoxes(rootDir: string): BoxListEntry[] {
   const dir = snippetsDir(rootDir);
   if (!existsSync(dir)) return [];
   const slots = readBoxSlotAssignments(rootDir);
+  // #4275: badge separado da variante Patronos — mesma lista de caixas
+  // (pool único em context/snippets/), atribuição independente por variante.
+  const slotsPatronos = readBoxSlotAssignments(rootDir, "patronos");
   const filenames = readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && isValidBoxSlug(entry.name))
     .map((entry) => entry.name)
@@ -939,6 +996,7 @@ export function listBoxes(rootDir: string): BoxListEntry[] {
       contentTitle: extractBoxTitle(content),
       mtimeIso,
       slot: slots[filename] ?? null,
+      slotPatronos: slotsPatronos[filename] ?? null,
       dirtyVsGit: checkDirtyVsGit(rootDir, filename),
     };
   });
@@ -1157,7 +1215,12 @@ export interface ArchiveBoxResult {
  * #4290: a checagem é `slot !== undefined`, NÃO um truthy check (`if (slot)`)
  * — `BoxSlot` inclui `0` (slot0, introdução) desde #4290, e `0` é falsy em JS.
  * Um truthy check deixaria uma caixa no slot0 arquivar sem bloqueio, quebrando
- * o mesmo invariante que já vale pros slots 1/2/3. */
+ * o mesmo invariante que já vale pros slots 1/2/3.
+ *
+ * #4275: o guard cobre AS DUAS variantes — `boxes_divulgacao` (padrão) E
+ * `boxes_divulgacao_patronos` — não só a padrão. Uma caixa usada só na
+ * variante Patronos é igualmente auto-injetada (na edição Patronos) e
+ * arquivá-la quebraria essa montagem do mesmo jeito. */
 export function archiveBox(rootDir: string, slug: string): ArchiveBoxResult {
   if (!isValidBoxSlug(slug)) {
     return { ok: false, error: `slug inválido: ${slug}`, slug, notFound: true };
@@ -1174,6 +1237,16 @@ export function archiveBox(rootDir: string, slug: string): ArchiveBoxResult {
       slug,
       blockedBySlot: true,
       slot,
+    };
+  }
+  const slotPatronos = readBoxSlotAssignments(rootDir, "patronos")[slug];
+  if (slotPatronos !== undefined) {
+    return {
+      ok: false,
+      error: `a caixa "${slug}" está no slot ${slotPatronos} da variante Patronos (platform.config.json → boxes_divulgacao_patronos) e é injetada em toda edição Patronos — remova a atribuição de slot antes de arquivar`,
+      slug,
+      blockedBySlot: true,
+      slot: slotPatronos,
     };
   }
   try {

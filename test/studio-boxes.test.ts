@@ -1144,6 +1144,180 @@ describe("saveBoxSlots (#3937, pure; slot0 #4290)", () => {
   });
 });
 
+// ─── Variante Patronos: chave irmã boxes_divulgacao_patronos (#4275) ───────
+
+describe("replaceBoxesDivulgacaoBlock com configKey=boxes_divulgacao_patronos (#4275, pure)", () => {
+  it("reescreve boxes_divulgacao_patronos, preservando boxes_divulgacao e o resto do arquivo byte-a-byte", () => {
+    const raw = [
+      "{",
+      '  "newsletter": "beehiiv",',
+      '  "boxes_divulgacao": {',
+      '    "slot0": null,',
+      '    "slot1": "historia.md",',
+      '    "slot2": "artigo.md",',
+      '    "slot3": "clarice.md"',
+      "  },",
+      '  "boxes_divulgacao_patronos": {',
+      '    "slot0": null,',
+      '    "slot1": "patronos-bastidores.md",',
+      '    "slot2": "patronos-acesso.md",',
+      '    "slot3": "patronos-agradecimento.md"',
+      "  },",
+      '  "drive_sync": false',
+      "}",
+    ].join("\n");
+
+    const out = replaceBoxesDivulgacaoBlock(
+      raw,
+      { slot0: "", slot1: "outra-patronos.md", slot2: "", slot3: "patronos-agradecimento.md" },
+      "boxes_divulgacao_patronos",
+    );
+
+    const parsed = JSON.parse(out);
+    // boxes_divulgacao (variante Padrão) sai INTOCADO — só a chave irmã muda.
+    assert.deepEqual(parsed.boxes_divulgacao, {
+      slot0: null,
+      slot1: "historia.md",
+      slot2: "artigo.md",
+      slot3: "clarice.md",
+    });
+    assert.deepEqual(parsed.boxes_divulgacao_patronos, {
+      slot0: "",
+      slot1: "outra-patronos.md",
+      slot2: "",
+      slot3: "patronos-agradecimento.md",
+    });
+    assert.equal(parsed.newsletter, "beehiiv");
+    assert.equal(parsed.drive_sync, false);
+  });
+
+  it("insere o bloco boxes_divulgacao_patronos (defensivo) quando ainda não existe no arquivo", () => {
+    const raw = '{\n  "newsletter": "beehiiv",\n  "boxes_divulgacao": {\n    "slot0": null,\n    "slot1": "a.md",\n    "slot2": "",\n    "slot3": ""\n  }\n}';
+    const out = replaceBoxesDivulgacaoBlock(
+      raw,
+      { slot0: "", slot1: "patronos-a.md", slot2: "", slot3: "" },
+      "boxes_divulgacao_patronos",
+    );
+    const parsed = JSON.parse(out);
+    assert.deepEqual(parsed.boxes_divulgacao_patronos, { slot0: "", slot1: "patronos-a.md", slot2: "", slot3: "" });
+    // boxes_divulgacao original preservado.
+    assert.deepEqual(parsed.boxes_divulgacao, { slot0: null, slot1: "a.md", slot2: "", slot3: "" });
+  });
+
+  it("default (sem 3º argumento) segue reescrevendo boxes_divulgacao — comportamento pré-#4275 intacto", () => {
+    const raw = '{\n  "boxes_divulgacao": {\n    "slot0": null,\n    "slot1": "",\n    "slot2": "",\n    "slot3": ""\n  }\n}';
+    const out = replaceBoxesDivulgacaoBlock(raw, { slot0: "x.md", slot1: "", slot2: "", slot3: "" });
+    const parsed = JSON.parse(out);
+    assert.deepEqual(parsed.boxes_divulgacao, { slot0: "x.md", slot1: "", slot2: "", slot3: "" });
+    assert.equal(parsed.boxes_divulgacao_patronos, undefined);
+  });
+});
+
+describe("readBoxSlotAssignments / readBoxSlotsState / saveBoxSlots com variant=patronos (#4275, pure)", () => {
+  let root: string;
+
+  before(() => {
+    root = mkdtempSync(join(tmpdir(), "studio-boxes-patronos-variant-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "a.md"), "# A");
+    writeFileSync(join(root, "context", "snippets", "b.md"), "# B");
+  });
+
+  beforeEach(() => {
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify(
+        {
+          boxes_divulgacao: { slot0: null, slot1: "a.md", slot2: null, slot3: null },
+          boxes_divulgacao_patronos: { slot0: null, slot1: "b.md", slot2: null, slot3: null },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+  });
+
+  after(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("readBoxSlotAssignments(root, 'patronos') inverte boxes_divulgacao_patronos, não boxes_divulgacao", () => {
+    assert.deepEqual(readBoxSlotAssignments(root, "patronos"), { "b.md": 1 });
+    // default (sem variant) continua lendo boxes_divulgacao.
+    assert.deepEqual(readBoxSlotAssignments(root), { "a.md": 1 });
+  });
+
+  it("readBoxSlotsState(root, 'patronos') lê boxes_divulgacao_patronos", () => {
+    const state = readBoxSlotsState(root, "patronos");
+    assert.equal(state.slot1, "b.md");
+    // default continua lendo boxes_divulgacao (valor diferente no fixture).
+    assert.equal(readBoxSlotsState(root).slot1, "a.md");
+  });
+
+  it("saveBoxSlots com variant:'patronos' escreve SÓ boxes_divulgacao_patronos", () => {
+    const before = readFileSync(join(root, "platform.config.json"), "utf8");
+    const result = saveBoxSlots(root, { slot0: "", slot1: "a.md", slot2: "b.md", slot3: "" }, { variant: "patronos" });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.slots, { slot0: "", slot1: "a.md", slot2: "b.md", slot3: "", modifiedAt: result.modifiedAt });
+
+    const after = readFileSync(join(root, "platform.config.json"), "utf8");
+    const parsedBefore = JSON.parse(before);
+    const parsedAfter = JSON.parse(after);
+    // boxes_divulgacao (Padrão) NÃO foi tocado pelo save da variante Patronos.
+    assert.deepEqual(parsedAfter.boxes_divulgacao, parsedBefore.boxes_divulgacao);
+    assert.deepEqual(parsedAfter.boxes_divulgacao_patronos, { slot0: "", slot1: "a.md", slot2: "b.md", slot3: "" });
+  });
+
+  it("guard 1 (caixa inexistente) e guard 2 (duplicata) valem igualmente pra variant:'patronos'", () => {
+    const missing = saveBoxSlots(root, { slot0: "", slot1: "nao-existe.md", slot2: "", slot3: "" }, { variant: "patronos" });
+    assert.equal(missing.ok, false);
+    assert.equal(missing.invalid, true);
+
+    const dupe = saveBoxSlots(root, { slot0: "a.md", slot1: "a.md", slot2: "", slot3: "" }, { variant: "patronos" });
+    assert.equal(dupe.ok, false);
+    assert.equal(dupe.invalid, true);
+  });
+
+  it("archiveBox bloqueia uma caixa em uso na variante Patronos, mesmo livre na variante Padrão", () => {
+    // No estado do beforeEach: "a.md" está no slot1 PADRÃO, "b.md" está no
+    // slot1 PATRONOS — nenhum dos dois está livre em AMBAS as variantes.
+    const blockedDefault = archiveBox(root, "a.md");
+    assert.equal(blockedDefault.ok, false);
+    assert.equal(blockedDefault.blockedBySlot, true);
+
+    const blockedPatronos = archiveBox(root, "b.md");
+    assert.equal(blockedPatronos.ok, false);
+    assert.equal(blockedPatronos.blockedBySlot, true);
+    assert.equal(blockedPatronos.slot, 1);
+  });
+});
+
+describe("listBoxes expõe slotPatronos separado de slot (#4275)", () => {
+  it("uma caixa em slots DIFERENTES por variante mostra os dois valores; sem atribuição patronos -> null", () => {
+    const root = mkdtempSync(join(tmpdir(), "studio-boxes-listboxes-patronos-"));
+    mkdirSync(join(root, "context", "snippets"), { recursive: true });
+    writeFileSync(join(root, "context", "snippets", "a.md"), "# A");
+    writeFileSync(join(root, "context", "snippets", "b.md"), "# B");
+    writeFileSync(
+      join(root, "platform.config.json"),
+      JSON.stringify({
+        boxes_divulgacao: { slot0: null, slot1: "a.md", slot2: null, slot3: null },
+        boxes_divulgacao_patronos: { slot0: null, slot1: null, slot2: "a.md", slot3: null },
+      }),
+    );
+
+    const list = listBoxes(root);
+    const a = list.find((b) => b.slug === "a.md");
+    const b = list.find((b) => b.slug === "b.md");
+    assert.equal(a?.slot, 1);
+    assert.equal(a?.slotPatronos, 2);
+    assert.equal(b?.slot, null);
+    assert.equal(b?.slotPatronos, null);
+
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
 // ─── PARA ENCERRAR: slots A/B de texto direto (pura, #4274) ────────────────
 
 describe("replaceParaEncerrarBlock (#4274, pure)", () => {
@@ -2054,6 +2228,78 @@ describe("GET/PUT /api/boxes/slots (#3937; slot0 #4290)", () => {
     const res = await fetch(new URL("/api/boxes/slots", server.url));
     assert.equal(res.status, 200);
     assert.equal((await res.json()).slot1, "recomendacao-leitura.md");
+  });
+
+  // #4275: variante Patronos via ?variant=patronos (GET) / {variant:"patronos"} (PUT).
+  it("GET /api/boxes/slots?variant=patronos lê boxes_divulgacao_patronos — ausente no fixture, todos vazios", async () => {
+    const res = await fetch(new URL("/api/boxes/slots?variant=patronos", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.slot0, "");
+    assert.equal(body.slot1, "");
+    assert.equal(body.slot2, "");
+    assert.equal(body.slot3, "");
+    // GET sem ?variant continua batendo boxes_divulgacao (Padrão) — as duas
+    // rotas não interferem uma na outra.
+    const defaultRes = await fetch(new URL("/api/boxes/slots", server.url));
+    assert.equal((await defaultRes.json()).slot1, "recomendacao-leitura.md");
+  });
+
+  it("PUT /api/boxes/slots com variant:'patronos' escreve boxes_divulgacao_patronos, preserva boxes_divulgacao", async () => {
+    const getRes = await fetch(new URL("/api/boxes/slots?variant=patronos", server.url));
+    const { modifiedAt } = await getRes.json();
+
+    const putRes = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slot0: "",
+        slot1: "intro-box.md",
+        slot2: "",
+        slot3: "",
+        variant: "patronos",
+        expectedModifiedAt: modifiedAt,
+      }),
+    });
+    assert.equal(putRes.status, 200);
+    const putBody = await putRes.json();
+    assert.equal(putBody.ok, true);
+    assert.equal(putBody.slots.slot1, "intro-box.md");
+
+    // Confirma via GET das duas variantes: Patronos mudou, Padrão não.
+    const patronosAfter = await (await fetch(new URL("/api/boxes/slots?variant=patronos", server.url))).json();
+    assert.equal(patronosAfter.slot1, "intro-box.md");
+    const defaultAfter = await (await fetch(new URL("/api/boxes/slots", server.url))).json();
+    assert.equal(defaultAfter.slot1, "recomendacao-leitura.md");
+
+    // Restaura pro estado do beforeEach (evita vazar pro próximo teste).
+    await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slot0: "", slot1: "", slot2: "", slot3: "", variant: "patronos", force: true }),
+    });
+  });
+
+  it("PUT /api/boxes/slots com variant desconhecido (typo/ausente) cai no comportamento padrão (boxes_divulgacao)", async () => {
+    const getRes = await fetch(new URL("/api/boxes/slots", server.url));
+    const { modifiedAt } = await getRes.json();
+    const putRes = await fetch(new URL("/api/boxes/slots", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        slot0: "",
+        slot1: "recomendacao-leitura.md",
+        slot2: "livros-divulgacao.md",
+        slot3: "apoio-divulgacao.md",
+        variant: "nao-existe",
+        expectedModifiedAt: modifiedAt,
+      }),
+    });
+    assert.equal(putRes.status, 200);
+    // Sem mudança real de valor (mesmos slots do beforeEach) — só confirma
+    // que a chave escrita foi boxes_divulgacao (Padrão), não uma 3ª chave.
+    const cfg = JSON.parse(readFileSync(join(root, "platform.config.json"), "utf8"));
+    assert.equal(cfg.boxes_divulgacao_patronos, undefined);
   });
 
   it("PUT /api/boxes/slots feliz — reatribui e devolve o novo estado", async () => {
