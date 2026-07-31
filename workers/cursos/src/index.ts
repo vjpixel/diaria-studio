@@ -40,7 +40,7 @@
  */
 import { CURSOS_FULL_HTML } from "./courses-full.generated.ts";
 import { renderGatePage } from "./gate-page.ts";
-import { checkGateRateLimit, checkGateSubscriber } from "./gate.ts";
+import { checkGateRateLimit, checkGateSubscriber, shouldRecheckPendingSession } from "./gate.ts";
 import { clearSessionCookieHeader, issueSessionCookie, readSession } from "./cookie.ts";
 import { handleGateSubscribe, isValidEmailFormat } from "./subscribe.ts";
 
@@ -197,11 +197,19 @@ async function handleIndex(request: Request, env: Env): Promise<Response> {
       // próxima visita ou no /gate/verify seguinte"). Sem isso, quem assinou
       // e cujo double opt-in não confirmou na mesma resposta ficaria preso
       // no teaser mesmo depois de confirmar, até refazer o cadastro.
+      // #4387: sem isto, TODO reload de `/` com sessão pending disparava
+      // `checkGateSubscriber` de novo — que cai pra uma chamada AO VIVO da
+      // Beehiiv quando o KV ainda não sincronizou (sync roda só 1x/dia). O
+      // cooldown é por SESSÃO (hash do e-mail), não por IP — ver docstring de
+      // `shouldRecheckPendingSession` em gate.ts pro porquê.
       if (session && session.pending) {
-        const outcome = await checkGateSubscriber(env, session.email);
-        if (outcome.status === "active") {
-          const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, session.email);
-          return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
+        const shouldRecheck = await shouldRecheckPendingSession(env.CURSOS_SUBSCRIBERS, session.email);
+        if (shouldRecheck) {
+          const outcome = await checkGateSubscriber(env, session.email);
+          if (outcome.status === "active") {
+            const setCookie = await issueSessionCookie(env.COOKIE_HMAC_SECRET, session.email);
+            return html(CURSOS_FULL_HTML, { "Set-Cookie": setCookie });
+          }
         }
       }
     }
