@@ -90,15 +90,13 @@ export interface Course {
   certificate: boolean;
   themes: string[];
   summary: string;
-  /** #4052 (renomeado de `teaser` em #4322 — o nome antigo colidia com
-   * `CursosRenderMode "teaser"`, o MODO de render, e sugeria "está aberto"
-   * quando o campo é só uma PREFERÊNCIA de curadoria pra vaga de curso
-   * aberto, não a decisão final. Quantos ficam abertos é `openCourseCount()`
-   * (20% do total, decisão do editor em #4052); os marcados `true` ocupam as
-   * vagas primeiro, na ordem do seed, e o restante das vagas é preenchido
-   * pelos demais cursos, também na ordem do seed. Marcar mais que o teto não
-   * abre mais cursos; marcar menos não deixa vaga vazia. */
-  preferOpen?: boolean;
+  /** #4052: PREFERÊNCIA de curadoria pra vaga de curso aberto — não a
+   * decisão final. Quantos ficam abertos é `openCourseCount()` (20% do
+   * total, decisão do editor em #4052); os marcados `true` ocupam as vagas
+   * primeiro, na ordem do seed, e o restante das vagas é preenchido pelos
+   * demais cursos, também na ordem do seed. Marcar mais que o teto não abre
+   * mais cursos; marcar menos não deixa vaga vazia. */
+  teaser?: boolean;
 }
 
 /** #4052: modo de render — `"teaser"` é o HTML PÚBLICO/estático (asset), só
@@ -122,18 +120,18 @@ export function openCourseCount(total: number): number {
 }
 
 /**
- * Subconjunto que fica ABERTO no modo teaser: os marcados `preferOpen: true`
+ * Subconjunto que fica ABERTO no modo teaser: os marcados `teaser: true`
  * primeiro, depois os demais na ordem do seed, cortando em
  * `openCourseCount(total)`. Pure.
  *
- * Nota pra quem cura o seed: ao marcar `preferOpen: true`, prefira cobrir
- * pt-br/en e plataformas distintas — é o que os marcados de hoje fazem, mas
- * o código não impõe nada disso.
+ * Nota pra quem cura o seed: ao marcar `teaser: true`, prefira cobrir pt-br/en
+ * e plataformas distintas — é o que os marcados de hoje fazem, mas o código
+ * não impõe nada disso.
  */
 export function selectOpenCourses(courses: Course[]): Course[] {
   const limit = openCourseCount(courses.length);
-  const marked = courses.filter((c) => c.preferOpen);
-  const rest = courses.filter((c) => !c.preferOpen);
+  const marked = courses.filter((c) => c.teaser);
+  const rest = courses.filter((c) => !c.teaser);
   return [...marked, ...rest].slice(0, limit);
 }
 

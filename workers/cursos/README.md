@@ -17,7 +17,7 @@ ANTES do asset (`run_worker_first`, ver `wrangler.toml`) pra decidir teaser ×
 conteúdo completo.
 
 **Gate PARCIAL** (decisão do editor, #4052/#4305): os cursos ABERTOS são
-`floor(20% × total)` do catálogo — os marcados `preferOpen: true` no seed
+`floor(20% × total)` do catálogo — os marcados `teaser: true` no seed
 ocupam essas vagas primeiro (`selectOpenCourses`,
 `scripts/build-cursos-page.ts`). Ficam completos e indexáveis no HTML público.
 Os demais NÃO são renderizados de forma alguma — nem título, nem plataforma,

@@ -4,10 +4,8 @@
  *
  * Gate PARCIAL (decisão do editor, ver #4052 e o follow-up #4305): os cursos
  * ABERTOS são `openCourseCount()` do catálogo — 20% arredondado pra baixo,
- * hoje 6 de 31 —, com os marcados `preferOpen: true` no seed ocupando as
- * vagas primeiro (`selectOpenCourses`, em `scripts/build-cursos-page.ts`;
- * campo renomeado de `teaser` em #4322 — colidia com `CursosRenderMode
- * "teaser"`, o MODO de render). Ficam
+ * hoje 6 de 31 —, com os marcados `teaser: true` no seed ocupando as vagas
+ * primeiro (`selectOpenCourses`, em `scripts/build-cursos-page.ts`). Ficam
  * completos e indexáveis no HTML público (`workers/cursos/public/index.html`,
  * servido via `env.ASSETS`). Os demais NÃO são renderizados de forma alguma —
  * nem título, nem plataforma, nem tema/contagem nos filtros — até o leitor
