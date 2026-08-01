@@ -32,7 +32,7 @@ import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 // — antes era uma cópia manualmente sincronizada com a interface homônima em
 // workers/brevo-dashboard/src/types.ts.
 import { isJuridicoEmail } from "./lib/clarice-sector.ts";
-import { isFirstSend } from "./lib/clarice-segment.ts";
+import { isFirstSend, isSendEligible } from "./lib/clarice-segment.ts";
 import { COHORT_JURIDICO } from "./lib/cohorts.ts";
 import type { CohortStatsRow } from "./lib/dashboard-kv-types.ts";
 export type { CohortStatsRow };
@@ -313,9 +313,10 @@ export function computeStoreSummary(db: DatabaseSync): StoreSummary {
  * `COHORT_JURIDICO` EM VEZ DA sua safra real (decisão do editor: "cada
  * contato só pode estar em um cohort por vez" — a mesma partição de sempre,
  * sem caso especial de dupla-contagem). SQLite não expressa essa regex sem
- * duplicar os padrões dentro da query, e o full-scan em JS já era o caminho
- * usado aqui antes (a linha jurídica vivia numa tabela separada com scan
- * próprio) — unificar num scan só é estritamente MENOS trabalho, não mais.
+ * duplicar os padrões dentro da query — trade-off aceito no #4406: a query
+ * `GROUP BY cohort` que existia antes virou este scan em JS, único jeito de
+ * aplicar `isJuridicoEmail` na chave de agregação sem duplicar a lógica de
+ * classificação em SQL cru.
  */
 function computeCohortStats(db: DatabaseSync): Record<string, WrittenCohortStatsRow> {
   const rows = db.prepare(`
@@ -348,7 +349,7 @@ function computeCohortStats(db: DatabaseSync): Record<string, WrittenCohortStats
     const row = (out[key] ??= blank());
     const recebeu = (r.sends_count ?? 0) > 0;
     row.contacts++;
-    if (r.send_eligible === 1) row.eligible++;
+    if (isSendEligible(r)) row.eligible++;
     if (recebeu) row.received++;
     if (isFirstSend({ send_eligible: r.send_eligible, sends_count: r.sends_count ?? 0 })) {
       row.eligible_never_sent++;

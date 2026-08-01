@@ -323,7 +323,7 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
 
   it("o convite social é o ÚLTIMO parágrafo da seção (#3368)", () => {
     withStableSnippet(() => {
-      const out = buildParaEncerrar();
+      const out = buildParaEncerrar({ slotA: null, slotB: null });
       assert.match(out.trimEnd(), /Agora que chegou ao final da edição, siga a \*\*diar\.ia\.br\*\* no \[LinkedIn\]\([^)]+\), no \[Facebook\]\([^)]+\) ou no \[Instagram\]\([^)]+\)\. Todo dia publicamos por lá um resumo das 3 principais notícias\.$/);
     });
   });
@@ -416,7 +416,7 @@ describe("buildParaEncerrar — split falho NÃO descarta conteúdo real (#3382,
         const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
         assert.equal(split, null, "pré-condição do teste: split precisa falhar com 1 parágrafo só");
 
-        const out = buildParaEncerrar();
+        const out = buildParaEncerrar({ slotA: null, slotB: null });
         // conteúdo real do editor está presente...
         assert.match(out, /Texto único do editor fundindo apoio e social/);
         assert.match(out, /https:\/\/exemplo-editor-fundiu\.test\/apoio-e-social/);
@@ -430,7 +430,7 @@ describe("buildParaEncerrar — split falho NÃO descarta conteúdo real (#3382,
     withSnippetContent(
       "{{OPENING}}Quem quiser apoiar a curadoria, o link é https://exemplo-editor-3par.test/apoio.\n\nParágrafo extra que o editor adicionou no meio, fora do formato de 2 parágrafos original.\n\nConvite social customizado pelo editor: https://exemplo-editor-3par.test/social.",
       () => {
-        const out = buildParaEncerrar();
+        const out = buildParaEncerrar({ slotA: null, slotB: null });
         // os 3 parágrafos do editor aparecem, nenhum foi descartado
         assert.match(out, /Quem quiser apoiar a curadoria, o link é https:\/\/exemplo-editor-3par\.test\/apoio/);
         assert.match(out, /Parágrafo extra que o editor adicionou no meio/);
@@ -446,7 +446,7 @@ describe("buildParaEncerrar — split falho NÃO descarta conteúdo real (#3382,
       const whole = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
       assert.equal(whole, null, "pré-condição do teste: arquivo precisa renderizar null (vazio após strip)");
 
-      const out = buildParaEncerrar();
+      const out = buildParaEncerrar({ slotA: null, slotB: null });
       assert.match(out, /Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante/);
     });
   });

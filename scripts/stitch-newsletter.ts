@@ -86,16 +86,21 @@ Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse
   // mudou, o cabeçalho continua abrindo a seção).
   para_encerrar_header: `**🙋🏼‍♀️ PARA ENCERRAR**`,
 
-  // #3219: parágrafo de ferramentas — fixo, sem parametrização. O parágrafo
-  // de apoio (Apoia.se) + convite social (LinkedIn/Facebook) vêm de
-  // `buildParaEncerrar()` abaixo, carregados do snippet compartilhado com o
-  // mensal. #4357: a lista de pills "Acesse nossas curadorias" que ANTES
-  // terminava este bloco foi extraída pra `para_encerrar_curadorias` (abaixo)
-  // — ela é navegação estrutural PERMANENTE, não copy editorial do slot A, e
-  // morar aqui a deixava vulnerável a sumir por inteiro sempre que o editor
-  // sobrescrevia `para_encerrar.slot_a` pelo painel Caixas (override é
-  // all-or-nothing por slot — ver `buildParaEncerrar`).
-  para_encerrar_tools: `Nessa edição da **Diar.ia**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).`,
+  // #3219: parágrafo de ferramentas — FALLBACK apenas (achado ao vivo,
+  // ciclo 2607-08: o parágrafo de créditos passou a viver como o 2º
+  // parágrafo de context/snippets/encerramento-social-apoio.md, mesma fonte
+  // única usada pelo mensal — ver computeParaEncerrarDefaults abaixo, que
+  // extrai esse parágrafo do split quando o arquivo tem os 3 parágrafos).
+  // Esta constante só é usada quando o split falha (arquivo ausente/vazio,
+  // ou com forma inesperada — casos 2/3 de computeParaEncerrarDefaults), sem
+  // conteúdo real de onde extrair o parágrafo de ferramentas. #4357: a lista
+  // de pills "Acesse nossas curadorias" que ANTES terminava este bloco foi
+  // extraída pra `para_encerrar_curadorias` (abaixo) — ela é navegação
+  // estrutural PERMANENTE, não copy editorial do slot A, e morar aqui a
+  // deixava vulnerável a sumir por inteiro sempre que o editor sobrescrevia
+  // `para_encerrar.slot_a` pelo painel Caixas (override é all-or-nothing por
+  // slot — ver `buildParaEncerrar`).
+  para_encerrar_tools: `Nesta edição da **diar.ia.br**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).`,
 
   // #4357: lista de pills "Acesse nossas curadorias" — navegação estrutural
   // PERMANENTE (não copy editorial), concatenada por `buildParaEncerrar`
@@ -192,9 +197,23 @@ export function loadParaEncerrarConfig(): ParaEncerrarConfig {
 function computeParaEncerrarDefaults(): { slotA: string; slotB: string } {
   const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
   if (split) {
+    // Achado ao vivo, ciclo 2607-08: o snippet ganhou um 3º parágrafo
+    // (créditos de ferramentas) entre apoio e convite social.
+    // `splitEncerramentoSocialApoio` só separa em 2 (apoio + resto), então
+    // `split.socialInvite` aqui é "créditos\n\nconvite social" quando o
+    // arquivo tem os 3 parágrafos. Separar de novo no primeiro `\n\n` extrai
+    // o parágrafo de créditos REAL do snippet em vez de duplicar o
+    // `FIXED_BLOCKS.para_encerrar_tools` hardcoded ao lado dele (regressão
+    // achada no fleet review do #4425 — a fonte compartilhada ganhou esse
+    // parágrafo, mas o código do diário ainda colava a cópia hardcoded
+    // antiga por cima). Arquivo com só 2 parágrafos (forma pré-2607-08)
+    // continua caindo no fallback hardcoded — comportamento inalterado.
+    const restParts = split.socialInvite.split(/\n\s*\n/);
+    const tools = restParts.length > 1 ? restParts[0] : FIXED_BLOCKS.para_encerrar_tools;
+    const social = restParts.length > 1 ? restParts.slice(1).join("\n\n") : split.socialInvite;
     return {
-      slotA: `${split.apoio}\n\n${FIXED_BLOCKS.para_encerrar_tools}`,
-      slotB: split.socialInvite,
+      slotA: `${split.apoio}\n\n${tools}`,
+      slotB: social,
     };
   }
   // Split falhou — distingue arquivo ausente (caso 1) de arquivo presente mas
