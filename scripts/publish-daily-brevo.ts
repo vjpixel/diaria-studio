@@ -113,6 +113,41 @@ export function checkDailySendCap(totalSubscribers: number, cap: number): DailyC
   };
 }
 
+// ── guards de pré-condição fora de --dry-run (puro) ───────────────────────
+
+export type PreflightGuardCheck = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Pura — os 3 guards de pré-condição pra rodar fora de `--dry-run` (#4404:
+ * antes só `list_id` e a API key eram validados; `sender_email` null — o
+ * default de `platform.config.json` até o editor criar a conta Brevo própria
+ * — caía direto num erro genérico da API Brevo em vez do erro
+ * explícito/didático que os outros 2 campos já tinham). Extraída de `main()`
+ * pra ser testável sem mockar env/`platform.config.json` inteiros (mesmo
+ * padrão de `evaluate-brevo-diaria.ts`, #4398 review). Mensagens idênticas às
+ * que já existiam inline.
+ */
+export function checkBrevoDiariaGuards(params: {
+  dryRun: boolean;
+  brevoDiaria: BrevoDiariaConfig | undefined;
+  apiKey: string | undefined;
+}): PreflightGuardCheck {
+  const { dryRun, brevoDiaria, apiKey } = params;
+  if (!brevoDiaria) {
+    return { ok: false, reason: "brevo_diaria não configurado em platform.config.json." };
+  }
+  if (!dryRun && brevoDiaria.list_id == null) {
+    return { ok: false, reason: "brevo_diaria.list_id não definido em platform.config.json." };
+  }
+  if (!dryRun && !brevoDiaria.sender_email) {
+    return { ok: false, reason: "brevo_diaria.sender_email não definido em platform.config.json." };
+  }
+  if (!dryRun && !apiKey) {
+    return { ok: false, reason: `${brevoDiaria.api_key_env} não definido no ambiente.` };
+  }
+  return { ok: true };
+}
+
 // ── montagem do HTML final (puro, dado o conteúdo já parseado) ──────────
 
 /**
@@ -164,17 +199,10 @@ async function main(): Promise<void> {
 
   const platformConfig = JSON.parse(readFileSync(resolve(ROOT, "platform.config.json"), "utf8")) as PlatformConfig;
   const brevoDiaria = platformConfig.brevo_diaria;
-  if (!brevoDiaria) {
-    log("ERRO: brevo_diaria não configurado em platform.config.json.");
-    process.exit(2);
-  }
-  if (!dryRun && brevoDiaria!.list_id == null) {
-    log("ERRO: brevo_diaria.list_id não definido em platform.config.json.");
-    process.exit(2);
-  }
-  const apiKey = process.env[brevoDiaria!.api_key_env];
-  if (!dryRun && !apiKey) {
-    log(`ERRO: ${brevoDiaria!.api_key_env} não definido no ambiente.`);
+  const apiKey = brevoDiaria ? process.env[brevoDiaria.api_key_env] : undefined;
+  const guardCheck = checkBrevoDiariaGuards({ dryRun, brevoDiaria, apiKey });
+  if (!guardCheck.ok) {
+    log(`ERRO: ${guardCheck.reason}`);
     process.exit(2);
   }
 

@@ -14,6 +14,7 @@ import {
   buildDailyBrevoPreviewText,
   checkDailySendCap,
   buildDailyBrevoHtml,
+  checkBrevoDiariaGuards,
 } from "../scripts/publish-daily-brevo.ts";
 import type { NewsletterContent } from "../scripts/lib/newsletter-parse.ts";
 
@@ -66,6 +67,62 @@ describe("checkDailySendCap — guard de segurança, não rotação (#4266)", ()
     assert.equal(result.ok, false);
     assert.match((result as { ok: false; reason: string }).reason, /301/);
     assert.match((result as { ok: false; reason: string }).reason, /rotação por ondas/);
+  });
+});
+
+describe("checkBrevoDiariaGuards — pré-condições fora de --dry-run (#4404)", () => {
+  const validBrevoDiaria = {
+    api_key_env: "BREVO_DIARIA_API_KEY",
+    list_id: 42,
+    sender_email: "editor@diar.ia.br",
+    sender_name: "Diar.ia",
+    daily_send_cap: 300,
+  };
+
+  it("--dry-run: nenhum guard bloqueia mesmo com tudo ausente (só brevo_diaria precisa existir)", () => {
+    assert.deepEqual(
+      checkBrevoDiariaGuards({ dryRun: true, brevoDiaria: { ...validBrevoDiaria, list_id: null, sender_email: null }, apiKey: undefined }),
+      { ok: true },
+    );
+  });
+
+  it("brevo_diaria ausente → not ok, mesmo em --dry-run", () => {
+    const result = checkBrevoDiariaGuards({ dryRun: true, brevoDiaria: undefined, apiKey: undefined });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /brevo_diaria não configurado/);
+  });
+
+  it("fora de --dry-run com list_id null → not ok (guard existente)", () => {
+    const result = checkBrevoDiariaGuards({
+      dryRun: false,
+      brevoDiaria: { ...validBrevoDiaria, list_id: null },
+      apiKey: "key",
+    });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /brevo_diaria\.list_id não definido/);
+  });
+
+  it("fora de --dry-run com sender_email null → not ok, erro explícito (#4404 — antes caía no erro genérico da API Brevo)", () => {
+    const result = checkBrevoDiariaGuards({
+      dryRun: false,
+      brevoDiaria: { ...validBrevoDiaria, sender_email: null },
+      apiKey: "key",
+    });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /brevo_diaria\.sender_email não definido/);
+  });
+
+  it("fora de --dry-run com API key ausente do ambiente → not ok (guard existente)", () => {
+    const result = checkBrevoDiariaGuards({ dryRun: false, brevoDiaria: validBrevoDiaria, apiKey: undefined });
+    assert.equal(result.ok, false);
+    assert.match((result as { ok: false; reason: string }).reason, /BREVO_DIARIA_API_KEY não definido no ambiente/);
+  });
+
+  it("fora de --dry-run com tudo presente → ok", () => {
+    assert.deepEqual(
+      checkBrevoDiariaGuards({ dryRun: false, brevoDiaria: validBrevoDiaria, apiKey: "key" }),
+      { ok: true },
+    );
   });
 });
 
