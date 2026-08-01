@@ -19,6 +19,10 @@
  * mapa em memória, ao vivo, a partir do `prioritized.md` local (ver
  * `scripts/studio-ui/dashboard-clarice.ts::buildLinkTitlesByCycleLocal`).
  *
+ * #4405: sibling de `push-link-sections-kv.ts` também nesse ponto — chamado
+ * pelo pipeline (Etapa 5 de `.claude/skills/diaria-mensal/SKILL.md`),
+ * fail-soft, nunca pelo render do painel (ver nota #4405 naquele script).
+ *
  * Fonte: `data/monthly/{ciclo}/prioritized.md` (linha `TÍTULO — URL`, ver
  * `scripts/lib/mensal/monthly-link-sections.ts` pro parser
  * `parsePrioritizedUrlTitles`/`buildLinkTitleMap`/`loadLinkTitleMapForCycle`).

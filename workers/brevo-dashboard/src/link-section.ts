@@ -15,7 +15,17 @@
 // de markdown nem toca disco/rede.
 
 import type { LinkSectionName, LinkSectionMap } from "./types.ts";
+import { classifyNonEditorialLinkSection, type NonEditorialLinkCategory } from "./link-content.ts";
 export type { LinkSectionName, LinkSectionMap };
+
+/** #4405: rótulo de exibição de cada categoria não-editorial (ver link-content.ts). */
+export const NON_EDITORIAL_LINK_SECTION_LABELS: Record<NonEditorialLinkCategory, string> = {
+  "eia-poll": "Enquete É IA?",
+  "clarice-parceiro": "Clarice (parceiro)",
+  "produtos-diaria": "Produtos Diar.ia",
+  apoio: "Apoio",
+  "redes-sociais": "Redes sociais",
+};
 
 /** Rótulo de exibição de cada seção. */
 export const LINK_SECTION_LABELS: Record<LinkSectionName, string> = {
@@ -87,9 +97,17 @@ export interface LinkSectionCell {
   tooltip: string;
 }
 
-export const LINK_SECTION_FALLBACK_LABEL = "—";
+/**
+ * #4405: catch-all determinístico — nunca mais "—" (pedido explícito do
+ * editor: a coluna Seção NUNCA pode exibir traço). "Outros" é o piso de
+ * `lookupLinkSectionCell` abaixo, só alcançado depois de tentar o mapa
+ * editorial E a taxonomia não-editorial (`classifyNonEditorialLinkSection`)
+ * — se esta linha crescer numa edição, é termômetro de que uma das duas
+ * camadas não cobriu um caso real (ver CLAUDE.md/#4405).
+ */
+export const LINK_SECTION_FALLBACK_LABEL = "Outros";
 export const LINK_SECTION_FALLBACK_TOOLTIP =
-  "Seção não identificada — link anterior ao mapa de seções deste ciclo, link de sistema/CTA/rodapé, ou fora do prioritized.md do mês.";
+  "Fora das seções editoriais e da taxonomia de serviço conhecida — link anterior ao mapa de seções deste ciclo, ou de um tipo ainda não catalogado.";
 
 /**
  * Formata o resultado de `resolveLinkSection` pra exibição — nunca retorna
@@ -105,14 +123,35 @@ export function formatLinkSectionCell(resolved: ResolvedLinkSection | null): Lin
   return { label, tooltip: `${label} (também em: ${alsoLabels})` };
 }
 
-/** Atalho: lookup direto no mapa + resolve + format, num só passo — usado
+/** #4405: formata uma categoria não-editorial (`classifyNonEditorialLinkSection`)
+ * pra exibição — mesma forma de `LinkSectionCell` que o mapa editorial usa. */
+export function formatNonEditorialLinkSectionCell(category: NonEditorialLinkCategory): LinkSectionCell {
+  const label = NON_EDITORIAL_LINK_SECTION_LABELS[category];
+  return {
+    label,
+    tooltip: `${label} — link de serviço/CTA do e-mail, fora das seções editoriais do digest (Destaques/Use Melhor/Radar).`,
+  };
+}
+
+/**
+ * Atalho: lookup direto no mapa + resolve + format, num só passo — usado
  * pelos construtores de linha em render-links.ts (`parseLinksStats`/
- * `aggregateLinksAcrossCampaigns`). `map` ausente/null → fallback (nunca lança). */
+ * `aggregateLinksAcrossCampaigns`). Resolução em 3 camadas (#4405, pedido do
+ * editor — a coluna Seção nunca exibe "—"): (1) mapa editorial (Destaques/
+ * Use Melhor/Radar, `map`); (2) taxonomia não-editorial derivada da própria
+ * URL (`url`, opcional — enquete/Clarice/produtos/apoio/redes); (3) catch-all
+ * "Outros". `map`/`url` ausentes → cai direto na camada determinística.
+ */
 export function lookupLinkSectionCell(
   content: string,
   map: LinkSectionMap | null | undefined,
+  url?: string,
 ): LinkSectionCell {
-  return formatLinkSectionCell(resolveLinkSection(map?.[content]));
+  const resolved = resolveLinkSection(map?.[content]);
+  if (resolved) return formatLinkSectionCell(resolved);
+  const nonEditorial = url ? classifyNonEditorialLinkSection(url) : null;
+  if (nonEditorial) return formatNonEditorialLinkSectionCell(nonEditorial);
+  return formatLinkSectionCell(null);
 }
 
 /**
@@ -227,4 +266,4 @@ export function normalizeLinkSectionMap(raw: unknown): LinkSectionMap | null {
  * campanha (`renderLinksSection`) — evita duas cópias do mesmo texto. */
 export const LINK_SECTION_COLUMN_LABEL = "Seção";
 export const LINK_SECTION_COLUMN_TOOLTIP =
-  "Seção editorial do digest MENSAL onde este conteúdo apareceu (Destaques/Use Melhor/Radar nos ciclos atuais; Lançamentos/Pesquisas/Outras Notícias nos ciclos legados 2603-04/2604-05), a partir do prioritized.md do ciclo de envio (#4184). Só cobre envios do digest mensal via Clarice — links de edições diárias, CTA e rodapé caem no fallback \"—\" (sem seção mapeada).";
+  "Seção editorial do digest MENSAL onde este conteúdo apareceu (Destaques/Use Melhor/Radar nos ciclos atuais; Lançamentos/Pesquisas/Outras Notícias nos ciclos legados 2603-04/2604-05), a partir do prioritized.md do ciclo de envio (#4184). Links de serviço/CTA do e-mail (enquete É IA?, Clarice, produtos Diar.ia, apoio, redes sociais) recebem uma categoria própria (#4405); qualquer outro cai em \"Outros\" — a coluna nunca fica em branco.";

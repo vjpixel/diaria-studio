@@ -15,6 +15,14 @@
  * memória, ao vivo, a partir do `prioritized.md` local (ver
  * `scripts/studio-ui/dashboard-clarice.ts`).
  *
+ * #4405: desde este PR, `.claude/skills/diaria-mensal/SKILL.md` (Etapa 5 —
+ * Publicação) chama este script como parte do pipeline, fail-soft (warning,
+ * nunca bloqueia o envio) — não contradiz o parágrafo acima: o proibido é o
+ * caminho de RENDER do painel, este é um passo explícito de PIPELINE (só
+ * roda quando o editor de fato publica um ciclo). Sem isso, todo ciclo novo
+ * nascia com a coluna "Seção" vazia até alguém lembrar de rodar `--all`
+ * manualmente (RC4 do #4405).
+ *
  * Fonte: `data/monthly/{ciclo}/prioritized.md` (`## Destaques` / `## Use Melhor` /
  * `## Radar`) — ver `scripts/lib/mensal/monthly-link-sections.ts` pro parser.
  * Sem `utm_term`, sem alterar nenhum link de saída — retroativo de imediato,
