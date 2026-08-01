@@ -519,6 +519,17 @@ npx tsx scripts/pipeline-sentinel.ts write --edition $CYCLE --step 4 --dir "data
 
 **Resume check:** `_internal/05-published.json` existe com `status: "test_sent"` → pular para o gate.
 
+### 5-pre. Push do mapa de seção/título pro KV do dashboard (#4405)
+
+Antes de publicar (qualquer um dos 2 fluxos abaixo — legado 5a-5d ou canônico `clarice-schedule-sends`, ver "Fluxo multi-campanha" mais abaixo), empurrar o `prioritized.md` já aprovado pro KV do worker `clarice-dashboard` — sem isso, a coluna "Seção"/"Conteúdo" das tabelas de link fica sem dado pra este ciclo até alguém lembrar de rodar `--all` manualmente (RC4 do #4405):
+
+```bash
+npx tsx scripts/push-link-sections-kv.ts --cycle $CYCLE
+npx tsx scripts/push-link-titles-kv.ts --cycle $CYCLE
+```
+
+**Fail-soft: warning, nunca bloqueia.** Requer `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_WORKERS_TOKEN` no env (label `local`) — se ausentes ou se a chamada falhar por qualquer motivo (rede, permissão), registrar warning e seguir a Etapa 5 normalmente; o editor pode rodar os 2 comandos manualmente depois.
+
 ### 5a. Drive sync pull
 
 Pull do `draft.md` antes de converter (editor pode ter editado no Drive após Etapa 4):
@@ -666,6 +677,8 @@ Todos em `data/monthly/{ciclo}/` (ex: `data/monthly/2605-06/`):
 ## Fluxo multi-campanha Clarice (canônico — #2009)
 
 O fluxo `clarice-build-edition-sends → clarice-split-cells → clarice-schedule-sends` é o caminho **canônico** para ciclos com múltiplos envios (S1 A/B/C + S2/S3). O `publish-monthly.ts` (Etapa 5 acima) é o fluxo legado e será removido em release futuro.
+
+**Não pular a "5-pre" acima** (push do mapa de seção/título pro KV, #4405) mesmo seguindo este fluxo em vez do legado 5a-5d — os 2 comandos (`push-link-sections-kv.ts`/`push-link-titles-kv.ts`) são independentes de qual script cria a campanha, só dependem do `prioritized.md` do ciclo.
 
 **Passo obrigatório antes do `clarice-schedule-sends --schedule`**: setar o gabarito do É IA?:
 

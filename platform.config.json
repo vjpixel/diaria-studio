@@ -21,6 +21,15 @@
     "sender_name": "Clarice.ai",
     "test_email": "vjpixel@gmail.com"
   },
+  "brevo_diaria": {
+    "api_key_env": "BREVO_DIARIA_API_KEY",
+    "list_id": null,
+    "sender_email": null,
+    "sender_name": "Diar.ia",
+    "test_email": "vjpixel@gmail.com",
+    "daily_send_cap": 300,
+    "note": "#4266 — conta Brevo PRÓPRIA do editor (free tier, distinta da parceria Clarice em brevo_monthly), canal alternativo pro segmento Pending da Beehiiv (assinantes que nunca confirmaram o double opt-in). list_id/sender_email ficam null até o editor criar a conta/lista e preencher (mesmo padrão de brevo_monthly.sender_email antes do #653) — scripts/sync-pending-to-brevo.ts, scripts/evaluate-brevo-diaria.ts e scripts/publish-daily-brevo.ts abortam com erro explícito se list_id for null fora de --dry-run. daily_send_cap=300 cabe no free tier da Brevo (zero custo recorrente, CLAUDE.md)."
+  },
   "inbox": {
     "address": "diariaeditor@gmail.com",
     "gmailQuery": "in:sent {to:diariaeditor@gmail.com to:diaria.editor@gmail.com}",
@@ -61,6 +70,12 @@
     "slot1": "monge-iogue-faquir-clarice.md",
     "slot2": "amazon-loja-divulgacao.md",
     "slot3": "historia-ia-para-quem-tem-pressa-clarice.md"
+  },
+  "boxes_divulgacao_patronos": {
+    "slot0": null,
+    "slot1": "patronos-bastidores.md",
+    "slot2": "patronos-acesso-antecipado.md",
+    "slot3": null
   },
   "para_encerrar": {
     "slot_a": "Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria) para ganhar recompensas, como artigo especial do mês, sorteios e acesso antecipado a novos projetos.\n\nNesta edição da **diar.ia.br**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).",

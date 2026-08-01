@@ -47,12 +47,13 @@ const TWO_DESTAQUES_MD = [
   "",
 ].join("\n");
 
-describe("isReviewSlug (#3559, +html-final #3635)", () => {
-  it("aceita só os 4 slugs conhecidos", () => {
+describe("isReviewSlug (#3559, +html-final #3635, +html-final-patronos #4275)", () => {
+  it("aceita só os 5 slugs conhecidos", () => {
     assert.equal(isReviewSlug("categorized"), true);
     assert.equal(isReviewSlug("reviewed"), true);
     assert.equal(isReviewSlug("social"), true);
     assert.equal(isReviewSlug("html-final"), true);
+    assert.equal(isReviewSlug("html-final-patronos"), true);
     assert.equal(isReviewSlug("nope"), false);
     assert.equal(isReviewSlug(""), false);
   });
@@ -89,6 +90,15 @@ describe("resolveReviewFile (#3559)", () => {
     // basename(filename) na construção do baseline — NÃO deveria aninhar
     // outra pasta `_internal` dentro de `studio-review-baseline/`.
     assert.match(resolved!.baselinePath, /studio-review-baseline[\\/]newsletter-final\.html\.md$/);
+    assert.doesNotMatch(resolved!.baselinePath, /studio-review-baseline[\\/]_internal/);
+  });
+
+  it("#4275: html-final-patronos resolve pra _internal/newsletter-final-patronos.html, mesmo esquema de baseline do html-final", () => {
+    const resolved = resolveReviewFile(root, "260716", "html-final-patronos");
+    assert.ok(resolved);
+    assert.equal(resolved!.filename, "_internal/newsletter-final-patronos.html");
+    assert.match(resolved!.filePath, /_internal[\\/]newsletter-final-patronos\.html$/);
+    assert.match(resolved!.baselinePath, /studio-review-baseline[\\/]newsletter-final-patronos\.html\.md$/);
     assert.doesNotMatch(resolved!.baselinePath, /studio-review-baseline[\\/]_internal/);
   });
 });
@@ -507,6 +517,14 @@ describe("runReviewLints (#3559)", () => {
     assert.ok(report.note, "deveria ter uma note explicando a ausência de lints");
     assert.match(report.note!, /última milha/);
     assert.match(report.note!, /NÃO passa pelos lints/);
+  });
+
+  it("#4275: html-final-patronos tem o MESMO tratamento de html-final (sem lints, mesma note) — não cai no fallback lintSocial", () => {
+    const report = runReviewLints(root, editionDir, "html-final-patronos", "<html><body>variante Patronos</body></html>");
+    assert.equal(report.ok, true);
+    assert.deepEqual(report.checks, []);
+    assert.ok(report.note);
+    assert.match(report.note!, /última milha/);
   });
 });
 

@@ -30,7 +30,9 @@
       <p class="hint">
         Lista dinâmica de <code>context/snippets/*.md</code> (exceto <code>README.md</code>).
         O badge "slot N" mostra a atribuição atual em <code>platform.config.json</code> →
-        <code>boxes_divulgacao</code> — gerencie a atribuição na seção "Slots de divulgação" abaixo.
+        <code>boxes_divulgacao</code> (variante Padrão) — gerencie a atribuição, incluindo a
+        variante <strong>Patronos</strong> (<code>boxes_divulgacao_patronos</code>, #4275),
+        na seção "Slots de divulgação" abaixo.
       </p>
       <div class="panel-header-row">
         <span id="last-updated" class="hint" aria-live="polite"></span>
@@ -45,11 +47,18 @@
 
     <section class="panel" id="slots-panel">
       <h2>Slots de divulgação</h2>
-      <p class="hint">
+      <div class="cx-variant-toggle" role="tablist" aria-label="Variante de slots">
+        <button type="button" id="variant-default-btn" class="cx-variant-btn active" data-variant="default" role="tab" aria-selected="true">Padrão</button>
+        <button type="button" id="variant-patronos-btn" class="cx-variant-btn" data-variant="patronos" role="tab" aria-selected="false">Patronos</button>
+      </div>
+      <p class="hint" id="slots-variant-hint">
         Define quais caixas o <code>stitch-newsletter.ts</code> injeta automaticamente em cada
-        edição diária (#3937). Salvar reescreve só a chave <code>boxes_divulgacao</code> em
-        <code>platform.config.json</code>, preservando o resto do arquivo. Vale a partir da
-        <strong>próxima edição</strong> — nenhum restart necessário.
+        edição diária (#3937). Salvar reescreve só a chave correspondente à aba ativa —
+        <code>boxes_divulgacao</code> (Padrão) ou <code>boxes_divulgacao_patronos</code>
+        (Patronos, #4275) — em <code>platform.config.json</code>, preservando o resto do arquivo.
+        Vale a partir da <strong>próxima edição</strong> — nenhum restart necessário. A variante
+        Patronos ainda não é gerada/publicada automaticamente (Fase 1 — "Gerar e revisar"): rodar
+        manualmente <code>render-newsletter-html.ts --patronos</code> pra produzir o preview.
       </p>
       <div class="cx-slots-row" data-slot="slot0">
         <label class="cx-slots-label" for="slot0-select">

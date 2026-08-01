@@ -296,18 +296,22 @@ test("render — envio maduro (>48h) → semáforo + plano aparecem (sem diferen
   assert.match(html, /Verde|Amarelo|Vermelho/);
 });
 
-// #3081 (achado no self-review): a tabela de saúde da Rampa mostrava spam
-// rate com 2 casas decimais — 4ª tabela do dashboard com uma precisão
-// diferente das outras 3 (Envios/Totais por mês/Resumo A/B/C, já em 3 casas).
-test("#3081: tabela de saúde mostra spam rate com 3 casas decimais (não 2)", () => {
+// #4400: a linha "Spam (Brevo)" voltou ao default de 2 casas decimais, igual
+// às outras 4 linhas da tabela (Abertura/Hard bounce/Bounce total/Unsub) —
+// reverte a exceção de 3 casas do #3081 (que só fazia sentido comparada às
+// outras tabelas do dashboard, não a esta). A linha "Spam (Postmaster)", que
+// governa o semáforo, continua em 3 casas (ver teste dedicado mais abaixo).
+test("#4400: Spam (Brevo) mostra o valor com 2 casas decimais (mesmo default das outras linhas)", () => {
   const camps = [
     campaignSentHoursAgo(60, {
       statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600, complaints: 1 }),
     }),
   ];
   const html = renderWeeklyPlanTabPanel(camps, NOW);
-  // spamRate = 1/3000 = 0.033%
-  assert.match(html, />0\.033%</, "spam deve aparecer com 3 casas decimais");
+  // spamRate = 1/3000 = 0.0333...% → 0.03% com 2 casas
+  const spamBrevoRow = html.match(/<tr><td>Spam \(Brevo\)[\s\S]*?<\/tr>/)?.[0];
+  assert.ok(spamBrevoRow, "deve haver a linha 'Spam (Brevo)' na tabela de métricas de saúde");
+  assert.match(spamBrevoRow!, />0\.03%</, "spam (Brevo) deve aparecer com 2 casas decimais");
 });
 
 // #3081 (achado relacionado, mesma classe do fix de pct() denom-0 → "—" em
@@ -799,27 +803,20 @@ test("renderWeeklyPlanTabPanel — sem leitura de Postmaster, semáforo NUNCA é
   assert.match(html, /Amarelo/);
 });
 
-// #4154 — rótulo dinâmico da linha "Spam (Postmaster...)" reflete o produtor
-// REAL da leitura. Achado do self-review do #4342: sem este teste, o rótulo
-// nunca é exercitado fim-a-fim (só as partes puras isoladamente), e um bug
-// paralelo (normalizePostmasterSpamEntry descartando producedBy no boundary
-// do KV) passou despercebido justamente porque nada renderizava o HTML de
-// verdade com um producedBy setado.
-test("renderWeeklyPlanTabPanel — rótulo mostra ', automático' quando producedBy='auto'", () => {
+// #4400: o rótulo virou "Spam (Postmaster)" — ESTÁTICO em 2 sentidos: (1) não
+// reflete mais `producedBy` (sufixo ", automático"/", manual" introduzido no
+// #4154), e (2) também perdeu o sufixo fixo "— governa o semáforo" (pedido do
+// editor era texto estático SIMPLES, não só remover a parte dinâmica).
+// `producedBy` continua existindo em `SpamSignal`/`PostmasterSpamEntry`
+// (testado em `resolveSpamSignal — repassa producedBy...` acima), só não
+// afeta mais o rótulo renderizado — testado aqui com os 3 valores possíveis
+// (auto, manual, ausente) pra garantir que nenhum deles vaza pro texto.
+test("renderWeeklyPlanTabPanel — rótulo do Postmaster é estático 'Spam (Postmaster)', independente de producedBy", () => {
   const camps = [campaignSentHoursAgo(60, { statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600 }) })];
-  const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({ producedBy: "auto" }));
-  assert.match(html, /Spam \(Postmaster, automático — governa o semáforo\)/);
-});
-
-test("renderWeeklyPlanTabPanel — rótulo mostra ', manual' quando producedBy='manual'", () => {
-  const camps = [campaignSentHoursAgo(60, { statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600 }) })];
-  const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({ producedBy: "manual" }));
-  assert.match(html, /Spam \(Postmaster, manual — governa o semáforo\)/);
-});
-
-test("renderWeeklyPlanTabPanel — sem producedBy (entry pré-#4154), rótulo NÃO afirma origem nenhuma", () => {
-  const camps = [campaignSentHoursAgo(60, { statistics: statsFor({ sent: 3000, delivered: 2990, uniqueViews: 600 }) })];
-  const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry({}));
-  assert.match(html, /Spam \(Postmaster — governa o semáforo\)/);
-  assert.doesNotMatch(html, /Spam \(Postmaster, (automático|manual)/);
+  for (const producedBy of ["auto", "manual", undefined] as const) {
+    const html = renderWeeklyPlanTabPanel(camps, NOW, [], mkPostmasterEntry(producedBy ? { producedBy } : {}));
+    assert.match(html, /<tr><td>Spam \(Postmaster\)<\/td>/, `producedBy=${producedBy}`);
+    assert.doesNotMatch(html, /Spam \(Postmaster, (automático|manual)/, `producedBy=${producedBy}`);
+    assert.doesNotMatch(html, /governa o semáforo/, `producedBy=${producedBy}`);
+  }
 });

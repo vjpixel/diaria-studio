@@ -11,6 +11,8 @@ import {
   formatLinkSectionCell,
   LINK_SECTION_COLUMN_LABEL,
   LINK_SECTION_COLUMN_TOOLTIP,
+  LINK_SECTION_LABELS,
+  LINK_SECTION_FALLBACK_LABEL,
 } from "./link-section.ts";
 export * from "./link-section.ts";
 // NOTE (#2832): import circular com sections-core.ts (esHtml/parseClariceCampaignKey/
@@ -18,7 +20,7 @@ export * from "./link-section.ts";
 // dentro de corpos de função chamados em request-time, nunca em top-level do módulo,
 // então a ordem de inicialização ESM não importa (mesmo padrão que já existia
 // implicitamente dentro do monólito index.ts antes da quebra em módulos).
-import { escHtml, parseClariceCampaignKey, monthKeyBRT } from "./sections-core.ts";
+import { escHtml, parseClariceCampaignKey, monthKeyBRT, extractMonthlyCycleCandidate, resolveCampaignCycle } from "./sections-core.ts"; // #4405: extractMonthlyCycleCandidate/resolveCampaignCycle
 
 /**
  * `DS.alert` permanece local — é uma cor semântica de ferramenta interna
@@ -262,7 +264,7 @@ export function parseLinksStats(
       clicks,
       pctOfTotal: pct(clicks, totalClicks), // reusa helper pct() (#2183)
       variants,
-      section: lookupLinkSectionCell(content, sectionMap), // #4184
+      section: lookupLinkSectionCell(content, sectionMap, representativeUrl), // #4184/#4405
     };
   });
 
@@ -495,7 +497,7 @@ export function aggregateLinksAcrossCampaigns(
         variantCount: urlEntries.length,
         totalClicks,
         campaignCount,
-        section: lookupLinkSectionCell(content, sectionMap), // #4184
+        section: lookupLinkSectionCell(content, sectionMap, representativeUrl), // #4184/#4405
       };
     })
     .sort((a, b) => b.totalClicks - a.totalClicks);
@@ -508,28 +510,202 @@ export function aggregateLinksAcrossCampaigns(
  * - sendMonthBRT: mês de sentDate em BRT (zero-padded), via monthKeyBRT.
  * Retorna null quando: lista vazia, nenhuma campanha enviada, ou nome não parseável.
  * Exportado pra teste unitário.
+ *
+ * #4405: 2 correções sobre o comportamento original — (1) bug do
+ * double-suffix: pra campanhas já nomeadas no formato mensal completo
+ * (`Clarice News {AAMM-MM} — {cell}`), `parsed.cycle` JÁ vem `AAMM-MM` —
+ * apendar `-${sendMonthBRT}` de novo produzia `"2606-07-07"` (achado ao
+ * vivo, sem cobertura de teste até aqui — todos os testes existentes usavam
+ * só o formato diário `AAMM d{NN}`, onde `cycle` é 4 dígitos e o append é
+ * correto). (2) cobertura: campanhas `Diar.ia Mensal {AAMM}`/`Clarice {AAMM}
+ * grupo:` (não reconhecidas por `parseClariceCampaignKey`) agora também
+ * contam como "enviada" via `extractMonthlyCycleCandidate` — sem isso, uma
+ * janela só com esses formatos (sem nenhuma `Clarice News`) retornava `null`
+ * mesmo tendo campanhas mensais reais.
  */
 export function deriveLinksSectionTitle(
   campaigns: Array<Pick<BrevoCampaign, "name" | "sentDate">>,
 ): string | null {
-  // Filtrar campanhas enviadas (sentDate não-nulo) e ordenar desc por sentDate.
+  // Filtrar campanhas enviadas (sentDate não-nulo) e reconhecidas por QUALQUER
+  // um dos 2 classificadores, ordenar desc por sentDate.
   const sent = campaigns
     .filter(
       (c): c is typeof c & { sentDate: string } =>
-        Boolean(c.sentDate) && parseClariceCampaignKey(c.name) !== null,
+        Boolean(c.sentDate) &&
+        (parseClariceCampaignKey(c.name) !== null || extractMonthlyCycleCandidate(c.name ?? "") !== null),
     )
     .sort((a, b) => Date.parse(b.sentDate) - Date.parse(a.sentDate));
   if (sent.length === 0) return null;
 
   const latest = sent[0];
   const parsed = parseClariceCampaignKey(latest.name);
-  if (!parsed || !parsed.cycle) return null;
+  if (parsed?.cycle) {
+    if (/^\d{4}-\d{2}$/.test(parsed.cycle)) return parsed.cycle; // já é AAMM-MM (#4405)
+    const sendMonthKey = monthKeyBRT(latest.sentDate); // "YYYY-MM" em BRT
+    if (!sendMonthKey) return null;
+    return `${parsed.cycle}-${sendMonthKey.slice(5)}`; // ex: "2605-06" (ramo diário)
+  }
+  // #4405: parseClariceCampaignKey não reconheceu — extractMonthlyCycleCandidate
+  // já devolve AAMM-MM pronto (Diar.ia Mensal / Clarice grupo:).
+  return extractMonthlyCycleCandidate(latest.name ?? "");
+}
 
-  const sendMonthKey = monthKeyBRT(latest.sentDate); // "YYYY-MM" em BRT
-  if (!sendMonthKey) return null;
+/**
+ * #4405: seleciona a EDIÇÃO mais recente (ciclo de conteúdo mensal INTEIRO —
+ * decisão do editor 260731: TODAS as ondas — ramp-warm, grupos nomeados,
+ * células A/B/C — não só a campanha mais recente isolada) dentre
+ * `campaigns`. Usa `resolveCampaignCycle` (sections-core.ts) por campanha —
+ * desambigua pelo CONTEÚDO quando o nome é ambíguo (achado do `grupo:novos`,
+ * #4405) — e agrupa TODAS as campanhas cujo ciclo resolvido bate o da
+ * campanha de maior `sentDate`. `null` quando nenhuma campanha tem ciclo
+ * mensal resolvido (nunca lança).
+ *
+ * @param linkSectionsByCycle - mesmo mapa usado pra popular a coluna Seção
+ *   (`RenderDashboardOptions.linkSectionsByCycle`) — é o que alimenta o
+ *   desempate por conteúdo de `resolveCampaignCycle`. `null`/ausente: cada
+ *   campanha usa só o candidato do NOME (sem desambiguação).
+ */
+export function selectLatestEditionCampaigns<
+  C extends BrevoCampaign & { listName?: string; listSize?: number; linksStats?: BrevoLinksStats },
+>(
+  campaigns: readonly C[],
+  linkSectionsByCycle: Record<string, LinkSectionMap> | null | undefined,
+): { cycle: string; campaigns: C[] } | null {
+  const cycleOf = (c: C): string | null =>
+    resolveCampaignCycle(c.name ?? "", getCampaignLinksStats(c), linkSectionsByCycle);
 
-  const sendMonthBRT = sendMonthKey.slice(5); // "MM" (últimos 2 chars de "YYYY-MM")
-  return `${parsed.cycle}-${sendMonthBRT}`; // ex: "2605-06"
+  let latestCycle: string | null = null;
+  let latestSentMs = -Infinity;
+  for (const c of campaigns) {
+    if (!c.sentDate) continue;
+    const ms = Date.parse(c.sentDate);
+    if (!Number.isFinite(ms)) continue;
+    const cycle = cycleOf(c);
+    if (!cycle) continue;
+    if (ms > latestSentMs) {
+      latestSentMs = ms;
+      latestCycle = cycle;
+    }
+  }
+  if (latestCycle === null) return null;
+
+  const editionCampaigns = campaigns.filter((c) => cycleOf(c) === latestCycle);
+  return { cycle: latestCycle, campaigns: editionCampaigns };
+}
+
+// ─── #4405: "Seções mais clicadas" — agrupa a tabela de links acima por SEÇÃO ─
+
+/** Linha da tabela "Seções mais clicadas" — 1 por rótulo de `LinkStatRow.section`/`AggregatedLinkRow.section`. */
+export interface SectionClickRow {
+  /** Rótulo da seção — editorial (Destaques/Use Melhor/Radar/...), categoria
+   * de serviço (Enquete É IA?/Clarice/.../Redes sociais) ou "Outros". */
+  label: string;
+  /** true quando `label` é uma seção EDITORIAL do `prioritized.md` (marcada
+   * em negrito na tabela) — as demais são categoria de serviço/CTA ou "Outros". */
+  isEditorial: boolean;
+  totalClicks: number;
+  /** Participação percentual no total de cliques de TODAS as seções (mesma base da tabela de links). */
+  pctOfTotal: string;
+  /** Quantos conteúdos distintos (linhas da tabela de links) pertencem a esta seção. */
+  contentCount: number;
+  /** `totalClicks / contentCount`, 1 casa decimal — "—" se `contentCount` for 0 (nunca ocorre na prática, guard defensivo). */
+  avgClicksPerContent: string;
+}
+
+/**
+ * #4405: agrupa os cliques de `aggregateLinksAcrossCampaigns()` (ou de
+ * `parseLinksStats()`, mesmo shape de `section`) POR SEÇÃO — pedido do
+ * editor: "seções mais clicadas", não só "links mais clicados". Agrupa pelo
+ * rótulo PRIMÁRIO já resolvido em `row.section.label` (a precedência de
+ * `resolveLinkSection`/#4184 já decidiu qual seção "vence" quando o mesmo
+ * conteúdo aparece em mais de uma) — por isso a soma aqui bate EXATAMENTE
+ * com a soma da tabela de links, sem dupla contagem. `row.section` ausente
+ * (fixture manual de teste que não passa por `lookupLinkSectionCell`) cai no
+ * mesmo catch-all "Outros" da coluna Seção. Ordenado por cliques DESC.
+ */
+export function aggregateClicksBySection(
+  rows: ReadonlyArray<Pick<AggregatedLinkRow, "totalClicks" | "section">>,
+): SectionClickRow[] {
+  const buckets = new Map<string, { totalClicks: number; contentCount: number }>();
+  for (const r of rows) {
+    const label = r.section?.label ?? LINK_SECTION_FALLBACK_LABEL;
+    const bucket = buckets.get(label) ?? { totalClicks: 0, contentCount: 0 };
+    bucket.totalClicks += r.totalClicks;
+    bucket.contentCount += 1;
+    buckets.set(label, bucket);
+  }
+  const grandTotal = rows.reduce((sum, r) => sum + r.totalClicks, 0);
+  const editorialLabels = new Set<string>(Object.values(LINK_SECTION_LABELS));
+
+  return Array.from(buckets.entries())
+    .map(([label, { totalClicks, contentCount }]) => ({
+      label,
+      isEditorial: editorialLabels.has(label),
+      totalClicks,
+      pctOfTotal: pct(totalClicks, grandTotal),
+      contentCount,
+      avgClicksPerContent: contentCount > 0 ? (totalClicks / contentCount).toFixed(1) : "—",
+    }))
+    .sort((a, b) => b.totalClicks - a.totalClicks);
+}
+
+/** #4405: definição canônica das colunas de "Seções mais clicadas" — mesmo padrão de `AGGREGATED_LINKS_COLUMNS` (#3090). */
+export const SECTION_CLICKS_COLUMNS: Array<{ label: string; tooltip: string }> = [
+  { label: "Seção", tooltip: "Seção editorial (Destaques/Use Melhor/Radar/...) ou categoria de serviço (Enquete É IA?/Clarice/Produtos Diar.ia/Apoio/Redes sociais) — 'Outros' quando nenhuma das duas se aplica (#4405)." },
+  { label: "Cliques", tooltip: "Total de cliques somados de todos os conteúdos desta seção/categoria — mesma base da tabela 'Links mais clicados' abaixo." },
+  { label: "%", tooltip: "Participação percentual desta seção no total de cliques do período." },
+  { label: "Conteúdos", tooltip: "Quantos conteúdos distintos (linhas da tabela de links abaixo) pertencem a esta seção." },
+  { label: "Média/conteúdo", tooltip: "Cliques totais ÷ número de conteúdos desta seção — quão bem, em média, cada item da seção performa." },
+];
+
+/**
+ * Renderiza "Seções mais clicadas" — resumo por seção, ANTES do detalhe por
+ * conteúdo (`renderAggregatedLinksSection`, logo abaixo). Sempre visível
+ * (stub gracioso sem dados). Editoriais em negrito (`isEditorial`) — sinal
+ * visual de que aquela linha veio do `prioritized.md` do ciclo, não de uma
+ * categoria de serviço/CTA. Exportado pra teste unitário.
+ */
+export function renderSectionClicksSection(
+  rows: SectionClickRow[],
+  edicaoLabel?: string | null,
+): string {
+  const sectionTitle = edicaoLabel ? `Seções mais clicadas — edição ${edicaoLabel}` : "Seções mais clicadas";
+
+  if (rows.length === 0) {
+    return `
+<section class="phase2-section" id="secoes-mais-clicadas">
+  <h2 class="section-title">${sectionTitle}</h2>
+  <p class="section-note">Sem dados de links disponíveis para o período.</p>
+</section>`;
+  }
+
+  const tableRows = rows.map((r) => {
+    const sectionLabelHtml = r.isEditorial ? `<strong>${escHtml(r.label)}</strong>` : escHtml(r.label);
+    return `<tr>
+      <td class="link-content">${sectionLabelHtml}</td>
+      <td class="link-clicks metric">${r.totalClicks}</td>
+      <td class="link-pct">${r.pctOfTotal}</td>
+      <td>${r.contentCount}</td>
+      <td>${r.avgClicksPerContent}</td>
+    </tr>`;
+  }).join("\n");
+
+  return `
+<section class="phase2-section" id="secoes-mais-clicadas">
+  <h2 class="section-title">${sectionTitle}</h2>
+  <p class="section-note">Seções editoriais em <strong>negrito</strong>; demais linhas são categoria de serviço/CTA ou "Outros". Mesma base de cliques da tabela "Links mais clicados" logo abaixo — os totais batem.</p>
+  ${renderColumnGlossary("secoes-mais-clicadas", SECTION_CLICKS_COLUMNS)}
+  <div class="table-wrap">
+  <table class="links-table">
+    <thead>
+      <tr>
+        ${SECTION_CLICKS_COLUMNS.map((c) => `<th scope="col" title="${escHtml(c.tooltip)}">${c.label}</th>`).join("\n")}
+      </tr>
+    </thead>
+    <tbody>${tableRows}</tbody>
+  </table>
+  </div>
+</section>`;
 }
 
 /**
@@ -574,25 +750,43 @@ export const AGGREGATED_LINKS_COLUMNS: Array<{ label: string; tooltip: string }>
  * disponível (429/cache pendente da Brevo) e são puladas silenciosamente por
  * `aggregateLinksAcrossCampaigns`. O título é uma aproximação da janela, não
  * uma alegação de precisão perfeita.
+ *
+ * @param envioCount - #4405: número de ENVIOS (campanhas — ramp-warm, grupos
+ *   nomeados, células A/B/C) da EDIÇÃO `edicaoLabel`. Só produz efeito quando
+ *   `campaignCount` está ausente/null (os dois títulos — "janela de N
+ *   campanhas" vs "edição X, N envios" — são mutuamente exclusivos, cada um
+ *   descreve um escopo diferente): título vira "Links mais clicados da
+ *   edição X (N envios)" em vez de só "da edição X". Omitido preserva o
+ *   título antigo (retrocompat).
+ * @param idSuffix - #4405: sufixo do `id` do `<section>`/glossário — a
+ *   função agora é chamada 2× na mesma página (tabela da EDIÇÃO + tabela
+ *   HISTÓRICA, Fase 3), então o id precisa ser único por chamada pra não
+ *   duplicar `id=` no HTML. Default `"links-agregados"` preserva o id antigo
+ *   pros callers/testes existentes (só 1 chamada por página).
  */
 export function renderAggregatedLinksSection(
   rows: AggregatedLinkRow[],
   edicaoLabel?: string | null,
   campaignCount?: number | null,
+  envioCount?: number | null,
+  idSuffix = "links-agregados",
 ): string {
   // #3081 (review): pluralização — "1 campanha" no singular, evita "janela de
   // 1 campanhas" (gramaticalmente errado), mesmo padrão de
   // `renderUnclassifiedCampaignsNote` (sections-core.ts).
   const campaignWord = campaignCount === 1 ? "campanha" : "campanhas";
+  const envioWord = envioCount === 1 ? "envio" : "envios";
   const sectionTitle = campaignCount != null
     ? `Links mais clicados (janela de ${campaignCount} ${campaignWord})${edicaoLabel ? ` — mais recente: edição ${edicaoLabel}` : ""}`
+    : edicaoLabel && envioCount != null
+    ? `Links mais clicados da edição ${edicaoLabel} (${envioCount} ${envioWord})`
     : edicaoLabel
     ? `Links mais clicados da edição ${edicaoLabel}`
     : "Links mais clicados do período";
 
   if (rows.length === 0) {
     return `
-<section class="phase2-section" id="links-agregados">
+<section class="phase2-section" id="${escHtml(idSuffix)}">
   <h2 class="section-title">${sectionTitle}</h2>
   <p class="section-note">Sem dados de links disponíveis para o período.</p>
 </section>`;
@@ -622,10 +816,10 @@ export function renderAggregatedLinksSection(
   }).join("\n");
 
   return `
-<section class="phase2-section" id="links-agregados">
+<section class="phase2-section" id="${escHtml(idSuffix)}">
   <h2 class="section-title">${sectionTitle}</h2>
   <p class="section-note">${rows.length} conteúdos editoriais · ${totalClicks} clicks totais (soma across envios). Links de sistema excluídos.</p>
-  ${renderColumnGlossary("links-agregados", AGGREGATED_LINKS_COLUMNS)}
+  ${renderColumnGlossary(idSuffix, AGGREGATED_LINKS_COLUMNS)}
   <div class="table-wrap">
   <table class="links-table">
     <thead>

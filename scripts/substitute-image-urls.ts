@@ -32,14 +32,16 @@ import { fileURLToPath } from "node:url";
 import { mtimeMs } from "./lib/mtime.ts"; // #2316 fail-loud stale guard
 import { parseArgsSimple as parseArgs, isMainModule } from "./lib/cli-args.ts";
 
-interface PublicImage {
+// #4266: exportadas — publish-daily-brevo.ts reusa o mesmo shape do cache de
+// upload-images-public.ts (URLs públicas são ESP-agnósticas, sem reupload).
+export interface PublicImage {
   file_id: string;
   url: string;
   mime_type?: string;
   filename: string;
 }
 
-interface PublicImagesFile {
+export interface PublicImagesFile {
   images?: Record<string, PublicImage>;
 }
 

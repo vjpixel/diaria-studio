@@ -432,13 +432,56 @@ describe("studio-server — revisão de conteúdo rica (#3559)", () => {
     assert.ok(body.includes('id="rv-html-final-note"'));
   });
 
+  it("GET /revisao/{aammdd} inclui a aba 'HTML final — Patronos' (#4275, Fase 1)", async () => {
+    const res = await fetch(new URL("/revisao/260716", server.url));
+    const body = await res.text();
+    assert.ok(body.includes('data-slug="html-final-patronos"'));
+    assert.ok(body.includes('id="rv-html-final-patronos-note"'));
+  });
+
+  it("GET/PUT .../review/html-final-patronos (#4275) — não existe ainda -> exists:false; salva e persiste", async () => {
+    const getBefore = await fetch(new URL("/api/editions/260716/review/html-final-patronos", server.url));
+    const bodyBefore = await getBefore.json();
+    assert.equal(bodyBefore.exists, false);
+
+    const put = await fetch(new URL("/api/editions/260716/review/html-final-patronos", server.url), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "<html><body>variante Patronos</body></html>" }),
+    });
+    assert.equal(put.status, 200);
+
+    const getAfter = await fetch(new URL("/api/editions/260716/review/html-final-patronos", server.url));
+    const bodyAfter = await getAfter.json();
+    assert.equal(bodyAfter.exists, true);
+    assert.equal(bodyAfter.content, "<html><body>variante Patronos</body></html>");
+
+    // Não deveria ter afetado o slug html-final padrão.
+    const defaultGet = await fetch(new URL("/api/editions/260716/review/html-final", server.url));
+    const defaultBody = await defaultGet.json();
+    assert.notEqual(defaultBody.content, "<html><body>variante Patronos</body></html>");
+  });
+
+  // Roda DEPOIS do teste acima (que cria o arquivo) — a rota de lint
+  // responde "arquivo ainda não existe" antes de sequer checar o slug
+  // (mesmo comportamento pro html-final padrão), então o note de "última
+  // milha" só aparece pra um arquivo que já existe em disco.
+  it("GET .../review/html-final-patronos/lint (#4275) tem o MESMO tratamento de html-final — note, sem checks", async () => {
+    const res = await fetch(new URL("/api/editions/260716/review/html-final-patronos/lint", server.url));
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(body.checks, []);
+    assert.match(body.note ?? "", /última milha/);
+  });
+
   it("(#3874) os 2 tablists seguem WAI-ARIA APG: role=tab nos botões + role=tablist com aria-label nos containers; banners de erro/divergência têm role=alert", async () => {
     const res = await fetch(new URL("/revisao/260716", server.url));
     const body = await res.text();
     assert.ok(body.includes('id="rv-tabs" role="tablist" aria-label="Arquivo"'));
     assert.ok(body.includes('id="rv-side-tabs" role="tablist" aria-label="Painel"'));
-    // 4 abas de arquivo + 3 abas de painel lateral = 7 role="tab" no total.
-    assert.equal((body.match(/role="tab"/g) ?? []).length, 7);
+    // 5 abas de arquivo (#4275: +html-final-patronos) + 3 abas de painel
+    // lateral = 8 role="tab" no total.
+    assert.equal((body.match(/role="tab"/g) ?? []).length, 8);
     assert.ok(body.includes('id="rv-not-found" class="panel alert-banner" role="alert"'));
     assert.ok(body.includes('id="rv-divergence-banner" role="alert"'));
     // `#rv-side-tabs` tem painéis distintos de verdade (lint/diff/preview) —

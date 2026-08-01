@@ -19,6 +19,10 @@
  * mapa em memória, ao vivo, a partir do `prioritized.md` local (ver
  * `scripts/studio-ui/dashboard-clarice.ts::buildLinkTitlesByCycleLocal`).
  *
+ * #4405: sibling de `push-link-sections-kv.ts` também nesse ponto — chamado
+ * pelo pipeline (Etapa 5 de `.claude/skills/diaria-mensal/SKILL.md`),
+ * fail-soft, nunca pelo render do painel (ver nota #4405 naquele script).
+ *
  * Fonte: `data/monthly/{ciclo}/prioritized.md` (linha `TÍTULO — URL`, ver
  * `scripts/lib/mensal/monthly-link-sections.ts` pro parser
  * `parsePrioritizedUrlTitles`/`buildLinkTitleMap`/`loadLinkTitleMapForCycle`).
@@ -38,9 +42,10 @@
  *   CLOUDFLARE_ACCOUNT_ID     obrigatório p/ upload KV
  *   CLOUDFLARE_WORKERS_TOKEN  obrigatório p/ upload KV (permissão Workers KV)
  *
- * Execução real (contra o KV de produção) fica a cargo do editor/coordenador
- * — este script não é chamado automaticamente por nenhum stage do pipeline
- * nem por nenhum outro script. Indo além disso: mesmo depois deste script
+ * Execução real (contra o KV de produção) — desde #4405, chamado
+ * automaticamente pela Etapa 5 (Publicação) de `/diaria-mensal`, fail-soft
+ * (ver nota #4405 acima); fora desse pipeline, fica a cargo do
+ * editor/coordenador rodar manualmente. Indo além disso: mesmo depois deste script
  * rodar de verdade, o título só aparece no dashboard AO VIVO depois de
  * `wrangler deploy` do worker `brevo-dashboard` (esta PR só landa o código
  * que LÊ `titulo:{ciclo}` — ver `workers/brevo-dashboard/src/brevo-api.ts::readLinkTitlesByCycle`

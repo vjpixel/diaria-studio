@@ -94,6 +94,7 @@ export { singularizeSectionName } from "./lib/section-naming.ts";
 // ── Imports for main() ─────────────────────────────────────────────────
 import { extractContent } from "./lib/newsletter-parse.ts";
 import { renderHTML, renderEiaStandalone, type Esp } from "./lib/newsletter-render-html.ts";
+import { applyPatronosBoxes } from "./lib/newsletter-patronos.ts"; // #4275
 
 // #4266 — fonte única do conjunto válido; deriva mensagem de uso/erro do CLI
 // em vez de repetir o union literal (ver doc comment de `Esp`). `Record<Esp,
@@ -116,9 +117,10 @@ function main(): void {
 
   if (!editionDir) {
     console.error(
-      "Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>] [--split] [--esp beehiiv|brevo]\n" +
+      "Usage: npx tsx scripts/render-newsletter-html.ts <edition-dir> [--format html|json] [--out <path>] [--split] [--esp beehiiv|brevo] [--patronos]\n" +
         "  --split: produz 2 arquivos em {edition}/_internal/ — newsletter-body.html (sem È IA?) + newsletter-eia.html (È IA? standalone, preserva merge tags). #1046\n" +
-        `  --esp: merge tag do link de voto do É IA? (${VALID_ESP.join("|")}, default beehiiv). #4266`,
+        `  --esp: merge tag do link de voto do É IA? (${VALID_ESP.join("|")}, default beehiiv). #4266\n` +
+        "  --patronos: variante Patronos (#4275, Fase 1) — MESMO 02-reviewed.md, troca só o preenchimento dos slots de caixa via platform.config.json → boxes_divulgacao_patronos. Combine com --out apontando pra um arquivo distinto (ex: _internal/newsletter-final-patronos.html) — não sobrescreve o --out padrão sozinho.",
     );
     process.exit(1);
   }
@@ -171,7 +173,13 @@ function main(): void {
   }
 
   const resolvedDir = resolve(ROOT, editionDir);
-  const content = extractContent(resolvedDir);
+  const baseContent = extractContent(resolvedDir);
+  // #4275: --patronos sobrescreve só os campos de box de divulgação — destaques/
+  // seções/demais campos do conteúdo base (mesmo 02-reviewed.md) saem intocados.
+  // Aplicado ANTES dos 2 branches abaixo (split e non-split) pra funcionar com
+  // ambos sem duplicar a checagem da flag.
+  const patronos = flags.has("patronos");
+  const content = patronos ? applyPatronosBoxes(baseContent) : baseContent;
 
   // #1046 — Modo split: produz 2 arquivos pro paste híbrido (body via
   // ClipboardEvent + È IA? via insertContent). --format json incompatível;

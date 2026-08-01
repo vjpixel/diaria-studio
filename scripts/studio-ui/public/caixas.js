@@ -16,6 +16,12 @@
 // (`SLOTS_SAVE_CONFLICT_CONFIRM_MESSAGE`) e ZERO UI otimista (refetcha slots +
 // lista após salvar, pra o badge "slot N" dos cards refletir o disco).
 //
+// #4275: a seção ganhou um toggle "Padrão"/"Patronos" — MESMA maquinaria
+// (GET/PUT /api/boxes/slots), só que com `?variant=patronos` no GET e
+// `variant: "patronos"` no corpo do PUT quando a aba Patronos está ativa.
+// `currentSlotsVariant` guarda qual variante está carregada agora; trocar de
+// aba refetcha do zero (mesmo padrão zero-otimista do resto do painel).
+//
 // #4274: a seção "PARA ENCERRAR" gerencia os slots A/B de TEXTO DIRETO
 // (sempre presentes, sem pool de candidatos — diferente dos slots 0-3 acima)
 // — GET/PUT /api/boxes/para-encerrar, mesmo mecanismo de guard de mtime
@@ -78,6 +84,9 @@ const el = {
   slot3Select: document.getElementById("slot3-select"),
   slotsSaveBtn: document.getElementById("slots-save-btn"),
   slotsStatus: document.getElementById("slots-status"),
+  // #4275: toggle "Padrão"/"Patronos"
+  variantDefaultBtn: document.getElementById("variant-default-btn"),
+  variantPatronosBtn: document.getElementById("variant-patronos-btn"),
   // #4274: slots A/B de texto direto do PARA ENCERRAR
   paraEncerrarSlotA: document.getElementById("para-encerrar-slot-a"),
   paraEncerrarSlotB: document.getElementById("para-encerrar-slot-b"),
@@ -116,6 +125,12 @@ let dirty = false;
  * resolver. `modifiedAt` é reenviado como `expectedModifiedAt` no PUT (guard
  * de mtime #3729, mesmo mecanismo do editor de 1 caixa acima). */
 let slotsState = null;
+
+/** Variante atualmente exibida na seção "Slots de divulgação" (#4275) —
+ * `"default"` (boxes_divulgacao) ou `"patronos"` (boxes_divulgacao_patronos).
+ * Trocar de aba refetcha `slotsState` do zero pra essa variante (zero UI
+ * otimista, mesmo padrão do resto do painel). */
+let currentSlotsVariant = "default";
 
 /** Snapshot do conteúdo dos slots A/B do PARA ENCERRAR (#4274) — `{slotA,
  * slotB, modifiedAt}`, `null` até o 1º GET /api/boxes/para-encerrar resolver.
@@ -188,17 +203,26 @@ function renderList() {
     // esconderia o badge/desabilitação pra caixas no slot0.
     const hasSlot = box.slot !== null && box.slot !== undefined;
     const slotBadge = hasSlot ? `<span class="box-slot-badge">slot ${escapeHtml(String(box.slot))}</span>` : "";
+    // #4275: badge SEPARADO da variante Patronos — mesmo guard explícito
+    // contra null/undefined (slotPatronos pode ser 0, falsy em JS).
+    const hasSlotPatronos = box.slotPatronos !== null && box.slotPatronos !== undefined;
+    const slotPatronosBadge = hasSlotPatronos
+      ? `<span class="box-slot-badge box-slot-badge-patronos">Patronos slot ${escapeHtml(String(box.slotPatronos))}</span>`
+      : "";
     // #3981: rótulo exibido acima da caixa na newsletter (quando ocupa um slot ativo).
     const categoriaBadge = box.categoria ? `<span class="box-categoria-badge">${escapeHtml(box.categoria)}</span>` : "";
     const dirtyBadge = box.dirtyVsGit
       ? `<span class="box-dirty-badge" title="alteração local — entra no repo no próximo commit">modificado vs git</span>`
       : "";
-    // #3928: arquivar (não deletar). Caixa em slot ativo é auto-injetada em
-    // toda newsletter — arquivá-la quebraria o pipeline, então o botão fica
-    // desabilitado (o server também bloqueia, defense-in-depth).
+    // #3928: arquivar (não deletar). Caixa em slot ativo (Padrão OU Patronos,
+    // #4275) é auto-injetada em alguma edição — arquivá-la quebraria essa
+    // montagem, então o botão fica desabilitado (o server também bloqueia
+    // as duas variantes, defense-in-depth — ver `archiveBox`).
     const archiveBtn = hasSlot
       ? `<button type="button" class="cx-archive-btn" disabled title="Em uso no slot ${escapeHtml(String(box.slot))} — libere o slot na seção &quot;Slots de divulgação&quot; acima antes de arquivar">Arquivar</button>`
-      : `<button type="button" class="cx-archive-btn" data-action="archive" data-slug="${escapeHtml(box.slug)}">Arquivar</button>`;
+      : hasSlotPatronos
+        ? `<button type="button" class="cx-archive-btn" disabled title="Em uso no slot ${escapeHtml(String(box.slotPatronos))} da variante Patronos — libere o slot na seção &quot;Slots de divulgação&quot; (aba Patronos) antes de arquivar">Arquivar</button>`
+        : `<button type="button" class="cx-archive-btn" data-action="archive" data-slug="${escapeHtml(box.slug)}">Arquivar</button>`;
     // #3933: quando a caixa tem um nome interno explícito que difere do título
     // que renderiza na edição, mostra os dois — o nome (título do card) pra
     // identificar, e "na edição: …" pra saber o que o leitor vê.
@@ -210,6 +234,7 @@ function renderList() {
       <div class="box-card-head">
         <span class="box-title">${escapeHtml(box.title)}</span>
         ${slotBadge}
+        ${slotPatronosBadge}
         ${categoriaBadge}
         ${dirtyBadge}
       </div>
@@ -308,7 +333,10 @@ function renderSlotsSection() {
 
 async function fetchSlots() {
   try {
-    const { ok, status, body } = await fetchJson("/api/boxes/slots");
+    // #4275: `?variant=patronos` só quando a aba Patronos está ativa —
+    // omitido (aba Padrão) cai no comportamento de sempre no server.
+    const qs = currentSlotsVariant === "patronos" ? "?variant=patronos" : "";
+    const { ok, status, body } = await fetchJson(`/api/boxes/slots${qs}`);
     if (!ok) throw new Error(`HTTP ${status}`);
     slotsState = body;
   } catch (e) {
@@ -323,6 +351,24 @@ async function fetchSlots() {
   renderSlotsSection();
 }
 
+/** Alterna a variante exibida (#4275) e refetcha do zero — zero UI
+ * otimista, mesmo padrão do resto do painel. Descarta silenciosamente
+ * qualquer seleção não salva no `<select>` (mesma disciplina do resto da
+ * seção "Slots de divulgação", que não tem confirm() de dirty-check próprio
+ * — é sempre "o que está salvo no disco"). */
+function switchSlotsVariant(variant) {
+  if (variant === currentSlotsVariant) return;
+  currentSlotsVariant = variant;
+  el.variantDefaultBtn.classList.toggle("active", variant === "default");
+  el.variantDefaultBtn.setAttribute("aria-selected", String(variant === "default"));
+  el.variantPatronosBtn.classList.toggle("active", variant === "patronos");
+  el.variantPatronosBtn.setAttribute("aria-selected", String(variant === "patronos"));
+  el.slotsStatus.textContent = "";
+  el.slotsStatus.className = "cx-save-status";
+  slotsState = null;
+  fetchSlots();
+}
+
 async function saveSlots() {
   if (!slotsState) return;
   const input = {
@@ -330,6 +376,7 @@ async function saveSlots() {
     slot1: el.slot1Select.value,
     slot2: el.slot2Select.value,
     slot3: el.slot3Select.value,
+    variant: currentSlotsVariant, // #4275
   };
   // Feedback client imediato (guard 2 espelhado — server é a autoridade final
   // e revalida de qualquer forma).
@@ -767,6 +814,8 @@ el.refreshBtn.addEventListener("click", () => {
   fetchParaEncerrar();
 });
 el.slotsSaveBtn.addEventListener("click", () => saveSlots());
+el.variantDefaultBtn.addEventListener("click", () => switchSlotsVariant("default"));
+el.variantPatronosBtn.addEventListener("click", () => switchSlotsVariant("patronos"));
 el.paraEncerrarSaveBtn.addEventListener("click", () => saveParaEncerrarSlots());
 el.retryBtn.addEventListener("click", () => fetchBoxes());
 el.closeEditorBtn.addEventListener("click", () => closeEditor());

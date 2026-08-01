@@ -33,7 +33,6 @@ import { renderScheduledSection } from "./sections-kv.ts";
 // sections-kv.ts também consomem) — reexportados aqui pra não quebrar
 // consumidores existentes que importam de weekly-plan.ts/index.ts.
 import { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS, type HealthThresholds, type SpamSignal } from "./thresholds.ts";
-import type { PostmasterProducer } from "./types.ts";
 export { DEFAULT_HEALTH_THRESHOLDS, resolveSpamSignal, POSTMASTER_STALE_MS };
 export type { HealthThresholds, SpamSignal };
 
@@ -549,11 +548,13 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
     })
     .join("\n");
 
-  // #4063/#4154: "Spam" (Brevo) — 3 casas (o breaker dispara em ≥0,3%, 2 casas
-  // ainda arredondam 0.299%→"0.30%" perto do limiar), mas SEMPRE neutro —
-  // nunca verde/vermelho (ver docstring da função).
-  const spamBrevoValueFmt = noDataBySent ? "—" : fmtPct(health.spamRate, 3);
-  const spamBrevoRow = `<tr><td>Spam (Brevo, subconta — ver Postmaster)</td><td style="${neutralValueStyle()}">${spamBrevoValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
+  // #4063/#4154: "Spam" (Brevo) — SEMPRE neutro (nunca verde/vermelho, ver
+  // docstring da função). #4400: rótulo simplificado (era "Spam (Brevo,
+  // subconta — ver Postmaster)") e valor formatado com o mesmo default de 2
+  // casas das outras linhas (era 3 casas, `fmtPct(health.spamRate, 3)`) —
+  // consistência de formatação com Abertura/Hard bounce/Bounce total/Unsub.
+  const spamBrevoValueFmt = noDataBySent ? "—" : fmtPct(health.spamRate);
+  const spamBrevoRow = `<tr><td>Spam (Brevo)</td><td style="${neutralValueStyle()}">${spamBrevoValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
 
   // #4063: "Spam (Postmaster)" — a linha que GOVERNA o semáforo. Sem leitura
   // confiável, mostra "— (sem leitura)" em neutro (nunca verde). Com leitura,
@@ -567,15 +568,17 @@ function buildMetricRows(health: HealthAggregate, spamSignal: SpamSignal): strin
   const spamPostmasterStyle = spamSignal.source === "postmaster"
     ? `color:${STATUS_COLOR[classifySpamSignal(spamSignal, T)]};font-weight:600`
     : neutralValueStyle();
-  // #4154: rótulo reflete o produtor REAL da leitura (auto via API, manual
-  // via painel) em vez de afirmar "manual" incondicionalmente — desde que o
-  // sync automático existe, a maioria das leituras não é mais manual. Lookup
-  // (não ternário) pra ficar exaustivo por construção — um 3º valor futuro em
-  // `PostmasterProducer` quebra a checagem de tipo aqui em vez de cair
-  // silenciosamente no fallback "" (achado do self-review do #4342).
-  const SPAM_SOURCE_LABEL: Record<PostmasterProducer, string> = { auto: ", automático", manual: ", manual" };
-  const spamPostmasterSourceLabel = spamSignal.producedBy ? SPAM_SOURCE_LABEL[spamSignal.producedBy] : "";
-  const spamPostmasterRow = `<tr><td>Spam (Postmaster${spamPostmasterSourceLabel} — governa o semáforo)</td><td style="${spamPostmasterStyle}">${spamPostmasterValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
+  // #4400: rótulo simplificado pra estático "Spam (Postmaster)" — era
+  // "Spam (Postmaster{, automático|, manual} — governa o semáforo)", com
+  // sufixo dinâmico por `spamSignal.producedBy` via SPAM_SOURCE_LABEL
+  // (removido junto, ver histórico no #4154/#4342) mais o sufixo fixo
+  // "— governa o semáforo" (também removido — pedido do editor era texto
+  // estático SIMPLES, não só tirar a parte dinâmica). `producedBy` continua
+  // disponível em `SpamSignal`/`PostmasterSpamEntry` (thresholds.ts) pra quem
+  // precisar do dado, só não aparece mais nesta linha da tabela; a docstring
+  // acima desta função (e o código logo abaixo) continuam sendo a fonte de
+  // verdade de que esta É a linha que governa o semáforo.
+  const spamPostmasterRow = `<tr><td>Spam (Postmaster)</td><td style="${spamPostmasterStyle}">${spamPostmasterValueFmt}</td><td style="opacity:0.7">&lt;${T.spamRate.green}%</td><td style="opacity:0.7">&lt;${T.spamRate.yellow}%</td></tr>`;
 
   // Ordem: abertura, hard bounce, bounce total, os 2 de spam (Postmaster antes
   // do Brevo — é o que governa), unsub.

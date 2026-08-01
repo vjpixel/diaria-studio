@@ -1,9 +1,12 @@
 import type { Env, BrevoCampaign, BrevoGlobalStats, BrevoCampaignStats, BrevoLinksStats, EngagementCohorts, MvStatus, ContactsSummary, EiaEngagementSummary, PostmasterSpamEntry } from "./types.ts";
 import { type CouponUsageReport } from "../../../scripts/lib/stripe-coupons.ts";
+// #4405: desempate de ciclo por conteúdo em resolveCampaignCycle (abaixo) — mesma
+// função que render-links.ts já usa pra classificar URL→conteúdo.
+import { classifyLinkContent } from "./link-content.ts";
 // #3092: PT_MONTHS_ABBR — dependency-free/Workers-safe (mesmo padrão de
 // cohortSendRank em sections-kv.ts), reusado por formatCycleEnvioLabel.
 import { PT_MONTHS_ABBR } from "../../../scripts/lib/cohorts.ts";
-import { DS, DS_FONTS as DSF, pct, cellClass, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT, renderColumnGlossary, brevoReportLink, mergeLinkSectionMaps, mergeLinkTitleMaps, type LinkSectionMap } from "./render-links.ts"; // #4184: mergeLinkSectionMaps/LinkSectionMap; #4198: mergeLinkTitleMaps
+import { DS, DS_FONTS as DSF, pct, cellClass, renderLinksSection, aggregateLinksAcrossCampaigns, deriveLinksSectionTitle, renderAggregatedLinksSection, hoursSince, fmtTimeBRT, renderColumnGlossary, brevoReportLink, mergeLinkSectionMaps, mergeLinkTitleMaps, aggregateClicksBySection, renderSectionClicksSection, selectLatestEditionCampaigns, type LinkSectionMap } from "./render-links.ts"; // #4184: mergeLinkSectionMaps/LinkSectionMap; #4198: mergeLinkTitleMaps; #4405: aggregateClicksBySection/renderSectionClicksSection/selectLatestEditionCampaigns
 import {
   renderVolumeSection,
   aggregateByMonth,
@@ -113,21 +116,144 @@ export interface RenderDashboardOptions {
 }
 
 /**
- * #4184: ciclos mensais (`"AAMM-MM"`, `parseClariceCampaignKey().monthly`)
- * distintos presentes numa lista de campanhas — usado pra decidir quais
- * chaves `secao:{ciclo}` buscar no KV (Worker) ou quais `prioritized.md`
- * ler em disco (Studio). Campanhas DIÁRIAS (`cycle` de 4 dígitos, sem
- * sufixo de mês de envio) nunca têm `prioritized.md` equivalente — não
- * entram no resultado, e seu conteúdo cai no fallback "sem seção" sem
- * nenhuma checagem especial (não há chave pra elas em nenhum mapa).
+ * #4405: converte `YYMM` (mês de CONTEÚDO, 4 dígitos) pro ciclo `AAMM-MM`
+ * (chave do KV `secao:{ciclo}`/`titulo:{ciclo}`) — mesma regra de
+ * `yymmToCycle` (`scripts/lib/mensal/monthly-paths.ts`: envio = mês
+ * IMEDIATAMENTE seguinte ao conteúdo). Replicada aqui (2 linhas) porque o
+ * Worker não importa de `scripts/lib/` (fronteira do projeto, ver
+ * CLAUDE.md) — `test/brevo-dashboard-link-secao-4405.test.ts` tem um teste
+ * de paridade que garante que as duas nunca divergem. Deliberadamente NÃO
+ * deriva do `sentDate` da campanha — uma onda que atravessa a virada do mês
+ * erraria o mês de envio.
+ */
+function yymmToCycleLocal(yymm: string): string {
+  const contentMonth = Number(yymm.slice(2, 4));
+  const sendMonth = (contentMonth % 12) + 1;
+  return `${yymm}-${String(sendMonth).padStart(2, "0")}`;
+}
+
+/**
+ * #4405: candidato de ciclo mensal (`AAMM-MM`) extraído do NOME de uma
+ * campanha — reconhece, além do `Clarice News {AAMM-MM} — {cell}` que
+ * `parseClariceCampaignKey` já cobria, os outros 2 formatos reais
+ * observados na API Brevo (260731): `Diar.ia Mensal {AAMM} — ...` (envio
+ * inicial + ondas ramp-warm, `clarice-cta-ab-setup.ts`/`publish-monthly.ts`)
+ * e `Clarice {AAMM} grupo:{key}` (ondas de grupo nomeado — engajados, novos
+ * etc., `clarice-schedule-group.ts`). Função IRMÃ de `parseClariceCampaignKey`
+ * — deliberadamente não estende aquela função, cujo shape de retorno
+ * (dayNum/cell) serve o Resumo A/B/C, um propósito diferente; os 2 formatos
+ * novos não têm dayNum/cell no mesmo sentido e misturar arriscaria os
+ * agregadores que já dependem do shape atual.
+ *
+ * Só um CANDIDATO, nunca a palavra final — `Clarice {AAMM} grupo:` pode
+ * mentir: achado #4405, um envio pro grupo `novos` saiu rotulado com o
+ * ciclo CORRENTE carregando o conteúdo do ciclo ANTERIOR (o digest do mês
+ * corrente ainda não estava pronto quando o grupo foi disparado).
+ * `resolveCampaignCycle` (abaixo) usa este candidato só como ponto de
+ * partida, desempatando pelo conteúdo quando há ambiguidade.
+ */
+export function extractMonthlyCycleCandidate(campaignName: string): string | null {
+  const name = campaignName ?? "";
+  const newsMatch = name.match(/Clarice News (\d{4}-\d{2})\s*[—–-]\s*[ABC]\b/i);
+  if (newsMatch) return newsMatch[1];
+  const mensalMatch = name.match(/Diar\.ia Mensal (\d{4})\b/i);
+  if (mensalMatch) return yymmToCycleLocal(mensalMatch[1]);
+  const grupoMatch = name.match(/Clarice (\d{4}) grupo:/i);
+  if (grupoMatch) return yymmToCycleLocal(grupoMatch[1]);
+  return null;
+}
+
+function countContentCoverage(map: LinkSectionMap, contents: ReadonlySet<string>): number {
+  let n = 0;
+  for (const content of contents) if (map[content]) n++;
+  return n;
+}
+
+/**
+ * #4405: resolve o ciclo mensal (`AAMM-MM`) de UMA campanha, desambiguando o
+ * candidato do nome (`extractMonthlyCycleCandidate`) pelo CONTEÚDO — entre
+ * os ciclos já carregados em `sectionMapsByCycle`, escolhe o que cobre mais
+ * URLs de clique desta campanha (via `classifyLinkContent`, mesma chave que
+ * os mapas usam). Empate — seja contra o candidato, seja entre 2 ciclos
+ * NÃO-candidatos — ou zero cobertura em TODOS os ciclos → fica o candidato
+ * do nome (nunca inventa um ciclo sem evidência de conteúdo INEQUÍVOCA; o
+ * caso de empate entre não-candidatos nunca é decidido pela ordem de
+ * iteração de `sectionMapsByCycle`). Sem
+ * candidato de nome (campanha diária, ou naming desconhecido) → `null`, sem
+ * tentar desambiguar — nunca declara "monthly" uma campanha que não parece
+ * monthly pelo nome.
+ *
+ * Nota sobre `collectMonthlyLinkCycles` (abaixo): a decisão de QUAIS ciclos
+ * buscar no KV usa só o candidato do nome — não dá pra desambiguar por
+ * conteúdo antes de ter os mapas carregados (contradição de ordem: precisa
+ * do mapa pra saber qual mapa buscar). Na prática o ciclo correto quase
+ * sempre acaba no conjunto de qualquer forma, contribuído por OUTRAS
+ * campanhas bem nomeadas da mesma janela (`Clarice News`) — esta função só
+ * refina a classificação POR CAMPANHA depois que os mapas já foram
+ * carregados, ela não amplia o conjunto buscado no KV.
+ */
+export function resolveCampaignCycle(
+  campaignName: string,
+  linksStats: BrevoLinksStats | null | undefined,
+  sectionMapsByCycle: Record<string, LinkSectionMap> | null | undefined,
+): string | null {
+  const candidate = extractMonthlyCycleCandidate(campaignName);
+  if (candidate === null) return null;
+  if (!sectionMapsByCycle || !linksStats) return candidate;
+
+  const cycles = Object.keys(sectionMapsByCycle);
+  if (cycles.length === 0) return candidate;
+
+  const contents = new Set<string>();
+  for (const url of Object.keys(linksStats)) {
+    contents.add(classifyLinkContent(url).content);
+  }
+  if (contents.size === 0) return candidate;
+
+  let bestCycle = candidate;
+  let bestCoverage = sectionMapsByCycle[candidate]
+    ? countContentCoverage(sectionMapsByCycle[candidate], contents)
+    : 0;
+  // #4405 (achado do review): `tied` rastreia quando outro ciclo (não o
+  // candidato) empata com o MELHOR já visto — sem isso, um empate entre 2
+  // ciclos NÃO-candidatos era decidido silenciosamente pela ordem de
+  // iteração de `Object.keys`, contradizendo o "empate → fica o candidato"
+  // documentado acima. Reinicia a cada vez que um novo melhor estritamente
+  // maior aparece (só o TOPO atual importa pro empate).
+  let tied = false;
+  for (const cycle of cycles) {
+    if (cycle === candidate) continue;
+    const coverage = countContentCoverage(sectionMapsByCycle[cycle], contents);
+    if (coverage > bestCoverage) {
+      bestCoverage = coverage;
+      bestCycle = cycle;
+      tied = false;
+    } else if (coverage > 0 && coverage === bestCoverage) {
+      tied = true;
+    }
+  }
+  if (bestCoverage === 0 || tied) return candidate;
+  return bestCycle;
+}
+
+/**
+ * #4184: ciclos mensais (`"AAMM-MM"`) distintos presentes numa lista de
+ * campanhas — usado pra decidir quais chaves `secao:{ciclo}` buscar no KV
+ * (Worker) ou quais `prioritized.md` ler em disco (Studio). #4405: usa
+ * `extractMonthlyCycleCandidate` (não mais só `parseClariceCampaignKey`) —
+ * reconhece também `Diar.ia Mensal {AAMM}` e `Clarice {AAMM} grupo:`.
+ * Campanhas DIÁRIAS ou de naming desconhecido nunca têm `prioritized.md`
+ * equivalente — não entram no resultado, e seu conteúdo cai no fallback
+ * determinístico da coluna Seção (nunca mais "—", ver `link-section.ts`)
+ * sem nenhuma checagem especial (não há chave pra elas em nenhum mapa).
  */
 export function collectMonthlyLinkCycles(
   campaigns: ReadonlyArray<Pick<BrevoCampaign, "name">>,
 ): string[] {
   const cycles = new Set<string>();
   for (const c of campaigns) {
-    const parsed = parseClariceCampaignKey(c.name ?? "");
-    if (parsed?.monthly) cycles.add(parsed.cycle);
+    const candidate = extractMonthlyCycleCandidate(c.name ?? "");
+    if (candidate) cycles.add(candidate);
   }
   return [...cycles];
 }
@@ -204,20 +330,22 @@ export function renderDashboardHtml(
       // c.statistics?.linksStats is canonical (set by fetchRecentCampaigns #2199.3).
       // c.linksStats fallback preserved for backward compat (tests/mocks that pass top-level).
       const linksStats = c.statistics?.linksStats ?? c.linksStats;
-      // #4184: mapa de seção do ciclo EXATO desta campanha (não o merge
-      // cross-ciclo usado na tabela agregada, mais abaixo) — campanhas
-      // diárias (`cycle` de 4 dígitos, sem sufixo de mês de envio) nunca têm
-      // prioritized.md equivalente, então `monthly` é false e a linha cai no
-      // fallback "—" sem nenhuma checagem especial.
-      const campaignCycleKey = parseClariceCampaignKey(c.name ?? "");
-      const campaignSectionMap = campaignCycleKey?.monthly
-        ? linkSectionsByCycle?.[campaignCycleKey.cycle] ?? null
+      // #4184/#4405: mapa de seção do ciclo desta campanha, resolvido pelo
+      // CONTEÚDO quando o nome é ambíguo (ver resolveCampaignCycle) — não o
+      // merge cross-ciclo usado na tabela agregada, mais abaixo. Campanhas
+      // diárias (sem candidato de ciclo mensal no nome) nunca têm
+      // prioritized.md equivalente, então `campaignCycle` é `null` e a linha
+      // cai no fallback determinístico da coluna Seção sem nenhuma checagem
+      // especial.
+      const campaignCycle = resolveCampaignCycle(c.name ?? "", linksStats, linkSectionsByCycle);
+      const campaignSectionMap = campaignCycle
+        ? linkSectionsByCycle?.[campaignCycle] ?? null
         : null;
-      // #4198: mapa de título do ciclo EXATO desta campanha — mesmo espírito
+      // #4198: mapa de título do ciclo desta campanha — mesmo espírito
       // de campaignSectionMap acima (drill-down nunca usa o merge cross-ciclo,
       // que é só pra tabela agregada mais abaixo).
-      const campaignTitleMap = campaignCycleKey?.monthly
-        ? linkTitlesByCycle?.[campaignCycleKey.cycle] ?? null
+      const campaignTitleMap = campaignCycle
+        ? linkTitlesByCycle?.[campaignCycle] ?? null
         : null;
       if (!s) {
         // #2198 Bug 1: passa linksStats real mesmo quando stats ausente, evitando
@@ -469,11 +597,55 @@ ${monthlyAbcSectionsByDate}
   const mergedLinkTitleMap = linkTitlesByCycle
     ? mergeLinkTitleMaps(Object.values(linkTitlesByCycle))
     : null;
+  // #4405: seleção de edição content-disambiguated (`resolveCampaignCycle` —
+  // resolve o achado do `grupo:novos`, ver Fase 0) calculada UMA vez e
+  // reusada em 2 lugares: o label da tabela HISTÓRICA logo abaixo (em vez de
+  // duplicar a resolução mais fraca — só-nome — de `deriveLinksSectionTitle`,
+  // que existe só como FALLBACK pra quando nenhuma campanha tem ciclo
+  // resolvido de jeito nenhum) e a tabela ESCOPADA À EDIÇÃO mais abaixo.
+  // Sem isso as 2 tabelas podiam divergir sobre qual é "a edição mais
+  // recente" (achado ao vivo: `grupo:novos-260731` tem o `sentDate` mais
+  // recente da janela mas o NOME aponta pro ciclo errado — só a
+  // desambiguação por conteúdo acerta).
+  const latestEdition = selectLatestEditionCampaigns(campaigns, linkSectionsByCycle);
+  const edicaoLabel = latestEdition?.cycle ?? deriveLinksSectionTitle(campaigns);
   const aggregatedLinks = aggregateLinksAcrossCampaigns(campaigns, mergedLinkSectionMap, mergedLinkTitleMap);
-  const edicaoLabel = deriveLinksSectionTitle(campaigns);
   // #3081: campaignCount = tamanho da janela agregada (campaigns.length) — o
   // título reflete a janela real, não implica que os dados são de 1 edição só.
   const aggregatedLinksSection = renderAggregatedLinksSection(aggregatedLinks, edicaoLabel, campaigns.length);
+
+  // #4405: tabela ESCOPADA À EDIÇÃO mais recente (ciclo de conteúdo INTEIRO —
+  // todas as ondas: ramp-warm, grupos nomeados, células A/B/C — decisão do
+  // editor 260731), injetada ANTES da tabela histórica acima. Usa o mapa do
+  // ciclo EXATO da edição (nunca o merge cross-ciclo de `mergedLinkSectionMap`
+  // — a limitação documentada em `mergeLinkSectionMaps` não se aplica aqui,
+  // já que não há mais de um ciclo envolvido). A tabela histórica continua
+  // existindo tal como está — o editor pediu as duas, não a substituição de
+  // uma pela outra.
+  const editionSectionMap = latestEdition ? linkSectionsByCycle?.[latestEdition.cycle] ?? null : null;
+  const editionTitleMap = latestEdition ? linkTitlesByCycle?.[latestEdition.cycle] ?? null : null;
+  const editionLinks = latestEdition
+    ? aggregateLinksAcrossCampaigns(latestEdition.campaigns, editionSectionMap, editionTitleMap)
+    : [];
+  // Sem edição detectável (nenhuma campanha com ciclo mensal resolvido) →
+  // seção OMITIDA (nunca um stub vazio redundante com a tabela histórica
+  // logo abaixo, que já cobre esse caso) — só a histórica aparece.
+  const editionLinksSection = latestEdition
+    ? renderAggregatedLinksSection(
+        editionLinks,
+        latestEdition.cycle,
+        null, // nunca "janela de N campanhas" aqui — este bloco É a edição
+        latestEdition.campaigns.length,
+        "links-edicao",
+      )
+    : "";
+  // #4405: "Seções mais clicadas" — resumo por seção, MESMO escopo da tabela
+  // da edição acima (não da histórica) — pedido do editor: ver a
+  // performance por seção da edição mais recente, não diluída por meses de
+  // histórico. Mesma omissão sem edição detectável.
+  const sectionClicksSection = latestEdition
+    ? renderSectionClicksSection(aggregateClicksBySection(editionLinks), latestEdition.cycle)
+    : "";
   // #2251/#3010: seção de campanhas agendadas (status queued) — só sobre
   // `scheduled`, nunca polui os agregadores de enviadas (A/B/C, volume,
   // weekday). Movida pra aba Agendamento (renderWeeklyPlanTabPanel abaixo) —
@@ -945,6 +1117,8 @@ ${eiaEngagementSection}
 
   <!-- Aba 3: Links / Cliques — distribuição de cliques por link no período (não é taxa; Brevo v3 não dá opens/unique-clicks por link) -->
   <div class="tab-panel" id="panel-links" role="tabpanel" aria-labelledby="tablabel-links">
+${sectionClicksSection}
+${editionLinksSection}
 ${aggregatedLinksSection}
   </div><!-- /panel-links -->
 

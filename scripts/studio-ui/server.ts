@@ -1475,19 +1475,33 @@ function handleApiArchivedBoxesList(rootDir: string, res: ServerResponse): void 
   sendJson(res, 200, { boxes: listArchivedBoxes(rootDir) });
 }
 
+/** #4275: resolve `?variant=patronos` da query string pra `"patronos"`;
+ * qualquer outro valor (ausente, `"default"`, typo) cai em `"default"` —
+ * nunca lança, nunca rejeita um valor desconhecido (fail-soft, mesma
+ * disciplina do resto desta fatia). */
+function resolveBoxSlotVariantFromQuery(req: IncomingMessage): "default" | "patronos" {
+  const v = new URL(req.url ?? "/", "http://localhost").searchParams.get("variant");
+  return v === "patronos" ? "patronos" : "default";
+}
+
 /** `GET /api/boxes/slots` — atribuição atual dos 3 slots de divulgação +
- * mtime de `platform.config.json` (#3937). Sempre 200: `readBoxSlotsState` é
- * fail-soft (config ausente/corrompido -> slots vazios). */
-function handleApiBoxSlotsGet(rootDir: string, res: ServerResponse): void {
-  sendJson(res, 200, readBoxSlotsState(rootDir));
+ * mtime de `platform.config.json` (#3937). `?variant=patronos` (#4275) lê
+ * `boxes_divulgacao_patronos` em vez de `boxes_divulgacao` — mesmo shape de
+ * resposta. Sempre 200: `readBoxSlotsState` é fail-soft (config
+ * ausente/corrompido -> slots vazios). */
+function handleApiBoxSlotsGet(rootDir: string, req: IncomingMessage, res: ServerResponse): void {
+  sendJson(res, 200, readBoxSlotsState(rootDir, resolveBoxSlotVariantFromQuery(req)));
 }
 
 /** `PUT /api/boxes/slots` — salva a atribuição dos 3 slots de divulgação
  * (#3937). Mesmo contrato de `expectedModifiedAt`/`force` de
  * `handleApiBoxSave` — não duplicado aqui além da validação de shape do
- * corpo. Status: 200 sucesso, 409 conflito de mtime, 400 corpo malformado OU
- * atribuição inválida (guard 1: caixa inexistente/arquivada; guard 2:
- * duplicata entre slots). */
+ * corpo. Campo `variant: "patronos"` (#4275) grava em
+ * `boxes_divulgacao_patronos` em vez de `boxes_divulgacao` — omitido ou
+ * qualquer outro valor cai no comportamento padrão de sempre. Status: 200
+ * sucesso, 409 conflito de mtime, 400 corpo malformado OU atribuição
+ * inválida (guard 1: caixa inexistente/arquivada; guard 2: duplicata entre
+ * slots). */
 async function handleApiBoxSlotsSave(
   rootDir: string,
   req: IncomingMessage,
@@ -1507,6 +1521,7 @@ async function handleApiBoxSlotsSave(
     slot3?: unknown;
     expectedModifiedAt?: unknown;
     force?: unknown;
+    variant?: unknown; // #4275
   } | null;
   const slotField = (v: unknown): string | null => (v === undefined || v === null ? "" : typeof v === "string" ? v : null);
   const slot0 = slotField(parsed?.slot0);
@@ -1527,7 +1542,11 @@ async function handleApiBoxSlotsSave(
     expectedModifiedAt = raw;
   }
   const force = parsed?.force === true;
-  const result = saveBoxSlots(rootDir, { slot0, slot1, slot2, slot3 }, { expectedModifiedAt, force });
+  // #4275: `variant: "patronos"` grava em `boxes_divulgacao_patronos` em vez
+  // de `boxes_divulgacao` — qualquer outro valor (ausente, "default", typo)
+  // cai em "default", mesmo fail-soft do GET (resolveBoxSlotVariantFromQuery).
+  const variant = parsed?.variant === "patronos" ? "patronos" : "default";
+  const result = saveBoxSlots(rootDir, { slot0, slot1, slot2, slot3 }, { expectedModifiedAt, force, variant });
   // `invalid` (guards 1/2) e qualquer outra falha genérica (config ausente,
   // erro de escrita) caem no mesmo 400 — só `conflict` (guard 4, #3729) tem
   // status próprio (409).
@@ -1990,7 +2009,7 @@ export async function startStudioServer(opts: StudioServerOptions = {}): Promise
       // checagem antecipada do bloco acima ("archived"): o regex de
       // get-por-slug casaria "slots" também.
       if (urlPath === "/api/boxes/slots") {
-        handleApiBoxSlotsGet(rootDir, res);
+        handleApiBoxSlotsGet(rootDir, req, res);
         return;
       }
       // #4274: conteúdo atual dos slots A/B do PARA ENCERRAR — mesmo motivo
