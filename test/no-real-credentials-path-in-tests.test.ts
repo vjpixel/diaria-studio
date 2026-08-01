@@ -160,14 +160,31 @@ interface RealPathTarget {
 // (maiúsculo) pro path real do repo — nunca pra um dir `mkdtempSync` fake.
 // Os padrões abaixo exigem esse identificador exato como argumento de
 // resolve/join — `join(root, ...)` (minúsculo, fake) nunca casa.
+// Fatores comuns dos 4 gaps identificados no #4403 (regex casava só 3 formas
+// específicas de chamada e deixava escapar outras 4 formas de escrever o
+// mesmo path real):
+//   1. Segmento combinado numa string só — `resolve(ROOT, "data/inbox-cursor.json")`
+//      em vez de 2 segmentos `resolve(ROOT, "data", "inbox-cursor.json")`.
+//      Fechado abaixo: as 2 targets sob `data/` ganham uma alternativa que
+//      casa a string combinada (com `/` OU `\`) além da forma 2-segmentos.
+//   2. `path.resolve(ROOT, ...)`/`path.join(ROOT, ...)` (namespace-qualified)
+//      — o regex exigia `resolve(`/`join(` imediatamente após `writeFileSync(`;
+//      um prefixo `path.` quebrava a adjacência. Fechado abaixo: prefixo
+//      `(?:path\.)?` opcional antes de `resolve|join` nas 3 targets (inline e
+//      varDecl) — não afeta o discriminador ROOT/root (o prefixo `path.` não
+//      muda a exigência do identificador exato `ROOT` logo em seguida).
+//   3. Concatenação de string (`ROOT + "/data/..."`) e 4. path real sem citar
+//      `ROOT` (`resolve(__dirname, "..", "data", "...")`) ficam FORA DE
+//      ESCOPO aqui — exigiriam parse de AST pra fechar sem estourar
+//      falso-positivo (ver corpo do #4403).
 const REAL_PATH_TARGETS: RealPathTarget[] = [
   {
     label: "platform.config.json",
     inlineRe:
-      /writeFileSync\(\s*(?:resolve|join)\(\s*ROOT\b[^)]*?["'`]platform\.config\.json["'`][^)]*?\)/g,
+      /writeFileSync\(\s*(?:path\.)?(?:resolve|join)\(\s*ROOT\b[^)]*?["'`]platform\.config\.json["'`][^)]*?\)/g,
     literalRe: /writeFileSync\(\s*["'`][^"'`]*platform\.config\.json["'`]/g,
     varDeclRe:
-      /(?:const|let)\s+(\w+)\s*=\s*(?:resolve|join)\(\s*ROOT\b[^;]*?["'`]platform\.config\.json["'`][^;]*?\)/g,
+      /(?:const|let)\s+(\w+)\s*=\s*(?:path\.)?(?:resolve|join)\(\s*ROOT\b[^;]*?["'`]platform\.config\.json["'`][^;]*?\)/g,
     guidance:
       "use CONFIG_PATH_TEST_OVERRIDE_ENV (scripts/inbox-drain.ts) + mkdtempSync em vez de " +
       "escrever no platform.config.json real (raiz do repo, git-tracked!) — ver " +
@@ -176,10 +193,10 @@ const REAL_PATH_TARGETS: RealPathTarget[] = [
   {
     label: "data/inbox-cursor.json",
     inlineRe:
-      /writeFileSync\(\s*(?:resolve|join)\(\s*ROOT\b[^)]*?["'`]data["'`][^)]*?inbox-cursor\.json[^)]*?\)/g,
+      /writeFileSync\(\s*(?:path\.)?(?:resolve|join)\(\s*ROOT\b[^)]*?(?:["'`]data["'`][^)]*?inbox-cursor\.json|["'`]data[\\/]inbox-cursor\.json["'`])[^)]*?\)/g,
     literalRe: /writeFileSync\(\s*["'`][^"'`]*data[\\/]inbox-cursor\.json["'`]/g,
     varDeclRe:
-      /(?:const|let)\s+(\w+)\s*=\s*(?:resolve|join)\(\s*ROOT\b[^;]*?["'`]data["'`][^;]*?inbox-cursor\.json[^;]*?\)/g,
+      /(?:const|let)\s+(\w+)\s*=\s*(?:path\.)?(?:resolve|join)\(\s*ROOT\b[^;]*?(?:["'`]data["'`][^;]*?inbox-cursor\.json|["'`]data[\\/]inbox-cursor\.json["'`])[^;]*?\)/g,
     guidance:
       "use INBOX_CURSOR_PATH_TEST_OVERRIDE_ENV (scripts/inbox-drain.ts) + mkdtempSync em vez " +
       "de escrever no data/inbox-cursor.json real — ver test/inbox-drain.test.ts pro padrão, " +
@@ -188,10 +205,10 @@ const REAL_PATH_TARGETS: RealPathTarget[] = [
   {
     label: "data/inbox.md",
     inlineRe:
-      /writeFileSync\(\s*(?:resolve|join)\(\s*ROOT\b[^)]*?["'`]data["'`][^)]*?inbox\.md[^)]*?\)/g,
+      /writeFileSync\(\s*(?:path\.)?(?:resolve|join)\(\s*ROOT\b[^)]*?(?:["'`]data["'`][^)]*?inbox\.md|["'`]data[\\/]inbox\.md["'`])[^)]*?\)/g,
     literalRe: /writeFileSync\(\s*["'`][^"'`]*data[\\/]inbox\.md["'`]/g,
     varDeclRe:
-      /(?:const|let)\s+(\w+)\s*=\s*(?:resolve|join)\(\s*ROOT\b[^;]*?["'`]data["'`][^;]*?inbox\.md[^;]*?\)/g,
+      /(?:const|let)\s+(\w+)\s*=\s*(?:path\.)?(?:resolve|join)\(\s*ROOT\b[^;]*?(?:["'`]data["'`][^;]*?inbox\.md|["'`]data[\\/]inbox\.md["'`])[^;]*?\)/g,
     guidance:
       "use INBOX_MD_PATH_TEST_OVERRIDE_ENV (scripts/inbox-drain.ts) + mkdtempSync em vez de " +
       "escrever no data/inbox.md real — ver test/inbox-drain.test.ts pro padrão, #4369/#4396.",
@@ -318,6 +335,114 @@ describe("fixtures inline: o guard genérico (#4396) pega arquivo de teste FICT�
         offenders,
         [],
         `padrão legítimo (mkdtempSync + helper) foi falso-positivo pra ${target.label}: ${offenders.join("\n")}`,
+      );
+    }
+  });
+});
+
+describe("fixtures inline: gap 1 do #4403 — segmento 'data/arquivo' combinado numa string só é detectado", () => {
+  // Só as 2 targets sob `data/` têm esse gap — `platform.config.json` mora na
+  // raiz do repo (já é 1 segmento só, forma já coberta antes do #4403).
+  const targetsWithDataPrefix = REAL_PATH_TARGETS.filter((t) => t.label !== "platform.config.json");
+
+  for (const target of targetsWithDataPrefix) {
+    const combinedSuffix = target.label === "data/inbox-cursor.json" ? "inbox-cursor.json" : "inbox.md";
+
+    it(`${target.label}: writeFileSync(resolve(ROOT, "data/${combinedSuffix}"), ...) — string combinada com "/" é detectada`, () => {
+      const fakeSource = `writeFileSync(resolve(ROOT, "data/${combinedSuffix}"), "conteudo", "utf8");`;
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse a string combinada pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+
+    it(`${target.label}: writeFileSync(join(ROOT, "data\\${combinedSuffix}"), ...) — string combinada com barra invertida é detectada`, () => {
+      // Uma só barra invertida em runtime exige 2 caracteres `\` no source
+      // (escape de template literal) — `\\` aqui vira 1 `\` no valor de fakeSource.
+      const fakeSource = `writeFileSync(join(ROOT, "data\\${combinedSuffix}"), "conteudo", "utf8");`;
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse a string combinada (barra invertida) pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+
+    it(`${target.label}: escrita via variável declarada com string combinada é detectada`, () => {
+      const fakeSource = `const P = resolve(ROOT, "data/${combinedSuffix}");\nwriteFileSync(P, "conteudo", "utf8");`;
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse escrita via variável com string combinada pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+
+    it(`${target.label}: forma 2-segmentos original continua detectada (sem regressão)`, () => {
+      const fakeSource = `writeFileSync(resolve(ROOT, "data", "${combinedSuffix}"), "conteudo", "utf8");`;
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `regressão: a forma 2-segmentos parou de ser detectada pra ${target.label} em: ${fakeSource}`,
+      );
+    });
+  }
+});
+
+describe("fixtures inline: gap 2 do #4403 — path.resolve/path.join namespace-qualified é detectado", () => {
+  for (const target of REAL_PATH_TARGETS) {
+    const literalArg =
+      target.label === "platform.config.json"
+        ? `"platform.config.json"`
+        : target.label === "data/inbox-cursor.json"
+          ? `"data", "inbox-cursor.json"`
+          : `"data", "inbox.md"`;
+
+    it(`${target.label}: writeFileSync(path.resolve(ROOT, ...)) é detectado`, () => {
+      const fakeSource = `writeFileSync(path.resolve(ROOT, ${literalArg}), "conteudo", "utf8");`;
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse path.resolve(ROOT, ...) pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+
+    it(`${target.label}: writeFileSync(path.join(ROOT, ...)) é detectado`, () => {
+      const fakeSource = `writeFileSync(path.join(ROOT, ${literalArg}), "conteudo", "utf8");`;
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse path.join(ROOT, ...) pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+
+    it(`${target.label}: escrita via variável declarada com path.resolve(ROOT, ...) é detectada`, () => {
+      const fakeSource = `const P = path.resolve(ROOT, ${literalArg});\nwriteFileSync(P, "conteudo", "utf8");`;
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse variável de path.resolve(ROOT, ...) pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+  }
+
+  it("negativo: path.join(root, ...) minúsculo (dir fake) continua NÃO flagado (#4396 preservado)", () => {
+    // Confirma que adicionar suporte a `path.resolve`/`path.join` (gap 2) não
+    // reabriu o falso-positivo que o #4396 já tinha evitado — o discriminador
+    // continua sendo o identificador exato `ROOT` (maiúsculo), não a presença
+    // de `path.`.
+    const legitSource = `
+      const root = mkdtempSync(join(tmpdir(), "fake-root-"));
+      writeFileSync(path.join(root, "platform.config.json"), "{}", "utf8");
+      writeFileSync(path.join(root, "data", "inbox-cursor.json"), "{}", "utf8");
+      writeFileSync(path.resolve(root, "data", "inbox.md"), "conteudo", "utf8");
+    `;
+
+    for (const target of REAL_PATH_TARGETS) {
+      const offenders = findOffendersForTarget(legitSource, target);
+      assert.deepEqual(
+        offenders,
+        [],
+        `path.join/resolve(root minúsculo, ...) foi falso-positivo pra ${target.label}: ${offenders.join("\n")}`,
       );
     }
   });
