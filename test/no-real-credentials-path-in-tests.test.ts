@@ -196,8 +196,9 @@ describe("fixtures inline: gap 1 do #4415 — segmento 'data/.credentials.json' 
     // fake (fakeCredsDir JÁ representa o dir onde o arquivo fake fica) —
     // confirma que estender pro gap 1 não introduziu falso-positivo nesse
     // padrão real. Este arquivo já sofreu um falso-positivo maciço numa
-    // generalização anterior de um guard irmão (comentário linhas ~149-162
-    // abaixo) — exatamente a classe de regressão que este negativo pega cedo.
+    // generalização anterior de um guard irmão (ver o comentário "Nota (#4396)"
+    // logo antes de REAL_PATH_TARGETS, abaixo) — exatamente a classe de
+    // regressão que este negativo pega cedo.
     const legitSource = `
       const fakeCredsDir = mkdtempSync(join(tmpdir(), "creds-"));
       writeFileSync(join(fakeCredsDir, ".credentials.json"), JSON.stringify(FAKE_CREDS), "utf8");
@@ -562,11 +563,11 @@ describe("fixtures inline: gap 1 do #4403 — segmento 'data/arquivo' combinado 
     it(`${target.label}: negativo — resolve(root, "data/${combinedSuffix}") com root minúsculo (dir fake) NÃO é flagado`, () => {
       // Confirma que a alternância de string combinada (gap 1) preserva o
       // discriminador ROOT/root — só existia negativo pra forma 2-segmentos
-      // (linha ~428 abaixo, escopo gap 2) antes deste teste. Este arquivo já
-      // sofreu um falso-positivo maciço (~35 arquivos de teste) numa
-      // generalização anterior deste mesmo guard (ver comentário acima,
-      // linhas ~149-162) — exatamente a classe de regressão que este
-      // negativo pega cedo.
+      // (ver o teste negativo dentro do describe "gap 2 do #4403", abaixo)
+      // antes deste teste. Este arquivo já sofreu um falso-positivo maciço
+      // (~35 arquivos de teste) numa generalização anterior deste mesmo guard
+      // (ver o comentário "Nota (#4396)" logo antes de REAL_PATH_TARGETS,
+      // acima) — exatamente a classe de regressão que este negativo pega cedo.
       const fakeSource = `const root = mkdtempSync(join(tmpdir(), "fake-root-"));\nwriteFileSync(resolve(root, "data/${combinedSuffix}"), "conteudo", "utf8");`;
       const offenders = findOffendersForTarget(fakeSource, target);
       assert.deepEqual(
