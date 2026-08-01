@@ -41,6 +41,32 @@ test("latestEventTime: aceita timestamp epoch numérico (millis)", () => {
   assert.equal(r, new Date(ms).toISOString());
 });
 
+test("latestEventTime: desce em links[] quando a entrada não tem timestamp próprio (#4429 — shape real de statistics.clicked)", () => {
+  // Shape confirmado ao vivo via GET /v3/contacts/{email} (felipe@clarice.ai, 260801):
+  // a entrada de `clicked` só tem campaignId + links[]; cada link tem seu próprio eventTime.
+  const r = latestEventTime([
+    {
+      campaignId: 25,
+      links: [
+        { count: 1, ip: "1.2.3.4", eventTime: "2026-05-08T17:28:28.148-03:00", url: "https://a" },
+        { count: 1, ip: "1.2.3.4", eventTime: "2026-05-08T17:58:40.090-03:00", url: "https://b" },
+        { count: 1, ip: "1.2.3.4", eventTime: "2026-05-08T17:28:52.528-03:00", url: "https://c" },
+      ],
+    },
+  ]);
+  // sem o fix, latestEventTime não acha TIME_FIELDS no nível da entrada (só campaignId/links)
+  // e devolve null mesmo havendo 3 timestamps reais aninhados.
+  assert.equal(r, "2026-05-08T20:58:40.090Z"); // o mais recente dos 3 links, em UTC
+});
+
+test("latestEventTime: múltiplas entradas clicked (múltiplas campanhas), cada uma com links[] — pega o mais recente entre todas", () => {
+  const r = latestEventTime([
+    { campaignId: 25, links: [{ eventTime: "2026-05-08T17:28:28.148-03:00" }] },
+    { campaignId: 57, links: [{ eventTime: "2026-06-16T06:05:24.287-03:00" }] },
+  ]);
+  assert.equal(r, "2026-06-16T09:05:24.287Z");
+});
+
 // ---------------------------------------------------------------------------
 // parseBrevoContact
 // ---------------------------------------------------------------------------
@@ -79,6 +105,25 @@ test("parseBrevoContact: conta campanhas + extrai last_* + attributes + listIds"
   assert.equal(c.recency_quartil, "Q1");
   assert.equal(c.brevo_list_ids, "[3,7]");
   assert.equal(c.brevo_created_at, "2025-01-01T00:00:00Z");
+});
+
+test("parseBrevoContact: last_click_at preenchido a partir do shape real de clicked (links[] aninhado, #4429)", () => {
+  const c = parseBrevoContact({
+    email: "felipe@clarice.ai",
+    statistics: {
+      clicked: [
+        {
+          campaignId: 25,
+          links: [
+            { count: 1, eventTime: "2026-05-08T17:58:40.090-03:00", url: "https://a" },
+            { count: 1, eventTime: "2026-05-08T17:28:52.528-03:00", url: "https://b" },
+          ],
+        },
+      ],
+    },
+  });
+  assert.equal(c.clicks_count, 1); // 1 campanha clicada (contagem por campanha, não por link)
+  assert.equal(c.last_click_at, "2026-05-08T20:58:40.090Z");
 });
 
 test("parseBrevoContact: statistics object-keyed (não-array) também conta", () => {

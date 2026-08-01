@@ -44,6 +44,42 @@ function asArray(v: unknown): any[] {
   return [];
 }
 
+/** Valor cru de timestamp (ISO string ou epoch) do 1º campo de TIME_FIELDS presente, ou undefined. */
+function rawTimeField(obj: Record<string, unknown>): string | number | undefined {
+  for (const f of TIME_FIELDS) {
+    const v = obj[f];
+    // aceita ISO string OU epoch numérico (alguns endpoints devolvem millis)
+    if (typeof v === "string" && v) return v;
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  return undefined;
+}
+
+/**
+ * Timestamps candidatos de UMA entrada de evento. Na maioria das categorias
+ * (`opened`, `messagesSent`, ...) o timestamp mora no nível da própria entrada.
+ * Em `clicked`, a Brevo v3 aninha o timestamp dentro de `links[]` — a entrada
+ * em si só tem `campaignId` + `links` (#4429):
+ *
+ *   "clicked": [{ "campaignId": 21, "links": [{ "count": 2, "eventTime": "..." }] }]
+ *
+ * Por isso: se a própria entrada não tem timestamp, descemos em `links[]` e
+ * coletamos o timestamp de cada link (o caller pega o mais recente de todos).
+ */
+function timestampsOf(entry: Record<string, unknown>): Array<string | number> {
+  const own = rawTimeField(entry);
+  if (own !== undefined) return [own];
+
+  const links = asArray(entry.links);
+  const nested: Array<string | number> = [];
+  for (const link of links) {
+    if (!link || typeof link !== "object") continue;
+    const t = rawTimeField(link as Record<string, unknown>);
+    if (t !== undefined) nested.push(t);
+  }
+  return nested;
+}
+
 /** ISO do evento mais recente do array, ou null se vazio/sem timestamp parseável. */
 export function latestEventTime(events: unknown): string | null {
   const arr = asArray(events);
@@ -51,24 +87,12 @@ export function latestEventTime(events: unknown): string | null {
   let best: string | null = null;
   for (const e of arr) {
     if (!e || typeof e !== "object") continue;
-    let raw: string | number | undefined;
-    for (const f of TIME_FIELDS) {
-      const v = (e as Record<string, unknown>)[f];
-      // aceita ISO string OU epoch numérico (alguns endpoints devolvem millis)
-      if (typeof v === "string" && v) {
-        raw = v;
-        break;
+    for (const raw of timestampsOf(e as Record<string, unknown>)) {
+      const ms = typeof raw === "number" ? raw : new Date(raw).getTime();
+      if (Number.isFinite(ms) && ms > bestMs) {
+        bestMs = ms;
+        best = new Date(ms).toISOString();
       }
-      if (typeof v === "number" && Number.isFinite(v)) {
-        raw = v;
-        break;
-      }
-    }
-    if (raw === undefined) continue;
-    const ms = typeof raw === "number" ? raw : new Date(raw).getTime();
-    if (Number.isFinite(ms) && ms > bestMs) {
-      bestMs = ms;
-      best = new Date(ms).toISOString();
     }
   }
   return best;
