@@ -109,15 +109,23 @@ imagem boa/difícil. 1-2 parágrafos curtos.]
 
 [Chamada padrão pra interação: responder ao e-mail, sugerir tema, indicar a
 newsletter pra colega. Tom igual ao diário. Incluir call-to-action para assinar
-a newsletter diária com o link https://diar.ia.br/?utm_source=clarice
+a newsletter diária com o link https://diar.ia.br/?utm_source=clarice **escrito
+como link markdown** (ex: `[assine aqui](https://diar.ia.br/?utm_source=clarice)`),
+nunca como URL solta no texto — `withClariceUtm` (monthly-render.ts) só
+reescreve o UTM completo (`utm_medium`/`utm_campaign` com a seção codificada,
+#4040) em links markdown; URL solta sai travada no `?utm_source=clarice` cru,
+sem `utm_medium`/`utm_campaign`, e o clique fica invisível pro funil de
+conversão (achado ao vivo no gate do editor, ciclo 2607-08).
 (o parâmetro utm_source é obrigatório — é o que rastreia quantos assinantes
 da diária vieram pela mensal; desde 260723 o diar.ia.br está no Cloudflare e
 o redirect preserva a query string, então diar.ia.br voltou a ser o href
 canônico — ver #2457 e #2613).
 
-Seguido de 2 parágrafos fixos (#3219, fonte única em
+Seguido de 3 parágrafos fixos (#3219, fonte única em
 context/snippets/encerramento-social-apoio.md, compartilhada com o diário):
-apoio à curadoria via Apoia.se e convite pra interagir no LinkedIn/Facebook.]
+apoio à curadoria via Apoia.se, créditos das ferramentas usadas na produção
+(Claude Code, Gemini, Wispr Flow, MCP Clarice, Beehiiv) e convite pra
+interagir no LinkedIn/Facebook.]
 ```
 
 **Exemplo negativo (NÃO fazer) — #2794:**
