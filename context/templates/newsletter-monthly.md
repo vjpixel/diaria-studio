@@ -129,12 +129,15 @@ interagir em LinkedIn/Facebook/Instagram/Threads/X.
 
 Entre o parágrafo de créditos e o de convite social, incluir a lista de
 curadorias — SEM label manual "Acesse nossas curadorias:" antes dela, só a
-lista:
-  - [Cursos de IA](https://cursos.diar.ia.br)
-  - [Livros sobre IA](https://livros.diar.ia.br)
+lista, NESTA ORDEM (decisão do editor, ciclo 2607-08 — inclui a vitrine de
+equipamentos como 3ª pílula, em vez de um box próprio):
+  - [Livros](https://livros.diar.ia.br)
+  - [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
+  - [Cursos](https://cursos.diar.ia.br)
 `monthly-render.ts` gera o label sozinho ao detectar uma lista de links
 nessa posição (mesmo padrão do diário, `FIXED_BLOCKS.para_encerrar_curadorias`
-em stitch-newsletter.ts) — um label escrito à mão duplica o texto no render
+em stitch-newsletter.ts, que só tem Cursos/Livros — a pílula de Equipamentos
+é exclusiva do mensal) — um label escrito à mão duplica o texto no render
 (achado ao vivo, ciclo 2607-08: "Acesse nossas curadorias:" saiu 2×).]
 ```
 
