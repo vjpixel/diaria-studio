@@ -130,7 +130,7 @@ import {
 } from "./lib/clarice-segment.ts";
 import { clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
+import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
 
 loadProjectEnv();
 
@@ -450,14 +450,27 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   // re-selecionar quem já recebeu (sync do Brevo é 1×/dia, `sends_count` fica
   // até 24h defasado — `fetchSentCampaignListIds` é a fonte AO VIVO que fecha
   // esse furo).
+  //
+  // 260731: o ESCOPO do guard passou a depender do grupo (`guardScope` em
+  // NAMED_GROUPS). Grupos de 1º envio seguem excluindo queued ∪ sent; grupos de
+  // RE-envio (engajados/reativacao) excluem só `queued`. Motivo em
+  // `CommittedGuardScope` (clarice-segment.ts): incluir `sent` zerava esses dois
+  // grupos por construção — todo contato com `sends_count > 0` está em alguma
+  // lista com campanha `sent`, então o predicado e o guard se anulavam.
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
+  const guardScope = NAMED_GROUPS[group].guardScope;
   let committedListIds: Set<string> = new Set();
   if (apiKey) {
     try {
-      committedListIds = await fetchCommittedCampaignListIds(apiKey);
+      committedListIds =
+        guardScope === "queued"
+          ? await fetchQueuedCampaignListIds(apiKey)
+          : await fetchCommittedCampaignListIds(apiKey);
       if (committedListIds.size > 0) {
         console.error(
-          `🔒 guard queued/sent: ${committedListIds.size} lista(s) Brevo comprometida(s) (campanha agendada ou já disparada) serão excluídas.`,
+          guardScope === "queued"
+            ? `🔒 guard queued (grupo de re-envio): ${committedListIds.size} lista(s) Brevo com campanha AGENDADA serão excluídas.`
+            : `🔒 guard queued/sent: ${committedListIds.size} lista(s) Brevo comprometida(s) (campanha agendada ou já disparada) serão excluídas.`,
         );
       }
     } catch (err) {

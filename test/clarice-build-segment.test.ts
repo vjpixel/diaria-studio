@@ -26,6 +26,7 @@ import {
   type SegmentRow,
   type SentOrQueuedFile,
 } from "../scripts/clarice-build-segment.ts";
+import { NAMED_GROUPS, excludeCommittedToQueuedCampaigns } from "../scripts/lib/clarice-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
 import { cohortFromTier, INTERNAL_EMAILS, COHORT_ASSINANTES_ATIVOS } from "../scripts/lib/cohorts.ts";
 import { clariceSegmentsDir } from "../scripts/lib/clarice-paths.ts";
@@ -791,4 +792,42 @@ test("REGRESSÃO (#4347 D13): 501 contatos no grupo 'novos' ABORTA sem criar lis
   );
   const outAt = JSON.parse(logsAt.join("\n"));
   assert.equal(outAt.selected, NOVOS_ROUND_SIZE_CAP);
+});
+
+// ---------------------------------------------------------------------------
+// Regressão 260731: o guard de campanha comprometida (#4347 Etapa 2c) era
+// aplicado com escopo `committed` (queued ∪ sent) aos QUATRO grupos nomeados.
+// Isso zerava `engajados` e `reativacao` por CONSTRUÇÃO: os dois exigem
+// `sends_count > 0` no predicado, e quem já recebeu está necessariamente em
+// alguma lista com campanha `sent` — predicado e guard se anulavam. Medido em
+// produção nesse dia: 15.123 de 15.123 engajados excluídos, 0 deles por
+// campanha agendada. Ver `CommittedGuardScope` em clarice-segment.ts.
+// ---------------------------------------------------------------------------
+
+test("guardScope: grupos de RE-envio excluem só campanha agendada; 1º envio exclui queued∪sent", () => {
+  // Se alguém devolver "committed" a engajados/reativacao, os dois grupos
+  // voltam a sair sempre vazios — é essa troca que este teste trava.
+  assert.equal(NAMED_GROUPS.engajados.guardScope, "queued");
+  assert.equal(NAMED_GROUPS.reativacao.guardScope, "queued");
+  assert.equal(NAMED_GROUPS["ramp-warm"].guardScope, "committed");
+  assert.equal(NAMED_GROUPS.novos.guardScope, "committed");
+});
+
+test("guard de re-envio: engajado em lista com campanha JÁ ENVIADA sobrevive; em lista AGENDADA, não", () => {
+  // Mesma forma do caso real: contato que já recebeu (por isso está numa lista
+  // "sent") e é justamente o alvo de um envio de retenção.
+  const engajado = { email: "a@x.com", brevo_list_ids: JSON.stringify(["84", "85"]) };
+  const agendado = { email: "b@x.com", brevo_list_ids: JSON.stringify(["99"]) };
+  const rows = [engajado, agendado];
+
+  // Escopo "queued" (o que engajados/reativacao usam): só a lista 99 está
+  // comprometida por campanha agendada — o engajado passa.
+  const soQueued = excludeCommittedToQueuedCampaigns(rows, new Set(["99"]));
+  assert.deepEqual(soQueued.map((r) => r.email), ["a@x.com"]);
+
+  // Escopo "committed" (o que ramp-warm/novos usam): as listas já enviadas
+  // entram no Set e o engajado é excluído — correto para 1º envio, e é
+  // exatamente o que zerava o grupo de retenção antes desta correção.
+  const committed = excludeCommittedToQueuedCampaigns(rows, new Set(["84", "85", "99"]));
+  assert.deepEqual(committed.map((r) => r.email), []);
 });
