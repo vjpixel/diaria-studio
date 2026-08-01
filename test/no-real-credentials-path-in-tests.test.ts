@@ -157,7 +157,7 @@ interface RealPathTarget {
 // test/drive-sync.test.ts, test/drive-helpers.test.ts,
 // test/inbox-drain.test.ts). Adicionar uma exigência de ROOT aqui
 // enfraqueceria o guard mais crítico do arquivo (path do incidente de
-// produção #4344, P2 — credenciais OAuth reais sobrescritas) sem fechar
+// produção #4344, P1 — credenciais OAuth reais sobrescritas) sem fechar
 // nenhum falso-positivo conhecido — decisão original em #4415, reafirmada
 // aqui: fora de escopo mudar esse comportamento só porque o mecanismo virou
 // data-driven.
@@ -267,6 +267,28 @@ describe("nenhum test/*.test.ts escreve fake conteúdo nos paths REAIS listados 
       `esperava vários .test.ts sob ${TEST_DIR}, achou ${files.length} — este teste deixaria de proteger silenciosamente.`,
     );
   });
+
+  it(
+    "sanity: REAL_PATH_TARGETS inclui CREDENTIALS_TARGET (senão data/.credentials.json some da " +
+      "varredura real, #4344)",
+    () => {
+      // A unificação do #4417 trocou o safety-net antigo (comparação por
+      // string-label com .find()+throw) por comparação de identidade de
+      // objeto em ROOT_BASED_TARGETS (`t !== CREDENTIALS_TARGET`) — mais
+      // robusto contra rename, mas sem nenhum runtime-guard equivalente
+      // protegendo a composição do próprio array REAL_PATH_TARGETS. Verificado
+      // ao vivo (fleet review #4383): remover só a linha `CREDENTIALS_TARGET,`
+      // do array faz a suíte cair de 3293 pra 2482 testes, todos os 2482
+      // restantes passam — o guard do #4344 pararia de proteger
+      // data/.credentials.json SILENCIOSAMENTE (zero teste vermelho). Este
+      // teste é a rede que falha alto e explícito nesse cenário.
+      assert.ok(
+        REAL_PATH_TARGETS.includes(CREDENTIALS_TARGET),
+        "CREDENTIALS_TARGET precisa estar em REAL_PATH_TARGETS — a unificação do #4417 depende " +
+          "disso pra manter a rede estática do #4344 ativa.",
+      );
+    },
+  );
 
   for (const target of REAL_PATH_TARGETS) {
     for (const file of files) {
