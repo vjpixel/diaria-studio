@@ -173,10 +173,18 @@ interface RealPathTarget {
 //      `(?:path\.)?` opcional antes de `resolve|join` nas 3 targets (inline e
 //      varDecl) — não afeta o discriminador ROOT/root (o prefixo `path.` não
 //      muda a exigência do identificador exato `ROOT` logo em seguida).
-//   3. Concatenação de string (`ROOT + "/data/..."`) e 4. path real sem citar
-//      `ROOT` (`resolve(__dirname, "..", "data", "...")`) ficam FORA DE
-//      ESCOPO aqui — exigiriam parse de AST pra fechar sem estourar
-//      falso-positivo (ver corpo do #4403).
+//   3. Concatenação de string (`ROOT + "/data/..."`) fica FORA DE ESCOPO
+//      aqui, mas por razão distinta do gap 4 abaixo: provavelmente seria
+//      fechável com o mesmo padrão de extensão de regex usado nos gaps 1/2
+//      acima, se uma forma canônica de concatenação aparecesse no código de
+//      produção do repo — não fechado aqui só porque hoje esse estilo não é
+//      usado (mesma razão dada no corpo do #4403), não por limitação
+//      estrutural do regex.
+//   4. Path real sem citar `ROOT` (`resolve(__dirname, "..", "data", "...")`)
+//      é estruturalmente inatingível por regex: sem o identificador `ROOT`
+//      no source não há discriminador léxico entre path real e dir fake —
+//      fechar isso exigiria parse de AST (rastrear o valor efetivo da
+//      variável) pra não estourar falso-positivo.
 const REAL_PATH_TARGETS: RealPathTarget[] = [
   {
     label: "platform.config.json",
@@ -385,6 +393,23 @@ describe("fixtures inline: gap 1 do #4403 — segmento 'data/arquivo' combinado 
         `regressão: a forma 2-segmentos parou de ser detectada pra ${target.label} em: ${fakeSource}`,
       );
     });
+
+    it(`${target.label}: negativo — resolve(root, "data/${combinedSuffix}") com root minúsculo (dir fake) NÃO é flagado`, () => {
+      // Confirma que a alternância de string combinada (gap 1) preserva o
+      // discriminador ROOT/root — só existia negativo pra forma 2-segmentos
+      // (linha ~428 abaixo, escopo gap 2) antes deste teste. Este arquivo já
+      // sofreu um falso-positivo maciço (~35 arquivos de teste) numa
+      // generalização anterior deste mesmo guard (ver comentário acima,
+      // linhas ~149-162) — exatamente a classe de regressão que este
+      // negativo pega cedo.
+      const fakeSource = `const root = mkdtempSync(join(tmpdir(), "fake-root-"));\nwriteFileSync(resolve(root, "data/${combinedSuffix}"), "conteudo", "utf8");`;
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.deepEqual(
+        offenders,
+        [],
+        `string combinada com root minúsculo (dir fake) foi falso-positivo pra ${target.label}: ${offenders.join("\n")}`,
+      );
+    });
   }
 });
 
@@ -446,4 +471,46 @@ describe("fixtures inline: gap 2 do #4403 — path.resolve/path.join namespace-q
       );
     }
   });
+});
+
+describe("fixtures inline: interação gap 1 + gap 2 do #4403 — as duas alternâncias compõem no mesmo regex", () => {
+  // Nenhuma fixture acima exercita as duas formas simultaneamente (segmento
+  // combinado numa string só + prefixo `path.` namespace-qualified). Funciona
+  // hoje porque as 2 alternâncias (gap 1 no grupo `data/...`, gap 2 no prefixo
+  // `(?:path\.)?`) são independentes e compõem aditivamente no mesmo regex —
+  // mas sem teste dedicado, uma edição isolada futura numa das alternâncias
+  // poderia quebrar a composição sem que nenhum teste existente notasse
+  // (cada describe acima só varia uma dimensão por vez).
+  const targetsWithDataPrefix = REAL_PATH_TARGETS.filter((t) => t.label !== "platform.config.json");
+
+  for (const target of targetsWithDataPrefix) {
+    const combinedSuffix = target.label === "data/inbox-cursor.json" ? "inbox-cursor.json" : "inbox.md";
+
+    it(`${target.label}: writeFileSync(path.resolve(ROOT, "data/${combinedSuffix}"), ...) é detectado`, () => {
+      const fakeSource = `writeFileSync(path.resolve(ROOT, "data/${combinedSuffix}"), "conteudo", "utf8");`;
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse a composição gap1+gap2 (path.resolve) pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+
+    it(`${target.label}: writeFileSync(path.join(ROOT, "data/${combinedSuffix}"), ...) é detectado`, () => {
+      const fakeSource = `writeFileSync(path.join(ROOT, "data/${combinedSuffix}"), "conteudo", "utf8");`;
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse a composição gap1+gap2 (path.join) pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+
+    it(`${target.label}: escrita via variável declarada com path.resolve(ROOT, "data/${combinedSuffix}") é detectada`, () => {
+      const fakeSource = `const P = path.resolve(ROOT, "data/${combinedSuffix}");\nwriteFileSync(P, "conteudo", "utf8");`;
+      const offenders = findOffendersForTarget(fakeSource, target);
+      assert.ok(
+        offenders.length > 0,
+        `esperava que o guard pegasse variável da composição gap1+gap2 pra ${target.label}, mas não achou nada em: ${fakeSource}`,
+      );
+    });
+  }
 });
