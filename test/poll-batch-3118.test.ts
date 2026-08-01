@@ -51,6 +51,7 @@ import {
   brandHiddenInput,
   parseBrandParam,
   BRAND_INFO,
+  currentMonthSlugBrt,
 } from "../workers/poll/src/lib.ts";
 import { mergeYearEntries } from "../workers/poll/src/leaderboard-routes.ts";
 import { buildAlreadyVotedResponse } from "../workers/poll/src/vote.ts";
@@ -173,8 +174,14 @@ describe("integração — período fechado usa Cache-Control de 1h, não mais 3
 
   it("mês CORRENTE continua com cache curto de 60s (comportamento inalterado)", async () => {
     const env = makePollEnv(makeTrackedKv());
-    const now = new Date();
-    const slug = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    // #4408: "mês corrente" é definido em BRT pela produção
+    // (handleLeaderboardByMonth usa currentMonthSlugBrt, leaderboard-routes.ts:690),
+    // não em UTC puro. Entre 00:00–03:00 UTC do dia 1º, UTC já virou o mês
+    // novo mas BRT (offset fixo -3h) ainda está no mês anterior — calcular o
+    // slug esperado em UTC puro (como este teste fazia antes do fix) diverge
+    // da produção exatamente nessa janela de ~3h/mês e falha com 404. Usar o
+    // mesmo helper que a produção usa elimina a divergência de fonte.
+    const slug = currentMonthSlugBrt(new Date());
     const res = await workerDefault.fetch(
       new Request(`https://poll.diaria.workers.dev/leaderboard/${slug}`),
       env,
@@ -182,6 +189,23 @@ describe("integração — período fechado usa Cache-Control de 1h, não mais 3
     );
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("Cache-Control"), "public, max-age=60");
+  });
+
+  it("regressão #4408: na janela 00:00–03:00 UTC do dia 1º, o slug BRT (mês anterior) ≠ slug UTC puro (mês novo)", () => {
+    // Não é viável mockar `Date` global de forma segura no worker sem risco de
+    // vazar estado entre testes (o handler chama `new Date()` internamente,
+    // sem injeção de clock) — em vez disso, este teste prova a PROPRIEDADE
+    // que causava o flake: existe um instante em que os dois cálculos
+    // divergem, e é exatamente esse instante que o teste acima passou a usar
+    // a fonte correta (currentMonthSlugBrt) para evitar.
+    const duringUtcNewMonthBrtOldMonth = new Date("2026-08-01T01:30:00.000Z");
+    const slugBrt = currentMonthSlugBrt(duringUtcNewMonthBrtOldMonth);
+    const slugUtcPuro = `${duringUtcNewMonthBrtOldMonth.getUTCFullYear()}-${String(
+      duringUtcNewMonthBrtOldMonth.getUTCMonth() + 1,
+    ).padStart(2, "0")}`;
+    assert.equal(slugBrt, "2026-07", "BRT (offset -3h) ainda está em julho às 01:30 UTC do dia 1º de agosto");
+    assert.equal(slugUtcPuro, "2026-08", "UTC puro já é agosto");
+    assert.notEqual(slugBrt, slugUtcPuro, "a divergência nesta janela é a causa raiz do #4408");
   });
 });
 
