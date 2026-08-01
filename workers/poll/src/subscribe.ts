@@ -266,6 +266,20 @@ export interface SubscribeResult {
 }
 
 /**
+ * #4438 (fleet review oficial, achado 1 — silent-failure-hunter): timeout
+ * explícito do fetch pra API da Beehiiv. Antes deste fix, `subscribeToBeehiiv`
+ * não tinha NENHUM timeout — uma rede instável ou a Beehiiv respondendo devagar
+ * podia deixar o `await fetchImpl(...)` pendurado indefinidamente (nunca
+ * resolve, nunca rejeita). Isso é mais grave que um erro comum: o try/catch ao
+ * redor já cobria EXCEÇÃO (rejeição rápida), mas um hang nunca lança — o
+ * caller (`handleSetName`, index.ts) ficava preso pra sempre nesse `await`,
+ * sem nunca chegar no `env.POLL.put` que persiste o apelido do leitor. 8s é
+ * generoso pra um POST simples de assinatura — falha rápido (cai no mesmo
+ * ramo `beehiiv_error` do catch já existente) em vez de travar a resposta.
+ */
+export const SUBSCRIBE_FETCH_TIMEOUT_MS = 8000;
+
+/**
  * #3580: ponto de integração com a Beehiiv. Lê `BEEHIIV_API_KEY` +
  * `BEEHIIV_PUBLICATION_ID` do env do worker (secrets — NUNCA hardcode). Se
  * qualquer um faltar, retorna `not_configured` (o handler traduz pra 503
@@ -315,6 +329,9 @@ export async function subscribeToBeehiiv(
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
+      // #4438: aborta o fetch se a Beehiiv não responder a tempo — ver
+      // rationale completo em SUBSCRIBE_FETCH_TIMEOUT_MS acima.
+      signal: AbortSignal.timeout(SUBSCRIBE_FETCH_TIMEOUT_MS),
     });
   } catch {
     return { ok: false, status: 502, reason: "beehiiv_error" };

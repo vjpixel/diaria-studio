@@ -114,11 +114,16 @@ describe("#3108 — navegação (arquivo + anual) ANTES da tabela; #3615 restrin
     assert.doesNotMatch(html, /<p class="nav">/, "diária não deveria ter nenhum link de nav (nem anual, nem arquivo)");
   });
 
-  it("GET /leaderboard/2026?brand=clarice: nav preserva ?brand=clarice no link de arquivo; SEM 'Ver ranking anual' — a página já É a anual (#4049 item 1)", async () => {
+  it("GET /leaderboard/2026?brand=clarice: botão de arquivo preserva ?brand=clarice e vem antes da table; SEM 'Ver ranking anual' — a página já É a anual (#4049 item 1)", async () => {
     const html = await fetchHtml("/leaderboard/2026?brand=clarice");
-    const navIdx = idx(html, '<p class="nav">');
+    // #4420: o link de arquivo saiu de dentro de `<p class="nav">` — virou
+    // botão próprio (`.archive-cta`). Na view anual, sem "Ver ranking anual"
+    // (self-link, #4049), `<p class="nav">` fica de fora por completo — o
+    // botão de arquivo é a única navegação extra que sobra ali.
+    const archiveIdx = idx(html, 'class="archive-cta"');
     const tableIdx = idx(html, "<table>");
-    assert.ok(navIdx >= 0 && navIdx < tableIdx, "nav deve existir e vir antes da table na visão anual (clarice)");
+    assert.ok(archiveIdx >= 0 && archiveIdx < tableIdx, "botão de arquivo deve existir e vir antes da table na visão anual (clarice)");
+    assert.doesNotMatch(html, /<p class="nav">/, "sem 'Ver ranking anual' sobrando, nav não deveria renderizar vazio");
     assert.doesNotMatch(html, /Ver ranking anual/, "a view anual não deveria linkar pra si mesma");
     assert.match(html, /href="\/leaderboard\/2026\/arquivo\?brand=clarice">Votar em edições passadas<\/a>/);
   });

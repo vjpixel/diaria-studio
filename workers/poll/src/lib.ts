@@ -1027,6 +1027,27 @@ export function jogarArchiveHref(): string {
   return `/jogar/arquivo?${params.toString()}`;
 }
 
+/**
+ * CSS do botão do link de arquivo (#4420 — "texto maior e com cara de
+ * botão"). Reusa o visual já estabelecido pra botão cheio deste worker
+ * (`.nick-save`/`.share-actions button`: fundo ink, texto paper, raio 4px,
+ * peso 600) — pedido explícito do editor: "reusando o botão que já existe
+ * ali". Compartilhado por `votePageHtml` (index.ts, `/vote`) e
+ * `renderLeaderboardHtml` (leaderboard-routes.ts, `/leaderboard`) — mesmo
+ * destino ("Jogar edições passadas" / "Votar em edições passadas"), mesmo
+ * peso visual nas duas superfícies (racional do editor: "pra não existirem
+ * dois pesos visuais pro mesmo lugar").
+ */
+export function renderArchiveButtonStyles(): string {
+  return `  .archive-cta { margin: 20px 0; }
+  .archive-btn { display: inline-block; padding: 10px 20px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border-radius: 4px; font-weight: 600; text-decoration: none; font-family: ${DS_FONTS.sans}; font-size: 0.95rem; }
+  /* #4420: tap target >=44px no breakpoint mobile de 600px (mesma disciplina
+     do resto do worker — tráfego majoritariamente mobile). */
+  @media (max-width: 600px) {
+    .archive-btn { display: block; width: 100%; box-sizing: border-box; padding: 14px 16px; text-align: center; min-height: 44px; }
+  }`;
+}
+
 // ── Brand default hardcoded em 5 pontos → 2 helpers (#3118 item 12) ────────
 //
 // `leaderboardHref` (acima), `archiveHref` (leaderboard-routes.ts) e o hidden
@@ -1058,32 +1079,148 @@ export function brandHiddenInput(brand: Brand): string {
 // em "Ver leaderboard" antes de definir nickname (ou chega direto no
 // leaderboard com o link assinado do resultado do voto) ganha o MESMO form
 // ali, sem precisar voltar e votar de novo. `nicknameForm` sempre presente
-// aqui (diferente do `formHtml` de votePageHtml, que aceita `null` e retorna
-// "" — cada caller decide ANTES de chamar esta função se deve renderizar).
+// aqui (diferente do `identityBoxHtml` de votePageHtml, #4418, que aceita
+// `null` e retorna "" — cada caller decide ANTES de chamar esta função se
+// deve renderizar).
 
 /**
- * Pure (#4232, extraído de votePageHtml/#1078): bloco HTML do form de
- * nickname (`nick-box`). `leaderboardPeriodWord` deriva de
- * `BRAND_INFO[brand].leaderboardPeriod` (#3109 — "anual" pra brand com
+ * Pure (#4232, extraído de votePageHtml/#1078; reescrita #4418 §2/§2c):
+ * bloco HTML do form de nickname (`nick-box`, "Caixa A"). `leaderboardPeriodWord`
+ * deriva de `BRAND_INFO[brand].leaderboardPeriod` (#3109 — "anual" pra brand com
  * ranking anual, hoje só `clarice`; "mensal" pros demais).
+ *
+ * #4418: título ("Entre no leaderboard {…}") e ausência de anglicismo
+ * ("nickname" → "apelido") valem pras DUAS marcas (diaria/clarice) — decisão
+ * do editor (260801), pra não emitir 2 títulos diferentes do mesmo helper
+ * sem motivo. A nota de rodapé "Pode ser apelido. Mostrado publicamente."
+ * (`.nick-note`) foi REMOVIDA — redundante com `.nick-explain`, que já
+ * carrega sozinha a promessa de que o valor digitado é público.
+ *
+ * `showOptIn` (default `false`, back-compat com todo caller pré-#4418):
+ * mostra o checkbox de opt-in de newsletter DENTRO da caixa — só quando o
+ * CALLER decide oferecer (brand clarice, em contexto de sucesso pós-voto ou
+ * leaderboard). Nunca em retry de erro (`handleSetName`, index.ts): o form
+ * de re-tentativa de apelido (#1774) reusa esta MESMA função só pra corrigir
+ * o apelido, sem reabrir a oferta de assinatura — daí o flag ser decidido
+ * pelo CALLER, não inferido só do `brand` aqui dentro.
  */
 export function renderNicknameFormHtml(
   nicknameForm: { email: string; sig: string },
   brand: Brand,
+  showOptIn: boolean = false,
 ): string {
   const leaderboardPeriodWord = BRAND_INFO[brand].leaderboardPeriod === "year" ? "anual" : "mensal";
+  const optinHtml = showOptIn
+    ? `\n    <label class="nick-optin"><input type="checkbox" name="optin" value="on"> Quero receber a diar.ia.br — newsletter gratuita com as novidades de IA e como usar melhor as IAs, 5 minutos por dia, seg-sex.</label>`
+    : "";
   return `<div class="nick-box">
-  <p class="nick-title">Defina seu nickname pra aparecer no leaderboard ${leaderboardPeriodWord}</p>
-  <p class="nick-explain">Sem nickname você aparece como <code>${htmlEscape(maskEmail(nicknameForm.email))}</code> no ranking público.</p>
+  <p class="nick-title">Entre no leaderboard ${leaderboardPeriodWord}</p>
+  <p class="nick-explain">Sem apelido você aparece como <code>${htmlEscape(maskEmail(nicknameForm.email))}</code> no ranking público.</p>
   <form action="/set-name" method="GET" class="nick-form">
     <input type="hidden" name="email" value="${htmlEscape(nicknameForm.email)}">
     <input type="hidden" name="sig" value="${htmlEscape(nicknameForm.sig)}">
     ${brandHiddenInput(brand)}
     <input type="text" name="name" placeholder="Seu nome" maxlength="40" required class="nick-input">
-    <button type="submit" class="nick-save">Salvar</button>
+    <button type="submit" class="nick-save">Salvar e ver o leaderboard</button>${optinHtml}
   </form>
-  <p class="nick-note">Pode ser apelido. Mostrado publicamente.</p>
 </div>`;
+}
+
+/** #4418 §2b: shape da "Caixa B" — oferta de assinatura pra quem já tem
+ * apelido salvo mas ainda não confirmou o opt-in (`score.optin !== true`). */
+export interface SubscribeBoxState {
+  email: string;
+  sig: string;
+  nickname: string;
+}
+
+/**
+ * Pure (#4418 §2b): "Caixa B" — substitui a Caixa A quando o leitor JÁ tem
+ * apelido salvo mas ainda não assinou a diar.ia.br (brand clarice). Duas
+ * caixas com dois trabalhos (ver rationale completo na issue #4418 §2b): a
+ * Caixa A é sobre entrar no ranking, a Caixa B é só sobre assinar — por isso
+ * não tem campo de nome nem checkbox (o botão primário É o consentimento
+ * explícito). Submit continua sem JS: mesmo `GET /set-name`, com o apelido
+ * atual em `<input type="hidden" name="name">` e `optin=on` fixo.
+ *
+ * O secundário ("Ver o leaderboard") é link puro pro MESMO leaderboard,
+ * carregando `email`+`sig` — quem clica sem assinar continua identificado
+ * pro self-highlight (#4418 §2c).
+ *
+ * Só faz sentido pra brand `clarice` (diaria já é assinante, web não tem
+ * assinatura a oferecer aqui) — mesmo padrão de `renderNicknameFormHtml`: a
+ * função não valida `brand`, é responsabilidade do CALLER decidir quando
+ * chamar.
+ */
+export function renderSubscribeBoxHtml(box: SubscribeBoxState, brand: Brand): string {
+  const lbHref = leaderboardHref(brand);
+  const secondaryHref = `${lbHref}${lbHref.includes("?") ? "&" : "?"}email=${encodeURIComponent(box.email)}&sig=${encodeURIComponent(box.sig)}`;
+  return `<div class="nick-box nick-sub-box">
+  <p class="nick-kicker">Você está no ranking como ${htmlEscape(box.nickname)}.</p>
+  <p class="nick-title">Assine a diar.ia.br, de graça</p>
+  <p class="nick-explain">Newsletter diária com as novidades de IA e como usar melhor as IAs — 5 minutos, de segunda a sexta. O par de imagens do "É IA?" vai junto, todo dia.</p>
+  <form action="/set-name" method="GET" class="nick-sub-form">
+    <input type="hidden" name="email" value="${htmlEscape(box.email)}">
+    <input type="hidden" name="sig" value="${htmlEscape(box.sig)}">
+    <input type="hidden" name="name" value="${htmlEscape(box.nickname)}">
+    <input type="hidden" name="optin" value="on">
+    ${brandHiddenInput(brand)}
+    <div class="nick-actions">
+      <button type="submit" class="nick-save nick-save-primary">Assinar e ver o leaderboard</button>
+      <a class="nick-secondary" href="${htmlEscape(secondaryHref)}">Ver o leaderboard</a>
+    </div>
+  </form>
+</div>`;
+}
+
+/** #4418 §2/§3: qual caixa (A "nickname", B "subscribe", ou nenhuma)
+ * oferecer após o voto, a partir do estado persistido em `score:{email}`.
+ * Pure — compartilhado pelos 3 call sites que hoje montam nicknameForm
+ * (handleVote, handleVoteFastPath, buildAlreadyVotedResponse, vote.ts),
+ * evitando triplicar a decisão A/B/nenhuma (mesmo racional de extração de
+ * `buildAlreadyVotedResponse`, #3118 item 10).
+ *
+ * Regra: sem apelido → "nickname" (Caixa A). Com apelido, brand clarice e
+ * ainda sem opt-in bem-sucedido → "subscribe" (Caixa B). Qualquer outro caso
+ * (já tem apelido e já assinou, OU brand sem oferta de assinatura) →
+ * "none". `score.optin` só é gravado `true` quando `subscribeToBeehiiv`
+ * confirma sucesso (handleSetName, index.ts) — falha/recusa mantém `optin`
+ * ausente, reoferecendo a Caixa B no próximo voto (decisão do editor #4418:
+ * "reoferecer cadastro pra quem já assina é aceitável", nunca o inverso —
+ * declarar sucesso sem ter assinado de fato).
+ */
+export type VoteIdentityBoxKind = "nickname" | "subscribe" | "none";
+
+export function resolveVoteIdentityBoxKind(
+  score: { nickname?: string | null; optin?: boolean } | null | undefined,
+  brand: Brand,
+): VoteIdentityBoxKind {
+  if (!score?.nickname) return "nickname";
+  if (brand === "clarice" && !score.optin) return "subscribe";
+  return "none";
+}
+
+/**
+ * Pure (#4418 §3): mensagem de confirmação ("faixa" no topo do leaderboard)
+ * pós-redirect de `/set-name` bem-sucedido — lida a partir dos query params
+ * que `handleSetName` (index.ts) grava na URL de destino do 302
+ * (`saved=1`, `name`, `signup`). `null` quando a visita não veio desse
+ * redirect (`saved` ausente) — o caso comum (visita normal ao leaderboard
+ * nunca mostra a faixa).
+ */
+export function resolveSetNameConfirmationBanner(url: URL): string | null {
+  if (url.searchParams.get("saved") !== "1") return null;
+  const name = url.searchParams.get("name");
+  if (!name) return null;
+  const escapedName = htmlEscape(name);
+  const signup = url.searchParams.get("signup");
+  if (signup === "subscribed") {
+    return `Pronto, ${escapedName}! Você aparece assim no ranking — e a diar.ia.br começa a chegar amanhã de manhã.`;
+  }
+  if (signup === "failed") {
+    return `Apelido salvo. O cadastro na diar.ia.br não completou — tente de novo no próximo voto.`;
+  }
+  return `Pronto, ${escapedName}! Você aparece assim no ranking.`;
 }
 
 /**
@@ -1098,26 +1235,48 @@ export function renderNicknameFormStyles(): string {
   return `  /* #1675/#1779: nickname form + textos como classes (eram inline → media query
      não conseguia ampliar; causa do "texto miúdo no mobile"). */
   .nick-box { margin: 30px auto; padding: 20px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; max-width: 380px; }
+  /* #4418: Caixa B (assinatura) carrega mais texto que a Caixa A — max-width
+     próprio, mesmo valor de .signup-form/.share-card (outras caixas de CTA
+     deste worker), evita texto espremido em 380px. */
+  .nick-box.nick-sub-box { max-width: 420px; }
   .nick-title { font-size: 1.1rem; margin: 0 0 12px 0; font-weight: 600; }
+  /* #4418 §2b: kicker "Você está no ranking como {apelido}." acima do título
+     da Caixa B — mesma família visual do .kicker de página (maiúsculas,
+     letter-spacing), tamanho menor por ser secundário aqui. */
+  .nick-kicker { font-family: ${DS_FONTS.sans}; font-size: 0.8rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: ${DS_COLORS.ink}; margin: 0 0 8px 0; }
   .nick-explain { font-size: 0.95rem; color: ${DS_COLORS.ink}; margin: 0 0 12px 0; line-height: 1.5; }
   .nick-explain code { background: ${DS_COLORS.paper}; padding: 1px 4px; border-radius: 3px; }
-  .nick-note { font-size: 0.85rem; color: ${DS_COLORS.ink}; margin: 10px 0 0 0; }
-  .nick-form { display: flex; gap: 8px; }
+  .nick-form { display: flex; gap: 8px; flex-wrap: wrap; }
   .nick-input { flex: 1; padding: 8px 12px; border: 1px solid ${DS_COLORS.rule}; border-radius: 4px; font-size: 0.95rem; font-family: ${DS_FONTS.sans}; }
   /* #3110: fundo ink, não teal — botão cheio em teal reprovava
      contraste AA (~3:1 vs mínimo 4.5:1). Ink+onInk dá ~15:1. */
   .nick-save { padding: 8px 16px; background: ${DS_COLORS.ink}; color: ${DS_COLORS.paper}; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; font-family: ${DS_FONTS.sans}; }
+  /* #4418 §2: checkbox de opt-in dentro da Caixa A (clarice) — flex-basis
+     100% força quebra pra linha própria dentro do .nick-form (que já tem
+     input+botão na mesma linha), sem tocar o layout deles. */
+  .nick-optin { display: flex; align-items: flex-start; gap: 8px; flex: 1 0 100%; text-align: left; font-size: 0.9rem; line-height: 1.4; font-family: ${DS_FONTS.sans}; color: ${DS_COLORS.ink}; margin-top: 2px; }
+  .nick-optin input { flex: none; margin-top: 3px; }
+  /* #4418 §2b: par de botões da Caixa B — primário preenchido (.nick-save,
+     reusado) + secundário contornado, lado a lado e mesmo tamanho (spec:
+     "alternativa de verdade, não isca"). */
+  .nick-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 4px; }
+  .nick-save-primary { flex: 1 1 auto; }
+  .nick-secondary { display: inline-flex; align-items: center; justify-content: center; flex: 1 1 auto; padding: 8px 16px; border: 1px solid ${DS_COLORS.ink}; border-radius: 4px; font-weight: 600; color: ${DS_COLORS.ink}; text-decoration: none; font-family: ${DS_FONTS.sans}; }
   /* #1675/#1779: tráfego majoritariamente mobile — form empilhado, botão full-width. */
   @media (max-width: 600px) {
     .nick-box { max-width: 100%; padding: 20px 18px; }
     .nick-title { font-size: 1.15rem; }
+    .nick-kicker { font-size: 0.85rem; }
     .nick-explain { font-size: 1rem; }
-    .nick-note { font-size: 0.9rem; }
     .nick-form { flex-direction: column; }
     /* flex:none reseta o flex:1 do base — em coluna, flex-grow agiria no eixo
        vertical (input esticaria). Cross-axis stretch mantém largura total. */
     .nick-input { flex: none; padding: 14px; font-size: 1.1rem; }
     .nick-save { width: 100%; padding: 14px 16px; font-size: 1.1rem; }
+    /* flex:none reseta o 1 0 100% do base — em coluna o basis viraria altura. */
+    .nick-optin { flex: none; font-size: 1rem; }
+    .nick-actions { flex-direction: column; }
+    .nick-secondary { width: 100%; box-sizing: border-box; padding: 14px 16px; font-size: 1.1rem; }
   }`;
 }
 

@@ -430,7 +430,7 @@ describe("buildAlreadyVotedResponse (#4065 follow-up) — share card + CTA tamb�
     assert.match(html, /id="jogar-share-card"/, "share card deve aparecer também na tela de já votou");
   });
 
-  it("2º voto (já votou) em brand=clarice também embute o form de cadastro inline", async () => {
+  it("2º voto (já votou) em brand=clarice também embute o checkbox de opt-in (Caixa A fundida, #4418)", async () => {
     const env = makeEnv();
     const first = await worker.fetch(voteReq("clarice", "repete-clarice@example.com", "A", "260601"), env);
     assert.equal(first.status, 200);
@@ -439,12 +439,16 @@ describe("buildAlreadyVotedResponse (#4065 follow-up) — share card + CTA tamb�
     const html = await second.text();
     assert.match(html, /Você já votou/);
     assert.match(html, /id="jogar-share-card"/, "share card deve aparecer também na tela de já votou");
-    const formTag = /<form id="jogar-signup-form"[^>]*>/.exec(html);
-    assert.ok(formTag, "form de cadastro deve estar presente na tela de já votou");
-    assert.doesNotMatch(formTag![0], /\bhidden\b/, "form de cadastro deve estar VISÍVEL (não hidden), mesmo padrão do voto fresco");
+    // #4418: o form de cadastro standalone (id="jogar-signup-form") virou o
+    // checkbox de opt-in dentro da Caixa A (nick-box) — leitor ainda sem
+    // apelido depois de 2 votos, então a Caixa A continua sendo a oferecida.
+    assert.match(html, /<div class="nick-box">/, "Caixa A deve estar presente na tela de já votou (leitor ainda sem apelido)");
+    const checkboxTag = /<label class="nick-optin">(<input[^>]*>)/.exec(html);
+    assert.ok(checkboxTag, "checkbox de opt-in deve estar presente na tela de já votou");
+    assert.doesNotMatch(html, /\bhidden\b[^>]*name="optin"|name="optin"[^>]*\bhidden\b/, "checkbox nunca deve nascer hidden (página já é o pós-voto)");
   });
 
-  it("2º voto (já votou) em brand=web NÃO embute o form de cadastro inline (mesma regra do voto fresco)", async () => {
+  it("2º voto (já votou) em brand=web NÃO embute o checkbox de opt-in (mesma regra do voto fresco)", async () => {
     const env = makeEnv();
     const anonEmail = anonEmailForToken("3fa85f64-5717-4562-b3fc-2c963f66afa6");
     const first = await worker.fetch(voteReq("web", anonEmail, "A", "260601"), env);
@@ -453,7 +457,7 @@ describe("buildAlreadyVotedResponse (#4065 follow-up) — share card + CTA tamb�
     assert.equal(second.status, 200);
     const html = await second.text();
     assert.match(html, /Você já votou/);
-    assert.doesNotMatch(html, /id="jogar-signup-form"/);
+    assert.doesNotMatch(html, /name="optin"/);
   });
 
   // Achado no self-review da PR: `correct` do share card era computado a
@@ -509,7 +513,7 @@ describe("shareButtonScript (#4065 follow-up) — WhatsApp e Copiar link incluem
   });
 });
 
-describe("#4065: cadastro inline (#3580) na tela de resultado do voto — só brand clarice", () => {
+describe("#4065/#4418: cadastro (checkbox de opt-in, Caixa A fundida) na tela de resultado do voto — só brand clarice", () => {
   const voteReq = (brand: string | null, email: string, choice: string, edition = "260531") => {
     const b = brand ? `&brand=${brand}` : "";
     return new Request(
@@ -517,34 +521,35 @@ describe("#4065: cadastro inline (#3580) na tela de resultado do voto — só br
     );
   };
 
-  it("brand=clarice: form de cadastro inline aparece VISÍVEL (não hidden) no resultado do voto", async () => {
+  it("brand=clarice: checkbox de opt-in aparece VISÍVEL no resultado do voto, dentro da Caixa A (#4418)", async () => {
     const env = makeEnv();
     const res = await worker.fetch(voteReq("clarice", "leitor@example.com", "A"), env);
     assert.equal(res.status, 200);
     const html = await res.text();
-    assert.match(html, /id="jogar-signup-form"/);
-    // Diferente de /jogar e /jogar/quiz (onde o form nasce `hidden` e só é
-    // revelado via JS pós-voto), a tela de /vote JÁ É o pós-voto — o form não
-    // pode nascer hidden aqui (não existe JS de reveal nesta página estática).
-    assert.doesNotMatch(html, /<form id="jogar-signup-form" class="signup-form" hidden/);
-    assert.match(html, /<form id="jogar-signup-form" class="signup-form" novalidate>/);
-    // POSTa pro mesmo endpoint público /jogar/subscribe, com UTM próprio.
-    assert.match(html, /fetch\("\/jogar\/subscribe"/);
-    assert.match(html, /source: "vote-clarice"/);
+    // #4418: o form standalone (id="jogar-signup-form", POST /jogar/subscribe)
+    // foi substituído pelo checkbox de opt-in dentro da Caixa A — mesmo `GET
+    // /set-name` que já salva o apelido, sem endpoint/UTM client-side próprio
+    // (o UTM agora é aplicado server-side em handleSetName, index.ts).
+    assert.doesNotMatch(html, /id="jogar-signup-form"/, "form standalone do #3580/#4065 não existe mais nesta tela");
+    assert.match(html, /<div class="nick-box">/);
+    assert.match(html, /<label class="nick-optin"><input type="checkbox" name="optin" value="on">/);
+    // Continua sem JS: form GET pro /set-name, não fetch.
+    assert.match(html, /<form action="\/set-name" method="GET" class="nick-form">/);
+    assert.doesNotMatch(html, /fetch\("\/jogar\/subscribe"/);
   });
 
-  it("brand=diaria (já assinante) NÃO embute o cadastro inline — não faz sentido reoferecer", async () => {
+  it("brand=diaria (já assinante) NÃO embute o checkbox de opt-in — não faz sentido reoferecer", async () => {
     const env = makeEnv();
     const res = await worker.fetch(voteReq(null, "leitor@example.com", "B"), env);
     const html = await res.text();
-    assert.doesNotMatch(html, /id="jogar-signup-form"/);
+    assert.doesNotMatch(html, /name="optin"/);
   });
 
-  it("brand=web NÃO embute este form (já tem o form de identidade equivalente do #3975 em /jogar, não em /vote)", async () => {
+  it("brand=web NÃO embute o checkbox de opt-in (já tem o form de identidade equivalente do #3975 em /jogar, não em /vote)", async () => {
     const env = makeEnv();
     const anonEmail = anonEmailForToken("3fa85f64-5717-4562-b3fc-2c963f66afa6");
     const res = await worker.fetch(voteReq("web", anonEmail, "A"), env);
     const html = await res.text();
-    assert.doesNotMatch(html, /id="jogar-signup-form"/);
+    assert.doesNotMatch(html, /name="optin"/);
   });
 });

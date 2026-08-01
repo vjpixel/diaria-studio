@@ -192,7 +192,7 @@ describe("handleSetName — score:{email} corrompido falha graciosamente, não c
 // ── #3298 — propagateNicknameByMonth: entry mensal corrompida (site 9) ─────
 
 describe("handleSetName → propagateNicknameByMonth — entry mensal corrompida não aborta a propagação (#3298)", () => {
-  it("score:{email} válido + score-by-month:{slug}:{email} corrompido → nickname salvo (200), entry corrompida pulada sem lançar", async () => {
+  it("score:{email} válido + score-by-month:{slug}:{email} corrompido → nickname salvo (302, redireciona), entry corrompida pulada sem lançar", async () => {
     const kv = makeTrackedKv({
       "score:setname-ok@x.com": JSON.stringify({ total: 1, correct: 0, streak: 0, last_edition: "260701", nickname: null }),
       "score-by-month:2026-07:setname-ok@x.com": "{corrupted month entry for propagate",
@@ -211,7 +211,7 @@ describe("handleSetName → propagateNicknameByMonth — entry mensal corrompida
       assert.fail(`entry mensal corrompida não deve abortar handleSetName com exceção: ${String(e)}`);
       return;
     }
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 302); // #4418: sucesso navega pro leaderboard
 
     const scoreAfter = JSON.parse((await kv.get("score:setname-ok@x.com"))!);
     assert.equal(scoreAfter.nickname, "Novo Nome", "nickname global deve ter sido salvo normalmente");

@@ -107,8 +107,19 @@ describe("renderLeaderboardHtml — link de ranking anual gated por leaderboardP
     assert.doesNotMatch(html, /<p class="nav">/, "não deveria sobrar um parágrafo de nav vazio pra diária");
   });
 
-  it("clarice: <p class=\"nav\"> presente com o link de arquivo (#4049: sem o self-link anual)", async () => {
+  it("clarice: link de arquivo presente como botão próprio, fora de <p class=\"nav\"> (#4049: sem o self-link anual; #4420: tratamento visual de botão)", async () => {
     const html = await fetchHtml("/leaderboard?brand=clarice");
-    assert.match(html, /<p class="nav">.*Votar em edições passadas.*<\/p>/s, "clarice deveria manter o link de arquivo em nav");
+    // #4420: "Votar em edições passadas" saiu de dentro de `<p class="nav">`
+    // — agora é um botão próprio (`.archive-cta`/`.archive-btn`), mesmo
+    // tratamento visual do equivalente em /vote (não "dois pesos visuais
+    // pro mesmo lugar"). `/leaderboard?brand=clarice` dispatcha direto pra
+    // handleLeaderboardByYear (leaderboard-routes.ts, leaderboardPeriod
+    // "year" no router de index.ts) — a própria view anual, onde "Ver
+    // ranking anual" não se aplica (#4049,
+    // self-link) — sem NENHUM outro conteúdo de nav sobrando, `<p
+    // class="nav">` fica de fora por completo (mesmo padrão do teste
+    // #4049 acima).
+    assert.match(html, /class="archive-cta"[^>]*>\s*<a class="archive-btn"[^>]*>Votar em edições passadas<\/a>/s);
+    assert.doesNotMatch(html, /<p class="nav">/, "sem 'Ver ranking anual' sobrando (já é a view anual), nav não deveria renderizar vazio");
   });
 });

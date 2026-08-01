@@ -37,7 +37,10 @@ import {
   leaderboardHref,
   renderNicknameFormHtml, // #4232: extraído pra reuso no leaderboard
   renderNicknameFormStyles, // #4232: CSS do .nick-box, idem
+  renderSubscribeBoxHtml, // #4418 §2b: Caixa B (assinatura pra quem já tem apelido)
+  type SubscribeBoxState, // #4418 §2b — a decisão A/B/nenhuma (resolveVoteIdentityBoxKind) mora em vote.ts, não aqui
   jogarArchiveHref, // #3524
+  renderArchiveButtonStyles, // #4420: CSS do botão do link de arquivo
   buildBrandSiteUrl, // #3978: href com UTM do rodapé de /vote
   lightboxScript, // #4007: script do lightbox de zoom — reusado nas 5 superfícies do par de imagens (#4125 item 3: quiz incluído)
   renderLightboxMarkup, // #4007: markup do <dialog> de zoom
@@ -393,15 +396,17 @@ import {
 // #3595: handleJogarSeqState — skip-and-credit da sequência (rework
 // "Suspense" pós-#3589, ver header de jogar.ts).
 import { handleJogarArchivePage, handleJogarPage, handleJogarQuizPage, handleJogarSeqState, handleQuizAnswer, handleQuizResult } from "./jogar";
-// #4065: cadastro inline (#3580) trazido pra tela de resultado do voto do
-// brand `clarice` — mesmo bloco/script já usados por `/jogar/quiz`, reusados
-// literalmente (ver rationale completo em votePageHtml abaixo).
-import { inlineSignupScript, renderInlineSignupFormBlock, renderInlineSignupFormStyles } from "./jogar";
 // #3580: cadastro inline pós-jogo (POST /jogar/subscribe) — assina direto na
 // Beehiiv sem sair da página. Ciclo index↔subscribe (subscribe importa `json`
 // de index; index importa o handler de volta) é o mesmo padrão seguro já usado
 // por vote.ts/jogar.ts — valores só usados em request-time.
-import { handleJogarSubscribe } from "./subscribe";
+// #4418: `subscribeToBeehiiv` também importado direto — `handleSetName`
+// (abaixo) chama o mesmo mecanismo de assinatura quando a Caixa A/B da tela
+// de resultado do voto (`/set-name?...&optin=on`) é submetida, mesmo padrão
+// de UTM próprio (`VOTE_CLARICE_INLINE_UTM`, ./utm-registry) que o CTA
+// inline antigo usava via `resolveSubscribeUtm("vote-clarice")`.
+import { handleJogarSubscribe, subscribeToBeehiiv } from "./subscribe";
+import { VOTE_CLARICE_INLINE_UTM } from "./utm-registry";
 // #4054: gate por rodada do caminho de fora — tela + verify + subscribe.
 import { clearWebSessionCookieHeader, handleJogarGateSubscribe, handleJogarGateVerify, renderJogarGatePage } from "./web-gate";
 // #3975: identidade por e-mail no leaderboard do brand web (POST
@@ -793,6 +798,17 @@ export function votePageHtml(
    * o caso comum pra edições antigas sem backfill — o bloco simplesmente não
    * renderiza, nada quebra (fallback silencioso, ver rationale em vote.ts). */
   eiaMeta?: { description: string; credit: string } | null,
+  /** #4418 §2b: "Caixa B" — oferta de assinatura pra quem já tem apelido
+   * salvo mas ainda não confirmou o opt-in (brand clarice). Mutuamente
+   * exclusivo com `nicknameForm` por construção do caller (vote.ts —
+   * `resolveVoteIdentityBoxKind`): nunca os dois presentes na mesma chamada. */
+  subscribeBox?: SubscribeBoxState | null,
+  /** #4418 §2: mostra o checkbox de opt-in de newsletter dentro da Caixa A
+   * (`nicknameForm`) — só quando o caller está montando a caixa em contexto
+   * de SUCESSO pós-voto (brand clarice), nunca em retry de erro
+   * (`handleSetName`, mais abaixo, nunca passa isto — #1774 preservado).
+   * Default `false`: nenhum caller pré-#4418 passava isto. */
+  offerNicknameSubscribe: boolean = false,
 ): string {
   // #1083: htmlEscape no email (user-controlled) previne XSS via attribute
   // break. Sig é hex HMAC controlado pelo Worker — escape por consistência.
@@ -804,7 +820,15 @@ export function votePageHtml(
   // #3109/#4232: "mensal"/"anual" (BRAND_INFO.leaderboardPeriod) e o markup do
   // form em si agora vivem em renderNicknameFormHtml (lib.ts) — extraído pra
   // ser reusado por renderLeaderboardHtml (leaderboard-routes.ts, #4232).
-  const formHtml = nicknameForm ? renderNicknameFormHtml(nicknameForm, brand) : "";
+  // #4418 §2/§2b: caixa fundida — Caixa B (subscribeBox) tem prioridade
+  // sobre a Caixa A (nicknameForm) quando ambas seriam tecnicamente
+  // aplicáveis (não deveria acontecer — mutuamente exclusivas por
+  // construção — mas subscribeBox vence em caso de erro de chamador).
+  const identityBoxHtml = subscribeBox
+    ? renderSubscribeBoxHtml(subscribeBox, brand)
+    : nicknameForm
+    ? renderNicknameFormHtml(nicknameForm, brand, offerNicknameSubscribe)
+    : "";
 
   // #1351: HTML pra mostrar imagens A e B com labels + highlight da clicada
   const imagesHtml = renderResultImagesHtml(resultImages);
@@ -821,20 +845,6 @@ export function votePageHtml(
   // dinamicamente — ver rationale em share.ts.
   const shareCardHtml = shareCard
     ? `${renderShareCardBlock(shareCard.token, shareCard.payload, brand)}\n${shareButtonScript("#jogar-share-card")}`
-    : "";
-
-  // #4065: cadastro inline (#3580) na tela de resultado do voto — só brand
-  // `clarice` (a base que a parceria existe pra converter, e que nunca
-  // chegou a ver ESSE form: `/jogar/subscribe` só era embutido em `/jogar`,
-  // que ignora `?brand=` e é sempre "web", ver #3516). `diaria` não precisa
-  // (já é assinante); `web` já tem o form de identidade equivalente em
-  // `/jogar` (#3975). Renderizado JÁ VISÍVEL (`hidden=false`) — esta página é
-  // o próprio resultado do voto (não tem estado pré-voto pra esconder o form
-  // atrás de), diferente de `/jogar`/`/jogar/quiz` onde o form fica `hidden`
-  // até o JS revelar junto com o resultado. `source: "vote-clarice"` dá UTM
-  // próprio (subscribe.ts) pra medir esta conversão separada do funil web.
-  const inlineSignupHtml = brand === "clarice"
-    ? `${renderInlineSignupFormBlock(false)}\n${inlineSignupScript("vote-clarice")}`
     : "";
 
   // #2113(a): link do leaderboard com cache-buster quando vindo do resultado do voto.
@@ -859,9 +869,12 @@ export function votePageHtml(
   // brand "web" já resolve nickname via identidade local (`eia_web_identified_email`,
   // #3975) + form de identificação inline; não precisa (nem deveria) deste
   // mecanismo baseado em link assinado por e-mail.
-  if (nicknameForm && brand !== "web") {
-    leaderboardLink = appendLeaderboardQueryParam(leaderboardLink, "email", encodeURIComponent(nicknameForm.email));
-    leaderboardLink = appendLeaderboardQueryParam(leaderboardLink, "sig", encodeURIComponent(nicknameForm.sig));
+  // #4418 §2c: `subscribeBox` também carrega email+sig do MESMO leitor
+  // identificado — mesma lógica se aplica (self-highlight no leaderboard).
+  const identity = nicknameForm ?? subscribeBox;
+  if (identity && brand !== "web") {
+    leaderboardLink = appendLeaderboardQueryParam(leaderboardLink, "email", encodeURIComponent(identity.email));
+    leaderboardLink = appendLeaderboardQueryParam(leaderboardLink, "sig", encodeURIComponent(identity.sig));
   }
 
   // #3578 (correção do #3524, feedback do editor 260716): a metade "página
@@ -872,8 +885,12 @@ export function votePageHtml(
   // de produto (#3578). Brand "web" (jogo standalone) já tem o MESMO link no
   // próprio rodapé de `/jogar` (jogar.ts `renderJogarPageHtml`/
   // `renderJogarQuizPageHtml`); duplicar aqui seria redundante.
-  const archiveLinkHtml = brand === "clarice"
-    ? ` &nbsp;|&nbsp; <a href="${jogarArchiveHref()}">Jogar edições passadas</a>`
+  // #4420: sai de dentro de `.footer-links` — vira bloco/botão próprio,
+  // acima da linha de links (pedido do editor: "texto maior e com cara de
+  // botão"). Copy inalterada ("Jogar edições passadas"), só o tratamento
+  // visual muda.
+  const archiveButtonHtml = brand === "clarice"
+    ? `<p class="archive-cta"><a class="archive-btn" href="${jogarArchiveHref()}">Jogar edições passadas</a></p>`
     : "";
 
   return `<!DOCTYPE html>
@@ -940,7 +957,7 @@ ${renderNicknameFormStyles()}
     .share-actions button { width: 100%; padding: 14px 16px; font-size: 1.05rem; }
   }
 ${renderLightboxStyles()}
-${renderInlineSignupFormStyles()}
+${renderArchiveButtonStyles()}
 ${renderBrandShellStyles()}
 </style>
 </head>
@@ -950,10 +967,10 @@ ${renderBrandShellStyles()}
 <p class="msg">${htmlEscape(message)}</p>
 ${imagesHtml}
 ${eiaMetaHtml}
+${identityBoxHtml}
 ${shareCardHtml}
-${inlineSignupHtml}
-${formHtml}
-<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-voltar", "eia-vote-voltar"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
+${archiveButtonHtml}
+<p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-voltar", "eia-vote-voltar"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a></p>
 ${renderLightboxMarkup()}
 ${lightboxScript()}
 ${renderBrandFooter(brand)}
@@ -1110,7 +1127,7 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
   // #3298: score:{email} corrompido lançava aqui um JSON.parse desguardado —
   // 500 pro leitor que só está tentando salvar o nickname (voto original já
   // registrado com sucesso; só o campo nickname ficaria inacessível).
-  const score = safeParseKv<{ nickname?: string | null; [k: string]: unknown }>(raw, "set_name_score_parse_error", email);
+  const score = safeParseKv<{ nickname?: string | null; optin?: boolean; [k: string]: unknown }>(raw, "set_name_score_parse_error", email);
   if (!score) {
     return new Response(votePageHtml("Algo deu errado — tente votar novamente.", false, null, null, null, brand), {
       status: 400, headers: { "Content-Type": "text/html;charset=utf-8" }
@@ -1118,7 +1135,63 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
   }
   const oldNickname: string | null | undefined = score.nickname;
   score.nickname = cleanName;
+
+  // #4438 (fleet review oficial, achado 1 — silent-failure-hunter): o apelido
+  // é persistido AQUI, ANTES de qualquer tentativa de cadastro na Beehiiv —
+  // nunca depois. Antes deste fix, o `env.POLL.put(scoreKey, ...)` só
+  // acontecia DEPOIS do bloco de opt-in logo abaixo; um HANG (não só um erro)
+  // na chamada `subscribeToBeehiiv` — sem timeout algum no fetch antes deste
+  // fix, ver SUBSCRIBE_FETCH_TIMEOUT_MS em subscribe.ts — deixava o `await`
+  // preso indefinidamente DENTRO desta função, e o apelido nunca chegava a
+  // ser gravado: violação direta do requisito da issue #4418 ("o apelido
+  // nunca se perde por causa do cadastro"). Persistir aqui garante que a
+  // gravação do apelido nunca depende do resultado/tempo da chamada Beehiiv;
+  // o opt-in bem-sucedido faz um 2º `put` mais abaixo, só acrescentando
+  // `optin: true` ao mesmo objeto já salvo.
   await env.POLL.put(scoreKey, JSON.stringify(score));
+
+  // #4418 (§2/§2b/§2c): opt-in de newsletter (checkbox da Caixa A ou botão
+  // primário da Caixa B) — SÓ brand clarice (diaria já é assinante, web não
+  // oferece isto aqui). Cadastro é fail-soft: falha (ou timeout, #4438) da
+  // Beehiiv NUNCA derruba o salvamento do apelido — já persistido acima,
+  // antes deste bloco sequer começar — só fica sem marcar `score.optin`, o
+  // que reoferece a Caixa B no PRÓXIMO voto (decisão do editor: "reoferecer
+  // cadastro pra quem já assina é aceitável" — o inverso, declarar sucesso
+  // sem ter assinado de fato, não é). `signupOutcome` alimenta a faixa de
+  // confirmação no leaderboard (resolveSetNameConfirmationBanner, lib.ts —
+  // consumida por leaderboard-routes.ts).
+  const optinRequested = brand === "clarice" && url.searchParams.get("optin") === "on";
+  let signupOutcome: "subscribed" | "failed" | null = null;
+  if (optinRequested) {
+    try {
+      const result = await subscribeToBeehiiv(env, { name: cleanName, email }, fetch, VOTE_CLARICE_INLINE_UTM);
+      if (result.ok) {
+        score.optin = true;
+        signupOutcome = "subscribed";
+        // #4438: 2º put — só grava `optin: true` DEPOIS do sucesso
+        // confirmado. O apelido em si já está seguro no KV desde o put
+        // acima; este put reusa o mesmo objeto `score` (só ganhou o campo
+        // `optin`), nunca reintroduz uma dependência do timing da Beehiiv
+        // pra persistir o nickname.
+        await env.POLL.put(scoreKey, JSON.stringify(score));
+      } else {
+        console.error(JSON.stringify({
+          event: "set_name_beehiiv_subscribe_failed",
+          email_domain: email.split("@")[1] ?? "unknown",
+          status: result.status,
+          reason: result.reason,
+        }));
+        signupOutcome = "failed";
+      }
+    } catch (e) {
+      console.error(JSON.stringify({
+        event: "set_name_beehiiv_subscribe_exception",
+        email_domain: email.split("@")[1] ?? "unknown",
+        error: String(e),
+      }));
+      signupOutcome = "failed";
+    }
+  }
 
   // Libera o índice do apelido antigo (se houver e for diferente do novo) —
   // senão o apelido anterior fica "preso" pra sempre, impedindo outro leitor
@@ -1146,8 +1219,25 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
   // vote criar entry com nickname atualizado.
   await propagateNicknameByMonth(env, email, cleanName);
 
-  return new Response(votePageHtml(`Pronto, ${cleanName}! Você aparece assim no ranking.`, true, null, null, null, brand), {
-    status: 200, headers: { "Content-Type": "text/html;charset=utf-8" }
+  // #4418 (§2c/§3): sucesso NAVEGA pro leaderboard da marca — comportamento
+  // novo (antes esta rota nunca redirecionava, só respondia uma página
+  // "Pronto, ...", ver histórico completo na issue #4418 §2c/§3). `email`+
+  // `sig` viajam pra que o leitor chegue lá já IDENTIFICADO (self-highlight,
+  // #4418 §2c — resolveLeaderboardViewerEmail em leaderboard-routes.ts) e
+  // `#self-row` rola direto até a própria linha num ranking longo. `name`+
+  // `signup`+`saved` alimentam a faixa de confirmação no topo (ver
+  // resolveSetNameConfirmationBanner, lib.ts) — a mesma mensagem "Pronto,
+  // {nome}!" de antes, só que agora renderizada lá, não aqui.
+  const target = new URL(leaderboardHref(brand), url);
+  target.searchParams.set("email", email);
+  target.searchParams.set("sig", sig);
+  target.searchParams.set("name", cleanName);
+  target.searchParams.set("saved", "1");
+  if (signupOutcome) target.searchParams.set("signup", signupOutcome);
+  target.hash = "self-row";
+  return new Response(null, {
+    status: 302,
+    headers: { Location: target.toString(), "Cache-Control": "no-store" },
   });
 }
 
