@@ -162,6 +162,24 @@ describe("buildShareText (#3517)", () => {
       assert.doesNotMatch(text, /(?<!eia\.)diar\.ia\.br\/jogar/);
     }
   });
+
+  // Achado ao vivo 260801: "de hoje" fixo pra brand clarice (cadência
+  // mensal, dateLabel só "mês de ano") lia como "Acertei o É IA? de hoje
+  // (agosto de 2026)!" — confuso, um mês inteiro não é "hoje". clarice
+  // agora diz "deste mês"; brands diários (web/diaria) continuam "de hoje".
+  it("brand=clarice (cadência mensal) diz 'deste mês', não 'de hoje'", () => {
+    const text = buildShareText({ edition: "2607-08", correct: true }, "clarice");
+    assert.match(text, /deste mês \(agosto de 2026\)/);
+    assert.doesNotMatch(text, /de hoje/);
+  });
+
+  it("brand=web/diaria (cadência diária) continua dizendo 'de hoje'", () => {
+    for (const brand of ["web", "diaria"] as const) {
+      const text = buildShareText({ edition: "260716", correct: true }, brand);
+      assert.match(text, /de hoje/);
+      assert.doesNotMatch(text, /deste mês/);
+    }
+  });
 });
 
 describe("buildQuizShareText (#3717)", () => {
