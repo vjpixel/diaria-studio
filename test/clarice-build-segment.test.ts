@@ -26,6 +26,7 @@ import {
   type SegmentRow,
   type SentOrQueuedFile,
 } from "../scripts/clarice-build-segment.ts";
+import { NAMED_GROUPS, excludeCommittedToQueuedCampaigns } from "../scripts/lib/clarice-segment.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
 import { cohortFromTier, INTERNAL_EMAILS, COHORT_ASSINANTES_ATIVOS } from "../scripts/lib/cohorts.ts";
 import { clariceSegmentsDir } from "../scripts/lib/clarice-paths.ts";
@@ -791,4 +792,108 @@ test("REGRESSÃO (#4347 D13): 501 contatos no grupo 'novos' ABORTA sem criar lis
   );
   const outAt = JSON.parse(logsAt.join("\n"));
   assert.equal(outAt.selected, NOVOS_ROUND_SIZE_CAP);
+});
+
+// ---------------------------------------------------------------------------
+// Regressão 260731: o guard de campanha comprometida (#4347 Etapa 2c) era
+// aplicado com escopo `committed` (queued ∪ sent) aos QUATRO grupos nomeados.
+// Isso zerava `engajados` e `reativacao` por CONSTRUÇÃO: os dois exigem
+// `sends_count > 0` no predicado, e quem já recebeu está necessariamente em
+// alguma lista com campanha `sent` — predicado e guard se anulavam. Medido em
+// produção nesse dia: 15.123 de 15.123 engajados excluídos, 0 deles por
+// campanha agendada. Ver `CommittedGuardScope` em clarice-segment.ts.
+// ---------------------------------------------------------------------------
+
+test("guardScope: grupos de RE-envio excluem só campanha agendada; 1º envio exclui queued∪sent", () => {
+  // Se alguém devolver "committed" a engajados/reativacao, os dois grupos
+  // voltam a sair sempre vazios — é essa troca que este teste trava.
+  assert.equal(NAMED_GROUPS.engajados.guardScope, "queued");
+  assert.equal(NAMED_GROUPS.reativacao.guardScope, "queued");
+  assert.equal(NAMED_GROUPS["ramp-warm"].guardScope, "committed");
+  assert.equal(NAMED_GROUPS.novos.guardScope, "committed");
+});
+
+test("guard de re-envio: engajado em lista com campanha JÁ ENVIADA sobrevive; em lista AGENDADA, não", () => {
+  // Mesma forma do caso real: contato que já recebeu (por isso está numa lista
+  // "sent") e é justamente o alvo de um envio de retenção.
+  const engajado = { email: "a@x.com", brevo_list_ids: JSON.stringify(["84", "85"]) };
+  const agendado = { email: "b@x.com", brevo_list_ids: JSON.stringify(["99"]) };
+  const rows = [engajado, agendado];
+
+  // Escopo "queued" (o que engajados/reativacao usam): só a lista 99 está
+  // comprometida por campanha agendada — o engajado passa.
+  const soQueued = excludeCommittedToQueuedCampaigns(rows, new Set(["99"]));
+  assert.deepEqual(soQueued.map((r) => r.email), ["a@x.com"]);
+
+  // Escopo "committed" (o que ramp-warm/novos usam): as listas já enviadas
+  // entram no Set e o engajado é excluído — correto para 1º envio, e é
+  // exatamente o que zerava o grupo de retenção antes desta correção.
+  const committed = excludeCommittedToQueuedCampaigns(rows, new Set(["84", "85", "99"]));
+  assert.deepEqual(committed.map((r) => r.email), []);
+});
+
+/**
+ * Os dois testes acima travam a TABELA (`guardScope` por grupo) e a FUNÇÃO PURA
+ * (`excludeCommittedToQueuedCampaigns`), mas nenhum exercita o `if` de `main()`
+ * que LIGA as duas. Verificado por mutação: revertendo só aquele branch para
+ * `fetchCommittedCampaignListIds(apiKey)` incondicional — o bug de volta, com a
+ * tabela intacta — os 35 testes continuavam passando. Os dois testes abaixo
+ * fecham esse buraco: mockam `status=sent` NÃO-VAZIO (o caso que zerava os
+ * grupos) e passam por `main()` de verdade.
+ */
+test("REGRESSÃO main(): engajado em lista com campanha 'sent' SOBREVIVE (o guard de re-envio ignora `sent`)", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-reenvio-sent-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  // Engajado real: já recebeu (sends_count>0 ⇒ está numa lista `sent`) e abriu.
+  // É exatamente esse contato que o escopo "committed" excluía por construção.
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids) VALUES ('engajado-em-sent@x.com','E',2,3,3,'verified','[\"70\"]')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs = await withBrevoFetch(
+    (url) => {
+      // A lista 70 tem campanha JÁ ENVIADA; nada agendado.
+      if (url.includes("status=sent")) return jsonResponse({ campaigns: [{ id: 2, recipients: { lists: [70] } }] });
+      return jsonResponse({ campaigns: [] });
+    },
+    () => captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "engajados", "--dry-run", "--data-root", dir])),
+  );
+  const out = JSON.parse(logs.join("\n"));
+  // Com o bug (escopo "committed" em engajados), `selected` seria 0.
+  assert.equal(out.selected, 1);
+  // O campo só entra no summary quando há exclusão — ausente equivale a zero.
+  assert.equal(out.already_committed_brevo ?? 0, 0);
+});
+
+test("REGRESSÃO main(): 'reativacao' também ignora `sent` — mas continua excluindo campanha AGENDADA", async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), "bseg-reativacao-scope-"));
+  const dbPath = resolve(dir, "store.db");
+  const db = openClariceDb(dbPath);
+  // `reativacao`: recebeu e NUNCA abriu (opens_count=0).
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids) VALUES ('nao-abriu-em-sent@x.com','N',2,0,3,'verified','[\"70\"]')",
+  ).run();
+  // Mesmo perfil, mas numa lista com campanha AGENDADA — esse tem de sair,
+  // senão o envio agendado (imutável na Brevo) duplicaria.
+  db.prepare(
+    "INSERT INTO clarice_users (email, name, tier, opens_count, sends_count, mv_bucket, brevo_list_ids) VALUES ('nao-abriu-em-queued@x.com','Q',2,0,3,'verified','[\"71\"]')",
+  ).run();
+  recomputeDerived(db);
+  db.close();
+
+  const logs = await withBrevoFetch(
+    (url) => {
+      if (url.includes("status=sent")) return jsonResponse({ campaigns: [{ id: 2, recipients: { lists: [70] } }] });
+      if (url.includes("status=queued")) return jsonResponse({ campaigns: [{ id: 3, recipients: { lists: [71] } }] });
+      return jsonResponse({ campaigns: [] });
+    },
+    () => captureLogs(() => main(["--cycle", "2606-07", "--db", dbPath, "--group", "reativacao", "--dry-run", "--data-root", dir])),
+  );
+  const out = JSON.parse(logs.join("\n"));
+  // Sobra só o de lista `sent`; o de lista `queued` foi excluído.
+  assert.equal(out.selected, 1);
+  assert.equal(out.already_committed_brevo, 1);
 });

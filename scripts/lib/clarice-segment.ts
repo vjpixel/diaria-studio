@@ -291,12 +291,18 @@ export function parseBrevoListIds(raw: string | null | undefined): string[] {
  * PURA/testável: cruza `brevo_list_ids` de cada linha contra o Set de listas
  * comprometidas — a função é agnóstica a QUAL status alimentou o Set.
  *
- * #3682: os callers de produção agora passam a UNIÃO de `queued` + `sent`
+ * #3682: os callers de PRIMEIRO ENVIO passam a UNIÃO de `queued` + `sent`
  * (`fetchCommittedCampaignListIds`, brevo-client.ts) — `sends_count=0` local
  * não distingue "nunca recebeu" de "recebeu, mas o sync incremental do store
- * ainda não propagou" (lag observado ~1 dia no incidente 260716-260721).
- * Passar só `queued` (como o nome do parâmetro ainda sugere, mantido por
- * compat) cobre só a metade AGENDADA do problema.
+ * ainda não propagou" (lag observado ~1 dia no incidente 260716-260721). Para
+ * esses grupos, passar só `queued` cobriria só a metade AGENDADA do problema.
+ *
+ * 260731: isso vale para 1º envio, NÃO para todos os callers. Os grupos de
+ * RE-envio (`engajados`, `reativacao`) passam deliberadamente só `queued` — ali
+ * "já recebeu" é pré-requisito de entrada, não impedimento, e incluir `sent`
+ * zerava os dois grupos por construção. Não é regressão do #3682: é o mesmo
+ * raciocínio aplicado a um predicado de sinal oposto. Ver `CommittedGuardScope`
+ * mais abaixo, que é quem decide o escopo por grupo.
  *
  * Não distingue send_eligible/isFirstSend — é uma camada adicional aplicada
  * SOBRE o resultado de `segmentRampWarm`/`segmentFromStore`/etc, não um
@@ -304,6 +310,8 @@ export function parseBrevoListIds(raw: string | null | undefined): string[] {
  */
 export function excludeCommittedToQueuedCampaigns<T extends Pick<StoreRow, "brevo_list_ids">>(
   rows: T[],
+  // Nome mantido por compat (#2994). O Set pode conter só `queued` OU
+  // `queued ∪ sent`, conforme o `guardScope` do grupo que chamou.
   queuedListIds: ReadonlySet<string>,
 ): T[] {
   if (queuedListIds.size === 0) return rows.slice();
@@ -517,20 +525,56 @@ export interface NamedGroupContext {
   sinceIso?: string;
 }
 
+/**
+ * Que conjunto de listas Brevo o guard de campanha comprometida deve excluir
+ * neste grupo (#4347 Etapa 2c, corrigido em 260731).
+ *
+ *   "committed" — queued ∪ sent. Correto pros grupos de PRIMEIRO envio
+ *                 (`ramp-warm`, `novos`): ali "já está numa lista que recebeu
+ *                 campanha" é exatamente a condição que desqualifica, e
+ *                 `sends_count` local não serve porque o sync do Brevo é
+ *                 1×/dia (até 24h de defasagem).
+ *   "queued"    — só campanhas AGENDADAS e ainda não disparadas. É o correto
+ *                 pros grupos de RE-ENVIO (`engajados`, `reativacao`): eles
+ *                 existem justamente pra alcançar de novo quem já recebeu, com
+ *                 conteúdo novo. Usar "committed" aqui zera o grupo por
+ *                 CONSTRUÇÃO — todo engajado, por definição do predicado
+ *                 (`sends_count > 0`), está em alguma lista com campanha
+ *                 `sent`. Medido em 260731: 15.123 de 15.123 engajados
+ *                 excluídos, 0 deles por campanha agendada. A proteção real
+ *                 que o guard oferece a estes grupos (não duplicar um envio já
+ *                 AGENDADO, que na Brevo é imutável) é preservada — só a parte
+ *                 `sent`, que aqui não descreve risco nenhum, sai.
+ */
+export type CommittedGuardScope = "committed" | "queued";
+
 export interface NamedGroupDef {
   key: NamedGroupKey;
   /** Rótulo curto (vira `desc` no manifest, mesma convenção de `describeWave`). */
   label: string;
   segment: (rows: StoreRow[], ctx?: NamedGroupContext) => StoreRow[];
+  /** Ver `CommittedGuardScope` — 1º envio exclui queued∪sent; re-envio, só queued. */
+  guardScope: CommittedGuardScope;
 }
 
 export const NAMED_GROUPS: Record<NamedGroupKey, NamedGroupDef> = {
-  engajados: { key: "engajados", label: "Engajados (retenção)", segment: (rows) => segmentEngajados(rows) },
-  reativacao: { key: "reativacao", label: "Reativação", segment: (rows) => segmentReativacao(rows) },
+  engajados: {
+    key: "engajados",
+    label: "Engajados (retenção)",
+    segment: (rows) => segmentEngajados(rows),
+    guardScope: "queued",
+  },
+  reativacao: {
+    key: "reativacao",
+    label: "Reativação",
+    segment: (rows) => segmentReativacao(rows),
+    guardScope: "queued",
+  },
   "ramp-warm": {
     key: "ramp-warm",
     label: "Ramp warm (1º envio seguro)",
     segment: (rows) => segmentRampWarm(rows),
+    guardScope: "committed",
   },
   novos: {
     key: "novos",
@@ -543,6 +587,7 @@ export const NAMED_GROUPS: Record<NamedGroupKey, NamedGroupDef> = {
       }
       return segmentNovos(rows, { sinceIso: ctx.sinceIso });
     },
+    guardScope: "committed",
   },
 };
 

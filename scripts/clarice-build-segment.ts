@@ -130,7 +130,7 @@ import {
 } from "./lib/clarice-segment.ts";
 import { clariceSegmentsDir, ensureDir, requireCycleArg } from "./lib/clarice-paths.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
-import { fetchCommittedCampaignListIds } from "./lib/brevo-client.ts";
+import { fetchCommittedCampaignListIds, fetchQueuedCampaignListIds } from "./lib/brevo-client.ts";
 
 loadProjectEnv();
 
@@ -440,24 +440,54 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
   }
 
-  // #4347: guard queued/sent (fetchCommittedCampaignListIds/
-  // excludeCommittedToQueuedCampaigns, já usado por
-  // weekly-send-plan-audience.ts/clarice-schedule-ramp.ts/cohort-order-dryrun.ts)
-  // — vale pros 4 grupos nomeados, não só 'novos' (#4347 Etapa 2c). Fail-safe:
-  // --dry-run PROSSEGUE com aviso se a consulta falhar (ou sem a key); escrita
-  // real ABORTA — nunca escreve um grupo sem essa checagem passar, senão duas
-  // rodadas próximas (a cadência de ~4×/semana que a #4347 introduz) podem
-  // re-selecionar quem já recebeu (sync do Brevo é 1×/dia, `sends_count` fica
-  // até 24h defasado — `fetchSentCampaignListIds` é a fonte AO VIVO que fecha
-  // esse furo).
+  // #4347: guard de campanha comprometida (excludeCommittedToQueuedCampaigns, a
+  // mesma checagem já usada por weekly-send-plan-audience.ts/
+  // clarice-schedule-ramp.ts/cohort-order-dryrun.ts) — vale pros 4 grupos
+  // nomeados, não só 'novos' (#4347 Etapa 2c). O ESCOPO, porém, depende do
+  // grupo desde 260731 (`guardScope` em NAMED_GROUPS): 1º envio exclui
+  // queued ∪ sent; RE-envio (engajados/reativacao) exclui só `queued`. Motivo
+  // em `CommittedGuardScope` (clarice-segment.ts): incluir `sent` zerava esses
+  // dois grupos por CONSTRUÇÃO — todo contato com `sends_count > 0` está em
+  // alguma lista com campanha `sent`, então predicado e guard se anulavam.
+  //
+  // O que `sent` resolve nos grupos de 1º envio: o sync do Brevo é 1×/dia, então
+  // `sends_count` fica até 24h defasado — `fetchSentCampaignListIds` é a fonte
+  // AO VIVO que fecha esse furo. Em RE-envio esse furo não existe (já recebeu é
+  // pré-requisito, não impedimento).
+  //
+  // Fail-safe (ambos os escopos): --dry-run PROSSEGUE com aviso se a consulta
+  // falhar (ou sem a key); escrita real ABORTA — nunca escreve um grupo sem
+  // essa checagem passar, senão duas rodadas próximas (a cadência de ~4×/semana
+  // que a #4347 introduz) podem re-selecionar quem já está comprometido com uma
+  // campanha AGENDADA, que na Brevo é imutável.
   const apiKey = process.env.BREVO_CLARICE_API_KEY;
-  let committedListIds: Set<string> = new Set();
+  const guardScope = NAMED_GROUPS[group].guardScope;
+  // Nome neutro de propósito: o conteúdo é `queued` OU `queued ∪ sent` conforme
+  // `guardScope` — chamá-lo de "committed" induziria a ler `sent` onde não há.
+  let guardListIds: Set<string> = new Set();
   if (apiKey) {
     try {
-      committedListIds = await fetchCommittedCampaignListIds(apiKey);
-      if (committedListIds.size > 0) {
+      // `switch` + exhaustividade (em vez de ternário): um escopo novo
+      // adicionado a `CommittedGuardScope` quebra o TYPECHECK aqui, em vez de
+      // cair silenciosamente no ramo `committed` — que é a forma exata do bug
+      // que esta função corrige.
+      switch (guardScope) {
+        case "queued":
+          guardListIds = await fetchQueuedCampaignListIds(apiKey);
+          break;
+        case "committed":
+          guardListIds = await fetchCommittedCampaignListIds(apiKey);
+          break;
+        default: {
+          const jamais: never = guardScope;
+          throw new Error(`guardScope não tratado: ${String(jamais)}`);
+        }
+      }
+      if (guardListIds.size > 0) {
         console.error(
-          `🔒 guard queued/sent: ${committedListIds.size} lista(s) Brevo comprometida(s) (campanha agendada ou já disparada) serão excluídas.`,
+          guardScope === "queued"
+            ? `🔒 guard queued (grupo de re-envio): ${guardListIds.size} lista(s) Brevo com campanha AGENDADA serão excluídas.`
+            : `🔒 guard queued/sent: ${guardListIds.size} lista(s) Brevo comprometida(s) (campanha agendada ou já disparada) serão excluídas.`,
         );
       }
     } catch (err) {
@@ -474,10 +504,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     );
     process.exit(1);
   }
-  const universe = excludeCommittedToQueuedCampaigns(afterSentOrQueued, committedListIds);
+  const universe = excludeCommittedToQueuedCampaigns(afterSentOrQueued, guardListIds);
   const committedExcluded = afterSentOrQueued.length - universe.length;
   if (committedExcluded > 0) {
-    console.error(`🔒 ${committedExcluded} contato(s) excluído(s) por já estarem comprometidos com campanha agendada/disparada.`);
+    // A causa nomeada acompanha o escopo: em RE-envio nunca é "disparada".
+    console.error(
+      guardScope === "queued"
+        ? `🔒 ${committedExcluded} contato(s) excluído(s) por já estarem comprometidos com campanha AGENDADA.`
+        : `🔒 ${committedExcluded} contato(s) excluído(s) por já estarem comprometidos com campanha agendada/disparada.`,
+    );
   }
 
   const { csv, manifestEntry, selected } = buildSegmentArtifact(universe, group, budget, minScore, ctx);
@@ -505,6 +540,11 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     since: ctx?.sinceIso || undefined,
     universe_total: rows.length,
     already_sent_or_queued: alreadyTracked || undefined,
+    // Sempre presente (não `|| undefined`): saber QUAL escopo de guard rodou é
+    // o que permite auditar, meses depois, por que um contato entrou ou não
+    // numa rodada — e este guard já falhou em silêncio uma vez, zerando um
+    // grupo inteiro (ver `CommittedGuardScope`, clarice-segment.ts).
+    guard_scope: guardScope,
     already_committed_brevo: committedExcluded || undefined,
     selected: manifestEntry.count,
   };
