@@ -187,13 +187,18 @@ describe("GET /leaderboard/{YYYY}/arquivo?brand=clarice lista só ciclos mensais
     assert.match(html, /260615|15 de junho/i, "brand diaria segue listando via correct: cru — comportamento inalterado");
   });
 
-  it("chamada direta de handleLeaderboardArchive sem 4º arg (bEnv) usa env como fallback — back-compat de teste/caller antigo", async () => {
+  it("chamada direta de handleLeaderboardArchive com bEnv explícito (brand=diaria não lê stats: nesse ramo)", async () => {
     const kv = makeTrackedKv({
       "correct:260615": "A",
     });
     const env = makeEnv(kv);
-    // Sem bEnv — deve se comportar como antes pra brand=diaria (não lê stats: nesse ramo).
-    const res = await handleLeaderboardArchive("2026", env, "diaria");
+    // #4435 (achado type-design-analyzer): `bEnv` deixou de ter default
+    // (`= env`) — era um fail-open perigoso, ver rationale no header de
+    // `handleLeaderboardArchive` em leaderboard-routes.ts. Passa `env`
+    // explicitamente como bEnv; pra brand=diaria (leaderboardPeriod "month")
+    // o branch nunca lê bEnv mesmo, então este teste reproduz o MESMO
+    // cenário de antes sem depender de um default.
+    const res = await handleLeaderboardArchive("2026", env, "diaria", env);
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.match(html, /260615/);

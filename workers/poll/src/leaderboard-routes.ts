@@ -1238,6 +1238,33 @@ export function extractEditionsForYear(correctKeyNames: string[], year: string, 
  * filtro). Sem "edição futura" (#3113 item 9): esse conceito pressupõe um dia
  * real de calendário (AAMMDD) — um ciclo `YYMM-MM` não representa um dia, e a
  * intersecção com `correct:` FECHADO já é o gate real de "já aconteceu".
+ *
+ * #4435 (achado silent-failure-hunter do review pré-merge do #4419, MEDIUM,
+ * não-bloqueante — 2 efeitos colaterais ACEITOS, documentados aqui em vez de
+ * corrigidos):
+ *
+ *   (a) Um ciclo com `correct:` FECHADO mas ZERO votos ainda registrados
+ *   NAQUELA marca (`stats:{ciclo}` branded ainda ausente) fica invisível
+ *   nesta listagem — não porque o ciclo "não está fechado", mas porque
+ *   `statsEditionNames` (a única fonte que sabe com certeza "esta edição É
+ *   da clarice") ainda não tem entrada pra ele. A heurística de
+ *   pertencimento via presença de `stats:` dá um falso-negativo justo nesse
+ *   caso. Efeito esperado (trade-off, não bug) — desaparece sozinho assim
+ *   que o 1º voto do ciclo chega e popula `stats:{ciclo}` branded.
+ *
+ *   (b) A chave legada `correct:{legacyMarker}` (ex: `correct:260531`) é
+ *   sintaticamente INDISTINGUÍVEL de uma edição DIÁRIA real publicada no
+ *   mesmo dia — `isClosed` acima trata "existe valor em
+ *   `correct:{legacyMarker}`" como prova de que o CICLO da clarice fechou,
+ *   sem cross-check de que aquele valor foi de fato escrito por um
+ *   `close-poll.ts --brand clarice` (em vez de um close-poll normal da
+ *   edição diária publicada naquela data). Risco BOUNDED — só ciclos legados
+ *   pré-cutover #2115 têm essa ambiguidade; o formato novo de ciclo
+ *   (`YYMM-MM`) não colide com nenhum formato de edição diária. Mesma
+ *   colisão já nomeada em `scripts/close-poll.ts` (comentário do #2006:
+ *   "colisão real: 260531 é uma data de edição diária válida") — ver também
+ *   o comentário espelho em `handleArchiveVotePage` abaixo, onde o mesmo
+ *   `legacyMarker` é lido pra decidir se a página de voto de 1 edição existe.
  */
 export function extractMonthlyEditionsForYear(
   statsEditionNames: string[],
@@ -1528,20 +1555,33 @@ ${renderBrandFooter(brand)}
 /** Handler `GET /leaderboard/{YYYY}/arquivo` — lista as edições do ano com
  * gabarito fechado (ver `extractEditionsForYear`/`extractMonthlyEditionsForYear`).
  *
- * #4419: `bEnv` (opcional, default = `env`) é o env BRANDED da marca — mesmo
- * `bEnv` que o router (index.ts) já passa pra `handleEditions`. Só é
- * consultado pra brand com `leaderboardPeriod === "year"` (hoje só `clarice`),
- * onde a listagem precisa saber quais edições PERTENCEM à marca (via
- * `stats:{edition}` branded) antes de filtrar pelo `correct:` cru
- * compartilhado — ver `extractMonthlyEditionsForYear`. Pra `leaderboardPeriod
- * === "month"` (diária/web), `bEnv` nunca é lido — comportamento idêntico ao
- * pré-#4419 (só `correct:{yy}*` cru).
+ * #4419: `bEnv` é o env BRANDED da marca — mesmo `bEnv` que o router
+ * (index.ts) já passa pra `handleEditions`. Só é consultado pra brand com
+ * `leaderboardPeriod === "year"` (hoje só `clarice`), onde a listagem precisa
+ * saber quais edições PERTENCEM à marca (via `stats:{edition}` branded) antes
+ * de filtrar pelo `correct:` cru compartilhado — ver
+ * `extractMonthlyEditionsForYear`. Pra `leaderboardPeriod === "month"`
+ * (diária/web), `bEnv` nunca é lido — comportamento idêntico ao pré-#4419 (só
+ * `correct:{yy}*` cru).
+ *
+ * #4435 (achado type-design-analyzer do review pré-merge do #4419):
+ * DELIBERADAMENTE SEM default (`bEnv: Env`, não `bEnv: Env = env`). O irmão
+ * `rawEnv: Env = env` em vote.ts (#4038/#4118) falha SEGURO quando omitido —
+ * lê o gabarito cru compartilhado, que é correto mesmo sem brand. Aqui um
+ * default `= env` falharia PERIGOSO: se um call site futuro chamar com
+ * `brand="clarice"` e esquecer `bEnv`, o branch `leaderboardPeriod === "year"`
+ * abaixo passaria a enumerar `stats:` CRU (as stats da marca `diaria`, sem
+ * prefixo) em vez do namespace branded da clarice — reintroduzindo em
+ * silêncio o exato sintoma do #4419 (edições diárias vazando pro arquivo da
+ * clarice) que este handler existe pra corrigir. Tornar `bEnv` obrigatório
+ * transforma esse call site esquecido num erro de compilação, não num bug
+ * latente em produção.
  */
 export async function handleLeaderboardArchive(
   yearStr: string,
   env: Env,
-  brand: Brand = "diaria",
-  bEnv: Env = env,
+  brand: Brand,
+  bEnv: Env,
 ): Promise<Response> {
   const year = parseInt(yearStr, 10);
   if (!/^\d{4}$/.test(yearStr) || year < 2000 || year > 2099) {
@@ -1582,7 +1622,24 @@ export async function handleArchiveVotePage(
   env: Env,
   brand: Brand = "diaria",
 ): Promise<Response> {
-  if (!/^\d{4}$/.test(yearStr) || !isValidVoteEditionFormat(edition) || edition.slice(0, 2) !== yearStr.slice(2)) {
+  if (
+    !/^\d{4}$/.test(yearStr) ||
+    !isValidVoteEditionFormat(edition) ||
+    edition.slice(0, 2) !== yearStr.slice(2) ||
+    // #4435 (achado pr-test-analyzer do review pré-merge do #4419, espelha o
+    // guard de escrita #4157 em handleAdminCorrect/index.ts): `isValidVoteEditionFormat`
+    // só valida FORMATO (AAMMDD|ciclo), nunca FORMATO×MARCA — sem este guard,
+    // um `edition` em formato de ciclo (`YYMM-MM`, #4419) é aceito por
+    // QUALQUER brand, mesmo os com `leaderboardPeriod !== "year"` (hoje:
+    // diaria/web), que não têm noção de ciclo mensal. Verificado ao vivo pelo
+    // revisor: `handleArchiveVotePage("2026", "2605-06", env, "diaria")`
+    // respondia 200, renderizando a página de voto com branding "Diar.ia" mas
+    // descrevendo "leaderboard anual" (que a diaria não tem — o período dela
+    // é "month"). O caminho inverso (AAMMDD pra brand anual — marcador
+    // legado, ver `legacyMonthlyEditionForCycle`) continua aceito de
+    // propósito, só o de ciclo-pra-brand-mensal é bloqueado aqui.
+    (CYCLE_EDITION_RE.test(edition) && BRAND_INFO[brand].leaderboardPeriod !== "year")
+  ) {
     return new Response(votePageHtml("Link inválido.", false, null, null, null, brand), {
       status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
@@ -1592,6 +1649,16 @@ export async function handleArchiveVotePage(
   // cutover) — checa as duas antes de decidir "sem gabarito ainda" (mesmo
   // racional de `extractMonthlyEditionsForYear` acima). AAMMDD genuíno
   // (diária) não tem marcador equivalente — `legacyMarker` fica `null`.
+  //
+  // #4435 (achado silent-failure-hunter do review pré-merge do #4419, MEDIUM,
+  // risco residual ACEITO — mesma colisão já nomeada em `scripts/close-poll.ts`,
+  // comentário do #2006, e documentada em detalhe no docblock de
+  // `extractMonthlyEditionsForYear` acima): `correct:{legacyMarker}` é
+  // sintaticamente INDISTINGUÍVEL de uma edição DIÁRIA real publicada no
+  // mesmo dia — `correctRaw` abaixo trata "existe valor sob essa chave" como
+  // prova de que o gabarito do CICLO fechou, sem confirmar que quem escreveu
+  // foi de fato um `close-poll.ts --brand clarice`. Bounded: só ciclos
+  // legados pré-cutover têm essa ambiguidade.
   const legacyMarker = CYCLE_EDITION_RE.test(edition) ? legacyMonthlyEditionForCycle(edition) : null;
   const correctRaw =
     (await env.POLL.get(`correct:${edition}`)) ??

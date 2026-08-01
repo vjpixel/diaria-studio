@@ -1482,7 +1482,7 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
       // #4419: `handleLeaderboardArchive` agora recebe TAMBÉM `bEnv` (4º
       // arg) — pra brand com leaderboard ANUAL (só clarice, #3615), a
       // listagem precisa enumerar `stats:{edition}` BRANDED (mesmo padrão de
-      // `handleEditions` abaixo) pra saber quais edições pertencem à marca
+      // `handleEditions` acima) pra saber quais edições pertencem à marca
       // ANTES de intersectar com o `correct:` cru — sem isso o arquivo
       // listava as edições DIÁRIAS que também vivem em `correct:{yy}*`
       // (bug raiz do #4419). `handleArchiveVotePage` continua só com `env`
