@@ -62,9 +62,20 @@ function makeEnvWithDo(kv: ReturnType<typeof makeTrackedKv>, overrides: Partial<
 describe("GET /leaderboard/{YYYY}/arquivo?brand=clarice (#4117)", () => {
   it("lista edições do ano mesmo com brand=clarice — antes vinha sempre vazio (lia clarice:correct:* em vez de correct:*)", async () => {
     const { default: worker } = await import("../workers/poll/src/index.ts");
+    // #4419: desde a correção da issue #4419, a listagem da clarice só inclui
+    // edições que a marca de fato TEM (via `stats:{edition}` BRANDED — mesmo
+    // padrão de `handleEditions`) — um `correct:{AAMMDD}` cru sozinho, sem
+    // `stats:` branded correspondente, não é mais suficiente pra aparecer no
+    // arquivo (era exatamente esse buraco que fazia o arquivo da clarice
+    // vazar edições DIÁRIAS, ver #4419). O fixture usa ciclos mensais de
+    // verdade (`YYMM-MM`) + `clarice:stats:` correspondente — a asserção
+    // original deste teste (listagem não fica vazia com brand=clarice, por
+    // causa do `bEnv` prefixando a leitura de `correct:`) continua coberta.
     const kv = makeTrackedKv({
-      "correct:260101": "A", // chave CRUA — close-poll.ts nunca prefixa por brand
-      "correct:260615": "B",
+      "correct:2601-02": "A", // ciclo de janeiro (conteúdo), enviado em fevereiro
+      "correct:2606-07": "B", // ciclo de junho (conteúdo), enviado em julho
+      "clarice:stats:2601-02": JSON.stringify({ total: 1, correct: 1 }),
+      "clarice:stats:2606-07": JSON.stringify({ total: 1, correct: 1 }),
     });
     const env = makeEnvWithDo(kv);
 
@@ -76,8 +87,8 @@ describe("GET /leaderboard/{YYYY}/arquivo?brand=clarice (#4117)", () => {
     assert.equal(res.status, 200);
     const html = await res.text();
     assert.doesNotMatch(html, /Nenhuma edição disponível/i, "regressão #4117: listagem vinha vazia pro brand clarice");
-    assert.match(html, /260615|junho/i);
-    assert.match(html, /260101|janeiro/i);
+    assert.match(html, /2606-07|julho/i);
+    assert.match(html, /2601-02|fevereiro/i);
   });
 });
 

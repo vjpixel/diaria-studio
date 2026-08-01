@@ -1471,20 +1471,28 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
     // #1345: /leaderboard/{YYYY-MM} — URL única por mês de publicação
     // #3998: HEAD aceito pelo mesmo racional acima.
     if (path.startsWith("/leaderboard/") && (request.method === "GET" || request.method === "HEAD")) {
-      // #2867: /leaderboard/{YYYY}/arquivo[/{AAMMDD}] — arquivo retroativo do
-      // ano. Checado ANTES do monthMatch/yearMatch abaixo (regex mais específica).
-      // #4117: `env` CRU (não `bEnv`) — os dois handlers só tocam KV pra ler
-      // `correct:{edition}`/`correct:{yy}*` (gabarito compartilhado, mesma
-      // chave CRUA em todo brand — ver #3600/#4038). `bEnv` prefixava a leitura
-      // (ex: `clarice:correct:260101`), que nunca existe — `close-poll.ts`
-      // sempre grava `correct:` sem prefixo. Resultado: arquivo do brand
-      // clarice (o ÚNICO que expõe este link, ver #3615) sempre vinha vazio
-      // + página de voto individual sempre 404. `brand` continua threadeado
-      // separadamente pros dois handlers (cosmético — copy/branding do HTML).
-      const archiveVoteMatch = path.match(/^\/leaderboard\/(\d{4})\/arquivo\/(\d{6})$/);
+      // #2867: /leaderboard/{YYYY}/arquivo[/{AAMMDD|YYMM-MM}] — arquivo
+      // retroativo do ano. Checado ANTES do monthMatch/yearMatch abaixo
+      // (regex mais específica).
+      // #4117: `env` CRU pros dois handlers pra ler `correct:{edition}`/
+      // `correct:{yy}*` (gabarito compartilhado, mesma chave CRUA em todo
+      // brand — ver #3600/#4038). `bEnv` prefixaria essa leitura (ex:
+      // `clarice:correct:260101`), que nunca existe — `close-poll.ts` sempre
+      // grava `correct:` sem prefixo.
+      // #4419: `handleLeaderboardArchive` agora recebe TAMBÉM `bEnv` (4º
+      // arg) — pra brand com leaderboard ANUAL (só clarice, #3615), a
+      // listagem precisa enumerar `stats:{edition}` BRANDED (mesmo padrão de
+      // `handleEditions` abaixo) pra saber quais edições pertencem à marca
+      // ANTES de intersectar com o `correct:` cru — sem isso o arquivo
+      // listava as edições DIÁRIAS que também vivem em `correct:{yy}*`
+      // (bug raiz do #4419). `handleArchiveVotePage` continua só com `env`
+      // cru — a checagem de gabarito de 1 edição não precisa enumerar nada.
+      // Regex de edição aceita AAMMDD (diária) OU ciclo Clarice `YYMM-MM`
+      // (#4419) — a listagem agora gera hrefs em formato de ciclo pra clarice.
+      const archiveVoteMatch = path.match(/^\/leaderboard\/(\d{4})\/arquivo\/(\d{6}|\d{4}-\d{2})$/);
       if (archiveVoteMatch) return handleArchiveVotePage(archiveVoteMatch[1], archiveVoteMatch[2], env, brand);
       const archiveListMatch = path.match(/^\/leaderboard\/(\d{4})\/arquivo$/);
-      if (archiveListMatch) return handleLeaderboardArchive(archiveListMatch[1], env, brand);
+      if (archiveListMatch) return handleLeaderboardArchive(archiveListMatch[1], env, brand, bEnv);
 
       const monthMatch = path.match(/^\/leaderboard\/(\d{4}-\d{2})$/);
       // #2114(b): auto-heal: links mensais já enviados com leaderboardPeriod="year"

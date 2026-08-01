@@ -18,6 +18,10 @@ import {
   hashEmailForMatch, // #4029 item 2: uid opaco por linha pro self-highlight client-side
   closedPeriodCacheControl, // #3118 item 2: cache de período fechado — 1h, não mais 30d immutable
   AAMMDD_RE, // #3297: substitui as 2 cópias inline de /^\d{6}$/ deste arquivo
+  CYCLE_EDITION_RE, // #4419: formato de ciclo Clarice YYMM-MM — arquivo mensal aceita, não só AAMMDD
+  isValidVoteEditionFormat, // #4419: aceita AAMMDD|ciclo — mesmo regex combinado de handleEditions
+  cycleForLegacyMonthlyEdition, // #4419: normaliza marcador legado AAMMDD → ciclo YYMM-MM (mesmo uso de handleEditions)
+  legacyMonthlyEditionForCycle, // #4419: direção inversa — ciclo → marcador legado, pra checar correct: sob a chave antiga
   envioMonthYear, // #3464: heading do arquivo mensal Clarice mostra mês de ENVIO, não de conteúdo
   buildBrandSiteUrl, // #3978: href com UTM da sub-copy do leaderboard
   isAnonymousWebIdentity, // #3975: filtra identidade anônima do brand web fora do ranking público
@@ -1206,6 +1210,59 @@ export function extractEditionsForYear(correctKeyNames: string[], year: string, 
 }
 
 /**
+ * Pure (#4419): equivalente de `extractEditionsForYear` acima, mas pra brand
+ * com `leaderboardPeriod === "year"` (hoje só `clarice`) — o arquivo dessa
+ * marca deve listar só as edições MENSAIS de ciclo (`YYMM-MM`), nunca as
+ * edições DIÁRIAS que também vivem no `correct:` cru compartilhado (bug raiz
+ * do #4419: `extractEditionsForYear` mantém só `AAMMDD_RE`, então filtrava
+ * IN as edições diárias e IGNORAVA de propósito qualquer chave de ciclo).
+ *
+ * Duas fontes, dois papéis (mesmo racional de `handleEditions`, vote.ts):
+ *   - `statsEditionNames`: sufixos de `stats:{edition}` do namespace BRANDED
+ *     da marca (só existe depois do 1º voto NAQUELA marca) — é a ÚNICA fonte
+ *     que sabe com certeza "esta edição pertence à clarice" (o `correct:` cru
+ *     é compartilhado entre marcas e não carrega esse sinal sozinho). Aceita
+ *     tanto o marcador LEGADO AAMMDD (pré-#2115, ex: `260531`) quanto o
+ *     formato novo de ciclo (`2605-06`) — normalizado aqui via
+ *     `cycleForLegacyMonthlyEdition` pro mesmo ciclo, dedup automático via Set.
+ *   - `correctKeyNames`: nomes crus das chaves `correct:{...}` (namespace cru
+ *     compartilhado, ver `handleLeaderboardArchive`) — usado só pra checar se
+ *     o gabarito do ciclo já foi FECHADO (`close-poll.ts`). Um ciclo pode ter
+ *     o gabarito gravado sob a chave NOVA (`correct:2605-06`) OU a chave
+ *     LEGADA (`correct:260531`, pré-cutover) — os dois são checados via
+ *     `legacyMonthlyEditionForCycle` antes de decidir "sem gabarito ainda".
+ *
+ * Filtra pelo ano de CONTEÚDO (2 primeiros dígitos do ciclo — mesmo critério
+ * de `extractEditionsForYear`; a página já reconcilia CONTEÚDO×ENVIO só na
+ * exibição via `groupEditionsByMonth`/`formatEditionDateForBrand`, não no
+ * filtro). Sem "edição futura" (#3113 item 9): esse conceito pressupõe um dia
+ * real de calendário (AAMMDD) — um ciclo `YYMM-MM` não representa um dia, e a
+ * intersecção com `correct:` FECHADO já é o gate real de "já aconteceu".
+ */
+export function extractMonthlyEditionsForYear(
+  statsEditionNames: string[],
+  correctKeyNames: string[],
+  year: string,
+): string[] {
+  const yy = year.slice(2);
+  const closedRaw = new Set(
+    correctKeyNames.map((k) => (k.startsWith("correct:") ? k.slice("correct:".length) : k)),
+  );
+  const set = new Set<string>();
+  for (const raw of statsEditionNames) {
+    if (!isValidVoteEditionFormat(raw)) continue;
+    const cycle = CYCLE_EDITION_RE.test(raw) ? raw : cycleForLegacyMonthlyEdition(raw);
+    if (!cycle) continue;
+    if (cycle.slice(0, 2) !== yy) continue;
+    const legacyMarker = legacyMonthlyEditionForCycle(cycle);
+    const isClosed = closedRaw.has(cycle) || (legacyMarker !== null && closedRaw.has(legacyMarker));
+    if (!isClosed) continue;
+    set.add(cycle);
+  }
+  return [...set].sort().reverse();
+}
+
+/**
  * Pure (#3113 item 10): agrupa edições AAMMDD (já ordenadas DESC) por mês,
  * preservando a ordem de entrada — uma lista flat de edições diárias passa de
  * 200 itens/ano sem agrupamento. Assume todas as edições do MESMO ano (o
@@ -1469,11 +1526,22 @@ ${renderBrandFooter(brand)}
 }
 
 /** Handler `GET /leaderboard/{YYYY}/arquivo` — lista as edições do ano com
- * gabarito fechado (ver `extractEditionsForYear`). */
+ * gabarito fechado (ver `extractEditionsForYear`/`extractMonthlyEditionsForYear`).
+ *
+ * #4419: `bEnv` (opcional, default = `env`) é o env BRANDED da marca — mesmo
+ * `bEnv` que o router (index.ts) já passa pra `handleEditions`. Só é
+ * consultado pra brand com `leaderboardPeriod === "year"` (hoje só `clarice`),
+ * onde a listagem precisa saber quais edições PERTENCEM à marca (via
+ * `stats:{edition}` branded) antes de filtrar pelo `correct:` cru
+ * compartilhado — ver `extractMonthlyEditionsForYear`. Pra `leaderboardPeriod
+ * === "month"` (diária/web), `bEnv` nunca é lido — comportamento idêntico ao
+ * pré-#4419 (só `correct:{yy}*` cru).
+ */
 export async function handleLeaderboardArchive(
   yearStr: string,
   env: Env,
   brand: Brand = "diaria",
+  bEnv: Env = env,
 ): Promise<Response> {
   const year = parseInt(yearStr, 10);
   if (!/^\d{4}$/.test(yearStr) || year < 2000 || year > 2099) {
@@ -1482,33 +1550,62 @@ export async function handleLeaderboardArchive(
     });
   }
   const yy = yearStr.slice(2);
-  const keys: string[] = [];
-  for await (const k of listAllKeys(env, `correct:${yy}`)) keys.push(k);
-  const editions = extractEditionsForYear(keys, yearStr);
+  const correctKeys: string[] = [];
+  for await (const k of listAllKeys(env, `correct:${yy}`)) correctKeys.push(k);
+
+  if (BRAND_INFO[brand].leaderboardPeriod === "year") {
+    // #4419: marca com leaderboard ANUAL — arquivo lista só ciclos mensais,
+    // nunca as edições diárias que também vivem em `correct:{yy}*` (bug raiz
+    // da issue). `stats:` branded é a única fonte que sabe com certeza "esta
+    // edição é da clarice" — mesmo padrão de `handleEditions` (vote.ts).
+    const statsEditions: string[] = [];
+    for await (const k of listAllKeys(bEnv, "stats:")) statsEditions.push(k.slice("stats:".length));
+    const editions = extractMonthlyEditionsForYear(statsEditions, correctKeys, yearStr);
+    return renderArchiveListHtml(editions, yearStr, brand);
+  }
+
+  const editions = extractEditionsForYear(correctKeys, yearStr);
   return renderArchiveListHtml(editions, yearStr, brand);
 }
 
-/** Handler `GET /leaderboard/{YYYY}/arquivo/{AAMMDD}` — página de voto de 1
- * edição arquivada. 404 se a edição não pertence ao ano da URL, ou se ainda
- * não tem gabarito fechado (nunca foi publicada / poll não fechado). */
+/** Handler `GET /leaderboard/{YYYY}/arquivo/{AAMMDD|YYMM-MM}` — página de
+ * voto de 1 edição arquivada. 404 se a edição não pertence ao ano da URL, ou
+ * se ainda não tem gabarito fechado (nunca foi publicada / poll não fechado).
+ *
+ * #4419: `edition` aceita os 2 formatos (`isValidVoteEditionFormat`, não mais
+ * só `AAMMDD_RE`) — a listagem (`handleLeaderboardArchive`) agora gera hrefs
+ * em formato de ciclo (`YYMM-MM`) pra brand com leaderboard anual.
+ */
 export async function handleArchiveVotePage(
   yearStr: string,
   edition: string,
   env: Env,
   brand: Brand = "diaria",
 ): Promise<Response> {
-  if (!/^\d{4}$/.test(yearStr) || !AAMMDD_RE.test(edition) || edition.slice(0, 2) !== yearStr.slice(2)) {
+  if (!/^\d{4}$/.test(yearStr) || !isValidVoteEditionFormat(edition) || edition.slice(0, 2) !== yearStr.slice(2)) {
     return new Response(votePageHtml("Link inválido.", false, null, null, null, brand), {
       status: 404, headers: { "Content-Type": "text/html;charset=utf-8" }
     });
   }
-  const correctRaw = await env.POLL.get(`correct:${edition}`);
-  // #3113 (item 9): mesma checagem de `extractEditionsForYear` — sem ela, a
-  // página de voto do arquivo continuaria acessível via URL direta (mesmo
-  // AAMMDD, adivinhado ou incrementado a partir de uma edição já pública)
-  // mesmo depois da LISTA parar de mostrar a edição futura. Mesma mensagem
-  // do "sem gabarito" — o assinante não precisa saber o motivo específico.
-  if (!correctRaw || edition > todayAammddBrt(new Date())) {
+  // #4419: um ciclo mensal pode ter o gabarito gravado sob a chave NOVA
+  // (`correct:{ciclo}`) OU a chave LEGADA (`correct:{AAMMDD}`, pré-#2115
+  // cutover) — checa as duas antes de decidir "sem gabarito ainda" (mesmo
+  // racional de `extractMonthlyEditionsForYear` acima). AAMMDD genuíno
+  // (diária) não tem marcador equivalente — `legacyMarker` fica `null`.
+  const legacyMarker = CYCLE_EDITION_RE.test(edition) ? legacyMonthlyEditionForCycle(edition) : null;
+  const correctRaw =
+    (await env.POLL.get(`correct:${edition}`)) ??
+    (legacyMarker !== null ? await env.POLL.get(`correct:${legacyMarker}`) : null);
+  // #3113 (item 9): "edição futura" só é um conceito coerente pra AAMMDD (dia
+  // real de calendário) — sem ela, a página de voto do arquivo continuaria
+  // acessível via URL direta (mesmo AAMMDD, adivinhado ou incrementado a
+  // partir de uma edição já pública) mesmo depois da LISTA parar de mostrar a
+  // edição futura. Um ciclo `YYMM-MM` (#4419) não representa um dia — a
+  // intersecção com `correct:` (linhas acima) já é o gate real de "já
+  // aconteceu" pra esse formato. Mesma mensagem do "sem gabarito" em ambos os
+  // casos — o assinante não precisa saber o motivo específico.
+  const isFutureAammdd = AAMMDD_RE.test(edition) && edition > todayAammddBrt(new Date());
+  if (!correctRaw || isFutureAammdd) {
     return new Response(
       votePageHtml("Essa edição não está disponível para votação retroativa.", false, null, null, null, brand),
       { status: 404, headers: { "Content-Type": "text/html;charset=utf-8" } },
