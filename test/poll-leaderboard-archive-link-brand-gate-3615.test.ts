@@ -113,8 +113,9 @@ describe("renderLeaderboardHtml — link de ranking anual gated por leaderboardP
     // — agora é um botão próprio (`.archive-cta`/`.archive-btn`), mesmo
     // tratamento visual do equivalente em /vote (não "dois pesos visuais
     // pro mesmo lugar"). `/leaderboard?brand=clarice` dispatcha direto pra
-    // handleLeaderboardByYear (leaderboardPeriod "year", index.ts) — a
-    // própria view anual, onde "Ver ranking anual" não se aplica (#4049,
+    // handleLeaderboardByYear (leaderboard-routes.ts, leaderboardPeriod
+    // "year" no router de index.ts) — a própria view anual, onde "Ver
+    // ranking anual" não se aplica (#4049,
     // self-link) — sem NENHUM outro conteúdo de nav sobrando, `<p
     // class="nav">` fica de fora por completo (mesmo padrão do teste
     // #4049 acima).

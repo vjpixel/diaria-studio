@@ -1079,8 +1079,9 @@ export function brandHiddenInput(brand: Brand): string {
 // em "Ver leaderboard" antes de definir nickname (ou chega direto no
 // leaderboard com o link assinado do resultado do voto) ganha o MESMO form
 // ali, sem precisar voltar e votar de novo. `nicknameForm` sempre presente
-// aqui (diferente do `formHtml` de votePageHtml, que aceita `null` e retorna
-// "" — cada caller decide ANTES de chamar esta função se deve renderizar).
+// aqui (diferente do `identityBoxHtml` de votePageHtml, #4418, que aceita
+// `null` e retorna "" — cada caller decide ANTES de chamar esta função se
+// deve renderizar).
 
 /**
  * Pure (#4232, extraído de votePageHtml/#1078; reescrita #4418 §2/§2c):

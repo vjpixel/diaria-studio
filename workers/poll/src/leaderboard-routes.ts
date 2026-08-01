@@ -695,16 +695,26 @@ export async function resolveLeaderboardSubscribeBox(
   if (!email || !sig) return null;
   if (!isValidVoteEmailFormat(email)) return null;
 
-  const valid = await hmacVerify(env.POLL_SECRET, `setname:${email}`, sig);
-  if (!valid) return null; // já logado por resolveLeaderboardNicknameForm no mesmo request (sig igual)
-
+  // #4418 self-review (achado do silent-failure-hunter): `hmacVerify` e o
+  // `env.POLL.get` seguinte estavam em try/catch SEPARADOS — uma exceção do
+  // HMAC (ex: crypto.subtle falhando) escapava sem cair no fail-closed
+  // documentado no header desta função, derrubando a página de leaderboard
+  // inteira por causa de um bloco opcional/decorativo. Mesmo padrão de
+  // `resolveLeaderboardViewerEmail` logo abaixo — try/catch cobrindo TODO o
+  // caminho pós-validação de forma, não só a leitura de KV.
   try {
+    const valid = await hmacVerify(env.POLL_SECRET, `setname:${email}`, sig);
+    if (!valid) return null; // já logado por resolveLeaderboardNicknameForm no mesmo request (sig igual)
+
     const raw = await env.POLL.get(`score:${email}`);
     const score = safeParseKv<{ nickname?: string | null; optin?: boolean }>(raw, "leaderboard_subscribe_box_score_parse_error", email);
     if (!score?.nickname || score.optin) return null; // sem apelido (Caixa A é quem cobre isso), ou já assinou
     return { email, sig, nickname: score.nickname };
   } catch (e) {
-    console.error(JSON.stringify({ event: "leaderboard_subscribe_box_kv_error", email, error: String(e) }));
+    // #4418 self-review: `email_domain`, nunca o e-mail cru no log — mesmo
+    // padrão PII-safe já usado em todo o resto do worker (ex: vote.ts,
+    // set_name_beehiiv_subscribe_failed/_exception em index.ts).
+    console.error(JSON.stringify({ event: "leaderboard_subscribe_box_error", email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
     return null;
   }
 }
@@ -736,7 +746,9 @@ export async function resolveLeaderboardViewerEmail(
     const valid = await hmacVerify(env.POLL_SECRET, `setname:${email}`, sig);
     return valid ? email : null;
   } catch (e) {
-    console.error(JSON.stringify({ event: "leaderboard_viewer_email_hmac_error", email, error: String(e) }));
+    // #4418 self-review: email_domain, nunca o e-mail cru (mesmo padrão do
+    // resto do worker — ver resolveLeaderboardSubscribeBox acima).
+    console.error(JSON.stringify({ event: "leaderboard_viewer_email_hmac_error", email_domain: email.split("@")[1] ?? "unknown", error: String(e) }));
     return null;
   }
 }

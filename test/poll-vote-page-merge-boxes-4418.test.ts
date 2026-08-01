@@ -547,9 +547,21 @@ describe("§2c — self-highlight server-side no leaderboard da clarice (#4418)"
     const url = new URL(`https://poll.test/leaderboard?brand=clarice&email=${encodeURIComponent(email)}&sig=${sig}`);
     const res = await worker.fetch(new Request(url.toString()), env, {} as ExecutionContext);
     const html = await res.text();
-    const trMatches = [...html.matchAll(/<tr class="[^"]*self-row[^"]*"/g)];
-    assert.equal(trMatches.length, 1, "só a própria linha deve ser marcada");
-    assert.match(html, /id="self-row"/);
+    // #4418 self-review (achado do pr-test-analyzer): checar só "exatamente
+    // 1 linha marcada" não prova que é a linha CERTA — uma inversão de
+    // comparação (`!==` em vez de `===`) também produziria exatamente 1
+    // marcada (a errada) e passaria nisso. Captura cada `<tr>...</tr>`
+    // inteiro e confirma que a linha marcada é especificamente a de "Self"
+    // (com o badge "você"), e que a linha de "Other" NÃO está marcada.
+    const rowsHtml = [...html.matchAll(/<tr[^>]*>[\s\S]*?<\/tr>/g)].map((m) => m[0]);
+    const selfRows = rowsHtml.filter((r) => /class="[^"]*self-row[^"]*"/.test(r));
+    assert.equal(selfRows.length, 1, "só a própria linha deve ser marcada");
+    assert.match(selfRows[0], /Self/, "a linha marcada deve ser especificamente a de 'Self', não qualquer linha");
+    assert.match(selfRows[0], /<span class="self-badge">você<\/span>/);
+    assert.match(selfRows[0], /id="self-row"/);
+    const otherRows = rowsHtml.filter((r) => /Other/.test(r));
+    assert.equal(otherRows.length, 1, "sanity: a linha de 'Other' existe no HTML");
+    assert.doesNotMatch(otherRows[0], /self-row/, "a linha de 'Other' NUNCA deve ser marcada");
     assert.equal(res.headers.get("Cache-Control"), "no-store, no-cache, must-revalidate");
   });
 
@@ -641,5 +653,108 @@ describe("§2b — resolveLeaderboardSubscribeBox: Caixa B trazida pro leaderboa
     const html = await res.text();
     assert.match(html, /<div class="nick-box nick-sub-box">/);
     assert.match(html, /Você está no ranking como Leo\./);
+  });
+});
+
+// ── #4420 — botão do link de arquivo em /vote ───────────────────────────────
+//
+// Self-review (achado do pr-test-analyzer): o lado /leaderboard do #4420 já
+// tinha cobertura em test/poll-leaderboard-*.test.ts, mas o lado /vote
+// (votePageHtml, index.ts — onde a issue #4420 nasce) não tinha NENHUM teste
+// checando o tratamento de botão. Fechando o gap aqui.
+
+describe("#4420 — link de arquivo em /vote vira botão (fora de .footer-links)", () => {
+  it("clarice: botão .archive-cta/.archive-btn presente, com o texto 'Jogar edições passadas' inalterado", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(voteReq("clarice", "arquivo@example.com", "A"), env);
+    const html = await res.text();
+    assert.match(html, /<p class="archive-cta"><a class="archive-btn" href="[^"]+">Jogar edições passadas<\/a><\/p>/);
+  });
+
+  it("o botão fica FORA de <p class=\"footer-links\">, não mais inline entre os links", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(voteReq("clarice", "arquivo2@example.com", "A"), env);
+    const html = await res.text();
+    const footerMatch = /<p class="footer-links">[\s\S]*?<\/p>/.exec(html);
+    assert.ok(footerMatch, "footer-links deve existir");
+    assert.doesNotMatch(footerMatch![0], /Jogar edições passadas/, "o link de arquivo não deve mais estar dentro de .footer-links");
+    assert.match(footerMatch![0], /Ver leaderboard/, ".footer-links continua com os outros 2 links");
+  });
+
+  it("diaria: botão de arquivo NÃO aparece (regressão #3578 — só clarice)", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(voteReq(null, "arquivo3@example.com", "A"), env);
+    const html = await res.text();
+    // #4420: CSS estático (renderArchiveButtonStyles) sempre declara a regra
+    // `.archive-cta`/`.archive-btn` — checar o MARKUP (`<p class="archive-cta">`),
+    // não a string crua (que o CSS sempre contém, independente do brand).
+    assert.doesNotMatch(html, /<p class="archive-cta">/);
+    assert.doesNotMatch(html, /Jogar edições passadas/);
+  });
+
+  it("web: botão de arquivo NÃO aparece (já tem o mesmo link no rodapé de /jogar)", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(voteReq("web", "3fa85f64-5717-4562-b3fc-2c963f66afa6@web.eia.diaria.local", "A"), env);
+    const html = await res.text();
+    assert.doesNotMatch(html, /<p class="archive-cta">/);
+  });
+});
+
+// ── §2/§2b/§2c — mesma cobertura no fast-path (#3983) ───────────────────────
+//
+// Self-review (achado do pr-test-analyzer): TODOS os testes e2e acima usam
+// `{} as ExecutionContext` — sem um `waitUntil` de verdade, `handleVote`
+// NUNCA entra no fast-path (`handleVoteFastPath`, vote.ts), que duplica a
+// mesma decisão de Caixa A/B/nenhuma numa função irmã separada. Dado o
+// histórico deste worker de bugs específicos de divergência fast/slow-path
+// (#4250, #3983), a Caixa A/B precisa de cobertura própria passando um `ctx`
+// real. Mesmo padrão de `makeRealCtx` já usado em
+// test/poll-vote-fastpath-score-race-4125.test.ts.
+
+function makeRealCtx(): { ctx: ExecutionContext; scheduled: Promise<unknown>[] } {
+  const scheduled: Promise<unknown>[] = [];
+  const ctx = {
+    waitUntil(p: Promise<unknown>) {
+      scheduled.push(p);
+    },
+    passThroughOnException() {},
+  } as unknown as ExecutionContext;
+  return { ctx, scheduled };
+}
+
+describe("§2/§2b — fast-path (handleVoteFastPath) tem a MESMA lógica de Caixa A/B/nenhuma (#4418, achado pr-test-analyzer)", () => {
+  it("clarice sem apelido, via fast-path → Caixa A com checkbox (mesmo resultado do caminho síncrono)", async () => {
+    const env = makeEnv();
+    const { ctx, scheduled } = makeRealCtx();
+    const res = await worker.fetch(voteReq("clarice", "fastpath-novato@example.com", "A"), env, ctx);
+    const html = await res.text();
+    assert.match(html, /<div class="nick-box">/);
+    assert.match(html, /name="optin"/);
+    await Promise.all(scheduled); // drena o bookkeeping em background antes do teste terminar
+  });
+
+  it("clarice com apelido salvo, sem opt-in, via fast-path → Caixa B (mesmo resultado do caminho síncrono)", async () => {
+    const kv = makeTrackedKv({
+      "clarice:score:fastpath-comnick@example.com": JSON.stringify({ total: 1, correct: 1, streak: 1, nickname: "Mariana" }),
+    });
+    const env = makePollEnv(kv);
+    const { ctx, scheduled } = makeRealCtx();
+    const res = await worker.fetch(voteReq("clarice", "fastpath-comnick@example.com", "A"), env, ctx);
+    const html = await res.text();
+    assert.match(html, /<div class="nick-box nick-sub-box">/);
+    assert.match(html, /Você está no ranking como Mariana\./);
+    await Promise.all(scheduled);
+  });
+
+  it("diaria com apelido, via fast-path → nenhuma caixa (mesmo resultado do caminho síncrono)", async () => {
+    const kv = makeTrackedKv({
+      "score:fastpath-diaria@example.com": JSON.stringify({ total: 2, correct: 1, nickname: "Carla" }),
+    });
+    const env = makePollEnv(kv);
+    const { ctx, scheduled } = makeRealCtx();
+    const res = await worker.fetch(voteReq(null, "fastpath-diaria@example.com", "A"), env, ctx);
+    const html = await res.text();
+    assert.doesNotMatch(html, /class="nick-box/);
+    await Promise.all(scheduled);
   });
 });

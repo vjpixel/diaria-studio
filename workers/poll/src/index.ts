@@ -38,8 +38,7 @@ import {
   renderNicknameFormHtml, // #4232: extraído pra reuso no leaderboard
   renderNicknameFormStyles, // #4232: CSS do .nick-box, idem
   renderSubscribeBoxHtml, // #4418 §2b: Caixa B (assinatura pra quem já tem apelido)
-  type SubscribeBoxState, // #4418 §2b
-  resolveVoteIdentityBoxKind, // #4418 §2/§3: decide Caixa A/B/nenhuma a partir de score:{email}
+  type SubscribeBoxState, // #4418 §2b — a decisão A/B/nenhuma (resolveVoteIdentityBoxKind) mora em vote.ts, não aqui
   jogarArchiveHref, // #3524
   renderArchiveButtonStyles, // #4420: CSS do botão do link de arquivo
   buildBrandSiteUrl, // #3978: href com UTM do rodapé de /vote
@@ -1140,12 +1139,15 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
   // #4418 (§2/§2b/§2c): opt-in de newsletter (checkbox da Caixa A ou botão
   // primário da Caixa B) — SÓ brand clarice (diaria já é assinante, web não
   // oferece isto aqui). Cadastro é fail-soft: falha da Beehiiv NUNCA derruba
-  // o salvamento do apelido (já commitado por cima, linha acima) — só fica
-  // sem marcar `score.optin`, o que reoferece a Caixa B no PRÓXIMO voto
+  // o salvamento do apelido — `score.nickname` já foi atribuído acima e o
+  // `put` que persiste roda mais abaixo, DEPOIS deste bloco (o try/catch
+  // aqui nunca interrompe o fluxo) — só fica sem marcar `score.optin`, o
+  // que reoferece a Caixa B no PRÓXIMO voto
   // (decisão do editor: "reoferecer cadastro pra quem já assina é
   // aceitável" — o inverso, declarar sucesso sem ter assinado de fato, não
   // é). `signupOutcome` alimenta a faixa de confirmação no leaderboard
-  // (resolveSetNameConfirmationBanner, leaderboard-routes.ts).
+  // (resolveSetNameConfirmationBanner, lib.ts — consumida por
+  // leaderboard-routes.ts).
   const optinRequested = brand === "clarice" && url.searchParams.get("optin") === "on";
   let signupOutcome: "subscribed" | "failed" | null = null;
   if (optinRequested) {
@@ -1208,9 +1210,8 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
   // #4418 §2c — resolveLeaderboardViewerEmail em leaderboard-routes.ts) e
   // `#self-row` rola direto até a própria linha num ranking longo. `name`+
   // `signup`+`saved` alimentam a faixa de confirmação no topo (ver
-  // resolveSetNameConfirmationBanner, leaderboard-routes.ts) — a mesma
-  // mensagem "Pronto, {nome}!" de antes, só que agora renderizada lá, não
-  // aqui.
+  // resolveSetNameConfirmationBanner, lib.ts) — a mesma mensagem "Pronto,
+  // {nome}!" de antes, só que agora renderizada lá, não aqui.
   const target = new URL(leaderboardHref(brand), url);
   target.searchParams.set("email", email);
   target.searchParams.set("sig", sig);
