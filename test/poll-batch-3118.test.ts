@@ -191,21 +191,55 @@ describe("integração — período fechado usa Cache-Control de 1h, não mais 3
     assert.equal(res.headers.get("Cache-Control"), "public, max-age=60");
   });
 
-  it("regressão #4408: na janela 00:00–03:00 UTC do dia 1º, o slug BRT (mês anterior) ≠ slug UTC puro (mês novo)", () => {
-    // Não é viável mockar `Date` global de forma segura no worker sem risco de
-    // vazar estado entre testes (o handler chama `new Date()` internamente,
-    // sem injeção de clock) — em vez disso, este teste prova a PROPRIEDADE
-    // que causava o flake: existe um instante em que os dois cálculos
-    // divergem, e é exatamente esse instante que o teste acima passou a usar
-    // a fonte correta (currentMonthSlugBrt) para evitar.
-    const duringUtcNewMonthBrtOldMonth = new Date("2026-08-01T01:30:00.000Z");
-    const slugBrt = currentMonthSlugBrt(duringUtcNewMonthBrtOldMonth);
-    const slugUtcPuro = `${duringUtcNewMonthBrtOldMonth.getUTCFullYear()}-${String(
-      duringUtcNewMonthBrtOldMonth.getUTCMonth() + 1,
-    ).padStart(2, "0")}`;
-    assert.equal(slugBrt, "2026-07", "BRT (offset -3h) ainda está em julho às 01:30 UTC do dia 1º de agosto");
-    assert.equal(slugUtcPuro, "2026-08", "UTC puro já é agosto");
-    assert.notEqual(slugBrt, slugUtcPuro, "a divergência nesta janela é a causa raiz do #4408");
+  it("regressão #4408: na janela 00:00–03:00 UTC do dia 1º, a ROTA REAL resolve o mês corrente por BRT, não por UTC puro", async (t) => {
+    // #4408 era um bug no PRÓPRIO TESTE acima ("mês CORRENTE..."), não em
+    // produção: antes do fix ele calculava o slug esperado em UTC puro, que
+    // diverge de handleLeaderboardByMonth (usa currentMonthSlugBrt, BRT =
+    // UTC-3h — leaderboard-routes.ts:690) exatamente nesta janela de ~3h por
+    // mês, e o teste falhava com 404. `node:test` suporta mockar `Date`
+    // global de forma escopada por teste (`t.mock.timers`, com reset
+    // automático ao final — mesmo padrão de test/clarice-healthcheck.test.ts
+    // e test/studio-chat.test.ts); como este arquivo chama
+    // `workerDefault.fetch` diretamente via tsx (sem sandbox workerd), o
+    // `new Date()` interno do handler roda no mesmo escopo global mockado.
+    // Fixamos o relógio dentro da janela de divergência e chamamos a rota de
+    // verdade — provando o comportamento do HANDLER, não só da função pura
+    // currentMonthSlugBrt (que já tem cobertura própria em
+    // test/worker-poll.test.ts, describe "currentMonthSlugBrt (#1345)").
+    t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-08-01T01:30:00.000Z") });
+
+    const env = makePollEnv(makeTrackedKv());
+
+    // 2026-07 é o mês corrente em BRT às 01:30 UTC do dia 1º de agosto (UTC já
+    // virou agosto, mas BRT/-3h ainda está em julho) — a rota deve tratá-lo
+    // como corrente (cache de 60s), não como período fechado (1h). Se o bug
+    // voltasse (handler calculando o mês corrente em UTC puro), este teste
+    // veria "public, max-age=3600" (período fechado) em vez de 60s.
+    const resBrt = await workerDefault.fetch(
+      new Request("https://poll.diaria.workers.dev/leaderboard/2026-07"),
+      env,
+      {} as ExecutionContext,
+    );
+    assert.equal(resBrt.status, 200);
+    assert.equal(
+      resBrt.headers.get("Cache-Control"),
+      "public, max-age=60",
+      "2026-07 deve ser tratado como mês CORRENTE (BRT) mesmo com UTC já em agosto",
+    );
+
+    // 2026-08 só seria o mês "corrente" sob um cálculo UTC ingênuo — em BRT
+    // ainda não começou, e sem nenhum voto registrado a rota deve responder
+    // "ainda não começou" (404), não tratá-lo como corrente.
+    const resUtc = await workerDefault.fetch(
+      new Request("https://poll.diaria.workers.dev/leaderboard/2026-08"),
+      env,
+      {} as ExecutionContext,
+    );
+    assert.equal(
+      resUtc.status,
+      404,
+      "2026-08 ainda não começou em BRT às 01:30 UTC do dia 1º — a rota não deve tratá-lo como o mês corrente",
+    );
   });
 });
 
