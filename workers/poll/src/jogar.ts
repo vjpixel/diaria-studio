@@ -795,10 +795,14 @@ ${renderSubscribeCtaBlock()}
 
 <!-- #3589: link do arquivo removido daqui — /jogar (visão default, sem
      ?edition=) agora É a sequência do mês anterior; o par individual
-     servido por esta função só existe pra ?edition= explícito (ponte
-     clarice/#3524, ver handleJogarPage). A rota /jogar/arquivo continua
-     viva (destino dessa ponte), só não é mais auto-promovida em NENHUMA
-     view web (issue #3589 item 3). -->
+     servido por esta função só existe pra ?edition= explícito (ver
+     handleJogarPage). A rota /jogar/arquivo continua viva (é o arquivo do
+     brand web em si), só não é mais auto-promovida em NENHUMA view web
+     (issue #3589 item 3). Achado ao vivo 260801: a ponte clarice/#3524 que
+     linkava aqui foi RETARGETADA pro arquivo da própria clarice
+     (/leaderboard/{year}/arquivo?brand=clarice, ver votePageHtml em
+     index.ts) — /jogar/arquivo hoje é só concern do brand web, não mais
+     destino de ponte cross-brand nenhuma. -->
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a></p>
 ${renderBrandFooter(JOGAR_BRAND)}
 
@@ -1113,9 +1117,19 @@ ${lightboxScript()}
 //      deployada de #4008 item 7 e pediu pra tirar o link de novo. Rodapé da
 //      sequência volta a NÃO linkar "Jogar edições passadas" — ver a remoção
 //      no footer-links logo abaixo do bodyHtml. `/jogar/arquivo` continua
-//      vivo de qualquer forma (destino da ponte clarice, item 6 acima), só
-//      não é mais auto-promovido em NENHUMA view web — de volta ao estado
-//      original de #3589.
+//      vivo de qualquer forma, só não é mais auto-promovido em NENHUMA view
+//      web — de volta ao estado original de #3589.
+//
+//      Achado ao vivo 260801 (supersede itens 5/6 acima): a ponte
+//      clarice→arquivo descrita nos itens 5/6 (`votePageHtml` linkando
+//      "Jogar edições passadas" pra `/jogar/arquivo`) foi RETARGETADA — o
+//      botão de `votePageHtml` (clarice) agora linka pro arquivo da própria
+//      clarice (`/leaderboard/{year}/arquivo?brand=clarice`, via
+//      `archiveHref`, ver index.ts). `/jogar/arquivo` deixou de ser destino
+//      de qualquer ponte cross-brand; é puramente o arquivo do brand `web`
+//      hoje. A justificativa original de "não deletar a rota" (item 6) segue
+//      válida por outro motivo — o brand web ainda usa a própria rota — só o
+//      motivo mudou.
 //
 //   7. **`/jogar/quiz` intocado**: mecanismo distinto e complementar (casual,
 //      random, sem crédito de leaderboard) — a sequência oficial da issue
@@ -2190,10 +2204,12 @@ ${bodyHtml}
 <!-- #4030 (item 1): link do rodapé pro arquivo removido de novo — o editor
      pediu de volta em #4008 item 7 (260724) e, no MESMO dia, ao jogar a
      versão deployada, pediu pra tirar (ver rationale completo no header da
-     seção #3589 acima, item 6). /jogar/arquivo continua vivo (destino da
-     ponte clarice/#3524/#3578) — só não é mais linkado daqui. Texto do
-     link antigo evitado de propósito aqui: esta é uma HTML comment que
-     SOBREVIVE no response body — repeti-la faria os testes de regex
+     seção #3589 acima, item 6). /jogar/arquivo continua vivo (é o arquivo
+     do brand web em si — achado ao vivo 260801: já não é mais destino da
+     ponte clarice/#3524/#3578, que foi retargetada pro arquivo da própria
+     clarice, ver rationale item 6 acima) — só não é mais linkado daqui.
+     Texto do link antigo evitado de propósito aqui: esta é uma HTML comment
+     que SOBREVIVE no response body — repeti-la faria os testes de regex
      regressão/(doesNotMatch) falsearem positivo contra o próprio comentário. -->
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(JOGAR_BRAND, "jogar-voltar", "eia-jogar-voltar"))}">← Voltar para a ${htmlEscape(info.name)}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver ranking</a>${quizFallbackLink}</p>
 ${scriptHtml}
@@ -2206,10 +2222,12 @@ ${renderBrandFooter(JOGAR_BRAND)}
 
 /**
  * Handler `GET /jogar` (#3516, rework #3589). `?edition=AAMMDD` explícito e
- * válido preserva o comportamento CLÁSSICO de par único (ponte clarice→
- * arquivo, #3524/#3578 — ver rationale item 5/6 acima) — não é mais o
- * default. Sem `?edition=` (ou malformado): serve a SEQUÊNCIA do mês
- * anterior (#3589), a experiência principal do web a partir de agora.
+ * válido preserva o comportamento CLÁSSICO de par único (destino da ponte
+ * clarice→arquivo até 260801 — ver rationale item 5/6 acima; achado ao vivo
+ * 260801: essa ponte foi retargetada, `?edition=` explícito continua
+ * funcionando igual, só não é mais alcançado a partir de `votePageHtml`) —
+ * não é mais o default. Sem `?edition=` (ou malformado): serve a SEQUÊNCIA
+ * do mês anterior (#3589), a experiência principal do web a partir de agora.
  *
  * Prefixo de list `correct:{yy}{mm}` (mês de conteúdo anterior) em vez de
  * escanear TODO o keyspace `correct:*` — mesma economia de I/O que
