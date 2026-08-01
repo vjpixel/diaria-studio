@@ -239,6 +239,47 @@ describe("subscribeToBeehiiv (#3580)", () => {
     const r = await subscribeToBeehiiv(beehiivEnv(), { name: "", email: "a@b.com" }, fetchMock);
     assert.deepEqual(r, { ok: false, status: 422, reason: "beehiiv_error" });
   });
+
+  // ── #4438 (fleet review oficial, achado 1) — timeout contra hang ──────────
+  //
+  // Antes deste fix, o fetch pra Beehiiv não tinha NENHUM timeout — só o
+  // try/catch cobria exceção rápida, nunca um hang (fetch nunca resolve, nunca
+  // rejeita). Isso deixava `handleSetName` (index.ts) preso pra sempre, ANTES
+  // de gravar o apelido do leitor (ver o teste de regressão em
+  // poll-vote-page-merge-boxes-4418.test.ts pro fluxo completo). Aqui: (a)
+  // confirma que o fetch É feito com um AbortSignal de timeout wireado, e (b)
+  // confirma que um fetch que respeita esse signal (mock que só rejeita
+  // quando abortado, sem esperar 8s reais) degrada pro mesmo caminho
+  // `beehiiv_error` já tratado — nunca fica pendurado.
+  it("passa um AbortSignal de timeout pro fetch — defesa contra hang", async () => {
+    const fetchMock = makeFetchMock(201);
+    await subscribeToBeehiiv(beehiivEnv(), { name: "", email: "a@b.com" }, fetchMock);
+    const signal = fetchMock.calls[0].init?.signal;
+    assert.ok(signal instanceof AbortSignal, "fetch deve receber um AbortSignal");
+    assert.equal(signal!.aborted, false, "signal não deve começar já abortado");
+  });
+
+  it("fetch que trava até o signal abortar (hang simulado) → beehiiv_error, nunca fica pendurado pra sempre", async () => {
+    // Mock que NUNCA resolveria por conta própria (simula rede/servidor
+    // travado) — só rejeita quando o AbortSignal passado no init dispara,
+    // exatamente como o `fetch` real se comporta sob AbortSignal.timeout.
+    // Isso prova o comportamento fim-a-fim SEM esperar os 8s reais do timeout
+    // de produção (o mock aborta manualmente, rápido).
+    const hangingFetch = (async (_url: string, init?: RequestInit) => {
+      const signal = init?.signal;
+      assert.ok(signal instanceof AbortSignal, "subscribeToBeehiiv deve mandar um AbortSignal");
+      return new Promise<Response>((_resolve, reject) => {
+        signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        // Simula o timeout dando um trigger manual e imediato — o ponto do
+        // teste é provar que subscribeToBeehiiv REAGE ao abort corretamente
+        // (cai no catch → beehiiv_error), não medir o relógio de 8s real.
+        (signal as AbortSignal).dispatchEvent(new Event("abort"));
+      });
+    }) as typeof fetch;
+
+    const r = await subscribeToBeehiiv(beehiivEnv(), { name: "", email: "a@b.com" }, hangingFetch);
+    assert.deepEqual(r, { ok: false, status: 502, reason: "beehiiv_error" }, "hang vira falha rápida, não trava a função pra sempre");
+  });
 });
 
 // ── handleJogarSubscribe (endpoint) ─────────────────────────────────────────

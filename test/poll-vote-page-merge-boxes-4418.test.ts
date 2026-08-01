@@ -438,6 +438,55 @@ describe("§2c — cadastro na Beehiiv é fail-soft: apelido persiste, tela repo
     assert.match(bannerHtml, /diar\.ia\.br começa a chegar amanhã/);
   });
 
+  it("#4438 (fleet review oficial, achado 1): apelido persiste no KV mesmo com a Beehiiv TRAVADA (hang que nunca resolve)", async () => {
+    // Antes deste fix, `env.POLL.put(scoreKey, ...)` só rodava DEPOIS do
+    // `await subscribeToBeehiiv(...)` — um HANG (fetch que nunca resolve,
+    // nunca rejeita; diferente de um erro, que o try/catch já cobria) deixava
+    // `handleSetName` preso pra sempre ANTES de gravar o apelido. O fix
+    // reordenou: o apelido é persistido ANTES de qualquer tentativa de
+    // cadastro na Beehiiv. Este teste simula o hang com um mock de fetch que
+    // literalmente nunca resolve — se o fix regredisse (voltasse a persistir
+    // só depois do cadastro), o `kv.get` abaixo encontraria `nickname: null`
+    // (ainda não gravado), porque o `worker.fetch` inteiro estaria preso no
+    // await da Beehiiv nesse ponto.
+    const email = "hang-beehiiv@example.com";
+    const sig = await hmacSign(SECRET, `setname:${email}`);
+    const kv = makeTrackedKv({ [`clarice:score:${email}`]: JSON.stringify({ total: 1, nickname: null }) });
+    const env = makePollEnv(kv);
+    env.BEEHIIV_API_KEY = "test-key";
+    env.BEEHIIV_PUBLICATION_ID = "pub_test";
+    const url = new URL("https://poll.test/set-name");
+    url.searchParams.set("email", email);
+    url.searchParams.set("name", "Travou");
+    url.searchParams.set("sig", sig);
+    url.searchParams.set("brand", "clarice");
+    url.searchParams.set("optin", "on");
+
+    const originalFetch = globalThis.fetch;
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      // Nunca resolve, nunca rejeita — simula rede/servidor travado
+      // (indistinguível de um deadlock real de fora da função).
+      return new Promise<Response>(() => {});
+    }) as typeof fetch;
+
+    try {
+      // Não aguardamos a resolução completa do request (ela nunca viria —
+      // é esse o ponto do teste). Disparamos e damos ao event loop só o
+      // suficiente pra progredir até onde o apelido JÁ deveria estar
+      // gravado (o put roda ANTES da chamada Beehiiv travada).
+      void worker.fetch(new Request(url.toString()), env, {} as ExecutionContext);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      assert.ok(fetchCalled, "a chamada à Beehiiv deveria ter sido iniciada (não pulada) — senão o teste não prova nada sobre o hang");
+      const score = JSON.parse((await kv.get(`clarice:score:${email}`))!);
+      assert.equal(score.nickname, "Travou", "apelido persiste mesmo com a chamada Beehiiv travada indefinidamente — nunca se perde por causa do cadastro");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("brand diaria: optin=on é ignorado (sem checkbox nessa marca) — nunca chama a Beehiiv", async () => {
     const email = "diaria-optin@example.com";
     const sig = await hmacSign(SECRET, `setname:${email}`);
@@ -653,6 +702,44 @@ describe("§2b — resolveLeaderboardSubscribeBox: Caixa B trazida pro leaderboa
     const html = await res.text();
     assert.match(html, /<div class="nick-box nick-sub-box">/);
     assert.match(html, /Você está no ranking como Leo\./);
+  });
+});
+
+// ── #4438 (fleet review oficial, achado 3 — pr-test-analyzer) ───────────────
+//
+// A issue #4418 avisou explicitamente: trazer o checkbox de opt-in pro
+// /leaderboard (Caixa A, `renderNicknameFormHtml(nicknameForm, brand, brand
+// === "clarice")` em leaderboard-routes.ts) é "uma linha a mais, fácil de
+// esquecer". Os testes de leaderboard existentes (poll-leaderboard-nickname-
+// cta-4232.test.ts) só checam a presença de `<div class="nick-box">`, nunca
+// do checkbox `name="optin"` em si — esta suíte fecha esse gap.
+describe("#4438 — checkbox de opt-in chega no /leaderboard pra clarice, ausente pra diaria (achado pr-test-analyzer)", () => {
+  it("clarice, sem apelido, sig válida → checkbox de opt-in presente na Caixa A do leaderboard", async () => {
+    const email = "leaderboard-optin-clarice@x.com";
+    const sig = await hmacSign(SECRET, `setname:${email}`);
+    const kv = makeTrackedKv({
+      [`clarice:score:${email}`]: JSON.stringify({ total: 1, nickname: null }),
+    });
+    const env = makePollEnv(kv);
+    const url = new URL(`https://poll.test/leaderboard?brand=clarice&email=${encodeURIComponent(email)}&sig=${sig}`);
+    const res = await worker.fetch(new Request(url.toString()), env, {} as ExecutionContext);
+    const html = await res.text();
+    assert.match(html, /<div class="nick-box">/, "Caixa A (nickname form) deve renderizar");
+    assert.match(html, /<input type="checkbox" name="optin" value="on">/, "checkbox de opt-in deve estar presente pra clarice");
+  });
+
+  it("diaria, sem apelido, sig válida → checkbox de opt-in AUSENTE na Caixa A do leaderboard (marca não oferece assinatura aqui)", async () => {
+    const email = "leaderboard-optin-diaria@x.com";
+    const sig = await hmacSign(SECRET, `setname:${email}`);
+    const kv = makeTrackedKv({
+      [`score:${email}`]: JSON.stringify({ total: 1, nickname: null }),
+    });
+    const env = makePollEnv(kv);
+    const url = new URL(`https://poll.test/leaderboard?email=${encodeURIComponent(email)}&sig=${sig}`);
+    const res = await worker.fetch(new Request(url.toString()), env, {} as ExecutionContext);
+    const html = await res.text();
+    assert.match(html, /<div class="nick-box">/, "Caixa A (nickname form) deve renderizar");
+    assert.doesNotMatch(html, /name="optin"/, "checkbox de opt-in NUNCA deve aparecer pra diaria");
   });
 });
 

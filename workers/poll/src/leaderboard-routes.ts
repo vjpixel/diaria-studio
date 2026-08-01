@@ -30,6 +30,7 @@ import {
   safeParseKv, // #4232: parse seguro de score:{email} (mesmo padrão de handleSetName)
   renderSubscribeBoxHtml, // #4418 §2b: Caixa B (assinatura), trazida pro leaderboard
   type SubscribeBoxState, // #4418 §2b
+  resolveVoteIdentityBoxKind, // #4438: decisão A/B/nenhuma centralizada (mesmo helper de vote.ts) — não reimplementar à mão
   resolveSetNameConfirmationBanner, // #4418 §3: faixa de confirmação pós-redirect de /set-name
   renderArchiveButtonStyles, // #4420: CSS do botão do link de arquivo (mesmo tratamento de /vote)
 } from "./lib";
@@ -708,8 +709,15 @@ export async function resolveLeaderboardSubscribeBox(
 
     const raw = await env.POLL.get(`score:${email}`);
     const score = safeParseKv<{ nickname?: string | null; optin?: boolean }>(raw, "leaderboard_subscribe_box_score_parse_error", email);
-    if (!score?.nickname || score.optin) return null; // sem apelido (Caixa A é quem cobre isso), ou já assinou
-    return { email, sig, nickname: score.nickname };
+    // #4438 (fleet review oficial, achado 2 — type-design-analyzer): reusa
+    // resolveVoteIdentityBoxKind (lib.ts) em vez de reimplementar a mesma
+    // regra à mão — antes esta condição divergia silenciosamente de
+    // resolveVoteIdentityBoxKind se um dos dois lados mudasse sem o outro
+    // acompanhar (exatamente o risco que o helper compartilhado existe pra
+    // evitar). `brand === "clarice"` já garantido pelo guard no topo da
+    // função — "subscribe" só é possível aqui mesmo.
+    if (resolveVoteIdentityBoxKind(score, brand) !== "subscribe") return null; // sem apelido (Caixa A é quem cobre isso), ou já assinou
+    return { email, sig, nickname: score!.nickname! };
   } catch (e) {
     // #4418 self-review: `email_domain`, nunca o e-mail cru no log — mesmo
     // padrão PII-safe já usado em todo o resto do worker (ex: vote.ts,

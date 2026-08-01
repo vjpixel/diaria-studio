@@ -1136,18 +1136,30 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
   const oldNickname: string | null | undefined = score.nickname;
   score.nickname = cleanName;
 
+  // #4438 (fleet review oficial, achado 1 — silent-failure-hunter): o apelido
+  // é persistido AQUI, ANTES de qualquer tentativa de cadastro na Beehiiv —
+  // nunca depois. Antes deste fix, o `env.POLL.put(scoreKey, ...)` só
+  // acontecia DEPOIS do bloco de opt-in logo abaixo; um HANG (não só um erro)
+  // na chamada `subscribeToBeehiiv` — sem timeout algum no fetch antes deste
+  // fix, ver SUBSCRIBE_FETCH_TIMEOUT_MS em subscribe.ts — deixava o `await`
+  // preso indefinidamente DENTRO desta função, e o apelido nunca chegava a
+  // ser gravado: violação direta do requisito da issue #4418 ("o apelido
+  // nunca se perde por causa do cadastro"). Persistir aqui garante que a
+  // gravação do apelido nunca depende do resultado/tempo da chamada Beehiiv;
+  // o opt-in bem-sucedido faz um 2º `put` mais abaixo, só acrescentando
+  // `optin: true` ao mesmo objeto já salvo.
+  await env.POLL.put(scoreKey, JSON.stringify(score));
+
   // #4418 (§2/§2b/§2c): opt-in de newsletter (checkbox da Caixa A ou botão
   // primário da Caixa B) — SÓ brand clarice (diaria já é assinante, web não
-  // oferece isto aqui). Cadastro é fail-soft: falha da Beehiiv NUNCA derruba
-  // o salvamento do apelido — `score.nickname` já foi atribuído acima e o
-  // `put` que persiste roda mais abaixo, DEPOIS deste bloco (o try/catch
-  // aqui nunca interrompe o fluxo) — só fica sem marcar `score.optin`, o
-  // que reoferece a Caixa B no PRÓXIMO voto
-  // (decisão do editor: "reoferecer cadastro pra quem já assina é
-  // aceitável" — o inverso, declarar sucesso sem ter assinado de fato, não
-  // é). `signupOutcome` alimenta a faixa de confirmação no leaderboard
-  // (resolveSetNameConfirmationBanner, lib.ts — consumida por
-  // leaderboard-routes.ts).
+  // oferece isto aqui). Cadastro é fail-soft: falha (ou timeout, #4438) da
+  // Beehiiv NUNCA derruba o salvamento do apelido — já persistido acima,
+  // antes deste bloco sequer começar — só fica sem marcar `score.optin`, o
+  // que reoferece a Caixa B no PRÓXIMO voto (decisão do editor: "reoferecer
+  // cadastro pra quem já assina é aceitável" — o inverso, declarar sucesso
+  // sem ter assinado de fato, não é). `signupOutcome` alimenta a faixa de
+  // confirmação no leaderboard (resolveSetNameConfirmationBanner, lib.ts —
+  // consumida por leaderboard-routes.ts).
   const optinRequested = brand === "clarice" && url.searchParams.get("optin") === "on";
   let signupOutcome: "subscribed" | "failed" | null = null;
   if (optinRequested) {
@@ -1156,6 +1168,12 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
       if (result.ok) {
         score.optin = true;
         signupOutcome = "subscribed";
+        // #4438: 2º put — só grava `optin: true` DEPOIS do sucesso
+        // confirmado. O apelido em si já está seguro no KV desde o put
+        // acima; este put reusa o mesmo objeto `score` (só ganhou o campo
+        // `optin`), nunca reintroduz uma dependência do timing da Beehiiv
+        // pra persistir o nickname.
+        await env.POLL.put(scoreKey, JSON.stringify(score));
       } else {
         console.error(JSON.stringify({
           event: "set_name_beehiiv_subscribe_failed",
@@ -1174,8 +1192,6 @@ export async function handleSetName(url: URL, env: Env, brand: Brand = "diaria")
       signupOutcome = "failed";
     }
   }
-
-  await env.POLL.put(scoreKey, JSON.stringify(score));
 
   // Libera o índice do apelido antigo (se houver e for diferente do novo) —
   // senão o apelido anterior fica "preso" pra sempre, impedindo outro leitor
