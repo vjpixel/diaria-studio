@@ -61,10 +61,16 @@
  */
 
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { monthlyDir } from "./monthly-paths.ts";
 import { classifyLinkContent } from "../../../workers/brevo-dashboard/src/link-content.ts";
+// #4405: reusa a resolução de relink (não recalcula slug) pra mapear a URL
+// RELINKADA de cada Destaque — ver buildRelinkedContentAliases abaixo.
+import { buildUrlToEdition, makeEditionUrlResolver, normUrl } from "../../monthly-relink-to-diaria.ts";
 import type { LinkSectionName, LinkSectionMap } from "../dashboard-kv-types.ts";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 /** As 6 seções reconhecidas + o texto (normalizado: minúsculas, sem sufixo
  * parentético) do cabeçalho `##` correspondente no `prioritized.md`. Inclui
@@ -235,22 +241,146 @@ export function buildLinkSectionMap(
 }
 
 /**
+ * #4405: resolve, para cada URL de Destaque, a URL RELINKADA correspondente
+ * (`https://diar.ia.br/p/{slug}`, sem query — a chave de conteúdo descarta
+ * `utm_term`/`utm_campaign`, então não precisa do slug exato do relink real,
+ * só da URL base) — sem isso, o clique real (na edição diária) nunca bate a
+ * chave de conteúdo da URL de FONTE que o `prioritized.md` guarda, e
+ * Destaques (a seção mais clicada) nunca aparece na coluna Seção (achado
+ * #4405, RC2). Reusa a MESMA resolução do relink real (`buildUrlToEdition` +
+ * `makeEditionUrlResolver`, ambas puras, de `monthly-relink-to-diaria.ts` —
+ * não recalcula slug/âncora).
+ *
+ * I/O: lê `{monthlyDirPath}/_internal/raw-destaques.json` (por ciclo) e
+ * `{root}/data/beehiiv-cache/posts/index.json` (cache local do drain do
+ * Beehiiv — não é fetch de rede). `root` (default `REPO_ROOT`, o mesmo
+ * default de `relinkMonthlyEditionHtml` em `monthly-relink-to-diaria.ts`,
+ * que essa função reusa) é injetável só pra teste — permite um `root`
+ * temporário (`mkdtempSync`) com um `index.json` fixture, sem tocar o
+ * `data/` real do repo (mesma convenção já usada em
+ * `test/monthly-relink-truncate-share-4048-4050.test.ts`).
+ *
+ * Fail-soft em 2 níveis DISTINTOS (achado do review, #4405):
+ *   - Arquivo AUSENTE (ciclo sem `raw-destaques.json` ainda, ou clone sem o
+ *     cache do Beehiiv) → Map vazio, SILENCIOSO — esperado, não é bug.
+ *   - Arquivo PRESENTE mas quebrado (JSON malformado, schema mudou,
+ *     `raw.destaques`/`idx` não é o shape esperado) → Map vazio TAMBÉM (o
+ *     mapa de seção original, sem os aliases, segue funcionando), mas com
+ *     `console.warn` — esse caso é indistinguível de "arquivo ausente" pro
+ *     resultado, mas NÃO é esperado, e sem o warn o RC2 volta a se
+ *     manifestar (Destaques sem seção) de um jeito silencioso e
+ *     indistinguível de "ciclo ainda não processado". `console.warn` (não
+ *     `run-log.ts`/`logEvent`) de propósito: esta função roda durante
+ *     RENDER (Studio, em memória), inclusive em teste — `logEvent` faz
+ *     `mkdirSync` incondicional em `data/`, o que criaria a pasta durante
+ *     `node --test` (mesma race contra `exec-mode.ts` que os outros testes
+ *     deste módulo evitam de propósito, ver docstring do arquivo de teste).
+ */
+export function buildRelinkedContentAliases(
+  destaquesUrls: readonly string[],
+  monthlyDirPath: string,
+  root: string = REPO_ROOT,
+): Map<string, string> {
+  const aliases = new Map<string, string>();
+  const rawPath = join(monthlyDirPath, "_internal", "raw-destaques.json");
+  const idxPath = join(root, "data", "beehiiv-cache", "posts", "index.json");
+  if (!existsSync(rawPath) || !existsSync(idxPath)) return aliases; // ausência esperada, silenciosa
+
+  try {
+    const raw = JSON.parse(readFileSync(rawPath, "utf-8"));
+    const { urlToEdition, editionToPostId, ambiguous } = buildUrlToEdition(raw.destaques ?? []);
+    // #4405 (achado do review): `ambiguous` já existia (PR #4066) pra sinalizar
+    // quando a MESMA URL de fonte aparece em Destaques de 2 edições diárias
+    // diferentes (o pick da 1ª ocorrência é arbitrário) — descartar esse sinal
+    // aqui reintroduziria silenciosamente o problema que o #4066 tornou
+    // visível. Mesmo padrão de warning do CLI (`monthly-relink-to-diaria.ts main()`).
+    if (ambiguous.length > 0) {
+      console.warn(
+        `[monthly-link-sections] ${ambiguous.length} URL(s) de Destaque em mais de uma edição — alias de relink usou a 1ª ocorrência (pode apontar pra edição errada): ${ambiguous.map((a) => a.url).join(", ")}`,
+      );
+    }
+    const idx = JSON.parse(readFileSync(idxPath, "utf-8"));
+    const editionUrl = makeEditionUrlResolver(idx, editionToPostId);
+
+    for (const url of destaquesUrls) {
+      const edition = urlToEdition.get(normUrl(url));
+      const base = edition ? editionUrl(edition) : null;
+      if (base) aliases.set(url, base);
+    }
+  } catch (err) {
+    // arquivo PRESENTE mas quebrado — inesperado, sinaliza (ver docstring acima).
+    console.warn(
+      `[monthly-link-sections] falha lendo raw-destaques.json/posts index.json em ${monthlyDirPath} — alias de relink (RC2) fica sem efeito pra este ciclo: ${String(err)}`,
+    );
+    return new Map();
+  }
+  return aliases;
+}
+
+/**
+ * #4405: aplica um mapa de aliases (URL de fonte → URL relinkada) num mapa
+ * CONTEÚDO→valor já construído — para cada alias cuja URL de FONTE já tem
+ * entrada conhecida, registra o MESMO valor sob a chave de conteúdo da URL
+ * relinkada (nunca sobrescreve uma entrada própria já existente — defensivo,
+ * não deveria colidir na prática). Pura — recebe o mapa de aliases já
+ * resolvido (`buildRelinkedContentAliases`, que é quem faz I/O). Genérica
+ * (`LinkSectionMap` e `Record<string,string>` de título têm o mesmo formato
+ * de aplicação, só o tipo do valor difere) — usada pelos 2 wrappers
+ * exportados abaixo.
+ */
+function applyContentAliases<V>(
+  map: Record<string, V>,
+  aliases: ReadonlyMap<string, string>,
+): Record<string, V> {
+  const out = { ...map };
+  for (const [sourceUrl, relinkedUrl] of aliases) {
+    const sourceContent = classifyLinkContent(sourceUrl).content;
+    const relinkedContent = classifyLinkContent(relinkedUrl).content;
+    if (out[sourceContent] !== undefined && out[relinkedContent] === undefined) {
+      out[relinkedContent] = out[sourceContent];
+    }
+  }
+  return out;
+}
+
+/** #4405: `applyContentAliases` especializado pro `LinkSectionMap` (coluna Seção). */
+export function applyRelinkedContentAliases(
+  map: LinkSectionMap,
+  aliases: ReadonlyMap<string, string>,
+): LinkSectionMap {
+  return applyContentAliases(map, aliases);
+}
+
+/** #4405: `applyContentAliases` especializado pro mapa de título (#4198). */
+export function applyRelinkedTitleAliases(
+  map: Record<string, string>,
+  aliases: ReadonlyMap<string, string>,
+): Record<string, string> {
+  return applyContentAliases(map, aliases);
+}
+
+/**
  * Carrega e parseia `data/monthly/{ciclo}/prioritized.md`, já resolvido pro
- * `LinkSectionMap` final (content → seções). Fail-soft: ciclo sem
- * `prioritized.md` (ex: edição em andamento, ou `data/` inacessível —
- * sessão cloud sem o junction OneDrive, #2643) retorna `null`, nunca lança.
+ * `LinkSectionMap` final (content → seções), COM os aliases de relink dos
+ * Destaques aplicados (#4405, `buildRelinkedContentAliases`). Fail-soft:
+ * ciclo sem `prioritized.md` (ex: edição em andamento, ou `data/` inacessível
+ * — sessão cloud sem o junction OneDrive, #2643) retorna `null`, nunca lança.
  *
  * `allowLegacyFallback: false` — o ciclo aqui SEMPRE vem no formato novo
- * `{conteúdo}-{envio}` (extraído de `parseClariceCampaignKey().cycle` pro
- * naming `monthly: true`, ver `sections-core.ts::collectMonthlyLinkCycles`),
+ * `{conteúdo}-{envio}` (extraído de `extractMonthlyCycleCandidate`/
+ * `resolveCampaignCycle`, ver `sections-core.ts::collectMonthlyLinkCycles`),
  * então não faz sentido cair pro diretório legado `YYMM`.
  */
 export function loadLinkSectionMapForCycle(cycle: string): LinkSectionMap | null {
   try {
-    const path = join(monthlyDir(cycle, { allowLegacyFallback: false }), "prioritized.md");
+    const dir = monthlyDir(cycle, { allowLegacyFallback: false });
+    const path = join(dir, "prioritized.md");
     if (!existsSync(path)) return null;
     const markdown = readFileSync(path, "utf-8");
-    return buildLinkSectionMap(parsePrioritizedSections(markdown));
+    const rawSections = parsePrioritizedSections(markdown);
+    const map = buildLinkSectionMap(rawSections);
+    const aliases = buildRelinkedContentAliases(rawSections.destaques, dir);
+    return applyRelinkedContentAliases(map, aliases);
   } catch {
     return null;
   }
@@ -312,10 +442,16 @@ export function buildLinkTitleMap(
  */
 export function loadLinkTitleMapForCycle(cycle: string): Record<string, string> | null {
   try {
-    const path = join(monthlyDir(cycle, { allowLegacyFallback: false }), "prioritized.md");
+    const dir = monthlyDir(cycle, { allowLegacyFallback: false });
+    const path = join(dir, "prioritized.md");
     if (!existsSync(path)) return null;
     const markdown = readFileSync(path, "utf-8");
-    return buildLinkTitleMap(parsePrioritizedUrlTitles(markdown));
+    const map = buildLinkTitleMap(parsePrioritizedUrlTitles(markdown));
+    // #4405: mesmo alias de relink de loadLinkSectionMapForCycle — o título
+    // editorial segue disponível sob a chave de conteúdo relinkada.
+    const destaquesUrls = parsePrioritizedSections(markdown).destaques;
+    const aliases = buildRelinkedContentAliases(destaquesUrls, dir);
+    return applyRelinkedTitleAliases(map, aliases);
   } catch {
     return null;
   }

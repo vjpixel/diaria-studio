@@ -47,6 +47,62 @@ const OWN_HOST_LABELS: Record<string, string> = {
 
 const HOME_HOSTS = new Set(["diar.ia.br", "www.diar.ia.br"]);
 
+// ─── #4405: categoria não-editorial pra coluna "Seção" (link-section.ts) ────
+
+/** Loja Amazon (indicações de produto) — soma a "Produtos Diar.ia" abaixo. */
+const AMAZON_STORE_HOSTS = new Set(["link.amazon"]);
+const SUPPORT_HOSTS = new Set(["apoia.se", "www.apoia.se"]);
+const SOCIAL_HOSTS = new Set([
+  "linkedin.com", "www.linkedin.com",
+  "facebook.com", "www.facebook.com",
+  "instagram.com", "www.instagram.com",
+]);
+
+export type NonEditorialLinkCategory =
+  | "eia-poll"
+  | "clarice-parceiro"
+  | "produtos-diaria"
+  | "apoio"
+  | "redes-sociais";
+
+/**
+ * #4405: categoria NÃO-EDITORIAL de uma URL — consumida só pela coluna
+ * "Seção" das tabelas de link do dashboard (`link-section.ts`) como camada
+ * de resolução entre o mapa editorial (Destaques/Use Melhor/Radar, vindo do
+ * `prioritized.md`) e o catch-all "Outros" — sem ela, todo link de serviço/
+ * CTA do e-mail (enquete, Clarice, produtos, apoio, redes) caía no fallback
+ * "—" por nunca poder ter seção editorial (RC3 do #4405: esses links
+ * estruturalmente nunca aparecem no `prioritized.md`). Reusa os MESMOS hosts
+ * que `classifyLinkContent` já reconhece nas regras 1-3 abaixo (poll/
+ * Clarice/superfícies próprias) — mesma fonte de verdade, sem duplicar a
+ * lista. `null` = a URL não cai em nenhuma categoria conhecida (cai no
+ * catch-all "Outros" no caller).
+ */
+export function classifyNonEditorialLinkSection(url: string): NonEditorialLinkCategory | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  const host = u.hostname.toLowerCase();
+
+  if (POLL_HOSTS.has(host)) return "eia-poll";
+  if (CLARICE_HOSTS.has(host)) return "clarice-parceiro";
+  if (OWN_HOST_LABELS[host] || AMAZON_STORE_HOSTS.has(host)) return "produtos-diaria";
+  // HOME_HOSTS (diar.ia.br) só conta como "produto" na RAIZ do domínio — um
+  // artigo (`/p/{slug}`, inclusive um destaque relinkado, #4405 RC2) tem o
+  // MESMO host mas não é o produto "home", é conteúdo editorial; sem esta
+  // checagem de pathname, todo destaque relinkado cairia aqui em vez de
+  // resolver pela seção editorial (mascarando silenciosamente RC2 com um
+  // rótulo plausível, mas errado — mesma armadilha que a regra 3 de
+  // classifyLinkContent acima já evita pra HOME_HOSTS).
+  if (HOME_HOSTS.has(host) && (u.pathname === "/" || u.pathname === "")) return "produtos-diaria";
+  if (SUPPORT_HOSTS.has(host)) return "apoio";
+  if ([...SOCIAL_HOSTS].some((h) => host === h || host.endsWith(`.${h}`))) return "redes-sociais";
+  return null;
+}
+
 /**
  * Parâmetros de tracking removidos na normalização de fallback (regra 4).
  * `utm_*` é tratado à parte (prefixo, não lista fechada).

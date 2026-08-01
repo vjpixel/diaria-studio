@@ -588,7 +588,7 @@ describe("renderLinksSection: coluna Seção (#4184)", () => {
     assert.match(html, />Destaques</, "label 'Destaques' deve aparecer na célula");
   });
 
-  test("conteúdo SEM seção mapeada cai no fallback '—', sem quebrar o render", () => {
+  test("conteúdo SEM seção mapeada cai no catch-all determinístico ('Outros', #4405 — nunca mais '—'), sem quebrar o render", () => {
     const html = renderLinksSection(1, fixtureLinksStats, undefined, {});
     assert.match(html, new RegExp(`>${LINK_SECTION_FALLBACK_LABEL}<`));
     assert.doesNotThrow(() => renderLinksSection(1, fixtureLinksStats));
@@ -648,7 +648,7 @@ describe("renderAggregatedLinksSection: coluna Seção (#4184)", () => {
     }
   });
 
-  test("Worker sem mapa em KV (linkSectionsByCycle ausente) — renderDashboardHtml renderiza com fallback '—', sem crash (regressão)", () => {
+  test("Worker sem mapa em KV (linkSectionsByCycle ausente) — renderDashboardHtml renderiza com o catch-all determinístico ('Outros', #4405), sem crash (regressão)", () => {
     const campaign = {
       id: 77, name: "Clarice News 2606-07 — A · dom", subject: "s", status: "sent",
       sentDate: "2026-07-01T09:00:00Z", scheduledAt: null, createdAt: "2026-07-01T09:00:00Z",
@@ -774,7 +774,7 @@ describe("buildRateLimitFallback: coluna Seção via KV (#4184, revisão pós-#4
     assert.match(body, />Radar</, "coluna Seção deve mostrar 'Radar' — não mais sempre '—' (decisão pós-#4191)");
   });
 
-  test("SEM secao:{ciclo} no KV → fallback '—', sem crash (regressão)", async () => {
+  test("SEM secao:{ciclo} no KV → catch-all determinístico ('Outros', #4405), sem crash (regressão)", async () => {
     const kv = makeKv({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleMonthlyCampaign],
@@ -809,7 +809,7 @@ describe("buildFatalErrorFallback: coluna Seção via KV (#4184, revisão pós-#
     assert.match(body, />Destaques</, "coluna Seção deve mostrar 'Destaques' no fallback de erro fatal também");
   });
 
-  test("SEM secao:{ciclo} no KV → fallback '—', nunca lança (regressão)", async () => {
+  test("SEM secao:{ciclo} no KV → catch-all determinístico ('Outros', #4405), nunca lança (regressão)", async () => {
     const kv = makeKv({
       [LASTGOOD_CAMPAIGNS_KEY]: JSON.stringify({
         campaigns: [staleMonthlyCampaign],

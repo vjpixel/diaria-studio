@@ -15,6 +15,14 @@
  * memória, ao vivo, a partir do `prioritized.md` local (ver
  * `scripts/studio-ui/dashboard-clarice.ts`).
  *
+ * #4405: desde este PR, `.claude/skills/diaria-mensal/SKILL.md` (Etapa 5 —
+ * Publicação) chama este script como parte do pipeline, fail-soft (warning,
+ * nunca bloqueia o envio) — não contradiz o parágrafo acima: o proibido é o
+ * caminho de RENDER do painel, este é um passo explícito de PIPELINE (só
+ * roda quando o editor de fato publica um ciclo). Sem isso, todo ciclo novo
+ * nascia com a coluna "Seção" vazia até alguém lembrar de rodar `--all`
+ * manualmente (RC4 do #4405).
+ *
  * Fonte: `data/monthly/{ciclo}/prioritized.md` (`## Destaques` / `## Use Melhor` /
  * `## Radar`) — ver `scripts/lib/mensal/monthly-link-sections.ts` pro parser.
  * Sem `utm_term`, sem alterar nenhum link de saída — retroativo de imediato,
@@ -33,9 +41,10 @@
  *   CLOUDFLARE_ACCOUNT_ID     obrigatório p/ upload KV
  *   CLOUDFLARE_WORKERS_TOKEN  obrigatório p/ upload KV (permissão Workers KV)
  *
- * Execução real (contra o KV de produção) fica a cargo do editor/coordenador
- * — este script não é chamado automaticamente por nenhum stage do pipeline
- * nem por nenhum outro script.
+ * Execução real (contra o KV de produção) — desde #4405, chamado
+ * automaticamente pela Etapa 5 (Publicação) de `/diaria-mensal`, fail-soft
+ * (ver nota #4405 acima); fora desse pipeline, fica a cargo do
+ * editor/coordenador rodar manualmente (ex: backfill via `--all`).
  */
 
 import { readdirSync, existsSync } from "node:fs";
