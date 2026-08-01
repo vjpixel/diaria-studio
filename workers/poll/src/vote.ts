@@ -1,5 +1,5 @@
 import type { Env } from "./index";
-import { type Brand, editionToMonthSlug, AAMMDD_RE, BRAND_INFO } from "./lib"; // #3297: AAMMDD_RE substitui regex inline
+import { type Brand, editionToMonthSlug, AAMMDD_RE, CYCLE_EDITION_RE, BRAND_INFO } from "./lib"; // #3297: AAMMDD_RE substitui regex inline; #4435: CYCLE_EDITION_RE p/ guard de formato×marca
 // #3522: streak (dias/meses consecutivos acertando) — continuidade de
 // período de votação + sufixo de exibição pós-voto. Ver rationale completo
 // no header da seção "Streak" em lib.ts.
@@ -282,6 +282,22 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // direto pro schema de chave sem checagem nenhuma. Validação pura e
   // testável em lib.ts (isValidVoteEmailFormat/isValidVoteEditionFormat).
   if (!isValidVoteEmailFormat(email) || !isValidVoteEditionFormat(edition)) {
+    return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
+  }
+
+  // #4435 (achado pr-test-analyzer do review pré-merge do #4419, espelha o
+  // guard de escrita #4157 em handleAdminCorrect/index.ts, e o guard gêmeo
+  // de leitura em handleArchiveVotePage/leaderboard-routes.ts):
+  // `isValidVoteEditionFormat` acima só valida FORMATO (AAMMDD|ciclo), nunca
+  // FORMATO×MARCA. Sem este guard, `GET /vote?...&edition=2605-06&choice=A`
+  // (formato de ciclo, #4419) é aceito por QUALQUER brand — inclusive os com
+  // `leaderboardPeriod !== "year"` (hoje: diaria/web), que não têm noção de
+  // ciclo mensal — gravando `vote:2605-06:{email}`/`score-by-month:2605-06:...`
+  // sob um namespace que não deveria existir pra essa marca. O caminho
+  // inverso (AAMMDD pra brand anual — marcador legado, ver
+  // `legacyMonthlyEditionForCycle`) continua aceito de propósito, só o de
+  // ciclo-pra-brand-mensal é bloqueado aqui.
+  if (CYCLE_EDITION_RE.test(edition) && BRAND_INFO[brand].leaderboardPeriod !== "year") {
     return voteHtmlResponse(votePageHtml("Link inválido — parâmetros ausentes.", false, null, null, null, brand), 400);
   }
 
