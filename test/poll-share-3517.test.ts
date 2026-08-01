@@ -34,7 +34,7 @@ import {
   type QuizSharePayload,
 } from "../workers/poll/src/share.ts";
 import { anonEmailForToken } from "../workers/poll/src/jogar.ts";
-import worker, { type Env } from "../workers/poll/src/index.ts";
+import worker, { type Env, votePageHtml } from "../workers/poll/src/index.ts";
 import { PUBLIC_GAME_DISPLAY_HOST } from "../workers/poll/src/lib.ts";
 
 function makeMapKV(initial: Record<string, string> = {}) {
@@ -546,5 +546,46 @@ describe("#4065: cadastro inline (#3580) na tela de resultado do voto — só br
     const res = await worker.fetch(voteReq("web", anonEmail, "A"), env);
     const html = await res.text();
     assert.doesNotMatch(html, /id="jogar-signup-form"/);
+  });
+});
+
+// #4418: ordem das 3 caixas pós-resultado do voto (decisão de produto do
+// editor) — apelido (.nick-box) → assinatura da Diar.ia (#jogar-signup-form)
+// → compartilhar o É IA? (#jogar-share-card). Antes: compartilhar →
+// assinatura → apelido (#3517/#4065 originais). Esta issue só reordena as 3
+// interpolações no template de votePageHtml — nenhum gate condicional muda
+// (o bloco de assinatura continua só brand `clarice`, ver #4065).
+describe("#4418: ordem das 3 caixas em votePageHtml — apelido → assinatura → compartilhar", () => {
+  const sharePayload: SharePayload = { edition: "260716", correct: true };
+  const shareCard = { token: "260716.1.abc123", payload: sharePayload };
+  const nicknameForm = { email: "leitor@example.com", sig: "sig123" };
+
+  it("brand=clarice (3 caixas presentes) — nick-box, depois form de assinatura, depois share card", () => {
+    const html = votePageHtml(
+      "Você acertou!", true, nicknameForm, null, null, "clarice", null, shareCard,
+    );
+    const nickBoxIdx = html.indexOf('<div class="nick-box">');
+    const signupIdx = html.indexOf('<form id="jogar-signup-form"');
+    const shareCardIdx = html.indexOf('<div id="jogar-share-card"');
+
+    assert.ok(nickBoxIdx !== -1, "nick-box (apelido) deve estar presente");
+    assert.ok(signupIdx !== -1, "form de assinatura deve estar presente (brand clarice)");
+    assert.ok(shareCardIdx !== -1, "share card (compartilhar) deve estar presente");
+    assert.ok(nickBoxIdx < signupIdx, "apelido deve vir ANTES da assinatura");
+    assert.ok(signupIdx < shareCardIdx, "assinatura deve vir ANTES de compartilhar");
+  });
+
+  it("brand=diaria (2 caixas — gate de brand segue excluindo a assinatura) — apelido antes de compartilhar", () => {
+    const html = votePageHtml(
+      "Você acertou!", true, nicknameForm, null, null, "diaria", null, shareCard,
+    );
+    const nickBoxIdx = html.indexOf('<div class="nick-box">');
+    const signupIdx = html.indexOf('<form id="jogar-signup-form"');
+    const shareCardIdx = html.indexOf('<div id="jogar-share-card"');
+
+    assert.ok(nickBoxIdx !== -1, "nick-box (apelido) deve estar presente");
+    assert.equal(signupIdx, -1, "form de assinatura NÃO deve renderizar pra brand diaria (gate #4065 intacto)");
+    assert.ok(shareCardIdx !== -1, "share card (compartilhar) deve estar presente");
+    assert.ok(nickBoxIdx < shareCardIdx, "das 2 caixas que aparecem, apelido deve vir ANTES de compartilhar");
   });
 });

@@ -804,6 +804,12 @@ export function votePageHtml(
   // #3109/#4232: "mensal"/"anual" (BRAND_INFO.leaderboardPeriod) e o markup do
   // form em si agora vivem em renderNicknameFormHtml (lib.ts) — extraído pra
   // ser reusado por renderLeaderboardHtml (leaderboard-routes.ts, #4232).
+  // #4418: ordem de renderização no <body> (decisão de produto do editor) é
+  // formHtml (apelido) → inlineSignupHtml (assinatura) → shareCardHtml
+  // (compartilhar) — ver as 3 interpolações nessa ordem no template abaixo.
+  // Cada bloco continua "" quando não se aplica (gate de brand do
+  // inlineSignupHtml, ausência de nicknameForm/shareCard) — só a ORDEM
+  // relativa mudou com o #4418, nenhum gate condicional.
   const formHtml = nicknameForm ? renderNicknameFormHtml(nicknameForm, brand) : "";
 
   // #1351: HTML pra mostrar imagens A e B com labels + highlight da clicada
@@ -950,9 +956,9 @@ ${renderBrandShellStyles()}
 <p class="msg">${htmlEscape(message)}</p>
 ${imagesHtml}
 ${eiaMetaHtml}
-${shareCardHtml}
-${inlineSignupHtml}
 ${formHtml}
+${inlineSignupHtml}
+${shareCardHtml}
 <p class="footer-links"><a href="${htmlEscape(buildBrandSiteUrl(brand, "vote-voltar", "eia-vote-voltar"))}">← Voltar para a ${BRAND_INFO[brand].name}</a> &nbsp;|&nbsp; <a href="${leaderboardLink}">Ver leaderboard</a>${archiveLinkHtml}</p>
 ${renderLightboxMarkup()}
 ${lightboxScript()}
