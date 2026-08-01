@@ -26,11 +26,25 @@ Marcador `{{OPENING}}` no início do parágrafo de apoio é substituído conform
   - Mensal:  "Esta edição mensal nasce da **diar.ia.br**, newsletter diária
              gratuita sobre IA. " (nota o espaço final antes de "Quem quiser")
 
-Os parágrafos de créditos (ferramentas) e de convite social (LinkedIn/Facebook/Instagram) são IDÊNTICOS nos dois formatos — sem parametrização.
+Os parágrafos de créditos (ferramentas) e de convite social são IDÊNTICOS nos dois formatos — sem parametrização.
+
+O bloco "Acesse nossas curadorias" (pills Cursos de IA/Livros sobre IA) NÃO
+está neste arquivo — no diário ele é injetado por código
+(`FIXED_BLOCKS.para_encerrar_curadorias` em stitch-newsletter.ts, sempre
+entre slot A e slot B); colar aqui duplicaria o bloco no diário. No mensal,
+sem esse injetor, o `writer-monthly` precisa escrever a lista
+`- [Cursos de IA](https://cursos.diar.ia.br)` / `- [Livros sobre IA](https://livros.diar.ia.br)`
+direto no draft (ver context/templates/newsletter-monthly.md) — SEM label
+manual "Acesse nossas curadorias:" antes da lista, porque o render
+(monthly-render.ts) já gera esse label sozinho ao detectar uma lista de
+links nessa posição; um label manual duplica (achado ao vivo, ciclo 2607-08).
+
+Convite social atualizado pros 5 canais ativos (Threads/#3994 Twitter via
+Buffer incluídos, ciclo 2607-08 — antes só citava LinkedIn/Facebook/Instagram).
 -->
 
 {{OPENING}}Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria) para ganhar recompensas como artigo especial do mês, sorteios e acesso antecipado a novos projetos.
 
 Nesta edição da **diar.ia.br**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
 
-Agora que chegou ao final da edição, siga a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), no [Facebook](https://www.facebook.com/diar.ia.br) ou no [Instagram](https://www.instagram.com/diar.ia.br). Todo dia publicamos por lá um resumo das 3 principais notícias.
+Agora que chegou ao final da edição, siga a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), no [Facebook](https://www.facebook.com/diar.ia.br), no [Instagram](https://www.instagram.com/diar.ia.br), no [Threads](https://www.threads.net/@diar.ia.br) ou no [X](https://x.com/diariabr). Todo dia publicamos por lá um resumo das 3 principais notícias.

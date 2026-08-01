@@ -125,7 +125,17 @@ Seguido de 3 parágrafos fixos (#3219, fonte única em
 context/snippets/encerramento-social-apoio.md, compartilhada com o diário):
 apoio à curadoria via Apoia.se, créditos das ferramentas usadas na produção
 (Claude Code, Gemini, Wispr Flow, MCP Clarice, Beehiiv) e convite pra
-interagir no LinkedIn/Facebook.]
+interagir em LinkedIn/Facebook/Instagram/Threads/X.
+
+Entre o parágrafo de créditos e o de convite social, incluir a lista de
+curadorias — SEM label manual "Acesse nossas curadorias:" antes dela, só a
+lista:
+  - [Cursos de IA](https://cursos.diar.ia.br)
+  - [Livros sobre IA](https://livros.diar.ia.br)
+`monthly-render.ts` gera o label sozinho ao detectar uma lista de links
+nessa posição (mesmo padrão do diário, `FIXED_BLOCKS.para_encerrar_curadorias`
+em stitch-newsletter.ts) — um label escrito à mão duplica o texto no render
+(achado ao vivo, ciclo 2607-08: "Acesse nossas curadorias:" saiu 2×).]
 ```
 
 **Exemplo negativo (NÃO fazer) — #2794:**
