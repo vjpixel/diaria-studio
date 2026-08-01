@@ -28,6 +28,10 @@ import {
   renderNicknameFormStyles, // #4232: CSS do nick-box, idem
   isValidVoteEmailFormat, // #4232: valida forma do email recebido via query param
   safeParseKv, // #4232: parse seguro de score:{email} (mesmo padrão de handleSetName)
+  renderSubscribeBoxHtml, // #4418 §2b: Caixa B (assinatura), trazida pro leaderboard
+  type SubscribeBoxState, // #4418 §2b
+  resolveSetNameConfirmationBanner, // #4418 §3: faixa de confirmação pós-redirect de /set-name
+  renderArchiveButtonStyles, // #4420: CSS do botão do link de arquivo (mesmo tratamento de /vote)
 } from "./lib";
 import { htmlEscape, renderSeoMeta } from "./lib"; // #3106: meta description/OG/Twitter/canonical/favicon
 import { corsHeaders, hmacVerify, json, votePageHtml } from "./index";
@@ -665,6 +669,79 @@ export async function resolveLeaderboardNicknameForm(
 }
 
 /**
+ * #4418 §2b: resolve a "Caixa B" (oferta de assinatura) pro leaderboard —
+ * mesmo esquema de link assinado de `resolveLeaderboardNicknameForm` acima,
+ * mas para o caso OPOSTO: o leitor JÁ tem apelido salvo e ainda não
+ * confirmou o opt-in (`score.optin !== true`), só brand `clarice`.
+ *
+ * Deliberadamente uma função SEPARADA (não uma extensão de
+ * `resolveLeaderboardNicknameForm`) — a issue #4418 recomenda trazer a
+ * Caixa B pro leaderboard ("Recomendação: levar"), mas `resolveLeaderboardNicknameForm`
+ * já tem ~10 casos de teste travando seu contrato exato (retry #4250,
+ * fail-closed, etc.) — misturar as duas responsabilidades ali arriscaria
+ * regredir esse contrato só pra acrescentar um ramo novo. Duplica a
+ * verificação de sig (custo desprezível — HMAC + 1 KV get, tráfego baixo
+ * desta página) em troca de duas funções simples e independentemente
+ * testáveis.
+ */
+export async function resolveLeaderboardSubscribeBox(
+  url: URL,
+  env: Env,
+  brand: Brand,
+): Promise<SubscribeBoxState | null> {
+  if (brand !== "clarice") return null;
+  const email = url.searchParams.get("email")?.toLowerCase().trim();
+  const sig = url.searchParams.get("sig");
+  if (!email || !sig) return null;
+  if (!isValidVoteEmailFormat(email)) return null;
+
+  const valid = await hmacVerify(env.POLL_SECRET, `setname:${email}`, sig);
+  if (!valid) return null; // já logado por resolveLeaderboardNicknameForm no mesmo request (sig igual)
+
+  try {
+    const raw = await env.POLL.get(`score:${email}`);
+    const score = safeParseKv<{ nickname?: string | null; optin?: boolean }>(raw, "leaderboard_subscribe_box_score_parse_error", email);
+    if (!score?.nickname || score.optin) return null; // sem apelido (Caixa A é quem cobre isso), ou já assinou
+    return { email, sig, nickname: score.nickname };
+  } catch (e) {
+    console.error(JSON.stringify({ event: "leaderboard_subscribe_box_kv_error", email, error: String(e) }));
+    return null;
+  }
+}
+
+/**
+ * #4418 §2c: resolve o e-mail do VIEWER identificado (via `email`+`sig`
+ * assinados na query string) pro self-highlight server-side do leaderboard —
+ * independente de ter ou não apelido/opt-in (ao contrário das duas funções
+ * acima, que só retornam algo quando HÁ uma caixa a oferecer). Só verifica a
+ * sig — nenhuma leitura de KV — porque o self-highlight só precisa comparar
+ * contra o `uid` já presente nas entries do snapshot já carregado pelo
+ * handler (ver `renderLeaderboardHtml`), não precisa reler `score:{email}`.
+ *
+ * `brand === "web"` sempre retorna `null` — aquele brand já tem seu PRÓPRIO
+ * mecanismo de self-highlight client-side (`localStorage`, #4029), sem link
+ * assinado por e-mail (não há `email`+`sig` a verificar).
+ */
+export async function resolveLeaderboardViewerEmail(
+  url: URL,
+  env: Env,
+  brand: Brand,
+): Promise<string | null> {
+  if (brand === "web") return null;
+  const email = url.searchParams.get("email")?.toLowerCase().trim();
+  const sig = url.searchParams.get("sig");
+  if (!email || !sig) return null;
+  if (!isValidVoteEmailFormat(email)) return null;
+  try {
+    const valid = await hmacVerify(env.POLL_SECRET, `setname:${email}`, sig);
+    return valid ? email : null;
+  } catch (e) {
+    console.error(JSON.stringify({ event: "leaderboard_viewer_email_hmac_error", email, error: String(e) }));
+    return null;
+  }
+}
+
+/**
  * Handler `/leaderboard/{YYYY-MM}` — lê apenas score-by-month:{slug}:* e
  * renderiza o mesmo HTML do leaderboard atual. Cache header diferente
  * conforme mês passado (immutable) vs corrente (1h).
@@ -718,11 +795,22 @@ export async function handleLeaderboardByMonth(
   // #4232: resolve o form de nickname (email+sig do link "Ver leaderboard")
   // só quando a request carrega `url` (router de index.ts sempre passa).
   const nicknameForm = url ? await resolveLeaderboardNicknameForm(url, env, brand) : null;
+  // #4418 §2b: Caixa B só é checada quando a Caixa A não se aplica (mutuamente
+  // exclusivas por estado de score:{email} — evita 1 KV get redundante).
+  const subscribeBox = url && !nicknameForm ? await resolveLeaderboardSubscribeBox(url, env, brand) : null;
+  // #4418 §2c: self-highlight — independente de A/B, qualquer viewer com
+  // email+sig válidos é identificado.
+  const viewerEmail = url ? await resolveLeaderboardViewerEmail(url, env, brand) : null;
+  // #4418 §3: faixa de confirmação pós-redirect de /set-name (pura, sem KV).
+  const confirmationBanner = url ? resolveSetNameConfirmationBanner(url) : null;
 
   return renderLeaderboardHtml(
     scores, periodLabel, parsed.year, cacheControl, brand, "month",
     canonicalPath ?? leaderboardHref(brand, monthSlug),
     nicknameForm,
+    subscribeBox,
+    viewerEmail,
+    confirmationBanner,
   );
 }
 
@@ -899,9 +987,15 @@ export async function handleLeaderboardByYear(
   const cacheControl = year < currentYear
     ? closedPeriodCacheControl() // #3118 item 2: 1h (não mais 30d immutable — voto retroativo)
     : "public, max-age=60"; // corrente: real-time-ish (igual ao mensal)
-  // #4232: mesmo racional de handleLeaderboardByMonth acima.
+  // #4232 / #4418: mesmo racional de handleLeaderboardByMonth acima.
   const nicknameForm = url ? await resolveLeaderboardNicknameForm(url, env, brand) : null;
-  return renderLeaderboardHtml(scores, "", year, cacheControl, brand, "year", leaderboardHref(brand, yearStr), nicknameForm);
+  const subscribeBox = url && !nicknameForm ? await resolveLeaderboardSubscribeBox(url, env, brand) : null;
+  const viewerEmail = url ? await resolveLeaderboardViewerEmail(url, env, brand) : null;
+  const confirmationBanner = url ? resolveSetNameConfirmationBanner(url) : null;
+  return renderLeaderboardHtml(
+    scores, "", year, cacheControl, brand, "year", leaderboardHref(brand, yearStr),
+    nicknameForm, subscribeBox, viewerEmail, confirmationBanner,
+  );
 }
 
 /** Pure render — separado pra ser reusado por `/leaderboard` (corrente) + `/leaderboard/{YYYY-MM}`. */
@@ -917,6 +1011,18 @@ function renderLeaderboardHtml(
   // o leitor chegou com email+sig válidos e ainda não tem nickname — renderiza
   // o mesmo bloco nick-box da tela de resultado do voto.
   nicknameForm: { email: string; sig: string } | null = null,
+  // #4418 §2b: Caixa B — quando o leitor JÁ tem apelido salvo e ainda não
+  // confirmou o opt-in (brand clarice). Mutuamente exclusivo com
+  // `nicknameForm` (resolveLeaderboardSubscribeBox só roda quando
+  // `resolveLeaderboardNicknameForm` retornou null, ver handleLeaderboardByMonth/ByYear).
+  subscribeBox: SubscribeBoxState | null = null,
+  // #4418 §2c: e-mail do viewer identificado (email+sig válidos na query
+  // string), independente de ter caixa A/B a oferecer — usado só pro
+  // self-highlight server-side (diaria/clarice; brand web usa o mecanismo
+  // client-side já existente, ver selfHighlightHtml abaixo).
+  viewerEmail: string | null = null,
+  // #4418 §3: faixa de confirmação pós-redirect de /set-name bem-sucedido.
+  confirmationBanner: string | null = null,
 ): Response {
   // #1905: título/copy/link por marca (Diar.ia diário vs Clarice News mensal).
   const info = BRAND_INFO[brand];
@@ -946,6 +1052,15 @@ function renderLeaderboardHtml(
   const { visible } = partitionLeaderboardForDisplay(rankedAll, 0);
   const ranked = visible.slice(0, LEADERBOARD_DISPLAY_CAP);
 
+  // #4418 §2c: self-highlight server-side (diaria/clarice) — uid do viewer
+  // identificado via email+sig válidos (`resolveLeaderboardViewerEmail`).
+  // Mecanismo DIFERENTE do self-highlight client-side do brand `web` (script
+  // abaixo, gated `brand === "web"`, casa contra `localStorage`): aqui o
+  // servidor já SABE quem está olhando (a própria URL carrega a assinatura),
+  // então a marcação acontece direto no render — sem JS, sem `data-uid`
+  // emitido (guard do #4162 intacto: o atributo continua só pro brand web).
+  const selfUid = viewerEmail !== null ? hashEmailForMatch(viewerEmail) : null;
+
   const rows = ranked.map((s) => {
     // #3118 (item 11): maskEmail (lib.ts) — consolida com as outras 2 implementações.
     // #4123: prefere `s.masked` (já derivado na escrita do snapshot — nunca
@@ -955,7 +1070,15 @@ function renderLeaderboardHtml(
     const display = s.nickname || s.masked || maskEmail(s.email ?? "");
     // #2191: usa htmlEscape (de lib.ts) em vez de replace inline que omitia "'".
     const escaped = htmlEscape(display);
-    const trClass = s.rank === 1 ? ' class="leader"' : '';
+    // #4418 §2c: match só roda quando há um viewer identificado (short-circuit
+    // — `hashEmailForMatch` por linha só paga o custo quando faz sentido).
+    const isSelfRow = selfUid !== null && (s.uid ?? hashEmailForMatch(s.email ?? "")) === selfUid;
+    const rowClasses = [s.rank === 1 ? "leader" : null, isSelfRow ? "self-row" : null].filter(Boolean).join(" ");
+    const classAttr = rowClasses ? ` class="${rowClasses}"` : "";
+    // #4418 §2c: âncora pra rolagem direta (ranking longo não exige caça) —
+    // usada pelo `#self-row` no fragment da URL de redirect pós-/set-name.
+    const idAttr = isSelfRow ? ' id="self-row"' : "";
+    const selfBadge = isSelfRow ? ' <span class="self-badge">você</span>' : "";
     // #3977: coluna de percentual — `s.pct` já vem calculado por rankEntries
     // (leaderboard.ts, a partir de scoreByMonthEntriesToLeaderboard acima),
     // só não chegava no template HTML.
@@ -978,11 +1101,13 @@ function renderLeaderboardHtml(
     // ampliava a superfície de exposição sem ganho nenhum. Não implementamos
     // aqui um uid salgado por segredo do worker (mitigaria a reversibilidade
     // que PERMANECE no brand web) — decisão do editor foi descartar esse
-    // escopo nesta rodada.
+    // escopo nesta rodada. #4418: o self-highlight de diaria/clarice usa o
+    // uid só em MEMÓRIA do servidor (comparação acima) — nunca serializado
+    // como atributo HTML pra esses brands, guard intacto.
     const uidAttr = brand === "web" ? ` data-uid="${s.uid ?? hashEmailForMatch(s.email ?? "")}"` : "";
-    return `<tr${trClass}${uidAttr}>
+    return `<tr${classAttr}${idAttr}${uidAttr}>
       <td>${s.medal}</td>
-      <td>${escaped}</td>
+      <td>${escaped}${selfBadge}</td>
       <td>${s.correct}/${s.total}</td>
       <td>${s.pct}%</td>
     </tr>`;
@@ -1013,27 +1138,46 @@ function renderLeaderboardHtml(
   // de voto (votePageHtml, index.ts) pelo #3578. Diária não tem mais acesso
   // ao arquivo em NENHUMA superfície; web também não (#3589 — web é a
   // sequência do mês anterior, sem conceito de arquivo).
-  const archiveLinkHtml = brand === "clarice"
-    ? ` · <a href="${archiveHref(brand, String(year))}">Votar em edições passadas</a>`
+  // #4420: sai de dentro de `<p class="nav">` — vira bloco/botão próprio,
+  // mesmo tratamento visual do botão equivalente em `votePageHtml` (index.ts,
+  // "/vote") — pedido do editor: "não existirem dois pesos visuais pro mesmo
+  // lugar". Copy inalterada ("Votar em edições passadas").
+  const archiveButtonHtml = brand === "clarice"
+    ? `<p class="archive-cta"><a class="archive-btn" href="${archiveHref(brand, String(year))}">Votar em edições passadas</a></p>`
     : "";
   // #3615 (item 2, feedback do editor): "Ver ranking anual" só faz sentido
   // pra brand com leaderboard ANUAL (`BRAND_INFO[brand].leaderboardPeriod ===
   // "year"` — hoje só clarice) — mesma abstração que `leaderboardHref` já usa
   // internamente pra decidir a conversão mensal→anual do slug. Diária/web têm
   // leaderboard MENSAL (fecha todo mês) — não existe "ranking anual" pra
-  // linkar. `navHtml` fica "" (parágrafo inteiro some) quando não há NENHUM
-  // link (nem anual nem arquivo) pra oferecer.
+  // linkar. `navHtml` fica "" (parágrafo inteiro some) quando não há link
+  // (só o anual, desde #4420 — o arquivo virou botão separado acima) pra
+  // oferecer.
   // #4049: além do gate de brand, também não linkar quando a view ATUAL já é
   // a anual — evitava um self-link cujo href era byte-a-byte o canonicalPath
   // da própria página (`handleLeaderboardByYear` chama com periodKind="year").
   const annualLinkHtml = BRAND_INFO[brand].leaderboardPeriod === "year" && periodKind !== "year"
     ? `<a href="${leaderboardHref(brand, String(year))}">Ver ranking anual de ${year}</a>`
     : "";
-  const navHtml = annualLinkHtml || archiveLinkHtml ? `<p class="nav">${annualLinkHtml}${archiveLinkHtml}</p>` : "";
-  // #4232: bloco nick-box (mesmo markup da tela de resultado do voto) — só
-  // quando `resolveLeaderboardNicknameForm` validou email+sig da query string
-  // E o leitor ainda não tem nickname.
-  const nicknameFormHtml = nicknameForm ? renderNicknameFormHtml(nicknameForm, brand) : "";
+  const navHtml = annualLinkHtml ? `<p class="nav">${annualLinkHtml}</p>` : "";
+  // #4232 / #4418 §2b: bloco de identidade (Caixa A — mesmo markup da tela de
+  // resultado do voto — ou Caixa B, assinatura) — só quando
+  // resolveLeaderboardNicknameForm/resolveLeaderboardSubscribeBox validou
+  // email+sig da query string. `showOptIn: brand === "clarice"` traz o
+  // checkbox pro leaderboard também (recomendação da issue #4418 §2:
+  // "outra superfície de conversão pelo mesmo código").
+  const identityBoxHtml = subscribeBox
+    ? renderSubscribeBoxHtml(subscribeBox, brand)
+    : nicknameForm
+    ? renderNicknameFormHtml(nicknameForm, brand, brand === "clarice")
+    : "";
+  // #4418 §3: faixa de confirmação pós-redirect de /set-name — topo da
+  // página, acima do heading (é a PRIMEIRA coisa que o leitor vê ao chegar
+  // do redirect, reportando as duas ações: apelido salvo + resultado do
+  // cadastro, quando aplicável).
+  const confirmationBannerHtml = confirmationBanner
+    ? `<p class="confirm-banner">${confirmationBanner}</p>`
+    : "";
   // #4122 (decisão do editor 260727): agregado "+ N jogadores" removido —
   // era a contrapartida visual do corte de cauda revertido acima
   // (`partitionLeaderboardForDisplay` agora chamado com minAttempts=0,
@@ -1108,17 +1252,22 @@ ${seoMeta}
   tr.self-row td:first-child { border-left: 3px solid ${DS_COLORS.brand}; }
   .self-badge { display: inline-block; padding: 2px 8px; background: ${DS_COLORS.brand}; color: ${DS_COLORS.paper}; border-radius: 4px; font-size: 0.7rem; font-weight: 700; margin-left: 6px; }
   .self-cta { margin-top: 14px; padding: 12px 16px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; font-size: 0.85rem; }
+  /* #4418 §3: faixa de confirmação pós-redirect de /set-name. */
+  .confirm-banner { margin: 0 0 20px 0; padding: 14px 16px; background: ${DS_COLORS.paperAlt}; border-radius: 8px; font-size: 0.95rem; }
 ${renderNicknameFormStyles()}
+${renderArchiveButtonStyles()}
 ${renderBrandShellStyles()}
 </style>
 </head>
 <body>
 <p class="kicker">É IA?</p>
 <hr class="rule">
+${confirmationBannerHtml}
 <h1>${heading}</h1>
 ${subCopy}
 ${navHtml}
-${nicknameFormHtml}
+${archiveButtonHtml}
+${identityBoxHtml}
 <table>
 <thead><tr><th>#</th><th>Jogador(a)</th><th>Acertos</th><th>%</th></tr></thead>
 <tbody>${rows || `<tr><td colspan=4 style='color:${DS_COLORS.ink};text-align:center;padding:20px'>Ainda sem votos.</td></tr>`}</tbody>
@@ -1140,7 +1289,11 @@ ${renderBrandFooter(brand)}
   // guardar a resposta por URL e servir o e-mail+sig de um leitor pra outro
   // dentro do TTL. `no-store` só nesta resposta específica — o caminho SEM
   // nicknameForm (a esmagadora maioria do tráfego) mantém o cache normal.
-  const finalCacheControl = nicknameForm ? "no-store, no-cache, must-revalidate" : cacheControl;
+  // #4418 §2c: `subscribeBox`/`viewerEmail` carregam o MESMO par email+sig
+  // sensível (subscribeBox por construção; viewerEmail é o e-mail já
+  // verificado por sig) — mesmo racional, mesmo `no-store`.
+  const identified = nicknameForm !== null || subscribeBox !== null || viewerEmail !== null;
+  const finalCacheControl = identified ? "no-store, no-cache, must-revalidate" : cacheControl;
   return new Response(html, {
     headers: { "Content-Type": "text/html;charset=utf-8", "Cache-Control": finalCacheControl }
   });

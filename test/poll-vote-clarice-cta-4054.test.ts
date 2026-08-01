@@ -1,5 +1,5 @@
 /**
- * test/poll-vote-clarice-cta-4054.test.ts (#4054)
+ * test/poll-vote-clarice-cta-4054.test.ts (#4054, atualizado #4418)
  *
  * Gap remanescente da issue #4054: a página de resultado do `/vote` para o
  * brand `clarice` (audiência da Clarice News, não assinante da Diar.ia)
@@ -8,12 +8,22 @@
  * Rewardful #1910) — sem NUNCA substituir esse link do parceiro (a entrega
  * da parceria, medida pelo #4048).
  *
- * O núcleo desse gap já tinha sido entregue pelo #4065 (cadastro inline
+ * O núcleo desse gap foi entregue pelo #4065 (form standalone
  * `renderInlineSignupFormBlock`/`inlineSignupScript("vote-clarice")`, com UTM
- * próprio via `VOTE_CLARICE_INLINE_UTM`, ver utm-registry.ts e subscribe.ts) —
- * este arquivo formaliza o invariante das DUAS cautelas da issue: o CTA
- * aparece AO LADO do link do parceiro (nunca no lugar dele), e os dois são
- * medíveis separadamente (UTMs distintos).
+ * próprio via `VOTE_CLARICE_INLINE_UTM`). O #4418 (260801) FUNDIU esse form
+ * na caixa de apelido (`.nick-box`) — o CTA de cadastro deixou de ser um
+ * bloco separado (`id="jogar-signup-form"`) e virou um checkbox de opt-in
+ * (`name="optin"`) dentro da mesma caixa que já oferece o leaderboard. O UTM
+ * próprio (`VOTE_CLARICE_INLINE_UTM`) agora é aplicado server-side, no
+ * cadastro que `handleSetName` (index.ts) dispara quando `optin=on` chega em
+ * `/set-name` — não é mais visível como literal JS na página (o form virou
+ * `GET`, não `fetch`).
+ *
+ * Este arquivo formaliza o invariante das DUAS cautelas da issue na FORMA
+ * NOVA: o checkbox de opt-in aparece AO LADO do link do parceiro (nunca no
+ * lugar dele), e as duas conversões continuam distinguíveis (checkbox
+ * presente = existe oferta de cadastro; o parceiro é medido por
+ * clarice.ai/?via=diaria, entrega própria e sempre presente).
  */
 
 import { describe, it } from "node:test";
@@ -57,47 +67,48 @@ function voteReq(brand: string | null, email: string, choice: string, edition = 
   return new Request(`https://poll.test/vote?email=${encodeURIComponent(email)}&edition=${edition}&choice=${choice}${b}`);
 }
 
-describe("#4054: brand clarice — CTA de cadastro na Diar.ia CONVIVE com o link do parceiro (clarice.ai), nunca o substitui", () => {
-  it("brand=clarice: CTA de cadastro (source=vote-clarice, UTM próprio) E o link de saída pro parceiro (clarice.ai/?via=diaria) aparecem NA MESMA resposta", async () => {
+describe("#4054/#4418: brand clarice — checkbox de opt-in (Caixa A fundida) CONVIVE com o link do parceiro (clarice.ai), nunca o substitui", () => {
+  it("brand=clarice: checkbox de opt-in dentro da caixa fundida E o link de saída pro parceiro (clarice.ai/?via=diaria) aparecem NA MESMA resposta", async () => {
     const env = makeEnv();
     const res = await worker.fetch(voteReq("clarice", "leitor@example.com", "A"), env);
     assert.equal(res.status, 200);
     const html = await res.text();
 
-    // O CTA de cadastro na Diar.ia (#4065/#4054) — UTM próprio (source distinto
-    // do funil "eia-standalone" do jogo público, ver subscribe.ts).
-    assert.match(html, /id="jogar-signup-form"/, "CTA de cadastro deve estar presente");
-    assert.match(html, /source: "vote-clarice"/, "CTA deve carregar o UTM próprio vote-clarice");
+    // #4418: o CTA de cadastro na Diar.ia agora é o checkbox de opt-in
+    // dentro da Caixa A (nick-box) — não mais um form/bloco separado.
+    assert.match(html, /<div class="nick-box">/, "Caixa A deve estar presente (leitor sem apelido)");
+    assert.match(html, /<label class="nick-optin"><input type="checkbox" name="optin" value="on">/, "checkbox de opt-in deve estar presente pra clarice");
+    assert.match(html, /Quero receber a diar\.ia\.br/, "copy do checkbox nomeia o produto");
 
     // O link de saída pro parceiro (clarice.ai/?via=diaria) — a entrega da
     // parceria, medida pelo #4048. NUNCA pode desaparecer quando o CTA entra.
     assert.match(html, /href="https:\/\/clarice\.ai\/\?via=diaria[^"]*"/, "link do parceiro (clarice.ai) deve continuar presente ao lado do CTA");
   });
 
-  it("brand=diaria: NÃO renderiza o CTA vote-clarice (regressão — assinante não precisa reoferecer cadastro)", async () => {
+  it("brand=diaria: NÃO renderiza o checkbox de opt-in (regressão — assinante não precisa reoferecer cadastro)", async () => {
     const env = makeEnv();
     const res = await worker.fetch(voteReq(null, "leitor@example.com", "B"), env);
     const html = await res.text();
-    assert.doesNotMatch(html, /source: "vote-clarice"/);
+    assert.doesNotMatch(html, /name="optin"/);
   });
 
-  it("brand=web: NÃO renderiza o CTA vote-clarice (regressão — já tem o form de identidade equivalente do #3975)", async () => {
+  it("brand=web: NÃO renderiza o checkbox de opt-in (regressão — já tem o form de identidade equivalente do #3975)", async () => {
     const env = makeEnv();
     const res = await worker.fetch(
       voteReq("web", "3fa85f64-5717-4562-b3fc-2c963f66afa6@web.eia.diaria.local", "A"),
       env,
     );
     const html = await res.text();
-    assert.doesNotMatch(html, /source: "vote-clarice"/);
+    assert.doesNotMatch(html, /name="optin"/);
   });
 
-  it("brand=clarice na tela de 'já votou' (buildAlreadyVotedResponse): CTA + link do parceiro TAMBÉM convivem (mesma garantia, caminho de revisita)", async () => {
+  it("brand=clarice na tela de 'já votou' (buildAlreadyVotedResponse): checkbox + link do parceiro TAMBÉM convivem (mesma garantia, caminho de revisita)", async () => {
     const env = makeEnv();
     await worker.fetch(voteReq("clarice", "revisita@example.com", "A"), env);
     const res2 = await worker.fetch(voteReq("clarice", "revisita@example.com", "B"), env);
     const html2 = await res2.text();
     assert.match(html2, /já votou/i);
-    assert.match(html2, /source: "vote-clarice"/);
+    assert.match(html2, /<label class="nick-optin"><input type="checkbox" name="optin" value="on">/);
     assert.match(html2, /href="https:\/\/clarice\.ai\/\?via=diaria[^"]*"/);
   });
 });

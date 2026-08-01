@@ -491,7 +491,7 @@ describe("cobertura adicionada pelo #4124: GET /set-name com brand não-default"
     url.searchParams.set("brand", "clarice");
 
     const res = await worker.fetch(new Request(url.toString()), env, {} as ExecutionContext);
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 302); // #4418: sucesso navega pro leaderboard da marca
 
     const updated = JSON.parse((await kv.get("clarice:score:ana@x.com"))!);
     assert.equal(updated.nickname, "Ana Clarice", "nickname deve ser gravado sob a chave BRANDED clarice:score:*");
@@ -515,7 +515,7 @@ describe("cobertura adicionada pelo #4124: GET /set-name com brand não-default"
     url.searchParams.set("brand", "web");
 
     const res = await worker.fetch(new Request(url.toString()), env, {} as ExecutionContext);
-    assert.equal(res.status, 200, "dedup de nickname do brand diaria não deve vazar pro brand web");
+    assert.equal(res.status, 302, "dedup de nickname do brand diaria não deve vazar pro brand web"); // #4418: sucesso navega
 
     const updated = JSON.parse((await kv.get("web:score:leo@x.com"))!);
     assert.equal(updated.nickname, "Leo");

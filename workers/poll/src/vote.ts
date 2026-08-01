@@ -21,6 +21,8 @@ import {
   safeParseKv, // #3298: parse seguro de JSON vindo do KV
   isValidWebToken, // #3976: brand "web" exige local-part UUID v4 sob o domínio reservado
   isAnonymousWebIdentity, // #4011: domínio reservado do brand "web" nunca pode ser aceito fora dele
+  resolveVoteIdentityBoxKind, // #4418 §2/§3: decide Caixa A/B/nenhuma a partir de score:{email}
+  type SubscribeBoxState, // #4418 §2b
 } from "./lib";
 import { hmacSign, hmacVerify, json, voteHtmlResponse, votePageHtml } from "./index";
 import { upsertOwnEntryInSnapshot, listAllKeys } from "./leaderboard-routes";
@@ -144,13 +146,17 @@ export async function buildAlreadyVotedResponse(
   // determinar se o votante ainda precisa do form de nickname — sem isso, um
   // retry após 500 mostrava "já votou" mas sem o form, deixando o nickname
   // inacessível para sempre.
+  // #4418: agora decide entre Caixa A (nickname), Caixa B (subscribe, brand
+  // clarice sem opt-in) ou nenhuma — ver resolveVoteIdentityBoxKind (lib.ts),
+  // compartilhado com handleVote/handleVoteFastPath abaixo.
   let prevNicknameForm: { email: string; sig: string } | null = null;
+  let prevSubscribeBox: SubscribeBoxState | null = null;
   const prevScoreRaw = await env.POLL.get(`score:${email}`);
   // #3278: mesma classe de dado que existingFromKv acima (blob JSON gravado em
   // KV) — precisa do mesmo guard. Sem try/catch, um `score:{email}` corrompido
   // derrubava com 500 o leitor que só está reabrindo o link de "já votou"
   // (nem sequer é um voto novo sendo lançado).
-  let prevScoreObj: { nickname?: string | null } | null = null;
+  let prevScoreObj: { nickname?: string | null; optin?: boolean } | null = null;
   if (prevScoreRaw) {
     try {
       prevScoreObj = JSON.parse(prevScoreRaw);
@@ -161,9 +167,14 @@ export async function buildAlreadyVotedResponse(
       // nickname (comportamento seguro: pior caso é reoferecer o form).
     }
   }
-  if (!prevScoreObj?.nickname) {
+  const prevBoxKind = resolveVoteIdentityBoxKind(prevScoreObj, brand);
+  if (prevBoxKind !== "none") {
     const prevSig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
-    prevNicknameForm = { email, sig: prevSig };
+    if (prevBoxKind === "nickname") {
+      prevNicknameForm = { email, sig: prevSig };
+    } else {
+      prevSubscribeBox = { email, sig: prevSig, nickname: prevScoreObj!.nickname! };
+    }
   }
   // #4065 follow-up: mesmo payload {edition, correct} do voto fresco — share
   // card (todos os brands) + CTA/cadastro inline (brand clarice, via
@@ -204,7 +215,7 @@ export async function buildAlreadyVotedResponse(
   }
 
   return voteHtmlResponse(
-    votePageHtml(jaVotouMsg, false, prevNicknameForm, resultImages, editionToMonthSlug(edition), brand, null, shareCard, eiaMeta),
+    votePageHtml(jaVotouMsg, false, prevNicknameForm, resultImages, editionToMonthSlug(edition), brand, null, shareCard, eiaMeta, prevSubscribeBox, brand === "clarice"),
     200,
   );
 }
@@ -624,7 +635,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // (#3118 item 4 / #3278); scoreObj só é lido pra checar `nickname` mais
   // abaixo — corrompido é tratado como "sem nickname" (mesmo fallback de
   // score:{email} nunca ter sido gravado).
-  const scoreObj = safeParseKv<{ nickname?: string | null }>(scoreRaw, "vote_score_parse_error", edition);
+  const scoreObj = safeParseKv<{ nickname?: string | null; optin?: boolean }>(scoreRaw, "vote_score_parse_error", edition);
 
   // #1236: test mode — short-circuit antes de qualquer KV write. Mantém
   // validação completa (gate, sig, dedup) acima pra que o test reflita
@@ -834,11 +845,18 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
 
   // #1078 — primeiro voto: oferecer nickname pra leaderboard. scoreObj já foi
   // lido antes do put (ver #2189/#2190 acima) — reusar sem nova leitura.
-  const needsNickname = !scoreObj?.nickname;
+  // #4418: Caixa A (nickname) / Caixa B (subscribe, clarice sem opt-in) /
+  // nenhuma — ver resolveVoteIdentityBoxKind (lib.ts).
   let nicknameForm: { email: string; sig: string } | null = null;
-  if (needsNickname) {
+  let subscribeBox: SubscribeBoxState | null = null;
+  const boxKind = resolveVoteIdentityBoxKind(scoreObj, brand);
+  if (boxKind !== "none") {
     const sig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
-    nicknameForm = { email, sig };
+    if (boxKind === "nickname") {
+      nicknameForm = { email, sig };
+    } else {
+      subscribeBox = { email, sig, nickname: scoreObj!.nickname! };
+    }
   }
 
   // #1351: mostrar as duas imagens (A e B) na página de resultado.
@@ -881,7 +899,7 @@ export async function handleVote(url: URL, env: Env, brand: Brand = "diaria", ra
   // #2113(a): passa voteTs como cache-buster pra quebrar cache do navegador no link
   // "Ver leaderboard" — leitor que viu a página de leaderboard antes de votar não
   // fica com a versão vazia em cache. SÓ neste link (tráfego orgânico inalterado).
-  return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs, shareCard, eiaMeta), 200);
+  return voteHtmlResponse(votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs, shareCard, eiaMeta, subscribeBox, brand === "clarice"), 200);
 }
 
 // ── #3983: fast-path (reverte o Suspense #3595 + reavaliação do cômputo do
@@ -974,15 +992,22 @@ async function handleVoteFastPath(
 
   const voteTs = new Date().toISOString();
   const scoreRaw = await env.POLL.get(`score:${email}`);
-  const scoreObj = safeParseKv<{ nickname?: string | null }>(scoreRaw, "vote_fastpath_score_parse_error", edition);
+  const scoreObj = safeParseKv<{ nickname?: string | null; optin?: boolean }>(scoreRaw, "vote_fastpath_score_parse_error", edition);
 
   // #1078: mesmo critério do caminho legado — oferecer nickname enquanto o
   // jogador não tiver um. Não depende de nenhuma escrita desta rodada.
-  const needsNickname = !scoreObj?.nickname;
+  // #4418: Caixa A / Caixa B / nenhuma — mesmo critério do caminho legado
+  // (resolveVoteIdentityBoxKind, lib.ts).
   let nicknameForm: { email: string; sig: string } | null = null;
-  if (needsNickname) {
+  let subscribeBox: SubscribeBoxState | null = null;
+  const boxKind = resolveVoteIdentityBoxKind(scoreObj, brand);
+  if (boxKind !== "none") {
     const sig = await hmacSign(env.POLL_SECRET, `setname:${email}`);
-    nicknameForm = { email, sig };
+    if (boxKind === "nickname") {
+      nicknameForm = { email, sig };
+    } else {
+      subscribeBox = { email, sig, nickname: scoreObj!.nickname! };
+    }
   }
 
   // #1351: mesmo critério do caminho legado — mostrar as 2 imagens com
@@ -1026,7 +1051,7 @@ async function handleVoteFastPath(
     : "Voto registrado! O resultado sai na próxima edição.";
 
   const response = voteHtmlResponse(
-    votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs, shareCard, eiaMeta),
+    votePageHtml(msg, true, nicknameForm, resultImages, editionToMonthSlug(edition), brand, voteTs, shareCard, eiaMeta, subscribeBox, brand === "clarice"),
     200,
   );
 

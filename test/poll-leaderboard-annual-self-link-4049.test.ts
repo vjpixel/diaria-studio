@@ -86,7 +86,13 @@ describe("handleLeaderboardByYear — sem self-link 'Ver ranking anual' (#4049 i
   it("GET /leaderboard/{YYYY}?brand=clarice: link de arquivo continua presente (regressão do #3615)", async () => {
     const html = await fetchHtml("/leaderboard/2026?brand=clarice");
     assert.match(html, /Votar em edições passadas/, "o link de arquivo não deveria ter sido removido");
-    assert.match(html, /<p class="nav">/, "o parágrafo de nav deve continuar existindo com o link de arquivo");
+    // #4420: o link de arquivo saiu de dentro de `<p class="nav">` — agora é
+    // um botão próprio (`.archive-cta`/`.archive-btn`), mesmo tratamento
+    // visual do equivalente em /vote. Na view ANUAL, sem "Ver ranking anual"
+    // (self-link, #4049) sobrando, `<p class="nav">` fica vazio e não
+    // renderiza — a garantia que importa é o botão em si, não o parágrafo.
+    assert.match(html, /class="archive-cta"/, "o botão de arquivo deve existir");
+    assert.doesNotMatch(html, /<p class="nav">/, "sem 'Ver ranking anual' sobrando, nav não deveria renderizar vazio");
   });
 
   it("handleLeaderboardByMonth(brand=clarice) AINDA contém 'Ver ranking anual de {YYYY}' — guarda contra remover o branch inteiro", async () => {

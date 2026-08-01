@@ -66,7 +66,7 @@ describe("#3113 item 6 — HTML gerado usa ink sólido em vez de rgba", () => {
     assert.match(html, /p\.sub \{[^}]*color:\s*#171411/);
   });
 
-  it("votePageHtml: label do resultado, nick-explain e nick-note são ink sólido", async () => {
+  it("votePageHtml: label do resultado e nick-explain são ink sólido", async () => {
     const { votePageHtml } = await import("../workers/poll/src/index.ts");
     const html = votePageHtml(
       "Acertou!",
@@ -79,6 +79,6 @@ describe("#3113 item 6 — HTML gerado usa ink sólido em vez de rgba", () => {
     assert.doesNotMatch(html, /rgba\(23,\s*20,\s*17,/);
     assert.match(html, /\.result-image \.label \{[^}]*color:\s*#171411/);
     assert.match(html, /\.nick-explain \{[^}]*color:\s*#171411/);
-    assert.match(html, /\.nick-note \{[^}]*color:\s*#171411/);
+    // #4418: regra .nick-note foi REMOVIDA junto com a nota de rodapé.
   });
 });

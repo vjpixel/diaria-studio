@@ -45,8 +45,11 @@ describe("#3109 — form de nickname deriva 'mensal'/'anual' de BRAND_INFO.leade
       null,
       "diaria",
     );
-    assert.match(html, /aparecer no leaderboard mensal/);
-    assert.doesNotMatch(html, /aparecer no leaderboard anual/);
+    // #4418: título mudou de "Defina seu nickname pra aparecer no leaderboard
+    // {…}" pra "Entre no leaderboard {…}" — a derivação por brand (mensal/
+    // anual) continua a mesma garantia, texto atualizado.
+    assert.match(html, /Entre no leaderboard mensal/);
+    assert.doesNotMatch(html, /Entre no leaderboard anual/);
   });
 
   it("brand clarice (leaderboardPeriod: 'year') → 'leaderboard anual', NÃO 'mensal'", () => {
@@ -58,15 +61,15 @@ describe("#3109 — form de nickname deriva 'mensal'/'anual' de BRAND_INFO.leade
       null,
       "clarice",
     );
-    assert.match(html, /aparecer no leaderboard anual/);
-    assert.doesNotMatch(html, /aparecer no leaderboard mensal/);
+    assert.match(html, /Entre no leaderboard anual/);
+    assert.doesNotMatch(html, /Entre no leaderboard mensal/);
   });
 
   it("sem nicknameForm → form não aparece, texto ausente nos 2 brands (guarda: não afeta o caminho sem form)", () => {
     const htmlDiaria = votePageHtml("Voto registrado!", true, null, null, null, "diaria");
     const htmlClarice = votePageHtml("Voto registrado!", true, null, null, null, "clarice");
-    assert.doesNotMatch(htmlDiaria, /aparecer no leaderboard/);
-    assert.doesNotMatch(htmlClarice, /aparecer no leaderboard/);
+    assert.doesNotMatch(htmlDiaria, /Entre no leaderboard/);
+    assert.doesNotMatch(htmlClarice, /Entre no leaderboard/);
   });
 });
 

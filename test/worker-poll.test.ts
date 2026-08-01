@@ -875,7 +875,8 @@ describe("votePageHtml — mobile-friendly (#1675)", () => {
     const html = votePageHtml("Já votou", false, { email: "user@x.com", sig: "abc" });
     assert.match(html, /<p class="nick-title">/);
     assert.match(html, /<p class="nick-explain">/);
-    assert.match(html, /<p class="nick-note">/);
+    // #4418: nota de rodapé ".nick-note" REMOVIDA (redundante com .nick-explain).
+    assert.doesNotMatch(html, /<p class="nick-note">/);
     // Nenhum dos <p> do nick-box carrega style="font-size:..." inline.
     assert.doesNotMatch(html, /<p style="font-size:0\.(85|95|75)rem/);
   });
@@ -1159,22 +1160,30 @@ describe("validação de apelidos (#1758)", () => {
       assert.equal(after.nickname, null);
     });
 
-    it("apelido único e válido → 200, persiste + grava no índice", async () => {
+    it("apelido único e válido → 302 (redireciona pro leaderboard da marca), persiste + grava no índice (#4418 §2c/§3)", async () => {
       const env = memEnv({ "score:ana@x.com": JSON.stringify({ total: 3, nickname: null }) });
       const res = await handleSetName(await setNameUrl("ana@x.com", "Ana Cândida"), env);
-      assert.equal(res.status, 200);
+      assert.equal(res.status, 302);
+      const location = res.headers.get("Location") ?? "";
+      // #4418: sucesso navega pro leaderboard — email+sig preservados
+      // (self-highlight) + saved=1/name (faixa de confirmação).
+      assert.match(location, /\/leaderboard\?/);
+      assert.match(location, /email=ana%40x\.com/);
+      assert.match(location, /saved=1/);
+      assert.match(location, /name=Ana/);
+      assert.equal(res.headers.get("Cache-Control"), "no-store");
       const after = JSON.parse(await env.POLL.get("score:ana@x.com") as string);
       assert.equal(after.nickname, "Ana Cândida");
       assert.equal(await env.POLL.get("nickname:ana candida"), "ana@x.com");
     });
 
-    it("re-setar o PRÓPRIO apelido (mesmo email) não colide consigo → 200", async () => {
+    it("re-setar o PRÓPRIO apelido (mesmo email) não colide consigo → 302", async () => {
       const env = memEnv({
         "score:ana@x.com": JSON.stringify({ total: 3, nickname: "Ana" }),
         "nickname:ana": "ana@x.com",
       });
       const res = await handleSetName(await setNameUrl("ana@x.com", "Ana"), env);
-      assert.equal(res.status, 200);
+      assert.equal(res.status, 302);
     });
 
     it("trocar de apelido libera o índice antigo pra outro leitor usar", async () => {
@@ -1183,7 +1192,7 @@ describe("validação de apelidos (#1758)", () => {
         "nickname:ana": "ana@x.com",
       });
       const res = await handleSetName(await setNameUrl("ana@x.com", "Ana Nova"), env);
-      assert.equal(res.status, 200);
+      assert.equal(res.status, 302);
       // índice do apelido antigo foi removido...
       assert.equal(await env.POLL.get("nickname:ana"), null);
       // ...e o novo aponta pro mesmo email.
@@ -1206,7 +1215,7 @@ describe("validação de apelidos (#1758)", () => {
         "nickname:ana": "bob@x.com", // bob venceu a corrida, não ana
       });
       const res = await handleSetName(await setNameUrl("ana@x.com", "Ana Nova"), env);
-      assert.equal(res.status, 200);
+      assert.equal(res.status, 302);
       // O índice antigo "nickname:ana" NÃO foi deletado — ainda pertence ao bob.
       assert.equal(await env.POLL.get("nickname:ana"), "bob@x.com");
       // E o novo índice da ana aponta pro email dela normalmente.
@@ -1244,7 +1253,7 @@ describe("validação de apelidos (#1758)", () => {
         },
       } as unknown as Env;
       const res = await handleSetName(await setNameUrl("ana@x.com", "Ana"), env);
-      assert.equal(res.status, 200);
+      assert.equal(res.status, 302);
       // A única list() remanescente é propagateNicknameByMonth (score-by-month:*,
       // bounded pelos meses do PRÓPRIO usuário) — não mais o scan O(N-votantes) de score:*.
       assert.equal(listCalls, 1, "dedup não deveria chamar list() de score:*");
