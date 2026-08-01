@@ -130,16 +130,57 @@ interface RealPathTarget {
 //      fechar isso exigiria parse de AST (rastrear o valor efetivo da
 //      variável) pra não estourar falso-positivo.
 //
-// Nota adicional (#4417): o 4º elemento abaixo, `data/.credentials.json`, é
-// o ÚNICO que não usa esse discriminador ROOT/root — ver o comentário
-// dedicado junto da própria entrada pra explicar por quê. Por causa dessa
-// diferença de design, os describes de gap 1/2/interação mais abaixo neste
-// arquivo (que testam especificamente o discriminador ROOT) iteram sobre
-// `ROOT_BASED_TARGETS` (REAL_PATH_TARGETS menos `data/.credentials.json`,
-// derivado logo após o array) em vez de `REAL_PATH_TARGETS` diretamente —
-// do contrário os testes negativos de "ROOT minúsculo não deveria ser
-// flagado" dariam falso-positivo contra um alvo que nunca teve esse
-// discriminador por design.
+// Nota adicional (#4417): `CREDENTIALS_TARGET` (definido logo abaixo, antes
+// do array) é o ÚNICO RealPathTarget que não usa esse discriminador
+// ROOT/root — ver o comentário dedicado junto da própria constante pra
+// explicar por quê. Por causa dessa diferença de design, os describes de
+// gap 1/2/interação mais abaixo neste arquivo (que testam especificamente
+// o discriminador ROOT) iteram sobre `ROOT_BASED_TARGETS` em vez de
+// `REAL_PATH_TARGETS` diretamente — o motivo exato (não é sobre
+// falso-positivo nos testes negativos — esses continuariam passando
+// trivialmente) está no comentário junto da declaração de
+// `ROOT_BASED_TARGETS`, logo após o array.
+// 4º RealPathTarget — data/.credentials.json (#4344, migrado pra cá em
+// #4417 a partir de um mecanismo hand-rolled paralelo e algoritmicamente
+// idêntico a findOffendersForTarget, abaixo — findCredentialsOffenders +
+// CREDENTIALS_INLINE_RE/CREDENTIALS_LITERAL_RE/CREDENTIALS_VAR_DECL_RE,
+// que existiam só porque este era o único alvo antes do #4396 generalizar
+// pros outros 3 abaixo).
+//
+// Diferente deles, este alvo NUNCA exigiu o discriminador `ROOT`/`root` —
+// e o #4417 preservou essa omissão de propósito ao migrar (a interface
+// RealPathTarget já suporta isso nativamente: inlineRe/varDeclRe abaixo
+// simplesmente não têm o `\s*ROOT\b` que os 3 abaixo têm). A combinação
+// léxica "data" + ".credentials.json" já é específica o suficiente —
+// nenhum padrão legítimo do repo usa esse par: o padrão real de dir fake é
+// `join(fakeCredsDir, ".credentials.json")`, SEM segmento "data" (ver
+// test/drive-sync.test.ts, test/drive-helpers.test.ts,
+// test/inbox-drain.test.ts). Adicionar uma exigência de ROOT aqui
+// enfraqueceria o guard mais crítico do arquivo (path do incidente de
+// produção #4344, P2 — credenciais OAuth reais sobrescritas) sem fechar
+// nenhum falso-positivo conhecido — decisão original em #4415, reafirmada
+// aqui: fora de escopo mudar esse comportamento só porque o mecanismo virou
+// data-driven.
+//
+// Definido como constante nomeada (diferente dos outros 3 abaixo, que são
+// literais inline no array) e referenciado tanto no array quanto em
+// ROOT_BASED_TARGETS por identidade de objeto — evita comparação por
+// string de label, que seria frágil: um rename futuro do label desincroni-
+// zaria ROOT_BASED_TARGETS em SILÊNCIO (o filtro simplesmente pararia de
+// excluir o alvo certo, sem erro), enquanto um lookup por identidade não
+// tem esse modo de falha.
+const CREDENTIALS_TARGET: RealPathTarget = {
+  label: "data/.credentials.json",
+  inlineRe:
+    /writeFileSync\(\s*(?:path\.)?(?:resolve|join)\([^)]*?(?:["'`]data["'`][^)]*?\.credentials\.json|["'`]data[\\/]\.credentials\.json["'`])[^)]*?\)/g,
+  literalRe: /writeFileSync\(\s*["'`][^"'`]*data[\\/]\.credentials\.json["'`]/g,
+  varDeclRe:
+    /(?:const|let)\s+(\w+)\s*=\s*(?:path\.)?(?:resolve|join)\([^;]*?(?:["'`]data["'`][^;]*?\.credentials\.json|["'`]data[\\/]\.credentials\.json["'`])[^;]*?\)/g,
+  guidance:
+    "use mkdtempSync + CREDENTIALS_PATH_TEST_OVERRIDE_ENV (scripts/google-auth.ts) em vez de " +
+    "escrever no data/.credentials.json real — ver test/drive-sync.test.ts pro padrão, #4344.",
+};
+
 const REAL_PATH_TARGETS: RealPathTarget[] = [
   {
     label: "platform.config.json",
@@ -176,38 +217,7 @@ const REAL_PATH_TARGETS: RealPathTarget[] = [
       "use INBOX_MD_PATH_TEST_OVERRIDE_ENV (scripts/inbox-drain.ts) + mkdtempSync em vez de " +
       "escrever no data/inbox.md real — ver test/inbox-drain.test.ts pro padrão, #4369/#4396.",
   },
-  // 4º RealPathTarget — data/.credentials.json (#4344, migrado pra cá em
-  // #4417 a partir de um mecanismo hand-rolled paralelo e algoritmicamente
-  // idêntico a findOffendersForTarget, abaixo — findCredentialsOffenders +
-  // CREDENTIALS_INLINE_RE/CREDENTIALS_LITERAL_RE/CREDENTIALS_VAR_DECL_RE,
-  // que existiam só porque este era o único alvo antes do #4396 generalizar
-  // pros outros 3 acima).
-  //
-  // Diferente deles, este alvo NUNCA exigiu o discriminador `ROOT`/`root` —
-  // e o #4417 preservou essa omissão de propósito ao migrar (a interface
-  // RealPathTarget já suporta isso nativamente: inlineRe/varDeclRe abaixo
-  // simplesmente não têm o `\s*ROOT\b` que os 3 acima têm). A combinação
-  // léxica "data" + ".credentials.json" já é específica o suficiente —
-  // nenhum padrão legítimo do repo usa esse par: o padrão real de dir fake é
-  // `join(fakeCredsDir, ".credentials.json")`, SEM segmento "data" (ver
-  // test/drive-sync.test.ts, test/drive-helpers.test.ts,
-  // test/inbox-drain.test.ts). Adicionar uma exigência de ROOT aqui
-  // enfraqueceria o guard mais crítico do arquivo (path do incidente de
-  // produção #4344, P2 — credenciais OAuth reais sobrescritas) sem fechar
-  // nenhum falso-positivo conhecido — decisão original em #4415, reafirmada
-  // aqui: fora de escopo mudar esse comportamento só porque o mecanismo virou
-  // data-driven.
-  {
-    label: "data/.credentials.json",
-    inlineRe:
-      /writeFileSync\(\s*(?:path\.)?(?:resolve|join)\([^)]*?(?:["'`]data["'`][^)]*?\.credentials\.json|["'`]data[\\/]\.credentials\.json["'`])[^)]*?\)/g,
-    literalRe: /writeFileSync\(\s*["'`][^"'`]*data[\\/]\.credentials\.json["'`]/g,
-    varDeclRe:
-      /(?:const|let)\s+(\w+)\s*=\s*(?:path\.)?(?:resolve|join)\([^;]*?(?:["'`]data["'`][^;]*?\.credentials\.json|["'`]data[\\/]\.credentials\.json["'`])[^;]*?\)/g,
-    guidance:
-      "use mkdtempSync + CREDENTIALS_PATH_TEST_OVERRIDE_ENV (scripts/google-auth.ts) em vez de " +
-      "escrever no data/.credentials.json real — ver test/drive-sync.test.ts pro padrão, #4344.",
-  },
+  CREDENTIALS_TARGET,
 ];
 
 /** Acha ofensores (inline / literal / via variável) de `target` em `source` já sem comentários. */
@@ -233,20 +243,20 @@ function findOffendersForTarget(source: string, target: RealPathTarget): string[
   return offenders;
 }
 
-// data/.credentials.json não usa o discriminador ROOT/root (ver comentário
-// junto da entrada acima) — os describes de gap 1/2/interação mais abaixo
-// testam justamente esse discriminador, então iteram sobre este subconjunto
-// (os 3 targets que de fato o exigem) em vez de REAL_PATH_TARGETS inteiro.
-const ROOT_BASED_TARGETS = REAL_PATH_TARGETS.filter((t) => t.label !== "data/.credentials.json");
-
-// Referência nomeada pro alvo de credentials, usada pelos describes
-// dedicados a ele (abaixo) — mesmo padrão de "achar por label" usado pra
-// não depender de índice fixo caso a ordem do array mude no futuro.
-const credentialsTarget = REAL_PATH_TARGETS.find((t) => t.label === "data/.credentials.json");
-if (!credentialsTarget) {
-  throw new Error("REAL_PATH_TARGETS deveria conter data/.credentials.json (#4417)");
-}
-const CREDENTIALS_TARGET = credentialsTarget;
+// CREDENTIALS_TARGET (data/.credentials.json) não usa o discriminador
+// ROOT/root (ver comentário junto da constante, acima) — os describes de
+// gap 1/2/interação mais abaixo testam justamente esse discriminador, então
+// iteram sobre este subconjunto (os 3 targets que de fato o exigem) em vez
+// de REAL_PATH_TARGETS inteiro. O motivo NÃO é falso-positivo nos testes
+// negativos ("ROOT minúsculo não deveria ser flagado") — esses continuariam
+// passando trivialmente pra CREDENTIALS_TARGET, já que os fixtures
+// negativos nunca citam ".credentials.json". O motivo real: os testes de
+// CONSTRUÇÃO POSITIVA de fixture nesses describes usam ternários
+// (`target.label === "..." ? ... : ...`) com branch só pros 3 targets
+// originais — sem esse filtro, CREDENTIALS_TARGET cairia no branch "else"
+// e receberia uma fixture que não bate com o regex de credentials,
+// quebrando a asserção positiva (`offenders.length > 0`).
+const ROOT_BASED_TARGETS = REAL_PATH_TARGETS.filter((t) => t !== CREDENTIALS_TARGET);
 
 describe("nenhum test/*.test.ts escreve fake conteúdo nos paths REAIS listados em REAL_PATH_TARGETS (#4344/#4396, unificado em #4417)", () => {
   const files = testFilesUnder(TEST_DIR).filter((f) => resolve(f) !== SELF);
