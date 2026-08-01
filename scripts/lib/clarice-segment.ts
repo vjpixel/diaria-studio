@@ -291,12 +291,18 @@ export function parseBrevoListIds(raw: string | null | undefined): string[] {
  * PURA/testável: cruza `brevo_list_ids` de cada linha contra o Set de listas
  * comprometidas — a função é agnóstica a QUAL status alimentou o Set.
  *
- * #3682: os callers de produção agora passam a UNIÃO de `queued` + `sent`
+ * #3682: os callers de PRIMEIRO ENVIO passam a UNIÃO de `queued` + `sent`
  * (`fetchCommittedCampaignListIds`, brevo-client.ts) — `sends_count=0` local
  * não distingue "nunca recebeu" de "recebeu, mas o sync incremental do store
- * ainda não propagou" (lag observado ~1 dia no incidente 260716-260721).
- * Passar só `queued` (como o nome do parâmetro ainda sugere, mantido por
- * compat) cobre só a metade AGENDADA do problema.
+ * ainda não propagou" (lag observado ~1 dia no incidente 260716-260721). Para
+ * esses grupos, passar só `queued` cobriria só a metade AGENDADA do problema.
+ *
+ * 260731: isso vale para 1º envio, NÃO para todos os callers. Os grupos de
+ * RE-envio (`engajados`, `reativacao`) passam deliberadamente só `queued` — ali
+ * "já recebeu" é pré-requisito de entrada, não impedimento, e incluir `sent`
+ * zerava os dois grupos por construção. Não é regressão do #3682: é o mesmo
+ * raciocínio aplicado a um predicado de sinal oposto. Ver `CommittedGuardScope`
+ * mais abaixo, que é quem decide o escopo por grupo.
  *
  * Não distingue send_eligible/isFirstSend — é uma camada adicional aplicada
  * SOBRE o resultado de `segmentRampWarm`/`segmentFromStore`/etc, não um
@@ -304,6 +310,8 @@ export function parseBrevoListIds(raw: string | null | undefined): string[] {
  */
 export function excludeCommittedToQueuedCampaigns<T extends Pick<StoreRow, "brevo_list_ids">>(
   rows: T[],
+  // Nome mantido por compat (#2994). O Set pode conter só `queued` OU
+  // `queued ∪ sent`, conforme o `guardScope` do grupo que chamou.
   queuedListIds: ReadonlySet<string>,
 ): T[] {
   if (queuedListIds.size === 0) return rows.slice();
