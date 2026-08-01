@@ -31,6 +31,15 @@
  * classe de bug (e o gap não fica restrito aos 3 arquivos corrigidos agora,
  * do jeito que #3764 achou o mesmo bug do #3560/#3757 intocado em outros 2
  * scripts que a lista fixa original não cobria).
+ *
+ * Generalizado em #4396 pra mais 3 paths reais (`platform.config.json`,
+ * `data/inbox-cursor.json`, `data/inbox.md`) via `REAL_PATH_TARGETS`
+ * data-driven, abaixo. Até o #4417 esse mecanismo genérico convivia com um
+ * SEGUNDO mecanismo hand-rolled, algoritmicamente idêntico, dedicado só a
+ * `data/.credentials.json` — órfão de quando este teste cobria um único
+ * alvo. O #4417 unificou os dois: `data/.credentials.json` virou o 4º
+ * `RealPathTarget` (ver o comentário dedicado junto da entrada dele, mais
+ * abaixo) e o regex hand-rolled foi removido.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -62,242 +71,11 @@ function stripComments(source: string): string {
 }
 
 /**
- * Acha variáveis declaradas apontando pro path REAL de `data/.credentials.json`
- * (ex: `const CREDS_PATH = resolve(ROOT, "data", ".credentials.json");`).
- * A declaração em si não é a violação — só usá-la como alvo de `writeFileSync` é.
- *
- * Generalização (#4415, mesmo padrão do #4403/#4414 aplicado logo abaixo aos
- * outros 3 alvos): fecha os mesmos 2 gaps aqui — (1) segmento combinado numa
- * string só (`"data/.credentials.json"` além da forma 2-segmentos
- * `"data", ".credentials.json"`) e (2) prefixo `path.` namespace-qualified
- * antes de `resolve(`/`join(`. Diferente do REAL_PATH_TARGETS abaixo, este
- * guard nunca exigiu o discriminador `ROOT`/`root` — a combinação léxica
- * "data" + ".credentials.json" já é específica o suficiente (nenhum padrão
- * legítimo do repo usa esse par: o padrão real de dir fake é
- * `join(fakeCredsDir, ".credentials.json")`, SEM segmento "data" — ver
- * test/drive-sync.test.ts, test/drive-helpers.test.ts,
- * test/inbox-drain.test.ts). Adicionar uma exigência de ROOT aqui
- * enfraqueceria o guard mais crítico do arquivo (path do incidente de
- * produção #4344, P2) sem fechar nenhum falso-positivo conhecido — fora de
- * escopo deste fix.
- */
-const CREDENTIALS_VAR_DECL_RE =
-  /(?:const|let)\s+(\w+)\s*=\s*(?:path\.)?(?:resolve|join)\([^;]*?(?:["'`]data["'`][^;]*?\.credentials\.json|["'`]data[\\/]\.credentials\.json["'`])[^;]*?\)/g;
-
-function realCredentialsPathVarNames(source: string): string[] {
-  const re = new RegExp(CREDENTIALS_VAR_DECL_RE.source, CREDENTIALS_VAR_DECL_RE.flags);
-  const names: string[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(source))) names.push(m[1]);
-  return names;
-}
-
-// 1. Construção inline: writeFileSync(resolve(ROOT, "data", ".credentials.json"), ...)
-//    ou writeFileSync(path.resolve(ROOT, "data/.credentials.json"), ...) (#4415).
-const CREDENTIALS_INLINE_RE =
-  /writeFileSync\(\s*(?:path\.)?(?:resolve|join)\([^)]*?(?:["'`]data["'`][^)]*?\.credentials\.json|["'`]data[\\/]\.credentials\.json["'`])[^)]*?\)/g;
-
-// 2. Literal puro: writeFileSync("data/.credentials.json", ...) ou "data\.credentials.json"
-const CREDENTIALS_LITERAL_RE = /writeFileSync\(\s*["'`][^"'`]*data[\\/]\.credentials\.json["'`]/g;
-
-/** Acha ofensores (inline / literal / via variável) de data/.credentials.json em `source` já sem comentários. */
-function findCredentialsOffenders(source: string): string[] {
-  const offenders: string[] = [];
-  let m: RegExpExecArray | null;
-
-  const inlineRe = new RegExp(CREDENTIALS_INLINE_RE.source, CREDENTIALS_INLINE_RE.flags);
-  while ((m = inlineRe.exec(source))) offenders.push(m[0]);
-
-  const literalRe = new RegExp(CREDENTIALS_LITERAL_RE.source, CREDENTIALS_LITERAL_RE.flags);
-  while ((m = literalRe.exec(source))) offenders.push(m[0]);
-
-  // 3. Via variável declarada com o path real (ex: const CREDS_PATH = resolve(...))
-  for (const varName of realCredentialsPathVarNames(source)) {
-    const varRe = new RegExp(`writeFileSync\\(\\s*${varName}\\b`, "g");
-    while ((m = varRe.exec(source))) offenders.push(m[0]);
-  }
-
-  return offenders;
-}
-
-describe("nenhum test/*.test.ts escreve fake creds no data/.credentials.json REAL (#4344)", () => {
-  const files = testFilesUnder(TEST_DIR).filter((f) => resolve(f) !== SELF);
-
-  it("sanity: encontrou vários arquivos test/*.test.ts (senão o scan está quebrado)", () => {
-    assert.ok(
-      files.length > 5,
-      `esperava vários .test.ts sob ${TEST_DIR}, achou ${files.length} — este teste deixaria de proteger silenciosamente.`,
-    );
-  });
-
-  for (const file of files) {
-    const rel = file.slice(ROOT.length + 1).replaceAll("\\", "/");
-    const rawSource = readFileSync(file, "utf8");
-    const source = stripComments(rawSource);
-
-    it(`${rel}: nunca escreve em data/.credentials.json REAL via writeFileSync`, () => {
-      const offenders = findCredentialsOffenders(source);
-      assert.deepEqual(
-        offenders,
-        [],
-        `escrita direta em data/.credentials.json REAL detectada em ${rel} — use ` +
-          `mkdtempSync + CREDENTIALS_PATH_TEST_OVERRIDE_ENV (scripts/google-auth.ts) em vez ` +
-          `disso (ver test/drive-sync.test.ts pro padrão, #4344). Ofensores:\n${offenders.join("\n")}`,
-      );
-    });
-  }
-});
-
-describe("fixtures inline: gap 1 do #4415 — segmento 'data/.credentials.json' combinado numa string só é detectado (mesmo padrão do #4403/#4414)", () => {
-  it('writeFileSync(resolve(ROOT, "data/.credentials.json"), ...) — string combinada com "/" é detectada', () => {
-    const fakeSource = `writeFileSync(resolve(ROOT, "data/.credentials.json"), "{}", "utf8");`;
-    const offenders = findCredentialsOffenders(fakeSource);
-    assert.ok(
-      offenders.length > 0,
-      `esperava que o guard pegasse a string combinada, mas não achou nada em: ${fakeSource}`,
-    );
-  });
-
-  it('writeFileSync(join(ROOT, "data\\.credentials.json"), ...) — string combinada com barra invertida é detectada', () => {
-    // Uma só barra invertida em runtime exige 2 caracteres `\` no source
-    // (escape de template literal) — `\\` aqui vira 1 `\` no valor de fakeSource.
-    const fakeSource = `writeFileSync(join(ROOT, "data\\.credentials.json"), "{}", "utf8");`;
-    const offenders = findCredentialsOffenders(fakeSource);
-    assert.ok(
-      offenders.length > 0,
-      `esperava que o guard pegasse a string combinada (barra invertida), mas não achou nada em: ${fakeSource}`,
-    );
-  });
-
-  it("escrita via variável declarada com string combinada é detectada", () => {
-    const fakeSource = `const P = resolve(ROOT, "data/.credentials.json");\nwriteFileSync(P, "{}", "utf8");`;
-    const offenders = findCredentialsOffenders(fakeSource);
-    assert.ok(
-      offenders.length > 0,
-      `esperava que o guard pegasse escrita via variável com string combinada, mas não achou nada em: ${fakeSource}`,
-    );
-  });
-
-  it("forma 2-segmentos original continua detectada (sem regressão)", () => {
-    const fakeSource = `writeFileSync(resolve(ROOT, "data", ".credentials.json"), "{}", "utf8");`;
-    const offenders = findCredentialsOffenders(fakeSource);
-    assert.ok(
-      offenders.length > 0,
-      `regressão: a forma 2-segmentos parou de ser detectada em: ${fakeSource}`,
-    );
-  });
-
-  it('negativo: padrão real de dir fake join(fakeCredsDir, ".credentials.json") — SEM segmento "data" — não é flagado', () => {
-    // Este guard não usa discriminador ROOT/root (ver comentário acima de
-    // findCredentialsOffenders) — o discriminador real é a exigência do
-    // segmento literal "data" combinado com ".credentials.json". O padrão
-    // legítimo usado em test/drive-sync.test.ts, test/drive-helpers.test.ts e
-    // test/inbox-drain.test.ts nunca aninha um segmento "data" dentro do dir
-    // fake (fakeCredsDir JÁ representa o dir onde o arquivo fake fica) —
-    // confirma que estender pro gap 1 não introduziu falso-positivo nesse
-    // padrão real. Este arquivo já sofreu um falso-positivo maciço numa
-    // generalização anterior de um guard irmão (ver o comentário "Nota (#4396)"
-    // logo antes de REAL_PATH_TARGETS, abaixo) — exatamente a classe de
-    // regressão que este negativo pega cedo.
-    const legitSource = `
-      const fakeCredsDir = mkdtempSync(join(tmpdir(), "creds-"));
-      writeFileSync(join(fakeCredsDir, ".credentials.json"), JSON.stringify(FAKE_CREDS), "utf8");
-    `;
-    const offenders = findCredentialsOffenders(legitSource);
-    assert.deepEqual(
-      offenders,
-      [],
-      `padrão legítimo (mkdtempSync + fakeCredsDir, sem segmento "data") foi falso-positivo: ${offenders.join("\n")}`,
-    );
-  });
-});
-
-describe("fixtures inline: gap 2 do #4415 — path.resolve/path.join namespace-qualified é detectado (mesmo padrão do #4403/#4414)", () => {
-  it('writeFileSync(path.resolve(ROOT, "data", ".credentials.json")) é detectado', () => {
-    const fakeSource = `writeFileSync(path.resolve(ROOT, "data", ".credentials.json"), "{}", "utf8");`;
-    const offenders = findCredentialsOffenders(fakeSource);
-    assert.ok(
-      offenders.length > 0,
-      `esperava que o guard pegasse path.resolve(ROOT, ...), mas não achou nada em: ${fakeSource}`,
-    );
-  });
-
-  it('writeFileSync(path.join(ROOT, "data", ".credentials.json")) é detectado', () => {
-    const fakeSource = `writeFileSync(path.join(ROOT, "data", ".credentials.json"), "{}", "utf8");`;
-    const offenders = findCredentialsOffenders(fakeSource);
-    assert.ok(
-      offenders.length > 0,
-      `esperava que o guard pegasse path.join(ROOT, ...), mas não achou nada em: ${fakeSource}`,
-    );
-  });
-
-  it("escrita via variável declarada com path.resolve(ROOT, ...) é detectada", () => {
-    const fakeSource = `const P = path.resolve(ROOT, "data", ".credentials.json");\nwriteFileSync(P, "{}", "utf8");`;
-    const offenders = findCredentialsOffenders(fakeSource);
-    assert.ok(
-      offenders.length > 0,
-      `esperava que o guard pegasse variável de path.resolve(ROOT, ...), mas não achou nada em: ${fakeSource}`,
-    );
-  });
-
-  it('negativo: path.join(fakeCredsDir, ".credentials.json") — padrão legítimo SEM segmento "data" — continua não flagado', () => {
-    const legitSource = `
-      const fakeCredsDir = mkdtempSync(join(tmpdir(), "creds-"));
-      writeFileSync(path.join(fakeCredsDir, ".credentials.json"), JSON.stringify(FAKE_CREDS), "utf8");
-    `;
-    const offenders = findCredentialsOffenders(legitSource);
-    assert.deepEqual(
-      offenders,
-      [],
-      `path.join(fakeCredsDir, ...) sem segmento "data" foi falso-positivo: ${offenders.join("\n")}`,
-    );
-  });
-});
-
-describe("fixtures inline: interação gap 1 + gap 2 do #4415 — as duas alternâncias compõem no mesmo regex", () => {
-  // Espelha o describe equivalente do #4403/#4414 pros outros 3 alvos —
-  // confirma que a alternância do gap 1 (segmento combinado) e o prefixo
-  // opcional do gap 2 (`path.`) compõem aditivamente, não só isoladamente.
-  it('writeFileSync(path.resolve(ROOT, "data/.credentials.json"), ...) é detectado', () => {
-    const fakeSource = `writeFileSync(path.resolve(ROOT, "data/.credentials.json"), "{}", "utf8");`;
-    const offenders = findCredentialsOffenders(fakeSource);
-    assert.ok(
-      offenders.length > 0,
-      `esperava que o guard pegasse a composição gap1+gap2 (path.resolve), mas não achou nada em: ${fakeSource}`,
-    );
-  });
-
-  it('writeFileSync(path.join(ROOT, "data/.credentials.json"), ...) é detectado', () => {
-    const fakeSource = `writeFileSync(path.join(ROOT, "data/.credentials.json"), "{}", "utf8");`;
-    const offenders = findCredentialsOffenders(fakeSource);
-    assert.ok(
-      offenders.length > 0,
-      `esperava que o guard pegasse a composição gap1+gap2 (path.join), mas não achou nada em: ${fakeSource}`,
-    );
-  });
-
-  it('escrita via variável declarada com path.resolve(ROOT, "data/.credentials.json") é detectada', () => {
-    const fakeSource = `const P = path.resolve(ROOT, "data/.credentials.json");\nwriteFileSync(P, "{}", "utf8");`;
-    const offenders = findCredentialsOffenders(fakeSource);
-    assert.ok(
-      offenders.length > 0,
-      `esperava que o guard pegasse variável da composição gap1+gap2, mas não achou nada em: ${fakeSource}`,
-    );
-  });
-});
-
-/**
- * Generalização do guard acima (#4396, segue #4369) — `test/inbox-drain.test.ts`
- * isolou 3 paths reais adicionais em dirs `mkdtempSync` (`platform.config.json`
- * na raiz do repo — git-tracked! — e `data/inbox-cursor.json`/`data/inbox.md`),
- * mas sem rede estática genérica equivalente à de `data/.credentials.json`
- * acima. Um arquivo de teste FUTURO poderia reintroduzir a mesma classe de bug
- * (#4344) contra qualquer um desses 3 paths sem que ninguém notasse.
- *
- * O regex de `data/.credentials.json` é moldado especificamente pra essa
- * estrutura (sempre sob `data/`) — `platform.config.json` mora na raiz do
- * repo, então generalizar limpo exige um padrão por nome de arquivo, não uma
- * extensão direta do regex existente (ver corpo da issue #4396).
+ * Um path real que `test/*.test.ts` nunca pode escrever diretamente (fora de
+ * um dir `mkdtempSync`'d). Cada alvo define 3 formas de regex que juntas
+ * cobrem: construção inline (`writeFileSync(resolve(...))`), literal puro
+ * (`writeFileSync("path/literal")`) e via variável declarada antes
+ * (`const P = resolve(...); writeFileSync(P, ...)`).
  */
 interface RealPathTarget {
   /** Nome legível do path real, usado nas mensagens de erro/nomes de teste. */
@@ -312,10 +90,10 @@ interface RealPathTarget {
   guidance: string;
 }
 
-// Nota (#4396): diferente de `data/.credentials.json` acima (onde o literal
-// "data" na chamada resolve/join já distingue path real de dir fake, porque
-// fixtures fake nunca usam esse literal), `platform.config.json` mora na raiz
-// do repo — SEM segmento distintivo — e vários testes legítimos (ex:
+// Nota (#4396): `platform.config.json`, `data/inbox-cursor.json` e
+// `data/inbox.md` (os 3 primeiros elementos de REAL_PATH_TARGETS, abaixo)
+// usam o discriminador `ROOT`/`root` — `platform.config.json` mora na raiz do
+// repo, SEM segmento distintivo — e vários testes legítimos (ex:
 // test/studio-integrations.test.ts) criam um dir fake via `mkdtempSync` e
 // escrevem `join(root, "platform.config.json")`/`join(root, "data", "inbox-cursor.json")`
 // dentro dele, usando a variável local (lowercase) `root`. Detectado ao vivo:
@@ -351,6 +129,17 @@ interface RealPathTarget {
 //      no source não há discriminador léxico entre path real e dir fake —
 //      fechar isso exigiria parse de AST (rastrear o valor efetivo da
 //      variável) pra não estourar falso-positivo.
+//
+// Nota adicional (#4417): o 4º elemento abaixo, `data/.credentials.json`, é
+// o ÚNICO que não usa esse discriminador ROOT/root — ver o comentário
+// dedicado junto da própria entrada pra explicar por quê. Por causa dessa
+// diferença de design, os describes de gap 1/2/interação mais abaixo neste
+// arquivo (que testam especificamente o discriminador ROOT) iteram sobre
+// `ROOT_BASED_TARGETS` (REAL_PATH_TARGETS menos `data/.credentials.json`,
+// derivado logo após o array) em vez de `REAL_PATH_TARGETS` diretamente —
+// do contrário os testes negativos de "ROOT minúsculo não deveria ser
+// flagado" dariam falso-positivo contra um alvo que nunca teve esse
+// discriminador por design.
 const REAL_PATH_TARGETS: RealPathTarget[] = [
   {
     label: "platform.config.json",
@@ -387,6 +176,38 @@ const REAL_PATH_TARGETS: RealPathTarget[] = [
       "use INBOX_MD_PATH_TEST_OVERRIDE_ENV (scripts/inbox-drain.ts) + mkdtempSync em vez de " +
       "escrever no data/inbox.md real — ver test/inbox-drain.test.ts pro padrão, #4369/#4396.",
   },
+  // 4º RealPathTarget — data/.credentials.json (#4344, migrado pra cá em
+  // #4417 a partir de um mecanismo hand-rolled paralelo e algoritmicamente
+  // idêntico a findOffendersForTarget, abaixo — findCredentialsOffenders +
+  // CREDENTIALS_INLINE_RE/CREDENTIALS_LITERAL_RE/CREDENTIALS_VAR_DECL_RE,
+  // que existiam só porque este era o único alvo antes do #4396 generalizar
+  // pros outros 3 acima).
+  //
+  // Diferente deles, este alvo NUNCA exigiu o discriminador `ROOT`/`root` —
+  // e o #4417 preservou essa omissão de propósito ao migrar (a interface
+  // RealPathTarget já suporta isso nativamente: inlineRe/varDeclRe abaixo
+  // simplesmente não têm o `\s*ROOT\b` que os 3 acima têm). A combinação
+  // léxica "data" + ".credentials.json" já é específica o suficiente —
+  // nenhum padrão legítimo do repo usa esse par: o padrão real de dir fake é
+  // `join(fakeCredsDir, ".credentials.json")`, SEM segmento "data" (ver
+  // test/drive-sync.test.ts, test/drive-helpers.test.ts,
+  // test/inbox-drain.test.ts). Adicionar uma exigência de ROOT aqui
+  // enfraqueceria o guard mais crítico do arquivo (path do incidente de
+  // produção #4344, P2 — credenciais OAuth reais sobrescritas) sem fechar
+  // nenhum falso-positivo conhecido — decisão original em #4415, reafirmada
+  // aqui: fora de escopo mudar esse comportamento só porque o mecanismo virou
+  // data-driven.
+  {
+    label: "data/.credentials.json",
+    inlineRe:
+      /writeFileSync\(\s*(?:path\.)?(?:resolve|join)\([^)]*?(?:["'`]data["'`][^)]*?\.credentials\.json|["'`]data[\\/]\.credentials\.json["'`])[^)]*?\)/g,
+    literalRe: /writeFileSync\(\s*["'`][^"'`]*data[\\/]\.credentials\.json["'`]/g,
+    varDeclRe:
+      /(?:const|let)\s+(\w+)\s*=\s*(?:path\.)?(?:resolve|join)\([^;]*?(?:["'`]data["'`][^;]*?\.credentials\.json|["'`]data[\\/]\.credentials\.json["'`])[^;]*?\)/g,
+    guidance:
+      "use mkdtempSync + CREDENTIALS_PATH_TEST_OVERRIDE_ENV (scripts/google-auth.ts) em vez de " +
+      "escrever no data/.credentials.json real — ver test/drive-sync.test.ts pro padrão, #4344.",
+  },
 ];
 
 /** Acha ofensores (inline / literal / via variável) de `target` em `source` já sem comentários. */
@@ -412,7 +233,22 @@ function findOffendersForTarget(source: string, target: RealPathTarget): string[
   return offenders;
 }
 
-describe("nenhum test/*.test.ts escreve fake conteúdo em platform.config.json/data/inbox-cursor.json/data/inbox.md REAIS (#4396, segue #4344/#4369)", () => {
+// data/.credentials.json não usa o discriminador ROOT/root (ver comentário
+// junto da entrada acima) — os describes de gap 1/2/interação mais abaixo
+// testam justamente esse discriminador, então iteram sobre este subconjunto
+// (os 3 targets que de fato o exigem) em vez de REAL_PATH_TARGETS inteiro.
+const ROOT_BASED_TARGETS = REAL_PATH_TARGETS.filter((t) => t.label !== "data/.credentials.json");
+
+// Referência nomeada pro alvo de credentials, usada pelos describes
+// dedicados a ele (abaixo) — mesmo padrão de "achar por label" usado pra
+// não depender de índice fixo caso a ordem do array mude no futuro.
+const credentialsTarget = REAL_PATH_TARGETS.find((t) => t.label === "data/.credentials.json");
+if (!credentialsTarget) {
+  throw new Error("REAL_PATH_TARGETS deveria conter data/.credentials.json (#4417)");
+}
+const CREDENTIALS_TARGET = credentialsTarget;
+
+describe("nenhum test/*.test.ts escreve fake conteúdo nos paths REAIS listados em REAL_PATH_TARGETS (#4344/#4396, unificado em #4417)", () => {
   const files = testFilesUnder(TEST_DIR).filter((f) => resolve(f) !== SELF);
 
   it("sanity: encontrou vários arquivos test/*.test.ts (senão o scan está quebrado)", () => {
@@ -441,8 +277,147 @@ describe("nenhum test/*.test.ts escreve fake conteúdo em platform.config.json/d
   }
 });
 
+describe("fixtures inline: gap 1 do #4415 — segmento 'data/.credentials.json' combinado numa string só é detectado (mesmo padrão do #4403/#4414)", () => {
+  it('writeFileSync(resolve(ROOT, "data/.credentials.json"), ...) — string combinada com "/" é detectada', () => {
+    const fakeSource = `writeFileSync(resolve(ROOT, "data/.credentials.json"), "{}", "utf8");`;
+    const offenders = findOffendersForTarget(fakeSource, CREDENTIALS_TARGET);
+    assert.ok(
+      offenders.length > 0,
+      `esperava que o guard pegasse a string combinada, mas não achou nada em: ${fakeSource}`,
+    );
+  });
+
+  it('writeFileSync(join(ROOT, "data\\.credentials.json"), ...) — string combinada com barra invertida é detectada', () => {
+    // Uma só barra invertida em runtime exige 2 caracteres `\` no source
+    // (escape de template literal) — `\\` aqui vira 1 `\` no valor de fakeSource.
+    const fakeSource = `writeFileSync(join(ROOT, "data\\.credentials.json"), "{}", "utf8");`;
+    const offenders = findOffendersForTarget(fakeSource, CREDENTIALS_TARGET);
+    assert.ok(
+      offenders.length > 0,
+      `esperava que o guard pegasse a string combinada (barra invertida), mas não achou nada em: ${fakeSource}`,
+    );
+  });
+
+  it("escrita via variável declarada com string combinada é detectada", () => {
+    const fakeSource = `const P = resolve(ROOT, "data/.credentials.json");\nwriteFileSync(P, "{}", "utf8");`;
+    const offenders = findOffendersForTarget(fakeSource, CREDENTIALS_TARGET);
+    assert.ok(
+      offenders.length > 0,
+      `esperava que o guard pegasse escrita via variável com string combinada, mas não achou nada em: ${fakeSource}`,
+    );
+  });
+
+  it("forma 2-segmentos original continua detectada (sem regressão)", () => {
+    const fakeSource = `writeFileSync(resolve(ROOT, "data", ".credentials.json"), "{}", "utf8");`;
+    const offenders = findOffendersForTarget(fakeSource, CREDENTIALS_TARGET);
+    assert.ok(
+      offenders.length > 0,
+      `regressão: a forma 2-segmentos parou de ser detectada em: ${fakeSource}`,
+    );
+  });
+
+  it('negativo: padrão real de dir fake join(fakeCredsDir, ".credentials.json") — SEM segmento "data" — não é flagado', () => {
+    // Este guard não usa discriminador ROOT/root (ver comentário junto da
+    // entrada de data/.credentials.json em REAL_PATH_TARGETS, acima) — o
+    // discriminador real é a exigência do segmento literal "data" combinado
+    // com ".credentials.json". O padrão legítimo usado em
+    // test/drive-sync.test.ts, test/drive-helpers.test.ts e
+    // test/inbox-drain.test.ts nunca aninha um segmento "data" dentro do dir
+    // fake (fakeCredsDir JÁ representa o dir onde o arquivo fake fica) —
+    // confirma que estender pro gap 1 não introduziu falso-positivo nesse
+    // padrão real. Este arquivo já sofreu um falso-positivo maciço numa
+    // generalização anterior de um guard irmão (ver o comentário "Nota
+    // (#4396)" logo antes de REAL_PATH_TARGETS, acima) — exatamente a classe
+    // de regressão que este negativo pega cedo.
+    const legitSource = `
+      const fakeCredsDir = mkdtempSync(join(tmpdir(), "creds-"));
+      writeFileSync(join(fakeCredsDir, ".credentials.json"), JSON.stringify(FAKE_CREDS), "utf8");
+    `;
+    const offenders = findOffendersForTarget(legitSource, CREDENTIALS_TARGET);
+    assert.deepEqual(
+      offenders,
+      [],
+      `padrão legítimo (mkdtempSync + fakeCredsDir, sem segmento "data") foi falso-positivo: ${offenders.join("\n")}`,
+    );
+  });
+});
+
+describe("fixtures inline: gap 2 do #4415 — path.resolve/path.join namespace-qualified é detectado (mesmo padrão do #4403/#4414)", () => {
+  it('writeFileSync(path.resolve(ROOT, "data", ".credentials.json")) é detectado', () => {
+    const fakeSource = `writeFileSync(path.resolve(ROOT, "data", ".credentials.json"), "{}", "utf8");`;
+    const offenders = findOffendersForTarget(fakeSource, CREDENTIALS_TARGET);
+    assert.ok(
+      offenders.length > 0,
+      `esperava que o guard pegasse path.resolve(ROOT, ...), mas não achou nada em: ${fakeSource}`,
+    );
+  });
+
+  it('writeFileSync(path.join(ROOT, "data", ".credentials.json")) é detectado', () => {
+    const fakeSource = `writeFileSync(path.join(ROOT, "data", ".credentials.json"), "{}", "utf8");`;
+    const offenders = findOffendersForTarget(fakeSource, CREDENTIALS_TARGET);
+    assert.ok(
+      offenders.length > 0,
+      `esperava que o guard pegasse path.join(ROOT, ...), mas não achou nada em: ${fakeSource}`,
+    );
+  });
+
+  it("escrita via variável declarada com path.resolve(ROOT, ...) é detectada", () => {
+    const fakeSource = `const P = path.resolve(ROOT, "data", ".credentials.json");\nwriteFileSync(P, "{}", "utf8");`;
+    const offenders = findOffendersForTarget(fakeSource, CREDENTIALS_TARGET);
+    assert.ok(
+      offenders.length > 0,
+      `esperava que o guard pegasse variável de path.resolve(ROOT, ...), mas não achou nada em: ${fakeSource}`,
+    );
+  });
+
+  it('negativo: path.join(fakeCredsDir, ".credentials.json") — padrão legítimo SEM segmento "data" — continua não flagado', () => {
+    const legitSource = `
+      const fakeCredsDir = mkdtempSync(join(tmpdir(), "creds-"));
+      writeFileSync(path.join(fakeCredsDir, ".credentials.json"), JSON.stringify(FAKE_CREDS), "utf8");
+    `;
+    const offenders = findOffendersForTarget(legitSource, CREDENTIALS_TARGET);
+    assert.deepEqual(
+      offenders,
+      [],
+      `path.join(fakeCredsDir, ...) sem segmento "data" foi falso-positivo: ${offenders.join("\n")}`,
+    );
+  });
+});
+
+describe("fixtures inline: interação gap 1 + gap 2 do #4415 — as duas alternâncias compõem no mesmo regex", () => {
+  // Espelha o describe equivalente do #4403/#4414 pros outros 3 alvos —
+  // confirma que a alternância do gap 1 (segmento combinado) e o prefixo
+  // opcional do gap 2 (`path.`) compõem aditivamente, não só isoladamente.
+  it('writeFileSync(path.resolve(ROOT, "data/.credentials.json"), ...) é detectado', () => {
+    const fakeSource = `writeFileSync(path.resolve(ROOT, "data/.credentials.json"), "{}", "utf8");`;
+    const offenders = findOffendersForTarget(fakeSource, CREDENTIALS_TARGET);
+    assert.ok(
+      offenders.length > 0,
+      `esperava que o guard pegasse a composição gap1+gap2 (path.resolve), mas não achou nada em: ${fakeSource}`,
+    );
+  });
+
+  it('writeFileSync(path.join(ROOT, "data/.credentials.json"), ...) é detectado', () => {
+    const fakeSource = `writeFileSync(path.join(ROOT, "data/.credentials.json"), "{}", "utf8");`;
+    const offenders = findOffendersForTarget(fakeSource, CREDENTIALS_TARGET);
+    assert.ok(
+      offenders.length > 0,
+      `esperava que o guard pegasse a composição gap1+gap2 (path.join), mas não achou nada em: ${fakeSource}`,
+    );
+  });
+
+  it('escrita via variável declarada com path.resolve(ROOT, "data/.credentials.json") é detectada', () => {
+    const fakeSource = `const P = path.resolve(ROOT, "data/.credentials.json");\nwriteFileSync(P, "{}", "utf8");`;
+    const offenders = findOffendersForTarget(fakeSource, CREDENTIALS_TARGET);
+    assert.ok(
+      offenders.length > 0,
+      `esperava que o guard pegasse variável da composição gap1+gap2, mas não achou nada em: ${fakeSource}`,
+    );
+  });
+});
+
 describe("fixtures inline: o guard genérico (#4396) pega arquivo de teste FICTÍCIO ofensor", () => {
-  for (const target of REAL_PATH_TARGETS) {
+  for (const target of ROOT_BASED_TARGETS) {
     it(`${target.label}: construção inline writeFileSync(resolve(...)) é detectada`, () => {
       const fakeSource =
         target.label === "platform.config.json"
@@ -503,7 +478,7 @@ describe("fixtures inline: o guard genérico (#4396) pega arquivo de teste FICT�
       writeFileSync(fakeInboxMdPath(), "conteudo", "utf8");
     `;
 
-    for (const target of REAL_PATH_TARGETS) {
+    for (const target of ROOT_BASED_TARGETS) {
       const offenders = findOffendersForTarget(legitSource, target);
       assert.deepEqual(
         offenders,
@@ -517,7 +492,7 @@ describe("fixtures inline: o guard genérico (#4396) pega arquivo de teste FICT�
 describe("fixtures inline: gap 1 do #4403 — segmento 'data/arquivo' combinado numa string só é detectado", () => {
   // Só as 2 targets sob `data/` têm esse gap — `platform.config.json` mora na
   // raiz do repo (já é 1 segmento só, forma já coberta antes do #4403).
-  const targetsWithDataPrefix = REAL_PATH_TARGETS.filter((t) => t.label !== "platform.config.json");
+  const targetsWithDataPrefix = ROOT_BASED_TARGETS.filter((t) => t.label !== "platform.config.json");
 
   for (const target of targetsWithDataPrefix) {
     const combinedSuffix = target.label === "data/inbox-cursor.json" ? "inbox-cursor.json" : "inbox.md";
@@ -580,7 +555,7 @@ describe("fixtures inline: gap 1 do #4403 — segmento 'data/arquivo' combinado 
 });
 
 describe("fixtures inline: gap 2 do #4403 — path.resolve/path.join namespace-qualified é detectado", () => {
-  for (const target of REAL_PATH_TARGETS) {
+  for (const target of ROOT_BASED_TARGETS) {
     const literalArg =
       target.label === "platform.config.json"
         ? `"platform.config.json"`
@@ -628,7 +603,7 @@ describe("fixtures inline: gap 2 do #4403 — path.resolve/path.join namespace-q
       writeFileSync(path.resolve(root, "data", "inbox.md"), "conteudo", "utf8");
     `;
 
-    for (const target of REAL_PATH_TARGETS) {
+    for (const target of ROOT_BASED_TARGETS) {
       const offenders = findOffendersForTarget(legitSource, target);
       assert.deepEqual(
         offenders,
@@ -647,7 +622,7 @@ describe("fixtures inline: interação gap 1 + gap 2 do #4403 — as duas altern
   // mas sem teste dedicado, uma edição isolada futura numa das alternâncias
   // poderia quebrar a composição sem que nenhum teste existente notasse
   // (cada describe acima só varia uma dimensão por vez).
-  const targetsWithDataPrefix = REAL_PATH_TARGETS.filter((t) => t.label !== "platform.config.json");
+  const targetsWithDataPrefix = ROOT_BASED_TARGETS.filter((t) => t.label !== "platform.config.json");
 
   for (const target of targetsWithDataPrefix) {
     const combinedSuffix = target.label === "data/inbox-cursor.json" ? "inbox-cursor.json" : "inbox.md";
