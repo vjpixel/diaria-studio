@@ -24,7 +24,6 @@ import { uploadTextToWorkerKV } from "./lib/cloudflare-kv-upload.ts";
 import { loadProjectEnv } from "./lib/env-loader.ts";
 import { getArg, hasFlag, isMainModule } from "./lib/cli-args.ts";
 import { openClariceDb, DEFAULT_DB_PATH, INTERNAL_EMAILS } from "./lib/clarice-db.ts";
-import { datePartsInTz, zonedTimeToUtc, BRT_TIMEZONE } from "./lib/next-edition-date.ts";
 // #3081: importa direto de lib/dashboard-kv.ts (módulo sem side-effect) — antes
 // vinha indireto via clarice-mv-status.ts (que só re-exporta a MESMA constante
 // de lib/dashboard-kv.ts pra compat; sem motivo pra passar por esse hop extra).
@@ -32,13 +31,16 @@ import { DASHBOARD_KV_NAMESPACE_ID } from "./lib/dashboard-kv.ts";
 // #3081: CohortStatsRow fonte única em lib/dashboard-kv-types.ts (dependency-free)
 // — antes era uma cópia manualmente sincronizada com a interface homônima em
 // workers/brevo-dashboard/src/types.ts.
+import { isJuridicoEmail } from "./lib/clarice-sector.ts";
+import { isFirstSend } from "./lib/clarice-segment.ts";
+import { COHORT_JURIDICO } from "./lib/cohorts.ts";
 import type { CohortStatsRow } from "./lib/dashboard-kv-types.ts";
 export type { CohortStatsRow };
 
 export const CONTACTS_SUMMARY_KV_KEY = "contacts:summary";
 
 // #3081 (review): `CohortStatsRow` importado é intencionalmente lenient
-// (`received_this_cycle`/`brevo` opcionais) pro READER (worker) tolerar
+// (`eligible_never_sent`/`brevo` opcionais) pro READER (worker) tolerar
 // payloads KV gravados por versões antigas deste script, antes desses campos
 // existirem. Este script é o WRITER — `computeCohortStats` abaixo SEMPRE
 // popula os 2 (nenhum caminho da query os omite). A duplicata local antiga
@@ -50,14 +52,6 @@ type WrittenCohortStatsRow = Required<CohortStatsRow>;
 
 export interface StoreSummary {
   total: number;
-  // #2923 (substitui a fonte do #2909): início do ciclo de envio CORRENTE —
-  // 1º dia do mês corrente, 00:00 BRT (ver deriveCycleStart). Continua
-  // tipado `string | null` (o parâmetro `cycleStart` de computeStoreSummary
-  // aceita injeção `null` em teste/degradação, aí "recebeu neste ciclo"/
-  // "falta enviar" mostram "—") mas em produção deriveCycleStart() sempre
-  // retorna um valor. Insumo pra classificar `last_sent_at >= cycle_start`
-  // por cohort em cohort_stats.
-  cycle_start: string | null;
   brevo: { synced_rows: number; has_signal: boolean };
   eligibility: {
     eligible: number;
@@ -108,7 +102,10 @@ export interface StoreSummary {
   // cohort — insumo pra estratégia da rampa. Universo = store inteiro MENOS
   // internos (mesmo filtro do bloco priority_points, #2809 — engajamento de
   // ofício não deve poluir a leitura de "cohort X abre mais que cohort Y").
-  // Chave "null" = sem cohort atribuído.
+  // Chave "null" = sem cohort atribuído. Chave "juridico" (`COHORT_JURIDICO`,
+  // #4406): contato detectado como jurídico entra AQUI em vez da safra real —
+  // nunca nas duas (cada contato pertence a exatamente 1 chave, mesmo
+  // invariante de partição de sempre).
   cohort_stats: Record<string, WrittenCohortStatsRow>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
@@ -185,17 +182,10 @@ const NOT_INTERNAL_SQL = `LOWER(email) NOT IN (${INTERNAL_EMAILS.map(() => "?").
 const INTERNAL_PARAMS = INTERNAL_EMAILS.map((e) => e.toLowerCase());
 
 /**
- * Agrega o store em números (sem PII). Via SQL — não carrega 427k linhas em JS.
- *
- * #2909: `cycleStart` (ISO 8601 do início do ciclo corrente) é INJETADO — em
- * produção vem de `deriveCycleStart()` (lê o send-plan do ciclo mais recente);
- * nos testes é passado direto (o helper depende de data/ no OneDrive, ausente
- * em :memory:/CI). `null` (default) = sem ciclo → colunas de ciclo mostram "—".
+ * Agrega o store em números (sem PII). Via SQL — não carrega 427k linhas em JS
+ * (exceto `computeCohortStats`, que precisa de um scan JS — ver docstring lá).
  */
-export function computeStoreSummary(
-  db: DatabaseSync,
-  cycleStart: string | null = null,
-): StoreSummary {
+export function computeStoreSummary(db: DatabaseSync): StoreSummary {
   // Pares total+verified em SCAN ÚNICO por universo (review #2815 — antes eram
   // 2 queries full-scan por par, diferindo só pelo AND mv_bucket='verified').
   // #2857 fase B: GROUP BY cohort (não mais tier) — mesmo predicado firstSend,
@@ -213,7 +203,6 @@ export function computeStoreSummary(
   );
   return {
     total: count(db, "SELECT COUNT(*) n FROM clarice_users"),
-    cycle_start: cycleStart,
     brevo: {
       synced_rows: count(
         db,
@@ -297,7 +286,7 @@ export function computeStoreSummary(
     // #2865: coluna Brevo do histograma de priority_points — mesmo universo
     // (sem internos, #2809) do histograma total/verified acima.
     priority_points_histogram_brevo: ppHistPair.brevo,
-    cohort_stats: computeCohortStats(db, cycleStart),
+    cohort_stats: computeCohortStats(db),
     mv: groupCounts(
       db,
       "SELECT COALESCE(mv_bucket,'none') AS k, COUNT(*) n FROM clarice_users GROUP BY COALESCE(mv_bucket,'none')",
@@ -310,98 +299,67 @@ export function computeStoreSummary(
 }
 
 /**
- * #2864: agrega por cohort num scan único (mesmo padrão de
- * `groupCountsWithVerified` acima) as métricas comparativas da aba "Cohorts":
- * contatos, elegíveis, quem já recebeu ≥1 envio, quem abriu/clicou/saiu dentre
- * os que receberam, quem está na Brevo, e — #2909 — quem recebeu NO CICLO
- * corrente (`last_sent_at >= cycleStart`). Exclui INTERNAL_EMAILS (#2809) —
- * mesmo racional do bloco priority_points: engajamento de ofício não é sinal de
- * comportamento de audiência e distorceria a comparação entre cohorts.
+ * #2864: agrega por cohort as métricas comparativas da aba "Cohorts": contatos,
+ * elegíveis, quem já recebeu ≥1 envio, quem é elegível e NUNCA recebeu (fila
+ * real de 1º envio — `isFirstSend`, mesmo predicado que a rampa usa pra montar
+ * as waves, #4406), quem abriu/clicou/saiu dentre os que receberam, e quem
+ * está na Brevo. Exclui INTERNAL_EMAILS (#2809) — engajamento de ofício não é
+ * sinal de comportamento de audiência e distorceria a comparação entre
+ * cohorts.
  *
- * #2909: `cycleStart` (ISO 8601 ou null) é BOUND no `?` do SELECT (antes dos
- * INTERNAL_PARAMS do WHERE — ordem posicional do SQLite). `null` → o predicado
- * `last_sent_at >= NULL` vira NULL → CASE ELSE → received_this_cycle=0 pra todos
- * (o render suprime pra "—" via cycle_start top-level). `sends_sum`/`mv_verified`
- * foram removidos (#2909 — não serviam ao planejamento do envio do mês).
+ * Scan em JS (não SQL `GROUP BY cohort`) desde o #4406: a chave de agregação
+ * não é mais só a coluna `cohort` — um contato jurídico (`isJuridicoEmail`,
+ * clarice-sector.ts, classificação por regex sobre o e-mail) entra na linha
+ * `COHORT_JURIDICO` EM VEZ DA sua safra real (decisão do editor: "cada
+ * contato só pode estar em um cohort por vez" — a mesma partição de sempre,
+ * sem caso especial de dupla-contagem). SQLite não expressa essa regex sem
+ * duplicar os padrões dentro da query, e o full-scan em JS já era o caminho
+ * usado aqui antes (a linha jurídica vivia numa tabela separada com scan
+ * próprio) — unificar num scan só é estritamente MENOS trabalho, não mais.
  */
-function computeCohortStats(
-  db: DatabaseSync,
-  cycleStart: string | null,
-): Record<string, WrittenCohortStatsRow> {
-  const sql = `
-    SELECT
-      cohort AS k,
-      COUNT(*) AS contacts,
-      SUM(CASE WHEN send_eligible=1 THEN 1 ELSE 0 END) AS eligible,
-      SUM(CASE WHEN sends_count>0 THEN 1 ELSE 0 END) AS received,
-      SUM(CASE WHEN last_sent_at IS NOT NULL AND last_sent_at >= ? THEN 1 ELSE 0 END) AS received_this_cycle,
-      SUM(CASE WHEN sends_count>0 AND opens_count>0 THEN 1 ELSE 0 END) AS opened,
-      SUM(CASE WHEN sends_count>0 AND clicks_count>0 THEN 1 ELSE 0 END) AS clicked,
-      SUM(CASE WHEN sends_count>0 AND unsubscribed=1 THEN 1 ELSE 0 END) AS unsub,
-      SUM(CASE WHEN sends_count>0 AND hard_bounced=1 THEN 1 ELSE 0 END) AS hard_bounce,
-      ${BREVO_SYNCED_CASE} AS brevo
+function computeCohortStats(db: DatabaseSync): Record<string, WrittenCohortStatsRow> {
+  const rows = db.prepare(`
+    SELECT email, cohort, send_eligible, sends_count, opens_count, clicks_count,
+           unsubscribed, hard_bounced, brevo_list_ids
     FROM clarice_users
     WHERE ${NOT_INTERNAL_SQL}
-    GROUP BY cohort
-  `;
-  const out: Record<string, WrittenCohortStatsRow> = {};
-  const rows = db.prepare(sql).all(cycleStart, ...INTERNAL_PARAMS) as Array<{
-    k: unknown;
-    contacts: number;
-    eligible: number;
-    received: number;
-    received_this_cycle: number;
-    opened: number;
-    clicked: number;
-    unsub: number;
-    hard_bounce: number;
-    brevo: number;
+  `).all(...INTERNAL_PARAMS) as Array<{
+    email: string;
+    cohort: string | null;
+    send_eligible: number;
+    sends_count: number | null;
+    opens_count: number | null;
+    clicks_count: number | null;
+    unsubscribed: number;
+    hard_bounced: number;
+    brevo_list_ids: string | null;
   }>;
+
+  const out: Record<string, WrittenCohortStatsRow> = {};
+  const blank = (): WrittenCohortStatsRow => ({
+    contacts: 0, eligible: 0, received: 0, eligible_never_sent: 0,
+    opened: 0, clicked: 0, unsub: 0, hard_bounce: 0, brevo: 0,
+  });
+
   for (const r of rows) {
-    const key = r.k == null ? "null" : String(r.k);
-    out[key] = {
-      contacts: r.contacts,
-      eligible: r.eligible,
-      received: r.received,
-      received_this_cycle: r.received_this_cycle,
-      opened: r.opened,
-      clicked: r.clicked,
-      unsub: r.unsub,
-      hard_bounce: r.hard_bounce,
-      brevo: r.brevo,
-    };
+    const key = isJuridicoEmail(r.email)
+      ? COHORT_JURIDICO
+      : r.cohort == null ? "null" : String(r.cohort);
+    const row = (out[key] ??= blank());
+    const recebeu = (r.sends_count ?? 0) > 0;
+    row.contacts++;
+    if (r.send_eligible === 1) row.eligible++;
+    if (recebeu) row.received++;
+    if (isFirstSend({ send_eligible: r.send_eligible, sends_count: r.sends_count ?? 0 })) {
+      row.eligible_never_sent++;
+    }
+    if (recebeu && (r.opens_count ?? 0) > 0) row.opened++;
+    if (recebeu && (r.clicks_count ?? 0) > 0) row.clicked++;
+    if (recebeu && r.unsubscribed === 1) row.unsub++;
+    if (recebeu && r.hard_bounced === 1) row.hard_bounce++;
+    if (r.brevo_list_ids !== null) row.brevo++;
   }
   return out;
-}
-
-/**
- * #2923 (substitui a fonte do #2909): início do ciclo de envio corrente = 1º
- * dia do MÊS CORRENTE, 00:00 em BRT (America/Sao_Paulo).
- *
- * A fonte antiga (menor `scheduledAt` do `send-plan.json` do ciclo mais
- * recente em `data/clarice-subscribers/`) nunca é gravada pelo pipeline
- * real — nem a rampa diária (que grava `sends/dNN-DDmon.csv`, sem plano
- * consolidado), nem o digest mensal/ABC (enviado manualmente via Brevo, sem
- * arquivo nenhum) — então `cycle_start` ficava sempre `null` e "Recebeu
- * neste ciclo" sempre "—" (#2923).
- *
- * "Ciclo" aqui = mês corrente — casa com o objetivo do editor de não repetir
- * envio no mesmo mês (recomendação registrada no #2923). Fuso BRT (não UTC)
- * porque a operação/audiência é brasileira: um envio às 23h de BRT do
- * último dia do mês não pode contar como "mês seguinte" só porque já virou
- * o dia em UTC.
- *
- * É um conceito DIFERENTE do ciclo de COBRANÇA Brevo (dia 4, 15:45 BRT —
- * ver `workers/brevo-dashboard/src/billing-cycle.ts`, #2910) — os dois NÃO
- * se alinham por design (confirmado pelo editor 260703); não reconciliar.
- *
- * Pura (sem I/O) — sempre retorna um valor válido (nunca `null`: "início do
- * mês corrente" está sempre definido). `now` injetável pra teste; produção
- * usa a hora atual.
- */
-export function deriveCycleStart(now: Date = new Date()): string {
-  const { year, month } = datePartsInTz(now, BRT_TIMEZONE);
-  return zonedTimeToUtc(year, month, 1, 0, 0, 0, BRT_TIMEZONE).toISOString();
 }
 
 export async function main(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -410,12 +368,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
   const dryRun = hasFlag(argv, "dry-run");
 
   const db = openClariceDb(dbPath);
-  // #2923: início do ciclo corrente (1º dia do mês, BRT) pra "recebeu neste
-  // ciclo"/"falta enviar". Sempre definido (pura, sem I/O) — não depende mais
-  // de send-plan.json (#2909, nunca gravado pelo pipeline real).
-  const cycleStart = deriveCycleStart();
-  console.error(`[clarice-db-summary] cycle_start = ${cycleStart}`);
-  const summary = computeStoreSummary(db, cycleStart);
+  const summary = computeStoreSummary(db);
   db.close();
 
   const payload = { generated_at: new Date().toISOString(), ...summary };

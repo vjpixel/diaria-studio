@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeStoreSummary, deriveCycleStart } from "../scripts/clarice-db-summary.ts";
+import { computeStoreSummary } from "../scripts/clarice-db-summary.ts";
 import { openClariceDb, recomputeDerived } from "../scripts/lib/clarice-db.ts";
-import { COHORT_ASSINANTES_ATIVOS, COHORT_EX_ASSINANTES } from "../scripts/lib/cohorts.ts";
+import { COHORT_ASSINANTES_ATIVOS, COHORT_EX_ASSINANTES, COHORT_JURIDICO } from "../scripts/lib/cohorts.ts";
 
 test("computeStoreSummary: agrega tier/elegibilidade/pontos/mv/engajamento", () => {
   const db = openClariceDb(":memory:");
@@ -406,115 +406,73 @@ test("computeStoreSummary: cohort_stats NÃO tem mais priority_points_sum (#2884
 });
 
 // ---------------------------------------------------------------------------
-// #2909 — cycle_start + received_this_cycle (planejar envio do mês sem repetir)
+// #4406 — cohort_stats[x].eligible_never_sent ("Falta 1º envio", substitui
+// cycle_start/received_this_cycle do #2909/#2923) + linha virtual "juridico"
 // ---------------------------------------------------------------------------
 
-test("computeStoreSummary: cycle_start é propagado ao payload (injetável); default null", () => {
-  const db = openClariceDb(":memory:");
-  db.prepare("INSERT INTO clarice_users (email, tier) VALUES ('a@x.com',1)").run();
-  recomputeDerived(db);
-
-  assert.equal(computeStoreSummary(db).cycle_start, null, "default = null (sem ciclo)");
-  assert.equal(
-    computeStoreSummary(db, "2026-06-01T00:00:00Z").cycle_start,
-    "2026-06-01T00:00:00Z",
-    "cycleStart injetado propaga ao payload",
-  );
-  db.close();
-});
-
-test("computeStoreSummary: received_this_cycle conta last_sent_at >= cycle_start (boundary inclusivo) por cohort (#2909)", () => {
+test("computeStoreSummary: eligible_never_sent conta send_eligible=1 AND sends_count<=0 por cohort (#4406)", () => {
   const db = openClariceDb(":memory:");
   const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
-  const cycleStart = "2026-06-01T00:00:00Z";
 
   // assinantes-ativos (tier 1):
-  //   a: enviado DENTRO do ciclo (depois do início) → conta
-  ins("INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('a@x.com',1,1,'2026-06-10T00:00:00Z')");
-  //   d: enviado EXATAMENTE no início do ciclo → conta (>= é inclusivo)
-  ins("INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('d@x.com',1,1,'2026-06-01T00:00:00Z')");
-  //   b: enviado ANTES do ciclo → recebeu (sends>0) mas NÃO neste ciclo
-  ins("INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('b@x.com',1,1,'2026-05-31T23:59:59Z')");
-  //   c: nunca enviado (last_sent_at NULL) → não conta em nenhum
-  ins("INSERT INTO clarice_users (email, tier) VALUES ('c@x.com',1)");
+  //   a: elegível, nunca enviado (sends_count NULL) → conta
+  ins("INSERT INTO clarice_users (email, tier) VALUES ('a@x.com',1)");
+  //   b: elegível, nunca enviado (sends_count=0 explícito) → conta
+  ins("INSERT INTO clarice_users (email, tier, sends_count) VALUES ('b@x.com',1,0)");
+  //   c: elegível, JÁ recebeu (sends_count>0) → não conta
+  ins("INSERT INTO clarice_users (email, tier, sends_count) VALUES ('c@x.com',1,2)");
+  //   d: inelegível (unsub), nunca enviado → não conta (send_eligible=0)
+  ins("INSERT INTO clarice_users (email, tier, unsubscribed) VALUES ('d@x.com',1,1)");
   recomputeDerived(db);
 
-  const s = computeStoreSummary(db, cycleStart);
+  const s = computeStoreSummary(db);
   const row = s.cohort_stats[COHORT_ASSINANTES_ATIVOS];
   assert.equal(row.contacts, 4, "a,b,c,d");
-  assert.equal(row.received, 3, "a,b,d têm sends_count>0");
-  assert.equal(row.received_this_cycle, 2, "só a e d (last_sent_at >= cycle_start; b é anterior, c null)");
-  // "falta enviar" = eligible − received_this_cycle é calculado no render; aqui
-  // só validamos os insumos (eligible dos 4 — todos elegíveis, nenhum saiu).
-  assert.equal(row.eligible, 4, "nenhum inelegível");
+  assert.equal(row.eligible, 3, "a,b,c — d é inelegível (unsub)");
+  assert.equal(row.eligible_never_sent, 2, "só a e b — c já recebeu, d é inelegível");
+  assert.ok(row.eligible_never_sent <= row.eligible, "invariante: nunca-enviados é subconjunto de elegíveis");
 
   db.close();
 });
 
-test("computeStoreSummary: cycleStart=null → received_this_cycle=0 pra todos (last_sent_at >= NULL é NULL/0), sem quebrar (#2909)", () => {
+test("computeStoreSummary: eligible_never_sent NÃO subtrai — quem recebeu e depois descadastrou não é contado como falta 1º envio (regressão do bug do #2909)", () => {
+  // A coluna antiga ("Falta enviar" = eligible − received_this_cycle) podia
+  // subestimar quem falta quando alguém recebia e saía depois — o subtraendo
+  // não filtrava elegibilidade. eligible_never_sent não tem esse problema por
+  // construção: é computado DIRETO por isFirstSend, sem subtração nenhuma.
   const db = openClariceDb(":memory:");
-  db.prepare("INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('a@x.com',1,1,'2026-06-10T00:00:00Z')").run();
+  // recebeu 1 envio e depois descadastrou → sends_count>0, isFirstSend=false.
+  db.prepare(
+    "INSERT INTO clarice_users (email, tier, sends_count, unsubscribed) VALUES ('a@x.com',1,1,1)",
+  ).run();
   recomputeDerived(db);
 
-  const s = computeStoreSummary(db, null);
-  assert.equal(s.cycle_start, null);
-  assert.equal(s.cohort_stats[COHORT_ASSINANTES_ATIVOS].received_this_cycle, 0, "sem ciclo → 0 (render mostra —)");
+  const s = computeStoreSummary(db);
+  const row = s.cohort_stats[COHORT_ASSINANTES_ATIVOS];
+  assert.equal(row.eligible, 0, "descadastrado é inelegível");
+  assert.equal(row.eligible_never_sent, 0, "já recebeu — nunca deveria contar como 'falta 1º envio'");
+
   db.close();
 });
 
-// ---------------------------------------------------------------------------
-// #2923 — deriveCycleStart: 1º dia do mês corrente (BRT), não mais
-// send-plan.json (o pipeline real nunca grava esse arquivo — cycle_start
-// ficava sempre null, "Recebeu neste ciclo" sempre "—").
-// ---------------------------------------------------------------------------
-
-test("deriveCycleStart: meio do mês → 1º dia às 00:00 BRT (03:00 UTC), formato ISO (#2923)", () => {
-  // 15/jun/2026 12:00 UTC = 09:00 BRT (meio do mês, sem ambiguidade de fronteira).
-  const now = new Date("2026-06-15T12:00:00Z");
-  assert.equal(deriveCycleStart(now), "2026-06-01T03:00:00.000Z");
-});
-
-test("deriveCycleStart: virada de mês/ano (31/dez → 1/jan) resolve pro ANO/MÊS corretos (#2923)", () => {
-  const now = new Date("2026-12-20T12:00:00Z");
-  assert.equal(deriveCycleStart(now), "2026-12-01T03:00:00.000Z");
-});
-
-test("deriveCycleStart: 1º dia do mês, ANTES da meia-noite BRT → ainda no mês anterior (fronteira, #2923)", () => {
-  // 2026-07-01T02:59:59Z = 2026-06-30T23:59:59 BRT (ainda junho em BRT).
-  const now = new Date("2026-07-01T02:59:59Z");
-  assert.equal(deriveCycleStart(now), "2026-06-01T03:00:00.000Z");
-});
-
-test("deriveCycleStart: 1º dia do mês, DEPOIS da meia-noite BRT → já no mês novo (fronteira, #2923)", () => {
-  // 2026-07-01T03:00:01Z = 2026-07-01T00:00:01 BRT (já julho em BRT).
-  const now = new Date("2026-07-01T03:00:01Z");
-  assert.equal(deriveCycleStart(now), "2026-07-01T03:00:00.000Z");
-});
-
-test("deriveCycleStart: default (sem argumento) usa a hora atual — sempre retorna string, nunca null/lança (#2923)", () => {
-  const iso = deriveCycleStart();
-  assert.equal(typeof iso, "string");
-  assert.ok(!Number.isNaN(Date.parse(iso)), "deve ser ISO 8601 parseável");
-});
-
-test("computeStoreSummary + deriveCycleStart: fonte real (mês corrente) popula received_this_cycle, sem depender de send-plan.json (#2923)", () => {
+test("computeStoreSummary: contato jurídico entra na linha 'juridico' EM VEZ da safra real — nunca nas duas (#4406)", () => {
   const db = openClariceDb(":memory:");
-  const now = new Date("2026-06-15T12:00:00Z");
-  const cycleStart = deriveCycleStart(now);
-  db.prepare(
-    "INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('a@x.com',1,1,'2026-06-10T00:00:00Z')",
-  ).run();
-  db.prepare(
-    "INSERT INTO clarice_users (email, tier, sends_count, last_sent_at) VALUES ('b@x.com',1,1,'2026-05-20T00:00:00Z')",
-  ).run();
+  const ins = (sql: string, ...a: unknown[]) => db.prepare(sql).run(...a);
+
+  // advogado.fulano@gmail.com bateria em assinantes-ativos (tier 1) se não
+  // fosse jurídico — a classificação por e-mail tem PRECEDÊNCIA sobre cohort.
+  ins("INSERT INTO clarice_users (email, tier) VALUES ('advogado.fulano@gmail.com',1)");
+  // real@x.com não é jurídico — permanece na safra normal.
+  ins("INSERT INTO clarice_users (email, tier) VALUES ('real@x.com',1)");
   recomputeDerived(db);
 
-  const s = computeStoreSummary(db, cycleStart);
-  assert.notEqual(s.cycle_start, null, "cycle_start não é mais null (bug do #2923)");
-  assert.equal(
-    s.cohort_stats[COHORT_ASSINANTES_ATIVOS].received_this_cycle,
-    1,
-    "só a@x.com (enviado em junho) conta; b@x.com foi enviado em maio",
-  );
+  const s = computeStoreSummary(db);
+  assert.equal(s.cohort_stats[COHORT_JURIDICO]?.contacts, 1, "só o advogado entra em 'juridico'");
+  assert.equal(s.cohort_stats[COHORT_ASSINANTES_ATIVOS].contacts, 1, "só real@x.com fica em assinantes-ativos");
+  // Partição: soma de TODAS as linhas continua batendo com total-internos —
+  // nenhum contato duplicado, nenhum perdido pela reclassificação.
+  const totalCohortContacts = Object.values(s.cohort_stats).reduce((acc, c) => acc + c.contacts, 0);
+  assert.equal(totalCohortContacts, s.total - s.priority_points.internal_excluded);
+
   db.close();
 });

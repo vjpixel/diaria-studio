@@ -963,12 +963,8 @@ export const COHORTS_COLUMNS: Array<{ label: string; tooltip: string }> = [
   { label: "Elegíveis", tooltip: "Contatos elegíveis para envio (send_eligible=1)" },
   { label: "Recebeu ≥1", tooltip: "Contatos que já receberam ao menos 1 envio (sends_count>0)" },
   {
-    label: "Recebeu neste ciclo",
-    tooltip: "Contatos do cohort que receberam no ciclo atual (last_sent_at ≥ início do ciclo)",
-  },
-  {
-    label: "Falta enviar",
-    tooltip: "Elegíveis que ainda faltam receber neste ciclo (Elegíveis − Recebeu neste ciclo, mínimo 0)",
+    label: "Falta 1º envio",
+    tooltip: "Elegíveis que nunca receberam nenhum envio (send_eligible=1 e sends_count=0) — a fila real de 1º envio, mesma definição que a rampa usa pra montar as waves.",
   },
   { label: "Abertura", tooltip: "% de quem recebeu que abriu ao menos 1 envio" },
   { label: "Clique", tooltip: "% de quem recebeu que clicou ao menos 1 envio" },
@@ -978,9 +974,6 @@ export const COHORTS_COLUMNS: Array<{ label: string; tooltip: string }> = [
 
 export function renderCohortsTabPanel(
   cohortStats: Record<string, CohortStatsRow> | undefined,
-  // #2909: início do ciclo corrente (ISO). Presente → colunas "Recebeu neste
-  // ciclo"/"Falta enviar" exibem números; null/undefined → "—" (sem ciclo).
-  cycleStart: string | null = null,
 ): string {
   // #2660 (review #2872): payload AUSENTE (KV antigo, script nunca rodou) ≠
   // payload VAZIO (script rodou, store sem cohorts) — mensagens distintas.
@@ -1003,18 +996,16 @@ export function renderCohortsTabPanel(
   // ausente → divisão vira NaN; sem o guard, vaza "NaN%" e envenena colAvg.
   // numOrDash/pctOrDash: extraídos pra módulo (#2875) — ver acima.
 
-  // #2909: sem cycleStart não há ciclo definido → as colunas "recebeu neste
-  // ciclo"/"falta enviar" viram "—" (nulas, não 0). "" também conta como sem ciclo.
-  const hasCycle = !!cycleStart;
-  const cycleDash = "—";
-
   type Row = {
     cohort: string;
     contacts: number;
     brevo: number;
     eligible: number;
     received: number;
-    receivedThisCycle: number; // #2909: last_sent_at >= cycle_start
+    // #4406: "Falta 1º envio" — elegível e nunca recebeu (isFirstSend). `null`
+    // = campo ausente no KV (payload pré-#4406) — distinto de `0`, que
+    // significaria "ninguém falta" (ver normalizeCohortStatsRow, brevo-api.ts).
+    eligibleNeverSent: number | null;
     // contagens brutas (pro Total agregar taxas corretamente, #2880 E)
     opened: number;
     clicked: number;
@@ -1037,8 +1028,7 @@ export function renderCohortsTabPanel(
       brevo: c.brevo ?? 0,
       eligible: c.eligible,
       received: c.received,
-      // #2909: `?? 0` degrada KV pré-#2909; só é EXIBIDO quando hasCycle.
-      receivedThisCycle: c.received_this_cycle ?? 0,
+      eligibleNeverSent: c.eligible_never_sent ?? null,
       opened: c.opened ?? 0,
       clicked: c.clicked ?? 0,
       // #2880 G: unsub e bounce separados. `?? unsub_bounce ?? 0`: degrada em KV
@@ -1104,19 +1094,13 @@ export function renderCohortsTabPanel(
     return `<td>${text}</td>`;
   };
 
-  // #2909: célula "recebeu neste ciclo"/"falta enviar" — número quando há ciclo,
-  // "—" quando não (null-safe). "falta enviar" = elegíveis − recebeu no ciclo.
-  const cycleCell = (value: number): string =>
-    hasCycle ? n(value) : cycleDash;
-
   const renderCohortRow = (r: Row): string => `<tr>
       <td>${escHtml(cohortLabel(r.cohort === "null" ? null : r.cohort))}</td>
       <td>${n(r.contacts)}</td>
       <td>${n(r.brevo)}</td>
       <td>${n(r.eligible)}</td>
       <td>${n(r.received)}</td>
-      <td>${cycleCell(r.receivedThisCycle)}</td>
-      <td>${cycleCell(Math.max(0, r.eligible - r.receivedThisCycle))}</td>
+      <td>${countOrDash(r.eligibleNeverSent)}</td>
       ${renderRateCell(r.openRate, avgOpen, "higher")}
       ${renderRateCell(r.clickRate, avgClick, "higher")}
       ${renderRateCell(r.unsubRate, avgUnsub, "lower")}
@@ -1136,21 +1120,29 @@ export function renderCohortsTabPanel(
         brevo: a.brevo + r.brevo,
         eligible: a.eligible + r.eligible,
         received: a.received + r.received,
-        receivedThisCycle: a.receivedThisCycle + r.receivedThisCycle,
         opened: a.opened + r.opened,
         clicked: a.clicked + r.clicked,
         unsub: a.unsub + r.unsub,
         hardBounce: a.hardBounce + r.hardBounce,
       }),
-      { contacts: 0, brevo: 0, eligible: 0, received: 0, receivedThisCycle: 0, opened: 0, clicked: 0, unsub: 0, hardBounce: 0 },
+      { contacts: 0, brevo: 0, eligible: 0, received: 0, opened: 0, clicked: 0, unsub: 0, hardBounce: 0 },
     );
+  // #4406: soma de "Falta 1º envio" separada de `sumRows` — payload é
+  // all-or-nothing por snapshot KV (o writer sempre popula o campo em toda
+  // linha; só um KV pré-#4406 inteiro tem TODAS as linhas ausentes), mas o
+  // Total precisa distinguir "soma real = 0" de "não sei" (nenhuma linha
+  // tinha o campo) — daí não usar 0 como elemento neutro do reduce genérico.
+  const sumEligibleNeverSent = (rowsForTotal: Row[]): number | null => {
+    const present = rowsForTotal.map((r) => r.eligibleNeverSent).filter((v): v is number => v != null);
+    return present.length > 0 ? present.reduce((a, b) => a + b, 0) : null;
+  };
   // #2880 E: taxas AGREGADAS (Σnum/Σrecebeu, não média de taxas) — a taxa real
-  // do conjunto. "Falta enviar" = Σelegíveis − Σrecebeu_ciclo. Sem destaque de
-  // desvio (Total nunca ganha ▲/▼). Reusada pelas duas tabelas: no <details>
-  // de nunca-enviados `tot.received` é sempre 0 por construção (linhas
-  // filtradas por `received === 0`), então `totRate` degrada pra `null` e as
-  // taxas caem em "—" NATURALMENTE — não é um caso especial hardcoded.
-  const renderTotalRow = (tot: ReturnType<typeof sumRows>): string => {
+  // do conjunto. Sem destaque de desvio (Total nunca ganha ▲/▼). Reusada pelas
+  // duas tabelas: no <details> de nunca-enviados `tot.received` é sempre 0 por
+  // construção (linhas filtradas por `received === 0`), então `totRate`
+  // degrada pra `null` e as taxas caem em "—" NATURALMENTE — não é um caso
+  // especial hardcoded.
+  const renderTotalRow = (tot: ReturnType<typeof sumRows>, eligibleNeverSentTotal: number | null): string => {
     const totRate = (num: number): number | null => (tot.received > 0 ? (num / tot.received) * 100 : null);
     return `<tr class="total-row">
       <td>Total</td>
@@ -1158,8 +1150,7 @@ export function renderCohortsTabPanel(
       <td>${n(tot.brevo)}</td>
       <td>${n(tot.eligible)}</td>
       <td>${n(tot.received)}</td>
-      <td>${cycleCell(tot.receivedThisCycle)}</td>
-      <td>${cycleCell(Math.max(0, tot.eligible - tot.receivedThisCycle))}</td>
+      <td>${countOrDash(eligibleNeverSentTotal)}</td>
       <td>${pctOrDash(totRate(tot.opened))}</td>
       <td>${pctOrDash(totRate(tot.clicked))}</td>
       <td>${pctOrDash(totRate(tot.unsub))}</td>
@@ -1169,11 +1160,11 @@ export function renderCohortsTabPanel(
   const tot = sumRows(activeRows);
   // Total só quando há ≥1 cohort ativo (senão a tabela principal fica vazia — as
   // linhas foram todas pro <details> de nunca-enviados).
-  const totalRow = activeRows.length ? renderTotalRow(tot) : "";
+  const totalRow = activeRows.length ? renderTotalRow(tot, sumEligibleNeverSent(activeRows)) : "";
 
   // #2908: header compartilhado entre a tabela ativa e o <details> de
-  // nunca-enviados (mesmas colunas). 11 colunas (#2909: −Envios(Σ)/−MV verified,
-  // +Recebeu neste ciclo/+Falta enviar).
+  // nunca-enviados (mesmas colunas). 10 colunas (#4406: as antigas "Recebeu
+  // neste ciclo"/"Falta enviar" viraram uma única "Falta 1º envio").
   // #3090: gerado de COHORTS_COLUMNS (mesma fonte do glossário abaixo) — sem
   // duplicar texto entre o title= (hover) e o glossário (sempre visível).
   const headerRow = `<tr>
@@ -1198,22 +1189,18 @@ ${COHORTS_COLUMNS.map((c) => `        <th scope="col" title="${escHtml(c.tooltip
     <table>
       <thead>${headerRow}</thead>
       <tbody>${neverSentRows.map(renderCohortRow).join("\n")}
-${renderTotalRow(neverSentTotal)}</tbody>
+${renderTotalRow(neverSentTotal, sumEligibleNeverSent(neverSentRows))}</tbody>
     </table>
     </div>
   </details>`
     : "";
-
-  const cycleNote = hasCycle
-    ? `<strong>Recebeu neste ciclo</strong>/<strong>Falta enviar</strong> refletem o ciclo de envio corrente (last_sent_at ≥ início do ciclo, derivado do send-plan); "Falta enviar" = Elegíveis − Recebeu neste ciclo (mínimo 0 — recebeu pode passar de elegíveis quando há descadastro/bounce pós-envio).`
-    : `<strong>Recebeu neste ciclo</strong>/<strong>Falta enviar</strong> exibem "—" — nenhum ciclo de envio com send-plan legível.`;
 
   // #3092: takeaway curto sempre visível + metodologia completa (taxas,
   // marcação de desvio, linha Total) num <details> "Como ler esta tabela" —
   // o parágrafo original tinha 6-10 linhas e citava issues internas (#2864,
   // #2809, #3091, #2908), jargão que não ajuda o editor a ler o dado.
   const cohortsTakeaway = `Comparativo de envio e engajamento por cohort, ordenado pela fila real de 1º envio (mais morno → mais frio).`;
-  const cohortsMethodology = `Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>. ${cycleNote} Exclui e-mails internos (mesmo filtro do Score de re-envio). Células que desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna ganham <strong>▲</strong> (desvio favorável — abertura/clique acima da média, ou unsub/bounce abaixo dela) ou <span class="alert-label">▼ vermelho</span> (desvio desfavorável — o mesmo "ruim" do resto do dashboard). A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas, e não recebe essa marcação. Cohorts que nunca receberam envio ficam recolhidos abaixo, numa lista separada — com a própria linha Total (#4257).`;
+  const cohortsMethodology = `Abertura/Clique/Unsub/Bounce são <strong>taxas</strong> sobre quem <strong>recebeu ≥1 envio</strong>. <strong>Falta 1º envio</strong> = elegíveis que nunca receberam nenhum envio (<code>send_eligible=1</code> e <code>sends_count=0</code>) — a fila real de 1º envio, mesma definição que a rampa usa pra montar as waves; não reflete campanha já AGENDADA mas ainda não disparada (sync Brevo roda 1×/dia, até 24h de defasagem — quem de fato impede reenvio é o cruzamento com campanhas <code>queued</code>/<code>sent</code> na Brevo, não este número). <strong>Jurídico</strong> é uma linha própria (cohort virtual): um contato do setor jurídico entra AQUI em vez da safra de cadastro — nunca nas duas, mesmo invariante de partição das demais linhas. Exclui e-mails internos (mesmo filtro do Score de re-envio). Células que desviam mais de ${COHORT_DEVIATION_THRESHOLD_PP} pontos percentuais da média da coluna ganham <strong>▲</strong> (desvio favorável — abertura/clique acima da média, ou unsub/bounce abaixo dela) ou <span class="alert-label">▼ vermelho</span> (desvio desfavorável — o mesmo "ruim" do resto do dashboard). A linha <strong>Total</strong> usa taxas agregadas (Σ/Σ), não média das linhas, e não recebe essa marcação. Cohorts que nunca receberam envio ficam recolhidos abaixo, numa lista separada — com a própria linha Total (#4257).`;
 
   return `
 <section class="phase2-section" id="cohorts-tab">

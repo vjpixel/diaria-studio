@@ -85,10 +85,12 @@ export interface CohortStatsRow {
   eligible: number;
   /** sends_count>0 — "já recebeu ao menos 1 envio". */
   received: number;
-  /** #2909: last_sent_at >= cycle_start — recebeu no CICLO corrente. Opcional
-   * (`?`): KV pré-#2909 não tem o campo — render degrada pra 0 (e só o usa
-   * quando `ContactsSummary.cycle_start` está presente). */
-  received_this_cycle?: number;
+  /** #4406: send_eligible=1 AND sends_count=0 ("Falta 1º envio") — elegível
+   * que nunca recebeu nenhum envio, a fila real de 1º envio (mesma definição
+   * de `isFirstSend`, scripts/lib/clarice-segment.ts). Opcional (`?`): KV
+   * pré-#4406 não tem o campo — render trata AUSENTE como "—" (dado
+   * desconhecido), nunca como 0 (que leria como "não falta ninguém"). */
+  eligible_never_sent?: number;
   /** sends_count>0 AND opens_count>0 — abriu ≥1, dentre quem recebeu. */
   opened: number;
   /** sends_count>0 AND clicks_count>0 — clicou ≥1, dentre quem recebeu. */
@@ -194,10 +196,6 @@ export type LinkSectionMap = Record<string, LinkSectionName[]>;
 export interface ContactsSummary {
   generated_at: string;
   total: number;
-  // #2909: início do ciclo de envio corrente, ou null se não há ciclo com
-  // plano legível. A tabela Cohorts usa isto pra decidir se exibe "recebeu
-  // neste ciclo"/"falta enviar" (número) ou "—" (sem ciclo).
-  cycle_start?: string | null;
   brevo: { synced_rows: number; has_signal: boolean };
   eligibility: {
     eligible: number;
@@ -230,7 +228,9 @@ export interface ContactsSummary {
   // opcional, degrade gracioso (KV antigo sem o campo → sem a coluna).
   priority_points_histogram_brevo?: Record<string, number>;
   // #2864: comparativo de envio/engajamento por cohort. Opcional — KV antigo
-  // sem o campo faz a aba renderizar o stub "dados ainda não gerados".
+  // sem o campo faz a aba renderizar o stub "dados ainda não gerados". Chave
+  // "juridico" (#4406, COHORT_JURIDICO): contato jurídico entra aqui em vez
+  // da safra real — mesma linha, não uma tabela separada.
   cohort_stats?: Record<string, CohortStatsRow>;
   mv: Record<string, number>;
   engagement: { with_opens: number; with_clicks: number };
