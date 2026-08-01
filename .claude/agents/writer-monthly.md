@@ -93,9 +93,23 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    - **`selection == "fallback_last"` com `edition` presente:** escrever o recap dessa edição SEM afirmar que foi "a mais dividida/ambígua" — nenhuma edição do mês teve poll elegível (`reason` explica o motivo: sem gabarito ou poucos votos). Frasear como recap do encerramento do mês, não como vencedora de um critério.
    - **`selection == "criterion"`:** escrever 1-2 parágrafos citando a edição (`edition`, convertido pra data por extenso — ex: `260616` → "16 de junho"), o `pct_correct`% de acerto, e uma breve análise do que tornou aquela imagem difícil/interessante. Se `data/editions/{edition}/_internal/01-eia-meta.json` existir, usar os campos `wikimedia.title`/`wikimedia.credit` pra fundamentar a análise — nunca inventar detalhes da imagem que não estejam nesses campos.
 
-   Encerramento padrão: `Quer sugerir um tema, responder a uma análise ou compartilhar a diar.ia.br com um colega? Responda a este e-mail. Leio cada um. Se ainda não recebe a diar.ia.br diária, assine em https://diar.ia.br/?utm_source=clarice.` (o parâmetro utm_source é obrigatório — rastreia assinantes que vieram pela mensal, #2457; `utm_source=clarice` unificado com a APRESENTAÇÃO e com o `utm_source` esperado por `count-subscriptions-by-utm.ts` — #3971 corrigiu a divergência anterior `mensal-brevo`)
+   Encerramento padrão (#4421, decisão do editor 260801 — abertura mais curta, sem "Leio cada um."): `Quer sugerir um tema ou tirar uma dúvida sobre o que está aqui? Responda a este e-mail. Se ainda não recebe a diar.ia.br diária, [assine aqui](https://diar.ia.br/?utm_source=clarice).` (o parâmetro utm_source é obrigatório — rastreia assinantes que vieram pela mensal, #2457; `utm_source=clarice` unificado com a APRESENTAÇÃO e com o `utm_source` esperado por `count-subscriptions-by-utm.ts` — #3971 corrigiu a divergência anterior `mensal-brevo`; link markdown, não URL solta — ver nota de `withClariceUtm` em `context/templates/newsletter-monthly.md`, uma URL crua trava o UTM em `utm_source` só)
 
-   **Parágrafo de apoio + convite social (#3219, sempre presente, nunca parafrasear).** Logo após o parágrafo do encerramento padrão acima, na MESMA seção `PARA ENCERRAR` (2 parágrafos adicionais, sem label novo): ler `context/snippets/encerramento-social-apoio.md` e emitir o corpo do arquivo (sem o comentário HTML de header) literalmente, substituindo o marcador `{{OPENING}}` pela variante MENSAL documentada no header do próprio arquivo — `"Essa edição mensal nasce da **diar.ia.br**, newsletter diária gratuita sobre IA. "` (com o espaço final antes de "Quem quiser"). Resultado esperado (2 parágrafos, nessa ordem): (1) apoio à curadoria via Apoia.se; (2) convite pra interagir no LinkedIn/Facebook. Não reescrever de memória — sempre ler o arquivo, é a mesma fonte usada pelo diário (`scripts/stitch-newsletter.ts`) e um ajuste de texto/link ali deve propagar pros dois formatos sem duplicar a manutenção.
+   **Apoio + ferramentas + curadorias + convite social (#3219/#4413/#4411, sempre presentes, nunca parafrasear).** Logo após o parágrafo do encerramento padrão acima, na MESMA seção `PARA ENCERRAR` (sem label novo antes de cada peça), emitir NESTA ORDEM:
+
+   1. Ler `context/snippets/encerramento-social-apoio.md` e emitir o corpo do arquivo (sem o comentário HTML de header) literalmente, substituindo o marcador `{{OPENING}}` pela variante MENSAL documentada no header do próprio arquivo — `"Essa edição mensal nasce da **diar.ia.br**, newsletter diária gratuita sobre IA. "` (com o espaço final antes de "Apoie"). Resultado esperado: 2 parágrafos — apoio à curadoria via Apoia.se (recompensas em negrito) e créditos das ferramentas de produção.
+   2. A lista de pílulas de curadoria — SEM label manual ("Acesse nossas curadorias:" é gerado pelo render) — literal e verbatim (EXATAMENTE como abaixo, sem indentação), sempre nesta ordem e com estes labels exatos (#4411, constante `CURADORIA_PILLS` em `scripts/lib/shared/encerramento-snippet.ts`):
+
+```
+- [Cursos](https://cursos.diar.ia.br)
+- [Livros](https://livros.diar.ia.br)
+- [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
+```
+   3. O convite social — texto FIXO, idêntico ao diário, nunca parafrasear (#4413, decisão do editor 260801, constante `SOCIAL_INVITE` em `scripts/lib/shared/encerramento-snippet.ts`):
+
+      `Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), [Instagram](https://www.instagram.com/diar.ia.br), [Threads](https://www.threads.net/@diar.ia.br), [Facebook](https://www.facebook.com/diar.ia.br) ou [X](https://x.com/diariabr).`
+
+   Não reescrever nenhuma das 3 peças de memória — os itens 1 e 3 têm fonte única compartilhada com o diário (`scripts/stitch-newsletter.ts`/`scripts/lib/shared/encerramento-snippet.ts`); um ajuste de texto/link nessas fontes deve propagar pros dois formatos sem duplicar a manutenção.
 
 9. **Validar e gravar `out_path`.** Checklist pré-saída:
    - 3 subjects ≤ 70 chars; preview ≤ 100 chars
@@ -105,7 +119,7 @@ Exemplo negativo real (ciclo 2606-07, #2794): o writer emitiu `DESTAQUE 1 | BRAS
    - D1 ≤ 1.500 chars (prosa + fio); D2/D3 ≤ 1.200 chars cada
    - Use Melhor (até 3) + Radar (até 7), formato `título URL\ndescrição 1-2 frases` (warning se menos; Use Melhor pode estar vazio)
    - É IA? presente — texto resolvido (se `eia_selection_path` deu `edition`) ou placeholder (#2904) — e encerramento presentes
-   - `PARA ENCERRAR` inclui, ao final, os 2 parágrafos literais de `context/snippets/encerramento-social-apoio.md` (apoio Apoia.se + convite social) com a abertura mensal substituída (#3219)
+   - `PARA ENCERRAR` inclui, ao final, nesta ordem: os 2 parágrafos literais de `context/snippets/encerramento-social-apoio.md` (apoio Apoia.se + ferramentas) com a abertura mensal substituída (#3219), a lista `CURADORIA_PILLS` (3 pills — Cursos/Livros/Equipamentos, #4411) e o convite social fixo `SOCIAL_INVITE` (#4413)
    - Sem markdown excêntrico no corpo — MAS todo label de seção em negrito `**...**` (#2794); sem links de paywall/agregador
    - `_internal/02-d1-prompt.md`, `02-d2-prompt.md`, `02-d3-prompt.md` gravados (#1916)
 

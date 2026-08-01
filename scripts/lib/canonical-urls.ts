@@ -89,6 +89,19 @@ export const DIARIA_THREADS_SLUG = "threads.net/@diar.ia.br";
 export const DIARIA_THREADS_URL = `https://www.${DIARIA_THREADS_SLUG}`;
 
 /**
+ * Slug/URL canônicos da página da Diar.ia no X/Twitter (#4413). Handle
+ * `@diariabr` — mesmo já usado por `scripts/append-twitter-published.ts`. Sem
+ * `www.` (diferente de Facebook/LinkedIn/Instagram/Threads acima) — o X não
+ * usa esse subdomínio. Centralizado aqui pra parar de hardcodear
+ * `https://x.com/diariabr` em paralelo (`context/snippets/encerramento-social-apoio.md`,
+ * `SOCIAL_INVITE` em `scripts/lib/shared/encerramento-snippet.ts`).
+ */
+export const DIARIA_X_SLUG = "x.com/diariabr";
+
+/** URL completa (com protocolo, sem `www.`) derivada do slug acima. */
+export const DIARIA_X_URL = `https://${DIARIA_X_SLUG}`;
+
+/**
  * URL canônica de apoio financeiro via Apoia.se (#3219) — CTA de apoio à
  * curadoria no bloco ENCERRAMENTO/PARA ENCERRAR (diário e mensal). Ver
  * `context/snippets/encerramento-social-apoio.md`.

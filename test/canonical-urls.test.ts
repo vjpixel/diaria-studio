@@ -273,22 +273,32 @@ describe("URLs canônicas LinkedIn/Instagram/Threads (#2790)", () => {
   // platform.config.json) — Instagram/Threads tinham 1-2. Agora os 4 arquivos
   // de código importam de canonical-urls.ts; scan estático do source garante
   // que ninguém reintroduz um literal duplicado no lugar do import.
+  //
+  // #4413: `scripts/stitch-newsletter.ts` saiu desta lista de IMPORT DIRETO —
+  // o convite social (que usava LinkedIn/Facebook direto) virou o bloco fixo
+  // `SOCIAL_INVITE` em `scripts/lib/shared/encerramento-snippet.ts`, e é ESSE
+  // arquivo que agora importa de canonical-urls.ts (stitch-newsletter.ts só
+  // importa a constante já montada). O banned-literals check abaixo continua
+  // cobrindo `stitch-newsletter.ts` — a garantia real (nunca re-hardcodar os
+  // literais) não depende de QUEM faz o import direto.
   it("consumidores importam de canonical-urls.ts em vez de hardcodar os literais de novo", () => {
     const root = join(import.meta.dirname, "..");
-    const consumers = [
+    const directImportConsumers = [
       "scripts/lib/mensal/monthly-render.ts",
       // #2833: DIARIA_LINKEDIN_PAGE_SLUG import moved from lint-social-md.ts
       // to lib/social-lint-rules.ts (pure extraction) — check the new home.
       "scripts/lib/social-lint-rules.ts",
       "scripts/build-link-ctr.ts",
-      "scripts/stitch-newsletter.ts",
+      // #4413: convite social fixo (SOCIAL_INVITE) — fonte única compartilhada
+      // com o mensal, monta o texto a partir das constantes canônicas.
+      "scripts/lib/shared/encerramento-snippet.ts",
     ];
     const bannedLiterals = [
       "https://www.linkedin.com/company/diar.ia.br",
       "https://www.instagram.com/diar.ia.br",
       "https://www.threads.net/@diar.ia.br",
     ];
-    for (const file of consumers) {
+    for (const file of directImportConsumers) {
       const src = readFileSync(join(root, file), "utf8");
       assert.ok(
         src.includes("canonical-urls.ts"),
@@ -300,6 +310,16 @@ describe("URLs canônicas LinkedIn/Instagram/Threads (#2790)", () => {
           `${file} não deve hardcodar "${literal}" de novo — usar a constante importada`,
         );
       }
+    }
+    // #4413: stitch-newsletter.ts não importa mais canonical-urls.ts direto
+    // (recebe SOCIAL_INVITE já montado via encerramento-snippet.ts), mas
+    // ainda não pode reintroduzir os literais hardcoded.
+    const stitchSrc = readFileSync(join(root, "scripts/stitch-newsletter.ts"), "utf8");
+    for (const literal of bannedLiterals) {
+      assert.ok(
+        !stitchSrc.includes(literal),
+        `scripts/stitch-newsletter.ts não deve hardcodar "${literal}" de novo — usar SOCIAL_INVITE (scripts/lib/shared/encerramento-snippet.ts)`,
+      );
     }
   });
 });

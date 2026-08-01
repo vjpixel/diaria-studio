@@ -3,9 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, buildParaEncerrar, loadParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
+import { renderSection, renderUseMelhorSection, stitchNewsletter, loadClariceCallout, loadDailyCallout, buildParaEncerrar, loadParaEncerrarConfig, type ParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
 import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao2, extractBoxDivulgacao3, BOX0_SENTINEL } from "../scripts/render-newsletter-html.ts";
 import { stripHtml } from "../scripts/lib/clean-summary.ts";
+import { SOCIAL_INVITE } from "../scripts/lib/shared/encerramento-snippet.ts"; // #4413: convite social é bloco fixo
 
 // ─── #4083 — fixtures ESTÁVEIS de boxes_divulgacao ─────────────────────────
 // Testes de MECANISMO de injeção não devem depender do que platform.config.json
@@ -1880,71 +1881,62 @@ describe("renderUseMelhorSection (#2447/#2450)", () => {
   });
 });
 
-// ─── #4274 — PARA ENCERRAR slots A/B editáveis via platform.config.json ────
+// ─── #4274/#4413 — PARA ENCERRAR: slot A editável, convite social fixo ─────
 
-describe("#4274 — buildParaEncerrar: slots A/B (override de teste, sem tocar platform.config.json real)", () => {
-  it("sem override (compat — edição/config antigo sem a chave para_encerrar): cai no texto padrão do snippet, header > apoio+ferramentas > convite social nessa ordem", () => {
-    const out = buildParaEncerrar({ slotA: null, slotB: null });
+describe("#4274/#4413 — buildParaEncerrar: slot A editável via platform.config.json, convite social é bloco fixo", () => {
+  it("sem override (compat — edição/config antigo sem a chave para_encerrar): cai no texto padrão do snippet, header > apoio+ferramentas > pills > convite social fixo, nessa ordem", () => {
+    const out = buildParaEncerrar({ slotA: null });
     assert.match(out, /^\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/, "cabeçalho continua fixo, sempre primeiro");
     const headerPos = out.indexOf("PARA ENCERRAR");
     const apoioPos = out.indexOf("Apoie a curadoria");
-    // Ciclo 2607-08: parágrafo de ferramentas agora vem do 2º parágrafo real
-    // do snippet compartilhado (não mais do FIXED_BLOCKS.para_encerrar_tools
-    // hardcoded, que só é usado como fallback quando o split falha).
+    // Ciclo 2607-08: parágrafo de ferramentas vem do 2º parágrafo real
+    // do snippet compartilhado (só cai no FIXED_BLOCKS.para_encerrar_tools
+    // hardcoded quando o arquivo de snippet está ausente/vazio, #4413).
     const toolsPos = out.indexOf("Nesta edição da");
-    const socialPos = out.indexOf("Agora que chegou ao final da edição");
+    const pillsPos = out.indexOf("[Cursos]");
+    const socialPos = out.indexOf(SOCIAL_INVITE);
     assert.ok(headerPos < apoioPos, "cabeçalho antes do parágrafo de apoio");
     assert.ok(apoioPos < toolsPos, "apoio antes das ferramentas (dentro do slotA)");
-    assert.ok(toolsPos < socialPos, "convite social é o ÚLTIMO parágrafo (#3219/#3368)");
+    assert.ok(toolsPos < pillsPos, "ferramentas antes das pills");
+    assert.ok(pillsPos >= 0 && pillsPos < socialPos && socialPos >= 0, "convite social fixo é o ÚLTIMO parágrafo (#3219/#3368/#4413)");
   });
 
-  it("config custom em AMBOS os slots: injeta o texto customizado, ordem preservada (slotA > slotB)", () => {
-    const override = {
-      slotA: "Texto A customizado pelo editor no painel Caixas.",
-      slotB: "Texto B customizado — convite social alternativo.",
-    };
+  it("config custom no slotA: injeta o texto customizado, convite social continua fixo (SOCIAL_INVITE, nunca sobrescrito)", () => {
+    const override = { slotA: "Texto A customizado pelo editor no painel Caixas." };
     const out = buildParaEncerrar(override);
     assert.match(out, /^\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/);
     const slotAPos = out.indexOf(override.slotA);
-    const slotBPos = out.indexOf(override.slotB);
+    const socialPos = out.indexOf(SOCIAL_INVITE);
     assert.ok(slotAPos > 0, "slotA customizado presente");
-    assert.ok(slotBPos > 0, "slotB customizado presente");
-    assert.ok(slotAPos < slotBPos, "slotA antes de slotB (convite social continua por último)");
-    // Texto padrão do snippet NÃO deve vazar quando ambos os slots têm override.
+    assert.ok(socialPos > slotAPos, "convite social fixo continua por último, mesmo com slotA customizado");
+    // Texto padrão do snippet NÃO deve vazar quando o slotA tem override.
     assert.ok(!out.includes("Apoie a curadoria"), "default do slotA não vaza com override presente");
-    assert.ok(!out.includes("Agora que chegou ao final da edição"), "default do slotB não vaza com override presente");
   });
 
-  it("override PARCIAL (só slotA): slotB cai no default, ordem preservada", () => {
-    const override = { slotA: "Só o slotA foi customizado.", slotB: null };
-    const out = buildParaEncerrar(override);
-    const slotAPos = out.indexOf(override.slotA);
-    const socialPos = out.indexOf("Agora que chegou ao final da edição");
-    assert.ok(slotAPos > 0, "slotA customizado presente");
-    assert.ok(socialPos > 0, "slotB usa o default (convite social) quando ausente");
-    assert.ok(slotAPos < socialPos, "slotA (custom) ainda antes de slotB (default)");
-  });
-
-  it("override PARCIAL (só slotB): slotA cai no default, ordem preservada", () => {
-    const override = { slotA: null, slotB: "Só o slotB foi customizado." };
+  it("override AUSENTE (slotA null): slotA cai no default do snippet, convite social fixo presente", () => {
+    const override = { slotA: null };
     const out = buildParaEncerrar(override);
     const apoioPos = out.indexOf("Apoie a curadoria");
-    const slotBPos = out.indexOf(override.slotB);
+    const socialPos = out.indexOf(SOCIAL_INVITE);
     assert.ok(apoioPos > 0, "slotA usa o default (apoio) quando ausente");
-    assert.ok(slotBPos > 0, "slotB customizado presente");
-    assert.ok(apoioPos < slotBPos, "slotA (default) ainda antes de slotB (custom)");
+    assert.ok(socialPos > apoioPos, "convite social fixo continua por último");
   });
 
-  it("loadParaEncerrarConfig reflete o platform.config.json real do repo (populado no #4274 com o texto atual — compat)", () => {
-    // O #4274 populou platform.config.json.para_encerrar com o MESMO texto
-    // que já era o default hardcoded — este teste trava que a config real do
-    // repo produz um buildParaEncerrar() byte-idêntico ao override explícito
-    // {slotA:null, slotB:null} (default puro), confirmando que a migração não
-    // mudou o comportamento em produção.
+  it("#4413: um eventual slot_b (config legado/Studio, campo que a UI ainda pode escrever) é IGNORADO — convite social nunca varia", () => {
+    const out = buildParaEncerrar({ slotA: null, slotB: "Um convite social qualquer, sem nenhuma lista." } as ParaEncerrarConfig);
+    assert.ok(out.includes(SOCIAL_INVITE), "convite social deve ser sempre o texto fixo, ignorando qualquer slotB");
+    assert.ok(!out.includes("Um convite social qualquer"), "slotB nunca deveria aparecer no output — bloco fixo (#4413)");
+  });
+
+  it("loadParaEncerrarConfig reflete o platform.config.json real do repo (compat)", () => {
+    // Este teste trava que a config real do repo produz um buildParaEncerrar()
+    // byte-idêntico ao override explícito {slotA:null} (default puro),
+    // confirmando que o #4413 não mudou o comportamento em produção pra quem
+    // não tinha slotA customizado.
     const cfg = loadParaEncerrarConfig();
     const fromRealConfig = buildParaEncerrar(cfg);
-    const fromPureDefault = buildParaEncerrar({ slotA: null, slotB: null });
-    assert.equal(fromRealConfig, fromPureDefault, "platform.config.json real produz o mesmo output do default puro (#4274 não mudou comportamento)");
+    const fromPureDefault = buildParaEncerrar({ slotA: null });
+    assert.equal(fromRealConfig, fromPureDefault, "platform.config.json real produz o mesmo output do default puro");
   });
 });
 
@@ -1963,7 +1955,7 @@ describe("#4274 — stitchNewsletter() end-to-end: override paraEncerrar via Sti
     return { dir, internalDir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
   }
 
-  it("sem paraEncerrar no input (undefined): comportamento idêntico ao pré-#4274 (lê platform.config.json real)", () => {
+  it("sem paraEncerrar no input (undefined): comportamento idêntico ao pré-#4274 (lê platform.config.json real), convite social fixo presente", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter({
@@ -1974,13 +1966,13 @@ describe("#4274 — stitchNewsletter() end-to-end: override paraEncerrar via Sti
         editionDir: dir,
       });
       assert.match(out, /PARA ENCERRAR/);
-      assert.match(out, /Agora que chegou ao final da edição/, "convite social (default do repo) presente");
+      assert.ok(out.includes(SOCIAL_INVITE), "convite social fixo (#4413) presente");
     } finally {
       cleanup();
     }
   });
 
-  it("com paraEncerrar customizado no input: injeta o texto customizado, ordem preservada (slotA > slotB), independente do platform.config.json vigente", () => {
+  it("com paraEncerrar customizado no input: injeta o slotA customizado, convite social continua fixo (SOCIAL_INVITE), independente do platform.config.json vigente", () => {
     const { dir, internalDir, cleanup } = setupEdition();
     try {
       const out = stitchNewsletter({
@@ -1991,14 +1983,12 @@ describe("#4274 — stitchNewsletter() end-to-end: override paraEncerrar via Sti
         editionDir: dir,
         paraEncerrar: {
           slotA: "SlotA fixado via override de teste (#4274).",
-          slotB: "SlotB fixado via override de teste (#4274).",
         },
       });
       const slotAPos = out.indexOf("SlotA fixado via override de teste (#4274).");
-      const slotBPos = out.indexOf("SlotB fixado via override de teste (#4274).");
+      const socialPos = out.indexOf(SOCIAL_INVITE);
       assert.ok(slotAPos > 0, "slotA customizado presente no MD final");
-      assert.ok(slotBPos > 0, "slotB customizado presente no MD final");
-      assert.ok(slotAPos < slotBPos, "slotA antes de slotB");
+      assert.ok(socialPos > slotAPos, "convite social fixo continua por último, mesmo com slotA customizado");
     } finally {
       cleanup();
     }

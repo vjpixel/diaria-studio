@@ -1398,12 +1398,12 @@ Agora interaja!`,
     assert.match(html, /font-size:12px[^>]*>Acesse nossas curadorias:/, "kicker deve permanecer em 12px");
   });
 
-  it("#4356: renderiza 3 pills (Cursos/Livros/Equipamentos) sem quebrar o layout", () => {
+  it("#4356/#4411: renderiza 3 pills (Cursos/Livros/Equipamentos, labels curtos) sem quebrar o layout", () => {
     const html = renderHTML(fixt({
       encerrar: `Nessa edição da **Diar.ia**, usei Claude Code.
 
-- [Cursos de IA](https://cursos.diar.ia.br)
-- [Livros sobre IA](https://livros.diar.ia.br)
+- [Cursos](https://cursos.diar.ia.br)
+- [Livros](https://livros.diar.ia.br)
 - [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
 
 Agora interaja!`,

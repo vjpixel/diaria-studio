@@ -28,6 +28,7 @@ import {
   pickErroIntencionalReveal,
 } from "./newsletter-parse.ts";
 import { EIA_ARCHIVE_UTM } from "./shared/utm-registry.ts"; // #4041: registry único de UTM
+import { SOCIAL_INVITE } from "./shared/encerramento-snippet.ts"; // #4413: convite social fixo — detecção do CTA box não depende mais só de prefixo hardcoded
 import type { AprofundeItem } from "../extract-destaques.ts"; // #3920
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -1346,14 +1347,18 @@ export function renderEncerrar(text: string): string {
   }
   if (current) blocks.push(current);
 
-  // #1148: último parágrafo (CTA "Agora que chegou...") vai numa caixa
-  // estilo É IA? — fundo #FAFAFA, padding 32px/24px, border-radius 8px.
-  // Heurística: separar último item dos blocos se for um `<p>` começando com
-  // "Agora que chegou"; render o resto inline e o último envelopado em box.
+  // #1148: último parágrafo (CTA de convite social) vai numa caixa estilo
+  // É IA? — fundo #FAFAFA, padding 32px/24px, border-radius 8px. Heurística:
+  // separar último item dos blocos se for um `<p>` que É o convite social
+  // fixo (`SOCIAL_INVITE`, #4413) OU que começa com a redação legada "Agora
+  // que chegou" (edições já stitchadas antes deste PR mergear, ou overrides
+  // de teste que ainda usam o texto antigo) — render o resto inline e o
+  // último envelopado em box.
   const lastBlock = blocks[blocks.length - 1];
+  const lastBlockText = lastBlock?.content.join(" ").trim() ?? "";
   const isAgoraCta =
     lastBlock?.type === "p" &&
-    /^agora que chegou/i.test(lastBlock.content.join(" ").trim());
+    (lastBlockText === SOCIAL_INVITE || /^agora que chegou/i.test(lastBlockText));
   const mainBlocks = isAgoraCta ? blocks.slice(0, -1) : blocks;
   const ctaBlock = isAgoraCta ? lastBlock : null;
 
@@ -1385,7 +1390,7 @@ export function renderEncerrar(text: string): string {
 
   const html = mainBlocks.map(renderBlock).join("\n  ");
 
-  // CTA final ("Agora que chegou…") = box "painel" do DS.
+  // CTA final (convite social, `SOCIAL_INVITE`) = box "painel" do DS.
   const ctaBox = ctaBlock
     ? `
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px;border-collapse:separate;border-spacing:0"><tr>

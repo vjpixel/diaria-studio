@@ -94,21 +94,24 @@
       <h2>PARA ENCERRAR</h2>
       <p class="hint">
         Conteúdo SEMPRE PRESENTE da seção <strong>🙋🏼‍♀️ PARA ENCERRAR</strong> (#4274) — diferente
-        dos slots acima (pool de caixas opcionais), estes 2 campos são texto direto, editado aqui e
+        dos slots acima (pool de caixas opcionais), o Slot A é texto direto, editado aqui e
         salvo em <code>platform.config.json</code> → <code>para_encerrar</code>. O cabeçalho da seção
         continua fixo. Campo vazio = usa o texto padrão do snippet
         <code>context/snippets/encerramento-social-apoio.md</code>.
-        A linha "Acesse nossas curadorias" (Cursos/Livros/Equipamentos) é fixa e SEMPRE aparece entre
-        o Slot A e o Slot B, independente do que for salvo abaixo (#4357) — editar o Slot A nunca
+        A linha "Acesse nossas curadorias" (Cursos/Livros/Equipamentos) é fixa e SEMPRE aparece
+        depois do Slot A, independente do que for salvo abaixo (#4357) — editar o Slot A nunca
         apaga essas pills.
+        <strong>Slot B foi desativado (#4413, decisão do editor 260801)</strong> — o convite social
+        virou texto FIXO (idêntico ao mensal, nunca mais editável por edição); qualquer valor salvo
+        aqui é ignorado pelo pipeline. Campo mantido só por compat de leitura; não editar.
       </p>
       <label class="cx-field">
         <span>Slot A <em>(parágrafo de apoio + bloco de ferramentas)</em></span>
         <textarea id="para-encerrar-slot-a" class="cx-editor" spellcheck="false" placeholder="(vazio — usa o texto padrão do snippet)"></textarea>
       </label>
       <label class="cx-field">
-        <span>Slot B <em>(convite social — LinkedIn/Facebook/Instagram, SEMPRE o último parágrafo da seção)</em></span>
-        <textarea id="para-encerrar-slot-b" class="cx-editor" spellcheck="false" placeholder="(vazio — usa o texto padrão do snippet)"></textarea>
+        <span>Slot B <em>(DESATIVADO, #4413 — convite social agora é texto fixo; valor aqui é ignorado)</em></span>
+        <textarea id="para-encerrar-slot-b" class="cx-editor" spellcheck="false" placeholder="(desativado — convite social é fixo, #4413)" disabled></textarea>
       </label>
       <div class="cx-editor-toolbar">
         <button id="para-encerrar-save-btn" type="button">Salvar PARA ENCERRAR</button>
