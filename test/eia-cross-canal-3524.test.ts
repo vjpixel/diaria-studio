@@ -11,6 +11,12 @@
  *   2. página pós-voto (email) → arquivo: `votePageHtml` (workers/poll/src/index.ts)
  *      ganha o mesmo link no rodapé, só para brands diaria/clarice — brand
  *      `web` já tem o equivalente no próprio `/jogar` (não duplicado aqui).
+ *      Achado ao vivo 260801: pra clarice, o destino foi corrigido de
+ *      `/jogar/arquivo` (a ponte cross-canal desta issue) pro arquivo DA
+ *      PRÓPRIA clarice (`/leaderboard/{year}/arquivo?brand=clarice`) — ver
+ *      test/poll-vote-page-merge-boxes-4418.test.ts. A ponte em si (função
+ *      `jogarArchiveHref`) segue existindo pro caso hipotético de algum
+ *      brand precisar dela de novo, mas não tem mais caller em produção.
  *   3. reforço contextual de assinatura no arquivo (site): `renderJogarArchiveHtml`
  *      (workers/poll/src/jogar.ts) ganha uma frase de reforço — distinta do
  *      CTA principal pós-voto (#3518), que seria duplicação.
@@ -140,7 +146,13 @@ describe("votePageHtml linka o arquivo no rodapé SÓ pra brand clarice — diá
   it("brand clarice: link presente (mensal MANTÉM o arquivo, já podia voltar em edições anteriores antes do #3524)", () => {
     const html = votePageHtml("Você acertou!", true, null, null, null, "clarice");
     assert.match(html, /Jogar edições passadas/);
-    assert.match(html, /href="\/jogar\/arquivo\?utm_source=newsletter/);
+    // Achado ao vivo 260801: destino corrigido de /jogar/arquivo (ponte
+    // cross-canal do brand web, #3524) pro arquivo DA PRÓPRIA clarice —
+    // ver test/poll-vote-page-merge-boxes-4418.test.ts pra cobertura
+    // completa desse destino (esta suíte segue cobrindo as outras 2 pontes
+    // do #3524, que não mudaram).
+    assert.match(html, /href="\/leaderboard\/\d{4}\/arquivo\?brand=clarice"/);
+    assert.doesNotMatch(html, /\/jogar\/arquivo/);
   });
 
   it("brand web: link NÃO duplicado (o /jogar já tem o próprio link de arquivo no rodapé)", () => {

@@ -39,7 +39,6 @@ import {
   renderNicknameFormStyles, // #4232: CSS do .nick-box, idem
   renderSubscribeBoxHtml, // #4418 §2b: Caixa B (assinatura pra quem já tem apelido)
   type SubscribeBoxState, // #4418 §2b — a decisão A/B/nenhuma (resolveVoteIdentityBoxKind) mora em vote.ts, não aqui
-  jogarArchiveHref, // #3524
   renderArchiveButtonStyles, // #4420: CSS do botão do link de arquivo
   buildBrandSiteUrl, // #3978: href com UTM do rodapé de /vote
   lightboxScript, // #4007: script do lightbox de zoom — reusado nas 5 superfícies do par de imagens (#4125 item 3: quiz incluído)
@@ -388,6 +387,7 @@ import {
   handleArchiveVotePage,
   invalidateSnapshot,
   listAllKeys,
+  archiveHref, // achado ao vivo 260801: botão "Jogar edições passadas" do /vote (clarice) linkava pro sistema errado
 } from "./leaderboard-routes";
 // #3516: página jogável standalone (EPIC #3514) — brand fixo "web", ver
 // rationale completo no header de jogar.ts.
@@ -877,20 +877,28 @@ export function votePageHtml(
     leaderboardLink = appendLeaderboardQueryParam(leaderboardLink, "sig", encodeURIComponent(identity.sig));
   }
 
-  // #3578 (correção do #3524, feedback do editor 260716): a metade "página
-  // pós-voto (email) → arquivo" da ponte cross-canal (EPIC #3514) agora só
-  // vale pra brand `clarice` (É IA? MENSAL — já podia voltar em edições
+  // #3578 (correção do #3524, feedback do editor 260716): este botão só
+  // aparece pra brand `clarice` (É IA? MENSAL — já podia voltar em edições
   // anteriores antes do #3524, continua). `diaria` foi removida do gate: a
   // diária só vota no par do dia, sem arquivo/jogar edições passadas — regra
-  // de produto (#3578). Brand "web" (jogo standalone) já tem o MESMO link no
-  // próprio rodapé de `/jogar` (jogar.ts `renderJogarPageHtml`/
+  // de produto (#3578). Brand "web" (jogo standalone) já tem seu próprio
+  // link de arquivo no rodapé de `/jogar` (jogar.ts `renderJogarPageHtml`/
   // `renderJogarQuizPageHtml`); duplicar aqui seria redundante.
   // #4420: sai de dentro de `.footer-links` — vira bloco/botão próprio,
   // acima da linha de links (pedido do editor: "texto maior e com cara de
   // botão"). Copy inalterada ("Jogar edições passadas"), só o tratamento
   // visual muda.
+  // Achado ao vivo 260801: até aqui o botão linkava pra `jogarArchiveHref()`
+  // — a ponte cross-canal do #3524/EPIC #3514 pro arquivo do brand `web`
+  // (`/jogar/arquivo`), sistema diferente do leaderboard/arquivo da própria
+  // clarice. Pra quem vota como clarice, "edições passadas" deveria ser o
+  // arquivo DA CLARICE (`/leaderboard/{year}/arquivo?brand=clarice`, mesmo
+  // destino que o botão equivalente do leaderboard já usa via `archiveHref`,
+  // leaderboard-routes.ts:1170) — não o arquivo do jogo standalone. `year`
+  // é sempre o corrente (BRT) — este botão não está associado a uma edição
+  // específica, é navegação geral pro arquivo.
   const archiveButtonHtml = brand === "clarice"
-    ? `<p class="archive-cta"><a class="archive-btn" href="${jogarArchiveHref()}">Jogar edições passadas</a></p>`
+    ? `<p class="archive-cta"><a class="archive-btn" href="${archiveHref(brand, currentMonthSlugBrt(new Date()).slice(0, 4))}">Jogar edições passadas</a></p>`
     : "";
 
   return `<!DOCTYPE html>

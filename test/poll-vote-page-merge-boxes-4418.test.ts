@@ -758,6 +758,22 @@ describe("#4420 — link de arquivo em /vote vira botão (fora de .footer-links)
     assert.match(html, /<p class="archive-cta"><a class="archive-btn" href="[^"]+">Jogar edições passadas<\/a><\/p>/);
   });
 
+  // Achado ao vivo 260801: o teste acima aceitava QUALQUER href — nunca
+  // pegou que o botão linkava pro sistema errado (`/jogar/arquivo`, a ponte
+  // cross-canal do brand `web`/#3524) em vez do arquivo DA PRÓPRIA clarice
+  // (`/leaderboard/{year}/arquivo?brand=clarice`, mesmo destino que o botão
+  // equivalente do leaderboard já usa via `archiveHref`). Fechando o gap.
+  it("clarice: botão de arquivo linka pro leaderboard/arquivo DA CLARICE, não pro /jogar/arquivo do brand web", async () => {
+    const env = makeEnv();
+    const res = await worker.fetch(voteReq("clarice", "arquivo-destino@example.com", "A"), env);
+    const html = await res.text();
+    const hrefMatch = /<p class="archive-cta"><a class="archive-btn" href="([^"]+)">/.exec(html);
+    assert.ok(hrefMatch, "botão de arquivo deve existir");
+    const href = hrefMatch![1];
+    assert.match(href, /^\/leaderboard\/\d{4}\/arquivo\?brand=clarice/);
+    assert.doesNotMatch(href, /\/jogar\/arquivo/);
+  });
+
   it("o botão fica FORA de <p class=\"footer-links\">, não mais inline entre os links", async () => {
     const env = makeEnv();
     const res = await worker.fetch(voteReq("clarice", "arquivo2@example.com", "A"), env);
