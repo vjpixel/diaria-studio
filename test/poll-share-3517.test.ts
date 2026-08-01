@@ -284,6 +284,26 @@ describe("renderSharePageHtml (#3517) — página /share/{token}, destino dos un
     assert.match(html, /<meta property="og:title" content="[^"]+">/);
     assert.match(html, /<meta property="og:description" content="[^"]+">/);
   });
+
+  // Achado no review de PR (260801): este call site infere o brand a partir
+  // da FORMA do edition (inferDateFormatBrand, share.ts) — não recebe o
+  // brand real, porque o token assinado não carrega brand (#4119). Desde que
+  // buildShareText passou a usar brand pra escolher "de hoje"/"deste mês"
+  // (não só o formato da data), essa inferência também precisa acertar a
+  // PALAVRA pra edição de ciclo Clarice — o og:description é o que os
+  // unfurlers (WhatsApp/LinkedIn) de fato mostram pra quem RECEBE o link.
+  it("edição de ciclo Clarice (ex: 2607-08) — og:description diz 'deste mês', não 'de hoje'", () => {
+    const html = renderSharePageHtml({
+      token: "2607-08.1.abc123",
+      payload: { edition: "2607-08", correct: true },
+      utmMedium: "social",
+    });
+    const descMatch = html.match(/<meta property="og:description" content="([^"]+)">/);
+    assert.ok(descMatch, "og:description ausente no HTML");
+    const desc = descMatch[1];
+    assert.match(desc, /deste mês \(agosto de 2026\)/);
+    assert.doesNotMatch(desc, /de hoje/);
+  });
 });
 
 describe("GET /og/{token} e GET /share/{token} (#3517, rotas)", () => {

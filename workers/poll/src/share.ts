@@ -314,6 +314,17 @@ export function renderShareCardBlock(token: string, payload: SharePayload, brand
  * o ciclo, e pro formato AAMMDD padrão caso contrário — puramente uma chave
  * de lookup de FORMATAÇÃO, não uma inferência de identidade real (pior caso
  * de errar, que não ocorre na prática, é só afetar a string exibida).
+ *
+ * Achado ao vivo 260801 (review de PR): desde que `buildShareText` também
+ * usa `brand` pra escolher "de hoje" vs "deste mês" (não só o formato da
+ * data), o "pior caso" acima ficou um pouco mais largo — um token de share
+ * LEGADO de clarice em formato AAMMDD (pré-#2115, ainda decodificável,
+ * assinatura nunca invalidada) inferiria `brand="web"` aqui e mostraria "de
+ * hoje" pra uma edição que na verdade era mensal. Mesma classe de risco já
+ * aceita pelo rationale acima (edge case de token antigo, nunca ocorre pra
+ * links novos, pior caso é só a string exibida) — não vale ampliar o
+ * payload assinado por isso, só registrando que agora também afeta escolha
+ * de palavra, não só granularidade de data.
  */
 function inferDateFormatBrand(edition: string): Brand {
   return CYCLE_EDITION_RE.test(edition) ? "clarice" : "web";
@@ -370,8 +381,11 @@ export interface SharePageOptions {
 export function renderSharePageHtml(opts: SharePageOptions): string {
   const { token, payload, utmMedium } = opts;
   // #4119: brand desconhecido aqui por design (ver rationale de
-  // `inferDateFormatBrand` acima) — infere só pra escolher o FORMATO DE DATA
-  // certo dentro de `buildShareText`, nunca pra afetar o resto da mensagem.
+  // `inferDateFormatBrand` acima) — infere pra escolher o FORMATO DE DATA
+  // certo dentro de `buildShareText`. Achado 260801: desde que `buildShareText`
+  // também usa `brand` pra escolher "de hoje"/"deste mês", a inferência agora
+  // afeta essa palavra também, não só a granularidade da data — mesmo trade-off
+  // já aceito (ver o parágrafo final do rationale acima).
   const text = buildShareText(payload, inferDateFormatBrand(payload.edition));
   const ogImageUrl = `${PUBLIC_GAME_BASE_URL}/og/${encodeURIComponent(token)}`;
   // #3978: utm_source era "share" hardcoded (valor PRÓPRIO, desalinhado da
