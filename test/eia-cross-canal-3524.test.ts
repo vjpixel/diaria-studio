@@ -48,6 +48,7 @@ import {
   EMAIL_ARCHIVE_UTM_SOURCE,
   EMAIL_ARCHIVE_UTM_MEDIUM,
   EMAIL_ARCHIVE_UTM_CAMPAIGN,
+  currentYearBrt,
 } from "../workers/poll/src/lib.ts";
 import {
   renderJogarArchiveHtml,
@@ -151,11 +152,11 @@ describe("votePageHtml linka o arquivo no rodapé SÓ pra brand clarice — diá
     // ver test/poll-vote-page-merge-boxes-4418.test.ts pra cobertura
     // completa desse destino (esta suíte segue cobrindo as outras 2 pontes
     // do #3524, que não mudaram).
-    assert.match(html, /href="\/leaderboard\/\d{4}\/arquivo\?brand=clarice"/);
+    assert.match(html, new RegExp(`href="/leaderboard/${currentYearBrt(new Date())}/arquivo\\?brand=clarice"`));
     assert.doesNotMatch(html, /\/jogar\/arquivo/);
   });
 
-  it("brand web: link NÃO duplicado (o /jogar já tem o próprio link de arquivo no rodapé)", () => {
+  it("brand web: link NÃO duplicado (o /jogar/quiz já tem o próprio link de arquivo standalone no rodapé)", () => {
     const html = votePageHtml("Você acertou!", true, null, null, null, "web");
     assert.ok(!html.includes("Jogar edições passadas"), "brand web não deve repetir o link — já existe em /jogar");
   });

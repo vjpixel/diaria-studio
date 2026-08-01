@@ -287,7 +287,7 @@ describe("Regressão — /jogar/quiz e /jogar/arquivo seguem intactos (#3589 nã
     assert.equal(res.status, 200);
   });
 
-  it("/jogar/arquivo continua respondendo (NÃO deletado — destino da ponte clarice/#3524, ver rationale em jogar.ts)", async () => {
+  it("/jogar/arquivo continua respondendo (NÃO deletado — arquivo do brand web em si; até 260801 também era destino da ponte clarice/#3524, ver rationale em jogar.ts)", async () => {
     const env = makeEnv({ "correct:260101": "A" });
     const res = await worker.fetch(new Request("https://poll.test/jogar/arquivo?year=2026"), env);
     assert.equal(res.status, 200);

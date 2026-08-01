@@ -558,6 +558,19 @@ export function currentMonthSlugBrt(now: Date): string {
 }
 
 /**
+ * Pure: ano corrente em BRT como string "YYYY". Achado no review de PR
+ * (260801): antes de existir, callers que só queriam o ano pegavam
+ * `currentMonthSlugBrt(now).slice(0, 4)` — decompor por offset fixo uma
+ * string cujo contrato documentado é "slug YYYY-MM", não "ano". Extraído
+ * pra dar nome próprio ao caso "só quero o ano" em vez de duplicar a
+ * fatia mágica em cada call site (5+ ocorrências no worker antes desta
+ * extração, ver `git blame`/histórico de #4441).
+ */
+export function currentYearBrt(now: Date): string {
+  return currentMonthSlugBrt(now).slice(0, 4);
+}
+
+/**
  * Pure (#3113 item 9): "hoje" em AAMMDD (BRT) — mesmo offset fixo de -3h usado
  * em toda formatação de data deste worker. Usado só pra comparação
  * lexicográfica contra edições AAMMDD (strings zero-padded de mesmo tamanho

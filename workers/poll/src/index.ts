@@ -23,7 +23,7 @@
 
 import { rankEntries, type LeaderboardEntry } from "./leaderboard";
 import {
-  currentMonthSlugBrt,
+  currentYearBrt, // achado no review de PR #4441: nomeia o caso "só quero o ano em BRT", antes duplicado via .slice(0,4)
   editionToMonthSlug,
   monthSlugCompare,
   parseMonthSlug,
@@ -882,8 +882,10 @@ export function votePageHtml(
   // anteriores antes do #3524, continua). `diaria` foi removida do gate: a
   // diária só vota no par do dia, sem arquivo/jogar edições passadas — regra
   // de produto (#3578). Brand "web" (jogo standalone) já tem seu próprio
-  // link de arquivo no rodapé de `/jogar` (jogar.ts `renderJogarPageHtml`/
-  // `renderJogarQuizPageHtml`); duplicar aqui seria redundante.
+  // link de arquivo no rodapé de `/jogar/quiz` (jogar.ts
+  // `renderJogarQuizPageHtml` — a sequência default de `/jogar`,
+  // `renderJogarSequencePageHtml`, NÃO linka o arquivo desde #4030);
+  // duplicar aqui seria redundante.
   // #4420: sai de dentro de `.footer-links` — vira bloco/botão próprio,
   // acima da linha de links (pedido do editor: "texto maior e com cara de
   // botão"). Copy inalterada ("Jogar edições passadas"), só o tratamento
@@ -896,9 +898,13 @@ export function votePageHtml(
   // destino que o botão equivalente do leaderboard já usa via `archiveHref`,
   // leaderboard-routes.ts:1170) — não o arquivo do jogo standalone. `year`
   // é sempre o corrente (BRT) — este botão não está associado a uma edição
-  // específica, é navegação geral pro arquivo.
+  // específica, é navegação geral pro arquivo. `archiveHref`/`withBrandQuery`
+  // não carregam UTM (mesmo comportamento do botão irmão do leaderboard,
+  // sem tracking próprio) — `jogarArchiveHref()` carregava
+  // utm_source=newsletter/etc., perdido aqui de propósito (consistência com
+  // o botão análogo), não por descuido.
   const archiveButtonHtml = brand === "clarice"
-    ? `<p class="archive-cta"><a class="archive-btn" href="${archiveHref(brand, currentMonthSlugBrt(new Date()).slice(0, 4))}">Jogar edições passadas</a></p>`
+    ? `<p class="archive-cta"><a class="archive-btn" href="${archiveHref(brand, currentYearBrt(new Date()))}">Jogar edições passadas</a></p>`
     : "";
 
   return `<!DOCTYPE html>
@@ -1561,7 +1567,7 @@ async function routeRequest(request: Request, url: URL, path: string, env: Env, 
       // "year" → visão anual (clarice: 1 voto/mês, faz sentido agregar ano inteiro).
       // "month" → visão mensal (diária: votos diários, ranking mês corrente).
       if (BRAND_INFO[brand].leaderboardPeriod === "year") {
-        return handleLeaderboardByYear(currentMonthSlugBrt(new Date()).slice(0, 4), bEnv, brand, url);
+        return handleLeaderboardByYear(currentYearBrt(new Date()), bEnv, brand, url);
       }
       return handleLeaderboard(bEnv, brand, url);
     }

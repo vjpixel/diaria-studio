@@ -27,6 +27,7 @@ import {
   resolveVoteIdentityBoxKind,
   resolveSetNameConfirmationBanner,
   currentMonthSlugBrt,
+  currentYearBrt,
 } from "../workers/poll/src/lib.ts";
 import {
   handleLeaderboardByMonth,
@@ -770,7 +771,11 @@ describe("#4420 — link de arquivo em /vote vira botão (fora de .footer-links)
     const hrefMatch = /<p class="archive-cta"><a class="archive-btn" href="([^"]+)">/.exec(html);
     assert.ok(hrefMatch, "botão de arquivo deve existir");
     const href = hrefMatch![1];
-    assert.match(href, /^\/leaderboard\/\d{4}\/arquivo\?brand=clarice/);
+    // Achado no review de PR (pr-test-analyzer): `\d{4}` só checava a FORMA
+    // do ano, não o VALOR — passaria mesmo se o ano estivesse errado
+    // (off-by-one, offset de slice trocado, etc). Assert contra o valor
+    // exato esperado (mesmo cálculo BRT que o código de produção usa).
+    assert.equal(href, `/leaderboard/${currentYearBrt(new Date())}/arquivo?brand=clarice`);
     assert.doesNotMatch(href, /\/jogar\/arquivo/);
   });
 
@@ -795,7 +800,7 @@ describe("#4420 — link de arquivo em /vote vira botão (fora de .footer-links)
     assert.doesNotMatch(html, /Jogar edições passadas/);
   });
 
-  it("web: botão de arquivo NÃO aparece (já tem o mesmo link no rodapé de /jogar)", async () => {
+  it("web: botão de arquivo NÃO aparece (já tem seu próprio arquivo standalone, /jogar/arquivo, linkado no rodapé de /jogar/quiz)", async () => {
     const env = makeEnv();
     const res = await worker.fetch(voteReq("web", "3fa85f64-5717-4562-b3fc-2c963f66afa6@web.eia.diaria.local", "A"), env);
     const html = await res.text();
