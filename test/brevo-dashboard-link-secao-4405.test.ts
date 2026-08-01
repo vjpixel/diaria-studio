@@ -37,6 +37,9 @@
  */
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   extractMonthlyCycleCandidate,
@@ -156,6 +159,21 @@ describe("resolveCampaignCycle (#4405, achado do grupo:novos)", () => {
     assert.equal(resolved, "2607-08"); // candidato do nome, não inventado
   });
 
+  test("REGRESSÃO (achado do review): empate entre 2 ciclos NÃO-candidatos nunca é decidido pela ordem de iteração — cai pro candidato do nome", () => {
+    // Os 2 ciclos cobrem exatamente a MESMA URL (empate genuíno de cobertura,
+    // ambos > 0 e > cobertura do candidato, que nem está no mapa). Antes da
+    // correção, o vencedor era só "o primeiro em Object.keys(...)" — não
+    // determinístico do ponto de vista do chamador, e contradizia o
+    // documentado "empate → fica o candidato".
+    const linksStats = { [URL_A]: 1 };
+    const sectionMapsByCycle: Record<string, LinkSectionMap> = {
+      "2606-07": mapCycleA,
+      "2609-10": { [contentA]: ["radar"] }, // mesmo conteúdo, seção diferente — só a COBERTURA importa pro empate
+    };
+    const resolved = resolveCampaignCycle("Clarice 2607 grupo:novos-260731", linksStats, sectionMapsByCycle);
+    assert.equal(resolved, "2607-08", "candidato do nome, nunca a ordem de iteração do mapa");
+  });
+
   test("candidato do nome também está entre os ciclos disponíveis e cobre — usa ele mesmo sem trocar", () => {
     const linksStats = { [URL_B]: 3 };
     const resolved = resolveCampaignCycle(
@@ -226,6 +244,87 @@ describe("buildRelinkedContentAliases (#4405 — I/O fail-soft, mesmo padrão de
       assert.equal(aliases.size, 0);
     });
   });
+
+  // ─── Caminho feliz com `root` injetado (#4405, achado do review) ──────────
+  // `root` passou a ser injetável (mesmo padrão de `relinkMonthlyEditionHtml`,
+  // já testado em test/monthly-relink-truncate-share-4048-4050.test.ts) —
+  // permite testar o wiring de I/O de verdade SEM tocar data/ real do repo
+  // (mkdtempSync, nunca o cwd).
+  function makeMonthlyDir(): string {
+    const dir = mkdtempSync(join(tmpdir(), "link-secao-4405-monthly-"));
+    mkdirSync(join(dir, "_internal"), { recursive: true });
+    return dir;
+  }
+  function makeRoot(postsIndex: unknown[]): string {
+    const root = mkdtempSync(join(tmpdir(), "link-secao-4405-root-"));
+    mkdirSync(join(root, "data/beehiiv-cache/posts"), { recursive: true });
+    writeFileSync(join(root, "data/beehiiv-cache/posts/index.json"), JSON.stringify(postsIndex));
+    return root;
+  }
+  function withCapturedWarnings(fn: () => void): string[] {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(" ")); };
+    try {
+      fn();
+    } finally {
+      console.warn = original;
+    }
+    return warnings;
+  }
+
+  test("caminho feliz: raw-destaques.json + posts index reais → alias URL-fonte→URL-relinkada correto", () => {
+    const monthlyDir = makeMonthlyDir();
+    writeFileSync(
+      join(monthlyDir, "_internal/raw-destaques.json"),
+      JSON.stringify({
+        destaques: [{ url: "https://exemplo.com/noticia-completa", edition: "260601", beehiiv_post_id: "abc12345" }],
+      }),
+    );
+    const root = makeRoot([{ id: "abc12345", web_url: "https://diar.ia.br/p/edicao-260601" }]);
+
+    const aliases = buildRelinkedContentAliases(["https://exemplo.com/noticia-completa"], monthlyDir, root);
+    assert.equal(aliases.get("https://exemplo.com/noticia-completa"), "https://diar.ia.br/p/edicao-260601");
+  });
+
+  test("raw-destaques.json presente mas JSON malformado → Map vazio + console.warn (não silencioso), nunca lança", () => {
+    const monthlyDir = makeMonthlyDir();
+    writeFileSync(join(monthlyDir, "_internal/raw-destaques.json"), "{ isso não é json válido");
+    const root = makeRoot([]);
+
+    let aliases: Map<string, string> = new Map();
+    const warnings = withCapturedWarnings(() => {
+      assert.doesNotThrow(() => {
+        aliases = buildRelinkedContentAliases(["https://exemplo.com/x"], monthlyDir, root);
+      });
+    });
+    assert.equal(aliases.size, 0);
+    assert.ok(warnings.some((w) => w.includes(monthlyDir)), "deve avisar (não engolir silenciosamente) — arquivo PRESENTE mas quebrado é diferente de ausente");
+  });
+
+  test("mesma URL de fonte em 2 edições diferentes (ambiguous) → console.warn nomeando a URL, mas ainda resolve (1ª ocorrência, mesmo comportamento do #4066)", () => {
+    const monthlyDir = makeMonthlyDir();
+    writeFileSync(
+      join(monthlyDir, "_internal/raw-destaques.json"),
+      JSON.stringify({
+        destaques: [
+          { url: "https://exemplo.com/mesma-noticia", edition: "260601", beehiiv_post_id: "aaa11111" },
+          { url: "https://exemplo.com/mesma-noticia", edition: "260615", beehiiv_post_id: "bbb22222" },
+        ],
+      }),
+    );
+    const root = makeRoot([
+      { id: "aaa11111", web_url: "https://diar.ia.br/p/edicao-260601" },
+      { id: "bbb22222", web_url: "https://diar.ia.br/p/edicao-260615" },
+    ]);
+
+    let aliases: Map<string, string> = new Map();
+    const warnings = withCapturedWarnings(() => {
+      aliases = buildRelinkedContentAliases(["https://exemplo.com/mesma-noticia"], monthlyDir, root);
+    });
+    assert.equal(aliases.get("https://exemplo.com/mesma-noticia"), "https://diar.ia.br/p/edicao-260601", "1ª ocorrência vence, mesma regra do buildUrlToEdition");
+    assert.ok(warnings.some((w) => w.includes("exemplo.com/mesma-noticia")), "ambiguidade deve gerar aviso nomeando a URL — nunca descartada em silêncio");
+  });
 });
 
 describe("classifyNonEditorialLinkSection (#4405, RC3)", () => {
@@ -267,6 +366,58 @@ describe("classifyNonEditorialLinkSection (#4405, RC3)", () => {
   test("host desconhecido → null (cai no catch-all 'Outros' no caller)", () => {
     assert.equal(classifyNonEditorialLinkSection("https://exame.com/materia"), null);
     assert.equal(classifyNonEditorialLinkSection("não é uma url"), null);
+  });
+});
+
+describe("RC3 fim-a-fim: lookupLinkSectionCell devolve o RÓTULO certo, não só 'não é traço' (#4405, achado do review)", () => {
+  // Achado do review: as baterias "nunca traço" verificam só que o label
+  // NÃO é "—" — o fallback "Outros" também satisfaz isso, então uma
+  // regressão que removesse o parâmetro `url` de qualquer call site em
+  // render-links.ts faria as 5 categorias RC3 caírem silenciosamente em
+  // "Outros" sem nenhum teste acusar. Estes testes travam o TEXTO exato.
+  test("cada categoria não-editorial resolve pro rótulo exato de NON_EDITORIAL_LINK_SECTION_LABELS", () => {
+    const cases: Array<[string, string]> = [
+      ["https://eia.diar.ia.br/vote?choice=A", NON_EDITORIAL_LINK_SECTION_LABELS["eia-poll"]],
+      ["https://clarice.ai/?via=diaria", NON_EDITORIAL_LINK_SECTION_LABELS["clarice-parceiro"]],
+      ["https://livros.diar.ia.br/x", NON_EDITORIAL_LINK_SECTION_LABELS["produtos-diaria"]],
+      ["https://apoia.se/diaria", NON_EDITORIAL_LINK_SECTION_LABELS["apoio"]],
+      ["https://www.linkedin.com/company/diaria", NON_EDITORIAL_LINK_SECTION_LABELS["redes-sociais"]],
+    ];
+    for (const [url, expectedLabel] of cases) {
+      const cell = lookupLinkSectionCell("qualquer-conteudo-sem-mapa", null, url);
+      assert.equal(cell.label, expectedLabel, `${url} deve resolver pro rótulo "${expectedLabel}", não pro catch-all`);
+    }
+  });
+
+  test("formatNonEditorialLinkSectionCell devolve o mesmo rótulo que a tabela de labels", () => {
+    for (const category of Object.keys(NON_EDITORIAL_LINK_SECTION_LABELS) as Array<keyof typeof NON_EDITORIAL_LINK_SECTION_LABELS>) {
+      const cell = formatNonEditorialLinkSectionCell(category);
+      assert.equal(cell.label, NON_EDITORIAL_LINK_SECTION_LABELS[category]);
+    }
+  });
+
+  test("render HTML de ponta a ponta: enquete/Clarice/apoio aparecem com o rótulo próprio, não 'Outros'", () => {
+    const rows = aggregateLinksAcrossCampaigns([
+      {
+        id: 1, name: "x", subject: "s", status: "sent",
+        sentDate: "2026-07-31T09:00:00Z", scheduledAt: null, createdAt: "2026-07-31T09:00:00Z",
+        recipients: { lists: [1] },
+        statistics: {
+          globalStats: undefined,
+          linksStats: {
+            "https://eia.diar.ia.br/vote?choice=A": 4,
+            "https://clarice.ai/?via=diaria": 6,
+            "https://apoia.se/diaria": 2,
+          },
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+    ], null);
+    const html = renderAggregatedLinksSection(rows, null);
+    assert.match(html, />Enquete É IA\?</);
+    assert.match(html, />Clarice \(parceiro\)</);
+    assert.match(html, />Apoio</);
+    assert.doesNotMatch(html, />Outros</, "nenhuma dessas 3 categorias deveria degradar pro catch-all");
   });
 });
 
@@ -445,6 +596,14 @@ describe("selectLatestEditionCampaigns (#4405, Fase 3)", () => {
     withoutDate.sentDate = null;
     const result = selectLatestEditionCampaigns([withoutDate], null);
     assert.equal(result, null);
+  });
+
+  test("sentDate PRESENTE mas não-parseável (garbage, não null) também é ignorada — nunca vira -Infinity/NaN que quebra a comparação", () => {
+    const garbage = campaign("Diar.ia Mensal 2606 — envio 1", "isto-nao-e-uma-data", []);
+    const valid = campaign("Diar.ia Mensal 2605 — envio 1", "2026-06-10T09:00:00Z", []);
+    const result = selectLatestEditionCampaigns([garbage, valid], null);
+    assert.ok(result);
+    assert.equal(result!.cycle, "2605-06", "a campanha com data válida deve vencer, garbage nunca resolve como 'mais recente'");
   });
 });
 

@@ -174,8 +174,11 @@ function countContentCoverage(map: LinkSectionMap, contents: ReadonlySet<string>
  * candidato do nome (`extractMonthlyCycleCandidate`) pelo CONTEÚDO — entre
  * os ciclos já carregados em `sectionMapsByCycle`, escolhe o que cobre mais
  * URLs de clique desta campanha (via `classifyLinkContent`, mesma chave que
- * os mapas usam). Empate ou zero cobertura em TODOS os ciclos → fica o
- * candidato do nome (nunca inventa um ciclo sem evidência de conteúdo). Sem
+ * os mapas usam). Empate — seja contra o candidato, seja entre 2 ciclos
+ * NÃO-candidatos — ou zero cobertura em TODOS os ciclos → fica o candidato
+ * do nome (nunca inventa um ciclo sem evidência de conteúdo INEQUÍVOCA; o
+ * caso de empate entre não-candidatos nunca é decidido pela ordem de
+ * iteração de `sectionMapsByCycle`). Sem
  * candidato de nome (campanha diária, ou naming desconhecido) → `null`, sem
  * tentar desambiguar — nunca declara "monthly" uma campanha que não parece
  * monthly pelo nome.
@@ -211,15 +214,26 @@ export function resolveCampaignCycle(
   let bestCoverage = sectionMapsByCycle[candidate]
     ? countContentCoverage(sectionMapsByCycle[candidate], contents)
     : 0;
+  // #4405 (achado do review): `tied` rastreia quando outro ciclo (não o
+  // candidato) empata com o MELHOR já visto — sem isso, um empate entre 2
+  // ciclos NÃO-candidatos era decidido silenciosamente pela ordem de
+  // iteração de `Object.keys`, contradizendo o "empate → fica o candidato"
+  // documentado acima. Reinicia a cada vez que um novo melhor estritamente
+  // maior aparece (só o TOPO atual importa pro empate).
+  let tied = false;
   for (const cycle of cycles) {
     if (cycle === candidate) continue;
     const coverage = countContentCoverage(sectionMapsByCycle[cycle], contents);
     if (coverage > bestCoverage) {
       bestCoverage = coverage;
       bestCycle = cycle;
+      tied = false;
+    } else if (coverage > 0 && coverage === bestCoverage) {
+      tied = true;
     }
   }
-  return bestCoverage > 0 ? bestCycle : candidate;
+  if (bestCoverage === 0 || tied) return candidate;
+  return bestCycle;
 }
 
 /**

@@ -41,9 +41,10 @@
  *   CLOUDFLARE_ACCOUNT_ID     obrigatório p/ upload KV
  *   CLOUDFLARE_WORKERS_TOKEN  obrigatório p/ upload KV (permissão Workers KV)
  *
- * Execução real (contra o KV de produção) fica a cargo do editor/coordenador
- * — este script não é chamado automaticamente por nenhum stage do pipeline
- * nem por nenhum outro script.
+ * Execução real (contra o KV de produção) — desde #4405, chamado
+ * automaticamente pela Etapa 5 (Publicação) de `/diaria-mensal`, fail-soft
+ * (ver nota #4405 acima); fora desse pipeline, fica a cargo do
+ * editor/coordenador rodar manualmente (ex: backfill via `--all`).
  */
 
 import { readdirSync, existsSync } from "node:fs";

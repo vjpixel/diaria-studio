@@ -252,24 +252,53 @@ export function buildLinkSectionMap(
  * não recalcula slug/âncora).
  *
  * I/O: lê `{monthlyDirPath}/_internal/raw-destaques.json` (por ciclo) e
- * `data/beehiiv-cache/posts/index.json` (root, cache local do drain do
- * Beehiiv — não é fetch de rede). Fail-soft: qualquer arquivo ausente (ciclo
- * sem `raw-destaques.json` ainda, ou clone sem o cache do Beehiiv) retorna
- * Map vazio, nunca lança — o mapa de seção original (sem os aliases) segue
- * funcionando normalmente, só sem a correção do RC2 pra esse ciclo.
+ * `{root}/data/beehiiv-cache/posts/index.json` (cache local do drain do
+ * Beehiiv — não é fetch de rede). `root` (default `REPO_ROOT`, o mesmo
+ * default de `relinkMonthlyEditionHtml` em `monthly-relink-to-diaria.ts`,
+ * que essa função reusa) é injetável só pra teste — permite um `root`
+ * temporário (`mkdtempSync`) com um `index.json` fixture, sem tocar o
+ * `data/` real do repo (mesma convenção já usada em
+ * `test/monthly-relink-truncate-share-4048-4050.test.ts`).
+ *
+ * Fail-soft em 2 níveis DISTINTOS (achado do review, #4405):
+ *   - Arquivo AUSENTE (ciclo sem `raw-destaques.json` ainda, ou clone sem o
+ *     cache do Beehiiv) → Map vazio, SILENCIOSO — esperado, não é bug.
+ *   - Arquivo PRESENTE mas quebrado (JSON malformado, schema mudou,
+ *     `raw.destaques`/`idx` não é o shape esperado) → Map vazio TAMBÉM (o
+ *     mapa de seção original, sem os aliases, segue funcionando), mas com
+ *     `console.warn` — esse caso é indistinguível de "arquivo ausente" pro
+ *     resultado, mas NÃO é esperado, e sem o warn o RC2 volta a se
+ *     manifestar (Destaques sem seção) de um jeito silencioso e
+ *     indistinguível de "ciclo ainda não processado". `console.warn` (não
+ *     `run-log.ts`/`logEvent`) de propósito: esta função roda durante
+ *     RENDER (Studio, em memória), inclusive em teste — `logEvent` faz
+ *     `mkdirSync` incondicional em `data/`, o que criaria a pasta durante
+ *     `node --test` (mesma race contra `exec-mode.ts` que os outros testes
+ *     deste módulo evitam de propósito, ver docstring do arquivo de teste).
  */
 export function buildRelinkedContentAliases(
   destaquesUrls: readonly string[],
   monthlyDirPath: string,
+  root: string = REPO_ROOT,
 ): Map<string, string> {
   const aliases = new Map<string, string>();
-  try {
-    const rawPath = join(monthlyDirPath, "_internal", "raw-destaques.json");
-    const idxPath = join(REPO_ROOT, "data", "beehiiv-cache", "posts", "index.json");
-    if (!existsSync(rawPath) || !existsSync(idxPath)) return aliases;
+  const rawPath = join(monthlyDirPath, "_internal", "raw-destaques.json");
+  const idxPath = join(root, "data", "beehiiv-cache", "posts", "index.json");
+  if (!existsSync(rawPath) || !existsSync(idxPath)) return aliases; // ausência esperada, silenciosa
 
+  try {
     const raw = JSON.parse(readFileSync(rawPath, "utf-8"));
-    const { urlToEdition, editionToPostId } = buildUrlToEdition(raw.destaques ?? []);
+    const { urlToEdition, editionToPostId, ambiguous } = buildUrlToEdition(raw.destaques ?? []);
+    // #4405 (achado do review): `ambiguous` já existia (PR #4066) pra sinalizar
+    // quando a MESMA URL de fonte aparece em Destaques de 2 edições diárias
+    // diferentes (o pick da 1ª ocorrência é arbitrário) — descartar esse sinal
+    // aqui reintroduziria silenciosamente o problema que o #4066 tornou
+    // visível. Mesmo padrão de warning do CLI (`monthly-relink-to-diaria.ts main()`).
+    if (ambiguous.length > 0) {
+      console.warn(
+        `[monthly-link-sections] ${ambiguous.length} URL(s) de Destaque em mais de uma edição — alias de relink usou a 1ª ocorrência (pode apontar pra edição errada): ${ambiguous.map((a) => a.url).join(", ")}`,
+      );
+    }
     const idx = JSON.parse(readFileSync(idxPath, "utf-8"));
     const editionUrl = makeEditionUrlResolver(idx, editionToPostId);
 
@@ -278,8 +307,12 @@ export function buildRelinkedContentAliases(
       const base = edition ? editionUrl(edition) : null;
       if (base) aliases.set(url, base);
     }
-  } catch {
-    // fail-soft — mapa original (sem os aliases) segue funcionando
+  } catch (err) {
+    // arquivo PRESENTE mas quebrado — inesperado, sinaliza (ver docstring acima).
+    console.warn(
+      `[monthly-link-sections] falha lendo raw-destaques.json/posts index.json em ${monthlyDirPath} — alias de relink (RC2) fica sem efeito pra este ciclo: ${String(err)}`,
+    );
+    return new Map();
   }
   return aliases;
 }
