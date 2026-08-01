@@ -121,24 +121,35 @@ da diária vieram pela mensal; desde 260723 o diar.ia.br está no Cloudflare e
 o redirect preserva a query string, então diar.ia.br voltou a ser o href
 canônico — ver #2457 e #2613).
 
-Seguido de 3 parágrafos fixos (#3219, fonte única em
-context/snippets/encerramento-social-apoio.md, compartilhada com o diário):
-apoio à curadoria via Apoia.se, créditos das ferramentas usadas na produção
-(Claude Code, Gemini, Wispr Flow, MCP Clarice, Beehiiv) e convite pra
-interagir em LinkedIn/Facebook/Instagram/Threads/X.
+Seguido de, nesta ordem (#3219/#4413/#4411 — cada peça tem fonte única
+compartilhada com o diário em `scripts/lib/shared/encerramento-snippet.ts`,
+nunca reescrever de memória):
 
-Entre o parágrafo de créditos e o de convite social, incluir a lista de
-curadorias — SEM label manual "Acesse nossas curadorias:" antes dela, só a
-lista, NESTA ORDEM (decisão do editor, ciclo 2607-08 — inclui a vitrine de
-equipamentos como 3ª pílula, em vez de um box próprio):
-  - [Livros](https://livros.diar.ia.br)
-  - [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
-  - [Cursos](https://cursos.diar.ia.br)
-`monthly-render.ts` gera o label sozinho ao detectar uma lista de links
-nessa posição (mesmo padrão do diário, `FIXED_BLOCKS.para_encerrar_curadorias`
-em stitch-newsletter.ts, que só tem Cursos/Livros — a pílula de Equipamentos
-é exclusiva do mensal) — um label escrito à mão duplica o texto no render
-(achado ao vivo, ciclo 2607-08: "Acesse nossas curadorias:" saiu 2×).]
+1. 2 parágrafos fixos de context/snippets/encerramento-social-apoio.md —
+   apoio à curadoria via Apoia.se (recompensas em negrito) e créditos das
+   ferramentas usadas na produção (Claude Code, Gemini, Wispr Flow, MCP
+   Clarice, Beehiiv).
+2. A lista de pílulas de curadoria (`CURADORIA_PILLS`) — SEM label manual
+   "Acesse nossas curadorias:" antes dela, só a lista, sempre nesta ordem e
+   com estes labels exatos, EXATAMENTE como abaixo (#4411, decisão do
+   editor: labels curtos, mesma ordem do diário):
+
+- [Cursos](https://cursos.diar.ia.br)
+- [Livros](https://livros.diar.ia.br)
+- [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
+
+   `monthly-render.ts` gera o label sozinho ao detectar uma lista de links
+   nessa posição (mesmo padrão do diário, `FIXED_BLOCKS.para_encerrar_curadorias`
+   em stitch-newsletter.ts — os dois lados agora leem a mesma constante
+   `CURADORIA_PILLS`) — um label escrito à mão duplica o texto no render
+   (achado ao vivo, ciclo 2607-08: "Acesse nossas curadorias:" saiu 2×).
+3. O convite social (`SOCIAL_INVITE`) — texto FIXO, idêntico ao diário,
+   nunca parafrasear, EXATAMENTE como abaixo, numa linha só (#4413, decisão
+   do editor 260801 — substitui o "convite pra interagir em
+   LinkedIn/Facebook/Instagram/Threads/X" livre que existia antes desta
+   redação):
+
+Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), [Instagram](https://www.instagram.com/diar.ia.br), [Threads](https://www.threads.net/@diar.ia.br), [Facebook](https://www.facebook.com/diar.ia.br) ou [X](https://x.com/diariabr).]
 ```
 
 **Exemplo negativo (NÃO fazer) — #2794:**

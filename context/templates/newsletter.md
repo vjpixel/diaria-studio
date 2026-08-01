@@ -102,21 +102,20 @@ Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse
 
 **🙋🏼‍♀️ PARA ENCERRAR**
 
-Quem quiser apoiar a curadoria pode contribuir a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria) e ganha recompensas como artigo especial do mês, bastidores da produção e acesso antecipado a novos projetos.
+Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria) para ganhar recompensas como **artigo especial do mês**, **sorteios** e **acesso antecipado a novos projetos**.
 
-Nessa edição da **diar.ia.br**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
+Nesta edição da **diar.ia.br**, usei Claude Code para automatizar parte da pesquisa e criar resumos, Gemini para criar imagens e Wispr Flow para ganhar velocidade com comandos de voz ([ganhe um mês do plano Pro](https://wisprflow.ai/r?ANGELO492=)). A revisão foi feita pelo MCP da Clarice ([ganhe descontos com os cupons NEWS25 e NEWS50](https://clarice.ai/precos-planos?via=diaria)), dei o toque final e enviei via Beehiiv ([ganhe um mês grátis e 20% de desconto por 3 meses](https://www.beehiiv.com?via=Diaria)).
 
-**Acesse:**
+- [Cursos](https://cursos.diar.ia.br)
+- [Livros](https://livros.diar.ia.br)
+- [Equipamentos](https://www.amazon.com.br/shop/vjpixel)
 
-- [Melhores cursos grátis de IA](https://cursos.diar.ia.br)
-- [Curadoria de livros sobre IA](https://livros.diar.ia.br)
-
-Agora que chegou ao final da edição, que tal seguir a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), no [Facebook](https://www.facebook.com/diar.ia.br) ou no [Instagram](https://www.instagram.com/diar.ia.br)? Todo dia publicamos por lá um resumo das 3 principais notícias.
+Para acompanhar as 3 principais notícias de IA todos os dias, siga a **diar.ia.br** no [LinkedIn](https://www.linkedin.com/company/diar.ia.br/), [Instagram](https://www.instagram.com/diar.ia.br), [Threads](https://www.threads.net/@diar.ia.br), [Facebook](https://www.facebook.com/diar.ia.br) ou [X](https://x.com/diariabr).
 ```
 
-**Seções 🎁 SORTEIO + 🙋🏼‍♀️ PARA ENCERRAR (#1076):** copiadas literalmente do template Beehiiv original. Texto + links de afiliados (Wispr/Clarice/Beehiiv) mudam raramente — editor pode editar localmente (ou via Studio) entre Stage 2 gate e publish quando precisar. Render parseia ambos como blocos editoriais (kicker + parágrafos + lista "Acesse:"), sem boxes. Pixel pediu "no reviewed" (#1076) pra ter visibilidade + edição fácil em vez de hardcoded no script. `render-newsletter-html.ts` graceful — se algum bloco ausente, omite na renderização (não falha).
+**Seções 🎁 SORTEIO + 🙋🏼‍♀️ PARA ENCERRAR (#1076):** copiadas literalmente do template Beehiiv original. O label "Acesse nossas curadorias:" acima da lista de pills **não** é escrito no markdown — o render (`newsletter-render-html.ts`) gera esse label sozinho ao detectar a lista de links nessa posição; um label manual duplicaria o texto. Render parseia os blocos como kicker + parágrafos + pills, sem boxes. Pixel pediu "no reviewed" (#1076) pra ter visibilidade + edição fácil em vez de hardcoded no script. `render-newsletter-html.ts` graceful — se algum bloco ausente, omite na renderização (não falha).
 
-**Parágrafo de apoio + convite social em PARA ENCERRAR (#3219, ordem #3368):** o parágrafo de apoio (Apoia.se) e o convite social (LinkedIn/Facebook) são injetados por `scripts/stitch-newsletter.ts` a partir do snippet canônico `context/snippets/encerramento-social-apoio.md` — a mesma fonte usada pelo `writer-monthly` na edição mensal (`PARA ENCERRAR` lá também). Desde #3368 (pedido do editor na edição 260713), o parágrafo de apoio é o PRIMEIRO parágrafo da seção (logo após o cabeçalho, antes de ferramentas/Acesse) e o convite social continua sendo o ÚLTIMO — só no diário; o mensal não mudou. Editar o texto/links no snippet propaga pros dois formatos; não editar diretamente em `stitch-newsletter.ts` nem duplicar o texto em outro lugar.
+**PARA ENCERRAR — o que é editável e o que é bloco fixo (#3219/#4413/#4411/#4357):** só o parágrafo de apoio (Apoia.se) + créditos de ferramentas é editável por edição — vem de `context/snippets/encerramento-social-apoio.md` (via painel Caixas do Studio, `platform.config.json` → `para_encerrar.slot_a`), injetado por `scripts/stitch-newsletter.ts`. A lista de pills "Acesse nossas curadorias" (`CURADORIA_PILLS`) e o convite social final (`SOCIAL_INVITE`) são blocos FIXOS, definidos em `scripts/lib/shared/encerramento-snippet.ts` e compartilhados verbatim com o mensal (`writer-monthly` cita as mesmas constantes literalmente no prompt) — não são mais editáveis por edição (decisão do editor, 260801, #4413: o texto do convite social tinha 5 variantes divergentes entre diário/mensal/config/docs; um bloco fixo elimina o drift). Editar o texto/link de qualquer uma das 3 peças só pela fonte única correspondente; nunca duplicar em `stitch-newsletter.ts` nem noutro lugar.
 
 **Seção ERRO INTENCIONAL (#911 / #1079):** cada edição contém 1 erro proposital. Esta seção fecha o loop entre edições com duas frases narrativas curtas — sem convite ao concurso, sem "Responda este e-mail...". É confissão direta:
 

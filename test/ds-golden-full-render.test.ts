@@ -217,8 +217,8 @@ const FULL_FIXTURE: NewsletterContent = {
 
   encerrar: `Chegou ao fim de mais uma edição da Diar.ia. Se esse conteúdo ajudou você a entender melhor o que está acontecendo com IA, compartilhe com alguém que também precisa saber.
 
-- [Cursos de IA](https://cursos.diar.ia.br)
-- [Livros sobre IA](https://livros.diar.ia.br)
+- [Cursos](https://cursos.diar.ia.br)
+- [Livros](https://livros.diar.ia.br)
 - [Newsletter no Beehiiv](https://diaria.beehiiv.com)
 
 Agora que chegou até aqui, aproveite e responda o É IA? de hoje — leva menos de 10 segundos e te coloca no ranking do mês.`,
@@ -520,9 +520,9 @@ describe("ds-golden-full-render (#2108) — golden de página inteira do renderH
     );
   });
 
-  it("PARA ENCERRAR tem pills de curadoria e CTA 'Agora que chegou'", () => {
-    assert.ok(html.includes("Cursos de IA"), "pill 'Cursos de IA' ausente");
-    assert.ok(html.includes("Livros sobre IA"), "pill 'Livros sobre IA' ausente");
+  it("PARA ENCERRAR tem pills de curadoria (labels curtos, #4411) e CTA 'Agora que chegou'", () => {
+    assert.ok(html.includes("Cursos"), "pill 'Cursos' ausente");
+    assert.ok(html.includes("Livros"), "pill 'Livros' ausente");
     assert.ok(html.includes("Agora que chegou"), "CTA 'Agora que chegou' ausente");
     assert.ok(html.includes("border-radius:999px"), "pills sem border-radius:999px");
     // #2138: pills devem ter font-size:16px (CTA no tamanho do corpo)

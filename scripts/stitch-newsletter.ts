@@ -32,17 +32,11 @@ import {
 } from "./lib/use-melhor-curation.ts"; // #2447/#2450
 import { USE_MELHOR_TEMPO_RE } from "./lib/lint-checks/use-melhor-tempo.ts"; // #2464 finding 5 — evitar cópia de regex
 import {
-  DIARIA_FACEBOOK_PAGE_URL,
-  DIARIA_LINKEDIN_PAGE_URL,
-  DIARIA_CURSOS_URL,
-  DIARIA_LIVROS_URL,
-  DIARIA_AMAZON_LOJA_URL,
-} from "./lib/canonical-urls.ts"; // #2695/#2790/#3698 fonte única; DIARIA_AMAZON_LOJA_URL #4356
-import {
-  splitEncerramentoSocialApoio,
   renderEncerramentoSocialApoio,
   ENCERRAMENTO_OPENING_DAILY,
-} from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (social + apoio Apoia.se), compartilhada com o mensal; split #3368 (reorder); renderEncerramentoSocialApoio #3382 fix (fallback de conteúdo real quando o split falha)
+  SOCIAL_INVITE,
+  CURADORIA_PILLS,
+} from "./lib/shared/encerramento-snippet.ts"; // #3219 fonte única (apoio Apoia.se + ferramentas), compartilhada com o mensal; renderEncerramentoSocialApoio #3382 fix (fallback de conteúdo real quando o slot A não tem override); SOCIAL_INVITE/CURADORIA_PILLS #4413/#4411 (blocos fixos, não mais lidos de config/snippet por edição)
 import { readSnippetFile } from "./lib/shared/snippet-loader.ts"; // #3219 leitura crua compartilhada com loadEncerramentoSocialApoioTemplate
 import { extractBoxDivulgacao0, extractBoxDivulgacao1, extractBoxDivulgacao3, BOX0_SENTINEL } from "./lib/newsletter-parse.ts"; // #3232 idempotência marcador-agnóstica (ver boxAlreadyPresentInGap); extractBoxDivulgacao3 #3476; extractBoxDivulgacao0 #4274; BOX0_SENTINEL #4338
 import {
@@ -104,14 +98,15 @@ Você presta atenção ao conteúdo gerado por IA que consome? Para ajudar nesse
 
   // #4357: lista de pills "Acesse nossas curadorias" — navegação estrutural
   // PERMANENTE (não copy editorial), concatenada por `buildParaEncerrar`
-  // DEPOIS do slot A e ANTES do slot B, fora do alcance de qualquer override
-  // de slot. Sobrevive incondicionalmente a qualquer edição do parágrafo de
-  // apoio/ferramentas pelo painel Caixas. #4356: 3º pill "Equipamentos"
-  // (vitrine própria do editor na Amazon, link direto — decisão do editor,
-  // sem camada de redirect via Worker) somado às 2 curadorias originais.
-  para_encerrar_curadorias: `- [Cursos de IA](${DIARIA_CURSOS_URL})
-- [Livros sobre IA](${DIARIA_LIVROS_URL})
-- [Equipamentos](${DIARIA_AMAZON_LOJA_URL})`,
+  // DEPOIS do slot A e ANTES do convite social, fora do alcance de qualquer
+  // override de slot. Sobrevive incondicionalmente a qualquer edição do
+  // parágrafo de apoio/ferramentas pelo painel Caixas. #4356: 3º pill
+  // "Equipamentos" (vitrine própria do editor na Amazon, link direto —
+  // decisão do editor, sem camada de redirect via Worker) somado às 2
+  // curadorias originais. #4411: labels curtos (Cursos/Livros, não mais
+  // "Cursos de IA"/"Livros sobre IA") + constante compartilhada
+  // `CURADORIA_PILLS` (mesmo texto usado pelo mensal — single source, #4411).
+  para_encerrar_curadorias: CURADORIA_PILLS,
 
   erro_intencional_placeholder: `**ERRO INTENCIONAL**
 
@@ -121,37 +116,40 @@ Esta edição tem um erro proposital. Responda este e-mail com a correção para
 };
 
 /**
- * #4274 (reescopo do gate /diaria-develop 260729): shape da config
- * `para_encerrar` de `platform.config.json` — os 2 blocos de conteúdo
- * SEMPRE-PRESENTES da seção PARA ENCERRAR, editáveis pelo painel Caixas como
- * texto direto (sem pool de snippets, diferente dos slots 0-3 de
- * `boxes_divulgacao`, que são opcionais e sorteiam entre candidatos).
+ * #4274 (reescopo #4413, 260801): shape da config `para_encerrar` de
+ * `platform.config.json` — o único bloco de conteúdo ainda editável pelo
+ * painel Caixas como texto direto (sem pool de snippets, diferente dos
+ * slots 0-3 de `boxes_divulgacao`, que são opcionais e sorteiam entre
+ * candidatos).
  *
  *   - `slotA`: parágrafo de apoio (Apoia.se) + bloco de ferramentas — um
- *     único bloco de texto. #4357: NÃO inclui mais a lista de pills "Acesse
+ *     único bloco de texto. #4357: NÃO inclui a lista de pills "Acesse
  *     nossas curadorias" — essa lista é navegação estrutural permanente
  *     (`FIXED_BLOCKS.para_encerrar_curadorias`), concatenada por
- *     `buildParaEncerrar` DEPOIS do slot A, fora do alcance deste override
- *     (antes, sobrescrever slotA apagava as pills junto — override é
- *     all-or-nothing por slot).
- *   - `slotB`: convite social (LinkedIn/Facebook/Instagram) — o ÚLTIMO
- *     parágrafo da seção (invariante do #3219/#3368, preservada).
+ *     `buildParaEncerrar` DEPOIS do slot A (antes, sobrescrever slotA
+ *     apagava as pills junto — override é all-or-nothing por slot).
  *
- * `null` = sem override, cai no default (`computeParaEncerrarDefaults`) —
+ * #4413 (decisão do editor, 260801): o antigo `slotB` (convite social) SAIU
+ * deste tipo — o convite social virou bloco FIXO (`SOCIAL_INVITE`, ver
+ * `lib/shared/encerramento-snippet.ts`), nunca mais editável por edição. Um
+ * eventual `para_encerrar.slot_b` ainda presente em `platform.config.json`
+ * (config legado, ou escrito pelo painel Caixas do Studio antes deste PR
+ * remover o campo da UI) é simplesmente IGNORADO por `loadParaEncerrarConfig`
+ * — nunca lido, nunca propagado ao output.
+ *
+ * `null` = sem override, cai no default (`computeParaEncerrarSlotADefault`) —
  * mesmo contrato de `BoxesDivulgacaoConfig` (ausência/vazio nunca quebra,
  * comportamento idêntico ao pré-#4274).
  */
 export interface ParaEncerrarConfig {
   slotA: string | null;
-  slotB: string | null;
 }
 
 /**
- * #4274: lê `platform.config.json.para_encerrar.{slot_a,slot_b}`. Chave
- * ausente, config corrompido, ou valor vazio/não-string em qualquer um dos 2
- * campos -> `null` NESSE campo (fallback pro default em `buildParaEncerrar`,
- * ver `computeParaEncerrarDefaults`) — cada slot é independente, um override
- * parcial (só slotA ou só slotB) é válido. Nunca lança.
+ * #4274/#4413: lê `platform.config.json.para_encerrar.slot_a`. Chave
+ * ausente, config corrompido, ou valor vazio/não-string -> `null` (fallback
+ * pro default em `buildParaEncerrar`, ver `computeParaEncerrarSlotADefault`).
+ * Nunca lança. `slot_b` (se presente no arquivo) é ignorado — #4413.
  */
 export function loadParaEncerrarConfig(): ParaEncerrarConfig {
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -160,102 +158,51 @@ export function loadParaEncerrarConfig(): ParaEncerrarConfig {
     const raw = JSON.parse(readFileSync(p, "utf8"));
     if (raw.para_encerrar && typeof raw.para_encerrar === "object") {
       const rawA = raw.para_encerrar.slot_a;
-      const rawB = raw.para_encerrar.slot_b;
       const slotA = typeof rawA === "string" && rawA.trim() ? rawA.trim() : null;
-      const slotB = typeof rawB === "string" && rawB.trim() ? rawB.trim() : null;
-      return { slotA, slotB };
+      return { slotA };
     }
   } catch {
     // graceful — config ausente/corrompido cai no default abaixo
   }
-  return { slotA: null, slotB: null };
+  return { slotA: null };
 }
 
 /**
- * #4274: valores DEFAULT de slotA/slotB — reproduz byte-a-byte a lógica
- * pré-#4274 de `buildParaEncerrar` (3 níveis de fallback do
- * `splitEncerramentoSocialApoio`/`renderEncerramentoSocialApoio`, ver
- * docstring de cada um em `lib/shared/encerramento-snippet.ts`), só que
- * dividida nos 2 slots em vez de montar o bloco inteiro direto. Usada quando
- * `platform.config.json` não tem override pra um slot (config ausente,
- * campo vazio, ou edição anterior ao #4274).
- *
- * `splitEncerramentoSocialApoio` retorna `null` em 2 situações BEM diferentes
- * (finding de self-review do #3382, thread em encerramento-snippet.ts:80):
- *   1. Arquivo ausente/vazio (`renderEncerramentoSocialApoio` também `null`)
- *      — nunca houve conteúdo real pra perder, cai no fallback hardcoded
- *      genérico (comportamento graceful original, #3219).
- *   2. Arquivo existe e RENDERIZOU, mas não tem exatamente 2 parágrafos
- *      separados por linha em branco (ex: editor fundiu apoio+social num só
- *      parágrafo). Antes deste fix, esse caso caía indistintamente no MESMO
- *      fallback hardcoded do caso 1 — descartando silenciosamente conteúdo
- *      real do editor só porque o reorder (#3368) não conseguiu separar os
- *      parágrafos. Agora usa o render INTEIRO, não-dividido, como slotB
- *      (header > tools/slotA > render inteiro/slotB) — perde só o reorder
- *      (apoio não fica mais isolado do convite social), nunca o conteúdo.
+ * #4413 (simplificado — antes do #4413 esta função precisava separar
+ * apoio/ferramentas/convite social do mesmo arquivo via
+ * `splitEncerramentoSocialApoio`, porque o convite social também vinha dele;
+ * agora que o convite social é `SOCIAL_INVITE`, um bloco fixo à parte, o
+ * arquivo inteiro — qualquer que seja sua forma, 1 parágrafo ou mais — é
+ * usado verbatim como slot A): valor DEFAULT do slot A quando
+ * `platform.config.json` não tem override (config ausente, campo vazio, ou
+ * edição anterior ao #4274). Cai no fallback hardcoded
+ * `FIXED_BLOCKS.para_encerrar_tools` só quando o próprio arquivo de snippet
+ * está ausente/vazio (nunca houve conteúdo real pra perder).
  */
-function computeParaEncerrarDefaults(): { slotA: string; slotB: string } {
-  const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
-  if (split) {
-    // Achado ao vivo, ciclo 2607-08: o snippet ganhou um 3º parágrafo
-    // (créditos de ferramentas) entre apoio e convite social.
-    // `splitEncerramentoSocialApoio` só separa em 2 (apoio + resto), então
-    // `split.socialInvite` aqui é "créditos\n\nconvite social" quando o
-    // arquivo tem os 3 parágrafos. Separar de novo no primeiro `\n\n` extrai
-    // o parágrafo de créditos REAL do snippet em vez de duplicar o
-    // `FIXED_BLOCKS.para_encerrar_tools` hardcoded ao lado dele (regressão
-    // achada no fleet review do #4425 — a fonte compartilhada ganhou esse
-    // parágrafo, mas o código do diário ainda colava a cópia hardcoded
-    // antiga por cima). Arquivo com só 2 parágrafos (forma pré-2607-08)
-    // continua caindo no fallback hardcoded — comportamento inalterado.
-    const restParts = split.socialInvite.split(/\n\s*\n/);
-    const tools = restParts.length > 1 ? restParts[0] : FIXED_BLOCKS.para_encerrar_tools;
-    const social = restParts.length > 1 ? restParts.slice(1).join("\n\n") : split.socialInvite;
-    return {
-      slotA: `${split.apoio}\n\n${tools}`,
-      slotB: social,
-    };
-  }
-  // Split falhou — distingue arquivo ausente (caso 1) de arquivo presente mas
-  // com forma inesperada (caso 2, #3382).
-  const whole = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
-  if (whole) {
-    return { slotA: FIXED_BLOCKS.para_encerrar_tools, slotB: whole };
-  }
-  const socialFallback = `Agora que chegou ao final da edição, que tal interagir em uma publicação no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}) ou no [Facebook](${DIARIA_FACEBOOK_PAGE_URL})? Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante!`;
-  return { slotA: FIXED_BLOCKS.para_encerrar_tools, slotB: socialFallback };
+function computeParaEncerrarSlotADefault(): string {
+  return renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY) ?? FIXED_BLOCKS.para_encerrar_tools;
 }
 
 /**
- * #3219/#3368/#4274/#4357: monta o bloco PARA ENCERRAR completo — cabeçalho
- * (fixo, `FIXED_BLOCKS.para_encerrar_header`) + slotA (apoio + ferramentas) +
- * pills de curadoria (fixo, `FIXED_BLOCKS.para_encerrar_curadorias`) + slotB
- * (convite social), nessa ordem (invariante do #3219/#3368 preservada — o
- * convite social é sempre o ÚLTIMO parágrafo). #4274: cada slot lê primeiro
- * de `platform.config.json.para_encerrar` (editável pelo painel Caixas);
- * ausência/vazio cai no default (`computeParaEncerrarDefaults`) — mesmo
- * output de antes do #4274 pra qualquer config sem a chave nova.
- *
- * #4357: a lista de pills "Acesse nossas curadorias" é concatenada FORA do
- * alcance de qualquer override de slot — antes ela morava dentro do default
- * do slot A (`computeParaEncerrarDefaults` concatenava `para_encerrar_tools`
- * inteiro, pills incluídas), e como o override do slot A é all-or-nothing
- * (`cfg.slotA ?? defaults.slotA`), qualquer texto que o editor salvasse no
- * painel Caixas apagava a linha de pills junto, em silêncio (achado
- * 260730/731). Extrair as pills pra um bloco sempre-presente elimina a
- * causa raiz sem tocar o isolamento de teste do painel (`studio-boxes.ts`).
+ * #3219/#3368/#4274/#4357/#4413: monta o bloco PARA ENCERRAR completo —
+ * cabeçalho (fixo, `FIXED_BLOCKS.para_encerrar_header`) + slot A (apoio +
+ * ferramentas, editável) + pills de curadoria (fixo, `CURADORIA_PILLS`) +
+ * convite social (fixo, `SOCIAL_INVITE`), nessa ordem (invariante do
+ * #3219/#3368 preservada — o convite social é sempre o ÚLTIMO parágrafo).
+ * #4413: o convite social NÃO É MAIS um slot editável — é sempre
+ * `SOCIAL_INVITE`, verbatim, independente de qualquer config (decisão do
+ * editor: o texto precisa ser invariante, e o override por edição era
+ * justamente o mecanismo que produzia divergência entre diário e mensal).
  *
  * `override` — pula a leitura de `platform.config.json` e usa esta config
- * diretamente (mesmo contrato de `input.boxesDivulgacao` em `StitchInput`).
- * Produção nunca passa este parâmetro (sempre lê do disco via
- * `loadParaEncerrarConfig`).
+ * diretamente pro slot A (mesmo contrato de `input.boxesDivulgacao` em
+ * `StitchInput`). Produção nunca passa este parâmetro (sempre lê do disco
+ * via `loadParaEncerrarConfig`).
  */
 export function buildParaEncerrar(override?: ParaEncerrarConfig): string {
   const cfg = override ?? loadParaEncerrarConfig();
-  const defaults = computeParaEncerrarDefaults();
-  const slotA = cfg.slotA ?? defaults.slotA;
-  const slotB = cfg.slotB ?? defaults.slotB;
-  return `${FIXED_BLOCKS.para_encerrar_header}\n\n${slotA}\n\n${FIXED_BLOCKS.para_encerrar_curadorias}\n\n${slotB}`;
+  const slotA = cfg.slotA ?? computeParaEncerrarSlotADefault();
+  return `${FIXED_BLOCKS.para_encerrar_header}\n\n${slotA}\n\n${FIXED_BLOCKS.para_encerrar_curadorias}\n\n${SOCIAL_INVITE}`;
 }
 
 /**
@@ -531,7 +478,7 @@ interface StitchInput {
   /** Override de teste: pula a leitura de `platform.config.json` e usa esta
    * config diretamente. Produção nunca passa este campo (sempre lê do disco). */
   boxesDivulgacao?: BoxesDivulgacaoConfig;
-  /** #4274: override de teste pro conteúdo dos slots A/B do PARA ENCERRAR —
+  /** #4274/#4413: override de teste pro conteúdo do slot A do PARA ENCERRAR —
    * mesmo contrato de `boxesDivulgacao` acima. Produção nunca passa este
    * campo (sempre lê `platform.config.json.para_encerrar` via
    * `loadParaEncerrarConfig`). */

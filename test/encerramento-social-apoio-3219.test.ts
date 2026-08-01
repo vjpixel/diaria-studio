@@ -1,5 +1,5 @@
 /**
- * test/encerramento-social-apoio-3219.test.ts (#3219, regressão #633)
+ * test/encerramento-social-apoio-3219.test.ts (#3219, regressão #633; reescopo #4413/#4411)
  *
  * A edição mensal 2606-07 enviada saiu com um parágrafo de apoio (Apoia.se)
  * ao lado do convite social (LinkedIn/Facebook) no bloco de encerramento —
@@ -7,34 +7,44 @@
  * template/repo (mesmo padrão do #2866: ajuste aprovado numa edição
  * específica vira fonte canônica permanente).
  *
+ * #4413/#4411 (260801, decisão do editor): o convite social e a lista de
+ * pills "Acesse nossas curadorias" tinham, respectivamente, 5 e 3 grafias
+ * divergentes entre diário/mensal/config/docs. Os dois viraram BLOCOS FIXOS
+ * — `SOCIAL_INVITE`/`CURADORIA_PILLS` em `scripts/lib/shared/encerramento-snippet.ts`,
+ * nunca mais editáveis por edição. `context/snippets/encerramento-social-apoio.md`
+ * ficou só com o parágrafo de apoio + créditos de ferramentas (a única parte
+ * ainda editável, via painel Caixas / `platform.config.json` → `para_encerrar.slot_a`).
+ *
  * Este teste cobre:
  *   1. `context/snippets/encerramento-social-apoio.md` — o texto aprovado
- *      (parágrafo de apoio + convite social) existe, com o marcador
- *      `{{OPENING}}` e os links canônicos corretos.
+ *      (parágrafo de apoio + ferramentas) existe, com o marcador
+ *      `{{OPENING}}` e o link canônico do Apoia.se.
  *   2. `scripts/lib/shared/encerramento-snippet.ts` — o loader/render
  *      substitui `{{OPENING}}` corretamente pras duas variantes (diário
- *      vazio, mensal com a cláusula de contexto), sem vazamento cruzado.
+ *      vazio, mensal com a cláusula de contexto), sem vazamento cruzado;
+ *      `SOCIAL_INVITE`/`CURADORIA_PILLS` são os blocos fixos.
  *   3. `scripts/stitch-newsletter.ts` — o diário (`buildParaEncerrar` /
- *      `stitchNewsletter`) usa o snippet de verdade (não duplica o texto).
+ *      `stitchNewsletter`) usa o snippet pro slot A + os 2 blocos fixos,
+ *      nessa ordem, sempre.
  *   4. `.claude/agents/writer-monthly.md` — documenta a mesma fonte E a
- *      mesma cláusula de abertura mensal (drift-guard entre TS/prompt/MD,
- *      #2866-style).
- *   5. `context/templates/newsletter-monthly.md` — renomeou `ENCERRAMENTO`
- *      → `PARA ENCERRAR` (nome que o writer-monthly já gerava na prática).
+ *      mesma cláusula de abertura mensal, e CITA `SOCIAL_INVITE`/
+ *      `CURADORIA_PILLS` literalmente (drift-guard, #4413/#4411).
+ *   5. `context/templates/newsletter-monthly.md`/`newsletter.md` — citam as
+ *      mesmas constantes literalmente (drift-guard entre as duas superfícies).
  *   6. Integração de render: o texto novo passa por
  *      `scripts/lib/newsletter-render-html.ts` (diário) e
  *      `scripts/lib/mensal/monthly-render.ts` (mensal) sem quebrar — CTA
  *      final continua caindo no box destacado, links resolvem certo.
  *
  * #4139 (mesma doença que o #4083 corrigiu em stitch-newsletter.test.ts):
- * testes de MECANISMO (load/render/split/stitch) rodam contra uma fixture
- * ESTÁVEL (`STABLE_ENCERRAMENTO_FIXTURE`, escrita transitoriamente via
- * `withSnippetContent`/`withStableSnippet`) em vez do arquivo
- * REAL — a lista de recompensas do Apoia.se é rotação editorial normal (já
- * mudou uma vez, 260727) e não deveria quebrar CI sem regressão nenhuma.
- * Só o describe "guardas de forma" no topo do arquivo lê o arquivo real, e
- * só verifica invariantes de FORMA (marcador, links canônicos, ausência de
- * placeholder) — nunca texto exato de recompensa.
+ * testes de MECANISMO (load/render/stitch) rodam contra uma fixture ESTÁVEL
+ * (`STABLE_ENCERRAMENTO_FIXTURE`, escrita transitoriamente via
+ * `withSnippetContent`/`withStableSnippet`) em vez do arquivo REAL — a lista
+ * de recompensas do Apoia.se é rotação editorial normal (já mudou 2×) e não
+ * deveria quebrar CI sem regressão nenhuma. Só o describe "guardas de forma"
+ * no topo do arquivo lê o arquivo real, e só verifica invariantes de FORMA
+ * (marcador, link canônico, ausência de placeholder) — nunca texto exato de
+ * recompensa.
  */
 
 import { describe, it } from "node:test";
@@ -44,11 +54,12 @@ import { join } from "node:path";
 import {
   loadEncerramentoSocialApoioTemplate,
   renderEncerramentoSocialApoio,
-  splitEncerramentoSocialApoio,
   ENCERRAMENTO_OPENING_DAILY,
   ENCERRAMENTO_OPENING_MONTHLY,
+  SOCIAL_INVITE,
+  CURADORIA_PILLS,
 } from "../scripts/lib/shared/encerramento-snippet.ts";
-import { buildParaEncerrar } from "../scripts/stitch-newsletter.ts";
+import { buildParaEncerrar, type ParaEncerrarConfig } from "../scripts/stitch-newsletter.ts";
 import { renderEncerrar } from "../scripts/lib/newsletter-render-html.ts";
 import { renderEncerramento } from "../scripts/lib/mensal/monthly-render.ts";
 import { extractTemplateBlock } from "../scripts/lib/newsletter-parse.ts";
@@ -56,6 +67,8 @@ import {
   DIARIA_LINKEDIN_PAGE_URL,
   DIARIA_FACEBOOK_PAGE_URL,
   DIARIA_INSTAGRAM_URL,
+  DIARIA_THREADS_URL,
+  DIARIA_X_URL,
   DIARIA_APOIASE_URL,
 } from "../scripts/lib/canonical-urls.ts";
 
@@ -67,19 +80,19 @@ const NEWSLETTER_DAILY_TEMPLATE = join(ROOT, "context", "templates", "newsletter
 
 // ─── #4139 — fixture ESTÁVEL do snippet de encerramento ────────────────────
 // Mesma doença que o #4083 corrigiu em test/stitch-newsletter.test.ts: testes
-// de MECANISMO (load/render/split/stitch) não devem depender do que
+// de MECANISMO (load/render/stitch) não devem depender do que
 // context/snippets/encerramento-social-apoio.md diz HOJE — rotação editorial
-// normal (a lista de recompensas do Apoia.se já mudou uma vez, 260727: "bastidores
-// da produção" → "sorteios") quebrava CI sem regressão nenhuma de código. A
-// fixture abaixo preserva a ESTRUTURA real (marcador {{OPENING}}, abertura do
-// parágrafo de apoio, convite social com os 3 links canônicos) mas troca a
-// lista de recompensas por texto sintético — nenhum teste de mecanismo deveria
-// se importar com QUAL recompensa está listada, só que ela passe intacta.
-// Escrita via `withStableSnippet` (generalização do helper que já existia,
-// escopado, no describe #3382 abaixo) — grava, roda, restaura no finally.
-const STABLE_ENCERRAMENTO_FIXTURE = `{{OPENING}}Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](${DIARIA_APOIASE_URL}) para ganhar recompensas como acesso a bastidores de teste, brindes fixture e prioridade em enquetes.
+// normal (a lista de recompensas do Apoia.se já mudou 2×) quebrava CI sem
+// regressão nenhuma de código. A fixture abaixo preserva a ESTRUTURA real
+// (marcador {{OPENING}}, abertura do parágrafo de apoio, parágrafo de
+// ferramentas) mas troca o conteúdo por texto sintético — nenhum teste de
+// mecanismo deveria se importar com QUAL recompensa/ferramenta está listada,
+// só que ela passe intacta. #4413: o arquivo tem só 2 parágrafos agora (o
+// convite social virou bloco fixo, `SOCIAL_INVITE`, fora deste arquivo).
+// Escrita via `withStableSnippet` — grava, roda, restaura no finally.
+const STABLE_ENCERRAMENTO_FIXTURE = `{{OPENING}}Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](${DIARIA_APOIASE_URL}) para ganhar recompensas como **acesso a bastidores de teste**, **brindes fixture** e **prioridade em enquetes**.
 
-Agora que chegou ao final da edição, siga a **diar.ia.br** no [LinkedIn](${DIARIA_LINKEDIN_PAGE_URL}), no [Facebook](${DIARIA_FACEBOOK_PAGE_URL}) ou no [Instagram](${DIARIA_INSTAGRAM_URL}). Todo dia publicamos por lá um resumo das 3 principais notícias.`;
+Nesta edição da **diar.ia.br**, usei uma ferramenta fixture qualquer para os testes ([link fixture](https://exemplo-fixture.test/ferramenta)).`;
 
 const originalSnippetContent = readFileSync(SNIPPET_PATH, "utf8");
 
@@ -113,19 +126,9 @@ describe("context/snippets/encerramento-social-apoio.md — guardas de forma (#4
     assert.match(raw, new RegExp(DIARIA_APOIASE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 
-  it("convite social usa os links canônicos de LinkedIn/Facebook/Instagram (não hardcoda de novo)", () => {
-    assert.match(
-      raw,
-      new RegExp(`\\[LinkedIn\\]\\(${DIARIA_LINKEDIN_PAGE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`),
-    );
-    assert.match(
-      raw,
-      new RegExp(`\\[Facebook\\]\\(${DIARIA_FACEBOOK_PAGE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`),
-    );
-    assert.match(
-      raw,
-      new RegExp(`\\[Instagram\\]\\(${DIARIA_INSTAGRAM_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`),
-    );
+  it("não menciona mais o convite social (#4413 — virou bloco fixo fora deste arquivo)", () => {
+    assert.doesNotMatch(raw, /\[LinkedIn\]/, "convite social não deveria mais morar neste arquivo");
+    assert.doesNotMatch(raw, /\[X\]\(https:\/\/x\.com/, "convite social não deveria mais morar neste arquivo");
   });
 
   it("não carrega placeholder não substituído além do {{OPENING}} (ex: {mês} esquecido)", () => {
@@ -179,57 +182,78 @@ describe("context/snippets/encerramento-social-apoio.md — mecanismo de load/re
     });
   });
 
-  it("o parágrafo de convite social é IDÊNTICO nas duas variantes (só a abertura muda)", () => {
+  it("o parágrafo de ferramentas é IDÊNTICO nas duas variantes (só a abertura do parágrafo de apoio muda)", () => {
     withStableSnippet(() => {
       const daily = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY)!;
       const monthly = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_MONTHLY)!;
-      const socialParaOf = (s: string) => s.split(/\n\n+/).pop();
-      assert.equal(socialParaOf(daily), socialParaOf(monthly));
-      assert.match(socialParaOf(daily)!, /Todo dia publicamos por lá um resumo das 3 principais notícias\./);
+      const toolsParaOf = (s: string) => s.split(/\n\n+/).pop();
+      assert.equal(toolsParaOf(daily), toolsParaOf(monthly));
+      assert.match(toolsParaOf(daily)!, /link fixture/);
     });
   });
 });
 
-describe("scripts/lib/shared/encerramento-snippet.ts — splitEncerramentoSocialApoio (#3368, fixture estável #4139)", () => {
-  it("separa o template em { apoio, socialInvite } sem perder conteúdo", () => {
-    withStableSnippet(() => {
-      const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
-      assert.ok(split, "split não deveria ser null");
-      assert.match(split!.apoio, /^Apoie a curadoria contribuindo a partir de R\$5\/mês em \[apoia\.se\/diaria\]/);
-      assert.match(split!.socialInvite, /^Agora que chegou ao final da edição, siga/);
-      // nenhum dos dois vaza conteúdo do outro
-      assert.doesNotMatch(split!.apoio, /Agora que chegou ao final da edição/);
-      assert.doesNotMatch(split!.socialInvite, /apoia\.se\/diaria/);
-    });
+describe("SOCIAL_INVITE / CURADORIA_PILLS — blocos fixos, mesma constante em diária e mensal (#4413/#4411, drift-guard)", () => {
+  it("SOCIAL_INVITE menciona os 5 canais na ordem LinkedIn > Instagram > Threads > Facebook > X", () => {
+    const order = [
+      DIARIA_LINKEDIN_PAGE_URL,
+      DIARIA_INSTAGRAM_URL,
+      DIARIA_THREADS_URL,
+      DIARIA_FACEBOOK_PAGE_URL,
+      DIARIA_X_URL,
+    ].map((url) => SOCIAL_INVITE.indexOf(url));
+    assert.ok(order.every((i) => i >= 0), "algum canal está ausente do SOCIAL_INVITE");
+    for (let i = 1; i < order.length; i++) {
+      assert.ok(order[i] > order[i - 1], "ordem dos canais incorreta em SOCIAL_INVITE");
+    }
   });
 
-  it("aplica a cláusula de abertura só no parágrafo de apoio, nunca no convite social", () => {
-    withStableSnippet(() => {
-      const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_MONTHLY);
-      assert.ok(split);
-      assert.match(split!.apoio, /^Essa edição mensal nasce da \*\*diar\.ia\.br\*\*/);
-      assert.doesNotMatch(split!.socialInvite, /Essa edição mensal nasce/);
-    });
+  it("CURADORIA_PILLS tem exatamente 3 pills, nesta ordem: Cursos, Livros, Equipamentos", () => {
+    const idxCursos = CURADORIA_PILLS.indexOf("[Cursos]");
+    const idxLivros = CURADORIA_PILLS.indexOf("[Livros]");
+    const idxEquip = CURADORIA_PILLS.indexOf("[Equipamentos]");
+    assert.ok(idxCursos >= 0 && idxLivros > idxCursos && idxEquip > idxLivros, "ordem/labels das pills incorretos");
+    assert.equal(CURADORIA_PILLS.split("\n").length, 3, "deveriam existir exatamente 3 linhas de pill");
   });
 
-  it("o texto concatenado de volta (apoio + \\n\\n + socialInvite) é idêntico ao render não-splitado", () => {
-    withStableSnippet(() => {
-      const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY)!;
-      const whole = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY)!;
-      assert.equal(`${split.apoio}\n\n${split.socialInvite}`, whole);
-    });
+  it("buildParaEncerrar() (diária) usa exatamente SOCIAL_INVITE como último parágrafo", () => {
+    const out = buildParaEncerrar({ slotA: null });
+    assert.ok(out.trimEnd().endsWith(SOCIAL_INVITE), "convite social deveria ser o SOCIAL_INVITE exato, no final da seção");
+  });
+
+  it("buildParaEncerrar() (diária) inclui CURADORIA_PILLS antes do convite social", () => {
+    const out = buildParaEncerrar({ slotA: null });
+    assert.ok(out.includes(CURADORIA_PILLS));
+    assert.ok(out.indexOf(CURADORIA_PILLS) < out.indexOf(SOCIAL_INVITE));
+  });
+
+  it("writer-monthly.md cita SOCIAL_INVITE e CURADORIA_PILLS literalmente (drift-guard, mesma fonte do diário)", () => {
+    const content = readFileSync(WRITER_MONTHLY_MD, "utf8");
+    assert.ok(content.includes(SOCIAL_INVITE), "writer-monthly.md deve citar o convite social literalmente igual à constante SOCIAL_INVITE");
+    assert.ok(content.includes(CURADORIA_PILLS), "writer-monthly.md deve citar as pills literalmente iguais à constante CURADORIA_PILLS");
+  });
+
+  it("newsletter-monthly.md (template doc) cita SOCIAL_INVITE e CURADORIA_PILLS literalmente", () => {
+    const content = readFileSync(NEWSLETTER_MONTHLY_TEMPLATE, "utf8");
+    assert.ok(content.includes(SOCIAL_INVITE));
+    assert.ok(content.includes(CURADORIA_PILLS));
+  });
+
+  it("newsletter.md (template doc diário) cita SOCIAL_INVITE e CURADORIA_PILLS literalmente", () => {
+    const content = readFileSync(NEWSLETTER_DAILY_TEMPLATE, "utf8");
+    assert.ok(content.includes(SOCIAL_INVITE));
+    assert.ok(content.includes(CURADORIA_PILLS));
   });
 });
 
-describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartilhado (#3219, reorder #3368)", () => {
-  it("buildParaEncerrar preserva o cabeçalho + parágrafo de ferramentas + pills Acesse (inalterado)", () => {
+describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartilhado + blocos fixos (#3219/#4413/#4411)", () => {
+  it("buildParaEncerrar preserva o cabeçalho + parágrafo de ferramentas + pills de curadoria (labels curtos, #4411)", () => {
     const out = buildParaEncerrar();
     assert.match(out, /\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/);
     assert.match(out, /usei Claude Code para automatizar parte da pesquisa/);
-    // #3698: domínio de marca (era cursos/livros.diaria.workers.dev).
-    assert.match(out, /- \[Cursos de IA\]\(https:\/\/cursos\.diar\.ia\.br\)/);
-    assert.match(out, /- \[Livros sobre IA\]\(https:\/\/livros\.diar\.ia\.br\)/);
-    // #4356: 3º pill "Equipamentos" — link direto pro Amazon (sem redirect worker).
+    // #4411: labels curtos ("Cursos de IA"/"Livros sobre IA" → "Cursos"/"Livros").
+    assert.match(out, /- \[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\)/);
+    assert.match(out, /- \[Livros\]\(https:\/\/livros\.diar\.ia\.br\)/);
     assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
   });
 
@@ -241,34 +265,24 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     // alcance do override.
     const out = buildParaEncerrar({
       slotA: "Apoie a curadoria contribuindo a partir de R$5/mês em [apoia.se/diaria](https://apoia.se/diaria). Nesta edição, usei alguns equipamentos legais.",
-      slotB: null,
     });
-    assert.equal((out.match(/Cursos de IA/g) ?? []).length, 1, "não deveria haver duplicação — só 1 ocorrência da pill");
-    assert.match(out, /- \[Cursos de IA\]\(https:\/\/cursos\.diar\.ia\.br\)/);
-    assert.match(out, /- \[Livros sobre IA\]\(https:\/\/livros\.diar\.ia\.br\)/);
+    assert.equal((out.match(/\[Cursos\]/g) ?? []).length, 1, "não deveria haver duplicação — só 1 ocorrência da pill");
+    assert.match(out, /- \[Cursos\]\(https:\/\/cursos\.diar\.ia\.br\)/);
+    assert.match(out, /- \[Livros\]\(https:\/\/livros\.diar\.ia\.br\)/);
     assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
   });
 
-  it("#4357: override de para_encerrar.slot_b (texto arbitrário) também preserva as pills (concatenadas ANTES do slotB)", () => {
-    const out = buildParaEncerrar({
-      slotA: null,
-      slotB: "Um convite social qualquer, sem nenhuma lista.",
-    });
-    assert.match(out, /- \[Cursos de IA\]\(https:\/\/cursos\.diar\.ia\.br\)/);
-    assert.match(out, /- \[Livros sobre IA\]\(https:\/\/livros\.diar\.ia\.br\)/);
-    assert.match(out, /- \[Equipamentos\]\(https:\/\/www\.amazon\.com\.br\/shop\/vjpixel\)/);
-    // Pills continuam vindo ANTES do slotB (invariante: convite social é
-    // sempre o ÚLTIMO parágrafo, #3219/#3368).
-    const pillsIdx = out.indexOf("[Cursos de IA]");
-    const slotBIdx = out.indexOf("Um convite social qualquer");
-    assert.ok(pillsIdx >= 0 && slotBIdx >= 0 && pillsIdx < slotBIdx);
+  it("#4413: um eventual slot_b em platform.config.json/override (config legado) é ignorado — convite social nunca varia", () => {
+    const out = buildParaEncerrar({ slotA: null, slotB: "Um convite social qualquer, sem nenhuma lista." } as ParaEncerrarConfig);
+    assert.ok(out.includes(SOCIAL_INVITE), "convite social deveria ser sempre o texto fixo, ignorando qualquer slotB");
+    assert.ok(!out.includes("Um convite social qualquer"), "slotB nunca deveria aparecer no output — bloco fixo (#4413)");
   });
 
-  it("buildParaEncerrar inclui o parágrafo de apoio (Apoia.se) e o convite social do snippet", () => {
+  it("buildParaEncerrar inclui o parágrafo de apoio (Apoia.se, do snippet) e o convite social fixo (SOCIAL_INVITE)", () => {
     withStableSnippet(() => {
       const out = buildParaEncerrar();
       assert.match(out, /Apoie a curadoria contribuindo a partir de R\$5\/mês em \[apoia\.se\/diaria\]\(https:\/\/apoia\.se\/diaria\)/);
-      assert.match(out, /Agora que chegou ao final da edição, siga a \*\*diar\.ia\.br\*\* no \[LinkedIn\]/);
+      assert.ok(out.includes(SOCIAL_INVITE));
     });
   });
 
@@ -286,28 +300,16 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     });
   });
 
-  it("buildParaEncerrar não regride pro texto antigo sem o apoio ('ajuda bastante' sem CTA de apoio)", () => {
-    withStableSnippet(() => {
-      // Antes do #3219 a última frase era só o convite social + esta cauda —
-      // se ela reaparecer sem o parágrafo de apoio antes, é regressão.
-      const out = buildParaEncerrar();
-      const apoioIdx = out.indexOf("apoia.se/diaria");
-      const socialIdx = out.indexOf("Agora que chegou ao final da edição");
-      assert.ok(apoioIdx >= 0 && socialIdx >= 0, "os dois parágrafos precisam estar presentes");
-      assert.ok(apoioIdx < socialIdx, "apoio deve vir ANTES do convite social");
-    });
-  });
-
-  it("ordem final (#3368, pedido do editor 260713): cabeçalho > apoio > ferramentas > Acesse > convite social", () => {
+  it("ordem final (#3368/#4413): cabeçalho > apoio > ferramentas > pills > convite social fixo", () => {
     withStableSnippet(() => {
       const out = buildParaEncerrar();
       const headerIdx = out.indexOf("PARA ENCERRAR");
       const apoioIdx = out.indexOf("apoia.se/diaria");
-      const toolsIdx = out.indexOf("usei Claude Code");
-      const acesseIdx = out.indexOf("[Cursos de IA]");
-      const socialIdx = out.indexOf("Agora que chegou ao final da edição");
+      const toolsIdx = out.indexOf("Nesta edição da");
+      const pillsIdx = out.indexOf("[Cursos]");
+      const socialIdx = out.indexOf(SOCIAL_INVITE);
       assert.ok(
-        headerIdx >= 0 && headerIdx < apoioIdx && apoioIdx < toolsIdx && toolsIdx < acesseIdx && acesseIdx < socialIdx,
+        headerIdx >= 0 && headerIdx < apoioIdx && apoioIdx < toolsIdx && toolsIdx < pillsIdx && pillsIdx < socialIdx,
         "ordem incorreta",
       );
     });
@@ -321,11 +323,9 @@ describe("scripts/stitch-newsletter.ts — PARA ENCERRAR usa o snippet compartil
     });
   });
 
-  it("o convite social é o ÚLTIMO parágrafo da seção (#3368)", () => {
-    withStableSnippet(() => {
-      const out = buildParaEncerrar({ slotA: null, slotB: null });
-      assert.match(out.trimEnd(), /Agora que chegou ao final da edição, siga a \*\*diar\.ia\.br\*\* no \[LinkedIn\]\([^)]+\), no \[Facebook\]\([^)]+\) ou no \[Instagram\]\([^)]+\)\. Todo dia publicamos por lá um resumo das 3 principais notícias\.$/);
-    });
+  it("o convite social fixo é o ÚLTIMO parágrafo da seção (#3368/#4413), mesmo com slotA customizado", () => {
+    const out = buildParaEncerrar({ slotA: "Texto A qualquer, customizado pelo editor." });
+    assert.match(out.trimEnd(), new RegExp(`${SOCIAL_INVITE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
   });
 });
 
@@ -359,14 +359,14 @@ describe("templates — nomeação de seção PARA ENCERRAR (#3219)", () => {
     assert.doesNotMatch(content, /\*\*ENCERRAMENTO\*\*/, "nome antigo não deve mais aparecer no bloco de formato — writer-monthly já gerava PARA ENCERRAR na prática");
   });
 
-  it("newsletter.md (diário) documenta a fonte do parágrafo de apoio/social", () => {
+  it("newsletter.md (diário) documenta a fonte do parágrafo de apoio/ferramentas", () => {
     const content = readFileSync(NEWSLETTER_DAILY_TEMPLATE, "utf8");
     assert.match(content, /encerramento-social-apoio\.md/);
   });
 });
 
-describe("integração de render — diário (renderEncerrar processa o novo bloco, #3219, fixture estável #4139)", () => {
-  it("o HTML resultante inclui o link de apoio e o CTA social, com o parágrafo social boxed (CTA)", () => {
+describe("integração de render — diário (renderEncerrar processa o novo bloco, #3219/#4413, fixture estável #4139)", () => {
+  it("o HTML resultante inclui o link de apoio e o CTA social (5 canais), com o parágrafo social boxed (CTA)", () => {
     withStableSnippet(() => {
       const full = buildParaEncerrar();
       const body = extractTemplateBlock(full, "🙋🏼‍♀️ PARA ENCERRAR");
@@ -374,23 +374,27 @@ describe("integração de render — diário (renderEncerrar processa o novo blo
       const html = renderEncerrar(body!);
       assert.match(html, /href="https:\/\/apoia\.se\/diaria"/);
       assert.match(html, new RegExp(`href="${DIARIA_LINKEDIN_PAGE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+      assert.match(html, new RegExp(`href="${DIARIA_INSTAGRAM_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+      assert.match(html, new RegExp(`href="${DIARIA_THREADS_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
       assert.match(html, new RegExp(`href="${DIARIA_FACEBOOK_PAGE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
-      assert.match(html, /Agora que chegou ao final da edição/);
+      assert.match(html, new RegExp(`href="${DIARIA_X_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+      assert.match(html, /Para acompanhar as 3 principais notícias de IA todos os dias/);
     });
   });
 });
 
-describe("integração de render — mensal (renderEncerramento processa o novo bloco, #3219, fixture estável #4139)", () => {
-  it("o HTML resultante inclui o link de apoio e o CTA social ao lado do encerramento padrão existente", () => {
+describe("integração de render — mensal (renderEncerramento processa o novo bloco, #3219/#4413/#4411, fixture estável #4139)", () => {
+  it("o HTML resultante inclui o link de apoio, as pills e o CTA social ao lado do encerramento padrão existente", () => {
     withStableSnippet(() => {
       const encerramentoPadrao =
-        "Quer sugerir um tema, responder a uma análise ou compartilhar a Diar.ia com um colega? Responda a este e-mail. Leio cada um. Se ainda não recebe a Diar.ia diária, assine em https://diar.ia.br/?utm_source=mensal-brevo.";
-      const apoioSocial = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_MONTHLY)!;
-      const body = `${encerramentoPadrao}\n\n${apoioSocial}`;
+        "Quer sugerir um tema ou tirar uma dúvida sobre o que está aqui? Responda a este e-mail. Se ainda não recebe a diar.ia.br diária, assine em https://diar.ia.br/?utm_source=mensal-brevo.";
+      const apoioFerramentas = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_MONTHLY)!;
+      const body = `${encerramentoPadrao}\n\n${apoioFerramentas}\n\n${CURADORIA_PILLS}\n\n${SOCIAL_INVITE}`;
       const html = renderEncerramento(body);
       assert.match(html, /href="https:\/\/apoia\.se\/diaria"/);
       assert.match(html, new RegExp(`href="${DIARIA_LINKEDIN_PAGE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
       assert.match(html, new RegExp(`href="${DIARIA_FACEBOOK_PAGE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+      assert.match(html, /href="https:\/\/cursos\.diar\.ia\.br"/);
       assert.match(html, /Essa edição mensal nasce/);
       // encerramento padrão pré-existente continua presente — não foi substituído
       assert.match(html, /assine em/);
@@ -398,56 +402,40 @@ describe("integração de render — mensal (renderEncerramento processa o novo 
   });
 });
 
-describe("buildParaEncerrar — split falho NÃO descarta conteúdo real (#3382, regressão do self-review do #3368)", () => {
-  // #3382: `splitEncerramentoSocialApoio` retorna `null` tanto quando o
-  // arquivo está ausente/vazio QUANTO quando o arquivo existe mas não separa
-  // em exatamente 2 parágrafos (ex: editor fundiu apoio+social num parágrafo
-  // só). Antes deste fix, os 2 casos eram tratados IGUAL por
-  // `buildParaEncerrar` — caindo no fallback hardcoded genérico e perdendo
-  // silenciosamente o conteúdo real do editor no 2º caso. Testamos aqui
-  // sobrescrevendo transitoriamente o snippet real via `withSnippetContent`
-  // (hoisted pro topo do arquivo, #4139 — usado por todos os describes deste
-  // arquivo agora, não só este), sempre restaurando o original no `finally`.
-
-  it("arquivo com 1 parágrafo só (editor fundiu apoio+social): splitEncerramentoSocialApoio retorna null, mas o conteúdo real aparece em buildParaEncerrar (não cai no hardcoded genérico)", () => {
+describe("buildParaEncerrar — slot A usa o snippet inteiro, qualquer forma (#4413 simplifica: não há mais split entre apoio/social nesta função, porque o social virou bloco fixo)", () => {
+  it("arquivo com conteúdo em 1 parágrafo só (sem estrutura de 2 parágrafos): aparece integralmente em slotA, convite social fixo continua presente", () => {
     withSnippetContent(
-      "{{OPENING}}Texto único do editor fundindo apoio e social num parágrafo só, com link exclusivo https://exemplo-editor-fundiu.test/apoio-e-social e sem quebra de linha.",
+      "{{OPENING}}Texto único do editor, com link exclusivo https://exemplo-editor-fundiu.test/apoio e sem quebra de linha.",
       () => {
-        const split = splitEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
-        assert.equal(split, null, "pré-condição do teste: split precisa falhar com 1 parágrafo só");
-
-        const out = buildParaEncerrar({ slotA: null, slotB: null });
-        // conteúdo real do editor está presente...
-        assert.match(out, /Texto único do editor fundindo apoio e social/);
-        assert.match(out, /https:\/\/exemplo-editor-fundiu\.test\/apoio-e-social/);
-        // ...e o fallback hardcoded genérico (que NUNCA existiu no arquivo) NÃO aparece
-        assert.doesNotMatch(out, /Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante/);
+        const out = buildParaEncerrar({ slotA: null });
+        assert.match(out, /Texto único do editor, com link exclusivo/);
+        assert.match(out, /https:\/\/exemplo-editor-fundiu\.test\/apoio/);
+        assert.ok(out.includes(SOCIAL_INVITE), "convite social fixo continua presente, independente da forma do snippet");
       },
     );
   });
 
-  it("arquivo com 3 parágrafos (editor adicionou um parágrafo extra no meio): conteúdo do editor inteiro é preservado em buildParaEncerrar", () => {
+  it("arquivo com 3+ parágrafos (editor adicionou parágrafo extra): conteúdo do editor inteiro é preservado em slotA", () => {
     withSnippetContent(
-      "{{OPENING}}Quem quiser apoiar a curadoria, o link é https://exemplo-editor-3par.test/apoio.\n\nParágrafo extra que o editor adicionou no meio, fora do formato de 2 parágrafos original.\n\nConvite social customizado pelo editor: https://exemplo-editor-3par.test/social.",
+      "{{OPENING}}Quem quiser apoiar a curadoria, o link é https://exemplo-editor-3par.test/apoio.\n\nParágrafo extra que o editor adicionou no meio, fora do formato de 2 parágrafos original.\n\nMais um parágrafo qualquer do editor.",
       () => {
-        const out = buildParaEncerrar({ slotA: null, slotB: null });
-        // os 3 parágrafos do editor aparecem, nenhum foi descartado
+        const out = buildParaEncerrar({ slotA: null });
         assert.match(out, /Quem quiser apoiar a curadoria, o link é https:\/\/exemplo-editor-3par\.test\/apoio/);
         assert.match(out, /Parágrafo extra que o editor adicionou no meio/);
-        assert.match(out, /Convite social customizado pelo editor: https:\/\/exemplo-editor-3par\.test\/social/);
-        // fallback hardcoded genérico não aparece
-        assert.doesNotMatch(out, /Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante/);
+        assert.match(out, /Mais um parágrafo qualquer do editor/);
+        assert.ok(out.includes(SOCIAL_INVITE));
       },
     );
   });
 
-  it("arquivo de fato ausente/vazio ainda cai no fallback hardcoded genérico (caso 1, comportamento preservado)", () => {
+  it("arquivo de fato ausente/vazio cai no fallback hardcoded genérico (FIXED_BLOCKS.para_encerrar_tools) — convite social continua fixo", () => {
     withSnippetContent("<!-- só comentário, sem conteúdo real -->", () => {
       const whole = renderEncerramentoSocialApoio(ENCERRAMENTO_OPENING_DAILY);
       assert.equal(whole, null, "pré-condição do teste: arquivo precisa renderizar null (vazio após strip)");
 
-      const out = buildParaEncerrar({ slotA: null, slotB: null });
-      assert.match(out, /Seguir, comentar e compartilhar nossas publicações por lá ajuda bastante/);
+      const out = buildParaEncerrar({ slotA: null });
+      assert.match(out, /usei Claude Code para automatizar parte da pesquisa/, "cai no fallback hardcoded de ferramentas");
+      assert.ok(out.includes(SOCIAL_INVITE), "convite social continua presente mesmo com slotA no fallback genérico");
     });
   });
 });
