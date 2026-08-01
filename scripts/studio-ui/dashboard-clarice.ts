@@ -70,7 +70,7 @@ import { loadProjectEnv } from "../lib/env-loader.ts";
 loadProjectEnv();
 
 import { openClariceDb, DEFAULT_DB_PATH } from "../lib/clarice-db.ts";
-import { computeStoreSummary, deriveCycleStart } from "../clarice-db-summary.ts";
+import { computeStoreSummary } from "../clarice-db-summary.ts";
 import {
   fetchRecentCampaigns,
   fetchScheduledCampaigns,
@@ -198,8 +198,7 @@ function buildContactsSummaryLocal(): ContactsSummary | null {
   try {
     const db = openClariceDb(DEFAULT_DB_PATH);
     try {
-      const cycleStart = deriveCycleStart();
-      const summary = computeStoreSummary(db, cycleStart);
+      const summary = computeStoreSummary(db);
       return { generated_at: new Date().toISOString(), ...summary };
     } finally {
       db.close();

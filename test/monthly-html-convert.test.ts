@@ -59,7 +59,69 @@ describe("htmlToLines", () => {
   });
 });
 
+// Recorte do template ATUAL (#3104/#3181, tealDot()): cada label de seção
+// vem prefixado por `<span>●</span>&nbsp;`, que sobrevive ao strip de tags
+// como "● LANÇAMENTO" — regressão do achado ao vivo no ciclo 2607-08, onde
+// os 24 posts do mês convertiam para 0 destaques porque a linha de
+// categoria não começava mais com letra maiúscula.
+const BEEHIIV_HTML_WITH_BULLET = `
+<html><body>
+<table><tr><td>
+<td style="..."><span style="color:#00A0A0;">●</span>&nbsp;LANÇAMENTO</td>
+<h1><a href="https://example.com/a">Título Com Marcador</a></h1>
+<p>Corpo do destaque com marcador de seção.</p>
+<p>Por que isso importa:</p>
+<p>Porquê do destaque com marcador.</p>
+</td></tr>
+<tr><td>
+<td style="..."><span style="color:#00A0A0;">●</span>&nbsp;BRASIL</td>
+<h1><a href="https://exemplo.com.br/b">Segundo Título Com Marcador</a></h1>
+<p>Corpo do segundo destaque.</p>
+<p>Por que isso importa:</p>
+<p>Segundo porquê.</p>
+</td></tr>
+</table>
+</body></html>
+`;
+
+// Rollout incremental do tealDot() (#3104) atingiu o label "Por que isso
+// importa" também, a partir de algum ponto do mês (visto ao vivo: ausente
+// até 260709, presente desde 260710) — regressão do mesmo achado do
+// ciclo 2607-08, mas na ponta do WHY_LINE_RE em vez do CATEGORY_LINE_RE.
+const BEEHIIV_HTML_BULLET_WHY = `
+<html><body>
+<table><tr><td>
+<td style="..."><span style="color:#00A0A0;">●</span>&nbsp;LANÇAMENTO</td>
+<h1><a href="https://example.com/a">Título Com Why Marcado</a></h1>
+<p>Corpo do destaque.</p>
+<p><span style="color:#00A0A0;">●</span>&nbsp;Por que isso importa</p>
+<p>Porquê com marcador no label.</p>
+</td></tr>
+</table>
+</body></html>
+`;
+
 describe("convertBeehiivHtmlToMarkdown", () => {
+  it("reconhece 'Por que isso importa' prefixado pelo marcador ● (tealDot(), rollout incremental)", () => {
+    const result = convertBeehiivHtmlToMarkdown(BEEHIIV_HTML_BULLET_WHY, "post_teste_bullet_why.txt");
+    assert.equal(result.destaquesFound, 1);
+    assert.match(result.markdown, /##### LANÇAMENTO/);
+    assert.match(result.markdown, /Por que isso importa:\n\nPorquê com marcador no label\./);
+  });
+
+  it("reconhece categoria prefixada pelo marcador ● (tealDot(), template atual)", () => {
+    const result = convertBeehiivHtmlToMarkdown(BEEHIIV_HTML_WITH_BULLET, "post_teste_bullet.txt");
+    assert.equal(result.destaquesFound, 2, "os 2 blocos com marcador ● devem converter limpo");
+
+    assert.match(result.markdown, /##### LANÇAMENTO/);
+    assert.ok(!result.markdown.includes("●"), "o marcador não deve vazar pro category do pseudo-markdown");
+    assert.match(result.markdown, /# \[Título Com Marcador\]\(https:\/\/example\.com\/a\)/);
+    assert.match(result.markdown, /Porquê do destaque com marcador\./);
+
+    assert.match(result.markdown, /##### BRASIL/);
+    assert.match(result.markdown, /Segundo porquê\./);
+  });
+
   it("extrai categoria/título/url/porquê dos blocos que convertem limpo", () => {
     const result = convertBeehiivHtmlToMarkdown(BEEHIIV_HTML, "post_teste.txt");
     assert.equal(result.destaquesFound, 2, "só os 2 blocos com why convertem");

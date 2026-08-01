@@ -1888,7 +1888,10 @@ describe("#4274 — buildParaEncerrar: slots A/B (override de teste, sem tocar p
     assert.match(out, /^\*\*🙋🏼‍♀️ PARA ENCERRAR\*\*/, "cabeçalho continua fixo, sempre primeiro");
     const headerPos = out.indexOf("PARA ENCERRAR");
     const apoioPos = out.indexOf("Apoie a curadoria");
-    const toolsPos = out.indexOf("Nessa edição da");
+    // Ciclo 2607-08: parágrafo de ferramentas agora vem do 2º parágrafo real
+    // do snippet compartilhado (não mais do FIXED_BLOCKS.para_encerrar_tools
+    // hardcoded, que só é usado como fallback quando o split falha).
+    const toolsPos = out.indexOf("Nesta edição da");
     const socialPos = out.indexOf("Agora que chegou ao final da edição");
     assert.ok(headerPos < apoioPos, "cabeçalho antes do parágrafo de apoio");
     assert.ok(apoioPos < toolsPos, "apoio antes das ferramentas (dentro do slotA)");

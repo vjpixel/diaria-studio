@@ -7,12 +7,11 @@
  * 15:45 do mês atual). Usado pela seção "Volume enviado no ciclo" do
  * dashboard (denominador dinâmico por mês, nunca 40k hardcoded).
  *
- * ⚠️ Conceito DIFERENTE do "ciclo de conteúdo/envio" do #2909/#2923
- * (`deriveCycleStart` em `scripts/clarice-db-summary.ts`, que é "1º dia do
- * mês corrente" — planejamento de reenvio, não crédito de plano). Os dois
- * NÃO se alinham por design (confirmado pelo editor 260703) — não
- * reconciliar; cada superfície do dashboard deixa explícito qual "ciclo"
- * usa.
+ * ⚠️ Conceito DIFERENTE do antigo "ciclo de conteúdo/envio" do #2909/#2923
+ * (`deriveCycleStart`, removido no #4406 — o sumário `contacts:summary` não
+ * carrega mais noção de ciclo; a tabela Cohorts hoje usa "Falta 1º envio",
+ * lifetime, sem janela temporal). Não confundir os dois conceitos se este
+ * arquivo for revisitado no futuro.
  *
  * Pura (sem I/O, sem `Env`) — só matemática de data/fuso, testável isolada.
  * Reusa `zonedTimeToUtc`/`datePartsInTz` de `scripts/lib/next-edition-date.ts`

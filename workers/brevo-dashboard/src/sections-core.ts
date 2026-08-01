@@ -670,13 +670,10 @@ ${monthlyAbcSectionsByDate}
   const contactsSummarySection = renderContactsSummarySection(contactsSummary, nowDate);
   // #2864: aba Cohorts — comparativo de envio/engajamento por cohort. Deriva
   // de contactsSummary (mesmo payload KV de Contatos, campo cohort_stats
-  // opcional) — sem parâmetro novo na assinatura desta função.
-  // #2909: passa cycle_start (top-level do summary) pra tabela decidir entre
-  // exibir "recebeu neste ciclo"/"falta enviar" (número) ou "—" (sem ciclo).
-  const cohortsTabSection = renderCohortsTabPanel(
-    contactsSummary?.cohort_stats,
-    contactsSummary?.cycle_start ?? null,
-  );
+  // opcional) — sem parâmetro novo na assinatura desta função. #4406: a linha
+  // "Jurídico" (cohort virtual) já vem dentro de cohort_stats — sem seção
+  // separada.
+  const cohortsTabSection = renderCohortsTabPanel(contactsSummary?.cohort_stats);
   // #2738: engajamento do poll "É IA?" por edição (pré-computado via KV).
   // #4165/#4173: opts.studioMode troca o stub null pro aviso + o botão de
   // refresh (que 405a servido pelo Studio) por um link pro dashboard Cloudflare.

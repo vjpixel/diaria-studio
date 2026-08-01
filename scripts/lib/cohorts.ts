@@ -41,6 +41,20 @@ import { EDITOR_SEED_EMAILS } from "./editor-copy.ts"; // #4257: ver INTERNAL_EM
 export const COHORT_ASSINANTES_ATIVOS = "assinantes-ativos";
 export const COHORT_EX_ASSINANTES = "ex-assinantes";
 export const COHORT_LEADS_CAUDAO = "leads-caudao";
+/**
+ * #4406: cohort VIRTUAL usado só pela agregação da aba Cohorts do dashboard
+ * (`computeCohortStats`, scripts/clarice-db-summary.ts) — nunca é escrito na
+ * coluna `cohort` real de `clarice_users` nem participa do pipeline de envio
+ * (waves/segments). Um contato detectado como jurídico (`isJuridicoEmail`,
+ * clarice-sector.ts) entra NESTA linha da tabela EM VEZ DA safra de cadastro
+ * — nunca nas duas (decisão do editor, 260731: "cada contato só pode estar
+ * em um cohort por vez"), preservando o invariante de partição que a tabela
+ * já tinha. Por ser puramente de exibição, NÃO entra em `isKnownCohortSlug`
+ * nem em `TIER_TO_COHORT` — scripts que validam `--cohort` (build de waves,
+ * verificação MV) continuam rejeitando "juridico" como valor inválido, o que
+ * é o comportamento correto (não é um segmento de envio).
+ */
+export const COHORT_JURIDICO = "juridico";
 
 /**
  * Cohort é isento de verificação MillionVerifier (#1297, #2886 PR3 review)?
@@ -294,6 +308,11 @@ function leadPeriodStartMs(cohort: string): number | null {
 
 const RANK_ASSINANTES_ATIVOS = 0;
 const RANK_EX_ASSINANTES = 1;
+// #4406: logo após os cohorts pagantes, antes de qualquer lead — a leitura de
+// 260731 mediu o segmento jurídico como mais quente que a base geral (abre
+// 25,5% vs 10,4%). Nunca colide com um rank de lead real: `leadPeriodStartMs`
+// produz valores na casa de 10^11-10^14 (ver FUTURE_REFERENCE_MS abaixo).
+const RANK_JURIDICO = 2;
 
 // Referência bem no futuro: `FUTURE_REFERENCE_MS - periodStartMs` cresce à
 // medida que o período fica mais antigo → rank crescente (= prioridade
@@ -316,6 +335,7 @@ const RANK_UNKNOWN = Number.MAX_SAFE_INTEGER - 1;
 export function cohortSendRank(cohort: string | null | undefined): number {
   if (cohort === COHORT_ASSINANTES_ATIVOS) return RANK_ASSINANTES_ATIVOS;
   if (cohort === COHORT_EX_ASSINANTES) return RANK_EX_ASSINANTES;
+  if (cohort === COHORT_JURIDICO) return RANK_JURIDICO;
   if (cohort === COHORT_LEADS_CAUDAO) return RANK_LEADS_CAUDAO;
   if (cohort != null) {
     const ms = leadPeriodStartMs(cohort);
@@ -358,6 +378,7 @@ export function cohortDisplayLabel(cohort: string | null | undefined): string {
   if (cohort == null) return "sem cohort";
   if (cohort === COHORT_ASSINANTES_ATIVOS) return "Assinantes ativos";
   if (cohort === COHORT_EX_ASSINANTES) return "Ex-assinantes";
+  if (cohort === COHORT_JURIDICO) return "Jurídico";
   if (cohort === COHORT_LEADS_CAUDAO) return "Caudão";
 
   const monthly = cohort.match(MONTHLY_SAFRA_RE) ?? cohort.match(BARE_SAFRA_RE);

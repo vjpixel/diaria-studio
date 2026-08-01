@@ -44,8 +44,8 @@ function decodeEntities(s: string): string {
 /**
  * Normaliza HTML pra linhas de texto, preservando links como
  * `[texto](url)` (convertidos ANTES de remover as demais tags) e inserindo
- * quebra de linha nos limites de bloco (`<br>`, `</p>`, `</h1-6>`, `</div>`,
- * `</td>`, `</tr>`, `</li>`). Linhas vazias são descartadas.
+ * quebra de linha nos limites de bloco (`<br>`, `<img>`, `</p>`, `</h1-6>`,
+ * `</div>`, `</td>`, `</tr>`, `</li>`). Linhas vazias são descartadas.
  */
 export function htmlToLines(html: string): string[] {
   let s = html.replace(/<!--[\s\S]*?-->/g, "");
@@ -58,6 +58,15 @@ export function htmlToLines(html: string): string[] {
       .trim();
     return text ? `[${text}](${href})` : "";
   });
+  // O template atual (#3104) não envolve o link do headline num <h1-6> —
+  // ele fica solto num <td>, seguido de <img class="hero"> e a legenda
+  // ("Criada com Gemini") no <p> seguinte, sem tag de fechamento entre eles
+  // pra marcar quebra de linha. Sem isso, `[Título](url)` gruda na legenda
+  // na mesma linha e nunca bate no LINK_LINE_RE (que exige a linha INTEIRA
+  // ser só o link) — achado ao vivo junto do bug do marcador ● (ciclo
+  // 2607-08). Imagem nunca carrega texto relevante pro parser, então
+  // sempre é seguro virar quebra de linha.
+  s = s.replace(/<img\b[^>]*>/gi, "\n");
   s = s.replace(/<br\s*\/?>/gi, "\n");
   s = s.replace(/<\/(p|h[1-6]|div|td|tr|li)>/gi, "\n");
   s = s.replace(/<[^>]+>/g, "");
@@ -65,15 +74,44 @@ export function htmlToLines(html: string): string[] {
   return s
     .split(/\r?\n/)
     .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+    .filter((l) => l.length > 0 && !IMAGE_CREDIT_LINE_RE.test(l));
 }
+
+// Legenda de crédito da imagem de capa ("Criada com Gemini/gpt-image-2/
+// Cloudflare FLUX/ComfyUI/IA" — ver credits{} em newsletter-render-html.ts),
+// renderizada logo abaixo do <img> do headline. Puro ruído de metadata, não
+// conteúdo editorial — sem filtrar, vira a primeira "linha de corpo" de todo
+// destaque (achado junto do bug do marcador ●, ciclo 2607-08).
+const IMAGE_CREDIT_LINE_RE = /^Criada com /;
 
 // Heurística de header de categoria: linha inteira em maiúsculas (Unicode),
 // só letras/espaços — cobre "LANÇAMENTO", "BRASIL", "GEOPOLÍTICA" etc. sem
-// casar títulos/frases mistas.
+// casar títulos/frases mistas. Tolera o marcador ● (tealDot(), #3104) que
+// precede o label na renderização atual — `<span>●</span>&nbsp;LANÇAMENTO`
+// vira a linha "● LANÇAMENTO" depois do strip de tags; sem isso a linha
+// nunca batia (não começa com letra maiúscula) e TODO destaque era perdido
+// silenciosamente convertido em "0 destaques" (achado ao vivo, ciclo 2607-08).
 const CATEGORY_LINE_RE = /^[\p{Lu}][\p{Lu}\s]{1,38}$/u;
+const BULLET_PREFIX_RE = /^●\s*/u;
 const LINK_LINE_RE = /^\[(.+?)\]\((https?:\/\/[^\s)]+)\)$/;
+// tealDot() (#3104) também prefixa o label "Por que isso importa" a partir
+// de algum ponto do mês (visto ao vivo: presente desde 260710, ausente até
+// 260709 — rollout incremental do marcador, não big-bang) — mesmo tratamento
+// de stripBullet() do CATEGORY_LINE_RE, senão a linha "why" nunca fecha o
+// destaque e todo bloco vira "sem Por que isso importa: — pulado".
 const WHY_LINE_RE = /^por que isso importa:?$/i;
+
+function stripBullet(line: string): string {
+  return line.replace(BULLET_PREFIX_RE, "");
+}
+
+function isCategoryLine(line: string): boolean {
+  return CATEGORY_LINE_RE.test(stripBullet(line));
+}
+
+function isWhyLine(line: string): boolean {
+  return WHY_LINE_RE.test(stripBullet(line));
+}
 
 /**
  * Converte o HTML de um post Beehiiv pro pseudo-markdown que `parsePost`
@@ -89,11 +127,12 @@ export function convertBeehiivHtmlToMarkdown(html: string, label = "post"): Html
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    if (!CATEGORY_LINE_RE.test(line) || WHY_LINE_RE.test(line) || LINK_LINE_RE.test(line)) {
+    const categoryCandidate = stripBullet(line);
+    if (!CATEGORY_LINE_RE.test(categoryCandidate) || isWhyLine(line) || LINK_LINE_RE.test(line)) {
       i++;
       continue;
     }
-    const category = line;
+    const category = categoryCandidate;
 
     // Procura o link título nas próximas linhas (tolera 1-2 linhas de
     // ruído, ex: espaçadores). Encontrar outra categoria antes de achar um
@@ -106,7 +145,7 @@ export function convertBeehiivHtmlToMarkdown(html: string, label = "post"): Html
         titleLink = { title: m[1], url: m[2] };
         break;
       }
-      if (CATEGORY_LINE_RE.test(lines[j])) break;
+      if (isCategoryLine(lines[j])) break;
       j++;
     }
     if (!titleLink) {
@@ -118,11 +157,11 @@ export function convertBeehiivHtmlToMarkdown(html: string, label = "post"): Html
     // esbarrar na próxima categoria (sinal de que não há why — bloco sujo).
     let k = j + 1;
     const bodyLines: string[] = [];
-    while (k < lines.length && !WHY_LINE_RE.test(lines[k]) && !CATEGORY_LINE_RE.test(lines[k])) {
+    while (k < lines.length && !isWhyLine(lines[k]) && !isCategoryLine(lines[k])) {
       bodyLines.push(lines[k]);
       k++;
     }
-    if (k >= lines.length || !WHY_LINE_RE.test(lines[k])) {
+    if (k >= lines.length || !isWhyLine(lines[k])) {
       warnings.push(
         `${label}: bloco "${category}" (${titleLink.title}) sem "Por que isso importa:" — pulado`,
       );
@@ -133,7 +172,7 @@ export function convertBeehiivHtmlToMarkdown(html: string, label = "post"): Html
     // Why: da linha após o delimitador até a próxima categoria (ou fim).
     let w = k + 1;
     const whyLines: string[] = [];
-    while (w < lines.length && !CATEGORY_LINE_RE.test(lines[w])) {
+    while (w < lines.length && !isCategoryLine(lines[w])) {
       whyLines.push(lines[w]);
       w++;
     }

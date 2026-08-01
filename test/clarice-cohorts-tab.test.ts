@@ -9,12 +9,13 @@ import {
 } from "../workers/brevo-dashboard/src/index.ts";
 
 // #2864: aba "Cohorts" — comparativo de envio/engajamento por cohort.
-// #2909: colunas "Recebeu neste ciclo"/"Falta enviar" (−"Envios (Σ)"/−"MV verified").
+// #4406: coluna "Falta 1º envio" (substitui "Recebeu neste ciclo"/"Falta
+// enviar", #2909) + linha virtual "Jurídico" dentro do próprio cohort_stats.
 // #2908: cohorts nunca-enviados (received=0) num <details> recolhível.
 
 // Helper de fixture: preenche os campos obrigatórios de CohortStatsRow e deixa
 // sobrescrever qualquer um. `sends_sum`/`mv_verified` NÃO existem mais no tipo
-// (#2909); `received_this_cycle`/`brevo` são opcionais (schema evolution).
+// (#2909); `eligible_never_sent`/`brevo` são opcionais (schema evolution).
 const mk = (o: Partial<CohortStatsRow>): CohortStatsRow => ({
   contacts: 0,
   eligible: 0,
@@ -106,8 +107,8 @@ test("renderCohortsTabPanel: cohort sem ninguém 'recebeu' (received=0) mostra '
   const html = renderCohortsTabPanel(stats);
   assert.doesNotMatch(html, /NaN/);
   assert.doesNotMatch(html, /Infinity/);
-  // Abertura/Clique/Unsub/Bounce → "—" (e, sem ciclo, Recebeu neste ciclo/Falta
-  // enviar também "—").
+  // Abertura/Clique/Unsub/Bounce → "—" (received=0); Falta 1º envio também
+  // "—" (fixture não popula eligible_never_sent — campo ausente).
   const dashCount = (html.match(/>—</g) ?? []).length;
   assert.ok(dashCount >= 4, `esperado ao menos 4 travessões, achou ${dashCount}`);
 });
@@ -222,75 +223,84 @@ test("renderCohortsTabPanel: linha Total soma contagens e agrega taxas (Σnum/Σ
 });
 
 // ---------------------------------------------------------------------------
-// #2909 — colunas "Recebeu neste ciclo" + "Falta enviar"
+// #4406 — coluna "Falta 1º envio" (substitui "Recebeu neste ciclo" + "Falta
+// enviar", #2909) + linha virtual "Jurídico" dentro de cohort_stats
 // ---------------------------------------------------------------------------
 
-test("renderCohortsTabPanel: header tem 'Recebeu neste ciclo' + 'Falta enviar', e NÃO tem 'Envios (Σ)'/'MV verified' (#2909)", () => {
+test("renderCohortsTabPanel: header tem 'Falta 1º envio', e NÃO tem as colunas antigas de ciclo (#4406)", () => {
   const stats: Record<string, CohortStatsRow> = {
-    "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 50, received_this_cycle: 30, opened: 40 }),
+    "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 50, eligible_never_sent: 40, opened: 40 }),
   };
-  const html = renderCohortsTabPanel(stats, "2026-06-01T00:00:00Z");
-  assert.match(html, /<th[^>]*>Recebeu neste ciclo<\/th>/, "coluna Recebeu neste ciclo presente");
-  assert.match(html, /<th[^>]*>Falta enviar<\/th>/, "coluna Falta enviar presente");
+  const html = renderCohortsTabPanel(stats);
+  assert.match(html, /<th[^>]*>Falta 1º envio<\/th>/, "coluna Falta 1º envio presente");
+  assert.doesNotMatch(html, /<th[^>]*>Recebeu neste ciclo<\/th>/, "coluna antiga removida");
+  assert.doesNotMatch(html, /<th[^>]*>Falta enviar<\/th>/, "coluna antiga removida");
   assert.doesNotMatch(html, /<th[^>]*>Envios \(Σ\)<\/th>/, "Envios (Σ) removida");
   assert.doesNotMatch(html, /<th[^>]*>MV verified<\/th>/, "MV verified removida");
 });
 
-test("renderCohortsTabPanel: com cycleStart, 'Recebeu neste ciclo'=número e 'Falta enviar'=elegíveis−recebeu_ciclo (#2909)", () => {
+test("renderCohortsTabPanel: célula 'Falta 1º envio' reflete eligible_never_sent diretamente, sem subtração (#4406)", () => {
   const stats: Record<string, CohortStatsRow> = {
-    // eligible 90, received_this_cycle 30 → falta = 60. brevo=55 (≠60, evita colisão).
-    "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 50, received_this_cycle: 30, opened: 40, clicked: 10, unsub: 1, brevo: 55 }),
+    // eligible_never_sent vem PRONTO do writer — o render não subtrai nada.
+    "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 50, eligible_never_sent: 40, opened: 40, clicked: 10, unsub: 1, brevo: 55 }),
   };
-  const html = renderCohortsTabPanel(stats, "2026-06-01T00:00:00Z");
-  assert.match(html, />30</, "Recebeu neste ciclo = 30");
-  assert.match(html, />60</, "Falta enviar = eligible(90) − received_this_cycle(30)");
+  const html = renderCohortsTabPanel(stats);
+  assert.match(html, />40</, "Falta 1º envio = eligible_never_sent(40)");
 });
 
-test("renderCohortsTabPanel: SEM cycleStart, colunas de ciclo exibem '—' (não o número), nota avisa (#2909)", () => {
+test("renderCohortsTabPanel: linha Total — 'Falta 1º envio' = soma das linhas (#4406)", () => {
   const stats: Record<string, CohortStatsRow> = {
-    "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 50, received_this_cycle: 30, opened: 40, clicked: 10, unsub: 1, brevo: 55 }),
+    "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 50, eligible_never_sent: 30, opened: 30, clicked: 10, unsub: 2, hard_bounce: 1, brevo: 80 }),
+    "ex-assinantes": mk({ contacts: 200, eligible: 150, received: 100, eligible_never_sent: 40, opened: 60, clicked: 15, unsub: 5, hard_bounce: 2, brevo: 150 }),
   };
-  const html = renderCohortsTabPanel(stats); // cycleStart default = null
-  assert.doesNotMatch(html, />30</, "Recebeu neste ciclo NÃO exibido como número sem ciclo");
-  assert.match(html, /nenhum ciclo de envio com send-plan legível/i, "nota explica o '—'");
-});
-
-test("renderCohortsTabPanel: linha Total — 'Falta enviar' = Σelegíveis − Σrecebeu_ciclo (#2909)", () => {
-  const stats: Record<string, CohortStatsRow> = {
-    "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 50, received_this_cycle: 30, opened: 30, clicked: 10, unsub: 2, hard_bounce: 1, brevo: 80 }),
-    "ex-assinantes": mk({ contacts: 200, eligible: 150, received: 100, received_this_cycle: 40, opened: 60, clicked: 15, unsub: 5, hard_bounce: 2, brevo: 150 }),
-  };
-  const html = renderCohortsTabPanel(stats, "2026-06-01T00:00:00Z");
+  const html = renderCohortsTabPanel(stats);
   const totalRowHtml = html.match(/<tr class="total-row">([\s\S]*?)<\/tr>/)![1];
-  assert.match(totalRowHtml, />70</, "Recebeu neste ciclo total = 30+40");
-  assert.match(totalRowHtml, />170</, "Falta enviar total = Σelegíveis(240) − Σrecebeu_ciclo(70)");
+  assert.match(totalRowHtml, />70</, "Falta 1º envio total = 30+40");
 });
 
-test("renderCohortsTabPanel: 'Falta enviar' nunca negativo — recebeu>elegíveis → 0 (clamp, review PR)", () => {
-  // eligible 40, received_this_cycle 45: 5 contatos descadastraram/bounce APÓS
-  // receberem no ciclo → send_eligible caiu p/ 0 mas last_sent_at ≥ cycle_start.
-  // Falta = max(0, 40−45) = 0, jamais "−5" (por cohort E na linha Total).
-  const stats: Record<string, CohortStatsRow> = {
-    "assinantes-ativos": mk({ contacts: 100, eligible: 40, received: 50, received_this_cycle: 45, opened: 30, clicked: 10, unsub: 5, brevo: 60 }),
-  };
-  const html = renderCohortsTabPanel(stats, "2026-06-01T00:00:00Z");
-  assert.doesNotMatch(html, />[-−]\d/, "nenhum número negativo renderizado (Falta enviar clampado em 0)");
-  const totalRowHtml = html.match(/<tr class="total-row">([\s\S]*?)<\/tr>/)![1];
-  assert.doesNotMatch(totalRowHtml, />[-−]\d/, "linha Total também sem negativo");
-});
-
-test("renderCohortsTabPanel: received_this_cycle ausente (KV pré-#2909) com ciclo → degrada pra 0, não lança (#2909)", () => {
+test("renderCohortsTabPanel: eligible_never_sent AUSENTE (KV pré-#4406) → '—', nunca '0' (#4406)", () => {
+  // Ausente ≠ zero: "0" leria como "não falta ninguém" (o oposto de "não sei").
   const stats: Record<string, CohortStatsRow> = {
     "assinantes-ativos": {
       contacts: 100, eligible: 90, received: 50,
       opened: 40, clicked: 10, unsub: 1, hard_bounce: 0,
-      // received_this_cycle AUSENTE
+      // eligible_never_sent AUSENTE
     } as unknown as CohortStatsRow,
   };
-  assert.doesNotThrow(() => renderCohortsTabPanel(stats, "2026-06-01T00:00:00Z"));
-  const html = renderCohortsTabPanel(stats, "2026-06-01T00:00:00Z");
-  // recebeu_ciclo degrada a 0 → falta = eligible(90) − 0 = 90.
-  assert.match(html, />90</, "falta = eligible quando received_this_cycle ausente (0)");
+  assert.doesNotThrow(() => renderCohortsTabPanel(stats));
+  const html = renderCohortsTabPanel(stats);
+  const cohortRowHtml = html.match(/<tr>\s*<td>Assinantes ativos<\/td>[\s\S]*?<\/tr>/)![0];
+  assert.match(cohortRowHtml, />—</, "campo ausente renderiza travessão, não 0");
+  const totalRowHtml = html.match(/<tr class="total-row">([\s\S]*?)<\/tr>/)![1];
+  assert.match(totalRowHtml, />—</, "Total também travessão quando nenhuma linha tem o campo");
+});
+
+test("renderCohortsTabPanel: eligible_never_sent PRESENTE e ZERO renderiza '0', não '—' (#4406)", () => {
+  const stats: Record<string, CohortStatsRow> = {
+    "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 90, eligible_never_sent: 0, opened: 40 }),
+  };
+  const html = renderCohortsTabPanel(stats);
+  const cohortRowHtml = html.match(/<tr>\s*<td>Assinantes ativos<\/td>[\s\S]*?<\/tr>/)![0];
+  assert.match(cohortRowHtml, />0</, "0 real é exibido como 0, não confundido com ausência");
+});
+
+test("renderCohortsTabPanel: cohort virtual 'juridico' rotulado 'Jurídico' e ordenado logo após os cohorts pagantes (#4406)", () => {
+  const stats: Record<string, CohortStatsRow> = {
+    "leads-caudao": mk({ contacts: 1, eligible: 1, received: 1 }),
+    juridico: mk({ contacts: 1, eligible: 1, received: 1 }),
+    "ex-assinantes": mk({ contacts: 1, eligible: 1, received: 1 }),
+    "assinantes-ativos": mk({ contacts: 1, eligible: 1, received: 1 }),
+  };
+  const html = renderCohortsTabPanel(stats);
+  assert.match(html, /<td>Jurídico<\/td>/, "rótulo pt-BR do cohort virtual");
+  // A metodologia (renderizada ANTES da tabela) também cita "<strong>Jurídico
+  // </strong>" em prosa — buscar pela CÉLULA exata (<td>...</td>), senão o
+  // índice captura o texto explicativo em vez da linha da tabela.
+  const idxAtivos = html.indexOf("<td>Assinantes ativos</td>");
+  const idxEx = html.indexOf("<td>Ex-assinantes</td>");
+  const idxJuridico = html.indexOf("<td>Jurídico</td>");
+  const idxCaudao = html.indexOf("<td>Caudão</td>");
+  assert.ok(idxAtivos < idxEx && idxEx < idxJuridico && idxJuridico < idxCaudao, "assinantes-ativos < ex-assinantes < Jurídico < leads-caudao");
 });
 
 // ---------------------------------------------------------------------------
@@ -386,24 +396,24 @@ test("renderCohortsTabPanel: <summary> mostra contatos/elegíveis SEM precisar e
   );
 });
 
-test("renderCohortsTabPanel: 'Falta enviar'/'Recebeu neste ciclo' da Total do <details> são COMPUTADOS, não hardcoded em 0 (#4257)", () => {
-  // Cenário artificial (não ocorre na prática — received=0 mas receivedThisCycle>0
-  // seria inconsistente no store real): prova que o cálculo é genérico, não um
-  // caminho especial que sempre devolve 0 pro conjunto nunca-enviado.
+test("renderCohortsTabPanel: 'Falta 1º envio' da Total do <details> é a SOMA real das linhas, não um atalho igual a Elegíveis (#4257, #4406)", () => {
+  // Cohort nunca-enviado (received=0) ainda pode ter contatos INELEGÍVEIS que
+  // nunca foram sequer contados como "falta 1º envio" — eligible_never_sent
+  // pode ser < eligible mesmo aqui, então somar as linhas de verdade importa
+  // (um atalho que reusasse `tot.eligible` passaria despercebido se os dois
+  // valores coincidissem por acaso).
   const stats: Record<string, CohortStatsRow> = {
     "ex-assinantes": {
-      contacts: 500, eligible: 480, received: 0,
-      received_this_cycle: 50, // valor não-zero, deliberadamente inconsistente com received=0
+      contacts: 500, eligible: 480, received: 0, eligible_never_sent: 430,
       opened: 0, clicked: 0, unsub: 0, hard_bounce: 0,
     } as CohortStatsRow,
   };
-  const html = renderCohortsTabPanel(stats, "2026-06-01T00:00:00Z"); // cycleStart presente → colunas numéricas, não "—"
+  const html = renderCohortsTabPanel(stats);
   const detailsBlock = html.slice(html.indexOf('<details class="never-sent">'));
   const totalRowMatch = detailsBlock.match(/<tr class="total-row">[\s\S]*?<\/tr>/);
   const cells = [...totalRowMatch![0].matchAll(/<td>([^<]*)<\/td>/g)].map((m) => m[1]);
-  // ordem: Total | contatos | brevo | elegíveis | recebeu | recebeu-ciclo | falta-enviar | ...
-  assert.equal(cells[5], "50", "recebeu-ciclo soma o valor real (50), não hardcoded em 0");
-  assert.equal(cells[6], "430", "falta-enviar = elegíveis(480) - recebeu-ciclo(50) = 430, calculado de verdade");
+  // ordem: Total | contatos | brevo | elegíveis | recebeu | falta-1º-envio | ...
+  assert.equal(cells[5], "430", "Falta 1º envio soma eligible_never_sent real (430), não eligible (480)");
 });
 
 test("renderCohortsTabPanel: nenhum cohort nunca-enviado → <details> ausente, comportamento pré-#4257 preservado", () => {
@@ -451,23 +461,21 @@ test("renderDashboardHtml: contactsSummary.cohort_stats popula a tabela Cohorts 
   assert.doesNotMatch(panel, /Dados ainda não gerados/);
 });
 
-test("renderDashboardHtml: cycle_start do summary flui até a tabela Cohorts (#2909)", () => {
+test("renderDashboardHtml: cohort_stats[x].eligible_never_sent flui até a tabela Cohorts dentro da aba Contatos (#4406)", () => {
   const contactsSummary: ContactsSummary = {
     generated_at: "2026-07-02T12:00:00Z",
     total: 100,
-    cycle_start: "2026-06-01T00:00:00Z",
     brevo: { synced_rows: 50, has_signal: true },
     eligibility: { eligible: 90, ineligible: 10, by_reason: {} },
     priority_points: { lt0: 0, eq0: 100, p1_40: 0, p41_80: 0, gt80: 0, optin: 0 },
     mv: {},
     engagement: { with_opens: 0, with_clicks: 0 },
     cohort_stats: {
-      "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 80, received_this_cycle: 25, opened: 40, brevo: 60 }),
+      "assinantes-ativos": mk({ contacts: 100, eligible: 90, received: 80, eligible_never_sent: 25, opened: 40, brevo: 60 }),
     },
   };
   const html = renderDashboardHtml([], [], null, null, contactsSummary);
-  // com cycle_start presente, "Recebeu neste ciclo" = 25 é EXIBIDO (não "—").
-  assert.match(html, />25</, "received_this_cycle exibido quando cycle_start flui pelo dashboard");
+  assert.match(html, />25</, "eligible_never_sent flui do summary até a tabela Cohorts dentro do dashboard");
 });
 
 test("renderDashboardHtml: legenda do footer diz que vermelho SEMPRE significa 'ruim' — inclusive na aba Cohorts (#3091, reverte #2875 item 6)", () => {

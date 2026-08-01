@@ -602,18 +602,23 @@ export const CAMPAIGNS_FETCH_LIMIT = 100;
  * num payload externo) produzia `undefined` e o render de contagem
  * (`toLocaleString`) lançava — TypeError → 502.
  *
- * #2909: `received_this_cycle` entra com o mesmo guard (degrada a 0 em KV
- * pré-#2909); `sends_sum`/`mv_verified` saíram do payload (colunas removidas).
+ * #4406: `eligible_never_sent` é a ÚNICA exceção ao padrão "ausente degrada
+ * pra 0" desta função — degradar pra 0 leria como "não falta ninguém" (o
+ * oposto de "não sei", que é o que um KV pré-#4406 de fato significa). Chave
+ * fica OMITIDA quando ausente/inválida no payload cru; o render (`countOrDash`)
+ * trata ausência como "—". `sends_sum`/`mv_verified`/`received_this_cycle`
+ * saíram do payload (colunas removidas, #2909/#4406).
  */
 function normalizeCohortStatsRow(raw: unknown): CohortStatsRow | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Partial<CohortStatsRow> & { unsub_bounce?: number };
   const numOr0 = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const isFiniteNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
   return {
     contacts: numOr0(r.contacts),
     eligible: numOr0(r.eligible),
     received: numOr0(r.received),
-    received_this_cycle: numOr0(r.received_this_cycle),
+    ...(isFiniteNum(r.eligible_never_sent) ? { eligible_never_sent: r.eligible_never_sent } : {}),
     opened: numOr0(r.opened),
     clicked: numOr0(r.clicked),
     // #2880: degrada pro par legado unsub_bounce (pré-split) quando `unsub`
@@ -704,10 +709,6 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
   return {
     generated_at: typeof s.generated_at === "string" ? s.generated_at : "",
     total: s.total,
-    // #2909: cycle_start (string ISO) só é INCLUÍDO quando presente — OMITIDO
-    // quando ausente OU null explícito (schema evolution, igual aos histogramas
-    // opcionais). Render trata ausente/null como "sem ciclo" → colunas de ciclo "—".
-    ...(typeof s.cycle_start === "string" ? { cycle_start: s.cycle_start } : {}),
     brevo: {
       synced_rows: numOr0(rawBrevo.synced_rows),
       has_signal: typeof rawBrevo.has_signal === "boolean" ? rawBrevo.has_signal : false,
@@ -724,12 +725,12 @@ export function normalizeContactsSummary(raw: unknown): ContactsSummary | null {
       p41_80: numOr0(rawPp.p41_80),
       gt80: numOr0(rawPp.gt80),
       optin: numOr0(rawPp.optin),
-      // #3081 (review): opcional por SCHEMA EVOLUTION (mesmo critério de
-      // `cycle_start` acima) — OMITIDO quando ausente no KV cru (payload
-      // pré-#3081), nunca defaultado a 0 (0 excluídos e "dado ausente" não
-      // são a mesma coisa). Sem este passthrough, o campo nunca chegava ao
-      // render em produção — este normalizador reconstrói `priority_points`
-      // como literal fixo e descartava qualquer chave extra do KV cru.
+      // #3081 (review): opcional por SCHEMA EVOLUTION — OMITIDO quando
+      // ausente no KV cru (payload pré-#3081), nunca defaultado a 0 (0
+      // excluídos e "dado ausente" não são a mesma coisa). Sem este
+      // passthrough, o campo nunca chegava ao render em produção — este
+      // normalizador reconstrói `priority_points` como literal fixo e
+      // descartava qualquer chave extra do KV cru.
       ...(typeof rawPp.internal_excluded === "number" ? { internal_excluded: numOr0(rawPp.internal_excluded) } : {}),
     },
     ...histFields,
