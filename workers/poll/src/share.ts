@@ -66,7 +66,7 @@
  *     converter tráfego pro jogo, alinhado ao objetivo do EPIC #3514
  *     ("motor de divulgação").
  */
-import { CYCLE_EDITION_RE, isValidVoteEditionFormat, htmlEscape, formatEditionDateForBrand, type Brand, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST, SUBSCRIBE_UTM_SOURCE } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca; #3978: utm_source fixo do funil; #4119: isValidVoteEditionFormat/CYCLE_EDITION_RE — token de share passa a aceitar edição de ciclo Clarice (formatEditionDate direto não é mais usado aqui — ver formatShareEditionDate)
+import { CYCLE_EDITION_RE, isValidVoteEditionFormat, htmlEscape, formatEditionDateForBrand, type Brand, BRAND_INFO, renderBrandFooter, renderBrandShellStyles, renderSeoMeta, PUBLIC_GAME_BASE_URL, PUBLIC_GAME_DISPLAY_HOST, SUBSCRIBE_UTM_SOURCE } from "./lib"; // #3701: share/og deste arquivo são exclusivos do brand web — domínio de marca; #3978: utm_source fixo do funil; #4119: isValidVoteEditionFormat/CYCLE_EDITION_RE — token de share passa a aceitar edição de ciclo Clarice (formatEditionDate direto não é mais usado aqui — ver formatShareEditionDate)
 import { DS_COLORS, DS_FONTS } from "./ds-tokens.generated";
 import { hmacSign } from "./index";
 import {
@@ -176,17 +176,26 @@ export async function decodeShareToken(secret: string, token: string): Promise<S
  * "YYMM-MM") — sem passar o brand real aqui, `formatEditionDate` (genérico,
  * só entende AAMMDD por design — #3113 item 13) devolvia o slug cru pro
  * leitor. O call site que RENDERIZA direto no resultado do voto (`votePageHtml`
- * em index.ts) conhece o brand de verdade e passa explicitamente. */
+ * em index.ts) conhece o brand de verdade e passa explicitamente.
+ *
+ * Achado ao vivo 260801: "de hoje" fixo pressupõe cadência DIÁRIA — errado
+ * pra `clarice` (`leaderboardPeriod === "year"`, cadência mensal), onde
+ * `dateLabel` já é só "mês de ano" (sem dia, ver `formatEditionDateForBrand`).
+ * "Acertei o 'É IA?' de hoje (agosto de 2026)!" lia como se a edição de um
+ * dia específico fosse "agosto inteiro". Mesmo padrão brand-aware de
+ * `renderStreakSuffix`/`leaderboardPeriodWord` (lib.ts): swap "de hoje" →
+ * "deste mês" quando o brand é mensal. */
 export function buildShareText(payload: SharePayload, brand: Brand = "web"): string {
   const dateLabel = formatEditionDateForBrand(payload.edition, brand);
   const question = "Você consegue diferenciar uma foto real de uma gerada por IA?";
+  const periodPhrase = BRAND_INFO[brand].leaderboardPeriod === "year" ? "deste mês" : "de hoje";
   if (payload.correct === true) {
-    return `Acertei o "É IA?" de hoje (${dateLabel})! ${question} ${PUBLIC_GAME_DISPLAY_HOST}/jogar`;
+    return `Acertei o "É IA?" ${periodPhrase} (${dateLabel})! ${question} ${PUBLIC_GAME_DISPLAY_HOST}/jogar`;
   }
   if (payload.correct === false) {
-    return `Não foi dessa vez no "É IA?" de hoje (${dateLabel}). ${question} ${PUBLIC_GAME_DISPLAY_HOST}/jogar`;
+    return `Não foi dessa vez no "É IA?" ${periodPhrase} (${dateLabel}). ${question} ${PUBLIC_GAME_DISPLAY_HOST}/jogar`;
   }
-  return `Já votei no "É IA?" de hoje (${dateLabel}) — resultado sai em breve. ${question} ${PUBLIC_GAME_DISPLAY_HOST}/jogar`;
+  return `Já votei no "É IA?" ${periodPhrase} (${dateLabel}) — resultado sai em breve. ${question} ${PUBLIC_GAME_DISPLAY_HOST}/jogar`;
 }
 
 /**
@@ -305,6 +314,17 @@ export function renderShareCardBlock(token: string, payload: SharePayload, brand
  * o ciclo, e pro formato AAMMDD padrão caso contrário — puramente uma chave
  * de lookup de FORMATAÇÃO, não uma inferência de identidade real (pior caso
  * de errar, que não ocorre na prática, é só afetar a string exibida).
+ *
+ * Achado ao vivo 260801 (review de PR): desde que `buildShareText` também
+ * usa `brand` pra escolher "de hoje" vs "deste mês" (não só o formato da
+ * data), o "pior caso" acima ficou um pouco mais largo — um token de share
+ * LEGADO de clarice em formato AAMMDD (pré-#2115, ainda decodificável,
+ * assinatura nunca invalidada) inferiria `brand="web"` aqui e mostraria "de
+ * hoje" pra uma edição que na verdade era mensal. Mesma classe de risco já
+ * aceita pelo rationale acima (edge case de token antigo, nunca ocorre pra
+ * links novos, pior caso é só a string exibida) — não vale ampliar o
+ * payload assinado por isso, só registrando que agora também afeta escolha
+ * de palavra, não só granularidade de data.
  */
 function inferDateFormatBrand(edition: string): Brand {
   return CYCLE_EDITION_RE.test(edition) ? "clarice" : "web";
@@ -361,8 +381,11 @@ export interface SharePageOptions {
 export function renderSharePageHtml(opts: SharePageOptions): string {
   const { token, payload, utmMedium } = opts;
   // #4119: brand desconhecido aqui por design (ver rationale de
-  // `inferDateFormatBrand` acima) — infere só pra escolher o FORMATO DE DATA
-  // certo dentro de `buildShareText`, nunca pra afetar o resto da mensagem.
+  // `inferDateFormatBrand` acima) — infere pra escolher o FORMATO DE DATA
+  // certo dentro de `buildShareText`. Achado 260801: desde que `buildShareText`
+  // também usa `brand` pra escolher "de hoje"/"deste mês", a inferência agora
+  // afeta essa palavra também, não só a granularidade da data — mesmo trade-off
+  // já aceito (ver o parágrafo final do rationale acima).
   const text = buildShareText(payload, inferDateFormatBrand(payload.edition));
   const ogImageUrl = `${PUBLIC_GAME_BASE_URL}/og/${encodeURIComponent(token)}`;
   // #3978: utm_source era "share" hardcoded (valor PRÓPRIO, desalinhado da
